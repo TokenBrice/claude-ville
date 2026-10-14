@@ -93,7 +93,7 @@ const OUTCOME_CHIT_OFFSETS = [
 // door's front is the moat fence, so its row stands back on the lit plaza at
 // the stair foot; the Task board's slides along its apron off the curtain
 // wall's corner; the Forge's brazier, the Mine's ore cart and the
-// Observatory's lamp post would stand on it; the Portal's door front is the
+// Tavern's yard lamp would stand on it; the Portal's door front is the
 // hedge; the lighthouse's door ground is under the Harbor Master's roofs, so
 // its row stands at the foot of the tower's own stair; the Harbor's is the
 // slipway's water. Every shift keeps the row clear of the chip rows above.
@@ -102,7 +102,7 @@ const OUTCOME_ROW_SHIFT = Object.freeze({
     taskboard: { x: 6, y: 1 },
     forge: { x: 34, y: 2 },
     mine: { x: 14, y: 3 },
-    observatory: { x: -6, y: -14 },
+    tavern: { x: -6, y: -14 },
     portal: { x: 20, y: -26 },
     watchtower: { x: 16, y: -62 },
     harbor: { x: -8, y: -38 },

@@ -26,21 +26,21 @@ const TOOL_METADATA = Object.freeze({
     },
 
     WebSearch: {
-        classification: { building: 'observatory', reason: 'web-search', confidence: 0.95 },
+        classification: { building: 'portal', reason: 'web-search', confidence: 0.95 },
         icon: '🌐',
         category: 'search',
         actionLabel: 'Researching',
         hostLabel: true,
     },
     WebFetch: {
-        classification: { building: 'observatory', reason: 'web-fetch', confidence: 0.95 },
+        classification: { building: 'portal', reason: 'web-fetch', confidence: 0.95 },
         icon: '🌐',
         category: 'search',
         actionLabel: 'Fetching',
         hostLabel: true,
     },
     'web.run': {
-        classification: { building: 'observatory', reason: 'web-tool', confidence: 0.95 },
+        classification: { building: 'portal', reason: 'web-tool', confidence: 0.95 },
         hostLabel: true,
     },
 
@@ -279,7 +279,7 @@ const SHELL_TOOL_NAMES = new Set([
     'command_execution',
 ]);
 
-const MULTI_TOOL_PRIORITY = ['harbor', 'taskboard', 'command', 'forge', 'archive', 'portal', 'observatory', 'mine'];
+const MULTI_TOOL_PRIORITY = ['harbor', 'taskboard', 'command', 'forge', 'archive', 'portal', 'mine'];
 
 const NORMALIZED_INPUT_FIELDS = Object.freeze([
     'cmd',
@@ -501,7 +501,7 @@ export function classifyShellInput(input) {
         return { building: 'portal', reason: 'browser-preview', confidence: 0.86, label: compactToolLabel(text, 'browser') };
     }
     if (WEB_COMMAND_PATTERN.test(text)) {
-        return { building: 'observatory', reason: 'external-research', confidence: 0.86, label: compactToolLabel(text, 'web') };
+        return { building: 'portal', reason: 'external-research', confidence: 0.86, label: compactToolLabel(text, 'web') };
     }
     if (FILE_MUTATION_COMMAND_PATTERN.test(text)) {
         return isDocumentationToolInput(input)
@@ -623,7 +623,7 @@ export function classifyTool(toolName, input) {
         return { building: 'harbor', reason: 'github-flow', confidence: 0.84, label: compactToolLabel(tool, 'git') };
     }
     if (WEB_TOOL_NAME_PATTERN.test(lowerTool)) {
-        return { building: 'observatory', reason: 'external-research', confidence: 0.82, label: compactToolLabel(tool, 'web') };
+        return { building: 'portal', reason: 'external-research', confidence: 0.82, label: compactToolLabel(tool, 'web') };
     }
     if (FILE_MUTATION_TOOL_NAME_PATTERN.test(lowerTool)) {
         return isDocumentationToolInput(input)

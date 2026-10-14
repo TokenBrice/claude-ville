@@ -112,17 +112,19 @@ test('daypart weights are deterministic per hour and distinct across the day', (
     assert.equal(AMBIENT_SCENIC_POINTS.find((point) => point.id === top(19)).district, 'harbor');
     assert.ok(buildingWeightsForHour(8).command > buildingWeightsForHour(13).command ?? 1);
     assert.ok(strollCapForHour(23) < strollCapForHour(13));
-    const brazier = REST_SEATS.find((seat) => seat.id === 'command-east-step-n');
-    assert.ok(restSeatStepBias(23, brazier) < 0);
-    assert.equal(restSeatStepBias(13, brazier), 0);
-    assert.equal(restSeatStepBias(null, brazier), 0);
+    const step = REST_SEATS.find((seat) => seat.id === 'command-east-step-n');
+    const table = REST_SEATS.find((seat) => seat.occluder === 'tavern');
+    assert.equal(restSeatStepBias(23, step), 0);
+    assert.ok(restSeatStepBias(13, table) < 0, 'the Tavern draws idlers by day');
+    assert.ok(restSeatStepBias(23, table) < restSeatStepBias(13, table), 'and more so at night');
+    assert.ok(restSeatStepBias(null, table) < 0);
 });
 
 test('the errand table follows recent phases and never picks where the body stands', () => {
     const tally = (recent, current = null) => {
         const counts = {};
         for (let cycle = 0; cycle < 400; cycle++) {
-            const choice = errandChoice({ agentId: 'w', cycle, recentBuildings: recent, currentBuilding: current, homeDistrict: 'observatory' });
+            const choice = errandChoice({ agentId: 'w', cycle, recentBuildings: recent, currentBuilding: current, homeDistrict: 'portal' });
             assert.notEqual(choice.building, current);
             counts[choice.kind] = (counts[choice.kind] || 0) + 1;
         }

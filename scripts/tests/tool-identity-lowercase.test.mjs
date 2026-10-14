@@ -44,7 +44,7 @@ const LOWERCASE_CASES = [
     ['yield', {}, 'taskboard', 'report-work', 'report', 'task'],
     ['wait', {}, 'command', 'wait-agent', 'wait on agent', 'task'],
     ['ask', { question: 'Which branch?' }, 'command', 'ask-decision', 'ask', 'task'],
-    ['web_search', { query: 'Node documentation' }, 'observatory', 'web-search', 'search web', 'search'],
+    ['web_search', { query: 'Node documentation' }, 'portal', 'web-search', 'search web', 'search'],
     ['browser', { url: 'http://localhost:4000/' }, 'portal', 'browser-preview', 'preview', 'exec'],
     ['github', { method: 'GET', path: '/repos/example/project' }, 'harbor', 'github-flow', 'github', 'exec'],
     ['debug', { command: 'start', program: 'app.js' }, 'command', 'debug-session', 'debug', 'exec'],
@@ -83,8 +83,8 @@ const CAPITALIZED_CASES = [
     ['EnterPlanMode', {}, 'taskboard'],
     ['ExitPlanMode', {}, 'taskboard'],
     ['AskUserQuestion', {}, 'command'],
-    ['WebSearch', { query: 'Node documentation' }, 'observatory'],
-    ['WebFetch', { url: 'https://example.com/' }, 'observatory'],
+    ['WebSearch', { query: 'Node documentation' }, 'portal'],
+    ['WebFetch', { url: 'https://example.com/' }, 'portal'],
     ['WebFetch', { url: 'http://localhost:4000/' }, 'portal'],
 ];
 

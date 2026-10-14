@@ -532,7 +532,8 @@ export const WORK_TOOLS = Object.freeze({
     forge: k => ({ currentTool: 'Edit', currentToolInput: { file_path: `src/work-${k}.js` } }),
     archive: k => ({ currentTool: 'Read', currentToolInput: { file_path: `docs/notes-${k}.md` } }),
     taskboard: k => ({ currentTool: 'TodoWrite', currentToolInput: { todos: [{ content: `step ${k}` }] } }),
-    observatory: k => ({ currentTool: 'WebSearch', currentToolInput: { query: `query ${k}` } }),
+    // Web research works at the Portal beside the browser tools.
+    web: k => ({ currentTool: 'WebSearch', currentToolInput: { query: `query ${k}` } }),
     portal: k => ({ currentTool: 'mcp__playwright__browser_navigate', currentToolInput: { url: `http://localhost:3000/page-${k}` } }),
     command: k => ({ currentTool: 'Task', currentToolInput: { description: `task ${k}` } }),
     harbor: k => ({ currentTool: 'Bash', currentToolInput: { command: k % 2 ? 'git status' : 'git push' } }),
@@ -573,7 +574,7 @@ export function workFixture(agents, { seconds, seed = 4242, idle = 0 } = {}) {
 // staffed, a tool start every couple of seconds.
 const TOWN_BUSY = [
     { b: 'forge', gap: 2.5 }, { b: 'forge', gap: 3 }, { b: 'archive', gap: 3 }, { b: 'archive', gap: 3.5 }, { b: 'harbor', gap: 4 },
-    { b: 'taskboard', gap: 3 }, { b: 'observatory', gap: 3.5 }, { b: 'portal', gap: 3.5 }, { b: 'command', gap: 4 },
+    { b: 'taskboard', gap: 3 }, { b: 'web', gap: 3.5 }, { b: 'portal', gap: 3.5 }, { b: 'command', gap: 4 },
 ];
 
 // 5.6 (D3): the Town band (−3 dB while the window is blurred) over the busy
@@ -651,7 +652,7 @@ export const PERCUSSION_SEGMENTS = Object.freeze([
     { from: 0, to: 120, agents: [{ b: 'forge', gap: 9 }, { b: 'archive', gap: 10 }] },
     { from: 120, to: 240, agents: [{ b: 'forge', gap: 4 }, { b: 'archive', gap: 5 }, { b: 'harbor', gap: 5 }, { b: 'taskboard', gap: 5 }] },
     { from: 240, to: 360, agents: TOWN_BUSY.map(a => ({ ...a, gap: 2 })) },
-    { from: 360, to: 480, agents: [{ b: 'forge', gap: 6 }, { b: 'command', gap: 7 }, { b: 'observatory', gap: 7 }] },
+    { from: 360, to: 480, agents: [{ b: 'forge', gap: 6 }, { b: 'command', gap: 7 }, { b: 'web', gap: 7 }] },
     { from: 480, to: 600, agents: [] },
 ]);
 export function percussionScene({ segments = PERCUSSION_SEGMENTS, seconds = 600 } = {}) {

@@ -20,7 +20,7 @@
 // (slate/bronze ramps, per spec). Pixels in front of the base edge are apron
 // (up, height 0). Authored regions (polygons, first match wins) override this
 // for decks, piers, stairs, daises and set-back masses; M5 approved hand
-// authoring for the Harbor, Lighthouse, Observatory and Portal.
+// authoring for the Harbor, Lighthouse, Observatory (retired) and Portal.
 //
 // Usage:
 //   node scripts/sprites/bake-surface-channel.mjs            # write sidecars
@@ -145,16 +145,13 @@ export const SURFACE_SPECS = Object.freeze({
             { face: 'roof', poly: [[122, 58], [124, 42], [138, 28], [143, 3], [149, 3], [154, 28], [168, 42], [170, 58]] },
         ],
     },
-    observatory: {
-        base: { left: [50, 236], bottom: [148, 265], right: [205, 238] },
+    tavern: {
+        // The 4x4 footprint's front edges, under the veranda's post feet.
+        base: { left: [30, 218], bottom: [158, 282], right: [286, 218] },
         roof: [SLATE],
         regions: [
-            // Door steps under the porch gable.
-            { face: 'up', poly: [[148, 262], [188, 243], [204, 250], [204, 258], [166, 274], [148, 268]], height: { ramp: [[168, 268, 0], [176, 250, 8]] } },
-            // Dome shell with its brass ribs and lantern.
-            { face: 'roof', poly: [[55, 118], [60, 90], [70, 70], [85, 55], [85, 35], [100, 10], [106, 0], [112, 10], [125, 35], [125, 55], [140, 70], [150, 90], [153, 118]], base: { corner: [104, 250] } },
-            // Maroon eave boards and gable rakes belong to the roofs.
-            { face: 'roof', poly: [[30, 0], [230, 0], [230, 200], [30, 200]], match: [{ hue: [340, 20], minSat: 0.3, minValue: 0.2, maxValue: 0.75 }] },
+            // Below the eaves the slate-toned glass and ironwork is no roof.
+            { face: 'auto', roof: [], poly: [[0, 70], [60, 92], [190, 158], [205, 150], [296, 150], [296, 288], [0, 288]] },
         ],
     },
     portal: {

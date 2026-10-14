@@ -29,9 +29,8 @@ export const BUILDING_MATERIAL_REGISTRY = Object.freeze({
         emissiveSource('emissive.archive.windows', 'windows', 'windowRects', 0.68),
         emissiveSource('emissive.archive.door-spill', 'lantern', 'lightSource', 0.74),
     ]),
-    observatory: landmarkMaterial('observatory', 'stone', 288, 235, [
-        emissiveSource('emissive.observatory.windows', 'windows', 'windowRects', 0.62),
-        emissiveSource('emissive.observatory.dome', 'rune', 'effectAnchors.domeAperture', 0.78),
+    tavern: landmarkMaterial('tavern', 'stone', 288, 248, [
+        emissiveSource('emissive.tavern.windows', 'windows', 'windowRects', 0.62),
     ]),
     portal: landmarkMaterial('portal', 'stone', 264, 150, [
         emissiveSource('emissive.portal.vortex', 'rune', 'layers.portalGlow', 1),
@@ -324,44 +323,31 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
             step: [247, 219],
         },
     },
-    observatory: {
-        material: BUILDING_MATERIAL_REGISTRY.observatory,
-        grounding: BUILDING_GROUNDING_PROFILES.observatory,
-        labelAccent: '#bda7ff',
-        emblem: 'star',
-        districtTint: 'rgba(189, 167, 255, 0.22)',
-        pulseBand: { color: '#bda7ff', alpha: 0.26 },
+    tavern: {
+        material: BUILDING_MATERIAL_REGISTRY.tavern,
+        grounding: BUILDING_GROUNDING_PROFILES.tavern,
+        labelAccent: '#e8b86a',
+        emblem: 'tankard',
+        districtTint: 'rgba(232, 184, 106, 0.2)',
+        pulseBand: { color: '#e8b86a', alpha: 0.26 },
         reducedMotionFallback: { pulse: 0.56, alpha: 0.86 },
         occupancyThresholds: { occupiedMax: 0.5, busyMax: 0.86 },
         labelPriority: 'landmark',
         beaconBase: 0.7,
-        // 4.6 — centres of the three glazed windows, measured on base.png
-        // (the old rects were top-left corners): tower lancet, gable window,
-        // porch window.
+        // Glass centres of the five windows on base.png: the dormer, the
+        // east gable's upper pair and the curtained ground-floor pair. Each is
+        // a room lit by the Tavern's patrons; the open bar's lanterns and
+        // hearth glow on the building's patron gate.
         windowRects: [
-            { at: [80, 206], w: 12, h: 40 },
-            { at: [167, 175], w: 10, h: 28 },
-            { at: [121, 222], w: 8, h: 22 },
+            { at: [127, 89], w: 10, h: 12 },
+            { at: [221, 157], w: 11, h: 15 },
+            { at: [251, 143], w: 11, h: 12 },
+            { at: [218, 214], w: 4, h: 13 },
+            { at: [248, 201], w: 3, h: 8 },
         ],
-        pennant: { at: [108, 20] },
+        // The chimney mouth: the hearth smokes while the Tavern has patrons.
         effectAnchors: {
-            clockFace: {
-                compositeRef: { w: 256, h: 288 },
-                center: [80, 155],
-                radius: 13,
-                sourceSize: 40,
-                sourceCenter: 20,
-                sourceRadius: 18,
-                hourHandLength: 10,
-                minuteHandLength: 15,
-            },
-            // #52 — the round dome aperture nearest the telescope opens at
-            // night and bursts when a web ritual completes.
-            domeAperture: {
-                slit: [149, 107],
-                star: [149, 101],
-                glintArc: { center: [149, 104], radius: 12, from: -2.4, to: -0.7 },
-            },
+            smokeTop: [217, 36],
         },
     },
     portal: {

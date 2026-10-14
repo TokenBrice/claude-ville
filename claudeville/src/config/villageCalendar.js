@@ -50,7 +50,7 @@ export const VILLAGE_CALENDAR_DRESSINGS = Object.freeze([
     Object.freeze({ id: 'gate-garland-lights', occasion: 'winter-solstice', stamp: 'gateGarland', variant: 'lights', anchor: 'gate.arch', glow: true }),
     Object.freeze({ id: 'gate-garland-blossom', occasion: 'spring-equinox', stamp: 'gateGarland', variant: 'blossom', anchor: 'gate.arch' }),
     // A small decorated pine on the open green at the plaza's east end, in
-    // front of the Observatory's west steps: beside its runestone, clear of
+    // front of the Tavern's west steps: beside its ale barrels, clear of
     // the visit places and paving.
     Object.freeze({ id: 'plaza-pine', occasion: 'winter-solstice', sprite: 'prop.festival.pine', anchor: 'plaza.green', tileX: 24.0, tileY: 17.4 }),
     // Late-December wreaths on the Command and Archive doors (sprite texels).

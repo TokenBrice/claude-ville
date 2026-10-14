@@ -74,7 +74,7 @@ import { bakeWeaponFrame, rasterWeaponSource } from './WeaponFrames.js';
 import { clearDetachedCodexWrench } from './CodexEngineerGrips.js';
 import { REF_DT_MS, SPEED_RUNGS, snapBodyPx, speedRungIndex } from './MotionClock.js';
 import { gradeTone } from './EffectStamps.js';
-import { CANDLE_OFFSET, FALLBACK_SEAT_DROP, SEAT_FACING_DIR, queueCandleStamp, seatLineOffset, seatStoneStamps } from './RestSeats.js';
+import { CANDLE_OFFSET, DRINK_FRAME_BY_STEP, FALLBACK_SEAT_DROP, SEAT_FACING_DIR, queueCandleStamp, seatLineOffset, seatStoneStamps, tankardLift, tankardSipStep, tankardStamp } from './RestSeats.js';
 import { materialClassId } from './MaterialRegistry.js';
 import { waitAnchor } from '../../domain/services/SignalLedger.js';
 import { AMBIENT_SCENIC_POINTS } from '../../config/scenery.js';
@@ -186,6 +186,9 @@ const FOOT_ANCHOR_KEYS = Object.freeze(DIRECTIONS.map((_, direction) => `anchor:
 // picks the seat (nearest free) or the queue slot (wait rank); the queue keeps
 // the Command route type so a status route to Command never re-picks it.
 const REST_PLACE = Object.freeze({ type: 'rest-seat', restSeats: true, visitTiles: Object.freeze([]) });
+// The Tavern patron's tankard at rest: its near edge `x` texels out from the
+// body's centre on the facing side, its foot `y` texels above the seat line.
+const TANKARD_HOLD = Object.freeze({ x: 3, y: 9 });
 const QUEUE_PLACE = Object.freeze({ type: 'command', commandQueue: true, visitTiles: Object.freeze([]) });
 // W4.4 / W4.8 — a scenic point as a place (the renderer's scenic shape): the
 // harbour quay an errand or a wind-down walks to.
@@ -398,7 +401,6 @@ const AMBIENT_BUILDING_SEQUENCE = [
     'forge',
     'mine',
     'portal',
-    'observatory',
     'harbor',
     'archive',
     'watchtower',
@@ -406,11 +408,11 @@ const AMBIENT_BUILDING_SEQUENCE = [
 const PROVIDER_HOME_BUILDINGS = {
     claude: 'command',
     codex: 'forge',
-    gemini: 'observatory',
+    gemini: 'portal',
     kimi: 'portal',
     omp: 'taskboard',
     opencode: 'portal',
-    deepseek: 'observatory',
+    deepseek: 'archive',
     zai: 'archive',
 };
 const ACTION_TRAIL_LIMIT = 2;
@@ -1660,8 +1662,8 @@ export class AgentSprite {
     // lowered-body fallback drops the standing idle cell FALLBACK_SEAT_DROP
     // texels; the caller clips both at the seat line.
     _seatedBodyY(seat, pose, anchor, drawY) {
-        if (pose?.group === 'sit') {
-            const lines = pose.strip?.meta?.groups?.sit?.seatLine;
+        if (pose?.group === 'sit' || pose?.group === 'drink') {
+            const lines = pose.strip?.meta?.groups?.[pose.group]?.seatLine;
             const short = DIRECTIONS[this.direction];
             const row = Number(lines?.[short] ?? lines?.[LONG_DIRECTION_NAMES[short]]);
             if (Number.isFinite(row)) return drawY + seatLineOffset(seat) - row;
@@ -1730,7 +1732,7 @@ export class AgentSprite {
     // W4.3 / W4.4 / W4.8 — the living crowd (CrowdRoutine). An IDLE villager
     // alternates its seat with a scenic stroll; a WORKING agent between
     // intents runs a short errand; a COMPLETED one winds down at the quay or
-    // a bench, then waits inside the gate. Each leg is a place
+    // the Tavern, then waits inside the gate. Each leg is a place
     // (_restPlaceForState), so _syncRestPlace walks it, and a status change or
     // a real intent ends it the same frame. No leg starts under reduced
     // motion: every body then holds its place on its static frame.
@@ -1768,7 +1770,7 @@ export class AgentSprite {
         crowd.arrivedAt = null;
     }
 
-    // Sit ≥ MIN_SIT_MS (seeded, so a bench row stands up at different times),
+    // Sit ≥ MIN_SIT_MS (seeded, so a tavern table stands up at different times),
     // stroll to a scenic point, dwell, sit again. The seat is released when
     // the stroll leaves (_syncRestPlace) and a seat is picked afresh after.
     _advanceIdleLoop(now) {
@@ -1855,7 +1857,7 @@ export class AgentSprite {
         crowd.cooldownUntil = now + errandCooldownMs(this.agent.id, crowd.cycle++);
     }
 
-    // Last building → the quay or a bench → a brief rest → inside the gate,
+    // Last building → the quay or the Tavern → a brief rest → inside the gate,
     // where it waits for removal. Subagents return to their parent instead.
     _advanceWindDown(now) {
         const crowd = this._crowd;
@@ -1932,7 +1934,7 @@ export class AgentSprite {
         if (type === 'forge') return 'editing';
         if (type === 'taskboard') return 'testing';
         if (type === 'archive') return 'reading';
-        if (type === 'observatory' || type === 'portal') return 'researching';
+        if (type === 'portal') return 'researching';
         return 'coordinating';
     }
 
@@ -4006,7 +4008,7 @@ export class AgentSprite {
         if (budgetMode && !this.gpuWorldEnabled) {
             this._drawBudgetImpostor(ctx);
             if (departedTableau(this)) this.gpuOverlayRenderer.drawDepartedTreatment(ctx);
-            this._drawNameTag(ctx);
+            if (!this._onOpenFloor) this._drawNameTag(ctx);
             if (archivePushed) ctx.restore();
             return;
         }
@@ -4150,7 +4152,7 @@ export class AgentSprite {
                 lod: true,
             });
             this._drawBudgetImpostor(ctx);
-            this._drawNameTag(ctx);
+            if (!this._onOpenFloor) this._drawNameTag(ctx);
             if (archivePushed) ctx.restore();
             return;
         }
@@ -4355,11 +4357,14 @@ export class AgentSprite {
         }
         if (canvasBody && !sheathed) this._drawCodexEquipment(ctx, identity, frameGeometry, 'front');
         // 7.1 — the stone seat's front faces over the sitter's legs; 7.2 — the
-        // petitioner's floor candle. Both after the body in its depth slot.
+        // petitioner's floor candle; the Tavern patron's tankard. All after
+        // the body in its depth slot.
         if (canvasBody) {
             if (seatStones) ctx.drawImage(seatStones.front.canvas, this._placeX + seatStones.front.x, this._placeY + seatStones.front.y);
             const candle = this._queueCandleMark();
             if (candle) ctx.drawImage(candle.stamp, candle.x, candle.y);
+            const tankard = this._tankardMark();
+            if (tankard) ctx.drawImage(tankard.stamp, tankard.x, tankard.y);
         }
         if (departedBody) ctx.restore();
         // These five marks belong to the body frame and have exactly one owner
@@ -4403,7 +4408,7 @@ export class AgentSprite {
                 this._drawPlanModeGlyph(ctx, labelTopY);
                 this._drawRetryGlyph(ctx, labelTopY);
             }
-            this._drawNameTag(ctx);
+            if (!this._onOpenFloor) this._drawNameTag(ctx);
         }
 
         // Sparkle flash during the first 200 ms of the archive fade.
@@ -4703,6 +4708,44 @@ export class AgentSprite {
         return mark;
     }
 
+    // The Tavern patron's tankard: held at the chest on its facing side, lifted
+    // to the mouth on each seeded sip (RestSeats.tankardLift). Null for anyone
+    // not seated at a Tavern table.
+    _tankardMark() {
+        const seat = this._seatedSeat();
+        if (seat?.building !== 'tavern' || departedTableau(this)) return null;
+        // An authored drink strip carries its own tankard.
+        if (this._poseCell?.group === 'drink') return null;
+        const southWest = seat.facing === 'south-west';
+        const stamp = tankardStamp(southWest);
+        if (!stamp) return null;
+        const lift = tankardLift(this.agent?.id, Date.now(), this.motionScale > 0);
+        const mark = this._tankard || (this._tankard = { kind: 'tavern-tankard', stamp: null, x: 0, y: 0 });
+        const reach = TANKARD_HOLD.x - Math.round(lift / 3);
+        mark.stamp = stamp;
+        mark.x = Math.round(this._placeX + (southWest ? -reach - stamp.width : reach));
+        mark.y = Math.round(this._placeY + seatLineOffset(seat) - TANKARD_HOLD.y - lift) - stamp.height;
+        return mark;
+    }
+
+    _tankardRecord() {
+        const mark = this._tankardMark();
+        if (!mark || !this._gpuFrameRecord) return null;
+        const stamp = mark.stamp;
+        const record = this._tankardGpuRecord || (this._tankardGpuRecord = { sx: 0, sy: 0, alpha: 1, elevation: 0.36, occluder: 0, emissive: 0 });
+        record.id = `agent:${this.agent?.id}:tavern-tankard`;
+        record.stableKey = record.id;
+        record.textureKey = `agent-ground:${stamp.__cvGroundKey}`;
+        record.source = stamp;
+        record.sourceWidth = stamp.width;
+        record.sourceHeight = stamp.height;
+        record.sw = record.width = stamp.width;
+        record.sh = record.height = stamp.height;
+        record.x = mark.x;
+        record.y = mark.y;
+        return record;
+    }
+
     // 7.1 — the stone seat (a Command step) this villager sits
     // on: { back, front } stamps drawn in its own depth slot, so the stone
     // exists only under a sitter. Null standing, or on a timber seat.
@@ -4800,12 +4843,14 @@ export class AgentSprite {
     getGpuWorldRecords() {
         const records = this.gpuOverlayRenderer.getRecords();
         const candle = this._queueCandleRecord();
+        const tankard = this._tankardRecord();
         const stones = this._gpuFrameRecord ? this._seatStoneStamps() : null;
-        if (!stones) return candle ? [...records, candle] : records;
+        if (!stones && !candle && !tankard) return records;
         // 7.1 — the stone seat's top face paints before the body, its front
         // faces after it (record order is paint order within the body slot).
-        const out = [this._seatStoneRecord(stones.back, 'back'), ...records, this._seatStoneRecord(stones.front, 'front')];
+        const out = stones ? [this._seatStoneRecord(stones.back, 'back'), ...records, this._seatStoneRecord(stones.front, 'front')] : [...records];
         if (candle) out.push(candle);
+        if (tankard) out.push(tankard);
         return out;
     }
 
@@ -5917,10 +5962,13 @@ export class AgentSprite {
         const travelling = this.moving && this.motionScale > 0;
         if (travelling) return this._running && this.animState === 'walk' ? this._runStripPose(identity, spriteId) : null;
         if (this.chatting || departedTableau(this) || this.animState !== 'idle') return null;
-        const group = this.actionStripGroup();
+        let group = this.actionStripGroup();
         if (!group) return null;
         const strip = this.assets?.getActionStrip?.(spriteId);
         if (!strip?.image || !strip.meta) return null;
+        // A Tavern patron whose strip authors the drink drinks instead of
+        // sitting (same seated body; the strip draws its own tankard).
+        if (group === 'sit' && this._seatedSeat()?.building === 'tavern' && this._stripAuthors(strip.meta, 'drink')) group = 'drink';
         const now = Date.now();
         const cell = resolveActionFrame(strip.meta, group, this.direction, this._actionStripFrame(strip.meta, group, now));
         if (!cell) return null;
@@ -6058,7 +6106,21 @@ export class AgentSprite {
         return ritual.phase === 'playing' || ritual.phase === 'fading' ? ritual.stripGroup : null;
     }
 
+    // True when the strip's `group` has a cell for this facing.
+    _stripAuthors(meta, group) {
+        const groupMeta = meta?.groups?.[group];
+        if (!groupMeta) return false;
+        const directions = groupMeta.directions;
+        return !Array.isArray(directions) || directions.includes(DIRECTIONS[this.direction]);
+    }
+
     _actionStripFrame(meta, group, now = Date.now()) {
+        // The Tavern drink: the hold row at rest, the sip frames on the
+        // patron's seeded sip clock (the procedural tankard's own clock).
+        if (group === 'drink') {
+            const step = tankardSipStep(this.agent?.id, now, this.motionScale > 0 && this.observation?.state !== 'stale');
+            return step < 0 ? 'hold' : DRINK_FRAME_BY_STEP[step];
+        }
         // Static band for the held wait row, for a stale observation (C1), and
         // for reduced motion. Otherwise one two-frame medium-band beat, which
         // replaces the working pulse instead of stacking on it.
@@ -6650,6 +6712,14 @@ export class AgentSprite {
     // LOD: below 1.6 a routine name hid the body it named. Identity stays one
     // hover away and in the Sidebar, and an agent that needs the operator is
     // always named by its T1 attention plate (AttentionPlates.js).
+    // Canvas — a body on a landmark's open floor (the Tavern's bar) paints
+    // between the building's halves, so its name would sit under the arcade
+    // redrawn over it: the frame names it after the world instead, as the
+    // resident overlay names every body (WorldFrameRenderer).
+    drawDeferredNameTag(ctx) {
+        if (this._onOpenFloor && !this.gpuWorldEnabled) this._drawNameTag(ctx);
+    }
+
     _drawNameTag(ctx) {
         if (this.decisionFocusRoutine || this.isArrivalPending()) return;
         const plate = this.selected || this.labelPlate === true;
@@ -7254,8 +7324,8 @@ export class AgentSprite {
     // token burn (delta of the same total LandmarkActivity._observeTokens reads)
     // becomes ambient visible life: tiny motes rise off the chest and drift
     // toward the bound building's centre, denser when the burn is hot. The
-    // building palette picks the mote — beacon-gold for command/observatory/
-    // portal/watchtower, parchment-green archive motes elsewhere. Pulse band:
+    // building palette picks the mote — beacon-gold for command/portal/
+    // watchtower, parchment-green archive motes elsewhere. Pulse band:
     // these claim the `medium` particle-emission budget alongside the mood/ritual
     // motes (mutually exclusive sources, gated below). Reduced motion (motionScale
     // 0) or any in-motion/chat/ritual state emits nothing.
@@ -7288,7 +7358,7 @@ export class AgentSprite {
         this._tokenFlowBeat = beat;
 
         const type = String(this._lastBuildingType || '').toLowerCase();
-        const beacon = type === 'command' || type === 'observatory' || type === 'portal' || type === 'watchtower';
+        const beacon = type === 'command' || type === 'portal' || type === 'watchtower';
         const preset = beacon ? 'beaconMote' : 'archiveMote';
 
         // Drift toward the bound building centre (world space). The mote rises
@@ -7351,7 +7421,7 @@ export class AgentSprite {
     // Tool ritual pose overlay driven by RitualConductor: a small procedural
     // work gesture at hand/tool height — hammer-tick at the forge, page-turn at
     // the archive, pick-swing at the mine, scroll-unfurl at the taskboard, plus
-    // a gaze (observatory), conjure (portal), signal (command), haul (harbor),
+    // a conjure (portal), signal (command), haul (harbor),
     // and scan (watchtower). No new image assets; reduced motion renders each
     // gesture as a single static frame (no swing offset, no work beat).
     _drawToolRitualOverlay(ctx, frameGeometry) {
@@ -7410,9 +7480,6 @@ export class AgentSprite {
             case 'scroll':
                 this._drawGestureScaled(ctx, centerX, handY, gestureScale, () => this._drawScrollGesture(ctx, 0, 0, swing));
                 break;
-            case 'gaze':
-                this._drawGestureScaled(ctx, centerX, headY, gestureScale, () => this._drawGazeGesture(ctx, 0, 0, sideSign, swing));
-                break;
             case 'conjure':
                 this._drawGestureScaled(ctx, centerX, handY, gestureScale, () => this._drawConjureGesture(ctx, 0, 0, swing));
                 break;
@@ -7429,7 +7496,7 @@ export class AgentSprite {
         // 6.6 — the Minor-tier work beat lands on the gesture's strike (every
         // third one); the static pose under reduced motion strikes nothing.
         if (animated) {
-            const atHead = ritual.pose === 'gaze' || ritual.pose === 'signal' || ritual.pose === 'scan';
+            const atHead = ritual.pose === 'signal' || ritual.pose === 'scan';
             drawWorkDownbeat(ctx, ritual, Math.round(centerX), Math.round(atHead ? headY : handY), {
                 side: sideSign,
                 scale: gestureScale,
@@ -7682,16 +7749,6 @@ export class AgentSprite {
         ctx.fillRect(bx + 3, by - 2, 1, 4);
         ctx.fillStyle = '#f0e6c8';
         ctx.fillRect(bx - 3, by - open / 2, 6, open);
-    }
-
-    // Observatory: a spyglass held to the eye, lens glinting on the downbeat.
-    _drawGazeGesture(ctx, x, y, sideSign, swing) {
-        const bx = Math.round(x + sideSign * 2);
-        const by = Math.round(y + 2);
-        ctx.fillStyle = '#2b2030';
-        ctx.fillRect(bx, by, sideSign * 6, 2);
-        ctx.fillStyle = swing > 0.85 ? '#fff1a8' : '#8feaff';
-        ctx.fillRect(bx + sideSign * 6 - (sideSign < 0 ? 1 : 0), by, 1, 2);
     }
 
     // Portal: a rune ring conjured, brightening on the downbeat.

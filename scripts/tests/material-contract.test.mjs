@@ -70,7 +70,7 @@ test('material normalization supplies safe non-emissive defaults', () => {
 test('all nine building pilots expose named emissive material sources', () => {
     const expected = [
         'archive', 'command', 'forge', 'harbor', 'mine',
-        'observatory', 'portal', 'taskboard', 'watchtower',
+        'portal', 'taskboard', 'tavern', 'watchtower',
     ];
     assert.deepEqual(Object.keys(BUILDING_MATERIAL_REGISTRY).sort(), expected);
     const sourceIds = [];

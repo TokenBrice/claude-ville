@@ -79,7 +79,7 @@ const BUILDING_GLYPH = Object.freeze({
     forge: 'edit-strike',
     command: 'district-command',
     taskboard: 'task-slip',
-    observatory: 'search-lens',
+    tavern: 'district-tavern',
     portal: 'district-portal',
     harbor: 'district-harbor',
     mine: 'district-mine',

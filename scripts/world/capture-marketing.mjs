@@ -94,7 +94,7 @@ await page.waitForFunction(() => window.cameraSet && window.__claudeVilleAtmosph
 // Let the crowd walk to its buildings.
 await page.waitForTimeout(12000);
 
-// Hero: the whole core (Archive, Command, bridge, Forge, Observatory) at 1x.
+// Hero: the whole core (Archive, Command, bridge, Forge, Tavern) at 1x.
 await sky(DAY_HOUR);
 await frame(HERO);
 await shot('world-day');

@@ -503,7 +503,7 @@ const COMMIT_LAGOON_ROUTE_BANDS = Object.freeze([
         exitLaneIndex: 1,
     },
     {
-        name: 'observatory-backwater',
+        name: 'tavern-backwater',
         offsetX: 0.14,
         offsetY: 0.22,
         allowSouthbound: true,
@@ -579,12 +579,12 @@ const HARBOR_ROUTE_GRAPH = Object.freeze({
             bandName: 'lagoon-spring-channel',
             waypoints: ['lagoon.spring', 'lagoon.channel-buoy', 'roadstead.north', 'sea.exit'],
         },
-        'lagoon.observatory-backwater': {
-            id: 'lagoon.observatory-backwater',
-            name: 'Observatory Backwater',
+        'lagoon.tavern-backwater': {
+            id: 'lagoon.tavern-backwater',
+            name: 'Tavern Backwater',
             kind: 'lagoon',
             zone: 'commit-lagoon',
-            bandName: 'observatory-backwater',
+            bandName: 'tavern-backwater',
             waypoints: ['lagoon.center', 'lagoon.east', 'lagoon.channel-buoy', 'roadstead.outer', 'sea.exit'],
         },
         'inbound.pull': {

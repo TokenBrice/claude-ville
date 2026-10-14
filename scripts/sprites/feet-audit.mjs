@@ -99,6 +99,10 @@ const flag = (name) => args.includes(`--${name}`);
 const list = (value) => (value || '').split(',').map((item) => item.trim()).filter(Boolean);
 
 const tolerance = Number(option('tolerance', '2'));
+// Shipped seat groups (the 7.1 sit, the Tavern drink) always audit against
+// their own first frame: the seat line is their foot line.
+const SEAT_GROUPS = new Set(['sit', 'drink']);
+
 const reference = option('reference', 'anchor');
 const stripOption = option('strip');
 const groupsOption = option('groups');
@@ -315,7 +319,8 @@ function cycleDrift(histograms) {
     });
 }
 
-function auditGroup(png, group, anchors, { reference: mode = reference, keypoints = null } = {}) {
+function auditGroup(png, group, anchors, { reference: requested = reference, keypoints = null } = {}) {
+    const mode = SEAT_GROUPS.has(group.name) ? 'group' : requested;
     const result = { name: group.name, rows: group.rows, reference: mode, directions: {}, failingFrames: [], pass: true };
     const holdIndex = group.rows[1] - group.rows[0];
     for (const dir of columns) {

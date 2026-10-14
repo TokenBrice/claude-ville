@@ -34,7 +34,7 @@ const MATERIAL_BY_BUILDING = Object.freeze({
     forge: 'stone',
     harbor: 'timber',
     watchtower: 'stone',
-    observatory: 'stone',
+    tavern: 'stone',
     portal: 'stone',
 });
 
@@ -49,7 +49,7 @@ export const GPU_LANDMARK_IDS = Object.freeze({
     forge: 5,
     harbor: 6,
     watchtower: 7,
-    observatory: 8,
+    tavern: 8,
     portal: 9,
 });
 

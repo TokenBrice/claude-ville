@@ -134,7 +134,7 @@ geometry map (below) instead of an occluder atlas.
 Generated emissive defaults come only from named semantic sources and existing
 window/light anchors. The tooling does not infer emission from luminance.
 
-Every building ships an authored `base.emissive.png` (Command, Observatory,
+Every building ships an authored `base.emissive.png` (Command, Tavern,
 Archive, Forge, Mine, Task board, Harbor, Portal, and the Lighthouse
 `building.watchtower`); lit panes live only in the sidecar and the
 albedo keeps dark glass, so a building is never lit by day or by an empty
@@ -645,8 +645,7 @@ sidecar, `--out=<dir>` writes previews.
   the dome's corner and are walls (faces 1/2), as are three unlit slate-glass
   panes the emissive sidecar leaves dark. Per M5 the Harbor
   (water line; decks and piers at h 8, houses lifted 8), Lighthouse (stair,
-  footing apron, bronze cap = roof), Observatory (door steps, dome shell and
-  maroon eaves = roof) and Portal (stairs 0->23, dais flagstones at h 23, the
+  footing apron, bronze cap = roof) and Portal (stairs 0->23, dais flagstones at h 23, the
   arch and slabs lifted 23) are hand-authored.
 - The 1-px outline and the deepest shadow texels (HSV value < 0.13) take the
   modal face and mean height of the non-ink texels in their 5x5 window, so an
@@ -659,7 +658,7 @@ sidecar, `--out=<dir>` writes previews.
   on face-3 texels whose albedo is roof material (slate, metal, or the ink
   between them — a mis-tagged wall stays bare), minus lit glass,
   fabric/rune/fire material and trim (metal on a slate roof, any other
-  face-3 colour such as the Observatory's maroon cornice), and on silhouette
+  face-3 colour such as a painted cornice), and on silhouette
   caps; a landmark without the
   channel takes none. They draw as a patch record right after the landmark
   (after its glass patch, before its parts) that carries crops of the

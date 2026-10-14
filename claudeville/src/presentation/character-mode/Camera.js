@@ -37,7 +37,7 @@ const TOUR_EMPTY_DELAY_MS = 20000;
 const TOUR_USER_IDLE_MS = 40000;
 const TOUR_DWELL_MS = 7000;
 const TOUR_STOP_ORDER = Object.freeze([
-    'command', 'archive', 'observatory', 'watchtower', 'harbor',
+    'command', 'archive', 'tavern', 'watchtower', 'harbor',
     'portal', 'mine', 'forge', 'taskboard',
 ]);
 

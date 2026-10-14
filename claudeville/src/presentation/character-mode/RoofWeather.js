@@ -13,7 +13,7 @@
 // metal on a slate roof (ribs, rings, finials; a mostly-metal roof, the
 // Lighthouse's bronze cap, keeps it and snows as one sheet from its ridge
 // down each column, its finial above the ridge and any 1-2 texel run bare)
-// and any face-3 texel of another colour (the Observatory's maroon cornice).
+// and any face-3 texel of another colour (a painted cornice).
 // Trim stays bare and uncapped but is still roof to the eave. A face-tag
 // speck wholly inside a roof is roof; a deep course-shadow line inside it is
 // buried like a joint. A landmark without a surface channel gets none. A
@@ -280,7 +280,7 @@ export function roofWeatherMap({ width, height, albedo, occluder = null, region 
     const edge = new Uint8Array(n);
     const thin = new Uint8Array(n);
     // Texels of the roof class that are no roof material (a mis-tagged
-    // wall, the Observatory's maroon cornice, gold trim): bare and never
+    // wall, a painted cornice, gold trim): bare and never
     // capped, but still roof to the eave, so the snow runs down to them.
     const trimmed = new Uint8Array(n);
     const opaque = (x, y) => x >= 0 && y >= 0 && x < width && y < height && albedo[(y * width + x) * 4 + 3] >= 128;

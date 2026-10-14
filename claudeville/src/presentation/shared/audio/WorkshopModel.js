@@ -36,11 +36,11 @@ const GRID_STRIDE = 3;
 
 // Slot pitches per building (FOL-2 v3: Forge A6/E7/C♯7/F♯7, Archive five
 // page centres).
-const PITCHES = { forge: 4, archive: 5, mine: 4, taskboard: 4, observatory: 4, portal: 4, command: 4, harbor: 4 };
+const PITCHES = { forge: 4, archive: 5, mine: 4, taskboard: 4, portal: 4, command: 4, harbor: 4 };
 // Task-board runs that verify (tests, checks) strike chalk, not the tack.
 const VERIFY_REASONS = new Set(['verify', 'inspect-validation']);
 
-export const BUILDING_IDS = Object.freeze(['forge', 'archive', 'mine', 'taskboard', 'observatory', 'portal', 'command', 'harbor']);
+export const BUILDING_IDS = Object.freeze(['forge', 'archive', 'mine', 'taskboard', 'portal', 'command', 'harbor']);
 
 // Per building: its slot count. The Lighthouse has no workshop.
 export const BUILDINGS = Object.freeze(Object.fromEntries(BUILDING_IDS.map(id => [

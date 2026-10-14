@@ -86,10 +86,10 @@ export const VISIT_OVERFLOW_TILES = Object.freeze({
         { tileX: 1, tileY: 33, overflow: true, reason: 'portal-court' },
         { tileX: 11, tileY: 30, overflow: true, reason: 'portal-lawn' },
     ],
-    observatory: [
-        { tileX: 23, tileY: 20, overflow: true, reason: 'skywatch' },
-        { tileX: 23, tileY: 21, overflow: true, reason: 'skywatch' },
-        { tileX: 22, tileY: 21, overflow: true, reason: 'skywatch' },
+    tavern: [
+        { tileX: 26, tileY: 16, overflow: true, reason: 'tavern-lawn' },
+        { tileX: 26, tileY: 15, overflow: true, reason: 'tavern-lawn' },
+        { tileX: 26, tileY: 14, overflow: true, reason: 'tavern-lawn' },
     ],
     watchtower: [
         { tileX: 23, tileY: 11, overflow: true, reason: 'lookout' },
@@ -99,7 +99,7 @@ export const VISIT_OVERFLOW_TILES = Object.freeze({
     harbor: [
         { tileX: 26, tileY: 18, overflow: true, reason: 'quay' },
         { tileX: 28, tileY: 17, overflow: true, reason: 'quay' },
-        { tileX: 24, tileY: 21, overflow: true, reason: 'quay' },
+        { tileX: 26, tileY: 19, overflow: true, reason: 'quay' },
     ],
 });
 
@@ -266,30 +266,33 @@ export const BUILDING_DEFS = [
         },
     },
     {
-        type: 'observatory',
+        type: 'tavern',
         x: 21,
         y: 14,
         width: 4,
         height: 4,
-        label: 'RESEARCH OBSERVATORY',
-        shortLabel: 'OBSERVATORY',
-        icon: '*',
-        description: 'External research and skywatch',
-        district: 'knowledge',
-        capacity: { work: 3, ambient: 2, overflow: 2 },
+        label: 'THE TAVERN',
+        shortLabel: 'TAVERN',
+        icon: 'T',
+        description: 'Idle villagers rest here with a pint',
+        district: 'civic',
+        // No tool works here: the Tavern is a rest place. Idle and finished
+        // villagers sit at its beer-garden tables (REST_SEATS, townPlan.js);
+        // its visit tiles only hold ambient loiterers at the door.
+        capacity: { work: 0, ambient: 3, overflow: 2 },
         visualTier: 'hero',
         labelPriority: 'landmark',
+        // The open veranda's middle bay, between its front posts.
         entrance: { tileX: 23, tileY: 18 },
         visitTiles: [
-            workSlot(23, 18, { x: 22.5, y: 16.0 }, { queueGroup: 'observatory-lens', stance: 'observe' }),
-            workSlot(22, 19, { x: 22.5, y: 16.0 }, { queueGroup: 'observatory-lens', stance: 'observe' }),
-            workSlot(24, 19, { x: 22.5, y: 16.0 }, { queueGroup: 'observatory-lens', stance: 'observe' }),
-            scenicSlot(20, 16, { x: 22.5, y: 16.0 }, { queueGroup: 'observatory-terrace', stance: 'skywatch' }),
-            scenicSlot(20, 17, { x: 22.5, y: 16.0 }, { queueGroup: 'observatory-terrace', stance: 'skywatch' }),
-            queueSlot(21, 18, { x: 22.5, y: 16.0 }, { queueGroup: 'observatory-lens', reason: 'skywatch' }),
-            queueSlot(25, 18, { x: 22.5, y: 16.0 }, { queueGroup: 'observatory-lens', reason: 'skywatch' }),
+            scenicSlot(23, 18, { x: 23.0, y: 16.0 }, { queueGroup: 'tavern-bar', stance: 'watch' }),
+            scenicSlot(20, 20, { x: 23.0, y: 16.0 }, { queueGroup: 'tavern-bar', stance: 'watch' }),
+            scenicSlot(25, 18, { x: 23.0, y: 16.0 }, { queueGroup: 'tavern-lawn', stance: 'watch' }),
         ],
-        walkExclusion: [{ dx: 4, dy: 1, width: 1, height: 3 }],
+        walkExclusion: [],
+        // The open veranda under the arches and the bar floor behind the beam:
+        // walkable, and a body there paints inside the Tavern (TavernArcade).
+        openFloor: [{ dx: 0, dy: 2, width: 3, height: 2 }],
         scenery: {
             excludePadding: { x: 2, y: 1 },
             sightline: { x0: 19.2, y0: 6.8, x1: 28.8, y1: 19.4 },
@@ -305,7 +308,7 @@ export const BUILDING_DEFS = [
         label: 'PORTAL GATE',
         shortLabel: 'PORTAL',
         icon: 'O',
-        description: 'Browser and remote tools',
+        description: 'Browser, web research and remote tools',
         district: 'arcane',
         capacity: { work: 4, ambient: 2, overflow: 2 },
         visualTier: 'hero',

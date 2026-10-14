@@ -327,6 +327,7 @@ function collectSplitBuildings(buildingDrawables) {
         if (!Number.isFinite(x0) || !Number.isFinite(y0)) continue;
         out.push({
             drawable,
+            building,
             backSortY: drawable.sortY,
             frontSortY: front.sortY,
             x1,
@@ -348,9 +349,19 @@ function behindSplit(x, y, splitBuildings) {
         if (!(y > split.backSortY && y <= split.frontSortY)) continue;
         if (x < split.left || x > split.right) continue;
         const tile = worldToTile(x, y);
+        // A body on a landmark's open floor (the Tavern's veranda) stands in
+        // the building, not behind it: it paints between the halves.
+        if (split.building?.isOpenFloor?.(tile.tileX, tile.tileY)) continue;
         if (tile.tileX < split.x1 && tile.tileY < split.y1) return split;
     }
     return null;
+}
+
+// True when (x, y) stands on a split building's open floor (Building.openFloor).
+function onOpenFloor(x, y, splitBuildings) {
+    if (!splitBuildings.length || !Number.isFinite(x) || !Number.isFinite(y)) return false;
+    const tile = worldToTile(x, y);
+    return splitBuildings.some((split) => split.building?.isOpenFloor?.(tile.tileX, tile.tileY) === true);
 }
 
 // The back-half depth such a point takes, else null.
@@ -363,6 +374,7 @@ function behindSplitSortY(x, y, splitBuildings) {
 // sprite (`_depthSortY`), so the particles it emits (footfalls, sweat, motes)
 // sort with the body that owns them, behind a building with it.
 function agentSortY(sprite, splitBuildings) {
+    sprite._onOpenFloor = onOpenFloor(sprite.x, sprite.y, splitBuildings);
     const split = behindSplit(sprite.x, sprite.y, splitBuildings);
     sprite._behindBuilding = split != null;
     // W3.4 — the occluding building, so the overlay can lift this body's

@@ -244,7 +244,7 @@ const DISTRICT_DRIFT = Object.freeze({
     command: { warm: 0.15, value: 0.15 },
     harbor: { warm: 0.3, value: 0.1 },
     archive: { warm: -0.6, value: -0.1 },
-    observatory: { warm: -0.35, value: 0 },
+    tavern: { warm: -0.35, value: 0 },
     portal: { warm: -0.5, value: -0.2 },
     watchtower: { warm: -0.3, value: -0.1 },
 });

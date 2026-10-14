@@ -151,7 +151,7 @@ export const BUILDING_ACCENTS = Object.freeze({
     forge: '#b86765', // brick rose, darker and cooler than error coral
     harbor: '#589a95', // sea teal
     watchtower: '#8d9062', // lichen olive, not needs-you yellow
-    observatory: '#7978b7', // night indigo
+    tavern: '#b08a5a', // honey ale, below status lightness
     portal: '#ac678b', // orchid, split from archive
 });
 export const BUILDING_ACCENTS_RGB = Object.freeze(Object.fromEntries(

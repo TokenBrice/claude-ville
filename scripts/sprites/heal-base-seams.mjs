@@ -41,7 +41,6 @@ const BUILDING_IDS = [
     'building.forge',
     'building.harbor',
     'building.mine',
-    'building.observatory',
     'building.portal',
     'building.taskboard',
     'building.watchtower',

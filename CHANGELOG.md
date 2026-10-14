@@ -2,6 +2,29 @@
 
 ---
 
+## v0.55.0 — *The Open Tap* · Oct 14, 2026
+
+The Observatory, which only web-search agents ever visited, is gone. In its place stands the Tavern, an open-front inn where idle agents go for a pint. It replaces the green benches as the village's place to rest.
+
+- **The Tavern.** A new open-front inn stands on the Observatory's spot. The ground floor is a plank veranda under timber arches, with the bar, ale kegs, stools and hearth in plain view. It was generated with PixelLab in the same style as Command. No tool works there; it is a place to rest.
+- **Idle agents go for a pint.**
+  - All eleven green benches are gone. Idle agents now prefer the Tavern: three stools at its bar and two trestle tables (five seats) in its beer garden, with an even stronger pull at night.
+  - Command's steps and the harbour pier kerb still take any overflow.
+  - About half of finished agents stop at the Tavern for a last pint before leaving through the gate.
+- **Drinking.**
+  - A seated patron holds a wooden tankard and sips every 7–15 seconds, each on its own rhythm.
+  - Opus, Sol and Luna, plus each one's second body, have a real drinking pose, with the tankard drawn into the sprite and raised to the mouth.
+  - With reduced motion on, nobody sips.
+- **Drinking at the bar.** Agents can sit inside the Tavern's open bar. The veranda and bar floor are now walkable. The front beam, posts and arches are redrawn in front of the patrons, so they sit behind the beam and in front of the bar, on both the GPU and Canvas renderers. Their names stay readable.
+- **A Tavern that lives at night.** The windows, the bar's lanterns and the hearth light up, and the chimney smokes, only while patrons are seated. Patrons still don't count as workers, so they open no doors and move no building parts.
+- **Web research moved to the Portal.** WebSearch, WebFetch, curl and other web tools now send agents to the Portal ("Browser, web research and remote tools"). Gemini and DeepSeek agents now default to the Portal and the Archive as their home buildings.
+- **Music.** The Observatory's shaker parts moved into the Portal's row in every piece, so the town band's groove holds.
+- **Simulation.** A new dev scenario, `?sim=1&scenario=tavern-evening`, shows idle agents filling the Tavern at night.
+
+Validation: 1822 unit tests pass, including new tests for the Tavern's routing, seating, patron light, sip clock and bar floor. The building, terrain, ambient, sprite, sprite-channel and architecture validators pass. `verify:server` passes, and `verify:render` passes with no console errors. The local `audio:probe` passes every music, stem and margin check; its only failures are real-time timing checks that also fail on a clean checkout of v0.54.0. The Tavern, its bar and its drinkers were reviewed by eye, day and night, on both the GPU and Canvas renderers.
+
+---
+
 ## v0.54.0 — *The Moonforged Muster* · Oct 13, 2026
 
 The four busiest villagers (Luna, Sol, Astra and Opus) got a visual overhaul: a new Luna, fixed and fuller poses, body variants so a crowd of one model no longer looks identical, and night glow.

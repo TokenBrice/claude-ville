@@ -21,6 +21,7 @@
 //   node scripts/sprites/assemble-action-strip.mjs --id=agent.claude.sonnet \
 //       --stage=output/pose-strips/agent.claude.sonnet.strike+tinker+wait.png [--groups=wait,strike]
 //   … --no-sit        ignore a staged sit strip
+//   … --append        keep the shipped rows, put new staged groups after them
 //   … --dry           print the record, write nothing
 // Audit the result: node scripts/sprites/feet-audit.mjs --id=<id>
 
@@ -137,7 +138,15 @@ for (const [name, source] of sources) {
 
 // ─── layout ───────────────────────────────────────────────────────────────────
 
-const names = [...sources.keys()].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+// `--append`: shipped groups keep their rows (and companion channels) and the
+// staged groups that are new to the strip go after them.
+const names = flag('append')
+    ? [
+        ...[...sources.keys()].filter((name) => sources.get(name).origin === 'shipped' && !list(option('groups')).includes(name))
+            .sort((a, b) => sources.get(a).rows[0] - sources.get(b).rows[0]),
+        ...[...sources.keys()].filter((name) => sources.get(name).origin !== 'shipped' || list(option('groups')).includes(name)),
+    ]
+    : [...sources.keys()].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
 const layout = {};
 let row = 0;
 for (const name of names) {

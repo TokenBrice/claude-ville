@@ -175,7 +175,6 @@ const BUILDING_EMBLEMS = Object.freeze({
     forge: '\u{1F528}',    // hammer — editing
     harbor: '⚓',      // anchor — git flow
     watchtower: '\u{1F3F0}', // tower — watch
-    observatory: '\u{1F52D}', // telescope — research
     portal: '\u{1F310}',   // globe — preview
 });
 

@@ -111,7 +111,7 @@ function lcg(seed) {
 export function townBandHours({ hours = 8, seed = 24301, voice = 'isle' } = {}) {
     const sim = startSim({ seed, voice, band: 2 });
     const r = lcg(seed ^ 0x5eed);
-    const buildings = ['forge', 'archive', 'harbor', 'taskboard', 'observatory', 'portal', 'command', 'mine'];
+    const buildings = ['forge', 'archive', 'harbor', 'taskboard', 'portal', 'command', 'mine'];
     let nextChange = 0;
     let waitUntil = -1;
     let nextWait = 600 + 1200 * r();

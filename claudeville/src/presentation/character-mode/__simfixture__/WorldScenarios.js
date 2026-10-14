@@ -1202,6 +1202,47 @@ export const MIDNIGHT_OIL_SCENARIO = {
     },
 };
 
+// The Tavern's beer garden: idle villagers (the Opus, Sol and Luna sheets
+// that author the drink strip, and a Sonnet that holds the drawn tankard)
+// start in the yard and take its tables at once; a Sol researches at the
+// Portal. Evening, so the patrons light the Tavern's windows and hearth.
+export const TAVERN_EVENING_SCENARIO = {
+    id: 'tavern-evening',
+    label: 'Tavern evening',
+    description: '21:30 clear night: idle villagers drink at the Tavern tables while one researches at the Portal.',
+    timeBase: SCENARIO_TIME_BASE,
+    agents: [
+        agentSpec({ id: 'tavern-opus', name: 'Aurelia', model: 'claude-opus-5', position: { tileX: 22, tileY: 20 } }),
+        agentSpec({ id: 'tavern-opus-2', name: 'Bramble', model: 'claude-opus-5', position: { tileX: 23, tileY: 20 } }),
+        agentSpec({ id: 'tavern-sol', name: 'Solenne', provider: 'codex', model: 'gpt-6.1-sol', position: { tileX: 24, tileY: 20 } }),
+        agentSpec({ id: 'tavern-luna', name: 'Lunette', provider: 'codex', model: 'gpt-6-luna', position: { tileX: 21, tileY: 20 } }),
+        agentSpec({ id: 'tavern-sonnet', name: 'Pip', position: { tileX: 25, tileY: 20 } }),
+        agentSpec({ id: 'tavern-luna-2', name: 'Selene', provider: 'codex', model: 'gpt-6-luna', position: { tileX: 20, tileY: 20 } }),
+        agentSpec({
+            id: 'tavern-researcher',
+            name: 'Scout',
+            provider: 'codex',
+            model: 'gpt-6.1-sol',
+            status: AgentStatus.WORKING,
+            currentTool: 'WebSearch',
+            currentToolInput: 'query=best ale in the isles',
+            position: { tileX: 6, tileY: 34 },
+        }),
+    ],
+    timeline: [5000, 13000, 21000, 29000, 37000, 45000].map((ts) => (
+        { ts, agentId: 'tavern-researcher', tool: 'WebSearch', input: 'query=best ale in the isles', status: AgentStatus.WORKING }
+    )),
+    metadata: {
+        qaTags: ['tavern', 'rest-seats', 'night', 'lighting'],
+        atmosphere: {
+            phase: 'night',
+            clock: { hours: 21, minutes: 30, seconds: 0, label: '21:30', phase: 'night' },
+            weather: { type: 'clear', intensity: 0.1 },
+        },
+        camera: { centerTile: { tileX: 23, tileY: 19 }, zoom: 2.6 },
+    },
+};
+
 export const CACHE_ORE_SCENARIO = {
     id: 'cache-ore',
     label: 'Cache ore',
@@ -1428,6 +1469,7 @@ export const WORLD_SCENARIOS = [
     SELECTED_BEHIND_BUILDING_SCENARIO,
     STORM_NIGHT_REDUCED_MOTION_SCENARIO,
     MIDNIGHT_OIL_SCENARIO,
+    TAVERN_EVENING_SCENARIO,
     CACHE_ORE_SCENARIO,
     TASKBOARD_LIVE_SCENARIO,
     STALE_CARGO_SCENARIO,

@@ -1,6 +1,6 @@
 # ClaudeVille Building Style Contract
 
-The visual and runtime contract for every World-mode building. Observatory is the style reference for the landmark family, Command Center is the hero and land-material reference, Harbor is the water-contact reference, and Portal/Lighthouse are named structural-platform exceptions. Use this when writing generation prompts, defining grounding metadata, and reviewing a regenerated sprite.
+The visual and runtime contract for every World-mode building. Command Center (`building.command`) is the style reference for the landmark family and the hero and land-material reference, Harbor is the water-contact reference, and Portal/Lighthouse are named structural-platform exceptions. Use this when writing generation prompts, defining grounding metadata, and reviewing a regenerated sprite.
 
 ## Craft rules (every building)
 
@@ -61,7 +61,7 @@ Every sidecar is a same-size companion of `base.png`, opted in on the manifest e
 | `base.occluder.png` | `occluderSidecar: true` + `surfaceCode: true` | 2.3 surface channel: R = true height above ground (world px, clamped 255), G = occlusion strength, B = `face·64 + min(63, round(height/4))`, face 0 up/apron, 1 left wall, 2 right wall, 3 roof | all nine |
 | `base.rooms.png` | `roomsSidecar: true` | 6.3 room index 1..N in R on each room's glass | all but portal (its vortex is no room: no `windowRects`) |
 
-- `scripts/sprites/bake-surface-channel.mjs` writes the occluder sidecar from the footprint's visual base (the `BUILDING_DEFS` diamond through the sprite anchor) plus authored `SURFACE_SPECS` regions (first match wins) for decks, piers, stairs, daises and set-back masses. M5 approved hand authoring for the Harbor, Lighthouse, Observatory and Portal; Command, Archive and Forge also carry authored regions. `--check` verifies the on-disk bytes; rerun `npm run sprites:atlas-bake -- --atlas=world-pilot` after writing.
+- `scripts/sprites/bake-surface-channel.mjs` writes the occluder sidecar from the footprint's visual base (the `BUILDING_DEFS` diamond through the sprite anchor) plus authored `SURFACE_SPECS` regions (first match wins) for decks, piers, stairs, daises and set-back masses. M5 approved hand authoring for the Harbor, Lighthouse and Portal; Command, Archive, Forge and the Tavern also carry authored regions. `--check` verifies the on-disk bytes; rerun `npm run sprites:atlas-bake -- --atlas=world-pilot` after writing.
 - `scripts/sprites/bake-room-masks.mjs` writes the room masks (`--check` verifies them). Glass is the emissive alpha after a 1-texel closing, split into 4-connected components. With `rooms.slots`, room k + 1 is the component under slot k; otherwise every component under a `windowRects` entry is a room, numbered by first reference. Fire, lantern-body, crystal and door-spill emission that no rect names stays 0.
 
 ## Windows (`windowRects`, `rooms.slots`, `glassRects`)
@@ -114,7 +114,6 @@ Shipped:
 | --- | --- | --- | --- | --- |
 | Command `gate` | `door.command` | 3 × 40 × 80 | 110 ms/frame | `oneShot`; the lifted 78 px leaf |
 | Archive `door` | `door.archive` | 3 × 35 × 93 | 110 ms/frame | `oneShot` |
-| Observatory `door` | `door.observatory` | 3 × 34 × 54 | 110 ms/frame | `oneShot` |
 | Harbor `door` | `door.harbor` | 3 × 14 × 24 | 110 ms/frame | `oneShot`, the harbour-office door |
 | Harbor `crane` | `work.harbor` | 6 × 28 × 70 | 4 fps | hoist 0/2/4/6/4/2 px |
 | Mine `sheave` | `work.mine` | 4 × 22 × 32 | 6 fps | |
@@ -182,7 +181,7 @@ Night window light counts workers; it is not a building-wide switch.
 
 ## Pennants and Chronicle dressing (6.5, 6.7)
 
-- **Pennants** are never painted into a sprite. Every pennant and flag (the occupancy pennant, the Harbor mast pennants and the day-long release pennant, ship flags, dock mini-pennants, the Harbor bunting) is a blit of `sprites/overlays/pennant.strip.png` (`PixelPennant.js`: 4 frames of 24 × 16, five indexed tones rim/accent/shade/pole/finial, recoloured per accent), stepped at 4 fps from the C-W3 wind, mirrored downwind, on its rest frame 1 when calm (knot wind < 0.15) or under reduced motion. A building's occupancy pennant pole base is its registry `pennant: { at }` (Command, Task Board, Archive, Observatory, Portal, Lighthouse).
+- **Pennants** are never painted into a sprite. Every pennant and flag (the occupancy pennant, the Harbor mast pennants and the day-long release pennant, ship flags, dock mini-pennants, the Harbor bunting) is a blit of `sprites/overlays/pennant.strip.png` (`PixelPennant.js`: 4 frames of 24 × 16, five indexed tones rim/accent/shade/pole/finial, recoloured per accent), stepped at 4 fps from the C-W3 wind, mirrored downwind, on its rest frame 1 when calm (knot wind < 0.15) or under reduced motion. A building's occupancy pennant pole base is its registry `pennant: { at }` (Command, Task Board, Archive, Portal, Lighthouse).
 - **Dressing** is a static manifest strip layer with `dressing: true` (no `fps`, `gate` or `staticFrame`), one frame per earned tier from `MonumentRules.chronicleDressingFrame`; nothing earned draws nothing, and records past retention keep their tier. Shipped: Harbor `bunting` (one pennant per verified release, 1–5), Forge `billetRack` (verified feat/fix commits: ribbon, flagship, aurora), Archive `lectern` (verified Chronicle records: flagship, aurora). Dressing sits inside the footprint, casts no light and never moves.
 
 ## Size tiers (footprint-driven; all ≤400px → single-image generation)
@@ -193,7 +192,8 @@ Rule of thumb: **sprite width ≈ 1.2 × iso-diamond width** = `1.2 · (w+h) · 
 |---|---|---|
 | Hero hall | command, archive, harbor, portal | 312–360 × 208–264 |
 | Standard structure | forge, mine, taskboard | 256 × 232 |
-| Tower (narrow, tall) | observatory, watchtower | 256 × 288, 288 × 384 |
+| Tower (narrow, tall) | watchtower | 288 × 384 |
+| Open-front inn | tavern | 296 × 288 |
 
 ## The village's stone family (gatehouse, sea tower, curtain)
 
@@ -201,7 +201,7 @@ The Village Gate's gatehouse (`prop.villageGate`, with its door strip `prop.vill
 
 ## Generation recipe
 
-- Tool: REST `generate-image-v2` (Pro, with `building.observatory` as the style image) or MCP `create_map_object` (≤400px, transparent BG). Smoke-test the tool per building; `generate-image-v2` produced Command, Archive, Task Board, Forge, Mine, and Portal (2026-10-01, `building.command` as the style image); `create_map_object` produced Harbor, Observatory, and Watchtower. The manifest `tool` field names the surface, and the Pro re-authors carry a `provenance` block with endpoint, job, and style image.
+- Tool: REST `generate-image-v2` (Pro, with `building.command` as the style image) or MCP `create_map_object` (≤400px, transparent BG). Smoke-test the tool per building; `generate-image-v2` produced Command, Archive, Task Board, Forge, Mine, and Portal (2026-10-01, `building.command` as the style image); `create_map_object` produced Harbor and Watchtower; the Tavern (`building.tavern`, 296 × 288, an open-front tavern) came from `create_image_pro` with `building.command` as the style image. The manifest `tool` field names the surface, and the Pro re-authors carry a `provenance` block with endpoint, job, and style image.
 - `create_map_object` params (not in the description): `view: low top-down`, `outline: selective outline`, `shading: detailed shading`, `detail: high detail`, transparent background.
 - Description for `terrain-apron`: prepend the manifest `style.anchor`; add subject identity, palette cues, silhouette intent, "true wall/post/rock footings and attached steps only", and "transparent ground around the structure". Explicitly forbid ground tile, lawn, slab, plinth, retaining lip, complete perimeter, and baked shadow.
 - Description for a structural exception: name the physical platform (`dais`, `quay`, `deck/pilings`), its support, and its terrain/water transition. Still forbid a larger generic ground tile.
@@ -209,4 +209,4 @@ The Village Gate's gatehouse (`prop.villageGate`, with its door strip `prop.vill
 
 ## Reference order
 
-Harbor (`water-pilings`) · Command (`terrain-apron`) · Portal (`intentional-dais`) · Lighthouse (`quay`). Archive, Task Board, Forge, and Mine were re-authored on the Observatory's grid and Command re-crowned as the hero in the 2026-09-25 Painted Isle landmark pass (manifest provenance items 4.2 and 4.5); preserve their recognizable silhouettes and authored material channels in future revisions.
+Harbor (`water-pilings`) · Command (`terrain-apron`) · Portal (`intentional-dais`) · Lighthouse (`quay`). Archive, Task Board, Forge, and Mine were re-authored on the grid of the since-retired Observatory (its base remains the historic style reference through git history; the current landmark family reference is `building.command`) and Command re-crowned as the hero in the 2026-09-25 Painted Isle landmark pass (manifest provenance items 4.2 and 4.5); preserve their recognizable silhouettes and authored material channels in future revisions.

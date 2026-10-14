@@ -600,7 +600,6 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     const reactions = applySurfaceWetnessToReactions(atmosphere?.reactions || {}, renderer._surfaceWetness);
     renderer._atmosphereReactions = reactions;
     renderer.buildingRenderer?.setLightingState(atmosphere?.lighting);
-    renderer.buildingRenderer?.setClockState?.(atmosphere?.clock);
     renderer.buildingRenderer?.setAtmosphereState?.(atmosphere
         ? { ...atmosphere, reactions }
         : atmosphere);
@@ -1015,6 +1014,9 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
         }
     }
     drawSelectedAgentXray(renderer, overlayCtx, buildingDrawables);
+    if (!gpuWorldRendered) {
+        for (const sprite of sortedSprites) sprite.drawDeferredNameTag?.(overlayCtx);
+    }
     drawThoughtLayer(overlayCtx, sortedSprites, zoom);
     // 4.5 — the shared-file overlap plate. The thread and knot live in the
     // occluded ground texture; the exact counts belong here, once, in both
@@ -1998,7 +2000,8 @@ function drawSelectedAgentXray(renderer, ctx, buildingDrawables) {
                 && sprite.x <= right + 12
                 && sprite.y >= top
                 && sprite.y <= bottom + 12;
-            if (withinSpriteBounds && sprite.y < frontY) {
+            // A body on the building's open floor is in plain view: no x-ray.
+            if (withinSpriteBounds && sprite.y < frontY && !sprite._onOpenFloor) {
                 sprite.drawXraySilhouette(ctx);
                 return;
             }

@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-10-13-hero-sprites"
+  assetVersion: "2026-10-14-tavern"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -29,7 +29,7 @@ atlases:
       - building.command
       - building.watchtower
       - building.harbor
-      - building.observatory
+      - building.tavern
       - building.portal
       - building.forge
       - building.mine
@@ -125,11 +125,12 @@ characters:
         gaze: { rows: [21, 24], hold: 22, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [46, 35], w: [45, 32], se: [43, 34], sw: [50, 34] } }
         celebrate: { rows: [25, 27], hold: 27, directions: [se, w, sw] }
         think: { rows: [28, 30], hold: 30, directions: [se, e, w, sw] }
+        drink: { rows: [31, 35], hold: 31, seatLine: { south-east: 65, south-west: 64 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose + tankard, scripts/sprites/generate-pose-strip.mjs --groups=drink)", jobs: { se: "31c6cadd-17c1-44d0-95a9-1fb4c6f9d708", sw: "155aad8e-27de-463e-b37a-ec394b7e3bea" } }, directions: [se, sw] }
       grip: { hand: both, sheathe: true }
       provenance:
         characterId: "f8a273d6-1b74-4192-ba60-c9854d8e2683"
         generationSize: 128
-        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "4aa926e2-fc13-4afc-8489-9818de80d0c8", w: "26f39a00-7b38-4a44-adb8-1750f6210cda", se: "54abff10-40a8-43b3-94e5-2a7097440530", sw: "6c209e9f-922d-4d7f-8b2f-aadb9d61eb59" }, gaze: { e: "3073784b-15a2-47e9-b226-a90a87d49a4a", w: "1822ad0e-d318-41ae-a803-14a3e3c44979", se: "382911cc-977a-478b-acf4-5adfe21f166c", sw: "e007fc4d-28ed-4fcc-8d20-fd1c0aa4e515" } } }
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "4aa926e2-fc13-4afc-8489-9818de80d0c8", w: "26f39a00-7b38-4a44-adb8-1750f6210cda", se: "54abff10-40a8-43b3-94e5-2a7097440530", sw: "6c209e9f-922d-4d7f-8b2f-aadb9d61eb59" }, gaze: { e: "3073784b-15a2-47e9-b226-a90a87d49a4a", w: "1822ad0e-d318-41ae-a803-14a3e3c44979", se: "382911cc-977a-478b-acf4-5adfe21f166c", sw: "e007fc4d-28ed-4fcc-8d20-fd1c0aa4e515" }, drink: { se: "31c6cadd-17c1-44d0-95a9-1fb4c6f9d708", sw: "155aad8e-27de-463e-b37a-ec394b7e3bea" } } }
         animationStrips: { groups: { read: { s: "b3c39c0e-297b-410b-99dc-77e5a2363f0b", se: "b3c39c0e-297b-410b-99dc-77e5a2363f0b", e: "b3c39c0e-297b-410b-99dc-77e5a2363f0b", ne: "b3c39c0e-297b-410b-99dc-77e5a2363f0b", nw: "b3c39c0e-297b-410b-99dc-77e5a2363f0b", w: "b3c39c0e-297b-410b-99dc-77e5a2363f0b", sw: "b3c39c0e-297b-410b-99dc-77e5a2363f0b" }, wait: { se: "caaa99b9-5eab-475d-a280-b4c9b2615650", e: "caaa99b9-5eab-475d-a280-b4c9b2615650", w: "caaa99b9-5eab-475d-a280-b4c9b2615650", sw: "caaa99b9-5eab-475d-a280-b4c9b2615650" }, think: { se: "1a5022f7-3fea-4579-aeee-a3f140b8a49c", e: "1a5022f7-3fea-4579-aeee-a3f140b8a49c", w: "1a5022f7-3fea-4579-aeee-a3f140b8a49c", sw: "1a5022f7-3fea-4579-aeee-a3f140b8a49c" }, celebrate: { se: "916c4129-59fd-4e3b-a6d7-520502af2835", w: "916c4129-59fd-4e3b-a6d7-520502af2835", sw: "916c4129-59fd-4e3b-a6d7-520502af2835" } } }
     portraitCrop: { x: 29, y: 8, w: 34, h: 32 }
     provenance: { characterId: f8a273d6-1b74-4192-ba60-c9854d8e2683 }
@@ -170,11 +171,12 @@ characters:
         gaze: { rows: [19, 22], hold: 20, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [47, 30], w: [46, 33], se: [42, 35], sw: [50, 33] } }
         celebrate: { rows: [23, 25], hold: 25, directions: [se, e, w, sw] }
         think: { rows: [26, 28], hold: 28, directions: [se, e, w, sw] }
+        drink: { rows: [29, 33], hold: 29, seatLine: { south-east: 64, south-west: 64 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose + tankard, scripts/sprites/generate-pose-strip.mjs --groups=drink)", jobs: { se: "802902cd-53ea-4406-bc09-42716aaafa06", sw: "afaf7904-43f1-4df3-8974-7c7fdfe0e81a" } }, directions: [se, sw] }
       grip: { hand: both, sheathe: true }
       provenance:
         characterId: "1622d08f-4388-44b1-b60c-8b6c583b3f92"
         generationSize: 128
-        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker": { e: "df08a1b1-f166-41db-8af0-e289d96d6900", w: "3b85ada0-b10a-4439-aa06-2c7853bf7111", se: "02e1f0dd-324a-455e-a756-5e93b9b29b12", sw: "f8a85d01-aa11-4e57-9f63-a355eb18a297" }, gaze: { e: "e307b90d-b59b-4d8c-a967-bd02aa31f0db", w: "6a864cec-d29a-4788-b1bb-26bb509fe090", se: "cc752b56-de3b-42d2-9bbf-7cfa52bc8fdf", sw: "a6b32257-48f4-4448-8935-9d1abd3e5e13" } } }
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker": { e: "df08a1b1-f166-41db-8af0-e289d96d6900", w: "3b85ada0-b10a-4439-aa06-2c7853bf7111", se: "02e1f0dd-324a-455e-a756-5e93b9b29b12", sw: "f8a85d01-aa11-4e57-9f63-a355eb18a297" }, gaze: { e: "e307b90d-b59b-4d8c-a967-bd02aa31f0db", w: "6a864cec-d29a-4788-b1bb-26bb509fe090", se: "cc752b56-de3b-42d2-9bbf-7cfa52bc8fdf", sw: "a6b32257-48f4-4448-8935-9d1abd3e5e13" }, drink: { se: "802902cd-53ea-4406-bc09-42716aaafa06", sw: "afaf7904-43f1-4df3-8974-7c7fdfe0e81a" } } }
         animationStrips: { groups: { read: { s: "36920ca0-87e9-48e4-9306-d5631cf4b322", se: "6b8f81d8-f6b5-430d-a7ac-5ba5aa99c67b", e: "b1bd2a98-5225-4f24-9323-aff3b287cdbc", n: "abef05e2-aa61-4c5a-b47a-e5dad0c025a1", nw: "a1c0d1ca-0ea9-4e88-8747-b8732ebfe694", w: "ae5af482-5452-4c9f-b261-bb16f49ba4db", sw: "8623d143-524b-4524-a0d4-fd560e9c1ec3" }, wait: { se: "91601c94-6d47-45af-8596-ce0fdc392f17", e: "5b0dedae-a7ba-4867-b690-5103e61f5cc1", w: "65b14557-3eba-4027-b9b2-7909af4fdaac", sw: "cb4062be-031b-4dd2-8a86-39cb5458a883" }, think: { se: "d123edfd-676c-4f71-afdb-6c13520fb7f7", e: "98425c20-986d-4179-9e33-28c8c6ca2514", w: "69654b6b-d59c-480b-8065-808cff3e5403", sw: "8bc160fb-ad5c-4d88-8f51-57d42101ed65" }, celebrate: { se: "1391546f-3966-4443-9d63-fe7ee99d983c", e: "40a1ee64-6b8d-479c-902c-d27fb5497a55", w: "6b317400-1fd1-4164-8052-0db70978fdcb", sw: "8bae2372-e65a-44ad-af6e-fb8e3567f404" } } }
     provenance: { characterId: 1622d08f-4388-44b1-b60c-8b6c583b3f92, generationSize: 76, generationMode: pro }
     portraitCrop: { x: 29, y: 15, w: 34, h: 32 }
@@ -480,12 +482,13 @@ characters:
         run: { rows: [21, 26], hold: 21 }
         celebrate: { rows: [27, 29], hold: 29, directions: [se, e, w, sw] }
         think: { rows: [30, 32], hold: 32, directions: [se, e, w, sw] }
+        drink: { rows: [33, 37], hold: 33, seatLine: { south-east: 68, south-west: 69 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose + tankard, scripts/sprites/generate-pose-strip.mjs --groups=drink)", jobs: { se: "5e912630-c7a9-4b73-99ad-17d8ff996df8", sw: "29f02b5f-145c-44bb-86a0-30f9681dfc5f" } }, directions: [se, sw] }
       grip: { hand: both, sheathe: true }
       provenance:
         characterId: "c3424b1d-2a37-47db-bc9a-dfb88bf53885"
         animationGroupId: "b9ee8a17-e595-4302-b0a2-a721331d163b"
         generationSize: 128
-        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "d3d0018c-75a7-4e44-948f-6ec1a47c8ff6", w: "d2fe3fd1-87ee-4b05-9c47-df883e05f8f9", se: "d2f06dcf-3437-4ac9-89f1-934c0cc362b7", sw: "932d670b-f99d-4eb2-b552-6350039cf252" } } }
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "d3d0018c-75a7-4e44-948f-6ec1a47c8ff6", w: "d2fe3fd1-87ee-4b05-9c47-df883e05f8f9", se: "d2f06dcf-3437-4ac9-89f1-934c0cc362b7", sw: "932d670b-f99d-4eb2-b552-6350039cf252" }, drink: { se: "5e912630-c7a9-4b73-99ad-17d8ff996df8", sw: "29f02b5f-145c-44bb-86a0-30f9681dfc5f" } } }
         templateStrips: { generationMode: skeleton-v3, groups: { run: { s: "0ef145f0-7a88-42e6-8b55-92d99d07a67d", se: "3dcfd3e0-5eff-4c52-909a-ff9465236efa", e: "d8ded118-5a79-4254-a323-978a7c56d695", ne: "bc7c8700-06d5-4073-93fd-3ef16a370356", n: "88ef54ec-8090-474f-842e-a8daa6cd4d8c", nw: "272a0259-0287-46d4-92ba-bf213086061b", w: "97e04757-c702-4a3a-a820-8e6362d46845", sw: "fa29f881-d019-4d70-ade8-5c07a7be5696" } } }
         animationStrips: { groups: { think: { se: "ed65bfbc-09c8-4777-b7a0-43934c3c87f4", e: "4b3cbf29-dc1b-40b7-91a4-bc9a93cab38a", w: "20f9b297-7cd8-4ecb-85d5-dc227d04b7fb", sw: "c1e5e288-be0c-46e6-8ad9-cb1c656c2286" }, celebrate: { se: "943976b5-836e-4749-b642-f0025d97d426", e: "aae6f47c-c20b-46e3-82f1-247fdcf7e542", sw: "85f43c5c-bb56-4825-9d99-4d75898466ad", w: "c74b3892-d179-4ba7-b69d-3fbf4e23d643" } } }
     portraitCrop: { x: 26, y: 13, w: 40, h: 34 }
@@ -529,11 +532,12 @@ characters:
         tinker: { rows: [13, 18], hold: 13, contactFrame: 2, directions: [se, w, sw], contact: { e: [60, 47], w: [40, 49], se: [48, 53], sw: [45, 52] } }
         celebrate: { rows: [19, 21], hold: 21, directions: [se, e, w, sw] }
         think: { rows: [22, 24], hold: 24, directions: [se, e, w, sw] }
+        drink: { rows: [25, 29], hold: 25, seatLine: { south-east: 62, south-west: 62 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose + tankard, scripts/sprites/generate-pose-strip.mjs --groups=drink)", jobs: { se: "11f9a6df-7f58-4e37-8505-610508600a37", sw: "56fc1c66-6c73-4f45-ac56-4ef9f12c7a2a" } }, directions: [se, sw] }
       grip: { hand: both, sheathe: true }
       provenance:
         characterId: "bafdea82-e961-40f3-9c4e-a321ccab3005"
         generationSize: 128
-        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "52b237d6-e6fe-46ac-a80e-de1533541f49", w: "30f29082-b0f5-43bf-aee5-b17deda276d2", se: "e3202311-cbbc-468a-8945-0acf55cd6e8c", sw: "c2a6bcd6-fe85-49d2-8431-9824c4d3b057" } } }
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "52b237d6-e6fe-46ac-a80e-de1533541f49", w: "30f29082-b0f5-43bf-aee5-b17deda276d2", se: "e3202311-cbbc-468a-8945-0acf55cd6e8c", sw: "c2a6bcd6-fe85-49d2-8431-9824c4d3b057" }, drink: { se: "11f9a6df-7f58-4e37-8505-610508600a37", sw: "56fc1c66-6c73-4f45-ac56-4ef9f12c7a2a" } } }
         animationStrips: { groups: { read: { s: "0667f1ad-519e-4302-8270-5788d72cf713", se: "26e0629c-5a95-4229-be55-1cae6f340a94", e: "a74a2215-72d8-4e55-b34e-519724302704", ne: "25482aad-7bff-4c47-b8f3-e666a4dcd1d0", n: "4c173cef-796a-4304-9cfe-ae4f12ed830e", nw: "8986477f-fd3e-4d60-9d0c-8e79a1b1079f", w: "9f8c7f5b-3ef5-469a-8652-09e42d2e5de3", sw: "f2ce0272-1972-475d-b91a-9bfe1b31cc4e" }, think: { se: "d439881a-713e-4bd6-9e1b-8cf7e171aad1", e: "1ea17a4d-92e7-44f5-8354-9ab25dfaaefd", w: "5d583c5a-e96c-40ab-a848-20135ca6e3c1", sw: "8bf0ddc3-ed7e-4a4f-9a8e-b3e0dcfd58c4" }, celebrate: { se: "83610acb-da5b-4654-a652-1bbc7ea12cf5", e: "31957868-870e-4708-86bb-06101e1b03a3", w: "1070fe22-5a3f-42c6-9582-40e5c891617c", sw: "acf507cb-8919-4b76-a0c0-0dce6e6012d4" } } }
     portraitCrop: { x: 28, y: 11, w: 36, h: 34 }
     provenance: { characterId: bafdea82-e961-40f3-9c4e-a321ccab3005, generationSize: 76, generationMode: pro }
@@ -611,12 +615,13 @@ characters:
         run: { rows: [21, 26], hold: 21 }
         celebrate: { rows: [27, 29], hold: 29, directions: [se, e, w, sw] }
         think: { rows: [30, 32], hold: 32, directions: [se, e, w, sw] }
+        drink: { rows: [33, 37], hold: 33, seatLine: { south-east: 66, south-west: 64 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose + tankard, scripts/sprites/generate-pose-strip.mjs --groups=drink)", jobs: { se: "a61b141b-e12e-4d02-8425-93bc063a8da9", sw: "66a01f16-2f76-4a8f-bb82-f08fde9cffd9" } }, directions: [se, sw] }
       grip: { hand: both, sheathe: true }
       provenance:
         characterId: "a84176da-b4a8-4e2e-a98a-c80d16d36c43"
         animationGroupId: "075fcd11-485f-4dfa-bcbc-729369a68318"
         generationSize: 76
-        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "c66b3262-9e13-4503-b880-f93a4bc69d1c", w: "d05a78a9-c8e1-4a71-968e-fb06e91439fc", se: "5904067a-71dc-481e-b252-a38c4d0d42b3", sw: "d548fc63-6feb-434b-9630-c9bb2e8dbe0c" } } }
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "c66b3262-9e13-4503-b880-f93a4bc69d1c", w: "d05a78a9-c8e1-4a71-968e-fb06e91439fc", se: "5904067a-71dc-481e-b252-a38c4d0d42b3", sw: "d548fc63-6feb-434b-9630-c9bb2e8dbe0c" }, drink: { se: "a61b141b-e12e-4d02-8425-93bc063a8da9", sw: "66a01f16-2f76-4a8f-bb82-f08fde9cffd9" } } }
         templateStrips: { generationMode: skeleton-v3, groups: { run: { s: "6ea3f408-7060-45cc-99ff-c494884d7bd2", se: "ae4bec2e-c773-4b9a-bc6b-5c47c9f09236", e: "e1a089e5-d525-4ac6-a9b9-18fbaaef5821", ne: "5871aee4-0853-4b96-8dfc-17847664b2e5", n: "a48733bc-fc46-46f4-bd5d-6122a64d3ce6", nw: "8fd816d3-a836-4109-bdf7-1c1f490b7e3a", w: "dca1f636-97b5-48ed-9cda-53b4bd7bf618", sw: "bf0cace3-4b6b-46de-bdc0-c7b41e7d9fb1" } } }
         animationStrips: { groups: { read: { s: "273e9224-684f-4ae5-9ebb-2d4a045d871b", se: "273e9224-684f-4ae5-9ebb-2d4a045d871b", e: "273e9224-684f-4ae5-9ebb-2d4a045d871b", ne: "273e9224-684f-4ae5-9ebb-2d4a045d871b", n: "273e9224-684f-4ae5-9ebb-2d4a045d871b", nw: "273e9224-684f-4ae5-9ebb-2d4a045d871b", w: "273e9224-684f-4ae5-9ebb-2d4a045d871b", sw: "273e9224-684f-4ae5-9ebb-2d4a045d871b" }, think: { se: "1fbe8805-870c-4078-8a6d-8554e4c750b3", e: "e9ab2738-25b6-4f9d-b7e3-a6dd41ef7edf", w: "62b2ee9d-f1e9-47fd-a926-c55ad7162cf6", sw: "976e9f69-9b33-4f84-8101-d842c13e8edb" }, celebrate: { se: "ae48d4f0-e535-453e-b791-fd4de5e91106", e: "7375273f-29c7-4d89-a424-d4d0f9f86021", w: "20eab189-03f3-4ca2-b3df-96f0d5739b29", sw: "36f56d40-5a02-4bce-8d17-6a3ebb7e4088" } } }
     portraitCrop: { x: 29, y: 14, w: 34, h: 36 }
@@ -656,11 +661,12 @@ characters:
         tinker: { rows: [13, 18], hold: 13, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [57, 48], w: [38, 48], se: [50, 54], sw: [44, 51] } }
         celebrate: { rows: [19, 21], hold: 21, directions: [se, e, w, sw] }
         think: { rows: [22, 24], hold: 24, directions: [se, e, w, sw] }
+        drink: { rows: [25, 29], hold: 25, seatLine: { south-east: 66, south-west: 60 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose + tankard, scripts/sprites/generate-pose-strip.mjs --groups=drink)", jobs: { se: "c845cf78-161b-4f81-9509-3d664773ba1a", sw: "c7588b59-3b7b-4627-a353-42fedb9bab3b" } }, directions: [se, sw] }
       grip: { hand: both, sheathe: true }
       provenance:
         characterId: "8881d235-be6f-4bd3-b3b9-99e3098f2a91"
         generationSize: 128
-        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "7924484f-7fa1-48dd-93f3-0156595a5094", w: "2fe2d655-90b4-444c-b4fb-a4eb54d66953", se: "eb44542e-4754-468d-9e1a-a3b7187d6123", sw: "47da7172-9295-420f-b76b-c501262666b9" } } }
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "7924484f-7fa1-48dd-93f3-0156595a5094", w: "2fe2d655-90b4-444c-b4fb-a4eb54d66953", se: "eb44542e-4754-468d-9e1a-a3b7187d6123", sw: "47da7172-9295-420f-b76b-c501262666b9" }, drink: { se: "c845cf78-161b-4f81-9509-3d664773ba1a", sw: "c7588b59-3b7b-4627-a353-42fedb9bab3b" } } }
         animationStrips: { groups: { read: { s: "9aae15b3-7285-4b8c-b1af-a81f920f16e8", se: "3ebe15b4-4841-42fe-8c83-cf595a2b2499", e: "36a58aa3-2a79-4fb9-8aae-6236f119542c", ne: "f9c11cb2-136c-481d-a248-b08714da713c", n: "7681ac46-b1f8-49c2-b996-f5ae33574a25", nw: "4a4cdfab-649e-470d-b186-4ec9ef974380", w: "1214b6cf-bb77-4154-9f9c-5939aed0580c", sw: "e2d291cb-53fb-478d-ad4b-1ffe37c5f14c" }, think: { se: "4c2816c8-07c3-42d0-a938-6a48cb2c0809", e: "b6c37b6d-760b-4639-9835-f61c4cee6466", w: "0250c799-cdab-4fcf-8c3f-d96ef3c4292c", sw: "99ba4db5-18fc-4857-9c56-49ac3689f6ae" }, celebrate: { se: "1d60ff1c-ccae-4332-b78f-7a9bbd86343d", e: "0ace0743-3433-498e-862b-d2aebfc601c1", w: "ad5ccfc6-400b-4a1d-a57f-34c3c76466e9", sw: "2f227b33-e1a5-44ff-9c87-f7d823c1d22a" } } }
     # N/NW walk repaired with skeleton-v3 (the template walk dropped the cape).
     portraitCrop: { x: 29, y: 14, w: 34, h: 34 }
@@ -1925,57 +1931,46 @@ buildings:
         dressing: true
         materialClass: timber
 
-  # ── HERO: Clock Observatory ── (single-image; was composeGrid [3,2])
-  # Blank clock dial on the sprite; the animated hands are drawn procedurally
-  # by _drawObservatoryClock at BUILDING_VISUAL_REGISTRY.observatory clockFace.
-  - id: building.observatory
-    tool: map_object
-    prompt: "Broad stocky grey-stone astronomical observatory whose masonry walls end directly at their footings, a large blue-slate dome with an open viewing aperture, and one enormous ornate brass telescope projecting far upward-right. One blank circular astrolabe dial centered above the arched front door, warm gold windows, copper trim, heavy buttresses, attached stone doorstep and stairs, compact proportions, and a strong asymmetric telescope silhouette. Structure only with empty transparent space around every footing; no lawn, grass, terrain, base platform, cast shadow, text, numbers, logo, or clock hands."
-    width: 256
+  # ── HERO: The Tavern ── (2026-10-14; replaces the retired Clock Observatory
+  # on its 4x4 footprint). Pro model (create_image_pro, 400x368 canvas, seed
+  # 4242) with building.command as the style image and the closed-inn first
+  # draft as the reference, cropped to the structure. An open-front tavern:
+  # its ground floor is a plank veranda under timber arches, the bar, kegs
+  # and hearth in plain view; idle villagers drink at the beer-garden tables
+  # in front of it (REST_SEATS). No tool works here. The emissive sidecar is
+  # the glass of its five windows (stepped amber rim / pale core) plus the
+  # bar's lanterns and hearth fire, lit at night by the Tavern's seated
+  # patrons (BuildingSprite patron rooms); the chimney smokes while it has
+  # patrons. No door strip: the front stands open.
+  - id: building.tavern
+    tool: generate-image-v2
+    prompt: "isometric pixel art building sprite, true 2:1 dimetric isometric view from the south-east, a cosy medieval village tavern with an OPEN FRONT: the whole ground floor of the front wall facing the lower-left has no wall, only three wide round timber arches on stout oak posts, so you see straight inside: a long wooden bar counter, stacked ale kegs and barrels on racks, shelves of tankards, hanging lanterns and a stone hearth fireplace on the back wall, a plank floor at ground level. Above it a half-timbered upper storey of dark oak beams over cream plaster with small leaded windows and red flower boxes, a steep slate-blue tiled gable roof with one dormer, a stone chimney, a wooden hanging sign with a golden ale tankard on an iron bracket at the corner. The right side wall is grey limestone ashlar. Warm light from the upper left. The building fills most of the canvas width, fully visible with a small transparent margin. Structure only on a transparent background: no ground tile, no lawn, no cobbles outside, no cast shadow, no text, no people."
+    provenance: { item: 'tavern', endpoint: create_image_pro, jobId: dec52550-328a-4975-a7e7-d4769aabe2e6, seed: 4242, styleImage: building.command, referenceImage: 'closed-inn draft (create_image_pro job 14da2be4-dd33-4899-84e6-898ceba6a1d6)', generationSize: 400x368, crop: [52, 32, 296, 288], generations: 25, pilotGenerations: 110, generatedAt: '2026-10-14' }
+    width: 296
     height: 288
-    anchor: [128, 252]
+    anchor: [158, 218]
     materialClass: stone
-    # 4.6 — authored lit-window sidecar: only the dark glass of the three
-    # windows, stepped amber rim / pale core; gated by NightOccupancyGate.
     emissiveSidecar: true
     occluderSidecar: true
     surfaceCode: true
     roomsSidecar: true
-    atlasFrame: { atlas: world-pilot, key: building.observatory }
+    atlasFrame: { atlas: world-pilot, key: building.tavern }
     elevation: { base: 0, top: 288, unit: sprite-px }
     emissive:
       strength: 0.78
       sources:
-        - { id: emissive.observatory.windows, kind: windows, geometry: registry.windowRects, strength: 0.62 }
-        - { id: emissive.observatory.dome, kind: rune, geometry: registry.effectAnchors.domeAperture, strength: 0.78 }
-    occluder: { mode: alpha-silhouette, strength: 1, horizonY: 235 }
+        - { id: emissive.tavern.windows, kind: windows, geometry: registry.windowRects, strength: 0.62 }
+    # The split sits low, at the post feet: the open floor, its bar and every
+    # patron on it paint between the halves; TavernArcade redraws the posts
+    # and beam over the patrons.
+    occluder: { mode: alpha-silhouette, strength: 1, horizonY: 248 }
     splitForOcclusion: true
-    horizonY: 235
-    emitters:
-      sparkle: [211, 57]
+    horizonY: 248
     # Phase 2.5.5: light-reflection compositing reads these to additively
-    # tint nearby water tiles. Anchor is sprite-local pixels.
-    lightSource: [149, 107]
-    lightColor: '#9fd1ff'
+    # tint nearby water tiles. Anchor is sprite-local pixels (the hearth).
+    lightSource: [190, 172]
+    lightColor: '#ffcf7a'
     lightRadius: 58
-    layers:
-      # 6.2 — the arched front door: closed / ajar / open while the
-      # Observatory has a working visitor (V8), one-shot on arrival.
-      door:
-        tool: hand-authored
-        prompt: "Observatory front door closed / ajar / open, dark hall #1a1310 over a stepped warm floor; authored, not generated"
-        width: 102
-        height: 54
-        frames: 3
-        frameW: 34
-        frameH: 54
-        anchor: [168, 253]
-        fps: 8
-        staticFrame: 0
-        gate: door.observatory
-        oneShot: true
-        restIsBase: true
-        materialClass: timber
 
   # ── HERO: Portal Gate ── re-authored 2026-10-01 into the Painted Isle family
   # (it was a dark charcoal rock heap with a boxy brazier overlay). REST

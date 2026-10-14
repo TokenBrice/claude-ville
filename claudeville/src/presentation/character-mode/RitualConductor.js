@@ -12,7 +12,6 @@ const RITUAL_META = {
     forge: { kind: 'forge-strike', durationMs: 1500, pulseBand: 'medium' },
     archive: { kind: 'archive-page', durationMs: 1800, pulseBand: 'medium' },
     mine: { kind: 'mine-pick', durationMs: 1500, pulseBand: 'medium' },
-    observatory: { kind: 'observatory-sweep', durationMs: 1900, pulseBand: 'slow' },
     portal: { kind: 'portal-mirror', durationMs: 2600, pulseBand: 'medium' },
     taskboard: { kind: 'task-paper', durationMs: 2600, pulseBand: 'fast' },
     command: { kind: 'command-signal', durationMs: 2600, pulseBand: 'static' },
@@ -20,7 +19,7 @@ const RITUAL_META = {
     watchtower: { kind: 'watchtower-flare', durationMs: 1800, pulseBand: 'slow' },
 };
 
-// Agent-level work-gesture pose per ritual building. Each of the nine
+// Agent-level work-gesture pose per ritual building. Each of the eight
 // buildings gets a small repeated gesture (hammer-tick at the forge,
 // page-turn at the archive, pick-swing at the mine, scroll-unfurl at the
 // taskboard, …) drawn procedurally by AgentSprite._drawToolRitualOverlay.
@@ -33,7 +32,6 @@ const RITUAL_POSE_BY_BUILDING = {
     archive: 'page',
     mine: 'pick',
     taskboard: 'scroll',
-    observatory: 'gaze',
     portal: 'conjure',
     command: 'signal',
     harbor: 'haul',
@@ -47,7 +45,6 @@ const RITUAL_GESTURE_PERIOD_MS = {
     page: 900,
     pick: 540,
     scroll: 1100,
-    gaze: 1400,
     conjure: 760,
     signal: 820,
     haul: 980,
@@ -87,7 +84,7 @@ export function ritualDownbeat(ritual, now = Date.now()) {
 // tests) tinker, file edits (Edit/Write/apply_patch) strike, lookups
 // (WebFetch/WebSearch, Grep/Glob, Read) gaze. Only a tool with no such class
 // (tasks, MCP calls, unknown names) takes the building's group as the
-// tie-break: gaze at the Observatory, strike at the Forge. Everything else
+// tie-break: strike at the Forge. Everything else
 // keeps its procedural gesture. Admission is this conductor's: only an
 // enqueued ritual (≤ MAX_CONCURRENT_RITUALS) animates a strip.
 const STRIP_GROUP_BY_TOOL_CATEGORY = Object.freeze({ exec: 'tinker', write: 'strike', search: 'gaze', read: 'gaze' });
@@ -98,7 +95,6 @@ export function workStripGroup(tool, building) {
     // An MCP call reports as `exec` but is not a shell command.
     const byClass = name.startsWith('mcp__') ? null : STRIP_GROUP_BY_TOOL_CATEGORY[toolCategory(name)];
     if (byClass) return byClass;
-    if (building === 'observatory') return 'gaze';
     if (building === 'forge') return 'strike';
     return null;
 }
@@ -119,11 +115,12 @@ const SCENIC_POINT_POSTURE = Object.freeze({
     'mine-cart': { staticDy: 1, bobScale: 0.8 },
     'forest-edge': { staticDy: 2, bobScale: 0.6, idleFrame: 3 },   // resting on the stone
     'archive-alcove': { staticDy: 1, bobScale: 0.65, idleFrame: 3 }, // reading, head low
-    'observatory-view': { staticDy: -2, bobScale: 0.9 },  // skywatch, head up
     'lighthouse-shore': { staticDy: 1, bobScale: 0.75 },  // gazing out to sea
     'plaza-corner': { staticDy: 0, bobScale: 0.85 },
     'forge-handoff': { staticDy: 0, bobScale: 0.9 },
 });
+
+const WEB_SEARCH_TOOLS = new Set(['WebSearch', 'web.run', 'web_search']);
 
 const COMMAND_LIFECYCLE_ACTIONS = {
     spawn: 'summon',
@@ -191,13 +188,6 @@ function extractHost(input) {
         }
     }
     return '';
-}
-
-function hashText(value) {
-    const text = String(value || '');
-    let hash = 0;
-    for (let i = 0; i < text.length; i++) hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
-    return Math.abs(hash);
 }
 
 function stableIdentityValue(value) {
@@ -340,14 +330,9 @@ function ritualMetaFor(event) {
             return { ...base, action, label: compactText(tool, 'CMD') };
         }
     }
-    if (building === 'observatory') {
-        return {
-            ...base,
-            label: host ? compactText(host, host) : compactText(input, 'SEARCH'),
-            angle: ((hashText(host || text || tool) % 220) - 160) * Math.PI / 180,
-        };
-    }
     if (building === 'portal') {
+        // A web search names its query; any other portal call its host or tool.
+        if (!host && WEB_SEARCH_TOOLS.has(tool)) return { ...base, label: compactText(input, 'SEARCH') };
         return { ...base, label: host ? compactText(host, host) : compactText(tool.replace(/^mcp__|^functions\./, ''), 'PORTAL') };
     }
     return { ...base, label };

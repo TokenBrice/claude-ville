@@ -53,7 +53,7 @@ const WALK_STEPS = Object.freeze([[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, 
 const FACING_TILE_STEP = Object.freeze({ 'south-east': [1, 0], 'south-west': [0, 1] });
 
 // A standing body never covers a fixture: a brazier, lantern, well, cart,
-// stall, sign or crate, or a bench it does not sit on. A body standing in
+// stall, sign or crate, or a Tavern table it does not sit at. A body standing in
 // front of a fixture is drawn over it, so its box (`FIXTURE_BODY.halfPx`
 // either side of the foot, `heightPx` up) keeps off the fixture's standing
 // part: the foot stays out of the box `half + halfPx` across, `backPx` behind
@@ -61,7 +61,7 @@ const FACING_TILE_STEP = Object.freeze({ 'south-east': [1, 0], 'south-west': [0,
 // half-width of the fixture sprite's standing part (alpha > 128, world px) and
 // `rise` the height of that part's lowest row above the foot: a brazier's
 // bowl, a stall's awning, a cart's bed, a lantern's post and lamp or a sign's
-// post and arm (above their ground plinth), a bench's timber seat. A body
+// post and arm (above their ground plinth), a Tavern table. A body
 // behind a fixture is drawn under it. Walkers may pass; standing places
 // (visit slots, the seat stand ring, fan places, landings, queue slots) are
 // checked. Step, rim and pier seats draw only under a sitter, so they are no
@@ -84,10 +84,13 @@ const FIXTURE_PARTS = Object.freeze({
     'prop.fishRack': [22, 0], 'prop.firewoodStack': [22, 0], 'prop.bellowsBench': [19, 0], 'prop.barrelStack': [15, 0],
     'prop.grindstone': [15, 0], 'prop.toolRack': [20, 0], 'prop.wheelbarrow': [17, 0], 'prop.slagHeap': [18, 0],
     'prop.oreSacks': [18, 0],
-    bench: [14, 0],
+    // A Tavern seat's bench and the trestle table in front of it: centred
+    // TAVERN_TABLE_SHIFT_PX toward the sitter's facing side.
+    tavern: [22, 0],
 });
-const fixtureFoot = (tileX, tileY, [half, rise], seatId = null) => Object.freeze({
-    x: (tileX - tileY) * TILE_WIDTH / 2,
+const TAVERN_TABLE_SHIFT_PX = Object.freeze({ 'south-east': 13, 'south-west': -13 });
+const fixtureFoot = (tileX, tileY, [half, rise], seatId = null, shiftPx = 0) => Object.freeze({
+    x: (tileX - tileY) * TILE_WIDTH / 2 + shiftPx,
     y: (tileX + tileY) * TILE_HEIGHT / 2,
     xPx: half + FIXTURE_BODY.halfPx,
     frontPx: FIXTURE_BODY.heightPx - rise,
@@ -99,13 +102,13 @@ const FIXTURE_FEET = Object.freeze([
     ...AMBIENT_GROUND_PROPS.map(prop => [prop, `prop.${prop.type}`]),
 ].filter(([, id]) => FIXTURE_PARTS[id])
     .map(([prop, id]) => fixtureFoot(prop.tileX, prop.tileY, FIXTURE_PARTS[id]))
-    .concat(REST_SEATS.filter(seat => seat.occluder === 'bench')
-        .map(seat => fixtureFoot(seat.tileX, seat.tileY, FIXTURE_PARTS.bench, seat.id))));
+    .concat(REST_SEATS.filter(seat => seat.occluder === 'tavern')
+        .map(seat => fixtureFoot(seat.tileX, seat.tileY, FIXTURE_PARTS.tavern, seat.id, TAVERN_TABLE_SHIFT_PX[seat.facing] || 0))));
 
 // True when a body standing at world (x, y) covers a fixture, or stands on
 // the village's stone (the curtain, gatehouse or sea tower: townPlan
-// `inVillageMasonry`, a body's half-width of reach). `seatId` is the bench
-// its body sits on, which it may cover.
+// `inVillageMasonry`, a body's half-width of reach). `seatId` is the seat
+// its body sits on, whose table it may cover.
 export function standsOnFixture(x, y, seatId = null) {
     if (inVillageMasonry((x / (TILE_WIDTH / 2) + y / (TILE_HEIGHT / 2)) / 2, (y / (TILE_HEIGHT / 2) - x / (TILE_WIDTH / 2)) / 2, 0.3)) return true;
     for (const foot of FIXTURE_FEET) {
@@ -122,7 +125,6 @@ const BUILDING_CAPACITY_OVERRIDES = Object.freeze({
     forge: 4,
     mine: 4,
     archive: 4,
-    observatory: 3,
     portal: 4,
     harbor: 4,
     watchtower: 2,

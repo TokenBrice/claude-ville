@@ -100,7 +100,7 @@ test('clear, dry weather paints nothing on any landmark roof', () => {
 });
 
 test('snow lies only on roof texels and silhouette tops, never on glass, fabric or gold trim', () => {
-    for (const type of ['command', 'archive', 'forge', 'observatory', 'taskboard']) {
+    for (const type of ['command', 'archive', 'forge', 'tavern', 'taskboard']) {
         const sprite = landmark(type);
         const { texels } = paint(sprite, { bucket: 4, wetQ: 0 });
         assert.ok(texels.length > 500, `${type} takes snow`);
@@ -174,7 +174,7 @@ test('snow never lies on the Command drum wall under the gold ring', () => {
 test('portholes, cupola openings and other dark glass stay bare under any cover', () => {
     // Openings by shape, not by the emissive sidecar: texels inside a 3x3
     // block of near-black albedo.
-    for (const type of ['observatory', 'forge', 'watchtower', 'archive']) {
+    for (const type of ['tavern', 'forge', 'watchtower', 'archive']) {
         const sprite = landmark(type);
         const { width, height, data } = sprite.albedo;
         const dark = (x, y) => data[(y * width + x) * 4 + 3] >= 128 && Math.max(data[(y * width + x) * 4], data[(y * width + x) * 4 + 1], data[(y * width + x) * 4 + 2]) < 32;
@@ -186,7 +186,6 @@ test('portholes, cupola openings and other dark glass stay bare under any cover'
                 if (all) for (let k = 0; k < 9; k++) opening[(y + Math.floor(k / 3)) * width + x + (k % 3)] = 1;
             }
         }
-        if (type === 'observatory') assert.ok(opening.reduce((s, v) => s + v, 0) > 500, 'the portholes are found');
         for (const bucket of [1, 2, 3, 4]) {
             for (const p of paint(sprite, { bucket, wetQ: 0 }).texels) assert.equal(opening[p], 0, `${type} b${bucket}: opening texel ${p} stays bare`);
         }
@@ -194,19 +193,19 @@ test('portholes, cupola openings and other dark glass stay bare under any cover'
 });
 
 test('a full cover keeps the lit pitch lighter than the shaded one', () => {
-    // The Observatory dome: its upper-left pitch left of the central rib is
-    // lit, the right one shaded; under snow the shaded pitch stays darker.
-    const sprite = landmark('observatory');
+    // The Tavern's dormer: its upper-left pitch left of the ridge is lit, the
+    // right one shaded; under snow the shaded pitch stays darker.
+    const sprite = landmark('tavern');
     const { data } = sprite.albedo;
     const { map } = sprite;
     const out = new Uint8ClampedArray(map.w * map.h * 4);
     paintRoofWeather(map, data, out, { bucket: 4 });
     const mean = [[0, 0], [0, 0]];
-    for (let y = 60; y < 118; y++) {
+    for (let y = 50; y < 80; y++) {
         for (let x = map.left; x < map.left + map.w; x++) {
             const o = ((y - map.top) * map.w + x - map.left) * 4;
-            if (!out[o + 3] || x < 60 || x > 150) continue;
-            const side = x < 104 ? 0 : 1;
+            if (!out[o + 3] || x < 115 || x > 160) continue;
+            const side = x < 135 ? 0 : 1;
             mean[side][0] += 0.2126 * out[o] + 0.7152 * out[o + 1] + 0.0722 * out[o + 2];
             mean[side][1]++;
         }
@@ -252,7 +251,7 @@ function specks(width, height, painted, keep = () => false) {
 }
 
 test('a full cover leaves no dark specks where joints cross', () => {
-    for (const type of ['command', 'forge', 'archive', 'harbor', 'observatory', 'taskboard']) {
+    for (const type of ['command', 'forge', 'archive', 'harbor', 'tavern', 'taskboard']) {
         const sprite = landmark(type);
         const painted = new Uint8Array(sprite.albedo.width * sprite.albedo.height);
         for (const p of paint(sprite, { bucket: 4, wetQ: 0 }).texels) painted[p] = 1;

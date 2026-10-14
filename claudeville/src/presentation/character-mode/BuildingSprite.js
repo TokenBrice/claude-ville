@@ -226,20 +226,6 @@ const PARTICLE_ALIASES = {
     torch3: 'torch',
     torch4: 'torch',
 };
-const OBSERVATORY_CLOCK_FACE = Object.freeze(getBuildingEffectAnchor('observatory', 'clockFace', {
-    // Calibrated against the generated 256x288 single-image clock observatory base.
-    // Composite reference is asserted at first draw so a regenerated sprite
-    // with different dimensions logs a visible warning instead of silently
-    // misplacing the clock hands.
-    compositeRef: Object.freeze({ w: 256, h: 288 }),
-    center: [80, 155],
-    radius: 13,
-    sourceSize: 40,
-    sourceCenter: 20,
-    sourceRadius: 18,
-    hourHandLength: 10,
-    minuteHandLength: 15,
-}));
 const MINE_SEAM_COLORS = ['#ffc15a', '#ff8a33', '#ff4528'];
 const MINE_CARGO_CRYSTAL_COLORS = ['#bfe9ff', '#8fd0f4', '#e6f8ff'];
 const MINE_CARGO_ORE_COLORS = ['#5c554b', '#3f3a33', '#7e6a50'];
@@ -258,23 +244,6 @@ const PRESENCE_TIER_TABLE = Object.freeze({
 // the cap keeps every ambient halo inside one reviewed ceiling while the
 // emissive core and near-receiver spill keep their full energy (D4).
 export const SOURCE_HALO_RADIUS_CAP = 76;
-// Observatory clock spin while a WebFetch/WebSearch/web.run ritual is active.
-// Spin speed is in rad/s; ease back to 0 over OBSERVATORY_SPIN_EASE_MS.
-const OBSERVATORY_WEB_RITUAL_TOOLS = new Set(['WebFetch', 'WebSearch', 'web.run']);
-const OBSERVATORY_SPIN_RATE_RAD_PER_S = 0.9;
-// 3.8 (PT-6) — the spin shows as one of 16 stepped frames, never a rotate.
-const OBSERVATORY_SPIN_FRAMES = 16;
-const OBSERVATORY_SPIN_EASE_MS = 1500;
-// #52 — dome aperture (registry-anchored): opens with the night beacon, and a
-// brief star burst pays off a completed web ritual. 6.5 — the same aperture
-// carries a slow idle glint sweep when nothing is happening.
-const OBSERVATORY_APERTURE = Object.freeze(getBuildingEffectAnchor('observatory', 'domeAperture', {
-    slit: [149, 107],
-    star: [149, 101],
-    glintArc: { center: [149, 104], radius: 12, from: -2.4, to: -0.7 },
-}));
-const OBSERVATORY_BURST_MS = 1600;
-const OBSERVATORY_GLINT_PERIOD_FRAMES = 540; // ≈9s at 60fps
 const BUILDING_ACTIVITY_STATE_WEIGHT = Object.freeze({
     idle: 0,
     occupied: 0.42,
@@ -419,9 +388,6 @@ export class BuildingSprite {
         this._labelMetricsCache = new Map();
         this._visitorCountByType = new Map();
         this._visitorStatusByType = new Map();
-        this._clockCanvas = null;
-        this._clockCanvasKey = '';
-        this.clockState = null;
         this.lightingState = null;
         this.atmosphereState = null;
         this.ritualConductor = null;
@@ -456,12 +422,6 @@ export class BuildingSprite {
             this._archiveReadIntensity = Number.isFinite(next) ? clamp01(next) : 0;
         };
         eventBus.on('building:read-intensity', this._onReadIntensity);
-        // Observatory clock extra rotation while a web ritual is active.
-        this._observatoryClockSpin = 0;
-        // #52 — dome aperture result burst: ids of web rituals seen last tick;
-        // a vanished id means the search completed and the dome star fires.
-        this._observatoryWebRitualIds = new Set();
-        this._observatoryBurstAt = -Infinity;
         // #53 — dominant occupant repo per building type (for pennant tint).
         this._visitorRepoByType = new Map();
         // #54 — last emitted village population; the empty-village tour in
@@ -582,10 +542,6 @@ export class BuildingSprite {
 
     setLightingState(state) {
         this.lightingState = state ? normalizeLightingState(state) : null;
-    }
-
-    setClockState(clock) {
-        this.clockState = clock || null;
     }
 
     setAtmosphereState(atmosphere) {
@@ -819,10 +775,8 @@ export class BuildingSprite {
         this._updateInspection();
         this._updateNightLightGates(dt);
         this._emitVillagePopulation();
-        this._trackObservatoryWebRituals();
         this._syncTaskboardPapers(Date.now());
         this._updateForgeGlow(dt);
-        this._updateObservatoryClockSpin(dt);
         for (const b of this.buildings) this._spawnEmittersFor(b, dt);
     }
 
@@ -848,70 +802,6 @@ export class BuildingSprite {
         if (count === this._lastAgentCount) return;
         this._lastAgentCount = count;
         eventBus.emit('village:population', { count, empty: count === 0 });
-    }
-
-    // #52 — diff the observatory's web-ritual set tick over tick; a ritual that
-    // vanished since last tick completed, so fire the dome result burst then.
-    _trackObservatoryWebRituals() {
-        const current = new Set();
-        for (const ritual of this._ritualsFor('observatory')) {
-            if (OBSERVATORY_WEB_RITUAL_TOOLS.has(ritual?.tool)) current.add(ritual);
-        }
-        for (const ritual of this._observatoryWebRitualIds) {
-            if (!current.has(ritual)) {
-                this._observatoryBurstAt = Date.now();
-                this._spawnObservatoryBurstParticles();
-                break;
-            }
-        }
-        this._observatoryWebRitualIds = current;
-    }
-
-    _spawnObservatoryBurstParticles() {
-        if (!this.motionScale || !this.particles) return;
-        const observatory = this.buildings.find((b) => b.type === 'observatory');
-        if (!observatory) return;
-        const center = this._buildingScreenCenter(observatory);
-        const anchor = this.assets.getAnchor('building.observatory');
-        const star = OBSERVATORY_APERTURE.star;
-        this.particles.spawn('sparkle',
-            center.x - anchor[0] + star[0],
-            center.y - anchor[1] + star[1],
-            {
-                count: 7,
-                colors: ['#fff1a8', '#d9c7ff', '#ffffff'],
-                size: [1, 2.4],
-                life: [26, 48],
-                speed: [0.25, 0.7],
-                spread: [4, 8],
-                sortY: this.particleSortY(observatory, star[1]),
-            });
-    }
-
-    // Tick the extra clock spin while a web ritual is active at the
-    // Observatory; ease back to 0 within OBSERVATORY_SPIN_EASE_MS once it ends.
-    // Held at 0 under reduced motion so the time-of-day hands stay still.
-    _updateObservatoryClockSpin(dt) {
-        if (!this.motionScale) {
-            this._observatoryClockSpin = 0;
-            return;
-        }
-        const seconds = Math.max(0, Number(dt) || 0) / 1000;
-        if (this._hasObservatoryWebRitual()) {
-            this._observatoryClockSpin = (this._observatoryClockSpin + seconds * OBSERVATORY_SPIN_RATE_RAD_PER_S) % (Math.PI * 2);
-            return;
-        }
-        if (this._observatoryClockSpin <= 0) return;
-        const easePerSecond = (Math.PI * 2) / (OBSERVATORY_SPIN_EASE_MS / 1000);
-        this._observatoryClockSpin = Math.max(0, this._observatoryClockSpin - seconds * easePerSecond);
-    }
-
-    _hasObservatoryWebRitual() {
-        const rituals = this._ritualsFor('observatory');
-        for (const ritual of rituals) {
-            if (OBSERVATORY_WEB_RITUAL_TOOLS.has(ritual?.tool)) return true;
-        }
-        return false;
     }
 
     // One stepped, clock-only mirror beam. `foot` is the sea landing, not
@@ -3215,20 +3105,6 @@ export class BuildingSprite {
         // (RoomGlass), selected or not.
         const rooms = this._roomInstrumentFor(building);
         if (rooms && !this._openApertureFor(building)) this._drawRoomCount(ctx, localPoint, shouldDrawLocalY, rooms);
-        if (building.type === 'observatory') {
-            this._assertObservatoryClockDims(entry);
-            // #52 — the dome dormer aperture sits above the clock on the roof;
-            // drawn whenever its slice of the sprite is in this pass.
-            if (shouldDrawLocalY(OBSERVATORY_APERTURE.slit[1])) {
-                this._drawObservatoryAperture(ctx, localPoint);
-            }
-            if (shouldDrawLocalY(OBSERVATORY_CLOCK_FACE.center[1])) {
-                this._drawObservatoryClock(ctx, localPoint);
-                this._drawObservatoryRitual(ctx, localPoint, building);
-            }
-            ctx.restore();
-            return;
-        }
         if (building.type === 'forge') {
             // 4.6 — at canonical rest the hearth is banked: the authored orange
             // mouth is masked back to a stepped ember and the work marks,
@@ -3597,147 +3473,10 @@ export class BuildingSprite {
         return sources;
     }
 
-    _assertObservatoryClockDims(entry) {
-        // Warn once per session if the observatory sprite drifts away from the
-        // composite size that OBSERVATORY_CLOCK_FACE.center / .radius were
-        // calibrated against. Silent drift would misplace the clock hands.
-        if (this._observatoryDimsChecked) return;
-        this._observatoryDimsChecked = true;
-        const dims = entry?.id ? this.assets?.getDims?.(entry.id) : null;
-        if (!dims) return;
-        const ref = OBSERVATORY_CLOCK_FACE.compositeRef;
-        if (dims.w !== ref.w || dims.h !== ref.h) {
-            console.warn(
-                `[BuildingSprite] observatory sprite is ${dims.w}x${dims.h}; clock-face calibration assumes ${ref.w}x${ref.h}. Hand placement may be off — recalibrate OBSERVATORY_CLOCK_FACE.center / .radius.`
-            );
-        }
-    }
-
-    _drawObservatoryClock(ctx, localPoint) {
-        const config = OBSERVATORY_CLOCK_FACE;
-        const [cx, cy] = config.center;
-        const face = localPoint(cx, cy);
-        const time = this._clockTime();
-        const hourAngle = (((time.hour % 12) + time.minute / 60) / 12) * Math.PI * 2 - Math.PI / 2;
-        const minuteAngle = (time.minute / 60) * Math.PI * 2 - Math.PI / 2;
-        // Independent web-ritual spin layered on top of the time-of-day hands.
-        // 3.8 (PT-6) — the spin is stepped, never a runtime rotate: it snaps
-        // to one of 16 baked frames (22.5° apart) in which the hands and the
-        // four tick marks are re-rasterized on the pixel grid. Reduced motion
-        // holds frame 0.
-        const spin = this.motionScale ? (this._observatoryClockSpin || 0) : 0;
-        const spinStep = Math.round(spin / (Math.PI * 2) * OBSERVATORY_SPIN_FRAMES) % OBSERVATORY_SPIN_FRAMES;
-        const spinAngle = spinStep * (Math.PI * 2) / OBSERVATORY_SPIN_FRAMES;
-        const source = this._clockSourceCanvas(
-            config,
-            hourAngle + spinAngle,
-            minuteAngle + spinAngle,
-            `${time.hour}:${time.minute}:${spinStep}`,
-            spinAngle,
-        );
-        const size = config.radius * 2;
-        const left = Math.round(face.x - size / 2);
-        const top = Math.round(face.y - size / 2);
-        const previousSmoothing = ctx.imageSmoothingEnabled;
-        ctx.imageSmoothingEnabled = false;
-        ctx.drawImage(source, left, top, size, size);
-        ctx.imageSmoothingEnabled = previousSmoothing;
-    }
-
-    _clockSourceCanvas(config, hourAngle, minuteAngle, cacheKey, spinAngle = 0) {
-        if (!this._clockCanvas) {
-            this._clockCanvas = document.createElement('canvas');
-        }
-        const canvas = this._clockCanvas;
-        if (canvas.width !== config.sourceSize || canvas.height !== config.sourceSize) {
-            canvas.width = config.sourceSize;
-            canvas.height = config.sourceSize;
-            this._clockCanvasKey = '';
-        }
-        if (this._clockCanvasKey === cacheKey) return canvas;
-
-        const ctx = canvas.getContext('2d');
-        const c = config.sourceCenter;
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.imageSmoothingEnabled = false;
-
-        ctx.fillStyle = 'rgba(19, 21, 30, 0.56)';
-        this._fillPixelCircle(ctx, c, c, config.sourceRadius);
-        ctx.fillStyle = 'rgba(229, 218, 170, 0.72)';
-        this._strokePixelCircle(ctx, c, c, config.sourceRadius);
-        ctx.fillStyle = 'rgba(255, 241, 190, 0.88)';
-        // The four tick marks sit on the rim, turned with the ritual spin.
-        const tickRadius = config.sourceRadius - 1;
-        for (let quarter = 0; quarter < 4; quarter++) {
-            const angle = spinAngle + quarter * Math.PI / 2;
-            const tx = Math.round(c + Math.cos(angle) * tickRadius);
-            const ty = Math.round(c + Math.sin(angle) * tickRadius);
-            ctx.fillRect(tx - 1, ty - 1, 2, 2);
-        }
-
-        this._drawClockHand(ctx, c, c, hourAngle, config.hourHandLength, 3, '#1a1712');
-        this._drawClockHand(ctx, c, c, minuteAngle, config.minuteHandLength, 2, '#f7de91');
-        ctx.fillStyle = '#21170f';
-        ctx.fillRect(c - 1, c - 1, 3, 3);
-        ctx.fillStyle = '#ffe6a0';
-        ctx.fillRect(c, c, 1, 1);
-
-        this._clockCanvasKey = cacheKey;
-        return canvas;
-    }
-
-    _clockTime() {
-        const hour = Number(this.clockState?.hours);
-        const minute = Number(this.clockState?.minutes);
-        if (Number.isFinite(hour) && Number.isFinite(minute)) {
-            return { hour, minute };
-        }
-        const now = new Date();
-        return { hour: now.getHours(), minute: now.getMinutes() };
-    }
-
-    _drawClockHand(ctx, cx, cy, angle, length, width, color) {
-        const x1 = Math.round(cx + Math.cos(angle) * length);
-        const y1 = Math.round(cy + Math.sin(angle) * length);
-        this._drawBlockLine(ctx, cx, cy, x1, y1, width, color);
-    }
-
-    _drawBlockLine(ctx, x0, y0, x1, y1, width, color) {
-        let dx = Math.abs(x1 - x0);
-        let dy = Math.abs(y1 - y0);
-        const sx = x0 < x1 ? 1 : -1;
-        const sy = y0 < y1 ? 1 : -1;
-        let err = dx - dy;
-        const half = Math.floor(width / 2);
-
-        ctx.fillStyle = color;
-        while (true) {
-            ctx.fillRect(x0 - half, y0 - half, width, width);
-            if (x0 === x1 && y0 === y1) break;
-            const e2 = err * 2;
-            if (e2 > -dy) {
-                err -= dy;
-                x0 += sx;
-            }
-            if (e2 < dx) {
-                err += dx;
-                y0 += sy;
-            }
-        }
-    }
-
     _fillPixelCircle(ctx, cx, cy, radius) {
         for (let y = -radius; y <= radius; y++) {
             const halfWidth = Math.floor(Math.sqrt(radius * radius - y * y));
             ctx.fillRect(cx - halfWidth, cy + y, halfWidth * 2 + 1, 1);
-        }
-    }
-
-    _strokePixelCircle(ctx, cx, cy, radius) {
-        for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 24) {
-            const x = Math.round(cx + Math.cos(angle) * radius);
-            const y = Math.round(cy + Math.sin(angle) * radius);
-            ctx.fillRect(x, y, 1, 1);
         }
     }
 
@@ -4449,130 +4188,6 @@ export class BuildingSprite {
                 type: 'mine',
             });
         }
-    }
-
-    // #52 — dome aperture: the round opening nearest the telescope opens with
-    // the night beacon (state-driven, so the reduced-motion pose is simply the
-    // same static open amount) revealing a warm slit + star point; a completed
-    // web ritual pays off as a brief star burst. 6.5 — when nothing is going
-    // on, a slow glint (slow band, shared with the observatory sweep — never
-    // concurrent, the glint idles only while no ritual runs) crosses the dormer.
-    _drawObservatoryAperture(ctx, localPoint) {
-        const night = clamp01(this.lightingState?.beaconIntensity
-            ?? this.atmosphereState?.lighting?.beaconIntensity ?? 0);
-        // Closed by day, fully open in deep night.
-        const open = clamp01((night - 0.3) / 0.5);
-        const burstAge = Date.now() - this._observatoryBurstAt;
-        const bursting = burstAge >= 0 && burstAge < OBSERVATORY_BURST_MS;
-        // Motion fades the burst envelope out; reduced motion holds a fixed
-        // alpha for the window instead (static one-shot flash).
-        const burst = bursting
-            ? (this.motionScale ? 1 - burstAge / OBSERVATORY_BURST_MS : 0.85)
-            : 0;
-        const ritualActive = this._observatoryWebRitualIds.size > 0;
-
-        if (open > 0.02 || burst > 0) {
-            const slit = localPoint(...OBSERVATORY_APERTURE.slit);
-            const star = localPoint(...OBSERVATORY_APERTURE.star);
-            const slitH = 1 + Math.round(open * 4);
-            ctx.save();
-            ctx.globalCompositeOperation = 'screen';
-            // Two stepped courses of warm light on the dormer, not a gradient.
-            const glowAlpha = Math.min(0.5, 0.10 + open * 0.2 + burst * 0.3);
-            const rx = Math.round(15 + burst * 8);
-            const ry = Math.round(10 + burst * 6);
-            ctx.globalAlpha = glowAlpha * 0.5;
-            fillPixelEllipse(ctx, slit.x, slit.y, rx, ry, '#ffa24e');
-            ctx.globalAlpha = glowAlpha;
-            fillPixelEllipse(ctx, slit.x, slit.y, Math.round(rx * 0.55), Math.round(ry * 0.55), '#ffd68a');
-            ctx.restore();
-
-            ctx.save();
-            // Dark frame + warm core so the slit reads as an opening, not a glow smear.
-            ctx.fillStyle = 'rgba(22, 17, 26, 0.88)';
-            ctx.fillRect(slit.x - 4, slit.y - Math.ceil(slitH / 2) - 1, 9, slitH + 2);
-            ctx.fillStyle = `rgba(255, 216, 142, ${0.32 + open * 0.45})`;
-            ctx.fillRect(slit.x - 3, slit.y - Math.floor(slitH / 2), 7, slitH);
-            // Star point inside the aperture; gentle twinkle on the slow band.
-            const twinkle = this.motionScale ? 0.5 + Math.sin(this.frame * 0.05) * 0.18 : 0.58;
-            ctx.fillStyle = `rgba(255, 244, 196, ${Math.min(1, twinkle + burst * 0.4)})`;
-            ctx.fillRect(star.x - 1, star.y - 1, 2, 2);
-            if (burst > 0) {
-                // 4-point result-burst star over the dormer, in texel runs.
-                ctx.fillStyle = `rgba(255, 241, 168, ${Math.min(1, 0.45 + burst * 0.55)})`;
-                const arm = 3 + Math.round(burst * 5);
-                ctx.fillRect(star.x - arm, star.y, arm * 2 + 1, 1);
-                ctx.fillRect(star.x, star.y - arm, 1, arm * 2 + 1);
-            }
-            ctx.restore();
-        }
-
-        this._drawObservatoryIdleGlint(ctx, localPoint, ritualActive);
-    }
-
-    // 6.5 — idle glint: a slow bright point sweeping the dormer glass on a ~9s
-    // sawtooth while the observatory has no live web ritual. Reduced motion: a
-    // fixed faint glint at the arc's rest angle (no sweep, no allocations).
-    _drawObservatoryIdleGlint(ctx, localPoint, ritualActive) {
-        if (ritualActive) return;
-        const arc = OBSERVATORY_APERTURE.glintArc || { center: [149, 104], radius: 12, from: -2.4, to: -0.7 };
-        const center = localPoint(...arc.center);
-        let angle;
-        let alpha;
-        if (this.motionScale) {
-            const t = (this.frame % OBSERVATORY_GLINT_PERIOD_FRAMES) / OBSERVATORY_GLINT_PERIOD_FRAMES;
-            // Sweep across the arc for the first 22% of the period, dark the rest.
-            if (t > 0.22) return;
-            const sweep = t / 0.22;
-            angle = arc.from + (arc.to - arc.from) * sweep;
-            alpha = Math.sin(sweep * Math.PI) * 0.55;
-        } else {
-            angle = arc.from + (arc.to - arc.from) * 0.5;
-            alpha = 0.22;
-        }
-        const gx = Math.round(center.x + Math.cos(angle) * arc.radius);
-        const gy = Math.round(center.y + Math.sin(angle) * arc.radius * 0.6);
-        ctx.save();
-        ctx.globalCompositeOperation = 'screen';
-        ctx.globalAlpha = alpha;
-        ctx.fillStyle = '#e8f2ff';
-        ctx.fillRect(gx - 1, gy - 1, 2, 2);
-        ctx.globalAlpha = alpha * 0.5;
-        ctx.fillRect(gx - 2, gy, 4, 1);
-        ctx.restore();
-    }
-
-    _drawObservatoryRitual(ctx, localPoint, building) {
-        const ritual = this._latestRitual('observatory');
-        if (!ritual) return;
-        const dome = localPoint(157, 86);
-        const progress = this._ritualProgress(ritual);
-        const fade = this._ritualFade(ritual);
-        const target = ritual.angle || -0.7;
-        const angle = ritual.motionEnabled === false ? target : lerp(-1.2, target, Math.min(1, progress / 0.5));
-        // The telescope swings as a stepped block line, never a rotated rect.
-        const reach = 28;
-        const tipX = Math.round(dome.x + Math.cos(angle) * reach);
-        const tipY = Math.round(dome.y + Math.sin(angle) * reach);
-        ctx.save();
-        ctx.globalAlpha = fade;
-        this._drawBlockLine(ctx, dome.x, dome.y, tipX, tipY, 8, '#252532');
-        this._drawBlockLine(ctx, dome.x, dome.y, tipX, tipY, 6, '#6e7585');
-        ctx.fillStyle = '#bda7ff';
-        ctx.fillRect(tipX - 3, tipY - 3, 5, 6);
-        ctx.restore();
-
-        if (ritual.motionEnabled !== false && progress > 0.48 && progress < 0.86) {
-            ctx.save();
-            ctx.globalAlpha = fade * 0.72;
-            ctx.fillStyle = '#fff1a8';
-            for (let i = 0; i < 6; i++) {
-                const a = -1.2 + (angle + 1.2) * (i / 5);
-                ctx.fillRect(Math.round(dome.x + Math.cos(a) * 34), Math.round(dome.y + Math.sin(a) * 34), 2, 2);
-            }
-            ctx.restore();
-        }
-        if (ritual.label) this._drawRitualLabel(ctx, dome.x, dome.y + 54, ritual.label, '#bda7ff', fade, 'observatory');
     }
 
     _drawPortalRitual(ctx, gate, ritual) {
@@ -5358,6 +4973,12 @@ export class BuildingSprite {
         // gates, 6.2 doors and 6.3 room slots all read this one set).
         const workingIds = this._workingIdsByType || (this._workingIdsByType = new Map());
         for (const ids of workingIds.values()) ids.clear();
+        // The Tavern's patrons: idle villagers seated at its tables. They are
+        // no visitors (V8) and move no part or door, but the Tavern's windows
+        // are theirs: its rooms light for patrons the way other rooms light
+        // for workers (`_updateRoomSlots`, `_updateNightLightGates`).
+        const patronIds = this._patronIdsByType || (this._patronIdsByType = new Map());
+        for (const ids of patronIds.values()) ids.clear();
         if (!this.agentSprites?.length || !this.buildings.length) {
             if (this.agentSprites?.length) for (const sprite of this.agentSprites) sprite._foldBuildingType = null;
             this._updateRoomSlots();
@@ -5372,6 +4993,12 @@ export class BuildingSprite {
         for (const tally of repoTally.values()) tally.clear();
 
         for (const sprite of this.agentSprites) {
+            const patronOf = sprite.visitRole === 'rest' ? sprite._seatedSeat?.()?.building : null;
+            if (patronOf && sprite.agent?.id) {
+                let ids = patronIds.get(patronOf);
+                if (!ids) patronIds.set(patronOf, ids = new Set());
+                ids.add(sprite.agent.id);
+            }
             // V8 — rest-seat (7.1) and queue (7.2) occupants are never visitors:
             // no count, no working tally, no fold (their names stay up).
             if (NON_WORKING_VISIT_ROLES.includes(sprite.visitRole)) continue;
@@ -5463,9 +5090,10 @@ export class BuildingSprite {
             const type = building.type;
             const rooms = this.roomGlass.roomCount(type);
             const ids = workingIds?.get(type);
+            const patrons = this._patronIdsByType?.get(type);
             const held = this._roomSlotsByType.get(type)?.assignment;
             // Sorted so a newcomer's room never depends on sprite order.
-            const working = ids?.size ? [...ids].sort() : [];
+            const working = ids?.size || patrons?.size ? [...new Set([...(ids || []), ...(patrons || [])])].sort() : [];
             const { assignment, overflow } = assignRoomSlots({ previous: held, workingIds: working, rooms });
             const tally = this._visitorStatusByType.get(type);
             this._roomSlotsByType.set(type, {
@@ -5565,9 +5193,11 @@ export class BuildingSprite {
         const types = new Set([
             ...this._visitorStatusByType.keys(),
             ...this._litGateByType.keys(),
+            ...(this._patronIdsByType?.keys() || []),
         ]);
         for (const type of types) {
-            const target = (this._visitorStatusByType.get(type)?.working || 0) > 0 ? 1 : 0;
+            const target = (this._visitorStatusByType.get(type)?.working || 0) > 0
+                || (this._patronIdsByType?.get(type)?.size || 0) > 0 ? 1 : 0;
             const current = this._litGateByType.get(type)?.value || 0;
             const value = advanceNightOccupancyGate(current, target, dt, this.motionScale);
             this._litGateByType.set(type, { value, target });
@@ -5613,14 +5243,15 @@ export class BuildingSprite {
     // tool recency tail), so the tier drops the update after the last worker
     // leaves, and seated, queued, waiting or passing bodies never brighten it.
     _workTierFor(building) {
-        const working = this._workingVisitorCountFor(building);
+        // The Tavern's patrons keep its hearth and lamps going (no visitors, V8).
+        const working = this._workingVisitorCountFor(building) + (this._patronIdsByType?.get(building?.type)?.size || 0);
         if (working <= 0) return 'dormant';
         const capacity = Number(building?.capacity?.work);
         return capacity > 0 && working >= capacity ? 'busy' : 'occupied';
     }
 
-    // V8 — Map<type, { count, tier }> of working presence, the occupancy gate
-    // ChimneySmoke reads. Entries are reused frame to frame.
+    // V8 — Map<type, { count, tier }> of working presence (and the Tavern's
+    // patrons), the occupancy gate ChimneySmoke reads. Entries are reused frame to frame.
     getWorkingPresence() {
         const out = this._workingPresence || (this._workingPresence = new Map());
         for (const building of this.buildings) {

@@ -3,15 +3,15 @@
 // (it holds every live reservation, so it is the one place that can count).
 //
 //   stroll   — an IDLE villager sits MIN_SIT_MS‥MAX_SIT_MS (seeded per agent
-//              and cycle, so a bench row never stands up together), strolls
+//              and cycle, so a tavern table never stands up together), strolls
 //              to a scenic point, dwells STROLL_DWELL_*, and sits again.
 //              At most STROLL_CAP strollers at once (fewer at night).
 //   errand   — a WORKING agent whose intent ended ERRAND_GAP_MS ago with no
 //              new one walks a short errand drawn from its recent phases.
 //              Any real intent ends it at once; at most ⅓ of agents at once.
 //              An errand is never a working visit (role 'errand', V8).
-//   winddown — a COMPLETED agent walks to the harbour quay or a bench,
-//              rests briefly, then waits inside the gate. Removal is never
+//   winddown — a COMPLETED agent walks to the harbour quay or the Tavern
+//              for a last pint, then waits inside the gate. Removal is never
 //              delayed: the departure sigil lands wherever the body stands.
 
 export const STROLL_CAP = 6;
@@ -81,9 +81,9 @@ export function windDownDwellMs(agentId) {
     return seededSpan(`${agentId}:winddown`, WIND_DOWN_DWELL_MIN_MS, WIND_DOWN_DWELL_MAX_MS);
 }
 
-/** 'quay' or 'bench': where a finished session rests before the gate. */
+/** 'quay' or 'tavern': where a finished session rests before the gate. */
 export function windDownStop(agentId) {
-    return routineHash(`${agentId}:winddown-stop`) % 2 === 0 ? 'quay' : 'bench';
+    return routineHash(`${agentId}:winddown-stop`) % 2 === 0 ? 'quay' : 'tavern';
 }
 
 /** Concurrent errands allowed among `agentCount` live agents: at most a third. */

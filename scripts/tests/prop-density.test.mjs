@@ -24,8 +24,8 @@ function authoredProps() {
         ...AMBIENT_GROUND_PROPS.map((prop) => ({ id: `prop.${prop.type}`, tileX: prop.tileX, tileY: prop.tileY })),
         ...SCENIC_POINT_PROPS.map((prop) => ({ id: prop.id, tileX: prop.tileX, tileY: prop.tileY })),
         ...BOULDERS.map((boulder) => ({ id: 'boulder', tileX: boulder.tileX, tileY: boulder.tileY })),
-        ...REST_SEATS.filter((seat) => seat.occluder === 'bench')
-            .map((seat) => ({ id: `bench.${seat.id}`, tileX: seat.tileX, tileY: seat.tileY })),
+        ...REST_SEATS.filter((seat) => seat.occluder === 'tavern')
+            .map((seat) => ({ id: `tavern-table.${seat.id}`, tileX: seat.tileX, tileY: seat.tileY, district: 'tavern-garden' })),
     ];
 }
 
@@ -34,8 +34,8 @@ test('standing authored props stay inside the density budget', () => {
     assert.ok(standing.length <= STANDING_PROP_BUDGET, `${standing.length} standing props > ${STANDING_PROP_BUDGET}`);
 });
 
-test('no land prop gathers more than three neighbours (the farm pocket is one composition)', () => {
-    const land = authoredProps().filter((prop) => !WATER_DRESSING.test(prop.id) && prop.district !== 'farm');
+test('no land prop gathers more than three neighbours (the farm pocket and the beer garden are compositions)', () => {
+    const land = authoredProps().filter((prop) => !WATER_DRESSING.test(prop.id) && prop.district !== 'farm' && prop.district !== 'tavern-garden');
     for (const prop of land) {
         const near = land.filter((other) => other !== prop
             && Math.hypot(other.tileX - prop.tileX, other.tileY - prop.tileY) <= CROWD_RADIUS);

@@ -184,7 +184,7 @@ async function generateMapConcept(token) {
             'top-down old-school fantasy RPG village concept map for ClaudeVille',
             'central stone civic plaza with command keep, city hall, and task board',
             'river crossing through town, harbor lighthouse and docks on the east water edge',
-            'forge row, token mine yard, scholars archive, observatory, sanctuary grove, arcane portal',
+            'forge row, token mine yard, scholars archive, village tavern, sanctuary grove, arcane portal',
             'clear readable district organization, winding roads, no labels, no text',
         ].join(', '),
         width: 400,

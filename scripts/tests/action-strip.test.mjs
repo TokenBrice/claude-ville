@@ -30,12 +30,12 @@ const PILOT = {
 test('a work strip follows the real tool class wherever it lands; the building only breaks ties', () => {
     assert.equal(workStripGroup('Grep', 'forge'), 'gaze', 'a lookup at the Forge gazes, it never strikes');
     assert.equal(workStripGroup('Read', 'archive'), 'gaze');
-    assert.equal(workStripGroup('WebFetch', 'observatory'), 'gaze');
+    assert.equal(workStripGroup('WebFetch', 'portal'), 'gaze');
     assert.equal(workStripGroup('Edit', 'forge'), 'strike');
     assert.equal(workStripGroup('apply_patch', 'taskboard'), 'strike');
-    assert.equal(workStripGroup('Bash', 'observatory'), 'tinker', 'a shell command tinkers even under the telescope');
+    assert.equal(workStripGroup('Bash', 'portal'), 'tinker', 'a shell command tinkers even at the Portal');
     assert.equal(workStripGroup('Task', 'forge'), 'strike', 'no tool class: the Forge breaks the tie');
-    assert.equal(workStripGroup('mcp__browser__click', 'observatory'), 'gaze', 'an MCP call is not a shell command');
+    assert.equal(workStripGroup('mcp__browser__click', 'portal'), null, 'an MCP call is not a shell command');
     assert.equal(workStripGroup('mcp__browser__click', 'archive'), null);
     assert.equal(workStripGroup('', 'forge'), null);
 });

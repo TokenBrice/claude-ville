@@ -108,7 +108,7 @@ function phaseFromToolClassification(tool, input, classified) {
     if (building === 'mine' || /\b(quota|token|context|usage|throttle|rate.?limit|resource)\b/.test(text)) return 'quota/resource';
     if (/\b(test|spec|pytest|jest|vitest|playwright|check|lint|typecheck|validate|verification)\b/.test(text)) return 'testing';
     if (building === 'forge' || /\b(edit|write|patch|apply_patch|modify|refactor|generate|create|delete|rename|move|format)\b/.test(text)) return 'editing';
-    if (building === 'observatory' || building === 'portal' || /\b(web|browser|browse|fetch|curl|research|search_query|image_query|lookup)\b/.test(text)) return 'researching';
+    if (building === 'portal' || /\b(web|browser|browse|fetch|curl|research|search_query|image_query|lookup)\b/.test(text)) return 'researching';
     if (building === 'archive' || /\b(read|grep|rg|find|cat|sed|open|inspect|scan|list|ls|view)\b/.test(text)) return 'reading';
     if (building === 'command' || building === 'taskboard' || /\b(spawn|agent|parallel|multi_tool|todo|task|plan|handoff|coordinate|delegate|wait|resume)\b/.test(text)) return 'coordinating';
     return 'coordinating';
@@ -126,7 +126,7 @@ function phaseFromIntentDraft(draft) {
     if (source === 'alert' && reason.includes('wait')) return 'waiting';
     if (building === 'archive') return 'reading';
     if (building === 'forge') return 'editing';
-    if (building === 'observatory' || building === 'portal') return 'researching';
+    if (building === 'portal') return 'researching';
     if (building === 'taskboard') return 'testing';
     return 'coordinating';
 }

@@ -71,7 +71,7 @@ export const BUILDING_GROUNDING_PROFILES = Object.freeze({
         foundation: Object.freeze({ enabled: true, owner: 'terrain-cache', opacity: 0.52, density: 0.52, thresholdReach: 0.66 }),
         contact: Object.freeze({ offsetX: 0, offsetY: -7, width: 218, depth: 38, opacity: 0.8 }),
     }),
-    observatory: Object.freeze({
+    tavern: Object.freeze({
         mode: 'terrain-apron',
         material: 'knowledge-terrace',
         edgeTreatment: 'broken',

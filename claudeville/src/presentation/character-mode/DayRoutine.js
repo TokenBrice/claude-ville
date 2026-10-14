@@ -11,8 +11,8 @@
 //   morning (05–10)  muster near Command and the Task board
 //   midday  (10–17)  spread out to the workshops
 //   golden  (17–21)  drift toward the harbour rail and the lighthouse shore
-//   night   (21–05)  fewer strollers, longer sits, idles gather at the lit
-//                    braziers on Command's steps
+//   night   (21–05)  fewer strollers, longer sits, idles gather at the
+//                    Tavern's tables under its lit windows
 
 export const DAYPARTS = Object.freeze(['morning', 'midday', 'golden', 'night']);
 
@@ -21,11 +21,11 @@ export const DAYPARTS = Object.freeze(['morning', 'midday', 'golden', 'night']);
 // ×2 weight is worth about eight tiles of walking: a tilt, never a mandate.
 export const SCENIC_BIAS_PER_DOUBLING = 12;
 
-// Night: the seats by Command's lit braziers count this many walk steps
-// nearer, so a villager across the plaza takes the brazier step over its own
-// green, and one across the water still sits on its own side.
-export const BRAZIER_SEAT_STEPS = 18;
-export const BRAZIER_SEAT_IDS = Object.freeze(['command-east-step-n', 'command-east-step-s', 'command-west-step']);
+// The Tavern's seats (its bar and beer garden) count this many walk steps nearer, so an
+// idle villager goes for a pint before it sits on a step or the pier kerb;
+// at night the pull grows, so one across the water crosses over too.
+export const TAVERN_SEAT_STEPS = 24;
+export const TAVERN_NIGHT_SEAT_STEPS = 40;
 
 const freezeEntry = (entry) => Object.freeze({
     ...entry,
@@ -47,7 +47,7 @@ export const DAYPART_TABLE = Object.freeze({
         sitScale: 1,
     }),
     midday: freezeEntry({
-        buildings: { forge: 1.6, mine: 1.4, archive: 1.3, observatory: 1.2, portal: 1.2, command: 0.8 },
+        buildings: { forge: 1.6, mine: 1.4, archive: 1.3, portal: 1.2, command: 0.8 },
         districts: { workshop: 1.8, resource: 1.6, knowledge: 1.4, arcane: 1.3, civic: 0.8 },
         tags: { forge: 1.3, mine: 1.3 },
         strollCap: 6,
@@ -120,8 +120,8 @@ export function sitScaleForHour(hour) {
     return daypartEntry(hour).sitScale;
 }
 
-/** Walk-step delta for a rest seat (negative = preferred): the brazier steps at night. */
+/** Walk-step delta for a rest seat (negative = preferred): the Tavern's seats, more so at night. */
 export function restSeatStepBias(hour, seat) {
-    if (daypartForHour(hour) !== 'night' || !seat) return 0;
-    return BRAZIER_SEAT_IDS.includes(seat.id) ? -BRAZIER_SEAT_STEPS : 0;
+    if (seat?.building !== 'tavern') return 0;
+    return daypartForHour(hour) === 'night' ? -TAVERN_NIGHT_SEAT_STEPS : -TAVERN_SEAT_STEPS;
 }

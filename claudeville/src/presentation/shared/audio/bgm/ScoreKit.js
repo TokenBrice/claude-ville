@@ -142,7 +142,6 @@ export const PERCUSSION_VOICE = Object.freeze({
     archive: 'brush',
     mine: 'lowTom',
     taskboard: 'rim',
-    observatory: 'shaker',
     portal: 'shaker',
     command: 'lowTom',
     harbor: 'brush',

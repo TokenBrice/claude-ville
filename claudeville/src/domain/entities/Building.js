@@ -19,6 +19,7 @@ export class Building {
         entrance,
         visitTiles,
         walkExclusion,
+        openFloor,
         scenery,
     }) {
         this.type = type;
@@ -39,6 +40,9 @@ export class Building {
             ? visitTiles.map((tile) => ({ ...tile, tileX: tile.tileX, tileY: tile.tileY }))
             : [];
         this.walkExclusion = this._normalizeWalkExclusions(walkExclusion);
+        // Open floor inside the footprint (the Tavern's veranda): walkable, and
+        // never behind the landmark in the depth pass.
+        this.openFloor = this._normalizeWalkExclusions(openFloor);
         this.scenery = scenery ? {
             excludePadding: scenery.excludePadding ? { ...scenery.excludePadding } : null,
             sightline: scenery.sightline ? { ...scenery.sightline } : null,
@@ -128,9 +132,20 @@ export class Building {
         return this.walkExclusion.map((rect) => ({ ...rect }));
     }
 
+    openFloorRects() {
+        return this.openFloor.map((rect) => ({ ...rect }));
+    }
+
+    isOpenFloor(tileX, tileY) {
+        const x = Math.round(tileX);
+        const y = Math.round(tileY);
+        return this.openFloor.some((rect) => x >= rect.x0 && x <= rect.x1 && y >= rect.y0 && y <= rect.y1);
+    }
+
     blocksWalkTile(tileX, tileY) {
         const x = Math.round(tileX);
         const y = Math.round(tileY);
+        if (this.isOpenFloor(x, y)) return false;
         return this.containsPoint(x, y) || this.walkExclusion.some((rect) => (
             x >= rect.x0 && x <= rect.x1 && y >= rect.y0 && y <= rect.y1
         ));

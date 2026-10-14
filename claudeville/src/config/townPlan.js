@@ -215,7 +215,7 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
         points: [[16, 20], [23, 18]],
     },
     {
-        id: 'observatory-promenade',
+        id: 'tavern-promenade',
         material: 'avenue',
         width: 1,
         points: [[23, 18], [28, 16], [29, 13]],
@@ -288,7 +288,7 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
 //   earth   trodden yard earth (dirt ramp)
 export const YARD_MATERIALS = Object.freeze({
     archive: Object.freeze({ surface: 'flag', edge: 'kerb', paved: true }),
-    observatory: Object.freeze({ surface: 'flag', edge: 'kerb', paved: true }),
+    tavern: Object.freeze({ surface: 'flag', edge: 'kerb', paved: true }),
     portal: Object.freeze({ surface: 'flag', edge: 'kerb', paved: true }),
     forge: Object.freeze({ surface: 'cinder', edge: 'wattle', paved: false }),
     mine: Object.freeze({ surface: 'gravel', edge: null, paved: false }),
@@ -298,30 +298,34 @@ export const YARD_MATERIALS = Object.freeze({
 });
 
 // Plan 7.1 — rest seats. Idle villagers reserve the free seat nearest on foot
-// (VisitTileAllocator) and hold a seated pose there; working bodies never sit.
-// `facing` is the sitter's front three-quarter facing (the sit strips are
-// authored for south-east and south-west only). `occluder` names the front
-// slice drawn over the sitter's legs (RestSeats.js): a timber bench on the
-// greens, the Harbor pier kerb, and stone (a step against Command's wings)
-// that is drawn only under a sitter. Seats on building visit points (Command
-// wings, the pier) never count as visitors (V8). None sits on the Command
-// approach (7.2) or behind a wall the camera cannot see past.
+// (VisitTileAllocator, the Tavern's tables first: DayRoutine.restSeatStepBias)
+// and hold a seated pose there; working bodies never sit. `facing` is the
+// sitter's front three-quarter facing (the sit strips are authored for
+// south-east and south-west only). `occluder` names the front slice drawn
+// over the sitter's legs (RestSeats.js): the Tavern's beer-garden bench and
+// trestle table, the Harbor pier kerb, and stone (a step against Command's
+// wings) that is drawn only under a sitter. A seat's `building` makes its
+// sitter that building's patron (the Tavern's windows and chimney). Seats on
+// building visit points (Command wings, the pier) never count as visitors
+// (V8). None sits on the Command approach (7.2) or behind a wall the camera
+// cannot see past.
 export const REST_SEATS = Object.freeze([
     { id: 'command-east-step-n', tileX: 18, tileY: 18, facing: 'south-east', occluder: 'step' },
     { id: 'command-east-step-s', tileX: 18, tileY: 19, facing: 'south-east', occluder: 'step' },
     { id: 'command-west-step', tileX: 12, tileY: 19, facing: 'south-west', occluder: 'step' },
-    { id: 'taskboard-green', tileX: 24, tileY: 28, facing: 'south-west', occluder: 'bench' },
     { id: 'harbor-pier', tileX: 26, tileY: 21, facing: 'south-west', occluder: 'pier' },
-    { id: 'archive-green-e', tileX: 10, tileY: 13, facing: 'south-east', occluder: 'bench' },
-    { id: 'archive-green-w', tileX: 12, tileY: 13, facing: 'south-west', occluder: 'bench' },
-    { id: 'archive-bank-w', tileX: 6, tileY: 21, facing: 'south-west', occluder: 'bench' },
-    { id: 'observatory-green-w', tileX: 24, tileY: 20, facing: 'south-west', occluder: 'bench' },
-    { id: 'south-lawn-w', tileX: 6, tileY: 28, facing: 'south-east', occluder: 'bench' },
-    { id: 'south-lawn-mid', tileX: 7, tileY: 30, facing: 'south-west', occluder: 'bench' },
-    { id: 'south-lawn-e', tileX: 15, tileY: 28, facing: 'south-east', occluder: 'bench' },
-    { id: 'forge-shore', tileX: 30, tileY: 30, facing: 'south-east', occluder: 'bench' },
-    { id: 'gate-green-w', tileX: 16, tileY: 32, facing: 'south-east', occluder: 'bench' },
-    { id: 'gate-green-e', tileX: 21, tileY: 34, facing: 'south-west', occluder: 'bench' },
+    // The Tavern's bar: three stools on its floor behind the front beam, the
+    // drinkers' backs to the counter (Building.openFloor, TavernArcade).
+    { id: 'tavern-bar-w', tileX: 21, tileY: 16, facing: 'south-west', occluder: 'stool', building: 'tavern' },
+    { id: 'tavern-bar-mid', tileX: 22, tileY: 16, facing: 'south-west', occluder: 'stool', building: 'tavern' },
+    { id: 'tavern-bar-e', tileX: 23, tileY: 16, facing: 'south-west', occluder: 'stool', building: 'tavern' },
+    // The Tavern's beer garden: a table for two against its front wall and a
+    // table for three across the yard aisle, every sitter facing the plaza.
+    { id: 'tavern-wall-w', tileX: 23, tileY: 19, facing: 'south-west', occluder: 'tavern', building: 'tavern' },
+    { id: 'tavern-wall-e', tileX: 24, tileY: 19, facing: 'south-west', occluder: 'tavern', building: 'tavern' },
+    { id: 'tavern-yard-w', tileX: 22, tileY: 21, facing: 'south-west', occluder: 'tavern', building: 'tavern' },
+    { id: 'tavern-yard-mid', tileX: 23, tileY: 21, facing: 'south-west', occluder: 'tavern', building: 'tavern' },
+    { id: 'tavern-yard-e', tileX: 24, tileY: 21, facing: 'south-west', occluder: 'tavern', building: 'tavern' },
 ]);
 
 // Plan 7.2 — the petitioners' queue. Waiting-on-user agents stand in
@@ -400,7 +404,7 @@ const approachFile = (...points) => Object.freeze(points.map(([tileX, tileY]) =>
 export const APPROACH_FILES = Object.freeze({
     // Along the Archive's front steps, west from its south-east corner.
     archive: approachFile([7, 19], [6, 19], [5, 19], [4, 19]),
-    // Up the lane between Command's east wing and the Observatory terrace.
+    // Up the lane between Command's east wing and the Tavern porch.
     command: approachFile([20, 18], [19, 18], [19, 17], [19, 16]),
     // Up the Forge's cinder yard, parallel to its west wall.
     forge: approachFile([23, 30], [23, 29], [23, 28], [23, 27]),
@@ -410,8 +414,8 @@ export const APPROACH_FILES = Object.freeze({
     mine: approachFile([10, 35], [9, 35], [8, 35], [7, 35]),
     // Up the Portal's east flank, then across its lawn.
     portal: approachFile([7, 33], [7, 32], [7, 31], [8, 30], [9, 29]),
-    // Up the lawn east of the Observatory's door, turning short of the tower.
-    observatory: approachFile([26, 16], [26, 15], [26, 14], [25, 14]),
+    // Up the lawn along the Tavern's east wall, from its front corner.
+    tavern: approachFile([25, 17], [25, 16], [25, 15], [25, 14]),
     // North-west from the Lighthouse, between the tower and the dome.
     watchtower: approachFile([26, 12], [25, 12], [24, 12], [24, 11]),
     // Up the Harbor's quay front, along its west wall.

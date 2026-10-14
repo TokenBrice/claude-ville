@@ -27,6 +27,8 @@
 //       --clip --directions=east,west,south-east,south-west --agent=Strips73 --item=7.3 --plan
 //   node scripts/sprites/generate-pose-strip.mjs --id=agent.codex.gpt55 --groups=sit-template \
 //       --directions=south-east,south-west,east,west --item=7.1
+//   node scripts/sprites/generate-pose-strip.mjs --id=agent.claude.opus --groups=drink \
+//       --directions=south-east,south-west --item=tavern   (the Tavern drink, seat-front + tankard)
 //   node scripts/sprites/generate-pose-strip.mjs --id=agent.codex.gpt55 --groups=sit-front \
 //       --directions=south-east,south-west --agent=Villagers --item=7.1 --out=output/waking-isle/Villagers/sitart/strips
 //       (7.1 front sit: seatFrontSkeleton drops hips/head onto the seat with joint depth;
@@ -135,7 +137,7 @@ const BASE_GROUPS = Object.freeze({
         contactFrame: 2,
         hold: 0,
     },
-    // WebFetch/search at the Observatory: the hand rises to shade the eyes,
+    // A lookup (Read, Grep, WebFetch, search): the hand rises to shade the eyes,
     // the head lifts a pixel to look far, then settles.
     gaze: {
         route: 'skeleton',
@@ -266,6 +268,29 @@ const BASE_GROUPS = Object.freeze({
         freezeDetached: true,
     },
 });
+// The Tavern drink (SE/SW only): the 'sit-front' seat held, the free hand
+// (never the PROPS hand) brings a tankard of ale from the chest to the mouth
+// and back. `drink` (0..1) is the hand's way from its rest on the knee to the
+// mouth; `skip` settle frames are generated (the clip starts from the standing
+// idle cell) and dropped. Shipped rows: 0 tankard at the chest (hold),
+// 1 raising, 2–3 sipping, 4 lowering. The model draws the tankard (`holds`);
+// the runtime draws none of its own over a `drink` strip.
+const DRINK_GROUP = Object.freeze({
+    ...BASE_GROUPS['sit-front'],
+    action: 'lifting a wooden tankard of ale to the mouth and drinking from it',
+    held: 'seated upright with a straight back on a low seat, knees toward the viewer',
+    holds: 'a small wooden tankard of foaming ale',
+    frames: [
+        { seat: 0.75, drink: 0.2 },
+        { seat: 1, drink: 0.35 },
+        { seat: 1, drink: 0.7 },
+        { seat: 1, drink: 1 },
+        { seat: 1, drink: 1 },
+        { seat: 1, drink: 0.6 },
+    ],
+    skip: 1,
+    hold: 0,
+});
 
 // Baked props (drawn into the base sheet; Codex weapons are runtime overlays
 // the strip's `grip.sheathe` parks). `hands` names the screen side of the body
@@ -325,7 +350,7 @@ const smearMax = Number(option('smear', '40'));
 // `--group-override='{"wait":{"clearance":0,"frames":[…]}}'` replaces a group's
 // fields for one profile's request (recorded in the stage json provenance).
 const groupOverride = JSON.parse(option('group-override', '{}'));
-const GROUPS = Object.freeze(Object.fromEntries(Object.entries(BASE_GROUPS)
+const GROUPS = Object.freeze(Object.fromEntries(Object.entries({ ...BASE_GROUPS, drink: DRINK_GROUP })
     .map(([name, group]) => [name, { ...group, ...(groupOverride[name] || {}) }])));
 const seatFrontOverride = JSON.parse(option('seat-front', '{}'));
 const freezeBoxes = Object.fromEntries((option('freeze') || '').split(';').filter(Boolean).map((spec) => {
@@ -458,7 +483,7 @@ async function skeletonClip(names, direction) {
         const seed = pending?.seed ?? hashSeed(`${id}:${key}:${direction}:${isForced ? Date.now() : 0}`);
         const single = names.length === 1 ? GROUPS[names[0]] : null;
         const body = {
-            description: `${description}${heldText(direction)}${single?.held ? `, ${single.held}` : ''}`,
+            description: `${description}${heldText(direction, single?.holds)}${single?.held ? `, ${single.held}` : ''}`,
             action: names.map((name) => GROUPS[name].action).join(', then '),
             direction,
             view: 'low top-down',
@@ -503,6 +528,7 @@ async function skeletonClip(names, direction) {
         for (let frame = 0; frame < perGroup[name].length; frame++, index++) {
             const png = await imagePng(job.images[index], `${key}-${direction}-${index}`);
             writePng(join(cacheDir, `${key}-${direction}-${index}.png`), png);
+            if (frame < (GROUPS[name].skip || 0)) continue;
             cells[name].push(freezeProps(despeckle(snapToSheet(cropPadded(png)), idleMask, GROUPS[name]), cropPadded(firstFrame), direction, GROUPS[name]));
         }
     }
@@ -515,10 +541,10 @@ async function skeletonClip(names, direction) {
 
 // The prop clause for this facing: the profile's baked prop stays still in
 // its own hand, the gesturing hand is empty (a prop never becomes a tool).
-function heldText(direction) {
+function heldText(direction, holds = null) {
     const props = PROPS[id];
-    if (props?.hands?.[direction]) return `, holding ${props.prop} perfectly still in one hand, the other hand empty`;
-    return ', both hands empty';
+    if (props?.hands?.[direction]) return `, holding ${props.prop} perfectly still in one hand, ${holds ? `${holds} in` : ''} the other hand${holds ? '' : ' empty'}`;
+    return holds ? `, holding ${holds} in one hand` : ', both hands empty';
 }
 
 function maskOf(cell) {
@@ -796,6 +822,23 @@ function seatFrontSkeleton(base, pose, direction, group) {
         const depth = sideDepth(side);
         out[`${side} ELBOW`] = { ...out[`${side} ELBOW`], ...lerp(elbowStand, elbowSeat), depth: depth + s * p.handDepth * 0.5 };
         out[`${side} ARM`] = { ...out[`${side} ARM`], ...lerp(handStand, hand), depth: depth + s * p.handDepth };
+    }
+    if (pose.drink !== undefined) {
+        // The drinking hand: the near free hand (the far one if the near one
+        // holds the prop) travels from its knee rest to just under the mouth,
+        // in front of the body; its elbow swings out toward the facing.
+        const far = near === 'RIGHT' ? 'LEFT' : 'RIGHT';
+        const side = near === propHand ? far : near;
+        const d = Math.max(0, Math.min(1, pose.drink));
+        const shoulder = out[`${side} SHOULDER`];
+        const restHand = out[`${side} ARM`];
+        const restElbow = out[`${side} ELBOW`];
+        const upperLen = dist(px[`${side} SHOULDER`], px[`${side} ELBOW`]);
+        const mouth = { x: out.NOSE.x + toward * 2, y: out.NOSE.y + 3 };
+        const elbowUp = { x: shoulder.x + toward * upperLen * 0.55, y: shoulder.y + upperLen * 0.7 };
+        const mix = (a, b) => ({ x: a.x + (b.x - a.x) * d, y: a.y + (b.y - a.y) * d });
+        out[`${side} ARM`] = { ...restHand, ...mix(restHand, mouth), depth: Math.min(255, (restHand.depth ?? p.standDepth) + 30 * d) };
+        out[`${side} ELBOW`] = { ...restElbow, ...mix(restElbow, elbowUp), depth: Math.min(255, (restElbow.depth ?? p.standDepth) + 15 * d) };
     }
     return base.map((k) => {
         const q = out[k.label];

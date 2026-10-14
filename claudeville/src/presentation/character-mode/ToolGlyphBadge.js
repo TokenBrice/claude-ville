@@ -22,7 +22,6 @@ const CATEGORY_GLYPH = Object.freeze({
 // Building hints that override the category glyph for richer reads. The
 // classifier resolves Bash/web/etc. to a building even when category is broad.
 const BUILDING_GLYPH = Object.freeze({
-    observatory: 'globe',
     mine: 'pick',
     portal: 'globe',
     harbor: 'anchor',

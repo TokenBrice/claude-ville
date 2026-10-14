@@ -185,6 +185,14 @@ export class SceneryEngine {
                 }
             }
         }
+        // A landmark's open floor (the Tavern's veranda) is walked on.
+        for (const b of this.world.buildings.values()) {
+            for (const rect of b.openFloorRects?.() || []) {
+                for (let x = rect.x0; x <= rect.x1; x++) {
+                    for (let y = rect.y0; y <= rect.y1; y++) set.delete(`${x},${y}`);
+                }
+            }
+        }
         return set;
     }
 

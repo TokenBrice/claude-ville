@@ -365,7 +365,7 @@ export const TREE_AVENUES = [
 
 // The world ash (user item 5): one colossal evergreen (FoliageRenderer
 // `ash.world`, 240×271 px) planted on the northern lagoon islet between the
-// Observatory and the Lighthouse. `tileX`/`tileY` is the sheet's anchor, its
+// Tavern and the Lighthouse. `tileX`/`tileY` is the sheet's anchor, its
 // front root tip; the trunk meets the ground about 30 px up the sheet.
 // `islet` is the islet's land, an authored oval in world px (centre, radii,
 // `edgeNoise` the share its radius wanders round the rim) sized so every root
@@ -512,9 +512,9 @@ export const DISTRICT_PROPS = [
     // lane, visit slot, seat or queue place; listed back to front per yard
     // because the cache bake draws in list order. No hull anywhere (git
     // channel). The door queues (townPlan APPROACH_FILES, the outer rings)
-    // claim the ground between the Observatory and the harbour office, so
+    // claim the ground between the Tavern and the harbour office, so
     // the harbour quay spreads to its shores: a fishing nook on the lagoon
-    // shore north of the Observatory (a fish rack), an
+    // shore north of the Tavern (a fish rack), an
     // anchor beached on the lawn below the Pharos, the salt store against
     // the harbour office's west wall by its door, the bollard pair where
     // the causeway meets land.
@@ -555,8 +555,8 @@ export const DISTRICT_PROPS = [
     { tileX: 10.0, tileY: 32.0, id: 'prop.lantern', layer: 'sorted', district: 'arcane' },
     // W8.4b (AW-P15) — the north road: a parked handcart of firewood on the
     // watchtower green's verge beside the dirt road up to the lighthouse.
-    // Cache-baked: every verge tile of the observatory promenade lies in the
-    // Observatory or Watchtower tall-scenery zone (padded footprint or
+    // Cache-baked: every verge tile of the tavern promenade lies in the
+    // Tavern or Watchtower tall-scenery zone (padded footprint or
     // sightline), so a `sorted` cart there was culled and never drew. The
     // whole-tile row keeps its walkBlock to two lattice nodes, neither a path
     // nor an approach-file place. Static everyday dressing, never an actor.
@@ -570,7 +570,7 @@ export const DISTRICT_PROPS = [
     // north shore's open crest, the chapel on the Archive's north lawn (west
     // of the farm pocket), the ruined tower at the north wood's edge on the
     // lake's north-west beach. The
-    // headland between the Observatory and the Lighthouse stays bare: it is
+    // headland between the Tavern and the Lighthouse stays bare: it is
     // both buildings' tall-scenery sightline zone.
     { tileX: 9.6, tileY: 0.9, id: 'prop.windmill', layer: 'sorted', district: 'north', walkBlock: true, landmark: true },
     { tileX: 1.6, tileY: 9.0, id: 'prop.waysideChapel', layer: 'sorted', district: 'knowledge', walkBlock: true, landmark: true },
@@ -637,7 +637,7 @@ export const DISTRICT_PROPS = [
 
 // Props group by purpose (plan item 4.1): a work yard reads as cart + lantern,
 // never as lone steles on open dirt. Upright stones and crates are rationed
-// island-wide — two runestones (portal ruins, observatory skywatch), two
+// island-wide — one runestone (portal ruins), two
 // crates (archive alcove, forge handoff). Nothing stands on a busy lane.
 export const AMBIENT_GROUND_PROPS = [
     // The mine work yard: an ore cart with its lantern.
@@ -649,11 +649,11 @@ export const AMBIENT_GROUND_PROPS = [
     // village well stands on the south-bank green (DISTRICT_PROPS).
     { tileX: 17.8, tileY: 19.4, type: 'signpost' },
 
-    // Research edges: a reading lamp beside the Archive alcove's scroll
-    // crates, a skywatch lamp beside the Observatory's runestone (the quay's
-    // second lamp, crates and bench went, so it stands alone there).
+    // A reading lamp beside the Archive alcove's scroll crates, and the
+    // Tavern's garden lamp on the yard's east edge, between the tables and
+    // the harbour quay.
     { tileX: 11.2, tileY: 17.3, type: 'lantern' },
-    { tileX: 24.5, tileY: 18.9, type: 'lantern' },
+    { tileX: 26.4, tileY: 19.5, type: 'lantern' },
 ];
 
 export const AMBIENT_SCENIC_POINTS = Object.freeze([
@@ -665,7 +665,6 @@ export const AMBIENT_SCENIC_POINTS = Object.freeze([
     { id: 'mine-cart', tileX: 15, tileY: 37, district: 'resource', reason: 'cart-path', tags: ['mine'] },
     { id: 'forest-edge', tileX: 25, tileY: 11, district: 'knowledge', reason: 'forest-edge', tags: ['quiet'] },
     { id: 'archive-alcove', tileX: 10, tileY: 18, district: 'knowledge', reason: 'reading-alcove', tags: ['archive'] },
-    { id: 'observatory-view', tileX: 25, tileY: 19, district: 'knowledge', reason: 'skywatch', tags: ['observatory'] },
     { id: 'lighthouse-shore', tileX: 30, tileY: 15, district: 'harbor', reason: 'shore-watch', tags: ['watchtower'] },
     { id: 'plaza-corner', tileX: 20, tileY: 22, district: 'civic', reason: 'plaza-pause', tags: ['command'] },
     { id: 'forge-handoff', tileX: 27, tileY: 31, district: 'workshop', reason: 'handoff-path', tags: ['forge', 'taskboard'] },
@@ -689,7 +688,6 @@ export const SCENIC_POINT_PROPS = [
     { scenicPoint: 'mine-cart', tileX: 15.4, tileY: 36.5, id: 'prop.oreCart', layer: 'cache' },
     { scenicPoint: 'forest-edge', tileX: 25.5, tileY: 11.4, id: 'veg.standingStone.mossy', layer: 'cache' },
     { scenicPoint: 'archive-alcove', tileX: 10.4, tileY: 17.6, id: 'prop.scrollCrates', layer: 'cache' },
-    { scenicPoint: 'observatory-view', tileX: 25.4, tileY: 18.5, id: 'prop.runestone', layer: 'cache' },
     { scenicPoint: 'lighthouse-shore', tileX: 29.6, tileY: 15.4, id: 'prop.driftwood.log', layer: 'cache' },
     // W8.2b: the 49 px handcart sits 0.1 tile up-east so its fixture box
     // (half 24) clears the plaza-corner viewing place at 20,22.

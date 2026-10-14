@@ -100,6 +100,7 @@ import {
 } from './ThoughtColumn.js';
 import { StaticPropSprite, buildStaticPropDrawables, lineOcclusionColumns } from './StaticPropDrawables.js';
 import { buildRestSeatPropSprites } from './RestSeats.js';
+import { buildTavernArcadeSprites } from './TavernArcade.js';
 import { createDepthDrawable, propPartSortY } from './DrawablePass.js';
 import {
     renderWorldFrame,
@@ -3313,12 +3314,12 @@ export class IsometricRenderer {
                 // W4.9 — the daypart tilts the pick (golden hour to the shore).
                 score += scenicScoreBias(hour, point);
                 if (recent.has(`ambient:${point.id}`)) score += 80;
-                if (provider === 'gemini' && point.tags?.includes('observatory')) score -= 12;
+                if (provider === 'gemini' && point.tags?.includes('portal')) score -= 12;
                 if (provider === 'codex' && point.tags?.includes('forge')) score -= 10;
                 if (provider === 'claude' && point.tags?.includes('command')) score -= 8;
                 if (provider === 'kimi' && point.tags?.includes('portal')) score -= 10;
                 if (provider === 'opencode' && point.tags?.includes('portal')) score -= 8;
-                if (model.includes('deepseek') && point.tags?.includes('observatory')) score -= 10;
+                if (model.includes('deepseek') && point.tags?.includes('archive')) score -= 10;
                 if (model.includes('glm') && point.tags?.includes('archive')) score -= 10;
                 if (agent.teamName && point.district === 'civic') score -= 6;
                 if (agent.isSubagent && point.tags?.includes('command')) score -= 7;
@@ -8235,6 +8236,8 @@ export class IsometricRenderer {
         }));
         // 7.1 — rest-seat furniture: back and front slices around each seat.
         sprites.push(...buildRestSeatPropSprites());
+        // The Tavern's arches and beam, over the drinkers on its floor.
+        sprites.push(...buildTavernArcadeSprites({ building: this.world?.buildings?.get?.('tavern'), assets: this.assets }));
         return sprites;
     }
 

@@ -50,7 +50,7 @@ try {
   await shot('night-command');
   await page.evaluate(() => window.cameraSet({ x: 700, y: 120, zoom: 2 }));
   await page.waitForTimeout(700);
-  await shot('night-observatory');
+  await shot('night-tavern');
 
   // Night wide (windowRects across village, dais rings)
   await page.evaluate(() => window.cameraSet({ x: 0, y: 0, zoom: 1 }));

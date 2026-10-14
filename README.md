@@ -50,8 +50,8 @@ An isometric pixel island where each session is a villager whose sprite follows 
 | Code Forge | Code work: workload billets and a result shelf that stamps only provider-reported exit codes. |
 | Token Mine | Token usage: an assay bench with exact input and cache-read counts for the last minute. |
 | Grand Lore Archive | Reading and search. |
-| Research Observatory | External research. |
-| Portal Gate | Browser and remote tools. |
+| The Tavern | A rest place: idle villagers sit at its beer-garden tables, tankard in hand. No tool works here. |
+| Portal Gate | Browser, web research and remote tools. |
 | Pharos Lighthouse | Sea watch and beacon. |
 | Harbor Master | Unpushed commits as ships moored per repository, push departures, a crown for a verified release, and a broken bracket for a failed push. |
 
