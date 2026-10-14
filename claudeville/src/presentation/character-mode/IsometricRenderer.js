@@ -240,6 +240,10 @@ const LANE_STEERING = Object.freeze({
     avenueOffsetPx: 4.4,
     dirtOffsetPx: 3.4,
     plazaOffsetPx: 2.2,
+    // The landmark deck (not planks or docks) is walkable on its centre column only, but its rails
+    // stand ~30 px either side: 10 px lanes keep two-way traffic ~20 px apart
+    // (clear of the 14 px body box) and inside the rails.
+    bridgeOffsetPx: 10,
 });
 const LOCAL_AVOIDANCE = Object.freeze({
     radiusPx: 28,
@@ -5365,7 +5369,9 @@ export class IsometricRenderer {
                 tangentY: vy / length,
                 perpX: -vy / length,
                 perpY: vx / length,
-                laneOffset: plazaLike
+                laneOffset: this.bridgeTiles?.get?.(key)?.kind === 'landmark'
+                    ? LANE_STEERING.bridgeOffsetPx
+                    : plazaLike
                     ? LANE_STEERING.plazaOffsetPx
                     : material === 'avenue'
                         ? LANE_STEERING.avenueOffsetPx
