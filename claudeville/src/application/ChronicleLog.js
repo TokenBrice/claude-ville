@@ -271,8 +271,9 @@ export class ChronicleLog {
                     this._presentIds.delete(event.agentId);
                 } else if (event.kind === ChronicleEventKind.COMMIT || event.kind === ChronicleEventKind.PUSH) {
                     if (event.sha) this._seenGitEvents.add(event.sha);
+                    if (event.gitKey) this._seenGitEvents.add(event.gitKey);
                     const replayKey = subjectKey(event.label);
-                    if (replayKey) this._seenGitEvents.add(`${event.kind}:${replayKey}`);
+                    if (replayKey) this._seenGitEvents.add(gitReplayKey(event.kind, event.outcome || null, replayKey));
                 }
                 return null;
             });
@@ -331,7 +332,13 @@ export class ChronicleLog {
             if (!event?.id) continue;
             const type = String(event.type || '').toLowerCase();
             if (type !== 'commit' && type !== 'push') continue;
-            const key = event.sha || event.commandHash || event.id;
+            // #10 / R7 — a push is one occurrence: its own event id (which
+            // carries the chain segment), never a shared commandHash or
+            // sourceId (two pushes in one tool call, successive synthetic
+            // transition pushes).
+            const key = type === 'push'
+                ? pushOccurrenceKey(event)
+                : event.sha || event.commandHash || event.id;
             const existing = best.get(key);
             if (!existing || this._gitEventScore(event) > this._gitEventScore(existing)) {
                 best.set(key, event);
@@ -342,13 +349,17 @@ export class ChronicleLog {
             const kind = String(event.type).toLowerCase() === 'push'
                 ? ChronicleEventKind.PUSH
                 : ChronicleEventKind.COMMIT;
+            if (kind === ChronicleEventKind.PUSH) {
+                this._notePush(agent, key, event);
+                continue;
+            }
             const subject = commitSubject(event);
             // One commit can still reach us as two records that share neither
             // sha nor commandHash, so identity is "any of these keys seen".
             const keys = [key];
             if (event.sha) keys.push(event.sha);
             const subjectId = subjectKey(subject);
-            if (subjectId) keys.push(`${kind}:${subjectId}`);
+            if (subjectId) keys.push(gitReplayKey(kind, null, subjectId));
             // A commit we can neither name nor identify by sha tells the
             // reader nothing, and its named twin will cover it.
             if (!subjectId && !event.sha) continue;
@@ -364,6 +375,27 @@ export class ChronicleLog {
         if (this._seenGitEvents.size > 2000) {
             this._seenGitEvents = new Set([...this._seenGitEvents].slice(-1000));
         }
+    }
+
+    // #10 — a push logs once per occurrence and outcome, labelled by its own
+    // target (`origin main`), whether or not it carries a subject or sha. A
+    // push still in flight (no outcome yet) waits; a later outcome for the
+    // same occurrence (rejected after unknown) logs under its own key.
+    _notePush(agent, occurrence, event) {
+        const outcome = pushOutcome(event);
+        if (!outcome && !pushLanded(event)) return;
+        const gitKey = `${occurrence}:${outcome || 'landed'}`;
+        if (this._seenGitEvents.has(gitKey)) return;
+        this._seenGitEvents.add(gitKey);
+        const ts = Number(event.completedAt || event.ts || event.timestamp || 0);
+        if (!ts || Date.now() - ts > 60 * 60 * 1000) return;
+        this.record(ChronicleEventKind.PUSH, agent, {
+            label: pushLabel(event),
+            ts,
+            sha: null,
+            gitKey,
+            ...(outcome ? { outcome } : {}),
+        });
     }
 
     // A commit record is better the more it can say. A readable subject line
@@ -760,6 +792,38 @@ export function summarizeDigest(events = [], { since = null, until = null } = {}
     return finalizeDigestSummary(summary, { since, until });
 }
 
+// A push's non-success outcome (`failed`, `rejected`, `cancelled`), or
+// null for a push that landed or whose outcome is unknown.
+export function pushOutcome(event = {}) {
+    const status = String(event.status || '').toLowerCase();
+    if (status === 'rejected' || status === 'failed') return status;
+    if (status === 'cancelled' || status === 'canceled') return 'cancelled';
+    if (event.success === false) return 'failed';
+    const exitCode = Number(event.exitCode ?? event.exit_code);
+    if (event.exitCode != null && Number.isFinite(exitCode) && exitCode !== 0) return 'failed';
+    return null;
+}
+
+export function pushLanded(event = {}) {
+    const status = String(event.status || '').toLowerCase();
+    return status === 'success' || event.success === true || (event.exitCode != null && Number(event.exitCode) === 0);
+}
+
+function pushOccurrenceKey(event = {}) {
+    return `push:${event.id}`;
+}
+
+// `origin main`, `origin feature:main`, or the push's own label.
+export function pushLabel(event = {}) {
+    const target = event.branch || event.targetRef || event.refspec || '';
+    const label = [event.remote || (target ? 'origin' : ''), target].filter(Boolean).join(' ');
+    return boundedText(label || String(event.label || '').replace(/^push\s+/i, '') || 'a branch');
+}
+
+function gitReplayKey(kind, outcome, subjectId) {
+    return outcome ? `${kind}:${outcome}:${subjectId}` : `${kind}:${subjectId}`;
+}
+
 function accumulateDaySummary(summary, event) {
     summary.totalEvents++;
     if (event.agentName) summary.agents.add(event.agentName);
@@ -768,7 +832,7 @@ function accumulateDaySummary(summary, event) {
     if (summary.lastTs === null || event.ts > summary.lastTs) summary.lastTs = event.ts;
     switch (event.kind) {
         case ChronicleEventKind.COMMIT: summary.commits++; break;
-        case ChronicleEventKind.PUSH: summary.pushes++; break;
+        case ChronicleEventKind.PUSH: if (!event.outcome) summary.pushes++; break;
         case ChronicleEventKind.COMPLETED: summary.completed++; break;
         case ChronicleEventKind.ERRORED: summary.errors++; break;
         case ChronicleEventKind.RATE_LIMITED: summary.rateLimits++; break;

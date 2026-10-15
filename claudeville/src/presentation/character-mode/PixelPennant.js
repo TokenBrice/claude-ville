@@ -1,6 +1,6 @@
 // 6.5 — pixel pennants and flags. Every pennant and flag in the village (the
-// occupancy pennant, the Harbor mast pennants, the ships' repo flags and
-// pennons, the dock mini-pennants, the 6.7 Harbor bunting) is a blit of one
+// occupancy pennant, the Harbor mast pennants, the release sloop's flag,
+// the 6.7 Harbor bunting) is a blit of one
 // authored strip, `sprites/overlays/pennant.strip.png`: 4 frames of 24×16,
 // five indexed tones (rim, accent, shade, pole, finial), frame 1 the calm
 // rest pose. A recolour per accent is cached (bounded); no path, no
@@ -209,34 +209,8 @@ export function currentPennantTime() {
     return shared.tMs;
 }
 
-// Tip lift of the small dock pennant per strip frame (texels).
+// Tip lift of a branch pennon's fly per strip frame (texels).
 const MINI_TIP = Object.freeze([-1, 1, 0, 2]);
-
-/**
- * A small pennant (8×6 cloth on a 1-texel pole, pole foot at (x, y)) for
- * places the 24×16 strip does not fit — the dock plate poles. Same frame
- * clock and wind as the strip; every texel a whole-pixel rect.
- */
-export function drawMiniPennant(ctx, x, y, { accent, shade = null, frame = PENNANT_REST_FRAME, windX = 1, pole = '#4a3322' } = {}) {
-    const base = parseHex(accent) || KEY.accent;
-    const cloth = `rgb(${base.join(', ')})`;
-    const hem = shade || `rgb(${scaled(base, 0.62).join(', ')})`;
-    const dir = Number(windX) < 0 ? -1 : 1;
-    const px = Math.round(x);
-    const py = Math.round(y);
-    ctx.fillStyle = pole;
-    ctx.fillRect(px, py - 11, 1, 11);
-    const tip = MINI_TIP[frame] ?? 0;
-    for (let i = 0; i < 8; i++) {
-        const h = Math.max(1, Math.round(6 * (1 - i / 8)));
-        const top = py - 11 + ((6 - h) >> 1) + Math.round(tip * i / 7);
-        const cx = dir > 0 ? px + 1 + i : px - 1 - i;
-        ctx.fillStyle = cloth;
-        ctx.fillRect(cx, top, 1, Math.max(1, h - 1));
-        ctx.fillStyle = hem;
-        ctx.fillRect(cx, top + h - 1, 1, 1);
-    }
-}
 
 // W7.4 (D2: squad = shape) — the squad standard: a small swallowtail pennon
 // (8×6 cloth on a 12-texel pole, about knee-to-hip on a villager) standing on
@@ -313,4 +287,115 @@ export function drawSquadPennon(ctx, x, y, {
     ctx.fillStyle = device;
     const cells = SQUAD_DEVICES[((deviceIndex % SQUAD_DEVICES.length) + SQUAD_DEVICES.length) % SQUAD_DEVICES.length];
     for (const [cx, cy] of cells) ctx.fillRect(col(cx), clothY + cy, 1, 1);
+}
+
+// U-P1 / D1 — the branch pennon at a ship's masthead: the repo colour is the
+// cloth, the branch is the SHAPE. Row spans `[first column, length]` of the
+// cloth from the staff, top to bottom (7 rows):
+//   default  — swallowtail: a square fly with a deep V cut (the trunk);
+//   feature  — burgee: a pennant tapering to one point;
+//   worktree — notched triangle: the burgee with its point cut back, so a
+//              linked worktree's sub-squad reads apart from a plain branch.
+// Whole-texel fills only; the fly lifts with the shared 4-frame flutter.
+export const BRANCH_PENNON_SHAPES = Object.freeze({
+    default: Object.freeze([[0, 11], [0, 10], [0, 8], [0, 6], [0, 8], [0, 10], [0, 11]]),
+    feature: Object.freeze([[0, 3], [0, 6], [0, 9], [0, 12], [0, 9], [0, 6], [0, 3]]),
+    worktree: Object.freeze([[0, 4], [0, 7], [0, 10], [0, 7], [0, 10], [0, 7], [0, 4]]),
+});
+const BRANCH_PENNON_POLE_H = 14;
+const KEY_FINIAL_CSS = `rgb(${KEY.finial.join(', ')})`;
+
+/**
+ * Draws a branch pennon with its staff foot at the art-grid point (x, y).
+ * `kind` picks the shape (`default` | `feature` | `worktree`; anything else
+ * flies the burgee). The cloth flies toward +x when `windX >= 0`.
+ */
+export function drawBranchPennon(ctx, x, y, options = {}) {
+    if (!ctx || !options.accent) return;
+    // A fleet of a hundred hulls flies a handful of distinct pennons: each
+    // (tones, shape, frame, side) is rastered once into a small canvas and
+    // blitted at whole texels after that (bounded LRU).
+    const raster = branchPennonRaster(options);
+    if (raster) {
+        ctx.drawImage(raster.canvas, Math.round(x) - raster.originX, Math.round(y) - raster.originY);
+        return;
+    }
+    paintBranchPennon(ctx, x, y, options);
+}
+
+const pennonRasters = new Map();
+const PENNON_RASTER_LIMIT = 96;
+
+function branchPennonRaster({ accent, shade = null, rim = null, kind = 'default', frame = PENNANT_REST_FRAME, windX = 1, pole = '#4a3322' }) {
+    if (typeof document === 'undefined') return null;
+    const dir = Number(windX) < 0 ? -1 : 1;
+    const key = `${accent}|${shade}|${rim}|${kind}|${frame}|${dir}|${pole}`;
+    let raster = pennonRasters.get(key);
+    if (raster) {
+        pennonRasters.delete(key);
+        pennonRasters.set(key, raster);
+        return raster;
+    }
+    // The pennon spans the staff column ±16 texels and from 2 above its top
+    // to its foot; paint it with the foot at (originX, originY).
+    const originX = 17;
+    const originY = BRANCH_PENNON_POLE_H + 4;
+    const canvas = document.createElement('canvas');
+    canvas.width = originX * 2 + 1;
+    canvas.height = originY + 1;
+    const rctx = canvas.getContext('2d');
+    if (!rctx) return null;
+    paintBranchPennon(rctx, originX, originY, { accent, shade, rim, kind, frame, windX, pole });
+    raster = { canvas, originX, originY };
+    pennonRasters.set(key, raster);
+    while (pennonRasters.size > PENNON_RASTER_LIMIT) pennonRasters.delete(pennonRasters.keys().next().value);
+    return raster;
+}
+
+function paintBranchPennon(ctx, x, y, {
+    accent,
+    shade = null,
+    rim = null,
+    kind = 'default',
+    frame = PENNANT_REST_FRAME,
+    windX = 1,
+    pole = '#4a3322',
+} = {}) {
+    const rows = BRANCH_PENNON_SHAPES[kind] || BRANCH_PENNON_SHAPES.feature;
+    const base = parseHex(accent) || KEY.accent;
+    const cloth = `rgb(${base.join(', ')})`;
+    const hem = shade || `rgb(${scaled(base, 0.62).join(', ')})`;
+    const edge = rim || `rgb(${scaled(base, 0.3).join(', ')})`;
+    const dir = Number(windX) < 0 ? -1 : 1;
+    const px = Math.round(x);
+    const top = Math.round(y) - BRANCH_PENNON_POLE_H;
+    const tip = MINI_TIP[frame] ?? 0;
+    const width = rows.reduce((max, [start, length]) => Math.max(max, start + length), 0);
+    // Column `cx` (0 next to the staff) → world column, and its fly lift.
+    const col = (cx) => px + dir * (cx + 1);
+    const lift = (cx) => Math.round(tip * cx / Math.max(1, width - 1));
+    const has = (cx, cy) => {
+        const row = rows[cy];
+        return Boolean(row) && cx >= row[0] && cx < row[0] + row[1];
+    };
+    // Rim: one texel around the cloth (outside it), riding the same lift.
+    ctx.fillStyle = edge;
+    for (let cy = -1; cy <= rows.length; cy++) {
+        for (let cx = 0; cx <= width; cx++) {
+            if (has(cx, cy)) continue;
+            if (has(cx - 1, cy) || has(cx + 1, cy) || has(cx, cy - 1) || has(cx, cy + 1)) {
+                ctx.fillRect(col(cx), top + 1 + cy + lift(cx), 1, 1);
+            }
+        }
+    }
+    rows.forEach(([start, length], cy) => {
+        for (let cx = start; cx < start + length; cx++) {
+            ctx.fillStyle = cy >= rows.length - 2 ? hem : cloth;
+            ctx.fillRect(col(cx), top + 1 + cy + lift(cx), 1, 1);
+        }
+    });
+    ctx.fillStyle = pole;
+    ctx.fillRect(px, top, 1, BRANCH_PENNON_POLE_H);
+    ctx.fillStyle = KEY_FINIAL_CSS;
+    ctx.fillRect(px, top - 1, 1, 1);
 }

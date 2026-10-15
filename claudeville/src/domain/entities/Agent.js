@@ -65,6 +65,8 @@ export class Agent {
         lastPrompt,
         todos,
         gitBranch,
+        repoRoot,
+        worktree,
         permissionMode,
         sendMessages,
         provider,
@@ -136,6 +138,8 @@ export class Agent {
         this.gitBranch = typeof gitBranch === 'string' && gitBranch.trim()
             ? gitBranch.trim().slice(0, 256)
             : null;
+        this.repoRoot = repoRoot || null;
+        this.worktree = worktree || null;
         this.permissionMode = permissionMode ?? null;
         // Transcript-derived turn state (see adapters/turnState.js). `waitReason`
         // says why a WAITING_ON_USER agent is blocked; `resident` marks a session

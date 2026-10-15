@@ -84,6 +84,7 @@ const INNER_QUAY_BASIN_TILE = { tileX: 35.15, tileY: 22.55 };
 const MAX_PLANTER_SEEN = 4096;
 const MAX_COMMIT_SEEN = 4096;
 const MAX_CHRISTENED_REPOS = 512;
+const CHRISTENED_REPOS_META_KEY = 'harbor.christenedRepos';
 
 const MILESTONE_DURATIONS_MS = {
     maiden: 6000,
@@ -166,8 +167,12 @@ export class ChronicleMonuments {
         this._pendingMilestones = [];
         // #18 — christening: HarborTraffic fires `harbor:repo-christened` the
         // first time a repo earns a Home-Waters anchorage. Raise a maiden banner
-        // over its buoy. Track christened repos so duplicate emits are no-ops.
+        // over its buoy. Christened repos persist in the Chronicle store (S-L2),
+        // so a reload never christens a repo twice; emits that arrive before
+        // that set loads wait for it.
         this._christenedRepos = new Set();
+        this._christeningsLoaded = !store?.getMeta;
+        this._pendingChristenings = [];
         this._onRepoChristened = (event) => this._christenRepo(event);
         this._unsubscribeRepoChristened = this.eventBus?.on?.('harbor:repo-christened', this._onRepoChristened) || null;
         this._disposed = false;
@@ -185,6 +190,7 @@ export class ChronicleMonuments {
         if (this._disposed || !this.store || this._loaded) return;
         if (this._pendingHydrate) return this._pendingHydrate;
         const generation = this._lifecycleGeneration;
+        this._loadChristenings(generation);
         this._pendingHydrate = this.store.queryRange('monuments', 'plantedAt', now - MONTH_MS, now + MONTH_MS)
             .then((records) => {
                 if (this._disposed || generation !== this._lifecycleGeneration) return;
@@ -265,6 +271,7 @@ export class ChronicleMonuments {
         this.planter?.seen?.clear?.();
         this.planter?.dressing?.reveal?.();
         this._christenedRepos.clear();
+        this._pendingChristenings.length = 0;
         if (this._crown?.startedAt != null) releaseMajorMoment(CROWN_MAJOR_ID);
         this._crown = null;
         this.harbor = null;
@@ -673,14 +680,34 @@ export class ChronicleMonuments {
     // #18 — first-sighting christening. Raises a maiden banner over the repo's
     // own buoy (the event carries its anchorage tile), distinct from the
     // commit-count maiden milestone which sits at the inner quay basin.
+    _loadChristenings(generation) {
+        if (this._christeningsLoaded || this._christeningsLoad) return;
+        this._christeningsLoad = Promise.resolve()
+            .then(() => this.store.getMeta(CHRISTENED_REPOS_META_KEY, []))
+            .catch(() => [])
+            .then((saved) => {
+                if (this._disposed || generation !== this._lifecycleGeneration) return;
+                for (const project of Array.isArray(saved) ? saved : []) this._christenedRepos.add(String(project));
+                this._christeningsLoaded = true;
+                const pending = this._pendingChristenings.splice(0);
+                for (const event of pending) this._christenRepo(event);
+            });
+    }
+
     _christenRepo(event = {}) {
         if (this._disposed) return;
+        if (!this._christeningsLoaded) {
+            if (this._pendingChristenings.length < MAX_CHRISTENED_REPOS) this._pendingChristenings.push(event);
+            if (this.store?.getMeta) this._loadChristenings(this._lifecycleGeneration);
+            return;
+        }
         const project = String(event.project || 'unknown');
         if (this._christenedRepos.has(project)) return;
         this._christenedRepos.add(project);
         if (this._christenedRepos.size > MAX_CHRISTENED_REPOS) {
             this._christenedRepos.delete(this._christenedRepos.values().next().value);
         }
+        this.store?.setMeta?.(CHRISTENED_REPOS_META_KEY, [...this._christenedRepos])?.catch?.(() => {});
         const repo = event.repoName || projectName(project);
         const now = Number(event.ts) || Date.now();
         const duration = MILESTONE_DURATIONS_MS.maiden || 6000;

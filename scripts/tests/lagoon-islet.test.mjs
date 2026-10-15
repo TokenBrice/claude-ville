@@ -55,3 +55,26 @@ test('no lagoon departure crosses the islet, from any anchorage, on any route ba
         }
     }
 });
+
+// Phase 3.3 — lagoon routes leave by the lane graph: none may cross the
+// (14,7) spit or any other land tile of the water mask, from any lagoon
+// mooring, on any route, and every inbound passage stays in the water too.
+test('no lagoon route crosses land: every sample lies on a water tile', async () => {
+    const { HARBOR_WATER_MASK, COAST_ANCHORAGE_SLOTS, composeWaterPath, harborWaterField } = await import('../../claudeville/src/presentation/character-mode/HarborLayout.js');
+    const water = ({ tileX, tileY }) => tileX < 0 || tileY < 0 || tileX >= 40 || tileY >= 40
+        || HARBOR_WATER_MASK[Math.floor(tileY)][Math.floor(tileX)] === '~';
+    const field = harborWaterField();
+    const moorings = [
+        ...COMMIT_LAGOON_SQUAD_ANCHORAGES,
+        ...COAST_ANCHORAGE_SLOTS.filter(slot => slot.zone === 'commit-lagoon').map(slot => ({ ...slot, tileY: slot.tileY + (slot.leadDy || 0) })),
+    ];
+    for (const anchorage of moorings) {
+        const start = field.nearestClear(anchorage, 0.6);
+        for (let routeIndex = 0; routeIndex < 3; routeIndex++) {
+            const route = composeWaterRouteTiles(start, { departWaterZone: 'commit-lagoon', departRouteIndex: routeIndex });
+            for (const point of sampled(route)) assert.ok(water(point), `${anchorage.name} route ${routeIndex} crosses land at (${point.tileX.toFixed(2)}, ${point.tileY.toFixed(2)})`);
+            const inbound = composeWaterPath({ tileX: 36.6, tileY: 17.6 }, start);
+            for (const point of sampled(inbound)) assert.ok(water(point), `inbound to ${anchorage.name} crosses land at (${point.tileX.toFixed(2)}, ${point.tileY.toFixed(2)})`);
+        }
+    }
+});

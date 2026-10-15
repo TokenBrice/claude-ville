@@ -243,6 +243,9 @@ export const PLANK_BRIDGES = [
 // creating extra town-wide crossings.
 export const HARBOR_DOCK_TILES = [
     { tileX: 28, tileY: 19, orientation: 'EW', style: 'causeway' },
+    { tileX: 28, tileY: 20, orientation: 'EW', style: 'causeway' },
+    { tileX: 29, tileY: 20, orientation: 'EW', style: 'causeway' },
+    { tileX: 30, tileY: 20, orientation: 'EW', style: 'causeway' },
     { tileX: 29, tileY: 19, orientation: 'EW', style: 'causeway' },
     { tileX: 30, tileY: 19, orientation: 'EW', style: 'causeway' },
     { tileX: 31, tileY: 19, orientation: 'EW', style: 'causeway' },
@@ -515,13 +518,12 @@ export const DISTRICT_PROPS = [
     // claim the ground between the Tavern and the harbour office, so
     // the harbour quay spreads to its shores: a fishing nook on the lagoon
     // shore north of the Tavern (a fish rack), an
-    // anchor beached on the lawn below the Pharos, the salt store against
-    // the harbour office's west wall by its door, the bollard pair where
-    // the causeway meets land.
+    // anchor beached on the lawn below the Pharos, and the salt store and
+    // bollard pair on the beach west of the quay, beside its shore step.
     { tileX: 21, tileY: 12, id: 'prop.fishRack', layer: 'cache', district: 'harbor', walkBlock: true },
     { tileX: 26, tileY: 10, id: 'prop.anchorChain', layer: 'cache', district: 'harbor', walkBlock: true },
-    { tileX: 29, tileY: 19, id: 'prop.saltCrates', layer: 'cache', district: 'harbor', walkBlock: true },
-    { tileX: 29, tileY: 20, id: 'prop.bollardPair', layer: 'cache', district: 'harbor', walkBlock: true },
+    { tileX: 26, tileY: 20, id: 'prop.saltCrates', layer: 'cache', district: 'harbor', walkBlock: true },
+    { tileX: 27, tileY: 20, id: 'prop.bollardPair', layer: 'cache', district: 'harbor', walkBlock: true },
     // Forge smithy yard: the roofed log store on the shore behind the
     // hearth, the bellows bench on the shore past the hearth's east corner
     // (the door file and its ring hold the yard west of the door), barrels

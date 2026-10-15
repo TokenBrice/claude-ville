@@ -455,18 +455,47 @@
     margin-top: 16px;
 }
 
-.sidebar__harbor-row {
-    cursor: default;
-}
-
-/* Harbor rows keep the 8px swatch column: no bust. */
+/* Harbor rows keep the 8px swatch column: no bust. Each row is a button
+   that focuses its fleet in the World and opens the fleet card. */
 .sidebar__harbor-row .sidebar__agent-select {
     grid-template-columns: 8px minmax(0, 1fr) auto;
-    cursor: default;
 }
 
 .sidebar__harbor-row .sidebar__agent-dot {
     background: var(--cv-repo-color, var(--ink-4));
+}
+
+/* A repo's branch lanes sit under it, indented one swatch, on a quieter
+   rail; the swatch shrinks to a 4px tick so the repo row stays the head. */
+.sidebar__harbor-row--lane {
+    padding-left: 25px;
+    border-left-color: color-mix(in srgb, var(--cv-repo-color, transparent) 30%, transparent);
+}
+
+.sidebar__harbor-row--lane .sidebar__agent-dot {
+    width: 4px;
+    height: 4px;
+    margin: 6px 2px 0;
+}
+
+.sidebar__harbor-row--lane .sidebar__agent-name {
+    color: var(--ink-2);
+}
+
+/* U-P5 — a standing push failure: red sub-line and a red notch on the rail
+   until the lane's next successful push. */
+.sidebar__harbor-row--failed {
+    box-shadow: inset 3px 0 0 -1px var(--cv-status-errored);
+}
+
+.sidebar__harbor-failure {
+    color: var(--cv-status-errored);
+}
+
+.sidebar__harbor-more {
+    padding: 2px 16px 4px 41px;
+    color: var(--ink-3);
+    font: var(--fs-body)/var(--lh-body) var(--font-body);
 }
 
 .sidebar__harbor-empty {

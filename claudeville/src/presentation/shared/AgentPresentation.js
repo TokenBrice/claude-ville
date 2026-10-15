@@ -43,8 +43,21 @@ const PROVIDER_BADGES = Object.freeze(Object.fromEntries(
     }]),
 ));
 
+// D1 / U-P2 — agents group by repo: a linked worktree or subdirectory
+// session reports its repo's main worktree as `repoRoot` (harbor wire
+// contract v1), so it joins its repo's group; older servers without
+// `repoRoot` fall back to the checkout path.
 export function projectKeyForAgent(agent) {
-    return agent?.projectPath || UNKNOWN_PROJECT_KEY;
+    return agent?.repoRoot || agent?.projectPath || UNKNOWN_PROJECT_KEY;
+}
+
+// The worktree sub-label of an agent working in a linked worktree
+// (`wt agent-a1b2c3`), or '' for a main checkout or an old server.
+export function worktreeLabel(agent) {
+    const worktree = agent?.worktree;
+    if (!worktree || worktree.isMain !== false) return '';
+    const name = String(worktree.name || '').trim();
+    return name ? `wt ${name}` : '';
 }
 
 export function groupAgentsByProject(agents) {

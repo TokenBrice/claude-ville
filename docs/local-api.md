@@ -16,6 +16,14 @@ The server is hardcoded to port `4000` and the IPv4 loopback interface. Requests
 | `GET /api/changelog` | Raw `CHANGELOG.md` text for the in-app changelog modal. |
 | `ws://localhost:4000/ws` | Same-origin snapshot, delta updates, and ping/pong heartbeats. |
 
+Git identity on `/api/sessions` (all fields optional; a client keys a repository on `repoRoot || project`, so older servers still work):
+
+- Sessions inside a repository carry `repoRoot` (its main worktree path, shared by every linked worktree and subdirectory) and `worktree: { name, path, isMain }`.
+- Every git event carries `repoRoot`, `checkout`, `worktree` and `cwd` (where the command actually ran, after `cd` or `git -C`). Commits add `sha`, `branch` (frozen when first observed) or `detached`, `author`, `coAuthors` and `attribution` (`observed`: the session ran it; `scanned`: a repository scan found it). Pushes add `refs: [{ src, dst, status, sha? }]`, `status`, `reason` (first stderr line, at most 200 characters), `tag`/`tagsOnly`, `deleted`, `synthetic` (`transition` or `inferred`) and `landedShas`, the shas the server verified a remote-tracking ref now contains.
+- `type: 'rewritten'` events (`oldShas`, optional `replacements: [{ oldSha, newSha }]`) report commits that left a branch without reaching a remote: an amend, a rebase or a reset.
+
+The adapter contract has the extraction rules: [git event extraction](../claudeville/adapters/README.md#git-event-extraction).
+
 The server does not enable CORS and rejects `OPTIONS` requests. Missing or invalid routes receive JSON error responses.
 
 With `npm run dev` running, inspect provider detection and session discovery:

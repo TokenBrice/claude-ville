@@ -626,6 +626,8 @@ function projectClaudeTailEntry(entry) {
     'agentId',
     'agentType',
     'model',
+    'cwd',
+    'gitBranch',
   ]) {
     if (entry[field] !== undefined) {
       const value = entry[field];
@@ -652,6 +654,7 @@ function projectClaudeTailEntry(entry) {
         { keepTail: true },
       ),
     };
+    if (entry.toolUseResult.interrupted === true) projected.toolUseResult.interrupted = true;
   }
   if (entry.message && typeof entry.message === 'object') {
     const needsSourceHash = !entry.uuid
@@ -693,7 +696,7 @@ function readJsonLines(filePath, { from = 'end', count = GIT_EVENT_SCAN_LINES } 
     tailMaxBytes: MAX_TAIL_BYTES,
     source: 'claude',
     project: from === 'end' ? projectClaudeTailEntry : undefined,
-    projectionKey: from === 'end' ? 'claude-tail-v1' : undefined,
+    projectionKey: from === 'end' ? 'claude-tail-v2' : undefined,
   });
 }
 
@@ -1598,7 +1601,7 @@ function getClaudeTranscriptSummary(filePath, tailCount, project = null) {
 
 function getClaudeMainSessionSummary(sessionId, projectPath) {
   if (!projectPath) return getClaudeTranscriptSummary(null, 30, projectPath);
-  const encoded = projectPath.replace(/\//g, '-');
+  const encoded = claudeProjectDirName(projectPath);
   return getClaudeTranscriptSummary(path.join(CLAUDE_DIR, 'projects', encoded, `${sessionId}.jsonl`), 30, projectPath);
 }
 
@@ -1897,36 +1900,54 @@ function getSendMessageEdges(sessionFilePath, maxItems = SEND_MESSAGE_MAX_EDGES)
   return edges.slice(-maxItems);
 }
 
+// Claude reports a Bash failure as `is_error` with `Exit code N` leading the
+// result text; a successful result carries stdout/stderr in toolUseResult.
+function claudeToolCompletion(entry, block) {
+  const tur = entry.toolUseResult;
+  const parts = [];
+  if (tur && typeof tur === 'object') {
+    if (typeof tur.stdout === 'string') parts.push(tur.stdout);
+    if (typeof tur.stderr === 'string') parts.push(tur.stderr);
+  }
+  if (typeof block.content === 'string') {
+    parts.push(block.content);
+  } else if (Array.isArray(block.content)) {
+    for (const item of block.content) {
+      if (item?.type === 'text' && typeof item.text === 'string') parts.push(item.text);
+    }
+  }
+  const output = parts.join('\n');
+  const isError = block.is_error === true;
+  const interrupted = tur && typeof tur === 'object' && tur.interrupted === true;
+  const exitMatch = /^(?:Error: )?Exit code (\d+)/m.exec(output);
+  const completion = {
+    output: output.length > 64 * 1024 ? output.slice(-64 * 1024) : output,
+    completedAt: entry.timestamp || null,
+  };
+  if (interrupted) {
+    completion.status = 'cancelled';
+  } else {
+    completion.success = !isError;
+    if (exitMatch) completion.exitCode = Number(exitMatch[1]);
+    else if (!isError) completion.exitCode = 0;
+  }
+  return completion;
+}
+
 function getGitEvents(sessionFilePath, context) {
   const events = [];
   try {
     const entries = getSessionEntries(sessionFilePath);
 
-    // Index tool_result blocks by tool_use_id so we can surface push stderr
-    // back into the parser context (rejected vs. failed disambiguation).
+    // Index tool results by tool_use_id: success/exit code and output feed
+    // the parser (commit evidence, rejected vs. failed pushes).
     const resultsByToolUseId = new Map();
     for (const entry of entries) {
       const msg = entry.message;
       if (!msg || msg.role !== 'user' || !Array.isArray(msg.content)) continue;
       for (const block of msg.content) {
         if (block?.type !== 'tool_result' || !block.tool_use_id) continue;
-        const tur = entry.toolUseResult;
-        const parts = [];
-        if (tur) {
-          if (typeof tur.stderr === 'string') parts.push(tur.stderr);
-          if (typeof tur.stdout === 'string') parts.push(tur.stdout);
-        }
-        if (typeof block.content === 'string') {
-          parts.push(block.content);
-        } else if (Array.isArray(block.content)) {
-          for (const item of block.content) {
-            if (item?.type === 'text' && typeof item.text === 'string') parts.push(item.text);
-          }
-        }
-        resultsByToolUseId.set(block.tool_use_id, {
-          stderr: parts.join('\n'),
-          isError: block.is_error === true,
-        });
+        resultsByToolUseId.set(block.tool_use_id, claudeToolCompletion(entry, block));
       }
     }
 
@@ -1941,7 +1962,10 @@ function getGitEvents(sessionFilePath, context) {
           ...context,
           ts: entry.timestamp || entry.created_at || 0,
           sourceId: block.id || entry.uuid || entry.id || `${entry._sourceHash || stableHash(JSON.stringify(entry))}:${blockIndex}`,
-          stderr: result?.stderr || '',
+          // The transcript records the shell's cwd and branch for each call.
+          cwd: typeof entry.cwd === 'string' && entry.cwd ? entry.cwd : undefined,
+          branchHint: typeof entry.gitBranch === 'string' && entry.gitBranch ? entry.gitBranch : undefined,
+          ...(result || {}),
         }));
       });
     });
@@ -1951,7 +1975,7 @@ function getGitEvents(sessionFilePath, context) {
 
 function resolveSessionFilePath(sessionId, project) {
   if (!project) return null;
-  const encoded = project.replace(/\//g, '-');
+  const encoded = claudeProjectDirName(project);
   const projectsDir = path.join(CLAUDE_DIR, 'projects', encoded);
 
   if (sessionId.startsWith('subagent-')) {
@@ -1985,7 +2009,7 @@ function resolveSessionFilePath(sessionId, project) {
 
 function getSessionFileActivity(sessionId, project) {
   if (!project) return 0;
-  const encoded = project.replace(/\//g, '-');
+  const encoded = claudeProjectDirName(project);
   const sessionFile = path.join(CLAUDE_DIR, 'projects', encoded, `${sessionId}.jsonl`);
   try {
     if (fs.existsSync(sessionFile)) return fs.statSync(sessionFile).mtimeMs;
@@ -1993,8 +2017,45 @@ function getSessionFileActivity(sessionId, project) {
   return 0;
 }
 
-function resolveProjectPathFromMap(projectPathMap, encodedProject) {
+// Claude names a project directory by replacing every non-alphanumeric
+// character of its path with '-' (older versions replaced only '/'), so the
+// name cannot be decoded: `.worktrees`, dots and hyphens are lost.
+function encodeClaudeProjectDir(projectPath) {
+  return String(projectPath || '').replace(/[^a-zA-Z0-9]/g, '-');
+}
+
+const _projectDirNameCache = new Map();
+
+function claudeProjectDirName(projectPath) {
+  const encoded = encodeClaudeProjectDir(projectPath);
+  const legacy = String(projectPath || '').replace(/\//g, '-');
+  if (encoded === legacy) return encoded;
+  const now = Date.now();
+  const cached = _projectDirNameCache.get(projectPath);
+  if (cached && now - cached.at < 30_000) return cached.name;
+  const projectsDir = path.join(CLAUDE_DIR, 'projects');
+  let name = encoded;
+  if (!fs.existsSync(path.join(projectsDir, encoded)) && fs.existsSync(path.join(projectsDir, legacy))) name = legacy;
+  _projectDirNameCache.set(projectPath, { at: now, name });
+  if (_projectDirNameCache.size > 512) _projectDirNameCache.delete(_projectDirNameCache.keys().next().value);
+  return name;
+}
+
+// The cwd recorded in a transcript, for project directories the history map
+// does not name.
+function transcriptCwd(filePath) {
+  if (!filePath) return null;
+  try {
+    for (const entry of getSessionEntries(filePath)) {
+      if (typeof entry?.cwd === 'string' && path.isAbsolute(entry.cwd)) return entry.cwd;
+    }
+  } catch { /* fall through to decoding */ }
+  return null;
+}
+
+function resolveProjectPathFromMap(projectPathMap, encodedProject, transcriptPath = null) {
   return projectPathMap.get(encodedProject)
+    || transcriptCwd(transcriptPath)
     || `/${encodedProject.replace(/^-/, '').replace(/-/g, '/')}`;
 }
 
@@ -2213,8 +2274,9 @@ class ClaudeAdapter {
     for (const entry of entries) {
       // Build the project path map from all entries, regardless of active state
       if (entry.project) {
-        const encoded = entry.project.replace(/\//g, '-');
+        const encoded = claudeProjectDirName(entry.project);
         projectPathMap.set(encoded, entry.project);
+        projectPathMap.set(encodeClaudeProjectDir(entry.project), entry.project);
         if (!activeSessionIdsByProject.has(encoded)) {
           activeSessionIdsByProject.set(encoded, new Set());
         }
@@ -2228,7 +2290,7 @@ class ClaudeAdapter {
       const existing = sessionsMap.get(entry.sessionId);
       if (!existing || (entry.timestamp || 0) > (existing.timestamp || 0)) {
         if (entry.project) {
-          const encoded = entry.project.replace(/\//g, '-');
+          const encoded = claudeProjectDirName(entry.project);
           activeSessionIdsByProject.set(encoded, activeSessionIdsByProject.get(encoded) || new Set());
           activeSessionIdsByProject.get(encoded).add(entry.sessionId);
         }
@@ -2253,7 +2315,7 @@ class ClaudeAdapter {
       const fileMtime = getSessionFileActivity(session.sessionId, session.project);
       const childMtime = session.project
         ? latestSubAgentActivity(
-          path.join(CLAUDE_DIR, 'projects', session.project.replace(/\//g, '-'), session.sessionId),
+          path.join(CLAUDE_DIR, 'projects', claudeProjectDirName(session.project), session.sessionId),
           activeThresholdMs,
           now,
         )
@@ -2299,7 +2361,7 @@ class ClaudeAdapter {
     const orphans = this._getOrphanSessions(activeThresholdMs, projectPathMap, new Set(sessionsMap.keys()), sessionNames, teamMembership);
     for (const orphan of orphans) {
       if (!orphan.project || !orphan.sessionId) continue;
-      const encoded = orphan.project.replace(/\//g, '-');
+      const encoded = claudeProjectDirName(orphan.project);
       if (!activeSessionIdsByProject.has(encoded)) activeSessionIdsByProject.set(encoded, new Set());
       activeSessionIdsByProject.get(encoded).add(orphan.sessionId);
     }
@@ -2330,7 +2392,7 @@ class ClaudeAdapter {
           const sessionDir = path.join(projPath, sessionId);
           const parentSessionFile = path.join(projPath, `${sessionId}.jsonl`);
           const agentLaunches = getAgentLaunches(parentSessionFile);
-          const decodedProject = resolveProjectPathFromMap(projectPathMap, encodedProject);
+          const decodedProject = resolveProjectPathFromMap(projectPathMap, encodedProject, parentSessionFile);
 
           // Ordinary Task sub-agents live directly under subagents/.
           let agentFiles;
@@ -2452,7 +2514,7 @@ class ClaudeAdapter {
 
           if (now - lastActivity > activeThresholdMs) continue;
 
-          const decodedProject = resolveProjectPathFromMap(projectPathMap, projDir.name);
+          const decodedProject = resolveProjectPathFromMap(projectPathMap, projDir.name, filePath);
           const detail = getSubAgentDetail(filePath, decodedProject);
           const sessionName = sessionNames.get(sessionId) || null;
           const teamName = sessionName ? teamMembership.get(sessionName) || null : null;
@@ -2558,7 +2620,7 @@ class ClaudeAdapter {
 
     for (const session of sessions) {
       if (!session?.project || !session.sessionId) continue;
-      const projectDir = path.join(projectsDir, session.project.replace(/\//g, '-'));
+      const projectDir = path.join(projectsDir, claudeProjectDirName(session.project));
       const parentSessionId = session.parentSessionId || session.sessionId;
       const parentDir = path.join(projectDir, parentSessionId);
       const dirtyTarget = {
@@ -2757,6 +2819,7 @@ class ClaudeAdapter {
 
 module.exports = {
   ClaudeAdapter,
+  _test: { claudeProjectDirName, encodeClaudeProjectDir, getGitEvents },
   deriveTaskProgress,
   projectClaudeExecution,
   sanitizeTaskSubject,

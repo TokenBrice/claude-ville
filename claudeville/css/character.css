@@ -142,6 +142,235 @@
     pointer-events: none;
 }
 
+/* U-P3 — the fleet card: a pinned bg2 popover beside the fleet it reads.
+   Repo colour rides the 3px rail and the pennon swatch only; text stays in
+   the parchment ink ramp, failures in the error status hue. */
+.harbor-fleet-card {
+    position: absolute;
+    z-index: 4;
+    left: 16px;
+    top: 16px;
+    display: flex;
+    width: 320px;
+    max-height: min(440px, calc(100% - 24px));
+    box-sizing: border-box;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px 10px 8px 12px;
+    color: var(--ink-1);
+    font: var(--fs-body)/var(--lh-body) var(--font-body);
+    box-shadow: inset 3px 0 0 var(--cv-repo-color, var(--ink-4));
+}
+
+.harbor-fleet-card:focus-visible {
+    outline: 1px solid var(--gold-hi);
+    outline-offset: 2px;
+}
+
+.harbor-fleet-card__head {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.harbor-fleet-card__title-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.harbor-fleet-card__title {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    color: var(--ink-1);
+    font: var(--fs-body)/var(--lh-body) var(--font-body);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* The branch's pennon shape in the repo colour, cut with clip-path steps
+   (the same three shapes the masthead flies). */
+.harbor-fleet-card__pennon {
+    flex-shrink: 0;
+    width: 12px;
+    height: 8px;
+    background: var(--cv-repo-color, var(--ink-4));
+}
+
+.harbor-fleet-card__pennon--default {
+    clip-path: polygon(0 0, 100% 0, 50% 50%, 100% 100%, 0 100%);
+}
+
+.harbor-fleet-card__pennon--feature,
+.harbor-fleet-card__pennon--detached {
+    clip-path: polygon(0 0, 100% 50%, 0 100%);
+}
+
+.harbor-fleet-card__pennon--worktree {
+    clip-path: polygon(0 0, 84% 38%, 58% 50%, 84% 62%, 0 100%);
+}
+
+.harbor-fleet-card__close,
+.harbor-fleet-card__lane,
+.harbor-fleet-card__agent {
+    color: inherit;
+    background: none;
+    border: 0;
+    font: inherit;
+    cursor: pointer;
+}
+
+.harbor-fleet-card__close {
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    color: var(--ink-3);
+    line-height: 16px;
+}
+
+.harbor-fleet-card__close:hover,
+.harbor-fleet-card__close:focus-visible {
+    color: var(--gold-hi);
+}
+
+.harbor-fleet-card__meta,
+.harbor-fleet-card__push {
+    color: var(--ink-3);
+}
+
+.harbor-fleet-card__push {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 2px 8px;
+}
+
+.harbor-fleet-card__push--unpushed .harbor-fleet-card__push-text {
+    color: var(--cv-gold);
+}
+
+.harbor-fleet-card__push--failed .harbor-fleet-card__push-text,
+.harbor-fleet-card__push--rejected .harbor-fleet-card__push-text,
+.harbor-fleet-card__reason {
+    color: var(--cv-status-errored);
+}
+
+.harbor-fleet-card__reason {
+    padding: 2px 6px;
+    overflow-wrap: anywhere;
+    background: color-mix(in srgb, var(--cv-status-errored) 12%, var(--bg-1));
+}
+
+.harbor-fleet-card__lanes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.harbor-fleet-card__lane {
+    display: inline-flex;
+    gap: 6px;
+    padding: 0 6px;
+    color: var(--ink-2);
+    background: var(--bg-1);
+    box-shadow: inset 0 0 0 1px var(--line-1);
+}
+
+.harbor-fleet-card__lane[aria-pressed="true"] {
+    color: var(--ink-1);
+    box-shadow: inset 0 0 0 1px var(--cv-repo-color, var(--line-2));
+}
+
+.harbor-fleet-card__lane:hover,
+.harbor-fleet-card__lane:focus-visible,
+.harbor-fleet-card__agent:hover,
+.harbor-fleet-card__agent:focus-visible {
+    color: var(--gold-hi);
+    outline: none;
+}
+
+.harbor-fleet-card__lane-count {
+    color: var(--ink-3);
+}
+
+.harbor-fleet-card__commits {
+    display: flex;
+    min-height: 0;
+    margin: 0;
+    padding: 0;
+    flex-direction: column;
+    gap: 4px;
+    overflow-y: auto;
+    list-style: none;
+    border-top: 1px solid var(--line-1);
+    padding-top: 6px;
+}
+
+.harbor-fleet-card__commit {
+    padding-left: 6px;
+    box-shadow: inset 1px 0 0 var(--line-2);
+}
+
+.harbor-fleet-card__commit--failed,
+.harbor-fleet-card__commit--rejected {
+    box-shadow: inset 1px 0 0 var(--cv-status-errored);
+}
+
+.harbor-fleet-card__commit-line,
+.harbor-fleet-card__commit-sub {
+    display: flex;
+    gap: 8px;
+    min-width: 0;
+}
+
+.harbor-fleet-card__subject {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.harbor-fleet-card__age,
+.harbor-fleet-card__author,
+.harbor-fleet-card__branch,
+.harbor-fleet-card__more,
+.harbor-fleet-card__empty {
+    flex-shrink: 0;
+    color: var(--ink-3);
+}
+
+.harbor-fleet-card__sha {
+    color: var(--ink-2);
+    font: inherit;
+}
+
+.harbor-fleet-card__author {
+    flex-shrink: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.harbor-fleet-card__agent {
+    flex-shrink: 0;
+    padding: 0;
+    color: var(--ink-2);
+    text-decoration: underline dotted;
+    text-underline-offset: 2px;
+}
+
+.harbor-fleet-card__agent--gone {
+    color: var(--ink-3);
+    text-decoration: none;
+    cursor: default;
+}
+
 /* 7.2 system: flat --bg-1 plate, 1px --line-2 bevel and 1px black seam, the
    parchment ink ramp, gold only for light, C5 type (PS2P 8/16, DM 11). */
 .world-empty {

@@ -12,7 +12,8 @@ const { noteReadFailure } = require('./shared');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { dedupeGitEvents, extractGitEventsFromCommandSource, stableHash } = require('./gitEvents');
+const { fileURLToPath } = require('url');
+const { dedupeGitEvents, extractCommand, extractGitEventsFromCommandSource, stableHash } = require('./gitEvents');
 const {
   clearTailCache,
   createDetailResponse,
@@ -1368,48 +1369,103 @@ function appendToolResult(results, entry, sessionId) {
   });
 }
 
-function rememberGitEvents(events, bySourceId, byCommandHash) {
-  for (const event of events) {
-    if (event.sourceId) {
-      if (!bySourceId.has(event.sourceId)) bySourceId.set(event.sourceId, new Map());
-      bySourceId.get(event.sourceId).set(event.id, event);
-    }
-
-    if (event.commandHash) {
-      if (!byCommandHash.has(event.commandHash)) byCommandHash.set(event.commandHash, new Map());
-      byCommandHash.get(event.commandHash).set(event.id, event);
-    }
+function codexFileUriPath(value) {
+  if (typeof value !== 'string' || !value) return null;
+  if (!value.startsWith('file://')) return value;
+  try {
+    return fileURLToPath(value);
+  } catch {
+    return value.slice('file://'.length);
   }
 }
 
-function applyCompletionMetadata(eventsById, completion) {
-  if (!eventsById || !completion) return;
-  for (const event of eventsById.values()) {
-    if (typeof completion.success === 'boolean') event.success = completion.success;
-    if (completion.exitCode !== null) event.exitCode = completion.exitCode;
-    if (completion.completedAt) event.completedAt = completion.completedAt;
-    if (completion.stderr) event.stderr = completion.stderr;
-  }
+function boundedOutput(parts) {
+  const output = parts.filter((part) => typeof part === 'string' && part).join('\n');
+  return output.length > 64 * 1024 ? output.slice(-64 * 1024) : output;
+}
+
+// A finished shell command in the current rollout format: `item_completed`
+// with a `CommandExecution` item (command array, `file://` cwd, exit code,
+// aggregated output). It is the only record of the command: the matching
+// `custom_tool_call` carries JavaScript that launched it, not the command.
+function commandExecutionItem(entry) {
+  const payload = entry?.payload;
+  const item = payload?.item;
+  if (entry?.type !== 'event_msg' || payload?.type !== 'item_completed' || item?.type !== 'CommandExecution') return null;
+  const command = commandFromExecPayload(item);
+  if (!command) return null;
+  const rawExitCode = item.exit_code ?? item.exitCode;
+  const exitCode = Number.isFinite(rawExitCode) ? rawExitCode : null;
+  const status = typeof item.status === 'string' ? item.status : null;
+  let success;
+  if (exitCode !== null) success = exitCode === 0;
+  else if (status === 'failed' || status === 'declined') success = false;
+  return {
+    callId: typeof item.call_id === 'string' ? item.call_id : null,
+    id: typeof item.id === 'string' ? item.id : null,
+    command,
+    cwd: codexFileUriPath(item.cwd),
+    startedAt: toEpochMs(payload.started_at_ms ?? item.started_at_ms ?? entry.timestamp),
+    completedAt: toEpochMs(payload.completed_at_ms ?? item.completed_at_ms ?? entry.timestamp),
+    exitCode,
+    success,
+    output: boundedOutput([item.aggregated_output, item.stdout, item.stderr]),
+  };
+}
+
+function completionContext(completion) {
+  if (!completion) return {};
+  const context = {};
+  if (typeof completion.success === 'boolean') context.success = completion.success;
+  if (Number.isFinite(completion.exitCode)) context.exitCode = completion.exitCode;
+  if (completion.completedAt) context.completedAt = completion.completedAt;
+  if (completion.output) context.output = completion.output;
+  // Where the command actually ran; a `workdir` argument still wins.
+  if (completion.cwd) context.cwd = completion.cwd;
+  return context;
 }
 
 function getGitEvents(filePath, context, entries = null) {
   const events = [];
   try {
     entries = entries || readJsonLines(filePath, { from: 'end', count: GIT_EVENT_SCAN_LINES });
-    const eventsBySourceId = new Map();
-    const eventsByCommandHash = new Map();
 
-    entries.forEach((entry, entryIndex) => {
-      const completion = completionFromExecEvent(entry);
-      if (completion) {
-        if (completion.callId && eventsBySourceId.has(completion.callId)) {
-          applyCompletionMetadata(eventsBySourceId.get(completion.callId), completion);
-          return;
+    // Completions first, so each command is parsed once with its outcome:
+    // the chain's exit status and its own output decide every segment.
+    const completionsByCallId = new Map();
+    const unkeyedByCommand = new Map();
+    const functionCallIds = new Set();
+    for (const entry of entries) {
+      const legacy = completionFromExecEvent(entry);
+      if (legacy) {
+        const completion = { ...legacy, output: legacy.stderr, cwd: codexFileUriPath(entry.payload?.cwd) };
+        if (legacy.callId) completionsByCallId.set(legacy.callId, completion);
+        else if (legacy.command) {
+          const key = stableHash(normalizeCommand(legacy.command));
+          unkeyedByCommand.set(key, unkeyedByCommand.has(key) ? null : completion);
         }
+        continue;
+      }
+      const item = commandExecutionItem(entry);
+      if (item?.callId) completionsByCallId.set(item.callId, item);
+      const payload = entry?.type === 'response_item' ? entry.payload : null;
+      if ((payload?.type === 'function_call' || payload?.type === 'command_execution') && payload.call_id) {
+        functionCallIds.add(payload.call_id);
+      }
+    }
 
-        const command = normalizeCommand(completion.command);
-        const eventsById = command ? eventsByCommandHash.get(stableHash(command)) : null;
-        if (eventsById && eventsById.size === 1) applyCompletionMetadata(eventsById, completion);
+    entries.forEach((entry) => {
+      const item = commandExecutionItem(entry);
+      if (item) {
+        // Older rollouts pair the item with a function_call parsed below.
+        if (item.callId && functionCallIds.has(item.callId)) return;
+        events.push(...extractGitEventsFromCommandSource(item.command, {
+          ...context,
+          ts: item.startedAt || item.completedAt || 0,
+          sourceId: item.callId || item.id || `${stableHash(JSON.stringify(entry.payload))}:item`,
+          cwd: item.cwd || undefined,
+          ...completionContext(item),
+        }));
         return;
       }
 
@@ -1422,13 +1478,17 @@ function getGitEvents(filePath, context, entries = null) {
       if (payload.arguments) commandSources.push(payload.arguments);
 
       commandSources.forEach((source, sourceIndex) => {
-        const parsedEvents = extractGitEventsFromCommandSource(source, {
+        let completion = payload.call_id ? completionsByCallId.get(payload.call_id) : null;
+        if (!completion) {
+          const command = extractCommand(source);
+          completion = command ? unkeyedByCommand.get(stableHash(normalizeCommand(command))) || null : null;
+        }
+        events.push(...extractGitEventsFromCommandSource(source, {
           ...context,
           ts: entry.timestamp || payload.timestamp || 0,
           sourceId: payload.call_id || payload.id || entry.id || `${stableHash(JSON.stringify(entry))}:${sourceIndex}`,
-        });
-        events.push(...parsedEvents);
-        rememberGitEvents(parsedEvents, eventsBySourceId, eventsByCommandHash);
+          ...completionContext(completion),
+        }));
       });
     });
   } catch { /* ignore */ }
@@ -1942,4 +2002,4 @@ class CodexAdapter {
   }
 }
 
-module.exports = { CodexAdapter };
+module.exports = { CodexAdapter, _test: { getGitEvents } };

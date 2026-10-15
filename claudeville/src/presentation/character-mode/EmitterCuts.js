@@ -574,6 +574,8 @@ export function drawCanvasEmitterCuts(ctx, renderer, atmosphere, bloomScale = 0)
         drawSpriteCut(ctx, renderer, emitter, core, scale, topLeft, bottomRight, bloomCtx);
         if (emitter.building) drawPartCuts(ctx, renderer, emitter, core, scale, bloomCtx);
     }
+    // 5.3 — lit ship lamps (masthead and stern lanterns), cut like panes.
+    renderer.harborTraffic?.drawLampCuts?.(ctx, core, bloomCtx);
     // 2.7 — the Lighthouse lamp's own light (halo, lens flash, fans).
     ctx.globalAlpha = 1;
     renderer.buildingRenderer?.drawLanternLight?.(ctx);

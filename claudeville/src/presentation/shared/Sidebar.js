@@ -1,7 +1,7 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { i18n } from '../../config/i18n.js';
 import { getTeamColor, shortTeamName } from './TeamColor.js';
-import { repoBranchProfile } from './RepoColor.js';
+import { HARBOR_FOCUS_FLEET_EVENT, harborLedger, ledgerFailureText, ledgerLaneLabel, middleTruncate } from './HarborLedger.js';
 import { AgentSearchIndex } from './SearchIndex.js';
 import { sessionDetailsService } from './SessionDetailsService.js';
 import { el, replaceChildren } from './DomSafe.js';
@@ -24,6 +24,8 @@ import {
 } from './AgentSelection.js';
 import {
     groupAgentsByProject,
+    projectKeyForAgent,
+    worktreeLabel,
     modelPresentation,
     projectProfile,
     providerPresentation,
@@ -96,40 +98,6 @@ function bustIdentityKey(agent) {
 
 // Busts are created when a row comes within four rows of the list's view.
 const BUST_ROOT_MARGIN = '176px 0px';
-
-export function buildHarborLedgerRows(repos = [], now = Date.now()) {
-    return [...(Array.isArray(repos) ? repos : [])]
-        .filter(repo => (Number(repo.pendingCommits ?? repo.count) || 0) > 0)
-        .sort((a, b) => {
-            const aOldest = Number(a.oldestCommitTime) || 0;
-            const bOldest = Number(b.oldestCommitTime) || 0;
-            if (aOldest > 0 && bOldest > 0 && aOldest !== bOldest) return aOldest - bOldest;
-            if ((aOldest > 0) !== (bOldest > 0)) return aOldest > 0 ? -1 : 1;
-            return (Number(b.failedPushes) || 0) - (Number(a.failedPushes) || 0)
-                || (Number(b.pendingCommits ?? b.count) || 0) - (Number(a.pendingCommits ?? a.count) || 0)
-                || String(a.repoName || a.shortName || a.project || '').localeCompare(
-                    String(b.repoName || b.shortName || b.project || ''),
-                );
-        })
-        .map((repo) => {
-            const profile = repo.profile || repoBranchProfile(repo.project, repo.branch);
-            const count = Number(repo.pendingCommits ?? repo.count) || 0;
-            const oldestCommitTime = Number(repo.oldestCommitTime) || 0;
-            const ageLabel = oldestCommitTime > 0 ? formatRelative(oldestCommitTime, now) : '';
-            const branch = repo.branch || '';
-            return {
-                profile,
-                project: repo.project || '',
-                name: repo.repoName || repo.shortName || profile.shortName || profile.name || 'unknown',
-                branch,
-                count,
-                ageLabel,
-                countCapped: count >= 120,
-                detailText: `${branch || 'unknown branch'} - ${count} ${count === 1 ? 'commit' : 'commits'}${ageLabel ? ` - oldest ${ageLabel}` : ''}`,
-            };
-        });
-}
-
 
 export class Sidebar {
     constructor(world) {
@@ -707,6 +675,8 @@ export class Sidebar {
                     agent.effort,
                     agent.provider,
                     agent.projectPath,
+                    agent.repoRoot,
+                    agent.worktree?.name,
                     agent.teamName,
                     agent.workflowName,
                     agent.agentType,
@@ -1196,11 +1166,13 @@ export class Sidebar {
             this._setAttribute(refs.workflow, 'aria-label', workflowLabel);
         }
 
-        // Sub-line: `state · Model`. The adapter's wait reason, when known, is
-        // the state ("waiting for approval — Bash").
+        // Sub-line: `state · Model` (`· wt <name>` for an agent in a linked
+        // worktree, D1: it sits in its repo's group). The adapter's wait
+        // reason, when known, is the state ("waiting for approval — Bash").
         const reason = waitReasonLabel(agent);
         const stateText = reason ? lowerFirst(reason) : statusPresentation(agent.status).label.toLowerCase();
-        this._setNodeText(refs.modelText, model.label ? ` · ${model.label}` : '');
+        const worktree = worktreeLabel(agent);
+        this._setNodeText(refs.modelText, `${model.label ? ` · ${model.label}` : ''}${worktree ? ` · ${worktree}` : ''}`);
         this._setText(refs.state, stateText);
         this._setAttribute(refs.age, 'data-tip', extras.ageText || '');
         this._toggleOptional(refs.info, refs.match, Boolean(extras.searchContext));
@@ -1309,10 +1281,10 @@ export class Sidebar {
 
     _prunePersistentElements(agents, visibleProjectPaths, visibleWorkflowKeys) {
         const liveIds = new Set(agents.map(agent => agent.id));
-        const liveProjects = new Set(agents.map(agent => agent.projectPath || '_unknown'));
+        const liveProjects = new Set(agents.map(agent => projectKeyForAgent(agent)));
         const liveWorkflows = new Set(agents
             .filter(agent => agent.agentType === 'workflow-subagent' && agent.workflowId)
-            .map(agent => `${agent.projectPath || '_unknown'}\u0001${agent.workflowId}`));
+            .map(agent => `${projectKeyForAgent(agent)}\u0001${agent.workflowId}`));
         for (const [id, row] of this._agentRows) {
             if (liveIds.has(id)) continue;
             row._elapsedUnsubscribe?.();
@@ -1369,44 +1341,88 @@ export class Sidebar {
             return;
         }
 
-        const repos = buildHarborLedgerRows(this.harborRepos, Date.now());
-        const total = repos.reduce((sum, repo) => sum + repo.count, 0);
-        this.harborCountEl.textContent = total;
+        const now = Date.now();
+        const ledger = harborLedger(this.harborRepos, { now });
+        this.harborCountEl.textContent = ledger.total;
 
-        if (repos.length === 0) {
+        if (ledger.groups.length === 0) {
             replaceChildren(this.harborListEl, [
                 el('div', { className: 'sidebar__harbor-empty', text: 'No pending commits' }),
             ]);
             return;
         }
 
-        // Harbor rows share the agent row grid: repo swatch | repo / branch ·
-        // oldest | pending-commit count. Repo colour stays on the rail + swatch.
-        const nodes = repos.map(repo => {
-            const { profile } = repo;
-            const disclosure = `best-effort scan - newest 120 commits per branch - repo-watch window 7 days${repo.countCapped ? ' - count capped' : ''}`;
-            const sourceTitle = repo.branch ? `${repo.project} (${repo.branch})` : repo.project;
-            const sub = `${repo.branch || 'unknown branch'}${repo.ageLabel ? ` · oldest ${repo.ageLabel}` : ''}`;
-            const row = el('div', {
-                className: ['sidebar__agent', 'sidebar__harbor-row'],
-                dataset: { tip: `${sourceTitle} - ${repo.detailText} - ${disclosure}` },
-            }, [
-                el('div', { className: 'sidebar__agent-select' }, [
-                    el('span', { className: ['sidebar__agent-dot', 'sidebar__harbor-dot'] }),
-                    el('span', { className: 'sidebar__agent-info' }, [
-                        el('span', { className: 'sidebar__agent-name', text: repo.name }),
-                        el('span', { className: 'sidebar__agent-model', text: sub }),
-                    ]),
-                    el('span', {
-                        className: ['sidebar__agent-age', 'sidebar__harbor-count'],
-                        text: repo.countCapped ? `${repo.count}+` : repo.count,
-                    }),
-                ]),
-            ]);
-            if (profile.accent) row.style.setProperty('--cv-repo-color', profile.accent);
-            return row;
-        });
+        // U-P4 — one row per repo (swatch | name / lane or failure | count);
+        // a repo with several branches lists them as indented lane rows.
+        // Every row is a button: it focuses the camera on that fleet and
+        // opens its fleet card (U-P3). A standing push failure takes the
+        // sub-line until the lane's next successful push (U-P5).
+        const disclosure = 'best-effort scan - newest 120 commits per branch - repo-watch window 7 days';
+        const nodes = [];
+        for (const group of ledger.groups) {
+            const single = group.lanes.length === 1 && group.hiddenLanes === 0 ? group.lanes[0] : null;
+            const laneCount = group.lanes.length + group.hiddenLanes;
+            const age = group.oldestCommitTime > 0 ? `oldest ${formatRelative(group.oldestCommitTime, now)}` : '';
+            const sub = group.failure
+                ? ledgerFailureText(group.failure, now)
+                : [single ? ledgerLaneLabel(single) : `${laneCount} branches`, age].filter(Boolean).join(' · ');
+            nodes.push(this._harborRow({
+                name: middleTruncate(group.name, 26),
+                sub,
+                count: group.count,
+                failed: Boolean(group.failure),
+                accent: group.profile?.accent,
+                project: group.project,
+                branch: single ? single.branch : null,
+                tip: `${group.project}${single ? ` (${single.branch || 'detached'})` : ''} - ${group.count} pending ${group.count === 1 ? 'commit' : 'commits'}${group.failure?.reason ? ` - ${group.failure.reason}` : ''} - ${disclosure}`,
+            }));
+            if (single) continue;
+            for (const lane of group.lanes) {
+                nodes.push(this._harborRow({
+                    lane: true,
+                    name: ledgerLaneLabel(lane, { branchChars: 24 }),
+                    sub: lane.failure
+                        ? ledgerFailureText(lane.failure, now)
+                        : (lane.oldestCommitTime > 0 ? `oldest ${formatRelative(lane.oldestCommitTime, now)}` : ''),
+                    count: lane.count,
+                    failed: Boolean(lane.failure),
+                    accent: group.profile?.accent,
+                    project: lane.project,
+                    branch: lane.branch,
+                    kind: lane.kind,
+                    tip: `${group.name} · ${lane.branch || 'detached'}${lane.worktreeName ? ` (worktree ${lane.worktreeName})` : ''} - ${lane.count} pending${lane.failure?.reason ? ` - ${lane.failure.reason}` : ''}`,
+                }));
+            }
+            if (group.hiddenLanes > 0) {
+                nodes.push(el('div', { className: 'sidebar__harbor-more', text: `+${group.hiddenLanes} more branches` }));
+            }
+        }
         replaceChildren(this.harborListEl, nodes);
+    }
+
+    _harborRow({ lane = false, name, sub, count, failed, accent, project, branch, kind = '', tip }) {
+        const button = el('button', {
+            className: 'sidebar__agent-select',
+            ariaLabel: `${name}, ${count} pending${failed ? `, ${sub}` : ''}. Show fleet`,
+        }, [
+            el('span', { className: ['sidebar__agent-dot', 'sidebar__harbor-dot', kind ? `sidebar__harbor-dot--${kind}` : ''] }),
+            el('span', { className: 'sidebar__agent-info' }, [
+                el('span', { className: 'sidebar__agent-name', text: name }),
+                sub ? el('span', { className: ['sidebar__agent-model', failed ? 'sidebar__harbor-failure' : ''], text: sub }) : null,
+            ]),
+            el('span', { className: ['sidebar__agent-age', 'sidebar__harbor-count'], text: count }),
+        ]);
+        button.type = 'button';
+        button.addEventListener('click', () => {
+            eventBus.emit(HARBOR_FOCUS_FLEET_EVENT, { project, branch });
+            this._closeMobileDrawer();
+        });
+        const row = el('div', {
+            className: ['sidebar__agent', 'sidebar__harbor-row', lane ? 'sidebar__harbor-row--lane' : '', failed ? 'sidebar__harbor-row--failed' : ''],
+            dataset: { tip },
+        }, [button]);
+        if (accent) row.style.setProperty('--cv-repo-color', accent);
+        return row;
     }
 
     destroy() {

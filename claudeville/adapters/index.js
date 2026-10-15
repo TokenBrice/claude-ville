@@ -24,6 +24,8 @@ const {
   inferPushedGitEventsForSessions,
   inferUnpushedGitEventsForSessions,
   isGitEnrichmentDisabled,
+  normalizeProjectPath,
+  resolveRepoIdentity,
 } = require('./gitEvents');
 
 const adapters = [
@@ -192,7 +194,9 @@ function normalizeSession(session, context = {}) {
     agentId: session?.agentId ?? null,
     agentType: session?.agentType || 'main',
     agentName: session?.agentName ?? session?.name ?? null,
-    project: session?.project ?? null,
+    // Absolute projects are resolved once (no trailing slash or `..`), so
+    // every git cache keys one spelling of a path.
+    project: typeof session?.project === 'string' ? normalizeProjectPath(session.project) ?? session.project : (session?.project ?? null),
     model: session?.model || provider,
     status: session?.status || 'active',
     lastActivity: Number(session?.lastActivity) || 0,
@@ -292,21 +296,11 @@ function runGit(args) {
   }).trim();
 }
 
+// A linked worktree's git dir has no config of its own: remotes live in the
+// common dir, which every checkout of the repository shares.
 function resolveGitConfigPath(project) {
-  try {
-    const dotGit = path.join(project, '.git');
-    const stat = fs.statSync(dotGit);
-    if (stat.isDirectory()) return path.join(dotGit, 'config');
-    if (!stat.isFile()) return null;
-
-    const content = fs.readFileSync(dotGit, 'utf8');
-    const match = content.match(/^\s*gitdir:\s*(.+?)\s*$/im);
-    if (!match) return null;
-    const gitDir = path.resolve(project, match[1]);
-    return path.join(gitDir, 'config');
-  } catch {
-    return null;
-  }
+  const identity = resolveRepoIdentity(project);
+  return identity ? path.join(identity.commonDir, 'config') : null;
 }
 
 function hasGitHubRemote(project) {
@@ -718,4 +712,5 @@ module.exports = {
   normalizeDetail,
   normalizeSession,
   setAdapterDataReadyCallback,
+  _test: { hasGitHubRemote },
 };

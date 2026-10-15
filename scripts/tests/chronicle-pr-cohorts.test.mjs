@@ -156,15 +156,23 @@ test('W7.9: PR cutter labels and summaries use pull identity, never event IDs or
         harbor._drawHoverCargoLabel(hover.ctx, positioned, 1);
         assert.deepEqual(hover.calls.texts, [expected]);
 
-        // The always-visible identity plate used to fall through to event IDs.
+        // The identity plate (from z2) used to fall through to event IDs.
         const pennant = recordingCtx();
-        harbor._drawCommitPennant(pennant.ctx, positioned, 1);
+        harbor._drawCommitPennant(pennant.ctx, positioned, 2);
         assert.equal(pennant.calls.texts.length, 1);
         assert.ok(pennant.calls.texts[0].startsWith('PR'));
         if (expected === 'PR #13' || expected === 'PR') {
             assert.deepEqual(pennant.calls.texts, [expected]);
         }
         assert.ok(!pennant.calls.texts[0].includes('qa-pr'));
+
+        // Phase 4: at z1 a PR cutter flies a compact parchment glyph, no plate.
+        const z1 = recordingCtx();
+        harbor._drawCommitPennant(z1.ctx, positioned, 1);
+        assert.deepEqual(z1.calls.texts, [], 'no plate text at z1');
+        const glyph = recordingCtx();
+        harbor._drawCompactGlyph(glyph.ctx, positioned, 1);
+        assert.ok(glyph.calls.fills.length > 0, 'the z1 PR glyph draws');
 
         const badge = recordingCtx();
         harbor._drawShipTierBadge(badge.ctx, positioned);

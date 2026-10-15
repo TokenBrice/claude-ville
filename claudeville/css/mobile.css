@@ -567,6 +567,28 @@
     width: 480px;
 }
 
+/* U-P3 — the fleet card is a bottom sheet on the phone: full width above
+   the safe area, its commit list scrolling inside, finger-sized controls. */
+:root[data-cv-profile="mobile"] .harbor-fleet-card {
+    left: 8px;
+    right: 8px;
+    top: auto;
+    bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+    width: auto;
+    max-height: 56%;
+}
+
+:root[data-cv-profile="mobile"] .harbor-fleet-card__close {
+    width: 32px;
+    height: 32px;
+    line-height: 32px;
+}
+
+:root[data-cv-profile="mobile"] .harbor-fleet-card__lane,
+:root[data-cv-profile="mobile"] .harbor-fleet-card__agent {
+    min-height: 28px;
+}
+
 /* Reduced motion: the drawer and its scrim cut in (the operator's override
    already shortens every animation through topbar.css); the sheet cuts
    through activity-panel.css. */

@@ -1,0 +1,1849 @@
+{
+  "contract": "harbor-wire-v1",
+  "description": "Server session objects (before compactGitEventsForWire) produced by the real parser and repository scan over temporary repositories: a main checkout, a linked worktree under .worktrees/, a detached worktree, a subdirectory session and a second clone. Paths are rewritten under /home/dev/git. Regenerate rather than hand-edit. events lists every distinct event once; sessions shows how they attach.",
+  "cases": {
+    "observedCommit": "git-commit-715e989187555361",
+    "worktreeObservedCommit": "git-commit-ecf50e629f8159b9",
+    "scannedCommitWithCoAuthors": "git-unpushed-7f1d761ee7980f2e",
+    "scannedCommitWithBranches": "git-unpushed-da53f6c8b940b806",
+    "scannedWorktreeCommit": "git-unpushed-da53f6c8b940b806",
+    "detachedCommit": "git-unpushed-e457561c96d98118",
+    "subdirectoryPushWithLandedShas": "git-push-78d95ecb1e147b2a",
+    "headPushWithLandedShas": "git-push-b6db95756223872e",
+    "transitionPush": "git-push-transition-c6defdb6c7bdb4ed",
+    "tagsOnlyPush": "git-push-a80c30aaf1c4fb6e",
+    "singleTagPush": "git-push-f701a4909b2023e9",
+    "deletedPush": "git-push-c351294ea0d7dbec",
+    "rejectedPush": "git-push-618214e83f5f52b8",
+    "refspecPairPush": "git-push-1727a7c7dd03beba",
+    "rewritten": "git-rewritten-00c5013c42e73d7f",
+    "rewrittenGhost": "git-rewritten-512e1f9ff46fbe69"
+  },
+  "events": [
+    {
+      "id": "git-commit-715e989187555361",
+      "type": "commit",
+      "command": "git commit -m \"Build the quay\"",
+      "project": "/home/dev/git/harbor",
+      "provider": "claude",
+      "sessionId": "claude-main-0001",
+      "sourceId": "toolu_commit_quay",
+      "ts": 1792077194769,
+      "commandHash": "e2cab0e3aa42ed53",
+      "dryRun": false,
+      "source": "command-parser",
+      "confidence": 0.98,
+      "inferred": false,
+      "observed": true,
+      "cwd": "/home/dev/git/harbor",
+      "repoRoot": "/home/dev/git/harbor",
+      "checkout": "/home/dev/git/harbor",
+      "worktree": {
+        "name": "harbor",
+        "path": "/home/dev/git/harbor",
+        "isMain": true
+      },
+      "branch": "main",
+      "sha": "ab29c84",
+      "label": "Build the quay",
+      "attribution": "observed",
+      "success": true,
+      "exitCode": 0,
+      "stderr": "[main ab29c84] Build the quay 1 file changed, 1 insertion(+) create mode 100644 quay.txt"
+    },
+    {
+      "id": "git-push-a80c30aaf1c4fb6e",
+      "type": "push",
+      "command": "git push origin --tags",
+      "project": "/home/dev/git/harbor",
+      "provider": "claude",
+      "sessionId": "claude-main-0001",
+      "sourceId": "toolu_push_tags",
+      "ts": 1792077198768,
+      "commandHash": "978a0353e2f54189",
+      "dryRun": false,
+      "source": "command-parser",
+      "confidence": 0.98,
+      "inferred": false,
+      "observed": true,
+      "cwd": "/home/dev/git/harbor",
+      "repoRoot": "/home/dev/git/harbor",
+      "checkout": "/home/dev/git/harbor",
+      "worktree": {
+        "name": "harbor",
+        "path": "/home/dev/git/harbor",
+        "isMain": true
+      },
+      "refs": [],
+      "tagsOnly": true,
+      "remote": "origin",
+      "success": true,
+      "exitCode": 0,
+      "status": "success",
+      "stderr": "To /home/dev/git/remotes/harbor.git * [new tag] v1.0.0 -> v1.0.0"
+    },
+    {
+      "id": "git-push-f701a4909b2023e9",
+      "type": "push",
+      "command": "git push origin v1.0.1",
+      "project": "/home/dev/git/harbor",
+      "provider": "claude",
+      "sessionId": "claude-main-0001",
+      "sourceId": "toolu_push_tag",
+      "ts": 1792077199768,
+      "commandHash": "40951fdf38230703",
+      "dryRun": false,
+      "source": "command-parser",
+      "confidence": 0.98,
+      "inferred": false,
+      "observed": true,
+      "cwd": "/home/dev/git/harbor",
+      "repoRoot": "/home/dev/git/harbor",
+      "checkout": "/home/dev/git/harbor",
+      "worktree": {
+        "name": "harbor",
+        "path": "/home/dev/git/harbor",
+        "isMain": true
+      },
+      "targetRef": "v1.0.1",
+      "refspec": "v1.0.1",
+      "refspecs": [
+        "v1.0.1"
+      ],
+      "refs": [
+        {
+          "src": "refs/tags/v1.0.1",
+          "dst": "refs/tags/v1.0.1",
+          "status": "ok",
+          "tag": true
+        }
+      ],
+      "tag": "v1.0.1",
+      "tagsOnly": true,
+      "remote": "origin",
+      "success": true,
+      "exitCode": 0,
+      "status": "success",
+      "stderr": "To /home/dev/git/remotes/harbor.git * [new tag] v1.0.1 -> v1.0.1"
+    },
+    {
+      "id": "git-push-c351294ea0d7dbec",
+      "type": "push",
+      "command": "git push origin --delete old",
+      "project": "/home/dev/git/harbor",
+      "provider": "claude",
+      "sessionId": "claude-main-0001",
+      "sourceId": "toolu_push_delete",
+      "ts": 1792077200768,
+      "commandHash": "ef0fb4f97ab13924",
+      "dryRun": false,
+      "source": "command-parser",
+      "confidence": 0.98,
+      "inferred": false,
+      "observed": true,
+      "cwd": "/home/dev/git/harbor",
+      "repoRoot": "/home/dev/git/harbor",
+      "checkout": "/home/dev/git/harbor",
+      "worktree": {
+        "name": "harbor",
+        "path": "/home/dev/git/harbor",
+        "isMain": true
+      },
+      "targetRef": "old",
+      "refspec": "old",
+      "refspecs": [
+        "old"
+      ],
+      "branch": "old",
+      "refs": [
+        {
+          "src": "",
+          "dst": "old",
+          "status": "ok"
+        }
+      ],
+      "deleted": true,
+      "remote": "origin",
+      "success": true,
+      "exitCode": 0,
+      "status": "success",
+      "stderr": "To /home/dev/git/remotes/harbor.git - [deleted] old"
+    },
+    {
+      "id": "git-push-618214e83f5f52b8",
+      "type": "push",
+      "command": "git -C ../harbor-other push origin main",
+      "project": "/home/dev/git/harbor",
+      "provider": "claude",
+      "sessionId": "claude-main-0001",
+      "sourceId": "toolu_push_rejected",
+      "ts": 1792077201768,
+      "commandHash": "70a140633e019826",
+      "dryRun": false,
+      "source": "command-parser",
+      "confidence": 0.98,
+      "inferred": false,
+      "observed": true,
+      "cwd": "/home/dev/git/harbor-other",
+      "repoRoot": "/home/dev/git/harbor-other",
+      "checkout": "/home/dev/git/harbor-other",
+      "worktree": {
+        "name": "harbor-other",
+        "path": "/home/dev/git/harbor-other",
+        "isMain": true
+      },
+      "targetRef": "main",
+      "refspec": "main",
+      "refspecs": [
+        "main"
+      ],
+      "branch": "main",
+      "refs": [
+        {
+          "src": "main",
+          "dst": "main",
+          "status": "rejected"
+        }
+      ],
+      "remote": "origin",
+      "success": false,
+      "status": "rejected",
+      "reason": "! [rejected] main -> main (fetch first)",
+      "stderr": "To /home/dev/git/remotes/harbor.git ! [rejected] main -> main (fetch first) error: failed to push some refs to '/home/dev/git/remotes/harbor.git' hint: Updates were rejected because the remote contains work that you do not hint: have locally. This is usually caused by another repository pushing to hint: the same ref. If you want to integrate the remote changes, use hint: 'git pull' before pushing again. hint: See the 'Note about fast-forwards' in 'git push --help' for details."
+    },
+    {
+      "id": "git-push-1727a7c7dd03beba",
+      "type": "push",
+      "command": "git push origin feat-a:main",
+      "project": "/home/dev/git/harbor",
+      "provider": "claude",
+      "sessionId": "claude-main-0001",
+      "sourceId": "toolu_push_pair",
+      "ts": 1792077202768,
+      "commandHash": "6b2533037516360b",
+      "dryRun": false,
+      "source": "command-parser",
+      "confidence": 0.85,
+      "inferred": false,
+      "observed": true,
+      "cwd": "/home/dev/git/harbor",
+      "repoRoot": "/home/dev/git/harbor",
+      "checkout": "/home/dev/git/harbor",
+      "worktree": {
+        "name": "harbor",
+        "path": "/home/dev/git/harbor",
+        "isMain": true
+      },
+      "targetRef": "main",
+      "refspec": "feat-a:main",
+      "refspecs": [
+        "feat-a:main"
+      ],
+      "branch": "feat-a",
+      "refs": [
+        {
+          "src": "feat-a",
+          "dst": "main",
+          "status": null
+        }
+      ],
+      "remote": "origin"
+    },
+    {
+      "id": "git-unpushed-da53f6c8b940b806",
+      "type": "commit",
+      "command": "git commit 4721411b1c (Rig the mast)",
+      "project": "/home/dev/git/harbor",
+      "repoRoot": "/home/dev/git/harbor",
+      "provider": "git",
+      "sessionId": "git-repo-f09fcc7ab4dff010",
+      "sourceId": "git-upstream-status",
+      "source": "git-upstream-status",
+      "confidence": 0.72,
+      "ts": 1792077213000,
+      "commandHash": "eff52a1521373d46",
+      "dryRun": false,
+      "success": true,
+      "exitCode": 0,
+      "completedAt": 1792077213000,
+      "sha": "4721411b1c7aef1582adf1e7e96ce3ccd84b4552",
+      "label": "Rig the mast",
+      "inferred": true,
+      "observed": false,
+      "branch": "feat-a",
+      "targetRef": "feat-a",
+      "upstream": "origin/feat-a",
+      "comparisonRef": "origin/feat-a",
+      "hasUpstream": true,
+      "attribution": "scanned",
+      "scanSeq": 1792077213986,
+      "scannedAt": 1792077213980,
+      "branchesComplete": true,
+      "branches": [
+        "feat-a"
+      ],
+      "checkout": "/home/dev/git/harbor/.worktrees/feat-a",
+      "worktree": {
+        "name": "feat-a",
+        "path": "/home/dev/git/harbor/.worktrees/feat-a",
+        "isMain": false
+      },
+      "author": {
+        "name": "Ada Lovelace",
+        "email": "ada@example.com"
+      }
+    },
+    {
+      "id": "git-unpushed-e457561c96d98118",
+      "type": "commit",
+      "command": "git commit 9a36bf1c13 (Sound the depth)",
+      "project": "/home/dev/git/harbor",
+      "repoRoot": "/home/dev/git/harbor",
+      "provider": "git",
+      "sessionId": "git-repo-f09fcc7ab4dff010",
+      "sourceId": "git-upstream-status",
+      "source": "git-upstream-status",
+      "confidence": 0.72,
+      "ts": 1792077213000,
+      "commandHash": "fd290ca31b84c7f8",
+      "dryRun": false,
+      "success": true,
+      "exitCode": 0,
+      "completedAt": 1792077213000,
+      "sha": "9a36bf1c13e6e7107572d353c82ed2784ef440b9",
+      "label": "Sound the depth",
+      "inferred": true,
+      "observed": false,
+      "branch": null,
+      "targetRef": null,
+      "upstream": null,
+      "comparisonRef": "remotes",
+      "hasUpstream": false,
+      "attribution": "scanned",
+      "scanSeq": 1792077213986,
+      "scannedAt": 1792077213980,
+      "branchesComplete": true,
+      "detached": true,
+      "author": {
+        "name": "Ada Lovelace",
+        "email": "ada@example.com"
+      }
+    },
+    {
+      "id": "git-unpushed-0ad8424a7a58c698",
+      "type": "commit",
+      "command": "git commit 78e998ac61 (Trim the jib)",
+      "project": "/home/dev/git/harbor",
+      "repoRoot": "/home/dev/git/harbor",
+      "provider": "git",
+      "sessionId": "git-repo-f09fcc7ab4dff010",
+      "sourceId": "git-upstream-status",
+      "source": "git-upstream-status",
+      "confidence": 0.72,
+      "ts": 1792077213000,
+      "commandHash": "c5ff0c71347c5aa4",
+      "dryRun": false,
+      "success": true,
+      "exitCode": 0,
+      "completedAt": 1792077213000,
+      "sha": "78e998ac61d61c45e788df02c3a5056fde88e2b0",
+      "label": "Trim the jib",
+      "inferred": true,
+      "observed": false,
+      "branch": "feat-a",
+      "targetRef": "feat-a",
+      "upstream": "origin/feat-a",
+      "comparisonRef": "origin/feat-a",
+      "hasUpstream": true,
+      "attribution": "scanned",
+      "scanSeq": 1792077213986,
+      "scannedAt": 1792077213980,
+      "branchesComplete": true,
+      "branches": [
+        "feat-a"
+      ],
+      "checkout": "/home/dev/git/harbor/.worktrees/feat-a",
+      "worktree": {
+        "name": "feat-a",
+        "path": "/home/dev/git/harbor/.worktrees/feat-a",
+        "isMain": false
+      },
+      "author": {
+        "name": "Ada Lovelace",
+        "email": "ada@example.com"
+      }
+    },
+    {
+      "id": "git-unpushed-7f1d761ee7980f2e",
+      "type": "commit",
+      "command": "git commit dce8f242cd (Raise the pier)",
+      "project": "/home/dev/git/harbor",
+      "repoRoot": "/home/dev/git/harbor",
+      "provider": "git",
+      "sessionId": "git-repo-f09fcc7ab4dff010",
+      "sourceId": "git-upstream-status",
+      "source": "git-upstream-status",
+      "confidence": 0.72,
+      "ts": 1792077213000,
+      "commandHash": "1f927c2409c819e3",
+      "dryRun": false,
+      "success": true,
+      "exitCode": 0,
+      "completedAt": 1792077213000,
+      "sha": "dce8f242cd8ca04b1be7f9c4008b7203dd9f8610",
+      "label": "Raise the pier",
+      "inferred": true,
+      "observed": false,
+      "branch": "main",
+      "targetRef": "main",
+      "upstream": "origin/main",
+      "comparisonRef": "origin/main",
+      "hasUpstream": true,
+      "attribution": "scanned",
+      "scanSeq": 1792077213986,
+      "scannedAt": 1792077213980,
+      "branchesComplete": true,
+      "branches": [
+        "main"
+      ],
+      "checkout": "/home/dev/git/harbor",
+      "worktree": {
+        "name": "harbor",
+        "path": "/home/dev/git/harbor",
+        "isMain": true
+      },
+      "author": {
+        "name": "Ada Lovelace",
+        "email": "ada@example.com"
+      },
+      "coAuthors": [
+        "Claude Opus 5.5"
+      ]
+    },
+    {
+      "id": "git-unpushed-1c6ed3d1b58b76bc",
+      "type": "commit",
+      "command": "git commit 852306eb0c (Late cargo)",
+      "project": "/home/dev/git/harbor-other",
+      "repoRoot": "/home/dev/git/harbor-other",
+      "provider": "git",
+      "sessionId": "git-repo-a1679e76b99a8c0b",
+      "sourceId": "git-upstream-status",
+      "source": "git-upstream-status",
+      "confidence": 0.72,
+      "ts": 1792077213000,
+      "commandHash": "c39d2e5f7fba13d3",
+      "dryRun": false,
+      "success": true,
+      "exitCode": 0,
+      "completedAt": 1792077213000,
+      "sha": "852306eb0c09742f5ca1d27dcf67374ca27a7e55",
+      "label": "Late cargo",
+      "inferred": true,
+      "observed": false,
+      "branch": "main",
+      "targetRef": "main",
+      "upstream": "origin/main",
+      "comparisonRef": "origin/main",
+      "hasUpstream": true,
+      "attribution": "scanned",
+      "scanSeq": 1792077213921,
+      "scannedAt": 1792077213895,
+      "branchesComplete": true,
+      "branches": [
+        "main"
+      ],
+      "checkout": "/home/dev/git/harbor-other",
+      "worktree": {
+        "name": "harbor-other",
+        "path": "/home/dev/git/harbor-other",
+        "isMain": true
+      },
+      "author": {
+        "name": "Ada Lovelace",
+        "email": "ada@example.com"
+      }
+    },
+    {
+      "id": "git-push-transition-c6defdb6c7bdb4ed",
+      "type": "push",
+      "command": "git push (origin/main now contains main)",
+      "project": "/home/dev/git/harbor",
+      "repoRoot": "/home/dev/git/harbor",
+      "provider": "git",
+      "sessionId": "git-repo-f09fcc7ab4dff010",
+      "sourceId": "git-upstream-transition",
+      "source": "git-upstream-transition",
+      "confidence": 0.82,
+      "ts": 1792077213000,
+      "commandHash": "4bb08a3bb8e3a5ca",
+      "dryRun": false,
+      "success": true,
+      "exitCode": 0,
+      "completedAt": 1792077213000,
+      "status": "success",
+      "targetRef": "origin/main",
+      "branch": "main",
+      "label": "Pushed to origin/main",
+      "inferred": true,
+      "observed": false,
+      "synthetic": "transition",
+      "refs": [
+        {
+          "src": "main",
+          "dst": "main",
+          "status": "ok",
+          "sha": "7bc388412129412a41ef39efa8d6ce78b40cf2da"
+        }
+      ],
+      "landedShas": [
+        "7bc388412129412a41ef39efa8d6ce78b40cf2da"
+      ]
+    },
+    {
+      "id": "git-rewritten-00c5013c42e73d7f",
+      "type": "rewritten",
+      "command": "git history rewritten (1 commit left feat-a)",
+      "project": "/home/dev/git/harbor",
+      "repoRoot": "/home/dev/git/harbor",
+      "provider": "git",
+      "sessionId": "git-repo-f09fcc7ab4dff010",
+      "sourceId": "git-upstream-status",
+      "source": "git-upstream-status",
+      "confidence": 0.8,
+      "ts": 1792077213808,
+      "completedAt": 1792077213808,
+      "commandHash": "3f9b96692a6b472f",
+      "dryRun": false,
+      "inferred": true,
+      "observed": false,
+      "branch": "feat-a",
+      "oldShas": [
+        "93ae586ed1143ed463349a0b9e947943cce60342"
+      ],
+      "scanSeq": 1792077213813,
+      "scannedAt": 1792077213808,
+      "branchesComplete": true,
+      "replacements": [
+        {
+          "oldSha": "93ae586ed1143ed463349a0b9e947943cce60342",
+          "newSha": "6e16a7e0f08bb538009fa6b5fe688c28d92c36ed"
+        }
+      ]
+    },
+    {
+      "id": "git-rewritten-512e1f9ff46fbe69",
+      "type": "rewritten",
+      "command": "git history rewritten (1 commit left main)",
+      "project": "/home/dev/git/harbor",
+      "repoRoot": "/home/dev/git/harbor",
+      "provider": "git",
+      "sessionId": "git-repo-f09fcc7ab4dff010",
+      "sourceId": "git-upstream-status",
+      "source": "git-upstream-status",
+      "confidence": 0.8,
+      "ts": 1792077204768,
+      "completedAt": 1792077204768,
+      "commandHash": "82fc1a3367c8a1cd",
+      "dryRun": false,
+      "inferred": true,
+      "observed": false,
+      "branch": "main",
+      "oldShas": [
+        "0badc0d"
+      ],
+      "scanSeq": 1792077213986,
+      "scannedAt": 1792077213980,
+      "branchesComplete": true,
+      "oldIds": [
+        "git-commit-f1115c9a115e3f9f"
+      ]
+    },
+    {
+      "id": "git-push-b6db95756223872e",
+      "type": "push",
+      "command": "git push -u origin HEAD 2>&1",
+      "project": "/home/dev/git/harbor/.worktrees/feat-a",
+      "provider": "codex",
+      "sessionId": "codex-feat-a-0002",
+      "sourceId": "exec-push-head",
+      "ts": 1792077197768,
+      "commandHash": "d65a6a0805f5122b",
+      "dryRun": false,
+      "source": "command-parser",
+      "confidence": 0.98,
+      "inferred": false,
+      "observed": true,
+      "cwd": "/home/dev/git/harbor/.worktrees/feat-a",
+      "repoRoot": "/home/dev/git/harbor",
+      "checkout": "/home/dev/git/harbor/.worktrees/feat-a",
+      "worktree": {
+        "name": "feat-a",
+        "path": "/home/dev/git/harbor/.worktrees/feat-a",
+        "isMain": false
+      },
+      "targetRef": "feat-a",
+      "refspec": "HEAD",
+      "refspecs": [
+        "HEAD"
+      ],
+      "branch": "feat-a",
+      "refs": [
+        {
+          "src": "feat-a",
+          "dst": "feat-a",
+          "status": "ok"
+        }
+      ],
+      "remote": "origin",
+      "success": true,
+      "exitCode": 0,
+      "status": "success",
+      "stderr": "branch 'feat-a' set up to track 'origin/feat-a'. To /home/dev/git/remotes/harbor.git * [new branch] HEAD -> feat-a",
+      "landedShas": [
+        "6e16a7e0f08bb538009fa6b5fe688c28d92c36ed"
+      ]
+    },
+    {
+      "id": "git-commit-ecf50e629f8159b9",
+      "type": "commit",
+      "command": "git commit -m \"Trim the jib\"",
+      "project": "/home/dev/git/harbor/.worktrees/feat-a",
+      "repoRoot": "/home/dev/git/harbor",
+      "provider": "codex",
+      "sessionId": "codex-feat-a-0002",
+      "sourceId": "exec-jib",
+      "source": "command-parser",
+      "confidence": 0.98,
+      "ts": 1792077203768,
+      "commandHash": "da75e49ab2903558",
+      "dryRun": false,
+      "success": true,
+      "exitCode": 0,
+      "completedAt": 1792077213000,
+      "sha": "78e998ac61d61c45e788df02c3a5056fde88e2b0",
+      "label": "Trim the jib",
+      "inferred": false,
+      "observed": true,
+      "branch": "feat-a",
+      "targetRef": "feat-a",
+      "upstream": "origin/feat-a",
+      "comparisonRef": "origin/feat-a",
+      "hasUpstream": true,
+      "attribution": "observed",
+      "scanSeq": 1792077213986,
+      "scannedAt": 1792077213980,
+      "branchesComplete": true,
+      "branches": [
+        "feat-a"
+      ],
+      "checkout": "/home/dev/git/harbor/.worktrees/feat-a",
+      "worktree": {
+        "name": "feat-a",
+        "path": "/home/dev/git/harbor/.worktrees/feat-a",
+        "isMain": false
+      },
+      "author": {
+        "name": "Ada Lovelace",
+        "email": "ada@example.com"
+      },
+      "cwd": "/home/dev/git/harbor/.worktrees/feat-a",
+      "stderr": "[feat-a 78e998a] Trim the jib 1 file changed, 1 insertion(+) create mode 100644 jib.txt"
+    },
+    {
+      "id": "git-push-78d95ecb1e147b2a",
+      "type": "push",
+      "command": "git push origin main",
+      "project": "/home/dev/git/harbor/pkg/app",
+      "provider": "claude",
+      "sessionId": "claude-subdir-0003",
+      "sourceId": "toolu_push_main",
+      "ts": 1792077196768,
+      "commandHash": "16f880284c51ff51",
+      "dryRun": false,
+      "source": "command-parser",
+      "confidence": 0.98,
+      "inferred": false,
+      "observed": true,
+      "cwd": "/home/dev/git/harbor/pkg/app",
+      "repoRoot": "/home/dev/git/harbor",
+      "checkout": "/home/dev/git/harbor",
+      "worktree": {
+        "name": "harbor",
+        "path": "/home/dev/git/harbor",
+        "isMain": true
+      },
+      "targetRef": "main",
+      "refspec": "main",
+      "refspecs": [
+        "main"
+      ],
+      "branch": "main",
+      "refs": [
+        {
+          "src": "main",
+          "dst": "main",
+          "status": "ok",
+          "sha": "ab29c84"
+        }
+      ],
+      "remote": "origin",
+      "success": true,
+      "exitCode": 0,
+      "status": "success",
+      "stderr": "To /home/dev/git/remotes/harbor.git 63dd845..ab29c84 main -> main",
+      "landedShas": [
+        "ab29c84a34465b65088c3dced70b85b9c473102f"
+      ]
+    }
+  ],
+  "sessions": [
+    {
+      "sessionId": "claude-main-0001",
+      "provider": "claude",
+      "project": "/home/dev/git/harbor",
+      "repoRoot": "/home/dev/git/harbor",
+      "worktree": {
+        "name": "harbor",
+        "path": "/home/dev/git/harbor",
+        "isMain": true
+      },
+      "gitEvents": [
+        {
+          "id": "git-commit-715e989187555361",
+          "type": "commit",
+          "command": "git commit -m \"Build the quay\"",
+          "project": "/home/dev/git/harbor",
+          "provider": "claude",
+          "sessionId": "claude-main-0001",
+          "sourceId": "toolu_commit_quay",
+          "ts": 1792077194769,
+          "commandHash": "e2cab0e3aa42ed53",
+          "dryRun": false,
+          "source": "command-parser",
+          "confidence": 0.98,
+          "inferred": false,
+          "observed": true,
+          "cwd": "/home/dev/git/harbor",
+          "repoRoot": "/home/dev/git/harbor",
+          "checkout": "/home/dev/git/harbor",
+          "worktree": {
+            "name": "harbor",
+            "path": "/home/dev/git/harbor",
+            "isMain": true
+          },
+          "branch": "main",
+          "sha": "ab29c84",
+          "label": "Build the quay",
+          "attribution": "observed",
+          "success": true,
+          "exitCode": 0,
+          "stderr": "[main ab29c84] Build the quay 1 file changed, 1 insertion(+) create mode 100644 quay.txt"
+        },
+        {
+          "id": "git-push-a80c30aaf1c4fb6e",
+          "type": "push",
+          "command": "git push origin --tags",
+          "project": "/home/dev/git/harbor",
+          "provider": "claude",
+          "sessionId": "claude-main-0001",
+          "sourceId": "toolu_push_tags",
+          "ts": 1792077198768,
+          "commandHash": "978a0353e2f54189",
+          "dryRun": false,
+          "source": "command-parser",
+          "confidence": 0.98,
+          "inferred": false,
+          "observed": true,
+          "cwd": "/home/dev/git/harbor",
+          "repoRoot": "/home/dev/git/harbor",
+          "checkout": "/home/dev/git/harbor",
+          "worktree": {
+            "name": "harbor",
+            "path": "/home/dev/git/harbor",
+            "isMain": true
+          },
+          "refs": [],
+          "tagsOnly": true,
+          "remote": "origin",
+          "success": true,
+          "exitCode": 0,
+          "status": "success",
+          "stderr": "To /home/dev/git/remotes/harbor.git * [new tag] v1.0.0 -> v1.0.0"
+        },
+        {
+          "id": "git-push-f701a4909b2023e9",
+          "type": "push",
+          "command": "git push origin v1.0.1",
+          "project": "/home/dev/git/harbor",
+          "provider": "claude",
+          "sessionId": "claude-main-0001",
+          "sourceId": "toolu_push_tag",
+          "ts": 1792077199768,
+          "commandHash": "40951fdf38230703",
+          "dryRun": false,
+          "source": "command-parser",
+          "confidence": 0.98,
+          "inferred": false,
+          "observed": true,
+          "cwd": "/home/dev/git/harbor",
+          "repoRoot": "/home/dev/git/harbor",
+          "checkout": "/home/dev/git/harbor",
+          "worktree": {
+            "name": "harbor",
+            "path": "/home/dev/git/harbor",
+            "isMain": true
+          },
+          "targetRef": "v1.0.1",
+          "refspec": "v1.0.1",
+          "refspecs": [
+            "v1.0.1"
+          ],
+          "refs": [
+            {
+              "src": "refs/tags/v1.0.1",
+              "dst": "refs/tags/v1.0.1",
+              "status": "ok",
+              "tag": true
+            }
+          ],
+          "tag": "v1.0.1",
+          "tagsOnly": true,
+          "remote": "origin",
+          "success": true,
+          "exitCode": 0,
+          "status": "success",
+          "stderr": "To /home/dev/git/remotes/harbor.git * [new tag] v1.0.1 -> v1.0.1"
+        },
+        {
+          "id": "git-push-c351294ea0d7dbec",
+          "type": "push",
+          "command": "git push origin --delete old",
+          "project": "/home/dev/git/harbor",
+          "provider": "claude",
+          "sessionId": "claude-main-0001",
+          "sourceId": "toolu_push_delete",
+          "ts": 1792077200768,
+          "commandHash": "ef0fb4f97ab13924",
+          "dryRun": false,
+          "source": "command-parser",
+          "confidence": 0.98,
+          "inferred": false,
+          "observed": true,
+          "cwd": "/home/dev/git/harbor",
+          "repoRoot": "/home/dev/git/harbor",
+          "checkout": "/home/dev/git/harbor",
+          "worktree": {
+            "name": "harbor",
+            "path": "/home/dev/git/harbor",
+            "isMain": true
+          },
+          "targetRef": "old",
+          "refspec": "old",
+          "refspecs": [
+            "old"
+          ],
+          "branch": "old",
+          "refs": [
+            {
+              "src": "",
+              "dst": "old",
+              "status": "ok"
+            }
+          ],
+          "deleted": true,
+          "remote": "origin",
+          "success": true,
+          "exitCode": 0,
+          "status": "success",
+          "stderr": "To /home/dev/git/remotes/harbor.git - [deleted] old"
+        },
+        {
+          "id": "git-push-618214e83f5f52b8",
+          "type": "push",
+          "command": "git -C ../harbor-other push origin main",
+          "project": "/home/dev/git/harbor",
+          "provider": "claude",
+          "sessionId": "claude-main-0001",
+          "sourceId": "toolu_push_rejected",
+          "ts": 1792077201768,
+          "commandHash": "70a140633e019826",
+          "dryRun": false,
+          "source": "command-parser",
+          "confidence": 0.98,
+          "inferred": false,
+          "observed": true,
+          "cwd": "/home/dev/git/harbor-other",
+          "repoRoot": "/home/dev/git/harbor-other",
+          "checkout": "/home/dev/git/harbor-other",
+          "worktree": {
+            "name": "harbor-other",
+            "path": "/home/dev/git/harbor-other",
+            "isMain": true
+          },
+          "targetRef": "main",
+          "refspec": "main",
+          "refspecs": [
+            "main"
+          ],
+          "branch": "main",
+          "refs": [
+            {
+              "src": "main",
+              "dst": "main",
+              "status": "rejected"
+            }
+          ],
+          "remote": "origin",
+          "success": false,
+          "status": "rejected",
+          "reason": "! [rejected] main -> main (fetch first)",
+          "stderr": "To /home/dev/git/remotes/harbor.git ! [rejected] main -> main (fetch first) error: failed to push some refs to '/home/dev/git/remotes/harbor.git' hint: Updates were rejected because the remote contains work that you do not hint: have locally. This is usually caused by another repository pushing to hint: the same ref. If you want to integrate the remote changes, use hint: 'git pull' before pushing again. hint: See the 'Note about fast-forwards' in 'git push --help' for details."
+        },
+        {
+          "id": "git-push-1727a7c7dd03beba",
+          "type": "push",
+          "command": "git push origin feat-a:main",
+          "project": "/home/dev/git/harbor",
+          "provider": "claude",
+          "sessionId": "claude-main-0001",
+          "sourceId": "toolu_push_pair",
+          "ts": 1792077202768,
+          "commandHash": "6b2533037516360b",
+          "dryRun": false,
+          "source": "command-parser",
+          "confidence": 0.85,
+          "inferred": false,
+          "observed": true,
+          "cwd": "/home/dev/git/harbor",
+          "repoRoot": "/home/dev/git/harbor",
+          "checkout": "/home/dev/git/harbor",
+          "worktree": {
+            "name": "harbor",
+            "path": "/home/dev/git/harbor",
+            "isMain": true
+          },
+          "targetRef": "main",
+          "refspec": "feat-a:main",
+          "refspecs": [
+            "feat-a:main"
+          ],
+          "branch": "feat-a",
+          "refs": [
+            {
+              "src": "feat-a",
+              "dst": "main",
+              "status": null
+            }
+          ],
+          "remote": "origin"
+        },
+        {
+          "id": "git-unpushed-da53f6c8b940b806",
+          "type": "commit",
+          "command": "git commit 4721411b1c (Rig the mast)",
+          "project": "/home/dev/git/harbor",
+          "repoRoot": "/home/dev/git/harbor",
+          "provider": "git",
+          "sessionId": "git-repo-f09fcc7ab4dff010",
+          "sourceId": "git-upstream-status",
+          "source": "git-upstream-status",
+          "confidence": 0.72,
+          "ts": 1792077213000,
+          "commandHash": "eff52a1521373d46",
+          "dryRun": false,
+          "success": true,
+          "exitCode": 0,
+          "completedAt": 1792077213000,
+          "sha": "4721411b1c7aef1582adf1e7e96ce3ccd84b4552",
+          "label": "Rig the mast",
+          "inferred": true,
+          "observed": false,
+          "branch": "feat-a",
+          "targetRef": "feat-a",
+          "upstream": "origin/feat-a",
+          "comparisonRef": "origin/feat-a",
+          "hasUpstream": true,
+          "attribution": "scanned",
+          "scanSeq": 1792077213986,
+          "scannedAt": 1792077213980,
+          "branchesComplete": true,
+          "branches": [
+            "feat-a"
+          ],
+          "checkout": "/home/dev/git/harbor/.worktrees/feat-a",
+          "worktree": {
+            "name": "feat-a",
+            "path": "/home/dev/git/harbor/.worktrees/feat-a",
+            "isMain": false
+          },
+          "author": {
+            "name": "Ada Lovelace",
+            "email": "ada@example.com"
+          }
+        },
+        {
+          "id": "git-unpushed-e457561c96d98118",
+          "type": "commit",
+          "command": "git commit 9a36bf1c13 (Sound the depth)",
+          "project": "/home/dev/git/harbor",
+          "repoRoot": "/home/dev/git/harbor",
+          "provider": "git",
+          "sessionId": "git-repo-f09fcc7ab4dff010",
+          "sourceId": "git-upstream-status",
+          "source": "git-upstream-status",
+          "confidence": 0.72,
+          "ts": 1792077213000,
+          "commandHash": "fd290ca31b84c7f8",
+          "dryRun": false,
+          "success": true,
+          "exitCode": 0,
+          "completedAt": 1792077213000,
+          "sha": "9a36bf1c13e6e7107572d353c82ed2784ef440b9",
+          "label": "Sound the depth",
+          "inferred": true,
+          "observed": false,
+          "branch": null,
+          "targetRef": null,
+          "upstream": null,
+          "comparisonRef": "remotes",
+          "hasUpstream": false,
+          "attribution": "scanned",
+          "scanSeq": 1792077213986,
+          "scannedAt": 1792077213980,
+          "branchesComplete": true,
+          "detached": true,
+          "author": {
+            "name": "Ada Lovelace",
+            "email": "ada@example.com"
+          }
+        },
+        {
+          "id": "git-unpushed-0ad8424a7a58c698",
+          "type": "commit",
+          "command": "git commit 78e998ac61 (Trim the jib)",
+          "project": "/home/dev/git/harbor",
+          "repoRoot": "/home/dev/git/harbor",
+          "provider": "git",
+          "sessionId": "git-repo-f09fcc7ab4dff010",
+          "sourceId": "git-upstream-status",
+          "source": "git-upstream-status",
+          "confidence": 0.72,
+          "ts": 1792077213000,
+          "commandHash": "c5ff0c71347c5aa4",
+          "dryRun": false,
+          "success": true,
+          "exitCode": 0,
+          "completedAt": 1792077213000,
+          "sha": "78e998ac61d61c45e788df02c3a5056fde88e2b0",
+          "label": "Trim the jib",
+          "inferred": true,
+          "observed": false,
+          "branch": "feat-a",
+          "targetRef": "feat-a",
+          "upstream": "origin/feat-a",
+          "comparisonRef": "origin/feat-a",
+          "hasUpstream": true,
+          "attribution": "scanned",
+          "scanSeq": 1792077213986,
+          "scannedAt": 1792077213980,
+          "branchesComplete": true,
+          "branches": [
+            "feat-a"
+          ],
+          "checkout": "/home/dev/git/harbor/.worktrees/feat-a",
+          "worktree": {
+            "name": "feat-a",
+            "path": "/home/dev/git/harbor/.worktrees/feat-a",
+            "isMain": false
+          },
+          "author": {
+            "name": "Ada Lovelace",
+            "email": "ada@example.com"
+          }
+        },
+        {
+          "id": "git-unpushed-7f1d761ee7980f2e",
+          "type": "commit",
+          "command": "git commit dce8f242cd (Raise the pier)",
+          "project": "/home/dev/git/harbor",
+          "repoRoot": "/home/dev/git/harbor",
+          "provider": "git",
+          "sessionId": "git-repo-f09fcc7ab4dff010",
+          "sourceId": "git-upstream-status",
+          "source": "git-upstream-status",
+          "confidence": 0.72,
+          "ts": 1792077213000,
+          "commandHash": "1f927c2409c819e3",
+          "dryRun": false,
+          "success": true,
+          "exitCode": 0,
+          "completedAt": 1792077213000,
+          "sha": "dce8f242cd8ca04b1be7f9c4008b7203dd9f8610",
+          "label": "Raise the pier",
+          "inferred": true,
+          "observed": false,
+          "branch": "main",
+          "targetRef": "main",
+          "upstream": "origin/main",
+          "comparisonRef": "origin/main",
+          "hasUpstream": true,
+          "attribution": "scanned",
+          "scanSeq": 1792077213986,
+          "scannedAt": 1792077213980,
+          "branchesComplete": true,
+          "branches": [
+            "main"
+          ],
+          "checkout": "/home/dev/git/harbor",
+          "worktree": {
+            "name": "harbor",
+            "path": "/home/dev/git/harbor",
+            "isMain": true
+          },
+          "author": {
+            "name": "Ada Lovelace",
+            "email": "ada@example.com"
+          },
+          "coAuthors": [
+            "Claude Opus 5.5"
+          ]
+        },
+        {
+          "id": "git-unpushed-1c6ed3d1b58b76bc",
+          "type": "commit",
+          "command": "git commit 852306eb0c (Late cargo)",
+          "project": "/home/dev/git/harbor-other",
+          "repoRoot": "/home/dev/git/harbor-other",
+          "provider": "git",
+          "sessionId": "git-repo-a1679e76b99a8c0b",
+          "sourceId": "git-upstream-status",
+          "source": "git-upstream-status",
+          "confidence": 0.72,
+          "ts": 1792077213000,
+          "commandHash": "c39d2e5f7fba13d3",
+          "dryRun": false,
+          "success": true,
+          "exitCode": 0,
+          "completedAt": 1792077213000,
+          "sha": "852306eb0c09742f5ca1d27dcf67374ca27a7e55",
+          "label": "Late cargo",
+          "inferred": true,
+          "observed": false,
+          "branch": "main",
+          "targetRef": "main",
+          "upstream": "origin/main",
+          "comparisonRef": "origin/main",
+          "hasUpstream": true,
+          "attribution": "scanned",
+          "scanSeq": 1792077213921,
+          "scannedAt": 1792077213895,
+          "branchesComplete": true,
+          "branches": [
+            "main"
+          ],
+          "checkout": "/home/dev/git/harbor-other",
+          "worktree": {
+            "name": "harbor-other",
+            "path": "/home/dev/git/harbor-other",
+            "isMain": true
+          },
+          "author": {
+            "name": "Ada Lovelace",
+            "email": "ada@example.com"
+          }
+        },
+        {
+          "id": "git-push-transition-c6defdb6c7bdb4ed",
+          "type": "push",
+          "command": "git push (origin/main now contains main)",
+          "project": "/home/dev/git/harbor",
+          "repoRoot": "/home/dev/git/harbor",
+          "provider": "git",
+          "sessionId": "git-repo-f09fcc7ab4dff010",
+          "sourceId": "git-upstream-transition",
+          "source": "git-upstream-transition",
+          "confidence": 0.82,
+          "ts": 1792077213000,
+          "commandHash": "4bb08a3bb8e3a5ca",
+          "dryRun": false,
+          "success": true,
+          "exitCode": 0,
+          "completedAt": 1792077213000,
+          "status": "success",
+          "targetRef": "origin/main",
+          "branch": "main",
+          "label": "Pushed to origin/main",
+          "inferred": true,
+          "observed": false,
+          "synthetic": "transition",
+          "refs": [
+            {
+              "src": "main",
+              "dst": "main",
+              "status": "ok",
+              "sha": "7bc388412129412a41ef39efa8d6ce78b40cf2da"
+            }
+          ],
+          "landedShas": [
+            "7bc388412129412a41ef39efa8d6ce78b40cf2da"
+          ]
+        },
+        {
+          "id": "git-rewritten-00c5013c42e73d7f",
+          "type": "rewritten",
+          "command": "git history rewritten (1 commit left feat-a)",
+          "project": "/home/dev/git/harbor",
+          "repoRoot": "/home/dev/git/harbor",
+          "provider": "git",
+          "sessionId": "git-repo-f09fcc7ab4dff010",
+          "sourceId": "git-upstream-status",
+          "source": "git-upstream-status",
+          "confidence": 0.8,
+          "ts": 1792077213808,
+          "completedAt": 1792077213808,
+          "commandHash": "3f9b96692a6b472f",
+          "dryRun": false,
+          "inferred": true,
+          "observed": false,
+          "branch": "feat-a",
+          "oldShas": [
+            "93ae586ed1143ed463349a0b9e947943cce60342"
+          ],
+          "scanSeq": 1792077213813,
+          "scannedAt": 1792077213808,
+          "branchesComplete": true,
+          "replacements": [
+            {
+              "oldSha": "93ae586ed1143ed463349a0b9e947943cce60342",
+              "newSha": "6e16a7e0f08bb538009fa6b5fe688c28d92c36ed"
+            }
+          ]
+        },
+        {
+          "id": "git-rewritten-512e1f9ff46fbe69",
+          "type": "rewritten",
+          "command": "git history rewritten (1 commit left main)",
+          "project": "/home/dev/git/harbor",
+          "repoRoot": "/home/dev/git/harbor",
+          "provider": "git",
+          "sessionId": "git-repo-f09fcc7ab4dff010",
+          "sourceId": "git-upstream-status",
+          "source": "git-upstream-status",
+          "confidence": 0.8,
+          "ts": 1792077204768,
+          "completedAt": 1792077204768,
+          "commandHash": "82fc1a3367c8a1cd",
+          "dryRun": false,
+          "inferred": true,
+          "observed": false,
+          "branch": "main",
+          "oldShas": [
+            "0badc0d"
+          ],
+          "scanSeq": 1792077213986,
+          "scannedAt": 1792077213980,
+          "branchesComplete": true,
+          "oldIds": [
+            "git-commit-f1115c9a115e3f9f"
+          ]
+        }
+      ]
+    },
+    {
+      "sessionId": "codex-feat-a-0002",
+      "provider": "codex",
+      "project": "/home/dev/git/harbor/.worktrees/feat-a",
+      "repoRoot": "/home/dev/git/harbor",
+      "worktree": {
+        "name": "feat-a",
+        "path": "/home/dev/git/harbor/.worktrees/feat-a",
+        "isMain": false
+      },
+      "gitEvents": [
+        {
+          "id": "git-push-b6db95756223872e",
+          "type": "push",
+          "command": "git push -u origin HEAD 2>&1",
+          "project": "/home/dev/git/harbor/.worktrees/feat-a",
+          "provider": "codex",
+          "sessionId": "codex-feat-a-0002",
+          "sourceId": "exec-push-head",
+          "ts": 1792077197768,
+          "commandHash": "d65a6a0805f5122b",
+          "dryRun": false,
+          "source": "command-parser",
+          "confidence": 0.98,
+          "inferred": false,
+          "observed": true,
+          "cwd": "/home/dev/git/harbor/.worktrees/feat-a",
+          "repoRoot": "/home/dev/git/harbor",
+          "checkout": "/home/dev/git/harbor/.worktrees/feat-a",
+          "worktree": {
+            "name": "feat-a",
+            "path": "/home/dev/git/harbor/.worktrees/feat-a",
+            "isMain": false
+          },
+          "targetRef": "feat-a",
+          "refspec": "HEAD",
+          "refspecs": [
+            "HEAD"
+          ],
+          "branch": "feat-a",
+          "refs": [
+            {
+              "src": "feat-a",
+              "dst": "feat-a",
+              "status": "ok"
+            }
+          ],
+          "remote": "origin",
+          "success": true,
+          "exitCode": 0,
+          "status": "success",
+          "stderr": "branch 'feat-a' set up to track 'origin/feat-a'. To /home/dev/git/remotes/harbor.git * [new branch] HEAD -> feat-a",
+          "landedShas": [
+            "6e16a7e0f08bb538009fa6b5fe688c28d92c36ed"
+          ]
+        },
+        {
+          "id": "git-commit-ecf50e629f8159b9",
+          "type": "commit",
+          "command": "git commit -m \"Trim the jib\"",
+          "project": "/home/dev/git/harbor/.worktrees/feat-a",
+          "repoRoot": "/home/dev/git/harbor",
+          "provider": "codex",
+          "sessionId": "codex-feat-a-0002",
+          "sourceId": "exec-jib",
+          "source": "command-parser",
+          "confidence": 0.98,
+          "ts": 1792077203768,
+          "commandHash": "da75e49ab2903558",
+          "dryRun": false,
+          "success": true,
+          "exitCode": 0,
+          "completedAt": 1792077213000,
+          "sha": "78e998ac61d61c45e788df02c3a5056fde88e2b0",
+          "label": "Trim the jib",
+          "inferred": false,
+          "observed": true,
+          "branch": "feat-a",
+          "targetRef": "feat-a",
+          "upstream": "origin/feat-a",
+          "comparisonRef": "origin/feat-a",
+          "hasUpstream": true,
+          "attribution": "observed",
+          "scanSeq": 1792077213986,
+          "scannedAt": 1792077213980,
+          "branchesComplete": true,
+          "branches": [
+            "feat-a"
+          ],
+          "checkout": "/home/dev/git/harbor/.worktrees/feat-a",
+          "worktree": {
+            "name": "feat-a",
+            "path": "/home/dev/git/harbor/.worktrees/feat-a",
+            "isMain": false
+          },
+          "author": {
+            "name": "Ada Lovelace",
+            "email": "ada@example.com"
+          },
+          "cwd": "/home/dev/git/harbor/.worktrees/feat-a",
+          "stderr": "[feat-a 78e998a] Trim the jib 1 file changed, 1 insertion(+) create mode 100644 jib.txt"
+        },
+        {
+          "id": "git-unpushed-da53f6c8b940b806",
+          "type": "commit",
+          "command": "git commit 4721411b1c (Rig the mast)",
+          "project": "/home/dev/git/harbor",
+          "repoRoot": "/home/dev/git/harbor",
+          "provider": "git",
+          "sessionId": "git-repo-f09fcc7ab4dff010",
+          "sourceId": "git-upstream-status",
+          "source": "git-upstream-status",
+          "confidence": 0.72,
+          "ts": 1792077213000,
+          "commandHash": "eff52a1521373d46",
+          "dryRun": false,
+          "success": true,
+          "exitCode": 0,
+          "completedAt": 1792077213000,
+          "sha": "4721411b1c7aef1582adf1e7e96ce3ccd84b4552",
+          "label": "Rig the mast",
+          "inferred": true,
+          "observed": false,
+          "branch": "feat-a",
+          "targetRef": "feat-a",
+          "upstream": "origin/feat-a",
+          "comparisonRef": "origin/feat-a",
+          "hasUpstream": true,
+          "attribution": "scanned",
+          "scanSeq": 1792077213986,
+          "scannedAt": 1792077213980,
+          "branchesComplete": true,
+          "branches": [
+            "feat-a"
+          ],
+          "checkout": "/home/dev/git/harbor/.worktrees/feat-a",
+          "worktree": {
+            "name": "feat-a",
+            "path": "/home/dev/git/harbor/.worktrees/feat-a",
+            "isMain": false
+          },
+          "author": {
+            "name": "Ada Lovelace",
+            "email": "ada@example.com"
+          }
+        },
+        {
+          "id": "git-unpushed-e457561c96d98118",
+          "type": "commit",
+          "command": "git commit 9a36bf1c13 (Sound the depth)",
+          "project": "/home/dev/git/harbor",
+          "repoRoot": "/home/dev/git/harbor",
+          "provider": "git",
+          "sessionId": "git-repo-f09fcc7ab4dff010",
+          "sourceId": "git-upstream-status",
+          "source": "git-upstream-status",
+          "confidence": 0.72,
+          "ts": 1792077213000,
+          "commandHash": "fd290ca31b84c7f8",
+          "dryRun": false,
+          "success": true,
+          "exitCode": 0,
+          "completedAt": 1792077213000,
+          "sha": "9a36bf1c13e6e7107572d353c82ed2784ef440b9",
+          "label": "Sound the depth",
+          "inferred": true,
+          "observed": false,
+          "branch": null,
+          "targetRef": null,
+          "upstream": null,
+          "comparisonRef": "remotes",
+          "hasUpstream": false,
+          "attribution": "scanned",
+          "scanSeq": 1792077213986,
+          "scannedAt": 1792077213980,
+          "branchesComplete": true,
+          "detached": true,
+          "author": {
+            "name": "Ada Lovelace",
+            "email": "ada@example.com"
+          }
+        },
+        {
+          "id": "git-unpushed-7f1d761ee7980f2e",
+          "type": "commit",
+          "command": "git commit dce8f242cd (Raise the pier)",
+          "project": "/home/dev/git/harbor",
+          "repoRoot": "/home/dev/git/harbor",
+          "provider": "git",
+          "sessionId": "git-repo-f09fcc7ab4dff010",
+          "sourceId": "git-upstream-status",
+          "source": "git-upstream-status",
+          "confidence": 0.72,
+          "ts": 1792077213000,
+          "commandHash": "1f927c2409c819e3",
+          "dryRun": false,
+          "success": true,
+          "exitCode": 0,
+          "completedAt": 1792077213000,
+          "sha": "dce8f242cd8ca04b1be7f9c4008b7203dd9f8610",
+          "label": "Raise the pier",
+          "inferred": true,
+          "observed": false,
+          "branch": "main",
+          "targetRef": "main",
+          "upstream": "origin/main",
+          "comparisonRef": "origin/main",
+          "hasUpstream": true,
+          "attribution": "scanned",
+          "scanSeq": 1792077213986,
+          "scannedAt": 1792077213980,
+          "branchesComplete": true,
+          "branches": [
+            "main"
+          ],
+          "checkout": "/home/dev/git/harbor",
+          "worktree": {
+            "name": "harbor",
+            "path": "/home/dev/git/harbor",
+            "isMain": true
+          },
+          "author": {
+            "name": "Ada Lovelace",
+            "email": "ada@example.com"
+          },
+          "coAuthors": [
+            "Claude Opus 5.5"
+          ]
+        },
+        {
+          "id": "git-push-transition-c6defdb6c7bdb4ed",
+          "type": "push",
+          "command": "git push (origin/main now contains main)",
+          "project": "/home/dev/git/harbor",
+          "repoRoot": "/home/dev/git/harbor",
+          "provider": "git",
+          "sessionId": "git-repo-f09fcc7ab4dff010",
+          "sourceId": "git-upstream-transition",
+          "source": "git-upstream-transition",
+          "confidence": 0.82,
+          "ts": 1792077213000,
+          "commandHash": "4bb08a3bb8e3a5ca",
+          "dryRun": false,
+          "success": true,
+          "exitCode": 0,
+          "completedAt": 1792077213000,
+          "status": "success",
+          "targetRef": "origin/main",
+          "branch": "main",
+          "label": "Pushed to origin/main",
+          "inferred": true,
+          "observed": false,
+          "synthetic": "transition",
+          "refs": [
+            {
+              "src": "main",
+              "dst": "main",
+              "status": "ok",
+              "sha": "7bc388412129412a41ef39efa8d6ce78b40cf2da"
+            }
+          ],
+          "landedShas": [
+            "7bc388412129412a41ef39efa8d6ce78b40cf2da"
+          ]
+        },
+        {
+          "id": "git-rewritten-00c5013c42e73d7f",
+          "type": "rewritten",
+          "command": "git history rewritten (1 commit left feat-a)",
+          "project": "/home/dev/git/harbor",
+          "repoRoot": "/home/dev/git/harbor",
+          "provider": "git",
+          "sessionId": "git-repo-f09fcc7ab4dff010",
+          "sourceId": "git-upstream-status",
+          "source": "git-upstream-status",
+          "confidence": 0.8,
+          "ts": 1792077213808,
+          "completedAt": 1792077213808,
+          "commandHash": "3f9b96692a6b472f",
+          "dryRun": false,
+          "inferred": true,
+          "observed": false,
+          "branch": "feat-a",
+          "oldShas": [
+            "93ae586ed1143ed463349a0b9e947943cce60342"
+          ],
+          "scanSeq": 1792077213813,
+          "scannedAt": 1792077213808,
+          "branchesComplete": true,
+          "replacements": [
+            {
+              "oldSha": "93ae586ed1143ed463349a0b9e947943cce60342",
+              "newSha": "6e16a7e0f08bb538009fa6b5fe688c28d92c36ed"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "sessionId": "claude-subdir-0003",
+      "provider": "claude",
+      "project": "/home/dev/git/harbor/pkg/app",
+      "repoRoot": "/home/dev/git/harbor",
+      "worktree": {
+        "name": "harbor",
+        "path": "/home/dev/git/harbor",
+        "isMain": true
+      },
+      "gitEvents": [
+        {
+          "id": "git-push-78d95ecb1e147b2a",
+          "type": "push",
+          "command": "git push origin main",
+          "project": "/home/dev/git/harbor/pkg/app",
+          "provider": "claude",
+          "sessionId": "claude-subdir-0003",
+          "sourceId": "toolu_push_main",
+          "ts": 1792077196768,
+          "commandHash": "16f880284c51ff51",
+          "dryRun": false,
+          "source": "command-parser",
+          "confidence": 0.98,
+          "inferred": false,
+          "observed": true,
+          "cwd": "/home/dev/git/harbor/pkg/app",
+          "repoRoot": "/home/dev/git/harbor",
+          "checkout": "/home/dev/git/harbor",
+          "worktree": {
+            "name": "harbor",
+            "path": "/home/dev/git/harbor",
+            "isMain": true
+          },
+          "targetRef": "main",
+          "refspec": "main",
+          "refspecs": [
+            "main"
+          ],
+          "branch": "main",
+          "refs": [
+            {
+              "src": "main",
+              "dst": "main",
+              "status": "ok",
+              "sha": "ab29c84"
+            }
+          ],
+          "remote": "origin",
+          "success": true,
+          "exitCode": 0,
+          "status": "success",
+          "stderr": "To /home/dev/git/remotes/harbor.git 63dd845..ab29c84 main -> main",
+          "landedShas": [
+            "ab29c84a34465b65088c3dced70b85b9c473102f"
+          ]
+        },
+        {
+          "id": "git-unpushed-da53f6c8b940b806",
+          "type": "commit",
+          "command": "git commit 4721411b1c (Rig the mast)",
+          "project": "/home/dev/git/harbor",
+          "repoRoot": "/home/dev/git/harbor",
+          "provider": "git",
+          "sessionId": "git-repo-f09fcc7ab4dff010",
+          "sourceId": "git-upstream-status",
+          "source": "git-upstream-status",
+          "confidence": 0.72,
+          "ts": 1792077213000,
+          "commandHash": "eff52a1521373d46",
+          "dryRun": false,
+          "success": true,
+          "exitCode": 0,
+          "completedAt": 1792077213000,
+          "sha": "4721411b1c7aef1582adf1e7e96ce3ccd84b4552",
+          "label": "Rig the mast",
+          "inferred": true,
+          "observed": false,
+          "branch": "feat-a",
+          "targetRef": "feat-a",
+          "upstream": "origin/feat-a",
+          "comparisonRef": "origin/feat-a",
+          "hasUpstream": true,
+          "attribution": "scanned",
+          "scanSeq": 1792077213986,
+          "scannedAt": 1792077213980,
+          "branchesComplete": true,
+          "branches": [
+            "feat-a"
+          ],
+          "checkout": "/home/dev/git/harbor/.worktrees/feat-a",
+          "worktree": {
+            "name": "feat-a",
+            "path": "/home/dev/git/harbor/.worktrees/feat-a",
+            "isMain": false
+          },
+          "author": {
+            "name": "Ada Lovelace",
+            "email": "ada@example.com"
+          }
+        },
+        {
+          "id": "git-unpushed-e457561c96d98118",
+          "type": "commit",
+          "command": "git commit 9a36bf1c13 (Sound the depth)",
+          "project": "/home/dev/git/harbor",
+          "repoRoot": "/home/dev/git/harbor",
+          "provider": "git",
+          "sessionId": "git-repo-f09fcc7ab4dff010",
+          "sourceId": "git-upstream-status",
+          "source": "git-upstream-status",
+          "confidence": 0.72,
+          "ts": 1792077213000,
+          "commandHash": "fd290ca31b84c7f8",
+          "dryRun": false,
+          "success": true,
+          "exitCode": 0,
+          "completedAt": 1792077213000,
+          "sha": "9a36bf1c13e6e7107572d353c82ed2784ef440b9",
+          "label": "Sound the depth",
+          "inferred": true,
+          "observed": false,
+          "branch": null,
+          "targetRef": null,
+          "upstream": null,
+          "comparisonRef": "remotes",
+          "hasUpstream": false,
+          "attribution": "scanned",
+          "scanSeq": 1792077213986,
+          "scannedAt": 1792077213980,
+          "branchesComplete": true,
+          "detached": true,
+          "author": {
+            "name": "Ada Lovelace",
+            "email": "ada@example.com"
+          }
+        },
+        {
+          "id": "git-unpushed-0ad8424a7a58c698",
+          "type": "commit",
+          "command": "git commit 78e998ac61 (Trim the jib)",
+          "project": "/home/dev/git/harbor",
+          "repoRoot": "/home/dev/git/harbor",
+          "provider": "git",
+          "sessionId": "git-repo-f09fcc7ab4dff010",
+          "sourceId": "git-upstream-status",
+          "source": "git-upstream-status",
+          "confidence": 0.72,
+          "ts": 1792077213000,
+          "commandHash": "c5ff0c71347c5aa4",
+          "dryRun": false,
+          "success": true,
+          "exitCode": 0,
+          "completedAt": 1792077213000,
+          "sha": "78e998ac61d61c45e788df02c3a5056fde88e2b0",
+          "label": "Trim the jib",
+          "inferred": true,
+          "observed": false,
+          "branch": "feat-a",
+          "targetRef": "feat-a",
+          "upstream": "origin/feat-a",
+          "comparisonRef": "origin/feat-a",
+          "hasUpstream": true,
+          "attribution": "scanned",
+          "scanSeq": 1792077213986,
+          "scannedAt": 1792077213980,
+          "branchesComplete": true,
+          "branches": [
+            "feat-a"
+          ],
+          "checkout": "/home/dev/git/harbor/.worktrees/feat-a",
+          "worktree": {
+            "name": "feat-a",
+            "path": "/home/dev/git/harbor/.worktrees/feat-a",
+            "isMain": false
+          },
+          "author": {
+            "name": "Ada Lovelace",
+            "email": "ada@example.com"
+          }
+        },
+        {
+          "id": "git-unpushed-7f1d761ee7980f2e",
+          "type": "commit",
+          "command": "git commit dce8f242cd (Raise the pier)",
+          "project": "/home/dev/git/harbor",
+          "repoRoot": "/home/dev/git/harbor",
+          "provider": "git",
+          "sessionId": "git-repo-f09fcc7ab4dff010",
+          "sourceId": "git-upstream-status",
+          "source": "git-upstream-status",
+          "confidence": 0.72,
+          "ts": 1792077213000,
+          "commandHash": "1f927c2409c819e3",
+          "dryRun": false,
+          "success": true,
+          "exitCode": 0,
+          "completedAt": 1792077213000,
+          "sha": "dce8f242cd8ca04b1be7f9c4008b7203dd9f8610",
+          "label": "Raise the pier",
+          "inferred": true,
+          "observed": false,
+          "branch": "main",
+          "targetRef": "main",
+          "upstream": "origin/main",
+          "comparisonRef": "origin/main",
+          "hasUpstream": true,
+          "attribution": "scanned",
+          "scanSeq": 1792077213986,
+          "scannedAt": 1792077213980,
+          "branchesComplete": true,
+          "branches": [
+            "main"
+          ],
+          "checkout": "/home/dev/git/harbor",
+          "worktree": {
+            "name": "harbor",
+            "path": "/home/dev/git/harbor",
+            "isMain": true
+          },
+          "author": {
+            "name": "Ada Lovelace",
+            "email": "ada@example.com"
+          },
+          "coAuthors": [
+            "Claude Opus 5.5"
+          ]
+        },
+        {
+          "id": "git-push-transition-c6defdb6c7bdb4ed",
+          "type": "push",
+          "command": "git push (origin/main now contains main)",
+          "project": "/home/dev/git/harbor",
+          "repoRoot": "/home/dev/git/harbor",
+          "provider": "git",
+          "sessionId": "git-repo-f09fcc7ab4dff010",
+          "sourceId": "git-upstream-transition",
+          "source": "git-upstream-transition",
+          "confidence": 0.82,
+          "ts": 1792077213000,
+          "commandHash": "4bb08a3bb8e3a5ca",
+          "dryRun": false,
+          "success": true,
+          "exitCode": 0,
+          "completedAt": 1792077213000,
+          "status": "success",
+          "targetRef": "origin/main",
+          "branch": "main",
+          "label": "Pushed to origin/main",
+          "inferred": true,
+          "observed": false,
+          "synthetic": "transition",
+          "refs": [
+            {
+              "src": "main",
+              "dst": "main",
+              "status": "ok",
+              "sha": "7bc388412129412a41ef39efa8d6ce78b40cf2da"
+            }
+          ],
+          "landedShas": [
+            "7bc388412129412a41ef39efa8d6ce78b40cf2da"
+          ]
+        },
+        {
+          "id": "git-rewritten-00c5013c42e73d7f",
+          "type": "rewritten",
+          "command": "git history rewritten (1 commit left feat-a)",
+          "project": "/home/dev/git/harbor",
+          "repoRoot": "/home/dev/git/harbor",
+          "provider": "git",
+          "sessionId": "git-repo-f09fcc7ab4dff010",
+          "sourceId": "git-upstream-status",
+          "source": "git-upstream-status",
+          "confidence": 0.8,
+          "ts": 1792077213808,
+          "completedAt": 1792077213808,
+          "commandHash": "3f9b96692a6b472f",
+          "dryRun": false,
+          "inferred": true,
+          "observed": false,
+          "branch": "feat-a",
+          "oldShas": [
+            "93ae586ed1143ed463349a0b9e947943cce60342"
+          ],
+          "scanSeq": 1792077213813,
+          "scannedAt": 1792077213808,
+          "branchesComplete": true,
+          "replacements": [
+            {
+              "oldSha": "93ae586ed1143ed463349a0b9e947943cce60342",
+              "newSha": "6e16a7e0f08bb538009fa6b5fe688c28d92c36ed"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

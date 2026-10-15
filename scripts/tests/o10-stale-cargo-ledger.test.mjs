@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { pendingRepoSummariesFromDockSummaries } from '../../claudeville/src/presentation/character-mode/HarborTraffic.js';
-import { buildHarborLedgerRows } from '../../claudeville/src/presentation/shared/Sidebar.js';
+import { harborLedger } from '../../claudeville/src/presentation/shared/HarborLedger.js';
 
 const DAY_MS = 24 * 60 * 60_000;
 const NOW = Date.UTC(2026, 8, 5, 12, 0, 0);
@@ -40,30 +40,29 @@ test('pending repo summaries retain the oldest commit across dock zones', () => 
     assert.equal(unknownRow.oldestCommitTime, 0);
 });
 
-test('harbor ledger is age-first and formats honest age and cap disclosures', () => {
-    const rows = buildHarborLedgerRows([
-        { project: '/repos/alpha', repoName: 'alpha', branch: 'main', profile: profile('alpha'), pendingCommits: 4, failedPushes: 0, oldestCommitTime: NOW - 2 * DAY_MS },
-        { project: '/repos/beta', repoName: 'beta', branch: 'feature/leaks', profile: profile('beta'), pendingCommits: 2, failedPushes: 0, oldestCommitTime: NOW - 6 * DAY_MS },
-        { project: '/repos/capped', repoName: 'capped', branch: 'release', profile: profile('capped'), pendingCommits: 120, failedPushes: 1, oldestCommitTime: 0 },
-        { project: '/repos/empty', repoName: 'empty', branch: 'main', profile: profile('empty'), pendingCommits: 0, failedPushes: 4, oldestCommitTime: NOW - 8 * DAY_MS },
-    ], NOW);
+// U-P4 — one ledger order: a standing failure first, then the oldest
+// pending commit, unknown ages last.
+const ledgerOptions = { now: NOW, nameFor: project => project.split('/').at(-1), profileFor: project => profile(project) };
 
-    assert.deepEqual(rows.map(row => row.name), ['beta', 'alpha', 'capped']);
-    assert.equal(rows[0].ageLabel, '6d ago');
-    assert.equal(rows[0].detailText, 'feature/leaks - 2 commits - oldest 6d ago');
-    assert.equal(rows[1].ageLabel, '2d ago');
-    assert.equal(rows[2].ageLabel, '');
-    assert.equal(rows[2].detailText, 'release - 120 commits');
-    assert.equal(rows[2].detailText.includes('oldest'), false);
-    assert.equal(rows[2].countCapped, true);
+test('harbor ledger puts failures first, then oldest pending, and drops empty lanes', () => {
+    const { groups } = harborLedger([
+        { project: '/repos/alpha', branch: 'main', pendingCommits: 4, failedPushes: 0, oldestCommitTime: NOW - 2 * DAY_MS },
+        { project: '/repos/beta', branch: 'feature/leaks', pendingCommits: 2, failedPushes: 0, oldestCommitTime: NOW - 6 * DAY_MS },
+        { project: '/repos/capped', branch: 'release', pendingCommits: 120, failedPushes: 1, latestFailureAt: NOW - 60_000, oldestCommitTime: 0 },
+        { project: '/repos/empty', branch: 'main', pendingCommits: 0, failedPushes: 0, oldestCommitTime: NOW - 8 * DAY_MS },
+    ], ledgerOptions);
+
+    assert.deepEqual(groups.map(group => group.name), ['capped', 'beta', 'alpha']);
+    assert.equal(groups[1].lanes[0].ageLabel, '6d');
+    assert.equal(groups[0].failure.status, 'failed');
 });
 
-test('unknown-age rows use failure and count ordering only after known ages', () => {
-    const rows = buildHarborLedgerRows([
-        { repoName: 'zeta', branch: 'main', profile: profile('zeta'), pendingCommits: 8, failedPushes: 0, oldestCommitTime: 0 },
-        { repoName: 'alpha', branch: 'main', profile: profile('alpha'), pendingCommits: 1, failedPushes: 2, oldestCommitTime: 0 },
-        { repoName: 'known', branch: 'main', profile: profile('known'), pendingCommits: 1, failedPushes: 0, oldestCommitTime: NOW - 60_000 },
-    ], NOW);
+test('unknown-age lanes sort after known ages, then by count', () => {
+    const { groups } = harborLedger([
+        { project: '/r/zeta', branch: 'main', pendingCommits: 8, oldestCommitTime: 0 },
+        { project: '/r/alpha', branch: 'main', pendingCommits: 1, oldestCommitTime: 0 },
+        { project: '/r/known', branch: 'main', pendingCommits: 1, oldestCommitTime: NOW - 60_000 },
+    ], ledgerOptions);
 
-    assert.deepEqual(rows.map(row => row.name), ['known', 'alpha', 'zeta']);
+    assert.deepEqual(groups.map(group => group.name), ['known', 'zeta', 'alpha']);
 });

@@ -18,15 +18,21 @@
 //       art at display size, colour image = the hull palette. Guarded spend
 //       (balance before/after, ledger line, the lane's 40-generation cap).
 //       Writes the raw candidate to output/pixellab-cache/hulls/.
-//   node scripts/sprites/bake-harbor-hulls.mjs author <key> <source.png>
+//   node scripts/sprites/bake-harbor-hulls.mjs author <key> <source.png> [--nw <source-nw.png>]
 //       Quantize a reviewed candidate, bake the lip and the roll strip into
-//       claudeville/assets/sprites/props/prop.harborShip.<key>.png.
-//   node scripts/sprites/bake-harbor-hulls.mjs rebake <key|all>
-//       Re-derive the four rolled frames from each strip's own centre frame.
-//   node scripts/sprites/bake-harbor-hulls.mjs normalize <key|all> [--target L]
+//       claudeville/assets/sprites/props/prop.harborShip.<key>.png. With
+//       --nw (Phase 3.5 directional hulls) the strip carries two authored
+//       views, SW then NW, five roll frames each on one shared frame and
+//       anchor; the runtime mirrors them for SE and NE. Prints the manifest
+//       `frames` and `directions`.
+//   node scripts/sprites/bake-harbor-hulls.mjs rebake <key|all> [--directions N]
+//       Re-derive the four rolled frames from each strip's own centre frame
+//       (per authored view of an N-view strip).
+//   node scripts/sprites/bake-harbor-hulls.mjs normalize <key|all> [--target L] [--directions N]
 //       Re-quantize each strip's interior wood texels along the timber ladder
 //       so the upright frame's timber mean lands on the Harbor's (3.8 luma);
-//       prints the manifest `masthead` (flag hoist, frame-local).
+//       prints the manifest `masthead` (flag hoist, frame-local), one per
+//       authored view (`mastheads` for an N-view strip).
 //   node scripts/sprites/bake-harbor-hulls.mjs sheet [out.png]
 //       Contact sheet of every strip at 2x (review evidence).
 //   node scripts/sprites/bake-harbor-hulls.mjs flowercart
@@ -53,6 +59,8 @@ const LANE_CAP = 40;
 
 export const ROLL_DEGREES = Object.freeze([-3, -1.5, 0, 1.5, 3]);
 export const ROLL_CENTRE = 2;
+// Authored views in strip order (HarborHulls mirrors SW → SE, NW → NE).
+export const HULL_VIEWS = Object.freeze(['sw', 'nw']);
 
 // Display sizes are the legacy canvas x legacy class scale (the size the
 // operator already saw), rounded. stack20 had borrowed stack30's art at 0.76;
@@ -264,6 +272,54 @@ export function centreFrame(strip, frameWidth) {
     return out;
 }
 
+// The 5-frame roll strips of an N-view strip, left to right.
+export function splitViews(strip, views = 1) {
+    const groupWidth = strip.width / views;
+    if (!Number.isInteger(groupWidth / ROLL_DEGREES.length)) throw new Error(`strip ${strip.width} px wide is not ${views} view(s) of ${ROLL_DEGREES.length} frames`);
+    return Array.from({ length: views }, (_, v) => {
+        const out = blank(groupWidth, strip.height);
+        for (let y = 0; y < strip.height; y++) for (let x = 0; x < groupWidth; x++) {
+            const c = px(strip, v * groupWidth + x, y);
+            if (c[3]) put(out, x, y, c);
+        }
+        return out;
+    });
+}
+
+// One strip of several baked views on one frame size and one anchor: each
+// view's frames shift so every anchor lands on the shared one.
+export function joinViews(baked) {
+    const ax = Math.max(...baked.map(b => b.anchor[0]));
+    const ay = Math.max(...baked.map(b => b.anchor[1]));
+    const fw = Math.max(...baked.map(b => ax - b.anchor[0] + b.frameWidth));
+    const fh = Math.max(...baked.map(b => ay - b.anchor[1] + b.frameHeight));
+    const frames = ROLL_DEGREES.length;
+    const strip = blank(fw * frames * baked.length, fh);
+    baked.forEach((b, v) => {
+        const dx = ax - b.anchor[0]; const dy = ay - b.anchor[1];
+        for (let f = 0; f < frames; f++) {
+            for (let y = 0; y < b.frameHeight; y++) for (let x = 0; x < b.frameWidth; x++) {
+                const c = px(b.strip, f * b.frameWidth + x, y);
+                if (c[3]) put(strip, (v * frames + f) * fw + dx + x, dy + y, c);
+            }
+        }
+    });
+    return { strip, frameWidth: fw, frameHeight: fh, anchor: [ax, ay] };
+}
+
+function joinStrips(groups) {
+    const strip = blank(groups.reduce((sum, g) => sum + g.width, 0), groups[0].height);
+    let ox = 0;
+    for (const g of groups) {
+        for (let y = 0; y < g.height; y++) for (let x = 0; x < g.width; x++) {
+            const c = px(g, x, y);
+            if (c[3]) put(strip, ox + x, y, c);
+        }
+        ox += g.width;
+    }
+    return strip;
+}
+
 function hullByKey(key) {
     const hull = HULLS.find(h => h.key === key);
     if (!hull) throw new Error(`unknown hull ${key}; one of ${HULLS.map(h => h.key).join(', ')}`);
@@ -312,36 +368,45 @@ function dropBakedWater(src) {
     return out;
 }
 
-function author(hull, source, anchorX = null) {
+function bakeView(source, anchorX = null) {
     const quantized = quantizeToHullPalette(dropBakedWater(source));
     const bounds = opaqueBounds(quantized);
     const waterline = waterlineOf(quantized);
     const lipped = bakeLip(quantized, waterline);
     const ax = anchorX ?? Math.round((bounds.minX + bounds.maxX) / 2);
-    const baked = bakeRollStrip(lipped, [ax, waterline + 1]);
+    return bakeRollStrip(lipped, [ax, waterline + 1]);
+}
+
+// `sources`: the SW view, then (optionally) the NW view.
+function author(hull, sources, anchorX = null) {
+    const list = Array.isArray(sources) ? sources : [sources];
+    const views = list.map(source => bakeView(source, anchorX));
+    const baked = views.length > 1 ? joinViews(views) : views[0];
     const out = join(PROPS, `prop.harborShip.${hull.key}.png`);
     writePng(out, baked.strip);
-    console.log(`${hull.key}: ${baked.frameWidth}x${baked.frameHeight} x5 → ${baked.strip.width}x${baked.strip.height}, anchor [${baked.anchor.join(', ')}], colours ${colourCount(baked.strip)}`);
+    const frames = ROLL_DEGREES.length * views.length;
+    console.log(`${hull.key}: ${baked.frameWidth}x${baked.frameHeight} x${frames} → ${baked.strip.width}x${baked.strip.height}, frames: ${frames}, directions: [${HULL_VIEWS.slice(0, views.length).join(', ')}], anchor [${baked.anchor.join(', ')}], colours ${colourCount(baked.strip)}`);
     return baked;
 }
 
-function rebake(hull) {
+function rebake(hull, views = 1) {
     const path = join(PROPS, `prop.harborShip.${hull.key}.png`);
-    const strip = readPng(path);
-    const fw = strip.width / ROLL_DEGREES.length;
-    if (!Number.isInteger(fw)) throw new Error(`${path} is not a ${ROLL_DEGREES.length}-frame strip`);
-    const frame = centreFrame(strip, fw);
-    const waterline = waterlineOf(frame);
-    const bounds = opaqueBounds(frame);
-    const trimmed = blank(bounds.maxX - bounds.minX + 1, waterline + 1);
-    for (let y = 0; y <= waterline; y++) for (let x = bounds.minX; x <= bounds.maxX; x++) {
-        const c = px(frame, x, y);
-        if (c[3]) put(trimmed, x - bounds.minX, y, c);
-    }
-    const ax = Math.round((bounds.maxX - bounds.minX) / 2);
-    const baked = bakeRollStrip(trimmed, [ax, waterline]);
-    writePng(path, baked.strip);
-    console.log(`${hull.key}: rebaked ${baked.frameWidth}x${baked.frameHeight}, anchor [${baked.anchor.join(', ')}]`);
+    const baked = splitViews(readPng(path), views).map((strip) => {
+        const fw = strip.width / ROLL_DEGREES.length;
+        const frame = centreFrame(strip, fw);
+        const waterline = waterlineOf(frame);
+        const bounds = opaqueBounds(frame);
+        const trimmed = blank(bounds.maxX - bounds.minX + 1, waterline + 1);
+        for (let y = 0; y <= waterline; y++) for (let x = bounds.minX; x <= bounds.maxX; x++) {
+            const c = px(frame, x, y);
+            if (c[3]) put(trimmed, x - bounds.minX, y, c);
+        }
+        const ax = Math.round((bounds.maxX - bounds.minX) / 2);
+        return bakeRollStrip(trimmed, [ax, waterline]);
+    });
+    const joined = baked.length > 1 ? joinViews(baked) : baked[0];
+    writePng(path, joined.strip);
+    console.log(`${hull.key}: rebaked ${joined.frameWidth}x${joined.frameHeight} x${ROLL_DEGREES.length * baked.length}, anchor [${joined.anchor.join(', ')}]`);
 }
 
 // ─── Timber value (3.8 luma) ─────────────────────────────────────────────────
@@ -439,13 +504,16 @@ export function mastheadOf(strip, frameWidth) {
     return [xs[Math.floor((xs.length - 1) / 2)], b.minY];
 }
 
-function normalize(hull, target) {
+function normalize(hull, target, views = 1) {
     const path = join(PROPS, `prop.harborShip.${hull.key}.png`);
-    const strip = readPng(path);
-    const fw = strip.width / ROLL_DEGREES.length;
-    const result = normalizeTimber(strip, fw, target);
-    writePng(path, result.strip);
-    console.log(`${hull.key}: timber ${result.before.toFixed(1)} → ${result.after.toFixed(1)}${result.threshold == null ? ' (unchanged)' : ` (terminator ${result.threshold.toFixed(2)})`}, masthead [${mastheadOf(result.strip, fw).join(', ')}]`);
+    const results = splitViews(readPng(path), views).map((strip) => {
+        const fw = strip.width / ROLL_DEGREES.length;
+        return { ...normalizeTimber(strip, fw, target), fw };
+    });
+    writePng(path, joinStrips(results.map(result => result.strip)));
+    results.forEach((result, v) => {
+        console.log(`${hull.key}${views > 1 ? ` [${HULL_VIEWS[v]}]` : ''}: timber ${result.before.toFixed(1)} → ${result.after.toFixed(1)}${result.threshold == null ? ' (unchanged)' : ` (terminator ${result.threshold.toFixed(2)})`}, masthead [${mastheadOf(result.strip, result.fw).join(', ')}]`);
+    });
 }
 
 // ─── PixelLab (guarded) ──────────────────────────────────────────────────────
@@ -586,11 +654,12 @@ async function main() {
         await generate(hullByKey(target), { seed: argValue(args, '--seed', 1), strength: argValue(args, '--strength', 350) });
     } else if (cmd === 'author') {
         if (!extra) throw new Error('author <key> <source.png>');
-        author(hullByKey(target), readPng(extra));
+        const nw = args.indexOf('--nw');
+        author(hullByKey(target), nw >= 0 ? [readPng(extra), readPng(args[nw + 1])] : readPng(extra));
     } else if (cmd === 'rebake') {
-        for (const hull of targets()) rebake(hull);
+        for (const hull of targets()) rebake(hull, argValue(args, '--directions', 1));
     } else if (cmd === 'normalize') {
-        for (const hull of targets()) normalize(hull, argValue(args, '--target', HARBOR_TIMBER_LUMA));
+        for (const hull of targets()) normalize(hull, argValue(args, '--target', HARBOR_TIMBER_LUMA), argValue(args, '--directions', 1));
     } else if (cmd === 'sheet') {
         sheet(target || join(repoRoot, 'output/waking-isle/Ships/hull-contact-2x.png'));
     } else if (cmd === 'flowercart') {

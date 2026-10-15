@@ -2,6 +2,55 @@
 
 ---
 
+## v0.57.0 — *The True Moorings* · Oct 15, 2026
+
+The Harbor, rebuilt from the keel up. It now understands worktrees and branches, its ships sail bow-first through open water to the horizon, and the Harbor Master's house finally belongs to the village.
+
+- **A new Harbor Master.** The old steampunk guildhall, the last landmark outside the village's style, is replaced by a half-timbered harbour house with a glowing tide-clock turret. Its dressed-stone quay now meets the island shore, and three long timber piers reach into the basin. It was generated with PixelLab in the same style as Command and the Tavern. Its windows, crane, door and release bunting are redrawn from the new art. The salt crates and bollards moved to the beach beside the quay; no props were added.
+- **Worktrees belong to their repository.**
+  - A linked worktree, a subdirectory session and the main checkout are now one repository. Before, each worktree took its own mooring under its folder name, such as "agent-a1b2c3", and its ships never left after the work was merged and pushed from the main checkout.
+  - A worktree's branch moors with its repository as its own squad, under a notched worktree pennant.
+  - The sidebar and Dashboard list worktree agents under their repository, marked `wt <name>`.
+- **Ships leave when their commits reach the remote.**
+  - A ship departs when the server confirms a remote branch now contains its commit, so a push from any checkout sails the right ships.
+  - `git push -u origin HEAD`, or a first push before the branch is known, no longer sends every branch to sea.
+  - Tag-only pushes, branch deletions and `feature:main` refspecs sail only what they publish.
+  - A rejected push bounces its ships once and does not replay with every later commit. A successful retry turns them back out to sea.
+- **Commits are counted honestly.**
+  - Failed commits, "nothing to commit", and commits blocked by a hook no longer make ships.
+  - A rebase or amend replaces its ships instead of doubling them.
+  - Commits run in temporary repositories are no longer filed under the session's own repository, and leftover phantom ships retire.
+  - The same commit seen from several sessions or branches is one ship, and it follows the branches that still contain it.
+- **Codex commits reach the Harbor.** Current Codex sessions record shell work in a format ClaudeVille did not read, so their commits and pushes were invisible. They are read now.
+- **Claude sessions report outcomes.** Whether a Claude Bash git command succeeded or failed now reaches the Harbor, with the failure's first line as its reason.
+- **Credentials stay out of the village.** Passwords in remote URLs, auth headers and token assignments are redacted from every git field sent to the browser. Branch names and commit subjects are left intact.
+- **Ships that sail properly.**
+  - Moored ships glide to their berths instead of jumping, even when the harbour reshuffles.
+  - Every hull now has two authored views plus mirrors, so ships sail bow-first in every direction. Before, 95 % of arriving ships sailed backwards.
+  - Routes follow a channel graph checked against the real water, so ships no longer sail across the lagoon spit or the Harbor's quay.
+  - Speed follows the route's length, convoys sail in line astern, and departures sink hull-down past the north-east horizon.
+  - Ships moored at anchor swing together with the wind.
+- **Fleets moor at the Harbor.**
+  - The four most active repositories berth in the channels between the Harbor's piers; others moor along the coast.
+  - The largest hulls moor past the pier heads.
+  - No hull overlaps a pier, the quay, a wall or another hull, even with a hundred commits waiting.
+  - A busy harbour consolidates its largest fleets into stack hulls sooner, so a hundred commits draw as about thirty-five hulls.
+  - Detached-HEAD and failed fleets stack too.
+- **New fleet art.** The seven ship classes, skiff to flagship, are regenerated with PixelLab in the new Harbor's style, each one larger than the last. The stack hulls are now flotillas: a rafted trio, a brigantine with boats alongside, and a flagship ringed by boats. The crab pots and beacon buoy are redrawn in place.
+- **Ships light up at night.** Hulls carry stern and masthead lamps from dusk to dawn, with a warm glow and a shimmer on the water. The Harbor, its clock and the Lighthouse stay the brightest lights.
+- **A Harbor you can read.**
+  - Ship colour is the repository's colour everywhere, matching its agents. The branch is shown by the pennant's shape: swallowtail for the default branch, burgee for a feature branch, notched for a worktree branch.
+  - At survey zoom each repository shows one plate with its total. Branch plates and commit hashes appear from z2.
+  - The sidebar, the Harbor plaque, the building panel and the mooring labels share one format, list failures first, and always show the count.
+  - A failed or rejected push stays visible in the sidebar with its reason until the next successful push. It is logged in the Chronicle under the agent's name.
+- **Click a ship.** A fleet card lists the fleet's commits with subject, short hash, age and author (or "seen by" the agent that found it), plus the last push and its reason. Agent chips select the agent. Ledger rows in the sidebar, the building panel and the Dashboard open the same card and fly the camera to the fleet. The card works from the keyboard and as a bottom sheet on `/m/`.
+- **The Dashboard shows the Harbor.** Each lane shows its branch and a harbour chip with its waiting and failed counts, kept live while the World is paused.
+- **Smaller fixes.** The Lighthouse's night beam no longer paints a stripe down the tower. Cargo crates stand in one pile by the crane instead of floating on the water. Empty moorings hide their marker.
+
+Validation: `gate:release` and `validate:full` are clean, with 2088 unit tests and 3 integration tests passing. 257 new harbor tests, plus a server-path integration test, cover the identity model, departures, rewrites, redaction, motion, pier berths, water bounds and lamps, many of them on real temporary repositories with worktrees, submodules and a bare remote. `verify:render` passes, and the sprite, building and terrain validators are clean. In a 10-minute, 14-repository simulation, no ship stood on land, none jumped, and fewer than 0.5 % sailed stern-first. Four independent adversarial review passes ended with no blocking issue. The new server was run against real repositories with eight linked worktrees, and every ship matched what git reports. Frame times with 103 commits matched v0.56.0 on the Canvas renderer. The Harbor and its fleets were reviewed by eye by day and night on the WebGPU and Canvas renderers.
+
+---
+
 ## v0.56.0 — *The Second Muster* · Oct 15, 2026
 
 The rest of the village gets the hero treatment. GLM, Sonnet, Haiku and GLM Flash have new bodies, the DeepSeek rangers step out of the grass, and every one of them now thinks, celebrates, reads and drinks with its whole body.

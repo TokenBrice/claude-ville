@@ -36,6 +36,7 @@ import { Toast } from './shared/Toast.js';
 import { Modal } from './shared/Modal.js';
 import { el } from './shared/DomSafe.js';
 import { emitAgentSelected, emitAgentDeselected, resetAgentSelection } from './shared/AgentSelection.js';
+import { HARBOR_FOCUS_FLEET_EVENT } from './shared/HarborLedger.js';
 import { sessionDetailsService } from './shared/SessionDetailsService.js';
 import { ClientPerfMetrics } from './shared/ClientPerfMetrics.js';
 import { getModelVisualIdentity } from './shared/ModelVisualIdentity.js';
@@ -902,6 +903,8 @@ export class App {
         // The visible card depends on the mode, so the failure detail and the
         // retry button follow a mode switch.
         this._eventUnsubscribers.push(eventBus.on('mode:changed', () => this._renderVillageSurfaces()));
+        // U-P3 — a Harbor ledger row shows its fleet in the World.
+        this._eventUnsubscribers.push(eventBus.on(HARBOR_FOCUS_FLEET_EVENT, () => this.modeManager?.switchMode('character')));
         this._bootStatusWrap = wrap;
         this._bootStatusEl = status;
         this._bootAnnouncementEl = announcement;

@@ -32,6 +32,8 @@ import {
     workingSetForAgent,
 } from '../shared/Formatters.js';
 import { AgentSelectionMirror, emitAgentDeselected, emitAgentSelected } from '../shared/AgentSelection.js';
+import { HARBOR_FOCUS_FLEET_EVENT, harborLedger, ledgerFailureText, middleTruncate } from '../shared/HarborLedger.js';
+import { normalizeRepoBranch } from '../shared/GitEventIdentity.js';
 import { operatorStatusLabel } from '../shared/SemanticTriage.js';
 import { getTeamColor, shortTeamName } from '../shared/TeamColor.js';
 import { attentionAgentIds, isKeyboardEditTarget, nextCardId, recoveryCardId } from './DashboardKeyboardNavigation.js';
@@ -45,6 +47,8 @@ import {
     buildingPresentation,
     currentToolPresentation,
     groupAgentsByProject,
+    projectKeyForAgent,
+    worktreeLabel,
     modelPresentation,
     projectProfile,
     providerPresentation,
@@ -617,6 +621,16 @@ export class DashboardRenderer {
         eventBus.on('agent:removed', this._onAgentRemoved);
         eventBus.on('mode:changed', this._onModeChanged);
         eventBus.on(DASHBOARD_FILTER_EVENT, this._onSharedFilterChanged);
+        // U-P8 — each project lane states its harbor cargo (`3 unpushed ·
+        // main` / `push failed 2m`) from the shared ledger rows.
+        this._harborRepos = [];
+        this._onHarborUpdated = (repos = []) => {
+            this._harborRepos = Array.isArray(repos) ? repos : [];
+            for (const [projectPath, sectionEl] of this._sectionEls) {
+                this._updateSectionHarbor(sectionEl, projectPath, sectionEl._harborAgents || []);
+            }
+        };
+        eventBus.on('harbor:updated', this._onHarborUpdated);
         document.addEventListener('visibilitychange', this._onVisibilityChange);
         // The view's own box (window resize, sidebar collapse), never the
         // grid's, so toggling the roomy tier cannot re-trigger it.
@@ -656,7 +670,7 @@ export class DashboardRenderer {
         const laneIds = new Set(laneAgents.map(agent => agent.id));
         const laneByProject = new Map();
         for (const agent of laneAgents) {
-            const project = agent.projectPath || '_unknown';
+            const project = projectKeyForAgent(agent);
             if (!laneByProject.has(project)) laneByProject.set(project, []);
             laneByProject.get(project).push(agent);
         }
@@ -969,7 +983,7 @@ export class DashboardRenderer {
         const liveProjects = new Set();
         for (const agent of agents) {
             liveIds.add(String(agent.id));
-            const project = agent.projectPath || '_unknown';
+            const project = projectKeyForAgent(agent);
             liveProjects.add(project);
             if (!this._stableAgentOrder.has(String(agent.id))) {
                 this._stableAgentOrder.set(String(agent.id), this._nextStableAgentOrder++);
@@ -1037,7 +1051,7 @@ export class DashboardRenderer {
 
     _renderAgentUpdate(agent) {
         const cardEl = this.cards.get(agent.id);
-        const projectPath = agent.projectPath || '_unknown';
+        const projectPath = projectKeyForAgent(agent);
         const status = normalizeStatus(agent.status);
         if (!cardEl || cardEl._projectPath !== projectPath || cardEl._status !== status) {
             this.render();
@@ -1109,6 +1123,7 @@ export class DashboardRenderer {
                 <span class="dashboard__section-path"></span>
                 <span class="dashboard__section-health" aria-label="Project health"></span>
                 <span class="dashboard__section-lift" hidden></span>
+                <button type="button" class="dashboard__section-harbor" hidden></button>
                 <span class="dashboard__section-count"></span>
             </div>
             <div class="dashboard__section-healthbar" aria-hidden="true">
@@ -1136,6 +1151,7 @@ export class DashboardRenderer {
             path: section.querySelector('.dashboard__section-path'),
             count: section.querySelector('.dashboard__section-count'),
             lift: section.querySelector('.dashboard__section-lift'),
+            harbor: section.querySelector('.dashboard__section-harbor'),
             grid: section.querySelector('.dashboard__section-grid'),
             health,
             healthStats: Object.fromEntries(SECTION_HEALTH_ORDER.map(bucket => {
@@ -1153,6 +1169,11 @@ export class DashboardRenderer {
             })),
         };
         section._trueErrorCount = 0;
+        section._sectionRefs.harbor.addEventListener('click', (event) => {
+            event.stopPropagation();
+            const target = section._harborTarget;
+            if (target) eventBus.emit(HARBOR_FOCUS_FLEET_EVENT, target);
+        });
         return section;
     }
 
@@ -1186,6 +1207,37 @@ export class DashboardRenderer {
         sectionEl.classList.toggle('dashboard__section--has-kids', hasKids);
 
         this._updateSectionHealth(sectionEl, refs, [...agents, ...laneAgents]);
+        sectionEl._harborAgents = [...agents, ...laneAgents];
+        this._updateSectionHarbor(sectionEl, projectPath, sectionEl._harborAgents);
+    }
+
+    // The lane's harbor chip: its repo's ledger, narrowed to the branches
+    // its agents are on when any of them has cargo. A failure wins the chip.
+    _updateSectionHarbor(sectionEl, projectPath, agents = []) {
+        const chip = sectionEl._sectionRefs?.harbor;
+        if (!chip) return;
+        const repoRoot = agents.find(agent => agent?.repoRoot)?.repoRoot || projectPath;
+        const now = Date.now();
+        const group = harborLedger(this._harborRepos.filter(row => row?.project === repoRoot), { now }).groups[0] || null;
+        const branches = new Set(agents.map(agent => normalizeRepoBranch(agent?.gitBranch)).filter(Boolean));
+        const ownLanes = group?.lanes.filter(lane => branches.has(lane.branch)) || [];
+        const lanes = ownLanes.length ? ownLanes : (group?.lanes || []);
+        const count = lanes.reduce((sum, lane) => sum + lane.count, 0);
+        // A standing failure anywhere in the repo wins the chip.
+        const failure = group?.failure || null;
+        if (!group || (!count && !failure)) {
+            chip.hidden = true;
+            sectionEl._harborTarget = null;
+            return;
+        }
+        const single = lanes.length === 1 ? lanes[0] : null;
+        const where = single ? middleTruncate(single.branch || 'detached', 18) : `${lanes.length} branches`;
+        const text = failure ? ledgerFailureText({ ...failure, reason: '' }, now) : `${count} unpushed · ${where}`;
+        this._setText(chip, text);
+        chip.hidden = false;
+        chip.classList.toggle('dashboard__section-harbor--failed', Boolean(failure));
+        chip.title = `${group.name} · ${where}: ${count} unpushed${failure?.reason ? ` - ${failure.reason}` : ''} - show the fleet`;
+        sectionEl._harborTarget = { project: repoRoot, branch: single ? single.branch : null };
     }
 
     _hasChildProgress(agent) {
@@ -1273,6 +1325,7 @@ export class DashboardRenderer {
                     <span class="dash-card__meta-line">
                         <span class="dash-card__provider-badge"></span>
                         <span class="dash-card__model"></span>
+                        <span class="dash-card__branch"></span>
                         <span class="dash-card__role"></span>
                         <span class="dash-card__workflow-badge" style="display: none"></span>
                     </span>
@@ -1396,6 +1449,7 @@ export class DashboardRenderer {
             select: selectBtn,
             name: card.querySelector('.dash-card__name'),
             model: card.querySelector('.dash-card__model'),
+            branch: card.querySelector('.dash-card__branch'),
             workflowBadge: card.querySelector('.dash-card__workflow-badge'),
             parentChip: card.querySelector('.dash-card__parent-chip'),
             teamBadge: card.querySelector('.dash-card__team-badge'),
@@ -1519,7 +1573,7 @@ export class DashboardRenderer {
         this._mountHero(cardEl, agent, refs.hero);
         const model = modelPresentation(agent);
         const provider = providerPresentation(agent.provider, model.identity);
-        const project = shortProjectName(agent.projectPath || '_unknown', i18n.t('unknownProject'));
+        const project = shortProjectName(projectKeyForAgent(agent), i18n.t('unknownProject'));
         this._setText(refs.name, agent.name || agent.id);
         const providerEl = document.createElement('span');
         providerEl.className = 'dash-card__call-provider';
@@ -1714,7 +1768,7 @@ export class DashboardRenderer {
             i18n.lang || '',
         ].join('|');
 
-        cardEl._projectPath = agent.projectPath || '_unknown';
+        cardEl._projectPath = projectKeyForAgent(agent);
         cardEl._status = status;
         if (this._cardRenderSignatures.get(agent.id) !== signature) {
             this._cardRenderSignatures.set(agent.id, signature);
@@ -1736,6 +1790,11 @@ export class DashboardRenderer {
             // Codex-style labels repeat the provider; say it once.
             this._setText(refs.model, model.label === provider.badge.label ? '' : model.label);
             refs.model.title = model.title;
+            // U-P8 — the branch the agent is on, and its linked worktree (`wt x`).
+            const branch = normalizeRepoBranch(agent.gitBranch);
+            const worktree = worktreeLabel(agent);
+            this._setText(refs.branch, [branch ? `on ${middleTruncate(branch, 22)}` : '', worktree ? middleTruncate(worktree, 20) : ''].filter(Boolean).join(' · '));
+            refs.branch.title = [branch ? `branch ${branch}` : '', agent.worktree?.path ? `worktree ${agent.worktree.path}` : ''].filter(Boolean).join(' - ');
 
             // Workflow swarm members read as one unit via a shared workflow chip;
             // it stands in for the generic 'workflow-subagent' role text.
@@ -2526,5 +2585,6 @@ export class DashboardRenderer {
         eventBus.off('agent:removed', this._onAgentRemoved);
         eventBus.off('mode:changed', this._onModeChanged);
         eventBus.off(DASHBOARD_FILTER_EVENT, this._onSharedFilterChanged);
+        eventBus.off('harbor:updated', this._onHarborUpdated);
     }
 }

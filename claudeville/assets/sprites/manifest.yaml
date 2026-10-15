@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-10-15-second-muster"
+  assetVersion: "2026-10-15-harbor-fleet"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -1962,88 +1962,100 @@ buildings:
     lightOverlay: 'atmosphere.light.lighthouse-beam'
 
   # ── STANDARD: Harbor Master (commit ships / push departures) ──
-  # 4.6 (QAWorld F6) — the baked amber panes are repainted to dark slate glass
-  # in base.png (hand remap onto the building's own glass/roof colours); the
-  # emissive sidecar carries the original pane hues (alpha 0.66, 0.82 at the
-  # lantern), so at night the windows burn only through NightOccupancyGate.
+  # 5.A (2026-10-15) — re-authored into the Painted Isle family: a
+  # half-timbered harbour master's house on a coursed limestone quay whose
+  # west face meets the island shore, three timber piers reaching east into
+  # the basin (the pier berths of decision D2), and one whimsical signature,
+  # the tide clock in the turret. Pro model (create_image_pro, 416x304 canvas,
+  # seed 4245) with building.command as the style image, the operator-picked
+  # B-clock-3 composition draft (painted over with longer piers) and
+  # building.tavern as references, cropped to the structure. Glass is slate in
+  # base.png; the emissive sidecar lights the panes (stepped amber), the quay
+  # lantern and the tide-clock dial (its own sea-glass hue). The crane, door
+  # and bunting strips are re-cropped from this base; the bunting rope runs
+  # between the two masts baked on the north pier.
   - id: building.harbor
-    tool: map_object
-    prompt: "Grand compact high-fantasy steampunk Harbor Masters Guild landmark, designed as a wide readable isometric RPG sprite. A stacked three-level half-timbered guildhall rises directly from a structural timber quay and stone tide-gate pilings, with blue-black slate roofs, warm amber windows, dark oak galleries, stone lower arches, copper steam pipes, narrow smokestacks, brass pressure gauges, gear housings, iron catwalks, and one large ornate clockwork loading crane with chain hoist and suspended cargo crate. Several dock fingers, mooring posts, rope coils, cargo barrels, and visible supports terminate directly in the water. Strong asymmetrical crane-and-chimney silhouette, intricate but readable pixel clusters, medieval fantasy architecture fused with functional Victorian steam machinery. Structure and attached quay only, transparent empty space around and between pilings; no filled water tile, ship, airship, surrounding city, ground slab, cast shadow, text, letters, logo, or watermark."
-    width: 352
-    height: 232
-    anchor: [176, 204]
-    materialClass: timber
+    tool: create_image_pro
+    prompt: "isometric pixel art building sprite, true 2:1 dimetric isometric view from the south-east, a medieval Harbour Master's house on a stone quay with three long timber piers. The house: a large two-storey half-timbered hall of dark oak beams over cream plaster on a grey limestone ashlar ground floor, steep slate-blue tiled roofs with gables and a dormer, a stone chimney, a counting-house bay window, a tall arched oak door facing the lower-left, small leaded windows with unlit dark slate glass, a slate-roofed lean-to store at the left end. Whimsical signature: a slim square clock turret with a slate spire holding a large round glowing tide clock, a brass ring around a pale blue-green moon-and-wave dial. The quay: a broad raised grey limestone quay laid in visible ashlar courses with a darker base course at the waterline and a pale dressed coping-stone edge along its top rim, iron mooring rings. A plain timber jib crane with a rope hoist and a hanging cargo crate at the quay's front corner, an iron lantern on a post. Three long plank timber piers on oak pilings reach from the quay toward the lower-right into open water, parallel and evenly spaced with wide empty water channels between them as ship berths, bollards along each pier. Two tall slim timber masts on the far right pier for bunting. Warm light from the upper left, chunky stepped cel shading, 1px warm near-black selective outline. The structure fills the canvas with a small transparent margin. Structure only on a transparent background: no water, no ground tile, no lawn, no cast shadow, no ships, no people, no text. No steam pipes, no smokestacks, no gauges."
+    provenance: { item: '5.A', endpoint: create_image_pro, jobId: 0bf2b62f-89a8-45d5-9dd1-7e6d659a6163, seed: 4245, styleImage: building.command, referenceImage: 'B-clock-3 draft (create_image_pro job 0aabf50d-9f1b-4f72-9c21-b68a576bdb13, painted over with longer piers) + building.tavern', generationSize: 416x304, crop: [30, 8, 384, 284], generations: 25, pilotGenerations: 45, recolor: 'pure-black outline -> #060402 (hand, not generated)', generatedAt: '2026-10-15' }
+    width: 384
+    height: 284
+    anchor: [131, 154]
+    materialClass: stone
     emissiveSidecar: true
     occluderSidecar: true
     surfaceCode: true
     roomsSidecar: true
     atlasFrame: { atlas: world-pilot, key: building.harbor }
-    elevation: { base: 0, top: 232, unit: sprite-px }
+    elevation: { base: 0, top: 284, unit: sprite-px }
     emissive:
       strength: 0.82
       sources:
         - { id: emissive.harbor.windows, kind: windows, geometry: registry.windowRects, strength: 0.66 }
         - { id: emissive.harbor.lantern, kind: lantern, geometry: lightSource, strength: 0.82 }
-    occluder: { mode: alpha-silhouette, strength: 1, horizonY: 164 }
+        - { id: emissive.harbor.tideClock, kind: lantern, geometry: emitters.signal, strength: 0.72 }
+    # The split sits on the quay's front coping: bodies on the apron (the
+    # open floor) paint over the house, under the quay face and the piers.
+    occluder: { mode: alpha-silhouette, strength: 1, horizonY: 200 }
     splitForOcclusion: true
-    horizonY: 164
+    horizonY: 200
     emitters:
-      torch: [145, 96]
-      signal: [208, 38]
-    lightSource: [181, 156]
+      torch: [18, 149]
+      signal: [187, 51]
+    lightSource: [18, 150]
     lightColor: '#ffd37a'
     lightRadius: 96
     lightOverlay: 'atmosphere.light.lantern-glow'
     layers:
-      # 6.1 — the loading crane hoists: the hook block and crate ride up and
-      # down 6 px on the chain (links scroll as it winds), 4 fps, only while
-      # the Harbor has a working visitor (V8). Frame 0 is the base crop.
+      # 6.1 — the jib crane hoists: the hook and crate ride up 6 px on the
+      # rope, 4 fps, only while the Harbor has a working visitor (V8). Frame 0
+      # is the base crop; the quay texels a lifted crate uncovers are borrowed
+      # one coping course up-left.
       crane:
         tool: hand-authored
-        prompt: "Harbor crane hoist strip: the base chain, hook block and crate raised 0/2/4/6/4/2 px; authored, not generated"
-        width: 168
-        height: 70
+        prompt: "Harbor crane hoist strip: the hook and cargo crate under the jib raised 0/2/4/6/4/2 px; authored, not generated"
+        width: 132
+        height: 56
         frames: 6
-        frameW: 28
-        frameH: 70
-        anchor: [294, 128]
+        frameW: 22
+        frameH: 56
+        anchor: [85, 206]
         fps: 4
         staticFrame: 0
         gate: work.harbor
         restIsBase: true
         materialClass: timber
-      # 6.2 — the harbour-office door on the east house's deck: closed /
-      # ajar / open onto the dark hall and a warm floor while it works.
+      # 6.2 — the arched oak door under the bay window: closed / ajar / open
+      # onto the dark hall and a warm floor while it works.
       door:
         tool: hand-authored
         prompt: "Harbor office door closed / ajar / open, hinged left, dark hall #1a1310 over a stepped warm floor; authored, not generated"
-        width: 42
+        width: 36
         height: 24
         frames: 3
-        frameW: 14
+        frameW: 12
         frameH: 24
-        anchor: [244, 155]
+        anchor: [137, 161]
         fps: 8
         staticFrame: 0
         gate: door.harbor
         oneShot: true
         restIsBase: true
         materialClass: timber
-      # 6.7 (M16) — Chronicle dressing: festival bunting strung between two
-      # outlined timber masts with brass knobs on the middle pier, a pale rope
-      # over a dark under-line, one 6x10 swallow-tailed pennant of the 6.5
-      # family per verified release (frame k = k + 1 pennants, evenly spaced,
-      # max 5), sized to read at z2. A static fact from the Chronicle ledger:
-      # no clock, no gate, no light.
+      # 6.7 (M16) — Chronicle dressing: festival bunting strung between the
+      # two timber masts baked on the north pier, a pale rope over a dark
+      # under-line, one 6x10 swallow-tailed pennant of the 6.5 family per
+      # verified release (frame k = k + 1 pennants, evenly spaced, max 5).
+      # A static fact from the Chronicle ledger: no clock, no gate, no light.
       bunting:
         tool: hand-authored
-        prompt: "Harbor release bunting strip: two outlined timber masts with brass knobs and a sagging pale rope hung with 1..5 gold swallow-tailed pennants (rim, accent, shade, finial tones of pennant.strip.png); authored, not generated"
-        width: 280
-        height: 36
+        prompt: "Harbor release bunting strip: a sagging pale rope between the north pier's two masts hung with 1..5 gold swallow-tailed pennants (rim, accent, shade, finial tones of pennant.strip.png); authored, not generated"
+        width: 420
+        height: 58
         frames: 5
-        frameW: 56
-        frameH: 36
-        anchor: [126, 184]
+        frameW: 84
+        frameH: 58
+        anchor: [302, 122]
         dressing: true
         materialClass: timber
 
@@ -2736,140 +2748,281 @@ props:
   # prop.harborBoat retired to output/attic (3.8): the 64 px commit-boat marker
   # lost its last code reference when commits began riding the stack hulls.
 
-  # 3.8 — every hull is a 5-frame roll strip at its on-screen size (scale 1):
-  # -3°, -1.5°, 0, +1.5°, +3° left to right, frame 2 the authored sprite, the
-  # rolled frames baked with cleanEdge and a 1-px waterline lip on every frame
-  # (`node scripts/sprites/bake-harbor-hulls.mjs`). `anchor` is the frame-local
-  # waterline pivot (the lip row). The seven class hulls were generated at
-  # display size (REST pixflux, hull palette as colour image, seeds below;
-  # ledger output/waking-isle/pixellab-ledger.jsonl); the stacks are the
-  # previous map-object art resampled to display size (area majority).
+  # 3.8 — every hull is a roll strip at its on-screen size (scale 1): five
+  # frames -3°, -1.5°, 0, +1.5°, +3° per authored view, frame 2 of each view the
+  # authored sprite, the rolled frames baked with cleanEdge and a 1-px
+  # waterline lip (`node scripts/sprites/bake-harbor-hulls.mjs`). `anchor` is
+  # the frame-local waterline pivot (the lip row).
+  # 5.1 / 5.6 (2026-10-15) — the seven class hulls are the operator-picked Set I
+  # (create_1_direction_object review packs styled on the new Harbor and the
+  # Tavern), each with an authored NW view from a create_object_pro_flash
+  # 8-view rotation of the picked frame: `directions: [sw, nw]`, 10 frames,
+  # SE/NE mirrored in code (HarborHulls). The dreadnought was drawn facing SE,
+  # so its SW and NW are both rotation views. 5.2 — the stacks are three
+  # flotilla designs (rafted trio; brigantine with boats alongside; flagship
+  # ringed by boats) stepping up in size, SW only. The v0.56 hull and stack art
+  # is retired to output/attic/harbor-fleet-v056. Ledger:
+  # output/waking-isle/pixellab-ledger.jsonl (agent TrackC-Harbor).
   - id: prop.harborShip.skiff
-    tool: generated
-    prompt: "tiny fantasy harbor skiff, one cream triangular sail, dark oak hull, isometric three-quarter view, pixel art, transparent background"
-    width: 155
-    height: 41
-    frames: 5
-    anchor: [15, 38]
-    masthead: [12, 1]
-    provenance: { item: '3.8', endpoint: create-image-pixflux, seed: 13, generationSize: 52x52, generations: 1, pilotGenerations: 2, colorImage: 'C1 hull pool', post: 'quantized to <= 24 C1 colours; lip and roll frames by bake-harbor-hulls.mjs; timber normalised to the Harbor (normalize)', generatedAt: '2026-09-28' }
+    tool: create_1_direction_object
+    prompt: "tiny rowing skiff with one short mast and a small cream lateen sail, bow lower-left, true 2:1 isometric three-quarter view, dark oak plank hull, warm cream canvas sails, 1px warm near-black selective outline, chunky stepped cel shading lit from the upper-left, transparent background"
+    width: 290
+    height: 34
+    frames: 10
+    anchor: [14, 32]
+    masthead: [20, 1]
+    bowFacing: west
+    directions: [sw, nw]
+    mastheads: { sw: [20, 1], nw: [12, 1] }
+    # 5.3 — masthead lamp: hand-placed C1 emissive texels per authored view, rolled
+    # per frame like the mastheads (hand-authored); mirrors derive.
+    materialClass: timber
+    emissiveSidecar: true
+    emissive:
+      strength: 0.8
+      sources:
+        - { id: emissive.harborShip.skiff.lamps, kind: lantern, geometry: authored-albedo, strength: 0.8 }
+    provenance: { item: '5.1+5.6', endpoint: create_1_direction_object, objectId: e317d426-bc83-41d2-b0a1-e9735900d18a, candidate: 'A-1', reviewSize: 48x48, generations: 10, styleImage: 'building.harbor crane/quay/pier crop + building.tavern slate', rotation: { endpoint: create_object_pro_flash, objectId: c1f22297-0a63-4b99-be71-15a121518b94, firstFrame: 'A-1', sw: 'south', nw: 'west', generations: 1 }, post: 'quantized to the C1 hull pool; lip and roll frames by bake-harbor-hulls.mjs author --nw; timber normalised (normalize --directions 2)', generatedAt: '2026-10-15' }
 
   - id: prop.harborShip.cutter
-    tool: generated
-    prompt: "small fantasy cutter sailboat, single mast, cream sail, dark oak hull, isometric three-quarter view, pixel art, transparent background"
-    width: 150
-    height: 47
-    frames: 5
-    anchor: [14, 45]
-    masthead: [14, 1]
-    provenance: { item: '3.8', endpoint: create-image-pixflux, seed: 11, generationSize: 64x64, generations: 1, pilotGenerations: 2, colorImage: 'C1 hull pool', post: 'quantized to <= 24 C1 colours; lip and roll frames by bake-harbor-hulls.mjs; timber normalised to the Harbor (normalize)', generatedAt: '2026-09-28' }
+    tool: create_1_direction_object
+    prompt: "small single-masted cutter with a cream gaff mainsail and jib and a bowsprit pointing lower-left, true 2:1 isometric three-quarter view, dark oak plank hull, warm cream canvas sails, 1px warm near-black selective outline, chunky stepped cel shading lit from the upper-left, transparent background"
+    width: 420
+    height: 49
+    frames: 10
+    anchor: [20, 45]
+    masthead: [30, 5]
+    bowFacing: west
+    directions: [sw, nw]
+    mastheads: { sw: [30, 5], nw: [20, 1] }
+    # 5.3 — masthead lamp: hand-placed C1 emissive texels per authored view, rolled
+    # per frame like the mastheads (hand-authored); mirrors derive.
+    materialClass: timber
+    emissiveSidecar: true
+    emissive:
+      strength: 0.8
+      sources:
+        - { id: emissive.harborShip.cutter.lamps, kind: lantern, geometry: authored-albedo, strength: 0.8 }
+    provenance: { item: '5.1+5.6', endpoint: create_1_direction_object, objectId: e317d426-bc83-41d2-b0a1-e9735900d18a, candidate: 'A-5', reviewSize: 48x48, generations: 10, styleImage: 'building.harbor crane/quay/pier crop + building.tavern slate', rotation: { endpoint: create_object_pro_flash, objectId: e407b326-33b2-4f11-859d-cc750a26e519, firstFrame: 'A-5', sw: 'south', nw: 'west', generations: 1 }, post: 'quantized to the C1 hull pool; lip and roll frames by bake-harbor-hulls.mjs author --nw; timber normalised (normalize --directions 2)', generatedAt: '2026-10-15' }
 
   - id: prop.harborShip.sloop
-    tool: generated
-    prompt: "fantasy sailing sloop, two cream sails, oak hull with ochre trim, isometric three-quarter view, pixel art, transparent background"
-    width: 280
-    height: 62
-    frames: 5
-    anchor: [28, 59]
-    masthead: [24, 1]
-    provenance: { item: '3.8', endpoint: create-image-pixflux, seed: 13, generationSize: 68x68, generations: 1, pilotGenerations: 2, colorImage: 'C1 hull pool', post: 'quantized to <= 24 C1 colours; lip and roll frames by bake-harbor-hulls.mjs; timber normalised to the Harbor (normalize)', generatedAt: '2026-09-28' }
+    tool: create_1_direction_object
+    prompt: "single-masted sloop with a tall cream mainsail and a cream jib, bowsprit pointing lower-left, ochre trim, true 2:1 isometric three-quarter view, dark oak plank hull, warm cream canvas sails, 1px warm near-black selective outline, chunky stepped cel shading lit from the upper-left, transparent background"
+    width: 460
+    height: 49
+    frames: 10
+    anchor: [22, 46]
+    masthead: [32, 1]
+    bowFacing: west
+    directions: [sw, nw]
+    mastheads: { sw: [32, 1], nw: [21, 1] }
+    # 5.3 — masthead lamp: hand-placed C1 emissive texels per authored view, rolled
+    # per frame like the mastheads (hand-authored); mirrors derive.
+    materialClass: timber
+    emissiveSidecar: true
+    emissive:
+      strength: 0.8
+      sources:
+        - { id: emissive.harborShip.sloop.lamps, kind: lantern, geometry: authored-albedo, strength: 0.8 }
+    provenance: { item: '5.1+5.6', endpoint: create_1_direction_object, objectId: e317d426-bc83-41d2-b0a1-e9735900d18a, candidate: 'A-8', reviewSize: 48x48, generations: 10, styleImage: 'building.harbor crane/quay/pier crop + building.tavern slate', rotation: { endpoint: create_object_pro_flash, objectId: b06ae788-aeba-472c-a108-2e5e82c954b0, firstFrame: 'A-8', sw: 'south', nw: 'west', generations: 1 }, post: 'quantized to the C1 hull pool; lip and roll frames by bake-harbor-hulls.mjs author --nw; timber normalised (normalize --directions 2)', generatedAt: '2026-10-15' }
 
   - id: prop.harborShip.brigantine
-    tool: generated
-    prompt: "fantasy merchant brigantine, two masts of cream square sails, stern cabin, oak hull, isometric three-quarter view, pixel art, transparent background"
-    width: 340
-    height: 66
-    frames: 5
-    anchor: [33, 63]
-    masthead: [45, 2]
-    provenance: { item: '3.8', endpoint: create-image-pixflux, seed: 11, generationSize: 72x72, generations: 1, pilotGenerations: 2, colorImage: 'C1 hull pool', post: 'quantized to <= 24 C1 colours; lip and roll frames by bake-harbor-hulls.mjs; timber normalised to the Harbor (normalize)', generatedAt: '2026-09-28' }
+    tool: create_1_direction_object
+    prompt: "two-masted brigantine with cream square sails on the foremast and a cream gaff mainsail, bowsprit lower-left, true 2:1 isometric three-quarter view, dark oak plank hull, warm cream canvas sails, 1px warm near-black selective outline, chunky stepped cel shading lit from the upper-left, transparent background"
+    width: 660
+    height: 75
+    frames: 10
+    anchor: [33, 69]
+    masthead: [39, 6]
+    bowFacing: west
+    directions: [sw, nw]
+    mastheads: { sw: [39, 6], nw: [24, 1] }
+    # 5.3 — masthead lamp: hand-placed C1 emissive texels per authored view, rolled
+    # per frame like the mastheads (hand-authored); mirrors derive.
+    materialClass: timber
+    emissiveSidecar: true
+    emissive:
+      strength: 0.8
+      sources:
+        - { id: emissive.harborShip.brigantine.lamps, kind: lantern, geometry: authored-albedo, strength: 0.8 }
+    provenance: { item: '5.1+5.6', endpoint: create_1_direction_object, objectId: 69aee2fb-af32-49ed-8e80-530879090951, candidate: 'B-0', reviewSize: 84x84, generations: 15, styleImage: 'building.harbor crane/quay/pier crop + building.tavern slate', rotation: { endpoint: create_object_pro_flash, objectId: eb177d76-5138-4954-91ce-160a390184f7, firstFrame: 'B-0', sw: 'south', nw: 'west', generations: 1 }, post: 'quantized to the C1 hull pool; lip and roll frames by bake-harbor-hulls.mjs author --nw; timber normalised (normalize --directions 2)', generatedAt: '2026-10-15' }
 
   - id: prop.harborShip.galleon
-    tool: generated
-    prompt: "fantasy galleon, three masts of cream sails, ornate oak hull with gold trim, stern lanterns, isometric three-quarter view, pixel art, transparent background"
-    width: 280
-    height: 65
-    frames: 5
-    anchor: [28, 62]
-    masthead: [28, 1]
-    provenance: { item: '3.8', endpoint: create-image-pixflux, seed: 11, generationSize: 78x78, generations: 1, pilotGenerations: 4, colorImage: 'C1 hull pool', post: 'quantized to <= 24 C1 colours; lip and roll frames by bake-harbor-hulls.mjs; timber normalised to the Harbor (normalize)', generatedAt: '2026-09-28' }
+    tool: create_1_direction_object
+    prompt: "three-masted galleon with cream sails, gilded stern windows, bow lower-left, true 2:1 isometric three-quarter view, dark oak plank hull, warm cream canvas sails, 1px warm near-black selective outline, chunky stepped cel shading lit from the upper-left, transparent background"
+    width: 760
+    height: 79
+    frames: 10
+    anchor: [37, 76]
+    masthead: [42, 9]
+    bowFacing: west
+    directions: [sw, nw]
+    mastheads: { sw: [42, 9], nw: [28, 1] }
+    # 5.3 — stern lanterns and masthead lamp: hand-placed C1 emissive texels per authored view, rolled
+    # per frame like the mastheads (hand-authored); mirrors derive.
+    materialClass: timber
+    emissiveSidecar: true
+    emissive:
+      strength: 0.8
+      sources:
+        - { id: emissive.harborShip.galleon.lamps, kind: lantern, geometry: authored-albedo, strength: 0.8 }
+    provenance: { item: '5.1+5.6', endpoint: create_1_direction_object, objectId: 69aee2fb-af32-49ed-8e80-530879090951, candidate: 'B-7', reviewSize: 84x84, generations: 15, styleImage: 'building.harbor crane/quay/pier crop + building.tavern slate', rotation: { endpoint: create_object_pro_flash, objectId: 284ae2dc-04e5-4373-be67-074b696a26f1, firstFrame: 'B-7', sw: 'south', nw: 'west', generations: 1 }, post: 'quantized to the C1 hull pool; lip and roll frames by bake-harbor-hulls.mjs author --nw; timber normalised (normalize --directions 2)', generatedAt: '2026-10-15' }
 
   - id: prop.harborShip.dreadnought
-    tool: generated
-    prompt: "fantasy dreadnought warship, dark oak hull, four masts of cream sails, crimson pennants, isometric three-quarter view, pixel art, transparent background"
-    width: 370
-    height: 81
-    frames: 5
-    anchor: [36, 74]
-    masthead: [40, 1]
-    provenance: { item: '3.8', endpoint: create-image-pixflux, seed: 13, generationSize: 84x84, generations: 1, pilotGenerations: 2, colorImage: 'C1 hull pool', post: 'quantized to <= 24 C1 colours; lip and roll frames by bake-harbor-hulls.mjs; timber normalised to the Harbor (normalize)', generatedAt: '2026-09-28' }
+    tool: create_1_direction_object
+    prompt: "large three-masted warship with two rows of closed gun ports, cream sails, dark oak hull with gold stripe, true 2:1 isometric three-quarter view, dark oak plank hull, warm cream canvas sails, 1px warm near-black selective outline, chunky stepped cel shading lit from the upper-left, transparent background"
+    width: 820
+    height: 85
+    frames: 10
+    anchor: [42, 80]
+    masthead: [38, 1]
+    bowFacing: west
+    directions: [sw, nw]
+    mastheads: { sw: [38, 1], nw: [35, 4] }
+    # 5.3 — stern lanterns and masthead lamp: hand-placed C1 emissive texels per authored view, rolled
+    # per frame like the mastheads (hand-authored); mirrors derive.
+    materialClass: timber
+    emissiveSidecar: true
+    emissive:
+      strength: 0.8
+      sources:
+        - { id: emissive.harborShip.dreadnought.lamps, kind: lantern, geometry: authored-albedo, strength: 0.8 }
+    provenance: { item: '5.1+5.6', endpoint: create_1_direction_object, objectId: 69aee2fb-af32-49ed-8e80-530879090951, candidate: 'B-8', reviewSize: 84x84, generations: 15, styleImage: 'building.harbor crane/quay/pier crop + building.tavern slate', rotation: { endpoint: create_object_pro_flash, objectId: 2b5c3258-60f9-49f5-9075-c63406d0604e, firstFrame: 'B-8', sw: 'east', nw: 'north', generations: 1 }, post: 'quantized to the C1 hull pool; lip and roll frames by bake-harbor-hulls.mjs author --nw; timber normalised (normalize --directions 2)', generatedAt: '2026-10-15' }
 
   - id: prop.harborShip.flagship
-    tool: generated
-    prompt: "mythic fantasy flagship galleon, five masts of cream sails, ornate gilded prow, stern lanterns, isometric three-quarter view, pixel art, transparent background"
-    width: 355
-    height: 89
-    frames: 5
-    anchor: [35, 84]
-    masthead: [43, 1]
-    provenance: { item: '3.8', endpoint: create-image-pixflux, seed: 11, generationSize: 92x92, generations: 1, pilotGenerations: 2, colorImage: 'C1 hull pool', post: 'quantized to <= 24 C1 colours; lip and roll frames by bake-harbor-hulls.mjs; timber normalised to the Harbor (normalize)', generatedAt: '2026-09-28' }
+    tool: create_1_direction_object
+    prompt: "grand four-masted royal flagship, bowsprit lower-left, gilded stern castle upper-right, cream sails, gold banner, true 2:1 isometric three-quarter view, dark oak plank hull, warm cream canvas sails, 1px warm near-black selective outline, chunky stepped cel shading lit from the upper-left, transparent background"
+    width: 970
+    height: 93
+    frames: 10
+    anchor: [47, 90]
+    masthead: [51, 1]
+    bowFacing: west
+    directions: [sw, nw]
+    mastheads: { sw: [51, 1], nw: [35, 2] }
+    # 5.3 — stern lanterns and masthead lamp: hand-placed C1 emissive texels per authored view, rolled
+    # per frame like the mastheads (hand-authored); mirrors derive.
+    materialClass: timber
+    emissiveSidecar: true
+    emissive:
+      strength: 0.8
+      sources:
+        - { id: emissive.harborShip.flagship.lamps, kind: lantern, geometry: authored-albedo, strength: 0.8 }
+    provenance: { item: '5.1+5.6', endpoint: create_1_direction_object, objectId: d36cd8a1-b78a-4866-9789-dcd53332f3dd, candidate: 'C-0', reviewSize: 100x100, generations: 10, styleImage: 'building.harbor crane/quay/pier crop + building.tavern slate', rotation: { endpoint: create_object_pro_flash, objectId: 7aab71f4-8ffa-494d-94a9-e42e16301245, firstFrame: 'C-0', sw: 'south', nw: 'west', generations: 1 }, post: 'quantized to the C1 hull pool; lip and roll frames by bake-harbor-hulls.mjs author --nw; timber normalised (normalize --directions 2)', generatedAt: '2026-10-15' }
 
   - id: prop.harborShip.stack5
-    tool: map_object
-    prompt: "compact isometric stack of about five tiny fantasy harbor commit cargo boats lashed together, dark wood hulls, cream triangular sails, gold branch sigils, a few glowing sealed cargo crates, transparent background, no text, no numbers"
-    width: 345
-    height: 68
+    tool: create_1_direction_object
+    prompt: "three small cream-sailed cargo boats rafted side by side and roped together, one gold-trimmed crate on each deck, bows lower-left, true 2:1 isometric three-quarter view, dark oak plank hull, warm cream canvas sails, 1px warm near-black selective outline, chunky stepped cel shading lit from the upper-left, transparent background"
+    width: 375
+    height: 66
     frames: 5
-    anchor: [40, 65]
-    masthead: [40, 1]
+    anchor: [37, 64]
+    masthead: [35, 1]
+    bowFacing: west
+    # 5.3 — deck lamps: hand-placed C1 emissive texels per authored view, rolled
+    # per frame like the mastheads (hand-authored); mirrors derive.
+    materialClass: timber
+    emissiveSidecar: true
+    emissive:
+      strength: 0.8
+      sources:
+        - { id: emissive.harborShip.stack5.lamps, kind: lantern, geometry: authored-albedo, strength: 0.8 }
+    provenance: { item: '5.2', endpoint: create_1_direction_object, objectId: '73f9f8fb-833e-4a82-a204-c9c95c5a9799', candidate: 'S-0', reviewSize: 84x84, generations: 15, styleImage: 'Set I hulls (B-0 + A-1, C-0 + B-0 + A-5)', post: 'leaked style-hull copies removed; quantized to the C1 hull pool; lip and roll frames by bake-harbor-hulls.mjs author; timber normalised (normalize)', generatedAt: '2026-10-15' }
 
   - id: prop.harborShip.stack10
-    tool: map_object
-    prompt: "large isometric stack of about ten fantasy harbor commit cargo boats packed into one broad flotilla marker, dark wood hulls, staggered cream sails, gold branch sigils, transparent background, no text, no numbers"
-    width: 425
-    height: 84
+    tool: create_1_direction_object
+    prompt: "a two-masted brigantine with cream sails and four small cream-sailed cargo boats moored alongside it in a tight raft, ropes and crates, all bows lower-left, true 2:1 isometric three-quarter view, dark oak plank hull, warm cream canvas sails, 1px warm near-black selective outline, chunky stepped cel shading lit from the upper-left, transparent background"
+    width: 540
+    height: 105
     frames: 5
-    anchor: [48, 80]
-    masthead: [52, 1]
+    anchor: [54, 102]
+    masthead: [51, 1]
+    bowFacing: west
+    # 5.3 — deck lamps: hand-placed C1 emissive texels per authored view, rolled
+    # per frame like the mastheads (hand-authored); mirrors derive.
+    materialClass: timber
+    emissiveSidecar: true
+    emissive:
+      strength: 0.8
+      sources:
+        - { id: emissive.harborShip.stack10.lamps, kind: lantern, geometry: authored-albedo, strength: 0.8 }
+    provenance: { item: '5.2', endpoint: create_1_direction_object, objectId: '81d69de6-a513-4df9-9cb3-d4afa684e579', candidate: 'L-0', reviewSize: 168x168, generations: 15, styleImage: 'Set I hulls (B-0 + A-1, C-0 + B-0 + A-5)', post: 'leaked style-hull copies removed; quantized to the C1 hull pool; lip and roll frames by bake-harbor-hulls.mjs author; timber normalised (normalize)', generatedAt: '2026-10-15' }
 
   - id: prop.harborShip.stack20
-    tool: map_object
-    # 3.8 — the stack30 art resampled to 128 px (stack20 used to draw it at 0.76x).
-    prompt: "heavy isometric fleet-stack marker for about twenty to thirty fantasy harbor commit cargo boats, central flagship hull with smaller dark wood boats around it, dense staggered cream sails, gold branch sigils, transparent background, no text, no numbers"
-    width: 555
-    height: 109
+    tool: create_1_direction_object
+    prompt: "a two-masted brigantine with cream square sails, three small cargo boats rafted on its near side and one astern, gold-banded crates, all bows lower-left, true 2:1 isometric three-quarter view, dark oak plank hull, warm cream canvas sails, 1px warm near-black selective outline, chunky stepped cel shading lit from the upper-left, transparent background"
+    width: 610
+    height: 105
     frames: 5
-    anchor: [57, 106]
-    masthead: [61, 1]
+    anchor: [60, 102]
+    masthead: [49, 1]
+    bowFacing: west
+    # 5.3 — deck lamps: hand-placed C1 emissive texels per authored view, rolled
+    # per frame like the mastheads (hand-authored); mirrors derive.
+    materialClass: timber
+    emissiveSidecar: true
+    emissive:
+      strength: 0.8
+      sources:
+        - { id: emissive.harborShip.stack20.lamps, kind: lantern, geometry: authored-albedo, strength: 0.8 }
+    provenance: { item: '5.2', endpoint: create_1_direction_object, objectId: '81d69de6-a513-4df9-9cb3-d4afa684e579', candidate: 'L-1', reviewSize: 168x168, generations: 15, styleImage: 'Set I hulls (B-0 + A-1, C-0 + B-0 + A-5)', post: 'leaked style-hull copies removed; quantized to the C1 hull pool; lip and roll frames by bake-harbor-hulls.mjs author; timber normalised (normalize)', generatedAt: '2026-10-15' }
 
   - id: prop.harborShip.stack30
-    tool: map_object
-    prompt: "heavy isometric fleet-stack marker for about twenty to thirty fantasy harbor commit cargo boats, central flagship hull with smaller dark wood boats around it, dense staggered cream sails, gold branch sigils, transparent background, no text, no numbers"
-    width: 625
-    height: 122
+    tool: create_1_direction_object
+    prompt: "a grand four-masted royal flagship with cream sails and a gold banner at the centre of a ring of six small cream-sailed cargo boats, lanterns, all bows lower-left, true 2:1 isometric three-quarter view, dark oak plank hull, warm cream canvas sails, 1px warm near-black selective outline, chunky stepped cel shading lit from the upper-left, transparent background"
+    width: 755
+    height: 120
     frames: 5
-    anchor: [64, 119]
-    masthead: [69, 1]
+    anchor: [75, 117]
+    masthead: [72, 1]
+    bowFacing: west
+    # 5.3 — deck lamps: hand-placed C1 emissive texels per authored view, rolled
+    # per frame like the mastheads (hand-authored); mirrors derive.
+    materialClass: timber
+    emissiveSidecar: true
+    emissive:
+      strength: 0.8
+      sources:
+        - { id: emissive.harborShip.stack30.lamps, kind: lantern, geometry: authored-albedo, strength: 0.8 }
+    provenance: { item: '5.2', endpoint: create_1_direction_object, objectId: '81d69de6-a513-4df9-9cb3-d4afa684e579', candidate: 'L-2', reviewSize: 168x168, generations: 15, styleImage: 'Set I hulls (B-0 + A-1, C-0 + B-0 + A-5)', post: 'leaked style-hull copies removed; quantized to the C1 hull pool; lip and roll frames by bake-harbor-hulls.mjs author; timber normalised (normalize)', generatedAt: '2026-10-15' }
 
   - id: prop.harborShip.stack40
-    tool: map_object
-    # NOTE: baked via REST pixflux with seed=11 (the manifest-hash seed keeps
-    # returning a hull sitting on an opaque water diamond).
-    prompt: "titan-class isometric fleet-stack marker for about forty fantasy harbor commit cargo boats, colossal dark wood treasure galleon with towering stacked cream sails and a cluster of small cargo boats lashed to its hull, gold branch sigils, glowing sealed cargo crates on deck, transparent background, no text, no numbers"
-    width: 660
-    height: 152
+    tool: create_1_direction_object
+    prompt: "a gilded royal flagship galleon with cream sails surrounded by a ring of six small oak cargo boats with cream sails and gold crates, all bows lower-left, true 2:1 isometric three-quarter view, dark oak plank hull, warm cream canvas sails, 1px warm near-black selective outline, chunky stepped cel shading lit from the upper-left, transparent background"
+    width: 785
+    height: 122
     frames: 5
-    anchor: [69, 145]
-    masthead: [87, 2]
+    anchor: [78, 119]
+    masthead: [83, 1]
+    bowFacing: west
+    # 5.3 — deck lamps: hand-placed C1 emissive texels per authored view, rolled
+    # per frame like the mastheads (hand-authored); mirrors derive.
+    materialClass: timber
+    emissiveSidecar: true
+    emissive:
+      strength: 0.8
+      sources:
+        - { id: emissive.harborShip.stack40.lamps, kind: lantern, geometry: authored-albedo, strength: 0.8 }
+    provenance: { item: '5.2', endpoint: create_1_direction_object, objectId: '81d69de6-a513-4df9-9cb3-d4afa684e579', candidate: 'L-3', reviewSize: 168x168, generations: 15, styleImage: 'Set I hulls (B-0 + A-1, C-0 + B-0 + A-5)', post: 'leaked style-hull copies removed; quantized to the C1 hull pool; lip and roll frames by bake-harbor-hulls.mjs author; timber normalised (normalize)', generatedAt: '2026-10-15' }
 
   - id: prop.harborShip.stack50
-    tool: map_object
-    prompt: "titan-class isometric fleet-stack marker for about fifty fantasy harbor commit cargo boats, mythic leviathan-sized dark wood ark with five towering masts of cream sails, ornate gold prow, magical lanterns, dense flotilla of tiny cargo boats moored around its hull, gold branch sigils, transparent background, no text, no numbers"
-    width: 865
-    height: 157
+    tool: create_1_direction_object
+    prompt: "the stack40 flagship ring with the stack5 rafted trio moored off its stern quarter (hand composite of the two generated designs), true 2:1 isometric three-quarter view, dark oak plank hull, warm cream canvas sails, 1px warm near-black selective outline, chunky stepped cel shading lit from the upper-left, transparent background"
+    width: 985
+    height: 143
     frames: 5
-    anchor: [88, 154]
-    masthead: [113, 2]
+    anchor: [99, 130]
+    masthead: [84, 2]
+    bowFacing: west
+    # 5.3 — deck lamps: hand-placed C1 emissive texels per authored view, rolled
+    # per frame like the mastheads (hand-authored); mirrors derive.
+    materialClass: timber
+    emissiveSidecar: true
+    emissive:
+      strength: 0.8
+      sources:
+        - { id: emissive.harborShip.stack50.lamps, kind: lantern, geometry: authored-albedo, strength: 0.8 }
+    provenance: { item: '5.2', endpoint: create_1_direction_object, objectId: '81d69de6-a513-4df9-9cb3-d4afa684e579 + 73f9f8fb-833e-4a82-a204-c9c95c5a9799', candidate: 'L-3 + S-0', reviewSize: 168x168, generations: 0, styleImage: 'Set I hulls (B-0 + A-1, C-0 + B-0 + A-5)', post: 'leaked style-hull copies removed; quantized to the C1 hull pool; lip and roll frames by bake-harbor-hulls.mjs author; timber normalised (normalize)', generatedAt: '2026-10-15' }
 
   - id: prop.harborCrates
     tool: edit_image_pixen
@@ -3071,10 +3224,12 @@ props:
     anchor: [32, 48]
 
   - id: prop.harborBeaconBuoy
-    tool: isometric_tile
-    prompt: "fantasy harbor beacon buoy, brass cage lantern, red pennant, rope knots, barnacled float, transparent background only, isolated sprite, no water tile, no square base, no baked shadow, empty transparent corners"
-    size: 32
-    anchor: [16, 24]
+    tool: create_1_direction_object
+    prompt: "squat round red barrel buoy with a cream band and a little brass lantern cage on top, true 2:1 isometric three-quarter view, 1px warm near-black selective outline, chunky stepped cel shading lit from the upper-left, transparent background, no water, no shadow, no text"
+    width: 16
+    height: 20
+    anchor: [8, 17]
+    provenance: { item: '5.4', endpoint: create_1_direction_object, objectId: 429285de-9796-46b2-aa4d-4d2b34d73012, candidate: 'P-9', reviewSize: 32x32, generations: 0, note: 'same 10-generation pack as prop.crabPots', styleImage: 'building.harbor crane crate crop', post: 'trimmed; downscaled 0.6x (box filter, snapped back onto its own colours, hard alpha) so it reads half a skiff tall; bottom-centred on a 16x20 canvas', generatedAt: '2026-10-15', replaces: 'isometric_tile thin brass stick buoy' }
 
   - id: prop.netRack
     tool: map_object
@@ -3140,12 +3295,12 @@ props:
   # only: no ground plate, no shadow slab, and no hull of any kind (hulls are
   # the git channel). Placed as yard groupings in scenery.js DISTRICT_PROPS.
   - id: prop.crabPots
-    tool: create_map_object
-    prompt: "stack of three slatted timber crab pots with rope bindings and one cork float, small fisherman's harbour clutter, isolated single object on fully transparent background, low top-down isometric fantasy RPG scenery, weathered dark walnut and oak-brown timber slats, hemp rope, crisp stepped pixel shading, warm key light from the upper left, no floor tile, no ground plane, no grass, no water, no square base, no platform, no shadow slab, no boat, no characters, no text, empty transparent corners"
-    width: 48
-    height: 48
-    anchor: [25, 41]
-    provenance: { item: 'W8.3a', endpoint: create_map_object, objectId: 333e4899-6759-4136-aedb-3abfcd338d6b, generations: 9, post: key-out-bg, generatedAt: '2026-10-09' }
+    tool: create_1_direction_object
+    prompt: "two small slatted timber crab pots stacked, rope bindings, one cork float, low and squat, true 2:1 isometric three-quarter view, dark oak timber and hemp rope, 1px warm near-black selective outline, chunky stepped cel shading lit from the upper-left, transparent background, no water, no ground tile, no shadow, no text"
+    width: 32
+    height: 28
+    anchor: [16, 26]
+    provenance: { item: '5.4', endpoint: create_1_direction_object, objectId: 429285de-9796-46b2-aa4d-4d2b34d73012, candidate: 'P-1', reviewSize: 32x32, generations: 10, styleImage: 'building.harbor crane crate crop', post: 'trimmed, hard alpha, bottom-centred on a 32x28 canvas', generatedAt: '2026-10-15', replaces: 'W8.3a create_map_object 333e4899 (48x48)' }
 
   - id: prop.anchorChain
     tool: create_map_object
@@ -3169,7 +3324,7 @@ props:
     width: 64
     height: 64
     anchor: [31, 48]
-    provenance: { item: 'W8.3a', endpoint: create_map_object, objectId: 024f964a-e3c6-4a03-8ddf-c68d76bb5157, generations: 8, post: key-out-bg, generatedAt: '2026-10-09' }
+    provenance: { item: 'W8.3a', endpoint: create_map_object, objectId: 024f964a-e3c6-4a03-8ddf-c68d76bb5157, generations: 8, post: 'key-out-bg; 5.4 baked grass tufts at the feet keyed out (37 texels, offline)', generatedAt: '2026-10-09' }
 
   - id: prop.saltCrates
     tool: create_map_object

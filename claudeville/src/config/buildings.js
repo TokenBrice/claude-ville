@@ -360,10 +360,16 @@ export const BUILDING_DEFS = [
     },
     {
         type: 'harbor',
-        x: 30,
+        // 5.A (2026-10-15) — the Painted Isle re-author: the house's stone
+        // quay is the footprint, its west face on the shore (x 28), so the
+        // house stands on the island's edge; the three timber piers reach east
+        // into the basin outside it. The quay's front apron (row 20, where the
+        // lantern and the crane stand) is the causeway visitors step onto from
+        // the shore (HARBOR_DOCK_TILES), in front of the door.
+        x: 29,
         y: 17,
-        width: 5,
-        height: 4,
+        width: 3,
+        height: 3,
         label: 'HARBOR MASTER',
         shortLabel: 'HARBOR',
         icon: 'H',
@@ -372,17 +378,17 @@ export const BUILDING_DEFS = [
         capacity: { work: 4, ambient: 3, overflow: 3 },
         visualTier: 'major',
         labelPriority: 'landmark',
-        entrance: { tileX: 28, tileY: 19 },
+        entrance: { tileX: 28, tileY: 20 },
         visitTiles: [
-            workSlot(28, 19, { x: 34.0, y: 19.0 }, { queueGroup: 'harbor-ledger', stance: 'dispatch' }),
-            workSlot(28, 18, { x: 34.0, y: 19.0 }, { queueGroup: 'harbor-ledger', stance: 'dispatch' }),
+            workSlot(30, 20, { x: 34.0, y: 19.0 }, { queueGroup: 'harbor-ledger', stance: 'dispatch' }),
+            workSlot(29, 20, { x: 34.0, y: 19.0 }, { queueGroup: 'harbor-ledger', stance: 'dispatch' }),
             workSlot(28, 20, { x: 34.0, y: 19.0 }, { queueGroup: 'harbor-ledger', stance: 'dispatch' }),
             queueSlot(27, 19, { x: 34.0, y: 19.0 }, { queueGroup: 'harbor-quay', reason: 'quay' }),
             scenicSlot(27, 17, { x: 34.0, y: 19.0 }, { queueGroup: 'harbor-quay', stance: 'watch', reason: 'quay' }),
             queueSlot(27, 21, { x: 34.0, y: 19.0 }, { queueGroup: 'harbor-pier', reason: 'pier' }),
             scenicSlot(26, 21, { x: 34.0, y: 19.0 }, { queueGroup: 'harbor-pier', stance: 'watch', reason: 'pier' }),
         ],
-        walkExclusion: [{ dx: -1, dy: 0, width: 1, height: 4 }],
+        walkExclusion: [],
         scenery: {
             excludePadding: { x: 2, y: 1 },
             sightline: { x0: 28.5, y0: 14.5, x1: 36.5, y1: 21.5 },

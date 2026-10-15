@@ -655,7 +655,8 @@ export class VisitIntentManager {
                 maxLabelChars: 18,
                 ellipsis: '...',
             });
-            if (!normalized) continue;
+            // A rewritten notice is the server's bookkeeping, not an agent's act.
+            if (!normalized || normalized.type === 'rewritten') continue;
             this._gitReplayStats.normalized++;
             const sourceKey = `${normalized.sessionId}:${normalized.id}`;
             const previous = candidatesByKey.get(sourceKey);

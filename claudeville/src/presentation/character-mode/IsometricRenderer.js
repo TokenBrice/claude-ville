@@ -25,6 +25,9 @@ import {
     percentileAtSnapshot,
 } from '../shared/ClientPerfMetrics.js';
 import { getReservedRects } from '../shared/ReservedRects.js';
+import { HARBOR_FOCUS_FLEET_EVENT } from '../shared/HarborLedger.js';
+import { HarborFleetCard, isInFleetCard } from '../shared/HarborFleetCard.js';
+import { emitAgentSelected } from '../shared/AgentSelection.js';
 import { HDR_HIGHLIGHTS_EVENT, overlayContextAttributes, publishDisplayStatus, readHdrHighlights } from '../shared/DisplaySettings.js';
 import { installP3OverlayInks, readDisplayMedia, setOverlayInksP3, watchDisplayMedia } from './DisplayColor.js';
 import { CameraDirector } from './CameraDirector.js';
@@ -139,6 +142,8 @@ import {
     unifiedRendererResourceAccounting,
 } from './CanvasBudget.js';
 
+// #8 — cadence of harbor reconciliation while the World loop is stopped.
+const HARBOR_SEMANTICS_IDLE_MS = 1000;
 const WATER_FRAME_STEP = 0.03;
 const STATIC_WATER_SHIMMER = 0.08;
 const LIGHT_FADE_COLOR_CACHE_LIMIT = 1024;
@@ -511,6 +516,13 @@ export class IsometricRenderer {
             ? new BuildingSprite(this.assets, this.sprites, this.particleSystem)
             : null;
         this.harborTraffic = new HarborTraffic({ sprites: this.sprites });
+        // #8 — the harbor's semantics (reconcile + `harbor:updated`) stay
+        // live while the World loop is stopped (Dashboard mode), so the
+        // sidebar ledger and the Dashboard lane chips never freeze. While the
+        // loop runs, `_update` reconciles and this timer does nothing.
+        this._harborSemanticsTimer = typeof setInterval === 'function'
+            ? setInterval(() => this._reconcileHarborWhileWorldStopped(), HARBOR_SEMANTICS_IDLE_MS)
+            : null;
         this.visitIntentManager = new VisitIntentManager({ world: this.world });
         this.visitTileAllocator = new VisitTileAllocator();
         this.atmosphereState = new AtmosphereState();
@@ -769,6 +781,8 @@ export class IsometricRenderer {
         // Bridges (Task 5): two authored river crossings only.
         this.scenery.generateBridges();
         this.bridgeTiles = this.scenery.getBridgeTiles();
+        // Harbor ships moor and sail on the live water (HarborLayout's field).
+        this.harborTraffic?.setWaterMask?.(this.waterTiles, this.bridgeTiles);
         this.bridgeLanterns = new BridgeLanterns({ renderer: this });
         this.bridgeSpans = this._buildBridgeSpans();
         this._waterTileDescriptors = this._buildWaterTileDescriptors();
@@ -2018,6 +2032,16 @@ export class IsometricRenderer {
             }),
             eventBus.on(BUILDING_EVENTS.SELECTED, () => this._invalidateIdleFrame()),
             eventBus.on(BUILDING_EVENTS.DESELECTED, () => this._invalidateIdleFrame()),
+            // U-P3 — a Harbor ledger row (sidebar, building panel) focuses
+            // its fleet and opens the fleet card. The World may be coming
+            // back from the Dashboard this task, so wait one frame.
+            eventBus.on(HARBOR_FOCUS_FLEET_EVENT, (query) => {
+                if (!query?.project) return;
+                requestAnimationFrame(() => {
+                    if (this._disposed) return;
+                    this._focusFleet(query);
+                });
+            }),
             // #attract — topbar toggle flips the idle-attract camera live.
             eventBus.on('camera:auto-camera', (payload) => this.cameraDirector?.setAutoMode?.(payload?.enabled !== false)),
             // 10.2 / 10.3 — SET's HDR highlights and the screen's media
@@ -2224,6 +2248,8 @@ export class IsometricRenderer {
         this._setHoveredAgentSprite(null);
         if (this._onKeyDown) window.removeEventListener('keydown', this._onKeyDown);
         this._onKeyDown = null;
+        this._fleetCard?.close();
+        this._fleetCard = null;
         window.removeEventListener('keyup', this._onReadKeyUp);
         window.removeEventListener('blur', this._onReadBlur);
         this.setReadMode(false);
@@ -2264,6 +2290,8 @@ export class IsometricRenderer {
         this.agentEventStream?.dispose?.();
         releaseCouncilRingState(this.relationshipState);
         this.relationshipState?.dispose?.();
+        if (this._harborSemanticsTimer) clearInterval(this._harborSemanticsTimer);
+        this._harborSemanticsTimer = null;
         this.harborTraffic?.dispose?.();
         this.landmarkActivity?.dispose?.();
         this.chronicleMonuments?.dispose?.();
@@ -3488,6 +3516,8 @@ export class IsometricRenderer {
         const activeElement = typeof document !== 'undefined' ? document.activeElement : null;
         if (this._isKeyboardEditTarget(activeElement)) return;
         if (this._isModalOpen()) return;
+        // #7 — inside the fleet card the keyboard belongs to the card.
+        if (isInFleetCard(activeElement)) return;
         if (event.code === 'KeyB') {
             this.setReadMode(true);
             event.preventDefault();
@@ -3563,6 +3593,7 @@ export class IsometricRenderer {
         // their controls are ordinary Tab stops: only the World surface itself
         // turns Tab into agent cycling.
         if (element.closest?.('#worldDock, [popover], button, a[href], [role="button"]')) return false;
+        if (isInFleetCard(element)) return false;
         return Boolean(document.getElementById('characterMode')?.contains?.(element));
     }
 
@@ -4300,6 +4331,17 @@ export class IsometricRenderer {
             }
         }
 
+        // U-P3 — a ship opens its fleet card and leaves the selection alone:
+        // the operator is reading cargo, not dismissing the agent.
+        if (!clicked) {
+            const ship = this.harborTraffic?.hitTestShip?.(worldX, worldY) ?? null;
+            if (ship) {
+                this._openFleetCard({ project: ship.project, branch: ship.branch || '', shipId: ship.id });
+                return;
+            }
+        }
+        this._closeFleetCard();
+
         // Deselect all
         for (const sprite of this.agentSprites.values()) sprite.selected = false;
 
@@ -4398,9 +4440,84 @@ export class IsometricRenderer {
                     : (tokenItem ? this.landmarkActivity.tokenItemTooltip(tokenItem) : '')));
     }
 
+    // ─── U-P3 fleet card ────────────────────────────────────────────────
+    _agentNameFor(id) {
+        const agent = this.world?.agents?.get?.(id) || this.agentSprites.get(id)?.agent || null;
+        return agent?.name || '';
+    }
+
+    _openFleetCard(query, { focus = false } = {}) {
+        const harbor = this.harborTraffic;
+        const host = this.canvas?.parentElement;
+        if (!harbor || !host) return;
+        const model = harbor.fleetCardModel(query, { agentName: id => this._agentNameFor(id) });
+        if (!model) return;
+        this._fleetCard ||= new HarborFleetCard({
+            host,
+            onSelectAgent: (id) => {
+                const agent = this.world?.agents?.get?.(id) || this.agentSprites.get(id)?.agent;
+                if (agent) emitAgentSelected(agent);
+            },
+            onSelectLane: (lane) => this._openFleetCard({ ...lane, shipId: null }),
+            onClose: () => { this._fleetCardQuery = null; },
+        });
+        this._fleetCardQuery = query;
+        this._fleetCardVersion = harbor._stateVersion;
+        this._fleetCard.open(model, query, { focus });
+        this._updateFleetCard();
+        this._invalidateIdleFrame();
+    }
+
+    _closeFleetCard() {
+        this._fleetCard?.close();
+    }
+
+    // Each frame the card follows its fleet on screen; when the harbor's
+    // state changes it re-reads its data (a push departs, a commit docks).
+    _updateFleetCard() {
+        const card = this._fleetCard;
+        const query = this._fleetCardQuery;
+        const harbor = this.harborTraffic;
+        if (!card?.isOpen || !query || !harbor) return;
+        if (harbor._stateVersion !== this._fleetCardVersion) {
+            this._fleetCardVersion = harbor._stateVersion;
+            const model = harbor.fleetCardModel(query, { agentName: id => this._agentNameFor(id) });
+            if (!model) {
+                card.close();
+                return;
+            }
+            card.refresh(model);
+        }
+        const anchor = harbor.fleetAnchor(query);
+        const point = anchor ? this.camera.worldToScreen(anchor.x, anchor.y) : null;
+        if (point) card.position(point, getReservedRects());
+    }
+
+    // A ledger row: glide to the fleet (medium scale) and open its card,
+    // focused, so the keyboard lands inside it.
+    _focusFleet(query) {
+        const anchor = this.harborTraffic?.fleetAnchor?.(query);
+        if (anchor && this.camera) {
+            this.camera.noteSelectionInput?.();
+            const box = { minX: anchor.x - 200, maxX: anchor.x + 200, minY: anchor.y - 150, maxY: anchor.y + 90 };
+            const pose = this.camera._poseForWorldBox?.(box, { maxZoom: 2, minZoom: 1 });
+            if (pose) this.camera.glideToPose(pose, { owner: 'system' });
+        }
+        this._openFleetCard({ ...query, shipId: null }, { focus: true });
+    }
+
     _showTouchInfo(clientX, clientY) {
         const rect = this.canvas.getBoundingClientRect();
         const world = this.camera.screenToWorld(clientX - rect.left, clientY - rect.top);
+        // U-P3 — a held finger on a ship opens its fleet card (the touch
+        // twin of a click), not the one-line tip.
+        const heldShip = this.harborTraffic?.hitTestShip?.(world.x, world.y) ?? null;
+        if (heldShip) {
+            this._onMouseLeaveMain();
+            this._dismissTouchInfo();
+            this._openFleetCard({ project: heldShip.project, branch: heldShip.branch || '', shipId: heldShip.id });
+            return true;
+        }
         this.canvas.title = this._worldHoverInfo(world.x, world.y);
         // The agent pass uses the same front-most/arrival filters and dialogue
         // provenance as mouse hover, which wins over the scenery underneath.
@@ -5110,6 +5227,7 @@ export class IsometricRenderer {
             this.camera.update(dt, performance.now());
             this.camera.updateFollow(dt);
         }
+        if (this._fleetCard?.isOpen) this._updateFleetCard();
 
         // Chat matching only depends on session/tool state, not frame-perfect motion.
         this._chatMatchAccumulator += dt;
@@ -6542,6 +6660,21 @@ export class IsometricRenderer {
         const selected = this.selectedAgent?.name ? ` Selected ${this.selectedAgent.name}.` : '';
         const text = `Village: ${agents.length} agents. ${counts.needsYou} need you, ${counts.errors} errored, ${counts.quota} quota-limited, ${counts.watchlist} waiting, ${counts.working} working.${selected}`;
         if (text !== this._semanticSummaryText) { this._semanticSummaryText = text; el.textContent = text; }
+    }
+
+    _reconcileHarborWhileWorldStopped(now = Date.now()) {
+        if (this._disposed || !this.harborTraffic) return false;
+        if (this.frameId != null) return false;
+        if (typeof document !== 'undefined' && document.hidden) return false;
+        const agents = Array.from(this.world?.agents?.values?.() || []);
+        this.harborTraffic.reconcile(agents, now);
+        this._harborFailedPushState = this.harborTraffic.getFailedPushState?.(now) || null;
+        const repos = this.harborTraffic.getPendingRepoSummaries?.() ?? [];
+        const signature = this._harborPendingReposSignature(repos);
+        if (signature === this._harborPendingSignature) return true;
+        this._harborPendingSignature = signature;
+        eventBus.emit('harbor:updated', repos);
+        return true;
     }
 
     _harborPendingReposSignature(repos = []) {
@@ -9653,6 +9786,8 @@ export class IsometricRenderer {
             ...this._lanternGroundLightSources(lighting),
             ...this._villageWallLanternLightSources(lighting),
             ...(this.bridgeLanterns?.getLightSources?.(lighting) || []),
+            // 5.3 — moored and sailing ships' lamps (fixtures, budget-capped).
+            ...(this.harborTraffic?.lampLightSources?.(sourceEnergyFor(lighting).core) || []),
         ];
         // 2.6 — fire sources (forge door and spill, torches, village and gate
         // braziers) breathe in stepped 140 ms quanta on the one motion clock;

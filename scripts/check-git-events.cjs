@@ -128,6 +128,22 @@ function ids(events) {
   assert.equal(events[0].source, 'command-parser');
 }
 
+{
+  // Parser contract: redirections and pipes never become refspecs, `HEAD`
+  // is never a branch, tag pushes select no branch, heredoc bodies are data.
+  const context = { provider: 'codex', sessionId: 'session-parser', sourceId: 'tool-parser', ts: baseTime };
+  const [piped] = parseGitEventsFromCommand('git push origin main 2>&1 | tail -3 > /dev/null', context);
+  assert.deepEqual(piped.refspecs, ['main']);
+  assert.equal(piped.branch, 'main');
+  const [head] = parseGitEventsFromCommand('git push -u origin HEAD', context);
+  assert.notEqual(head.branch, 'HEAD');
+  const [tags] = parseGitEventsFromCommand('git push origin --tags', context);
+  assert.equal(tags.tagsOnly, true);
+  assert.equal(tags.branch, undefined);
+  assert.deepEqual(parseGitEventsFromCommand("cat <<'EOF'\ngit commit -m fake\nEOF", context), []);
+  assert.deepEqual(parseGitEventsFromCommand('git commit -m x', { ...context, exitCode: 1, output: 'nothing to commit' }), []);
+}
+
 async function runNormalizationChecks() {
   const identityPath = path.join(
     __dirname,

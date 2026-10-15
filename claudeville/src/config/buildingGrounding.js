@@ -95,9 +95,12 @@ export const BUILDING_GROUNDING_PROFILES = Object.freeze({
         foundation: Object.freeze({ enabled: false, owner: 'structural-sprite', opacity: 0 }),
         contact: Object.freeze({ offsetX: 0, offsetY: -4, width: 74, depth: 20, opacity: 0.76, castLength: 86 }),
     }),
+    // 5.A — the coursed stone quay meets the island shore at its west face;
+    // the piers stand on pilings in the basin. The quay's water contact is in
+    // the art, so the bake adds no foundation and no contact shadow.
     harbor: Object.freeze({
-        mode: 'water-pilings',
-        material: 'tidal-water',
+        mode: 'quay',
+        material: 'harbor-quay',
         edgeTreatment: 'water-contact',
         shadow: 'none',
         foundation: Object.freeze({ enabled: false, owner: 'structural-sprite', opacity: 0 }),

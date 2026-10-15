@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '../..');
@@ -12,29 +11,12 @@ const HARBOR_PATH = path.join(
   REPO_ROOT,
   'claudeville/src/presentation/character-mode/HarborTraffic.js',
 );
-const moduleUrlCache = new Map();
-
-function sourceModuleUrl(filePath) {
-  const absolutePath = path.resolve(filePath);
-  const cached = moduleUrlCache.get(absolutePath);
-  if (cached) return cached;
-  const source = fs.readFileSync(absolutePath, 'utf8').replace(
-    /from\s+(['"])(\.{1,2}\/[^'"]+\.js)\1/g,
-    (match, quote, specifier) => {
-      const resolved = path.resolve(path.dirname(absolutePath), specifier);
-      return `from ${quote}${sourceModuleUrl(resolved)}${quote}`;
-    },
-  );
-  const url = `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
-  moduleUrlCache.set(absolutePath, url);
-  return url;
-}
 
 const {
   HarborTraffic,
   reduceHarborTrafficState,
   snapshotHarborTrafficState,
-} = await import(sourceModuleUrl(HARBOR_PATH));
+} = await import(pathToFileURL(HARBOR_PATH).href);
 
 const BASE_TIME = Date.parse('2026-07-14T12:00:00Z');
 const PROJECT = '/tmp/harbor-traffic-bounds';
@@ -75,8 +57,8 @@ function push(id, timestamp, overrides = {}) {
 
 const limits = new HarborTraffic().getDiagnostics();
 
-// The first two repo fleets share their lagoon buoys across branches; later
-// repos retain coastal slots, and pushes depart from the same water region.
+// D2 — the first repo fleets moor at the Harbor's pier berths (every branch
+// of a repo in its one berth); pushes depart from the same water.
 const homeEvents = Array.from({ length: 6 }, (_, index) => commit(`home-${index}`, BASE_TIME + index, {
   project: `${PROJECT}-${Math.floor(index / 2)}`,
   branch: index % 2 ? 'feature' : 'main',
@@ -85,11 +67,11 @@ const homeEvents = Array.from({ length: 6 }, (_, index) => commit(`home-${index}
 const homeState = reduceHarborTrafficState(null, homeEvents, { now: BASE_TIME + 100, motionScale: 1 });
 const homeSnapshot = snapshotHarborTrafficState(homeState);
 assert.deepEqual(homeSnapshot.repoAnchorages.map(entry => entry.anchorage), [
-  'Commit Lagoon West', 'Commit Lagoon Spring', 'Pharos Reach',
+  'North Pier Berth', 'Middle Pier Berth', 'Pharos Pier Berth',
 ]);
 for (const ship of homeSnapshot.ships) {
   const slot = homeSnapshot.repoAnchorages.find(entry => entry.project === ship.project).slot;
-  assert.equal(ship.waitingZone, slot < 2 ? 'commit-lagoon' : 'coast');
+  assert.equal(ship.waitingZone, 'coast');
   assert.equal(ship.anchorageIndex, slot);
 }
 const homeReplay = reduceHarborTrafficState(homeState, [...homeEvents].reverse(), { now: BASE_TIME + 200 });
@@ -98,11 +80,9 @@ const homeDepartures = reduceHarborTrafficState(homeReplay, homeEvents.map((even
   push(`home-push-${index}`, BASE_TIME + 300, { project: event.project, branch: event.branch, targetRef: event.branch })
 )), { now: BASE_TIME + 400, motionScale: 1 });
 for (const ship of homeDepartures.ships.values()) {
-  const lagoon = ship.project !== `${PROJECT}-2`;
   assert.equal(ship.status, 'departing');
-  assert.equal(ship.departWaterZone, lagoon ? 'commit-lagoon' : 'coast');
-  assert.ok(lagoon ? ship.departFromTile.tileX < 28 : ship.departFromTile.tileX > 30);
-  if (lagoon) assert.ok(ship.departFromTile.tileY < 13);
+  assert.equal(ship.departWaterZone, 'coast');
+  assert.ok(ship.departFromTile.tileX > 32 && ship.departFromTile.tileY > 14 && ship.departFromTile.tileY < 23);
 }
 
 // A push before a source tail longer than the seen-id cap must still launch a

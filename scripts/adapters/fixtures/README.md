@@ -6,6 +6,7 @@ These synthetic JSONL transcripts test parser contracts without reading real pro
 | --- | --- | --- |
 | Claude | `claude/all-records.jsonl` | Broad projection: tools/results, tokens/cost, branch/effort, todos, changes, duration, hooks, and bounded text. |
 | Claude | `claude/minimal.jsonl` | Completed turn proving defaults and estimated cost without richer records. |
+| Claude | `claude/git-outcomes.jsonl` | Git calls with outcomes: an `is_error` hook rejection, a chained commit with `[branch sha]` output, a rejected push behind `|| true`, and a push from a subdirectory `cwd`. |
 | Claude | `claude/agent-launch.jsonl` | Parent transcript with an `Agent` launch and declared child identity. |
 | Claude | `claude/agent-child.jsonl` | Paired child transcript proving parent/subagent identity linkage. |
 | Codex | `codex/abort-after-pending.jsonl` | Pending tools followed by `turn_aborted`; pending state must clear. |
@@ -13,6 +14,7 @@ These synthetic JSONL transcripts test parser contracts without reading real pro
 | Codex | `codex/item-completed.jsonl` | Ordered file changes and a failed command with duration, stderr, and exit status. |
 | Codex | `codex/long-running-turn.jsonl` | Old active turn with token events remains running rather than decaying idle. |
 | Codex | `codex/tool-results.jsonl` | Command completions with exit 0, exit 1, an unknown exit, and one invocation that never completes. |
+| Codex | `codex/git-commit-push.jsonl` | Current rollout shape: `custom_tool_call` plus `item_completed` `CommandExecution` (command array, `file://` cwd) for a commit, a nothing-to-commit failure, a `push -u origin HEAD \| tail` and a `git -C` commit in a nested repository. |
 | Kimi Code | `kimi/tool-results.jsonl` | Wire loop events: a passing and a failing command result, plus a result carrying only output (no outcome). |
 | OpenCode | `opencode/tool-results.jsonl` | Normalized tool parts with `metadata.exit` 0 and 1, plus a part with no exit at all. |
 | OMP | `omp/tool-results-session-exit.jsonl` | Paired success, failure, and unknown results; an unpaired result and an unfinished call; explicit `session_exit`. |
@@ -30,6 +32,7 @@ Author fixtures synthetic-first. If derived from provider output, replace every 
 - `scripts/tests/turn-state.test.mjs` copies the Codex fixture directory into a synthetic provider home.
 - `scripts/tests/integration/session-payload-contract.test.mjs` replays the broad Claude fixture through an isolated server.
 - `scripts/tests/tool-results.test.mjs` materializes the Codex and Kimi Code result transcripts in a synthetic home, replays the OpenCode parts through `buildOpenCodeSession`, and uses the broad Claude record as the no-result control.
+- `scripts/tests/harbor-ingest-adapters.test.mjs` materializes the Claude and Codex git fixtures over a temporary repository and checks outcomes, identity and per-segment status.
 - `scripts/tests/living-isle-outcomes.test.mjs` replays the OMP outcomes/session-exit fixture, including explicit departure and resumed-session behavior.
 
 `npm run check:adapter-fixtures` is a broad executable adapter contract. It creates synthetic ClaudeVille, Codex, Kimi, OpenCode, and OMP state and checks normalization, detail dispatch, discovery, fixture-backed turn states, and OMP outcomes/session ends. Unit fixtures are narrower named `node:test` cases run by `npm run test:unit`; the integration consumer runs only under `npm run test:integration`.

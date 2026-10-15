@@ -60,15 +60,19 @@ export function projectNameFromPath(project) {
     return parts.at(-1) || text || 'unknown';
 }
 
-export function displayRepoName(project, maxChars = 26) {
-    return shortGitLabel(projectNameFromPath(project), maxChars, '…')
-        .replace(/[-_]+/g, ' ')
-        .replace(/\b\w/g, char => char.toUpperCase());
+export function normalizeRepoBranch(branch) {
+    const text = String(branch || '')
+        .replace(/^refs\/heads\//, '')
+        .replace(/^refs\/remotes\/[^/]+\//, '')
+        .trim();
+    if (!text || text === 'HEAD' || text === 'unknown') return '';
+    return text;
 }
 
 export function gitEventKind(event) {
     const raw = String(event?.type || event?.kind || event?.action || event?.event || event?.name || '').toLowerCase();
     const tokens = raw.split(/[^a-z0-9]+/).filter(Boolean);
+    if (tokens.includes('rewritten')) return 'rewritten';
     if (raw.includes('push')) return 'push';
     if (raw.includes('commit')) return 'commit';
     if (tokens.includes('fetch') || raw.includes('fetch')) return 'fetch';
@@ -106,8 +110,11 @@ function normalizeGitCommandStatus(event) {
 
 export function normalizePushStatus(event) {
     if (!event || typeof event !== 'object') return 'unknown';
-    // rejected: non-fast-forward or upstream refused
-    const stderr = String(event.stderr || event.output || '');
+    // rejected: non-fast-forward or upstream refused. An explicit status (the
+    // server classifies from the segment's own output, so `|| true` cannot
+    // launder it) wins over the shell's exit.
+    if (String(event.status || '').toLowerCase() === 'rejected') return 'rejected';
+    const stderr = String(event.stderr || event.output || event.reason || '');
     const looksRejected = /rejected|non-fast-forward|failed to push some refs/i.test(stderr);
     if (typeof event.success === 'boolean') {
         if (event.success) return 'success';
@@ -204,6 +211,11 @@ export function normalizeGitEvent(event, agent = {}, index = 0, options = {}) {
         || agent.teamName
         || agent.project
         || 'unknown';
+    // Wire contract v1: `repoRoot` is the canonical repo. An event from the
+    // session's own project may borrow the session's resolved repo.
+    const sameProjectAsSession = !!agent.projectPath && String(project) === String(agent.projectPath);
+    const repoRoot = event.repoRoot || (sameProjectAsSession ? agent.repoRoot : '') || '';
+    const worktree = event.worktree || (sameProjectAsSession ? agent.worktree : null) || null;
     const sha = event.sha || event.commit || event.hash || event.commitSha || event.revision || '';
     const targetRef = event.targetRef || event.target || event.ref || event.branch || '';
     const branch = event.branch || (type === 'commit' || type === 'push' || type === 'pull' || type === 'fetch' ? targetRef : '');
@@ -275,7 +287,39 @@ export function normalizeGitEvent(event, agent = {}, index = 0, options = {}) {
         agentStatus: agent.status || '',
         agentModel: event.model || agent.model || '',
         teamName: event.teamName || agent.teamName || '',
+        repoRoot: repoRoot ? String(repoRoot) : '',
+        checkout: event.checkout ? String(event.checkout) : '',
+        worktree: worktree && typeof worktree === 'object' ? { ...worktree } : null,
+        cwd: event.cwd ? String(event.cwd) : '',
+        detached: event.detached === true,
+        reason: event.reason ? String(event.reason) : '',
+        ...optionalWireFields(event),
     };
+}
+
+// Wire fields copied only when present, so older servers' events keep
+// their shape (the client falls back to `project`).
+function optionalWireFields(event) {
+    const fields = {};
+    if (event.deleted === true) fields.deleted = true;
+    if (event.tagsOnly === true) fields.tagsOnly = true;
+    if (event.tag) fields.tag = String(event.tag);
+    if (Array.isArray(event.landedShas)) fields.landedShas = event.landedShas.map(String).slice(0, 200);
+    if (Array.isArray(event.refs)) fields.refs = event.refs.map(ref => ({ ...ref }));
+    if (event.synthetic) fields.synthetic = String(event.synthetic);
+    if (event.author && typeof event.author === 'object') fields.author = { ...event.author };
+    if (Array.isArray(event.coAuthors)) fields.coAuthors = event.coAuthors.map(String);
+    if (event.attribution) fields.attribution = String(event.attribution);
+    if (Array.isArray(event.oldShas)) fields.oldShas = event.oldShas.map(String);
+    if (Array.isArray(event.oldIds)) fields.oldIds = event.oldIds.map(String);
+    if (Array.isArray(event.branches)) fields.branches = event.branches.map(String).filter(Boolean);
+    if (event.unresolved === true) fields.unresolved = true;
+    // Wire v1.1 — scan ordering for authoritative branch membership.
+    if (Number.isFinite(Number(event.scanSeq)) && event.scanSeq !== null && event.scanSeq !== '') fields.scanSeq = Number(event.scanSeq);
+    if (Number.isFinite(Number(event.scannedAt)) && Number(event.scannedAt) > 0) fields.scannedAt = Number(event.scannedAt);
+    if (typeof event.branchesComplete === 'boolean') fields.branchesComplete = event.branchesComplete;
+    if (Array.isArray(event.replacements)) fields.replacements = event.replacements.map(entry => ({ ...entry }));
+    return fields;
 }
 
 export function collectGitEventsFromAgents(agents, options = {}) {

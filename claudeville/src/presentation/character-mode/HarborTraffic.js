@@ -1,22 +1,20 @@
 import { ART_RAMPS } from '../../config/artPalette.js';
-import { MAP_SIZE } from '../../config/constants.js';
 import { WORLD_BODY_FONT_11, WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { pulseValue, pulseAlpha } from './PulsePolicy.js';
 import { BUOY_TORCH_COLORS } from './ParticleSystem.js';
 import { fitLabelText, measureLabelText, snapScreenOrigin } from './WorldLabelKit.js';
-import { normalizeRepoBranch, repoBranchProfile, repoProfile } from '../shared/RepoColor.js';
+import { branchPennonKind, normalizeRepoBranch, repoBranchProfile, repoDisplayName, repoProfile } from '../shared/RepoColor.js';
+import { assignMonograms, ledgerBuoyLabel, middleTruncate } from '../shared/HarborLedger.js';
+import { buildFleetCardModel } from '../shared/HarborFleetCard.js';
+import { BUILDING_DEFS } from '../../config/buildings.js';
+import { buildingCenterToWorld } from './Projection.js';
 import {
-    cleanCommitSubject,
-    commitMessageFromCommand,
-    displayRepoName,
     gitEventKind,
     normalizeGitEvent,
     parseEventTime,
     shortGitLabel,
 } from '../shared/GitEventIdentity.js';
-import { tileToWorld, worldToTile } from './Projection.js';
-import { WORLD_TREE } from '../../config/scenery.js';
 import { WILDLIFE_SCENE_CATEGORY } from './WildlifeRenderer.js';
 import {
     FAILURE,
@@ -44,22 +42,81 @@ import {
     wakeV,
 } from './EffectStamps.js';
 import { drawPixelFlame, fillPixelEllipse } from './PixelShapes.js';
-import { PENNANT_REST_FRAME, currentPennantTime, currentPennantWind, drawMiniPennant, drawPennant, pennantFrame } from './PixelPennant.js';
+import { PENNANT_REST_FRAME, currentPennantTime, currentPennantWind, drawBranchPennon, drawPennant, pennantFrame } from './PixelPennant.js';
 
-import { drawHullFallback, hullGeometry, hullMasthead, hullRecords, hullStrip, liveryStrip, rollFrameIndex } from './HarborHulls.js';
+import { drawHullFallback, drawHullLamps, hullGeometry, hullHeadingDirection, hullLampPoints, hullLampStrip, hullMasthead, hullRecords, hullStrip, liveryStrip, rollFrameIndex } from './HarborHulls.js';
+import { normalizeLightSource } from './LightSourceRegistry.js';
+
+import {
+    BERTHS,
+    HARBOR_PIER_DECKS,
+    COAST_ANCHORAGE_SLOTS,
+    HARBOR_GROUND_PX_PER_TILE,
+    MAX_HARBOR_SHIP_PACK_SIZE,
+    QUAY_GROUPS,
+    buildDockLayoutFresh,
+    buildDockSquadLayout,
+    clamp,
+    composeStorageTransferTiles,
+    composeWaterPath,
+    composeWaterRouteTiles,
+    harborHullClearance,
+    harborSailDistance,
+    harborShipCollisionRadius,
+    harborShipTier,
+    isCommitLagoonZone,
+    harborWaterField,
+    repoAnchorageSlot,
+    routeGraphMetadata,
+    routeSeaLength,
+    routeSeaTile,
+    setHarborWaterMask,
+    stableHash,
+    toTile,
+    toWorld,
+} from './HarborLayout.js';
+import {
+    BOOMERANG_IN_MS,
+    BOOMERANG_OUT_MS,
+    CANCEL_RETURN_MS,
+    DEPARTURE_MS,
+    EXIT_FADE_MS,
+    FINALE_EFFECT_MS,
+    FORCE_DEPARTURE_MS,
+    HARBOR_CLEAN_LABEL_CACHE_LIMIT,
+    INBOUND_DURATION_MS,
+    MAX_HARBOR_BATCHES,
+    MAX_HARBOR_COMMIT_REPLAY_FLOORS,
+    MAX_HARBOR_EVENT_TOMBSTONES,
+    MAX_HARBOR_OVERFLOW_DOCK_COUNTS,
+    MAX_HARBOR_PUSH_EVENTS,
+    MAX_HARBOR_REPO_QUAYS,
+    MAX_HARBOR_SEEN_EVENT_IDS,
+    MAX_HARBOR_SHIPS,
+    RELEASE_CONVOY_MIN_SHIPS,
+    SCREEN_SUMMARY_MS,
+    SCUTTLE_MS,
+    assignedQuayIndex,
+    cachedCleanCommitSubject,
+    cleanCommitLabelCacheSize,
+    cloneState,
+    gitEventStatusLabel,
+    harborOverflowDockCount,
+    harborStateHasTimedLifecycle,
+    pullRequestShipLabel,
+    reduceHarborTrafficState,
+} from './HarborState.js';
 
 export { normalizeGitEvent } from '../shared/GitEventIdentity.js';
+export { reduceHarborTrafficState, snapshotHarborTrafficState } from './HarborState.js';
+export { COMMIT_LAGOON_SQUAD_ANCHORAGES, clearOfWorldTreeIslet, composeWaterRouteTiles } from './HarborLayout.js';
 
-const MAX_SHIPS_PER_SQUAD_ANCHORAGE = 3;
-const HARBOR_LOG_TILE = { tileX: 34.8, tileY: 17.2 };
-const COMMIT_LAGOON_LOG_TILE = { tileX: 15.2, tileY: 8.6 };
-const DEPARTURE_MS = 48000;
-const DEPARTURE_STAGGER_MS = 720;
 const STORAGE_TRANSFER_MS = 9000;
+const STORAGE_TRANSFER_MAX_MS = 40000;
+// A docked fleet holds its formation this long after a ship casts off.
+const FLEET_HOLD_MS = 5000;
 const STORAGE_TRANSFER_STAGGER_MS = 220;
-const EXIT_HOLD_MS = 1800;
-const EXIT_FADE_MS = 4200;
-const FADE_DELAY_MS = 3200;
+
 // 3.6 / 6.5 — the untethered broken-rope chevron: two polylines in texels
 // from the flag pole's top (x toward the cloth side), a gap between them.
 const UNTETHERED_CHEVRON = Object.freeze([
@@ -71,6 +128,7 @@ const UNTETHERED_CHEVRON = Object.freeze([
 // `[y, x0, x1)` about a centre column: straight sides to the shoulder at
 // 72 % of the height, then a stepped taper to a 2-texel point.
 const shieldRunCache = new Map();
+
 function shieldRuns(w, h) {
     const key = `${w}x${h}`;
     let runs = shieldRunCache.get(key);
@@ -93,27 +151,13 @@ function shieldRuns(w, h) {
     shieldRunCache.set(key, runs = Object.freeze(runs.map((run) => Object.freeze(run))));
     return runs;
 }
-const FINALE_EFFECT_MS = 9000;
-const SCREEN_SUMMARY_MS = 16000;
-const RECENT_PUSH_REPLAY_MS = 2 * 60 * 1000;
-const HARBOR_REPLAY_GRACE_MS = 60 * 1000;
-const HARBOR_REPLAY_RETENTION_MS = RECENT_PUSH_REPLAY_MS + HARBOR_REPLAY_GRACE_MS;
-const MAX_HARBOR_SHIPS = 2048;
-const MAX_HARBOR_SEEN_EVENT_IDS = 2048;
-const MAX_HARBOR_PUSH_EVENTS = 1024;
-const MAX_HARBOR_BATCHES = 512;
-const MAX_HARBOR_REPO_QUAYS = 512;
-const MAX_HARBOR_EVENT_TOMBSTONES = 4096;
-const MAX_HARBOR_COMMIT_REPLAY_FLOORS = 1024;
-const MAX_HARBOR_OVERFLOW_DOCK_COUNTS = 512;
-const MAX_HARBOR_EVENT_IDS_PER_SHIP = 64;
-const HARBOR_OVERFLOW_OTHER_KEY = '\x00other-repositories';
+
 const MAX_REPO_FIRST_SEEN = 512;
 const HARBOR_MAINTENANCE_INTERVAL_MS = 10000;
 const HARBOR_CRATE_TTL_MS = 30000;
 const MAX_LABEL_CHARS = 30;
-const COMMIT_EQUIVALENCE_WINDOW_MS = 10 * 60 * 1000;
 const HARBOR_FINALE_TILE = { tileX: 38.2, tileY: 6.6 };
+
 // 6.5 — failed-push bracket: a 120 ms convergence, one cream flash frame, a
 // three-step shake of the stamp only, then a static red broken bracket for as
 // long as the failure stands. Replays older than the window arrive static.
@@ -124,30 +168,16 @@ const FAILURE_BRACKET_FRESH_MS = 15000;
 const FAILURE_BRACKET_MAX = 4;
 const FAILURE_SHAKE = Object.freeze([2, -2, 1]);
 const HARBOR_SUMMARY_TILE = { tileX: 35.2, tileY: 21.5 };
-const FORCE_DEPARTURE_MS = 12000;
 const CAST_OFF_MS = 1500;
 const MIST_FADE_MS = 800;
-const BOOMERANG_OUT_MS = 16000;
-const BOOMERANG_IN_MS = 12000;
-// 5.11 — cancelled pushes return to berth half-speed with no collision flare.
-const CANCEL_RETURN_MS = 12000;
-const INBOUND_DURATION_MS = 36000;
-const INBOUND_FADE_IN_MS = 8000;
 const INBOUND_SHIP_CLASS_KEY = 'cutter';
-// W7.9 (SW-P9) — the pull-request cutter: `gh pr create` moors one at the
-// outer roadstead for as long as an open PR plausibly waits (PR_SHIP_MOOR_MS
-// from its creation), `gh pr merge` sails it in to a quay berth over
-// PR_MERGE_SAIL_MS, where it lies PR_QUAY_HOLD_MS before retiring. Its one
-// mark is a parchment pennant above the repo flag (no new hull art).
-const PR_SHIP_MOOR_MS = 2 * 60 * 60 * 1000;
-const PR_QUAY_HOLD_MS = 10 * 60 * 1000;
-const PR_MERGE_SAIL_MS = 20000;
-const PR_ROADSTEAD_ROWS = 3;
 const PR_PENNANT_CLOTH = '#e8dcb8';
 const PR_PENNANT_RIM = '#3a2c1a';
-const NO_SINK = Object.freeze({ progress: 0, px: 0, alphaScale: 1 });
+const NO_SINK = Object.freeze({ progress: 0, px: 0, alphaScale: 1, force: false });
+
 // The repo flag's staff foot laps this many texels down the mast top.
 const FLAG_MAST_OVERLAP = 3;
+
 // 8.2 — a verified release sails from the pier (SM-3). The release's own
 // sloop (the existing sloop hull: one more ship record) appears at the
 // Harbor's release slip on a 4×4 Bayer order in four steps (whole texels of
@@ -163,21 +193,25 @@ const FLAG_MAST_OVERLAP = 3;
 // and clears it when the moment ends.
 // Pennant cloth texels below its flown position per hoist step (3 = flown).
 const RELEASE_SAIL_HOIST_DROP = Object.freeze([24, 16, 8, 0]);
+
 // World px per ms at cruise, reached over the crown's 1200 ms follow.
 const RELEASE_SAIL_CRUISE = 0.036;
 const RELEASE_SAIL_ACCEL_MS = 1200;
 const RELEASE_SAIL_FADE_PX = 160;
+
 // The arrival: 1/4, 2/4, 3/4 and all of the hull's texels, each held this
 // long.
 const RELEASE_SAIL_ARRIVE_STEP_MS = 150;
 const RELEASE_SAIL_LIMIT = 2;
 const RELEASE_SAIL_BAYER4 = Object.freeze([0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5]);
-// The release slip: open water in front of the Harbor jetty's east arm, and
-// the one leg out of it (bow-first, about 27° below screen-right — the way
-// the hull faces — passing below the east arm's front posts) where the sloop
-// joins the channel route every departure takes.
-const RELEASE_SAIL_SLIP = Object.freeze({ tileX: 32.025, tileY: 21.1 });
-const RELEASE_SAIL_OUT = Object.freeze({ tileX: 34.5, tileY: 21.1 });
+
+// The release slip: open water just outside the Harbor's South pier, and
+// the one leg out of it along the pier (bow-first, about 27° below
+// screen-right, the SE view) where the sloop joins the channel route every
+// departure takes.
+const RELEASE_SAIL_SLIP = Object.freeze({ tileX: 32.3, tileY: 21.95 });
+const RELEASE_SAIL_OUT = Object.freeze({ tileX: 34.9, tileY: 21.95 });
+
 // The chevrons: 7-step V arms two texels thick (they must read over the sea
 // glitter), the first 3 texels astern of the stern, the
 // second a further 8 back; foam and crest are the hull wake's tones.
@@ -185,25 +219,14 @@ const RELEASE_SAIL_CHEVRON_LENGTH = 7;
 const RELEASE_SAIL_CHEVRON_GAP = 8;
 const RELEASE_SAIL_FOAM = ART_RAMPS.shallowWater[2];
 const RELEASE_SAIL_CREST = '#b5cabf';
+
 // The rejected caution beat: one 2 Hz step of four is the lit tone (V4).
 const CAUTION_BEAT_STEP_MS = 500;
 const UNTETHERED_MIN_COMMITS = 2;
 const UNTETHERED_HOLD_MS = 5 * 60 * 1000;
 const HARBOR_BEACON_BUOY_TILE = { tileX: 26.0, tileY: 6.0 };
-const REPO_DOCK_SHIP_Y_OFFSET = 236;
 const REPO_DOCK_SHIP_SORT_OFFSET = 8;
-const MAX_HARBOR_SHIP_PACK_SIZE = 50;
-// Titan tiers — a repo/branch fleet of HARBOR_TITAN_MIN_COMMITS or more docked
-// commits stops sailing as one ship per commit and consolidates into
-// ceil(n / 50) balanced stack ships (5/10/20/30/40/50-class hulls, exact count
-// on the badge). Smaller fleets keep the lead-hull + skiffs look.
-const HARBOR_TITAN_MIN_COMMITS = 5;
-const HARBOR_SQUAD_REUSE_OFFSETS = Object.freeze([
-    { tileX: 0.70, tileY: 0.48 },
-    { tileX: -0.56, tileY: 0.56 },
-    { tileX: 0.82, tileY: -0.34 },
-    { tileX: -0.64, tileY: -0.42 },
-]);
+
 // 3.8 — hulls draw at scale 1 from their roll strips (HarborHulls.js). The
 // label lift is the hull's height above its waterline (world px; the strip
 // anchor overrides it once loaded) and the flag offsets sit the repo flag at
@@ -217,11 +240,13 @@ const HARBOR_SHIP_CLASSES = Object.freeze([
     { key: 'cutter', spriteId: 'prop.harborShip.cutter', minCommits: 2, wakeScale: 1.15, cargoRows: 1, mastCount: 1, labelLift: 45, flagOffsetX: 2, flagOffsetY: 12, badge: '2+' },
     { key: 'skiff', spriteId: 'prop.harborShip.skiff', minCommits: 1, wakeScale: 0.88, cargoRows: 0, mastCount: 1, labelLift: 38, flagOffsetX: 0, flagOffsetY: 6, badge: '' },
 ]);
+
 const RELEASE_SAIL_CLASS = Object.freeze({
     ...HARBOR_SHIP_CLASSES.find(item => item.key === 'sloop'),
     packSize: 1,
     trim: 0,
 });
+
 // Stack hull per titan tier, chosen by the pack's exact commit count.
 const HARBOR_SHIP_STACK_CLASSES = Object.freeze([
     { key: 'stack50', spriteId: 'prop.harborShip.stack50', minCommits: 50, wakeScale: 2.80, cargoRows: 10, mastCount: 7, labelLift: 154, flagOffsetX: 40, flagOffsetY: 118 },
@@ -231,67 +256,7 @@ const HARBOR_SHIP_STACK_CLASSES = Object.freeze([
     { key: 'stack10', spriteId: 'prop.harborShip.stack10', minCommits: 10, wakeScale: 1.72, cargoRows: 5, mastCount: 4, labelLift: 80, flagOffsetX: 18, flagOffsetY: 48 },
     { key: 'stack5', spriteId: 'prop.harborShip.stack5', minCommits: 1, wakeScale: 1.30, cargoRows: 3, mastCount: 3, labelLift: 65, flagOffsetX: 14, flagOffsetY: 34 },
 ]);
-const HARBOR_DOCK_WATER_BOUNDS = Object.freeze({
-    minTileX: 31.05,
-    maxTileX: MAP_SIZE - 1.95,
-    minTileY: 10.15,
-    maxTileY: 24.85,
-});
-const HARBOR_DOCK_WATER_REGIONS = Object.freeze([
-    { centerX: 37.30, centerY: 21.70, radiusX: 6.35, radiusY: 7.00, limit: 0.86 },
-    { centerX: 39.20, centerY: 16.20, radiusX: 4.45, radiusY: 6.05, limit: 0.82 },
-    { centerX: 43.00, centerY: 19.00, radiusX: 12.60, radiusY: 23.00, limit: 0.88 },
-]);
-const COMMIT_LAGOON_WATER_BOUNDS = Object.freeze({
-    minTileX: 5.15,
-    maxTileX: 27.85,
-    minTileY: 3.55,
-    maxTileY: 12.85,
-});
-// The lagoon's open water, clear of the world ash's islet at its mouth, the
-// Tavern's roof and the Lighthouse's quay (both tall sprites a ship behind
-// them would vanish under): the west basin, the spring reach, the water west
-// of the Tavern and the roadstead north-east of the islet.
-const COMMIT_LAGOON_WATER_REGIONS = Object.freeze([
-    { centerX: 7.60, centerY: 8.30, radiusX: 5.45, radiusY: 3.65, limit: 0.88 },
-    { centerX: 12.40, centerY: 5.20, radiusX: 3.85, radiusY: 2.65, limit: 0.86 },
-    { centerX: 14.40, centerY: 9.40, radiusX: 3.00, radiusY: 1.50, limit: 0.88 },
-    { centerX: 25.80, centerY: 4.20, radiusX: 2.80, radiusY: 1.60, limit: 0.86 },
-]);
-// World px a lagoon ship keeps from the world ash's islet (WORLD_TREE.islet):
-// about a hull's half-length, so no keel ever rides its sand.
-const WORLD_TREE_ISLET_CLEARANCE_PX = 24;
-const HARBOR_SQUAD_ANCHORAGES = Object.freeze([
-    { name: 'Inner West Basin', zone: 'inner-harbor', tileX: 32.60, tileY: 22.75, columns: 2, columnDx: 1.16, columnDy: 0.08, rowDx: -0.54, rowDy: 1.02 },
-    { name: 'Inner Quay Basin', zone: 'inner-harbor', tileX: 35.15, tileY: 22.55, columns: 2, columnDx: 1.12, columnDy: -0.12, rowDx: -0.40, rowDy: 1.04 },
-    { name: 'Harbor Mouth', zone: 'inner-harbor', tileX: 37.15, tileY: 20.50, columns: 2, columnDx: 0.52, columnDy: -1.08, rowDx: 0.88, rowDy: 0.26 },
-    { name: 'Beacon Reach', zone: 'inner-harbor', tileX: 37.55, tileY: 17.25, columns: 2, columnDx: -0.32, columnDy: -1.18, rowDx: 0.84, rowDy: 0.18 },
-    { name: 'North Roadstead', zone: 'outer-roadstead', tileX: 38.05, tileY: 13.15, columns: 2, columnDx: -0.34, columnDy: -1.26, rowDx: 0.86, rowDy: 0.10 },
-    { name: 'East Roadstead', zone: 'outer-roadstead', tileX: 38.75, tileY: 16.15, columns: 2, columnDx: 0.86, columnDy: -0.70, rowDx: 0.54, rowDy: 0.76 },
-    { name: 'South Roadstead', zone: 'outer-roadstead', tileX: 38.90, tileY: 21.20, columns: 2, columnDx: 1.04, columnDy: 0.08, rowDx: 0.38, rowDy: 0.98 },
-    { name: 'Outer Fairway', zone: 'outer-roadstead', tileX: 38.25, tileY: 24.05, columns: 2, columnDx: 1.06, columnDy: 0.20, rowDx: -0.28, rowDy: 1.04 },
-]);
-export const COMMIT_LAGOON_SQUAD_ANCHORAGES = Object.freeze([
-    { name: 'Commit Lagoon West', zone: 'commit-lagoon', tileX: 7.75, tileY: 8.55, columns: 2, columnDx: 0.96, columnDy: -0.22, rowDx: 0.36, rowDy: 0.82 },
-    { name: 'Commit Lagoon Spring', zone: 'commit-lagoon', tileX: 12.30, tileY: 5.75, columns: 2, columnDx: 0.82, columnDy: 0.18, rowDx: 0.54, rowDy: 0.72 },
-    { name: 'Commit Lagoon Center', zone: 'commit-lagoon', tileX: 14.20, tileY: 9.30, columns: 2, columnDx: 1.04, columnDy: -0.18, rowDx: 0.42, rowDy: 0.82 },
-    { name: 'Commit Lagoon East', zone: 'commit-lagoon', tileX: 25.60, tileY: 3.90, columns: 2, columnDx: 0.82, columnDy: -0.24, rowDx: 0.46, rowDy: 0.78 },
-]);
 
-const BERTHS = [
-    { tileX: 32.8, tileY: 21.2 },
-    { tileX: 33.4, tileY: 21.7 },
-    { tileX: 33.6, tileY: 20.5 },
-    { tileX: 34.2, tileY: 21.9 },
-    { tileX: 35.0, tileY: 21.8 },
-    { tileX: 34.7, tileY: 20.3 },
-    { tileX: 35.8, tileY: 21.6 },
-    { tileX: 36.5, tileY: 21.0 },
-    { tileX: 36.1, tileY: 20.2 },
-    { tileX: 37.0, tileY: 21.5 },
-    { tileX: 36.8, tileY: 20.5 },
-    { tileX: 35.4, tileY: 20.0 },
-];
 // S9 — the Harbor jetty's tie-up posts (the timber deck south of the master's
 // office), one per quay group, where a failed push with no docked ship is
 // bracketed.
@@ -302,48 +267,11 @@ const HARBOR_JETTY_SLIPS = Object.freeze([
     Object.freeze({ tileX: 31.1, tileY: 20.6 }),
 ]);
 
-const QUAY_GROUPS = [
-    { name: 'West Quay', berthIndexes: [0, 1, 2] },
-    { name: 'Market Quay', berthIndexes: [3, 4, 5] },
-    { name: 'Beacon Quay', berthIndexes: [6, 7, 8] },
-    { name: 'Outer Quay', berthIndexes: [9, 10, 11] },
-];
-
-// Home Waters — persistent per-repo anchorages. Each active repo (a
-// repo with a live agent, or with docked commit ships) claims a stable buoy +
-// crest + tinted-water slot in the lagoon or along the east coast. The repo's
-// docked commit ships form up beside their own buoy, so the water reads as a
-// map of which projects are alive and how much each is holding. Slots are
-// listed in fill order: two northern lagoon slots, then the coast.
-// `leadDx/leadDy` offset the formation origin from the buoy; rows march along the
-// shore so the buoy label stays in front of its fleet. Repos beyond the pool
-// share an overflow chip and dock in the Commit Lagoon (no silent drop).
-const COAST_ANCHORAGE_SLOTS = Object.freeze([
-    { ...COMMIT_LAGOON_SQUAD_ANCHORAGES[0], tileY: 9.65, leadDy: -1.1 },
-    { ...COMMIT_LAGOON_SQUAD_ANCHORAGES[1], tileY: 6.85, leadDy: -1.1 },
-    { name: 'Pharos Reach', tileX: 33.0, tileY: 10.2, columns: 2, columnDx: 1.15, columnDy: 0, rowDx: 0, rowDy: -1.05, leadDx: 0, leadDy: -1.15 },
-    { name: 'Southern Strand', tileX: 35.8, tileY: 28.6, columns: 2, columnDx: 1.15, columnDy: 0, rowDx: 0, rowDy: -1.05, leadDx: 0, leadDy: -1.15 },
-    { name: 'North Shoal', tileX: 35.4, tileY: 7.4, columns: 2, columnDx: 0, columnDy: 1.15, rowDx: -1.05, rowDy: 0, leadDx: -1.15, leadDy: 0 },
-    { name: 'Reed Point', tileX: 33.6, tileY: 31.4, columns: 2, columnDx: 1.15, columnDy: 0, rowDx: 0, rowDy: -1.05, leadDx: 0, leadDy: -1.15 },
-    { name: 'Far North Sea', tileX: 32.8, tileY: 4.6, columns: 2, columnDx: 0, columnDy: 1.15, rowDx: -1.05, rowDy: 0, leadDx: -1.15, leadDy: 0 },
-    { name: 'Wall Tower Bank', tileX: 35.8, tileY: 34.2, columns: 2, columnDx: 1.15, columnDy: 0, rowDx: 0, rowDy: -1.05, leadDx: 0, leadDy: -1.15 },
-    { name: 'Pharos Bank', tileX: 32.0, tileY: 13.4, columns: 2, columnDx: 1.15, columnDy: 0, rowDx: 0, rowDy: -1.05, leadDx: 0, leadDy: -1.15 },
-    { name: 'Strand Shallows', tileX: 32.2, tileY: 28.2, columns: 2, columnDx: 1.15, columnDy: 0, rowDx: 0, rowDy: -1.05, leadDx: 0, leadDy: -1.15 },
-]);
-const COAST_ANCHORAGE_ZONE = 'coast';
-const COAST_WATER_BOUNDS = Object.freeze({
-    minTileX: 30.4,
-    maxTileX: MAP_SIZE - 2.3,
-    minTileY: 3.3,
-    maxTileY: 36.6,
-});
-const COAST_WATER_REGIONS = Object.freeze([
-    { centerX: 33.00, centerY: 6.20, radiusX: 6.00, radiusY: 3.40, limit: 0.90 },
-    { centerX: 34.30, centerY: 13.50, radiusX: 3.60, radiusY: 5.00, limit: 0.90 },
-    { centerX: 34.00, centerY: 24.50, radiusX: 4.00, radiusY: 5.20, limit: 0.90 },
-    { centerX: 35.20, centerY: 31.80, radiusX: 2.40, radiusY: 4.60, limit: 0.90 },
-]);
 const REPO_ANCHORAGE_OVERFLOW_TILE = Object.freeze({ tileX: 17.2, tileY: 11.4 });
+
+// The quay apron under the Harbor crane, where its one cargo pile stands.
+const HARBOR_CRATE_QUAY = Object.freeze({ tileX: 30.4, tileY: 20.4 });
+
 // An agent's repo stays "home" (a lit anchorage) this long after its last update.
 const REPO_ANCHORAGE_ACTIVE_MS = 5 * 60 * 1000;
 
@@ -352,6 +280,7 @@ const REPO_ANCHORAGE_ACTIVE_MS = 5 * 60 * 1000;
 // and waterfalls share the same resolved category so the existing registry
 // can replay every water/air detail above the direct GPU island.
 const OVERLAY_SAFE_SCENE_ITEMS = [];
+
 // 3.8 / M23 — the hulls themselves are matter: on the resident path they are
 // V9 records (painter depth, grade, lamp light, footprint occlusion) with a
 // `reflect` twin and a V-wake stamp in the ground band; elsewhere the Canvas
@@ -379,6 +308,7 @@ export const HARBOR_HULL_SCENE_CATEGORY = Object.freeze({
     unsupported: 'overlay-safe',
     overlayBand: 39,
 });
+
 export const HARBOR_TRAFFIC_SCENE_CATEGORY = Object.freeze({
     id: 'harbor-traffic',
     sortBand: 40,
@@ -389,6 +319,7 @@ export const HARBOR_TRAFFIC_SCENE_CATEGORY = Object.freeze({
         for (let index = 0; index < wildlifeItems.length; index++) items.push(wildlifeItems[index]);
         const harborItems = renderer?.harborTraffic?.enumerateDrawables?.() ?? [];
         for (let index = 0; index < harborItems.length; index++) items.push(harborItems[index]);
+        renderer?.harborTraffic?.beginPlateFrame?.(renderer?.camera?.zoom);
         return items;
     },
     emitSceneCommands() {
@@ -406,252 +337,6 @@ export const HARBOR_TRAFFIC_SCENE_CATEGORY = Object.freeze({
     overlayBand: 40,
 });
 
-const SEA_LANES = [
-    [
-        { tileX: 36.2, tileY: 21.1 },
-        { tileX: 37.1, tileY: 19.2 },
-        { tileX: 38.0, tileY: 15.7 },
-        { tileX: 37.6, tileY: 12.8 },
-        { tileX: 38.1, tileY: 9.4 },
-        { tileX: 38.2, tileY: 6.6 },
-    ],
-    [
-        { tileX: 34.8, tileY: 20.6 },
-        { tileX: 36.9, tileY: 18.8 },
-        { tileX: 38.1, tileY: 14.7 },
-        { tileX: 37.7, tileY: 12.1 },
-        { tileX: 38.3, tileY: 8.8 },
-        { tileX: 38.5, tileY: 5.8 },
-    ],
-    [
-        { tileX: 33.5, tileY: 20.5 },
-        { tileX: 36.6, tileY: 18.3 },
-        { tileX: 37.8, tileY: 14.2 },
-        { tileX: 37.3, tileY: 11.8 },
-        { tileX: 38.0, tileY: 8.4 },
-        { tileX: 38.3, tileY: 4.9 },
-    ],
-    [
-        { tileX: 38.2, tileY: 21.0 },
-        { tileX: 38.0, tileY: 18.7 },
-        { tileX: 38.0, tileY: 15.8 },
-        { tileX: 37.5, tileY: 13.2 },
-        { tileX: 38.1, tileY: 9.9 },
-        { tileX: 38.4, tileY: 7.0 },
-    ],
-];
-
-const LOCAL_WATER_ROUTE_BANDS = Object.freeze([
-    {
-        name: 'inner-channel',
-        offsetX: 0.34,
-        offsetY: -0.08,
-        waypoints: [
-            { tileX: 36.4, tileY: 22.05 },
-            { tileX: 38.05, tileY: 20.35 },
-            { tileX: 38.0, tileY: 16.2 },
-            { tileX: 37.55, tileY: 12.7 },
-            { tileX: 38.15, tileY: 8.75 },
-        ],
-        exitLaneIndex: 1,
-    },
-    {
-        name: 'outer-channel',
-        offsetX: -0.20,
-        offsetY: -0.26,
-        waypoints: [
-            { tileX: 37.75, tileY: 21.25 },
-            { tileX: 38.25, tileY: 18.45 },
-            { tileX: 37.8, tileY: 14.15 },
-            { tileX: 37.35, tileY: 11.45 },
-            { tileX: 38.05, tileY: 8.15 },
-        ],
-        exitLaneIndex: 2,
-    },
-    {
-        name: 'beacon-channel',
-        offsetX: 0.18,
-        offsetY: 0.20,
-        waypoints: [
-            { tileX: 38.2, tileY: 20.85 },
-            { tileX: 37.95, tileY: 17.4 },
-            { tileX: 37.45, tileY: 13.25 },
-            { tileX: 38.05, tileY: 9.75 },
-        ],
-        exitLaneIndex: 3,
-    },
-]);
-// The world ash's islet stands in the lagoon's mouth, so every lagoon route
-// leaves by the south channel between the islet and the Tavern's shore, rounds
-// the islet's east end and stands out to sea north-east of it. A ship already
-// east of a waypoint never sails back west to it (composeWaterRouteTiles).
-const COMMIT_LAGOON_ROUTE_BANDS = Object.freeze([
-    {
-        name: 'lagoon-east-channel',
-        offsetX: 0.30,
-        offsetY: -0.14,
-        allowSouthbound: true,
-        waypoints: [
-            { tileX: 15.6, tileY: 9.3 },
-            { tileX: 18.8, tileY: 9.85 },
-            { tileX: 21.0, tileY: 9.75 },
-            { tileX: 22.5, tileY: 9.0 },
-            { tileX: 23.8, tileY: 7.8 },
-            { tileX: 24.8, tileY: 5.6 },
-            { tileX: 27.5, tileY: 3.2 },
-            { tileX: 32.0, tileY: 3.4 },
-            { tileX: 36.2, tileY: 4.9 },
-        ],
-        exitLaneIndex: 2,
-    },
-    {
-        name: 'lagoon-spring-channel',
-        offsetX: -0.22,
-        offsetY: -0.26,
-        allowSouthbound: true,
-        waypoints: [
-            { tileX: 13.4, tileY: 7.5 },
-            { tileX: 15.2, tileY: 8.9 },
-            { tileX: 18.6, tileY: 9.7 },
-            { tileX: 21.0, tileY: 9.6 },
-            { tileX: 22.6, tileY: 8.8 },
-            { tileX: 24.2, tileY: 6.8 },
-            { tileX: 26.0, tileY: 4.0 },
-            { tileX: 31.4, tileY: 4.0 },
-            { tileX: 36.8, tileY: 5.6 },
-        ],
-        exitLaneIndex: 1,
-    },
-    {
-        name: 'tavern-backwater',
-        offsetX: 0.14,
-        offsetY: 0.22,
-        allowSouthbound: true,
-        waypoints: [
-            { tileX: 16.4, tileY: 9.9 },
-            { tileX: 19.2, tileY: 10.1 },
-            { tileX: 21.2, tileY: 9.9 },
-            { tileX: 22.7, tileY: 9.1 },
-            { tileX: 24.0, tileY: 7.6 },
-            { tileX: 25.2, tileY: 5.4 },
-            { tileX: 29.0, tileY: 4.6 },
-            { tileX: 34.0, tileY: 4.3 },
-            { tileX: 38.2, tileY: 6.6 },
-        ],
-        exitLaneIndex: 3,
-    },
-]);
-// A lagoon ship skips any route waypoint more than this many tiles west of it.
-const LAGOON_BACKTRACK_TILES = 1.0;
-// Inbound to the lagoon: the islet's east end, the south channel, its west mouth.
-const LAGOON_INBOUND_CHANNEL = Object.freeze([
-    Object.freeze({ tileX: 25.0, tileY: 5.6 }),
-    Object.freeze({ tileX: 23.9, tileY: 7.8 }),
-    Object.freeze({ tileX: 22.5, tileY: 9.05 }),
-    Object.freeze({ tileX: 20.4, tileY: 9.8 }),
-    Object.freeze({ tileX: 17.4, tileY: 9.7 }),
-]);
-const DEPARTURE_EDGE_Y = 2.8;
-const HARBOR_ROUTE_GRAPH_VERSION = 1;
-const RELEASE_CONVOY_MIN_SHIPS = 2;
-const HARBOR_ROUTE_WAYPOINTS = Object.freeze({
-    'berth.quay': { id: 'berth.quay', name: 'Repo Berth', zone: 'berth' },
-    'berth.pull': { id: 'berth.pull', name: 'Pull Berth', zone: 'berth' },
-    'harbor.inner-basin': { id: 'harbor.inner-basin', name: 'Inner Basin', zone: 'harbor', tileX: 36.4, tileY: 22.05 },
-    'harbor.mouth': { id: 'harbor.mouth', name: 'Harbor Mouth', zone: 'harbor', tileX: 38.05, tileY: 20.35 },
-    'roadstead.north': { id: 'roadstead.north', name: 'North Roadstead', zone: 'roadstead', tileX: 38.05, tileY: 13.15 },
-    'roadstead.east': { id: 'roadstead.east', name: 'East Roadstead', zone: 'roadstead', tileX: 38.75, tileY: 16.15 },
-    'roadstead.south': { id: 'roadstead.south', name: 'South Roadstead', zone: 'roadstead', tileX: 38.90, tileY: 21.20 },
-    'roadstead.outer': { id: 'roadstead.outer', name: 'Outer Fairway', zone: 'roadstead', tileX: 38.25, tileY: 24.05 },
-    'sea.exit': { id: 'sea.exit', name: 'Departure Edge', zone: 'sea', tileY: DEPARTURE_EDGE_Y },
-    'lagoon.west': { id: 'lagoon.west', name: 'Commit Lagoon West', zone: 'commit-lagoon', tileX: 7.75, tileY: 8.55 },
-    'lagoon.spring': { id: 'lagoon.spring', name: 'Commit Lagoon Spring', zone: 'commit-lagoon', tileX: 12.30, tileY: 5.75 },
-    'lagoon.center': { id: 'lagoon.center', name: 'Commit Lagoon Center', zone: 'commit-lagoon', tileX: 14.20, tileY: 9.30 },
-    'lagoon.south-channel': { id: 'lagoon.south-channel', name: 'Islet South Channel', zone: 'commit-lagoon', tileX: 21.00, tileY: 9.75 },
-    'lagoon.east': { id: 'lagoon.east', name: 'Commit Lagoon East', zone: 'commit-lagoon', tileX: 25.60, tileY: 3.90 },
-    'lagoon.channel-buoy': { id: 'lagoon.channel-buoy', name: 'Lagoon Channel Buoy', zone: 'commit-lagoon', tileX: 26.0, tileY: 6.0 },
-});
-const HARBOR_ROUTE_GRAPH = Object.freeze({
-    version: HARBOR_ROUTE_GRAPH_VERSION,
-    routes: Object.freeze({
-        'outbound.inner-channel': {
-            id: 'outbound.inner-channel',
-            name: 'Inner Channel',
-            kind: 'outbound',
-            zone: 'harbor',
-            bandName: 'inner-channel',
-            waypoints: ['berth.quay', 'harbor.inner-basin', 'harbor.mouth', 'roadstead.north', 'sea.exit'],
-        },
-        'outbound.outer-channel': {
-            id: 'outbound.outer-channel',
-            name: 'Outer Channel',
-            kind: 'outbound',
-            zone: 'harbor',
-            bandName: 'outer-channel',
-            waypoints: ['berth.quay', 'harbor.mouth', 'roadstead.east', 'roadstead.north', 'sea.exit'],
-        },
-        'outbound.beacon-channel': {
-            id: 'outbound.beacon-channel',
-            name: 'Beacon Channel',
-            kind: 'outbound',
-            zone: 'harbor',
-            bandName: 'beacon-channel',
-            waypoints: ['berth.quay', 'harbor.mouth', 'roadstead.south', 'roadstead.outer', 'sea.exit'],
-        },
-        'lagoon.lagoon-east-channel': {
-            id: 'lagoon.lagoon-east-channel',
-            name: 'Lagoon East Channel',
-            kind: 'lagoon',
-            zone: 'commit-lagoon',
-            bandName: 'lagoon-east-channel',
-            waypoints: ['lagoon.center', 'lagoon.south-channel', 'lagoon.channel-buoy', 'lagoon.east', 'roadstead.north', 'sea.exit'],
-        },
-        'lagoon.lagoon-spring-channel': {
-            id: 'lagoon.lagoon-spring-channel',
-            name: 'Lagoon Spring Channel',
-            kind: 'lagoon',
-            zone: 'commit-lagoon',
-            bandName: 'lagoon-spring-channel',
-            waypoints: ['lagoon.spring', 'lagoon.south-channel', 'lagoon.channel-buoy', 'roadstead.north', 'sea.exit'],
-        },
-        'lagoon.tavern-backwater': {
-            id: 'lagoon.tavern-backwater',
-            name: 'Tavern Backwater',
-            kind: 'lagoon',
-            zone: 'commit-lagoon',
-            bandName: 'tavern-backwater',
-            waypoints: ['lagoon.center', 'lagoon.south-channel', 'lagoon.channel-buoy', 'roadstead.outer', 'sea.exit'],
-        },
-        'inbound.pull': {
-            id: 'inbound.pull',
-            name: 'Inbound Pull Approach',
-            kind: 'inbound',
-            zone: 'berth',
-            waypoints: ['sea.exit', 'roadstead.north', 'harbor.mouth', 'berth.pull'],
-        },
-        'inbound.fetch-roadstead': {
-            id: 'inbound.fetch-roadstead',
-            name: 'Inbound Fetch Roadstead',
-            kind: 'roadstead',
-            zone: 'roadstead',
-            waypoints: ['sea.exit', 'roadstead.north', 'roadstead.outer'],
-        },
-        'berth.assignment': {
-            id: 'berth.assignment',
-            name: 'Berth Assignment',
-            kind: 'berth',
-            zone: 'berth',
-            waypoints: ['berth.quay'],
-        },
-        'storage.lagoon-transfer': {
-            id: 'storage.lagoon-transfer',
-            name: 'Lagoon Storage Transfer',
-            kind: 'lagoon-transfer',
-            zone: 'commit-lagoon',
-            waypoints: ['harbor.inner-basin', 'lagoon.channel-buoy', 'lagoon.south-channel', 'lagoon.center'],
-        },
-    }),
-});
 const PUSH_STATUS_STYLE = {
     success: {
         label: 'Push landed',
@@ -697,18 +382,6 @@ function isHarborCrateTool(agent) {
     return /\bgit\s+(status|diff|show)\b/.test(text);
 }
 
-function toWorld(tileX, tileY) {
-    return tileToWorld(tileX, tileY);
-}
-
-function toTile(x, y) {
-    return worldToTile(x, y);
-}
-
-function clamp(value, min, max) {
-    return Math.max(min, Math.min(max, value));
-}
-
 function parseColorRgba(value) {
     const text = String(value || '').trim();
     const hex = text.match(/^#([0-9a-f]{6})$/i);
@@ -745,34 +418,6 @@ function gradeColorString(value, grade) {
     return `rgba(${r}, ${g}, ${b}, ${base.a})`;
 }
 
-function stableHash(input) {
-    const text = String(input || '');
-    let hash = 0;
-    for (let i = 0; i < text.length; i++) {
-        hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
-    }
-    return Math.abs(hash);
-}
-
-function eventBranch(event = {}) {
-    return normalizeRepoBranch(event.branch || event.targetRef || '');
-}
-
-function trafficIdentity(project, branch = '') {
-    return `${String(project || 'unknown')}\x1f${normalizeRepoBranch(branch)}`;
-}
-
-const HARBOR_CLEAN_LABEL_CACHE_LIMIT = 512;
-const _cleanCommitLabelCache = new Map();
-
-function boundedCacheValue(cache, key, create, limit) {
-    if (cache.has(key)) return cache.get(key);
-    const value = create();
-    cache.set(key, value);
-    if (cache.size > limit) cache.delete(cache.keys().next().value);
-    return value;
-}
-
 // Repo profiles resolve live: RepoColor's visible-repo registry can move a
 // repo's pennant when the on-screen set changes, so a private cache would
 // keep a stale slot after a repo leaves and returns.
@@ -780,653 +425,15 @@ function trafficProfile(project, branch = '') {
     return repoBranchProfile(project, normalizeRepoBranch(branch));
 }
 
-function cachedCleanCommitSubject(value) {
-    const key = String(value || '');
-    return boundedCacheValue(
-        _cleanCommitLabelCache,
-        key,
-        () => cleanCommitSubject(key),
-        HARBOR_CLEAN_LABEL_CACHE_LIMIT,
-    );
+function trafficShortName(project, branch = '') {
+    return trafficProfile(project, branch).shortName;
 }
 
 function trafficLabel(project, branch = '', maxChars = 26) {
     const normalizedBranch = normalizeRepoBranch(branch);
-    const repo = displayRepoName(project, maxChars);
+    const repo = shortGitLabel(repoDisplayName(project), maxChars, '…');
     if (!normalizedBranch) return repo;
     return `${repo}/${shortGitLabel(normalizedBranch, 14, '…')}`;
-}
-
-function boundedEventConfidence(value) {
-    const numeric = Number(value);
-    if (!Number.isFinite(numeric)) return null;
-    return Math.max(0, Math.min(1, numeric));
-}
-
-function gitEventSourceLabel(event = {}) {
-    const explicit = event.source || event.eventSource || event.sourceType || event.origin || '';
-    if (explicit) return String(explicit);
-    if (event.command) return 'command-parser';
-    return event.inferred === true ? 'inferred' : 'observed';
-}
-
-function gitEventStatusLabel(event = {}) {
-    if (event.status) return String(event.status);
-    if (event.success === true) return 'success';
-    if (event.success === false) return 'failed';
-    return 'unknown';
-}
-
-function gitEventRefLabel(event = {}, branch = '') {
-    return String(event.ref || event.refspec || event.targetRef || branch || event.upstream || '');
-}
-
-function gitEventDebugMetadata(event = {}, branch = '') {
-    const inferred = event.inferred === true;
-    return {
-        gitKind: event.type ? String(event.type) : '',
-        eventStatus: gitEventStatusLabel(event),
-        remote: event.remote ? String(event.remote) : '',
-        ref: gitEventRefLabel(event, branch),
-        refspec: event.refspec ? String(event.refspec) : '',
-        source: gitEventSourceLabel(event),
-        sourceId: event.sourceId ? String(event.sourceId) : '',
-        confidence: boundedEventConfidence(event.confidence),
-        inferred,
-        observed: event.observed === true || (!inferred && event.observed !== false),
-        sessionId: event.sessionId ? String(event.sessionId) : '',
-        agentId: event.agentId ? String(event.agentId) : '',
-        completedAt: Number(event.completedAt || event.completed_at || 0) || 0,
-    };
-}
-
-function inboundGitLabel(event = {}, branch = '') {
-    const type = event.type === 'fetch' ? 'fetch' : 'pull';
-    const parts = [type, event.remote || '', event.targetRef || event.ref || event.refspec || branch || ''].filter(Boolean);
-    return shortGitLabel(parts.join(' '), 22, '…') || type;
-}
-
-function rotateIndexes(indexes, offset) {
-    const list = Array.isArray(indexes) ? indexes : [];
-    if (list.length <= 1) return [...list];
-    const start = Math.abs(offset || 0) % list.length;
-    return [...list.slice(start), ...list.slice(0, start)];
-}
-
-function cloneState(previous = {}) {
-    previous = previous || {};
-    const seenEventIds = previous.seenEventIds instanceof Set
-        ? new Set(previous.seenEventIds)
-        : new Set(previous.seenEventIds || []);
-    const sourceShips = previous.ships instanceof Map
-        ? previous.ships.entries()
-        : Object.entries(previous.ships || {});
-    const ships = new Map();
-    for (const [id, ship] of sourceShips) {
-        ships.set(id, {
-            ...ship,
-            eventIds: Array.isArray(ship.eventIds) ? [...ship.eventIds] : [ship.id].filter(Boolean),
-            route: compactRouteMetadata(ship.route),
-            convoy: ship.convoy ? { ...ship.convoy } : null,
-        });
-    }
-    const sourceBatches = previous.batches instanceof Map
-        ? previous.batches.entries()
-        : Object.entries(previous.batches || {});
-    const batches = new Map();
-    for (const [id, batch] of sourceBatches) {
-        const next = {
-            ...batch,
-            shipIds: Array.isArray(batch.shipIds) ? [...batch.shipIds] : [],
-            route: compactRouteMetadata(batch.route),
-            convoy: batch.convoy ? { ...batch.convoy } : null,
-        };
-        if (Array.isArray(batch.sealedOriginPoints)) {
-            next.sealedOriginPoints = batch.sealedOriginPoints.map(p => ({ x: p.x, y: p.y }));
-        }
-        batches.set(id, next);
-    }
-    const sourcePushEvents = previous.pushEvents instanceof Map
-        ? previous.pushEvents.entries()
-        : Object.entries(previous.pushEvents || {});
-    const pushEvents = new Map();
-    for (const [id, pushEvent] of sourcePushEvents) {
-        pushEvents.set(id, { ...pushEvent });
-    }
-    const sourceRepoQuays = previous.repoQuays instanceof Map
-        ? previous.repoQuays.entries()
-        : Object.entries(previous.repoQuays || {});
-    const repoQuays = new Map();
-    for (const [project, quayIndex] of sourceRepoQuays) {
-        repoQuays.set(project, Number.isFinite(Number(quayIndex)) ? Number(quayIndex) : 0);
-    }
-    const sourceSeenEventTimes = previous.seenEventTimes instanceof Map
-        ? previous.seenEventTimes.entries()
-        : Object.entries(previous.seenEventTimes || {});
-    const seenEventTimes = new Map();
-    for (const [id, timestamp] of sourceSeenEventTimes) {
-        const value = Number(timestamp);
-        if (id && Number.isFinite(value)) seenEventTimes.set(id, value);
-    }
-    const sourceEventTombstones = previous.eventTombstones instanceof Map
-        ? previous.eventTombstones.entries()
-        : Object.entries(previous.eventTombstones || {});
-    const eventTombstones = new Map();
-    for (const [id, tombstone] of sourceEventTombstones) {
-        if (!id) continue;
-        eventTombstones.set(id, typeof tombstone === 'object' && tombstone
-            ? { ...tombstone }
-            : { removedAt: Number(tombstone) || 0 });
-    }
-    const sourceCommitReplayFloors = previous.commitReplayFloors instanceof Map
-        ? previous.commitReplayFloors.entries()
-        : Object.entries(previous.commitReplayFloors || {});
-    const commitReplayFloors = new Map();
-    for (const [identity, floor] of sourceCommitReplayFloors) {
-        const eventTime = Number(typeof floor === 'object' ? floor?.eventTime : floor);
-        if (!identity || !Number.isFinite(eventTime) || eventTime <= 0) continue;
-        commitReplayFloors.set(identity, typeof floor === 'object' && floor
-            ? { ...floor, eventTime }
-            : { eventTime, recordedAt: 0 });
-    }
-    const sourceOverflowDockCounts = previous.overflowDockCounts instanceof Map
-        ? previous.overflowDockCounts.entries()
-        : Object.entries(previous.overflowDockCounts || {});
-    const overflowDockCounts = new Map();
-    for (const [identity, overflow] of sourceOverflowDockCounts) {
-        const count = Math.max(0, Number(overflow?.count || 0));
-        if (!identity || count <= 0) continue;
-        overflowDockCounts.set(identity, { ...overflow, count });
-    }
-    const sourceRepoAnchorages = previous.repoAnchorages instanceof Map
-        ? previous.repoAnchorages.entries()
-        : Object.entries(previous.repoAnchorages || {});
-    const repoAnchorages = new Map();
-    for (const [project, slot] of sourceRepoAnchorages) {
-        const index = Number(slot);
-        if (!project || !Number.isInteger(index) || index < 0 || index >= COAST_ANCHORAGE_SLOTS.length) continue;
-        repoAnchorages.set(project, index);
-    }
-    return {
-        seenEventIds,
-        seenEventTimes,
-        eventTombstones,
-        commitReplayFloors,
-        overflowDockCounts,
-        ships,
-        batches,
-        pushEvents,
-        repoQuays,
-        repoAnchorages,
-        nextSequence: Number.isFinite(previous.nextSequence) ? previous.nextSequence : ships.size,
-        nextBatchSequence: Number.isFinite(previous.nextBatchSequence) ? previous.nextBatchSequence : batches.size,
-    };
-}
-
-function repoAnchorageKey(project) {
-    return String(project || 'unknown');
-}
-
-// Home Waters allocation lives in the semantic state so the dock layout, the
-// push reducer (departure start tiles) and the buoy drawables all agree on
-// which coastal slot a repo owns. First come keeps its slot until it has no
-// docked ships and no live agent; slots are claimed in COAST_ANCHORAGE_SLOTS
-// order so the fleet spreads along the coast. Returns the slot index or null
-// when the pool is exhausted (the repo then docks in the Commit Lagoon).
-function ensureRepoAnchorage(state, project) {
-    const key = repoAnchorageKey(project);
-    const existing = state.repoAnchorages.get(key);
-    if (Number.isInteger(existing)) return existing;
-    const used = new Set(state.repoAnchorages.values());
-    for (let slot = 0; slot < COAST_ANCHORAGE_SLOTS.length; slot++) {
-        if (used.has(slot)) continue;
-        state.repoAnchorages.set(key, slot);
-        return slot;
-    }
-    return null;
-}
-
-function repoAnchorageSlot(state, project) {
-    const slot = state?.repoAnchorages?.get?.(repoAnchorageKey(project));
-    return Number.isInteger(slot) ? slot : null;
-}
-
-function syncRepoAnchorages(state, activeProjects = null) {
-    const keep = new Set();
-    for (const ship of state.ships.values()) {
-        if (ship.status === 'docked') keep.add(repoAnchorageKey(ship.project));
-    }
-    for (const project of activeProjects || []) keep.add(repoAnchorageKey(project));
-    for (const key of [...state.repoAnchorages.keys()]) {
-        if (!keep.has(key)) state.repoAnchorages.delete(key);
-    }
-    for (const key of keep) ensureRepoAnchorage(state, key);
-}
-
-function markHarborEventSeen(state, event, now) {
-    if (!event?.id) return;
-    state.seenEventIds.add(event.id);
-    const eventTime = Number(event.timestamp);
-    state.seenEventTimes.set(event.id, Number.isFinite(eventTime) && eventTime > 0 ? eventTime : now);
-}
-
-function harborEventStatus(event = {}) {
-    return String(event.status || gitEventStatusLabel(event) || 'unknown').toLowerCase();
-}
-
-function tombstoneHarborEvent(state, event, now, overrides = {}) {
-    const id = typeof event === 'string' ? event : event?.id;
-    if (!id) return;
-    const source = typeof event === 'object' && event ? event : {};
-    const eventTime = Number(overrides.eventTime ?? source.timestamp ?? source.eventTime ?? 0) || 0;
-    const tombstone = {
-        type: String(overrides.type || source.type || ''),
-        status: String(overrides.status || source.status || ''),
-        eventTime,
-        removedAt: now,
-    };
-    state.eventTombstones.delete(id);
-    state.eventTombstones.set(id, tombstone);
-    while (state.eventTombstones.size > MAX_HARBOR_EVENT_TOMBSTONES) {
-        state.eventTombstones.delete(state.eventTombstones.keys().next().value);
-    }
-}
-
-function harborEventIsTombstoned(state, event) {
-    const tombstone = state.eventTombstones.get(event?.id);
-    if (!tombstone) return false;
-    if (event.type !== 'push') return true;
-    if (tombstone.type && tombstone.type !== 'push') return false;
-    return String(tombstone.status || 'unknown').toLowerCase() === harborEventStatus(event);
-}
-
-function recordCommitReplayFloor(state, project, branch, eventTime, now) {
-    const timestamp = Number(eventTime);
-    if (!Number.isFinite(timestamp) || timestamp <= 0) return;
-    const identity = trafficIdentity(project, branch);
-    const previous = state.commitReplayFloors.get(identity);
-    const next = {
-        eventTime: Math.max(timestamp, Number(previous?.eventTime || 0)),
-        recordedAt: now,
-    };
-    state.commitReplayFloors.delete(identity);
-    state.commitReplayFloors.set(identity, next);
-    while (state.commitReplayFloors.size > MAX_HARBOR_COMMIT_REPLAY_FLOORS) {
-        state.commitReplayFloors.delete(state.commitReplayFloors.keys().next().value);
-    }
-}
-
-function latestProjectCommitReplayFloor(state, project) {
-    const prefix = `${String(project || 'unknown')}\x1f`;
-    let latest = 0;
-    for (const [identity, floor] of state.commitReplayFloors) {
-        if (!identity.startsWith(prefix)) continue;
-        latest = Math.max(latest, Number(floor?.eventTime || 0));
-    }
-    return latest;
-}
-
-function commitIsAtOrBelowReplayFloor(state, event) {
-    const eventTime = Number(event?.timestamp);
-    if (!Number.isFinite(eventTime) || eventTime <= 0) return false;
-    const branch = eventBranch(event);
-    const exact = Number(state.commitReplayFloors.get(trafficIdentity(event.project, branch))?.eventTime || 0);
-    const projectWide = Number(state.commitReplayFloors.get(trafficIdentity(event.project, ''))?.eventTime || 0);
-    const floor = Math.max(exact, projectWide, branch ? 0 : latestProjectCommitReplayFloor(state, event.project));
-    return floor > 0 && eventTime <= floor;
-}
-
-function mergeHarborOverflowRecord(target, source, now) {
-    target.count = Math.max(0, Number(target.count || 0)) + Math.max(0, Number(source.count || 0));
-    target.failedCount = Math.max(0, Number(target.failedCount || 0)) + Math.max(0, Number(source.failedCount || 0));
-    const earliest = [target.earliestEventTime, source.earliestEventTime]
-        .map(Number)
-        .filter(value => Number.isFinite(value) && value > 0);
-    target.earliestEventTime = earliest.length ? Math.min(...earliest) : 0;
-    target.latestEventTime = Math.max(Number(target.latestEventTime || 0), Number(source.latestEventTime || 0));
-    target.updatedAt = now;
-    return target;
-}
-
-function foldHarborOverflowRecord(state, record, now) {
-    const other = state.overflowDockCounts.get(HARBOR_OVERFLOW_OTHER_KEY) || {
-        project: 'Additional repositories',
-        branch: '',
-        waitingZone: 'harbor',
-        quayIndex: 0,
-        count: 0,
-        failedCount: 0,
-        earliestEventTime: 0,
-        latestEventTime: 0,
-        aggregate: true,
-    };
-    state.overflowDockCounts.delete(HARBOR_OVERFLOW_OTHER_KEY);
-    state.overflowDockCounts.set(HARBOR_OVERFLOW_OTHER_KEY, mergeHarborOverflowRecord(other, record, now));
-}
-
-function pruneHarborOverflowDockCounts(state, now) {
-    while (state.overflowDockCounts.size > MAX_HARBOR_OVERFLOW_DOCK_COUNTS) {
-        const entry = [...state.overflowDockCounts.entries()]
-            .find(([identity]) => identity !== HARBOR_OVERFLOW_OTHER_KEY);
-        if (!entry) break;
-        state.overflowDockCounts.delete(entry[0]);
-        foldHarborOverflowRecord(state, entry[1], now);
-    }
-}
-
-function recordHarborDockOverflow(state, ship, now) {
-    const project = String(ship?.project || 'unknown');
-    const branch = normalizeRepoBranch(ship?.branch || ship?.targetRef || '');
-    const waitingZone = ship?.waitingZone || 'harbor';
-    const identity = `${trafficIdentity(project, branch)}\x1f${waitingZone}`;
-    const eventTime = Number(ship?.eventTime || 0);
-    const record = state.overflowDockCounts.get(identity) || {
-        project,
-        branch,
-        waitingZone,
-        quayIndex: Number.isFinite(Number(ship?.quayIndex)) ? Number(ship.quayIndex) : 0,
-        count: 0,
-        failedCount: 0,
-        earliestEventTime: eventTime,
-        latestEventTime: eventTime,
-        aggregate: false,
-    };
-    mergeHarborOverflowRecord(record, {
-        count: 1,
-        failedCount: ship?.pushStatus === 'failed' ? 1 : 0,
-        earliestEventTime: eventTime,
-        latestEventTime: eventTime,
-    }, now);
-    state.overflowDockCounts.delete(identity);
-    if (state.overflowDockCounts.size >= MAX_HARBOR_OVERFLOW_DOCK_COUNTS) {
-        foldHarborOverflowRecord(state, record, now);
-    } else {
-        state.overflowDockCounts.set(identity, record);
-    }
-    pruneHarborOverflowDockCounts(state, now);
-}
-
-function clearHarborDockOverflowForPush(state, event, pushTime) {
-    for (const [identity, record] of state.overflowDockCounts) {
-        if (record.aggregate || !pushEventMatchesShip(event, record)) continue;
-        const latest = Number(record.latestEventTime || 0);
-        if (!pushTime || !latest || latest <= pushTime) state.overflowDockCounts.delete(identity);
-    }
-}
-
-function harborOverflowDockCount(state) {
-    let total = 0;
-    for (const record of state?.overflowDockCounts?.values?.() || []) {
-        total += Math.max(0, Number(record?.count || 0));
-    }
-    return total;
-}
-
-function latestShipEventTime(state, ship) {
-    let latest = Number(ship?.eventTime || 0);
-    for (const id of ship?.eventIds || []) {
-        latest = Math.max(latest, Number(state.seenEventTimes.get(id) || 0));
-    }
-    return latest;
-}
-
-function retireHarborShip(state, id, ship, now, { recordFloor = true } = {}) {
-    if (!ship) return;
-    const ids = new Set([ship.id, ...(ship.eventIds || [])].filter(Boolean));
-    const eventTime = latestShipEventTime(state, ship);
-    const type = ship.gitKind || (ship.isInbound ? ship.arrivingKind : 'commit') || '';
-    for (const eventId of ids) {
-        tombstoneHarborEvent(state, eventId, now, {
-            type,
-            eventTime: Number(state.seenEventTimes.get(eventId) || eventTime || 0),
-        });
-    }
-    if (recordFloor && type === 'commit') {
-        recordCommitReplayFloor(state, ship.project, ship.branch || ship.targetRef || '', eventTime, now);
-    }
-    state.ships.delete(id);
-}
-
-function harborLiveEventIds(state) {
-    const ids = new Set();
-    for (const ship of state.ships.values()) {
-        if (ship.id) ids.add(ship.id);
-        for (const id of ship.eventIds || []) if (id) ids.add(id);
-        if (ship.pushEventId) ids.add(ship.pushEventId);
-        if (ship.departEventId) ids.add(ship.departEventId);
-    }
-    for (const batch of state.batches.values()) {
-        const id = String(batch.id || '').replace(/^push-batch:/, '');
-        if (id) ids.add(id);
-    }
-    return ids;
-}
-
-function pruneHarborReplayState(state, now) {
-    const liveIds = harborLiveEventIds(state);
-    const cutoff = now - HARBOR_REPLAY_RETENTION_MS;
-
-    for (const [id, push] of state.pushEvents) {
-        const timestamp = Number(push.eventTime || push.seenAt || 0);
-        if (!liveIds.has(id) && (!Number.isFinite(timestamp) || timestamp < cutoff)) {
-            tombstoneHarborEvent(state, id, now, { type: 'push', status: push.status, eventTime: timestamp });
-            state.pushEvents.delete(id);
-        }
-    }
-    if (state.pushEvents.size > MAX_HARBOR_PUSH_EVENTS) {
-        const removable = [...state.pushEvents.entries()].sort((a, b) => (
-            Number(liveIds.has(a[0])) - Number(liveIds.has(b[0]))
-            || Number(a[1]?.eventTime || a[1]?.seenAt || 0) - Number(b[1]?.eventTime || b[1]?.seenAt || 0)
-            || a[0].localeCompare(b[0])
-        ));
-        let excess = state.pushEvents.size - MAX_HARBOR_PUSH_EVENTS;
-        for (const [id, push] of removable) {
-            if (excess <= 0) break;
-            excess--;
-            tombstoneHarborEvent(state, id, now, {
-                type: 'push',
-                status: push.status,
-                eventTime: Number(push.eventTime || push.seenAt || 0),
-            });
-            state.pushEvents.delete(id);
-        }
-    }
-
-    for (const id of state.seenEventIds) {
-        const timestamp = Number(state.seenEventTimes.get(id) || 0);
-        if (!liveIds.has(id) && (!Number.isFinite(timestamp) || timestamp < cutoff)) {
-            tombstoneHarborEvent(state, id, now, { eventTime: timestamp });
-            state.seenEventIds.delete(id);
-            state.seenEventTimes.delete(id);
-        }
-    }
-    if (state.seenEventIds.size > MAX_HARBOR_SEEN_EVENT_IDS) {
-        const removable = [...state.seenEventIds].sort((a, b) => (
-            Number(liveIds.has(a)) - Number(liveIds.has(b))
-            || Number(state.seenEventTimes.get(a) || 0) - Number(state.seenEventTimes.get(b) || 0)
-            || a.localeCompare(b)
-        ));
-        let excess = state.seenEventIds.size - MAX_HARBOR_SEEN_EVENT_IDS;
-        for (const id of removable) {
-            if (excess <= 0) break;
-            excess--;
-            tombstoneHarborEvent(state, id, now, { eventTime: Number(state.seenEventTimes.get(id) || 0) });
-            state.seenEventIds.delete(id);
-            state.seenEventTimes.delete(id);
-        }
-    }
-    for (const id of state.seenEventTimes.keys()) {
-        if (!state.seenEventIds.has(id)) state.seenEventTimes.delete(id);
-    }
-    while (state.eventTombstones.size > MAX_HARBOR_EVENT_TOMBSTONES) {
-        state.eventTombstones.delete(state.eventTombstones.keys().next().value);
-    }
-    while (state.commitReplayFloors.size > MAX_HARBOR_COMMIT_REPLAY_FLOORS) {
-        state.commitReplayFloors.delete(state.commitReplayFloors.keys().next().value);
-    }
-    pruneHarborOverflowDockCounts(state, now);
-}
-
-function harborShipRetentionRank(ship) {
-    if (ship?.status === 'departing' || ship?.status === 'rejecting' || ship?.status === 'cancelling') return 3;
-    if (ship?.status === 'docked') return 2;
-    if (ship?.status === 'arriving') return 1;
-    return 0;
-}
-
-function pruneHarborShips(state, now) {
-    for (const ship of state.ships.values()) {
-        if (!Array.isArray(ship.eventIds) || ship.eventIds.length <= MAX_HARBOR_EVENT_IDS_PER_SHIP) continue;
-        const excess = ship.eventIds.splice(0, ship.eventIds.length - MAX_HARBOR_EVENT_IDS_PER_SHIP);
-        for (const id of excess) {
-            tombstoneHarborEvent(state, id, now, { type: ship.gitKind || 'commit', eventTime: state.seenEventTimes.get(id) });
-        }
-    }
-    if (state.ships.size <= MAX_HARBOR_SHIPS) return;
-    const removable = [...state.ships.entries()].sort((a, b) => (
-        harborShipRetentionRank(a[1]) - harborShipRetentionRank(b[1])
-        || Number(a[1]?.eventTime || a[1]?.createdAt || 0) - Number(b[1]?.eventTime || b[1]?.createdAt || 0)
-        || a[0].localeCompare(b[0])
-    ));
-    let excess = state.ships.size - MAX_HARBOR_SHIPS;
-    for (const [id, ship] of removable) {
-        if (excess <= 0) break;
-        excess--;
-        if (ship.status === 'docked' && ship.gitKind === 'commit') {
-            recordHarborDockOverflow(state, ship, now);
-        }
-        retireHarborShip(state, id, ship, now);
-    }
-}
-
-function pruneHarborBatches(state) {
-    for (const batch of state.batches.values()) {
-        batch.shipIds = (batch.shipIds || []).filter(id => state.ships.has(id)).slice(0, MAX_HARBOR_SHIPS);
-        batch.shipCount = batch.shipIds.length;
-    }
-    if (state.batches.size <= MAX_HARBOR_BATCHES) return;
-    const removable = [...state.batches.entries()].sort((a, b) => (
-        Number((a[1]?.shipIds || []).some(id => state.ships.has(id)))
-        - Number((b[1]?.shipIds || []).some(id => state.ships.has(id)))
-        || Number(a[1]?.startedAt || a[1]?.eventTime || 0) - Number(b[1]?.startedAt || b[1]?.eventTime || 0)
-        || a[0].localeCompare(b[0])
-    ));
-    let excess = state.batches.size - MAX_HARBOR_BATCHES;
-    for (const [id] of removable) {
-        if (excess <= 0) break;
-        excess--;
-        state.batches.delete(id);
-    }
-}
-
-function pruneHarborRepoQuays(state) {
-    if (state.repoQuays.size <= MAX_HARBOR_REPO_QUAYS) return;
-    const liveProjects = new Set([...state.ships.values()].map(ship => String(ship.project || 'unknown')));
-    const removable = [...state.repoQuays.keys()].sort((a, b) => (
-        Number(liveProjects.has(String(a))) - Number(liveProjects.has(String(b)))
-        || String(a).localeCompare(String(b))
-    ));
-    let excess = state.repoQuays.size - MAX_HARBOR_REPO_QUAYS;
-    for (const project of removable) {
-        if (excess <= 0) break;
-        excess--;
-        state.repoQuays.delete(project);
-    }
-}
-
-function assignedQuayIndex(state, project) {
-    const key = String(project || 'unknown');
-    const existing = state.repoQuays.get(key);
-    if (Number.isFinite(existing)) return existing;
-
-    const preferred = stableHash(key) % QUAY_GROUPS.length;
-    const loads = QUAY_GROUPS.map((_, index) => {
-        let load = 0;
-        for (const ship of state.ships.values()) {
-            if (ship.quayIndex === index && ship.status === 'docked') load += 1;
-        }
-        for (const [project, quayIndex] of state.repoQuays.entries()) {
-            if (String(project || 'unknown') === key) continue;
-            if (quayIndex === index) load += 0.35;
-        }
-        return load;
-    });
-
-    let chosen = preferred;
-    for (let i = 1; i < QUAY_GROUPS.length; i++) {
-        const candidate = (preferred + i) % QUAY_GROUPS.length;
-        if (loads[candidate] < loads[chosen]) chosen = candidate;
-    }
-    state.repoQuays.set(key, chosen);
-    while (state.repoQuays.size > MAX_HARBOR_REPO_QUAYS) {
-        const oldest = state.repoQuays.keys().next().value;
-        if (oldest === key && state.repoQuays.size > 1) {
-            const nextOldest = [...state.repoQuays.keys()][1];
-            state.repoQuays.delete(nextOldest);
-        } else {
-            state.repoQuays.delete(oldest);
-        }
-    }
-    return chosen;
-}
-
-function chooseBerthIndex(state, project, occupiedBerths = null) {
-    const quayIndex = assignedQuayIndex(state, project);
-    const key = String(project || 'unknown');
-    const occupied = occupiedBerths || new Set();
-    if (!occupiedBerths) {
-        for (const ship of state.ships.values()) {
-            if (Number.isFinite(Number(ship.berthIndex))) occupied.add(Number(ship.berthIndex));
-        }
-    }
-    const otherRepoQuays = new Set();
-    for (const [assignedProject, assignedQuay] of state.repoQuays.entries()) {
-        if (String(assignedProject || 'unknown') !== key) otherRepoQuays.add(assignedQuay);
-    }
-
-    const preferredGroup = QUAY_GROUPS[quayIndex] || QUAY_GROUPS[0];
-    for (const berthIndex of rotateIndexes(preferredGroup.berthIndexes, state.nextSequence)) {
-        if (!occupied.has(berthIndex)) return { berthIndex, quayIndex };
-    }
-
-    for (let offset = 1; offset < QUAY_GROUPS.length; offset++) {
-        const nextQuayIndex = (quayIndex + offset) % QUAY_GROUPS.length;
-        if (otherRepoQuays.has(nextQuayIndex)) continue;
-        const group = QUAY_GROUPS[nextQuayIndex];
-        for (const berthIndex of rotateIndexes(group.berthIndexes, state.nextSequence)) {
-            if (!occupied.has(berthIndex)) return { berthIndex, quayIndex };
-        }
-    }
-
-    for (let offset = 1; offset < QUAY_GROUPS.length; offset++) {
-        const group = QUAY_GROUPS[(quayIndex + offset) % QUAY_GROUPS.length];
-        for (const berthIndex of rotateIndexes(group.berthIndexes, state.nextSequence)) {
-            if (!occupied.has(berthIndex)) return { berthIndex, quayIndex };
-        }
-    }
-
-    return {
-        berthIndex: state.nextSequence % BERTHS.length,
-        quayIndex,
-    };
-}
-
-function latestPushTimesByProject(events) {
-    const latest = new Map();
-    for (const event of events) {
-        if (event?.type !== 'push' || !event.project || !Number.isFinite(event.timestamp) || event.timestamp <= 0) continue;
-        if (!pushMarksCommitsLanded(event)) continue;
-        const key = trafficIdentity(event.project, eventBranch(event));
-        const previous = latest.get(key) || 0;
-        if (event.timestamp > previous) latest.set(key, event.timestamp);
-    }
-    return latest;
-}
-
-function pushMarksCommitsLanded(event = {}) {
-    if (event.status === 'success' || event.success === true) return true;
-    const exitCode = event.exitCode ?? event.exit_code;
-    return exitCode != null && Number.isFinite(Number(exitCode)) && Number(exitCode) === 0;
 }
 
 // 8.2 — the release sloop's partial reveal (arrival and last stretch): a copy
@@ -1459,7 +466,7 @@ function releaseRevealStrip(strip, level) {
             }
         }
         ctx.putImageData(data, 0, 0);
-        revealed = { ...strip, image: canvas, liveryKey: `${strip.liveryKey || strip.spriteId}|reveal${keep}` };
+        revealed = { ...strip, image: canvas, liveryKey: `${strip.liveryKey || strip.key || strip.spriteId}|reveal${keep}` };
     }
     levels.set(keep, revealed);
     return revealed;
@@ -1488,7 +495,7 @@ function releaseSailOutline(strip, frame) {
         source.width = w;
         source.height = h;
         const sctx = source.getContext('2d', { willReadFrequently: true });
-        sctx.drawImage(strip.image, frame * w, 0, w, h, 0, 0, w, h);
+        sctx.drawImage(strip.image, ((strip.frameOffset || 0) + frame) * w, 0, w, h, 0, 0, w, h);
         const data = sctx.getImageData(0, 0, w, h).data;
         const cloth = new Uint8Array(w * h);
         // The deck and waterline rows (the lip is pale too) stay out.
@@ -1558,934 +565,162 @@ function pointAlongPath(points, progress) {
     return points[points.length - 1];
 }
 
-function compareDockedShips(a, b) {
-    const aFailed = a?.pushStatus === 'failed' ? 1 : 0;
-    const bFailed = b?.pushStatus === 'failed' ? 1 : 0;
-    return (bFailed - aFailed)
-        || ((b?.eventTime || 0) - (a?.eventTime || 0))
-        || String(a?.id || '').localeCompare(String(b?.id || ''));
+// ─── Sailing paths (Phase 3) ─────────────────────────────────────────────────
+//
+// A lane-graph tile path (HarborLayout.composeWaterPath: cached and frozen,
+// so its identity keys these caches) as a world polyline with cumulative
+// ground length in tiles, so speeds read true on the ground whatever the
+// leg's screen slope.
+const SAIL_TAIL_TILES = 0.4;
+// The last stretch of a departure (tiles) over which the hull sinks below
+// the horizon; an arrival rises over the same stretch.
+const HORIZON_SINK_TILES = 3.6;
+const FORCE_SAIL_TILES_PER_S = 0.8;
+const CONVOY_ECHELON_TILES = 0.32;
+const BOOMERANG_REACH_TILES = 6;
+const CANCEL_REACH_TILES = 2.6;
+const _sailPaths = new WeakMap();
+const _reversedTiles = new WeakMap();
+
+function sailPath(tiles) {
+    let path = _sailPaths.get(tiles);
+    if (path) return path;
+    const points = tiles.map(point => toWorld(point.tileX, point.tileY));
+    const cum = [0];
+    for (let i = 1; i < tiles.length; i++) {
+        cum.push(cum[i - 1] + Math.hypot(tiles[i].tileX - tiles[i - 1].tileX, tiles[i].tileY - tiles[i - 1].tileY));
+    }
+    path = { tiles, points, cum, length: cum[cum.length - 1] || 0, seaLength: routeSeaLength(tiles) };
+    if (Object.isFrozen(tiles)) _sailPaths.set(tiles, path);
+    return path;
 }
 
-function compareDepartingShips(a, b) {
-    return ((a?.eventTime || 0) - (b?.eventTime || 0))
-        || String(a?.id || '').localeCompare(String(b?.id || ''));
+function sailPathSegment(path, distance) {
+    const { cum } = path;
+    const d = clamp(distance, 0, path.length);
+    let lo = 0;
+    let hi = cum.length - 1;
+    while (hi - lo > 1) {
+        const mid = (lo + hi) >> 1;
+        if (cum[mid] <= d) lo = mid;
+        else hi = mid;
+    }
+    const span = cum[hi] - cum[lo];
+    return { lo, hi, t: span > 0 ? (d - cum[lo]) / span : 0 };
 }
 
-function releaseConvoyMetadata(event, branch, selectedShips = [], status = 'unknown', forceFlag = null) {
-    if (status !== 'success' || forceFlag === true) return null;
-    if (!Array.isArray(selectedShips) || selectedShips.length < RELEASE_CONVOY_MIN_SHIPS) return null;
-    const profile = trafficProfile(event.project, branch);
-    return {
-        id: `release-convoy:${event.id}`,
-        mode: 'release-convoy',
-        project: event.project,
-        branch: branch || '',
-        repoName: profile.shortName,
-        label: 'Release convoy',
-        count: selectedShips.length,
-        leaderShipId: selectedShips[0]?.id || '',
-        pushEventId: event.id,
-        routeId: '',
-    };
+// World point `distance` ground tiles along a sail path (clamped to it).
+function sampleSailPath(path, distance) {
+    if (path.points.length < 2) return path.points[0] || { x: 0, y: 0 };
+    const { lo, hi, t } = sailPathSegment(path, distance);
+    const a = path.points[lo];
+    const b = path.points[hi];
+    return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
 }
 
-function dockSquadDensity(totalDocked, squadCount, shipCount) {
-    return Math.max(
-        Math.min(1, totalDocked / 14),
-        Math.min(1, squadCount / 6),
-        Math.min(1, shipCount / 4)
-    );
+function sailPathTile(path, distance) {
+    if (path.tiles.length < 2) return path.tiles[0];
+    const { lo, hi, t } = sailPathSegment(path, distance);
+    const a = path.tiles[lo];
+    const b = path.tiles[hi];
+    return { tileX: a.tileX + (b.tileX - a.tileX) * t, tileY: a.tileY + (b.tileY - a.tileY) * t };
 }
 
-function harborShipClassFormationSpacing(shipClass = {}) {
-    const wakeScale = Math.max(0.85, Number(shipClass.wakeScale || 1));
-    return Math.max(1.05, Math.min(2.28, 0.82 + wakeScale * 0.56));
+// Render motion (Phase 3.1). A target jump faster than MOTION_JUMP_SPEED
+// (no hull sails that fast) becomes an offset that springs home, critically
+// damped at MOTION_OMEGA and capped at MOTION_MAX_SPEED (about 5 px a frame
+// at 30 fps); a jump past MOTION_SNAP_PX, or a gap past MOTION_RESYNC_S (a
+// hidden tab), lands at once.
+const MOTION_OMEGA = 2.4;
+const MOTION_MAX_SPEED = 150;
+const MOTION_JUMP_PX = 3;
+const MOTION_JUMP_SPEED = 160;
+const MOTION_SNAP_PX = 520;
+const MOTION_RESYNC_S = 1.5;
+const MOTION_FORGET_MS = 4000;
+const HEADING_SMOOTH_S = 0.25;
+// A moored hull whose slot moves farther than this (tiles) sails there by
+// water (a relocation) instead of gliding straight over whatever lies
+// between, at RELOCATE_TILES_PER_S; a sortie that starts this far from where
+// the hull is drawn starts from where it is drawn.
+const RELOCATE_TILES = 1.25;
+const RELOCATE_TILES_PER_S = 1.1;
+// A moored hull gliding faster than this faces its glide; one still for
+// WEATHERVANE_MS (plus up to WEATHERVANE_STAGGER_MS by hash, so a fleet
+// swings one hull at a time) lies bow into the wind.
+const MOORED_HEADING_SPEED = 14;
+const WEATHERVANE_MS = 2500;
+const WEATHERVANE_STAGGER_MS = 4000;
+// Phase 3.7 — a new commit slides off the nearest slipway: the last
+// LAUNCH_RUN_TILES of the water path from it, fading in over LAUNCH_FADE_MS.
+const LAUNCH_WINDOW_MS = 6000;
+const LAUNCH_RUN_TILES = 2.4;
+const LAUNCH_SPEED = 120;
+const LAUNCH_FADE_MS = 700;
+const PACK_GHOST_MS = 1500;
+// 5.3 — ship lamp light: warm C1 lantern core, a small pool, dimmer than
+// a building window, for at most this many hulls (leads, then the largest).
+const HARBOR_LAMP_LIGHT_CAP = 12;
+const HARBOR_LAMP_COLOR = '#ffcf7a';
+const HARBOR_LAMP_RADIUS = 18;
+const HARBOR_LAMP_INTENSITY = 0.9;
+const HARBOR_LAMP_HALO = Object.freeze([3, 5]);
+const LAMP_SHIMMER_STEP_MS = 250;
+const LAMP_BAYER4 = Object.freeze([0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5]);
+// World px a Harbor pier deck stands above the water (Track C's surface
+// channel), where a pier berth's marker post stands.
+const PIER_DECK_LIFT_PX = 12;
+const MARKER_FADE_MS = 600;
+const PACK_GHOST_REACH_PX = 110;
+const HARBOR_SLIPWAY = Object.freeze({ tileX: 33.8, tileY: 22.0 });
+const LAGOON_SLIPWAY = Object.freeze({ tileX: 17.2, tileY: 10.7 });
+const LAGOON_EAST_TILE_X = 23;
+// Swing at anchor: ±2 px across, ±1 px along, periods by hash.
+const SWING_X_PX = 2;
+const SWING_Y_PX = 1;
+
+function tileDistance(a, b) {
+    return Math.hypot(a.tileX - b.tileX, a.tileY - b.tileY);
 }
 
-function dockSquadFormationSpacing(ships = [], repoDockOffset = 0, repoDockCount = ships.length) {
-    return ships.reduce((spacing, ship, shipIndex) => (
-        Math.max(spacing, harborShipClassFormationSpacing(harborShipClass({
-            ...ship,
-            repoDockIndex: repoDockOffset + shipIndex,
-            repoDockCount,
-            repoDockVisibleCount: ships.length,
-        })))
-    ), 1);
+// Opacity on the horizon stretch: full until 60 % of the way under, then out.
+function horizonAlpha(progress) {
+    const p = Number(progress) || 0;
+    return p <= 0.6 ? 1 : clamp(1 - (p - 0.6) / 0.4, 0, 1);
 }
 
-function anchoragesForWaitingZone(waitingZone) {
-    return isCommitLagoonZone(waitingZone)
-        ? COMMIT_LAGOON_SQUAD_ANCHORAGES
-        : HARBOR_SQUAD_ANCHORAGES;
-}
-
-function harborShipCollisionRadius(ship = {}) {
-    const shipClass = harborShipClass(ship);
-    const wakeScale = Math.max(0.85, Number(shipClass.wakeScale || 1));
-    return Math.max(34, Math.min(66, 22 + wakeScale * 16));
-}
-
-function isCommitLagoonZone(zone) {
-    return zone === 'commit-lagoon';
-}
-
-function isCoastZone(zone) {
-    return zone === COAST_ANCHORAGE_ZONE;
-}
-
-function dockWaterBounds(entry = {}) {
-    const zone = entry.waitingZone || entry.departWaterZone;
-    if (isCommitLagoonZone(zone)) return COMMIT_LAGOON_WATER_BOUNDS;
-    if (isCoastZone(zone)) return COAST_WATER_BOUNDS;
-    return HARBOR_DOCK_WATER_BOUNDS;
-}
-
-function dockWaterRegions(entry = {}) {
-    const zone = entry.waitingZone || entry.departWaterZone;
-    if (isCommitLagoonZone(zone)) return COMMIT_LAGOON_WATER_REGIONS;
-    if (isCoastZone(zone)) return COAST_WATER_REGIONS;
-    return HARBOR_DOCK_WATER_REGIONS;
-}
-
-function dockShipWaterBounds(entry = {}) {
-    const radius = Math.max(34, Number(entry.collisionRadius) || 42);
-    const margin = clamp((radius - 34) / 64, 0, 0.62);
-    const bounds = dockWaterBounds(entry);
-    return {
-        minTileX: bounds.minTileX + margin * 0.40,
-        maxTileX: bounds.maxTileX - margin * 0.92,
-        minTileY: bounds.minTileY + margin * 0.32,
-        maxTileY: bounds.maxTileY - margin * 0.50,
-    };
-}
-
-function harborWaterRegionScore(tile, region) {
-    const dx = (tile.tileX - region.centerX) / region.radiusX;
-    const dy = (tile.tileY - region.centerY) / region.radiusY;
-    return dx * dx + dy * dy;
-}
-
-function projectTileIntoHarborRegion(tile, region) {
-    const score = harborWaterRegionScore(tile, region);
-    if (score <= region.limit) return tile;
-
-    const scale = Math.sqrt(region.limit / Math.max(score, 0.0001));
-    return {
-        tileX: region.centerX + (tile.tileX - region.centerX) * scale,
-        tileY: region.centerY + (tile.tileY - region.centerY) * scale,
-    };
-}
-
-// A tile pushed radially off the world ash's islet until it stands
-// WORLD_TREE_ISLET_CLEARANCE_PX clear of its oval; any other tile unchanged.
-export function clearOfWorldTreeIslet(tile) {
-    const { centerX, centerY, radiusX, radiusY } = WORLD_TREE.islet;
-    const world = tileToWorld(tile.tileX, tile.tileY);
-    const dx = world.x - centerX;
-    const dy = world.y - centerY;
-    const outerX = radiusX + WORLD_TREE_ISLET_CLEARANCE_PX;
-    const outerY = radiusY + WORLD_TREE_ISLET_CLEARANCE_PX;
-    const reach = Math.hypot(dx / outerX, dy / outerY);
-    if (reach >= 1) return tile;
-    const angle = reach > 0 ? Math.atan2(dy / outerY, dx / outerX) : Math.PI / 2;
-    const pushed = worldToTile(centerX + Math.cos(angle) * outerX, centerY + Math.sin(angle) * outerY);
-    return { tileX: pushed.tileX, tileY: pushed.tileY };
-}
-
-function clampDockTileToHarborWater(tile, entry = {}) {
-    const clamped = clampDockTileToHarborRegions(tile, entry);
-    return isCommitLagoonZone(entry.waitingZone || entry.departWaterZone) ? clearOfWorldTreeIslet(clamped) : clamped;
-}
-
-function clampDockTileToHarborRegions(tile, entry = {}) {
-    const bounds = dockShipWaterBounds(entry);
-    let next = {
-        tileX: clamp(Number(tile.tileX) || bounds.maxTileX, bounds.minTileX, bounds.maxTileX),
-        tileY: clamp(Number(tile.tileY) || bounds.maxTileY, bounds.minTileY, bounds.maxTileY),
-    };
-
-    const regions = dockWaterRegions(entry);
-    let bestRegion = regions[0];
-    let bestScore = Infinity;
-    for (const region of regions) {
-        const score = harborWaterRegionScore(next, region);
-        if (score < bestScore) {
-            bestScore = score;
-            bestRegion = region;
+function springOffset(m, dt) {
+    let left = dt;
+    const k = MOTION_OMEGA * MOTION_OMEGA;
+    const c = 2 * MOTION_OMEGA;
+    while (left > 1e-6) {
+        const h = Math.min(left, 1 / 60);
+        left -= h;
+        m.ovx += (-k * m.ox - c * m.ovx) * h;
+        m.ovy += (-k * m.oy - c * m.ovy) * h;
+        const speed = Math.hypot(m.ovx, m.ovy);
+        if (speed > MOTION_MAX_SPEED) {
+            m.ovx *= MOTION_MAX_SPEED / speed;
+            m.ovy *= MOTION_MAX_SPEED / speed;
         }
-        if (score <= region.limit) return next;
+        m.ox += m.ovx * h;
+        m.oy += m.ovy * h;
     }
-
-    next = projectTileIntoHarborRegion(next, bestRegion);
-    return {
-        tileX: clamp(next.tileX, bounds.minTileX, bounds.maxTileX),
-        tileY: clamp(next.tileY, bounds.minTileY, bounds.maxTileY),
-    };
-}
-
-function clampDockShipToHarborWater(entry = {}) {
-    const tile = clampDockTileToHarborWater(toTile(entry.x, entry.y), entry);
-    const world = toWorld(tile.tileX, tile.tileY);
-    entry.x = world.x;
-    entry.y = world.y;
-    entry.tileX = tile.tileX;
-    entry.tileY = tile.tileY;
-}
-
-function dockSquadCycleOffset(squadCycle = 0, anchorIndex = 0) {
-    const cycle = Math.max(0, Math.floor(Number(squadCycle) || 0));
-    if (cycle <= 0) return { tileX: 0, tileY: 0 };
-
-    const patternIndex = (cycle - 1 + Math.max(0, Number(anchorIndex) || 0)) % HARBOR_SQUAD_REUSE_OFFSETS.length;
-    const ring = Math.floor((cycle - 1) / HARBOR_SQUAD_REUSE_OFFSETS.length);
-    const offset = HARBOR_SQUAD_REUSE_OFFSETS[patternIndex];
-    const ringSpread = 1 + Math.min(2, ring) * 0.34;
-    return {
-        tileX: offset.tileX * ringSpread,
-        tileY: offset.tileY * ringSpread,
-    };
-}
-
-function dockSquadFormationTile(anchor, shipIndex, shipCount, squadCycle = 0, key = '', spacing = 1, anchorIndex = 0) {
-    const columns = Math.max(1, Math.min(Number(anchor.columns) || 1, shipCount));
-    const column = shipIndex % columns;
-    const row = Math.floor(shipIndex / columns);
-    const columnCenter = (columns - 1) / 2;
-    const spacingScale = Math.max(0.9, Number(spacing) || 1);
-    const jitterSeed = stableHash(`${key}:${shipIndex}`);
-    const jitter = shipCount > 1 ? ((jitterSeed % 9) - 4) * 0.01 : 0;
-    const cycleOffset = dockSquadCycleOffset(squadCycle, anchorIndex);
-    return {
-        tileX: anchor.tileX
-            + (column - columnCenter) * (anchor.columnDx || 0) * spacingScale
-            + row * (anchor.rowDx || 0) * spacingScale
-            + cycleOffset.tileX
-            + jitter,
-        tileY: anchor.tileY
-            + (column - columnCenter) * (anchor.columnDy || 0) * spacingScale
-            + row * (anchor.rowDy || 0) * spacingScale
-            + cycleOffset.tileY
-            - jitter,
-        column,
-        row,
-        columns,
-    };
-}
-
-function relaxDockShipLayout(entries = []) {
-    if (!Array.isArray(entries) || !entries.length) return;
-    for (const entry of entries) clampDockShipToHarborWater(entry);
-    if (entries.length <= 1) return;
-
-    for (let iteration = 0; iteration < 14; iteration++) {
-        for (let i = 0; i < entries.length; i++) {
-            for (let j = i + 1; j < entries.length; j++) {
-                const a = entries[i];
-                const b = entries[j];
-                const minDistance = Math.max(a.collisionRadius || 42, b.collisionRadius || 42);
-                const dx = b.x - a.x;
-                const dy = b.y - a.y;
-                const distance = Math.hypot(dx, dy);
-                if (distance >= minDistance) continue;
-                const fallbackAngle = ((stableHash(`${a.id}:${b.id}:dock-relax`) % 628) / 100);
-                const ux = distance > 0.001 ? dx / distance : Math.cos(fallbackAngle);
-                const uy = distance > 0.001 ? dy / distance : Math.sin(fallbackAngle) * 0.55;
-                const push = (minDistance - distance) * 0.52;
-                a.x -= ux * push;
-                a.y -= uy * push;
-                b.x += ux * push;
-                b.y += uy * push;
-            }
-        }
-        for (const entry of entries) clampDockShipToHarborWater(entry);
-    }
-
-    for (const entry of entries) {
-        const tile = clampDockTileToHarborWater(toTile(entry.x, entry.y), entry);
-        const world = toWorld(tile.tileX, tile.tileY);
-        entry.x = world.x;
-        entry.y = world.y;
-        entry.tileX = tile.tileX;
-        entry.tileY = tile.tileY;
+    if (Math.hypot(m.ox, m.oy) < 0.05 && Math.hypot(m.ovx, m.ovy) < 0.5) {
+        m.ox = 0;
+        m.oy = 0;
+        m.ovx = 0;
+        m.ovy = 0;
     }
 }
 
-// 5.5 — memo for buildDockSquadLayout. relaxDockShipLayout runs up to 14 iterations
-// per call; on first-paint replay (200 unpushed commits across 8 repos) the same
-// ship set + status set repeats across many ticks. Key is the sorted ship-id list +
-// per-ship status/pushStatus/eventTime + the repo→anchorage allocation; cap at
-// 32 entries (drop oldest on overflow).
-const DOCK_SQUAD_LAYOUT_CACHE_SIZE = 32;
-const _dockSquadLayoutCache = new Map();
-
-function dockSquadLayoutCacheKey(state) {
-    const ships = state?.ships;
-    if (!ships) return '';
-    const ids = [];
-    const meta = [];
-    const iterable = ships instanceof Map
-        ? ships.values()
-        : Object.values(ships || {});
-    for (const ship of iterable) {
-        if (!ship || !ship.id || ship.status !== 'docked') continue;
-        ids.push(ship.id);
-        meta.push(`${ship.id}:${ship.pushStatus || ''}:${ship.eventTime || 0}`);
+function reversedTiles(tiles) {
+    let reversed = _reversedTiles.get(tiles);
+    if (!reversed) {
+        reversed = Object.freeze([...tiles].reverse());
+        if (Object.isFrozen(tiles)) _reversedTiles.set(tiles, reversed);
     }
-    if (!ids.length) return 'empty';
-    ids.sort();
-    meta.sort();
-    const anchorages = [];
-    for (const [project, slot] of state?.repoAnchorages?.entries?.() || []) anchorages.push(`${project}=${slot}`);
-    anchorages.sort();
-    return `${ids.join('|')}#${meta.join(',')}#${anchorages.join(',')}`;
-}
-
-function buildDockSquadLayout(state) {
-    const cacheKey = dockSquadLayoutCacheKey(state);
-    if (cacheKey) {
-        const cached = _dockSquadLayoutCache.get(cacheKey);
-        if (cached) {
-            // refresh LRU order
-            _dockSquadLayoutCache.delete(cacheKey);
-            _dockSquadLayoutCache.set(cacheKey, cached);
-            return cached;
-        }
-    }
-    const layout = _buildDockSquadLayoutFresh(state);
-    if (cacheKey) {
-        _dockSquadLayoutCache.set(cacheKey, layout);
-        if (_dockSquadLayoutCache.size > DOCK_SQUAD_LAYOUT_CACHE_SIZE) {
-            const oldest = _dockSquadLayoutCache.keys().next().value;
-            if (oldest !== undefined) _dockSquadLayoutCache.delete(oldest);
-        }
-    }
-    return layout;
-}
-
-function dockedShipNeedsIndividualVisual(ship = {}) {
-    return ship.pushStatus === 'failed'
-        || ship.pushStatus === 'rejected'
-        || ship.pushStatus === 'cancelled'
-        || ship.pushStatus === 'canceled'
-        || ship.untetheredFlag
-        || ship.detachedHead;
-}
-
-// Titan packing. `ships` is one repo/branch fleet in dock order. Fleets under
-// HARBOR_TITAN_MIN_COMMITS keep one ship per commit; larger fleets collapse
-// into ceil(n / MAX_HARBOR_SHIP_PACK_SIZE) balanced packs, each drawn as a
-// single stack hull whose badge carries the exact count. Ships that need their
-// own visual (failed/rejected/cancelled pushes, untethered, detached HEAD)
-// always sail individually. Every pack's lead is its first ship; the rest are
-// hidden behind that lead and inherit its position.
-function planDockedVisualPacks(ships = []) {
-    const regular = [];
-    const special = [];
-    ships.forEach((ship, index) => {
-        (dockedShipNeedsIndividualVisual(ship) ? special : regular).push({ ship, index });
-    });
-    const toPack = (chunk) => ({
-        ships: chunk.map(entry => entry.ship),
-        lead: chunk[0].ship,
-        size: chunk.length,
-        startIndex: chunk[0].index,
-        endIndex: chunk[chunk.length - 1].index,
-    });
-    const packs = [];
-    if (regular.length >= HARBOR_TITAN_MIN_COMMITS) {
-        const packCount = Math.ceil(regular.length / MAX_HARBOR_SHIP_PACK_SIZE);
-        const base = Math.floor(regular.length / packCount);
-        const extra = regular.length % packCount;
-        let cursor = 0;
-        for (let packIndex = 0; packIndex < packCount; packIndex++) {
-            const size = base + (packIndex < extra ? 1 : 0);
-            packs.push(toPack(regular.slice(cursor, cursor + size)));
-            cursor += size;
-        }
-    } else {
-        for (const entry of regular) packs.push(toPack([entry]));
-    }
-    for (const entry of special) packs.push(toPack([entry]));
-    packs.sort((a, b) => a.startIndex - b.startIndex);
-    return packs;
-}
-
-function coastFormationAnchor(slot = COAST_ANCHORAGE_SLOTS[0]) {
-    return {
-        ...slot,
-        tileX: slot.tileX + (Number(slot.leadDx) || 0),
-        tileY: slot.tileY + (Number(slot.leadDy) || 0),
-    };
-}
-
-function dockSquadPackSpacing(squad) {
-    return squad.packs.reduce((spacing, pack) => (
-        Math.max(spacing, harborShipClassFormationSpacing(harborShipClass({
-            ...pack.lead,
-            repoDockIndex: pack.startIndex,
-            repoDockCount: squad.repoDockCount,
-            repoDockVisibleCount: squad.packs.length,
-            visualPackSize: pack.size,
-        })))
-    ), 1);
-}
-
-function _buildDockSquadLayoutFresh(state) {
-    const groups = new Map();
-    let totalDocked = 0;
-    for (const ship of state?.ships?.values?.() || []) {
-        if (ship.status !== 'docked') continue;
-        const profile = trafficProfile(ship.project, ship.branch);
-        const group = groups.get(profile.key) || {
-            key: profile.key,
-            project: ship.project,
-            branch: ship.branch || '',
-            profile,
-            quayIndex: Number.isFinite(Number(ship.quayIndex)) ? Number(ship.quayIndex) : assignedQuayIndex(state, ship.project),
-            ships: [],
-            failedCount: 0,
-            latestEventTime: 0,
-        };
-        group.ships.push(ship);
-        group.failedCount += ship.pushStatus === 'failed' ? 1 : 0;
-        group.latestEventTime = Math.max(group.latestEventTime, ship.eventTime || 0);
-        groups.set(profile.key, group);
-        totalDocked += 1;
-    }
-    const repoGroups = [...groups.values()]
-        .map((group) => ({
-            ...group,
-            ships: [...group.ships].sort(compareDockedShips),
-            count: group.ships.length,
-        }))
-        .sort((a, b) => (a.quayIndex - b.quayIndex)
-            || (b.failedCount - a.failedCount)
-            || (b.count - a.count)
-            || (b.latestEventTime - a.latestEventTime)
-            || a.profile.name.localeCompare(b.profile.name));
-
-    // Each repo/branch fleet is packed first, then routed either to its
-    // project's coastal anchorage (every branch of a project shares one buoy and
-    // one formation) or, when the coast is full, to the Commit Lagoon in squads
-    // of up to MAX_SHIPS_PER_SQUAD_ANCHORAGE visible packs.
-    const squads = [];
-    const fleets = new Map();
-    const makeSquad = (group, packs, extra) => {
-        const ships = packs.flatMap(pack => pack.ships);
-        const dockIndexById = new Map();
-        group.ships.forEach((ship, index) => dockIndexById.set(ship.id, index));
-        return {
-            ...group,
-            ships,
-            packs,
-            dockIndexById,
-            count: ships.length,
-            repoDockCount: group.ships.length,
-            repoTotalDockCount: group.ships.length,
-            repoDockOffset: packs[0]?.startIndex || 0,
-            failedCount: ships.filter(ship => ship.pushStatus === 'failed').length,
-            latestEventTime: ships.reduce((max, ship) => Math.max(max, ship.eventTime || 0), 0),
-            ...extra,
-        };
-    };
-    repoGroups.forEach((group, repoGroupIndex) => {
-        const packs = planDockedVisualPacks(group.ships);
-        if (!packs.length) return;
-        const slot = repoAnchorageSlot(state, group.project);
-        if (slot != null) {
-            const fleetKey = repoAnchorageKey(group.project);
-            const fleet = fleets.get(fleetKey) || { key: fleetKey, slot, squads: [] };
-            const squad = makeSquad(group, packs, {
-                waitingZone: COAST_ANCHORAGE_SLOTS[slot].zone || COAST_ANCHORAGE_ZONE,
-                repoGroupIndex,
-                repoSegmentIndex: 0,
-                repoSegmentCount: 1,
-                segmentKey: `${group.key}:${COAST_ANCHORAGE_ZONE}:segment:0`,
-            });
-            fleet.squads.push(squad);
-            fleets.set(fleetKey, fleet);
-            squads.push(squad);
-            return;
-        }
-        const repoSegmentCount = Math.max(1, Math.ceil(packs.length / MAX_SHIPS_PER_SQUAD_ANCHORAGE));
-        for (let repoSegmentIndex = 0; repoSegmentIndex < repoSegmentCount; repoSegmentIndex++) {
-            const start = repoSegmentIndex * MAX_SHIPS_PER_SQUAD_ANCHORAGE;
-            const segmentPacks = packs.slice(start, start + MAX_SHIPS_PER_SQUAD_ANCHORAGE);
-            if (!segmentPacks.length) continue;
-            squads.push(makeSquad(group, segmentPacks, {
-                waitingZone: 'commit-lagoon',
-                repoGroupIndex,
-                repoSegmentIndex,
-                repoSegmentCount,
-                segmentKey: `${group.key}:commit-lagoon:segment:${repoSegmentIndex}`,
-            }));
-        }
-    });
-
-    const byShipId = new Map();
-    const visualPackByShipId = new Map();
-    const squadCount = squads.length;
-    const totalVisible = squads.reduce((sum, squad) => sum + squad.packs.length, 0);
-    for (const fleet of fleets.values()) {
-        const slot = COAST_ANCHORAGE_SLOTS[fleet.slot];
-        const packs = fleet.squads.flatMap(squad => squad.packs);
-        // Coastal slots sit ~3 tiles apart, so keep each fleet short along the
-        // shore: skiff-only fleets take a third column, and one oversized lead
-        // hull does not stretch the whole grid (collision relax clears it).
-        const spacings = fleet.squads.flatMap(squad => squad.packs.map(pack => (
-            harborShipClassFormationSpacing(harborShipClass({
-                ...pack.lead,
-                repoDockIndex: pack.startIndex,
-                repoDockCount: squad.repoDockCount,
-                repoDockVisibleCount: squad.packs.length,
-                visualPackSize: pack.size,
-            }))
-        ))).sort((a, b) => b - a);
-        const hasPack = packs.some(pack => pack.size > 1);
-        fleet.anchor = { ...coastFormationAnchor(slot), columns: hasPack ? slot.columns : slot.columns + 1 };
-        fleet.visibleCount = packs.length;
-        fleet.spacing = Math.max(1.05, (spacings.length >= 3 ? spacings[1] : spacings[0]) || 1);
-        fleet.cursor = 0;
-    }
-    const zoneSquadCounts = new Map();
-    const representatives = [];
-    squads.forEach((squad, squadIndex) => {
-        const waitingZone = squad.waitingZone;
-        const zoneSquadIndex = zoneSquadCounts.get(waitingZone) || 0;
-        zoneSquadCounts.set(waitingZone, zoneSquadIndex + 1);
-        let anchor;
-        let anchorIndex;
-        let squadCycle = 0;
-        let formationBase = 0;
-        let formationCount = squad.packs.length;
-        let spacing;
-        const fleet = fleets.get(repoAnchorageKey(squad.project));
-        if (fleet) {
-            anchor = fleet.anchor;
-            anchorIndex = fleet.slot;
-            formationBase = fleet.cursor;
-            fleet.cursor += squad.packs.length;
-            formationCount = fleet.visibleCount;
-            spacing = fleet.spacing;
-        } else {
-            const anchorages = anchoragesForWaitingZone(waitingZone);
-            anchorIndex = zoneSquadIndex % anchorages.length;
-            squadCycle = Math.floor(zoneSquadIndex / anchorages.length);
-            anchor = anchorages[anchorIndex] || anchorages[0] || HARBOR_SQUAD_ANCHORAGES[0];
-            spacing = dockSquadPackSpacing(squad);
-        }
-        const repoDockCount = squad.repoDockCount;
-        const visibleCount = squad.packs.length;
-        const density = dockSquadDensity(totalVisible, squadCount, visibleCount);
-        const compactCommitLabel = density >= 0.52 || totalVisible >= 9 || visibleCount >= 3;
-        squad.anchor = anchor;
-        squad.anchorIndex = anchorIndex;
-        squad.squadIndex = squadIndex;
-        squad.zoneSquadIndex = zoneSquadIndex;
-        squad.squadCount = squadCount;
-        squad.totalDocked = totalDocked;
-        squad.density = density;
-        squad.compactCommitLabel = compactCommitLabel;
-        squad.formationSpacing = spacing;
-        squad.packs.forEach((pack, packIndex) => {
-            const tile = dockSquadFormationTile(anchor, formationBase + packIndex, formationCount, squadCycle, squad.segmentKey || squad.key, spacing, anchorIndex);
-            const world = toWorld(tile.tileX, tile.tileY);
-            const lead = pack.lead;
-            const repoDockIndex = pack.startIndex;
-            const layoutShip = {
-                ...lead,
-                repoDockIndex,
-                repoDockCount,
-                repoDockVisibleCount: visibleCount,
-                waitingZone,
-                visualPackSize: pack.size,
-            };
-            const showCommitLabel = lead.pushStatus === 'failed'
-                || (!compactCommitLabel && totalVisible <= 18)
-                || (packIndex === 0 && totalVisible <= 18 && repoDockCount <= 5)
-                || (packIndex === 0 && totalVisible <= 36 && (squad.repoSegmentIndex % 3) === 0);
-            const meta = {
-                ...tile,
-                id: lead.id,
-                x: world.x,
-                y: world.y,
-                collisionRadius: harborShipCollisionRadius(layoutShip),
-                squadKey: squad.key,
-                waitingZone,
-                anchorageName: anchor.name,
-                anchorageIndex: anchorIndex,
-                repoDockIndex,
-                repoDockCount,
-                repoTotalDockCount: squad.repoTotalDockCount,
-                repoDockVisibleCount: visibleCount,
-                repoSegmentIndex: squad.repoSegmentIndex,
-                repoSegmentCount: squad.repoSegmentCount,
-                squadIndex,
-                zoneSquadIndex,
-                squadCount,
-                squadShipIndex: packIndex,
-                squadShipCount: visibleCount,
-                squadDensity: density,
-                compactCommitLabel,
-                showCommitLabel,
-                visualLeadId: lead.id,
-            };
-            byShipId.set(lead.id, meta);
-            representatives.push(meta);
-            visualPackByShipId.set(lead.id, {
-                visualPackSize: pack.size,
-                visualPackStartIndex: pack.startIndex,
-                visualPackEndIndex: pack.endIndex,
-                visualPackHiddenCount: Math.max(0, pack.size - 1),
-                visualIndex: packIndex,
-                visibleCount,
-            });
-            for (const ship of pack.ships) {
-                if (ship === lead) continue;
-                byShipId.set(ship.id, {
-                    ...meta,
-                    id: ship.id,
-                    repoDockIndex: squad.dockIndexById.get(ship.id) ?? repoDockIndex,
-                    showCommitLabel: false,
-                });
-            }
-        });
-    });
-
-    relaxDockShipLayout(representatives);
-    for (const meta of byShipId.values()) {
-        if (meta.visualLeadId === meta.id) continue;
-        const lead = byShipId.get(meta.visualLeadId);
-        if (!lead) continue;
-        meta.x = lead.x;
-        meta.y = lead.y;
-        meta.tileX = lead.tileX;
-        meta.tileY = lead.tileY;
-    }
-
-    return {
-        squads,
-        byShipId,
-        visualPackByShipId,
-        totalDocked,
-        totalVisible,
-        squadCount,
-    };
-}
-
-function harborRouteGraphRoute(routeId) {
-    return HARBOR_ROUTE_GRAPH.routes[routeId] || null;
-}
-
-function routeGraphWaypointSnapshot(waypointId) {
-    const waypoint = HARBOR_ROUTE_WAYPOINTS[waypointId] || { id: waypointId, name: waypointId, zone: 'unknown' };
-    return {
-        id: waypoint.id,
-        name: waypoint.name,
-        zone: waypoint.zone,
-        tileX: Number.isFinite(Number(waypoint.tileX)) ? Number(waypoint.tileX) : null,
-        tileY: Number.isFinite(Number(waypoint.tileY)) ? Number(waypoint.tileY) : null,
-    };
-}
-
-function routeGraphMetadata(routeId, overrides = {}) {
-    const route = harborRouteGraphRoute(routeId);
-    if (!route) return null;
-    const waypointIds = Array.isArray(route.waypoints) ? [...route.waypoints] : [];
-    return {
-        graphVersion: HARBOR_ROUTE_GRAPH.version,
-        id: route.id,
-        name: route.name,
-        kind: overrides.kind || route.kind,
-        zone: overrides.zone || route.zone,
-        bandName: overrides.bandName || route.bandName || '',
-        waypointIds,
-        waypoints: waypointIds.map(routeGraphWaypointSnapshot),
-        fromWaypoint: overrides.fromWaypoint || waypointIds[0] || '',
-        toWaypoint: overrides.toWaypoint || waypointIds[waypointIds.length - 1] || '',
-    };
-}
-
-function outboundRouteIdForBand(band, zone = 'harbor') {
-    const bandName = String(band?.name || '');
-    if (isCommitLagoonZone(zone)) return `lagoon.${bandName}`;
-    return `outbound.${bandName}`;
-}
-
-function waterRouteMetadataForBand(band, ship = {}, kind = 'outbound') {
-    if (kind === 'inbound') {
-        const moorsOut = ship?.arrivingKind === 'fetch' || ship?.arrivingKind === 'pr';
-        return routeGraphMetadata(moorsOut ? 'inbound.fetch-roadstead' : 'inbound.pull');
-    }
-    const zone = ship?.departWaterZone || ship?.waitingZone || 'harbor';
-    return routeGraphMetadata(outboundRouteIdForBand(band, zone), {
-        kind: isCommitLagoonZone(zone) ? 'lagoon' : 'outbound',
-        zone: isCommitLagoonZone(zone) ? 'commit-lagoon' : 'harbor',
-        bandName: band?.name || '',
-    });
-}
-
-function compactRouteMetadata(route = null) {
-    if (!route) return null;
-    return {
-        graphVersion: route.graphVersion,
-        id: route.id,
-        name: route.name,
-        kind: route.kind,
-        zone: route.zone,
-        bandName: route.bandName || '',
-        waypointIds: Array.isArray(route.waypointIds) ? [...route.waypointIds] : [],
-        fromWaypoint: route.fromWaypoint || '',
-        toWaypoint: route.toWaypoint || '',
-    };
-}
-
-function routeBandsFromData(routeData, ship = null) {
-    if (Array.isArray(routeData?.bands) && routeData.bands.length) return routeData.bands;
-    return isCommitLagoonZone(ship?.departWaterZone || ship?.waitingZone)
-        ? COMMIT_LAGOON_ROUTE_BANDS
-        : LOCAL_WATER_ROUTE_BANDS;
-}
-
-function pushRoutePoint(route, point) {
-    if (!point) return;
-    const previous = route[route.length - 1];
-    if (previous && Math.hypot(previous.tileX - point.tileX, previous.tileY - point.tileY) < 0.12) return;
-    route.push({ tileX: point.tileX, tileY: point.tileY });
-}
-
-function offsetWaterRoutePoint(point, band, ship, index, lastIndex) {
-    if (index === 0 || index === lastIndex) return point;
-    const squadCount = Math.max(1, Number(ship?.departSquadCount || 1));
-    const squadIndex = Math.max(0, Number(ship?.departSquadIndex || 0));
-    const centered = squadIndex - (squadCount - 1) / 2;
-    const offset = Math.max(-0.36, Math.min(0.36, centered * 0.13));
-    return {
-        tileX: point.tileX + offset * (Number(band?.offsetX) || 0),
-        tileY: point.tileY + offset * (Number(band?.offsetY) || 0),
-    };
-}
-
-export function composeWaterRouteTiles(startTile, ship, routeData = null) {
-    const bands = routeBandsFromData(routeData, ship);
-    const routeIndex = Number.isFinite(Number(ship?.departRouteIndex))
-        ? Number(ship.departRouteIndex)
-        : Number(ship?.laneIndex || 0);
-    const band = bands[Math.abs(routeIndex) % bands.length] || bands[0];
-    const fallbackLane = SEA_LANES[Math.abs(Number(band.exitLaneIndex ?? ship?.laneIndex ?? 0)) % SEA_LANES.length] || SEA_LANES[0];
-    const lagoon = bands === COMMIT_LAGOON_ROUTE_BANDS;
-    const raw = [];
-    pushRoutePoint(raw, startTile);
-    for (const point of band.waypoints || []) {
-        if (!band.allowSouthbound && Number(point.tileY) > Number(startTile.tileY) + 0.65) continue;
-        // A lagoon ship east of a waypoint never turns back west to it: the
-        // way back would cross the world ash's islet.
-        if (lagoon && Number(point.tileX) < Number(startTile.tileX) - LAGOON_BACKTRACK_TILES) continue;
-        pushRoutePoint(raw, point);
-    }
-    // End at the established sea-lane endpoint. The old randomized edge leg
-    // could send a ship back across the island after it had already reached
-    // open water; the ship now fades during this final approach instead.
-    const seaExitPoint = fallbackLane?.[fallbackLane.length - 1];
-    pushRoutePoint(raw, seaExitPoint);
-
-    const lastIndex = raw.length - 1;
-    const route = [];
-    raw.forEach((point, index) => {
-        const offset = offsetWaterRoutePoint(point, band, ship, index, lastIndex);
-        pushRoutePoint(route, lagoon ? clearOfWorldTreeIslet(offset) : offset);
-    });
-    return route.length ? route : [startTile, ...(fallbackLane || [])];
-}
-
-function composeStorageTransferTiles(fromTile, toTile, ship = {}) {
-    const route = [];
-    pushRoutePoint(route, fromTile);
-    const laneOffset = Math.max(-0.44, Math.min(0.44, ((stableHash(`${ship.id || ''}:storage-lane`) % 9) - 4) * 0.11));
-    const entryY = Math.max(12.0, Math.min(16.2, fromTile.tileY - 5.6));
-    pushRoutePoint(route, { tileX: 37.0 + laneOffset, tileY: entryY });
-    pushRoutePoint(route, { tileX: 35.2 + laneOffset, tileY: 9.1 });
-    pushRoutePoint(route, { tileX: 28.4 + laneOffset * 0.6, tileY: 6.6 });
-    if (toTile.tileX < 23) {
-        // Into the lagoon round the world ash's islet: down its east end and
-        // in by the south channel, then west to the anchorage.
-        for (const point of LAGOON_INBOUND_CHANNEL) pushRoutePoint(route, { tileX: point.tileX, tileY: point.tileY + laneOffset * 0.25 });
-    }
-    pushRoutePoint(route, toTile);
-    return route;
-}
-
-function isHistoricalCommittedBeforePush(event, latestPushTimes, now) {
-    const branch = eventBranch(event);
-    const latestPush = latestPushTimes.get(trafficIdentity(event.project, branch))
-        || latestPushTimes.get(trafficIdentity(event.project, ''))
-        || (branch ? 0 : latestProjectPushTime(latestPushTimes, event.project))
-        || 0;
-    if (!latestPush || !Number.isFinite(event.timestamp) || event.timestamp > latestPush) return false;
-    return Math.max(0, now - latestPush) > RECENT_PUSH_REPLAY_MS;
-}
-
-function latestProjectPushTime(latestPushTimes, project) {
-    const prefix = `${String(project || 'unknown')}\x1f`;
-    let latest = 0;
-    for (const [key, timestamp] of latestPushTimes.entries()) {
-        if (!String(key).startsWith(prefix)) continue;
-        if (Number(timestamp) > latest) latest = Number(timestamp);
-    }
-    return latest;
-}
-
-function pushEventMatchesShip(event, ship) {
-    if (!ship || ship.project !== event.project) return false;
-    const pushBranch = eventBranch(event);
-    const shipBranch = normalizeRepoBranch(ship.branch || ship.targetRef || '');
-    if (!pushBranch) return true;
-    if (!shipBranch) return true;
-    return pushBranch === shipBranch;
-}
-
-function shipEligibleForPush(ship, event, previousPush, now) {
-    if (!ship || ship.status !== 'docked' || !pushEventMatchesShip(event, ship)) return false;
-    const pushTime = Number.isFinite(event.timestamp) && event.timestamp > 0 ? event.timestamp : 0;
-    if (!pushTime) return true;
-    if (Number.isFinite(ship.eventTime) && ship.eventTime <= pushTime) return true;
-
-    // Existing harbor ships predate the observed push even when their backend
-    // timestamps are slightly out of order. New post-push commits must stay docked.
-    const firstSeenBeforePush = Number.isFinite(ship.createdAt)
-        && ship.createdAt < (previousPush?.seenAt || now);
-    return firstSeenBeforePush;
-}
-
-function commitCompareText(value = '') {
-    return cachedCleanCommitSubject(value)
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, ' ')
-        .trim();
-}
-
-function commitIdentityParts(event = {}) {
-    const project = String(event.project || 'unknown');
-    const branch = normalizeRepoBranch(event.branch || event.targetRef || '');
-    const sha = String(event.sha || '').trim().toLowerCase();
-    const label = cachedCleanCommitSubject(event.label || commitMessageFromCommand(event.command) || '');
-    return {
-        project,
-        branch,
-        sha,
-        label,
-        compareLabel: commitCompareText(label),
-        timestamp: Number(event.timestamp ?? event.eventTime ?? 0) || 0,
-    };
-}
-
-function commitTimesClose(a, b) {
-    if (!Number.isFinite(a) || !Number.isFinite(b) || a <= 0 || b <= 0) return true;
-    return Math.abs(a - b) <= COMMIT_EQUIVALENCE_WINDOW_MS;
-}
-
-function commitLabelsEquivalent(left, right, leftTime, rightTime) {
-    if (!left || !right || !commitTimesClose(leftTime, rightTime)) return false;
-    if (left === right) {
-        if (left.length >= 10) return true;
-        if (!Number.isFinite(leftTime) || !Number.isFinite(rightTime) || leftTime <= 0 || rightTime <= 0) return false;
-        return Math.abs(leftTime - rightTime) <= 30000;
-    }
-    if (Math.min(left.length, right.length) < 18) return false;
-    return left.startsWith(right) || right.startsWith(left);
-}
-
-function sameCommitIdentity(a, b) {
-    const left = commitIdentityParts(a);
-    const right = commitIdentityParts(b);
-    if (left.project !== right.project) return false;
-    if (left.branch && right.branch && left.branch !== right.branch && (!left.sha || !right.sha || left.sha !== right.sha)) return false;
-    if (left.sha && right.sha) return left.sha === right.sha;
-    if (left.sha || right.sha) {
-        return commitLabelsEquivalent(left.compareLabel, right.compareLabel, left.timestamp, right.timestamp);
-    }
-    return commitLabelsEquivalent(left.compareLabel, right.compareLabel, left.timestamp, right.timestamp);
-}
-
-function commitIdentityIndexLabelKey(parts) {
-    const label = parts.compareLabel || '';
-    if (!label) return '';
-    return `${parts.project}\x1f${label.length >= 18 ? label.slice(0, 18) : label}`;
-}
-
-function addCommitIdentityIndexEntry(map, key, ship) {
-    if (!key) return;
-    const entries = map.get(key) || new Set();
-    entries.add(ship);
-    map.set(key, entries);
-}
-
-function indexCommitShip(index, ship) {
-    if (!ship) return;
-    if (!index.order.has(ship)) index.order.set(ship, index.nextOrder++);
-    const parts = commitIdentityParts(ship);
-    if (parts.sha) addCommitIdentityIndexEntry(index.bySha, `${parts.project}\x1f${parts.sha}`, ship);
-    addCommitIdentityIndexEntry(index.byLabel, commitIdentityIndexLabelKey(parts), ship);
-    if (!parts.sha) addCommitIdentityIndexEntry(index.byLabelWithoutSha, commitIdentityIndexLabelKey(parts), ship);
-}
-
-function buildCommitIdentityIndex(state) {
-    const index = {
-        bySha: new Map(),
-        byLabel: new Map(),
-        byLabelWithoutSha: new Map(),
-        order: new Map(),
-        nextOrder: 0,
-    };
-    for (const ship of state.ships.values()) indexCommitShip(index, ship);
-    return index;
-}
-
-function findIndexedCommitShip(index, event) {
-    const parts = commitIdentityParts(event);
-    const candidates = new Set();
-    if (parts.sha) {
-        for (const ship of index.bySha.get(`${parts.project}\x1f${parts.sha}`) || []) candidates.add(ship);
-    }
-    const labelKey = commitIdentityIndexLabelKey(parts);
-    if (labelKey) {
-        const labelIndex = parts.sha ? index.byLabelWithoutSha : index.byLabel;
-        for (const ship of labelIndex.get(labelKey) || []) candidates.add(ship);
-    }
-    return [...candidates]
-        .sort((a, b) => Number(index.order.get(a) || 0) - Number(index.order.get(b) || 0))
-        .find(ship => sameCommitIdentity(ship, event)) || null;
-}
-
-function mergeCommitIntoShip(ship, event, now = Date.now()) {
-    const nextLabel = cachedCleanCommitSubject(event.label || commitMessageFromCommand(event.command) || '');
-    const currentLabel = cachedCleanCommitSubject(ship.label || '');
-    const previousEventIds = Array.isArray(ship.eventIds) ? ship.eventIds : [ship.id].filter(Boolean);
-    ship.eventIds = previousEventIds;
-    const isNewAmend = !!(event.id && !ship.eventIds.includes(event.id));
-    if (event.id && !ship.eventIds.includes(event.id)) ship.eventIds.push(event.id);
-    if (!ship.sha && event.sha) ship.sha = event.sha;
-    if (!ship.branch && eventBranch(event)) ship.branch = eventBranch(event);
-    if (!ship.targetRef && event.targetRef) ship.targetRef = event.targetRef;
-    if (nextLabel && (!currentLabel || currentLabel.startsWith('$(cat') || nextLabel.length < currentLabel.length)) {
-        ship.label = nextLabel;
-    }
-    if (Number.isFinite(event.timestamp) && event.timestamp > 0) {
-        ship.eventTime = Math.min(Number(ship.eventTime || event.timestamp), event.timestamp);
-    }
-    if (isNewAmend) {
-        // 3.6 — amended commit: bump count and flash hull for 400ms via amendFlashAt
-        ship.amendCount = Math.max(0, Number(ship.amendCount || 0)) + 1;
-        ship.amendFlashAt = now;
-    }
-    // 3.6 — detached HEAD detection (commit with empty branch)
-    if (eventBranch(event) === '' && ship.detachedHead !== true) {
-        ship.detachedHead = true;
-    }
-    // Track upstream hint when an adapter forwards it on commits
-    if (typeof event.hasUpstream === 'boolean' && ship.hasUpstreamHint == null) {
-        ship.hasUpstreamHint = event.hasUpstream;
-    }
+    return reversed;
 }
 
 function commitIdFragment(value = '') {
@@ -2525,144 +760,19 @@ function commitPennantLabel(ship = {}) {
     return 'commit';
 }
 
-export function snapshotHarborTrafficState(state) {
-    const cloned = cloneState(state);
-    const dockLayout = buildDockSquadLayout(cloned);
-    return {
-        nextSequence: cloned.nextSequence,
-        seenEventIds: [...cloned.seenEventIds].sort(),
-        ships: [...cloned.ships.values()]
-            .map((ship) => {
-                const meta = dockLayout.byShipId.get(ship.id) || {};
-                return {
-                    id: ship.id,
-                    project: ship.project,
-                    branch: ship.branch || '',
-                    quayIndex: ship.quayIndex ?? null,
-                    repoName: ship.repoName || '',
-                    sha: ship.sha || '',
-                    label: ship.prShip ? pullRequestShipLabel(ship) : ship.label || '',
-                    status: ship.status,
-                    gitKind: ship.gitKind || '',
-                    eventStatus: ship.eventStatus || '',
-                    remote: ship.remote || '',
-                    ref: ship.ref || '',
-                    refspec: ship.refspec || '',
-                    targetRef: ship.targetRef || '',
-                    source: ship.source || '',
-                    sourceId: ship.sourceId || '',
-                    confidence: ship.confidence ?? null,
-                    inferred: ship.inferred === true,
-                    observed: ship.observed === true,
-                    sessionId: ship.sessionId || '',
-                    agentId: ship.agentId || '',
-                    completedAt: ship.completedAt || 0,
-                    arrivingKind: ship.arrivingKind || null,
-                    inboundCargoCount: ship.inboundCargoCount ?? null,
-                    pushStatus: ship.pushStatus || null,
-                    pushSource: ship.pushSource || '',
-                    pushConfidence: ship.pushConfidence ?? null,
-                    pushInferred: ship.pushInferred === true,
-                    pushObserved: ship.pushObserved === true,
-                    pushRemote: ship.pushRemote || '',
-                    pushRef: ship.pushRef || '',
-                    pushForce: ship.pushForce || null,
-                    batchId: ship.batchId || null,
-                    berthIndex: ship.berthIndex,
-                    laneIndex: ship.laneIndex,
-                    repoDockIndex: meta.repoDockIndex ?? ship.repoDockIndex ?? null,
-                    repoDockCount: meta.repoDockCount ?? ship.repoDockCount ?? null,
-                    repoTotalDockCount: meta.repoTotalDockCount ?? ship.repoTotalDockCount ?? null,
-                    repoDockVisibleCount: meta.repoDockVisibleCount ?? ship.repoDockVisibleCount ?? null,
-                    repoSegmentIndex: meta.repoSegmentIndex ?? ship.repoSegmentIndex ?? null,
-                    repoSegmentCount: meta.repoSegmentCount ?? ship.repoSegmentCount ?? null,
-                    squadIndex: meta.squadIndex ?? ship.squadIndex ?? null,
-                    squadCount: meta.squadCount ?? ship.squadCount ?? null,
-                    squadShipIndex: meta.squadShipIndex ?? ship.squadShipIndex ?? null,
-                    squadShipCount: meta.squadShipCount ?? ship.squadShipCount ?? null,
-                    squadDensity: meta.squadDensity ?? ship.squadDensity ?? null,
-                    compactCommitLabel: meta.compactCommitLabel ?? ship.compactCommitLabel ?? null,
-                    showCommitLabel: meta.showCommitLabel ?? ship.showCommitLabel ?? null,
-                    formationColumn: meta.column ?? ship.formationColumn ?? null,
-                    formationRow: meta.row ?? ship.formationRow ?? null,
-                    waitingZone: meta.waitingZone ?? ship.waitingZone ?? null,
-                    departWaterZone: ship.departWaterZone || null,
-                    anchorageName: meta.anchorageName ?? ship.anchorageName ?? null,
-                    anchorageIndex: meta.anchorageIndex ?? ship.anchorageIndex ?? null,
-                    zoneSquadIndex: meta.zoneSquadIndex ?? ship.zoneSquadIndex ?? null,
-                    departSquadIndex: ship.departSquadIndex ?? null,
-                    departSquadCount: ship.departSquadCount ?? null,
-                    departRouteIndex: ship.departRouteIndex ?? null,
-                    route: compactRouteMetadata(ship.route),
-                    convoy: ship.convoy ? { ...ship.convoy } : null,
-                    departFromTile: ship.departFromTile || null,
-                    eventTime: ship.eventTime,
-                    departEventId: ship.departEventId || null,
-                    departStartedAt: ship.departStartedAt || null,
-                };
-            })
-            .sort((a, b) => (a.eventTime - b.eventTime) || a.id.localeCompare(b.id)),
-        repoQuays: [...cloned.repoQuays.entries()]
-            .map(([project, quayIndex]) => ({ project, quayIndex }))
-            .sort((a, b) => a.project.localeCompare(b.project)),
-        repoAnchorages: [...cloned.repoAnchorages.entries()]
-            .map(([project, slot]) => ({ project, slot, anchorage: COAST_ANCHORAGE_SLOTS[slot]?.name || '' }))
-            .sort((a, b) => a.project.localeCompare(b.project)),
-        batches: [...cloned.batches.values()]
-            .map(batch => ({
-                id: batch.id,
-                project: batch.project,
-                branch: batch.branch || '',
-                quayIndex: batch.quayIndex ?? null,
-                repoName: batch.repoName || '',
-                label: batch.label || '',
-                status: batch.status || 'unknown',
-                eventStatus: batch.eventStatus || '',
-                remote: batch.remote || '',
-                ref: batch.ref || '',
-                refspec: batch.refspec || '',
-                source: batch.source || '',
-                sourceId: batch.sourceId || '',
-                confidence: batch.confidence ?? null,
-                inferred: batch.inferred === true,
-                observed: batch.observed === true,
-                targetRef: batch.targetRef || '',
-                force: batch.force || null,
-                route: compactRouteMetadata(batch.route),
-                convoy: batch.convoy ? { ...batch.convoy } : null,
-                shipCount: batch.shipCount || 0,
-                eventTime: batch.eventTime || 0,
-                startedAt: batch.startedAt || 0,
-                shipIds: [...(batch.shipIds || [])].sort(),
-            }))
-            .sort((a, b) => (a.eventTime - b.eventTime) || a.id.localeCompare(b.id)),
-        pushEvents: [...cloned.pushEvents.values()]
-            .map(push => ({
-                id: push.id,
-                project: push.project || '',
-                branch: push.branch || '',
-                status: push.status || 'unknown',
-                eventStatus: push.eventStatus || '',
-                remote: push.remote || '',
-                ref: push.ref || '',
-                refspec: push.refspec || '',
-                source: push.source || '',
-                sourceId: push.sourceId || '',
-                confidence: push.confidence ?? null,
-                inferred: push.inferred === true,
-                observed: push.observed === true,
-                force: push.force || null,
-                eventTime: push.eventTime || 0,
-                batchId: push.batchId || null,
-            }))
-            .sort((a, b) => (a.eventTime - b.eventTime) || a.id.localeCompare(b.id)),
-    };
-}
-
 // One row per repo with docked commits or a failed push. A failed push with
 // nothing docked (no batch) still makes a row, so `harbor:updated` reports it;
 // `agentId` is the agent whose failure the Harbor's bracket marks (its docked
 // failed ship first, else its latest failed push), the key its cue is scored by.
+// The row's standing failure is its newest one: when, which word
+// (failed / rejected) and the first stderr line the server kept.
+function noteFailure(row, at, status, reason) {
+    if (!(at > 0) || at < row.latestFailureAt) return;
+    row.latestFailureAt = at;
+    row.failureStatus = status === 'rejected' ? 'rejected' : 'failed';
+    row.failureReason = reason ? String(reason) : row.failureReason || '';
+}
+
 export function pendingRepoSummariesFromDockSummaries(summaries, pushEvents = []) {
     const byRepo = new Map();
     const rowFor = (project, branch, profile) => byRepo.get(profile.key) || {
@@ -2675,6 +785,9 @@ export function pendingRepoSummariesFromDockSummaries(summaries, pushEvents = []
         failedPushes: 0,
         agentId: null,
         latestFailureAt: 0,
+        failureStatus: '',
+        failureReason: '',
+        worktree: null,
         latestEventTime: 0,
         oldestCommitTime: 0,
         waitingZone: 'harbor',
@@ -2688,7 +801,8 @@ export function pendingRepoSummariesFromDockSummaries(summaries, pushEvents = []
         existing.pendingCommits += count;
         existing.failedPushes += Number(summary.failedCount) || 0;
         existing.agentId ??= summary.failedAgentId ?? null;
-        existing.latestFailureAt = Math.max(existing.latestFailureAt, Number(summary.failedAt) || 0);
+        noteFailure(existing, Number(summary.failedAt) || 0, summary.failureStatus, summary.failureReason);
+        existing.worktree ||= summary.worktree || null;
         existing.latestEventTime = Math.max(existing.latestEventTime, Number(summary.latestEventTime) || 0);
         const earliestEventTime = Number(summary.earliestEventTime) || 0;
         if (earliestEventTime > 0) {
@@ -2702,16 +816,25 @@ export function pendingRepoSummariesFromDockSummaries(summaries, pushEvents = []
         }
         byRepo.set(profile.key, existing);
     }
+    // U-P5 — a failure stands until the lane's next successful push.
+    const landedAt = new Map();
+    const pushList = [...(pushEvents || [])];
+    for (const push of pushList) {
+        if ((push?.status || 'unknown') !== 'success' || !push.project) continue;
+        const lane = `${push.project}\x1f${normalizeRepoBranch(push.branch)}`;
+        landedAt.set(lane, Math.max(landedAt.get(lane) || 0, Number(push.eventTime) || 0));
+    }
     const pushAgent = new Map();
-    for (const push of pushEvents || []) {
+    for (const push of pushList) {
         const status = push?.status || 'unknown';
         if ((status !== 'failed' && status !== 'rejected') || push.batchId || !push.project) continue;
         const branch = push.branch || '';
+        const eventTime = Number(push.eventTime) || 0;
+        if ((landedAt.get(`${push.project}\x1f${normalizeRepoBranch(branch)}`) || 0) > eventTime) continue;
         const profile = trafficProfile(push.project, branch);
         const existing = rowFor(push.project, branch, profile);
-        const eventTime = Number(push.eventTime) || 0;
         existing.failedPushes += 1;
-        existing.latestFailureAt = Math.max(existing.latestFailureAt, eventTime);
+        noteFailure(existing, eventTime, status, push.reason);
         existing.latestEventTime = Math.max(existing.latestEventTime, eventTime);
         const latest = pushAgent.get(profile.key);
         if (push.agentId && (!latest || eventTime >= latest.eventTime)) {
@@ -2728,46 +851,6 @@ export function pendingRepoSummariesFromDockSummaries(summaries, pushEvents = []
             || (b.pendingCommits - a.pendingCommits)
             || (b.latestEventTime - a.latestEventTime)
             || a.repoName.localeCompare(b.repoName));
-}
-
-// v0.23 A2 — the repo's lead ship (repoDockIndex/departSquadIndex 0) carries a
-// commit-count-class hull sized by the whole fleet; every other commit sails as
-// an individual skiff.
-function harborFleetCount(ship = {}) {
-    return Math.max(
-        1,
-        Number(ship.repoTotalDockCount || 0),
-        Number(ship.repoDockCount || 0),
-        Number(ship.squadShipCount || 0),
-        Number(ship.repoDockVisibleCount || 0)
-    );
-}
-
-function harborShipPackSize(ship = {}) {
-    const visualPackSize = Number(ship.visualPackSize);
-    if (Number.isFinite(visualPackSize) && visualPackSize > 1) {
-        return Math.max(1, Math.min(MAX_HARBOR_SHIP_PACK_SIZE, Math.round(visualPackSize)));
-    }
-    if (ship.status === 'docked') {
-        const repoIndex = Number.isFinite(Number(ship.repoDockIndex))
-            ? Math.max(0, Number(ship.repoDockIndex))
-            : 0;
-        if (repoIndex !== 0) return 1;
-        return Math.max(1, Math.min(MAX_HARBOR_SHIP_PACK_SIZE, harborFleetCount(ship)));
-    }
-    if (ship.status === 'departing') {
-        const departIndex = Number.isFinite(Number(ship.departSquadIndex))
-            ? Math.max(0, Number(ship.departSquadIndex))
-            : 0;
-        if (departIndex !== 0) return 1;
-        const squadCount = Math.max(1, Number(ship.departSquadCount || 0));
-        return Math.max(1, Math.min(MAX_HARBOR_SHIP_PACK_SIZE, squadCount));
-    }
-    const repoIndex = Number.isFinite(Number(ship.repoDockIndex))
-        ? Math.max(0, Number(ship.repoDockIndex))
-        : 0;
-    if (repoIndex !== 0) return 1;
-    return Math.max(1, Math.min(MAX_HARBOR_SHIP_PACK_SIZE, harborFleetCount(ship)));
 }
 
 function harborShipStackClass(packSize) {
@@ -2797,15 +880,15 @@ function harborShipClass(ship = {}) {
             ...(ship.prShip ? { badge: '' } : null),
         };
     }
-    const packSize = harborShipPackSize(ship);
     // Stack sprites are reserved for true visual packs — one drawable standing
     // in for hidden overflow ships. A fleet lead whose flock is individually
     // visible keeps a commit-count class hull instead, so the harbor never
-    // double-counts (e.g. 12 skiffs plus a "12x" stack).
-    const isTrueVisualPack = Number(ship.visualPackSize) > 1;
-    const stackVariant = isTrueVisualPack ? harborShipStackClass(packSize) : null;
-    if (stackVariant) return stackVariant;
-    const variant = HARBOR_SHIP_CLASSES.find(item => packSize >= item.minCommits)
+    // double-counts (e.g. 12 skiffs plus a "12x" stack). HarborLayout picks
+    // the tier, so formations and hulls always agree.
+    const tier = harborShipTier(ship);
+    if (tier.stack) return harborShipStackClass(tier.packSize);
+    const packSize = tier.packSize;
+    const variant = HARBOR_SHIP_CLASSES.find(item => item.key === tier.key)
         || HARBOR_SHIP_CLASSES[HARBOR_SHIP_CLASSES.length - 1];
     const trim = stableHash(`${ship.project || ''}:${ship.branch || ''}:${ship.id || ''}:harbor-ship-trim`) % 4;
     const skiffScale = [0.88, 0.94, 0.90, 0.86][trim] || variant.scale;
@@ -2817,663 +900,10 @@ function harborShipClass(ship = {}) {
     };
 }
 
-// Push lifecycle: mass-scaled departure (overridden by force-push)
-function dynamicDepartureMs(ship = {}, force = null) {
-    if (force === true) return FORCE_DEPARTURE_MS;
-    const packSize = Math.max(1, harborShipPackSize(ship));
-    const base = DEPARTURE_MS + Math.min(20000, packSize * 1200);
-    // v0.23 A5 — deterministic ±12% per-ship jitter so a flock doesn't sail in
-    // lock-step and the departure spreads out over time.
-    const jitter = 1 + (((stableHash(`${ship.id || ''}:depart-jitter`) % 25) - 12) / 100);
-    return Math.round(base * jitter);
-}
-
 // 3.2 — inbound ship class lookup
 function inboundShipClass() {
     return HARBOR_SHIP_CLASSES.find(item => item.key === INBOUND_SHIP_CLASS_KEY)
         || HARBOR_SHIP_CLASSES[HARBOR_SHIP_CLASSES.length - 1];
-}
-
-// 3.2 — parse incoming commit count from pull flags/remote args. Best-effort.
-function parseIncomingCommits(event = {}) {
-    const flags = Array.isArray(event.flags) ? event.flags : [];
-    const stderr = String(event.stderr || '');
-    // Look for tokens like "+12" or "Fast-forwarded ... 12 files changed".
-    const stderrMatch = stderr.match(/(\d+)\s+(?:files?\s+changed|commits?|insertions?|new\s+commits?)/i);
-    if (stderrMatch) {
-        const n = parseInt(stderrMatch[1], 10);
-        if (Number.isFinite(n) && n > 0) return Math.min(10, n);
-    }
-    for (const flag of flags) {
-        const m = String(flag).match(/^--depth=(\d+)$/);
-        if (m) {
-            const n = parseInt(m[1], 10);
-            if (Number.isFinite(n) && n > 0) return Math.min(10, n);
-        }
-    }
-    return 0;
-}
-
-// W7.9 — the moored PR cutter a `gh pr merge` sends in: the one whose scraped
-// pull URL matches, else the project's newest moored PR with no URL to
-// contradict it. Null when no cutter is waiting (a PR opened elsewhere).
-function findMooredPullRequest(state, event) {
-    const url = String(event?.url || '');
-    let best = null;
-    for (const ship of state.ships.values()) {
-        if (!ship.prShip || ship.arrivingKind !== 'pr' || ship.project !== event.project) continue;
-        if (url && ship.prUrl) {
-            if (ship.prUrl === url) return ship;
-            continue;
-        }
-        if (!best || (ship.prCreatedAt || 0) > (best.prCreatedAt || 0)) best = ship;
-    }
-    return best;
-}
-
-// Moored PR cutters fill the outer-roadstead anchorages in turn, a row
-// further out each lap, so two open PRs never moor on one tile.
-function pullRequestRoadsteadTile(state) {
-    const anchorages = HARBOR_SQUAD_ANCHORAGES.filter(anchorage => anchorage.zone === 'outer-roadstead');
-    let slot = 0;
-    for (const ship of state.ships.values()) {
-        if (ship.prShip && ship.arrivingKind === 'pr') slot++;
-    }
-    const anchorage = anchorages[slot % anchorages.length] || HARBOR_SQUAD_ANCHORAGES[0];
-    const row = Math.floor(slot / Math.max(1, anchorages.length)) % PR_ROADSTEAD_ROWS;
-    return { tileX: anchorage.tileX + anchorage.rowDx * row, tileY: anchorage.tileY + anchorage.rowDy * row };
-}
-
-function pullRequestShipLabel(event = {}) {
-    const match = String(event.prUrl || event.url || '').match(/\/pull\/(\d+)(?:[/?#]|$)/);
-    if (match) return `PR #${match[1]}`;
-    const detail = String(event.branch || event.prTitle || event.title || '').trim();
-    return detail ? `PR ${detail}` : 'PR';
-}
-
-function pullRequestShip(state, event, now) {
-    const profile = trafficProfile(event.project, event.branch || '');
-    state.nextSequence++;
-    return {
-        id: `pr:${event.id}`,
-        project: event.project,
-        branch: event.branch || '',
-        targetRef: '',
-        ...gitEventDebugMetadata(event, ''),
-        repoName: profile.shortName,
-        quayIndex: assignedQuayIndex(state, event.project),
-        sha: '',
-        label: pullRequestShipLabel(event),
-        inboundCargoCount: 0,
-        berthIndex: state.nextSequence % BERTHS.length,
-        laneIndex: stableHash(`${event.project}:${event.id}:pr`) % SEA_LANES.length,
-        eventTime: event.timestamp || now,
-        createdAt: now,
-        eventIds: [event.id],
-        isInbound: true,
-        prShip: true,
-        prUrl: String(event.url || ''),
-        prTitle: String(event.title || ''),
-        prCreatedAt: event.timestamp || now,
-        detachedHead: false,
-        amendCount: 0,
-    };
-}
-
-export function reduceHarborTrafficState(previous, events, options = {}) {
-    const state = cloneState(previous);
-    const now = Number.isFinite(options.now) ? options.now : Date.now();
-    const motionScale = options.motionScale === 0 ? 0 : 1;
-
-    const sortedEvents = [...(events || [])]
-        .filter(event => event?.id && event?.type && event?.project)
-        .sort((a, b) => (a.timestamp - b.timestamp) || a.id.localeCompare(b.id));
-    // Pushes may sit before a long commit tail while still applying to a live
-    // docked ship, so transition correctness requires the complete ordered tail.
-    const sorted = sortedEvents;
-    const latestPushTimes = latestPushTimesByProject(sorted);
-    const relevantProjects = new Set(sorted.map(event => String(event.project || 'unknown')));
-    for (const ship of state.ships.values()) {
-        if (ship.project) relevantProjects.add(String(ship.project));
-    }
-    for (const [project] of state.repoQuays.entries()) {
-        if (!relevantProjects.has(String(project || 'unknown'))) state.repoQuays.delete(project);
-    }
-    if (relevantProjects.size <= MAX_HARBOR_REPO_QUAYS) {
-        for (const project of relevantProjects) assignedQuayIndex(state, project);
-    }
-    const commitIdentityIndex = buildCommitIdentityIndex(state);
-    // Live-only repos claim coastal slots only after this tail's commits have,
-    // so a fresh replay parks fleets first and idle agents fill what's left.
-    const activeProjects = Array.isArray(options.activeProjects) ? options.activeProjects : [];
-    const occupiedBerths = new Set();
-    for (const ship of state.ships.values()) {
-        if (Number.isFinite(Number(ship.berthIndex))) occupiedBerths.add(Number(ship.berthIndex));
-    }
-
-    for (const event of sorted) {
-        if (event.type !== 'push') {
-            if (state.seenEventIds.has(event.id) || harborEventIsTombstoned(state, event)) continue;
-            markHarborEventSeen(state, event, now);
-        }
-
-        if (event.type === 'commit') {
-            if (commitIsAtOrBelowReplayFloor(state, event)) continue;
-            if (isHistoricalCommittedBeforePush(event, latestPushTimes, now)) continue;
-            const existingShip = findIndexedCommitShip(commitIdentityIndex, event);
-            if (existingShip) {
-                markHarborEventSeen(state, event, now);
-                mergeCommitIntoShip(existingShip, event, now);
-                indexCommitShip(commitIdentityIndex, existingShip);
-                continue;
-            }
-            const branch = eventBranch(event);
-            const { berthIndex, quayIndex } = chooseBerthIndex(state, event.project, occupiedBerths);
-            const laneIndex = stableHash(`${event.project}:${branch}:${event.id}`) % SEA_LANES.length;
-            const profile = trafficProfile(event.project, branch);
-            state.nextSequence++;
-            const ship = {
-                id: event.id,
-                project: event.project,
-                branch,
-                targetRef: event.targetRef || '',
-                ...gitEventDebugMetadata(event, branch),
-                repoName: profile.shortName,
-                quayIndex,
-                sha: event.sha,
-                label: cachedCleanCommitSubject(event.label || commitMessageFromCommand(event.command)) || event.label,
-                status: 'docked',
-                route: routeGraphMetadata('berth.assignment'),
-                berthIndex,
-                laneIndex,
-                eventTime: event.timestamp || now,
-                createdAt: now,
-                eventIds: [event.id],
-                // 3.6 — edge case flags inferred at commit time
-                detachedHead: branch === '',
-                hasUpstreamHint: typeof event.hasUpstream === 'boolean' ? event.hasUpstream : null,
-                amendCount: 0,
-            };
-            state.ships.set(event.id, ship);
-            ensureRepoAnchorage(state, event.project);
-            occupiedBerths.add(berthIndex);
-            indexCommitShip(commitIdentityIndex, ship);
-            continue;
-        }
-
-        // 3.2 — pull/fetch as inbound ships sailing toward harbor.
-        if (event.type === 'pull' || event.type === 'fetch') {
-            const inboundStatus = String(event.status || gitEventStatusLabel(event) || '').toLowerCase();
-            if (inboundStatus === 'failed' || inboundStatus === 'rejected'
-                || inboundStatus === 'cancelled' || inboundStatus === 'canceled') {
-                markHarborEventSeen(state, event, now);
-                continue;
-            }
-            if (motionScale === 0) continue;
-            const eventAge = Number.isFinite(event.timestamp) && event.timestamp > 0
-                ? Math.max(0, now - event.timestamp)
-                : 0;
-            if (eventAge > RECENT_PUSH_REPLAY_MS) continue;
-            const inboundId = `inbound:${event.id}`;
-            if (state.ships.has(inboundId)) continue;
-            const branch = eventBranch(event);
-            const profile = trafficProfile(event.project, branch);
-            const laneIndex = stableHash(`${event.project}:${branch}:${event.id}:inbound`) % SEA_LANES.length;
-            const cargoCount = parseIncomingCommits(event);
-            // Choose an outer-roadstead anchor for fetch (waits) or a berth for pull.
-            const isFetch = event.type === 'fetch';
-            const outerRoadsteads = HARBOR_SQUAD_ANCHORAGES.filter(a => a.zone === 'outer-roadstead');
-            const roadstead = outerRoadsteads[stableHash(`${event.project}:${event.id}:roadstead`) % outerRoadsteads.length]
-                || HARBOR_SQUAD_ANCHORAGES[0];
-            const { berthIndex, quayIndex } = isFetch
-                ? { berthIndex: -1, quayIndex: assignedQuayIndex(state, event.project) }
-                : chooseBerthIndex(state, event.project, occupiedBerths);
-            state.nextSequence++;
-            const ship = {
-                id: inboundId,
-                project: event.project,
-                branch,
-                targetRef: event.targetRef || '',
-                ...gitEventDebugMetadata(event, branch),
-                repoName: profile.shortName,
-                quayIndex,
-                sha: '',
-                label: inboundGitLabel(event, branch),
-                status: 'arriving',
-                arrivingKind: isFetch ? 'fetch' : 'pull',
-                route: routeGraphMetadata(isFetch ? 'inbound.fetch-roadstead' : 'inbound.pull'),
-                inboundCargoCount: cargoCount,
-                inboundRoadsteadTile: isFetch ? { tileX: roadstead.tileX, tileY: roadstead.tileY } : null,
-                berthIndex: berthIndex >= 0 ? berthIndex : (state.nextSequence % BERTHS.length),
-                laneIndex,
-                arrivingStartedAt: now,
-                arrivingDuration: INBOUND_DURATION_MS,
-                eventTime: event.timestamp || now,
-                createdAt: now,
-                eventIds: [event.id],
-                isInbound: true,
-                detachedHead: false,
-                amendCount: 0,
-            };
-            state.ships.set(inboundId, ship);
-            occupiedBerths.add(ship.berthIndex);
-            indexCommitShip(commitIdentityIndex, ship);
-            continue;
-        }
-
-        // W7.9 (SW-P9) — pull requests as the PR cutter class. A failed
-        // command sails nothing; a PR older than the replay window appears
-        // already moored (or already at the quay) instead of re-sailing.
-        if (event.type === 'pr') {
-            const prStatus = String(event.status || gitEventStatusLabel(event) || '').toLowerCase();
-            if (prStatus === 'failed' || prStatus === 'rejected'
-                || prStatus === 'cancelled' || prStatus === 'canceled') continue;
-            const eventAge = Number.isFinite(event.timestamp) && event.timestamp > 0
-                ? Math.max(0, now - event.timestamp)
-                : 0;
-            const sail = motionScale !== 0 && eventAge <= RECENT_PUSH_REPLAY_MS;
-            if (event.action === 'create') {
-                if (eventAge > PR_SHIP_MOOR_MS || state.ships.has(`pr:${event.id}`)) continue;
-                const ship = pullRequestShip(state, event, now);
-                Object.assign(ship, {
-                    status: sail ? 'arriving' : 'anchored',
-                    arrivingKind: 'pr',
-                    route: routeGraphMetadata('inbound.fetch-roadstead'),
-                    inboundRoadsteadTile: pullRequestRoadsteadTile(state),
-                    arrivingStartedAt: sail ? now : now - INBOUND_DURATION_MS,
-                    prMooredAt: sail ? 0 : (event.timestamp || now),
-                });
-                state.ships.set(ship.id, ship);
-                continue;
-            }
-            if (event.action !== 'merge') continue;
-            const moored = findMooredPullRequest(state, event);
-            if (eventAge > PR_QUAY_HOLD_MS) {
-                if (moored) retireHarborShip(state, moored.id, moored, now, { recordFloor: false });
-                continue;
-            }
-            if (!moored && state.ships.has(`pr:${event.id}`)) continue;
-            const ship = moored || pullRequestShip(state, event, now);
-            if (moored) ship.eventIds.push(event.id);
-            ship.prUrl = String(event.url || ship.prUrl || '');
-            ship.branch = event.branch || ship.branch || '';
-            ship.prTitle = String(event.title || ship.prTitle || '');
-            ship.label = pullRequestShipLabel(ship);
-            const { berthIndex, quayIndex } = chooseBerthIndex(state, event.project, occupiedBerths);
-            Object.assign(ship, {
-                status: sail ? 'arriving' : 'anchored',
-                arrivingKind: 'pr-merge',
-                route: routeGraphMetadata('inbound.pull'),
-                prFromTile: moored ? ship.inboundRoadsteadTile : null,
-                inboundRoadsteadTile: null,
-                berthIndex,
-                quayIndex,
-                arrivingStartedAt: sail ? now : now - INBOUND_DURATION_MS,
-                arrivingDuration: moored ? PR_MERGE_SAIL_MS : INBOUND_DURATION_MS,
-                prMergedAt: event.timestamp || now,
-                prQuayedAt: sail ? 0 : (event.timestamp || now),
-                eventTime: event.timestamp || now,
-            });
-            state.ships.set(ship.id, ship);
-            occupiedBerths.add(berthIndex);
-            continue;
-        }
-
-        if (event.type === 'push') {
-            const eventAge = Number.isFinite(event.timestamp) && event.timestamp > 0
-                ? Math.max(0, now - event.timestamp)
-                : 0;
-            const skipOldReplay = eventAge > RECENT_PUSH_REPLAY_MS;
-            const skipDepartureAnimation = motionScale === 0 || skipOldReplay;
-            const pushTime = Number.isFinite(event.timestamp) && event.timestamp > 0 ? event.timestamp : 0;
-            const batchId = `push-batch:${event.id}`;
-            const previousPush = state.pushEvents.get(event.id);
-            if (!previousPush && harborEventIsTombstoned(state, event)) continue;
-            const incomingStatus = harborEventStatus(event);
-            const previousStatus = previousPush?.status || null;
-            const status = previousStatus && incomingStatus === 'unknown' ? previousStatus : incomingStatus;
-            const existingBatch = state.batches.get(batchId);
-            const statusChanged = previousStatus && previousStatus !== status;
-            const branch = eventBranch(event);
-            if (status === 'success') {
-                recordCommitReplayFloor(state, event.project, branch, pushTime, now);
-                clearHarborDockOverflowForPush(state, event, pushTime);
-            }
-            const profile = trafficProfile(event.project, branch);
-            const pushMetadata = gitEventDebugMetadata(event, branch);
-            // 3.1 — capture force flag (true / 'lease' / 'includes')
-            const forceFlag = event.force === true || event.force === 'lease' || event.force === 'includes'
-                ? event.force
-                : null;
-
-            let selectedShips = [];
-            const existingShipIds = new Set(existingBatch?.shipIds || []);
-            const selectedIds = new Set();
-            const addShip = (ship) => {
-                if (!ship || selectedIds.has(ship.id)) return;
-                selectedIds.add(ship.id);
-                selectedShips.push(ship);
-            };
-            if (existingBatch?.shipIds?.length) {
-                existingBatch.shipIds
-                    .map(id => state.ships.get(id))
-                    .filter(Boolean)
-                    .forEach(addShip);
-            }
-            for (const ship of state.ships.values()) {
-                if (!shipEligibleForPush(ship, event, previousPush, now)) continue;
-                addShip(ship);
-            }
-            selectedShips.sort(compareDepartingShips);
-
-            if (status !== 'success' && status !== 'failed' && status !== 'rejected' && status !== 'cancelled') {
-                if (existingBatch?.status === 'unknown') state.batches.delete(batchId);
-                state.pushEvents.set(event.id, {
-                    id: event.id,
-                    project: event.project,
-                    branch,
-                    status,
-                    ...pushMetadata,
-                    force: forceFlag,
-                    eventTime: event.timestamp || now,
-                    batchId: null,
-                    seenAt: previousPush?.seenAt || now,
-                });
-                continue;
-            }
-
-            if (!existingBatch && selectedShips.length === 0) {
-                state.pushEvents.set(event.id, {
-                    id: event.id,
-                    project: event.project,
-                    branch,
-                    status,
-                    ...pushMetadata,
-                    force: forceFlag,
-                    eventTime: event.timestamp || now,
-                    batchId: null,
-                    seenAt: now,
-                });
-                continue;
-            }
-
-            const newShipCount = selectedShips.filter(ship => !existingShipIds.has(ship.id)).length;
-            if (previousPush && !statusChanged && existingBatch && newShipCount === 0) continue;
-
-            const dockLayout = buildDockSquadLayout(state);
-            const shipIds = selectedShips.map(ship => ship.id);
-            const startedAt = existingBatch?.startedAt
-                || previousPush?.seenAt
-                || (skipOldReplay ? now - SCREEN_SUMMARY_MS - FINALE_EFFECT_MS - 1 : now);
-            const convoy = status === 'success'
-                ? (existingBatch?.convoy || releaseConvoyMetadata(event, branch, selectedShips, status, forceFlag))
-                : null;
-            const batch = {
-                ...(existingBatch || {}),
-                id: batchId,
-                project: event.project,
-                branch,
-                quayIndex: assignedQuayIndex(state, event.project),
-                repoName: profile.shortName,
-                label: event.label || existingBatch?.label || '',
-                targetRef: event.targetRef || existingBatch?.targetRef || '',
-                status,
-                ...pushMetadata,
-                // 3.1 — keep force flag on the batch so renderers can branch on it
-                force: forceFlag,
-                convoy,
-                shipIds,
-                shipCount: shipIds.length,
-                sequence: existingBatch?.sequence || ++state.nextBatchSequence,
-                eventTime: event.timestamp || existingBatch?.eventTime || now,
-                startedAt,
-                statusUpdatedAt: statusChanged ? now : existingBatch?.statusUpdatedAt || now,
-            };
-            state.batches.set(batchId, batch);
-            state.pushEvents.set(event.id, {
-                id: event.id,
-                project: event.project,
-                branch,
-                status,
-                ...pushMetadata,
-                force: forceFlag,
-                eventTime: event.timestamp || now,
-                batchId,
-                seenAt: previousPush?.seenAt || now,
-            });
-
-            const departSquadCount = Math.max(1, selectedShips.length);
-            // Titan packs sail as one hull: members of a docked pack that leave
-            // together stay hidden behind the first selected member of that pack.
-            const departPacks = new Map();
-            for (const ship of selectedShips) {
-                const key = dockLayout.byShipId.get(ship.id)?.visualLeadId || ship.id;
-                const pack = departPacks.get(key) || { leadId: ship.id, size: 0, visibleIndex: departPacks.size };
-                pack.size += 1;
-                departPacks.set(key, pack);
-            }
-            selectedShips.forEach((ship, departSquadIndex) => {
-                const dockMeta = dockLayout.byShipId.get(ship.id);
-                const departPack = departPacks.get(dockMeta?.visualLeadId || ship.id) || { leadId: ship.id, size: 1, visibleIndex: departSquadIndex };
-                ship.visualPackLeadId = departPack.leadId;
-                ship.visualPackSize = departPack.leadId === ship.id ? departPack.size : 1;
-                const berth = BERTHS[ship.berthIndex % BERTHS.length] || BERTHS[0];
-                const departWaterZone = dockMeta?.waitingZone || ship.waitingZone || 'harbor';
-                const routeBands = isCommitLagoonZone(departWaterZone)
-                    ? COMMIT_LAGOON_ROUTE_BANDS
-                    : LOCAL_WATER_ROUTE_BANDS;
-                const routeIndex = stableHash(`${event.project}:${branch}:${event.id}:${departWaterZone}:water-route`) % routeBands.length;
-                const routeBand = routeBands[routeIndex] || routeBands[0];
-                const route = waterRouteMetadataForBand(routeBand, { ...ship, departWaterZone });
-                if (convoy && !convoy.routeId && route?.id) convoy.routeId = route.id;
-                if (!batch.route && route) batch.route = route;
-                ship.pushStatus = status;
-                ship.pushSource = pushMetadata.source || '';
-                ship.pushConfidence = pushMetadata.confidence;
-                ship.pushInferred = pushMetadata.inferred === true;
-                ship.pushObserved = pushMetadata.observed === true;
-                ship.pushRemote = pushMetadata.remote || '';
-                ship.pushRef = pushMetadata.ref || '';
-                ship.batchId = batchId;
-                ship.pushEventId = event.id;
-                ship.pushSeenAt = now;
-                ship.waitingZone = departWaterZone;
-                ship.departWaterZone = departWaterZone;
-                ship.departSquadIndex = departSquadIndex;
-                ship.departSquadCount = departSquadCount;
-                ship.departRouteIndex = routeIndex;
-                ship.route = route;
-                ship.departRouteOffset = departSquadIndex - (departSquadCount - 1) / 2;
-                ship.departStaggerMs = DEPARTURE_STAGGER_MS;
-                ship.departFromTile = dockMeta
-                    ? { tileX: dockMeta.tileX, tileY: dockMeta.tileY }
-                    : { tileX: berth.tileX, tileY: berth.tileY };
-                if (dockMeta) {
-                    ship.repoDockIndex = dockMeta.repoDockIndex;
-                    ship.repoDockCount = dockMeta.repoDockCount;
-                    ship.repoTotalDockCount = dockMeta.repoTotalDockCount;
-                    ship.repoDockVisibleCount = dockMeta.repoDockVisibleCount;
-                    ship.repoSegmentIndex = dockMeta.repoSegmentIndex;
-                    ship.repoSegmentCount = dockMeta.repoSegmentCount;
-                    ship.squadIndex = dockMeta.squadIndex;
-                    ship.squadCount = dockMeta.squadCount;
-                    ship.squadShipIndex = dockMeta.squadShipIndex;
-                    ship.squadShipCount = dockMeta.squadShipCount;
-                    ship.squadDensity = dockMeta.squadDensity;
-                    ship.compactCommitLabel = dockMeta.compactCommitLabel;
-                    ship.showCommitLabel = dockMeta.showCommitLabel;
-                    ship.formationColumn = dockMeta.column;
-                    ship.formationRow = dockMeta.row;
-                    ship.waitingZone = dockMeta.waitingZone;
-                    ship.departWaterZone = dockMeta.waitingZone;
-                    ship.anchorageName = dockMeta.anchorageName;
-                    ship.anchorageIndex = dockMeta.anchorageIndex;
-                }
-                // 3.1 — propagate force flag to each ship so draw/lifecycle helpers can react.
-                ship.pushForce = forceFlag;
-                ship.convoy = convoy ? {
-                    ...convoy,
-                    routeId: convoy.routeId || route?.id || '',
-                    index: departSquadIndex,
-                    leaderShipId: convoy.leaderShipId || selectedShips[0]?.id || ship.id,
-                } : null;
-                if (status === 'failed') {
-                    ship.status = 'docked';
-                    ship.failedAt = skipOldReplay ? null : now;
-                    ship.departEventId = null;
-                    ship.departStartedAt = null;
-                    ship.departEventTime = null;
-                    return;
-                }
-                // Rejected push boomerangs: out then back, redocks with caution flag.
-                if (status === 'rejected') {
-                    if (statusChanged || !ship.boomerangStartedAt) {
-                        ship.boomerangStartedAt = skipDepartureAnimation
-                            ? now - BOOMERANG_OUT_MS - BOOMERANG_IN_MS - 1
-                            : now + departPack.visibleIndex * DEPARTURE_STAGGER_MS;
-                    }
-                    ship.status = skipDepartureAnimation ? 'docked' : 'rejecting';
-                    ship.departEventId = event.id;
-                    ship.departEventTime = event.timestamp || now;
-                    return;
-                }
-                // 5.11 — cancelled push: half-speed return to berth, no collision flare.
-                if (status === 'cancelled') {
-                    if (statusChanged || !ship.cancelReturnStartedAt) {
-                        ship.cancelReturnStartedAt = skipDepartureAnimation
-                            ? now - CANCEL_RETURN_MS - 1
-                            : now + departPack.visibleIndex * DEPARTURE_STAGGER_MS;
-                    }
-                    ship.status = skipDepartureAnimation ? 'docked' : 'cancelling';
-                    ship.departEventId = event.id;
-                    ship.departEventTime = event.timestamp || now;
-                    return;
-                }
-                ship.status = 'departing';
-                ship.departEventId = event.id;
-                // Mass-scaled departure (force-push wins). Pack members share
-                // their lead's timing so the whole titan retires together.
-                ship.departMsOverride = dynamicDepartureMs({ ...ship, visualPackSize: departPack.size }, forceFlag);
-                if (status === 'success' && previousStatus !== 'success') {
-                    ship.departStartedAt = null;
-                }
-                ship.departStartedAt = skipDepartureAnimation
-                    ? now - ship.departMsOverride - FADE_DELAY_MS - EXIT_FADE_MS - EXIT_HOLD_MS - 1
-                    : ship.departStartedAt || startedAt + departPack.visibleIndex * DEPARTURE_STAGGER_MS;
-                // Cast-off phase: hold at berth briefly before the proper departure.
-                if (!skipDepartureAnimation && (statusChanged || !ship.castOffStartedAt)) {
-                    ship.castOffStartedAt = ship.departStartedAt;
-                }
-                ship.departEventTime = event.timestamp || now;
-            });
-        }
-    }
-
-    for (const [id, ship] of state.ships) {
-        // Boomerang lifecycle: out then back, then redock with caution flag.
-        if (ship.status === 'rejecting') {
-            const startedAt = ship.boomerangStartedAt || now;
-            const totalMs = BOOMERANG_OUT_MS + BOOMERANG_IN_MS;
-            if (motionScale === 0 || now - startedAt >= totalMs) {
-                ship.status = 'docked';
-                ship.pushStatus = 'rejected';
-                ship.rejectedAt = now;
-                ship.boomerangStartedAt = null;
-                ship.departStartedAt = null;
-                ship.visualPackLeadId = null;
-                ship.visualPackSize = null;
-                ship.departEventId = null;
-            }
-            continue;
-        }
-        // 5.11 — cancelled lifecycle: half-speed return then redock, no caution flag.
-        if (ship.status === 'cancelling') {
-            const startedAt = ship.cancelReturnStartedAt || now;
-            if (motionScale === 0 || now - startedAt >= CANCEL_RETURN_MS) {
-                ship.status = 'docked';
-                ship.pushStatus = 'cancelled';
-                ship.cancelledAt = now;
-                ship.cancelReturnStartedAt = null;
-                ship.departStartedAt = null;
-                ship.visualPackLeadId = null;
-                ship.visualPackSize = null;
-                ship.departEventId = null;
-            }
-            continue;
-        }
-        // 3.2 — inbound lifecycle: arrive then dock (pull) or anchor (fetch,
-        // a moored PR, a merged PR at its quay berth).
-        if (ship.status === 'arriving') {
-            const startedAt = ship.arrivingStartedAt || now;
-            const duration = Math.max(1, Number(ship.arrivingDuration) || INBOUND_DURATION_MS);
-            if (motionScale === 0 || now - startedAt >= duration) {
-                if (ship.arrivingKind === 'fetch' || ship.arrivingKind === 'pr') {
-                    ship.status = 'anchored';
-                    if (ship.arrivingKind === 'pr') ship.prMooredAt = ship.prMooredAt || now;
-                } else if (ship.arrivingKind === 'pr-merge') {
-                    ship.status = 'anchored';
-                    ship.prQuayedAt = ship.prQuayedAt || now;
-                } else {
-                    ship.status = 'docked';
-                    ship.eventTime = ship.eventTime || now;
-                }
-            }
-            continue;
-        }
-        // 3.2 — anchored fetch ships expire after a while; W7.9 moored and
-        // quayed PR cutters on their own holds.
-        if (ship.status === 'anchored') {
-            const startedAt = ship.arrivingStartedAt || now;
-            const expired = ship.arrivingKind === 'pr'
-                ? now - (ship.prMooredAt || startedAt) > PR_SHIP_MOOR_MS
-                : ship.arrivingKind === 'pr-merge'
-                    ? now - (ship.prQuayedAt || startedAt) > PR_QUAY_HOLD_MS
-                    : now - startedAt > INBOUND_DURATION_MS * 2;
-            if (expired) retireHarborShip(state, id, ship, now, { recordFloor: false });
-            continue;
-        }
-        if (ship.status !== 'departing') continue;
-        const departMs = Math.max(1, Number(ship.departMsOverride) || DEPARTURE_MS);
-        const startedAt = ship.departStartedAt || now;
-        const progress = motionScale === 0 ? 1 : Math.max(0, Math.min(1, (now - startedAt) / departMs));
-        if (progress >= 1 && now - startedAt > departMs + FADE_DELAY_MS + EXIT_FADE_MS + EXIT_HOLD_MS) {
-            const batch = ship.batchId ? state.batches.get(ship.batchId) : null;
-            if (batch) {
-                const startTile = Number.isFinite(Number(ship?.departFromTile?.tileX))
-                    && Number.isFinite(Number(ship?.departFromTile?.tileY))
-                    ? { tileX: Number(ship.departFromTile.tileX), tileY: Number(ship.departFromTile.tileY) }
-                    : (() => {
-                        const berth = BERTHS[ship.berthIndex % BERTHS.length] || BERTHS[0];
-                        return { tileX: berth.tileX, tileY: berth.tileY };
-                    })();
-                const route = composeWaterRouteTiles(startTile, ship, null);
-                const endpointTile = (batch.status || 'unknown') === 'failed'
-                    ? startTile
-                    : route?.[route.length - 1] || startTile;
-                if (endpointTile) {
-                    const world = toWorld(endpointTile.tileX, endpointTile.tileY);
-                    if (!batch.sealedOriginPoints) batch.sealedOriginPoints = [];
-                    batch.sealedOriginPoints.push({ x: world.x, y: world.y });
-                }
-            }
-            retireHarborShip(state, id, ship, now);
-        }
-    }
-
-    for (const [id, batch] of state.batches) {
-        const age = now - (batch.startedAt || now);
-        if (age > SCREEN_SUMMARY_MS + FINALE_EFFECT_MS + DEPARTURE_MS) {
-            state.batches.delete(id);
-        }
-    }
-
-    pruneHarborShips(state, now);
-    pruneHarborBatches(state);
-    pruneHarborRepoQuays(state);
-    syncRepoAnchorages(state, activeProjects);
-    pruneHarborReplayState(state, now);
-
-    return state;
 }
 
 function easedDeparture(progress) {
@@ -3569,6 +999,14 @@ function normalizeHarborPullRequestEvent(event, agent = {}, index = 0) {
     };
 }
 
+// One commit reported by two sessions (a detached-worktree scan and the
+// named-branch scan) collapses to the earliest report, which still adopts
+// the other's branch: a shared commit never stays branch-less.
+function withAdoptedBranch(kept, dropped) {
+    if (gitEventKind(kept) !== 'commit' || kept.branch || !dropped?.branch) return kept;
+    return { ...kept, branch: dropped.branch, targetRef: kept.targetRef || dropped.targetRef || dropped.branch, detached: false };
+}
+
 function collectHarborGitEvents(agents, options = {}, stats = null) {
     const candidates = [];
     const canonicalCandidates = new Map();
@@ -3592,11 +1030,15 @@ function collectHarborGitEvents(agents, options = {}, stats = null) {
                 if (!previous) {
                     canonicalCandidates.set(canonicalKey, candidate);
                     candidates.push(candidate);
-                } else if (preferCanonicalRawGitEvent(previous, candidate)) {
-                    candidate.order = previous.order;
-                    canonicalCandidates.set(canonicalKey, candidate);
-                    candidates[previous.order] = candidate;
+                    return;
                 }
+                const [kept, dropped] = preferCanonicalRawGitEvent(previous, candidate)
+                    ? [candidate, previous]
+                    : [previous, candidate];
+                kept.order = previous.order;
+                kept.event = withAdoptedBranch(kept.event, dropped.event);
+                canonicalCandidates.set(canonicalKey, kept);
+                candidates[previous.order] = kept;
             });
         }
     }
@@ -3630,6 +1072,17 @@ function rawGitEventEdgeVersion(event) {
         event.completedAt || event.completed_at || '',
         event.sha || event.commit || event.hash || '',
         event.branch || event.targetRef || event.ref || '',
+        event.repoRoot || '',
+        Array.isArray(event.landedShas) ? event.landedShas.join(',') : '',
+        event.reason || '',
+        event.author?.name || '',
+        Array.isArray(event.coAuthors) ? event.coAuthors.join(',') : '',
+        event.worktree?.path || '',
+        Array.isArray(event.branches) ? event.branches.join(',') : '',
+        Array.isArray(event.oldIds) ? event.oldIds.join(',') : '',
+        event.unresolved === true ? 'unresolved' : '',
+        event.scanSeq ?? '',
+        event.branchesComplete ?? '',
     ].join('\x1f');
 }
 
@@ -3703,19 +1156,54 @@ function harborEventsVersion(events) {
         mix(event.exitCode);
         mix(event.remote);
         mix(event.ref);
+        mix(event.repoRoot);
+        mix(event.checkout);
+        mix(event.deleted);
+        mix(event.tagsOnly);
+        // #6 — every field the reducer consumes, array contents included, so
+        // a re-report that only enriches an event still reaches it.
+        mix(event.tag);
+        mix(event.reason);
+        mix(event.stderr);
+        mix(event.detached);
+        mix(event.synthetic);
+        mix(event.attribution);
+        mix(event.author?.name);
+        mix(event.author?.email);
+        mix(event.worktree ? `${event.worktree.name}\x1e${event.worktree.path}\x1e${event.worktree.isMain}` : '');
+        mix(event.coAuthors?.join('\x1e'));
+        mix(event.landedShas?.join('\x1e'));
+        mix(event.oldShas?.join('\x1e'));
+        mix(event.oldIds?.join('\x1e'));
+        mix(event.branches?.join('\x1e'));
+        mix(event.unresolved);
+        mix(event.scanSeq);
+        mix(event.scannedAt);
+        mix(event.branchesComplete);
+        if (Array.isArray(event.refs)) for (const ref of event.refs) mix(`${ref?.src}\x1e${ref?.dst}\x1e${ref?.status}\x1e${ref?.tag}\x1e${ref?.deleted}\x1e${ref?.sha}`);
+        if (Array.isArray(event.replacements)) for (const entry of event.replacements) mix(`${entry?.oldSha}\x1e${entry?.newSha}`);
     }
     return `${events?.length || 0}:${first.toString(36)}:${second.toString(36)}`;
 }
 
-function harborStateHasTimedLifecycle(state) {
-    if (state?.batches?.size) return true;
-    for (const ship of state?.ships?.values?.() || []) {
-        if (ship.status === 'docked') continue;
-        // Moored and quayed PR cutters only expire, on the maintenance tick.
-        if (ship.status === 'anchored' && ship.prShip) continue;
-        return true;
+// Bunting runs only between neighbours of one branch squad moored in the
+// same channel, never more than about two tiles apart and never over a pier
+// deck (at the pier berths a line between channels read as a scribble).
+function buntingSpan(meta, next) {
+    if (!meta || !next) return false;
+    if (meta.squadKey !== next.squadKey || meta.anchorageName !== next.anchorageName) return false;
+    const ax = Number(meta.tileX);
+    const ay = Number(meta.tileY);
+    const bx = Number(next.tileX);
+    const by = Number(next.tileY);
+    if (![ax, ay, bx, by].every(Number.isFinite)) return false;
+    if (Math.hypot(bx - ax, by - ay) > 2.2) return false;
+    for (let step = 0; step <= 8; step++) {
+        const x = ax + (bx - ax) * step / 8;
+        const y = ay + (by - ay) * step / 8;
+        if (HARBOR_PIER_DECKS.some(deck => x >= deck.x0 - 0.1 && x <= deck.x1 + 0.1 && y >= deck.y0 - 0.1 && y <= deck.y1 + 0.1)) return false;
     }
-    return false;
+    return true;
 }
 
 export class HarborTraffic {
@@ -3726,6 +1214,13 @@ export class HarborTraffic {
         this.harborCrates = new Map();
         this.storageTransfers = new Map();
         this._lastDockLayoutByShipId = new Map();
+        // Phase 3 — per-ship render motion (eased offsets, heading, launch)
+        // and the slot each inbound or returning ship will moor in.
+        this._motion = new Map();
+        this._dockTargets = new Map();
+        this._motionPrimed = false;
+        this._previousDockPositions = new Map();
+        this._markerFades = new Map();
         // 3.6 — hover lore: per-frame ship positions for hit testing + hovered ship id.
         this.hoveredShipId = null;
         this._shipHitEntries = [];
@@ -3762,14 +1257,18 @@ export class HarborTraffic {
         // instead of walking the complete retained history every frame.
         this._packedDockedEntries = [];
         this._activeRenderShips = [];
-        this._repoQuayDrawableCache = [];
-        this._markerByRepoCache = new Map();
+        // U-P6 — this frame's placed plate boxes (world rects) and the lane
+        // lead plates' reserved slots (see _reservePlates).
+        this._fleetLeadByRepo = new Map();
+        this._repoLaneCount = new Map();
+        this._plateBoxes = [];
+        this._plateFrame = -1;
+        this._leadPlateLift = new Map();
         this._repoAnchorageDrawableCache = [];
         this._drawableBuffer = [];
         this._hullItems = [];
         this._hullItemPool = new Map();
         this._departingBuffer = [];
-        this._crateDrawnForKeys = new Set();
         this._convoyGroups = new Map();
         // 8.2 — release sloops by crown key (see launchReleaseSail).
         this._releaseSails = new Map();
@@ -3812,20 +1311,23 @@ export class HarborTraffic {
         ctx.closePath();
         ctx.fill();
         ctx.stroke();
-        if (profile?.isBranchVariant) {
-            ctx.strokeStyle = 'rgba(19, 12, 8, 0.78)';
-            ctx.beginPath();
-            ctx.moveTo(x - r * 0.3, y - r * 0.35);
-            ctx.lineTo(x + r * 0.25, y + r * 0.2);
-            ctx.lineTo(x + r * 0.52, y + r * 0.2);
-            ctx.stroke();
-        }
         ctx.restore();
     }
 
     setWaterRouteData(routeData) {
         this.waterRouteData = routeData || null;
         this._enumeratedFrame = -1;
+    }
+
+    // Phase 3.2 — the live water mask (scenery water minus bridge spans):
+    // when it differs from the baked one, every fleet is re-laid on it.
+    setWaterMask(waterTiles, bridgeTiles = null) {
+        if (!setHarborWaterMask(waterTiles, bridgeTiles)) return false;
+        this._dockLayout = buildDockSquadLayout(this.state);
+        this._repoDockSummaryCache = this._repoDockSummaries(this._dockLayout);
+        this._observeDockTargets();
+        this._refreshRenderWindow();
+        return true;
     }
 
     setMotionScale(scale) {
@@ -3836,6 +1338,144 @@ export class HarborTraffic {
 
     setGradeState(grade) {
         this._grade = grade || null;
+    }
+
+    // 5.3 — the village lamp clock (dusk to dawn; IsometricRenderer
+    // villageLampsLit): every hull's lamps, moored or under way, are lit
+    // fixtures, never occupancy.
+    setLampsLit(lit) {
+        this._lampsLit = lit === true;
+    }
+
+    // 5.3 — the lamps' own light: a small warm fixture per lit hull (a soft
+    // halo on the hull and the water round it, and, as every fixture does,
+    // a broken lamp column on the water below it on both backends; 2.9).
+    // Budgeted: the fleet leads first, then the largest hulls, at most
+    // HARBOR_LAMP_LIGHT_CAP, each far dimmer than a window, so a moored
+    // fleet glimmers without outshining the Harbor or the Lighthouse.
+    // `core` is the frame's source-energy core.
+    lampLightSources(core = 1) {
+        if (!this._lampsLit || !(core > 0.02)) return [];
+        const lit = this._litLampItems();
+        const out = [];
+        for (const item of lit) {
+            const pose = item.pose;
+            const lamp = hullLampPoints(pose)[0] || { x: pose.x, y: pose.y - 10 };
+            const foot = { x: Math.round(pose.x), y: Math.round(pose.y) };
+            out.push(normalizeLightSource({
+                id: `harbor-lamp:${item.id}`,
+                kind: 'point',
+                role: 'fixture',
+                x: lamp.x,
+                y: lamp.y,
+                ground: foot,
+                height: Math.max(2, foot.y - lamp.y),
+                color: HARBOR_LAMP_COLOR,
+                radius: HARBOR_LAMP_RADIUS,
+                intensity: HARBOR_LAMP_INTENSITY * core * pose.alpha * pose.lamps.strength,
+            }));
+        }
+        return out;
+    }
+
+    // The lit hulls whose lamps get light and halo, budget-capped: fleet
+    // leads first, then the largest hulls (a calm harbor lights them all).
+    _litLampItems() {
+        const lit = [];
+        for (const item of this._hullItems || []) {
+            const pose = item.pose;
+            if (!pose?.lamps || item.behindBuilding || !(pose.alpha >= 0.5)) continue;
+            lit.push(item);
+        }
+        lit.sort((a, b) => (Number(b.fleetLead) - Number(a.fleetLead))
+            || (b.pose.strip.frameWidth - a.pose.strip.frameWidth)
+            || String(a.id).localeCompare(String(b.id)));
+        if (lit.length > HARBOR_LAMP_LIGHT_CAP) lit.length = HARBOR_LAMP_LIGHT_CAP;
+        return lit;
+    }
+
+    // 5.3 — the lamp glow both backends draw on the ungraded overlay:
+    // - every lit lamp's core as a 2x2-texel lamp at z >= 2 (a single texel
+    //   reads as a speck there);
+    // - for the budgeted hulls (HARBOR_LAMP_LIGHT_CAP, leads first), a small
+    //   halo of Bayer-dithered lamp texels round each lamp (half the texels
+    //   within 3, a quarter within 5: glow in the pixel grid, never a wash);
+    // - under each of those hulls, the lamp's reflection: 2-4 broken warm
+    //   runs on the water below its waterline, shimmering on the 4 Hz water
+    //   step (the lamp columns' tick; held under reduced motion).
+    // A hull the Harbor hides shows none; a sinking hull's lamps sink with it.
+    drawLampGlow(ctx, zoom = 1, core = 1) {
+        if (!this._lampsLit || !(core > 0.02)) return;
+        const haloed = new Set(this._litLampItems());
+        const tick = this.motionScale > 0 ? Math.floor(this.frame * 16 / LAMP_SHIMMER_STEP_MS) : 0;
+        ctx.save();
+        for (const item of this._hullItems || []) {
+            const pose = item.pose;
+            if (!pose?.lamps || item.behindBuilding || !(pose.alpha > 0.02)) continue;
+            const points = hullLampPoints(pose);
+            if (!points.length) continue;
+            const alpha = Math.min(1, pose.alpha * core);
+            if (haloed.has(item)) {
+                for (const point of points) this._drawLampHalo(ctx, Math.floor(point.x), Math.floor(point.y), alpha);
+                this._drawLampReflection(ctx, pose, points[0], alpha, tick, item.id);
+            }
+            if ((zoom || 1) >= 2) {
+                ctx.globalAlpha = alpha;
+                ctx.fillStyle = HARBOR_LAMP_COLOR;
+                for (const point of points) ctx.fillRect(Math.floor(point.x), Math.floor(point.y) - 1, 2, 2);
+            }
+        }
+        ctx.restore();
+    }
+
+    _drawLampHalo(ctx, cx, cy, alpha) {
+        ctx.globalAlpha = 0.7 * alpha;
+        ctx.fillStyle = HARBOR_LAMP_COLOR;
+        const outer = HARBOR_LAMP_HALO[1];
+        for (let dy = -outer; dy <= outer; dy++) {
+            for (let dx = -outer; dx <= outer; dx++) {
+                const d = Math.hypot(dx, dy);
+                if (d < 1 || d > outer) continue;
+                const x = cx + dx;
+                const y = cy + dy;
+                const threshold = LAMP_BAYER4[((y & 3) << 2) | (x & 3)];
+                // Half the texels inside the inner ring, a quarter outside.
+                if (threshold >= (d <= HARBOR_LAMP_HALO[0] ? 8 : 4)) continue;
+                ctx.fillRect(x, y, 1, 1);
+            }
+        }
+    }
+
+    _drawLampReflection(ctx, pose, lamp, alpha, tick, id) {
+        const waterline = Math.round(pose.y) + (pose.sink | 0) + 2;
+        const reach = Math.max(3, Math.min(14, Math.round(pose.y - lamp.y) >> 1));
+        const seed = stableHash(`${id}:lamp-shimmer`);
+        const x = Math.floor(lamp.x);
+        ctx.fillStyle = HARBOR_LAMP_COLOR;
+        const runs = 2 + ((seed + tick) % 3);
+        for (let i = 0; i < runs; i++) {
+            const t = (i + 0.5) / runs;
+            const y = waterline + Math.round(t * reach);
+            const wobble = ((seed >> (i * 3)) + tick * (i + 1)) % 3 - 1;
+            const width = Math.max(1, 3 - i);
+            ctx.globalAlpha = alpha * (0.62 - 0.4 * t);
+            ctx.fillRect(x + wobble - (width >> 1), y, width, 1);
+        }
+    }
+
+    // Canvas (and hybrid PostFx) path: lit lamps as emitter cuts on the
+    // ungraded overlay, and on the bloom source when there is one. `core` is
+    // the frame's source-energy core (EmitterCuts). A hull the Harbor hides
+    // takes its lamps with it.
+    drawLampCuts(ctx, core = 1, bloomCtx = null) {
+        if (!this._lampsLit) return;
+        for (const item of this._hullItems || []) {
+            const pose = item.pose;
+            if (!pose?.lamps || item.behindBuilding) continue;
+            const alpha = pose.alpha * core;
+            drawHullLamps(ctx, pose, alpha);
+            if (bloomCtx) drawHullLamps(bloomCtx, pose, alpha);
+        }
     }
 
     update(agents, dt = 16, now = Date.now()) {
@@ -3888,6 +1528,7 @@ export class HarborTraffic {
                 now,
                 motionScale: this.motionScale,
                 activeProjects,
+                repoDisplayName: trafficShortName,
             });
             this._lastEventsVersion = eventsVersion;
             this._activeProjectsKey = activeProjectsKey;
@@ -3899,6 +1540,7 @@ export class HarborTraffic {
             this._repoDockSummaryCache = this._repoDockSummaries(this._dockLayout);
             this._pendingRepoSummaries = pendingRepoSummariesFromDockSummaries(this._repoDockSummaryCache, this.state.pushEvents.values());
             this._observeStorageTransfers(this._dockLayout, now);
+            this._observeDockTargets(now);
             this._refreshRenderWindow(now);
         } else {
             this._unchangedReconciliations++;
@@ -3943,7 +1585,7 @@ export class HarborTraffic {
             activeRepoAnchorages: this._activeRepoAnchorages?.size || 0,
             repoFirstSeen: this._repoFirstSeen.size,
             maxRepoFirstSeen: MAX_REPO_FIRST_SEEN,
-            cleanLabelCache: _cleanCommitLabelCache.size,
+            cleanLabelCache: cleanCommitLabelCacheSize(),
             cleanLabelCacheLimit: HARBOR_CLEAN_LABEL_CACHE_LIMIT,
         };
     }
@@ -3975,14 +1617,15 @@ export class HarborTraffic {
         this._repoDockSummaryCache?.clear?.();
         this._packedDockedEntries.length = 0;
         this._activeRenderShips.length = 0;
-        this._repoQuayDrawableCache.length = 0;
-        this._markerByRepoCache.clear();
+        this._fleetLeadByRepo.clear();
+        this._repoLaneCount.clear();
+        this._plateBoxes.length = 0;
+        this._leadPlateLift.clear();
         this._repoAnchorageDrawableCache.length = 0;
         this._drawableBuffer.length = 0;
         this._hullItems.length = 0;
         this._hullItemPool.clear();
         this._departingBuffer.length = 0;
-        this._crateDrawnForKeys.clear();
         this._convoyGroups.clear();
         this._enumeratedFrame = -1;
         this.waterRouteData = null;
@@ -4000,7 +1643,7 @@ export class HarborTraffic {
     _observeRepoAnchorages(agents, now = Date.now()) {
         const active = this._activeRepoAnchorages;
         for (const agent of agents || []) {
-            const project = agent?.projectPath || agent?.project;
+            const project = agent?.repoRoot || agent?.projectPath || agent?.project;
             if (!project) continue;
             const profile = repoProfile(project);
             if (!profile?.key) continue;
@@ -4013,63 +1656,6 @@ export class HarborTraffic {
 
     getPendingRepoSummaries() {
         return this._pendingRepoSummaries || [];
-    }
-
-    getRepoSummaries() {
-        const summaries = new Map();
-        for (const summary of this._pendingRepoSummaries || []) {
-            const profile = summary.profile || trafficProfile(summary.project, summary.branch);
-            summaries.set(profile.key, {
-                project: summary.project,
-                branch: summary.branch || '',
-                repoName: summary.repoName || trafficLabel(summary.project, summary.branch),
-                shortName: summary.shortName || profile.shortName,
-                profile,
-                pendingCommits: Number(summary.pendingCommits) || 0,
-                dockedCommits: 0,
-                failedPushes: 0,
-                latestEventTime: Number(summary.latestEventTime) || 0,
-                waitingZone: summary.waitingZone || 'harbor',
-                storageCommits: Number(summary.storageCommits) || 0,
-            });
-        }
-        for (const summary of this._repoDockSummaries().values()) {
-            const existing = summaries.get(summary.profile.key) || {
-                project: summary.project,
-                branch: summary.branch || '',
-                repoName: trafficLabel(summary.project, summary.branch),
-                shortName: summary.profile.shortName,
-                profile: summary.profile,
-                pendingCommits: 0,
-                dockedCommits: 0,
-                failedPushes: 0,
-                latestEventTime: 0,
-                waitingZone: summary.waitingZone || 'harbor',
-                storageCommits: 0,
-            };
-            existing.dockedCommits += summary.count;
-            if (Number(existing.pendingCommits) <= 0) {
-                existing.failedPushes += summary.failedCount;
-            }
-            existing.latestEventTime = Math.max(existing.latestEventTime, summary.latestEventTime || 0);
-            if (isCommitLagoonZone(summary.waitingZone)) {
-                existing.waitingZone = 'commit-lagoon';
-                if (Number(existing.pendingCommits) > 0) {
-                    existing.storageCommits = Math.max(existing.storageCommits, Number(summary.count) || 0);
-                } else {
-                    existing.storageCommits += Number(summary.count) || 0;
-                }
-            } else {
-                existing.waitingZone = existing.waitingZone || 'harbor';
-            }
-            summaries.set(summary.profile.key, existing);
-        }
-        return [...summaries.values()]
-            .sort((a, b) => (b.failedPushes - a.failedPushes)
-                || (b.dockedCommits - a.dockedCommits)
-                || (b.pendingCommits - a.pendingCommits)
-                || (b.latestEventTime - a.latestEventTime)
-                || a.repoName.localeCompare(b.repoName));
     }
 
     getFailedPushState(now = Date.now()) {
@@ -4186,6 +1772,8 @@ export class HarborTraffic {
         for (const push of this.state.pushEvents.values()) {
             if (push?.project) pushedProjects.add(String(push.project));
         }
+        // S-M6 — a landed push outlives the pruned push records.
+        for (const project of this.state.lastLandedPushAt?.keys?.() || []) pushedProjects.add(String(project));
         for (const ship of this.state.ships.values()) {
             if (ship.status !== 'docked') continue;
             const projectKey = String(ship.project || 'unknown');
@@ -4239,6 +1827,9 @@ export class HarborTraffic {
             return;
         }
 
+        // Where each docked ship lay in the layout before this one (a pack
+        // member: its lead's mooring), for unpack glides.
+        this._previousDockPositions = this._lastDockLayoutByShipId;
         if (!this._lastDockLayoutByShipId.size) {
             this._lastDockLayoutByShipId = next;
             return;
@@ -4262,13 +1853,14 @@ export class HarborTraffic {
                 tileX: Number(current.tileX),
                 tileY: Number(current.tileY),
             };
+            // Lane-graph passage at about a tile a second (P-D7).
+            const route = sailPath(composeStorageTransferTiles(fromTile, toTile));
             this.storageTransfers.set(id, {
                 id,
                 startedAt: now + transferIndex * STORAGE_TRANSFER_STAGGER_MS,
-                duration: STORAGE_TRANSFER_MS,
+                duration: clamp(route.length * 1000, STORAGE_TRANSFER_MS, STORAGE_TRANSFER_MAX_MS),
                 routeMetadata: routeGraphMetadata('storage.lagoon-transfer'),
-                route: composeStorageTransferTiles(fromTile, toTile, ship)
-                    .map(point => toWorld(point.tileX, point.tileY)),
+                route,
                 fromZone: previous.waitingZone || 'harbor',
                 toZone: current.waitingZone || 'commit-lagoon',
             });
@@ -4289,17 +1881,283 @@ export class HarborTraffic {
         this._lastDockLayoutByShipId = next;
     }
 
+    // P-D1 — the moorings as they will be: the dock layout with every
+    // inbound pull and every returning rejected or cancelled ship already
+    // docked (with the push status it redocks with), and a ship that has
+    // just cast off still holding its place until it has cleared the fleet.
+    // Returning ships sail to their slot in it, and docked ships hold their
+    // slot in it, so a sortie never shuffles the fleet twice. Rebuilt per
+    // state; empty when nothing is out.
+    _observeDockTargets(now = Date.now()) {
+        this._dockTargets.clear();
+        let ships = null;
+        for (const [id, ship] of this.state.ships) {
+            const pull = ship.status === 'arriving' && !['fetch', 'pr', 'pr-merge'].includes(ship.arrivingKind);
+            const clearing = ship.status === 'departing' && now - (Number(ship.departStartedAt) || 0) < CAST_OFF_MS + FLEET_HOLD_MS;
+            if (!pull && !clearing && ship.status !== 'rejecting' && ship.status !== 'cancelling') continue;
+            ships ||= new Map(this.state.ships);
+            ships.set(id, {
+                ...ship,
+                status: 'docked',
+                pushStatus: ship.status === 'rejecting' ? 'rejected' : ship.status === 'cancelling' ? 'cancelled' : ship.pushStatus,
+            });
+        }
+        if (!ships) return;
+        const layout = buildDockLayoutFresh({ ...this.state, ships });
+        for (const [id, meta] of layout.byShipId) this._dockTargets.set(id, { tileX: meta.tileX, tileY: meta.tileY, x: meta.x, y: meta.y });
+    }
+
+    // Phase 3.1 — the render position: the drawable's target (its layout
+    // slot or route sample) plus an offset that springs to zero, so any jump
+    // in the target (a relayout, a redock, a sortie from a slot the layout
+    // has since moved) is a glide, never a teleport. Also the hull's heading
+    // (3.5: the route tangent under way, the glide while moored, bow into
+    // the wind at rest), 3.7's slipway launch and swing at anchor.
+    _settleShipMotion(payload, now) {
+        const id = payload.id;
+        if (!id || payload.releaseSail) return;
+        const tx = payload.x;
+        const ty = payload.y;
+        const moored = (payload.status === 'docked' || payload.status === 'anchored' || payload.status === 'scuttling') && !payload.storageTransfer;
+        let m = this._motion.get(id);
+        if (!m) {
+            m = { x: tx, y: ty, tx, ty, ox: 0, oy: 0, ovx: 0, ovy: 0, vx: 0, vy: 0, at: now, heading: null, stillSince: now, launchAt: 0 };
+            this._motion.set(id, m);
+            const recent = (time) => Number.isFinite(Number(time)) && now - Number(time) < LAUNCH_WINDOW_MS;
+            if (this._motionPrimed && moored && payload.status === 'docked' && this.motionScale > 0
+                && recent(payload.createdAt) && recent(payload.eventTime)) this._launchShip(m, payload, now);
+            else if (this._motionPrimed && moored && this.motionScale > 0) this._unpackShip(m, payload, now);
+        } else {
+            const dt = (now - m.at) / 1000;
+            if (dt > MOTION_RESYNC_S || this.motionScale <= 0) {
+                m.ox = 0;
+                m.oy = 0;
+                m.ovx = 0;
+                m.ovy = 0;
+                m.relocation = null;
+            } else if (dt > 0) {
+                const goal = toTile(tx, ty);
+                if (moored && (m.relocation
+                    ? Math.hypot(goal.tileX - m.relocation.goal.tileX, goal.tileY - m.relocation.goal.tileY) > 0.05
+                    : Math.hypot(tx - m.tx, ty - m.ty) > RELOCATE_TILES * HARBOR_GROUND_PX_PER_TILE * 0.8
+                        && tileDistance(toTile(m.x, m.y), goal) > RELOCATE_TILES)) {
+                    // P-D2 — the slot moved across the water: sail there.
+                    const path = sailPath(composeWaterPath(toTile(m.x, m.y), goal));
+                    m.relocation = { path, goal, startedAt: now, duration: clamp(path.length / RELOCATE_TILES_PER_S * 1000, 1500, 30000) };
+                    m.ox = 0;
+                    m.oy = 0;
+                    m.ovx = 0;
+                    m.ovy = 0;
+                } else if (!moored) {
+                    m.relocation = null;
+                }
+                if (!m.relocation && Math.hypot(tx - m.tx, ty - m.ty) > Math.max(MOTION_JUMP_PX, MOTION_JUMP_SPEED * dt)) {
+                    m.ox = m.x - tx;
+                    m.oy = m.y - ty;
+                    if (Math.hypot(m.ox, m.oy) > MOTION_SNAP_PX) {
+                        m.ox = 0;
+                        m.oy = 0;
+                        m.ovx = 0;
+                        m.ovy = 0;
+                    }
+                }
+                springOffset(m, dt);
+            }
+        }
+        // Leaving the mooring, the swing at anchor eases out with the offset.
+        if (!moored && m.swingX !== undefined) {
+            m.ox += m.swingX;
+            m.oy += m.swingY;
+            m.swingX = undefined;
+            m.swingY = undefined;
+        }
+        let x = tx + m.ox;
+        let y = ty + m.oy;
+        let relocating = false;
+        if (m.relocation) {
+            const r = m.relocation;
+            const progress = clamp((now - r.startedAt) / r.duration, 0, 1);
+            if (progress >= 1) {
+                m.relocation = null;
+            } else {
+                const distance = easedDeparture(progress) * r.path.length;
+                const pos = sampleSailPath(r.path, distance);
+                const tail = sampleSailPath(r.path, distance - SAIL_TAIL_TILES);
+                x = pos.x;
+                y = pos.y;
+                payload.tailX = tail.x;
+                payload.tailY = tail.y;
+                relocating = true;
+            }
+        }
+        const dt = (now - m.at) / 1000;
+        if (dt > 0 && dt <= MOTION_RESYNC_S) {
+            const k = 1 - Math.exp(-dt / HEADING_SMOOTH_S);
+            m.vx += ((x - m.x) / dt - m.vx) * k;
+            m.vy += ((y - m.y) / dt - m.vy) * k;
+        } else if (dt > MOTION_RESYNC_S) {
+            m.vx = 0;
+            m.vy = 0;
+        }
+        m.x = x;
+        m.y = y;
+        m.tx = tx;
+        m.ty = ty;
+        m.at = now;
+
+        const speed = Math.hypot(m.vx, m.vy);
+        m.status = payload.status;
+        if (moored) m.sortieFrom = undefined;
+        if (!moored || relocating) {
+            const hx = (relocating ? x : tx) - (Number.isFinite(payload.tailX) ? payload.tailX : tx);
+            const hy = (relocating ? y : ty) - (Number.isFinite(payload.tailY) ? payload.tailY : ty);
+            if (Math.hypot(hx, hy) > 0.5) m.heading = hullHeadingDirection(hx, hy, m.heading);
+            m.stillSince = now;
+        } else if (speed > MOORED_HEADING_SPEED) {
+            m.heading = hullHeadingDirection(m.vx, m.vy, m.heading);
+            m.stillSince = now;
+        } else {
+            // Bow into the wind, or bow in to the quay at a pier berth.
+            const windHeading = payload.moorHeading || (currentPennantWind() >= 0 ? 'sw' : 'se');
+            const settle = WEATHERVANE_MS + (stableHash(`${id}:weathervane`) % WEATHERVANE_STAGGER_MS);
+            if (!m.heading || (m.heading !== windHeading && now - m.stillSince > settle)) m.heading = windHeading;
+        }
+
+        payload.x = x;
+        payload.y = y;
+        if (!relocating && Number.isFinite(payload.tailX)) payload.tailX += m.ox;
+        if (!relocating && Number.isFinite(payload.tailY)) payload.tailY += m.oy;
+        payload.relocating = relocating;
+        payload.heading = m.heading;
+        m.payload = payload;
+        payload.launchAlpha = m.launchAt ? clamp((now - m.launchAt) / LAUNCH_FADE_MS, 0, 1) : 1;
+        if (moored && !relocating && this.motionScale > 0) {
+            const t = this.frame * 16 / 1000;
+            const hash = stableHash(`${id}:swing`);
+            const phase = (hash % 1000) / 1000 * Math.PI * 2;
+            m.swingX = Math.sin(t * Math.PI * 2 / (9 + (hash % 5)) + phase) * SWING_X_PX;
+            m.swingY = Math.sin(t * Math.PI * 2 / (12 + (hash % 7)) + phase * 1.7) * SWING_Y_PX;
+            payload.x += m.swingX;
+            payload.y += m.swingY;
+        }
+    }
+
+    // P-D9 — a sortie (departure, boomerang, cancel) starts from where the
+    // hull is drawn, not from the tile the reducer laid it at (its fleet may
+    // since have moved, or be holding formation for a returning ship).
+    _observeSortieStart(ship) {
+        const m = this._motion.get(ship.id);
+        if (!m) return;
+        // #3 — a publication that supersedes a return turns the hull back
+        // out to sea from where it is drawn, on a fresh course.
+        if (ship.status === 'departing' && (m.status === 'rejecting' || m.status === 'cancelling')) {
+            const drawn = toTile(m.x, m.y);
+            m.sortieFrom = harborWaterField().nearestClear({ tileX: Math.round(drawn.tileX * 100) / 100, tileY: Math.round(drawn.tileY * 100) / 100 }, 0.3);
+            return;
+        }
+        if (m.sortieFrom !== undefined) return;
+        const sortie = ship.status === 'departing' || ship.status === 'rejecting' || ship.status === 'cancelling';
+        if (!sortie) return;
+        if (m.status !== 'docked' && m.status !== 'anchored') {
+            m.sortieFrom = null;
+            return;
+        }
+        const drawn = toTile(m.x, m.y);
+        m.sortieFrom = harborWaterField().nearestClear({ tileX: Math.round(drawn.tileX * 100) / 100, tileY: Math.round(drawn.tileY * 100) / 100 }, 0.3);
+    }
+
+    // Phase 3.1 — pack consolidation: a moored hull folded into a titan
+    // pack (still docked, no longer drawn) glides into its pack lead and
+    // fades over PACK_GHOST_MS instead of vanishing.
+    _observePackGhosts(visible, now) {
+        const layout = this._dockLayout;
+        for (const [id, m] of this._motion) {
+            if (m.at >= now) {
+                m.ghost = null;
+                continue;
+            }
+            if (!m.ghost) {
+                if (!m.payload || m.status !== 'docked') continue;
+                const ship = this.state.ships.get(id);
+                const leadId = layout?.byShipId?.get(id)?.visualLeadId;
+                if (!ship || ship.status !== 'docked' || !leadId || leadId === id || this.motionScale <= 0) continue;
+                // Into a lead close by (bow toward it); one across the water
+                // fades where it lay.
+                const lead = this._motion.get(leadId) || layout.byShipId.get(leadId);
+                const near = lead && Math.hypot(lead.x - m.x, lead.y - m.y) < PACK_GHOST_REACH_PX
+                    && harborWaterField().segmentClearance(toTile(m.x, m.y), toTile(lead.x, lead.y)) > 0.25;
+                const payload = { ...m.payload };
+                if (near && Math.hypot(lead.x - m.x, lead.y - m.y) > 4) payload.heading = hullHeadingDirection(lead.x - m.x, lead.y - m.y, payload.heading);
+                m.ghost = { startedAt: now, fromX: m.x, fromY: m.y, toX: near ? lead.x : m.x, toY: near ? lead.y : m.y, payload };
+            }
+            const t = clamp((now - m.ghost.startedAt) / PACK_GHOST_MS, 0, 1);
+            if (t >= 1) continue;
+            const { toX, toY } = m.ghost;
+            const eased = easedDeparture(t);
+            const x = m.ghost.fromX + (toX - m.ghost.fromX) * eased;
+            const y = m.ghost.fromY + (toY - m.ghost.fromY) * eased;
+            m.at = now - MOTION_FORGET_MS / 2;
+            visible.push({
+                kind: 'harbor-traffic',
+                sortY: y + REPO_DOCK_SHIP_SORT_OFFSET,
+                payload: { ...m.ghost.payload, x, y, ghost: true, launchAlpha: 1 - t },
+            });
+        }
+    }
+
+    // Phase 3.1 — a ship stepping out of a titan pack (the hull budget eased)
+    // glides out of its old lead's mooring and fades in, never pops.
+    _unpackShip(m, payload, now) {
+        const from = this._previousDockPositions?.get?.(payload.id);
+        if (!from || Math.hypot(from.x - payload.x, from.y - payload.y) < 3) return;
+        if (Math.hypot(from.x - payload.x, from.y - payload.y) > PACK_GHOST_REACH_PX * 2) return;
+        m.ox = from.x - payload.x;
+        m.oy = from.y - payload.y;
+        m.x = from.x;
+        m.y = from.y;
+        m.launchAt = now;
+    }
+
+    // The marker fade per repo: toward 1 while it has ships, 0 without, over
+    // MARKER_FADE_MS on the render clock (immediate under reduced motion).
+    _markerFade(project, present) {
+        const key = repoProfile(project).key;
+        const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        const entry = this._markerFades.get(key) || { value: present ? 1 : 0, at: now };
+        const step = this.motionScale > 0 ? (now - entry.at) / MARKER_FADE_MS : 1;
+        entry.value = present ? Math.min(1, entry.value + step) : Math.max(0, entry.value - step);
+        entry.at = now;
+        this._markerFades.set(key, entry);
+        return Math.round(entry.value * 4) / 4;
+    }
+
+    _launchShip(m, payload, now) {
+        const target = toTile(payload.x, payload.y);
+        const slipway = target.tileX < LAGOON_EAST_TILE_X ? LAGOON_SLIPWAY : HARBOR_SLIPWAY;
+        const path = sailPath(composeWaterPath(slipway, target));
+        const run = Math.min(LAUNCH_RUN_TILES, path.length);
+        if (run < 0.3) return;
+        const from = sampleSailPath(path, path.length - run);
+        m.ox = from.x - payload.x;
+        m.oy = from.y - payload.y;
+        m.x = from.x;
+        m.y = from.y;
+        const len = Math.hypot(m.ox, m.oy) || 1;
+        m.ovx = -m.ox / len * LAUNCH_SPEED;
+        m.ovy = -m.oy / len * LAUNCH_SPEED;
+        m.vx = m.ovx;
+        m.vy = m.ovy;
+        m.launchAt = now;
+    }
+
     _storageTransferPosition(shipId, fallback, now = Date.now()) {
         const transfer = this.storageTransfers.get(shipId);
         if (!transfer || this.motionScale <= 0) return null;
         const duration = Math.max(1, Number(transfer.duration) || STORAGE_TRANSFER_MS);
         const rawProgress = Math.max(0, Math.min(1, (now - (transfer.startedAt || now)) / duration));
-        const eased = easedDeparture(rawProgress);
-        const route = Array.isArray(transfer.route) && transfer.route.length
-            ? transfer.route
-            : [{ x: fallback.x, y: fallback.y }];
-        const pos = pointAlongPath(route, eased);
-        const tail = pointAlongPath(route, Math.max(0, eased - 0.035));
+        const distance = easedDeparture(rawProgress) * transfer.route.length;
+        const pos = sampleSailPath(transfer.route, distance);
+        const tail = sampleSailPath(transfer.route, distance - SAIL_TAIL_TILES);
         if (rawProgress >= 1) {
             this.storageTransfers.delete(shipId);
             return {
@@ -4331,13 +2189,19 @@ export class HarborTraffic {
         // Squads contain every retained docked ship, while the pack map only
         // contains representatives that can produce a drawable. Materialize
         // that sparse join once per semantic state version.
+        // U-P6 — one shield per repo fleet: the first visible lane lead of
+        // each repo (the default branch's when it has one), wearing a
+        // collision-checked monogram. The fleet lead's position also anchors
+        // the repo's buoy label (its leading edge, U-P7).
+        const fleetLeads = new Map();
+        const monogramRepos = new Map();
         for (const squad of dockLayout.squads || []) {
             const visibleSquad = [];
             for (const ship of squad.ships || []) {
                 const pack = visualPackByShipId.get(ship.id);
                 const meta = pack ? dockLayout.byShipId.get(ship.id) : null;
                 if (!pack || !meta) continue;
-                visibleSquad.push({ ship, pack, meta, nextMeta: null, drawable: null });
+                visibleSquad.push({ ship, pack, meta, crateKey: repoProfile(ship.project).key, nextMeta: null, drawable: null });
             }
             for (let index = 0; index < visibleSquad.length; index++) {
                 const entry = visibleSquad[index];
@@ -4365,6 +2229,7 @@ export class HarborTraffic {
                 payload.waitingZone = meta.waitingZone;
                 payload.zoneSquadIndex = meta.zoneSquadIndex;
                 payload.anchorageName = meta.anchorageName;
+                payload.moorHeading = meta.moorHeading || '';
                 payload.anchorageIndex = meta.anchorageIndex;
                 payload.formationColumn = meta.column;
                 payload.formationRow = meta.row;
@@ -4372,15 +2237,44 @@ export class HarborTraffic {
                 payload.visualPackStartIndex = pack.visualPackStartIndex;
                 payload.visualPackEndIndex = pack.visualPackEndIndex;
                 payload.visualPackHiddenCount = pack.visualPackHiddenCount;
-                payload.buntingNext = entry.nextMeta
+                payload.buntingNext = buntingSpan(meta, entry.nextMeta)
                     ? { x: entry.nextMeta.x, y: entry.nextMeta.y }
                     : null;
                 payload.untetheredFlag = meta.squadShipIndex === 0
                     && untetheredProjects.has(String(payload.project || 'unknown'));
+                payload.pennonKind = branchPennonKind(payload.branch, payload.worktree);
+                payload.laneLead = meta.squadShipIndex === 0 && !payload.prShip && !payload.isInbound;
+                payload.repoFleetLead = false;
+                if (payload.laneLead) {
+                    const lead = fleetLeads.get(entry.crateKey);
+                    if (!lead || (lead.payload.pennonKind !== 'default' && payload.pennonKind === 'default')) {
+                        fleetLeads.set(entry.crateKey, { payload, meta });
+                    }
+                    monogramRepos.set(entry.crateKey, { key: entry.crateKey, name: repoDisplayName(payload.project) });
+                }
                 drawable.sortY = payload.y + REPO_DOCK_SHIP_SORT_OFFSET;
                 entry.drawable = drawable;
                 packed.push(entry);
             }
+        }
+        const monograms = assignMonograms([...monogramRepos.values()]);
+        this._repoLaneCount.clear();
+        for (const entry of packed) {
+            if (entry.drawable.payload.laneLead) this._repoLaneCount.set(entry.crateKey, (this._repoLaneCount.get(entry.crateKey) || 0) + 1);
+        }
+        for (const [key, { payload }] of fleetLeads) payload.repoLaneCount = this._repoLaneCount.get(key) || 1;
+        this._fleetLeadByRepo.clear();
+        // z1 — the fleet lead's plate is the repo's whole cargo.
+        const repoTotals = new Map();
+        for (const row of this._pendingRepoSummaries || []) {
+            const key = repoProfile(row.project).key;
+            repoTotals.set(key, (repoTotals.get(key) || 0) + (Number(row.pendingCommits) || 0));
+        }
+        for (const [key, { payload, meta }] of fleetLeads) {
+            payload.repoFleetLead = true;
+            payload.monogram = monograms.get(key) || '';
+            payload.repoTotal = repoTotals.get(key) || 0;
+            this._fleetLeadByRepo.set(key, { x: meta.x, y: meta.y, id: payload.id });
         }
 
         for (const ship of this.state.ships.values()) {
@@ -4388,18 +2282,6 @@ export class HarborTraffic {
             // Pack members sailing behind their titan lead never draw themselves.
             if (ship.visualPackLeadId && ship.visualPackLeadId !== ship.id) continue;
             active.push(ship);
-        }
-
-        this._repoQuayDrawableCache = this._repoQuayDrawables(this._repoDockSummaryCache);
-        this._markerByRepoCache.clear();
-        for (const marker of this._repoQuayDrawableCache) {
-            if (marker.payload?.type !== 'repo-quay') continue;
-            const profile = marker.payload.profile || trafficProfile(marker.payload.project, marker.payload.branch);
-            if (profile.key) this._markerByRepoCache.set(profile.key, marker.payload);
-            const baseKey = repoProfile(marker.payload.project).key;
-            if (baseKey && !this._markerByRepoCache.has(baseKey)) {
-                this._markerByRepoCache.set(baseKey, marker.payload);
-            }
         }
         this._enumeratedFrame = -1;
     }
@@ -4409,24 +2291,25 @@ export class HarborTraffic {
         if (!this._packedDockedEntries.length && this.state.ships.size) {
             this._refreshRenderWindow(now);
         }
-        const markerByRepo = this._markerByRepoCache;
         const departing = this._departingBuffer;
         departing.length = 0;
         for (const ship of this._activeRenderShips) {
+            this._observeSortieStart(ship);
             const drawable = this._shipDrawable(ship, now);
             if (!drawable) continue;
+            this._settleShipMotion(drawable.payload, now);
+            drawable.sortY = drawable.payload.y;
             departing.push(drawable);
         }
 
         const visible = this._drawableBuffer;
         visible.length = 0;
-        const crateDrawnForKeys = this._crateDrawnForKeys;
-        crateDrawnForKeys.clear();
         for (const entry of this._packedDockedEntries) {
             const { drawable, meta, ship } = entry;
             const payload = drawable.payload;
-            payload.x = meta.x;
-            payload.y = meta.y;
+            const held = this._dockTargets.get(ship.id) || meta;
+            payload.x = held.x;
+            payload.y = held.y;
             payload.tailX = ship.tailX;
             payload.tailY = ship.tailY;
             payload.storageTransferProgress = null;
@@ -4440,13 +2323,19 @@ export class HarborTraffic {
                 payload.storageTransferProgress = transfer.progress;
                 payload.storageTransfer = transfer.progress < 1;
             }
-            payload.harborCrate = !crateDrawnForKeys.has(meta.squadKey)
-                ? this.harborCrates.get(meta.squadKey) || null
-                : null;
-            if (payload.harborCrate) crateDrawnForKeys.add(meta.squadKey);
+            // A repo's git-status crate stands on the deck or quay beside its
+            // fleet (_harborCrateDrawables), never stamped on a hull: on the
+            // flotilla art it covered the sails and read out of scale.
+            payload.harborCrate = null;
+            this._settleShipMotion(payload, now);
             drawable.sortY = payload.y + REPO_DOCK_SHIP_SORT_OFFSET;
             visible.push(drawable);
         }
+        this._observePackGhosts(visible, now);
+        for (const [id, motion] of this._motion) {
+            if (now - motion.at > MOTION_FORGET_MS) this._motion.delete(id);
+        }
+        this._motionPrimed = true;
 
         departing.sort((a, b) => ((a.payload.departStartedAt || 0) - (b.payload.departStartedAt || 0))
             || ((a.payload.departSquadIndex || 0) - (b.payload.departSquadIndex || 0))
@@ -4485,7 +2374,7 @@ export class HarborTraffic {
             const drawable = this._releaseSailDrawable(sail, now);
             if (drawable) visible.push(drawable);
         }
-        for (const drawable of this._harborCrateDrawables(markerByRepo, crateDrawnForKeys)) {
+        for (const drawable of this._harborCrateDrawables()) {
             visible.push(drawable);
         }
         // 3.7 — single lagoon channel buoy at the Commit Lagoon → Harbor seam.
@@ -4501,7 +2390,7 @@ export class HarborTraffic {
         // 3.6 — hover lore: snapshot ship positions in draw order for hit testing.
         this._shipHitEntries.length = 0;
         for (const drawable of visible) {
-            if (drawable.payload?.type === 'ship') this._shipHitEntries.push(drawable.payload);
+            if (drawable.payload?.type === 'ship' && !drawable.payload.ghost) this._shipHitEntries.push(drawable.payload);
         }
         this._enumeratedFrame = this.frame;
         return visible;
@@ -4527,7 +2416,8 @@ export class HarborTraffic {
 
     // 3.6 — hover lore: native-tooltip text for a hovered ship (repo + commit subject).
     shipTooltip(ship = {}) {
-        const repo = trafficLabel(ship.project, ship.branch, 40);
+        const branch = normalizeRepoBranch(ship.branch);
+        const repo = `${repoDisplayName(ship.project)}${branch ? ` · ${branch}` : ''}`;
         if (ship.prShip) return `${repo} - ${pullRequestShipLabel(ship)}`;
         const visualPackSize = Number(ship.visualPackSize);
         if (Number.isFinite(visualPackSize) && visualPackSize > 1) {
@@ -4542,6 +2432,38 @@ export class HarborTraffic {
         const subject = cachedCleanCommitSubject(ship.label || '');
         const cargo = subject || `commit ${commitPennantLabel(ship)}`;
         return `${repo} - ${cargo}`;
+    }
+
+    // U-P3 — the fleet card's data for `{ project, branch, shipId }`
+    // (`branch` null = the whole repo); see HarborFleetCard.
+    fleetCardModel(query = {}, { agentName = () => '', now = Date.now() } = {}) {
+        return buildFleetCardModel({
+            ships: this.state.ships.values(),
+            pushEvents: [...this.state.pushEvents.values()],
+            overflow: [...this.state.overflowDockCounts.values()],
+        }, query, { agentName, now });
+    }
+
+    // Where a fleet card anchors (world px): the clicked hull while it is
+    // drawn, else the lane's lead, else the repo fleet's lead; null when the
+    // fleet has nothing docked.
+    fleetAnchor(query = {}) {
+        const project = String(query.project || '');
+        if (!project) return null;
+        if (query.shipId) {
+            const hit = this._shipHitEntries.find(entry => entry.id === query.shipId);
+            if (hit) return { x: hit.x, y: hit.y };
+        }
+        const branch = query.branch == null ? null : normalizeRepoBranch(query.branch);
+        let fallback = null;
+        for (const entry of this._packedDockedEntries) {
+            const payload = entry.drawable?.payload;
+            if (!payload || payload.project !== project) continue;
+            if (branch != null && normalizeRepoBranch(payload.branch) !== branch) continue;
+            if (payload.repoFleetLead || (branch != null && payload.laneLead)) return { x: payload.x, y: payload.y };
+            fallback ||= { x: payload.x, y: payload.y };
+        }
+        return fallback;
     }
 
     // 3.7 — lagoon channel buoy: pulses in the repo accent of whichever ship is mid-storage-transfer.
@@ -4596,43 +2518,34 @@ export class HarborTraffic {
         };
     }
 
-    _harborCrateDrawables(markerByRepo, skipKeys = new Set()) {
-        const drawables = [];
-        let fallbackIndex = 0;
-        for (const [key, crate] of this.harborCrates) {
-            if (skipKeys.has(key)) continue;
-            const marker = markerByRepo.get(key);
-            const quayIndex = assignedQuayIndex(this.state, crate.project);
-            const fallbackBerthIndex = QUAY_GROUPS[quayIndex]?.berthIndexes?.[0] ?? fallbackIndex % BERTHS.length;
-            const fallbackBerth = BERTHS[fallbackBerthIndex] || BERTHS[0];
-            const pos = marker
-                ? {
-                    x: marker.x + (Number(marker.repoLogIndex || 0) % 2 === 0 ? -86 : 86),
-                    y: marker.y + REPO_DOCK_SHIP_Y_OFFSET + 42,
-                }
-                : toWorld(fallbackBerth.tileX, fallbackBerth.tileY);
-            drawables.push({
-                kind: 'harbor-traffic',
-                sortY: pos.y + REPO_DOCK_SHIP_SORT_OFFSET,
-                payload: {
-                    type: 'crate',
-                    project: crate.project,
-                    profile: crate.profile,
-                    harborCrate: crate,
-                    berthIndex: fallbackBerthIndex,
-                    x: pos.x,
-                    y: pos.y,
-                },
-            });
-            fallbackIndex += 1;
-        }
-        return drawables;
+    // The Harbor's one cargo pile: while any agent reads git status at the
+    // Harbor, the authored `prop.harborCrates` stands once on the quay apron
+    // under the crane (never on a pier deck, never a crate per agent). The
+    // number of repos it stands for rides along as `count` for the tooltip.
+    _harborCrateDrawables() {
+        if (!this.harborCrates.size) return [];
+        const crates = [...this.harborCrates.values()]
+            .sort((a, b) => ((b.createdAt || 0) - (a.createdAt || 0)) || String(a.project).localeCompare(String(b.project)));
+        const pos = toWorld(HARBOR_CRATE_QUAY.tileX, HARBOR_CRATE_QUAY.tileY);
+        return [{
+            kind: 'harbor-traffic',
+            sortY: pos.y + REPO_DOCK_SHIP_SORT_OFFSET,
+            payload: {
+                type: 'crate',
+                project: crates[0].project,
+                profile: crates[0].profile,
+                harborCrate: crates[0],
+                count: crates.length,
+                x: pos.x,
+                y: pos.y,
+            },
+        }];
     }
 
     _observeHarborCrates(agents, events, now) {
         for (const event of events || []) {
             if (event?.type !== 'push') continue;
-            const key = repoProfile(event.project).key;
+            const key = repoProfile(event.repoRoot || event.project).key;
             this.harborCrates.delete(key);
         }
 
@@ -4640,7 +2553,7 @@ export class HarborTraffic {
             if (!agent?.projectPath && !agent?.project) continue;
             if (!isHarborCrateTool(agent)) continue;
             if (agent.targetBuildingType !== 'harbor' && agent.lastKnownBuildingType !== 'harbor') continue;
-            const project = agent.projectPath || agent.project || agent.teamName || 'unknown';
+            const project = agent.repoRoot || agent.projectPath || agent.project || agent.teamName || 'unknown';
             const profile = repoProfile(project);
             this.harborCrates.set(profile.key, {
                 project,
@@ -4688,10 +2601,17 @@ export class HarborTraffic {
                 earliestEventTime: 0,
             };
             summary.count += 1;
-            if (ship.pushStatus === 'failed') {
+            if (!summary.worktree && ship.worktree?.isMain === false) summary.worktree = ship.worktree;
+            if (ship.pushStatus === 'failed' || ship.pushStatus === 'rejected') {
                 summary.failedCount += 1;
                 summary.failedAgentId ??= ship.agentId || null;
-                summary.failedAt = Math.max(Number(summary.failedAt) || 0, Number(ship.failedAt || ship.eventTime) || 0);
+                const push = this.state.pushEvents.get(ship.pushEventId);
+                const failedAt = Number(push?.eventTime || ship.failedAt || ship.rejectedAt || ship.eventTime) || 0;
+                if (failedAt >= (Number(summary.failedAt) || 0)) {
+                    summary.failedAt = failedAt;
+                    summary.failureStatus = ship.pushStatus;
+                    summary.failureReason = push?.reason || summary.failureReason || '';
+                }
             }
             summary.x += pos.x;
             summary.y += pos.y;
@@ -4739,75 +2659,6 @@ export class HarborTraffic {
             summaries.set(summaryKey, summary);
         }
         return summaries;
-    }
-
-    _repoQuayDrawables(summaries = this._repoDockSummaries()) {
-        const ordered = [...summaries.values()]
-            .sort((a, b) => Number(isCommitLagoonZone(b.waitingZone)) - Number(isCommitLagoonZone(a.waitingZone))
-                || (a.quayIndex - b.quayIndex)
-                || (b.count - a.count)
-                || (b.latestEventTime - a.latestEventTime)
-                || a.profile.name.localeCompare(b.profile.name));
-        const harborAnchor = toWorld(HARBOR_LOG_TILE.tileX, HARBOR_LOG_TILE.tileY);
-        const lagoonAnchor = toWorld(COMMIT_LAGOON_LOG_TILE.tileX, COMMIT_LAGOON_LOG_TILE.tileY);
-        const drawables = [];
-
-        const lagoonSummaries = ordered.filter(summary => isCommitLagoonZone(summary.waitingZone));
-        if (lagoonSummaries.length) {
-            const total = lagoonSummaries.reduce((sum, summary) => sum + (Number(summary.count) || 0), 0);
-            const leader = lagoonSummaries
-                .slice()
-                .sort((a, b) => (b.count - a.count)
-                    || (b.latestEventTime - a.latestEventTime)
-                    || a.profile.name.localeCompare(b.profile.name))[0];
-            drawables.push({
-                kind: 'harbor-traffic',
-                sortY: lagoonAnchor.y - 96,
-                payload: {
-                    type: 'commit-lagoon-sign',
-                    project: leader?.project || '',
-                    branch: leader?.branch || '',
-                    profile: leader?.profile || repoProfile(leader?.project),
-                    count: total,
-                    repoName: leader ? trafficLabel(leader.project, leader.branch) : '',
-                    x: lagoonAnchor.x,
-                    y: lagoonAnchor.y - 96,
-                },
-            });
-        }
-
-        const zoneIndexes = new Map();
-        ordered.forEach((summary) => {
-            const quayIndex = Number.isFinite(Number(summary.quayIndex)) ? Number(summary.quayIndex) : 0;
-            const waitingZone = summary.waitingZone || 'harbor';
-            const index = zoneIndexes.get(waitingZone) || 0;
-            zoneIndexes.set(waitingZone, index + 1);
-            const anchor = isCommitLagoonZone(waitingZone) ? lagoonAnchor : harborAnchor;
-            const yOffset = isCommitLagoonZone(waitingZone) ? -66 + index * 16 : -192 + index * 16;
-            drawables.push({
-                kind: 'harbor-traffic',
-                sortY: anchor.y + yOffset + index,
-                payload: {
-                    type: 'repo-quay',
-                    project: summary.project,
-                    branch: summary.branch || '',
-                    profile: summary.profile,
-                    quayName: isCommitLagoonZone(waitingZone)
-                        ? 'Commit Lagoon'
-                        : (isCoastZone(waitingZone) && COAST_ANCHORAGE_SLOTS[repoAnchorageSlot(this.state, summary.project)]?.name)
-                            || QUAY_GROUPS[quayIndex]?.name
-                            || 'Quay',
-                    waitingZone,
-                    count: summary.count,
-                    failedCount: summary.failedCount,
-                    repoLogIndex: index,
-                    x: anchor.x,
-                    y: anchor.y + yOffset,
-                },
-            });
-        });
-
-        return drawables;
     }
 
     /**
@@ -4864,10 +2715,21 @@ export class HarborTraffic {
         }
         shown.sort((a, b) => a.slot - b.slot);
 
+        // A repo with no ship moored or under way keeps its berth (state) but
+        // shows no marker or label: they fade out with its last ship and back
+        // in with its next (`_markerFade`).
+        const projects = new Set();
+        for (const ship of this.state.ships.values()) projects.add(ship.project);
+        const afloat = new Set();
+        for (const project of projects) afloat.add(repoProfile(project).key);
         const drawables = [];
         for (const repo of shown) {
-            const tile = COAST_ANCHORAGE_SLOTS[repo.slot];
-            if (!tile) continue;
+            const slotTile = COAST_ANCHORAGE_SLOTS[repo.slot];
+            if (!slotTile) continue;
+            // D2 — a pier berth's marker is a post on the pier deck beside
+            // its channel, with its fleet, not a buoy on open water.
+            const onPier = Number.isFinite(slotTile.markerTileX);
+            const tile = onPier ? { tileX: slotTile.markerTileX, tileY: slotTile.markerTileY } : slotTile;
             const pos = toWorld(tile.tileX, tile.tileY);
             const lively = repo.docked > 0 || (now - repo.lastActive) < REPO_ANCHORAGE_ACTIVE_MS;
             // #18 — christening: the first time a repo ever earns an anchorage,
@@ -4892,12 +2754,16 @@ export class HarborTraffic {
                     type: 'repo-anchorage',
                     project: repo.project,
                     profile: repo.profile,
-                    repoName: repo.profile.shortName,
+                    repoName: repoDisplayName(repo.project),
+                    labelAt: this._fleetLeadByRepo.get(repo.key) || null,
+                    laneCount: this._repoLaneCount.get(repo.key) || 0,
                     docked: repo.docked,
                     failed: repo.failed,
                     live: repo.live,
                     lively,
                     slot: repo.slot,
+                    present: repo.docked > 0 || afloat.has(repo.key),
+                    deckLift: onPier ? PIER_DECK_LIFT_PX : 0,
                     x: pos.x,
                     y: pos.y,
                 },
@@ -4982,8 +2848,8 @@ export class HarborTraffic {
                 points.push(toWorld(tile.tileX, tile.tileY));
                 continue;
             }
-            const route = this._shipRouteTiles(ship);
-            const endpoint = route?.[route.length - 1];
+            // The route's last point on the map (its horizon leg is off it).
+            const endpoint = routeSeaTile(this._shipRouteTiles(ship));
             if (endpoint) points.push(toWorld(endpoint.tileX, endpoint.tileY));
         }
         for (const sealed of batch.sealedOriginPoints || []) {
@@ -5001,6 +2867,8 @@ export class HarborTraffic {
     }
 
     _shipStartTile(ship) {
+        const sortieFrom = this._motion?.get(ship?.id)?.sortieFrom;
+        if (sortieFrom && ship.status !== 'docked') return sortieFrom;
         if (Number.isFinite(Number(ship?.departFromTile?.tileX)) && Number.isFinite(Number(ship?.departFromTile?.tileY))) {
             return {
                 tileX: Number(ship.departFromTile.tileX),
@@ -5017,25 +2885,14 @@ export class HarborTraffic {
 
     draw(ctx, drawable, zoom = 1) {
         if (!drawable?.payload) return;
-        if (drawable.payload.type === 'cluster') {
-            this._drawClusterTag(ctx, drawable.payload, zoom);
-            return;
-        }
-        if (drawable.payload.type === 'repo-quay') {
-            this._drawRepoQuayMarker(ctx, drawable.payload, zoom);
-            return;
-        }
         if (drawable.payload.type === 'repo-anchorage') {
             this._drawRepoAnchorage(ctx, drawable.payload, zoom);
             return;
         }
-        if (drawable.payload.type === 'commit-lagoon-sign') {
-            this._drawCommitLagoonSign(ctx, drawable.payload, zoom);
-            return;
-        }
         if (drawable.payload.type === 'crate') {
-            const profile = drawable.payload.profile || repoProfile(drawable.payload.project);
-            this._drawHarborCrate(ctx, drawable.payload, zoom, 1, profile);
+            const payload = drawable.payload;
+            const profile = payload.profile || repoProfile(payload.project);
+            this._drawHarborCrate(ctx, payload, zoom, 1, profile);
             return;
         }
         if (drawable.payload.type === 'lagoon-channel-buoy') {
@@ -5068,7 +2925,21 @@ export class HarborTraffic {
         holdSuccessGrammar(this, 400);
         ctx.save();
         ctx.globalCompositeOperation = 'source-over';
-        for (const mark of marks) this._drawFailureBracket(ctx, mark, now);
+        // Off-screen failures fold into one edge plate (the newest mark's
+        // anchor, the count in its word), never a stack of identical chips.
+        const edges = [];
+        for (const mark of marks) {
+            const edge = this._drawFailureBracket(ctx, mark, now);
+            if (edge) edges.push(edge);
+        }
+        if (edges.length) {
+            edges.sort((a, b) => (b.mark.eventTime || 0) - (a.mark.eventTime || 0));
+            const lead = edges[0];
+            const word = edges.length > 1
+                ? `${edges.length} PUSHES FAILED`
+                : (lead.mark.status === 'rejected' ? 'PUSH REJECTED' : 'PUSH FAILED');
+            queueMomentEdgePlate(lead.anchor, { word, color: FAILURE, peak: edges.some(edge => edge.peak), ctx });
+        }
         ctx.restore();
     }
 
@@ -5086,6 +2957,7 @@ export class HarborTraffic {
                 key,
                 tile: this._shipStartTile(ship),
                 onShip: true,
+                status: ship.pushStatus,
                 agentId: ship.agentId || null,
                 eventTime: Number(ship.failedAt || ship.rejectedAt || 0),
             });
@@ -5099,6 +2971,7 @@ export class HarborTraffic {
                 key,
                 tile: this._repoSlipTile(push.project),
                 onShip: false,
+                status,
                 agentId: push.agentId || null,
                 eventTime: Number(push.eventTime || 0),
             });
@@ -5313,6 +3186,8 @@ export class HarborTraffic {
         payload.y = y;
         payload.tailX = tailX;
         payload.tailY = tailY;
+        // Phase 3.5 — bow along its run out of the slip.
+        payload.heading = hullHeadingDirection(sail.lead.x, sail.lead.y, payload.heading);
         payload.progress = progress;
         payload.releaseAlpha = alpha;
         // The V wake waits until the cast-off chevrons are spent.
@@ -5333,7 +3208,7 @@ export class HarborTraffic {
         const alpha = ship.releaseAlpha ?? 1;
         if (alpha < 0.75) return;
         ctx.save();
-        const strip = hullStrip(this.sprites?.assets, RELEASE_SAIL_CLASS.spriteId);
+        const strip = hullStrip(this.sprites?.assets, RELEASE_SAIL_CLASS.spriteId, ship.heading || 'sw');
         const pose = strip ? this._hullPose(ship) : null;
         if (ship.peak && pose) {
             const outline = releaseSailOutline(strip, pose.frame);
@@ -5419,10 +3294,7 @@ export class HarborTraffic {
             tier: 'medium',
             phase: phase?.phase ?? 'residue',
         });
-        if (anchor.mode === 'edge') {
-            queueMomentEdgePlate(anchor, { word: 'PUSH FAILED', color: FAILURE, peak: phase?.phase === 'peak', ctx });
-            return;
-        }
+        if (anchor.mode === 'edge') return { anchor, mark, peak: phase?.phase === 'peak' };
         const x = anchor.x;
         const y = anchor.y - size.lift;
         // The actor → the slip, for the residue window only.
@@ -5458,21 +3330,24 @@ export class HarborTraffic {
             : Math.min(1, Math.max(0, (SCREEN_SUMMARY_MS - age) / 1600));
         if (fade <= 0) return;
 
-        const project = trafficLabel(summary.project, summary.branch);
+        const branch = normalizeRepoBranch(summary.branch);
+        const project = `${middleTruncate(repoDisplayName(summary.project), 22)}${branch ? ` · ${middleTruncate(branch, 24)}` : ''}`;
         const count = Number(summary.shipCount || 0);
         const commitLabel = count === 1 ? '1 commit' : `${count} commits`;
-        const title = summary.status === 'success'
-            ? `${commitLabel} successfully pushed`
-            : summary.status === 'failed'
-                ? 'Push failed'
-                : `${commitLabel} sent to sea`;
-        const target = summary.targetRef && normalizeRepoBranch(summary.targetRef) !== normalizeRepoBranch(summary.branch)
-            ? ` -> ${summary.targetRef}`
+        const push = this._batchPush(summary);
+        const title = this._screenSummaryTitle(summary.status, commitLabel);
+        const target = summary.targetRef && normalizeRepoBranch(summary.targetRef) !== branch
+            ? ` → ${summary.targetRef}`
             : '';
         const detail = `${project}${target}`;
         const titleLine = shortGitLabel(title, 56, '…');
         const detailLine = shortGitLabel(detail, 60, '…');
-        const statusLine = (PUSH_STATUS_STYLE[summary.status] || PUSH_STATUS_STYLE.unknown).shortLabel.toUpperCase();
+        const who = push?.agentName ? `by ${push.agentName}` : '';
+        const statusLine = [
+            (PUSH_STATUS_STYLE[summary.status] || PUSH_STATUS_STYLE.unknown).shortLabel.toUpperCase(),
+            who,
+            push?.reason ? middleTruncate(push.reason, 44) : '',
+        ].filter(Boolean).join(' · ');
         ctx.save();
         ctx.font = WORLD_DISPLAY_FONT_8;
         const titleWidth = measureLabelText(ctx, titleLine);
@@ -5523,13 +3398,41 @@ export class HarborTraffic {
         ctx.font = WORLD_BODY_FONT_11;
         this._fillReadableText(ctx, detailLine, x + 38, y + 48);
         ctx.fillStyle = 'rgba(244, 232, 190, 0.62)';
-        ctx.font = WORLD_DISPLAY_FONT_8;
-        this._fillReadableText(ctx, statusLine, x + 26, y + 66);
-        ctx.fillStyle = 'rgba(244, 232, 190, 0.42)';
-        ctx.fillRect(x + 94, y + 56, Math.max(34, width - 114), 1);
+        ctx.font = WORLD_BODY_FONT_11;
+        this._fillReadableText(ctx, fitLabelText(ctx, statusLine, width - 40), x + 26, y + 68);
+        ctx.fillStyle = 'rgba(244, 232, 190, 0.22)';
+        ctx.fillRect(x + 26, y + 56, Math.max(34, width - 46), 1);
         ctx.restore();
     }
 
+    // U-P5 — the card says what happened: rejected and cancelled pushes
+    // bring their commits back, they never "sent them to sea".
+    _screenSummaryTitle(status, commitLabel) {
+        if (status === 'success') return `${commitLabel} pushed`;
+        if (status === 'failed') return `Push failed · ${commitLabel} still docked`;
+        if (status === 'rejected') return `Push rejected · ${commitLabel} returned`;
+        if (status === 'cancelled') return `Push cancelled · ${commitLabel} stay docked`;
+        return `${commitLabel} sent to sea`;
+    }
+
+    // The push record behind a batch (its reason and agent).
+    _batchPush(batch) {
+        if (!batch?.id) return null;
+        const direct = this.state.pushEvents.get(batch.id);
+        if (direct?.batchId === batch.id || direct) return direct;
+        for (const push of this.state.pushEvents.values()) {
+            if (push.batchId === batch.id) return push;
+        }
+        return null;
+    }
+
+    // Phase 3 — every sailing position is a pure function of `now`: the
+    // distance along a lane-graph path (HarborLayout.composeWaterPath) at
+    // the hull's speed profile. Departures accelerate from rest and hold
+    // cruise to the horizon, where the hull sinks below it; arrivals rise
+    // over the horizon and slow into the slot they will moor in; a rejected
+    // or cancelled push sails out, stops, turns and comes back to its slot.
+    // `_settleShipMotion` then eases any jump between these (P-D1/P-D2/P-D9).
     _shipDrawable(ship, now) {
         const startTile = this._shipStartTile(ship);
         const start = toWorld(startTile.tileX, startTile.tileY);
@@ -5539,157 +3442,138 @@ export class HarborTraffic {
         let castOff = 0;
         let castingOff = false;
         let inboundProgress = 0;
+        let horizonProgress = 0;
+        let extra = null;
+        // The hull at `distance` along `path`, its tail a little astern (on
+        // the start, mirrored ahead of it so the heading is the first leg's).
+        const place = (path, distance) => {
+            const pos = sampleSailPath(path, distance);
+            const tail = sampleSailPath(path, distance - SAIL_TAIL_TILES);
+            x = pos.x;
+            y = pos.y;
+            ship.tailX = tail.x;
+            ship.tailY = tail.y;
+            if (distance < SAIL_TAIL_TILES) {
+                const ahead = sampleSailPath(path, SAIL_TAIL_TILES);
+                ship.tailX = 2 * pos.x - ahead.x;
+                ship.tailY = 2 * pos.y - ahead.y;
+            }
+            return pos;
+        };
 
         if (ship.status === 'departing') {
-            const route = this._shipRouteTiles(ship).map(point => toWorld(point.tileX, point.tileY));
+            const path = sailPath(this._shipRouteTiles(ship));
             const departMs = Math.max(1, Number(ship.departMsOverride) || DEPARTURE_MS);
             const startedAt = ship.departStartedAt || now;
             const elapsed = Math.max(0, now - startedAt);
-            // Cast-off phase ('casting-off'): hold ship at berth, stutter east ~8px.
-            if (this.motionScale > 0 && elapsed < CAST_OFF_MS) {
+            const forced = ship.pushForce === true;
+            // A force-pushed hull sails its short fixed run at cruise and
+            // founders at sea (the sink); every other one sails to the horizon.
+            const runLength = forced ? Math.min(path.length, departMs / 1000 * FORCE_SAIL_TILES_PER_S) : path.length;
+            if (this.motionScale > 0 && elapsed < CAST_OFF_MS && !ship.turnedFromReturn) {
+                // Cast-off: the mooring lines come in; the hull holds on its
+                // mooring, bow already on its first leg.
                 castingOff = true;
                 ship.phase = 'casting-off';
                 castOff = elapsed / CAST_OFF_MS;
-                x = start.x + castOff * 8;
-                y = start.y;
+                place(path, 0);
             } else {
                 if (ship.phase === 'casting-off') ship.phase = 'departing';
-                const effectiveElapsed = Math.max(0, elapsed - CAST_OFF_MS);
+                // A hull turned from its return is already under way: no cast-off.
+                const effectiveElapsed = Math.max(0, elapsed - (ship.turnedFromReturn ? 0 : CAST_OFF_MS));
                 progress = this.motionScale === 0 ? 1 : Math.max(0, Math.min(1, effectiveElapsed / departMs));
-                const eased = easedDeparture(progress);
-                const pos = pointAlongPath(route, eased);
-                const previous = pointAlongPath(route, Math.max(0, eased - 0.035));
-                x = pos.x;
-                y = pos.y;
-                ship.tailX = previous.x;
-                ship.tailY = previous.y;
-                // v0.23 A5 — perpendicular serpentine sway along the heading so
-                // the flock weaves rather than sailing dead-straight.
+                const distance = this.motionScale === 0 ? runLength : harborSailDistance(effectiveElapsed, runLength, departMs);
+                const pos = place(path, distance);
+                if (!forced) horizonProgress = clamp(1 - (path.length - distance) / HORIZON_SINK_TILES, 0, 1);
+                // v0.23 A5 — a slow serpentine weave across the heading, by
+                // distance sailed, so a convoy never moves dead-straight; and
+                // P-D6 — an echelon: odd and even convoy members stand a third
+                // of a tile to either side of the lead's track where the water
+                // is wide enough.
                 if (this.motionScale > 0) {
-                    const hdx = pos.x - previous.x;
-                    const hdy = pos.y - previous.y;
+                    const hdx = pos.x - ship.tailX;
+                    const hdy = pos.y - ship.tailY;
                     const len = Math.hypot(hdx, hdy) || 1;
                     const swayPhase = (stableHash(`${ship.id || ''}:sway`) % 1000) / 1000 * Math.PI * 2;
-                    const sway = Math.sin(progress * Math.PI * 3 + swayPhase) * 4;
-                    x += (-hdy / len) * sway;
-                    y += (hdx / len) * sway;
+                    const sway = Math.sin(distance * 1.4 + swayPhase) * 3 * Math.min(1, distance / 2);
+                    const index = Math.max(0, Number(ship.convoy?.index ?? ship.departSquadIndex) || 0);
+                    const side = index === 0 ? 0 : (index % 2 ? 1 : -1);
+                    let echelon = 0;
+                    if (side) {
+                        const tile = toTile(pos.x, pos.y);
+                        const room = harborWaterField().clearance(tile.tileX, tile.tileY) - harborHullClearance(ship);
+                        echelon = side * clamp(room, 0, CONVOY_ECHELON_TILES) * Math.min(1, distance / 3) * HARBOR_GROUND_PX_PER_TILE;
+                    }
+                    // The tail shifts with the hull: the weave never turns it.
+                    const lateralX = (-hdy / len) * (sway + echelon);
+                    const lateralY = (hdx / len) * (sway + echelon);
+                    x += lateralX;
+                    y += lateralY;
+                    ship.tailX += lateralX;
+                    ship.tailY += lateralY;
                 }
                 if (progress >= 1 && this.motionScale === 0) return null;
             }
-        } else if (ship.status === 'rejecting') {
-            // Boomerang: 16s out, 12s back; turn 180° at apex.
-            const route = this._shipRouteTiles(ship).map(point => toWorld(point.tileX, point.tileY));
-            const startedAt = ship.boomerangStartedAt || now;
+        } else if (ship.status === 'rejecting' || ship.status === 'cancelling') {
+            // Boomerang (rejected): out about half the way to open water over
+            // BOOMERANG_OUT_MS, then back to its slot over BOOMERANG_IN_MS.
+            // 5.11 — a cancelled push only stands off a short way and turns,
+            // half each of CANCEL_RETURN_MS. Both legs start and end at rest.
+            const rejecting = ship.status === 'rejecting';
+            const path = sailPath(this._shipRouteTiles(ship));
+            const startedAt = (rejecting ? ship.boomerangStartedAt : ship.cancelReturnStartedAt) || now;
             const elapsed = Math.max(0, now - startedAt);
+            const outMs = rejecting ? BOOMERANG_OUT_MS : CANCEL_RETURN_MS / 2;
+            const inMs = rejecting ? BOOMERANG_IN_MS : CANCEL_RETURN_MS / 2;
+            const reach = rejecting ? BOOMERANG_REACH_TILES : CANCEL_REACH_TILES;
+            const apex = Math.min(path.seaLength * (rejecting ? 0.5 : 0.3), reach);
             let phaseProgress;
             let outbound = true;
-            if (elapsed < BOOMERANG_OUT_MS) {
-                phaseProgress = elapsed / BOOMERANG_OUT_MS;
-                // Outbound never reaches further than the halfway point along the route.
-                const eased = easedDeparture(phaseProgress) * 0.5;
-                const pos = pointAlongPath(route, eased);
-                const previous = pointAlongPath(route, Math.max(0, eased - 0.035));
-                x = pos.x;
-                y = pos.y;
-                ship.tailX = previous.x;
-                ship.tailY = previous.y;
-                progress = phaseProgress * 0.5;
+            if (elapsed < outMs) {
+                phaseProgress = elapsed / outMs;
+                place(path, apex * easedDeparture(phaseProgress));
+                progress = (apex * easedDeparture(phaseProgress)) / Math.max(0.001, path.length);
             } else {
                 outbound = false;
-                phaseProgress = Math.min(1, (elapsed - BOOMERANG_OUT_MS) / BOOMERANG_IN_MS);
-                // Inbound from the apex back toward the berth.
-                const eased = 0.5 - easedDeparture(phaseProgress) * 0.5;
-                const pos = pointAlongPath(route, eased);
-                const next = pointAlongPath(route, Math.min(1, eased + 0.035));
-                x = pos.x;
-                y = pos.y;
-                ship.tailX = next.x;
-                ship.tailY = next.y;
-                progress = eased;
+                phaseProgress = Math.min(1, (elapsed - outMs) / inMs);
+                // Home to its slot in the fleet as it will be, unless that
+                // lies across the water: then to where it left (a relocation
+                // sails the rest once it has redocked).
+                const target = this._dockTargets.get(ship.id);
+                const home = target && tileDistance(target, startTile) < RELOCATE_TILES * 1.6 ? target : startTile;
+                const back = sailPath(composeWaterPath(sailPathTile(path, apex), home));
+                place(back, back.length * easedDeparture(phaseProgress));
+                progress = (apex * (1 - easedDeparture(phaseProgress))) / Math.max(0.001, path.length);
             }
-            return {
-                kind: 'harbor-traffic',
-                sortY: y,
-                payload: {
-                    ...ship,
-                    type: 'ship',
-                    x,
-                    y,
-                    tailX: ship.tailX,
-                    tailY: ship.tailY,
-                    progress,
-                    boomerangOutbound: outbound,
-                    boomerangPhaseProgress: phaseProgress,
-                    elapsed,
-                },
-            };
-        } else if (ship.status === 'cancelling') {
-            // 5.11 — cancelled return: short outbound (~30%), then back to berth.
-            //        Total CANCEL_RETURN_MS, half-speed of a full departure. No flare.
-            const route = this._shipRouteTiles(ship).map(point => toWorld(point.tileX, point.tileY));
-            const startedAt = ship.cancelReturnStartedAt || now;
-            const elapsed = Math.max(0, now - startedAt);
-            const phaseProgress = Math.min(1, elapsed / CANCEL_RETURN_MS);
-            // 0 → 0.5 (apex) → 0 along the route, peaking at 30% of the way out.
-            const apex = 0.30;
-            const eased = phaseProgress < 0.5
-                ? (phaseProgress / 0.5) * apex
-                : apex * (1 - (phaseProgress - 0.5) / 0.5);
-            const pos = pointAlongPath(route, eased);
-            const trailingDir = phaseProgress < 0.5
-                ? pointAlongPath(route, Math.max(0, eased - 0.025))
-                : pointAlongPath(route, Math.min(1, eased + 0.025));
-            x = pos.x;
-            y = pos.y;
-            ship.tailX = trailingDir.x;
-            ship.tailY = trailingDir.y;
-            return {
-                kind: 'harbor-traffic',
-                sortY: y,
-                payload: {
-                    ...ship,
-                    type: 'ship',
-                    x,
-                    y,
-                    tailX: ship.tailX,
-                    tailY: ship.tailY,
-                    progress: eased,
-                    cancelPhaseProgress: phaseProgress,
-                    elapsed,
-                },
-            };
+            extra = rejecting
+                ? { boomerangOutbound: outbound, boomerangPhaseProgress: phaseProgress }
+                : { cancelPhaseProgress: Math.min(1, elapsed / CANCEL_RETURN_MS) };
         } else if (ship.status === 'arriving' || ship.status === 'anchored') {
-            // 3.2 — inbound ship: sail toward dock through the reversed route.
-            const dockTile = ship.arrivingKind === 'fetch' || ship.arrivingKind === 'pr'
-                ? (ship.inboundRoadsteadTile || { tileX: 38.05, tileY: 13.15 })
-                : startTile;
-            const fakeShipForRoute = { ...ship, departFromTile: dockTile };
-            const fwdRoute = composeWaterRouteTiles(dockTile, fakeShipForRoute, this.waterRouteData)
-                .map(point => toWorld(point.tileX, point.tileY));
-            let reversedRoute = [...fwdRoute].reverse();
-            // W7.9 — a merged PR sails in from its mooring, not from the sea:
-            // the approach joins the route at its nearest point.
+            // 3.2 — inbound: a pull sails to the slot it will moor in (the
+            // tentative layout, `_dockTargets`), a fetch or an opened PR to
+            // its roadstead mooring, from the horizon; W7.9 — a merged PR
+            // from its mooring to a quay berth.
+            const moorsOut = ship.arrivingKind === 'fetch' || ship.arrivingKind === 'pr';
+            const field = harborWaterField();
+            const dockTile = moorsOut
+                ? field.nearestClear(ship.inboundRoadsteadTile || { tileX: 38.05, tileY: 13.15 }, harborHullClearance(ship))
+                : (this._dockTargets.get(ship.id) || field.nearestClear(startTile, harborHullClearance(ship)));
+            let path;
             if (ship.arrivingKind === 'pr-merge' && ship.prFromTile) {
-                const from = toWorld(ship.prFromTile.tileX, ship.prFromTile.tileY);
-                let nearest = 0;
-                let best = Infinity;
-                for (let i = 0; i < reversedRoute.length; i++) {
-                    const d = (reversedRoute[i].x - from.x) ** 2 + (reversedRoute[i].y - from.y) ** 2;
-                    if (d < best) { best = d; nearest = i; }
-                }
-                const rest = reversedRoute.slice(nearest + 1);
-                reversedRoute = [from, ...(rest.length ? rest : reversedRoute.slice(-1))];
+                path = sailPath(composeWaterPath(ship.prFromTile, dockTile));
+            } else {
+                path = sailPath(reversedTiles(composeWaterRouteTiles(dockTile, { ...ship, departFromTile: dockTile }, this.waterRouteData)));
             }
             const startedAt = ship.arrivingStartedAt || now;
             const duration = Math.max(1, Number(ship.arrivingDuration) || INBOUND_DURATION_MS);
-            inboundProgress = this.motionScale === 0 ? 1 : Math.max(0, Math.min(1, (now - startedAt) / duration));
-            const eased = easedDeparture(inboundProgress);
-            const pos = pointAlongPath(reversedRoute, eased);
-            const next = pointAlongPath(reversedRoute, Math.min(1, eased + 0.035));
-            x = pos.x;
-            y = pos.y;
-            ship.tailX = next.x;
-            ship.tailY = next.y;
+            const elapsed = Math.max(0, now - startedAt);
+            inboundProgress = this.motionScale === 0 ? 1 : Math.max(0, Math.min(1, elapsed / duration));
+            // Slows into its mooring: the departure profile run backwards.
+            const distance = this.motionScale === 0 || inboundProgress >= 1
+                ? path.length
+                : path.length - harborSailDistance(duration - elapsed, path.length, duration);
+            place(path, distance);
+            if (ship.arrivingKind !== 'pr-merge') horizonProgress = clamp(1 - distance / HORIZON_SINK_TILES, 0, 1);
         }
 
         return {
@@ -5706,7 +3590,10 @@ export class HarborTraffic {
                 castingOff,
                 castOffProgress: castOff,
                 inboundProgress,
-                elapsed: Math.max(0, now - (ship.departStartedAt || ship.arrivingStartedAt || ship.boomerangStartedAt || now)),
+                horizonProgress,
+                elapsed: Math.max(0, now - (ship.departStartedAt || ship.arrivingStartedAt || ship.boomerangStartedAt || ship.cancelReturnStartedAt || now)),
+                scuttleElapsed: ship.status === 'scuttling' ? Math.max(0, now - (ship.scuttleStartedAt || now)) : 0,
+                ...extra,
             },
         };
     }
@@ -5741,6 +3628,8 @@ export class HarborTraffic {
     }
 
     _drawShip(ctx, ship, zoom) {
+        // A pack ghost (Phase 3.1) is hull only.
+        if (ship.ghost) return;
         const alpha = this._shipAlpha(ship);
         if (alpha <= 0.02) return;
         // A hull the Harbor hides takes its flags and plates with it, as a
@@ -5779,14 +3668,13 @@ export class HarborTraffic {
         }
         this._drawShipClassOverlay(ctx, ship, forceSinkAlpha, profile, shipClass, zoom);
         this._drawRepoFlag(ctx, ship, zoom, forceSinkAlpha, profile, shipClass);
-        // 4.17: procedural repo heraldry shield on the squad flagship. Drawn
-        // alongside (not replacing) the existing pennant/flag — the small
-        // pennant remains for cluster-density reads.
-        if (ship.squadShipIndex === 0 && ship.status === 'docked') {
+        // U-P6 — one small heraldry shield per repo fleet, on its lead.
+        if (ship.repoFleetLead && ship.status === 'docked') {
             this._drawRepoShield(ctx, ship, zoom, forceSinkAlpha, profile, shipClass);
         }
-        // 4.17: bunting arc to the next docked sibling in the same squad.
-        if (ship.buntingNext && ship.status === 'docked') {
+        // 4.17 / V-R4: bunting to the next docked sibling of the same branch
+        // squad, only from z2 up (at z1 it read as scribbles across hulls).
+        if (ship.buntingNext && ship.status === 'docked' && zoom >= 2) {
             this._drawSquadBunting(ctx, ship, ship.buntingNext, zoom, forceSinkAlpha, profile);
         }
         ctx.restore();
@@ -5869,12 +3757,8 @@ export class HarborTraffic {
         if (ship.isInbound && Number(ship.inboundCargoCount || 0) > 0) {
             this._drawInboundCrates(ctx, ship, zoom, profile, shipClass);
         }
-        if (ship.harborCrate) {
-            this._drawHarborCrate(ctx, ship, zoom, alpha, profile, shipClass);
-        }
-        if (ship.showCommitLabel !== false || ship.pushStatus === 'failed' || ship.pushStatus === 'rejected') {
-            this._drawCommitPennant(ctx, ship, zoom, alpha, profile, shipClass);
-        }
+        this._drawCommitPennant(ctx, ship, zoom, alpha, profile, shipClass);
+        if ((zoom || 1) < 2 && !ship.repoFleetLead) this._drawCompactGlyph(ctx, ship, zoom, alpha, shipClass);
         // 3.6 — hover lore: hovered ship surfaces its commit subject as a cargo label.
         if (ship.id && ship.id === this.hoveredShipId) {
             this._drawHoverCargoLabel(ctx, ship, zoom, alpha, profile, shipClass);
@@ -5902,30 +3786,36 @@ export class HarborTraffic {
         return Math.sin(this.frame * 0.065 + phase + 0.7) * 1.5 * heave;
     }
 
-    // 3.2 — inbound ships fade in over the first 8 s of approach; departing
-    // ships fade out at the end of their route.
+    // Phase 3.6 — departing ships sink below the horizon on their last leg
+    // and arrivals rise over it (_shipSink), fading through its far end; a
+    // new commit fades in as it slides off its slipway.
     _shipAlpha(ship = {}) {
         if (ship.releaseSail) return ship.releaseAlpha ?? 1;
+        if (ship.status === 'scuttling') return Math.max(0, 1 - Math.max(0, Number(ship.scuttleElapsed) || 0) / SCUTTLE_MS);
         if (ship.status === 'departing') return this._departureAlpha(ship);
         // A merged PR cutter is already in view at its mooring.
         if (ship.arrivingKind === 'pr-merge') return 1;
-        if (ship.status === 'arriving' || ship.status === 'anchored') {
-            const elapsed = Math.max(0, Number(ship.elapsed) || 0);
-            return Math.max(0, Math.min(1, elapsed / INBOUND_FADE_IN_MS));
-        }
-        return 1;
+        if (ship.status === 'arriving') return horizonAlpha(ship.horizonProgress);
+        return ship.launchAlpha ?? 1;
     }
 
     // 3.1 / 3.8 — a force-pushed hull sinks 16 texels over the last 4 s of
-    // its departure, in whole texels, fading to 45 %.
+    // its departure, in whole texels, fading to 45 %, on its hardest roll.
+    // Phase 3.6 — any other hull on the horizon stretch of its route sinks
+    // whole texels below the waterline, hull first and masthead last.
     _shipSink(ship = {}) {
-        if (!(this.motionScale > 0) || ship.status !== 'departing' || ship.pushForce !== true) return NO_SINK;
-        const departMs = Math.max(1, Number(ship.departMsOverride) || FORCE_DEPARTURE_MS);
-        const sinkWindow = Math.min(4000, departMs * 0.5);
-        const elapsed = Math.max(0, Number(ship.elapsed) || 0);
-        const progress = Math.max(0, Math.min(1, (elapsed - (departMs - sinkWindow)) / sinkWindow));
-        if (!(progress > 0)) return NO_SINK;
-        return { progress, px: Math.round(16 * progress), alphaScale: 1 - progress * 0.55 };
+        if (!(this.motionScale > 0)) return NO_SINK;
+        if (ship.status === 'departing' && ship.pushForce === true) {
+            const departMs = Math.max(1, Number(ship.departMsOverride) || FORCE_DEPARTURE_MS);
+            const sinkWindow = Math.min(4000, departMs * 0.5);
+            const elapsed = Math.max(0, Number(ship.elapsed) || 0);
+            const progress = Math.max(0, Math.min(1, (elapsed - (departMs - sinkWindow)) / sinkWindow));
+            if (!(progress > 0)) return NO_SINK;
+            return { progress, px: Math.round(16 * progress), alphaScale: 1 - progress * 0.55, force: true };
+        }
+        const horizon = Number(ship.horizonProgress) || 0;
+        if (!(horizon > 0) || (ship.status !== 'departing' && ship.status !== 'arriving')) return NO_SINK;
+        return { progress: horizon, px: Math.round(horizon * (this._hullLift(ship) + 1)), alphaScale: 1, force: false };
     }
 
     // 3.8 — the whole-texel hull pose the harbor-hulls category draws: roll
@@ -5933,7 +3823,7 @@ export class HarborTraffic {
     // repo-accent livery stripe on skiffs (baked into a cached strip copy).
     _hullPose(ship) {
         const shipClass = harborShipClass(ship);
-        let strip = hullStrip(this.sprites?.assets, shipClass.spriteId);
+        let strip = this._hullStripFor(ship, shipClass);
         if (!strip) return null;
         const sink = this._shipSink(ship);
         let alpha = Math.round(this._shipAlpha(ship) * sink.alphaScale * 4) / 4;
@@ -5947,29 +3837,34 @@ export class HarborTraffic {
             strip = releaseRevealStrip(strip, alpha);
             alpha = 1;
         }
-        const frame = sink.progress > 0 ? 4 : rollFrameIndex(this._shipRoll(ship));
+        const frame = sink.force ? 4 : rollFrameIndex(this._shipRoll(ship));
+        // 5.3 — lamps from dusk to dawn (a pack ghost's fade out included).
+        const lamps = this._lampsLit ? hullLampStrip(this.sprites?.assets, strip) : null;
         return {
             id: ship.id || `${ship.x},${ship.y}`,
             strip,
+            lamps,
+            direction: strip.direction,
+            bowX: strip.bowX,
             frame,
             x: ship.x,
             y: ship.y,
             bob: this._shipBob(ship),
             sink: sink.px,
             alpha,
-            wake: this._shipUnderWay(ship) ? this._wakeHeading(ship, shipClass) : null,
+            // Past the horizon's near edge the V wake is lost with the hull.
+            wake: this._shipUnderWay(ship) && !(sink.progress > 0.3 && !sink.force) ? this._wakeHeading(ship, shipClass) : null,
         };
     }
 
-    // Heading from the route sample `_shipDrawable` stored: an inbound ship's
-    // tail point lies ahead on its reversed route, every other one behind.
+    // Heading from the route sample `_shipDrawable` stored: the tail point
+    // lies astern on every course.
     _wakeHeading(ship, shipClass) {
-        const ahead = ship.status === 'arriving' || ship.status === 'anchored';
-        const dirX = ahead ? ship.tailX - ship.x : ship.x - ship.tailX;
-        const dirY = ahead ? ship.tailY - ship.y : ship.y - ship.tailY;
+        const dirX = ship.x - ship.tailX;
+        const dirY = ship.y - ship.tailY;
         // The V runs from the bow: fresh (under the hull) to the stern, then a
         // class-scaled open-water tail that ages out in its 4 steps.
-        const strip = hullStrip(this.sprites?.assets, shipClass.spriteId);
+        const strip = this._hullStripFor(ship, shipClass);
         const hold = strip ? Math.round(strip.frameWidth * 0.8) : 20;
         return { dirX, dirY, hold, length: hold + 24 + Math.round(shipClass.wakeScale * 12) };
     }
@@ -6007,6 +3902,7 @@ export class HarborTraffic {
             item.x = ship.x;
             item.y = ship.y;
             item.pose = pose;
+            item.fleetLead = ship.repoFleetLead === true;
             hullRecords(pose, item.records);
             items.push(item);
         }
@@ -6015,14 +3911,6 @@ export class HarborTraffic {
             for (const id of pool.keys()) if (!live.has(id)) pool.delete(id);
         }
         return items;
-    }
-
-    // v0.23 A7 — the repo's lead docked ship (index 0) with more than one commit
-    // aboard the fleet.
-    _isFleetLead(ship = {}) {
-        return ship.status === 'docked'
-            && Math.max(0, Number(ship.repoDockIndex || 0)) === 0
-            && harborFleetCount(ship) > 1;
     }
 
     _drawShipClassOverlay(ctx, ship, alpha = 1, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship), zoom = 1) {
@@ -6131,10 +4019,16 @@ export class HarborTraffic {
         ctx.restore();
     }
 
+    // Phase 3.5 — the hull strip in the view the ship faces (`heading`, set
+    // by _settleShipMotion; SW until it has one).
+    _hullStripFor(ship, shipClass = harborShipClass(ship)) {
+        return hullStrip(this.sprites?.assets, shipClass.spriteId, ship.heading || 'sw');
+    }
+
     // 3.8 — the hull's height above its waterline in world px (the strip's
     // waterline anchor), falling back to the class table.
     _hullLift(ship, shipClass = harborShipClass(ship)) {
-        const strip = hullStrip(this.sprites?.assets, shipClass.spriteId);
+        const strip = this._hullStripFor(ship, shipClass);
         return strip ? strip.anchorY : Math.max(0, Number(shipClass.labelLift || 0));
     }
 
@@ -6142,28 +4036,24 @@ export class HarborTraffic {
     // screen px (relative to the waterline anchor, zoom cancelled) of the
     // flag's top (the hull's top edge while the strip loads), 4 px up.
     _plateBase(ship, shipClass, zoom) {
-        const strip = hullStrip(this.sprites?.assets, shipClass.spriteId);
+        const strip = this._hullStripFor(ship, shipClass);
         const flagTop = strip?.mastheads ? strip.mastheads[2][1] + FLAG_MAST_OVERLAP - 16 : 0;
         const lift = this._hullLift(ship, shipClass) - Math.min(0, flagTop);
         return -Math.round((lift + this._shipBob(ship)) * (zoom || 1)) - 4;
     }
 
-    _hasShipBadge(ship, shipClass) {
+    // At z1 only the repo fleet's lead keeps its pack badge.
+    _hasShipBadge(ship, shipClass, zoom = 2) {
         if (ship.prShip) return false;
-        return (this._isFleetLead(ship) && !(Number(ship.visualPackSize) > 1)) || Boolean(shipClass.badge);
+        if (zoom < 2 && !ship.repoFleetLead) return false;
+        return Number(ship.visualPackSize) > 1 && Boolean(shipClass.badge);
     }
 
+    // A titan pack's exact `Nx` count (it stands in for hidden hulls). Class
+    // badges (`4+`) and the old `N⚓` fleet banner are retired (V-R4): the
+    // lane lead's plate carries the lane's count.
     _drawShipTierBadge(ctx, ship, alpha = 1, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship), zoom = 1) {
-        if (ship.prShip) return;
-        // v0.23 A7 — the repo's lead docked ship shows a single fleet-count banner
-        // in place of its class tier badge. Titan packs keep their exact `Nx`
-        // badge instead (a 57-commit fleet reads 29x + 28x; the buoy label
-        // carries the fleet total), so per-hull counts never disagree.
-        if (this._isFleetLead(ship) && !(Number(ship.visualPackSize) > 1)) {
-            this._drawFleetBanner(ctx, ship, alpha, profile, shipClass, zoom);
-            return;
-        }
-        if (!shipClass.badge) return;
+        if (!this._hasShipBadge(ship, shipClass, zoom)) return;
         const badge = shipClass.badge;
         ctx.save();
         ctx.globalAlpha = 0.94 * alpha;
@@ -6176,6 +4066,15 @@ export class HarborTraffic {
         const height = 14;
         const left = -Math.round(width / 2);
         const top = this._plateBase(ship, shipClass, zoom) - height;
+        // A pack badge over the Harbor house or a pier deck stays hidden (the
+        // lane lead's plate still carries the count); else it claims its box.
+        const z = zoom || 1;
+        const box = { x0: ship.x + (left - 1) / z, x1: ship.x + (left + width + 1) / z, y0: ship.y + (top - 1) / z, y1: ship.y + (top + height + 1) / z };
+        if (this._plateOverScenery(box)) {
+            ctx.restore();
+            return;
+        }
+        this._plateBoxes.push(box);
         ctx.fillStyle = profile.accent;
         ctx.fillRect(left - 1, top - 1, width + 2, height + 2);
         ctx.fillStyle = 'rgba(24, 33, 36, 0.92)';
@@ -6184,33 +4083,6 @@ export class HarborTraffic {
         ctx.textAlign = 'center';
         ctx.textBaseline = 'alphabetic';
         ctx.fillText(badge, 0, top + 11);
-        ctx.restore();
-    }
-
-    // v0.23 A7 — one fleet-count banner (N⚓, repo accent) above the lead ship,
-    // reusing the tier-badge style so the whole flock reads as a single fleet.
-    _drawFleetBanner(ctx, ship, alpha = 1, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship), zoom = 1) {
-        const count = harborFleetCount(ship);
-        const badge = `${count}⚓`;
-        ctx.save();
-        ctx.globalAlpha = 0.96 * alpha;
-        // C5 — screen-fixed plate: zoom cancelled, integer screen-pixel layout.
-        ctx.translate(ship.x, ship.y);
-        ctx.scale(1 / (zoom || 1), 1 / (zoom || 1));
-        snapScreenOrigin(ctx);
-        ctx.font = WORLD_DISPLAY_FONT_8;
-        const width = Math.max(20, measureLabelText(ctx, badge) + 10);
-        const height = 14;
-        const left = -Math.round(width / 2);
-        const top = this._plateBase(ship, shipClass, zoom) - height;
-        ctx.fillStyle = profile.accent;
-        ctx.fillRect(left - 1, top - 1, width + 2, height + 2);
-        ctx.fillStyle = 'rgba(20, 29, 32, 0.94)';
-        ctx.fillRect(left, top, width, height);
-        ctx.fillStyle = profile.accent;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'alphabetic';
-        this._fillReadableText(ctx, badge, 0, top + 11);
         ctx.restore();
     }
 
@@ -6237,6 +4109,7 @@ export class HarborTraffic {
     }
 
     _departureAlpha(ship) {
+        if (ship.pushForce !== true && Number.isFinite(Number(ship.horizonProgress))) return horizonAlpha(ship.horizonProgress);
         const departMs = Math.max(1, Number(ship.departMsOverride) || DEPARTURE_MS);
         const elapsed = Number.isFinite(Number(ship.elapsed))
             ? Number(ship.elapsed)
@@ -6536,14 +4409,14 @@ export class HarborTraffic {
     // falls back to the class offsets.
     _flagAnchor(ship, shipClass = harborShipClass(ship)) {
         const bob = this._shipBob(ship);
-        const strip = hullStrip(this.sprites?.assets, shipClass.spriteId);
+        const strip = this._hullStripFor(ship, shipClass);
         if (!strip?.mastheads) {
             return {
                 x: Math.round(ship.x + 13 + (shipClass.flagOffsetX || 0)),
                 y: Math.round(ship.y - 31 - (shipClass.flagOffsetY || 0) - bob),
             };
         }
-        const frame = this._shipSink(ship).progress > 0 ? 4 : rollFrameIndex(this._shipRoll(ship));
+        const frame = this._shipSink(ship).force ? 4 : rollFrameIndex(this._shipRoll(ship));
         const [mx, my] = strip.mastheads[frame];
         return {
             x: Math.round(ship.x) - strip.anchorX + mx,
@@ -6551,82 +4424,67 @@ export class HarborTraffic {
         };
     }
 
-    // 6.5 — the repo flag: the shared pixel pennant strip on a staff at the
-    // masthead in the repo accent (a branch variant rims it in its base
-    // repo's accent), stepped at 4 fps downwind, on the rest frame in calm
-    // air and under reduced motion.
+    // U-P1 — the masthead pennon: its cloth is the repo colour (the hue every
+    // surface gives the repo) and its SHAPE is the branch: swallowtail for
+    // the default branch, burgee for a feature branch, notched triangle for a
+    // branch checked out in a linked worktree. Stepped at 4 fps downwind with
+    // the one wind; the rest frame in calm air and under reduced motion.
     _drawRepoFlag(ctx, ship, zoom, alpha = 1, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship)) {
         const { x, y } = this._flagAnchor(ship, shipClass);
         const windX = currentPennantWind();
         const phase = stableHash(ship.id || '') % 4;
         ctx.save();
-        ctx.globalAlpha = 0.92 * alpha;
-        drawPennant(ctx, x, y + 16, {
+        ctx.globalAlpha = 0.94 * alpha;
+        drawBranchPennon(ctx, x, y + 16, {
             accent: profile.accent,
-            rim: profile.isBranchVariant && profile.baseAccent ? profile.baseAccent : null,
+            kind: ship.pennonKind || branchPennonKind(ship.branch, ship.worktree),
             frame: pennantFrame(currentPennantTime(), windX, { motion: this.motionScale > 0, phase }),
             windX,
         });
         ctx.restore();
     }
 
-    // 4.17 / 6.5: procedural repo heraldry shield on the squad flagship,
-    // tinted by the repo at render time. The shield is flag drawing on the art
-    // grid: whole-texel row runs in world units (24 texels tall, wide enough
-    // at z1 for its label), so it scales with the hull in exact k×k texels;
-    // no path, no anti-aliased edge. Only the short repo label stays a
-    // screen-fixed C5 glyph run, centred on the shield's upper third.
+    // U-P6 / V-R4 — the repo's heraldry: one small shield (16 texels tall)
+    // per fleet, on its lead, beside the hull at deck height so it never
+    // covers the sails. Whole-texel row runs (no path): a dark field, a chief
+    // and rim in the repo colour, and the collision-checked monogram (`CV`,
+    // `CV2`) as a screen-fixed C5 glyph run.
     _drawRepoShield(ctx, ship, zoom, alpha = 1, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship)) {
-        const h = 24;
-        const shortName = String(profile.shortName || profile.name || '').slice(0, 3).toUpperCase();
+        const label = String(ship.monogram || '').slice(0, 3);
+        const h = 16;
         ctx.save();
-        ctx.font = WORLD_DISPLAY_FONT_8;
-        // The crest widens just enough to carry its label at z1 without
-        // squeezing glyphs (C5 measures instead of fillText maxWidth).
-        const w = shortName ? Math.max(18, Math.ceil(measureLabelText(ctx, shortName)) + 6) : 18;
-        const cx = Math.round(ship.x);
-        const top = Math.round(ship.y) - Math.round(44 + (shipClass.flagOffsetY || 0) * 0.6);
+        ctx.font = WORLD_BODY_FONT_11;
+        const z = Math.max(1, zoom || 1);
+        const w = Math.max(12, Math.min(20, Math.ceil((label ? measureLabelText(ctx, label) : 0) / z) + 4));
+        const radius = harborShipCollisionRadius(ship);
+        const cx = Math.round(ship.x - radius * 0.72 - w / 2);
+        const top = Math.round(ship.y) - h - 6 - this._shipBob(ship);
         const runs = shieldRuns(w, h);
-        ctx.globalAlpha = Math.max(0, alpha) * 0.94;
-        // Drop shadow behind the shield for legibility against busy water.
+        ctx.globalAlpha = Math.max(0, alpha) * 0.96;
         ctx.fillStyle = 'rgba(8, 12, 16, 0.55)';
-        for (const [y, x0, x1] of runs) ctx.fillRect(cx + x0 + 1, top + y + 2, x1 - x0, 1);
-        // Outer rim — gold on base repos, branch accent on variants: the
-        // silhouette grown by one texel.
-        ctx.fillStyle = profile.isBranchVariant && profile.baseAccent
-            ? profile.baseAccent
-            : 'rgba(255, 240, 184, 0.88)';
+        for (const [y, x0, x1] of runs) ctx.fillRect(cx + x0 + 1, top + y + 1, x1 - x0, 1);
+        ctx.fillStyle = profile.accent || '#f6d384';
         ctx.fillRect(cx + runs[0][1] - 1, top - 1, runs[0][2] - runs[0][1] + 2, 1);
         for (const [y, x0, x1] of runs) ctx.fillRect(cx + x0 - 1, top + y, x1 - x0 + 2, 1);
         ctx.fillRect(cx - 1, top + h, 2, 1);
-        // Shield body filled with the repo accent.
+        ctx.fillStyle = profile.panel || 'rgba(24, 33, 36, 0.94)';
+        for (const [y, x0, x1] of runs) if (y >= 3) ctx.fillRect(cx + x0, top + y, x1 - x0, 1);
         ctx.fillStyle = profile.accent || '#f6d384';
-        for (const [y, x0, x1] of runs) ctx.fillRect(cx + x0, top + y, x1 - x0, 1);
-        // Branch variant: a 3-texel sash across the middle (just above the
-        // point, so the chevron still reads as a shield).
-        if (profile.isBranchVariant && profile.baseAccent) {
-            const bandTop = Math.round(h * 0.5);
-            ctx.fillStyle = profile.baseAccent;
-            for (const [y, x0, x1] of runs) {
-                if (y >= bandTop && y < bandTop + 3) ctx.fillRect(cx + x0 + 2, top + y, Math.max(0, x1 - x0 - 4), 1);
-            }
-        }
+        for (const [y, x0, x1] of runs) if (y < 3) ctx.fillRect(cx + x0, top + y, x1 - x0, 1);
         ctx.restore();
-        // Short repo label in the upper third of the shield (C5 screen-fixed).
-        if (shortName) {
-            ctx.save();
-            ctx.globalAlpha = Math.max(0, alpha) * 0.94;
-            ctx.translate(cx, top + Math.round(h * 0.34));
-            ctx.scale(1 / (zoom || 1), 1 / (zoom || 1));
-            snapScreenOrigin(ctx);
-            ctx.font = WORLD_DISPLAY_FONT_8;
-            ctx.fillStyle = profile.labelText || 'rgba(20, 14, 10, 0.94)';
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'alphabetic';
-            this._applyReadableTextShadow(ctx);
-            ctx.fillText(shortName, 0, 4);
-            ctx.restore();
-        }
+        if (!label) return;
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, alpha) * 0.96;
+        ctx.translate(cx, top + Math.round(h * 0.62));
+        ctx.scale(1 / (zoom || 1), 1 / (zoom || 1));
+        snapScreenOrigin(ctx);
+        ctx.font = WORLD_BODY_FONT_11;
+        ctx.fillStyle = profile.labelText || '#f4df9f';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'alphabetic';
+        this._applyReadableTextShadow(ctx);
+        ctx.fillText(label, 0, 4);
+        ctx.restore();
     }
 
     // 4.17 / 6.5: static bunting line between two adjacent docked ships in
@@ -6656,9 +4514,6 @@ export class HarborTraffic {
         // Small pennant at the lowest point for a flag-line feel: a hanging
         // triangle, rows filled on whole texels.
         const [px, py] = at(0.5);
-        ctx.fillStyle = profile.isBranchVariant && profile.baseAccent
-            ? profile.baseAccent
-            : (profile.accent || '#f6d384');
         fillConvex(ctx, [[px - 3, py + 1], [px + 3, py + 1], [px, py + 6]]);
         ctx.restore();
     }
@@ -6727,83 +4582,242 @@ export class HarborTraffic {
         ctx.restore();
     }
 
+    // U-P6 / V-R4 — plates carry meaning, not hashes. A repo fleet's lead
+    // flies `repo · branch` and its lane count; from z2 the other lane leads
+    // fly `branch` and their count, and the other hulls their short SHA. A
+    // failed or rejected hull always shows its plate in the failure ink. No
+    // plate overlaps another: lead plates reserve theirs first
+    // (beginPlateFrame), the rest take the first free lift or stay hidden.
     _drawCommitPennant(ctx, ship, zoom, alpha = 1, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship)) {
-        const statusStyle = PUSH_STATUS_STYLE[ship.pushStatus] || null;
-        const accent = ship.pushStatus === 'failed' && statusStyle ? statusStyle.accent : profile.accent;
-        const compact = Boolean(ship.compactCommitLabel);
-        const localIndex = Number.isFinite(Number(ship.squadShipIndex))
-            ? Math.max(0, Number(ship.squadShipIndex))
-            : Math.max(0, Number(ship.repoDockIndex || 0));
-        const visibleCount = Math.max(1, Number(ship.repoDockVisibleCount || 1));
-        const lane = visibleCount > 1 ? Math.max(-0.72, Math.min(0.72, localIndex - (visibleCount - 1) / 2)) : 0;
+        const spec = this._plateSpec(ship, zoom);
+        if (!spec) return;
+        const z = zoom || 1;
         const bob = this._shipBob(ship);
-        // The mini pennant is the second flag of the masthead hoist: on the
-        // mast just under the repo flag's cloth, riding the same bob and roll.
-        const hoist = this._flagAnchor(ship, shipClass);
-        const miniX = hoist.x;
-        const miniY = hoist.y + 12;
-
-        const label = shortGitLabel(commitPennantLabel(ship), compact ? 10 : 12, '…');
-        const maxText = compact ? 58 : 70;
-        const labelTier = compact ? localIndex % 4 : localIndex % 3;
         ctx.save();
-        ctx.globalAlpha = 0.92 * alpha;
-        // C5 — screen-fixed plate: zoom cancelled, whole screen px, width
-        // measured (fitLabelText keeps today's 58/70 px cap).
+        ctx.globalAlpha = 0.94 * alpha;
         ctx.translate(ship.x, ship.y - bob);
         ctx.scale(1 / (zoom || 1), 1 / (zoom || 1));
         snapScreenOrigin(ctx);
         ctx.font = WORLD_BODY_FONT_11;
-        const shown = fitLabelText(ctx, label, maxText);
-        const width = Math.max(42, measureLabelText(ctx, shown) + 22);
-        const height = 16;
-        const left = Math.round(lane * 34) - Math.round(width / 2);
-        // 3.8 — above the hull (and its tier badge), staggered per squad slot,
-        // never on the water where the reflection lies.
-        const badgeRoom = this._hasShipBadge(ship, shipClass) ? 18 : 0;
-        const top = this._plateBase(ship, shipClass, zoom) + Math.round(bob * (zoom || 1)) - badgeRoom - height - labelTier * 10;
-        ctx.fillStyle = accent;
+        const text = fitLabelText(ctx, spec.text, spec.lead ? 168 : spec.pinned ? 120 : 70);
+        const countText = spec.lead ? String(spec.count) : '';
+        const countWidth = countText ? Math.ceil(measureLabelText(ctx, countText)) + 8 : 0;
+        const width = Math.ceil(measureLabelText(ctx, text)) + 12 + countWidth;
+        const height = 15;
+        const centred = -Math.round(width / 2);
+        const base = this._plateBase(ship, shipClass, z) + Math.round(bob * z) - (this._hasShipBadge(ship, shipClass, z) ? 18 : 0) - height;
+        const place = this._claimPlate(ship, centred, base, width, height, z, spec);
+        if (!place) {
+            ctx.restore();
+            return;
+        }
+        const { lift } = place;
+        const left = centred + place.dx;
+        const top = base - lift;
+        const failedAccent = spec.failed ? (PUSH_STATUS_STYLE[ship.pushStatus] || PUSH_STATUS_STYLE.failed).accent : null;
+        ctx.fillStyle = failedAccent || profile.accent;
         ctx.fillRect(left - 1, top - 1, width + 2, height + 2);
         ctx.fillStyle = profile.panel || 'rgba(24, 42, 39, 0.9)';
         ctx.fillRect(left, top, width, height);
-        if (profile.isBranchVariant && profile.baseAccent) {
-            ctx.fillStyle = profile.baseAccent;
-            ctx.fillRect(left, top, 2, height);
-        }
-        ctx.fillStyle = profile.accent;
-        ctx.fillRect(left + (profile.isBranchVariant ? 2 : 0), top, 4, height);
-        this._drawRepoLabelIcon(ctx, left + 8, top + height / 2, 6, profile);
-        ctx.fillStyle = ship.pushStatus === 'failed' && statusStyle ? accent : (profile.labelText || accent);
+        ctx.fillStyle = failedAccent || profile.accent;
+        ctx.fillRect(left, top, 2, height);
         ctx.textAlign = 'left';
         ctx.textBaseline = 'alphabetic';
-        this._fillReadableText(ctx, shown, left + 15, top + 12);
+        ctx.fillStyle = failedAccent || (spec.lead ? (profile.labelText || profile.accent) : 'rgba(244, 232, 190, 0.86)');
+        this._fillReadableText(ctx, text, left + 6, top + 11);
+        if (countText) {
+            const cellLeft = left + width - countWidth;
+            ctx.fillStyle = failedAccent || profile.accent;
+            ctx.fillRect(cellLeft, top, countWidth, height);
+            ctx.fillStyle = profile.panel || 'rgba(24, 42, 39, 0.9)';
+            ctx.fillText(countText, cellLeft + 4, top + 11);
+        }
+        // A 1-px stem from the plate's foot down to the masthead (for a
+        // plate set aside, from its nearer edge).
+        if (lift > 0) {
+            ctx.fillStyle = failedAccent || profile.accent;
+            const stemX = Math.max(left + 2, Math.min(left + width - 3, 0));
+            ctx.fillRect(stemX, top + height + 1, 1, lift);
+        }
         ctx.restore();
-        // v0.23 A4 / 6.5 — mini pennant on the plate pole (world art): the
-        // small pixel pennant, stepped with the one wind like the repo flag.
+    }
+
+    // z1 — a failed or rejected hull, or a PR cutter, carries a 7 × 9
+    // screen-px glyph over its masthead instead of a plate: `!` on the
+    // failure (or caution) colour, a parchment tab for a pull request.
+    _drawCompactGlyph(ctx, ship, zoom, alpha = 1, shipClass = harborShipClass(ship)) {
+        const failed = ship.status === 'docked' && (ship.pushStatus === 'failed' || ship.pushStatus === 'rejected');
+        if (!failed && !ship.prShip) return;
+        const z = zoom || 1;
         ctx.save();
-        ctx.globalAlpha = 0.92 * alpha;
-        const windX = currentPennantWind();
-        drawMiniPennant(ctx, miniX, miniY + 11, {
-            accent,
-            frame: pennantFrame(currentPennantTime(), windX, {
-                motion: this.motionScale > 0,
-                phase: stableHash(ship.id || '') % 4,
-            }),
-            windX,
-        });
+        ctx.globalAlpha = 0.96 * alpha;
+        ctx.translate(ship.x, ship.y - this._shipBob(ship));
+        ctx.scale(1 / (zoom || 1), 1 / (zoom || 1));
+        snapScreenOrigin(ctx);
+        const top = this._plateBase(ship, shipClass, z) + Math.round(this._shipBob(ship) * z) - 9;
+        const fill = failed ? (PUSH_STATUS_STYLE[ship.pushStatus] || PUSH_STATUS_STYLE.failed).accent : PR_PENNANT_CLOTH;
+        ctx.fillStyle = failed ? 'rgba(20, 12, 10, 0.92)' : PR_PENNANT_RIM;
+        ctx.fillRect(-4, top - 1, 9, 11);
+        ctx.fillStyle = fill;
+        ctx.fillRect(-3, top, 7, 9);
+        ctx.fillStyle = failed ? 'rgba(20, 12, 10, 0.92)' : PR_PENNANT_RIM;
+        if (failed) {
+            ctx.fillRect(0, top + 1, 1, 5);
+            ctx.fillRect(0, top + 7, 1, 1);
+        } else {
+            ctx.fillRect(-1, top + 2, 3, 1);
+            ctx.fillRect(-1, top + 4, 3, 1);
+            ctx.fillRect(-1, top + 6, 2, 1);
+        }
         ctx.restore();
+    }
+
+    // What a ship's plate says, or null when it shows none at this zoom.
+    _plateSpec(ship, zoom = 1) {
+        // W7.9 — a PR cutter always carries its pull identity.
+        // z1 shows one plate per repo; everything else waits for z2 (a
+        // failed hull and a PR cutter fly a compact glyph there instead).
+        if (ship.prShip) return zoom < 2 ? null : { lead: false, pinned: true, text: commitPennantLabel(ship), count: 1, failed: false };
+        const failed = ship.pushStatus === 'failed' || ship.pushStatus === 'rejected';
+        const docked = ship.status === 'docked';
+        if (docked && ship.repoFleetLead && zoom < 2) {
+            const lanes = Number(ship.repoLaneCount) || 1;
+            const text = `${middleTruncate(repoDisplayName(ship.project), 16)}${lanes > 1 ? ` · ${lanes} br` : ''}`;
+            return { lead: true, text, count: Math.max(1, Number(ship.repoTotal) || Number(ship.repoDockCount) || 1), failed };
+        }
+        if (zoom < 2) return null;
+        if (docked && ship.laneLead) {
+            const branch = ship.branch ? middleTruncate(ship.branch, 16) : 'detached';
+            const text = ship.repoFleetLead ? `${middleTruncate(repoDisplayName(ship.project), 14)} · ${branch}` : branch;
+            return { lead: true, text, count: Math.max(1, Number(ship.repoDockCount) || 1), failed };
+        }
+        if (!failed && ship.showCommitLabel === false) return null;
+        return { lead: false, text: shortGitLabel(commitPennantLabel(ship), 10, '…'), count: 1, failed };
+    }
+
+    // Plate placement for this frame. Lead plates use the lift their
+    // reservation found; other plates take the first free lift (0, 18 or 36
+    // screen px up), registering their box, or return null (not drawn). The
+    // hovered ship's plate always draws.
+    // Plate placement for this frame, `{ lift, dx }` (screen px) or null.
+    // Candidates: above the masthead at three lifts, then on the water under
+    // the hull (a negative lift: the plate's top 10 px below the waterline),
+    // each centred, then set aside left and right. A plate never covers
+    // another plate, a pier deck or the Harbor house (D2: fleets moor in the
+    // pier channels). Lead plates use the slot their reservation found; a
+    // repo fleet's lead, a PR cutter and the hovered hull always draw (at
+    // the first candidate when none is free), any other plate stays hidden.
+    _claimPlate(ship, left, base, width, height, zoom, spec) {
+        if (spec.lead && this._leadPlateLift.has(ship.id)) return this._leadPlateLift.get(ship.id);
+        const z = zoom || 1;
+        const force = spec.forced || spec.pinned || ship.id === this.hoveredShipId;
+        const aside = Math.round(width / 2) + 12;
+        const candidates = [];
+        for (const dx of [0, -aside, aside, 2 * aside]) {
+            for (const lift of [0, 18, 36, base - 10, base - 28]) {
+                candidates.push({ lift, dx, box: {
+                    x0: ship.x + (left + dx - 2) / z,
+                    x1: ship.x + (left + dx + width + 2) / z,
+                    y0: ship.y + (base - lift - 2) / z,
+                    y1: ship.y + (base - lift + height + 2) / z,
+                } });
+            }
+        }
+        const free = candidates.find(({ box }) => !this._plateBoxesHit(box) && !this._plateOverScenery(box));
+        // A plate that must draw prefers water and decks clear of scenery
+        // even where it meets another plate.
+        const chosen = free || (force ? candidates.find(({ box }) => !this._plateOverScenery(box)) || candidates[0] : null);
+        if (!chosen) return null;
+        this._plateBoxes.push(chosen.box);
+        return { lift: chosen.lift, dx: chosen.dx };
+    }
+
+    _plateBoxesHit(box) {
+        return this._plateBoxes.some(other => box.x0 < other.x1 && box.x1 > other.x0 && box.y0 < other.y1 && box.y1 > other.y0);
+    }
+
+    // Whether a plate box (world px) lies over a pier deck or the Harbor
+    // house's drawn pixels: sampled on a 5 × 3 grid.
+    _plateOverScenery(box) {
+        const house = this._harborHouseHit();
+        for (let j = 0; j <= 2; j++) {
+            const y = box.y0 + (box.y1 - box.y0) * j / 2;
+            for (let i = 0; i <= 4; i++) {
+                const x = box.x0 + (box.x1 - box.x0) * i / 4;
+                const tile = toTile(x, y);
+                if (HARBOR_PIER_DECKS.some(deck => tile.tileX >= deck.x0 && tile.tileX <= deck.x1 && tile.tileY >= deck.y0 && tile.tileY <= deck.y1)) return true;
+                if (house && house(x, y)) return true;
+            }
+        }
+        return false;
+    }
+
+    _harborHouseHit() {
+        const sprites = this.sprites;
+        if (typeof sprites?.hitTest !== 'function') return null;
+        if (this._houseHit !== undefined) return this._houseHit;
+        const def = BUILDING_DEFS.find(item => item.type === 'harbor');
+        const anchor = def && sprites.assets?.getAnchor?.('building.harbor');
+        if (!def || !anchor || !sprites.assets?.getMask?.('building.harbor')) return null;
+        const center = buildingCenterToWorld(def);
+        const dx = Math.round(center.x - anchor[0]);
+        const dy = Math.round(center.y - anchor[1]);
+        this._houseHit = (x, y) => sprites.hitTest('building.harbor', x, y, dx, dy);
+        return this._houseHit;
+    }
+
+    // Once per frame (the scene category's enumerate): clear the plate boxes
+    // and reserve the lane-lead plates first, fleet leads and failures
+    // ahead, so a SHA plate never covers a fleet's name.
+    beginPlateFrame(zoom = 1) {
+        const z = Number(zoom) > 0 ? Number(zoom) : 1;
+        this._plateBoxes.length = 0;
+        this._leadPlateLift.clear();
+        const leads = [];
+        for (const entry of this._packedDockedEntries) {
+            const ship = entry.drawable?.payload;
+            if (!ship?.laneLead) continue;
+            const spec = this._plateSpec(ship, z);
+            if (spec?.lead) leads.push({ ship, spec });
+        }
+        leads.sort((a, b) => (Number(b.ship.repoFleetLead) - Number(a.ship.repoFleetLead))
+            || (Number(b.spec.failed) - Number(a.spec.failed))
+            || (b.ship.y - a.ship.y));
+        const charWidth = this._plateCharWidth();
+        for (const { ship, spec } of leads) {
+            const shipClass = harborShipClass(ship);
+            const width = Math.min(168, spec.text.length * charWidth) + 12 + String(spec.count).length * charWidth + 8;
+            const left = -Math.round(width / 2);
+            const base = this._plateBase(ship, shipClass, z) - (this._hasShipBadge(ship, shipClass, z) ? 18 : 0) - 15;
+            // A repo fleet's lead always flies its name; another lane lead
+            // with no free slot stays hidden this frame (null).
+            this._leadPlateLift.set(ship.id, this._claimPlate(ship, left, base, width, 15, z, { forced: ship.repoFleetLead }));
+        }
+    }
+
+    _plateCharWidth() {
+        if (this._plateCharWidthPx) return this._plateCharWidthPx;
+        let width = 6;
+        if (typeof document !== 'undefined') {
+            const ctx = document.createElement('canvas').getContext('2d');
+            if (ctx) {
+                ctx.font = WORLD_BODY_FONT_11;
+                width = measureLabelText(ctx, 'abcdefghij') / 10 || width;
+            }
+        }
+        this._plateCharWidthPx = width;
+        return width;
     }
 
     // 3.6 — hover lore: cargo label above the hovered ship carrying the commit subject.
     _drawHoverCargoLabel(ctx, ship, zoom, alpha = 1, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship)) {
-        const subject = ship.prShip ? pullRequestShipLabel(ship) : cachedCleanCommitSubject(ship.label || '');
-        const label = shortGitLabel(subject || `commit ${commitPennantLabel(ship)}`, 36, '…');
+        const label = shortGitLabel(this._hoverCargoText(ship), 44, '…');
         if (!label) return;
-        const base = this._plateBase(ship, shipClass, zoom) - (this._hasShipBadge(ship, shipClass) ? 18 : 0);
+        const base = this._plateBase(ship, shipClass, zoom) - (this._hasShipBadge(ship, shipClass, zoom) ? 18 : 0);
         ctx.save();
         ctx.globalAlpha = Math.min(1, 0.96 * alpha);
         // C5 — screen-fixed plate: zoom cancelled, whole screen px, width
-        // measured (this label has no cap today, so none is added).
+        // measured.
         ctx.translate(ship.x, ship.y);
         ctx.scale(1 / (zoom || 1), 1 / (zoom || 1));
         snapScreenOrigin(ctx);
@@ -6811,7 +4825,7 @@ export class HarborTraffic {
         const width = Math.max(54, measureLabelText(ctx, label) + 26);
         const height = 16;
         const left = -Math.round(width / 2);
-        const top = base - 20 - height;
+        const top = base - 38 - height;
         ctx.fillStyle = profile.accent;
         ctx.fillRect(left - 1, top - 1, width + 2, height + 2);
         ctx.fillStyle = profile.panel || 'rgba(24, 42, 39, 0.92)';
@@ -6825,6 +4839,37 @@ export class HarborTraffic {
         ctx.fillStyle = profile.accent;
         ctx.fillRect(-1, top + height, 2, 6);
         ctx.restore();
+    }
+
+    // U-P9 — a pack names its size and newest subject (`14 commits · newest:
+    // Fix plates`), a single hull its short SHA and subject.
+    _hoverCargoText(ship = {}) {
+        if (ship.prShip) return pullRequestShipLabel(ship);
+        const packSize = Number(ship.visualPackSize);
+        if (Number.isFinite(packSize) && packSize > 1) {
+            const members = this._packMembers(ship);
+            const newest = members.reduce((best, item) => ((item.eventTime || 0) > (best?.eventTime || 0) ? item : best), null) || ship;
+            const subject = cachedCleanCommitSubject(newest.label || '');
+            return `${Math.round(packSize)} commits${subject ? ` · newest: ${subject}` : ''}`;
+        }
+        const subject = cachedCleanCommitSubject(ship.label || '');
+        const sha = commitIdFragment(ship.sha || '');
+        return [sha, subject].filter(Boolean).join(' · ') || `commit ${commitPennantLabel(ship)}`;
+    }
+
+    // The docked ships one titan pack stands for: its lane's ships in dock
+    // order, from the pack's start index to its end index.
+    _packMembers(ship = {}) {
+        const lane = [];
+        for (const other of this.state.ships.values()) {
+            if (other.status !== 'docked' || other.project !== ship.project) continue;
+            if (normalizeRepoBranch(other.branch) !== normalizeRepoBranch(ship.branch)) continue;
+            lane.push(other);
+        }
+        lane.sort((a, b) => ((a.eventTime || 0) - (b.eventTime || 0)) || String(a.id).localeCompare(String(b.id)));
+        const start = Math.max(0, Number(ship.visualPackStartIndex) || 0);
+        const end = Number.isFinite(Number(ship.visualPackEndIndex)) ? Number(ship.visualPackEndIndex) : start;
+        return lane.slice(start, end + 1);
     }
 
     _drawFinaleEffect(ctx, effect) {
@@ -6924,108 +4969,6 @@ export class HarborTraffic {
         ctx.restore();
     }
 
-    _drawClusterTag(ctx, payload, zoom) {
-        const label = `+${payload.count}`;
-        // C5 — screen-fixed tab: zoom cancelled, whole screen px.
-        ctx.save();
-        ctx.translate(payload.x, payload.y);
-        ctx.scale(1 / (zoom || 1), 1 / (zoom || 1));
-        snapScreenOrigin(ctx);
-        ctx.font = WORLD_DISPLAY_FONT_8;
-        const width = Math.max(18, measureLabelText(ctx, label) + 8);
-        const height = 14;
-        const left = -Math.round(width / 2);
-        const top = -34;
-        ctx.fillStyle = 'rgba(242, 211, 107, 0.82)';
-        ctx.fillRect(left - 1, top - 1, width + 2, height + 2);
-        ctx.fillStyle = 'rgba(27, 43, 48, 0.86)';
-        ctx.fillRect(left, top, width, height);
-        ctx.fillStyle = '#f2d36b';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'alphabetic';
-        ctx.fillText(label, 0, top + 11);
-        ctx.restore();
-    }
-
-    _drawCommitLagoonSign(ctx, payload, zoom) {
-        const profile = payload.profile || trafficProfile(payload.project, payload.branch);
-        const count = Math.max(1, Number(payload.count || 1));
-        const detail = `${shortGitLabel(payload.repoName || trafficLabel(payload.project, payload.branch), 20, '…')} (${count})`;
-        const title = 'COMMIT LAGOON';
-        // C5 — screen-fixed sign: zoom cancelled, whole screen px, rows sized
-        // from measured text with today's 132–204 px width band.
-        ctx.save();
-        ctx.globalAlpha = 0.96;
-        ctx.translate(payload.x, payload.y);
-        ctx.scale(1 / (zoom || 1), 1 / (zoom || 1));
-        snapScreenOrigin(ctx);
-        ctx.font = WORLD_DISPLAY_FONT_8;
-        const titleWidth = measureLabelText(ctx, title);
-        ctx.font = WORLD_BODY_FONT_11;
-        const detailWidth = measureLabelText(ctx, detail);
-        const width = Math.max(132, Math.min(204, Math.max(titleWidth, detailWidth) + 34));
-        const shownDetail = fitLabelText(ctx, detail, width - 28);
-        const height = 36;
-        const left = -Math.round(width / 2);
-        const top = -Math.round(height / 2);
-        ctx.fillStyle = 'rgba(247, 214, 123, 0.86)';
-        ctx.fillRect(left - 1, top - 1, width + 2, height + 2);
-        ctx.fillStyle = 'rgba(50, 42, 25, 0.92)';
-        ctx.fillRect(left, top, width, height);
-        ctx.fillStyle = profile.accent;
-        ctx.fillRect(left + 5, top + 5, 4, height - 10);
-        ctx.font = WORLD_DISPLAY_FONT_8;
-        ctx.fillStyle = '#f4df9f';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'alphabetic';
-        this._fillReadableText(ctx, title, 2, top + 14);
-        this._drawRepoLabelIcon(ctx, left + 15, top + 25, 7, profile);
-        ctx.font = WORLD_BODY_FONT_11;
-        ctx.fillStyle = profile.labelText || profile.accent;
-        ctx.textAlign = 'left';
-        this._fillReadableText(ctx, shownDetail, left + 23, top + 29);
-        ctx.restore();
-    }
-
-    _drawRepoQuayMarker(ctx, payload, zoom) {
-        const profile = payload.profile || trafficProfile(payload.project, payload.branch);
-        const count = Math.max(1, Number(payload.count || 1));
-        const name = shortGitLabel(trafficLabel(payload.project, payload.branch), count >= 100 ? 18 : 20, '…');
-        const label = `${name} (${count})`;
-        const failed = Number(payload.failedCount || 0) > 0;
-        // C5 — screen-fixed marker: zoom cancelled, whole screen px, width
-        // measured with today's 104–190 px band.
-        ctx.save();
-        ctx.globalAlpha = 0.94;
-        ctx.translate(payload.x, payload.y);
-        ctx.scale(1 / (zoom || 1), 1 / (zoom || 1));
-        snapScreenOrigin(ctx);
-        ctx.font = WORLD_BODY_FONT_11;
-        const width = Math.max(104, Math.min(190, measureLabelText(ctx, label) + 30));
-        const shown = fitLabelText(ctx, label, width - 24);
-        const height = 16;
-        const left = -Math.round(width / 2);
-        const top = -Math.round(height / 2);
-        ctx.fillStyle = failed ? PUSH_STATUS_STYLE.failed.accent : (profile.panelBorder || profile.accent);
-        ctx.fillRect(left - 1, top - 1, width + 2, height + 2);
-        ctx.fillStyle = profile.panel || 'rgba(20, 30, 34, 0.88)';
-        ctx.fillRect(left, top, width, height);
-        if (profile.isBranchVariant && profile.baseAccent) {
-            ctx.fillStyle = profile.baseAccent;
-            ctx.fillRect(left, top, 3, height);
-        }
-        ctx.fillStyle = profile.accent;
-        ctx.fillRect(left + (profile.isBranchVariant ? 3 : 0), top, 5, height);
-
-        ctx.globalAlpha = 1;
-        this._drawRepoLabelIcon(ctx, left + 11, top + height / 2, 7, profile);
-        ctx.fillStyle = failed ? PUSH_STATUS_STYLE.failed.accent : (profile.labelText || profile.accent);
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'alphabetic';
-        this._fillReadableText(ctx, shown, left + 20, top + 12);
-        ctx.restore();
-    }
-
     // #18 — small flickering flame atop an active repo buoy; colours come
     // from ParticleSystem's shared `buoyTorch` palette. 5.8 — reduced motion
     // draws a single static frame instead of suppressing the flame entirely.
@@ -7078,6 +5021,9 @@ export class HarborTraffic {
             return;
         }
 
+        // An empty berth's marker and label fade with its fleet.
+        const fade = this._markerFade(payload.project, payload.present !== false);
+        if (fade <= 0.02) return;
         const profile = payload.profile || repoProfile(payload.project);
         const lively = payload.lively !== false;
         const failed = Number(payload.failed || 0) > 0;
@@ -7087,24 +5033,29 @@ export class HarborTraffic {
         // lockstep. Slot index seeds the phase; failed repos sit low ("droop")
         // and bob with a smaller amplitude. Whole texels; reduced motion = none.
         const slot = Number(payload.slot) || 0;
+        // D2 — a pier berth's marker stands on the deck: no bob, no water.
+        const deckLift = Number(payload.deckLift) || 0;
         const bobBand = pulseValue('harbor', this.frame + slot * 11, this.motionScale) - 0.62;
         const bobAmp = failed ? 0.7 : 1.6;
-        const bob = moving ? Math.round(bobBand * bobAmp) : 0;
-        const droop = failed ? 3 : 0;
+        const bob = moving && !deckLift ? Math.round(bobBand * bobAmp) : 0;
+        const droop = failed && !deckLift ? 3 : 0;
         const bx = snap(x);
-        const buoyY = snap(y) + bob + droop;
+        const buoyY = snap(y) - deckLift + bob + droop;
 
         ctx.save();
+        ctx.globalAlpha = fade;
         // Tinted water patch — the repo's "sea area", one flat stepped course.
         // Failed repos lose their colour: a muted grey wash reads as a sunken,
         // troubled anchorage.
-        const rx = lively ? 17 : 13;
-        const waterGlow = failed
-            ? 'rgba(96, 104, 110, 0.30)'
-            : gradeColorString(profile.glow || 'rgba(122, 200, 216, 0.32)', this._grade);
-        ctx.globalAlpha = failed ? 0.5 : (lively ? 0.85 : 0.45);
-        fillPixelEllipse(ctx, bx, snap(y), rx, Math.round(rx / 2), waterGlow);
-        ctx.globalAlpha = 1;
+        if (!deckLift) {
+            const rx = lively ? 17 : 13;
+            const waterGlow = failed
+                ? 'rgba(96, 104, 110, 0.30)'
+                : gradeColorString(profile.glow || 'rgba(122, 200, 216, 0.32)', this._grade);
+            ctx.globalAlpha = (failed ? 0.5 : (lively ? 0.85 : 0.45)) * fade;
+            fillPixelEllipse(ctx, bx, snap(y), rx, Math.round(rx / 2), waterGlow);
+            ctx.globalAlpha = fade;
+        }
 
         // Mooring buoy post + pennant in the repo accent (rides the bob).
         const topY = buoyY - 13;
@@ -7131,29 +5082,50 @@ export class HarborTraffic {
             fill: profile.accent || '#f6d384',
         });
 
-        // Name + docked count label.
-        const name = payload.repoName || profile.shortName || 'repo';
-        const label = payload.docked > 0 ? `${name} (${payload.docked})` : name;
+        // U-P4 / U-P7 — the repo's name and its whole fleet's count in the
+        // ledger grammar (`claude-ville · 7`: the name shrinks from the
+        // middle, the count never does), set on the fleet's leading edge
+        // (under its lead hull) so it sits with its ships, not off the slot.
+        const label = ledgerBuoyLabel(payload.repoName || profile.shortName || 'repo', payload.docked);
+        const at = payload.docked > 0 && payload.labelAt ? payload.labelAt : null;
+        // A one-lane fleet's lead plate already reads `repo · branch N`; a
+        // label that would cover a plate, a pier deck or the house is left
+        // out (the lead plate and the ledgers still say it).
+        // At z1 that plate carries the repo's total (`repo 18 · 3 br`).
+        if (at && (payload.laneCount <= 1 || (zoom || 1) < 2)) {
+            ctx.restore();
+            return;
+        }
+        if (at) {
+            const z = zoom || 1;
+            const halfW = (Math.max(40, label.length * this._plateCharWidth() + 12) / 2 + 1) / z;
+            const box = { x0: at.x - halfW, x1: at.x + halfW, y0: at.y + 9 / z, y1: at.y + 25 / z };
+            if (this._plateBoxesHit(box) || this._plateOverScenery(box)) {
+                ctx.restore();
+                return;
+            }
+            this._plateBoxes.push(box);
+        }
         // C5 screen-fixed plate: zoom cancelled, whole screen px.
         ctx.save();
-        ctx.translate(x, y);
+        ctx.translate(at ? at.x : x, at ? at.y : y - deckLift);
         ctx.scale(1 / (zoom || 1), 1 / (zoom || 1));
         snapScreenOrigin(ctx);
         ctx.font = WORLD_BODY_FONT_11;
         const w = Math.max(40, measureLabelText(ctx, label) + 12);
         const h = 14;
         const left = -Math.round(w / 2);
-        const top = 9;
-        ctx.globalAlpha = lively ? 0.95 : 0.7;
+        const top = at ? 10 : 9;
+        ctx.globalAlpha = (lively ? 0.95 : 0.7) * fade;
         ctx.fillStyle = failed ? PUSH_STATUS_STYLE.failed.accent : (profile.panelBorder || profile.accent);
         ctx.fillRect(left - 1, top - 1, w + 2, h + 2);
         ctx.fillStyle = profile.panel || 'rgba(20, 30, 34, 0.85)';
         ctx.fillRect(left, top, w, h);
-        ctx.globalAlpha = 1;
+        ctx.globalAlpha = fade;
         ctx.fillStyle = lively ? (profile.labelText || profile.accent) : 'rgba(180, 196, 192, 0.78)';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'alphabetic';
-        this._fillReadableText(ctx, fitLabelText(ctx, label, w - 8), 0, top + 11);
+        this._fillReadableText(ctx, label, 0, top + 11);
         ctx.restore();
         ctx.restore();
     }

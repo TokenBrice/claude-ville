@@ -40,9 +40,10 @@ export const BUILDING_MATERIAL_REGISTRY = Object.freeze({
         emissiveSource('emissive.watchtower.windows', 'windows', 'windowRects', 0.68),
         emissiveSource('emissive.watchtower.beacon', 'fire', 'effectAnchors.lanternFire', 1),
     ]),
-    harbor: landmarkMaterial('harbor', 'timber', 232, 164, [
+    harbor: landmarkMaterial('harbor', 'stone', 284, 200, [
         emissiveSource('emissive.harbor.windows', 'windows', 'windowRects', 0.66),
         emissiveSource('emissive.harbor.lantern', 'lantern', 'lightSource', 0.82),
+        emissiveSource('emissive.harbor.tideClock', 'lantern', 'emitters.signal', 0.72),
     ]),
 });
 
@@ -438,25 +439,25 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         occupancyThresholds: { occupiedMax: 0.5, busyMax: 0.84 },
         labelPriority: 'landmark',
         beaconBase: 0.9,
-        // Pane centres, sized to the sidecar's lit texels on each pane. The
-        // sidecar lights only a one-texel sliver of the panes at ~[122, 129]
-        // and ~[167, 148], so they carry no rect.
+        // 5.A — pane centres on the re-authored house, each fitted to its
+        // pane's lit texels: the counting-house bay first (room 1), then the
+        // upper band under its slate hood, the turret-side window and the
+        // dormer. The tide-clock dial and the quay lantern glow in the sidecar
+        // but are no room; nor is the one-texel slit beside the door.
         windowRects: [
-            { at: [155.5, 70.5], w: 3, h: 3 },
-            { at: [181.5, 79.5], w: 3, h: 5 },
-            { at: [196, 88], w: 6, h: 6 },
-            { at: [221.5, 90.5], w: 3, h: 3 },
-            { at: [102.5, 111], w: 3, h: 8 },
-            { at: [178.5, 107], w: 3, h: 4 },
-            { at: [231.5, 111], w: 3, h: 4 },
-            { at: [179.5, 135.5], w: 3, h: 5 },
-            { at: [183.5, 155.5], w: 3, h: 5 },
-            { at: [190.5, 158], w: 3, h: 4 },
+            { at: [162, 135], w: 4, h: 12 },
+            { at: [154.5, 136.5], w: 3, h: 11 },
+            { at: [151.5, 104], w: 5, h: 14 },
+            { at: [144, 108.5], w: 4, h: 11 },
+            { at: [159, 101.5], w: 4, h: 11 },
+            { at: [184.5, 88.5], w: 5, h: 9 },
+            { at: [94.5, 74.5], w: 5, h: 11 },
+            { at: [84, 69.5], w: 4, h: 9 },
         ],
-        // 6.4 — the two grey stacks behind the office roof: where each column
-        // leaves its cap (ChimneySmoke; smoke only with a working visitor).
+        // 6.4 — the stone chimney behind the gable: where its column leaves
+        // the cap (ChimneySmoke; smoke only with a working visitor).
         effectAnchors: {
-            smokeTop: [[129, 26], [139, 30]],
+            smokeTop: [[140, 14]],
         },
     },
 });
@@ -480,7 +481,7 @@ export const BUILDING_EMITTER_FALLBACKS = {
         { type: 'forgeEmber', at: WATCHTOWER_LANTERN_FIRE.particle, stepMs: 1120, count: 1 },
     ],
     harbor: [
-        { type: 'sparkle', at: [249, 88], chance: 0.014, count: 1 },
+        { type: 'sparkle', at: [192, 45], chance: 0.014, count: 1 },
     ],
     taskboard: [
         { type: 'questPing', at: [124, 100], chance: 0.024, count: 1 },
@@ -497,7 +498,7 @@ export const BUILDING_LIGHT_FALLBACKS = {
     mine: { at: [76, 186], color: '#ffb84d', radius: 80, overlay: 'atmosphere.light.lantern-glow' },
     taskboard: { at: [124, 108], color: '#8bd7ff', radius: 42, overlay: 'atmosphere.light.lantern-glow' },
     archive: { at: [245, 178], color: '#ffcf7a', radius: 96, overlay: 'atmosphere.light.lantern-glow' },
-    harbor: { at: [181, 156], color: '#ffd37a', radius: 58, overlay: 'atmosphere.light.lantern-glow' },
+    harbor: { at: [18, 150], color: '#ffd37a', radius: 58, overlay: 'atmosphere.light.lantern-glow' },
 };
 
 export const LIGHT_SOURCE_REGISTRY = {

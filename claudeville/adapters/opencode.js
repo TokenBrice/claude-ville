@@ -709,26 +709,32 @@ function getGitEvents(parts, context) {
       const command = input.command || input.cmd || '';
       if (!command) continue;
 
-      const parsedEvents = extractGitEventsFromCommandSource(command, {
+      // The completion goes into the parser so a chain's exit status lands
+      // on the segment that ran last, not on every git segment.
+      const rawExit = state.metadata?.exit ?? state.exitCode ?? state.exit_code;
+      const exitCode = rawExit === null || rawExit === undefined ? NaN : Number(rawExit);
+      const completion = {};
+      if (Number.isFinite(exitCode)) {
+        completion.exitCode = exitCode;
+        completion.success = exitCode === 0;
+      } else if (state.status === 'completed') {
+        completion.success = true;
+      } else if (state.status === 'error' || state.status === 'failed') {
+        completion.success = false;
+      }
+      const completedAt = Number(state.time?.end || part.timeUpdated || part.timeCreated) || null;
+      if (completedAt) completion.completedAt = completedAt;
+      const output = [state.output, state.metadata?.output, state.error].filter((value) => typeof value === 'string' && value).join('\n');
+      if (output) completion.output = output.length > 64 * 1024 ? output.slice(-64 * 1024) : output;
+      const workdir = typeof input.workdir === 'string' && input.workdir ? input.workdir : undefined;
+
+      events.push(...extractGitEventsFromCommandSource(command, {
         ...context,
         ts: part.timeCreated,
         sourceId: part.data.callID || part.data.callId || part.id || `${stableHash(JSON.stringify(part.data))}:0`,
-      });
-
-      const exitCode = Number(state.metadata?.exit ?? state.exitCode ?? state.exit_code);
-      const completedAt = Number(state.time?.end || part.timeUpdated || part.timeCreated) || null;
-      for (const event of parsedEvents) {
-        if (Number.isFinite(exitCode)) {
-          event.exitCode = exitCode;
-          event.success = exitCode === 0;
-        } else if (state.status === 'completed') {
-          event.success = true;
-        } else if (state.status === 'error' || state.status === 'failed') {
-          event.success = false;
-        }
-        if (completedAt) event.completedAt = completedAt;
-      }
-      events.push(...parsedEvents);
+        cwd: workdir,
+        ...completion,
+      }));
     }
   } catch { /* ignore */ }
   return dedupeGitEvents(events);

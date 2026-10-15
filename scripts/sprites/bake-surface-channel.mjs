@@ -107,32 +107,38 @@ export const SURFACE_SPECS = Object.freeze({
         regions: [],
     },
     harbor: {
-        // Water line under the quay; decks and piers stand 8 px above it.
-        base: { corner: [222, 208] },
+        // 5.A — the water line under the quay's coursed face; the quay deck
+        // stands 16 px above it, the pier decks 12 px.
+        base: { left: [3, 187], bottom: [95, 226], right: [230, 154] },
         roof: [SLATE],
         regions: [
-            // Deck and pier tops: the lit plank colour, seams closed.
+            // Quay lantern on its post, at the deck's west corner.
+            { face: 'auto', poly: [[6, 138], [26, 138], [26, 176], [6, 176]], base: { corner: [12, 176] }, lift: 16 },
+            // Jib crane on the deck's front: post and jib, then rope and crate.
+            { face: 'auto', poly: [[44, 144], [92, 144], [92, 158], [63, 158], [63, 206], [46, 206], [46, 158], [44, 158]], base: { corner: [55, 203] }, lift: 16 },
+            { face: 'auto', poly: [[83, 158], [90, 158], [90, 184], [94, 184], [94, 206], [75, 206], [75, 184], [83, 184]], base: { corner: [55, 203] }, lift: 16 },
+            // The two bunting masts on the north pier.
+            { face: 'auto', poly: [[260, 66], [270, 66], [270, 140], [260, 140]], base: { corner: [265, 139] }, lift: 12 },
+            { face: 'auto', poly: [[337, 105], [346, 105], [346, 178], [337, 178]], base: { corner: [341, 177] }, lift: 12 },
+            // Quay deck between the house's foot and the coping: the stone tops,
+            // the house's shadow on them and the pier roots on the coping.
             {
                 face: 'up',
-                height: 8,
-                poly: [[38, 150], [110, 138], [160, 150], [200, 158], [292, 158], [292, 200], [240, 216], [200, 233], [118, 233], [38, 206]],
-                match: [{ rgb: [[136, 104, 80], [164, 119, 82], [202, 148, 100]] }],
+                height: 16,
+                poly: [[0, 168], [30, 158], [34, 163], [112, 172], [210, 124], [240, 128], [232, 140], [96, 214], [0, 172]],
+                match: [{ rgb: [[169, 159, 154], [120, 98, 117], [140, 121, 130], [220, 209, 199], [108, 87, 106], [129, 108, 126], [241, 231, 215], [149, 129, 137], [90, 68, 84], [76, 58, 76], [62, 47, 66], [157, 122, 94], [155, 140, 130]] }],
                 close: true,
             },
-            // East quay platform under the crane hall: darker planks.
+            // Pier decks east of the quay's SE face: the plank tops.
             {
                 face: 'up',
-                height: 8,
-                poly: [[212, 160], [268, 134], [282, 140], [282, 150], [228, 172], [212, 168]],
-                match: [{ rgb: [[129, 88, 63], [109, 76, 57], [136, 104, 80], [88, 66, 48]] }],
+                height: 12,
+                poly: [[96, 214], [232, 138], [250, 128], [384, 128], [384, 284], [96, 284]],
+                match: [{ rgb: [[157, 122, 94], [155, 140, 130], [162, 131, 107], [157, 110, 85]] }],
                 close: true,
             },
-            // Stone arcade under the east hall, on the water.
-            { face: 'auto', poly: [[148, 150], [282, 150], [282, 214], [148, 214]], base: { left: [60, 150], bottom: [158, 200], right: [282, 196] } },
-            // West house on the upper deck.
-            { face: 'auto', poly: [[70, 20], [152, 20], [152, 152], [70, 152]], base: { corner: [114, 152] }, lift: 8 },
-            // Guildhall, east hall and crane on the quay.
-            { face: 'auto', poly: [[150, 0], [312, 0], [312, 150], [150, 150]], base: { corner: [205, 172] }, lift: 8 },
+            // The house, lean-to and clock turret on the quay: their own front corner.
+            { face: 'auto', poly: [[20, 0], [270, 0], [270, 128], [210, 124], [112, 172], [34, 163], [20, 160]], base: { corner: [113, 170] }, lift: 16 },
         ],
     },
     watchtower: {

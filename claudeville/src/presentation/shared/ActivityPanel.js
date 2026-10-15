@@ -42,7 +42,9 @@ import {
     toolHistoryNodes,
     toolHistorySignature,
 } from './AgentPresentation.js';
-import { normalizeGitEvent } from './GitEventIdentity.js';
+import { normalizeGitEvent, normalizeRepoBranch } from './GitEventIdentity.js';
+import { HARBOR_FOCUS_FLEET_EVENT, harborLedger, ledgerFailureText, ledgerLaneLabel, middleTruncate } from './HarborLedger.js';
+import { repoDisplayName, repoProfile } from './RepoColor.js';
 import { contextWindowLimitForModel } from './ModelVisualIdentity.js';
 import { AvatarCanvas } from '../dashboard-mode/AvatarCanvas.js';
 import { buildExecutionTree } from '../dashboard-mode/DashboardRenderer.js';
@@ -868,6 +870,12 @@ export class ActivityPanel {
         document.addEventListener('click', this._onInteractionClick, true);
         document.addEventListener('keydown', this._onInteractionKeydown, true);
         eventBus.on('agent:selected', this._onAgentSelected);
+        // #9 — a ship departing or docking changes the Harbor Log's labels
+        // without touching the agent's events.
+        this._onHarborUpdated = () => {
+            if (this._mode === 'agent' && this.currentAgent) this._updateHarborLog(this.currentAgent);
+        };
+        eventBus.on('harbor:updated', this._onHarborUpdated);
         eventBus.on('agent:deselected', this._onAgentDeselected);
         eventBus.on('agent:updated', this._onAgentUpdated);
         eventBus.on('agent:removed', this._onAgentRemoved);
@@ -1064,6 +1072,35 @@ export class ActivityPanel {
             this.closeBtn.parentNode.insertBefore(button, this.closeBtn);
             this._pinToggleBtn = button;
         }
+    }
+
+    // U-P8 — the agent's repo and current branch under the provenance line:
+    // `claude-ville · feat/harbor-cards · worktree agent-a1b2c3`, the swatch in the
+    // repo colour every other surface uses.
+    _updateRepoLine(agent) {
+        const provenance = this.dom.panelProvenance;
+        if (!provenance) return;
+        if (!this._repoLineEl) {
+            this._repoLineSwatchEl = el('span', { className: 'activity-panel__repo-swatch' });
+            this._repoLineTextEl = el('span', { className: 'activity-panel__repo-text' });
+            this._repoLineEl = el('div', { className: 'activity-panel__repo-line' }, [this._repoLineSwatchEl, this._repoLineTextEl]);
+            provenance.after(this._repoLineEl);
+        }
+        const project = agent?.repoRoot || agent?.projectPath || '';
+        if (!project) {
+            this._repoLineEl.hidden = true;
+            return;
+        }
+        const branch = normalizeRepoBranch(agent.gitBranch);
+        const worktree = agent.worktree && agent.worktree.isMain === false ? agent.worktree.name : '';
+        const text = [
+            middleTruncate(repoDisplayName(project), 28),
+            branch ? middleTruncate(branch, 30) : '',
+        ].filter(Boolean).join(' · ') + (worktree ? ` · worktree ${middleTruncate(worktree, 18)}` : '');
+        this._repoLineEl.hidden = false;
+        this._repoLineTextEl.textContent = text;
+        this._repoLineEl.title = [project, branch && `branch ${branch}`, worktree && `worktree ${agent.worktree.path || worktree}`].filter(Boolean).join(' - ');
+        this._repoLineSwatchEl.style.background = repoProfile(project).accent || '';
     }
 
     _ensureWorkingDirectoryAction() {
@@ -1417,6 +1454,7 @@ export class ActivityPanel {
         this._chronicleFetchSeq++;
         // Building selection overrides agent selection. Close any agent state first.
         this._resetNarration();
+        if (this._repoLineEl) this._repoLineEl.hidden = true;
         if (this._mode === 'agent') {
             this._stopPolling();
             this.currentAgent = null;
@@ -1556,6 +1594,7 @@ export class ActivityPanel {
             ].filter(Boolean).join(' · ');
             this.dom.panelProvenance.title = model.title;
         }
+        this._updateRepoLine(agent);
         // Session rows show known facts only: an empty row is hidden, never
         // printed as a dash.
         const level = this._formatAgentLevel(model.identity);
@@ -2669,6 +2708,9 @@ export class ActivityPanel {
             this._renderSignatures.harborLog = '';
             return;
         }
+        // #9 — the cargo state (docked / sailed) is part of what a row says,
+        // so it is part of the signature: a departure re-renders the rows.
+        const cargo = this._harborCargoStatus();
         const signature = hashRows(events, [
             event => event.id,
             event => event.type,
@@ -2677,20 +2719,40 @@ export class ActivityPanel {
             event => event.sha,
             event => event.force,
             event => event.inferred,
+            event => cargo.get(event.id) || '',
         ]);
         this._harborLogSectionEl.style.display = '';
         if (signature === this._renderSignatures.harborLog) return;
         this._renderSignatures.harborLog = signature;
-        replaceChildren(this._harborLogBodyEl, events.map(event => this._harborLogRow(event)));
+        replaceChildren(this._harborLogBodyEl, events.map(event => this._harborLogRow(event, cargo)));
     }
 
-    _harborLogRow(event) {
-        const status = this._gitEventStatus(event);
-        const shortSha = event.sha ? event.sha.slice(0, 7) : event.type;
-        const label = [this._titleize(event.type), shortSha].filter(Boolean).join(' ');
+    // U-P5 — a commit is `unpushed` while its ship is docked and `pushed` once
+    // it has sailed (or is gone after a landed push); the dock is the truth.
+    _harborCargoStatus() {
+        const byEventId = new Map();
+        for (const ship of this._getHarborTraffic()?.state?.ships?.values?.() || []) {
+            const status = ship.status === 'docked' ? 'unpushed' : ship.status === 'departing' ? 'pushed' : '';
+            if (!status) continue;
+            for (const id of ship.eventIds || [ship.id]) byEventId.set(id, status);
+        }
+        return byEventId;
+    }
+
+    _harborLogRow(event, cargo = new Map()) {
+        const status = this._gitEventStatus(event, cargo);
+        const shortSha = event.sha ? event.sha.slice(0, 7) : '';
+        const branch = normalizeRepoBranch(event.branch);
+        // Real labels: `commit 4aa1b2c · main`, `push origin main → rejected`.
+        const label = event.type === 'push'
+            ? `push ${event.remote || 'origin'} ${branch || 'HEAD'} → ${status.label}`
+            : [event.type, shortSha, branch].filter(Boolean).join(' · ').replace(/^(\w+) · /, '$1 ');
+        const subject = event.type === 'push'
+            ? (event.reason || (status.label === 'landed' ? 'sent to sea' : ''))
+            : (event.label || shortSha || '');
         const row = el('div', {
             className: 'activity-panel__token-row activity-panel__harbor-row',
-            title: event.project || '',
+            title: [event.repoRoot || event.project, status.title].filter(Boolean).join(' - '),
             style: event.inferred ? { opacity: '0.68' } : undefined,
         }, [
             el('span', { className: 'activity-panel__token-label' }, [
@@ -2701,9 +2763,14 @@ export class ActivityPanel {
                 el('span', { text: label }),
             ]),
             el('span', { className: 'activity-panel__token-value activity-panel__harbor-subject' }, [
-                el('span', { text: event.label || shortSha || event.id }),
+                el('span', { text: subject }),
             ]),
         ]);
+        if (event.type === 'commit' && status.chip) {
+            row.querySelector('.activity-panel__harbor-subject')?.appendChild(
+                el('span', { className: ['activity-panel__harbor-chip', `activity-panel__harbor-chip--${status.chip}`], text: status.chip }),
+            );
+        }
         if (event.force) {
             row.querySelector('.activity-panel__harbor-subject')?.appendChild(
                 el('span', { className: 'activity-panel__harbor-chip', text: 'force' }),
@@ -2712,14 +2779,22 @@ export class ActivityPanel {
         return row;
     }
 
-    _gitEventStatus(event) {
+    _gitEventStatus(event, cargo = new Map()) {
+        if (event?.type === 'commit') {
+            const state = cargo.get(event.id);
+            if (state === 'unpushed') return { label: 'unpushed', chip: 'unpushed', color: 'var(--cv-gold)', title: 'docked in the harbor, not pushed yet' };
+            if (state === 'pushed') return { label: 'pushed', chip: 'pushed', color: 'var(--cv-green-soft)', title: 'sailed: pushed to the remote' };
+            return { label: 'committed', color: 'var(--ink-3)', title: 'not in the harbor (pushed, or older than its window)' };
+        }
         const status = String(event?.status || '').toLowerCase();
         if (status === 'failed' || status === 'rejected') {
-            return { label: 'failed', color: 'var(--cv-status-errored)' };
+            return { label: status, color: 'var(--cv-status-errored)' };
         }
-        if (status === 'cancelled' || status === 'canceled' || status === 'unknown') {
-            return { label: 'pending', color: 'var(--cv-status-waiting)' };
+        if (status === 'cancelled' || status === 'canceled') {
+            return { label: 'cancelled', color: 'var(--cv-status-waiting)' };
         }
+        if (status === 'unknown') return { label: 'sent', color: 'var(--cv-status-waiting)' };
+        if (event?.type === 'push') return { label: 'landed', color: 'var(--cv-green-soft)' };
         return { label: 'ok', color: 'var(--cv-green-soft)' };
     }
     _ensureNarrationSection() {
@@ -4135,12 +4210,27 @@ export class ActivityPanel {
             return [this._buildingRow('Push issue', active ? 'Push failed' : 'clear')];
         }
         if (type === 'harbor') {
-            const repos = this._getHarborRepoSummaries();
-            if (!repos.length) return [this._buildingRow('Pending repos', 'none')];
-            return repos.slice(0, 8).map((repo) => this._buildingRow(
-                repo.shortName || repo.repoName || repo.project || 'repo',
-                this._formatRepoLedger(repo),
-            ));
+            // U-P4 — the shared ledger: one row per lane (`repo · branch`),
+            // failures first, an explicit `+N more`; a row opens its fleet.
+            const now = Date.now();
+            const ledger = harborLedger(this._getHarborTraffic()?.getPendingRepoSummaries?.() || [], { now, maxGroups: 6, maxLanes: 3 });
+            if (!ledger.groups.length) return [this._buildingRow('Pending repos', 'none')];
+            const rows = [];
+            for (const group of ledger.groups) {
+                for (const lane of group.lanes) {
+                    rows.push(this._harborLedgerButton({
+                        label: `${middleTruncate(group.name, 18)} · ${ledgerLaneLabel(lane, { branchChars: 18, worktreeChars: 10 })}`,
+                        value: lane.failure ? `${lane.count} · ${ledgerFailureText(lane.failure, now, { reasonChars: 28 })}` : `${lane.count} pending`,
+                        failed: Boolean(lane.failure),
+                        accent: group.profile?.accent,
+                        project: lane.project,
+                        branch: lane.branch,
+                    }));
+                }
+                if (group.hiddenLanes > 0) rows.push(this._buildingRow('', `+${group.hiddenLanes} more branches`));
+            }
+            if (ledger.hiddenGroups > 0) rows.push(this._buildingRow('', `+${ledger.hiddenGroups} more repos · ${ledger.hiddenCommits}`));
+            return rows;
         }
         return [];
     }
@@ -4547,25 +4637,20 @@ export class ActivityPanel {
         return Object.prototype.hasOwnProperty.call(source, key);
     }
 
-    _formatRepoLedger(repo) {
-        const pending = Number(repo.pendingCommits) || 0;
-        const docked = Number(repo.dockedCommits) || 0;
-        const failed = Number(repo.failedPushes) || 0;
-        const parts = [];
-        if (pending) parts.push(`${pending} pending`);
-        if (docked) parts.push(`${docked} docked`);
-        if (failed) parts.push(this._formatPushIssueCount(failed, 'failed'));
-        return parts.length ? parts.join(', ') : '0 pending';
-    }
-
-    _formatPushIssueCount(count, status) {
-        const normalized = String(status || '').toLowerCase();
-        if (normalized === 'failed') return `${count} ${count === 1 ? 'push failed' : 'pushes failed'}`;
-        if (normalized === 'rejected') return `${count} ${count === 1 ? 'push rejected' : 'pushes rejected'}`;
-        if (normalized === 'cancelled' || normalized === 'canceled') {
-            return `${count} ${count === 1 ? 'push cancelled' : 'pushes cancelled'}`;
-        }
-        return `${count} ${this._titleize(status).toLowerCase()}`;
+    _harborLedgerButton({ label, value, failed, accent, project, branch }) {
+        const button = el('button', {
+            className: ['activity-panel__token-row', 'activity-panel__harbor-ledger-row', failed ? 'activity-panel__harbor-ledger-row--failed' : ''],
+            title: `${project}${branch ? ` (${branch})` : ''} - show fleet`,
+        }, [
+            el('span', { className: 'activity-panel__token-label' }, [
+                el('span', { className: 'activity-panel__harbor-dot', style: { background: accent || '' } }),
+                el('span', { text: label }),
+            ]),
+            el('span', { className: 'activity-panel__token-value', text: value }),
+        ]);
+        button.type = 'button';
+        button.addEventListener('click', () => eventBus.emit(HARBOR_FOCUS_FLEET_EVENT, { project, branch }));
+        return button;
     }
 
     _buildingRow(label, value) {
@@ -4606,18 +4691,6 @@ export class ActivityPanel {
         return this._getBiographyService()?.identityKeyFor?.(agent) || AgentBiography.identityKeyFor(agent);
     }
 
-    _getHarborRepoSummaries() {
-        const harbor = this._getHarborTraffic();
-        if (!harbor) return [];
-        if (typeof harbor.getRepoSummaries === 'function') {
-            return harbor.getRepoSummaries() || [];
-        }
-        if (typeof harbor.getPendingRepoSummaries === 'function') {
-            return harbor.getPendingRepoSummaries() || [];
-        }
-        return [];
-    }
-
     destroy() {
         if (this._destroyed) return;
         this._destroyed = true;
@@ -4655,6 +4728,7 @@ export class ActivityPanel {
         document.removeEventListener('click', this._onInteractionClick, true);
         document.removeEventListener('keydown', this._onInteractionKeydown, true);
         eventBus.off('agent:selected', this._onAgentSelected);
+        eventBus.off('harbor:updated', this._onHarborUpdated);
         eventBus.off('agent:deselected', this._onAgentDeselected);
         eventBus.off('agent:updated', this._onAgentUpdated);
         eventBus.off('agent:removed', this._onAgentRemoved);

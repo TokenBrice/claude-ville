@@ -1,6 +1,6 @@
 {
   "name": "claude-ville",
-  "version": "0.56.0",
+  "version": "0.57.0",
   "description": "Local-first dashboard for watching Claude Code, Codex CLI, Gemini, Grok, Kimi, OpenCode, and OMP sessions as an isometric pixel village and monitoring dashboard.",
   "private": true,
   "license": "MIT",
@@ -53,7 +53,7 @@
     "models:check": "node scripts/models/generate.mjs --check",
     "models:resolve": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/models/resolve.mjs",
     "verify:architecture": "node scripts/smoke/architecture.mjs",
-    "verify:server": "NODE_NO_WARNINGS=1 node scripts/smoke/boot-contract.mjs && NODE_NO_WARNINGS=1 node scripts/smoke/server-security.mjs && NODE_NO_WARNINGS=1 node scripts/smoke/server-fatal.mjs",
+    "verify:server": "NODE_NO_WARNINGS=1 node scripts/smoke/boot-contract.mjs && NODE_NO_WARNINGS=1 node scripts/smoke/server-security.mjs && NODE_NO_WARNINGS=1 node scripts/smoke/server-fatal.mjs && NODE_NO_WARNINGS=1 node scripts/smoke/scoped-invalidation.mjs",
     "verify:render": "NODE_NO_WARNINGS=1 node scripts/smoke/render-smoke.mjs",
     "audio:probe": "NODE_NO_WARNINGS=1 node scripts/audio/probe.mjs",
     "art:analyze": "node scripts/sprites/art-analyze.mjs",

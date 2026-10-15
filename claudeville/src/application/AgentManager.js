@@ -54,6 +54,8 @@ const AGENT_SIGNATURE_FIELDS = Object.freeze([
     'lastToolInput',
     'lastPrompt',
     'gitBranch',
+    'repoRoot',
+    'worktree',
     'gitEvents',
     'permissionMode',
     'turnState',
@@ -713,6 +715,12 @@ export class AgentManager {
                 : null,
             gitBranch: typeof session.gitBranch === 'string' && session.gitBranch.trim()
                 ? session.gitBranch.trim().slice(0, 256)
+                : null,
+            // Harbor wire contract v1: the session's repo (main worktree) and
+            // checkout, so harbor and colour group a worktree with its repo.
+            repoRoot: typeof session.repoRoot === 'string' && session.repoRoot ? session.repoRoot : null,
+            worktree: session.worktree && typeof session.worktree === 'object'
+                ? { name: String(session.worktree.name || ''), path: String(session.worktree.path || ''), isMain: session.worktree.isMain === true }
                 : null,
             gitEvents: this._rehydrateGitEvents(session.gitEvents, gitEventWire),
             permissionMode: session.permissionMode ?? null,

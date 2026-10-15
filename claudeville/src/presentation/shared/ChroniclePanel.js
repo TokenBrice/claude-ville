@@ -107,7 +107,11 @@ function eventText(event) {
         case ChronicleEventKind.ERRORED: return `${who} hit an error${where}`;
         case ChronicleEventKind.RATE_LIMITED: return `${who} hit the rate limit${where}`;
         case ChronicleEventKind.COMMIT: return `${who} committed ${detailLabel || 'a change'}${where}`;
-        case ChronicleEventKind.PUSH: return `${who} pushed ${detailLabel || ''}${where}`.trim();
+        case ChronicleEventKind.PUSH: {
+            if (!event.outcome) return `${who} pushed ${detailLabel || ''}${where}`.trim();
+            const what = event.outcome === 'rejected' ? 'was rejected' : event.outcome === 'cancelled' ? 'was cancelled' : 'failed';
+            return `${who}'s push ${what}${detailLabel ? ` (${detailLabel})` : ''}${where}`;
+        }
         default: return `${who} ${event.kind}${where}`;
     }
 }

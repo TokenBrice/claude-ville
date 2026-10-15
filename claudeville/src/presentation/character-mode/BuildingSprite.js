@@ -25,6 +25,7 @@ import { ACTIONABLE_BUCKETS, bucketForStatus, isActionableBucket } from '../../d
 import { BUILDING_EVENTS, eventBus } from '../../domain/events/DomainEvent.js';
 import { classifyTool, toolVerbLabel } from '../../domain/services/ToolIdentity.js';
 import { repoProfile } from '../shared/RepoColor.js';
+import { ledgerPlaqueRows } from '../shared/HarborLedger.js';
 import { squadMusterLines } from './RelationshipState.js';
 import { getReservedRects } from '../shared/ReservedRects.js';
 import { fireBreath, normalizeLightSource } from './LightSourceRegistry.js';
@@ -839,9 +840,19 @@ export class BuildingSprite {
             const center = this._buildingScreenCenter(building);
             const [anchorX, anchorY] = this.assets.getAnchor(entry?.id || `building.${building.type}`);
             const [flameX, flameY] = WATCHTOWER_LANTERN_FIRE.flame;
+            const id = entry?.id || `building.${building.type}`;
             this._drawWatchtowerFire(ctx, {
                 x: Math.round(center.x - anchorX + flameX),
                 y: Math.round(center.y - anchorY + flameY),
+                // V-R6 — the tower's own silhouette: the shaft is light in
+                // the air beyond the masonry, so no texel of it lands on
+                // the tower (it read as a tan stripe painted down its face).
+                tower: {
+                    mask: this.assets.getMask?.(id) || null,
+                    dims: this.assets.getDims?.(id) || null,
+                    x: Math.round(center.x - anchorX),
+                    y: Math.round(center.y - anchorY),
+                },
             });
         }
     }
@@ -1330,12 +1341,20 @@ export class BuildingSprite {
             })
             : { displayText: '', width: 0 };
         ctx.font = WORLD_BODY_FONT_11;
-        const countText = count > 0 ? String(count) : '';
+        const countText = count > 0 && !attempt.hideCount ? String(count) : '';
         const countWidth = countText ? measureLabelText(ctx, countText) : 0;
         // W7.5 — a muster row keeps its exact `· out ▸ returned` tail whole
         // and shortens only the parent's name to make room.
         const rowMaxWidth = attempt.rowMaxWidth || 180;
         const rows = (attempt.rows || []).map(row => {
+            // U-P4 — a ledger row's count is a tail that never truncates:
+            // only the name shrinks to make room for it.
+            if (row.tail) {
+                const tailText = ` ${row.tail}`;
+                const tailWidth = Math.round(measureLabelText(ctx, tailText));
+                const label = fitLabelText(ctx, row.label, Math.max(0, rowMaxWidth - (row.profile ? 8 : 0) - tailWidth));
+                return { ...row, label, tailText, tailWidth };
+            }
             if (!row.muster) return { ...row, label: fitLabelText(ctx, row.label, rowMaxWidth) };
             const musterLeft = ` · ${row.muster.out} `;
             const musterRight = ` ${row.muster.returned}`;
@@ -1459,6 +1478,10 @@ export class BuildingSprite {
                 }
                 ctx.fillStyle = row.color || WALNUT.count;
                 ctx.fillText(row.label, rowX, baseline);
+                if (row.tailText) {
+                    ctx.fillStyle = row.tailColor || WALNUT.count;
+                    ctx.fillText(row.tailText, rowX + Math.round(measureLabelText(ctx, row.label)), baseline);
+                }
                 if (row.musterLeft) {
                     // `· 6 ▸ 2` in count ink; the ▸ is a 3×5 carved
                     // triangle (Departure Mono has no U+25B8).
@@ -1526,7 +1549,10 @@ export class BuildingSprite {
         const attempts = [{
             text: isHarborLedger || isMuster ? compactText : baseText,
             rows: isHarborLedger ? harborLedgerRows : isMuster ? musterRows : [],
-            rowMaxWidth: isHovered ? 214 : 184,
+            // The plaque's head number is a visitor count; above commit rows
+            // it read as "N pending", so the ledger plaque drops it.
+            hideCount: isHarborLedger,
+            rowMaxWidth: isHovered ? 214 : isHarborLedger ? 204 : 184,
             motif: true,
             maxTextWidth: isHovered ? 190 : isLandmark ? 132 : 96,
             overlapTolerance: major ? Math.min(0.92, LABEL_OVERLAP_TOLERANCE * overlapScale) : 0.3,
@@ -3214,7 +3240,16 @@ export class BuildingSprite {
             // Warm halo and one descending shaft, ungraded on the shared
             // overlay; sea glints use lighthouseBeam in the water backends.
             if (this._ungradedOverlay && shouldDrawLocalY(WATCHTOWER_LANTERN_FIRE.flame[1])) {
-                lanternBeacon = localPoint(...WATCHTOWER_LANTERN_FIRE.flame);
+                const origin = localPoint(0, 0);
+                lanternBeacon = {
+                    ...localPoint(...WATCHTOWER_LANTERN_FIRE.flame),
+                    tower: {
+                        mask: this.assets.getMask?.('building.watchtower') || null,
+                        dims: this.assets.getDims?.('building.watchtower') || null,
+                        x: Math.round(origin.x),
+                        y: Math.round(origin.y),
+                    },
+                };
             }
         } else if (building.type === 'harbor') {
             // Harbor effects span the roofline and foreground quay. Draw in both
@@ -3485,8 +3520,10 @@ export class BuildingSprite {
     // wake arcs. What remains is cloth and cargo, snapped to the art grid and
     // taken through the frame's C2 grade so it sits in the island's light.
     _drawHarborMasterOffice(ctx, localPoint, building = null) {
-        const signal = localPoint(208, 38);
-        const pier = localPoint(112, 187);
+        // 5.A — the signals hoist on the outer bunting mast of the north pier;
+        // the cargo stands on the quay deck between the door and the coping.
+        const signal = localPoint(341, 116);
+        const pier = localPoint(140, 205);
         const lightGrade = this._overlayLightGrade();
         const grade = lightGrade ? (tone) => gradeTone(tone, lightGrade) : null;
         const windX = pennantWind(this.atmosphereState?.weather);
@@ -3535,8 +3572,9 @@ export class BuildingSprite {
         ctx.globalCompositeOperation = 'source-over';
         ctx.globalAlpha = 1;
         for (let i = 0; i < cargoCount; i++) {
+            // One crate per 16 px along the coping's 2:1 run.
             const x = pier.x - 28 + i * 16;
-            const y = pier.y - 15 + (i % 2) * 5 + bob;
+            const y = pier.y - 15 - i * 8 + bob;
             // Crate: a 1-texel dark rim around the lid-lit body.
             ctx.fillStyle = rim;
             ctx.fillRect(x - 5, y - 5, 10, 8);
@@ -4844,8 +4882,16 @@ export class BuildingSprite {
         const bayer = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
         const ox = Math.round(beacon.x);
         const oy = Math.round(beacon.y);
+        const tower = beacon.tower?.mask && beacon.tower?.dims ? beacon.tower : null;
+        const onTower = (wx, wy) => {
+            if (!tower) return false;
+            const lx = wx - tower.x;
+            const ly = wy - tower.y;
+            return lx >= 0 && ly >= 0 && lx < tower.dims.w && ly < tower.dims.h && tower.mask[ly * tower.dims.w + lx] === 1;
+        };
         for (let y = minY; y <= maxY; y++) {
             for (let x = minX; x <= maxX; x++) {
+                if (onTower(ox + x, oy + y)) continue;
                 const px = x + 0.5;
                 const py = y + 0.5;
                 const t = (px * ny - py * nx) / determinant;
@@ -5785,30 +5831,20 @@ export class BuildingSprite {
         return buildingCenterToWorld(b);
     }
 
+    // U-P4 — the Harbor plaque's ledger in the shared grammar: one row per
+    // repo (`repo · branch N`), failed repos first in the failure ink, then
+    // the oldest pending, and an explicit `+N more` row.
     _harborLedgerRows(repos = []) {
-        const active = (Array.isArray(repos) ? repos : [])
-            .filter((repo) => Number(repo?.pendingCommits) > 0)
-            .sort((a, b) => (Number(b.pendingCommits) - Number(a.pendingCommits))
-                || String(a.repoName || a.shortName || '').localeCompare(String(b.repoName || b.shortName || '')));
-        if (!active.length) return [];
-        const visible = active.slice(0, 3).map((repo) => {
-            const name = String(repo.shortName || repo.repoName || repo.project || 'Repo')
-                .replace(/[-_]+/g, ' ')
-                .replace(/\b\w/g, (char) => char.toUpperCase());
+        return ledgerPlaqueRows(repos, { maxRows: 4 }).map((row) => {
+            if (row.more) return { label: row.label, color: WALNUT.text };
             return {
-                label: `${name} (${Number(repo.pendingCommits)})`,
-                color: repo.profile?.labelText || repo.profile?.accent || '#f6d384',
-                profile: repo.profile || null,
+                label: `${row.name} · ${row.detail}`,
+                tail: String(row.count),
+                tailColor: row.failed ? STATUS_VISUALS.errored.color : null,
+                color: row.failed ? STATUS_VISUALS.errored.color : (row.profile?.labelText || row.profile?.accent || '#f6d384'),
+                profile: row.profile || null,
             };
         });
-        const remaining = active.length - visible.length;
-        if (remaining > 0 && visible.length) {
-            visible[visible.length - 1] = {
-                ...visible[visible.length - 1],
-                label: `${visible[visible.length - 1].label} +${remaining}`,
-            };
-        }
-        return visible;
     }
 
     // W7.5 — muster rows for the Command plaque: the parent's name in its

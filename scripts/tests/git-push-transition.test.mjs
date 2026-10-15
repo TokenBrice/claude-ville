@@ -29,6 +29,9 @@ function fixture(t, { remote = true } = {}) {
   const root = fs.realpathSync(makeTempDir('claudeville-push-transition-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const repo = path.join(root, 'repo');
+  // Setup pushes are dated an hour back so a fresh scan does not replay them
+  // from the remote-tracking reflog.
+  process.env.GIT_COMMITTER_DATE = new Date(Date.now() - 60 * 60 * 1000).toISOString();
   if (remote) {
     const origin = path.join(root, 'origin.git');
     git(root, 'init', '-q', '--bare', '-b', 'main', origin);
@@ -41,6 +44,7 @@ function fixture(t, { remote = true } = {}) {
     git(repo, 'push', '-q', '-u', 'origin', 'main');
     git(repo, 'remote', 'set-head', 'origin', 'main');
   }
+  delete process.env.GIT_COMMITTER_DATE;
   return { root, repo };
 }
 
@@ -105,14 +109,15 @@ test('commits pushed through a release branch sail after HEAD has moved to it', 
   ]);
 });
 
-test('commits that left the list without reaching a remote stay unsailed until pushed', (t) => {
+test('a branch switched away from keeps its unpushed cargo docked until pushed', (t) => {
   const { repo } = fixture(t);
   git(repo, 'switch', '-q', '-c', 'feat/hold');
   git(repo, 'commit', '-q', '--allow-empty', '-m', 'Stow the cargo');
   assert.deepEqual(observe(repo).commits, ['feat/hold:Stow the cargo']);
 
+  // Every recent local branch is scanned, not only the checked-out one.
   git(repo, 'switch', '-q', 'main');
-  assert.deepEqual(observe(repo), { commits: [], pushes: [] });
+  assert.deepEqual(observe(repo), { commits: ['feat/hold:Stow the cargo'], pushes: [] });
 
   git(repo, 'push', '-q', 'origin', 'feat/hold');
   assert.deepEqual(observe(repo).pushes.map((push) => push.branch), ['feat/hold']);

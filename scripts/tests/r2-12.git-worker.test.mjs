@@ -20,18 +20,14 @@ function writeFakeGit(directory) {
 const args = process.argv.slice(2).join(' ');
 if (process.env.FAKE_GIT_MODE === 'hang') {
   setTimeout(() => {}, 2000);
-} else if (args.includes('--is-inside-work-tree')) {
-  process.stdout.write('true\\n');
-} else if (args.includes('branch --show-current')) {
-  process.stdout.write('main\\n');
-} else if (args.includes('upstream:short')) {
-  process.stdout.write('origin/main\\n');
+} else if (args.includes('for-each-ref')) {
+  const now = String(Math.floor(Date.now() / 1000));
+  const nul = String.fromCharCode(0);
+  process.stdout.write(['refs/heads/main', 'a'.repeat(40), 'origin/main', '[ahead 1]', now, ''].join(nul) + '\\n'
+    + ['refs/remotes/origin/main', 'b'.repeat(40), '', '', now, ''].join(nul) + '\\n');
 } else if (args.includes('log ')) {
-  process.stdout.write('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' + String.fromCharCode(31) + '1700000000' + String.fromCharCode(31) + 'cached commit\\n');
-} else if (args.includes('rev-list')) {
-  process.stdout.write('0 0\\n');
-} else if (args.includes('rev-parse --verify')) {
-  process.stdout.write('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\n');
+  const unit = String.fromCharCode(31);
+  process.stdout.write(['a'.repeat(40), '1700000000', 'refs/heads/main', 'Fixture', 'fixture@example.com', 'cached commit', ''].join(unit) + String.fromCharCode(30) + '\\n');
 } else {
   process.exitCode = 1;
 }
@@ -44,7 +40,7 @@ function runWorkerChild(mode, { fakeGit, projectCount = 1 } = {}) {
   const childScript = `
 const git = require(${JSON.stringify(GIT_EVENTS_PATH)});
 const mode = process.argv[1];
-const projects = Array.from({ length: ${projectCount} }, (_, index) => '/tmp/r2-12-project-' + index);
+const projects = JSON.parse(process.argv[2]);
 git.configureGitEnrichmentWorker({ enabled: true });
 if (mode === 'queue') {
   for (const project of projects) git.requestGitWorkerRefresh(project, { reason: 'load' });
@@ -94,7 +90,16 @@ if (mode === 'queue') {
   waitForRefresh();
 }
 `;
-  const result = spawnSync(process.execPath, ['-e', childScript, mode], {
+  // Each project is a directory with a minimal git dir so repository
+  // identity resolves without a subprocess.
+  const projectRoot = makeTempDir('git-worker-projects');
+  const projects = Array.from({ length: projectCount }, (_, index) => {
+    const project = path.join(projectRoot, `project-${index}`);
+    fs.mkdirSync(path.join(project, '.git'), { recursive: true });
+    fs.writeFileSync(path.join(project, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+    return project;
+  });
+  const result = spawnSync(process.execPath, ['-e', childScript, mode, JSON.stringify(projects)], {
     cwd: REPO_ROOT,
     env: {
       ...process.env,

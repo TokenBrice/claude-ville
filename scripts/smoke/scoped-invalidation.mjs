@@ -13,125 +13,114 @@ const previousDisableGit = process.env.CLAUDEVILLE_DISABLE_GIT_ENRICHMENT;
 process.env.HOME = tmpHome;
 delete process.env.CLAUDEVILLE_DISABLE_GIT_ENRICHMENT;
 
+process.env.GIT_CONFIG_NOSYSTEM = '1';
+process.env.GIT_AUTHOR_NAME = process.env.GIT_COMMITTER_NAME = 'ClaudeVille Fixture';
+process.env.GIT_AUTHOR_EMAIL = process.env.GIT_COMMITTER_EMAIL = 'fixture@claudeville.local';
+
+function git(cwd, ...args) {
+  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+}
+
+// A clone of a bare remote with one pushed base commit.
 function makeRepository(name) {
+  const remote = path.join(tmpHome, 'remotes', `${name}.git`);
   const project = path.join(tmpHome, name);
-  fs.mkdirSync(project, { recursive: true });
-  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: project });
+  fs.mkdirSync(path.dirname(remote), { recursive: true });
+  git(tmpHome, 'init', '-q', '--bare', '-b', 'main', remote);
+  git(tmpHome, 'clone', '-q', remote, project);
+  commit(project, `${name} base`);
+  git(project, 'push', '-q', '-u', 'origin', 'main');
   return project;
 }
 
-function syntheticCommit(project) {
-  return {
-    id: `fixture-${path.basename(project)}`,
-    type: 'commit',
-    project,
-    provider: 'fixture',
-    sessionId: 'fixture',
-    success: true,
-    branch: 'main',
-    ts: Date.now(),
-    completedAt: Date.now(),
-  };
+function commit(project, message) {
+  fs.writeFileSync(path.join(project, 'commit.txt'), `${message}\n`);
+  git(project, 'add', 'commit.txt');
+  git(project, 'commit', '-q', '-m', message);
+  return git(project, 'rev-parse', 'HEAD');
 }
+
+const session = (project, id = `fixture-${path.basename(project)}`) => ({ sessionId: id, provider: 'fixture', project, gitEvents: [] });
+const labels = (sessions) => sessions[0].gitEvents.filter((event) => event.type === 'commit').map((event) => event.label);
 
 try {
   const projectA = makeRepository('project-a');
   const projectB = makeRepository('project-b');
+  commit(projectA, 'a first');
+  commit(projectB, 'b first');
+  const gitEvents = require('../../claudeville/adapters/gitEvents.js');
+  const commands = () => gitEvents.getGitEnrichmentPerfStats().gitCommandCount;
+
+  // Gitlink identity: a linked worktree and a submodule both have a `.git`
+  // file. The worktree belongs to its main checkout; the submodule is its own
+  // repository; subdirectories of either walk up to them.
+  const worktree = path.join(tmpHome, 'project-a-wt');
+  git(projectA, 'worktree', 'add', '-q', '-b', 'side', worktree);
+  assert.ok(fs.statSync(path.join(worktree, '.git')).isFile());
+  const worktreeIdentity = gitEvents.resolveRepoIdentity(path.join(worktree, 'nested', 'dir'));
+  assert.equal(worktreeIdentity.repoRoot, fs.realpathSync(projectA));
+  assert.equal(worktreeIdentity.checkout, fs.realpathSync(worktree));
+  assert.equal(worktreeIdentity.worktree.isMain, false);
+  assert.ok(gitEvents.projectGitStateSignature(worktree), 'a worktree gitlink must sign its git state');
+  git(projectB, '-c', 'protocol.file.allow=always', 'submodule', '-q', 'add', projectA, 'vendor/a');
+  const submodule = path.join(projectB, 'vendor', 'a');
+  assert.ok(fs.statSync(path.join(submodule, '.git')).isFile());
+  const submoduleIdentity = gitEvents.resolveRepoIdentity(submodule);
+  assert.equal(submoduleIdentity.repoRoot, fs.realpathSync(submodule));
+  assert.equal(submoduleIdentity.checkout, fs.realpathSync(submodule));
+  assert.equal(submoduleIdentity.commonDir, path.join(fs.realpathSync(projectB), '.git', 'modules', 'vendor', 'a'));
+  assert.ok(gitEvents.projectGitStateSignature(submodule), 'a submodule gitlink must sign its git state');
+  assert.equal(gitEvents.resolveRepoIdentity(projectB).repoRoot, fs.realpathSync(projectB));
+  git(projectB, 'commit', '-q', '-m', 'b submodule');
+
+  const sessionsA = [session(projectA), session(path.join(projectA, 'sub', 'dir'), 'fixture-a-subdir'), session(worktree, 'fixture-a-wt')];
+  const first = gitEvents.inferUnpushedGitEventsForSessions(sessionsA);
+  assert.ok(labels(first).includes('a first'));
+  assert.equal(new Set(first.map((entry) => entry.repoRoot)).size, 1, 'root, subdirectory and worktree share one repository');
+  gitEvents.inferUnpushedGitEventsForSessions([session(projectB)]);
+  const warmStart = commands();
+  gitEvents.inferUnpushedGitEventsForSessions(sessionsA);
+  gitEvents.inferUnpushedGitEventsForSessions([session(projectB)]);
+  assert.equal(commands(), warmStart, 'warm polls must launch no Git subprocess');
+  const realDateNow = Date.now;
+  Date.now = () => realDateNow() + 60_000;
+  try {
+    gitEvents.inferUnpushedGitEventsForSessions(sessionsA);
+  } finally {
+    Date.now = realDateNow;
+  }
+  assert.equal(commands(), warmStart, 'an unchanged 60-second window must not launch a periodic Git subprocess burst');
+  const initialStats = gitEvents.getGitEnrichmentPerfStats();
+  assert.equal(initialStats.repositoryScanCount, 2, 'one scan state per repository, not per session path');
+  assert.equal(initialStats.unpushedEventCacheSize, 2);
+
+  const beforeCommit = gitEvents.getGitEnrichmentPerfStats();
+  commit(projectA, 'a second');
+  const afterCommitSessions = gitEvents.inferUnpushedGitEventsForSessions(sessionsA);
+  const afterCommit = gitEvents.getGitEnrichmentPerfStats();
+  assert.equal(afterCommit.headInvalidations, beforeCommit.headInvalidations + 1,
+    'a new commit must invalidate the repository without waiting for its TTL');
+  assert.ok(afterCommit.gitCommandCount > beforeCommit.gitCommandCount);
+  assert.ok(labels(afterCommitSessions).includes('a second'), 'the next enrichment pass must expose the new commit');
+
+  gitEvents.invalidateGitStatusCaches({ project: projectA });
+  const pathBeforeGitFailure = process.env.PATH;
+  process.env.PATH = path.join(tmpHome, 'missing-bin');
+  let failedScan;
+  try {
+    failedScan = gitEvents.inferUnpushedGitEventsForSessions(sessionsA);
+  } finally {
+    process.env.PATH = pathBeforeGitFailure;
+  }
+  assert.ok(labels(failedScan).includes('a second'), 'a failed Git scan must keep the last good result');
+  const recovered = gitEvents.inferUnpushedGitEventsForSessions(sessionsA);
+  assert.ok(labels(recovered).includes('a second'), 'Git enrichment must retry and recover after a transient failure');
+
   const openCodeState = path.join(tmpHome, '.local', 'share', 'opencode');
   fs.mkdirSync(openCodeState, { recursive: true });
   for (const fileName of ['opencode.db', 'opencode.db-wal', 'opencode.db-shm']) {
     fs.writeFileSync(path.join(openCodeState, fileName), 'fixture');
   }
-  const gitEvents = require('../../claudeville/adapters/gitEvents.js');
-  gitEvents.inferPushedGitEvents([syntheticCommit(projectA)]);
-  gitEvents.inferPushedGitEvents([syntheticCommit(projectB)]);
-  const initialGitStats = gitEvents.getGitEnrichmentPerfStats();
-  assert.equal(initialGitStats.statusCacheSize, 2, 'fixture should populate two project status entries');
-  const session = {
-    sessionId: 'fixture-session',
-    provider: 'fixture',
-    project: projectA,
-    gitEvents: [],
-  };
-  gitEvents.inferUnpushedGitEventsForSessions([session]);
-  const afterFirstUnpushed = gitEvents.getGitEnrichmentPerfStats();
-  gitEvents.inferUnpushedGitEventsForSessions([session]);
-  const afterSecondUnpushed = gitEvents.getGitEnrichmentPerfStats();
-  assert.equal(
-    afterSecondUnpushed.gitCommandCount,
-    afterFirstUnpushed.gitCommandCount,
-    'unchanged unpushed enrichment should reuse its project cache',
-  );
-  const realDateNow = Date.now;
-  Date.now = () => realDateNow() + 60_000;
-  try {
-    gitEvents.inferUnpushedGitEventsForSessions([session]);
-  } finally {
-    Date.now = realDateNow;
-  }
-  assert.equal(
-    gitEvents.getGitEnrichmentPerfStats().gitCommandCount,
-    afterFirstUnpushed.gitCommandCount,
-    'an unchanged 60-second window must not launch a periodic Git subprocess burst',
-  );
-  assert.equal(afterSecondUnpushed.statusCacheSize, 2, 'unpushed events need a distinct cache key space');
-  assert.equal(afterSecondUnpushed.unpushedEventCacheSize, 1, 'fixture should retain one bounded unpushed entry');
-
-  execFileSync('git', ['config', 'user.email', 'fixture@claudeville.local'], { cwd: projectA });
-  execFileSync('git', ['config', 'user.name', 'ClaudeVille Fixture'], { cwd: projectA });
-  fs.writeFileSync(path.join(projectA, 'commit.txt'), 'base fixture\n');
-  execFileSync('git', ['add', 'commit.txt'], { cwd: projectA });
-  execFileSync('git', ['commit', '-q', '-m', 'fixture base'], { cwd: projectA });
-  execFileSync('git', ['branch', 'master'], { cwd: projectA });
-  gitEvents.inferUnpushedGitEventsForSessions([session]);
-  const afterBase = gitEvents.getGitEnrichmentPerfStats();
-  assert.equal(
-    afterBase.headInvalidations,
-    afterSecondUnpushed.headInvalidations + 1,
-    'the first commit must invalidate the project cache without waiting for its TTL',
-  );
-
-  fs.writeFileSync(path.join(projectA, 'commit.txt'), 'new commit fixture\n');
-  execFileSync('git', ['add', 'commit.txt'], { cwd: projectA });
-  execFileSync('git', ['commit', '-q', '-m', 'fixture commit'], { cwd: projectA });
-  const afterCommitSessions = gitEvents.inferUnpushedGitEventsForSessions([session]);
-  const afterCommit = gitEvents.getGitEnrichmentPerfStats();
-  assert.equal(
-    afterCommit.headInvalidations,
-    afterBase.headInvalidations + 1,
-    'a new commit must invalidate the project cache without waiting for its TTL',
-  );
-  assert.ok(afterCommit.gitCommandCount > afterBase.gitCommandCount);
-  assert.ok(
-    afterCommitSessions[0].gitEvents.some(event => event.label === 'fixture commit'),
-    'the next enrichment pass must expose the new commit',
-  );
-
-  gitEvents.invalidateGitStatusCaches({ project: projectA });
-  const pathBeforeGitFailure = process.env.PATH;
-  process.env.PATH = path.join(tmpHome, 'missing-bin');
-  try {
-    gitEvents.inferUnpushedGitEventsForSessions([session]);
-  } finally {
-    process.env.PATH = pathBeforeGitFailure;
-  }
-  assert.equal(
-    gitEvents.getGitEnrichmentPerfStats().unpushedEventCacheSize,
-    0,
-    'a failed Git scan must not cache an authoritative empty result',
-  );
-  const recoveredSessions = gitEvents.inferUnpushedGitEventsForSessions([session]);
-  assert.ok(
-    recoveredSessions[0].gitEvents.some(event => event.label === 'fixture commit'),
-    'Git enrichment must retry and recover immediately after a transient failure',
-  );
-  gitEvents.inferPushedGitEvents([syntheticCommit(projectA)]);
-  assert.equal(
-    gitEvents.getGitEnrichmentPerfStats().statusCacheSize,
-    2,
-    'the pushed-status fixture should restore both project cache entries',
-  );
-
   const registry = require('../../claudeville/adapters/index.js');
   const claude = registry.adapters.find((adapter) => adapter.provider === 'claude');
   const grok = registry.adapters.find((adapter) => adapter.provider === 'grok');
@@ -173,16 +162,10 @@ try {
     assert.equal(claudeDirtyCalls[0].kind, 'transcript');
     assert.equal(claudeDirtyCalls[0].sessionId, 'fixture-session');
     assert.equal(grokFullInvalidations, 0, 'unrelated adapter cache must survive provider append');
-    assert.equal(
-      gitEvents.getGitEnrichmentPerfStats().statusCacheSize,
-      2,
-      'provider append must not invalidate Git status caches',
-    );
-    assert.equal(
-      gitEvents.getGitEnrichmentPerfStats().unpushedEventCacheSize,
-      1,
-      'provider append must not invalidate unpushed Git events',
-    );
+    const afterAppend = commands();
+    gitEvents.inferUnpushedGitEventsForSessions(sessionsA);
+    gitEvents.inferUnpushedGitEventsForSessions([session(projectB)]);
+    assert.equal(commands(), afterAppend, 'provider append must not invalidate Git enrichment');
 
     registry.invalidateSessionCaches({
       dirty: {
@@ -193,16 +176,11 @@ try {
         project: projectA,
       },
     });
-    assert.equal(
-      gitEvents.getGitEnrichmentPerfStats().statusCacheSize,
-      1,
-      'Git invalidation should remove all cache entries for only the named project',
-    );
-    assert.equal(
-      gitEvents.getGitEnrichmentPerfStats().unpushedEventCacheSize,
-      0,
-      'Git invalidation should remove the named project unpushed-event entry',
-    );
+    const afterGitDirty = commands();
+    gitEvents.inferUnpushedGitEventsForSessions([session(projectB)]);
+    assert.equal(commands(), afterGitDirty, 'Git invalidation must leave other repositories warm');
+    gitEvents.inferUnpushedGitEventsForSessions(sessionsA);
+    assert.ok(commands() > afterGitDirty, 'Git invalidation must rescan the named repository');
     assert.equal(grokFullInvalidations, 0, 'Git invalidation must not flush provider adapters');
 
     registry.invalidateSessionCaches({
@@ -220,64 +198,33 @@ try {
   }
 
   const remoteProject = makeRepository('nested-remote-ref');
-  execFileSync('git', ['config', 'user.email', 'fixture@claudeville.local'], { cwd: remoteProject });
-  execFileSync('git', ['config', 'user.name', 'ClaudeVille Fixture'], { cwd: remoteProject });
-  fs.writeFileSync(path.join(remoteProject, 'remote.txt'), 'base\n');
-  execFileSync('git', ['add', 'remote.txt'], { cwd: remoteProject });
-  execFileSync('git', ['commit', '-q', '-m', 'remote base'], { cwd: remoteProject });
-  const remoteBase = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: remoteProject, encoding: 'utf8' }).trim();
-  fs.writeFileSync(path.join(remoteProject, 'remote.txt'), 'second\n');
-  execFileSync('git', ['add', 'remote.txt'], { cwd: remoteProject });
-  execFileSync('git', ['commit', '-q', '-m', 'remote second'], { cwd: remoteProject });
-  const remoteHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: remoteProject, encoding: 'utf8' }).trim();
-  execFileSync('git', ['update-ref', 'refs/remotes/origin/main', remoteBase], { cwd: remoteProject });
-  const remoteSession = {
-    sessionId: 'nested-remote-ref-session',
-    provider: 'fixture',
-    project: remoteProject,
-    gitEvents: [],
-  };
-  const beforeRemoteAdvance = gitEvents.inferUnpushedGitEventsForSessions([remoteSession]);
-  assert.ok(
-    beforeRemoteAdvance[0].gitEvents.some(event => event.label === 'remote second'),
-    'fixture must begin with one commit ahead of the nested remote ref',
-  );
+  const remoteBase = git(remoteProject, 'rev-parse', 'HEAD');
+  const remoteHead = commit(remoteProject, 'remote second');
+  git(remoteProject, 'update-ref', 'refs/remotes/origin/team/main', remoteBase);
+  const remoteSession = session(remoteProject, 'nested-remote-ref-session');
+  assert.ok(labels(gitEvents.inferUnpushedGitEventsForSessions([remoteSession])).includes('remote second'),
+    'fixture must begin with one commit ahead of the nested remote ref');
   const beforeRemoteStats = gitEvents.getGitEnrichmentPerfStats();
-  execFileSync('git', ['update-ref', 'refs/remotes/origin/main', remoteHead], { cwd: remoteProject });
+  git(remoteProject, 'update-ref', 'refs/remotes/origin/team/main', remoteHead);
   const afterRemoteAdvance = gitEvents.inferUnpushedGitEventsForSessions([remoteSession]);
   const afterRemoteStats = gitEvents.getGitEnrichmentPerfStats();
-  assert.equal(
-    afterRemoteStats.headInvalidations,
-    beforeRemoteStats.headInvalidations + 1,
-    'a nested loose remote-ref update must invalidate Git enrichment without watcher help',
-  );
+  assert.equal(afterRemoteStats.headInvalidations, beforeRemoteStats.headInvalidations + 1,
+    'a nested loose remote-ref update must invalidate Git enrichment without watcher help');
   assert.ok(afterRemoteStats.gitCommandCount > beforeRemoteStats.gitCommandCount);
-  assert.equal(
-    afterRemoteAdvance[0].gitEvents.some(event => event.type === 'commit' && event.label === 'remote second'),
-    false,
-    'the refreshed enrichment must not retain a commit now contained by the remote ref',
-  );
+  assert.equal(labels(afterRemoteAdvance).includes('remote second'), false,
+    'the refreshed enrichment must not retain a commit now contained by the remote ref');
+  assert.ok(afterRemoteAdvance[0].gitEvents.some((event) => event.type === 'push' && event.landedShas?.includes(remoteHead)),
+    'the landed commit departs with a transition push');
+
   const bulkRemoteDir = path.join(remoteProject, '.git', 'refs', 'remotes', 'bulk');
   fs.mkdirSync(bulkRemoteDir, { recursive: true });
   for (let index = 0; index < 900; index++) {
-    fs.writeFileSync(
-      path.join(bulkRemoteDir, `ref-${String(index).padStart(4, '0')}`),
-      `${remoteHead}\n`,
-    );
+    fs.writeFileSync(path.join(bulkRemoteDir, `ref-${String(index).padStart(4, '0')}`), `${remoteHead}\n`);
   }
-  const beforeBoundedRemoteStats = gitEvents.getGitEnrichmentPerfStats();
   gitEvents.inferUnpushedGitEventsForSessions([remoteSession]);
-  const afterBoundedRemoteStats = gitEvents.getGitEnrichmentPerfStats();
-  assert.ok(
-    afterBoundedRemoteStats.remoteRefScanTruncations
-      > beforeBoundedRemoteStats.remoteRefScanTruncations,
-    'large loose remote-ref trees must stop at the traversal budget',
-  );
-  assert.ok(
-    afterBoundedRemoteStats.remoteRefScanHighWater
-      <= afterBoundedRemoteStats.remoteRefScanEntryLimit,
-    'loose remote-ref traversal exceeded its entry budget',
-  );
+  const afterBulk = commands();
+  gitEvents.inferUnpushedGitEventsForSessions([remoteSession]);
+  assert.equal(commands(), afterBulk, 'a bounded signature over large loose remote-ref trees stays warm');
 
   const { shutdownRuntime, _watcherTest } = require('../../claudeville/server.js');
   const watchRoot = path.join(tmpHome, 'watch-root');
@@ -309,7 +256,7 @@ try {
   });
   shutdownRuntime({ reason: 'scoped invalidation smoke', exitProcess: false });
 
-  console.log('scoped invalidation smoke passed (provider append, project Git scope, nested remote refs, watcher metadata)');
+  console.log('scoped invalidation smoke passed (gitlink identity, warm polls, provider append, repository Git scope, nested remote refs, watcher metadata)');
 } finally {
   process.env.HOME = previousHome;
   if (previousDisableGit === undefined) delete process.env.CLAUDEVILLE_DISABLE_GIT_ENRICHMENT;

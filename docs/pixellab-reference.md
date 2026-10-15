@@ -79,7 +79,7 @@ The PixelLab MCP server (configured via `claude mcp add --transport http pixella
 - Maps: `create-map`, `create-map-new`, `extend-map`, `extend-map-v2`, `create-large-image`, `create-texture`
 - Other: `create-instant-character`, `create-ui-elements`, `create-ui-elements-pro`, `create-sl-image-pro`, `create-character-with-4-directions`, `create-character-with-8-directions` (the MCP `create_character` wraps these last two)
 
-**Why ClaudeVille uses both:** MCP `create_isometric_tile` caps at 64 px, and the repo's bake scripts call REST directly. The Painted Isle landmarks (Command, Archive, Task Board, Forge, Mine) were re-authored with REST `generate-image-v2` using the since-retired `building.observatory` as the style image; the Portal (2026-10-01) was re-authored the same way with `building.command` as the style image; Harbor and Watchtower (288×384) are single `create_map_object` images (manifest `tool: map_object`); the Tavern (296×288, open-front) is a `create_image_pro` image with `building.command` as the style image. `scripts/sprites/generate-pixellab-revamp.mjs` calls REST directly and reads `PIXELLAB_API_TOKEN` or `PIXELLAB_AUTHORIZATION` from `.dev.vars`; its building specs come from the manifest, but its character/prop inventories are still code-defined. Run it only with an explicit, reviewed `--ids` list.
+**Why ClaudeVille uses both:** MCP `create_isometric_tile` caps at 64 px, and the repo's bake scripts call REST directly. The Painted Isle landmarks (Command, Archive, Task Board, Forge, Mine) were re-authored with REST `generate-image-v2` using the since-retired `building.observatory` as the style image; the Portal (2026-10-01) was re-authored the same way with `building.command` as the style image; the Watchtower (288×384) is a single `create_map_object` image (manifest `tool: map_object`); the Tavern (296×288, open-front) and the Harbor (384×284, 2026-10-15, quay and piers) are `create_image_pro` images with `building.command` as the style image. `scripts/sprites/generate-pixellab-revamp.mjs` calls REST directly and reads `PIXELLAB_API_TOKEN` or `PIXELLAB_AUTHORIZATION` from `.dev.vars`; its building specs come from the manifest, but its character/prop inventories are still code-defined. Run it only with an explicit, reviewed `--ids` list.
 
 ## Tool catalog
 
@@ -312,6 +312,26 @@ curl --fail -X POST https://api.pixellab.ai/v2/create-image-pixflux \
 ```
 
 For the full revamp script that handles edge-colour cleanup, see `scripts/sprites/generate-pixellab-revamp.mjs`.
+
+### Directional harbor hull (two authored views)
+
+The 2026-10-15 fleet (manifest `prop.harborShip.*`, provenance item `5.1+5.6`) used this route: one generated view per class, one cheap rotation for the second, mirrors for the other two.
+
+```text
+1. mcp__pixellab__create_1_direction_object: bow lower-left (SW), true 2:1 isometric, style image = a crop
+   of building.harbor (quay, crane, pier) plus building.tavern's slate; pick on the candidate board.
+2. mcp__pixellab__create_object_pro_flash with the picked object as source (rotation only, about
+   1 generation): returns the other views. Their direction names do not map to the village's
+   diagonals consistently (the galleon's SW was 'south', the dreadnought's 'east'), so pick the SW and
+   NW frames by eye and record the mapping in provenance.rotation.
+3. node scripts/sprites/bake-harbor-hulls.mjs author <key> sw.png --nw nw.png
+4. node scripts/sprites/bake-harbor-hulls.mjs normalize <key> --directions 2   # prints the mastheads
+5. Manifest: directions: [sw, nw], frames: 10, bowFacing: west, mastheads: { sw, nw }; update the
+   tier's screenWidth in HarborLayout.js if the frame width changed.
+6. npm run sprites:validate; node --test scripts/tests/harbor-motion-directions.test.mjs scripts/tests/harbor-water-bounds.test.mjs
+```
+
+The runtime mirrors SW and NW for SE and NE by texel copy. Stacks author SW only.
 
 ## Known issues / TODO
 

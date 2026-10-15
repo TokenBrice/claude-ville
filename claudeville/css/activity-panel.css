@@ -167,6 +167,34 @@
     text-overflow: ellipsis;
 }
 
+/* U-P8 — repo · branch (· worktree) under the provenance line. */
+.activity-panel__repo-line {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    font: var(--fs-body)/var(--lh-body) var(--font-body);
+    color: var(--ink-2);
+}
+
+.activity-panel__repo-line[hidden] {
+    display: none;
+}
+
+.activity-panel__repo-swatch {
+    flex-shrink: 0;
+    width: 6px;
+    height: 6px;
+    background: var(--ink-4);
+}
+
+.activity-panel__repo-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .activity-panel__provenance:empty {
     display: none;
 }
@@ -1334,6 +1362,41 @@
     font-size: var(--fs-body);
     text-transform: uppercase;
     flex-shrink: 0;
+}
+
+/* U-P5 — a commit's cargo state: docked (unpushed, gold) or sailed. */
+.activity-panel__harbor-chip--unpushed {
+    color: var(--cv-gold);
+    border-color: color-mix(in srgb, var(--cv-gold) 40%, transparent);
+}
+
+.activity-panel__harbor-chip--pushed {
+    color: var(--cv-green-soft);
+    border-color: color-mix(in srgb, var(--cv-green-soft) 40%, transparent);
+}
+
+/* U-P4 — Harbor building ledger rows are buttons that open the fleet. */
+.activity-panel__harbor-ledger-row {
+    width: 100%;
+    color: inherit;
+    background: none;
+    border: 0;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.activity-panel__harbor-ledger-row:hover {
+    background: var(--bg-2);
+}
+
+.activity-panel__harbor-ledger-row:focus-visible {
+    outline: 1px solid var(--gold-hi);
+    outline-offset: -1px;
+}
+
+.activity-panel__harbor-ledger-row--failed .activity-panel__token-value {
+    color: var(--cv-status-errored);
 }
 
 .activity-panel__journey {

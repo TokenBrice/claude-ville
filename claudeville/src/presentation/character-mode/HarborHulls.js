@@ -3,8 +3,17 @@
 // Every hull class ships as a 5-frame roll strip baked offline at scale 1
 // (`scripts/sprites/bake-harbor-hulls.mjs`: -3°, -1.5°, 0, +1.5°, +3° with
 // cleanEdge, frame 2 = the authored sprite, a 1-px waterline lip on the
-// contact row). The runtime picks a frame and a whole-texel position; it
-// never rotates or scales a hull. On the resident path a hull is a V9 record
+// contact row). The runtime picks a view, a frame and a whole-texel
+// position; it never rotates or scales a hull.
+//
+// Phase 3.5 — directional hulls. A hull faces one of four diagonals (SW, SE,
+// NW, NE: the strip is `[direction][roll]`). The manifest lists the views a
+// strip authors (`directions`, five roll frames each, in strip order;
+// default the one view its `bowFacing` names: west = SW, east = SE); every
+// other view is the mirror of its partner (SW ↔ SE, NW ↔ NE) or, while the
+// art has no view for that side, the authored view nearest it. Mirrored
+// strips are baked once into cached canvases with their anchor, mastheads
+// and livery/reflection caches keyed by direction. On the resident path a hull is a V9 record
 // (painter depth, the scene grade, lamp light, footprint occlusion) with a
 // `reflect` twin in the ground band and a V-wake stamp record under it; the
 // Canvas fallback draws the same frames, graded through cached tinted
@@ -47,39 +56,219 @@ export function rollFrameIndex(rollDeg) {
     return step + HULL_ROLL_CENTRE;
 }
 
+export const HULL_DIRECTIONS = Object.freeze(['sw', 'se', 'nw', 'ne']);
+const MIRROR_DIRECTION = Object.freeze({ sw: 'se', se: 'sw', nw: 'ne', ne: 'nw' });
+const SAME_SIDE_DIRECTION = Object.freeze({ sw: 'nw', nw: 'sw', se: 'ne', ne: 'se' });
+const WEST_DIRECTIONS = new Set(['sw', 'nw']);
+// Screen angle (world px, y down) of travel along each tile diagonal.
+const DIRECTION_ANGLES = Object.freeze({
+    se: Math.atan2(16, 32),
+    sw: Math.atan2(16, -32),
+    nw: Math.atan2(-16, -32),
+    ne: Math.atan2(-16, 32),
+});
+const HEADING_HYSTERESIS = 20 * Math.PI / 180;
+
+function angleBetween(a, b) {
+    const d = Math.abs(a - b) % (Math.PI * 2);
+    return d > Math.PI ? Math.PI * 2 - d : d;
+}
+
+// Screen travel (world px) → the hull view nearest it. The current view
+// holds until another is HEADING_HYSTERESIS nearer, so a weaving course never
+// flickers it.
+export function hullHeadingDirection(vx, vy, current = null) {
+    const angle = Math.atan2(vy, vx);
+    let best = 'sw';
+    let bestDistance = Infinity;
+    for (const direction of HULL_DIRECTIONS) {
+        const distance = angleBetween(angle, DIRECTION_ANGLES[direction]);
+        if (distance < bestDistance) {
+            best = direction;
+            bestDistance = distance;
+        }
+    }
+    if (current && current !== best && DIRECTION_ANGLES[current] !== undefined
+        && angleBetween(angle, DIRECTION_ANGLES[current]) - bestDistance < HEADING_HYSTERESIS) return current;
+    return best;
+}
+
+// The views a manifest entry authors, in strip order.
+export function hullAuthoredDirections(entry = {}) {
+    const listed = Array.isArray(entry?.directions)
+        ? entry.directions.map(item => String(item).toLowerCase()).filter(item => MIRROR_DIRECTION[item])
+        : [];
+    if (listed.length) return listed;
+    return [String(entry?.bowFacing || 'west').toLowerCase() === 'east' ? 'se' : 'sw'];
+}
+
+// How `direction` is drawn: from which authored view, mirrored or not.
+export function hullDirectionSource(entry, direction = 'sw') {
+    const authored = hullAuthoredDirections(entry);
+    const wanted = MIRROR_DIRECTION[direction] ? direction : 'sw';
+    const candidates = [
+        [wanted, false],
+        [MIRROR_DIRECTION[wanted], true],
+        [SAME_SIDE_DIRECTION[wanted], false],
+        [MIRROR_DIRECTION[SAME_SIDE_DIRECTION[wanted]], true],
+    ];
+    for (const [source, mirrored] of candidates) {
+        const index = authored.indexOf(source);
+        if (index >= 0) return { source, mirrored, index, count: authored.length };
+    }
+    return { source: authored[0], mirrored: false, index: 0, count: authored.length };
+}
+
 const _stripMeta = new WeakMap();
 
-// The resident strip for a hull sprite id: { image, frameWidth, frameHeight,
-// anchorX, anchorY, mastheads } (anchor = the waterline pivot, frame-local;
+// The resident strip for a hull sprite id in one direction: { image,
+// frameWidth, frameHeight, frameOffset, anchorX, anchorY, mastheads,
+// direction, bowX, key } (anchor = the waterline pivot, frame-local;
 // mastheads = per roll frame, the frame-local top of the tallest mast where
-// the repo flag hoists, from the manifest `masthead` of the upright frame
-// turned about the pivot like the bake turned the art), or null while the
-// asset is missing or is not a roll strip.
-export function hullStrip(assets, spriteId) {
+// the repo flag hoists, from the manifest `masthead` (or the view's
+// `mastheads[view]`) of the upright frame turned about the pivot like the
+// bake turned the art; bowX = the screen side the bow points, -1 west, +1
+// east), or null while the asset is missing or is not a roll strip.
+export function hullStrip(assets, spriteId, direction = 'sw') {
     const image = assets?.get?.(spriteId);
     if (!image?.width || !image?.height) return null;
-    let meta = _stripMeta.get(image);
-    if (meta) return meta;
+    let byDirection = _stripMeta.get(image);
+    if (!byDirection) {
+        byDirection = new Map();
+        _stripMeta.set(image, byDirection);
+    }
+    const dir = MIRROR_DIRECTION[direction] ? direction : 'sw';
+    if (byDirection.has(dir)) return byDirection.get(dir);
+    const meta = buildStripMeta(assets, spriteId, image, dir);
+    byDirection.set(dir, meta);
+    return meta;
+}
+
+function buildStripMeta(assets, spriteId, image, direction) {
     const entry = assets.getEntry?.(spriteId);
     const frames = Number(entry?.frames) || 0;
-    if (frames !== HULL_ROLL_FRAMES) return null;
+    const view = hullDirectionSource(entry, direction);
+    if (frames !== HULL_ROLL_FRAMES * view.count) return null;
     const frameWidth = Math.floor(image.width / frames);
-    const anchor = assets.getAnchor?.(spriteId) || [frameWidth / 2, image.height - 1];
+    const anchor = (Array.isArray(entry?.anchors?.[view.source]) && entry.anchors[view.source])
+        || assets.getAnchor?.(spriteId) || [frameWidth / 2, image.height - 1];
     const anchorX = Math.round(anchor[0]);
     const anchorY = Math.round(anchor[1]);
-    const masthead = Array.isArray(entry?.masthead) ? entry.masthead.map(Number) : [anchorX, 0];
-    meta = {
+    const authoredMasthead = Array.isArray(entry?.mastheads?.[view.source])
+        ? entry.mastheads[view.source]
+        : entry?.masthead;
+    const masthead = Array.isArray(authoredMasthead) ? authoredMasthead.map(Number) : [anchorX, 0];
+    const mastheads = Array.from({ length: HULL_ROLL_FRAMES }, (_, frame) => rollPoint(masthead, anchorX, anchorY, (frame - HULL_ROLL_CENTRE) * HULL_ROLL_STEP_DEG));
+    const sourceBow = WEST_DIRECTIONS.has(view.source) ? -1 : 1;
+    const meta = {
         spriteId,
+        key: `${spriteId}@${direction}`,
+        direction,
         image,
         frameWidth,
         frameHeight: image.height,
+        frameOffset: view.index * HULL_ROLL_FRAMES,
+        sourceFrameOffset: view.index * HULL_ROLL_FRAMES,
         anchorX,
         anchorY,
-        mastheads: Array.from({ length: HULL_ROLL_FRAMES }, (_, frame) => rollPoint(masthead, anchorX, anchorY, (frame - HULL_ROLL_CENTRE) * HULL_ROLL_STEP_DEG)),
+        mastheads,
+        bowX: view.mirrored ? -sourceBow : sourceBow,
+        mirrored: view.mirrored,
         revision: 0,
     };
-    _stripMeta.set(image, meta);
+    if (!view.mirrored) return meta;
+    // A mirrored view: each roll frame flipped in place (frame order kept),
+    // anchor and mastheads mirrored with it. Without a canvas (node) the
+    // geometry still mirrors so poses and bounds stay true.
+    const flip = (x) => frameWidth - 1 - x;
+    meta.anchorX = flip(anchorX);
+    meta.mastheads = mastheads.map(([x, y]) => [flip(x), y]);
+    const canvas = flippedFrames(image, frameWidth, meta.frameOffset);
+    if (!canvas) return meta;
+    meta.image = canvas;
+    meta.frameOffset = 0;
     return meta;
+}
+
+// The five roll frames of one view (from `frameOffset`), each flipped in
+// place by texel copy: no canvas transform ever touches a hull.
+function flippedFrames(image, frameWidth, frameOffset) {
+    const canvas = canvasOf(frameWidth * HULL_ROLL_FRAMES, image.height);
+    const ctx = canvas?.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return null;
+    ctx.drawImage(image, frameOffset * frameWidth, 0, canvas.width, image.height, 0, 0, canvas.width, image.height);
+    const source = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const flipped = ctx.createImageData(canvas.width, canvas.height);
+    for (let y = 0; y < canvas.height; y++) {
+        for (let x = 0; x < canvas.width; x++) {
+            const frame = Math.floor(x / frameWidth);
+            const sx = frame * frameWidth + (frameWidth - 1 - (x - frame * frameWidth));
+            const si = (y * canvas.width + sx) * 4;
+            const di = (y * canvas.width + x) * 4;
+            flipped.data[di] = source.data[si];
+            flipped.data[di + 1] = source.data[si + 1];
+            flipped.data[di + 2] = source.data[si + 2];
+            flipped.data[di + 3] = source.data[si + 3];
+        }
+    }
+    ctx.putImageData(flipped, 0, 0);
+    return canvas;
+}
+
+// ─── Lamps: the emissive sidecar (5.3 night lamps) ───────────────────────────
+//
+// `prop.harborShip.<id>.emissive.png` (manifest `emissiveSidecar: true`) is
+// the strip's twin, frame for frame: masthead and stern lanterns per authored
+// view and roll. A strip's lamps are that sidecar laid out exactly like its
+// albedo (a mirrored view mirrored the same way), so one source rect samples
+// both. Cached per view and source image; null until the sidecar has loaded
+// (the AssetManager companion request retries) or for a hull without one.
+const _lampStrips = new Map();
+const _lampSidecars = new Map();
+const HULL_LAMP_STRENGTH = 0.8;
+
+// The sidecar image: the AssetManager companion (loaded with the material
+// channels), else, where those are off (the Canvas world), the `.emissive.png`
+// beside the strip, fetched once (EmitterCuts.emissiveSidecarFor's rule).
+function lampSidecar(assets, id) {
+    const companion = assets.getCompanion?.(id, 'emissive');
+    if (companion?.width) return companion;
+    const key = `${assets.assetVersion || ''}|${id}`;
+    const cached = _lampSidecars.get(key);
+    if (cached !== undefined) return cached === 'loading' ? null : cached;
+    const src = typeof assets.get?.(id)?.src === 'string' ? assets.get(id).src : '';
+    if (!src || typeof Image === 'undefined') {
+        _lampSidecars.set(key, null);
+        return null;
+    }
+    const image = new Image();
+    _lampSidecars.set(key, 'loading');
+    image.onload = () => _lampSidecars.set(key, image);
+    image.onerror = () => _lampSidecars.set(key, null);
+    image.src = src.replace(/\.png(?=([?#]|$))/, '.emissive.png');
+    return null;
+}
+
+export function hullLampStrip(assets, strip) {
+    if (!strip?.spriteId) return null;
+    const entry = assets?.getEntry?.(strip.spriteId);
+    if (entry?.emissiveSidecar !== true) return null;
+    const source = lampSidecar(assets, strip.spriteId);
+    if (!source?.width) return null;
+    const key = `${strip.spriteId}@${strip.direction || 'sw'}`;
+    const hit = _lampStrips.get(key);
+    if (hit && hit.source === source) return hit.lamps;
+    const image = strip.mirrored
+        ? flippedFrames(source, strip.frameWidth, strip.sourceFrameOffset || 0)
+        : source;
+    if (!image) return null;
+    const lamps = {
+        image,
+        key: `harbor-hull-lamps:${key}`,
+        strength: Math.max(0, Math.min(1, Number(entry.emissive?.strength) || HULL_LAMP_STRENGTH)),
+    };
+    _lampStrips.set(key, { source, lamps });
+    return lamps;
 }
 
 // A frame-local point of the upright frame turned `deg` clockwise about the
@@ -123,7 +312,7 @@ function touch(cache, key, value, limit) {
 // the waterline, painted only on dark timber texels of the hull, so the
 // stripe follows each rolled frame's own planks and never floats in the air.
 export function liveryStrip(strip, accent, stripeRow) {
-    const key = `${strip.spriteId}|${accent}|${stripeRow}`;
+    const key = `${strip.key || strip.spriteId}|${accent}|${stripeRow}`;
     const hit = _livery.get(key);
     if (hit && hit.source === strip.image) return touch(_livery, key, hit, LIVERY_CACHE_LIMIT).strip;
     const canvas = canvasOf(strip.image.width, strip.image.height);
@@ -137,7 +326,7 @@ export function liveryStrip(strip, accent, stripeRow) {
     if (y > 0) {
         for (let frame = 0; frame < HULL_ROLL_FRAMES; frame++) {
             for (let x = 0; x < strip.frameWidth; x++) {
-                const i = ((y * canvas.width) + frame * strip.frameWidth + x) * 4;
+                const i = ((y * canvas.width) + ((strip.frameOffset || 0) + frame) * strip.frameWidth + x) * 4;
                 if (px[i + 3] < 128) continue;
                 const lum = px[i] * 0.2126 + px[i + 1] * 0.7152 + px[i + 2] * 0.0722;
                 // Timber, not sail cloth or outline.
@@ -165,7 +354,7 @@ export function hullGeometry(pose) {
     // A sinking hull loses the rows that pass below its waterline.
     const visible = Math.max(1, strip.anchorY + 1 - (pose.sink | 0));
     return {
-        sx: pose.frame * strip.frameWidth,
+        sx: ((strip.frameOffset || 0) + pose.frame) * strip.frameWidth,
         x: x0,
         y: top,
         width: strip.frameWidth,
@@ -181,7 +370,7 @@ export function hullRecords(pose, out = []) {
     out.length = 0;
     const { strip } = pose;
     const g = hullGeometry(pose);
-    const textureKey = `harbor-hull:${strip.liveryKey || strip.spriteId}`;
+    const textureKey = `harbor-hull:${strip.liveryKey || strip.key || strip.spriteId}`;
     const common = {
         stableKey: pose.id,
         textureKey,
@@ -231,8 +420,79 @@ export function hullRecords(pose, out = []) {
         frontCornerX: Math.round(pose.x),
         frontCornerY: -1,
         receiverAxis: true,
+        // 5.3 — lit lamps: the sidecar is the record's emissive channel (same
+        // source rect as the albedo), so they bloom and skip the grade like
+        // a building's windows; its gate is the lamp strength (the record's
+        // alpha already carries a hull's fade and hull-down sink). The
+        // reflection twin above takes none.
+        ...(pose.lamps ? {
+            emissiveSource: pose.lamps.image,
+            sidecarKey: pose.lamps.key,
+            sidecarRevision: pose.lamps.key,
+            emissiveGate: pose.lamps.strength,
+        } : null),
     });
     return out;
+}
+
+// The world points a lit pose's lamps shine from: its lamp texels in its
+// frame grouped into lamps (texels within 2 of each other), each lamp's
+// centre, lowest first (the stern lantern or deck lamp before the masthead).
+// Read back once per lamp image and frame; [] where pixels cannot be read
+// (node) or the frame carries no lamp.
+const _lampPoints = new WeakMap();
+const NO_LAMPS = Object.freeze([]);
+
+export function hullLampPoints(pose) {
+    const lamps = pose?.lamps;
+    if (!lamps?.image) return NO_LAMPS;
+    let byFrame = _lampPoints.get(lamps.image);
+    if (!byFrame) {
+        byFrame = new Map();
+        _lampPoints.set(lamps.image, byFrame);
+    }
+    const g = hullGeometry(pose);
+    if (!byFrame.has(g.sx)) {
+        const groups = [];
+        const canvas = canvasOf(g.width, pose.strip.frameHeight);
+        const ctx = canvas?.getContext('2d', { willReadFrequently: true });
+        if (ctx) {
+            ctx.drawImage(lamps.image, g.sx, 0, g.width, canvas.height, 0, 0, g.width, canvas.height);
+            const px = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+            for (let y = 0; y < canvas.height; y++) {
+                for (let x = 0; x < canvas.width; x++) {
+                    if (px[(y * canvas.width + x) * 4 + 3] < 64) continue;
+                    const group = groups.find(item => Math.abs(item.x / item.n - x) <= 2 && Math.abs(item.y / item.n - y) <= 2);
+                    if (group) {
+                        group.x += x; group.y += y; group.n += 1;
+                    } else groups.push({ x, y, n: 1 });
+                }
+            }
+        }
+        byFrame.set(g.sx, groups
+            .map(group => ({ x: group.x / group.n, y: group.y / group.n }))
+            .sort((a, b) => b.y - a.y));
+    }
+    const local = byFrame.get(g.sx);
+    if (!local.length) return NO_LAMPS;
+    // The texels sit `sink` lower while the hull sinks (hullGeometry crops
+    // rows, it does not move the texels it keeps); a sunk lamp is gone.
+    const top = Math.round(pose.y) - pose.strip.anchorY - (pose.bob | 0) + (pose.sink | 0);
+    const out = [];
+    for (const point of local) {
+        if (point.y >= g.height) continue;
+        out.push({ x: g.x + point.x, y: top + point.y });
+    }
+    return out;
+}
+
+// Canvas: a lit pose's lamp texels on the ungraded overlay (world
+// transform applied), the way EmitterCuts draws a building's lit panes.
+export function drawHullLamps(ctx, pose, alpha = 1) {
+    if (!pose?.lamps || !(alpha > 0.02)) return;
+    const g = hullGeometry(pose);
+    ctx.globalAlpha = Math.min(1, alpha);
+    ctx.drawImage(pose.lamps.image, g.sx, 0, g.width, g.height, g.x, g.y, g.width, g.height);
 }
 
 // ─── V wake stamps ───────────────────────────────────────────────────────────
@@ -361,7 +621,7 @@ const _reflections = new Map();
 // the lip, mirrored by row copy (no transform), every fifth row dropped,
 // three alpha courses (ordered at their seams) and 38 % toward the water stop.
 function reflectionCanvas(strip, frame) {
-    const key = `${strip.liveryKey || strip.spriteId}|${frame}`;
+    const key = `${strip.liveryKey || strip.key || strip.spriteId}|${frame}`;
     const hit = _reflections.get(key);
     if (hit && hit.source === strip.image) return touch(_reflections, key, hit, LIVERY_CACHE_LIMIT).canvas;
     const w = strip.frameWidth;
@@ -369,7 +629,7 @@ function reflectionCanvas(strip, frame) {
     const canvas = canvasOf(w, h);
     const ctx = canvas?.getContext('2d', { willReadFrequently: true });
     if (!ctx) return null;
-    ctx.drawImage(strip.image, frame * w, 0, w, h, 0, 0, w, h);
+    ctx.drawImage(strip.image, ((strip.frameOffset || 0) + frame) * w, 0, w, h, 0, 0, w, h);
     const src = ctx.getImageData(0, 0, w, h);
     const out = ctx.createImageData(w, h);
     for (let r = 0; r < h; r++) {
@@ -411,10 +671,10 @@ export function drawHullFallback(ctx, pose, { ungradedOverlay = false, lightGrad
     if (pose.reflect !== false) {
         const reflection = reflectionCanvas(strip, pose.frame);
         if (reflection) {
-            ctx.drawImage(tinted(`${strip.liveryKey || strip.spriteId}|r${pose.frame}`, reflection), g.x, g.reflectY + g.reflectHeight);
+            ctx.drawImage(tinted(`${strip.liveryKey || strip.key || strip.spriteId}|r${pose.frame}`, reflection), g.x, g.reflectY + g.reflectHeight);
         }
     }
-    const image = tinted(strip.liveryKey || strip.spriteId, strip.image);
+    const image = tinted(strip.liveryKey || strip.key || strip.spriteId, strip.image);
     ctx.drawImage(image, g.sx, 0, g.width, g.height, g.x, g.y, g.width, g.height);
     ctx.restore();
 }

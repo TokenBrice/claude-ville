@@ -35,6 +35,7 @@ import { drawOffshoreScenery, isOffshoreRecordId } from './OffshoreScenery.js';
 import { poolMaskRect, poolReceiverMask } from './CanvasPoolMask.js';
 import { drawCanvasWaterColumns } from './CanvasWaterState.js';
 import { drawCanvasEmitterCuts, drawMineCrystalGlow } from './EmitterCuts.js';
+import { sourceEnergyFor } from './AtmosphereState.js';
 import { groundOptionsFor, groundStateAt } from './GroundState.js';
 import { ungradeRgb } from './CanvasGrade.js';
 import { PEAK, armPeakMarks, drawMomentEdgePlates, setMomentStage, takePeakMarks } from './EffectStamps.js';
@@ -609,6 +610,8 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     for (const sprite of renderer.agentSprites?.values?.() || []) sprite.overlayLightGrade = overlayLightGrade;
     // #3 — grade authority: harbor anchorage glows lerp toward the time-of-day tint.
     renderer.harborTraffic?.setGradeState?.(atmosphere?.grade);
+    // 5.3 — ship lamps burn on the village lamp clock.
+    renderer.harborTraffic?.setLampsLit?.(renderer.villageLampsLit?.() === true);
     const perfNow = performance.now();
     renderer._frameLightSources = renderer._computeFrameLightSources(atmosphere, perfNow);
     renderer._updateGateDoorState?.(perfNow);
@@ -963,6 +966,8 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     // Static Mine crystals are clock-lit, on the same carved ungraded
     // overlay for Canvas, WebGL and WebGPU; cargo/reserve art stays graded.
     drawMineCrystalGlow(overlayCtx, renderer);
+    // 5.3 — ship lamp cores and halos, on the same ungraded overlay.
+    renderer.harborTraffic?.drawLampGlow?.(overlayCtx, zoom, sourceEnergyFor(atmosphere?.lighting).core);
     drawTalkArcs(overlayCtx, {
         relationship: renderer.relationshipState,
         agentSprites: renderer.agentSprites,

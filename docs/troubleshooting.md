@@ -341,6 +341,25 @@ If installing dependencies is out of scope, fall back to:
 
 `AssetManager` also loads `claudeville/assets/sprites/palettes.yaml`; keep it aligned with the `palettes` block in `manifest.yaml`. Bump `style.assetVersion` after changing PNGs if browser cache is suspected.
 
+## Harbor ships stay docked, leave unexpectedly, or say "seen by"
+
+A ship is one commit, moored in its repository's anchorage (`repoRoot`: the main worktree, shared by every linked worktree and subdirectory session). It departs in one of two ways:
+
+1. **Containment** (primary). Git enrichment notices that a commit left the unpushed list and a remote-tracking ref now contains it, and sends its sha in a push's `landedShas`. Every ship with that sha departs, whichever branch or checkout pushed it.
+2. **Lane push.** An observed successful push with a branch departs that `(repoRoot, branch)` lane's ships committed at or before it.
+
+Ships that never left after you merged a worktree branch locally and pushed `main` from the main checkout were a known fault before the harbor refinement: the push matched only ships with the same cwd. Containment now sails them. A ship that still stays docked usually means its sha is not on any remote-tracking ref yet (no `git fetch` since a push made elsewhere, or the push failed), or git enrichment is disabled (`CLAUDEVILLE_DISABLE_GIT_ENRICHMENT=1`). Check `/api/sessions` for a `git-upstream-transition` push carrying the sha in `landedShas`.
+
+Expected behaviour that can look wrong:
+
+- A `git push` with no visible branch departs only branch-less ships of the checkout it ran in; it never empties the harbor. A `--tags` push or a `--delete` push sails nothing.
+- An amend, a rebase or a reset that drops unpushed commits sends a `rewritten` event: the old ship fades out quietly (or takes the new sha), with no departure.
+- A rejected, failed or cancelled push plays its boomerang once and is not replayed on later updates; the sidebar keeps `push failed 2m · reason` until the lane's next successful push.
+- A commit that fails (pre-commit hook, `nothing to commit`, a failed exit) makes no ship. Gemini, Grok, Kimi v1 and OMP record no command outcomes, so their git events carry no `success` and a lower `confidence` (0.85).
+- **"seen by <agent>"** on the fleet card means a repository scan found the commit while that agent's session was open (`attribution: 'scanned'`): the agent saw it, nothing proves it made it. The card also names the git author and any `Co-Authored-By` trailers when the scan read them. `by <agent>` means the session ran the commit itself.
+
+The rules and their rationale: [design decisions](design-decisions.md#the-harbor-keys-on-the-repository-departs-by-containment-and-colours-by-repo); the extraction rules: [adapter contract](../claudeville/adapters/README.md#git-event-extraction).
+
 ## Agent display name keeps changing
 
 Generated villager names are deterministic candidates from `Agent.generateNameForLang` (`claudeville/src/domain/entities/Agent.js`), with the assigned name saved synchronously per identity at `claudeville.generatedAgentName.v2:<identityKey>` and loaded lazily by `AgentManager`. The legacy `claudeville.generatedAgentNames.v1` array migrates once, preserving saved names; its record is removed only after successful migration. New names use constant-size writes independent of historical identity count. Restricted or quota-limited storage keeps in-memory naming, and failed migration leaves legacy names recoverable. Provider/team names remain explicit: the manager does not rename an agent whose `_customName` is set.

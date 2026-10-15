@@ -19,6 +19,9 @@
 
 import { PENNANT_PALETTE } from '../../config/artPalette.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
+import { normalizeRepoBranch, projectNameFromPath } from './GitEventIdentity.js';
+
+export { normalizeRepoBranch };
 
 const INK_LIGHT = [0xee, 0xe3, 0xcb]; // --ink-1: label text mixes toward it
 const PANEL_DARK = [0x15, 0x10, 0x0d]; // --bg-1: panels mix toward it
@@ -85,11 +88,37 @@ function hashSlot(hash) {
 // --- Visible-repo registry --------------------------------------------------
 const liveAgentRepo = new Map(); // agent id -> repo key of each live agent
 const visibleSlots = new Map();  // repo key -> resolved pennant index
+// Harbor wire contract v1: a linked worktree or subdirectory session reports
+// its repo's main worktree as `repoRoot`. Profiles key on that repo, so every
+// checkout of one repo wears one pennant.
+const checkoutRepo = new Map();  // checkout path -> repoRoot
+const MAX_CHECKOUT_REPOS = 512;
 let registryDirty = false;
+
+function learnCheckout(agent) {
+    const checkout = agent?.projectPath ? String(agent.projectPath) : '';
+    const repoRoot = agent?.repoRoot ? String(agent.repoRoot) : '';
+    if (!checkout || !repoRoot || checkoutRepo.get(checkout) === repoRoot) return;
+    checkoutRepo.delete(checkout);
+    // P2-12 — a path that is now its own repo drops any old worktree alias.
+    if (checkout === repoRoot) {
+        registryDirty = true;
+        return;
+    }
+    checkoutRepo.set(checkout, repoRoot);
+    if (checkoutRepo.size > MAX_CHECKOUT_REPOS) checkoutRepo.delete(checkoutRepo.keys().next().value);
+}
+
+// The repo a path belongs to: its known repoRoot, else the path itself.
+export function repoKeyFor(project) {
+    const path = String(project || '');
+    return checkoutRepo.get(path) || path;
+}
 
 function trackAgent(agent) {
     if (!agent?.id) return;
-    const key = agent.projectPath ? String(agent.projectPath) : '';
+    learnCheckout(agent);
+    const key = agent.repoRoot ? String(agent.repoRoot) : (agent.projectPath ? String(agent.projectPath) : '');
     if ((liveAgentRepo.get(agent.id) || '') === key) return;
     if (key) liveAgentRepo.set(agent.id, key);
     else liveAgentRepo.delete(agent.id);
@@ -140,14 +169,6 @@ function colorProfileFor(key, hash) {
     return PENNANT_PROFILES[visibleSlots.get(key) ?? hashSlot(hash)];
 }
 
-// A branch never shares its base repo's pennant: step to one of the other
-// seven entries, chosen by the branch hash.
-function branchColorProfile(baseProfile, branchHash) {
-    const count = PENNANT_PALETTE.length;
-    const step = 1 + (branchHash % (count - 1));
-    return PENNANT_PROFILES[((baseProfile.pennantIndex || 0) + step) % count];
-}
-
 // FNV-1a over UTF-16 code units, finished with murmur3's fmix32 avalanche.
 function stableHash(input) {
     const text = String(input || '');
@@ -172,21 +193,26 @@ function shorten(value, maxChars) {
 }
 
 function projectName(project) {
-    const text = String(project || 'unknown').trim();
-    const parts = text.split(/[\\/]/).filter(Boolean);
-    return shorten(parts.at(-1) || text || 'unknown', 26);
+    return shorten(projectNameFromPath(project), 26);
 }
 
-export function normalizeRepoBranch(branch) {
-    const text = String(branch || '')
-        .replace(/^refs\/heads\//, '')
-        .replace(/^refs\/remotes\/[^/]+\//, '')
-        .trim();
-    if (!text || text === 'HEAD' || text === 'unknown') return '';
-    return text;
+// U-1.1 — the display name of a repo: its raw basename (never title-cased),
+// with the parent directory only when another visible repo shares that
+// basename (`work/beta` beside `other/beta`).
+export function repoDisplayName(project) {
+    const key = repoKeyFor(project) || 'unknown';
+    const name = projectNameFromPath(key);
+    resolveVisibleSlots();
+    for (const other of visibleSlots.keys()) {
+        if (other === key || projectNameFromPath(other) !== name) continue;
+        const parent = String(key).split(/[\\/]/).filter(Boolean).at(-2);
+        return parent ? `${parent}/${name}` : name;
+    }
+    return name;
 }
 
 export function repoProfile(project) {
+    project = repoKeyFor(project) || project;
     const name = projectName(project);
     const key = String(project || name || 'unknown');
     const hash = stableHash(key);
@@ -200,13 +226,16 @@ export function repoProfile(project) {
     };
 }
 
+// U-P1 — colour is the repo, everywhere: a branch profile wears its repo's
+// pennant (the colours are the base profile's), and only adds the branch
+// identity — its name, its key (one ledger row per lane) and its shape kind
+// (`branchPennonKind`), which the harbor draws as the masthead pennon.
 export function repoBranchProfile(project, branch) {
     const normalizedBranch = normalizeRepoBranch(branch);
     const base = repoProfile(project);
     if (!normalizedBranch) return base;
 
     const branchHash = stableHash(`${base.key}:${normalizedBranch}`);
-    const colors = branchColorProfile(base, branchHash);
     const branchName = shorten(normalizedBranch, 18);
     return {
         ...base,
@@ -216,10 +245,17 @@ export function repoBranchProfile(project, branch) {
         fullName: `${base.name}/${branchName}`,
         shortName: `${base.shortName}/${shorten(normalizedBranch, 10)}`,
         branchHash,
-        baseAccent: base.accent,
-        baseGlow: base.glow,
-        basePanel: base.panel,
-        isBranchVariant: true,
-        ...colors,
     };
+}
+
+const DEFAULT_BRANCHES = new Set(['main', 'master', 'trunk']);
+
+// The pennon shape a lane flies: `default` (swallowtail) for the repo's
+// trunk, `worktree` (notched triangle) for a branch checked out in a linked
+// worktree, `feature` (burgee) for every other branch, `detached` without one.
+export function branchPennonKind(branch, worktree = null) {
+    const normalizedBranch = normalizeRepoBranch(branch);
+    if (!normalizedBranch) return 'detached';
+    if (worktree && worktree.isMain === false) return 'worktree';
+    return DEFAULT_BRANCHES.has(normalizedBranch) ? 'default' : 'feature';
 }

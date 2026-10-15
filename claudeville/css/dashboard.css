@@ -282,6 +282,33 @@
     white-space: nowrap;
 }
 
+.dashboard__section-harbor {
+    flex: none;
+    padding: 0 6px;
+    color: var(--cv-gold);
+    background: none;
+    border: 0;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cv-gold) 36%, transparent);
+    font: var(--fs-body)/var(--lh-body) var(--font-body);
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.dashboard__section-harbor[hidden] {
+    display: none;
+}
+
+.dashboard__section-harbor--failed {
+    color: var(--cv-status-errored);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cv-status-errored) 50%, transparent);
+}
+
+.dashboard__section-harbor:hover,
+.dashboard__section-harbor:focus-visible {
+    color: var(--gold-hi);
+    outline: none;
+}
+
 .dashboard__section-count {
     flex: none;
     min-width: 16px;
@@ -515,6 +542,7 @@
 }
 .dash-card__meta-line > * + *:not(:empty)::before { content: ' · '; color: var(--ink-4); }
 .dash-card__model { color: var(--ink-2); }
+.dash-card__branch { color: var(--ink-2); }
 .dash-card__workflow-badge { color: var(--ink-2); }
 
 /* NOW: lead + detail on one line */

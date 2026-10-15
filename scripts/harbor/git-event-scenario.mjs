@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '../..');
@@ -12,31 +11,15 @@ const HARBOR_PATH = path.join(
     'claudeville/src/presentation/character-mode/HarborTraffic.js',
 );
 
-const moduleUrlCache = new Map();
-
-function sourceModuleUrl(filePath) {
-    const absolutePath = path.resolve(filePath);
-    const cached = moduleUrlCache.get(absolutePath);
-    if (cached) return cached;
-
-    const source = fs.readFileSync(absolutePath, 'utf8').replace(
-        /from\s+(['"])(\.{1,2}\/[^'"]+\.js)\1/g,
-        (match, quote, specifier) => {
-            const resolved = path.resolve(path.dirname(absolutePath), specifier);
-            return `from ${quote}${sourceModuleUrl(resolved)}${quote}`;
-        },
-    );
-    const url = `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
-    moduleUrlCache.set(absolutePath, url);
-    return url;
-}
-
 const {
     HarborTraffic,
     normalizeGitEvent,
     reduceHarborTrafficState,
     snapshotHarborTrafficState,
-} = await import(sourceModuleUrl(HARBOR_PATH));
+} = await import(pathToFileURL(HARBOR_PATH).href);
+const { HARBOR_LANE_NODES, HARBOR_SEA_EXITS, harborWaterField, routeSeaTile } = await import(
+    pathToFileURL(path.join(REPO_ROOT, 'claudeville/src/presentation/character-mode/HarborLayout.js')).href
+);
 
 const project = '/tmp/claude-ville-harbor-fixture';
 const baseTime = Date.parse('2026-04-28T12:00:00Z');
@@ -183,7 +166,14 @@ const harbor = new HarborTraffic();
 const successShip = state.ships.get('commit-success');
 const successRoute = harbor._shipRouteTiles(successShip);
 const routeEndpoint = successRoute[successRoute.length - 1];
-assert.ok(routeEndpoint?.tileY > 3.5, 'successful departure should end at the sea lane, before the randomized map edge');
+// Phase 3.6 — a departure still leaves by a sea lane: through open water to
+// one of the horizon exits off the map's north-east edge.
+const exits = HARBOR_SEA_EXITS.map(id => HARBOR_LANE_NODES.find(node => node.id === id));
+assert.ok(exits.some(exit => exit.tileX === routeEndpoint?.tileX && exit.tileY === routeEndpoint?.tileY), 'successful departure should end at a horizon sea exit');
+assert.ok(routeEndpoint.tileY < 0, 'the horizon exit lies past the map\'s north-east edge');
+const seaTile = routeSeaTile(successRoute);
+assert.ok(seaTile.tileX >= 0 && seaTile.tileY >= 0 && seaTile.tileX < 40 && seaTile.tileY < 40, 'the route crosses the map edge at sea');
+for (const point of successRoute) assert.ok(harborWaterField().clearance(point.tileX, point.tileY) > 0.05, 'the sea lane never crosses land');
 const endpointDrawable = harbor._shipDrawable(
     successShip,
     successShip.departStartedAt + 1500 + successShip.departMsOverride,

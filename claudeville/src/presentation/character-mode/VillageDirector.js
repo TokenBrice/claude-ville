@@ -201,19 +201,11 @@ export class VillageDirector {
         }
     }
 
+    // The failed-push incident scene itself comes from `harbor:updated`
+    // (_onHarborUpdated), which knows the pushing agent; adding a second,
+    // agentless scene here logged every failure twice as "— someone".
     setHarborState(state = null) {
-        const active = Boolean(state?.hasFailedPush || state?.status === 'failed');
         this.harborState = state || null;
-        if (!active) return;
-        this._addScene({
-            type: 'incident',
-            kind: 'failed-push',
-            building: 'watchtower',
-            label: 'Push failed',
-            intensity: clamp(state?.intensity ?? 0.8),
-            startedAt: Date.now(),
-            expiresAt: Date.now() + INCIDENT_TTL_MS,
-        });
     }
 
     setSelectedBuilding(building) {
@@ -954,18 +946,26 @@ export class VillageDirector {
     }
 
     _onHarborUpdated(repos = []) {
-        const failed = Array.isArray(repos) && repos.some(repo => Number(repo?.failedPushes || 0) > 0);
-        if (!failed) return;
+        const failing = (Array.isArray(repos) ? repos : [])
+            .filter(repo => Number(repo?.failedPushes || 0) > 0)
+            .sort((a, b) => (Number(b.latestFailureAt) || 0) - (Number(a.latestFailureAt) || 0));
+        const latest = failing[0];
+        if (!latest) return;
+        const label = latest.failureStatus === 'rejected' ? 'Push rejected' : 'Push failed';
         this._touchBuildingSignal('harbor', {
             reason: 'failed-push',
-            label: 'Push failed',
+            label,
             intensity: 0.9,
         });
+        // One scene per failing agent (the signature dedupes repeats); an
+        // agentless failure names its repo instead of "someone".
         this._addScene({
             type: 'incident',
             kind: 'failed-push',
             building: 'watchtower',
-            label: 'Harbor alert',
+            label,
+            agentId: latest.agentId || null,
+            subject: latest.project ? shortProjectName(latest.project, '') : '',
             intensity: 0.9,
             startedAt: Date.now(),
             expiresAt: Date.now() + INCIDENT_TTL_MS,
@@ -1460,11 +1460,12 @@ export function narrativeFeedEntries(snapshot) {
     }
 
     for (const scene of snapshot.incidents || []) {
-        const who = narrativeLabelPair(scene.agent?.label);
+        const who = narrativeLabelPair(scene.agent?.label || scene.subject);
+        const what = scene.kind === 'failed-push' ? (scene.label || 'Push failed') : incidentLabel(scene.kind);
         out.push({
             id: scene.id || `incident:${scene.agentId}:${scene.kind}`,
             kind: 'incident',
-            label: `${incidentLabel(scene.kind)} — ${who}`,
+            label: `${what} — ${who}`,
             ts: Number(scene.startedAt) || snapshot.now || Date.now(),
         });
     }
