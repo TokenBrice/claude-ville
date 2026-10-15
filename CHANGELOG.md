@@ -2,6 +2,10 @@
 
 ---
 
+## v0.57.1.1 · Oct 15, 2026 — Hotfix
+
+- **The Lighthouse beam no longer vanishes behind the new tower.** When the beam swept toward the viewer, the tower and the keeper's cottage hid it, and only a stub showed below the building. The beam is now hidden only by walls that really stand in front of it. It leaves the lantern in one piece at every angle and crosses the tower face and the cottage roof when it passes in front of them.
+
 ## v0.57.1 — *The Keeper's Light* · Oct 15, 2026
 
 The village's buildings now share one palette: the Tavern and Harbor's dark oak, pale limestone and slate-blue roofs. A new Pharos Lighthouse completes the coast.

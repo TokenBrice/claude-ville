@@ -844,11 +844,12 @@ export class BuildingSprite {
             this._drawWatchtowerFire(ctx, {
                 x: Math.round(center.x - anchorX + flameX),
                 y: Math.round(center.y - anchorY + flameY),
-                // V-R6 — the tower's own silhouette: the shaft is light in
-                // the air beyond the masonry, so no texel of it lands on
-                // the tower (it read as a tan stripe painted down its face).
+                // The landmark's silhouette and surface heights: the shaft
+                // hides only behind masonry nearer the camera than its own
+                // ground point (see _fillBeaconShaft).
                 tower: {
                     mask: this.assets.getMask?.(id) || null,
+                    heights: this._surfaceHeights('watchtower'),
                     dims: this.assets.getDims?.(id) || null,
                     x: Math.round(center.x - anchorX),
                     y: Math.round(center.y - anchorY),
@@ -1985,6 +1986,46 @@ export class BuildingSprite {
         const code = a > 0 ? { height: r, face: b >> 6 } : null;
         cache.set(key, code);
         return code;
+    }
+
+    // 2.3 — the whole R channel (true height above ground, sprite px) of a
+    // surface-coded landmark as one Uint8Array (`dims.w × dims.h`), read once
+    // per asset version from the same occluder sources as `_surfaceCodeAt`;
+    // null until those pixels are readable.
+    _surfaceHeights(type) {
+        const id = `building.${type}`;
+        const entry = this.assets?.getEntry?.(id);
+        const dims = this.assets?.getDims?.(id);
+        if (entry?.surfaceCode !== true || !dims) return null;
+        const key = `${this.assets.assetVersion ?? ''}|${id}`;
+        if (this._surfaceHeightsKey?.[type] === key) return this._surfaceHeightsCache[type];
+        let image = this.assets.getCompanion?.(id, 'occluder') || null;
+        let ox = 0;
+        let oy = 0;
+        if (!image) {
+            const frame = this.assets.getAtlasFrame?.(id);
+            image = frame ? this.assets.getAtlas?.(frame.atlas, 'occluder') : null;
+            ox = frame?.rect?.x ?? 0;
+            oy = frame?.rect?.y ?? 0;
+        }
+        if (!image) {
+            image = this._occluderSidecar(id, entry) || null;
+            ox = 0;
+            oy = 0;
+        }
+        if (!image || !(image.width > 0)) return null;
+        const canvas = typeof OffscreenCanvas !== 'undefined'
+            ? new OffscreenCanvas(dims.w, dims.h)
+            : typeof document !== 'undefined' ? Object.assign(document.createElement('canvas'), { width: dims.w, height: dims.h }) : null;
+        if (!canvas) return null;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(image, ox, oy, dims.w, dims.h, 0, 0, dims.w, dims.h);
+        const data = ctx.getImageData(0, 0, dims.w, dims.h).data;
+        const heights = new Uint8Array(dims.w * dims.h);
+        for (let i = 0; i < heights.length; i++) heights[i] = data[i * 4];
+        (this._surfaceHeightsKey || (this._surfaceHeightsKey = {}))[type] = key;
+        (this._surfaceHeightsCache || (this._surfaceHeightsCache = {}))[type] = heights;
+        return heights;
     }
 
     // The `.occluder.png` sidecar of `id` fetched beside its albedo: the
@@ -3245,6 +3286,7 @@ export class BuildingSprite {
                     ...localPoint(...WATCHTOWER_LANTERN_FIRE.flame),
                     tower: {
                         mask: this.assets.getMask?.('building.watchtower') || null,
+                        heights: this._surfaceHeights('watchtower'),
                         dims: this.assets.getDims?.('building.watchtower') || null,
                         x: Math.round(origin.x),
                         y: Math.round(origin.y),
@@ -4882,20 +4924,32 @@ export class BuildingSprite {
         const bayer = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
         const ox = Math.round(beacon.x);
         const oy = Math.round(beacon.y);
+        // Depth against the landmark's 2.3 surface heights: a building texel
+        // hides the shaft only where its ground point (texel y + height) lies
+        // nearer the camera than the shaft's own ground point, measured from
+        // the tower's axis. So the shaft leaves the lantern behind the gallery
+        // parapet and crosses the tower face and the keeper's cottage only
+        // where it really runs in front of them. Without heights (still
+        // loading) every tower texel hides it, the V-R6 silhouette cut.
         const tower = beacon.tower?.mask && beacon.tower?.dims ? beacon.tower : null;
-        const onTower = (wx, wy) => {
+        const axisY = (WATCHTOWER_LANTERN_FIRE.axis || foot)[1] - WATCHTOWER_LANTERN_FIRE.flame[1];
+        const hides = (wx, wy, t) => {
             if (!tower) return false;
             const lx = wx - tower.x;
             const ly = wy - tower.y;
-            return lx >= 0 && ly >= 0 && lx < tower.dims.w && ly < tower.dims.h && tower.mask[ly * tower.dims.w + lx] === 1;
+            if (lx < 0 || ly < 0 || lx >= tower.dims.w || ly >= tower.dims.h) return false;
+            const i = ly * tower.dims.w + lx;
+            if (tower.mask[i] !== 1) return false;
+            if (!tower.heights) return true;
+            return wy - oy + tower.heights[i] > axisY + t * s * distance * 0.5 + 1;
         };
         for (let y = minY; y <= maxY; y++) {
             for (let x = minX; x <= maxX; x++) {
-                if (onTower(ox + x, oy + y)) continue;
                 const px = x + 0.5;
                 const py = y + 0.5;
                 const t = (px * ny - py * nx) / determinant;
                 if (t < 6 / length || t >= 1) continue;
+                if (hides(ox + x, oy + y, t)) continue;
                 const width = 4 + (BEAM_NEAR_HALF_WIDTH - 4) * t;
                 const across = Math.abs((dx * py - dy * px) / determinant);
                 const coverage = Math.max(0, Math.min(1, (width - across) / 3))
