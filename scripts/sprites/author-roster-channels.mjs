@@ -28,12 +28,12 @@ const PROFILES = Object.freeze({
     'agent.claude.fable': character('fabric', 0.10, ['#f9c855', '#f9cc57', '#f6c658']),
     'agent.claude.opus': character('fabric'),
     'agent.claude.sonnet': {
-        ...character('fabric', 0.12, ['#6f70cc', '#bed2f6']),
-        // Reviewed source palette: silver fittings, exposed face, crystal focus.
+        ...character('fabric', 0.12, ['#d59cfb', '#c15df4', '#dba4f2']),
+        // Reviewed source palette (pass 2 crescent-staff body): exposed face,
+        // the crescent crystal at the staff head.
         materialColors: {
-            metal: ['a7aabe', '9697b2', '9ca6b4', '8884b2', 'd5d3ef', '898d97', 'eeeef5'],
-            unlit: ['dea88f', 'bd8978', 'a67360', 'e4bdae', '8e6350', 'f0c5a3'],
-            'glass-rune': ['6f70cc', 'bed2f6', 'b2beea', '9d97ec'],
+            unlit: ['d59f99', 'efa096', 'eca9a2', 'e89e99', 'e9a59b', 'd68884'],
+            'glass-rune': ['d59cfb', 'c15df4', 'dba4f2', 'a464dc', 'd385ed'],
         },
     },
     'agent.claude.haiku': character('fabric'),
@@ -63,13 +63,15 @@ const PROFILES = Object.freeze({
     'agent.deepseek.reasoner': character('earth', 0.12, ['#4ea68c', '#398e7b']),
     'agent.deepseek.pro': character('earth', 0.10, ['#61ab9d', '#319893']),
     // Sampled 2026-09-10 from each regenerated sheet: the sparse bright teals
-    // on the cloak's rune edging, not the leather body greens.
-    'agent.deepseek.flash': character('earth', 0.08, ['#3ca186', '#2fb586', '#62caba']),
-    'agent.deepseek.flash.high': character('earth', 0.10, ['#50c3a9', '#17ad8e']),
-    'agent.deepseek.flash.xhigh': character('earth', 0.12, ['#69dcbe', '#80e8cc']),
+    // on the cloak's rune edging, not the leather body greens. Re-mapped
+    // through the 2026-10-15 value lift (scripts/sprites/value-lift.mjs).
+    'agent.deepseek.flash': character('earth', 0.08, ['#77dabf', '#72eac0', '#c1f0e9']),
+    'agent.deepseek.flash.high': character('earth', 0.10, ['#b9eee2', '#2efad0']),
+    'agent.deepseek.flash.xhigh': character('earth', 0.12, ['#bbf6e7', '#b8fae8']),
     'agent.grok.base': character('fabric', 0.14, ['#46a9d1', '#59d3e4']),
     'agent.grok.composer': character('fabric', 0.12, ['#4ab9cf', '#47dce4']),
-    'agent.zai.glm': character('fabric', 0.12, ['#73b493', '#4e7c61']),
+    'agent.zai.glm': character('fabric', 0.12, ['#40865d', '#569c77', '#70ca84']),
+    'agent.zai.glm.b': character('fabric', 0.12, ['#3f906e']),
     'agent.zai.flash': character('fabric'),
     'building.command': {
         ...terrain('stone'),

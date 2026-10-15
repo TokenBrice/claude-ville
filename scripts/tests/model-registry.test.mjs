@@ -153,6 +153,18 @@ test('body variants: base body without an agent id, one stable body per agent, e
     assert.equal(getModelVisualIdentity('gpt-6-astra', 'high', 'codex', 'agent-1').spriteId, 'agent.codex.gpt6astra');
 });
 
+test('GLM bodies: the grandmaster and the abbot, for omp-hosted and unknown z.AI models alike', () => {
+    for (const [model, provider] of [['glm-5.3', 'omp'], ['zai/glm-5.3', 'zai'], ['glm-9-preview', 'zai']]) {
+        const bodies = new Set();
+        for (let i = 0; i < 64; i++) bodies.add(getModelVisualIdentity(model, null, provider, `agent-${i}`).spriteId);
+        assert.deepEqual([...bodies].sort(), ['agent.zai.glm', 'agent.zai.glm.b'], `${provider}/${model}`);
+    }
+    // GLM Flash keeps its single body, and the DeepSeek effort ladder still
+    // wins over any body choice: max folds into the xhigh sheet.
+    assert.equal(getModelVisualIdentity('glm-5.3-flash', null, 'zai', 'agent-1').spriteId, 'agent.zai.flash');
+    assert.equal(getModelVisualIdentity('deepseek-flash', 'max', 'omp', 'agent-1').spriteId, 'agent.deepseek.flash.xhigh');
+});
+
 test('registry and defaults cover every manifest agent sprite in both directions', (t) => {
     if (!manifestTools) {
         if (manifestImportError?.code === 'ERR_MODULE_NOT_FOUND' && String(manifestImportError.message).includes('js-yaml')) {

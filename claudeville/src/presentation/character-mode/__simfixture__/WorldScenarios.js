@@ -1243,6 +1243,39 @@ export const TAVERN_EVENING_SCENARIO = {
     },
 };
 
+// Sprite review lineup (model sprites pass 2): the supporting cast beside two
+// hero references, idle on the Tavern's yard so each body is judged on grass
+// and path at one zoom, then drifts to the tables to show its seat and drink.
+const lineup = (id, name, provider, model, tileX, extra = {}) => agentSpec({
+    id: `lineup-${id}`, name, provider, model, position: { tileX, tileY: 22 }, ...extra,
+});
+
+export const MODEL_LINEUP_SCENARIO = {
+    id: 'model-lineup',
+    label: 'Model lineup',
+    description: 'Sprite review: both GLM bodies, GLM Flash, Sonnet, Haiku, Fable and the three DeepSeek Flash rungs beside Opus and Luna.',
+    timeBase: SCENARIO_TIME_BASE,
+    agents: [
+        lineup('opus-hero', 'Opus', 'claude', 'claude-opus-5', 14),
+        lineup('fable', 'Fable', 'claude', 'claude-fable-5-1', 15),
+        lineup('sonnet', 'Sonnet', 'claude', 'claude-sonnet-5', 16),
+        lineup('haiku', 'Haiku', 'claude', 'claude-haiku-4-5', 17),
+        // The two ids hash to the grandmaster and the abbot body.
+        lineup('glm', 'GLM', 'omp', 'glm-5.3', 18, { underlyingProvider: 'zai' }),
+        lineup('glm-b', 'GLM Abbot', 'omp', 'glm-5.3', 19, { underlyingProvider: 'zai' }),
+        lineup('glm-flash', 'GLM Flash', 'omp', 'glm-5.3-flash', 20, { underlyingProvider: 'zai' }),
+        lineup('ds-flash', 'DS Flash', 'omp', 'deepseek-flash', 21, { underlyingProvider: 'deepseek' }),
+        lineup('ds-flash-high', 'DS high', 'omp', 'deepseek-flash', 22, { underlyingProvider: 'deepseek', effort: 'high' }),
+        lineup('ds-flash-xhigh', 'DS xhigh', 'omp', 'deepseek-flash', 23, { underlyingProvider: 'deepseek', effort: 'xhigh' }),
+        lineup('luna', 'Luna', 'codex', 'gpt-6-luna', 24),
+    ],
+    timeline: [],
+    metadata: {
+        qaTags: ['sprites', 'lineup', 'scale'],
+        camera: { centerTile: { tileX: 18, tileY: 22 }, zoom: 2.6 },
+    },
+};
+
 export const CACHE_ORE_SCENARIO = {
     id: 'cache-ore',
     label: 'Cache ore',
@@ -1470,6 +1503,7 @@ export const WORLD_SCENARIOS = [
     STORM_NIGHT_REDUCED_MOTION_SCENARIO,
     MIDNIGHT_OIL_SCENARIO,
     TAVERN_EVENING_SCENARIO,
+    MODEL_LINEUP_SCENARIO,
     CACHE_ORE_SCENARIO,
     TASKBOARD_LIVE_SCENARIO,
     STALE_CARGO_SCENARIO,

@@ -274,6 +274,7 @@
             "id": "zai.glm-5-3", "provider": "zai", "match": ["glm-5-3"], "sample": "zai/glm-5.3",
             "label": "GLM 5.3", "shortLabel": "GLM", "modelClass": "glm", "modelTier": "apex", "mood": "deliberate",
             "spriteId": "agent.zai.glm", "paletteKey": "zai", "color": "#ff8c5f",
+            "spriteVariants": ["agent.zai.glm", "agent.zai.glm.b"],
             "trim": ["#ff8c5f", "#ffb28c", "#ffe0cf"], "accent": ["#fff1e8", "#ff8c5f", "#ffd6a5"],
             "contextWindow": 1000000, "pricing": { "input": 1.4, "output": 4.4, "cacheRead": 0.26, "cacheCreate": 0 }
         },
@@ -355,6 +356,7 @@
             "pricingKey": "zai", "pricing": { "input": 1.4, "output": 4.4, "cacheRead": 0.26, "cacheCreate": 0 }, "contextWindow": 1000000,
             "label": "GLM", "shortLabel": "GLM", "modelClass": "glm", "modelTier": "balanced", "mood": "balanced",
             "spriteId": "agent.zai.glm", "paletteKey": "zai", "color": "#ff8c5f",
+            "spriteVariants": ["agent.zai.glm", "agent.zai.glm.b"],
             "trim": ["#ff8c5f", "#ffb28c", "#ffe0cf"], "accent": ["#fff1e8", "#ff8c5f", "#ffd6a5"]
         },
         "gemini": {

@@ -213,6 +213,29 @@ re-rolled facing can come from a second animation. `generate-pose-strip.mjs
 --group-override='{"wait":{"clearance":0,"frames":[…]}}'` retunes a skeleton
 group for one profile (Opus's hat made the stock wait arm overreach).
 
+A wide hat, hood brim or wide sleeves make the skeleton `wait` arm overreach,
+because it clears the hat tip. Author `wait` for those bodies with
+PixMiniMax instead ("raises the free empty hand up high beside the head, palm
+open"). The feet audit's clearance check fails that pose by design.
+
+Before any skeleton job on a prop-holding body, give its `PROPS` entry in
+`generate-pose-strip.mjs` a `hands` map for **every** facing you generate.
+`heldText()` tells an unmapped facing that it has "both hands empty", so the
+model drops the prop (the cause of Sonnet's 2026-10 staff drift).
+
+A body that sinks into the grass can be lifted without spending generations:
+`node scripts/sprites/value-lift.mjs --id=<id> [--k=1.6] [--dry-run]` remaps
+only green-to-teal garment pixels (HLS hue 95–185°, above the outline floor)
+toward lighter values in `sheet.png` and `actions.png`, and saves the unlifted
+copies to `output/value-lift/<id>/`; `--check` proves the shipped PNGs are
+exactly that lift, until new rows are appended. The lift is not idempotent:
+never run it twice on the same PNG. After a sprite is lifted, skeleton-v3
+strips snap to the lifted sheet and need nothing, while PixMiniMax animates
+the PixelLab rig in its original colours. Lift only those stages, with
+`--in=<stage png> --out=<png>`, before assembly. Then re-sample
+`paletteSource` and the emissive `PROFILES` colours. The three DeepSeek
+Flash rungs ship lifted at k = 1.6 (2026-10-15).
+
 A regenerated or new Codex body needs its `CodexCelestialGrips.js` wrists:
 `node scripts/sprites/measure-wrists.mjs --id=<id> --overlay=<png>` (base
 sheet) or `--strip-group=run` proposes them from one PixelLab skeleton

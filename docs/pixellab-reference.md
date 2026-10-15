@@ -20,7 +20,7 @@ Approximate cost per asset family (so an agent can sanity-check before kicking o
 | Operation | Cost |
 | --- | --- |
 | `create_character` standard mode (4 or 8 directions) | 1 generation |
-| `create_character` pro mode | 20–40 generations |
+| `create_character` pro mode | 10–25 generations (size 76: 10, measured 2026-10-13 and 2026-10-15) |
 | `create_character` v3 mode | 2–9 generations |
 | `animate_character` template mode (per animation, full 8-direction rig) | 1 generation per direction, 8 total |
 | `animate_character` v3 mode | `ceil(width * height * frames / 65536)` per direction on the generated canvas, which the silhouette can grow past the source size |

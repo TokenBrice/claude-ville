@@ -195,6 +195,8 @@ test('reduced motion never runs: the body holds its idle frame and no run row', 
 const MANIFEST = yaml.load(readFileSync(new URL('../../claudeville/assets/sprites/manifest.yaml', import.meta.url), 'utf8'));
 const RUN_PROFILES = (MANIFEST.characters || []).filter(entry => entry.actionStrip?.groups?.run);
 const RUN_MODELS = { 'agent.codex.gpt56sol': 'gpt-5.6-sol', 'agent.codex.gpt56luna': 'gpt-5.6-luna' };
+// Run profiles with no runtime weapon (empty-handed bodies): nothing to grip.
+const UNARMED_RUN_MODELS = { 'agent.zai.flash': ['glm-5.3-flash', 'zai'] };
 
 function runPose(entry, direction, frame) {
     const meta = entry.actionStrip;
@@ -205,6 +207,12 @@ test('a run strip whose other poses sheathe the weapon authors the weapon hand f
     assert.ok(RUN_PROFILES.length > 0, 'the manifest ships run strips');
     for (const entry of RUN_PROFILES) {
         if (!entry.actionStrip.grip?.sheathe) continue;
+        const unarmed = UNARMED_RUN_MODELS[entry.id];
+        if (unarmed) {
+            assert.ok(!getModelVisualIdentity(unarmed[0], 'high', unarmed[1]).equipment, `${entry.id} carries no runtime weapon`);
+            continue;
+        }
+        assert.ok(RUN_MODELS[entry.id], `${entry.id} run profile is registered as armed or unarmed`);
         // Without an authored hand the draw parks the weapon on the first run
         // frame and it pops back on the first idle frame.
         assert.ok(codexPoseGripped(entry.id, 'run'), `${entry.id} run rows need poseWrists.run`);

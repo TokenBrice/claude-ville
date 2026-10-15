@@ -2,6 +2,31 @@
 
 ---
 
+## v0.56.0 — *The Second Muster* · Oct 15, 2026
+
+The rest of the village gets the hero treatment. GLM, Sonnet, Haiku and GLM Flash have new bodies, the DeepSeek rangers step out of the grass, and every one of them now thinks, celebrates, reads and drinks with its whole body.
+
+- **GLM, the Vermilion Grandmaster.** GLM was a small, plain monk. He is now a robed elder with a long white beard and a jade mala that glows at night, and every pose is redone. **Half of all GLM agents are now the Wandering Abbot**, a second body in a tasselled straw hat with a small backpack shrine.
+- **Sonnet, the Cobalt Spellwright.** Sonnet's staff used to come and go between facings, and her book changed with every turn. She now holds a crescent-crystal staff on every facing and in every pose. She was also taller than Opus; she now stands between Haiku and Opus.
+- **Haiku, the Moss Apprentice.** The apprentice was the tallest villager (74 px) and drawn in a different style from everyone else. She is now 49 px, in the village style, with her wand always in hand.
+- **GLM Flash, the Ember Acolyte.** Rebuilt in GLM's style as his young pupil. He is the first villager outside Codex with a run cycle.
+- **DeepSeek out of the grass.** The DeepSeek Flash scout, shortbow scout and longbow ranger (low/medium, high and xhigh/max effort) were dark green on green grass. Their garments are now lifted to a lighter jade, so cloaks, bows and quivers read at every zoom. All three rungs have new poses, the ranger and scout have a new read with the book held at chest height, and the stretched raised arm in their wait poses is gone.
+- **Fable** keeps her body and gains read (she opens her storybook), gaze, think, celebrate and drink.
+- **Every sprite named above now thinks, celebrates and reads with its body.** All of them also drink at the Tavern with a tankard drawn into the sprite.
+- **Hero polish:**
+  - Sol and Luna, plus their second bodies, now shade their eyes while reading and searching instead of standing still.
+  - Astra drinks at the Tavern, raising the tankard to her closed visor.
+  - The Opus, Sol, Luna and GLM second bodies can now sit on Command's steps and the pier kerb.
+- **Action icons for DeepSeek and GLM.** The read, work, think, talk and celebrate icons by the hand were drawn only for Claude and Codex agents. DeepSeek and GLM agents, including GLM run through omp, now show them too.
+- **Sprite tooling.**
+  - `scripts/sprites/value-lift.mjs` lightens a sprite's green garment ramp without new generations.
+  - The runbook now covers the PixMiniMax wait for hats and hoods, and why a pose-strip prop map must cover every facing.
+  - A new dev scenario, `?sim=1&scenario=model-lineup`, brings the reworked cast beside Opus and Luna.
+
+Validation: `gate:release` is clean, with 1830 unit tests passing, including new tests for the action icons, GLM's two bodies, unarmed run cycles and the lineup scenario. The sprite, channel and emissive validators are clean, and `verify:render` passes. Every new pose was reviewed by eye, and the cast was checked in the village on the GPU renderer by day and the Canvas renderer at night at the Tavern.
+
+---
+
 ## v0.55.1.1 · Oct 14, 2026 — Hotfix
 
 - **The open-front Tavern now reaches every browser.** The Tavern's art changed after the sprite cache version was last bumped, so a browser that had loaded the first draft kept showing the closed inn, even after a hard refresh. The cache version is bumped, and the open-front Tavern loads on a normal refresh.

@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-10-14-open-tavern"
+  assetVersion: "2026-10-15-second-muster"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -80,11 +80,17 @@ characters:
         sit: { rows: [3, 4], hold: 4, seatLine: { south-east: 64, south-west: 64 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "d2ba5ede-849b-4322-b63d-34d0d95a1a08", sw: "09cb6f81-3412-4cc2-8e1a-f66cae520161" } }, directions: [se, sw] }
         strike: { rows: [5, 10], hold: 10, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [56, 47], w: [32, 44], se: [48, 50], sw: [43, 50] } }
         tinker: { rows: [11, 16], hold: 11, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [54, 48], w: [34, 45], se: [46, 51], sw: [45, 51] } }
+        read: { rows: [17, 20], hold: 20, directions: [s, se, e, ne, nw, w, sw] }
+        gaze: { rows: [21, 24], hold: 22, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [44, 28], w: [42, 26], se: [41, 31], sw: [50, 31] } }
+        celebrate: { rows: [25, 27], hold: 27, directions: [se, e, w, sw] }
+        think: { rows: [28, 30], hold: 30, directions: [se, e, w, sw] }
+        drink: { rows: [31, 35], hold: 31, seatLine: { south-east: 64, south-west: 64 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose + tankard, scripts/sprites/generate-pose-strip.mjs --groups=drink)", jobs: { se: "69658de1-531d-4af5-a521-ae2d6c521561", sw: "d08fe413-0341-4e08-b653-f677a4c6106b" } }, directions: [se, sw] }
       grip: { hand: both, sheathe: true }
       provenance:
         characterId: "3cef2064-b3dd-4f17-ab8a-ff35ed2ee379"
         generationSize: 128
-        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "3ea95fc1-4bbd-47f4-aaa5-a3ed9f22afd8", w: "d24c9c05-8061-4829-8429-34fef1260b15", se: "3e946315-6463-4151-87b2-f8f8676434cf", sw: "6edd6e38-2523-45be-9f79-1b6944c40271" } } }
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "3ea95fc1-4bbd-47f4-aaa5-a3ed9f22afd8", w: "d24c9c05-8061-4829-8429-34fef1260b15", se: "3e946315-6463-4151-87b2-f8f8676434cf", sw: "6edd6e38-2523-45be-9f79-1b6944c40271" }, gaze: { e: "fe975891-8a2a-42c4-b599-13949db6d53e", w: "22993b0d-1c62-4a2a-85b9-b00864891373", se: "9edfa7b2-1f45-477d-8fab-a6aced696e83", sw: "a1b9882f-f10c-4982-9d48-c14e4f8116c4" }, drink: { se: "69658de1-531d-4af5-a521-ae2d6c521561", sw: "d08fe413-0341-4e08-b653-f677a4c6106b" } } }
+        animationStrips: { groups: { read: { s: "977ba596-a922-4f43-8a5d-6e5624535275", se: "46d9f912-e5ef-4163-9d33-f54cf271d710", e: "46d9f912-e5ef-4163-9d33-f54cf271d710", ne: "46d9f912-e5ef-4163-9d33-f54cf271d710", nw: "46d9f912-e5ef-4163-9d33-f54cf271d710", w: "46d9f912-e5ef-4163-9d33-f54cf271d710", sw: "46d9f912-e5ef-4163-9d33-f54cf271d710" }, celebrate: { se: "da9d3b83-0677-4c24-a013-0edd6213cb8b", e: "da9d3b83-0677-4c24-a013-0edd6213cb8b", w: "da9d3b83-0677-4c24-a013-0edd6213cb8b", sw: "da9d3b83-0677-4c24-a013-0edd6213cb8b" }, think: { se: "959cb1fa-b5be-4b2c-9934-163608e8888d", e: "959cb1fa-b5be-4b2c-9934-163608e8888d", w: "959cb1fa-b5be-4b2c-9934-163608e8888d", sw: "959cb1fa-b5be-4b2c-9934-163608e8888d" } } }
     portraitCrop: { x: 28, y: 9, w: 34, h: 30 }
     provenance: { characterId: 3cef2064-b3dd-4f17-ab8a-ff35ed2ee379 }
     palette_layer: claude
@@ -172,6 +178,7 @@ characters:
         celebrate: { rows: [23, 25], hold: 25, directions: [se, e, w, sw] }
         think: { rows: [26, 28], hold: 28, directions: [se, e, w, sw] }
         drink: { rows: [29, 33], hold: 29, seatLine: { south-east: 64, south-west: 64 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose + tankard, scripts/sprites/generate-pose-strip.mjs --groups=drink)", jobs: { se: "802902cd-53ea-4406-bc09-42716aaafa06", sw: "afaf7904-43f1-4df3-8974-7c7fdfe0e81a" } }, directions: [se, sw] }
+        sit: { rows: [34, 35], hold: 35, seatLine: { south-east: 64, south-west: 62 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "3e3b092c-0c9d-4fa9-b967-a8f61fcf8de1", sw: "5795202f-38fa-4ee0-ad3e-807a21f62d56" } }, directions: [se, sw] }
       grip: { hand: both, sheathe: true }
       provenance:
         characterId: "1622d08f-4388-44b1-b60c-8b6c583b3f92"
@@ -192,10 +199,10 @@ characters:
 
   - id: agent.claude.sonnet
     tool: create_character
-    prompt: "Claude Sonnet female mid-tier wizard, deep violet and cobalt robes with silver rune trim, shorter pointed wizard hat below top margin, star-lined cloak, crystal-topped staff held tight inside silhouette, chained spellbook at belt, controlled blue-violet hand runes, robe hem fully visible above bottom margin, no pixels touching canvas edge, no wings, no angel armor, no warrior plate armor, no revealing outfit, elegant seasoned mage stance"
+    prompt: "Claude Sonnet female sorceress, medium height slender build, cobalt-blue robe with a deep violet mantle and silver star embroidery, tall pointed cobalt and violet wizard hat, long silver-white braid over one shoulder, chained spellbook at the belt, tall slim wooden staff with a crescent-shaped violet crystal held upright in her right hand, readable face, graceful poised stance, identical outfit and colors from every viewing angle, isolated character on transparent background, no wings, no armor, no floating objects, no revealing outfit, 8-direction pixel art"
     n_directions: 8
     size: 92
-    generationSize: 92 # generation size unverified — inherited default
+    generationSize: 76
     generationMode: pro
     animations: [walk, breathing-idle]
     animationGroups: { walk: { rows: [0, 5] }, breathingIdle: { rows: [6, 9] } }
@@ -203,24 +210,27 @@ characters:
       path: characters/agent.claude.sonnet/actions.png
       cell: 92
       groups:
-        read: { rows: [0, 3], hold: 3 }
+        read: { rows: [0, 3], hold: 3, directions: [s, se, e, ne, nw, w, sw] }
         wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
-        sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 70, south-west: 68 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "990e85b8-1940-411a-82f7-5d5f1e542d8a", sw: "e2f0b7f1-2604-4ef2-b9cd-732a2d151bc7" } }, directions: [se, sw] }
-        strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [54, 51], w: [33, 49], se: [50, 53], sw: [42, 52] } }
-        tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [56, 48], w: [41, 52], se: [49, 54], sw: [44, 53] } }
-        gaze: { rows: [21, 24], hold: 22, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [44, 34], w: [43, 32], se: [42, 34], sw: [51, 31] } }
+        sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 65, south-west: 67 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "2f1e288b-a17f-4bfa-a612-033b473ab99b", sw: "ec291b38-b1e0-4520-8864-eb16743bc2b1" } }, directions: [se, sw] }
+        strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [59, 47], w: [36, 48], se: [52, 52], sw: [41, 52] } }
+        tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [57, 48], w: [38, 50], se: [51, 53], sw: [42, 53] } }
+        gaze: { rows: [21, 24], hold: 22, contactFrame: 2, directions: [se, w, sw], contact: { w: [45, 33], se: [45, 36], sw: [48, 34] } }
+        celebrate: { rows: [25, 27], hold: 27, directions: [e, w, sw] }
+        drink: { rows: [28, 32], hold: 28, seatLine: { south-east: 65, south-west: 67 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose + tankard, scripts/sprites/generate-pose-strip.mjs --groups=drink)", jobs: { se: "11aefe18-444e-40fe-be47-caad162f1347", sw: "ccdce499-f533-4373-8c35-0f42bbc7a52b" } }, directions: [se, sw] }
+        think: { rows: [33, 35], hold: 35, directions: [se, e, w, sw] }
       grip: { hand: both, sheathe: true }
       provenance:
-        characterId: "28414b93-f0b6-4060-a9bf-cf471a26a7d9"
-        animationGroupId: "cbe22634-af4c-4e77-a104-72ac68c96446"
-        generationSize: 144
-        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "6ce8a5f6-b59c-4857-98da-fc7dd41c5ba0", w: "367eef2f-04eb-4e9b-873e-d4e4eb1c3f74", se: "98e38052-393d-4a65-9736-497bdb285a1f", sw: "52a0f7ed-02cc-46df-a00c-dd35fb8c6aa3" }, gaze: { e: "dc38230a-c5d9-46e9-a289-63816e706ecb", w: "363a82ac-15c6-49e4-aa43-19bce258fb64", se: "0bc82fc8-fb50-4d4a-9580-0bf5d99cb317", sw: "d71e3583-6de8-47fa-b3d6-47b38979dfce" } } }
-    portraitCrop: { x: 29, y: 6, w: 34, h: 32 }
-    provenance: { characterId: 28414b93-f0b6-4060-a9bf-cf471a26a7d9 }
+        characterId: "7044aaa0-6c61-4de2-896b-274eb15274b7"
+        generationSize: 128
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker": { e: "12f095a5-563d-47cb-80f9-2b95dc42f011", w: "b04793f3-7af8-4217-ae2c-a4c47ced1e0f", se: "cb84a9c6-114d-41e4-91d9-1b01aa7b6b12", sw: "cd567f36-5ac1-455d-aa0e-cd686c1efc35" }, gaze: { w: "f6aa32af-6694-4294-b940-9d95e9efca7f", se: "16d60573-7c27-488f-bc13-aa75e8d14f4d", sw: "a7c06966-254a-475b-aef8-980c8fb37c4f" }, drink: { se: "11aefe18-444e-40fe-be47-caad162f1347", sw: "ccdce499-f533-4373-8c35-0f42bbc7a52b" } } }
+        animationStrips: { groups: { read: { s: "5415fb2f-47c6-42a5-888e-439bf5fc14d6", se: "5415fb2f-47c6-42a5-888e-439bf5fc14d6", e: "5415fb2f-47c6-42a5-888e-439bf5fc14d6", ne: "5415fb2f-47c6-42a5-888e-439bf5fc14d6", nw: "5415fb2f-47c6-42a5-888e-439bf5fc14d6", w: "5415fb2f-47c6-42a5-888e-439bf5fc14d6", sw: "5415fb2f-47c6-42a5-888e-439bf5fc14d6" }, wait: { se: "3250ab63-aa8c-45eb-a5d2-163455d38f79", e: "3250ab63-aa8c-45eb-a5d2-163455d38f79", w: "3250ab63-aa8c-45eb-a5d2-163455d38f79", sw: "3250ab63-aa8c-45eb-a5d2-163455d38f79" }, think: { se: "6952fac4-00b2-458d-91b2-8addf5a53b0c", e: "6952fac4-00b2-458d-91b2-8addf5a53b0c", w: "6952fac4-00b2-458d-91b2-8addf5a53b0c", sw: "6952fac4-00b2-458d-91b2-8addf5a53b0c" }, celebrate: { e: "38560c0e-b909-4f3e-8a64-495ea6f7fe96", w: "38560c0e-b909-4f3e-8a64-495ea6f7fe96", sw: "38560c0e-b909-4f3e-8a64-495ea6f7fe96" } } }
+    portraitCrop: { x: 28, y: 14, w: 34, h: 32 }
+    provenance: { characterId: 7044aaa0-6c61-4de2-896b-274eb15274b7, generationSize: 76, generationMode: pro }
     palette_layer: claude
-    # Sampled from sheet.png (plan 0.5): dark violet robe + cobalt cloak; the
-    # declared claude sources are inert here.
-    paletteSource: { robe: ['#34184f', '#522c6b'], pants: '#2a4791' }
+    # Sampled from sheet.png (pass 2, 2026-10-15 crescent-staff body): the
+    # violet mantle takes the crowd hue, the cobalt robe is informational.
+    paletteSource: { robe: ['#623082', '#472164'], pants: '#3a5bab' }
     headCovered: true
     anchor: [46, 80]
     materialClass: fabric
@@ -231,15 +241,15 @@ characters:
     emissive:
       strength: 0
       sources:
-        - { id: emissive.agent.claude.sonnet.runes, kind: rune, geometry: sidecar, strength: 0.12 }
+        - { id: emissive.agent.claude.sonnet.crescent, kind: rune, geometry: sidecar, strength: 0.12 }
     occluder: { mode: alpha-silhouette, strength: 1 }
 
   - id: agent.claude.haiku
     tool: create_character
-    prompt: "Claude Haiku female lightest model magician apprentice, green dominant palette with moss green hood, emerald short apprentice robe, pale mint scarf, bronze rune clasp, leather satchel of scrolls, tiny spellbook at belt, short wooden wand held close to body with small green magic spark, compact humble novice sorcerer silhouette, no wings, no crown, no heavy armor, no revealing outfit"
+    prompt: "Claude Haiku young female magician apprentice, short small slender build with normal proportions, moss-green hood up, emerald short apprentice robe belted with a brown leather belt, pale mint scarf, bronze rune clasp, leather satchel of scrolls at the hip, short wooden wand with a small green spark held in her right hand, humble eager stance, readable face, identical outfit and colors from every viewing angle, isolated character on transparent background, no wings, no crown, no heavy armor, no staff, no floating objects, no revealing outfit, 8-direction pixel art"
     n_directions: 8
     size: 92
-    generationSize: 92 # generation size unverified — inherited default
+    generationSize: 76
     generationMode: pro
     animations: [walk, breathing-idle]
     animationGroups: { walk: { rows: [0, 5] }, breathingIdle: { rows: [6, 9] } }
@@ -247,22 +257,28 @@ characters:
       path: characters/agent.claude.haiku/actions.png
       cell: 92
       groups:
-        wait: { rows: [0, 2], hold: 2, directions: [se, e, w, sw] }
-        sit: { rows: [3, 4], hold: 4, seatLine: { south-east: 72, south-west: 72 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "d7675204-dd59-4f09-ac6b-5acb02d371be", sw: "6f5f5e51-a5cb-4536-9763-15425a81c6eb" }, handEdit: "7.1 fix: torso shortened 4 rows (cell rows 53-56, se and sw, every channel) so the body no longer sits tall" }, directions: [se, sw] }
-        strike: { rows: [5, 10], hold: 10, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [63, 49], w: [25, 46], se: [54, 54], sw: [24, 51] } }
-        tinker: { rows: [11, 16], hold: 11, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [64, 46], w: [34, 50], se: [52, 55], sw: [40, 54] } }
-        gaze: { rows: [17, 20], hold: 18, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [49, 26], w: [37, 25], se: [44, 30], sw: [35, 23] } }
+        read: { rows: [0, 3], hold: 3, directions: [s, se, e, ne, nw, w, sw] }
+        wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
+        sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 64, south-west: 64 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "8c6e65ca-9a86-476f-841b-ee414461a2a0", sw: "e26e085d-e442-4d7c-bea8-5c73688221f0" } }, directions: [se, sw] }
+        strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { se: [50, 52], e: [56, 45], w: [36, 49], sw: [42, 51] } }
+        tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { se: [49, 53], e: [54, 47], w: [38, 50], sw: [43, 52] } }
+        gaze: { rows: [21, 24], hold: 22, contactFrame: 2, directions: [se, e, w, sw], contact: { se: [44, 35], e: [47, 31], w: [45, 34], sw: [49, 34] } }
+        celebrate: { rows: [25, 27], hold: 27, directions: [se, e, w, sw] }
+        drink: { rows: [28, 32], hold: 28, seatLine: { south-east: 64, south-west: 64 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose + tankard, scripts/sprites/generate-pose-strip.mjs --groups=drink)", jobs: { se: "e4b22d43-bff6-4224-a560-d72cba1e6bef", sw: "c4b1ebff-d261-4c37-ab07-d79efb638d81" } }, directions: [se, sw] }
+        think: { rows: [33, 35], hold: 35, directions: [se, e, w, sw] }
       grip: { hand: both, sheathe: true }
       provenance:
-        characterId: "b55ca52b-eaf5-48cc-a45b-3f0c067bf020"
-        generationSize: 128
-        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "42a880c5-c9fd-436f-adee-aae955eaf4fd", w: "e0e5604d-6650-446e-8e35-4e80b2a144b1", se: "008e1bc6-c613-40f0-9707-ce025a67ff9b", sw: "8b427014-33b1-4dd2-9d26-de47cad6384d" }, gaze: { e: "1804a1ea-169e-46e8-8626-6d52fa61c9e9", w: "d8c5f590-6510-4b47-b51d-272f562d2273", se: "74a29771-e3c0-49fc-8089-d84ef970b46a", sw: "82cf6f1b-d4d1-495e-b828-dc4fe08c6d87" } } }
-    portraitCrop: { x: 29, y: 5, w: 32, h: 30 }
-    provenance: { characterId: b55ca52b-eaf5-48cc-a45b-3f0c067bf020 }
+        characterId: "869837ef-4caf-4272-a11f-a20828a6b24e"
+        generationSize: 76
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { se: "ef2e01fd-8396-42cd-89a6-6f14cb2235d7", e: "305fc424-cb9a-4b5f-80e0-1bee41ae8019", w: "99f53c1c-a8e0-4b90-a5b6-e4a8847affbf", sw: "f475441a-2ad0-457d-a1c6-2163eef87f2c" }, gaze: { se: "18d7d539-b6ee-4335-a242-095ed6672e7a", e: "e22b8bed-c8f9-4486-a3b6-f6e0dae4368d", w: "4a5e09d8-fc9d-4d95-8d72-c55f739ab4ec", sw: "bee6a063-a290-4d6c-a7cc-0d23a7994c8d" }, drink: { se: "e4b22d43-bff6-4224-a560-d72cba1e6bef", sw: "c4b1ebff-d261-4c37-ab07-d79efb638d81" } } }
+        animationStrips: { groups: { read: { s: "766734e5-3250-4149-b0e9-e05ad3e5e468", se: "766734e5-3250-4149-b0e9-e05ad3e5e468", e: "766734e5-3250-4149-b0e9-e05ad3e5e468", ne: "766734e5-3250-4149-b0e9-e05ad3e5e468", nw: "766734e5-3250-4149-b0e9-e05ad3e5e468", w: "766734e5-3250-4149-b0e9-e05ad3e5e468", sw: "766734e5-3250-4149-b0e9-e05ad3e5e468" }, wait: { se: "1794a05c-b4a7-46f2-96d6-15de7997b6ea", e: "1794a05c-b4a7-46f2-96d6-15de7997b6ea", w: "1794a05c-b4a7-46f2-96d6-15de7997b6ea", sw: "1794a05c-b4a7-46f2-96d6-15de7997b6ea" }, celebrate: { se: "eb03fb16-960b-4b3c-85ae-860495267edd", e: "eb03fb16-960b-4b3c-85ae-860495267edd", w: "eb03fb16-960b-4b3c-85ae-860495267edd", sw: "eb03fb16-960b-4b3c-85ae-860495267edd" }, think: { se: "cbffb98a-5183-416e-aa85-ff3e5490b195", e: "cbffb98a-5183-416e-aa85-ff3e5490b195", w: "cbffb98a-5183-416e-aa85-ff3e5490b195", sw: "cbffb98a-5183-416e-aa85-ff3e5490b195" } } }
+    portraitCrop: { x: 27, y: 18, w: 32, h: 30 }
+    provenance: { characterId: 869837ef-4caf-4272-a11f-a20828a6b24e, generationSize: 76, generationMode: pro }
     palette_layer: claude
-    # Sampled from sheet.png (plan 0.5): mint scarf (robe role) + bronze clasp;
-    # declared pants source already matches the moss-green lower robe.
-    paletteSource: { robe: ['#c0e9c3', '#78894d'], pants: '#0e8c44', trim: '#a49159' }
+    # Sampled from sheet.png (pass 2, 2026-10-15 moss-apprentice body): the
+    # emerald robe takes the crowd hue, the moss hood is informational, the
+    # bronze clasp takes the provider trim.
+    paletteSource: { robe: ['#227e4f', '#114c35'], pants: '#6e8550', trim: '#b1a056' }
     headCovered: true
     anchor: [46, 80]
     materialClass: fabric
@@ -417,12 +433,13 @@ characters:
         gaze: { rows: [21, 24], hold: 22, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [49, 21], w: [35, 19], se: [43, 23], sw: [29, 19] } }
         celebrate: { rows: [25, 27], hold: 27, directions: [se, e, w, sw] }
         think: { rows: [28, 30], hold: 30, directions: [se, e, w, sw] }
+        drink: { rows: [31, 35], hold: 31, seatLine: { south-east: 66, south-west: 69 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose + tankard, scripts/sprites/generate-pose-strip.mjs --groups=drink)", jobs: { se: "28738a4d-31d1-4b97-b729-d6160923ccf1", sw: "86827c42-7cab-4e7d-a554-e95fa6e224bd" } }, directions: [se, sw] }
       grip: { hand: both, sheathe: true }
       provenance:
         characterId: "a1da82e8-9dc7-410c-9c5e-81698604ab2c"
         animationGroupId: "6b29a379-57d5-482d-a4a9-961dbace148f"
         generationSize: 76
-        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "3d53d06c-72bd-45a6-a605-9c200781e09d", w: "4f975fba-7952-4d5c-8582-ae9235232c32", se: "2be28b82-41d7-49d5-bbf0-a09c43f13000", sw: "16286937-0fff-434b-b47f-39340f391c19" }, gaze: { e: "ed3f5608-4c56-43e3-b1ed-fcb492afdd2f", w: "1e8e477a-51e3-42d7-ad16-faf11c47607c", se: "39780efa-6aab-43c9-b8cc-bb0898cdb06d", sw: "929dea74-4787-420d-87cb-6f55b498430c" } } }
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "3d53d06c-72bd-45a6-a605-9c200781e09d", w: "4f975fba-7952-4d5c-8582-ae9235232c32", se: "2be28b82-41d7-49d5-bbf0-a09c43f13000", sw: "16286937-0fff-434b-b47f-39340f391c19" }, gaze: { e: "ed3f5608-4c56-43e3-b1ed-fcb492afdd2f", w: "1e8e477a-51e3-42d7-ad16-faf11c47607c", se: "39780efa-6aab-43c9-b8cc-bb0898cdb06d", sw: "929dea74-4787-420d-87cb-6f55b498430c" }, drink: { se: "28738a4d-31d1-4b97-b729-d6160923ccf1", sw: "86827c42-7cab-4e7d-a554-e95fa6e224bd" } } }
         animationStrips: { groups: { think: { se: "4991d160-7831-4f86-8501-e3764686fd14", e: "5ae3a73d-5270-4627-a996-5d16c9085b05", w: "0abb16ed-755c-47ac-bb9e-27f96598a843", sw: "c80c64da-1c00-4dc1-8c9a-bb459d697b6c" }, celebrate: { se: "0e72b87a-8f47-41c6-9ccc-fdfb975cd9bf", e: "093e4ce9-2eb2-4fc6-9632-a64aff568fbe", w: "e3b0ca89-5128-42c7-a47e-5557d805b937", sw: "3c675eb6-2811-4d6e-9432-7fe86edc6ae2" } } }
     provenance:
       characterId: a1da82e8-9dc7-410c-9c5e-81698604ab2c
@@ -483,12 +500,13 @@ characters:
         celebrate: { rows: [27, 29], hold: 29, directions: [se, e, w, sw] }
         think: { rows: [30, 32], hold: 32, directions: [se, e, w, sw] }
         drink: { rows: [33, 37], hold: 33, seatLine: { south-east: 68, south-west: 69 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose + tankard, scripts/sprites/generate-pose-strip.mjs --groups=drink)", jobs: { se: "5e912630-c7a9-4b73-99ad-17d8ff996df8", sw: "29f02b5f-145c-44bb-86a0-30f9681dfc5f" } }, directions: [se, sw] }
+        gaze: { rows: [38, 41], hold: 39, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [49, 27], w: [34, 27], se: [42, 32], sw: [32, 26] } }
       grip: { hand: both, sheathe: true }
       provenance:
         characterId: "c3424b1d-2a37-47db-bc9a-dfb88bf53885"
         animationGroupId: "b9ee8a17-e595-4302-b0a2-a721331d163b"
         generationSize: 128
-        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "d3d0018c-75a7-4e44-948f-6ec1a47c8ff6", w: "d2fe3fd1-87ee-4b05-9c47-df883e05f8f9", se: "d2f06dcf-3437-4ac9-89f1-934c0cc362b7", sw: "932d670b-f99d-4eb2-b552-6350039cf252" }, drink: { se: "5e912630-c7a9-4b73-99ad-17d8ff996df8", sw: "29f02b5f-145c-44bb-86a0-30f9681dfc5f" } } }
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "d3d0018c-75a7-4e44-948f-6ec1a47c8ff6", w: "d2fe3fd1-87ee-4b05-9c47-df883e05f8f9", se: "d2f06dcf-3437-4ac9-89f1-934c0cc362b7", sw: "932d670b-f99d-4eb2-b552-6350039cf252" }, drink: { se: "5e912630-c7a9-4b73-99ad-17d8ff996df8", sw: "29f02b5f-145c-44bb-86a0-30f9681dfc5f" }, gaze: { e: "7b44b03b-2dbe-4032-8548-210be9697fe6", w: "f85614e7-4691-4f80-b14e-e6bca3ba67de", se: "dd5fc03e-a546-406d-aecb-71261ccf3358", sw: "1c7ef243-a7d8-4c9b-9d34-9b8fbef71b69" } } }
         templateStrips: { generationMode: skeleton-v3, groups: { run: { s: "0ef145f0-7a88-42e6-8b55-92d99d07a67d", se: "3dcfd3e0-5eff-4c52-909a-ff9465236efa", e: "d8ded118-5a79-4254-a323-978a7c56d695", ne: "bc7c8700-06d5-4073-93fd-3ef16a370356", n: "88ef54ec-8090-474f-842e-a8daa6cd4d8c", nw: "272a0259-0287-46d4-92ba-bf213086061b", w: "97e04757-c702-4a3a-a820-8e6362d46845", sw: "fa29f881-d019-4d70-ade8-5c07a7be5696" } } }
         animationStrips: { groups: { think: { se: "ed65bfbc-09c8-4777-b7a0-43934c3c87f4", e: "4b3cbf29-dc1b-40b7-91a4-bc9a93cab38a", w: "20f9b297-7cd8-4ecb-85d5-dc227d04b7fb", sw: "c1e5e288-be0c-46e6-8ad9-cb1c656c2286" }, celebrate: { se: "943976b5-836e-4749-b642-f0025d97d426", e: "aae6f47c-c20b-46e3-82f1-247fdcf7e542", sw: "85f43c5c-bb56-4825-9d99-4d75898466ad", w: "c74b3892-d179-4ba7-b69d-3fbf4e23d643" } } }
     portraitCrop: { x: 26, y: 13, w: 40, h: 34 }
@@ -533,11 +551,13 @@ characters:
         celebrate: { rows: [19, 21], hold: 21, directions: [se, e, w, sw] }
         think: { rows: [22, 24], hold: 24, directions: [se, e, w, sw] }
         drink: { rows: [25, 29], hold: 25, seatLine: { south-east: 62, south-west: 62 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose + tankard, scripts/sprites/generate-pose-strip.mjs --groups=drink)", jobs: { se: "11f9a6df-7f58-4e37-8505-610508600a37", sw: "56fc1c66-6c73-4f45-ac56-4ef9f12c7a2a" } }, directions: [se, sw] }
+        sit: { rows: [30, 31], hold: 31, seatLine: { south-east: 62, south-west: 62 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "894ce416-2c89-40ee-a6f9-81c09de15122", sw: "577190d2-7694-4c8e-9233-ad712cc27cb0" } }, directions: [se, sw] }
+        gaze: { rows: [32, 35], hold: 33, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [48, 34], w: [39, 32], se: [43, 34], sw: [33, 29] } }
       grip: { hand: both, sheathe: true }
       provenance:
         characterId: "bafdea82-e961-40f3-9c4e-a321ccab3005"
         generationSize: 128
-        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "52b237d6-e6fe-46ac-a80e-de1533541f49", w: "30f29082-b0f5-43bf-aee5-b17deda276d2", se: "e3202311-cbbc-468a-8945-0acf55cd6e8c", sw: "c2a6bcd6-fe85-49d2-8431-9824c4d3b057" }, drink: { se: "11f9a6df-7f58-4e37-8505-610508600a37", sw: "56fc1c66-6c73-4f45-ac56-4ef9f12c7a2a" } } }
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "52b237d6-e6fe-46ac-a80e-de1533541f49", w: "30f29082-b0f5-43bf-aee5-b17deda276d2", se: "e3202311-cbbc-468a-8945-0acf55cd6e8c", sw: "c2a6bcd6-fe85-49d2-8431-9824c4d3b057" }, drink: { se: "11f9a6df-7f58-4e37-8505-610508600a37", sw: "56fc1c66-6c73-4f45-ac56-4ef9f12c7a2a" }, gaze: { e: "49dca72b-ea34-4dbb-b923-fa8214322cba", w: "20aa70e2-f581-4fc0-b814-3b7f70ae63bb", se: "df1f8023-6f5d-474f-be5e-fd560e39c558", sw: "a642b5ed-9205-4912-b0d9-d087d9927736" } } }
         animationStrips: { groups: { read: { s: "0667f1ad-519e-4302-8270-5788d72cf713", se: "26e0629c-5a95-4229-be55-1cae6f340a94", e: "a74a2215-72d8-4e55-b34e-519724302704", ne: "25482aad-7bff-4c47-b8f3-e666a4dcd1d0", n: "4c173cef-796a-4304-9cfe-ae4f12ed830e", nw: "8986477f-fd3e-4d60-9d0c-8e79a1b1079f", w: "9f8c7f5b-3ef5-469a-8652-09e42d2e5de3", sw: "f2ce0272-1972-475d-b91a-9bfe1b31cc4e" }, think: { se: "d439881a-713e-4bd6-9e1b-8cf7e171aad1", e: "1ea17a4d-92e7-44f5-8354-9ab25dfaaefd", w: "5d583c5a-e96c-40ab-a848-20135ca6e3c1", sw: "8bf0ddc3-ed7e-4a4f-9a8e-b3e0dcfd58c4" }, celebrate: { se: "83610acb-da5b-4654-a652-1bbc7ea12cf5", e: "31957868-870e-4708-86bb-06101e1b03a3", w: "1070fe22-5a3f-42c6-9582-40e5c891617c", sw: "acf507cb-8919-4b76-a0c0-0dce6e6012d4" } } }
     portraitCrop: { x: 28, y: 11, w: 36, h: 34 }
     provenance: { characterId: bafdea82-e961-40f3-9c4e-a321ccab3005, generationSize: 76, generationMode: pro }
@@ -616,12 +636,13 @@ characters:
         celebrate: { rows: [27, 29], hold: 29, directions: [se, e, w, sw] }
         think: { rows: [30, 32], hold: 32, directions: [se, e, w, sw] }
         drink: { rows: [33, 37], hold: 33, seatLine: { south-east: 66, south-west: 64 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose + tankard, scripts/sprites/generate-pose-strip.mjs --groups=drink)", jobs: { se: "a61b141b-e12e-4d02-8425-93bc063a8da9", sw: "66a01f16-2f76-4a8f-bb82-f08fde9cffd9" } }, directions: [se, sw] }
+        gaze: { rows: [38, 41], hold: 39, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [48, 34], w: [39, 33], se: [44, 34], sw: [37, 32] } }
       grip: { hand: both, sheathe: true }
       provenance:
         characterId: "a84176da-b4a8-4e2e-a98a-c80d16d36c43"
         animationGroupId: "075fcd11-485f-4dfa-bcbc-729369a68318"
         generationSize: 76
-        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "c66b3262-9e13-4503-b880-f93a4bc69d1c", w: "d05a78a9-c8e1-4a71-968e-fb06e91439fc", se: "5904067a-71dc-481e-b252-a38c4d0d42b3", sw: "d548fc63-6feb-434b-9630-c9bb2e8dbe0c" }, drink: { se: "a61b141b-e12e-4d02-8425-93bc063a8da9", sw: "66a01f16-2f76-4a8f-bb82-f08fde9cffd9" } } }
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "c66b3262-9e13-4503-b880-f93a4bc69d1c", w: "d05a78a9-c8e1-4a71-968e-fb06e91439fc", se: "5904067a-71dc-481e-b252-a38c4d0d42b3", sw: "d548fc63-6feb-434b-9630-c9bb2e8dbe0c" }, drink: { se: "a61b141b-e12e-4d02-8425-93bc063a8da9", sw: "66a01f16-2f76-4a8f-bb82-f08fde9cffd9" }, gaze: { e: "19cb3a07-5932-43e9-9cb4-f5be58b57a5f", w: "8d85e31d-2de4-4bf1-a3c0-c1dbc9caee16", se: "dc212cd3-d273-4474-92e8-47352366f802", sw: "bd924394-08e5-44ae-b451-2d0f455e4ae9" } } }
         templateStrips: { generationMode: skeleton-v3, groups: { run: { s: "6ea3f408-7060-45cc-99ff-c494884d7bd2", se: "ae4bec2e-c773-4b9a-bc6b-5c47c9f09236", e: "e1a089e5-d525-4ac6-a9b9-18fbaaef5821", ne: "5871aee4-0853-4b96-8dfc-17847664b2e5", n: "a48733bc-fc46-46f4-bd5d-6122a64d3ce6", nw: "8fd816d3-a836-4109-bdf7-1c1f490b7e3a", w: "dca1f636-97b5-48ed-9cda-53b4bd7bf618", sw: "bf0cace3-4b6b-46de-bdc0-c7b41e7d9fb1" } } }
         animationStrips: { groups: { read: { s: "273e9224-684f-4ae5-9ebb-2d4a045d871b", se: "273e9224-684f-4ae5-9ebb-2d4a045d871b", e: "273e9224-684f-4ae5-9ebb-2d4a045d871b", ne: "273e9224-684f-4ae5-9ebb-2d4a045d871b", n: "273e9224-684f-4ae5-9ebb-2d4a045d871b", nw: "273e9224-684f-4ae5-9ebb-2d4a045d871b", w: "273e9224-684f-4ae5-9ebb-2d4a045d871b", sw: "273e9224-684f-4ae5-9ebb-2d4a045d871b" }, think: { se: "1fbe8805-870c-4078-8a6d-8554e4c750b3", e: "e9ab2738-25b6-4f9d-b7e3-a6dd41ef7edf", w: "62b2ee9d-f1e9-47fd-a926-c55ad7162cf6", sw: "976e9f69-9b33-4f84-8101-d842c13e8edb" }, celebrate: { se: "ae48d4f0-e535-453e-b791-fd4de5e91106", e: "7375273f-29c7-4d89-a424-d4d0f9f86021", w: "20eab189-03f3-4ca2-b3df-96f0d5739b29", sw: "36f56d40-5a02-4bce-8d17-6a3ebb7e4088" } } }
     portraitCrop: { x: 29, y: 14, w: 34, h: 36 }
@@ -662,11 +683,13 @@ characters:
         celebrate: { rows: [19, 21], hold: 21, directions: [se, e, w, sw] }
         think: { rows: [22, 24], hold: 24, directions: [se, e, w, sw] }
         drink: { rows: [25, 29], hold: 25, seatLine: { south-east: 66, south-west: 60 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose + tankard, scripts/sprites/generate-pose-strip.mjs --groups=drink)", jobs: { se: "c845cf78-161b-4f81-9509-3d664773ba1a", sw: "c7588b59-3b7b-4627-a353-42fedb9bab3b" } }, directions: [se, sw] }
+        sit: { rows: [30, 31], hold: 31, seatLine: { south-east: 64, south-west: 62 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "0d33f6f4-2e79-4c48-9217-084d19a09066", sw: "dae69af5-166c-44d2-ab1e-e0e97902a9a5" } }, directions: [se, sw] }
+        gaze: { rows: [32, 35], hold: 33, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [48, 33], w: [39, 31], se: [45, 35], sw: [37, 32] } }
       grip: { hand: both, sheathe: true }
       provenance:
         characterId: "8881d235-be6f-4bd3-b3b9-99e3098f2a91"
         generationSize: 128
-        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "7924484f-7fa1-48dd-93f3-0156595a5094", w: "2fe2d655-90b4-444c-b4fb-a4eb54d66953", se: "eb44542e-4754-468d-9e1a-a3b7187d6123", sw: "47da7172-9295-420f-b76b-c501262666b9" }, drink: { se: "c845cf78-161b-4f81-9509-3d664773ba1a", sw: "c7588b59-3b7b-4627-a353-42fedb9bab3b" } } }
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "7924484f-7fa1-48dd-93f3-0156595a5094", w: "2fe2d655-90b4-444c-b4fb-a4eb54d66953", se: "eb44542e-4754-468d-9e1a-a3b7187d6123", sw: "47da7172-9295-420f-b76b-c501262666b9" }, drink: { se: "c845cf78-161b-4f81-9509-3d664773ba1a", sw: "c7588b59-3b7b-4627-a353-42fedb9bab3b" }, gaze: { e: "5d16902b-d3fe-47c2-9a8f-cbdae9732108", w: "f1153521-5c75-4827-b994-979ddf274cc9", se: "92b4c75a-ad55-4b83-a9c6-eb74c7b7f287", sw: "fe56000e-7afb-4e96-9254-78614269e9da" } } }
         animationStrips: { groups: { read: { s: "9aae15b3-7285-4b8c-b1af-a81f920f16e8", se: "3ebe15b4-4841-42fe-8c83-cf595a2b2499", e: "36a58aa3-2a79-4fb9-8aae-6236f119542c", ne: "f9c11cb2-136c-481d-a248-b08714da713c", n: "7681ac46-b1f8-49c2-b996-f5ae33574a25", nw: "4a4cdfab-649e-470d-b186-4ec9ef974380", w: "1214b6cf-bb77-4154-9f9c-5939aed0580c", sw: "e2d291cb-53fb-478d-ad4b-1ffe37c5f14c" }, think: { se: "4c2816c8-07c3-42d0-a938-6a48cb2c0809", e: "b6c37b6d-760b-4639-9835-f61c4cee6466", w: "0250c799-cdab-4fcf-8c3f-d96ef3c4292c", sw: "99ba4db5-18fc-4857-9c56-49ac3689f6ae" }, celebrate: { se: "1d60ff1c-ccae-4332-b78f-7a9bbd86343d", e: "0ace0743-3433-498e-862b-d2aebfc601c1", w: "ad5ccfc6-400b-4a1d-a57f-34c3c76466e9", sw: "2f227b33-e1a5-44ff-9c87-f7d823c1d22a" } } }
     # N/NW walk repaired with skeleton-v3 (the template walk dropped the cape).
     portraitCrop: { x: 29, y: 14, w: 34, h: 34 }
@@ -1026,12 +1049,16 @@ characters:
         sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 67, south-west: 67 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "4f14e5f1-85a5-41a8-974c-dda08b64a34d", sw: "a3a69d59-1643-4b70-96d8-ffab20f1ada8" } }, directions: [se, sw] }
         strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [58, 43], w: [27, 42], se: [52, 48], sw: [41, 47] } }
         tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [56, 45], w: [30, 45], se: [62, 42], sw: [43, 48] } }
+        celebrate: { rows: [21, 23], hold: 23, directions: [se, e, w, sw] }
+        drink: { rows: [24, 28], hold: 24, seatLine: { south-east: 67, south-west: 67 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose + tankard, scripts/sprites/generate-pose-strip.mjs --groups=drink)", jobs: { se: "85695389-1170-4c78-bd27-68d3119472d7", sw: "38611580-eaff-414c-9153-a9a532456281" } }, directions: [se, sw] }
+        think: { rows: [29, 31], hold: 31, directions: [se, e, w, sw] }
       grip: { hand: both, sheathe: true }
       provenance:
         characterId: "56645a06-9fff-45e5-8929-6f2bbd54a2c6"
         animationGroupId: "7da12e76-7616-4a25-8d13-4b3960d532e6"
         generationSize: 76
-        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "51e68404-3a79-4f26-a22a-4c85708b03ea", w: "df4b6151-dcd8-41bf-979f-0fb639036593", se: "bd8d03c0-345d-4ff5-8509-c7794ea57b75", sw: "653ec1db-0064-4d45-8e48-9a4fdf5041b9" } } }
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "51e68404-3a79-4f26-a22a-4c85708b03ea", w: "df4b6151-dcd8-41bf-979f-0fb639036593", se: "bd8d03c0-345d-4ff5-8509-c7794ea57b75", sw: "653ec1db-0064-4d45-8e48-9a4fdf5041b9" }, drink: { se: "85695389-1170-4c78-bd27-68d3119472d7", sw: "38611580-eaff-414c-9153-a9a532456281" } } }
+        animationStrips: { groups: { wait: { se: "8d3eb9a4-1be3-46f9-af29-fc42c8d18e52", e: "8d3eb9a4-1be3-46f9-af29-fc42c8d18e52", w: "8d3eb9a4-1be3-46f9-af29-fc42c8d18e52", sw: "8d3eb9a4-1be3-46f9-af29-fc42c8d18e52" }, think: { se: "c7563c7a-16f3-42ef-b6d0-4516b57a2dbc", e: "c7563c7a-16f3-42ef-b6d0-4516b57a2dbc", w: "c7563c7a-16f3-42ef-b6d0-4516b57a2dbc", sw: "c7563c7a-16f3-42ef-b6d0-4516b57a2dbc" }, celebrate: { se: "ea71edd3-ea36-4c3c-95bd-850cfa65df92", e: "ea71edd3-ea36-4c3c-95bd-850cfa65df92", w: "ea71edd3-ea36-4c3c-95bd-850cfa65df92", sw: "ea71edd3-ea36-4c3c-95bd-850cfa65df92" } } }
     provenance: { characterId: 56645a06-9fff-45e5-8929-6f2bbd54a2c6, generationSize: 76, generationMode: pro }
     tool: create_character
     prompt: "DeepSeek Flash hooded forest scout, deep forest-green fitted leather armor with bronze trim, short hooded cloak with glowing teal rune edging, single curved dagger sheathed at hip, leather bracers and belt pouch, dark green leggings and light boots, lean agile ready stance, glowing teal accents, heroic high-fantasy RPG silhouette, no mage robe, no wizard hat, no staff, no bow, no plate armor, 8-direction pixel art"
@@ -1043,7 +1070,9 @@ characters:
     portraitCrop: { x: 31, y: 15, w: 32, h: 32 }
     portraitFace: { x: 47, y: 23 }
     palette_layer: deepseek
-    paletteSource: { robe: ['#162620', '#2e4735'], trim: '#459883' }
+    # Value-lifted k=1.6 by scripts/sprites/value-lift.mjs (2026-10-15): the
+    # forest greens sat at mean luminance ~40 on the grass. Sampled after the lift.
+    paletteSource: { robe: ['#3a6245', '#1a3326'], trim: '#72c0a7' }
     headCovered: true
     anchor: [46, 80]
     materialClass: earth
@@ -1063,17 +1092,22 @@ characters:
       path: characters/agent.deepseek.flash.high/actions.png
       cell: 92
       groups:
-        read: { rows: [0, 3], hold: 3 }
+        read: { rows: [0, 3], hold: 3, directions: [s, se, e, w, sw] }
         wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
         sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 66, south-west: 67 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "d9e90680-e138-4dc4-88a9-6bfdbbbaefb6", sw: "6013b008-3d10-4909-8e2e-f6bd981d69a8" } }, directions: [se, sw] }
         strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [57, 44], w: [34, 45], se: [50, 48], sw: [41, 46] } }
         tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [55, 46], w: [36, 46], se: [48, 49], sw: [43, 48] } }
+        think: { rows: [21, 23], hold: 23, directions: [se, e, w, sw] }
+        celebrate: { rows: [24, 26], hold: 26, directions: [se, e, w, sw] }
+        drink: { rows: [27, 31], hold: 27, seatLine: { south-east: 66, south-west: 67 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose + tankard, scripts/sprites/generate-pose-strip.mjs --groups=drink)", jobs: { se: "19196d52-266a-48a4-bc3d-2527432e9c38", sw: "c16487da-4dfc-49e1-92ca-a782b71cd873" } }, directions: [se, sw] }
+        gaze: { rows: [32, 35], hold: 33, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [45, 23], w: [48, 23], se: [40, 24], sw: [50, 21] } }
       grip: { hand: both, sheathe: true }
       provenance:
         characterId: "b2bad297-e8c2-4a73-9a20-266ce33fb26c"
         animationGroupId: "86d4c084-6cc9-4381-b01a-363278172051"
         generationSize: 76
-        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "67d10a80-0b79-461e-ac7d-7648313df50e", w: "dac8070f-9208-40fc-87aa-fab683869dec", se: "1df91bc2-8061-4855-aa00-f338924fc031", sw: "10c40b15-ad0e-4703-90d6-c57c168b3c51" } } }
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "67d10a80-0b79-461e-ac7d-7648313df50e", w: "dac8070f-9208-40fc-87aa-fab683869dec", se: "1df91bc2-8061-4855-aa00-f338924fc031", sw: "10c40b15-ad0e-4703-90d6-c57c168b3c51" }, drink: { se: "19196d52-266a-48a4-bc3d-2527432e9c38", sw: "c16487da-4dfc-49e1-92ca-a782b71cd873" }, gaze: { e: "a985f675-639c-4f05-8f8c-dfd440b6f512", w: "0e427c3a-aa98-4004-86b4-b8d292a42017", se: "0aff161b-9cf0-4492-b44c-5d110eac1b0f", sw: "d61ce1ac-e1c1-488f-be1b-23e38e651320" } } }
+        animationStrips: { groups: { read: { s: "9e1f5c27-8446-46c4-826a-2292fba28221", se: "9e1f5c27-8446-46c4-826a-2292fba28221", e: "9e1f5c27-8446-46c4-826a-2292fba28221", w: "9e1f5c27-8446-46c4-826a-2292fba28221", sw: "9e1f5c27-8446-46c4-826a-2292fba28221" }, wait: { se: "a9f8578c-39dc-4541-aaf5-9f2fe36419cf", e: "a9f8578c-39dc-4541-aaf5-9f2fe36419cf", w: "a9f8578c-39dc-4541-aaf5-9f2fe36419cf", sw: "a9f8578c-39dc-4541-aaf5-9f2fe36419cf" }, think: { se: "8025f06a-acf0-4d34-9c2e-c3e0d2eae070", e: "8025f06a-acf0-4d34-9c2e-c3e0d2eae070", w: "8025f06a-acf0-4d34-9c2e-c3e0d2eae070", sw: "8025f06a-acf0-4d34-9c2e-c3e0d2eae070" }, celebrate: { se: "37520bc4-275e-4428-bd18-b2f35e165352", e: "37520bc4-275e-4428-bd18-b2f35e165352", w: "37520bc4-275e-4428-bd18-b2f35e165352", sw: "37520bc4-275e-4428-bd18-b2f35e165352" } } }
     provenance: { characterId: b2bad297-e8c2-4a73-9a20-266ce33fb26c, generationSize: 76, generationMode: pro }
     tool: create_character
     prompt: "DeepSeek Flash hooded forest scout archer, deep forest-green fitted leather armor with bronze trim, short hooded cloak with glowing teal rune edging, compact recurve shortbow held in one hand, small arrow quiver at hip, curved dagger sheathed at belt, leather bracers, dark green leggings and light boots, lean agile ready stance, glowing teal accents, heroic high-fantasy RPG silhouette, no mage robe, no wizard hat, no staff, no plate armor, 8-direction pixel art"
@@ -1085,7 +1119,9 @@ characters:
     portraitCrop: { x: 31, y: 15, w: 32, h: 32 }
     portraitFace: { x: 46, y: 24 }
     palette_layer: deepseek
-    paletteSource: { robe: ['#162620', '#2e4735'], trim: '#459883' }
+    # Value-lifted k=1.6 by scripts/sprites/value-lift.mjs (2026-10-15): the
+    # forest greens sat at mean luminance ~40 on the grass. Sampled after the lift.
+    paletteSource: { robe: ['#406f4e', '#1f3f30'], trim: '#40be8f' }
     headCovered: true
     anchor: [46, 80]
     materialClass: earth
@@ -1105,16 +1141,22 @@ characters:
       path: characters/agent.deepseek.flash.xhigh/actions.png
       cell: 92
       groups:
-        read: { rows: [0, 3], hold: 3 }
+        read: { rows: [0, 3], hold: 3, directions: [s, se, e, ne, nw, w, sw] }
         wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
         strike: { rows: [7, 12], hold: 12, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [57, 43], w: [33, 45], se: [51, 48], sw: [42, 48] } }
         tinker: { rows: [13, 18], hold: 13, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [55, 45], w: [35, 47], se: [49, 49], sw: [44, 49] } }
+        think: { rows: [19, 21], hold: 21, directions: [se, e, w, sw] }
+        celebrate: { rows: [22, 24], hold: 24, directions: [se, e, w, sw] }
+        drink: { rows: [25, 29], hold: 25, seatLine: { south-east: 67, south-west: 67 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose + tankard, scripts/sprites/generate-pose-strip.mjs --groups=drink)", jobs: { se: "9229f2d6-27a2-4fb0-b37f-2d4fcbc3fd3f", sw: "b9452587-f169-4750-9afe-e79872e66d65" }, handEdit: "SW frame 4 (lowering) is frame 1 (raising): the generated frame smeared the tankard into the shoulder; xhigh has no sit group, so its seatLine is estimated from the flash and high drink cells" }, directions: [se, sw] }
+        gaze: { rows: [30, 33], hold: 31, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [46, 23], w: [46, 23], se: [41, 22], sw: [52, 22] } }
+        sit: { rows: [34, 35], hold: 35, seatLine: { south-east: 67, south-west: 68 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "680bd6f9-0f74-4daa-bebc-193c0ad4880a", sw: "abd0c5dc-0069-47e9-9248-41fbe4fed3f8" } }, directions: [se, sw] }
       grip: { hand: both, sheathe: true }
       provenance:
         characterId: "ed46dccd-92ae-4be0-be3a-cb08051d770e"
         animationGroupId: "89bbe8fe-e17d-4513-bcf6-eec764e2c8e0"
         generationSize: 76
-        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "8682dc5f-54a9-4b17-ae07-1832959a2290", w: "725a3ed3-c200-4fcb-a6d8-62eccbf10863", se: "8abda427-2e2f-4d61-9e29-225dc4048abb", sw: "42eb39d1-f8b3-4595-ba5e-c685eb1d85a9" } } }
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "8682dc5f-54a9-4b17-ae07-1832959a2290", w: "725a3ed3-c200-4fcb-a6d8-62eccbf10863", se: "8abda427-2e2f-4d61-9e29-225dc4048abb", sw: "42eb39d1-f8b3-4595-ba5e-c685eb1d85a9" }, drink: { se: "9229f2d6-27a2-4fb0-b37f-2d4fcbc3fd3f", sw: "b9452587-f169-4750-9afe-e79872e66d65" }, gaze: { e: "d066b083-b5e8-4b4d-8c38-d0240b556d64", w: "e5157723-74b7-422c-867b-de82e52028af", se: "cc359573-542b-4fed-b18e-73be7da8d515", sw: "3e52a568-1056-4a77-bbe0-ad47ed0d2d5e" } } }
+        animationStrips: { groups: { read: { s: "15b3e31e-8bd1-40d5-823e-080737615893", se: "15b3e31e-8bd1-40d5-823e-080737615893", e: "15b3e31e-8bd1-40d5-823e-080737615893", ne: "15b3e31e-8bd1-40d5-823e-080737615893", nw: "15b3e31e-8bd1-40d5-823e-080737615893", w: "15b3e31e-8bd1-40d5-823e-080737615893", sw: "15b3e31e-8bd1-40d5-823e-080737615893" }, wait: { se: "2a4310a6-decc-433b-98a9-b4e342b5b55c", e: "2a4310a6-decc-433b-98a9-b4e342b5b55c", w: "2a4310a6-decc-433b-98a9-b4e342b5b55c", sw: "2a4310a6-decc-433b-98a9-b4e342b5b55c" }, think: { se: "eeb6aaf4-57ab-400b-a9e6-b07ca9cb6184", e: "eeb6aaf4-57ab-400b-a9e6-b07ca9cb6184", w: "eeb6aaf4-57ab-400b-a9e6-b07ca9cb6184", sw: "eeb6aaf4-57ab-400b-a9e6-b07ca9cb6184" }, celebrate: { se: "23b14c05-2702-45c0-b7f4-9597854f8d4e", e: "23b14c05-2702-45c0-b7f4-9597854f8d4e", w: "23b14c05-2702-45c0-b7f4-9597854f8d4e", sw: "23b14c05-2702-45c0-b7f4-9597854f8d4e" } } }
     provenance: { characterId: ed46dccd-92ae-4be0-be3a-cb08051d770e, generationSize: 76, generationMode: pro }
     tool: create_character
     prompt: "DeepSeek Flash hooded forest ranger, deep forest-green layered leather armor with ornate bronze trim, hooded cloak with glowing teal rune edging, large ornate recurve longbow held ready in hand, full arrow quiver at hip, leather bracers and pauldron, dark green leggings and boots, commanding seasoned ranger stance, glowing teal accents, heroic high-fantasy RPG silhouette, no mage robe, no wizard hat, no staff, no plate armor, 8-direction pixel art"
@@ -1126,7 +1168,9 @@ characters:
     portraitCrop: { x: 30, y: 12, w: 34, h: 30 }
     portraitFace: { x: 47, y: 23 }
     palette_layer: deepseek
-    paletteSource: { robe: ['#162620', '#2e4735'], trim: '#459883' }
+    # Value-lifted k=1.6 by scripts/sprites/value-lift.mjs (2026-10-15): the
+    # forest greens sat at mean luminance ~40 on the grass. Sampled after the lift.
+    paletteSource: { robe: ['#1a3629', '#3a6548'], trim: '#309c6f' }
     headCovered: true
     anchor: [46, 80]
     materialClass: earth
@@ -1231,12 +1275,13 @@ characters:
   # z.AI GLM warrior-monk class: vermilion martial robes + peach meridian glow,
   # open-hand stance — distinct from Claude mages (staff/hat), Codex warriors
   # (plate/weapons), DeepSeek rogues (daggers/bow), and Grok truthseekers (coat).
-  # character_ids: glm=f64e33dc-6476-4c03-aac3-722e32a82088
+  # character_ids: glm=6714016d-77c0-4aea-92e7-316c69f5bd3e (Vermilion Grandmaster, 2026-10-15)
+  #                glm.b=b7f7dc6d-691b-45da-b5bc-9499071d5aef (Wandering Abbot)
   #                flash=f2b37456-ed34-4c67-84bf-f1ab93cf6f68
   # Reassemble: node scripts/sprites/generate-character-mcp.mjs --id=<id> --zip=...
   - id: agent.zai.glm
     tool: create_character
-    prompt: "GLM warrior-monk grandmaster, flowing vermilion-crimson martial robe with wide sleeves and a broad pale-peach sash knotted at the waist, shaved head with faint glowing peach meridian tattoo lines on the temples, jade prayer-bead necklace, cloth-wrapped forearms and fists, dark crimson trousers, cloth-wrapped feet, calm centered open-hand ready stance, serene disciplined face, peach rim light for a crisp readable silhouette, identical outfit and colors from every viewing angle, isolated character on transparent background, no scenery, no ground tile, no weapon, no staff, no wizard hat, no plate armor, no bow, no daggers, no hood, no cloak, 8-direction pixel art"
+    prompt: "GLM Vermilion Grandmaster, venerable warrior-monk master, tall broad imposing powerful build, flowing layered vermilion-crimson martial robe with wide long sleeves and an ornate gold-embroidered border, broad pale-peach sash knotted at the waist with long hanging tails, shaved head with softly glowing peach meridian tattoo lines on the temples, long flowing white beard and long white eyebrows, large jade prayer-bead mala necklace across the chest, cloth-wrapped forearms, dark crimson trousers, cloth-wrapped feet, calm centered open-hand stance, serene wise face, identical outfit and colors from every viewing angle, isolated character on transparent background, no weapon, no staff, no hat, no hood, no cloak, no plate armor, no floating objects, 8-direction pixel art"
     n_directions: 8
     size: 92
     generationSize: 76
@@ -1247,23 +1292,28 @@ characters:
       path: characters/agent.zai.glm/actions.png
       cell: 92
       groups:
-        read: { rows: [0, 3], hold: 3 }
+        read: { rows: [0, 3], hold: 3, directions: [s, se, e, ne, nw, w, sw] }
         wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
-        sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 66, south-west: 66 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "df88b9f5-ac47-4796-b6d3-2dd4cc43fb92", sw: "ef5a1995-259e-4caa-809b-c5b50b79ed18" } }, directions: [se, sw] }
-        strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [57, 48], w: [29, 46], se: [52, 53], sw: [29, 50] } }
-        tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [55, 50], w: [38, 49], se: [50, 54], sw: [43, 51] } }
+        sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 67, south-west: 67 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "fd461345-f69e-4fb7-a2fb-551ec2978ad1", sw: "919b5b8a-6307-43c7-a5c1-410bf8d769b6" } }, directions: [se, sw] }
+        strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [61, 48], w: [35, 47], se: [53, 53], sw: [24, 47] } }
+        tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [59, 49], w: [37, 49], se: [51, 54], sw: [43, 51] } }
+        gaze: { rows: [21, 24], hold: 22, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [49, 29], w: [46, 28], se: [43, 28], sw: [33, 22] } }
+        celebrate: { rows: [25, 27], hold: 27, directions: [se, e, w, sw] }
+        drink: { rows: [28, 32], hold: 28, seatLine: { south-east: 67, south-west: 67 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose + tankard, scripts/sprites/generate-pose-strip.mjs --groups=drink)", jobs: { se: "a7a309e9-d380-46b6-bbe4-375a0934c47c", sw: "62bf1d8d-41a8-4b20-bea1-4de32023efbb" } }, directions: [se, sw] }
+        think: { rows: [33, 35], hold: 35, directions: [se, e, w, sw] }
       grip: { hand: both, sheathe: true }
       provenance:
-        characterId: "f64e33dc-6476-4c03-aac3-722e32a82088"
-        animationGroupId: "c470a518-e4fd-4ec0-92f9-af78e82a53cf"
-        generationSize: 76
-        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "bf849bd4-5f09-4515-bbf2-4e8feb81fe36", w: "39c48890-44d0-407c-ab3e-e9b0292aa653", se: "08a24785-73a2-4866-980b-1cd61251c5e5", sw: "a4a23c96-dd47-4a3c-90c7-01d49082e7c8" } } }
-    portraitCrop: { x: 30, y: 17, w: 32, h: 32 }
-    provenance: { characterId: f64e33dc-6476-4c03-aac3-722e32a82088, generationSize: 76, generationMode: pro }
+        characterId: "6714016d-77c0-4aea-92e7-316c69f5bd3e"
+        generationSize: 128
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "bdbe5558-f5b3-4356-8f2f-1e05c159378a", w: "f7f5258a-a58c-4d47-851b-7a6d2d734f06", se: "e425b8d2-4189-4c3d-9d48-9fcda5a8d5be", sw: "73d9d057-23c9-4e0e-bdcf-90b782537ccc" }, gaze: { e: "7fa64355-cff8-4448-a923-d5c1fc663441", w: "1967ffab-5c78-42ad-9603-7f8e8c417a3c", se: "55717dc8-e28c-4ed8-9b5f-c5643f6d9013", sw: "02221b3d-9471-48c5-889b-ec003ffbdf06" }, drink: { se: "a7a309e9-d380-46b6-bbe4-375a0934c47c", sw: "62bf1d8d-41a8-4b20-bea1-4de32023efbb" } } }
+        animationStrips: { groups: { read: { s: "76e4d402-f7fa-4152-aae1-4cdd87785a92", se: "76e4d402-f7fa-4152-aae1-4cdd87785a92", e: "76e4d402-f7fa-4152-aae1-4cdd87785a92", ne: "76e4d402-f7fa-4152-aae1-4cdd87785a92", nw: "76e4d402-f7fa-4152-aae1-4cdd87785a92", w: "76e4d402-f7fa-4152-aae1-4cdd87785a92", sw: "76e4d402-f7fa-4152-aae1-4cdd87785a92" }, celebrate: { se: "4e57e930-efda-45d8-b7f7-a22104f1506d", e: "4e57e930-efda-45d8-b7f7-a22104f1506d", w: "4e57e930-efda-45d8-b7f7-a22104f1506d", sw: "4e57e930-efda-45d8-b7f7-a22104f1506d" }, think: { se: "cf63c80c-8ced-4dd5-be08-567defa99da9", e: "cf63c80c-8ced-4dd5-be08-567defa99da9", w: "cf63c80c-8ced-4dd5-be08-567defa99da9", sw: "cf63c80c-8ced-4dd5-be08-567defa99da9" } } }
+    portraitCrop: { x: 29, y: 17, w: 34, h: 32 }
+    provenance: { characterId: 6714016d-77c0-4aea-92e7-316c69f5bd3e, generationSize: 76, generationMode: pro }
     palette_layer: zai
-    # Sampled from sheet.png: vermilion robe + shade; the peach sash shares the
-    # skin ramp so only the jade prayer beads form a confident trim cluster.
-    paletteSource: { robe: ['#b7362f', '#88242e'], trim: '#73b493' }
+    # Sampled from sheet.png (2026-10-15 grandmaster body): vermilion robe +
+    # shade; the peach sash shares the skin ramp, so the jade mala is the only
+    # confident trim cluster.
+    paletteSource: { robe: ['#b32e28', '#7c1c2f'], trim: ['#296d47', '#40865d'] }
     # Shaved head: the only sheet a cosmetic hair tuft may sit on (W8.2a).
     headBare: true
     anchor: [46, 80]
@@ -1278,12 +1328,68 @@ characters:
         - { id: emissive.agent.zai.glm.jade-beads, kind: rune, geometry: sidecar, strength: 0.12 }
     occluder: { mode: alpha-silhouette, strength: 1 }
 
-  - id: agent.zai.flash
+  # Body variant of agent.zai.glm (models.json `spriteVariants`): the same
+  # vermilion monk on pilgrimage, under a tasselled straw hat with a small
+  # backpack shrine (candidate B of the 2026-10-15 GLM rebuild). Empty-handed.
+  - id: agent.zai.glm.b
     tool: create_character
-    prompt: "GLM Flash swift acolyte monk, sleeveless vermilion-crimson martial tunic with a short pale-peach sash, peach headband with two short trailing tails, short dark hair, cloth-wrapped forearms, dark crimson leggings, light cloth-wrapped boots, lean agile sprinter stance with fists raised, bright eager face, peach rim light for a crisp readable silhouette, identical outfit and colors from every viewing angle, isolated character on transparent background, no scenery, no ground tile, no weapon, no staff, no wizard hat, no plate armor, no bow, no daggers, no hood, no cloak, 8-direction pixel art"
+    prompt: "GLM wandering pilgrim monk, sturdy calm build, vermilion-crimson martial robe with long sleeves and gold-trimmed hems, wide flat woven straw hat with peach tassels, small wooden backpack shrine strapped on the back, jade prayer-bead mala necklace, broad pale-peach sash, dark crimson trousers, straw sandals, calm pilgrim stance, serene face, identical outfit and colors from every viewing angle, isolated character on transparent background, no weapon, no staff, no hood, no plate armor, no floating objects, 8-direction pixel art"
     n_directions: 8
     size: 92
     generationSize: 76
+    generationMode: pro
+    animations: [walk, breathing-idle]
+    animationGroups: { walk: { rows: [0, 5] }, breathingIdle: { rows: [6, 9] } }
+    actionStrip:
+      path: characters/agent.zai.glm.b/actions.png
+      cell: 92
+      groups:
+        read: { rows: [0, 3], hold: 3 }
+        wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
+        strike: { rows: [7, 12], hold: 12, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [58, 49], w: [29, 44], se: [51, 53], sw: [30, 49] } }
+        tinker: { rows: [13, 18], hold: 13, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [59, 46], w: [37, 48], se: [49, 54], sw: [45, 52] } }
+        celebrate: { rows: [19, 21], hold: 21, directions: [se, e, w, sw] }
+        drink: { rows: [22, 26], hold: 22, seatLine: { south-east: 62, south-west: 63 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose + tankard, scripts/sprites/generate-pose-strip.mjs --groups=drink)", jobs: { se: "1589f900-391b-421f-a0a2-65fcbfd746af", sw: "f27b8762-4df5-427f-b22d-b6dd9a8a193a" } }, directions: [se, sw] }
+        think: { rows: [27, 29], hold: 29, directions: [se, e, w, sw] }
+        gaze: { rows: [30, 33], hold: 31, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [50, 34], w: [38, 30], se: [44, 36], sw: [36, 32] } }
+        sit: { rows: [34, 35], hold: 35, seatLine: { south-east: 62, south-west: 63 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "14ab8ccc-ebe9-4bb7-bdd6-260fd7d20567", sw: "7b101fb3-48cf-480c-a593-b14ba09a47e1" } }, directions: [se, sw] }
+      grip: { hand: both, sheathe: true }
+      # Strike SE/E rows come from a lower-wind-up re-roll (the stock arm
+      # stretched through the hat brim): jobs a4b46926-d46e-4dca-bf8d-3bf49d8ae41e (se),
+      # c394dc9e-595a-4877-90db-90b30cdc5c1d (e); tinker and wait keep the clip jobs below.
+      provenance:
+        characterId: "b7f7dc6d-691b-45da-b5bc-9499071d5aef"
+        generationSize: 128
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "321d69dd-870d-428b-aa0f-917d85be1cd5", w: "af43f6e3-badf-41a7-a328-b4e637011c44", se: "74623ae0-241c-498f-bfd3-93dd4fc751fb", sw: "38d48d64-7003-40f7-be4c-3c19bfb2070a" }, drink: { se: "1589f900-391b-421f-a0a2-65fcbfd746af", sw: "f27b8762-4df5-427f-b22d-b6dd9a8a193a" }, gaze: { e: "3c43d413-2730-48a7-813f-e3a8ab0c56a3", w: "7bb19015-de62-41eb-ac0e-122afdf555dd", se: "285cd602-ac4f-4d2e-804d-a5bb5817e905", sw: "3dd56e9f-09bc-41da-b826-3a209d62030f" } } }
+        animationStrips: { groups: { read: { s: "a8a42e7d-c5e3-435c-83c9-b17dbac7f383", se: "a8a42e7d-c5e3-435c-83c9-b17dbac7f383", e: "a8a42e7d-c5e3-435c-83c9-b17dbac7f383", ne: "a8a42e7d-c5e3-435c-83c9-b17dbac7f383", n: "a8a42e7d-c5e3-435c-83c9-b17dbac7f383", nw: "a8a42e7d-c5e3-435c-83c9-b17dbac7f383", w: "a8a42e7d-c5e3-435c-83c9-b17dbac7f383", sw: "a8a42e7d-c5e3-435c-83c9-b17dbac7f383" }, celebrate: { se: "e8531ad4-878a-4b49-b669-29f3ab01d576", e: "e8531ad4-878a-4b49-b669-29f3ab01d576", w: "e8531ad4-878a-4b49-b669-29f3ab01d576", sw: "e8531ad4-878a-4b49-b669-29f3ab01d576" }, think: { se: "6028c96c-2386-49c9-857f-385541f3db43", e: "6028c96c-2386-49c9-857f-385541f3db43", w: "6028c96c-2386-49c9-857f-385541f3db43", sw: "6028c96c-2386-49c9-857f-385541f3db43" } } }
+    portraitCrop: { x: 26, y: 15, w: 40, h: 36 }
+    provenance: { characterId: b7f7dc6d-691b-45da-b5bc-9499071d5aef, generationSize: 76, generationMode: pro }
+    palette_layer: zai
+    # Sampled from sheet.png: vermilion robe + shade, jade mala as trim; the
+    # straw hat and shrine stay authored.
+    paletteSource: { robe: ['#b12b30', '#72172e'], trim: ['#3f906e', '#0f653f'] }
+    headCovered: true
+    anchor: [46, 80]
+    materialClass: fabric
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
+    elevation: { base: 0, top: 80, unit: sprite-px }
+    emissive:
+      strength: 0
+      sources:
+        - { id: emissive.agent.zai.glm.b.jade-beads, kind: rune, geometry: sidecar, strength: 0.12 }
+    occluder: { mode: alpha-silhouette, strength: 1 }
+
+  - id: agent.zai.flash
+    tool: create_character
+    # 2026-10-15 rebuild (model sprites pass 2): pro rig at size 66, styled
+    # from the GLM grandmaster rig 6714016d-77c0-4aea-92e7-316c69f5bd3e so the
+    # two read as master and pupil.
+    prompt: "GLM Flash young teen ember acolyte monk, the grandmaster's small swift pupil, short slight lean build, sleeveless vermilion-crimson martial tunic with gold-trimmed hem and a short pale-peach sash, peach headband with two short trailing tails, short dark hair, small jade bead bracelet, cloth-wrapped forearms, dark crimson leggings, light cloth-wrapped boots, eager ready stance with loose fists, bright determined young face, identical outfit and colors from every viewing angle, isolated character on transparent background, no weapon, no staff, no hat, no hood, no cloak, no plate armor, no floating objects, 8-direction pixel art"
+    n_directions: 8
+    size: 92
+    generationSize: 66
     generationMode: pro
     animations: [walk, breathing-idle]
     animationGroups: { walk: { rows: [0, 5] }, breathingIdle: { rows: [6, 9] } }
@@ -1293,21 +1399,31 @@ characters:
       groups:
         read: { rows: [0, 3], hold: 3 }
         wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
-        sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 65, south-west: 66 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "970529c3-89d6-4048-b8e3-da4b50f4d566", sw: "49dfe4f7-09db-4bd7-a642-907d1d2fef17" } }, directions: [se, sw] }
-        strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [56, 48], w: [31, 47], se: [51, 51], sw: [32, 51] } }
-        tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [58, 46], w: [33, 49], se: [58, 50], sw: [44, 52] } }
+        sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 67, south-west: 67 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "535636a9-655d-4629-8596-34384934ba8e", sw: "43185f6c-74d3-4c1c-8b39-3d50903eecc5" } }, directions: [se, sw] }
+        strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [60, 49], w: [28, 46], se: [52, 53], sw: [26, 48] } }
+        tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [58, 51], w: [36, 49], se: [50, 54], sw: [43, 52] } }
+        gaze: { rows: [21, 24], hold: 22, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [50, 31], w: [38, 28], se: [43, 31], sw: [34, 26] } }
+        celebrate: { rows: [25, 27], hold: 27, directions: [se, e, w, sw] }
+        think: { rows: [28, 30], hold: 30, directions: [se, e, w, sw] }
+        run: { rows: [31, 36], hold: 31 }
+        drink: { rows: [37, 41], hold: 37, seatLine: { south-east: 67, south-west: 67 }, provenance: { route: "pixminimax from the seated sit hold cell (custom start frame), frames se 1,2,4,5,8 / sw 1,2,5,6,8; 2026-10-15 polish", animationGroup: "b5bc6991-f33e-4017-b7bb-ae09b36a54b3" }, directions: [se, sw] }
       grip: { hand: both, sheathe: true }
       provenance:
-        characterId: "f2b37456-ed34-4c67-84bf-f1ab93cf6f68"
-        animationGroupId: "3d89ced6-3563-47c8-863a-45f4777376eb"
-        generationSize: 76
-        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "27d82aad-ede9-4247-8641-a48e4b223009", w: "36a19ab2-9e0f-45df-a889-6398f9dfcc61", se: "5f3f2abc-0819-4927-be20-20061eb41806", sw: "37850530-8bfe-4d09-860c-f0f4b6c6bae5" } } }
-    portraitCrop: { x: 31, y: 16, w: 32, h: 32 }
-    provenance: { characterId: f2b37456-ed34-4c67-84bf-f1ab93cf6f68, generationSize: 76, generationMode: pro }
+        characterId: "218909b8-74db-4297-96d2-7b013cf5fdff"
+        generationSize: 66
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "0c8c101e-a8be-4d17-a6e3-6063419eb33e", w: "aa003dae-56fb-49bc-8ae1-1b6bdd1f9883", se: "3f688468-e6a1-4dc9-88a8-822550d0333e", sw: "d247adcd-ed72-4c9e-9cc9-97965eeee933" }, gaze: { e: "12a9d3b4-a7a6-4cbe-838b-7990ca4414a0", w: "e4e0221b-5ba9-427d-a00c-90d597bd4f11", se: "217da2c1-4222-434d-9059-1f5f9a100627", sw: "190929f9-b906-46cb-9729-3b08bd8c8231" } } }
+        animationStrips: { groups: { read: { s: "3197b151-2e1f-451f-af54-f0ed34e47bd1", se: "3197b151-2e1f-451f-af54-f0ed34e47bd1", e: "3197b151-2e1f-451f-af54-f0ed34e47bd1", ne: "3197b151-2e1f-451f-af54-f0ed34e47bd1", n: "3197b151-2e1f-451f-af54-f0ed34e47bd1", nw: "3197b151-2e1f-451f-af54-f0ed34e47bd1", w: "3197b151-2e1f-451f-af54-f0ed34e47bd1", sw: "3197b151-2e1f-451f-af54-f0ed34e47bd1" }, celebrate: { se: "a20bcc90-322f-453a-8325-64f85a560593", e: "a20bcc90-322f-453a-8325-64f85a560593", w: "a20bcc90-322f-453a-8325-64f85a560593", sw: "a20bcc90-322f-453a-8325-64f85a560593" }, think: { se: "571d2e78-d851-4a43-87e8-3afe205e5a48", e: "571d2e78-d851-4a43-87e8-3afe205e5a48", w: "571d2e78-d851-4a43-87e8-3afe205e5a48", sw: "571d2e78-d851-4a43-87e8-3afe205e5a48" }, drink: { se: "b5bc6991-f33e-4017-b7bb-ae09b36a54b3", sw: "b5bc6991-f33e-4017-b7bb-ae09b36a54b3" } } }
+        templateStrips: { generationMode: skeleton-v3, groups: { run: { s: "8c8d736e-74ae-4955-a53b-91b94a5ae10b", se: "570a7251-ecf6-4860-aa99-abbc8e34c847", e: "60ea3d71-6e57-42ae-980e-7d7f77e0ba7f", ne: "bd1368a5-cb89-4375-9092-407aa43053e6", n: "a1f97a3b-6f80-481d-b94d-0c27f56bc9a2", nw: "0feeb7de-40a0-40a0-a1b8-850846dbf295", w: "1fb5feb1-98d8-4cbd-b280-35aafefb1370", sw: "1c1c125b-32d8-4990-9fb7-b3a149c7715d" } } }
+    portraitCrop: { x: 30, y: 17, w: 32, h: 30 }
+    provenance: { characterId: 218909b8-74db-4297-96d2-7b013cf5fdff, generationSize: 66, generationMode: pro }
     palette_layer: zai
-    # Sampled from sheet.png: vermilion tunic + shade; the peach headband and
-    # sash share the skin ramp, so no confident trim cluster exists.
-    paletteSource: { robe: ['#b83f41', '#a52d3b'] }
+    # Sampled from sheet.png (2026-10-15 acolyte body): vermilion tunic + its
+    # shade, dark crimson leggings; the peach headband and sash share the skin
+    # ramp, so no confident trim cluster exists.
+    paletteSource: { robe: ['#a82f28', '#97332c'], pants: '#731e2d' }
+    # The peach headband with trailing tails is his signature: no cosmetic
+    # head overlay may cover it.
+    headCovered: true
     anchor: [46, 80]
     materialClass: fabric
     materialSidecar: true

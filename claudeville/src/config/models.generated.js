@@ -1297,6 +1297,10 @@ const MODEL_REGISTRY = [
         "sample": "zai/glm-5.3",
         "shortLabel": "GLM",
         "spriteId": "agent.zai.glm",
+        "spriteVariants": [
+            "agent.zai.glm",
+            "agent.zai.glm.b"
+        ],
         "trim": [
             "#ff8c5f",
             "#ffb28c",
@@ -1662,6 +1666,10 @@ const MODEL_DEFAULTS = {
         "pricingKey": "zai",
         "shortLabel": "GLM",
         "spriteId": "agent.zai.glm",
+        "spriteVariants": [
+            "agent.zai.glm",
+            "agent.zai.glm.b"
+        ],
         "trim": [
             "#ff8c5f",
             "#ffb28c",

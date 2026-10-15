@@ -271,6 +271,9 @@ const ACTION_STRIP_GROUPS = Object.freeze({
     [AgentAction.THINK]: 'think',
     [AgentAction.CELEBRATE]: 'celebrate',
 });
+// Families that draw the action prop chip (read, work, think, talk,
+// celebrate) beside the hand. Gemini, Kimi and Grok keep a bare body.
+const ACTION_PROP_PROVIDERS = new Set(['claude', 'codex', 'deepseek', 'zai']);
 // 2.3 — how long the resolved command slip shows its wax seal. Static mark,
 // bounded to the lifecycle event that earned it.
 const SEALED_SLIP_MS = 1800;
@@ -7573,9 +7576,10 @@ export class AgentSprite {
         ctx.restore();
     }
 
-    // Shared medium-distance action vocabulary for the Claude and Codex hero
-    // families. Static geometry carries the meaning; the optional two-frame
-    // lift uses the medium pulse band and freezes under reduced motion.
+    // Shared medium-distance action vocabulary for the Claude, Codex, DeepSeek
+    // and z.AI families (ACTION_PROP_PROVIDERS). Static geometry carries the
+    // meaning; the optional two-frame lift uses the medium pulse band and
+    // freezes under reduced motion.
     _drawActionPoseOverlay(ctx, frameGeometry) {
         this._drawObservationSeal(ctx);
         this._drawTurnSand(ctx);
@@ -7587,7 +7591,7 @@ export class AgentSprite {
             return;
         }
         const provider = this._providerKey();
-        if (!['claude', 'codex'].includes(provider) || this.moving) return;
+        if (!ACTION_PROP_PROVIDERS.has(provider) || this.moving) return;
         const action = resolveAgentAction(this.agent, { chatting: this.chatting });
         if (!action) return;
         // SM-7 — one chip per body: a chatting body already wears the message
