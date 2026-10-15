@@ -25,8 +25,8 @@ test('one stepped 0.2 rad/s shaft lands 35 percent out and only at full lampligh
         const sprite = beacon(hour);
         const a = { ...sprite.lighthouseBeam(0), foot: { ...sprite.lighthouseBeam(0).foot } };
         assert.equal(a.length, 520 * 0.65);
-        assert.equal(a.foot.x, Math.round(1001 + Math.cos(a.angle) * 182));
-        assert.equal(a.foot.y, Math.round(996 + Math.sin(a.angle) * 91));
+        assert.equal(a.foot.x, Math.round(1022 + Math.cos(a.angle) * 182));
+        assert.equal(a.foot.y, Math.round(1004 + Math.sin(a.angle) * 91));
         assert.equal(sprite.lighthouseBeam(100).angle, a.angle, 'angle holds within one 140 ms step');
         const b = sprite.lighthouseBeam(1000);
         assert.ok(Math.abs(b.angle - a.angle - 0.196) < 1e-10);

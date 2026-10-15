@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-10-15-harbor-fleet"
+  assetVersion: "2026-10-15-family-pharos"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -1733,7 +1733,7 @@ buildings:
   - id: building.command
     tool: generate-image-v2
     prompt: "isometric pixel art building sprite, true 2:1 dimetric isometric view from the south-east, the Command Center, the grandest building in town: a heroic castle keep with a tall central hall crowned by a large slate-blue tiled dome with a gold ring and gold finial, a tall square stone tower with a slate-blue spire and a small gold flag on the left, a round crenellated stone tower on the right, two lower side wings with slate-blue roofs, the right wing has a long plain right-facing wall with three small windows, one huge arched main gate with heavy oak double doors in the front wall facing the lower-left, as tall as a third of the keep, reached by two broad stone steps and flanked by two lit iron braziers, crimson banners with gold emblems on the walls, cream limestone ashlar walls with a darker stone base course, small arched windows with warm amber glass. Warm light from the upper left. Structure only on a transparent background: no ground tile, no paved floor, no cobble plaza, no lawn, no platform, no plinth, no cast shadow, no text."
-    provenance: { item: '4.2', endpoint: generate-image-v2, jobId: 42f7aab2-6e0a-45c8-b335-1afcd25448a0, styleImage: building.observatory, referenceImage: 'building.command (pre-4.2)', generationSize: 360x240, generations: 25, pilotGenerations: 145, recolor: 'cream -> family cool grey (hand, not generated)', edit: { endpoint: inpaint-v3, jobId: 1c219d8c-5bce-48be-88f8-7dea9c1690a9, seed: 1234, crop: 200x200, generations: 20, note: 'gate leaf ~45 -> ~71 px; seam patches beside the steps hand-recoloured to the stone ramp' }, generatedAt: '2026-09-25' }
+    provenance: { item: '4.2', endpoint: generate-image-v2, jobId: 42f7aab2-6e0a-45c8-b335-1afcd25448a0, styleImage: building.observatory, referenceImage: 'building.command (pre-4.2)', generationSize: 360x240, generations: 25, pilotGenerations: 145, recolor: 'cream -> family cool grey (hand, not generated)', edit: { endpoint: inpaint-v3, jobId: 1c219d8c-5bce-48be-88f8-7dea9c1690a9, seed: 1234, crop: 200x200, generations: 20, note: 'gate leaf ~45 -> ~71 px; seam patches beside the steps hand-recoloured to the stone ramp' }, generatedAt: '2026-09-25', harmonize: 'spire and wing roofs domeSlate -> roofSlate, gilt dome kept (scripts/sprites/harmonize-roofs.mjs, 2026-10-15)' }
     width: 360
     height: 240
     anchor: [199, 164]
@@ -1888,19 +1888,24 @@ buildings:
     lightRadius: 80
 
   # ── HERO: Harbor Lighthouse (watchtower) ──
-  # Single-image (was composeGrid [4,3]); narrow/tall Pharos per the building
-  # style contract. The lamp is the `beacon` layer seated in the lantern glass
-  # (6.1: drawn by partDrawsFor on both backends; the `lens` cycle steps it).
-  # Night light: one warm mirror shaft, clock-gated embers and crown exhaust
-  # at registry.effectAnchors.smokeTop; windows still require working visitors.
-  # QAWorld F8 — the baked blue grid-tile plinth is cleared to alpha (the
-  # terrain/coast bakes paint the ground around it); a hand-authored 7 px
-  # limestone footing on the tower's own stone colours replaces it, the stair
-  # landing on the ground. The emissive sidecar is the six window glasses
-  # (alpha 0.68), measured on base.png, never luminance.
+  # Re-authored 2026-10-15 into the Tavern/Harbor family: a round tapering
+  # tower of pale coursed limestone in three stages, a railed stone gallery
+  # round a dark lantern room under a roofSlate cone with a gilt finial, and a
+  # half-timbered keeper's cottage at its south-west foot whose door faces the
+  # entrance tiles. Pro model (create_image_pro, 288x384, seed 5304) with
+  # building.command as the style image (outline, detail, shading) and the
+  # operator-picked B-0 composition draft placed on the canvas plus
+  # building.tavern as references; the art moved +20/+24 px onto the 3x5
+  # footprint, ink snapped to #060402 and both roofs harmonized onto roofSlate.
+  # The lamp is the `beacon` layer seated in the lantern glass (6.1: drawn by
+  # partDrawsFor on both backends; the `lens` cycle steps it). Night light:
+  # one warm mirror shaft, clock-gated embers and crown exhaust at
+  # registry.effectAnchors.smokeTop; windows (two on the shaft, one in the
+  # cottage) still require working visitors.
   - id: building.watchtower
-    tool: map_object
-    prompt: "Pharos Lighthouse — tall narrow heroic cool-grey stone lighthouse tower with strong light-to-shadow contrast, tapering stacked circular stages, small arched windows, bronze lantern crown with the flame area left dark for the beacon overlay, lower structural stone quay with a connected short stair and localized wet water-contact edge. Narrow vertical silhouette, much taller than wide. No generic square ground tile, no unsupported platform, no pale pastel, no modern beam."
+    tool: create_image_pro
+    prompt: "isometric pixel art building sprite, true 2:1 dimetric isometric view from the south-east, ONE single isolated landmark: a medieval harbour lighthouse with its keeper's cottage. The tower: one tall slender ROUND tapering tower of pale grey limestone ashlar in clearly visible stone block courses, three stages separated by projecting stone string courses, a few small arched windows with unlit dark slate glass, at the top a stone gallery on corbels with a dark iron railing around a glazed lantern room whose glass is dark and empty, crowned by a steep conical slate-blue tiled roof with a small gilt finial. The cottage: a small low keeper's cottage against the foot of the tower on the lower-left, dark oak half-timbering over cream plaster on a grey limestone base, a steep slate-blue tiled gable roof, a small stone chimney, small leaded windows with unlit dark glass, an arched oak door facing the lower-left with two stone steps. Warm light from the upper left, chunky stepped cel shading, 1px warm near-black selective outline. Nothing else on the canvas: no water, no ground tile, no cast shadow, no light beam, no flame, no people, no text."
+    provenance: { item: 'pharos', endpoint: create_image_pro, jobId: 66a2a4a6-2339-4c8f-b1bb-be4e9e9d0cbe, seed: 5304, styleImage: building.command, referenceImage: 'B-0 draft (create_image_pro job 46cf1505-5e04-4413-a5ee-1ba21af13768, style building.harbor) placed 2x + building.tavern', generationSize: 288x384, offset: [20, 24], generations: 15, pilotGenerations: 45, recolor: 'ink -> #060402; roofs -> roofSlate (scripts/sprites/harmonize-roofs.mjs)', generatedAt: '2026-10-15' }
     width: 288
     height: 384
     anchor: [144, 320]
@@ -1921,9 +1926,8 @@ buildings:
     horizonY: 300
     layers:
       # 6.1 — the Pharos lamp: the original generated 64x64 beacon.png cropped
-      # to its flame and bowl (cols 23-40, rows 5-29; the pedestal dropped) and seated on the
-      # lantern floor inside the glass; the texels that fell on the lantern
-      # roof were cleared so the roof stays in front. Static art (the old
+      # to its flame and bowl (cols 23-40, rows 5-29; the pedestal dropped),
+      # seated on the lantern floor in the central pane, under the cone. Static art (the old
       # smooth-sine alpha pulse is gone, V4); a fixture, so on the GPU it
       # emits through no occupancy gate (M22).
       beacon:
@@ -1931,7 +1935,7 @@ buildings:
         prompt: "isolated warm lantern flame for a lighthouse crown, orange amber pixel fire with a bright golden core and soft warm halo, thin tile, transparent background only, no ground tile, no square base, no platform, no cube block, no modern beam, empty transparent corners"
         width: 18
         height: 25
-        anchor: [145, 84]
+        anchor: [164, 109]
         fixture: true
         materialClass: fire
         emissive:
@@ -1949,14 +1953,14 @@ buildings:
         prompt: "cycle mask: the flame texels of beacon.png ordered by height; authored, not generated"
         width: 18
         height: 25
-        anchor: [145, 84]
+        anchor: [164, 109]
         fixture: true
         cycle: { gate: lamps, art: beacon, frames: 8, bandPx: 4, riseStepPx: 2, fixedBelowRankFrac: 0.25, rampStops: 6, heightFromMask: true, hz: 4 }
     emitters:
-      torch: [144, 68]
+      torch: [164, 97]
     # Phase 2.5.5: light-reflection compositing reads these to additively
     # tint nearby water tiles. Anchor is sprite-local pixels.
-    lightSource: [144, 68]
+    lightSource: [164, 97]
     lightColor: '#ffb347'
     lightRadius: 96
     lightOverlay: 'atmosphere.light.lighthouse-beam'
@@ -2196,7 +2200,7 @@ buildings:
   - id: building.forge
     tool: generate-image-v2
     prompt: "isometric pixel art building sprite, true 2:1 dimetric isometric view from the south-east, a Code Forge landmark: a compact stone blacksmith forge hall with soot-darkened grey stone walls and a steep dark blue-grey slate roof, one tall square stone chimney with a dark iron cap rising at the back right, a tall open arched workshop doorway on the left end wall with a glowing orange furnace fire inside spilling warm light, an iron anvil on a stone block and a stone quench trough beside the front wall, a timber tool rack with hammers and tongs, two small warm-lit windows. Warm light from the upper left. Structure only on a transparent background: no ground tile, no lawn, no platform, no plinth, no cast shadow, no text."
-    provenance: { item: '4.5', endpoint: generate-image-v2, jobId: 59af4d9e-b105-4769-8e3f-c16a14f26090, styleImage: building.observatory, referenceImage: 'building.forge (pre-4.5)', generationSize: 256x232, generations: 20, pilotGenerations: 40, generatedAt: '2026-09-25' }
+    provenance: { item: '4.5', endpoint: generate-image-v2, jobId: 59af4d9e-b105-4769-8e3f-c16a14f26090, styleImage: building.observatory, referenceImage: 'building.forge (pre-4.5)', generationSize: 256x232, generations: 20, pilotGenerations: 40, generatedAt: '2026-09-25', harmonize: 'roof indigo -> roofSlate, charcoal walls -> family masonry by percentile against building.command (scripts/sprites/harmonize-roofs.mjs, 2026-10-15)' }
     width: 256
     height: 232
     anchor: [128, 169]
@@ -2360,7 +2364,7 @@ buildings:
   - id: building.taskboard
     tool: generate-image-v2
     prompt: "isometric pixel art building sprite, true 2:1 dimetric isometric view from the south-east, a grand open-air town Quest Board landmark: one wide rectangular dark green-grey slate chalkboard panel in a heavy weathered oak timber frame, the board running diagonally from the upper-left down to the lower-right so its broad slate face looks toward the lower-left, standing on two thick carved oak posts with grey stone footings, a small slate-blue tiled gable roof cap along the top of the board, one hanging iron lantern with warm amber glass at each end of the roof beam, small crimson guild banners on the posts, a narrow wooden chalk ledge under the slate. The slate is completely blank and empty: no writing, no paper, no pins. Warm key light from the upper left, the slate face in soft light. Structure only on a transparent background."
-    provenance: { item: '4.5', endpoint: generate-image-v2, jobId: f6f270cd-6b3a-4e06-8f2c-a408359c0ef7, seed: 777, styleImage: building.observatory, referenceImage: 'taskboard t1 candidate, mirrored', generationSize: 256x232, generations: 20, pilotGenerations: 100, generatedAt: '2026-09-25' }
+    provenance: { item: '4.5', endpoint: generate-image-v2, jobId: f6f270cd-6b3a-4e06-8f2c-a408359c0ef7, seed: 777, styleImage: building.observatory, referenceImage: 'taskboard t1 candidate, mirrored', generationSize: 256x232, generations: 20, pilotGenerations: 100, generatedAt: '2026-09-25', harmonize: 'roof teal -> roofSlate (scripts/sprites/harmonize-roofs.mjs, 2026-10-15)' }
     width: 256
     height: 232
     anchor: [128, 203]
@@ -2444,7 +2448,7 @@ buildings:
   - id: building.archive
     tool: generate-image-v2
     prompt: "isometric pixel art building sprite, true 2:1 dimetric isometric view from the south-east, a grand medieval Lore Archive library hall: one long rectangular stone library nave with a steep slate-blue tiled gable roof running along its length, a single tall square stone bell tower with a slate-blue pyramid spire rising at the left end, tall narrow pointed lancet windows with warm amber stained glass between stone buttresses along the long wall, one very large arched oak double door, one third as tall as the wall, set in a deep carved stone portal on the right gable end with three stone steps, a round amber rose window in the gable above the door, a small bronze lantern beside the portal, grey limestone ashlar walls, brass trim, small crimson banners. Warm light from the upper left. Structure only on a transparent background: no ground tile, no lawn, no platform, no plinth, no cast shadow, no text, no book emblem."
-    provenance: { item: '4.5', endpoint: generate-image-v2, jobId: 8b5fb6f3-476b-4b7e-b670-4e863c6528d0, seed: 4242, styleImage: building.observatory, generationSize: 336x232, generations: 25, pilotGenerations: 102, generatedAt: '2026-09-25', edit: { endpoint: inpaint-v3, jobId: e973d087-17ab-4409-87c5-49a04c510945, seed: 4242, crop: 200x200, generations: 20, pilotGenerations: 40, note: 'QAWorld F10 — SE portal re-authored as a tall lancet (leaf ~52 -> ~83 px); rose window removed; palette snapped to the sprite; lantern wall-glow repainted by hand' } }
+    provenance: { item: '4.5', endpoint: generate-image-v2, jobId: 8b5fb6f3-476b-4b7e-b670-4e863c6528d0, seed: 4242, styleImage: building.observatory, generationSize: 336x232, generations: 25, pilotGenerations: 102, generatedAt: '2026-09-25', edit: { endpoint: inpaint-v3, jobId: e973d087-17ab-4409-87c5-49a04c510945, seed: 4242, crop: 200x200, generations: 20, pilotGenerations: 40, note: 'QAWorld F10 — SE portal re-authored as a tall lancet (leaf ~52 -> ~83 px); rose window removed; palette snapped to the sprite; lantern wall-glow repainted by hand' }, harmonize: 'roof teal -> roofSlate (scripts/sprites/harmonize-roofs.mjs, 2026-10-15)' }
     width: 336
     height: 240
     anchor: [167, 182]

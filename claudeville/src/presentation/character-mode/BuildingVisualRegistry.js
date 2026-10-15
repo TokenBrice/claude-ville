@@ -397,32 +397,28 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         occupancyThresholds: { occupiedMax: 0.5, busyMax: 0.9 },
         labelPriority: 'landmark',
         beaconBase: 1,
-        // Centres of the five arched windows up the lit (SW) face of the
-        // shaft, measured on base.png glass (the old rects sat on blank wall).
-        // The emissive sidecar lights the same glass plus the SE-face window;
-        // the second, fourth and fifth rects are narrowed to its lit slit.
+        // Glass centres of the two arched shaft windows (SW and SE faces)
+        // and the keeper's cottage window, measured on the emissive sidecar.
         windowRects: [
-            { at: [131, 122], w: 6, h: 15 },
-            { at: [130.5, 148], w: 3, h: 16 },
-            { at: [129, 179], w: 4, h: 17 },
-            { at: [126.5, 218], w: 3, h: 16 },
-            { at: [118.5, 258], w: 3, h: 16 },
+            { at: [146.5, 158], w: 3, h: 12 },
+            { at: [183.5, 204.5], w: 3, h: 11 },
+            { at: [137, 308.5], w: 6, h: 13 },
         ],
-        pennant: { at: [166, 80] },
+        pennant: { at: [192, 112] },
         effectAnchors: {
-            // Fire exhaust leaves the lantern crown, not its occupancy rooms.
-            smokeTop: [144, 35],
+            // Fire exhaust leaves the cone's crown, not its occupancy rooms.
+            smokeTop: [164, 50],
             lanternFire: {
-                flame: [144, 68],
-                light: [144, 68],
-                particle: [144, 68],
+                flame: [164, 97],
+                light: [164, 97],
+                particle: [164, 97],
                 // Tower foot under the lantern; the mirror shaft lands 35 %
                 // of its reach out from here (the lamp lights no ground).
-                foot: [145, 316],
+                foot: [166, 324],
             },
             // Full reach before its air/sea split, in ground texels.
             searchlight: {
-                pivot: [144, 68],
+                pivot: [164, 97],
                 length: 520,
                 width: 200,
             },

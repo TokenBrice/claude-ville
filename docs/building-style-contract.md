@@ -1,6 +1,6 @@
 # ClaudeVille Building Style Contract
 
-The visual and runtime contract for every World-mode building. Command Center (`building.command`) is the style reference for the landmark family and the hero and land-material reference, Harbor is the water-contact reference (a stone quay meeting the shore, piers on pilings), and Portal/Lighthouse are named structural-platform exceptions. Use this when writing generation prompts, defining grounding metadata, and reviewing a regenerated sprite.
+The visual and runtime contract for every World-mode building. Command Center (`building.command`) is the style reference for the landmark family and the hero and land-material reference, the Tavern and Harbor are the family palette reference (dark oak, pale limestone, the `roofSlate` tile), Harbor is also the water-contact reference (a stone quay meeting the shore, piers on pilings), and Portal/Lighthouse are named structural-platform exceptions. Use this when writing generation prompts, defining grounding metadata, and reviewing a regenerated sprite.
 
 ## Craft rules (every building)
 
@@ -10,7 +10,7 @@ The visual and runtime contract for every World-mode building. Command Center (`
 - **Lighting:** single warm key baked from the **upper-left**; cool shadow toward lower-right. No rim light, glow or bloom baked into the albedo: light that emits belongs to the emissive sidecar. Emissive-sidecar texels keep their own colour at every hour (1.3: the scene pass exempts them from the time grade, and the Canvas/hybrid paths draw an ungraded emitter cut, `EmitterCuts.drawCanvasEmitterCuts`). On an HDR screen under WebGPU they are the role-1 pixels that HDR highlights lift (10.2, `DisplayColor.js`); on a P3 screen their chroma is stretched ×1.22 (10.3). Both stay below the action-needed marks.
 - **Doors:** a door leaf is at least **1.2× the median 1:1 body height** (Command's leaf ≥ 78 px), so a villager reads as going in, not squeezing past.
 - **Glass:** `base.png` paints window glass **unlit** (slate glass on the stone/slate ramps, with the frame and a cool sky glint at most). Painted amber glass makes an empty building look occupied at noon. Window light comes only from the emissive sidecar (`base.emissive.png`), gated at night by real work (see Rooms).
-- **Roof signature:** slate-blue tiled roof is the family motif. No terracotta-red, no sky-blue cartoon roofs.
+- **Roof signature:** slate-blue tiled roof is the family motif, on `ART_RAMPS.roofSlate` (sampled from the Tavern and Harbor; their main tile is stop 6). Only the Command's gilt dome keeps its own `domeSlate`. No terracotta-red, no sky-blue cartoon roofs, no teal or near-black indigo. `scripts/sprites/harmonize-roofs.mjs` remaps a drifted roof onto the ramp (and lifted the Forge's charcoal walls onto the family masonry); its `--check`, run by `npm run world:validate-buildings`, fails on any landmark roof texel off the ramp. Run it after every regeneration.
 - **Grounding (required):** land sprites contain structure, attached stairs, and true footings only. The ground bake (`claudeville/src/presentation/character-mode/GroundBake.js`, cached in the static terrain layer) owns grass, dirt, district yards and their kerbs, contact darkening, and the worn threshold from each door along its frontage spur. A land sprite must not contain a complete ground tile, raised slab, plinth, retaining lip, closed dark perimeter, baked cast shadow, or generic square diamond.
 - **Exceptions:** `intentional-dais`, `quay`, and `water-pilings` may remain structural parts of the sprite. They must have visible support, stairs/thresholds where applicable, and a localized terrain or water contact rather than a second generic platform.
 - **Contact shadow:** structure-aware and tight to walls, posts, rock mass, towers, or pilings. Never size a shadow from the whole sprite canvas or flat apron.
@@ -22,7 +22,8 @@ The master palette is code-owned; authoring, the ground bake, and `npm run art:a
 | Ramp | Stops (dark → light) | Use |
 |---|---|---|
 | `stone` | `#25262D` · `#373944` · `#4D4F5A` · `#686A72` · `#8C8B8A` | masonry and props |
-| `slate` | `#1E2433` · `#2C3650` · `#3E4D6C` · `#5A6C8C` | all roofs |
+| `roofSlate` | `#1C2139` · `#272B4F` · `#2F355E` · `#37436A` · `#42567F` · `#536F93` · `#5F80A1` · `#6F8EB0` | every landmark roof (main tile stop 6) |
+| `slate` | `#1E2433` · `#2C3650` · `#3E4D6C` · `#5A6C8C` | iron, slate glass, gate ironwork; never a roof |
 | `wetSlate` | `#5A6C8C` · `#6B7EA0` · `#7D91B0` · `#8FA3C0` | 6.6 wet course on the roof's upper-left edges, one stop per wetness quantum; eave drips (runtime only, never authored) |
 | `timber` | `#2A1C14` · `#45301F` · `#654629` · `#8A6337` | beams, planks, doors, hulls |
 | `clothCrimson` | `#732A31` · `#A4463F` | banners and awnings; the only red on buildings |
@@ -192,7 +193,7 @@ Rule of thumb: **sprite width ≈ 1.2 × iso-diamond width** = `1.2 · (w+h) · 
 |---|---|---|
 | Hero hall | command, archive, portal | 312–360 × 208–264 |
 | Standard structure | forge, mine, taskboard | 256 × 232 |
-| Tower (narrow, tall) | watchtower | 288 × 384 |
+| Tower (narrow, tall) | watchtower (round tower + keeper's cottage) | 288 × 384 |
 | Open-front inn | tavern | 296 × 288 |
 | Quay with piers (the piers reach past the footprint) | harbor | 384 × 284 |
 
@@ -202,7 +203,7 @@ The Village Gate's gatehouse (`prop.villageGate`, with its door strip `prop.vill
 
 ## Generation recipe
 
-- Tool: REST `generate-image-v2` (Pro, with `building.command` as the style image) or MCP `create_map_object` (≤400px, transparent BG). Smoke-test the tool per building; `generate-image-v2` produced Command, Archive, Task Board, Forge, Mine, and Portal (2026-10-01, `building.command` as the style image); `create_map_object` produced the Watchtower; the Tavern (`building.tavern`, 296 × 288, an open-front tavern) and the Harbor (`building.harbor`, 384 × 284, a house on a stone quay with three piers, 2026-10-15) came from `create_image_pro` with `building.command` as the style image. The manifest `tool` field names the surface, and the Pro re-authors carry a `provenance` block with endpoint, job, and style image.
+- Tool: REST `generate-image-v2` (Pro, with `building.command` as the style image) or MCP `create_map_object` (≤400px, transparent BG). Smoke-test the tool per building; `generate-image-v2` produced Command, Archive, Task Board, Forge, Mine, and Portal (2026-10-01, `building.command` as the style image); the Tavern (`building.tavern`, 296 × 288, an open-front tavern), the Harbor (`building.harbor`, 384 × 284, a house on a stone quay with three piers, 2026-10-15) and the Pharos Lighthouse (`building.watchtower`, 288 × 384, a round limestone tower with a keeper's cottage, 2026-10-15) came from `create_image_pro` with `building.command` as the style image. Explore compositions at ≤ 170 px (4 candidates per call), then make one full-size final with the picked draft, placed on the final canvas, as a reference. At full size the Pro model can paint the style image's own content into the result (a Harbor-styled Lighthouse final came back with the Harbor's house and piers beside it), so a final takes a single-building style image and names everything else as forbidden. The manifest `tool` field names the surface, and the Pro re-authors carry a `provenance` block with endpoint, job, and style image.
 - `create_map_object` params (not in the description): `view: low top-down`, `outline: selective outline`, `shading: detailed shading`, `detail: high detail`, transparent background.
 - Description for `terrain-apron`: prepend the manifest `style.anchor`; add subject identity, palette cues, silhouette intent, "true wall/post/rock footings and attached steps only", and "transparent ground around the structure". Explicitly forbid ground tile, lawn, slab, plinth, retaining lip, complete perimeter, and baked shadow.
 - Description for a structural exception: name the physical platform (`dais`, `quay`, `deck/pilings`), its support, and its terrain/water transition. Still forbid a larger generic ground tile.
@@ -210,4 +211,4 @@ The Village Gate's gatehouse (`prop.villageGate`, with its door strip `prop.vill
 
 ## Reference order
 
-Harbor (`quay`: a coursed stone quay meeting the island shore, with timber piers on pilings in the basin) · Command (`terrain-apron`) · Portal (`intentional-dais`) · Lighthouse (`quay`). Archive, Task Board, Forge, and Mine were re-authored on the grid of the since-retired Observatory (its base remains the historic style reference through git history; the current landmark family reference is `building.command`) and Command re-crowned as the hero in the 2026-09-25 Painted Isle landmark pass (manifest provenance items 4.2 and 4.5); preserve their recognizable silhouettes and authored material channels in future revisions.
+Harbor (`quay`: a coursed stone quay meeting the island shore, with timber piers on pilings in the basin) · Command (`terrain-apron`) · Portal (`intentional-dais`) · Lighthouse (`quay`: a round tower and its keeper's cottage on the island's north-east point). Archive, Task Board, Forge, and Mine were re-authored on the grid of the since-retired Observatory (its base remains the historic style reference through git history; the current landmark family reference is `building.command`) and Command re-crowned as the hero in the 2026-09-25 Painted Isle landmark pass (manifest provenance items 4.2 and 4.5); preserve their recognizable silhouettes and authored material channels in future revisions.

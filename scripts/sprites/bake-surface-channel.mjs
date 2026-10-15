@@ -142,13 +142,19 @@ export const SURFACE_SPECS = Object.freeze({
         ],
     },
     watchtower: {
-        base: { corner: [146, 334] },
-        roof: [],
+        // Foot edges under the round tower's elliptical base (a 2:1 corner
+        // would cut its lower curve), meeting under the lantern.
+        base: { left: [124, 312], bottom: [166, 327], right: [208, 312] },
+        roof: [SLATE],
         regions: [
-            // Quay stair up to the door landing.
-            { face: 'up', poly: [[88, 318], [104, 309], [126, 309], [126, 322], [108, 333], [88, 331]], height: { ramp: [[95, 329, 0], [118, 311, 8]] } },
-            // Bronze lantern cap and finial.
-            { face: 'roof', poly: [[122, 58], [124, 42], [138, 28], [143, 3], [149, 3], [154, 28], [168, 42], [170, 58]] },
+            // The lantern room: its slate-toned panes and frame are no roof.
+            { face: 'auto', roof: [], poly: [[143, 81], [187, 81], [187, 111], [143, 111]] },
+            // Slate cone and gilt finial.
+            { face: 'roof', poly: [[138, 82], [150, 64], [158, 52], [158, 40], [171, 40], [171, 52], [178, 64], [190, 82]] },
+            // Steps up to the cottage door.
+            { face: 'up', poly: [[74, 326], [88, 319], [106, 327], [106, 340], [92, 347], [74, 338]], height: { ramp: [[84, 340, 0], [96, 323, 6]] } },
+            // The keeper's cottage at the tower foot: its own front corner.
+            { face: 'auto', poly: [[68, 282], [96, 256], [98, 236], [118, 236], [118, 250], [141, 240], [165, 284], [161, 326], [118, 350], [68, 330]], base: { corner: [118, 348] } },
         ],
     },
     tavern: {

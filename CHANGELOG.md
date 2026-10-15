@@ -2,6 +2,16 @@
 
 ---
 
+## v0.57.1 — *The Keeper's Light* · Oct 15, 2026
+
+The village's buildings now share one palette: the Tavern and Harbor's dark oak, pale limestone and slate-blue roofs. A new Pharos Lighthouse completes the coast.
+
+- **A new Pharos Lighthouse.** The dark square obelisk is replaced by a round tower of pale coursed limestone. A railed gallery circles its lantern room, and a slate-blue cone tops it. A half-timbered keeper's cottage stands at its foot, and its door faces the visitors. The beacon still burns in the lantern and the night beam still sweeps the sea. The windows, smoke, gull perch and occupancy pennant are re-seated on the new art. It was generated with PixelLab in the Harbor and Tavern style.
+- **One roof colour across the village.** The Task Board and Archive roofs were teal, the Forge's near-black indigo and the Command's slightly cyan. All now use the Tavern and Harbor slate. The Command's gilt dome keeps its own blue.
+- **A lighter Forge.** Its charcoal walls are now the village's pale masonry, a shade sootier than the Command. The iron chimney cap, anvil and tool rack stay dark.
+- **The anchor washed up on the shore.** The beached anchor below the Lighthouse moved to the point's beach, clear of the new cottage. No props were added.
+- **Roof colours can't drift.** The roof palette is now a named ramp in the art palette. `npm run world:validate-buildings` fails if any landmark roof leaves it, and `npm run sprites:harmonize-roofs` brings a regenerated roof back onto it.
+
 ## v0.57.0 — *The True Moorings* · Oct 15, 2026
 
 The Harbor, rebuilt from the keel up. It now understands worktrees and branches, its ships sail bow-first through open water to the horizon, and the Harbor Master's house finally belongs to the village.

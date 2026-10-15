@@ -212,9 +212,9 @@ const FISH_SCATTER_MS = 3000;
 const FISH_DIVE_REACH = 2.5;
 const FISH_WAKE_REACH = 56;
 // Roost points (sprite-local px of the building art, feet on the perch): the
-// lighthouse's seaward merlon and three pile tops of the harbor piers.
+// lighthouse's seaward gallery rail and three pile tops of the harbor piers.
 const GULL_ROOSTS = Object.freeze([
-    Object.freeze({ building: 'watchtower', at: [174, 79], facing: -1 }),
+    Object.freeze({ building: 'watchtower', at: [193, 96], facing: -1 }),
     Object.freeze({ building: 'harbor', at: [64, 173], facing: 1 }),
     Object.freeze({ building: 'harbor', at: [150, 185], facing: -1 }),
     Object.freeze({ building: 'harbor', at: [122, 212], facing: 1 }),

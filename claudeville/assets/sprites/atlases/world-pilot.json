@@ -322,7 +322,7 @@
       "id": "building.archive",
       "materialClass": "stone",
       "sourcePath": "buildings/building.archive/base.png",
-      "sourceSha256": "cdc44813d04b8125577c6f904aaa4e25f395ede583bda3fc7d8f38bc3e10af3a",
+      "sourceSha256": "5b7c5795bdbea41c37433e5b8be213421d36fe73aa05d8cb2c3ae1dc1517bbbf",
       "sourceSize": {
         "h": 240,
         "w": 336
@@ -359,7 +359,7 @@
       "id": "building.command",
       "materialClass": "stone",
       "sourcePath": "buildings/building.command/base.png",
-      "sourceSha256": "33bd67f0b78300d30085dde3c81a673369a456dcca99518293d1930e55e2de77",
+      "sourceSha256": "e543f27d073a0ac3322d639638f37410b83aed76a27d2279ef615c41f5599726",
       "sourceSize": {
         "h": 240,
         "w": 360
@@ -391,7 +391,7 @@
       "id": "building.forge",
       "materialClass": "stone",
       "sourcePath": "buildings/building.forge/base.png",
-      "sourceSha256": "59d7f96e60fdd0630fcaa77df5a62950f3a16692efcf4d9b0c0e7e1b90e7ae8e",
+      "sourceSha256": "894638bb9815b112280143fcc9c21bf26e5422e71b899755d4c1689378ecd03e",
       "sourceSize": {
         "h": 232,
         "w": 256
@@ -515,7 +515,7 @@
       "id": "building.taskboard",
       "materialClass": "timber",
       "sourcePath": "buildings/building.taskboard/base.png",
-      "sourceSha256": "371d0f82087f9e217b8d254fba5cee0b6235c646b42471b0d2fb1746bd553ea2",
+      "sourceSha256": "7ab7dfde7d6f5efec54f7aaf85b2d966ef208023aa2d6f6f2f92e0ac48b4d330",
       "sourceSize": {
         "h": 232,
         "w": 256
@@ -574,7 +574,7 @@
       "id": "building.watchtower",
       "materialClass": "stone",
       "sourcePath": "buildings/building.watchtower/base.png",
-      "sourceSha256": "52ae020d5f44a37c8210609c72197ac00a5d1d987f0385a887af651e749d1577",
+      "sourceSha256": "565aabbfe1f5483ccb55f800913486195fbc3d7be49bd5f22d93406569c0d657",
       "sourceSize": {
         "h": 384,
         "w": 288
@@ -749,10 +749,10 @@
     }
   },
   "channelSha256": {
-    "albedo": "4ad426afc88d05944e62a0a6cf538696e76c1ac22066648d31110fafd0258a7e",
-    "emissive": "5ad4ee289d98cd60c4b876e6700819722025633d9f9243779326d7f4bb852904",
-    "material": "2a21ab1c3853928b2ad8765017bd80d33f81eef6dc4fd37092c02db696e2439d",
-    "occluder": "eeaea2715ba92c596c41971af46a430986ee33e67136646fa548fadc857cf04f"
+    "albedo": "c7e6522a90046e5ab3e5c36f7aaf428d628ce57e54b71dd751681c5c892200a7",
+    "emissive": "7cc495aef68cb36eda7bbcf66ff628b74d30b282a274eb766a695a8cf3fbde0d",
+    "material": "af10bd160cbf5a558c6024c1c69d6baa46ced17710f7b08d7dea87a98bdc813d",
+    "occluder": "09a2d68cbc7391cc7bc77b9a40d411ae548518e3bdccb1368b1f162825e03c33"
   },
   "channels": {
     "albedo": "assets/sprites/atlases/world-pilot.albedo.png",
@@ -9936,7 +9936,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "cdc44813d04b8125577c6f904aaa4e25f395ede583bda3fc7d8f38bc3e10af3a",
+      "sourceSha256": "5b7c5795bdbea41c37433e5b8be213421d36fe73aa05d8cb2c3ae1dc1517bbbf",
       "sourceSize": {
         "h": 240,
         "w": 336
@@ -10087,7 +10087,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "33bd67f0b78300d30085dde3c81a673369a456dcca99518293d1930e55e2de77",
+      "sourceSha256": "e543f27d073a0ac3322d639638f37410b83aed76a27d2279ef615c41f5599726",
       "sourceSize": {
         "h": 240,
         "w": 360
@@ -10177,7 +10177,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "b1ee2fbd6ed7e7c7c7c37973479fa6cf8c19406176b76338dff236f7556ea0c2",
+      "sourceSha256": "346c9e1a372ef82f9774985038e27892e9ed9ae7f90e3f30743a97c5702c9b07",
       "sourceSize": {
         "h": 89,
         "w": 150
@@ -10222,7 +10222,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "bf9c2101677eebb9c927b090fc3a425378fe8db632c37474cae911b23c10fe8c",
+      "sourceSha256": "6f6f8c6fd425ac29754ae36537412cd9b0403b653d2e7bad65bcb720be8df493",
       "sourceSize": {
         "h": 89,
         "w": 150
@@ -10267,7 +10267,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "e62820ba92b898a18d3d493a11a13a163caccaa7ff406edc6713f255265d5788",
+      "sourceSha256": "8649c4dc0e2057519e92915ff5a8560a0bbdeb0cd1292d2447ef544ecf25c90f",
       "sourceSize": {
         "h": 89,
         "w": 150
@@ -10501,7 +10501,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "59d7f96e60fdd0630fcaa77df5a62950f3a16692efcf4d9b0c0e7e1b90e7ae8e",
+      "sourceSha256": "894638bb9815b112280143fcc9c21bf26e5422e71b899755d4c1689378ecd03e",
       "sourceSize": {
         "h": 232,
         "w": 256
@@ -10545,7 +10545,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "bf351e33e9fb225b16be38de4cd1fbfec6dde379847e2f113ea7985abb004ac5",
+      "sourceSha256": "a8e2cd639f492e553fe029be3d9b7c72a7b7a4bbae0d0b83a8d05dc4f4bc888f",
       "sourceSize": {
         "h": 232,
         "w": 256
@@ -10633,7 +10633,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "27353e1abe3a1a09f5b8dd43b6f0a46810a2eb2c63311331c50790c1a0a01365",
+      "sourceSha256": "aa259e354b7cc01964448f33975d315c519b2b8eed3da1f2b79eb62c7615b1a1",
       "sourceSize": {
         "h": 26,
         "w": 54
@@ -11198,7 +11198,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "371d0f82087f9e217b8d254fba5cee0b6235c646b42471b0d2fb1746bd553ea2",
+      "sourceSha256": "7ab7dfde7d6f5efec54f7aaf85b2d966ef208023aa2d6f6f2f92e0ac48b4d330",
       "sourceSize": {
         "h": 232,
         "w": 256
@@ -11243,7 +11243,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "382de03f527dcb7e2fd32f92ba8944616f9dce437c1a47ec56fb2fca75dadbd2",
+      "sourceSha256": "67e60a2e22cf8463cf3c5a8a0f6f2fa9a1a0040a7dd3fe86a3791cf9a570525a",
       "sourceSize": {
         "h": 30,
         "w": 80
@@ -11404,7 +11404,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "52ae020d5f44a37c8210609c72197ac00a5d1d987f0385a887af651e749d1577",
+      "sourceSha256": "565aabbfe1f5483ccb55f800913486195fbc3d7be49bd5f22d93406569c0d657",
       "sourceSize": {
         "h": 384,
         "w": 288
@@ -11415,8 +11415,8 @@
     },
     "building.watchtower.beacon": {
       "anchor": [
-        145,
-        84
+        164,
+        109
       ],
       "emissive": {
         "sources": [
@@ -11469,8 +11469,8 @@
     },
     "building.watchtower.lens": {
       "anchor": [
-        145,
-        84
+        164,
+        109
       ],
       "emissive": null,
       "materialClass": "stone",

@@ -62,7 +62,13 @@
 //   trimGold      The Command's gilt trim, dark -> light: finials and the
 //                 gate's sign (its letters and frame).
 //   timber        Beams, planks, hulls, bridge decks.
-//   slate         Roof slate, blue-violet shadow family.
+//   slate         Iron and glass slate, blue-violet shadow family: wall and
+//                 gate ironwork, slate glass, the eave-drip shade. No roof.
+//   roofSlate     THE landmark roof tile (dark -> light), sampled from the
+//                 family reference, building.tavern + building.harbor; the
+//                 Tavern's main tile is stop 6. Every landmark roof but the
+//                 Command's gilt dome (domeSlate) sits on it, and
+//                 `scripts/sprites/harmonize-roofs.mjs --check` holds it.
 //   clothCrimson  Banners and awnings; the only red allowed on buildings.
 //   clothOchre    Awnings, pennant fringes, brass-toned cloth (S <= 0.63).
 //   emissive      RESERVED: authored lamp/fire/window light (Tier A allowed).
@@ -95,6 +101,7 @@ export const ART_RAMPS = Object.freeze({
     stone: ['#25262d', '#373944', '#4d4f5a', '#686a72', '#8c8b8a'],
     timber: ['#2a1c14', '#45301f', '#654629', '#8a6337'],
     slate: ['#1e2433', '#2c3650', '#3e4d6c', '#5a6c8c'],
+    roofSlate: ['#1c2139', '#272b4f', '#2f355e', '#37436a', '#42567f', '#536f93', '#5f80a1', '#6f8eb0'],
     ashlar: ['#050302', '#231821', '#4c3a4c', '#685c67', '#7f767f', '#9b8c82', '#a99f9a', '#b4aaa6', '#c4baad'],
     domeSlate: ['#0c2246', '#1e2433', '#2d4467', '#375676', '#547793', '#6d94ad'],
     trimGold: ['#8a5a28', '#d4984e', '#ebb754', '#fae174'],

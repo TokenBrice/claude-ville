@@ -269,20 +269,33 @@ test('a full cover leaves no dark specks where joints cross', () => {
     }
 });
 
+// Warm saturated trim (gilt and brass): HSV hue 20-60, S >= 0.45.
+function brass(sprite, p) {
+    const [r, g, b] = sprite.albedo.data.subarray(p * 4, p * 4 + 3);
+    const max = Math.max(r, g, b);
+    const d = max - Math.min(r, g, b);
+    if (!d || d / max < 0.45) return false;
+    const h = max === r ? ((g - b) / d + 6) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+    return h * 60 >= 20 && h * 60 <= 60;
+}
+
 test('the Lighthouse finial stays brass under any cover', () => {
     const sprite = landmark('watchtower');
     const { width } = sprite.albedo;
-    // The cap: its widest roof row; the finial: the roof-face texels above
-    // the first row a third that wide (the ridge).
+    // The cap (the crown's roof, in the sprite's top third, above the keeper's
+    // cottage roof): its widest roof row; the finial: the roof-face texels
+    // above the first row a third that wide (the ridge).
+    const crown = Math.floor(sprite.albedo.height / 3);
     const rows = new Map();
-    for (let p = 0; p < width * sprite.albedo.height; p++) {
+    for (let p = 0; p < width * crown; p++) {
         if (sprite.albedo.data[p * 4 + 3] >= 128 && face(sprite, p) === 3) rows.set(Math.floor(p / width), (rows.get(Math.floor(p / width)) || 0) + 1);
     }
     const widest = Math.max(...rows.values());
     const ridge = Math.min(...[...rows].filter(([, count]) => count >= widest / 3).map(([y]) => y));
     for (const bucket of [1, 2, 3, 4]) {
         const { texels } = paint(sprite, { bucket, wetQ: 0 });
-        const finial = texels.filter((p) => Math.floor(p / width) < ridge);
+        // The cone's slate tip above the ridge row may snow; its brass may not.
+        const finial = texels.filter((p) => Math.floor(p / width) < ridge && brass(sprite, p));
         assert.equal(finial.length, 0, `b${bucket}: ${finial.length} snow texels on the finial`);
     }
 });
