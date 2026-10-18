@@ -10,11 +10,13 @@ import {
     MAX_SIT_MS,
     MIN_SIT_MS,
     STROLL_CAP,
+    SUBAGENT_WAIT_PINT_MS,
     errandCap,
     errandChoice,
     errandDwellMs,
     sitDurationMs,
     strollDwellMs,
+    waitsForPint,
     windDownDwellMs,
 } from '../../claudeville/src/presentation/character-mode/CrowdRoutine.js';
 import {
@@ -275,4 +277,30 @@ test('a finished session winds down at a stop, then waits inside the gate; resum
     agent.status = AgentStatus.WORKING;
     sprite._advanceCrowdRoutine(now + 16);
     assert.equal(sprite._restPlaceForState(), null, 'a resumed session drops the wind-down at once');
+});
+
+test('an orchestrator blocked on its subagents goes for a pint, and the wait ending calls it back', t => {
+    const { sprite, calls, advance, now } = workerSprite(t);
+    Object.assign(sprite.agent, { turnState: 'tool_pending', pendingTool: 'wait', pendingSince: now() });
+    sprite._advanceCrowdRoutine(now());
+    assert.equal(sprite._restPlaceForState(), null, 'a fresh wait stays at Command');
+    sprite._advanceCrowdRoutine(advance(SUBAGENT_WAIT_PINT_MS));
+    assert.equal(sprite._crowd.place, null, 'no errand while waiting');
+    assert.equal(sprite._restPlaceForState()?.restSeats, true, 'a long wait takes a rest seat');
+    assert.ok(sprite._routeToRestPlace());
+    assert.equal(sprite.visitRole, 'rest');
+    assert.equal(calls.at(-1).building.restSeats, true);
+
+    Object.assign(sprite.agent, { turnState: 'working', pendingTool: null, pendingSince: null });
+    assert.equal(sprite._restPlaceForState(), null, 'the wait ending sends it back to work');
+});
+
+test('only a long wait-agent tool counts as a wait on subagents', () => {
+    const base = { status: AgentStatus.WORKING, turnState: 'tool_pending', pendingSince: NOW - SUBAGENT_WAIT_PINT_MS };
+    assert.equal(waitsForPint({ ...base, pendingTool: 'wait' }, NOW), true);
+    assert.equal(waitsForPint({ ...base, pendingTool: 'functions.wait_agent' }, NOW), true);
+    assert.equal(waitsForPint({ ...base, pendingTool: 'grep' }, NOW), false, 'a stale grep is no wait');
+    assert.equal(waitsForPint({ ...base, pendingTool: 'wait' }, NOW - 1), false, 'not yet a minute');
+    assert.equal(waitsForPint({ ...base, pendingTool: 'wait', turnState: 'working' }, NOW), false);
+    assert.equal(waitsForPint({ ...base, pendingTool: 'wait', status: AgentStatus.WAITING_ON_USER }, NOW), false);
 });

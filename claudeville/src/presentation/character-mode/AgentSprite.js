@@ -89,6 +89,7 @@ import {
     sitDurationMs,
     strollDwellMs,
     strollRetryMs,
+    waitsForPint,
     windDownDwellMs,
     windDownStop,
 } from './CrowdRoutine.js';
@@ -1583,10 +1584,12 @@ export class AgentSprite {
     // 7.1 / 7.2 — the place this status waits at, or null: IDLE rests on a
     // seat, WAITING_ON_USER stands in the Command queue. W4.3 / W4.4 / W4.8 —
     // a living-crowd leg of the current status (a stroll, an errand, a
-    // wind-down stop) is a place too: `{ role, building }`.
+    // wind-down stop) is a place too: `{ role, building }`. A long wait on
+    // subagents rests on a seat as IDLE does (waitsForPint).
     _restPlaceForState() {
         const status = this.agent?.status;
         if (status === AgentStatus.WAITING_ON_USER) return QUEUE_PLACE;
+        if (waitsForPint(this.agent, Date.now())) return REST_PLACE;
         const leg = this._crowd.status === status ? this._crowd.place : null;
         if (leg) return leg;
         if (status === AgentStatus.IDLE) return REST_PLACE;
@@ -1749,7 +1752,7 @@ export class AgentSprite {
         }
         if (this.chatPartner || this.chatting || this.leaving || this.isArrivalPending?.()) return;
         if (status === AgentStatus.IDLE) this._advanceIdleLoop(now);
-        else if (status === AgentStatus.WORKING) this._advanceErrand(now);
+        else if (status === AgentStatus.WORKING && !waitsForPint(this.agent, now)) this._advanceErrand(now);
         else if (status === AgentStatus.COMPLETED) this._advanceWindDown(now);
     }
 

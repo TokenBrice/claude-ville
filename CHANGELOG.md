@@ -2,6 +2,13 @@
 
 ---
 
+## v0.57.2 — *The Waiting Pint* · Oct 18, 2026
+
+Orchestrators that are waiting on their subagents now go to the Tavern for a drink.
+
+- **Long waits go to the Tavern.** An agent that has waited a full minute on its subagents (a pending `wait` or `wait_agent` call, as in omp or Codex fan-outs) now leaves Command and takes a rest seat. The Tavern's bar and beer garden come first, and the agent drinks there. When the wait ends, the agent stands up and goes back to work.
+- **Why the Tavern was empty.** Only idle villagers took a seat, but every provider now reports turn state, so a live session is almost never idle. A long wait on subagents was counted as work at Command.
+
 ## v0.57.1.1 · Oct 15, 2026 — Hotfix
 
 - **The Lighthouse beam no longer vanishes behind the new tower.** When the beam swept toward the viewer, the tower and the keeper's cottage hid it, and only a stub showed below the building. The beam is now hidden only by walls that really stand in front of it. It leaves the lantern in one piece at every angle and crosses the tower face and the cottage roof when it passes in front of them.

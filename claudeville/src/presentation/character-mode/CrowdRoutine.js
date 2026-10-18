@@ -10,9 +10,15 @@
 //              new one walks a short errand drawn from its recent phases.
 //              Any real intent ends it at once; at most ⅓ of agents at once.
 //              An errand is never a working visit (role 'errand', V8).
+//   pint     — a WORKING agent blocked SUBAGENT_WAIT_PINT_MS on its
+//              subagents (a pending wait-agent tool) leaves Command for a
+//              rest seat, the Tavern's first; the wait's end calls it back.
 //   winddown — a COMPLETED agent walks to the harbour quay or the Tavern
 //              for a last pint, then waits inside the gate. Removal is never
 //              delayed: the departure sigil lands wherever the body stands.
+
+import { classifyTool } from '../../domain/services/ToolIdentity.js';
+import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 
 export const STROLL_CAP = 6;
 export const MIN_SIT_MS = 45_000;
@@ -36,6 +42,8 @@ export const ERRAND_RECENT_WINDOW = 6;
 
 export const WIND_DOWN_DWELL_MIN_MS = 12_000;
 export const WIND_DOWN_DWELL_MAX_MS = 25_000;
+
+export const SUBAGENT_WAIT_PINT_MS = 60_000;
 
 // Occupancy roles of the routine. None is ever a working visit.
 export const ROUTINE_ROLES = Object.freeze(['stroll', 'errand', 'winddown']);
@@ -79,6 +87,14 @@ export function errandCooldownMs(agentId, cycle = 0) {
 
 export function windDownDwellMs(agentId) {
     return seededSpan(`${agentId}:winddown`, WIND_DOWN_DWELL_MIN_MS, WIND_DOWN_DWELL_MAX_MS);
+}
+
+/** Whether a WORKING agent has sat blocked on its subagents long enough for a pint. */
+export function waitsForPint(agent, now) {
+    if (agent?.status !== AgentStatus.WORKING || agent.turnState !== 'tool_pending') return false;
+    if (classifyTool(agent.pendingTool)?.reason !== 'wait-agent') return false;
+    const since = Number(agent.pendingSince);
+    return Number.isFinite(since) && since > 0 && now - since >= SUBAGENT_WAIT_PINT_MS;
 }
 
 /** 'quay' or 'tavern': where a finished session rests before the gate. */
