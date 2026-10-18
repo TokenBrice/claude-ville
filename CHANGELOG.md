@@ -2,6 +2,14 @@
 
 ---
 
+## v0.57.3 — *A Round for Every Hall* · Oct 18, 2026
+
+The pint is now open to every harness. Claude Code and Codex orchestrators waiting on their subagents join omp's at the Tavern.
+
+- **Claude Code orchestrators drink while their subagents work.** A lead whose turn ended with background subagents still running goes straight to the Tavern. It no longer winds down and walks to the gate. When its last subagent finishes, it heads home. A foreground subagent call counts after a minute, like omp's wait.
+- **Codex waits add up.** Codex waits on its agents in short `wait_agent` slices. The minute now counts across the slices, so a Codex orchestrator reaches the Tavern too. Any other tool sends it back to work at once.
+- **Codex's code-cell wait is not a subagent wait.** A bare `wait` counts only for omp, where it waits on jobs. In Codex it polls a code cell.
+
 ## v0.57.2 — *The Waiting Pint* · Oct 18, 2026
 
 Orchestrators that are waiting on their subagents now go to the Tavern for a drink.

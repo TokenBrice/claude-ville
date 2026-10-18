@@ -10,14 +10,15 @@
 //              new one walks a short errand drawn from its recent phases.
 //              Any real intent ends it at once; at most ⅓ of agents at once.
 //              An errand is never a working visit (role 'errand', V8).
-//   pint     — a WORKING agent blocked SUBAGENT_WAIT_PINT_MS on its
-//              subagents (a pending wait-agent tool) leaves Command for a
-//              rest seat, the Tavern's first; the wait's end calls it back.
+//   pint     — an agent waiting on its subagents takes a rest seat, the
+//              Tavern's first, and the wait's end calls it back: a wait
+//              tool pending SUBAGENT_WAIT_PINT_MS (Codex's short slices
+//              count as one wait), or a closed turn whose background
+//              subagents still run (Claude Code), at once.
 //   winddown — a COMPLETED agent walks to the harbour quay or the Tavern
 //              for a last pint, then waits inside the gate. Removal is never
 //              delayed: the departure sigil lands wherever the body stands.
 
-import { classifyTool } from '../../domain/services/ToolIdentity.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 
 export const STROLL_CAP = 6;
@@ -44,6 +45,12 @@ export const WIND_DOWN_DWELL_MIN_MS = 12_000;
 export const WIND_DOWN_DWELL_MAX_MS = 25_000;
 
 export const SUBAGENT_WAIT_PINT_MS = 60_000;
+// Codex waits in slices (wait_agent with a short timeout): the next slice
+// inside this gap continues the same wait.
+export const SUBAGENT_WAIT_SLICE_GAP_MS = 15_000;
+// Tools that block on subagents. A bare `wait` is omp's job wait; Codex's
+// polls a code cell.
+const SUBAGENT_WAIT_TOOLS = new Set(['wait_agent', 'functions.wait_agent', 'Agent', 'Task']);
 
 // Occupancy roles of the routine. None is ever a working visit.
 export const ROUTINE_ROLES = Object.freeze(['stroll', 'errand', 'winddown']);
@@ -89,12 +96,31 @@ export function windDownDwellMs(agentId) {
     return seededSpan(`${agentId}:winddown`, WIND_DOWN_DWELL_MIN_MS, WIND_DOWN_DWELL_MAX_MS);
 }
 
-/** Whether a WORKING agent has sat blocked on its subagents long enough for a pint. */
-export function waitsForPint(agent, now) {
-    if (agent?.status !== AgentStatus.WORKING || agent.turnState !== 'tool_pending') return false;
-    if (classifyTool(agent.pendingTool)?.reason !== 'wait-agent') return false;
-    const since = Number(agent.pendingSince);
-    return Number.isFinite(since) && since > 0 && now - since >= SUBAGENT_WAIT_PINT_MS;
+export function isSubagentWaitTool(agent, tool) {
+    if (tool === 'wait') return agent?.provider === 'omp';
+    return SUBAGENT_WAIT_TOOLS.has(tool);
+}
+
+/**
+ * The next subagent-wait record `{ since, seenAt, pint }` for `agent` at
+ * `now`, or null when it is not waiting on subagents. `pint` marks a wait
+ * long enough for a seat.
+ */
+export function advanceSubagentWait(prev, agent, now, { hasLiveSubagents = false } = {}) {
+    if (!agent || agent.isDeparted) return null;
+    if (agent.status === AgentStatus.COMPLETED) {
+        return hasLiveSubagents ? { since: prev?.since ?? now, seenAt: now, pint: true } : null;
+    }
+    if (agent.status !== AgentStatus.WORKING) return null;
+    if (agent.turnState === 'tool_pending' && isSubagentWaitTool(agent, agent.pendingTool)) {
+        const pendingSince = Number(agent.pendingSince);
+        const since = Math.min(prev?.since ?? now, pendingSince > 0 ? pendingSince : now);
+        return { since, seenAt: now, pint: now - since >= SUBAGENT_WAIT_PINT_MS };
+    }
+    // Between two slices of one wait the record (and its seat) holds.
+    if (prev && agent.turnState === 'working' && isSubagentWaitTool(agent, agent.lastTool)
+        && now - prev.seenAt < SUBAGENT_WAIT_SLICE_GAP_MS) return prev;
+    return null;
 }
 
 /** 'quay' or 'tavern': where a finished session rests before the gate. */

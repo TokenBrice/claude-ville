@@ -11,12 +11,13 @@ import {
     MIN_SIT_MS,
     STROLL_CAP,
     SUBAGENT_WAIT_PINT_MS,
+    SUBAGENT_WAIT_SLICE_GAP_MS,
+    advanceSubagentWait,
     errandCap,
     errandChoice,
     errandDwellMs,
     sitDurationMs,
     strollDwellMs,
-    waitsForPint,
     windDownDwellMs,
 } from '../../claudeville/src/presentation/character-mode/CrowdRoutine.js';
 import {
@@ -281,7 +282,7 @@ test('a finished session winds down at a stop, then waits inside the gate; resum
 
 test('an orchestrator blocked on its subagents goes for a pint, and the wait ending calls it back', t => {
     const { sprite, calls, advance, now } = workerSprite(t);
-    Object.assign(sprite.agent, { turnState: 'tool_pending', pendingTool: 'wait', pendingSince: now() });
+    Object.assign(sprite.agent, { provider: 'omp', turnState: 'tool_pending', pendingTool: 'wait', pendingSince: now() });
     sprite._advanceCrowdRoutine(now());
     assert.equal(sprite._restPlaceForState(), null, 'a fresh wait stays at Command');
     sprite._advanceCrowdRoutine(advance(SUBAGENT_WAIT_PINT_MS));
@@ -295,12 +296,56 @@ test('an orchestrator blocked on its subagents goes for a pint, and the wait end
     assert.equal(sprite._restPlaceForState(), null, 'the wait ending sends it back to work');
 });
 
-test('only a long wait-agent tool counts as a wait on subagents', () => {
-    const base = { status: AgentStatus.WORKING, turnState: 'tool_pending', pendingSince: NOW - SUBAGENT_WAIT_PINT_MS };
-    assert.equal(waitsForPint({ ...base, pendingTool: 'wait' }, NOW), true);
-    assert.equal(waitsForPint({ ...base, pendingTool: 'functions.wait_agent' }, NOW), true);
-    assert.equal(waitsForPint({ ...base, pendingTool: 'grep' }, NOW), false, 'a stale grep is no wait');
-    assert.equal(waitsForPint({ ...base, pendingTool: 'wait' }, NOW - 1), false, 'not yet a minute');
-    assert.equal(waitsForPint({ ...base, pendingTool: 'wait', turnState: 'working' }, NOW), false);
-    assert.equal(waitsForPint({ ...base, pendingTool: 'wait', status: AgentStatus.WAITING_ON_USER }, NOW), false);
+test('every harness wait on subagents counts, and nothing else does', () => {
+    const pending = (provider, pendingTool, extra = {}) => ({
+        provider, pendingTool, status: AgentStatus.WORKING, turnState: 'tool_pending',
+        pendingSince: NOW - SUBAGENT_WAIT_PINT_MS, ...extra,
+    });
+    const pint = (agent, prev = null, opts) => advanceSubagentWait(prev, agent, NOW, opts)?.pint === true;
+    assert.equal(pint(pending('omp', 'wait')), true, 'omp job wait');
+    assert.equal(pint(pending('codex', 'wait_agent')), true, 'Codex wait_agent');
+    assert.equal(pint(pending('claude', 'Agent')), true, 'Claude Code foreground subagent');
+    assert.equal(pint(pending('codex', 'wait')), false, "Codex's bare wait polls a code cell");
+    assert.equal(pint(pending('omp', 'grep')), false, 'a stale grep is no wait');
+    assert.equal(pint(pending('omp', 'wait', { pendingSince: NOW - 1 })), false, 'not yet a minute');
+    assert.equal(pint(pending('omp', 'wait', { status: AgentStatus.WAITING_ON_USER })), false);
+
+    const closed = { provider: 'claude', status: AgentStatus.COMPLETED, turnState: 'awaiting_input' };
+    assert.equal(pint(closed, null, { hasLiveSubagents: true }), true, 'a closed turn on background subagents');
+    assert.equal(pint(closed), false, 'a closed turn with none left winds down');
+    assert.equal(pint({ ...closed, isDeparted: true }, null, { hasLiveSubagents: true }), false);
+});
+
+test("Codex's short wait slices add up to one wait, and real work ends it", () => {
+    const slice = (start) => ({
+        provider: 'codex', status: AgentStatus.WORKING, turnState: 'tool_pending',
+        pendingTool: 'wait_agent', pendingSince: start, lastTool: 'wait_agent',
+    });
+    const between = { provider: 'codex', status: AgentStatus.WORKING, turnState: 'working', lastTool: 'wait_agent' };
+    let wait = null;
+    let t = NOW;
+    for (let i = 0; i < 6; i++) {
+        wait = advanceSubagentWait(wait, slice(t), t);
+        t += 10_000;
+        wait = advanceSubagentWait(wait, between, t);
+        assert.ok(wait, 'the gap between slices holds the wait');
+        t += 2_000;
+    }
+    assert.equal(advanceSubagentWait(wait, slice(t), t).pint, true, 'six 10 s slices make a minute');
+    assert.equal(advanceSubagentWait(wait, between, t + SUBAGENT_WAIT_SLICE_GAP_MS), null, 'a long gap is not a wait');
+    assert.equal(advanceSubagentWait(wait, { ...between, lastTool: 'exec_command' }, t + 1), null, 'a real tool ends it');
+});
+
+test('a Claude Code orchestrator closed on background subagents drinks instead of winding down', t => {
+    t.mock.method(Date, 'now', () => NOW);
+    let live = true;
+    const agent = { id: 'lead-1', status: AgentStatus.COMPLETED, provider: 'claude', model: 'claude-opus-5-5' };
+    const sprite = new AgentSprite(agent, { hasLiveSubagents: (id) => id === 'lead-1' && live });
+    sprite.motionScale = 1;
+    sprite._advanceCrowdRoutine(NOW);
+    assert.equal(sprite._crowd.phase, null, 'no wind-down while its subagents run');
+    assert.equal(sprite._restPlaceForState().restSeats, true);
+    live = false;
+    sprite._advanceCrowdRoutine(NOW);
+    assert.equal(sprite._crowd.phase, 'winddown-stop', 'the last subagent done: the wind-down starts');
 });

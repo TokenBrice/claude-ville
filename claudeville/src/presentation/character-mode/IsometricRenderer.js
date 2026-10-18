@@ -3311,6 +3311,16 @@ export class IsometricRenderer {
         }) || null;
     }
 
+    // A subagent still at work (not finished, not an omp advisor, which lives
+    // as long as its parent): its parent waits on it (AgentSprite._waitsForPint).
+    _hasLiveSubagents(agentId) {
+        for (const childId of this.relationshipState?.parentToChildren?.get(agentId) || []) {
+            const child = this.world?.agents?.get(childId);
+            if (child && !child.isDeparted && !child.isAdvisor && child.status !== AgentStatus.COMPLETED) return true;
+        }
+        return false;
+    }
+
     // W4.9 — the local hour of the atmosphere clock (fractional; `setHour`
     // pins it): the one clock the daypart table (DayRoutine) reads.
     _dayHour() {
@@ -3743,6 +3753,7 @@ export class IsometricRenderer {
                 renewVisitReservation: (agentId) => this.visitTileAllocator?.renew?.(agentId),
                 getAmbientDestination: (request) => this._getAmbientDestination(request),
                 getDayHour: () => this._dayHour(),
+                hasLiveSubagents: (agentId) => this._hasLiveSubagents(agentId),
                 getRoadTiles: () => this.pathTiles,
                 getRoutingContext: () => ({
                     laneTiles: this.laneTiles,
