@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { BUILDING_DEFS } from '../../claudeville/src/config/buildings.js';
 import { REST_SEATS } from '../../claudeville/src/config/townPlan.js';
 import { classifyTool } from '../../claudeville/src/domain/services/ToolIdentity.js';
+import { AgentSprite } from '../../claudeville/src/presentation/character-mode/AgentSprite.js';
 import { BuildingSprite } from '../../claudeville/src/presentation/character-mode/BuildingSprite.js';
 import { restSeatStepBias } from '../../claudeville/src/presentation/character-mode/DayRoutine.js';
 import { MIDNIGHT_OIL_RISE_MS } from '../../claudeville/src/presentation/character-mode/NightOccupancyGate.js';
@@ -67,6 +68,18 @@ test('a patron sips on its own seeded clock, and never under reduced motion', ()
         assert.equal(tankardLift('patron-a', index * 40), step < 0 ? 0 : TANKARD_SIP_LIFT[step]);
     }
     assert.ok(DRINK_FRAME_BY_STEP.every((frame) => frame >= 0 && frame <= 4));
+});
+
+test('a stale patron (a long wait on subagents) keeps sipping, and still rests under reduced motion', () => {
+    const sprite = new AgentSprite({ id: 'patron-stale', status: 'working', provider: 'omp', model: 'claude-opus-5-5' }, {});
+    sprite.observation = { state: 'stale', observedAt: 0, ageMs: 600_000 };
+    sprite.motionScale = 1;
+    let sip = 0;
+    while (tankardSipStep('patron-stale', sip) < 0) sip += 40;
+    const step = tankardSipStep('patron-stale', sip);
+    assert.equal(sprite._actionStripFrame({}, 'drink', sip), DRINK_FRAME_BY_STEP[step]);
+    sprite.motionScale = 0;
+    assert.equal(sprite._actionStripFrame({}, 'drink', sip), 'hold');
 });
 
 test("the Tavern's windows light for seated patrons, not for passers-by", () => {

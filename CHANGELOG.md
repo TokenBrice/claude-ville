@@ -2,6 +2,10 @@
 
 ---
 
+## v0.57.3.1 · Oct 18, 2026 — Hotfix
+
+- **Long waiters drink again.** An orchestrator waiting on its subagents for more than about two minutes sat at the Tavern without drinking. A wait that long marks the session stale, and stale bodies froze the drink animation on its rest frame. A sip is not a claim about live work, so stale patrons now keep drinking, as the drawn tankard already did. Reduced motion still holds every patron at rest.
+
 ## v0.57.3 — *A Round for Every Hall* · Oct 18, 2026
 
 The pint is now open to every harness. Claude Code and Codex orchestrators waiting on their subagents join omp's at the Tavern.

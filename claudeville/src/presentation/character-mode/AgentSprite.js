@@ -6136,8 +6136,10 @@ export class AgentSprite {
     _actionStripFrame(meta, group, now = Date.now()) {
         // The Tavern drink: the hold row at rest, the sip frames on the
         // patron's seeded sip clock (the procedural tankard's own clock).
+        // A sip is ambience, not evidence of work, so a stale observation
+        // (a long wait on subagents is resident) keeps drinking.
         if (group === 'drink') {
-            const step = tankardSipStep(this.agent?.id, now, this.motionScale > 0 && this.observation?.state !== 'stale');
+            const step = tankardSipStep(this.agent?.id, now, this.motionScale > 0);
             return step < 0 ? 'hold' : DRINK_FRAME_BY_STEP[step];
         }
         // Static band for the held wait row, for a stale observation (C1), and
