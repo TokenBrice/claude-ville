@@ -2,6 +2,10 @@
 
 ---
 
+## v0.57.4.1 · Oct 19, 2026 — Hotfix
+
+- **A fading ship still sails on its push.** A docked commit that dropped off the server's list for one update started fading out. If it came back in the next update together with the push that landed it, the fading ship ignored the push, was put back at its mooring, and stayed there. A returning ship now docks again before that update's pushes apply, so it sails with them.
+
 ## v0.57.4 — *Clear Moorings* · Oct 19, 2026
 
 Commits that reached `main` through a pull request now leave the Harbor, and the live Harbor no longer keeps ships a page reload would drop.
