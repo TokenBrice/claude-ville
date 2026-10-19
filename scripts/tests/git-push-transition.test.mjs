@@ -144,3 +144,39 @@ test('merging into a local main with no remote is not a push', (t) => {
   git(repo, 'switch', '-q', 'feat/local');
   assert.deepEqual(observe(repo), { commits: [], pushes: [] });
 });
+
+// GitHub's rebase merge (and a one-commit squash) lands new shas on main
+// with the same patches; the branch's own shas never reach a remote.
+function landByRebase(repo, checkout, branch) {
+  git(repo, 'commit', '-q', '--allow-empty', '-m', 'Meanwhile on main');
+  for (const sha of git(checkout, 'rev-list', '--reverse', `origin/main..${branch}`).split('\n')) {
+    git(repo, 'cherry-pick', sha);
+  }
+  git(repo, 'push', '-q', 'origin', 'main');
+}
+
+test('commits rebase-merged into the default branch sail', (t) => {
+  const { repo } = fixture(t);
+  const checkout = worktree(repo, 'feat/mole');
+  fs.writeFileSync(path.join(checkout, 'mole.txt'), 'stone\n');
+  git(checkout, 'add', 'mole.txt');
+  git(checkout, 'commit', '-q', '-m', 'Build the mole');
+  assert.deepEqual(observe(checkout).commits, ['feat/mole:Build the mole']);
+
+  landByRebase(repo, checkout, 'feat/mole');
+  const after = observe(checkout);
+  assert.deepEqual(after.commits, []);
+  assert.deepEqual(after.pushes, [{ branch: 'feat/mole', targetRef: 'origin/main', source: 'git-upstream-transition' }]);
+});
+
+test('a branch rebase-merged before the first scan never docks; later cargo does', (t) => {
+  const { repo } = fixture(t);
+  const checkout = worktree(repo, 'feat/jetty');
+  fs.writeFileSync(path.join(checkout, 'jetty.txt'), 'plank\n');
+  git(checkout, 'add', 'jetty.txt');
+  git(checkout, 'commit', '-q', '-m', 'Plank the jetty');
+  landByRebase(repo, checkout, 'feat/jetty');
+  fs.writeFileSync(path.join(checkout, 'jetty.txt'), 'plank\nrail\n');
+  git(checkout, 'commit', '-q', '-am', 'Rail the jetty');
+  assert.deepEqual(observe(checkout).commits, ['feat/jetty:Rail the jetty']);
+});

@@ -3069,9 +3069,13 @@ function scanCwd(identity) {
 function parseRefListing(output) {
   const heads = new Map();
   const remotes = new Map();
+  let defaultRemote = null;
   for (const line of String(output || '').split('\n')) {
     const [refname, objectname, upstream, track, date, symref] = line.split('\0');
     if (!refname || !objectname) continue;
+    if (refname === 'refs/remotes/origin/HEAD' && symref?.startsWith('refs/remotes/')) {
+      defaultRemote = symref.slice('refs/remotes/'.length);
+    }
     if (refname.startsWith('refs/heads/')) {
       heads.set(refname.slice('refs/heads/'.length), {
         tip: objectname,
@@ -3083,7 +3087,8 @@ function parseRefListing(output) {
       remotes.set(refname.slice('refs/remotes/'.length), objectname);
     }
   }
-  return { heads, remotes };
+  if (!remotes.has(defaultRemote)) defaultRemote = ['origin/main', 'origin/master'].find((ref) => remotes.has(ref)) || null;
+  return { heads, remotes, defaultRemote };
 }
 
 // Every listed commit's named branches. The listing is closed under
@@ -3334,7 +3339,7 @@ function* scanRepositorySteps(state, { observedBranches = new Set(), now = Date.
   const identity = state.identity;
   const listing = yield ['for-each-ref', `--format=${REF_LISTING_FORMAT}`, 'refs/heads', 'refs/remotes'];
   if (listing === null) return { ok: false };
-  const { heads, remotes } = parseRefListing(listing);
+  const { heads, remotes, defaultRemote } = parseRefListing(listing);
   const worktrees = repoWorktreeHeads(identity);
   const worktreeByBranch = new Map(worktrees.filter((worktree) => worktree.branch).map((worktree) => [worktree.branch, worktree]));
   const hasRemotes = remotes.size > 0;
@@ -3391,6 +3396,19 @@ function* scanRepositorySteps(state, { observedBranches = new Set(), now = Date.
       commits = parseUnpushedLog(output);
     }
     state.scanSaturated = maxCount > 0 && commits.length >= maxCount;
+    // A rebase merge (or a one-commit squash) lands new shas with the same
+    // patches on the default branch; the branch's own shas never reach a
+    // remote. Those commits landed: one patch-id comparison per branch.
+    state.equivalentShas = new Set();
+    if (defaultRemote) {
+      const tips = new Set(commits.map((commit) => commit.sha));
+      for (const name of candidates.filter((name) => tips.has(heads.get(name).tip))) {
+        const output = yield ['rev-list', '--cherry-mark', '--right-only', '--no-merges', `refs/remotes/${defaultRemote}...refs/heads/${name}`, '--'];
+        for (const line of String(output || '').split('\n')) {
+          if (line.startsWith('=')) state.equivalentShas.add(line.slice(1));
+        }
+      }
+    }
     // A saturated listing may omit a connecting parent, so the parent walk
     // can miss membership: each branch's own unpushed list settles it. Only
     // when the log is re-read, and at most one call per scanned branch.
@@ -3450,7 +3468,9 @@ function* scanRepositorySteps(state, { observedBranches = new Set(), now = Date.
   const scanStamp = { scanSeq: Math.max((state.scanSeq || 0) + 1, Date.now()), scannedAt: now };
 
   const meta = { heads, remotes, hasRemotes, defaultLocal, worktreeByBranch, ...scanStamp };
-  const unpushed = commits.map((commit) => scannedCommitEvent(state, commit, meta));
+  const unpushed = commits
+    .filter((commit) => !state.equivalentShas?.has(commit.sha))
+    .map((commit) => scannedCommitEvent(state, commit, meta));
   const current = new Map(unpushed.map((event) => [event.sha, event]));
   const landedNow = new Set();
   expireRecentRepositoryEvents(state, now);
@@ -3475,7 +3495,7 @@ function* scanRepositorySteps(state, { observedBranches = new Set(), now = Date.
       : new Map();
     for (const [branch, previousList] of vanishedByBranch) {
       if (!reach) continue;
-      const landed = previousList.filter((previous) => reach.get(previous.sha)?.contained);
+      const landed = previousList.filter((previous) => reach.get(previous.sha)?.contained || state.equivalentShas?.has(previous.sha));
       const rewritten = previousList.filter((previous) => {
         const entry = reach.get(previous.sha);
         return entry && !entry.contained && (entry.orphaned || entry.missing);
@@ -3489,7 +3509,7 @@ function* scanRepositorySteps(state, { observedBranches = new Set(), now = Date.
           .filter((ref) => ref.startsWith('refs/remotes/') && !ref.endsWith('/HEAD'))
           .map((ref) => ref.slice('refs/remotes/'.length));
         const upstream = heads.get(branch)?.upstream;
-        const targetRef = [upstream, `origin/${branch}`].find((ref) => ref && refs.includes(ref)) || refs[0] || upstream || null;
+        const targetRef = [upstream, `origin/${branch}`].find((ref) => ref && refs.includes(ref)) || refs[0] || upstream || defaultRemote;
         const moved = targetRef ? remoteReflogEntries(identity.commonDir, targetRef, state.scannedAt - 60_000).at(-1) : null;
         const event = transitionPushEvent(state, {
           branch,
@@ -3876,7 +3896,7 @@ function repositoryContribution(state, info, now) {
     const sha = eventSha(commit);
     if (!sha || commit.success === false) continue;
     const entry = containmentFor(state, sha);
-    if (!entry?.contained) continue;
+    if (!entry?.contained && !state.equivalentShas?.has(entry?.full)) continue;
     const full = entry.full || sha;
     if ([...covered].some((landed) => shasMatch(landed, full))) continue;
     const branch = eventBranch(commit);
