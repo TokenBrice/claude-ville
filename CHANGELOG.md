@@ -2,6 +2,16 @@
 
 ---
 
+## v0.57.4 — *Clear Moorings* · Oct 19, 2026
+
+Commits that reached `main` through a pull request now leave the Harbor, and the live Harbor no longer keeps ships a page reload would drop.
+
+- **Merged pull requests sail.** Commits whose work reached the default branch under other shas now count as landed:
+  - A squash merge counts when, at some commit on the default branch since the branch forked, every file the branch changed read exactly as on the branch tip. Later edits to those files on `main` do not undo it, so a branch merged through a release PR leaves too.
+  - A rebase merge or a cherry-pick counts per commit whose patch `main` carries.
+- **Pushed ships no longer come back.** A branch pushed for a pull request, squash-merged on GitHub and then pruned by `git fetch --prune` re-docked its commits, because no remote branch contained them any more. They now stay gone.
+- **The Harbor no longer needs a reload.** A ship left only when the page saw its push. A commit the server stopped listing, or one whose session ended before the push, stayed docked until a reload. Now a docked ship that no session reports any more fades out, as a reload would drop it, and docks again if a session reports it later.
+
 ## v0.57.3.1 · Oct 18, 2026 — Hotfix
 
 - **Long waiters drink again.** An orchestrator waiting on its subagents for more than about two minutes sat at the Tavern without drinking. A wait that long marks the session stale, and stale bodies froze the drink animation on its rest frame. A sip is not a claim about live work, so stale patrons now keep drinking, as the drawn tankard already did. Reduced motion still holds every patron at rest.
