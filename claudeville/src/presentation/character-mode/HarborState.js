@@ -606,6 +606,17 @@ export function retireHarborShip(state, id, ship, now, { recordFloor = true } = 
     state.ships.delete(id);
 }
 
+// A ship whose reports left the wire goes without a tombstone or a floor,
+// and its events count as unseen, so a report that returns docks it again.
+export function forgetHarborShip(state, id, ship) {
+    for (const eventId of new Set([ship.id, ...(ship.eventIds || [])])) {
+        state.seenEventIds.delete(eventId);
+        state.seenEventTimes.delete(eventId);
+        state.seenEventSignatures.delete(eventId);
+    }
+    state.ships.delete(id);
+}
+
 export function harborLiveEventIds(state) {
     const ids = new Set();
     for (const ship of state.ships.values()) {
@@ -2160,6 +2171,29 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
         }
     }
 
+    // `complete`: `events` is every git event on the wire, what a page load
+    // would replay. A docked commit none of whose reports is still there
+    // (its session left, or the server stopped listing it with no departure
+    // the client saw) fades out as it would be absent after a reload; if a
+    // report returns before or after the fade, the commit docks again.
+    if (options.complete === true) {
+        const live = new Set(sorted.map(event => event.id));
+        for (const ship of state.ships.values()) {
+            const reported = (ship.eventIds || [ship.id]).some(id => live.has(id));
+            if (ship.vanished) {
+                if (reported && ship.status === 'scuttling') {
+                    ship.status = 'docked';
+                    ship.scuttleStartedAt = null;
+                    ship.vanished = false;
+                }
+                continue;
+            }
+            if (reported || ship.status !== 'docked' || ship.isInbound) continue;
+            scuttle(ship);
+            ship.vanished = true;
+        }
+    }
+
     for (const [id, ship] of state.ships) {
         // Boomerang lifecycle: out then back, then redock with caution flag.
         if (ship.status === 'rejecting') {
@@ -2227,7 +2261,8 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
         // a floor (its replacement may still be docking).
         if (ship.status === 'scuttling') {
             if (motionScale === 0 || now - (ship.scuttleStartedAt || now) >= SCUTTLE_MS) {
-                retireHarborShip(state, id, ship, now, { recordFloor: false });
+                if (ship.vanished) forgetHarborShip(state, id, ship);
+                else retireHarborShip(state, id, ship, now, { recordFloor: false });
             }
             continue;
         }

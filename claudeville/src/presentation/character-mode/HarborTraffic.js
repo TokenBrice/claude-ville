@@ -1524,11 +1524,13 @@ export class HarborTraffic {
             || this._hasTimedLifecycle
             || now >= this._nextMaintenanceAt;
         if (shouldReduce) {
-            this.state = reduceHarborTrafficState(this.state, force || eventsChanged ? events : [], {
+            const complete = force || eventsChanged;
+            this.state = reduceHarborTrafficState(this.state, complete ? events : [], {
                 now,
                 motionScale: this.motionScale,
                 activeProjects,
                 repoDisplayName: trafficShortName,
+                complete,
             });
             this._lastEventsVersion = eventsVersion;
             this._activeProjectsKey = activeProjectsKey;

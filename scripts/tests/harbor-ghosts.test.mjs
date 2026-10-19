@@ -83,3 +83,32 @@ test('reconcile() forwards a new oldIds list and a grown branch set', () => {
     assert.equal(harbor.state.ships.get('ghost-2')?.status, 'scuttling');
     harbor.dispose();
 });
+
+// A page load replays only what the wire carries now. A docked commit whose
+// reports left it with no departure the client saw (the scan stopped listing
+// it, or its only session left before the push) must not outlive a reload.
+test('reconcile() fades a docked commit whose reports left the wire, and docks it again if they return', () => {
+    const harbor = new HarborTraffic();
+    const scan = { id: 'git-unpushed-gone', type: 'commit', project: REPO, repoRoot: REPO, sha: '9'.repeat(40), branch: 'feat/pr', label: 'merged by pull request', timestamp: T, inferred: true };
+    const kept = { id: 'kept', type: 'commit', project: REPO, repoRoot: REPO, sha: '8'.repeat(40), branch: 'main', label: 'still unpushed', timestamp: T, success: true };
+    const agent = { id: 'a1', projectPath: REPO, repoRoot: REPO, provider: 'claude', sessionId: 's1', gitEvents: [scan, kept] };
+    harbor.reconcile([agent], T + S);
+    assert.equal(harbor.state.ships.get('git-unpushed-gone').status, 'docked');
+
+    agent.gitEvents = [kept];
+    harbor.reconcile([agent], T + 2 * S);
+    assert.equal(harbor.state.ships.get('git-unpushed-gone').status, 'scuttling', 'fades, never sails');
+    harbor.reconcile([agent], T + 10 * S, { force: true });
+    assert.equal(harbor.state.ships.has('git-unpushed-gone'), false);
+    assert.equal(harbor.state.ships.get('kept').status, 'docked');
+
+    agent.gitEvents = [scan, kept];
+    harbor.reconcile([agent], T + 11 * S);
+    assert.equal(harbor.state.ships.get('git-unpushed-gone')?.status, 'docked', 'a returning report docks again');
+
+    // Every session of the repo left: nothing it reported stays docked.
+    harbor.reconcile([], T + 12 * S);
+    harbor.reconcile([], T + 20 * S, { force: true });
+    assert.equal(harbor.state.ships.size, 0);
+    harbor.dispose();
+});

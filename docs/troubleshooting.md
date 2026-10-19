@@ -345,10 +345,12 @@ If installing dependencies is out of scope, fall back to:
 
 A ship is one commit, moored in its repository's anchorage (`repoRoot`: the main worktree, shared by every linked worktree and subdirectory session). It departs in one of two ways:
 
-1. **Containment** (primary). Git enrichment notices that a commit left the unpushed list and a remote-tracking ref now contains it, and sends its sha in a push's `landedShas`. Every ship with that sha departs, whichever branch or checkout pushed it.
+1. **Containment** (primary). Git enrichment notices that a commit left the unpushed list and a remote-tracking ref now contains it, or the default branch carries its work under another sha (a pull request squash- or rebase-merged), and sends its sha in a push's `landedShas`. Every ship with that sha departs, whichever branch or checkout pushed it.
 2. **Lane push.** An observed successful push with a branch departs that `(repoRoot, branch)` lane's ships committed at or before it.
 
-Ships that never left after you merged a worktree branch locally and pushed `main` from the main checkout were a known fault before the harbor refinement: the push matched only ships with the same cwd. Containment now sails them. A ship that still stays docked usually means its sha is not on any remote-tracking ref yet (no `git fetch` since a push made elsewhere, or the push failed), or git enrichment is disabled (`CLAUDEVILLE_DISABLE_GIT_ENRICHMENT=1`). Check `/api/sessions` for a `git-upstream-transition` push carrying the sha in `landedShas`.
+A docked ship whose commit no session reports any more (its session left, or the scan stopped listing it with no departure the page saw) fades out on the next update, as it would be absent after a reload; it docks again if the report returns.
+
+Ships that never left after you merged a worktree branch locally and pushed `main` from the main checkout were a known fault before the harbor refinement: the push matched only ships with the same cwd. Containment now sails them. A ship that still stays docked usually means its sha is not on any remote-tracking ref yet (no `git fetch` since a push made elsewhere, or the push failed), or git enrichment is disabled (`CLAUDEVILLE_DISABLE_GIT_ENRICHMENT=1`). A squash merge counts as landed only while every file the branch changed reads the same on the default branch: a release squash that edited the branch's files on the way, or later default-branch edits to those files before your next fetch, keep its commits docked until the local branch is deleted. Check `/api/sessions` for a `git-upstream-transition` push carrying the sha in `landedShas`.
 
 Expected behaviour that can look wrong:
 

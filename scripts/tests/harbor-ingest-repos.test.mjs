@@ -289,7 +289,9 @@ test('warm polls launch no git subprocesses', (t) => {
   git(repos.main, 'push', '-q');
   enrich(g, sessions);
   const cost = g.getGitEnrichmentPerfStats().gitCommandCount - before;
-  assert.ok(cost > 0 && cost <= 8, `a push costs a bounded refresh (${cost} commands)`);
+  // The default branch moved: the one unpushed worktree branch re-checks
+  // what of it landed under other shas (squash, rebase merge): three calls.
+  assert.ok(cost > 0 && cost <= 9, `a push costs a bounded refresh (${cost} commands)`);
 });
 
 test('worker path normalizes trailing slashes and dot segments without a refresh loop', async (t) => {

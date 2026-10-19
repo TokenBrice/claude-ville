@@ -47,6 +47,8 @@ const MAX_UNPUSHED_COMMITS_PER_BRANCH = 120;
 const MAX_SCANNED_BRANCHES = 24;
 // Ambiguous branch memberships settled per log re-read.
 const MAX_MEMBERSHIP_RESOLUTIONS = 32;
+// Files a squash-merge check compares; a wider branch is judged per patch.
+const MAX_SQUASH_CHECK_PATHS = 1000;
 const MAX_UNPUSHED_COMMITS_PER_SCAN = 600;
 const GIT_EVENT_STDERR_MAX_CHARS = 2048;
 const GIT_EVENT_REASON_MAX_CHARS = 200;
@@ -3333,6 +3335,26 @@ function expireRecentRepositoryEvents(state, now = Date.now()) {
   }
 }
 
+// How much of `branch` already landed on `base` under other shas, or null
+// when git could not tell. Squashed: every file the branch changed since the
+// merge base reads the same on `base`. Otherwise the commits whose patch
+// `base` carries. Read-only: three calls at most.
+function* branchLandingSteps(base, branch) {
+  const names = yield ['diff', '-z', '--name-only', '--no-renames', `${base}...${branch}`, '--'];
+  if (names === null) return null;
+  const paths = names.split('\0').filter(Boolean);
+  if (paths.length && paths.length <= MAX_SQUASH_CHECK_PATHS) {
+    const differing = yield ['--literal-pathspecs', 'diff', '-z', '--name-only', '--no-renames', branch, base, '--', ...paths];
+    if (differing === '') return { squashed: true, shas: [] };
+  }
+  const marked = yield ['rev-list', '--cherry-mark', '--right-only', '--no-merges', `${base}...${branch}`, '--'];
+  if (marked === null) return null;
+  return {
+    squashed: false,
+    shas: marked.split('\n').filter((line) => line.startsWith('=')).map((line) => line.slice(1)),
+  };
+}
+
 // Yields git argument lists and receives each command's stdout (null when it
 // failed); shared by the synchronous path and the background worker.
 function* scanRepositorySteps(state, { observedBranches = new Set(), now = Date.now() } = {}) {
@@ -3396,19 +3418,26 @@ function* scanRepositorySteps(state, { observedBranches = new Set(), now = Date.
       commits = parseUnpushedLog(output);
     }
     state.scanSaturated = maxCount > 0 && commits.length >= maxCount;
-    // A rebase merge (or a one-commit squash) lands new shas with the same
-    // patches on the default branch; the branch's own shas never reach a
-    // remote. Those commits landed: one patch-id comparison per branch.
+    // Work can land on the default branch under other shas, so the branch's
+    // own shas never reach a remote: a squash merge lands the whole branch,
+    // a rebase merge or a cherry-pick the commits whose patch it carries.
+    // Settled once per (branch tip, default tip).
     state.equivalentShas = new Set();
-    if (defaultRemote) {
+    state.squashedBranches = new Set();
+    const defaultTip = defaultRemote ? remotes.get(defaultRemote) : null;
+    const equivalence = new Map();
+    if (defaultTip) {
       const tips = new Set(commits.map((commit) => commit.sha));
       for (const name of candidates.filter((name) => tips.has(heads.get(name).tip))) {
-        const output = yield ['rev-list', '--cherry-mark', '--right-only', '--no-merges', `refs/remotes/${defaultRemote}...refs/heads/${name}`, '--'];
-        for (const line of String(output || '').split('\n')) {
-          if (line.startsWith('=')) state.equivalentShas.add(line.slice(1));
-        }
+        const key = `${heads.get(name).tip}:${defaultTip}`;
+        const entry = state.equivalence?.get(key) || (yield* branchLandingSteps(`refs/remotes/${defaultRemote}`, `refs/heads/${name}`));
+        if (!entry) continue;
+        equivalence.set(key, entry);
+        if (entry.squashed) state.squashedBranches.add(name);
+        for (const sha of entry.shas) state.equivalentShas.add(sha);
       }
     }
+    state.equivalence = equivalence;
     // A saturated listing may omit a connecting parent, so the parent walk
     // can miss membership: each branch's own unpushed list settles it. Only
     // when the log is re-read, and at most one call per scanned branch.
@@ -3462,6 +3491,7 @@ function* scanRepositorySteps(state, { observedBranches = new Set(), now = Date.
     }
     commit.branch = commit.branches[0] || '';
     commit.detached = commit.branches.length === 0 && commit.branchesComplete;
+    if (commit.branches.some((name) => state.squashedBranches?.has(name))) state.equivalentShas?.add(commit.sha);
   }
   // Wall-clock based so a restarted server always outranks the previous
   // lifetime's sequence (unless the clock moves backwards).

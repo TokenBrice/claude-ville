@@ -180,3 +180,47 @@ test('a branch rebase-merged before the first scan never docks; later cargo does
   git(checkout, 'commit', '-q', '-am', 'Rail the jetty');
   assert.deepEqual(observe(checkout).commits, ['feat/jetty:Rail the jetty']);
 });
+
+// GitHub's squash merge lands one new commit carrying the branch's whole
+// change; the platform then deletes the branch, and a pruning fetch drops
+// the only remote-tracking ref that contained the branch's own shas.
+function landBySquash(repo, branch) {
+  fs.writeFileSync(path.join(repo, 'elsewhere.txt'), 'meanwhile\n');
+  git(repo, 'add', 'elsewhere.txt');
+  git(repo, 'commit', '-q', '-m', 'Meanwhile on main');
+  git(repo, 'merge', '-q', '--squash', branch);
+  git(repo, 'commit', '-q', '-m', `Squash ${branch} (#1)`);
+  git(repo, 'push', '-q', 'origin', 'main');
+}
+
+function commitFiles(checkout, files) {
+  for (const [name, text] of files) {
+    fs.writeFileSync(path.join(checkout, name), text);
+    git(checkout, 'add', name);
+    git(checkout, 'commit', '-q', '-m', `Lay the ${name}`);
+  }
+}
+
+test('a pushed pull request squash-merged and its branch deleted never docks again', (t) => {
+  const { repo } = fixture(t);
+  const checkout = worktree(repo, 'feat/quay');
+  commitFiles(checkout, [['quay.txt', 'stone\n'], ['bollard.txt', 'iron\n']]);
+  git(checkout, 'push', '-q', '-u', 'origin', 'feat/quay');
+  assert.deepEqual(observe(checkout).commits, []);
+
+  landBySquash(repo, 'feat/quay');
+  git(repo, 'push', '-q', 'origin', '--delete', 'feat/quay');
+  assert.deepEqual(observe(checkout).commits, []);
+});
+
+test('commits squash-merged into the default branch sail', (t) => {
+  const { repo } = fixture(t);
+  const checkout = worktree(repo, 'feat/slip');
+  commitFiles(checkout, [['slip.txt', 'ramp\n'], ['winch.txt', 'rope\n']]);
+  assert.deepEqual(observe(checkout).commits, ['feat/slip:Lay the slip.txt', 'feat/slip:Lay the winch.txt']);
+
+  landBySquash(repo, 'feat/slip');
+  const after = observe(checkout);
+  assert.deepEqual(after.commits, []);
+  assert.deepEqual(after.pushes, [{ branch: 'feat/slip', targetRef: 'origin/main', source: 'git-upstream-transition' }]);
+});

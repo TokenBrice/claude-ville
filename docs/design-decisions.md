@@ -386,6 +386,8 @@ A repository is its main worktree path (`repoRoot`), not a session's cwd. The se
 
 A ship departs when the server has verified that a remote-tracking ref contains its sha (`landedShas`), whatever branch or checkout pushed it. That is what makes "merge the worktree branch locally, push main" sail the worktree's ships. Without `landedShas`, a push departs its own lane only. A push with no branch never acts as a wildcard, a tag or branch-delete push sails nothing, a reset is never a push, and the server never infers a push from the current HEAD.
 
+Work the default branch carries under other shas also landed: a pull request squash-merged (every file the branch changed reads the same on the default branch) or rebase-merged (per commit, by patch id). Without this, a pushed branch squash-merged on GitHub and pruned by `git fetch --prune` re-docked its already departed ships, because no remote-tracking ref contained their shas any more. The client harbor converges on the wire: given every current event, a docked commit nothing reports any more fades out and is forgotten, so live state never keeps ships a reload would drop (before, a ship left only on a departure the page happened to see, and one whose session ended before the push stayed until reload).
+
 The operator settled eight presentation choices (2026-10-15):
 
 | # | Decision | Rationale |
