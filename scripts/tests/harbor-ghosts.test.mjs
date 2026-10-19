@@ -112,3 +112,21 @@ test('reconcile() fades a docked commit whose reports left the wire, and docks i
     assert.equal(harbor.state.ships.size, 0);
     harbor.dispose();
 });
+
+test('a fading commit whose report returns with a push carrying its sha sails', () => {
+    const harbor = new HarborTraffic();
+    const sha = '7'.repeat(40);
+    const commit = { id: 'flicker', type: 'commit', project: REPO, repoRoot: REPO, sha, branch: 'feat/pr', label: 'briefly unlisted', timestamp: T, success: true };
+    const agent = { id: 'a1', projectPath: REPO, repoRoot: REPO, provider: 'claude', sessionId: 's1', gitEvents: [commit] };
+    harbor.reconcile([agent], T + S);
+    agent.gitEvents = [];
+    harbor.reconcile([agent], T + 2 * S);
+    assert.equal(harbor.state.ships.get('flicker').status, 'scuttling');
+
+    // Back within the fade, together with the push that landed it.
+    const push = { id: 'push-flicker', type: 'push', project: REPO, repoRoot: REPO, branch: 'feat/pr', landedShas: [sha], timestamp: T + 2 * S, success: true, exitCode: 0 };
+    agent.gitEvents = [commit, push];
+    harbor.reconcile([agent], T + 2 * S + 500);
+    assert.equal(harbor.state.ships.get('flicker').status, 'departing');
+    harbor.dispose();
+});

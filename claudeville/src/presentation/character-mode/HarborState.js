@@ -1611,6 +1611,24 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
         if (Number.isFinite(Number(ship.berthIndex))) occupiedBerths.add(Number(ship.berthIndex));
     }
 
+    // `complete`: `events` is every git event on the wire, what a page load
+    // would replay. A docked commit none of whose reports is still there
+    // (its session left, or the server stopped listing it with no departure
+    // the client saw) fades out as it would be absent after a reload; if a
+    // report returns before or after the fade, the commit docks again. A
+    // fading ship revives before this tail's pushes and rewrites apply, so a
+    // push arriving with its returning report still sails it.
+    const liveEventIds = options.complete === true ? new Set(sorted.map(event => event.id)) : null;
+    const reportedLive = ship => (ship.eventIds || [ship.id]).some(id => liveEventIds.has(id));
+    if (liveEventIds) {
+        for (const ship of state.ships.values()) {
+            if (!ship.vanished || ship.status !== 'scuttling' || !reportedLive(ship)) continue;
+            ship.status = 'docked';
+            ship.scuttleStartedAt = null;
+            ship.vanished = false;
+        }
+    }
+
     for (const event of sorted) {
         if (event.type !== 'push') {
             if (harborEventIsTombstoned(state, event)) continue;
@@ -2171,24 +2189,9 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
         }
     }
 
-    // `complete`: `events` is every git event on the wire, what a page load
-    // would replay. A docked commit none of whose reports is still there
-    // (its session left, or the server stopped listing it with no departure
-    // the client saw) fades out as it would be absent after a reload; if a
-    // report returns before or after the fade, the commit docks again.
-    if (options.complete === true) {
-        const live = new Set(sorted.map(event => event.id));
+    if (liveEventIds) {
         for (const ship of state.ships.values()) {
-            const reported = (ship.eventIds || [ship.id]).some(id => live.has(id));
-            if (ship.vanished) {
-                if (reported && ship.status === 'scuttling') {
-                    ship.status = 'docked';
-                    ship.scuttleStartedAt = null;
-                    ship.vanished = false;
-                }
-                continue;
-            }
-            if (reported || ship.status !== 'docked' || ship.isInbound) continue;
+            if (ship.vanished || ship.status !== 'docked' || ship.isInbound || reportedLive(ship)) continue;
             scuttle(ship);
             ship.vanished = true;
         }
