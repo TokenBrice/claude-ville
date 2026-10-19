@@ -201,7 +201,7 @@ function commitFiles(checkout, files) {
   }
 }
 
-test('a pushed pull request squash-merged and its branch deleted never docks again', (t) => {
+test('a pushed pull request squash-merged, edited on main later and its branch deleted never docks again', (t) => {
   const { repo } = fixture(t);
   const checkout = worktree(repo, 'feat/quay');
   commitFiles(checkout, [['quay.txt', 'stone\n'], ['bollard.txt', 'iron\n']]);
@@ -209,8 +209,24 @@ test('a pushed pull request squash-merged and its branch deleted never docks aga
   assert.deepEqual(observe(checkout).commits, []);
 
   landBySquash(repo, 'feat/quay');
+  // Main moves on over the merged files before anyone fetches again.
+  fs.writeFileSync(path.join(repo, 'quay.txt'), 'stone\nmortar\n');
+  git(repo, 'commit', '-q', '-am', 'Point the quay');
+  git(repo, 'push', '-q', 'origin', 'main');
   git(repo, 'push', '-q', 'origin', '--delete', 'feat/quay');
   assert.deepEqual(observe(checkout).commits, []);
+});
+
+test('a branch main never carried whole stays docked', (t) => {
+  const { repo } = fixture(t);
+  const checkout = worktree(repo, 'feat/dock');
+  commitFiles(checkout, [['dock.txt', 'timber\n'], ['crane.txt', 'jib\n']]);
+  fs.writeFileSync(path.join(repo, 'dock.txt'), 'timber\n');
+  fs.writeFileSync(path.join(repo, 'crane.txt'), 'gantry\n');
+  git(repo, 'add', 'dock.txt', 'crane.txt');
+  git(repo, 'commit', '-q', '-m', 'Build a different dock');
+  git(repo, 'push', '-q', 'origin', 'main');
+  assert.deepEqual(observe(checkout).commits, ['feat/dock:Lay the dock.txt', 'feat/dock:Lay the crane.txt']);
 });
 
 test('commits squash-merged into the default branch sail', (t) => {

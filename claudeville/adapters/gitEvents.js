@@ -3335,17 +3335,51 @@ function expireRecentRepositoryEvents(state, now = Date.now()) {
   }
 }
 
+// `git diff --raw -z` / `git log --raw -z` entries: `:<old mode> <new mode>
+// <old sha> <new sha> <status>` then the path, each NUL-terminated; a log
+// commit header (`%x01%H`) starts each commit.
+function parseRawEntries(output) {
+  const entries = [];
+  const tokens = String(output || '').split('\0');
+  for (let index = 0; index < tokens.length; index++) {
+    const token = tokens[index].replace(/^\n+/, '');
+    if (token.startsWith('\x01')) {
+      entries.push({ commit: token.slice(1) });
+    } else if (token.startsWith(':')) {
+      const [, mode, , sha] = token.slice(1).split(' ');
+      entries.push({ path: tokens[++index], blob: `${mode} ${sha}` });
+    }
+  }
+  return entries;
+}
+
 // How much of `branch` already landed on `base` under other shas, or null
-// when git could not tell. Squashed: every file the branch changed since the
-// merge base reads the same on `base`. Otherwise the commits whose patch
+// when git could not tell. Squashed: at some commit on `base`'s first-parent
+// line since the merge base (its tip included), every file the branch
+// changed read exactly as on the branch tip, so later edits on `base` to
+// those files do not hide a squash merge. Otherwise the commits whose patch
 // `base` carries. Read-only: three calls at most.
 function* branchLandingSteps(base, branch) {
-  const names = yield ['diff', '-z', '--name-only', '--no-renames', `${base}...${branch}`, '--'];
-  if (names === null) return null;
-  const paths = names.split('\0').filter(Boolean);
-  if (paths.length && paths.length <= MAX_SQUASH_CHECK_PATHS) {
-    const differing = yield ['--literal-pathspecs', 'diff', '-z', '--name-only', '--no-renames', branch, base, '--', ...paths];
-    if (differing === '') return { squashed: true, shas: [] };
+  const changed = yield ['diff', '--raw', '-z', '--no-abbrev', '--no-renames', `${base}...${branch}`, '--'];
+  if (changed === null) return null;
+  const target = new Map(parseRawEntries(changed).filter((entry) => entry.path).map((entry) => [entry.path, entry.blob]));
+  if (target.size && target.size <= MAX_SQUASH_CHECK_PATHS) {
+    const history = yield [
+      '--literal-pathspecs', 'log', '--first-parent', '--diff-merges=first-parent', '--reverse',
+      '--raw', '-z', '--no-abbrev', '--no-renames', '--format=%x01%H', `${branch}..${base}`, '--', ...target.keys(),
+    ];
+    // At the merge base every changed file differs from the tip; replay
+    // `base`'s changes to those files, checking each commit's state.
+    const differing = new Set(target.keys());
+    for (const entry of history === null ? [] : [...parseRawEntries(history), { commit: '' }]) {
+      if (entry.commit !== undefined) {
+        if (!differing.size) return { squashed: true, shas: [] };
+        continue;
+      }
+      if (!target.has(entry.path)) continue;
+      if (entry.blob === target.get(entry.path)) differing.delete(entry.path);
+      else differing.add(entry.path);
+    }
   }
   const marked = yield ['rev-list', '--cherry-mark', '--right-only', '--no-merges', `${base}...${branch}`, '--'];
   if (marked === null) return null;
