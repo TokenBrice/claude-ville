@@ -3,9 +3,15 @@ import assert from 'node:assert/strict';
 
 import {
     APERTURE_MIN_ZOOM,
+    apertureCutContains,
     assignRoomSlots,
     buildApertureModel,
 } from '../../claudeville/src/presentation/character-mode/BuildingApertureModel.js';
+import {
+    getBuildingApertureProfile,
+    getBuildingRoomProfile,
+} from '../../claudeville/src/presentation/character-mode/BuildingVisualRegistry.js';
+import { BuildingSprite } from '../../claudeville/src/presentation/character-mode/BuildingSprite.js';
 
 const session = (agentId, extra = {}) => ({
     agentId,
@@ -110,4 +116,30 @@ test('rooms with no workers light nothing', () => {
     const { assignment, overflow } = assignRoomSlots({ previous: null, workingIds: [], rooms: 3 });
     assert.equal(assignment.size, 0);
     assert.equal(overflow, 0);
+});
+
+test('every painted pane is a room: Archive 10, Command 11 (B3-01)', () => {
+    assert.equal(getBuildingRoomProfile('archive').slots.length, 10);
+    assert.equal(getBuildingRoomProfile('command').slots.length, 11);
+});
+
+test('a Command room pane inside the open aperture cut stays dark (B3-01)', () => {
+    const cut = getBuildingApertureProfile('command').cut;
+    const inCut = getBuildingRoomProfile('command').slots
+        .map((slot, index) => (apertureCutContains(cut, slot.at[0], slot.at[1]) ? index : -1))
+        .filter((index) => index >= 0);
+    // The east wing's three panes, and no drum, tower or keep pane.
+    assert.deepEqual(inCut, [3, 4, 5]);
+
+    const renderer = Object.assign(Object.create(BuildingSprite.prototype), {
+        atmosphereState: { clock: { minuteOfDay: 23 * 60 } },
+        _roomLitByType: new Map([['command', new Array(11).fill(1)]]),
+        _apertureModel: null,
+        _apertureProfile: null,
+    });
+    assert.equal(renderer.roomGate('command', 4), 1);
+    renderer._apertureModel = { buildingType: 'command' };
+    renderer._apertureProfile = getBuildingApertureProfile('command');
+    assert.equal(renderer.roomGate('command', 4), 0);
+    assert.equal(renderer.roomGate('command', 0), 1);
 });

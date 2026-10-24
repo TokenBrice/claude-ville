@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-10-15-family-pharos"
+  assetVersion: "2026-10-24-banked-hearth"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -1733,7 +1733,7 @@ buildings:
   - id: building.command
     tool: generate-image-v2
     prompt: "isometric pixel art building sprite, true 2:1 dimetric isometric view from the south-east, the Command Center, the grandest building in town: a heroic castle keep with a tall central hall crowned by a large slate-blue tiled dome with a gold ring and gold finial, a tall square stone tower with a slate-blue spire and a small gold flag on the left, a round crenellated stone tower on the right, two lower side wings with slate-blue roofs, the right wing has a long plain right-facing wall with three small windows, one huge arched main gate with heavy oak double doors in the front wall facing the lower-left, as tall as a third of the keep, reached by two broad stone steps and flanked by two lit iron braziers, crimson banners with gold emblems on the walls, cream limestone ashlar walls with a darker stone base course, small arched windows with warm amber glass. Warm light from the upper left. Structure only on a transparent background: no ground tile, no paved floor, no cobble plaza, no lawn, no platform, no plinth, no cast shadow, no text."
-    provenance: { item: '4.2', endpoint: generate-image-v2, jobId: 42f7aab2-6e0a-45c8-b335-1afcd25448a0, styleImage: building.observatory, referenceImage: 'building.command (pre-4.2)', generationSize: 360x240, generations: 25, pilotGenerations: 145, recolor: 'cream -> family cool grey (hand, not generated)', edit: { endpoint: inpaint-v3, jobId: 1c219d8c-5bce-48be-88f8-7dea9c1690a9, seed: 1234, crop: 200x200, generations: 20, note: 'gate leaf ~45 -> ~71 px; seam patches beside the steps hand-recoloured to the stone ramp' }, generatedAt: '2026-09-25', harmonize: 'spire and wing roofs domeSlate -> roofSlate, gilt dome kept (scripts/sprites/harmonize-roofs.mjs, 2026-10-15)' }
+    provenance: { item: '4.2', endpoint: generate-image-v2, jobId: 42f7aab2-6e0a-45c8-b335-1afcd25448a0, styleImage: building.observatory, referenceImage: 'building.command (pre-4.2)', generationSize: 360x240, generations: 25, pilotGenerations: 145, recolor: 'cream -> family cool grey (hand, not generated)', edit: { endpoint: inpaint-v3, jobId: 1c219d8c-5bce-48be-88f8-7dea9c1690a9, seed: 1234, crop: 200x200, generations: 20, note: 'gate leaf ~45 -> ~71 px; seam patches beside the steps hand-recoloured to the stone ramp' }, generatedAt: '2026-09-25', harmonize: 'spire and wing roofs domeSlate -> roofSlate, gilt dome kept (scripts/sprites/harmonize-roofs.mjs, 2026-10-15)', roofCourses: 'B3-06 — tile courses on the flat wing, porch and back roofs, mirrored into the restIsBase banner frames (scripts/sprites/paint-roof-courses.mjs, 2026-10-24)', emissiveEdit: 'B3-01 — the left-tower middle, right-turret and keep panes glazed in base.emissive.png with the lit left-tower pane recipe (hand, 2026-10-24)' }
     width: 360
     height: 240
     anchor: [199, 164]
@@ -1797,7 +1797,7 @@ buildings:
       # Command has a working visitor (V8); one-shot on arrival.
       gate:
         tool: hand-authored
-        prompt: "Command gate closed / ajar / open: the base oak leaves swung inward, dark hall #1a1310 with a stepped warm floor on the C1 emissive ramp; authored, not generated"
+        prompt: "Command gate closed / ajar / open: the base oak leaves swung inward, dark hall #1a1310 with a stepped warm floor on the C1 emissive ramp; B3-08: the open frames' hall rises from that floor in two Bayer-dithered courses of #ff9d4a (1/2, 1/4), so an occupied hall reads lit at night, not void; authored, not generated"
         width: 120
         height: 80
         frames: 3
@@ -2033,7 +2033,7 @@ buildings:
       # onto the dark hall and a warm floor while it works.
       door:
         tool: hand-authored
-        prompt: "Harbor office door closed / ajar / open, hinged left, dark hall #1a1310 over a stepped warm floor; authored, not generated"
+        prompt: "Harbor office door closed / ajar / open, hinged left, dark hall #1a1310 over a stepped warm floor; B3-08: two Bayer-dithered #ff9d4a courses (1/2, 1/4) rise from it in the open frames; authored, not generated"
         width: 36
         height: 24
         frames: 3
@@ -2103,6 +2103,18 @@ buildings:
     lightSource: [190, 172]
     lightColor: '#ffcf7a'
     lightRadius: 58
+    layers:
+      # B3-03' — the banked hearth, the Forge's 4.6 recipe: the hearth fire
+      # and its firelight spill are painted into base.png, so an empty Tavern
+      # (no patron, no worker) lays this mask over exactly those pixels: a
+      # part (BuildingSprite.partDrawsFor) only while the hearth is banked.
+      banked:
+        tool: hand-authored
+        prompt: "banked tavern hearth mask: the painted fireplace flame restated as stepped charcoal over one ember course at the bed, and the firelight spill on the stone hob and oak floor restated as their unlit texels; authored, not generated"
+        width: 296
+        height: 288
+        anchor: [158, 218]
+        materialClass: stone
 
   # ── HERO: Portal Gate ── re-authored 2026-10-01 into the Painted Isle family
   # (it was a dark charcoal rock heap with a boxy brazier overlay). REST
@@ -2481,7 +2493,7 @@ buildings:
       # has a working visitor (V8), one-shot on arrival.
       door:
         tool: hand-authored
-        prompt: "Archive lancet door closed / ajar / open, dark hall #1a1310 over a stepped warm floor; authored, not generated"
+        prompt: "Archive lancet door closed / ajar / open, dark hall #1a1310 over a stepped warm floor; B3-08: two Bayer-dithered #ff9d4a courses (1/2, 1/4) rise from it in the open frames; authored, not generated"
         width: 105
         height: 93
         frames: 3
@@ -2633,7 +2645,7 @@ props:
     height: 208
     anchor: [64, 168]
     materialClass: stone
-    provenance: { item: 'W8.5b', tool: create_map_object, objectId: 9e0d3633-5d2c-4848-b8f1-5387b7e531c2, finish: 'scripts/sprites/finish-isle-landmarks.mjs (plate strip, ashlar snap, mirrored to the upper-left key)', generatedAt: '2026-10-09' }
+    provenance: { item: 'W8.5b', tool: create_map_object, objectId: 9e0d3633-5d2c-4848-b8f1-5387b7e531c2, finish: 'scripts/sprites/finish-isle-landmarks.mjs (plate strip, ashlar snap, mirrored to the upper-left key)', generatedAt: '2026-10-09', harmonize: 'cap remapped onto roofSlate (scripts/sprites/harmonize-roofs.mjs, B3-05, 2026-10-24)' }
 
   # The sail cross, 4 frames of 112 x 112 (hub at the frame centre, seated on
   # the windmill's windshaft at base-local [50, 86]); frame k is the cross
@@ -2665,7 +2677,7 @@ props:
     height: 144
     anchor: [53, 104]
     materialClass: stone
-    provenance: { item: 'W8.5b', tool: create_map_object, objectId: f2367bd7-2b9c-4bf9-9ca1-b45e87e89055, finish: 'scripts/sprites/finish-isle-landmarks.mjs (plate strip, ashlar snap, lit window and lantern glass unlit, lantern emissive sidecar, mirrored)', generatedAt: '2026-10-09' }
+    provenance: { item: 'W8.5b', tool: create_map_object, objectId: f2367bd7-2b9c-4bf9-9ca1-b45e87e89055, finish: 'scripts/sprites/finish-isle-landmarks.mjs (plate strip, ashlar snap, lit window and lantern glass unlit, lantern emissive sidecar, mirrored)', generatedAt: '2026-10-09', harmonize: 'roof onto roofSlate, violet walls onto the Command masonry by percentile (scripts/sprites/harmonize-roofs.mjs, B3-05, 2026-10-24)' }
     emissiveSidecar: true
     emissive:
       strength: 0.9

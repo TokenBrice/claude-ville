@@ -12,6 +12,18 @@
 // ordinary counts.
 export const APERTURE_MIN_ZOOM = 2;
 
+/**
+ * Whether the sprite-local point (x, y) lies inside an aperture `cut`
+ * (`{ x0, x1, top, bottom, slope }`: the parallelogram between x0 and x1 whose
+ * top and bottom edges rise along the wall at `slope` px per px). B3-01 — a
+ * room pane inside the cut stays dark while the aperture is open.
+ */
+export function apertureCutContains(cut, x, y) {
+    if (!cut || !(x >= cut.x0 && x <= cut.x1)) return false;
+    const rise = (Number(cut.slope) || 0) * (x - cut.x0);
+    return y >= cut.top + rise && y <= cut.bottom + rise;
+}
+
 const TOOL_LABEL_LIMIT = 12;
 const NAME_LIMIT = 10;
 

@@ -335,3 +335,48 @@ test('AG-4: a patron wears its wait on the 1/5/15-min ladder, held still', (t) =
     sprite._subagentWait = { since: 1, seenAt: rest, pint: true };
     assert.equal(sprite._patronWaitTier(), null, 'a standing patron has no seated posture');
 });
+
+test('an empty Tavern banks its painted hearth; a patron or worker lights it (B3-03\')', () => {
+    const tavern = { type: 'tavern' };
+    const renderer = Object.assign(Object.create(BuildingSprite.prototype), {
+        atmosphereState: { clock: { minuteOfDay: 12 * 60 } },
+        _visitorStatusByType: new Map(),
+        _patronIdsByType: new Map(),
+        _litGateByType: new Map(),
+    });
+    assert.equal(renderer._restMaskShowing(tavern), true);
+    assert.equal(renderer._emissiveGateFor(tavern), 0);
+
+    renderer._patronIdsByType.set('tavern', new Set(['lead-1']));
+    assert.equal(renderer._restMaskShowing(tavern), false);
+    assert.equal(renderer._emissiveGateFor(tavern), 1);
+
+    renderer._patronIdsByType.clear();
+    renderer._visitorStatusByType.set('tavern', { working: 1 });
+    assert.equal(renderer._restMaskShowing(tavern), false);
+
+    // Buildings without an authored rest mask never bank.
+    assert.equal(renderer._restMaskShowing({ type: 'archive' }), false);
+});
+
+test('the banked hearth is a part at the base origin only while banked (B3-03\')', () => {
+    const tavern = { type: 'tavern' };
+    const entry = { id: 'building.tavern', layers: { banked: { width: 296, height: 288, anchor: [158, 218] } } };
+    const renderer = Object.assign(Object.create(BuildingSprite.prototype), {
+        assets: {
+            getAnchor: () => [158, 218],
+            get: (id) => (id === 'building.tavern.banked' ? { width: 296, height: 288 } : null),
+            assetVersion: 'test',
+        },
+        _visitorStatusByType: new Map(),
+        _patronIdsByType: new Map(),
+    });
+    const banked = renderer.partDrawsFor(entry, tavern, 1000, 2000);
+    assert.equal(banked.length, 1);
+    assert.equal(banked[0].name, 'banked');
+    assert.equal(banked[0].x, 1000 - 158);
+    assert.equal(banked[0].y, 2000 - 218);
+
+    renderer._patronIdsByType.set('tavern', new Set(['lead-1']));
+    assert.equal(renderer.partDrawsFor(entry, tavern, 1000, 2000).length, 0);
+});

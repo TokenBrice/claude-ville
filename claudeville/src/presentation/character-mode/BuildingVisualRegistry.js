@@ -121,16 +121,28 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
             ],
         },
         // 4.2 — the hall's work rooms: one authored window per room, lit for
-        // one real working occupant each — the three dome-drum panes. Distinct
-        // from `windowRects` (the dusk warmth stamps) and from the gate
-        // braziers, and deliberately outside the 4.1 cut so an open aperture
-        // never argues with a lit window about the same room.
+        // one real working occupant each. B3-01 — every painted pane is a
+        // room, front and large first (`assignRoomSlots` fills in order): the
+        // three dome-drum panes, the east wing's three, the hall pane by the
+        // right tower, the left tower's two, the right turret and the small
+        // keep pane between the banners. Distinct from `windowRects` and from
+        // the gate braziers. The wing panes sit inside the 4.1 cut: while the
+        // aperture is open they stay dark (`BuildingSprite.roomGate`), so an
+        // open aperture never argues with a lit window about the same room.
         rooms: {
             countAt: [186, 236],
             slots: [
                 { at: [143, 104], w: 5, h: 9 },
                 { at: [175, 110], w: 6, h: 10 },
                 { at: [207, 104], w: 3, h: 9 },
+                { at: [247, 186], w: 4, h: 8 },
+                { at: [272, 173.5], w: 4, h: 7 },
+                { at: [296, 160], w: 4, h: 8 },
+                { at: [236.5, 122], w: 3, h: 10 },
+                { at: [72.5, 121], w: 3, h: 6 },
+                { at: [73, 102], w: 3, h: 6 },
+                { at: [265, 100.5], w: 3, h: 7 },
+                { at: [215, 133], w: 3, h: 5 },
             ],
         },
     },
@@ -186,8 +198,8 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         ],
         // 4.6 — the hearth fire is painted into base.png, so rest needs an
         // authored mask: `banked.png` restates exactly those pixels as stepped
-        // charcoal over one ember course. Drawn by the building renderer on
-        // canonical READY_EMPTY only, never by the generic layer pass.
+        // charcoal over one ember course. A part (`partDrawsFor`) only while
+        // the hearth is banked (`BuildingSprite._restMaskShowing`).
         rest: { layer: 'banked' },
         // 4.4 — the workload bench. `billets` are the three stepped bars on the
         // anvil plinth (one per observed count tier), `shelf` is the result
@@ -294,24 +306,25 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
             { at: [159.5, 183], w: 5, h: 28 },
             { at: [181.5, 195], w: 5, h: 26 },
         ],
-        // 6.3 / M15 — the clerestory lancets: authored glass that belongs to
-        // no room, so it is unlit slate glass at every hour (RoomGlass reads
-        // `glassRects`); only a room a worker holds glows.
-        glassRects: [
-            { at: [98, 92], w: 7, h: 19 },
-            { at: [123.5, 104.5], w: 4, h: 18 },
-            { at: [147.5, 117], w: 4, h: 19 },
-            { at: [170, 129], w: 5, h: 19 },
-            { at: [192.5, 141], w: 6, h: 19 },
-        ],
         pennant: { at: [68, 14] },
-        // 4.2 — two reading rooms (the second and fourth lancet bays). A third
-        // working occupant is a count, never an invented third window.
+        // 4.2 — reading rooms. B3-01 — every painted lancet is a room: the
+        // five tall ground lancets first (the second and fourth bays keep
+        // rooms 1 and 2), then the five clerestory lancets above the same
+        // bays. An eleventh working occupant is a count, never an invented
+        // window.
         rooms: {
             countAt: [140, 216],
             slots: [
                 { at: [115.5, 160.5], w: 5, h: 25 },
                 { at: [159.5, 183], w: 5, h: 28 },
+                { at: [137.5, 172], w: 5, h: 26 },
+                { at: [95, 152], w: 5, h: 30 },
+                { at: [181.5, 195], w: 5, h: 26 },
+                { at: [123.5, 104.5], w: 4, h: 18 },
+                { at: [170, 129], w: 5, h: 19 },
+                { at: [147.5, 117], w: 4, h: 19 },
+                { at: [98.5, 92.5], w: 5, h: 17 },
+                { at: [192.5, 141], w: 6, h: 19 },
             ],
         },
         // QAWorld F10 — the SE portal was re-authored (inpaint) into a lancet
@@ -350,6 +363,11 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         effectAnchors: {
             smokeTop: [217, 36],
         },
+        // B3-03' — the hearth fire and its floor spill are painted into
+        // base.png, so an empty Tavern (no patron, no worker) lays the
+        // authored `banked.png` mask over exactly those pixels: charcoal over
+        // one ember course. A part only while banked, like the Forge's.
+        rest: { layer: 'banked' },
     },
     portal: {
         material: BUILDING_MATERIAL_REGISTRY.portal,

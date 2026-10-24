@@ -82,7 +82,7 @@ import {
     getBuildingWorkloadProfile,
     isBuildingApertureLayer,
 } from './BuildingVisualRegistry.js';
-import { APERTURE_MIN_ZOOM, assignRoomSlots, buildApertureModel } from './BuildingApertureModel.js';
+import { APERTURE_MIN_ZOOM, apertureCutContains, assignRoomSlots, buildApertureModel } from './BuildingApertureModel.js';
 import { RoomGlass, readPixels } from './RoomGlass.js';
 import { mirrorRowOf, waterlineProfile } from './CoastBake.js';
 import { ApertureLights, APERTURE_GLASS_SNAP, APERTURE_REGISTRY_CLEARANCE, apertureIntensity, apertureOverRoof, apertureRadius } from './ApertureLights.js';
@@ -529,16 +529,15 @@ export class BuildingSprite {
     }
 
     _nightWindowGate() {
-        return nightWindowGate(
-            this.atmosphereState?.phase,
-            this.atmosphereState?.phaseProgress,
-        );
+        return nightWindowGate(lampCourseFor(this.atmosphereState));
     }
 
     _emissiveGateFor(building) {
+        // B3-03' — a banked hearth emits nothing: the mask covers the painted
+        // fire, so no emitter cut or light may restate it.
+        if (this._restMaskShowing(building)) return 0;
         return buildingEmissiveGate(
-            this.atmosphereState?.phase,
-            this.atmosphereState?.phaseProgress,
+            lampCourseFor(this.atmosphereState),
             this._nightShiftLit(building?.type),
         );
     }
@@ -2908,14 +2907,19 @@ export class BuildingSprite {
                 top = Math.round(layer.anchor[1] - frameH);
                 textureKey = `part:${id}:${this.assets.assetVersion || ''}`;
             } else {
-                if (isBuildingApertureLayer(type, name) || !Array.isArray(layer.anchor)) continue;
+                // 4.6 / B3-03' — a rest mask is a part only while its hearth is
+                // banked (`_restMaskShowing`), so both backends grade and depth
+                // sort it like the base; it is authored at the base's size and
+                // origin.
+                const rest = getBuildingRestLayer(type) === name;
+                if (rest ? !this._restMaskShowing(building) : (isBuildingApertureLayer(type, name) || !Array.isArray(layer.anchor))) continue;
                 image = this.assets.get(id);
                 if (!image) continue;
                 frame = 0;
                 frameW = image.width;
                 frameH = image.height;
-                left = Math.round(layer.anchor[0] - frameW / 2);
-                top = Math.round(layer.anchor[1] - frameH);
+                left = rest ? 0 : Math.round(layer.anchor[0] - frameW / 2);
+                top = rest ? 0 : Math.round(layer.anchor[1] - frameH);
                 textureKey = `layer:${id}:${this.assets.assetVersion || ''}`;
             }
             let sy = 0;
@@ -3269,10 +3273,9 @@ export class BuildingSprite {
             // shipped treatment. 4.4 — a Forge we have watched fall quiet for
             // ten minutes banks the same way: the mask is the same, the reason
             // is a measured idle rather than a canonical empty village.
+            // The banked mask itself is a part (partDrawsFor).
             const forgeSelected = this._selectedBuildingType === 'forge';
-            if (this._villageAtRest() || this._forgeWorkload?.banked) {
-                this._drawForgeBankedMouth(ctx, entry, wx, wy);
-            } else {
+            if (!this._restMaskShowing(building)) {
                 if (shouldDrawLocalY(getBuildingEffectAnchor('forge', 'hearth', [75, 118])[1])) this._drawForgeEnhancement(ctx, localPoint, building);
             }
             // The workload billets and the result shelf are physical objects in
@@ -5298,11 +5301,20 @@ export class BuildingSprite {
 
     // 6.3 — the per-room gate other light surfaces read (2.4 aperture lights,
     // 2.9 water columns): 0..1, night × this room's stepped occupancy. A room
-    // index is 0-based (mask R = index + 1); unknown rooms are dark.
+    // index is 0-based (mask R = index + 1); unknown rooms are dark. B3-01 —
+    // a room pane inside the open 4.1 aperture's cut stays dark: the cut
+    // presents that wall's occupants itself.
     roomGate(type, roomIndex) {
         const lit = this._roomLitByType.get(type);
         const value = lit ? lit[roomIndex] || 0 : 0;
-        return value > 0 ? value * this._nightWindowGate() : 0;
+        if (!(value > 0) || this._roomUnderOpenAperture(type, roomIndex)) return 0;
+        return value * this._nightWindowGate();
+    }
+
+    _roomUnderOpenAperture(type, roomIndex) {
+        const open = this._openApertureFor({ type });
+        const at = open ? getBuildingRoomProfile(type)?.slots?.[roomIndex]?.at : null;
+        return !!at && apertureCutContains(open.profile?.cut, at[0], at[1]);
     }
 
     roomCount(type) {
@@ -5316,8 +5328,8 @@ export class BuildingSprite {
     }
 
     // 6.3 — lit share of a glass group: k ≥ 1 is room k - 1. Group 0 (glass
-    // under a window/glass rect that no room mask claims: the Command's tower
-    // panes, the Archive's hall lancets and clerestory) is never lit: only a
+    // under a window/glass rect that no room mask claims; since B3-01 no
+    // Command or Archive pane is one) is never lit: only a
     // room a worker holds glows, so N workers light exactly min(N, rooms)
     // glass shapes. By day every pane is unlit glass (M15).
     _glassGroupGate(type, group) {
@@ -5729,16 +5741,20 @@ export class BuildingSprite {
         return phase === VillagePhase.READY_EMPTY && !(this.agentSprites?.length);
     }
 
-    // 4.6 — the banked mouth. The hearth fire is painted into base.png, so rest
-    // lays the authored `banked.png` mask over exactly those pixels: stepped
-    // charcoal over one ember course. A workshop between shifts, not a dead one.
-    _drawForgeBankedMouth(ctx, entry, wx, wy) {
-        const name = getBuildingRestLayer('forge');
-        if (!name) return;
-        const id = `${entry.id}.${name}`;
-        if (!this.assets.get(id)) return;
-        const anchor = this.assets.getAnchor(entry.id);
-        this.sprites.drawSprite(ctx, id, wx, wy, { anchor });
+    // 4.6 / B3-03' — whether a building's authored rest mask lies over its
+    // painted fire now. The Forge: the canonical empty village, or a hearth
+    // watched fall quiet for ten minutes (4.4). The Tavern: no patron and no
+    // worker, at any hour (its hearth burns for its patrons). Never read from
+    // mood or director state.
+    _restMaskShowing(building) {
+        const type = building?.type;
+        if (!type || !getBuildingRestLayer(type)) return false;
+        if (type === 'forge') return this._villageAtRest() || Boolean(this._forgeWorkload?.banked);
+        if (type === 'tavern') {
+            const working = this._visitorStatusByType?.get(type)?.working || 0;
+            return working + (this._patronIdsByType?.get(type)?.size || 0) === 0;
+        }
+        return false;
     }
 
     // 4.6 — the slate between shifts: the authored rack with nothing pinned to
