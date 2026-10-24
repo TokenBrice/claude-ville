@@ -516,16 +516,12 @@ export class BuildingSprite {
     }
 
     _nightWindowGate() {
-        return nightWindowGate(
-            this.atmosphereState?.phase,
-            this.atmosphereState?.phaseProgress,
-        );
+        return nightWindowGate(lampCourseFor(this.atmosphereState));
     }
 
     _emissiveGateFor(building) {
         return buildingEmissiveGate(
-            this.atmosphereState?.phase,
-            this.atmosphereState?.phaseProgress,
+            lampCourseFor(this.atmosphereState),
             this._nightShiftLit(building?.type),
         );
     }

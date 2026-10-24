@@ -1076,7 +1076,7 @@ const OVERCAST_WEATHER_TYPES = new Set(['rain', 'storm', 'overcast']);
 const SOURCE_ENERGY_ORDER = ['daylight', 'settling', 'lamplight', 'deep-night'];
 
 /**
- * Pick one reviewed exposure bucket. `nightWindowGate`'s dusk shoulder stays
+ * Pick one reviewed exposure bucket. `nightWindowGate` (on the same lamp course) stays
  * the authority on *when* working windows light up; this only decides how much
  * energy each consumer may spend once they do. The bucket is keyed to the same
  * minutes as the C2 grade keys (`lampCourseAt`): at dusk the ambient falls
