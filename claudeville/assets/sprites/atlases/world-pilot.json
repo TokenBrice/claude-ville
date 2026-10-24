@@ -359,7 +359,7 @@
       "id": "building.command",
       "materialClass": "stone",
       "sourcePath": "buildings/building.command/base.png",
-      "sourceSha256": "e543f27d073a0ac3322d639638f37410b83aed76a27d2279ef615c41f5599726",
+      "sourceSha256": "894f223c34898ff793b3673cff56935d1000777b8e0e3d8186f3087d2299597f",
       "sourceSize": {
         "h": 240,
         "w": 360
@@ -749,7 +749,7 @@
     }
   },
   "channelSha256": {
-    "albedo": "2d68bbed0670eb12ba79c96303651e20b5bb499218925e28be8d38f3e5a3b1be",
+    "albedo": "8bb1651c99689b442226e71447248c358d27a10070a6ff8ce8d021db3139563a",
     "emissive": "bef3e83ec2fba3dc25576eaacde7d03807b0c066ba41f49873ed17c21901e33e",
     "material": "af10bd160cbf5a558c6024c1c69d6baa46ced17710f7b08d7dea87a98bdc813d",
     "occluder": "09a2d68cbc7391cc7bc77b9a40d411ae548518e3bdccb1368b1f162825e03c33"
@@ -10087,7 +10087,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "e543f27d073a0ac3322d639638f37410b83aed76a27d2279ef615c41f5599726",
+      "sourceSha256": "894f223c34898ff793b3673cff56935d1000777b8e0e3d8186f3087d2299597f",
       "sourceSize": {
         "h": 240,
         "w": 360
@@ -10177,7 +10177,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "346c9e1a372ef82f9774985038e27892e9ed9ae7f90e3f30743a97c5702c9b07",
+      "sourceSha256": "bb8f726be5e7eba1681d50c776aa338120d3f8e0d058874bc2bc0f5ffc5e523e",
       "sourceSize": {
         "h": 89,
         "w": 150
@@ -10222,7 +10222,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "6f6f8c6fd425ac29754ae36537412cd9b0403b653d2e7bad65bcb720be8df493",
+      "sourceSha256": "e58ebc5d4259cbb0474f3d8741e867a02ede5ed95a66a80aa338af18e7f6bb9e",
       "sourceSize": {
         "h": 89,
         "w": 150
@@ -10267,7 +10267,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "8649c4dc0e2057519e92915ff5a8560a0bbdeb0cd1292d2447ef544ecf25c90f",
+      "sourceSha256": "471687984325c8a3defe3fd197b99a3e7f1519b0a288ed20a578bceed819723f",
       "sourceSize": {
         "h": 89,
         "w": 150
