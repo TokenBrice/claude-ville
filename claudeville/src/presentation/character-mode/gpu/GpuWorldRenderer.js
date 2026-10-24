@@ -616,6 +616,19 @@ float waterHash12(vec2 p) {
     p3 += dot(p3, p3.yzx + 33.33);
     return fract((p3.x + p3.y) * p3.z);
 }
+// waterHash12 on an integer lattice point, in integer arithmetic: bit-exact
+// on every GPU and in the Canvas twin. The float hash's threshold compares
+// flip under different FMA contraction (WebGL2 vs WebGPU on Vulkan), so
+// seaNoise (the swell's sets, heights and chop), the static swell caps and
+// the rain rings use this.
+float waterLatticeHash(vec2 p) {
+    highp uint x = uint(int(p.x));
+    highp uint y = uint(int(p.y));
+    highp uint h = (x * 1597334677u) ^ (y * 3812015801u);
+    h = (h ^ (h >> 16u)) * 2246822519u;
+    h ^= h >> 13u;
+    return float(h >> 8u) / 16777216.0;
+}
 float waterBayer2(vec2 a) {
     a = floor(a);
     return fract(dot(a, vec2(0.5, a.y * 0.75)));
@@ -716,10 +729,10 @@ float seaNoise(vec2 q) {
     vec2 i = floor(q);
     vec2 f = q - i;
     f = f * f * (3.0 - 2.0 * f);
-    float a = waterHash12(i + vec2(71.0, 13.0));
-    float b = waterHash12(i + vec2(72.0, 13.0));
-    float c = waterHash12(i + vec2(71.0, 14.0));
-    float d = waterHash12(i + vec2(72.0, 14.0));
+    float a = waterLatticeHash(i + vec2(71.0, 13.0));
+    float b = waterLatticeHash(i + vec2(72.0, 13.0));
+    float c = waterLatticeHash(i + vec2(71.0, 14.0));
+    float d = waterLatticeHash(i + vec2(72.0, 14.0));
     return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 float seaContourRows(vec2 cell) {
@@ -806,17 +819,17 @@ float swellCap(vec2 p, float s, float near, float paw) {
     float cx = centre.x + mod(crow, 2.0) * ${(SWELL_CLUSTER_CELL[0] * 0.5).toFixed(1)};
     vec2 ck = vec2(floor(cx / ${SWELL_CLUSTER_CELL[0].toFixed(1)}), crow);
     bool inCluster = false;
-    if (waterHash12(ck + vec2(101.0, 7.0)) < clusters) {
-        vec2 at = (ck + 0.35 + 0.3 * vec2(waterHash12(ck + vec2(103.0, 9.0)), waterHash12(ck + vec2(107.0, 3.0)))) * vec2(${SWELL_CLUSTER_CELL[0].toFixed(1)}, ${SWELL_CLUSTER_CELL[1].toFixed(1)});
+    if (waterLatticeHash(ck + vec2(101.0, 7.0)) < clusters) {
+        vec2 at = (ck + 0.35 + 0.3 * vec2(waterLatticeHash(ck + vec2(103.0, 9.0)), waterLatticeHash(ck + vec2(107.0, 3.0)))) * vec2(${SWELL_CLUSTER_CELL[0].toFixed(1)}, ${SWELL_CLUSTER_CELL[1].toFixed(1)});
         vec2 d = (vec2(cx, centre.y) - at) / vec2(${(SWELL_CLUSTER_CELL[0] * 0.5).toFixed(1)}, ${(SWELL_CLUSTER_CELL[1] * 0.5).toFixed(1)});
         inCluster = dot(d, d) < 1.0;
     }
     float presence = inCluster ? ${SWELL_CLUSTER_CAPS.toFixed(2)} : mix(${SWELL_LONE_CAPS[0].toFixed(2)}, ${SWELL_LONE_CAPS[1].toFixed(2)}, near);
-    if (waterHash12(k + vec2(211.0, 17.0)) >= presence) return 0.0;
+    if (waterLatticeHash(k + vec2(211.0, 17.0)) >= presence) return 0.0;
     vec2 local = vec2(x - k.x * ${SWELL_CAP_CELL[0].toFixed(1)}, p.y - row * ${SWELL_CAP_CELL[1].toFixed(1)});
-    float len = 3.0 + floor(waterHash12(k + vec2(223.0, 5.0)) * 5.0);
-    float x0 = floor(waterHash12(k + vec2(227.0, 41.0)) * (${SWELL_CAP_CELL[0].toFixed(1)} - len));
-    float y0 = floor(waterHash12(k + vec2(229.0, 83.0)) * ${(SWELL_CAP_CELL[1] - 1).toFixed(1)});
+    float len = 3.0 + floor(waterLatticeHash(k + vec2(223.0, 5.0)) * 5.0);
+    float x0 = floor(waterLatticeHash(k + vec2(227.0, 41.0)) * (${SWELL_CAP_CELL[0].toFixed(1)} - len));
+    float y0 = floor(waterLatticeHash(k + vec2(229.0, 83.0)) * ${(SWELL_CAP_CELL[1] - 1).toFixed(1)});
     if (local.y == y0 && local.x >= x0 && local.x < x0 + len) {
         return inCluster || near > 0.8 ? 2.0 : 1.0;
     }
@@ -1502,25 +1515,27 @@ vec3 applyCoastSwash(vec3 color, vec2 px) {
 // 3.9 — one rain ring pixel at world texel p: 12x6-texel cells (8x4 in a
 // storm), active per life when hash < 0.55 x precipitation, a 5-stage life
 // on 7 Hz steps (dot -> pair -> 2:1 ring -> wide ring -> none; storm cells
-// skip the wide ring). The static frame is a fixed 20 % set of rings.
+// skip the wide ring). The static frame is a fixed 20 % set of rings. The
+// cell hashes are waterLatticeHash (integer, bit-exact across backends) with
+// the life folded into the lattice row.
 bool rainRingAt(vec2 p, float precipitation, float storm, float clock) {
     vec2 size = mix(vec2(12.0, 6.0), vec2(8.0, 4.0), storm);
     vec2 cell = floor(p / size);
     vec2 local = p - cell * size;
-    float seed = waterHash12(cell + vec2(41.0, 7.0));
+    float seed = waterLatticeHash(cell + vec2(41.0, 7.0));
     float stage = 2.0;
     float life = 0.0;
     if (clock > 0.0) {
         float s = floor(u_time * 0.007 * clock) + floor(seed * 5.0);
         life = floor(s / 5.0);
         stage = mod(s, 5.0);
-        if (waterHash12(cell + vec2(life * 1.7, 3.1)) >= 0.55 * precipitation) return false;
+        if (waterLatticeHash(cell + vec2(43.0, 11.0 + life * 4096.0)) >= 0.55 * precipitation) return false;
     } else if (seed >= min(0.20, 0.55 * precipitation)) {
         return false;
     }
     if (stage > 3.5 || (storm > 0.5 && stage > 2.5)) return false;
     vec2 room = storm > 0.5 ? vec2(2.0, 1.0) : vec2(4.0, 2.0);
-    vec2 jitter = vec2(waterHash12(cell + vec2(life, 13.0)), waterHash12(cell + vec2(29.0, life)));
+    vec2 jitter = vec2(waterLatticeHash(cell + vec2(47.0, 13.0 + life * 4096.0)), waterLatticeHash(cell + vec2(29.0, 17.0 + life * 4096.0)));
     vec2 centre = room + floor(jitter * (size - room * 2.0));
     vec2 d = abs(local - centre);
     if (stage < 0.5) return d.x < 0.5 && d.y < 0.5;

@@ -4,7 +4,7 @@
 // `scripts/world/gpu-burst.mjs` (real-frame throughput per level). Imported
 // helper; not directly executable.
 import os from 'node:os';
-import { chromium } from 'playwright';
+import { gpuLaunchArgs, launchChromium } from './chromium.mjs';
 import { startIsolatedServer } from './isolated-server.mjs';
 
 // Pinned weather presets (the V2 quiet-host protocol: clear, plus rain and
@@ -15,15 +15,16 @@ export const BENCH_WEATHER = Object.freeze({
   storm: Object.freeze({ type: 'storm', intensity: 1, precipitation: 1, fog: 0.34, cloudCover: 1, windX: -0.78 }),
 });
 
-// Real-GPU Chromium on macOS (a hardware WebGPU adapter, so the World's
-// default backend is WebGPU: pass `query: { renderer: 'webgl' }` to measure
-// WebGL2); the unlocked arm adds vsync and frame-rate limits off so the rAF
-// interval is the frame's own cost.
-export const GPU_LAUNCH_ARGS = Object.freeze(['--use-angle=metal', '--ignore-gpu-blocklist', '--enable-gpu-rasterization']);
+// Real-GPU Chromium (Metal ANGLE on macOS, Vulkan on Linux; see
+// `chromium.mjs`): a hardware WebGPU adapter, so the World's default backend
+// is WebGPU (pass `query: { renderer: 'webgl' }` to measure WebGL2); the
+// unlocked arm adds vsync and frame-rate limits off so the rAF interval is
+// the frame's own cost.
+export const GPU_LAUNCH_ARGS = Object.freeze(gpuLaunchArgs());
 export const UNLOCKED_LAUNCH_ARGS = Object.freeze(['--disable-gpu-vsync', '--disable-frame-rate-limit']);
 
 export function launchBenchBrowser({ headed = false, unlocked = false } = {}) {
-  return chromium.launch({
+  return launchChromium({
     headless: !headed,
     args: [...GPU_LAUNCH_ARGS, ...(unlocked ? UNLOCKED_LAUNCH_ARGS : [])],
   });

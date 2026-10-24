@@ -8,7 +8,7 @@
 //   node scripts/audio/audio-capture.mjs index [--out dir]
 import fs from 'node:fs';
 import path from 'node:path';
-import { chromium } from 'playwright';
+import { launchChromium } from '../smoke/support/chromium.mjs';
 import { startStaticServer, AUDIO_DIR, REPO_ROOT } from './lib/server.mjs';
 import { analyze, readWav, writeWavFloat } from './lib/analyze.mjs';
 import { openPlotter } from './lib/plot.mjs';
@@ -323,7 +323,7 @@ async function main() {
         return;
     }
 
-    const browser = await chromium.launch({ headless: true, args: HARNESS_CHROME_ARGS });
+    const browser = await launchChromium({ headless: true, args: HARNESS_CHROME_ARGS });
     const plotter = await openPlotter(browser);
     let server = null;
     try {

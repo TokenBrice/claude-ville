@@ -222,6 +222,16 @@ function hash12(x, y) {
     return fract((px + py) * pz);
 }
 
+// SEA_SWELL_GLSL waterLatticeHash: integer arithmetic on an integer lattice
+// point, bit-exact with both shader dialects (seaNoise, the static swell
+// caps, the rain rings).
+function latticeHash12(x, y) {
+    let h = (Math.imul(x, 1597334677) ^ Math.imul(y, 3812015801)) >>> 0;
+    h = Math.imul(h ^ (h >>> 16), 2246822519) >>> 0;
+    h = (h ^ (h >>> 13)) >>> 0;
+    return (h >>> 8) / 16777216;
+}
+
 // The same hash in the GPU's float32 arithmetic, every step rounded as the
 // shader rounds it: at the column's row and life inputs (hundreds to
 // thousands) float32 and double `waterHash12` part ways, and the 2.9
@@ -277,10 +287,10 @@ function seaNoise(qx, qy) {
     let fy = qy - iy;
     fx = fx * fx * (3 - 2 * fx);
     fy = fy * fy * (3 - 2 * fy);
-    const a = hash12(ix + 71, iy + 13);
-    const b = hash12(ix + 72, iy + 13);
-    const c = hash12(ix + 71, iy + 14);
-    const d = hash12(ix + 72, iy + 14);
+    const a = latticeHash12(ix + 71, iy + 13);
+    const b = latticeHash12(ix + 72, iy + 13);
+    const c = latticeHash12(ix + 71, iy + 14);
+    const d = latticeHash12(ix + 72, iy + 14);
     const top = a + (b - a) * fx;
     return top + (c + (d - c) * fx - top) * fy;
 }
@@ -318,10 +328,10 @@ function latticeNoise() {
         if (jx !== ix || jy !== iy) {
             ix = jx;
             iy = jy;
-            a = hash12(jx + 71, jy + 13);
-            b = hash12(jx + 72, jy + 13);
-            c = hash12(jx + 71, jy + 14);
-            d = hash12(jx + 72, jy + 14);
+            a = latticeHash12(jx + 71, jy + 13);
+            b = latticeHash12(jx + 72, jy + 13);
+            c = latticeHash12(jx + 71, jy + 14);
+            d = latticeHash12(jx + 72, jy + 14);
         }
         let fx = qx - jx;
         let fy = qy - jy;
@@ -759,7 +769,7 @@ function buildCapChunk(base, cx, cy) {
         const shift = posMod(row, 2) * cw * 0.5;
         const kx1 = Math.floor((X0 + CHUNK_W + shift) / cw) + 1;
         for (let kx = Math.floor((X0 + shift) / cw) - 1; kx <= kx1; kx++) {
-            const hp = hash12(kx + 211, row + 17);
+            const hp = latticeHash12(kx + 211, row + 17);
             if (hp >= SWELL_CLUSTER_CAPS) continue;
             const centreX = kx * cw + cw * 0.5 - shift;
             const centreY = (row + 0.5) * ch;
@@ -767,13 +777,13 @@ function buildCapChunk(base, cx, cy) {
             const crow = Math.floor(centreY / kh);
             const clusterX = centreX + posMod(crow, 2) * kw * 0.5;
             const ckx = Math.floor(clusterX / kw);
-            const hc = hash12(ckx + 101, crow + 7);
-            const ex = (clusterX - (ckx + 0.35 + 0.3 * hash12(ckx + 103, crow + 9)) * kw) / (kw * 0.5);
-            const ey = (centreY - (crow + 0.35 + 0.3 * hash12(ckx + 107, crow + 3)) * kh) / (kh * 0.5);
+            const hc = latticeHash12(ckx + 101, crow + 7);
+            const ex = (clusterX - (ckx + 0.35 + 0.3 * latticeHash12(ckx + 103, crow + 9)) * kw) / (kw * 0.5);
+            const ey = (centreY - (crow + 0.35 + 0.3 * latticeHash12(ckx + 107, crow + 3)) * kh) / (kh * 0.5);
             const inEllipse = ex * ex + ey * ey < 1;
-            const len = 3 + Math.floor(hash12(kx + 223, row + 5) * 5);
-            const x0 = Math.floor(hash12(kx + 227, row + 41) * (cw - len));
-            const y0 = Math.floor(hash12(kx + 229, row + 83) * (ch - 1));
+            const len = 3 + Math.floor(latticeHash12(kx + 223, row + 5) * 5);
+            const x0 = Math.floor(latticeHash12(kx + 227, row + 41) * (cw - len));
+            const y0 = Math.floor(latticeHash12(kx + 229, row + 83) * (ch - 1));
             for (let trail = 0; trail < 2; trail++) {
                 const ly = row * ch + y0 + trail - Y0;
                 if (ly < 0 || ly >= CHUNK_H) continue;
@@ -1287,20 +1297,20 @@ function rebuildOverlay(state, base, fx, palette, rect, renderer, sea) {
         const live = 0.55 * fx.rain;
         for (let cy = Math.floor(y0 / sh); cy * sh < y1; cy++) {
             for (let cx = Math.floor(x0 / sw); cx * sw < x1; cx++) {
-                const seed = hash12(cx + 41, cy + 7);
+                const seed = latticeHash12(cx + 41, cy + 7);
                 let stage = 2;
                 let life = 0;
                 if (clock > 0) {
                     const s = fx.ringTick + Math.floor(seed * 5);
                     life = Math.floor(s / 5);
                     stage = s % 5;
-                    if (hash12(cx + life * 1.7, cy + 3.1) >= live) continue;
+                    if (latticeHash12(cx + 43, cy + 11 + life * 4096) >= live) continue;
                 } else if (seed >= Math.min(0.20, live)) {
                     continue;
                 }
                 if (stage > 3 || (storm && stage > 2)) continue;
-                const centreX = cx * sw + rx + Math.floor(hash12(cx + life, cy + 13) * (sw - rx * 2));
-                const centreY = cy * sh + ry + Math.floor(hash12(cx + 29, cy + life) * (sh - ry * 2));
+                const centreX = cx * sw + rx + Math.floor(latticeHash12(cx + 47, cy + 13 + life * 4096) * (sw - rx * 2));
+                const centreY = cy * sh + ry + Math.floor(latticeHash12(cx + 29, cy + 17 + life * 4096) * (sh - ry * 2));
                 for (const [dx, dy] of RING_STAGES[stage]) {
                     const x = centreX + dx;
                     const y = centreY + dy;
