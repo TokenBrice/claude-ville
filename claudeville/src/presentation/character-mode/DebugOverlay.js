@@ -3,6 +3,7 @@ import { WORLD_BODY_FONT_11 } from '../../config/theme.js';
 import { CANVAS_BUDGET } from './CanvasBudget.js';
 import { AgentSprite } from './AgentSprite.js';
 import { ambientDebugSnapshot } from './AmbientEvents.js';
+import { momentTally } from './MomentTally.js';
 
 export class DebugOverlay {
     constructor() {
@@ -225,6 +226,7 @@ export class DebugOverlay {
             ...this._rendererBackendRows(renderer),
             ...this._trailRows(renderer),
             ...this._behaviorRows(behaviorStats?.rollingBehavior),
+            ...momentRows(),
             renderStats?.drawables ? `drawables: ${renderStats.drawables.total} drawn / ${renderStats.drawables.culling?.culled || 0} culled` : null,
             renderStats?.harbor ? `harbor: pending ${renderStats.harbor.pendingRepos || 0} commits ${renderStats.harbor.pendingCommits || 0} lanterns ${renderStats.harbor.bridgeLanterns || 0}` : null,
             renderStats?.canvas ? `light/cache: ${renderStats.canvas.lightGradients || 0} gradients / particles ${renderStats.canvas.particles || 0}` : null,
@@ -523,6 +525,14 @@ function agentSheetRow(stats) {
         + ` / cap ${formatBytes(stats.gpuEquippedSheetPixelLimit * 4)}${overage}`
         + ` · released ${stats.gpuEquippedReleasedSheets ?? 0} (LOD ${formatBytes(stats.gpuEquippedLodEstimateBytes || 0)})`
         + ` · packed geometry ${stats.packedGeometrySheets} · ${formatBytes(stats.packedGeometryEstimateBytes)}`;
+}
+
+// D qw — moments fired per kind since load, with the span they cover.
+function momentRows() {
+    const { since, counts } = momentTally();
+    const parts = Object.entries(counts).map(([kind, count]) => `${kind} ${count}`);
+    const minutes = Math.max(0, Math.round((Date.now() - since) / 60000));
+    return wrapRows(`moments (${minutes} min): `, parts.length ? parts : ['none'], ' · ');
 }
 
 // Rows wider than the 560 px panel are squeezed, not wrapped, so long

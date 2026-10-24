@@ -23,6 +23,7 @@ const KIND_GLYPH = {
     [ChronicleEventKind.RATE_LIMITED]: '~',
     [ChronicleEventKind.COMMIT]: '◆',
     [ChronicleEventKind.PUSH]: '▲',
+    [ChronicleEventKind.MENDED]: '◇',
 };
 
 const REASON_TEXT = {
@@ -41,6 +42,7 @@ const TIMELINE_LABELS = Object.freeze({
     'rate limited': 'rate limit',
     commit: 'commit',
     push: 'push',
+    mended: 'mend',
 });
 
 function humanizeTimelineKind(kind) {
@@ -111,6 +113,10 @@ function eventText(event) {
             if (!event.outcome) return `${who} pushed ${detailLabel || ''}${where}`.trim();
             const what = event.outcome === 'rejected' ? 'was rejected' : event.outcome === 'cancelled' ? 'was cancelled' : 'failed';
             return `${who}'s push ${what}${detailLabel ? ` (${detailLabel})` : ''}${where}`;
+        }
+        case ChronicleEventKind.MENDED: {
+            const was = Number.isFinite(Number(event.failedExit)) && event.failedExit !== null ? ` (was exit ${event.failedExit})` : '';
+            return `${who} mended ${detailLabel || 'a failing command'}${was}${where}`;
         }
         default: return `${who} ${event.kind}${where}`;
     }
@@ -232,6 +238,7 @@ function summaryRows(summary) {
         ['Projects', summary.projects.length],
         ['Commits', summary.commits],
         ['Pushes', summary.pushes],
+        ['Mended', summary.mends || 0],
         ['Turns done', summary.completed],
         ['Waited on you', summary.waits],
         ['Errors', summary.errors],

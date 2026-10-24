@@ -68,6 +68,7 @@ import { HarborTraffic } from './HarborTraffic.js';
 import { BridgeLanterns } from './BridgeLanterns.js';
 import { LandmarkActivity } from './LandmarkActivity.js';
 import { AgentEventStream } from './AgentEventStream.js';
+import { bindSquadNotice } from './SquadNotice.js';
 import { RelationshipState } from './RelationshipState.js';
 import { RitualConductor } from './RitualConductor.js';
 import { VisitIntentManager } from './VisitIntentManager.js';
@@ -1959,6 +1960,9 @@ export class IsometricRenderer {
             shouldEmitToolEvent: (event, agent) => this._canAcceptToolRitual(event, agent),
             shouldEmitEvent: () => this._worldModeActive,
         });
+        // D7 — seated and waiting squadmates face a celebrating villager.
+        this._unbindSquadNotice?.();
+        this._unbindSquadNotice = bindSquadNotice(() => this.agentSprites);
         this.relationshipState = new RelationshipState(this.world);
         this._replayActiveToolRituals({ force: true });
         this._updateVisitSystems(Date.now());
@@ -2289,6 +2293,8 @@ export class IsometricRenderer {
         this.trailRenderer?.dispose?.();
         this.trailRenderer = null;
         this.agentEventStream?.dispose?.();
+        this._unbindSquadNotice?.();
+        this._unbindSquadNotice = null;
         releaseCouncilRingState(this.relationshipState);
         this.relationshipState?.dispose?.();
         if (this._harborSemanticsTimer) clearInterval(this._harborSemanticsTimer);
@@ -4443,13 +4449,19 @@ export class IsometricRenderer {
         const tokenItem = (hoveredBuilding || hoveredShip || bridgeLantern)
             ? null
             : (this.landmarkActivity?.hitTestTokenItem?.(worldX, worldY) ?? null);
+        // D5 — a repo standing stone tells its lifetime count and tier.
+        const repoStone = (hoveredBuilding || hoveredShip || bridgeLantern || tokenItem)
+            ? null
+            : (this.chronicleMonuments?.repoStones?.hitTest?.(worldX, worldY) ?? null);
         return hoveredBuilding
             ? this._buildingVisitorTooltip(hoveredBuilding)
             : (hoveredShip
                 ? this.harborTraffic.shipTooltip(hoveredShip)
                 : (bridgeLantern
                     ? this.bridgeLanterns.tooltipFor(bridgeLantern, Date.now())
-                    : (tokenItem ? this.landmarkActivity.tokenItemTooltip(tokenItem) : '')));
+                    : (tokenItem
+                        ? this.landmarkActivity.tokenItemTooltip(tokenItem)
+                        : (repoStone ? this.chronicleMonuments.repoStones.tooltipFor(repoStone) : ''))));
     }
 
     // ─── U-P3 fleet card ────────────────────────────────────────────────
