@@ -1,5 +1,7 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { classifyTool } from './VisitIntentManager.js';
+import { placedToolBuilding } from './MovementRouting.js';
+import { homeDistrictFor } from './HomeDistrict.js';
 
 function nowMs() {
     if (typeof performance !== 'undefined' && performance.now) return performance.now();
@@ -382,7 +384,14 @@ export class AgentEventStream {
                     ? Number(result.durationMs)
                     : null,
                 completedAt,
-                building: classifyTool(result.tool, result.detail || null)?.building || null,
+                building: resultBuilding(agent, result),
+                // The call's command summary and whether its exit code is a
+                // real process exit (`exit`) or a provider error flag (`flag`):
+                // the Mended Mark opens only on a real exit (D2).
+                detail: typeof result.detail === 'string' ? result.detail : null,
+                exitCodeSource: result.exitCodeSource === 'exit' || result.exitCodeSource === 'flag'
+                    ? result.exitCodeSource
+                    : null,
             };
             if (!this._canEmit('tool:result', event, agent)) continue;
             eventBus.emit('tool:result', event);
@@ -506,6 +515,16 @@ export class AgentEventStream {
             this.chatPairs.delete(key);
         }
     }
+}
+
+// The building a finished call's outcome lands at: where the body worked it.
+// A classified building is the call's own place; Command's unknown-shell
+// fallback names none (AG-3), and the tool intent sends that body to its
+// stable home district, so the outcome lands there too.
+export function resultBuilding(agent, result) {
+    const classified = classifyTool(result?.tool, result?.detail || null);
+    if (!classified?.building) return null;
+    return placedToolBuilding(classified) || homeDistrictFor(agent) || null;
 }
 
 export { nowMs };

@@ -42,7 +42,10 @@ export function updateHomeDistrictContext(sprites, now = Date.now()) {
         activeIds.add(sessionKeyFor(agent));
         const project = projectKeyFor(agent);
         const tool = agent.currentTool || agent.lastTool;
-        const building = tool ? classifyTool(tool, agent.currentToolInput || agent.lastToolInput)?.building : null;
+        const classified = tool ? classifyTool(tool, agent.currentToolInput || agent.lastToolInput) : null;
+        // Command's unknown-shell fallback is no evidence of a place (AG-3,
+        // `placedToolBuilding`), so it never pulls a project's home there.
+        const building = classified?.building === 'command' && classified.reason === 'run-shell' ? null : classified?.building;
         if (project && WORK_DISTRICTS.includes(building)) {
             let mix = projectMix.get(project);
             if (!mix) projectMix.set(project, mix = new Map());
