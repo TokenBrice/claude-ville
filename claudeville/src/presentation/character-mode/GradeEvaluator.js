@@ -228,12 +228,12 @@ export const GRADE_KEYFRAMES = Object.freeze([
 ]);
 
 // Weather rows, applied after the time key. Tints are the plan's cool
-// multiplies (rain #b2c4d6, storm #8e9fb4). At night the multiply keeps its
-// hue but spends less value (the night key already owns the darkness); storm
-// keeps one extra night course darker.
+// multiplies (rain #b2c4d6, storm #8e9fb4). Once the sky dims the multiply
+// keeps its hue but spends less value (the night key already owns the
+// darkness); storm keeps a little extra night darkness (`nightCourse`).
 export const GRADE_WEATHER_ROWS = Object.freeze({
     rain: Object.freeze({ saturation: 0.74, tint: '#b2c4d6', flatten: 0.7, nightCourse: 1 }),
-    storm: Object.freeze({ saturation: 0.62, tint: '#8e9fb4', flatten: 0.85, nightCourse: 0.88 }),
+    storm: Object.freeze({ saturation: 0.62, tint: '#8e9fb4', flatten: 0.85, nightCourse: 0.94 }),
     overcast: Object.freeze({ saturation: 0.82, tint: '#c4ccd4', flatten: 0.55, nightCourse: 1 }),
     fog: Object.freeze({ saturation: 0.80, tint: '#dfe3e6', flatten: 0.45, nightCourse: 1 }),
 });
@@ -345,16 +345,23 @@ export function evaluateGrade({
         const row = GRADE_WEATHER_ROWS[kind];
         saturation *= lerp(1, row.saturation, weight);
         const tint = hexToRgb01(row.tint);
-        // By day the cool multiply spends its full value; at night it keeps
-        // the hue and spends ~40% of the value, so rain nights stay readable.
-        const value = lerp(1, luma(tint), lerp(1, 0.4, night));
+        // L1-1 — the weather charges its darkness once. By day the cool
+        // multiply spends 70 % of its value (a storm noon was darker than a
+        // clear midnight); once the sky dims (night, or a sky past golden
+        // hour: the blue hour no longer pays the daytime price on top of the
+        // falling ambient) it keeps the hue and spends a quarter.
+        const dim = Math.max(night, 1 - smoothstep((daylight - 0.1) / 0.8));
+        const value = lerp(1, luma(tint), lerp(0.7, 0.25, dim));
         const weatherTint = lumaNormalized(tint).map(channel => channel * value);
         gain = mul3(gain, lerp3(NEUTRAL, weatherTint, weight));
         exposure *= lerp(1, row.nightCourse, weight * night);
-        // A covered sky flattens the split tone and the sun band.
-        shadowTint = towardOne3(shadowTint, row.flatten * weight);
-        highlightTint = towardOne3(highlightTint, row.flatten * weight);
-        gamma = lerp(gamma, 1, row.flatten * weight);
+        // A covered sky flattens the split tone and the sun band; at night
+        // half of the moonlit split tone survives, so silhouettes keep
+        // their cool rim under cloud.
+        const flatten = row.flatten * weight * lerp(1, 0.5, night);
+        shadowTint = towardOne3(shadowTint, flatten);
+        highlightTint = towardOne3(highlightTint, flatten);
+        gamma = lerp(gamma, 1, flatten);
         rake *= 1 - row.flatten * weight;
         vignetteAlpha = Math.min(0.52, vignetteAlpha + 0.06 * weight);
         const grey = WEATHER_GREY[kind];

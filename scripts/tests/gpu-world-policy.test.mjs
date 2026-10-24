@@ -154,6 +154,23 @@ test('the moon brightens the night grade and never relights the day', () => {
   assert.deepEqual(evaluateGrade({ minuteOfDay: 12 * 60, moonFill: 1 }), evaluateGrade({ minuteOfDay: 12 * 60, moonFill: 0 }));
 });
 
+test('L1-1: weather darkens the dusk and the night once, not twice', () => {
+  const luma = rgb => rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+  const storm = { type: 'storm', intensity: 0.9, cloudCover: 0.97 };
+  const clear = { type: 'clear', intensity: 0.18, cloudCover: 0.08 };
+  const ambient = (minute, weather) => luma(evaluateGrade({ minuteOfDay: minute, moonFill: 0, weather }).ambientTint);
+  // The user's frame (storm at 19:15) and a storm night stay one course under
+  // the clear sky at the same minute, never several.
+  for (const minute of [19 * 60 + 15, 20 * 60 + 30, 23 * 60, 2 * 60]) {
+    const ratio = ambient(minute, storm) / ambient(minute, clear);
+    assert.ok(ratio >= 0.8 && ratio < 1, `storm/clear ambient at ${minute} min: ${ratio.toFixed(3)}`);
+  }
+  // A storm noon is still darker than a clear noon, but no longer darker
+  // than a clear midnight.
+  assert.ok(ambient(12 * 60 + 30, storm) < ambient(12 * 60 + 30, clear));
+  assert.ok(ambient(12 * 60 + 30, storm) >= ambient(0, clear));
+});
+
 test('the grade tells the time and the weather apart', () => {
   const at = (hour, weather = { type: 'clear', cloudCover: 0.08 }) => evaluateGrade({ minuteOfDay: hour * 60, weather });
   const noon = at(12);
