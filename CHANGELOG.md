@@ -2,6 +2,12 @@
 
 ---
 
+## v0.57.6.1 · Oct 24, 2026 — Hotfix
+
+- **The fog banks stop flashing in, for real.** v0.57.6 delayed the frame-pressure governor's restore but did not remove the cause. On the GPU world, the fog banks were drawn twice: once as ground records, which are what you see, and once as a full-viewport pattern fill on the 2D backdrop. That second copy is invisible, because the composite's open sea is opaque below the horizon, yet it cost about 20 ms a frame at 2508×1398. Every time the governor probed down to full detail, that cost pushed the frame over budget and the fog was shed again within about 200 ms, which is the flash. The backdrop no longer draws fog, and its pre-graded fog tile is gone. At 2508×1398 with fog on, the median render time drops from 28.7 ms to 4.8 ms (4.6 ms without fog), so a host that can afford full detail now keeps the fog banks steady in overcast, rain and fog. The Canvas renderer still draws the fog with the same full-viewport fill.
+
+---
+
 ## v0.57.6 — *The Settled Mist* · Oct 24, 2026
 
 Overcast and stormy skies stop flickering. On a busy host, soft cloud-like shapes flashed over the sea and the island for a few frames every couple of seconds, then vanished.
