@@ -284,15 +284,25 @@ Sound is off by default and browsers only start audio after a click or key press
 | State | What it means | What to do |
 | --- | --- | --- |
 | `off` | The preset is *Off*. | Click the note (it turns the last preset back on) or press `M`. A profile's very first click on the note opens the presets instead; pick one. |
-| `armed` | Sound is on but not heard yet: the browser is waiting for a gesture, or the page is away. The popover says `Waiting for a click — browsers start sound on your first click`. | Click the note or press `M`. Until sound has started once in this page, any click or key press on the page starts it. |
+| `armed` | Sound is on but not started: the browser is waiting for a gesture, or the page is away. The tooltip says `Sound not started — click anywhere to start it`, the popover `Waiting for a click — browsers start sound on your first click`, and the note's toggle state reads *mixed*, never *on*. After a reload the first needs-you notice of the page also says `Sound is on but waiting for a click.` with a `START SOUND` button. | Click `START SOUND`, the note, or press `M`; any click or key press on the page also starts it. A context the browser suspends later (an audio device change, an OS interruption) reads `armed` at once and the next click starts it again. To skip the click after every reload, allow autoplay for the page (below). |
 | `hushed` | `HUSH FOR 1 HOUR` or SET *Quiet hours* is active; sound drops to Signals only (quiet hours also a little softer) until the time the tooltip names. | `RESUME NOW` in the popover, the *Hush* row in SET, or change *Quiet hours*. |
 | `playing` | Sound is running. | If it still seems silent, see below. |
 
 `M` works anywhere except in a text field or while a modal is open. The tooltip `Sound unavailable in this browser` means the browser has no Web Audio.
 
+### Sound stays armed after a reload
+
+Browsers start audio only after a click or key press on the page, and a reload (a release, a browser restart, the automatic reload after a GPU reset) forgets the last one. ClaudeVille never probes for permission by building an audio context; it starts sound at boot only when the browser says it may:
+
+- **Firefox:** click the permissions icon in the address bar on `http://localhost:4000`, set *Autoplay* to *Allow Audio and Video*, and reload. Firefox reports the site's policy (`navigator.getAutoplayPolicy`), so a stored-on preset starts by itself.
+- **Chrome / Edge:** the site's *Sound* setting does not lift the gesture rule for Web Audio, and Chrome does not report the policy, so sound waits for a click: the first needs-you notice carries `START SOUND`. A Chrome started with `--autoplay-policy=no-user-gesture-required` (a dedicated profile for a wall display, say) still needs that one click, because the page cannot tell.
+
+In the console readout below, `autoplayAllowed: true` means the browser allows sound at boot here.
+
 Silent or quiet on purpose while `playing`:
 
-- **Signals** plays only when an agent needs you, errors or hits a limit; between calls it is silent, and other events are captioned instead.
+- **Signals** plays only when an agent needs you, errors or hits a limit, plus one soft wooden knock when a turn of two minutes or more finishes (at most one a minute and 12 an hour; past that it is captioned); between them it is silent, and other events are captioned instead. The Town band plays the same knock over the music.
+- **A softer needs-you call** (one pair of strikes instead of two) means you count as present: the window is focused and you touched it in the last 10 s, or you answered that session's prompt or typed a new turn in its terminal in the last 90 s. Other sessions still ring in full voice.
 - **Town band** is continuous music with a breath of about 1.4 s between pieces; after 30 s with nobody working only the tune and the bass play. The popover's now line names the piece and its players (`Now · <title> · <lead> & <counter>`), or `Now · between tunes`.
 - **Volume** is kept per preset: each preset has one Volume slider, in the popover and in SET; step 0 is silent.
 - **A lost feed** rings the link-lost cue once and pauses reminders; stale agents make no sound and no longer move the band's percussion or working band.
@@ -306,17 +316,18 @@ For a readout, open the browser console. `window.__claudevilleAudio` exists once
 const a = window.__claudevilleAudio?.();
 a && { enabled: a.enabled, available: a.available, contextState: a.contextState, running: a.running,
   soundState: a.soundState, preset: a.preset, mode: a.mode, storedMode: a.storedMode, nowLine: a.nowLine,
-  userActivated: a.userActivated, paused: a.paused, blurred: a.blurred, background: a.background,
+  userActivated: a.userActivated, autoplayAllowed: a.autoplayAllowed, terminalPresent: a.terminalPresent, paused: a.paused, blurred: a.blurred, background: a.background,
   quietMix: a.quietMix, hushedUntil: a.hushedUntil, quietActive: a.quietActive, volumeStep: a.volumeStep,
   nowPlaying: a.nowPlaying, section: a.section, link: a.link };
 ```
 
-- `contextState` other than `running` with `enabled: true`: the context is waiting for a gesture (`userActivated: false`) or the page is away (`paused: true` while hidden).
+- `contextState` other than `running` with `enabled: true`: the context is waiting for a gesture (`userActivated: false` and `autoplayAllowed: false`) or the page is away (`paused: true` while hidden).
+- `terminalPresent`: the sessions whose next needs-you call rings softer because you just answered in their terminal.
 - `mode: 'signals'` while `storedMode` is `bgm`: a hush (`hushedUntil`) or quiet hours (`quietActive`) are in force.
 - `quietMix: { active: true, preset: 'bgm' }`: the blurred-window quiet mix is lowering the Town band.
 - `volumeStep`: the current preset's stored step (0 is silent).
 - The rest of the readout is the playing director's `snapshot()`. In Town band: `nowPlaying` (the piece, its `title`, its `lead` and `counter` instruments; `null` between tunes), `section` (the working band applied, requested and pending, with its counts), `voice` and `percussion`. In Signals: `link` (the feed's health) and `audible.waiting`.
-- The returned object also carries handles: `a.setPreset('townBand')`, `a.resumeFromHush()`, `a.testCall('summons')` (the needs-you bell at the current volume, only while sound plays), and `a.meters({ enable: true })` for loudness readings. They go through the same controller as the UI; a browser that has not seen a click on the page may still refuse to start the context.
+- The returned object also carries handles: `a.setPreset('townBand')`, `a.resumeFromHush()`, `a.testCall('summons')` (the needs-you bell at the current volume, only while sound plays; SET → SOUND → *Hear the calls* plays the needs-you, error and limit bells the same way), `a.start()` (what `START SOUND` does), and `a.meters({ enable: true })` for loudness readings. They go through the same controller as the UI; a browser that has not seen a click on the page may still refuse to start the context.
 
 ## Browser console errors after editing
 

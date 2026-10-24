@@ -5,9 +5,11 @@ import {
     INVITE_MAX_SHOW_MS,
     INVITE_MIN_UPTIME_MS,
     SOUND_INVITE_COPY,
+    SOUND_START_COPY,
     SoundInvite,
     inviteEligible,
     inviteTrigger,
+    startEligible,
 } from '../../claudeville/src/presentation/shared/SoundInvite.js';
 import { SOUND_INVITED_KEY } from '../../claudeville/src/presentation/shared/SoundSettings.js';
 import { Toast } from '../../claudeville/src/presentation/shared/Toast.js';
@@ -322,5 +324,55 @@ test('more than two attention notices in one second collapse into one summary th
     h.eventTarget.emit('audio:cue-played', { kind: 'summons', agentId: 'd', label: 'Dune' });
     assert.equal(h.container.children.length, 1, 'later notices, direct copies and summons fold into the summary');
     assert.equal(summary.textContent, '4 agents need you · oldest 9 min');
+    h.toast.destroy();
+});
+
+const SOUND_ON = Object.freeze({ 'claudeville.sound.enabled': 'true', [SOUND_INVITED_KEY]: '1' });
+
+test('the armed offer needs sound on but not started, on a visible page, once (SND-2)', () => {
+    const ok = { soundState: 'armed', visible: true, offered: false };
+    assert.equal(startEligible(ok), true);
+    for (const soundState of ['off', 'playing', 'hushed', null]) assert.equal(startEligible({ ...ok, soundState }), false);
+    assert.equal(startEligible({ ...ok, visible: false }), false);
+    assert.equal(startEligible({ ...ok, offered: true }), false);
+
+    const invite = new SoundInvite({ storage: new MemoryStorage(SOUND_ON) });
+    assert.equal(invite.offerStart(raised('a', 'errored'), { soundState: 'playing', visible: true }), null, 'an ineligible moment does not spend it');
+    assert.equal(invite.offerStart(raised('a', 'errored'), { soundState: 'armed', visible: true }).bucket, 'distress');
+    assert.equal(invite.offerStart(raised('b', 'waiting_on_user'), { soundState: 'armed', visible: true }), null);
+    // A new page session (a reload) may need it again: nothing is stored.
+    assert.equal(new SoundInvite({ storage: invite._storage }).offerStart(raised('b', 'waiting_on_user'), { soundState: 'armed', visible: true }).bucket, 'summons');
+});
+
+test('an armed sound puts START SOUND on the first needs-you notice; the click asks to start it (SND-2)', () => {
+    const h = harness({ storage: new MemoryStorage(SOUND_ON) });
+    h.eventTarget.emit('attention:raised', raised('a', 'waiting_on_user', 'Aurora'));
+    assert.deepEqual(inviteButtons(h), [], 'no offer before the controller says armed');
+    h.eventTarget.emit('audio:sound-state', { soundState: 'armed' });
+    h.eventTarget.emit('attention:raised', raised('b', 'waiting_on_user', 'Birch'));
+    const notice = h.container.children.at(-1);
+    assert.match(notice.textContent, /^Birch asked you a question/);
+    assert.ok(notice.textContent.includes(SOUND_START_COPY.prompt));
+    const buttons = inviteButtons(h);
+    assert.deepEqual(buttons.map(b => b.textContent), [SOUND_START_COPY.accept]);
+    buttons[0].click();
+    assert.deepEqual(h.emitted.filter(e => e.name === 'sound:start-requested').map(e => e.payload.agentId), ['b']);
+    assert.deepEqual(inviteButtons(h), []);
+    buttons[0].click();
+    assert.equal(h.emitted.filter(e => e.name === 'sound:start-requested').length, 1, 'answered once');
+    // Once per page session.
+    h.eventTarget.emit('attention:raised', raised('c', 'errored', 'Cedar'));
+    assert.deepEqual(inviteButtons(h), []);
+    h.toast.destroy();
+});
+
+test('sound starting by any route retires a START SOUND still showing (SND-2)', () => {
+    const h = harness({ storage: new MemoryStorage(SOUND_ON) });
+    h.eventTarget.emit('audio:sound-state', { soundState: 'armed' });
+    h.eventTarget.emit('attention:raised', raised('a', 'errored', 'Aurora'));
+    assert.equal(inviteButtons(h).length, 1);
+    h.eventTarget.emit('audio:sound-state', { soundState: 'playing' });
+    assert.deepEqual(inviteButtons(h), []);
+    assert.equal(h.container.children[0].textContent, 'Aurora hit an error');
     h.toast.destroy();
 });

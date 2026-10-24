@@ -289,7 +289,8 @@ export class BgmDirector {
         this.player?.setVoice(this._voice);
     }
 
-    // S7: an entry summons while the operator is looking plays the L2 voice.
+    // S7: an entry summons while the operator is looking plays the L2 voice;
+    // `fn(agentId)` also hears that agent's terminal presence (SND-4).
     setOperatorLooking(fn) {
         this._operatorLooking = typeof fn === 'function' ? fn : null;
     }
@@ -427,7 +428,7 @@ export class BgmDirector {
                 ...payload,
                 status,
                 family,
-                ...(kind === 'summons' ? { level: this._operatorLooking?.() ? 2 : 1 } : {}),
+                ...(kind === 'summons' ? { level: this._operatorLooking?.(payload.agentId) ? 2 : 1 } : {}),
             }),
         );
     }

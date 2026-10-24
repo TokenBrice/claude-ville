@@ -236,7 +236,8 @@ export class SignalDirector {
         this._hiddenSummonsHandler = typeof handler === 'function' ? handler : null;
     }
 
-    // S7: an entry summons while the operator is looking plays the L2 voice.
+    // S7: an entry summons while the operator is looking plays the L2 voice;
+    // `fn(agentId)` also hears that agent's terminal presence (SND-4).
     setOperatorLooking(fn) {
         this._operatorLooking = typeof fn === 'function' ? fn : null;
     }
@@ -448,7 +449,7 @@ export class SignalDirector {
                 oldestWaitMs: payload?.oldestWaitMs,
                 // The ladder's L1 is the entry call; to an operator who is
                 // already looking it rings as L2 (S7).
-                ...(kind === 'summons' ? { level: this._operatorLooking?.() ? 2 : 1 } : {}),
+                ...(kind === 'summons' ? { level: this._operatorLooking?.(agentId) ? 2 : 1 } : {}),
             };
             if (this.hidden && this._hiddenSummonsHandler) {
                 this._hiddenSummonsHandler({ ...payload, ...details, audioCueKind: kind });
