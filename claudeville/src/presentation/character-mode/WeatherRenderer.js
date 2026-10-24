@@ -430,10 +430,8 @@ export class WeatherRenderer {
     // cloud-course drift (the one wind; fog blows at 0.1, so the banks barely
     // creep; reduced motion holds them). The frame renderer lays it on the
     // ground below the sea horizon, under every body, building and tree. The
-    // tile is FOG_COLOR as-is (both backends grade the world downstream);
-    // `graded` bakes it through the C2 grade for the resident path's 2D
-    // backdrop (the outer ocean, which nothing grades after it is drawn).
-    groundFogLayer({ atmosphere = null, viewport = null, timeMs = null, graded = false } = {}) {
+    // tile is FOG_COLOR as-is (both backends grade the world downstream).
+    groundFogLayer({ atmosphere = null, viewport = null, timeMs = null } = {}) {
         const weather = normalizeWeather(atmosphere);
         if (!weather || !(weather.intensity > 0) || typeof document === 'undefined') return null;
         const reduced = atmosphere?.motion?.particleEnabled === false;
@@ -446,18 +444,14 @@ export class WeatherRenderer {
         const legibility = weatherLegibilityGate(weather, atmosphere);
         const strength = Math.round(clamp(fogBankIntensity(weather, legibility), 0, 1) * FOG_BUCKETS);
         if (strength <= 0) return null;
-        const grade = graded ? atmosphere?.lightGrade || null : null;
-        const key = `ground-fog-${strength}${grade ? `-${grade.cacheKey || 'g'}` : ''}`;
+        const key = `ground-fog-${strength}`;
         const variants = this._fogVariants ||= {};
-        const variant = variants[graded ? 'graded' : 'plain'] ||= {
+        const variant = variants.plain ||= {
             canvas: null,
             layer: { canvas: null, key: '', x: 0, y: 0, width: FOG_TILE_W, height: FOG_TILE_H, texel: FOG_TEXEL, top: OCEAN_HORIZON_WORLD_Y },
         };
         if (variant.layer.key !== key || !variant.canvas) {
-            const rgb = grade
-                ? applyGradeToRgb(FOG_COLOR.map(channel => channel / 255), grade).map(channel => Math.round(clamp(channel, 0, 1) * 255))
-                : FOG_COLOR;
-            variant.canvas = bakeFogBankTile(variant.canvas, strength / FOG_BUCKETS, rgb);
+            variant.canvas = bakeFogBankTile(variant.canvas, strength / FOG_BUCKETS, FOG_COLOR);
         }
         const drift = cloudCourseDrift(reduced ? null : timeMs, weather);
         const layer = variant.layer;

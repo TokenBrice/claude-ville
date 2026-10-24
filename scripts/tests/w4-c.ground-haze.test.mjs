@@ -166,3 +166,23 @@ test('no blur filter is introduced and haze draws in the ground stage, not the s
     assert.ok(renderFn.indexOf('drawGroundHaze') > 0);
     assert.ok(renderFn.indexOf('drawGroundHaze') < renderFn.indexOf('_drawSkyCanopy'));
 });
+
+test('the resident backdrop lays no fog banks under the opaque open sea', () => {
+    // The composite's open sea fills every pixel below the sea horizon, so a
+    // backdrop fog fill there is invisible; it cost ~20 ms a frame and shed
+    // itself on every pressure probe (the fog banks flashed in).
+    const worldSource = readSource('WorldFrameRenderer.js');
+    const renderFn = worldSource.slice(
+        worldSource.indexOf('export function renderWorldFrame'),
+        worldSource.indexOf('function drawPrimaryMarksPostAtmosphere'),
+    );
+    const resident = renderFn.slice(
+        renderFn.indexOf('if (gpuWorldActive) {'),
+        renderFn.indexOf("markFrameTiming(frameTimer, 'horizon')"),
+    );
+    assert.ok(resident.includes('drawResidentBackdropGrade'));
+    assert.doesNotMatch(resident, /drawGroundFog\(/);
+    assert.equal(renderFn.match(/drawGroundFog\(/g)?.length, 1);
+    assert.match(readSource('gpu/GpuWorldRendererWebGPU.js'), /s\.seaOn = true;/);
+    assert.match(readSource('gpu/GpuWorldRenderer.js'), /gl\.uniform1i\(uniforms\.u_seaOn, 1\);/);
+});

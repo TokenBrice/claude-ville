@@ -649,10 +649,11 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     // resident path (Canvas/PostFx grade the finished frame afterwards).
     renderer._drawDistantSeaHorizon(ctx, atmosphere, { gpuGraded: gpuWorldActive });
     if (gpuWorldActive) {
-        // 0.10 — the fog banks over the outer ocean (the island's own come
-        // in as ground records, under its bodies): the same world-locked
-        // lattice, pre-graded like the ocean under it.
-        drawGroundFog(ctx, renderer, atmosphere, viewport, { graded: true });
+        // 0.10 — no fog banks here: the composite's open sea is opaque below
+        // the sea horizon, so the ground fog records (whose span covers the
+        // whole view) carry them over the outer ocean too. A full-viewport
+        // pattern fill here was invisible and cost ~20 ms a frame at 2508 px,
+        // enough to shed itself on every pressure probe (the fog flashed in).
         // 1.3 — the island's stepped vignette and screen-Y aerial haze over
         // the backdrop (sky plate + outer ocean), so sea and sky meet the
         // graded island without a seam at the frame edges.
@@ -1772,17 +1773,16 @@ function groundFogSpan(renderer, viewport, layer) {
     return bottom > top && right > left ? { left, top, right, bottom } : null;
 }
 
-function groundFogFor(renderer, atmosphere, viewport, graded = false) {
+function groundFogFor(renderer, atmosphere, viewport) {
     return renderer.weatherRenderer?.groundFogLayer?.({
         atmosphere,
         viewport,
         timeMs: renderer.motionTimeMs,
-        graded,
     }) || null;
 }
 
-function drawGroundFog(ctx, renderer, atmosphere, viewport, { graded = false } = {}) {
-    const layer = groundFogFor(renderer, atmosphere, viewport, graded);
+function drawGroundFog(ctx, renderer, atmosphere, viewport) {
+    const layer = groundFogFor(renderer, atmosphere, viewport);
     const span = layer && groundFogSpan(renderer, viewport, layer);
     if (!span) return;
     let cached = renderer._groundFogPattern;
