@@ -3322,6 +3322,20 @@ export class IsometricRenderer {
         return false;
     }
 
+    // AG-5 — the sprite of this lead's first live child observed waiting on
+    // the operator or errored, else null: the lead stands up for it
+    // (AgentSprite._risenForChild). Reads the child's own status only.
+    _blockedChildSprite(agentId) {
+        for (const childId of this.relationshipState?.parentToChildren?.get(agentId) || []) {
+            const child = this.world?.agents?.get(childId);
+            if (!child || child.isDeparted) continue;
+            if (child.status !== AgentStatus.WAITING_ON_USER && child.status !== AgentStatus.ERRORED) continue;
+            const sprite = this.agentSprites.get(childId);
+            if (sprite && !sprite.leaving) return sprite;
+        }
+        return null;
+    }
+
     // W4.9 — the local hour of the atmosphere clock (fractional; `setHour`
     // pins it): the one clock the daypart table (DayRoutine) reads.
     _dayHour() {
@@ -3755,6 +3769,7 @@ export class IsometricRenderer {
                 getAmbientDestination: (request) => this._getAmbientDestination(request),
                 getDayHour: () => this._dayHour(),
                 hasLiveSubagents: (agentId) => this._hasLiveSubagents(agentId),
+                getBlockedChild: (agentId) => this._blockedChildSprite(agentId),
                 getRoadTiles: () => this.pathTiles,
                 getRoutingContext: () => ({
                     laneTiles: this.laneTiles,
