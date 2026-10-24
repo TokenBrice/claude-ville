@@ -1,12 +1,18 @@
 #!/usr/bin/env node
 
+// Visit slots are unique, walkable and reachable from the village gate.
+// Runs against an isolated server from this checkout unless CLAUDEVILLE_URL
+// names one.
 import assert from 'node:assert/strict';
-import { chromium } from 'playwright';
+import { launchChromium } from './support/chromium.mjs';
+import { resolveServer } from './support/world-bench.mjs';
 
-const baseUrl = (process.env.CLAUDEVILLE_URL || 'http://localhost:4000').replace(/\/+$/, '');
-const browser = await chromium.launch({ headless: true });
+const server = await resolveServer(process.env.CLAUDEVILLE_URL || null);
+const baseUrl = server.baseUrl;
+let browser = null;
 
 try {
+    browser = await launchChromium({ headless: true });
     const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
     await page.goto(`${baseUrl}/?sim=1&scenario=world-visit-paths`, {
         waitUntil: 'domcontentloaded',
@@ -78,5 +84,6 @@ try {
         `world visit paths smoke: PASS (${result.usableSlots} unique walkable slots from gate ${result.gate.tileX},${result.gate.tileY})`,
     );
 } finally {
-    await browser.close();
+    await browser?.close();
+    await server.stop();
 }
