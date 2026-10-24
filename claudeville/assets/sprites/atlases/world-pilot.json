@@ -750,10 +750,10 @@
     }
   },
   "channelSha256": {
-    "albedo": "2da96ce0103a2f6331b4b750130769ebc19f11d734a0b5de5d2a0f0c655c0645",
+    "albedo": "5f0328725738a1fca816b7f76da926f7e90ae49f41c6cedfed09a826b4ba480b",
     "emissive": "0d29781ea0588831db98f196d8ed72cae383f60629843ae8734dcabcc5e0ceed",
-    "material": "ad6c8cebf8afecacf83f4b60adefc7453a539f154b94a519e17003b9f33a62e0",
-    "occluder": "8c17d419526092d644f0a424d31cfc3561dfedd966a5126d0b2c5d3bfdb4efa7"
+    "material": "ee4e93bc689f7eeacc476bcf9c475901626ddfc00bfd9f019821ec67559c1715",
+    "occluder": "5d69f3eaa33ecdae99946246cb39ca95d60a73162545e5cec98dc0ce6d2348c5"
   },
   "channels": {
     "albedo": "assets/sprites/atlases/world-pilot.albedo.png",
@@ -10546,7 +10546,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "674cb79fe9e4d3177a80eb48537bceb5ce231e0219406bf075a69a31a5d12a60",
+      "sourceSha256": "4dab6b9a21a56cd39e3ef8fe95f6a1c1dfa33a30ed033a6c84790098ee9c3a28",
       "sourceSize": {
         "h": 232,
         "w": 256
