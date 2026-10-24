@@ -269,9 +269,14 @@ export class WeatherRenderer {
         ctx.save();
         ctx.globalCompositeOperation = 'source-over';
         const washBudget = Math.min(1, 0.72 + (1 - fog) * 0.18) * legibility.wash;
+        // L1-1 — once the grade owns the darkness (its weather row already
+        // dims a storm night), the darkening washes spend half their alpha at
+        // full night, so the overlay does not darken the same sky twice. The
+        // fog wash lightens and keeps its budget.
+        const darkWashBudget = washBudget * (1 - 0.5 * gradeNightOf(this._lightGrade));
 
         const overcastIntensity = weather.type === 'overcast' || cloudCover > 0.72
-            ? Math.max(weather.intensity * 0.72, cloudCover * 0.54) * washBudget
+            ? Math.max(weather.intensity * 0.72, cloudCover * 0.54) * darkWashBudget
             : 0;
         const fogIntensity = fogWashIntensity(weather, legibility);
         // The first rain falls here; the sea's forecast squall (CoastBake
@@ -282,7 +287,7 @@ export class WeatherRenderer {
                 1,
                 Math.max(cloudCover, weather.intensity)
                     * (weather.type === 'storm' ? 0.56 : 0.42),
-            ) * washBudget
+            ) * darkWashBudget
             : 0;
         this._drawWeatherWash(
             ctx,
@@ -625,7 +630,9 @@ export class WeatherRenderer {
     // animated-only; the courses' alpha stays under the labels' contrast.
     _drawRainCurtains(ctx, canvas, { intensity, windX, phaseMs, seed }) {
         const count = intensity > 0.86 ? 3 : 2;
-        const baseAlpha = Math.min(0.1, 0.04 + (intensity - 0.7) * 0.2);
+        // L1-1 — the curtains darken; like the washes they spend half their
+        // alpha at full night.
+        const baseAlpha = Math.min(0.1, 0.04 + (intensity - 0.7) * 0.2) * (1 - 0.5 * gradeNightOf(this._lightGrade));
         if (baseAlpha <= 0.005) return;
         const span = canvas.width + canvas.width * 0.6;
         const drift = clamp(Number(windX) || 0, -1.4, 1.4);
@@ -1154,6 +1161,11 @@ function normalizeWeather(atmosphere) {
 
 // The fog's own strength (fog weather, or any weather carrying fog),
 // legibility-gated: the screen wash and the ground banks both follow it.
+// L1-1 — the C2 grade's night weight (0 by day, 1 at full night).
+function gradeNightOf(grade) {
+    return clamp(Number(grade?.night) || 0, 0, 1);
+}
+
 function fogWashIntensity(weather, legibility) {
     const fogActive = weather.fog > 0.04 || weather.type === 'fog';
     return fogActive

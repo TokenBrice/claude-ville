@@ -33,6 +33,7 @@ import { getReservedRects } from '../shared/ReservedRects.js';
 import { fireBreath, normalizeLightSource } from './LightSourceRegistry.js';
 import { normalizeLightingState, seasonShiftFor, smokeWindDrift, sourceEnergyFor } from './AtmosphereState.js';
 import { lampCourseAt } from './GradeEvaluator.js';
+import { canvasGradeKey, statusClothPreimage } from './CanvasGrade.js';
 import { seasonTokenForAtmosphere } from './SeasonalAmbience.js';
 import { isWorkingVisitor, NON_WORKING_VISIT_ROLES } from './VisitIntentManager.js';
 import { attentionBannerState, BuildingPartGates } from './BuildingPartGates.js';
@@ -2871,6 +2872,7 @@ export class BuildingSprite {
             let left;
             let top;
             let textureKey;
+            let textureRevision = null;
             if (layer.cycle) {
                 if (!this._emitterCycleActive(type, layer.cycle)) continue;
                 const cycle = this._emitterCycleFor(entry, name, layer);
@@ -2906,6 +2908,14 @@ export class BuildingSprite {
                 left = Math.round(layer.anchor[0] - frameW / 2);
                 top = Math.round(layer.anchor[1] - frameH);
                 textureKey = `part:${id}:${this.assets.assetVersion || ''}`;
+                // G7-1 — a status part's cloth holds its hue at night.
+                if (typeof layer.gate === 'string' && layer.gate.startsWith('status.')) {
+                    const cloth = this._statusCloth(id, image);
+                    if (cloth) {
+                        image = cloth.canvas;
+                        textureRevision = `${textureKey}:${cloth.key}`;
+                    }
+                }
             } else {
                 // 4.6 / B3-03' — a rest mask is a part only while its hearth is
                 // banked (`_restMaskShowing`), so both backends grade and depth
@@ -2939,6 +2949,7 @@ export class BuildingSprite {
                 layer,
                 image,
                 textureKey,
+                textureRevision: textureRevision || textureKey,
                 frame,
                 sx: frame * frameW,
                 sy,
@@ -2959,6 +2970,53 @@ export class BuildingSprite {
         }
         this._fixturePartDraws(entry, type, originX, originY, splitPass, horizonY, out);
         return out;
+    }
+
+    // G7-1 — the attention banner (a `status.<bucket>` part) is the one
+    // landmark-sized needs-you signal, and the night grade turned its yellow
+    // sage-grey. Like the T1 status cells it keeps its own hue: the strip is
+    // repainted with each texel's `statusClothPreimage`, so the frame grade
+    // (resident, hybrid or Canvas fills, `residentGradeFormula`) lands on the
+    // authored chroma at the graded value. It holds colour, not light: no
+    // emission, no bloom, no gate change. Repainted only when the grade moves
+    // a 1/128 step; null by day (night 0), when the authored strip draws.
+    _statusCloth(id, image) {
+        const grade = this.atmosphereState?.lightGrade || null;
+        if (!grade || !(Number(grade.night) > 0) || typeof document === 'undefined' || !(image?.width > 0)) return null;
+        const postFx = this.residentGradeFormula === true;
+        const key = `${canvasGradeKey(grade, { postFx })}|${Math.round(grade.night * 128)}`;
+        const cache = (this._statusCloths ||= new Map());
+        let entry = cache.get(id);
+        if (!entry || entry.image !== image) {
+            const canvas = document.createElement('canvas');
+            canvas.width = image.width;
+            canvas.height = image.height;
+            const context = canvas.getContext('2d', { willReadFrequently: true });
+            context.drawImage(image, 0, 0);
+            entry = { image, canvas, context, authored: context.getImageData(0, 0, canvas.width, canvas.height), key: null };
+            cache.set(id, entry);
+        }
+        if (entry.key !== key) {
+            const source = entry.authored.data;
+            const out = new ImageData(new Uint8ClampedArray(source), entry.authored.width, entry.authored.height);
+            const memo = new Map();
+            for (let i = 0; i < source.length; i += 4) {
+                if (!source[i + 3]) continue;
+                const packed = (source[i] << 16) | (source[i + 1] << 8) | source[i + 2];
+                let rgb = memo.get(packed);
+                if (!rgb) {
+                    rgb = statusClothPreimage([source[i] / 255, source[i + 1] / 255, source[i + 2] / 255], grade, { postFx })
+                        .map(channel => Math.round(Math.max(0, Math.min(1, channel)) * 255));
+                    memo.set(packed, rgb);
+                }
+                out.data[i] = rgb[0];
+                out.data[i + 1] = rgb[1];
+                out.data[i + 2] = rgb[2];
+            }
+            entry.context.putImageData(out, 0, 0);
+            entry.key = key;
+        }
+        return entry;
     }
 
     // W6.8 / W6.10 — procedural fixture parts in the same part records (both

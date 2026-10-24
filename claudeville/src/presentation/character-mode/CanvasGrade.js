@@ -167,6 +167,56 @@ export function canvasFramePreimage(target, grade, { postFx = false } = {}) {
 }
 
 /**
+ * G7-1 — a status cloth (the Command attention banner) keeps its own hue and
+ * saturation through the night grade while its value follows the frame: the
+ * colour to paint so the finished frame lands on the authored chroma at the
+ * graded luma (the cloth is matter, not light, so it never brightens). By
+ * day (grade night 0) the cloth grades like any texel; from the blue hour
+ * (night 0.5) the hold is whole. Where the night's gain cannot lift a
+ * channel to the authored chroma at that value (the yellow's red under the
+ * cool night gain), the value steps down until it can, so the hue holds and
+ * the cloth reads darker, never brighter. The grade's lift and desaturation
+ * floor stay: a deep storm still mutes the cloth, only less. `postFx` picks the frame grade the texel will meet (the resident
+ * and hybrid formula, else the Canvas fills), as `canvasFramePreimage` does.
+ */
+export function statusClothPreimage(rgb, grade, { postFx = false } = {}) {
+    const hold = clamp((Number(grade?.night) || 0) / 0.5);
+    if (!grade || hold <= 0) return rgb;
+    const graded = canvasFrameGradeRgb(rgb, grade, { postFx });
+    const authored = rgb[0] * LUMA[0] + rgb[1] * LUMA[1] + rgb[2] * LUMA[2];
+    if (authored <= 1e-4) return rgb;
+    const full = (graded[0] * LUMA[0] + graded[1] * LUMA[1] + graded[2] * LUMA[2]) / authored;
+    const solve = (scale) => {
+        const peak = Math.max(1, rgb[0] * scale, rgb[1] * scale, rgb[2] * scale);
+        const target = [0, 1, 2].map(channel => graded[channel] + (rgb[channel] * scale / peak - graded[channel]) * hold);
+        const preimage = canvasFramePreimage(target, grade, { postFx });
+        const landed = canvasFrameGradeRgb(preimage, grade, { postFx });
+        // A channel the grade's floor holds above its target only greys the
+        // cloth a little; a channel that cannot rise to its target turns the
+        // hue (yellow to sage), so only a shortfall counts as a miss.
+        const short = Math.max(...[0, 1, 2].map(channel => target[channel] - landed[channel]));
+        return { preimage, reached: short < 0.012 };
+    };
+    const first = solve(full);
+    if (first.reached) return first.preimage;
+    // The largest value in [0.6, 1] x the graded value that lands on target.
+    let lo = full * 0.6;
+    let hi = full;
+    let best = solve(lo).preimage;
+    for (let step = 0; step < 7; step++) {
+        const mid = (lo + hi) / 2;
+        const trial = solve(mid);
+        if (trial.reached) {
+            best = trial.preimage;
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    return best;
+}
+
+/**
  * A key that moves when `canvasWaterPreimage` can: every grade term either
  * frame grade reads, in 1/128 steps.
  */

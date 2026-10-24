@@ -601,6 +601,9 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     const reactions = applySurfaceWetnessToReactions(atmosphere?.reactions || {}, renderer._surfaceWetness);
     renderer._atmosphereReactions = reactions;
     renderer.buildingRenderer?.setLightingState(atmosphere?.lighting);
+    // G7-1 — which frame grade the status cloth's preimage must meet: the
+    // resident or hybrid formula, else the Canvas fills.
+    if (renderer.buildingRenderer) renderer.buildingRenderer.residentGradeFormula = gpuWorldActive || postFxActive;
     renderer.buildingRenderer?.setAtmosphereState?.(atmosphere
         ? { ...atmosphere, reactions }
         : atmosphere);

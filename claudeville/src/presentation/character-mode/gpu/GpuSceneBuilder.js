@@ -677,7 +677,7 @@ function buildingPartRecords(renderer, drawable, base, sequence) {
             paletteRamp: base.paletteRamp,
             occluder: base.occluder,
             landmarkId: base.landmarkId,
-            textureRevision: d.textureKey,
+            textureRevision: d.textureRevision || d.textureKey,
             sidecarRevision: channels?.key || d.textureKey,
             sequence: sequence + (index + 2) / 1000,
             sourceKind: 'individual',
