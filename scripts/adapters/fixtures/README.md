@@ -8,6 +8,7 @@ These synthetic JSONL transcripts test parser contracts without reading real pro
 | Claude | `claude/minimal.jsonl` | Completed turn proving defaults and estimated cost without richer records. |
 | Claude | `claude/git-outcomes.jsonl` | Git calls with outcomes: an `is_error` hook rejection, a chained commit with `[branch sha]` output, a rejected push behind `|| true`, and a push from a subdirectory `cwd`. |
 | Claude | `claude/shell-prefix.jsonl` | Bash calls behind `cd <dir> &&`, `cd <dir>;` and `git -C <dir>`; the summary must keep the command. |
+| Claude | `claude/tool-results.jsonl` | Flagged results (`Exit code 1`, a codeless error, an `Edit` miss, an explicit success), plus an unflagged read, a background command, an async agent launch, an interrupted and a rejected call, and one pending call: only the four flagged outcomes publish. |
 | Claude | `claude/agent-launch.jsonl` | Parent transcript with an `Agent` launch and declared child identity. |
 | Claude | `claude/agent-child.jsonl` | Paired child transcript proving parent/subagent identity linkage. |
 | Codex | `codex/abort-after-pending.jsonl` | Pending tools followed by `turn_aborted`; pending state must clear. |
@@ -32,7 +33,7 @@ Author fixtures synthetic-first. If derived from provider output, replace every 
 - `scripts/tests/claude-projection.test.mjs` uses broad and minimal Claude records (it resolves the fixture root without spelling the full search string).
 - `scripts/tests/turn-state.test.mjs` copies the Codex fixture directory into a synthetic provider home.
 - `scripts/tests/integration/session-payload-contract.test.mjs` replays the broad Claude fixture through an isolated server.
-- `scripts/tests/tool-results.test.mjs` materializes the Codex and Kimi Code result transcripts in a synthetic home, replays the OpenCode parts through `buildOpenCodeSession`, and uses the broad Claude record as the no-result control.
+- `scripts/tests/tool-results.test.mjs` materializes the Codex and Kimi Code result transcripts in a synthetic home, replays the OpenCode parts through `buildOpenCodeSession`, replays the Claude outcome fixture, and uses the broad Claude record as the no-flag, no-result control.
 - `scripts/tests/harbor-ingest-adapters.test.mjs` materializes the Claude and Codex git fixtures over a temporary repository and checks outcomes, identity and per-segment status.
 - `scripts/tests/shell-location-prefix.test.mjs` replays the Claude shell-prefix fixture and pins the stripped summary.
 - `scripts/tests/living-isle-outcomes.test.mjs` replays the OMP outcomes/session-exit fixture, including explicit departure and resumed-session behavior.

@@ -16,6 +16,7 @@ const {
   summarizeToolInput: summarizeSharedToolInput,
 } = require('./shared');
 const { deriveTurnState, toEpochMs } = require('./turnState');
+const { normalizeToolResults, toolResultId } = require('./toolResults');
 const { emptyObservedSources, makeDialogue, pickDialogue } = require('./dialogue');
 const { MODEL_REVISION, contextWindowForModel } = require('../src/config/models.generated.cjs');
 
@@ -544,6 +545,8 @@ function projectToolInput(input) {
       projected[field] = value;
     }
   }
+  // A background call reports only that it started, never an outcome.
+  if (input.run_in_background === true) projected.run_in_background = true;
   return projected;
 }
 
@@ -655,6 +658,13 @@ function projectClaudeTailEntry(entry) {
       ),
     };
     if (entry.toolUseResult.interrupted === true) projected.toolUseResult.interrupted = true;
+    if (entry.toolUseResult.isAsync === true) projected.toolUseResult.isAsync = true;
+    if (typeof entry.toolUseResult.backgroundTaskId === 'string' && entry.toolUseResult.backgroundTaskId) {
+      projected.toolUseResult.backgroundTaskId = boundedProjectionString(
+        entry.toolUseResult.backgroundTaskId,
+        TRANSCRIPT_PROJECTION_FIELD_BYTES,
+      );
+    }
   }
   if (entry.message && typeof entry.message === 'object') {
     const needsSourceHash = !entry.uuid
@@ -696,7 +706,7 @@ function readJsonLines(filePath, { from = 'end', count = GIT_EVENT_SCAN_LINES } 
     tailMaxBytes: MAX_TAIL_BYTES,
     source: 'claude',
     project: from === 'end' ? projectClaudeTailEntry : undefined,
-    projectionKey: from === 'end' ? 'claude-tail-v2' : undefined,
+    projectionKey: from === 'end' ? 'claude-tail-v3' : undefined,
   });
 }
 
@@ -1902,6 +1912,10 @@ function getSendMessageEdges(sessionFilePath, maxItems = SEND_MESSAGE_MAX_EDGES)
 
 // Claude reports a Bash failure as `is_error` with `Exit code N` leading the
 // result text; a successful result carries stdout/stderr in toolUseResult.
+const CLAUDE_EXIT_CODE_PATTERN = /^(?:Error: )?Exit code (\d+)/m;
+// The user declining or interrupting a call is not an outcome of the call.
+const CLAUDE_REJECTED_RESULT_PATTERN = /^\s*(?:The user doesn't want to proceed with this tool use|\[Request interrupted by user)/;
+
 function claudeToolCompletion(entry, block) {
   const tur = entry.toolUseResult;
   const parts = [];
@@ -1919,7 +1933,7 @@ function claudeToolCompletion(entry, block) {
   const output = parts.join('\n');
   const isError = block.is_error === true;
   const interrupted = tur && typeof tur === 'object' && tur.interrupted === true;
-  const exitMatch = /^(?:Error: )?Exit code (\d+)/m.exec(output);
+  const exitMatch = CLAUDE_EXIT_CODE_PATTERN.exec(output);
   const completion = {
     output: output.length > 64 * 1024 ? output.slice(-64 * 1024) : output,
     completedAt: entry.timestamp || null,
@@ -1932,6 +1946,62 @@ function claudeToolCompletion(entry, block) {
     else if (!isError) completion.exitCode = 0;
   }
   return completion;
+}
+
+/**
+ * Provider-reported outcomes of finished Claude tool calls, paired by
+ * `tool_use_id` inside the cached transcript tail (see adapters/README.md,
+ * "Command results"):
+ *
+ * - `is_error: true` with `Exit code N` -> N (`exitCodeSource: 'exit'`);
+ *   `is_error: true` without a code -> 1 (`'flag'`); `is_error: false` -> 0
+ *   (`'flag'`). No `is_error` at all is no claim, and produces no record.
+ * - Background commands (`run_in_background`, `backgroundTaskId`) and async
+ *   agent launches (`isAsync`) only report that something started; interrupted
+ *   or user-rejected calls never ran to an end. None of them is published.
+ */
+function getClaudeToolResults(sessionFilePath, sessionId) {
+  if (!sessionFilePath) return [];
+  const results = [];
+  try {
+    const entries = getSessionEntries(sessionFilePath);
+    const uses = new Map();
+    for (const entry of entries) {
+      const content = entry?.message?.content;
+      if (!Array.isArray(content)) continue;
+      if (entry.message.role === 'assistant') {
+        for (const block of content) {
+          if (block?.type === 'tool_use' && block.id) uses.set(block.id, { block, at: toEpochMs(entry.timestamp) });
+        }
+        continue;
+      }
+      for (const block of content) {
+        if (block?.type !== 'tool_result' || !block.tool_use_id) continue;
+        const use = uses.get(block.tool_use_id);
+        if (!use || typeof block.is_error !== 'boolean') continue;
+        const tur = entry.toolUseResult && typeof entry.toolUseResult === 'object' ? entry.toolUseResult : null;
+        if (use.block.input?.run_in_background === true || tur?.backgroundTaskId || tur?.isAsync) continue;
+        const completion = claudeToolCompletion(entry, block);
+        if (completion.status === 'cancelled' || CLAUDE_REJECTED_RESULT_PATTERN.test(completion.output)) continue;
+        const completedAt = toEpochMs(entry.timestamp);
+        if (!completedAt) continue;
+        const exitMatch = block.is_error ? CLAUDE_EXIT_CODE_PATTERN.exec(completion.output) : null;
+        const tool = use.block.name || 'unknown';
+        results.push({
+          id: toolResultId({ provider: 'claude', sessionId, callId: block.tool_use_id }),
+          tool,
+          detail: summarizeToolInput(use.block.input, { maxLength: 80, basenameFile: false }) || '',
+          exitCode: exitMatch ? Number(exitMatch[1]) : (block.is_error ? 1 : 0),
+          exitCodeSource: exitMatch ? 'exit' : 'flag',
+          durationMs: use.at ? Math.max(0, completedAt - use.at) : null,
+          completedAt,
+          source: 'transcript',
+        });
+        uses.delete(block.tool_use_id);
+      }
+    }
+  } catch { /* ignore */ }
+  return normalizeToolResults(results);
 }
 
 function getGitEvents(sessionFilePath, context) {
@@ -2215,6 +2285,7 @@ function buildSubAgentSession({ filePath, agentId, decodedProject, parentSession
     tokenUsage: getTokenUsage(filePath, model),
     permissionMode,
     sendMessages: getSendMessageEdges(filePath),
+    lastResults: getClaudeToolResults(filePath, sessionId),
     gitEvents: getGitEvents(filePath, { provider: 'claude', sessionId, project: decodedProject }),
     parentSessionId,
     workflowId,
@@ -2345,6 +2416,7 @@ class ClaudeAdapter {
         tokenUsage: sessionFilePath ? getTokenUsage(sessionFilePath, model) : null,
         permissionMode,
         sendMessages: sessionFilePath ? getSendMessageEdges(sessionFilePath) : [],
+        lastResults: getClaudeToolResults(sessionFilePath, session.sessionId),
         gitEvents: sessionFilePath ? getGitEvents(sessionFilePath, {
           provider: 'claude',
           sessionId: session.sessionId,
@@ -2546,6 +2618,7 @@ class ClaudeAdapter {
             tokenUsage: getTokenUsage(filePath, model),
             permissionMode,
             sendMessages: getSendMessageEdges(filePath),
+            lastResults: getClaudeToolResults(filePath, sessionId),
             gitEvents: getGitEvents(filePath, {
               provider: 'claude',
               sessionId,

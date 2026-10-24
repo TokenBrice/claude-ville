@@ -1363,6 +1363,7 @@ function appendToolResult(results, entry, sessionId) {
     tool: completion.tool,
     detail,
     exitCode: completion.exitCode,
+    exitCodeSource: 'exit',
     durationMs: completion.durationMs,
     completedAt: completion.completedAt,
     source: 'transcript',

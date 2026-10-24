@@ -97,17 +97,24 @@ function buildProviderHome(t) {
         project,
         path.join(root, '.kimi-code', 'sessions', 'wd_results', 'session_results', 'agents', 'main', 'wire.jsonl'),
     );
-    // Claude is the control: a rich transcript with tool results and no
-    // provider-reported command outcome contract.
+    // Claude: the outcome fixture, plus the broad transcript as the control —
+    // its tool results carry no `is_error` flag, so they claim nothing.
     const claudeProjectDir = path.join(root, '.claude', 'projects', project.replaceAll('/', '-'));
     fs.mkdirSync(claudeProjectDir, { recursive: true });
     fs.writeFileSync(
         path.join(root, '.claude', 'history.jsonl'),
-        `${JSON.stringify({ sessionId: 'results-claude', project, timestamp: NOW, model: 'claude-sonnet-4-5', display: 'Results control' })}\n`,
+        [
+            { sessionId: 'results-claude', project, timestamp: NOW, model: 'claude-sonnet-4-5', display: 'Results control' },
+            { sessionId: 'outcomes-claude', project, timestamp: NOW, model: 'claude-sonnet-4-5', display: 'Outcomes' },
+        ].map(entry => `${JSON.stringify(entry)}\n`).join(''),
     );
     fs.copyFileSync(
         path.join(FIXTURE_ROOT, 'claude', 'all-records.jsonl'),
         path.join(claudeProjectDir, 'results-claude.jsonl'),
+    );
+    fs.copyFileSync(
+        path.join(FIXTURE_ROOT, 'claude', 'tool-results.jsonl'),
+        path.join(claudeProjectDir, 'outcomes-claude.jsonl'),
     );
 
     return { root, project };
@@ -130,7 +137,7 @@ function openCodeSession(project) {
     }, parts, NOW);
 }
 
-test('Codex, Kimi Code and OpenCode publish bounded command outcomes; Claude publishes none', (t) => {
+test('Codex, Kimi Code, OpenCode and Claude publish bounded command outcomes', (t) => {
     const { root, project } = buildProviderHome(t);
     const { first, second } = readProviderProjections(root);
 
@@ -162,15 +169,40 @@ test('Codex, Kimi Code and OpenCode publish bounded command outcomes; Claude pub
     ]);
     assert.ok(!opencode.lastResults.some(result => result.tool === 'Read'));
 
-    const claude = normalizeSession(first.claude.find(session => session.sessionId === 'results-claude'));
-    assert.ok(claude.lastTool, 'the Claude control fixture really does record tool activity');
-    assert.deepEqual(claude.lastResults, []);
+    assert.deepEqual(codex.lastResults.map(result => result.exitCodeSource), ['exit', null, 'exit']);
+    assert.deepEqual(kimi.lastResults.map(result => result.exitCodeSource), ['exit', 'exit']);
+    assert.deepEqual(opencode.lastResults.map(result => result.exitCodeSource), ['exit', 'exit']);
+
+    // Claude: tool results without an `is_error` flag claim nothing.
+    const control = normalizeSession(first.claude.find(session => session.sessionId === 'results-claude'));
+    assert.ok(control.lastTool, 'the Claude control fixture really does record tool activity');
+    assert.deepEqual(control.lastResults, []);
+
+    // SM-2: Claude pairs flagged results with their calls. "Exit code N" is
+    // the exit; an error with no code is 1; an explicit success is 0. Reads
+    // without a flag, background commands, async agent launches, interrupted
+    // and user-rejected calls, and the still-pending call publish nothing.
+    const claude = normalizeSession(first.claude.find(session => session.sessionId === 'outcomes-claude'));
+    assert.deepEqual(
+        claude.lastResults.map(result => [result.tool, result.detail, result.exitCode, result.exitCodeSource, result.durationMs]),
+        [
+            ['Bash', 'npm run build', 0, 'flag', 2250],
+            ['Bash', 'rm -rf build', 1, 'flag', 100],
+            ['Edit', '/fixture/repo/src/a.js', 1, 'flag', 200],
+            ['Bash', 'npm test', 1, 'exit', 2500],
+        ],
+    );
+    assert.equal(claude.lastResults[0].id, 'claude:outcomes-claude:bash-build');
+    assert.equal(claude.lastResults[0].completedAt, Date.parse('2026-09-01T13:00:14.250Z'));
+    assert.ok(claude.lastResults.every(result => result.source === 'transcript'));
 
     // Same transcripts, second poll: ids are call identity, not receipt time.
     const codexAgain = normalizeSession(second.codex.find(session => session.sessionId === 'codex-tool-results'));
     const kimiAgain = normalizeSession(second.kimi.find(session => session.sessionId === 'kimi-session_results'));
+    const claudeAgain = normalizeSession(second.claude.find(session => session.sessionId === 'outcomes-claude'));
     assert.deepEqual(codexAgain.lastResults.map(result => result.id), codex.lastResults.map(result => result.id));
     assert.deepEqual(kimiAgain.lastResults.map(result => result.id), kimi.lastResults.map(result => result.id));
+    assert.deepEqual(claudeAgain.lastResults.map(result => result.id), claude.lastResults.map(result => result.id));
     assert.deepEqual(
         normalizeSession(openCodeSession(project)).lastResults.map(result => result.id),
         opencode.lastResults.map(result => result.id),
@@ -185,6 +217,7 @@ test('the summary keeps the five newest outcomes and drops unattributable ones',
         tool: 'Bash',
         detail: `npm run step-${index}`,
         exitCode: index % 2,
+        exitCodeSource: 'exit',
         durationMs: 10,
         completedAt: NOW - index * 1000,
         source: 'transcript',
@@ -206,8 +239,13 @@ test('the summary keeps the five newest outcomes and drops unattributable ones',
     assert.deepEqual(normalizeToolResults([{ ...results[0], exitCode: null, durationMs: null }]), [{
         ...results[0],
         exitCode: null,
+        exitCodeSource: null,
         durationMs: null,
     }]);
+    // The exit-code source is one of two words, and only beside a known code.
+    assert.equal(normalizeToolResults([{ ...results[0], exitCodeSource: 'guess' }])[0].exitCodeSource, null);
+    assert.equal(normalizeToolResults([{ ...results[0], exitCodeSource: 'flag' }])[0].exitCodeSource, 'flag');
+    assert.equal(normalizeToolResults([{ ...results[0], exitCodeSource: undefined }])[0].exitCodeSource, null);
     assert.deepEqual(normalizeToolResults(null), []);
 });
 

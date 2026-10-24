@@ -4,10 +4,11 @@
  * A result record exists only where a provider explicitly reported the outcome
  * of a call it already finished: Codex `item_completed.CommandExecution`, Kimi
  * Code `tool.result` with an exit code or an error flag, OpenCode tool
- * state with a numeric `metadata.exit`, and OMP paired `toolResult` records.
+ * state with a numeric `metadata.exit`, OMP paired `toolResult` records, and
+ * Claude paired `tool_result` blocks carrying an explicit `is_error`.
  * Invocation is not a result, and a tool call disappearing from a transcript
- * tail is not a result either. Providers without such a record (Claude, Gemini,
- * Grok) carry no `lastResults`, and nothing downstream may synthesize one.
+ * tail is not a result either. Providers without such a record (Gemini, Grok)
+ * carry no `lastResults`, and nothing downstream may synthesize one.
  *
  * The id is derived from provider, session, and call identity so the same
  * finished command keeps one identity across polls; consumers deduplicate on it
@@ -18,6 +19,11 @@ const TOOL_RESULT_LIMIT = 5;
 const TOOL_RESULT_ID_MAX_LENGTH = 256;
 const TOOL_NAME_MAX_LENGTH = 64;
 const TOOL_RESULT_DETAIL_MAX_LENGTH = 80;
+// Where `exitCode` came from: `'exit'` is a process exit status the provider
+// wrote down; `'flag'` is derived from a boolean error flag (error -> 1,
+// explicit success -> 0). Null when the exit code is unknown or the producer
+// does not say.
+const EXIT_CODE_SOURCES = new Set(['exit', 'flag']);
 
 function fingerprint(value) {
   let hash = 2166136261;
@@ -69,13 +75,15 @@ function normalizeToolResults(value) {
     const completedAt = boundedInteger(item.completedAt, { nonnegative: true });
     if (!id || !tool || !source || !completedAt) continue;
     if (byId.has(id)) continue;
+    const exitCode = boundedInteger(item.exitCode);
     byId.set(id, {
       id,
       tool,
       detail: typeof item.detail === 'string'
         ? item.detail.trim().slice(0, TOOL_RESULT_DETAIL_MAX_LENGTH)
         : '',
-      exitCode: boundedInteger(item.exitCode),
+      exitCode,
+      exitCodeSource: exitCode !== null && EXIT_CODE_SOURCES.has(item.exitCodeSource) ? item.exitCodeSource : null,
       durationMs: boundedInteger(item.durationMs, { nonnegative: true }),
       completedAt,
       source,

@@ -138,7 +138,7 @@ Registry metadata treats adapter-backed providers as detail-capable when `getSes
 | `tasks` | array | Claude-only task summary, up to 12 `{ subject, status }` items. `[]` when omitted. |
 | `sendMessages` | array | Claude-only sender→recipient edges from `SendMessage` tool calls; the carrying session is the sender. Up to 10 most recent edges of `{ recipient, messageType, summary, ts }`: `recipient` is the raw alias from the tool input (match against `agentName`/`name`/`agentId`), `messageType` is the tool input `type` (default `'message'`), `summary` is truncated to 80 chars or null, `ts` is the transcript entry timestamp. Edges without a resolvable recipient (e.g. `shutdown_response` replies keyed by `request_id`) are skipped. Registry normalization sets this to `[]` when adapters omit it. |
 | `gitEvents` | array | Backend-extracted git `commit` / `push` events from raw tool records. Registry normalization sets this to `[]` when adapters omit it. Dry-run events are omitted. Events include `id`, `type`, `project`, `provider`, `sessionId`, `sourceId`, `ts`, and `commandHash`; `command`, `targetRef`, `success`, `exitCode`, and `completedAt` are optional metadata when the adapter can derive them. |
-| `lastResults` | array | Up to 5 most recent provider-reported outcomes of calls that already finished, newest first: `{ id, tool, detail, exitCode, durationMs, completedAt, source }`. See "Command results" below. Registry normalization sets this to `[]` when adapters omit it. |
+| `lastResults` | array | Up to 5 most recent provider-reported outcomes of calls that already finished, newest first: `{ id, tool, detail, exitCode, exitCodeSource, durationMs, completedAt, source }`. See "Command results" below. Registry normalization sets this to `[]` when adapters omit it. |
 
 ### Command results
 
@@ -149,7 +149,10 @@ exists only where the provider wrote one down.
 - **Kimi Code** — `tool.result` loop events carrying an exit code, or an explicit `isError`/`is_error`/`error` flag (`kimi.js`). A result that only carries output is not an outcome and produces nothing.
 - **OpenCode** — tool parts with a numeric `state.metadata.exit` (`opencode.js`).
 - **OMP** — `toolResult` records paired with their `toolCall` id inside the bounded transcript tail (`omp.js`). An explicit `isError` flag maps to exit 1 or 0; an absent flag leaves `exitCode: null`. Unpaired results and still-open calls are not published.
-- **Claude, Gemini, Grok** — no result record is published. Nothing downstream may synthesize one.
+- **Claude** — `tool_result` blocks paired with their `tool_use` id inside the cached transcript tail (`claude.js` `getClaudeToolResults`, reusing `claudeToolCompletion`). Only an explicit `is_error` flag is a claim: `true` with `Exit code N` in the result text gives `N` (`exitCodeSource: 'exit'`), `true` without a code gives 1 and `false` gives 0 (both `'flag'`). A result with no `is_error` (most `Read`/`Edit`/`Agent` successes) claims nothing and produces no record. Background commands (`run_in_background`, `backgroundTaskId`) and async agent launches (`isAsync`) report only that something started, and interrupted (`toolUseResult.interrupted`) or user-rejected calls never ran to an end; none of them is published. Unpaired results and still-open calls are not published either.
+- **Gemini, Grok** — no result record is published. Nothing downstream may synthesize one.
+
+`exitCodeSource` says where the number came from: `'exit'` is a process exit status the provider wrote down (Codex `exit_code`, OpenCode `metadata.exit`, a Kimi Code exit code, Claude `Exit code N`); `'flag'` is derived from a boolean error flag (OMP `isError`, a Kimi Code error flag, Claude `is_error` without a code). It is `null` whenever `exitCode` is `null`. A consumer that must not mistake a harness refusal, a permission denial or an `Edit` miss for a failing command should require `'exit'` for the failure side.
 
 `id` is derived from provider, session, and call identity in `toolResults.js`, so
 re-reading the same transcript yields the same id and consumers deduplicate
