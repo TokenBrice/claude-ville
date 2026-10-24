@@ -81,6 +81,10 @@ function buildAgent(spec, timeBase, rebase = value => value) {
             ? rebase(Number(spec.awaitingSince))
             : null,
         pendingTool: spec.pendingTool,
+        turnState: spec.turnState,
+        pendingSince: Number.isFinite(Number(spec.pendingSince)) && spec.pendingSince !== null
+            ? rebase(Number(spec.pendingSince))
+            : null,
         signalSource: spec.signalSource,
         signalCertainty: spec.signalCertainty,
         signalStale: spec.signalStale,

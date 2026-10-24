@@ -1243,6 +1243,45 @@ export const TAVERN_EVENING_SCENARIO = {
     },
 };
 
+// The Tavern full of leads waiting on their own subagents (Q1): fourteen
+// sessions blocked on an `Agent` / `wait_agent` call, aged across the shared
+// 1/5/15-min wait ladder, so the seats fill, the overflow stands at the
+// Tavern, and the plaque carries the tally and the oldest wait.
+const TAVERN_CROWD_WAITS_MIN = [47, 38, 31, 24, 19, 16, 13, 11, 9, 7, 6, 4, 3, 2];
+export const TAVERN_CROWD_SCENARIO = {
+    id: 'tavern-crowd',
+    label: 'Tavern crowd',
+    description: '17:30 clear: fourteen leads wait on their subagents, 2 to 47 minutes; eight seated, six standing at the Tavern.',
+    timeBase: SCENARIO_TIME_BASE,
+    agents: TAVERN_CROWD_WAITS_MIN.map((minutes, index) => {
+        const codex = index % 3 === 1;
+        return agentSpec({
+            id: `tavern-lead-${index + 1}`,
+            name: `Lead ${index + 1}`,
+            provider: codex ? 'codex' : 'claude',
+            model: codex ? 'gpt-6-luna' : 'claude-opus-5',
+            status: AgentStatus.WORKING,
+            turnState: 'tool_pending',
+            pendingTool: codex ? 'wait_agent' : 'Agent',
+            pendingSince: SCENARIO_TIME_BASE - minutes * 60_000,
+            currentTool: codex ? 'wait_agent' : 'Agent',
+            currentToolInput: 'description=review lane',
+            projectPath: `/sim/repos/tavern-${index % 4}`,
+            position: { tileX: 19 + (index % 5), tileY: 21 + Math.floor(index / 5) },
+        });
+    }),
+    timeline: [],
+    metadata: {
+        qaTags: ['tavern', 'rest-seats', 'subagent-wait', 'plaque'],
+        atmosphere: {
+            phase: 'day',
+            clock: { hours: 17, minutes: 30, seconds: 0, label: '17:30', phase: 'day' },
+            weather: { type: 'clear', intensity: 0.1 },
+        },
+        camera: { centerTile: { tileX: 21, tileY: 19 }, zoom: 2.4 },
+    },
+};
+
 // Sprite review lineup (model sprites pass 2): the supporting cast beside two
 // hero references, idle on the Tavern's yard so each body is judged on grass
 // and path at one zoom, then drifts to the tables to show its seat and drink.
@@ -1503,6 +1542,7 @@ export const WORLD_SCENARIOS = [
     STORM_NIGHT_REDUCED_MOTION_SCENARIO,
     MIDNIGHT_OIL_SCENARIO,
     TAVERN_EVENING_SCENARIO,
+    TAVERN_CROWD_SCENARIO,
     MODEL_LINEUP_SCENARIO,
     CACHE_ORE_SCENARIO,
     TASKBOARD_LIVE_SCENARIO,
