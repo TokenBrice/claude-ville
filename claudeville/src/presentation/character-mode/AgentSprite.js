@@ -1716,10 +1716,12 @@ export class AgentSprite {
         this._renewVisitReservation();
         this._markCrowdArrival(now);
         const seat = this._seatedSeat();
+        const glance = this._squadGlanceFacing(now);
         if (seat) {
-            this._setFacingGoal(SEAT_FACING_DIR[seat.facing]);
+            this._setFacingGoal(glance ?? SEAT_FACING_DIR[seat.facing]);
             return;
         }
+        if (glance != null) this._setFacingGoal(glance);
         if (this.visitRole !== 'queue' || now < (this._queueRefreshAt || 0)) return;
         this._queueRefreshAt = now + QUEUE_REFRESH_MS;
         const target = this._placeTarget(QUEUE_PLACE);
@@ -1728,6 +1730,28 @@ export class AgentSprite {
         if (current && current.tileX === target.tileX && current.tileY === target.tileY) return;
         this._lastPathTileKey = null;
         this._routeToVisitTarget(QUEUE_PLACE, null, target);
+    }
+
+    // D7 — a nearby squadmate's verified win (`SquadNotice`): a body holding
+    // a seat or a queue place faces the world point until `until`, then
+    // turns back to the facing it had. Facing makes no claim of its own.
+    noticeSquadmate(point, until) {
+        if (!Number.isFinite(point?.x) || !Number.isFinite(point?.y) || !Number.isFinite(until)) return;
+        const restore = this._squadGlance?.restore ?? null;
+        this._squadGlance = { x: point.x, y: point.y, until, restore };
+    }
+
+    _squadGlanceFacing(now) {
+        const glance = this._squadGlance;
+        if (!glance) return null;
+        if (now >= glance.until) {
+            this._squadGlance = null;
+            // A body that left its place meanwhile keeps its own facing.
+            if (glance.restore != null && now - glance.until < 1000) this._setFacingGoal(glance.restore);
+            return null;
+        }
+        if (glance.restore == null) glance.restore = this._facingGoal ?? this.direction;
+        return dirFromVelocity(glance.x - this.x, glance.y - this.y);
     }
 
     // W4.9 — the local hour (fractional) of the atmosphere clock, or the
