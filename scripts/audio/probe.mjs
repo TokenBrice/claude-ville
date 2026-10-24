@@ -70,7 +70,7 @@
 // see lib/soak.mjs.
 import fs from 'node:fs';
 import path from 'node:path';
-import { chromium } from 'playwright';
+import { launchChromium } from '../smoke/support/chromium.mjs';
 import { startStaticServer, AUDIO_DIR } from './lib/server.mjs';
 import { writeWavFloat } from './lib/analyze.mjs';
 import { BACKGROUND_ARGS, DEFAULT_SEED, HARNESS_CHROME_ARGS } from './lib/capture.mjs';
@@ -1213,8 +1213,8 @@ async function main() {
     let server = null;
     let harnessBrowser = null;
     let appBrowser = null;
-    const harness = async () => (harnessBrowser ||= await chromium.launch({ headless: true, args: HARNESS_CHROME_ARGS }));
-    const appB = async () => (appBrowser ||= await chromium.launch({ headless: true, args: APP_CHROME_ARGS }));
+    const harness = async () => (harnessBrowser ||= await launchChromium({ headless: true, args: HARNESS_CHROME_ARGS }));
+    const appB = async () => (appBrowser ||= await launchChromium({ headless: true, args: APP_CHROME_ARGS }));
     try {
         server = await startStaticServer();
         const units = [];

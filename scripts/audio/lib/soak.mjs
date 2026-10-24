@@ -10,7 +10,7 @@
 // ±5 points (0.8b); `--update` records this soak as baselines/soak.json.
 import fs from 'node:fs';
 import path from 'node:path';
-import { chromium } from 'playwright';
+import { launchChromium } from '../../smoke/support/chromium.mjs';
 import { AUDIO_DIR } from './server.mjs';
 import { loudness, writeWavFloat } from './analyze.mjs';
 import { BACKGROUND_ARGS, clockToIndex, newHarnessPage, pullPcm } from './capture.mjs';
@@ -134,7 +134,7 @@ function analyzeSession(cap) {
 }
 
 export async function runSoak({ seed, out, verdict, info, log, seconds, update }) {
-    const browser = await chromium.launch({ headless: true, args: CHROME_ARGS });
+    const browser = await launchChromium({ headless: true, args: CHROME_ARGS });
     const measured = {};
     try {
         for (const planName of SOAK_PLANS) {

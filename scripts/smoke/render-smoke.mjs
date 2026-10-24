@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { chromium } from 'playwright';
+import { launchChromium } from './support/chromium.mjs';
 import { startIsolatedServer } from './support/isolated-server.mjs';
 import { makeTempDir } from '../tests/support/tmp.mjs';
 
@@ -321,7 +321,7 @@ async function run() {
     diagnostics.baseUrl = server.baseUrl;
     diagnostics.port = server.port;
 
-    browser = await chromium.launch({ headless: true });
+    browser = await launchChromium({ headless: true });
     const context = await browser.newContext({
       viewport: VIEWPORT,
       reducedMotion: 'reduce',
@@ -490,7 +490,7 @@ async function run() {
     });
 
     await timedStep('sound-states', async () => {
-      const soundBrowser = await chromium.launch({ headless: true, args: SOUND_GESTURE_ARGS });
+      const soundBrowser = await launchChromium({ headless: true, args: SOUND_GESTURE_ARGS });
       try {
         diagnostics.soundStates = {};
         for (const width of SOUND_VIEWPORTS) diagnostics.soundStates[width] = await soundStates(soundBrowser, server.baseUrl, width);
