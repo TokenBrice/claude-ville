@@ -111,10 +111,16 @@ export function verifiedOutcomeFact(outcome) {
     };
 }
 
-/** `tool:result`: a non-zero exit is a failure; exit 0 (or none) is silent. */
+/**
+ * `tool:result`: a non-zero exit is a failure; exit 0 (or none) is silent.
+ * A code the adapter only inferred from an error flag (`exitCodeSource:
+ * 'flag'`: an Edit that found no match, a refused permission, a harness
+ * guard) is not a failed command, so it raises no "Command failed".
+ */
 export function toolFailedFact(event) {
     const exitCode = finite(event?.exitCode);
     if (exitCode == null || exitCode === 0) return null;
+    if (event.exitCodeSource === 'flag') return null;
     return {
         kind: 'toolFailed',
         agentId: idOf(event.agentId),

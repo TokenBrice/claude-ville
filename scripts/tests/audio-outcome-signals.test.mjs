@@ -152,6 +152,12 @@ test('verified outcomes and tool results map to facts; exit 0 is silent', () => 
     assert.equal(toolFailedFact({ agentId: 'a', exitCode: 2, tool: 'Bash' }).kind, 'toolFailed');
 });
 
+test('a flag-only failure (an Edit miss, a refusal) is not a failed command', () => {
+    assert.equal(toolFailedFact({ agentId: 'a', tool: 'Edit', exitCode: 1, exitCodeSource: 'flag' }), null);
+    assert.equal(toolFailedFact({ agentId: 'a', tool: 'Bash', exitCode: 2, exitCodeSource: 'exit' })?.kind, 'toolFailed');
+    assert.equal(toolFailedFact({ agentId: 'a', tool: 'Bash', exitCode: 2 })?.kind, 'toolFailed', 'providers without a source keep today\'s reading');
+});
+
 test('a failed push is a growth in a repo\'s failed pushes after the first summary', () => {
     const repo = failed => ({ project: '/p', branch: 'main', shortName: 'p', failedPushes: failed });
     const first = failedPushFacts(null, [repo(1)]);
