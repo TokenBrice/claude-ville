@@ -3,6 +3,19 @@ import { classifyTool } from '../../domain/services/ToolIdentity.js';
 import { homeDistrictFor } from './HomeDistrict.js';
 
 /**
+ * The building a classified tool call actually names. Command's `run-shell`
+ * is the classifier's no-evidence fallback for a shell command it does not
+ * recognize, not orchestration, so it names no building: the caller falls
+ * back to what it already knows and then the session's home district. The
+ * classification itself (verb, bubble label) is unchanged.
+ */
+export function placedToolBuilding(classified) {
+    if (!classified?.building) return null;
+    if (classified.building === 'command' && classified.reason === 'run-shell') return null;
+    return classified.building;
+}
+
+/**
  * Resolve the building that may replace an agent's in-flight route.
  *
  * Completed and idle villagers own an ambient route until they arrive. Their
@@ -22,7 +35,7 @@ export function resolveUpdateRouteBuilding({
 
     if (status === AgentStatus.WORKING) {
         const toolBuilding = agent?.currentTool
-            ? classifyTool(agent.currentTool, agent.currentToolInput ?? agent.lastToolInput)?.building
+            ? placedToolBuilding(classifyTool(agent.currentTool, agent.currentToolInput ?? agent.lastToolInput))
             : null;
         return toolBuilding || targetBuilding || lastKnownBuilding || homeDistrictFor(agent);
     }

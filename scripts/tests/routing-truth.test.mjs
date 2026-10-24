@@ -218,3 +218,29 @@ test('working dwell is five-second base in virtual ticks and scales with observe
     const longer = sprite._waitDurationForState();
     assert.ok(longer > base && longer <= 480);
 });
+
+// AG-3: an unrecognized shell command is no evidence of a place.
+test('unrecognized shell commands work in the home district, not at Command', t => {
+    const agent = worker({ id: 'shell-worker', sessionId: 'shell-worker', currentTool: 'Bash', currentToolInput: 'echo ready' });
+    const home = homeDistrictFor(agent, { now: NOW });
+    assert.equal(resolveUpdateRouteBuilding({ agent, status: agent.status }), home);
+    // What the body already knows still beats the home district.
+    assert.equal(resolveUpdateRouteBuilding({ agent, status: agent.status, targetBuilding: 'archive' }), 'archive');
+
+    const manager = new VisitIntentManager({ now: () => NOW });
+    t.after(() => manager.dispose());
+    manager.reconcile([agent], NOW);
+    const intent = manager.getIntentForAgent(agent.id, NOW);
+    assert.equal(intent.source, 'tool');
+    assert.equal(intent.building, home);
+    assert.equal(intent.reason, 'run-shell', 'the call keeps its own label and verb');
+
+    // Recognized commands and real orchestration keep their buildings.
+    agent.currentToolInput = 'npm test';
+    manager.reconcile([agent], NOW + 1000);
+    assert.equal(manager.getIntentForAgent(agent.id, NOW + 1000).building, 'taskboard');
+    assert.equal(resolveUpdateRouteBuilding({ agent, status: agent.status }), 'taskboard');
+    agent.currentTool = 'SendMessage';
+    agent.currentToolInput = 'lane-04';
+    assert.equal(resolveUpdateRouteBuilding({ agent, status: agent.status }), 'command');
+});

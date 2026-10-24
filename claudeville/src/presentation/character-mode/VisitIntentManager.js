@@ -13,6 +13,8 @@ import {
     WORK_ITINERARY_ROUTE,
 } from './VisitIntentSemantics.js';
 import { isPlanMode } from './ActionVocabulary.js';
+import { homeDistrictFor } from './HomeDistrict.js';
+import { placedToolBuilding } from './MovementRouting.js';
 
 const CASH_OUT_TOKEN_DELTA = 8000;
 const CASH_OUT_CONTEXT_SHARE = 0.04;
@@ -453,10 +455,16 @@ export class VisitIntentManager {
         const tool = agent.currentTool || null;
         if (!tool) return;
         if (String(agent.status || '').toLowerCase() !== 'working') return;
-        const classified = classifyTool(tool, agent.currentToolInput ?? agent.lastToolInput);
-        if (!classified?.building) return;
+        const raw = classifyTool(tool, agent.currentToolInput ?? agent.lastToolInput);
+        if (!raw?.building) return;
+        // An unrecognized shell command is no evidence of a place: the body
+        // works in its stable home district instead of crowding Command.
+        const classified = placedToolBuilding(raw)
+            ? raw
+            : { ...raw, building: homeDistrictFor(agent, { now }) };
         const input = agent.currentToolInput ?? agent.lastToolInput;
-        const phase = phaseFromToolClassification(tool, input, classified);
+        // The phase reads the call itself, not the district it was given.
+        const phase = phaseFromToolClassification(tool, input, raw);
         this.lastToolBuildingByAgent.set(agent.id, {
             building: classified.building,
             reason: classified.reason,
