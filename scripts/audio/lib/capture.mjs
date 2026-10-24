@@ -4,6 +4,7 @@
 // time to sample index.
 import fs from 'node:fs';
 import path from 'node:path';
+import { chromium } from 'playwright';
 import { AUDIO_DIR } from './server.mjs';
 import { tempRoot } from '../../tests/support/tmp.mjs';
 
@@ -20,6 +21,19 @@ export const RENDERS = path.join(tempRoot(), 'claudeville-audio-renders');
 // `--autoplay-policy=user-gesture-required` instead (see probe.mjs).
 export const BACKGROUND_ARGS = ['--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'];
 export const HARNESS_CHROME_ARGS = ['--autoplay-policy=no-user-gesture-required', ...BACKGROUND_ARGS];
+
+// `CLAUDEVILLE_CHROME=/path/to/chrome` runs the audio tools on that browser
+// instead of Playwright's bundled Chromium (a host without the bundled build,
+// or one that wants the system Chrome's codecs). The same variable as the
+// smokes' launcher.
+export const CHROME_ENV = 'CLAUDEVILLE_CHROME';
+
+export function launchChromium(options = {}) {
+    const executablePath = process.env[CHROME_ENV];
+    if (!executablePath) return chromium.launch(options);
+    if (!fs.existsSync(executablePath)) throw new Error(`${CHROME_ENV}=${executablePath} does not exist`);
+    return chromium.launch({ ...options, executablePath });
+}
 
 export async function pullPcm(page, floats, name = '__harPcm') {
     const parts = [];

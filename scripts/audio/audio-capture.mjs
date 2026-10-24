@@ -8,14 +8,13 @@
 //   node scripts/audio/audio-capture.mjs index [--out dir]
 import fs from 'node:fs';
 import path from 'node:path';
-import { chromium } from 'playwright';
 import { startStaticServer, AUDIO_DIR, REPO_ROOT } from './lib/server.mjs';
 import { analyze, readWav, writeWavFloat } from './lib/analyze.mjs';
 import { openPlotter } from './lib/plot.mjs';
 import { buildTargets } from './lib/targets.mjs';
 import { STANDARD_VOLUME_STEP } from '../../claudeville/src/presentation/shared/audio/Loudness.js';
 import {
-    DEFAULT_SEED, HARNESS_CHROME_ARGS, RENDERS,
+    DEFAULT_SEED, HARNESS_CHROME_ARGS, RENDERS, launchChromium,
     cutWindow, newHarnessPage, openHarness, pullPcm, readHazards, readVoiceLog,
 } from './lib/capture.mjs';
 
@@ -323,7 +322,7 @@ async function main() {
         return;
     }
 
-    const browser = await chromium.launch({ headless: true, args: HARNESS_CHROME_ARGS });
+    const browser = await launchChromium({ headless: true, args: HARNESS_CHROME_ARGS });
     const plotter = await openPlotter(browser);
     let server = null;
     try {
