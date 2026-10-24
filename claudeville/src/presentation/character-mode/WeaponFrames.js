@@ -95,6 +95,8 @@ export function bakeWeaponFrame(source, { angle = 0, scale = 1, flipX = false } 
     const canvas = document.createElement('canvas');
     canvas.width = width;
     canvas.height = height;
-    canvas.getContext('2d').putImageData(new ImageData(pixels, width, height), 0, 0);
+    // CPU-backed: these frames are drawn into the CPU agent atlases, and one
+    // GPU-backed source puts that atlas's every texture patch on a readback.
+    canvas.getContext('2d', { willReadFrequently: true }).putImageData(new ImageData(pixels, width, height), 0, 0);
     return { canvas, offsetX, offsetY };
 }

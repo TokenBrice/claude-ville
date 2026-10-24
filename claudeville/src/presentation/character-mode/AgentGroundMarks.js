@@ -142,7 +142,7 @@ export function contactShadowStamp(width, cast = frameCastLighting(), pointCast 
     const maxY = Math.max(cy0 + h, raster ? raster.offsetY + raster.canvas.height : cy0 + h);
     const canvas = makeCanvas(maxX - minX, maxY - minY);
     if (!canvas) return null;
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (raster) {
         ctx.drawImage(raster.canvas, raster.offsetX - minX, raster.offsetY - minY);
         // The point cast raster stays in RakingLight's LRU; the raking trail
@@ -197,7 +197,7 @@ function ringStamp(kind, width, color, alpha = 255, keylineAlpha = KEYLINE_ALPHA
     const h = Math.max(7, Math.round(w * RING_ASPECT) | 1);
     const canvas = makeCanvas(w, h + 1);
     if (!canvas) return null;
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     const image = ctx.createImageData(w, h + 1);
     const inside = ellipseMask(w, h);
     const rgb = hexRgb(color);

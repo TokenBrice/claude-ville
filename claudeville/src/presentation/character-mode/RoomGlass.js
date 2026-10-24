@@ -188,7 +188,7 @@ export class RoomGlass {
         const canvas = document.createElement('canvas');
         canvas.width = map.w;
         canvas.height = map.h;
-        canvas.getContext('2d').drawImage(image, map.left, map.top, map.w, map.h, 0, 0, map.w, map.h);
+        canvas.getContext('2d', { willReadFrequently: true }).drawImage(image, map.left, map.top, map.w, map.h, 0, 0, map.w, map.h);
         return canvas;
     }
 
@@ -219,7 +219,7 @@ export class RoomGlass {
             entry = { canvas, left: map.left, top: map.top, w: map.w, h: map.h, key: '', revision: 0, channels: map.channels };
             this._patches.set(type, entry);
         }
-        const ctx = entry.canvas.getContext('2d');
+        const ctx = entry.canvas.getContext('2d', { willReadFrequently: true });
         const image = ctx.createImageData(map.w, map.h);
         const out = image.data;
         const src = map.albedo;

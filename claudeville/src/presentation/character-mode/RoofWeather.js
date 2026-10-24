@@ -967,7 +967,7 @@ export class RoofWeather {
                 const crop = (image) => {
                     if (!sized(image)) return null;
                     const canvas = canvasOf(map.w, map.h);
-                    canvas.getContext('2d').drawImage(image, map.left, map.top, map.w, map.h, 0, 0, map.w, map.h);
+                    canvas.getContext('2d', { willReadFrequently: true }).drawImage(image, map.left, map.top, map.w, map.h, 0, 0, map.w, map.h);
                     return canvas;
                 };
                 map.channels = { material: crop(materialImage), occluder: crop(occluder) };
@@ -992,7 +992,7 @@ export class RoofWeather {
             entry = { canvas: canvasOf(map.w, map.h), left: map.left, top: map.top, w: map.w, h: map.h, key: '', revision: 0, channels: map.channels, empty: false };
             this._patches.set(type, entry);
         }
-        const ctx = entry.canvas.getContext('2d');
+        const ctx = entry.canvas.getContext('2d', { willReadFrequently: true });
         const image = ctx.createImageData(map.w, map.h);
         const written = paintRoofWeather(map, map.albedo, image.data, { bucket: this.bucket, wetQ: this.wetQ });
         ctx.putImageData(image, 0, 0);
@@ -1015,7 +1015,7 @@ export class RoofWeather {
             const strip = paintRoofDrips(map);
             if (!strip) return null;
             const canvas = canvasOf(strip.box.w * ROOF_DRIP_FRAMES, strip.box.h);
-            const ctx = canvas.getContext('2d');
+            const ctx = canvas.getContext('2d', { willReadFrequently: true });
             const image = ctx.createImageData(canvas.width, canvas.height);
             image.data.set(strip.data);
             ctx.putImageData(image, 0, 0);

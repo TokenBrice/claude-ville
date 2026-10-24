@@ -428,12 +428,13 @@ export class MonumentRules {
         return null;
     }
 
-    buildRecord(event, context = {}) {
+    buildRecord(event, context = {}, seen = null) {
         const result = this.classify(event);
         if (!result) return null;
         const now = Number(context.now || Date.now());
         const project = textOf(event.project || event.repository || event.repo || context.project || 'unknown');
         const id = stableHash(result.dedupKey);
+        if (seen?.has(id)) return null;
         const placement = chooseMonumentPlacement(result.district, {
             seed: result.dedupKey,
             monuments: context.monuments,
@@ -527,7 +528,7 @@ export class MonumentPlanter {
         const isActive = typeof context.isActive === 'function' ? context.isActive : () => true;
         for (const event of events) {
             if (!isActive()) break;
-            const record = this.rules.buildRecord(event, context);
+            const record = this.rules.buildRecord(event, context, this.seen);
             if (!record || this.seen.has(record.id)) continue;
             this.seen.add(record.id);
             try {

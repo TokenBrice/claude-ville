@@ -1076,7 +1076,7 @@ function bakeFogBankTile(canvas, strength, rgb) {
     const tile = canvas || document.createElement('canvas');
     tile.width = w;
     tile.height = h;
-    const tctx = tile.getContext('2d');
+    const tctx = tile.getContext('2d', { willReadFrequently: true });
     const image = tctx.createImageData(w, h);
     const share = 0.3 + 0.34 * strength;
     const threshold = s => sorted[Math.round((1 - clamp(s, 0, 1)) * (sorted.length - 1))];

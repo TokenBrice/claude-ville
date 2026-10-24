@@ -127,7 +127,7 @@ export class StaticPropSprite {
         const canvas = document.createElement('canvas');
         canvas.width = width;
         canvas.height = height;
-        const ctx = canvas.getContext('2d');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
         if (!ctx) return null;
         const originX = -(this.x + left - CACHE_PAD);
         const originY = -(this.y + top - CACHE_PAD);
@@ -144,7 +144,7 @@ export class StaticPropSprite {
             const channel = document.createElement('canvas');
             channel.width = width;
             channel.height = height;
-            const channelCtx = channel.getContext('2d');
+            const channelCtx = channel.getContext('2d', { willReadFrequently: true });
             if (!channelCtx) continue;
             SpriteRenderer.disableSmoothing(channelCtx);
             channelCtx.translate(originX, originY);

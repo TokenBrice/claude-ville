@@ -205,7 +205,7 @@ function waterOnlySource(source, materialSource, propKey, textureKey) {
     const canvas = document.createElement('canvas');
     canvas.width = materialSource.width;
     canvas.height = materialSource.height;
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     ctx.drawImage(source, 0, 0);
     ctx.globalCompositeOperation = 'destination-in';
     ctx.drawImage(materialSource, 0, 0);

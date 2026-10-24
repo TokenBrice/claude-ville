@@ -2,6 +2,34 @@
 
 ---
 
+## v0.57.5 — *Fleet of Foot* · Oct 24, 2026
+
+A busy village walks smoothly again. With 25 working villagers on Linux Chrome, the World fell to 20–30 fps and dipped below 10 in bursts. The cause was not the villager count but a GPU readback on every upload of a villager's animation frame.
+
+- **Villager frames upload without a readback.** The weapon and tool frames held by Codex villagers, and the darkened back layer of hats and accessories, were drawn on GPU-backed canvases. Composing one of them into a villager's sheet put that sheet, and through it the shared agent atlas, on Chrome's slow path. On Chrome with GL raster (the Linux default), every texture copy from that atlas then read the whole 840×3080 canvas back from the GPU: about 3–7 ms per animation-frame patch, several times per frame. Every canvas the WebGPU world uploads now stays CPU-backed, as the v0.50 atlas rule already required. An atlas patch costs about 0.2 ms.
+- **No more stalls on first sight.** Foliage frames, ground marks, raking light, prop and building stamps, window glass, roof weather, ground cues, emitter cuts, attention plates and label stamps each stalled for 1–45 ms the first time they were uploaded, so the World hitched when villagers arrived, the camera panned or the weather turned. The retained ground cues stalled for up to 28 ms on each redraw. All of them now upload in under 3 ms.
+- **The Chronicle stops re-planting old monuments.** Once a second, the Chronicle replays recent events, and each replayed event chose a monument tile again before the dedup check threw it away. On a long history that was a periodic main-thread stall: 384 ms at 60,000 retained records, now 0.29 ms. Planted records are unchanged.
+- **Diagnostics stop costing a scan per frame.** The WebGPU world's per-frame diagnostics build their resource accounting only when the Shift-D overlay reads it.
+- **Model roster tool refreshed.** `tools/model-roster.html` now lists the current Claude, Codex (`gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-luna`), GLM, Grok and Gemini models, and shows the Astra worldsplitter.
+
+Measured at 2508×1398 on an RTX 5070 Ti (Chrome on Wayland, WebGPU world), median of three alternating runs per arm against v0.57.4.1:
+
+| Scenario | Host load | v0.57.4.1 fps (p95) | v0.57.5 fps (p95) |
+|---|---|---|---|
+| `dense-24-agents` | about 6 | 78 (29.2 ms) | 222 (4.3 ms) |
+| `dense-24-agents` | about 15–20 | 17 (128.5 ms) | 53 (33.3 ms) |
+| `readme-showcase` (31 villagers) | about 15–20 | 55 (33.3 ms) | 59 (16.8 ms) |
+
+At host load 15–20, frames over 33 ms in 15 s fell from 199 to 58 on `dense-24-agents` and from 56 to 11 on `readme-showcase`.
+
+Pixels: an in-page mirror compared each moved canvas byte for byte against a GPU-backed twin. Twenty match exactly. The material-channel sidecar differed by 1 LSB, so it keeps its GPU backing. Three show raster rounding:
+
+- The accessory back layer differs by at most 1/255 in a colour channel, on about 9% of its pixels. It now rounds as hood overlays already did.
+- The soft ellipse shadow edges of prop stamps differ on 0.2% of pixels.
+- The retained ground cues' fractional-scale edges differ on 0.03% of pixels, all with alpha under about 40.
+
+Validation: `gate:release` is clean with 2102 tests, including a new monument replay regression test and a lazy-diagnostics test. It ran with `GIT_CEILING_DIRECTORIES` set to the temp root, because a stray repository there made the worktree-pointer fixture walk up into it. `verify:architecture` is clean. `verify:render` was not run because Playwright's bundled Chromium is not installed here. The benchmarks ran on system Chrome instead.
+
 ## v0.57.4.1 · Oct 19, 2026 — Hotfix
 
 - **A fading ship still sails on its push.** A docked commit that dropped off the server's list for one update started fading out. If it came back in the next update together with the push that landed it, the fading ship ignored the push, was put back at its mooring, and stayed there. A returning ship now docks again before that update's pushes apply, so it sails with them.

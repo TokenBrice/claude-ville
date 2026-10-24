@@ -2936,7 +2936,7 @@ export class BuildingSprite {
             const canvas = document.createElement('canvas');
             canvas.width = frameW * 3;
             canvas.height = frameH;
-            const ctx = canvas.getContext('2d');
+            const ctx = canvas.getContext('2d', { willReadFrequently: true });
             const [beam, dark, shade, mid, light] = ['#2e1f12', '#5a3a1a', '#87591f', '#a8732a', '#e0b05a'];
             const put = (color, x, y, w = 1) => { ctx.fillStyle = color; ctx.fillRect(x, y, w, 1); };
             for (let f = 0; f < 3; f++) {
@@ -3045,7 +3045,7 @@ export class BuildingSprite {
             const canvas = document.createElement('canvas');
             canvas.width = baked.width;
             canvas.height = baked.height;
-            canvas.getContext('2d').putImageData(new ImageData(baked.data, baked.width, baked.height), 0, 0);
+            canvas.getContext('2d', { willReadFrequently: true }).putImageData(new ImageData(baked.data, baked.width, baked.height), 0, 0);
             cycle = { ...baked, data: null, canvas, version };
         }
         this._cycleCache.set(id, { version, cycle });

@@ -2080,6 +2080,7 @@ export class GpuWorldRendererWebGPU {
     }
 
     getDiagnostics() {
+        const renderer = this;
         const quality = this.qualityLadder.getState();
         return {
             backend: 'webgpu',
@@ -2207,7 +2208,7 @@ export class GpuWorldRendererWebGPU {
             debugLoad: this._debugLoad
                 ? { passes: this._debugLoad.passes, levels: this._debugLoad.levels, arms: this._debugLoad.schedule?.length ?? 0 }
                 : null,
-            resources: this.getResourceAccounting(),
+            get resources() { return renderer.getResourceAccounting(); },
             atlasRecords: this._sourceCensus?.atlasRecords || 0,
             individualRecords: this._sourceCensus?.individualRecords || 0,
             sourceBatchCount: this._sourceCensus?.batchCount || this.batches,

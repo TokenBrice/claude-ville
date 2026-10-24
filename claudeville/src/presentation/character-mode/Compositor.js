@@ -571,7 +571,7 @@ export class Compositor {
         const back = document.createElement('canvas');
         back.width = dims.w;
         back.height = dims.h;
-        const bctx = back.getContext('2d', { willReadFrequently: fillBack });
+        const bctx = back.getContext('2d', { willReadFrequently: true });
         bctx.imageSmoothingEnabled = false;
         if (fillBack) {
             const filled = bctx.createImageData(dims.w, dims.h);

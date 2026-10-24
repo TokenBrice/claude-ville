@@ -2261,8 +2261,8 @@ export function mirrorAccentLayers(renderer) {
                 albedo.data[o + 3] = 255;
                 glow.data[o + 3] = 128;
             }
-            canvas.getContext('2d').putImageData(albedo, 0, 0);
-            emissive.getContext('2d').putImageData(glow, 0, 0);
+            canvas.getContext('2d', { willReadFrequently: true }).putImageData(albedo, 0, 0);
+            emissive.getContext('2d', { willReadFrequently: true }).putImageData(glow, 0, 0);
             layers.push({ building, type, group, canvas, emissive, x: x0, y: y0, w: lw, h: lh, key: `mirror-accent:${type}:${group}` });
         }
     }

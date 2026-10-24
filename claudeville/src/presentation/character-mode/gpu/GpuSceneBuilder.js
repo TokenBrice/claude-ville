@@ -253,7 +253,7 @@ function composeProceduralTerrainMaterial(renderer, cached) {
     const canvas = document.createElement('canvas');
     canvas.width = Math.max(1, Math.ceil(cached.canvas.width * scale));
     canvas.height = Math.max(1, Math.ceil(cached.canvas.height * scale));
-    const ctx = canvas.getContext('2d', { alpha: true });
+    const ctx = canvas.getContext('2d', { alpha: true, willReadFrequently: true });
     ctx.imageSmoothingEnabled = false;
     paintTerrainClassMap(ctx, renderer, cached, scale, [
         { tiles: 'pathTiles', materialClass: 'cobble' },
@@ -271,7 +271,7 @@ function composeAuthoredTerrainMaterial(renderer, cached) {
     const canvas = document.createElement('canvas');
     canvas.width = Math.max(1, Math.ceil(cached.canvas.width * scale));
     canvas.height = Math.max(1, Math.ceil(cached.canvas.height * scale));
-    const ctx = canvas.getContext('2d', { alpha: true });
+    const ctx = canvas.getContext('2d', { alpha: true, willReadFrequently: true });
     ctx.imageSmoothingEnabled = false;
     paintTerrainClassMap(ctx, renderer, cached, scale, TERRAIN_TILE_SOURCES);
     paintGroundClass(ctx, renderer, cached, scale,

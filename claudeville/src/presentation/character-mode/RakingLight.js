@@ -140,7 +140,7 @@ export function rasterizeCourses(stamps, rgb) {
             }
         }
     }
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     const image = ctx.createImageData(width, height);
     for (let index = 0; index < alpha.length; index++) {
         if (!alpha[index]) continue;

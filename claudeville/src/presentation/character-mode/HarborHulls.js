@@ -512,7 +512,7 @@ function wakeStamp(dirX, dirY, length, hold = 0) {
     if (hit) return touch(_wakes, key, hit, WAKE_CACHE_LIMIT);
     const size = len * 2 + 4;
     const canvas = canvasOf(size, size);
-    const ctx = canvas?.getContext('2d');
+    const ctx = canvas?.getContext('2d', { willReadFrequently: true });
     if (!ctx) return null;
     const a = bucket / WAKE_HEADINGS * Math.PI * 2;
     wakeV(ctx, size / 2, size / 2, Math.cos(a), Math.sin(a) / 2, { length: len, hold: fresh, color: WAKE_FOAM, crest: WAKE_CREST, thick: 2 });

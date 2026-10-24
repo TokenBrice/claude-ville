@@ -1366,7 +1366,7 @@ export function prepareSemanticGround(renderer, viewport, snapshot, atmosphere) 
         // drift must not turn a static cue texture into a per-frame upload.
         Math.round((atmosphere?.lighting?.lightBoost ?? 1) * 64), atmosphere?.grade?.worldTint,
     ].join(';');
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (key === renderer._semanticGroundKey) return { ctx, dirty: false };
     // B.2 — on the same canvas size and camera transform the last redraw's
     // painted extent is the only non-transparent area: clear just it, record

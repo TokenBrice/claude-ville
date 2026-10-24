@@ -771,7 +771,7 @@ function markInks() {
     const canvas = document.createElement('canvas');
     canvas.width = MARK_INKS.length;
     canvas.height = 1;
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) return null;
     const texel = new Map();
     MARK_INKS.forEach((ink, index) => {

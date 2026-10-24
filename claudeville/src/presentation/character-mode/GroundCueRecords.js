@@ -208,7 +208,7 @@ class CueAtlas {
         this.capacity = bands;
         this.canvas.width = ATLAS_WIDTH;
         this.canvas.height = bands * BAND_HEIGHT;
-        this.ctx = this.canvas.getContext('2d');
+        this.ctx = this.canvas.getContext('2d', { willReadFrequently: true });
         for (let i = 0; i < this.colors.length; i++) this._paintBand(i, this.colors[i]);
     }
 

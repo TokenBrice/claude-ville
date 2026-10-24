@@ -43,30 +43,30 @@ const LADDERS = {
 // (low / high / top tier — or low / med / high for ring-only models).
 const ROWS = [
     { label: 'CLAUDE', models: [
-        ['claude-fable', 'claude', 'FULL'],
-        ['claude-opus', 'claude', 'FULL'],
-        ['claude-sonnet', 'claude', 'FULL'],
-        ['claude-haiku', 'claude', 'FULL'],
+        ['claude-fable-5-1', 'claude', 'FULL'],
+        ['claude-opus-5', 'claude', 'FULL'],
+        ['claude-sonnet-5', 'claude', 'FULL'],
+        ['claude-haiku-4-5', 'claude', 'FULL'],
     ] },
     { label: 'CODEX', models: [
-        ['gpt-5.3-codex-spark', 'codex', 'STD'],
-        ['gpt-5.4', 'codex', 'STD'],
-        ['gpt-5.5', 'codex', 'XH'],
+        ['gpt-6.1-sol', 'codex', 'FULL'],
+        ['gpt-6-astra', 'codex', 'FULL'],
+        ['gpt-6-luna', 'codex', 'FULL'],
     ] },
-    { label: 'CODEX · GPT-5.6', models: [
-        ['gpt-5.6-sol', 'codex', 'ULTRA'],
-        ['gpt-5.6-terra', 'codex', 'ULTRA'],
-        ['gpt-5.6-luna', 'codex', 'FULL'],
-    ] },
-    { label: 'KIMI · GROK', models: [
-        ['kimi', 'kimi', 'STD'],
-        ['grok', 'grok', 'STD'],
-        ['grok-composer', 'grok', 'STD'],
+    { label: 'GLM', models: [
+        ['zai/glm-5.3', 'zai', 'STD'],
+        ['zai/glm-5.3-flash', 'zai', 'STD'],
     ] },
     { label: 'DEEPSEEK', models: [
         ['deepseek-flash', 'deepseek', 'FULL'],
         ['deepseek-v4-pro', 'deepseek', 'STD'],
         ['deepseek-reasoner', 'deepseek', 'STD'],
+    ] },
+    { label: 'KIMI · GROK · GEMINI', models: [
+        ['kimi', 'kimi', 'STD'],
+        ['grok-4.5', 'grok', 'STD'],
+        ['grok-composer', 'grok', 'STD'],
+        ['gemini-3.5-flash', 'gemini', 'STD'],
     ] },
 ];
 const EFFORT_LABELS = { low: 'low', medium: 'med', high: 'high', xhigh: 'xhigh', max: 'max', ultra: 'ultra' };
@@ -97,9 +97,10 @@ const MAX_AGENT_DRAW_SCALE = 1.25;
 const CODEX_EQUIPMENT_BY_CLASS = {
     codex: 'engineerWrench', spark: 'multitool', gpt54: 'engineerWrench',
     gpt55: 'runeblade', gpt56sol: 'dawnblade', gpt56terra: 'earthbreaker',
-    gpt56luna: 'crescentSaber',
+    gpt56luna: 'crescentSaber', gpt6astra: 'worldsplitter',
 };
 const CODEX_WEAPON_ASSETS = {
+    worldsplitter:  { id: 'equipment.codex.worldsplitter',  pose: 'polearmUpright',     anchor: [36, 68], scale: 0.78, hands: 'single' },
     runeblade:      { id: 'equipment.codex.runeblade',      pose: 'rightHand',          anchor: [31, 70], scale: 0.62, hands: 'single' },
     greatsword:     { id: 'equipment.codex.greatsword',     pose: 'greatswordShoulder', backLayer: 'always', anchor: [36, 82], scale: 0.56, hands: 'single' },
     polearm:        { id: 'equipment.codex.polearm',        pose: 'polearmUpright',     anchor: [44, 74], scale: 0.70, hands: 'double', handSpacing: 13, handVector: [-7, 12] },

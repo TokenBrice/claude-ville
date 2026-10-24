@@ -151,3 +151,12 @@ test('WebGPU rescue repaint preserves the primary pacing and timing sample', t =
     assert.equal(f.renderer.render(f.input), true);
     assert.equal(f.renderer.getDiagnostics().pacing.sampledAtMs, now, 'the next logical frame still records timing');
 });
+
+test('diagnostics defer resource accounting until resources are read', t => {
+    const f = fixture(t);
+    const accounting = t.mock.method(f.renderer, 'getResourceAccounting', () => ({ pinnedBytes: 123 }));
+    const diagnostics = f.renderer.getDiagnostics();
+    assert.equal(accounting.mock.callCount(), 0);
+    assert.deepEqual(diagnostics.resources, { pinnedBytes: 123 });
+    assert.equal(accounting.mock.callCount(), 1);
+});

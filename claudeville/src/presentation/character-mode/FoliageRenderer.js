@@ -691,7 +691,7 @@ export class FoliageRenderer {
         const canvas = document.createElement('canvas');
         canvas.width = lean.width;
         canvas.height = lean.height;
-        const ctx = canvas.getContext('2d');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
         const image = ctx.createImageData(lean.width, lean.height);
         image.data.set(lean.data);
         ctx.putImageData(image, 0, 0);

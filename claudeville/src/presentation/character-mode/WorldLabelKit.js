@@ -136,7 +136,7 @@ function bakeOutlinedMotif(id, color, outline, step, scale) {
     const canvas = document.createElement('canvas');
     canvas.width = size * unit;
     canvas.height = size * unit;
-    const stamp = canvas.getContext('2d');
+    const stamp = canvas.getContext('2d', { willReadFrequently: true });
     const fill = (px, py, w, h) => stamp.fillRect(px * unit, py * unit, w * unit, h * unit);
     stamp.fillStyle = outline;
     for (let row = 0; row < 8; row++) {
