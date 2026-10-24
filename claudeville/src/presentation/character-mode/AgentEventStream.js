@@ -2,6 +2,8 @@ import { eventBus } from '../../domain/events/DomainEvent.js';
 import { classifyTool } from './VisitIntentManager.js';
 import { placedToolBuilding } from './MovementRouting.js';
 import { homeDistrictFor } from './HomeDistrict.js';
+import { MendLedger } from './OutcomeMends.js';
+import { createVerifiedOutcome, VERIFIED_OUTCOME_EVENT } from '../../domain/services/VerifiedOutcome.js';
 
 function nowMs() {
     if (typeof performance !== 'undefined' && performance.now) return performance.now();
@@ -208,6 +210,8 @@ export class AgentEventStream {
         this._emittedToolKeysByAgent = new Map();
         this._emittedToolKeyOwners = new Map();
         this._observedResultIdsByAgent = new Map();
+        // D2 — open real-exit failures awaiting the same command's pass.
+        this._mends = new MendLedger();
         // Results that finished before the village started watching this agent
         // are recorded, never stamped: a shelf tile means "this completed while
         // you were here", not "this exists in the transcript tail".
@@ -237,6 +241,7 @@ export class AgentEventStream {
         this._emittedToolKeysByAgent.clear();
         this._emittedToolKeyOwners.clear();
         this._observedResultIdsByAgent.clear();
+        this._mends.clear();
         this.shouldEmitToolEvent = null;
         this.shouldEmitEvent = null;
     }
@@ -328,6 +333,7 @@ export class AgentEventStream {
         this._clearChatPairsFor(agent.id);
         this._retireEmittedToolKeys(agent.id);
         this._observedResultIdsByAgent.delete(String(agent.id || ''));
+        this._mends.forgetAgent(String(agent.id || ''));
     }
 
     _emitToolIfChanged(agent, previous, next) {
@@ -395,7 +401,21 @@ export class AgentEventStream {
             };
             if (!this._canEmit('tool:result', event, agent)) continue;
             eventBus.emit('tool:result', event);
+            this._observeMend(agent, event);
         }
+    }
+
+    // D2 — the same command that failed with a real exit code has passed:
+    // `outcome:mended` turns its chit to stone and writes the Chronicle line,
+    // and the verified `mended` outcome gives the body its celebrate pose.
+    _observeMend(agent, event) {
+        const mend = this._mends.observe(event);
+        if (!mend) return;
+        const payload = { ...mend, agent, ts: Date.now() };
+        if (!this._canEmit('outcome:mended', payload, agent)) return;
+        eventBus.emit('outcome:mended', payload);
+        const outcome = createVerifiedOutcome('mended', agent.projectPath || agent.project, agent.id, payload.ts);
+        if (outcome) eventBus.emit(VERIFIED_OUTCOME_EVENT, outcome);
     }
 
     _toolEvent(agent, snap, extra = {}) {
@@ -485,6 +505,7 @@ export class AgentEventStream {
             maxEmittedToolKeysPerAgent: MAX_EMITTED_TOOL_KEYS_PER_AGENT,
             maxEmittedToolKeysTotal: MAX_EMITTED_TOOL_KEYS_TOTAL,
             observedResultAgents: this._observedResultIdsByAgent.size,
+            openMends: this._mends.openCount,
             maxObservedResultIdsPerAgent: MAX_OBSERVED_RESULT_IDS_PER_AGENT,
         };
     }
