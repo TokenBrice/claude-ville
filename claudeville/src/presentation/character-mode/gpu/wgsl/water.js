@@ -17,6 +17,7 @@ import {
     OPEN_SEA_LIGHT_REACH,
     OPEN_SEA_STOP_SEAM,
     WATER_CAST,
+    WATER_SKY_LIFT,
 } from '../../CoastBake.js';
 import {
     DEEP_CREST_RUN,
@@ -55,7 +56,9 @@ import {
     SWELL_CREST_ROWS,
     SWELL_CREST_RUN,
     SWELL_GAP_GAIN,
+    SWELL_LIT_FLOOR,
     SWELL_LIT_ROWS,
+    SWELL_LIT_STEPS,
     SWELL_LONE_CAPS,
     SWELL_NEAR_FADE,
     SWELL_SET_GAIN,
@@ -84,6 +87,12 @@ function wgslRgbArray(name, list) {
 }
 
 const WATER_MOOD_WGSL = /* wgsl */ `
+fn applyWaterSky(color: vec3f) -> vec3f {
+    if (frame.waterSky.w <= 0.0) { return color; }
+    let l = dot(color, vec3f(0.2126, 0.7152, 0.0722));
+    let ls = max(1e-4, dot(frame.waterSky.rgb, vec3f(0.2126, 0.7152, 0.0722)));
+    return clamp(mix(color, frame.waterSky.rgb * (min(max(ls, l), l * ${WATER_SKY_LIFT.toFixed(2)}) / ls), frame.waterSky.w), vec3f(0.0), vec3f(1.0));
+}
 fn applyWaterMood(color0: vec3f) -> vec3f {
     var color = color0;
     if (frame.waterMood.y > 0.0) {
@@ -154,7 +163,7 @@ fn seaNear(excess: f32) -> f32 {
     return clamp(1.0 - (excess - 1.5) / ${SWELL_NEAR_FADE.toFixed(1)}, 0.0, 1.0);
 }
 fn swellPhase(p: vec2f) -> f32 {
-    return dot(p, vec2f(${SWELL_SET_NORMAL[0].toFixed(2)}, 1.0)) / ${SWELL_SET_PERIOD.toFixed(1)}
+    return (dot(p, vec2f(${SWELL_SET_NORMAL[0].toFixed(2)}, 1.0)) + frame.swellDrift) / ${SWELL_SET_PERIOD.toFixed(1)}
         + ${SWELL_SET_WARP.toFixed(2)} * seaNoise(p / vec2f(${SWELL_WARP_CELL[0].toFixed(1)}, ${SWELL_WARP_CELL[1].toFixed(1)}) + vec2f(3.0, 11.0))
         + ${SWELL_SET_WARP_FINE.toFixed(2)} * seaNoise(p / vec2f(${SWELL_WARP_FINE_CELL[0].toFixed(1)}, ${SWELL_WARP_FINE_CELL[1].toFixed(1)}) + vec2f(29.0, 5.0));
 }
@@ -235,6 +244,7 @@ fn seaBodyStop(p: vec2f, s: f32, stop: f32, excess: f32, order: f32) -> f32 {
             mix(${SWELL_CHOP_LIT_ROWS[0].toFixed(1)}, ${SWELL_CHOP_LIT_ROWS[1].toFixed(1)}, key) * ch,
             mix(${SWELL_CHOP_TROUGH_ROWS[0].toFixed(1)}, ${SWELL_CHOP_TROUGH_ROWS[1].toFixed(1)}, key) * ch * calm, order);
     }
+    if (form < 0.0) { return max(stop - ${SWELL_LIT_STEPS.toFixed(1)}, min(stop, ${SWELL_LIT_FLOOR.toFixed(1)})); }
     return clamp(stop + form, 0.0, 6.0);
 }
 const OPEN_SEA_REACH: f32 = ${OPEN_SEA_LIGHT_REACH.toFixed(1)};
@@ -343,7 +353,7 @@ fn applyCoastSwash(color: vec3f, px: vec2f) -> vec3f {
     let cyc = glslMod(floor(frame.timeMs * 0.005 * frame.waterFx.x), 8.0);
     let reach = select(select(0.0, 6.0 - cyc, cyc < 7.0), cyc, cyc < 4.0);
     if (sd > 0.0) {
-        if (waterStopIndex(color) < 0 && !sameColour(color, WATER_FOAM) && !sameColour(color, WATER_FOAM_CREST)) {
+        if ((flags & ${COAST_FIELD_FLAGS.cliffSurf}u) == 0u && waterStopIndex(color) < 0 && !sameColour(color, WATER_FOAM) && !sameColour(color, WATER_FOAM_CREST)) {
             return color;
         }
         let front = 0.05 + reach * 0.035;

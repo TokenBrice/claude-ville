@@ -29,6 +29,7 @@ import { ART_RAMPS } from '../../config/artPalette.js';
 import { WATER_POLYLINES, WORLD_TREE, inWorldTreeIslet } from '../../config/scenery.js';
 import * as CanvasGrade from './CanvasGrade.js';
 import { emissiveSidecarFor } from './EmitterCuts.js';
+import { cloudCourseDrift } from './Wind.js';
 
 const HALF_W = TILE_WIDTH / 2;
 const HALF_H = TILE_HEIGHT / 2;
@@ -106,6 +107,22 @@ const SHELF_HANDOVER_SD = 0.35;
 const OUTER_CAP = DEPTH_BOUNDS.length;
 // Grade night weight below which water keeps its day mood (see waterMoodFor).
 const WATER_NIGHT_FLOOR = 0.15;
+// E2-01 — the sky on the sea. At the working zoom the sky is off-frame and
+// the sea, half the frame, stands in for it: graded water takes
+// WATER_SKY_WEIGHT of the grade's own sky-horizon colour (warm at golden
+// hour, violet at the blue hour, the pewter of an overcast), plus
+// WATER_SKY_COVER x the cloud cover and WATER_SKY_FOG x the fog, halved at
+// night (`waterMoodFor` .sky / .skyWeight; CanvasGrade.applyWaterSky and its
+// GLSL / WGSL twins mix it in after V6's cap). The sky lends its hue at the
+// water's own value, lifting it by at most WATER_SKY_LIFT (an overcast's pale
+// sky) and never darkening it, so the night lane's value grade stands.
+// Weather and clock only, never agents.
+const WATER_SKY_WEIGHT = 0.22;
+const WATER_SKY_COVER = 0.12;
+const WATER_SKY_FOG = 0.08;
+export { WATER_SKY_LIFT } from './CanvasGrade.js';
+// Canvas rebake buckets: the weight in 1/32, the sky in 1/32 a channel.
+const WATER_SKY_STEPS = 32;
 
 // Cliff (3.5) face height in world px (varied +-CLIFF_FACE_WOBBLE).
 const CLIFF_FACE = 34;
@@ -1234,6 +1251,8 @@ function paintStratifiedCliff(buf, coast, field, renderer) {
     const edgeLimit = MAP_SIZE - 0.5 - 0.06;
     const plainTiles = cliffPlainTiles(renderer);
     const walls = wallPixels(renderer);
+    // E2-05 — each boulder column's waterline (world x -> y), for the swash.
+    coast.cliffFoot = new Map();
     const { data, role } = buf;
     const set = (x, y, rgb, kind) => {
         const at = bufferIndex(buf, x, y);
@@ -1330,6 +1349,7 @@ function paintStratifiedCliff(buf, coast, field, renderer) {
             if (!col.land) continue;
             const waterline = foot.get(x);
             if (waterline == null) continue;
+            coast.cliffFoot.set(x, waterline);
             let y = waterline;
             // Surf lace hugging the boulder bases: clustered runs (a coarse
             // and a fine hash), two foam buckets, a sparse second texel.
@@ -2388,6 +2408,16 @@ const COAST_SD_BIAS = 128;
 // The swash may draw from this far up the beach to this far out to sea.
 const SWASH_LAND_SD = -0.35;
 const SWASH_WATER_SD = 0.3;
+// E2-05 — the swash at the cliff's foot (under the curtain wall and the sea
+// tower, SW and SE): the outer shelf's cells within CLIFF_SURF_ROWS world rows
+// below a column's boulder waterline take the swash, their coast-field sd
+// rewritten to the distance below that waterline (CLIFF_SURF_SD0 plus
+// CLIFF_SURF_SD_ROW a row), so the beaches' 1.6 s lapping front breaks
+// against the rock too. The sd of the beaches runs off the island's signed
+// distance, which the cliff's 34 px face pushes far past the swash band.
+const CLIFF_SURF_ROWS = 8;
+const CLIFF_SURF_SD0 = 0.02;
+const CLIFF_SURF_SD_ROW = 0.025;
 
 export const COAST_FIELD_FLAGS = Object.freeze({
     reflection: 1,
@@ -2397,6 +2427,9 @@ export const COAST_FIELD_FLAGS = Object.freeze({
     // 3.3 (a) — the sea's own water (sea and Harbor bodies and the outer
     // shelf; never a lagoon, pond or river), where the swell caps may lie.
     sea: 16,
+    // E2-05 — a cell at the cliff's foot: its swash breaks over the cliff's
+    // mirror too (a beach's swash only ever turns water stops and foam).
+    cliffSurf: 32,
     // A water cell the terrain bake covered with a dock, pier deck, bridge
     // span or foundation (staticReflections' `covered`): land for 2.9 casts.
     covered: 64,
@@ -2437,6 +2470,20 @@ function riverArcAt(axes, u, v) {
         best = seg.s + t * seg.length;
     }
     return best;
+}
+
+// E2-05 — a coast cell's swash sd below the cliff's waterline, or null when
+// the cell is not wholly within CLIFF_SURF_ROWS rows under both its columns'
+// waterlines (a plain column under a building, slip or bridge has none).
+function cliffSurfSd(coast, c, r) {
+    const feet = coast.cliffFoot;
+    if (!feet?.size) return null;
+    const a = feet.get(coast.x + c * 2);
+    const b = feet.get(coast.x + c * 2 + 1);
+    if (a == null || b == null) return null;
+    const d = coast.y + r * 2 - Math.max(a, b);
+    if (d < 0 || d >= CLIFF_SURF_ROWS) return null;
+    return CLIFF_SURF_SD0 + d * CLIFF_SURF_SD_ROW;
 }
 
 function bakeWaterFields(renderer, coast, field) {
@@ -2490,7 +2537,9 @@ function bakeWaterFields(renderer, coast, field) {
                 flags |= COAST_FIELD_FLAGS.swash;
             }
             if (cls >= CLASS_WATER && (!inMap || field.caps[tile] > 3)) flags |= COAST_FIELD_FLAGS.sea;
-            coastField[cell * 2] = Math.max(0, Math.min(255, Math.round(sd * COAST_SD_SCALE) + COAST_SD_BIAS));
+            const surfSd = cls >= CLASS_WATER && !inMap ? cliffSurfSd(coast, c, r) : null;
+            if (surfSd != null) flags |= COAST_FIELD_FLAGS.swash | COAST_FIELD_FLAGS.cliffSurf;
+            coastField[cell * 2] = Math.max(0, Math.min(255, Math.round((surfSd ?? sd) * COAST_SD_SCALE) + COAST_SD_BIAS));
             coastField[cell * 2 + 1] = flags;
             if (mirrorBase && reflect?.[cell] > 0 && cls >= CLASS_WATER && !coast.covered?.[cell]) {
                 for (let oy = 0; oy < 2; oy++) {
@@ -2560,10 +2609,25 @@ export function waterMoodFor(atmosphere) {
     const type = weather?.type || 'clear';
     const intensity = Math.max(0, Math.min(1, Number(weather?.intensity) || 0));
     const storm = type === 'storm' ? 0.6 + 0.4 * intensity : type === 'rain' ? 0.45 * intensity : 0;
+    const q = value => Math.round(Math.max(0, Math.min(1, value)) * WATER_SKY_STEPS) / WATER_SKY_STEPS;
+    const horizon = grade?.skyHorizon ? colourTo01(grade.skyHorizon) : null;
+    const cover = Math.max(0, Math.min(1, Number(weather?.cloudCover) || 0));
+    const fog = Math.max(0, Math.min(1, Number(weather?.fog) || 0));
+    const quantNight = Math.round(night * 8) / 8;
+    const skyWeight = horizon
+        ? q((WATER_SKY_WEIGHT + WATER_SKY_COVER * cover + WATER_SKY_FOG * fog) * (1 - 0.5 * quantNight))
+        : 0;
     return {
-        night: Math.round(night * 8) / 8,
+        night: quantNight,
         storm: Math.round(storm * 8) / 8,
+        sky: skyWeight > 0 ? horizon.map(q) : [0, 0, 0],
+        skyWeight,
     };
+}
+
+/** The Canvas rebake key of a `waterMoodFor` result. */
+export function waterMoodKey(mood) {
+    return `${mood?.night || 0}:${mood?.storm || 0}:${mood?.skyWeight || 0}:${(mood?.sky || []).join(',')}`;
 }
 
 // CPU mirror of the GLSL `applyWaterMood` in GpuWorldRenderer (0..1 channels).
@@ -2704,7 +2768,7 @@ function drawCanvasMoodLayer(ctx, renderer, atmosphere) {
         };
     }
     const drop = mirrorStormDrop(atmosphere?.weather);
-    const moodKey = `${mood.night}:${mood.storm}:${sunBand}:${drop}`;
+    const moodKey = `${waterMoodKey(mood)}:${sunBand}:${drop}`;
     const now = performance.now();
     const due = layer.moodKey !== moodKey || !(now - layer.bakedAt < OCEAN_REBAKE_MIN_MS);
     if (due && (layer.moodKey !== moodKey || layer.gradeKey !== gradeKey)) {
@@ -2719,7 +2783,7 @@ function drawCanvasMoodLayer(ctx, renderer, atmosphere) {
             if (colour !== layer.colours[k]) changed = true;
             if (memo.has(colour)) continue;
             let rgb = waterSurfaceRgb([((colour >> 16) & 255) / 255, ((colour >> 8) & 255) / 255, (colour & 255) / 255], mood, sunBand);
-            if (!(colour & MIRROR_UNCAPPED)) rgb = CanvasGrade.canvasWaterPreimage(rgb, grade, { postFx });
+            if (!(colour & MIRROR_UNCAPPED)) rgb = CanvasGrade.canvasWaterPreimage(rgb, grade, { postFx, sky: mood });
             const out = (Math.round(rgb[0] * 255) << 16) | (Math.round(rgb[1] * 255) << 8) | Math.round(rgb[2] * 255);
             memo.set(colour, out);
             if (out !== (colour & 0xffffff)) changed = true;
@@ -3058,9 +3122,39 @@ export function distantShowerFront(weather) {
     return progress < squallFlipProgress(progress, Number(weather?.precipitation));
 }
 
+// E2-04 — showers on the sea while it rains: the squall's patch, kept on the
+// sea once the rain falls (precipitation >= RAIN_START_PRECIPITATION) at
+// SHOWER_STRENGTH of its courses (scaled down in light rain), carried
+// downwind by the cloud courses' drift (`cloudCourseDrift`, the motion clock,
+// so reduced motion holds it) across a loop SHOWER_MARGIN world px wider than
+// the island and the patch on either side, so it wraps far off-frame; each
+// pass crosses on its own seeded row within SHOWER_ROW_SPREAD of the
+// island's middle. A pure function of the weather and the motion clock (V3).
+export const SHOWER_STRENGTH = 0.6;
+const SHOWER_MARGIN = 1400;
+const SHOWER_ROW_SPREAD = 900;
+const SHOWER_FULL_PRECIPITATION = 0.6;
+
+function openSeaShower(weather, motionTimeMs) {
+    const precipitation = Number(weather?.precipitation);
+    if (!(precipitation >= RAIN_START_PRECIPITATION)) return null;
+    const reach = MAP_SIZE * HALF_W + SQUALL_HALF_WIDTH + SHOWER_MARGIN;
+    const span = reach * 2;
+    const drift = cloudCourseDrift(motionTimeMs, weather);
+    const along = (Number(drift?.x) || 0) + reach;
+    const pass = Math.floor(along / span);
+    return {
+        x: Math.round(along - pass * span - reach),
+        y: (MAP_SIZE - 1) * HALF_H + Math.round((hash2(pass, 17, 431) - 0.5) * SHOWER_ROW_SPREAD),
+        halfWidth: SQUALL_HALF_WIDTH,
+        strength: SHOWER_STRENGTH * Math.max(0.35, Math.min(1, precipitation / SHOWER_FULL_PRECIPITATION)),
+        fall: (Math.floor((Number(motionTimeMs) || 0) / SQUALL_STREAK_STEP_MS) * 3) % 48,
+    };
+}
+
 export function openSeaSquall(weather, motionTimeMs = 0) {
     const s = squallApproachPhase(weather);
-    if (s < 0) return null;
+    if (s < 0) return openSeaShower(weather, motionTimeMs);
     const windX = Number(weather?.windX);
     const sign = Number.isFinite(windX) && windX < 0 ? -1 : 1;
     const islandHalf = MAP_SIZE * HALF_W;
@@ -3085,7 +3179,7 @@ function oceanPalette(atmosphere, postFx) {
     const sunBand = waterSunBandFor(atmosphere);
     const pre = [...OPEN_SEA_STOPS, SEA_TROUGH, FOAM_CREST].map((rgb) => {
         const c = waterSurfaceRgb(rgb.map(channel => channel / 255), mood, sunBand);
-        return grade ? CanvasGrade.canvasWaterPreimage(c, grade, { postFx }) : c;
+        return grade ? CanvasGrade.canvasWaterPreimage(c, grade, { postFx, sky: mood }) : c;
     });
     const sky = openSeaSky(atmosphere);
     const preimage = rgb => (grade ? CanvasGrade.canvasFramePreimage(rgb, grade, { postFx }) : rgb);

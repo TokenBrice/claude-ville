@@ -136,17 +136,40 @@ function canvasUngradeRgb(target, terms) {
  * Returns `rgb` itself when the cap does not bind. Used for the outer ocean
  * and the in-map water copy (CoastBake).
  */
-export function canvasWaterPreimage(rgb, grade, { postFx = false, maxS = WATER_MAX_SATURATION } = {}) {
+export function canvasWaterPreimage(rgb, grade, { postFx = false, maxS = WATER_MAX_SATURATION, sky = null } = {}) {
     if (!grade) return rgb;
+    const finish = graded => {
+        const capped = capSaturation(graded, maxS);
+        return sky?.skyWeight > 0 ? capSaturation(applyWaterSky(capped, sky), maxS) : capped;
+    };
     if (postFx) {
         const graded = applyGradeToRgb(rgb, grade);
-        const capped = capSaturation(graded, maxS);
-        return capped === graded ? rgb : ungradeRgb(capped, grade);
+        const target = finish(graded);
+        return target === graded ? rgb : ungradeRgb(target, grade);
     }
     const terms = canvasGradeTerms(grade);
     const graded = canvasGradeRgb(rgb, grade, terms);
-    const capped = capSaturation(graded, maxS);
-    return capped === graded ? rgb : canvasUngradeRgb(capped, terms);
+    const target = finish(graded);
+    return target === graded ? rgb : canvasUngradeRgb(target, terms);
+}
+
+/**
+ * E2-01 — the sky on the sea, on graded (capped) water: at the working zoom
+ * the sky is off-frame and the sea, half the frame, stands in for it, so the
+ * water takes `mood.skyWeight` of the grade's own sky-horizon colour
+ * (`mood.sky`, CoastBake.waterMoodFor) at its own value, lifted at most
+ * WATER_SKY_LIFT and never darkened. The GLSL / WGSL `applyWaterSky` twins
+ * run at the same point (after V6's cap; the caller caps again).
+ */
+export const WATER_SKY_LIFT = 1.3;
+export function applyWaterSky(rgb, mood) {
+    const w = mood?.skyWeight || 0;
+    if (!(w > 0)) return rgb;
+    const sky = mood.sky;
+    const l = rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+    const ls = Math.max(1e-4, sky[0] * 0.2126 + sky[1] * 0.7152 + sky[2] * 0.0722);
+    const k = Math.min(Math.max(ls, l), l * WATER_SKY_LIFT) / ls;
+    return [0, 1, 2].map(i => Math.max(0, Math.min(1, rgb[i] + (sky[i] * k - rgb[i]) * w)));
 }
 
 /**

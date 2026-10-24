@@ -90,6 +90,7 @@ import {
     openSeaSky,
     openSeaSquall,
     waterMoodFor,
+    WATER_SKY_LIFT,
 } from '../CoastBake.js';
 import { GRASS_GUST_STOPS } from '../GroundBake.js';
 import { MAP_SIZE, TILE_HEIGHT, TILE_WIDTH } from '../../../config/constants.js';
@@ -221,6 +222,13 @@ export const SWELL_AMP_FLOOR = 0.2;
 export const SWELL_AMP_SPAN = 0.4;
 export const SWELL_CALM_TILES = Object.freeze([1, 4]);
 export const SWELL_LIT_ROWS = Object.freeze([16, 56]);
+// E2-02 — a lit slope (the set's or the chop's) steps SWELL_LIT_STEPS stops
+// lighter than the body, a full deep-ramp step (DEEP[1] -> DEEP[2]) where the
+// half step read as one flat field at zoom 1, but never lighter than
+// SWELL_LIT_FLOOR (DEEP[2], the deep ramp's lightest stop) unless the body
+// already is.
+export const SWELL_LIT_STEPS = 2;
+export const SWELL_LIT_FLOOR = 3;
 export const SWELL_TROUGH_ROWS = Object.freeze([64, 16]);
 // The chop (`seaBodyStop`): a shorter swell under the sets that fills their
 // calm with its own lit slopes and troughs (never over a set's form):
@@ -573,6 +581,16 @@ const ATMOSPHERE_COURSE_UNIFORM_NAMES = ['u_cloudTile', 'u_cloud', 'u_cloudThres
 // CPU mirror: CoastBake.applyWaterMood (the Canvas twin).
 const WATER_MOOD_GLSL = `
 uniform vec2 u_waterMood;
+uniform vec4 u_waterSky;
+// E2-01 — the sky on the sea (CoastBake.waterMoodFor, CPU twin
+// CanvasGrade.applyWaterSky), on graded, capped water: the sky's hue at the
+// water's value, lifted at most WATER_SKY_LIFT, never darker.
+vec3 applyWaterSky(vec3 color) {
+    if (u_waterSky.w <= 0.0) return color;
+    float l = dot(color, vec3(0.2126, 0.7152, 0.0722));
+    float ls = max(1e-4, dot(u_waterSky.rgb, vec3(0.2126, 0.7152, 0.0722)));
+    return clamp(mix(color, u_waterSky.rgb * (min(max(ls, l), l * ${WATER_SKY_LIFT.toFixed(2)}) / ls), u_waterSky.w), 0.0, 1.0);
+}
 vec3 applyWaterMood(vec3 color) {
     if (u_waterMood.y > 0.0) {
         float l = dot(color, vec3(0.2126, 0.7152, 0.0722));
@@ -611,6 +629,8 @@ vec3 applyWaterMood(vec3 color) {
 //    dithered in over a two-texel seam. The in-map water uses it to know
 //    which of its texels are open water (as deep as the open sea there).
 export const SEA_SWELL_GLSL = `
+// E2-03 — the swell sets' drift (rows, GpuFrameState.swellDriftRows).
+uniform float u_swellDrift;
 float waterHash12(vec2 p) {
     vec3 p3 = fract(vec3(p.xyx) * 0.1031);
     p3 += dot(p3, p3.yzx + 33.33);
@@ -757,7 +777,7 @@ float seaNear(float excess) {
 // sets, fract x SWELL_SET_PERIOD is the rows below the set's crest. Sets run
 // near level along SWELL_SET_NORMAL, bent by two octaves of a slow field.
 float swellPhase(vec2 p) {
-    return dot(p, vec2(${SWELL_SET_NORMAL[0].toFixed(2)}, 1.0)) / ${SWELL_SET_PERIOD.toFixed(1)}
+    return (dot(p, vec2(${SWELL_SET_NORMAL[0].toFixed(2)}, 1.0)) + u_swellDrift) / ${SWELL_SET_PERIOD.toFixed(1)}
         + ${SWELL_SET_WARP.toFixed(2)} * seaNoise(p / vec2(${SWELL_WARP_CELL[0].toFixed(1)}, ${SWELL_WARP_CELL[1].toFixed(1)}) + vec2(3.0, 11.0))
         + ${SWELL_SET_WARP_FINE.toFixed(2)} * seaNoise(p / vec2(${SWELL_WARP_FINE_CELL[0].toFixed(1)}, ${SWELL_WARP_FINE_CELL[1].toFixed(1)}) + vec2(29.0, 5.0));
 }
@@ -854,8 +874,8 @@ float swellForm(float rowsIn, float period, float crestRows, float lit, float tr
 }
 // 3.3 (a) — the sea body's stop at an open-water texel p (in-map water as
 // deep as the open sea, or the open sea) over its horizon stop \`stop\`, \`s\`
-// its swellPhase: the set's form (its lit slope one stop lighter above the
-// crest, its trough one stop darker below it, each scaled by the set's
+// its swellPhase: the set's form (its lit slope SWELL_LIT_STEPS stops lighter
+// above the crest, never past SWELL_LIT_FLOOR, its trough one stop darker below it, each scaled by the set's
 // height and widening, the lit slope, or narrowing, the trough, with the sun
 // key; the trough stilled near the island), else the chop's form; taking
 // over from the horizon's stops across SEA_BODY_ROWS on a Bayer ramp. 0..6
@@ -877,6 +897,7 @@ float seaBodyStop(vec2 p, float s, float stop, float excess, float order) {
             mix(${SWELL_CHOP_LIT_ROWS[0].toFixed(1)}, ${SWELL_CHOP_LIT_ROWS[1].toFixed(1)}, key) * ch,
             mix(${SWELL_CHOP_TROUGH_ROWS[0].toFixed(1)}, ${SWELL_CHOP_TROUGH_ROWS[1].toFixed(1)}, key) * ch * calm, order);
     }
+    if (form < 0.0) return max(stop - ${SWELL_LIT_STEPS.toFixed(1)}, min(stop, ${SWELL_LIT_FLOOR.toFixed(1)}));
     return clamp(stop + form, 0.0, 6.0);
 }
 const float OPEN_SEA_REACH = ${OPEN_SEA_LIGHT_REACH.toFixed(1)};
@@ -1490,7 +1511,8 @@ vec3 applyCoastSwash(vec3 color, vec2 px) {
     float cyc = mod(floor(u_time * 0.005 * u_waterFx.x), 8.0);
     float reach = cyc < 4.0 ? cyc : (cyc < 7.0 ? 6.0 - cyc : 0.0);
     if (sd > 0.0) {
-        if (waterStopIndex(color) < 0 && !sameColour(color, WATER_FOAM) && !sameColour(color, WATER_FOAM_CREST)) {
+        // E2-05 — at the cliff's foot the front breaks over the mirror too.
+        if ((flags & 32u) == 0u && waterStopIndex(color) < 0 && !sameColour(color, WATER_FOAM) && !sameColour(color, WATER_FOAM_CREST)) {
             return color;
         }
         float front = 0.05 + reach * 0.035;
@@ -2006,7 +2028,7 @@ void main() {
     // takes the same cap, so the two still meet without a seam). The 3.2
     // path is the one exception (M7): its seaPath stop keeps its colour and
     // is held at HSL L <= 0.70 instead.
-    if (waterHue) color = seaPath ? seaPathCap(color) : capSaturation(color, WATER_MAX_SATURATION);
+    if (waterHue) color = seaPath ? seaPathCap(color) : capSaturation(applyWaterSky(capSaturation(color, WATER_MAX_SATURATION)), WATER_MAX_SATURATION);
     // 2.7 — a Lighthouse-lit dash is the lamp's own light (like 1.3's
     // emitters below): it keeps its beaconFire stop (okL <= 0.83) instead of
     // the night Purkinje grey.
@@ -2794,7 +2816,7 @@ vec3 shadeOpenSea(vec2 cell) {
         vec3 albedo = whitecap ? WATER_FOAM : seaStopRgb(max(stop - lighter, 0.0));
         if (starlightAt(cell, cap, u_starlight, tick)) albedo = WATER_FOAM_CREST;
         c = applyWaterMood(albedo) * WATER_CAST * mix(1.0, 0.86, u_seaSunBand);
-        c = capSaturation(applyTimeGrade(c, true), WATER_MAX_SATURATION);
+        c = capSaturation(applyWaterSky(capSaturation(applyTimeGrade(c, true), WATER_MAX_SATURATION)), WATER_MAX_SATURATION);
     }
     float hazeRows = u_seaHaze.a;
     // 3.3 (d) / WS-11 — the sky-reflection band: the sky's own horizon colour
@@ -3457,7 +3479,7 @@ export class GpuWorldRenderer {
             'u_lightCount', 'u_lightData', 'u_lightTiles', 'u_lightTileGrid',
             'u_radiance', 'u_radianceGrid', 'u_radianceGain', 'u_radianceStrength',
             'u_footprint', 'u_footprintRect', 'u_footprintSize', 'u_marchSteps',
-            'u_coreEnergy', 'u_waterMood',
+            'u_coreEnergy', 'u_waterMood', 'u_waterSky', 'u_swellDrift',
             'u_cycleOffset', 'u_coastField', 'u_coastRect', 'u_waterFx', 'u_glint', 'u_glintStops[0]',
             'u_starlight',
             'u_terrainBatch', 'u_cueRuns',
@@ -3477,7 +3499,7 @@ export class GpuWorldRenderer {
             'u_scene', 'u_bloom', 'u_bloomStrength', 'u_flash',
             'u_camera', 'u_resolution', 'u_beamGround', 'u_beamShape', 'u_beamCourseEnds', 'u_beamCourseShares',
             ...GRADE_UNIFORM_NAMES, ...ATMOSPHERE_COURSE_UNIFORM_NAMES,
-            'u_waterMood', 'u_seaOn', 'u_time', 'u_weather', 'u_waterFx', 'u_glint', 'u_glintStops[0]',
+            'u_waterMood', 'u_waterSky', 'u_swellDrift', 'u_seaOn', 'u_time', 'u_weather', 'u_waterFx', 'u_glint', 'u_glintStops[0]',
             'u_starlight',
             'u_seaSunBand', 'u_fogColor', 'u_seaHaze', 'u_seaSky', 'u_seaSunlit',
             'u_seaGust', 'u_seaGustRect', 'u_squall', 'u_squallFall', 'u_fatPixels',
@@ -4486,11 +4508,13 @@ export class GpuWorldRenderer {
         const water = resolveWaterFx(feed, camera, qualityLevel, grade, moonFill, this.width, this._waterFx);
         gl.uniform4fv(uniforms.u_waterFx, water.fx);
         gl.uniform1f(uniforms.u_starlight, water.starlight);
+        gl.uniform1f(uniforms.u_swellDrift, water.swellDrift);
         gl.uniform4fv(uniforms.u_glint, water.glint);
         gl.uniform3fv(uniforms['u_glintStops[0]'], water.stops);
         this._bindWaterFields(uniforms, feed.coastWater, qualityLevel);
         const mood = waterMoodFor({ lightGrade: grade, weather: feed.weather || feed.atmosphere?.weather });
         gl.uniform2f(uniforms.u_waterMood, mood.night, mood.storm);
+        gl.uniform4f(uniforms.u_waterSky, mood.sky[0], mood.sky[1], mood.sky[2], mood.skyWeight);
         // 0.1 / 2.2 / 2.4 / 3.2 — the frame's lights (resolveLights): ranked
         // admission, the tile index, the wet-reflection slots (FULL eight,
         // REDUCED four, MINIMAL none; the static wet darkening still reads)
@@ -5079,11 +5103,13 @@ export class GpuWorldRenderer {
         gl.uniform1f(uniforms.u_seaSunBand, clamp(finite(grade.sunBand, 1), 0, 1));
         const mood = waterMoodFor({ lightGrade: grade, weather });
         gl.uniform2f(uniforms.u_waterMood, mood.night, mood.storm);
+        gl.uniform4f(uniforms.u_waterSky, mood.sky[0], mood.sky[1], mood.sky[2], mood.skyWeight);
         gl.uniform4fv(uniforms.u_weather, this._frameWeather || resolveWeatherUniform(feed));
         const shaderTimeMs = ((finite(feed.timeMs, Date.now()) % 1000000) + 1000000) % 1000000;
         gl.uniform1f(uniforms.u_time, shaderTimeMs);
         gl.uniform4fv(uniforms.u_waterFx, this._waterFx.fx);
         gl.uniform1f(uniforms.u_starlight, this._waterFx.starlight);
+        gl.uniform1f(uniforms.u_swellDrift, this._waterFx.swellDrift);
         gl.uniform4fv(uniforms.u_glint, this._waterFx.glint);
         gl.uniform3fv(uniforms['u_glintStops[0]'], this._waterFx.stops);
         const sky = openSeaSky(atmosphere);
