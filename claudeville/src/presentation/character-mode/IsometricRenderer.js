@@ -4443,13 +4443,19 @@ export class IsometricRenderer {
         const tokenItem = (hoveredBuilding || hoveredShip || bridgeLantern)
             ? null
             : (this.landmarkActivity?.hitTestTokenItem?.(worldX, worldY) ?? null);
+        // D5 — a repo standing stone tells its lifetime count and tier.
+        const repoStone = (hoveredBuilding || hoveredShip || bridgeLantern || tokenItem)
+            ? null
+            : (this.chronicleMonuments?.repoStones?.hitTest?.(worldX, worldY) ?? null);
         return hoveredBuilding
             ? this._buildingVisitorTooltip(hoveredBuilding)
             : (hoveredShip
                 ? this.harborTraffic.shipTooltip(hoveredShip)
                 : (bridgeLantern
                     ? this.bridgeLanterns.tooltipFor(bridgeLantern, Date.now())
-                    : (tokenItem ? this.landmarkActivity.tokenItemTooltip(tokenItem) : '')));
+                    : (tokenItem
+                        ? this.landmarkActivity.tokenItemTooltip(tokenItem)
+                        : (repoStone ? this.chronicleMonuments.repoStones.tooltipFor(repoStone) : ''))));
     }
 
     // ─── U-P3 fleet card ────────────────────────────────────────────────
