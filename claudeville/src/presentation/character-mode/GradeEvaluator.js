@@ -124,11 +124,28 @@ const PURKINJE_BLUE = Object.freeze(lumaNormalized([0.93, 1.0, 1.07]));
 // the lamps give colour back), measured on the fixed `readme-showcase` camera
 // and asserted over the C1 ramps by scripts/tests/grade-colour-script.test.mjs.
 // The 8 key names are a contract: the audio arrangement couples to them.
+//
+// L1-3 — the moonlit night: a moon term you can see (a full moon over a new
+// moon is a visible course) and night shadows lifted from flat black to deep
+// indigo, so silhouettes part from the ground. `MOONLIT_NIGHT_STRENGTH` is
+// the one knob: 1 is the full step reviewed on screen, 0.5 half of it, 0 the
+// night before it. It scales the blue-hour, night and deep-night exposure,
+// saturation and lift, and the moon term, together.
+export const MOONLIT_NIGHT_STRENGTH = 1;
+
+function moonlit(base, full) {
+    return base + (full - base) * MOONLIT_NIGHT_STRENGTH;
+}
+
+function moonlit3(base, full) {
+    return base.map((value, index) => moonlit(value, full[index]));
+}
+
 export const GRADE_KEYFRAMES = Object.freeze([
     Object.freeze({
         name: 'deep-night', minute: 2 * 60, side: 'night',
-        exposure: 0.70, saturation: 0.52,
-        gain: [0.82, 0.94, 1.06], lift: [0.024, 0.027, 0.034], gamma: 1.03,
+        exposure: moonlit(0.70, 0.75), saturation: moonlit(0.52, 0.57),
+        gain: [0.82, 0.94, 1.06], lift: moonlit3([0.024, 0.027, 0.034], [0.034, 0.040, 0.056]), gamma: 1.03,
         shadowTint: [0.82, 0.92, 1.12], highlightTint: [0.96, 1.04, 1.02],
         purkinje: 0.7, sunBand: 0, daylight: 0, night: 1, rake: 0,
         vignetteEdge: [0.74, 0.76, 0.83], vignetteAlpha: 0.36,
@@ -207,8 +224,8 @@ export const GRADE_KEYFRAMES = Object.freeze([
     // the night key does.
     Object.freeze({
         name: 'blue-hour', minute: 19 * 60 + 45, side: 'dusk',
-        exposure: 0.82, saturation: 0.62,
-        gain: [0.80, 0.90, 1.10], lift: [0.018, 0.020, 0.034], gamma: 1.02,
+        exposure: moonlit(0.82, 0.85), saturation: moonlit(0.62, 0.64),
+        gain: [0.80, 0.90, 1.10], lift: moonlit3([0.018, 0.020, 0.034], [0.024, 0.028, 0.044]), gamma: 1.02,
         shadowTint: [0.86, 0.90, 1.14], highlightTint: [1.04, 0.98, 1.02],
         purkinje: 0.3, sunBand: 0.2, daylight: 0.1, night: 0.5, rake: 0.375,
         vignetteEdge: [0.74, 0.74, 0.84], vignetteAlpha: 0.40,
@@ -222,8 +239,8 @@ export const GRADE_KEYFRAMES = Object.freeze([
     // saturation sits between 0.5x and 0.85x, and night is bluer than noon.
     Object.freeze({
         name: 'night', minute: 22 * 60, side: 'night',
-        exposure: 0.76, saturation: 0.58,
-        gain: [0.82, 0.94, 1.06], lift: [0.024, 0.027, 0.034], gamma: 1.02,
+        exposure: moonlit(0.76, 0.78), saturation: moonlit(0.58, 0.62),
+        gain: [0.82, 0.94, 1.06], lift: moonlit3([0.024, 0.027, 0.034], [0.034, 0.040, 0.056]), gamma: 1.02,
         shadowTint: [0.82, 0.92, 1.12], highlightTint: [0.96, 1.04, 1.02],
         purkinje: 0.6, sunBand: 0, daylight: 0, night: 1, rake: 0,
         vignetteEdge: [0.76, 0.78, 0.85], vignetteAlpha: 0.34,
@@ -339,8 +356,8 @@ export function evaluateGrade({
     const moon = moonFill == null
         ? illumination * clamp(1 - clamp(finite(weather?.cloudCover, 0)) * 0.85)
         : clamp(finite(moonFill, 0));
-    exposure += 0.05 * moon * night;
-    saturation += 0.03 * moon * night;
+    exposure += moonlit(0.05, 0.08) * moon * night;
+    saturation += moonlit(0.03, 0.05) * moon * night;
 
     const w = weatherWeights(weather);
     for (const kind of ['rain', 'storm', 'overcast', 'fog']) {

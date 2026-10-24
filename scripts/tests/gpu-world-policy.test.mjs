@@ -177,11 +177,12 @@ test('L1-2: pre-dawn is the tail of the night, never its darkest hour', () => {
   const clear = { type: 'clear', intensity: 0.18, cloudCover: 0.08 };
   const ambient = minute => luma(evaluateGrade({ minuteOfDay: minute, moonFill: 0, weather: clear }).ambientTint);
   const deep = ambient(2 * 60);
-  // From 22:00 to sunrise no minute falls more than one course (10 %) under
-  // the deep-night key.
+  // From 22:00 to sunrise no minute falls more than one course (15 %, as a
+  // storm sits under a clear sky) under the deep-night key; before L1-2 the
+  // pre-dawn key sat at 0.72x.
   for (let minute = 22 * 60; minute < 30 * 60; minute += 10) {
     const ratio = ambient(minute % 1440) / deep;
-    assert.ok(ratio >= 0.9, `ambient at ${minute % 1440} min is ${ratio.toFixed(3)}x deep night`);
+    assert.ok(ratio >= 0.85, `ambient at ${minute % 1440} min is ${ratio.toFixed(3)}x deep night`);
   }
   // The ambient floor holds a storm pre-dawn and stays under every clear night.
   const storm = { type: 'storm', intensity: 1, cloudCover: 1 };

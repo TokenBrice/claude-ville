@@ -235,8 +235,10 @@ test('G7-1: the attention banner keeps its status hue through the night grade', 
             const plain = frame(authored);
             const held = frame(statusClothPreimage(authored, night, { postFx }));
             const label = `${status} ${postFx ? 'resident' : 'canvas'}`;
-            // Much more of its colour than the plain night grade leaves it...
-            assert.ok(sat(held) >= Math.max(sat(plain) + 0.08, 0.45), `${label}: sat ${sat(plain).toFixed(2)} -> ${sat(held).toFixed(2)}`);
+            // Its authored colour back, or much more of it than the plain
+            // night grade leaves it...
+            const enough = Math.min(sat(authored) - 0.03, sat(plain) + 0.08);
+            assert.ok(sat(held) >= Math.max(enough, 0.45), `${label}: sat ${sat(plain).toFixed(2)} -> ${sat(held).toFixed(2)}`);
             // ...on its own hue, not the Purkinje shift (the yellow went sage)...
             const drift = Math.abs(((hue(held) - hue(authored) + 540) % 360) - 180);
             assert.ok(drift < 15, `${label}: hue drift ${drift.toFixed(1)}`);
