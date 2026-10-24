@@ -41,8 +41,10 @@ export function roomRectsFor(visual) {
 
 // Rect slots that are panes of one lamp or window split by a solid post: they
 // light together as one room. Task board: each end lantern has two panes.
+// Forge (B3-04): each leaded window has an upper and a lower pane.
 export const ROOM_PANE_GROUPS = Object.freeze({
     taskboard: [[0, 1], [2, 3]],
+    forge: [[0, 1], [2, 3]],
 });
 
 function groupLeader(type, slot) {

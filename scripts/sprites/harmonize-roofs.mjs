@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Harmonize landmark roofs (and the Forge's stone) onto the family palette.
+// Harmonize landmark roofs (and the chapel's stone) onto the family palette.
 //
 // The Tavern and the Harbor are the family reference: their slate tile is
 // `ART_RAMPS.roofSlate`. Older landmarks drifted (a teal Task Board and
@@ -17,10 +17,10 @@
 // art that the channel tags as roof but is no tile (the Task Board's slate
 // shadow band) or a deliberate signature (the Command's gilt dome).
 //
-// `stone` (the Forge): masonry texels (faces 0-2, `isStone`) remap onto the
-// family masonry (`ART_RAMPS.ashlar` plus the Command's own wall colours) by
-// percentile against the Command's walls; iron (chimney cap, anvil, tool
-// rack) is kept.
+// `stone` (the chapel; the pre-B3-04 Forge too): masonry texels (`isStone`)
+// remap onto the family masonry (`ART_RAMPS.ashlar` plus the Command's own
+// wall colours) by percentile against the Command's walls; `keep` regions
+// (glass, iron) are held.
 //
 // Every art layer that restates base pixels (restIsBase strips, the Forge's
 // banked hearth) is remapped at the same base coordinates, so frame 0 stays
@@ -30,7 +30,7 @@
 //   node scripts/sprites/harmonize-roofs.mjs [--building=<id>] [--dry-run] [--out=<dir>]
 //   node scripts/sprites/harmonize-roofs.mjs --check
 // Apply is idempotent: texels already on the target ramp are never remapped.
-// `--check` fails when a landmark's roof (or the Forge's or the chapel's stone) has a texel
+// `--check` fails when a landmark's roof (or the chapel's stone) has a texel
 // off its ramp; run it after any regeneration so the family cannot drift.
 // `PROP_TARGETS` (B3-05) brings the isle landmark props under the same rule.
 
@@ -66,25 +66,11 @@ const TARGETS = {
     },
     // The Pharos cone and the keeper's cottage roof (2026-10-15 re-author).
     'building.watchtower': { bodyStop: 6 },
-    'building.forge': {
-        bodyStop: 5,
-        // The walls take the Command's masonry value balance (percentile
-        // match), snapped onto the family masonry: the ashlar ramp plus the
-        // Command's own wall colours, so the block texture keeps its
-        // in-between steps and every source step its order. Iron (hooks,
-        // window bars) is slate-hued, so no stone. `banked` restates the
-        // hearth jamb's stone where the base is fire-lit, so it is remapped
-        // by colour, not by the base mask.
-        stone: {
-            reference: 'building.command',
-            byColour: ['banked'],
-            keep: [
-                { rect: [154, 0, 216, 33] },   // iron chimney cap
-                { poly: [[86, 190], [104, 186], [127, 197], [127, 207], [106, 216], [86, 208]] }, // iron anvil (its stump is stone)
-                { rect: [134, 148, 182, 206] }, // tool rack
-            ],
-        },
-    },
+    // B3-04 (2026-10-24) — the re-authored smithy is drawn with the Tavern as
+    // its style image, so its limestone is already the family masonry; only
+    // the roof needs the ramp (its main tile lands one stop under the
+    // Tavern's).
+    'building.forge': { bodyStop: 5 },
 };
 
 // B3-05 — the W8.5b isle landmarks (`props/<id>.png`). They carry no
