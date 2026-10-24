@@ -1165,6 +1165,7 @@ export class BuildingSprite {
                 isLandmark,
                 alert: failedPushAlert,
                 accent: getBuildingLabelAccent(b.type, WALNUT.text),
+                quiet: !count && !readMode,
             });
         }
     }
@@ -1451,9 +1452,16 @@ export class BuildingSprite {
         return plaque;
     }
 
-    _paintPlaque(ctx, plaque, { x, y, labelScale, poleBottom, isHovered, isSelected, isLandmark, alert, accent }) {
+    _paintPlaque(ctx, plaque, { x, y, labelScale, poleBottom, isHovered, isSelected, isLandmark, alert, accent, quiet = false }) {
         const { width, height } = plaque;
         const lit = isHovered || isSelected;
+        // G7-2 — a board with nobody in it steps back: no work count, no
+        // patrons, no ledger or attention, not hovered, selected, alerted or
+        // in READ. Its motif and name take the dim ink and it drops its nails,
+        // so the occupied boards carry the weight. The overlay is ungraded,
+        // so the step reads the same by night.
+        const dim = quiet && !lit && !alert && !plaque.countText && !plaque.rows.length
+            && !plaque.patronCell && !plaque.attention;
         // The post: one screen pixel from the board's foot into the roof.
         ctx.save();
         ctx.translate(x, y);
@@ -1473,7 +1481,7 @@ export class BuildingSprite {
             ctx.fillStyle = LABEL_INK.gold;
             ctx.fillRect(left - 1, top - 1, width + 2, height + 2);
         }
-        paintWalnutBoard(ctx, left, top, width, height, { nails: isLandmark || lit, lit });
+        paintWalnutBoard(ctx, left, top, width, height, { nails: (isLandmark && !dim) || lit, lit });
         // A verified failed push on the watchtower carries a red left rail;
         // nothing else on a plaque claims an outcome.
         if (alert) {
@@ -1483,7 +1491,7 @@ export class BuildingSprite {
         let cursor = left + 1 + PLAQUE_PAD;
         if (plaque.motif) {
             drawOutlinedMotif(ctx, plaque.motif, cursor, top + 4, {
-                color: lit ? '#ffe7a3' : accent,
+                color: lit ? '#ffe7a3' : dim ? LABEL_INK.textDim : accent,
                 outline: WALNUT.outline,
             });
             cursor += 8 + 5;
@@ -1492,7 +1500,7 @@ export class BuildingSprite {
         ctx.textBaseline = 'alphabetic';
         if (plaque.title) {
             ctx.font = WORLD_DISPLAY_FONT_8;
-            ctx.fillStyle = lit ? '#ffe7a3' : WALNUT.text;
+            ctx.fillStyle = lit ? '#ffe7a3' : dim ? LABEL_INK.textDim : WALNUT.text;
             ctx.fillText(plaque.title, cursor, top + 13);
         }
         if (plaque.countText) {
