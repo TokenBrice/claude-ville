@@ -233,6 +233,9 @@ const GATE_PLACE = Object.freeze({
 // waiting set changes), and how soon a failed seat/queue pick may retry.
 const QUEUE_REFRESH_MS = 500;
 const PLACE_RETRY_MS = 2000;
+// AG-2 — how often a patron standing at the Tavern asks again, so it takes
+// the first seat that frees.
+const STAND_REFRESH_MS = 2000;
 const LONG_DIRECTION_NAMES = Object.freeze({
     s: 'south', se: 'south-east', e: 'east', ne: 'north-east', n: 'north', nw: 'north-west', w: 'west', sw: 'south-west',
 });
@@ -1539,6 +1542,9 @@ export class AgentSprite {
         // 'errand', 'winddown'); none is ever a working visit either.
         this.visitRole = role || (building.restSeats ? 'rest' : building.commandQueue ? 'queue' : null);
         this._restSeat = building.restSeats ? visitTarget.meta?.seat || null : null;
+        // AG-1 / AG-2 — the building whose patron this rest place makes it
+        // (a Tavern seat or the standing room beside one); read by its plaque.
+        this._restBuilding = building.restSeats ? visitTarget.meta?.restBuilding || null : null;
 
         const routeReason = reason || this._routeReasonFor(building, intent);
         if (holdSlot) {
@@ -1629,6 +1635,7 @@ export class AgentSprite {
             role: place.role || null,
             routineCap: place.routineCap ?? null,
             dayHour: this._dayHour(),
+            restAt: this._restAtFor(place),
         });
         if (!allocated || !Number.isFinite(Number(allocated.tileX)) || !Number.isFinite(Number(allocated.tileY))) return null;
         this._lastReservationId = allocated.reservationId || null;
@@ -1648,8 +1655,20 @@ export class AgentSprite {
                 queueOverflow: !!allocated.queueOverflow,
                 overflow: !!allocated.overflow,
                 seat: allocated.seat || null,
+                restBuilding: allocated.restBuilding || null,
             },
         };
+    }
+
+    // AG-2 (Q1) — a lead waiting on its own subagents, and a finished session
+    // winding down at the Tavern, rest at the Tavern only: its seats, then
+    // standing room there, never Command's steps or the pier. An idle
+    // villager takes the nearest free seat anywhere.
+    _restAtFor(place) {
+        if (place !== REST_PLACE) return null;
+        if (this._subagentWait?.pint === true) return 'tavern';
+        const crowd = this._crowd;
+        return crowd?.phase === 'winddown-stop' && crowd.place === REST_PLACE ? 'tavern' : null;
     }
 
     // Holding its place: arrived at a seat or queue slot and standing there.
@@ -1718,6 +1737,16 @@ export class AgentSprite {
         const seat = this._seatedSeat();
         if (seat) {
             this._setFacingGoal(SEAT_FACING_DIR[seat.facing]);
+            return;
+        }
+        if (this.visitRole === 'rest' && !this._restSeat && this._restBuilding && now >= (this._standRefreshAt || 0)) {
+            // AG-2 — a patron standing at the Tavern takes a seat once one frees.
+            this._standRefreshAt = now + STAND_REFRESH_MS;
+            const target = this._placeTarget(REST_PLACE);
+            const current = this._lastTargetTile;
+            if (!target || (current && current.tileX === target.tileX && current.tileY === target.tileY)) return;
+            this._lastPathTileKey = null;
+            this._routeToVisitTarget(REST_PLACE, null, target);
             return;
         }
         if (this.visitRole !== 'queue' || now < (this._queueRefreshAt || 0)) return;
@@ -2417,6 +2446,7 @@ export class AgentSprite {
         this._lastReservationRenewedAt = 0;
         this.visitRole = null;
         this._restSeat = null;
+        this._restBuilding = null;
     }
 
     _renewVisitReservation() {

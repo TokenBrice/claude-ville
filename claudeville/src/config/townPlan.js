@@ -328,6 +328,23 @@ export const REST_SEATS = Object.freeze([
     { id: 'tavern-yard-e', tileX: 24, tileY: 21, facing: 'south-west', occluder: 'tavern', building: 'tavern' },
 ]);
 
+// AG-2 — standing room for patrons once a building's seats are full: the
+// Tavern's bar floor behind its front beam first, then its veranda front and
+// the yard beside the wall tables, so a crowd of leads waiting on their
+// subagents grows in one place (VisitTileAllocator, before the seat stand
+// ring). Each stander faces the bar. None stands on a seat, a fixture, a
+// road or another building's standing place.
+export const REST_STANDS = Object.freeze({
+    tavern: Object.freeze({
+        facing: Object.freeze({ tileX: 22, tileY: 15 }),
+        tiles: Object.freeze([
+            [22, 17], [21, 17], [23, 17],
+            [21, 18], [22, 18], [24, 18],
+            [22, 19], [21, 19],
+        ].map(([tileX, tileY]) => Object.freeze({ tileX, tileY }))),
+    }),
+});
+
 // Plan 7.2 — the petitioners' queue. Waiting-on-user agents stand in
 // `slots` by SignalLedger wait rank (slot 0, nearest Command's door, holds the
 // longest wait); ranks change only when the waiting set changes. The line
