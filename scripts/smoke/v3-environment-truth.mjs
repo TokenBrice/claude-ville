@@ -40,7 +40,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { chromium } from 'playwright';
+import { launchChromium } from './support/chromium.mjs';
 import { PNG } from 'pngjs';
 import { GPU_LAUNCH_ARGS, resolveServer } from './support/world-bench.mjs';
 
@@ -610,7 +610,7 @@ async function main() {
   const out = path.resolve(ROOT, options.out || path.join('output', 'v3-environment-truth', stamp));
   mkdirSync(out, { recursive: true });
   const server = await resolveServer(options.url);
-  const browser = await chromium.launch({ headless: !options.headed, args: [...GPU_LAUNCH_ARGS] });
+  const browser = await launchChromium({ headless: !options.headed, args: [...GPU_LAUNCH_ARGS] });
   const report = { tool: 'v3-environment-truth', startedAt: new Date().toISOString(), browserVersion: browser.version(), options, backends: {}, rows: [] };
   let failed = 0;
   let unavailable = 0;
