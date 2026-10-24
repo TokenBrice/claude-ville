@@ -1455,6 +1455,7 @@ function shutdownClaudeAdapter() {
   _teamsCache.signature = '';
   _teamsCache.value = [];
   _sessionIdentityCache.clear();
+  _subAgentMetaCache.clear();
 
   for (const stream of streams) {
     try { stream.destroy(); } catch { /* shutdown is best effort */ }
@@ -2258,7 +2259,53 @@ function latestSubAgentActivity(sessionDir, activeThresholdMs, now = Date.now())
   return latest;
 }
 
-function buildSubAgentSession({ filePath, agentId, decodedProject, parentSessionId, name, agentType, subagentKind = null, workflowId = null, workflowName = null, lastActivity }) {
+const SUBAGENT_META_MAX_BYTES = 64 * 1024;
+const SUBAGENT_META_CACHE_MAX = 4096;
+const _subAgentMetaCache = new Map();
+
+function boundedMetaText(value, maxLength) {
+  return typeof value === 'string' && value.trim() ? value.trim().slice(0, maxLength) : null;
+}
+
+// `subagents/agent-<id>.meta.json`: the launch identity Claude records beside
+// a subagent transcript (`name`, `description`, `agentType`, and for
+// teammates `teamName`, `color`, `spawnedAgentType`). Read defensively: size
+// capped, unknown shapes ignored, cached by file stamp.
+function readSubAgentMeta(transcriptPath) {
+  const metaPath = transcriptPath.replace(/\.jsonl$/, '.meta.json');
+  let stat;
+  try {
+    stat = fs.statSync(metaPath);
+  } catch {
+    _subAgentMetaCache.delete(metaPath);
+    return null;
+  }
+  if (!stat.isFile() || stat.size > SUBAGENT_META_MAX_BYTES) return null;
+  const key = statCacheKey(metaPath, stat);
+  const cached = _subAgentMetaCache.get(metaPath);
+  if (cached?.key === key) return cached.meta;
+  let meta = null;
+  try {
+    const raw = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      meta = {
+        name: boundedMetaText(raw.name, 256),
+        description: boundedMetaText(raw.description, 256),
+        kind: boundedMetaText(raw.spawnedAgentType, 128) || boundedMetaText(raw.agentType, 128),
+        teamName: boundedMetaText(raw.teamName, 256),
+        color: boundedMetaText(raw.color, 32),
+      };
+    }
+  } catch { /* malformed metadata is no metadata */ }
+  _subAgentMetaCache.delete(metaPath);
+  _subAgentMetaCache.set(metaPath, { key, meta });
+  while (_subAgentMetaCache.size > SUBAGENT_META_CACHE_MAX) {
+    _subAgentMetaCache.delete(_subAgentMetaCache.keys().next().value);
+  }
+  return meta;
+}
+
+function buildSubAgentSession({ filePath, agentId, decodedProject, parentSessionId, name, agentType, subagentKind = null, teamName = null, agentColor = null, workflowId = null, workflowName = null, lastActivity }) {
   const detail = getSubAgentDetail(filePath, decodedProject);
   const sessionId = `subagent-${agentId}`;
   const permissionMode = getPermissionMode(filePath);
@@ -2273,6 +2320,8 @@ function buildSubAgentSession({ filePath, agentId, decodedProject, parentSession
     agentName: name || null,
     agentType,
     subagentKind,
+    teamName,
+    agentColor,
     model,
     status: 'active',
     lastActivity,
@@ -2485,15 +2534,21 @@ class ClaudeAdapter {
             const launch = prompt
               ? agentLaunches.find(item => item.promptHash === stableHash(prompt))
               : null;
+            // Claude writes the launch's own identity beside the transcript;
+            // the prompt hash cannot match a teammate, whose first prompt
+            // arrives wrapped in a <teammate-message>.
+            const meta = readSubAgentMeta(filePath);
 
             results.push(buildSubAgentSession({
               filePath,
               agentId,
               decodedProject,
               parentSessionId: sessionId,
-              name: launch?.name || null,
+              name: meta?.name || launch?.name || meta?.description || null,
               agentType: launch?.agentType || 'sub-agent',
-              subagentKind: launch?.subagentKind || null,
+              subagentKind: launch?.subagentKind || meta?.kind || null,
+              teamName: meta?.teamName || null,
+              agentColor: meta?.color || null,
               lastActivity: stat.mtimeMs,
             }));
           }
