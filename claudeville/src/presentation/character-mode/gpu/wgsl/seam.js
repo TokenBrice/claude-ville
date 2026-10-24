@@ -17,6 +17,12 @@ fn waterHash12(p: vec2f) -> f32 {
     p3 += dot(p3, p3.yzx + 33.33);
     return fract((p3.x + p3.y) * p3.z);
 }
+fn waterLatticeHash(p: vec2f) -> f32 {
+    var h = (u32(i32(p.x)) * 1597334677u) ^ (u32(i32(p.y)) * 3812015801u);
+    h = (h ^ (h >> 16u)) * 2246822519u;
+    h ^= h >> 13u;
+    return f32(h >> 8u) / 16777216.0;
+}
 fn waterBayer2(a0: vec2f) -> f32 {
     let a = floor(a0);
     return fract(dot(a, vec2f(0.5, a.y * 0.75)));
@@ -54,10 +60,10 @@ fn seaNoise(q: vec2f) -> f32 {
     let i = floor(q);
     var f = q - i;
     f = f * f * (3.0 - 2.0 * f);
-    let a = waterHash12(i + vec2f(71.0, 13.0));
-    let b = waterHash12(i + vec2f(72.0, 13.0));
-    let c = waterHash12(i + vec2f(71.0, 14.0));
-    let d = waterHash12(i + vec2f(72.0, 14.0));
+    let a = waterLatticeHash(i + vec2f(71.0, 13.0));
+    let b = waterLatticeHash(i + vec2f(72.0, 13.0));
+    let c = waterLatticeHash(i + vec2f(71.0, 14.0));
+    let d = waterLatticeHash(i + vec2f(72.0, 14.0));
     return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 fn seaContourRows(cell: vec2f) -> f32 {
