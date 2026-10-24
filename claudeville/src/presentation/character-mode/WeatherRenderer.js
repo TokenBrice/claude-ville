@@ -75,7 +75,11 @@ const MAX_FRAME_DT = 80;
 const RAIN_REFERENCE_AREA = 1920 * 1080;
 const RAIN_STREAKS = 100;
 const STORM_STREAKS = 150;
-const RAIN_WIDE_STREAKS = 64;
+// E2-06 — at the wide shot (zoom <= RAIN_WIDE_ZOOM) a streak's cells are one
+// screen px, a quarter of the ink a zoom-2 streak lays, so the field takes
+// RAIN_WIDE_GAIN x the streaks (the zoom-2 field's ink) to read as rain
+// rather than only as a darker grade.
+const RAIN_WIDE_GAIN = 4;
 const RAIN_WIDE_ZOOM = 1.5;
 const SNOW_AREA_DENSITY = 3200;
 const SNOW_MAX_FLAKES = 420;
@@ -473,7 +477,7 @@ export class WeatherRenderer {
         const grid = this._artGrid();
         const areaScale = (canvas.width * canvas.height) / RAIN_REFERENCE_AREA;
         let count = Math.round((storm ? STORM_STREAKS : RAIN_STREAKS) * areaScale * (0.45 + intensity * 0.55));
-        if (grid.zoom <= RAIN_WIDE_ZOOM) count = Math.min(count, RAIN_WIDE_STREAKS);
+        if (grid.zoom <= RAIN_WIDE_ZOOM) count = Math.round(count * RAIN_WIDE_GAIN);
         if (!particleEnabled) count = Math.round(count * 0.5);
         if (!this._allowEmbellishment) count = Math.round(count * 0.62);
 

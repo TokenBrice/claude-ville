@@ -9,14 +9,14 @@ import { CALM_WATER_FAUNA, SHORE_FAUNA } from '../../claudeville/src/config/scen
 // do not change whether a class is allowed to live. No renderer or DOM boots.
 const HOURS = [{ label: 'dawn', hour: 6, phase: 'dawn' }, { label: 'noon', hour: 12, phase: 'day' }, { label: 'dusk', hour: 19, phase: 'dusk' }, { label: 'night', hour: 23, phase: 'night' }];
 const MONTHS = [{ label: 'Jan', month: 0 }, { label: 'Apr', month: 3 }, { label: 'Jul', month: 6 }, { label: 'Oct', month: 9 }];
-const WEATHER = [{ label: 'clear', type: 'clear', cloudCover: 0.1 }, { label: 'partly', type: 'partly-cloudy', cloudCover: 0.42 }, { label: 'overcast', type: 'overcast', cloudCover: 0.9 }, { label: 'rain', type: 'rain', cloudCover: 0.95 }];
+const WEATHER = [{ label: 'clear', type: 'clear', cloudCover: 0.1 }, { label: 'partly', type: 'partly-cloudy', cloudCover: 0.42 }, { label: 'overcast', type: 'overcast', cloudCover: 0.9 }, { label: 'rain', type: 'rain', cloudCover: 0.95 }, { label: 'fog', type: 'fog', cloudCover: 0.6 }, { label: 'storm', type: 'storm', cloudCover: 0.97 }];
 const scheduler = createAmbientScheduler();
 const rows = [];
 for (const { label: seasonLabel, month } of MONTHS) {
     for (const { label: hourLabel, hour, phase } of HOURS) {
         for (const spec of WEATHER) {
             const date = new Date(2026, month, 15, hour);
-            const weather = { ...spec, nextType: spec.type, transitionProgress: 0, precipitation: spec.type === 'rain' ? 0.7 : 0 };
+            const weather = { ...spec, nextType: spec.type, transitionProgress: 0, precipitation: spec.type === 'rain' ? 0.7 : spec.type === 'storm' ? 0.92 : 0 };
             const atmosphere = { phase, clock: { date }, effectiveDate: date, weather };
             const context = { zoom: 1, weatherType: spec.type, phase, motionScale: 1, month, approach: ambientGates({ weather, phase }).approach };
             // Resolve existing gate methods on isolated objects with injected
@@ -37,15 +37,23 @@ for (const { label: seasonLabel, month } of MONTHS) {
             };
             const live = Object.entries(caps).filter(([, cap]) => cap > 0).map(([name]) => name);
             // Gulls (the lighthouse bird at night) and waterfowl are persistent
-            // even in January. Rain permits sheltering waterfowl and fewer gulls;
-            // its deliberately weaker floor is one. Seasonal/event life is bonus.
-            const minimum = spec.type === 'rain' ? 1 : 2;
+            // even in January. Rain and storm permit sheltering waterfowl and
+            // fewer or roosting gulls; their deliberately weaker floor is one.
+            // Seasonal/event life is bonus.
+            const minimum = spec.type === 'rain' || spec.type === 'storm' ? 1 : 2;
             assert.ok(live.length >= minimum, `${seasonLabel} ${hourLabel} ${spec.label}: ${live.length} classes < ${minimum}; ${JSON.stringify(caps)}`);
-            assert.equal(caps.fireflies, month >= 3 && month <= 9 && (phase === 'dusk' || phase === 'night') && spec.type !== 'rain' ? 12 : 0);
-            assert.equal(caps.ashMotes, phase === 'night' ? 12 : 0, 'ash motes live year-round, including rainy nights');
+            assert.equal(caps.fireflies, month >= 3 && month <= 9 && (phase === 'dusk' || phase === 'night') && spec.type !== 'rain' && spec.type !== 'storm' ? 12 : 0);
+            assert.equal(caps.ashMotes, phase === 'night' && spec.type !== 'storm' ? 12 : 0, 'ash motes live year-round, including rainy nights, and lie low in a storm');
+            if (spec.type === 'storm') {
+                // The storm gates: the gulls sit out the weather on the four
+                // roost perches, every songbird is in cover.
+                assert.equal(gullPlan.mode, 'storm', `${seasonLabel} ${hourLabel} storm: gulls ${gullPlan.mode}`);
+                assert.equal(caps.gulls, 4, `${seasonLabel} ${hourLabel} storm: ${caps.gulls} roosting gulls`);
+                assert.equal(caps.songbirds, 0, `${seasonLabel} ${hourLabel} storm: songbirds aloft`);
+            }
             rows.push({ season: seasonLabel, hour: hourLabel, weather: spec.label, classes: live.length, minimum, live: live.join(', '), frequent: events.frequent?.kind || events.held.frequent });
         }
     }
 }
 console.table(rows);
-console.log(`PASS: ${rows.length} ambient eligibility cases at zoom 1 (FULL motion; clear/partly/overcast >= 2 classes, rain >= 1).`);
+console.log(`PASS: ${rows.length} ambient eligibility cases at zoom 1 (FULL motion; clear/partly/overcast/fog >= 2 classes, rain/storm >= 1; storm gulls roost).`);
