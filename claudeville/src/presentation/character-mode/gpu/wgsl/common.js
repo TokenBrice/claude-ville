@@ -162,6 +162,9 @@ export const FRAME_UNIFORM_LAYOUT = uniformLayout('FrameUniforms', [
     ['cloudLone', 'vec4f'],
     // Night sea glints; appended so every existing frame offset stays fixed.
     ['starlight', 'f32'],
+    // E2-01 — the sky on the sea (CoastBake.waterMoodFor: rgb, weight);
+    // appended likewise.
+    ['waterSky', 'vec4f'],
 ]);
 
 // §2.6 — the per-batch block, one 256-byte slot per batch in a frame ring

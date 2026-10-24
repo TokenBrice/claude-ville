@@ -90,6 +90,7 @@ import {
     openSeaSky,
     openSeaSquall,
     waterMoodFor,
+    WATER_SKY_LIFT,
 } from '../CoastBake.js';
 import { GRASS_GUST_STOPS } from '../GroundBake.js';
 import { MAP_SIZE, TILE_HEIGHT, TILE_WIDTH } from '../../../config/constants.js';
@@ -580,6 +581,16 @@ const ATMOSPHERE_COURSE_UNIFORM_NAMES = ['u_cloudTile', 'u_cloud', 'u_cloudThres
 // CPU mirror: CoastBake.applyWaterMood (the Canvas twin).
 const WATER_MOOD_GLSL = `
 uniform vec2 u_waterMood;
+uniform vec4 u_waterSky;
+// E2-01 — the sky on the sea (CoastBake.waterMoodFor, CPU twin
+// CanvasGrade.applyWaterSky), on graded, capped water: the sky's hue at the
+// water's value, lifted at most WATER_SKY_LIFT, never darker.
+vec3 applyWaterSky(vec3 color) {
+    if (u_waterSky.w <= 0.0) return color;
+    float l = dot(color, vec3(0.2126, 0.7152, 0.0722));
+    float ls = max(1e-4, dot(u_waterSky.rgb, vec3(0.2126, 0.7152, 0.0722)));
+    return clamp(mix(color, u_waterSky.rgb * (min(max(ls, l), l * ${WATER_SKY_LIFT.toFixed(2)}) / ls), u_waterSky.w), 0.0, 1.0);
+}
 vec3 applyWaterMood(vec3 color) {
     if (u_waterMood.y > 0.0) {
         float l = dot(color, vec3(0.2126, 0.7152, 0.0722));
@@ -2015,7 +2026,7 @@ void main() {
     // takes the same cap, so the two still meet without a seam). The 3.2
     // path is the one exception (M7): its seaPath stop keeps its colour and
     // is held at HSL L <= 0.70 instead.
-    if (waterHue) color = seaPath ? seaPathCap(color) : capSaturation(color, WATER_MAX_SATURATION);
+    if (waterHue) color = seaPath ? seaPathCap(color) : capSaturation(applyWaterSky(capSaturation(color, WATER_MAX_SATURATION)), WATER_MAX_SATURATION);
     // 2.7 — a Lighthouse-lit dash is the lamp's own light (like 1.3's
     // emitters below): it keeps its beaconFire stop (okL <= 0.83) instead of
     // the night Purkinje grey.
@@ -2803,7 +2814,7 @@ vec3 shadeOpenSea(vec2 cell) {
         vec3 albedo = whitecap ? WATER_FOAM : seaStopRgb(max(stop - lighter, 0.0));
         if (starlightAt(cell, cap, u_starlight, tick)) albedo = WATER_FOAM_CREST;
         c = applyWaterMood(albedo) * WATER_CAST * mix(1.0, 0.86, u_seaSunBand);
-        c = capSaturation(applyTimeGrade(c, true), WATER_MAX_SATURATION);
+        c = capSaturation(applyWaterSky(capSaturation(applyTimeGrade(c, true), WATER_MAX_SATURATION)), WATER_MAX_SATURATION);
     }
     float hazeRows = u_seaHaze.a;
     // 3.3 (d) / WS-11 — the sky-reflection band: the sky's own horizon colour
@@ -3466,7 +3477,7 @@ export class GpuWorldRenderer {
             'u_lightCount', 'u_lightData', 'u_lightTiles', 'u_lightTileGrid',
             'u_radiance', 'u_radianceGrid', 'u_radianceGain', 'u_radianceStrength',
             'u_footprint', 'u_footprintRect', 'u_footprintSize', 'u_marchSteps',
-            'u_coreEnergy', 'u_waterMood',
+            'u_coreEnergy', 'u_waterMood', 'u_waterSky',
             'u_cycleOffset', 'u_coastField', 'u_coastRect', 'u_waterFx', 'u_glint', 'u_glintStops[0]',
             'u_starlight',
             'u_terrainBatch', 'u_cueRuns',
@@ -3486,7 +3497,7 @@ export class GpuWorldRenderer {
             'u_scene', 'u_bloom', 'u_bloomStrength', 'u_flash',
             'u_camera', 'u_resolution', 'u_beamGround', 'u_beamShape', 'u_beamCourseEnds', 'u_beamCourseShares',
             ...GRADE_UNIFORM_NAMES, ...ATMOSPHERE_COURSE_UNIFORM_NAMES,
-            'u_waterMood', 'u_seaOn', 'u_time', 'u_weather', 'u_waterFx', 'u_glint', 'u_glintStops[0]',
+            'u_waterMood', 'u_waterSky', 'u_seaOn', 'u_time', 'u_weather', 'u_waterFx', 'u_glint', 'u_glintStops[0]',
             'u_starlight',
             'u_seaSunBand', 'u_fogColor', 'u_seaHaze', 'u_seaSky', 'u_seaSunlit',
             'u_seaGust', 'u_seaGustRect', 'u_squall', 'u_squallFall', 'u_fatPixels',
@@ -4500,6 +4511,7 @@ export class GpuWorldRenderer {
         this._bindWaterFields(uniforms, feed.coastWater, qualityLevel);
         const mood = waterMoodFor({ lightGrade: grade, weather: feed.weather || feed.atmosphere?.weather });
         gl.uniform2f(uniforms.u_waterMood, mood.night, mood.storm);
+        gl.uniform4f(uniforms.u_waterSky, mood.sky[0], mood.sky[1], mood.sky[2], mood.skyWeight);
         // 0.1 / 2.2 / 2.4 / 3.2 — the frame's lights (resolveLights): ranked
         // admission, the tile index, the wet-reflection slots (FULL eight,
         // REDUCED four, MINIMAL none; the static wet darkening still reads)
@@ -5088,6 +5100,7 @@ export class GpuWorldRenderer {
         gl.uniform1f(uniforms.u_seaSunBand, clamp(finite(grade.sunBand, 1), 0, 1));
         const mood = waterMoodFor({ lightGrade: grade, weather });
         gl.uniform2f(uniforms.u_waterMood, mood.night, mood.storm);
+        gl.uniform4f(uniforms.u_waterSky, mood.sky[0], mood.sky[1], mood.sky[2], mood.skyWeight);
         gl.uniform4fv(uniforms.u_weather, this._frameWeather || resolveWeatherUniform(feed));
         const shaderTimeMs = ((finite(feed.timeMs, Date.now()) % 1000000) + 1000000) % 1000000;
         gl.uniform1f(uniforms.u_time, shaderTimeMs);

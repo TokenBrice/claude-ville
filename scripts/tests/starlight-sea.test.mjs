@@ -68,13 +68,17 @@ test('GLSL and WGSL starlight hash, cap gate, tips and held cadence are identica
 });
 
 test('the appended WebGPU scalar stages without shifting the existing frame fields', () => {
-    const last = FRAME_UNIFORM_LAYOUT.fields.at(-1);
-    assert.equal(last.name, 'starlight');
+    const starlight = FRAME_UNIFORM_LAYOUT.fields.find(f => f.name === 'starlight');
     const cloudLone = FRAME_UNIFORM_LAYOUT.fields.find(f => f.name === 'cloudLone');
-    assert.equal(last.offset, cloudLone.offset + 16);
+    assert.equal(starlight.offset, cloudLone.offset + 16);
+    // E2-01's sky on the sea is appended after it, so starlight keeps its slot.
+    const last = FRAME_UNIFORM_LAYOUT.fields.at(-1);
+    assert.equal(last.name, 'waterSky');
+    assert.ok(last.offset > starlight.offset);
     const views = createUniformViews(FRAME_UNIFORM_LAYOUT.size);
-    writeFrameUniforms(views, { starlight: 0.375 });
-    assert.equal(views.f32[last.offset / 4], 0.375);
+    writeFrameUniforms(views, { starlight: 0.375, waterSky: [0.25, 0.5, 0.75, 0.125] });
+    assert.equal(views.f32[starlight.offset / 4], 0.375);
+    assert.deepEqual(Array.from(views.f32.slice(last.offset / 4, last.offset / 4 + 4)), [0.25, 0.5, 0.75, 0.125]);
 });
 
 test('Canvas named crest keeps its own water stop and takes the same horizon haze', () => {

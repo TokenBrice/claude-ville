@@ -68,6 +68,7 @@ import {
     SEA_SEAM_ROWS,
     WATER_SUN_BAND,
     waterMoodFor,
+    waterMoodKey,
     waterSunBandFor,
     waterSurfaceRgb,
 } from './CoastBake.js';
@@ -887,7 +888,7 @@ function buildPalette(atmosphere, postFx, storm) {
     const sunBand = waterSunBandFor(atmosphere);
     const band = 1 + (WATER_SUN_BAND - 1) * sunBand;
     const grade = atmosphere?.lightGrade || null;
-    const water = rgb01 => u32Of(CanvasGrade.canvasWaterPreimage(waterSurfaceRgb(rgb01, mood, sunBand), grade, { postFx }));
+    const water = rgb01 => u32Of(CanvasGrade.canvasWaterPreimage(waterSurfaceRgb(rgb01, mood, sunBand), grade, { postFx, sky: mood }));
     // The depth stops, then the 3.3 (a) trough one stop below the deepest
     // (index 6: an open texel's body stop reaches it).
     const seaStops = [...COAST_PALETTE.stops, COAST_PALETTE.trough];
@@ -929,7 +930,7 @@ function buildPalette(atmosphere, postFx, storm) {
         if (out === undefined) {
             const c = [(colour >> 16) / 255, ((colour >> 8) & 255) / 255, (colour & 255) / 255];
             const moody = waterSurfaceRgb(c, mood, sunBand);
-            out = u32Of(capped ? CanvasGrade.canvasWaterPreimage(moody, grade, { postFx }) : moody);
+            out = u32Of(capped ? CanvasGrade.canvasWaterPreimage(moody, grade, { postFx, sky: mood }) : moody);
             memo.set(colour, out);
         }
         return out;
@@ -1975,7 +1976,7 @@ export function drawCanvasWaterState(ctx, renderer, atmosphere) {
     const postFx = renderer.postFx?.isActive?.() === true;
     const mood = waterMoodFor(atmosphere);
     const cloudStep = Math.round(clamp01((clamp01(atmosphere?.weather?.cloudCover) - 0.7) / 0.2) * 8);
-    const paletteKey = `${mood.night}:${mood.storm}:${waterSunBandFor(atmosphere)}|${CanvasGrade.canvasGradeKey(atmosphere?.lightGrade || null, { postFx })}|${fx.storm}|${cloudStep}`;
+    const paletteKey = `${waterMoodKey(mood)}:${waterSunBandFor(atmosphere)}|${CanvasGrade.canvasGradeKey(atmosphere?.lightGrade || null, { postFx })}|${fx.storm}|${cloudStep}`;
     if (state.paletteKey !== paletteKey) {
         state.palette = buildPalette(atmosphere, postFx, fx.storm);
         state.paletteKey = paletteKey;

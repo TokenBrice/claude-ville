@@ -17,6 +17,7 @@ import {
     OPEN_SEA_LIGHT_REACH,
     OPEN_SEA_STOP_SEAM,
     WATER_CAST,
+    WATER_SKY_LIFT,
 } from '../../CoastBake.js';
 import {
     DEEP_CREST_RUN,
@@ -86,6 +87,12 @@ function wgslRgbArray(name, list) {
 }
 
 const WATER_MOOD_WGSL = /* wgsl */ `
+fn applyWaterSky(color: vec3f) -> vec3f {
+    if (frame.waterSky.w <= 0.0) { return color; }
+    let l = dot(color, vec3f(0.2126, 0.7152, 0.0722));
+    let ls = max(1e-4, dot(frame.waterSky.rgb, vec3f(0.2126, 0.7152, 0.0722)));
+    return clamp(mix(color, frame.waterSky.rgb * (min(max(ls, l), l * ${WATER_SKY_LIFT.toFixed(2)}) / ls), frame.waterSky.w), vec3f(0.0), vec3f(1.0));
+}
 fn applyWaterMood(color0: vec3f) -> vec3f {
     var color = color0;
     if (frame.waterMood.y > 0.0) {

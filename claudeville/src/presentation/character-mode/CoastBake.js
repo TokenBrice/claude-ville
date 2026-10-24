@@ -106,6 +106,22 @@ const SHELF_HANDOVER_SD = 0.35;
 const OUTER_CAP = DEPTH_BOUNDS.length;
 // Grade night weight below which water keeps its day mood (see waterMoodFor).
 const WATER_NIGHT_FLOOR = 0.15;
+// E2-01 — the sky on the sea. At the working zoom the sky is off-frame and
+// the sea, half the frame, stands in for it: graded water takes
+// WATER_SKY_WEIGHT of the grade's own sky-horizon colour (warm at golden
+// hour, violet at the blue hour, the pewter of an overcast), plus
+// WATER_SKY_COVER x the cloud cover and WATER_SKY_FOG x the fog, halved at
+// night (`waterMoodFor` .sky / .skyWeight; CanvasGrade.applyWaterSky and its
+// GLSL / WGSL twins mix it in after V6's cap). The sky lends its hue at the
+// water's own value, lifting it by at most WATER_SKY_LIFT (an overcast's pale
+// sky) and never darkening it, so the night lane's value grade stands.
+// Weather and clock only, never agents.
+const WATER_SKY_WEIGHT = 0.22;
+const WATER_SKY_COVER = 0.12;
+const WATER_SKY_FOG = 0.08;
+export { WATER_SKY_LIFT } from './CanvasGrade.js';
+// Canvas rebake buckets: the weight in 1/32, the sky in 1/32 a channel.
+const WATER_SKY_STEPS = 32;
 
 // Cliff (3.5) face height in world px (varied +-CLIFF_FACE_WOBBLE).
 const CLIFF_FACE = 34;
@@ -2592,10 +2608,25 @@ export function waterMoodFor(atmosphere) {
     const type = weather?.type || 'clear';
     const intensity = Math.max(0, Math.min(1, Number(weather?.intensity) || 0));
     const storm = type === 'storm' ? 0.6 + 0.4 * intensity : type === 'rain' ? 0.45 * intensity : 0;
+    const q = value => Math.round(Math.max(0, Math.min(1, value)) * WATER_SKY_STEPS) / WATER_SKY_STEPS;
+    const horizon = grade?.skyHorizon ? colourTo01(grade.skyHorizon) : null;
+    const cover = Math.max(0, Math.min(1, Number(weather?.cloudCover) || 0));
+    const fog = Math.max(0, Math.min(1, Number(weather?.fog) || 0));
+    const quantNight = Math.round(night * 8) / 8;
+    const skyWeight = horizon
+        ? q((WATER_SKY_WEIGHT + WATER_SKY_COVER * cover + WATER_SKY_FOG * fog) * (1 - 0.5 * quantNight))
+        : 0;
     return {
-        night: Math.round(night * 8) / 8,
+        night: quantNight,
         storm: Math.round(storm * 8) / 8,
+        sky: skyWeight > 0 ? horizon.map(q) : [0, 0, 0],
+        skyWeight,
     };
+}
+
+/** The Canvas rebake key of a `waterMoodFor` result. */
+export function waterMoodKey(mood) {
+    return `${mood?.night || 0}:${mood?.storm || 0}:${mood?.skyWeight || 0}:${(mood?.sky || []).join(',')}`;
 }
 
 // CPU mirror of the GLSL `applyWaterMood` in GpuWorldRenderer (0..1 channels).
@@ -2736,7 +2767,7 @@ function drawCanvasMoodLayer(ctx, renderer, atmosphere) {
         };
     }
     const drop = mirrorStormDrop(atmosphere?.weather);
-    const moodKey = `${mood.night}:${mood.storm}:${sunBand}:${drop}`;
+    const moodKey = `${waterMoodKey(mood)}:${sunBand}:${drop}`;
     const now = performance.now();
     const due = layer.moodKey !== moodKey || !(now - layer.bakedAt < OCEAN_REBAKE_MIN_MS);
     if (due && (layer.moodKey !== moodKey || layer.gradeKey !== gradeKey)) {
@@ -2751,7 +2782,7 @@ function drawCanvasMoodLayer(ctx, renderer, atmosphere) {
             if (colour !== layer.colours[k]) changed = true;
             if (memo.has(colour)) continue;
             let rgb = waterSurfaceRgb([((colour >> 16) & 255) / 255, ((colour >> 8) & 255) / 255, (colour & 255) / 255], mood, sunBand);
-            if (!(colour & MIRROR_UNCAPPED)) rgb = CanvasGrade.canvasWaterPreimage(rgb, grade, { postFx });
+            if (!(colour & MIRROR_UNCAPPED)) rgb = CanvasGrade.canvasWaterPreimage(rgb, grade, { postFx, sky: mood });
             const out = (Math.round(rgb[0] * 255) << 16) | (Math.round(rgb[1] * 255) << 8) | Math.round(rgb[2] * 255);
             memo.set(colour, out);
             if (out !== (colour & 0xffffff)) changed = true;
@@ -3117,7 +3148,7 @@ function oceanPalette(atmosphere, postFx) {
     const sunBand = waterSunBandFor(atmosphere);
     const pre = [...OPEN_SEA_STOPS, SEA_TROUGH, FOAM_CREST].map((rgb) => {
         const c = waterSurfaceRgb(rgb.map(channel => channel / 255), mood, sunBand);
-        return grade ? CanvasGrade.canvasWaterPreimage(c, grade, { postFx }) : c;
+        return grade ? CanvasGrade.canvasWaterPreimage(c, grade, { postFx, sky: mood }) : c;
     });
     const sky = openSeaSky(atmosphere);
     const preimage = rgb => (grade ? CanvasGrade.canvasFramePreimage(rgb, grade, { postFx }) : rgb);

@@ -61,7 +61,7 @@ fn shadeOpenSea(cell: vec2f) -> vec3f {
         if (!whitecap) { albedo = seaStopRgb(max(stop - lighter, 0.0)); }
         if (starlightAt(cell, cap, frame.starlight, tick)) { albedo = WATER_FOAM_CREST; }
         c = applyWaterMood(albedo) * WATER_CAST * mix(1.0, 0.86, frame.seaSunBand);
-        c = capSaturation(applyTimeGrade(c, true), WATER_MAX_SATURATION);
+        c = capSaturation(applyWaterSky(capSaturation(applyTimeGrade(c, true), WATER_MAX_SATURATION)), WATER_MAX_SATURATION);
     }
     let hazeRows = frame.seaHaze.a;
     let band = max(0.0, t - hazeRows) + floor(contour * clamp((t - hazeRows) / 96.0, 0.0, 1.0) + 0.5);
