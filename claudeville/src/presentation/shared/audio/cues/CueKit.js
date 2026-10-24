@@ -179,9 +179,15 @@ const OUTCOME_LEVEL_LANE = Object.freeze({ minor: 'outcomeMinor', medium: 'outco
 // trim may never lift it (S2), and over the band it would sit more than 1 LU
 // under the bed (the Town band window, −1…+3 LU) while still ≥ 3 LU under a
 // routine cue.
+// A long turn's knock (SND-1), levelled as a Medium outcome, is voiced
+// firmer again: at the Medium aim alone its one short strike read +3.2 LU
+// over the band stems (probe margins, outcomeMedium:longTurn), on the
+// window's +3 LU floor; 1.2 dB centres it.
 const TOWN_BAND_MINOR_VOICE_DB = 0.6;
+const TOWN_BAND_LONG_TURN_VOICE_DB = 1.2;
 function presetVoiceDb(kind, cue) {
     if (cue.preset !== 'townBand' || STRATUM_BY_KIND[kind] !== 'outcome') return 0;
+    if (kind === 'turnDone' && cue.long === true) return TOWN_BAND_LONG_TURN_VOICE_DB;
     return (cue.tier ?? outcomeTier(kind)) === 'minor' ? TOWN_BAND_MINOR_VOICE_DB : 0;
 }
 

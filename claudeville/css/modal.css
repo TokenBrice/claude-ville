@@ -290,6 +290,16 @@
     color: var(--ink-3);
 }
 
+/* A row whose control is a button group spans both columns (SND-7's calls). */
+.settings-control--wide {
+    grid-column: 1 / -1;
+}
+
+.settings-control__buttons {
+    display: inline-flex;
+    gap: 6px;
+}
+
 /* SOUND rows that do nothing for the current preset leave the layout. */
 .settings-control[hidden] {
     display: none;

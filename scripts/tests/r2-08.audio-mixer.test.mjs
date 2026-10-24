@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { AmbientAudioController } from '../../claudeville/src/presentation/shared/AmbientAudioController.js';
+import { AmbientAudioController, autoplayAllowed } from '../../claudeville/src/presentation/shared/AmbientAudioController.js';
 import { SOUND_RECALIBRATED_MESSAGE } from '../../claudeville/src/presentation/shared/SoundSettings.js';
 import { AudioEngine } from '../../claudeville/src/presentation/shared/audio/AudioEngine.js';
 import { STANDARD_VOLUME_STEP } from '../../claudeville/src/presentation/shared/audio/Loudness.js';
@@ -374,4 +374,104 @@ test('without a user activation a hidden summons is captioned, never woken', asy
     controller._handleHiddenSummons({ agentId: 'agent-quiet', audioCueKind: 'distress' });
     await settle();
     assert.deepEqual(events, ['distress:agent-quiet']);
+});
+
+test('a browser that allows autoplay starts a stored-on profile at boot; one that does not stays armed (SND-2)', async () => {
+    assert.equal(autoplayAllowed({ getAutoplayPolicy: kind => (kind === 'audiocontext' ? 'allowed' : 'disallowed') }), true);
+    assert.equal(autoplayAllowed({ getAutoplayPolicy: () => 'allowed-muted' }), false);
+    assert.equal(autoplayAllowed({ getAutoplayPolicy: () => { throw new TypeError('unknown'); } }), false);
+    assert.equal(autoplayAllowed({}), false, 'no API (Chromium today): never probed by building a context');
+
+    const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+    const setNavigator = value => Object.defineProperty(globalThis, 'navigator', { value, configurable: true, writable: true });
+    const storage = memoryStorage({ ...CALIBRATED, 'claudeville.sound.enabled': 'true', 'claudeville.sound.mode': 'signals' });
+    const starts = [];
+    const original = AmbientAudioController.prototype._startActivation;
+    AmbientAudioController.prototype._startActivation = function () { starts.push(this.mayStart); return Promise.resolve(); };
+    try {
+        for (const policy of ['allowed', 'disallowed']) {
+            setNavigator({ getAutoplayPolicy: () => policy, userActivation: { hasBeenActive: false } });
+            await withWindow(browserWindow(storage), async () => {
+                const controller = new AmbientAudioController({});
+                assert.equal(controller.mayStart, policy === 'allowed');
+                assert.equal(controller.soundView().soundState, 'armed', 'never claims playing before the context runs');
+                assert.equal(controller.soundView().chipTitle, 'Sound not started — click anywhere to start it');
+                await controller.destroy();
+            });
+        }
+    } finally {
+        AmbientAudioController.prototype._startActivation = original;
+        if (previousNavigator) Object.defineProperty(globalThis, 'navigator', previousNavigator);
+        else delete globalThis.navigator;
+    }
+    assert.deepEqual(starts, [true], 'only the allowing browser starts at boot');
+});
+
+test('START SOUND only ever starts sound, and a suspended context re-arms the click (SND-2)', () => {
+    const controller = Object.create(AmbientAudioController.prototype);
+    const calls = [];
+    const director = { running: false, paused: false };
+    Object.assign(controller, {
+        _destroyed: false,
+        _gestureSeen: false,
+        _windowBlurred: false,
+        _playingMode: null,
+        _quietActive: false,
+        _activation: null,
+        hushedUntil: 0,
+        available: true,
+        enabled: true,
+        mode: 'signals',
+        engine: { context: { state: 'suspended' } },
+        directors: { signals: director, bgm: { running: false } },
+        _startActivation: () => calls.push('start'),
+        _armUnlockListeners: () => calls.push('arm'),
+        _publishView: () => calls.push('view'),
+        setPreset: preset => calls.push(`set:${preset}`),
+    });
+    controller.startFromUser();
+    assert.deepEqual(calls, ['start']);
+    assert.equal(controller.userActivated, true);
+    controller._activation = Promise.resolve();
+    controller.startFromUser();
+    assert.deepEqual(calls, ['start'], 'an activation in flight is not doubled');
+    controller._activation = null;
+    controller.engine.context.state = 'running';
+    director.running = true;
+    controller.startFromUser();
+    assert.deepEqual(calls, ['start'], 'a sounding control is never turned off by it');
+
+    // The browser suspends the running context: the click is armed again.
+    calls.length = 0;
+    controller.engine.context.state = 'suspended';
+    controller._handleContextState();
+    assert.deepEqual(calls, ['arm', 'view']);
+    controller.enabled = false;
+    calls.length = 0;
+    controller._handleContextState();
+    assert.deepEqual(calls, ['view'], 'sound turned off is not re-armed');
+});
+
+test('a session answered in its terminal rings its next call in the looking voice (SND-4)', async () => {
+    const storage = memoryStorage({ ...CALIBRATED, 'claudeville.sound.enabled': 'false' });
+    const now = Date.now();
+    const agents = new Map([
+        ['a', { id: 'a', status: 'waiting_on_user', lastSessionActivity: now }],
+        ['b', { id: 'b', status: 'waiting_on_user', lastSessionActivity: now }],
+    ]);
+    await withWindow(browserWindow(storage), async () => {
+        const controller = new AmbientAudioController({ world: { agents } });
+        const looking = controller.directors.signals._operatorLooking;
+        assert.equal(controller.directors.bgm._operatorLooking, looking, 'both directors read one presence');
+        for (const agent of agents.values()) eventBus.emit('agent:updated', agent);
+        assert.equal(looking('a'), false);
+        // The operator approves a's prompt in its terminal.
+        agents.set('a', { ...agents.get('a'), status: 'working', lastSessionActivity: Date.now() });
+        eventBus.emit('agent:updated', agents.get('a'));
+        assert.equal(looking('a'), true);
+        assert.equal(looking('b'), false, 'another session still rings in full voice');
+        assert.equal(looking(), false, 'no agent, no terminal presence');
+        assert.deepEqual(controller._debugSnapshot().terminalPresent, ['a']);
+        await controller.destroy();
+    });
 });

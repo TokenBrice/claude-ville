@@ -14,6 +14,10 @@ import { AgentStatus } from '../domain/value-objects/AgentStatus.js';
 
 // Short turns are chatter (SIG-6): only a turn this long is an outcome.
 export const TURN_OUTCOME_MIN_MS = 20_000;
+// A turn this long ran while the operator looked away (the ladder's first
+// reminder waits as long): its end is a "your move" the directors sound out
+// loud (SND-1). Any provider that reports `lastTurnDurationMs` qualifies.
+export const LONG_TURN_MS = 120_000;
 // Minor facts that land together are one fact with a count ("4 turns finished").
 export const OUTCOME_AGGREGATE_MS = 1_500;
 // A failing command loop is one fact per agent per this span, not a clank per exit.
@@ -87,7 +91,12 @@ export function turnEndOutcome(previous, agent, { reportedKey = null } = {}) {
     if (next.parentId || !TURN_END_STATUSES.has(next.status)) return null;
     if (next.lastTurnDurationMs == null || next.lastTurnDurationMs < TURN_OUTCOME_MIN_MS) return null;
     if (reportedKey != null && reportedKey === turnKey(next)) return null;
-    return { kind: 'turnDone', agentId: idOf(agent?.id), durationMs: next.lastTurnDurationMs };
+    return {
+        kind: 'turnDone',
+        agentId: idOf(agent?.id),
+        durationMs: next.lastTurnDurationMs,
+        long: next.lastTurnDurationMs >= LONG_TURN_MS,
+    };
 }
 
 /** `outcome:verified` → its outcome fact; gold is never inferred elsewhere. */
@@ -102,10 +111,16 @@ export function verifiedOutcomeFact(outcome) {
     };
 }
 
-/** `tool:result`: a non-zero exit is a failure; exit 0 (or none) is silent. */
+/**
+ * `tool:result`: a non-zero exit is a failure; exit 0 (or none) is silent.
+ * A code the adapter only inferred from an error flag (`exitCodeSource:
+ * 'flag'`: an Edit that found no match, a refused permission, a harness
+ * guard) is not a failed command, so it raises no "Command failed".
+ */
 export function toolFailedFact(event) {
     const exitCode = finite(event?.exitCode);
     if (exitCode == null || exitCode === 0) return null;
+    if (event.exitCodeSource === 'flag') return null;
     return {
         kind: 'toolFailed',
         agentId: idOf(event.agentId),
@@ -287,6 +302,8 @@ export function summarizeOutcomes(facts) {
         version: single(facts.map(fact => fact.version)),
         building: single(facts.map(fact => fact.building)),
         childIds: facts.map(fact => fact.childId).filter(id => id != null),
+        // A batch holding one long turn is a long-turn outcome (SND-1).
+        long: facts.some(fact => fact.long === true),
     };
 }
 

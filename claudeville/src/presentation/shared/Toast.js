@@ -1,6 +1,6 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { CAPTION_SETTINGS, readCaptionSetting, readStoredSoundEnabled } from './SoundSettings.js';
-import { INVITE_MAX_SHOW_MS, SOUND_INVITE_COPY, SoundInvite } from './SoundInvite.js';
+import { INVITE_MAX_SHOW_MS, SOUND_INVITE_COPY, SOUND_START_COPY, SoundInvite } from './SoundInvite.js';
 
 const MAX_TOASTS = 5;
 const AUTO_DISMISS_MS = 3000;
@@ -378,6 +378,15 @@ export class Toast {
         on('sound:status', (payload) => {
             this.showStatus(payload?.message);
         });
+        // SND-2: the sound state the armed offer reads; a sound that starts
+        // by any route retires an offer still showing.
+        this._soundState = null;
+        on('audio:sound-state', (view) => {
+            this._soundState = view?.soundState ?? null;
+            if (this._soundState !== 'armed') {
+                for (const entry of this.toasts.filter(entry => entry.invite?.start)) this._closeInvite(entry);
+            }
+        });
         on('chronicle:read-failed', payload => {
             this.show(payload?.message || 'Could not load the Chronicle day.', 'warning');
         });
@@ -515,7 +524,10 @@ export class Toast {
             visible,
             uptimeMs: this._uptimeMs(),
         });
-        if (!trigger) return;
+        if (!trigger) {
+            this._offerStart(entry, payload, visible);
+            return;
+        }
 
         const prompt = this._addLine(entry, SOUND_INVITE_COPY.prompt);
         const actions = doc.createElement('span');
@@ -539,6 +551,34 @@ export class Toast {
         entry.el.classList.add('toast--invite');
         entry.el.append(actions);
         entry.invite = { prompt, actions };
+        this._restartDismissTimer(entry, INVITE_MAX_SHOW_MS);
+    }
+
+    // SND-2: sound is on but armed (the browser waits for a click): the
+    // first needs-you notice of the page session says so and carries one
+    // button, announced inside the click so the listener has the gesture.
+    // Static: it waits for the click (at most INVITE_MAX_SHOW_MS) and leaves
+    // as soon as sound starts by any route.
+    _offerStart(entry, payload, visible) {
+        const trigger = this._invite.offerStart?.(payload, { soundState: this._soundState, visible });
+        if (!trigger) return;
+        const doc = this.documentRef;
+        const prompt = this._addLine(entry, SOUND_START_COPY.prompt);
+        const actions = doc.createElement('span');
+        actions.className = 'toast__actions';
+        const button = doc.createElement('button');
+        button.type = 'button';
+        button.className = 'toast__action';
+        button.textContent = SOUND_START_COPY.accept;
+        button.addEventListener('click', () => {
+            if (!entry.invite) return;
+            this._closeInvite(entry);
+            this._eventTarget?.emit?.('sound:start-requested', trigger);
+        });
+        actions.append(button);
+        entry.el.classList.add('toast--invite');
+        entry.el.append(actions);
+        entry.invite = { prompt, actions, start: true };
         this._restartDismissTimer(entry, INVITE_MAX_SHOW_MS);
     }
 

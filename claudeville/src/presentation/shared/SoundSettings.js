@@ -41,7 +41,7 @@ export const SOUND_PRESET_LABELS = Object.freeze({
 });
 export const SOUND_PRESET_DETAILS = Object.freeze({
     off: 'Silent. Captions still appear.',
-    signals: 'Only a bell when an agent needs you, errors, or hits a limit.',
+    signals: 'A bell when an agent needs you, errors, or hits a limit; a soft knock when a long turn finishes.',
     townBand: 'Continuous town music. The signal bells ring over it.',
 });
 const PRESET_MODES = Object.freeze({ signals: 'signals', townBand: 'bgm' });

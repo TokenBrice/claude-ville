@@ -124,7 +124,7 @@ export function readPersistedSettings(storage = globalThis.window?.localStorage)
 // ── Sound chip and popover helpers (plan 7.1–7.3, UX-2/UX-7 copy) ──
 const SOUND_PANEL_WIDTH = 308;
 const SOUND_FIRST_TITLE = 'Sound off — click to choose what you hear';
-const SOUND_ARMED_TITLE = 'Sound on — click anywhere to start it';
+const SOUND_ARMED_TITLE = 'Sound not started — click anywhere to start it';
 const SOUND_ARMED_LINE = 'Waiting for a click — browsers start sound on your first click';
 
 // Before the controller's boot-idle build no context can be running: a
@@ -576,6 +576,8 @@ export class TopBar {
                 else audio.resumeFromHush();
                 return audio.soundView().hushedUntil ?? 0;
             }, settings => settings.soundHushUntil),
+            // SND-7: SET's three call previews, at the current volume.
+            onSoundTestCall: (kind) => this._withAudio(audio => audio.testCall(kind)),
             onAutoCamera: (enabled) => this._setAutoCamera(enabled),
             onDesktopAlerts: (enabled) => this._setDesktopAlerts(enabled),
             onSidebarCollapsed: (collapsed) => this._setSidebarCollapsed(collapsed),
@@ -791,6 +793,9 @@ export class TopBar {
             audio.testCall(bucket);
         });
         eventBus.on('sound:invite-accepted', this._onSoundInviteAccepted);
+        // SND-2: the armed notice's START SOUND (a click: a user activation).
+        this._onSoundStartRequested = () => this._withAudio(audio => audio.startFromUser());
+        eventBus.on('sound:start-requested', this._onSoundStartRequested);
         // 7.6: `M` turns sound on and off from anywhere (a key press is a
         // user activation), never from a text field or under a modal.
         this._onSoundKey = (event) => {
@@ -875,7 +880,8 @@ export class TopBar {
         const title = !available
             ? (view.chipTitle || 'Sound unavailable in this browser')
             : (view.preset === 'off' && !readSoundChipSeen() ? SOUND_FIRST_TITLE : view.chipTitle);
-        const pressed = available && view.preset !== 'off' ? 'true' : 'false';
+        // SND-2: armed is chosen but not heard, so the toggle reads mixed, never on.
+        const pressed = !available || view.preset === 'off' ? 'false' : (state === 'armed' ? 'mixed' : 'true');
         const key = `${state}\u001f${title}\u001f${pressed}\u001f${available}`;
         if (key === this._soundChipKey) return;
         this._soundChipKey = key;
@@ -1852,6 +1858,7 @@ export class TopBar {
         document.removeEventListener('keydown', this._onSoundKey);
         eventBus.off('audio:sound-state', this._onSoundState);
         eventBus.off('sound:invite-accepted', this._onSoundInviteAccepted);
+        eventBus.off('sound:start-requested', this._onSoundStartRequested);
         this._reducedMotionQuery?.removeEventListener?.('change', this._onReducedMotionChange);
         this._reducedMotionQuery = null;
         this.chronicle?.destroy?.();

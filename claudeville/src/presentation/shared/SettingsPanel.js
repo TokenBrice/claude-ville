@@ -75,6 +75,13 @@ const REMINDER_CHOICES = Object.freeze([
     ['gentle', 'Gentle'],
     ['off', 'Off'],
 ]);
+// SND-7: the three calls SET can preview, in the attention slot's words.
+const SOUND_CALL_PREVIEWS = Object.freeze([
+    Object.freeze(['summons', 'NEEDS YOU']),
+    Object.freeze(['distress', 'ERROR']),
+    Object.freeze(['limit', 'LIMIT']),
+]);
+
 // D2: the Town band's players. The sound controller hears a change on
 // `sound:town-band-voice` and the band changes voice at its next chunk.
 const TOWN_BAND_VOICE_CHOICES = Object.freeze([
@@ -275,6 +282,7 @@ export class SettingsPanel {
         onSoundReminders,
         onSoundCountHours,
         onSoundTownBandVoice,
+        onSoundTestCall,
         onCaptions,
         onAutoCamera,
         onDesktopAlerts,
@@ -315,6 +323,8 @@ export class SettingsPanel {
             const voice = writeTownBandVoice(value, storage);
             eventBus.emit('sound:town-band-voice', { voice });
         });
+        // SND-7: a preview of one call; nothing to hear without the controller.
+        this.onSoundTestCall = onSoundTestCall || null;
         this._storage = storage;
         this.onCaptions = onCaptions || (value => writeCaptionSetting(value, storage));
         this.onAutoCamera = onAutoCamera;
@@ -400,16 +410,19 @@ export class SettingsPanel {
         hushButton.addEventListener('click', () => this._toggleHush());
         const hushRow = this._settingRow('Hush', 'Signals only for an hour.', hushButton);
         this.controls.set('soundHush', hushButton);
+        const callsRow = this._buildCallPreviews();
         this._sound = {
             preset: null,
             presetDetail: presetRow.querySelector('.settings-control__detail'),
             volumeRow,
+            callsRow,
             hushDetail: hushRow.querySelector('.settings-control__detail'),
             hushUntil: 0,
         };
         const grid = el('div', { className: 'settings-controls' }, [
             presetRow,
             volumeRow,
+            callsRow,
             this._select('soundBackground', 'In the background', 'When ClaudeVille is visible but another app has focus.',
                 BACKGROUND_CHOICES, settings.soundBackground, this.onSoundBackground),
             this._select('soundOutput', 'Output', 'Headphones narrows left–right placement. Mono plays everything in both ears.',
@@ -520,8 +533,27 @@ export class SettingsPanel {
         const detail = SOUND_PRESET_DETAILS[preset];
         if (sound.presetDetail && sound.presetDetail.textContent !== detail) sound.presetDetail.textContent = detail;
         sound.volumeRow.hidden = !mode;
+        sound.callsRow.hidden = !mode;
         if (mode) this._syncRange('soundVolume', settings.soundVolumes?.[mode]);
         sound.preset = preset;
+    }
+
+    // SND-7: learn the three calls. Each button plays its bell at the
+    // current volume (the controller's `testCall`: no caption, no governor);
+    // with sound Off the row leaves the layout, like Volume.
+    _buildCallPreviews() {
+        const buttons = SOUND_CALL_PREVIEWS.map(([kind, text]) => {
+            const button = el('button', { className: 'settings-button', text });
+            button.type = 'button';
+            button.dataset.call = kind;
+            button.addEventListener('click', () => this.onSoundTestCall?.(kind));
+            this.controls.set(`soundTestCall:${kind}`, button);
+            return button;
+        });
+        const row = this._settingRow('Hear the calls', 'Each bell as it rings for an agent, at the current volume.',
+            el('span', { className: 'settings-control__buttons' }, buttons));
+        row.classList.add('settings-control--wide');
+        return row;
     }
 
     /** Scrolls SET to its SOUND section and focuses `Listen to` (the popover's link). */

@@ -5,6 +5,12 @@
 // Accepting plays the call of the family that triggered it. The offer is made
 // at most once per profile: showing it records the profile as invited.
 // Pure and DOM-free: storage, visibility, uptime and sound state come in.
+//
+// SND-2, its sibling: sound is on but not started (`armed`: a reload, a
+// browser restart, a GPU-crash reload — the browser waits for a click), so
+// the first needs-you notice of the page session on a visible page carries
+// `START SOUND`. The click is the gesture that starts it. Once per page
+// session, never stored: the next reload may need it again.
 
 import { actionableFamily, attentionStatus, familyCueKind } from './audio/ActionableRouting.js';
 import { readSoundInvited, writeSoundInvited } from './SoundSettings.js';
@@ -20,6 +26,16 @@ export const SOUND_INVITE_COPY = Object.freeze({
     accept: 'TURN ON SIGNALS',
     decline: 'NO THANKS',
 });
+
+export const SOUND_START_COPY = Object.freeze({
+    prompt: 'Sound is on but waiting for a click.',
+    accept: 'START SOUND',
+});
+
+/** Pure eligibility of the armed offer (SND-2). */
+export function startEligible({ soundState, visible, offered }) {
+    return soundState === 'armed' && visible === true && offered !== true;
+}
 
 /**
  * What an `attention:raised` payload would ring: the SignalLedger family and
@@ -50,6 +66,7 @@ export class SoundInvite {
     constructor({ storage = globalThis.window?.localStorage } = {}) {
         this._storage = storage;
         this._offered = false;
+        this._startOffered = false;
     }
 
     get offered() {
@@ -66,6 +83,16 @@ export class SoundInvite {
         })) return null;
         this._offered = true;
         writeSoundInvited(this._storage);
+        return inviteTrigger(payload);
+    }
+
+    /**
+     * SND-2: the armed offer for this notice, or null. The first eligible
+     * notice of the page session spends it.
+     */
+    offerStart(payload, { soundState = null, visible = false } = {}) {
+        if (!startEligible({ soundState, visible, offered: this._startOffered })) return null;
+        this._startOffered = true;
         return inviteTrigger(payload);
     }
 }

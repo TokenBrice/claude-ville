@@ -35,6 +35,9 @@
     "margin:music:outcomeMedium": {
       "margin": 4.17
     },
+    "margin:music:outcomeMedium:longTurn": {
+      "margin": 4.4
+    },
     "margin:music:outcomeMajor": {
       "margin": 6.12
     },

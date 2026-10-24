@@ -52,6 +52,25 @@ export function outcomeTier(kind) {
     return OUTCOME_TIERS[kind] ?? null;
 }
 
+// SND-1: a long turn's end sounds as a "your move" at most this often,
+// village-wide — the ladder's reminder budget shape (S7), with a shorter gap
+// since each one is a different agent's news. Past the caps a long turn
+// speaks as any finished turn does: a caption in Signals, the Minor knock
+// under the Town band.
+export const LONG_TURN_CAPS = Object.freeze({ minGapMs: 60_000, perHour: 12, windowMs: 60 * 60_000 });
+
+/**
+ * The cue fields of a long turn's end that may sound now (SND-1): it is
+ * levelled as a Medium outcome, so it reads over the Town band, and Signals
+ * sounds it. A hidden page hears no outcomes, so it spends no cap; an
+ * ordinary or capped turn adds nothing.
+ */
+export function longTurnDetails(outcome, governor, hidden = false) {
+    if (outcome?.kind !== 'turnDone' || outcome.long !== true || hidden) return {};
+    if (!governor?.admitLongTurn?.()) return {};
+    return { long: true, tier: 'medium' };
+}
+
 // Outcomes share the routine cues' per-minute budget; this many of it are
 // reserved for outcomes, so routine chatter can never starve them (S7).
 export const OUTCOME_RESERVED_PER_MINUTE = 2;
@@ -194,6 +213,22 @@ export class CueGovernor {
         // Heard ladder reminders (ms), for the S7 backstop caps.
         this._reminders = [];
         this._majorUntil = 0;
+        // Long turns sounded as "your move" (ms), for LONG_TURN_CAPS.
+        this._longTurns = [];
+    }
+
+    /**
+     * Whether a long turn's end may sound as a "your move" now (SND-1);
+     * admitting spends one of LONG_TURN_CAPS. Both directors ask the one
+     * governor, so a preset switch never resets the caps.
+     */
+    admitLongTurn(now = Date.now()) {
+        this._longTurns = this._longTurns.filter(at => now - at < LONG_TURN_CAPS.windowMs);
+        const last = this._longTurns[this._longTurns.length - 1];
+        if (last != null && now - last < LONG_TURN_CAPS.minGapMs) return false;
+        if (this._longTurns.length >= LONG_TURN_CAPS.perHour) return false;
+        this._longTurns.push(now);
+        return true;
     }
 
     // `outcome` spends the shared per-minute budget without the spacing rule;
@@ -438,6 +473,7 @@ export class CueGovernor {
         this._urgentUntil = 0;
         this._majorUntil = 0;
         this._reminders = [];
+        this._longTurns = [];
         this._clusters.clear();
         this._lastByKind.clear();
     }
