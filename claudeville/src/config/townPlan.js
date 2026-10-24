@@ -347,39 +347,40 @@ export const REST_STANDS = Object.freeze({
 
 // Plan 7.2 — the petitioners' queue. Waiting-on-user agents stand in
 // `slots` by SignalLedger wait rank (slot 0, nearest Command's door, holds the
-// longest wait); ranks change only when the waiting set changes. The line
-// leaves the foot of Command's steps, crosses the bridge landing, runs down
-// the bridge deck and folds at its foot, between the watch lantern, the
-// notice pillar, the avenue stall and the Task Board roof (32-36 world px
-// between slots). The 13th petitioner onward stands on the civic west arm
-// beyond the market stall (`overflow`). No slot stands on a fixture's footprint
-// (VisitTileAllocator `standsOnFixture`) or behind a roof. `door` is the point
-// the head of the line faces; each later slot faces the slot ahead of it.
+// longest wait); ranks change only when the waiting set changes. AG-7 (Q7) —
+// the line stays on Command's forecourt, off the plank and the central
+// bridge (the island's main north-south crossing): from the foot of the
+// steps it runs west along the pond verge, past the plaza's ring place, and
+// folds back along the forecourt's west edge (36 world px between slots).
+// The 13th petitioner onward stands on the civic west arm (`overflow`). No
+// slot stands on a bridge, a fixture's footprint (VisitTileAllocator
+// `standsOnFixture`), another standing place or behind a roof. `door` is the
+// point the head of the line faces; each later slot faces the slot ahead.
 export const COMMAND_QUEUE = Object.freeze({
     door: Object.freeze({ tileX: 14.5, tileY: 19.5 }),
     slots: Object.freeze([
         { tileX: 15, tileY: 21 },
-        { tileX: 16, tileY: 22 },
-        { tileX: 17, tileY: 22 },
-        { tileX: 18, tileY: 22 },
-        { tileX: 18, tileY: 23 },
-        { tileX: 18, tileY: 24 },
-        { tileX: 18, tileY: 25 },
-        { tileX: 18, tileY: 26 },
-        { tileX: 18, tileY: 27 },
-        { tileX: 19, tileY: 28 },
-        { tileX: 18, tileY: 28 },
-        { tileX: 18, tileY: 29 },
-    ].map(Object.freeze)),
-    overflow: Object.freeze([
+        { tileX: 13, tileY: 22 },
+        { tileX: 12, tileY: 22 },
         { tileX: 11, tileY: 22 },
         { tileX: 10, tileY: 22 },
-        { tileX: 9, tileY: 21 },
-        { tileX: 10, tileY: 20 },
         { tileX: 9, tileY: 22 },
-        { tileX: 8, tileY: 21 },
-        { tileX: 10, tileY: 19 },
         { tileX: 8, tileY: 22 },
+        { tileX: 8, tileY: 21 },
+        { tileX: 9, tileY: 21 },
+        { tileX: 10, tileY: 21 },
+        { tileX: 11, tileY: 21 },
+        { tileX: 12, tileY: 21 },
+    ].map(Object.freeze)),
+    overflow: Object.freeze([
+        { tileX: 10, tileY: 19 },
+        { tileX: 11, tileY: 20 },
+        { tileX: 11, tileY: 17 },
+        { tileX: 11, tileY: 16 },
+        { tileX: 10, tileY: 16 },
+        { tileX: 11, tileY: 15 },
+        { tileX: 10, tileY: 15 },
+        { tileX: 12, tileY: 16 },
     ].map(Object.freeze)),
 });
 
