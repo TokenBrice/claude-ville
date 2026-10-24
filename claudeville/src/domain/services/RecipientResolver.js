@@ -1,5 +1,6 @@
 // Pure helpers for parsing the recipient alias out of a summarized
-// `SendMessage` tool-input string. Returns the alias unchanged so callers
+// agent-messaging tool-input string (Claude `SendMessage`, Codex
+// `send_message` / `send_input`, OMP `send_message`). Returns the alias unchanged so callers
 // can compare against agent name/agentName/agentId directly.
 //
 // Heuristic order:
@@ -7,7 +8,18 @@
 //   2. `recipient_name: <alias>` / `recipient_name = <alias>` (with optional quotes).
 //   3. Fallback: trimmed single-token input that looks like a plausible name.
 
-const RECIPIENT_KEYS = ['recipient_name', 'recipientName', 'recipient'];
+// `target` is Codex `send_message`'s addressee (a sub-agent's task path leaf);
+// `to` is Claude `SendMessage`'s.
+const RECIPIENT_KEYS = ['recipient_name', 'recipientName', 'recipient', 'target', 'to'];
+
+/**
+ * The last segment of a Codex sub-agent's `agent_path` ("/root/composition"
+ * -> "composition"): the name its orchestrator addresses it by.
+ */
+export function agentPathAlias(agent) {
+    const value = typeof agent?.agentPath === 'string' ? agent.agentPath : '';
+    return value.split('/').filter(Boolean).pop() || null;
+}
 
 function stripQuotes(value) {
     const text = String(value ?? '').trim();

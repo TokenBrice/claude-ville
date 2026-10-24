@@ -1,0 +1,2 @@
+{"type":"user","timestamp":"2026-09-01T12:00:02.000Z","isSidechain":true,"message":{"role":"user","content":[{"type":"text","text":"<teammate-message teammate_id=\"team-lead\">Survey the fixture lane.</teammate-message>"}]}}
+{"type":"assistant","timestamp":"2026-09-01T12:00:03.000Z","isSidechain":true,"message":{"role":"assistant","model":"claude-opus-4-6","content":[{"type":"tool_use","id":"teammate-send","name":"SendMessage","input":{"to":"team-lead","summary":"Lane surveyed","message":"Done."}}]}}

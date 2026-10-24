@@ -78,7 +78,8 @@ import { annotationModeForPressure, calculateScenePressure, getActiveMarkGoverno
 import { fireBreath, fireBreathDepth, groundCourseHeight, HEARTH_TONE, hearthLightSources, lightSourceCacheKey, normalizeLightSource } from './LightSourceRegistry.js';
 import { applyTeamPlazaPreferences, getCouncilRingDiagnostics, releaseCouncilRingState } from './CouncilRing.js';
 import { ArrivalDepartureController } from './ArrivalDeparture.js';
-import { extractRecipientName } from '../../domain/services/RecipientResolver.js';
+import { agentPathAlias, extractRecipientName } from '../../domain/services/RecipientResolver.js';
+import { isAgentMessageTool } from '../../domain/services/ToolIdentity.js';
 import { bucketCounts, buckets as signalBuckets } from '../../domain/services/SignalLedger.js';
 import { BUILDING_EVENTS } from '../../domain/events/DomainEvent.js';
 import { ChronicleMonuments } from './ChronicleMonuments.js';
@@ -5132,6 +5133,7 @@ export class IsometricRenderer {
                 agent.agentName,
                 agent.agentId,
                 agent.id,
+                agentPathAlias(agent),
             ].filter(Boolean);
 
             for (const alias of aliases) {
@@ -5145,7 +5147,8 @@ export class IsometricRenderer {
             if (this._isGateTransit(sprite)) continue;
             const agent = sprite.agent;
             if (!agent) continue;
-            if (agent.status === AgentStatus.WORKING && agent.currentTool === 'SendMessage' && agent.currentToolInput) {
+            if (agent.status === AgentStatus.WORKING && agent.currentToolInput
+                && isAgentMessageTool(agent.currentTool, agent.currentToolInput)) {
                 senders.add(sprite);
 
                 if (sprite.chatPartner) continue;

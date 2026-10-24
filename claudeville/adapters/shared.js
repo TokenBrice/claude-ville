@@ -60,6 +60,31 @@ const DEFAULT_TOOL_FIELDS = Object.freeze([
   'content',
 ]);
 
+// Shell input fields whose leading `cd <dir> &&` hop and `git -C <dir>` flag
+// say where a command ran, not what it does. Agents prefix most calls with an
+// absolute `cd`, so a bounded summary that keeps them shows only a directory.
+const SHELL_COMMAND_FIELDS = new Set(['command', 'cmd']);
+const SHELL_DIR_TOKEN = String.raw`(?:"[^"]*"|'[^']*'|[^\s;&|]+)`;
+const SHELL_CD_PREFIX = new RegExp(String.raw`^\s*cd\s+${SHELL_DIR_TOKEN}\s*(?:&&|;|\n)\s*`);
+const GIT_DIR_FLAG = new RegExp(String.raw`(^|[\s;&|(])git\s+-C\s+${SHELL_DIR_TOKEN}\s+`, 'g');
+
+/**
+ * Drop leading `cd <dir> &&` / `cd <dir>;` hops and every `git -C <dir>` flag,
+ * so what survives truncation is the command itself. Returns the input
+ * unchanged when nothing would be left of it.
+ */
+function stripShellLocationPrefix(command) {
+  if (typeof command !== 'string') return command;
+  let text = command;
+  for (let hops = 0; hops < 8; hops++) {
+    const next = text.replace(SHELL_CD_PREFIX, '');
+    if (next === text) break;
+    text = next;
+  }
+  text = text.replace(GIT_DIR_FLAG, '$1git ').trim();
+  return text || command;
+}
+
 function readHeadText(filePath, maxBytes = DEFAULT_HEAD_BYTES) {
   try {
     if (!fs.existsSync(filePath)) return '';
@@ -820,6 +845,7 @@ function summarizeToolInput(input, options = {}) {
     const hasValue = resolved.requireTruthyField ? Boolean(fieldValue) : fieldValue != null;
     if (!hasValue) continue;
     if (basenameFields.has(field)) fieldValue = basenameForSummary(fieldValue);
+    if (SHELL_COMMAND_FIELDS.has(field)) fieldValue = stripShellLocationPrefix(fieldValue);
     return truncateText(fieldValue, resolved.maxLength, resolved);
   }
 
@@ -869,6 +895,7 @@ module.exports = {
   readLines,
   readTailLines,
   statCacheKey,
+  stripShellLocationPrefix,
   summarizeToolInput,
   tailGuard,
   trimCache,

@@ -13,6 +13,8 @@ import {
     WORK_ITINERARY_ROUTE,
 } from './VisitIntentSemantics.js';
 import { isPlanMode } from './ActionVocabulary.js';
+import { homeDistrictFor } from './HomeDistrict.js';
+import { placedToolBuilding } from './MovementRouting.js';
 
 const CASH_OUT_TOKEN_DELTA = 8000;
 const CASH_OUT_CONTEXT_SHARE = 0.04;
@@ -306,7 +308,6 @@ export class VisitIntentManager {
             activeIds.add(agent.id);
             this._deriveAgentIntents(agent, currentNow);
         }
-        this._deriveGlobalIntents(activeAgents, currentNow);
         this._consumePendingGathers(activeAgents, currentNow);
         this._applyQuotaThrottle(activeAgents, currentNow);
 
@@ -453,10 +454,16 @@ export class VisitIntentManager {
         const tool = agent.currentTool || null;
         if (!tool) return;
         if (String(agent.status || '').toLowerCase() !== 'working') return;
-        const classified = classifyTool(tool, agent.currentToolInput ?? agent.lastToolInput);
-        if (!classified?.building) return;
+        const raw = classifyTool(tool, agent.currentToolInput ?? agent.lastToolInput);
+        if (!raw?.building) return;
+        // An unrecognized shell command is no evidence of a place: the body
+        // works in its stable home district instead of crowding Command.
+        const classified = placedToolBuilding(raw)
+            ? raw
+            : { ...raw, building: homeDistrictFor(agent, { now }) };
         const input = agent.currentToolInput ?? agent.lastToolInput;
-        const phase = phaseFromToolClassification(tool, input, classified);
+        // The phase reads the call itself, not the district it was given.
+        const phase = phaseFromToolClassification(tool, input, raw);
         this.lastToolBuildingByAgent.set(agent.id, {
             building: classified.building,
             reason: classified.reason,
@@ -637,6 +644,13 @@ export class VisitIntentManager {
             for (const source of sources) {
                 const start = Math.max(0, source.length - MAX_SEEN_GIT_EVENTS);
                 source.slice(start).forEach((event, offset) => {
+                    // A git event moves only the session that made it. Git
+                    // enrichment hands every session in a repository the
+                    // repository's scanned commits and ref transitions
+                    // (`git-repo-*`) and other sessions' pushes; a carrier
+                    // that is not the event's own session is no evidence.
+                    const owner = event?.sessionId || event?.session_id || null;
+                    if (owner && owner !== agent.id) return;
                     const index = start + offset;
                     const key = this._rawGitReplayKey(event, agent, index);
                     if (rawCandidates.has(key)) {
@@ -776,50 +790,6 @@ export class VisitIntentManager {
                 payload: { ageMs: age },
                 priority: 48,
             }, now);
-        }
-    }
-
-    _deriveGlobalIntents(agents, now) {
-        const working = agents.filter((agent) => String(agent?.status || '').toLowerCase() === 'working');
-        if (working.length >= 4) {
-            const sentries = agents
-                .filter((agent) => agent?.id && String(agent.status || '').toLowerCase() !== 'working')
-                .slice(0, 2);
-            for (const agent of sentries) {
-                this._upsertIntent(agent.id, {
-                    source: 'alert',
-                    sourceKey: `active-count:${working.length}`,
-                    building: 'watchtower',
-                    reason: 'high-activity-watch',
-                    phase: 'coordinating',
-                    confidence: 0.58,
-                    label: `${working.length} active`,
-                    payload: { activeWorkingCount: working.length },
-                    priority: 54,
-                }, now);
-            }
-        }
-
-        const quotaPressure = agents.some((agent) => contextRatio(agent) >= CONTEXT_PRESSURE_THRESHOLD);
-        if (quotaPressure) {
-            const sentinel = agents.find((agent) => (
-                agent?.id &&
-                contextRatio(agent) < CONTEXT_PRESSURE_THRESHOLD &&
-                ['idle', 'waiting'].includes(String(agent.status || '').toLowerCase())
-            ));
-            if (sentinel) {
-                this._upsertIntent(sentinel.id, {
-                    source: 'quota',
-                    sourceKey: 'quota-sentinel',
-                    building: 'mine',
-                    reason: 'resource-check',
-                    phase: 'quota/resource',
-                    confidence: 0.5,
-                    label: 'quota watch',
-                    payload: { sentinel: true },
-                    priority: 45,
-                }, now);
-            }
         }
     }
 

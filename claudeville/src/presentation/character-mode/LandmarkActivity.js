@@ -2,7 +2,7 @@ import { eventBus } from '../../domain/events/DomainEvent.js';
 import { WORLD_BODY_FONT_11 } from '../../config/theme.js';
 import { measureLabelText } from './WorldLabelKit.js';
 import { tileToWorld, worldToTile } from './Projection.js';
-import { compactToolLabel, isCommandToolName, isTaskCommandInput, toolVerbLabel } from '../../domain/services/ToolIdentity.js';
+import { compactToolLabel, isAgentMessageTool, isCommandToolName, isTaskCommandInput, toolVerbLabel } from '../../domain/services/ToolIdentity.js';
 import { providerColor } from './ArrivalDeparture.js';
 import { resolveObservation } from './ObservationCertainty.js';
 import { FAILURE, FAILURE_OUTLINE, STONE_RAMP, bracket, diamond, dottedCurve, gradeTone, momentRectClear, resolveMomentAnchor, snap } from './EffectStamps.js';
@@ -906,7 +906,7 @@ export class LandmarkActivity {
         for (const sprite of this.agentSprites) {
             if (!sprite?.agent) continue;
             const agent = sprite.agent;
-            if (agent.currentTool === 'SendMessage' && sprite.chatPartner) {
+            if (sprite.chatPartner && isAgentMessageTool(agent.currentTool, agent.currentToolInput)) {
                 const id = `chat-line:${agent.id}:${sprite.chatPartner.agent?.id || 'target'}`;
                 const activityStamp = agent.lastSessionActivity || null;
                 const existing = this.items.get(id);

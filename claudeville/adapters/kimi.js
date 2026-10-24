@@ -1225,11 +1225,11 @@ function kimiCodeExplicitExitCode(result) {
   if (!result || typeof result !== 'object') return undefined;
   const rawExitCode = result.exitCode ?? result.exit_code ?? result.code;
   if (rawExitCode !== null && rawExitCode !== undefined && rawExitCode !== '' && Number.isFinite(Number(rawExitCode))) {
-    return Math.trunc(Number(rawExitCode));
+    return { exitCode: Math.trunc(Number(rawExitCode)), exitCodeSource: 'exit' };
   }
   const rawError = result.isError ?? result.is_error ?? result.error;
-  if (rawError === true || (typeof rawError === 'string' && rawError.trim())) return 1;
-  if (rawError === false) return 0;
+  if (rawError === true || (typeof rawError === 'string' && rawError.trim())) return { exitCode: 1, exitCodeSource: 'flag' };
+  if (rawError === false) return { exitCode: 0, exitCodeSource: 'flag' };
   return undefined;
 }
 
@@ -1252,8 +1252,9 @@ function kimiCodeToolResults(wireEntries, sessionId) {
     const entry = entries[i];
     const event = loopEvent(entry, 'tool.result');
     if (!event) continue;
-    const exitCode = kimiCodeExplicitExitCode(event.result);
-    if (exitCode === undefined) continue;
+    const outcome = kimiCodeExplicitExitCode(event.result);
+    if (outcome === undefined) continue;
+    const { exitCode, exitCodeSource } = outcome;
     const completedAt = kimiCodeEventTime(entry, event);
     if (!completedAt) continue;
     const callId = kimiCodeToolCallId(event);
@@ -1266,6 +1267,7 @@ function kimiCodeToolResults(wireEntries, sessionId) {
       tool,
       detail,
       exitCode,
+      exitCodeSource,
       durationMs: call?.at ? Math.max(0, completedAt - call.at) : null,
       completedAt,
       source: 'transcript',

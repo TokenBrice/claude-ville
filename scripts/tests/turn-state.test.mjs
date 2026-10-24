@@ -209,6 +209,26 @@ test('derived state carries the wait reason only when blocked', () => {
     assert.equal(blocked.awaitingSince, NOW - 60_000);
 });
 
+test('Codex turn duration prefers the provider duration_ms and survives a later turn start', () => {
+    const { _test: codex } = require('../../claudeville/adapters/codex.js');
+    const at = (offsetMs) => new Date(NOW + offsetMs).toISOString();
+    const event = (offsetMs, payload) => ({ timestamp: at(offsetMs), type: 'event_msg', payload });
+    const finished = codex.deriveCodexTurnState([
+        event(0, { type: 'task_started' }),
+        event(200_000, { type: 'task_complete', duration_ms: 200_996 }),
+        event(210_000, { type: 'task_started' }),
+    ], NOW + 220_000);
+    assert.equal(finished.lastTurnDurationMs, 200_996);
+    const aborted = codex.deriveCodexTurnState([
+        event(0, { type: 'task_started' }),
+        event(5_000, { type: 'turn_aborted', duration_ms: 5_000 }),
+    ], NOW + 6_000);
+    assert.equal(aborted.lastTurnDurationMs, null);
+    // A completion whose start is outside the window and unreported has none.
+    const orphan = codex.deriveCodexTurnState([event(5_000, { type: 'task_complete' })], NOW + 6_000);
+    assert.equal(orphan.lastTurnDurationMs, null);
+});
+
 test('timestamps parse from ISO strings and numbers alike', () => {
     assert.equal(toEpochMs('2026-07-25T07:39:20.959Z'), Date.parse('2026-07-25T07:39:20.959Z'));
     assert.equal(toEpochMs(NOW), NOW);
@@ -236,6 +256,16 @@ test('Codex transcript fixtures preserve turn truth and project item_completed f
     assert.equal(aborted.waitReason, null);
     assert.equal(aborted.signalSource, 'transcript');
     assert.ok(Number.isFinite(aborted.turnStartedAt));
+    // SND-5: an aborted turn never has a duration.
+    assert.equal(aborted.lastTurnDurationMs, null);
+
+    // SND-5: a completed Codex turn's duration is the provider's `duration_ms`,
+    // else the span from its own `task_started`; an abort in between neither
+    // sets nor clears it.
+    const durations = byId.get('codex-turn-durations');
+    assert.ok(durations);
+    assert.equal(durations.turnState, TurnState.AWAITING_INPUT);
+    assert.equal(durations.lastTurnDurationMs, 3 * 60_000);
 
     const longRunning = byId.get('codex-long-running-turn');
     assert.ok(longRunning);

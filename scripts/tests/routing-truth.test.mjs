@@ -218,3 +218,78 @@ test('working dwell is five-second base in virtual ticks and scales with observe
     const longer = sprite._waitDurationForState();
     assert.ok(longer > base && longer <= 480);
 });
+
+// AG-8: git enrichment hands every session in a repository the repository's
+// scanned commits and the sibling events it merged; only the event's own
+// session may walk to the Harbor for it.
+test('a commit moves only the session that made it', t => {
+    const manager = new VisitIntentManager({ now: () => NOW });
+    t.after(() => manager.dispose());
+    const commit = (id, sessionId, extra = {}) => ({
+        id, type: 'commit', sessionId, ts: NOW - 2000, sha: `${id}0000000`, label: id, success: true, ...extra,
+    });
+    const ownCommit = commit('a-own', 'session-a');
+    const scanned = commit('repo-scan', 'git-repo-abc', { attribution: 'scanned', source: 'git-upstream-status' });
+    const a = worker({ id: 'session-a', currentTool: 'Edit', currentToolInput: { file_path: 'src/a.js' }, gitEvents: [ownCommit, scanned] });
+    const b = worker({ id: 'session-b', currentTool: 'Read', currentToolInput: { file_path: 'src/b.js' }, gitEvents: [scanned, { ...ownCommit }] });
+    const c = worker({ id: 'session-c', currentTool: 'Read', currentToolInput: { file_path: 'src/c.js' }, gitEvents: [commit('c-legacy', null)] });
+    manager.reconcile([a, b, c], NOW);
+    const gitIntents = agentId => manager.snapshot(NOW).intents
+        .filter(intent => intent.agentId === agentId && intent.source === 'git');
+    assert.deepEqual(gitIntents('session-a').map(intent => intent.building), ['harbor']);
+    assert.deepEqual(gitIntents('session-b'), [], 'a sibling keeps working where its tools are');
+    // An event with no session id still belongs to the session carrying it.
+    assert.deepEqual(gitIntents('session-c').map(intent => intent.building), ['harbor']);
+    assert.notEqual(manager.getIntentForAgent('session-b', NOW).building, 'harbor');
+});
+
+// AG-9 / SM-9: no flavour sentries. A body at the Lighthouse or the Mine has
+// a reason of its own.
+test('busy or pressured fleets send no unrelated sentries to the Lighthouse or the Mine', t => {
+    const manager = new VisitIntentManager({ now: () => NOW });
+    t.after(() => manager.dispose());
+    const busy = Array.from({ length: 5 }, (_, index) => worker({
+        id: `busy-${index}`,
+        currentTool: 'Edit',
+        currentToolInput: { file_path: `src/${index}.js` },
+        tokens: index === 0 ? { input: 1000, contextWindow: 90000, contextWindowMax: 100000 } : { input: 1000 },
+    }));
+    const idle = ['idle-a', 'idle-b', 'waiting-c'].map((id, index) => ({
+        id, status: index < 2 ? AgentStatus.IDLE : AgentStatus.WAITING, provider: 'claude', tokens: { input: 100 },
+    }));
+    manager.reconcile([...busy, ...idle], NOW);
+    const intents = manager.snapshot(NOW).intents;
+    for (const agent of idle) {
+        assert.ok(!intents.some(intent => intent.agentId === agent.id && ['watchtower', 'mine'].includes(intent.building)),
+            `${agent.id} has no evidence of its own`);
+    }
+    assert.ok(!intents.some(intent => ['high-activity-watch', 'resource-check'].includes(intent.reason)));
+    // The pressured session's own Mine intent is real evidence and stays.
+    assert.ok(intents.some(intent => intent.agentId === 'busy-0' && intent.reason === 'context-pressure'));
+});
+
+// AG-3: an unrecognized shell command is no evidence of a place.
+test('unrecognized shell commands work in the home district, not at Command', t => {
+    const agent = worker({ id: 'shell-worker', sessionId: 'shell-worker', currentTool: 'Bash', currentToolInput: 'echo ready' });
+    const home = homeDistrictFor(agent, { now: NOW });
+    assert.equal(resolveUpdateRouteBuilding({ agent, status: agent.status }), home);
+    // What the body already knows still beats the home district.
+    assert.equal(resolveUpdateRouteBuilding({ agent, status: agent.status, targetBuilding: 'archive' }), 'archive');
+
+    const manager = new VisitIntentManager({ now: () => NOW });
+    t.after(() => manager.dispose());
+    manager.reconcile([agent], NOW);
+    const intent = manager.getIntentForAgent(agent.id, NOW);
+    assert.equal(intent.source, 'tool');
+    assert.equal(intent.building, home);
+    assert.equal(intent.reason, 'run-shell', 'the call keeps its own label and verb');
+
+    // Recognized commands and real orchestration keep their buildings.
+    agent.currentToolInput = 'npm test';
+    manager.reconcile([agent], NOW + 1000);
+    assert.equal(manager.getIntentForAgent(agent.id, NOW + 1000).building, 'taskboard');
+    assert.equal(resolveUpdateRouteBuilding({ agent, status: agent.status }), 'taskboard');
+    agent.currentTool = 'SendMessage';
+    agent.currentToolInput = 'lane-04';
+    assert.equal(resolveUpdateRouteBuilding({ agent, status: agent.status }), 'command');
+});

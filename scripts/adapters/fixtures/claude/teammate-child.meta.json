@@ -1,0 +1,1 @@
+{"agentType":"lane-fixture","isBuiltIn":false,"description":"Fixture survey lane","name":"lane-fixture","spawnDepth":0,"requestShape":"background","model":"opus","taskKind":"in_process_teammate","teamName":"session-fixture","color":"cyan","planModeRequired":false,"spawnedAgentType":"general-purpose","permissionMode":"bypassPermissions"}

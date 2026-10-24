@@ -5,7 +5,8 @@ import {
     PairAffinity,
     affinityPairKey,
 } from '../domain/value-objects/PairAffinity.js';
-import { extractRecipientName } from '../domain/services/RecipientResolver.js';
+import { agentPathAlias, extractRecipientName } from '../domain/services/RecipientResolver.js';
+import { isAgentMessageTool } from '../domain/services/ToolIdentity.js';
 
 const FLUSH_DEBOUNCE_MS = 3000;
 const WRITE_LEASE_KEY = 'claudeville.affinity.writeLease';
@@ -125,14 +126,14 @@ function isLiveAgent(agent) {
 }
 
 function recipientAliases(agent) {
-    return [agent?.name, agent?.agentName, agent?.agentId].map(normalizeAlias);
+    return [agent?.name, agent?.agentName, agent?.agentId, agentPathAlias(agent)].map(normalizeAlias);
 }
 
 function addressesAliases(agent, aliases) {
     if ((agent.sendMessages || []).some(message => aliases.has(normalizeAlias(message?.recipient)))) {
         return true;
     }
-    return agent.currentTool === 'SendMessage'
+    return isAgentMessageTool(agent.currentTool, agent.currentToolInput)
         && aliases.has(normalizeAlias(extractRecipientName(agent.currentToolInput || '')));
 }
 
@@ -164,8 +165,8 @@ function telemetryRevisions(agent) {
         chat.add(chatEventKey(agent, message, index));
         chat.add(eventTimestamp(message));
     });
-    if (agent.currentTool === 'SendMessage') {
-        chat.add('SendMessage');
+    if (isAgentMessageTool(agent.currentTool, agent.currentToolInput)) {
+        chat.add(agent.currentTool);
         chat.add(agent.currentToolInput);
     }
     for (const event of agent.gitEvents || []) {
@@ -576,7 +577,7 @@ export class RelationshipAffinityService {
         });
 
         // Keep the live-tool fallback for providers without sendMessages.
-        if (String(agent.currentTool || '') !== 'SendMessage') return;
+        if (!isAgentMessageTool(agent.currentTool, agent.currentToolInput)) return;
         const signature = String(agent.currentToolInput || '');
         if (!signature || entry.lastChatSignature === signature) return;
         const alias = normalizeAlias(extractRecipientName(signature));
@@ -596,7 +597,7 @@ export class RelationshipAffinityService {
     _findRecipient(entry, alias) {
         for (const other of this._roster.values()) {
             if (other === entry || !other.identityKey || !isLiveAgent(other.agent)) continue;
-            const candidates = [other.agent.name, other.agent.agentName, other.agent.agentId];
+            const candidates = [other.agent.name, other.agent.agentName, other.agent.agentId, agentPathAlias(other.agent)];
             if (candidates.some(value => normalizeAlias(value) === alias)) {
                 return other;
             }

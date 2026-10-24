@@ -675,6 +675,7 @@ function getToolResults(parts, sessionId) {
       tool,
       detail,
       exitCode: Math.trunc(Number(rawExit)),
+      exitCodeSource: 'exit',
       durationMs: startedAt ? Math.max(0, completedAt - startedAt) : null,
       completedAt,
       source: 'transcript',

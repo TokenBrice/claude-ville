@@ -456,6 +456,7 @@ function reduceOmpTranscript(records, {
           tool: call.tool,
           detail: call.detail,
           exitCode: Object.hasOwn(message, 'isError') ? (message.isError ? 1 : 0) : null,
+          exitCodeSource: 'flag',
           durationMs: call.ts && messageTs ? messageTs - call.ts : null,
           completedAt: messageTs,
           source: 'transcript',
