@@ -576,6 +576,8 @@ export class TopBar {
                 else audio.resumeFromHush();
                 return audio.soundView().hushedUntil ?? 0;
             }, settings => settings.soundHushUntil),
+            // SND-7: SET's three call previews, at the current volume.
+            onSoundTestCall: (kind) => this._withAudio(audio => audio.testCall(kind)),
             onAutoCamera: (enabled) => this._setAutoCamera(enabled),
             onDesktopAlerts: (enabled) => this._setDesktopAlerts(enabled),
             onSidebarCollapsed: (collapsed) => this._setSidebarCollapsed(collapsed),
