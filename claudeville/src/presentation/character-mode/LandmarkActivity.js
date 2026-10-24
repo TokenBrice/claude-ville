@@ -125,6 +125,10 @@ const OUTCOME_SEEN_LIMIT = 400;
 // diamond steps out over the follow-through. The chit then stays the plain
 // stone residue for its TTL.
 const MEND_MOMENT = defineMoment('medium', { anticipation: 240, peak: 80, follow: 480 });
+// D8 — a session's own plan closed (Minor): the checked note seats in one
+// held step, takes one cream rim frame, and the rim steps out; no residue.
+// The note then waits for the chit gate like every Task board chip.
+const PLAN_CLOSED_MOMENT = defineMoment('minor', { anticipation: 120, peak: 80, follow: 200 });
 // A chit shows `verb · detail` only while it fits this many screen pixels;
 // past that it shows the verb alone, never a word cut in half (S14).
 const CHIT_MAX_TEXT_PX = 132;
@@ -371,6 +375,8 @@ export class LandmarkActivity {
         eventBus.on('tool:result', this._onToolResult);
         this._onOutcomeMended = (event) => this._observeMend(event);
         eventBus.on('outcome:mended', this._onOutcomeMended);
+        this._onPlanClosed = (event) => this._observePlanClosed(event);
+        eventBus.on('plan:closed', this._onPlanClosed);
         this.agentSprites = [];
         this._kindIds = new Map();
         this._recencyByType = new Map();
@@ -471,6 +477,7 @@ export class LandmarkActivity {
         eventBus.off('tool:invoked', this._onToolInvoked);
         eventBus.off('tool:result', this._onToolResult);
         eventBus.off('outcome:mended', this._onOutcomeMended);
+        eventBus.off('plan:closed', this._onPlanClosed);
         this._outcomeSeen.clear();
         this._outcomeSeqByBuilding.clear();
         this._kindIds.clear();
@@ -500,6 +507,7 @@ export class LandmarkActivity {
                     progress: pos.progress,
                     alpha: this._itemAlpha(item, now),
                     mendAge: item.mendedAt != null ? now - item.mendedAt : null,
+                    age: now - item.createdAt,
                 },
             });
         }
@@ -550,6 +558,7 @@ export class LandmarkActivity {
         // W7.2 — the outcome stamp is static ground evidence and always
         // draws; only its text plate waits for the chit gate.
         if (item.type === 'outcome') return this._drawOutcomeItem(ctx, item, this._chipVisible(item));
+        if (item.type === 'plan') return this._drawPlanClosedItem(ctx, item);
         if (!this._chipVisible(item)) return;
         if (item.type === 'forge') return this._drawForgeItem(ctx, item);
         if (item.type === 'handoff') return this._drawHandoffItem(ctx, item);
@@ -1107,6 +1116,30 @@ export class LandmarkActivity {
         item.detail = 'mended';
     }
 
+    // D8 — `plan:closed` (AgentEventStream): one checked note at the Task
+    // board for the session whose own plan just went all-done. The copy says
+    // "closed": the model's own declaration, not a verified success.
+    _observePlanClosed(event, now = Date.now()) {
+        if (this._disposed || !event?.agentId || !this.world?.buildings?.get?.('taskboard')) return;
+        const id = `plan:${event.agentId}:${Number(event.ts) || now}`;
+        if (this.items.has(id)) return;
+        this.items.set(id, {
+            id,
+            type: 'plan',
+            building: 'taskboard',
+            agentId: String(event.agentId),
+            createdAt: now,
+            expiresAt: now + SNAPSHOT_TTL_MS,
+            slot: stableHash(id) % CHIP_SLOTS,
+            label: 'plan',
+            detail: 'closed',
+            isCheck: true,
+            sortOffset: 5,
+        });
+        this._recencyByType.set('taskboard', now);
+        this._capKind('plan', 4, id);
+    }
+
     _expireItems(now) {
         for (const [id, item] of this.items) {
             if (item.expiresAt <= now) this.items.delete(id);
@@ -1335,6 +1368,34 @@ export class LandmarkActivity {
         }
         this._drawTinyLabel(ctx, item, x, y - 15, '#ffe7a3');
         ctx.restore();
+    }
+
+    _drawPlanClosedItem(ctx, item) {
+        const beat = this.motionScale === 0
+            ? null
+            : momentPhase(item.age ?? Infinity, PLAN_CLOSED_MOMENT);
+        const live = beat && beat.phase !== 'done';
+        if (!live && !this._chipVisible(item)) return;
+        const x = snap(item.x);
+        const y = snap(item.y);
+        // The anticipation holds the note one texel high, then it seats.
+        const lift = beat?.phase === 'anticipation' ? 1 : 0;
+        if (live) {
+            this._drawTaskItem(ctx, { ...item, y: item.y - lift, alpha: 1, label: '' });
+            if (beat.phase === 'peak' || beat.phase === 'follow') {
+                ctx.save();
+                ctx.globalAlpha = beat.phase === 'peak' ? 1 : ALPHA_QUANTA[beat.step];
+                ctx.fillStyle = this._tone(PEAK);
+                ctx.fillRect(x - 5, y - 9, 11, 1);
+                ctx.fillRect(x - 5, y + 1, 11, 1);
+                ctx.fillRect(x - 5, y - 8, 1, 9);
+                ctx.fillRect(x + 5, y - 8, 1, 9);
+                ctx.restore();
+            }
+            if (this._chipVisible(item)) this._drawTinyLabel(ctx, item, x, y - 15, '#ffe7a3');
+            return;
+        }
+        this._drawTaskItem(ctx, item);
     }
 
     // W7.2 — an outcome on the apron. A failure is the failed-push bracket

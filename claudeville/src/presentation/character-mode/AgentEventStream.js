@@ -212,6 +212,8 @@ export class AgentEventStream {
         this._observedResultIdsByAgent = new Map();
         // D2 — open real-exit failures awaiting the same command's pass.
         this._mends = new MendLedger();
+        // D8 — each session's own explicit plan, as last observed.
+        this._plans = new Map();
         // Results that finished before the village started watching this agent
         // are recorded, never stamped: a shelf tile means "this completed while
         // you were here", not "this exists in the transcript tail".
@@ -223,6 +225,7 @@ export class AgentEventStream {
         for (const agent of this.world?.agents?.values?.() || []) {
             this.snapshots.set(agent.id, snapshotAgent(agent));
             this._observeResults(agent, { emit: false });
+            this._observePlan(agent, { emit: false });
         }
 
         this.unsubscribers.push(
@@ -242,6 +245,7 @@ export class AgentEventStream {
         this._emittedToolKeyOwners.clear();
         this._observedResultIdsByAgent.clear();
         this._mends.clear();
+        this._plans.clear();
         this.shouldEmitToolEvent = null;
         this.shouldEmitEvent = null;
     }
@@ -300,6 +304,7 @@ export class AgentEventStream {
         }
         this._emitToolIfChanged(agent, null, snap);
         this._observeResults(agent);
+        this._observePlan(agent, { emit: false });
     }
 
     _onUpdated(agent) {
@@ -308,6 +313,7 @@ export class AgentEventStream {
         this.snapshots.set(agent.id, next);
         this._emitToolIfChanged(agent, previous, next);
         this._observeResults(agent);
+        this._observePlan(agent);
         if (!previous?.teamName && next.teamName) {
             const event = {
                 agentId: agent.id,
@@ -334,6 +340,7 @@ export class AgentEventStream {
         this._retireEmittedToolKeys(agent.id);
         this._observedResultIdsByAgent.delete(String(agent.id || ''));
         this._mends.forgetAgent(String(agent.id || ''));
+        this._plans.delete(String(agent.id || ''));
     }
 
     _emitToolIfChanged(agent, previous, next) {
@@ -416,6 +423,24 @@ export class AgentEventStream {
         eventBus.emit('outcome:mended', payload);
         const outcome = createVerifiedOutcome('mended', agent.projectPath || agent.project, agent.id, payload.ts);
         if (outcome) eventBus.emit(VERIFIED_OUTCOME_EVENT, outcome);
+    }
+
+    // D8 — `plan:closed` once, when a session's own explicit plan (its todo
+    // list, or exact task records) goes from unfinished to every item done
+    // while the village watched. First sight is a baseline, never a beat.
+    _observePlan(agent, { emit = true } = {}) {
+        const owner = String(agent?.id || '');
+        if (!owner) return;
+        const progress = explicitPlanProgress(agent);
+        const previous = this._plans.get(owner) || null;
+        const closed = previous?.closed || new Set();
+        this._plans.set(owner, { progress, closed });
+        if (!emit || !progress || !previous?.progress) return;
+        if (!planClosedBetween(previous.progress, progress) || closed.has(progress.key)) return;
+        closed.add(progress.key);
+        while (closed.size > PLAN_CLOSED_KEYS_PER_AGENT) closed.delete(closed.values().next().value);
+        const event = { agentId: agent.id, total: progress.total, source: progress.source, ts: Date.now() };
+        if (this._canEmit('plan:closed', event, agent)) eventBus.emit('plan:closed', event);
     }
 
     _toolEvent(agent, snap, extra = {}) {
@@ -536,6 +561,38 @@ export class AgentEventStream {
             this.chatPairs.delete(key);
         }
     }
+}
+
+// D8 — a plan needs this many items before closing it is a beat.
+export const PLAN_CLOSE_MIN_ITEMS = 3;
+const PLAN_CLOSED_KEYS_PER_AGENT = 16;
+
+/**
+ * A session's own declared plan: its todo list (TodoWrite, `update_plan`,
+ * OMP `todo`) or exact task records. Inferred progress (from children) is
+ * not a plan the model wrote, so it is never one.
+ */
+export function explicitPlanProgress(agent) {
+    const todos = Array.isArray(agent?.todos) ? agent.todos : [];
+    if (todos.length) {
+        let done = 0;
+        for (const todo of todos) if (todo?.status === 'completed') done += 1;
+        const key = `todos:${todos.map(todo => String(todo?.subject || '')).join('\u001f')}`;
+        return { done, total: todos.length, source: 'todos', key };
+    }
+    const progress = agent?.taskProgress;
+    if (progress?.source !== 'exact') return null;
+    const total = Math.trunc(Number(progress.total));
+    const done = Math.trunc(Number(progress.done));
+    if (!Number.isFinite(total) || !Number.isFinite(done) || total <= 0) return null;
+    return { done: Math.min(done, total), total, source: 'exact', key: `tasks:${total}` };
+}
+
+/** Unfinished before, every item done now, and big enough to be a plan. */
+export function planClosedBetween(previous, next) {
+    return Boolean(previous && next)
+        && previous.total > 0 && previous.done < previous.total
+        && next.total >= PLAN_CLOSE_MIN_ITEMS && next.done === next.total;
 }
 
 // The building a finished call's outcome lands at: where the body worked it.
