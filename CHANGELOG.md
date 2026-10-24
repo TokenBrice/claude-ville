@@ -2,6 +2,16 @@
 
 ---
 
+## v0.57.6 — *The Settled Mist* · Oct 24, 2026
+
+Overcast and stormy skies stop flickering. On a busy host, soft cloud-like shapes flashed over the sea and the island for a few frames every couple of seconds, then vanished.
+
+- **Fog banks and ground haze no longer pop in on a recovery probe.** These shapes were the ground fog banks and the full-strength ground haze. They are the first ornament the frame-pressure governor sheds. After 1.5 s of healthy frames, the governor probes one rung down, and on a host still over budget it climbs back within about 200 ms. The weather read that live level directly, so each failed probe drew the fog for a few frames. The weather layer now sheds at once but restores only after the lower level has held for 4 s. A host that is genuinely healthy gets its fog and haze back about 4 s later. Reduced motion keeps its latched static level.
+
+Validation: `validate:quick` is clean with 2103 tests, including a new regression test that replays three failed probes. It fails on v0.57.5 at the first probe (1712 ms). `verify:render` was not run because Playwright's bundled Chromium is not installed here.
+
+---
+
 ## v0.57.5 — *Fleet of Foot* · Oct 24, 2026
 
 A busy village walks smoothly again. With 25 working villagers on Linux Chrome, the World fell to 20–30 fps and dipped below 10 in bursts. The cause was not the villager count but a GPU readback on every upload of a villager's animation frame.
