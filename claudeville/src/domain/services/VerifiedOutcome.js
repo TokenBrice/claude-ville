@@ -1,7 +1,9 @@
 // Pure records and predicates for outcomes verified by provider evidence.
 
 export const VERIFIED_OUTCOME_EVENT = 'outcome:verified';
-export const VERIFIED_OUTCOME_KINDS = Object.freeze(['commit', 'push', 'release', 'milestone']);
+// `mended` (D2): the same shell command that failed with a real exit code
+// later passed for the same agent (`character-mode/OutcomeMends.js`).
+export const VERIFIED_OUTCOME_KINDS = Object.freeze(['commit', 'push', 'release', 'milestone', 'mended']);
 export const VERIFIED_OUTCOME_LIVE_MS = 10_000;
 
 const VERIFIED_OUTCOME_KIND_SET = new Set(VERIFIED_OUTCOME_KINDS);
@@ -51,7 +53,7 @@ export function createVerifiedOutcome(kind, project, agentId = null, at = Date.n
 
 export function verifiedOutcomeFromGitEvent(event, context = {}) {
     const kind = String(event?.type || event?.kind || '').toLowerCase();
-    if (!VERIFIED_OUTCOME_KIND_SET.has(kind) || kind === 'milestone') return null;
+    if (!VERIFIED_OUTCOME_KIND_SET.has(kind) || kind === 'milestone' || kind === 'mended') return null;
     if (!hasVerifiedSuccess(event)) return null;
     return createVerifiedOutcome(
         kind,

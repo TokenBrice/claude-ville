@@ -171,11 +171,13 @@ const CHAT_FAN_REACH_PX = CHAT_START_PX + 24;
 // the face, E/W the profile, NE/N/NW the back. An exact reversal turns through
 // the side with the higher rank, so the operator sees a face, never a back.
 const FACING_FRONT_RANK = Object.freeze([2, 2, 1, 0, 0, 0, 1, 2]);
+const DIR_SE = 1;
 const DIR_E = 2;
 const DIR_NE = 3;
 const DIR_N = 4;
 const DIR_NW = 5;
 const DIR_W = 6;
+const DIR_SW = 7;
 // 7.3 — the facings the work and wait strips are authored for (manifest
 // `directions: [se, e, w, sw]`, V7 work facings). A body about to play one
 // of those strips turns to the nearest of these, since any other column
@@ -204,6 +206,17 @@ const TANKARD_SET_DOWN = Object.freeze({
 const PATRON_SET_DOWN_TIER = 2;
 const PATRON_SLUMP_TIER = 3;
 const PATRON_SLUMP_TEXELS = 3;
+// AG-6 — the held distress poses (`_distressPose`). An errored villager
+// stands with its back to the operator (DIR_N, the one column no resting
+// body ever holds). A rate-limited one sits the limit out on the ground,
+// facing the camera side (SE/SW): the sit strip's seat line lands
+// GROUND_SIT_SEAT_DY texels below its foot point, legs forward; a profile
+// without a sit strip holds its eye-shut idle cell GROUND_SIT_FALLBACK_DROP
+// texels lower, clipped at the ground. Static steps.
+const DISTRESS_ERRORED = 'errored';
+const DISTRESS_LIMITED = 'limited';
+const GROUND_SIT_SEAT_DY = 1;
+const GROUND_SIT_FALLBACK_DROP = 8;
 const QUEUE_PLACE = Object.freeze({ type: 'command', commandQueue: true, visitTiles: Object.freeze([]) });
 // W4.4 / W4.8 — a scenic point as a place (the renderer's scenic shape): the
 // harbour quay an errand or a wind-down walks to.
@@ -1091,6 +1104,7 @@ export class AgentSprite {
         getAmbientDestination = null,
         getDayHour = null,
         hasLiveSubagents = null,
+        getBlockedChild = null,
         getRoadTiles = null,
         getRoutingContext = null,
         getTileType = null,
@@ -1251,6 +1265,10 @@ export class AgentSprite {
         this.getDayHour = typeof getDayHour === 'function' ? getDayHour : null;
         // Whether this agent's subagents still run (_waitsForPint).
         this.hasLiveSubagents = typeof hasLiveSubagents === 'function' ? hasLiveSubagents : null;
+        // AG-5 — this lead's first live child observed waiting on the
+        // operator or errored (its sprite), else null (_risenForChild).
+        this.getBlockedChild = typeof getBlockedChild === 'function' ? getBlockedChild : null;
+        this._risenFacing = false;
         this._subagentWait = null;
         // W4.3 / W4.4 / W4.8 — the living-crowd routine (_advanceCrowdRoutine).
         this._crowd = {
@@ -1699,6 +1717,19 @@ export class AgentSprite {
         return Math.abs(world.x - this.x) < 1 && Math.abs(world.y - this.y) < 1 ? seat : null;
     }
 
+    // AG-6 — world Y of the ground sitter's body cell top: the sit strip's
+    // seat line GROUND_SIT_SEAT_DY texels below the foot point, else the
+    // standing idle cell lowered GROUND_SIT_FALLBACK_DROP texels.
+    _groundSitBodyY(pose, anchor, drawY) {
+        if (pose?.group === 'sit') {
+            const lines = pose.strip?.meta?.groups?.sit?.seatLine;
+            const short = DIRECTIONS[this.direction];
+            const row = Number(lines?.[short] ?? lines?.[LONG_DIRECTION_NAMES[short]]);
+            if (Number.isFinite(row)) return drawY + GROUND_SIT_SEAT_DY - row;
+        }
+        return drawY - anchor.maxY + 2 + GROUND_SIT_FALLBACK_DROP;
+    }
+
     // World Y of the seated body cell's top edge. A sit strip lands its
     // declared seat line (manifest `seatLine`, cell px per facing) on the
     // seat's front edge; without one the strip keeps the V7 foot anchor. The
@@ -1748,11 +1779,28 @@ export class AgentSprite {
         this.waitTimer = Math.max(this.waitTimer, 60);
         this._renewVisitReservation();
         this._markCrowdArrival(now);
+        // AG-5 — risen for a blocked child: face it (in the Command queue or
+        // at the Pharos) while its state holds; then sit back, or face the bar.
+        // A back-facing bearing turns to the profile on the child's side, so
+        // the lead never shows the errored body's turned back.
+        const child = this._risenForChild();
+        if (child) {
+            this._risenFacing = true;
+            const bearingX = child.x - this.x;
+            const dir = dirFromVelocity(bearingX, child.y - this.y);
+            this._setFacingGoal(dir == null || FACING_FRONT_RANK[dir] !== 0 ? dir
+                : dir === DIR_NE ? DIR_E : dir === DIR_NW ? DIR_W : bearingX >= 0 ? DIR_E : DIR_W);
+        } else if (this._risenFacing) {
+            this._risenFacing = false;
+            if (!this._restSeat) this._faceBuilding(this._buildingForType(this._lastBuildingType), this._lastVisitFacingPoint);
+        }
         const seat = this._seatedSeat();
+        const glance = this._squadGlanceFacing(now);
         if (seat) {
-            this._setFacingGoal(SEAT_FACING_DIR[seat.facing]);
+            if (!child) this._setFacingGoal(glance ?? SEAT_FACING_DIR[seat.facing]);
             return;
         }
+        if (glance != null) this._setFacingGoal(glance);
         if (this.visitRole === 'rest' && !this._restSeat && this._restBuilding && now >= (this._standRefreshAt || 0)) {
             // AG-2 — a patron standing at the Tavern takes a seat once one frees.
             this._standRefreshAt = now + STAND_REFRESH_MS;
@@ -1771,6 +1819,28 @@ export class AgentSprite {
         if (current && current.tileX === target.tileX && current.tileY === target.tileY) return;
         this._lastPathTileKey = null;
         this._routeToVisitTarget(QUEUE_PLACE, null, target);
+    }
+
+    // D7 — a nearby squadmate's verified win (`SquadNotice`): a body holding
+    // a seat or a queue place faces the world point until `until`, then
+    // turns back to the facing it had. Facing makes no claim of its own.
+    noticeSquadmate(point, until) {
+        if (!Number.isFinite(point?.x) || !Number.isFinite(point?.y) || !Number.isFinite(until)) return;
+        const restore = this._squadGlance?.restore ?? null;
+        this._squadGlance = { x: point.x, y: point.y, until, restore };
+    }
+
+    _squadGlanceFacing(now) {
+        const glance = this._squadGlance;
+        if (!glance) return null;
+        if (now >= glance.until) {
+            this._squadGlance = null;
+            // A body that left its place meanwhile keeps its own facing.
+            if (glance.restore != null && now - glance.until < 1000) this._setFacingGoal(glance.restore);
+            return null;
+        }
+        if (glance.restore == null) glance.restore = this._facingGoal ?? this.direction;
+        return dirFromVelocity(glance.x - this.x, glance.y - this.y);
     }
 
     // W4.9 — the local hour (fractional) of the atmosphere clock, or the
@@ -2866,6 +2936,39 @@ export class AgentSprite {
         return this.agent?.status === AgentStatus.ERRORED ? 3 : 2;
     }
 
+    // AG-6 — the held distress pose of a planted errored or rate-limited
+    // body, else null: DISTRESS_ERRORED stands with its back to the
+    // operator; DISTRESS_LIMITED sits the limit out on the ground. Read from
+    // the observed status alone; walking keeps the hunched gait (#40), and a
+    // chat or a seat owns the body instead.
+    _distressPose() {
+        if (this.moving || this.chatting || this.chatPartner || departedTableau(this) || this._seatedSeat()) return null;
+        const status = this.agent?.status;
+        if (status === AgentStatus.ERRORED) return DISTRESS_ERRORED;
+        if (status === AgentStatus.RATE_LIMITED) return DISTRESS_LIMITED;
+        return null;
+    }
+
+    // AG-6 — the one facing a distress pose holds, else null. The ground
+    // sitter faces SE or SW (its sit strip's columns), on its building's side.
+    _distressFacing() {
+        const pose = this._distressPose();
+        if (pose === DISTRESS_ERRORED) return DIR_N;
+        if (pose !== DISTRESS_LIMITED) return null;
+        const bearing = this._workBearing;
+        const side = bearing == null ? (this._idlePhaseFrames & 1 ? 1 : -1) : Math.cos(bearing);
+        return side >= 0 ? DIR_SE : DIR_SW;
+    }
+
+    // AG-5 — a lead waiting on its subagents at its rest place stands up
+    // while one of its children is observed waiting on the operator or
+    // errored: returns that child's sprite, else null. Never inferred from
+    // the wait itself; the renderer reads the child's own status.
+    _risenForChild() {
+        if (this.visitRole !== 'rest' || this.moving || this.chatting || this._subagentWait?.pint !== true) return null;
+        return this.getBlockedChild?.(this.agent?.id) || null;
+    }
+
     /** Destination/current building when over visit capacity, else null. */
     _congestedBuilding() {
         const type = this._lastBuildingType
@@ -3112,6 +3215,8 @@ export class AgentSprite {
         this._advanceTokenFlowMotes(particleSystem, frameScale);
         // 7.3 — a body whose strip is due turns to an authored strip facing.
         this._holdStripFacing();
+        // AG-6 — a planted errored or rate-limited body turns to its pose.
+        this._setFacingGoal(this._distressFacing());
         // V7 — the one facing writer turns one column toward its goal.
         this._advanceFacing(dt);
 
@@ -3581,6 +3686,10 @@ export class AgentSprite {
     // back); a turn of 135° or more plants the stride so the body pivots.
     _setFacingGoal(dir) {
         if (dir == null) return;
+        // AG-6 — a held distress pose keeps its one facing against every
+        // other writer (building, fidget, glance); a chat or a step ends it.
+        const held = this._distressFacing();
+        if (held != null && dir !== held) return;
         if (this.motionScale <= 0) {
             this.direction = dir;
             this._facingGoal = null;
@@ -4169,7 +4278,8 @@ export class AgentSprite {
         if (budgetMode) {
             // 7.1 — a seated crowd body holds its still idle cell, lowered
             // onto the seat and clipped at the seat line like the 1:1 fallback.
-            const seat = this._seatedSeat();
+            // AG-5 — a lead risen for its blocked child stands.
+            const seat = this._risenForChild() ? null : this._seatedSeat();
             let cell = seat
                 ? this.spriteSheet.cell('idle', this.direction, 0)
                 : this.spriteSheet.cell(this.animState, this.direction, this.frame);
@@ -4254,13 +4364,19 @@ export class AgentSprite {
         }
         // 7.1 — a seated villager holds one still frame: the sit strip's held
         // row, else the idle row-6 cell lowered onto the seat (fallback).
-        const seat = this._seatedSeat();
+        // AG-5 — a lead risen for its blocked child stands at its place.
+        // AG-6 — a distress pose holds one idle frame too: the errored back
+        // stands still, the ground sitter's fallback shuts its eyes.
+        const seat = this._risenForChild() ? null : this._seatedSeat();
+        const distress = this._distressPose();
         const renderFrame = seat
             ? 0
-            : (this.animState === 'idle' && posture.idleFrame != null)
-                ? posture.idleFrame
-                : this.frame;
-        const cell = this.spriteSheet.cell(seat ? 'idle' : this.animState, this.direction, renderFrame);
+            : distress
+                ? (distress === DISTRESS_LIMITED ? IDLE_FRAMES - 1 : 0)
+                : (this.animState === 'idle' && posture.idleFrame != null)
+                    ? posture.idleFrame
+                    : this.frame;
+        const cell = this.spriteSheet.cell(seat || distress ? 'idle' : this.animState, this.direction, renderFrame);
         // 2.2 — an authored action pose replaces the idle body for this frame.
         // Geometry stays the base cell's (same 92 px cell, same feet anchor), so
         // only the source image and source rect change and the body never jumps.
@@ -4294,8 +4410,12 @@ export class AgentSprite {
         const distressDrop = this._distressPostureDrop();
         // 7.3 — an authored wait or work pose holds its own frame: no idle bob.
         const heldStrip = Boolean(seat) || (pose && (pose.group === 'wait' || WORK_STRIP_GROUPS.has(pose.group)));
+        // AG-6 — a held distress pose stands on its feet, still: the pose
+        // replaces the hunch's whole-body drop while planted.
         const bobY = departedTableau(this)
             ? 2
+            : distress
+            ? 0
             : this.animState === 'idle' && !heldStrip
             ? this.motionScale > 0
                 ? Math.round(
@@ -4329,15 +4449,22 @@ export class AgentSprite {
         // #36 — context-strain tremble: a tiny ±1px horizontal shiver once the
         // context window is nearly full (ratio >= 0.85), so the body language
         // reads as strain. Reduced motion (motionScale 0) skips the shiver.
-        const trembleX = seat ? 0 : this._contextStrainTremble();
+        const trembleX = seat || distress ? 0 : this._contextStrainTremble();
         const dx = drawX - Math.round(anchor.cx2 / 2) + trembleX;
         const dy = seat
             ? this._seatedBodyY(seat, pose, anchor, drawY) + (this._patronWaitTier() >= PATRON_SLUMP_TIER ? PATRON_SLUMP_TEXELS : 0)
-            : drawY - anchor.maxY + 2 + bobY + ackBobY;
-        if (seat) {
+            : distress === DISTRESS_LIMITED
+                ? this._groundSitBodyY(pose, anchor, drawY)
+                : drawY - anchor.maxY + 2 + bobY + ackBobY;
+        // AG-6 — the ground sitter's lowered fallback body is clipped at the
+        // ground line; the sit strip keeps its legs, stretched forward.
+        const clipLine = seat
+            ? drawY + seatLineOffset(seat)
+            : distress === DISTRESS_LIMITED && pose?.group !== 'sit' ? drawY + 2 : null;
+        if (clipLine != null) {
             // Clip at the seat line: nothing of the body shows below the seat's
             // front slice, on either backend.
-            const rows = Math.max(1, drawY + seatLineOffset(seat) - dy + 1);
+            const rows = Math.max(1, clipLine - dy + 1);
             if (rows < bodyCell.sh) {
                 bodyCell = { ...bodyCell, sh: rows };
                 if (pose) pose = { ...pose, cell: bodyCell };
@@ -4782,7 +4909,8 @@ export class AgentSprite {
         const southWest = seat.facing === 'south-west';
         const stamp = tankardStamp(southWest);
         if (!stamp) return null;
-        const setDown = this._patronWaitTier() >= PATRON_SET_DOWN_TIER;
+        // AG-5 — a lead risen for its blocked child leaves it set down too.
+        const setDown = this._patronWaitTier() >= PATRON_SET_DOWN_TIER || Boolean(this._risenForChild());
         const hold = setDown ? TANKARD_SET_DOWN[seat.occluder] || TANKARD_SET_DOWN.tavern : TANKARD_HOLD;
         const lift = setDown ? 0 : tankardLift(this.agent?.id, Date.now(), this.motionScale > 0);
         const mark = this._tankard || (this._tankard = { kind: 'tavern-tankard', stamp: null, x: 0, y: 0 });
@@ -6168,8 +6296,13 @@ export class AgentSprite {
     // verified celebration keep their groups.
     // Never derived from elapsed time.
     actionStripGroup() {
-        // 7.1 — a villager on its seat sits (static held row).
-        if (this._seatedSeat()) return 'sit';
+        // 7.1 — a villager on its seat sits (static held row); AG-5 — a
+        // lead risen for its blocked child stands on the plain body.
+        if (this._seatedSeat()) return this._risenForChild() ? null : 'sit';
+        // AG-6 — the rate-limited body sits on the ground (held sit row);
+        // the errored one stands on the plain body, its back turned.
+        const distress = this._distressPose();
+        if (distress) return distress === DISTRESS_LIMITED ? 'sit' : null;
         if (this.agent?.status === AgentStatus.WAITING_ON_USER) return 'wait';
         const work = this._admittedWorkStripGroup();
         if (work) return work;
@@ -7667,7 +7800,8 @@ export class AgentSprite {
             return;
         }
         const provider = this._providerKey();
-        if (!ACTION_PROP_PROVIDERS.has(provider) || this.moving) return;
+        // AG-6 — a held distress pose is the body's one claim: no tool chip.
+        if (!ACTION_PROP_PROVIDERS.has(provider) || this.moving || this._distressPose?.()) return;
         const action = resolveAgentAction(this.agent, { chatting: this.chatting });
         if (!action) return;
         // SM-7 — one chip per body: a chatting body already wears the message

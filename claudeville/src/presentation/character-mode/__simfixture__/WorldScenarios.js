@@ -1282,6 +1282,101 @@ export const TAVERN_CROWD_SCENARIO = {
     },
 };
 
+// AG-5 / AG-6 — the stuck squad. Four leads wait on their subagents at the
+// Tavern. Lead 1's child waits on the operator (Command queue) and lead 2's
+// child errored (Pharos): both leads stand up and face their child. Lead 3's
+// child is rate-limited and lead 4's still works, so those two stay seated.
+// A rate-limited and an errored villager with no lead hold their distress
+// poses at the Pharos beside the children.
+const squadLead = (index, minutes, codex = false) => agentSpec({
+    id: `squad-lead-${index}`,
+    name: `Lead ${index}`,
+    provider: codex ? 'codex' : 'claude',
+    model: codex ? 'gpt-6-luna' : 'claude-opus-5',
+    status: AgentStatus.WORKING,
+    turnState: 'tool_pending',
+    pendingTool: codex ? 'wait_agent' : 'Agent',
+    pendingSince: SCENARIO_TIME_BASE - minutes * 60_000,
+    currentTool: codex ? 'wait_agent' : 'Agent',
+    currentToolInput: 'description=review lane',
+    projectPath: `/sim/repos/squad-${index}`,
+    position: { tileX: 20 + index, tileY: 20 },
+});
+const squadChild = (index, extra) => agentSpec({
+    id: `squad-child-${index}`,
+    name: `Child ${index}`,
+    model: 'claude-sonnet-5',
+    agentType: 'subagent',
+    parentId: `squad-lead-${index}`,
+    projectPath: `/sim/repos/squad-${index}`,
+    ...extra,
+});
+export const SQUAD_DISTRESS_SCENARIO = {
+    id: 'squad-distress',
+    label: 'Squad distress',
+    description: 'Tavern leads whose children wait on you or errored stand up; errored and rate-limited villagers hold their distress poses at the Pharos.',
+    timeBase: SCENARIO_TIME_BASE,
+    agents: [
+        squadLead(1, 12),
+        squadLead(2, 7, true),
+        squadLead(3, 20),
+        squadLead(4, 3),
+        squadChild(1, {
+            status: AgentStatus.WAITING_ON_USER,
+            waitReason: 'approval',
+            pendingTool: 'Bash',
+            promptDetail: 'Allow `npm publish --dry-run`?',
+            signalSource: 'hook',
+            awaitingSince: SCENARIO_TIME_BASE - 3 * 60_000,
+            position: { tileX: 15, tileY: 22 },
+        }),
+        squadChild(2, {
+            status: AgentStatus.ERRORED,
+            lastMessage: 'Push rejected',
+            position: { tileX: 27, tileY: 15 },
+        }),
+        squadChild(3, {
+            status: AgentStatus.RATE_LIMITED,
+            lastMessage: 'Rate limit window active',
+            position: { tileX: 28, tileY: 16 },
+        }),
+        squadChild(4, {
+            status: AgentStatus.WORKING,
+            currentTool: 'Read',
+            currentToolInput: 'file_path=src/ledger/BranchRows.js',
+            position: { tileX: 8, tileY: 17 },
+        }),
+        agentSpec({
+            id: 'squad-solo-errored',
+            name: 'Flint',
+            provider: 'codex',
+            model: 'gpt-6-astra',
+            status: AgentStatus.ERRORED,
+            lastMessage: 'Push rejected',
+            position: { tileX: 28, tileY: 14 },
+        }),
+        agentSpec({
+            id: 'squad-solo-limited',
+            name: 'Gauge',
+            provider: 'gemini',
+            model: 'gemini-3.1-pro',
+            status: AgentStatus.RATE_LIMITED,
+            lastMessage: 'Rate limit window active',
+            position: { tileX: 27, tileY: 14 },
+        }),
+    ],
+    timeline: [],
+    metadata: {
+        qaTags: ['tavern', 'subagent-wait', 'distress', 'watchtower-alert'],
+        atmosphere: {
+            phase: 'day',
+            clock: { hours: 14, minutes: 0, seconds: 0, label: '14:00', phase: 'day' },
+            weather: { type: 'clear', intensity: 0.1 },
+        },
+        camera: { centerTile: { tileX: 23, tileY: 17 }, zoom: 2 },
+    },
+};
+
 // Sprite review lineup (model sprites pass 2): the supporting cast beside two
 // hero references, idle on the Tavern's yard so each body is judged on grass
 // and path at one zoom, then drifts to the tables to show its seat and drink.
@@ -1543,6 +1638,7 @@ export const WORLD_SCENARIOS = [
     MIDNIGHT_OIL_SCENARIO,
     TAVERN_EVENING_SCENARIO,
     TAVERN_CROWD_SCENARIO,
+    SQUAD_DISTRESS_SCENARIO,
     MODEL_LINEUP_SCENARIO,
     CACHE_ORE_SCENARIO,
     TASKBOARD_LIVE_SCENARIO,

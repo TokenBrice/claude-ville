@@ -4,9 +4,11 @@ import assert from 'node:assert/strict';
 import {
     CUE_LANES,
     CueGovernor,
+    LONG_TURN_CAPS,
     collapseCueBurst,
     compareCuePriority,
     cueLifecycleDecision,
+    longTurnDetails,
 } from '../../claudeville/src/presentation/shared/audio/CueGovernor.js';
 
 test('an urgent cue preempts a routine cue', () => {
@@ -270,5 +272,29 @@ test('outcomes keep a reserve of the routine budget; one Major at a time', () =>
     assert.equal(governor.submit(outcome('commit'), play), true);
     assert.equal(governor.submit(outcome('push'), play), false, 'the shared 6 per minute is spent');
     assert.deepEqual(events.map(event => event.kind), ['r0', 'r1', 'r2', 'r3', 'release', 'commit']);
+    governor.destroy();
+}));
+
+test('a long turn sounds as a Medium "your move" at most once a minute and 12 times an hour (SND-1)', () => withClock((clock) => {
+    const governor = new CueGovernor();
+    const long = { kind: 'turnDone', long: true, count: 1 };
+    assert.deepEqual(LONG_TURN_CAPS, { minGapMs: 60_000, perHour: 12, windowMs: 3_600_000 });
+    assert.deepEqual(longTurnDetails(long, governor), { long: true, tier: 'medium' });
+    clock.now += 59_000;
+    assert.deepEqual(longTurnDetails(long, governor), {}, 'closer than 60 s: an ordinary finished turn');
+    // A hidden page hears no outcomes and spends no cap; an ordinary turn is never long.
+    clock.now += 1_000;
+    assert.deepEqual(longTurnDetails(long, governor, true), {});
+    assert.deepEqual(longTurnDetails({ kind: 'turnDone', long: false }, governor), {});
+    assert.deepEqual(longTurnDetails({ kind: 'push', long: true }, governor), {});
+    const first = 1_000_000;
+    let heard = 1;
+    for (let i = 0; i < 30; i++) {
+        if (longTurnDetails(long, governor).long) heard++;
+        clock.now += 60_000;
+    }
+    assert.equal(heard, 12, 'an hour holds 12');
+    clock.now = first + LONG_TURN_CAPS.windowMs;
+    assert.equal(longTurnDetails(long, governor).long, true, 'the first one has left the window');
     governor.destroy();
 }));

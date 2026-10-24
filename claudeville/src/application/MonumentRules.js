@@ -5,6 +5,7 @@
 import { BUILDING_DEFS } from '../config/buildings.js';
 import { eventBus } from '../domain/events/DomainEvent.js';
 import { verifiedOutcomeFromGitEvent } from '../domain/services/VerifiedOutcome.js';
+import { commitSubject } from './ChronicleLog.js';
 
 // W7.9 (SW-P9) — every conventional type a day's work commonly carries plants
 // in a district: writing in the Archive, proving and mending at the Task
@@ -34,9 +35,16 @@ const KIND_BY_TYPE = {
 // A merged pull request without a conventional title docks at the Harbor.
 const PR_MERGE_DEFAULT_DISTRICT = 'harbor';
 
-// Upkeep stones stand below every other kind in a district's cap and stone
-// ledger, so a run of chores never pushes a release out of the newest three.
-const LOW_STANDING_KINDS = new Set(['upkeep']);
+// D3 — a verified commit whose subject names no conventional type (`golden:`,
+// `signals:`, plain prose) still leaves a minor record at the Forge, where
+// file mutations are worked. `style:` stays deliberately unplanted.
+const UNTYPED_COMMIT_DISTRICT = 'forge';
+const UNPLANTED_TYPES = new Set(['style']);
+
+// Upkeep and plain-commit stones stand below every other kind in a district's
+// cap and stone ledger, so a run of chores or a burst of untyped commits never
+// pushes a feature, a fix or a release out of the newest three.
+const LOW_STANDING_KINDS = new Set(['upkeep', 'commit']);
 
 export function monumentStanding(record) {
     return LOW_STANDING_KINDS.has(record?.kind) ? 0 : 1;
@@ -102,17 +110,20 @@ export function repoStoneSpriteFor(count) {
 // feat/fix commits (more billets at flagship and aurora); the Archive a brass
 // lectern from the flagship tier of verified Chronicle records (a gilt book
 // at aurora). The frame is the layer's strip frame; null draws nothing.
+// D3 — the billet rack counts every verified commit (`commits`), whatever
+// its subject's style; a ledger saved before the counter existed seeds it
+// from its feat/fix count, so no rack loses a tier it already earned.
 export const CHRONICLE_DRESSING_META_KEY = 'chronicleDressing';
 export const BUNTING_MAX_PENNANTS = 5;
 const DRESSING_ID_LIMIT = 512;
 const DRESSING_TIER_FRAMES = Object.freeze({
-    'forge.billetRack': Object.freeze({ counter: 'featFix', frames: Object.freeze({ ribbon: 0, flagship: 1, aurora: 2 }) }),
+    'forge.billetRack': Object.freeze({ counter: 'commits', frames: Object.freeze({ ribbon: 0, flagship: 1, aurora: 2 }) }),
     'archive.lectern': Object.freeze({ counter: 'records', frames: Object.freeze({ flagship: 0, aurora: 1 }) }),
 });
 
 /**
  * The static strip frame of dressing layer `name` on building `type` for
- * lifetime `counts` `{ release, featFix, records }`, or null (nothing earned,
+ * lifetime `counts` `{ release, featFix, commits, records }`, or null (nothing earned,
  * unknown layer, or a frame the strip does not have).
  */
 export function chronicleDressingFrame(counts, type, name, frames = Infinity) {
@@ -143,7 +154,7 @@ function isFeatFixCommit(event) {
  */
 export class ChronicleDressingLedger {
     constructor() {
-        this.counts = { release: 0, featFix: 0, records: 0 };
+        this.counts = { release: 0, featFix: 0, commits: 0, records: 0 };
         this._ids = [];
         this._idSet = new Set();
         // 8.2 / M16 — counted releases whose crown has not played yet: the
@@ -167,6 +178,7 @@ export class ChronicleDressingLedger {
                         const n = Math.floor(Number(value?.[key]));
                         if (Number.isFinite(n) && n > this.counts[key]) this.counts[key] = n;
                     }
+                    if (this.counts.featFix > this.counts.commits) this.counts.commits = this.counts.featFix;
                     for (const id of Array.isArray(value?.ids) ? value.ids : []) this._remember(String(id));
                 })
                 .catch(() => {})
@@ -204,7 +216,10 @@ export class ChronicleDressingLedger {
         if (record.kind === 'release') {
             this.counts.release += 1;
             if (hold) this._held.add(String(record.id));
-        } else if (isFeatFixCommit(event)) this.counts.featFix += 1;
+        } else if (String(event?.type || '').toLowerCase() === 'commit') {
+            this.counts.commits += 1;
+            if (isFeatFixCommit(event)) this.counts.featFix += 1;
+        }
         if (typeof store?.setMeta === 'function') {
             await store.setMeta(CHRONICLE_DRESSING_META_KEY, { ...this.counts, ids: [...this._ids] });
         }
@@ -214,6 +229,10 @@ export class ChronicleDressingLedger {
 
 function textOf(value) {
     return String(value || '').trim();
+}
+
+function subjectKeyOf(label) {
+    return textOf(label).toLowerCase().replace(/\s+/g, ' ').slice(0, 80);
 }
 
 function conventionalType(message) {
@@ -324,6 +343,7 @@ const LORE_BY_KIND = {
     test: (label, repo) => `Marks the proving of "${label}" in ${repo}.`,
     upkeep: (label, repo) => `Notes the upkeep of ${repo}: "${label}".`,
     merge: (label, repo) => `Marks ${label} brought in to the ${repo} quay.`,
+    commit: (label, repo) => `Set down when "${label}" was committed to ${repo}.`,
 };
 
 // A finished command that reported failure (an explicit false, a non-zero
@@ -393,14 +413,30 @@ export class MonumentRules {
         const parsed = conventionalType(
             event.subject || event.message || event.label || commitMessageFromCommand(event.command) || event.command
         );
-        if (!parsed || !DISTRICT_BY_TYPE[parsed.type]) return null;
         const project = textOf(event.project || event.repository || event.repo || 'unknown');
+        if (!parsed || !DISTRICT_BY_TYPE[parsed.type]) {
+            return parsed && UNPLANTED_TYPES.has(parsed.type) ? null : this._untypedCommitStone(event, project);
+        }
         return {
             kind: KIND_BY_TYPE[parsed.type] || 'feature',
             district: DISTRICT_BY_TYPE[parsed.type],
             weight: parsed.type === 'feat' ? 'medium' : 'minor',
             label: parsed.subject || parsed.type,
             dedupKey: `commit:${project}:${event.sha || event.commandHash || event.id || textOf(parsed.subject).slice(0, 80)}`,
+        };
+    }
+
+    // D3 — only a verified commit: an untyped subject carries no claim of its
+    // own, so the commit's observed success is the whole of its evidence.
+    _untypedCommitStone(event, project) {
+        if (!verifiedOutcomeFromGitEvent(event)) return null;
+        const label = textOf(event.subject || event.message) || commitSubject(event) || 'a commit';
+        return {
+            kind: 'commit',
+            district: UNTYPED_COMMIT_DISTRICT,
+            weight: 'minor',
+            label: label.slice(0, 100),
+            dedupKey: `commit:${project}:${event.sha || event.commandHash || event.id || subjectKeyOf(label)}`,
         };
     }
 

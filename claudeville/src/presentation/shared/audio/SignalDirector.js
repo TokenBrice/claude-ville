@@ -38,7 +38,7 @@ import {
     verifiedOutcomeFact,
 } from '../../../application/OutcomeSignals.js';
 import { createAtmosphereSnapshot } from '../../character-mode/AtmosphereState.js';
-import { cueLifecycleDecision } from './CueGovernor.js';
+import { cueLifecycleDecision, longTurnDetails } from './CueGovernor.js';
 import { cuePlacementKind, laneForCueKind } from './cues/CueKit.js';
 import { buildingOf, explicitSpot, resolveCueSpot } from './SpatialField.js';
 import { ActionableCueRouter, attentionStatus, familyCuePayload } from './ActionableRouting.js';
@@ -50,8 +50,12 @@ const DIRECTOR_ID = 'signals';
 const PAUSE_CLOSE_SEC = 0.08;
 const RESUME_OPEN_SEC = 0.25;
 const ATMO_FRESH_MS = 3000;
-// What Signals sounds (7.2, UX-3); every other kind only captions.
+// What Signals sounds (7.2, UX-3); every other kind only captions, except a
+// long turn's end (SND-1), which knocks as a "your move".
 const SIGNALS_SOUNDING = new Set(['summons', 'distress', 'limit', 'reminder', 'answered', 'recovery']);
+function soundsInSignals(kind, payload) {
+    return SIGNALS_SOUNDING.has(kind) || (kind === 'turnDone' && payload.long === true);
+}
 // The bed-aware trim's window (CueLevel) for a cue with no music under it.
 const NO_MUSIC_BED = 'village';
 
@@ -232,7 +236,8 @@ export class SignalDirector {
         this._hiddenSummonsHandler = typeof handler === 'function' ? handler : null;
     }
 
-    // S7: an entry summons while the operator is looking plays the L2 voice.
+    // S7: an entry summons while the operator is looking plays the L2 voice;
+    // `fn(agentId)` also hears that agent's terminal presence (SND-4).
     setOperatorLooking(fn) {
         this._operatorLooking = typeof fn === 'function' ? fn : null;
     }
@@ -444,7 +449,7 @@ export class SignalDirector {
                 oldestWaitMs: payload?.oldestWaitMs,
                 // The ladder's L1 is the entry call; to an operator who is
                 // already looking it rings as L2 (S7).
-                ...(kind === 'summons' ? { level: this._operatorLooking?.() ? 2 : 1 } : {}),
+                ...(kind === 'summons' ? { level: this._operatorLooking?.(agentId) ? 2 : 1 } : {}),
             };
             if (this.hidden && this._hiddenSummonsHandler) {
                 this._hiddenSummonsHandler({ ...payload, ...details, audioCueKind: kind });
@@ -486,6 +491,8 @@ export class SignalDirector {
 
     // One aggregated outcome → one cue with its exact count. A batch that
     // closes after the Town band took the signals still plays, in its mix.
+    // A long turn's end (SND-1) is levelled as a Medium outcome, inside the
+    // governor's long-turn caps.
     _playOutcome(outcome) {
         const agentId = outcome.agentId ?? null;
         const details = {
@@ -495,6 +502,7 @@ export class SignalDirector {
             repo: outcome.repo,
             version: outcome.version,
             ...(outcome.building ? { building: outcome.building } : {}),
+            ...longTurnDetails(outcome, this.governor, this.hidden),
             ...this._presetDetails(),
         };
         details.spot = this._spotFor(details, agentId);
@@ -580,7 +588,7 @@ export class SignalDirector {
         }
         // Signals sounds the attention voices only; the rest caption (7.2).
         // A cue raised on the Town band's behalf sounds in the band's mix.
-        if (this._signalRouting && !SIGNALS_SOUNDING.has(kind)) payload.announceOnly = true;
+        if (this._signalRouting && !soundsInSignals(kind, payload)) payload.announceOnly = true;
         // The S2 window the bed-aware trim aims at: the band's music when
         // the cue plays in its mix, otherwise the no-music bed.
         payload.bed ??= NO_MUSIC_BED;

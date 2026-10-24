@@ -44,7 +44,7 @@ import {
 import { drawPixelFlame, fillPixelEllipse } from './PixelShapes.js';
 import { PENNANT_REST_FRAME, currentPennantTime, currentPennantWind, drawBranchPennon, drawPennant, pennantFrame } from './PixelPennant.js';
 
-import { drawHullFallback, drawHullLamps, hullGeometry, hullHeadingDirection, hullLampPoints, hullLampStrip, hullMasthead, hullRecords, hullStrip, liveryStrip, rollFrameIndex } from './HarborHulls.js';
+import { anchorLampStrip, drawHullFallback, drawHullLamps, hullGeometry, hullHeadingDirection, hullLampPoints, hullLampStrip, hullMasthead, hullRecords, hullStrip, liveryStrip, rollFrameIndex } from './HarborHulls.js';
 import { normalizeLightSource } from './LightSourceRegistry.js';
 
 import {
@@ -1341,8 +1341,8 @@ export class HarborTraffic {
     }
 
     // 5.3 — the village lamp clock (dusk to dawn; IsometricRenderer
-    // villageLampsLit): every hull's lamps, moored or under way, are lit
-    // fixtures, never occupancy.
+    // villageLampsLit): every hull's lamps are lit fixtures, never
+    // occupancy (M05-5: a moored hull shows only its anchor light).
     setLampsLit(lit) {
         this._lampsLit = lit === true;
     }
@@ -3841,7 +3841,11 @@ export class HarborTraffic {
         }
         const frame = sink.force ? 4 : rollFrameIndex(this._shipRoll(ship));
         // 5.3 — lamps from dusk to dawn (a pack ghost's fade out included).
-        const lamps = this._lampsLit ? hullLampStrip(this.sprites?.assets, strip) : null;
+        // M05-5 riding lights: moored, one anchor light (the masthead); under
+        // way, every lamp, lit in one held step as the ship casts off. Keyed
+        // on the ship's own motion, never on agents.
+        const allLamps = this._lampsLit ? hullLampStrip(this.sprites?.assets, strip) : null;
+        const lamps = allLamps && !this._shipUnderWay(ship) ? anchorLampStrip(allLamps, strip) : allLamps;
         return {
             id: ship.id || `${ship.x},${ship.y}`,
             strip,

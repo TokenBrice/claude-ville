@@ -256,10 +256,39 @@ test('timing assessment attributes upload, auxiliary upload, shader, GPU, and fr
     assert.equal(upload.driver, 'uploadMs');
     assert.equal(upload.score, 10.5);
 
-    // The > 35 ms gap penalty still reaches the veto score.
+    // Without a timer the > 35 ms gap penalty still reaches the veto score.
     const stall = assessPostFxTimings({ uploadMs: 0.2, shaderCpuMs: 0.2, frameGapMs: 140 });
     assert.equal(stall.driver, 'frameGapMs');
     assert.equal(stall.score, 107);
+    // With a timer the gap is wall time, not GPU load (T1).
+    const timed = assessPostFxTimings({ uploadMs: 0.2, shaderCpuMs: 0.2, gpuMs: 0.47, frameGapMs: 140 });
+    assert.equal(timed.components.frameGapPenaltyMs, 0);
+    assert.notEqual(timed.driver, 'frameGapMs');
+    assert.ok(Math.abs(timed.score - 0.87) < 1e-9);
+});
+
+test('T1: main-thread stalls with a healthy GPU timer never demote from FULL', () => {
+    const { ladder, now } = bootedLadder();
+    // A busy host: every third frame stalls 60 ms, GPU work stays at 0.47 ms.
+    let frame = 0;
+    const { transitions } = transitionsOf(ladder, () => ({ intervalMs: (frame++ % 3 === 0) ? 60 : P60, gpuMs: 0.47 }), 60_000, now);
+    assert.deepEqual(transitions, []);
+    assert.equal(ladder.getLevel(), FULL);
+    assert.equal(ladder.getState().lastDecisionReason, REASONS.MISSING_TIMER_UNDER_BUDGET);
+    assert.equal(ladder.getState().timerVeto, 'under-budget');
+});
+
+test('T1: a resident ladder booted at MINIMAL on a busy host climbs to FULL', () => {
+    const ladder = residentLadder();
+    let frame = 0;
+    const busy = () => ({ intervalMs: (frame++ % 3 === 0) ? 60 : P60, gpuMs: 0.47 });
+    const { transitions } = transitionsOf(ladder, busy, 30_000, 0);
+    assert.equal(ladder.getLevel(), FULL);
+    assert.deepEqual(transitions.map(t => t.reason), [REASONS.PROBE, REASONS.PROBE]);
+    // A GPU that really is over budget still holds at the floor.
+    const loaded = residentLadder();
+    drive(loaded, () => ({ intervalMs: P60 * 2, gpuMs: 22 }), 30_000);
+    assert.equal(loaded.getLevel(), MINIMAL);
 });
 
 test('light admission is a declared row: the night keeps its pools at every level', () => {

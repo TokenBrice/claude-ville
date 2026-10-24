@@ -27,6 +27,7 @@ import { scheduleAccent } from '../shared/audio/CueScore.js';
 import { WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
 import { LABEL_INK, measureLabelText, snapScreenOrigin } from './WorldLabelKit.js';
 import { materialClassId } from './MaterialRegistry.js';
+import { noteMoment } from './MomentTally.js';
 
 const MONTH_MS = 30 * 24 * 60 * 60 * 1000;
 const KIND_COLORS = {
@@ -376,6 +377,7 @@ export class ChronicleMonuments {
     }
 
     _scheduleReleaseCrown(record, now, actorId = null) {
+        noteMoment('crown');
         const color = KIND_COLORS[record.kind] || KIND_COLORS.release;
         this.eventBus?.emit?.('harbor:release-burst', {
             project: record.project,

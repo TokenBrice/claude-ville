@@ -22,7 +22,8 @@ import { CueGovernor } from './audio/CueGovernor.js';
 import { CueKit } from './audio/cues/CueKit.js';
 import { cueNoteCount, cueNoteTime } from './audio/CueScore.js';
 import { INSTRUMENT_LABELS } from './audio/music/Instruments.js';
-import { audibleAgents } from './audio/AudibleWorld.js';
+import { audibleAgents, isAudibleAgent } from './audio/AudibleWorld.js';
+import { TerminalPresence } from './audio/TerminalPresence.js';
 import {
     LOOKING_L1_IDLE_MS,
     REMINDER_CAPS,
@@ -118,6 +119,18 @@ const PRESENCE_INPUT_EVENTS = Object.freeze(['pointerdown', 'keydown', 'wheel'])
 // An entry cue's trim is the wait's held trim when it was placed this recently.
 const ENTRY_TRIM_WINDOW_SEC = 1;
 const ENTRY_CUE_KINDS = new Set(['summons', 'distress', 'limit']);
+
+// SND-2: whether this browser lets an AudioContext start without a gesture
+// on this page (Firefox with the site's Autoplay set to allow audio; any
+// browser exposing the Autoplay Policy Detection API). Never probed by
+// building a context: where the API is missing the answer is no.
+export function autoplayAllowed(nav = globalThis.navigator) {
+    try {
+        return nav?.getAutoplayPolicy?.('audiocontext') === 'allowed';
+    } catch {
+        return false;
+    }
+}
 
 function phaseFamily(phase) {
     return phase === 'night' ? 'night' : 'day';
@@ -231,9 +244,24 @@ export class AmbientAudioController {
         this.directors.signals.setHiddenSummonsHandler((payload) => {
             this._handleHiddenSummons(payload);
         });
-        // S7: an entry cue while the operator is looking plays the L2 voice.
-        const looking = () => this._operatorLooking(LOOKING_L1_IDLE_MS);
+        // S7: an entry cue while the operator is looking plays the L2 voice;
+        // SND-4: so does one for a session whose operator just answered in
+        // its terminal. The raising update may reach this controller after
+        // the call, so the agent is observed again first (idempotent).
+        this._terminal = new TerminalPresence();
+        const looking = (agentId = null) => {
+            if (this._operatorLooking(LOOKING_L1_IDLE_MS)) return true;
+            if (agentId == null) return false;
+            const agent = this.world?.agents?.get?.(agentId);
+            if (agent) this._observeTerminal(agent);
+            return this._terminal.actedRecently(agentId, Date.now());
+        };
         for (const director of Object.values(this.directors)) director.setOperatorLooking?.(looking);
+        this._onAgentObserved = agent => this._observeTerminal(agent);
+        this._onAgentRemoved = agent => this._terminal.forget(agent?.id);
+        eventBus.on('agent:added', this._onAgentObserved);
+        eventBus.on('agent:updated', this._onAgentObserved);
+        eventBus.on('agent:removed', this._onAgentRemoved);
         this._inactive = this._pageInactive();
         this.directors.signals.setHidden(this._inactive);
         this.directors.signals.setSignalRouting(true);
@@ -275,11 +303,17 @@ export class AmbientAudioController {
         eventBus.on('audio:now-playing', this._onNowPlaying);
         this._signalTimer = setInterval(() => this._signalTick(), SIGNAL_TICK_MS);
 
+        // SND-2: a context the browser itself suspends or interrupts reads
+        // armed at once, and any click starts it again.
+        this._watchedContext = null;
+        this._onContextState = () => this._handleContextState();
         if (this.enabled) {
             this._armUnlockListeners();
             // A returning user who already clicked before the idle build
-            // (sticky activation) starts sound without a second click.
-            if (this.userActivated) this._startActivation();
+            // (sticky activation), or a browser that allows autoplay here,
+            // starts sound without a click (SND-2: a reload never leaves a
+            // stored-on profile silently armed where it need not be).
+            if (this.mayStart) this._startActivation();
         }
 
         if (typeof window !== 'undefined') {
@@ -296,6 +330,11 @@ export class AmbientAudioController {
     get userActivated() {
         return this._gestureSeen
             || globalThis.navigator?.userActivation?.hasBeenActive === true;
+    }
+
+    /** Whether sound may start now without waiting for a click. */
+    get mayStart() {
+        return this.userActivated || autoplayAllowed();
     }
 
     /** The preset the listener chose: `off | signals | townBand`. */
@@ -323,6 +362,18 @@ export class AmbientAudioController {
             return this.preset;
         }
         return this.setPreset(this.enabled ? 'off' : this.lastPreset, { fromUser: true });
+    }
+
+    // SND-2: the notice's START SOUND. A user activation that only ever
+    // starts sound already on; it never turns sound off, so a click that
+    // lands after the page's own unlock gesture started it is harmless.
+    startFromUser() {
+        if (!this.available || this._destroyed) return this.preset;
+        this._gestureSeen = true;
+        if (this.enabled && !this.isRunning() && !this._activation && !this._pageInactive()) {
+            this._startActivation();
+        }
+        return this.preset;
     }
 
     /**
@@ -634,6 +685,7 @@ export class AmbientAudioController {
         }
 
         this.engine.start();
+        this._watchContext();
         // The latch goes first, before any director builds (7.4).
         this._awaken();
         // Back from an absence: continue the piece where it stopped, unless
@@ -732,7 +784,7 @@ export class AmbientAudioController {
             return;
         }
         this.directors.signals.setHidden(false);
-        if (this.enabled && this.userActivated) this._startActivation();
+        if (this.enabled && this.mayStart) this._startActivation();
         else this.directors.signals.setSignalRouting(true);
         this._publishView();
     }
@@ -807,7 +859,7 @@ export class AmbientAudioController {
 
         const generation = this._visibilityGeneration;
         const finish = () => this._hiddenSummonsPending.delete(pendingKey);
-        if (!this.enabled || !this.available || !this.userActivated) {
+        if (!this.enabled || !this.available || !this.mayStart) {
             this._playHiddenUrgent(payload);
             finish();
             return;
@@ -890,6 +942,12 @@ export class AmbientAudioController {
 
     _operatorLooking(idleMs) {
         return isOperatorLooking(this._presence(), Date.now(), idleMs);
+    }
+
+    _observeTerminal(agent) {
+        if (this._destroyed || !agent) return;
+        const now = Date.now();
+        this._terminal.observe(agent, now, { audible: isAudibleAgent(agent, now) });
     }
 
     // A wait begins with its entry cue; that cue's bed-aware trim is held
@@ -980,10 +1038,27 @@ export class AmbientAudioController {
     // Whether a hidden page's urgent cue will be heard from the page itself;
     // desktop alerts go silent when it will (UX-13).
     _emitBellState() {
-        const rings = Boolean(this.available && this.enabled && this.userActivated);
+        const rings = Boolean(this.available && this.enabled && this.mayStart);
         if (rings === this._bellRings) return;
         this._bellRings = rings;
         eventBus.emit('audio:bell-state', { rings });
+    }
+
+    _watchContext() {
+        const context = this.engine.context;
+        if (!context || context === this._watchedContext || typeof context.addEventListener !== 'function') return;
+        this._watchedContext?.removeEventListener?.('statechange', this._onContextState);
+        this._watchedContext = context;
+        context.addEventListener('statechange', this._onContextState);
+    }
+
+    // A context that leaves `running` (the browser's own suspend, an
+    // interruption, or this controller's pause) is armed: the chip says so
+    // on the next frame, not the next tick, and a click starts it again.
+    _handleContextState() {
+        if (this._destroyed) return;
+        if (this.enabled && this.engine.context?.state !== 'running') this._armUnlockListeners();
+        this._publishView();
     }
 
     _armUnlockListeners() {
@@ -1044,7 +1119,7 @@ export class AmbientAudioController {
         const label = SOUND_PRESET_LABELS[this.lastPreset];
         switch (state) {
             case 'off': return `Sound off — click to turn on ${label}`;
-            case 'armed': return 'Sound on — click anywhere to start it';
+            case 'armed': return 'Sound not started — click anywhere to start it';
             case 'hushed': {
                 if (hushActive(this.hushedUntil, Date.now())) return `Hushed until ${clockTime(this.hushedUntil)} — signals only`;
                 const ends = quietHoursEndsAt(this.quietHours, new Date());
@@ -1135,12 +1210,15 @@ export class AmbientAudioController {
             paused: this._paused !== null,
             transport: this.engine.transport?.diagnostics() ?? null,
             userActivated: this.userActivated,
+            autoplayAllowed: autoplayAllowed(),
             background: this.background,
             townBandVoice: readTownBandVoice(),
             blurred: this._windowBlurred,
             // D3 (5.6): the quiet mix, `{ active, preset }`.
             quietMix: { ...this._quietMix },
             wakeCount: this._wakeCount,
+            // SND-4: sessions whose operator just answered in their terminal.
+            terminalPresent: this._terminal.present(Date.now()),
             ladder: this._ladder ? {
                 ...this._ladder,
                 heldTrimDb: this._ladderWait?.heldTrimDb ?? null,
@@ -1149,6 +1227,7 @@ export class AmbientAudioController {
             } : null,
             setPreset: (preset) => this.setPreset(preset, { fromUser: true }),
             toggle: () => this.toggleFromUser(),
+            start: () => this.startFromUser(),
             setVolumeStep: (step) => this.setVolumeStep(step),
             setBackground: (b) => this.setBackground(b),
             setOutput: (o) => this.setOutput(o),
@@ -1178,6 +1257,8 @@ export class AmbientAudioController {
         this._visibilityGeneration++;
         this._wakeToken++;
         this._removeUnlockListeners();
+        this._watchedContext?.removeEventListener?.('statechange', this._onContextState);
+        this._watchedContext = null;
         this._stopDirectors();
         if (this._suspendTimer) {
             clearTimeout(this._suspendTimer);
@@ -1187,6 +1268,10 @@ export class AmbientAudioController {
         clearInterval(this._signalTimer);
         this._signalTimer = null;
         eventBus.off('attention:acknowledged', this._onAcknowledged);
+        eventBus.off('agent:added', this._onAgentObserved);
+        eventBus.off('agent:updated', this._onAgentObserved);
+        eventBus.off('agent:removed', this._onAgentRemoved);
+        this._terminal.clear();
         eventBus.off('attention:raised', this._onAttentionRaised);
         eventBus.off('sound:town-band-voice', this._onTownBandVoice);
         eventBus.off('audio:now-playing', this._onNowPlaying);

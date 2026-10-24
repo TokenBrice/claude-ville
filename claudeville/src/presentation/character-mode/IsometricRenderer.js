@@ -68,6 +68,7 @@ import { HarborTraffic } from './HarborTraffic.js';
 import { BridgeLanterns } from './BridgeLanterns.js';
 import { LandmarkActivity } from './LandmarkActivity.js';
 import { AgentEventStream } from './AgentEventStream.js';
+import { bindSquadNotice } from './SquadNotice.js';
 import { RelationshipState } from './RelationshipState.js';
 import { RitualConductor } from './RitualConductor.js';
 import { VisitIntentManager } from './VisitIntentManager.js';
@@ -75,7 +76,8 @@ import VisitTileAllocator, { standsOnFixture } from './VisitTileAllocator.js';
 import { scenicScoreBias } from './DayRoutine.js';
 import { getPulsePriority } from './PulsePolicy.js';
 import { annotationModeForPressure, calculateScenePressure, getActiveMarkGovernor, MarkGovernor, setActiveMarkGovernor } from './MarkGovernor.js';
-import { fireBreath, fireBreathDepth, groundCourseHeight, HEARTH_TONE, hearthLightSources, lightSourceCacheKey, normalizeLightSource } from './LightSourceRegistry.js';
+import { fireBreath, fireBreathDepth, fixturePoolReach, groundCourseHeight, HEARTH_FIXTURES, HEARTH_TONE, hearthLightSources, lightSourceCacheKey, normalizeLightSource } from './LightSourceRegistry.js';
+import { lampRoundFor } from './LamplighterRound.js';
 import { applyTeamPlazaPreferences, getCouncilRingDiagnostics, releaseCouncilRingState } from './CouncilRing.js';
 import { ArrivalDepartureController } from './ArrivalDeparture.js';
 import { agentPathAlias, extractRecipientName } from '../../domain/services/RecipientResolver.js';
@@ -435,7 +437,8 @@ const THOUGHT_CROWN_GAP = 4;
 const THOUGHT_NO_THREAD = Object.freeze([]);
 // Street fixture pools (world px). The village keeps fewer lamp posts with a
 // wider throw, so the night chain stays continuous without a plinth every
-// tile; both stay under SOURCE_HALO_RADIUS_CAP.
+// tile; both stay under SOURCE_HALO_RADIUS_CAP, and deep night alone lets
+// them reach `fixturePoolReach` (L1-5) past it.
 const STREET_LAMP_POOL_RADIUS = 66;
 const BRAZIER_POOL_RADIUS = 70;
 // Command's watchfires are drawn burning, so at night they light the plaza
@@ -1959,6 +1962,9 @@ export class IsometricRenderer {
             shouldEmitToolEvent: (event, agent) => this._canAcceptToolRitual(event, agent),
             shouldEmitEvent: () => this._worldModeActive,
         });
+        // D7 — seated and waiting squadmates face a celebrating villager.
+        this._unbindSquadNotice?.();
+        this._unbindSquadNotice = bindSquadNotice(() => this.agentSprites);
         this.relationshipState = new RelationshipState(this.world);
         this._replayActiveToolRituals({ force: true });
         this._updateVisitSystems(Date.now());
@@ -2289,6 +2295,8 @@ export class IsometricRenderer {
         this.trailRenderer?.dispose?.();
         this.trailRenderer = null;
         this.agentEventStream?.dispose?.();
+        this._unbindSquadNotice?.();
+        this._unbindSquadNotice = null;
         releaseCouncilRingState(this.relationshipState);
         this.relationshipState?.dispose?.();
         if (this._harborSemanticsTimer) clearInterval(this._harborSemanticsTimer);
@@ -3322,6 +3330,20 @@ export class IsometricRenderer {
         return false;
     }
 
+    // AG-5 — the sprite of this lead's first live child observed waiting on
+    // the operator or errored, else null: the lead stands up for it
+    // (AgentSprite._risenForChild). Reads the child's own status only.
+    _blockedChildSprite(agentId) {
+        for (const childId of this.relationshipState?.parentToChildren?.get(agentId) || []) {
+            const child = this.world?.agents?.get(childId);
+            if (!child || child.isDeparted) continue;
+            if (child.status !== AgentStatus.WAITING_ON_USER && child.status !== AgentStatus.ERRORED) continue;
+            const sprite = this.agentSprites.get(childId);
+            if (sprite && !sprite.leaving) return sprite;
+        }
+        return null;
+    }
+
     // W4.9 — the local hour of the atmosphere clock (fractional; `setHour`
     // pins it): the one clock the daypart table (DayRoutine) reads.
     _dayHour() {
@@ -3755,6 +3777,7 @@ export class IsometricRenderer {
                 getAmbientDestination: (request) => this._getAmbientDestination(request),
                 getDayHour: () => this._dayHour(),
                 hasLiveSubagents: (agentId) => this._hasLiveSubagents(agentId),
+                getBlockedChild: (agentId) => this._blockedChildSprite(agentId),
                 getRoadTiles: () => this.pathTiles,
                 getRoutingContext: () => ({
                     laneTiles: this.laneTiles,
@@ -4443,13 +4466,19 @@ export class IsometricRenderer {
         const tokenItem = (hoveredBuilding || hoveredShip || bridgeLantern)
             ? null
             : (this.landmarkActivity?.hitTestTokenItem?.(worldX, worldY) ?? null);
+        // D5 — a repo standing stone tells its lifetime count and tier.
+        const repoStone = (hoveredBuilding || hoveredShip || bridgeLantern || tokenItem)
+            ? null
+            : (this.chronicleMonuments?.repoStones?.hitTest?.(worldX, worldY) ?? null);
         return hoveredBuilding
             ? this._buildingVisitorTooltip(hoveredBuilding)
             : (hoveredShip
                 ? this.harborTraffic.shipTooltip(hoveredShip)
                 : (bridgeLantern
                     ? this.bridgeLanterns.tooltipFor(bridgeLantern, Date.now())
-                    : (tokenItem ? this.landmarkActivity.tokenItemTooltip(tokenItem) : '')));
+                    : (tokenItem
+                        ? this.landmarkActivity.tokenItemTooltip(tokenItem)
+                        : (repoStone ? this.chronicleMonuments.repoStones.tooltipFor(repoStone) : ''))));
     }
 
     // ─── U-P3 fleet card ────────────────────────────────────────────────
@@ -9699,14 +9728,35 @@ export class IsometricRenderer {
         return lampsLitAt(this._lastAtmosphere);
     }
 
+    // D4 — the Lamplighter's Round: `(tileX, tileY) => lit` for this
+    // atmosphere snapshot. Clock and fixed geography only (never agent
+    // state); reduced motion keeps the shared lamp clock.
+    lampRoundLit() {
+        const atmosphere = this._lastAtmosphere;
+        const motionScale = this.motionScale ?? 1;
+        const cached = this._lampRoundCache;
+        if (cached && cached.atmosphere === atmosphere && cached.motionScale === motionScale) return cached.lit;
+        const lit = lampRoundFor(atmosphere, { motionScale });
+        this._lampRoundCache = { atmosphere, motionScale, lit };
+        return lit;
+    }
+
+    // The street lamps and braziers already caught on the round.
+    _litLanternGlowSources() {
+        const lit = this.lampRoundLit();
+        return this._lanternGlowSources().filter(source => lit(source.tileX, source.tileY));
+    }
+
     _lanternGroundLightSources(lighting = null) {
         if (!this.villageLampsLit()) return [];
-        const core = sourceEnergyFor(lighting).core;
+        const energy = sourceEnergyFor(lighting);
+        const core = energy.core;
+        const reach = fixturePoolReach(energy);
         // V5 — a village lantern or brazier stands on its tile (the flame
         // source sits 10 px above it), its flame 16 (brazier) / 24 (lantern)
         // world px up: the pool lands around the foot, and the post, the
         // walls and the bodies around it light by their height and facing.
-        return this._lanternGlowSources().map((source) => {
+        return this._litLanternGlowSources().map((source) => {
             const isBrazier = source.fixture === 'brazier';
             const foot = { x: source.x, y: source.y + 10 };
             const height = isBrazier ? 16 : 24;
@@ -9720,7 +9770,7 @@ export class IsometricRenderer {
                 height,
                 fire: isBrazier,
                 color: isBrazier ? '#ffa94a' : '#ffc95e',
-                radius: Math.min(isBrazier ? BRAZIER_POOL_RADIUS : STREET_LAMP_POOL_RADIUS, SOURCE_HALO_RADIUS_CAP),
+                radius: Math.round(Math.min(isBrazier ? BRAZIER_POOL_RADIUS : STREET_LAMP_POOL_RADIUS, SOURCE_HALO_RADIUS_CAP) * reach),
                 intensity: (isBrazier ? 0.94 : 0.82) * core,
             });
         }).concat(this._hearthLightSources(lighting));
@@ -9747,7 +9797,15 @@ export class IsometricRenderer {
                 fire: true,
             });
         }
-        return hearthLightSources({ lampsLit, core: sourceEnergyFor(lighting).core, extra });
+        // D4 — each hearth and watchfire catches on the round with the lamps.
+        const lit = this.lampRoundLit();
+        const caught = row => lit(row.tileX, row.tileY);
+        return hearthLightSources({
+            lampsLit,
+            core: sourceEnergyFor(lighting).core,
+            extra: extra.filter(caught),
+            fixtures: HEARTH_FIXTURES.filter(caught),
+        });
     }
 
     _attentionLightSources() {
@@ -10222,7 +10280,7 @@ export class IsometricRenderer {
         const nightFactor = this._lanternNightFactor(atmosphere);
         if (nightFactor <= 0.05) return;
         const spill = sourceEnergyFor(atmosphere?.lighting).spill;
-        const sources = this._lanternGlowSources();
+        const sources = this._litLanternGlowSources();
         if (!sources.length) return;
 
         const zoom = this.camera?.zoom || 1;

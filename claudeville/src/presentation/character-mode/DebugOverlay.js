@@ -3,6 +3,8 @@ import { WORLD_BODY_FONT_11 } from '../../config/theme.js';
 import { CANVAS_BUDGET } from './CanvasBudget.js';
 import { AgentSprite } from './AgentSprite.js';
 import { ambientDebugSnapshot } from './AmbientEvents.js';
+import { momentTally } from './MomentTally.js';
+import { getFramePressureSnapshot, shedSetForLevel } from './MarkGovernor.js';
 
 export class DebugOverlay {
     constructor() {
@@ -225,6 +227,7 @@ export class DebugOverlay {
             ...this._rendererBackendRows(renderer),
             ...this._trailRows(renderer),
             ...this._behaviorRows(behaviorStats?.rollingBehavior),
+            ...momentRows(),
             renderStats?.drawables ? `drawables: ${renderStats.drawables.total} drawn / ${renderStats.drawables.culling?.culled || 0} culled` : null,
             renderStats?.harbor ? `harbor: pending ${renderStats.harbor.pendingRepos || 0} commits ${renderStats.harbor.pendingCommits || 0} lanterns ${renderStats.harbor.bridgeLanterns || 0}` : null,
             renderStats?.canvas ? `light/cache: ${renderStats.canvas.lightGradients || 0} gradients / particles ${renderStats.canvas.particles || 0}` : null,
@@ -289,6 +292,7 @@ export class DebugOverlay {
             const snapshot = ambientDebugSnapshot(renderer);
             this._ambientRowsAt = now;
             this._ambientRowsCache = [
+                ...framePressureRows(getFramePressureSnapshot()),
                 'ambient: live / cap / gate-reason',
                 ...Object.entries(snapshot.actors).map(([name, row]) => `${name}: ${row.live} / ${row.cap} / ${row.reason || 'open'}`),
                 ...Object.entries(snapshot.tiers).map(([tier, row]) => `${tier}: ${row.kind || row.reason || 'between'}`),
@@ -525,6 +529,14 @@ function agentSheetRow(stats) {
         + ` · packed geometry ${stats.packedGeometrySheets} · ${formatBytes(stats.packedGeometryEstimateBytes)}`;
 }
 
+// D qw — moments fired per kind since load, with the span they cover.
+function momentRows() {
+    const { since, counts } = momentTally();
+    const parts = Object.entries(counts).map(([kind, count]) => `${kind} ${count}`);
+    const minutes = Math.max(0, Math.round((Date.now() - since) / 60000));
+    return wrapRows(`moments (${minutes} min): `, parts.length ? parts : ['none'], ' · ');
+}
+
 // Rows wider than the 560 px panel are squeezed, not wrapped, so long
 // readouts break into continuation rows instead.
 const WRAP_CHARS = 72;
@@ -612,6 +624,22 @@ function formatMs(value) {
     const number = Number(value);
     if (!Number.isFinite(number)) return '0.0';
     return number.toFixed(number >= 10 ? 0 : 1);
+}
+
+// T2/T3 — the frame-pressure governor's held level, so a "pressure" reason
+// below reads without devtools.
+const PRESSURE_LEVEL_NAMES = ['full', 'weather+fauna', 'particles', 'glyphs'];
+export function framePressureRows(pressure) {
+    if (!pressure) return [];
+    const level = Number(pressure.level) || 0;
+    const rows = [`frame pressure: ${level} ${PRESSURE_LEVEL_NAMES[level] || ''} · cost ${formatOptionalMs(pressure.costMs)}`
+        + ` / ${formatOptionalMs(pressure.budgetMs)} (healthy < ${formatOptionalMs(pressure.healthyMs)})`];
+    if (level > 0) {
+        rows.push(`  sheds ${shedSetForLevel(level).join(', ')}`);
+        rows.push(`  restore ${pressure.restoreInMs == null ? 'waits for healthy frames' : `in ${(pressure.restoreInMs / 1000).toFixed(1)} s`}`
+            + (pressure.probeFailures ? ` · failed probes ${pressure.probeFailures}` : ''));
+    }
+    return rows;
 }
 
 function formatOptionalMs(value) {

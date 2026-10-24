@@ -33,6 +33,7 @@ import { getReservedRects } from '../shared/ReservedRects.js';
 import { fireBreath, normalizeLightSource } from './LightSourceRegistry.js';
 import { normalizeLightingState, seasonShiftFor, smokeWindDrift, sourceEnergyFor } from './AtmosphereState.js';
 import { lampCourseAt } from './GradeEvaluator.js';
+import { lampRoundFor } from './LamplighterRound.js';
 import { canvasGradeKey, statusClothPreimage } from './CanvasGrade.js';
 import { seasonTokenForAtmosphere } from './SeasonalAmbience.js';
 import { isWorkingVisitor, NON_WORKING_VISIT_ROLES } from './VisitIntentManager.js';
@@ -233,6 +234,15 @@ function lampCourseFor(atmosphere) {
 
 export function lampsLitAt(atmosphere) {
     return lampCourseFor(atmosphere) >= LAMP_COURSE_SETTLING;
+}
+
+// D4 — a building's `lamps` cycle (the Pharos lens, Command's braziers)
+// catches on the Lamplighter's Round at the building's centre tile: the
+// Pharos first. Only reached with motion on (reduced motion runs no cycle).
+function lampCycleCaught(atmosphere, type) {
+    const def = BUILDING_DEFS.find(building => building.type === type);
+    if (!def) return true;
+    return lampRoundFor(atmosphere)(def.x + def.width / 2, def.y + def.height / 2);
 }
 const PARTICLE_ALIASES = {
     sparkle2: 'sparkle',
@@ -3162,7 +3172,7 @@ export class BuildingSprite {
     _emitterCycleActive(type, cycle) {
         if (!(this.motionScale > 0)) return false;
         const gate = cycle?.gate;
-        if (gate === 'lamps') return lampsLitAt(this.atmosphereState);
+        if (gate === 'lamps') return lampsLitAt(this.atmosphereState) && lampCycleCaught(this.atmosphereState, type);
         if (!this.partGates.isOpen(gate)) return false;
         if (type === 'forge') {
             return this._forgeGlow > FORGE_BANKED_GLOW

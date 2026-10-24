@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { BuildingPartGates, attentionBannerState, parsePartGate } from '../../claudeville/src/presentation/character-mode/BuildingPartGates.js';
 import { getBuildingAttentionBanner } from '../../claudeville/src/presentation/character-mode/BuildingVisualRegistry.js';
 import { REPO_STONE_SPRITES, repoStoneSpriteFor } from '../../claudeville/src/application/MonumentRules.js';
-import { RepoStones, repoStoneLayout } from '../../claudeville/src/presentation/character-mode/RepoStones.js';
+import { RepoStones, repoStoneLayout, repoStoneLore } from '../../claudeville/src/presentation/character-mode/RepoStones.js';
 import { REPO_STONE_ANCHORS } from '../../claudeville/src/config/townPlan.js';
 import { AgentStatus } from '../../claudeville/src/domain/value-objects/AgentStatus.js';
 import { ChronicleMonuments } from '../../claudeville/src/presentation/character-mode/ChronicleMonuments.js';
@@ -213,6 +213,24 @@ test('Chronicle stones reach the resident GPU world as records over their baked 
         if (previous === undefined) delete globalThis.document;
         else globalThis.document = previous;
     }
+});
+
+// D5 — the stones remember: hover lore from the lifetime count.
+test('a repo stone tells its repo, tier, lifetime commits and next threshold on hover', async () => {
+    assert.equal(repoStoneLore({ project: '/work/pharosville', count: 214 }), 'pharosville · pillar · 214 commits · next at 1000');
+    assert.equal(repoStoneLore({ project: '/work/a', count: 1 }), 'a · cairn · 1 commit · next at 10');
+    assert.equal(repoStoneLore({ project: '/work/a', count: 1000 }), 'a · obelisk · 1000 commits');
+    assert.equal(repoStoneLore({ project: '/work/a', count: 0 }), '');
+
+    const stones = new RepoStones();
+    const harbor = { state: { repoAnchorages: new Map([['/r/a', 1]]) } };
+    await stones.refresh(harbor, { getLifetimeCommitCount: async () => 37 }, NOW);
+    const [stone] = stones.stones;
+    assert.equal(stone.count, 37);
+    stones.image = () => ({ canvas: { width: 20, height: 30 }, ax: 10, ay: 28 });
+    assert.equal(stones.hitTest(stone.worldX, stone.worldY - 5), stone);
+    assert.equal(stones.hitTest(stone.worldX + 40, stone.worldY), null);
+    assert.equal(stones.tooltipFor(stone), 'a · stone · 37 commits · next at 100');
 });
 
 test('G7-1: the attention banner keeps its status hue through the night grade', () => {

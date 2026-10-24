@@ -294,6 +294,8 @@ test('tool:result fires once per newly observed outcome, and never for an invoca
         durationMs: 1500,
         completedAt: at,
         building: 'taskboard',
+        detail: 'npm run build',
+        exitCodeSource: null,
     }]);
 
     // A different tool is a new invocation, not a new outcome.

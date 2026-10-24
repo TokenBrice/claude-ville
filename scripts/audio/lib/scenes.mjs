@@ -23,6 +23,8 @@ export const LANE_CUE_KIND = Object.freeze({
 const LANE_STATUS = { needsYou: 'waiting_on_user', error: 'errored', limit: 'rate_limited' };
 // A long turn (≥ 20 s, 3.4) ends: the agent is seen working, then idle.
 const LONG_TURN_MS = 25000;
+// SND-1: a turn of two minutes or more finishes out loud ("your move").
+const YOUR_MOVE_TURN_MS = 150000;
 
 // `voice` (MARGIN_VOICES) picks one of the lane's cue kinds; `atmosphere` is
 // the bed's, which an hour bell's clock step must keep.
@@ -65,6 +67,14 @@ export function laneActions(lane, at, agentIndex, { voice = null, atmosphere = D
         return [
             { at: at - 1, status: { index: agentIndex, status: 'working' } },
             { at, status: { index: agentIndex, status: 'idle', fields: { lastTurnDurationMs: LONG_TURN_MS } }, ...tag },
+        ];
+    }
+    if (lane === 'outcomeMedium' && voice === 'longTurn') {
+        // The marker names the cue kind the long turn sounds as.
+        const vtag = { ...tag, voice: 'turnDone', label: `${lane}:${voice}#${agentIndex}` };
+        return [
+            { at: at - 1, status: { index: agentIndex, status: 'working' } },
+            { at, status: { index: agentIndex, status: 'idle', fields: { lastTurnDurationMs: YOUR_MOVE_TURN_MS } }, ...vtag },
         ];
     }
     if (lane === 'outcomeMedium' || lane === 'outcomeMajor') {
@@ -143,9 +153,11 @@ const URGENT_MARGIN_LANES = ['needsYou', 'error', 'limit'];
 // windows where the lane's one voice passed). The first is the lane's
 // default voice (the `margin:<bed>:<lane>` render); the others render as
 // `margin:<bed>:<lane>:<voice>`.
+// The long turn (SND-1) is the oak knock levelled as a Medium outcome.
 export const MARGIN_VOICES = Object.freeze({
     routine: Object.freeze(['arrival', 'council', 'departure']),
     scenery: Object.freeze(['aurora', 'hourBell']),
+    outcomeMedium: Object.freeze(['push', 'longTurn']),
 });
 export function marginVoices(lane) {
     return MARGIN_VOICES[lane] ?? [LANE_CUE_KIND[lane]];
@@ -173,8 +185,9 @@ const MARGIN_SPACING = 7;
 const PLACEMENTS_BY_LANE = { scenery: 1, outcomeMajor: 1 };
 // Voices whose CueKit cooldown outlasts the lane grid: the council (60 s)
 // keeps its three placements 63 s apart; the hour bell (55 min) renders one
-// placement per scene (`margin:<bed>:scenery:hourBell#<p>`), at its slot.
-const VOICE_SPACING = Object.freeze({ council: 63 });
+// placement per scene (`margin:<bed>:scenery:hourBell#<p>`), at its slot;
+// the long turn keeps its 63 s past the governor's 60 s long-turn gap.
+const VOICE_SPACING = Object.freeze({ council: 63, longTurn: 63 });
 export const PER_RENDER_VOICES = Object.freeze(['hourBell']);
 const PLACEMENTS_BY_VOICE = Object.freeze({ aurora: 1, hourBell: MARGIN_PLACEMENTS });
 const COUNCIL_MEMBERS = Object.freeze(['probe-a', 'probe-b', 'probe-c', 'probe-d']);
@@ -490,6 +503,21 @@ export const DASHBOARD_SCENE = {
         { at: 5, status: { index: 3, status: 'idle', fields: { lastTurnDurationMs: LONG_TURN_MS } }, label: 'turn done', lane: 'turnDone' },
         { at: 12, addAgent: { status: 'working', parentIndex: 4 }, label: 'dispatch', lane: 'dispatch' },
         { at: 28, remove: { index: 5 }, label: 'return', lane: 'subagentReturn' },
+    ],
+};
+
+// SND-1 in Signals (which captions every other outcome): a 25 s turn ends
+// (caption only), a long turn ends (the knock sounds), a second long turn
+// 30 s later meets the governor's 60 s long-turn gap (caption only).
+export const SIGNALS_LONG_TURN_SCENE = {
+    mode: 'signals', world: { counts: { working: 4 } }, atmosphere: DAY, warmup: 6, seconds: 50, stems: ['cue'], captions: ['auto'],
+    actions: [
+        { at: 2, status: { index: 0, status: 'working' } },
+        { at: 3, status: { index: 0, status: 'idle', fields: { lastTurnDurationMs: LONG_TURN_MS } }, label: 'short turn', lane: 'shortTurn' },
+        { at: 12, status: { index: 1, status: 'working' } },
+        { at: 13, status: { index: 1, status: 'idle', fields: { lastTurnDurationMs: YOUR_MOVE_TURN_MS } }, label: 'long turn', lane: 'longTurn' },
+        { at: 42, status: { index: 2, status: 'working' } },
+        { at: 43, status: { index: 2, status: 'idle', fields: { lastTurnDurationMs: YOUR_MOVE_TURN_MS } }, label: 'capped long turn', lane: 'cappedTurn' },
     ],
 };
 

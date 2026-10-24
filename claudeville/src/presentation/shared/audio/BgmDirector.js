@@ -37,6 +37,7 @@ import {
     verifiedOutcomeFact,
 } from '../../../application/OutcomeSignals.js';
 import { expectCueScore } from './CueScore.js';
+import { longTurnDetails } from './CueGovernor.js';
 import { createAtmosphereSnapshot } from '../../character-mode/AtmosphereState.js';
 import { seasonTokenForAtmosphere } from '../../character-mode/SeasonalAmbience.js';
 import { readCountHours, readTownBandVoice } from '../SoundSettings.js';
@@ -288,7 +289,8 @@ export class BgmDirector {
         this.player?.setVoice(this._voice);
     }
 
-    // S7: an entry summons while the operator is looking plays the L2 voice.
+    // S7: an entry summons while the operator is looking plays the L2 voice;
+    // `fn(agentId)` also hears that agent's terminal presence (SND-4).
     setOperatorLooking(fn) {
         this._operatorLooking = typeof fn === 'function' ? fn : null;
     }
@@ -409,6 +411,8 @@ export class BgmDirector {
             repo: outcome.repo,
             version: outcome.version,
             ...(outcome.building ? { building: outcome.building } : {}),
+            // SND-1: a long turn's end rises to the Medium level over the band.
+            ...longTurnDetails(outcome, this.governor),
         });
     }
 
@@ -424,7 +428,7 @@ export class BgmDirector {
                 ...payload,
                 status,
                 family,
-                ...(kind === 'summons' ? { level: this._operatorLooking?.() ? 2 : 1 } : {}),
+                ...(kind === 'summons' ? { level: this._operatorLooking?.(payload.agentId) ? 2 : 1 } : {}),
             }),
         );
     }

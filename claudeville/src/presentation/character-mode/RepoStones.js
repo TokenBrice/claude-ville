@@ -12,7 +12,7 @@
 // (`image`, read by ChronicleMonuments); counts are re-read at most every
 // REFRESH_MS.
 
-import { repoStoneSpriteFor } from '../../application/MonumentRules.js';
+import { lifetimeTierFor, repoStoneSpriteFor } from '../../application/MonumentRules.js';
 import { REPO_STONE_ANCHORS } from '../../config/townPlan.js';
 import { repoProfile } from '../shared/RepoColor.js';
 import { fillPixelEllipse } from './PixelShapes.js';
@@ -31,6 +31,23 @@ export const REPO_STONE_CRESTS = Object.freeze({
 // The crest: a heater shield, 7 wide, 8 tall ('1' ink rim, '2' accent field).
 const CREST_ROWS = ['1111111', '1222221', '1222221', '1222221', '1222221', '0122210', '0012100', '0001000'];
 const SHADOW_PAD = 4;
+// D5 — the stone's lore on hover: its tier's name and the next threshold.
+const TIER_NAMES = Object.freeze({ maiden: 'cairn', ribbon: 'stone', flagship: 'pillar', aurora: 'obelisk' });
+const TIER_NEXT = Object.freeze({ maiden: 10, ribbon: 100, flagship: 1000, aurora: null });
+
+function repoName(project) {
+    return String(project || '').split(/[\\/]/).filter(Boolean).at(-1) || 'unknown';
+}
+
+/** D5 — `pharosville · pillar · 214 commits · next at 1000`, from the lifetime count. */
+export function repoStoneLore(stone) {
+    const count = Math.max(0, Math.floor(Number(stone?.count) || 0));
+    const tier = lifetimeTierFor(count);
+    if (!tier) return '';
+    const parts = [repoName(stone.project), TIER_NAMES[tier], `${count} ${count === 1 ? 'commit' : 'commits'}`];
+    if (TIER_NEXT[tier]) parts.push(`next at ${TIER_NEXT[tier]}`);
+    return parts.join(' · ');
+}
 
 /**
  * Pure: the stones to plant for `anchorages` (Map or entries of project →
@@ -47,7 +64,7 @@ export function repoStoneLayout(anchorages, counts, anchors = REPO_STONE_ANCHORS
         const spriteId = repoStoneSpriteFor(counts?.get?.(project));
         if (!spriteId) continue;
         seen.add(slot);
-        out.push({ project, slot, spriteId, tileX: anchor.tileX, tileY: anchor.tileY });
+        out.push({ project, slot, spriteId, count: Math.floor(Number(counts?.get?.(project)) || 0), tileX: anchor.tileX, tileY: anchor.tileY });
     }
     return out.sort((a, b) => a.slot - b.slot);
 }
@@ -94,6 +111,27 @@ export class RepoStones {
             out.push({ kind: 'chronicle-monument', sortY: stone.worldY + 18, payload: { ...stone, kind: 'repo-stone' } });
         }
         return out;
+    }
+
+    /**
+     * D5 — the stone under world point (x, y): the rect of its baked face
+     * (sprite, crest and contact shadow), front-most first.
+     */
+    hitTest(worldX, worldY) {
+        let hit = null;
+        for (const stone of this.stones) {
+            const baked = this.image(stone);
+            if (!baked) continue;
+            const left = Math.round(stone.worldX - baked.ax);
+            const top = Math.round(stone.worldY - baked.ay);
+            if (worldX < left || worldX >= left + baked.canvas.width || worldY < top || worldY >= top + baked.canvas.height) continue;
+            if (!hit || stone.worldY > hit.worldY) hit = stone;
+        }
+        return hit;
+    }
+
+    tooltipFor(stone) {
+        return repoStoneLore(stone);
     }
 
     draw(ctx, stone) {

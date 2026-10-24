@@ -21,7 +21,13 @@ export const ChronicleEventKind = Object.freeze({
     RATE_LIMITED: 'rate_limited',
     COMMIT: 'commit',
     PUSH: 'push',
+    // D2 — the same shell command failed with a real exit code, then passed.
+    MENDED: 'mended',
 });
+
+// D2 — one Chronicle line per mend; mends repeat for the same result id only
+// if the stream replays it, which this set absorbs.
+const MEND_SEEN_LIMIT = 256;
 
 // Statuses whose entry is worth a line in the day book, and the kind to log.
 const STATUS_EVENTS = {
@@ -138,6 +144,7 @@ export class ChronicleLog {
         this._pendingArrivals = new Map();
         this._pendingRemovals = new Map();
         this._stopPromise = null;
+        this._mendSeen = new Set();
     }
 
     start() {
@@ -187,9 +194,12 @@ export class ChronicleLog {
             }
         };
 
+        this._onMended = (mend) => this._noteMend(mend);
+
         eventBus.on('agent:added', this._onAdded);
         eventBus.on('agent:updated', this._onUpdated);
         eventBus.on('agent:removed', this._onRemoved);
+        eventBus.on('outcome:mended', this._onMended);
         return this;
     }
 
@@ -200,6 +210,7 @@ export class ChronicleLog {
             eventBus.off('agent:added', this._onAdded);
             eventBus.off('agent:updated', this._onUpdated);
             eventBus.off('agent:removed', this._onRemoved);
+            eventBus.off('outcome:mended', this._onMended);
             if (activeChronicleLog === this) {
                 activeChronicleLog = null;
                 eventBus.emit('chronicle:log-stopped', this);
@@ -375,6 +386,21 @@ export class ChronicleLog {
         if (this._seenGitEvents.size > 2000) {
             this._seenGitEvents = new Set([...this._seenGitEvents].slice(-1000));
         }
+    }
+
+    // D2 — `outcome:mended` (World mode's event stream): `label` is the
+    // command that passed, `failedExit` the exit code it had failed with.
+    _noteMend(mend) {
+        const key = String(mend?.resultId || '');
+        if (!key || !mend?.agent || this._mendSeen.has(key)) return;
+        this._mendSeen.add(key);
+        while (this._mendSeen.size > MEND_SEEN_LIMIT) this._mendSeen.delete(this._mendSeen.values().next().value);
+        this.record(ChronicleEventKind.MENDED, mend.agent, {
+            label: mend.signature || null,
+            tool: mend.tool || null,
+            failedExit: Number.isFinite(Number(mend.failedExit)) ? Number(mend.failedExit) : null,
+            ts: Number(mend.at) || Date.now(),
+        });
     }
 
     // #10 — a push logs once per occurrence and outcome, labelled by its own
@@ -583,6 +609,7 @@ function createDaySummary() {
         totalEvents: 0,
         commits: 0,
         pushes: 0,
+        mends: 0,
         completed: 0,
         errors: 0,
         rateLimits: 0,
@@ -833,6 +860,7 @@ function accumulateDaySummary(summary, event) {
     switch (event.kind) {
         case ChronicleEventKind.COMMIT: summary.commits++; break;
         case ChronicleEventKind.PUSH: if (!event.outcome) summary.pushes++; break;
+        case ChronicleEventKind.MENDED: summary.mends++; break;
         case ChronicleEventKind.COMPLETED: summary.completed++; break;
         case ChronicleEventKind.ERRORED: summary.errors++; break;
         case ChronicleEventKind.RATE_LIMITED: summary.rateLimits++; break;

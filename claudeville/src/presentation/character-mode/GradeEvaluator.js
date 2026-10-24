@@ -523,6 +523,27 @@ export function lampCourseAt(minuteOfDay, { sunriseShift = 0, sunsetShift = 0 } 
     return 0;
 }
 
+/**
+ * D4 — the two `settling` windows of `lampCourseAt` in minutes of the day:
+ * at dusk `[duskStart, duskEnd)` (golden/blue midpoint → blue hour − 15), at
+ * dawn `[dawnStart, dawnEnd)` (sunrise − 20 → sunrise + 30). The street lamps
+ * are lit from `duskStart` to `dawnEnd`; the Lamplighter's Round spreads
+ * each lamp's own step across the start of the first and the end of the
+ * second.
+ */
+export function lampSettlingWindows({ sunriseShift = 0, sunsetShift = 0 } = {}) {
+    const at = name => keyMinutes(GRADE_KEYFRAMES.find(key => key.name === name), sunriseShift, sunsetShift);
+    const sunrise = at('sunrise');
+    const golden = at('golden-hour');
+    const blue = at('blue-hour');
+    return {
+        duskStart: (golden + blue) / 2,
+        duskEnd: blue - 15,
+        dawnStart: sunrise - 20,
+        dawnEnd: sunrise + 30,
+    };
+}
+
 // The lamps' share of the pool gain: the lamp course's own share from the
 // lamplight course on, nothing before it.
 function lampCarry(minuteOfDay, sunriseShift, sunsetShift) {
