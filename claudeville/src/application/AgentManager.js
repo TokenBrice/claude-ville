@@ -33,6 +33,7 @@ const AGENT_SIGNATURE_FIELDS = Object.freeze([
     'agentId',
     'agentName',
     'agentType',
+    'agentPath',
     'subagentKind',
     'parentSessionId',
     'workflowId',
@@ -514,6 +515,7 @@ export class AgentManager {
             this._agentSignatures.set(id, signature);
             const agent = new Agent(payload);
             agent.subagentKind = payload.subagentKind;
+            agent.agentPath = payload.agentPath;
             agent.taskProgress = payload.taskProgress;
             agent.tasks = payload.tasks;
             // Fallback (non-provider) names come from a shared pool; probe past
@@ -681,6 +683,7 @@ export class AgentManager {
                 : null,
             agentName,
             agentType: session.agentType || null,
+            agentPath: typeof session.agentPath === 'string' && session.agentPath ? session.agentPath.slice(0, 512) : null,
             parentSessionId: session.parentSessionId || null,
             workflowId: session.workflowId || null,
             workflowName: session.workflowName || null,

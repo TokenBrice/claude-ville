@@ -137,6 +137,10 @@ const TOOL_METADATA = Object.freeze({
         classification: { building: 'command', reason: 'send-agent-input', confidence: 0.98 },
         agentCommand: true,
     },
+    send_input: {
+        classification: { building: 'command', reason: 'send-agent-input', confidence: 0.98 },
+        agentCommand: true,
+    },
     'functions.wait_agent': {
         classification: { building: 'command', reason: 'wait-agent', confidence: 0.98 },
         agentCommand: true,
@@ -833,6 +837,18 @@ export function toolVerbLabel(tool, input = '') {
         .replace(/[_-]+/g, ' ')
         .trim()
         .toLowerCase();
+}
+
+const AGENT_MESSAGE_REASONS = new Set(['message-agent', 'send-agent-input']);
+
+/**
+ * True for a call that sends a message to another agent: Claude
+ * `SendMessage`, Codex `send_message` / `send_input`, OMP `send_message`.
+ * Chat pairing and chat affinity key on this, not on one provider's name.
+ */
+export function isAgentMessageTool(tool, input = '') {
+    if (!tool) return false;
+    return AGENT_MESSAGE_REASONS.has(classifyTool(tool, input)?.reason);
 }
 
 export function isTaskCommandInput(input) {

@@ -1834,6 +1834,9 @@ class CodexAdapter {
         name: sessionName,
         agentName: sessionName,
         agentType: detail.agentType || 'main',
+        // The spawn path ("/root/composition"); its leaf is the name the
+        // orchestrator's `send_message` addresses.
+        agentPath: typeof detail.agentPath === 'string' && detail.agentPath ? detail.agentPath.slice(0, 512) : null,
         model: inferCodexModel(detail) || 'codex',
         reasoningEffort: detail.reasoningEffort,
         permissionMode: detail.permissionMode,
