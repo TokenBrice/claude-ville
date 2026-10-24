@@ -161,3 +161,13 @@ test('a 10 minute Auto soak at the whole-island rung barely moves and keeps the 
     }
     assert.ok(moving / intervals < 0.15, `${moving} of ${intervals} intervals moving`);
 });
+
+test('G7-9: the boot pose centres the island, not the harbor lanes', () => {
+    for (const [w, h] of [[2000, 1118], [1760, 1118], [2300, 1352], [1280, 720]]) {
+        const camera = new Camera(canvasOf(w, h));
+        const centre = centreOf(camera, camera);
+        assert.equal(camera.zoom, camera.tierZoom(1));
+        assert.ok(Math.abs(centre.x - ISLAND_CENTRE.x) < 1e-9, `${w}x${h} x ${centre.x}`);
+        assert.ok(Math.abs(centre.y - ISLAND_CENTRE.y) < 1e-9, `${w}x${h} y ${centre.y}`);
+    }
+});
