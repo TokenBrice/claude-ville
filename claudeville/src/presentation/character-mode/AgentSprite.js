@@ -76,7 +76,7 @@ import { REF_DT_MS, SPEED_RUNGS, snapBodyPx, speedRungIndex } from './MotionCloc
 import { gradeTone } from './EffectStamps.js';
 import { CANDLE_OFFSET, DRINK_FRAME_BY_STEP, FALLBACK_SEAT_DROP, SEAT_FACING_DIR, queueCandleStamp, seatLineOffset, seatStoneStamps, tankardLift, tankardSipStep, tankardStamp } from './RestSeats.js';
 import { materialClassId } from './MaterialRegistry.js';
-import { waitAnchor } from '../../domain/services/SignalLedger.js';
+import { waitAgeTier, waitAnchor } from '../../domain/services/SignalLedger.js';
 import { AMBIENT_SCENIC_POINTS } from '../../config/scenery.js';
 import {
     ERRAND_GAP_MS,
@@ -190,6 +190,20 @@ const REST_PLACE = Object.freeze({ type: 'rest-seat', restSeats: true, visitTile
 // The Tavern patron's tankard at rest: its near edge `x` texels out from the
 // body's centre on the facing side, its foot `y` texels above the seat line.
 const TANKARD_HOLD = Object.freeze({ x: 3, y: 9 });
+// AG-4 — a patron's wait on the shared 1/5/15-min ladder (SignalLedger
+// `waitAgeTier`): from PATRON_SET_DOWN_TIER (5 min) the patron stops sipping
+// and its tankard stands set down at its side, `x` texels out and its foot
+// `y` above the seat line: on the trestle table's top at a beer-garden seat,
+// on the floor beside a bar stool. From PATRON_SLUMP_TIER (15 min) the seated
+// body also slumps PATRON_SLUMP_TEXELS lower behind its seat. Held steps,
+// never a tween, so reduced motion shows the same.
+const TANKARD_SET_DOWN = Object.freeze({
+    tavern: Object.freeze({ x: 9, y: 10 }),
+    stool: Object.freeze({ x: 6, y: -3 }),
+});
+const PATRON_SET_DOWN_TIER = 2;
+const PATRON_SLUMP_TIER = 3;
+const PATRON_SLUMP_TEXELS = 3;
 const QUEUE_PLACE = Object.freeze({ type: 'command', commandQueue: true, visitTiles: Object.freeze([]) });
 // W4.4 / W4.8 — a scenic point as a place (the renderer's scenic shape): the
 // harbour quay an errand or a wind-down walks to.
@@ -4318,7 +4332,7 @@ export class AgentSprite {
         const trembleX = seat ? 0 : this._contextStrainTremble();
         const dx = drawX - Math.round(anchor.cx2 / 2) + trembleX;
         const dy = seat
-            ? this._seatedBodyY(seat, pose, anchor, drawY)
+            ? this._seatedBodyY(seat, pose, anchor, drawY) + (this._patronWaitTier() >= PATRON_SLUMP_TIER ? PATRON_SLUMP_TEXELS : 0)
             : drawY - anchor.maxY + 2 + bobY + ackBobY;
         if (seat) {
             // Clip at the seat line: nothing of the body shows below the seat's
@@ -4768,13 +4782,24 @@ export class AgentSprite {
         const southWest = seat.facing === 'south-west';
         const stamp = tankardStamp(southWest);
         if (!stamp) return null;
-        const lift = tankardLift(this.agent?.id, Date.now(), this.motionScale > 0);
+        const setDown = this._patronWaitTier() >= PATRON_SET_DOWN_TIER;
+        const hold = setDown ? TANKARD_SET_DOWN[seat.occluder] || TANKARD_SET_DOWN.tavern : TANKARD_HOLD;
+        const lift = setDown ? 0 : tankardLift(this.agent?.id, Date.now(), this.motionScale > 0);
         const mark = this._tankard || (this._tankard = { kind: 'tavern-tankard', stamp: null, x: 0, y: 0 });
-        const reach = TANKARD_HOLD.x - Math.round(lift / 3);
+        const reach = hold.x - Math.round(lift / 3);
         mark.stamp = stamp;
         mark.x = Math.round(this._placeX + (southWest ? -reach - stamp.width : reach));
-        mark.y = Math.round(this._placeY + seatLineOffset(seat) - TANKARD_HOLD.y - lift) - stamp.height;
+        mark.y = Math.round(this._placeY + seatLineOffset(seat) - hold.y - lift) - stamp.height;
         return mark;
+    }
+
+    // AG-4 — the wait tier (SignalLedger `waitAgeTier`) of a patron seated at
+    // the Tavern while it waits on its subagents, else null: a wind-down or
+    // idle drinker carries no wait.
+    _patronWaitTier(now = Date.now()) {
+        const wait = this._subagentWait;
+        if (!wait?.pint || !(wait.since > 0) || this._seatedSeat()?.building !== 'tavern') return null;
+        return waitAgeTier(Math.max(0, now - wait.since));
     }
 
     _tankardRecord() {
@@ -6017,7 +6042,10 @@ export class AgentSprite {
         if (!strip?.image || !strip.meta) return null;
         // A Tavern patron whose strip authors the drink drinks instead of
         // sitting (same seated body; the strip draws its own tankard).
-        if (group === 'sit' && this._seatedSeat()?.building === 'tavern' && this._stripAuthors(strip.meta, 'drink')) group = 'drink';
+        // AG-4 — from 5 min of waiting the tankard is set down: the patron
+        // holds the plain sit row and the drawn tankard rests beside it.
+        if (group === 'sit' && this._seatedSeat()?.building === 'tavern' && this._stripAuthors(strip.meta, 'drink')
+            && !(this._patronWaitTier() >= PATRON_SET_DOWN_TIER)) group = 'drink';
         const now = Date.now();
         const cell = resolveActionFrame(strip.meta, group, this.direction, this._actionStripFrame(strip.meta, group, now));
         if (!cell) return null;
