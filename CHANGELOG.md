@@ -2,7 +2,7 @@
 
 ---
 
-## v0.58.0 — *The Moonlit Watch* · Oct 24, 2026
+## v0.58.0 — *The Moonlit Watch* · Oct 25, 2026
 
 Night is readable, the Tavern can be read at a glance, and the town tells the truth about Claude's work.
 
@@ -38,6 +38,7 @@ Night is readable, the Tavern can be read at a glance, and the town tells the tr
   - Open doors show a warm lit hall at night.
   - An empty Tavern banks its hearth, like the Forge. The Forge's banked hearth is now graded and depth-sorted on the GPU path.
   - The chapel and the windmill cap join the village palette, and Command's wing roofs gain tile courses.
+  - The Forge is redrawn in the Tavern and Harbor family, at the same footprint: limestone walls, a timbered gable over the forge mouth, Tavern-scale slate and no light baked onto the chimney. Its banked hearth is a dark mouth over a low ember bed.
 - **A living sea.**
   - The sea takes the sky's colour by time and weather, and lit swell slopes are one step lighter, so the swell reads at the wide shot.
   - Swell sets roll slowly; with reduced motion they hold still.
