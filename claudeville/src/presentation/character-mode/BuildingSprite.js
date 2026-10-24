@@ -80,7 +80,7 @@ import {
     getBuildingWorkloadProfile,
     isBuildingApertureLayer,
 } from './BuildingVisualRegistry.js';
-import { APERTURE_MIN_ZOOM, assignRoomSlots, buildApertureModel } from './BuildingApertureModel.js';
+import { APERTURE_MIN_ZOOM, apertureCutContains, assignRoomSlots, buildApertureModel } from './BuildingApertureModel.js';
 import { RoomGlass, readPixels } from './RoomGlass.js';
 import { mirrorRowOf, waterlineProfile } from './CoastBake.js';
 import { ApertureLights, APERTURE_GLASS_SNAP, APERTURE_REGISTRY_CLEARANCE, apertureIntensity, apertureOverRoof, apertureRadius } from './ApertureLights.js';
@@ -5204,11 +5204,20 @@ export class BuildingSprite {
 
     // 6.3 — the per-room gate other light surfaces read (2.4 aperture lights,
     // 2.9 water columns): 0..1, night × this room's stepped occupancy. A room
-    // index is 0-based (mask R = index + 1); unknown rooms are dark.
+    // index is 0-based (mask R = index + 1); unknown rooms are dark. B3-01 —
+    // a room pane inside the open 4.1 aperture's cut stays dark: the cut
+    // presents that wall's occupants itself.
     roomGate(type, roomIndex) {
         const lit = this._roomLitByType.get(type);
         const value = lit ? lit[roomIndex] || 0 : 0;
-        return value > 0 ? value * this._nightWindowGate() : 0;
+        if (!(value > 0) || this._roomUnderOpenAperture(type, roomIndex)) return 0;
+        return value * this._nightWindowGate();
+    }
+
+    _roomUnderOpenAperture(type, roomIndex) {
+        const open = this._openApertureFor({ type });
+        const at = open ? getBuildingRoomProfile(type)?.slots?.[roomIndex]?.at : null;
+        return !!at && apertureCutContains(open.profile?.cut, at[0], at[1]);
     }
 
     roomCount(type) {
@@ -5222,8 +5231,8 @@ export class BuildingSprite {
     }
 
     // 6.3 — lit share of a glass group: k ≥ 1 is room k - 1. Group 0 (glass
-    // under a window/glass rect that no room mask claims: the Command's tower
-    // panes, the Archive's hall lancets and clerestory) is never lit: only a
+    // under a window/glass rect that no room mask claims; since B3-01 no
+    // Command or Archive pane is one) is never lit: only a
     // room a worker holds glows, so N workers light exactly min(N, rooms)
     // glass shapes. By day every pane is unlit glass (M15).
     _glassGroupGate(type, group) {
