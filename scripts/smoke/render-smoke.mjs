@@ -108,6 +108,7 @@ async function soundPage(browser, baseUrl, width, { scenario = null, storage = n
   page.on('pageerror', error => diagnostics.pageErrors.push(`[sound ${width}] ${oneLine(error)}`));
   await page.goto(`${baseUrl}/?sim=1${scenario ? `&scenario=${scenario}` : ''}`, { waitUntil: 'domcontentloaded', timeout: 12_000 });
   await page.waitForFunction(() => window.__claudeVilleApp?._bootState === 'ready' && Boolean(document.getElementById('topbarSoundToggle')));
+  await page.waitForFunction(() => typeof window.__claudevilleAudio === 'function');
   return { context, page };
 }
 
@@ -123,6 +124,33 @@ async function soundGeometry(page) {
       counts: document.querySelector('.topbar__badges')?.textContent.trim().replace(/\s+/g, ' ') ?? null,
     };
   });
+}
+
+// A sound control click that holds at 3 FPS. Playwright's own stable check
+// wants the box unchanged across two animation frames; on a loaded host the
+// World renders in 150-480 ms long tasks with 2-4 s gaps between frames, so
+// the click spent its 8 s step waiting for frames and timed out on whichever
+// control came first (the boxes themselves hold still from before boot-ready). The page's timers keep running when
+// frames do not: wait until the control is enabled and two timer polls (run
+// late under load, so naturally spaced) read one box, then click it without
+// the frame-based check. Still a trusted click at the control's centre, the
+// gesture sound needs. soundPage also waits for the sound controller's
+// boot-idle build, the readiness the sound controls really depend on (under
+// load that idle slot fires at its 4 s deadline as one more long task).
+let settleCount = 0;
+async function settledClick(page, selector) {
+  const token = `${selector}#${++settleCount}`;
+  await page.waitForFunction(([sel, key0]) => {
+    const el = document.querySelector(sel);
+    const r = el?.getBoundingClientRect();
+    if (!el || el.disabled || !r || r.width === 0 || el.checkVisibility?.() === false) return false;
+    const key = `${r.x},${r.y},${r.width},${r.height}`;
+    const memo = (window.__renderSmokeSettle ??= {});
+    const prev = memo[key0];
+    memo[key0] = { key };
+    return prev?.key === key;
+  }, [selector, token], { polling: 200 });
+  await page.locator(selector).click({ force: true });
 }
 
 async function waitSoundState(page, state, timeout = STEP_TIMEOUT_MS) {
@@ -185,14 +213,14 @@ async function soundStates(browser, baseUrl, width) {
       record('off', base, assertSameBox(base, base, `${width} off`, width));
       await soundShot(page, `off-${width}`);
 
-      await page.locator('#topbarSoundToggle').click();
+      await settledClick(page, '#topbarSoundToggle');
       await page.locator('#soundPanel').waitFor({ state: 'visible' });
       const open = await soundGeometry(page);
       assert.equal(open.state, 'off', 'the first-ever click opens the presets and picks none');
       record('popover open', open, assertSameBox(base, open, `${width} popover open`, width));
       await soundShot(page, `popover-${width}`);
 
-      await page.locator('#soundPresets [role="radio"][data-preset="townBand"]').click();
+      await settledClick(page, '#soundPresets [role="radio"][data-preset="townBand"]');
       await waitSoundState(page, 'playing');
       const playingOpen = await soundGeometry(page);
       record('playing, popover open', playingOpen, assertSameBox(base, playingOpen, `${width} playing (open)`, width));
@@ -203,8 +231,8 @@ async function soundStates(browser, baseUrl, width) {
       record('playing', playing, assertSameBox(base, playing, `${width} playing`, width));
       await soundShot(page, `playing-${width}`);
 
-      await page.locator('#topbarSoundMenu').click();
-      await page.locator('#soundHush').click();
+      await settledClick(page, '#topbarSoundMenu');
+      await settledClick(page, '#soundHush');
       await waitSoundState(page, 'hushed');
       const hushed = await soundGeometry(page);
       record('hushed', hushed, assertSameBox(base, hushed, `${width} hushed`, width));
@@ -231,8 +259,8 @@ async function soundStates(browser, baseUrl, width) {
     // No agents: the Town band plays on an empty island.
     const { context, page } = await soundPage(browser, baseUrl, width, { scenario: 'no-agents' });
     try {
-      await page.locator('#topbarSoundToggle').click();
-      await page.locator('#soundPresets [role="radio"][data-preset="townBand"]').click();
+      await settledClick(page, '#topbarSoundToggle');
+      await settledClick(page, '#soundPresets [role="radio"][data-preset="townBand"]');
       await page.keyboard.press('Escape');
       await waitSoundState(page, 'playing');
       const empty = await soundGeometry(page);
@@ -267,7 +295,7 @@ async function keyboardWalk(browser, baseUrl) {
     assert.ok(distinct.length >= 5, `14 Tabs from #topbarAlertsToggle visited ${distinct.length} top-bar controls (${distinct.join(', ')}), want ≥ 5`);
     assert.equal(await selected(), before, 'the keyboard walk changed the selected agent');
 
-    await page.locator('#topbarSoundToggle').click();
+    await settledClick(page, '#topbarSoundToggle');
     await page.locator('#soundPanel').waitFor({ state: 'visible' });
     const aria = await page.evaluate(() => {
       const group = document.querySelector('#soundPanel [role="radiogroup"]');
