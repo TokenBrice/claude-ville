@@ -52,6 +52,14 @@ export function cacheLayerProps() {
     return cacheProps;
 }
 
+// D4 — a street lantern's glass lights when the Lamplighter's Round reaches
+// its tile (the shared lamp clock where the renderer has no round).
+function lanternGate(renderer, prop) {
+    if (renderer.villageLampsLit?.() !== true) return 0;
+    const lit = renderer.lampRoundLit?.();
+    return typeof lit === 'function' ? Number(lit(prop.tileX, prop.tileY) === true) : 1;
+}
+
 function hasEmissiveSidecar(assets, id) {
     return assets?.getEntry?.(id)?.emissiveSidecar === true;
 }
@@ -101,7 +109,7 @@ export function cacheEmitterRecords(renderer, channelRevision) {
             material: materialClassId(assets.getMaterialMetadata?.(prop.id)?.materialClass || 'default'),
             elevation: 0.34,
             emissive: 0,
-            emissiveGate: prop.id === 'prop.lantern' ? Number(renderer.villageLampsLit?.() === true) : 1,
+            emissiveGate: prop.id === 'prop.lantern' ? lanternGate(renderer, prop) : 1,
             occluder: 0,
             textureRevision: assets.assetVersion || 0,
             sidecarRevision: channelRevision(assets, atlasId),
@@ -453,7 +461,7 @@ function* emitterPlacements(renderer) {
         // Baked into the terrain, so every villager and every static sprite
         // draws over it: static sprites carve by their own drawn silhouette
         // whatever their depth.
-        const gate = prop.id === 'prop.lantern' ? Number(renderer.villageLampsLit?.() === true) : 1;
+        const gate = prop.id === 'prop.lantern' ? lanternGate(renderer, prop) : 1;
         if (!(gate > 0)) continue;
         yield { id: prop.id, x: prop.x, y: prop.y, sortY: -Infinity, staticSortY: -Infinity, gate };
     }

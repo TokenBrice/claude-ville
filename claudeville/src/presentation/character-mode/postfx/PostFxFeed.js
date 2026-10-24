@@ -381,7 +381,8 @@ export function createPostFxFeed() {
         // separate, night-gated pass (_drawLanternGlows) from sources that are
         // NOT in the ambient list. Feed them as flagged lights so the GL pass
         // can apply the same lantern night factor per light.
-        const lanternSources = renderer?._lanternGlowSources?.() || null;
+        // D4 — only the lamps already caught on the Lamplighter's Round.
+        const lanternSources = (renderer?._litLanternGlowSources || renderer?._lanternGlowSources)?.call(renderer) || null;
         if (lanternSources && camera && typeof camera.worldToScreen === 'function') {
             const lanternRadius = Math.max(9, Math.round(14 * zoom)) * dpr;
             for (let i = 0; i < lanternSources.length && lightCount < MAX_LIGHTS; i++) {

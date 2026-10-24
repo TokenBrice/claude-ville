@@ -76,7 +76,8 @@ import VisitTileAllocator, { standsOnFixture } from './VisitTileAllocator.js';
 import { scenicScoreBias } from './DayRoutine.js';
 import { getPulsePriority } from './PulsePolicy.js';
 import { annotationModeForPressure, calculateScenePressure, getActiveMarkGovernor, MarkGovernor, setActiveMarkGovernor } from './MarkGovernor.js';
-import { fireBreath, fireBreathDepth, fixturePoolReach, groundCourseHeight, HEARTH_TONE, hearthLightSources, lightSourceCacheKey, normalizeLightSource } from './LightSourceRegistry.js';
+import { fireBreath, fireBreathDepth, fixturePoolReach, groundCourseHeight, HEARTH_FIXTURES, HEARTH_TONE, hearthLightSources, lightSourceCacheKey, normalizeLightSource } from './LightSourceRegistry.js';
+import { lampRoundFor } from './LamplighterRound.js';
 import { applyTeamPlazaPreferences, getCouncilRingDiagnostics, releaseCouncilRingState } from './CouncilRing.js';
 import { ArrivalDepartureController } from './ArrivalDeparture.js';
 import { agentPathAlias, extractRecipientName } from '../../domain/services/RecipientResolver.js';
@@ -9712,6 +9713,25 @@ export class IsometricRenderer {
         return lampsLitAt(this._lastAtmosphere);
     }
 
+    // D4 — the Lamplighter's Round: `(tileX, tileY) => lit` for this
+    // atmosphere snapshot. Clock and fixed geography only (never agent
+    // state); reduced motion keeps the shared lamp clock.
+    lampRoundLit() {
+        const atmosphere = this._lastAtmosphere;
+        const motionScale = this.motionScale ?? 1;
+        const cached = this._lampRoundCache;
+        if (cached && cached.atmosphere === atmosphere && cached.motionScale === motionScale) return cached.lit;
+        const lit = lampRoundFor(atmosphere, { motionScale });
+        this._lampRoundCache = { atmosphere, motionScale, lit };
+        return lit;
+    }
+
+    // The street lamps and braziers already caught on the round.
+    _litLanternGlowSources() {
+        const lit = this.lampRoundLit();
+        return this._lanternGlowSources().filter(source => lit(source.tileX, source.tileY));
+    }
+
     _lanternGroundLightSources(lighting = null) {
         if (!this.villageLampsLit()) return [];
         const energy = sourceEnergyFor(lighting);
@@ -9721,7 +9741,7 @@ export class IsometricRenderer {
         // source sits 10 px above it), its flame 16 (brazier) / 24 (lantern)
         // world px up: the pool lands around the foot, and the post, the
         // walls and the bodies around it light by their height and facing.
-        return this._lanternGlowSources().map((source) => {
+        return this._litLanternGlowSources().map((source) => {
             const isBrazier = source.fixture === 'brazier';
             const foot = { x: source.x, y: source.y + 10 };
             const height = isBrazier ? 16 : 24;
@@ -9762,7 +9782,15 @@ export class IsometricRenderer {
                 fire: true,
             });
         }
-        return hearthLightSources({ lampsLit, core: sourceEnergyFor(lighting).core, extra });
+        // D4 — each hearth and watchfire catches on the round with the lamps.
+        const lit = this.lampRoundLit();
+        const caught = row => lit(row.tileX, row.tileY);
+        return hearthLightSources({
+            lampsLit,
+            core: sourceEnergyFor(lighting).core,
+            extra: extra.filter(caught),
+            fixtures: HEARTH_FIXTURES.filter(caught),
+        });
     }
 
     _attentionLightSources() {
@@ -10237,7 +10265,7 @@ export class IsometricRenderer {
         const nightFactor = this._lanternNightFactor(atmosphere);
         if (nightFactor <= 0.05) return;
         const spill = sourceEnergyFor(atmosphere?.lighting).spill;
-        const sources = this._lanternGlowSources();
+        const sources = this._litLanternGlowSources();
         if (!sources.length) return;
 
         const zoom = this.camera?.zoom || 1;
