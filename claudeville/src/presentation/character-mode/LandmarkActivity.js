@@ -7,6 +7,7 @@ import { providerColor } from './ArrivalDeparture.js';
 import { resolveObservation } from './ObservationCertainty.js';
 import { ALPHA_QUANTA, FAILURE, FAILURE_OUTLINE, PEAK, STONE_RAMP, bracket, defineMoment, diamond, dottedCurve, gradeTone, momentPhase, momentRectClear, resolveMomentAnchor, snap } from './EffectStamps.js';
 import { fillPixelEllipse } from './PixelShapes.js';
+import { noteMoment } from './MomentTally.js';
 
 const MAX_ITEMS_PER_KIND = 10;
 const SNAPSHOT_TTL_MS = 18000;
@@ -1077,6 +1078,7 @@ export class LandmarkActivity {
         const seq = this._outcomeSeqByBuilding.get(building) || 0;
         this._outcomeSeqByBuilding.set(building, seq + 1);
         const failed = exitCode !== 0;
+        noteMoment(failed ? 'chit:fail' : 'chit:pass');
         this.items.set(itemId, {
             id: itemId,
             type: 'outcome',
@@ -1112,6 +1114,7 @@ export class LandmarkActivity {
             }
         }
         item.mendedAt = now;
+        noteMoment('mend');
         item.expiresAt = now + SNAPSHOT_TTL_MS;
         item.detail = 'mended';
     }
@@ -1138,6 +1141,7 @@ export class LandmarkActivity {
         });
         this._recencyByType.set('taskboard', now);
         this._capKind('plan', 4, id);
+        noteMoment('plan-closed');
     }
 
     _expireItems(now) {

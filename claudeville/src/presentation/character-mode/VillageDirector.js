@@ -4,6 +4,7 @@ import { AgentBiography } from '../../domain/value-objects/AgentBiography.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { TILE_HALF_HEIGHT, buildingCenterToWorld } from './Projection.js';
 import { shortProjectName } from '../shared/Formatters.js';
+import { noteMoment } from './MomentTally.js';
 import {
     replaySampleLookup,
     resolveWorkScoreGeometry,
@@ -802,6 +803,7 @@ export class VillageDirector {
         } else if (was) {
             this._distressedAgents.delete(id);
             this._recoveries.set(id, { recoveredAt: Date.now() });
+            noteMoment('relief');
             eventBus.emit('distress:watchtower', {
                 agentId: id,
                 kind: 'recovered',

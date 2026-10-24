@@ -22,6 +22,7 @@ import {
     snap,
     steppedDecay,
 } from './EffectStamps.js';
+import { noteMoment } from './MomentTally.js';
 
 // 6.2 — arrival materialize beat (Medium): anticipation column + rune ring,
 // one cream silhouette frame, the true body with a 3-step column collapse and
@@ -355,6 +356,7 @@ export class ArrivalDepartureController {
             cue: reduced ? null : createCueGate('arrival', agent.id),
         };
         this.arrivals.set(agent.id, arrival);
+        noteMoment('arrival');
         return reduced ? null : arrival;
     }
 
@@ -378,6 +380,7 @@ export class ArrivalDepartureController {
         }
 
         childSprite.setArrivalState?.('pending');
+        noteMoment('dispatch');
         this.dispatches.set(childId, {
             id: childId,
             parentSprite,
@@ -426,6 +429,7 @@ export class ArrivalDepartureController {
         if (!childAgent || !childPoint || !parentSprite) return null;
         if (this.motionScale === 0) return null;
 
+        noteMoment('merge');
         this.merges.set(childAgent.id, {
             id: childAgent.id,
             parentSprite,

@@ -8,6 +8,7 @@ import { eventBus } from '../../domain/events/DomainEvent.js';
 import { VERIFIED_OUTCOME_EVENT } from '../../domain/services/VerifiedOutcome.js';
 import { VERIFIED_CELEBRATION_MS } from './ActionVocabulary.js';
 import { worldToTile } from './Projection.js';
+import { noteMoment } from './MomentTally.js';
 
 export const SQUAD_NOTICE_RADIUS_TILES = 8;
 export const SQUAD_NOTICE_CAP = 6;
@@ -61,6 +62,9 @@ export function bindSquadNotice(getSprites, { eventTarget = eventBus, onNotice =
         if (!Number.isFinite(until) || until <= Date.now()) return;
         const watchers = squadWatchers(celebrant, sprites.values());
         for (const sprite of watchers) sprite.noticeSquadmate?.({ x: celebrant.x, y: celebrant.y }, until);
-        if (watchers.length) onNotice?.(watchers.length);
+        if (watchers.length) {
+            noteMoment('heads-turn');
+            onNotice?.(watchers.length);
+        }
     });
 }

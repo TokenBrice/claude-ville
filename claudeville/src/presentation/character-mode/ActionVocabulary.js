@@ -4,6 +4,7 @@ import {
     VERIFIED_OUTCOME_EVENT,
     VERIFIED_OUTCOME_KINDS,
 } from './ChronicleEvents.js';
+import { noteMoment } from './MomentTally.js';
 
 export const VERIFIED_CELEBRATION_MS = 5000;
 export const AgentAction = Object.freeze({
@@ -44,6 +45,7 @@ const RECENT_VERIFIED_OUTCOME_LIMIT = 256;
 eventBus.on(VERIFIED_OUTCOME_EVENT, (outcome) => {
     if (!outcome?.agentId || !verifiedOutcomeKinds.has(outcome.kind)) return;
     recentVerifiedOutcomes.set(String(outcome.agentId), outcome);
+    noteMoment(`celebrate:${outcome.kind}`);
     while (recentVerifiedOutcomes.size > RECENT_VERIFIED_OUTCOME_LIMIT) {
         recentVerifiedOutcomes.delete(recentVerifiedOutcomes.keys().next().value);
     }
