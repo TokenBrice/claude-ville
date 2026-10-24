@@ -8,6 +8,7 @@
 
 import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 import { BUILDING_DEFS } from '../../config/buildings.js';
+import { REST_SEATS } from '../../config/townPlan.js';
 import { STATUS_VISUALS, WORLD_BODY_FONT_11, WORLD_BODY_FONT_22, WORLD_DISPLAY_FONT_8, WORLD_DISPLAY_FONT_16 } from '../../config/theme.js';
 import { EVENT_SHAPES } from '../shared/EventShapes.js';
 import {
@@ -25,12 +26,14 @@ import { ACTIONABLE_BUCKETS, bucketForStatus, isActionableBucket } from '../../d
 import { BUILDING_EVENTS, eventBus } from '../../domain/events/DomainEvent.js';
 import { classifyTool, toolVerbLabel } from '../../domain/services/ToolIdentity.js';
 import { repoProfile } from '../shared/RepoColor.js';
+import { formatWaitAge } from '../shared/Formatters.js';
 import { ledgerPlaqueRows } from '../shared/HarborLedger.js';
 import { squadMusterLines } from './RelationshipState.js';
 import { getReservedRects } from '../shared/ReservedRects.js';
 import { fireBreath, normalizeLightSource } from './LightSourceRegistry.js';
 import { normalizeLightingState, seasonShiftFor, smokeWindDrift, sourceEnergyFor } from './AtmosphereState.js';
 import { lampCourseAt } from './GradeEvaluator.js';
+import { canvasGradeKey, statusClothPreimage } from './CanvasGrade.js';
 import { seasonTokenForAtmosphere } from './SeasonalAmbience.js';
 import { isWorkingVisitor, NON_WORKING_VISIT_ROLES } from './VisitIntentManager.js';
 import { attentionBannerState, BuildingPartGates } from './BuildingPartGates.js';
@@ -80,7 +83,7 @@ import {
     getBuildingWorkloadProfile,
     isBuildingApertureLayer,
 } from './BuildingVisualRegistry.js';
-import { APERTURE_MIN_ZOOM, assignRoomSlots, buildApertureModel } from './BuildingApertureModel.js';
+import { APERTURE_MIN_ZOOM, apertureCutContains, assignRoomSlots, buildApertureModel } from './BuildingApertureModel.js';
 import { RoomGlass, readPixels } from './RoomGlass.js';
 import { mirrorRowOf, waterlineProfile } from './CoastBake.js';
 import { ApertureLights, APERTURE_GLASS_SNAP, APERTURE_REGISTRY_CLEARANCE, apertureIntensity, apertureOverRoof, apertureRadius } from './ApertureLights.js';
@@ -133,6 +136,17 @@ const PLAQUE_ATTENTION = Object.freeze({
     quota: Object.freeze({ motif: 'limit-gate', color: STATUS_VISUALS.rate_limited.color }),
 });
 const PLAQUE_ATTENTION_GAP = 4;
+// AG-1 (B3-07, G7-4) — the Tavern's tally: a patron cell after the head band,
+// `│ ⊔5 · 14m`, the district's own tankard motif, the exact patron count and
+// the oldest wait on a lead's subagents (minute grain, Formatters
+// `formatWaitAge`). Patrons are no visitors (V8): the cell never joins the
+// work count. At seat capacity the cell fills with the district accent, the
+// one "full" state. Static; it changes only when a count or a minute does.
+const PATRON_MOTIF = 'district-tavern';
+const PATRON_SEATS_BY_TYPE = REST_SEATS.reduce((seats, seat) => {
+    if (seat.building) seats.set(seat.building, (seats.get(seat.building) || 0) + 1);
+    return seats;
+}, new Map());
 const LABEL_OVERLAP_TOLERANCE = 0.45;
 const LABEL_COMPACT_OVERLAP_TOLERANCE = 0.62;
 const MAX_TASKBOARD_PAPERS = 4;
@@ -516,16 +530,15 @@ export class BuildingSprite {
     }
 
     _nightWindowGate() {
-        return nightWindowGate(
-            this.atmosphereState?.phase,
-            this.atmosphereState?.phaseProgress,
-        );
+        return nightWindowGate(lampCourseFor(this.atmosphereState));
     }
 
     _emissiveGateFor(building) {
+        // B3-03' — a banked hearth emits nothing: the mask covers the painted
+        // fire, so no emitter cut or light may restate it.
+        if (this._restMaskShowing(building)) return 0;
         return buildingEmissiveGate(
-            this.atmosphereState?.phase,
-            this.atmosphereState?.phaseProgress,
+            lampCourseFor(this.atmosphereState),
             this._nightShiftLit(building?.type),
         );
     }
@@ -1087,6 +1100,7 @@ export class BuildingSprite {
                 const plaque = this._measurePlaque(ctx, b, attempt, {
                     count, zoom, isHovered, isLandmark, scaleMode,
                     attention: b.type === 'command' ? this.plaqueAttention : null,
+                    patrons: this.plaquePatrons?.get(b.type) || null,
                 });
                 if (!plaque.title && !plaque.motif) continue;
                 const layout = this._resolveLabelLayout({
@@ -1151,6 +1165,7 @@ export class BuildingSprite {
                 isLandmark,
                 alert: failedPushAlert,
                 accent: getBuildingLabelAccent(b.type, WALNUT.text),
+                quiet: !count && !readMode,
             });
         }
     }
@@ -1287,9 +1302,14 @@ export class BuildingSprite {
     // (SignalLedger's actionable buckets, the T1 beacon population) into
     // `plaqueAttention`: null at zero, else the exact count and the lead
     // bucket's hue and motif for the Command plaque's attention cell.
-    _plaqueCountsByType() {
+    _plaqueCountsByType(now = Date.now()) {
         const counts = this._plaqueCounts || (this._plaqueCounts = new Map());
         counts.clear();
+        const patrons = this._plaquePatrons || (this._plaquePatrons = new Map());
+        for (const tally of patrons.values()) {
+            tally.count = 0;
+            tally.oldestSince = 0;
+        }
         const actionable = this._plaqueActionable || (this._plaqueActionable = Object.fromEntries(ACTIONABLE_BUCKETS.map(name => [name, 0])));
         for (const name of ACTIONABLE_BUCKETS) actionable[name] = 0;
         let actionableTotal = 0;
@@ -1302,9 +1322,20 @@ export class BuildingSprite {
                 actionableTotal++;
             }
             // V8 (M12) — a plaque number means work: a resting body (7.1 seat)
-            // counts nowhere, and a petitioner in the Command queue (7.2)
-            // counts at its own district, never at Command.
-            if (sprite.visitRole === 'rest') continue;
+            // counts in no work count, and a petitioner in the Command queue
+            // (7.2) counts at its own district, never at Command. AG-1 — a
+            // body resting at a building's seats or standing room is that
+            // building's patron, tallied apart (the Tavern's cell).
+            if (sprite.visitRole === 'rest') {
+                const at = sprite._restBuilding || null;
+                if (!at) continue;
+                let tally = patrons.get(at);
+                if (!tally) patrons.set(at, tally = { count: 0, oldestSince: 0 });
+                tally.count++;
+                const wait = sprite._subagentWait;
+                if (wait?.pint && wait.since > 0 && (!tally.oldestSince || wait.since < tally.oldestSince)) tally.oldestSince = wait.since;
+                continue;
+            }
             if (sprite.visitRole === 'queue') {
                 const own = String(agent.targetBuildingType || agent.lastKnownBuildingType || '').trim();
                 if (own && own !== 'command') counts.set(own, (counts.get(own) || 0) + 1);
@@ -1322,11 +1353,22 @@ export class BuildingSprite {
         }
         const lead = actionableTotal ? ACTIONABLE_BUCKETS.find(name => actionable[name] > 0) : null;
         this.plaqueAttention = lead ? { count: actionableTotal, bucket: lead, ...PLAQUE_ATTENTION[lead] } : null;
+        const tallies = this.plaquePatrons || (this.plaquePatrons = new Map());
+        tallies.clear();
+        for (const [type, tally] of patrons) {
+            if (!tally.count) continue;
+            const seats = PATRON_SEATS_BY_TYPE.get(type) || 0;
+            tallies.set(type, {
+                count: tally.count,
+                age: tally.oldestSince ? formatWaitAge(now - tally.oldestSince) : '',
+                full: seats > 0 && tally.count >= seats,
+            });
+        }
         return counts;
     }
 
     // Plaque geometry in screen pixels (before the 1/zoom counter-scale).
-    _measurePlaque(ctx, building, attempt, { count, zoom, isHovered, isLandmark, scaleMode, attention = null }) {
+    _measurePlaque(ctx, building, attempt, { count, zoom, isHovered, isLandmark, scaleMode, attention = null, patrons = null }) {
         const motif = attempt.motif ? DISTRICT_MOTIFS[building.type] || null : null;
         ctx.save();
         ctx.font = WORLD_DISPLAY_FONT_8;
@@ -1367,6 +1409,10 @@ export class BuildingSprite {
         const rowsWidth = rows.reduce((max, row) => Math.max(max, Math.round(measureLabelText(ctx, row.label)) + (row.profile ? 8 : 0) + (row.tailWidth || 0)), 0);
         const attentionText = attention?.count > 0 ? String(attention.count) : '';
         const attentionWidth = attentionText ? measureLabelText(ctx, attentionText) : 0;
+        const patronText = patrons?.count > 0 ? String(patrons.count) : '';
+        const patronAge = patronText && patrons.age ? ` · ${patrons.age}` : '';
+        const patronWidth = patronText ? Math.round(measureLabelText(ctx, patronText)) : 0;
+        const patronAgeWidth = patronAge ? Math.round(measureLabelText(ctx, patronAge)) : 0;
         ctx.restore();
         const titleWidth = Math.round(title.width);
         const motifWidth = motif ? 8 + 5 : 0;
@@ -1377,7 +1423,8 @@ export class BuildingSprite {
         // right end, the lead bucket's motif and the exact actionable count in
         // plate ink. Absent at zero, so the plaque is then unchanged.
         const attentionCell = attentionText ? PLAQUE_PAD + 8 + PLAQUE_ATTENTION_GAP + attentionWidth + PLAQUE_PAD : 0;
-        const width = Math.max(headWidth + countCell + attentionCell, rowsWidth + PLAQUE_PAD * 2) + 2;
+        const patronCell = patronText ? 1 + PLAQUE_PAD + 8 + PLAQUE_ATTENTION_GAP + patronWidth + patronAgeWidth + PLAQUE_PAD : 0;
+        const width = Math.max(headWidth + countCell + patronCell + attentionCell, rowsWidth + PLAQUE_PAD * 2) + 2;
         const height = PLAQUE_HEAD_H + (rows.length ? rows.length * PLAQUE_ROW_H + 3 : 0);
         const plaque = {
             motif,
@@ -1394,12 +1441,27 @@ export class BuildingSprite {
             plaque.attentionText = attentionText;
             plaque.attentionCell = attentionCell;
         }
+        if (patronText) {
+            plaque.patronText = patronText;
+            plaque.patronAge = patronAge;
+            plaque.patronWidth = patronWidth;
+            plaque.patronCell = patronCell;
+            plaque.patronCellLeft = headWidth + countCell;
+            plaque.patronFull = Boolean(patrons.full);
+        }
         return plaque;
     }
 
-    _paintPlaque(ctx, plaque, { x, y, labelScale, poleBottom, isHovered, isSelected, isLandmark, alert, accent }) {
+    _paintPlaque(ctx, plaque, { x, y, labelScale, poleBottom, isHovered, isSelected, isLandmark, alert, accent, quiet = false }) {
         const { width, height } = plaque;
         const lit = isHovered || isSelected;
+        // G7-2 — a board with nobody in it steps back: no work count, no
+        // patrons, no ledger or attention, not hovered, selected, alerted or
+        // in READ. Its motif and name take the dim ink and it drops its nails,
+        // so the occupied boards carry the weight. The overlay is ungraded,
+        // so the step reads the same by night.
+        const dim = quiet && !lit && !alert && !plaque.countText && !plaque.rows.length
+            && !plaque.patronCell && !plaque.attention;
         // The post: one screen pixel from the board's foot into the roof.
         ctx.save();
         ctx.translate(x, y);
@@ -1419,7 +1481,7 @@ export class BuildingSprite {
             ctx.fillStyle = LABEL_INK.gold;
             ctx.fillRect(left - 1, top - 1, width + 2, height + 2);
         }
-        paintWalnutBoard(ctx, left, top, width, height, { nails: isLandmark || lit, lit });
+        paintWalnutBoard(ctx, left, top, width, height, { nails: (isLandmark && !dim) || lit, lit });
         // A verified failed push on the watchtower carries a red left rail;
         // nothing else on a plaque claims an outcome.
         if (alert) {
@@ -1429,7 +1491,7 @@ export class BuildingSprite {
         let cursor = left + 1 + PLAQUE_PAD;
         if (plaque.motif) {
             drawOutlinedMotif(ctx, plaque.motif, cursor, top + 4, {
-                color: lit ? '#ffe7a3' : accent,
+                color: lit ? '#ffe7a3' : dim ? LABEL_INK.textDim : accent,
                 outline: WALNUT.outline,
             });
             cursor += 8 + 5;
@@ -1438,7 +1500,7 @@ export class BuildingSprite {
         ctx.textBaseline = 'alphabetic';
         if (plaque.title) {
             ctx.font = WORLD_DISPLAY_FONT_8;
-            ctx.fillStyle = lit ? '#ffe7a3' : WALNUT.text;
+            ctx.fillStyle = lit ? '#ffe7a3' : dim ? LABEL_INK.textDim : WALNUT.text;
             ctx.fillText(plaque.title, cursor, top + 13);
         }
         if (plaque.countText) {
@@ -1448,6 +1510,34 @@ export class BuildingSprite {
             ctx.font = WORLD_BODY_FONT_11;
             ctx.fillStyle = WALNUT.count;
             ctx.fillText(plaque.countText, dividerX + 1 + PLAQUE_PAD, top + 12);
+        }
+        if (plaque.patronCell) {
+            // AG-1 — after the head band and any work count: a divider, the
+            // tankard in the district accent, the count in count ink and the
+            // oldest wait in dim ink; at seat capacity the cell fills with the
+            // accent and its marks take plate ink.
+            const cellLeft = left + 1 + plaque.patronCellLeft;
+            const full = plaque.patronFull;
+            if (full) {
+                ctx.fillStyle = accent;
+                ctx.fillRect(cellLeft + 1, top + 1, plaque.patronCell - 1, PLAQUE_HEAD_H - 2);
+            } else {
+                ctx.fillStyle = WALNUT.divider;
+                ctx.fillRect(cellLeft, top + 2, 1, PLAQUE_HEAD_H - 4);
+            }
+            const motifX = cellLeft + 1 + PLAQUE_PAD;
+            drawOutlinedMotif(ctx, PATRON_MOTIF, motifX, top + 4, {
+                color: full ? LABEL_INK.plate : accent,
+                outline: full ? 'transparent' : WALNUT.outline,
+            });
+            const textX = motifX + 8 + PLAQUE_ATTENTION_GAP;
+            ctx.font = WORLD_BODY_FONT_11;
+            ctx.fillStyle = full ? LABEL_INK.plate : WALNUT.count;
+            ctx.fillText(plaque.patronText, textX, top + 12);
+            if (plaque.patronAge) {
+                ctx.fillStyle = full ? LABEL_INK.plate : LABEL_INK.textDim;
+                ctx.fillText(plaque.patronAge, textX + plaque.patronWidth, top + 12);
+            }
         }
         if (plaque.attention) {
             // Right-aligned inside the outline, over the head band's bevel
@@ -2782,6 +2872,7 @@ export class BuildingSprite {
             let left;
             let top;
             let textureKey;
+            let textureRevision = null;
             if (layer.cycle) {
                 if (!this._emitterCycleActive(type, layer.cycle)) continue;
                 const cycle = this._emitterCycleFor(entry, name, layer);
@@ -2817,15 +2908,28 @@ export class BuildingSprite {
                 left = Math.round(layer.anchor[0] - frameW / 2);
                 top = Math.round(layer.anchor[1] - frameH);
                 textureKey = `part:${id}:${this.assets.assetVersion || ''}`;
+                // G7-1 — a status part's cloth holds its hue at night.
+                if (typeof layer.gate === 'string' && layer.gate.startsWith('status.')) {
+                    const cloth = this._statusCloth(id, image);
+                    if (cloth) {
+                        image = cloth.canvas;
+                        textureRevision = `${textureKey}:${cloth.key}`;
+                    }
+                }
             } else {
-                if (isBuildingApertureLayer(type, name) || !Array.isArray(layer.anchor)) continue;
+                // 4.6 / B3-03' — a rest mask is a part only while its hearth is
+                // banked (`_restMaskShowing`), so both backends grade and depth
+                // sort it like the base; it is authored at the base's size and
+                // origin.
+                const rest = getBuildingRestLayer(type) === name;
+                if (rest ? !this._restMaskShowing(building) : (isBuildingApertureLayer(type, name) || !Array.isArray(layer.anchor))) continue;
                 image = this.assets.get(id);
                 if (!image) continue;
                 frame = 0;
                 frameW = image.width;
                 frameH = image.height;
-                left = Math.round(layer.anchor[0] - frameW / 2);
-                top = Math.round(layer.anchor[1] - frameH);
+                left = rest ? 0 : Math.round(layer.anchor[0] - frameW / 2);
+                top = rest ? 0 : Math.round(layer.anchor[1] - frameH);
                 textureKey = `layer:${id}:${this.assets.assetVersion || ''}`;
             }
             let sy = 0;
@@ -2845,6 +2949,7 @@ export class BuildingSprite {
                 layer,
                 image,
                 textureKey,
+                textureRevision: textureRevision || textureKey,
                 frame,
                 sx: frame * frameW,
                 sy,
@@ -2865,6 +2970,53 @@ export class BuildingSprite {
         }
         this._fixturePartDraws(entry, type, originX, originY, splitPass, horizonY, out);
         return out;
+    }
+
+    // G7-1 — the attention banner (a `status.<bucket>` part) is the one
+    // landmark-sized needs-you signal, and the night grade turned its yellow
+    // sage-grey. Like the T1 status cells it keeps its own hue: the strip is
+    // repainted with each texel's `statusClothPreimage`, so the frame grade
+    // (resident, hybrid or Canvas fills, `residentGradeFormula`) lands on the
+    // authored chroma at the graded value. It holds colour, not light: no
+    // emission, no bloom, no gate change. Repainted only when the grade moves
+    // a 1/128 step; null by day (night 0), when the authored strip draws.
+    _statusCloth(id, image) {
+        const grade = this.atmosphereState?.lightGrade || null;
+        if (!grade || !(Number(grade.night) > 0) || typeof document === 'undefined' || !(image?.width > 0)) return null;
+        const postFx = this.residentGradeFormula === true;
+        const key = `${canvasGradeKey(grade, { postFx })}|${Math.round(grade.night * 128)}`;
+        const cache = (this._statusCloths ||= new Map());
+        let entry = cache.get(id);
+        if (!entry || entry.image !== image) {
+            const canvas = document.createElement('canvas');
+            canvas.width = image.width;
+            canvas.height = image.height;
+            const context = canvas.getContext('2d', { willReadFrequently: true });
+            context.drawImage(image, 0, 0);
+            entry = { image, canvas, context, authored: context.getImageData(0, 0, canvas.width, canvas.height), key: null };
+            cache.set(id, entry);
+        }
+        if (entry.key !== key) {
+            const source = entry.authored.data;
+            const out = new ImageData(new Uint8ClampedArray(source), entry.authored.width, entry.authored.height);
+            const memo = new Map();
+            for (let i = 0; i < source.length; i += 4) {
+                if (!source[i + 3]) continue;
+                const packed = (source[i] << 16) | (source[i + 1] << 8) | source[i + 2];
+                let rgb = memo.get(packed);
+                if (!rgb) {
+                    rgb = statusClothPreimage([source[i] / 255, source[i + 1] / 255, source[i + 2] / 255], grade, { postFx })
+                        .map(channel => Math.round(Math.max(0, Math.min(1, channel)) * 255));
+                    memo.set(packed, rgb);
+                }
+                out.data[i] = rgb[0];
+                out.data[i + 1] = rgb[1];
+                out.data[i + 2] = rgb[2];
+            }
+            entry.context.putImageData(out, 0, 0);
+            entry.key = key;
+        }
+        return entry;
     }
 
     // W6.8 / W6.10 — procedural fixture parts in the same part records (both
@@ -3179,10 +3331,9 @@ export class BuildingSprite {
             // shipped treatment. 4.4 — a Forge we have watched fall quiet for
             // ten minutes banks the same way: the mask is the same, the reason
             // is a measured idle rather than a canonical empty village.
+            // The banked mask itself is a part (partDrawsFor).
             const forgeSelected = this._selectedBuildingType === 'forge';
-            if (this._villageAtRest() || this._forgeWorkload?.banked) {
-                this._drawForgeBankedMouth(ctx, entry, wx, wy);
-            } else {
+            if (!this._restMaskShowing(building)) {
                 if (shouldDrawLocalY(getBuildingEffectAnchor('forge', 'hearth', [75, 118])[1])) this._drawForgeEnhancement(ctx, localPoint, building);
             }
             // The workload billets and the result shelf are physical objects in
@@ -5208,11 +5359,20 @@ export class BuildingSprite {
 
     // 6.3 — the per-room gate other light surfaces read (2.4 aperture lights,
     // 2.9 water columns): 0..1, night × this room's stepped occupancy. A room
-    // index is 0-based (mask R = index + 1); unknown rooms are dark.
+    // index is 0-based (mask R = index + 1); unknown rooms are dark. B3-01 —
+    // a room pane inside the open 4.1 aperture's cut stays dark: the cut
+    // presents that wall's occupants itself.
     roomGate(type, roomIndex) {
         const lit = this._roomLitByType.get(type);
         const value = lit ? lit[roomIndex] || 0 : 0;
-        return value > 0 ? value * this._nightWindowGate() : 0;
+        if (!(value > 0) || this._roomUnderOpenAperture(type, roomIndex)) return 0;
+        return value * this._nightWindowGate();
+    }
+
+    _roomUnderOpenAperture(type, roomIndex) {
+        const open = this._openApertureFor({ type });
+        const at = open ? getBuildingRoomProfile(type)?.slots?.[roomIndex]?.at : null;
+        return !!at && apertureCutContains(open.profile?.cut, at[0], at[1]);
     }
 
     roomCount(type) {
@@ -5226,8 +5386,8 @@ export class BuildingSprite {
     }
 
     // 6.3 — lit share of a glass group: k ≥ 1 is room k - 1. Group 0 (glass
-    // under a window/glass rect that no room mask claims: the Command's tower
-    // panes, the Archive's hall lancets and clerestory) is never lit: only a
+    // under a window/glass rect that no room mask claims; since B3-01 no
+    // Command or Archive pane is one) is never lit: only a
     // room a worker holds glows, so N workers light exactly min(N, rooms)
     // glass shapes. By day every pane is unlit glass (M15).
     _glassGroupGate(type, group) {
@@ -5639,16 +5799,20 @@ export class BuildingSprite {
         return phase === VillagePhase.READY_EMPTY && !(this.agentSprites?.length);
     }
 
-    // 4.6 — the banked mouth. The hearth fire is painted into base.png, so rest
-    // lays the authored `banked.png` mask over exactly those pixels: stepped
-    // charcoal over one ember course. A workshop between shifts, not a dead one.
-    _drawForgeBankedMouth(ctx, entry, wx, wy) {
-        const name = getBuildingRestLayer('forge');
-        if (!name) return;
-        const id = `${entry.id}.${name}`;
-        if (!this.assets.get(id)) return;
-        const anchor = this.assets.getAnchor(entry.id);
-        this.sprites.drawSprite(ctx, id, wx, wy, { anchor });
+    // 4.6 / B3-03' — whether a building's authored rest mask lies over its
+    // painted fire now. The Forge: the canonical empty village, or a hearth
+    // watched fall quiet for ten minutes (4.4). The Tavern: no patron and no
+    // worker, at any hour (its hearth burns for its patrons). Never read from
+    // mood or director state.
+    _restMaskShowing(building) {
+        const type = building?.type;
+        if (!type || !getBuildingRestLayer(type)) return false;
+        if (type === 'forge') return this._villageAtRest() || Boolean(this._forgeWorkload?.banked);
+        if (type === 'tavern') {
+            const working = this._visitorStatusByType?.get(type)?.working || 0;
+            return working + (this._patronIdsByType?.get(type)?.size || 0) === 0;
+        }
+        return false;
     }
 
     // 4.6 — the slate between shifts: the authored rack with nothing pinned to

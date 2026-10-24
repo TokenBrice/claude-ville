@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { BuildingSprite } from '../../claudeville/src/presentation/character-mode/BuildingSprite.js';
+import { BuildingSprite, lampsLitAt } from '../../claudeville/src/presentation/character-mode/BuildingSprite.js';
 import {
     MIDNIGHT_OIL_FALL_MS,
     MIDNIGHT_OIL_RISE_MS,
@@ -18,7 +18,12 @@ function lightFixture(phase, forgeGate) {
     const forge = { type: 'forge' };
     const watchtower = { type: 'watchtower' };
     return Object.assign(Object.create(BuildingSprite.prototype), {
-        atmosphereState: { phase, phaseProgress: phase === 'night' ? 0.5 : 0, reactions: { windowWarmth: 0.8 } },
+        atmosphereState: {
+            phase,
+            phaseProgress: phase === 'night' ? 0.5 : 0,
+            clock: { minuteOfDay: phase === 'night' ? 23 * 60 : 12 * 60 },
+            reactions: { windowWarmth: 0.8 },
+        },
         lightingState: { lightBoost: 1, beaconIntensity: 1 },
         harborStatus: { failedPushActive: false, activeWorkingCount: 0 },
         motionScale: 1,
@@ -39,10 +44,10 @@ function lightFixture(phase, forgeGate) {
 }
 
 test('day is unchanged while night follows only live working occupancy', () => {
-    assert.equal(buildingEmissiveGate('day', 0, 0), 1);
-    assert.equal(buildingEmissiveGate('dawn', 0.9, 0), 1);
-    assert.equal(buildingEmissiveGate('night', 0.2, 0), 0);
-    assert.equal(buildingEmissiveGate('night', 0.2, 1), 1);
+    assert.equal(buildingEmissiveGate(0, 0), 1);
+    assert.equal(buildingEmissiveGate(1, 0), 0.5);
+    assert.equal(buildingEmissiveGate(3, 0), 0);
+    assert.equal(buildingEmissiveGate(3, 1), 1);
 
     // The Lighthouse lamp stands up its tower and lays no ground light at any
     // hour (2.7, AD #6); the Forge follows its occupancy gate at night.
@@ -112,13 +117,32 @@ test('frame-fresh physical visitor tally drives the rise and completion fade', (
     assert.equal(renderer._nightShiftLit('forge'), 0);
 });
 
-test('night phase gate crossfades only during the last fifth of dusk', () => {
-    assert.equal(nightWindowGate('day', 1), 0);
-    assert.equal(nightWindowGate('dawn', 1), 0);
-    assert.equal(nightWindowGate('dusk', 0.5), 0);
-    assert.ok(Math.abs(nightWindowGate('dusk', 0.9) - 0.5) < 1e-9);
-    assert.equal(nightWindowGate('dusk', 1), 1);
-    assert.equal(nightWindowGate('night', 0), 1);
+test('the window gate follows the lamp course (B3-02)', () => {
+    assert.equal(nightWindowGate(0), 0);
+    assert.equal(nightWindowGate(1), 0.5);
+    assert.equal(nightWindowGate(2), 1);
+    assert.equal(nightWindowGate(3), 1);
+});
+
+test('a worked window is never dark while the street lamps burn (B3-02)', () => {
+    // Every minute of dusk (17:00–21:00) and dawn (04:00–08:00), in every
+    // season: when lampsLitAt says the lamps are lit, the window gate is open,
+    // and in daylight it is shut.
+    for (const month of [0, 3, 6, 9, null]) {
+        for (const [from, to] of [[17 * 60, 21 * 60], [4 * 60, 8 * 60]]) {
+            for (let minute = from; minute <= to; minute++) {
+                const renderer = Object.assign(Object.create(BuildingSprite.prototype), {
+                    atmosphereState: {
+                        clock: { minuteOfDay: minute, ...(month === null ? {} : { date: new Date(2026, month, 15) }) },
+                    },
+                });
+                const lamps = lampsLitAt(renderer.atmosphereState);
+                const gate = renderer._nightWindowGate();
+                if (lamps) assert.ok(gate > 0, `month ${month} ${minute}: lamps lit, windows dark`);
+                else assert.equal(gate, 0, `month ${month} ${minute}: daylight windows lit`);
+            }
+        }
+    }
 });
 
 test('working transitions are monotonic and reduced motion snaps instantly', () => {

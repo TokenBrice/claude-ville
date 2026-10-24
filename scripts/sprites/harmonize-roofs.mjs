@@ -30,8 +30,9 @@
 //   node scripts/sprites/harmonize-roofs.mjs [--building=<id>] [--dry-run] [--out=<dir>]
 //   node scripts/sprites/harmonize-roofs.mjs --check
 // Apply is idempotent: texels already on the target ramp are never remapped.
-// `--check` fails when a landmark's roof (or the Forge's stone) has a texel
+// `--check` fails when a landmark's roof (or the Forge's or the chapel's stone) has a texel
 // off its ramp; run it after any regeneration so the family cannot drift.
+// `PROP_TARGETS` (B3-05) brings the isle landmark props under the same rule.
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { basename, join } from 'node:path';
@@ -86,8 +87,34 @@ const TARGETS = {
     },
 };
 
+// B3-05 — the W8.5b isle landmarks (`props/<id>.png`). They carry no
+// occluder sidecar, so their roof is the same slate-hue test inside an
+// authored `region` (the whole sprite when omitted) and the one-ring growth
+// is skipped; their stone is every masonry texel off that roof.
+const PROP_TARGETS = {
+    // The near-black indigo roof lands on the ramp's dark half (its shadowed
+    // slope is the body, the lit slope two stops up); the violet-shaded walls
+    // take the Command's masonry by percentile, as the Forge's did. The
+    // window and lantern glass are kept.
+    'prop.waysideChapel': {
+        bodyStop: 2,
+        keep: [{ rect: [23, 77, 41, 101] }, { rect: [89, 75, 100, 93] }],
+        stone: {
+            reference: 'building.command',
+            keep: [{ rect: [23, 77, 41, 101] }, { rect: [89, 75, 100, 93] }],
+        },
+    },
+    // The cap only: the tower's cool mortar is slate-hued too.
+    'prop.windmill': {
+        bodyStop: 4,
+        region: [{ poly: [[63, 24], [33, 60], [34, 69], [64, 78], [95, 69], [96, 60]] }],
+    },
+    // Roofless: checked so a regeneration that adds a roof cannot drift.
+    'prop.ruinedTower': { region: [] },
+};
+
 // Landmarks whose roofs --check holds to the family ramps.
-const CHECKED = ['building.tavern', 'building.harbor', ...Object.keys(TARGETS)];
+const CHECKED = ['building.tavern', 'building.harbor', ...Object.keys(TARGETS), ...Object.keys(PROP_TARGETS)];
 
 const hex = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
 const key = (r, g, b) => (r << 16) | (g << 8) | b;
@@ -138,7 +165,8 @@ function texel(png, x, y) {
     return [png.data[i], png.data[i + 1], png.data[i + 2], png.data[i + 3]];
 }
 
-function roofMask(base, occ, keep) {
+// `occ` null (an isle prop): the roof is the slate-hue test inside `region`.
+function roofMask(base, occ, keep, region = null) {
     const { width: W, height: H } = base;
     const mask = new Uint8Array(W * H);
     const counts = new Map();
@@ -148,14 +176,18 @@ function roofMask(base, occ, keep) {
         const { h, s } = hsv(r, g, b);
         return h >= 170 && h <= 260 && s >= 0.08;
     };
+    const onRoof = occ
+        ? (x, y) => texel(occ, x, y)[2] >> 6 === 3
+        : (x, y) => (region ? inside(region, x, y) : true);
     for (let y = 0; y < H; y++) {
         for (let x = 0; x < W; x++) {
-            if (texel(occ, x, y)[2] >> 6 !== 3 || !eligible(x, y)) continue;
+            if (!onRoof(x, y) || !eligible(x, y)) continue;
             mask[y * W + x] = 1;
             const k = key(...texel(base, x, y));
             counts.set(k, (counts.get(k) || 0) + 1);
         }
     }
+    if (!occ) return mask;
     // One ring onto the roof's own colours: tile edges the bake tagged as wall.
     const colours = new Set([...counts].filter(([, n]) => n >= 3).map(([k]) => k));
     const ring = [];
@@ -178,14 +210,16 @@ function isStone(r, g, b) {
     return s <= 0.22 || (h >= 240 && h <= 300 && s <= 0.5);
 }
 
-function stoneMask(base, occ, keep) {
+// `occ` null (an isle prop): `roof` (its roofMask) is what is not stone.
+function stoneMask(base, occ, keep, roof = null) {
     const { width: W, height: H } = base;
     const mask = new Uint8Array(W * H);
     for (let y = 0; y < H; y++) {
         for (let x = 0; x < W; x++) {
             const [r, g, b, a] = texel(base, x, y);
-            if (a < 128 || luma(r, g, b) < INK_LUMA || inside(keep, x, y)) continue;
-            if (texel(occ, x, y)[2] >> 6 === 3) continue;
+            // A prop's near-black outline (luma < 24, the --check ink) stays.
+            if (a < 128 || luma(r, g, b) < (occ ? INK_LUMA : CHECK_INK_LUMA) || inside(keep, x, y)) continue;
+            if (occ ? texel(occ, x, y)[2] >> 6 === 3 : roof?.[y * W + x]) continue;
             if (!isStone(r, g, b)) continue;
             mask[y * W + x] = 1;
         }
@@ -325,13 +359,16 @@ function cropFrame(png, f, k) {
 const manifest = loadSpriteManifest();
 const entries = new Map((manifest.buildings || []).map((e) => [e.id, e]));
 const dir = (id) => join(spritesRoot, 'buildings', id);
+const isProp = (id) => Object.hasOwn(PROP_TARGETS, id);
+const basePathOf = (id) => (isProp(id) ? join(spritesRoot, 'props', `${id}.png`) : join(dir(id), 'base.png'));
+const occluderOf = (id) => (isProp(id) ? null : readPng(join(dir(id), 'base.occluder.png')));
 
 if (check) {
     let bad = 0;
     for (const id of CHECKED) {
-        const base = readPng(join(dir(id), 'base.png'));
-        const occ = readPng(join(dir(id), 'base.occluder.png'));
-        const spec = TARGETS[id] || {};
+        const base = readPng(basePathOf(id));
+        const occ = occluderOf(id);
+        const spec = TARGETS[id] || PROP_TARGETS[id] || {};
         const off = new Map();
         const tally = (mask, ok) => {
             for (let i = 0; i < mask.length; i++) {
@@ -340,9 +377,9 @@ if (check) {
                 if (!ok.has(k) && luma(k >> 16, (k >> 8) & 255, k & 255) >= CHECK_INK_LUMA) off.set(k, (off.get(k) || 0) + 1);
             }
         };
-        const roof = roofMask(base, occ, spec.keep);
+        const roof = roofMask(base, occ, spec.keep, spec.region);
         tally(roof, ROOF_OK);
-        if (spec.stone) tally(stoneMask(base, occ, spec.stone.keep), new Set(familyMasonry(spec.stone.reference).map((c) => key(...c))));
+        if (spec.stone) tally(stoneMask(base, occ, spec.stone.keep, roof), new Set(familyMasonry(spec.stone.reference).map((c) => key(...c))));
         const n = [...off.values()].reduce((a, b) => a + b, 0);
         const total = roof.reduce((a, b) => a + b, 0);
         if (n) {
@@ -356,17 +393,17 @@ if (check) {
     process.exit(bad ? 1 : 0);
 }
 
-for (const [id, spec] of Object.entries(TARGETS)) {
-    if (only && only !== id) continue;
+for (const [id, spec] of [...Object.entries(TARGETS), ...Object.entries(PROP_TARGETS)]) {
+    if ((only && only !== id) || !Number.isInteger(spec.bodyStop)) continue;
     const entry = entries.get(id);
-    const basePath = join(dir(id), 'base.png');
+    const basePath = basePathOf(id);
     const base = readPng(basePath);
-    const occ = readPng(join(dir(id), 'base.occluder.png'));
+    const occ = occluderOf(id);
     const passes = [];
-    const roof = roofMask(base, occ, spec.keep);
+    const roof = roofMask(base, occ, spec.keep, spec.region);
     passes.push({ name: 'roof', mask: roof, lut: ratioLut(base, roof, ROOF, spec.bodyStop, ROOF_OK) });
     if (spec.stone) {
-        const stone = stoneMask(base, occ, spec.stone.keep);
+        const stone = stoneMask(base, occ, spec.stone.keep, roof);
         const masonry = familyMasonry(spec.stone.reference);
         const reference = wallTexels(spec.stone.reference).map((c) => luma(...c));
         const ok = new Set(masonry.map((c) => key(...c)));
@@ -375,7 +412,7 @@ for (const [id, spec] of Object.entries(TARGETS)) {
 
     // Layers first: they read the base's original colours through the LUT keys.
     const layerOut = [];
-    for (const [name, layer] of Object.entries(entry.layers || {})) {
+    for (const [name, layer] of Object.entries(entry?.layers || {})) {
         const f = layerFrames(entry, layer);
         const path = join(dir(id), `${name}.png`);
         if (!f || !existsSync(path)) continue;

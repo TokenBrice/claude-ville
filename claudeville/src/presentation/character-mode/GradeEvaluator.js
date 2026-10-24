@@ -31,8 +31,9 @@ export const GRADE_EXPOSURE_FLOOR = 0.40;
 // The weather rows also spend value through `gain`, which the exposure floor
 // cannot see. The effective ambient (exposure x luma(gain), what an unlit
 // mid-grey becomes) never falls below this: a storm night sits one course
-// under a clear deep night (0.53), never at black.
-export const GRADE_AMBIENT_FLOOR = 0.42;
+// under a clear deep night (0.65), never at black. L1-2 — it binds only on a
+// storm pre-dawn.
+export const GRADE_AMBIENT_FLOOR = 0.56;
 
 // Rec.709 luma weights, shared with the shaders.
 const LUMA = [0.2126, 0.7152, 0.0722];
@@ -123,20 +124,40 @@ const PURKINJE_BLUE = Object.freeze(lumaNormalized([0.93, 1.0, 1.07]));
 // the lamps give colour back), measured on the fixed `readme-showcase` camera
 // and asserted over the C1 ramps by scripts/tests/grade-colour-script.test.mjs.
 // The 8 key names are a contract: the audio arrangement couples to them.
+//
+// L1-3 — the moonlit night: a moon term you can see (a full moon over a new
+// moon is a visible course) and night shadows lifted from flat black to deep
+// indigo, so silhouettes part from the ground. `MOONLIT_NIGHT_STRENGTH` is
+// the one knob: 1 is the full step reviewed on screen, 0.5 half of it, 0 the
+// night before it. It scales the blue-hour, night and deep-night exposure,
+// saturation and lift, and the moon term, together.
+export const MOONLIT_NIGHT_STRENGTH = 1;
+
+function moonlit(base, full) {
+    return base + (full - base) * MOONLIT_NIGHT_STRENGTH;
+}
+
+function moonlit3(base, full) {
+    return base.map((value, index) => moonlit(value, full[index]));
+}
+
 export const GRADE_KEYFRAMES = Object.freeze([
     Object.freeze({
         name: 'deep-night', minute: 2 * 60, side: 'night',
-        exposure: 0.70, saturation: 0.52,
-        gain: [0.82, 0.94, 1.06], lift: [0.024, 0.027, 0.034], gamma: 1.03,
+        exposure: moonlit(0.70, 0.75), saturation: moonlit(0.52, 0.57),
+        gain: [0.82, 0.94, 1.06], lift: moonlit3([0.024, 0.027, 0.034], [0.034, 0.040, 0.056]), gamma: 1.03,
         shadowTint: [0.82, 0.92, 1.12], highlightTint: [0.96, 1.04, 1.02],
         purkinje: 0.7, sunBand: 0, daylight: 0, night: 1, rake: 0,
         vignetteEdge: [0.74, 0.76, 0.83], vignetteAlpha: 0.36,
         skyTop: '#070b16', skyHorizon: '#141d2e', voidColor: '#0b1218', horizonHaze: '#1a2436',
     }),
+    // L1-2 — pre-dawn is the tail of the night, not its darkest key: a
+    // little under deep night (exposure 0.68 against 0.70) with a rosier gain,
+    // never the 04:00 blackout the old 0.50 key made.
     Object.freeze({
         name: 'pre-dawn', minute: 4 * 60 + 30, side: 'dawn',
-        exposure: 0.50, saturation: 0.34,
-        gain: [0.86, 0.86, 1.00], lift: [0.022, 0.021, 0.028], gamma: 1.05,
+        exposure: 0.68, saturation: 0.48,
+        gain: [0.86, 0.86, 1.00], lift: [0.032, 0.034, 0.048], gamma: 1.04,
         shadowTint: [0.92, 0.90, 1.00], highlightTint: [1.06, 0.98, 0.98],
         purkinje: 0.8, sunBand: 0, daylight: 0, night: 0.85, rake: 0.25,
         vignetteEdge: [0.74, 0.74, 0.84], vignetteAlpha: 0.42,
@@ -203,8 +224,8 @@ export const GRADE_KEYFRAMES = Object.freeze([
     // the night key does.
     Object.freeze({
         name: 'blue-hour', minute: 19 * 60 + 45, side: 'dusk',
-        exposure: 0.82, saturation: 0.62,
-        gain: [0.80, 0.90, 1.10], lift: [0.018, 0.020, 0.034], gamma: 1.02,
+        exposure: moonlit(0.82, 0.85), saturation: moonlit(0.62, 0.64),
+        gain: [0.80, 0.90, 1.10], lift: moonlit3([0.018, 0.020, 0.034], [0.024, 0.028, 0.044]), gamma: 1.02,
         shadowTint: [0.86, 0.90, 1.14], highlightTint: [1.04, 0.98, 1.02],
         purkinje: 0.3, sunBand: 0.2, daylight: 0.1, night: 0.5, rake: 0.375,
         vignetteEdge: [0.74, 0.74, 0.84], vignetteAlpha: 0.40,
@@ -218,8 +239,8 @@ export const GRADE_KEYFRAMES = Object.freeze([
     // saturation sits between 0.5x and 0.85x, and night is bluer than noon.
     Object.freeze({
         name: 'night', minute: 22 * 60, side: 'night',
-        exposure: 0.76, saturation: 0.58,
-        gain: [0.82, 0.94, 1.06], lift: [0.024, 0.027, 0.034], gamma: 1.02,
+        exposure: moonlit(0.76, 0.78), saturation: moonlit(0.58, 0.62),
+        gain: [0.82, 0.94, 1.06], lift: moonlit3([0.024, 0.027, 0.034], [0.034, 0.040, 0.056]), gamma: 1.02,
         shadowTint: [0.82, 0.92, 1.12], highlightTint: [0.96, 1.04, 1.02],
         purkinje: 0.6, sunBand: 0, daylight: 0, night: 1, rake: 0,
         vignetteEdge: [0.76, 0.78, 0.85], vignetteAlpha: 0.34,
@@ -228,12 +249,12 @@ export const GRADE_KEYFRAMES = Object.freeze([
 ]);
 
 // Weather rows, applied after the time key. Tints are the plan's cool
-// multiplies (rain #b2c4d6, storm #8e9fb4). At night the multiply keeps its
-// hue but spends less value (the night key already owns the darkness); storm
-// keeps one extra night course darker.
+// multiplies (rain #b2c4d6, storm #8e9fb4). Once the sky dims the multiply
+// keeps its hue but spends less value (the night key already owns the
+// darkness); storm keeps a little extra night darkness (`nightCourse`).
 export const GRADE_WEATHER_ROWS = Object.freeze({
     rain: Object.freeze({ saturation: 0.74, tint: '#b2c4d6', flatten: 0.7, nightCourse: 1 }),
-    storm: Object.freeze({ saturation: 0.62, tint: '#8e9fb4', flatten: 0.85, nightCourse: 0.88 }),
+    storm: Object.freeze({ saturation: 0.62, tint: '#8e9fb4', flatten: 0.85, nightCourse: 0.94 }),
     overcast: Object.freeze({ saturation: 0.82, tint: '#c4ccd4', flatten: 0.55, nightCourse: 1 }),
     fog: Object.freeze({ saturation: 0.80, tint: '#dfe3e6', flatten: 0.45, nightCourse: 1 }),
 });
@@ -335,8 +356,8 @@ export function evaluateGrade({
     const moon = moonFill == null
         ? illumination * clamp(1 - clamp(finite(weather?.cloudCover, 0)) * 0.85)
         : clamp(finite(moonFill, 0));
-    exposure += 0.05 * moon * night;
-    saturation += 0.03 * moon * night;
+    exposure += moonlit(0.05, 0.08) * moon * night;
+    saturation += moonlit(0.03, 0.05) * moon * night;
 
     const w = weatherWeights(weather);
     for (const kind of ['rain', 'storm', 'overcast', 'fog']) {
@@ -345,16 +366,23 @@ export function evaluateGrade({
         const row = GRADE_WEATHER_ROWS[kind];
         saturation *= lerp(1, row.saturation, weight);
         const tint = hexToRgb01(row.tint);
-        // By day the cool multiply spends its full value; at night it keeps
-        // the hue and spends ~40% of the value, so rain nights stay readable.
-        const value = lerp(1, luma(tint), lerp(1, 0.4, night));
+        // L1-1 — the weather charges its darkness once. By day the cool
+        // multiply spends 70 % of its value (a storm noon was darker than a
+        // clear midnight); once the sky dims (night, or a sky past golden
+        // hour: the blue hour no longer pays the daytime price on top of the
+        // falling ambient) it keeps the hue and spends a quarter.
+        const dim = Math.max(night, 1 - smoothstep((daylight - 0.1) / 0.8));
+        const value = lerp(1, luma(tint), lerp(0.7, 0.25, dim));
         const weatherTint = lumaNormalized(tint).map(channel => channel * value);
         gain = mul3(gain, lerp3(NEUTRAL, weatherTint, weight));
         exposure *= lerp(1, row.nightCourse, weight * night);
-        // A covered sky flattens the split tone and the sun band.
-        shadowTint = towardOne3(shadowTint, row.flatten * weight);
-        highlightTint = towardOne3(highlightTint, row.flatten * weight);
-        gamma = lerp(gamma, 1, row.flatten * weight);
+        // A covered sky flattens the split tone and the sun band; at night
+        // half of the moonlit split tone survives, so silhouettes keep
+        // their cool rim under cloud.
+        const flatten = row.flatten * weight * lerp(1, 0.5, night);
+        shadowTint = towardOne3(shadowTint, flatten);
+        highlightTint = towardOne3(highlightTint, flatten);
+        gamma = lerp(gamma, 1, flatten);
         rake *= 1 - row.flatten * weight;
         vignetteAlpha = Math.min(0.52, vignetteAlpha + 0.06 * weight);
         const grey = WEATHER_GREY[kind];

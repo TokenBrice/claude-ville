@@ -291,6 +291,7 @@ test('an orchestrator blocked on its subagents goes for a pint, and the wait end
     assert.ok(sprite._routeToRestPlace());
     assert.equal(sprite.visitRole, 'rest');
     assert.equal(calls.at(-1).building.restSeats, true);
+    assert.equal(calls.at(-1).restAt, 'tavern', 'AG-2: a lead waiting on its subagents rests at the Tavern only');
 
     Object.assign(sprite.agent, { turnState: 'working', pendingTool: null, pendingSince: null });
     assert.equal(sprite._restPlaceForState(), null, 'the wait ending sends it back to work');
@@ -348,4 +349,6 @@ test('a Claude Code orchestrator closed on background subagents drinks instead o
     live = false;
     sprite._advanceCrowdRoutine(NOW);
     assert.equal(sprite._crowd.phase, 'winddown-stop', 'the last subagent done: the wind-down starts');
+    const stop = sprite._restPlaceForState();
+    assert.equal(sprite._restAtFor(stop), stop.restSeats ? 'tavern' : null, 'AG-2: a Tavern wind-down rests at the Tavern only');
 });

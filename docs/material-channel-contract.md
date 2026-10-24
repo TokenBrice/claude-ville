@@ -696,6 +696,11 @@ from the night desaturation without a separate lit mask, and `fire` pixels keep
 their authored colour at every hour. The Canvas fallback reproduces the same
 order with composite fills (`CanvasGrade.js`). Emission sidecars are gated at
 runtime by `NightOccupancyGate`, so a lit window means real work inside.
+Status parts (the Command attention banner) are not light and take no
+emission; from the blue hour on they paint the preimage
+(`CanvasGrade.statusClothPreimage`) whose frame grade keeps their authored
+hue and saturation at the graded value, so the needs-you yellow never turns
+sage-grey at night (G7-1).
 
 The offline analyzer (`npm run art:analyze`) treats pixels lit in an
 `.emissive.png` sidecar, and `fire`/unlit/light layers, as allowed Tier-A
