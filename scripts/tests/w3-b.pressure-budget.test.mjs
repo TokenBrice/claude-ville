@@ -12,6 +12,7 @@ import {
     appOwnedCostMs,
     createFramePressureState,
     framePressureSnapshot,
+    getFramePressureSnapshot,
     markPolicyFor,
     ornamentPlan,
     resetFramePressureState,
@@ -448,36 +449,73 @@ test('weather embellishment holds through a failed recovery probe', () => {
     };
     const frame = () => {
         now += STEP_MS;
-        return { governor: sampleFramePressure().level, weather: weatherPressureLevel(null, false) };
+        const governor = sampleFramePressure().level;
+        return { governor, weather: weatherPressureLevel(null, false), plan: ornamentPlan({ level: governor }) };
+    };
+    const run = (ms, check) => {
+        let seen = null;
+        for (let i = 0; i < ms / STEP_MS; i++) {
+            seen = frame();
+            check?.(seen);
+        }
+        return seen;
+    };
+    const held = (seen) => {
+        assert.ok(seen.governor >= PRESSURE_LEVELS.WEATHER_FAUNA, `governor restored at ${now} ms`);
+        assert.ok(weatherEmbellishmentAllowed(seen.weather) === false, `fog popped in at ${now} ms`);
+        assert.equal(seen.plan.faunaCadence, 'off', `fauna popped in at ${now} ms`);
+        assert.equal(seen.plan.ambientWeatherEmbellishment, 'off');
     };
     try {
         let seen = frame();
         while (seen.governor < PRESSURE_LEVELS.WEATHER_FAUNA) seen = frame();
-        // A host over budget at FULL: each healthy stretch probes down a rung
-        // and the next heavy frames climb straight back.
-        let probedTo = Infinity;
+        // T3: a host hovering at the budget (1.7 s healthy, then heavy bursts
+        // under the 12-frame shed hold) no longer probes every 1.5 s: the
+        // restore hold sits in the governor, so weather, fauna and particles
+        // all stay shed.
         for (let cycle = 0; cycle < 3; cycle++) {
             costMs = 2;
-            for (let i = 0; i < 1700 / STEP_MS; i++) {
-                seen = frame();
-                probedTo = Math.min(probedTo, seen.governor);
-                assert.ok(weatherEmbellishmentAllowed(seen.weather) === false, `fog popped in at ${now} ms`);
-            }
+            run(1700, held);
             costMs = 12;
-            for (let i = 0; i < 300 / STEP_MS; i++) {
-                seen = frame();
-                assert.ok(weatherEmbellishmentAllowed(seen.weather) === false, `fog popped in at ${now} ms`);
-            }
+            seen = run(STEP_MS * 9, held);
         }
-        assert.equal(probedTo, PRESSURE_LEVELS.FULL);
-        // A host that stays healthy gets the embellishment back.
+        assert.equal(seen.governor, PRESSURE_LEVELS.WEATHER_FAUNA);
+        // A probe after 4 s healthy that fails (heavy again inside the probe
+        // window) doubles the next wait: 4.2 s healthy no longer restores.
         costMs = 2;
-        for (let i = 0; i < 12000 / STEP_MS; i++) seen = frame();
+        seen = run(4200);
+        assert.equal(seen.governor, PRESSURE_LEVELS.FULL, 'the first probe restores after the 4 s hold');
+        costMs = 12;
+        seen = run(STEP_MS * 14);
+        assert.equal(seen.governor, PRESSURE_LEVELS.WEATHER_FAUNA);
+        assert.equal(getFramePressureSnapshot().probeFailures, 1);
+        costMs = 2;
+        run(4200, held);
+        // ... the doubled 8 s hold does, and a level that holds clears the backoff.
+        seen = run(4200);
+        assert.equal(seen.governor, PRESSURE_LEVELS.FULL);
+        run(4200);
+        assert.equal(getFramePressureSnapshot().probeFailures, 0);
+        // A host that stays healthy gets the embellishment back.
+        seen = run(4200);
         assert.equal(seen.weather, PRESSURE_LEVELS.FULL);
+        assert.equal(seen.plan.faunaCadence, 'on');
     } finally {
         performance.now = realNow;
         resetFramePressureState();
         if (previousWindow === undefined) delete globalThis.window;
         else globalThis.window = previousWindow;
     }
+});
+
+
+test('Shift-D prints the frame-pressure level, what it sheds and the restore countdown', async () => {
+    const { framePressureRows } = await import('../../claudeville/src/presentation/character-mode/DebugOverlay.js');
+    assert.deepEqual(framePressureRows(null), []);
+    const calm = framePressureRows({ level: 0, costMs: 4, budgetMs: 10, healthyMs: 6.7 });
+    assert.equal(calm.length, 1);
+    assert.match(calm[0], /^frame pressure: 0 full · cost 4\.0ms \/ 10ms/);
+    const shed = framePressureRows({ level: 2, costMs: 11, budgetMs: 10, healthyMs: 6.7, restoreInMs: 2300, probeFailures: 1 });
+    assert.match(shed[1], /sheds ambient-weather-embellishment, fauna-cadence, ambient-particles/);
+    assert.match(shed[2], /restore in 2\.3 s · failed probes 1/);
 });

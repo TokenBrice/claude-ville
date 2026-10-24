@@ -271,6 +271,60 @@ export function hullLampStrip(assets, strip) {
     return lamps;
 }
 
+// M05-5 — riding lights. A moored hull shows one anchor light: only the
+// topmost lamp (the masthead) of each frame survives in this copy of its
+// lamp strip; under way the full strip lights (HarborTraffic._hullPose picks
+// by the ship's own status, never by agents). Lamps group as hullLampPoints
+// groups them (texels within 2 of a group's centre).
+const _anchorLamps = new WeakMap();
+
+/** Zero every lamp texel of `data` (RGBA, `width` x `height`) but each `frameWidth` frame's topmost lamp. */
+export function keepTopLampPerFrame(data, width, height, frameWidth) {
+    const frames = Math.max(1, Math.floor(width / Math.max(1, frameWidth)));
+    for (let f = 0; f < frames; f++) {
+        const x0 = f * frameWidth;
+        const groups = [];
+        for (let y = 0; y < height; y++) {
+            for (let x = x0; x < x0 + frameWidth; x++) {
+                if (data[(y * width + x) * 4 + 3] < 64) continue;
+                let group = groups.find(item => Math.abs(item.x / item.n - x) <= 2 && Math.abs(item.y / item.n - y) <= 2);
+                if (!group) groups.push(group = { x: 0, y: 0, n: 0, texels: [] });
+                group.x += x; group.y += y; group.n += 1;
+                group.texels.push(y * width + x);
+            }
+        }
+        if (groups.length < 2) continue;
+        const top = groups.reduce((best, group) => (group.y / group.n < best.y / best.n ? group : best));
+        for (const group of groups) {
+            if (group === top) continue;
+            for (const index of group.texels) data[index * 4 + 3] = 0;
+        }
+    }
+    return data;
+}
+
+export function anchorLampStrip(lamps, strip) {
+    if (!lamps?.image) return lamps || null;
+    let byWidth = _anchorLamps.get(lamps.image);
+    if (!byWidth) _anchorLamps.set(lamps.image, byWidth = new Map());
+    const frameWidth = strip?.frameWidth || lamps.image.width;
+    const hit = byWidth.get(frameWidth);
+    if (hit && hit.strength === lamps.strength) return hit;
+    let image = lamps.image;
+    const canvas = canvasOf(lamps.image.width, lamps.image.height);
+    const ctx = canvas?.getContext('2d', { willReadFrequently: true });
+    if (ctx) {
+        ctx.drawImage(lamps.image, 0, 0);
+        const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        keepTopLampPerFrame(pixels.data, canvas.width, canvas.height, frameWidth);
+        ctx.putImageData(pixels, 0, 0);
+        image = canvas;
+    }
+    const anchor = { image, key: `${lamps.key}:anchor`, strength: lamps.strength, anchor: true };
+    byWidth.set(frameWidth, anchor);
+    return anchor;
+}
+
 // A frame-local point of the upright frame turned `deg` clockwise about the
 // waterline pivot's texel centre (the bake's cleanEdge roll), whole texels.
 function rollPoint([x, y], anchorX, anchorY, deg) {

@@ -212,11 +212,14 @@ export function assessPostFxTimings(metrics = {}) {
     let driver = Object.entries(components)
         .filter(([name]) => name !== 'frameGapPenaltyMs')
         .sort((a, b) => b[1] - a[1])[0]?.[0] || 'combined';
-    // Driver stalls (e.g. canvas-producer readbacks) can land outside the
-    // instrumented windows: an oversized gap between consecutive renders is
-    // the only visible symptom, so fold the excess above ~30 FPS pacing in.
+    // Without a GPU timer, driver stalls can land outside the instrumented
+    // windows: an oversized gap between consecutive renders is the only
+    // visible symptom, so fold the excess above ~30 FPS pacing in. With a
+    // timer the gap is wall time the GPU did not spend (a main-thread stall,
+    // a busy host): counting it would shed bloom and lamp pools at 0.5 ms of
+    // GPU work for no gain (plan T1).
     const frameGap = finite(metrics.frameGapMs);
-    if (frameGap > 35) {
+    if (frameGap > 35 && !hasTimer(metrics)) {
         components.frameGapPenaltyMs = frameGap - 33;
         if (components.frameGapPenaltyMs > score) driver = 'frameGapMs';
         score = Math.max(score, components.frameGapPenaltyMs);
@@ -502,12 +505,15 @@ export function advancePostFxLadder(state = {}, metrics = {}, nowMs = Date.now()
     }
 
     const windowFull = next.pacingCount >= window;
-    if (windowFull && next.missShare >= config.demoteMissShare) {
+    // Misses with a healthy timer are main-thread-bound. Below FULL they must
+    // not hold the ladder down either (T1): fall through to the probe, whose
+    // revert takes the same veto, so a busy host climbs back to FULL.
+    const mainThreadBound = !vetoWaived && !timerOver;
+    if (windowFull && next.missShare >= config.demoteMissShare && !(mainThreadBound && next.level > POST_FX_LEVELS.FULL)) {
         if (next.level >= config.maxLevel) {
             next.lastDecisionReason = POST_FX_LADDER_REASONS.MISSING_AT_FLOOR;
-        } else if (!vetoWaived && !timerOver) {
-            // Misses with a healthy timer are main-thread-bound; shedding GPU
-            // work would not help.
+        } else if (mainThreadBound) {
+            // Shedding GPU work would not help.
             next.lastDecisionReason = POST_FX_LADDER_REASONS.MISSING_TIMER_UNDER_BUDGET;
         } else if (next.holdUntilMs !== null && now < next.holdUntilMs) {
             next.lastDecisionReason = POST_FX_LADDER_REASONS.MISSING_COOL_DOWN;

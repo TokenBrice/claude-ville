@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { hullLampStrip, hullRecords, hullStrip } from '../../claudeville/src/presentation/character-mode/HarborHulls.js';
+import { hullLampStrip, hullRecords, hullStrip, keepTopLampPerFrame } from '../../claudeville/src/presentation/character-mode/HarborHulls.js';
 import { HarborTraffic } from '../../claudeville/src/presentation/character-mode/HarborTraffic.js';
 import { hullSprites } from './support/harbor-sim.mjs';
 
@@ -95,4 +95,43 @@ test('lamp light is budget-capped, leads and the largest hulls first, and dark b
     assert.deepEqual(harbor.lampLightSources(0), [], 'no light without source energy');
     harbor.setLampsLit(false);
     assert.deepEqual(harbor.lampLightSources(1), []);
+});
+
+test('M05-5 riding lights: only each frame\'s topmost lamp survives the anchor strip', () => {
+    // Two 6-px frames, 8 rows: frame 0 has a masthead lamp (row 1) and a stern
+    // lamp (row 6); frame 1 has one lamp only (kept whole).
+    const width = 12;
+    const height = 8;
+    const data = new Uint8ClampedArray(width * height * 4);
+    const lit = (x, y) => { data[(y * width + x) * 4 + 3] = 255; };
+    lit(3, 1); lit(4, 1); lit(1, 6); lit(2, 6); lit(9, 4);
+    keepTopLampPerFrame(data, width, height, 6);
+    const alpha = (x, y) => data[(y * width + x) * 4 + 3];
+    assert.equal(alpha(3, 1), 255);
+    assert.equal(alpha(4, 1), 255);
+    assert.equal(alpha(1, 6), 0);
+    assert.equal(alpha(2, 6), 0);
+    assert.equal(alpha(9, 4), 255);
+});
+
+test('M05-5 riding lights: a moored hull shows its anchor light, a hull under way every lamp', () => {
+    const harbor = new HarborTraffic({ sprites: spritesWithLamps() });
+    const T = Date.parse('2026-10-15T22:00:00Z');
+    const agent = { id: 'a', name: 'A', provider: 'claude', sessionId: 's', projectPath: '/w/ride', gitEvents: [
+        { id: 'r1', type: 'commit', project: '/w/ride', branch: 'main', sha: '2'.padStart(40, '0'), label: 'c', timestamp: T - 60_000, success: true, status: 'success' },
+    ] };
+    harbor.reconcile([agent], T);
+    harbor.setLampsLit(true);
+    harbor.advance(16);
+    const moored = harbor.enumerateHullDrawables(T);
+    assert.ok(moored.length > 0);
+    for (const item of moored) {
+        assert.equal(item.pose.lamps.anchor, true, 'a docked hull rides at anchor');
+        assert.ok(item.pose.lamps.key.endsWith(':anchor'), 'its own sidecar texture');
+    }
+    // The choice reads the ship's own motion only: the same hull under way
+    // lights its full strip.
+    harbor._shipUnderWay = () => true;
+    harbor.advance(16);
+    for (const item of harbor.enumerateHullDrawables(T + 16)) assert.notEqual(item.pose.lamps.anchor, true);
 });

@@ -26,11 +26,23 @@ export const PRESSURE_PROTECTED = Object.freeze([
     'canvas-fallback',
 ]);
 
+// Plan T2 + T3. The cost is the windowed CPU frame (app update + render +
+// upload; the EMA when the profiling rings are off) against the GPU timer,
+// whichever is larger: the two run in parallel, so their sum double-counted
+// and pinned a 45-60 fps village at GLYPHS from boot. Budget and healthy
+// line are 0.6x and 0.4x of a 60 Hz period. A shed lands at once; a restore
+// waits until the lower level has held healthy for `probeMs`, and a shed
+// within `probeWindowMs` of a restore is a failed probe that doubles the
+// next wait up to `probeBackoffMaxMs` (the PostFxLadder's 8-64 s shape, from
+// 4 s). Every consumer (weather, fauna, particles, glyphs and glows) reads
+// this one held level.
 export const FRAME_PRESSURE_OPTIONS = Object.freeze({
-    budgetMs: 8,
-    healthyMs: 5,
+    budgetMs: 10,
+    healthyMs: 6.7,
     overBudgetFrames: 12,
-    probeMs: 1500,
+    probeMs: 4000,
+    probeBackoffMaxMs: 64000,
+    probeWindowMs: 4000,
     dwellMs: 192,
 });
 
@@ -130,25 +142,16 @@ export function appOwnedCostMs(inputs = {}) {
     const upload = finiteOrNull(inputs.uploadP95);
     const gpu = finiteOrNull(inputs.gpuMs);
     const rendererCost = finiteOrNull(inputs.rendererCostMs);
-    let cost = 0;
-    let attributed = false;
-    if (update !== null || render !== null) {
-        cost += (update || 0) + (render || 0);
-        attributed = true;
-    } else if (rendererCost !== null) {
-        cost += rendererCost;
-        attributed = true;
-    }
-    if (upload !== null) {
-        cost += upload;
-        attributed = true;
-    }
-    if (gpu !== null) {
-        cost += gpu;
-        attributed = true;
-    }
-    if (!attributed) return 0;
-    return cost;
+    let cpu = 0;
+    if (update !== null || render !== null) cpu += (update || 0) + (render || 0);
+    else if (rendererCost !== null) cpu += rendererCost;
+    if (upload !== null) cpu += upload;
+    // CPU and GPU work overlap: the frame costs the larger, not the sum.
+    return Math.max(cpu, gpu || 0);
+}
+
+function restoreDelayMs(config, failures) {
+    return Math.min(config.probeBackoffMaxMs, config.probeMs * 2 ** Math.max(0, failures));
 }
 
 export function createFramePressureState(options = {}) {
@@ -174,12 +177,21 @@ export function advanceFramePressure(state = {}, inputs = {}, nowMs = 0, options
     let overBudgetFrames = current.overBudgetFrames;
     let healthySinceMs = current.healthySinceMs;
     let enteredAtMs = current.enteredAtMs;
+    let probeFailures = current.probeFailures;
+    let lastRestoreAtMs = current.lastRestoreAtMs;
     const dwellReady = now - enteredAtMs >= config.dwellMs;
 
     if (cost > config.budgetMs) {
         overBudgetFrames += 1;
         healthySinceMs = null;
         if (dwellReady && overBudgetFrames >= config.overBudgetFrames && level < PRESSURE_LEVELS.GLYPHS) {
+            // A shed soon after a restore means the restore was a failed
+            // probe: back off before the next one. A shed long after one is
+            // fresh pressure.
+            probeFailures = lastRestoreAtMs !== null && now - lastRestoreAtMs < config.probeWindowMs
+                ? probeFailures + 1
+                : 0;
+            lastRestoreAtMs = null;
             level += 1;
             overBudgetFrames = 0;
             enteredAtMs = now;
@@ -188,14 +200,20 @@ export function advanceFramePressure(state = {}, inputs = {}, nowMs = 0, options
         overBudgetFrames = 0;
         if (cost < config.healthyMs && level > PRESSURE_LEVELS.FULL) {
             if (healthySinceMs === null) healthySinceMs = now;
-            if (dwellReady && now - healthySinceMs >= config.probeMs) {
+            if (dwellReady && now - healthySinceMs >= restoreDelayMs(config, probeFailures)) {
                 level -= 1;
                 healthySinceMs = now;
                 enteredAtMs = now;
+                lastRestoreAtMs = now;
             }
         } else {
             healthySinceMs = null;
         }
+    }
+    // A restored level that holds through the probe window clears the backoff.
+    if (lastRestoreAtMs !== null && now - lastRestoreAtMs >= config.probeWindowMs) {
+        probeFailures = 0;
+        lastRestoreAtMs = null;
     }
 
     return {
@@ -205,6 +223,8 @@ export function advanceFramePressure(state = {}, inputs = {}, nowMs = 0, options
         overBudgetFrames,
         healthySinceMs,
         enteredAtMs,
+        probeFailures,
+        lastRestoreAtMs,
     };
 }
 
@@ -219,6 +239,15 @@ export function framePressureSnapshot(state = {}, inputs = {}) {
         hostGapP95: finiteOrNull(src.hostGapP95),
         level: current.level,
         dwellMs: Math.max(0, (Number(current.lastNowMs) || 0) - (Number(current.enteredAtMs) || 0)),
+        costMs: current.lastCostMs,
+        budgetMs: current.options.budgetMs,
+        healthyMs: current.options.healthyMs,
+        probeFailures: current.probeFailures,
+        // ms of healthy frames still needed before the next restore (null at
+        // FULL or while not healthy).
+        restoreInMs: current.level > PRESSURE_LEVELS.FULL && current.healthySinceMs !== null
+            ? Math.max(0, restoreDelayMs(current.options, current.probeFailures) - ((Number(current.lastNowMs) || 0) - current.healthySinceMs))
+            : null,
     };
 }
 
@@ -384,6 +413,8 @@ function normalizePressureState(state = {}, options = {}) {
             ? null
             : (Number.isFinite(Number(state.healthySinceMs)) ? Number(state.healthySinceMs) : null),
         enteredAtMs: Number.isFinite(Number(state.enteredAtMs)) ? Number(state.enteredAtMs) : 0,
+        probeFailures: Math.max(0, Math.floor(Number(state.probeFailures) || 0)),
+        lastRestoreAtMs: Number.isFinite(Number(state.lastRestoreAtMs)) && state.lastRestoreAtMs !== null ? Number(state.lastRestoreAtMs) : null,
         lastNowMs: Number.isFinite(Number(state.lastNowMs)) ? Number(state.lastNowMs) : 0,
         lastCostMs: Number.isFinite(Number(state.lastCostMs)) ? Number(state.lastCostMs) : 0,
         appUpdateP95: finiteOrNull(state.appUpdateP95),
@@ -396,6 +427,8 @@ function normalizePressureState(state = {}, options = {}) {
             healthyMs: finiteOr(config.healthyMs, FRAME_PRESSURE_OPTIONS.healthyMs),
             overBudgetFrames: Math.max(1, Math.floor(finiteOr(config.overBudgetFrames, FRAME_PRESSURE_OPTIONS.overBudgetFrames))),
             probeMs: Math.max(0, finiteOr(config.probeMs, FRAME_PRESSURE_OPTIONS.probeMs)),
+            probeBackoffMaxMs: Math.max(0, finiteOr(config.probeBackoffMaxMs, FRAME_PRESSURE_OPTIONS.probeBackoffMaxMs)),
+            probeWindowMs: Math.max(0, finiteOr(config.probeWindowMs, FRAME_PRESSURE_OPTIONS.probeWindowMs)),
             dwellMs: Math.max(0, finiteOr(config.dwellMs, FRAME_PRESSURE_OPTIONS.dwellMs)),
         },
     };
@@ -416,7 +449,8 @@ function readFrameHealthInputs() {
             uploadP95: health.p95UploadMs ?? health.uploadP95,
             gpuMs: health.gpuMs,
             hostGapP95: health.p95HostGapMs ?? health.hostGapP95,
-            rendererCostMs: health.attribution?.rendererCostMs,
+            // Windowed, not the last frame: the EMA of the app frame.
+            rendererCostMs: health.emaAppTotalMs ?? health.attribution?.rendererCostMs,
         };
     } catch {
         return {};

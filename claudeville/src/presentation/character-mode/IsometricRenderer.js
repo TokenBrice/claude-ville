@@ -76,7 +76,7 @@ import VisitTileAllocator, { standsOnFixture } from './VisitTileAllocator.js';
 import { scenicScoreBias } from './DayRoutine.js';
 import { getPulsePriority } from './PulsePolicy.js';
 import { annotationModeForPressure, calculateScenePressure, getActiveMarkGovernor, MarkGovernor, setActiveMarkGovernor } from './MarkGovernor.js';
-import { fireBreath, fireBreathDepth, groundCourseHeight, HEARTH_TONE, hearthLightSources, lightSourceCacheKey, normalizeLightSource } from './LightSourceRegistry.js';
+import { fireBreath, fireBreathDepth, fixturePoolReach, groundCourseHeight, HEARTH_TONE, hearthLightSources, lightSourceCacheKey, normalizeLightSource } from './LightSourceRegistry.js';
 import { applyTeamPlazaPreferences, getCouncilRingDiagnostics, releaseCouncilRingState } from './CouncilRing.js';
 import { ArrivalDepartureController } from './ArrivalDeparture.js';
 import { agentPathAlias, extractRecipientName } from '../../domain/services/RecipientResolver.js';
@@ -436,7 +436,8 @@ const THOUGHT_CROWN_GAP = 4;
 const THOUGHT_NO_THREAD = Object.freeze([]);
 // Street fixture pools (world px). The village keeps fewer lamp posts with a
 // wider throw, so the night chain stays continuous without a plinth every
-// tile; both stay under SOURCE_HALO_RADIUS_CAP.
+// tile; both stay under SOURCE_HALO_RADIUS_CAP, and deep night alone lets
+// them reach `fixturePoolReach` (L1-5) past it.
 const STREET_LAMP_POOL_RADIUS = 66;
 const BRAZIER_POOL_RADIUS = 70;
 // Command's watchfires are drawn burning, so at night they light the plaza
@@ -9713,7 +9714,9 @@ export class IsometricRenderer {
 
     _lanternGroundLightSources(lighting = null) {
         if (!this.villageLampsLit()) return [];
-        const core = sourceEnergyFor(lighting).core;
+        const energy = sourceEnergyFor(lighting);
+        const core = energy.core;
+        const reach = fixturePoolReach(energy);
         // V5 — a village lantern or brazier stands on its tile (the flame
         // source sits 10 px above it), its flame 16 (brazier) / 24 (lantern)
         // world px up: the pool lands around the foot, and the post, the
@@ -9732,7 +9735,7 @@ export class IsometricRenderer {
                 height,
                 fire: isBrazier,
                 color: isBrazier ? '#ffa94a' : '#ffc95e',
-                radius: Math.min(isBrazier ? BRAZIER_POOL_RADIUS : STREET_LAMP_POOL_RADIUS, SOURCE_HALO_RADIUS_CAP),
+                radius: Math.round(Math.min(isBrazier ? BRAZIER_POOL_RADIUS : STREET_LAMP_POOL_RADIUS, SOURCE_HALO_RADIUS_CAP) * reach),
                 intensity: (isBrazier ? 0.94 : 0.82) * core,
             });
         }).concat(this._hearthLightSources(lighting));

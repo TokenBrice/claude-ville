@@ -4,6 +4,7 @@ import { CANVAS_BUDGET } from './CanvasBudget.js';
 import { AgentSprite } from './AgentSprite.js';
 import { ambientDebugSnapshot } from './AmbientEvents.js';
 import { momentTally } from './MomentTally.js';
+import { getFramePressureSnapshot, shedSetForLevel } from './MarkGovernor.js';
 
 export class DebugOverlay {
     constructor() {
@@ -291,6 +292,7 @@ export class DebugOverlay {
             const snapshot = ambientDebugSnapshot(renderer);
             this._ambientRowsAt = now;
             this._ambientRowsCache = [
+                ...framePressureRows(getFramePressureSnapshot()),
                 'ambient: live / cap / gate-reason',
                 ...Object.entries(snapshot.actors).map(([name, row]) => `${name}: ${row.live} / ${row.cap} / ${row.reason || 'open'}`),
                 ...Object.entries(snapshot.tiers).map(([tier, row]) => `${tier}: ${row.kind || row.reason || 'between'}`),
@@ -622,6 +624,22 @@ function formatMs(value) {
     const number = Number(value);
     if (!Number.isFinite(number)) return '0.0';
     return number.toFixed(number >= 10 ? 0 : 1);
+}
+
+// T2/T3 — the frame-pressure governor's held level, so a "pressure" reason
+// below reads without devtools.
+const PRESSURE_LEVEL_NAMES = ['full', 'weather+fauna', 'particles', 'glyphs'];
+export function framePressureRows(pressure) {
+    if (!pressure) return [];
+    const level = Number(pressure.level) || 0;
+    const rows = [`frame pressure: ${level} ${PRESSURE_LEVEL_NAMES[level] || ''} · cost ${formatOptionalMs(pressure.costMs)}`
+        + ` / ${formatOptionalMs(pressure.budgetMs)} (healthy < ${formatOptionalMs(pressure.healthyMs)})`];
+    if (level > 0) {
+        rows.push(`  sheds ${shedSetForLevel(level).join(', ')}`);
+        rows.push(`  restore ${pressure.restoreInMs == null ? 'waits for healthy frames' : `in ${(pressure.restoreInMs / 1000).toFixed(1)} s`}`
+            + (pressure.probeFailures ? ` · failed probes ${pressure.probeFailures}` : ''));
+    }
+    return rows;
 }
 
 function formatOptionalMs(value) {

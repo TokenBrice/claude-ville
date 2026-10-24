@@ -1553,9 +1553,22 @@ export function createLightBinScratch() {
     };
 }
 
+// T4 — the night's fixtures (street lamps, braziers, watchfires) keep up to
+// this many slots, at most half the count, ahead of apertures and attention
+// lights: at MINIMAL (24) the ranked order alone handed every slot to
+// windows and attention and the lamps lost their pools first.
+export const FIXTURE_LIGHT_RESERVE = 12;
+
+function isFixtureLight(light) {
+    return !isAttentionLight(light) && Math.round(finite(light?.role, LIGHT_ROLE_CODES.point)) === LIGHT_ROLE_CODES.fixture;
+}
+
 /**
  * 2.4 — admission by binning. Walks `ranked` (clampGpuLights order) and
- * admits a light while the count allows (`cap`; attention lights always) and
+ * admits a light while the count allows (`cap`; attention lights always;
+ * T4: min(FIXTURE_LIGHT_RESERVE, cap / 2, visible fixtures) of the count is
+ * held for fixtures, which apertures and points cannot take and attention
+ * lights cannot crowd out) and
  * every LIGHT_TILE_PX tile its reach rect covers on the `width x height`
  * backing store has a free slot (LIGHT_TILE_SLOTS). A light whose rect misses
  * the backing store is culled (it lights no visible pixel). The camera is the
@@ -1594,9 +1607,22 @@ export function binGpuLights(ranked = [], {
     const w = finite(width);
     const h = finite(height);
     const rect = scratch.rect;
+    const onScreen = (light) => {
+        lightReachRect(light, { wet }, rect);
+        return !((rect.x1 + 1 + cameraX) * s + 2 < 0 || (rect.y1 + 1 + cameraY) * s + 2 < 0
+            || (rect.x0 - 1 + cameraX) * s - 2 >= w || (rect.y0 - 1 + cameraY) * s - 2 >= h);
+    };
+    let fixtureReserve = 0;
+    const reserveCap = Math.min(FIXTURE_LIGHT_RESERVE, Math.floor(limit / 2));
+    for (let n = 0; n < ranked.length && fixtureReserve < reserveCap; n++) {
+        const light = ranked[n];
+        if (isFixtureLight(light) && Number.isFinite(light?.footX) && Number.isFinite(light?.footY) && onScreen(light)) fixtureReserve++;
+    }
+    let fixturesAdmitted = 0;
     for (let n = 0; n < ranked.length; n++) {
         const light = ranked[n];
         const attention = isAttentionLight(light);
+        const fixture = !attention && isFixtureLight(light);
         if (!Number.isFinite(light?.footX) || !Number.isFinite(light?.footY)) {
             scratch.culled++;
             continue;
@@ -1612,7 +1638,11 @@ export function binGpuLights(ranked = [], {
             continue;
         }
         scratch.visible++;
-        if (admitted.length >= MAX_LIGHT_RECORDS || (!attention && admitted.length >= limit)) {
+        const heldForFixtures = Math.max(0, fixtureReserve - fixturesAdmitted);
+        const overCap = attention ? false
+            : fixture ? admitted.length >= limit && fixturesAdmitted >= fixtureReserve
+                : admitted.length >= limit - heldForFixtures;
+        if (admitted.length >= MAX_LIGHT_RECORDS || overCap) {
             scratch.overCap++;
             continue;
         }
@@ -1644,6 +1674,7 @@ export function binGpuLights(ranked = [], {
             }
         }
         admitted.push(light);
+        if (fixture) fixturesAdmitted++;
     }
     for (let tile = 0; tile < tiles; tile++) index[tile * LIGHT_TILE_STRIDE] = counts[tile];
     return scratch;

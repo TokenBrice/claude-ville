@@ -143,6 +143,15 @@ export function lightSourceCacheKey(source, phaseBucket = 'fallback') {
     ].join('|');
 }
 
+// L1-5 — in the deep-night source-energy bucket the street lamps' and
+// braziers' pools reach this much further (the course weights stay as
+// reviewed: the faint outer courses feather over a longer distance). One
+// held step with the bucket, never a continuous ramp.
+export const DEEP_NIGHT_FIXTURE_REACH = 1.15;
+export function fixturePoolReach(energy) {
+    return energy?.bucket === 'deep-night' ? DEEP_NIGHT_FIXTURE_REACH : 1;
+}
+
 // 2.6 — fire breathes in stepped quanta, never a continuous sine: each fire
 // holds one of three intensity steps for a 140 ms beat, picked by a hash of
 // (beat, fire key) on the one motion clock. Pass a light's `fireGroup` (else

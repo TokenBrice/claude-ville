@@ -52,14 +52,47 @@ test('admission ranks attention > aperture > fixture > point before priority', (
     const ranked = clampGpuLights(lights, 64, 64);
     assert.deepEqual(ranked.map(l => l.id), ['attention', 'aperture', 'fixture', 'point']);
 
-    // A count of two admits the first two in that order and nothing else.
-    const bins = binGpuLights(ranked, { ...VIEW, cap: 2 });
-    assert.deepEqual(bins.admitted.map(l => l.id), ['attention', 'aperture']);
-    assert.equal(bins.overCap, 2);
+    // A count of four admits in that order (one slot, half of four's two, is
+    // held for the visible fixture and the fixture takes it).
+    const bins = binGpuLights(ranked, { ...VIEW, cap: 4 });
+    assert.deepEqual(bins.admitted.map(l => l.id), ['attention', 'aperture', 'fixture', 'point']);
+    // A count of two holds its one fixture slot: the aperture waits (T4).
+    const tight = binGpuLights(ranked, { ...VIEW, cap: 2 });
+    assert.deepEqual(tight.admitted.map(l => l.id), ['attention', 'fixture']);
+    assert.equal(tight.overCap, 2);
 
     // An attention light is admitted past a zero count; the others are not.
     const none = binGpuLights(ranked, { ...VIEW, cap: 0 });
     assert.deepEqual(none.admitted.map(l => l.id), ['attention']);
+});
+
+test('T4: at MINIMAL the lamps and braziers keep their slots ahead of windows and attention', () => {
+    // Spread over the backing store so no tile fills: 3 attention lights,
+    // 30 lit windows, 15 lamps, 5 hearths.
+    const at = (i) => [40 + (i % 16) * 60, 40 + Math.floor(i / 16) * 120];
+    let i = 0;
+    const lights = [
+        ...Array.from({ length: 3 }, (_, n) => light(`attention:${n}`, ...at(i++), { role: 'attention' })),
+        ...Array.from({ length: 30 }, (_, n) => light(`window${n}`, ...at(i++), { role: 'aperture', priority: 5 })),
+        ...Array.from({ length: 15 }, (_, n) => light(`lamp${n}`, ...at(i++), { role: 'fixture' })),
+        ...Array.from({ length: 5 }, (_, n) => light(`hearth${n}`, ...at(i++))),
+    ];
+    const ranked = clampGpuLights(lights, 256, 256);
+    const count = (bins, prefix) => bins.admitted.filter(l => l.id.startsWith(prefix)).length;
+    const minimal = binGpuLights(ranked, { ...VIEW, cap: 24 });
+    assert.equal(minimal.tileFull, 0);
+    assert.equal(count(minimal, 'attention:'), 3, 'attention stays past the count');
+    assert.equal(count(minimal, 'lamp'), 12, 'twelve lamps keep their pools');
+    assert.equal(count(minimal, 'window'), 9);
+    assert.equal(minimal.admitted.length, 24);
+    // Fewer fixtures than the reserve: the unused slots go back to windows.
+    const fewLamps = clampGpuLights(lights.filter(l => !/^lamp([3-9]|1\d)$/.test(l.id)), 256, 256);
+    const few = binGpuLights(fewLamps, { ...VIEW, cap: 24 });
+    assert.equal(count(few, 'lamp'), 3);
+    assert.equal(count(few, 'window'), 18);
+    // FULL has room for everything.
+    const full = binGpuLights(ranked, { ...VIEW, cap: 128 });
+    assert.equal(full.admitted.length, lights.length);
 });
 
 test('a full tile rejects later lights there but not elsewhere on screen', () => {
