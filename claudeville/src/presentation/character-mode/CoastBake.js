@@ -29,6 +29,7 @@ import { ART_RAMPS } from '../../config/artPalette.js';
 import { WATER_POLYLINES, WORLD_TREE, inWorldTreeIslet } from '../../config/scenery.js';
 import * as CanvasGrade from './CanvasGrade.js';
 import { emissiveSidecarFor } from './EmitterCuts.js';
+import { cloudCourseDrift } from './Wind.js';
 
 const HALF_W = TILE_WIDTH / 2;
 const HALF_H = TILE_HEIGHT / 2;
@@ -3121,9 +3122,39 @@ export function distantShowerFront(weather) {
     return progress < squallFlipProgress(progress, Number(weather?.precipitation));
 }
 
+// E2-04 — showers on the sea while it rains: the squall's patch, kept on the
+// sea once the rain falls (precipitation >= RAIN_START_PRECIPITATION) at
+// SHOWER_STRENGTH of its courses (scaled down in light rain), carried
+// downwind by the cloud courses' drift (`cloudCourseDrift`, the motion clock,
+// so reduced motion holds it) across a loop SHOWER_MARGIN world px wider than
+// the island and the patch on either side, so it wraps far off-frame; each
+// pass crosses on its own seeded row within SHOWER_ROW_SPREAD of the
+// island's middle. A pure function of the weather and the motion clock (V3).
+export const SHOWER_STRENGTH = 0.6;
+const SHOWER_MARGIN = 1400;
+const SHOWER_ROW_SPREAD = 900;
+const SHOWER_FULL_PRECIPITATION = 0.6;
+
+function openSeaShower(weather, motionTimeMs) {
+    const precipitation = Number(weather?.precipitation);
+    if (!(precipitation >= RAIN_START_PRECIPITATION)) return null;
+    const reach = MAP_SIZE * HALF_W + SQUALL_HALF_WIDTH + SHOWER_MARGIN;
+    const span = reach * 2;
+    const drift = cloudCourseDrift(motionTimeMs, weather);
+    const along = (Number(drift?.x) || 0) + reach;
+    const pass = Math.floor(along / span);
+    return {
+        x: Math.round(along - pass * span - reach),
+        y: (MAP_SIZE - 1) * HALF_H + Math.round((hash2(pass, 17, 431) - 0.5) * SHOWER_ROW_SPREAD),
+        halfWidth: SQUALL_HALF_WIDTH,
+        strength: SHOWER_STRENGTH * Math.max(0.35, Math.min(1, precipitation / SHOWER_FULL_PRECIPITATION)),
+        fall: (Math.floor((Number(motionTimeMs) || 0) / SQUALL_STREAK_STEP_MS) * 3) % 48,
+    };
+}
+
 export function openSeaSquall(weather, motionTimeMs = 0) {
     const s = squallApproachPhase(weather);
-    if (s < 0) return null;
+    if (s < 0) return openSeaShower(weather, motionTimeMs);
     const windX = Number(weather?.windX);
     const sign = Number.isFinite(windX) && windX < 0 ? -1 : 1;
     const islandHalf = MAP_SIZE * HALF_W;
