@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createAtmosphereSnapshot } from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
-import { canvasSeaMarkRgb, COAST_PALETTE, OCEAN_HORIZON_WORLD_Y } from '../../claudeville/src/presentation/character-mode/CoastBake.js';
+import { applyWaterMood, canvasSeaMarkRgb, COAST_PALETTE, OCEAN_HORIZON_WORLD_Y } from '../../claudeville/src/presentation/character-mode/CoastBake.js';
 import { createWaterFx, resolveStarlight, resolveWaterFx } from '../../claudeville/src/presentation/character-mode/gpu/GpuFrameState.js';
 import { SEA_SWELL_GLSL, STARLIGHT_DENSITY, STARLIGHT_HOLD } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldRenderer.js';
 import { WATER_WGSL } from '../../claudeville/src/presentation/character-mode/gpu/wgsl/water.js';
@@ -93,4 +93,14 @@ test('Canvas named crest keeps its own water stop and takes the same horizon haz
     assert.equal(canvasSeaMarkRgb(renderer, 999, 0, far, true), (trough[0] << 16) | (trough[1] << 8) | trough[2], 'numeric stops keep their old clamp');
     assert.equal(canvasSeaMarkRgb(renderer, 'crest', 0, OCEAN_HORIZON_WORLD_Y, true), 0x283c50, 'haze covers starlight at the horizon as on GPU');
     assert.equal(canvasSeaMarkRgb(null, 'crest', 0, far, true), -1);
+});
+
+test('L1-4: the night sea drops 10 % of its value in all three water-mood twins', () => {
+    const rgb = [0.19, 0.26, 0.29];
+    const l = rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+    const expected = [0.78, 0.94, 1.10].map((tone, i) => (rgb[i] + (l * tone - rgb[i]) * 0.55) * 0.9);
+    applyWaterMood(rgb, { night: 1, storm: 0 }).forEach((channel, i) => assert.ok(Math.abs(channel - expected[i]) < 1e-9));
+    const glsl = readFileSync(new URL('../../claudeville/src/presentation/character-mode/gpu/GpuWorldRenderer.js', import.meta.url), 'utf8');
+    assert.ok(glsl.includes('color *= 1.0 - u_waterMood.x * 0.1;'));
+    assert.ok(WATER_WGSL.includes('color *= 1.0 - frame.waterMood.x * 0.1;'));
 });

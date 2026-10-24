@@ -2581,7 +2581,9 @@ export function applyWaterMood(rgb, mood) {
     if (night > 0) {
         const l = r * 0.2126 + g * 0.7152 + b * 0.0722;
         const k = night * 0.55;
-        const scale = 1 - night * 0.2;
+        // L1-4 — the night value drop is 10 %, not 20 %: the sea is half the
+        // frame, and the grade already darkens it with the land.
+        const scale = 1 - night * 0.1;
         r += (l * 0.78 - r) * k; r *= scale;
         g += (l * 0.94 - g) * k; g *= scale;
         b += (l * 1.10 - b) * k; b *= scale;
