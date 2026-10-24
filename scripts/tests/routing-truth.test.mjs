@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import { BUILDING_DEFS } from '../../claudeville/src/config/buildings.js';
 import { AgentStatus } from '../../claudeville/src/domain/value-objects/AgentStatus.js';
+import { Agent } from '../../claudeville/src/domain/entities/Agent.js';
 import { homeDistrictFor } from '../../claudeville/src/presentation/character-mode/HomeDistrict.js';
 import { resolveUpdateRouteBuilding } from '../../claudeville/src/presentation/character-mode/MovementRouting.js';
 import { VisitIntentManager } from '../../claudeville/src/presentation/character-mode/VisitIntentManager.js';
@@ -292,4 +293,35 @@ test('unrecognized shell commands work in the home district, not at Command', t 
     agent.currentTool = 'SendMessage';
     agent.currentToolInput = 'lane-04';
     assert.equal(resolveUpdateRouteBuilding({ agent, status: agent.status }), 'command');
+});
+
+// AG-3: the domain getters agree with the routing branch. With no active tool
+// intent, a real Agent's target and last-known building name no place for an
+// unrecognized shell command, so the body works in its home district.
+test('Agent target buildings name no place for an unrecognized shell command', () => {
+    const agent = new Agent({
+        id: 'shell-entity', status: AgentStatus.WORKING, provider: 'claude',
+        currentTool: 'Bash', currentToolInput: 'echo ready',
+        lastTool: 'Bash', lastToolInput: 'echo ready',
+    });
+    assert.equal(agent.targetBuildingType, null);
+    assert.equal(agent.lastKnownBuildingType, null);
+    const routed = resolveUpdateRouteBuilding({
+        agent, status: agent.status,
+        targetBuilding: agent.targetBuildingType,
+        lastKnownBuilding: agent.lastKnownBuildingType,
+    });
+    assert.equal(routed, homeDistrictFor(agent, { now: NOW }));
+    assert.notEqual(routed, 'command');
+
+    // Earlier recognized evidence still beats the home district.
+    agent.lastTool = 'Read';
+    agent.lastToolInput = 'docs/README.md';
+    assert.equal(agent.lastKnownBuildingType, 'archive');
+    // Recognized shell and real orchestration keep their buildings.
+    agent.currentToolInput = 'npm test';
+    assert.equal(agent.targetBuildingType, 'taskboard');
+    agent.currentTool = 'SendMessage';
+    agent.currentToolInput = 'lane-04';
+    assert.equal(agent.targetBuildingType, 'command');
 });

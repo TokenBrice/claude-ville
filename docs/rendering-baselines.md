@@ -108,6 +108,27 @@ npm run world:benchmark-trails -- --duration-ms=2200
 
 The benchmark fails when any camera mode allocates or repaints an ambient historical cache. It reports frame p50/p95, semantic trail draw time, cache pixels, render-stage timings, and PostFX diagnostics for stationary, manual-pan, follow, and director-glide modes.
 
+## Golden hour sweep (T5)
+
+The capture manifest above is review evidence; the hour sweep is a gate. It pins brightness, so a lighting retune that drifts a backend, or drifts one backend away from the others, fails with numbers instead of waiting for someone to notice a darker evening.
+
+```bash
+npm run world:golden-hours                                # check WebGPU, WebGL2 and Canvas
+npm run world:golden-hours -- --renderers=webgpu --scenes=clear-2300
+npm run world:golden-hours -- --update                    # recalibrate after an intended change
+npm run world:golden-hours -- --frames=output/golden-hours  # also write the frames for review
+```
+
+It runs on an isolated server with the real-GPU launch (`scripts/smoke/support/chromium.mjs`), takes about 90 seconds and is opt-in: it needs a hardware WebGPU adapter, so it is not part of `test:unit`, `validate:quick` or CI. Exit 0 passes, 1 fails and 2 means nothing failed but a backend did not start.
+
+- **Scenes** (`scripts/world/golden-hours-metrics.mjs`): clear 05:00, clear 12:00, clear 19:15, storm 19:15, clear 23:00 and storm 02:00, on 2026-10-24 (season and moon phase fixed), with seeded weather profiles.
+- **Determinism:** the `no-agents` sim scenario (no live data), reduced motion from the first frame (the motion clock stays at 0, so the swell, cloud drift and lightning hold still), `AtmosphereState.update` pinned to the date in fixed mode with a forced hour, the camera pinned at tile 18,20 zoom 1 on a 1920×1080 page, the quality ladder held FULL and the mark governor calm. A scene is captured until two captures 1.2 s apart agree. Repeat runs on one machine agree within 0.01 luma.
+- **Readback:** WebGPU through the renderer's own `debugCaptureTargets()` composite (headless screenshots miss its swap chain); WebGL2 and Canvas (the hybrid Canvas world with its WebGL PostFx) through a screenshot of the world stack with every DOM layer and the label overlay hidden.
+- **Metrics** over the island region (the middle 60 % × 70 % of the world stack): mean luma, P10 and P90 (8-bit Rec. 709 on the encoded values), the dark share (luma under 32) and the warm share (bright pixels with red over blue by 48 and green between). At night the warm share is lamp light: pools, lit windows and the Pharos lens. By day it also counts sunlit timber and sand, so it is compared per scene, never across hours.
+- **Checks:** every scene stays within the committed curve (`scripts/world/golden-hours.json`: mean ±2, P10/P90 ±4, dark share ±0.03, warm share ±25 % or ±0.002); declared orderings hold on every backend (noon is brighter than dusk, night and dawn; a storm is darker than clear at the same hour); WebGPU and WebGL2 means stay within 2 of each other, and Canvas within 12 of the GPU path. Canvas reads about +10 at storm 19:15 and +7 at clear 19:15 (it grades on the CPU), within about 4 elsewhere.
+
+The curve holds numbers only; no PNG is committed. Recalibrate it after the sea, sky or grade changes you intended (`--update` rewrites the measured values and keeps the tolerances), and review the JSON diff in the same commit. A half-strength `MOONLIT_NIGHT_STRENGTH` moves clear 23:00 and storm 02:00 by about 3 luma on every backend and fails the gate. Calibrate on the reference machine and note it in the commit; tolerances are meant to absorb cross-GPU noise, so widen them in the curve file only with evidence from a second machine.
+
 ## Review gate
 
 Before material, atlas, or GPU-world work begins:

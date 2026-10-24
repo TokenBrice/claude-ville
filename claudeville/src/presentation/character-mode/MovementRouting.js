@@ -1,19 +1,9 @@
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
-import { classifyTool } from '../../domain/services/ToolIdentity.js';
+import { classifyTool, placedBuilding as placedToolBuilding } from '../../domain/services/ToolIdentity.js';
 import { homeDistrictFor } from './HomeDistrict.js';
 
-/**
- * The building a classified tool call actually names. Command's `run-shell`
- * is the classifier's no-evidence fallback for a shell command it does not
- * recognize, not orchestration, so it names no building: the caller falls
- * back to what it already knows and then the session's home district. The
- * classification itself (verb, bubble label) is unchanged.
- */
-export function placedToolBuilding(classified) {
-    if (!classified?.building) return null;
-    if (classified.building === 'command' && classified.reason === 'run-shell') return null;
-    return classified.building;
-}
+// AG-3: Command's unknown-shell fallback names no building (see ToolIdentity).
+export { placedToolBuilding };
 
 /**
  * Resolve the building that may replace an agent's in-flight route.

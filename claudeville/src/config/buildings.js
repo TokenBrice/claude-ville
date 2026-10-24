@@ -347,9 +347,11 @@ export const BUILDING_DEFS = [
         entrance: { tileX: 28, tileY: 14 },
         visitTiles: [
             workSlot(28, 14, { x: 28.0, y: 10.5 }, { queueGroup: 'watchtower-beacon', stance: 'signal' }),
-            queueSlot(27, 14, { x: 28.0, y: 10.5 }, { queueGroup: 'watchtower-lookout', reason: 'lookout' }),
-            scenicSlot(27, 15, { x: 28.0, y: 10.5 }, { queueGroup: 'watchtower-lookout', stance: 'scan', reason: 'lookout' }),
-            scenicSlot(28, 16, { x: 28.0, y: 10.5 }, { queueGroup: 'watchtower-lookout', stance: 'scan', reason: 'lookout' }),
+            // The lookouts stand north-west of the door, where the default
+            // camera sees them whole: the Harbor house (29-31, 17-19) hides
+            // the tiles south of the door (27,14 / 27,15 / 28,16 before).
+            queueSlot(26, 13, { x: 28.0, y: 10.5 }, { queueGroup: 'watchtower-lookout', reason: 'lookout' }),
+            scenicSlot(25, 13, { x: 28.0, y: 10.5 }, { queueGroup: 'watchtower-lookout', stance: 'scan', reason: 'lookout' }),
         ],
         walkExclusion: [{ dx: 0, dy: 5, width: 3, height: 1 }],
         scenery: {

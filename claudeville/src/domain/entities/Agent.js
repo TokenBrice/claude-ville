@@ -5,7 +5,7 @@ import { AgentBiography } from '../value-objects/AgentBiography.js';
 import { i18n } from '../../config/i18n.js';
 import { TokenUsage } from '../value-objects/TokenUsage.js';
 import { normalizeMood } from '../value-objects/AgentMood.js';
-import { buildingForTool } from '../services/ToolIdentity.js';
+import { placedBuildingForTool } from '../services/ToolIdentity.js';
 import { DIALOGUE_STALE_MS, dialogueShape, dialogueWindowMs } from '../../config/dialogue.js';
 
 const AGENT_NAMES_EN = [
@@ -337,17 +337,20 @@ export class Agent {
     }
 
     /**
-     * Return the target building type for the current tool
+     * The building the current tool call names. An unrecognized shell command
+     * (Command's `run-shell` fallback) names none, so routing falls back to
+     * last-known evidence and then the home district, as the tool intent and
+     * outcome chits do (AG-3).
      */
     get targetBuildingType() {
         const toolName = this.currentTool;
         if (!toolName) return null;
-        return buildingForTool(toolName, this.currentToolInput || this.lastToolInput);
+        return placedBuildingForTool(toolName, this.currentToolInput || this.lastToolInput);
     }
 
     get lastKnownBuildingType() {
         return this.targetBuildingType
-            || buildingForTool(this.lastTool, this.lastToolInput || this.currentToolInput)
+            || placedBuildingForTool(this.lastTool, this.lastToolInput || this.currentToolInput)
             || null;
     }
 

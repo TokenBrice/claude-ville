@@ -668,6 +668,23 @@ export function buildingForTool(toolName, input) {
     return classifyTool(toolName, input)?.building || null;
 }
 
+/**
+ * The building a classified tool call actually names. Command's `run-shell`
+ * is the classifier's no-evidence fallback for a shell command it does not
+ * recognize, not orchestration, so it names no building: the caller falls
+ * back to what it already knows and then the session's home district (AG-3).
+ * The classification itself (verb, bubble label) is unchanged.
+ */
+export function placedBuilding(classified) {
+    if (!classified?.building) return null;
+    if (classified.building === 'command' && classified.reason === 'run-shell') return null;
+    return classified.building;
+}
+
+export function placedBuildingForTool(toolName, input) {
+    return placedBuilding(classifyTool(toolName, input));
+}
+
 export function toolIcon(tool) {
     if (!tool) return '❓';
     const name = String(tool);

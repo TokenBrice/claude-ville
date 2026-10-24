@@ -1,0 +1,165 @@
+{
+  "schema": 1,
+  "note": "T5 golden hour-sweep curve: island metrics per backend and scene. Regenerate with `npm run world:golden-hours -- --update` after an intended lighting change; review the diff.",
+  "viewport": {
+    "width": 1920,
+    "height": 1080
+  },
+  "pose": {
+    "tile": [
+      18,
+      20
+    ],
+    "zoom": 1
+  },
+  "pinnedDate": "2026-10-24T12:00:00.000Z",
+  "region": [
+    0.2,
+    0.15,
+    0.8,
+    0.85
+  ],
+  "tolerances": {
+    "mean": 2,
+    "percentile": 4,
+    "dark": 0.03,
+    "warmAbs": 0.002,
+    "warmRel": 0.25,
+    "gpuPairMean": 2,
+    "canvasMean": 12
+  },
+  "backends": {
+    "webgpu": {
+      "clear-0500": {
+        "mean": 69.51,
+        "p10": 35,
+        "p90": 104,
+        "warmShare": 0.01711,
+        "darkShare": 0.08785
+      },
+      "clear-1200": {
+        "mean": 93.33,
+        "p10": 46,
+        "p90": 145,
+        "warmShare": 0.08362,
+        "darkShare": 0.06892
+      },
+      "clear-1915": {
+        "mean": 76.25,
+        "p10": 36,
+        "p90": 114,
+        "warmShare": 0.00878,
+        "darkShare": 0.08875
+      },
+      "storm-1915": {
+        "mean": 69.62,
+        "p10": 35,
+        "p90": 97,
+        "warmShare": 0.00841,
+        "darkShare": 0.08481
+      },
+      "clear-2300": {
+        "mean": 79.93,
+        "p10": 40,
+        "p90": 125,
+        "warmShare": 0.03084,
+        "darkShare": 0.07702
+      },
+      "storm-0200": {
+        "mean": 62.04,
+        "p10": 34,
+        "p90": 90,
+        "warmShare": 0.02059,
+        "darkShare": 0.08861
+      }
+    },
+    "webgl": {
+      "clear-0500": {
+        "mean": 69.51,
+        "p10": 35,
+        "p90": 104,
+        "warmShare": 0.01711,
+        "darkShare": 0.08785
+      },
+      "clear-1200": {
+        "mean": 93.33,
+        "p10": 46,
+        "p90": 145,
+        "warmShare": 0.08362,
+        "darkShare": 0.06892
+      },
+      "clear-1915": {
+        "mean": 76.27,
+        "p10": 36,
+        "p90": 114,
+        "warmShare": 0.00879,
+        "darkShare": 0.08874
+      },
+      "storm-1915": {
+        "mean": 69.62,
+        "p10": 35,
+        "p90": 97,
+        "warmShare": 0.00842,
+        "darkShare": 0.08481
+      },
+      "clear-2300": {
+        "mean": 79.92,
+        "p10": 40,
+        "p90": 125,
+        "warmShare": 0.03084,
+        "darkShare": 0.07702
+      },
+      "storm-0200": {
+        "mean": 62.04,
+        "p10": 34,
+        "p90": 90,
+        "warmShare": 0.02059,
+        "darkShare": 0.08859
+      }
+    },
+    "canvas": {
+      "clear-0500": {
+        "mean": 70.12,
+        "p10": 35,
+        "p90": 106,
+        "warmShare": 0.01858,
+        "darkShare": 0.08848
+      },
+      "clear-1200": {
+        "mean": 97.25,
+        "p10": 46,
+        "p90": 147,
+        "warmShare": 0.09524,
+        "darkShare": 0.06692
+      },
+      "clear-1915": {
+        "mean": 82.88,
+        "p10": 41,
+        "p90": 122,
+        "warmShare": 0.00921,
+        "darkShare": 0.07031
+      },
+      "storm-1915": {
+        "mean": 80.02,
+        "p10": 43,
+        "p90": 115,
+        "warmShare": 0.01241,
+        "darkShare": 0.06283
+      },
+      "clear-2300": {
+        "mean": 79.81,
+        "p10": 40,
+        "p90": 125,
+        "warmShare": 0.03181,
+        "darkShare": 0.0778
+      },
+      "storm-0200": {
+        "mean": 66.49,
+        "p10": 35,
+        "p90": 100,
+        "warmShare": 0.02551,
+        "darkShare": 0.0859
+      }
+    }
+  }
+}
