@@ -629,6 +629,8 @@ vec3 applyWaterMood(vec3 color) {
 //    dithered in over a two-texel seam. The in-map water uses it to know
 //    which of its texels are open water (as deep as the open sea there).
 export const SEA_SWELL_GLSL = `
+// E2-03 — the swell sets' drift (rows, GpuFrameState.swellDriftRows).
+uniform float u_swellDrift;
 float waterHash12(vec2 p) {
     vec3 p3 = fract(vec3(p.xyx) * 0.1031);
     p3 += dot(p3, p3.yzx + 33.33);
@@ -775,7 +777,7 @@ float seaNear(float excess) {
 // sets, fract x SWELL_SET_PERIOD is the rows below the set's crest. Sets run
 // near level along SWELL_SET_NORMAL, bent by two octaves of a slow field.
 float swellPhase(vec2 p) {
-    return dot(p, vec2(${SWELL_SET_NORMAL[0].toFixed(2)}, 1.0)) / ${SWELL_SET_PERIOD.toFixed(1)}
+    return (dot(p, vec2(${SWELL_SET_NORMAL[0].toFixed(2)}, 1.0)) + u_swellDrift) / ${SWELL_SET_PERIOD.toFixed(1)}
         + ${SWELL_SET_WARP.toFixed(2)} * seaNoise(p / vec2(${SWELL_WARP_CELL[0].toFixed(1)}, ${SWELL_WARP_CELL[1].toFixed(1)}) + vec2(3.0, 11.0))
         + ${SWELL_SET_WARP_FINE.toFixed(2)} * seaNoise(p / vec2(${SWELL_WARP_FINE_CELL[0].toFixed(1)}, ${SWELL_WARP_FINE_CELL[1].toFixed(1)}) + vec2(29.0, 5.0));
 }
@@ -3477,7 +3479,7 @@ export class GpuWorldRenderer {
             'u_lightCount', 'u_lightData', 'u_lightTiles', 'u_lightTileGrid',
             'u_radiance', 'u_radianceGrid', 'u_radianceGain', 'u_radianceStrength',
             'u_footprint', 'u_footprintRect', 'u_footprintSize', 'u_marchSteps',
-            'u_coreEnergy', 'u_waterMood', 'u_waterSky',
+            'u_coreEnergy', 'u_waterMood', 'u_waterSky', 'u_swellDrift',
             'u_cycleOffset', 'u_coastField', 'u_coastRect', 'u_waterFx', 'u_glint', 'u_glintStops[0]',
             'u_starlight',
             'u_terrainBatch', 'u_cueRuns',
@@ -3497,7 +3499,7 @@ export class GpuWorldRenderer {
             'u_scene', 'u_bloom', 'u_bloomStrength', 'u_flash',
             'u_camera', 'u_resolution', 'u_beamGround', 'u_beamShape', 'u_beamCourseEnds', 'u_beamCourseShares',
             ...GRADE_UNIFORM_NAMES, ...ATMOSPHERE_COURSE_UNIFORM_NAMES,
-            'u_waterMood', 'u_waterSky', 'u_seaOn', 'u_time', 'u_weather', 'u_waterFx', 'u_glint', 'u_glintStops[0]',
+            'u_waterMood', 'u_waterSky', 'u_swellDrift', 'u_seaOn', 'u_time', 'u_weather', 'u_waterFx', 'u_glint', 'u_glintStops[0]',
             'u_starlight',
             'u_seaSunBand', 'u_fogColor', 'u_seaHaze', 'u_seaSky', 'u_seaSunlit',
             'u_seaGust', 'u_seaGustRect', 'u_squall', 'u_squallFall', 'u_fatPixels',
@@ -4506,6 +4508,7 @@ export class GpuWorldRenderer {
         const water = resolveWaterFx(feed, camera, qualityLevel, grade, moonFill, this.width, this._waterFx);
         gl.uniform4fv(uniforms.u_waterFx, water.fx);
         gl.uniform1f(uniforms.u_starlight, water.starlight);
+        gl.uniform1f(uniforms.u_swellDrift, water.swellDrift);
         gl.uniform4fv(uniforms.u_glint, water.glint);
         gl.uniform3fv(uniforms['u_glintStops[0]'], water.stops);
         this._bindWaterFields(uniforms, feed.coastWater, qualityLevel);
@@ -5106,6 +5109,7 @@ export class GpuWorldRenderer {
         gl.uniform1f(uniforms.u_time, shaderTimeMs);
         gl.uniform4fv(uniforms.u_waterFx, this._waterFx.fx);
         gl.uniform1f(uniforms.u_starlight, this._waterFx.starlight);
+        gl.uniform1f(uniforms.u_swellDrift, this._waterFx.swellDrift);
         gl.uniform4fv(uniforms.u_glint, this._waterFx.glint);
         gl.uniform3fv(uniforms['u_glintStops[0]'], this._waterFx.stops);
         const sky = openSeaSky(atmosphere);

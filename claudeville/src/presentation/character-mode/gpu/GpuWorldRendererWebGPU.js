@@ -1217,6 +1217,7 @@ export class GpuWorldRendererWebGPU {
         const water = resolveWaterFx(feed, camera, qualityLevel, grade, moonFill, this.width, this._waterFx);
         s.waterFx = water.fx;
         s.starlight = water.starlight;
+        s.swellDrift = water.swellDrift;
         s.glint = water.glint;
         s.glintStops = vec3Pair(water.stops);
         // 3.1 / 3.6 — the coast lattice fields (MINIMAL: absent).

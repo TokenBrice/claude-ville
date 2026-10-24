@@ -175,7 +175,26 @@ export function resolveFatPixels(camera, override = null) {
 }
 
 export function createWaterFx() {
-    return { fx: new Float32Array(4), glint: new Float32Array(4), stops: new Float32Array(6), starlight: 0 };
+    return { fx: new Float32Array(4), glint: new Float32Array(4), stops: new Float32Array(6), starlight: 0, swellDrift: 0 };
+}
+
+/**
+ * E2-03 — rolling swell sets: the sea's swell sets (with their crest strokes
+ * and the caps gathered on them) creep one world row up the screen every
+ * SWELL_DRIFT_STEP_MS of the motion clock, the phase every copy of
+ * `swellPhase` adds as drift / SWELL_SET_PERIOD. A pure function of the
+ * motion clock, so reduced motion (a frozen clock) holds the sea still and a
+ * re-rendered frame lands on the same rows; it wraps after
+ * SWELL_DRIFT_WRAP_ROWS rows (200 set periods, about 21 hours of motion
+ * clock: one jump a day) to keep the shaders' float
+ * phase exact.
+ */
+export const SWELL_DRIFT_STEP_MS = 2500;
+export const SWELL_DRIFT_WRAP_ROWS = 30000;
+export function swellDriftRows(motionTimeMs) {
+    const t = Number(motionTimeMs);
+    if (!(t > 0)) return 0;
+    return Math.floor(t / SWELL_DRIFT_STEP_MS) % SWELL_DRIFT_WRAP_ROWS;
 }
 
 // Night-only sparkle shares the water/path budget but not the moon-path gate:
@@ -202,6 +221,7 @@ export function resolveStarlight(atmosphere, weather, grade, moonFill, level) {
 export function resolveWaterFx(feed, camera, level, grade, moonFill, width, out = createWaterFx()) {
     const { fx, glint, stops } = out;
     const motion = feed.reducedMotion ? 0 : clamp(finite(feed.motionScale, 1), 0, 2);
+    out.swellDrift = swellDriftRows(feed.timeMs);
     // One water clock: every cycle freezes on its static frame under
     // reduced motion and at MINIMAL.
     fx[0] = effectBudgetMode('waterCrests', level) === 'on' ? motion : 0;

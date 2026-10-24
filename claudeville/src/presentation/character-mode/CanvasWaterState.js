@@ -72,7 +72,7 @@ import {
     waterSunBandFor,
     waterSurfaceRgb,
 } from './CoastBake.js';
-import { BEAM_NEAR_HALF_WIDTH, DEEP_DASH_DENSITY, FOOTPRINT_MARCH_STEPS, NOON_GLINT_GROW_GAIN, resolveStarlight } from './gpu/GpuFrameState.js';
+import { BEAM_NEAR_HALF_WIDTH, DEEP_DASH_DENSITY, FOOTPRINT_MARCH_STEPS, NOON_GLINT_GROW_GAIN, resolveStarlight, swellDriftRows } from './gpu/GpuFrameState.js';
 import {
     DEEP_CREST_RUN,
     GLINT_DASH_DENSITY,
@@ -355,8 +355,9 @@ function swellForm(rowsIn, period, crestRows, lit, trough, order) {
 
 // 3.3 (a) — the resident sea body terms (SEA_SWELL_GLSL swellPhase,
 // swellHeight, swellCrest, seaKeyReach, seaBodyStop) on one world texel,
-// each noise field on its own cached lattice.
-function seaField() {
+// each noise field on its own cached lattice. `drift` is E2-03's swell drift
+// in rows (GpuFrameState.swellDriftRows), as the resident `swellPhase` adds.
+function seaField(drift = 0) {
     const warp = latticeNoise();
     const warpFine = latticeNoise();
     const height = latticeNoise();
@@ -368,7 +369,7 @@ function seaField() {
     const swellHeight = (noise, along, set) => clamp01((noise(along / SWELL_AMP_RUN + 17, set * 7.3) - SWELL_AMP_FLOOR) / SWELL_AMP_SPAN);
     const field = {
         phase(x, y) {
-            return (x * normal + y) / SWELL_SET_PERIOD
+            return (x * normal + y + drift) / SWELL_SET_PERIOD
                 + SWELL_SET_WARP * warp(x / SWELL_WARP_CELL[0] + 3, y / SWELL_WARP_CELL[1] + 11)
                 + SWELL_SET_WARP_FINE * warpFine(x / SWELL_WARP_FINE_CELL[0] + 29, y / SWELL_WARP_FINE_CELL[1] + 5);
         },
@@ -716,12 +717,12 @@ function buildChunk(cx, cy, storm) {
 // is off without the paw): the paw's presence must exceed `need`, and the
 // texel then rises `rise`.
 
-function buildCapChunk(base, cx, cy) {
+function buildCapChunk(base, cx, cy, drift = 0) {
     const X0 = cx * CHUNK_W;
     const Y0 = cy * CHUNK_H;
     const info = new Uint8Array(CHUNK_W * CHUNK_H).fill(SEA_NONE);
     const { cls, fx: fieldX, fy: fieldY, cols, rows, coastField } = base;
-    const field = seaField();
+    const field = seaField(drift);
     const body = [];
     for (let ly = 0; ly < CHUNK_H; ly++) {
         const y = Y0 + ly;
@@ -763,7 +764,7 @@ function buildCapChunk(base, cx, cy) {
             }
         }
     }
-    const cells = seaField();
+    const cells = seaField(drift);
     // The caps: one per half-staggered cap cell, gathered into clusters.
     const [cw, ch] = SWELL_CAP_CELL;
     const [kw, kh] = SWELL_CLUSTER_CELL;
@@ -986,6 +987,8 @@ function resolveFx(renderer, atmosphere) {
         seaWeather: effectBudgetMode('sea-weather', level) === 'on',
         // W6.11 — the grass gust course: FULL only, never under reduced motion.
         grassGust: effectBudgetMode('grassGust', level) === 'on' && motion > 0,
+        // E2-03 — the swell sets' drift, on the unwrapped motion clock.
+        swellDrift: swellDriftRows(renderer.motionTimeMs),
         deepTick: Math.floor(t * 0.006 * clock),
         nearTick: Math.floor(t * 0.004 * clock),
         ringTick: Math.floor(t * 0.007 * clock),
@@ -1602,7 +1605,11 @@ function rebuildBeam(state, base, fx, palette, view, beam) {
         const sheen = (((Math.floor(along / 16) - step) % 3) + 3) % 3 === 0 ? 1 : 0;
         return 1 + Math.min(2, course + sheen);
     };
-    const field = state.beaconField || (state.beaconField = seaField());
+    if (state.beaconDrift !== state.capsDrift) {
+        state.beaconField = seaField(state.capsDrift);
+        state.beaconDrift = state.capsDrift;
+    }
+    const field = state.beaconField;
     const path = state.pathLive ? state.path : null;
     for (let y = top; y < bottom; y++) {
         for (let x = left; x < right; x++) {
@@ -1962,6 +1969,7 @@ export function drawCanvasWaterState(ctx, renderer, atmosphere) {
     if (!state.base || state.base.key !== baseKey) {
         state.base = buildBase(renderer);
         state.caps.clear();
+        state.nextCaps = null;
         state.seaCanvasChunks.clear();
         state.overlayKey = '';
         state.pathKey = '';
@@ -2018,10 +2026,20 @@ export function drawCanvasWaterState(ctx, renderer, atmosphere) {
         }
         state.stats.chunks = state.chunks.size;
     }
-    // 3.3 (a) — the static cap chunks over the rect, built within a budget.
+    // 3.3 (a) — the cap chunks over the rect, built within a budget. E2-03:
+    // when the swell drift steps, the visible chunks rebuild for the new
+    // drift into `nextCaps` (within the same budget) while the old ones keep
+    // drawing, and swap in together once all are built, so no chunk seam
+    // ever shows two drifts.
     {
         const started = performance.now();
         let visible = 0;
+        if (!state.caps.size) state.capsDrift = fx.swellDrift;
+        if (fx.swellDrift !== state.capsDrift && !state.nextCaps) {
+            state.nextCaps = new Map();
+            state.nextDrift = fx.swellDrift;
+        }
+        let nextPending = 0;
         for (let cy = Math.floor(rect.y0 / CHUNK_H); cy * CHUNK_H < rect.y0 + rect.h; cy++) {
             if ((cy + 1) * CHUNK_H <= OCEAN_HORIZON_WORLD_Y) continue;
             for (let cx = Math.floor(rect.x0 / CHUNK_W); cx * CHUNK_W < rect.x0 + rect.w; cx++) {
@@ -2032,11 +2050,20 @@ export function drawCanvasWaterState(ctx, renderer, atmosphere) {
                     state.caps.delete(id);
                     state.caps.set(id, hit);
                 } else if (performance.now() - started < CAP_BUILD_BUDGET_MS) {
-                    state.caps.set(id, buildCapChunk(base, cx, cy));
+                    state.caps.set(id, buildCapChunk(base, cx, cy, state.capsDrift));
                 } else {
                     pending++;
                 }
+                if (state.nextCaps && !state.nextCaps.has(id)) {
+                    if (performance.now() - started < CAP_BUILD_BUDGET_MS) state.nextCaps.set(id, buildCapChunk(base, cx, cy, state.nextDrift));
+                    else nextPending++;
+                }
             }
+        }
+        if (state.nextCaps && !nextPending) {
+            state.caps = state.nextCaps;
+            state.capsDrift = state.nextDrift;
+            state.nextCaps = null;
         }
         const cap = Math.max(CHUNK_CACHE_MIN, visible * 2);
         for (const id of state.caps.keys()) {
@@ -2079,11 +2106,11 @@ export function drawCanvasWaterState(ctx, renderer, atmosphere) {
         fx.deepTick, fx.nearTick, fx.ringTick, fx.swashCyc, fx.rippleTick,
         fx.caustics ? Math.floor(fx.t * 0.004 * fx.clock) % 8 : -1,
         Math.round(fx.rain * 64), fx.swash ? 1 : 0, fx.grassGust ? 1 : 0, fx.horizonTop, pending,
-        sun?.key ?? '', gust?.key ?? '', seaKey,
+        sun?.key ?? '', gust?.key ?? '', seaKey, state.capsDrift,
     ].join('|');
     // 3.4 — the sunlit course, under every mark.
     if (sun && seaKey) {
-        const sunKey = `${base.key}|${seaCanvasKey}|${sun.key}|${rect.x0},${rect.y0},${rect.w},${rect.h}|${pending}`;
+        const sunKey = `${base.key}|${seaCanvasKey}|${sun.key}|${rect.x0},${rect.y0},${rect.w},${rect.h}|${pending}|${state.capsDrift}`;
         if (state.sunKey !== sunKey) {
             const started = performance.now();
             rebuildSun(state, renderer, rect, sun, palette, seaCanvasKey);

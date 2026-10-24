@@ -165,6 +165,8 @@ export const FRAME_UNIFORM_LAYOUT = uniformLayout('FrameUniforms', [
     // E2-01 — the sky on the sea (CoastBake.waterMoodFor: rgb, weight);
     // appended likewise.
     ['waterSky', 'vec4f'],
+    // E2-03 — the swell sets' drift in rows (GpuFrameState.swellDriftRows).
+    ['swellDrift', 'f32'],
 ]);
 
 // §2.6 — the per-batch block, one 256-byte slot per batch in a frame ring

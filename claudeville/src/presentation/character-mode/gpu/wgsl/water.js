@@ -163,7 +163,7 @@ fn seaNear(excess: f32) -> f32 {
     return clamp(1.0 - (excess - 1.5) / ${SWELL_NEAR_FADE.toFixed(1)}, 0.0, 1.0);
 }
 fn swellPhase(p: vec2f) -> f32 {
-    return dot(p, vec2f(${SWELL_SET_NORMAL[0].toFixed(2)}, 1.0)) / ${SWELL_SET_PERIOD.toFixed(1)}
+    return (dot(p, vec2f(${SWELL_SET_NORMAL[0].toFixed(2)}, 1.0)) + frame.swellDrift) / ${SWELL_SET_PERIOD.toFixed(1)}
         + ${SWELL_SET_WARP.toFixed(2)} * seaNoise(p / vec2f(${SWELL_WARP_CELL[0].toFixed(1)}, ${SWELL_WARP_CELL[1].toFixed(1)}) + vec2f(3.0, 11.0))
         + ${SWELL_SET_WARP_FINE.toFixed(2)} * seaNoise(p / vec2f(${SWELL_WARP_FINE_CELL[0].toFixed(1)}, ${SWELL_WARP_FINE_CELL[1].toFixed(1)}) + vec2f(29.0, 5.0));
 }
