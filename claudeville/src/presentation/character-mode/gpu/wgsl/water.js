@@ -55,7 +55,9 @@ import {
     SWELL_CREST_ROWS,
     SWELL_CREST_RUN,
     SWELL_GAP_GAIN,
+    SWELL_LIT_FLOOR,
     SWELL_LIT_ROWS,
+    SWELL_LIT_STEPS,
     SWELL_LONE_CAPS,
     SWELL_NEAR_FADE,
     SWELL_SET_GAIN,
@@ -235,6 +237,7 @@ fn seaBodyStop(p: vec2f, s: f32, stop: f32, excess: f32, order: f32) -> f32 {
             mix(${SWELL_CHOP_LIT_ROWS[0].toFixed(1)}, ${SWELL_CHOP_LIT_ROWS[1].toFixed(1)}, key) * ch,
             mix(${SWELL_CHOP_TROUGH_ROWS[0].toFixed(1)}, ${SWELL_CHOP_TROUGH_ROWS[1].toFixed(1)}, key) * ch * calm, order);
     }
+    if (form < 0.0) { return max(stop - ${SWELL_LIT_STEPS.toFixed(1)}, min(stop, ${SWELL_LIT_FLOOR.toFixed(1)})); }
     return clamp(stop + form, 0.0, 6.0);
 }
 const OPEN_SEA_REACH: f32 = ${OPEN_SEA_LIGHT_REACH.toFixed(1)};

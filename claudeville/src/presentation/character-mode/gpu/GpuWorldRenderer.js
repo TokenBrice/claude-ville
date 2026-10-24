@@ -221,6 +221,13 @@ export const SWELL_AMP_FLOOR = 0.2;
 export const SWELL_AMP_SPAN = 0.4;
 export const SWELL_CALM_TILES = Object.freeze([1, 4]);
 export const SWELL_LIT_ROWS = Object.freeze([16, 56]);
+// E2-02 — a lit slope (the set's or the chop's) steps SWELL_LIT_STEPS stops
+// lighter than the body, a full deep-ramp step (DEEP[1] -> DEEP[2]) where the
+// half step read as one flat field at zoom 1, but never lighter than
+// SWELL_LIT_FLOOR (DEEP[2], the deep ramp's lightest stop) unless the body
+// already is.
+export const SWELL_LIT_STEPS = 2;
+export const SWELL_LIT_FLOOR = 3;
 export const SWELL_TROUGH_ROWS = Object.freeze([64, 16]);
 // The chop (`seaBodyStop`): a shorter swell under the sets that fills their
 // calm with its own lit slopes and troughs (never over a set's form):
@@ -854,8 +861,8 @@ float swellForm(float rowsIn, float period, float crestRows, float lit, float tr
 }
 // 3.3 (a) — the sea body's stop at an open-water texel p (in-map water as
 // deep as the open sea, or the open sea) over its horizon stop \`stop\`, \`s\`
-// its swellPhase: the set's form (its lit slope one stop lighter above the
-// crest, its trough one stop darker below it, each scaled by the set's
+// its swellPhase: the set's form (its lit slope SWELL_LIT_STEPS stops lighter
+// above the crest, never past SWELL_LIT_FLOOR, its trough one stop darker below it, each scaled by the set's
 // height and widening, the lit slope, or narrowing, the trough, with the sun
 // key; the trough stilled near the island), else the chop's form; taking
 // over from the horizon's stops across SEA_BODY_ROWS on a Bayer ramp. 0..6
@@ -877,6 +884,7 @@ float seaBodyStop(vec2 p, float s, float stop, float excess, float order) {
             mix(${SWELL_CHOP_LIT_ROWS[0].toFixed(1)}, ${SWELL_CHOP_LIT_ROWS[1].toFixed(1)}, key) * ch,
             mix(${SWELL_CHOP_TROUGH_ROWS[0].toFixed(1)}, ${SWELL_CHOP_TROUGH_ROWS[1].toFixed(1)}, key) * ch * calm, order);
     }
+    if (form < 0.0) return max(stop - ${SWELL_LIT_STEPS.toFixed(1)}, min(stop, ${SWELL_LIT_FLOOR.toFixed(1)}));
     return clamp(stop + form, 0.0, 6.0);
 }
 const float OPEN_SEA_REACH = ${OPEN_SEA_LIGHT_REACH.toFixed(1)};

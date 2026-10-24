@@ -112,7 +112,9 @@ import {
     SWELL_CREST_ROWS,
     SWELL_CREST_RUN,
     SWELL_GAP_GAIN,
+    SWELL_LIT_FLOOR,
     SWELL_LIT_ROWS,
+    SWELL_LIT_STEPS,
     SWELL_LONE_CAPS,
     SWELL_NEAR_FADE,
     SWELL_SET_GAIN,
@@ -407,6 +409,7 @@ function seaField() {
                     (SWELL_CHOP_LIT_ROWS[0] + (SWELL_CHOP_LIT_ROWS[1] - SWELL_CHOP_LIT_ROWS[0]) * key) * ch,
                     (SWELL_CHOP_TROUGH_ROWS[0] + (SWELL_CHOP_TROUGH_ROWS[1] - SWELL_CHOP_TROUGH_ROWS[0]) * key) * ch * calm, order);
             }
+            if (form < 0) return Math.max(stop - SWELL_LIT_STEPS, Math.min(stop, SWELL_LIT_FLOOR));
             return Math.max(0, Math.min(6, stop + form));
         },
     };
