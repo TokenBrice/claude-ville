@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-10-24-lit-halls"
+  assetVersion: "2026-10-24-isle-palette"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -2633,7 +2633,7 @@ props:
     height: 208
     anchor: [64, 168]
     materialClass: stone
-    provenance: { item: 'W8.5b', tool: create_map_object, objectId: 9e0d3633-5d2c-4848-b8f1-5387b7e531c2, finish: 'scripts/sprites/finish-isle-landmarks.mjs (plate strip, ashlar snap, mirrored to the upper-left key)', generatedAt: '2026-10-09' }
+    provenance: { item: 'W8.5b', tool: create_map_object, objectId: 9e0d3633-5d2c-4848-b8f1-5387b7e531c2, finish: 'scripts/sprites/finish-isle-landmarks.mjs (plate strip, ashlar snap, mirrored to the upper-left key)', generatedAt: '2026-10-09', harmonize: 'cap remapped onto roofSlate (scripts/sprites/harmonize-roofs.mjs, B3-05, 2026-10-24)' }
 
   # The sail cross, 4 frames of 112 x 112 (hub at the frame centre, seated on
   # the windmill's windshaft at base-local [50, 86]); frame k is the cross
@@ -2665,7 +2665,7 @@ props:
     height: 144
     anchor: [53, 104]
     materialClass: stone
-    provenance: { item: 'W8.5b', tool: create_map_object, objectId: f2367bd7-2b9c-4bf9-9ca1-b45e87e89055, finish: 'scripts/sprites/finish-isle-landmarks.mjs (plate strip, ashlar snap, lit window and lantern glass unlit, lantern emissive sidecar, mirrored)', generatedAt: '2026-10-09' }
+    provenance: { item: 'W8.5b', tool: create_map_object, objectId: f2367bd7-2b9c-4bf9-9ca1-b45e87e89055, finish: 'scripts/sprites/finish-isle-landmarks.mjs (plate strip, ashlar snap, lit window and lantern glass unlit, lantern emissive sidecar, mirrored)', generatedAt: '2026-10-09', harmonize: 'roof onto roofSlate, violet walls onto the Command masonry by percentile (scripts/sprites/harmonize-roofs.mjs, B3-05, 2026-10-24)' }
     emissiveSidecar: true
     emissive:
       strength: 0.9
