@@ -212,11 +212,14 @@ export function assessPostFxTimings(metrics = {}) {
     let driver = Object.entries(components)
         .filter(([name]) => name !== 'frameGapPenaltyMs')
         .sort((a, b) => b[1] - a[1])[0]?.[0] || 'combined';
-    // Driver stalls (e.g. canvas-producer readbacks) can land outside the
-    // instrumented windows: an oversized gap between consecutive renders is
-    // the only visible symptom, so fold the excess above ~30 FPS pacing in.
+    // Without a GPU timer, driver stalls can land outside the instrumented
+    // windows: an oversized gap between consecutive renders is the only
+    // visible symptom, so fold the excess above ~30 FPS pacing in. With a
+    // timer the gap is wall time the GPU did not spend (a main-thread stall,
+    // a busy host): counting it would shed bloom and lamp pools at 0.5 ms of
+    // GPU work for no gain (plan T1).
     const frameGap = finite(metrics.frameGapMs);
-    if (frameGap > 35) {
+    if (frameGap > 35 && !hasTimer(metrics)) {
         components.frameGapPenaltyMs = frameGap - 33;
         if (components.frameGapPenaltyMs > score) driver = 'frameGapMs';
         score = Math.max(score, components.frameGapPenaltyMs);
