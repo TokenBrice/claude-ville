@@ -7,6 +7,8 @@ import { VILLAGE_NIGHT_LAMPS, AMBIENT_SCENIC_POINTS } from '../../claudeville/sr
 import { APPROACH_FILES, REST_SEATS, COMMAND_QUEUE } from '../../claudeville/src/config/townPlan.js';
 import { BUILDING_DEFS, VISIT_OVERFLOW_TILES } from '../../claudeville/src/config/buildings.js';
 import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
+import { SOURCE_ENERGY_BUCKETS } from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
+import { DEEP_NIGHT_FIXTURE_REACH } from '../../claudeville/src/presentation/character-mode/LightSourceRegistry.js';
 
 test('nine low lamp feet keep every standing place and approach file clear', () => {
     assert.equal(VILLAGE_NIGHT_LAMPS.length, 9);
@@ -43,6 +45,28 @@ test('street fixture pools use only the lamps clock gate, not weather or occupan
     assert.deepEqual(light.ground, { x: 100, y: 100 });
     assert.equal(light.height, 24);
     assert.equal(light.ownerId, null);
+});
+
+test('L1-5: deep night alone lets the lamp and brazier pools reach 15 % further', () => {
+    const renderer = Object.create(IsometricRenderer.prototype);
+    renderer._lanternGlowSources = () => [
+        { x: 100, y: 90, tileX: 6, tileY: 22, fixture: 'lantern' },
+        { x: 300, y: 90, tileX: 9, tileY: 22, fixture: 'brazier' },
+    ];
+    renderer._hearthLightSources = () => [];
+    renderer._lastAtmosphere = { clock: { minuteOfDay: 23 * 60 } };
+    const radii = bucket => renderer._lanternGroundLightSources({ sourceEnergy: { ...SOURCE_ENERGY_BUCKETS[bucket] } }).map(light => light.radius);
+    const lamplight = radii('lamplight');
+    const deep = radii('deep-night');
+    assert.deepEqual(lamplight, [66, 70]);
+    assert.deepEqual(deep, [Math.round(66 * DEEP_NIGHT_FIXTURE_REACH), Math.round(70 * DEEP_NIGHT_FIXTURE_REACH)]);
+    for (let i = 0; i < 2; i++) {
+        const gain = deep[i] / lamplight[i];
+        assert.ok(gain > 1.13 && gain < 1.17, `reach gain ${gain}`);
+    }
+    // Intensity is not touched: the reach changes, the energy per light does not.
+    const intensity = bucket => renderer._lanternGroundLightSources({ sourceEnergy: { ...SOURCE_ENERGY_BUCKETS[bucket], core: 1 } }).map(light => light.intensity);
+    assert.deepEqual(intensity('deep-night'), intensity('lamplight'));
 });
 
 const stops = GRADE_CONSTANTS.AMBIENT_POOL_STOPS.value;
