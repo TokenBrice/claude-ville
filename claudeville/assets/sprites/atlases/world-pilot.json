@@ -391,7 +391,7 @@
       "id": "building.forge",
       "materialClass": "stone",
       "sourcePath": "buildings/building.forge/base.png",
-      "sourceSha256": "894638bb9815b112280143fcc9c21bf26e5422e71b899755d4c1689378ecd03e",
+      "sourceSha256": "7f83b4b7b57f9cbef7563d52b20166400988291614fdc2e44e7f2f9a2e655382",
       "sourceSize": {
         "h": 232,
         "w": 256
@@ -750,10 +750,10 @@
     }
   },
   "channelSha256": {
-    "albedo": "63fa3c3d6d80c62360ac28fa2596086a4330a137838983d39bdff9164b2afaca",
-    "emissive": "4184c4dc6d3f74ce6d695f8e0ad3f14d9cefbb3b2e21258ec223f832c3e62a56",
-    "material": "ac682525f782ed61288ab5fbdc928b6575f74c6e9dedcf2deb1ade352ca5e5d7",
-    "occluder": "7eac60903231b01df3ae681b772cd02479cd7081975ce7023540dac12c4c4d30"
+    "albedo": "d514318ff9c4d0cd2eacd5407f7146cea4d4182f22a8362fe35bcd7f49f24f25",
+    "emissive": "ba9d326e25a3ee29fb6ca0e2ffe08c7ad95da3c0ebeaa481aca5191ceb3cf946",
+    "material": "ad6c8cebf8afecacf83f4b60adefc7453a539f154b94a519e17003b9f33a62e0",
+    "occluder": "8c17d419526092d644f0a424d31cfc3561dfedd966a5126d0b2c5d3bfdb4efa7"
   },
   "channels": {
     "albedo": "assets/sprites/atlases/world-pilot.albedo.png",
@@ -10502,7 +10502,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "894638bb9815b112280143fcc9c21bf26e5422e71b899755d4c1689378ecd03e",
+      "sourceSha256": "7f83b4b7b57f9cbef7563d52b20166400988291614fdc2e44e7f2f9a2e655382",
       "sourceSize": {
         "h": 232,
         "w": 256
@@ -10546,7 +10546,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "a8e2cd639f492e553fe029be3d9b7c72a7b7a4bbae0d0b83a8d05dc4f4bc888f",
+      "sourceSha256": "674cb79fe9e4d3177a80eb48537bceb5ce231e0219406bf075a69a31a5d12a60",
       "sourceSize": {
         "h": 232,
         "w": 256
@@ -10678,7 +10678,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "71686a92b39e285f84a429947a835047f3f0bf50dfcb24da064f7a26db4ed449",
+      "sourceSha256": "2cd8c406a753921b89e13c5246082f0ae27ac0b5964bbcae493fd06c590dcbf5",
       "sourceSize": {
         "h": 232,
         "w": 256

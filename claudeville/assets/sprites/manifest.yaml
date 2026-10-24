@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-10-24-banked-hearth"
+  assetVersion: "2026-10-24-forge-d"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -2202,17 +2202,19 @@ buildings:
     lightRadius: 70
 
   # ── STANDARD: Code Forge ──
-  # 4.5 (aesthetic plan, D3) — re-authored on the Observatory grid: REST
-  # generate-image-v2 (Pro), style image building.observatory, the previous
-  # forge as a massing reference (furnace arch on the SW gable, chimney at the
-  # back right, anvil and quench trough in the yard); alpha-thresholded, placed
-  # 8 px right and snapped to the family palette (55 colours). Two candidates
-  # (f1/f2, 40 generations), f2 chosen. Sidecars and the banked mask are
-  # re-derived from the reviewed fire/glass/timber colours.
+  # B3-04 (2026-10-24) — re-authored in the Tavern/Harbor family: MCP
+  # create_image_pro at native 256x232, style image building.tavern, the
+  # operator-picked draft D (create_image_pro 128x116 board, 4 drafts, seed
+  # 2404) placed 2x and drawn 5% smaller about the anchor as the composition
+  # reference. Two full-size takes (seeds 2404/2405), take 2 chosen as the
+  # most faithful to D. Near-black outline -> #060402, roof onto roofSlate
+  # (harmonize-roofs); the limestone is already the family masonry. Sidecars,
+  # the hearth tongues and the banked mask are re-derived from the new fire
+  # and glass; the bellows and billet-rack strips are unchanged.
   - id: building.forge
-    tool: generate-image-v2
-    prompt: "isometric pixel art building sprite, true 2:1 dimetric isometric view from the south-east, a Code Forge landmark: a compact stone blacksmith forge hall with soot-darkened grey stone walls and a steep dark blue-grey slate roof, one tall square stone chimney with a dark iron cap rising at the back right, a tall open arched workshop doorway on the left end wall with a glowing orange furnace fire inside spilling warm light, an iron anvil on a stone block and a stone quench trough beside the front wall, a timber tool rack with hammers and tongs, two small warm-lit windows. Warm light from the upper left. Structure only on a transparent background: no ground tile, no lawn, no platform, no plinth, no cast shadow, no text."
-    provenance: { item: '4.5', endpoint: generate-image-v2, jobId: 59af4d9e-b105-4769-8e3f-c16a14f26090, styleImage: building.observatory, referenceImage: 'building.forge (pre-4.5)', generationSize: 256x232, generations: 20, pilotGenerations: 40, generatedAt: '2026-09-25', harmonize: 'roof indigo -> roofSlate, charcoal walls -> family masonry by percentile against building.command (scripts/sprites/harmonize-roofs.mjs, 2026-10-15)' }
+    tool: create_image_pro
+    prompt: "isometric pixel art building sprite, true 2:1 dimetric isometric view from the south-east, a compact medieval village smithy, drawn exactly like the reference layout: pale grey limestone ashlar walls in small even courses (the style image's stone size), a half-timbered upper gable of dark oak beams over cream plaster on the left end wall, a steep roof of SMALL slate-blue tiles in thin even courses (the style image's tile size) with a dark oak ridge and eave boards, one tall square limestone chimney with a dark iron cap at the back right, a tall round-arched open forge mouth in the left end wall with an orange fire painted inside the arch only, a small stone quench trough at the left corner, a dark iron anvil on a stone block in front of the forge mouth, on the long right front wall a dark oak frame with two small leaded windows of unlit dark slate glass above a timber tool rack with hanging tongs. Warm key light from the upper left, chunky stepped cel shading, 1px warm near-black selective outline. No rim light, no glow or orange light on the outer stone, no ground tile, no plinth, no cast shadow, no people, no text. Keep the whole building inside the canvas with a small transparent margin."
+    provenance: { item: 'B3-04', endpoint: create_image_pro, jobId: ccfabb65-ecdf-4615-bff2-3684574126f7, seed: 2405, styleImage: building.tavern, referenceImage: 'Forge draft D (create_image_pro job af4e9b6f-1e9b-4a7c-86d0-f04c14bdb906, seed 2404) placed 2x at 0.95 about the anchor', generationSize: 256x232, generations: 20, pilotGenerations: 10, takes: { 'bc480314-f002-4a37-910e-c1fd0bc00f97': 'seed 2404, not chosen', 'ccfabb65-ecdf-4615-bff2-3684574126f7': 'seed 2405, chosen' }, recolor: 'near-black outline -> #060402 (hand, not generated)', harmonize: 'roof -> roofSlate bodyStop 5 (scripts/sprites/harmonize-roofs.mjs)', generatedAt: '2026-10-24' }
     width: 256
     height: 232
     anchor: [128, 169]
@@ -2230,12 +2232,12 @@ buildings:
         - { id: emissive.forge.furnace, kind: fire, geometry: registry.windowRects, strength: 1 }
     occluder: { mode: alpha-silhouette, strength: 1 }
     emitters:
-      forgeEmber: [80, 150]
+      forgeEmber: [73, 152]
       forgeSpark: [104, 198]
       sparkle: [150, 165]
     # 2.6 — the hearth light stands at the fire's base on the door threshold,
     # so the 2.5D light loop lands its breathing courses on the street.
-    lightSource: [80, 186]
+    lightSource: [73, 190]
     lightColor: '#ff8a33'
     lightRadius: 80
     lightOverlay: 'atmosphere.light.fire-glow'

@@ -88,11 +88,12 @@ export const SURFACE_SPECS = Object.freeze({
         ],
     },
     forge: {
-        base: { left: [28, 170], bottom: [120, 206], right: [228, 160] },
+        // B3-04 (draft D) — measured on the 2026-10-24 re-author.
+        base: { left: [24, 166], bottom: [137, 222], right: [224, 183] },
         roof: [SLATE],
         regions: [
             // Chimney stack above the roof: its own corner at the back right.
-            { face: 'auto', poly: [[146, 6], [210, 6], [210, 120], [146, 120]], base: { corner: [178, 176] } },
+            { face: 'auto', poly: [[158, 6], [214, 6], [214, 126], [158, 126]], base: { corner: [178, 204] } },
         ],
     },
     taskboard: {

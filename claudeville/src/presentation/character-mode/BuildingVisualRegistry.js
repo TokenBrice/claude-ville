@@ -190,11 +190,16 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         occupancyThresholds: { occupiedMax: 0.5, busyMax: 0.84 },
         labelPriority: 'landmark',
         beaconBase: 1,
-        // 4.5 — the two warm panes over the tool rack (re-authored base.png).
+        // 4.5 — the two warm windows over the tool rack. B3-04 (2026-10-24):
+        // each leaded window of the re-authored art has an upper and a lower
+        // pane split by a 3-texel transom, so it is two rects that light as
+        // one room (`ROOM_PANE_GROUPS.forge` in bake-room-masks.mjs).
         // BL-3 — pane centres on the sidecar glass (they were top-left corners).
         windowRects: [
-            { at: [144, 169.5], w: 6, h: 19 },
-            { at: [158, 163.5], w: 6, h: 19 },
+            { at: [144.5, 168], w: 5, h: 8 },
+            { at: [144.5, 179], w: 5, h: 8 },
+            { at: [159.5, 160.5], w: 5, h: 9 },
+            { at: [159.5, 172], w: 5, h: 8 },
         ],
         // 4.6 — the hearth fire is painted into base.png, so rest needs an
         // authored mask: `banked.png` restates exactly those pixels as stepped
@@ -208,19 +213,19 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         // inspection. The chimney anchor is the one the smoke column uses.
         workload: {
             billets: { at: [114, 214], step: [10, -4], w: 8, h: 4 },
-            chimney: { at: [183, 8] },
+            chimney: { at: [184, 19] },
             countAt: [150, 222],
             shelf: { at: [136, 184], step: 11, w: 9, h: 8, max: 4 },
         },
-        // 4.5 — art-coupled points of the re-authored forge: the furnace arch
+        // 4.5 / B3-04 — art-coupled points of the re-authored forge: the furnace arch
         // on the SW gable, the molten spill in front of it, the chimney crown
         // (smoke source; `smokeTop` is where a column leaves the cap) and the
         // anvil stump in the yard.
         effectAnchors: {
-            hearth: [80, 160],
-            spill: [80, 190],
-            chimney: [183, 8],
-            smokeTop: [183, 4],
+            hearth: [73, 162],
+            spill: [73, 194],
+            chimney: [184, 19],
+            smokeTop: [184, 15],
             anvil: [104, 200],
         },
     },
@@ -483,7 +488,7 @@ const WATCHTOWER_LANTERN_FIRE = BUILDING_VISUAL_REGISTRY.watchtower.effectAnchor
 
 export const BUILDING_EMITTER_FALLBACKS = {
     forge: [
-        { type: 'forgeEmber', at: [80, 150], chance: 0.06, count: 1 },
+        { type: 'forgeEmber', at: [73, 152], chance: 0.06, count: 1 },
         { type: 'forgeSpark', at: [104, 196], chance: 0.032, count: 1 },
     ],
     mine: [
@@ -511,7 +516,7 @@ export const BUILDING_EMITTER_FALLBACKS = {
 };
 
 export const BUILDING_LIGHT_FALLBACKS = {
-    forge: { at: [80, 186], color: '#ff8a33', radius: 80, overlay: 'atmosphere.light.fire-glow', fire: true },
+    forge: { at: [73, 190], color: '#ff8a33', radius: 80, overlay: 'atmosphere.light.fire-glow', fire: true },
     mine: { at: [76, 186], color: '#ffb84d', radius: 80, overlay: 'atmosphere.light.lantern-glow' },
     taskboard: { at: [124, 108], color: '#8bd7ff', radius: 42, overlay: 'atmosphere.light.lantern-glow' },
     archive: { at: [245, 178], color: '#ffcf7a', radius: 96, overlay: 'atmosphere.light.lantern-glow' },
