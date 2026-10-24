@@ -1490,7 +1490,8 @@ vec3 applyCoastSwash(vec3 color, vec2 px) {
     float cyc = mod(floor(u_time * 0.005 * u_waterFx.x), 8.0);
     float reach = cyc < 4.0 ? cyc : (cyc < 7.0 ? 6.0 - cyc : 0.0);
     if (sd > 0.0) {
-        if (waterStopIndex(color) < 0 && !sameColour(color, WATER_FOAM) && !sameColour(color, WATER_FOAM_CREST)) {
+        // E2-05 — at the cliff's foot the front breaks over the mirror too.
+        if ((flags & 32u) == 0u && waterStopIndex(color) < 0 && !sameColour(color, WATER_FOAM) && !sameColour(color, WATER_FOAM_CREST)) {
             return color;
         }
         float front = 0.05 + reach * 0.035;

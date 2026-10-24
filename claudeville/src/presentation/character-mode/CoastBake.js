@@ -1234,6 +1234,8 @@ function paintStratifiedCliff(buf, coast, field, renderer) {
     const edgeLimit = MAP_SIZE - 0.5 - 0.06;
     const plainTiles = cliffPlainTiles(renderer);
     const walls = wallPixels(renderer);
+    // E2-05 — each boulder column's waterline (world x -> y), for the swash.
+    coast.cliffFoot = new Map();
     const { data, role } = buf;
     const set = (x, y, rgb, kind) => {
         const at = bufferIndex(buf, x, y);
@@ -1330,6 +1332,7 @@ function paintStratifiedCliff(buf, coast, field, renderer) {
             if (!col.land) continue;
             const waterline = foot.get(x);
             if (waterline == null) continue;
+            coast.cliffFoot.set(x, waterline);
             let y = waterline;
             // Surf lace hugging the boulder bases: clustered runs (a coarse
             // and a fine hash), two foam buckets, a sparse second texel.
@@ -2388,6 +2391,16 @@ const COAST_SD_BIAS = 128;
 // The swash may draw from this far up the beach to this far out to sea.
 const SWASH_LAND_SD = -0.35;
 const SWASH_WATER_SD = 0.3;
+// E2-05 — the swash at the cliff's foot (under the curtain wall and the sea
+// tower, SW and SE): the outer shelf's cells within CLIFF_SURF_ROWS world rows
+// below a column's boulder waterline take the swash, their coast-field sd
+// rewritten to the distance below that waterline (CLIFF_SURF_SD0 plus
+// CLIFF_SURF_SD_ROW a row), so the beaches' 1.6 s lapping front breaks
+// against the rock too. The sd of the beaches runs off the island's signed
+// distance, which the cliff's 34 px face pushes far past the swash band.
+const CLIFF_SURF_ROWS = 8;
+const CLIFF_SURF_SD0 = 0.02;
+const CLIFF_SURF_SD_ROW = 0.025;
 
 export const COAST_FIELD_FLAGS = Object.freeze({
     reflection: 1,
@@ -2397,6 +2410,9 @@ export const COAST_FIELD_FLAGS = Object.freeze({
     // 3.3 (a) — the sea's own water (sea and Harbor bodies and the outer
     // shelf; never a lagoon, pond or river), where the swell caps may lie.
     sea: 16,
+    // E2-05 — a cell at the cliff's foot: its swash breaks over the cliff's
+    // mirror too (a beach's swash only ever turns water stops and foam).
+    cliffSurf: 32,
     // A water cell the terrain bake covered with a dock, pier deck, bridge
     // span or foundation (staticReflections' `covered`): land for 2.9 casts.
     covered: 64,
@@ -2437,6 +2453,20 @@ function riverArcAt(axes, u, v) {
         best = seg.s + t * seg.length;
     }
     return best;
+}
+
+// E2-05 — a coast cell's swash sd below the cliff's waterline, or null when
+// the cell is not wholly within CLIFF_SURF_ROWS rows under both its columns'
+// waterlines (a plain column under a building, slip or bridge has none).
+function cliffSurfSd(coast, c, r) {
+    const feet = coast.cliffFoot;
+    if (!feet?.size) return null;
+    const a = feet.get(coast.x + c * 2);
+    const b = feet.get(coast.x + c * 2 + 1);
+    if (a == null || b == null) return null;
+    const d = coast.y + r * 2 - Math.max(a, b);
+    if (d < 0 || d >= CLIFF_SURF_ROWS) return null;
+    return CLIFF_SURF_SD0 + d * CLIFF_SURF_SD_ROW;
 }
 
 function bakeWaterFields(renderer, coast, field) {
@@ -2490,7 +2520,9 @@ function bakeWaterFields(renderer, coast, field) {
                 flags |= COAST_FIELD_FLAGS.swash;
             }
             if (cls >= CLASS_WATER && (!inMap || field.caps[tile] > 3)) flags |= COAST_FIELD_FLAGS.sea;
-            coastField[cell * 2] = Math.max(0, Math.min(255, Math.round(sd * COAST_SD_SCALE) + COAST_SD_BIAS));
+            const surfSd = cls >= CLASS_WATER && !inMap ? cliffSurfSd(coast, c, r) : null;
+            if (surfSd != null) flags |= COAST_FIELD_FLAGS.swash | COAST_FIELD_FLAGS.cliffSurf;
+            coastField[cell * 2] = Math.max(0, Math.min(255, Math.round((surfSd ?? sd) * COAST_SD_SCALE) + COAST_SD_BIAS));
             coastField[cell * 2 + 1] = flags;
             if (mirrorBase && reflect?.[cell] > 0 && cls >= CLASS_WATER && !coast.covered?.[cell]) {
                 for (let oy = 0; oy < 2; oy++) {

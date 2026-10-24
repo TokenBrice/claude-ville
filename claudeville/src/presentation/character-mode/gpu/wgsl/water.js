@@ -343,7 +343,7 @@ fn applyCoastSwash(color: vec3f, px: vec2f) -> vec3f {
     let cyc = glslMod(floor(frame.timeMs * 0.005 * frame.waterFx.x), 8.0);
     let reach = select(select(0.0, 6.0 - cyc, cyc < 7.0), cyc, cyc < 4.0);
     if (sd > 0.0) {
-        if (waterStopIndex(color) < 0 && !sameColour(color, WATER_FOAM) && !sameColour(color, WATER_FOAM_CREST)) {
+        if ((flags & ${COAST_FIELD_FLAGS.cliffSurf}u) == 0u && waterStopIndex(color) < 0 && !sameColour(color, WATER_FOAM) && !sameColour(color, WATER_FOAM_CREST)) {
             return color;
         }
         let front = 0.05 + reach * 0.035;

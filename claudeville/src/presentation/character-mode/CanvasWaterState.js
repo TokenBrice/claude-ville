@@ -589,7 +589,7 @@ function buildBase(renderer) {
                     const k = cls[i];
                     if (flags & COAST_FIELD_FLAGS.swash) {
                         for (let cyc = 0; cyc < 8; cyc++) {
-                            const code = swashCode(k, sd, cyc, x, y);
+                            const code = swashCode(k, sd, cyc, x, y, (flags & COAST_FIELD_FLAGS.cliffSurf) !== 0);
                             if (code) swash[cyc].push(i, code);
                         }
                     }
@@ -633,11 +633,12 @@ function buildBase(renderer) {
 }
 
 // 3.6 applyCoastSwash on one texel of class `k`: 0 unchanged, else the class
-// it becomes (CLS_FOAM, CLS_CREST, CLS_WET, CLS_WET_DARK).
-function swashCode(k, sd, cyc, x, y) {
+// it becomes (CLS_FOAM, CLS_CREST, CLS_WET, CLS_WET_DARK). E2-05: at the
+// cliff's foot (`cliff`) the front breaks over the mirror texels too.
+function swashCode(k, sd, cyc, x, y, cliff = false) {
     const reach = cyc < 4 ? cyc : (cyc < 7 ? 6 - cyc : 0);
     if (sd > 0) {
-        if (k > 5 && k !== CLS_FOAM && k !== CLS_CREST) return 0;
+        if (k === CLS_EMPTY || (!cliff && k > 5 && k !== CLS_FOAM && k !== CLS_CREST)) return 0;
         const front = 0.05 + reach * 0.035;
         let out = 0;
         if (sd < front - 0.035) out = CLS_FOAM;
