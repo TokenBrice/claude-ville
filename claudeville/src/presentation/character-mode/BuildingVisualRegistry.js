@@ -363,6 +363,12 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         effectAnchors: {
             smokeTop: [217, 36],
         },
+        // B3-03' — the hearth fire and its floor spill are painted into
+        // base.png, so an empty Tavern (no patron, no worker) lays the
+        // authored `banked.png` mask over exactly those pixels: charcoal over
+        // one ember course. Drawn by the building renderer, never by the
+        // generic layer pass.
+        rest: { layer: 'banked' },
     },
     portal: {
         material: BUILDING_MATERIAL_REGISTRY.portal,

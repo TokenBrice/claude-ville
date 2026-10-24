@@ -156,3 +156,26 @@ test('the bar floor is walkable, paints inside the Tavern, and its arcade redraw
     const yard = tileToWorld(22, 18);
     assert.ok(sortAt(yard.x) < yard.y, 'a body in the yard paints after it');
 });
+
+test('an empty Tavern banks its painted hearth; a patron or worker lights it (B3-03\')', () => {
+    const tavern = { type: 'tavern' };
+    const renderer = Object.assign(Object.create(BuildingSprite.prototype), {
+        atmosphereState: { clock: { minuteOfDay: 12 * 60 } },
+        _visitorStatusByType: new Map(),
+        _patronIdsByType: new Map(),
+        _litGateByType: new Map(),
+    });
+    assert.equal(renderer._restMaskShowing(tavern), true);
+    assert.equal(renderer._emissiveGateFor(tavern), 0);
+
+    renderer._patronIdsByType.set('tavern', new Set(['lead-1']));
+    assert.equal(renderer._restMaskShowing(tavern), false);
+    assert.equal(renderer._emissiveGateFor(tavern), 1);
+
+    renderer._patronIdsByType.clear();
+    renderer._visitorStatusByType.set('tavern', { working: 1 });
+    assert.equal(renderer._restMaskShowing(tavern), false);
+
+    // Buildings without an authored rest mask never bank.
+    assert.equal(renderer._restMaskShowing({ type: 'archive' }), false);
+});

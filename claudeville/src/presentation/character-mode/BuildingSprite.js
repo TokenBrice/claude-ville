@@ -520,6 +520,9 @@ export class BuildingSprite {
     }
 
     _emissiveGateFor(building) {
+        // B3-03' — a banked hearth emits nothing: the mask covers the painted
+        // fire, so no emitter cut or light may restate it.
+        if (this._restMaskShowing(building)) return 0;
         return buildingEmissiveGate(
             lampCourseFor(this.atmosphereState),
             this._nightShiftLit(building?.type),
@@ -3176,8 +3179,8 @@ export class BuildingSprite {
             // ten minutes banks the same way: the mask is the same, the reason
             // is a measured idle rather than a canonical empty village.
             const forgeSelected = this._selectedBuildingType === 'forge';
-            if (this._villageAtRest() || this._forgeWorkload?.banked) {
-                this._drawForgeBankedMouth(ctx, entry, wx, wy);
+            if (this._restMaskShowing(building)) {
+                this._drawRestMask(ctx, entry, wx, wy, 'forge');
             } else {
                 if (shouldDrawLocalY(getBuildingEffectAnchor('forge', 'hearth', [75, 118])[1])) this._drawForgeEnhancement(ctx, localPoint, building);
             }
@@ -3289,6 +3292,10 @@ export class BuildingSprite {
                     },
                 };
             }
+        } else if (building.type === 'tavern') {
+            // B3-03' — an empty Tavern banks its painted hearth (the split
+            // clip partitions the mask like the base).
+            if (this._restMaskShowing(building)) this._drawRestMask(ctx, entry, wx, wy, 'tavern');
         } else if (building.type === 'harbor') {
             // Harbor effects span the roofline and foreground quay. Draw in both
             // split passes and let the active occlusion clip partition them.
@@ -5644,11 +5651,27 @@ export class BuildingSprite {
         return phase === VillagePhase.READY_EMPTY && !(this.agentSprites?.length);
     }
 
+    // 4.6 / B3-03' — whether a building's authored rest mask lies over its
+    // painted fire now. The Forge: the canonical empty village, or a hearth
+    // watched fall quiet for ten minutes (4.4). The Tavern: no patron and no
+    // worker, at any hour (its hearth burns for its patrons). Never read from
+    // mood or director state.
+    _restMaskShowing(building) {
+        const type = building?.type;
+        if (!type || !getBuildingRestLayer(type)) return false;
+        if (type === 'forge') return this._villageAtRest() || Boolean(this._forgeWorkload?.banked);
+        if (type === 'tavern') {
+            const working = this._visitorStatusByType?.get(type)?.working || 0;
+            return working + (this._patronIdsByType?.get(type)?.size || 0) === 0;
+        }
+        return false;
+    }
+
     // 4.6 — the banked mouth. The hearth fire is painted into base.png, so rest
     // lays the authored `banked.png` mask over exactly those pixels: stepped
     // charcoal over one ember course. A workshop between shifts, not a dead one.
-    _drawForgeBankedMouth(ctx, entry, wx, wy) {
-        const name = getBuildingRestLayer('forge');
+    _drawRestMask(ctx, entry, wx, wy, type) {
+        const name = getBuildingRestLayer(type);
         if (!name) return;
         const id = `${entry.id}.${name}`;
         if (!this.assets.get(id)) return;

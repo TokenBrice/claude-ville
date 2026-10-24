@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-10-24-wing-courses"
+  assetVersion: "2026-10-24-banked-hearth"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -2103,6 +2103,18 @@ buildings:
     lightSource: [190, 172]
     lightColor: '#ffcf7a'
     lightRadius: 58
+    layers:
+      # B3-03' — the banked hearth, the Forge's 4.6 recipe: the hearth fire
+      # and its firelight spill are painted into base.png, so an empty Tavern
+      # (no patron, no worker) lays this mask over exactly those pixels.
+      # Drawn by the building renderer only, never by the generic layer pass.
+      banked:
+        tool: hand-authored
+        prompt: "banked tavern hearth mask: the painted fireplace flame restated as stepped charcoal over one ember course at the bed, and the firelight spill on the stone hob and oak floor restated as their unlit texels; authored, not generated"
+        width: 296
+        height: 288
+        anchor: [158, 218]
+        materialClass: stone
 
   # ── HERO: Portal Gate ── re-authored 2026-10-01 into the Painted Isle family
   # (it was a dark charcoal rock heap with a boxy brazier overlay). REST
