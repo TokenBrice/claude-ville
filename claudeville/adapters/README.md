@@ -108,7 +108,7 @@ Registry metadata treats adapter-backed providers as detail-capable when `getSes
 | `status` | `'active'` | Currently always `'active'`; idle/terminated transitions are inferred client-side by `AgentManager`. |
 | `lastActivity` | number (ms epoch) | Latest of file mtime and any in-file timestamp. Sort key. |
 | `lastTool` | string \| null | Most recent tool name. |
-| `lastToolInput` | string \| null | Compact summary of the tool's argument; truncated to ~60 chars. |
+| `lastToolInput` | string \| null | Compact summary of the tool's argument; truncated to ~60 chars. Shell `command`/`cmd` fields first drop leading `cd <dir> &&` / `cd <dir>;` hops and every `git -C <dir>` flag (`shared.js` `stripShellLocationPrefix`), so the summary carries the command, not the directory. |
 | `lastMessage` | string \| null | Most recent assistant text; truncated. |
 | `lastPrompt` | string \| null | Most recent user prompt, trimmed to 200 characters. Codex reads user rollout messages; OMP ignores system-reminder and advisory XML blocks. |
 | `todos` | array | Current provider checklist, up to 64 `{ subject, status, phase }` items in declared order. Subjects are capped at 200 characters, statuses are `pending`, `in_progress`, or `completed`, and `phase` is either a label capped at 80 characters or `null`. Claude `TodoWrite` and Codex `update_plan` have no phase labels; OMP folds `todo` operations and preserves their phases. |
