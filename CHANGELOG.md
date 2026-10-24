@@ -2,6 +2,71 @@
 
 ---
 
+## v0.58.0 — *The Moonlit Watch* · Oct 24, 2026
+
+Night is readable, the Tavern can be read at a glance, and the town tells the truth about Claude's work.
+
+- **Night you can see.**
+  - Storms stop darkening the dusk and the night twice. The user's storm at 19:15 measures 66 mean island luma, up from 51.
+  - Pre-dawn is no longer the darkest hour of the day (clear 05:00: 68 luma, up from 54), and the night sea darkens less.
+  - Moonlight lights silhouettes and lifts shadows to deep indigo. Its strength is one constant, `MOONLIT_NIGHT_STRENGTH`.
+  - The Command "needs you" banner keeps its gold at night instead of turning sage-green.
+  - On a busy host, the GPU quality ladder no longer counts main-thread stalls as GPU load, so street-lamp pools and bloom stay on. At its lowest level, lamps and braziers keep their light slots.
+  - The frame-pressure governor reads windowed CPU or GPU time instead of their sum, and restores with one shared delay and backoff, so fireflies, livestock and drift are not shed on a healthy frame.
+  - Deep-night lamp pools reach further. Moored ships show one anchor light; ships under way show all their lamps.
+  - The Lamplighter's Round: at dusk the lighthouse lights first, and the lamps catch inland over seven minutes. At dawn they go out in reverse. It follows the clock only.
+- **The Honest Tavern.**
+  - The Tavern plaque counts its patrons and shows the oldest wait on subagents (`TAVERN │ 14 · 47m`). At its eight seats it fills with honey as the full state.
+  - Patrons beyond the seats stand at the bar, the veranda and the yard, not on Command's steps or the pier.
+  - Patrons wear their wait: they set the tankard down at 5 minutes and slump at 15.
+  - A lead stands up and faces its subagent when that child needs you or errors.
+  - The waiting-on-you queue runs along Command's forecourt instead of standing on the bridges.
+  - Empty buildings' boards step back, so the occupied ones carry the weight.
+- **The town tells the truth about Claude.**
+  - A Claude shell command is classified after its leading `cd <dir> &&` or `git -C <dir>`. Replaying a week of real calls, Bash placements at Command drop from 63 % to 16 %. Unrecognized shell commands go to the session's home district, not Command.
+  - Claude publishes tool results with exit codes. Harness refusals, permission denials and Edit misses are marked as flags and never captioned "Command failed".
+  - Claude subagents and teammates carry their real names, teams and colours.
+  - `Agent` dispatch, `Monitor`, test and gate commands, and doc reads map to their buildings. Codex and OMP messaging tools pair villagers for chat.
+  - A commit moves only the session that made it. Decoy sentry trips to the Lighthouse and the Mine are gone.
+  - Codex turns carry their duration.
+- **Bodies that say what is wrong.**
+  - An errored villager stands still with its back to the viewer; a rate-limited one sits on the ground.
+  - Pharos lookouts stand where the default camera can see them.
+- **Buildings that show who is inside.**
+  - Every painted pane is a room: the Archive lights up to 10 windows, Command up to 11, one per worker.
+  - Occupied windows light with the street lamps at dusk and dawn.
+  - Open doors show a warm lit hall at night.
+  - An empty Tavern banks its hearth, like the Forge. The Forge's banked hearth is now graded and depth-sorted on the GPU path.
+  - The chapel and the windmill cap join the village palette, and Command's wing roofs gain tile courses.
+- **A living sea.**
+  - The sea takes the sky's colour by time and weather, and lit swell slopes are one step lighter, so the swell reads at the wide shot.
+  - Swell sets roll slowly; with reduced motion they hold still.
+  - Surf breaks along the curtain wall's foot.
+  - Rain is four times denser at the wide shot, and showers cross the sea while it rains.
+- **Moments the town remembers.**
+  - The Mended Mark: when a command that failed with a real exit code passes again for the same agent, its broken chit becomes a stone and the agent celebrates.
+  - Every verified commit counts on the Forge billet rack, whatever its subject.
+  - Repo stones show their lore on hover.
+  - A session's plan of three or more items closing all-done leaves one checked note at the Task board.
+  - Nearby squadmates turn to face a celebrating villager.
+  - Outcome chits land in the district where the body works.
+- **Sound that doesn't go quiet.**
+  - A turn of two minutes or more finishes with a calm knock, capped at one a minute.
+  - After a reload, sound starts by itself where the browser allows it. Otherwise the first needs-you notice offers `START SOUND`, and the chip no longer claims sound is on.
+  - Answering a session in the terminal softens that session's next call.
+  - Settings can preview the needs-you, error and limit bells.
+- **Tooling.**
+  - Browser smokes launch on Linux through one shared launcher, with a `CLAUDEVILLE_CHROME` override.
+  - Water hashes are integer-based, so storm-night water is bit-exact across GPU paths.
+  - `npm run world:golden-hours` checks island brightness and lamp-light share at six fixed scenes on WebGPU, WebGL2 and Canvas.
+  - `world:validate-ambient` covers fog and storm.
+  - `verify:render`'s sound clicks hold at 3 FPS.
+  - Shift-D shows the frame-pressure level, its shed reasons, and a moment counter.
+
+Validation: `validate:full` and `world:golden-hours` pass. `world-visit-paths` still fails on two Harbor pier slots that have been unreachable since v0.57.0.
+
+---
+
 ## v0.57.6.1 · Oct 24, 2026 — Hotfix
 
 - **The fog banks stop flashing in, for real.** v0.57.6 delayed the frame-pressure governor's restore but did not remove the cause. On the GPU world, the fog banks were drawn twice: once as ground records, which are what you see, and once as a full-viewport pattern fill on the 2D backdrop. That second copy is invisible, because the composite's open sea is opaque below the horizon, yet it cost about 20 ms a frame at 2508×1398. Every time the governor probed down to full detail, that cost pushed the frame over budget and the fog was shed again within about 200 ms, which is the flash. The backdrop no longer draws fog, and its pre-graded fog tile is gone. At 2508×1398 with fog on, the median render time drops from 28.7 ms to 4.8 ms (4.6 ms without fog), so a host that can afford full detail now keeps the fog banks steady in overcast, rain and fog. The Canvas renderer still draws the fog with the same full-viewport fill.
