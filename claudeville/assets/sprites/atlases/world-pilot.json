@@ -749,7 +749,7 @@
     }
   },
   "channelSha256": {
-    "albedo": "c7e6522a90046e5ab3e5c36f7aaf428d628ce57e54b71dd751681c5c892200a7",
+    "albedo": "2d68bbed0670eb12ba79c96303651e20b5bb499218925e28be8d38f3e5a3b1be",
     "emissive": "bef3e83ec2fba3dc25576eaacde7d03807b0c066ba41f49873ed17c21901e33e",
     "material": "af10bd160cbf5a558c6024c1c69d6baa46ced17710f7b08d7dea87a98bdc813d",
     "occluder": "09a2d68cbc7391cc7bc77b9a40d411ae548518e3bdccb1368b1f162825e03c33"
@@ -9981,7 +9981,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "c06f0701a0065ff3f9a79097d95783a79c9b2fe3bf96140c85b6e134fe792eb3",
+      "sourceSha256": "e26dcc92162d4faf03f6b997ced30718183b705fd5e8449a61dfadcbd502039c",
       "sourceSize": {
         "h": 93,
         "w": 105
@@ -10402,7 +10402,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "7b1aba043732670ad7dfe3c40b08de004eeda735668e3b92ce8c7baea085546d",
+      "sourceSha256": "fa491fbe90f26bdb5e415ce998d1b1e2cf5db8b5982651996ffcb4d45d5ea9a2",
       "sourceSize": {
         "h": 80,
         "w": 120
@@ -10879,7 +10879,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "513c2db90b52e71d6e6ecffc1f5145a3509ed95f55d3aa6c17dc21f7aa4864b5",
+      "sourceSha256": "0ed0f5a9db7d9d50e62934050c8bfb46a9cf82309ed59a03e2c79cd99791deab",
       "sourceSize": {
         "h": 24,
         "w": 36

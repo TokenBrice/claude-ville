@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-10-24-every-pane"
+  assetVersion: "2026-10-24-lit-halls"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -1797,7 +1797,7 @@ buildings:
       # Command has a working visitor (V8); one-shot on arrival.
       gate:
         tool: hand-authored
-        prompt: "Command gate closed / ajar / open: the base oak leaves swung inward, dark hall #1a1310 with a stepped warm floor on the C1 emissive ramp; authored, not generated"
+        prompt: "Command gate closed / ajar / open: the base oak leaves swung inward, dark hall #1a1310 with a stepped warm floor on the C1 emissive ramp; B3-08: the open frames' hall rises from that floor in two Bayer-dithered courses of #ff9d4a (1/2, 1/4), so an occupied hall reads lit at night, not void; authored, not generated"
         width: 120
         height: 80
         frames: 3
@@ -2033,7 +2033,7 @@ buildings:
       # onto the dark hall and a warm floor while it works.
       door:
         tool: hand-authored
-        prompt: "Harbor office door closed / ajar / open, hinged left, dark hall #1a1310 over a stepped warm floor; authored, not generated"
+        prompt: "Harbor office door closed / ajar / open, hinged left, dark hall #1a1310 over a stepped warm floor; B3-08: two Bayer-dithered #ff9d4a courses (1/2, 1/4) rise from it in the open frames; authored, not generated"
         width: 36
         height: 24
         frames: 3
@@ -2481,7 +2481,7 @@ buildings:
       # has a working visitor (V8), one-shot on arrival.
       door:
         tool: hand-authored
-        prompt: "Archive lancet door closed / ajar / open, dark hall #1a1310 over a stepped warm floor; authored, not generated"
+        prompt: "Archive lancet door closed / ajar / open, dark hall #1a1310 over a stepped warm floor; B3-08: two Bayer-dithered #ff9d4a courses (1/2, 1/4) rise from it in the open frames; authored, not generated"
         width: 105
         height: 93
         frames: 3
