@@ -16,6 +16,7 @@ These synthetic JSONL transcripts test parser contracts without reading real pro
 | Codex | `codex/full-auto-pending.jsonl` | Old pending command under full-auto remains working, not permission-blocked. |
 | Codex | `codex/item-completed.jsonl` | Ordered file changes and a failed command with duration, stderr, and exit status. |
 | Codex | `codex/long-running-turn.jsonl` | Old active turn with token events remains running rather than decaying idle. |
+| Codex | `codex/turn-durations.jsonl` | A completed turn with `duration_ms`, an aborted turn, then a completed turn without one: the last completed turn's span is the duration. |
 | Codex | `codex/tool-results.jsonl` | Command completions with exit 0, exit 1, an unknown exit, and one invocation that never completes. |
 | Codex | `codex/git-commit-push.jsonl` | Current rollout shape: `custom_tool_call` plus `item_completed` `CommandExecution` (command array, `file://` cwd) for a commit, a nothing-to-commit failure, a `push -u origin HEAD \| tail` and a `git -C` commit in a nested repository. |
 | Kimi Code | `kimi/tool-results.jsonl` | Wire loop events: a passing and a failing command result, plus a result carrying only output (no outcome). |

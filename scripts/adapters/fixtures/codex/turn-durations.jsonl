@@ -1,0 +1,8 @@
+{"type":"session_meta","payload":{"id":"turn-durations","cwd":"__PROJECT__","model":"gpt-6-luna"}}
+{"type":"turn_context","payload":{"cwd":"__PROJECT__","model":"gpt-6-luna","effort":"high"}}
+{"timestamp":"__FIVE_MINUTES_AGO__","type":"event_msg","payload":{"type":"task_started"}}
+{"timestamp":"__FOUR_MINUTES_AGO__","type":"event_msg","payload":{"type":"task_complete","duration_ms":59000}}
+{"timestamp":"__FOUR_MINUTES_AGO__","type":"event_msg","payload":{"type":"task_started"}}
+{"timestamp":"__THREE_MINUTES_AGO__","type":"event_msg","payload":{"type":"turn_aborted"}}
+{"timestamp":"__THREE_MINUTES_AGO__","type":"event_msg","payload":{"type":"task_started"}}
+{"timestamp":"__NOW__","type":"event_msg","payload":{"type":"task_complete"}}

@@ -417,13 +417,29 @@ function boundaryFromEntry(entry, previous = null) {
     };
   }
   if (payload.type === 'task_complete' || payload.type === 'turn_complete' || payload.type === 'turn_aborted') {
+    const turnStartedAt = previous?.turnStartedAt || null;
     return {
       type: payload.type,
       at,
-      turnStartedAt: previous?.turnStartedAt || null,
+      turnStartedAt,
+      lastTurnDurationMs: payload.type === 'turn_aborted'
+        ? previous?.lastTurnDurationMs ?? null
+        : codexTurnDurationMs(payload, turnStartedAt, at),
     };
   }
   return previous;
+}
+
+// A completed Codex turn's duration: the provider's own `duration_ms` on
+// `task_complete`, else the span between this turn's recorded `task_started`
+// and its completion. An aborted turn never has one.
+function codexTurnDurationMs(payload, turnStartedAt, completedAt) {
+  const reported = Number(payload?.duration_ms);
+  if (payload?.duration_ms != null && Number.isFinite(reported) && reported >= 0) return Math.trunc(reported);
+  if (Number.isFinite(turnStartedAt) && Number.isFinite(completedAt) && completedAt >= turnStartedAt) {
+    return completedAt - turnStartedAt;
+  }
+  return null;
 }
 
 function foldRolloutBoundary(entries, initial = null) {
@@ -954,6 +970,7 @@ function deriveCodexTurnState(
     || priorBoundary?.type === 'turn_aborted';
   let turnEndedAt = turnEnded ? priorBoundary?.at || null : null;
   let turnStartedAt = priorBoundary?.turnStartedAt || null;
+  let lastTurnDurationMs = priorBoundary?.lastTurnDurationMs ?? null;
   let sawTurnBoundary = Boolean(priorBoundary);
 
   for (const entry of entries) {
@@ -974,6 +991,9 @@ function deriveCodexTurnState(
       sawTurnBoundary = true;
       turnEnded = true;
       turnEndedAt = toEpochMs(entry.timestamp);
+      if (payload.type !== 'turn_aborted') {
+        lastTurnDurationMs = codexTurnDurationMs(payload, turnStartedAt, turnEndedAt);
+      }
       pendingCalls.clear();
     }
 
@@ -998,7 +1018,7 @@ function deriveCodexTurnState(
   const pendingTool = pending?.tool || null;
   const pendingSince = pending?.since || null;
   if (!sawTurnBoundary && !pendingTool) {
-    return { ...deriveTurnState({ known: false }, now), turnStartedAt: null };
+    return { ...deriveTurnState({ known: false }, now), turnStartedAt: null, lastTurnDurationMs: null };
   }
 
   return {
@@ -1010,6 +1030,7 @@ function deriveCodexTurnState(
       permissionMode,
     }, now),
     turnStartedAt,
+    lastTurnDurationMs,
   };
 }
 
@@ -1844,6 +1865,7 @@ class CodexAdapter {
         signalSource: detail.signalSource,
         signalCertainty: detail.signalCertainty,
         turnStartedAt: detail.turnStartedAt,
+        lastTurnDurationMs: detail.lastTurnDurationMs ?? null,
         pendingTool: detail.pendingTool,
         pendingSince: detail.pendingSince,
         awaitingSince: detail.awaitingSince,
@@ -2006,4 +2028,4 @@ class CodexAdapter {
   }
 }
 
-module.exports = { CodexAdapter, _test: { getGitEvents } };
+module.exports = { CodexAdapter, _test: { getGitEvents, deriveCodexTurnState } };
