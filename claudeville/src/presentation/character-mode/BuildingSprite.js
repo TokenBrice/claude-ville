@@ -2817,14 +2817,19 @@ export class BuildingSprite {
                 top = Math.round(layer.anchor[1] - frameH);
                 textureKey = `part:${id}:${this.assets.assetVersion || ''}`;
             } else {
-                if (isBuildingApertureLayer(type, name) || !Array.isArray(layer.anchor)) continue;
+                // 4.6 / B3-03' — a rest mask is a part only while its hearth is
+                // banked (`_restMaskShowing`), so both backends grade and depth
+                // sort it like the base; it is authored at the base's size and
+                // origin.
+                const rest = getBuildingRestLayer(type) === name;
+                if (rest ? !this._restMaskShowing(building) : (isBuildingApertureLayer(type, name) || !Array.isArray(layer.anchor))) continue;
                 image = this.assets.get(id);
                 if (!image) continue;
                 frame = 0;
                 frameW = image.width;
                 frameH = image.height;
-                left = Math.round(layer.anchor[0] - frameW / 2);
-                top = Math.round(layer.anchor[1] - frameH);
+                left = rest ? 0 : Math.round(layer.anchor[0] - frameW / 2);
+                top = rest ? 0 : Math.round(layer.anchor[1] - frameH);
                 textureKey = `layer:${id}:${this.assets.assetVersion || ''}`;
             }
             let sy = 0;
@@ -3178,10 +3183,9 @@ export class BuildingSprite {
             // shipped treatment. 4.4 — a Forge we have watched fall quiet for
             // ten minutes banks the same way: the mask is the same, the reason
             // is a measured idle rather than a canonical empty village.
+            // The banked mask itself is a part (partDrawsFor).
             const forgeSelected = this._selectedBuildingType === 'forge';
-            if (this._restMaskShowing(building)) {
-                this._drawRestMask(ctx, entry, wx, wy, 'forge');
-            } else {
+            if (!this._restMaskShowing(building)) {
                 if (shouldDrawLocalY(getBuildingEffectAnchor('forge', 'hearth', [75, 118])[1])) this._drawForgeEnhancement(ctx, localPoint, building);
             }
             // The workload billets and the result shelf are physical objects in
@@ -3292,10 +3296,6 @@ export class BuildingSprite {
                     },
                 };
             }
-        } else if (building.type === 'tavern') {
-            // B3-03' — an empty Tavern banks its painted hearth (the split
-            // clip partitions the mask like the base).
-            if (this._restMaskShowing(building)) this._drawRestMask(ctx, entry, wx, wy, 'tavern');
         } else if (building.type === 'harbor') {
             // Harbor effects span the roofline and foreground quay. Draw in both
             // split passes and let the active occlusion clip partition them.
@@ -5665,18 +5665,6 @@ export class BuildingSprite {
             return working + (this._patronIdsByType?.get(type)?.size || 0) === 0;
         }
         return false;
-    }
-
-    // 4.6 — the banked mouth. The hearth fire is painted into base.png, so rest
-    // lays the authored `banked.png` mask over exactly those pixels: stepped
-    // charcoal over one ember course. A workshop between shifts, not a dead one.
-    _drawRestMask(ctx, entry, wx, wy, type) {
-        const name = getBuildingRestLayer(type);
-        if (!name) return;
-        const id = `${entry.id}.${name}`;
-        if (!this.assets.get(id)) return;
-        const anchor = this.assets.getAnchor(entry.id);
-        this.sprites.drawSprite(ctx, id, wx, wy, { anchor });
     }
 
     // 4.6 — the slate between shifts: the authored rack with nothing pinned to

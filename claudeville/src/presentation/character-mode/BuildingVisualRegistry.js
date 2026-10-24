@@ -198,8 +198,8 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         ],
         // 4.6 — the hearth fire is painted into base.png, so rest needs an
         // authored mask: `banked.png` restates exactly those pixels as stepped
-        // charcoal over one ember course. Drawn by the building renderer on
-        // canonical READY_EMPTY only, never by the generic layer pass.
+        // charcoal over one ember course. A part (`partDrawsFor`) only while
+        // the hearth is banked (`BuildingSprite._restMaskShowing`).
         rest: { layer: 'banked' },
         // 4.4 — the workload bench. `billets` are the three stepped bars on the
         // anvil plinth (one per observed count tier), `shelf` is the result
@@ -366,8 +366,7 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         // B3-03' — the hearth fire and its floor spill are painted into
         // base.png, so an empty Tavern (no patron, no worker) lays the
         // authored `banked.png` mask over exactly those pixels: charcoal over
-        // one ember course. Drawn by the building renderer, never by the
-        // generic layer pass.
+        // one ember course. A part only while banked, like the Forge's.
         rest: { layer: 'banked' },
     },
     portal: {

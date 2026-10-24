@@ -2106,8 +2106,8 @@ buildings:
     layers:
       # B3-03' — the banked hearth, the Forge's 4.6 recipe: the hearth fire
       # and its firelight spill are painted into base.png, so an empty Tavern
-      # (no patron, no worker) lays this mask over exactly those pixels.
-      # Drawn by the building renderer only, never by the generic layer pass.
+      # (no patron, no worker) lays this mask over exactly those pixels: a
+      # part (BuildingSprite.partDrawsFor) only while the hearth is banked.
       banked:
         tool: hand-authored
         prompt: "banked tavern hearth mask: the painted fireplace flame restated as stepped charcoal over one ember course at the bed, and the firelight spill on the stone hob and oak floor restated as their unlit texels; authored, not generated"
