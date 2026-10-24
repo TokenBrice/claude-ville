@@ -548,13 +548,15 @@ export class Camera {
     }
 
     centerOnMap() {
-        // G7-9 — the boot (and empty-content) pose centres the island, so the
-        // Portal where arrivals appear is in frame; it used to sit about 480
-        // world px east, toward the harbor lanes, until AUTO's first move.
+        // Frame the village core while giving the right-side harbor sea lanes more room.
+        const tx = 33, ty = 18;
+        const screen = tileToWorld(tx, ty);
         this._idleDrift = null;
         this.zoom = this.tierZoom(1);
         if (!this.canvas) return;
-        this._setCenter(ISLAND_CENTROID.x, ISLAND_CENTROID.y, this.zoom);
+        this.x = -screen.x + this._viewportWidth() / (2 * this.zoom);
+        this.y = -screen.y + this._viewportHeight() / (2 * this.zoom);
+        this._clampToBounds();
     }
 
     // 4.1 — the ladder changes only with the backing DPR (`_syncDisplayPixelZoom`
