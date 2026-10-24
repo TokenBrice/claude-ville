@@ -391,7 +391,7 @@
       "id": "building.forge",
       "materialClass": "stone",
       "sourcePath": "buildings/building.forge/base.png",
-      "sourceSha256": "7f83b4b7b57f9cbef7563d52b20166400988291614fdc2e44e7f2f9a2e655382",
+      "sourceSha256": "80e32eb487264843971c8f806f30cb2732ed92b469114261d80fe608965c3ddc",
       "sourceSize": {
         "h": 232,
         "w": 256
@@ -750,8 +750,8 @@
     }
   },
   "channelSha256": {
-    "albedo": "d514318ff9c4d0cd2eacd5407f7146cea4d4182f22a8362fe35bcd7f49f24f25",
-    "emissive": "ba9d326e25a3ee29fb6ca0e2ffe08c7ad95da3c0ebeaa481aca5191ceb3cf946",
+    "albedo": "2da96ce0103a2f6331b4b750130769ebc19f11d734a0b5de5d2a0f0c655c0645",
+    "emissive": "0d29781ea0588831db98f196d8ed72cae383f60629843ae8734dcabcc5e0ceed",
     "material": "ad6c8cebf8afecacf83f4b60adefc7453a539f154b94a519e17003b9f33a62e0",
     "occluder": "8c17d419526092d644f0a424d31cfc3561dfedd966a5126d0b2c5d3bfdb4efa7"
   },
@@ -10502,7 +10502,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "7f83b4b7b57f9cbef7563d52b20166400988291614fdc2e44e7f2f9a2e655382",
+      "sourceSha256": "80e32eb487264843971c8f806f30cb2732ed92b469114261d80fe608965c3ddc",
       "sourceSize": {
         "h": 232,
         "w": 256
