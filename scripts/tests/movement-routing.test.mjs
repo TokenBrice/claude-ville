@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { AMBIENT_SCENIC_POINTS, BRIDGE_HINTS, DISTRICT_PROPS } from '../../claudeville/src/config/scenery.js';
 import { BUILDING_DEFS, VISIT_OVERFLOW_TILES } from '../../claudeville/src/config/buildings.js';
-import { COMMAND_QUEUE, REST_SEATS, VILLAGE_GATE, VILLAGE_GATE_GEOMETRY } from '../../claudeville/src/config/townPlan.js';
+import { COMMAND_QUEUE, REST_SEATS, REST_STANDS, VILLAGE_GATE, VILLAGE_GATE_GEOMETRY } from '../../claudeville/src/config/townPlan.js';
 import { MAP_SIZE } from '../../claudeville/src/config/constants.js';
 import { AgentStatus } from '../../claudeville/src/domain/value-objects/AgentStatus.js';
 import {
@@ -97,6 +97,7 @@ test('walk-blocking fixtures take their foot out of the walk grid and off every 
 
     const places = [
         ...REST_SEATS,
+        ...Object.values(REST_STANDS).flatMap(room => room.tiles),
         ...COMMAND_QUEUE.slots,
         ...COMMAND_QUEUE.overflow,
         ...AMBIENT_SCENIC_POINTS,

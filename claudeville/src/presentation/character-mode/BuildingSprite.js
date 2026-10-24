@@ -8,6 +8,7 @@
 
 import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 import { BUILDING_DEFS } from '../../config/buildings.js';
+import { REST_SEATS } from '../../config/townPlan.js';
 import { STATUS_VISUALS, WORLD_BODY_FONT_11, WORLD_BODY_FONT_22, WORLD_DISPLAY_FONT_8, WORLD_DISPLAY_FONT_16 } from '../../config/theme.js';
 import { EVENT_SHAPES } from '../shared/EventShapes.js';
 import {
@@ -25,6 +26,7 @@ import { ACTIONABLE_BUCKETS, bucketForStatus, isActionableBucket } from '../../d
 import { BUILDING_EVENTS, eventBus } from '../../domain/events/DomainEvent.js';
 import { classifyTool, toolVerbLabel } from '../../domain/services/ToolIdentity.js';
 import { repoProfile } from '../shared/RepoColor.js';
+import { formatWaitAge } from '../shared/Formatters.js';
 import { ledgerPlaqueRows } from '../shared/HarborLedger.js';
 import { squadMusterLines } from './RelationshipState.js';
 import { getReservedRects } from '../shared/ReservedRects.js';
@@ -133,6 +135,17 @@ const PLAQUE_ATTENTION = Object.freeze({
     quota: Object.freeze({ motif: 'limit-gate', color: STATUS_VISUALS.rate_limited.color }),
 });
 const PLAQUE_ATTENTION_GAP = 4;
+// AG-1 (B3-07, G7-4) — the Tavern's tally: a patron cell after the head band,
+// `│ ⊔5 · 14m`, the district's own tankard motif, the exact patron count and
+// the oldest wait on a lead's subagents (minute grain, Formatters
+// `formatWaitAge`). Patrons are no visitors (V8): the cell never joins the
+// work count. At seat capacity the cell fills with the district accent, the
+// one "full" state. Static; it changes only when a count or a minute does.
+const PATRON_MOTIF = 'district-tavern';
+const PATRON_SEATS_BY_TYPE = REST_SEATS.reduce((seats, seat) => {
+    if (seat.building) seats.set(seat.building, (seats.get(seat.building) || 0) + 1);
+    return seats;
+}, new Map());
 const LABEL_OVERLAP_TOLERANCE = 0.45;
 const LABEL_COMPACT_OVERLAP_TOLERANCE = 0.62;
 const MAX_TASKBOARD_PAPERS = 4;
@@ -1087,6 +1100,7 @@ export class BuildingSprite {
                 const plaque = this._measurePlaque(ctx, b, attempt, {
                     count, zoom, isHovered, isLandmark, scaleMode,
                     attention: b.type === 'command' ? this.plaqueAttention : null,
+                    patrons: this.plaquePatrons?.get(b.type) || null,
                 });
                 if (!plaque.title && !plaque.motif) continue;
                 const layout = this._resolveLabelLayout({
@@ -1151,6 +1165,7 @@ export class BuildingSprite {
                 isLandmark,
                 alert: failedPushAlert,
                 accent: getBuildingLabelAccent(b.type, WALNUT.text),
+                quiet: !count && !readMode,
             });
         }
     }
@@ -1287,9 +1302,14 @@ export class BuildingSprite {
     // (SignalLedger's actionable buckets, the T1 beacon population) into
     // `plaqueAttention`: null at zero, else the exact count and the lead
     // bucket's hue and motif for the Command plaque's attention cell.
-    _plaqueCountsByType() {
+    _plaqueCountsByType(now = Date.now()) {
         const counts = this._plaqueCounts || (this._plaqueCounts = new Map());
         counts.clear();
+        const patrons = this._plaquePatrons || (this._plaquePatrons = new Map());
+        for (const tally of patrons.values()) {
+            tally.count = 0;
+            tally.oldestSince = 0;
+        }
         const actionable = this._plaqueActionable || (this._plaqueActionable = Object.fromEntries(ACTIONABLE_BUCKETS.map(name => [name, 0])));
         for (const name of ACTIONABLE_BUCKETS) actionable[name] = 0;
         let actionableTotal = 0;
@@ -1302,9 +1322,20 @@ export class BuildingSprite {
                 actionableTotal++;
             }
             // V8 (M12) — a plaque number means work: a resting body (7.1 seat)
-            // counts nowhere, and a petitioner in the Command queue (7.2)
-            // counts at its own district, never at Command.
-            if (sprite.visitRole === 'rest') continue;
+            // counts in no work count, and a petitioner in the Command queue
+            // (7.2) counts at its own district, never at Command. AG-1 — a
+            // body resting at a building's seats or standing room is that
+            // building's patron, tallied apart (the Tavern's cell).
+            if (sprite.visitRole === 'rest') {
+                const at = sprite._restBuilding || null;
+                if (!at) continue;
+                let tally = patrons.get(at);
+                if (!tally) patrons.set(at, tally = { count: 0, oldestSince: 0 });
+                tally.count++;
+                const wait = sprite._subagentWait;
+                if (wait?.pint && wait.since > 0 && (!tally.oldestSince || wait.since < tally.oldestSince)) tally.oldestSince = wait.since;
+                continue;
+            }
             if (sprite.visitRole === 'queue') {
                 const own = String(agent.targetBuildingType || agent.lastKnownBuildingType || '').trim();
                 if (own && own !== 'command') counts.set(own, (counts.get(own) || 0) + 1);
@@ -1322,11 +1353,22 @@ export class BuildingSprite {
         }
         const lead = actionableTotal ? ACTIONABLE_BUCKETS.find(name => actionable[name] > 0) : null;
         this.plaqueAttention = lead ? { count: actionableTotal, bucket: lead, ...PLAQUE_ATTENTION[lead] } : null;
+        const tallies = this.plaquePatrons || (this.plaquePatrons = new Map());
+        tallies.clear();
+        for (const [type, tally] of patrons) {
+            if (!tally.count) continue;
+            const seats = PATRON_SEATS_BY_TYPE.get(type) || 0;
+            tallies.set(type, {
+                count: tally.count,
+                age: tally.oldestSince ? formatWaitAge(now - tally.oldestSince) : '',
+                full: seats > 0 && tally.count >= seats,
+            });
+        }
         return counts;
     }
 
     // Plaque geometry in screen pixels (before the 1/zoom counter-scale).
-    _measurePlaque(ctx, building, attempt, { count, zoom, isHovered, isLandmark, scaleMode, attention = null }) {
+    _measurePlaque(ctx, building, attempt, { count, zoom, isHovered, isLandmark, scaleMode, attention = null, patrons = null }) {
         const motif = attempt.motif ? DISTRICT_MOTIFS[building.type] || null : null;
         ctx.save();
         ctx.font = WORLD_DISPLAY_FONT_8;
@@ -1367,6 +1409,10 @@ export class BuildingSprite {
         const rowsWidth = rows.reduce((max, row) => Math.max(max, Math.round(measureLabelText(ctx, row.label)) + (row.profile ? 8 : 0) + (row.tailWidth || 0)), 0);
         const attentionText = attention?.count > 0 ? String(attention.count) : '';
         const attentionWidth = attentionText ? measureLabelText(ctx, attentionText) : 0;
+        const patronText = patrons?.count > 0 ? String(patrons.count) : '';
+        const patronAge = patronText && patrons.age ? ` · ${patrons.age}` : '';
+        const patronWidth = patronText ? Math.round(measureLabelText(ctx, patronText)) : 0;
+        const patronAgeWidth = patronAge ? Math.round(measureLabelText(ctx, patronAge)) : 0;
         ctx.restore();
         const titleWidth = Math.round(title.width);
         const motifWidth = motif ? 8 + 5 : 0;
@@ -1377,7 +1423,8 @@ export class BuildingSprite {
         // right end, the lead bucket's motif and the exact actionable count in
         // plate ink. Absent at zero, so the plaque is then unchanged.
         const attentionCell = attentionText ? PLAQUE_PAD + 8 + PLAQUE_ATTENTION_GAP + attentionWidth + PLAQUE_PAD : 0;
-        const width = Math.max(headWidth + countCell + attentionCell, rowsWidth + PLAQUE_PAD * 2) + 2;
+        const patronCell = patronText ? 1 + PLAQUE_PAD + 8 + PLAQUE_ATTENTION_GAP + patronWidth + patronAgeWidth + PLAQUE_PAD : 0;
+        const width = Math.max(headWidth + countCell + patronCell + attentionCell, rowsWidth + PLAQUE_PAD * 2) + 2;
         const height = PLAQUE_HEAD_H + (rows.length ? rows.length * PLAQUE_ROW_H + 3 : 0);
         const plaque = {
             motif,
@@ -1394,12 +1441,27 @@ export class BuildingSprite {
             plaque.attentionText = attentionText;
             plaque.attentionCell = attentionCell;
         }
+        if (patronText) {
+            plaque.patronText = patronText;
+            plaque.patronAge = patronAge;
+            plaque.patronWidth = patronWidth;
+            plaque.patronCell = patronCell;
+            plaque.patronCellLeft = headWidth + countCell;
+            plaque.patronFull = Boolean(patrons.full);
+        }
         return plaque;
     }
 
-    _paintPlaque(ctx, plaque, { x, y, labelScale, poleBottom, isHovered, isSelected, isLandmark, alert, accent }) {
+    _paintPlaque(ctx, plaque, { x, y, labelScale, poleBottom, isHovered, isSelected, isLandmark, alert, accent, quiet = false }) {
         const { width, height } = plaque;
         const lit = isHovered || isSelected;
+        // G7-2 — a board with nobody in it steps back: no work count, no
+        // patrons, no ledger or attention, not hovered, selected, alerted or
+        // in READ. Its motif and name take the dim ink and it drops its nails,
+        // so the occupied boards carry the weight. The overlay is ungraded,
+        // so the step reads the same by night.
+        const dim = quiet && !lit && !alert && !plaque.countText && !plaque.rows.length
+            && !plaque.patronCell && !plaque.attention;
         // The post: one screen pixel from the board's foot into the roof.
         ctx.save();
         ctx.translate(x, y);
@@ -1419,7 +1481,7 @@ export class BuildingSprite {
             ctx.fillStyle = LABEL_INK.gold;
             ctx.fillRect(left - 1, top - 1, width + 2, height + 2);
         }
-        paintWalnutBoard(ctx, left, top, width, height, { nails: isLandmark || lit, lit });
+        paintWalnutBoard(ctx, left, top, width, height, { nails: (isLandmark && !dim) || lit, lit });
         // A verified failed push on the watchtower carries a red left rail;
         // nothing else on a plaque claims an outcome.
         if (alert) {
@@ -1429,7 +1491,7 @@ export class BuildingSprite {
         let cursor = left + 1 + PLAQUE_PAD;
         if (plaque.motif) {
             drawOutlinedMotif(ctx, plaque.motif, cursor, top + 4, {
-                color: lit ? '#ffe7a3' : accent,
+                color: lit ? '#ffe7a3' : dim ? LABEL_INK.textDim : accent,
                 outline: WALNUT.outline,
             });
             cursor += 8 + 5;
@@ -1438,7 +1500,7 @@ export class BuildingSprite {
         ctx.textBaseline = 'alphabetic';
         if (plaque.title) {
             ctx.font = WORLD_DISPLAY_FONT_8;
-            ctx.fillStyle = lit ? '#ffe7a3' : WALNUT.text;
+            ctx.fillStyle = lit ? '#ffe7a3' : dim ? LABEL_INK.textDim : WALNUT.text;
             ctx.fillText(plaque.title, cursor, top + 13);
         }
         if (plaque.countText) {
@@ -1448,6 +1510,34 @@ export class BuildingSprite {
             ctx.font = WORLD_BODY_FONT_11;
             ctx.fillStyle = WALNUT.count;
             ctx.fillText(plaque.countText, dividerX + 1 + PLAQUE_PAD, top + 12);
+        }
+        if (plaque.patronCell) {
+            // AG-1 — after the head band and any work count: a divider, the
+            // tankard in the district accent, the count in count ink and the
+            // oldest wait in dim ink; at seat capacity the cell fills with the
+            // accent and its marks take plate ink.
+            const cellLeft = left + 1 + plaque.patronCellLeft;
+            const full = plaque.patronFull;
+            if (full) {
+                ctx.fillStyle = accent;
+                ctx.fillRect(cellLeft + 1, top + 1, plaque.patronCell - 1, PLAQUE_HEAD_H - 2);
+            } else {
+                ctx.fillStyle = WALNUT.divider;
+                ctx.fillRect(cellLeft, top + 2, 1, PLAQUE_HEAD_H - 4);
+            }
+            const motifX = cellLeft + 1 + PLAQUE_PAD;
+            drawOutlinedMotif(ctx, PATRON_MOTIF, motifX, top + 4, {
+                color: full ? LABEL_INK.plate : accent,
+                outline: full ? 'transparent' : WALNUT.outline,
+            });
+            const textX = motifX + 8 + PLAQUE_ATTENTION_GAP;
+            ctx.font = WORLD_BODY_FONT_11;
+            ctx.fillStyle = full ? LABEL_INK.plate : WALNUT.count;
+            ctx.fillText(plaque.patronText, textX, top + 12);
+            if (plaque.patronAge) {
+                ctx.fillStyle = full ? LABEL_INK.plate : LABEL_INK.textDim;
+                ctx.fillText(plaque.patronAge, textX + plaque.patronWidth, top + 12);
+            }
         }
         if (plaque.attention) {
             // Right-aligned inside the outline, over the head band's bevel

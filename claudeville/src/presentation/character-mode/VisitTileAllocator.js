@@ -1,7 +1,7 @@
 import { normalizeBuildingType, VISIT_OVERFLOW_TILES } from '../../config/buildings.js';
 import { TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
 import { AMBIENT_GROUND_PROPS, DISTRICT_PROPS, SCENIC_POINT_PROPS } from '../../config/scenery.js';
-import { APPROACH_FILES, COMMAND_QUEUE, inVillageMasonry, REST_SEATS } from '../../config/townPlan.js';
+import { APPROACH_FILES, COMMAND_QUEUE, inVillageMasonry, REST_SEATS, REST_STANDS } from '../../config/townPlan.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { compareByWaitAge, waitAnchor } from '../../domain/services/SignalLedger.js';
 import { summarizeCrowdClusterEntries } from './CrowdClusters.js';
@@ -321,6 +321,7 @@ export class VisitTileAllocator {
         role = null,
         routineCap = null,
         dayHour = null,
+        restAt = null,
     } = {}) {
         if (this._disposed) return null;
         const now = Date.now();
@@ -334,7 +335,7 @@ export class VisitTileAllocator {
 
         // 7.1 / 7.2 — rest seats and the Command queue are places, not
         // buildings: their slot is chosen by distance or by wait rank.
-        if (building?.restSeats) return this._allocateRestSeat({ agentId, agent, sprite, now, dayHour });
+        if (building?.restSeats) return this._allocateRestSeat({ agentId, agent, sprite, now, dayHour, restAt });
         if (building?.commandQueue) return this._allocateQueuePlace({ agentId, now });
 
         const routine = ROUTINE_ROLES.includes(role) ? role : null;
@@ -586,7 +587,13 @@ export class VisitTileAllocator {
     // 7.1 — the free seat the villager reaches soonest on foot (a seat across
     // the water is far however close it looks); its own seat while it still
     // holds one. With every seat taken it stands beside the nearest seat.
-    _allocateRestSeat({ agentId, agent, sprite, now, dayHour = null }) {
+    // AG-2 — `restAt` names the building a patron must rest at (a lead
+    // waiting on its subagents, a Tavern wind-down): only that building's
+    // seats, then its authored standing room (townPlan `REST_STANDS`, the bar
+    // first), then the stand ring beside its seats, so the crowd grows in one
+    // place and never borrows Command's steps or the pier. An idle villager
+    // whose nearest seat is that building's stands there too.
+    _allocateRestSeat({ agentId, agent, sprite, now, dayHour = null, restAt = null }) {
         const own = this._reservationForAgent(agentId);
         const taken = new Set();
         const standing = new Set();
@@ -596,12 +603,14 @@ export class VisitTileAllocator {
             taken.add(reservation.slotId);
             standing.add(`${reservation.tileX},${reservation.tileY}`);
         }
-        if (own?.buildingType === REST_SEAT_BUILDING_TYPE && own.seat && own.expiresAt > now && !taken.has(own.slotId)) {
+        const seats = restAt ? REST_SEATS.filter((seat) => seat.building === restAt) : REST_SEATS;
+        if (own?.buildingType === REST_SEAT_BUILDING_TYPE && own.seat && own.expiresAt > now && !taken.has(own.slotId)
+            && (!restAt || own.seat.building === restAt)) {
             return this._placeAllocation(this._storePlace(agentId, own, now));
         }
         const source = this._spriteTile(sprite) || this._agentTile(agent);
-        const steps = source ? this._walkSteps(source, REST_SEATS) : null;
-        const bySource = REST_SEATS
+        const steps = source ? this._walkSteps(source, seats) : null;
+        const bySource = seats
             .map((seat) => {
                 const direct = source ? this._distance(source, seat) : 0;
                 const walked = steps ? steps.get(`${seat.tileX},${seat.tileY}`) ?? SEAT_UNREACHED_STEPS + direct : direct;
@@ -617,13 +626,33 @@ export class VisitTileAllocator {
                 tileY: seat.tileY,
                 slotId,
                 seat,
+                restBuilding: seat.building || null,
                 role: 'rest',
                 facingPoint: seatFacingPoint(seat),
             }, now));
         }
-        // Overflow: stand at the nearest seat's cluster, never on a seat.
+        // Overflow: the building's standing room, else stand at the nearest
+        // seat's cluster, never on a seat; a patron of `restAt` stands from
+        // its first authored seat outward.
+        const standAt = restAt || bySource[0]?.seat.building || null;
+        const room = REST_STANDS[standAt];
+        for (const tile of room?.tiles || []) {
+            const key = `${tile.tileX},${tile.tileY}`;
+            if (standing.has(key) || !this._isStandable(tile.tileX, tile.tileY)) continue;
+            return this._placeAllocation(this._storePlace(agentId, {
+                buildingType: REST_SEAT_BUILDING_TYPE,
+                tileX: tile.tileX,
+                tileY: tile.tileY,
+                slotId: `seat-stand:${key}`,
+                seat: null,
+                restBuilding: standAt,
+                role: 'rest',
+                overflow: true,
+                facingPoint: { x: room.facing.tileX, y: room.facing.tileY },
+            }, now));
+        }
         const seatTiles = new Set(REST_SEATS.map((seat) => `${seat.tileX},${seat.tileY}`));
-        for (const { seat } of bySource) {
+        for (const seat of restAt ? seats : bySource.map((entry) => entry.seat)) {
             for (const [ox, oy] of SEAT_STAND_RING) {
                 const tileX = seat.tileX + ox;
                 const tileY = seat.tileY + oy;
@@ -635,6 +664,7 @@ export class VisitTileAllocator {
                     tileY,
                     slotId: `seat-stand:${key}`,
                     seat: null,
+                    restBuilding: restAt || seat.building || null,
                     role: 'rest',
                     overflow: true,
                     facingPoint: { x: seat.tileX, y: seat.tileY },
@@ -769,6 +799,7 @@ export class VisitTileAllocator {
             queueOverflow: !!reservation.queueOverflow,
             role: reservation.role,
             seat: reservation.seat || null,
+            restBuilding: reservation.restBuilding || null,
             facingPoint: reservation.facingPoint ? { ...reservation.facingPoint } : null,
         };
     }

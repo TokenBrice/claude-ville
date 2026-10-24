@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { AMBIENT_SCENIC_POINTS } from '../../claudeville/src/config/scenery.js';
 import { BUILDING_DEFS, VISIT_OVERFLOW_TILES } from '../../claudeville/src/config/buildings.js';
-import { APPROACH_FILES, COMMAND_QUEUE, REST_SEATS } from '../../claudeville/src/config/townPlan.js';
+import { APPROACH_FILES, COMMAND_QUEUE, REST_SEATS, REST_STANDS } from '../../claudeville/src/config/townPlan.js';
 import { MAP_SIZE, TILE_HEIGHT, TILE_WIDTH } from '../../claudeville/src/config/constants.js';
 import { Building } from '../../claudeville/src/domain/entities/Building.js';
 import { SceneryEngine } from '../../claudeville/src/presentation/character-mode/SceneryEngine.js';
@@ -195,4 +195,59 @@ test('the 6th-12th bodies at Command land on distinct authored places; its petit
         assert.ok(!harborSlots.some((slot) => slot.tileX === place.tileX && slot.tileY === place.tileY), `${keyOf(place)} is the line's`);
     }
     assert.equal(COMMAND_QUEUE.slots.length, 12);
+});
+
+test('AG-7: the petitioners\' line stays on Command\'s forecourt, off every bridge and standing place', () => {
+    const bridges = scenery.getBridgeTiles();
+    const others = new Map();
+    const claim = (place, owner) => others.set(keyOf(place), owner);
+    REST_SEATS.forEach((seat) => claim(seat, `seat ${seat.id}`));
+    Object.values(REST_STANDS).forEach((room) => room.tiles.forEach((tile) => claim(tile, 'rest stand')));
+    AMBIENT_SCENIC_POINTS.forEach((point) => claim({ tileX: Math.round(point.tileX), tileY: Math.round(point.tileY) }, `scenic ${point.id}`));
+    for (const def of BUILDING_DEFS) {
+        APPROACH_FILES[def.type].forEach((place) => claim(place, `${def.type} file`));
+        VISIT_OVERFLOW_TILES[def.type].forEach((place) => claim(place, `${def.type} ring`));
+    }
+    const places = [...COMMAND_QUEUE.slots, ...COMMAND_QUEUE.overflow];
+    const seen = new Set();
+    for (const place of places) {
+        const label = `petitioner place ${keyOf(place)}`;
+        assert.ok(walkable(place.tileX, place.tileY), `${label} is walkable`);
+        assert.equal(bridges.has(keyOf(place)), false, `${label} stands on a bridge`);
+        const world = { x: (place.tileX - place.tileY) * TILE_WIDTH / 2, y: (place.tileX + place.tileY) * TILE_HEIGHT / 2 };
+        assert.equal(standsOnFixture(world.x, world.y), false, `${label} stands on a fixture`);
+        assert.ok(!others.has(keyOf(place)), `${label} is ${others.get(keyOf(place))}'s place`);
+        assert.ok(!seen.has(keyOf(place)), `${label} is claimed twice`);
+        seen.add(keyOf(place));
+    }
+    // One file: every later slot within a stride of the slot ahead.
+    COMMAND_QUEUE.slots.slice(1).forEach((slot, index) => {
+        const ahead = COMMAND_QUEUE.slots[index];
+        assert.ok(Math.hypot(slot.tileX - ahead.tileX, slot.tileY - ahead.tileY) <= 2.3, `slot ${index + 1} trails slot ${index}`);
+    });
+});
+
+test('AG-2: the Tavern\'s standing room keeps off seats, fixtures and every other standing place', () => {
+    const others = new Map();
+    const claim = (place, owner) => others.set(keyOf(place), owner);
+    REST_SEATS.forEach((seat) => claim(seat, `seat ${seat.id}`));
+    [...COMMAND_QUEUE.slots, ...COMMAND_QUEUE.overflow].forEach((slot) => claim(slot, 'command petitioners'));
+    AMBIENT_SCENIC_POINTS.forEach((point) => claim({ tileX: Math.round(point.tileX), tileY: Math.round(point.tileY) }, `scenic ${point.id}`));
+    for (const def of BUILDING_DEFS) {
+        APPROACH_FILES[def.type].forEach((place) => claim(place, `${def.type} file`));
+        VISIT_OVERFLOW_TILES[def.type].forEach((place) => claim(place, `${def.type} ring`));
+        def.visitTiles.forEach((tile) => claim(tile, `${def.type} visit tile`));
+    }
+    const tavern = BUILDING_DEFS.find((def) => def.type === 'tavern');
+    const room = REST_STANDS.tavern;
+    assert.ok(room.tiles.length >= 6, 'room for the 9th to the 14th patron at least');
+    for (const tile of room.tiles) {
+        const label = `tavern stand ${keyOf(tile)}`;
+        assert.ok(walkable(tile.tileX, tile.tileY), `${label} is walkable`);
+        const world = { x: (tile.tileX - tile.tileY) * TILE_WIDTH / 2, y: (tile.tileX + tile.tileY) * TILE_HEIGHT / 2 };
+        assert.equal(standsOnFixture(world.x, world.y), false, `${label} stands on a fixture`);
+        assert.ok(!others.has(keyOf(tile)), `${label} is ${others.get(keyOf(tile))}'s place`);
+        assert.ok(Math.abs(tile.tileX - (tavern.x + tavern.width / 2)) <= 3 && tile.tileY <= tavern.y + tavern.height + 2,
+            `${label} stands at the Tavern`);
+    }
 });
