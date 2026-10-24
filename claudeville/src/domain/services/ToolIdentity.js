@@ -92,6 +92,21 @@ const TOOL_METADATA = Object.freeze({
         category: 'task',
         actionLabel: 'Delegating',
     },
+    // Claude Code's subagent launcher (formerly `Task`).
+    Agent: {
+        classification: { building: 'command', reason: 'delegate-task', confidence: 0.82 },
+        icon: '📋',
+        category: 'task',
+        actionLabel: 'Delegating',
+    },
+    // Claude Code waits for a condition (a file, a port, a log line): a
+    // lookout's job, so it keeps watch at the Lighthouse.
+    Monitor: {
+        classification: { building: 'watchtower', reason: 'watch-condition', confidence: 0.8 },
+        icon: '🔭',
+        category: 'task',
+        actionLabel: 'Watching',
+    },
     TeamCreate: {
         classification: { building: 'command', reason: 'form-team', confidence: 0.96 },
         icon: '👥',
@@ -302,7 +317,7 @@ const NORMALIZED_INPUT_FIELDS = Object.freeze([
 const SHELL_WRAPPER_PREFIXES = new Set(['bash', 'sh', 'zsh', 'fish', 'exec_command', 'shell', 'command_execution']);
 const BOUNDARY_CHARS = ['/', '.', ' ', ':'];
 const SHELL_LIKE_INPUT_PATTERN = /^(?:bash|sh|zsh|fish|exec_command|shell|command_execution|git|gh|wrangler|vercel|npm|node|pnpm|yarn|bun|python|pytest|playwright|curl|wget|rg|grep|find|fd|ls|cat|sed|head|tail|jq|pharos-watch)\b/;
-const DOCUMENTATION_INPUT_PATTERN = /\b(agents|docs|doc|documentation|readme|changelog|handover|plan|spec|adr)\b|(?:^|[\/\s"'=])(?:agents|claude|readme|changelog|contributing|license)(?:\.md)?\b|\.mdx?\b/;
+const DOCUMENTATION_INPUT_PATTERN = /\b(agents|docs|doc|documentation|readme|changelog|handover|plan|spec|adr)\b|(?:^|[\/\s"'=])(?:agents|readme|changelog|contributing|license)(?:\.md)?\b|\.mdx?\b/;
 const CODE_INPUT_PATTERN = /\b(src|server\.js|adapters|services|claudeville\/src|claudeville\/server\.js)\b|\.([cm]?js|ts|tsx|jsx|css|html|json|yaml|yml)\b/;
 const JSONISH_INPUT_PATTERN = /^[\[{]/;
 const TOOL_REFERENCE_PATTERN = /(?:recipient_name|tool|name)["']?\s*[:=]\s*["']([^"']+)["']/g;
@@ -311,7 +326,7 @@ const PLAYWRIGHT_PLUGIN_TOOL_PATTERN = /^mcp__plugin_playwright_/;
 const LOCAL_PREVIEW_INPUT_PATTERN = /localhost:|127\.0\.0\.1:/;
 
 const GIT_FLOW_COMMAND_PATTERN = /\b(git\s+(status|diff|show|log|branch|rev-list|fetch|pull|merge|rebase|commit|push|tag)|gh\s+(pr\s+create|release|workflow|run|repo)|wrangler\s+deploy|vercel\s+deploy|npm\s+run\s+deploy)\b/;
-const VALIDATION_COMMAND_PATTERN = /\b(npm\s+(test|run\s+(test|check|lint|build|sprites:validate|sprites:visual-diff))|node\s+--check|xargs\s+-0\s+-n1\s+node\s+--check|pytest|vitest|playwright\s+test)\b/;
+const VALIDATION_COMMAND_PATTERN = /\b(npm\s+(test|run\s+(test|check|lint|build|validate|verify|gate|sprites:validate|sprites:visual-diff))|node\s+--(check|test)|xargs\s+-0\s+-n1\s+node\s+--check|pytest|vitest|playwright\s+test)\b/;
 const BROWSER_PREVIEW_COMMAND_PATTERN = /\b(npm\s+run\s+dev|node\s+claudeville\/server\.js|playwright|browser|chrome|chromium|firefox|screenshot|localhost|127\.0\.0\.1)\b/;
 const WEB_COMMAND_PATTERN = /\b(curl|wget|web|fetch|search_query|open\s+https?:\/\/)\b/;
 const FILE_MUTATION_COMMAND_PATTERN = /\b(apply_patch|patch|edit|write|create|update|delete|mv|cp|perl\s+-pi)\b/;
@@ -779,6 +794,7 @@ const TOOL_VERBS = Object.freeze({
     'edit-docs': 'edit docs',
     'generate-asset': 'generate',
     'read-local': 'read',
+    'read-docs': 'read',
     'search-local': 'search',
     'find-local': 'find',
     'list-local': 'list',
@@ -799,6 +815,7 @@ const TOOL_VERBS = Object.freeze({
     'plan-mode-enter': 'plan',
     'plan-mode-exit': 'plan',
     verify: 'verify',
+    'watch-condition': 'watch',
     'run-shell': 'run',
     'git-flow': 'git',
     'github-flow': 'github',
