@@ -8,10 +8,7 @@ Nothing in the repository is edited or written: the shipped modules are served r
 `$CLAUDEVILLE_TEST_TMPDIR/claudeville-audio-renders/` (the OS temp dir when the variable is unset).
 
 All commands run from the repo root. They need only Node, `playwright` and its Chromium (the repo's
-dev dependencies). No ffmpeg, sox, scipy, or extra install. Dev-only: nothing here ships. On a host
-without Playwright's bundled Chromium, set `CLAUDEVILLE_CHROME` to a system Chrome (for example
-`CLAUDEVILLE_CHROME=/usr/bin/google-chrome-stable npm run audio:probe`); the probe, the soak and
-`audio-capture.mjs` all launch through `launchChromium()` in `lib/capture.mjs`.
+dev dependencies). No ffmpeg, sox, scipy, or extra install. Dev-only: nothing here ships.
 
 ## The probe (`npm run audio:probe`)
 

@@ -70,9 +70,10 @@
 // see lib/soak.mjs.
 import fs from 'node:fs';
 import path from 'node:path';
+import { launchChromium } from '../smoke/support/chromium.mjs';
 import { startStaticServer, AUDIO_DIR } from './lib/server.mjs';
 import { writeWavFloat } from './lib/analyze.mjs';
-import { BACKGROUND_ARGS, DEFAULT_SEED, HARNESS_CHROME_ARGS, launchChromium } from './lib/capture.mjs';
+import { BACKGROUND_ARGS, DEFAULT_SEED, HARNESS_CHROME_ARGS } from './lib/capture.mjs';
 import { fmt, signed } from './lib/format.mjs';
 import {
     BASELINE_TOLERANCE, BUSY_BAND_ERROR_BAND_RULE, CROWN_SYNC_MS, CUE_STRATUM, ISLAND_AIR, LADDER, PLAN_STAGE,

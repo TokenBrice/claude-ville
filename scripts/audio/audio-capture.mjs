@@ -8,13 +8,14 @@
 //   node scripts/audio/audio-capture.mjs index [--out dir]
 import fs from 'node:fs';
 import path from 'node:path';
+import { launchChromium } from '../smoke/support/chromium.mjs';
 import { startStaticServer, AUDIO_DIR, REPO_ROOT } from './lib/server.mjs';
 import { analyze, readWav, writeWavFloat } from './lib/analyze.mjs';
 import { openPlotter } from './lib/plot.mjs';
 import { buildTargets } from './lib/targets.mjs';
 import { STANDARD_VOLUME_STEP } from '../../claudeville/src/presentation/shared/audio/Loudness.js';
 import {
-    DEFAULT_SEED, HARNESS_CHROME_ARGS, RENDERS, launchChromium,
+    DEFAULT_SEED, HARNESS_CHROME_ARGS, RENDERS,
     cutWindow, newHarnessPage, openHarness, pullPcm, readHazards, readVoiceLog,
 } from './lib/capture.mjs';
 

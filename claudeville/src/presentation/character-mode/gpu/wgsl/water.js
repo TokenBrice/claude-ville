@@ -192,17 +192,17 @@ fn swellCap(p: vec2f, s: f32, near: f32, paw: f32) -> f32 {
     let cx = centre.x + glslMod(crow, 2.0) * ${(SWELL_CLUSTER_CELL[0] * 0.5).toFixed(1)};
     let ck = vec2f(floor(cx / ${SWELL_CLUSTER_CELL[0].toFixed(1)}), crow);
     var inCluster = false;
-    if (waterHash12(ck + vec2f(101.0, 7.0)) < clusters) {
-        let at = (ck + 0.35 + 0.3 * vec2f(waterHash12(ck + vec2f(103.0, 9.0)), waterHash12(ck + vec2f(107.0, 3.0)))) * vec2f(${SWELL_CLUSTER_CELL[0].toFixed(1)}, ${SWELL_CLUSTER_CELL[1].toFixed(1)});
+    if (waterLatticeHash(ck + vec2f(101.0, 7.0)) < clusters) {
+        let at = (ck + 0.35 + 0.3 * vec2f(waterLatticeHash(ck + vec2f(103.0, 9.0)), waterLatticeHash(ck + vec2f(107.0, 3.0)))) * vec2f(${SWELL_CLUSTER_CELL[0].toFixed(1)}, ${SWELL_CLUSTER_CELL[1].toFixed(1)});
         let d = (vec2f(cx, centre.y) - at) / vec2f(${(SWELL_CLUSTER_CELL[0] * 0.5).toFixed(1)}, ${(SWELL_CLUSTER_CELL[1] * 0.5).toFixed(1)});
         inCluster = dot(d, d) < 1.0;
     }
     let presence = select(mix(${SWELL_LONE_CAPS[0].toFixed(2)}, ${SWELL_LONE_CAPS[1].toFixed(2)}, near), ${SWELL_CLUSTER_CAPS.toFixed(2)}, inCluster);
-    if (waterHash12(k + vec2f(211.0, 17.0)) >= presence) { return 0.0; }
+    if (waterLatticeHash(k + vec2f(211.0, 17.0)) >= presence) { return 0.0; }
     let local = vec2f(x - k.x * ${SWELL_CAP_CELL[0].toFixed(1)}, p.y - row * ${SWELL_CAP_CELL[1].toFixed(1)});
-    let len = 3.0 + floor(waterHash12(k + vec2f(223.0, 5.0)) * 5.0);
-    let x0 = floor(waterHash12(k + vec2f(227.0, 41.0)) * (${SWELL_CAP_CELL[0].toFixed(1)} - len));
-    let y0 = floor(waterHash12(k + vec2f(229.0, 83.0)) * ${(SWELL_CAP_CELL[1] - 1).toFixed(1)});
+    let len = 3.0 + floor(waterLatticeHash(k + vec2f(223.0, 5.0)) * 5.0);
+    let x0 = floor(waterLatticeHash(k + vec2f(227.0, 41.0)) * (${SWELL_CAP_CELL[0].toFixed(1)} - len));
+    let y0 = floor(waterLatticeHash(k + vec2f(229.0, 83.0)) * ${(SWELL_CAP_CELL[1] - 1).toFixed(1)});
     if (local.y == y0 && local.x >= x0 && local.x < x0 + len) {
         return select(1.0, 2.0, inCluster || near > 0.8);
     }
@@ -365,20 +365,20 @@ fn rainRingAt(p: vec2f, precipitation: f32, storm: f32, clock: f32) -> bool {
     let size = mix(vec2f(12.0, 6.0), vec2f(8.0, 4.0), storm);
     let cell = floor(p / size);
     let local = p - cell * size;
-    let seed = waterHash12(cell + vec2f(41.0, 7.0));
+    let seed = waterLatticeHash(cell + vec2f(41.0, 7.0));
     var stage = 2.0;
     var life = 0.0;
     if (clock > 0.0) {
         let s = floor(frame.timeMs * 0.007 * clock) + floor(seed * 5.0);
         life = floor(s / 5.0);
         stage = glslMod(s, 5.0);
-        if (waterHash12(cell + vec2f(life * 1.7, 3.1)) >= 0.55 * precipitation) { return false; }
+        if (waterLatticeHash(cell + vec2f(43.0, 11.0 + life * 4096.0)) >= 0.55 * precipitation) { return false; }
     } else if (seed >= min(0.20, 0.55 * precipitation)) {
         return false;
     }
     if (stage > 3.5 || (storm > 0.5 && stage > 2.5)) { return false; }
     let room = select(vec2f(4.0, 2.0), vec2f(2.0, 1.0), storm > 0.5);
-    let jitter = vec2f(waterHash12(cell + vec2f(life, 13.0)), waterHash12(cell + vec2f(29.0, life)));
+    let jitter = vec2f(waterLatticeHash(cell + vec2f(47.0, 13.0 + life * 4096.0)), waterLatticeHash(cell + vec2f(29.0, 17.0 + life * 4096.0)));
     let centre = room + floor(jitter * (size - room * 2.0));
     let d = abs(local - centre);
     if (stage < 0.5) { return d.x < 0.5 && d.y < 0.5; }

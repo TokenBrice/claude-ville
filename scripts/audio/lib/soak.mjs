@@ -10,9 +10,10 @@
 // ±5 points (0.8b); `--update` records this soak as baselines/soak.json.
 import fs from 'node:fs';
 import path from 'node:path';
+import { launchChromium } from '../../smoke/support/chromium.mjs';
 import { AUDIO_DIR } from './server.mjs';
 import { loudness, writeWavFloat } from './analyze.mjs';
-import { BACKGROUND_ARGS, clockToIndex, launchChromium, newHarnessPage, pullPcm } from './capture.mjs';
+import { BACKGROUND_ARGS, clockToIndex, newHarnessPage, pullPcm } from './capture.mjs';
 import { duckedTime, median, percentile } from './checks.mjs';
 import { fmt, signed } from './format.mjs';
 import { startIsolatedServer } from '../../smoke/support/isolated-server.mjs';
