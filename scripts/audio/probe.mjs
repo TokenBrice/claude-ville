@@ -85,7 +85,7 @@ import {
 } from './lib/checks.mjs';
 import {
     AIR_CUE_SCENE, CAPTION_MODES, CAPTION_SETTINGS, DASHBOARD_SCENE, GALLERY_VOICES, LADDER_OPEN_SEC, LADDER_SECONDS, LADDER_TRIM_BAND_SCENE,
-    LADDER_TRIM_SCENE, MARGIN_BEDS, OUTCOME_SCENE, STALE_SCENE, TOWN_DRY_SCENE, TRANSPORT_SCENE,
+    LADDER_TRIM_SCENE, MARGIN_BEDS, OUTCOME_SCENE, SIGNALS_LONG_TURN_SCENE, STALE_SCENE, TOWN_DRY_SCENE, TRANSPORT_SCENE,
     WAKE_SCENE, captionScene, clusterScene, galleryScene, hiddenScene, ladderSilentScene, marginKeys, marginLanes, marginVoices,
     QUIET_MIX, quietMixScene,
     PERCUSSION_SEGMENTS, RAIN_SWITCH_AT, TOWN_SESSION, WAIT_CADENCE, musicStemScene, percussionScene, rainSwitchScene,
@@ -680,7 +680,20 @@ function wave3Units(render, browser, baseUrl) {
                     const e = laneEvents(d, lane, { withinSec: 5 });
                     verdict('outcomes', e.cues.length === 1 && e.scores.some(s => !s.silent), `Dashboard (agent:* transitions only): ${lane} → ${e.cues.length} cue(s)${e.cues[0] ? ` "${e.cues[0].label}"` : ''}; want one`);
                 }
-                const errs = [...r.errors, ...d.errors];
+                // SND-1: Signals sounds a long turn's end, within its caps.
+                const sig = await render('outcomes:signals-long-turn', SIGNALS_LONG_TURN_SCENE);
+                const turnRow = (lane) => {
+                    const e = laneEvents(sig, lane, { withinSec: 4, kinds: ['turnDone'] });
+                    const captioned = (sig.meta.captions || []).some(c => c.cueKind === 'turnDone' && e.cues.some(p => Math.abs(p.t - c.wall) < 1));
+                    return { cues: e.cues.length, sounding: e.scores.filter(x => !x.silent).length, captioned };
+                };
+                const [short, long, capped] = ['shortTurn', 'longTurn', 'cappedTurn'].map(turnRow);
+                const knock = sig.meta.levels.find(l => l.kind === 'turnDone');
+                info('outcomes', `Signals: the long-turn knock's trim ${knock ? `${signed(knock.trimDb)} dB` : '—'} (Medium over silence; the needs-you call takes −4 dB there)`);
+                verdict('outcomes', short.cues === 1 && short.sounding === 0 && short.captioned, `Signals: a 25 s turn ends → ${short.cues} cue(s), ${short.sounding} sounding, caption ${short.captioned ? 'shown' : 'missing'}; want caption only`);
+                verdict('outcomes', long.cues === 1 && long.sounding === 1 && long.captioned, `Signals: a 150 s turn ends (SND-1) → ${long.cues} cue(s), ${long.sounding} sounding, caption ${long.captioned ? 'shown' : 'missing'}; want one knock and its caption`);
+                verdict('outcomes', capped.cues === 1 && capped.sounding === 0 && capped.captioned, `Signals: a second long turn 30 s later → ${capped.cues} cue(s), ${capped.sounding} sounding, caption ${capped.captioned ? 'shown' : 'missing'}; want caption only (LONG_TURN_CAPS gap)`);
+                const errs = [...r.errors, ...d.errors, ...sig.errors];
                 if (errs.length) info('outcomes', `page errors: ${errs.slice(0, 3).join(' | ')}`);
             },
         });

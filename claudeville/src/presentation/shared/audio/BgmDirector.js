@@ -37,6 +37,7 @@ import {
     verifiedOutcomeFact,
 } from '../../../application/OutcomeSignals.js';
 import { expectCueScore } from './CueScore.js';
+import { longTurnDetails } from './CueGovernor.js';
 import { createAtmosphereSnapshot } from '../../character-mode/AtmosphereState.js';
 import { seasonTokenForAtmosphere } from '../../character-mode/SeasonalAmbience.js';
 import { readCountHours, readTownBandVoice } from '../SoundSettings.js';
@@ -409,6 +410,8 @@ export class BgmDirector {
             repo: outcome.repo,
             version: outcome.version,
             ...(outcome.building ? { building: outcome.building } : {}),
+            // SND-1: a long turn's end rises to the Medium level over the band.
+            ...longTurnDetails(outcome, this.governor),
         });
     }
 

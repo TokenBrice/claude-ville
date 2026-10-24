@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+    LONG_TURN_MS,
     MOMENT_AGGREGATE_MS,
     OUTCOME_AGGREGATE_MS,
     OutcomeRouter,
@@ -63,12 +64,41 @@ test('a long turn ending is one turn-done fact; a short one is chatter', () => {
     tracker.added(working('short'));
     assert.deepEqual(
         tracker.updated({ id: 'long', status: 'idle', turnStartedAt: 100, lastTurnDurationMs: 25_000 }),
-        [{ kind: 'turnDone', agentId: 'long', durationMs: 25_000 }],
+        [{ kind: 'turnDone', agentId: 'long', durationMs: 25_000, long: false }],
     );
     assert.deepEqual(
         tracker.updated({ id: 'short', status: 'idle', turnStartedAt: 100, lastTurnDurationMs: 19_999 }),
         [],
     );
+});
+
+test('a turn of two minutes or more is a long turn, from any provider that reports its duration (SND-1)', () => {
+    const tracker = trackerWith([]);
+    tracker.added(working('claude', { provider: 'claude' }));
+    tracker.added(working('codex', { provider: 'codex' }));
+    tracker.added(working('almost'));
+    const [claude] = tracker.updated({ id: 'claude', provider: 'claude', status: 'idle', turnStartedAt: 100, lastTurnDurationMs: LONG_TURN_MS });
+    const [codex] = tracker.updated({ id: 'codex', provider: 'codex', status: 'waiting', turnStartedAt: 100, lastTurnDurationMs: 600_000 });
+    const [almost] = tracker.updated({ id: 'almost', status: 'idle', turnStartedAt: 100, lastTurnDurationMs: LONG_TURN_MS - 1 });
+    assert.equal(LONG_TURN_MS, 120_000);
+    assert.equal(claude.long, true);
+    assert.equal(codex.long, true);
+    assert.equal(almost.long, false);
+});
+
+test('a batch of finished turns is long when one of them was (SND-1)', () => {
+    const time = fakeTime();
+    const emitted = [];
+    const outcomes = router(time, emitted);
+    outcomes.submit({ kind: 'turnDone', agentId: 'a', long: false });
+    outcomes.submit({ kind: 'turnDone', agentId: 'b', long: true });
+    time.advance(OUTCOME_AGGREGATE_MS);
+    assert.equal(emitted.length, 1);
+    assert.equal(emitted[0].count, 2);
+    assert.equal(emitted[0].long, true);
+    outcomes.submit({ kind: 'turnDone', agentId: 'c', long: false });
+    time.advance(OUTCOME_AGGREGATE_MS);
+    assert.equal(emitted[1].long, false);
 });
 
 test('a turn is reported once, and a status flutter never re-reports an old turn', () => {

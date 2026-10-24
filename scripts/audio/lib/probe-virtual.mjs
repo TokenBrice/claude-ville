@@ -153,11 +153,20 @@ function stemMarginRows(r) {
     };
 }
 
+// A single oak knock is judged as its own level over the bed stems: the
+// Minor turn-done and the long turn's Medium knock (SND-1), whose program
+// margin is the band's own swell over the 2.5 s window (a +5 dB louder knock
+// moved its program margin 0.2 LU and its stem margin 5 LU).
+function knockLane(lane, voice) {
+    return lane === 'outcomeMinor' || (lane === 'outcomeMedium' && voice === 'turnDone');
+}
+
 // The same for any render whose lane actions carry `lane` markers and whose
 // stems include both limiter taps; `bed` is the S2 bed context. Every row
 // carries `programMargin` (cue + bed over the bed, on the program) and,
 // with bed stems, `stemMargin`; `margin` is the program margin, except for
-// Minor outcomes, judged on `stemMargin` (the Wave-4 ruling).
+// the knocks (Minor outcomes, the Wave-4 ruling; the long turn), judged on
+// `stemMargin`.
 export function laneMarginRows(r, bed) {
     const { L, R } = r.program;
     const lou = loudness(L, R, r.sr);
@@ -174,7 +183,7 @@ export function laneMarginRows(r, bed) {
         const sm = stemMargin ? stemMargin(t) : null;
         rows.push({
             lane: m.lane, voice, bed, label: m.label, at: t,
-            margin: m.lane === 'outcomeMinor' && sm != null ? sm : mg.margin, programMargin: mg.margin, stemMargin: sm,
+            margin: knockLane(m.lane, voice) && sm != null ? sm : mg.margin, programMargin: mg.margin, stemMargin: sm,
             bedLufs: mg.bed, cueMaxLufs: mg.cueMax,
             bandsOver6dB: bands.bandsOver6dB, bestRiseDb: bands.bestRiseDb,
             presenceRiseDb: presenceRise(L, R, r.sr, t),
