@@ -17,6 +17,7 @@ import {
 import {
   applyGradeToRgb,
   evaluateGrade,
+  GRADE_AMBIENT_FLOOR,
   GRADE_EXPOSURE_FLOOR,
 } from '../../claudeville/src/presentation/character-mode/GradeEvaluator.js';
 import {
@@ -169,6 +170,23 @@ test('L1-1: weather darkens the dusk and the night once, not twice', () => {
   // than a clear midnight.
   assert.ok(ambient(12 * 60 + 30, storm) < ambient(12 * 60 + 30, clear));
   assert.ok(ambient(12 * 60 + 30, storm) >= ambient(0, clear));
+});
+
+test('L1-2: pre-dawn is the tail of the night, never its darkest hour', () => {
+  const luma = rgb => rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+  const clear = { type: 'clear', intensity: 0.18, cloudCover: 0.08 };
+  const ambient = minute => luma(evaluateGrade({ minuteOfDay: minute, moonFill: 0, weather: clear }).ambientTint);
+  const deep = ambient(2 * 60);
+  // From 22:00 to sunrise no minute falls more than one course (10 %) under
+  // the deep-night key.
+  for (let minute = 22 * 60; minute < 30 * 60; minute += 10) {
+    const ratio = ambient(minute % 1440) / deep;
+    assert.ok(ratio >= 0.9, `ambient at ${minute % 1440} min is ${ratio.toFixed(3)}x deep night`);
+  }
+  // The ambient floor holds a storm pre-dawn and stays under every clear night.
+  const storm = { type: 'storm', intensity: 1, cloudCover: 1 };
+  assert.ok(luma(evaluateGrade({ minuteOfDay: 4 * 60 + 30, moonFill: 0, weather: storm }).ambientTint) >= GRADE_AMBIENT_FLOOR - 1e-6);
+  assert.ok(ambient(4 * 60 + 30) > GRADE_AMBIENT_FLOOR);
 });
 
 test('the grade tells the time and the weather apart', () => {

@@ -31,8 +31,9 @@ export const GRADE_EXPOSURE_FLOOR = 0.40;
 // The weather rows also spend value through `gain`, which the exposure floor
 // cannot see. The effective ambient (exposure x luma(gain), what an unlit
 // mid-grey becomes) never falls below this: a storm night sits one course
-// under a clear deep night (0.53), never at black.
-export const GRADE_AMBIENT_FLOOR = 0.42;
+// under a clear deep night (0.65), never at black. L1-2 — it binds only on a
+// storm pre-dawn.
+export const GRADE_AMBIENT_FLOOR = 0.56;
 
 // Rec.709 luma weights, shared with the shaders.
 const LUMA = [0.2126, 0.7152, 0.0722];
@@ -133,10 +134,13 @@ export const GRADE_KEYFRAMES = Object.freeze([
         vignetteEdge: [0.74, 0.76, 0.83], vignetteAlpha: 0.36,
         skyTop: '#070b16', skyHorizon: '#141d2e', voidColor: '#0b1218', horizonHaze: '#1a2436',
     }),
+    // L1-2 — pre-dawn is the tail of the night, not its darkest key: a
+    // little under deep night (exposure 0.68 against 0.70) with a rosier gain,
+    // never the 04:00 blackout the old 0.50 key made.
     Object.freeze({
         name: 'pre-dawn', minute: 4 * 60 + 30, side: 'dawn',
-        exposure: 0.50, saturation: 0.34,
-        gain: [0.86, 0.86, 1.00], lift: [0.022, 0.021, 0.028], gamma: 1.05,
+        exposure: 0.68, saturation: 0.48,
+        gain: [0.86, 0.86, 1.00], lift: [0.032, 0.034, 0.048], gamma: 1.04,
         shadowTint: [0.92, 0.90, 1.00], highlightTint: [1.06, 0.98, 0.98],
         purkinje: 0.8, sunBand: 0, daylight: 0, night: 0.85, rake: 0.25,
         vignetteEdge: [0.74, 0.74, 0.84], vignetteAlpha: 0.42,
