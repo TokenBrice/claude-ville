@@ -13,6 +13,8 @@ import { appendDepthSortedDrawables } from '../../claudeville/src/presentation/c
 import { buildGpuWorldRecords } from '../../claudeville/src/presentation/character-mode/gpu/GpuSceneBuilder.js';
 import { materialClassId } from '../../claudeville/src/presentation/character-mode/MaterialRegistry.js';
 import { tileToWorld } from '../../claudeville/src/presentation/character-mode/Projection.js';
+import { evaluateGrade } from '../../claudeville/src/presentation/character-mode/GradeEvaluator.js';
+import { canvasFrameGradeRgb, statusClothPreimage } from '../../claudeville/src/presentation/character-mode/CanvasGrade.js';
 
 const NOW = 1_800_000_000_000;
 const MIN = 60_000;
@@ -211,4 +213,37 @@ test('Chronicle stones reach the resident GPU world as records over their baked 
         if (previous === undefined) delete globalThis.document;
         else globalThis.document = previous;
     }
+});
+
+test('G7-1: the attention banner keeps its status hue through the night grade', () => {
+    const hex = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16) / 255);
+    const sat = c => (Math.max(...c) - Math.min(...c)) / Math.max(...c);
+    const luma = c => c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722;
+    // HSV hue in degrees.
+    const hue = ([r, g, b]) => {
+        const hi = Math.max(r, g, b);
+        const d = hi - Math.min(r, g, b);
+        const h = hi === r ? ((g - b) / d + 6) % 6 : hi === g ? (b - r) / d + 2 : (r - g) / d + 4;
+        return h * 60;
+    };
+    const night = evaluateGrade({ minuteOfDay: 23 * 60, moonFill: 0.8, weather: { type: 'clear', cloudCover: 0.08 } });
+    const noon = evaluateGrade({ minuteOfDay: 12 * 60 + 30 });
+    for (const postFx of [true, false]) {
+        const frame = rgb => canvasFrameGradeRgb(rgb, night, { postFx });
+        for (const status of ['#e8d44d', '#e06c5b', '#f06ae0']) {
+            const authored = hex(status);
+            const plain = frame(authored);
+            const held = frame(statusClothPreimage(authored, night, { postFx }));
+            const label = `${status} ${postFx ? 'resident' : 'canvas'}`;
+            // Much more of its colour than the plain night grade leaves it...
+            assert.ok(sat(held) >= Math.max(sat(plain) + 0.08, 0.45), `${label}: sat ${sat(plain).toFixed(2)} -> ${sat(held).toFixed(2)}`);
+            // ...on its own hue, not the Purkinje shift (the yellow went sage)...
+            const drift = Math.abs(((hue(held) - hue(authored) + 540) % 360) - 180);
+            assert.ok(drift < 15, `${label}: hue drift ${drift.toFixed(1)}`);
+            // ...and never brighter than the night makes it: cloth, not light.
+            assert.ok(luma(held) <= luma(plain) + 0.01, `${label}: luma ${luma(plain).toFixed(3)} -> ${luma(held).toFixed(3)}`);
+        }
+    }
+    // By day the cloth is its authored strip.
+    assert.deepEqual(statusClothPreimage(hex('#e8d44d'), noon, { postFx: true }), hex('#e8d44d'));
 });
