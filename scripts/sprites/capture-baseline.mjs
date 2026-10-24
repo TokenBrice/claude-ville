@@ -7,7 +7,7 @@
  * renderer's grounding diagnostics before a screenshot is written.
  */
 
-import { chromium } from 'playwright';
+import { launchChromium } from '../smoke/support/chromium.mjs';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,7 +37,7 @@ const captureUrl = new URL(baseUrl);
 captureUrl.searchParams.set('sim', '1');
 captureUrl.searchParams.set('scenario', 'no-agents');
 
-const browser = await chromium.launch();
+const browser = await launchChromium();
 const context = await browser.newContext({
     viewport,
     reducedMotion: 'reduce',

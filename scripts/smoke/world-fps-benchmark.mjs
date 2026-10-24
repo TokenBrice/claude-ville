@@ -2,7 +2,6 @@
 
 import os from 'node:os';
 import { writeFileSync } from 'node:fs';
-import { chromium } from 'playwright';
 import {
   BENCH_WEATHER,
   hostSnapshot,
@@ -17,7 +16,7 @@ import {
   round as roundTo,
 } from './support/world-bench.mjs';
 
-const DEFAULT_URL = process.env.CLAUDEVILLE_URL || 'http://localhost:4000';
+const DEFAULT_URL = process.env.CLAUDEVILLE_URL || '';
 const DEFAULT_COUNTS = [1, 10, 24, 50, 100];
 const WEATHER_PROFILES = Object.freeze({
   clear: Object.freeze({
@@ -76,9 +75,8 @@ Modes:
              MINIMAL in alternating 60-frame blocks; the rAF interval delta
 
 Common options:
-  --url=<url>                 ClaudeVille URL (matrix default: ${DEFAULT_URL};
-                              other modes default to an isolated server unless
-                              --url or CLAUDEVILLE_URL is given)
+  --url=<url>                 ClaudeVille URL (default: an isolated server
+                              unless --url or CLAUDEVILLE_URL is given)
   --duration-seconds=<n>      Measurement per run (matrix 30, soak 180, kslope 24,
                               unlocked 12)
   --warmup-seconds=<n>        Warmup per run (matrix/soak/inject/dashboard 10,
@@ -560,9 +558,12 @@ function summarizeRuns(runs) {
 }
 
 async function runMatrix(options) {
-  const browser = await chromium.launch({ headless: !options.headed });
+  const server = await resolveServer(options.urlExplicit ? options.url : null);
+  options = { ...options, url: server.baseUrl };
+  let browser = null;
   const runs = [];
   try {
+    browser = await launchBenchBrowser({ headed: options.headed });
     for (let repetition = 1; repetition <= options.repetitions; repetition++) {
       const weatherOrder = repetition % 2 === 0 ? [...options.weather].reverse() : options.weather;
       const countOrder = repetition % 2 === 0 ? [...options.counts].reverse() : options.counts;
@@ -592,7 +593,7 @@ async function runMatrix(options) {
     const summary = {
       type: 'summary',
       ok: rainRegressionViolations.length === 0,
-      url: options.url,
+      url: server.isolated ? 'isolated' : options.url,
       browserVersion: browser.version(),
       environment: {
         platform: os.platform(),
@@ -623,7 +624,8 @@ async function runMatrix(options) {
     if (options.out) writeFileSync(options.out, JSON.stringify({ summary, runs }, null, 2));
     if (!summary.ok) process.exitCode = 1;
   } finally {
-    await browser.close();
+    await browser?.close();
+    await server.stop();
   }
 }
 

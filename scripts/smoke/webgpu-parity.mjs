@@ -39,7 +39,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { chromium } from 'playwright';
+import { launchChromium } from './support/chromium.mjs';
 import { BENCH_WEATHER, GPU_LAUNCH_ARGS, resolveServer } from './support/world-bench.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -955,7 +955,7 @@ async function main() {
   const outDir = path.resolve(ROOT, options.out || path.join('output', 'webgpu-parity', stamp));
   mkdirSync(outDir, { recursive: true });
   const server = await resolveServer(options.url);
-  const browser = await chromium.launch({ headless: !options.headed, args: [...GPU_LAUNCH_ARGS] });
+  const browser = await launchChromium({ headless: !options.headed, args: [...GPU_LAUNCH_ARGS] });
   const report = {
     tool: 'webgpu-parity',
     contract: 'webgpu contract §5 (10.1 Stage A gate)',
