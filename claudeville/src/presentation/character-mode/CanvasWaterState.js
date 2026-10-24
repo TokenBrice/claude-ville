@@ -1700,7 +1700,8 @@ function columnLights(renderer, atmosphere) {
             lightRgb01(src.color), Number(src.intensity ?? 1) || 0, spill,
             Math.max(0, Math.round(Number(src.landmarkId) || 0)), role === LIGHT_ROLE_CODES.fixture);
     }
-    const lanterns = renderer._lanternGlowSources?.() || [];
+    // D4 — only the lamps already caught on the Lamplighter's Round.
+    const lanterns = (renderer._litLanternGlowSources || renderer._lanternGlowSources)?.call(renderer) || [];
     const zoom = Math.max(1e-6, Number(renderer.camera?.zoom) || 1);
     const lanternRadius = Math.max(9, Math.round(14 * zoom)) / zoom;
     for (const src of lanterns) {
