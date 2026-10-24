@@ -29,13 +29,30 @@ export function weatherPassKeepsPrecipitation(level = 0) {
 // latched per static scene (the weather's type and buckets, the zoom and the
 // viewport) instead of read each frame: a level crossing on a busy host would
 // otherwise pop the fog banks, the rain density and the ground haze between
-// otherwise identical frames. With motion on the live level is returned.
+// otherwise identical frames. With motion on the live level sheds at once but
+// restores only once the lower level has held for WEATHER_RESTORE_HOLD_MS: the
+// governor's recovery probe drops a rung after 1.5 s healthy and climbs back
+// within ~200 ms on a host still over budget, which flashed the fog banks and
+// the full ground haze in for a few frames every couple of seconds.
+const WEATHER_RESTORE_HOLD_MS = 4000;
 const _staticPressure = { key: null, level: 0 };
+const _livePressure = { level: null, lowerSinceMs: null };
 export function weatherPressureLevel(atmosphere, reduced, { zoom = 1, width = 0, height = 0 } = {}) {
     const level = sampleFramePressure().level;
     if (!reduced) {
         _staticPressure.key = null;
-        return level;
+        if (_livePressure.level === null || level >= _livePressure.level) {
+            _livePressure.level = level;
+            _livePressure.lowerSinceMs = null;
+            return level;
+        }
+        const now = globalThis.performance?.now?.() ?? Date.now();
+        _livePressure.lowerSinceMs ??= now;
+        if (now - _livePressure.lowerSinceMs >= WEATHER_RESTORE_HOLD_MS) {
+            _livePressure.level = level;
+            _livePressure.lowerSinceMs = null;
+        }
+        return _livePressure.level;
     }
     const weather = atmosphere?.weather || {};
     const bucket = value => Math.round((Number(value) || 0) * 8);

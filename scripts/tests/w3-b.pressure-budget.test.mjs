@@ -27,6 +27,7 @@ import {
 import {
     weatherEmbellishmentAllowed,
     weatherPassKeepsPrecipitation,
+    weatherPressureLevel,
 } from '../../claudeville/src/presentation/character-mode/WeatherRenderer.js';
 import {
     allowAmbientMeteor,
@@ -434,3 +435,49 @@ for (const level of ALL_RUNGS) {
         assert.equal(particleSpawnAllowed('forgeEmber', { level, motionEnabled: false }), false);
     });
 }
+
+test('weather embellishment holds through a failed recovery probe', () => {
+    resetFramePressureState();
+    const previousWindow = globalThis.window;
+    const realNow = performance.now;
+    let now = 0;
+    let costMs = 12;
+    performance.now = () => now;
+    globalThis.window = {
+        __claudeVillePerf: { frameHealth: () => ({ p95AppUpdateMs: costMs, p95AppRenderMs: 0 }) },
+    };
+    const frame = () => {
+        now += STEP_MS;
+        return { governor: sampleFramePressure().level, weather: weatherPressureLevel(null, false) };
+    };
+    try {
+        let seen = frame();
+        while (seen.governor < PRESSURE_LEVELS.WEATHER_FAUNA) seen = frame();
+        // A host over budget at FULL: each healthy stretch probes down a rung
+        // and the next heavy frames climb straight back.
+        let probedTo = Infinity;
+        for (let cycle = 0; cycle < 3; cycle++) {
+            costMs = 2;
+            for (let i = 0; i < 1700 / STEP_MS; i++) {
+                seen = frame();
+                probedTo = Math.min(probedTo, seen.governor);
+                assert.ok(weatherEmbellishmentAllowed(seen.weather) === false, `fog popped in at ${now} ms`);
+            }
+            costMs = 12;
+            for (let i = 0; i < 300 / STEP_MS; i++) {
+                seen = frame();
+                assert.ok(weatherEmbellishmentAllowed(seen.weather) === false, `fog popped in at ${now} ms`);
+            }
+        }
+        assert.equal(probedTo, PRESSURE_LEVELS.FULL);
+        // A host that stays healthy gets the embellishment back.
+        costMs = 2;
+        for (let i = 0; i < 12000 / STEP_MS; i++) seen = frame();
+        assert.equal(seen.weather, PRESSURE_LEVELS.FULL);
+    } finally {
+        performance.now = realNow;
+        resetFramePressureState();
+        if (previousWindow === undefined) delete globalThis.window;
+        else globalThis.window = previousWindow;
+    }
+});
