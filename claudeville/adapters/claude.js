@@ -1666,9 +1666,13 @@ function getRecentMessages(sessionFilePath, maxItems = 5) {
 function getTokenUsage(sessionFilePath, model = null) {
   try {
     const aggregate = getTranscriptAggregate(sessionFilePath);
+    // Session detail calls without a model; use the transcript's own latest
+    // model (skipping `<synthetic>` stubs) so the limit isn't the 200K default.
+    const history = aggregate?.projection?.modelHistory || [];
+    const transcriptModel = history.findLast(item => !item.model.startsWith('<'))?.model;
     return aggregate ? {
       ...(aggregate.displayUsage || aggregate.usage),
-      contextWindowMax: contextWindowMaxForClaudeModel(model),
+      contextWindowMax: contextWindowMaxForClaudeModel(model || transcriptModel),
     } : emptyTokenUsage();
   } catch { /* ignore */ }
   return emptyTokenUsage();

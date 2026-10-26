@@ -2,6 +2,12 @@
 
 ---
 
+## v0.58.0.1 · Oct 26, 2026 — Hotfix
+
+- **Claude's context gauge reads 1M again.** Selecting a Claude Opus or Sonnet agent with a 1M-token context window showed `of 200.0K context` in the Activity Panel. The session list reported the right limit, but the session-detail request read the token usage without a model, fell back to the 200K default, and overwrote it. Session detail now takes the limit from the latest model in the session's own transcript.
+
+---
+
 ## v0.58.0 — *The Moonlit Watch* · Oct 25, 2026
 
 Night is readable, the Tavern can be read at a glance, and the town tells the truth about Claude's work.
