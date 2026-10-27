@@ -993,7 +993,9 @@ export class IsometricRenderer {
                 }
             }
         }
-        this._generateTownSquare(plazaHub.x, plazaHub.y);
+        // CM-1 — the square is centred one row out from the door, so it runs
+        // from the gate steps to the river bank at the bridge's north landing.
+        this._generateTownSquare(plazaHub.x, plazaHub.y + 1);
         this._generatePlannedRoads();
         this._generateGateApproach();
         // Fallback connection for future buildings that are not covered by
