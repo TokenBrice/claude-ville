@@ -395,3 +395,48 @@ test('the banked hearth is a part at the base origin only while banked (B3-03\')
     renderer._patronIdsByType.set('tavern', new Set(['lead-1']));
     assert.equal(renderer.partDrawsFor(entry, tavern, 1000, 2000).length, 0);
 });
+
+// VQ-8 — the banked Forge keeps a low ember floor: the mask's own ember
+// course emits through its own part gate, open only while the lamps burn.
+test('the banked Forge mask carries its ember floor and lamp gate; the Tavern mask none (VQ-8)', () => {
+    const entry = { id: 'building.forge', layers: { banked: { width: 256, height: 232, anchor: [128, 169] } } };
+    const renderer = Object.assign(Object.create(BuildingSprite.prototype), {
+        assets: {
+            getAnchor: () => [128, 169],
+            get: (id) => (id === 'building.forge.banked' ? { width: 256, height: 232 } : null),
+            assetVersion: 'test',
+        },
+        _villageAtRest: () => false,
+        _forgeWorkload: { banked: true },
+    });
+    const at = (hour) => {
+        renderer.atmosphereState = { clock: { minuteOfDay: hour * 60 } };
+        const [banked] = renderer.partDrawsFor(entry, { type: 'forge' }, 0, 0);
+        return banked;
+    };
+    const night = at(22);
+    assert.equal(night.name, 'banked');
+    assert.deepEqual(night.ember.colors, ['#d67634', '#803e22'], 'the course\'s own authored colours');
+    assert.ok(night.ember.strength > 0 && night.ember.strength <= 0.5, 'a low floor, never a working fire');
+    assert.equal(night.emissiveGate, 1, 'lit through no work gate at night');
+    assert.equal(night.fixture, false);
+    assert.equal(at(12).emissiveGate, 0, 'dark by day');
+    // Never while the hearth works: no mask, no ember.
+    renderer._forgeWorkload = { banked: false };
+    assert.equal(at(22), undefined);
+    // The Tavern's banked mask declares no ember: the building gate rules it.
+    const tavernEntry = { id: 'building.tavern', layers: { banked: { width: 296, height: 288, anchor: [158, 218] } } };
+    const tavern = Object.assign(Object.create(BuildingSprite.prototype), {
+        assets: {
+            getAnchor: () => [158, 218],
+            get: (id) => (id === 'building.tavern.banked' ? { width: 296, height: 288 } : null),
+            assetVersion: 'test',
+        },
+        atmosphereState: { clock: { minuteOfDay: 22 * 60 } },
+        _visitorStatusByType: new Map(),
+        _patronIdsByType: new Map(),
+    });
+    const [hearth] = tavern.partDrawsFor(tavernEntry, { type: 'tavern' }, 0, 0);
+    assert.equal(hearth.ember, null);
+    assert.equal(hearth.emissiveGate, null);
+});

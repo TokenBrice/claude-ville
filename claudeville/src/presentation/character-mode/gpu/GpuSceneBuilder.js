@@ -673,7 +673,8 @@ function buildingPartRecords(renderer, drawable, base, sequence) {
             material: d.materialClass ? materialClassId(d.materialClass) : base.material,
             elevation: base.elevation,
             emissive: channels?.material ? base.emissive : 0,
-            emissiveGate: d.fixture ? 1 : base.emissiveGate,
+            // VQ-8 — a part with its own gate (the banked ember floor) keeps it.
+            emissiveGate: d.emissiveGate ?? (d.fixture ? 1 : base.emissiveGate),
             paletteRamp: base.paletteRamp,
             occluder: base.occluder,
             landmarkId: base.landmarkId,

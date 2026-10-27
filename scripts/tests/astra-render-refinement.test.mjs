@@ -54,6 +54,30 @@ test('authored geometry travels beside albedo while absent geometry clears reusa
     assert.deepEqual(batches[0].records.map(r => [r.elevation, r.occluder]), [[.1, .2], [.9, .8]]);
 });
 
+// VQ-8 — the banked Forge's ember floor: a part that carries its own gate
+// keeps it on the resident path; every other part keeps the building's.
+test('a part with its own emission gate keeps it over the building gate', () => {
+    const albedo = { width: 16, height: 16 };
+    const emissive = { width: 16, height: 16 };
+    const draw = (name, extra) => ({ name, image: albedo, textureKey: `layer:${name}`, sx: 0, sy: 0, sw: 16, sh: 16, x: 0, y: 0, fixture: false, ...extra });
+    const renderer = {
+        assets: { get: () => albedo, getDims: () => ({ w: 16, h: 16 }), getAnchor: () => [8, 16] },
+        buildingRenderer: {
+            _emissiveGateFor: () => 0,
+            partDrawsFor: () => [draw('banked', { emissiveGate: 1 }), draw('bellows', { emissiveGate: null }), draw('beacon', { fixture: true })],
+            partChannelsFor: (_entry, d) => (d.name === 'banked' ? { emissive, key: 'ember' } : null),
+        },
+    };
+    const records = buildGpuWorldRecords(renderer, { drawables: [{ kind: 'building',
+        building: { type: 'forge' }, entry: { id: 'building.forge', layers: { banked: {} } }, wx: 0, wy: 0,
+    }] });
+    const part = (name) => records.find(r => String(r.id).endsWith(`:part:${name}`));
+    assert.equal(part('banked').emissiveGate, 1, 'the ember floor keeps its lamp gate');
+    assert.equal(part('banked').emissiveSource, emissive);
+    assert.equal(part('bellows').emissiveGate, 0, 'a plain part takes the building gate');
+    assert.equal(part('beacon').emissiveGate, 1, 'a fixture emits through no occupancy gate');
+});
+
 test('empty disposed Canvas backing stores never reach a GPU upload', () => {
     const renderer = { gl: new Proxy({}, { get() { throw new Error('unexpected GL call'); } }) };
     assert.equal(GpuWorldRenderer.prototype._textureFor.call(renderer, 'disposed', { width: 0, height: 0 }), null);
