@@ -554,6 +554,11 @@ function assertUsagePayload(payload) {
   assertObject(payload.account, '/api/usage.account');
   assert.equal(Object.hasOwn(payload.account, 'email'), false, '/api/usage must not carry the unused account email');
   assertObject(payload.quota, '/api/usage.quota');
+  for (const field of ['fiveHour', 'sevenDay', 'fiveHourResetsAt', 'sevenDayResetsAt']) {
+    assert.ok(Object.hasOwn(payload.quota, field), `/api/usage.quota.${field} must be present`);
+  }
+  assert.equal(payload.quotaError, null, 'no quota check failed in the isolated home');
+  assert.equal(payload.codex, null, 'no Codex rollout carried rate_limits, so the Codex quota is unknown, not zero');
   assertObject(payload.activity, '/api/usage.activity');
   assert.equal(Object.hasOwn(payload, 'totals'), false, '/api/usage must not carry frozen stats-cache totals');
   assert.equal(typeof payload.quotaAvailable, 'boolean');

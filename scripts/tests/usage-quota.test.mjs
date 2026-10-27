@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
+import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { resolveAgentStatus } from '../../claudeville/src/domain/services/StatusResolver.js';
+import { AgentStatus } from '../../claudeville/src/domain/value-objects/AgentStatus.js';
 import { makeTempDir } from './support/tmp.mjs';
 
 const require = createRequire(import.meta.url);
@@ -15,6 +20,7 @@ const usageQuota = require('../../claudeville/services/usageQuota.js');
 if (originalHome === undefined) delete process.env.HOME; else process.env.HOME = originalHome;
 test.after(() => fs.rmSync(home, { recursive: true, force: true }));
 const {
+  codexQuotaFromObservation,
   consumeQuotaResponse,
   quotaRetryDelayMs,
   recordQuotaFailure,
@@ -210,4 +216,137 @@ test('SV-7: the change listener hears a new snapshot or failure state, not a rep
   assert.doesNotThrow(() => recordQuotaSuccess(WINDOWS, NOW + 6));
   assert.equal(usageAt(NOW + 6).quotaError, null);
   resetQuotaCache();
+});
+
+// ─── SV-6 / PV-7: Codex rate limits and credits ─────────────────
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const RATE_LIMIT_FIXTURE = path.join(REPO_ROOT, 'scripts', 'adapters', 'fixtures', 'codex', 'rate-limits.jsonl');
+const FAR_RESET_MS = 4102444800 * 1000;
+
+function codexQuotaProjection({ mtimeAgoMs = 0 } = {}) {
+  const root = makeTempDir('claudeville-codex-quota-');
+  try {
+    const now = Date.now();
+    const project = path.join(root, 'work', 'codex-quota');
+    const rolloutDir = path.join(root, '.codex', 'sessions', '2026', '10', '27');
+    fs.mkdirSync(project, { recursive: true });
+    fs.mkdirSync(rolloutDir, { recursive: true });
+    let content = fs.readFileSync(RATE_LIMIT_FIXTURE, 'utf8');
+    for (const [placeholder, value] of [
+      ['__PROJECT__', project],
+      ['__FIVE_MINUTES_AGO__', new Date(now - mtimeAgoMs - 5 * 60_000).toISOString()],
+      ['__FOUR_MINUTES_AGO__', new Date(now - mtimeAgoMs - 4 * 60_000).toISOString()],
+      ['__THREE_MINUTES_AGO__', new Date(now - mtimeAgoMs - 3 * 60_000).toISOString()],
+    ]) content = content.replaceAll(placeholder, value);
+    const target = path.join(rolloutDir, 'rollout-2026-10-27T12-00-00-rate-limits.jsonl');
+    fs.writeFileSync(target, content);
+    const mtime = (now - mtimeAgoMs) / 1000;
+    fs.utimesSync(target, mtime, mtime);
+    const script = `
+      const { CodexAdapter } = require('./claudeville/adapters/codex');
+      const usageQuota = require('./claudeville/services/usageQuota');
+      const adapter = new CodexAdapter();
+      const sessions = adapter.getActiveSessions(2 * 60 * 1000, { force: true });
+      usageQuota._test.resetQuotaCache();
+      usageQuota._test.setCodexRateLimitsSource(() => adapter.getRateLimitObservation());
+      process.stdout.write(JSON.stringify({
+        sessions,
+        observation: adapter.getRateLimitObservation(),
+        codex: usageQuota.fetchUsage().codex,
+      }));
+    `;
+    const output = execFileSync(process.execPath, ['-e', script], {
+      cwd: REPO_ROOT,
+      env: { ...process.env, HOME: root, USERPROFILE: root },
+      encoding: 'utf8',
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    return { ...JSON.parse(output), observedAt: Date.parse(new Date(now - mtimeAgoMs - 3 * 60_000).toISOString()) };
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test('SV-6: a live rollout feeds /api/usage.codex from its newest token_count', () => {
+  const { sessions, observation, codex, observedAt } = codexQuotaProjection();
+  assert.deepEqual(observation, {
+    observedAt,
+    primary: { usedPercent: 100, windowMinutes: 10080, resetsAt: FAR_RESET_MS },
+    secondary: null,
+    credits: { balance: 2510.32726225, hasCredits: true, unlimited: false },
+    reached: false,
+  });
+  assert.deepEqual(codex, {
+    usedPercent: 100,
+    windowMinutes: 10080,
+    resetsAt: FAR_RESET_MS,
+    credits: { balance: 2510.32726225, hasCredits: true, unlimited: false },
+    limitReached: true,
+    observedAt,
+  });
+  // Account data stays off the session wire: no account id, no quota fields.
+  const session = sessions.find(row => row.sessionId === 'codex-2026-10-27T12-00-00-rate-limits');
+  assert.ok(session, 'the fixture rollout is a live session');
+  for (const field of ['accountId', 'rateLimits', 'rateLimit', 'credits', 'quota']) {
+    assert.equal(Object.hasOwn(session, field), false, field);
+  }
+});
+
+test('SV-6: a server that boots with no live Codex session still reads the last observation', () => {
+  const { sessions, codex, observedAt } = codexQuotaProjection({ mtimeAgoMs: 6 * 60 * 60_000 });
+  assert.equal(sessions.length, 0, 'the six-hour-old rollout is not live');
+  assert.equal(codex.limitReached, true);
+  assert.equal(codex.observedAt, observedAt, 'its age is stated, not hidden');
+});
+
+test('PV-7 / Q3: LIMIT at 100 % or a reached type, the binding window, and resets read as unknown', () => {
+  const NOW_MS = Date.UTC(2026, 9, 27, 12);
+  const week = (usedPercent, resetsAt = NOW_MS + 86_400_000) => ({ usedPercent, windowMinutes: 10080, resetsAt });
+  const fiveHour = (usedPercent, resetsAt = NOW_MS + 3_600_000) => ({ usedPercent, windowMinutes: 300, resetsAt });
+  const credits = { balance: 12.5, hasCredits: true, unlimited: false };
+  const observe = (extra) => ({ observedAt: NOW_MS - 1000, primary: null, secondary: null, credits, reached: false, ...extra });
+
+  assert.equal(codexQuotaFromObservation(null, NOW_MS), null, 'absence stays unknown');
+  assert.equal(codexQuotaFromObservation(observe({ primary: week(99.9) }), NOW_MS).limitReached, false);
+  assert.equal(codexQuotaFromObservation(observe({ primary: week(100) }), NOW_MS).limitReached, true, 'Q3: LIMIT at 100 % even on credits');
+  assert.equal(codexQuotaFromObservation(observe({ primary: week(42), reached: true }), NOW_MS).limitReached, true);
+
+  const binding = codexQuotaFromObservation(observe({ primary: fiveHour(40), secondary: week(100) }), NOW_MS);
+  assert.equal(binding.windowMinutes, 10080, 'the tighter window is the one reported');
+  assert.equal(binding.usedPercent, 100);
+  assert.equal(binding.limitReached, true);
+
+  const reset = codexQuotaFromObservation(observe({ primary: week(100, NOW_MS - 1) }), NOW_MS);
+  assert.deepEqual(reset, {
+    usedPercent: null,
+    windowMinutes: 10080,
+    resetsAt: null,
+    credits,
+    limitReached: false,
+    observedAt: NOW_MS - 1000,
+  }, 'a window past its reset is unknown, never 0 %');
+
+  const partlyReset = codexQuotaFromObservation(observe({ primary: fiveHour(100, NOW_MS - 1), secondary: week(61) }), NOW_MS);
+  assert.equal(partlyReset.usedPercent, 61);
+  assert.equal(partlyReset.windowMinutes, 10080);
+  assert.equal(partlyReset.limitReached, false);
+
+  const bare = codexQuotaFromObservation(observe({ credits: null, reached: true }), NOW_MS);
+  assert.deepEqual(bare.credits, { balance: null, hasCredits: null, unlimited: null });
+  assert.equal(bare.usedPercent, null);
+  assert.equal(bare.limitReached, true, 'a reached type alone is a LIMIT');
+});
+
+test('Q3: an account LIMIT never changes a Codex session\'s own status', () => {
+  const usage = {
+    provider: 'claude',
+    quota: { provider: 'claude', fiveHour: 0.2, sevenDay: 0.5 },
+    codex: { usedPercent: 100, windowMinutes: 10080, resetsAt: FAR_RESET_MS, credits: {}, limitReached: true, observedAt: 1 },
+  };
+  const now = Date.now();
+  const working = { provider: 'codex', sessionId: 'codex-a', turnState: 'working', lastActivity: now };
+  assert.equal(resolveAgentStatus(working, { usage, now }), AgentStatus.WORKING);
+  const idle = { provider: 'codex', sessionId: 'codex-b', turnState: 'awaiting_input', lastActivity: now };
+  assert.equal(resolveAgentStatus(idle, { usage, now }), AgentStatus.COMPLETED);
 });

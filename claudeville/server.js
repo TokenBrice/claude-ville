@@ -37,6 +37,8 @@ const { hookOverlay } = require('./adapters/hooks');
 
 // Claude adapter (teams/tasks are Claude-only)
 const claudeAdapter = adapters.find(a => a.provider === 'claude');
+// Codex adapter: its rollouts carry the account's rate limits (SV-6).
+const codexAdapter = adapters.find(a => a.provider === 'codex');
 
 // ─── Settings ───────────────────────────────────────────────
 const PORT = 4000;
@@ -2842,6 +2844,7 @@ function startServer() {
         // A new quota snapshot or failure (SV-7) reaches open tabs at once
         // through the overlay broadcast, without a transcript scan.
         onChange: () => markProviderDataDirty({ kind: 'overlay', reason: 'usage-quota' }, null, { coalesce: false }),
+        codexRateLimits: () => codexAdapter?.getRateLimitObservation?.() || null,
       });
       startFileWatcher(startupStats.watchPaths);
       startWebSocketHeartbeat();

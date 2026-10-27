@@ -1,10 +1,11 @@
 /**
- * usageQuota.js - Claude usage data collection and caching module
+ * usageQuota.js - account usage and quota (Claude, plus Codex rate limits)
  *
  * Data source:
  *   A) ~/.claude/.credentials.json → subscriptionType, rateLimitTier
  *   B) ~/.claude/history.jsonl → today/this-week activity (bounded reverse scan)
  *   C) api.anthropic.com/api/oauth/usage → 5h/7d quota utilization (refreshed every QUOTA_API_TTL)
+ *   D) the Codex adapter's newest `token_count.rate_limits` → `codex` (no I/O here)
  *
  * SV-10: it never spawns a CLI (a boot-time `claude auth status` fetched an
  * email no client read) and serves no frozen `stats-cache.json` totals.
@@ -33,9 +34,11 @@ const cache = {
   stats: { data: null, ts: 0 },
   quota: { data: null, nextAttemptAt: 0, available: false, lastSuccessTs: 0, error: null },
 };
-// Set by init(): told when the quota snapshot or its failure state changes, so
-// the server can push the new usage without waiting for a session scan.
-const quotaHooks = { onChange: null };
+// Set by init(). `onChange` hears when the quota snapshot or its failure state
+// changes, so the server can push the new usage without waiting for a session
+// scan. `codexRateLimits` returns the Codex adapter's newest rate-limit
+// observation (SV-6).
+const quotaHooks = { onChange: null, codexRateLimits: null };
 
 function aggregateHistoryFile(filePath, todayStart, weekStart) {
   const fd = fs.openSync(filePath, 'r');
@@ -360,6 +363,50 @@ function tryFetchQuota(now = Date.now()) {
   req.end();
 }
 
+// ─── Codex quota (SV-6 / PV-7) ─────────────────────────────────
+
+/**
+ * `/api/usage.codex` from the newest observation (see `extractCodexRateLimits`
+ * in `adapters/codex.js`), or null when no rollout carried `rate_limits`.
+ *
+ * The reported window is the binding one: the highest `used_percent` among
+ * the windows that have not reset since they were observed. A window past its
+ * `resetsAt` no longer describes the account, so its use is unknown (null),
+ * never 0 %. Per user decision Q3, `limitReached` is true at 100 % (Codex keeps
+ * working on paid credits there) or whenever `rate_limit_reached_type` is set.
+ * It is for account surfaces only and never changes a session's status.
+ */
+function codexQuotaFromObservation(observation, now = Date.now()) {
+  if (!observation || !Number.isFinite(observation.observedAt)) return null;
+  const windows = [observation.primary, observation.secondary].filter(Boolean);
+  const current = windows.filter(window => !(window.resetsAt !== null && window.resetsAt <= now));
+  const highest = list => list.reduce((best, window) => (!best || window.usedPercent > best.usedPercent ? window : best), null);
+  const binding = highest(current);
+  const shape = binding || highest(windows);
+  const allReset = windows.length > 0 && current.length === 0;
+  const credits = observation.credits || {};
+  return {
+    usedPercent: binding ? binding.usedPercent : null,
+    windowMinutes: shape ? shape.windowMinutes : null,
+    resetsAt: binding ? binding.resetsAt : null,
+    credits: {
+      balance: Number.isFinite(credits.balance) ? credits.balance : null,
+      hasCredits: typeof credits.hasCredits === 'boolean' ? credits.hasCredits : null,
+      unlimited: typeof credits.unlimited === 'boolean' ? credits.unlimited : null,
+    },
+    limitReached: !allReset && ((binding?.usedPercent ?? 0) >= 100 || observation.reached === true),
+    observedAt: observation.observedAt,
+  };
+}
+
+function readCodexQuota(now) {
+  try {
+    return codexQuotaFromObservation(quotaHooks.codexRateLimits?.() || null, now);
+  } catch {
+    return null;
+  }
+}
+
 // ─── Public API ────────────────────────────────────────────────
 
 function fetchUsage() {
@@ -391,11 +438,13 @@ function fetchUsage() {
       thisWeek: stats.thisWeek,
     },
     quotaAvailable: quotaFresh,
+    codex: readCodexQuota(now),
   };
 }
 
-function init({ onChange = null } = {}) {
+function init({ onChange = null, codexRateLimits = null } = {}) {
   quotaHooks.onChange = typeof onChange === 'function' ? onChange : null;
+  quotaHooks.codexRateLimits = typeof codexRateLimits === 'function' ? codexRateLimits : null;
   // Initial quota API attempt
   tryFetchQuota();
 }
@@ -404,6 +453,7 @@ module.exports = {
   fetchUsage,
   init,
   _test: {
+    codexQuotaFromObservation,
     consumeQuotaResponse,
     quotaRetryDelayMs,
     recordQuotaFailure,
@@ -412,6 +462,10 @@ module.exports = {
     resetQuotaCache({ nextAttemptAt = Infinity } = {}) {
       cache.quota = { data: null, nextAttemptAt, available: false, lastSuccessTs: 0, error: null };
       quotaHooks.onChange = null;
+      quotaHooks.codexRateLimits = null;
+    },
+    setCodexRateLimitsSource(source) {
+      quotaHooks.codexRateLimits = source;
     },
     setQuotaChangeListener(listener) {
       quotaHooks.onChange = listener;

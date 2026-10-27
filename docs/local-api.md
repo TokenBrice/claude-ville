@@ -11,7 +11,7 @@ The server is hardcoded to port `4000` and the IPv4 loopback interface. Requests
 | `GET /api/teams` | Claude Code team metadata from `~/.claude/teams/`. |
 | `GET /api/tasks` | Claude Code task groups from `~/.claude/tasks/`. Diagnostic; the UI does not fetch it. |
 | `GET /api/providers` | Detected providers, home directories, and per-provider health. |
-| `GET /api/usage` | Usage, subscription, activity, and quota metadata. |
+| `GET /api/usage` | Claude subscription, activity and quota, plus the Codex account quota ([fields](#usage-and-quota)). |
 | `GET /api/perf` | Runtime counters: watchers, caches, adapter scan cost, event loop, memory. |
 | `GET /api/changelog` | Raw `CHANGELOG.md` text for the in-app changelog modal. |
 | `ws://localhost:4000/ws` | Same-origin snapshot, delta updates, and ping/pong heartbeats. |
@@ -23,6 +23,18 @@ Git identity on `/api/sessions` (all fields optional; a client keys a repository
 - `type: 'rewritten'` events (`oldShas`, optional `replacements: [{ oldSha, newSha }]`) report commits that left a branch without reaching a remote: an amend, a rebase or a reset.
 
 The adapter contract has the extraction rules: [git event extraction](../claudeville/adapters/README.md#git-event-extraction).
+
+## Usage and quota
+
+`GET /api/usage` returns the same object that rides on every WebSocket `init` and `update` as `usage`. Clients feature-detect the newer fields, which older servers omit.
+
+- `provider: 'claude'`, `account: { subscriptionType, rateLimitTier }` and `activity: { today, thisWeek }`, each `{ messages, sessions }` from `~/.claude/history.jsonl`.
+- `quota`: the Claude windows as 0–1 ratios, `fiveHour` and `sevenDay`, with `fiveHourResetsAt` and `sevenDayResetsAt` in epoch ms. Every field is null while `quotaAvailable` is false: before the first good check, once the snapshot is 30 minutes old, or after a 401.
+- `quotaError`: `{ status, at }` while the last quota check failed with 401 (the stored token expired; running `claude` refreshes it) or 429 (the check is throttled and backs off), where `at` is when the failure began. Otherwise null.
+- `codex`: the Codex account's quota from the newest `token_count.rate_limits` in its rollouts, or null when none was observed. It is `{ usedPercent, windowMinutes, resetsAt, credits: { balance, hasCredits, unlimited }, limitReached, observedAt }`:
+  - `usedPercent` (0–100) and `resetsAt` (epoch ms) describe the binding window, the highest among windows that have not reset. Once its `resetsAt` passes, both are null: unknown, never 0 %.
+  - `limitReached` is true at `usedPercent >= 100`, or whenever Codex reports `rate_limit_reached_type`. It drives account surfaces only (the top-bar LIMIT, the quota card and the Mine) and never a session's status.
+  - `observedAt` is the record's own time, so it can be hours old when no Codex session is live.
 
 The server does not enable CORS and rejects `OPTIONS` requests. Missing or invalid routes receive JSON error responses.
 

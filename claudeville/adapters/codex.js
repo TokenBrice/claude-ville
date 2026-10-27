@@ -173,6 +173,7 @@ function extractSessionMetadataFromText(line) {
   const parentThreadId = extractJsonString(metadataPrefix, 'parent_thread_id');
   const model = extractJsonString(metadataPrefix, 'model');
   const project = extractJsonString(metadataPrefix, 'cwd');
+  const accountId = extractJsonString(metadataPrefix, 'creator_account_id');
 
   return {
     agentId,
@@ -182,6 +183,7 @@ function extractSessionMetadataFromText(line) {
     parentThreadId,
     model,
     project,
+    accountId,
   };
 }
 
@@ -319,6 +321,7 @@ function applySessionMetadata(detail, metadata) {
   if (!detail.model && metadata.model) detail.model = metadata.model;
   if (!detail.project && metadata.project) detail.project = metadata.project;
   if (!detail.gitBranch && metadata.gitBranch) detail.gitBranch = metadata.gitBranch;
+  if (!detail.accountId && metadata.accountId) detail.accountId = metadata.accountId;
 }
 
 function applyTurnMetadata(detail, metadata, overwrite = false) {
@@ -501,6 +504,7 @@ function readEarlyMetadata(filePath) {
     permissionMode: null,
     project: null,
     gitBranch: null,
+    accountId: null,
   };
   let boundary = cached?.boundary || null;
 
@@ -522,6 +526,7 @@ function readEarlyMetadata(filePath) {
         model: entry.payload.model || null,
         project: entry.payload.cwd || null,
         gitBranch: entry.payload.git?.branch || entry.payload.gitBranch || entry.payload.git_branch || null,
+        accountId: entry.payload.creator_account_id || null,
       });
     } else if (line.includes('"type":"session_meta"') || line.includes('"type": "session_meta"')) {
       applySessionMetadata(metadata, extractSessionMetadataFromText(line));
@@ -1236,6 +1241,101 @@ function getTokenUsage(filePath, entries = null) {
   return tokenUsage;
 }
 
+// SV-6 / PV-7 — the account's Codex quota as each `token_count` reports it:
+// `rate_limits.primary`/`secondary` windows, `credits`, and
+// `rate_limit_reached_type`. Kept per `session_meta.creator_account_id`; the
+// newest observation wins. It feeds `/api/usage.codex` (account surfaces only)
+// and never a session's status.
+const MAX_RATE_LIMIT_ACCOUNTS = 16;
+const _rateLimitsByAccount = new Map();
+// The first scan also reads the newest rollout's tail, once, so a server that
+// boots with no live Codex session still shows the last observed quota.
+let _rateLimitSeeded = false;
+
+function rateLimitWindow(window) {
+  if (!window || typeof window !== 'object') return null;
+  const usedPercent = Number(window.used_percent);
+  if (window.used_percent === null || !Number.isFinite(usedPercent)) return null;
+  const windowMinutes = Number(window.window_minutes);
+  const resetsAt = Number(window.resets_at);
+  return {
+    usedPercent: Math.max(0, usedPercent),
+    windowMinutes: Number.isFinite(windowMinutes) && windowMinutes > 0 ? windowMinutes : null,
+    // Codex writes `resets_at` in epoch seconds.
+    resetsAt: Number.isFinite(resetsAt) && resetsAt > 0 ? Math.round(resetsAt * 1000) : null,
+  };
+}
+
+function rateLimitCredits(credits) {
+  if (!credits || typeof credits !== 'object') return null;
+  // `balance` is a decimal string ("2510.3272622500").
+  const balance = typeof credits.balance === 'string' || typeof credits.balance === 'number'
+    ? Number(credits.balance)
+    : NaN;
+  return {
+    balance: credits.balance !== '' && Number.isFinite(balance) ? balance : null,
+    hasCredits: typeof credits.has_credits === 'boolean' ? credits.has_credits : null,
+    unlimited: typeof credits.unlimited === 'boolean' ? credits.unlimited : null,
+  };
+}
+
+function extractCodexRateLimits(entries) {
+  let latest = null;
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const payload = entry?.payload;
+    if (payload?.type !== 'token_count') continue;
+    const limits = payload.rate_limits;
+    if (!limits || typeof limits !== 'object') continue;
+    const observedAt = parseTimestampMs(entry.timestamp);
+    if (!observedAt || (latest && observedAt < latest.observedAt)) continue;
+    const reached = limits.rate_limit_reached_type;
+    latest = {
+      observedAt,
+      primary: rateLimitWindow(limits.primary),
+      secondary: rateLimitWindow(limits.secondary),
+      credits: rateLimitCredits(limits.credits),
+      reached: reached !== null && reached !== undefined && reached !== false && reached !== '',
+    };
+  }
+  return latest;
+}
+
+function noteCodexRateLimits(accountId, entries) {
+  const observation = extractCodexRateLimits(entries);
+  if (!observation) return;
+  const key = typeof accountId === 'string' ? accountId : '';
+  const previous = _rateLimitsByAccount.get(key);
+  if (previous && previous.observedAt >= observation.observedAt) return;
+  _rateLimitsByAccount.delete(key);
+  _rateLimitsByAccount.set(key, observation);
+  while (_rateLimitsByAccount.size > MAX_RATE_LIMIT_ACCOUNTS) {
+    _rateLimitsByAccount.delete(_rateLimitsByAccount.keys().next().value);
+  }
+}
+
+function seedCodexRateLimits() {
+  if (_rateLimitSeeded) return;
+  _rateLimitSeeded = true;
+  if (_rateLimitsByAccount.size > 0) return;
+  let newest = null;
+  for (const [filePath, cached] of _rolloutDiscoveryCache.filesByPath) {
+    if (!newest || (cached.mtime || 0) > newest.mtime) newest = { filePath, mtime: cached.mtime || 0 };
+  }
+  if (!newest) return;
+  noteCodexRateLimits(
+    readEarlyMetadata(newest.filePath)?.accountId || null,
+    readJsonLines(newest.filePath, { from: 'end', count: TOKEN_USAGE_SCAN_LINES }),
+  );
+}
+
+function latestCodexRateLimits() {
+  let latest = null;
+  for (const observation of _rateLimitsByAccount.values()) {
+    if (!latest || observation.observedAt > latest.observedAt) latest = observation;
+  }
+  return latest;
+}
+
 function normalizeCommand(command) {
   return String(command || '').trim().replace(/\s+/g, ' ');
 }
@@ -1839,6 +1939,7 @@ class CodexAdapter {
     for (const { filePath, mtime, fileName } of rollouts) {
       const scanContext = createActiveRolloutScanContext(filePath);
       const detail = parseRollout(filePath, scanContext);
+      noteCodexRateLimits(detail.accountId, scanContext.tokenEntries);
       // Extract session ID from the filename: rollout-2025-01-22T10-30-00-abc123.jsonl
       const fullSessionId = rolloutSessionId(fileName);
       const sessionId = fullSessionId.slice('codex-'.length);
@@ -1847,6 +1948,7 @@ class CodexAdapter {
       sessionIdByThreadId.set(threadId, fullSessionId);
       parsedRollouts.push({ filePath, mtime, detail, scanContext, sessionId, fullSessionId, threadId });
     }
+    seedCodexRateLimits();
     const activeSessionIds = new Set(parsedRollouts.map((rollout) => rollout.fullSessionId));
     for (const sessionId of _rolloutFileBySessionId.keys()) {
       if (!activeSessionIds.has(sessionId)) _rolloutFileBySessionId.delete(sessionId);
@@ -2017,6 +2119,11 @@ class CodexAdapter {
     if (dirty.kind === 'reconcile') {
       _rolloutDiscoveryCache.reconcileRequested = true;
     }
+  }
+
+  // The newest Codex rate-limit observation across accounts, or null (SV-6).
+  getRateLimitObservation() {
+    return latestCodexRateLimits();
   }
 
   getPerfStats() {
