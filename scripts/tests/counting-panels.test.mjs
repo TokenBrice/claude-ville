@@ -15,7 +15,7 @@ import {
 } from '../../claudeville/src/presentation/shared/AgentPresentation.js';
 import { formatStatusElapsed, formatTokens } from '../../claudeville/src/presentation/shared/Formatters.js';
 import { TokenUsage } from '../../claudeville/src/domain/value-objects/TokenUsage.js';
-import { childRowVisible, leadIdFor, rowTokenCells } from '../../claudeville/src/presentation/dashboard-mode/DashboardRenderer.js';
+import { childRowVisible, codexQuotaFacts, leadIdFor, rowTokenCells } from '../../claudeville/src/presentation/dashboard-mode/DashboardRenderer.js';
 import { sessionDetailsService } from '../../claudeville/src/presentation/shared/SessionDetailsService.js';
 import { operatorStatusLabel } from '../../claudeville/src/presentation/shared/SemanticTriage.js';
 import { offFrameTallyText } from '../../claudeville/src/presentation/character-mode/AttentionPlates.js';
@@ -144,6 +144,30 @@ test('UI-16 (Q5): a subagent row folds under its lead unless selected, filtered,
     assert.equal(leadIdFor(nested), 'lead');
     assert.equal(childRowVisible(nested, { liveIds, expandedLeads: new Set(['lead']) }), true);
     assert.equal(leadIdFor({ id: 'lead', rootSessionId: 'lead' }), '', 'a root naming itself is a lead');
+});
+
+test('Codex quota card: weekly %, reset, credits and LIMIT, hidden when the field is absent', () => {
+    const now = 5_000_000;
+    assert.equal(codexQuotaFacts(undefined, now), null, 'an older server: no card');
+    assert.equal(codexQuotaFacts(null, now), null, 'no rollout with rate limits: no card');
+    const facts = codexQuotaFacts({
+        usedPercent: 100, windowMinutes: 10080, resetsAt: now + 86_400_000,
+        credits: { balance: 2510.33, hasCredits: true, unlimited: false }, limitReached: true, observedAt: now - 60_000,
+    }, now);
+    assert.equal(facts.usedText, '100%');
+    assert.equal(facts.lit, 12);
+    assert.equal(facts.limit, true, 'Q3: LIMIT at 100 % on the account card');
+    assert.equal(facts.windowLabel, 'weekly');
+    assert.equal(facts.resetsAt, now + 86_400_000);
+    assert.equal(facts.credits, '2,510.33 credits');
+    // After the window reset passes, B1 nulls the numbers: unknown, never 0 %.
+    const reset = codexQuotaFacts({ usedPercent: null, resetsAt: null, credits: { balance: null }, limitReached: false, observedAt: now }, now);
+    assert.equal(reset.usedText, '—');
+    assert.equal(reset.lit, 0);
+    assert.equal(reset.limit, false);
+    assert.equal(reset.resetsAt, null);
+    assert.equal(reset.credits, '');
+    assert.equal(codexQuotaFacts({ usedPercent: 40, credits: { unlimited: true } }, now).credits, 'unlimited credits');
 });
 
 test('UI-13: a departed villager is aged from its departure', () => {

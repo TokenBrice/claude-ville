@@ -1101,3 +1101,32 @@
     .dashboard__healthbar-seg { transition: none; }
     .dashboard__section--errored-flash .dashboard__section-header { animation: none; }
 }
+
+/* Codex quota card (tally bar): the account's window, its reset and its
+   credits. LIMIT (Q3) rims the card in the rate-limit orchid; a quota that
+   is merely high stays in ink. */
+.dashboard-quota {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    gap: 6px;
+    height: 24px;
+    padding: 0 6px;
+    border: 1px solid var(--line-1);
+    color: var(--ink-2);
+    font: var(--fs-body)/var(--lh-body) var(--font-body);
+    white-space: nowrap;
+}
+.dashboard-quota--limit { border-color: color-mix(in srgb, var(--cv-status-rate-limited) 50%, transparent); }
+.dashboard-quota__provider,
+.dashboard-quota__window,
+.dashboard-quota__word { font: var(--fs-label)/var(--lh-label) var(--font-display); letter-spacing: 1px; }
+.dashboard-quota__window { color: var(--ink-3); }
+.dashboard-quota__word { color: var(--cv-status-rate-limited); }
+.dashboard-quota__used { color: var(--ink-1); font-variant-numeric: tabular-nums; }
+.dashboard-quota__fact,
+.dashboard-quota__age { color: var(--ink-3); }
+.dashboard-quota__gauge { display: inline-flex; gap: 1px; }
+.dashboard-quota__gauge > span { width: 3px; height: 8px; background: var(--line-2); }
+.dashboard-quota__gauge > span.on { background: var(--ink-2); }
+.dashboard-quota--limit .dashboard-quota__gauge > span.on { background: var(--cv-status-rate-limited); }

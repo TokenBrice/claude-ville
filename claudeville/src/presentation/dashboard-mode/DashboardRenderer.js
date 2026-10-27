@@ -24,6 +24,7 @@ import {
     formatRelative,
     formatTokens,
     formatToolDetail,
+    formatWaitAge,
     normalizeStatus,
     shortenHomePath,
     shortProjectName,
@@ -289,6 +290,31 @@ export function rowTokenCells(rawUsage) {
         newShort: fresh,
         cacheShort: cache ? `+${cache}` : '',
         title: `${fresh} new tokens (input, output, cache writes)${cache ? ` · ${cache} cache reads` : ''}${usage.availability === 'partial' ? ' · partial' : ''}`,
+    };
+}
+
+/**
+ * The Codex quota card's facts from `/api/usage.codex` (B1's contract), or
+ * null when the field is absent or null. Unknown stays unknown: a null
+ * percentage reads `—`, never 0 %. Q3: LIMIT is the account's (>= 100 % or
+ * the window reports it reached); villagers keep their own status.
+ */
+export function codexQuotaFacts(codex, now = Date.now()) {
+    if (!codex || typeof codex !== 'object') return null;
+    const known = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
+    const used = known(codex.usedPercent) ? Math.max(0, Number(codex.usedPercent)) : null;
+    const resetsAt = known(codex.resetsAt) && Number(codex.resetsAt) > now ? Number(codex.resetsAt) : null;
+    const credits = codex.credits || {};
+    const minutes = known(codex.windowMinutes) ? Number(codex.windowMinutes) : 0;
+    return {
+        usedText: used === null ? '—' : `${Math.round(used)}%`,
+        lit: used === null ? 0 : Math.min(GAUGE_SEGMENTS, Math.round((used / 100) * GAUGE_SEGMENTS)),
+        limit: codex.limitReached === true,
+        resetsAt,
+        credits: credits.unlimited === true ? 'unlimited credits'
+            : known(credits.balance) ? `${Number(credits.balance).toLocaleString('en-US', { maximumFractionDigits: 2 })} credits` : '',
+        observedAt: known(codex.observedAt) && Number(codex.observedAt) > 0 ? Number(codex.observedAt) : null,
+        windowLabel: minutes >= 7 * 24 * 60 ? 'weekly' : minutes >= 60 ? `${Math.round(minutes / 60)}h` : 'window',
     };
 }
 
@@ -682,6 +708,13 @@ export class DashboardRenderer {
             }
         };
         eventBus.on('harbor:updated', this._onHarborUpdated);
+        // Codex quota card: the account facts B1 adds to /api/usage.
+        this._latestUsage = null;
+        this._onUsageUpdated = (usage) => {
+            this._latestUsage = usage || null;
+            if (this.active) this._renderAttentionQueue(Array.from(this.world.agents.values()));
+        };
+        eventBus.on('usage:updated', this._onUsageUpdated);
         document.addEventListener('visibilitychange', this._onVisibilityChange);
         // The view's own box (window resize, sidebar collapse), never the
         // grid's, so toggling the roomy tier cannot re-trigger it.
@@ -1739,6 +1772,7 @@ export class DashboardRenderer {
             provider: [...this._providerFilters].sort(),
             search: this._searchQuery,
             matches: this._searchMatches?.size ?? agents.length,
+            codex: this._latestUsage?.codex ?? null,
         });
         this.attentionEl.hidden = false;
         if (signature === this._controlsSignature) return;
@@ -1820,12 +1854,43 @@ export class DashboardRenderer {
         legend.className = 'dashboard-attention__legend';
         legend.textContent = '≈ estimate · — unavailable';
         legend.title = '≈ cost estimated from token counts and published rates; — no usage reported';
-        replaceChildren(this.attentionEl, [heading, list, legend]);
+        replaceChildren(this.attentionEl, [heading, list, this._codexQuotaCard(), legend].filter(Boolean));
         if (focusedKey) {
             [...this.attentionEl.querySelectorAll('[data-filter-key]')]
                 .find(button => button.dataset.filterKey === focusedKey)
                 ?.focus({ preventScroll: true });
         }
+    }
+
+    // The Codex account card in the tally bar: `CODEX WEEKLY ▮▮▮ 100% LIMIT ·
+    // resets 5d12h · 2,510.33 credits · as of 3m`. Absent or null usage.codex
+    // (an older server, or no rollout with rate_limits) shows nothing.
+    _codexQuotaCard() {
+        const facts = codexQuotaFacts(this._latestUsage?.codex);
+        if (!facts) return null;
+        const part = (className, text = '') => Object.assign(document.createElement('span'), { className, textContent: text });
+        const card = part(`dashboard-quota${facts.limit ? ' dashboard-quota--limit' : ''}`);
+        card.title = 'Codex account quota from the newest rollout\'s rate limits. LIMIT means the account is at its window\'s limit '
+            + '(spending credits when it has them); Codex villagers keep their own status.';
+        const provider = part('dashboard-quota__provider', providerPresentation('codex').badge.label.toUpperCase());
+        provider.style.color = providerPresentation('codex').badge.color;
+        const gauge = part('dashboard-quota__gauge');
+        for (let index = 0; index < GAUGE_SEGMENTS; index++) gauge.appendChild(part(index < facts.lit ? 'on' : ''));
+        const parts = [provider, part('dashboard-quota__window', facts.windowLabel.toUpperCase()), gauge, part('dashboard-quota__used', facts.usedText)];
+        if (facts.limit) parts.push(part('dashboard-quota__word', bucketWord('quota', 'upper')));
+        if (facts.resetsAt) {
+            const reset = part('dashboard-quota__fact');
+            subscribeElapsedText(reset, now => `· resets in ${formatWaitAge(Math.max(0, facts.resetsAt - now))}`);
+            parts.push(reset);
+        }
+        if (facts.credits) parts.push(part('dashboard-quota__fact', `· ${facts.credits}`));
+        if (facts.observedAt) {
+            const age = part('dashboard-quota__age');
+            subscribeElapsedText(age, now => `· as of ${formatWaitAge(Math.max(0, now - facts.observedAt))} ago`);
+            parts.push(age);
+        }
+        card.append(...parts);
+        return card;
     }
 
     _filterButton({ key, label, pressed, onClick }) {
@@ -2717,5 +2782,6 @@ export class DashboardRenderer {
         eventBus.off('mode:changed', this._onModeChanged);
         eventBus.off(DASHBOARD_FILTER_EVENT, this._onSharedFilterChanged);
         eventBus.off('harbor:updated', this._onHarborUpdated);
+        eventBus.off('usage:updated', this._onUsageUpdated);
     }
 }

@@ -604,3 +604,8 @@
         animation: none;
     }
 }
+
+/* Codex quota card: the observation age stays in the card's title. */
+:root[data-cv-profile="mobile"] .dashboard-quota__age {
+    display: none;
+}
