@@ -272,7 +272,8 @@ export function hullLampStrip(assets, strip) {
 }
 
 // M05-5 — riding lights. A moored hull shows one anchor light: only the
-// topmost lamp (the masthead) of each frame survives in this copy of its
+// topmost lamp (the masthead; on the stack hulls the VQ-12 masthead lamp over
+// their deck lamps) of each frame survives in this copy of its
 // lamp strip; under way the full strip lights (HarborTraffic._hullPose picks
 // by the ship's own status, never by agents). Lamps group as hullLampPoints
 // groups them (texels within 2 of a group's centre).

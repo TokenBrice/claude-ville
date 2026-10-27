@@ -79,8 +79,17 @@ test('AG-6: the ground sitter lands its seat line on the ground, else drops its 
     assert.equal(sprite._groundSitBodyY(pose, anchor, 100), 100 + 1 - 64);
     // A profile without a sit strip: the standing body 8 texels lower.
     assert.equal(sprite._groundSitBodyY(null, anchor, 100), 100 - 75 + 2 + 8);
-    // Lower than a seated Tavern patron's slump (3) and than standing.
-    assert.ok(sprite._groundSitBodyY(null, anchor, 100) > 100 - 75 + 2 + 3);
+    // Lower than a seated Tavern patron's slump (4, J39) and than standing.
+    assert.ok(sprite._groundSitBodyY(null, anchor, 100) > 100 - 75 + 2 + 4);
+    // VQ-11 — the clip: the fallback at the ground, a robed sit strip whole,
+    // an armoured one at its seat line (the shins no longer hang below it).
+    assert.equal(sprite._groundSitClipLine(null, 100), 102);
+    sprite._spriteIdentity = { spriteId: 'agent.claude.opus' };
+    assert.equal(sprite._groundSitClipLine(pose, 100), null);
+    for (const spriteId of ['agent.codex.gpt56luna', 'agent.codex.gpt56luna.b', 'agent.codex.gpt56sol', 'agent.codex.gpt56sol.b']) {
+        sprite._spriteIdentity = { spriteId };
+        assert.equal(sprite._groundSitClipLine(pose, 100), 101, spriteId);
+    }
 });
 
 // AG-5 — a lead waiting on its subagents stands up for a blocked child.

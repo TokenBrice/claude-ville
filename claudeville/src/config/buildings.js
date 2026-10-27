@@ -346,12 +346,20 @@ export const BUILDING_DEFS = [
         labelPriority: 'landmark',
         entrance: { tileX: 28, tileY: 14 },
         visitTiles: [
-            workSlot(28, 14, { x: 28.0, y: 10.5 }, { queueGroup: 'watchtower-beacon', stance: 'signal' }),
+            // VQ-2 — the work slot stands at 26,11, beside the keeper's
+            // cottage and ahead of the approach file's head (26,12), where the
+            // camera sees a Monitor wait or a distress pose whole: at the door
+            // tile (28,14) the Harbor clock tower hid the body. The door tile
+            // stays the entrance (its worn path and frontage spur are
+            // unchanged) and fills last; 27,13 is the cottage's walk-excluded
+            // doorstep row.
+            workSlot(26, 11, { x: 28.0, y: 10.5 }, { queueGroup: 'watchtower-beacon', stance: 'signal' }),
             // The lookouts stand north-west of the door, where the default
             // camera sees them whole: the Harbor house (29-31, 17-19) hides
             // the tiles south of the door (27,14 / 27,15 / 28,16 before).
             queueSlot(26, 13, { x: 28.0, y: 10.5 }, { queueGroup: 'watchtower-lookout', reason: 'lookout' }),
             scenicSlot(25, 13, { x: 28.0, y: 10.5 }, { queueGroup: 'watchtower-lookout', stance: 'scan', reason: 'lookout' }),
+            queueSlot(28, 14, { x: 28.0, y: 10.5 }, { queueGroup: 'watchtower-door', reason: 'door' }),
         ],
         walkExclusion: [{ dx: 0, dy: 5, width: 3, height: 1 }],
         scenery: {

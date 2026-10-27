@@ -750,8 +750,8 @@
     }
   },
   "channelSha256": {
-    "albedo": "5f0328725738a1fca816b7f76da926f7e90ae49f41c6cedfed09a826b4ba480b",
-    "emissive": "0d29781ea0588831db98f196d8ed72cae383f60629843ae8734dcabcc5e0ceed",
+    "albedo": "386aadeadb9af9ebee036cb7348540b3561f4b02c487650ce4d1ecb3c471b1c5",
+    "emissive": "48ff5c8bd331c61bd1d3383ece88735424285e252c2f82f55b275368479f4344",
     "material": "ee4e93bc689f7eeacc476bcf9c475901626ddfc00bfd9f019821ec67559c1715",
     "occluder": "5d69f3eaa33ecdae99946246cb39ca95d60a73162545e5cec98dc0ce6d2348c5"
   },
@@ -9982,7 +9982,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "e26dcc92162d4faf03f6b997ced30718183b705fd5e8449a61dfadcbd502039c",
+      "sourceSha256": "e24ecec2b1d998fdd8b40f303c09079d07f79a4deeb0b1e75fb81d76cd63c9d9",
       "sourceSize": {
         "h": 93,
         "w": 105
@@ -10403,7 +10403,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "fa491fbe90f26bdb5e415ce998d1b1e2cf5db8b5982651996ffcb4d45d5ea9a2",
+      "sourceSha256": "516f59a7220c050343f38786f0ba062b73d19705f09d54734ecb15df1c452cff",
       "sourceSize": {
         "h": 80,
         "w": 120
@@ -10880,7 +10880,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "0ed0f5a9db7d9d50e62934050c8bfb46a9cf82309ed59a03e2c79cd99791deab",
+      "sourceSha256": "a7877ab19893cd27da4e8e6575d53cc0ffbe928c3e85c2760a28baa085fe5362",
       "sourceSize": {
         "h": 24,
         "w": 36

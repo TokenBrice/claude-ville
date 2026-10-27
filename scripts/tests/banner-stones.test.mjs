@@ -267,3 +267,34 @@ test('G7-1: the attention banner keeps its status hue through the night grade', 
     // By day the cloth is its authored strip.
     assert.deepEqual(statusClothPreimage(hex('#e8d44d'), noon, { postFx: true }), hex('#e8d44d'));
 });
+
+test('RG-3: on storm and rain nights the banner hold never lands greyer than no hold', () => {
+    const hex = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16) / 255);
+    const sat = c => (Math.max(...c) - Math.min(...c)) / Math.max(...c);
+    const weathers = [
+        { type: 'rain', intensity: 0.8, cloudCover: 0.9, precipitation: 0.7 },
+        { type: 'storm', intensity: 1, cloudCover: 1, precipitation: 1 },
+        // The user's real 2026-10-24 19:15 storm (the golden-hours storm row).
+        { type: 'storm', intensity: 0.9, cloudCover: 0.97, precipitation: 0.92, fog: 0.18 },
+    ];
+    let cases = 0;
+    for (const weather of weathers) {
+        for (const hour of [19.25, 19.75, 21, 23, 1, 3, 5]) {
+            for (const moonFill of [0.1, 0.8]) {
+                const grade = evaluateGrade({ minuteOfDay: hour * 60, moonFill, weather });
+                for (const postFx of [true, false]) {
+                    const frame = rgb => canvasFrameGradeRgb(rgb, grade, { postFx });
+                    for (const status of ['#e8d44d', '#e06c5b', '#f06ae0']) {
+                        const authored = hex(status);
+                        const plain = frame(authored);
+                        const held = frame(statusClothPreimage(authored, grade, { postFx }));
+                        cases++;
+                        assert.ok(sat(held) >= sat(plain) - 1e-6,
+                            `${status} ${weather.type} ${hour}h moon ${moonFill} ${postFx ? 'resident' : 'canvas'}: sat ${sat(plain).toFixed(3)} -> ${sat(held).toFixed(3)}`);
+                    }
+                }
+            }
+        }
+    }
+    assert.equal(cases, 252);
+});

@@ -116,8 +116,10 @@ const WATER_NIGHT_FLOOR = 0.15;
 // GLSL / WGSL twins mix it in after V6's cap). The sky lends its hue at the
 // water's own value, lifting it by at most WATER_SKY_LIFT (an overcast's pale
 // sky) and never darkening it, so the night lane's value grade stands.
-// Weather and clock only, never agents.
-const WATER_SKY_WEIGHT = 0.22;
+// Weather and clock only, never agents. J29 — 0.16 (was 0.22), so an
+// overcast or golden-hour lagoon keeps more of its own water and reads less
+// pewter; the one weight reaches every path through `waterMoodFor`.
+const WATER_SKY_WEIGHT = 0.16;
 const WATER_SKY_COVER = 0.12;
 const WATER_SKY_FOG = 0.08;
 export { WATER_SKY_LIFT } from './CanvasGrade.js';

@@ -201,6 +201,10 @@ export function canvasFramePreimage(target, grade, { postFx = false } = {}) {
  * the cloth reads darker, never brighter. The grade's lift and desaturation
  * floor stay: a deep storm still mutes the cloth, only less. `postFx` picks the frame grade the texel will meet (the resident
  * and hybrid formula, else the Canvas fills), as `canvasFramePreimage` does.
+ * RG-3 — the hold never lands greyer than no hold: where the preimage leaves
+ * gamut (a storm night's cool gain and floor), the clamped texel can land
+ * less saturated than the plain grade leaves it, and then the authored texel
+ * grades plainly instead. Darker at a higher saturation is the hold working.
  */
 export function statusClothPreimage(rgb, grade, { postFx = false } = {}) {
     const hold = clamp((Number(grade?.night) || 0) / 0.5);
@@ -209,6 +213,11 @@ export function statusClothPreimage(rgb, grade, { postFx = false } = {}) {
     const authored = rgb[0] * LUMA[0] + rgb[1] * LUMA[1] + rgb[2] * LUMA[2];
     if (authored <= 1e-4) return rgb;
     const full = (graded[0] * LUMA[0] + graded[1] * LUMA[1] + graded[2] * LUMA[2]) / authored;
+    const saturation = (c) => {
+        const peak = Math.max(c[0], c[1], c[2]);
+        return peak > 1e-4 ? (peak - Math.min(c[0], c[1], c[2])) / peak : 0;
+    };
+    const plainSaturation = saturation(graded);
     const solve = (scale) => {
         const peak = Math.max(1, rgb[0] * scale, rgb[1] * scale, rgb[2] * scale);
         const target = [0, 1, 2].map(channel => graded[channel] + (rgb[channel] * scale / peak - graded[channel]) * hold);
@@ -218,25 +227,26 @@ export function statusClothPreimage(rgb, grade, { postFx = false } = {}) {
         // cloth a little; a channel that cannot rise to its target turns the
         // hue (yellow to sage), so only a shortfall counts as a miss.
         const short = Math.max(...[0, 1, 2].map(channel => target[channel] - landed[channel]));
-        return { preimage, reached: short < 0.012 };
+        return { preimage, reached: short < 0.012, saturation: saturation(landed) };
     };
+    const kept = (candidate) => (candidate.saturation >= plainSaturation ? candidate.preimage : rgb);
     const first = solve(full);
-    if (first.reached) return first.preimage;
+    if (first.reached) return kept(first);
     // The largest value in [0.6, 1] x the graded value that lands on target.
     let lo = full * 0.6;
     let hi = full;
-    let best = solve(lo).preimage;
+    let best = solve(lo);
     for (let step = 0; step < 7; step++) {
         const mid = (lo + hi) / 2;
         const trial = solve(mid);
         if (trial.reached) {
-            best = trial.preimage;
+            best = trial;
             lo = mid;
         } else {
             hi = mid;
         }
     }
-    return best;
+    return kept(best);
 }
 
 /**

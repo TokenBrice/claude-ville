@@ -213,7 +213,7 @@ const TANKARD_SET_DOWN = Object.freeze({
 });
 const PATRON_SET_DOWN_TIER = 2;
 const PATRON_SLUMP_TIER = 3;
-const PATRON_SLUMP_TEXELS = 3;
+const PATRON_SLUMP_TEXELS = 4; // J39 — was 3
 // AG-6 — the held distress poses (`_distressPose`). An errored villager
 // stands with its back to the operator (DIR_N, the one column no resting
 // body ever holds). A rate-limited one sits the limit out on the ground,
@@ -225,6 +225,13 @@ const DISTRESS_ERRORED = 'errored';
 const DISTRESS_LIMITED = 'limited';
 const GROUND_SIT_SEAT_DY = 1;
 const GROUND_SIT_FALLBACK_DROP = 8;
+// VQ-11 — the armoured sheets (Luna, Sol and their .b) sit on a bench strip
+// whose greaves show the shins hanging below the ground line; their ground
+// sit clips at the seat line, on the ground, as a bench clips at its seat.
+// Robes hide the shins, so the robed sheets keep their whole strip.
+const GROUND_SIT_CLIPPED = new Set([
+    'agent.codex.gpt56luna', 'agent.codex.gpt56luna.b', 'agent.codex.gpt56sol', 'agent.codex.gpt56sol.b',
+]);
 const QUEUE_PLACE = Object.freeze({ type: 'command', commandQueue: true, visitTiles: Object.freeze([]) });
 // W4.4 / W4.8 — a scenic point as a place (the renderer's scenic shape): the
 // harbour quay an errand or a wind-down walks to.
@@ -1755,6 +1762,14 @@ export class AgentSprite {
             if (Number.isFinite(row)) return drawY + GROUND_SIT_SEAT_DY - row;
         }
         return drawY - anchor.maxY + 2 + GROUND_SIT_FALLBACK_DROP;
+    }
+
+    // AG-6 / VQ-11 — world Y of the ground sitter's last drawn body row, or
+    // null for the whole strip: the lowered fallback clips at the ground; an
+    // armoured sheet's sit strip clips at its seat line.
+    _groundSitClipLine(pose, drawY) {
+        if (pose?.group !== 'sit') return drawY + 2;
+        return GROUND_SIT_CLIPPED.has(this._spriteIdentity?.spriteId) ? drawY + GROUND_SIT_SEAT_DY : null;
     }
 
     // World Y of the seated body cell's top edge. A sit strip lands its
@@ -4500,10 +4515,11 @@ export class AgentSprite {
                 ? this._groundSitBodyY(pose, anchor, drawY)
                 : drawY - anchor.maxY + 2 + bobY + ackBobY;
         // AG-6 — the ground sitter's lowered fallback body is clipped at the
-        // ground line; the sit strip keeps its legs, stretched forward.
+        // ground line; the sit strip keeps its legs, stretched forward, except
+        // on the armoured sheets (VQ-11).
         const clipLine = seat
             ? drawY + seatLineOffset(seat)
-            : distress === DISTRESS_LIMITED && pose?.group !== 'sit' ? drawY + 2 : null;
+            : distress === DISTRESS_LIMITED ? this._groundSitClipLine(pose, drawY) : null;
         if (clipLine != null) {
             // Clip at the seat line: nothing of the body shows below the seat's
             // front slice, on either backend.

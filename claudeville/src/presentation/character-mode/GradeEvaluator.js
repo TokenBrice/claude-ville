@@ -221,10 +221,13 @@ export const GRADE_KEYFRAMES = Object.freeze([
     }),
     // Blue hour is a cobalt dusk: bluer than golden hour, never darker than
     // night (the arc stays monotone), keeping more of the albedo's colour than
-    // the night key does.
+    // the night key does. VQ-3 — exposure +0.08 (0.85 -> 0.93 under the full moonlit
+    // night): the lamplit night outshone the dusk on the GPU paths (19:15 at
+    // 76.3 island luma against 80.0 at 23:00); golden-hours now gates
+    // dusk >= night.
     Object.freeze({
         name: 'blue-hour', minute: 19 * 60 + 45, side: 'dusk',
-        exposure: moonlit(0.82, 0.85), saturation: moonlit(0.62, 0.64),
+        exposure: moonlit(0.90, 0.93), saturation: moonlit(0.62, 0.64),
         gain: [0.80, 0.90, 1.10], lift: moonlit3([0.018, 0.020, 0.034], [0.024, 0.028, 0.044]), gamma: 1.02,
         shadowTint: [0.86, 0.90, 1.14], highlightTint: [1.04, 0.98, 1.02],
         purkinje: 0.3, sunBand: 0.2, daylight: 0.1, night: 0.5, rake: 0.375,
@@ -545,8 +548,14 @@ export function lampSettlingWindows({ sunriseShift = 0, sunsetShift = 0 } = {}) 
 }
 
 // The lamps' share of the pool gain: the lamp course's own share from the
-// lamplight course on, nothing before it.
+// lamplight course on, nothing before it. J27 — the pre-dawn lamplight
+// course (pre-dawn key to the dawn settling) keeps the deep night's whole
+// share, so the pools hold their 23:00 strength until the round puts the
+// lamps out; the dusk course keeps its step.
 function lampCarry(minuteOfDay, sunriseShift, sunsetShift) {
     const course = lampCourseAt(minuteOfDay, { sunriseShift, sunsetShift });
-    return course >= 2 ? course / 3 : 0;
+    if (course < 2) return 0;
+    const minute = ((finite(minuteOfDay) % DAY_MINUTES) + DAY_MINUTES) % DAY_MINUTES;
+    if (course === 2 && minute < lampSettlingWindows({ sunriseShift, sunsetShift }).dawnStart) return 1;
+    return course / 3;
 }
