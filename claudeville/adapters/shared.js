@@ -287,7 +287,9 @@ function readTailLines(filePath, count, {
       return [];
     }
 
-    const cached = _tailStateCache.get(filePath);
+    // A JSON tail keeps records, not raw lines: a raw read starts over.
+    const found = _tailStateCache.get(filePath);
+    const cached = found?.kind === 'json' ? null : found;
     const cacheCoversRequest = cached
       && cached.capacity >= requestedCount
       && (cached.lines.length >= requestedCount || cached.maxBytes >= maxBytes);
@@ -476,57 +478,6 @@ function parseJsonLines(lines, { source, file, project } = {}) {
   return results;
 }
 
-function commonSuffixLength(left, right) {
-  let count = 0;
-  while (
-    count < left.length
-    && count < right.length
-    && left[left.length - count - 1] === right[right.length - count - 1]
-  ) {
-    count += 1;
-  }
-  return count;
-}
-
-// Longest suffix of `left` that is also a prefix of `right`, using the KMP
-// prefix table so repeated identical JSONL lines remain linear-time.
-function suffixPrefixLength(left, right) {
-  if (!left.length || !right.length) return 0;
-  const separator = Symbol('jsonl-view-separator');
-  const sequence = right.concat(separator, left);
-  const prefix = new Uint32Array(sequence.length);
-  for (let index = 1; index < sequence.length; index++) {
-    let candidate = prefix[index - 1];
-    while (candidate > 0 && sequence[index] !== sequence[candidate]) {
-      candidate = prefix[candidate - 1];
-    }
-    if (sequence[index] === sequence[candidate]) candidate += 1;
-    prefix[index] = Math.min(candidate, right.length);
-  }
-  return Math.min(prefix[prefix.length - 1], left.length, right.length);
-}
-
-function alignJsonView(previous, lines, source, projectionKey) {
-  const records = new Array(lines.length).fill(null);
-  if (!previous || previous.source !== source || previous.projectionKey !== projectionKey) {
-    return { source, projectionKey, lines, records, estimatedBytes: 0 };
-  }
-
-  const suffixLength = commonSuffixLength(previous.lines, lines);
-  const appendOverlap = suffixPrefixLength(previous.lines, lines);
-  if (suffixLength >= appendOverlap) {
-    for (let index = 0; index < suffixLength; index++) {
-      records[lines.length - suffixLength + index] =
-        previous.records[previous.records.length - suffixLength + index];
-    }
-  } else {
-    for (let index = 0; index < appendOverlap; index++) {
-      records[index] = previous.records[previous.records.length - appendOverlap + index];
-    }
-  }
-  return { source, projectionKey, lines, records, estimatedBytes: 0 };
-}
-
 function estimateParsedValueBytes(value) {
   const seen = new Set();
   const stack = [value];
@@ -557,29 +508,40 @@ function estimateParsedValueBytes(value) {
   return bytes;
 }
 
-function estimateJsonViewBytes(view) {
-  let bytes = 64 + (view.records.length * 8);
-  for (const record of view.records) {
-    if (!record) continue;
-    bytes += 24;
-    if (record.valid) bytes += estimateParsedValueBytes(record.value);
+// SV-1 — a JSON tail state keeps the parsed (or projected) record of each
+// line in its window, never the raw line text: once parsed, the text is dead
+// weight, and holding both made a 3.8 MB transcript cost 14.7 MB of budget.
+// An append is folded structurally (the guard proves the prefix intact), so
+// only appended lines are decoded, parsed and estimated, and the window's
+// estimate is a running sum of per-record estimates. A malformed last line
+// keeps its text until it can be judged as a mid-window skip.
+function tailRecord(record, lineBytes) {
+  record.lineBytes = lineBytes;
+  record.bytes = 24
+    + (record.valid ? estimateParsedValueBytes(record.value) : 0)
+    + (record.line ? 16 + (record.line.length * 2) : 0);
+  return record;
+}
+
+function noteSkippedTailLine(stats, source, file, line, windowByteOffset) {
+  stats.skippedLines += 1;
+  stats.lastSkipped = {
+    file: file || null,
+    windowByteOffset,
+    lineBytes: Buffer.byteLength(line, 'utf-8'),
+    ts: Date.now(),
+  };
+  if (JSONL_DEBUG) {
+    console.warn(
+      `[jsonl] skipped malformed line (source=${source || 'unknown'} file=${file || 'n/a'} `
+      + `windowByteOffset=${windowByteOffset} lineBytes=${stats.lastSkipped.lineBytes}): `
+      + `${line.slice(0, 120)}`,
+    );
   }
-  return bytes;
 }
 
-function tailJsonSignature(state) {
-  return [
-    state.dev,
-    state.ino,
-    state.size,
-    state.mtimeMs,
-    state.ctimeMs,
-    state.capacity,
-    state.maxBytes,
-  ].join(':');
-}
-
-function parseJsonRecord(line, { source, file, lines, index, lastContentIndex, project }) {
+function parseTailLine(line, lineBytes, { source, file, project, last, offset }) {
+  if (!line.trim()) return tailRecord({ valid: false, value: null, classification: 'blank' }, lineBytes);
   const stats = _jsonlStatsFor(source);
   try {
     const parsed = JSON.parse(line);
@@ -587,15 +549,211 @@ function parseJsonRecord(line, { source, file, lines, index, lastContentIndex, p
     stats.parsedLines += 1;
     _parsedTailStats.parsedLines += 1;
     if (typeof project === 'function') _parsedTailStats.projectedLines += 1;
-    return { valid: true, value, classification: 'parsed' };
+    return tailRecord({ valid: true, value, classification: 'parsed' }, lineBytes);
   } catch {
-    if (index === lastContentIndex) {
+    // A malformed last line is expected mid-write; anywhere else it is real
+    // silent data loss (see /api/perf).
+    if (last) {
       stats.trailingPartials += 1;
-      return { valid: false, value: null, classification: 'trailing' };
+      return tailRecord({ valid: false, value: null, classification: 'trailing', line }, lineBytes);
     }
-    _recordSkippedLine(stats, source, file, lines, index);
-    return { valid: false, value: null, classification: 'skipped' };
+    noteSkippedTailLine(stats, source, file, line, offset);
+    return tailRecord({ valid: false, value: null, classification: 'skipped' }, lineBytes);
   }
+}
+
+function splitTailBuffer(buffer) {
+  const lines = [];
+  const lineBytes = [];
+  let start = 0;
+  for (let index = 0; index < buffer.length; index++) {
+    if (buffer[index] !== 10) continue;
+    lines.push(buffer.toString('utf-8', start, index));
+    lineBytes.push(index - start);
+    start = index + 1;
+  }
+  return { lines, lineBytes, pendingBuffer: Buffer.from(buffer.subarray(start)) };
+}
+
+// Fold complete lines (and the bytes after the last newline) onto `base`
+// records, keeping the newest `capacity` complete lines. Lines that fall out
+// of the window are never parsed, as with a plain tail read.
+function buildJsonTailState(base, split, identity, ctx) {
+  const { capacity, source, file, project } = ctx;
+  const pendingText = split.pendingBuffer.length ? split.pendingBuffer.toString('utf-8') : '';
+  const total = base.records.length + split.lines.length;
+  const drop = Math.max(0, total - capacity);
+  const baseDrop = Math.min(drop, base.records.length);
+  const firstNew = drop - baseDrop;
+  let recordBytes = base.recordBytes;
+  let windowBytes = base.windowBytes;
+  for (let index = 0; index < baseDrop; index++) {
+    recordBytes -= base.records[index].bytes;
+    windowBytes -= base.records[index].lineBytes + 1;
+  }
+  const records = baseDrop ? base.records.slice(baseDrop) : base.records.slice();
+  let lastNew = -1;
+  if (!pendingText.trim()) {
+    for (let index = split.lines.length - 1; index >= firstNew; index--) {
+      if (split.lines[index].trim()) { lastNew = index; break; }
+    }
+  }
+  for (let index = firstNew; index < split.lines.length; index++) {
+    const line = split.lines[index];
+    const reused = index === 0 && base.pendingText && line === base.pendingText ? base.pendingRecord : null;
+    const record = reused || parseTailLine(line, split.lineBytes[index], {
+      source, file, project, last: index === lastNew, offset: windowBytes,
+    });
+    records.push(record);
+    recordBytes += record.bytes;
+    windowBytes += record.lineBytes + 1;
+  }
+  // A malformed line is "trailing" only while it is the last line with
+  // content; once newer content follows it, it is a mid-window skip.
+  let lastContent = pendingText.trim() ? records.length : -1;
+  for (let index = records.length - 1; lastContent < 0 && index >= 0; index--) {
+    if (records[index].classification !== 'blank') lastContent = index;
+  }
+  for (let index = 0; index < records.length; index++) {
+    const record = records[index];
+    if (record.classification !== 'trailing' || index === lastContent) continue;
+    let offset = 0;
+    for (let prior = 0; prior < index; prior++) offset += records[prior].lineBytes + 1;
+    noteSkippedTailLine(_jsonlStatsFor(source), source, file, record.line, offset);
+    records[index] = tailRecord({ valid: false, value: null, classification: 'skipped' }, record.lineBytes);
+    recordBytes += records[index].bytes - record.bytes;
+  }
+  const pendingRecord = pendingText
+    ? parseTailLine(pendingText, split.pendingBuffer.length, { source, file, project, last: true, offset: windowBytes })
+    : null;
+  const estimatedBytes = 64 + (records.length * 8) + recordBytes + (pendingRecord ? pendingRecord.bytes : 0);
+  return {
+    kind: 'json',
+    ...identity,
+    capacity,
+    maxBytes: ctx.maxBytes,
+    pendingBuffer: split.pendingBuffer,
+    pendingText,
+    pendingRecord,
+    records,
+    recordBytes,
+    windowBytes,
+    // Summary for diagnostics and `clearTailCache(source)`.
+    jsonView: { source, projectionKey: ctx.projectionKey, estimatedBytes },
+  };
+}
+
+const EMPTY_JSON_TAIL = Object.freeze({ records: [], recordBytes: 0, windowBytes: 0, pendingText: '', pendingRecord: null });
+
+function readJsonTailState(filePath, options) {
+  const count = Math.max(1, Number(options.count) || 1);
+  const chunkBytes = options.tailChunkBytes ?? DEFAULT_TAIL_CHUNK_BYTES;
+  const maxBytes = options.tailMaxBytes ?? DEFAULT_TAIL_BYTES;
+  const source = options.source || 'unknown';
+  const projectionKey = typeof options.project === 'function'
+    ? String(options.projectionKey || 'projected')
+    : 'full';
+  try {
+    let stat;
+    try {
+      stat = fs.statSync(filePath);
+    } catch {
+      deleteTailState(filePath);
+      return null;
+    }
+    if (stat.size === 0) {
+      deleteTailState(filePath);
+      return null;
+    }
+    const ctx = { source, file: filePath, project: options.project, projectionKey };
+    const found = _tailStateCache.get(filePath);
+    const cached = found?.kind === 'json'
+      && found.jsonView.source === source
+      && found.jsonView.projectionKey === projectionKey
+      ? found
+      : null;
+    const covers = cached
+      && cached.capacity >= count
+      && (cached.records.length >= count || cached.maxBytes >= maxBytes);
+    if (covers && cached.dev === stat.dev && cached.ino === (stat.ino || 0) && stat.size >= cached.size) {
+      if (stat.size === cached.size && stat.mtimeMs === cached.mtimeMs && stat.ctimeMs === cached.ctimeMs) {
+        // Unchanged: serve the parsed window without touching the file.
+        _parsedTailStats.hits += 1;
+        _parsedTailStats.reusedLines += cached.records.length;
+        cacheTailState(filePath, cached);
+        return cached;
+      }
+      const appendedBytes = stat.size - cached.size;
+      const pendingBytes = cached.pendingBuffer.byteLength;
+      if (appendedBytes > 0 && appendedBytes <= maxBytes && pendingBytes <= maxBytes) {
+        // Re-read the guard window just before the cached offset; a mismatch
+        // means the prefix was rewritten in place, so take the full-read path.
+        const guard = cached.guard;
+        const window = readByteRangeText(filePath, cached.size - guard.length, guard.length + appendedBytes);
+        _parsedTailStats.bytesRead += window.bytesRead;
+        const prefixIntact = window.bytesRead >= guard.length
+          && window.buffer.subarray(0, guard.length).equals(guard);
+        if (prefixIntact && window.bytesRead > guard.length) {
+          const appended = window.buffer.subarray(guard.length);
+          const state = buildJsonTailState(cached, splitTailBuffer(Buffer.concat([cached.pendingBuffer, appended])), {
+            size: cached.size + appended.length,
+            mtimeMs: stat.mtimeMs,
+            ctimeMs: stat.ctimeMs,
+            dev: stat.dev,
+            ino: cached.ino,
+            guard: tailGuard(Buffer.concat([guard, appended])),
+          }, { ...ctx, capacity: cached.capacity, maxBytes: Math.max(cached.maxBytes, maxBytes) });
+          _parsedTailStats.misses += 1;
+          _parsedTailStats.parsePasses += 1;
+          _parsedTailStats.reusedLines += Math.min(cached.records.length, state.records.length);
+          return retainJsonTailState(filePath, state);
+        }
+      }
+    }
+
+    // Full tail read: first sight, shrink/rotation, rewrite, or oversized append.
+    const capacity = Math.max(count, cached?.capacity || 0);
+    const readMaxBytes = Math.max(maxBytes, cached?.maxBytes || 0);
+    const { stat: readStat, buffer } = readTailRaw(filePath, capacity, chunkBytes, readMaxBytes);
+    if (!buffer.length) {
+      deleteTailState(filePath);
+      return null;
+    }
+    const state = buildJsonTailState(EMPTY_JSON_TAIL, splitTailBuffer(buffer), {
+      size: readStat.size,
+      mtimeMs: readStat.mtimeMs,
+      ctimeMs: readStat.ctimeMs,
+      dev: readStat.dev,
+      ino: readStat.ino || 0,
+      guard: tailGuard(buffer),
+    }, { ...ctx, capacity, maxBytes: readMaxBytes });
+    _parsedTailStats.misses += 1;
+    _parsedTailStats.parsePasses += 1;
+    return retainJsonTailState(filePath, state);
+  } catch (error) {
+    noteReadFailure(error);
+    return null;
+  }
+}
+
+function retainJsonTailState(filePath, state) {
+  cacheTailState(filePath, state);
+  if (_tailStateCache.get(filePath) !== state) {
+    _parsedTailStats.rejectedEntries += 1;
+    _parsedTailStats.rejectedBytes += state.estimatedBytes || 0;
+  }
+  return state;
+}
+
+// The newest `count` lines of a JSON tail, with blank edges trimmed exactly
+// as a raw tail read trims them.
+function jsonTailWindow(state, count) {
+  const all = state.pendingRecord ? state.records.concat(state.pendingRecord) : state.records;
+  let start = 0;
+  let end = all.length;
+  while (start < end && all[start].classification === 'blank') start += 1;
+  while (end > start && all[end - 1].classification === 'blank') end -= 1;
+  return all.slice(Math.max(start, end - count), end);
 }
 
 function jsonRecordWindow(records, count) {
@@ -623,103 +781,15 @@ function readJsonLines(filePath, options = {}) {
     });
   }
 
-  const requestedLines = readLines(filePath, options);
   const windowCounts = options._windowCounts || null;
-  if (!requestedLines.length) {
+  const count = Math.max(1, Number(options.count ?? 50) || 1);
+  const state = readJsonTailState(filePath, { ...options, count });
+  if (!state) {
     return windowCounts
-      ? new Map(windowCounts.map(count => [count, []]))
+      ? new Map(windowCounts.map(windowCount => [windowCount, []]))
       : [];
   }
-  const state = _tailStateCache.get(filePath);
-  if (!state) {
-    _parsedTailStats.misses += 1;
-    _parsedTailStats.parsePasses += 1;
-    if (windowCounts) {
-      let lastContentIndex = requestedLines.length - 1;
-      while (lastContentIndex >= 0 && !requestedLines[lastContentIndex].trim()) lastContentIndex -= 1;
-      const records = requestedLines.map((line, index) => {
-        if (!line.trim()) return { valid: false, value: null, classification: 'blank' };
-        return parseJsonRecord(line, {
-          source: options.source || 'unknown',
-          file: filePath,
-          lines: requestedLines,
-          index,
-          lastContentIndex,
-          project: options.project,
-        });
-      });
-      return jsonRecordWindows(records, windowCounts);
-    }
-    const stats = _jsonlStatsFor(options.source);
-    const parsedBefore = stats.parsedLines;
-    const results = parseJsonLines(requestedLines, {
-      source: options.source,
-      file: filePath,
-      project: options.project,
-    });
-    const parsed = Math.max(0, stats.parsedLines - parsedBefore);
-    _parsedTailStats.parsedLines += parsed;
-    if (typeof options.project === 'function') _parsedTailStats.projectedLines += parsed;
-    return results;
-  }
-
-  const lines = finalizeTailLines(state.lines, state.pendingBuffer, state.capacity);
-  const source = options.source || 'unknown';
-  const projectionKey = typeof options.project === 'function'
-    ? String(options.projectionKey || 'projected')
-    : 'full';
-  const previousView = state.jsonView;
-  const signature = tailJsonSignature(state);
-  const unchangedView = previousView
-    && previousView.source === source
-    && previousView.projectionKey === projectionKey
-    && previousView.signature === signature;
-  const view = unchangedView ? previousView : alignJsonView(previousView, lines, source, projectionKey);
-  let lastContentIndex = lines.length - 1;
-  while (lastContentIndex >= 0 && !lines[lastContentIndex].trim()) lastContentIndex -= 1;
-
-  let parsedThisRead = 0;
-  let reusedThisRead = 0;
-  for (let index = 0; index < lines.length; index++) {
-    let record = view.records[index];
-    if (!lines[index].trim()) {
-      if (!record) view.records[index] = { valid: false, value: null, classification: 'blank' };
-      continue;
-    }
-    if (record?.classification === 'trailing' && index !== lastContentIndex) {
-      record = null;
-    }
-    if (!record) {
-      view.records[index] = parseJsonRecord(lines[index], {
-        source,
-        file: filePath,
-        lines,
-        index,
-        lastContentIndex,
-        project: options.project,
-      });
-      parsedThisRead += 1;
-    } else {
-      reusedThisRead += 1;
-    }
-  }
-
-  view.estimatedBytes = estimateJsonViewBytes(view);
-  view.signature = signature;
-  state.jsonView = view;
-  cacheTailState(filePath, state);
-  if (_tailStateCache.get(filePath) !== state) {
-    _parsedTailStats.rejectedEntries += 1;
-    _parsedTailStats.rejectedBytes += state.estimatedBytes || 0;
-  }
-  if (parsedThisRead === 0) _parsedTailStats.hits += 1;
-  else {
-    _parsedTailStats.misses += 1;
-    _parsedTailStats.parsePasses += 1;
-  }
-  _parsedTailStats.reusedLines += reusedThisRead;
-
-  const requestedRecords = view.records.slice(-requestedLines.length);
+  const requestedRecords = jsonTailWindow(state, count);
   if (windowCounts) return jsonRecordWindows(requestedRecords, windowCounts);
   return jsonRecordWindow(requestedRecords, requestedRecords.length);
 }
