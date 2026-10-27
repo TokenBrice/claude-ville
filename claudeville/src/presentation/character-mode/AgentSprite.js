@@ -7809,6 +7809,9 @@ export class AgentSprite {
         if (!ACTION_PROP_PROVIDERS.has(provider) || this.moving || this._distressPose?.()) return;
         const action = resolveAgentAction(this.agent, { chatting: this.chatting });
         if (!action) return;
+        // VQ-1a — a lead resting at the Tavern on its subagents makes no work
+        // claim of its own: the rest tableau and the plaque carry the crew's.
+        if (action === AgentAction.WORK && this._subagentWait?.pint === true && this.visitRole === 'rest') return;
         // SM-7 — one chip per body: a chatting body already wears the message
         // bubble over its head, so the TALK scroll prop would be a second one.
         // A muted chatter (decision focus elsewhere) shows the prop instead,

@@ -203,6 +203,21 @@ test('AG-2: Tavern patrons fill its seats, then stand at its bar, never on Comma
     assert.ok(Math.min(...tavernSeats.map((seat) => Math.hypot(seat.tileX - beyond.tileX, seat.tileY - beyond.tileY))) <= 2.3);
 });
 
+// VQ-1b: a stander in a bar stool's screen column, less than a body height in
+// front of it, hides that sitter's tankard, sip and slump; such tiles fill last.
+test('VQ-1b: Tavern standers hide no bar sitter until the standing room is full', () => {
+    const screen = ({ tileX, tileY }) => ({ x: (tileX - tileY) * 32, y: (tileX + tileY) * 16 });
+    const stools = REST_SEATS.filter((seat) => seat.occluder === 'stool').map(screen);
+    const hides = (tile) => {
+        const at = screen(tile);
+        return stools.some((stool) => stool.x === at.x && at.y > stool.y && at.y - stool.y < 64);
+    };
+    const hidden = REST_STANDS.tavern.tiles.map(hides);
+    const first = hidden.indexOf(true);
+    assert.ok(first > 0, 'the first stander hides nobody');
+    assert.ok(hidden.slice(first).every(Boolean), 'every stander that hides a sitter fills after all that do not');
+});
+
 test('AG-2: an idle villager still takes the nearest free seat anywhere once the Tavern is full', () => {
     const sit = townAllocator();
     for (let index = 0; index < 8; index++) sit(`patron-${index}`, 'tavern');
