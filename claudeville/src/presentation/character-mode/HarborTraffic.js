@@ -987,6 +987,10 @@ function normalizeHarborPullRequestEvent(event, agent = {}, index = 0) {
         url: String(event.url || ''),
         title: String(event.title || ''),
         status: gitEventStatusLabel(event),
+        // VB-3 — the command's own result: no outcome yet is no PR yet.
+        success: typeof event.success === 'boolean' ? event.success : null,
+        exitCode: Number.isFinite(Number(event.exitCode ?? event.exit_code)) ? Number(event.exitCode ?? event.exit_code) : null,
+        completedAt: parseEventTime(event.completedAt || event.completed_at, 0),
         label: action === 'merge' ? 'PR merged' : 'PR opened',
         command: event.command ? String(event.command) : '',
         sha: '',
@@ -1163,6 +1167,7 @@ function harborEventsVersion(events) {
         // #6 — every field the reducer consumes, array contents included, so
         // a re-report that only enriches an event still reaches it.
         mix(event.tag);
+        mix(event.url);
         mix(event.reason);
         mix(event.stderr);
         mix(event.detached);

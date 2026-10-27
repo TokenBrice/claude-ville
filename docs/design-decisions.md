@@ -390,6 +390,8 @@ Work the default branch carries under other shas also landed: a pull request squ
 
 Inbound hulls (a `git pull` or `git fetch`, a PR cutter) carry no local cargo: no push ever sails one, and none holds its repo's anchorage. A pull hull lies at its berth only as long as a fetch lies at anchor (36 s after it arrives), then retires. Before, pull hulls never left, and a day of pulls sailed out together on an unrelated push.
 
+A git command lands only on its own result: `success`, a zero exit or a success status (`HarborState.gitEventLanded`). A command still waiting on its result (a permission prompt, a slow hook) sails no pull, fetch or PR cutter, and docks no commit unless its sha or a repository scan shows the commit exists. Its result, reported later under the same id, re-applies: the seen set keys on the event's id, status and URL (`harborEventSignature`), so a settled pull sails in, a PR's URL attaches, and `gh pr merge` sails the cutter with that URL. Before, a pending pull docked and stayed after failing, a failed `gh pr create` moored for 2 h with no URL, and a merge could sail another PR's cutter.
+
 The operator settled eight presentation choices (2026-10-15):
 
 | # | Decision | Rationale |
