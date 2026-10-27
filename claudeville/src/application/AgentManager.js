@@ -93,7 +93,14 @@ const SIGNATURE_COLLECTION_VALUE_BUDGET = 1024;
 const SIGNATURE_FIELD_CHARACTER_BUDGET = 1024;
 const SIGNATURE_COLLECTION_CHARACTER_BUDGET = 15 * 1024;
 const SIGNATURE_CHARACTER_BUDGET = 64 * 1024;
-const SIGNATURE_COLLECTION_FIELDS = new Set(['gitEvents', 'sendMessages', 'workingSet', 'lastResults', 'collisions', 'tasks', 'todos']);
+const SIGNATURE_COLLECTION_FIELDS = new Set(['sendMessages', 'workingSet', 'collisions', 'tasks', 'todos']);
+// VB-7 — git events and tool results change in place anywhere in the list (an
+// outcome settles, a PR URL attaches, a rescan or a landed-sha patch restamps
+// a row). Every row mixes a compact key of its identity and those fields
+// instead of a sampled head and tail, bounded per row and per list.
+const SIGNATURE_KEYED_FIELDS = new Set(['gitEvents', 'lastResults']);
+const SIGNATURE_KEYED_ROW_LIMIT = 2048;
+const SIGNATURE_KEY_PART_CHARACTERS = 160;
 const VERIFIED_OUTCOME_KEY_LIMIT = 512;
 const EXECUTION_TASK_LIMIT = 12;
 // Mirrors the adapter contract's bounded last-result summary (adapters/toolResults.js).
@@ -238,11 +245,48 @@ function mixDigestValue(state, value, depth = 0, budget = null) {
     }
 }
 
+function mixDigestKeyPart(state, value) {
+    const text = value === undefined ? '\u0000' : String(value);
+    const length = Math.min(text.length, SIGNATURE_KEY_PART_CHARACTERS);
+    mixDigestCode(state, length);
+    for (let index = 0; index < length; index++) mixDigestCode(state, text.charCodeAt(index));
+}
+
+// One `id:status:sha:url` key per row (outcome, label, scan and landed set
+// included), so an edit at any index changes the digest.
+function mixDigestKeyedRows(state, rows) {
+    if (!Array.isArray(rows)) {
+        mixDigestKeyPart(state, rows === null ? 'null' : typeof rows);
+        return 0;
+    }
+    mixDigestKeyPart(state, rows.length);
+    const count = Math.min(rows.length, SIGNATURE_KEYED_ROW_LIMIT);
+    for (let index = 0; index < count; index++) {
+        const row = rows[index];
+        if (!row || typeof row !== 'object') {
+            mixDigestKeyPart(state, row);
+            continue;
+        }
+        const landed = Array.isArray(row.landedShas) ? row.landedShas : null;
+        mixDigestKeyPart(state, row.id);
+        mixDigestKeyPart(state, row.status);
+        mixDigestKeyPart(state, row.success);
+        mixDigestKeyPart(state, row.exitCode);
+        mixDigestKeyPart(state, row.sha);
+        mixDigestKeyPart(state, row.url);
+        mixDigestKeyPart(state, row.label);
+        mixDigestKeyPart(state, row.scanSeq);
+        mixDigestKeyPart(state, landed ? `${landed.length}:${landed[landed.length - 1] ?? ''}` : undefined);
+    }
+    return count;
+}
+
 /**
  * Fixed-size signature for the fields retained by an Agent. Work is bounded by
  * sampled strings, recent array rows, recursion depth, and per-field work
  * budgets, so one large collection cannot starve later fields or force a
- * second full-payload serialization.
+ * second full-payload serialization. Git events and tool results mix one
+ * bounded key per row instead (VB-7), outside those budgets.
  */
 export function digestAgentPayload(payload, diagnostics = null) {
     const state = {
@@ -251,8 +295,13 @@ export function digestAgentPayload(payload, diagnostics = null) {
         characters: 0,
         values: 0,
     };
+    let keyedRows = 0;
     for (const field of AGENT_SIGNATURE_FIELDS) {
         mixDigestString(state, field);
+        if (SIGNATURE_KEYED_FIELDS.has(field)) {
+            keyedRows += mixDigestKeyedRows(state, payload?.[field]);
+            continue;
+        }
         const collection = SIGNATURE_COLLECTION_FIELDS.has(field);
         const budget = {
             values: 0,
@@ -279,6 +328,7 @@ export function digestAgentPayload(payload, diagnostics = null) {
     if (diagnostics && typeof diagnostics === 'object') {
         diagnostics.characters = state.characters;
         diagnostics.values = state.values;
+        diagnostics.keyedRows = keyedRows;
     }
     return `${(state.a >>> 0).toString(16).padStart(8, '0')}${(state.b >>> 0).toString(16).padStart(8, '0')}`;
 }
