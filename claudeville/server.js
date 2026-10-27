@@ -734,7 +734,30 @@ function handleGetChangelog(req, res) {
 
 // ─── Static file serving ─────────────────────────────────────
 
-function serveContainedFile(req, res, parsedUrl, { root, realRoot, label = 'Static' }) {
+// SV-11 — the static route serves the client only: the page shell, its
+// manifests and icons, and the client roots. Server source (`server.js`,
+// `adapters/`, `services/`) and agent docs (`CLAUDE.md`) live in the same
+// directory and are never served, nor is anything dropped there later.
+const CLIENT_STATIC_DIRECTORIES = new Set(['src', 'css', 'assets', 'vendor', 'tools']);
+const CLIENT_STATIC_FILES = new Set([
+  'index.html',
+  'favicon.svg',
+  'favicon-alert.svg',
+  'icon-192.png',
+  'icon-512.png',
+  'manifest.webmanifest',
+  'm.webmanifest',
+]);
+
+function isClientStaticPath(relativePath) {
+  const parts = String(relativePath || '').split(/[\\/]+/).filter(Boolean);
+  if (parts.length === 0 || parts[0] === '..') return false;
+  return parts.length === 1
+    ? CLIENT_STATIC_FILES.has(parts[0])
+    : CLIENT_STATIC_DIRECTORIES.has(parts[0]);
+}
+
+function serveContainedFile(req, res, parsedUrl, { root, realRoot, label = 'Static', allow = null }) {
   if (process.env.DEBUG_STATIC) {
     console.log(`[${label}] request`, req.url);
   }
@@ -756,6 +779,9 @@ function serveContainedFile(req, res, parsedUrl, { root, realRoot, label = 'Stat
     if (!isContainedPath(root, filePath)) {
       return sendError(res, 403, 'Forbidden');
     }
+    if (allow && !allow(path.relative(root, filePath))) {
+      return sendError(res, 404, 'Not Found');
+    }
 
     if (!fs.existsSync(filePath)) {
       return sendError(res, 404, 'Not Found');
@@ -775,6 +801,10 @@ function serveContainedFile(req, res, parsedUrl, { root, realRoot, label = 'Stat
     const realFilePath = realpathExistingPath(filePath);
     if (!isContainedPath(realRoot, realFilePath)) {
       return sendError(res, 403, 'Forbidden');
+    }
+    // A link inside a client root must also land inside one.
+    if (allow && !allow(path.relative(realRoot, realFilePath))) {
+      return sendError(res, 404, 'Not Found');
     }
     filePath = realFilePath;
     const fileStat = fs.statSync(filePath);
@@ -841,6 +871,7 @@ function handleStaticFile(req, res, parsedUrl) {
     root: STATIC_ROOT,
     realRoot: STATIC_REAL_ROOT,
     label: 'Static',
+    allow: isClientStaticPath,
   });
 }
 
@@ -3038,6 +3069,8 @@ module.exports = {
     SERVER_IDENTITY,
   },
   _staticTest: {
+    handleStaticFile,
+    isClientStaticPath,
     serveContainedFile,
   },
   _providerHealthTest: {

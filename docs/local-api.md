@@ -44,7 +44,7 @@ The adapter contract has the extraction rules: [git event extraction](../claudev
 - `{ type: 'resync' }` asks for a fresh baseline, answered by an `init`. If the fresh collection fails, the retained baseline comes back as an `init` with `scanning: true`; before any baseline exists, the reply is `{ type: 'snapshot-error', code: 'snapshot-unavailable' }`. The client re-sends an unanswered resync after 10 s and drops the socket for a reconnect after a second miss.
 - `{ type: 'ping' }` is answered with `{ type: 'pong', timestamp }`, and `WebSocketClient` sends one every 20 s. A quiet, healthy village receives no broadcasts (unchanged payloads are skipped), so liveness keys on the last message of any kind, never on snapshot age. No message within 10 s of a ping sets `stale: true` and `lastErrorCode: 'link-silent'` on `ws:state` (which also carries `lastMessageAt`), and a second unanswered ping drops the socket for a reconnect. The server's own 30-second heartbeat (protocol ping frames) closes a client silent for 90 s, except on the first tick after the server process itself was paused.
 
-The server does not enable CORS and rejects `OPTIONS` requests. Missing or invalid routes receive JSON error responses.
+The server does not enable CORS and rejects `OPTIONS` requests. Missing or invalid routes receive JSON error responses. Static routes serve only the client: `/` and `/m` (the shell), its manifests and icons, and `src/`, `css/`, `assets/`, `vendor/` and `tools/`. Server source and agent docs under `claudeville/` return 404.
 
 With `npm run dev` running, inspect provider detection and session discovery:
 

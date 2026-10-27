@@ -124,6 +124,39 @@ test('text MIME and gzip variants preserve exact bodies, HEAD and strong validat
       }
       assert.equal((await request(port, '/m/index.html')).status, 404);
     });
+    await t.test('SV-11: the production root serves the client and nothing else', async () => {
+      const production = http.createServer((req, res) => {
+        runtime._staticTest.handleStaticFile(req, res, new URL(req.url, 'http://fixture'));
+      });
+      await new Promise(resolve => production.listen(0, '127.0.0.1', resolve));
+      try {
+        const productionPort = production.address().port;
+        assert.notEqual(productionPort, 4000);
+        for (const pathname of [
+          '/', '/m', '/m/', '/src/presentation/App.js', '/css/reset.css', '/assets/sprites/manifest.yaml',
+          '/vendor/js-yaml.min.js', '/tools/model-roster.html', '/favicon.svg', '/favicon-alert.svg',
+          '/icon-192.png', '/icon-512.png', '/manifest.webmanifest', '/m.webmanifest',
+        ]) {
+          assert.equal((await request(productionPort, pathname)).status, 200, pathname);
+        }
+        for (const pathname of [
+          '/server.js', '/CLAUDE.md', '/adapters/claude.js', '/adapters/', '/services/usageQuota.js',
+          '/%73erver.js', '/src/%2e%2e/server.js', '/src', '/assets',
+        ]) {
+          const response = await request(productionPort, pathname);
+          assert.equal(response.status, 404, pathname);
+          assert.equal(response.body.includes('require('), false, `${pathname} leaked source`);
+        }
+      } finally {
+        await new Promise(resolve => production.close(resolve));
+      }
+      const allowed = runtime._staticTest.isClientStaticPath;
+      assert.equal(allowed('index.html'), true);
+      assert.equal(allowed('src/a.js'), true);
+      for (const blocked of ['', 'server.js', 'CLAUDE.md', 'notes.html', 'services/usageQuota.js', '../package.json', 'src']) {
+        assert.equal(allowed(blocked), false, blocked);
+      }
+    });
   } finally {
     await new Promise(resolve => server.close(resolve));
     runtime.shutdownRuntime({ reason: 'static-test', exitProcess: false });

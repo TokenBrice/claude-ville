@@ -8,7 +8,7 @@ ClaudeVille is static HTML/CSS with vanilla ES modules. `server.js` uses Node bu
 
 ## Server
 
-`server.js` binds `127.0.0.1:4000`. Local Host and same-origin checks guard HTTP and WebSocket access. Static files come from `claudeville/`; watch paths come from active provider adapters. Filesystem updates debounce alongside a two-second poll, and broadcasts no-op when there are no WebSocket clients.
+`server.js` binds `127.0.0.1:4000`. Local Host and same-origin checks guard HTTP and WebSocket access. Static files come from the client roots in `claudeville/` only: `index.html`, its manifests and icons, `src/`, `css/`, `assets/`, `vendor/` and `tools/`. Server source (`server.js`, `adapters/`, `services/`) and this file are never served (SV-11; add a new client root to `CLIENT_STATIC_DIRECTORIES` or `CLIENT_STATIC_FILES`). Watch paths come from active provider adapters. Filesystem updates debounce alongside a two-second poll, and broadcasts no-op when there are no WebSocket clients.
 
 Main surfaces are `/api/sessions`, `/api/session-detail`, `POST /api/session-details`, `POST /api/ingest/hook`, `/api/teams`, `/api/tasks`, `/api/providers`, `/api/usage`, `/api/perf`, `/api/changelog`, and `/ws`. The app fetches `/api/providers` during boot. `/api/tasks` and `/api/perf` are diagnostic/external-integration surfaces; the product UI does not consume `/api/tasks`.
 
