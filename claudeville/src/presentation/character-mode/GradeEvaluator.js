@@ -221,13 +221,13 @@ export const GRADE_KEYFRAMES = Object.freeze([
     }),
     // Blue hour is a cobalt dusk: bluer than golden hour, never darker than
     // night (the arc stays monotone), keeping more of the albedo's colour than
-    // the night key does. VQ-3 — exposure +0.05 (0.85 under the full moonlit
+    // the night key does. VQ-3 — exposure +0.08 (0.85 -> 0.93 under the full moonlit
     // night): the lamplit night outshone the dusk on the GPU paths (19:15 at
     // 76.3 island luma against 80.0 at 23:00); golden-hours now gates
     // dusk >= night.
     Object.freeze({
         name: 'blue-hour', minute: 19 * 60 + 45, side: 'dusk',
-        exposure: moonlit(0.87, 0.90), saturation: moonlit(0.62, 0.64),
+        exposure: moonlit(0.90, 0.93), saturation: moonlit(0.62, 0.64),
         gain: [0.80, 0.90, 1.10], lift: moonlit3([0.018, 0.020, 0.034], [0.024, 0.028, 0.044]), gamma: 1.02,
         shadowTint: [0.86, 0.90, 1.14], highlightTint: [1.04, 0.98, 1.02],
         purkinje: 0.3, sunBand: 0.2, daylight: 0.1, night: 0.5, rake: 0.375,

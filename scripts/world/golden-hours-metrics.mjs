@@ -126,6 +126,8 @@ export const DECLARED_ORDER = Object.freeze([
   Object.freeze(['clear-1200', 'clear-0500', 4]),
   Object.freeze(['clear-1915', 'storm-1915', 2]),
   Object.freeze(['clear-2300', 'storm-0200', 2]),
+  // VQ-3 — colour-script 1.1: blue hour is never darker than night.
+  Object.freeze(['clear-1915', 'clear-2300', 0]),
 ]);
 
 /**

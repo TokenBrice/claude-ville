@@ -29,8 +29,8 @@ const metrics = (mean, warmShare = 0.02, extra = {}) => ({ mean, p10: 30, p90: 1
 
 // A plausible calibrated backend: the declared orderings hold with margin.
 const CURVE_SCENES = {
-  'clear-0500': metrics(70), 'clear-1200': metrics(93, 0.08), 'clear-1915': metrics(76, 0.009),
-  'storm-1915': metrics(70, 0.008), 'clear-2300': metrics(80, 0.03), 'storm-0200': metrics(62),
+  'clear-0500': metrics(70), 'clear-1200': metrics(93, 0.08), 'clear-1915': metrics(83, 0.009),
+  'storm-1915': metrics(74, 0.008), 'clear-2300': metrics(80, 0.03), 'storm-0200': metrics(62),
 };
 const clone = (value) => JSON.parse(JSON.stringify(value));
 
@@ -123,6 +123,11 @@ test('declared orderings hold on every backend, whatever the curve says', () => 
   const curve = buildCurve({ webgpu: clone(broken) });
   const failures = checkGoldenRun({ webgpu: broken }, curve);
   assert.ok(failures.some(f => /clear-1915 .* brighter than storm-1915/.test(f)), failures.join('; '));
+  // VQ-3 — colour-script 1.1: a lamplit night brighter than the dusk fails.
+  const lit = clone(CURVE_SCENES);
+  lit['clear-2300'].mean = lit['clear-1915'].mean + 0.5;
+  const litFailures = checkGoldenRun({ webgl: lit }, buildCurve({ webgl: clone(lit) }));
+  assert.ok(litFailures.some(f => /webgl: clear-1915 .* brighter than clear-2300/.test(f)), litFailures.join('; '));
   for (const [bright, dim] of DECLARED_ORDER) {
     assert.ok(GOLDEN_SCENES.some(s => s.id === bright) && GOLDEN_SCENES.some(s => s.id === dim));
   }
