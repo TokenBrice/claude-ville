@@ -89,6 +89,49 @@ test('important and turning atlas slots refresh immediately while ambient frames
     } finally { globalThis.document = previousDocument; }
 });
 
+// VQ-9 — one more record (a frost tint, a tankard) can widen the slot grid by
+// a column while a walker's strip band keeps the atlas the same size: every
+// slot then redraws at its new place, so no body samples another's old cell.
+test('a record that widens the atlas slot grid redraws every slot at its new place', () => {
+    const previousDocument = globalThis.document;
+    const content = new Map();
+    const canvas = () => {
+        const target = { width: 8, height: 8 };
+        target.getContext = () => ({
+            clearRect(x, y) { if (target.atlas) content.delete(`${x},${y}`); },
+            drawImage(source, sx, sy, sw, sh, dx, dy) { if (target.atlas) content.set(`${dx},${dy}`, `${source.tag}@${sx},${sy}`); },
+        });
+        return target;
+    };
+    globalThis.document = { createElement: () => Object.assign(canvas(), { atlas: true }) };
+    try {
+        const cell = (tag) => Object.assign(canvas(), { tag, width: 64, height: 8 });
+        const walker = cell('walker');
+        const sitter = cell('sitter');
+        const tint = cell('tint');
+        const renderer = { agentSprites: new Map([['a-walk', {}], ['b-sit', {}]]) };
+        const strip = Array.from({ length: 6 }, (_, frame) => ({ source: walker, sx: frame * 8, sy: 0, sw: 8, sh: 8 }));
+        const records = (withTint) => [
+            { id: 'agent:a-walk', source: walker, sourceWidth: 64, sourceHeight: 8, sx: 0, sy: 0, sw: 8, sh: 8, poseKey: 'walk', walkStrip: { key: 'w', cells: strip, frame: 0 } },
+            { id: 'agent:b-sit', source: sitter, sourceWidth: 64, sourceHeight: 8, sx: 8, sy: 0, sw: 8, sh: 8, poseKey: 'sit', urgentPose: true },
+            ...(withTint ? [{ id: 'agent:b-sit:frost-tint', source: tint, sourceWidth: 64, sourceHeight: 8, sx: 0, sy: 0, sw: 8, sh: 8, poseKey: 'sit', urgentPose: true }] : []),
+        ];
+        const sampled = (packed, id) => {
+            const record = packed.find(r => r.id === id);
+            return content.get(`${record.sx},${record.sy}`);
+        };
+        let packed = packGpuAgentFrameAtlas(renderer, records(false));
+        const size = `${renderer._gpuAgentFrameAtlas.width}x${renderer._gpuAgentFrameAtlas.height}`;
+        assert.equal(sampled(packed, 'agent:b-sit'), 'sitter@8,0');
+        packed = packGpuAgentFrameAtlas(renderer, records(true));
+        assert.equal(`${renderer._gpuAgentFrameAtlas.width}x${renderer._gpuAgentFrameAtlas.height}`, size, 'the atlas keeps its size');
+        assert.equal(sampled(packed, 'agent:b-sit'), 'sitter@8,0', 'the sitter samples its own cell');
+        assert.equal(sampled(packed, 'agent:b-sit:frost-tint'), 'tint@0,0');
+        packed = packGpuAgentFrameAtlas(renderer, records(false));
+        assert.equal(sampled(packed, 'agent:b-sit'), 'sitter@8,0', 'and again once the tint is gone');
+    } finally { globalThis.document = previousDocument; }
+});
+
 test('crowd congestion tightens annotations but never shrinks bodies below the population gate', () => {
     const viewport = { width: 880, height: 845 };
     const rendererFor = (count, zoom = 3) => {

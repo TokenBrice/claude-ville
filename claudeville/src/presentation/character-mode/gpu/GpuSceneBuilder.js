@@ -1389,10 +1389,16 @@ export function packGpuAgentFrameAtlas(renderer, records) {
     const channelResized = materialAtlasState.resized || emissiveAtlasState.resized;
     const rebuild = resized || channelResized;
     const bands = renderer._gpuAgentAtlasBands ||= new Map();
-    if (rebuild || rosterChanged || renderer._gpuAgentAtlasBandCells !== bandCells) {
+    // A new band size or slot grid moves every slot's cells, even when the
+    // atlas keeps its size (one more record, a frost tint or a tankard, can
+    // widen the grid by a column): every body redraws at its new place in
+    // this pass, never sampling another slot's old cell.
+    if (rebuild || rosterChanged || renderer._gpuAgentAtlasBandCells !== bandCells || renderer._gpuAgentAtlasColumns !== columns) {
         bands.clear();
         if (!resized) frameKeys.clear();
         renderer._gpuAgentAtlasBandCells = bandCells;
+        renderer._gpuAgentAtlasColumns = columns;
+        changed = true;
     }
     const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
     const cadenceElapsed = now - (renderer._gpuAgentAtlasUpdatedAt || 0) >= 125;

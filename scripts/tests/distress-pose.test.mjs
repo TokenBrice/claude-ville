@@ -92,6 +92,44 @@ test('AG-6: the ground sitter lands its seat line on the ground, else drops its 
     }
 });
 
+// VQ-9 — the frost tint has one owner per backend: the Canvas body blit, or
+// one resident record laid over the body, from the same cell and alpha.
+test('VQ-9: a rate-limited resident body carries one frost-tint record over it', () => {
+    const sprite = planted(AgentStatus.RATE_LIMITED);
+    const body = { id: `agent:${sprite.agent.id}`, alpha: 0.5, material: 'cloth', poseKey: 'sit:1:1:', bakedGear: false };
+    sprite.gpuOverlayRenderer = { getRecords: () => (sprite._gpuFrameRecord ? [sprite._gpuFrameRecord] : []) };
+    sprite._gpuFrameRecord = body;
+    const tinted = { width: 40, height: 60, __cvFrostKey: 'profile|strip:0,0,40,60' };
+    const asked = [];
+    sprite._getFrozenTintCell = (cell, source, gear) => {
+        asked.push({ cell, source, gear });
+        return tinted;
+    };
+    sprite._frostTint = { cell: { sx: 0, sy: 0, sw: 40, sh: 60 }, dx: 12, dy: -30, source: 'strip', identity: {}, frameGeometry: {} };
+    const records = sprite.getGpuWorldRecords();
+    assert.equal(records.length, 2);
+    assert.equal(records[0], body, 'the tint paints after the body, in its depth slot');
+    const frost = records[1];
+    assert.equal(frost.id, `agent:${sprite.agent.id}:frost-tint`);
+    assert.equal(frost.source, tinted);
+    assert.deepEqual([frost.x, frost.y, frost.width, frost.height], [12, -30, 40, 60]);
+    assert.ok(Math.abs(frost.alpha - 0.38 * 0.5) < 1e-9, 'the Canvas tint alpha, times the body alpha');
+    assert.equal(frost.material, body.material);
+    assert.equal(frost.poseKey, body.poseKey);
+    assert.equal(frost.urgentPose, true, 'updates in the same atlas pass as the body');
+    assert.deepEqual(asked[0], { cell: sprite._frostTint.cell, source: 'strip', gear: null });
+    // A body sampling its baked gear keeps the front gear clear of the tint.
+    body.bakedGear = true;
+    sprite.getGpuWorldRecords();
+    assert.equal(asked[1].gear, sprite._frostTint);
+    // No body record (hidden, Canvas, released) or no limit: no tint.
+    sprite._gpuFrameRecord = null;
+    assert.deepEqual(sprite.getGpuWorldRecords(), []);
+    sprite._gpuFrameRecord = body;
+    sprite.agent.status = AgentStatus.WORKING;
+    assert.deepEqual(sprite.getGpuWorldRecords(), [body]);
+});
+
 // AG-5 — a lead waiting on its subagents stands up for a blocked child.
 
 test('AG-5: a pint lead at its place rises only while the renderer reports a blocked child', () => {
