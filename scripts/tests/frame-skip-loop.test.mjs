@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
-import { createMotionClock } from '../../claudeville/src/presentation/character-mode/MotionClock.js';
+import { createMotionClock, SPEED_RUNGS } from '../../claudeville/src/presentation/character-mode/MotionClock.js';
+import { defineMoment, momentPhase } from '../../claudeville/src/presentation/character-mode/EffectStamps.js';
 import { FRAME_PACING_INTERVAL_MS, createFramePacing } from '../../claudeville/src/presentation/character-mode/FramePacing.js';
 
 function fixture() {
@@ -177,6 +178,59 @@ test('the ladder hears the paced interval, never the panel refresh', () => {
     assert.equal(renderer.updates, 4);
     assert.deepEqual(intervals.map(ms => Math.round(ms * 1000) / 1000), [16.667, 16.667, 16.667]);
     assert.ok(Math.abs(intervals[0] - FRAME_PACING_INTERVAL_MS) < 1e-9);
+});
+
+// FP-1b: the renderer's own ambient verdict, judged after each frame.
+function ambientFixture() {
+    const renderer = fixture();
+    renderer.motionScale = 1;
+    renderer._ambientHint = false;
+    renderer._ambientCamera = { x: NaN, y: NaN, zoom: NaN };
+    renderer._pointerInputAt = -Infinity;
+    renderer._visibleSortedSprites = [];
+    renderer.camera = { x: 10, y: 20, zoom: 2 };
+    renderer.arrivalDeparture = { dispatches: new Map(), merges: new Map(), orphanReturns: [] };
+    return renderer;
+}
+
+function renderedOver(renderer, fromMs, toMs, hz = 240) {
+    const before = renderer.updates;
+    for (let tick = Math.ceil(fromMs * hz / 1000); tick * 1000 / hz < toMs; tick++) renderer._loop(tick * 1000 / hz);
+    return renderer.updates - before;
+}
+
+test('an ambient-only village renders at 30 fps; a walker above the stroll rung restores 60', () => {
+    const renderer = ambientFixture();
+    assert.ok(renderedOver(renderer, 0, 1000) <= 32, 'ambient-only frames pace at 30 fps');
+    const walker = { moving: true, _gaitSpeed: SPEED_RUNGS[0] };
+    renderer._visibleSortedSprites.push(walker);
+    assert.ok(renderedOver(renderer, 1000, 2000) <= 32, 'a stroller stays ambient');
+    walker._gaitSpeed = SPEED_RUNGS[SPEED_RUNGS.length - 1];
+    const walking = renderedOver(renderer, 2000, 3000);
+    assert.ok(walking >= 59 && walking <= 61, `a WORKING walker on screen renders at 60 fps (${walking})`);
+});
+
+test('pointer input, camera easing, a comet, a strike and a playing moment each hold 60 fps', () => {
+    const causes = {
+        pointer: r => { r._pointerInputAt = 2500; },
+        camera: r => { r.camera._directorGlide = {}; },
+        follow: r => { r.camera.x += 1; },
+        comet: r => { r.arrivalDeparture.dispatches.set('child', {}); },
+        strike: r => { r._frameStrikeActive = true; },
+        moment: () => { momentPhase(10, defineMoment('minor')); },
+    };
+    for (const [name, apply] of Object.entries(causes)) {
+        const renderer = ambientFixture();
+        assert.ok(renderedOver(renderer, 0, 2000) <= 62, name);
+        // Each cause is re-applied every frame: follow moves the camera, a
+        // moment resolves its phase as it draws.
+        const update = renderer._update;
+        renderer._update = function (...args) { apply(this); return update.apply(this, args); };
+        apply(renderer);
+        renderer._noteAmbientFrame();
+        const rendered = renderedOver(renderer, 2000, 3000);
+        assert.ok(rendered >= 59, `${name} holds 60 fps (${rendered})`);
+    }
 });
 
 test('a stopped loop forgets its cadence: the first tick after a restart renders at once', () => {

@@ -579,6 +579,8 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     // 0.10 — one lightning schedule per frame on the one clock: the stepped
     // flash exposure both backends apply and the bolt WeatherRenderer draws.
     const strike = stormStrikeAt(renderer.motionTimeMs, atmosphere, renderer.motionScale ?? 1);
+    // FP-1b — a strike in flight holds the World at 60 fps.
+    renderer._frameStrikeActive = strike.active === true;
     const wx = atmosphere?.weather;
     // C-W2 — the ground remembers the village's own weather: wetness,
     // puddles, snow cover and frost integrated from the timeline history

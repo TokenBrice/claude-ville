@@ -1223,6 +1223,25 @@ async function runIdle(browser, baseUrl, options, spec, repetition) {
     }, durationMs);
     const wallSeconds = (performance.now() - wallStart) / 1000;
     const cpuEnd = procTreeCpuSeconds(options.rootPid);
+    // A walking scene's reference: the same page with the ambient cadence
+    // forced off, so "not paced down" holds on a host that cannot reach 60.
+    const referenceFps = measured.ambientPacing && !AMBIENT_SCENARIOS.has(spec.scenario)
+      ? await page.evaluate(async (windowMs) => {
+        const renderer = window.__claudeVilleApp.renderer;
+        let updates = 0;
+        const update = renderer._update;
+        renderer._ambientTick = () => false;
+        renderer._update = function countedUpdate(...args) {
+          updates++;
+          return update.apply(this, args);
+        };
+        const started = performance.now();
+        await new Promise(resolve => setTimeout(resolve, windowMs));
+        delete renderer._update;
+        delete renderer._ambientTick;
+        return Math.round((updates / ((performance.now() - started) / 1000)) * 10) / 10;
+      }, Math.min(durationMs, 8000))
+      : null;
     const cores = {};
     for (const key of new Set([...Object.keys(cpuStart), ...Object.keys(cpuEnd)])) {
       cores[key] = roundTo(((cpuEnd[key] || 0) - (cpuStart[key] || 0)) / wallSeconds, 3);
@@ -1257,10 +1276,16 @@ async function runIdle(browser, baseUrl, options, spec, repetition) {
         gpu: Math.round((cores.gpu || 0) * 3600),
         app: Math.round(appCores * 3600),
       },
+      referenceFps,
+      // Walking: never paced below the 60 fps cadence's own rate, and 59-61
+      // fps wherever the host reaches 59 with the ambient cadence off.
       acceptance: measured.ambientPacing
         ? (sceneClass === 'ambient'
           ? { ambientAtMost31Fps: renderedFps <= 31 }
-          : { walkingAt59To61Fps: renderedFps >= 59 && renderedFps <= 61 })
+          : {
+            walkingNotPacedDown: renderedFps >= referenceFps - 1.5,
+            walkingAt59To61Fps: referenceFps < 59 || (renderedFps >= 59 && renderedFps <= 61),
+          })
         : { atMost61Fps: renderedFps <= 61 },
       errors: errors.slice(0, 5),
     };

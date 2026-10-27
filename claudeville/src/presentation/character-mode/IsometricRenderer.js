@@ -15,8 +15,9 @@ import { eventBus } from '../../domain/events/DomainEvent.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { AgentBiography } from '../../domain/value-objects/AgentBiography.js';
 import { Camera } from './Camera.js';
-import { createMotionClock, advanceMotionClock, virtualFramesFor } from './MotionClock.js';
-import { admitFrame, createFramePacing, resetFramePacing } from './FramePacing.js';
+import { createMotionClock, advanceMotionClock, virtualFramesFor, SPEED_RUNGS } from './MotionClock.js';
+import { AMBIENT_FRAME_PACING, admitFrame, ambientFrame, createFramePacing, resetFramePacing } from './FramePacing.js';
+import { takeLiveMoment } from './EffectStamps.js';
 import {
     createFrameEnvelope,
     recordFrameEnvelope,
@@ -630,6 +631,11 @@ export class IsometricRenderer {
         this.running = false;
         this.frameId = null;
         this._framePacing = createFramePacing();
+        // FP-1b — the ambient (30 fps) cadence: the last frame's verdict, the
+        // camera it was judged on, and the last pointer input (rAF timebase).
+        this._ambientHint = false;
+        this._ambientCamera = { x: NaN, y: NaN, zoom: NaN };
+        this._pointerInputAt = -Infinity;
         this.terrainCache = null;
         this.terrainCacheBounds = null;
         this.terrainCacheKey = '';
@@ -2123,6 +2129,11 @@ export class IsometricRenderer {
             this._scheduleAgentHoverTest(worldPos.x, worldPos.y);
         };
         canvas.addEventListener('mousemove', this._onMouseMoveMain);
+        // FP-1b — any pointer input holds 60 fps for a second.
+        this._onPointerInputMain = () => { this._pointerInputAt = performance.now(); };
+        for (const type of ['pointerdown', 'pointermove', 'wheel']) {
+            canvas.addEventListener(type, this._onPointerInputMain, { passive: true, capture: true });
+        }
         this._onMouseLeaveMain = () => {
             if (this._agentHoverRafId !== null) {
                 cancelAnimationFrame(this._agentHoverRafId);
@@ -2253,6 +2264,9 @@ export class IsometricRenderer {
         if (this.canvas) {
             this.canvas.removeEventListener('click', this._onClick);
             this.canvas.removeEventListener('mousemove', this._onMouseMoveMain);
+            for (const type of ['pointerdown', 'pointermove', 'wheel']) {
+                this.canvas.removeEventListener(type, this._onPointerInputMain, { capture: true });
+            }
             this.canvas.removeEventListener('mouseleave', this._onMouseLeaveMain);
             this.canvas.title = '';
         }
@@ -4772,14 +4786,85 @@ export class IsometricRenderer {
         this._idleFrameDirty = false;
     }
 
+    // FP-1b — ambient-only frames wait for the 30 fps cadence (FramePacing.js
+    // `ambientFrame`). The verdict on the last frame (walkers, comets,
+    // strikes, moments, a camera that moved) holds until the next one; what
+    // can change between frames, the camera's own easing and the pointer, is
+    // read at the tick.
+    _ambientTick(tickMs) {
+        if (!AMBIENT_FRAME_PACING || !this._ambientHint) return false;
+        return ambientFrame({ cameraMoving: this._cameraEasing(), msSinceInput: tickMs - this._pointerInputAt });
+    }
+
+    _noteAmbientFrame() {
+        const momentPlaying = takeLiveMoment();
+        if (!AMBIENT_FRAME_PACING) return;
+        try {
+            const arrival = this.arrivalDeparture;
+            this._ambientHint = ambientFrame({
+                fastWalker: this._fastWalkerOnScreen(),
+                cameraMoving: this._cameraMovedSinceAmbientFrame() || this._cameraEasing(),
+                cometInFlight: Boolean(arrival?.dispatches?.size || arrival?.merges?.size || arrival?.orphanReturns?.length),
+                strikeActive: this._frameStrikeActive === true,
+                momentPlaying,
+            });
+        } catch {
+            this._ambientHint = false;
+        }
+    }
+
+    // A body in view (the render's own visible set) walking or running above
+    // the stroll rung.
+    _fastWalkerOnScreen() {
+        const sprites = this._visibleSortedSprites;
+        for (let index = 0; index < sprites.length; index++) {
+            const sprite = sprites[index];
+            if (sprite?.moving && (sprite._running || sprite._gaitSpeed > SPEED_RUNGS[0])) return true;
+        }
+        return false;
+    }
+
+    _cameraEasing() {
+        const camera = this.camera;
+        return Boolean(camera && (
+            camera.dragging
+            || camera._momentum
+            || camera._snapZoom
+            || camera._zoomAnimation
+            || camera._directorGlide
+            || camera._villageTour
+            || camera._followEase
+            || camera.isDirectorGliding?.()
+        ));
+    }
+
+    // A follow spring or a soft follow moves the camera without an easing
+    // flag; the idle breath (`_idleDrift`) is ambient.
+    _cameraMovedSinceAmbientFrame() {
+        const camera = this.camera;
+        if (!camera) return false;
+        const last = this._ambientCamera;
+        const moved = !camera._idleDrift && (
+            !(Math.abs(camera.x - last.x) <= 0.01)
+            || !(Math.abs(camera.y - last.y) <= 0.01)
+            || camera.zoom !== last.zoom
+        );
+        last.x = camera.x;
+        last.y = camera.y;
+        last.zoom = camera.zoom;
+        return moved;
+    }
+
     _loop(frameTime) {
         if (!this.running) return;
         this.frameId = null;
         if (!this._worldModeActive || this._contextLost) return;
         if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-        // FP-1a: at most 60 fps on every backend. A tick the cap holds only
-        // re-arms rAF: no update, clock, envelope or FPS sample.
-        if (!admitFrame(this._framePacing, Number.isFinite(frameTime) ? frameTime : performance.now())) {
+        // FP-1a: at most 60 fps on every backend (FP-1b: 30 for an ambient-only
+        // frame). A tick the cap holds only re-arms rAF: no update, clock,
+        // envelope or FPS sample.
+        const tickMs = Number.isFinite(frameTime) ? frameTime : performance.now();
+        if (!admitFrame(this._framePacing, tickMs, this._ambientTick(tickMs))) {
             this._startLoop();
             return;
         }
@@ -4901,6 +4986,7 @@ export class IsometricRenderer {
             this._reportFrameFailure(error, stage, now);
             this._recordFrameEnvelope(updateMs, renderMs, failedAt - updateStart, frameGapMs, stage);
         } finally {
+            this._noteAmbientFrame();
             try {
                 if (updateToken) perf?.endRenderStage?.(updateToken);
                 if (renderToken) perf?.endRenderStage?.(renderToken);

@@ -1,8 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+    AMBIENT_FRAME_PACING,
+    AMBIENT_FRAME_PACING_FPS,
+    AMBIENT_INPUT_HOLD_MS,
     FRAME_PACING_INTERVAL_MS,
     admitFrame,
+    ambientFrame,
     createFramePacing,
     resetFramePacing,
 } from '../../claudeville/src/presentation/character-mode/FramePacing.js';
@@ -140,4 +144,64 @@ test('paced intervals latch the 60 Hz period and stop the 240 Hz FULL/REDUCED fl
     assert.ok(Math.abs(paced.state.budgetMs - FRAME_PACING_INTERVAL_MS / 2) < 1e-6);
     assert.equal(paced.level, POST_FX_LEVELS.FULL);
     assert.ok(paced.changes <= 2, `the boot climb to FULL is the only change (changed ${paced.changes} times)`);
+});
+
+// FP-1b: ambient-only frames at 30 fps.
+function runAmbient(stream, ambientAt = () => true) {
+    const pacing = createFramePacing();
+    const intervals = [];
+    let rendered = 0;
+    for (const tick of stream) {
+        if (!admitFrame(pacing, tick, ambientAt(tick))) continue;
+        rendered++;
+        if (pacing.intervalMs !== null) intervals.push(pacing.intervalMs);
+    }
+    return { rendered, intervals };
+}
+
+test('the ambient switch is on for the review build and ambient frames pace at 30 fps', () => {
+    assert.equal(AMBIENT_FRAME_PACING, true);
+    assert.equal(AMBIENT_FRAME_PACING_FPS, 30);
+    for (const hz of [60, 75, 90, 120, 144, 165, 240]) {
+        const { rendered } = runAmbient(ticks(hz, 10, { jitterMs: hz === 60 ? 1.5 : 0 }));
+        assert.ok(rendered <= 10 * 31 && rendered >= 10 * 29, `${hz} Hz renders ${rendered / 10} ambient fps`);
+    }
+});
+
+test('the ladder still hears the 60 Hz display interval at the ambient cadence', () => {
+    const { intervals } = runAmbient(ticks(60, 5));
+    assert.ok(intervals.length > 100);
+    for (const interval of intervals) assert.ok(Math.abs(interval - FRAME_PACING_INTERVAL_MS) < 1e-6);
+});
+
+test('a frame that stops being ambient renders at the next 60 fps tick', () => {
+    const pacing = createFramePacing();
+    const renderedAt = [];
+    for (const tick of ticks(240, 2)) {
+        if (admitFrame(pacing, tick, tick < 1000)) renderedAt.push(tick);
+    }
+    const before = renderedAt.filter(tick => tick < 1000);
+    const after = renderedAt.filter(tick => tick >= 1000);
+    assert.ok(before.length <= 31, `the ambient second rendered ${before.length}`);
+    assert.ok(after.length >= 59 && after.length <= 61, `the 60 fps second rendered ${after.length}`);
+    assert.ok(after[0] - 1000 <= FRAME_PACING_INTERVAL_MS, 'no 30 fps hold carries past the switch');
+    assert.equal(pacing.ambient, false);
+});
+
+test('ambientFrame holds 60 fps for every listed cause and for pointer input inside a second', () => {
+    assert.equal(ambientFrame({}), true);
+    for (const cause of ['fastWalker', 'cameraMoving', 'cometInFlight', 'strikeActive', 'momentPlaying']) {
+        assert.equal(ambientFrame({ [cause]: true }), false, cause);
+    }
+    assert.equal(ambientFrame({ msSinceInput: AMBIENT_INPUT_HOLD_MS - 1 }), false);
+    assert.equal(ambientFrame({ msSinceInput: AMBIENT_INPUT_HOLD_MS }), true);
+    assert.equal(ambientFrame({ msSinceInput: NaN }), true, 'no input yet');
+});
+
+test('a reset forgets the ambient cadence', () => {
+    const pacing = createFramePacing();
+    admitFrame(pacing, 0, true);
+    assert.equal(pacing.ambient, true);
+    resetFramePacing(pacing);
+    assert.equal(pacing.ambient, false);
 });
