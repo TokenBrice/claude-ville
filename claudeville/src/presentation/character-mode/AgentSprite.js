@@ -237,7 +237,7 @@ function scenicPlace(point) {
         containsVisitPoint: (tileX, tileY) => Math.hypot(Number(tileX) - point.tileX, Number(tileY) - point.tileY) <= 0.8,
     });
 }
-const QUAY_PLACES = Object.freeze(AMBIENT_SCENIC_POINTS
+export const QUAY_PLACES = Object.freeze(AMBIENT_SCENIC_POINTS
     .filter((point) => point.id === 'harbor-ledger' || point.id === 'harbor-rail')
     .map((point) => scenicPlace(point)));
 // W4.8 — the last wind-down leg: stand inside the gate, facing out.
@@ -1109,6 +1109,9 @@ export class AgentSprite {
         getRoutingContext = null,
         getTileType = null,
         motionClock = null,
+        // VB-15 — the renderer places a new body itself (the gate or Portal
+        // arrival), which drops any route picked here; it picks from there.
+        deferInitialTarget = false,
     } = {}) {
         this.agent = agent;
         this.observation = resolveObservation(agent, Date.now());
@@ -1371,7 +1374,7 @@ export class AgentSprite {
         this._dialogueDisplayUntil = 0;
         this._activitySnapshot = this._captureActivitySnapshot(agent);
 
-        this._pickTarget();
+        if (!deferInitialTarget) this._pickTarget();
     }
 
     releaseRenderResources() {
