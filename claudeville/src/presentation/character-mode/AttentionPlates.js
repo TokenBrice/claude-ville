@@ -62,6 +62,7 @@ import { waitAgeTier, waitAnchor } from '../../domain/services/SignalLedger.js';
 import { STATUS_VISUALS, WORLD_BODY_FONT_11, WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
 import { EFFECT_COLORS } from '../../config/artPalette.js';
 import { elapsedTickNow, formatElapsed } from '../shared/Formatters.js';
+import { statusWord } from '../shared/AgentPresentation.js';
 import { LABEL_INK, WALNUT, drawOutlinedMotif, fitLabelText, measureLabelText, outlinedMotifStamp, paintWalnutBoard } from './WorldLabelKit.js';
 import { GPU_RECORD_FLAGS } from './gpu/GpuWorldPolicy.js';
 
@@ -72,9 +73,9 @@ export const ATTENTION_STATUSES = Object.freeze([
 ]);
 
 const KIND = Object.freeze({
-    [AgentStatus.WAITING_ON_USER]: { word: 'NEEDS YOU', motif: 'needs-you', color: STATUS_VISUALS.waiting_on_user.color, rank: 1 },
-    [AgentStatus.ERRORED]: { word: 'ERROR', motif: 'alert', color: STATUS_VISUALS.errored.color, rank: 0 },
-    [AgentStatus.RATE_LIMITED]: { word: 'LIMIT', motif: 'limit-gate', color: STATUS_VISUALS.rate_limited.color, rank: 2 },
+    [AgentStatus.WAITING_ON_USER]: { word: statusWord(AgentStatus.WAITING_ON_USER, 'upper'), motif: 'needs-you', color: STATUS_VISUALS.waiting_on_user.color, rank: 1 },
+    [AgentStatus.ERRORED]: { word: statusWord(AgentStatus.ERRORED, 'upper'), motif: 'alert', color: STATUS_VISUALS.errored.color, rank: 0 },
+    [AgentStatus.RATE_LIMITED]: { word: statusWord(AgentStatus.RATE_LIMITED, 'upper'), motif: 'limit-gate', color: STATUS_VISUALS.rate_limited.color, rank: 2 },
 });
 
 const BEACON_STEP = 2;
@@ -122,12 +123,10 @@ const CAPTION_CLEAR = 100;
 // the T1 plates.
 const TALLY_PAD = 5;
 const TALLY_SLIDE = 24;
-const TALLY_WORDS = Object.freeze([
-    [AgentStatus.WORKING, 'working'],
-    [AgentStatus.WAITING, 'waiting'],
-    [AgentStatus.IDLE, 'idle'],
-    [AgentStatus.COMPLETED, 'done'],
-]);
+// UI-1 (Q4) — the tally speaks the shared status words, so COMPLETED counts
+// as idle, exactly as the top bar's IDLE does.
+const TALLY_WORDS = Object.freeze([AgentStatus.WORKING, AgentStatus.WAITING, AgentStatus.IDLE]
+    .map(status => statusWord(status, 'lower')));
 
 export function isAttentionStatus(status) {
     return status === AgentStatus.WAITING_ON_USER
@@ -381,12 +380,12 @@ function offFrameTallyItem(sprite, head, camera, viewport) {
 export function offFrameTallyText(statuses) {
     const counts = new Map();
     for (const status of statuses) {
-        const key = normalizeAgentStatus(status);
-        counts.set(key, (counts.get(key) || 0) + 1);
+        const word = statusWord(normalizeAgentStatus(status), 'lower');
+        counts.set(word, (counts.get(word) || 0) + 1);
     }
     const parts = [];
-    for (const [status, word] of TALLY_WORDS) {
-        const count = counts.get(status);
+    for (const word of TALLY_WORDS) {
+        const count = counts.get(word);
         if (count) parts.push(`${count} ${word}`);
     }
     return parts.join(' · ');

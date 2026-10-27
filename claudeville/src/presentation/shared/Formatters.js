@@ -1,4 +1,7 @@
 import { AgentStatus, normalizeAgentStatus } from '../../domain/value-objects/AgentStatus.js';
+// A cycle (AgentPresentation imports this module); both use the other's
+// bindings only inside functions, never while evaluating.
+import { DEPARTED_WORD, statusWord } from './AgentPresentation.js';
 
 const HOME_ROOTS = Object.freeze(['users', 'home']);
 const ABSOLUTE_PATH_TOKEN_RE = /(^|[\s"'`=(\[{])((?:\/|[A-Za-z]:[\\/])[^"'`\s;&|<>()[\]{}]*)/g;
@@ -117,21 +120,16 @@ export function collisionsForAgent(agent) {
     return Array.isArray(agent?.collisions) ? agent.collisions : [];
 }
 
+// The age prefix reads the one status-word map (UI-1); a departed villager
+// is aged from its departure (UI-13).
 export function formatStatusElapsed(agent, now = Date.now()) {
+    const departedAt = Number(agent?.departedAt);
+    if (agent?.isDeparted && departedAt > 0) {
+        return `${DEPARTED_WORD} ${formatElapsed(Math.max(0, now - departedAt))} ago`;
+    }
     const since = Number(agent?.statusSince);
     if (!Number.isFinite(since) || since <= 0) return '';
-    const elapsed = formatElapsed(Math.max(0, now - since));
-    const status = normalizeStatus(agent?.status);
-    const prefix = {
-        [AgentStatus.WORKING]: 'Working for',
-        [AgentStatus.WAITING_ON_USER]: 'Waiting on you for',
-        [AgentStatus.WAITING]: 'Waiting for',
-        [AgentStatus.RATE_LIMITED]: 'Rate limited for',
-        [AgentStatus.ERRORED]: 'Errored for',
-        [AgentStatus.COMPLETED]: 'Idle',
-        [AgentStatus.IDLE]: 'Idle',
-    }[status] || 'In state for';
-    return `${prefix} ${elapsed}`;
+    return `${statusWord(agent?.status)} for ${formatElapsed(Math.max(0, now - since))}`;
 }
 
 function patchElapsedTargets() {

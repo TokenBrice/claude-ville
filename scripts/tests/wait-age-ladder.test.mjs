@@ -141,7 +141,9 @@ test('the Command plaque attention cell is absent at zero and carries the exact 
 
 test('off-frame tally text counts each silent status truthfully', () => {
     assert.equal(offFrameTallyText([AgentStatus.WORKING, AgentStatus.IDLE, AgentStatus.WORKING]), '2 working · 1 idle');
-    assert.equal(offFrameTallyText([AgentStatus.COMPLETED, AgentStatus.WAITING]), '1 waiting · 1 done');
+    // UI-1 (Q4): completed folds into idle, the word the top bar counts it under.
+    assert.equal(offFrameTallyText([AgentStatus.COMPLETED, AgentStatus.WAITING]), '1 waiting · 1 idle');
+    assert.equal(offFrameTallyText([AgentStatus.IDLE, AgentStatus.COMPLETED, AgentStatus.WORKING]), '1 working · 2 idle');
     assert.equal(offFrameTallyText(['active', 'bogus']), '1 working · 1 idle');
 });
 

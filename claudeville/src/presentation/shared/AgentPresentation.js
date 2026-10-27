@@ -124,21 +124,55 @@ export function waitReasonLabel(agent) {
         : label;
 }
 
-export function statusPresentation(status, translator = i18n) {
+// UI-1 (Q4) — one word per status on every surface; a surface picks only the
+// case (`NEEDS YOU` on a plate, `Needs you` on a chip, `needs you` on a
+// sub-line). COMPLETED, a closed turn whose next move is yours, folds into
+// IDLE, the count that holds it; its ✓ and stone hue stay its second cue.
+// Rate-limited is LIMIT everywhere.
+export const STATUS_WORDS = Object.freeze({
+    working: 'Working',
+    waiting: 'Waiting',
+    idle: 'Idle',
+    completed: 'Idle',
+    waiting_on_user: 'Needs you',
+    errored: 'Error',
+    rate_limited: 'Limit',
+});
+
+// The status whose word names each SignalLedger bucket (`bucketForStatus`).
+const BUCKET_STATUS = Object.freeze({
+    needsYou: 'waiting_on_user',
+    errors: 'errored',
+    quota: 'rate_limited',
+    working: 'working',
+    watchlist: 'waiting',
+    quiet: 'idle',
+});
+
+// UI-13 — a departed villager, during the grace before its row leaves.
+export const DEPARTED_WORD = 'Left the village';
+
+const WORD_FORMS = Object.freeze({
+    upper: word => word.toUpperCase(),
+    lower: word => word.toLowerCase(),
+    title: word => word,
+});
+
+export function statusWord(status, form = 'title') {
     const normalized = normalizeStatus(status);
-    const statusKey = { working: 'statusWorking', idle: 'statusIdle', waiting: 'statusWaiting' };
-    const statusOverrideLabel = {
-        rate_limited: 'Rate-limited',
-        errored: 'Errored',
-        waiting_on_user: 'Waiting for you',
-        completed: 'Completed',
-    };
-    const fallbackLabel = normalized.charAt(0).toUpperCase() + normalized.slice(1);
+    const word = STATUS_WORDS[normalized] || normalized.charAt(0).toUpperCase() + normalized.slice(1);
+    return (WORD_FORMS[form] || WORD_FORMS.title)(word);
+}
+
+export function bucketWord(bucket, form = 'title') {
+    return statusWord(BUCKET_STATUS[bucket] || bucket, form);
+}
+
+export function statusPresentation(status) {
+    const normalized = normalizeStatus(status);
     return {
         status: normalized,
-        label: statusOverrideLabel[normalized]
-            || translator?.t?.(statusKey[normalized] || normalized)
-            || fallbackLabel,
+        label: statusWord(normalized),
         color: STATUS_VISUALS[normalized]?.color || '#8b8b9e',
     };
 }
@@ -154,7 +188,7 @@ export function modelPresentation(agent) {
 }
 
 export function currentToolPresentation(agent, translator = i18n) {
-    const statusInfo = statusPresentation(agent?.status, translator);
+    const statusInfo = statusPresentation(agent?.status);
     if (agent?.currentTool) {
         return {
             isIdle: false,
@@ -163,9 +197,9 @@ export function currentToolPresentation(agent, translator = i18n) {
             detail: agent.currentToolInput || '',
         };
     }
-    // Tool-less fallback: terminal statuses read as themselves (idle → "Idle",
-    // completed → "Completed"); only genuinely in-flight tool-less statuses
-    // read as waiting. Fixes completed agents showing "Waiting...".
+    // Tool-less fallback: terminal statuses read as their word (idle and
+    // completed both "Idle", told apart by the glyph); only genuinely
+    // in-flight tool-less statuses read as waiting.
     const readsAsSelf = statusInfo.status === 'idle' || statusInfo.status === 'completed';
     return {
         isIdle: true,

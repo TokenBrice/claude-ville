@@ -354,7 +354,8 @@ test('operator labels distinguish every actionable status and generic waiting', 
     const labels = statuses.map(operatorStatusLabel);
 
     assert.equal(new Set(labels).size, statuses.length, 'no actionable state may share an operator label');
-    assert.deepEqual(labels, ['Errored', 'Waiting — quota', 'Needs you', 'Waiting']);
+    // UI-1 (Q4): the operator label is the one status word every surface reads.
+    assert.deepEqual(labels, ['Error', 'Limit', 'Needs you', 'Waiting']);
 });
 
 test('World preserves every pre-Wave 1 stats key and its original meaning', () => {

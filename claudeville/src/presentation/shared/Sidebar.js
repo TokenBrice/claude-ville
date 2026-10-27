@@ -23,13 +23,15 @@ import {
     toggleAgentSelection,
 } from './AgentSelection.js';
 import {
+    bucketWord,
+    DEPARTED_WORD,
     groupAgentsByProject,
     projectKeyForAgent,
     worktreeLabel,
     modelPresentation,
     projectProfile,
     providerPresentation,
-    statusPresentation,
+    statusWord,
     waitReasonLabel,
 } from './AgentPresentation.js';
 import { AvatarCanvas } from '../dashboard-mode/AvatarCanvas.js';
@@ -572,11 +574,9 @@ export class Sidebar {
         }
         // Only non-zero buckets speak (0.6: zeros dim or go), with the same
         // words as the World plates and the top bar's lit slot.
-        const heading = [
-            [buckets.needsYou.length, 'NEEDS YOU'],
-            [buckets.errors.length, 'ERROR'],
-            [buckets.quota.length, 'LIMIT'],
-        ].filter(([count]) => count > 0).map(([count, word]) => `${count} ${word}`).join(' · ');
+        const heading = ['needsYou', 'errors', 'quota']
+            .map(bucket => [buckets[bucket].length, bucketWord(bucket, 'upper')])
+            .filter(([count]) => count > 0).map(([count, word]) => `${count} ${word}`).join(' · ');
         this._setText(this._shelfHeading, heading);
         const lead = buckets.needsYou.length ? 'needsYou' : buckets.errors.length ? 'errors' : 'quota';
         if (this.shelfEl.dataset) this.shelfEl.dataset.lead = lead;
@@ -682,6 +682,7 @@ export class Sidebar {
                     agent.agentType,
                     agent.workflowId,
                     agent.parentSessionId,
+                    agent.departedAt,
                     rowExtras.get(agent.id).ageText,
                     rowExtras.get(agent.id).parentLabel,
                 ].join('|'))
@@ -1084,6 +1085,7 @@ export class Sidebar {
             agent.teamName,
             agent.workflowName,
             agent.parentSessionId,
+            agent.departedAt,
             extras.ageText,
             extras.parentLabel,
             extras.searchContext,
@@ -1170,7 +1172,8 @@ export class Sidebar {
         // worktree, D1: it sits in its repo's group). The adapter's wait
         // reason, when known, is the state ("waiting for approval — Bash").
         const reason = waitReasonLabel(agent);
-        const stateText = reason ? lowerFirst(reason) : statusPresentation(agent.status).label.toLowerCase();
+        const stateText = agent.isDeparted ? DEPARTED_WORD.toLowerCase()
+            : reason ? lowerFirst(reason) : statusWord(agent.status, 'lower');
         const worktree = worktreeLabel(agent);
         this._setNodeText(refs.modelText, `${model.label ? ` · ${model.label}` : ''}${worktree ? ` · ${worktree}` : ''}`);
         this._setText(refs.state, stateText);

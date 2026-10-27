@@ -1,7 +1,8 @@
 import { normalizeStatus } from './Formatters.js';
+import { statusWord } from './AgentPresentation.js';
+// UI-1 — the operator label is the one status word (AgentPresentation).
 export function operatorStatusLabel(status) {
-    const s = normalizeStatus(status);
-    return s === 'waiting_on_user' ? 'Needs you' : s === 'rate_limited' ? 'Waiting — quota' : s === 'errored' ? 'Errored' : s === 'working' ? 'Working' : s === 'waiting' ? 'Waiting' : 'Visiting';
+    return statusWord(status);
 }
 export function attentionRank(agent, usage = null) {
     const rank = { waiting_on_user: 0, errored: 1, rate_limited: 2, waiting: 3, working: 5 }[normalizeStatus(agent?.status)] ?? 7;

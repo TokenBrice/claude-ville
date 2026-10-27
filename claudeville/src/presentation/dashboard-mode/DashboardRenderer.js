@@ -34,7 +34,6 @@ import {
 import { AgentSelectionMirror, emitAgentDeselected, emitAgentSelected } from '../shared/AgentSelection.js';
 import { HARBOR_FOCUS_FLEET_EVENT, harborLedger, ledgerFailureText, middleTruncate } from '../shared/HarborLedger.js';
 import { normalizeRepoBranch } from '../shared/GitEventIdentity.js';
-import { operatorStatusLabel } from '../shared/SemanticTriage.js';
 import { getTeamColor, shortTeamName } from '../shared/TeamColor.js';
 import { attentionAgentIds, isKeyboardEditTarget, nextCardId, recoveryCardId } from './DashboardKeyboardNavigation.js';
 import {
@@ -52,7 +51,9 @@ import {
     modelPresentation,
     projectProfile,
     providerPresentation,
+    bucketWord,
     statusPresentation,
+    statusWord,
     waitReasonLabel,
     toolHistoryNodes,
     toolHistorySignature,
@@ -62,21 +63,21 @@ const DASHBOARD_TOOL_HISTORY_LIMIT = 12;
 const PROMPT_DETAIL_MAX_LENGTH = 200;
 const DASHBOARD_FILTER_EVENT = 'dashboard:filter-changed';
 const DASHBOARD_FILTER_REQUEST_EVENT = 'dashboard:filter-requested';
+// UI-1 — chips, the bell lane and section counts read the one status-word
+// map (AgentPresentation.STATUS_WORDS): rate-limited is LIMIT here too.
 const ROW_STATUS_FILTERS = Object.freeze([
-    { key: 'needsYou', label: 'Needs you', shape: 'needs-you' },
-    { key: 'errors', label: 'Errors', shape: 'errored' },
-    { key: 'quota', label: 'Quota', shape: 'quota' },
-    { key: 'working', label: 'Working', shape: 'working' },
-    { key: 'watchlist', label: 'Waiting', shape: 'watchlist' },
-    { key: 'quiet', label: 'Idle', shape: 'idle' },
-]);
+    { key: 'needsYou', shape: 'needs-you' },
+    { key: 'errors', shape: 'errored' },
+    { key: 'quota', shape: 'quota' },
+    { key: 'working', shape: 'working' },
+    { key: 'watchlist', shape: 'watchlist' },
+    { key: 'quiet', shape: 'idle' },
+].map(filter => Object.freeze({ ...filter, label: bucketWord(filter.key) })));
 // 7.9 — buckets that leave their project list for the bell lane.
 const BELL_BUCKETS = new Set(['needsYou', 'errors', 'quota']);
-const BELL_STATUS_WORD = Object.freeze({
-    waiting_on_user: 'NEEDS YOU',
-    errored: 'ERROR',
-    rate_limited: 'QUOTA',
-});
+const BELL_STATUS_WORD = Object.freeze(Object.fromEntries(
+    ['waiting_on_user', 'errored', 'rate_limited'].map(status => [status, statusWord(status, 'upper')]),
+));
 // 9.5 — the frame kit's attn slice per lane status (frame-kit.css).
 const CALL_FRAME_BY_STATUS = Object.freeze({
     waiting_on_user: 'cv-frame--attn',
@@ -132,10 +133,9 @@ function rowWaitAnchor(agent) {
 function rowPhase(agent) {
     if (agent?.currentTool) return agent.currentTool;
     const status = normalizeStatus(agent?.status);
-    if (status === 'idle' || status === 'completed') return statusPresentation(status, i18n).label;
+    if (status === 'idle' || status === 'completed') return statusWord(status);
     return TURN_STATE_LABELS[agent?.turnState]
-        || operatorStatusLabel(status)
-        || 'Unknown';
+        || statusWord(status);
 }
 
 function cleanMessage(text, max = 140) {
@@ -148,7 +148,7 @@ function blockerText(agent, reason = waitReasonLabel(agent)) {
     if (reason) return reason;
     if (status === 'waiting_on_user') return 'Waiting for input';
     if (status === 'errored') return cleanMessage(agent?.lastMessage, 90) || 'Session error';
-    if (status === 'rate_limited') return cleanMessage(agent?.lastMessage, 90) || 'Quota limit';
+    if (status === 'rate_limited') return cleanMessage(agent?.lastMessage, 90) || 'Usage limit reached';
     return '';
 }
 
@@ -213,12 +213,12 @@ export const SECTION_HEALTH_ORDER = Object.freeze([
 ]);
 
 const SECTION_HEALTH_PRESENTATION = Object.freeze({
-    errors: Object.freeze({ className: 'errored', label: 'error' }),
-    needsYou: Object.freeze({ className: 'needs-you', label: 'blocked' }),
-    quota: Object.freeze({ className: 'quota', label: 'quota' }),
-    working: Object.freeze({ className: 'working', label: 'working' }),
-    watchlist: Object.freeze({ className: 'watchlist', label: 'waiting' }),
-    idle: Object.freeze({ className: 'idle', label: 'idle' }),
+    errors: Object.freeze({ className: 'errored', label: bucketWord('errors', 'lower') }),
+    needsYou: Object.freeze({ className: 'needs-you', label: bucketWord('needsYou', 'lower') }),
+    quota: Object.freeze({ className: 'quota', label: bucketWord('quota', 'lower') }),
+    working: Object.freeze({ className: 'working', label: bucketWord('working', 'lower') }),
+    watchlist: Object.freeze({ className: 'watchlist', label: bucketWord('watchlist', 'lower') }),
+    idle: Object.freeze({ className: 'idle', label: bucketWord('quiet', 'lower') }),
 });
 
 /**
@@ -1587,7 +1587,7 @@ export class DashboardRenderer {
         refs.meta.title = `${provider.badge.label} · ${model.title || agent.model || ''} · ${agent.projectPath || ''}`;
 
         const status = normalizeStatus(agent.status);
-        this._setText(refs.blocker, `${BELL_STATUS_WORD[status] || operatorStatusLabel(status)} — ${blockerText(agent)}`);
+        this._setText(refs.blocker, `${BELL_STATUS_WORD[status] || statusWord(status)} — ${blockerText(agent)}`);
         const quote = safePromptDetail(agent);
         this._setText(refs.quote, quote ? `“${quote}”` : '');
         refs.quote.hidden = !quote;
@@ -1738,7 +1738,7 @@ export class DashboardRenderer {
         const status = normalizeStatus(agent.status);
         const model = modelPresentation(agent);
         const provider = providerPresentation(agent.provider, model.identity);
-        const statusInfo = statusPresentation(status, i18n);
+        const statusInfo = statusPresentation(status);
         const building = buildingClassForAgent(agent);
         const inLane = Boolean(this._bellEl) && cardEl.parentElement === this._bellEl;
         const signature = [
@@ -1829,7 +1829,7 @@ export class DashboardRenderer {
             refs.signalSource.title = 'Signal source and certainty';
 
             const reason = waitReasonLabel(agent);
-            this._setText(refs.detailStatus, inLane ? '' : `${operatorStatusLabel(status)}${reason ? ` — ${reason}` : ''}`);
+            this._setText(refs.detailStatus, inLane ? '' : `${statusWord(status)}${reason ? ` — ${reason}` : ''}`);
             this._setStyle(refs.detailStatus, 'display', inLane ? 'none' : '');
             refs.detailStatus.dataset.status = status;
 
@@ -2024,7 +2024,7 @@ export class DashboardRenderer {
         }
         this._setText(target, `${progress.done}/${progress.total} done`);
         target.title = children.length
-            ? children.map(child => `${child.name || child.id}: ${child.isDeparted ? 'Unknown' : operatorStatusLabel(child.status)}`).join('; ')
+            ? children.map(child => `${child.name || child.id}: ${child.isDeparted ? 'Unknown' : statusWord(child.status)}`).join('; ')
             : 'Task-store progress';
         this._setText(sourceEl, String(progress.source || 'inferred').toUpperCase());
         sourceEl?.classList.remove('dash-card__children-source--exact', 'dash-card__children-source--inferred');
@@ -2086,7 +2086,7 @@ export class DashboardRenderer {
             const detail = Object.assign(document.createElement('span'), { className: 'dash-card__kid-detail', textContent: facts });
             const state = Object.assign(document.createElement('span'), {
                 className: 'dash-card__kid-status',
-                textContent: child.isDeparted ? 'unknown' : operatorStatusLabel(child.status).toLowerCase(),
+                textContent: child.isDeparted ? 'unknown' : statusWord(child.status, 'lower'),
             });
             row.append(hook, face, name, detail, state);
             row.title = `Select ${child.name || id}`;

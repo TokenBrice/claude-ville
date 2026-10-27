@@ -9,7 +9,7 @@ test('semantic tiers preserve primary ordering and vocabulary', () => {
     assert.equal(salienceTierFor({ recent: true }), MarkTier.RECENT);
     assert.equal(salienceTierFor({ status: 'working' }), MarkTier.WORKING);
     assert.equal(operatorStatusLabel('waiting_on_user'), 'Needs you');
-    assert.equal(operatorStatusLabel('idle'), 'Visiting');
+    assert.equal(operatorStatusLabel('idle'), 'Idle');
 });
 
 test('primary reservations reject overlapping routine labels', () => {
