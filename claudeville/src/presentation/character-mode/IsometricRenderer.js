@@ -42,7 +42,7 @@ import { BehaviorTelemetry } from './BehaviorTelemetry.js';
 
 import { SceneryEngine } from './SceneryEngine.js';
 import { Pathfinder } from './Pathfinder.js';
-import { constrainSteeringToTarget, laneAxisForBridgeOrientation } from './MovementSteering.js';
+import { constrainSteeringInto, constrainSteeringToTarget, laneAxisForBridgeOrientation } from './MovementSteering.js';
 import { SpriteRenderer } from './SpriteRenderer.js';
 import { SkyRenderer } from './SkyRenderer.js';
 import { AtmosphereState, sourceEnergyFor } from './AtmosphereState.js';
@@ -5507,7 +5507,11 @@ export class IsometricRenderer {
                 activeWorkingCount,
             });
         }
-        this.landmarkActivity?.update?.(agents, allSpritesSnapshot, dt, chronicleNow);
+        // VB-9 — the clock advances every frame; reconcile (four observers per
+        // agent and the building counts) runs on the 250 ms tick, where its
+        // input `agents` changes, as harborTraffic.reconcile does.
+        this.landmarkActivity?.advance?.(dt);
+        if (slowSystemsTick) this.landmarkActivity?.reconcile?.(agents, allSpritesSnapshot, chronicleNow);
         const updateNow = Date.now();
         this.villageDirector?.update?.(this, dt, updateNow);
         this.buildingRenderer?.setZoom?.(this.camera?.zoom);
@@ -5774,15 +5778,18 @@ export class IsometricRenderer {
         const frameScale = Math.max(0, Math.min(2.5, dt / 16));
         const maxCorrection = (dense ? LANE_STEERING.denseCorrectionPx : LANE_STEERING.correctionPx) * frameScale;
         let corrections = 0;
-        for (const sprite of movingSprites) {
+        // FP-8 — allocation-free: indexed loop, one reused steering point,
+        // a lane mark object kept per body.
+        const steer = this._laneSteerScratch ||= { x: 0, y: 0, constrained: false };
+        for (let index = 0; index < movingSprites.length; index++) {
+            const sprite = movingSprites[index];
             if (!sprite || sprite.chatPartner || sprite.chatting || sprite.isArrivalPending?.()) continue;
             // 7.4 — a walker abreast of another on its course keeps its line
             // while local avoidance opens the pair (see _applyLocalAvoidance).
             if (this._abreastWalkers?.has(sprite)) continue;
-            const targetDistance = Math.hypot(
-                Number(sprite.targetX) - Number(sprite.x),
-                Number(sprite.targetY) - Number(sprite.y),
-            );
+            const toTargetX = Number(sprite.targetX) - Number(sprite.x);
+            const toTargetY = Number(sprite.targetY) - Number(sprite.y);
+            const targetDistance = Math.sqrt(toTargetX * toTargetX + toTargetY * toTargetY);
             if (!Number.isFinite(targetDistance) || targetDistance <= LANE_STEERING.arrivalDistancePx) {
                 delete sprite._laneDiscipline;
                 continue;
@@ -5798,25 +5805,28 @@ export class IsometricRenderer {
             const desiredOffset = lane.laneOffset * side;
             const correction = desiredOffset - currentOffset;
             if (Math.abs(correction) < LANE_STEERING.minimumCorrectionPx) {
-                sprite._laneDiscipline = { tileKey: lane.tileKey, side, offsetPx: desiredOffset };
+                this._markLaneDiscipline(sprite, lane.tileKey, side, desiredOffset);
                 continue;
             }
             const step = Math.max(-maxCorrection, Math.min(maxCorrection, correction));
-            const constrained = constrainSteeringToTarget({
-                x: sprite.x,
-                y: sprite.y,
-                nextX: sprite.x + lane.perpX * step,
-                nextY: sprite.y + lane.perpY * step,
-                targetX: sprite.targetX,
-                targetY: sprite.targetY,
-            });
+            const constrained = constrainSteeringInto(
+                steer,
+                sprite.x,
+                sprite.y,
+                sprite.x + lane.perpX * step,
+                sprite.y + lane.perpY * step,
+                sprite.targetX,
+                sprite.targetY,
+            );
             const steered = this._strideKeptSteer(sprite, constrained);
             if (!steered) continue;
             if (!this._isSpritePositionWalkable(sprite, steered.x, steered.y)) continue;
-            if (Math.hypot(steered.x - sprite.x, steered.y - sprite.y) <= 0.001) continue;
+            const movedX = steered.x - sprite.x;
+            const movedY = steered.y - sprite.y;
+            if (Math.sqrt(movedX * movedX + movedY * movedY) <= 0.001) continue;
             sprite.x = steered.x;
             sprite.y = steered.y;
-            sprite._laneDiscipline = { tileKey: lane.tileKey, side, offsetPx: desiredOffset };
+            this._markLaneDiscipline(sprite, lane.tileKey, side, desiredOffset);
             if (constrained.constrained) this._localAvoidanceMetrics.progressClamps++;
             corrections++;
         }
@@ -5824,6 +5834,14 @@ export class IsometricRenderer {
             this._localAvoidanceMetrics.laneCorrections += corrections;
             this._markSpritesDirty();
         }
+    }
+
+    _markLaneDiscipline(sprite, tileKey, side, offsetPx) {
+        const mark = sprite._laneDisciplineMark ||= { tileKey: '', side: 0, offsetPx: 0 };
+        mark.tileKey = tileKey;
+        mark.side = side;
+        mark.offsetPx = offsetPx;
+        sprite._laneDiscipline = mark;
     }
 
     // V7 — steering proposes a position; the body keeps its stride. A sprite
@@ -5860,12 +5878,18 @@ export class IsometricRenderer {
         const courses = this._travelCourses ||= new Map();
         headings.clear();
         courses.clear();
-        for (const sprite of movingSprites) {
+        for (let index = 0; index < movingSprites.length; index++) {
+            const sprite = movingSprites[index];
             const heading = this._travelHeading(sprite);
             if (!heading) continue;
             headings.set(sprite, heading);
             courses.set(sprite, this._travelCourse(sprite, heading));
         }
+        // FP-8 — the pair step reuses these points; nothing in it allocates.
+        const pushA = this._avoidPushA ||= { x: 0, y: 0 };
+        const pushB = this._avoidPushB ||= { x: 0, y: 0 };
+        const nextA = this._avoidNextA ||= { x: 0, y: 0, constrained: false };
+        const nextB = this._avoidNextB ||= { x: 0, y: 0, constrained: false };
         const dense = this.agentSprites.size >= 50;
         const radius = dense ? LOCAL_AVOIDANCE.denseRadiusPx : LOCAL_AVOIDANCE.radiusPx;
         const frameScale = Math.max(0, Math.min(2.5, dt / 16));
@@ -5875,7 +5899,7 @@ export class IsometricRenderer {
         this._forEachNearbySpritePair(movingSprites, LOCAL_AVOIDANCE.bucketPx, (a, b) => {
             const dx = a.x - b.x;
             const dy = a.y - b.y;
-            let dist = Math.hypot(dx, dy);
+            let dist = Math.sqrt(dx * dx + dy * dy);
             // 7.4 — a loose file: of two walkers on one course, the trailing
             // one walks a V7 rung below its leader (AgentSprite._speedForState)
             // until the gap opens to releasePx. Of two walkers merging or
@@ -5969,30 +5993,16 @@ export class IsometricRenderer {
             // reach the proposal; the gap belongs to the follow rung. Walkers
             // on crossing or opposed courses sidestep by the backward part.
             const sidestep = !sameCourse;
-            const pushA = this._forwardOnlyPush(nx * overlap * strength, ny * overlap * strength, headingA, sidestep);
-            const pushB = this._forwardOnlyPush(-nx * overlap * strength, -ny * overlap * strength, headingB, sidestep);
-            const nextA = constrainSteeringToTarget({
-                x: a.x,
-                y: a.y,
-                nextX: a.x + pushA.x,
-                nextY: a.y + pushA.y,
-                targetX: a.targetX,
-                targetY: a.targetY,
-            });
-            const nextB = constrainSteeringToTarget({
-                x: b.x,
-                y: b.y,
-                nextX: b.x + pushB.x,
-                nextY: b.y + pushB.y,
-                targetX: b.targetX,
-                targetY: b.targetY,
-            });
+            this._forwardOnlyPush(nx * overlap * strength, ny * overlap * strength, headingA, sidestep, pushA);
+            this._forwardOnlyPush(-nx * overlap * strength, -ny * overlap * strength, headingB, sidestep, pushB);
+            constrainSteeringInto(nextA, a.x, a.y, a.x + pushA.x, a.y + pushA.y, a.targetX, a.targetY);
+            constrainSteeringInto(nextB, b.x, b.y, b.x + pushB.x, b.y + pushB.y, b.targetX, b.targetY);
 
             let moved = false;
             const keptA = this._strideKeptSteer(a, nextA);
             if (
                 keptA
-                && Math.hypot(keptA.x - a.x, keptA.y - a.y) > 0.001
+                && (keptA.x - a.x) * (keptA.x - a.x) + (keptA.y - a.y) * (keptA.y - a.y) > 0.001 * 0.001
                 && this._isSpritePositionWalkable(a, keptA.x, keptA.y)
             ) {
                 a.x = keptA.x;
@@ -6003,7 +6013,7 @@ export class IsometricRenderer {
             const keptB = this._strideKeptSteer(b, nextB);
             if (
                 keptB
-                && Math.hypot(keptB.x - b.x, keptB.y - b.y) > 0.001
+                && (keptB.x - b.x) * (keptB.x - b.x) + (keptB.y - b.y) * (keptB.y - b.y) > 0.001 * 0.001
                 && this._isSpritePositionWalkable(b, keptB.x, keptB.y)
             ) {
                 b.x = keptB.x;
@@ -6074,7 +6084,7 @@ export class IsometricRenderer {
                 py += gy * weight;
             }
             if (!px && !py) continue;
-            const push = this._forwardOnlyPush(px, py, headings.get(walker), true);
+            const push = this._forwardOnlyPush(px, py, headings.get(walker), true, this._standingPush ||= { x: 0, y: 0 });
             const next = constrainSteeringToTarget({
                 x: walker.x,
                 y: walker.y,
@@ -6098,16 +6108,22 @@ export class IsometricRenderer {
     }
 
     // 7.4 — a walker's course: toward its current waypoint, else its last step.
+    // FP-8 — the heading and course are points kept per body, rewritten
+    // each refresh.
     _travelHeading(sprite) {
         let hx = Number(sprite.targetX) - sprite.x;
         let hy = Number(sprite.targetY) - sprite.y;
-        let length = Math.hypot(hx, hy);
+        let length = Math.sqrt(hx * hx + hy * hy);
         if (!(length > 0.5)) {
             hx = sprite.x - Number(sprite._stepStartX);
             hy = sprite.y - Number(sprite._stepStartY);
-            length = Math.hypot(hx, hy);
+            length = Math.sqrt(hx * hx + hy * hy);
         }
-        return length > 1e-6 ? { x: hx / length, y: hy / length } : null;
+        if (!(length > 1e-6)) return null;
+        const heading = sprite._travelHeadingPoint ||= { x: 0, y: 0 };
+        heading.x = hx / length;
+        heading.y = hy / length;
+        return heading;
     }
 
     // 7.4 — the course the file rule reads: within lookAheadPx of a corner it
@@ -6116,30 +6132,42 @@ export class IsometricRenderer {
     // they meet on it.
     _travelCourse(sprite, heading) {
         const next = sprite.waypoints?.length > 1 ? sprite.waypoints[1] : null;
-        if (!next || Math.hypot(Number(sprite.targetX) - sprite.x, Number(sprite.targetY) - sprite.y) > FOLLOW_GAP.lookAheadPx) {
-            return heading;
-        }
+        if (!next) return heading;
+        const tx = Number(sprite.targetX) - sprite.x;
+        const ty = Number(sprite.targetY) - sprite.y;
+        if (Math.sqrt(tx * tx + ty * ty) > FOLLOW_GAP.lookAheadPx) return heading;
         const hx = Number(next.x) - sprite.x;
         const hy = Number(next.y) - sprite.y;
-        const length = Math.hypot(hx, hy);
-        return length > 1e-6 ? { x: hx / length, y: hy / length } : heading;
+        const length = Math.sqrt(hx * hx + hy * hy);
+        if (!(length > 1e-6)) return heading;
+        const course = sprite._travelCoursePoint ||= { x: 0, y: 0 };
+        course.x = hx / length;
+        course.y = hy / length;
+        return course;
     }
 
     // A steering push without its part back along the walker's course. With
     // `sidestep`, that part turns into a sidestep instead: along the push's
     // own lateral side, or (dead ahead) to the walker's right, so two walkers
     // meeting head-on pass each other on opposite sides.
-    _forwardOnlyPush(px, py, heading, sidestep = false) {
-        if (!heading) return { x: px, y: py };
+    // `out` (FP-8) receives the push in place of a new point.
+    _forwardOnlyPush(px, py, heading, sidestep = false, out = { x: 0, y: 0 }) {
+        out.x = px;
+        out.y = py;
+        if (!heading) return out;
         const along = px * heading.x + py * heading.y;
-        if (along >= 0) return { x: px, y: py };
+        if (along >= 0) return out;
         const lx = px - along * heading.x;
         const ly = py - along * heading.y;
-        if (!sidestep) return { x: lx, y: ly };
-        const lateral = Math.hypot(lx, ly);
+        out.x = lx;
+        out.y = ly;
+        if (!sidestep) return out;
+        const lateral = Math.sqrt(lx * lx + ly * ly);
         const sx = lateral > 1e-6 ? lx / lateral : -heading.y;
         const sy = lateral > 1e-6 ? ly / lateral : heading.x;
-        return { x: lx - along * sx, y: ly - along * sy };
+        out.x = lx - along * sx;
+        out.y = ly - along * sy;
+        return out;
     }
 
     // The follow marks live on the sprite only while it trails someone:
@@ -6155,7 +6183,8 @@ export class IsometricRenderer {
             }
         }
         holders.clear();
-        for (const [sprite, leaderGait] of following) {
+        for (const sprite of following.keys()) {
+            const leaderGait = following.get(sprite);
             sprite._followGap = Number.isFinite(leaderGait) ? leaderGait : true;
             sprite._followYield = followGaps.has(sprite);
             holders.add(sprite);
@@ -6675,7 +6704,11 @@ export class IsometricRenderer {
 
     _emitCrowdBumpFeedback(a, b, overlap = 0) {
         const now = performance.now();
-        const key = [a.agent?.id || a.x, b.agent?.id || b.x].sort().join('|');
+        // FP-8 — the sorted pair key without an array, a sort and a join
+        // (the default sort's code-unit order is `<` on the two strings).
+        const idA = String(a.agent?.id || a.x);
+        const idB = String(b.agent?.id || b.x);
+        const key = idA <= idB ? `${idA}|${idB}` : `${idB}|${idA}`;
         if ((this._crowdBumpCooldowns.get(key) || 0) > now) return;
         while (this._crowdBumpCooldowns.size >= CROWD_BUMP_COOLDOWN_LIMIT) {
             this._crowdBumpCooldowns.delete(this._crowdBumpCooldowns.keys().next().value);

@@ -1175,11 +1175,14 @@ export class LandmarkActivity {
         this._countByType.clear();
         const buildings = this.world?.buildings;
         if (!buildings || typeof buildings.values !== 'function') return;
+        // VB-9 — `isAgentVisiting` reads only the position: one reused
+        // carrier instead of a copy of the whole Agent per sprite.
+        const positionedAgent = this._positionedAgent ||= { position: null };
         for (const sprite of this.agentSprites) {
             if (!sprite?.agent) continue;
             if (!Number.isFinite(sprite.x) || !Number.isFinite(sprite.y)) continue;
             const tile = worldToTile(sprite.x, sprite.y);
-            const positionedAgent = { ...sprite.agent, position: tile };
+            positionedAgent.position = tile;
             for (const building of buildings.values()) {
                 if (!building?.type) continue;
                 const visiting = typeof building.isAgentVisiting === 'function'
