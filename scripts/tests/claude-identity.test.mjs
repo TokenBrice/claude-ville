@@ -199,3 +199,64 @@ test('Claude subagents read their name, team and colour from agent-<id>.meta.jso
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// PV-15: a nested helper's meta names its real parent (`parentAgentId`, a
+// sibling transcript) and the launching call (`toolUseId`), which matches in
+// that parent's own transcript, never by hashing the first prompt.
+test('Claude nested subagents hang under their real parent and keep their root', () => {
+  const root = makeTempDir('claudeville-claude-nested-');
+  try {
+    const project = path.join(root, 'work', 'nested');
+    fs.mkdirSync(project, { recursive: true });
+    const projectDir = path.join(root, '.claude', 'projects', project.replaceAll('/', '-'));
+    const subagents = path.join(projectDir, 'nest-main', 'subagents');
+    fs.mkdirSync(subagents, { recursive: true });
+    fs.copyFileSync(path.join(FIXTURE_ROOT, 'agent-launch.jsonl'), path.join(projectDir, 'nest-main.jsonl'));
+    for (const [fixture, id] of [['nested-parent', 'nestedparent'], ['nested-child', 'nestedchild']]) {
+      fs.copyFileSync(path.join(FIXTURE_ROOT, `${fixture}.jsonl`), path.join(subagents, `agent-${id}.jsonl`));
+      fs.copyFileSync(path.join(FIXTURE_ROOT, `${fixture}.meta.json`), path.join(subagents, `agent-${id}.meta.json`));
+    }
+    // A parent named in meta but absent here leaves the child on its root.
+    fs.copyFileSync(path.join(FIXTURE_ROOT, 'nested-child.jsonl'), path.join(subagents, 'agent-orphaned.jsonl'));
+    fs.writeFileSync(path.join(subagents, 'agent-orphaned.meta.json'), JSON.stringify({
+      agentType: 'general-purpose', toolUseId: 'toolu_gone', parentAgentId: 'gone', spawnDepth: 2,
+    }));
+    writeJsonLines(path.join(root, '.claude', 'history.jsonl'), [{
+      sessionId: 'nest-main', project, timestamp: Date.now(), model: 'claude-opus-5-5', agentType: 'main',
+    }]);
+
+    const script = `
+      const { ClaudeAdapter } = require('./claudeville/adapters/claude');
+      const { normalizeSession } = require('./claudeville/adapters');
+      const adapter = new ClaudeAdapter();
+      const sessions = adapter.getActiveSessions(60 * 60 * 1000).map(normalizeSession);
+      const pick = id => {
+        const s = sessions.find(session => session.sessionId === id);
+        return s && { agentName: s.agentName, subagentKind: s.subagentKind, parentSessionId: s.parentSessionId, rootSessionId: s.rootSessionId ?? null, taskProgress: s.taskProgress };
+      };
+      process.stdout.write(JSON.stringify({ main: pick('nest-main'), lane: pick('subagent-nestedparent'), helper: pick('subagent-nestedchild'), orphaned: pick('subagent-orphaned') }));
+      adapter.shutdown();
+    `;
+    const repoRoot = path.resolve(import.meta.dirname, '../..');
+    const { main, lane, helper, orphaned } = JSON.parse(execFileSync(process.execPath, ['-e', script], {
+      cwd: repoRoot,
+      env: { ...process.env, HOME: root, USERPROFILE: root },
+      encoding: 'utf8',
+    }));
+    // The lane matches the main thread's launch `agent-1` by id.
+    assert.deepEqual({ ...lane, taskProgress: undefined }, {
+      agentName: 'Map the fixture', subagentKind: 'Explore', parentSessionId: 'nest-main', rootSessionId: 'nest-main', taskProgress: undefined,
+    });
+    // The helper matches `toolu_nested` in the lane's own transcript.
+    assert.deepEqual({ ...helper, taskProgress: undefined }, {
+      agentName: 'Nested helper', subagentKind: 'Explore', parentSessionId: 'subagent-nestedparent', rootSessionId: 'nest-main', taskProgress: undefined,
+    });
+    assert.equal(orphaned.parentSessionId, 'nest-main');
+    assert.equal(orphaned.agentName, null, 'no launch matches an id its parent never wrote');
+    // Root grouping still counts the whole crew.
+    assert.equal(main.taskProgress?.total, 3);
+    assert.equal(main.rootSessionId, null);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

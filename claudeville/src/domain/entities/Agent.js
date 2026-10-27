@@ -74,6 +74,7 @@ export class Agent {
         agentName,
         agentType,
         parentSessionId,
+        rootSessionId,
         workflowId,
         workflowName,
         lastSessionActivity,
@@ -107,6 +108,8 @@ export class Agent {
         this.agentName = agentName || name || null;
         this.agentType = agentType || null;
         this.parentSessionId = parentSessionId || null;
+        // PV-15 — the main session at the top of a nested crew, or null.
+        this.rootSessionId = rootSessionId || null;
         this.workflowId = workflowId || null;
         this.workflowName = workflowName || null;
         // isAdvisor (below) keys off the raw '__advisor' agentName; the

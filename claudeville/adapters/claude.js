@@ -234,9 +234,10 @@ function projectClaudeExecution(sessions, taskGroups = []) {
   );
   return source.map((session) => {
     const sessionId = String(session?.sessionId || '');
+    // A session's whole crew, nested children included (PV-15 `rootSessionId`).
     const children = source.filter(candidate => (
       candidate
-      && String(candidate.parentSessionId || '') === sessionId
+      && String(candidate.rootSessionId || candidate.parentSessionId || '') === sessionId
     ));
     const group = groups.get(sessionId);
     if (group) {
@@ -1135,6 +1136,8 @@ function addTranscriptEntry(aggregate, entry) {
         ? block.input.subagent_type.substring(0, 128)
         : null,
       promptHash: prompt ? stableHash(prompt) : null,
+      // PV-15 — the id a child's meta file names (`toolUseId`).
+      toolUseId: typeof block.id === 'string' && block.id ? block.id.substring(0, 256) : null,
     });
     if (aggregate.launches.length > TRANSCRIPT_MAX_AGENT_LAUNCHES) {
       aggregate.launches.splice(0, aggregate.launches.length - TRANSCRIPT_MAX_AGENT_LAUNCHES);
@@ -1242,7 +1245,8 @@ function estimateTranscriptAggregateBytes(aggregate) {
         + estimateStringBytes(launch.name)
         + estimateStringBytes(launch.agentType)
         + estimateStringBytes(launch.subagentKind)
-        + estimateStringBytes(launch.promptHash);
+        + estimateStringBytes(launch.promptHash)
+        + estimateStringBytes(launch.toolUseId);
     }
   };
   addLaunches(aggregate.launches);
@@ -1603,7 +1607,8 @@ function summarizeToolInput(input, { maxLength = 60, basenameFile = true } = {})
 // prompt is read once per file identity instead of re-reading a 512 KB head
 // per sub-agent per scan. A shrink or an older mtime means a rewrite; a
 // missing prompt is re-read while the file still grows inside the head
-// window. PV-15's toolUseId launch matching later replaces this read.
+// window. PV-15: only a child whose meta file records no `toolUseId` (and
+// is no teammate) still matches its launch this way; the memo stays for it.
 const FIRST_PROMPT_CACHE_MAX_ENTRIES = 512;
 const _firstPromptCache = new Map();
 
@@ -2476,8 +2481,10 @@ function boundedMetaText(value, maxLength) {
 
 // `subagents/agent-<id>.meta.json`: the launch identity Claude records beside
 // a subagent transcript (`name`, `description`, `agentType`, and for
-// teammates `teamName`, `color`, `spawnedAgentType`). Read defensively: size
-// capped, unknown shapes ignored, cached by file stamp.
+// teammates `teamName`, `color`, `spawnedAgentType`), plus its lineage
+// (PV-15): `toolUseId` names the launching `Agent` call, and `parentAgentId`
+// the agent that made it when that is not the main thread. Read
+// defensively: size capped, unknown shapes ignored, cached by file stamp.
 function readSubAgentMeta(transcriptPath) {
   const metaPath = transcriptPath.replace(/\.jsonl$/, '.meta.json');
   let stat;
@@ -2501,6 +2508,9 @@ function readSubAgentMeta(transcriptPath) {
         kind: boundedMetaText(raw.spawnedAgentType, 128) || boundedMetaText(raw.agentType, 128),
         teamName: boundedMetaText(raw.teamName, 256),
         color: boundedMetaText(raw.color, 32),
+        parentAgentId: boundedMetaText(raw.parentAgentId, 256),
+        toolUseId: boundedMetaText(raw.toolUseId, 256),
+        spawnDepth: Number.isInteger(raw.spawnDepth) && raw.spawnDepth >= 0 ? raw.spawnDepth : null,
       };
     }
   } catch { /* malformed metadata is no metadata */ }
@@ -2517,7 +2527,7 @@ function mainSubagentsDir(sessionFilePath) {
   return sessionFilePath ? path.join(sessionFilePath.replace(/\.jsonl$/, ''), 'subagents') : null;
 }
 
-function buildSubAgentSession({ filePath, agentId, decodedProject, parentSessionId, name, agentType, subagentKind = null, teamName = null, agentColor = null, workflowId = null, workflowName = null, lastActivity, activeThresholdMs = 0 }) {
+function buildSubAgentSession({ filePath, agentId, decodedProject, parentSessionId, rootSessionId, name, agentType, subagentKind = null, teamName = null, agentColor = null, workflowId = null, workflowName = null, lastActivity, activeThresholdMs = 0 }) {
   const detail = getSubAgentDetail(filePath, decodedProject);
   const sessionId = `subagent-${agentId}`;
   const permissionMode = getPermissionMode(filePath);
@@ -2554,6 +2564,7 @@ function buildSubAgentSession({ filePath, agentId, decodedProject, parentSession
     lastResults: getClaudeToolResults(filePath, sessionId),
     gitEvents: getGitEvents(filePath, { provider: 'claude', sessionId, project: decodedProject }),
     parentSessionId,
+    rootSessionId,
     workflowId,
     workflowName,
   };
@@ -2769,20 +2780,35 @@ class ClaudeAdapter {
             if (now - stat.mtimeMs > activeThresholdMs) continue;
 
             const agentId = agentFile.replace('agent-', '').replace('.jsonl', '');
-            const prompt = getFirstUserPrompt(filePath, stat);
-            const launch = prompt
-              ? agentLaunches.find(item => item.promptHash === stableHash(prompt))
-              : null;
-            // Claude writes the launch's own identity beside the transcript;
-            // the prompt hash cannot match a teammate, whose first prompt
-            // arrives wrapped in a <teammate-message>.
+            // Claude writes the launch's own identity beside the transcript.
             const meta = readSubAgentMeta(filePath);
+            // PV-15 — a nested child names its launching agent, whose
+            // transcript sits in this same flat directory.
+            const parentAgentId = meta?.parentAgentId
+              && path.basename(meta.parentAgentId) === meta.parentAgentId
+              && fs.existsSync(path.join(subagentsDir, `agent-${meta.parentAgentId}.jsonl`))
+              ? meta.parentAgentId
+              : null;
+            let launch = null;
+            if (meta?.toolUseId) {
+              const launches = parentAgentId
+                ? getAgentLaunches(path.join(subagentsDir, `agent-${parentAgentId}.jsonl`))
+                : agentLaunches;
+              launch = launches.find(item => item.toolUseId === meta.toolUseId) || null;
+            } else if (!meta?.teamName) {
+              // No launch id recorded: hash the first prompt against the
+              // main thread's launches. A teammate's prompt, wrapped in a
+              // <teammate-message>, never matches one.
+              const prompt = getFirstUserPrompt(filePath, stat);
+              launch = prompt ? agentLaunches.find(item => item.promptHash === stableHash(prompt)) || null : null;
+            }
 
             results.push(buildSubAgentSession({
               filePath,
               agentId,
               decodedProject,
-              parentSessionId: sessionId,
+              parentSessionId: parentAgentId ? `subagent-${parentAgentId}` : sessionId,
+              rootSessionId: sessionId,
               name: meta?.name || launch?.name || meta?.description || null,
               agentType: launch?.agentType || 'sub-agent',
               subagentKind: launch?.subagentKind || meta?.kind || null,
@@ -2825,6 +2851,7 @@ class ClaudeAdapter {
                 agentId,
                 decodedProject,
                 parentSessionId: sessionId,
+                rootSessionId: sessionId,
                 name: null,
                 agentType: 'workflow-subagent',
                 workflowId,

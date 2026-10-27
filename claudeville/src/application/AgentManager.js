@@ -36,6 +36,7 @@ const AGENT_SIGNATURE_FIELDS = Object.freeze([
     'agentPath',
     'subagentKind',
     'parentSessionId',
+    'rootSessionId',
     'workflowId',
     'workflowName',
     'model',
@@ -703,6 +704,8 @@ export class AgentManager {
             agentType: session.agentType || null,
             agentPath: typeof session.agentPath === 'string' && session.agentPath ? session.agentPath.slice(0, 512) : null,
             parentSessionId: session.parentSessionId || null,
+            // PV-15 — the main session a nested crew belongs to.
+            rootSessionId: session.rootSessionId || null,
             workflowId: session.workflowId || null,
             workflowName: session.workflowName || null,
             model: teamInfo?.model || session.model || 'unknown',

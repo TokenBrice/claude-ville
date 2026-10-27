@@ -380,9 +380,10 @@ function executionOwnerMatches(node, owner) {
 export function buildExecutionTree(agent, agents = [], options = {}) {
     const provider = String(agent?.provider || 'claude').toLowerCase();
     const rootId = String(agent?.id ?? agent?.sessionId ?? '');
+    // A lead's whole crew, nested children included (PV-15 `rootSessionId`).
     const children = (Array.isArray(agents) ? agents : []).filter((candidate) => (
         candidate
-        && String(candidate.parentSessionId || '') === rootId
+        && String(candidate.rootSessionId || candidate.parentSessionId || '') === rootId
         && (candidate.isSubagent === true
             || Boolean(candidate.parentSessionId)
             || (candidate.agentType && candidate.agentType !== 'main'))
