@@ -39,6 +39,10 @@ const SESSION_INDEX_FILE = path.join(CODEX_DIR, 'session_index.jsonl');
 const MAX_HEAD_BYTES = 64 * 1024;
 const MAX_METADATA_BYTES = 512 * 1024;
 const MAX_METADATA_LINES = 24;
+// PV-8 — a complete head is re-validated by its opening characters (its
+// first record's timestamp), read from at most this many bytes.
+const HEAD_GUARD_BYTES = 256;
+const HEAD_GUARD_CHARS = 48;
 const METADATA_BACKSCAN_CHUNK_BYTES = 64 * 1024;
 const MAX_METADATA_BACKSCAN_BYTES = 32 * 1024 * 1024;
 const MAX_EARLY_METADATA_CACHE_ENTRIES = 256;
@@ -389,6 +393,7 @@ function earlyMetadataIdentity(filePath) {
       size: stat.size,
       mtimeMs: stat.mtimeMs,
       ino: stat.ino || 0,
+      dev: stat.dev || 0,
     };
   } catch {
     return null;
@@ -402,11 +407,12 @@ function sameEarlyMetadataIdentity(cached, identity) {
     && cached.ino === identity.ino;
 }
 
-function cacheEarlyMetadata(filePath, identity, metadata, boundary = undefined) {
+function cacheEarlyMetadata(filePath, identity, metadata, boundary = undefined, head = undefined) {
   const previous = _earlyMetadataCache.get(filePath);
   const retainedBoundary = boundary === undefined ? previous?.boundary || null : boundary;
+  const retainedHead = head === undefined ? previous?.head || null : head;
   _earlyMetadataCache.delete(filePath);
-  _earlyMetadataCache.set(filePath, { ...identity, metadata, boundary: retainedBoundary });
+  _earlyMetadataCache.set(filePath, { ...identity, metadata, boundary: retainedBoundary, head: retainedHead });
   while (_earlyMetadataCache.size > MAX_EARLY_METADATA_CACHE_ENTRIES) {
     _earlyMetadataCache.delete(_earlyMetadataCache.keys().next().value);
   }
@@ -617,6 +623,21 @@ function readEarlyMetadata(filePath) {
   if (sameEarlyMetadataIdentity(cached, identity)) {
     return cacheEarlyMetadata(filePath, identity, cached.metadata, cached.boundary || null);
   }
+  // PV-8 — a rollout's head never changes once written: `session_meta` and
+  // the opening turn context sit in its first lines. A complete head (all
+  // MAX_METADATA_LINES lines, or the whole 512 KB window) is reused for the
+  // same file while it only grows, re-reading just its first bytes to catch
+  // an in-place rewrite, instead of the 512 KB head on every append.
+  const head = cached?.head;
+  if (
+    head
+    && head.dev === identity.dev
+    && head.ino === identity.ino
+    && identity.size >= head.size
+    && readHeadText(filePath, HEAD_GUARD_BYTES).startsWith(head.guard)
+  ) {
+    return cacheEarlyMetadata(filePath, identity, cached.metadata, cached.boundary || null);
+  }
 
   const headText = readHeadText(filePath);
   if (!headText && identity.size > 0) return null;
@@ -636,7 +657,13 @@ function readEarlyMetadata(filePath) {
   };
   let boundary = cached?.boundary || null;
 
-  const lines = headText.split('\n').slice(0, MAX_METADATA_LINES);
+  const headLines = headText.split('\n');
+  const lines = headLines.slice(0, MAX_METADATA_LINES);
+  // Complete once every metadata line has its newline, or once the window
+  // is full: appends can no longer change what the head says.
+  const completeHead = headLines.length > MAX_METADATA_LINES || identity.size >= MAX_METADATA_BYTES
+    ? { dev: identity.dev, ino: identity.ino, size: identity.size, guard: headText.slice(0, HEAD_GUARD_CHARS) }
+    : null;
   for (const line of lines) {
     if (!line.trim()) continue;
 
@@ -668,7 +695,7 @@ function readEarlyMetadata(filePath) {
     boundary = foldRolloutBoundary(entry ? [entry] : [], boundary);
   }
 
-  return cacheEarlyMetadata(filePath, identity, metadata, boundary);
+  return cacheEarlyMetadata(filePath, identity, metadata, boundary, completeHead);
 }
 
 function parseEarlyMetadata(filePath, detail) {
