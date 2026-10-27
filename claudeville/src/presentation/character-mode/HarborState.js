@@ -2253,6 +2253,15 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                     ship.castOffStartedAt = ship.departStartedAt;
                 }
             }
+            // VB-12 — the finale and the batch's expiry run from its last
+            // hull's arrival at the horizon, not a fixed 48 s departure.
+            if (!skipDepartureAnimation && departing.length) {
+                const last = departing.reduce((latest, { ship }) => (
+                    !latest || ship.departStartedAt + ship.departMsOverride > latest.departStartedAt + latest.departMsOverride ? ship : latest
+                ), null);
+                batch.lastArrivalAt = last.departStartedAt + last.departMsOverride;
+                batch.lastSailMs = last.departMsOverride;
+            }
         }
     }
 
@@ -2382,8 +2391,12 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
     }
 
     for (const [id, batch] of state.batches) {
-        const age = now - (batch.startedAt || now);
-        if (age > SCREEN_SUMMARY_MS + FINALE_EFFECT_MS + DEPARTURE_MS) {
+        // VB-12 — a sailing batch lasts its finale and summary past its last
+        // arrival; one with no departure keeps the fixed clock.
+        const expiresAt = Number.isFinite(batch.lastArrivalAt)
+            ? batch.lastArrivalAt + SCREEN_SUMMARY_MS + FINALE_EFFECT_MS
+            : (batch.startedAt || now) + SCREEN_SUMMARY_MS + FINALE_EFFECT_MS + DEPARTURE_MS;
+        if (now > expiresAt) {
             state.batches.delete(id);
             const push = state.pushEvents.get(String(id).replace(/^push-batch:/, ''));
             if (push && push.status !== 'success') push.settledAt = now;

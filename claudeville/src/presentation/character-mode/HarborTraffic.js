@@ -2846,6 +2846,11 @@ export class HarborTraffic {
     _batchFinaleDelay(batch) {
         const status = batch?.status || 'unknown';
         if (status === 'failed' || status === 'rejected' || status === 'cancelled' || this.motionScale === 0) return 0;
+        // VB-12 — as the batch's last hull reaches the horizon (the reducer's
+        // cast-off plan), 4 % of its own sail ahead, as for a lone 48 s run.
+        if (Number.isFinite(batch?.lastArrivalAt) && Number.isFinite(batch?.startedAt)) {
+            return Math.max(0, batch.lastArrivalAt - batch.startedAt - 0.04 * (Number(batch.lastSailMs) || 0));
+        }
         // 3.1 — force-push uses a shorter departure window, so fire the whirlpool earlier.
         const baseDeparture = batch?.force === true ? FORCE_DEPARTURE_MS : DEPARTURE_MS;
         return baseDeparture * 0.96;
