@@ -30,10 +30,11 @@ export function weatherPassKeepsPrecipitation(level = 0) {
 // viewport) instead of read each frame: a level crossing on a busy host would
 // otherwise pop the fog banks, the rain density and the ground haze between
 // otherwise identical frames. With motion on the live level sheds at once but
-// restores only once the lower level has held for WEATHER_RESTORE_HOLD_MS: the
-// governor's recovery probe drops a rung after 1.5 s healthy and climbs back
-// within ~200 ms on a host still over budget, which flashed the fog banks and
-// the full ground haze in for a few frames every couple of seconds.
+// restores only once the lower level has held for WEATHER_RESTORE_HOLD_MS.
+// That hold is the weather's own, on top of the post-FX ladder's recovery
+// (PostFxLadder: one-level probes, `probeBackoffMs` apart and longer after a
+// revert, each reverted if the pacing misses), so a probe that reverts within
+// a few frames never flashes the fog banks and the full ground haze in.
 const WEATHER_RESTORE_HOLD_MS = 4000;
 const _staticPressure = { key: null, level: 0 };
 const _livePressure = { level: null, lowerSinceMs: null };
