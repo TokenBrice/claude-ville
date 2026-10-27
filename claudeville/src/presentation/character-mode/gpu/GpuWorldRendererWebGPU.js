@@ -1141,10 +1141,10 @@ export class GpuWorldRendererWebGPU {
             const sidecar = batch.sidecarKey || batch.textureKey;
             batch.albedoTexture = this._textureFor(batch.textureKey, batch.source, first?.textureRevision, first?.textureUpdates);
             batch.materialTexture = batch.materialSource
-                ? this._textureFor(`material:${sidecar}`, batch.materialSource, first?.sidecarRevision, first?.materialTextureUpdates)
+                ? this._textureFor(`material:${sidecar}`, batch.materialSource, first?.materialRevision ?? first?.sidecarRevision, first?.materialTextureUpdates)
                 : null;
             batch.emissiveTexture = batch.emissiveSource
-                ? this._textureFor(`emissive:${sidecar}`, batch.emissiveSource, first?.sidecarRevision, first?.emissiveTextureUpdates)
+                ? this._textureFor(`emissive:${sidecar}`, batch.emissiveSource, first?.emissiveRevision ?? first?.sidecarRevision, first?.emissiveTextureUpdates)
                 : null;
             if (!occluderChannelEnabled && batch.occluderSource) this.skippedOccluderUploads++;
             batch.occluderTexture = occluderChannelEnabled && batch.occluderSource

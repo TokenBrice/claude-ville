@@ -4358,11 +4358,11 @@ export class GpuWorldRenderer {
             );
             batch.materialTexture = batch.materialSource
                 ? this._textureFor(`material:${sidecar}`, batch.materialSource,
-                    first?.sidecarRevision, first?.materialTextureUpdates)
+                    first?.materialRevision ?? first?.sidecarRevision, first?.materialTextureUpdates)
                 : null;
             batch.emissiveTexture = batch.emissiveSource
                 ? this._textureFor(`emissive:${sidecar}`, batch.emissiveSource,
-                    first?.sidecarRevision, first?.emissiveTextureUpdates)
+                    first?.emissiveRevision ?? first?.sidecarRevision, first?.emissiveTextureUpdates)
                 : null;
             if (!occluderChannelEnabled && batch.occluderSource) this.skippedOccluderUploads++;
             batch.occluderTexture = occluderChannelEnabled && batch.occluderSource
