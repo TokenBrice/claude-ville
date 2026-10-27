@@ -1931,6 +1931,7 @@ export class IsometricRenderer {
         if (pendingWebGpu && !switchLater) releaseWebGpuWorld(pendingWebGpu);
         // §8.1 — one console line naming the backend and why (field reports).
         let webgpuNote = chromium ? 'not requested' : 'not requested (not Chromium)';
+        if (chromium && !forced && !raster.softwareRaster && knownNoWebGpuAdapter()) webgpuNote = 'not requested (no adapter on a recent boot)';
         if (webgpuStartFailed) webgpuNote = 'failed to start';
         else if (switchLater) webgpuNote = 'compiling (switches when ready)';
         else if (webgpu) webgpuNote = webgpu.available ? 'ready' : `unavailable: ${webgpu.reason}`;
