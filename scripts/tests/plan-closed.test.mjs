@@ -71,3 +71,42 @@ test('the stream emits plan:closed once, never on first sight, and the Task boar
     manager.handleWebSocketMessage(session(subjects.map(s => todo(s, 'completed'))));
     assert.equal(closed.length, 1);
 });
+
+function taskSession(tasks) {
+    return {
+        sessions: [{
+            sessionId: 'tasker', provider: 'claude', project: '/work/plans', status: 'active',
+            turnState: 'working', lastActivity: Date.now(), lastTool: 'TaskUpdate',
+            taskProgress: { done: tasks.filter(task => task.status === 'completed').length, total: tasks.length, source: 'exact' },
+            tasks,
+        }],
+    };
+}
+
+// RG-14 — an exact task plan is keyed by its subjects as well as its size.
+test('a second exact task plan of the same size closes too; the same plan closing again stays silent', (t) => {
+    const world = new World();
+    const manager = new AgentManager(world, null);
+    const stream = new AgentEventStream(world);
+    const closed = [];
+    const off = eventBus.on('plan:closed', event => closed.push(event));
+    t.after(() => { off(); stream.dispose(); });
+
+    const plan = (subjects, done) => subjects.map((subject, i) => todo(subject, i < done ? 'completed' : 'pending'));
+    const first = ['map the pier', 'move the crates', 'rerun the smoke'];
+    const second = ['read the chit', 'key the mend', 'test the plan'];
+    assert.notEqual(
+        explicitPlanProgress({ taskProgress: { done: 0, total: 3, source: 'exact' }, tasks: plan(first, 0) }).key,
+        explicitPlanProgress({ taskProgress: { done: 0, total: 3, source: 'exact' }, tasks: plan(second, 0) }).key,
+    );
+
+    manager.handleWebSocketMessage(taskSession(plan(first, 1)));
+    manager.handleWebSocketMessage(taskSession(plan(first, 3)));
+    assert.equal(closed.length, 1);
+    manager.handleWebSocketMessage(taskSession(plan(second, 0)));
+    manager.handleWebSocketMessage(taskSession(plan(second, 3)));
+    assert.equal(closed.length, 2, 'a new plan of the same size is not the closed one');
+    manager.handleWebSocketMessage(taskSession(plan(second, 2)));
+    manager.handleWebSocketMessage(taskSession(plan(second, 3)));
+    assert.equal(closed.length, 2, 'the same plan closing again is silent');
+});

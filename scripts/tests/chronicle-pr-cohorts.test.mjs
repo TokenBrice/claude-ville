@@ -41,7 +41,7 @@ test('W7.9: docs, test and upkeep commits plant in their districts', () => {
 });
 
 test('W7.9: a merged PR takes its title type district, else the harbor', () => {
-    const typed = rules.classify({ type: 'pr-merge', title: 'docs: harbor guide', url: 'https://github.com/o/r/pull/7', project: '/r' });
+    const typed = rules.classify({ type: 'pr-merge', title: 'docs: harbor guide', url: 'https://github.com/o/r/pull/7', project: '/r', success: true });
     assert.equal(typed.district, 'archive');
     assert.equal(typed.kind, 'docs');
     const bare = rules.classify({ type: 'pr-merge', url: 'https://github.com/o/r/pull/12', project: '/r', success: true });
@@ -51,6 +51,16 @@ test('W7.9: a merged PR takes its title type district, else the harbor', () => {
     assert.equal(bare.dedupKey, 'pr-merge:/r:https://github.com/o/r/pull/12');
     assert.equal(rules.classify({ type: 'pr-merge', project: '/r', success: false }), null);
     assert.equal(rules.classify({ type: 'pr-merge', project: '/r', exitCode: 1 }), null);
+    // A pending `gh pr merge` has no outcome yet: absence of a result is
+    // never success, so no merge stone. Exit 0, a success, merged or verified
+    // status does plant; a dry run never does.
+    const pr = { type: 'pr-merge', url: 'https://github.com/o/r/pull/9', project: '/r' };
+    assert.equal(rules.classify(pr), null, 'a pending merge plants nothing');
+    assert.equal(rules.classify({ ...pr, status: 'pending' }), null);
+    assert.equal(rules.classify({ ...pr, success: true, dryRun: true }), null);
+    for (const outcome of [{ exitCode: 0 }, { status: 'success' }, { status: 'merged' }, { status: 'verified' }]) {
+        assert.equal(rules.classify({ ...pr, ...outcome })?.kind, 'merge', JSON.stringify(outcome));
+    }
     // The adapter's forge event carries the action the Chronicle forwards.
     const [merge] = parseGitEventsFromCommand('gh pr merge 12 --squash', { ts: T0, success: true });
     assert.equal(merge.type, 'pr');

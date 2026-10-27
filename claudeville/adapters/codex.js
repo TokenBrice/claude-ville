@@ -28,7 +28,7 @@ const {
 } = require('./shared');
 const { WaitReason, deriveTurnState, toEpochMs } = require('./turnState');
 const { emptyObservedSources, makeDialogue, pickDialogue } = require('./dialogue');
-const { TOOL_RESULT_LIMIT, toolResultId } = require('./toolResults');
+const { TOOL_RESULT_LIMIT, toolResultId, toolResultLocation } = require('./toolResults');
 
 const CODEX_DIR = path.join(os.homedir(), '.codex');
 const SESSIONS_DIR = path.join(CODEX_DIR, 'sessions');
@@ -1493,6 +1493,7 @@ function completionFromItemCompleted(entry) {
   }
 
   const stderr = typeof item.stderr === 'string' ? item.stderr : '';
+  const outputs = [item.aggregated_output, item.stdout, item.stderr].filter(value => typeof value === 'string');
   return {
     callId: typeof item.call_id === 'string'
       ? item.call_id
@@ -1504,6 +1505,10 @@ function completionFromItemCompleted(entry) {
     startedAt,
     completedAt,
     stderr,
+    // Where it ran (the item's cwd plus any `cd` hop the summary drops) and
+    // whether it printed anything; unknown when the item carries no output.
+    location: toolResultLocation({ cwd: codexFileUriPath(item.cwd), command: commandFromExecPayload(item) }),
+    noOutput: outputs.length ? outputs.every(value => !value.trim()) : null,
   };
 }
 
@@ -1549,6 +1554,8 @@ function appendToolResult(results, entry, sessionId) {
     durationMs: completion.durationMs,
     completedAt: completion.completedAt,
     source: 'transcript',
+    location: completion.location,
+    noOutput: completion.noOutput,
   });
 }
 

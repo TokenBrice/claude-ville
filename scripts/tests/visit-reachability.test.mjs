@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { BUILDING_DEFS, VISIT_OVERFLOW_TILES } from '../../claudeville/src/config/buildings.js';
-import { MAP_SIZE } from '../../claudeville/src/config/constants.js';
+import { MAP_SIZE, TILE_HEIGHT, TILE_WIDTH } from '../../claudeville/src/config/constants.js';
 import { AMBIENT_SCENIC_POINTS } from '../../claudeville/src/config/scenery.js';
 import {
     APPROACH_FILES,
@@ -18,7 +18,7 @@ import { AgentSprite, QUAY_PLACES } from '../../claudeville/src/presentation/cha
 import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
 import { Pathfinder } from '../../claudeville/src/presentation/character-mode/Pathfinder.js';
 import { SceneryEngine } from '../../claudeville/src/presentation/character-mode/SceneryEngine.js';
-import VisitTileAllocator from '../../claudeville/src/presentation/character-mode/VisitTileAllocator.js';
+import VisitTileAllocator, { standsOnFixture } from '../../claudeville/src/presentation/character-mode/VisitTileAllocator.js';
 
 // VB-5 / VB-15 — every standing place a body is sent to is reachable on foot
 // from the village gate, on the walk grid the renderer actually builds: its
@@ -51,11 +51,12 @@ const SEALED_POCKETS = Object.freeze([
     { label: 'the far north-west shore behind the farm', has: (x, y) => x <= 16 && y <= 17 },
 ]);
 
-// Standing places that are open water today, each named for the plan item
-// that closes it. They stay a todo below, never a silent pass.
+// Scenic loiter points that are open water today. The ambient picker skips
+// them (dead destinations, not traps), and the quay places stand on the quay
+// instead (VB-6). They stay a todo below, never a silent pass.
 const KNOWN_GAPS = new Map([
-    ['harbor-rail', 'VB-6: QUAY_PLACES (harbor-rail, harbor-ledger) stand in open water'],
-    ['harbor-ledger', 'VB-6: QUAY_PLACES (harbor-rail, harbor-ledger) stand in open water'],
+    ['harbor-rail', 'the harbor-rail and harbor-ledger loiter points stand in open water (QUAY_PLACES stand on the quay: VB-6)'],
+    ['harbor-ledger', 'the harbor-rail and harbor-ledger loiter points stand in open water (QUAY_PLACES stand on the quay: VB-6)'],
     ['lighthouse-shore', 'lighthouse-shore is open water on the live grid (the ambient picker skips it: dead, not a trap)'],
 ]);
 function standingPlaces() {
@@ -116,14 +117,42 @@ test('every standing place is reachable on foot from the village gate (VB-5)', (
     assert.deepEqual(failures, []);
 });
 
-test('QUAY_PLACES and the water scenic points are reachable (VB-6)', { todo: [...new Set(KNOWN_GAPS.values())].join('; ') }, () => {
+// VB-6 — the quay a finished session waits on (and a quay errand's stop) is
+// reachable, standable quay ground that reads as no work: off every visit
+// slot, overflow slot, approach file, rest seat, rest stand and queue place.
+test('QUAY_PLACES stand on reachable quay ground off every slot and fixture (VB-6)', () => {
+    const claimed = new Set(standingPlaces().filter((place) => !place.label.startsWith('scenic point')).map(keyOf));
     const failures = [];
+    assert.ok(QUAY_PLACES.length >= 1);
     for (const place of QUAY_PLACES) {
         for (const tile of place.visitTiles) {
             const why = unreachable(tile);
             if (why) failures.push(`${place.type} ${keyOf(tile)} is ${why}`);
+            if (claimed.has(keyOf(tile))) failures.push(`${place.type} ${keyOf(tile)} is a claimed standing place`);
+            if (standsOnFixture((tile.tileX - tile.tileY) * TILE_WIDTH / 2, (tile.tileX + tile.tileY) * TILE_HEIGHT / 2)) {
+                failures.push(`${place.type} ${keyOf(tile)} stands inside a fixture box`);
+            }
         }
     }
+    assert.deepEqual(failures, []);
+});
+
+// VB-5 — with the salt crates at the causeway's end, the two pier slots stand
+// clear of every fixture box again, so the allocator hands them out.
+test('the allocator hands out both Harbor pier slots (VB-5)', () => {
+    const allocator = new VisitTileAllocator();
+    allocator.updateContext({ buildings, agentSprites: [], pathfinder });
+    const harbor = buildings.get('harbor');
+    const taken = new Set();
+    for (let i = 0; i < harbor.visitTiles.length + 4; i++) {
+        const reservation = allocator.allocate({ agent: { id: `pier-${i}` }, building: harbor });
+        if (reservation) taken.add(keyOf(reservation));
+    }
+    for (const pier of ['26,21', '27,21']) assert.ok(taken.has(pier), `the allocator uses the pier slot ${pier}`);
+});
+
+test('the water scenic points are reachable', { todo: [...new Set(KNOWN_GAPS.values())].join('; ') }, () => {
+    const failures = [];
     for (const point of AMBIENT_SCENIC_POINTS) {
         const why = KNOWN_GAPS.has(point.id) ? unreachable(point) : null;
         if (why) failures.push(`scenic point ${point.id} ${keyOf(point)} is ${why}`);

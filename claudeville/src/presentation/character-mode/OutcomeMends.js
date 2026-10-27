@@ -4,9 +4,11 @@
 //
 // Pure ledger, fed the `tool:result` events in the order they were observed.
 // It never guesses: a provider error flag (`exitCodeSource: 'flag'`: harness
-// guard blocks, permission denials, Edit misses) still draws its red chit but
-// never opens a mend, an unknown exit neither opens nor closes one, and a
-// different tool, command or agent passing never closes one.
+// guard blocks, permission denials, Edit misses) draws a neutral refused chit
+// and never opens a mend, an unknown exit neither opens nor closes one, and a
+// different tool, command, place or agent passing never closes one: the
+// adapters strip `cd <dir> &&` from the summary, so the result's `location`
+// fingerprint keeps `cd api && npm test` and `cd web && npm test` apart (RG-10).
 
 import { classifyShellInput } from '../../domain/services/ToolIdentity.js';
 import { flagIsFailure } from '../../application/OutcomeSignals.js';
@@ -88,7 +90,7 @@ export class MendLedger {
         if (!signature) return null;
         const at = Number(event.completedAt);
         if (!Number.isFinite(at)) return null;
-        const key = `${agentId}\u001f${event.tool}\u001f${signature}`;
+        const key = `${agentId}\u001f${event.tool}\u001f${event.location ?? ''}\u001f${signature}`;
 
         if (exitCode !== 0) {
             // Only a real process exit opens a mend; a flag-only failure is

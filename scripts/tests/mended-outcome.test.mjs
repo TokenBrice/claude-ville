@@ -53,6 +53,17 @@ test('fail with a real exit, then pass: one mend', () => {
     assert.equal(ledger.observe(result('p2', 0, { at: T0 + 61_000 })), null);
 });
 
+// RG-10 — the adapters strip `cd <dir> &&`, so `cd api && npm test` and
+// `cd web && npm test` share the summary `npm test`; their locations differ.
+test('the same summary passing in another directory is not a mend', () => {
+    const ledger = new MendLedger();
+    const at = (location, id, exitCode, offset) => ({ ...result(id, exitCode, { at: T0 + offset }), location });
+    assert.equal(ledger.observe(at('aaaa0001', 'api-fail', 1, 0)), null);
+    assert.equal(ledger.observe(at('bbbb0002', 'web-pass', 0, 1000)), null, 'web passing never mends api');
+    const mend = ledger.observe(at('aaaa0001', 'api-pass', 0, 2000));
+    assert.equal(mend?.failedId, 'api-fail', 'api passing in api mends api');
+});
+
 test('flag-only and unknown failures never open a mend; unknown never closes one', () => {
     const ledger = new MendLedger();
     ledger.observe(result('flag', 1, { source: 'flag' }));

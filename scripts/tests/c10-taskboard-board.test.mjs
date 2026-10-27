@@ -91,9 +91,11 @@ test('taskboard resolution prefers selected, then pinned, then the latest change
     assert.equal(model.resolve({ candidates: [], agentSprites: sprites }), older);
 });
 
-test('taskboard fallback breaks update ties by latest activity and returns null without todos', () => {
-    const active = { id: 'active', lastActive: 200, todos: [{ subject: 'Active', status: 'pending' }] };
-    const idle = { id: 'idle', lastActive: 100, todos: [{ subject: 'Idle', status: 'pending' }] };
+test('taskboard fallback breaks update ties by session activity and returns null without todos', () => {
+    // VB-14 — the session that acted last wins, not the last WebSocket touch
+    // (`lastActive`, which every message stamps) or the id order.
+    const active = { id: 'b-active', lastSessionActivity: 200, lastActive: 100, todos: [{ subject: 'Active', status: 'pending' }] };
+    const idle = { id: 'a-idle', lastSessionActivity: 100, lastActive: 900, todos: [{ subject: 'Idle', status: 'pending' }] };
     const model = new TaskboardBoardModel();
     const tied = [sprite(idle), sprite(active)];
     model.updateAgentSprites(tied, 100);

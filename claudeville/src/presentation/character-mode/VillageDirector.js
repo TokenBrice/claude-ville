@@ -1191,7 +1191,9 @@ export class VillageDirector {
             if (explicitKeys.has(key)) continue;
             const buildingType = agent.building || agentBuilding(agent) || 'command';
             const building = this._buildingFor(buildingType);
-            const startedAt = Number(agent.lastActive || agent.lastSessionActivity || now);
+            // The session's own activity time, so the scene id holds while the
+            // incident stands; `lastActive` is restamped by every message (VB-14).
+            const startedAt = Number(agent.lastSessionActivity || agent.lastActive || now);
             out.push({
                 id: sceneId('incident-live', { agentId: agent.id, kind: agent.status, ts: startedAt }),
                 type: 'incident',

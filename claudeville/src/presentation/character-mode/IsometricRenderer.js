@@ -459,6 +459,10 @@ const ATMOSPHERE_EFFECT_ASSETS = Object.freeze({
 // Archive fade: keep the sprite in the draw loop for this many ms after
 // `agent:removed` so the sibling AgentSprite fade/sparkle animation can play.
 const ARCHIVE_FADE_DURATION_MS = 800;
+// VB-4 — a loop gap past this settles the world at once (_settleAfterFrameGap),
+// and a departure or a gate arrival older than this is over: no walk, no fade.
+const LONG_FRAME_GAP_MS = 10_000;
+const STALE_TRANSIT_MS = 30_000;
 // 2.4 — affinity proximity: how often ally pairs are re-evaluated, and how
 // many warm pairs get a shared plaza preference per pass (keeps idle
 // drift bounded in dense worlds).
@@ -728,6 +732,9 @@ export class IsometricRenderer {
         // 0.3 — the boot reveal waits for the opening pose (App._openWorld).
         this._firstFrameReason = 'boot-pending';
         this._worldSpritesDirty = false;
+        // VB-4 — between pauseForVisibility and resumeFromVisibility the agent
+        // handlers take the inactive branch: no frame would advance a walk.
+        this._visibilityPaused = false;
         this._idleFrameDirty = true;
         this._idleLastRenderCamera = { x: NaN, y: NaN, zoom: NaN };
         this._idleResourceWorkObserved = false;
@@ -1990,7 +1997,7 @@ export class IsometricRenderer {
         // Subscribe to domain events
         this._unsubscribers.push(
             eventBus.on('agent:added', (agent) => {
-                if (!this._worldModeActive) {
+                if (!this._worldModeActive || this._visibilityPaused) {
                     this._worldSpritesDirty = true;
                     return;
                 }
@@ -1998,7 +2005,7 @@ export class IsometricRenderer {
                 this._beginRelationshipArrival(agent);
             }),
             eventBus.on('agent:removed', (agent) => {
-                if (!this._worldModeActive) {
+                if (!this._worldModeActive || this._visibilityPaused) {
                     this._removeAgentSprite(agent.id);
                     this._worldSpritesDirty = true;
                     return;
@@ -2008,10 +2015,13 @@ export class IsometricRenderer {
                 this._beginAgentDeparture(agent);
             }),
             eventBus.on('agent:updated', (agent) => {
-                if (!this._worldModeActive) {
+                if (!this._worldModeActive || this._visibilityPaused) {
                     const sprite = this.agentSprites.get(agent.id);
                     if (sprite?.applyAgentUpdate) sprite.applyAgentUpdate(agent);
                     else if (sprite) sprite.agent = agent;
+                    // VB-4 — a hidden tab draws no walk-out: the villager
+                    // leaves now instead of parading out when the tab returns.
+                    if (sprite && agent.isDeparted && this._visibilityPaused) this._removeAgentSprite(agent.id);
                     this._worldSpritesDirty = true;
                     return;
                 }
@@ -2388,6 +2398,7 @@ export class IsometricRenderer {
     }
 
     pauseForVisibility() {
+        this._visibilityPaused = true;
         this._worldResourceGeneration++;
         this._stopLoop();
         if (this._worldResourcesSuspended) this.assets?.suspend?.();
@@ -2395,6 +2406,7 @@ export class IsometricRenderer {
     }
 
     resumeFromVisibility({ active = true } = {}) {
+        this._visibilityPaused = false;
         this._worldModeActive = Boolean(active);
         this._lastFrameTime = performance.now();
         if (this._worldModeActive) {
@@ -2661,6 +2673,37 @@ export class IsometricRenderer {
             this._addAgentSprite(agent);
         }
         this._worldSpritesDirty = false;
+    }
+
+    // VB-4 — the first frame after a gap of over 10 s (a hidden tab, a sleeping
+    // laptop, a long Dashboard visit) settles the world at once instead of
+    // replaying it. A body whose session ended over 30 s ago leaves with no
+    // walk and no fade; a session that arrived while nothing was drawn, or
+    // one still queued at or walking in through the gate (nobody watched that
+    // walk either), stands at its destination. Departures in their first
+    // 30 s still walk out. `_loop` calls this before it stamps the frame.
+    _settleAfterFrameGap(now) {
+        const lastFrameAt = this._lastLoopFrameTime;
+        if (!Number.isFinite(lastFrameAt) || now - lastFrameAt <= LONG_FRAME_GAP_MS) return;
+        if (this._worldSpritesDirty) this._reconcileSpritesWithWorld();
+        const wallNow = Date.now();
+        for (const [agentId, sprite] of Array.from(this.agentSprites)) {
+            const transit = this.gateTransits.get(agentId);
+            const agent = this.world?.agents?.get?.(agentId) || null;
+            if (!agent || agent.isDeparted || sprite._archiveAnim || sprite.leaving || transit?.type === 'departure') {
+                const leftAt = Number(agent?.departedAt ?? sprite.agent?.departedAt) || transit?.since || null;
+                if (!leftAt || wallNow - leftAt > STALE_TRANSIT_MS) this._removeAgentSprite(agentId, { fade: false });
+                continue;
+            }
+            if (Number(sprite.addedAt) >= lastFrameAt || sprite.isArrivalPending?.() || transit?.type === 'arrival') {
+                this.gateTransits.delete(agentId);
+                if (this._gateEntryQueue?.length) this._gateEntryQueue = this._gateEntryQueue.filter(entry => entry.sprite !== sprite);
+                this.arrivalDeparture?.arrivals?.delete(agentId);
+                this.arrivalDeparture?.dispatches?.delete(agentId);
+                sprite.settleAtDestination?.();
+            }
+        }
+        this._markSpritesDirty();
     }
 
     _markSpritesDirty() {
@@ -4130,7 +4173,7 @@ export class IsometricRenderer {
                 return;
             }
             sprite.walkToTile?.(destination.tileX, destination.tileY);
-            this.gateTransits.set(agent.id, { type: 'arrival' });
+            this.gateTransits.set(agent.id, { type: 'arrival', since: Date.now() });
             return;
         }
 
@@ -4176,7 +4219,7 @@ export class IsometricRenderer {
             queue.shift();
             sprite.setTilePosition?.(lane.tileX, lane.outsideY);
             sprite.walkStraightToTile?.(lane.tileX, lane.insideY);
-            this.gateTransits.set(agent.id, { type: 'arrival', gate: true });
+            this.gateTransits.set(agent.id, { type: 'arrival', gate: true, since: Date.now() });
             this._markSpritesDirty();
         }
     }
@@ -4206,7 +4249,7 @@ export class IsometricRenderer {
             VILLAGE_GATE.outside.tileX + this._gateJitter(agent, 'depart-x', 0.30),
             VILLAGE_GATE.outside.tileY + this._gateJitter(agent, 'depart-y', 0.20),
         );
-        this.gateTransits.set(agent.id, { type: 'departure' });
+        this.gateTransits.set(agent.id, { type: 'departure', since: Date.now() });
         this._markSpritesDirty();
     }
 
@@ -4229,7 +4272,7 @@ export class IsometricRenderer {
         this._markSpritesDirty();
     }
 
-    _removeAgentSprite(agentId) {
+    _removeAgentSprite(agentId, { fade = true } = {}) {
         const sprite = this.agentSprites.get(agentId);
         if (!sprite) return;
         if (this.selectedAgent?.id === agentId) {
@@ -4242,9 +4285,11 @@ export class IsometricRenderer {
         // ARCHIVE_FADE_DURATION_MS so AgentSprite.draw() fade alpha + sparkle
         // puff can play. The sprite stays in agentSprites and is collected by
         // _pruneArchiveFadedSprites(). Reduced motion (motionScale === 0)
-        // short-circuits to immediate disposal — there is no fade to play.
+        // short-circuits to immediate disposal — there is no fade to play —
+        // and so does a departure long over when the world is shown again
+        // (`fade: false`, VB-4).
         const motionScale = this.motionScale ?? 1;
-        if (motionScale > 0 && !sprite._archiveAnim) {
+        if (fade && motionScale > 0 && !sprite._archiveAnim) {
             sprite._archiveAnim = {
                 startedAt: Date.now(),
                 total: ARCHIVE_FADE_DURATION_MS,
@@ -4811,6 +4856,7 @@ export class IsometricRenderer {
             if (this._lastFrameTime === this._lastLoopFrameTime && presentIntervalMs !== null) {
                 this.gpuWorld?.notePresentInterval?.(presentIntervalMs);
             }
+            this._settleAfterFrameGap(now); // VB-4: no parade after a long gap
             this._lastLoopFrameTime = now;
             this._lastFrameTime = now;
             stage = 'fallback-prep';

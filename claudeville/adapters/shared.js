@@ -71,8 +71,8 @@ const DEFAULT_TOOL_FIELDS = Object.freeze([
 // absolute `cd`, so a bounded summary that keeps them shows only a directory.
 const SHELL_COMMAND_FIELDS = new Set(['command', 'cmd']);
 const SHELL_DIR_TOKEN = String.raw`(?:"[^"]*"|'[^']*'|[^\s;&|]+)`;
-const SHELL_CD_PREFIX = new RegExp(String.raw`^\s*cd\s+${SHELL_DIR_TOKEN}\s*(?:&&|;|\n)\s*`);
-const GIT_DIR_FLAG = new RegExp(String.raw`(^|[\s;&|(])git\s+-C\s+${SHELL_DIR_TOKEN}\s+`, 'g');
+const SHELL_CD_PREFIX = new RegExp(String.raw`^\s*cd\s+(${SHELL_DIR_TOKEN})\s*(?:&&|;|\n)\s*`);
+const GIT_DIR_FLAG = new RegExp(String.raw`(^|[\s;&|(])git\s+-C\s+(${SHELL_DIR_TOKEN})\s+`, 'g');
 
 /**
  * Drop leading `cd <dir> &&` / `cd <dir>;` hops and every `git -C <dir>` flag,
@@ -89,6 +89,25 @@ function stripShellLocationPrefix(command) {
   }
   text = text.replace(GIT_DIR_FLAG, '$1git ').trim();
   return text || command;
+}
+
+/**
+ * The directories `stripShellLocationPrefix` drops (the leading `cd <dir>`
+ * hops, then every `git -C <dir>`), joined in order; '' when the command
+ * names none. A summary without them reads the same in every directory.
+ */
+function shellLocationOf(command) {
+  if (typeof command !== 'string') return '';
+  const dirs = [];
+  let text = command;
+  for (let hops = 0; hops < 8; hops++) {
+    const match = SHELL_CD_PREFIX.exec(text);
+    if (!match) break;
+    dirs.push(match[1]);
+    text = text.slice(match[0].length);
+  }
+  for (const match of text.matchAll(GIT_DIR_FLAG)) dirs.push(match[2]);
+  return dirs.join('\u001f');
 }
 
 function readHeadText(filePath, maxBytes = DEFAULT_HEAD_BYTES) {
@@ -900,6 +919,7 @@ module.exports = {
   readJsonLines,
   readLines,
   readTailLines,
+  shellLocationOf,
   statCacheKey,
   stripShellLocationPrefix,
   summarizeToolInput,

@@ -195,6 +195,17 @@ test('Codex, Kimi Code, OpenCode and Claude publish bounded command outcomes', (
     assert.equal(claude.lastResults[0].id, 'claude:outcomes-claude:bash-build');
     assert.equal(claude.lastResults[0].completedAt, Date.parse('2026-09-01T13:00:14.250Z'));
     assert.ok(claude.lastResults.every(result => result.source === 'transcript'));
+    // RG-2: each printed something besides its exit line. RG-10: the two
+    // shell calls that hop into /fixture/repo share a location; the calls
+    // that name no directory (and no transcript cwd) have none.
+    assert.deepEqual(claude.lastResults.map(result => result.noOutput), [false, false, false, false]);
+    const claudeLocations = claude.lastResults.map(result => result.location);
+    assert.match(claudeLocations[0], /^[0-9a-f]{8}$/);
+    assert.deepEqual(claudeLocations, [claudeLocations[0], null, null, claudeLocations[0]]);
+    // Codex: the item's own cwd; output known only where the item carries it.
+    assert.deepEqual(codex.lastResults.map(result => result.noOutput), [false, null, null]);
+    assert.equal(new Set(codex.lastResults.map(result => result.location)).size, 1);
+    assert.match(codex.lastResults[0].location, /^[0-9a-f]{8}$/);
 
     // Same transcripts, second poll: ids are call identity, not receipt time.
     const codexAgain = normalizeSession(second.codex.find(session => session.sessionId === 'codex-tool-results'));
@@ -221,6 +232,8 @@ test('the summary keeps the five newest outcomes and drops unattributable ones',
         durationMs: 10,
         completedAt: NOW - index * 1000,
         source: 'transcript',
+        location: null,
+        noOutput: null,
     }));
     const normalized = normalizeToolResults([...results].reverse());
     assert.equal(normalized.length, TOOL_RESULT_LIMIT);
@@ -246,7 +259,33 @@ test('the summary keeps the five newest outcomes and drops unattributable ones',
     assert.equal(normalizeToolResults([{ ...results[0], exitCodeSource: 'guess' }])[0].exitCodeSource, null);
     assert.equal(normalizeToolResults([{ ...results[0], exitCodeSource: 'flag' }])[0].exitCodeSource, 'flag');
     assert.equal(normalizeToolResults([{ ...results[0], exitCodeSource: undefined }])[0].exitCodeSource, null);
+    // A location is an 8-hex fingerprint; whether a call printed is a boolean.
+    assert.equal(normalizeToolResults([{ ...results[0], location: '/work/api' }])[0].location, null);
+    assert.equal(normalizeToolResults([{ ...results[0], location: '0a1b2c3d' }])[0].location, '0a1b2c3d');
+    assert.equal(normalizeToolResults([{ ...results[0], noOutput: 'yes' }])[0].noOutput, null);
+    assert.equal(normalizeToolResults([{ ...results[0], noOutput: true }])[0].noOutput, true);
     assert.deepEqual(normalizeToolResults(null), []);
+});
+
+// RG-10 — the summary drops `cd <dir> &&` and `git -C <dir>`; the location
+// fingerprint keeps what they named, so one summary in two directories is
+// two commands.
+test('a result location fingerprints the working directory and the dropped cd hops', () => {
+    const { shellLocationOf } = require('../../claudeville/adapters/shared.js');
+    const { toolResultLocation } = require('../../claudeville/adapters/toolResults.js');
+    assert.equal(shellLocationOf('cd packages/api && npm test'), 'packages/api');
+    assert.equal(shellLocationOf('cd "/w/my repo"; cd sub && npm test'), '"/w/my repo"\u001fsub');
+    assert.equal(shellLocationOf(['git', '-C', 'vendor/lib', 'status'].join(' ')), 'vendor/lib');
+    assert.equal(shellLocationOf('npm test'), '');
+    assert.equal(shellLocationOf(null), '');
+
+    const api = toolResultLocation({ command: 'cd packages/api && npm test' });
+    const web = toolResultLocation({ command: 'cd packages/web && npm test' });
+    assert.match(api, /^[0-9a-f]{8}$/);
+    assert.notEqual(api, web);
+    assert.equal(toolResultLocation({ command: 'npm test' }), null, 'no location named');
+    assert.notEqual(toolResultLocation({ cwd: '/w/api', command: 'npm test' }), toolResultLocation({ cwd: '/w/web', command: 'npm test' }));
+    assert.equal(toolResultLocation({ cwd: '/w/api', command: 'npm test' }), toolResultLocation({ cwd: '/w/api', command: 'npm test' }));
 });
 
 test('tool:result fires once per newly observed outcome, and never for an invocation', (t) => {
@@ -298,6 +337,8 @@ test('tool:result fires once per newly observed outcome, and never for an invoca
         building: 'taskboard',
         detail: 'npm run build',
         exitCodeSource: null,
+        location: null,
+        noOutput: null,
     }]);
 
     // A different tool is a new invocation, not a new outcome.
