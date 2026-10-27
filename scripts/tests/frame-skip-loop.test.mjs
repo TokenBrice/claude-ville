@@ -2,12 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
 import { createMotionClock } from '../../claudeville/src/presentation/character-mode/MotionClock.js';
+import { FRAME_PACING_INTERVAL_MS, createFramePacing } from '../../claudeville/src/presentation/character-mode/FramePacing.js';
 
 function fixture() {
     return Object.assign(Object.create(IsometricRenderer.prototype), {
         running: true, _worldModeActive: true, _contextLost: false,
         _worldResourceGeneration: 0,
-        _lastFrameTime: null, _lastLoopFrameTime: null, _lastVsyncTime: null,
+        _lastFrameTime: null, _lastLoopFrameTime: null, _framePacing: createFramePacing(),
         _motionClock: createMotionClock(), motionScale: 0,
         _frameFailureStats: { paused: false, consecutive: 2 },
         _fallbackPrep: null, _worldSwap: null, _performanceSamples: [],
@@ -95,14 +96,14 @@ test('a withheld initial paint keeps logical work and RAF alive, paints by deadl
     assert.equal(renderer.envelopes.length, 2);
     assert.equal(renderer._frameFailureStats.consecutive, 0, 'a hold is not a failed frame');
     clock.now = 250;
-    renderer._loop(250);
+    renderer._loop(266);
     assert.equal(renderer.paints, 1);
     assert.equal(renderer.signals, 1);
     // A subsequent cache read is not allowed to hold an already-presented
     // world, even if the boot reveal is still waiting for its band snapshot.
     clock.deadline = 1000;
     clock.now = 266;
-    renderer._loop(266);
+    renderer._loop(283);
     assert.equal(renderer.paints, 2);
     assert.equal(renderer.scheduled, 4);
 });
@@ -140,4 +141,50 @@ test('a Dashboard-first return cannot hold its first World paint while boot is s
     assert.equal(renderer.paints, 1);
     assert.equal(renderer.signals, 1);
     assert.equal(renderer.scheduled, 1);
+});
+
+// FP-1a: the 60 fps cap. rAF ticks of a 240 Hz panel.
+const VSYNC_240 = 1000 / 240;
+
+test('a tick the 60 fps cap holds only re-arms RAF: no update, clock, envelope or FPS sample', () => {
+    const renderer = fixture();
+    renderer.motionScale = 1;
+    renderer.worldRendererMode = 'canvas';
+    renderer._loop(0);
+    const after = {
+        updates: renderer.updates, fps: renderer.fpsTicks, envelopes: renderer.envelopes.length,
+        clock: renderer._motionClock.elapsedMs, lastFrameTime: renderer._lastFrameTime,
+    };
+    assert.equal(after.updates, 1);
+    for (const tick of [1, 2, 3]) {
+        renderer._loop(tick * VSYNC_240);
+        assert.equal(renderer.scheduled, 1 + tick, 'every held tick re-arms RAF');
+    }
+    assert.deepEqual({
+        updates: renderer.updates, fps: renderer.fpsTicks, envelopes: renderer.envelopes.length,
+        clock: renderer._motionClock.elapsedMs, lastFrameTime: renderer._lastFrameTime,
+    }, after);
+    renderer._loop(4 * VSYNC_240);
+    assert.equal(renderer.updates, 2, 'the fourth 240 Hz tick renders');
+    assert.equal(renderer.envelopes.length, 2);
+});
+
+test('the ladder hears the paced interval, never the panel refresh', () => {
+    const renderer = fixture();
+    const intervals = [];
+    renderer.gpuWorld = { notePresentInterval: intervalMs => intervals.push(intervalMs) };
+    for (let tick = 0; tick <= 12; tick++) renderer._loop(tick * VSYNC_240);
+    assert.equal(renderer.updates, 4);
+    assert.deepEqual(intervals.map(ms => Math.round(ms * 1000) / 1000), [16.667, 16.667, 16.667]);
+    assert.ok(Math.abs(intervals[0] - FRAME_PACING_INTERVAL_MS) < 1e-9);
+});
+
+test('a stopped loop forgets its cadence: the first tick after a restart renders at once', () => {
+    const renderer = fixture();
+    renderer._loop(1000);
+    renderer._loop(1004);
+    assert.equal(renderer.updates, 1);
+    renderer._stopLoop();
+    renderer._loop(1008);
+    assert.equal(renderer.updates, 2);
 });

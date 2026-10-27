@@ -9,6 +9,7 @@ ClaudeVille's World mode uses motion to communicate state. New motion-bearing wo
 - Declare the pulse band claimed by each new animated cue.
 - Prefer alpha decay, static tint, or one-shot flashes when motion is ornamental rather than semantic.
 - Reuse the shared `getPulsePriority()` hook for visual A/B work instead of hardcoding competing priority orders in feature modules.
+- Author motion for 60 rendered frames per second at most. The World never renders faster on any backend (`FramePacing.js`, FP-1a), so a faster panel shows each frame for several refreshes, and a 75–165 Hz panel holds frames unevenly to average 60 fps.
 
 ## Shared Helper Direction
 

@@ -839,6 +839,8 @@ async function runFrameFailureProbe(page) {
     let contextResets = 0;
     let updateCalls = 0;
     let renderCalls = 0;
+    // Ticks 20 ms apart: each clears the 60 fps cap (FP-1a).
+    let frameAt = performance.now();
 
     try {
       renderer._stopLoop();
@@ -864,9 +866,9 @@ async function runFrameFailureProbe(page) {
 
       renderer._update = () => { updateCalls++; throw new Error('injected update failure'); };
       renderer._render = () => { renderCalls++; };
-      renderer._loop();
-      renderer._loop();
-      renderer._loop();
+      renderer._loop(frameAt += 20);
+      renderer._loop(frameAt += 20);
+      renderer._loop(frameAt += 20);
       const updateTrip = {
         paused: renderer._frameFailureStats.paused,
         scheduled,
@@ -879,9 +881,9 @@ async function runFrameFailureProbe(page) {
       renderer._update = () => { updateCalls++; };
       renderer._render = () => { renderCalls++; throw new Error('injected render failure'); };
       const scheduledBeforeRender = scheduled;
-      renderer._loop();
-      renderer._loop();
-      renderer._loop();
+      renderer._loop(frameAt += 20);
+      renderer._loop(frameAt += 20);
+      renderer._loop(frameAt += 20);
       const renderTrip = {
         paused: renderer._frameFailureStats.paused,
         scheduled: scheduled - scheduledBeforeRender,
