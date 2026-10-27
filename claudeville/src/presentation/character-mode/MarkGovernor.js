@@ -26,9 +26,9 @@ export const PRESSURE_PROTECTED = Object.freeze([
     'canvas-fallback',
 ]);
 
-// Plan T2 + T3. The cost is the windowed CPU frame (app update + render +
-// upload; the EMA when the profiling rings are off) against the GPU timer,
-// whichever is larger: the two run in parallel, so their sum double-counted
+// Plan T2 + T3. The cost is the windowed CPU frame (the EMA of app update +
+// render, plus upload; FP-3) against the GPU timer, whichever is larger:
+// the two run in parallel, so their sum double-counted
 // and pinned a 45-60 fps village at GLYPHS from boot. Budget and healthy
 // line are 0.6x and 0.4x of a 60 Hz period. A shed lands at once; a restore
 // waits until the lower level has held healthy for `probeMs`, and a shed
@@ -142,9 +142,12 @@ export function appOwnedCostMs(inputs = {}) {
     const upload = finiteOrNull(inputs.uploadP95);
     const gpu = finiteOrNull(inputs.gpuMs);
     const rendererCost = finiteOrNull(inputs.rendererCostMs);
+    // FP-3: the app frame's EMA is the cost. Its p95 values exist only while
+    // Settings or a profile records the rings, and are readouts; they stand
+    // in only for a caller that passes no EMA.
     let cpu = 0;
-    if (update !== null || render !== null) cpu += (update || 0) + (render || 0);
-    else if (rendererCost !== null) cpu += rendererCost;
+    if (rendererCost !== null) cpu += rendererCost;
+    else if (update !== null || render !== null) cpu += (update || 0) + (render || 0);
     if (upload !== null) cpu += upload;
     // CPU and GPU work overlap: the frame costs the larger, not the sum.
     return Math.max(cpu, gpu || 0);
@@ -254,13 +257,15 @@ export function framePressureSnapshot(state = {}, inputs = {}) {
 export function sampleFramePressure(nowMs, inputs) {
     ensureSharedPressure();
     const now = Number.isFinite(Number(nowMs)) ? Number(nowMs) : defaultNow();
-    const resolvedInputs = inputs && typeof inputs === 'object'
-        ? inputs
-        : readFrameHealthInputs();
+    // FP-4: an 8 ms quantum reuses its snapshot before reading frame health,
+    // which builds the renderer's full diagnostics (up to 13 callers a frame).
     const quant = Math.floor(now / 8);
     if (Number.isFinite(lastSampleQuant) && quant === lastSampleQuant && inputs == null) {
         return lastSnapshot;
     }
+    const resolvedInputs = inputs && typeof inputs === 'object'
+        ? inputs
+        : readFrameHealthInputs();
     lastSampleQuant = quant;
     sharedPressure = advanceFramePressure(sharedPressure, resolvedInputs, now);
     lastSnapshot = framePressureSnapshot(sharedPressure, resolvedInputs);

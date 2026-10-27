@@ -131,6 +131,23 @@ test('percentiles exist only after a ring is enabled and only at snapshot time',
     assert.equal(snap.p95AppTotalMs, expectedP95);
 });
 
+test('FP-3: stopped rings report no percentiles while the EMA follows the live frames', () => {
+    const env = createFrameEnvelope();
+    enableFrameEnvelopeRings(env, 8);
+    for (let i = 0; i < 8; i++) recordFrameEnvelope(env, 4, 12, 16, 17);
+    assert.ok(Number.isFinite(snapshotFrameEnvelope(env).p95AppRenderMs));
+
+    // Settings closed: the rings keep their samples but stop recording.
+    env.ringsEnabled = false;
+    for (let i = 0; i < 40; i++) recordFrameEnvelope(env, 1, 2, 3, 17);
+    const snap = snapshotFrameEnvelope(env);
+    for (const key of ['p95AppUpdateMs', 'p95AppRenderMs', 'p95AppTotalMs', 'p95FrameGapMs', 'p95HostGapMs']) {
+        assert.equal(snap[key], null, key);
+    }
+    assert.ok(snap.emaAppTotalMs < 4, `EMA ${snap.emaAppTotalMs}`);
+    assert.equal(snap.ringsEnabled, false);
+});
+
 test('last failure stage sticks across later successful frames', () => {
     const env = createFrameEnvelope();
     recordFrameEnvelope(env, 1, 0, 1, 16, 'render');

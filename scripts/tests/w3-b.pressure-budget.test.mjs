@@ -34,6 +34,12 @@ import {
     allowAmbientMeteor,
     liveTwinkleBudget,
 } from '../../claudeville/src/presentation/character-mode/SkyRenderer.js';
+import {
+    createFrameEnvelope,
+    enableFrameEnvelopeRings,
+    recordFrameEnvelope,
+    snapshotFrameEnvelope,
+} from '../../claudeville/src/presentation/shared/ClientPerfMetrics.js';
 
 const ALL_RUNGS = [0, 1, 2, 3];
 const STEP_MS = 16;
@@ -518,4 +524,60 @@ test('Shift-D prints the frame-pressure level, what it sheds and the restore cou
     const shed = framePressureRows({ level: 2, costMs: 11, budgetMs: 10, healthyMs: 6.7, restoreInMs: 2300, probeFailures: 1 });
     assert.match(shed[1], /sheds ambient-weather-embellishment, fauna-cadence, ambient-particles/);
     assert.match(shed[2], /restore in 2\.3 s · failed probes 1/);
+});
+
+function withFrameHealth(frameHealth, run) {
+    resetFramePressureState();
+    const previousWindow = globalThis.window;
+    globalThis.window = { __claudeVillePerf: { frameHealth } };
+    try {
+        return run();
+    } finally {
+        resetFramePressureState();
+        if (previousWindow === undefined) delete globalThis.window;
+        else globalThis.window = previousWindow;
+    }
+}
+
+test('FP-3: the governor cost is the EMA, never percentiles a closed Settings panel froze', () => {
+    assert.equal(appOwnedCostMs({ appUpdateP95: 12.2, appRenderP95: 4, rendererCostMs: 3.1, gpuMs: 0.6 }), 3.1);
+
+    // Settings open (rings on) through a heavy stretch, then closed (rings
+    // off) on a light village: the cost must follow the live frames down.
+    const envelope = createFrameEnvelope();
+    enableFrameEnvelopeRings(envelope);
+    const health = () => snapshotFrameEnvelope(envelope, { gpuMs: 0.6 });
+    withFrameHealth(health, () => {
+        let now = 0;
+        let snapshot = null;
+        for (let i = 0; i < 120; i++) {
+            recordFrameEnvelope(envelope, 4, 12, 16, 17);
+            snapshot = sampleFramePressure(now += STEP_MS);
+        }
+        assert.ok(snapshot.level > PRESSURE_LEVELS.FULL, 'the heavy stretch sheds');
+        envelope.ringsEnabled = false;
+        for (let i = 0; i < 4000; i++) {
+            recordFrameEnvelope(envelope, 1, 2, 3, 17);
+            snapshot = sampleFramePressure(now += STEP_MS);
+        }
+        assert.equal(health().p95AppRenderMs, null);
+        assert.ok(snapshot.costMs < 4, `cost ${snapshot.costMs} ms`);
+        assert.equal(snapshot.level, PRESSURE_LEVELS.FULL, 'ambient life returns once the village is light');
+    });
+});
+
+test('FP-4: frame health is read at most once per 8 ms quantum', () => {
+    let reads = 0;
+    const health = () => {
+        reads += 1;
+        return { emaAppTotalMs: 3, gpuMs: 0.5 };
+    };
+    withFrameHealth(health, () => {
+        for (let t = 0; t < 8; t += 0.5) sampleFramePressure(1000 + t);
+        assert.equal(reads, 1, '16 consumers inside one quantum share one read');
+        sampleFramePressure(1008);
+        assert.equal(reads, 2);
+        sampleFramePressure(1009, { rendererCostMs: 3 });
+        assert.equal(reads, 2, 'explicit inputs never read frame health');
+    });
 });
