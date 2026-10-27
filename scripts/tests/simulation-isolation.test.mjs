@@ -56,6 +56,11 @@ test('a simulated snapshot stays explicitly simulated without claiming stale net
     });
     assert.equal(linkStatusText(state, 1_000_000), 'SIMULATED');
     assert.equal(isStale(state, 1_000_000), false);
+    // Real sources do go stale, each by its own evidence (EN-2): a live socket
+    // when a ping goes unanswered, REST polling when its snapshot ages.
     const live = reduceVillageState(state, { type: 'snapshot', source: 'websocket', at: 200 });
-    assert.equal(isStale(live, 1_000_000), true);
+    assert.equal(isStale(live, 1_000_000), false, 'a quiet live socket is not stale by snapshot age');
+    assert.equal(isStale(reduceVillageState(live, { type: 'link', stale: true }), 1_000_000), true);
+    const polled = reduceVillageState(state, { type: 'snapshot', source: 'polling', at: 200 });
+    assert.equal(isStale(polled, 1_000_000), true);
 });

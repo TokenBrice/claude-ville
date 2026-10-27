@@ -89,6 +89,21 @@ function applyJsonPatch(state, patch) {
     return { state: root, changes: { sessionIds: [...sessionIds], shared, order } };
 }
 
+// VB-8 — a resync whose reply never comes (a lost frame, a wedged server)
+// would otherwise freeze the world: every later delta fails its baseline
+// check. The request is re-sent once after this long; a second miss closes
+// the socket so the reconnect path rebuilds state.
+const RESYNC_REPLY_TIMEOUT_MS = 10_000;
+const RESYNC_MAX_MISSES = 2;
+// EN-2 — link liveness. A quiet, healthy village gets no broadcasts (the
+// server skips unchanged payloads), so silence alone proves nothing: the client
+// asks. It sends `ping` every 20 s. No message of any kind within 10 s of one
+// marks the link `stale`; a second unanswered ping drops the socket for a
+// reconnect.
+const LINK_PING_INTERVAL_MS = 20_000;
+const LINK_PONG_TIMEOUT_MS = 10_000;
+const LINK_MAX_MISSED_PINGS = 2;
+
 function sessionsFromKeyedState(state) {
     if (
         !Array.isArray(state?.sessionOrder)
@@ -120,7 +135,11 @@ export class WebSocketClient {
             lastMessageAt: null,
             lastSnapshotAt: null,
             lastErrorCode: null,
+            stale: false,
         });
+        this._pingTimer = null;
+        this._pongTimer = null;
+        this._missedPings = 0;
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         this.url = `${protocol}//${window.location.host}/ws`;
         // Delta v2 baseline is keyed by stable session identity, separate from
@@ -128,7 +147,13 @@ export class WebSocketClient {
         this._state = null;
         this._seq = null;
         this._resyncRequested = false;
+        this._resyncTimer = null;
+        this._resyncMisses = 0;
         this._deltasDisabled = false;
+        // EN-4 — the first server identity this page saw, and the last
+        // different one announced.
+        this._serverIdentity = null;
+        this._announcedServer = null;
     }
 
     get isConnected() {
@@ -158,7 +183,9 @@ export class WebSocketClient {
                 this._publishState({
                     state: this.reconnectAttempts > 0 ? LinkState.RECONNECTING : LinkState.SYNCING,
                     nextRetryAt: null,
+                    stale: false,
                 });
+                this._startLiveness(socket);
             };
 
             socket.onmessage = (event) => {
@@ -169,7 +196,12 @@ export class WebSocketClient {
                     : null;
                 try {
                     const data = JSON.parse(event.data);
-                    this._publishState({ lastMessageAt: Date.now() });
+                    this._missedPings = 0;
+                    this._publishState({
+                        lastMessageAt: Date.now(),
+                        stale: false,
+                        ...(this.state.lastErrorCode === 'link-silent' ? { lastErrorCode: null } : {}),
+                    });
                     this._handleMessage(data, messagePerf);
                 } catch (err) {
                     if (messagePerf) metrics.cancelMessage?.(messagePerf);
@@ -182,6 +214,7 @@ export class WebSocketClient {
                 if (this.ws !== socket) return;
                 this.ws = null;
                 this.connected = false;
+                this._stopLiveness();
                 this._clearProtocolState();
                 console.log('[WS] Disconnected');
                 eventBus.emit('ws:disconnected');
@@ -206,6 +239,7 @@ export class WebSocketClient {
 
     disconnect() {
         this._clearReconnect();
+        this._stopLiveness();
         const socket = this.ws;
         if (socket) {
             socket.onopen = null;
@@ -234,6 +268,7 @@ export class WebSocketClient {
         switch (data.type) {
             case 'init':
                 if (messagePerf) this.performanceMetrics.cancelMessage?.(messagePerf);
+                this._noteServerIdentity(data.server);
                 // Reset reconnect attempts only after server confirms a healthy session,
                 // so half-open TCPs that never deliver init keep backing off.
                 this.reconnectAttempts = 0;
@@ -244,6 +279,7 @@ export class WebSocketClient {
                 break;
             case 'update':
                 if (messagePerf) this.performanceMetrics.cancelMessage?.(messagePerf);
+                this._noteServerIdentity(data.server);
                 this._rememberSnapshot(data);
                 this.reconnectAttempts = 0;
                 this._publishSnapshot();
@@ -255,6 +291,12 @@ export class WebSocketClient {
                 break;
             case 'pong':
                 if (messagePerf) this.performanceMetrics.cancelMessage?.(messagePerf);
+                break;
+            case 'snapshot-error':
+                if (messagePerf) this.performanceMetrics.cancelMessage?.(messagePerf);
+                // VB-8 — the server could not build a snapshot for this socket:
+                // reconnect with backoff instead of waiting on one.
+                this._abandonSocket(this.ws, 'snapshot-unavailable');
                 break;
             default:
                 if (messagePerf) this.performanceMetrics.cancelMessage?.(messagePerf);
@@ -292,13 +334,56 @@ export class WebSocketClient {
         if (!valid) this._state = null;
         this._seq = Number.isFinite(data.seq) ? data.seq : null;
         this._resyncRequested = false;
+        this._clearResyncWatchdog();
     }
 
     _clearProtocolState() {
         this._state = null;
         this._seq = null;
         this._resyncRequested = false;
+        this._clearResyncWatchdog();
         this._deltasDisabled = false;
+    }
+
+    // EN-4 — a full frame from a server other than the first one this page saw
+    // (a restart or an upgrade) is announced once per new identity. TopBar
+    // offers the reload; `versionChanged` is false for a same-version restart.
+    _noteServerIdentity(server) {
+        const version = typeof server?.version === 'string' ? server.version : null;
+        const bootId = typeof server?.bootId === 'string' ? server.bootId : null;
+        if (!version && !bootId) return;
+        const seen = this._serverIdentity;
+        if (!seen) {
+            this._serverIdentity = Object.freeze({ version, bootId });
+            return;
+        }
+        const same = (identity) => identity?.version === version && identity?.bootId === bootId;
+        if (same(seen) || same(this._announcedServer)) return;
+        this._announcedServer = Object.freeze({ version, bootId });
+        eventBus.emit('ws:server-changed', {
+            from: seen,
+            to: this._announcedServer,
+            versionChanged: version !== seen.version,
+        });
+    }
+
+    // Drop a socket that has stopped answering and take the ordinary reconnect
+    // path now. A browser close of a dead TCP link can wait a long time for its
+    // closing handshake, so this does not wait for `onclose`.
+    _abandonSocket(socket, errorCode) {
+        if (!socket || this.ws !== socket) return;
+        socket.onopen = null;
+        socket.onmessage = null;
+        socket.onerror = null;
+        socket.onclose = null;
+        this.ws = null;
+        this.connected = false;
+        this._stopLiveness();
+        this._clearProtocolState();
+        try { socket.close(); } catch { /* already closing */ }
+        console.warn(`[WS] Dropped an unresponsive socket (${errorCode})`);
+        eventBus.emit('ws:disconnected');
+        this._scheduleReconnect(errorCode);
     }
 
     getDebugSnapshot() {
@@ -389,7 +474,64 @@ export class WebSocketClient {
         // full snapshot (init/update) arrives or the socket reopens.
         if (this._resyncRequested) return;
         this._resyncRequested = true;
+        this._resyncMisses = 0;
+        this._sendResync();
+    }
+
+    _sendResync() {
         this.send({ type: 'resync' });
+        this._clearResyncWatchdog();
+        const socket = this.ws;
+        this._resyncTimer = setTimeout(() => {
+            this._resyncTimer = null;
+            if (!this._resyncRequested || this.ws !== socket) return;
+            this._resyncMisses++;
+            if (this._resyncMisses >= RESYNC_MAX_MISSES) {
+                this._abandonSocket(socket, 'resync-timeout');
+                return;
+            }
+            this._sendResync();
+        }, RESYNC_REPLY_TIMEOUT_MS);
+        this._resyncTimer?.unref?.();
+    }
+
+    _clearResyncWatchdog() {
+        if (!this._resyncTimer) return;
+        clearTimeout(this._resyncTimer);
+        this._resyncTimer = null;
+    }
+
+    _startLiveness(socket) {
+        this._stopLiveness();
+        this._pingTimer = setInterval(() => this._sendLivenessPing(socket), LINK_PING_INTERVAL_MS);
+        this._pingTimer?.unref?.();
+    }
+
+    _sendLivenessPing(socket) {
+        if (this.ws !== socket || socket.readyState !== WebSocket.OPEN) return;
+        const sentAt = Date.now();
+        this.send({ type: 'ping' });
+        if (this._pongTimer) clearTimeout(this._pongTimer);
+        this._pongTimer = setTimeout(() => {
+            this._pongTimer = null;
+            // Any message since the ping (a pong, a delta) proves the link.
+            if (this.ws !== socket || (this.state.lastMessageAt || 0) >= sentAt) return;
+            this._missedPings++;
+            if (this._missedPings >= LINK_MAX_MISSED_PINGS) {
+                this._abandonSocket(socket, 'link-silent');
+                return;
+            }
+            this._publishState({ stale: true, lastErrorCode: 'link-silent' });
+        }, LINK_PONG_TIMEOUT_MS);
+        this._pongTimer?.unref?.();
+    }
+
+    _stopLiveness() {
+        if (this._pingTimer) clearInterval(this._pingTimer);
+        if (this._pongTimer) clearTimeout(this._pongTimer);
+        this._pingTimer = null;
+        this._pongTimer = null;
+        this._missedPings = 0;
     }
 
     _scheduleReconnect(errorCode = 'socket-closed') {
@@ -407,6 +549,7 @@ export class WebSocketClient {
             attempts: this.reconnectAttempts,
             nextRetryAt,
             lastErrorCode: errorCode,
+            stale: false,
         });
         this.reconnectTimer = setTimeout(() => {
             if (this.reconnectAttempts > 3) {
@@ -449,6 +592,10 @@ export class WebSocketClient {
             lastErrorCode: updates.lastErrorCode !== undefined
                 ? updates.lastErrorCode
                 : this.state.lastErrorCode,
+            // EN-2 — an open socket that left a ping unanswered for 10 s.
+            stale: updates.stale !== undefined
+                ? updates.stale === true
+                : this.state.stale === true,
         };
         this.state = Object.freeze(next);
         eventBus.emit('ws:state', next);

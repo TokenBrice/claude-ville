@@ -139,3 +139,39 @@ test('the sweep never departs a villager the roster has not dropped', async () =
     assert.equal(world.agents.size, 1);
     assert.equal(world.agents.get('busy').isDeparted, false);
 });
+
+test('EN-8: a poisoned session skips only itself; later sessions and the departure sweep still run', () => {
+    let now = 50_000;
+    const world = new World();
+    const manager = new AgentManager(world, null, { clock: () => now });
+    manager.handleWebSocketMessage({ sessions: [liveSession('first'), liveSession('leaving'), liveSession('last')] });
+    assert.equal(world.agents.size, 3);
+
+    const warnings = [];
+    const warn = console.warn;
+    console.warn = (...args) => warnings.push(args.join(' '));
+    try {
+        const poisoned = { ...liveSession('poisoned'), sessionId: null };
+        now += 1_000;
+        manager.handleWebSocketMessage({
+            sessions: [liveSession('first'), poisoned, null, { ...liveSession('last'), lastTool: 'Edit' }, liveSession('new')],
+        });
+        assert.equal(world.agents.has('new'), true, 'a session after the poisoned one still arrives');
+        assert.equal(world.agents.get('leaving').isDeparted, true, 'the departure sweep still runs');
+        assert.equal(world.agents.get('first').isDeparted, false);
+        assert.equal(world.agents.get('last').isDeparted, false);
+        assert.equal(manager.ingestErrors, 2);
+        assert.equal(warnings.length, 1);
+
+        // A session that stays malformed warns at most once a minute.
+        now += 1_000;
+        manager.handleWebSocketMessage({ sessions: [liveSession('first'), null, liveSession('last'), liveSession('new')] });
+        assert.equal(manager.ingestErrors, 3);
+        assert.equal(warnings.length, 1);
+        now += 60_000;
+        manager.handleWebSocketMessage({ sessions: [liveSession('first'), null, liveSession('last'), liveSession('new')] });
+        assert.equal(warnings.length, 2);
+    } finally {
+        console.warn = warn;
+    }
+});

@@ -11,6 +11,7 @@
 //   fps:updated                                 // number (~2/s) from IsometricRenderer loop, null when loop stops
 //   atmosphere:updated                           // atmosphere snapshot (~2/s) from IsometricRenderer; the audio directors listen
 //   ws:connected, ws:disconnected, ws:init, ws:update, ws:message
+//   ws:server-changed                            // { from, to, versionChanged }: a full frame from a different server (EN-4)
 export const BUILDING_EVENTS = Object.freeze({
     SELECTED: 'building:selected',
     DESELECTED: 'building:deselected',

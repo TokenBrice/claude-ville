@@ -9,6 +9,11 @@ import { makeTempDir } from '../tests/support/tmp.mjs';
 
 const repoRoot = path.resolve(import.meta.dirname, '..', '..');
 const tmpHome = makeTempDir('claudeville-server-security-');
+// SV-10 — a CLI-free PATH, as `support/isolated-server.mjs` uses: a real
+// `claude` (or `git`) found under the temp HOME writes state there and can
+// outlive cleanup.
+const binDir = path.join(tmpHome, 'bin');
+fs.mkdirSync(binDir, { recursive: true });
 let child = null;
 let childOutput = '';
 
@@ -210,6 +215,7 @@ try {
     env: {
       ...process.env,
       HOME: tmpHome,
+      PATH: binDir,
       CLAUDEVILLE_DISABLE_GIT_ENRICHMENT: '1',
       CLAUDEVILLE_INGEST_TOKEN: 'security-smoke-token',
       CLAUDEVILLE_SMOKE_PORT: String(port),

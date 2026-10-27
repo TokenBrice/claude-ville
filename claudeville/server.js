@@ -37,6 +37,8 @@ const { hookOverlay } = require('./adapters/hooks');
 
 // Claude adapter (teams/tasks are Claude-only)
 const claudeAdapter = adapters.find(a => a.provider === 'claude');
+// Codex adapter: its rollouts carry the account's rate limits (SV-6).
+const codexAdapter = adapters.find(a => a.provider === 'codex');
 
 // ─── Settings ───────────────────────────────────────────────
 const PORT = 4000;
@@ -50,6 +52,12 @@ const ACTIVE_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes
 // Sessions with unresolved tool calls are held past the active window so slow
 // work and prompts stay visible. Finished turns use the browser departure grace.
 const sessionResidency = new SessionResidency();
+// EN-4 — the server's identity on every full frame (`init`, `update`), so a
+// long-lived tab notices a restarted or upgraded server and can offer a reload.
+const SERVER_IDENTITY = Object.freeze({
+  version: readAppVersion(),
+  bootId: crypto.randomBytes(8).toString('hex'),
+});
 const STARTUP_BOOTSTRAP_DELAY_MS = 25;
 const STARTUP_STATS_WARNING_MS = 1500;
 const JSON_BODY_LIMIT_BYTES = 256 * 1024;
@@ -97,6 +105,15 @@ const GIT_STATE_SCAN_INTERVAL_MS = 5000;
 const GIT_STATE_MAX_PROJECTS = 40;
 
 // ─── Utility functions ──────────────────────────────────────
+
+function readAppVersion() {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+    return typeof pkg.version === 'string' && pkg.version ? pkg.version : null;
+  } catch {
+    return null;
+  }
+}
 
 function localHostValues(req) {
   const port = Number(req?.socket?.localPort) || PORT;
@@ -717,7 +734,30 @@ function handleGetChangelog(req, res) {
 
 // ─── Static file serving ─────────────────────────────────────
 
-function serveContainedFile(req, res, parsedUrl, { root, realRoot, label = 'Static' }) {
+// SV-11 — the static route serves the client only: the page shell, its
+// manifests and icons, and the client roots. Server source (`server.js`,
+// `adapters/`, `services/`) and agent docs (`CLAUDE.md`) live in the same
+// directory and are never served, nor is anything dropped there later.
+const CLIENT_STATIC_DIRECTORIES = new Set(['src', 'css', 'assets', 'vendor', 'tools']);
+const CLIENT_STATIC_FILES = new Set([
+  'index.html',
+  'favicon.svg',
+  'favicon-alert.svg',
+  'icon-192.png',
+  'icon-512.png',
+  'manifest.webmanifest',
+  'm.webmanifest',
+]);
+
+function isClientStaticPath(relativePath) {
+  const parts = String(relativePath || '').split(/[\\/]+/).filter(Boolean);
+  if (parts.length === 0 || parts[0] === '..') return false;
+  return parts.length === 1
+    ? CLIENT_STATIC_FILES.has(parts[0])
+    : CLIENT_STATIC_DIRECTORIES.has(parts[0]);
+}
+
+function serveContainedFile(req, res, parsedUrl, { root, realRoot, label = 'Static', allow = null }) {
   if (process.env.DEBUG_STATIC) {
     console.log(`[${label}] request`, req.url);
   }
@@ -739,6 +779,9 @@ function serveContainedFile(req, res, parsedUrl, { root, realRoot, label = 'Stat
     if (!isContainedPath(root, filePath)) {
       return sendError(res, 403, 'Forbidden');
     }
+    if (allow && !allow(path.relative(root, filePath))) {
+      return sendError(res, 404, 'Not Found');
+    }
 
     if (!fs.existsSync(filePath)) {
       return sendError(res, 404, 'Not Found');
@@ -758,6 +801,10 @@ function serveContainedFile(req, res, parsedUrl, { root, realRoot, label = 'Stat
     const realFilePath = realpathExistingPath(filePath);
     if (!isContainedPath(realRoot, realFilePath)) {
       return sendError(res, 403, 'Forbidden');
+    }
+    // A link inside a client root must also land inside one.
+    if (allow && !allow(path.relative(realRoot, realFilePath))) {
+      return sendError(res, 404, 'Not Found');
     }
     filePath = realFilePath;
     const fileStat = fs.statSync(filePath);
@@ -824,6 +871,7 @@ function handleStaticFile(req, res, parsedUrl) {
     root: STATIC_ROOT,
     realRoot: STATIC_REAL_ROOT,
     label: 'Static',
+    allow: isClientStaticPath,
   });
 }
 
@@ -1143,23 +1191,33 @@ function writeWebSocketFrame(socket, frame, { queueLatest = false } = {}) {
   }
 }
 
+// EN-9 — a tick this late means the server process itself was paused (laptop
+// sleep, SIGSTOP), not that every client went silent: on wake the timer runs
+// before the sockets' queued frames are read. Such a tick refreshes every
+// socket's last-seen time and only pings, so a wake never closes every tab.
+function heartbeatTick(now = Date.now()) {
+  const paused = lastHeartbeatAt > 0 && now - lastHeartbeatAt > 2 * WS_HEARTBEAT_INTERVAL_MS;
+  lastHeartbeatAt = now;
+  const pingFrame = createWebSocketFrame(String(now), 0x9);
+  for (const socket of wsClients) {
+    if (!socket || socket.destroyed) {
+      closeWebSocket(socket, null, { sendFrame: false });
+      continue;
+    }
+    if (paused) {
+      socket._cvLastSeen = now;
+    } else if (now - (socket._cvLastSeen || now) > WS_STALE_AFTER_MS) {
+      closeWebSocket(socket, null);
+      continue;
+    }
+    writeWebSocketFrame(socket, pingFrame);
+  }
+}
+
 function startWebSocketHeartbeat() {
   if (heartbeatTimer) return;
-  heartbeatTimer = setInterval(() => {
-    const now = Date.now();
-    const pingFrame = createWebSocketFrame(String(now), 0x9);
-    for (const socket of wsClients) {
-      if (!socket || socket.destroyed) {
-        closeWebSocket(socket, null, { sendFrame: false });
-        continue;
-      }
-      if (now - (socket._cvLastSeen || now) > WS_STALE_AFTER_MS) {
-        closeWebSocket(socket, null);
-        continue;
-      }
-      writeWebSocketFrame(socket, pingFrame);
-    }
-  }, WS_HEARTBEAT_INTERVAL_MS);
+  lastHeartbeatAt = Date.now();
+  heartbeatTimer = setInterval(() => heartbeatTick(), WS_HEARTBEAT_INTERVAL_MS);
 }
 
 // ─── Data broadcast ────────────────────────────────
@@ -1249,6 +1307,7 @@ function sendInitialData(socket, { scanning = null, staleAt = null, forceFresh =
       collisions: state.collisions,
       teams: state.teams,
       usage: state.usage,
+      server: SERVER_IDENTITY,
       seq,
       scanning: isScanning,
       staleAt: snapshotStaleAt,
@@ -1266,8 +1325,39 @@ function sendInitialData(socket, { scanning = null, staleAt = null, forceFresh =
       }
     }
   } catch (err) {
-    // Ignore initial data send failures.
+    replySnapshotUnavailable(socket, err);
   }
+}
+
+// VB-8 — the reply to an init or resync whose fresh collection failed, so the
+// client never waits on a swallowed failure: the retained canonical baseline,
+// marked scanning so the client knows it may be stale (the next broadcast then
+// sends a full update), or an explicit `snapshot-error` when no baseline
+// exists yet.
+function replySnapshotUnavailable(socket, err) {
+  console.warn('[WS] Snapshot for a client failed:', err?.message || err);
+  const state = lastBroadcastState;
+  if (!state) {
+    wsSend(socket, { type: 'snapshot-error', code: 'snapshot-unavailable', server: SERVER_IDENTITY, timestamp: Date.now() });
+    return;
+  }
+  provisionalInitPending = true;
+  lastDeltaSnapshotAt = 0;
+  wsSend(socket, {
+    type: 'init',
+    sessions: state.sessions,
+    gitEventFields: state.gitEventFields,
+    gitEventStringTables: state.gitEventStringTables,
+    gitEventsById: state.gitEventsById,
+    collisions: state.collisions,
+    teams: state.teams,
+    usage: state.usage,
+    server: SERVER_IDENTITY,
+    seq: broadcastSeq,
+    scanning: true,
+    staleAt: sessionSnapshotStaleAt || serverPerf.lastDirty?.at || Date.now(),
+    timestamp: Date.now(),
+  });
 }
 
 let watchDebounce = null;
@@ -1276,6 +1366,7 @@ let hookOverlayExpiryTimer = null;
 let hookOverlayBroadcastTimer = null;
 let dynamicWatchRetireTimer = null;
 let heartbeatTimer = null;
+let lastHeartbeatAt = 0;
 let watcherSchedulerTimer = null;
 let perfSampleTimer = null;
 let startupTimer = null;
@@ -1722,6 +1813,7 @@ function collectBroadcastPayload({ force = false, overlayOnly = false } = {}) {
     collisions: sessionSnapshot.collisions,
     teams: stage('teams', () => getTeamsCached({ force })),
     usage: stage('usage', () => usageQuota.fetchUsage()),
+    server: SERVER_IDENTITY,
     scanning: pendingTranscript,
     staleAt: pendingTranscript ? sessionSnapshotStaleAt : null,
     timestamp: Date.now(),
@@ -2838,7 +2930,12 @@ function startServer() {
     startupTimer = setTimeout(() => {
       startupTimer = null;
       const startupStats = printStartupStats(providers);
-      usageQuota.init();
+      usageQuota.init({
+        // A new quota snapshot or failure (SV-7) reaches open tabs at once
+        // through the overlay broadcast, without a transcript scan.
+        onChange: () => markProviderDataDirty({ kind: 'overlay', reason: 'usage-quota' }, null, { coalesce: false }),
+        codexRateLimits: () => codexAdapter?.getRateLimitObservation?.() || null,
+      });
       startFileWatcher(startupStats.watchPaths);
       startWebSocketHeartbeat();
     }, STARTUP_BOOTSTRAP_DELAY_MS);
@@ -2963,13 +3060,17 @@ module.exports = {
     keyedBroadcastState,
     createJsonPatch,
     handleTextMessage,
+    heartbeatTick,
     sendInitialData,
     broadcastUpdate,
     markProviderDataDirty,
     wsClients,
     serverPerf,
+    SERVER_IDENTITY,
   },
   _staticTest: {
+    handleStaticFile,
+    isClientStaticPath,
     serveContainedFile,
   },
   _providerHealthTest: {

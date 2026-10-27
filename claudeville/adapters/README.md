@@ -190,6 +190,8 @@ Sessions and details expose `freshness: { state, observedAt, ageMs }`. A success
 
 Claude quota utilization is provider-qualified pressure, never evidence of enforcement. Session `rateLimit: { enforced: true }` carries an observed rejection (including Claude `stop_reason: 'rate_limited'`). Account-wide enforcement also requires matching provider and explicit account ID. An unanswered question/approval remains the primary status.
 
+Codex account quota (SV-6, PV-7) is account data, never session data. `extractCodexRateLimits` reads each `token_count.rate_limits` in the 500-line token window: the `primary`/`secondary` windows (`used_percent`, `window_minutes`, `resets_at` in epoch seconds), `credits` (`balance` is a decimal string) and `rate_limit_reached_type`. The adapter keeps the newest observation per `session_meta.creator_account_id`, and the first scan also reads the newest rollout's tail once, so a server that boots with no live Codex session still knows the last observed quota. `getRateLimitObservation()` hands the newest observation to `services/usageQuota.js`, which serves it as `/api/usage.codex` ([local API](../../docs/local-api.md)). No session payload carries the account ID or the quota, and an account LIMIT never changes a villager's status (decision Q3).
+
 ### Git event extraction
 
 `gitEvents.js` extracts only high-signal repository events from raw tool commands:
@@ -311,8 +313,10 @@ Workflow tool sub-agents use the same JSONL schema but live one level deeper, gr
 {"type":"turn_context","payload":{"model":"gpt-5","effort":"medium"}}
 {"type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":\"ls\"}"}}
 {"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done."}]}}
-{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":12000,"output_tokens":340,"cached_input_tokens":8000},"last_token_usage":{"total_tokens":420},"model_context_window":200000}}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":12000,"output_tokens":340,"cached_input_tokens":8000},"last_token_usage":{"total_tokens":420},"model_context_window":200000},"rate_limits":{"primary":{"used_percent":100.0,"window_minutes":10080,"resets_at":1793600373},"secondary":null,"credits":{"has_credits":true,"unlimited":false,"balance":"2510.33"},"rate_limit_reached_type":null}}}
 ```
+
+`session_meta` also carries `creator_account_id`, the key for the account quota above.
 
 Renamed Codex sessions are read from `~/.codex/session_index.jsonl`:
 

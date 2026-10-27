@@ -51,6 +51,10 @@ export function initialVillageState() {
             attempts: 0,
             nextRetryAt: null,
             lastSnapshotAt: null,
+            // EN-2 — the WebSocket client's liveness: the last message of any
+            // kind (a pong included), and whether a ping went unanswered.
+            lastMessageAt: null,
+            stale: false,
             lastErrorCode: null,
         },
         providers: [],
@@ -124,7 +128,7 @@ export function derivePhase(state) {
  *   { type: 'providers', providers: [...] }
  *   { type: 'snapshot', agentCount, at }        // proof of fresh data
  *   { type: 'source-failed', code }
- *   { type: 'link', state, attempts, nextRetryAt, lastErrorCode }
+ *   { type: 'link', state, attempts, nextRetryAt, lastErrorCode, lastMessageAt, stale }
  *   { type: 'boot-failed', code }
  *   { type: 'retry' }
  *   { type: 'storage', chronicle }
@@ -173,6 +177,8 @@ export function reduceVillageState(state = initialVillageState(), action = {}) {
             if (action.attempts !== undefined) next.link.attempts = Math.max(0, Number(action.attempts) || 0);
             if (action.nextRetryAt !== undefined) next.link.nextRetryAt = Number(action.nextRetryAt) || null;
             if (action.lastErrorCode !== undefined) next.link.lastErrorCode = normalizeCode(action.lastErrorCode);
+            if (action.lastMessageAt !== undefined) next.link.lastMessageAt = Number(action.lastMessageAt) || null;
+            if (action.stale !== undefined) next.link.stale = action.stale === true;
             break;
 
         case 'boot-failed':
@@ -197,15 +203,33 @@ export function reduceVillageState(state = initialVillageState(), action = {}) {
     return next;
 }
 
+// When the village last heard from its source: for the WebSocket, any message
+// (a pong included); otherwise the last good snapshot.
+function lastHeardAt(state) {
+    const link = state?.link || {};
+    if (state?.source !== 'websocket') return link.lastSnapshotAt || null;
+    return Math.max(Number(link.lastMessageAt) || 0, Number(link.lastSnapshotAt) || 0) || null;
+}
+
 /**
- * True when the last good snapshot is old enough that the operator should
- * discount the scene. Returns false while still syncing: unknown is not stale.
+ * True when the operator should discount the scene. Returns false while still
+ * syncing: unknown is not stale.
+ *
+ * EN-2 — a live WebSocket link is judged by liveness, not by snapshot age: a
+ * quiet, healthy village gets no broadcasts, yet its pings are answered. The
+ * client flags `link.stale` when one goes unanswered, and a socket that is
+ * down ages from the last message it heard. Any other source (REST polling)
+ * still ages its last good snapshot.
  */
 export function isStale(state, now = Date.now(), staleAfterMs = DEFAULT_STALE_AFTER_MS) {
     if (state?.source === 'simulator') return false;
-    const at = state?.link?.lastSnapshotAt;
-    if (!at) return false;
-    return (now - at) > staleAfterMs;
+    const link = state?.link || {};
+    if (!link.lastSnapshotAt) return false;
+    if (state.source === 'websocket') {
+        if (link.stale === true) return true;
+        if (link.state === LinkState.LIVE) return false;
+    }
+    return (now - lastHeardAt(state)) > staleAfterMs;
 }
 
 /** Age of the last good snapshot in ms, or null when none has arrived. */
@@ -247,7 +271,7 @@ export function linkStatusText(state, now = Date.now()) {
     const link = state?.link || {};
     if (!link.lastSnapshotAt) return 'SYNCING';
     if (isStale(state, now)) {
-        const age = Math.round((snapshotAgeMs(state, now) || 0) / 1000);
+        const age = Math.round(Math.max(0, now - (lastHeardAt(state) || now)) / 1000);
         return `STALE / last seen ${age}s ago`;
     }
     switch (link.state) {
