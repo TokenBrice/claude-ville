@@ -9,6 +9,7 @@
 // different tool, command or agent passing never closes one.
 
 import { classifyShellInput } from '../../domain/services/ToolIdentity.js';
+import { flagIsFailure } from '../../application/OutcomeSignals.js';
 
 // A failure older than this when its command passes is history, not a mend.
 export const MEND_WINDOW_MS = 30 * 60_000;
@@ -91,8 +92,10 @@ export class MendLedger {
 
         if (exitCode !== 0) {
             // Only a real process exit opens a mend; a flag-only failure is
-            // a chit, not evidence the command itself failed.
-            if (event.exitCodeSource !== 'exit') return null;
+            // a chit, not evidence the command itself failed, except where
+            // the flag is the provider's only outcome (RG-11: OMP, Kimi).
+            if (event.exitCodeSource !== 'exit'
+                && !(event.exitCodeSource === 'flag' && flagIsFailure(event.provider))) return null;
             if (at < (this._quietUntil.get(key) ?? -Infinity)) return null;
             // The newest failure stands for its command.
             this._open.delete(key);

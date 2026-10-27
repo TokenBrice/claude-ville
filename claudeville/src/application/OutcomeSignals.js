@@ -111,16 +111,29 @@ export function verifiedOutcomeFact(outcome) {
     };
 }
 
+// RG-11 — the providers whose error flag (`exitCodeSource: 'flag'`) is a
+// failed command. OMP records no exit codes, so its `isError` flag is its
+// only outcome; a Kimi Code flag is a result that carried no exit code.
+// Claude's flags are harness refusals, permission denials and Edit misses,
+// and Codex and OpenCode report real exits only.
+const FLAG_FAILURE_PROVIDERS = new Set(['omp', 'kimi']);
+
+/** Whether a `'flag'` failure from this provider is a failed command. */
+export function flagIsFailure(provider) {
+    return FLAG_FAILURE_PROVIDERS.has(String(provider || '').toLowerCase());
+}
+
 /**
  * `tool:result`: a non-zero exit is a failure; exit 0 (or none) is silent.
  * A code the adapter only inferred from an error flag (`exitCodeSource:
  * 'flag'`: an Edit that found no match, a refused permission, a harness
- * guard) is not a failed command, so it raises no "Command failed".
+ * guard) is not a failed command, so it raises no "Command failed", except
+ * where the flag is the provider's only outcome (`flagIsFailure`).
  */
 export function toolFailedFact(event) {
     const exitCode = finite(event?.exitCode);
     if (exitCode == null || exitCode === 0) return null;
-    if (event.exitCodeSource === 'flag') return null;
+    if (event.exitCodeSource === 'flag' && !flagIsFailure(event.provider)) return null;
     return {
         kind: 'toolFailed',
         agentId: idOf(event.agentId),

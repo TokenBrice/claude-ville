@@ -109,6 +109,15 @@ test('a sub-agent first prompt is read once per file identity, and again after a
   assert.equal(byId(rewritten.sessions, 'subagent-crew').subagentKind ?? null, null, 'the new prompt matches no launch');
 });
 
+test('PV-15: a sub-agent whose meta names its launch never reads its head', () => {
+  fs.writeFileSync(childPath('meta'), jsonl([userLine('m1', 'Map the fixture'), assistantLine('m2')]));
+  fs.writeFileSync(childPath('meta').replace(/\.jsonl$/, '.meta.json'), JSON.stringify({ agentType: 'general-purpose', toolUseId: 'toolu_1' }));
+  const first = scan();
+  assert.equal(byId(first.sessions, 'subagent-meta').agentName, 'Fixture crew');
+  assert.equal(byId(first.sessions, 'subagent-meta').subagentKind, 'Explore');
+  assert.equal(first.headBytes, 0, 'the launch matches by toolUseId, with no first-prompt read');
+});
+
 test('a sub-agent without a prompt yet is re-read as it grows', () => {
   fs.writeFileSync(childPath('late'), jsonl([assistantLine('l1')]));
   assert.equal(byId(scan().sessions, 'subagent-late').subagentKind ?? null, null);

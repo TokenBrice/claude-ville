@@ -120,3 +120,33 @@ test('Agent constructor enforces prompt-plan absence and bounds', () => {
     assert.equal(bounded.todos[1].phase, null);
     assert.equal(bounded.gitBranch.length, 256);
 });
+
+// PV-15 / PV-2: the nested crew's root and the crew a closed turn waits on
+// survive the client mapping, on the first upsert and on a later update
+// (Dashboard folds child rows under `rootSessionId`).
+test('rootSessionId and backgroundPending reach the World Agent and its updates', () => {
+    const { world, updates } = recordingWorld();
+    const manager = new AgentManager(world, null, { clock: () => 1_800_000_001_000 });
+    const child = liveSession({
+        sessionId: 'subagent-helper', agentId: 'helper',
+        parentSessionId: 'subagent-lane', rootSessionId: 'lead-session',
+        turnState: 'awaiting_input',
+        backgroundPending: { count: 2, kinds: ['agent', 'bash', 7], since: 1_799_999_990_000 },
+    });
+    const payload = manager._sessionToAgentPayload(child, null);
+    assert.equal(payload.parentSessionId, 'subagent-lane');
+    assert.equal(payload.rootSessionId, 'lead-session');
+    assert.deepEqual(payload.backgroundPending, { count: 2, kinds: ['agent', 'bash'], since: 1_799_999_990_000 });
+    assert.equal(payload.status, 'working', 'waiting on crew is working-family');
+    assert.equal(manager._sessionToAgentPayload(liveSession({ backgroundPending: { count: 0 } }), null).backgroundPending, null);
+
+    manager.handleWebSocketMessage({ sessions: [structuredClone(child)] });
+    const agent = world.agents.get('subagent-helper');
+    assert.equal(agent.rootSessionId, 'lead-session');
+    assert.equal(agent.backgroundPending.count, 2);
+    manager.handleWebSocketMessage({ sessions: [{ ...structuredClone(child), rootSessionId: 'other-lead', backgroundPending: null }] });
+    assert.ok(updates.some(update => update.rootSessionId === 'other-lead'), 'a changed root is an update');
+    assert.equal(world.agents.get('subagent-helper').rootSessionId, 'other-lead');
+    assert.equal(world.agents.get('subagent-helper').backgroundPending, null);
+    manager.stop();
+});

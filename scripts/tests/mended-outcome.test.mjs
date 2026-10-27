@@ -63,6 +63,19 @@ test('flag-only and unknown failures never open a mend; unknown never closes one
     assert.ok(ledger.observe(result('pass2', 0, { at: T0 + 3000 })));
 });
 
+test('RG-11: an OMP or Kimi flagged failure mends when the same command passes', () => {
+    for (const provider of ['omp', 'kimi']) {
+        const ledger = new MendLedger();
+        ledger.observe({ ...result('fail', 1, { source: 'flag' }), provider });
+        const mend = ledger.observe({ ...result('pass', 0, { at: T0 + 1000, source: 'flag' }), provider });
+        assert.ok(mend, `${provider}: its flag is its outcome`);
+        assert.equal(mend.failedExit, 1);
+    }
+    const claude = new MendLedger();
+    claude.observe({ ...result('fail', 1, { source: 'flag' }), provider: 'claude' });
+    assert.equal(claude.openCount, 0, 'a Claude refusal never opens a mend');
+});
+
 test('a different command, tool or agent passing never mends', () => {
     const ledger = new MendLedger();
     ledger.observe(result('f', 1));

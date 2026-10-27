@@ -36,6 +36,7 @@ const AGENT_SIGNATURE_FIELDS = Object.freeze([
     'agentPath',
     'subagentKind',
     'parentSessionId',
+    'rootSessionId',
     'workflowId',
     'workflowName',
     'model',
@@ -60,6 +61,7 @@ const AGENT_SIGNATURE_FIELDS = Object.freeze([
     'gitEvents',
     'permissionMode',
     'turnState',
+    'backgroundPending',
     'pendingTool',
     'pendingSince',
     'waitReason',
@@ -98,6 +100,21 @@ const VERIFIED_OUTCOME_KEY_LIMIT = 512;
 const EXECUTION_TASK_LIMIT = 12;
 // Mirrors the adapter contract's bounded last-result summary (adapters/toolResults.js).
 const LAST_RESULT_LIMIT = 5;
+
+// PV-2 — `{ count, kinds, since }` of the background work a closed turn
+// still waits on (adapters/README.md), else null.
+function normalizeBackgroundPending(value) {
+    const count = Math.trunc(Number(value?.count));
+    if (!Number.isFinite(count) || count <= 0) return null;
+    const since = Number(value.since);
+    return {
+        count,
+        kinds: Array.isArray(value.kinds)
+            ? value.kinds.filter(kind => typeof kind === 'string' && kind).slice(0, 4).map(kind => kind.slice(0, 32))
+            : [],
+        since: value.since != null && Number.isFinite(since) ? since : null,
+    };
+}
 
 function normalizeExecutionTaskSubject(value) {
     if (typeof value !== 'string') return '';
@@ -667,7 +684,9 @@ export class AgentManager {
         const teamInfo = teamMembers ? teamMembers.get(session.agentId) : null;
         const agentName = teamInfo?.name || session.name || session.agentName || session.nickname || null;
         const { status, lastSessionActivity, activityAgeMs } = this._sessionTiming(session);
-        const hasFreshTool = status === AgentStatus.WORKING && !!session.lastTool;
+        // A closed turn waiting on its crew (PV-2) runs no tool of its own.
+        const hasFreshTool = status === AgentStatus.WORKING && !!session.lastTool
+            && session.turnState !== 'awaiting_input';
 
         // Team name is an explicit provider field. Do not infer it from project
         // paths; Codex/Gemini intentionally degrade to null.
@@ -685,6 +704,8 @@ export class AgentManager {
             agentType: session.agentType || null,
             agentPath: typeof session.agentPath === 'string' && session.agentPath ? session.agentPath.slice(0, 512) : null,
             parentSessionId: session.parentSessionId || null,
+            // PV-15 — the main session a nested crew belongs to.
+            rootSessionId: session.rootSessionId || null,
             workflowId: session.workflowId || null,
             workflowName: session.workflowName || null,
             model: teamInfo?.model || session.model || 'unknown',
@@ -728,6 +749,7 @@ export class AgentManager {
             gitEvents: this._rehydrateGitEvents(session.gitEvents, gitEventWire),
             permissionMode: session.permissionMode ?? null,
             turnState: session.turnState ?? 'unknown',
+            backgroundPending: normalizeBackgroundPending(session.backgroundPending),
             pendingTool: session.pendingTool ?? null,
             pendingSince: session.pendingSince !== null
                 && session.pendingSince !== undefined

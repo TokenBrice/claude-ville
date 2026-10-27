@@ -1,0 +1,2 @@
+{"type":"user","uuid":"np1","timestamp":"2026-09-01T12:00:02.000Z","isSidechain":true,"agentId":"nestedparent","sessionId":"nest-main","message":{"role":"user","content":"Map the fixture"}}
+{"type":"assistant","uuid":"np2","timestamp":"2026-09-01T12:00:10.000Z","isSidechain":true,"agentId":"nestedparent","sessionId":"nest-main","message":{"role":"assistant","model":"claude-opus-5-5","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_nested","name":"Agent","input":{"description":"Nested helper","subagent_type":"Explore","prompt":"Check the nested parser."}}]}}

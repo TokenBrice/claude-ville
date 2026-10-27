@@ -74,11 +74,13 @@ export class Agent {
         agentName,
         agentType,
         parentSessionId,
+        rootSessionId,
         workflowId,
         workflowName,
         lastSessionActivity,
         activityAgeMs,
         turnState,
+        backgroundPending,
         pendingTool,
         pendingSince,
         waitReason,
@@ -106,6 +108,8 @@ export class Agent {
         this.agentName = agentName || name || null;
         this.agentType = agentType || null;
         this.parentSessionId = parentSessionId || null;
+        // PV-15 — the main session at the top of a nested crew, or null.
+        this.rootSessionId = rootSessionId || null;
         this.workflowId = workflowId || null;
         this.workflowName = workflowName || null;
         // isAdvisor (below) keys off the raw '__advisor' agentName; the
@@ -145,6 +149,8 @@ export class Agent {
         // says why a WAITING_ON_USER agent is blocked; `resident` marks a session
         // the server is holding past its active window.
         this.turnState = turnState || 'unknown';
+        // PV-2 — background work a closed turn still waits on, or null.
+        this.backgroundPending = backgroundPending || null;
         this.pendingTool = pendingTool || null;
         this.pendingSince = optionalNumber(pendingSince);
         this.waitReason = waitReason || null;

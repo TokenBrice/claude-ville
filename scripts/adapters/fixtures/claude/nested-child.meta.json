@@ -1,0 +1,1 @@
+{"agentType":"general-purpose","isBuiltIn":true,"description":"Helper meta description","toolUseId":"toolu_nested","parentAgentId":"nestedparent","spawnDepth":2,"requestShape":"agent-tool","requestNonInteractive":true}

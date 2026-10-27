@@ -234,9 +234,10 @@ function projectClaudeExecution(sessions, taskGroups = []) {
   );
   return source.map((session) => {
     const sessionId = String(session?.sessionId || '');
+    // A session's whole crew, nested children included (PV-15 `rootSessionId`).
     const children = source.filter(candidate => (
       candidate
-      && String(candidate.parentSessionId || '') === sessionId
+      && String(candidate.rootSessionId || candidate.parentSessionId || '') === sessionId
     ));
     const group = groups.get(sessionId);
     if (group) {
@@ -572,20 +573,28 @@ function projectToolResultContent(content) {
   });
 }
 
+// PV-13 — narration cut at the projection bound ends in an ellipsis, so
+// the dialogue `full` it feeds never passes a cut sentence off as whole.
+function boundedNarration(text) {
+  return text.length > TRANSCRIPT_PROJECTION_TEXT_BYTES
+    ? `${boundedProjectionString(text, TRANSCRIPT_PROJECTION_TEXT_BYTES - 1)}…`
+    : text;
+}
+
 function projectTranscriptContentBlock(block) {
   if (!block || typeof block !== 'object') return null;
   if (block.type === 'text') {
     const text = typeof block.text === 'string' ? block.text.trim() : '';
     return {
       type: 'text',
-      text: boundedProjectionString(text, TRANSCRIPT_PROJECTION_TEXT_BYTES),
+      text: boundedNarration(text),
     };
   }
   if (block.type === 'thinking') {
     const thinking = typeof block.thinking === 'string' ? block.thinking.trim() : '';
     return {
       type: 'thinking',
-      thinking: boundedProjectionString(thinking, TRANSCRIPT_PROJECTION_TEXT_BYTES),
+      thinking: boundedNarration(thinking),
     };
   }
 
@@ -641,6 +650,11 @@ function projectClaudeTailEntry(entry) {
     'model',
     'cwd',
     'gitBranch',
+    // PV-4b — Claude Code's own API-error record: `isApiErrorMessage`, its
+    // `error` kind (for example 'server_error') and HTTP `apiErrorStatus`.
+    'isApiErrorMessage',
+    'error',
+    'apiErrorStatus',
   ]) {
     if (entry[field] !== undefined) {
       const value = entry[field];
@@ -716,7 +730,7 @@ function readJsonLines(filePath, { from = 'end', count = GIT_EVENT_SCAN_LINES } 
     tailMaxBytes: MAX_TAIL_BYTES,
     source: 'claude',
     project: from === 'end' ? projectClaudeTailEntry : undefined,
-    projectionKey: from === 'end' ? 'claude-tail-v4' : undefined,
+    projectionKey: from === 'end' ? 'claude-tail-v5' : undefined,
   });
 }
 
@@ -952,6 +966,112 @@ function emptyTokenUsage() {
   };
 }
 
+// PV-2 — background work a session started and has not heard back from:
+// async `Agent` launches (and `SendMessage` resumes), teammates,
+// `run_in_background` Bash and Monitor watches. Each start carries ids the
+// harness later quotes in a `<task-notification>` (`<task-id>`,
+// `<tool-use-id>`); a notification with a status, or a `TaskStop`, ends it.
+// Folded over the whole transcript with the aggregate, so a launch far
+// behind the tail window still counts. The list is replaced, never mutated,
+// so clones and provisional folds share it safely.
+const BACKGROUND_ITEM_LIMIT = 64;
+// A background shell with no notification counts at most this long.
+const BACKGROUND_SHELL_MAX_MS = 30 * 60 * 1000;
+const TASK_NOTIFICATION_PATTERN = /<task-notification>([\s\S]*?)(?:<\/task-notification>|$)/g;
+const TASK_STOP_TOOLS = new Set(['TaskStop', 'KillShell', 'KillBash']);
+
+function backgroundId(value) {
+  return typeof value === 'string' && value.trim() ? value.trim().slice(0, 256) : null;
+}
+
+// Harness notices only: a queued notification, its mid-turn delivery, or a
+// user record's own text. Never an assistant quoting one or a tool result
+// that read a file holding one.
+function harnessNoticeText(entry) {
+  if (entry.type === 'queue-operation') {
+    return entry.operation === 'enqueue' && typeof entry.content === 'string' ? entry.content : '';
+  }
+  if (entry.type === 'attachment') {
+    const attachment = entry.attachment;
+    return attachment?.type === 'queued_command' && typeof attachment.prompt === 'string' ? attachment.prompt : '';
+  }
+  if (entry.type !== 'user') return '';
+  const content = entry.message?.content;
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content.filter(block => block?.type === 'text' && typeof block.text === 'string').map(block => block.text).join('\n');
+}
+
+// The ids every finished task in `text` names. A Monitor `<event>` without
+// a status is news from a watch that still runs, not its end.
+function finishedTaskIds(text) {
+  if (!text || !text.includes('<task-notification>')) return [];
+  const ids = [];
+  for (const [, body] of text.matchAll(TASK_NOTIFICATION_PATTERN)) {
+    if (body.includes('<event>') && !body.includes('<status>')) continue;
+    for (const tag of ['task-id', 'tool-use-id']) {
+      const id = backgroundId(body.match(new RegExp(`<${tag}>([^<]{1,256})</${tag}>`))?.[1]);
+      if (id) ids.push(id);
+    }
+  }
+  return ids;
+}
+
+function foldBackgroundWork(items, entry) {
+  if (!entry || typeof entry !== 'object') return items;
+  let next = items;
+  const at = toEpochMs(entry.timestamp ?? entry.created_at);
+  const end = (ids) => {
+    if (!ids.length || !next.length) return;
+    const kept = next.filter(item => !item.ids.some(id => ids.includes(id)));
+    if (kept.length !== next.length) next = kept;
+  };
+  const start = (item) => {
+    next = [...next.filter(other => !other.ids.some(id => item.ids.includes(id))), item]
+      .slice(-BACKGROUND_ITEM_LIMIT);
+  };
+
+  if (entry.type === 'assistant' && Array.isArray(entry.message?.content)) {
+    for (const block of entry.message.content) {
+      if (block?.type !== 'tool_use') continue;
+      if (TASK_STOP_TOOLS.has(block.name)) {
+        const id = backgroundId(block.input?.task_id) || backgroundId(block.input?.shell_id) || backgroundId(block.input?.bash_id);
+        if (id) end([id]);
+      } else if (block.name === 'Monitor' && backgroundId(block.id)) {
+        start({ kind: 'monitor', ids: [backgroundId(block.id)], agentId: null, at });
+      }
+    }
+    return next;
+  }
+
+  if (entry.type === 'user' && Array.isArray(entry.message?.content)) {
+    const block = entry.message.content.find(item => item?.type === 'tool_result');
+    const toolUseId = backgroundId(block?.tool_use_id);
+    const result = entry.toolUseResult && typeof entry.toolUseResult === 'object' && !Array.isArray(entry.toolUseResult)
+      ? entry.toolUseResult
+      : null;
+    const bashId = backgroundId(result?.backgroundTaskId);
+    const teammate = result?.status === 'teammate_spawned';
+    const agentId = backgroundId(result?.isAsync === true || teammate ? result.agentId : null)
+      || backgroundId(result?.resumedAgentId);
+    if (bashId) {
+      start({ kind: 'bash', ids: [bashId, toolUseId].filter(Boolean), agentId: null, at });
+    } else if (agentId) {
+      start({ kind: teammate ? 'teammate' : 'agent', ids: [agentId, toolUseId].filter(Boolean), agentId, at });
+    } else if (toolUseId && backgroundId(result?.taskId)
+      && next.some(item => item.kind === 'monitor' && item.ids.includes(toolUseId))) {
+      // A Monitor's result names the task id its notifications quote.
+      next = next.map(item => (item.kind === 'monitor' && item.ids.includes(toolUseId)
+        ? { ...item, ids: [...item.ids, backgroundId(result.taskId)] }
+        : item));
+    }
+    // A watch that failed to start never runs.
+    if (toolUseId && block?.is_error === true) end([toolUseId]);
+  }
+  end(finishedTaskIds(harnessNoticeText(entry)));
+  return next;
+}
+
 function createTranscriptAggregate(filePath) {
   return {
     filePath,
@@ -965,9 +1085,11 @@ function createTranscriptAggregate(filePath) {
     usage: emptyTokenUsage(),
     launches: [],
     projection: createTranscriptProjection(),
+    background: [],
     displayUsage: null,
     displayLaunches: null,
     displayProjection: null,
+    displayBackground: null,
   };
 }
 
@@ -997,6 +1119,7 @@ function appendTranscriptGuard(aggregate, chunk) {
 function addTranscriptEntry(aggregate, entry) {
   const msg = isClaudeConversationRecord(entry) ? entry.message : null;
   addTranscriptProjectionEntry(aggregate.projection, entry, msg);
+  aggregate.background = foldBackgroundWork(aggregate.background || [], entry);
   if (!msg) return;
 
   if (msg.usage) {
@@ -1026,6 +1149,8 @@ function addTranscriptEntry(aggregate, entry) {
         ? block.input.subagent_type.substring(0, 128)
         : null,
       promptHash: prompt ? stableHash(prompt) : null,
+      // PV-15 — the id a child's meta file names (`toolUseId`).
+      toolUseId: typeof block.id === 'string' && block.id ? block.id.substring(0, 256) : null,
     });
     if (aggregate.launches.length > TRANSCRIPT_MAX_AGENT_LAUNCHES) {
       aggregate.launches.splice(0, aggregate.launches.length - TRANSCRIPT_MAX_AGENT_LAUNCHES);
@@ -1117,6 +1242,10 @@ function estimateTranscriptAggregateBytes(aggregate) {
   if (aggregate.displayProjection && aggregate.displayProjection !== aggregate.projection) {
     bytes += estimateJsonValueBytes(aggregate.displayProjection);
   }
+  bytes += estimateJsonValueBytes(aggregate.background || []);
+  if (aggregate.displayBackground && aggregate.displayBackground !== aggregate.background) {
+    bytes += estimateJsonValueBytes(aggregate.displayBackground);
+  }
 
   const seenLaunches = new Set();
   const addLaunches = (launches) => {
@@ -1129,7 +1258,8 @@ function estimateTranscriptAggregateBytes(aggregate) {
         + estimateStringBytes(launch.name)
         + estimateStringBytes(launch.agentType)
         + estimateStringBytes(launch.subagentKind)
-        + estimateStringBytes(launch.promptHash);
+        + estimateStringBytes(launch.promptHash)
+        + estimateStringBytes(launch.toolUseId);
     }
   };
   addLaunches(aggregate.launches);
@@ -1230,6 +1360,7 @@ function finishTranscriptAggregate(aggregate, target) {
   aggregate.displayUsage = aggregate.usage;
   aggregate.displayLaunches = aggregate.launches;
   aggregate.displayProjection = aggregate.projection;
+  aggregate.displayBackground = aggregate.background;
   if (!aggregate.discardingLine && aggregate.trailing.length > 0) {
     let trailing = aggregate.trailing;
     if (trailing[trailing.length - 1] === 13) trailing = trailing.subarray(0, trailing.length - 1);
@@ -1238,11 +1369,13 @@ function finishTranscriptAggregate(aggregate, target) {
         usage: { ...aggregate.usage },
         launches: aggregate.launches.slice(),
         projection: cloneTranscriptProjection(aggregate.projection),
+        background: aggregate.background,
       };
       addTranscriptEntry(provisional, JSON.parse(trailing.toString('utf8')));
       aggregate.displayUsage = provisional.usage;
       aggregate.displayLaunches = provisional.launches;
       aggregate.displayProjection = provisional.projection;
+      aggregate.displayBackground = provisional.background;
     } catch {
       // An incomplete trailing record remains pending until a newline arrives.
     }
@@ -1487,7 +1620,8 @@ function summarizeToolInput(input, { maxLength = 60, basenameFile = true } = {})
 // prompt is read once per file identity instead of re-reading a 512 KB head
 // per sub-agent per scan. A shrink or an older mtime means a rewrite; a
 // missing prompt is re-read while the file still grows inside the head
-// window. PV-15's toolUseId launch matching later replaces this read.
+// window. PV-15: only a child whose meta file records no `toolUseId` (and
+// is no teammate) still matches its launch this way; the memo stays for it.
 const FIRST_PROMPT_CACHE_MAX_ENTRIES = 512;
 const _firstPromptCache = new Map();
 
@@ -1530,6 +1664,45 @@ function getAgentLaunches(sessionFilePath) {
   } catch {
     return [];
   }
+}
+
+// A crew member's transcript is active on the same window as
+// `latestSubAgentActivity`. Stat the one file: that cache rescans its
+// directory only every 30 s, so it can miss a child launched just now.
+function childTranscriptActive(subagentsDir, agentId, activeThresholdMs, now) {
+  if (!subagentsDir || !agentId || path.basename(agentId) !== agentId) return false;
+  try {
+    return now - fs.statSync(path.join(subagentsDir, `agent-${agentId}.jsonl`)).mtimeMs <= activeThresholdMs;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * PV-2 — `{ count, kinds, since }` for the background work this session
+ * still waits on, else null. An agent or teammate counts while its own
+ * transcript is active; a shell or watch counts for at most 30 minutes.
+ * `since` is when the oldest counted item started.
+ */
+function readBackgroundPending(sessionFilePath, { subagentsDir = null, activeThresholdMs = 0, now = Date.now() } = {}) {
+  if (!sessionFilePath) return null;
+  let items;
+  try {
+    const aggregate = getTranscriptAggregate(sessionFilePath);
+    items = aggregate?.displayBackground || aggregate?.background || [];
+  } catch {
+    return null;
+  }
+  const counted = items.filter(item => (item.agentId
+    ? childTranscriptActive(subagentsDir, item.agentId, activeThresholdMs, now)
+    : Number.isFinite(item.at) && now - item.at < BACKGROUND_SHELL_MAX_MS));
+  if (!counted.length) return null;
+  const starts = counted.map(item => item.at).filter(Number.isFinite);
+  return {
+    count: counted.length,
+    kinds: [...new Set(counted.map(item => item.kind))],
+    since: starts.length ? Math.min(...starts) : null,
+  };
 }
 
 // ─── Session parsing ────────────────────────────────────────
@@ -1582,7 +1755,8 @@ function getClaudeTranscriptSummary(filePath, tailCount, project = null) {
         const msg = entry.message;
         if (!msg || msg.role !== 'assistant') continue;
 
-        const stub = isClaudeModelStub(msg.model);
+        // An API-error record is Claude Code's own text, whatever its model.
+        const stub = isClaudeModelStub(msg.model) || entry.isApiErrorMessage === true;
         if (!detail.model && msg.model && !stub) detail.model = msg.model;
 
         const content = msg.content;
@@ -1874,9 +2048,18 @@ function turnStateFromEntries(entries, { permissionMode, skipSidechain, now }) {
 
   const lastAssistant = entries[lastAssistantIndex];
   const stopReason = lastAssistant?.message?.stop_reason || null;
+  // PV-4b — the turn died on an API error Claude Code already retried: it
+  // is over, and it ended in an error.
+  const apiError = lastAssistant?.isApiErrorMessage === true && !pendingTool
+    ? {
+      kind: typeof lastAssistant.error === 'string' && lastAssistant.error ? lastAssistant.error.slice(0, 64) : 'api_error',
+      status: Number.isFinite(lastAssistant.apiErrorStatus) ? lastAssistant.apiErrorStatus : null,
+      at: toEpochMs(lastAssistant.timestamp),
+    }
+    : null;
 
-  return withSignal({ rateLimit: { enforced: stopReason === 'rate_limited' }, ...deriveTurnState({
-    turnEnded: !pendingTool && stopReason === 'end_turn',
+  return withSignal({ rateLimit: { enforced: stopReason === 'rate_limited' }, apiError, ...deriveTurnState({
+    turnEnded: !pendingTool && (stopReason === 'end_turn' || apiError !== null),
     turnEndedAt: toEpochMs(lastAssistant?.timestamp),
     pendingTool,
     pendingSince,
@@ -2321,8 +2504,10 @@ function boundedMetaText(value, maxLength) {
 
 // `subagents/agent-<id>.meta.json`: the launch identity Claude records beside
 // a subagent transcript (`name`, `description`, `agentType`, and for
-// teammates `teamName`, `color`, `spawnedAgentType`). Read defensively: size
-// capped, unknown shapes ignored, cached by file stamp.
+// teammates `teamName`, `color`, `spawnedAgentType`), plus its lineage
+// (PV-15): `toolUseId` names the launching `Agent` call, and `parentAgentId`
+// the agent that made it when that is not the main thread. Read
+// defensively: size capped, unknown shapes ignored, cached by file stamp.
 function readSubAgentMeta(transcriptPath) {
   const metaPath = transcriptPath.replace(/\.jsonl$/, '.meta.json');
   let stat;
@@ -2346,6 +2531,9 @@ function readSubAgentMeta(transcriptPath) {
         kind: boundedMetaText(raw.spawnedAgentType, 128) || boundedMetaText(raw.agentType, 128),
         teamName: boundedMetaText(raw.teamName, 256),
         color: boundedMetaText(raw.color, 32),
+        parentAgentId: boundedMetaText(raw.parentAgentId, 256),
+        toolUseId: boundedMetaText(raw.toolUseId, 256),
+        spawnDepth: Number.isInteger(raw.spawnDepth) && raw.spawnDepth >= 0 ? raw.spawnDepth : null,
       };
     }
   } catch { /* malformed metadata is no metadata */ }
@@ -2357,7 +2545,12 @@ function readSubAgentMeta(transcriptPath) {
   return meta;
 }
 
-function buildSubAgentSession({ filePath, agentId, decodedProject, parentSessionId, name, agentType, subagentKind = null, teamName = null, agentColor = null, workflowId = null, workflowName = null, lastActivity }) {
+// A main transcript's subagents live in `<session>/subagents/`.
+function mainSubagentsDir(sessionFilePath) {
+  return sessionFilePath ? path.join(sessionFilePath.replace(/\.jsonl$/, ''), 'subagents') : null;
+}
+
+function buildSubAgentSession({ filePath, agentId, decodedProject, parentSessionId, rootSessionId, name, agentType, subagentKind = null, teamName = null, agentColor = null, workflowId = null, workflowName = null, lastActivity, activeThresholdMs = 0 }) {
   const detail = getSubAgentDetail(filePath, decodedProject);
   const sessionId = `subagent-${agentId}`;
   const permissionMode = getPermissionMode(filePath);
@@ -2365,6 +2558,11 @@ function buildSubAgentSession({ filePath, agentId, decodedProject, parentSession
   return {
     ...getClaudeTurnState(filePath, permissionMode),
     ...getTranscriptProjection(filePath, decodedProject, model),
+    // A nested crew lives in the same flat `subagents/` directory.
+    backgroundPending: readBackgroundPending(filePath, {
+      subagentsDir: path.dirname(filePath),
+      activeThresholdMs,
+    }),
     sessionId,
     provider: 'claude',
     agentId,
@@ -2389,6 +2587,7 @@ function buildSubAgentSession({ filePath, agentId, decodedProject, parentSession
     lastResults: getClaudeToolResults(filePath, sessionId),
     gitEvents: getGitEvents(filePath, { provider: 'claude', sessionId, project: decodedProject }),
     parentSessionId,
+    rootSessionId,
     workflowId,
     workflowName,
   };
@@ -2523,6 +2722,11 @@ class ClaudeAdapter {
         ...session,
         ...getClaudeTurnState(sessionFilePath, permissionMode, now),
         ...getTranscriptProjection(sessionFilePath, session.project, model),
+        backgroundPending: readBackgroundPending(sessionFilePath, {
+          subagentsDir: mainSubagentsDir(sessionFilePath),
+          activeThresholdMs,
+          now,
+        }),
         name: sessionName,
         agentName: sessionName,
         teamName,
@@ -2599,26 +2803,42 @@ class ClaudeAdapter {
             if (now - stat.mtimeMs > activeThresholdMs) continue;
 
             const agentId = agentFile.replace('agent-', '').replace('.jsonl', '');
-            const prompt = getFirstUserPrompt(filePath, stat);
-            const launch = prompt
-              ? agentLaunches.find(item => item.promptHash === stableHash(prompt))
-              : null;
-            // Claude writes the launch's own identity beside the transcript;
-            // the prompt hash cannot match a teammate, whose first prompt
-            // arrives wrapped in a <teammate-message>.
+            // Claude writes the launch's own identity beside the transcript.
             const meta = readSubAgentMeta(filePath);
+            // PV-15 — a nested child names its launching agent, whose
+            // transcript sits in this same flat directory.
+            const parentAgentId = meta?.parentAgentId
+              && path.basename(meta.parentAgentId) === meta.parentAgentId
+              && fs.existsSync(path.join(subagentsDir, `agent-${meta.parentAgentId}.jsonl`))
+              ? meta.parentAgentId
+              : null;
+            let launch = null;
+            if (meta?.toolUseId) {
+              const launches = parentAgentId
+                ? getAgentLaunches(path.join(subagentsDir, `agent-${parentAgentId}.jsonl`))
+                : agentLaunches;
+              launch = launches.find(item => item.toolUseId === meta.toolUseId) || null;
+            } else if (!meta?.teamName) {
+              // No launch id recorded: hash the first prompt against the
+              // main thread's launches. A teammate's prompt, wrapped in a
+              // <teammate-message>, never matches one.
+              const prompt = getFirstUserPrompt(filePath, stat);
+              launch = prompt ? agentLaunches.find(item => item.promptHash === stableHash(prompt)) || null : null;
+            }
 
             results.push(buildSubAgentSession({
               filePath,
               agentId,
               decodedProject,
-              parentSessionId: sessionId,
+              parentSessionId: parentAgentId ? `subagent-${parentAgentId}` : sessionId,
+              rootSessionId: sessionId,
               name: meta?.name || launch?.name || meta?.description || null,
               agentType: launch?.agentType || 'sub-agent',
               subagentKind: launch?.subagentKind || meta?.kind || null,
               teamName: meta?.teamName || null,
               agentColor: meta?.color || null,
               lastActivity: stat.mtimeMs,
+              activeThresholdMs,
             }));
           }
 
@@ -2654,11 +2874,13 @@ class ClaudeAdapter {
                 agentId,
                 decodedProject,
                 parentSessionId: sessionId,
+                rootSessionId: sessionId,
                 name: null,
                 agentType: 'workflow-subagent',
                 workflowId,
                 workflowName,
                 lastActivity: stat.mtimeMs,
+                activeThresholdMs,
               }));
             }
           }
@@ -2723,6 +2945,11 @@ class ClaudeAdapter {
           results.push({
             ...getClaudeTurnState(filePath, permissionMode, now),
             ...getTranscriptProjection(filePath, project, model),
+            backgroundPending: readBackgroundPending(filePath, {
+              subagentsDir: mainSubagentsDir(filePath),
+              activeThresholdMs,
+              now,
+            }),
             sessionId,
             provider: 'claude',
             agentId: agentType === 'main' ? null : sessionId,
@@ -3016,7 +3243,7 @@ class ClaudeAdapter {
 
 module.exports = {
   ClaudeAdapter,
-  _test: { claudeProjectDirName, encodeClaudeProjectDir, getGitEvents },
+  _test: { claudeProjectDirName, encodeClaudeProjectDir, foldBackgroundWork, getGitEvents, projectClaudeTailEntry },
   deriveTaskProgress,
   projectClaudeExecution,
   sanitizeTaskSubject,

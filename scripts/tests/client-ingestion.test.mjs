@@ -182,9 +182,11 @@ test('untouched sessions match full status, tool, dialogue and outcome transitio
         assert.deepEqual(agentAt(1, 'question').dialogue, question.dialogue);
         assert.equal(agentAt(89_999, 'question').status, 'waiting_on_user');
         assert.equal(speechAt(89_999, 'question').held, true);
-        assert.equal(agentAt(90_000, 'question').status, 'idle');
-        assert.equal(agentAt(90_000, 'question').dialogue, null);
-        assert.equal(speechAt(90_000, 'question'), null);
+        // A question quiet past the 2-minute WAITING window is still one:
+        // silence is no evidence it was answered.
+        assert.equal(agentAt(90_000, 'question').status, 'waiting_on_user');
+        assert.deepEqual(agentAt(90_000, 'question').dialogue, question.dialogue);
+        assert.equal(speechAt(90_000, 'question').held, true);
         const outcomesFor = (offset, id) => snapshotAt(offset).outcomes.filter(outcome => outcome.agentId === id);
         assert.deepEqual(outcomesFor(4_999, 'future'), []);
         assert.deepEqual(outcomesFor(5_000, 'future'), [{

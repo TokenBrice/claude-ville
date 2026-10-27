@@ -74,6 +74,28 @@ test('providers without turn state fall back to activity timing', () => {
     assert.equal(at({ ...stale, turnState: 'unknown' }), AgentStatus.IDLE);
 });
 
+test('a question without turn state stays needs-you past the 2-minute WAITING window', () => {
+    const question = { status: 'active', turnState: 'unknown', lastMessage: 'May I continue?' };
+    assert.equal(at({ ...question, lastActivity: NOW - 60_000 }), AgentStatus.WAITING_ON_USER);
+    assert.equal(at({ ...question, lastActivity: NOW - 121_000 }), AgentStatus.WAITING_ON_USER, 'silence is no answer');
+    assert.equal(at({ ...question, lastActivity: NOW - 1_000 }), AgentStatus.WORKING, 'new activity is evidence');
+    assert.equal(at({ ...question, lastMessage: 'Done.', lastActivity: NOW - 121_000 }), AgentStatus.IDLE);
+});
+
+test('PV-4b: a turn that ended on an API error is ERRORED until the next turn', () => {
+    const apiError = { kind: 'server_error', status: 522, at: NOW - 5_000 };
+    assert.equal(at({ ...fresh, turnState: 'awaiting_input', apiError }), AgentStatus.ERRORED);
+    assert.equal(at({ ...fresh, turnState: 'working', apiError }), AgentStatus.WORKING, 'a retry is work');
+    assert.equal(at({ ...fresh, turnState: 'awaiting_input', apiError: null }), AgentStatus.COMPLETED);
+});
+
+test('PV-6: a Codex question asked without blocking needs you while the agent works on', () => {
+    const openQuestion = { since: NOW - 30_000, count: 1 };
+    assert.equal(at({ ...fresh, provider: 'codex', turnState: 'working', openQuestion, waitReason: 'question' }), AgentStatus.WAITING_ON_USER);
+    assert.equal(at({ ...fresh, provider: 'codex', turnState: 'awaiting_input', openQuestion }), AgentStatus.COMPLETED, 'the turn ended: your move');
+    assert.equal(at({ ...fresh, provider: 'codex', turnState: 'working', openQuestion: null }), AgentStatus.WORKING);
+});
+
 test('the ask-tool fallback still works without a turn state', () => {
     const status = at({ ...fresh, turnState: 'unknown', lastTool: 'AskUserQuestion' });
     assert.equal(status, AgentStatus.WAITING_ON_USER);
