@@ -1286,7 +1286,7 @@ export class TopBar {
         setText(this.els.rate, pending ? '' : [rateText, incomplete ? 'partial' : ''].filter(Boolean).join(' · '));
         if (this.els.rateWrap) {
             this.els.rateWrap.dataset.tip = rate
-                ? `Tokens observed today, now running at about ~${formatCost(rate.costPerHour)}/hour at estimated API rates. Rate match: mixed session models; revision ${TokenUsage.rateRevision}. Click for project and provider detail.`
+                ? `Tokens observed today, now running at about ~${formatCost(rate.costPerHour)}/hour at estimated API rates, each session priced at its own model's rates (revision ${TokenUsage.rateRevision}). Click for project and provider detail.`
                 : 'Tokens observed today by this page. A burn rate appears after a couple of minutes of activity. Click for project and provider detail.';
         }
         if (this.els.rateWrap && this._coverageNote) this.els.rateWrap.dataset.tip += ` ${this._coverageNote}`;
