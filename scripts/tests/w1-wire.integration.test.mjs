@@ -357,21 +357,24 @@ test('operator labels distinguish every actionable status and generic waiting', 
     assert.deepEqual(labels, ['Errored', 'Waiting — quota', 'Needs you', 'Waiting']);
 });
 
-test('World preserves every pre-Wave 1 stats key and its original meaning', () => {
+// UI-1 (Q4) folds completed into `idle`, so the KPIs sum to `total`; UI-14
+// drops the unread `totalTokens`/`totalCost`. Every other key keeps its meaning.
+test('World keeps every pre-Wave 1 stats key that is read, with completed counted as idle', () => {
     const stats = fixtureWorld().getStats();
     const legacy = {
         working: 1,
-        idle: 1,
+        idle: 2,
         waiting: 1,
         errored: 1,
         attention: 3,
         total: 7,
-        totalTokens: 28,
-        totalCost: 28,
     };
 
     for (const [key, value] of Object.entries(legacy)) {
         assert.equal(Object.hasOwn(stats, key), true, `missing legacy stats key: ${key}`);
         assert.equal(stats[key], value, `changed legacy meaning for: ${key}`);
     }
+    assert.equal(stats.working + stats.idle + stats.waiting + stats.attention, stats.total);
+    assert.equal(Object.hasOwn(stats, 'totalTokens'), false);
+    assert.equal(Object.hasOwn(stats, 'totalCost'), false);
 });
