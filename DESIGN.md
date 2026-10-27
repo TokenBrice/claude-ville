@@ -22,6 +22,7 @@ colors:
   status-rate-limited: "#f06ae0"
   status-errored: "#e06c5b"
   status-waiting-user: "#e8d44d"
+  status-completed: "#d5cbb6"
 typography:
   display:
     fontFamily: "'Press Start 2P', monospace"
@@ -132,7 +133,7 @@ A warm timber frame around a cool, living world: four surfaces, two lines, one b
 - **`--gold` #f2c75c** and **`--gold-hi` #ffe08a**: the wordmark, a selected row or name, the active mode tab, the focus ring, and an engaged toggle's glyph.
 
 ### Status (the fenced spectrum)
-Canonical in `STATUS_VISUALS` (`claudeville/src/config/theme.js`), stamped onto `--cv-status-*` at boot: working #79d975, idle #86bfe0, waiting #df8c3f, rate-limited #f06ae0, errored #e06c5b, waiting on user #e8d44d. Rate-limited is a magenta orchid (HSL hue 307, 7.4:1 on `--bg-0`): it sits in the widest gap of the repo pennant palette, 105° from idle, and at OKLab ΔE ≥ 0.09 from every tool, accent and pennant hue, so a quota stop never reads as idle or as a repo. The World's incident colours (`INCIDENT_COLORS_RGB` quota and `rate_limited`) use the same orchid. Tool-category colours are canonical in `TOOL_CATEGORY_COLORS` (same file) and mirrored as `--cv-tool-*`: status-free hues (teal, rose, violet, plum, azure) so a tool chip never reads as a status.
+Canonical in `STATUS_VISUALS` (`claudeville/src/config/theme.js`), stamped onto `--cv-status-*` at boot: working #79d975, idle #86bfe0, waiting #df8c3f, rate-limited #f06ae0, errored #e06c5b, waiting on user #e8d44d, completed #d5cbb6. Completed (a closed turn, counted with idle) is a parchment stone, warm and desaturated at OKLab ΔE 0.12 from the needs-you beacon and 0.10 from `--gold`, so a quiet fleet never paints the chrome gold. Rate-limited is a magenta orchid (HSL hue 307, 7.4:1 on `--bg-0`): it sits in the widest gap of the repo pennant palette, 105° from idle, and at OKLab ΔE ≥ 0.09 from every tool, accent and pennant hue, so a quota stop never reads as idle or as a repo. The World's incident colours (`INCIDENT_COLORS_RGB` quota and `rate_limited`) use the same orchid. Tool-category colours are canonical in `TOOL_CATEGORY_COLORS` (same file) and mirrored as `--cv-tool-*`: status-free hues (teal, rose, violet, plum, azure) so a tool chip never reads as a status.
 
 ### Named Rules
 **The Ink-and-Light Rule.** Text is ink, not gold. Parchment ink (`--ink-1..4`) carries every word and number; gold appears only on the wordmark, the selected item, the active tab and focus. A zero or an unknown recedes to `--ink-4`; an unknown count is shown as `–`, never as a fabricated `0`.

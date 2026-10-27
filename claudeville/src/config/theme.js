@@ -14,8 +14,11 @@ export const THEME = {
     rateLimited: '#f06ae0',
     waitingOnUser: '#e8d44d',
     chatting: '#f2d36b',
-    // 0.4 — completed is a first-class status: soft-gold "small victory" tone.
-    completed: '#ffd873',
+    // UI-2 (Q4) — completed is the commonest quiet state, so it wears a
+    // parchment stone: warm, desaturated (OKLab C 0.031), ΔE 0.124 from the
+    // needs-you beacon, 0.103 from --gold and 0.106 from --gold-hi, and
+    // >= 0.093 from every building, provider and team accent.
+    completed: '#d5cbb6',
     ally: '#f0b27a',
     border: 'rgba(214, 169, 81, 0.48)',
     grass: ['#2c542d', '#315b31', '#386337', '#335a2f', '#3b6838'],
@@ -82,7 +85,7 @@ export const STATUS_VISUALS = Object.freeze({
     rate_limited: { color: THEME.rateLimited, glow: 'rgba(240, 106, 224, 0.30)', label: 'RATELIMIT', mark: 'R' },
     waiting_on_user: { color: THEME.waitingOnUser, glow: 'rgba(250, 204, 21, 0.34)', label: 'INPUT', mark: '?' },
     chatting: { color: THEME.chatting, glow: 'rgba(242, 211, 107, 0.30)', label: 'CHAT', mark: 'C' },
-    completed: { color: THEME.completed, glow: 'rgba(255, 216, 115, 0.30)', label: 'DONE', mark: '*' },
+    completed: { color: THEME.completed, glow: 'rgba(213, 203, 182, 0.26)', label: 'DONE', mark: '*' },
 });
 
 // Canonical CSS custom-property name per STATUS_VISUALS key. The boot bridge
