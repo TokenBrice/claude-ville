@@ -39,7 +39,7 @@ Desktop-first constraint: shared UI at `/` only needs to support browser widths 
 
 - Emit `agent:selected` and `agent:deselected` through `AgentSelection.js` helpers so future event-shape changes stay centralized.
 - `agent:selected` can be emitted by World mode, Dashboard cards, or Sidebar rows.
-- In World mode, `ActivityPanel` opens on `agent:selected`, refreshes its selected agent on matching `agent:updated`, and hides when that agent is removed. Dashboard keeps this panel hidden and expands selected detail inline.
+- In World mode, `ActivityPanel` opens on `agent:selected`, refreshes its selected agent on matching `agent:updated`, and reads `Left the village · 1m` through a departed villager's 90 s grace. When that agent is removed it does not close mid-read: it stops polling, shows `Left the village · this record no longer updates`, and stays open, read-only, until the operator closes it or selects another (UI-13). Sidebar and Dashboard rows wear the same departed marker (receding niche and name, `left the village` as the state). Dashboard keeps this panel hidden and expands selected detail inline.
 - `BUILDING_EVENTS.SELECTED` opens Activity Panel building mode, shows building purpose/status/occupants, polls occupants every 5 seconds, and emits `agent:deselected` when building selection overrides an agent selection.
 - `BUILDING_EVENTS.DESELECTED` clears building mode when the currently shown building is deselected.
 - `ActivityPanel.hide()` emits `agent:deselected`; `App.js` bridges that event back to World mode so camera follow stops.

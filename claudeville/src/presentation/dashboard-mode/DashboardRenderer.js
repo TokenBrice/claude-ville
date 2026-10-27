@@ -45,6 +45,7 @@ import {
     buildingClassForAgent,
     buildingPresentation,
     currentToolPresentation,
+    DEPARTED_WORD,
     groupAgentsByProject,
     isAgedQuietRow,
     silentSignal,
@@ -161,6 +162,11 @@ function blockerText(agent, reason = waitReasonLabel(agent)) {
  */
 function rowNow(agent) {
     const status = normalizeStatus(agent?.status);
+    // UI-13 — a departed villager says so through its 90 s grace.
+    if (agent?.isDeparted) {
+        const last = cleanMessage(agent?.lastMessage);
+        return { kind: 'status', lead: DEPARTED_WORD, detail: last ? `· last: ${last}` : '', title: last ? `Last observed message: ${last}` : '' };
+    }
     if (BELL_STATUS_WORD[status]) {
         return { kind: 'blocker', lead: BELL_STATUS_WORD[status], detail: blockerText(agent) };
     }
@@ -1809,6 +1815,7 @@ export class DashboardRenderer {
             agent.role || '',
             agent.workflowName || '',
             agent.parentSessionId || '',
+            agent.departedAt || '',
             agent.teamName || '',
             status,
             agent.waitReason || '',
@@ -1835,7 +1842,8 @@ export class DashboardRenderer {
             // 9.5 / one ask, one frame: a lane card wears the call card's attn
             // slice in its status hue instead of the row's status spine.
             const frame = inLane ? ` cv-frame ${CALL_FRAME_BY_STATUS[status] || 'cv-frame--attn'}` : '';
-            const nextClass = `dash-card dash-card--${status}${inLane ? ' dash-card--call' : ''}${frame}${selected ? ' dash-card--selected' : ''}`;
+            const departed = agent.isDeparted ? ' dash-card--departed' : '';
+            const nextClass = `dash-card dash-card--${status}${departed}${inLane ? ' dash-card--call' : ''}${frame}${selected ? ' dash-card--selected' : ''}`;
             if (cardEl.className !== nextClass) cardEl.className = nextClass;
             const now = rowNow(agent);
             refs.select.setAttribute('aria-label', `Select agent ${agent.name || agent.id}, ${statusInfo.label}: ${now.lead} ${now.detail}`.trim());

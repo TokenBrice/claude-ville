@@ -503,6 +503,11 @@
 .dash-card--aged:not(.dash-card--selected) .dash-card__niche { opacity: 0.62; }
 .dash-card--idle:not(.dash-card--selected) .dash-card__name,
 .dash-card--aged:not(.dash-card--selected) .dash-card__name { color: var(--ink-2); }
+/* UI-13 — a departed villager (its 90 s grace): the niche and name recede
+   like an aged row, and NOW reads "Left the village" in quiet ink. */
+.dash-card--departed:not(.dash-card--selected) .dash-card__niche { opacity: 0.62; }
+.dash-card--departed .dash-card__name,
+.dash-card--departed .dash-card__now--status .dash-card__phase { color: var(--ink-3); }
 
 /* 7.8 — the static 44×40 portrait niche */
 .dash-card__niche {

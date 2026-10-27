@@ -1181,6 +1181,7 @@ export class Sidebar {
         const agentClasses = ['sidebar__agent', `sidebar__agent--${status}`];
         if (this.selection.isSelected(agent.id)) agentClasses.push('sidebar__agent--selected');
         if (agent.parentSessionId) agentClasses.push('sidebar__agent--child');
+        if (agent.isDeparted) agentClasses.push('sidebar__agent--departed');
         const refs = row._sidebarRefs;
         const className = agentClasses.join(' ');
         if (row.className !== className) row.className = className;
