@@ -27,6 +27,7 @@ function jsonLine(value) {
 
 function usageEntry(input, output, { cacheRead = 0, cacheCreate = 0, content = [] } = {}) {
   return {
+    type: 'assistant',
     timestamp: new Date().toISOString(),
     message: {
       role: 'assistant',
@@ -85,7 +86,7 @@ try {
   ].join(''));
   writeFile(
     path.join(projectDir, sessionId, 'subagents', `agent-${subagentId}.jsonl`),
-    jsonLine({ message: { role: 'user', content: [{ type: 'text', text: prompt }] } }),
+    jsonLine({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: prompt }] } }),
   );
 
   const require = createRequire(import.meta.url);
@@ -97,6 +98,7 @@ try {
 
   const initial = usageFor(adapter);
   assert.deepEqual(initial, {
+    availability: 'observed',
     input: 9,
     output: 14,
     totalInput: 9,
@@ -104,12 +106,14 @@ try {
     cacheRead: 5,
     cacheCreate: 13,
     contextWindow: 20,
+    contextWindowMax: 200000,
     turnCount: 2,
   });
   const sessions = adapter.getActiveSessions(activeThresholdMs);
   const child = sessions.find((session) => session.sessionId === `subagent-${subagentId}`);
   assert.equal(child?.agentName, 'Transcript analyst');
-  assert.equal(child?.agentType, 'explorer');
+  assert.equal(child?.agentType, 'sub-agent');
+  assert.equal(child?.subagentKind, 'explorer');
 
   const noNewlineSessionId = 'aggregate-no-newline';
   const noNewlineTranscript = path.join(projectDir, `${noNewlineSessionId}.jsonl`);
@@ -182,7 +186,9 @@ try {
   const pendingUsage = usageFor(adapter, largeSessionId);
   const initialDurationMs = performance.now() - initialStartedAt;
   assert.ok(initialDurationMs < 500, `oversized initial call blocked for ${initialDurationMs.toFixed(1)}ms`);
+  // An aggregate still scanning has observed nothing yet.
   assert.deepEqual(pendingUsage, {
+    availability: 'unavailable',
     input: 0,
     output: 0,
     totalInput: 0,
@@ -190,6 +196,7 @@ try {
     cacheRead: 0,
     cacheCreate: 0,
     contextWindow: 0,
+    contextWindowMax: 0,
     turnCount: 0,
   });
   assert.equal(adapter.getPerfStats().transcriptAggregate.pending, 1);
