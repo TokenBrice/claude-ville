@@ -151,6 +151,62 @@ test('Claude api-request records never become turns', () => {
   }
 });
 
+// PV-4b: Claude Code's synthetic API-error record ends the turn in error.
+// It never names the model and its harness text never speaks.
+test('PV-4b: a Claude turn that died on an API error reads ERRORED, silent', async () => {
+  const { resolveAgentStatus } = await import('../../claudeville/src/domain/services/StatusResolver.js');
+  const root = makeTempDir('claudeville-claude-api-error-');
+  try {
+    const project = path.join(root, 'work', 'api-error');
+    const projectDir = path.join(root, '.claude', 'projects', project.replaceAll('/', '-'));
+    fs.mkdirSync(project, { recursive: true });
+    fs.mkdirSync(projectDir, { recursive: true });
+    fs.copyFileSync(path.join(FIXTURE_ROOT, 'api-error.jsonl'), path.join(projectDir, 'err-main.jsonl'));
+    const now = Date.parse('2026-09-01T15:00:45.000Z');
+    writeJsonLines(path.join(root, '.claude', 'history.jsonl'), [
+      { sessionId: 'err-main', project, timestamp: now, display: 'API error fixture' },
+    ]);
+    const childScript = `
+      Date.now = () => ${now};
+      const { ClaudeAdapter } = require('./claudeville/adapters/claude');
+      const adapter = new ClaudeAdapter();
+      const main = adapter.getActiveSessions(2 * 60 * 1000).find(session => session.sessionId === 'err-main');
+      adapter.shutdown();
+      process.stdout.write(JSON.stringify(main));
+    `;
+    const main = JSON.parse(execFileSync(process.execPath, ['-e', childScript], {
+      cwd: REPO_ROOT,
+      env: { ...process.env, HOME: root, USERPROFILE: root },
+      encoding: 'utf8',
+    }));
+    assert.equal(main.turnState, 'awaiting_input');
+    assert.deepEqual(main.apiError, { kind: 'server_error', status: 522, at: Date.parse('2026-09-01T15:00:40.000Z') });
+    assert.equal(resolveAgentStatus({ status: 'active', lastActivity: now, ...main }, { now }), 'errored');
+    assert.equal(main.model, 'claude-opus-5-5');
+    assert.ok(!String(main.dialogue?.full || main.dialogue?.text || '').includes('API Error'), 'the harness text never speaks');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// PV-13: narration cut at the projection bound says it was cut.
+test('PV-13: a cut Claude narration block ends in an ellipsis', async () => {
+  const { _test } = (await import('../../claudeville/adapters/claude.js')).default;
+  const { makeDialogue } = (await import('../../claudeville/adapters/dialogue.js')).default;
+  const long = `${'The parser walks every token and records its span. '.repeat(8)}Done.`;
+  const projected = _test.projectClaudeTailEntry({
+    type: 'assistant', timestamp: '2026-09-01T15:00:00.000Z',
+    message: { role: 'assistant', content: [{ type: 'text', text: long }, { type: 'thinking', thinking: long }, { type: 'text', text: 'Short.' }] },
+  });
+  const [text, thinking, short] = projected.message.content;
+  assert.equal(text.text.length, 200);
+  assert.ok(text.text.endsWith('…'));
+  assert.ok(thinking.thinking.endsWith('…'));
+  assert.equal(short.text, 'Short.');
+  const dialogue = makeDialogue({ text: text.text, kind: 'assistant', source: 'claude.text', observedAt: Date.now() });
+  assert.ok(dialogue.full.endsWith('…'), 'the narration panel shows the cut');
+});
+
 // PV-2 (Q2): a lead that closes its turn while its own background crew
 // works is waiting on that crew, not on you. Real shapes: an async `Agent`
 // launch, a `run_in_background` build, a watch ended by `TaskStop`, a queued

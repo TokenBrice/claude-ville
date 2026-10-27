@@ -42,6 +42,8 @@ function isRateLimited(session, usage) {
 }
 
 function isErrored(session, now) {
+    // PV-4b — a turn that died on a provider API error is over, in error.
+    if (session.apiError && session.turnState === TurnState.AWAITING_INPUT) return true;
     const events = Array.isArray(session.gitEvents) ? session.gitEvents : [];
     if (events.length) {
         const cutoff = now - GIT_FAIL_WINDOW_MS;

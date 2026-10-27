@@ -573,20 +573,28 @@ function projectToolResultContent(content) {
   });
 }
 
+// PV-13 — narration cut at the projection bound ends in an ellipsis, so
+// the dialogue `full` it feeds never passes a cut sentence off as whole.
+function boundedNarration(text) {
+  return text.length > TRANSCRIPT_PROJECTION_TEXT_BYTES
+    ? `${boundedProjectionString(text, TRANSCRIPT_PROJECTION_TEXT_BYTES - 1)}…`
+    : text;
+}
+
 function projectTranscriptContentBlock(block) {
   if (!block || typeof block !== 'object') return null;
   if (block.type === 'text') {
     const text = typeof block.text === 'string' ? block.text.trim() : '';
     return {
       type: 'text',
-      text: boundedProjectionString(text, TRANSCRIPT_PROJECTION_TEXT_BYTES),
+      text: boundedNarration(text),
     };
   }
   if (block.type === 'thinking') {
     const thinking = typeof block.thinking === 'string' ? block.thinking.trim() : '';
     return {
       type: 'thinking',
-      thinking: boundedProjectionString(thinking, TRANSCRIPT_PROJECTION_TEXT_BYTES),
+      thinking: boundedNarration(thinking),
     };
   }
 
@@ -642,6 +650,11 @@ function projectClaudeTailEntry(entry) {
     'model',
     'cwd',
     'gitBranch',
+    // PV-4b — Claude Code's own API-error record: `isApiErrorMessage`, its
+    // `error` kind (for example 'server_error') and HTTP `apiErrorStatus`.
+    'isApiErrorMessage',
+    'error',
+    'apiErrorStatus',
   ]) {
     if (entry[field] !== undefined) {
       const value = entry[field];
@@ -717,7 +730,7 @@ function readJsonLines(filePath, { from = 'end', count = GIT_EVENT_SCAN_LINES } 
     tailMaxBytes: MAX_TAIL_BYTES,
     source: 'claude',
     project: from === 'end' ? projectClaudeTailEntry : undefined,
-    projectionKey: from === 'end' ? 'claude-tail-v4' : undefined,
+    projectionKey: from === 'end' ? 'claude-tail-v5' : undefined,
   });
 }
 
@@ -1742,7 +1755,8 @@ function getClaudeTranscriptSummary(filePath, tailCount, project = null) {
         const msg = entry.message;
         if (!msg || msg.role !== 'assistant') continue;
 
-        const stub = isClaudeModelStub(msg.model);
+        // An API-error record is Claude Code's own text, whatever its model.
+        const stub = isClaudeModelStub(msg.model) || entry.isApiErrorMessage === true;
         if (!detail.model && msg.model && !stub) detail.model = msg.model;
 
         const content = msg.content;
@@ -2034,9 +2048,18 @@ function turnStateFromEntries(entries, { permissionMode, skipSidechain, now }) {
 
   const lastAssistant = entries[lastAssistantIndex];
   const stopReason = lastAssistant?.message?.stop_reason || null;
+  // PV-4b — the turn died on an API error Claude Code already retried: it
+  // is over, and it ended in an error.
+  const apiError = lastAssistant?.isApiErrorMessage === true && !pendingTool
+    ? {
+      kind: typeof lastAssistant.error === 'string' && lastAssistant.error ? lastAssistant.error.slice(0, 64) : 'api_error',
+      status: Number.isFinite(lastAssistant.apiErrorStatus) ? lastAssistant.apiErrorStatus : null,
+      at: toEpochMs(lastAssistant.timestamp),
+    }
+    : null;
 
-  return withSignal({ rateLimit: { enforced: stopReason === 'rate_limited' }, ...deriveTurnState({
-    turnEnded: !pendingTool && stopReason === 'end_turn',
+  return withSignal({ rateLimit: { enforced: stopReason === 'rate_limited' }, apiError, ...deriveTurnState({
+    turnEnded: !pendingTool && (stopReason === 'end_turn' || apiError !== null),
     turnEndedAt: toEpochMs(lastAssistant?.timestamp),
     pendingTool,
     pendingSince,
@@ -3220,7 +3243,7 @@ class ClaudeAdapter {
 
 module.exports = {
   ClaudeAdapter,
-  _test: { claudeProjectDirName, encodeClaudeProjectDir, foldBackgroundWork, getGitEvents },
+  _test: { claudeProjectDirName, encodeClaudeProjectDir, foldBackgroundWork, getGitEvents, projectClaudeTailEntry },
   deriveTaskProgress,
   projectClaudeExecution,
   sanitizeTaskSubject,

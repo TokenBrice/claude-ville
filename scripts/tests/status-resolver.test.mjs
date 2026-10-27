@@ -74,6 +74,13 @@ test('providers without turn state fall back to activity timing', () => {
     assert.equal(at({ ...stale, turnState: 'unknown' }), AgentStatus.IDLE);
 });
 
+test('PV-4b: a turn that ended on an API error is ERRORED until the next turn', () => {
+    const apiError = { kind: 'server_error', status: 522, at: NOW - 5_000 };
+    assert.equal(at({ ...fresh, turnState: 'awaiting_input', apiError }), AgentStatus.ERRORED);
+    assert.equal(at({ ...fresh, turnState: 'working', apiError }), AgentStatus.WORKING, 'a retry is work');
+    assert.equal(at({ ...fresh, turnState: 'awaiting_input', apiError: null }), AgentStatus.COMPLETED);
+});
+
 test('the ask-tool fallback still works without a turn state', () => {
     const status = at({ ...fresh, turnState: 'unknown', lastTool: 'AskUserQuestion' });
     assert.equal(status, AgentStatus.WAITING_ON_USER);
