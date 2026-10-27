@@ -232,6 +232,9 @@ const GROUND_SIT_FALLBACK_DROP = 8;
 const GROUND_SIT_CLIPPED = new Set([
     'agent.codex.gpt56luna', 'agent.codex.gpt56luna.b', 'agent.codex.gpt56sol', 'agent.codex.gpt56sol.b',
 ]);
+// The rate-limited frost tint: the body's own silhouette in cold slate, laid
+// over it at this alpha (`_getFrozenTintCell`), on every backend (VQ-9).
+const FROZEN_TINT_ALPHA = 0.38;
 const QUEUE_PLACE = Object.freeze({ type: 'command', commandQueue: true, visitTiles: Object.freeze([]) });
 // W4.4 / W4.8 — a scenic point as a place (the renderer's scenic shape): the
 // harbour quay an errand or a wind-down walks to.
@@ -4614,10 +4617,21 @@ export class AgentSprite {
             );
         }
         // Frozen/darkened body tint while rate-limited — static overlay, so it
-        // reads identically under reduced motion. No GPU channel owns this tint.
-        if (this.agent?.status === AgentStatus.RATE_LIMITED) {
-            this._drawFrozenTint(ctx, bodyCell, dx, dy, poseSource);
+        // reads identically under reduced motion. One owner per backend: this
+        // Canvas blit, or the resident record `_frostTintRecord` lays over the
+        // body from the same cell (VQ-9).
+        const frozen = this.agent?.status === AgentStatus.RATE_LIMITED;
+        const frost = frozen && !canvasBody ? (this._frostTintState ||= {}) : null;
+        if (frost) {
+            frost.cell = bodyCell;
+            frost.dx = dx;
+            frost.dy = dy;
+            frost.source = poseSource;
+            frost.identity = identity;
+            frost.frameGeometry = frameGeometry;
         }
+        this._frostTint = frost;
+        if (frozen && canvasBody) this._drawFrozenTint(ctx, bodyCell, dx, dy, poseSource);
         if (canvasBody && !sheathed) this._drawCodexEquipment(ctx, identity, frameGeometry, 'front');
         // 7.1 — the stone seat's front faces over the sitter's legs; 7.2 — the
         // petitioner's floor candle; the Tavern patron's tankard. All after
@@ -5117,16 +5131,50 @@ export class AgentSprite {
 
     getGpuWorldRecords() {
         const records = this.gpuOverlayRenderer.getRecords();
+        const frost = this._frostTintRecord();
         const candle = this._queueCandleRecord();
         const tankard = this._tankardRecord();
         const stones = this._gpuFrameRecord ? this._seatStoneStamps() : null;
-        if (!stones && !candle && !tankard) return records;
+        if (!stones && !candle && !tankard && !frost) return records;
         // 7.1 — the stone seat's top face paints before the body, its front
-        // faces after it (record order is paint order within the body slot).
-        const out = stones ? [this._seatStoneRecord(stones.back, 'back'), ...records, this._seatStoneRecord(stones.front, 'front')] : [...records];
+        // faces after it (record order is paint order within the body slot);
+        // the frost tint lies on the body itself, before either.
+        const out = stones ? [this._seatStoneRecord(stones.back, 'back'), ...records] : [...records];
+        if (frost) out.push(frost);
+        if (stones) out.push(this._seatStoneRecord(stones.front, 'front'));
         if (candle) out.push(candle);
         if (tankard) out.push(tankard);
         return out;
+    }
+
+    // VQ-9 — the rate-limited frost tint on the resident path: the cold slate
+    // cell the Canvas body blits (`_getFrozenTintCell`), one record over the
+    // body in its own depth slot at FROZEN_TINT_ALPHA of the body's alpha.
+    // A body sampling its baked gear keeps the front gear clear of the tint,
+    // as the Canvas draws that gear over it.
+    _frostTintRecord() {
+        const tint = this._frostTint;
+        const body = this._gpuFrameRecord;
+        if (!tint || !body || this.agent?.status !== AgentStatus.RATE_LIMITED) return null;
+        const canvas = this._getFrozenTintCell(tint.cell, tint.source, body.bakedGear ? tint : null);
+        if (!canvas) return null;
+        const record = this._frostGpuRecord || (this._frostGpuRecord = {
+            sx: 0, sy: 0, elevation: 0.52, occluder: 0, emissive: 0, urgentPose: true,
+        });
+        record.id = `agent:${this.agent?.id}:frost-tint`;
+        record.stableKey = record.id;
+        record.textureKey = `agent-frost:${canvas.__cvFrostKey}`;
+        record.source = canvas;
+        record.sourceWidth = canvas.width;
+        record.sourceHeight = canvas.height;
+        record.sw = record.width = canvas.width;
+        record.sh = record.height = canvas.height;
+        record.x = tint.dx;
+        record.y = tint.dy;
+        record.alpha = FROZEN_TINT_ALPHA * body.alpha;
+        record.material = body.material;
+        record.poseKey = body.poseKey;
+        return record;
     }
 
     // Plan 2.3 — ground marks (contact shadow + meaningful rings) for the
@@ -5350,15 +5398,18 @@ export class AgentSprite {
         const tinted = this._getFrozenTintCell(cell, source);
         if (!tinted) return;
         ctx.save();
-        ctx.globalAlpha *= 0.38;
+        ctx.globalAlpha *= FROZEN_TINT_ALPHA;
         ctx.drawImage(tinted, dx, dy, cell.sw, cell.sh);
         ctx.restore();
     }
 
-    _getFrozenTintCell(cell, source = null) {
+    // `gear` (the frame's `{ identity, frameGeometry }`): VQ-9 — a resident
+    // body bakes its front gear over the body, where the Canvas draws it over
+    // the tint, so this cell leaves that gear's texels clear.
+    _getFrozenTintCell(cell, source = null, gear = null) {
         const sheet = source || this.spriteCanvas;
         if (!sheet) return null;
-        const key = `${source ? 'strip' : 'base'}:${cell.sx},${cell.sy},${cell.sw},${cell.sh}`;
+        const key = `${source ? 'strip' : 'base'}:${cell.sx},${cell.sy},${cell.sw},${cell.sh}${gear ? ':gear' : ''}`;
         const cached = this._frozenTintCellCache.get(key);
         if (cached) return cached;
 
@@ -5371,6 +5422,12 @@ export class AgentSprite {
         tintCtx.globalCompositeOperation = 'source-in';
         tintCtx.fillStyle = '#2e4258';   // cold slate; drawn at low alpha over the body
         tintCtx.fillRect(0, 0, canvas.width, canvas.height);
+        if (gear) {
+            tintCtx.globalCompositeOperation = 'destination-out';
+            this._drawCodexEquipment(tintCtx, gear.identity, { ...gear.frameGeometry, dx: 0, dy: 0 }, 'front');
+        }
+        // The resident record's texture key: the profile and the cell.
+        canvas.__cvFrostKey = `${this._spriteProfileKey}|${key}`;
         this._frozenTintCellCache.set(key, canvas);
         this._updatePrivateDerivedEstimate();
         return canvas;

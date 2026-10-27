@@ -96,17 +96,7 @@ fn shadeOpenSea(cell: vec2f) -> vec3f {
     if (frame.cloud.z > 0.0) {
         shade = step(frame.cloudThresholds.x, m) + step(frame.cloudThresholds.y, m) + step(mix(frame.cloudThresholds.z, 1.2, reach), m);
     }
-    if (frame.squall.w > 0.0) {
-        let d = (cell + 0.5 - frame.squall.xy) / vec2f(frame.squall.z, frame.squall.z * 0.5);
-        let edge = length(d) + (n - 0.5) * 0.5 + (order - 0.5) * 3.0 / frame.squall.z;
-        if (edge < 1.0) {
-            var courses = 1.0;
-            if (edge < 0.5) { courses = 3.0; } else if (edge < 0.78) { courses = 2.0; }
-            let h = waterHash12(vec2f(floor(cell.x / 2.0), 409.0));
-            if (h < 0.45 && glslMod(cell.y - frame.squallFall + floor(h * 97.0), 24.0) < 12.0 + h * 10.0) { courses += 1.0; }
-            shade = max(shade, courses * frame.squall.w);
-        }
-    }
+    shade = max(shade, squallShade(cell, n, order));
     if (shade > 0.0) { c *= vec3f(1.0) - shade * 0.085 * vec3f(1.0, 0.96, 0.84); }
     return applyAerialHaze(c, order, (cell.y + 0.5 + seaContourRows(cell) + frame.cameraXy.y) * frame.cameraScale, false);
 }

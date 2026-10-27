@@ -673,7 +673,8 @@ function buildingPartRecords(renderer, drawable, base, sequence) {
             material: d.materialClass ? materialClassId(d.materialClass) : base.material,
             elevation: base.elevation,
             emissive: channels?.material ? base.emissive : 0,
-            emissiveGate: d.fixture ? 1 : base.emissiveGate,
+            // VQ-8 — a part with its own gate (the banked ember floor) keeps it.
+            emissiveGate: d.emissiveGate ?? (d.fixture ? 1 : base.emissiveGate),
             paletteRamp: base.paletteRamp,
             occluder: base.occluder,
             landmarkId: base.landmarkId,
@@ -1389,10 +1390,16 @@ export function packGpuAgentFrameAtlas(renderer, records) {
     const channelResized = materialAtlasState.resized || emissiveAtlasState.resized;
     const rebuild = resized || channelResized;
     const bands = renderer._gpuAgentAtlasBands ||= new Map();
-    if (rebuild || rosterChanged || renderer._gpuAgentAtlasBandCells !== bandCells) {
+    // A new band size or slot grid moves every slot's cells, even when the
+    // atlas keeps its size (one more record, a frost tint or a tankard, can
+    // widen the grid by a column): every body redraws at its new place in
+    // this pass, never sampling another slot's old cell.
+    if (rebuild || rosterChanged || renderer._gpuAgentAtlasBandCells !== bandCells || renderer._gpuAgentAtlasColumns !== columns) {
         bands.clear();
         if (!resized) frameKeys.clear();
         renderer._gpuAgentAtlasBandCells = bandCells;
+        renderer._gpuAgentAtlasColumns = columns;
+        changed = true;
     }
     const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
     const cadenceElapsed = now - (renderer._gpuAgentAtlasUpdatedAt || 0) >= 125;

@@ -54,6 +54,30 @@ test('authored geometry travels beside albedo while absent geometry clears reusa
     assert.deepEqual(batches[0].records.map(r => [r.elevation, r.occluder]), [[.1, .2], [.9, .8]]);
 });
 
+// VQ-8 — the banked Forge's ember floor: a part that carries its own gate
+// keeps it on the resident path; every other part keeps the building's.
+test('a part with its own emission gate keeps it over the building gate', () => {
+    const albedo = { width: 16, height: 16 };
+    const emissive = { width: 16, height: 16 };
+    const draw = (name, extra) => ({ name, image: albedo, textureKey: `layer:${name}`, sx: 0, sy: 0, sw: 16, sh: 16, x: 0, y: 0, fixture: false, ...extra });
+    const renderer = {
+        assets: { get: () => albedo, getDims: () => ({ w: 16, h: 16 }), getAnchor: () => [8, 16] },
+        buildingRenderer: {
+            _emissiveGateFor: () => 0,
+            partDrawsFor: () => [draw('banked', { emissiveGate: 1 }), draw('bellows', { emissiveGate: null }), draw('beacon', { fixture: true })],
+            partChannelsFor: (_entry, d) => (d.name === 'banked' ? { emissive, key: 'ember' } : null),
+        },
+    };
+    const records = buildGpuWorldRecords(renderer, { drawables: [{ kind: 'building',
+        building: { type: 'forge' }, entry: { id: 'building.forge', layers: { banked: {} } }, wx: 0, wy: 0,
+    }] });
+    const part = (name) => records.find(r => String(r.id).endsWith(`:part:${name}`));
+    assert.equal(part('banked').emissiveGate, 1, 'the ember floor keeps its lamp gate');
+    assert.equal(part('banked').emissiveSource, emissive);
+    assert.equal(part('bellows').emissiveGate, 0, 'a plain part takes the building gate');
+    assert.equal(part('beacon').emissiveGate, 1, 'a fixture emits through no occupancy gate');
+});
+
 test('empty disposed Canvas backing stores never reach a GPU upload', () => {
     const renderer = { gl: new Proxy({}, { get() { throw new Error('unexpected GL call'); } }) };
     assert.equal(GpuWorldRenderer.prototype._textureFor.call(renderer, 'disposed', { width: 0, height: 0 }), null);
@@ -86,6 +110,49 @@ test('important and turning atlas slots refresh immediately while ambient frames
         assert.notEqual(renderer._gpuAgentAtlasFrameKeys.get('agent:focus'), focus);
         assert.notEqual(renderer._gpuAgentAtlasFrameKeys.get('agent:turn'), turn);
         assert.equal(renderer._gpuAgentAtlasFrameKeys.get('agent:ambient'), ambient);
+    } finally { globalThis.document = previousDocument; }
+});
+
+// VQ-9 — one more record (a frost tint, a tankard) can widen the slot grid by
+// a column while a walker's strip band keeps the atlas the same size: every
+// slot then redraws at its new place, so no body samples another's old cell.
+test('a record that widens the atlas slot grid redraws every slot at its new place', () => {
+    const previousDocument = globalThis.document;
+    const content = new Map();
+    const canvas = () => {
+        const target = { width: 8, height: 8 };
+        target.getContext = () => ({
+            clearRect(x, y) { if (target.atlas) content.delete(`${x},${y}`); },
+            drawImage(source, sx, sy, sw, sh, dx, dy) { if (target.atlas) content.set(`${dx},${dy}`, `${source.tag}@${sx},${sy}`); },
+        });
+        return target;
+    };
+    globalThis.document = { createElement: () => Object.assign(canvas(), { atlas: true }) };
+    try {
+        const cell = (tag) => Object.assign(canvas(), { tag, width: 64, height: 8 });
+        const walker = cell('walker');
+        const sitter = cell('sitter');
+        const tint = cell('tint');
+        const renderer = { agentSprites: new Map([['a-walk', {}], ['b-sit', {}]]) };
+        const strip = Array.from({ length: 6 }, (_, frame) => ({ source: walker, sx: frame * 8, sy: 0, sw: 8, sh: 8 }));
+        const records = (withTint) => [
+            { id: 'agent:a-walk', source: walker, sourceWidth: 64, sourceHeight: 8, sx: 0, sy: 0, sw: 8, sh: 8, poseKey: 'walk', walkStrip: { key: 'w', cells: strip, frame: 0 } },
+            { id: 'agent:b-sit', source: sitter, sourceWidth: 64, sourceHeight: 8, sx: 8, sy: 0, sw: 8, sh: 8, poseKey: 'sit', urgentPose: true },
+            ...(withTint ? [{ id: 'agent:b-sit:frost-tint', source: tint, sourceWidth: 64, sourceHeight: 8, sx: 0, sy: 0, sw: 8, sh: 8, poseKey: 'sit', urgentPose: true }] : []),
+        ];
+        const sampled = (packed, id) => {
+            const record = packed.find(r => r.id === id);
+            return content.get(`${record.sx},${record.sy}`);
+        };
+        let packed = packGpuAgentFrameAtlas(renderer, records(false));
+        const size = `${renderer._gpuAgentFrameAtlas.width}x${renderer._gpuAgentFrameAtlas.height}`;
+        assert.equal(sampled(packed, 'agent:b-sit'), 'sitter@8,0');
+        packed = packGpuAgentFrameAtlas(renderer, records(true));
+        assert.equal(`${renderer._gpuAgentFrameAtlas.width}x${renderer._gpuAgentFrameAtlas.height}`, size, 'the atlas keeps its size');
+        assert.equal(sampled(packed, 'agent:b-sit'), 'sitter@8,0', 'the sitter samples its own cell');
+        assert.equal(sampled(packed, 'agent:b-sit:frost-tint'), 'tint@0,0');
+        packed = packGpuAgentFrameAtlas(renderer, records(false));
+        assert.equal(sampled(packed, 'agent:b-sit'), 'sitter@8,0', 'and again once the tint is gone');
     } finally { globalThis.document = previousDocument; }
 });
 

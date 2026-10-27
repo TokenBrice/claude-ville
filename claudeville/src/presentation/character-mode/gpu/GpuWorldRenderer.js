@@ -948,8 +948,27 @@ bool seaPawAt(vec2 cell, float gust, float order) {
 float seaPawCaps(vec2 cell, float order) {
     float gust = seaGustAt(cell);
     return seaPawAt(cell, gust, order) ? ${SEA_PAW_CAP_BASE.toFixed(2)} + ${SEA_PAW_CAP_GAIN.toFixed(2)} * gust : 0.0;
+}
+// Forecast squall: centre xy and half-width z (world px), strength w (0 = none);
+// streak fall offset (world px, stepped on the motion clock).
+uniform vec4 u_squall;
+uniform float u_squallFall;
+// The squall (and its E2-04 shower) at a sea cell, in cloud courses times its
+// strength, 0 outside it: three courses in the core stepping out to one at
+// the rim, so it reads darker than any cloud shadow it crosses, and 2-px rain
+// streak columns hanging under the patch. n is the cell's cloud field
+// (cloudNoiseAt); the rim dithers over a two-texel seam only.
+float squallShade(vec2 cell, float n, float order) {
+    if (u_squall.w <= 0.0) return 0.0;
+    vec2 d = (cell + 0.5 - u_squall.xy) / vec2(u_squall.z, u_squall.z * 0.5);
+    float edge = length(d) + (n - 0.5) * 0.5 + (order - 0.5) * 3.0 / u_squall.z;
+    if (edge >= 1.0) return 0.0;
+    float courses = edge < 0.5 ? 3.0 : edge < 0.78 ? 2.0 : 1.0;
+    float h = waterHash12(vec2(floor(cell.x / 2.0), 409.0));
+    if (h < 0.45 && mod(cell.y - u_squallFall + floor(h * 97.0), 24.0) < 12.0 + h * 10.0) courses += 1.0;
+    return courses * u_squall.w;
 }`;
-const SEA_WEATHER_UNIFORM_NAMES = ['u_seaSunlit', 'u_seaGust', 'u_seaGustRect'];
+const SEA_WEATHER_UNIFORM_NAMES = ['u_seaSunlit', 'u_seaGust', 'u_seaGustRect', 'u_squall', 'u_squallFall'];
 
 // One warm cone beyond the shaft's sea landing, shared across the map edge.
 // Only existing static swell crests / moving wave texels can catch its light.
@@ -1643,7 +1662,11 @@ vec3 mirrorStormColour(vec3 color, vec2 px, out bool gone) {
 // 3.3 / 3.4 — open water (a texel as deep as the open sea on its row) takes
 // the open sea's sunlit course and cat's paws (SEA_WEATHER_GLSL) exactly as
 // the composite does, so they cross the map edge unbroken; a sunlit texel's
-// colours then step from the stop one lighter.
+// colours then step from the stop one lighter. RG-5 — while a squall or
+// shower is out, open water on the terrain also sets \`seaOpenWater\`, path
+// dashes included, so main() lays the squall's courses on it as the
+// composite does on the open sea (applySeaCourses).
+bool seaOpenWater = false;
 vec3 applyWaterState(vec3 color, vec2 px, out bool seaPath) {
     seaPath = false;
     // The material map is quarter resolution: a coast block can hold sand or
@@ -1663,6 +1686,8 @@ vec3 applyWaterState(vec3 color, vec2 px, out bool seaPath) {
     float clock = u_waterFx.x;
     vec2 p = floor(px);
     if (stop < 0) return clock <= 0.0 ? staticWaterDashes(color, px) : applyWaterMood(color) * WATER_CAST;
+    seaOpenWater = u_terrainBatch && u_squall.w > 0.0 && stop >= 2
+        && float(stop) >= openSeaStop(openSeaDepth(p), waterBayer4(p));
     float storm = step(0.5, u_weather.z);
     float deepTick = floor(u_time * 0.006 * clock);
     // 3.2 — the path, on top of everything below it. Its screen terms read
@@ -1767,6 +1792,7 @@ vec3 fatTerrainSurface(float material, bool waterMaterial, out bool waterHue, ou
     float dominant = -1.0;
     bool dominantPath = false;
     bool dominantDash = false;
+    bool dominantOpen = false;
     for (int i = 0; i < 4; i++) {
         float w = fatTapWeight(t, i) * fatTap[i].a;
         if (w <= 0.0) continue;
@@ -1782,15 +1808,18 @@ vec3 fatTerrainSurface(float material, bool waterMaterial, out bool waterHue, ou
         before += vec4(c, 1.0) * w;
         bool tapPath = false;
         lighthouseDash = false;
+        seaOpenWater = false;
         if (tapWater) c = applyWaterState(c, world, tapPath);
         if (w > dominant) {
             dominant = w;
             dominantPath = tapPath;
             dominantDash = lighthouseDash;
+            dominantOpen = seaOpenWater;
         }
         surface += vec4(c, 1.0) * w;
     }
     lighthouseDash = dominantDash;
+    seaOpenWater = dominantOpen;
     seaPath = dominantPath;
     vec3 pre = before.rgb / max(before.a, 1e-6);
     waterHue = anyWater && !(pre.b < pre.r + 0.02 || pre.g < pre.r);
@@ -1813,6 +1842,18 @@ vec3 applyAuthoredSunBand(vec3 color, float material) {
     return color * mix(1.0, quantized, clamp(u_sun.w, 0.0, 1.0));
 }
 
+// RG-5 — the atmosphere courses of one cell, with the squall on open water
+// (\`seaOpenWater\`): the darker of its courses and the cloud course's, one
+// multiply as on the open sea (shadeOpenSea), so the patch crosses the map
+// edge unbroken. Every other texel takes applyAtmosphereCourses as is.
+vec3 applySeaCourses(vec3 color, vec2 cell, float order, float cellCentreY, bool additive) {
+    float squall = seaOpenWater ? squallShade(cell, cloudNoiseAt(cell), order) : 0.0;
+    if (squall <= 0.0) return applyAtmosphereCourses(color, cell, order, cellCentreY, additive);
+    float cloud = u_cloud.z > 0.0 ? cloudCourseAt(cloudSeamField(cell, cloudNoiseAt(cell), order, 2.0)) * u_cloud.z : 0.0;
+    color *= vec3(1.0) - max(cloud, squall * 0.085) * vec3(1.0, 0.96, 0.84);
+    return applyAerialHaze(color, order, cellCentreY, additive);
+}
+
 // 4.6 — the atmosphere courses (cloud shadow and aerial haze, stepped on the
 // art cell) at a flight frame's seam pixel: each covered cell's courses on
 // the pixel's own colour, blended by coverage, so a course edge or a Bayer
@@ -1825,7 +1866,7 @@ vec3 fatAtmosphereCourses(vec3 color, FatTaps t, bool waterMaterial) {
         vec2 cell = t.base + fatTapOffset(i);
         float rowPx = (cell.y + v_originFrac.y + 0.5 + u_camera.y) * u_camera.z
             + (waterMaterial ? seaContourRows(cell) * u_camera.z : 0.0);
-        sum += applyAtmosphereCourses(color, cell, bayer4(cell), rowPx, u_additive) * w;
+        sum += applySeaCourses(color, cell, bayer4(cell), rowPx, u_additive) * w;
     }
     return sum;
 }
@@ -2674,10 +2715,11 @@ void main() {
     color /= max(1.0, max(color.r, max(color.g, color.b)));
     // 1.4 + 1.6 — cloud courses and aerial haze on this record's own grid;
     // on water the haze courses follow the sea's swell contours (N3, the
-    // open sea's own rows, so they cross the map edge unbroken).
+    // open sea's own rows, so they cross the map edge unbroken), and open
+    // water takes the squall's courses (RG-5).
     color = seamTaps
         ? fatAtmosphereCourses(color, cellTaps, waterMaterial)
-        : applyAtmosphereCourses(color, artCell, poolOrder,
+        : applySeaCourses(color, artCell, poolOrder,
             artTopLeftPx.y + (waterMaterial ? seaContourRows(artCell) * u_camera.z : 0.0), u_additive);
     if (bakedRim && !u_additive) alpha = mix(alpha, max(alpha, v_alpha), nightCarry);
     outColor = vec4(max(color, vec3(0.0)) * alpha, alpha);
@@ -2751,10 +2793,6 @@ uniform vec3 u_fogColor;
 uniform vec4 u_seaHaze;
 // The sky just above the horizon, which the reflection band mirrors.
 uniform vec3 u_seaSky;
-// Forecast squall: centre xy and half-width z (world px), strength w (0 = none);
-// streak fall offset (world px, stepped on the motion clock).
-uniform vec4 u_squall;
-uniform float u_squallFall;
 const float OPEN_SEA_BAND = ${OPEN_SEA_BAND_DEPTH.toFixed(1)};
 vec3 shadeOpenSea(vec2 cell) {
     float order = waterBayer4(cell);
@@ -2862,20 +2900,7 @@ vec3 shadeOpenSea(vec2 cell) {
         // island as its threshold climbs above the field.
         shade = step(u_cloudThresholds.x, m) + step(u_cloudThresholds.y, m) + step(mix(u_cloudThresholds.z, 1.2, reach), m);
     }
-    if (u_squall.w > 0.0) {
-        vec2 d = (cell + 0.5 - u_squall.xy) / vec2(u_squall.z, u_squall.z * 0.5);
-        // The rim dithers over a two-texel seam only.
-        float edge = length(d) + (n - 0.5) * 0.5 + (order - 0.5) * 3.0 / u_squall.z;
-        if (edge < 1.0) {
-            // Three courses in the core, stepping out to one at the rim, so the
-            // squall reads darker than any cloud shadow it crosses.
-            float courses = edge < 0.5 ? 3.0 : edge < 0.78 ? 2.0 : 1.0;
-            // 2-px rain streak columns hanging under the patch.
-            float h = waterHash12(vec2(floor(cell.x / 2.0), 409.0));
-            if (h < 0.45 && mod(cell.y - u_squallFall + floor(h * 97.0), 24.0) < 12.0 + h * 10.0) courses += 1.0;
-            shade = max(shade, courses * u_squall.w);
-        }
-    }
+    shade = max(shade, squallShade(cell, n, order));
     if (shade > 0.0) c *= vec3(1.0) - shade * 0.085 * vec3(1.0, 0.96, 0.84);
     // N3 — the aerial haze's courses on water follow the swell contours (the
     // in-map water takes the same rows, SCENE_FRAGMENT), never a ruled line.
@@ -5090,8 +5115,9 @@ export class GpuWorldRenderer {
     // 3.3 / 3.4 — the composite's open sea: the scene pass's grade, water
     // mood, weather, water clock and path (`_waterFx`), the sky's horizon
     // colours, this frame's cloud courses, the gust field and the forecast
-    // squall. `sea-weather` sheds the sunlit course, the cat's paws and the
-    // squall at MINIMAL (the island's cloud courses shed there too).
+    // squall (both from `_resolveSeaWeather`, shared with the scene's in-map
+    // open water). `sea-weather` sheds the sunlit course, the cat's paws and
+    // the squall at MINIMAL (the island's cloud courses shed there too).
     _uploadOpenSeaUniforms(qualityLevel, camera, feed, uniforms = this.compositeUniforms) {
         const gl = this._uniformGl || this.gl;
         const grade = this._frameGradeForComposite || resolveFrameGrade(feed);
@@ -5115,22 +5141,24 @@ export class GpuWorldRenderer {
         const sky = openSeaSky(atmosphere);
         gl.uniform4f(uniforms.u_seaHaze, sky.haze[0], sky.haze[1], sky.haze[2], openSeaHazeRows(weather?.fog));
         gl.uniform3fv(uniforms.u_seaSky, sky.horizon);
-        const seaWeather = effectBudgetMode('sea-weather', qualityLevel) === 'on';
         this._uploadAtmosphereCourses(uniforms, COMPOSITE_SAMPLER_UNITS.cloudTile);
         this._uploadSeaWeather(uniforms, COMPOSITE_SAMPLER_UNITS.seaGust);
-        const squall = seaWeather ? openSeaSquall(weather, feed.timeMs) : null;
-        gl.uniform4f(uniforms.u_squall, squall?.x ?? 0, squall?.y ?? 0, squall?.halfWidth ?? 1, squall?.strength ?? 0);
-        gl.uniform1f(uniforms.u_squallFall, squall?.fall ?? 0);
-        this.openSeaDiagnostics = { squall: Boolean(squall), paws: Boolean(this._seaWeatherFrame?.gust), sunlit: finite(this._seaWeatherFrame?.sunlit, 0) > 0 };
+        this.openSeaDiagnostics = { squall: Boolean(this._seaWeatherFrame?.squall), paws: Boolean(this._seaWeatherFrame?.gust), sunlit: finite(this._seaWeatherFrame?.sunlit, 0) > 0 };
     }
 
     // 3.3 / 3.4 — the frame's sea weather (GpuFrameState.resolveSeaWeather,
     // SEA_WEATHER_GLSL) for both the scene's in-map open water and the
-    // composite's open sea: the sunlit ceiling and the gust field, resolved
-    // once per frame so both passes read the same step. The gust upload (V9
-    // typed path) runs here, before either pass binds a sampler.
+    // composite's open sea: the sunlit ceiling, the gust field and the
+    // squall, resolved once per frame so both passes read the same step. The
+    // gust upload (V9 typed path) runs here, before either pass binds a
+    // sampler.
     _resolveSeaWeather(qualityLevel, camera, feed) {
-        const frame = this._seaWeatherFrame || (this._seaWeatherFrame = { sunlit: 0, gust: null, grassGust: 0 });
+        const frame = this._seaWeatherFrame || (this._seaWeatherFrame = { sunlit: 0, gust: null, grassGust: 0, squall: null });
+        // RG-5 — the forecast squall and its shower, for the open sea and the
+        // in-map open water alike (`sea-weather` sheds it at MINIMAL).
+        frame.squall = effectBudgetMode('sea-weather', qualityLevel) === 'on'
+            ? openSeaSquall(feed.weather || feed.atmosphere?.weather || null, feed.timeMs)
+            : null;
         const sea = resolveSeaWeather(qualityLevel, camera, feed, {
             courses: this._atmosphereCourses,
             width: this.width,
@@ -5163,6 +5191,9 @@ export class GpuWorldRenderer {
         }
         gl.uniform1i(uniforms.u_seaGust, unit);
         gl.uniform4fv(uniforms.u_seaGustRect, gust ? this._seaWeather.gustState.rect : OPEN_SEA_ZERO4);
+        const squall = frame?.squall || null;
+        gl.uniform4f(uniforms.u_squall, squall?.x ?? 0, squall?.y ?? 0, squall?.halfWidth ?? 1, squall?.strength ?? 0);
+        gl.uniform1f(uniforms.u_squallFall, squall?.fall ?? 0);
         // W6.11 — the scene's grass gust course (the composite has no grass).
         if (uniforms.u_grassGust) gl.uniform1f(uniforms.u_grassGust, gust ? finite(frame?.grassGust, 0) : 0);
     }

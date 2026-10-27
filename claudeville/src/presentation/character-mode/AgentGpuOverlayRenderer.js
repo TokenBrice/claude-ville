@@ -341,6 +341,9 @@ export class AgentGpuOverlayRenderer {
             urgentPose: host.selected || host.hovered
                 || [AgentStatus.WAITING_ON_USER, AgentStatus.ERRORED, AgentStatus.RATE_LIMITED].includes(status),
             frameGeometry,
+            // VQ-9 — the sampled cell carries the runtime gear baked over the
+            // body (a padded equipped sheet or strip).
+            bakedGear: pad > 0,
         };
         if (stripProbe) return;
         const walkFrame = !pose && !lodSheet && host.animState === 'walk' && host.motionScale > 0

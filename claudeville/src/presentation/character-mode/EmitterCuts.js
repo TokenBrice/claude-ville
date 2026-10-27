@@ -387,7 +387,9 @@ function drawPartCuts(ctx, renderer, emitter, core, scale, bloomCtx) {
     const draws = buildings.partDrawsFor(emitter.entry, emitter.building, emitter.x, emitter.y, 'whole', null, partScratch);
     for (let index = 0; index < draws.length; index++) {
         const d = draws[index];
-        const alpha = Math.min(1, (d.fixture ? 1 : Math.max(0, emitter.gate)) * core);
+        // VQ-8 — a part with its own gate (the banked ember floor) keeps it.
+        const gate = d.emissiveGate ?? (d.fixture ? 1 : Math.max(0, emitter.gate));
+        const alpha = Math.min(1, gate * core);
         if (alpha < 0.02) continue;
         const cut = partCutFor(renderer.assets, buildings, emitter.entry, d);
         if (!cut) continue;

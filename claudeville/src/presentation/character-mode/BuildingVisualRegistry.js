@@ -205,7 +205,10 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         // authored mask: `banked.png` restates exactly those pixels as stepped
         // charcoal over one ember course. A part (`partDrawsFor`) only while
         // the hearth is banked (`BuildingSprite._restMaskShowing`).
-        rest: { layer: 'banked' },
+        // VQ-8 — the ember floor: the course's own authored texels (bright
+        // `#d67634`, dim `#803e22`) emit at `strength` while the village
+        // lamps burn, static, so a banked hearth reads banked, not cold.
+        rest: { layer: 'banked', ember: { colors: ['#d67634', '#803e22'], strength: 0.4 } },
         // 4.4 — the workload bench. `billets` are the three stepped bars on the
         // anvil plinth (one per observed count tier), `shelf` is the result
         // rack under the front windows where a finished command's stamped tile
@@ -653,6 +656,14 @@ export function isBuildingApertureLayer(type, layerName) {
 export function getBuildingRestLayer(type) {
     const layer = getBuildingVisual(type)?.rest?.layer;
     return typeof layer === 'string' && layer ? layer : null;
+}
+
+// VQ-8 — the rest mask's ember floor `{ colors, strength }`, or null: which
+// of the mask's own authored colours emit, and how strongly (the emissive
+// contribution, as an `authored-albedo` layer's strength).
+export function getBuildingRestEmber(type) {
+    const ember = getBuildingVisual(type)?.rest?.ember;
+    return Array.isArray(ember?.colors) && ember.colors.length && ember.strength > 0 ? ember : null;
 }
 
 // 4.2 — optional authored work rooms (sprite-local windows). Buildings without

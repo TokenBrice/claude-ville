@@ -79,6 +79,7 @@ import {
     getBuildingApertureProfile,
     getBuildingAssayProfile,
     getBuildingPlanTabProfile,
+    getBuildingRestEmber,
     getBuildingRestLayer,
     getBuildingRoomProfile,
     getBuildingWorkloadProfile,
@@ -159,8 +160,9 @@ const FORGE_GLOW_BASELINE = 0.22;
 const FORGE_GLOW_DECAY_PER_SECOND = 0.32;
 // 4.6 — the banked hearth of a confirmed-empty village: the heat value the
 // glow decays to, well under the ordinary idle baseline. It drives no light:
-// B3-03' — a banked hearth emits nothing, and its ember course is albedo in
-// the rest mask, so the night grade takes it down with the stone.
+// B3-03' — a banked hearth's painted fire emits nothing; only the rest mask's
+// own ember course glows, low and static, while the lamps burn (VQ-8,
+// `rest.ember` in BuildingVisualRegistry).
 const FORGE_BANKED_GLOW = 0.07;
 // 4.6 — architecture that stays lit through a sleeping town: the Pharos and
 // the harbour lantern are safety lights, not work signals.
@@ -552,7 +554,8 @@ export class BuildingSprite {
 
     _emissiveGateFor(building) {
         // B3-03' — a banked hearth emits nothing: the mask covers the painted
-        // fire, so no emitter cut or light may restate it.
+        // fire, so no emitter cut or light may restate it. The mask's ember
+        // floor carries its own part gate (VQ-8, `partDrawsFor`).
         if (this._restMaskShowing(building)) return 0;
         return buildingEmissiveGate(
             lampCourseFor(this.atmosphereState),
@@ -2902,6 +2905,8 @@ export class BuildingSprite {
             let top;
             let textureKey;
             let textureRevision = null;
+            let ember = null;
+            let emissiveGate = null;
             if (layer.cycle) {
                 if (!this._emitterCycleActive(type, layer.cycle)) continue;
                 const cycle = this._emitterCycleFor(entry, name, layer);
@@ -2960,6 +2965,10 @@ export class BuildingSprite {
                 left = rest ? 0 : Math.round(layer.anchor[0] - frameW / 2);
                 top = rest ? 0 : Math.round(layer.anchor[1] - frameH);
                 textureKey = `layer:${id}:${this.assets.assetVersion || ''}`;
+                // VQ-8 — a banked hearth's ember floor (`rest.ember`) emits
+                // through no work gate, only while the village lamps burn.
+                ember = rest ? getBuildingRestEmber(type) : null;
+                if (ember) emissiveGate = lampsLitAt(this.atmosphereState) ? 1 : 0;
             }
             let sy = 0;
             let sh = frameH;
@@ -2995,6 +3004,11 @@ export class BuildingSprite {
                 // Pharos lamp and lens) emit through no occupancy gate.
                 materialClass: (layer.cycle?.art ? entry.layers[layer.cycle.art]?.materialClass : layer.materialClass) || null,
                 fixture: layer.fixture === true,
+                // VQ-8 — the part's own emission gate where it has one (a
+                // rest mask's ember floor), else null: the fixture or
+                // building gate. `ember` names the texels it lights.
+                emissiveGate,
+                ember,
             });
         }
         this._fixturePartDraws(entry, type, originX, originY, splitPass, horizonY, out);
@@ -3280,6 +3294,26 @@ export class BuildingSprite {
             const alpha = Math.round(Math.min(1, emission) * 128);
             for (let i = 3; i < px.data.length; i += 4) {
                 if (px.data[i] > 0) px.data[i] = alpha;
+            }
+            context.putImageData(px, 0, 0);
+            out.emissive = canvas;
+        }
+        // VQ-8 — a rest mask's ember floor: only its texels of the declared
+        // authored colours emit (their own colour, at `strength` as above),
+        // in the mask's own geometry, so a channel shares the albedo's UVs
+        // and the Canvas cut its size.
+        if (draw.ember && !out.emissive) {
+            const canvas = document.createElement('canvas');
+            canvas.width = draw.image.width;
+            canvas.height = draw.image.height;
+            const context = canvas.getContext('2d', { willReadFrequently: true });
+            context.drawImage(draw.image, 0, 0);
+            const px = context.getImageData(0, 0, canvas.width, canvas.height);
+            const colours = new Set(draw.ember.colors.map((hex) => hex.toLowerCase()));
+            const alpha = Math.round(Math.min(1, draw.ember.strength) * 128);
+            for (let i = 0; i < px.data.length; i += 4) {
+                const hex = `#${[px.data[i], px.data[i + 1], px.data[i + 2]].map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+                px.data[i + 3] = px.data[i + 3] > 0 && colours.has(hex) ? alpha : 0;
             }
             context.putImageData(px, 0, 0);
             out.emissive = canvas;
