@@ -34,6 +34,7 @@ import { TopBar } from './shared/TopBar.js';
 import { Sidebar } from './shared/Sidebar.js';
 import { Toast } from './shared/Toast.js';
 import { Modal } from './shared/Modal.js';
+import { shortcutBlocked } from './shared/ShortcutGuard.js';
 import { el } from './shared/DomSafe.js';
 import { emitAgentSelected, emitAgentDeselected, resetAgentSelection } from './shared/AgentSelection.js';
 import { HARBOR_FOCUS_FLEET_EVENT } from './shared/HarborLedger.js';
@@ -1504,6 +1505,9 @@ export class App {
                     && (event.ctrlKey || event.metaKey)
                     && !event.altKey);
             if (searchShortcut) {
+                // UI-11: never behind the modal or a popover (focusing search
+                // would un-collapse the sidebar under it), never on a repeat.
+                if (shortcutBlocked(event)) return;
                 event.preventDefault();
                 this.sidebar?.focusSearch();
                 return;

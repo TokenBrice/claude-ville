@@ -10,6 +10,7 @@ import {
 } from '../../claudeville/src/application/VillageState.js';
 import { World } from '../../claudeville/src/domain/entities/World.js';
 import { AgentStatus } from '../../claudeville/src/domain/value-objects/AgentStatus.js';
+import { shortcutBlocked } from '../../claudeville/src/presentation/shared/ShortcutGuard.js';
 import { connectionChip } from '../../claudeville/src/presentation/shared/TopBar.js';
 
 function villageAfter(actions) {
@@ -101,6 +102,20 @@ test('a provider that cannot be read behind a live link still reads DEGRADED', (
     assert.equal(state.phase, VillagePhase.DEGRADED);
     assert.equal(linkDown(state, 2_000), false);
     assert.equal(connectionChip(state, 2_000).label, 'DEGRADED');
+});
+
+test('one shortcut guard: no key acts while typing, under the modal or a popover, or on a repeat (UI-11)', () => {
+    const doc = ({ modalOpen = false, popoverOpen = false } = {}) => ({
+        getElementById: id => (id === 'modalOverlay' ? { getAttribute: () => (modalOpen ? 'false' : 'true') } : null),
+        querySelector: () => (popoverOpen ? {} : null),
+    });
+    const key = (tagName = 'BODY', extra = {}) => ({ key: 'a', target: { tagName }, repeat: false, ...extra });
+    assert.equal(shortcutBlocked(key(), { doc: doc() }), false);
+    for (const tag of ['INPUT', 'TEXTAREA', 'SELECT']) assert.equal(shortcutBlocked(key(tag), { doc: doc() }), true, tag);
+    assert.equal(shortcutBlocked(key('DIV', { target: { tagName: 'DIV', isContentEditable: true } }), { doc: doc() }), true);
+    assert.equal(shortcutBlocked(key(), { doc: doc({ modalOpen: true }) }), true, 'under the modal');
+    assert.equal(shortcutBlocked(key(), { doc: doc({ popoverOpen: true }) }), true, 'under an auto popover');
+    assert.equal(shortcutBlocked(key('BODY', { repeat: true }), { doc: doc() }), true, 'a held key');
 });
 
 test('the simulator never reads as a lost link', () => {

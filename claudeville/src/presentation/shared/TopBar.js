@@ -19,6 +19,7 @@ import { TokenUsage } from '../../domain/value-objects/TokenUsage.js';
 import { bucketForStatus, oldestActionable, waitAnchor } from '../../domain/services/SignalLedger.js';
 import { eventShapeSvgPath } from './EventShapes.js';
 import { publishReservedRect } from './ReservedRects.js';
+import { shortcutBlocked } from './ShortcutGuard.js';
 import {
     DEFAULT_TOWN_BAND_VOICE,
     HUSH_DURATION_MS,
@@ -148,11 +149,6 @@ function storedSoundView(storage = globalThis.window?.localStorage) {
         quietActive: false,
         recalibrated: false,
     };
-}
-
-function isKeyboardEditTarget(target) {
-    const tag = String(target?.tagName || '').toUpperCase();
-    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || Boolean(target?.isContentEditable);
 }
 
 function stepReadout(step) {
@@ -484,9 +480,7 @@ export class TopBar {
         this._onAttentionKey = (event) => {
             if (event.key !== 'a' && event.key !== 'A') return;
             if (event.metaKey || event.ctrlKey || event.altKey) return;
-            const target = event.target;
-            const tag = target?.tagName;
-            if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) return;
+            if (shortcutBlocked(event)) return;
             if (this.frameAttention?.()) {
                 event.preventDefault();
                 return;
@@ -803,8 +797,8 @@ export class TopBar {
         // user activation), never from a text field or under a modal.
         this._onSoundKey = (event) => {
             if (event.key !== 'm' && event.key !== 'M') return;
-            if (event.metaKey || event.ctrlKey || event.altKey || event.repeat) return;
-            if (isKeyboardEditTarget(event.target) || this.modal?.isOpen?.()) return;
+            if (event.metaKey || event.ctrlKey || event.altKey) return;
+            if (shortcutBlocked(event)) return;
             event.preventDefault();
             this._toggleSound({ announce: true });
         };
