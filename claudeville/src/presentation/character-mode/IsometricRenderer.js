@@ -7690,8 +7690,16 @@ export class IsometricRenderer {
         const out = this._agentLabelHitRects;
         out.length = 0;
         for (const sprite of sprites) {
-            if (!sprite.agent || sprite.overlaySlot == null) continue;
-            out.push(this._agentIdentityRect(sprite, sprite.overlaySlot || 0));
+            if (!sprite.agent) continue;
+            if (sprite.overlaySlot != null) out.push(this._agentIdentityRect(sprite, sprite.overlaySlot || 0));
+            // VQ-14 — a T1 body is as hard an obstacle as its plate: a plaque
+            // steps aside (or stands down) rather than cover the pose the
+            // plate points at (the HARBOR plaque over the Pharos lookout).
+            const box = sprite._bodyBox;
+            if (!box || !isAttentionStatus(sprite.agent.status)) continue;
+            const x = sprite._placeX ?? sprite.x;
+            const y = sprite._visualAnchorY?.() ?? sprite.y;
+            out.push({ x: x + box.left, y: y + box.top, w: box.right - box.left, h: box.bottom - box.top });
         }
         for (const rect of this._attentionWorldRects) out.push(rect);
         if (this.buildingRenderer) this.buildingRenderer.identityWorldRects = out;
