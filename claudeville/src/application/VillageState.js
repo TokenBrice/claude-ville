@@ -263,3 +263,13 @@ export function linkStatusText(state, now = Date.now()) {
 export function isRetryable(state) {
     return state?.phase === VillagePhase.FAILED || state?.phase === VillagePhase.DEGRADED;
 }
+
+/**
+ * EN-1: the link to the server is down or silent (the socket is reconnecting,
+ * or the last word from the server is stale). That is the server, not a
+ * provider, so it outranks the DEGRADED phase's "a source is unreadable".
+ */
+export function linkDown(state, now = Date.now()) {
+    if (state?.source === 'simulator') return false;
+    return state?.link?.state === LinkState.RECONNECTING || isStale(state, now);
+}

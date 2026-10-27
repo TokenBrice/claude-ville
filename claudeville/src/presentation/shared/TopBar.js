@@ -10,6 +10,7 @@ import {
     initialVillageState,
     isStale,
     LinkState,
+    linkDown,
     linkStatusText,
     snapshotAgeMs,
     VillagePhase,
@@ -213,14 +214,16 @@ export function countsPending(state) {
 /**
  * The connection chip follows the village phase: it never says LIVE (or
  * lights green) while the village is still syncing, and says DEGRADED while
- * the world says a watchtower is unreadable.
+ * the world says a watchtower is unreadable. A lost or silent link (EN-1)
+ * outranks DEGRADED: an outage reads RECONNECTING n or STALE, never as a
+ * provider that cannot be read.
  */
 export function connectionChip(state, now = Date.now()) {
     const phase = state?.phase;
     if (phase === VillagePhase.STARTING || phase === VillagePhase.SYNCING) {
         return { label: 'SYNCING', state: LinkState.SYNCING, stale: false };
     }
-    if (phase === VillagePhase.DEGRADED) {
+    if (phase === VillagePhase.DEGRADED && !linkDown(state, now)) {
         return { label: 'DEGRADED', state: LinkState.RECONNECTING, stale: false };
     }
     const stale = isStale(state, now);
