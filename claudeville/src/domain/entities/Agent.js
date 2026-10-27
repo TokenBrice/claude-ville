@@ -79,6 +79,7 @@ export class Agent {
         lastSessionActivity,
         activityAgeMs,
         turnState,
+        backgroundPending,
         pendingTool,
         pendingSince,
         waitReason,
@@ -145,6 +146,8 @@ export class Agent {
         // says why a WAITING_ON_USER agent is blocked; `resident` marks a session
         // the server is holding past its active window.
         this.turnState = turnState || 'unknown';
+        // PV-2 — background work a closed turn still waits on, or null.
+        this.backgroundPending = backgroundPending || null;
         this.pendingTool = pendingTool || null;
         this.pendingSince = optionalNumber(pendingSince);
         this.waitReason = waitReason || null;

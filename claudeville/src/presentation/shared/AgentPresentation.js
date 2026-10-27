@@ -1,6 +1,7 @@
 import { i18n } from '../../config/i18n.js';
 import { BUILDING_ACCENTS, BUILDING_ACCENTS_RGB, PROVIDER_HUES, STATUS_VISUALS } from '../../config/theme.js';
 import { buildingForTool, toolCategory, toolIcon, shortToolName } from '../../domain/services/ToolIdentity.js';
+import { isWaitingOnCrew } from '../../domain/services/StatusResolver.js';
 import { formatModelLabel, getModelVisualIdentity } from './ModelVisualIdentity.js';
 import { repoProfile } from './RepoColor.js';
 import { el } from './DomSafe.js';
@@ -161,6 +162,16 @@ export function currentToolPresentation(agent, translator = i18n) {
             icon: toolIcon(agent.currentTool),
             name: agent.currentTool,
             detail: agent.currentToolInput || '',
+        };
+    }
+    // PV-2 (Q2) — a closed turn whose own background crew still works.
+    if (isWaitingOnCrew(agent)) {
+        const count = Number(agent.backgroundPending.count);
+        return {
+            isIdle: true,
+            icon: '\u23F3',
+            name: 'Waiting on crew',
+            detail: `${count} background ${count === 1 ? 'task' : 'tasks'}`,
         };
     }
     // Tool-less fallback: terminal statuses read as themselves (idle → "Idle",

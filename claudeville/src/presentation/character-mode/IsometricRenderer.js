@@ -3331,10 +3331,15 @@ export class IsometricRenderer {
 
     // A subagent still at work (not finished, not an omp advisor, which lives
     // as long as its parent): its parent waits on it (AgentSprite._waitsForPint).
-    _hasLiveSubagents(agentId) {
+    // A finished child's own crew counts too, at any depth: a Codex or nested
+    // Claude grandchild still holds its lead.
+    _hasLiveSubagents(agentId, seen = new Set([agentId])) {
         for (const childId of this.relationshipState?.parentToChildren?.get(agentId) || []) {
+            if (seen.has(childId)) continue;
+            seen.add(childId);
             const child = this.world?.agents?.get(childId);
-            if (child && !child.isDeparted && !child.isAdvisor && child.status !== AgentStatus.COMPLETED) return true;
+            if (!child || child.isDeparted || child.isAdvisor) continue;
+            if (child.status !== AgentStatus.COMPLETED || this._hasLiveSubagents(childId, seen)) return true;
         }
         return false;
     }

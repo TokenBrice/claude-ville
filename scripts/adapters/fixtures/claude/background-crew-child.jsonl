@@ -1,0 +1,2 @@
+{"type":"user","uuid":"k1","timestamp":"2026-09-01T14:00:02.500Z","isSidechain":true,"agentId":"crewchild","sessionId":"crew-main","message":{"role":"user","content":"Survey the repository."}}
+{"type":"assistant","uuid":"k2","timestamp":"2026-09-01T14:00:30.000Z","isSidechain":true,"agentId":"crewchild","sessionId":"crew-main","message":{"role":"assistant","model":"claude-opus-5-5","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_k1","name":"Grep","input":{"pattern":"TODO"}}]}}

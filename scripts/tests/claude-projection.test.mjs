@@ -150,3 +150,76 @@ test('Claude api-request records never become turns', () => {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// PV-2 (Q2): a lead that closes its turn while its own background crew
+// works is waiting on that crew, not on you. Real shapes: an async `Agent`
+// launch, a `run_in_background` build, a watch ended by `TaskStop`, a queued
+// `<task-notification>` and its delivery as a user record.
+test('PV-2: a closed turn waits on its own background crew until the crew reports back', async () => {
+  const { resolveAgentStatus } = await import('../../claudeville/src/domain/services/StatusResolver.js');
+  const root = makeTempDir('claudeville-claude-crew-');
+  try {
+    const project = path.join(root, 'work', 'crew');
+    const projectDir = path.join(root, '.claude', 'projects', project.replaceAll('/', '-'));
+    fs.mkdirSync(project, { recursive: true });
+    const lines = fs.readFileSync(path.join(FIXTURE_ROOT, 'background-crew.jsonl'), 'utf8')
+      .replaceAll('__PROJECT__', project).trimEnd().split('\n');
+    const mainFile = path.join(projectDir, 'crew-main.jsonl');
+    const childFile = path.join(projectDir, 'crew-main', 'subagents', 'agent-crewchild.jsonl');
+    fs.mkdirSync(path.dirname(childFile), { recursive: true });
+    fs.copyFileSync(path.join(FIXTURE_ROOT, 'background-crew-child.jsonl'), childFile);
+    const now = Date.parse('2026-09-01T14:02:10.000Z');
+    writeJsonLines(path.join(root, '.claude', 'history.jsonl'), [
+      { sessionId: 'crew-main', project, timestamp: now, display: 'Crew fixture' },
+    ]);
+
+    const childScript = `
+      const fs = require('fs');
+      Date.now = () => ${now};
+      const { ClaudeAdapter } = require('./claudeville/adapters/claude');
+      const lines = ${JSON.stringify(lines)};
+      const adapter = new ClaudeAdapter();
+      const at = (count, childAgeMs = 0) => {
+        fs.writeFileSync(${JSON.stringify(mainFile)}, lines.slice(0, count).join('\\n') + '\\n');
+        const childAt = (${now} - childAgeMs) / 1000;
+        fs.utimesSync(${JSON.stringify(childFile)}, childAt, childAt);
+        const main = adapter.getActiveSessions(2 * 60 * 1000).find(session => session.sessionId === 'crew-main');
+        return { turnState: main.turnState, awaitingSince: main.awaitingSince, backgroundPending: main.backgroundPending };
+      };
+      const cuts = {
+        closed: at(10),
+        childQuiet: at(10, 10 * 60 * 1000),
+        queuedNotice: at(11),
+        crewHome: at(15),
+      };
+      adapter.shutdown();
+      process.stdout.write(JSON.stringify(cuts));
+    `;
+    const cuts = JSON.parse(execFileSync(process.execPath, ['-e', childScript], {
+      cwd: REPO_ROOT,
+      env: { ...process.env, HOME: root, USERPROFILE: root },
+      encoding: 'utf8',
+    }));
+    const status = cut => resolveAgentStatus({ status: 'active', lastActivity: now, ...cut }, { now });
+
+    // The agent and the build are out; the watch was stopped.
+    assert.equal(cuts.closed.turnState, 'awaiting_input');
+    assert.deepEqual(cuts.closed.backgroundPending, {
+      count: 2, kinds: ['agent', 'bash'], since: Date.parse('2026-09-01T14:00:02.000Z'),
+    });
+    assert.equal(status(cuts.closed), 'working', 'waiting on crew is working-family, never COMPLETED');
+    // An agent counts only while its own transcript is active.
+    assert.deepEqual(cuts.childQuiet.backgroundPending, {
+      count: 1, kinds: ['bash'], since: Date.parse('2026-09-01T14:00:04.000Z'),
+    });
+    // The queued notice already ends the build, before the lead reads it.
+    assert.equal(cuts.queuedNotice.turnState, 'awaiting_input');
+    assert.deepEqual(cuts.queuedNotice.backgroundPending?.kinds, ['agent']);
+    // With the crew home, the closed turn is the user's move again.
+    assert.equal(cuts.crewHome.turnState, 'awaiting_input');
+    assert.equal(cuts.crewHome.backgroundPending, null);
+    assert.equal(status(cuts.crewHome), 'completed');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

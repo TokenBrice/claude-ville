@@ -952,6 +952,112 @@ function emptyTokenUsage() {
   };
 }
 
+// PV-2 — background work a session started and has not heard back from:
+// async `Agent` launches (and `SendMessage` resumes), teammates,
+// `run_in_background` Bash and Monitor watches. Each start carries ids the
+// harness later quotes in a `<task-notification>` (`<task-id>`,
+// `<tool-use-id>`); a notification with a status, or a `TaskStop`, ends it.
+// Folded over the whole transcript with the aggregate, so a launch far
+// behind the tail window still counts. The list is replaced, never mutated,
+// so clones and provisional folds share it safely.
+const BACKGROUND_ITEM_LIMIT = 64;
+// A background shell with no notification counts at most this long.
+const BACKGROUND_SHELL_MAX_MS = 30 * 60 * 1000;
+const TASK_NOTIFICATION_PATTERN = /<task-notification>([\s\S]*?)(?:<\/task-notification>|$)/g;
+const TASK_STOP_TOOLS = new Set(['TaskStop', 'KillShell', 'KillBash']);
+
+function backgroundId(value) {
+  return typeof value === 'string' && value.trim() ? value.trim().slice(0, 256) : null;
+}
+
+// Harness notices only: a queued notification, its mid-turn delivery, or a
+// user record's own text. Never an assistant quoting one or a tool result
+// that read a file holding one.
+function harnessNoticeText(entry) {
+  if (entry.type === 'queue-operation') {
+    return entry.operation === 'enqueue' && typeof entry.content === 'string' ? entry.content : '';
+  }
+  if (entry.type === 'attachment') {
+    const attachment = entry.attachment;
+    return attachment?.type === 'queued_command' && typeof attachment.prompt === 'string' ? attachment.prompt : '';
+  }
+  if (entry.type !== 'user') return '';
+  const content = entry.message?.content;
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content.filter(block => block?.type === 'text' && typeof block.text === 'string').map(block => block.text).join('\n');
+}
+
+// The ids every finished task in `text` names. A Monitor `<event>` without
+// a status is news from a watch that still runs, not its end.
+function finishedTaskIds(text) {
+  if (!text || !text.includes('<task-notification>')) return [];
+  const ids = [];
+  for (const [, body] of text.matchAll(TASK_NOTIFICATION_PATTERN)) {
+    if (body.includes('<event>') && !body.includes('<status>')) continue;
+    for (const tag of ['task-id', 'tool-use-id']) {
+      const id = backgroundId(body.match(new RegExp(`<${tag}>([^<]{1,256})</${tag}>`))?.[1]);
+      if (id) ids.push(id);
+    }
+  }
+  return ids;
+}
+
+function foldBackgroundWork(items, entry) {
+  if (!entry || typeof entry !== 'object') return items;
+  let next = items;
+  const at = toEpochMs(entry.timestamp ?? entry.created_at);
+  const end = (ids) => {
+    if (!ids.length || !next.length) return;
+    const kept = next.filter(item => !item.ids.some(id => ids.includes(id)));
+    if (kept.length !== next.length) next = kept;
+  };
+  const start = (item) => {
+    next = [...next.filter(other => !other.ids.some(id => item.ids.includes(id))), item]
+      .slice(-BACKGROUND_ITEM_LIMIT);
+  };
+
+  if (entry.type === 'assistant' && Array.isArray(entry.message?.content)) {
+    for (const block of entry.message.content) {
+      if (block?.type !== 'tool_use') continue;
+      if (TASK_STOP_TOOLS.has(block.name)) {
+        const id = backgroundId(block.input?.task_id) || backgroundId(block.input?.shell_id) || backgroundId(block.input?.bash_id);
+        if (id) end([id]);
+      } else if (block.name === 'Monitor' && backgroundId(block.id)) {
+        start({ kind: 'monitor', ids: [backgroundId(block.id)], agentId: null, at });
+      }
+    }
+    return next;
+  }
+
+  if (entry.type === 'user' && Array.isArray(entry.message?.content)) {
+    const block = entry.message.content.find(item => item?.type === 'tool_result');
+    const toolUseId = backgroundId(block?.tool_use_id);
+    const result = entry.toolUseResult && typeof entry.toolUseResult === 'object' && !Array.isArray(entry.toolUseResult)
+      ? entry.toolUseResult
+      : null;
+    const bashId = backgroundId(result?.backgroundTaskId);
+    const teammate = result?.status === 'teammate_spawned';
+    const agentId = backgroundId(result?.isAsync === true || teammate ? result.agentId : null)
+      || backgroundId(result?.resumedAgentId);
+    if (bashId) {
+      start({ kind: 'bash', ids: [bashId, toolUseId].filter(Boolean), agentId: null, at });
+    } else if (agentId) {
+      start({ kind: teammate ? 'teammate' : 'agent', ids: [agentId, toolUseId].filter(Boolean), agentId, at });
+    } else if (toolUseId && backgroundId(result?.taskId)
+      && next.some(item => item.kind === 'monitor' && item.ids.includes(toolUseId))) {
+      // A Monitor's result names the task id its notifications quote.
+      next = next.map(item => (item.kind === 'monitor' && item.ids.includes(toolUseId)
+        ? { ...item, ids: [...item.ids, backgroundId(result.taskId)] }
+        : item));
+    }
+    // A watch that failed to start never runs.
+    if (toolUseId && block?.is_error === true) end([toolUseId]);
+  }
+  end(finishedTaskIds(harnessNoticeText(entry)));
+  return next;
+}
+
 function createTranscriptAggregate(filePath) {
   return {
     filePath,
@@ -965,9 +1071,11 @@ function createTranscriptAggregate(filePath) {
     usage: emptyTokenUsage(),
     launches: [],
     projection: createTranscriptProjection(),
+    background: [],
     displayUsage: null,
     displayLaunches: null,
     displayProjection: null,
+    displayBackground: null,
   };
 }
 
@@ -997,6 +1105,7 @@ function appendTranscriptGuard(aggregate, chunk) {
 function addTranscriptEntry(aggregate, entry) {
   const msg = isClaudeConversationRecord(entry) ? entry.message : null;
   addTranscriptProjectionEntry(aggregate.projection, entry, msg);
+  aggregate.background = foldBackgroundWork(aggregate.background || [], entry);
   if (!msg) return;
 
   if (msg.usage) {
@@ -1117,6 +1226,10 @@ function estimateTranscriptAggregateBytes(aggregate) {
   if (aggregate.displayProjection && aggregate.displayProjection !== aggregate.projection) {
     bytes += estimateJsonValueBytes(aggregate.displayProjection);
   }
+  bytes += estimateJsonValueBytes(aggregate.background || []);
+  if (aggregate.displayBackground && aggregate.displayBackground !== aggregate.background) {
+    bytes += estimateJsonValueBytes(aggregate.displayBackground);
+  }
 
   const seenLaunches = new Set();
   const addLaunches = (launches) => {
@@ -1230,6 +1343,7 @@ function finishTranscriptAggregate(aggregate, target) {
   aggregate.displayUsage = aggregate.usage;
   aggregate.displayLaunches = aggregate.launches;
   aggregate.displayProjection = aggregate.projection;
+  aggregate.displayBackground = aggregate.background;
   if (!aggregate.discardingLine && aggregate.trailing.length > 0) {
     let trailing = aggregate.trailing;
     if (trailing[trailing.length - 1] === 13) trailing = trailing.subarray(0, trailing.length - 1);
@@ -1238,11 +1352,13 @@ function finishTranscriptAggregate(aggregate, target) {
         usage: { ...aggregate.usage },
         launches: aggregate.launches.slice(),
         projection: cloneTranscriptProjection(aggregate.projection),
+        background: aggregate.background,
       };
       addTranscriptEntry(provisional, JSON.parse(trailing.toString('utf8')));
       aggregate.displayUsage = provisional.usage;
       aggregate.displayLaunches = provisional.launches;
       aggregate.displayProjection = provisional.projection;
+      aggregate.displayBackground = provisional.background;
     } catch {
       // An incomplete trailing record remains pending until a newline arrives.
     }
@@ -1530,6 +1646,45 @@ function getAgentLaunches(sessionFilePath) {
   } catch {
     return [];
   }
+}
+
+// A crew member's transcript is active on the same window as
+// `latestSubAgentActivity`. Stat the one file: that cache rescans its
+// directory only every 30 s, so it can miss a child launched just now.
+function childTranscriptActive(subagentsDir, agentId, activeThresholdMs, now) {
+  if (!subagentsDir || !agentId || path.basename(agentId) !== agentId) return false;
+  try {
+    return now - fs.statSync(path.join(subagentsDir, `agent-${agentId}.jsonl`)).mtimeMs <= activeThresholdMs;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * PV-2 — `{ count, kinds, since }` for the background work this session
+ * still waits on, else null. An agent or teammate counts while its own
+ * transcript is active; a shell or watch counts for at most 30 minutes.
+ * `since` is when the oldest counted item started.
+ */
+function readBackgroundPending(sessionFilePath, { subagentsDir = null, activeThresholdMs = 0, now = Date.now() } = {}) {
+  if (!sessionFilePath) return null;
+  let items;
+  try {
+    const aggregate = getTranscriptAggregate(sessionFilePath);
+    items = aggregate?.displayBackground || aggregate?.background || [];
+  } catch {
+    return null;
+  }
+  const counted = items.filter(item => (item.agentId
+    ? childTranscriptActive(subagentsDir, item.agentId, activeThresholdMs, now)
+    : Number.isFinite(item.at) && now - item.at < BACKGROUND_SHELL_MAX_MS));
+  if (!counted.length) return null;
+  const starts = counted.map(item => item.at).filter(Number.isFinite);
+  return {
+    count: counted.length,
+    kinds: [...new Set(counted.map(item => item.kind))],
+    since: starts.length ? Math.min(...starts) : null,
+  };
 }
 
 // ─── Session parsing ────────────────────────────────────────
@@ -2357,7 +2512,12 @@ function readSubAgentMeta(transcriptPath) {
   return meta;
 }
 
-function buildSubAgentSession({ filePath, agentId, decodedProject, parentSessionId, name, agentType, subagentKind = null, teamName = null, agentColor = null, workflowId = null, workflowName = null, lastActivity }) {
+// A main transcript's subagents live in `<session>/subagents/`.
+function mainSubagentsDir(sessionFilePath) {
+  return sessionFilePath ? path.join(sessionFilePath.replace(/\.jsonl$/, ''), 'subagents') : null;
+}
+
+function buildSubAgentSession({ filePath, agentId, decodedProject, parentSessionId, name, agentType, subagentKind = null, teamName = null, agentColor = null, workflowId = null, workflowName = null, lastActivity, activeThresholdMs = 0 }) {
   const detail = getSubAgentDetail(filePath, decodedProject);
   const sessionId = `subagent-${agentId}`;
   const permissionMode = getPermissionMode(filePath);
@@ -2365,6 +2525,11 @@ function buildSubAgentSession({ filePath, agentId, decodedProject, parentSession
   return {
     ...getClaudeTurnState(filePath, permissionMode),
     ...getTranscriptProjection(filePath, decodedProject, model),
+    // A nested crew lives in the same flat `subagents/` directory.
+    backgroundPending: readBackgroundPending(filePath, {
+      subagentsDir: path.dirname(filePath),
+      activeThresholdMs,
+    }),
     sessionId,
     provider: 'claude',
     agentId,
@@ -2523,6 +2688,11 @@ class ClaudeAdapter {
         ...session,
         ...getClaudeTurnState(sessionFilePath, permissionMode, now),
         ...getTranscriptProjection(sessionFilePath, session.project, model),
+        backgroundPending: readBackgroundPending(sessionFilePath, {
+          subagentsDir: mainSubagentsDir(sessionFilePath),
+          activeThresholdMs,
+          now,
+        }),
         name: sessionName,
         agentName: sessionName,
         teamName,
@@ -2619,6 +2789,7 @@ class ClaudeAdapter {
               teamName: meta?.teamName || null,
               agentColor: meta?.color || null,
               lastActivity: stat.mtimeMs,
+              activeThresholdMs,
             }));
           }
 
@@ -2659,6 +2830,7 @@ class ClaudeAdapter {
                 workflowId,
                 workflowName,
                 lastActivity: stat.mtimeMs,
+                activeThresholdMs,
               }));
             }
           }
@@ -2723,6 +2895,11 @@ class ClaudeAdapter {
           results.push({
             ...getClaudeTurnState(filePath, permissionMode, now),
             ...getTranscriptProjection(filePath, project, model),
+            backgroundPending: readBackgroundPending(filePath, {
+              subagentsDir: mainSubagentsDir(filePath),
+              activeThresholdMs,
+              now,
+            }),
             sessionId,
             provider: 'claude',
             agentId: agentType === 'main' ? null : sessionId,
@@ -3016,7 +3193,7 @@ class ClaudeAdapter {
 
 module.exports = {
   ClaudeAdapter,
-  _test: { claudeProjectDirName, encodeClaudeProjectDir, getGitEvents },
+  _test: { claudeProjectDirName, encodeClaudeProjectDir, foldBackgroundWork, getGitEvents },
   deriveTaskProgress,
   projectClaudeExecution,
   sanitizeTaskSubject,

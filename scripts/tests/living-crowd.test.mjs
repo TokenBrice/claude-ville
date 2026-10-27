@@ -27,6 +27,7 @@ import {
     scenicScoreBias,
     strollCapForHour,
 } from '../../claudeville/src/presentation/character-mode/DayRoutine.js';
+import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
 import { tileToWorld } from '../../claudeville/src/presentation/character-mode/Projection.js';
 import { isWorkingVisitor } from '../../claudeville/src/presentation/character-mode/VisitIntentManager.js';
 import VisitTileAllocator from '../../claudeville/src/presentation/character-mode/VisitTileAllocator.js';
@@ -315,6 +316,49 @@ test('every harness wait on subagents counts, and nothing else does', () => {
     assert.equal(pint(closed, null, { hasLiveSubagents: true }), true, 'a closed turn on background subagents');
     assert.equal(pint(closed), false, 'a closed turn with none left winds down');
     assert.equal(pint({ ...closed, isDeparted: true }, null, { hasLiveSubagents: true }), false);
+});
+
+test('PV-2: a closed turn waiting on its own crew takes its pint after a minute, like a pending Agent call', () => {
+    const crew = (extra = {}) => ({
+        provider: 'claude', status: AgentStatus.WORKING, turnState: 'awaiting_input',
+        awaitingSince: NOW - SUBAGENT_WAIT_PINT_MS, backgroundPending: { count: 2, kinds: ['agent'], since: NOW - 90_000 },
+        ...extra,
+    });
+    const wait = advanceSubagentWait(null, crew(), NOW);
+    assert.equal(wait.pint, true, 'a minute since its turn closed');
+    assert.equal(wait.since, NOW - SUBAGENT_WAIT_PINT_MS, 'the wait runs from the close, not the launch');
+    assert.equal(advanceSubagentWait(null, crew({ awaitingSince: NOW - 1 }), NOW).pint, false, 'not yet a minute');
+    assert.equal(advanceSubagentWait(null, crew({ backgroundPending: null }), NOW), null, 'no crew, no wait');
+    assert.equal(advanceSubagentWait(null, crew({ status: AgentStatus.COMPLETED }), NOW), null,
+        'a COMPLETED status is not this wait');
+
+    // The lead reads a crew notice and closes again: the seat holds.
+    const reading = crew({ turnState: 'working', awaitingSince: null, lastTool: 'Read' });
+    assert.equal(advanceSubagentWait(wait, reading, NOW + 5_000), wait);
+    assert.equal(advanceSubagentWait(wait, reading, NOW + SUBAGENT_WAIT_SLICE_GAP_MS), null, 'a long read is work');
+    assert.equal(advanceSubagentWait(wait, { ...reading, backgroundPending: null }, NOW + 5_000), null,
+        'with its crew home, work is just work');
+});
+
+test('PV-2: a lead waits on its crew at any depth, finished children included', () => {
+    const agents = new Map([
+        ['lead', { id: 'lead', status: AgentStatus.COMPLETED }],
+        ['child', { id: 'child', status: AgentStatus.COMPLETED }],
+        ['grandchild', { id: 'grandchild', status: AgentStatus.WORKING }],
+    ]);
+    const parentToChildren = new Map([['lead', new Set(['child'])], ['child', new Set(['grandchild'])]]);
+    const renderer = { world: { agents }, relationshipState: { parentToChildren } };
+    renderer._hasLiveSubagents = IsometricRenderer.prototype._hasLiveSubagents;
+    assert.equal(renderer._hasLiveSubagents('lead'), true, 'a working grandchild holds its lead');
+    agents.get('grandchild').status = AgentStatus.COMPLETED;
+    assert.equal(renderer._hasLiveSubagents('lead'), false);
+    agents.get('grandchild').status = AgentStatus.WORKING;
+    agents.get('grandchild').isDeparted = true;
+    assert.equal(renderer._hasLiveSubagents('lead'), false, 'a departed grandchild holds nobody');
+    parentToChildren.set('grandchild', new Set(['lead']));
+    agents.get('grandchild').isDeparted = false;
+    agents.get('grandchild').status = AgentStatus.COMPLETED;
+    assert.equal(renderer._hasLiveSubagents('lead'), false, 'a cycle ends the walk');
 });
 
 test("Codex's short wait slices add up to one wait, and real work ends it", () => {

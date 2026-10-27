@@ -58,6 +58,17 @@ function isErrored(session, now) {
     return false;
 }
 
+/**
+ * PV-2 (Q2) — a closed turn whose own background crew (async agents,
+ * teammates, background shells; adapter `backgroundPending`) still works:
+ * the session waits on that crew, not on you. WORKING-family, never
+ * COMPLETED and never an attention status.
+ */
+export function isWaitingOnCrew(session) {
+    return session?.turnState === TurnState.AWAITING_INPUT
+        && Number(session.backgroundPending?.count) > 0;
+}
+
 // Fallback for providers with no turn state: the old name-and-punctuation
 // guess. Weak, but better than reporting nothing for Gemini/Grok/Kimi.
 function looksLikeAskWithoutTurnState(session, baseStatus) {
@@ -74,7 +85,8 @@ function looksLikeAskWithoutTurnState(session, baseStatus) {
  * Resolve the status a session should render as.
  *
  * Turn state is authoritative when the adapter derived one: a closed turn is
- * COMPLETED (the agent is done and the next move is the user's), a tool call
+ * COMPLETED (the agent is done and the next move is the user's) unless its
+ * own background crew still works (WORKING, `isWaitingOnCrew`), a tool call
  * the adapter judged blocked is WAITING_ON_USER, and a tool that is merely
  * running keeps the session WORKING however long it takes. Only sessions with
  * no turn state fall back to timing the file's mtime.
@@ -106,7 +118,9 @@ export function resolveAgentStatus(session = {}, { usage = null, now = Date.now(
         if (turnState === TurnState.TOOL_PENDING && session.waitReason) {
             return AgentStatus.WAITING_ON_USER;
         }
-        if (turnState === TurnState.AWAITING_INPUT) return AgentStatus.COMPLETED;
+        if (turnState === TurnState.AWAITING_INPUT) {
+            return isWaitingOnCrew(session) ? AgentStatus.WORKING : AgentStatus.COMPLETED;
+        }
         if (turnState === TurnState.TOOL_PENDING || turnState === TurnState.WORKING) {
             return AgentStatus.WORKING;
         }
