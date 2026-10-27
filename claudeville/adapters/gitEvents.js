@@ -2386,8 +2386,21 @@ function pushEvidence(parsed, output) {
   return { evidence: null, relevant };
 }
 
+// SV-2a: every event comes from a segment whose command word is `git` or
+// `gh` (a basename), so a command naming neither as a whole word cannot
+// produce one. The tokenizer joins quoted and escaped pieces (`g"i"t`,
+// `gi\t`), so the test also runs with every quote and backslash removed.
+const GIT_COMMAND_WORD_RE = /\b(?:git|gh)\b/;
+const SHELL_QUOTING_RE = /["'\\]/g;
+
+function mayNameGitCommand(command) {
+  if (GIT_COMMAND_WORD_RE.test(command)) return true;
+  return /["'\\]/.test(command) && GIT_COMMAND_WORD_RE.test(command.replace(SHELL_QUOTING_RE, ''));
+}
+
 function parseGitEventsFromCommand(command, context = {}, options = {}) {
   if (typeof command !== 'string' || !command.trim()) return [];
+  if (!mayNameGitCommand(command)) return [];
 
   const output = collectParserOutput(context, options);
   const forgeUrls = forgeUrlsByType(output);
