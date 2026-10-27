@@ -136,6 +136,10 @@ const PLAQUE_ATTENTION = Object.freeze({
     errors: Object.freeze({ motif: 'alert', color: STATUS_VISUALS.errored.color }),
     quota: Object.freeze({ motif: 'limit-gate', color: STATUS_VISUALS.rate_limited.color }),
 });
+// Q3 — an account at its limit (Codex at 100 % of its window, or an enforced
+// Claude quota) puts the same LIMIT cell on the Mine's plaque, worded instead
+// of counted: an account surface. Static; villagers keep their own status.
+const MINE_ACCOUNT_LIMIT = Object.freeze({ count: 1, text: 'LIMIT', bucket: 'quota', ...PLAQUE_ATTENTION.quota });
 const PLAQUE_ATTENTION_GAP = 4;
 // AG-1 (B3-07, G7-4) — the Tavern's tally: a patron cell after the head band,
 // `│ ⊔5 · 14m`, the district's own tankard motif, the exact patron count and
@@ -417,6 +421,7 @@ export class BuildingSprite {
         this.atmosphereState = null;
         this.ritualConductor = null;
         this.quotaState = null;
+        this.mineAccountLimit = null;
         this.harborStatus = { failedPushActive: false, activeWorkingCount: null };
         this._taskboardPapers = [];
         this._taskboardBoardModel = new TaskboardBoardModel();
@@ -578,6 +583,18 @@ export class BuildingSprite {
 
     setQuotaState(state) {
         this.quotaState = state || null;
+    }
+
+    setAccountLimit(limited) {
+        this.mineAccountLimit = limited === true ? MINE_ACCOUNT_LIMIT : null;
+    }
+
+    // The attention cell a plaque carries: Command's actionable bodies, the
+    // Mine's account LIMIT, none elsewhere.
+    _plaqueAttentionFor(type) {
+        if (type === 'command') return this.plaqueAttention || null;
+        if (type === 'mine') return this.mineAccountLimit || null;
+        return null;
     }
 
     setHarborStatus(status = {}) {
@@ -1109,7 +1126,7 @@ export class BuildingSprite {
             for (const attempt of labelAttempts) {
                 const plaque = this._measurePlaque(ctx, b, attempt, {
                     count, zoom, isHovered, isLandmark, scaleMode,
-                    attention: b.type === 'command' ? this.plaqueAttention : null,
+                    attention: this._plaqueAttentionFor(b.type),
                     patrons: this.plaquePatrons?.get(b.type) || null,
                 });
                 if (!plaque.title && !plaque.motif) continue;
@@ -1417,7 +1434,7 @@ export class BuildingSprite {
             return { ...row, label, musterLeft, musterRight, leftWidth, tailWidth };
         });
         const rowsWidth = rows.reduce((max, row) => Math.max(max, Math.round(measureLabelText(ctx, row.label)) + (row.profile ? 8 : 0) + (row.tailWidth || 0)), 0);
-        const attentionText = attention?.count > 0 ? String(attention.count) : '';
+        const attentionText = attention?.text || (attention?.count > 0 ? String(attention.count) : '');
         const attentionWidth = attentionText ? measureLabelText(ctx, attentionText) : 0;
         const patronText = patrons?.count > 0 ? String(patrons.count) : '';
         const patronAge = patronText && patrons.age ? ` · ${patrons.age}` : '';

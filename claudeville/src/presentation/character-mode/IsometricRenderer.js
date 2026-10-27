@@ -2910,6 +2910,8 @@ export class IsometricRenderer {
         const quota = state?.quota || state || null;
         this.quotaState = quota;
         this.buildingRenderer?.setQuotaState?.(quota);
+        // Q3 — an account at its limit shows on the Mine, never on a villager.
+        this.buildingRenderer?.setAccountLimit?.(state?.codex?.limitReached === true || quota?.enforced === true);
         this.villageDirector?.setQuotaState?.(quota);
     }
 
