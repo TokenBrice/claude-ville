@@ -42,14 +42,31 @@ const verifiedOutcomeKinds = new Set(VERIFIED_OUTCOME_KINDS);
 const recentVerifiedOutcomes = new Map();
 const RECENT_VERIFIED_OUTCOME_LIMIT = 256;
 
-eventBus.on(VERIFIED_OUTCOME_EVENT, (outcome) => {
+function rememberVerifiedOutcome(outcome) {
     if (!outcome?.agentId || !verifiedOutcomeKinds.has(outcome.kind)) return;
     recentVerifiedOutcomes.set(String(outcome.agentId), outcome);
     noteMoment(`celebrate:${outcome.kind}`);
     while (recentVerifiedOutcomes.size > RECENT_VERIFIED_OUTCOME_LIMIT) {
         recentVerifiedOutcomes.delete(recentVerifiedOutcomes.keys().next().value);
     }
-});
+}
+
+// Heard from import on, like RepoColor's roster. The App re-installs it at
+// boot and uninstalls it at teardown, which also forgets the outcomes, so a
+// destroyed app leaves no listener behind.
+let unsubscribeVerifiedOutcomes = null;
+
+export function installVerifiedOutcomeMemory() {
+    if (!unsubscribeVerifiedOutcomes) unsubscribeVerifiedOutcomes = eventBus.on(VERIFIED_OUTCOME_EVENT, rememberVerifiedOutcome);
+}
+
+export function uninstallVerifiedOutcomeMemory() {
+    unsubscribeVerifiedOutcomes?.();
+    unsubscribeVerifiedOutcomes = null;
+    recentVerifiedOutcomes.clear();
+}
+
+installVerifiedOutcomeMemory();
 
 function isDeparted(agent) {
     return agent?.isDeparted === true

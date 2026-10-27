@@ -1187,11 +1187,9 @@ function getToolHistoryV2(filePath, maxItems = 15) {
       };
       const callId = kimiCodeToolCallId(call);
       const completion = callId ? completionsByCallId.get(callId) : null;
-      if (completion && Number.isFinite(completion.exitCode)) {
-        item.toolExitCode = completion.exitCode;
-        if (completion.exitCode !== 0 && completion.stderr) {
-          item.toolStderr = completion.stderr.trim().substring(0, 200);
-        }
+      if (completion && Number.isFinite(completion.exitCode)) item.toolExitCode = completion.exitCode;
+      if (completion?.success === false && completion.stderr) {
+        item.toolStderr = completion.stderr.trim().substring(0, 200);
       }
       tools.push(item);
     }
@@ -1208,13 +1206,17 @@ function kimiCodeResultCompletion(entry) {
     || result.is_error === true
     || result.error === true
     || (typeof result.error === 'string' && result.error.trim().length > 0);
-  const rawExitCode = result.exitCode ?? result.exit_code ?? result.code;
-  const exitCode = Number.isFinite(Number(rawExitCode)) ? Number(rawExitCode) : (isError ? 1 : 0);
+  // RG-2: an exit code comes only from a reported exit (exitCodeSource
+  // 'exit'). A bare error flag is a failure with no exit
+  // (OutcomeSignals.flagIsFailure('kimi')), and a result that reports
+  // neither leaves its outcome unknown, never an invented exit 0 or 1.
+  const outcome = kimiCodeExplicitExitCode(result);
+  const success = outcome ? !isError && outcome.exitCode === 0 : undefined;
   return {
-    success: !isError && exitCode === 0,
-    exitCode,
+    success,
+    exitCode: outcome?.exitCodeSource === 'exit' ? outcome.exitCode : undefined,
     completedAt: kimiCodeEventTime(entry, entry.event),
-    stderr: (isError || exitCode !== 0) && output ? output.trim().substring(0, 2000) : '',
+    stderr: success === false && output ? output.trim().substring(0, 2000) : '',
   };
 }
 
@@ -1949,4 +1951,4 @@ class KimiAdapter {
   }
 }
 
-module.exports = { KimiAdapter };
+module.exports = { KimiAdapter, _test: { kimiCodeResultCompletion } };
