@@ -54,6 +54,43 @@ test('the shower drifts downwind on the motion clock, wraps far off the island, 
     assert.equal(openSeaSquall(RAIN, t).x, held.x, 'a stopped motion clock holds the shower');
 });
 
+// RG-5 — the shower's pass crosses the island row, so the in-map open water
+// takes the squall's courses too (GLSL and WGSL, one helper with the open
+// sea), and the WebGL scene program receives the squall uniforms.
+test('the squall and shower reach the in-map open water on both GPU backends', () => {
+    const glsl = read('gpu/GpuWorldRenderer.js');
+    const water = read('gpu/wgsl/water.js');
+    const scene = read('gpu/wgsl/scene.js');
+    const atmosphere = read('gpu/wgsl/atmosphere.js');
+    const openSea = read('gpu/wgsl/openSea.js');
+    // One rule on the open sea and on open water.
+    assert.match(glsl, /shade = max\(shade, squallShade\(cell, n, order\)\);/);
+    assert.match(openSea, /shade = max\(shade, squallShade\(cell, n, order\)\);/);
+    assert.match(glsl, /float edge = length\(d\) \+ \(n - 0\.5\) \* 0\.5 \+ \(order - 0\.5\) \* 3\.0 \/ u_squall\.z;/);
+    assert.match(water, /let edge = length\(d\) \+ \(n - 0\.5\) \* 0\.5 \+ \(order - 0\.5\) \* 3\.0 \/ frame\.squall\.z;/);
+    // Open terrain water (as deep as the open sea on its row) is flagged ...
+    assert.match(glsl, /seaOpenWater = u_terrainBatch && u_squall\.w > 0\.0 && stop >= 2\s+&& float\(stop\) >= openSeaStop\(openSeaDepth\(p\), waterBayer4\(p\)\);/);
+    assert.match(water, /seaOpenWater = batch\.terrainBatch != 0u && frame\.squall\.w > 0\.0 && stop >= 2\s+&& f32\(stop\) >= openSeaStop\(openSeaDepth\(p\), waterBayer4\(p\)\);/);
+    // ... and takes the darker of the cloud and squall courses, resting and fat.
+    assert.match(glsl, /color \*= vec3\(1\.0\) - max\(cloud, squall \* 0\.085\) \* vec3\(1\.0, 0\.96, 0\.84\);/);
+    assert.match(atmosphere, /color0 \* \(vec3f\(1\.0\) - max\(cloud, squall \* 0\.085\) \* vec3f\(1\.0, 0\.96, 0\.84\)\)/);
+    assert.match(glsl, /: applySeaCourses\(color, artCell, poolOrder,/);
+    assert.match(scene, /color = applySeaCourses\(color, artCell, poolOrder,/);
+    assert.match(glsl, /sum \+= applySeaCourses\(color, cell, bayer4\(cell\), rowPx, u_additive\) \* w;/);
+    assert.match(atmosphere, /sum \+= applySeaCourses\(color, cell, bayer4\(cell\), rowPx, batch\.additive != 0u\) \* w;/);
+    // WebGL: resolved once a frame, uploaded to both passes.
+    assert.match(glsl, /const SEA_WEATHER_UNIFORM_NAMES = \['u_seaSunlit', 'u_seaGust', 'u_seaGustRect', 'u_squall', 'u_squallFall'\];/);
+    assert.match(glsl, /frame\.squall = effectBudgetMode\('sea-weather', qualityLevel\) === 'on'/);
+    // The pass the in-map rule exists for: the shower crosses the island row.
+    const reach = MAP_SIZE * TILE_WIDTH / 2;
+    let inside = 0;
+    for (let t = 0; t < 4_000_000; t += 5000) {
+        const shower = openSeaSquall(RAIN, t);
+        if (Math.abs(shower.x) < reach) inside++;
+    }
+    assert.ok(inside > 0, 'the shower passes over the map, not only the open sea');
+});
+
 // E2-05 — the swash at the cliff's foot breaks over the cliff's mirror too,
 // in all three swash copies.
 test('the cliff-foot swash flag reaches the GLSL, WGSL and Canvas swash', () => {

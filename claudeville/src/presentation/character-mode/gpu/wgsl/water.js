@@ -276,6 +276,17 @@ fn seaPawCaps(cell: vec2f, order: f32) -> f32 {
     let gust = seaGustAt(cell);
     if (seaPawAt(cell, gust, order)) { return ${SEA_PAW_CAP_BASE.toFixed(2)} + ${SEA_PAW_CAP_GAIN.toFixed(2)} * gust; }
     return 0.0;
+}
+fn squallShade(cell: vec2f, n: f32, order: f32) -> f32 {
+    if (frame.squall.w <= 0.0) { return 0.0; }
+    let d = (cell + 0.5 - frame.squall.xy) / vec2f(frame.squall.z, frame.squall.z * 0.5);
+    let edge = length(d) + (n - 0.5) * 0.5 + (order - 0.5) * 3.0 / frame.squall.z;
+    if (edge >= 1.0) { return 0.0; }
+    var courses = 1.0;
+    if (edge < 0.5) { courses = 3.0; } else if (edge < 0.78) { courses = 2.0; }
+    let h = waterHash12(vec2f(floor(cell.x / 2.0), 409.0));
+    if (h < 0.45 && glslMod(cell.y - frame.squallFall + floor(h * 97.0), 24.0) < 12.0 + h * 10.0) { courses += 1.0; }
+    return courses * frame.squall.w;
 }`;
 
 const WATER_PALETTE_WGSL = [
@@ -444,6 +455,8 @@ fn mirrorStormColour(color: vec3f, px: vec2f, gone: ptr<function, bool>) -> vec3
     *gone = true;
     return WATER_STOPS[stop];
 }
+// RG-5 — open terrain water under a squall or shower (GLSL seaOpenWater).
+var<private> seaOpenWater: bool = false;
 fn applyWaterState(color0: vec3f, px: vec2f, seaPath: ptr<function, bool>) -> vec3f {
     *seaPath = false;
     var color = color0;
@@ -462,6 +475,8 @@ fn applyWaterState(color0: vec3f, px: vec2f, seaPath: ptr<function, bool>) -> ve
         if (clock <= 0.0) { return staticWaterDashes(color, px); }
         return applyWaterMood(color) * WATER_CAST;
     }
+    seaOpenWater = batch.terrainBatch != 0u && frame.squall.w > 0.0 && stop >= 2
+        && f32(stop) >= openSeaStop(openSeaDepth(p), waterBayer4(p));
     let storm = step(0.5, frame.weather.z);
     let deepTick = floor(frame.timeMs * 0.006 * clock);
     let glint = glintDash(p, (p + 0.5 + frame.cameraXy) * frame.cameraScale, frame.glint, frame.cameraScale, deepTick);

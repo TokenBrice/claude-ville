@@ -362,6 +362,7 @@ fn fatTerrainSurface(material: f32, waterMaterial: bool, waterHue: ptr<function,
   var dominant = -1.0;
   var dominantPath = false;
   var dominantDash = false;
+  var dominantOpen = false;
   for (var i = 0; i < 4; i++) {
     let w = fatTapWeight(t, i) * fatTap[i].a;
     if (w <= 0.0) { continue; }
@@ -377,15 +378,18 @@ fn fatTerrainSurface(material: f32, waterMaterial: bool, waterHue: ptr<function,
     before += vec4f(c, 1.0) * w;
     var tapPath = false;
     lighthouseDash = false;
+    seaOpenWater = false;
     if (tapWater) { c = applyWaterState(c, world, &tapPath); }
     if (w > dominant) {
       dominant = w;
       dominantPath = tapPath;
       dominantDash = lighthouseDash;
+      dominantOpen = seaOpenWater;
     }
     surface += vec4f(c, 1.0) * w;
   }
   lighthouseDash = dominantDash;
+  seaOpenWater = dominantOpen;
   *seaPath = dominantPath;
   let pre = before.rgb / max(before.a, 1e-6);
   *waterHue = anyWater && !(pre.b < pre.r + 0.02 || pre.g < pre.r);
@@ -1085,14 +1089,15 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
   color += emission * 0.42;
   // 1.3 — hue-preserving protection after emission.
   color /= max(1.0, max(color.r, max(color.g, color.b)));
-  // 1.4 + 1.6 — cloud courses and aerial haze on this record's own grid.
+  // 1.4 + 1.6 — cloud courses and aerial haze on this record's own grid;
+  // open water takes the squall's courses (RG-5).
   if (seamTaps) {
     color = fatAtmosphereCourses(color, cellTaps, waterMaterial);
   } else {
     // On water the haze courses follow the sea's swell contours (N3).
     var contourPx = 0.0;
     if (waterMaterial) { contourPx = seaContourRows(artCell) * frame.cameraScale; }
-    color = applyAtmosphereCourses(color, artCell, poolOrder, artTopLeftPx.y + contourPx, batch.additive != 0u);
+    color = applySeaCourses(color, artCell, poolOrder, artTopLeftPx.y + contourPx, batch.additive != 0u);
   }
   if (bakedRim && batch.additive == 0u) {
     (*surf).alpha = mix((*surf).alpha, max((*surf).alpha, v_alpha), nightCarry);

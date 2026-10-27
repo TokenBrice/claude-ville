@@ -8,7 +8,8 @@
 // at level 0 like GL's mip-less texture()), u_cloud / u_cloudThresholds /
 // u_haze / u_camera / u_resolution -> frame.*. ATMOSPHERE_WGSL is shared by
 // the scene and composite modules; ATMOSPHERE_SCENE_WGSL reads the scene's
-// `var<private> v_originFrac` and the batch block, so it is scene-only.
+// `var<private> v_originFrac` and `seaOpenWater` (RG-5's `applySeaCourses`,
+// the squall on open water) and the batch block, so it is scene-only.
 import { CLOUD_SECOND_OCTAVE, CLOUD_TILE_SIZE, CLOUD_TILE_WORLD_SCALE } from '../GpuWorldPolicy.js';
 
 const CLOUD_FIELD_SPAN = (CLOUD_TILE_WORLD_SCALE * CLOUD_TILE_SIZE).toFixed(1);
@@ -73,6 +74,15 @@ fn applyAtmosphereCourses(color0: vec3f, cell: vec2f, order: f32, cellCentreY: f
 `;
 
 export const ATMOSPHERE_SCENE_WGSL = /* wgsl */ `
+fn applySeaCourses(color0: vec3f, cell: vec2f, order: f32, cellCentreY: f32, additive: bool) -> vec3f {
+    var squall = 0.0;
+    if (seaOpenWater) { squall = squallShade(cell, cloudNoiseAt(cell), order); }
+    if (squall <= 0.0) { return applyAtmosphereCourses(color0, cell, order, cellCentreY, additive); }
+    var cloud = 0.0;
+    if (frame.cloud.z > 0.0) { cloud = cloudCourseAt(cloudSeamField(cell, cloudNoiseAt(cell), order, 2.0)) * frame.cloud.z; }
+    let color = color0 * (vec3f(1.0) - max(cloud, squall * 0.085) * vec3f(1.0, 0.96, 0.84));
+    return applyAerialHaze(color, order, cellCentreY, additive);
+}
 fn fatAtmosphereCourses(color: vec3f, t: FatTaps, waterMaterial: bool) -> vec3f {
     var sum = vec3f(0.0);
     for (var i = 0; i < 4; i++) {
@@ -82,7 +92,7 @@ fn fatAtmosphereCourses(color: vec3f, t: FatTaps, waterMaterial: bool) -> vec3f 
         var contour = 0.0;
         if (waterMaterial) { contour = seaContourRows(cell) * frame.cameraScale; }
         let rowPx = (cell.y + v_originFrac.y + 0.5 + frame.cameraXy.y) * frame.cameraScale + contour;
-        sum += applyAtmosphereCourses(color, cell, bayer4(cell), rowPx, batch.additive != 0u) * w;
+        sum += applySeaCourses(color, cell, bayer4(cell), rowPx, batch.additive != 0u) * w;
     }
     return sum;
 }
