@@ -2838,7 +2838,11 @@ function startServer() {
     startupTimer = setTimeout(() => {
       startupTimer = null;
       const startupStats = printStartupStats(providers);
-      usageQuota.init();
+      usageQuota.init({
+        // A new quota snapshot or failure (SV-7) reaches open tabs at once
+        // through the overlay broadcast, without a transcript scan.
+        onChange: () => markProviderDataDirty({ kind: 'overlay', reason: 'usage-quota' }, null, { coalesce: false }),
+      });
       startFileWatcher(startupStats.watchPaths);
       startWebSocketHeartbeat();
     }, STARTUP_BOOTSTRAP_DELAY_MS);

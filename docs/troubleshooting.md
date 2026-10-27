@@ -202,7 +202,12 @@ If `/` hangs while `claudeville/index.html` is readable and `/api/providers` eve
 2. `~/.claude/history.jsonl` for activity counts.
 3. `https://api.anthropic.com/api/oauth/usage` for the 5h/7d quota figures.
 
-When source 3 fails, the response still returns with `quota: { fiveHour: null, sevenDay: null }` and `quotaAvailable: false`. The other fields keep working. This is expected and non-fatal.
+When source 3 fails, the response still returns with `quota: { fiveHour: null, sevenDay: null }` and `quotaAvailable: false`. The other fields keep working. This is expected and non-fatal. Two failures are named in `quotaError: { status, at }` (`at` is when the failure began):
+
+- **401**: the stored OAuth token expired or was revoked. The numbers drop to null at once instead of freezing; running `claude` refreshes the token, and the next check (within 5 minutes) clears the error.
+- **429**: the quota check is throttled. The last snapshot stays until its 30-minute staleness cutoff, and the next check waits at least 10 minutes, or the response's `Retry-After` when that is longer.
+
+Any other failure keeps retrying every 5 minutes, and the last snapshot ages out after 30 minutes.
 
 Credential and activity sources are cached briefly, and quota checks are best-effort. Missing local files or failed Anthropic quota calls should return partial/null fields rather than breaking `/api/usage`.
 

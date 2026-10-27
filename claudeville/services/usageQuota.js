@@ -31,8 +31,11 @@ const HISTORY_MAX_LINE_BYTES = 4 * 1024 * 1024;
 const cache = {
   credentials: { data: null, ts: 0 },
   stats: { data: null, ts: 0 },
-  quota: { data: null, ts: 0, available: false, lastSuccessTs: 0 },
+  quota: { data: null, nextAttemptAt: 0, available: false, lastSuccessTs: 0, error: null },
 };
+// Set by init(): told when the quota snapshot or its failure state changes, so
+// the server can push the new usage without waiting for a session scan.
+const quotaHooks = { onChange: null };
 
 function aggregateHistoryFile(filePath, todayStart, weekStart) {
   const fd = fs.openSync(filePath, 'r');
@@ -212,10 +215,94 @@ function quotaRatio(window) {
   return Math.min(1, Math.max(0, utilization / 100));
 }
 
-function consumeQuotaResponse(res, onJson, { maxBytes = QUOTA_RESPONSE_MAX_BYTES } = {}) {
+// A window's `resets_at` as epoch ms. The API writes an ISO 8601 string; a bare
+// number is read as epoch seconds, or as ms when it is already that large.
+function resetsAtMs(value) {
+  if (typeof value !== 'string' && typeof value !== 'number') return null;
+  if (value === '') return null;
+  const number = Number(value);
+  const ms = Number.isFinite(number)
+    ? (number > 1e12 ? number : number * 1000)
+    : Date.parse(value);
+  return Number.isFinite(ms) && ms > 0 ? Math.round(ms) : null;
+}
+
+// SV-7 — the two failures that matter get a name instead of a silent drain:
+// 401 (the stored token expired or was revoked; running `claude` refreshes it)
+// and 429 (this check is throttled). Other failures keep retrying, and the
+// last snapshot still ages out after QUOTA_MAX_STALE_MS.
+const QUOTA_ERROR_STATUSES = new Set([401, 429]);
+const EMPTY_QUOTA = Object.freeze({
+  fiveHour: null,
+  sevenDay: null,
+  fiveHourResetsAt: null,
+  sevenDayResetsAt: null,
+});
+
+function notifyQuotaChange() {
+  try {
+    quotaHooks.onChange?.();
+  } catch { /* a listener failure never breaks the quota cache */ }
+}
+
+// A throttled check waits two refresh periods, or the server's Retry-After
+// (seconds or an HTTP date) when that is longer, but never past the age at
+// which the snapshot stops being trusted anyway.
+function quotaRetryDelayMs(retryAfter, now = Date.now()) {
+  const seconds = Number(retryAfter);
+  const requested = Number.isFinite(seconds) && retryAfter !== ''
+    ? seconds * 1000
+    : Date.parse(String(retryAfter ?? '')) - now;
+  const delay = Number.isFinite(requested) ? requested : 0;
+  return Math.min(QUOTA_MAX_STALE_MS, Math.max(2 * QUOTA_API_TTL, delay));
+}
+
+function recordQuotaSuccess(data, now = Date.now()) {
+  // Response shape: { five_hour: { utilization, resets_at },
+  //                   seven_day: { utilization, resets_at }, ... }
+  const fiveHour = quotaRatio(data?.five_hour);
+  const sevenDay = quotaRatio(data?.seven_day);
+  if (fiveHour === null && sevenDay === null) return;
+  cache.quota.data = {
+    provider: 'claude',
+    fiveHour,
+    sevenDay,
+    fiveHourResetsAt: resetsAtMs(data.five_hour?.resets_at),
+    sevenDayResetsAt: resetsAtMs(data.seven_day?.resets_at),
+  };
+  cache.quota.lastSuccessTs = now;
+  cache.quota.error = null;
+  if (!cache.quota.available) console.log('[Usage] Quota API available');
+  cache.quota.available = true;
+  notifyQuotaChange();
+}
+
+function recordQuotaFailure(statusCode, headers = {}, now = Date.now()) {
+  if (!QUOTA_ERROR_STATUSES.has(statusCode)) return;
+  const previous = cache.quota.error;
+  const hadSnapshot = cache.quota.data !== null;
+  // `at` is when this failure began; a repeat of the same status keeps it.
+  cache.quota.error = previous?.status === statusCode ? previous : { status: statusCode, at: now };
+  if (statusCode === 401) {
+    // An expired token never refreshes on its own: drop the numbers now
+    // instead of serving them frozen for QUOTA_MAX_STALE_MS.
+    if (previous?.status !== 401) {
+      console.log('[Usage] Quota API rejected the stored token (401); running `claude` refreshes it');
+    }
+    cache.quota.available = false;
+    cache.quota.data = null;
+  } else {
+    // 429: the last snapshot stays until it ages out; the next check backs off.
+    cache.quota.nextAttemptAt = now + quotaRetryDelayMs(headers?.['retry-after'], now);
+  }
+  if (cache.quota.error !== previous || (hadSnapshot && cache.quota.data === null)) notifyQuotaChange();
+}
+
+function consumeQuotaResponse(res, onJson, { maxBytes = QUOTA_RESPONSE_MAX_BYTES, onFailure = null } = {}) {
   if (res.statusCode !== 200) {
     // Error pages are not useful quota data; drain without retaining them.
     res.resume();
+    onFailure?.(res.statusCode, res.headers || {});
     return;
   }
 
@@ -241,10 +328,9 @@ function consumeQuotaResponse(res, onJson, { maxBytes = QUOTA_RESPONSE_MAX_BYTES
   });
 }
 
-function tryFetchQuota() {
-  const now = Date.now();
-  if (now - cache.quota.ts < QUOTA_API_TTL) return;
-  cache.quota.ts = now;
+function tryFetchQuota(now = Date.now()) {
+  if (now < cache.quota.nextAttemptAt) return;
+  cache.quota.nextAttemptAt = now + QUOTA_API_TTL;
 
   const creds = readClaudeOauthCredentials();
   if (!creds.subscriptionType) return;
@@ -264,16 +350,8 @@ function tryFetchQuota() {
   };
 
   const req = https.request(options, (res) => {
-    consumeQuotaResponse(res, data => {
-      // Response shape: { five_hour: { utilization, resets_at },
-      //                   seven_day: { utilization, resets_at }, ... }
-      const fiveHour = quotaRatio(data.five_hour);
-      const sevenDay = quotaRatio(data.seven_day);
-      if (fiveHour === null && sevenDay === null) return;
-      cache.quota.data = { provider: 'claude', fiveHour, sevenDay };
-      cache.quota.lastSuccessTs = Date.now();
-      if (!cache.quota.available) console.log('[Usage] Quota API available');
-      cache.quota.available = true;
+    consumeQuotaResponse(res, data => recordQuotaSuccess(data, Date.now()), {
+      onFailure: (statusCode, headers) => recordQuotaFailure(statusCode, headers, Date.now()),
     });
   });
 
@@ -285,16 +363,18 @@ function tryFetchQuota() {
 // ─── Public API ────────────────────────────────────────────────
 
 function fetchUsage() {
+  const now = Date.now();
   const credentials = readCredentials();
   const stats = readStats();
 
   // Try the quota API asynchronously (store results in the cache)
-  tryFetchQuota();
+  tryFetchQuota(now);
 
   // A snapshot that has not refreshed in QUOTA_MAX_STALE_MS is treated as
   // unavailable so consumers fall back cleanly instead of trusting frozen numbers.
   const quotaFresh = cache.quota.available
-    && (Date.now() - cache.quota.lastSuccessTs) <= QUOTA_MAX_STALE_MS;
+    && cache.quota.data !== null
+    && (now - cache.quota.lastSuccessTs) <= QUOTA_MAX_STALE_MS;
 
   return {
     provider: 'claude',
@@ -302,9 +382,10 @@ function fetchUsage() {
       subscriptionType: credentials.subscriptionType,
       rateLimitTier: credentials.rateLimitTier,
     },
-    quota: quotaFresh
-      ? cache.quota.data
-      : { fiveHour: null, sevenDay: null },
+    quota: quotaFresh ? cache.quota.data : EMPTY_QUOTA,
+    // `{ status: 401 | 429, at }` while the last quota check failed that way
+    // (`at` is when the failure began); null otherwise.
+    quotaError: cache.quota.error,
     activity: {
       today: stats.today,
       thisWeek: stats.thisWeek,
@@ -313,7 +394,8 @@ function fetchUsage() {
   };
 }
 
-function init() {
+function init({ onChange = null } = {}) {
+  quotaHooks.onChange = typeof onChange === 'function' ? onChange : null;
   // Initial quota API attempt
   tryFetchQuota();
 }
@@ -323,6 +405,19 @@ module.exports = {
   init,
   _test: {
     consumeQuotaResponse,
+    quotaRetryDelayMs,
+    recordQuotaFailure,
+    recordQuotaSuccess,
+    resetsAtMs,
+    resetQuotaCache({ nextAttemptAt = Infinity } = {}) {
+      cache.quota = { data: null, nextAttemptAt, available: false, lastSuccessTs: 0, error: null };
+      quotaHooks.onChange = null;
+    },
+    setQuotaChangeListener(listener) {
+      quotaHooks.onChange = listener;
+    },
+    QUOTA_API_TTL,
+    QUOTA_MAX_STALE_MS,
     QUOTA_RESPONSE_MAX_BYTES,
   },
 };
