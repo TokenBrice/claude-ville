@@ -869,9 +869,15 @@ export class IsometricRenderer {
         // name-tag slot clamp queries is built once here.
         this._propFootprintIndex = this._buildPropFootprintIndex(this._staticPropSprites);
 
-        // Walkability grid + Pathfinder (Task 11)
+        // Walkability grid + Pathfinder (Task 11). VB-15 — bodies route on the
+        // gate's walk component only: the Pathfinder's copy closes every tile
+        // no route from the gate reaches, so no boot spawn or nearest-walkable
+        // snap lands in a sealed pocket. The ground grid itself (AmbientGround's
+        // splashes and fireflies, monument sites, the debug overlay) keeps
+        // every open tile.
         this.walkabilityGrid = this.scenery.getWalkabilityGrid();
-        this.pathfinder = new Pathfinder(this.walkabilityGrid);
+        this.pathfinder = new Pathfinder(this.walkabilityGrid.slice());
+        this.pathfinder.keepReachableFrom(VILLAGE_GATE.inside);
         this.visitTileAllocator.updateContext({
             buildings: this.world?.buildings,
             agentSprites: this.agentSprites,
@@ -3785,6 +3791,8 @@ export class IsometricRenderer {
                 }),
                 getTileType: (tileX, tileY) => this._surfaceMaterialAt(tileX, tileY),
                 motionClock: this._motionClock,
+                // VB-15 — _beginAgentGateArrival places it below.
+                deferInitialTarget: true,
             });
             sprite.setMotionScale(this.motionScale);
             sprite.setGpuWorldEnabled?.(this.gpuWorld?.isActive?.() === true);

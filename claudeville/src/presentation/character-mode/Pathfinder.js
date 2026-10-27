@@ -116,6 +116,43 @@ export class Pathfinder {
         return this.grid[tileY * MAP_SIZE + tileX] === 1;
     }
 
+    // VB-15 — keeps only the walk nodes a body can reach from `from` (the
+    // village gate) under findPath's own step rule, so a sealed pocket (the
+    // shore tile under the pier lantern, the far shore behind the farm)
+    // leaves the grid: no spawn, snap or nearest-walkable fallback lands
+    // where every route fails. Closes the nodes in place and returns their
+    // count.
+    keepReachableFrom(from) {
+        const start = from ? this.nearestWalkable(from.tileX, from.tileY, 8) : null;
+        if (!start) return 0;
+        const N = MAP_SIZE;
+        const reached = new Uint8Array(N * N);
+        const queue = [start.tileY * N + start.tileX];
+        reached[queue[0]] = 1;
+        for (let head = 0; head < queue.length; head++) {
+            const cx = queue[head] % N;
+            const cy = (queue[head] - cx) / N;
+            for (const [dx, dy] of DIRS) {
+                const nx = cx + dx;
+                const ny = cy + dy;
+                if (!this.isWalkable(nx, ny) || reached[ny * N + nx]) continue;
+                // Corner-cut guard, as in findPath.
+                if (dx !== 0 && dy !== 0 && (!this.isWalkable(cx + dx, cy) || !this.isWalkable(cx, cy + dy))) continue;
+                reached[ny * N + nx] = 1;
+                queue.push(ny * N + nx);
+            }
+        }
+        let closed = 0;
+        for (let index = 0; index < N * N; index++) {
+            if (this.grid[index] === 1 && !reached[index]) {
+                this.grid[index] = 0;
+                closed++;
+            }
+        }
+        if (closed) this.setGrid(this.grid);
+        return closed;
+    }
+
     // Returns an array of {tileX, tileY} waypoints from `from` exclusive to `to` inclusive.
     // Empty array if unreachable. If straight-line works (no obstacles between centers
     // sampled at tile granularity), returns the single waypoint [to].

@@ -34,7 +34,10 @@ export function fireflyGroundTiles(host) {
 const EMPTY = Object.freeze([]);
 
 function classify(host) {
-    if (!host?.pathfinder || !host.waterTiles) return null;
+    // The ground grid, not the Pathfinder's: a walkable tile no body can
+    // reach (VB-15 closes it for routing) still takes splashes and fireflies.
+    const ground = host?.walkabilityGrid;
+    if (!ground || !host.waterTiles) return null;
     const cached = cache.get(host);
     if (cached) return cached;
     const occluders = buildingOccluders(host);
@@ -55,7 +58,7 @@ function classify(host) {
             const key = `${tileX},${tileY}`;
             if (host.waterTiles.has(key) || host.bridgeTiles?.has?.(key)) continue;
             if (coast && coast.signedDistance(tileX, tileY) > SPLASH_SHORE_MARGIN) continue;
-            if (!host.pathfinder.isWalkable(tileX, tileY)) continue;
+            if (ground[tileY * MAP_SIZE + tileX] !== 1) continue;
             const x = (tileX - tileY) * TILE_WIDTH / 2;
             const y = (tileX + tileY) * TILE_HEIGHT / 2;
             if (covered(occluders, x, y, SPLASH_REACH)) continue;
