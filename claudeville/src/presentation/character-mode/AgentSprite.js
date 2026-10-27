@@ -3147,6 +3147,17 @@ export class AgentSprite {
         return true;
     }
 
+    // VB-4 — a body that arrived while nothing was drawn (a hidden tab, a
+    // sleeping laptop) is not replayed through the gate: it picks its place
+    // and stands there now, as a reduced-motion body cuts to its route's end.
+    settleAtDestination() {
+        this.setArrivalState('visible');
+        this._lastPathTileKey = null;
+        this.waitTimer = 0;
+        this._pickTarget();
+        if (this.moving) this._cutToRouteEnd(REF_DT_MS, null);
+    }
+
     hasReachedTarget(tolerance = 6) {
         return Math.hypot(this.targetX - this.x, this.targetY - this.y) <= tolerance;
     }
