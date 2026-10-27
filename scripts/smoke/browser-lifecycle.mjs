@@ -499,8 +499,15 @@ async function runBootAudioRouteProbe(page) {
 // `navigator.userActivation` from trusted input only, as for a real visitor.
 //
 // The one-second budget runs in the page, from the trusted gesture to the
-// first poll that sees the band running, so Playwright's actionability
-// checks before it dispatches the click are not charged to the start.
+// moment the chip says `playing`, so Playwright's actionability checks
+// before it dispatches the click are not charged to the start. A
+// MutationObserver stamps the chip's change in the task that makes it; a
+// polled predicate would wait for the next animation frame, which a
+// headless software compositor stretches to hundreds of milliseconds. The
+// probe runs before the main page opens for the same reason: a second live
+// World page shares the headless GPU process and lengthens every frame the
+// start waits on (the worklet and the context's state change each resolve
+// in a task of their own).
 async function runArmedChipProbe(browser, url, timeoutMs) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   try {
@@ -514,6 +521,14 @@ async function runArmedChipProbe(browser, url, timeoutMs) {
       };
       window.addEventListener('pointerdown', mark, true);
       window.addEventListener('keydown', mark, true);
+      document.addEventListener('DOMContentLoaded', () => {
+        const chip = document.getElementById('topbarSoundToggle');
+        if (!chip) return;
+        new MutationObserver(() => {
+          if (window.__armedGestureAt === undefined || window.__armedRunningAt !== undefined) return;
+          if (chip.getAttribute('data-sound-state') === 'playing') window.__armedRunningAt = performance.now();
+        }).observe(chip, { attributes: true, attributeFilter: ['data-sound-state'] });
+      }, { once: true });
       Object.defineProperty(Navigator.prototype, 'userActivation', {
         configurable: true,
         get: () => ({ hasBeenActive: active, isActive: active }),
@@ -532,9 +547,7 @@ async function runArmedChipProbe(browser, url, timeoutMs) {
     await page.click('#topbarSoundToggle');
     const started = await waitForAudio(page, () => {
       const audio = window.__claudevilleAudio?.();
-      const running = audio?.contextState === 'running' && audio?.running === true;
-      if (running && window.__armedRunningAt === undefined) window.__armedRunningAt = performance.now();
-      return running;
+      return audio?.contextState === 'running' && audio?.running === true;
     });
     const startMs = await page.evaluate(() => window.__armedRunningAt - window.__armedGestureAt);
 
@@ -555,6 +568,7 @@ async function runArmedChipProbe(browser, url, timeoutMs) {
         withinOneSecond: startMs <= 1000,
       },
       secondClickDisabled: stopped.enabled === false,
+      startMs: Math.round(startMs),
     };
   } finally {
     await context.close();
@@ -839,7 +853,11 @@ async function runFrameFailureProbe(page) {
     let contextResets = 0;
     let updateCalls = 0;
     let renderCalls = 0;
-    // Ticks 20 ms apart: each clears the 60 fps cap (FP-1a).
+    // Ticks one ambient-only interval apart, plus a margin: each clears the
+    // 60 fps cap (FP-1a) and the 30 fps cap an empty village's ambient-only
+    // frames get (FP-1b).
+    const { AMBIENT_FRAME_PACING_INTERVAL_MS } = await import('/src/presentation/character-mode/FramePacing.js');
+    const tickStepMs = Math.ceil(AMBIENT_FRAME_PACING_INTERVAL_MS) + 4;
     let frameAt = performance.now();
 
     try {
@@ -866,9 +884,9 @@ async function runFrameFailureProbe(page) {
 
       renderer._update = () => { updateCalls++; throw new Error('injected update failure'); };
       renderer._render = () => { renderCalls++; };
-      renderer._loop(frameAt += 20);
-      renderer._loop(frameAt += 20);
-      renderer._loop(frameAt += 20);
+      renderer._loop(frameAt += tickStepMs);
+      renderer._loop(frameAt += tickStepMs);
+      renderer._loop(frameAt += tickStepMs);
       const updateTrip = {
         paused: renderer._frameFailureStats.paused,
         scheduled,
@@ -881,9 +899,9 @@ async function runFrameFailureProbe(page) {
       renderer._update = () => { updateCalls++; };
       renderer._render = () => { renderCalls++; throw new Error('injected render failure'); };
       const scheduledBeforeRender = scheduled;
-      renderer._loop(frameAt += 20);
-      renderer._loop(frameAt += 20);
-      renderer._loop(frameAt += 20);
+      renderer._loop(frameAt += tickStepMs);
+      renderer._loop(frameAt += tickStepMs);
+      renderer._loop(frameAt += tickStepMs);
       const renderTrip = {
         paused: renderer._frameFailureStats.paused,
         scheduled: scheduled - scheduledBeforeRender,
@@ -1365,6 +1383,10 @@ async function sameDocumentReboot(page) {
     }
     return { stablePromise, state: app._bootState };
   });
+  // The first mount was primed before its baseline (the lazily loaded
+  // Activity Panel among it); prime this one alike, so both compare the
+  // same components.
+  await primeInteractiveState(page);
   const ready = await runtimeSnapshot(page);
   const destroy = await page.evaluate(async () => {
     const app = window.__claudeVilleApp;
@@ -1452,7 +1474,12 @@ async function runBootFailureProbe(page) {
     } finally {
       window.fetch = originalFetch;
     }
+    // A failed boot stays up for its RETRY action (b063ece); the page's exit
+    // destroys it, and that teardown must release everything.
+    const keptForRetry = app._bootState === 'failed' && app._destroyed === false;
+    await app.destroy();
     return {
+      keptForRetry,
       state: app._bootState,
       destroyed: app._destroyed,
       ownersCleared: ownerKeys.every(key => app[key] == null),
@@ -1481,19 +1508,29 @@ async function main() {
     await server.stop();
     throw error;
   });
-  const context = await browser.newContext({
-    viewport: { width: 1440, height: 1000 },
-    deviceScaleFactor: 1,
-    reducedMotion: 'reduce',
-  });
-  const page = await context.newPage();
-  page.setDefaultTimeout(options.timeoutMs);
-  page.on('console', (message) => {
-    if (message.type() === 'error') browserErrors.push(`console: ${message.text()}`);
-  });
-  page.on('pageerror', (error) => browserErrors.push(`pageerror: ${error.message}`));
 
   try {
+    // Alone in the browser: see runArmedChipProbe.
+    const { startMs: armedStartMs, ...armedChipProbe } = await runArmedChipProbe(browser, baseUrl, options.timeoutMs);
+    assert.deepEqual(armedChipProbe, {
+      bootState: 'ready',
+      armed: { enabled: true, contextState: null, soundState: 'armed', chipState: 'armed' },
+      firstClick: { enabled: true, contextState: 'running', soundState: 'playing', withinOneSecond: true },
+      secondClickDisabled: true,
+    }, 'the first click on an armed chip must start sound, never turn it off');
+
+    const context = await browser.newContext({
+      viewport: { width: 1440, height: 1000 },
+      deviceScaleFactor: 1,
+      reducedMotion: 'reduce',
+    });
+    const page = await context.newPage();
+    page.setDefaultTimeout(options.timeoutMs);
+    page.on('console', (message) => {
+      if (message.type() === 'error') browserErrors.push(`console: ${message.text()}`);
+    });
+    page.on('pageerror', (error) => browserErrors.push(`pageerror: ${error.message}`));
+
     await installListenerAudit(page);
     await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: options.timeoutMs });
     await page.waitForFunction(() => {
@@ -1512,13 +1549,6 @@ async function main() {
       cuesPlayed: 1,
       captioned: true,
     }, 'the signal route and captions must exist from boot idle, with no AudioContext');
-    const armedChipProbe = await runArmedChipProbe(browser, baseUrl, options.timeoutMs);
-    assert.deepEqual(armedChipProbe, {
-      bootState: 'ready',
-      armed: { enabled: true, contextState: null, soundState: 'armed', chipState: 'armed' },
-      firstClick: { enabled: true, contextState: 'running', soundState: 'playing', withinOneSecond: true },
-      secondClickDisabled: true,
-    }, 'the first click on an armed chip must start sound, never turn it off');
     await page.waitForFunction(() => typeof window.__claudeVillePerf?.canvasBudget === 'function');
 
     const bootIdentity = await page.evaluate(() => {
@@ -1566,7 +1596,9 @@ async function main() {
       hiddenState: 'suspended',
       hiddenRunning: true,
       hiddenPaused: true,
-      hiddenSoundState: 'armed',
+      // UI-6: paused by the hidden page after a gesture reads `away` (it
+      // resumes on return with no click), never `armed`.
+      hiddenSoundState: 'away',
       wake: {
         woke: true,
         ranDuringWake: true,
@@ -1782,6 +1814,7 @@ async function main() {
 
     const errorsBeforeFailureProbe = browserErrors.length;
     const bootFailure = await runBootFailureProbe(page);
+    assert.equal(bootFailure.keptForRetry, true, 'a failed boot keeps the app for its retry action');
     assert.equal(bootFailure.state, 'failed');
     assert.equal(bootFailure.destroyed, true);
     assert.equal(bootFailure.ownersCleared, true);
@@ -1814,7 +1847,7 @@ async function main() {
       sessionDetails: before.sessionDetails,
       sessionDetailsProbe,
       bootAudioProbe,
-      armedChipProbe,
+      armedChipProbe: { ...armedChipProbe, startMs: armedStartMs },
       actualAudioProbe,
       audioProbe,
       frameProbe,
