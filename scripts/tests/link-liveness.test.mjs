@@ -185,7 +185,8 @@ test('VB-8: a full snapshot answers the resync and disarms its watchdog', async 
     assert.equal(pending(10_000).length, 1);
     socket.message({ type: 'init', seq: 9, sessions: [], teams: [], scanning: true });
     assert.equal(pending(10_000).length, 0);
-    advance(60_000);
+    // Past both watchdog deadlines (and before any liveness ping is due).
+    advance(19_000);
     assert.equal(socket.sent.filter(message => message.type === 'resync').length, 1);
     assert.equal(socket.closed, false);
 });
@@ -197,4 +198,80 @@ test('VB-8: a server snapshot-error reconnects instead of waiting', async (t) =>
     assert.equal(socket.closed, true);
     assert.equal(client.state.state, 'reconnecting');
     assert.equal(client.state.lastErrorCode, 'snapshot-unavailable');
+});
+
+test('EN-2: the client pings every 20 s and flags a link silent for 10 s after a ping', async (t) => {
+    const { client, advance, connect } = await harness(t);
+    const socket = connect();
+    socket.message({ type: 'init', seq: 1, sessions: [], teams: [] });
+    const pings = () => socket.sent.filter(message => message.type === 'ping').length;
+
+    advance(19_999);
+    assert.equal(pings(), 0);
+    advance(1);
+    assert.equal(pings(), 1, 'a ping every 20 s');
+    advance(5_000);
+    socket.message({ type: 'pong', timestamp: 1 });
+    advance(5_000);
+    assert.equal(client.state.stale, false, 'an answered ping keeps the link live');
+
+    // The server stops answering: 10 s after the next ping the link is stale.
+    advance(10_000);
+    assert.equal(pings(), 2);
+    assert.equal(client.state.stale, false);
+    advance(9_999);
+    assert.equal(client.state.stale, false);
+    advance(1);
+    assert.equal(client.state.stale, true);
+    assert.equal(client.state.lastErrorCode, 'link-silent');
+    assert.equal(client.state.state, 'live', 'the socket is still open; only its silence is flagged');
+
+    // Any message, not just a pong, clears it.
+    socket.message({ type: 'update-delta', deltaVersion: 2, baseSeq: 1, seq: 2, patch: [] });
+    assert.equal(client.state.stale, false);
+    assert.equal(client.state.lastErrorCode, null);
+});
+
+test('EN-2: a second unanswered ping drops the socket for the reconnect path', async (t) => {
+    const { client, advance, connect, pending } = await harness(t);
+    const socket = connect();
+    socket.message({ type: 'init', seq: 1, sessions: [], teams: [] });
+    advance(30_000);
+    assert.equal(client.state.stale, true);
+    assert.equal(socket.closed, false);
+    advance(20_000);
+    assert.equal(socket.closed, true, 'two silent pings in a row');
+    assert.equal(client.ws, null);
+    assert.equal(client.state.state, 'reconnecting');
+    assert.equal(client.state.lastErrorCode, 'link-silent');
+    assert.equal(client.state.stale, false, 'a down link is reconnecting, not stale');
+    assert.equal(pending(20_000).length, 0, 'the dropped socket stops pinging');
+});
+
+test('EN-2: a quiet but healthy link stays LIVE; staleness keys on the last message', async () => {
+    const {
+        initialVillageState, reduceVillageState, isStale, linkStatusText, LinkState,
+    } = await import('../../claudeville/src/application/VillageState.js');
+    let state = reduceVillageState(initialVillageState(), { type: 'providers', providers: [{ id: 'claude', health: 'healthy', sessions: 1 }] });
+    state = reduceVillageState(state, { type: 'snapshot', source: 'websocket', agentCount: 1, at: 1_000 });
+    // Ten quiet minutes with no broadcast, only pongs.
+    for (let at = 20_000; at <= 600_000; at += 20_000) {
+        state = reduceVillageState(state, { type: 'link', state: LinkState.LIVE, lastMessageAt: at, stale: false });
+    }
+    assert.equal(isStale(state, 610_000), false, 'a quiet village is not a stale one');
+    assert.equal(linkStatusText(state, 610_000), 'LIVE');
+
+    const silent = reduceVillageState(state, { type: 'link', stale: true, lastErrorCode: 'link-silent' });
+    assert.equal(isStale(silent, 615_000), true);
+    assert.equal(linkStatusText(silent, 615_000), 'STALE / last seen 15s ago', 'the age counts from the last message');
+
+    // A dropped socket ages from the last message it heard.
+    const down = reduceVillageState(silent, { type: 'link', state: LinkState.RECONNECTING, attempts: 1, stale: false });
+    assert.equal(linkStatusText(down, 605_000), 'RECONNECTING 1');
+    assert.equal(isStale(down, 615_001), true);
+
+    // REST polling has no liveness: its snapshots age as before.
+    const polled = reduceVillageState(initialVillageState(), { type: 'snapshot', source: 'polling', agentCount: 1, at: 1_000 });
+    assert.equal(isStale(polled, 16_001), true);
+    assert.equal(linkStatusText(polled, 21_000), 'STALE / last seen 20s ago');
 });

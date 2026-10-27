@@ -95,6 +95,14 @@ function applyJsonPatch(state, patch) {
 // the socket so the reconnect path rebuilds state.
 const RESYNC_REPLY_TIMEOUT_MS = 10_000;
 const RESYNC_MAX_MISSES = 2;
+// EN-2 — link liveness. A quiet, healthy village gets no broadcasts (the
+// server skips unchanged payloads), so silence alone proves nothing: the client
+// asks. It sends `ping` every 20 s. No message of any kind within 10 s of one
+// marks the link `stale`; a second unanswered ping drops the socket for a
+// reconnect.
+const LINK_PING_INTERVAL_MS = 20_000;
+const LINK_PONG_TIMEOUT_MS = 10_000;
+const LINK_MAX_MISSED_PINGS = 2;
 
 function sessionsFromKeyedState(state) {
     if (
@@ -127,7 +135,11 @@ export class WebSocketClient {
             lastMessageAt: null,
             lastSnapshotAt: null,
             lastErrorCode: null,
+            stale: false,
         });
+        this._pingTimer = null;
+        this._pongTimer = null;
+        this._missedPings = 0;
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         this.url = `${protocol}//${window.location.host}/ws`;
         // Delta v2 baseline is keyed by stable session identity, separate from
@@ -171,7 +183,9 @@ export class WebSocketClient {
                 this._publishState({
                     state: this.reconnectAttempts > 0 ? LinkState.RECONNECTING : LinkState.SYNCING,
                     nextRetryAt: null,
+                    stale: false,
                 });
+                this._startLiveness(socket);
             };
 
             socket.onmessage = (event) => {
@@ -182,7 +196,12 @@ export class WebSocketClient {
                     : null;
                 try {
                     const data = JSON.parse(event.data);
-                    this._publishState({ lastMessageAt: Date.now() });
+                    this._missedPings = 0;
+                    this._publishState({
+                        lastMessageAt: Date.now(),
+                        stale: false,
+                        ...(this.state.lastErrorCode === 'link-silent' ? { lastErrorCode: null } : {}),
+                    });
                     this._handleMessage(data, messagePerf);
                 } catch (err) {
                     if (messagePerf) metrics.cancelMessage?.(messagePerf);
@@ -195,6 +214,7 @@ export class WebSocketClient {
                 if (this.ws !== socket) return;
                 this.ws = null;
                 this.connected = false;
+                this._stopLiveness();
                 this._clearProtocolState();
                 console.log('[WS] Disconnected');
                 eventBus.emit('ws:disconnected');
@@ -219,6 +239,7 @@ export class WebSocketClient {
 
     disconnect() {
         this._clearReconnect();
+        this._stopLiveness();
         const socket = this.ws;
         if (socket) {
             socket.onopen = null;
@@ -357,6 +378,7 @@ export class WebSocketClient {
         socket.onclose = null;
         this.ws = null;
         this.connected = false;
+        this._stopLiveness();
         this._clearProtocolState();
         try { socket.close(); } catch { /* already closing */ }
         console.warn(`[WS] Dropped an unresponsive socket (${errorCode})`);
@@ -479,6 +501,39 @@ export class WebSocketClient {
         this._resyncTimer = null;
     }
 
+    _startLiveness(socket) {
+        this._stopLiveness();
+        this._pingTimer = setInterval(() => this._sendLivenessPing(socket), LINK_PING_INTERVAL_MS);
+        this._pingTimer?.unref?.();
+    }
+
+    _sendLivenessPing(socket) {
+        if (this.ws !== socket || socket.readyState !== WebSocket.OPEN) return;
+        const sentAt = Date.now();
+        this.send({ type: 'ping' });
+        if (this._pongTimer) clearTimeout(this._pongTimer);
+        this._pongTimer = setTimeout(() => {
+            this._pongTimer = null;
+            // Any message since the ping (a pong, a delta) proves the link.
+            if (this.ws !== socket || (this.state.lastMessageAt || 0) >= sentAt) return;
+            this._missedPings++;
+            if (this._missedPings >= LINK_MAX_MISSED_PINGS) {
+                this._abandonSocket(socket, 'link-silent');
+                return;
+            }
+            this._publishState({ stale: true, lastErrorCode: 'link-silent' });
+        }, LINK_PONG_TIMEOUT_MS);
+        this._pongTimer?.unref?.();
+    }
+
+    _stopLiveness() {
+        if (this._pingTimer) clearInterval(this._pingTimer);
+        if (this._pongTimer) clearTimeout(this._pongTimer);
+        this._pingTimer = null;
+        this._pongTimer = null;
+        this._missedPings = 0;
+    }
+
     _scheduleReconnect(errorCode = 'socket-closed') {
         this._clearReconnect();
         this.reconnectAttempts++;
@@ -494,6 +549,7 @@ export class WebSocketClient {
             attempts: this.reconnectAttempts,
             nextRetryAt,
             lastErrorCode: errorCode,
+            stale: false,
         });
         this.reconnectTimer = setTimeout(() => {
             if (this.reconnectAttempts > 3) {
@@ -536,6 +592,10 @@ export class WebSocketClient {
             lastErrorCode: updates.lastErrorCode !== undefined
                 ? updates.lastErrorCode
                 : this.state.lastErrorCode,
+            // EN-2 — an open socket that left a ping unanswered for 10 s.
+            stale: updates.stale !== undefined
+                ? updates.stale === true
+                : this.state.stale === true,
         };
         this.state = Object.freeze(next);
         eventBus.emit('ws:state', next);

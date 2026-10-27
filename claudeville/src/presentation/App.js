@@ -539,6 +539,9 @@ export class App {
                 attempts: payload.attempts,
                 nextRetryAt: payload.nextRetryAt,
                 lastErrorCode: payload.lastErrorCode,
+                // EN-2 — link liveness: staleness keys on the last message.
+                lastMessageAt: payload.lastMessageAt,
+                stale: payload.stale,
             });
         };
         const onWatcherState = (payload = {}) => {
