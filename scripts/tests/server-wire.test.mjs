@@ -311,6 +311,30 @@ test('v2 keyed updates reconstruct the full roster and survive fresh resync base
       wire.wsClients.delete(unsupported);
     });
 
+    await t.test('EN-9: a heartbeat after a process pause refreshes every socket instead of closing it', () => {
+      const sleeper = new Socket();
+      wire.wsClients.add(sleeper);
+      sleeper._cvLastSeen = now;
+      wire.heartbeatTick(now);
+      // The process slept 120 s: the next tick runs before any queued pong is read.
+      const wake = now + 120_000;
+      wire.heartbeatTick(wake);
+      assert.equal(wire.wsClients.has(sleeper), true, 'a paused server must not stale-close its clients on wake');
+      assert.equal(sleeper.writable, true);
+      assert.equal(sleeper._cvLastSeen, wake);
+      // Leave the shared sockets as they were: they keep no last-seen time.
+      for (const socket of [modern, peer, legacy]) delete socket._cvLastSeen;
+      // On-time ticks still close a client that stays silent past 90 s.
+      for (const offset of [30_000, 60_000, 90_000]) {
+        wire.heartbeatTick(wake + offset);
+        assert.equal(wire.wsClients.has(sleeper), true, `still open ${offset / 1000}s after wake`);
+      }
+      wire.heartbeatTick(wake + 120_000);
+      assert.equal(wire.wsClients.has(sleeper), false, 'a silent client is still closed after 90 s');
+      assert.equal(sleeper.writable, false);
+      for (const socket of [modern, peer, legacy]) assert.equal(wire.wsClients.has(socket), true);
+    });
+
     assert.equal(legacy.messages.some(message => message.type === 'update-delta'), false);
   } finally {
     Date.now = originalNow;

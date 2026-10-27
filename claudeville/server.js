@@ -1145,23 +1145,33 @@ function writeWebSocketFrame(socket, frame, { queueLatest = false } = {}) {
   }
 }
 
+// EN-9 — a tick this late means the server process itself was paused (laptop
+// sleep, SIGSTOP), not that every client went silent: on wake the timer runs
+// before the sockets' queued frames are read. Such a tick refreshes every
+// socket's last-seen time and only pings, so a wake never closes every tab.
+function heartbeatTick(now = Date.now()) {
+  const paused = lastHeartbeatAt > 0 && now - lastHeartbeatAt > 2 * WS_HEARTBEAT_INTERVAL_MS;
+  lastHeartbeatAt = now;
+  const pingFrame = createWebSocketFrame(String(now), 0x9);
+  for (const socket of wsClients) {
+    if (!socket || socket.destroyed) {
+      closeWebSocket(socket, null, { sendFrame: false });
+      continue;
+    }
+    if (paused) {
+      socket._cvLastSeen = now;
+    } else if (now - (socket._cvLastSeen || now) > WS_STALE_AFTER_MS) {
+      closeWebSocket(socket, null);
+      continue;
+    }
+    writeWebSocketFrame(socket, pingFrame);
+  }
+}
+
 function startWebSocketHeartbeat() {
   if (heartbeatTimer) return;
-  heartbeatTimer = setInterval(() => {
-    const now = Date.now();
-    const pingFrame = createWebSocketFrame(String(now), 0x9);
-    for (const socket of wsClients) {
-      if (!socket || socket.destroyed) {
-        closeWebSocket(socket, null, { sendFrame: false });
-        continue;
-      }
-      if (now - (socket._cvLastSeen || now) > WS_STALE_AFTER_MS) {
-        closeWebSocket(socket, null);
-        continue;
-      }
-      writeWebSocketFrame(socket, pingFrame);
-    }
-  }, WS_HEARTBEAT_INTERVAL_MS);
+  lastHeartbeatAt = Date.now();
+  heartbeatTimer = setInterval(() => heartbeatTick(), WS_HEARTBEAT_INTERVAL_MS);
 }
 
 // ─── Data broadcast ────────────────────────────────
@@ -1278,6 +1288,7 @@ let hookOverlayExpiryTimer = null;
 let hookOverlayBroadcastTimer = null;
 let dynamicWatchRetireTimer = null;
 let heartbeatTimer = null;
+let lastHeartbeatAt = 0;
 let watcherSchedulerTimer = null;
 let perfSampleTimer = null;
 let startupTimer = null;
@@ -2970,6 +2981,7 @@ module.exports = {
     keyedBroadcastState,
     createJsonPatch,
     handleTextMessage,
+    heartbeatTick,
     sendInitialData,
     broadcastUpdate,
     markProviderDataDirty,
