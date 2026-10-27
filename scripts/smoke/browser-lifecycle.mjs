@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict';
-import { chromium } from 'playwright';
+import { launchChromium } from './support/chromium.mjs';
+import { resolveServer } from './support/world-bench.mjs';
 
-const DEFAULT_URL = process.env.CLAUDEVILLE_URL || 'http://localhost:4000';
+const DEFAULT_URL = process.env.CLAUDEVILLE_URL || null;
 const DEFAULT_SWITCH_COUNT = Number(process.env.CLAUDEVILLE_LIFECYCLE_SWITCHES) || 250;
 const DEFAULT_TIMEOUT_MS = Number(process.env.CLAUDEVILLE_BROWSER_TIMEOUT_MS) || 30_000;
 const OWNER_KEYS = [
@@ -53,7 +54,7 @@ function usage() {
   console.log(`Usage: node scripts/smoke/browser-lifecycle.mjs [options]
 
 Options:
-  --url=<url>       ClaudeVille URL (default: ${DEFAULT_URL})
+  --url=<url>       ClaudeVille URL (default: an isolated server from this checkout)
   --count=<number>  Mode switches to run (default: ${DEFAULT_SWITCH_COUNT})
   --timeout=<ms>    Browser operation timeout (default: ${DEFAULT_TIMEOUT_MS})
   --headed          Show the Chromium window
@@ -96,7 +97,6 @@ function parseArgs(argv) {
   if (!Number.isFinite(options.timeoutMs) || options.timeoutMs < 1000) {
     throw new Error(`--timeout must be at least 1000ms, received ${options.timeoutMs}`);
   }
-  options.url = options.url.replace(/\/+$/, '');
   return options;
 }
 
@@ -952,7 +952,9 @@ async function primeInteractiveState(page) {
     document.getElementById('btnModeDashboard')?.click();
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const firstAgent = app?.world?.agents?.values?.().next?.().value || null;
-    if (firstAgent) app.activityPanel?.show?.(firstAgent);
+    // The panel loads on the first selection; an empty village has none.
+    const panel = await app?._loadActivityPanel?.();
+    if (firstAgent) panel?.show?.(firstAgent);
     document.getElementById('btnModeCharacter')?.click();
   });
   await page.waitForTimeout(100);
@@ -1468,9 +1470,14 @@ async function main() {
   const browserErrors = [];
   // Autoplay needs a real gesture, as for a fresh user: every enable path
   // must count as one.
-  const browser = await chromium.launch({
+  const server = await resolveServer(options.url);
+  const baseUrl = server.baseUrl;
+  const browser = await launchChromium({
     headless: !options.headed,
     args: ['--autoplay-policy=user-gesture-required'],
+  }).catch(async (error) => {
+    await server.stop();
+    throw error;
   });
   const context = await browser.newContext({
     viewport: { width: 1440, height: 1000 },
@@ -1486,7 +1493,7 @@ async function main() {
 
   try {
     await installListenerAudit(page);
-    await page.goto(options.url, { waitUntil: 'domcontentloaded', timeout: options.timeoutMs });
+    await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: options.timeoutMs });
     await page.waitForFunction(() => {
       const state = window.__claudeVilleApp?._bootState;
       return state === 'ready' || state === 'failed';
@@ -1503,7 +1510,7 @@ async function main() {
       cuesPlayed: 1,
       captioned: true,
     }, 'the signal route and captions must exist from boot idle, with no AudioContext');
-    const armedChipProbe = await runArmedChipProbe(browser, options.url, options.timeoutMs);
+    const armedChipProbe = await runArmedChipProbe(browser, baseUrl, options.timeoutMs);
     assert.deepEqual(armedChipProbe, {
       bootState: 'ready',
       armed: { enabled: true, contextState: null, soundState: 'armed', chipState: 'armed' },
@@ -1661,7 +1668,8 @@ async function main() {
     assert.equal(destroyed.lateClipboardToasts, 0, 'late clipboard completion created a toast after destroy');
     assert.deepEqual(destroyed.lateBiography, {
       identityKeys: [
-        'villager:claude:lifecycle-late-biography',
+        // An unnamed session's identity is its session id (v0.51.0).
+        'anonymous:claude:browser-lifecycle-late-biography',
         'villager:claude:lifecycle-late-channel',
       ],
       nicknameSets: 0,
@@ -1789,7 +1797,7 @@ async function main() {
 
     console.log(JSON.stringify({
       ok: true,
-      url: options.url,
+      url: baseUrl,
       switches: options.count,
       finalMode,
       cardsExercised: destroyProbe.cards,
@@ -1819,6 +1827,7 @@ async function main() {
     }, null, 2));
   } finally {
     await browser.close();
+    await server.stop();
   }
 }
 

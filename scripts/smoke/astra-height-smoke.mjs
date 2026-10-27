@@ -1,10 +1,15 @@
 #!/usr/bin/env node
+// Runs against an isolated server from this checkout unless CLAUDEVILLE_URL
+// names one.
 import assert from 'node:assert/strict';
-import { chromium } from 'playwright';
+import { launchChromium } from './support/chromium.mjs';
+import { resolveServer } from './support/world-bench.mjs';
 
-const baseUrl = process.env.CLAUDEVILLE_URL || 'http://localhost:4000';
-const browser = await chromium.launch({ headless: true });
+const server = await resolveServer(process.env.CLAUDEVILLE_URL || null);
+const baseUrl = server.baseUrl;
+let browser = null;
 try {
+    browser = await launchChromium({ headless: true });
     const page = await browser.newPage();
     const errors = [];
     page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
@@ -72,4 +77,7 @@ try {
     assert.deepEqual(result.low.receiver, result.open.receiver);
     assert.ok(result.authoredUnlit[0] < result.fallbackMetal[0] - 5, JSON.stringify(result));
     console.log(JSON.stringify(result));
-} finally { await browser.close(); }
+} finally {
+    await browser?.close();
+    await server.stop();
+}

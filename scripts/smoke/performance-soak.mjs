@@ -3,9 +3,15 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
-import { chromium } from 'playwright';
+import { gpuLaunchArgs, launchChromium } from './support/chromium.mjs';
+import { resolveServer } from './support/world-bench.mjs';
 
-const DEFAULT_URL = process.env.CLAUDEVILLE_URL || 'http://localhost:4000';
+const DEFAULT_URL = process.env.CLAUDEVILLE_URL || null;
+// The World backend the soak drives. WebGL2 on the real GPU is what users run;
+// `canvas` is the old soak (no GPU flags, so headless Chromium rasterizes in
+// software and the World takes Canvas).
+const RENDERERS = ['webgl', 'webgpu', 'canvas'];
+const DEFAULT_RENDERER = 'webgl';
 const DEFAULT_BROWSER_SECONDS = Number(process.env.CLAUDEVILLE_BROWSER_SOAK_SECONDS) || 600;
 const DEFAULT_SERVER_SECONDS = Number(process.env.CLAUDEVILLE_SERVER_SOAK_SECONDS) || 1800;
 const DEFAULT_INTERVAL_SECONDS = Number(process.env.CLAUDEVILLE_SOAK_INTERVAL_SECONDS) || 60;
@@ -38,7 +44,11 @@ function usage() {
   console.log(`Usage: node scripts/smoke/performance-soak.mjs [options]
 
 Options:
-  --url=<url>               ClaudeVille URL (default: ${DEFAULT_URL})
+  --url=<url>               ClaudeVille URL (default: CLAUDEVILLE_URL, else an
+                            isolated server from this checkout)
+  --renderer=<mode>         World backend: ${RENDERERS.join(', ')} (default: ${DEFAULT_RENDERER});
+                            GPU modes launch with the real-GPU flags and fail
+                            when the World runs another backend
   --browser-seconds=<n>     Active World duration (default: ${DEFAULT_BROWSER_SECONDS})
   --server-seconds=<n>      Server/reconnect duration (default: ${DEFAULT_SERVER_SECONDS})
   --interval-seconds=<n>    Checkpoint interval (default: ${DEFAULT_INTERVAL_SECONDS})
@@ -51,13 +61,16 @@ Options:
   --help                    Print this help
 
 The default run is the release-gate 10-minute World and 30-minute server soak.
+A short run, e.g. --browser-seconds=40 --server-seconds=40 --interval-seconds=10
+--warmup-seconds=10, keeps the same gates with fewer checkpoints.
 Provider append/rotation behavior is covered by watcher-runtime.mjs; this script
 does not mutate live provider data.`);
 }
 
 function parseArgs(argv) {
   const options = {
-    url: DEFAULT_URL.replace(/\/+$/, ''),
+    url: DEFAULT_URL,
+    renderer: DEFAULT_RENDERER,
     browserSeconds: DEFAULT_BROWSER_SECONDS,
     serverSeconds: DEFAULT_SERVER_SECONDS,
     intervalSeconds: DEFAULT_INTERVAL_SECONDS,
@@ -77,12 +90,13 @@ function parseArgs(argv) {
       continue;
     }
     const [flag, inlineValue] = arg.split('=', 2);
-    if (!['--url', '--browser-seconds', '--server-seconds', '--interval-seconds', '--warmup-seconds', '--ws-timeout-seconds', '--ws-attempts'].includes(flag)) {
+    if (!['--url', '--renderer', '--browser-seconds', '--server-seconds', '--interval-seconds', '--warmup-seconds', '--ws-timeout-seconds', '--ws-attempts'].includes(flag)) {
       throw new Error(`Unknown argument: ${arg}`);
     }
     const value = inlineValue ?? argv[++index];
     if (value == null || value === '') throw new Error(`Missing value for ${flag}`);
-    if (flag === '--url') options.url = value.replace(/\/+$/, '');
+    if (flag === '--url') options.url = value;
+    if (flag === '--renderer') options.renderer = value;
     if (flag === '--browser-seconds') options.browserSeconds = Number(value);
     if (flag === '--server-seconds') options.serverSeconds = Number(value);
     if (flag === '--interval-seconds') options.intervalSeconds = Number(value);
@@ -98,6 +112,9 @@ function parseArgs(argv) {
     ['ws attempts', options.wsAttempts],
   ]) {
     if (!Number.isFinite(value) || value <= 0) throw new Error(`${name} must be positive`);
+  }
+  if (!RENDERERS.includes(options.renderer)) {
+    throw new Error(`--renderer must be one of ${RENDERERS.join(', ')}`);
   }
   if (!Number.isFinite(options.warmupSeconds) || options.warmupSeconds < 0) {
     throw new Error('warmup seconds must be non-negative');
@@ -164,7 +181,7 @@ async function quiescentListenerCount(page, cdp) {
 }
 
 async function checkListenerCounter() {
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchChromium({ headless: true });
   try {
     const page = await browser.newPage();
     await page.goto('about:blank');
@@ -428,7 +445,6 @@ async function checkpointWorldSuspendResume(page) {
       && budget?.worldResourcesSuspended === true
       && budget.visibleCanvasPixels === 0
       && assets?.suspended === true
-      && assets.bitmaps === 0
       && assets.masks === 0
       && assets.outlines === 0
       && budget?.cacheStats?.compositor?.pixels === 0;
@@ -449,7 +465,10 @@ async function checkpointWorldSuspendResume(page) {
   assert.ok(before?.visibleCanvasPixels > 0, 'World checkpoint started without a canvas backing store');
   assert.equal(suspended?.visibleCanvasPixels, 0, 'Dashboard did not release the World canvas backing store');
   assert.equal(suspended?.worldResourcesSuspended, true, 'Dashboard did not suspend World resources');
-  assert.equal(suspended?.cacheStats?.assets?.bitmapPixels, 0, 'Dashboard retained decoded World bitmaps');
+  // Suspend keeps the committed decoded sources for a network-independent
+  // World return (56a44f8), so Dashboard may hold them but never decode more.
+  assert.ok(suspended?.cacheStats?.assets?.bitmapPixels <= before?.cacheStats?.assets?.bitmapPixels,
+    'Dashboard decoded World bitmaps while suspended');
   assert.equal(suspended?.cacheStats?.assets?.maskBytes, 0, 'Dashboard retained World hit masks');
   assert.equal(suspended?.cacheStats?.assets?.outlinePixels, 0, 'Dashboard retained World outlines');
   assert.equal(suspended?.cacheStats?.compositor?.pixels, 0, 'Dashboard retained composited agent sheets');
@@ -722,35 +741,59 @@ async function main() {
   const finishAt = Math.max(browserUntil, serverUntil);
   const intervalMs = options.intervalSeconds * 1000;
 
-  const browser = await chromium.launch({
+  const server = await resolveServer(options.url);
+  const baseUrl = server.baseUrl;
+  const gpu = options.renderer !== 'canvas';
+  const browser = await launchChromium({
     headless: !options.headed,
-    args: ['--enable-precise-memory-info'],
+    args: ['--enable-precise-memory-info', ...(gpu ? gpuLaunchArgs() : [])],
+  }).catch(async (error) => {
+    await server.stop();
+    throw error;
   });
-  const context = await browser.newContext({
-    viewport: { width: 1600, height: 1000 },
-    deviceScaleFactor: 1,
-  });
-  const page = await context.newPage();
-  const probePage = await context.newPage();
-  page.on('console', message => {
-    if (message.type() === 'error') browserErrors.push(message.text());
-  });
-  page.on('pageerror', error => browserErrors.push(error.message));
-  await page.goto(options.url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
-  await probePage.goto(`${options.url}/api/providers`, {
-    waitUntil: 'domcontentloaded',
-    timeout: 60_000,
-  });
-  await page.waitForFunction(() => window.__claudeVilleApp?._bootState === 'ready', null, { timeout: 60_000 });
-  await page.waitForFunction(() => typeof window.__claudeVillePerf?.canvasBudget === 'function');
-  const cdp = await context.newCDPSession(page);
-  await cdp.send('HeapProfiler.enable');
-  modeCheckpoint = await checkpointWorldSuspendResume(page);
-  console.log(JSON.stringify({ type: 'mode-checkpoint', ...modeCheckpoint }));
-
-  let browserOpen = true;
-  let nextCheckpointAt = startedAt;
+  // Close the browser and stop the server on every exit, or a failed
+  // checkpoint leaves both running and the process never exits.
   try {
+    const context = await browser.newContext({
+      viewport: { width: 1600, height: 1000 },
+      deviceScaleFactor: 1,
+    });
+    const page = await context.newPage();
+    const probePage = await context.newPage();
+    page.on('console', message => {
+      if (message.type() === 'error') browserErrors.push(message.text());
+    });
+    page.on('pageerror', error => browserErrors.push(error.message));
+    const worldUrl = new URL(`${baseUrl}/`);
+    worldUrl.searchParams.set('renderer', options.renderer);
+    await page.goto(worldUrl.href, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+    await probePage.goto(`${baseUrl}/api/providers`, {
+      waitUntil: 'domcontentloaded',
+      timeout: 60_000,
+    });
+    await page.waitForFunction(() => window.__claudeVilleApp?._bootState === 'ready', null, { timeout: 60_000 });
+    await page.waitForFunction(() => typeof window.__claudeVillePerf?.canvasBudget === 'function');
+    // A GPU soak that silently fell back to Canvas would measure the wrong World.
+    const backend = await page.waitForFunction((mode) => {
+      const renderer = window.__claudeVilleApp?.renderer;
+      const active = mode === 'canvas' || renderer?.gpuWorld?.isActive?.() === true;
+      return active && renderer?.worldRendererMode === mode
+        ? renderer.worldRendererMode
+        : false;
+    }, options.renderer, { timeout: 30_000 }).then(handle => handle.jsonValue()).catch(async () => (
+      page.evaluate(() => window.__claudeVilleApp?.renderer?.worldRendererMode ?? null)
+    ));
+    if (backend !== options.renderer) {
+      throw new Error(`requested the ${options.renderer} World but it runs ${backend}`);
+    }
+    console.log(JSON.stringify({ type: 'backend', renderer: backend }));
+    const cdp = await context.newCDPSession(page);
+    await cdp.send('HeapProfiler.enable');
+    modeCheckpoint = await checkpointWorldSuspendResume(page);
+    console.log(JSON.stringify({ type: 'mode-checkpoint', ...modeCheckpoint }));
+
+    let browserOpen = true;
+    let nextCheckpointAt = startedAt;
     while (nextCheckpointAt <= finishAt) {
       const checkpointAt = nextCheckpointAt;
       const now = Date.now();
@@ -766,7 +809,7 @@ async function main() {
         await page.close();
       }
       if (checkpointAt <= serverUntil) {
-        const sample = await sampleServer(probePage, options.url, elapsedSeconds, {
+        const sample = await sampleServer(probePage, baseUrl, elapsedSeconds, {
           timeoutMs: options.wsTimeoutSeconds * 1000,
           attempts: options.wsAttempts,
         });
@@ -782,6 +825,7 @@ async function main() {
     }
   } finally {
     await browser.close();
+    await server.stop();
   }
 
   const browserSlopes = assertBrowserPlateau(browserSamples, options.warmupSeconds);
@@ -789,7 +833,8 @@ async function main() {
   assert.equal(browserErrors.length, 0, browserErrors.join('\n'));
   const summary = {
     ok: true,
-    url: options.url,
+    url: baseUrl,
+    renderer: options.renderer,
     durations: {
       browserSeconds: options.browserSeconds,
       serverSeconds: options.serverSeconds,

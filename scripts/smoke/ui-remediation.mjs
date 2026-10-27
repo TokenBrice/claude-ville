@@ -1,15 +1,20 @@
 #!/usr/bin/env node
 
+// Runs against an isolated server from this checkout unless CLAUDEVILLE_URL
+// names one.
 import assert from 'node:assert/strict';
-import { chromium } from 'playwright';
+import { launchChromium } from './support/chromium.mjs';
+import { resolveServer } from './support/world-bench.mjs';
 
-const url = (process.env.CLAUDEVILLE_URL || 'http://localhost:4000').replace(/\/+$/, '');
-const browser = await chromium.launch({ headless: true });
-const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+const server = await resolveServer(process.env.CLAUDEVILLE_URL || null);
+const url = server.baseUrl;
+let browser = null;
 const pageErrors = [];
-page.on('pageerror', error => pageErrors.push(error.message));
 
 try {
+    browser = await launchChromium({ headless: true });
+    const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+    page.on('pageerror', error => pageErrors.push(error.message));
     await page.addInitScript(() => {
         const storageKey = 'claudeville.sidebarCollapsed';
         const originalGet = Storage.prototype.getItem;
@@ -47,7 +52,7 @@ try {
             cardsUseNativeSelection: cards.every(card => (
                 !card.hasAttribute('role')
                 && !card.hasAttribute('tabindex')
-                && card.querySelector(':scope > .dash-card__header > button.dash-card__select')
+                && card.querySelector(':scope > button.dash-card__select')
             )),
             rowsUseNativeSelection: rows.every(row => (
                 row.querySelector(':scope > button.sidebar__agent-select')
@@ -69,11 +74,16 @@ try {
     const firstSidebarSelect = page.locator('.sidebar__agent-select').first();
     await firstSidebarSelect.focus();
     await firstSidebarSelect.press('Enter');
-    await page.waitForFunction(() => document.getElementById('activityPanel')?.style.display !== 'none');
+    // In Dashboard mode a selection is recorded without opening the Activity
+    // Panel: the Dashboard row is the detail surface there.
+    await page.waitForFunction(() => Boolean(window.__claudeVilleApp?.activityPanel?.currentAgent));
     const firstDashboardSelect = page.locator('.dash-card__select').first();
     await firstDashboardSelect.focus();
     await firstDashboardSelect.press('Enter');
     assert.equal(await firstDashboardSelect.getAttribute('aria-pressed'), 'true');
+    // The Activity Panel opens only in World mode; the panel probes run there.
+    await page.click('#btnModeCharacter');
+    await page.waitForFunction(() => window.__claudeVilleApp?.modeManager?.getCurrentMode?.() === 'character');
 
     const modalOpenState = await page.evaluate(() => {
         const app = window.__claudeVilleApp;
@@ -191,6 +201,8 @@ try {
                 new Map(candidates.map(agent => [agent.id, {}]))
             );
             dashboard._isFetchingDetails = false;
+            // The Dashboard fetches detail for the selected row only.
+            dashboard._selectedAgentId = agentA.id;
             await dashboard._fetchAllDetails();
 
             const baseSignature = card._avatarSignature;
@@ -220,8 +232,11 @@ try {
                     && unavailableText.includes('Activity unavailable'),
                 noUsageText,
                 snapshotUsage,
-                obsoleteFooterCleared: !dashboard.usageFooters.has(agentA.id)
-                    && card._elements.usage.style.display === 'none',
+                // The flat row has no footer to hide: an empty detail
+                // recomputes the usage cells, so the stale numbers must go.
+                obsoleteFooterCleared: dashboard.usageFooters.get(agentA.id)?.tokens !== '999 tokens'
+                    && !card._elements.usageTokens.textContent.includes('999')
+                    && !card._elements.usageCost.textContent.includes('9.99'),
                 teamInvalidatesAvatar: teamSignature !== baseSignature,
                 teamRemovalInvalidatesAvatar: teamRemovedSignature !== teamSignature,
                 appearanceInvalidatesAvatar: appearanceSignature !== teamSignature,
@@ -259,5 +274,6 @@ try {
         detailState,
     }, null, 2));
 } finally {
-    await browser.close();
+    await browser?.close();
+    await server.stop();
 }
