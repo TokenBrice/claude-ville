@@ -1479,6 +1479,10 @@ const BROADCAST_POLL_INTERVAL = 2000;
 const BROADCAST_DEBOUNCE_MS = 100;
 const SESSION_SCAN_BACKOFF_MIN_MS = 250;
 const SESSION_SCAN_BACKOFF_MAX_MS = 15_000;
+// SV-8 — the next transcript scan waits three times the last one, so
+// scanning never holds the main thread more than about 25 % of the time.
+// Hook overlays bypass it, as before.
+const SESSION_SCAN_BACKOFF_FACTOR = 3;
 const TEAMS_CACHE_TTL_MS = 5000;
 // Delta clients still get a periodic full snapshot as a self-healing floor.
 // SV-5: deltas reconstruct the full state exactly (the live v2-versus-legacy
@@ -1575,7 +1579,7 @@ function updateCanonicalActiveProjects(sessions = []) {
 function sessionScanBackoffMs() {
   return Math.max(
     SESSION_SCAN_BACKOFF_MIN_MS,
-    Math.min(SESSION_SCAN_BACKOFF_MAX_MS, Math.round(lastSessionScanDurationMs)),
+    Math.min(SESSION_SCAN_BACKOFF_MAX_MS, Math.round(SESSION_SCAN_BACKOFF_FACTOR * lastSessionScanDurationMs)),
   );
 }
 
