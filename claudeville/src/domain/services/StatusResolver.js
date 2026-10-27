@@ -76,7 +76,9 @@ export function isWaitingOnCrew(session) {
 function looksLikeAskWithoutTurnState(session, baseStatus) {
     const tool = session.lastTool || null;
     if (tool && WAITING_ON_USER_TOOLS.has(tool)) return true;
-    if (baseStatus === AgentStatus.WAITING) {
+    // A question that keeps waiting is still a question: quiet past the
+    // 2-minute WAITING window is no evidence it was answered.
+    if (baseStatus === AgentStatus.WAITING || baseStatus === AgentStatus.IDLE) {
         const msg = String(session.lastMessage || '').trim();
         if (msg && msg.endsWith('?')) return true;
     }

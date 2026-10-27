@@ -74,6 +74,14 @@ test('providers without turn state fall back to activity timing', () => {
     assert.equal(at({ ...stale, turnState: 'unknown' }), AgentStatus.IDLE);
 });
 
+test('a question without turn state stays needs-you past the 2-minute WAITING window', () => {
+    const question = { status: 'active', turnState: 'unknown', lastMessage: 'May I continue?' };
+    assert.equal(at({ ...question, lastActivity: NOW - 60_000 }), AgentStatus.WAITING_ON_USER);
+    assert.equal(at({ ...question, lastActivity: NOW - 121_000 }), AgentStatus.WAITING_ON_USER, 'silence is no answer');
+    assert.equal(at({ ...question, lastActivity: NOW - 1_000 }), AgentStatus.WORKING, 'new activity is evidence');
+    assert.equal(at({ ...question, lastMessage: 'Done.', lastActivity: NOW - 121_000 }), AgentStatus.IDLE);
+});
+
 test('PV-4b: a turn that ended on an API error is ERRORED until the next turn', () => {
     const apiError = { kind: 'server_error', status: 522, at: NOW - 5_000 };
     assert.equal(at({ ...fresh, turnState: 'awaiting_input', apiError }), AgentStatus.ERRORED);
