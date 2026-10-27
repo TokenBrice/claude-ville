@@ -288,6 +288,8 @@ test('tool:result fires once per newly observed outcome, and never for an invoca
     push('Bash', [build]);
     assert.deepEqual(events, [{
         agentId: 'codex-alpha',
+        // RG-11: whose error flags are failures is per provider.
+        provider: 'codex',
         id: build.id,
         tool: 'Bash',
         exitCode: 0,

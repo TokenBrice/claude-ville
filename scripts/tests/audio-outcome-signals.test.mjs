@@ -158,6 +158,14 @@ test('a flag-only failure (an Edit miss, a refusal) is not a failed command', ()
     assert.equal(toolFailedFact({ agentId: 'a', tool: 'Bash', exitCode: 2 })?.kind, 'toolFailed', 'providers without a source keep today\'s reading');
 });
 
+test('RG-11: where a flag is the provider\'s only outcome, a flagged failure rings', () => {
+    const flagged = provider => toolFailedFact({ agentId: 'a', provider, tool: 'bash', exitCode: 1, exitCodeSource: 'flag' });
+    assert.equal(flagged('omp')?.kind, 'toolFailed', 'OMP records no exit codes');
+    assert.equal(flagged('kimi')?.kind, 'toolFailed', 'a Kimi flag is a result without an exit code');
+    assert.equal(flagged('claude'), null, 'Claude flags are refusals and Edit misses');
+    assert.equal(flagged(null), null);
+});
+
 test('a failed push is a growth in a repo\'s failed pushes after the first summary', () => {
     const repo = failed => ({ project: '/p', branch: 'main', shortName: 'p', failedPushes: failed });
     const first = failedPushFacts(null, [repo(1)]);

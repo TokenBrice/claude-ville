@@ -388,6 +388,8 @@ export class AgentEventStream {
             if (!emit || !Number.isFinite(completedAt) || completedAt < this._startedAt) continue;
             const event = {
                 agentId: agent.id,
+                // RG-11 — whose flags are failures is a per-provider fact.
+                provider: agent.provider || null,
                 id,
                 tool: result.tool || null,
                 exitCode: Number.isFinite(Number(result.exitCode)) && result.exitCode !== null
