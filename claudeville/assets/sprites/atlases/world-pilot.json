@@ -751,7 +751,7 @@
   },
   "channelSha256": {
     "albedo": "386aadeadb9af9ebee036cb7348540b3561f4b02c487650ce4d1ecb3c471b1c5",
-    "emissive": "0d29781ea0588831db98f196d8ed72cae383f60629843ae8734dcabcc5e0ceed",
+    "emissive": "48ff5c8bd331c61bd1d3383ece88735424285e252c2f82f55b275368479f4344",
     "material": "ee4e93bc689f7eeacc476bcf9c475901626ddfc00bfd9f019821ec67559c1715",
     "occluder": "5d69f3eaa33ecdae99946246cb39ca95d60a73162545e5cec98dc0ce6d2348c5"
   },
