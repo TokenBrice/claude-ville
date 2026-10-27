@@ -92,6 +92,63 @@ test('Claude projects provider records, turn timing, and a canonical working set
   }
 });
 
+// RG-4, the Claude half: a turn reports only its own duration. A new prompt
+// clears the last turn's, so a turn paused on a question (or aborted) never
+// re-reports it as its own; its own turn_duration record brings one back.
+test('RG-4: a Claude turn never re-reports the previous turn\'s duration', () => {
+  const root = makeTempDir('claudeville-claude-turn-duration-');
+  try {
+    const project = path.join(root, 'work', 'turns');
+    const file = path.join(root, '.claude', 'projects', project.replaceAll('/', '-'), 'turns.jsonl');
+    fs.mkdirSync(project, { recursive: true });
+    const now = Date.now();
+    const at = (agoMs) => new Date(now - agoMs).toISOString();
+    const reply = (agoMs, stopReason, content) => ({
+      type: 'assistant', timestamp: at(agoMs),
+      message: { role: 'assistant', model: 'claude-sonnet-4-5', stop_reason: stopReason, content, usage: { input_tokens: 10, output_tokens: 5 } },
+    });
+    const prompt = (agoMs, text) => ({ type: 'user', timestamp: at(agoMs), message: { role: 'user', content: [{ type: 'text', text }] } });
+    const turnOne = [
+      prompt(600_000, 'First task'),
+      reply(300_000, 'end_turn', [{ type: 'text', text: 'Done.' }]),
+      { type: 'system', subtype: 'turn_duration', durationMs: 300_000, timestamp: at(299_000) },
+    ];
+    const askingTurn = [
+      prompt(60_000, 'Second task'),
+      reply(30_000, 'tool_use', [{ type: 'tool_use', id: 'toolu_ask', name: 'AskUserQuestion', input: { questions: [{ question: 'Ship it?' }] } }]),
+    ];
+    const answeredTurn = [
+      { type: 'user', timestamp: at(20_000), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_ask', content: 'Yes' }] } },
+      reply(15_000, 'end_turn', [{ type: 'text', text: 'Shipped.' }]),
+      { type: 'system', subtype: 'turn_duration', durationMs: 45_000, timestamp: at(14_000) },
+    ];
+    writeJsonLines(path.join(root, '.claude', 'history.jsonl'), [{ sessionId: 'turns', project, timestamp: now, display: 'Turns' }]);
+    const read = (records) => {
+      writeJsonLines(file, records);
+      const script = `
+        const { ClaudeAdapter } = require('./claudeville/adapters/claude');
+        const session = new ClaudeAdapter().getActiveSessions(60 * 60 * 1000).find(s => s.sessionId === 'turns');
+        process.stdout.write(JSON.stringify({ turnStartedAt: session.turnStartedAt, lastTurnDurationMs: session.lastTurnDurationMs }));
+      `;
+      return JSON.parse(execFileSync(process.execPath, ['-e', script], {
+        cwd: REPO_ROOT, env: { ...process.env, HOME: root, USERPROFILE: root }, encoding: 'utf8',
+      }));
+    };
+
+    const first = read(turnOne);
+    assert.equal(first.lastTurnDurationMs, 300_000);
+    const asking = read([...turnOne, ...askingTurn]);
+    assert.ok(asking.turnStartedAt > first.turnStartedAt, 'the second turn started');
+    assert.equal(asking.lastTurnDurationMs, null, 'the asking turn reports no duration of its own yet');
+    // The tool result is no new prompt: the same turn ends with its own record.
+    const answered = read([...turnOne, ...askingTurn, ...answeredTurn]);
+    assert.equal(answered.turnStartedAt, asking.turnStartedAt);
+    assert.equal(answered.lastTurnDurationMs, 45_000);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // PV-1: `api-request-blob` copies carry `message.role` and no timestamp, and
 // subagent files hold them without `isSidechain`. Only user and assistant
 // records are turns.

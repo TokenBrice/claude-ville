@@ -447,6 +447,10 @@ function addModelHistory(projection, entry, msg) {
   if (projection.modelHistory.length > 8) projection.modelHistory.shift();
 }
 
+function isToolResultOnly(content) {
+  return Array.isArray(content) && content.length > 0 && content.every(block => block?.type === 'tool_result');
+}
+
 function addTranscriptProjectionEntry(projection, entry, msg) {
   if (!entry || typeof entry !== 'object') return;
   const at = toEpochMs(entry.timestamp ?? entry.created_at);
@@ -468,6 +472,14 @@ function addTranscriptProjectionEntry(projection, entry, msg) {
     if (linesRemoved !== null) projection.linesRemoved = Math.max(0, linesRemoved);
   }
 
+  // RG-4: a prompt opens a turn that has reported no duration yet, so an
+  // aborted turn, or one paused on a question, never re-reports the turn
+  // before it. A prompt is what moves turnStartedAt (turnStateFromEntries):
+  // a user record that is not only tool results; sidechain records belong
+  // to subagents.
+  if (msg?.role === 'user' && entry.isSidechain !== true && !isToolResultOnly(msg.content)) {
+    projection.lastTurnDurationMs = null;
+  }
   if (entry.type === 'system' && entry.subtype === 'turn_duration') {
     const duration = finiteNumber(entry.durationMs);
     if (duration !== null && duration >= 0) projection.lastTurnDurationMs = duration;
