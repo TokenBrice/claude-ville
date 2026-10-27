@@ -50,10 +50,12 @@ export const VISIT_OVERFLOW_TILES = Object.freeze({
         { tileX: 5, tileY: 22, overflow: true, reason: 'archive-bank' },
         { tileX: 4, tileY: 22, overflow: true, reason: 'archive-bank' },
     ],
+    // CM-1 — the east-arm pair stands on the arm between Command's east
+    // corner and the Tavern's standing room (21,18 and 22,18 are its stands).
     command: [
-        { tileX: 14, tileY: 22, overflow: true, reason: 'plaza' },
-        { tileX: 21, tileY: 20, overflow: true, reason: 'east-arm' },
-        { tileX: 22, tileY: 20, overflow: true, reason: 'east-arm' },
+        { tileX: 14, tileY: 20, overflow: true, reason: 'plaza' },
+        { tileX: 20, tileY: 18, overflow: true, reason: 'east-arm' },
+        { tileX: 20, tileY: 19, overflow: true, reason: 'east-arm' },
     ],
     forge: [
         { tileX: 29, tileY: 31, overflow: true, reason: 'forge-shore' },
@@ -106,8 +108,11 @@ export const VISIT_OVERFLOW_TILES = Object.freeze({
 export const BUILDING_DEFS = [
     {
         type: 'command',
+        // CM-1 (Q9) — two rows back toward the lake (y 16 → 14), with its
+        // slots, so the central bridge's north landing (16-18, 22) opens onto
+        // an open forecourt, not onto the briefing and the petitioners' line.
         x: 13,
-        y: 16,
+        y: 14,
         width: 5,
         height: 4,
         label: 'COMMAND CENTER',
@@ -118,22 +123,22 @@ export const BUILDING_DEFS = [
         capacity: { work: 5, ambient: 3, overflow: 3 },
         visualTier: 'hero',
         labelPriority: 'landmark',
-        entrance: { tileX: 15, tileY: 21 },
+        entrance: { tileX: 15, tileY: 19 },
         visitTiles: [
-            workSlot(15, 21, { x: 15.5, y: 18.0 }, { queueGroup: 'command-briefing', stance: 'briefing' }),
-            workSlot(14, 21, { x: 15.5, y: 18.0 }, { queueGroup: 'command-briefing', stance: 'briefing' }),
-            workSlot(18, 21, { x: 15.5, y: 18.0 }, { queueGroup: 'command-briefing', stance: 'briefing' }),
-            queueSlot(15, 22, { x: 15.5, y: 18.0 }, { queueGroup: 'command-plaza', reason: 'plaza' }),
-            queueSlot(18, 22, { x: 15.5, y: 18.0 }, { queueGroup: 'command-plaza', reason: 'plaza' }),
-            scenicSlot(12, 18, { x: 15.5, y: 18.0 }, { queueGroup: 'command-wing', stance: 'watch' }),
-            scenicSlot(12, 19, { x: 15.5, y: 18.0 }, { queueGroup: 'command-wing', stance: 'watch' }),
-            scenicSlot(18, 18, { x: 15.5, y: 18.0 }, { queueGroup: 'command-wing', stance: 'watch' }),
-            scenicSlot(18, 19, { x: 15.5, y: 18.0 }, { queueGroup: 'command-wing', stance: 'watch' }),
+            workSlot(15, 19, { x: 15.5, y: 16.0 }, { queueGroup: 'command-briefing', stance: 'briefing' }),
+            workSlot(14, 19, { x: 15.5, y: 16.0 }, { queueGroup: 'command-briefing', stance: 'briefing' }),
+            workSlot(18, 19, { x: 15.5, y: 16.0 }, { queueGroup: 'command-briefing', stance: 'briefing' }),
+            queueSlot(15, 20, { x: 15.5, y: 16.0 }, { queueGroup: 'command-plaza', reason: 'plaza' }),
+            queueSlot(18, 20, { x: 15.5, y: 16.0 }, { queueGroup: 'command-plaza', reason: 'plaza' }),
+            scenicSlot(12, 16, { x: 15.5, y: 16.0 }, { queueGroup: 'command-wing', stance: 'watch' }),
+            scenicSlot(12, 17, { x: 15.5, y: 16.0 }, { queueGroup: 'command-wing', stance: 'watch' }),
+            scenicSlot(18, 16, { x: 15.5, y: 16.0 }, { queueGroup: 'command-wing', stance: 'watch' }),
+            scenicSlot(18, 17, { x: 15.5, y: 16.0 }, { queueGroup: 'command-wing', stance: 'watch' }),
         ],
         walkExclusion: [{ dx: 0, dy: 4, width: 5, height: 1 }],
         scenery: {
             excludePadding: { x: 2, y: 2 },
-            sightline: { x0: 10.5, y0: 12.5, x1: 20.5, y1: 22.5 },
+            sightline: { x0: 10.5, y0: 10.5, x1: 20.5, y1: 20.5 },
             tallPropClearance: 2,
         },
     },

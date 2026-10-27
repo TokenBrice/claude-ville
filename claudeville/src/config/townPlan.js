@@ -206,13 +206,13 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
         id: 'civic-west-arm',
         material: 'avenue',
         width: 2,
-        points: [[10, 20], [14, 21]],
+        points: [[10, 20], [14, 19]],
     },
     {
         id: 'civic-east-arm',
         material: 'avenue',
         width: 2,
-        points: [[16, 20], [23, 18]],
+        points: [[16, 18], [23, 18]],
     },
     {
         id: 'tavern-promenade',
@@ -310,9 +310,9 @@ export const YARD_MATERIALS = Object.freeze({
 // (V8). None sits on the Command approach (7.2) or behind a wall the camera
 // cannot see past.
 export const REST_SEATS = Object.freeze([
-    { id: 'command-east-step-n', tileX: 18, tileY: 18, facing: 'south-east', occluder: 'step' },
-    { id: 'command-east-step-s', tileX: 18, tileY: 19, facing: 'south-east', occluder: 'step' },
-    { id: 'command-west-step', tileX: 12, tileY: 19, facing: 'south-west', occluder: 'step' },
+    { id: 'command-east-step-n', tileX: 18, tileY: 16, facing: 'south-east', occluder: 'step' },
+    { id: 'command-east-step-s', tileX: 18, tileY: 17, facing: 'south-east', occluder: 'step' },
+    { id: 'command-west-step', tileX: 12, tileY: 17, facing: 'south-west', occluder: 'step' },
     { id: 'harbor-pier', tileX: 26, tileY: 21, facing: 'south-west', occluder: 'pier' },
     // The Tavern's bar: three stools on its floor behind the front beam, the
     // drinkers' backs to the counter (Building.openFloor, TavernArcade).
@@ -352,38 +352,42 @@ export const REST_STANDS = Object.freeze({
 // `slots` by SignalLedger wait rank (slot 0, nearest Command's door, holds the
 // longest wait); ranks change only when the waiting set changes. AG-7 (Q7) —
 // the line stays on Command's forecourt, off the plank and the central
-// bridge (the island's main north-south crossing): from the foot of the
-// steps it runs west along the pond verge, past the plaza's ring place, and
-// folds back along the forecourt's west edge (36 world px between slots).
-// The 13th petitioner onward stands on the civic west arm (`overflow`). No
-// slot stands on a bridge, a fixture's footprint (VisitTileAllocator
+// bridge (the island's main north-south crossing). CM-1 — it is laid on the
+// forecourt's west half, away from the bridge's north landing (16-18, 22):
+// from the foot of the steps it runs west along the civic west arm to the
+// arm's mouth, folds back one row out and folds once more along the bank
+// (36 world px between slots). The steps' row west of the door is the rune
+// brazier's and the Archive alcove's crates' (their fixture boxes). The 13th
+// petitioner onward stands at the arm's mouth and on the bank beside the
+// line (`overflow`), the last two a stride clear of the plank. No slot
+// stands on a bridge, a fixture's footprint (VisitTileAllocator
 // `standsOnFixture`), another standing place or behind a roof. `door` is the
 // point the head of the line faces; each later slot faces the slot ahead.
 export const COMMAND_QUEUE = Object.freeze({
-    door: Object.freeze({ tileX: 14.5, tileY: 19.5 }),
+    door: Object.freeze({ tileX: 14.5, tileY: 17.5 }),
     slots: Object.freeze([
-        { tileX: 15, tileY: 21 },
-        { tileX: 13, tileY: 22 },
-        { tileX: 12, tileY: 22 },
-        { tileX: 11, tileY: 22 },
-        { tileX: 10, tileY: 22 },
-        { tileX: 9, tileY: 22 },
-        { tileX: 8, tileY: 22 },
-        { tileX: 8, tileY: 21 },
-        { tileX: 9, tileY: 21 },
+        { tileX: 15, tileY: 19 },
+        { tileX: 13, tileY: 20 },
+        { tileX: 12, tileY: 20 },
+        { tileX: 11, tileY: 20 },
+        { tileX: 10, tileY: 20 },
         { tileX: 10, tileY: 21 },
         { tileX: 11, tileY: 21 },
         { tileX: 12, tileY: 21 },
+        { tileX: 13, tileY: 21 },
+        { tileX: 13, tileY: 22 },
+        { tileX: 12, tileY: 22 },
+        { tileX: 11, tileY: 22 },
     ].map(Object.freeze)),
     overflow: Object.freeze([
+        { tileX: 10, tileY: 22 },
+        { tileX: 9, tileY: 22 },
+        { tileX: 9, tileY: 21 },
+        { tileX: 8, tileY: 21 },
+        { tileX: 8, tileY: 22 },
         { tileX: 10, tileY: 19 },
-        { tileX: 11, tileY: 20 },
-        { tileX: 11, tileY: 17 },
-        { tileX: 11, tileY: 16 },
-        { tileX: 10, tileY: 16 },
-        { tileX: 11, tileY: 15 },
-        { tileX: 10, tileY: 15 },
-        { tileX: 12, tileY: 16 },
+        { tileX: 14, tileY: 21 },
+        { tileX: 14, tileY: 22 },
     ].map(Object.freeze)),
 });
 
@@ -426,7 +430,7 @@ export const APPROACH_FILES = Object.freeze({
     // Along the Archive's front steps, west from its south-east corner.
     archive: approachFile([7, 19], [6, 19], [5, 19], [4, 19]),
     // Up the lane between Command's east wing and the Tavern porch.
-    command: approachFile([20, 18], [19, 18], [19, 17], [19, 16]),
+    command: approachFile([20, 16], [19, 16], [19, 15], [19, 14]),
     // Up the Forge's cinder yard, parallel to its west wall.
     forge: approachFile([23, 30], [23, 29], [23, 28], [23, 27]),
     // West along the Task Board's front, then up beside the gate avenue.
