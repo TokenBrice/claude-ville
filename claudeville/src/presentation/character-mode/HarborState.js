@@ -1532,16 +1532,28 @@ export function findMooredPullRequest(state, event) {
 }
 
 // Moored PR cutters fill the outer-roadstead anchorages in turn, a row
-// further out each lap, so two open PRs never moor on one tile.
+// further out each lap, so two open PRs never moor on one tile. VB-13 — a
+// new cutter takes the first free mooring: one a merged or expired cutter
+// left is reused, never the slot of one still moored.
 export function pullRequestRoadsteadTile(state) {
     const anchorages = HARBOR_SQUAD_ANCHORAGES.filter(anchorage => anchorage.zone === 'outer-roadstead');
-    let slot = 0;
+    const tileAt = (slot) => {
+        const anchorage = anchorages[slot % anchorages.length] || HARBOR_SQUAD_ANCHORAGES[0];
+        const row = Math.floor(slot / Math.max(1, anchorages.length)) % PR_ROADSTEAD_ROWS;
+        return { tileX: anchorage.tileX + anchorage.rowDx * row, tileY: anchorage.tileY + anchorage.rowDy * row };
+    };
+    const taken = new Set();
     for (const ship of state.ships.values()) {
-        if (ship.prShip && ship.arrivingKind === 'pr') slot++;
+        const tile = ship.prShip && ship.arrivingKind === 'pr' ? ship.inboundRoadsteadTile : null;
+        if (tile) taken.add(`${tile.tileX},${tile.tileY}`);
     }
-    const anchorage = anchorages[slot % anchorages.length] || HARBOR_SQUAD_ANCHORAGES[0];
-    const row = Math.floor(slot / Math.max(1, anchorages.length)) % PR_ROADSTEAD_ROWS;
-    return { tileX: anchorage.tileX + anchorage.rowDx * row, tileY: anchorage.tileY + anchorage.rowDy * row };
+    const slots = Math.max(1, anchorages.length) * PR_ROADSTEAD_ROWS;
+    for (let slot = 0; slot < slots; slot++) {
+        const tile = tileAt(slot);
+        if (!taken.has(`${tile.tileX},${tile.tileY}`)) return tile;
+    }
+    // Every mooring is taken: lap round as before.
+    return tileAt(taken.size);
 }
 
 export function pullRequestShipLabel(event = {}) {
