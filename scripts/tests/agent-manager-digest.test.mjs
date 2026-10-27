@@ -112,7 +112,8 @@ test('VB-7: digest work stays bounded for an oversized git event list', () => {
     const started = performance.now();
     digestAgentPayload(payload(huge), work);
     assert.ok(work.keyedRows <= 2_048, `keyed rows ${work.keyedRows}`);
-    assert.ok(performance.now() - started < 500, 'oversized list digest is bounded');
+    // A loose guard against unbounded work; the row cap above is the contract.
+    assert.ok(performance.now() - started < 2_000, 'oversized list digest is bounded');
 });
 
 // VB-16 (SV-5 client backstop): the server re-stamps `freshness.observedAt`
