@@ -21,14 +21,22 @@
 // and the `rimTier` bucket (pixels a record samples from a source texel with
 // 0 < a < 255, from the frame's own records, 1-px dilated). Pass: share(d<=1)
 // >= 0.999 on the composite of every case; a failure whose > 1 LSB pixels all
-// sit in rimTier is `P1-limited` (still a failure). A missing backend, method
+// sit in rimTier is `P1-limited` (still a failure). A required emission
+// target passes on the same share and never differs by more than 2 LSB
+// (VQ-6: it is not presented, it feeds the bloom chain whose result the
+// composite gate already holds). A missing backend, method
 // or target is `n/a`, never a crash. No shader-source assertions, no per-pass
 // timing assertions, no tolerance flag.
 //
 // Also: the device-loss check (§5.4: `device.destroy()`, isActive() false
 // within a frame, the app hands over to a fresh WebGL2 world, `deviceLost`
 // carries a reason; on a harness-built renderer the frame after
-// `_rebuildDevice()` matches the frame before), and `--burst`: the
+// `_rebuildDevice()` matches the frame before; EN-10: the handover counts no
+// frame failure and the WebGL2 world it lands on draws the frozen frame
+// exactly as a fresh renderer), the WebGL2 context-loss check (EN-10, on
+// ?renderer=webgl: `WEBGL_lose_context` takes the world inactive, the loop
+// counts no frame failure, `restoreContext()` brings the same world back and
+// it draws the frozen frame exactly as a fresh renderer), and `--burst`: the
 // gpu-burst FULL comparison at 1680 and 4880 per backend with the host load
 // recorded (a receipt only on a quiet host, load < 4).
 //
@@ -95,7 +103,7 @@ Options:
   --settle-seconds=<n>    Wait after posing before freezing (default: 4)
   --out=<dir>             Report directory (default: output/webgpu-parity/<timestamp>)
   --url=<url>             Existing ClaudeVille server (default: an isolated server)
-  --no-device-loss        Skip the device-loss check
+  --no-device-loss        Skip the device-loss and WebGL context-loss checks
   --burst                 Also run gpu-burst FULL (level 0) per backend at 1680 and 4880
   --no-images             Skip the frame/diff PNGs
   --headed                Show the Chromium window
@@ -183,6 +191,11 @@ function parseSizes(value) {
 function installParityHelpers() {
   const GPU = '/src/presentation/character-mode/gpu/';
   const T = window.__webgpuParity = {};
+  // VQ-6 — the emission ceiling: the measured worst is 2 LSB (the WebGPU and
+  // WebGL2 emission targets round 1-2 LSB apart on lit night frames, and
+  // every such composite passes); a real emitter drift moves whole lamps by
+  // far more.
+  const EMISSION_MAX_LSB = 2;
 
   const toBase64 = async (blob) => {
     const bytes = new Uint8Array(await blob.arrayBuffer());
@@ -696,7 +709,7 @@ function installParityHelpers() {
       }
       if (!out.webgpu.ok) { out.targets[name] = { status: 'n/a', reason: out.webgpu.reason }; continue; }
       const metric = await T.compare(ref, test, images ? (name === 'composite' ? 'always' : 'diff') : false);
-      out.targets[name] = { status: name === 'emission' && metric.maxAbsDiff > 0 ? 'fail' : metric.verdict, ...metric };
+      out.targets[name] = { status: name === 'emission' && metric.maxAbsDiff > EMISSION_MAX_LSB ? 'fail' : metric.verdict, ...metric };
     }
     if (images) {
       if (a.capture?.composite) out.webglImage = await T.png(a.capture.composite, T.width, T.height);
@@ -706,6 +719,77 @@ function installParityHelpers() {
     made.renderer?.dispose?.();
     window.__claudeVilleApp.renderer._startLoop?.();
     return out;
+  };
+
+  // EN-10 — the app's frame-failure count (`_frameFailureStats.total`).
+  const frameFailures = r => r._frameFailureStats?.total ?? 0;
+  // EN-10 — a world that came back from a loss draws a real frame: the
+  // frozen frame rendered on it equals a fresh WebGL2 renderer's render of
+  // the same frame, bit for bit (the reference is self-stable, VQ-6).
+  T.drawsFrozenFrame = async (world) => {
+    const got = await T.renderCapture(world, 'webgl', 1);
+    const fresh = await T.makeWebgl();
+    const ref = await T.renderCapture(fresh, 'webgl');
+    fresh.dispose?.();
+    const a = got.capture?.composite;
+    const b = ref.capture?.composite;
+    if (!got.ok || !a || !b) return { ok: false, reason: got.ok ? 'no composite captured' : 'render() returned false' };
+    let diffPixels = 0;
+    for (let i = 0; i < a.length; i += 4) {
+      if (a[i] !== b[i] || a[i + 1] !== b[i + 1] || a[i + 2] !== b[i + 2] || a[i + 3] !== b[i + 3]) diffPixels++;
+    }
+    return { ok: diffPixels === 0, diffPixels };
+  };
+
+  // EN-10 — WebGL2 context loss and restore on the app's own resident world
+  // (booted with ?renderer=webgl): `WEBGL_lose_context.loseContext()` takes
+  // the world inactive within a few frames, the loop rides the loss without
+  // counting a frame failure, `restoreContext()` brings the same world back
+  // active, and it then draws the frozen frame exactly as a fresh renderer.
+  T.webglLoss = async () => {
+    const r = window.__claudeVilleApp.renderer;
+    const world = r.gpuWorld;
+    const nextFrame = () => new Promise(resolve => requestAnimationFrame(() => resolve()));
+    const result = { mode: r.worldRendererMode };
+    if (r.worldRendererMode !== 'webgl' || !world?.gl) return { ...result, status: 'n/a', reason: 'no resident WebGL2 world' };
+    const ext = world.gl.getExtension('WEBGL_lose_context');
+    if (!ext) return { ...result, status: 'n/a', reason: 'WEBGL_lose_context unavailable' };
+    const LOSS_MAX_FRAMES = 3;
+    const RESTORE_MAX_FRAMES = 60;
+    r._startLoop?.();
+    const failures0 = frameFailures(r);
+    ext.loseContext();
+    result.framesToInactive = null;
+    for (let frame = 1; frame <= 10; frame++) {
+      await nextFrame();
+      if (world.isActive() === false) { result.framesToInactive = frame; break; }
+    }
+    // Half a second lost: the loop keeps running and counts no failure.
+    for (let frame = 0; frame < 30; frame++) await nextFrame();
+    result.lostFrameFailures = frameFailures(r) - failures0;
+    ext.restoreContext();
+    result.framesToRestore = null;
+    for (let frame = 1; frame <= RESTORE_MAX_FRAMES; frame++) {
+      await nextFrame();
+      if (world.isActive() === true && r.gpuWorld === world) { result.framesToRestore = frame; break; }
+    }
+    for (let frame = 0; frame < 10; frame++) await nextFrame();
+    result.frameFailures = frameFailures(r) - failures0;
+    result.failuresPaused = r._frameFailureStats?.paused === true;
+    result.after = { mode: r.worldRendererMode, sameWorld: r.gpuWorld === world, active: world.isActive() === true };
+    r._stopLoop();
+    result.drawn = result.after.active ? await T.drawsFrozenFrame(world) : { ok: false, reason: 'world not active after restore' };
+    const checks = [
+      result.framesToInactive !== null && result.framesToInactive <= LOSS_MAX_FRAMES,
+      result.framesToRestore !== null,
+      result.frameFailures === 0,
+      !result.failuresPaused,
+      result.after.mode === 'webgl' && result.after.sameWorld,
+      result.drawn.ok === true,
+    ];
+    result.status = checks.every(Boolean) ? 'pass' : 'fail';
+    r._startLoop?.();
+    return result;
   };
 
   // §5.4 device loss. With the app's own WebGPU world (booted with
@@ -735,6 +819,7 @@ function installParityHelpers() {
     };
     if (appWorld) {
       r._startLoop?.();
+      const failures0 = frameFailures(r);
       const lost = appWorld.device.lost;
       appWorld.device.destroy();
       result.framesToInactive = await awaitInactive(appWorld);
@@ -757,10 +842,18 @@ function installParityHelpers() {
         fxCanvasVisible: style ? style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity) > 0 : null,
         reason: r.worldBackendReason,
       };
+      // EN-10 — the handover itself fails no frame, and the WebGL2 world it
+      // hands to draws: after a few loop frames, the frozen frame rendered on
+      // it equals a fresh WebGL2 renderer's.
+      for (let frame = 0; frame < 10; frame++) await nextFrame();
+      result.fallback.frameFailures = frameFailures(r) - failures0;
+      result.fallback.failuresPaused = r._frameFailureStats?.paused === true;
+      r._stopLoop();
+      result.fallback.drawn = r.gpuWorld?.isActive?.() === true ? await T.drawsFrozenFrame(r.gpuWorld) : { ok: false, reason: 'no active world' };
       result.fallbackOk = result.fallback.mode === 'webgl' && result.fallback.gpuActive
         && framesToWebgl !== null && framesToWebgl <= DEVICE_LOSS_MAX_FRAMES + 1 + FALLBACK_IDLE_STEPS
-        && result.fallback.fxCanvasVisible === true && /webgpu failed in frame: device/.test(result.fallback.reason || '');
-      r._stopLoop();
+        && result.fallback.fxCanvasVisible === true && /webgpu failed in frame: device/.test(result.fallback.reason || '')
+        && result.fallback.frameFailures === 0 && !result.fallback.failuresPaused && result.fallback.drawn.ok === true;
     }
     const made = await T.makeWebgpu();
     if (!made.renderer || made.reason) {
@@ -905,6 +998,19 @@ async function runDeviceLoss(browser, baseUrl, size, settleSeconds) {
   }
 }
 
+// EN-10 — WebGL2 context loss and restore on a ?renderer=webgl page.
+async function runWebglLoss(browser, baseUrl, size, settleSeconds) {
+  const item = PARITY_SCENARIOS[0];
+  const { context, page, errors } = await openCase(browser, baseUrl, { size, scenario: item.scenario, reducedMotion: false, renderer: 'webgl' });
+  try {
+    const { pose, frozen } = await poseAndFreeze(page, item, size, settleSeconds);
+    const result = await page.evaluate(() => window.__webgpuParity.webglLoss());
+    return { scenario: item.id, size: size.label, pose, backing: frozen.backing, ...result, errors: errors.slice(0, 5) };
+  } finally {
+    await context.close();
+  }
+}
+
 // gpu-burst FULL per backend. The tool needs `--renderer` to boot WebGPU; a
 // tool without it records the WebGPU arm as n/a.
 function runBurst(outDir) {
@@ -966,6 +1072,7 @@ async function main() {
     options: { ...options, scenarios: options.scenarios.map(s => s.id), sizes: options.sizes.map(s => s.label) },
     cases: [],
     deviceLoss: null,
+    webglLoss: null,
     burst: null,
   };
   try {
@@ -1012,6 +1119,12 @@ async function main() {
         report.deviceLoss = { status: 'fail', error: String(error?.message || error).slice(0, 400) };
       }
       console.log(`[webgpu-parity] device loss: ${report.deviceLoss.status}${report.deviceLoss.reason ? ` (${report.deviceLoss.reason})` : ''}`);
+      try {
+        report.webglLoss = await runWebglLoss(browser, server.baseUrl, options.sizes[0], options.settleSeconds);
+      } catch (error) {
+        report.webglLoss = { status: 'fail', error: String(error?.message || error).slice(0, 400) };
+      }
+      console.log(`[webgpu-parity] webgl context loss: ${report.webglLoss.status}${report.webglLoss.reason ? ` (${report.webglLoss.reason})` : ''}`);
     }
   } finally {
     await browser.close();
@@ -1022,6 +1135,7 @@ async function main() {
 
   const verdicts = report.cases.map(row => row.verdict);
   if (report.deviceLoss) verdicts.push(report.deviceLoss.status);
+  if (report.webglLoss) verdicts.push(report.webglLoss.status);
   const failed = verdicts.some(v => v === 'fail' || v === 'P1-limited');
   const incomplete = verdicts.some(v => v === 'n/a');
   report.verdict = failed ? 'FAIL' : incomplete ? 'INCOMPLETE' : 'PASS';
@@ -1043,7 +1157,8 @@ async function main() {
     verdict: row.verdict,
   }));
   console.table(table);
-  if (report.deviceLoss) console.log('device loss:', JSON.stringify({ status: report.deviceLoss.status, reason: report.deviceLoss.reason, framesToInactive: report.deviceLoss.framesToInactive, inactiveInTime: report.deviceLoss.inactiveInTime, fallbackOk: report.deviceLoss.fallbackOk, rebuilt: report.deviceLoss.rebuilt, afterRebuild: report.deviceLoss.afterRebuild?.shareLe1 }));
+  if (report.deviceLoss) console.log('device loss:', JSON.stringify({ status: report.deviceLoss.status, reason: report.deviceLoss.reason, framesToInactive: report.deviceLoss.framesToInactive, inactiveInTime: report.deviceLoss.inactiveInTime, fallbackOk: report.deviceLoss.fallbackOk, rebuilt: report.deviceLoss.rebuilt, afterRebuild: report.deviceLoss.afterRebuild?.shareLe1, fallback: report.deviceLoss.fallback ? { frameFailures: report.deviceLoss.fallback.frameFailures, drawn: report.deviceLoss.fallback.drawn } : null }));
+  if (report.webglLoss) console.log('webgl context loss:', JSON.stringify({ status: report.webglLoss.status, reason: report.webglLoss.reason, framesToInactive: report.webglLoss.framesToInactive, framesToRestore: report.webglLoss.framesToRestore, frameFailures: report.webglLoss.frameFailures, after: report.webglLoss.after, drawn: report.webglLoss.drawn }));
   if (report.burst) console.log('gpu-burst:', JSON.stringify({ comparison: report.burst.comparison, receipt: report.burst.receipt, webgpu: report.burst.arms.webgpu?.status }));
   console.log(`[webgpu-parity] ${report.verdict} — report ${path.relative(ROOT, path.join(outDir, 'report.json'))}`);
   process.exit(failed ? 1 : incomplete ? 2 : 0);

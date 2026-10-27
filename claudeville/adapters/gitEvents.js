@@ -542,12 +542,79 @@ function projectGitStateSignature(project) {
   return parts.sort().join('|');
 }
 
+// SV-9 — the enrichment path signs every repository on every rescan, a stat
+// per loose ref. Git moves a loose ref by renaming a lock file over it, which
+// changes the identity of the ref's directory, so the leaf signature is
+// reused while HEAD, packed-refs, every ref directory and each worktree HEAD
+// keep theirs. A ref rewritten in place (no git command does that) is
+// re-signed within REPO_SIGNATURE_LEAF_TTL_MS; the five-second project probe
+// (`projectGitStateSignature`) still signs every leaf.
+const REPO_SIGNATURE_LEAF_TTL_MS = 5000;
+const REPO_SIGNATURE_CACHE_MAX = 256;
+const _repoSignatureCache = new Map();
+
+// Directory identities of a ref tree, with the same bounds as the leaf walk.
+// False when the tree is too large to stand in for its leaves.
+function appendGitRefDirIdentities(metadata, parts, root, label) {
+  const stack = [{ dir: root, depth: 0 }];
+  let entries = 0;
+  while (stack.length > 0) {
+    const current = stack.pop();
+    const identity = gitDirectoryIdentity(metadata.stat(current.dir));
+    if (!identity) continue;
+    parts.push(`dir:${label}/${path.relative(root, current.dir)}:${identity}`);
+    let dirents;
+    try {
+      dirents = gitDirectoryEntries(metadata, current.dir, GIT_STATE_MAX_REF_ENTRIES, true).entries;
+    } catch {
+      continue;
+    }
+    for (const dirent of dirents) {
+      if (++entries >= GIT_STATE_MAX_REF_ENTRIES) return false;
+      if (dirent.isDirectory() && current.depth < 8) stack.push({ dir: path.join(current.dir, dirent.name), depth: current.depth + 1 });
+    }
+  }
+  return true;
+}
+
 // Repository-wide ref state: the shared branches, remote-tracking refs and
 // packed refs, plus every worktree's HEAD. Unchanged means a scan would see
 // nothing new, so warm polls launch no subprocess.
 function repoStateSignature(identity) {
   const metadata = gitMetadataSnapshot(identity.repoRoot);
   const commonDir = identity.commonDir;
+  const structure = [];
+  for (const fileName of ['HEAD', 'packed-refs']) {
+    const part = gitStateFilePart(metadata, path.join(commonDir, fileName), fileName);
+    if (part) structure.push(part);
+  }
+  let worktreeEntries = [];
+  try {
+    worktreeEntries = gitDirectoryEntries(metadata, path.join(commonDir, 'worktrees'), 64).entries;
+  } catch { /* no linked worktrees */ }
+  for (const entry of worktreeEntries) {
+    const part = gitStateFilePart(metadata, path.join(commonDir, 'worktrees', entry.name, 'HEAD'), `worktrees/${entry.name}/HEAD`);
+    if (part) structure.push(part);
+  }
+  const cacheable = ['refs/heads', 'refs/remotes']
+    .map(label => appendGitRefDirIdentities(metadata, structure, path.join(commonDir, label), label))
+    .every(Boolean);
+  const key = structure.join('|');
+  const now = Date.now();
+  const cached = _repoSignatureCache.get(identity.repoRoot);
+  if (cacheable && cached?.key === key && now - cached.at < REPO_SIGNATURE_LEAF_TTL_MS) return cached.signature;
+  const signature = repoLeafSignature(metadata, commonDir);
+  _repoSignatureCache.delete(identity.repoRoot);
+  if (cacheable) {
+    _repoSignatureCache.set(identity.repoRoot, { key, signature, at: now });
+    while (_repoSignatureCache.size > REPO_SIGNATURE_CACHE_MAX) {
+      _repoSignatureCache.delete(_repoSignatureCache.keys().next().value);
+    }
+  }
+  return signature;
+}
+
+function repoLeafSignature(metadata, commonDir) {
   const parts = [];
   for (const fileName of ['HEAD', 'packed-refs']) {
     const part = gitStateFilePart(metadata, path.join(commonDir, fileName), fileName);
@@ -1900,7 +1967,10 @@ function frozenFields(id) {
 
 function freezeFields(id, fields) {
   const existing = _frozenGitEventFields.get(id);
-  const value = existing ? { ...existing, ...fields } : fields;
+  // Re-freezing the same values keeps the same object, so a memo of parsed
+  // events can tell "unchanged" by identity (SV-2b).
+  const unchanged = existing && Object.keys(fields).every((key) => existing[key] === fields[key]);
+  const value = unchanged ? existing : existing ? { ...existing, ...fields } : fields;
   _frozenGitEventFields.delete(id);
   _frozenGitEventFields.set(id, value);
   while (_frozenGitEventFields.size > GIT_FROZEN_EVENT_MAX) {
@@ -2677,16 +2747,20 @@ function scrubForgeEventOutput(event) {
   for (const field of ['stderr', 'stdout', 'output', 'result']) delete event[field];
 }
 
-function dedupeGitEvents(events) {
+// `scrubbed`: every event already left `parseGitEventsFromCommand`, whose
+// own pass scrubbed it; scrubbing is idempotent, so a merge skips the rerun.
+function dedupeGitEvents(events, { scrubbed = false } = {}) {
   const seen = new Set();
   const unique = [];
 
   for (const event of events) {
     const type = event?.type || event?.kind;
-    if (!isForgeEventType(type) && typeof event?.stderr === 'string') {
-      event.stderr = stripSecrets(event.stderr);
+    if (!scrubbed) {
+      if (!isForgeEventType(type) && typeof event?.stderr === 'string') {
+        event.stderr = stripSecrets(event.stderr);
+      }
+      scrubForgeEventOutput(event);
     }
-    scrubForgeEventOutput(event);
     if (!event || !event.id || seen.has(event.id)) continue;
     seen.add(event.id);
     unique.push(event);
@@ -4295,13 +4369,14 @@ function extractGitEventsFromCommandSource(source, context = {}, options = {}) {
 }
 
 module.exports = {
-  _test: { containmentSteps },
+  _test: { containmentSteps, freezeFields, repoStateSignature },
   MAX_FORGE_EVENTS_PER_PROJECT,
   compactGitEventsForWire,
   dedupeGitEvents,
   configureGitEnrichmentWorker,
   extractCommand,
   extractGitEventsFromCommandSource,
+  frozenGitEventFields: frozenFields,
   getGitEnrichmentPerfStats,
   getGitWorkerPerfStats,
   invalidateGitStatusCaches,

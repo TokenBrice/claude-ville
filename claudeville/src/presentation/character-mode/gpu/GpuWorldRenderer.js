@@ -515,9 +515,9 @@ uniform vec3 u_cloudThresholds;
 uniform vec4 u_haze;
 float cloudNoiseAt(vec2 cell) {
     vec2 p = cell + 0.5 + u_cloud.xy;
-    float n1 = texture(u_cloudTile, fract(p / ${(CLOUD_TILE_WORLD_SCALE * CLOUD_TILE_SIZE).toFixed(1)})).r;
-    float n2 = texture(u_cloudTile, fract((p / ${CLOUD_SECOND_OCTAVE.scale.toFixed(4)} + vec2(${CLOUD_SECOND_OCTAVE.offset.map(v => v.toFixed(1)).join(', ')}))
-        / ${(CLOUD_TILE_WORLD_SCALE * CLOUD_TILE_SIZE).toFixed(1)})).r;
+    float n1 = textureLod(u_cloudTile, fract(p / ${(CLOUD_TILE_WORLD_SCALE * CLOUD_TILE_SIZE).toFixed(1)}), 0.0).r;
+    float n2 = textureLod(u_cloudTile, fract((p / ${CLOUD_SECOND_OCTAVE.scale.toFixed(4)} + vec2(${CLOUD_SECOND_OCTAVE.offset.map(v => v.toFixed(1)).join(', ')}))
+        / ${(CLOUD_TILE_WORLD_SCALE * CLOUD_TILE_SIZE).toFixed(1)}), 0.0).r;
     float n = max(n1, n2 * ${CLOUD_SECOND_OCTAVE.weight.toFixed(3)});
     if (u_cloudLone.z > 0.0) {
         vec2 d = p - u_cloudLone.xy;
@@ -935,14 +935,14 @@ float seaGustAt(vec2 cell) {
     if (u_seaGustRect.z <= 0.0) return 0.0;
     vec2 g = (cell + 0.5 - u_seaGustRect.xy) / (u_seaGustRect.zw * 128.0);
     if (any(lessThan(g, vec2(0.0))) || any(greaterThanEqual(g, vec2(1.0)))) return 0.0;
-    return texture(u_seaGust, g).r;
+    return textureLod(u_seaGust, g, 0.0).r;
 }
 // The gust field is coarse (a texel spans tens of world px): a static detail
 // octave of the cloud tile, stretched along the wind, breaks its bilinear
 // edges into streaky ruffled patches.
 bool seaPawAt(vec2 cell, float gust, float order) {
     if (gust <= 0.0) return false;
-    float ruffle = texture(u_cloudTile, fract((cell + vec2(517.0, 229.0)) / vec2(768.0, 256.0))).r;
+    float ruffle = textureLod(u_cloudTile, fract((cell + vec2(517.0, 229.0)) / vec2(768.0, 256.0)), 0.0).r;
     return gust + (ruffle - 0.5) * 0.36 + (order - 0.5) * 0.06 > ${SEA_PAW_THRESHOLD.toFixed(2)};
 }
 float seaPawCaps(vec2 cell, float order) {
@@ -1063,7 +1063,7 @@ vec3 applyGrassGust(vec3 color, vec2 world) {
     vec2 texel = vec2(floor(world.x * 0.5), floor(world.y));
     float gust = seaGustAt(vec2(texel.x * 2.0, texel.y));
     if (gust <= 0.0) return color;
-    float ruffle = texture(u_cloudTile, fract((texel + vec2(311.0, 173.0)) / vec2(384.0, 256.0))).r;
+    float ruffle = textureLod(u_cloudTile, fract((texel + vec2(311.0, 173.0)) / vec2(384.0, 256.0)), 0.0).r;
     float order = ruffle * 0.5 + waterBayer4(texel) * 0.5;
     if (order >= min(${GRASS_GUST_ORDER_CAP.toFixed(2)}, ${GRASS_GUST_ORDER_BASE.toFixed(2)} + ${GRASS_GUST_ORDER_GAIN.toFixed(2)} * gust)) return color;
     return GRASS_GUST_TO[k];
@@ -1135,7 +1135,7 @@ uniform highp sampler2DArray u_albedoPage;
 uniform bool u_albedoPaged;
 flat in float v_layer;
 vec4 albedoTexture(vec2 uv) {
-    return u_albedoPaged ? texture(u_albedoPage, vec3(uv, v_layer)) : texture(u_albedo, uv);
+    return u_albedoPaged ? textureLod(u_albedoPage, vec3(uv, v_layer), 0.0) : textureLod(u_albedo, uv, 0.0);
 }
 vec4 albedoTexel(ivec2 texel) {
     return u_albedoPaged ? texelFetch(u_albedoPage, ivec3(texel, int(v_layer)), 0) : texelFetch(u_albedo, texel, 0);
@@ -1954,8 +1954,8 @@ void main() {
         alpha *= course < 0.5 ? 0.42 : course < 1.5 ? 0.28 : 0.16;
         albedo.rgb = mix(albedo.rgb, WATER_STOPS[waterStopForSd(reflectSd)], 0.38);
     }
-    vec4 sidecar = u_hasMaterialMap ? texture(u_materialMap, uv) : vec4(0.0);
-    vec4 authoredEmission = u_hasEmissiveMap ? texture(u_emissiveMap, uv) : vec4(0.0);
+    vec4 sidecar = u_hasMaterialMap ? textureLod(u_materialMap, uv, 0.0) : vec4(0.0);
+    vec4 authoredEmission = u_hasEmissiveMap ? textureLod(u_emissiveMap, uv, 0.0) : vec4(0.0);
     bool packedMap = (v_flags & ${GPU_RECORD_FLAGS.packedGeometry}u) != 0u;
     float materialId = floor(sidecar.r * 255.0 + 0.5);
     float material = sidecar.a > 0.0 && !(packedMap && materialId > 254.5) ? materialId : v_material;
@@ -1978,7 +1978,7 @@ void main() {
     emissive *= u_coreEnergy;
     vec4 geometry = packedMap
         ? (u_packedGeometry && sidecar.b > 0.0 ? vec4(sidecar.g, sidecar.b, 0.0, 1.0) : vec4(0.0))
-        : u_hasOccluderMap ? texture(u_occluderMap, uv) : vec4(0.0);
+        : u_hasOccluderMap ? textureLod(u_occluderMap, uv, 0.0) : vec4(0.0);
     // 2.3 — a surface-coded landmark (V9 flag 16) carries the true height
     // above ground / 255 in R and its face and height code in B; its fog lift
     // runs over 128 world px (the old R was a row ramp reaching 1 at the
@@ -2585,10 +2585,10 @@ void main() {
     // a cool grey lift, not lamplight.
     if (rampPixel && admitted > 0.0) {
         float course = step(0.14, admitted) + step(0.45, admitted);
-        vec4 ramp = texture(u_paletteLut, vec2(
+        vec4 ramp = textureLod(u_paletteLut, vec2(
             (material + 0.5) / 11.0,
             (course + 0.5) / 3.0
-        ));
+        ), 0.0);
         vec3 rampLit = receiverKnee(
             color * (ramp.rgb * 2.0) + vec3(ramp.a * 0.25) * step(0.14, admitted) + reflectionLight,
             receiverLuma

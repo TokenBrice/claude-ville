@@ -716,23 +716,36 @@ function buildChunk(cx, cy, storm) {
 // cat's paw can light (open water inside a cluster's ellipse whose cluster
 // is off without the paw): the paw's presence must exceed `need`, and the
 // texel then rises `rise`.
+//
+// FP-10 — only the sea texels depend on the swell drift. A chunk with none
+// (`driftFree`) carries over unchanged when the drift steps, and a drift
+// rebuild (`prev`: the same chunk at the previous drift, on the same base)
+// takes the previous chunk's texel classes (`classes`: each texel's sea
+// class before the body and crest terms) and grass candidates instead of
+// reclassifying them.
 
-function buildCapChunk(base, cx, cy, drift = 0) {
+function buildCapChunk(base, cx, cy, drift = 0, prev = null) {
     const X0 = cx * CHUNK_W;
     const Y0 = cy * CHUNK_H;
     const info = new Uint8Array(CHUNK_W * CHUNK_H).fill(SEA_NONE);
     const { cls, fx: fieldX, fy: fieldY, cols, rows, coastField } = base;
     const field = seaField(drift);
     const body = [];
+    let seaTexels = 0;
+    const known = prev?.classes || null;
+    const classes = known || new Uint8Array(CHUNK_W * CHUNK_H).fill(SEA_NONE);
     for (let ly = 0; ly < CHUNK_H; ly++) {
         const y = Y0 + ly;
         if (y < OCEAN_HORIZON_WORLD_Y) continue;
         const r = Math.floor((y - fieldY) / 2);
         for (let lx = 0; lx < CHUNK_W; lx++) {
             const x = X0 + lx;
+            let v = SEA_NONE;
+            if (known) {
+                v = known[ly * CHUNK_W + lx];
+            } else {
             const i = base.texelAt(x, y);
             const k = i < 0 ? CLS_EMPTY : cls[i];
-            let v = SEA_NONE;
             if (k === CLS_EMPTY) {
                 v = seaStopAt(x, y) | SEA_OPEN | SEA_OPEN_SEA;
             } else if (k >= 2 && k <= 5) {
@@ -746,7 +759,10 @@ function buildCapChunk(base, cx, cy, drift = 0) {
                     }
                 }
             }
+            classes[ly * CHUNK_W + lx] = v;
+            }
             if (v !== SEA_NONE) {
+                seaTexels++;
                 const idx = ly * CHUNK_W + lx;
                 const s = field.phase(x, y);
                 if (v & SEA_OPEN) {
@@ -838,7 +854,7 @@ function buildCapChunk(base, cx, cy, drift = 0) {
     const grassIdx = [];
     const grassNeed = [];
     const grassK = [];
-    for (let ly = 0; ly < CHUNK_H; ly++) {
+    for (let ly = 0; !prev && ly < CHUNK_H; ly++) {
         const y = Y0 + ly;
         let lastTx = NaN;
         let need = -1;
@@ -868,9 +884,11 @@ function buildCapChunk(base, cx, cy, drift = 0) {
         pawRise: Uint8Array.from(pawRise),
         pawKey: '',
         pawLit: null,
-        grassIdx: Int32Array.from(grassIdx),
-        grassNeed: Float32Array.from(grassNeed),
-        grassK: Uint8Array.from(grassK),
+        grassIdx: prev ? prev.grassIdx : Int32Array.from(grassIdx),
+        grassNeed: prev ? prev.grassNeed : Float32Array.from(grassNeed),
+        grassK: prev ? prev.grassK : Uint8Array.from(grassK),
+        driftFree: seaTexels === 0,
+        classes,
         grassKey: '',
         grassLit: null,
         // The chunk's body and sunlit canvases (`chunkSeaCanvas`), per palette.
@@ -1963,7 +1981,7 @@ export function drawCanvasWaterState(ctx, renderer, atmosphere) {
         columnKey: '',
         paletteKey: '',
         palette: null,
-        stats: { baseMs: 0, overlayMs: 0, overlayBuilds: 0, pathMs: 0, beamMs: 0, chunks: 0, caps: 0, capMs: 0, sunMs: 0, columnMs: 0, columns: 0 },
+        stats: { baseMs: 0, overlayMs: 0, overlayBuilds: 0, pathMs: 0, beamMs: 0, chunks: 0, caps: 0, capMs: 0, capBuilds: 0, sunMs: 0, columnMs: 0, columns: 0 },
     };
     const fields = renderer._coastBake?.waterFields;
     const baseKey = `${renderer.terrainCacheKey}|${fields?.revision}`;
@@ -2052,12 +2070,20 @@ export function drawCanvasWaterState(ctx, renderer, atmosphere) {
                     state.caps.set(id, hit);
                 } else if (performance.now() - started < CAP_BUILD_BUDGET_MS) {
                     state.caps.set(id, buildCapChunk(base, cx, cy, state.capsDrift));
+                    state.stats.capBuilds++;
                 } else {
                     pending++;
                 }
                 if (state.nextCaps && !state.nextCaps.has(id)) {
-                    if (performance.now() - started < CAP_BUILD_BUDGET_MS) state.nextCaps.set(id, buildCapChunk(base, cx, cy, state.nextDrift));
-                    else nextPending++;
+                    const current = state.caps.get(id) || null;
+                    if (current?.driftFree) {
+                        state.nextCaps.set(id, current);
+                    } else if (performance.now() - started < CAP_BUILD_BUDGET_MS) {
+                        state.nextCaps.set(id, buildCapChunk(base, cx, cy, state.nextDrift, current));
+                        state.stats.capBuilds++;
+                    } else {
+                        nextPending++;
+                    }
                 }
             }
         }

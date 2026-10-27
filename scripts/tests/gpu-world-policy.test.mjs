@@ -13,6 +13,8 @@ import {
   isChromiumBrowser,
   resolveGpuWorldRendererMode,
   shouldProbeWebGpu,
+  webGpuOutcomeSkipsProbe,
+  WEBGPU_NO_ADAPTER_RECHECK_MS,
 } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldPolicy.js';
 import {
   applyGradeToRgb,
@@ -270,4 +272,19 @@ test('scene material inference follows semantic sprite identity', () => {
   assert.equal(gpuMaterialNameForBuilding('portal'), 'stone');
   assert.equal(gpuMaterialNameForProp({ id: 'veg.tree.oak.large' }), 'foliage');
   assert.equal(gpuMaterialNameForProp({ id: 'prop.runeBrazier' }), 'fire');
+});
+
+test('FP-9: a recent no-adapter outcome on the same browser skips the default WebGPU probe only', () => {
+  const chrome = { chromium: true, gpu: true, softwareRaster: false };
+  assert.equal(shouldProbeWebGpu('', { ...chrome, knownNoAdapter: true }), false);
+  assert.equal(shouldProbeWebGpu('?renderer=webgpu', { ...chrome, knownNoAdapter: true }), true);
+  assert.equal(shouldProbeWebGpu('', { ...chrome, knownNoAdapter: false }), true);
+  const now = 1_000_000_000_000;
+  const record = { webgpu: 'no-adapter', ua: 'Chrome/153', at: now - 1000 };
+  assert.equal(webGpuOutcomeSkipsProbe(record, { userAgent: 'Chrome/153', now }), true);
+  assert.equal(webGpuOutcomeSkipsProbe(record, { userAgent: 'Chrome/154', now }), false, 'a browser update probes again');
+  assert.equal(webGpuOutcomeSkipsProbe({ ...record, at: now - WEBGPU_NO_ADAPTER_RECHECK_MS }, { userAgent: 'Chrome/153', now }), false, 'a day later probes again');
+  assert.equal(webGpuOutcomeSkipsProbe({ ...record, at: now + 5000 }, { userAgent: 'Chrome/153', now }), false, 'a clock step back probes again');
+  assert.equal(webGpuOutcomeSkipsProbe({ ...record, webgpu: 'ready' }, { userAgent: 'Chrome/153', now }), false);
+  assert.equal(webGpuOutcomeSkipsProbe(null, { userAgent: 'Chrome/153', now }), false);
 });

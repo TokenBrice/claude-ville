@@ -120,3 +120,45 @@ test('worktree pointers sign checkout-local HEAD and the shared refs a push from
   fs.writeFileSync(gitDir, 'not a gitdir pointer\n');
   assert.equal(projectGitStateSignature(project), null);
 });
+
+// SV-9 — the enrichment path reuses a repository's leaf signature while its
+// ref directories, HEAD, packed-refs and worktree HEADs are unchanged.
+const { _test: { repoStateSignature }, resolveRepoIdentity } = require('../../claudeville/adapters/gitEvents.js');
+
+test('SV-9: a repository signature is reused until git moves a ref, and re-signed within its TTL', (t) => {
+  const { project, gitDir } = fixture(t);
+  put(gitDir, 'refs/heads/main', 'a'.repeat(40));
+  put(gitDir, 'refs/remotes/origin/main', 'a'.repeat(40));
+  const identity = resolveRepoIdentity(project);
+  const originalNow = Date.now;
+  let now = 1_800_000_000_000;
+  Date.now = () => now;
+  t.after(() => { Date.now = originalNow; });
+  const leafStats = (fn) => {
+    const original = fs.statSync;
+    let count = 0;
+    fs.statSync = (target, ...rest) => {
+      if (String(target).includes(`${path.sep}refs${path.sep}`) && !fs.lstatSync(target, { throwIfNoEntry: false })?.isDirectory()) count++;
+      return original(target, ...rest);
+    };
+    try { return { value: fn(), count }; } finally { fs.statSync = original; }
+  };
+
+  const first = repoStateSignature(identity);
+  const warm = leafStats(() => repoStateSignature(identity));
+  assert.equal(warm.value, first);
+  assert.equal(warm.count, 0, 'an unchanged repository signs no loose ref');
+
+  // Git moves a ref by renaming a lock file over it: the directory changes.
+  const ref = path.join(gitDir, 'refs/remotes/origin/main');
+  fs.writeFileSync(`${ref}.lock`, 'b'.repeat(40));
+  fs.renameSync(`${ref}.lock`, ref);
+  const moved = repoStateSignature(identity);
+  assert.notEqual(moved, first, 'a pushed remote-tracking ref is seen at once');
+
+  // A rewrite in place keeps its directory; it is re-signed within the TTL.
+  put(gitDir, 'refs/heads/main', 'c'.repeat(40), 1_700_000_005);
+  assert.equal(repoStateSignature(identity), moved);
+  now += 5_000;
+  assert.notEqual(repoStateSignature(identity), moved, 'an in-place rewrite is re-signed after 5 s');
+});

@@ -1479,9 +1479,20 @@ const BROADCAST_POLL_INTERVAL = 2000;
 const BROADCAST_DEBOUNCE_MS = 100;
 const SESSION_SCAN_BACKOFF_MIN_MS = 250;
 const SESSION_SCAN_BACKOFF_MAX_MS = 15_000;
+// SV-8 — the next transcript scan waits three times the last one, so
+// scanning never holds the main thread more than about 25 % of the time.
+// Hook overlays bypass it, as before.
+const SESSION_SCAN_BACKOFF_FACTOR = 3;
 const TEAMS_CACHE_TTL_MS = 5000;
 // Delta clients still get a periodic full snapshot as a self-healing floor.
-const DELTA_SNAPSHOT_INTERVAL_MS = 20_000;
+// SV-5: deltas reconstruct the full state exactly (the live v2-versus-legacy
+// oracle matched every frame), and the floor carried half of all bytes at
+// 20 s, so it is 2 minutes. Sequence gaps and failed patches still resync
+// at once. The override exists for smokes that wait on a real floor.
+const DELTA_SNAPSHOT_INTERVAL_MS = Math.min(600_000, Math.max(
+  1_000,
+  Number(process.env.CLAUDEVILLE_DELTA_SNAPSHOT_INTERVAL_MS || 120_000) || 120_000,
+));
 const DELTA_MAX_PATCH_OPS = 500;
 
 function normalizeServerDirtyDescriptor(value = 'watch', provider = null) {
@@ -1568,7 +1579,7 @@ function updateCanonicalActiveProjects(sessions = []) {
 function sessionScanBackoffMs() {
   return Math.max(
     SESSION_SCAN_BACKOFF_MIN_MS,
-    Math.min(SESSION_SCAN_BACKOFF_MAX_MS, Math.round(lastSessionScanDurationMs)),
+    Math.min(SESSION_SCAN_BACKOFF_MAX_MS, Math.round(SESSION_SCAN_BACKOFF_FACTOR * lastSessionScanDurationMs)),
   );
 }
 
@@ -1738,14 +1749,98 @@ function keyedBroadcastState(state) {
   };
 }
 
+// SV-5 — an array whose items carry unique keys (the session ids of
+// `sessionOrder`, the ids of `lastResults` rows) is diffed by key, so a new
+// result or a session moving to the front is one insert (and one removal)
+// rather than a shift that rewrites every later index. Items that keep their
+// relative order (a longest increasing run) stay and are diffed in place;
+// the rest are removed and re-added. Applied in order, the ops rebuild
+// `next` exactly, with RFC 6902 array add (insert) and remove semantics.
+function arrayItemKey(item) {
+  if (typeof item === 'string') return item ? `s:${item}` : null;
+  if (item && typeof item === 'object' && !Array.isArray(item) && typeof item.id === 'string' && item.id) return `o:${item.id}`;
+  return null;
+}
+
+function uniqueArrayKeys(list) {
+  const keys = [];
+  const seen = new Set();
+  for (const item of list) {
+    const key = arrayItemKey(item);
+    if (key === null || seen.has(key)) return null;
+    seen.add(key);
+    keys.push(key);
+  }
+  return keys;
+}
+
+// Mask of one longest strictly increasing subsequence of `values`.
+function increasingRunMask(values) {
+  const tails = [];
+  const tailIndex = [];
+  const previous = new Array(values.length).fill(-1);
+  for (let index = 0; index < values.length; index++) {
+    let low = 0;
+    let high = tails.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (tails[middle] < values[index]) low = middle + 1;
+      else high = middle;
+    }
+    if (low > 0) previous[index] = tailIndex[low - 1];
+    tails[low] = values[index];
+    tailIndex[low] = index;
+  }
+  const mask = new Array(values.length).fill(false);
+  for (let index = tailIndex[tails.length - 1] ?? -1; index >= 0; index = previous[index]) mask[index] = true;
+  return mask;
+}
+
+function appendKeyedArrayOps(prev, next, basePath, ops) {
+  const prevKeys = uniqueArrayKeys(prev);
+  const nextKeys = prevKeys && uniqueArrayKeys(next);
+  if (!nextKeys) return false;
+  // Same keys at the same positions: the index-wise diff is already minimal.
+  if (prevKeys.length === nextKeys.length && prevKeys.every((key, index) => key === nextKeys[index])) return false;
+  const nextIndex = new Map(nextKeys.map((key, index) => [key, index]));
+  const keys = [];
+  const items = [];
+  for (let index = prev.length - 1; index >= 0; index--) {
+    if (!nextIndex.has(prevKeys[index])) ops.push({ op: 'remove', path: `${basePath}/${index}` });
+  }
+  prevKeys.forEach((key, index) => {
+    if (!nextIndex.has(key)) return;
+    keys.push(key);
+    items.push(prev[index]);
+  });
+  const stays = increasingRunMask(keys.map(key => nextIndex.get(key)));
+  for (let index = keys.length - 1; index >= 0; index--) {
+    if (stays[index]) continue;
+    ops.push({ op: 'remove', path: `${basePath}/${index}` });
+    keys.splice(index, 1);
+    items.splice(index, 1);
+  }
+  let kept = 0;
+  for (let index = 0; index < next.length && ops.length <= DELTA_MAX_PATCH_OPS; index++) {
+    if (kept < keys.length && keys[kept] === nextKeys[index]) {
+      appendJsonPatchOps(items[kept], next[index], `${basePath}/${index}`, ops);
+      kept++;
+    } else {
+      ops.push({ op: 'add', path: `${basePath}/${index}`, value: next[index] });
+    }
+  }
+  return true;
+}
+
 // Minimal JSON-Patch (RFC 6902 subset: add/replace/remove) diff. Session
-// identities are object keys; only explicit sessionOrder and other arrays
-// are diffed index-wise.
+// identities are object keys; sessionOrder and other arrays are diffed by
+// item key when every item has a unique one, else index-wise.
 function appendJsonPatchOps(prev, next, basePath, ops) {
   if (prev === next || ops.length > DELTA_MAX_PATCH_OPS) return;
   const prevIsArray = Array.isArray(prev);
   const nextIsArray = Array.isArray(next);
   if (prevIsArray && nextIsArray) {
+    if (appendKeyedArrayOps(prev, next, basePath, ops)) return;
     const shared = Math.min(prev.length, next.length);
     for (let i = 0; i < shared; i++) {
       appendJsonPatchOps(prev[i], next[i], `${basePath}/${i}`, ops);
@@ -3067,6 +3162,7 @@ module.exports = {
     wsClients,
     serverPerf,
     SERVER_IDENTITY,
+    DELTA_SNAPSHOT_INTERVAL_MS,
   },
   _staticTest: {
     handleStaticFile,
