@@ -394,3 +394,18 @@ test('outcomes older than the stream are recorded, never stamped', (t) => {
     assert.deepEqual(events, []);
     assert.deepEqual(world.agents.get('codex-beta').lastResults, [historical]);
 });
+
+test('Kimi Code completions take an exit code only from a reported exit (RG-2)', () => {
+    const { _test } = require('../../claudeville/adapters/kimi.js');
+    const completion = (result) => {
+        const { success, exitCode, stderr } = _test.kimiCodeResultCompletion({ time: NOW, event: { type: 'tool.result', result } });
+        return { success, exitCode, stderr };
+    };
+    assert.deepEqual(completion({ exitCode: 0, output: 'ok' }), { success: true, exitCode: 0, stderr: '' });
+    assert.deepEqual(completion({ exit_code: 2, stderr: 'boom' }), { success: false, exitCode: 2, stderr: 'boom' });
+    // A bare error flag is a failed command (flagIsFailure('kimi')) with no exit.
+    assert.deepEqual(completion({ isError: true, error: 'denied' }), { success: false, exitCode: undefined, stderr: 'denied' });
+    assert.deepEqual(completion({ is_error: false, output: 'fine' }), { success: true, exitCode: undefined, stderr: '' });
+    // Output alone says the call returned, not how: no success, no exit 0.
+    assert.deepEqual(completion({ output: '[main abc123] fixture' }), { success: undefined, exitCode: undefined, stderr: '' });
+});

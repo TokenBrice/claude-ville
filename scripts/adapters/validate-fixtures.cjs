@@ -178,8 +178,10 @@ if (kimiFixture) {
   assert.equal(main.tokenUsage.contextWindowMax, 262144);
   assert.equal(main.gitEvents.length, 1);
   assert.equal(main.gitEvents[0].type, 'commit');
-  assert.equal(main.gitEvents[0].success, true);
-  assert.equal(main.gitEvents[0].exitCode, 0);
+  // RG-2: the commit's result carries output but no exit code or error
+  // flag, so its outcome stays unknown, never an invented exit 0.
+  assert.equal(main.gitEvents[0].success, undefined);
+  assert.equal(main.gitEvents[0].exitCode, undefined);
   assert.ok(main.gitEvents[0].completedAt > 0);
 
   assert.ok(child);
@@ -209,7 +211,9 @@ if (kimiFixture) {
   assert.equal(childFreshChild.gitEvents.length, 1);
   assert.equal(childFreshChild.gitEvents[0].type, 'push');
   assert.equal(childFreshChild.gitEvents[0].success, false);
-  assert.equal(childFreshChild.gitEvents[0].exitCode, 1);
+  // RG-2: a bare error flag is a failed command with no exit
+  // (flagIsFailure('kimi')), never an invented exit 1.
+  assert.equal(childFreshChild.gitEvents[0].exitCode, undefined);
   assert.match(childFreshChild.gitEvents[0].stderr, /rejected/);
   assert.ok(childFreshParent.lastActivity >= childFreshChild.lastActivity);
 
@@ -268,7 +272,7 @@ if (kimiFixture) {
   assert.equal(detail.project, '/tmp/claude-ville');
   assert.equal(detail.toolHistory.length, 1);
   assert.equal(detail.toolHistory[0].tool, 'Bash');
-  assert.equal(detail.toolHistory[0].toolExitCode, 0);
+  assert.equal(detail.toolHistory[0].toolExitCode, undefined, 'an output-only result reports no exit (RG-2)');
   assert.equal(detail.messages.at(-1).text, 'Done.');
   assert.ok(detail.messages.some((message) => message.role === 'user' && message.text === 'Please commit the fixture.'));
   assert.equal(detail.tokenUsage.contextWindowMax, 262144);
@@ -289,7 +293,7 @@ if (kimiFixture) {
 
   const childFreshChildDetail = adapter.getSessionDetail('kimi-session_child_fresh::agent-0', '/tmp/claude-ville');
   assert.equal(childFreshChildDetail.toolHistory.length, 2);
-  assert.equal(childFreshChildDetail.toolHistory[0].toolExitCode, 1);
+  assert.equal(childFreshChildDetail.toolHistory[0].toolExitCode, undefined, 'a flag is no exit code');
   assert.match(childFreshChildDetail.toolHistory[0].toolStderr, /rejected/);
 
   const stateOnlyDetail = adapter.getSessionDetail('kimi-session_state_project', '/tmp/claude-ville');
