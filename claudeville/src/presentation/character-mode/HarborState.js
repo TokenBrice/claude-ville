@@ -1621,13 +1621,28 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
         return shipsByEventId.get(id) || null;
     };
     let scuttleLayout = null;
+    const returningHull = ship => ship.status === 'rejecting' || ship.status === 'cancelling';
     const scuttle = (ship) => {
+        // VB-10 — a hull still sailing home from a rejected or cancelled push
+        // fades once it has re-docked (`scuttleHeld` below).
+        if (returningHull(ship)) {
+            ship.scuttleOnDock = 'retire';
+            return;
+        }
         if (ship.status !== 'docked') return;
         scuttleLayout ||= buildDockLayoutFresh(state);
         const meta = scuttleLayout.byShipId.get(ship.id);
         if (meta) ship.departFromTile = { tileX: meta.tileX, tileY: meta.tileY };
         ship.status = 'scuttling';
         ship.scuttleStartedAt = now;
+    };
+    // A rewrite or a vanish held while the hull sailed home applies at its berth.
+    const scuttleHeld = (ship) => {
+        const held = ship.scuttleOnDock;
+        if (!held) return;
+        ship.scuttleOnDock = null;
+        scuttle(ship);
+        if (held === 'vanish') ship.vanished = true;
     };
     // Live-only repos claim coastal slots only after this tail's commits have,
     // so a fresh replay parks fleets first and idle agents fill what's left.
@@ -1759,7 +1774,8 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
             // they handled is no ghost.
             const handled = new Set();
             for (const ship of oldShas.size ? [...state.ships.values()] : []) {
-                if (ship.project !== event.project || ship.status !== 'docked') continue;
+                // VB-10 — a hull sailing home from a rejected push is rewritten too.
+                if (ship.project !== event.project || (ship.status !== 'docked' && !returningHull(ship))) continue;
                 const shas = shipShas(ship);
                 const oldSha = [...oldShas].find(candidate => shas.some(sha => shasMatch(sha, candidate)));
                 if (!oldSha) continue;
@@ -1780,7 +1796,14 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                     if (!shipShas(twin).some(sha => shasMatch(sha, newSha))) continue;
                     handled.add(twin);
                     unindexCommitShip(commitIdentityIndex, twin);
-                    retireHarborShip(state, twin.id, twin, now, { recordFloor: false });
+                    // The twin is the new sha's own report: the folded hull
+                    // carries its event ids on, so the report keeps it on the
+                    // wire (VB-10; retiring them left no hull at all).
+                    for (const id of twin.eventIds || [twin.id]) {
+                        if (!ship.eventIds.includes(id)) ship.eventIds.push(id);
+                        shipsByEventId?.set(id, ship);
+                    }
+                    state.ships.delete(twin.id);
                 }
                 ship.shas = [...shas.filter(sha => !shasMatch(sha, oldSha)), newSha];
                 ship.sha = newSha;
@@ -1793,7 +1816,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
             const oldIds = new Set(Array.isArray(event.oldIds) ? event.oldIds.map(String) : []);
             if (oldIds.size) {
                 for (const ship of [...state.ships.values()]) {
-                    if (handled.has(ship) || ship.project !== event.project || ship.status !== 'docked') continue;
+                    if (handled.has(ship) || ship.project !== event.project || (ship.status !== 'docked' && !returningHull(ship))) continue;
                     if ((ship.eventIds || [ship.id]).some(id => oldIds.has(id))) scuttle(ship);
                 }
             }
@@ -2235,7 +2258,14 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
 
     if (liveEventIds) {
         for (const ship of state.ships.values()) {
-            if (ship.vanished || ship.status !== 'docked' || ship.isInbound || reportedLive(ship)) continue;
+            if (ship.vanished || ship.isInbound) continue;
+            // VB-10 — a hull sailing home holds its vanish until it re-docks:
+            // no complete reduce may follow its return.
+            if (returningHull(ship)) {
+                if (ship.scuttleOnDock !== 'retire') ship.scuttleOnDock = reportedLive(ship) ? null : 'vanish';
+                continue;
+            }
+            if (ship.status !== 'docked' || reportedLive(ship)) continue;
             scuttle(ship);
             ship.vanished = true;
         }
@@ -2255,6 +2285,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 ship.visualPackLeadId = null;
                 ship.visualPackSize = null;
                 ship.departEventId = null;
+                scuttleHeld(ship);
             }
             continue;
         }
@@ -2270,6 +2301,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 ship.visualPackLeadId = null;
                 ship.visualPackSize = null;
                 ship.departEventId = null;
+                scuttleHeld(ship);
             }
             continue;
         }
