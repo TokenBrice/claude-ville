@@ -212,6 +212,13 @@ const TOOL_METADATA = Object.freeze({
     'functions.request_user_input': {
         classification: { building: 'taskboard', reason: 'ask-decision', confidence: 0.86 },
     },
+    // PV-6 — Codex's non-blocking question: the model asks and keeps working.
+    request_user_input_async: {
+        classification: { building: 'taskboard', reason: 'ask-decision', confidence: 0.86 },
+    },
+    'functions.request_user_input_async': {
+        classification: { building: 'taskboard', reason: 'ask-decision', confidence: 0.86 },
+    },
 
     AskUserQuestion: { icon: '❓' },
 

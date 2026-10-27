@@ -209,16 +209,26 @@ test('derived state carries the wait reason only when blocked', () => {
     assert.equal(blocked.awaitingSince, NOW - 60_000);
 });
 
-test('Codex turn duration prefers the provider duration_ms and survives a later turn start', () => {
+test('Codex turn duration prefers the provider duration_ms and belongs to its own turn', () => {
     const { _test: codex } = require('../../claudeville/adapters/codex.js');
     const at = (offsetMs) => new Date(NOW + offsetMs).toISOString();
     const event = (offsetMs, payload) => ({ timestamp: at(offsetMs), type: 'event_msg', payload });
     const finished = codex.deriveCodexTurnState([
         event(0, { type: 'task_started' }),
         event(200_000, { type: 'task_complete', duration_ms: 200_996 }),
-        event(210_000, { type: 'task_started' }),
-    ], NOW + 220_000);
+    ], NOW + 201_000);
     assert.equal(finished.lastTurnDurationMs, 200_996);
+    // RG-4: a later turn never re-reports it, in the window or from the
+    // carried boundary: no false long-turn knock on an abort or a question.
+    const prior = { type: 'task_complete', at: NOW + 200_000, turnStartedAt: NOW, lastTurnDurationMs: 200_996 };
+    const next = codex.deriveCodexTurnState([event(210_000, { type: 'task_started' })], NOW + 220_000, prior);
+    assert.equal(next.lastTurnDurationMs, null);
+    const abortedNext = codex.deriveCodexTurnState([
+        event(210_000, { type: 'task_started' }),
+        event(215_000, { type: 'turn_aborted' }),
+    ], NOW + 216_000, prior);
+    assert.equal(abortedNext.lastTurnDurationMs, null);
+    assert.equal(abortedNext.turnStartedAt, NOW + 210_000);
     const aborted = codex.deriveCodexTurnState([
         event(0, { type: 'task_started' }),
         event(5_000, { type: 'turn_aborted', duration_ms: 5_000 }),
@@ -260,12 +270,33 @@ test('Codex transcript fixtures preserve turn truth and project item_completed f
     assert.equal(aborted.lastTurnDurationMs, null);
 
     // SND-5: a completed Codex turn's duration is the provider's `duration_ms`,
-    // else the span from its own `task_started`; an abort in between neither
-    // sets nor clears it.
+    // else the span from its own `task_started`; an abort has none (RG-4).
     const durations = byId.get('codex-turn-durations');
     assert.ok(durations);
     assert.equal(durations.turnState, TurnState.AWAITING_INPUT);
     assert.equal(durations.lastTurnDurationMs, 3 * 60_000);
+
+    // PV-10: a second turn whose start is past the head seed and the tail
+    // window still reads working on a cold scan.
+    const cold = byId.get('codex-cold-long-turn');
+    assert.ok(cold);
+    assert.equal(cold.turnState, TurnState.WORKING);
+    assert.equal(cold.turnStartedAt, now - 4 * 60_000);
+    assert.equal(cold.lastTurnDurationMs, null);
+
+    // PV-6: a question asked without blocking waits on you while the model
+    // works on, far past the tail window, until a reply answers it.
+    const asking = byId.get('codex-async-question');
+    assert.ok(asking);
+    assert.equal(asking.turnState, TurnState.WORKING);
+    assert.deepEqual(asking.openQuestion, { since: now - 4 * 60_000, count: 1 });
+    assert.equal(asking.waitReason, 'question');
+    assert.equal(asking.awaitingSince, now - 4 * 60_000);
+    const answered = byId.get('codex-async-question-answered');
+    assert.ok(answered);
+    assert.equal(answered.turnState, TurnState.WORKING);
+    assert.equal(answered.openQuestion, null);
+    assert.equal(answered.waitReason, null);
 
     const longRunning = byId.get('codex-long-running-turn');
     assert.ok(longRunning);

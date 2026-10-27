@@ -115,6 +115,9 @@ export function resolveAgentStatus(session = {}, { usage = null, now = Date.now(
         : base === AgentStatus.WORKING;
 
     if (turnState === TurnState.TOOL_PENDING && session.waitReason) return AgentStatus.WAITING_ON_USER;
+    // PV-6 — a Codex question asked without blocking (`openQuestion`) while
+    // the agent keeps working is still waiting on you until answered.
+    if (session.openQuestion && turnState !== TurnState.AWAITING_INPUT) return AgentStatus.WAITING_ON_USER;
     if (busy && isRateLimited(session, usage)) return AgentStatus.RATE_LIMITED;
     if (isErrored(session, now)) return AgentStatus.ERRORED;
 

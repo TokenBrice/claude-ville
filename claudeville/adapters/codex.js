@@ -26,7 +26,7 @@ const {
   stripShellLocationPrefix,
   summarizeToolInput: summarizeSharedToolInput,
 } = require('./shared');
-const { deriveTurnState, toEpochMs } = require('./turnState');
+const { WaitReason, deriveTurnState, toEpochMs } = require('./turnState');
 const { emptyObservedSources, makeDialogue, pickDialogue } = require('./dialogue');
 const { TOOL_RESULT_LIMIT, toolResultId } = require('./toolResults');
 
@@ -428,8 +428,9 @@ function boundaryFromEntry(entry, previous = null) {
       type: payload.type,
       at,
       turnStartedAt,
+      // RG-4 — a duration belongs to its own turn: an aborted one has none.
       lastTurnDurationMs: payload.type === 'turn_aborted'
-        ? previous?.lastTurnDurationMs ?? null
+        ? null
         : codexTurnDurationMs(payload, turnStartedAt, at),
     };
   }
@@ -473,6 +474,133 @@ function rememberRolloutBoundary(filePath, entries) {
   const boundary = foldRolloutBoundary(entries, cached.boundary || null);
   cacheEarlyMetadata(filePath, cached, cached.metadata, boundary);
   return boundary;
+}
+
+// PV-10 / PV-6 — the current turn, read from the file itself: cold, a
+// back-scan to the newest `task_started` (as `readLatestTurnMetadata` does);
+// warm, a fold of only the appended bytes. Both give the same state, so a
+// restart never reads a long turn as done. It also carries a question the
+// model asked without blocking (`request_user_input_async` answers
+// `{accepted}` at once and the model keeps working): open until a user
+// message (a `<send_user_message_question_reply` or any other) or the
+// turn's end, however far behind the tail window the call is.
+const TURN_TRACKER_CACHE_MAX = 256;
+const ASYNC_QUESTION_TOOLS = new Set(['request_user_input_async', 'functions.request_user_input_async']);
+const _turnTrackerCache = new Map();
+
+function codexMessageText(content) {
+  if (typeof content === 'string') return content;
+  return Array.isArray(content) ? content.map(part => (typeof part?.text === 'string' ? part.text : '')).join('') : '';
+}
+
+function foldTurnTracker(state, entry) {
+  const payload = entry?.payload;
+  if (!payload) return state;
+  const boundary = foldRolloutBoundary([entry], state.boundary);
+  // Any turn boundary ends a question; the next turn asks its own.
+  if (boundary !== state.boundary) return { boundary, question: null };
+  if (entry.type !== 'response_item') return state;
+  if (payload.type === 'function_call' && ASYNC_QUESTION_TOOLS.has(payload.name)) {
+    const at = toEpochMs(entry.timestamp);
+    return { boundary, question: { since: state.question?.since ?? at, count: (state.question?.count || 0) + 1 } };
+  }
+  if (state.question && payload.type === 'message' && payload.role === 'user'
+    && !INJECTED_USER_PREFIXES.test(codexMessageText(payload.content))) {
+    return { boundary, question: null };
+  }
+  return state;
+}
+
+function foldTurnTrackerLines(state, text) {
+  let next = state;
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    let entry = null;
+    try { entry = JSON.parse(line); } catch { continue; }
+    next = foldTurnTracker(next, entry);
+  }
+  return next;
+}
+
+function isTaskStartedLine(line) {
+  if (!line.includes('"task_started"')) return false;
+  try {
+    const entry = JSON.parse(line);
+    return entry?.type === 'event_msg' && entry.payload?.type === 'task_started';
+  } catch {
+    return false;
+  }
+}
+
+function readTurnTracker(filePath) {
+  const identity = earlyMetadataIdentity(filePath);
+  if (!identity) {
+    _turnTrackerCache.delete(filePath);
+    return null;
+  }
+  const cached = _turnTrackerCache.get(filePath);
+  if (sameEarlyMetadataIdentity(cached, identity)) return cached.state;
+  const appended = cached && cached.ino === identity.ino && identity.size > cached.size;
+
+  let fd = null;
+  let state = { boundary: null, question: null };
+  let scannedTo = 0;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    if (appended) {
+      const length = identity.size - cached.scannedTo;
+      const buffer = Buffer.allocUnsafe(length);
+      const bytesRead = fs.readSync(fd, buffer, 0, length, cached.scannedTo);
+      const lastNewline = buffer.lastIndexOf(10, bytesRead - 1);
+      state = cached.state;
+      scannedTo = cached.scannedTo;
+      if (lastNewline >= 0) {
+        state = foldTurnTrackerLines(state, buffer.toString('utf-8', 0, lastNewline + 1));
+        scannedTo += lastNewline + 1;
+      }
+    } else {
+      const chunks = [];
+      let position = identity.size;
+      let bytesScanned = 0;
+      let found = false;
+      while (position > 0 && bytesScanned < MAX_METADATA_BACKSCAN_BYTES && !found) {
+        const bytesToRead = Math.min(METADATA_BACKSCAN_CHUNK_BYTES, position, MAX_METADATA_BACKSCAN_BYTES - bytesScanned);
+        position -= bytesToRead;
+        const buffer = Buffer.allocUnsafe(bytesToRead);
+        const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, position);
+        if (bytesRead <= 0) break;
+        bytesScanned += bytesRead;
+        chunks.unshift(buffer.subarray(0, bytesRead));
+        // Lines wholly inside what is read: the first may be a fragment.
+        const lines = Buffer.concat(chunks).toString('utf-8').split('\n');
+        found = lines.slice(position > 0 ? 1 : 0).some(isTaskStartedLine);
+      }
+      const all = Buffer.concat(chunks);
+      const lastNewline = all.lastIndexOf(10);
+      if (lastNewline >= 0) {
+        const lines = all.toString('utf-8', 0, lastNewline + 1).split('\n');
+        if (position > 0) lines.shift();
+        let start = 0;
+        for (let i = lines.length - 1; i >= 0; i--) {
+          if (isTaskStartedLine(lines[i])) { start = i; break; }
+        }
+        state = foldTurnTrackerLines(state, lines.slice(start).join('\n'));
+        scannedTo = position + lastNewline + 1;
+      }
+    }
+  } catch {
+    return cached?.state ?? null;
+  } finally {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch { /* ignore */ }
+    }
+  }
+  _turnTrackerCache.delete(filePath);
+  _turnTrackerCache.set(filePath, { ...identity, scannedTo, state });
+  while (_turnTrackerCache.size > TURN_TRACKER_CACHE_MAX) {
+    _turnTrackerCache.delete(_turnTrackerCache.keys().next().value);
+  }
+  return state;
 }
 
 function readEarlyMetadata(filePath) {
@@ -948,9 +1076,19 @@ function parseRollout(filePath, scanContext = null) {
 
   backfillPromptAndPlan(filePath, detail, entries.length, foundPlan);
   if (tailPermissionMode) detail.permissionMode = tailPermissionMode;
-  const priorBoundary = cachedRolloutBoundary(filePath);
+  // The file's own newest boundary seeds the window (PV-10); the window's
+  // records re-apply on top of it unchanged.
+  const tracker = readTurnTracker(filePath);
+  const priorBoundary = tracker ? tracker.boundary : cachedRolloutBoundary(filePath);
   Object.assign(detail, deriveCodexTurnState(entries, Date.now(), priorBoundary, detail.permissionMode));
   rememberRolloutBoundary(filePath, entries);
+  // PV-6 — an open question keeps the agent working, and waiting on you.
+  detail.openQuestion = null;
+  if (tracker?.question && detail.turnState !== 'awaiting_input') {
+    detail.openQuestion = { since: tracker.question.since, count: tracker.question.count };
+    detail.waitReason = WaitReason.QUESTION;
+    detail.awaitingSince = tracker.question.since;
+  }
   detail.signalSource = 'transcript';
   detail.workingSet = workingSet;
   detail.lastResults = lastResults;
@@ -988,6 +1126,8 @@ function deriveCodexTurnState(
       turnEnded = false;
       turnEndedAt = null;
       turnStartedAt = toEpochMs(entry.timestamp);
+      // RG-4 — the new turn has no duration yet; the last one's is not its.
+      lastTurnDurationMs = null;
       pendingCalls.clear();
     }
     if (
@@ -997,9 +1137,9 @@ function deriveCodexTurnState(
       sawTurnBoundary = true;
       turnEnded = true;
       turnEndedAt = toEpochMs(entry.timestamp);
-      if (payload.type !== 'turn_aborted') {
-        lastTurnDurationMs = codexTurnDurationMs(payload, turnStartedAt, turnEndedAt);
-      }
+      lastTurnDurationMs = payload.type === 'turn_aborted'
+        ? null
+        : codexTurnDurationMs(payload, turnStartedAt, turnEndedAt);
       pendingCalls.clear();
     }
 
@@ -1234,6 +1374,21 @@ function getTokenUsage(filePath, entries = null) {
   } catch { /* ignore */ }
 
   return tokenUsage;
+}
+
+// PV-14 — the context window each model last reported (gpt-6-astra
+// 258,400; gpt-6.1-sol 475,000, against the registry's 1.05M). A rollout
+// reports none before its first `token_count`, so it borrows its model's.
+const _observedContextWindows = new Map();
+
+function withObservedContextWindow(tokenUsage, model) {
+  if (!tokenUsage || !model) return tokenUsage;
+  if (tokenUsage.contextWindowMax > 0) {
+    _observedContextWindows.set(model, tokenUsage.contextWindowMax);
+    return tokenUsage;
+  }
+  const observed = _observedContextWindows.get(model);
+  return observed ? { ...tokenUsage, contextWindowMax: observed } : tokenUsage;
 }
 
 function normalizeCommand(command) {
@@ -1876,6 +2031,7 @@ class CodexAdapter {
         pendingSince: detail.pendingSince,
         awaitingSince: detail.awaitingSince,
         waitReason: detail.waitReason,
+        openQuestion: detail.openQuestion ?? null,
         status: 'active',
         lastActivity: mtime,
         project: detail.project || null,
@@ -1889,7 +2045,7 @@ class CodexAdapter {
         lastPrompt: detail.lastPrompt,
         todos: detail.todos,
         gitBranch: detail.gitBranch,
-        tokenUsage: getTokenUsage(filePath, scanContext.tokenEntries),
+        tokenUsage: withObservedContextWindow(getTokenUsage(filePath, scanContext.tokenEntries), inferCodexModel(detail)),
         gitEvents: getGitEvents(filePath, {
           provider: 'codex',
           sessionId: fullSessionId,
@@ -1987,6 +2143,7 @@ class CodexAdapter {
     _sessionNamesCache.signature = '';
     _sessionNamesCache.value = new Map();
     _earlyMetadataCache.clear();
+    _turnTrackerCache.clear();
     // Keep rollout discovery metadata across ordinary provider invalidations.
     // Watch events usually mean one file changed; dropping this cache would turn
     // every active-session refresh back into a full historical scan.

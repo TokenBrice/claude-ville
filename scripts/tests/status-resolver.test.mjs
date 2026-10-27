@@ -89,6 +89,13 @@ test('PV-4b: a turn that ended on an API error is ERRORED until the next turn', 
     assert.equal(at({ ...fresh, turnState: 'awaiting_input', apiError: null }), AgentStatus.COMPLETED);
 });
 
+test('PV-6: a Codex question asked without blocking needs you while the agent works on', () => {
+    const openQuestion = { since: NOW - 30_000, count: 1 };
+    assert.equal(at({ ...fresh, provider: 'codex', turnState: 'working', openQuestion, waitReason: 'question' }), AgentStatus.WAITING_ON_USER);
+    assert.equal(at({ ...fresh, provider: 'codex', turnState: 'awaiting_input', openQuestion }), AgentStatus.COMPLETED, 'the turn ended: your move');
+    assert.equal(at({ ...fresh, provider: 'codex', turnState: 'working', openQuestion: null }), AgentStatus.WORKING);
+});
+
 test('the ask-tool fallback still works without a turn state', () => {
     const status = at({ ...fresh, turnState: 'unknown', lastTool: 'AskUserQuestion' });
     assert.equal(status, AgentStatus.WAITING_ON_USER);
