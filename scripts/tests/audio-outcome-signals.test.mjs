@@ -9,6 +9,7 @@ import {
     OutcomeTracker,
     failedPushFacts,
     toolFailedFact,
+    toolResultOutcome,
     verifiedOutcomeFact,
 } from '../../claudeville/src/application/OutcomeSignals.js';
 import { pendingRepoSummariesFromDockSummaries } from '../../claudeville/src/presentation/character-mode/HarborTraffic.js';
@@ -156,6 +157,22 @@ test('a flag-only failure (an Edit miss, a refusal) is not a failed command', ()
     assert.equal(toolFailedFact({ agentId: 'a', tool: 'Edit', exitCode: 1, exitCodeSource: 'flag' }), null);
     assert.equal(toolFailedFact({ agentId: 'a', tool: 'Bash', exitCode: 2, exitCodeSource: 'exit' })?.kind, 'toolFailed');
     assert.equal(toolFailedFact({ agentId: 'a', tool: 'Bash', exitCode: 2 })?.kind, 'toolFailed', 'providers without a source keep today\'s reading');
+});
+
+// RG-2 — the chits and the sound read one outcome: a search that exited 1 and
+// printed nothing found no match, which is no "Command failed".
+test('a silent search miss is not a failed command; the outcome reading is shared', () => {
+    const miss = { agentId: 'a', tool: 'Bash', exitCode: 1, exitCodeSource: 'exit', noOutput: true, detail: 'rg -n needle src' };
+    assert.equal(toolResultOutcome(miss), 'nomatch');
+    assert.equal(toolFailedFact(miss), null);
+    assert.equal(toolResultOutcome({ ...miss, detail: 'FOO=1 grep -rn needle .' }), 'nomatch');
+    assert.equal(toolResultOutcome({ ...miss, detail: ['git', 'grep', 'needle'].join(' ') }), 'nomatch');
+    assert.equal(toolFailedFact({ ...miss, noOutput: false })?.kind, 'toolFailed', 'it printed: a real failure');
+    assert.equal(toolFailedFact({ ...miss, detail: 'npm test' })?.kind, 'toolFailed');
+    assert.equal(toolFailedFact({ ...miss, detail: 'find . -name x' })?.kind, 'toolFailed', 'find exits 1 on an error');
+    assert.equal(toolResultOutcome({ ...miss, exitCodeSource: 'flag' }), 'refused');
+    assert.equal(toolResultOutcome({ ...miss, exitCode: 0 }), 'pass');
+    assert.equal(toolResultOutcome({ ...miss, exitCode: null }), null);
 });
 
 test('a failed push is a growth in a repo\'s failed pushes after the first summary', () => {

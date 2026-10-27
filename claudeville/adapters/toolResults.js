@@ -15,6 +15,8 @@
  * instead of on receipt time.
  */
 
+const { shellLocationOf } = require('./shared');
+
 const TOOL_RESULT_LIMIT = 5;
 const TOOL_RESULT_ID_MAX_LENGTH = 256;
 const TOOL_NAME_MAX_LENGTH = 64;
@@ -47,6 +49,17 @@ function toolResultId({ provider, sessionId, callId, tool, detail, completedAt }
   if (call) return `${scope}:${call}`.slice(0, TOOL_RESULT_ID_MAX_LENGTH);
   const at = Number.isFinite(Number(completedAt)) ? Math.trunc(Number(completedAt)) : 0;
   return `${scope}:${at}:${fingerprint(`${tool || ''}\u001f${detail || ''}`)}`.slice(0, TOOL_RESULT_ID_MAX_LENGTH);
+}
+
+/**
+ * Where a call ran, as a short fingerprint (RG-10): the working directory the
+ * provider recorded for it, plus the `cd <dir>` hops and `git -C <dir>` flags
+ * its command summary drops. One summary run in two directories is two
+ * different commands. Null when the call names no location at all.
+ */
+function toolResultLocation({ cwd = null, command = null } = {}) {
+  const parts = [typeof cwd === 'string' ? cwd.trim() : '', shellLocationOf(command)].filter(Boolean);
+  return parts.length ? fingerprint(parts.join('\u001f')) : null;
 }
 
 function boundedInteger(value, { nonnegative = false } = {}) {
@@ -87,6 +100,10 @@ function normalizeToolResults(value) {
       durationMs: boundedInteger(item.durationMs, { nonnegative: true }),
       completedAt,
       source,
+      location: typeof item.location === 'string' && /^[0-9a-f]{8}$/.test(item.location) ? item.location : null,
+      // True when the call printed nothing, false when it printed something,
+      // null when the provider record does not say (RG-2).
+      noOutput: typeof item.noOutput === 'boolean' ? item.noOutput : null,
     });
   }
   return [...byId.values()]
@@ -98,4 +115,5 @@ module.exports = {
   TOOL_RESULT_LIMIT,
   normalizeToolResults,
   toolResultId,
+  toolResultLocation,
 };

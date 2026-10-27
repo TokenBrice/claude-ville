@@ -62,6 +62,32 @@ test('W7.2: only a real exit code lands a chit, at the owning building', t => {
     assert.equal(pass.detail, '');
 });
 
+// RG-2 — red is a real non-zero exit. A code derived from an error flag is a
+// refusal, and a search that exited 1 printing nothing found no match: both
+// land the hollow stone and never show an exit code.
+test('RG-2: flag results and silent search misses are neutral chits, never a red exit', t => {
+    const activity = activityWithWorld();
+    t.after(() => activity.dispose());
+    // At most two per door: a door keeps only its newest four chits.
+    const shell = (id, exitCode, detail, door, extra = {}) => ({ ...result(id, exitCode, door, 'Bash'), detail, exitCodeSource: 'exit', ...extra });
+    activity._observeToolResult({ ...result('refused', 1, 'forge', 'Edit'), detail: 'src/a.js', exitCodeSource: 'flag' }, NOW);
+    activity._observeToolResult(shell('rg-miss', 1, 'rg -n "foo|bar" src', 'archive', { noOutput: true }), NOW);
+    activity._observeToolResult(shell('pipe-miss', 1, 'cat notes.txt | grep TODO', 'taskboard', { noOutput: true }), NOW);
+    activity._observeToolResult(shell('rg-said', 1, 'rg -n foo src', 'command', { noOutput: false }), NOW);
+    activity._observeToolResult(shell('rg-unknown', 1, 'rg -n foo src', 'archive'), NOW);
+    activity._observeToolResult(shell('rg-error', 2, 'rg -n foo missing/', 'taskboard', { noOutput: true }), NOW);
+    activity._observeToolResult(shell('then-test', 1, 'npm test && rg foo', 'command', { noOutput: true }), NOW);
+    const byId = new Map(outcomes(activity).map(item => [item.id.replace('outcome:', ''), item]));
+    const read = id => [byId.get(id).failed, byId.get(id).neutral, byId.get(id).detail];
+    assert.deepEqual(read('refused'), [false, true, 'refused'], 'a flag-only failure claims no exit code');
+    assert.deepEqual(read('rg-miss'), [false, true, 'no match'], 'a quoted pipe is part of the pattern');
+    assert.deepEqual(read('pipe-miss'), [false, true, 'no match'], 'the last stage sets the exit');
+    assert.deepEqual(read('rg-said'), [true, false, 'exit 1'], 'output with exit 1: a real failure');
+    assert.deepEqual(read('rg-unknown'), [true, false, 'exit 1'], 'unknown output stays a failure');
+    assert.deepEqual(read('rg-error'), [true, false, 'exit 2'], 'exit 2 is a search error');
+    assert.deepEqual(read('then-test'), [true, false, 'exit 1'], 'the first command is no search');
+});
+
 test('W7.2: the chit subscribes to tool:result on the bus', t => {
     const activity = activityWithWorld();
     t.after(() => activity.dispose());

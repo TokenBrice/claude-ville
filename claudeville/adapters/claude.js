@@ -16,7 +16,7 @@ const {
   summarizeToolInput: summarizeSharedToolInput,
 } = require('./shared');
 const { deriveTurnState, toEpochMs } = require('./turnState');
-const { normalizeToolResults, toolResultId } = require('./toolResults');
+const { normalizeToolResults, toolResultId, toolResultLocation } = require('./toolResults');
 const { emptyObservedSources, makeDialogue, pickDialogue } = require('./dialogue');
 const { MODEL_REVISION, contextWindowForModel } = require('../src/config/models.generated.cjs');
 
@@ -2024,7 +2024,7 @@ function getClaudeToolResults(sessionFilePath, sessionId) {
       if (!Array.isArray(content)) continue;
       if (entry.message.role === 'assistant') {
         for (const block of content) {
-          if (block?.type === 'tool_use' && block.id) uses.set(block.id, { block, at: toEpochMs(entry.timestamp) });
+          if (block?.type === 'tool_use' && block.id) uses.set(block.id, { block, at: toEpochMs(entry.timestamp), cwd: entry.cwd });
         }
         continue;
       }
@@ -2049,6 +2049,10 @@ function getClaudeToolResults(sessionFilePath, sessionId) {
           durationMs: use.at ? Math.max(0, completedAt - use.at) : null,
           completedAt,
           source: 'transcript',
+          // Where it ran (the session cwd plus any `cd` hop the summary drops)
+          // and whether it printed anything besides its exit line.
+          location: toolResultLocation({ cwd: use.cwd, command: use.block.input?.command }),
+          noOutput: !completion.output.replace(CLAUDE_EXIT_CODE_PATTERN, '').trim(),
         });
         uses.delete(block.tool_use_id);
       }

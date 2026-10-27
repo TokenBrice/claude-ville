@@ -405,6 +405,10 @@ export class AgentEventStream {
                 exitCodeSource: result.exitCodeSource === 'exit' || result.exitCodeSource === 'flag'
                     ? result.exitCodeSource
                     : null,
+                // Where the call ran (a mend needs the same place, RG-10) and
+                // whether it printed nothing (a silent search miss, RG-2).
+                location: typeof result.location === 'string' ? result.location : null,
+                noOutput: typeof result.noOutput === 'boolean' ? result.noOutput : null,
             };
             if (!this._canEmit('tool:result', event, agent)) continue;
             eventBus.emit('tool:result', event);

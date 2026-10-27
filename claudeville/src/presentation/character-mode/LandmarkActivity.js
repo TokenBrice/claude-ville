@@ -8,6 +8,7 @@ import { resolveObservation } from './ObservationCertainty.js';
 import { ALPHA_QUANTA, FAILURE, FAILURE_OUTLINE, PEAK, STONE_RAMP, bracket, defineMoment, diamond, dottedCurve, gradeTone, momentPhase, momentRectClear, resolveMomentAnchor, snap } from './EffectStamps.js';
 import { fillPixelEllipse } from './PixelShapes.js';
 import { noteMoment } from './MomentTally.js';
+import { toolResultOutcome } from '../../application/OutcomeSignals.js';
 
 const MAX_ITEMS_PER_KIND = 10;
 const SNAPSHOT_TTL_MS = 18000;
@@ -121,6 +122,8 @@ const DOOR_GROUND_STEP_BACK = Object.freeze({
     mine: 1.3,
 });
 const OUTCOME_SEEN_LIMIT = 400;
+// RG-2 — the plate copy of a neutral outcome chit (`toolResultOutcome`).
+const OUTCOME_NEUTRAL_DETAIL = Object.freeze({ refused: 'refused', nomatch: 'no match' });
 // D2 — the Mended Mark (Medium): the broken bracket closes in two held steps
 // (120 ms each), one cream diamond frame, then a cream rim round the stone
 // diamond steps out over the follow-through. The chit then stays the plain
@@ -1077,8 +1080,13 @@ export class LandmarkActivity {
         }
         const seq = this._outcomeSeqByBuilding.get(building) || 0;
         this._outcomeSeqByBuilding.set(building, seq + 1);
-        const failed = exitCode !== 0;
-        noteMoment(failed ? 'chit:fail' : 'chit:pass');
+        // RG-2 — red only for a real non-zero exit. A code derived from an
+        // error flag is a refusal and a silent search miss found no match:
+        // both draw the hollow stone and never claim an exit code.
+        const outcome = toolResultOutcome({ ...event, exitCode });
+        const failed = outcome === 'fail';
+        const neutral = outcome === 'refused' || outcome === 'nomatch';
+        noteMoment(failed ? 'chit:fail' : (neutral ? 'chit:neutral' : 'chit:pass'));
         this.items.set(itemId, {
             id: itemId,
             type: 'outcome',
@@ -1090,8 +1098,9 @@ export class LandmarkActivity {
             slot: seq % OUTCOME_CHIT_OFFSETS.length,
             exitCode,
             failed,
+            neutral,
             label: toolVerbLabel(event.tool, null),
-            detail: failed ? `exit ${Math.trunc(exitCode)}` : '',
+            detail: failed ? `exit ${Math.trunc(exitCode)}` : (OUTCOME_NEUTRAL_DETAIL[outcome] || ''),
             sortOffset: 4,
         });
         this._recencyByType.set(building, now);
@@ -1436,6 +1445,10 @@ export class LandmarkActivity {
                 color: this._tone(FAILURE),
                 outline: this._tone(FAILURE_OUTLINE),
             });
+        } else if (item.neutral) {
+            // RG-2 — a refusal or a search that found nothing: the stone
+            // diamond left hollow, neither the failure bracket nor a pass.
+            diamond(ctx, x, y - 3, 3, { color: this._tone(STONE_RAMP[0]) });
         } else {
             diamond(ctx, x, y - 3, 3, { color: this._tone(STONE_RAMP[0]), fill: this._tone(STONE_RAMP[1]) });
             ctx.fillStyle = this._tone(STONE_RAMP[2]);

@@ -111,16 +111,67 @@ export function verifiedOutcomeFact(outcome) {
     };
 }
 
+// Programs whose exit status 1 means "selected no lines" (grep and its
+// variants, ripgrep, `git grep`, ag, ack): they keep exit 2 for errors.
+const SEARCH_PROGRAMS = new Set(['rg', 'grep', 'egrep', 'fgrep', 'zgrep', 'ag', 'ack']);
+const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+// True when the exit status of a command summary is a search program's: the
+// last pipeline stage of its first command (no pipefail; a later `&&` step
+// never runs once a search fails). Quotes hide separators in patterns.
+function searchSetsExit(detail) {
+    const text = typeof detail === 'string' ? detail : '';
+    let stage = '';
+    let quote = '';
+    for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        if (quote) {
+            if (ch === quote) quote = '';
+        } else if (ch === '"' || ch === "'") {
+            quote = ch;
+        } else if (ch === ';' || ch === '\n' || (ch === '&' && text[i + 1] === '&') || (ch === '|' && text[i + 1] === '|')) {
+            break;
+        } else if (ch === '|') {
+            stage = '';
+            continue;
+        }
+        stage += ch;
+    }
+    const words = stage.trim().split(/\s+/);
+    while (words.length && ENV_ASSIGNMENT.test(words[0])) words.shift();
+    const program = String(words[0] || '').split('/').pop();
+    return SEARCH_PROGRAMS.has(program) || (program === 'git' && words[1] === 'grep');
+}
+
+/**
+ * How a `tool:result` ended (RG-2), one reading for the outcome chits and the
+ * sound: `'pass'` (exit 0); `'refused'` (a code the adapter only derived from
+ * an error flag, `exitCodeSource: 'flag'`: a harness or hook refusal, a
+ * permission denial, an Edit miss); `'nomatch'` (a search that exited 1 and
+ * printed nothing: rg and grep report "no match" that way); `'fail'` (any
+ * other non-zero exit); null when the exit is unknown.
+ */
+export function toolResultOutcome(event) {
+    const exitCode = finite(event?.exitCode);
+    if (exitCode == null) return null;
+    if (exitCode === 0) return 'pass';
+    if (event.exitCodeSource === 'flag') return 'refused';
+    if (exitCode === 1 && event.noOutput === true && searchSetsExit(event.detail)) return 'nomatch';
+    return 'fail';
+}
+
 /**
  * `tool:result`: a non-zero exit is a failure; exit 0 (or none) is silent.
  * A code the adapter only inferred from an error flag (`exitCodeSource:
  * 'flag'`: an Edit that found no match, a refused permission, a harness
- * guard) is not a failed command, so it raises no "Command failed".
+ * guard) is not a failed command, so it raises no "Command failed"; nor does
+ * a search that found nothing (`toolResultOutcome` 'nomatch').
  */
 export function toolFailedFact(event) {
     const exitCode = finite(event?.exitCode);
     if (exitCode == null || exitCode === 0) return null;
     if (event.exitCodeSource === 'flag') return null;
+    if (toolResultOutcome(event) === 'nomatch') return null;
     return {
         kind: 'toolFailed',
         agentId: idOf(event.agentId),
