@@ -29,6 +29,7 @@ class SessionDetailsService {
             batchTimedOut: 0,
             inFlightJoined: 0,
             staleRefreshStarted: 0,
+            snapshotRefreshStarted: 0,
             cacheTrimmed: 0,
             cacheDeleted: 0,
             cacheSwept: 0,
@@ -167,8 +168,24 @@ class SessionDetailsService {
         else this._counters[failedCounter]++;
     }
 
-    _storeDetail(key, detail) {
-        this._cache.set(key, { value: detail, at: Date.now() });
+    // UI-8 — the snapshot facts a detail payload follows. An entry fetched
+    // for an older stamp is out of date the moment the snapshot moves, so the
+    // detail never trails the 2 s snapshot by its 5 s TTL plus a poll.
+    detailStamp(agent) {
+        return [
+            agent?.lastSessionActivity ?? '',
+            agent?.status ?? '',
+            agent?.currentTool ?? '',
+            JSON.stringify(agent?.tokens ?? null),
+        ].join('\u0001');
+    }
+
+    _snapshotMoved(entry, agent) {
+        return Boolean(entry && agent && entry.stamp != null && entry.stamp !== this.detailStamp(agent));
+    }
+
+    _storeDetail(key, detail, stamp = null) {
+        this._cache.set(key, { value: detail, at: Date.now(), stamp });
     }
 
     _trimCache() {
@@ -239,11 +256,20 @@ class SessionDetailsService {
         const key = this.getSessionDetailKey(agent);
         const now = Date.now();
         const cached = this._cacheStateFor(key, now);
-        if (cached.isFresh) {
+        const moved = this._snapshotMoved(cached.entry, agent);
+        if (cached.isFresh && !moved) {
             return Promise.resolve(this._recordFreshCacheHit(cached));
         }
 
-        if (cached.isStale) {
+        // UI-8 — the snapshot moved past the entry: wait for the fetch (the
+        // caller keeps its rendered detail meanwhile) instead of returning
+        // the old value and showing the fresh one a poll later.
+        if (moved && !this._inFlight.has(key)) {
+            this._counters.snapshotRefreshStarted++;
+            return this._startFetch(key, agent, cached.entry);
+        }
+
+        if (cached.isStale && !moved) {
             this._recordStaleCacheHit(cached);
             if (!this._inFlight.has(key)) {
                 this._counters.staleRefreshStarted++;
@@ -266,6 +292,7 @@ class SessionDetailsService {
         const results = new Map();
         const requests = [];
         const requestTokens = new Map();
+        const requestStamps = new Map();
         const pendingKeys = [];
         const callTokens = new Map();
 
@@ -275,13 +302,15 @@ class SessionDetailsService {
             const token = this._keyTokenFor(key);
             callTokens.set(agent.id, { key, token });
             const cached = this._cacheStateFor(key, now);
-            if (cached.isFresh) {
+            const moved = this._snapshotMoved(cached.entry, agent);
+            if (cached.isFresh && !moved) {
                 results.set(agent.id, this._recordFreshCacheHit(cached));
                 continue;
             }
-            if (cached.isStale) {
+            if (cached.isStale || (moved && cached.age <= this._staleTtlMs)) {
                 results.set(agent.id, this._recordStaleCacheHit(cached));
             }
+            if (moved) this._counters.snapshotRefreshStarted++;
             if (this._inFlight.has(key)) {
                 this._counters.inFlightJoined++;
                 pendingKeys.push({
@@ -296,6 +325,7 @@ class SessionDetailsService {
             if (!cached.hasEntry) this._counters.cacheMisses++;
             requests.push(this._requestPayloadFor(agent, key));
             requestTokens.set(key, token);
+            requestStamps.set(key, this.detailStamp(agent));
         }
 
         const applyPending = async () => {
@@ -356,7 +386,7 @@ class SessionDetailsService {
                     if (!this._isKeyTokenCurrent(request.key, requestTokens.get(request.key))) continue;
                     const detail = details[request.key];
                     if (!detail) continue;
-                    this._storeDetail(request.key, detail);
+                    this._storeDetail(request.key, detail, requestStamps.get(request.key));
                     fetched.set(request.sessionId, detail);
                 }
                 this._trimCache();
@@ -396,6 +426,9 @@ class SessionDetailsService {
     }
 
     _startFetch(key, agent, fallbackCache) {
+        // The stamp of the snapshot this request answers, taken before it
+        // leaves: a snapshot that moves mid-flight still reads as newer.
+        const stamp = this.detailStamp(agent);
         const token = this._keyTokenFor(key);
         const timeoutState = this._createFetchTimeout([key], key);
         const generation = this._generation;
@@ -417,7 +450,7 @@ class SessionDetailsService {
 
                 const data = await resp.json();
                 if (generation !== this._generation || !this._isKeyTokenCurrent(key, token)) return null;
-                this._storeDetail(key, data);
+                this._storeDetail(key, data, stamp);
                 this._trimCache();
                 this._counters.fetchSucceeded++;
                 return data;

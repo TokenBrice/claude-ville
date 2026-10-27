@@ -16,6 +16,7 @@ import {
 import { formatStatusElapsed, formatTokens } from '../../claudeville/src/presentation/shared/Formatters.js';
 import { TokenUsage } from '../../claudeville/src/domain/value-objects/TokenUsage.js';
 import { rowTokenCells } from '../../claudeville/src/presentation/dashboard-mode/DashboardRenderer.js';
+import { sessionDetailsService } from '../../claudeville/src/presentation/shared/SessionDetailsService.js';
 import { operatorStatusLabel } from '../../claudeville/src/presentation/shared/SemanticTriage.js';
 import { offFrameTallyText } from '../../claudeville/src/presentation/character-mode/AttentionPlates.js';
 
@@ -98,6 +99,33 @@ test('UI-5: a silent working agent climbs the hourglass rungs and never age-dims
     assert.equal(isAgedQuietRow(at(30 * 60_000, { status: AgentStatus.RATE_LIMITED })), false);
     assert.equal(isAgedQuietRow(at(30 * 60_000, { status: AgentStatus.COMPLETED })), true);
     assert.equal(isAgedQuietRow(at(14 * 60_000, { status: AgentStatus.IDLE })), false);
+});
+
+test('UI-8: the detail refetches as soon as the snapshot moves past its entry', async () => {
+    const calls = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+        calls.push(String(url));
+        const n = calls.length;
+        return { ok: true, json: async () => ({ toolHistory: [{ n }] }) };
+    };
+    const agent = { id: 'ui8-agent', provider: 'claude', projectPath: '/ui8', lastSessionActivity: 1_000, status: 'working', tokens: { input: 1, output: 1 } };
+    try {
+        await sessionDetailsService.fetchSessionDetail(agent);
+        await sessionDetailsService.fetchSessionDetail(agent);
+        assert.equal(calls.length, 1, 'an unchanged snapshot inside the TTL is a cache hit');
+        agent.lastSessionActivity = 2_000;
+        const moved = await sessionDetailsService.fetchSessionDetail(agent);
+        assert.equal(calls.length, 2, 'a moved snapshot fetches at once, not after the 5 s TTL');
+        assert.deepEqual(moved.toolHistory, [{ n: 2 }], 'and the caller gets the fresh detail on this poll');
+        agent.tokens = { input: 5, output: 1 };
+        const batch = await sessionDetailsService.fetchSessionDetailsBatch([agent]);
+        assert.equal(calls.length, 3, 'the Dashboard batch follows the same stamp');
+        assert.ok(batch.has(agent.id));
+    } finally {
+        globalThis.fetch = realFetch;
+        sessionDetailsService.deleteForAgent(agent);
+    }
 });
 
 test('UI-13: a departed villager is aged from its departure', () => {
