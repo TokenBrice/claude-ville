@@ -15,7 +15,7 @@ import {
 } from '../../claudeville/src/presentation/shared/AgentPresentation.js';
 import { formatStatusElapsed, formatTokens } from '../../claudeville/src/presentation/shared/Formatters.js';
 import { TokenUsage } from '../../claudeville/src/domain/value-objects/TokenUsage.js';
-import { rowTokenCells } from '../../claudeville/src/presentation/dashboard-mode/DashboardRenderer.js';
+import { childRowVisible, leadIdFor, rowTokenCells } from '../../claudeville/src/presentation/dashboard-mode/DashboardRenderer.js';
 import { sessionDetailsService } from '../../claudeville/src/presentation/shared/SessionDetailsService.js';
 import { operatorStatusLabel } from '../../claudeville/src/presentation/shared/SemanticTriage.js';
 import { offFrameTallyText } from '../../claudeville/src/presentation/character-mode/AttentionPlates.js';
@@ -126,6 +126,24 @@ test('UI-8: the detail refetches as soon as the snapshot moves past its entry', 
         globalThis.fetch = realFetch;
         sessionDetailsService.deleteForAgent(agent);
     }
+});
+
+test('UI-16 (Q5): a subagent row folds under its lead unless selected, filtered, needing you or unfolded', () => {
+    const liveIds = new Set(['lead', 'mid']);
+    const child = { id: 'kid', parentSessionId: 'lead', status: AgentStatus.WORKING };
+    assert.equal(leadIdFor(child), 'lead');
+    assert.equal(childRowVisible(child, { liveIds }), false, 'folded by default');
+    assert.equal(childRowVisible(child, { liveIds, selectedId: 'kid' }), true, 'selected');
+    assert.equal(childRowVisible(child, { liveIds, filtered: true }), true, 'matched by a search or filter');
+    assert.equal(childRowVisible({ ...child, status: AgentStatus.WAITING_ON_USER }, { liveIds }), true, 'needs you');
+    assert.equal(childRowVisible(child, { liveIds, expandedLeads: new Set(['lead']) }), true, 'the lead toggle unfolds it');
+    assert.equal(childRowVisible({ id: 'lead', status: AgentStatus.WORKING }, { liveIds }), true, 'a lead always has its row');
+    assert.equal(childRowVisible({ ...child, parentSessionId: 'gone' }, { liveIds }), true, 'an orphan keeps its row');
+    // A nested subagent folds under its root when the adapter names one.
+    const nested = { id: 'grandkid', parentSessionId: 'mid', rootSessionId: 'lead', status: AgentStatus.WORKING };
+    assert.equal(leadIdFor(nested), 'lead');
+    assert.equal(childRowVisible(nested, { liveIds, expandedLeads: new Set(['lead']) }), true);
+    assert.equal(leadIdFor({ id: 'lead', rootSessionId: 'lead' }), '', 'a root naming itself is a lead');
 });
 
 test('UI-13: a departed villager is aged from its departure', () => {

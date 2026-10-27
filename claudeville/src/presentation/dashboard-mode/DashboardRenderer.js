@@ -246,6 +246,30 @@ export function sectionHealthCounts(agents) {
     };
 }
 
+/**
+ * UI-16 (Q5) — the lead a subagent folds under: its root session when the
+ * adapter names one (`rootSessionId`, feature-detected), else its parent.
+ * '' for a lead itself.
+ */
+export function leadIdFor(agent) {
+    const lead = String(agent?.rootSessionId || agent?.parentSessionId || '');
+    return lead && lead !== String(agent?.id || '') ? lead : '';
+}
+
+/**
+ * A subagent's home is its lead's kid strip. Its full row shows only while
+ * it is selected, matched by an active search or filter, or needs you (the
+ * bell lane), or while its lead's toggle unfolds the crew; a child whose
+ * lead is gone keeps its row.
+ */
+export function childRowVisible(agent, { selectedId = null, filtered = false, expandedLeads = new Set(), liveIds = new Set() } = {}) {
+    const lead = leadIdFor(agent);
+    if (!lead || !liveIds.has(lead)) return true;
+    if (String(agent.id) === String(selectedId) || filtered) return true;
+    if (BELL_BUCKETS.has(bucketForStatus(agent.status))) return true;
+    return expandedLeads.has(lead);
+}
+
 /** Stable display order with zero-count buckets omitted. */
 export function nonZeroSectionHealthBuckets(counts) {
     return SECTION_HEALTH_ORDER.filter(bucket => Number(counts?.[bucket]) > 0);
@@ -548,6 +572,7 @@ export class DashboardRenderer {
         this._searchContexts = new Map();
         this._stableAgentOrder = new Map();
         this._stableProjectOrder = new Map();
+        this._expandedLeads = new Set();
         this._nextStableAgentOrder = 0;
         this._nextStableProjectOrder = 0;
         this._controlsSignature = '';
@@ -579,6 +604,8 @@ export class DashboardRenderer {
             notifyOnRepeat: true,
             onChange: (nextId, previousId) => {
                 this._selectedAgentId = nextId;
+                // UI-16 — selecting a folded subagent unfolds its row.
+                if (this.active && [nextId, previousId].some(id => leadIdFor(this.world.agents.get(id)))) this._queueFlush({ render: true });
                 this._syncSelectionControls(nextId, previousId);
                 if (this.active) void this._fetchAllDetails();
             },
@@ -699,7 +726,7 @@ export class DashboardRenderer {
             laneByProject.get(project).push(agent);
         }
 
-        const groups = [...groupAgentsByProject(visibleAgents.filter(agent => !laneIds.has(agent.id)))];
+        const groups = [...groupAgentsByProject(visibleAgents.filter(agent => !laneIds.has(agent.id) && this._showsFullRow(agent)))];
         this._sortProjectGroups(groups);
         // 9.7a — measured before any card or section moves.
         const flip = this._beginLaneFlip(laneIds);
@@ -1060,6 +1087,21 @@ export class DashboardRenderer {
         groups.sort((a, b) => projectRank(a) - projectRank(b)
             || projectWait(a) - projectWait(b)
             || (this._stableProjectOrder.get(a[0]) ?? 0) - (this._stableProjectOrder.get(b[0]) ?? 0));
+    }
+
+    _showsFullRow(agent) {
+        return childRowVisible(agent, {
+            selectedId: this._selectedAgentId,
+            filtered: Boolean(this._searchMatches || this._statusFilters.size || this._providerFilters.size),
+            expandedLeads: this._expandedLeads,
+            liveIds: this.world.agents,
+        });
+    }
+
+    _crewSize(leadId) {
+        let size = 0;
+        for (const agent of this.world.agents.values()) if (leadIdFor(agent) === leadId) size++;
+        return size;
     }
 
     _setFilteredEmpty(visible) {
@@ -2102,15 +2144,15 @@ export class DashboardRenderer {
         }
     }
 
-    // 7.12 — children read under their parent, even across projects. Each
-    // child keeps its own row in its own project; this strip is a pointer.
+    // 7.12 — children read under their parent, even across projects. A
+    // child's full row folds into this strip unless it is unfolded (UI-16).
     _renderKidStrip(cardEl, agent, children) {
         const strip = cardEl._elements?.kids;
         if (!strip) return;
         const signature = JSON.stringify(children.map(child => [
             child.id, child.name, child.role, child.agentType, normalizeStatus(child.status), child.isDeparted === true,
             child.currentTool || '', child.currentToolInput || '', child.projectPath || '',
-        ]).concat([[agent.projectPath || '']]));
+        ]).concat([[agent.projectPath || '', this._crewSize(String(agent.id)), this._expandedLeads.has(String(agent.id))]]));
         if (strip._kidSignature === signature) return;
         strip._kidSignature = signature;
         const chips = cardEl._kidChips || (cardEl._kidChips = new Map());
@@ -2161,10 +2203,31 @@ export class DashboardRenderer {
                 const current = this.world.agents.get(id);
                 if (!current) return;
                 emitAgentSelected(current);
-                this.cards.get(id)?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+                // After the queued render that unfolds a folded row (UI-16).
+                queueMicrotask(() => this.cards.get(id)?.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
             });
             return row;
         });
+        // UI-16 — the per-lead toggle: the crew's full rows fold into this
+        // strip unless the operator unfolds them.
+        const leadId = String(agent.id);
+        const crew = this._crewSize(leadId);
+        if (crew > 0) {
+            const expanded = this._expandedLeads.has(leadId);
+            const toggle = Object.assign(document.createElement('button'), {
+                type: 'button',
+                className: 'dash-card__kid-toggle',
+                textContent: expanded ? 'hide subagent rows' : `show ${crew} subagent row${crew === 1 ? '' : 's'}`,
+            });
+            toggle.setAttribute('aria-pressed', String(expanded));
+            toggle.addEventListener('click', (event) => {
+                event.stopPropagation();
+                if (this._expandedLeads.has(leadId)) this._expandedLeads.delete(leadId);
+                else this._expandedLeads.add(leadId);
+                this._queueFlush({ render: true });
+            });
+            rows.push(toggle);
+        }
         replaceChildren(strip, rows);
     }
 

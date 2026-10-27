@@ -679,6 +679,19 @@
 .dash-card__kid-name { color: var(--ink-1); font: var(--fs-label)/var(--lh-label) var(--font-display); }
 .dash-card__kid-detail { overflow: hidden; color: var(--ink-3); text-overflow: ellipsis; white-space: nowrap; }
 .dash-card__kid-status { color: var(--ink-3); }
+/* UI-16 — the per-lead toggle under the strip: ghost text, gold on hover. */
+.dash-card__kid-toggle {
+    justify-self: start;
+    padding: 0 6px;
+    border: 1px solid transparent;
+    background: none;
+    color: var(--ink-3);
+    font: var(--fs-body)/var(--lh-body) var(--font-body);
+    cursor: pointer;
+}
+.dash-card__kid-toggle:hover,
+.dash-card__kid-toggle:focus-visible { color: var(--gold-hi); background: var(--bg-2); outline: none; }
+.dash-card__kid-toggle[aria-pressed="true"] { border-color: var(--line-2); }
 .dash-card__kid--working .dash-card__kid-status { color: var(--cv-status-working); }
 .dash-card__kid--waiting .dash-card__kid-status { color: var(--cv-status-waiting); }
 .dash-card__kid--waiting_on_user .dash-card__kid-status { color: var(--cv-status-waiting-user); }
