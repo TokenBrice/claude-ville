@@ -902,8 +902,11 @@ export const LAND_BIRD_ROUTES = [
         { tileX: 14, tileY: 19 }, { tileX: 17, tileY: 17.5 }, { tileX: 19.5, tileY: 19.5 }, { tileX: 16, tileY: 22 } ] },
     { speed: 0.016, altitude: 24, phase: 0.40, wingRate: 5, points: [
         { tileX: 8, tileY: 20 }, { tileX: 10.5, tileY: 22 }, { tileX: 7, tileY: 24 }, { tileX: 5.5, tileY: 21 } ] },
+    // VQ-8 — two tiles south-east of the Forge yard (was 25,30 / 28.5,28.5 /
+    // 27,32 / 24,31): the old loop crossed the hearth arch, a red V that read
+    // as flame in an idle Forge. It now passes below the mouth.
     { speed: 0.023, altitude: 30, phase: 0.72, wingRate: 7, points: [
-        { tileX: 25, tileY: 30 }, { tileX: 28.5, tileY: 28.5 }, { tileX: 27, tileY: 32 }, { tileX: 24, tileY: 31 } ] },
+        { tileX: 27, tileY: 32 }, { tileX: 30.5, tileY: 30.5 }, { tileX: 29, tileY: 34 }, { tileX: 26, tileY: 33 } ] },
 ];
 
 // Ducks drifting on calm lagoon water (west of the command footbridge, the

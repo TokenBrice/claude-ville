@@ -153,8 +153,10 @@ const LABEL_COMPACT_OVERLAP_TOLERANCE = 0.62;
 const MAX_TASKBOARD_PAPERS = 4;
 const FORGE_GLOW_BASELINE = 0.22;
 const FORGE_GLOW_DECAY_PER_SECOND = 0.32;
-// 4.6 — the banked hearth of a confirmed-empty village: an ember behind the
-// mouth, well under the ordinary idle baseline, never fully out.
+// 4.6 — the banked hearth of a confirmed-empty village: the heat value the
+// glow decays to, well under the ordinary idle baseline. It drives no light:
+// B3-03' — a banked hearth emits nothing, and its ember course is albedo in
+// the rest mask, so the night grade takes it down with the stone.
 const FORGE_BANKED_GLOW = 0.07;
 // 4.6 — architecture that stays lit through a sleeping town: the Pharos and
 // the harbour lantern are safety lights, not work signals.
