@@ -965,7 +965,7 @@ function tailEntries(filePath, count) {
 // memoized on the file's identity, so rescanning an unchanged transcript
 // costs a stat per derivation and reads nothing. Clock-derived output
 // (dialogue freshness) is recomputed from the memoized inputs on every call.
-const DERIVED_MEMO_MAX = 1024;
+const DERIVED_MEMO_MAX = 256;
 const _derivedMemo = new Map();
 const _derivedMemoStats = { hits: 0, misses: 0, evictions: 0 };
 
