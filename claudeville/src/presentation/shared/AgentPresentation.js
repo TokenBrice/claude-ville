@@ -4,7 +4,8 @@ import { buildingForTool, toolCategory, toolIcon, shortToolName } from '../../do
 import { formatModelLabel, getModelVisualIdentity } from './ModelVisualIdentity.js';
 import { repoProfile } from './RepoColor.js';
 import { el } from './DomSafe.js';
-import { formatToolDetail, hashRows, formatRelative, formatElapsed, normalizeStatus } from './Formatters.js';
+import { formatToolDetail, hashRows, formatRelative, formatElapsed, formatWaitAge, normalizeStatus } from './Formatters.js';
+import { bucketForStatus } from '../../domain/services/SignalLedger.js';
 import { EVENT_SHAPES, eventShapeSvgPath, eventShapeSvgViewBox } from './EventShapes.js';
 
 export const UNKNOWN_PROJECT_KEY = '_unknown';
@@ -166,6 +167,28 @@ export function statusWord(status, form = 'title') {
 
 export function bucketWord(bucket, form = 'title') {
     return statusWord(BUCKET_STATUS[bucket] || bucket, form);
+}
+
+// UI-5 (= SM-8) — a working or tool-pending agent whose session has gone
+// quiet. The rungs are the hourglass ladder's (2 / 5 / 15 min), and the mark
+// is an elapsed word in ink, never an alarm hue: a long build is still work.
+export const SILENT_TIER_MS = Object.freeze([2 * 60_000, 5 * 60_000, 15 * 60_000]);
+const AGED_QUIET_MS = 15 * 60_000;
+
+export function silentSignal(agent, now = Date.now()) {
+    if (!agent || agent.isDeparted || normalizeStatus(agent.status) !== 'working') return null;
+    const last = Number(agent.lastSessionActivity);
+    if (!Number.isFinite(last) || last <= 0) return null;
+    const ms = Math.max(0, now - last);
+    const tier = SILENT_TIER_MS.filter(threshold => ms >= threshold).length;
+    return tier ? { tier, ms, text: `silent ${formatWaitAge(ms)}` } : null;
+}
+
+// Only a quiet row (idle, completed, unknown) dims with age; a working agent
+// gone silent is raised by its silent mark instead.
+export function isAgedQuietRow(agent) {
+    const ageMs = Number(agent?.activityAgeMs);
+    return bucketForStatus(agent?.status) === 'quiet' && Number.isFinite(ageMs) && ageMs > AGED_QUIET_MS;
 }
 
 export function statusPresentation(status) {

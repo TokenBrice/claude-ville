@@ -568,6 +568,11 @@
 .dash-card--waiting .dash-card__now--status .dash-card__phase { color: var(--cv-status-waiting); }
 .dash-card__now--blocker .dash-card__phase { color: var(--spine); }
 .dash-card__now--blocker .dash-card__phase-detail { color: var(--ink-2); }
+/* UI-5 — a silent working row: the elapsed word climbs the hourglass rungs
+   (2 / 5 / 15 min) in ink weight and a static rim, never an alarm hue. */
+.dash-card__silent { flex: none; padding: 0 4px; border: 1px solid transparent; color: var(--ink-3); }
+.dash-card__silent[data-tier="2"] { color: var(--ink-2); border-color: var(--line-2); }
+.dash-card__silent[data-tier="3"] { color: var(--ink-1); border-color: var(--ink-3); }
 
 .dash-card__tape {
     display: flex;

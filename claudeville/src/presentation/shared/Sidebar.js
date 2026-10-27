@@ -31,6 +31,7 @@ import {
     modelPresentation,
     projectProfile,
     providerPresentation,
+    silentSignal,
     statusWord,
     waitReasonLabel,
 } from './AgentPresentation.js';
@@ -1130,7 +1131,10 @@ export class Sidebar {
         const state = el('span', { className: 'sidebar__agent-state' });
         // State leads the sub-line so a narrow column clips the model, never
         // the one word that matters.
-        const model = el('span', { className: 'sidebar__agent-model' }, [state, modelText]);
+        // UI-5 — `working · silent 18m · Model`: the silent mark follows the
+        // state on the shared 1 Hz tick, so it climbs even without a render.
+        const silent = el('span', { className: 'sidebar__agent-silent' });
+        const model = el('span', { className: 'sidebar__agent-model' }, [state, silent, modelText]);
         const match = el('span', {
             className: ['sidebar__agent-model', 'sidebar__agent-match'],
         });
@@ -1152,13 +1156,19 @@ export class Sidebar {
             dataset: { agentId },
         }, [select]);
         row._sidebarRefs = {
-            nameText, workflow, name, modelText, state, age, model,
+            nameText, workflow, name, modelText, state, silent, age, model,
             match, info, dot, bust, select, parent,
             avatar: null, bustAgent: null, bustKey: '', bustObserved: false,
         };
         row._elapsedUnsubscribe = subscribeElapsedText(age, () => {
             const current = this.world.agents.get(agentId);
             return current ? shortStatusAge(current) : '';
+        });
+        row._silentUnsubscribe = subscribeElapsedText(silent, (now) => {
+            const signal = silentSignal(this.world.agents.get(agentId), now);
+            if (signal) silent.dataset.tier = String(signal.tier);
+            else delete silent.dataset.tier;
+            return signal ? ` · ${signal.text}` : '';
         });
         return row;
     }
@@ -1311,6 +1321,8 @@ export class Sidebar {
             if (liveIds.has(id)) continue;
             row._elapsedUnsubscribe?.();
             row._elapsedUnsubscribe = null;
+            row._silentUnsubscribe?.();
+            row._silentUnsubscribe = null;
             this._releaseBust(row);
             row.remove();
             this._agentRows.delete(id);

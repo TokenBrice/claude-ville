@@ -8,6 +8,8 @@ import {
     DEPARTED_WORD,
     STATUS_WORDS,
     bucketWord,
+    isAgedQuietRow,
+    silentSignal,
     statusPresentation,
     statusWord,
 } from '../../claudeville/src/presentation/shared/AgentPresentation.js';
@@ -77,6 +79,25 @@ test('UI-4: row TOKENS leads with new tokens and puts cache reads second', () =>
     assert.match(cells.title, /new tokens \(input, output, cache writes\) · .* cache reads/);
     assert.equal(rowTokenCells({ input: 10, output: 5 }).cacheShort, '', 'no cache line without cache reads');
     assert.deepEqual(rowTokenCells(null), { newShort: '—', cacheShort: '', title: 'Usage unavailable' });
+});
+
+test('UI-5: a silent working agent climbs the hourglass rungs and never age-dims', () => {
+    const now = 10_000_000;
+    const at = (ms, extra = {}) => ({ status: AgentStatus.WORKING, lastSessionActivity: now - ms, activityAgeMs: ms, ...extra });
+    assert.equal(silentSignal(at(119_000), now), null, 'under 2 min is not silent');
+    assert.deepEqual([2, 5, 15].map(min => silentSignal(at(min * 60_000), now).tier), [1, 2, 3]);
+    assert.equal(silentSignal(at(18 * 60_000), now).text, 'silent 18m');
+    // A tool-pending agent resolves WORKING, so it reads the same way.
+    assert.equal(silentSignal(at(6 * 60_000, { turnState: 'tool_pending' }), now).tier, 2);
+    for (const status of [AgentStatus.IDLE, AgentStatus.COMPLETED, AgentStatus.WAITING_ON_USER, AgentStatus.ERRORED]) {
+        assert.equal(silentSignal(at(30 * 60_000, { status }), now), null, `${status} is never "silent"`);
+    }
+    assert.equal(silentSignal(at(30 * 60_000, { departedAt: now, isDeparted: true }), now), null);
+    // Only quiet rows dim with age.
+    assert.equal(isAgedQuietRow(at(30 * 60_000)), false, 'working never age-dims');
+    assert.equal(isAgedQuietRow(at(30 * 60_000, { status: AgentStatus.RATE_LIMITED })), false);
+    assert.equal(isAgedQuietRow(at(30 * 60_000, { status: AgentStatus.COMPLETED })), true);
+    assert.equal(isAgedQuietRow(at(14 * 60_000, { status: AgentStatus.IDLE })), false);
 });
 
 test('UI-13: a departed villager is aged from its departure', () => {

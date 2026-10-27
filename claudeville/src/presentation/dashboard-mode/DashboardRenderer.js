@@ -46,6 +46,8 @@ import {
     buildingPresentation,
     currentToolPresentation,
     groupAgentsByProject,
+    isAgedQuietRow,
+    silentSignal,
     projectKeyForAgent,
     worktreeLabel,
     modelPresentation,
@@ -1375,6 +1377,7 @@ export class DashboardRenderer {
                 <span class="dash-card__now">
                     <span class="dash-card__now-icon" aria-hidden="true"></span>
                     <span class="dash-card__phase"></span>
+                    <span class="dash-card__silent" hidden></span>
                     <span class="dash-card__phase-detail"></span>
                 </span>
                 <span class="dash-card__tape"></span>
@@ -1524,6 +1527,7 @@ export class DashboardRenderer {
             toolList: card.querySelector('.dash-card__tool-list'),
             usageTokens: card.querySelector('.dash-card__usage-tokens'),
             usageNew: card.querySelector('.dash-card__usage-new'),
+            silent: card.querySelector('.dash-card__silent'),
             usageCache: card.querySelector('.dash-card__usage-cache'),
             usageCost: card.querySelector('.dash-card__usage-cost'),
             buildingEmblem: card.querySelector('.dash-card__building-emblem'),
@@ -1537,6 +1541,16 @@ export class DashboardRenderer {
             const current = this.world.agents.get(card.dataset.agentId);
             const ms = statusSinceMs(current, now);
             return ms == null ? '—' : formatElapsed(ms);
+        });
+        // UI-5 — `silent 18m` rides in NOW on the shared 1 Hz tick, so a hung
+        // tool is raised even when no message arrives to re-render the row.
+        const silentEl = card._elements.silent;
+        card._silentUnsubscribe = subscribeElapsedText(silentEl, (now) => {
+            const signal = silentSignal(this.world.agents.get(card.dataset.agentId), now);
+            silentEl.hidden = !signal;
+            if (signal) silentEl.dataset.tier = String(signal.tier);
+            else delete silentEl.dataset.tier;
+            return signal?.text || '';
         });
         this._paintCardTape(card);
 
@@ -2276,8 +2290,8 @@ export class DashboardRenderer {
 
     _updateActivityAge(cardEl, agent) {
         const chip = cardEl._elements?.activityAge;
-        const ageMs = Number(agent.activityAgeMs);
-        const isAged = Number.isFinite(ageMs) && ageMs > 15 * 60_000;
+        // UI-5 — only a quiet row dims with age; a silent working one is raised.
+        const isAged = isAgedQuietRow(agent);
         cardEl.classList.toggle('dash-card--aged', isAged);
         if (!chip) return;
 
@@ -2526,6 +2540,8 @@ export class DashboardRenderer {
             cardEl._elapsedUnsubscribe = null;
             cardEl._callElapsedUnsubscribe?.();
             cardEl._callElapsedUnsubscribe = null;
+            cardEl._silentUnsubscribe?.();
+            cardEl._silentUnsubscribe = null;
             cardEl._avatarCanvas?.destroy?.();
             cardEl._avatarCanvas = null;
             cardEl._heroCanvas?.destroy?.();
