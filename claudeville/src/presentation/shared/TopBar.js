@@ -78,6 +78,9 @@ const CONNECTION_REASON_COPY = Object.freeze({
     'session-poll-failed': 'The local session watcher could not refresh sessions.',
     'poll-failed': 'The local session watcher could not complete a refresh.',
     'source-failed': 'A local session source could not be read.',
+    'link-silent': 'The local server stopped answering the session link.',
+    'resync-timeout': 'A session resync never completed, so the link restarted.',
+    'snapshot-unavailable': 'The local server could not send a session snapshot.',
     'timeout': 'The local session link timed out.',
     'timed-out': 'The local session link timed out.',
 });
@@ -149,6 +152,111 @@ function storedSoundView(storage = globalThis.window?.localStorage) {
         quietActive: false,
         recalibrated: false,
     };
+}
+
+// Q10/UI-10: when the centre runs out of width it sheds whole units, least
+// needed first, instead of wrapping or clipping one: the burn rate, the
+// quota unit, the oldest wait, then the token total. Counts never shed.
+const CENTER_SHED_ORDER = Object.freeze(['rate', 'quota', 'age', 'total']);
+
+// A Claude window this full reads in the rate-limited hue (the pressure cue).
+export const QUOTA_PRESSURE_RATIO = 0.85;
+
+function quotaRatio(value) {
+    if (value === null || value === undefined || value === '') return null;
+    const ratio = Number(value);
+    return Number.isFinite(ratio) ? Math.min(1, Math.max(0, ratio)) : null;
+}
+
+function percentLabel(ratio) {
+    return `${Math.round(ratio * 100)}%`;
+}
+
+function resetsInText(at, now) {
+    const resetsAt = Number(at);
+    return Number.isFinite(resetsAt) && resetsAt > 0 ? `, resets in ${formatWaitAge(resetsAt - now)}` : '';
+}
+
+/**
+ * The top bar's Claude quota unit (SV-7 contract, `/api/usage`): the fuller
+ * of the 5-hour and 7-day windows with its reset countdown, both windows in
+ * the tip, and "token expired" on a 401. Null when nothing is known.
+ */
+export function claudeQuotaView(usage, now = Date.now()) {
+    if (Number(usage?.quotaError?.status) === 401) {
+        return {
+            value: '—', expired: true, pressure: false, window: null, resetsAt: null,
+            tip: 'Claude quota unknown: the sign-in token expired. Run claude to sign in again.',
+        };
+    }
+    const quota = usage?.quota;
+    const fiveHour = quotaRatio(quota?.fiveHour);
+    const sevenDay = quotaRatio(quota?.sevenDay);
+    if (fiveHour === null && sevenDay === null) return null;
+    const weekly = sevenDay !== null && (fiveHour === null || sevenDay >= fiveHour);
+    const used = weekly ? sevenDay : fiveHour;
+    const resetsAt = Number(weekly ? quota.sevenDayResetsAt : quota.fiveHourResetsAt);
+    const windows = [];
+    if (fiveHour !== null) windows.push(`5-hour ${percentLabel(fiveHour)}${resetsInText(quota.fiveHourResetsAt, now)}`);
+    if (sevenDay !== null) windows.push(`7-day ${percentLabel(sevenDay)}${resetsInText(quota.sevenDayResetsAt, now)}`);
+    const throttled = Number(usage?.quotaError?.status) === 429
+        ? ' · the quota check is throttled, so this is the last reading' : '';
+    return {
+        value: percentLabel(used),
+        expired: false,
+        pressure: used >= QUOTA_PRESSURE_RATIO,
+        window: weekly ? '7D' : '5H',
+        resetsAt: Number.isFinite(resetsAt) && resetsAt > 0 ? resetsAt : null,
+        tip: `Claude quota · ${windows.join(' · ')}${throttled}`,
+    };
+}
+
+/** The quota unit's caption at `now`: `7D · 2D3H`, `5H QUOTA`, `TOKEN EXPIRED`. */
+export function quotaCaption(view, now = Date.now()) {
+    if (!view) return '';
+    if (view.expired) return 'TOKEN EXPIRED';
+    if (!view.resetsAt) return `${view.window} QUOTA`;
+    return `${view.window} · ${formatWaitAge(Math.max(0, view.resetsAt - now)).toUpperCase()}`;
+}
+
+/**
+ * Q3: the Codex account at its weekly limit, from `usage.codex` alone (never
+ * from a session's status, so Codex villagers keep their real work). Null
+ * while the window has room or the field is absent.
+ */
+export function codexAccountLimit(usage, now = Date.now()) {
+    const codex = usage?.codex;
+    if (!codex || codex.limitReached !== true) return null;
+    const minutes = Number(codex.windowMinutes);
+    const span = minutes === 10080 ? 'weekly' : Number.isFinite(minutes) && minutes > 0 ? `${Math.round(minutes / 60)}-hour` : '';
+    const parts = [`Codex account at its ${span ? `${span} ` : ''}limit`];
+    if (Number.isFinite(Number(codex.usedPercent)) && codex.usedPercent !== null) parts.push(`${Math.round(codex.usedPercent)}% used`);
+    const resets = resetsInText(codex.resetsAt, now);
+    if (resets) parts.push(resets.slice(2));
+    if (codex.credits?.unlimited === true) parts.push('unlimited credits');
+    else if (Number.isFinite(codex.credits?.balance)) parts.push(`${formatNumber(Math.round(codex.credits.balance))} credits left`);
+    if (Number.isFinite(codex.observedAt) && codex.observedAt > 0) parts.push(`seen ${formatWaitAge(now - codex.observedAt)} ago`);
+    return { tip: parts.join(' · ') };
+}
+
+// `0.59.0` → `v0.59`; a hotfix keeps its fourth part.
+function shortVersion(version) {
+    const parts = String(version || '').replace(/^v/i, '').split('.');
+    while (parts.length > 2 && parts.at(-1) === '0') parts.pop();
+    return `v${parts.join('.')}`;
+}
+
+function attentionGlyph(motif) {
+    const glyph = document.createElementNS(SVG_NS, 'svg');
+    glyph.setAttribute('class', 'topbar__attn-glyph');
+    glyph.setAttribute('viewBox', '4 4 8 8');
+    glyph.setAttribute('aria-hidden', 'true');
+    glyph.setAttribute('focusable', 'false');
+    const path = document.createElementNS(SVG_NS, 'path');
+    path.setAttribute('fill', 'currentColor');
+    path.setAttribute('d', eventShapeSvgPath(motif));
+    glyph.appendChild(path);
+    return glyph;
 }
 
 // Local wall-clock `HH:MM`.
@@ -277,7 +385,10 @@ export class TopBar {
         // tip anchored to it) on a half CSS pixel. One px of right padding,
         // chosen from the unpadded position, keeps its left edge integral.
         this._centerSnap = typeof ResizeObserver === 'function' && this.els.center
-            ? new ResizeObserver(() => this._snapCenter())
+            ? new ResizeObserver(() => {
+                this._fitCenter();
+                this._snapCenter();
+            })
             : null;
         if (this._centerSnap) {
             this._centerSnap.observe(this.els.root);
@@ -289,22 +400,24 @@ export class TopBar {
         // rides beside its bucket's motif at 2× (the plates' 8×8 motif).
         this.els.attentionParts = Object.fromEntries(ATTENTION_PARTS.map(({ key, word, modifier, motif }) => {
             const num = el('span', { className: 'topbar__kpi-num', text: '0' });
-            const glyph = document.createElementNS(SVG_NS, 'svg');
-            glyph.setAttribute('class', 'topbar__attn-glyph');
-            glyph.setAttribute('viewBox', '4 4 8 8');
-            glyph.setAttribute('aria-hidden', 'true');
-            glyph.setAttribute('focusable', 'false');
-            const path = document.createElementNS(SVG_NS, 'path');
-            path.setAttribute('fill', 'currentColor');
-            path.setAttribute('d', eventShapeSvgPath(motif));
-            glyph.appendChild(path);
             const part = el('span', { className: `topbar__attn-part topbar__attn-part--${modifier}` }, [
-                el('span', { className: 'topbar__attn-count' }, [glyph, num]),
+                el('span', { className: 'topbar__attn-count' }, [attentionGlyph(motif), num]),
                 el('span', { className: 'topbar__kpi-cap', text: word }),
             ]);
             part.hidden = true;
             return [key, { part, num }];
         }));
+        // Q3 — the account limit (`CODEX` over `LIMIT`) lights from the
+        // usage contract alone. It is an account, not a session: it names
+        // the provider instead of a count and never joins the KPIs' sum.
+        this.els.accountLimit = el('span', { className: 'topbar__attn-part topbar__attn-part--limit topbar__attn-part--account' }, [
+            el('span', { className: 'topbar__attn-count' }, [
+                attentionGlyph('limit-gate'),
+                el('span', { className: 'topbar__kpi-num', text: 'CODEX' }),
+            ]),
+            el('span', { className: 'topbar__kpi-cap', text: 'LIMIT' }),
+        ]);
+        this.els.accountLimit.hidden = true;
         // W5.5b — the oldest actionable wait (`12m` over `OLDEST`), in the hue
         // of that agent's bucket, aged from `SignalLedger.waitAnchor` (the
         // anchor the plates and sidebar sort by) on the shared 1 Hz tick at
@@ -319,10 +432,21 @@ export class TopBar {
         this._oldestWaitAnchor = 0;
         this._unsubscribeOldestWait = null;
         this.els.attention = el('span', { className: 'topbar__seg topbar__seg--attention cv-frame cv-frame--attn' },
-            [...ATTENTION_PARTS.map(({ key }) => this.els.attentionParts[key].part), agePart]);
+            [...ATTENTION_PARTS.map(({ key }) => this.els.attentionParts[key].part), this.els.accountLimit, agePart]);
         this.els.attention.id = 'badgeAttention';
         this.els.attention.hidden = true;
         this.els.waiting?.parentElement?.parentElement?.prepend(this.els.attention);
+        // SV-7 — the Claude quota unit after the token total: the fuller
+        // window's percent over its reset countdown, hidden while unknown.
+        this.els.quotaValue = el('span', { className: 'topbar__stat-value', text: '–' });
+        this.els.quotaLabel = el('span', { className: 'topbar__stat-label' });
+        this.els.quota = el('span', { className: 'topbar__seg-stat topbar__quota' }, [this.els.quotaValue, this.els.quotaLabel]);
+        this.els.quota.hidden = true;
+        this.els.rateWrap?.insertAdjacentElement('afterend', this.els.quota);
+        this._quotaView = null;
+        this._unsubscribeQuota = null;
+        this._fitKey = null;
+        this._serverChange = null;
         this._usage = null;
         this.timeInterval = null;
         this._lastFps = null;
@@ -376,8 +500,19 @@ export class TopBar {
         this._onAtmosphere = snapshot => this._renderWitnessClock(snapshot);
         eventBus.on('atmosphere:updated', this._onAtmosphere);
 
-        this._onUsage = (usage) => { this._usage = usage; };
+        this._onUsage = (usage) => {
+            this._usage = usage;
+            this._scheduleReactiveRender();
+        };
         eventBus.on('usage:updated', this._onUsage);
+        // EN-4: the server came back as another build or boot; this tab
+        // still runs the client it loaded. A static chip offers the reload.
+        this._onServerChanged = (change) => {
+            if (this._destroyed || !change?.to) return;
+            this._serverChange = change;
+            this._renderServerChange();
+        };
+        eventBus.on('ws:server-changed', this._onServerChanged);
 
         this._onVillageState = (state) => {
             if (!state?.link) return;
@@ -399,12 +534,14 @@ export class TopBar {
 
         if (this.modal && this.els.version) {
             this.els.version.dataset.tip = 'View changelog';
-            this._onVersionClick = () => this._openChangelog();
+            // While the EN-4 chip shows, the version is the reload.
+            const activate = () => (this._serverChange ? window.location.reload() : this._openChangelog());
+            this._onVersionClick = activate;
             this.els.version.addEventListener('click', this._onVersionClick);
             this._onVersionKeydown = (e) => {
                 if (e.key === 'Enter' || e.key === ' ') {
                     if (e.key === ' ') e.preventDefault();
-                    this._openChangelog();
+                    activate();
                 }
             };
             this.els.version.addEventListener('keydown', this._onVersionKeydown);
@@ -1201,8 +1338,10 @@ export class TopBar {
         this._renderCount(this.els.idle, stats.idle, pending);
         this._renderCount(this.els.waiting, stats.waiting, pending);
         this._renderAttention(stats, pending);
+        this._renderQuota(pending);
 
         this._renderActivityRail(stats);
+        this._fitCenterIfChanged();
     }
 
     // Before the first snapshot the slot claims nothing it has not seen. The
@@ -1220,16 +1359,87 @@ export class TopBar {
             }
             if (count > 0) lit.push({ key, count, noun });
         }
-        frame.hidden = lit.length === 0;
+        const account = pending ? null : codexAccountLimit(this._usage);
+        if (this.els.accountLimit) this.els.accountLimit.hidden = !account;
+        frame.hidden = lit.length === 0 && !account;
         this._renderOldestWait(lit.length ? this.world : null);
-        if (!lit.length) return;
-        const lead = ATTENTION_PARTS.find(({ key }) => key === lit[0].key);
+        if (frame.hidden) return;
+        // An account limit alone leads in the limit slice.
+        const lead = ATTENTION_PARTS.find(({ key }) => key === (lit[0]?.key || 'quota'));
         if (frame.dataset.lead !== lead.key) {
             for (const { frame: slice } of ATTENTION_PARTS) frame.classList.toggle(slice, slice === lead.frame);
             frame.dataset.lead = lead.key;
         }
-        frame.dataset.tip = `Needs action: ${lit.map(({ count, noun }) => `${count} ${noun}`).join(' · ')} · frame them`;
-        frame.dataset.tipKey = 'A';
+        const facts = [...lit.map(({ count, noun }) => `${count} ${noun}`), ...(account ? [account.tip] : [])];
+        // `A` frames agents; an account limit alone has none to frame.
+        frame.dataset.tip = lit.length ? `Needs action: ${facts.join(' · ')} · frame them` : facts.join(' · ');
+        if (lit.length) frame.dataset.tipKey = 'A';
+        else delete frame.dataset.tipKey;
+    }
+
+    // SV-7 — the Claude quota unit: percent over a minute-grain reset
+    // countdown on the shared 1 Hz tick, the rate-limited hue at 85 %
+    // (the pressure cue), `TOKEN EXPIRED` on a 401; hidden while unknown.
+    _renderQuota(pending) {
+        const node = this.els.quota;
+        if (!node) return;
+        const view = pending ? null : claudeQuotaView(this._usage);
+        this._quotaView = view;
+        node.hidden = !view;
+        if (!view) {
+            this._unsubscribeQuota?.();
+            this._unsubscribeQuota = null;
+            return;
+        }
+        node.classList.toggle('topbar__quota--pressure', view.pressure);
+        node.classList.toggle('topbar__quota--expired', view.expired);
+        setText(this.els.quotaValue, view.value);
+        node.dataset.tip = view.tip;
+        if (!this._unsubscribeQuota) {
+            this._unsubscribeQuota = subscribeElapsedText(this.els.quotaLabel, now => quotaCaption(this._quotaView, now));
+        } else {
+            setText(this.els.quotaLabel, quotaCaption(view, elapsedTickNow()));
+        }
+    }
+
+    // EN-4 — static, no blink: the version becomes `UPDATED v0.59 · RELOAD`
+    // (or `RESTARTED · RELOAD` for the same version), and a press reloads.
+    _renderServerChange() {
+        const node = this.els.version;
+        const change = this._serverChange;
+        if (!node || !change) return;
+        const version = change.versionChanged && change.to?.version ? shortVersion(change.to.version) : '';
+        setText(node, version ? `UPDATED ${version} · RELOAD` : 'RESTARTED · RELOAD');
+        node.classList.add('topbar__version--update');
+        node.dataset.tip = version
+            ? `The server now runs ${version}; this tab still runs the old client. Reload to update.`
+            : 'The server restarted; this tab still runs the client it loaded. Reload to pick up any change.';
+    }
+
+    // Shed only when something that sets the centre's width changed.
+    _fitCenterIfChanged() {
+        if (!this.els.center) return;
+        const parts = ATTENTION_PARTS.map(({ key }) => this.els.attentionParts?.[key]?.part?.hidden);
+        const key = [
+            this.els.attention?.hidden, ...parts, this.els.accountLimit?.hidden, this.els.attentionAge?.part?.hidden,
+            this.els.tokens?.textContent?.length, this.els.rate?.textContent, this.els.tokensLabel?.textContent,
+            this.els.quota?.hidden, this.els.quotaValue?.textContent?.length,
+        ].join('|');
+        if (key === this._fitKey) return;
+        this._fitKey = key;
+        this._fitCenter();
+    }
+
+    // UI-10 — drop units whole, in CENTER_SHED_ORDER, until nothing wraps
+    // onto the clipped second row. Desktop only: `/m/` sheds in mobile.css.
+    _fitCenter() {
+        const center = this.els.center;
+        if (!center?.isConnected || document.documentElement?.dataset?.cvProfile === 'mobile') return;
+        for (const unit of CENTER_SHED_ORDER) center.classList.remove(`topbar__center--shed-${unit}`);
+        for (const unit of CENTER_SHED_ORDER) {
+            if (center.scrollHeight <= center.clientHeight) break;
+            center.classList.add(`topbar__center--shed-${unit}`);
+        }
     }
 
     // The oldest-wait part: shown only beside lit counts with a known anchor;
@@ -1298,7 +1508,7 @@ export class TopBar {
         if (this.els.rateWrap) {
             const seen = `Tokens seen today while ClaudeVille was open in this browser${sinceText ? `, since ${sinceText}` : ''}`;
             this.els.rateWrap.dataset.tip = rate
-                ? `${seen}, now running at about ~${formatCost(rate.costPerHour)}/hour at estimated API rates. Rate match: mixed session models; revision ${TokenUsage.rateRevision}. Click for project and provider detail.`
+                ? `${seen}, now running at about ~${formatCost(rate.costPerHour)}/hour at estimated API rates, each session priced at its own model's rates (revision ${TokenUsage.rateRevision}). Click for project and provider detail.`
                 : `${seen}. A burn rate appears after a couple of minutes of activity. Click for project and provider detail.`;
         }
         if (this.els.rateWrap && this._coverageNote) this.els.rateWrap.dataset.tip += ` ${this._coverageNote}`;
@@ -1361,7 +1571,7 @@ export class TopBar {
             .some((agent) => agent.cost?.unknownModel === true);
         const note = el('div', {
             className: 'topbar__spend-note',
-            title: `Estimated API pricing · rate match: mixed session models · revision ${TokenUsage.rateRevision}`,
+            title: `Estimated API pricing, each session priced at its own model's rates · revision ${TokenUsage.rateRevision}`,
         }, [
             `5-minute burn rate first · today observed totals · estimated API pricing, revision ${TokenUsage.rateRevision}. ${this._coverageNote || ''}`,
             hasUnknownModel ? ' ' : null,
@@ -1412,7 +1622,7 @@ export class TopBar {
                 : activeNoSpend ? 'WATCHING · no spend observed' : 'QUIET';
             const detail = `${formatNumber(row.tokens)} tokens · ~${formatCost(row.cost)}`;
             section.appendChild(el('div', {
-                title: `${projects ? row.key : `${name} provider`} · estimated API rates · rate match: mixed session models · revision ${TokenUsage.rateRevision}`,
+                title: `${projects ? row.key : `${name} provider`} · estimated API rates, each session priced at its own model's rates · revision ${TokenUsage.rateRevision}`,
                 className: 'topbar__spend-row',
             }, [
                 el('div', {
@@ -1779,6 +1989,10 @@ export class TopBar {
         this.els.attention?.remove();
         this._unsubscribeOldestWait?.();
         this._unsubscribeOldestWait = null;
+        this.els.quota?.remove();
+        this._unsubscribeQuota?.();
+        this._unsubscribeQuota = null;
+        eventBus.off('ws:server-changed', this._onServerChanged);
         if (this.timeInterval) {
             clearInterval(this.timeInterval);
             this.timeInterval = null;

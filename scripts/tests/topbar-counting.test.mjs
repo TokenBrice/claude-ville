@@ -11,7 +11,12 @@ import {
 import { World } from '../../claudeville/src/domain/entities/World.js';
 import { AgentStatus } from '../../claudeville/src/domain/value-objects/AgentStatus.js';
 import { shortcutBlocked } from '../../claudeville/src/presentation/shared/ShortcutGuard.js';
-import { connectionChip } from '../../claudeville/src/presentation/shared/TopBar.js';
+import {
+    claudeQuotaView,
+    codexAccountLimit,
+    connectionChip,
+    quotaCaption,
+} from '../../claudeville/src/presentation/shared/TopBar.js';
 
 function villageAfter(actions) {
     return actions.reduce((state, action) => reduceVillageState(state, action), initialVillageState());
@@ -116,6 +121,47 @@ test('one shortcut guard: no key acts while typing, under the modal or a popover
     assert.equal(shortcutBlocked(key(), { doc: doc({ modalOpen: true }) }), true, 'under the modal');
     assert.equal(shortcutBlocked(key(), { doc: doc({ popoverOpen: true }) }), true, 'under an auto popover');
     assert.equal(shortcutBlocked(key('BODY', { repeat: true }), { doc: doc() }), true, 'a held key');
+});
+
+test('the quota unit shows the fuller Claude window, its countdown and the pressure cue (SV-7)', () => {
+    const now = 1_000_000_000;
+    const HOUR = 3_600_000;
+    const usage = {
+        quota: { fiveHour: 0.62, sevenDay: 0.88, fiveHourResetsAt: now + 72 * 60_000, sevenDayResetsAt: now + 51 * HOUR },
+        quotaError: null,
+    };
+    const view = claudeQuotaView(usage, now);
+    assert.equal(view.value, '88%');
+    assert.equal(view.pressure, true, '7-day at 88 % is pressure');
+    assert.equal(quotaCaption(view, now), '7D · 2D3H');
+    assert.equal(view.tip, 'Claude quota · 5-hour 62%, resets in 1h12m · 7-day 88%, resets in 2d3h');
+
+    const calm = claudeQuotaView({ quota: { fiveHour: 0.4, sevenDay: 0.2, fiveHourResetsAt: now + 30 * 60_000 } }, now);
+    assert.deepEqual([calm.value, calm.pressure, quotaCaption(calm, now)], ['40%', false, '5H · 30M']);
+    assert.equal(quotaCaption(claudeQuotaView({ quota: { fiveHour: 0.4 } }, now), now), '5H QUOTA', 'no reset known');
+
+    const expired = claudeQuotaView({ quota: { fiveHour: null, sevenDay: null }, quotaError: { status: 401, at: now } }, now);
+    assert.deepEqual([expired.value, quotaCaption(expired, now)], ['—', 'TOKEN EXPIRED']);
+    assert.match(claudeQuotaView({ ...usage, quotaError: { status: 429, at: now } }, now).tip, /throttled/);
+
+    // Absent fields hide the unit: an old server, or no Claude quota at all.
+    assert.equal(claudeQuotaView(null, now), null);
+    assert.equal(claudeQuotaView({ quota: { fiveHour: null, sevenDay: null } }, now), null);
+});
+
+test('the account LIMIT comes from the Codex window alone, never a session (Q3)', () => {
+    const now = 2_000_000_000;
+    const limited = codexAccountLimit({
+        codex: {
+            usedPercent: 100, windowMinutes: 10080, resetsAt: now + 98 * 3_600_000,
+            credits: { balance: 2510.33, hasCredits: true, unlimited: false },
+            limitReached: true, observedAt: now - 3 * 3_600_000,
+        },
+    }, now);
+    assert.match(limited.tip, /^Codex account at its weekly limit · 100% used · resets in 4d2h · .*credits left · seen 3h ago$/);
+    assert.equal(codexAccountLimit({ codex: { usedPercent: 63, limitReached: false } }, now), null);
+    assert.equal(codexAccountLimit({ codex: null }, now), null, 'no rollout carried rate limits');
+    assert.equal(codexAccountLimit({}, now), null, 'an old server');
 });
 
 test('the simulator never reads as a lost link', () => {
