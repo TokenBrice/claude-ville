@@ -199,9 +199,12 @@ function checkVisitReplayWindow() {
 
 function checkSharedRepositoryVisitCost() {
   const now = 2_000_000;
+  // Git enrichment hands every session in a repository the commits one of
+  // them made: 120 commits owned by the first agent, carried by all 100.
+  const owner = 'shared-agent-0';
   const shared = Array.from({ length: 120 }, (_, index) => ({
     ...gitEvent(`shared-${index}`, now - 2_000 + index),
-    sessionId: 'git-repo-shared',
+    sessionId: owner,
   }));
   const agents = Array.from({ length: 100 }, (_, index) => ({
     id: `shared-agent-${index}`,
@@ -221,8 +224,14 @@ function checkSharedRepositoryVisitCost() {
   const manager = new VisitIntentManager({ now: () => now });
   manager.reconcile(agents, now);
   const diagnostics = manager.getDiagnostics();
+  // A carrier drops the copies it does not own before anything is normalized
+  // (AG-8), so 100 carriers still cost only the 121 owned events, and only the
+  // owners walk for them.
   assert.equal(diagnostics.gitReplayNormalized, 121);
-  assert.ok(diagnostics.gitReplayRawDuplicates >= 11_880);
+  const gitIntentAgents = agents
+    .filter(agent => [...(manager.intentsByAgent.get(agent.id)?.values() || [])].some(intent => intent.source === 'git'))
+    .map(agent => agent.id);
+  assert.deepEqual(gitIntentAgents, [owner, agents.at(-1).id]);
   const finalAgentIntents = [...(manager.intentsByAgent.get(agents.at(-1).id)?.values() || [])];
   assert.equal(finalAgentIntents.some(intent => intent.source === 'git' && intent.reason === 'push'), true);
   assert.equal(finalAgentIntents.some(intent => intent.source === 'alert'), true);
