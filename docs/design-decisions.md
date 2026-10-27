@@ -388,6 +388,8 @@ A ship departs when the server has verified that a remote-tracking ref contains 
 
 Work the default branch carries under other shas also landed: a pull request squash-merged (at some commit on the default branch's first-parent line since the fork, every file the branch changed read exactly as on the branch tip, so later edits to those files do not hide the merge) or rebase-merged (per commit, by patch id). Without this, a pushed branch squash-merged on GitHub and pruned by `git fetch --prune` re-docked its already departed ships, because no remote-tracking ref contained their shas any more. The client harbor converges on the wire: given every current event, a docked commit nothing reports any more fades out and is forgotten, so live state never keeps ships a reload would drop (before, a ship left only on a departure the page happened to see, and one whose session ended before the push stayed until reload).
 
+Inbound hulls (a `git pull` or `git fetch`, a PR cutter) carry no local cargo: no push ever sails one, and none holds its repo's anchorage. A pull hull lies at its berth only as long as a fetch lies at anchor (36 s after it arrives), then retires. Before, pull hulls never left, and a day of pulls sailed out together on an unrelated push.
+
 The operator settled eight presentation choices (2026-10-15):
 
 | # | Decision | Rationale |

@@ -419,7 +419,8 @@ export function ensureRepoAnchorage(state, project) {
 export function syncRepoAnchorages(state, activeProjects = null) {
     const keep = new Set();
     for (const ship of state.ships.values()) {
-        if (ship.status === 'docked') keep.add(repoAnchorageKey(ship.project));
+        // VB-2 — a docked pull hull, like an anchored fetch, never holds a slot.
+        if (ship.status === 'docked' && !ship.isInbound) keep.add(repoAnchorageKey(ship.project));
     }
     for (const project of activeProjects || []) keep.add(repoAnchorageKey(project));
     for (const key of [...state.repoAnchorages.keys()]) {
@@ -981,9 +982,10 @@ export function isHistoricalCommittedBeforePush(event, history, now, containment
 // How a push reaches a ship: 'sha' when the server verified the ship's commit
 // landed, 'branch' when the ship sits on a pushed branch, null otherwise.
 // A push with no target departs only branch-less work from its own checkout
-// (S-H2, S-M4): it never acts as a wildcard.
+// (S-H2, S-M4): it never acts as a wildcard. VB-2 — an inbound hull (a pull,
+// a fetch, a PR cutter) carries no local cargo, so no push ever sails it.
 export function pushMatchesShip(event, ship, target = pushTarget(event)) {
-    if (!ship || ship.project !== event.project || !target.cargo) return null;
+    if (!ship || ship.isInbound || ship.project !== event.project || !target.cargo) return null;
     const shas = shipShas(ship);
     if (target.landed.length && shas.length) {
         // P1-1 — the landed set is authoritative for sha-bearing cargo.
@@ -2251,6 +2253,14 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
             }
             continue;
         }
+        // VB-2 — a docked pull hull expires on the fetch clock below: no
+        // later event ever sails an inbound hull out.
+        if (ship.status === 'docked' && ship.isInbound) {
+            if (now - (ship.arrivingStartedAt || now) > INBOUND_DURATION_MS * 2) {
+                retireHarborShip(state, id, ship, now, { recordFloor: false });
+            }
+            continue;
+        }
         // 3.2 — anchored fetch ships expire after a while; W7.9 moored and
         // quayed PR cutters on their own holds.
         if (ship.status === 'anchored') {
@@ -2322,7 +2332,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
 export function harborStateHasTimedLifecycle(state) {
     if (state?.batches?.size) return true;
     for (const ship of state?.ships?.values?.() || []) {
-        if (ship.status === 'docked') continue;
+        if (ship.status === 'docked' && !ship.isInbound) continue;
         // Moored and quayed PR cutters only expire, on the maintenance tick.
         if (ship.status === 'anchored' && ship.prShip) continue;
         return true;

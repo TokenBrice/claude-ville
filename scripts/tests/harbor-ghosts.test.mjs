@@ -6,6 +6,10 @@ import {
     normalizeGitEvent,
     reduceHarborTrafficState,
 } from '../../claudeville/src/presentation/character-mode/HarborTraffic.js';
+import {
+    INBOUND_DURATION_MS,
+    harborStateHasTimedLifecycle,
+} from '../../claudeville/src/presentation/character-mode/HarborState.js';
 
 // Track A server additions: `rewritten.oldIds` retires ghost ships by event id
 // (the only way a sha-less ghost retires), `unresolved: true` events never
@@ -129,4 +133,59 @@ test('a fading commit whose report returns with a push carrying its sha sails', 
     harbor.reconcile([agent], T + 2 * S + 500);
     assert.equal(harbor.state.ships.get('flicker').status, 'departing');
     harbor.dispose();
+});
+
+// VB-2 (lane 03 harness harbor/h1): an inbound `git pull` hull follows the
+// fetch rules. It expires on the fetch clock, never holds its repo's
+// anchorage, and no push ever selects it.
+test('VB-2: a docked pull hull expires on the fetch clock, with or without its report', () => {
+    const pull = { id: 'pull-1', type: 'pull', remote: 'origin', branch: 'main', targetRef: 'main', success: true, exitCode: 0, timestamp: T };
+    let state = reduce([pull], T + S);
+    assert.equal(state.ships.get('inbound:pull-1').status, 'arriving');
+    state = reduceHarborTrafficState(state, [], { now: T + 40 * S });
+    assert.equal(state.ships.get('inbound:pull-1').status, 'docked');
+    assert.equal(harborStateHasTimedLifecycle(state), true, 'a docked pull hull keeps the reducer on its clock');
+    // Arrival started at T + 1 s: anchored or docked, an inbound hull lies
+    // INBOUND_DURATION_MS after arriving, as a fetch does.
+    state = reduceHarborTrafficState(state, [norm(pull)], { now: T + S + 2 * INBOUND_DURATION_MS - S, complete: true });
+    assert.equal(state.ships.get('inbound:pull-1')?.status, 'docked');
+    state = reduceHarborTrafficState(state, [norm(pull)], { now: T + S + 2 * INBOUND_DURATION_MS + S, complete: true });
+    assert.equal(state.ships.has('inbound:pull-1'), false, 'expired while still on the wire');
+    state = reduceHarborTrafficState(state, [norm(pull)], { now: T + 24 * 3600 * S, complete: true });
+    assert.equal(state.ships.has('inbound:pull-1'), false, 'a replayed report never re-docks it');
+});
+
+test('VB-2: a day of pulls leaves no hull and no claimed anchorage once the session goes', () => {
+    const harbor = new HarborTraffic({});
+    const agent = { id: 'a', sessionId: 'a', projectPath: REPO, repoRoot: REPO, gitEvents: [] };
+    for (let i = 0; i < 40; i++) {
+        const at = T + i * 10 * 60 * S;
+        agent.gitEvents = [...agent.gitEvents, { id: `pull-${i}`, type: 'pull', project: REPO, repoRoot: REPO, remote: 'origin', branch: 'main', success: true, exitCode: 0, timestamp: at }].slice(-3);
+        harbor.reconcile([{ ...agent }], at + S);
+        harbor.reconcile([{ ...agent }], at + 60 * S);
+        harbor.reconcile([{ ...agent }], at + 2 * 60 * S);
+    }
+    harbor.reconcile([], T + 41 * 10 * 60 * S);
+    harbor.reconcile([], T + 41 * 10 * 60 * S + 20 * S);
+    assert.equal([...harbor.state.ships.values()].filter(ship => ship.isInbound).length, 0);
+    assert.equal(harbor.state.repoAnchorages.has(REPO), false, 'the repo anchorage is released');
+    harbor.dispose();
+});
+
+test('VB-2: a push on the pulled branch never sails an inbound hull', () => {
+    const pull = { id: 'pull-x', type: 'pull', remote: 'origin', branch: 'main', targetRef: 'main', success: true, exitCode: 0, timestamp: T };
+    const commit = { id: 'c-1', type: 'commit', sha: 'e'.repeat(40), branch: 'main', label: 'local work to publish', timestamp: T + 2 * S, success: true };
+    let state = reduce([pull, commit], T + 3 * S);
+    state = reduceHarborTrafficState(state, [], { now: T + 40 * S });
+    assert.equal(state.ships.get('inbound:pull-x').status, 'docked');
+    // A branch push (no landed shas) and a sha push both leave the pull hull.
+    for (const push of [
+        { id: 'p-branch', type: 'push', branch: 'main', timestamp: T + 41 * S, success: true, exitCode: 0, refs: [{ src: 'main', dst: 'main', status: 'ok' }] },
+        { id: 'p-sha', type: 'push', branch: 'main', timestamp: T + 41 * S, success: true, exitCode: 0, landedShas: ['e'.repeat(40)] },
+    ]) {
+        const after = reduce([pull, commit, push], T + 42 * S, state);
+        assert.equal(after.ships.get('c-1').status, 'departing', `${push.id} sails the commit`);
+        assert.equal(after.ships.get('inbound:pull-x').status, 'docked', `${push.id} leaves the pull hull`);
+        assert.equal(after.batches.get(`push-batch:${push.id}`).shipIds.includes('inbound:pull-x'), false);
+    }
 });
