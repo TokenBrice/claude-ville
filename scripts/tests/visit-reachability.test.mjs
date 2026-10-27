@@ -49,7 +49,6 @@ const keyOf = (tile) => `${Math.round(tile.tileX)},${Math.round(tile.tileY)}`;
 const SEALED_POCKETS = Object.freeze([
     { label: 'the shore tile under the pier lantern', has: (x, y) => x === 25 && y === 22 },
     { label: 'the far north-west shore behind the farm', has: (x, y) => x <= 16 && y <= 17 },
-    { label: 'VB-5: the Harbor pier pocket behind prop.saltCrates', has: (x, y) => (x === 26 || x === 27) && y === 21 },
 ]);
 
 // Standing places that are open water today, each named for the plan item
@@ -59,11 +58,6 @@ const KNOWN_GAPS = new Map([
     ['harbor-ledger', 'VB-6: QUAY_PLACES (harbor-rail, harbor-ledger) stand in open water'],
     ['lighthouse-shore', 'lighthouse-shore is open water on the live grid (the ambient picker skips it: dead, not a trap)'],
 ]);
-const PENDING_PLACES = new Map([
-    ['26,21', 'VB-5: prop.saltCrates at 26,20 seals the Harbor pier pocket'],
-    ['27,21', 'VB-5: prop.saltCrates at 26,20 seals the Harbor pier pocket'],
-]);
-
 function standingPlaces() {
     const places = [];
     const add = (tile, label) => places.push({ tileX: tile.tileX, tileY: tile.tileY, label });
@@ -117,7 +111,7 @@ test('every standing place is reachable on foot from the village gate (VB-5)', (
     const failures = [];
     for (const place of standingPlaces()) {
         const why = unreachable(place);
-        if (why && !PENDING_PLACES.has(keyOf(place))) failures.push(`${place.label} ${keyOf(place)} is ${why}`);
+        if (why) failures.push(`${place.label} ${keyOf(place)} is ${why}`);
     }
     assert.deepEqual(failures, []);
 });
