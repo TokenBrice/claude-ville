@@ -760,16 +760,19 @@ export function drawAllyTethers(ctx, {
     }
 }
 
-function prioritizedChatPairs(pairs, agentSprites) {
+// The pairs whose sessions acted last keep their arcs. `lastSessionActivity`
+// is the session's own activity time; `lastActive` is only the last
+// WebSocket touch, which every message stamps on every agent (VB-14).
+export function prioritizedChatPairs(pairs, agentSprites) {
     return [...(pairs || [])]
         .sort((a, b) => {
             const aTime = Math.max(
-                agentSprites?.get?.(a.aId)?.agent?.lastActive || 0,
-                agentSprites?.get?.(a.bId)?.agent?.lastActive || 0,
+                agentSprites?.get?.(a.aId)?.agent?.lastSessionActivity || 0,
+                agentSprites?.get?.(a.bId)?.agent?.lastSessionActivity || 0,
             );
             const bTime = Math.max(
-                agentSprites?.get?.(b.aId)?.agent?.lastActive || 0,
-                agentSprites?.get?.(b.bId)?.agent?.lastActive || 0,
+                agentSprites?.get?.(b.aId)?.agent?.lastSessionActivity || 0,
+                agentSprites?.get?.(b.bId)?.agent?.lastSessionActivity || 0,
             );
             return bTime - aTime;
         })

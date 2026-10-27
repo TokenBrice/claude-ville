@@ -109,7 +109,9 @@ function buildAgent(spec, timeBase, rebase = value => value) {
     if (position) agent.position = position;
     const targetPosition = positionFromSpec(spec.targetPosition);
     if (targetPosition) agent.targetPosition = targetPosition;
-    agent.lastActive = lastSessionActivity;
+    // As live: `lastActive` is the last touch (every WebSocket message stamps
+    // it on every agent), never the session's activity time (VB-14).
+    agent.lastActive = Date.now();
     return agent;
 }
 

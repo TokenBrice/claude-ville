@@ -10,11 +10,10 @@ function hasTodos(agent) {
         && agent.todos.length > 0);
 }
 
+// The session's own activity time; `lastActive` is the last WebSocket touch,
+// which every message stamps on every agent (VB-14).
 function latestActivity(agent) {
-    return Math.max(
-        Number(agent?.lastActive) || 0,
-        Number(agent?.lastSessionActivity) || 0,
-    );
+    return Number(agent?.lastSessionActivity) || 0;
 }
 
 function todosSignature(todos) {
