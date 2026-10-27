@@ -585,7 +585,11 @@ export function explicitPlanProgress(agent) {
     const total = Math.trunc(Number(progress.total));
     const done = Math.trunc(Number(progress.done));
     if (!Number.isFinite(total) || !Number.isFinite(done) || total <= 0) return null;
-    return { done: Math.min(done, total), total, source: 'exact', key: `tasks:${total}` };
+    // A task plan is its subjects as well as its size (RG-14): a second plan
+    // with the same item count is a new plan, and it closes too.
+    const tasks = Array.isArray(agent?.tasks) ? agent.tasks : [];
+    const key = `tasks:${total}:${tasks.map(task => String(task?.subject || '')).join('\u001f')}`;
+    return { done: Math.min(done, total), total, source: 'exact', key };
 }
 
 /** Unfinished before, every item done now, and big enough to be a plan. */
