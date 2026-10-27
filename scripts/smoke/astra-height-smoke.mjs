@@ -27,10 +27,14 @@ try {
         document.body.append(canvas);
         const renderer = new GpuWorldRenderer(canvas);
         const camera = { x: 0, y: 0, zoom: 1, _dpr: () => 1 };
-        // 2.2 — a ground receiver (world x 16) and a lamp foot (world x 144,
-        // 24 px up) with the RG8 footprint field between them.
+        // 2.2 — a ground receiver (world x 16) and a lamp foot (world x 112,
+        // 24 px up) with the RG8 footprint field between them. The receiver
+        // stands 96 px out, in the pool's mid course: since the v0.51.1 lamp
+        // retune the outer course at 128 px of a 180 px lamp adds only 4
+        // levels over the unlit ground (74 -> 78), too little for the > 5
+        // shadow margin, while the footprint still blocked 3 of the 4.
         const feed = { lighting: { ambientLight: 0, beaconIntensity: 1 }, reducedMotion: true,
-            lights: [{ id: 'probe', x: 144, y: 32, footX: 144, footY: 32, radiusWorld: 180, height: 24,
+            lights: [{ id: 'probe', x: 112, y: 32, footX: 112, footY: 32, radiusWorld: 180, height: 24,
                 radius: 180, intensity: 2, r: 255, g: 210, b: 150 }] };
         const sample = (blockHeight) => {
             const data = new Uint8Array(40 * 16 * 2);
