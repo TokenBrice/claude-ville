@@ -355,6 +355,18 @@ function gitEventFailed(event) {
     return /^(failed|error|rejected|cancel+ed)$/i.test(textOf(event?.status));
 }
 
+// A pull request merge stone needs evidence the merge landed: the call's own
+// success (an explicit flag, exit 0, a success status) or a merged or
+// verified status. A pending `gh pr merge` reports no outcome yet, and the
+// absence of a result is never success, so it plants nothing.
+function mergeLanded(event) {
+    if (!event || event.dryRun === true || gitEventFailed(event)) return false;
+    if (event.success === true) return true;
+    const rawExit = event.exitCode ?? event.exit_code;
+    if (rawExit !== null && rawExit !== undefined && Number.isFinite(Number(rawExit))) return Number(rawExit) === 0;
+    return /^(success|succeeded|completed|landed|merged|verified)$/i.test(textOf(event.status));
+}
+
 // `PR #12` from the pull URL the adapter scraped, else a plain noun.
 function pullRequestLabel(event) {
     const match = textOf(event?.url).match(/\/pull\/(\d+)\/?$/);
@@ -392,7 +404,7 @@ export class MonumentRules {
             return this._featureStone(event);
         }
         if (type === 'pr-merge') {
-            return gitEventFailed(event) ? null : this._pullRequestStone(event);
+            return mergeLanded(event) ? this._pullRequestStone(event) : null;
         }
         return null;
     }
