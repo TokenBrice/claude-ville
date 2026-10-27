@@ -172,9 +172,10 @@ test('the lit slot counts needs-you, errored and rate-limited agents exactly, hi
 test('FPS counts elapsed intervals accurately and excludes suspended time', async () => {
     const { IsometricRenderer } = await import('../../claudeville/src/presentation/character-mode/IsometricRenderer.js');
     const { eventBus } = await import('../../claudeville/src/domain/events/DomainEvent.js');
+    const { createFramePacing } = await import('../../claudeville/src/presentation/character-mode/FramePacing.js');
     const samples = [];
     const off = eventBus.on('fps:updated', value => samples.push(value));
-    const renderer = Object.assign(Object.create(IsometricRenderer.prototype), { frameId: null });
+    const renderer = Object.assign(Object.create(IsometricRenderer.prototype), { frameId: null, _framePacing: createFramePacing() });
     const frame = now => IsometricRenderer.prototype._trackFps.call(renderer, now);
     try {
         for (const hz of [30, 60, 120, 144]) {
