@@ -110,6 +110,14 @@
     text-decoration: underline solid var(--gold-hi);
 }
 
+/* EN-4 — the server runs another build: a framed, static reload chip. */
+.topbar__version--update {
+    padding: 0 4px;
+    color: var(--ink-1);
+    text-decoration: none;
+    box-shadow: inset 0 0 0 1px var(--line-2);
+}
+
 /* FPS is a permanent instrument beside the clock, including while idle. Its
    box fits the widest reading (`· FPS idle`), so the centre instrument keeps
    its x when the render loop idles in Dashboard (9.1). */
@@ -585,12 +593,47 @@
 .topbar__ledger {
     display: flex;
     align-items: center;
+    gap: 12px;
     min-width: 0;
     height: 32px;
     padding-left: 12px;
     border-left: 1px solid var(--line-1);
     overflow: hidden;
     flex-shrink: 1;
+}
+
+/* UI-10 — TopBar sheds whole units, least needed first, when the centre
+   runs out of width: the burn rate, the quota unit, the oldest wait, then
+   the token total. The counts never shed. */
+.topbar__center--shed-rate #statRate,
+.topbar__center--shed-quota .topbar__quota,
+.topbar__center--shed-age .topbar__attn-part--age,
+.topbar__center--shed-total .topbar__ledger {
+    display: none;
+}
+
+/* SV-7 — the Claude quota unit beside the total: the fuller window's
+   percent over `7D · 2D3H`, in the rate-limited hue once the window is 85 %
+   full (the pressure cue), `—` over `TOKEN EXPIRED` after a 401. Static. */
+.topbar__quota[hidden] {
+    display: none;
+}
+
+.topbar__quota--pressure .topbar__stat-value {
+    color: var(--cv-status-rate-limited);
+}
+
+.topbar__quota--expired .topbar__stat-value {
+    color: var(--ink-4);
+}
+
+.topbar__quota--expired .topbar__stat-label {
+    color: var(--ink-2);
+}
+
+/* Q3 — the account part names its provider where a count would sit. */
+.topbar__attn-part--account .topbar__kpi-num {
+    font-variant-numeric: normal;
 }
 
 .topbar__kpi-row {
@@ -700,9 +743,10 @@ body:has(#worldGrammar:popover-open) #topbarWorldControls {
     background: var(--bg-3);
 }
 
-/* The chip's five static states (7.3, `data-sound-state`); no animation.
+/* The chip's static states (7.3, `data-sound-state`); no animation.
    Off rests at --ink-3; armed (on, but the browser waits for a click) one
-   step brighter with a hollow gold pip; playing lit; resting gold on the
+   step brighter with a hollow gold pip; playing lit; resting, and away
+   (UI-6: paused while the page is away, resumed on return), gold on the
    quieter plate; hushed (signals only for now) with a filled pip. */
 #topbarSoundToggle[data-sound-state="armed"],
 #topbarSoundToggle[data-sound-state="hushed"] {
@@ -715,7 +759,8 @@ body:has(#worldGrammar:popover-open) #topbarWorldControls {
     background: var(--bg-3);
 }
 
-#topbarSoundToggle[data-sound-state="resting"] {
+#topbarSoundToggle[data-sound-state="resting"],
+#topbarSoundToggle[data-sound-state="away"] {
     color: var(--gold);
     background: var(--bg-2);
 }

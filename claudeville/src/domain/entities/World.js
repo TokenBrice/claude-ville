@@ -1,7 +1,5 @@
 import { eventBus } from '../events/DomainEvent.js';
-import { bucketCounts } from '../services/SignalLedger.js';
-import { AgentStatus, normalizeAgentStatus } from '../value-objects/AgentStatus.js';
-import { TokenUsage } from '../value-objects/TokenUsage.js';
+import { bucketAgents, bucketCounts } from '../services/SignalLedger.js';
 
 export class World {
     constructor() {
@@ -61,28 +59,21 @@ export class World {
         }
     }
 
+    // The top bar's KPIs (UI-1, Q4): `completed` folds into `idle` with every
+    // other quiet status, so working + idle + waiting + attention is the
+    // agent count. A departed villager (projected as completed while it walks
+    // out) is no longer an agent: it is in neither the counts nor the total.
     getStats() {
-        let totalTokens = 0;
-        let totalCost = 0;
-        let idle = 0;
-
-        for (const agent of this.agents.values()) {
-            totalTokens += TokenUsage.totalTokens(agent.tokens);
-            totalCost += agent.cost;
-            const status = normalizeAgentStatus(agent.status);
-            if (status === AgentStatus.IDLE) idle++;
-        }
-
-        const counts = bucketCounts(this.agents);
+        const buckets = bucketAgents(this.agents);
+        const counts = bucketCounts(buckets);
+        const departed = buckets.quiet.filter(agent => agent?.isDeparted).length;
         return {
-            totalTokens,
-            totalCost,
             working: counts.working,
-            idle,
+            idle: counts.quiet - departed,
             waiting: counts.watchlist,
             errored: counts.errors,
             attention: counts.actionable,
-            total: this.agents.size,
+            total: this.agents.size - departed,
             needsYou: counts.needsYou,
             errors: counts.errors,
             quota: counts.quota,

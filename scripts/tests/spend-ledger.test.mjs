@@ -191,6 +191,7 @@ test('synchronous World updates persist once per microtask cohort', async (t) =>
     assert.equal(store.records.length, 1);
     assert.deepEqual(store.records[0].value, {
         tokens: 144, cacheRead: 180, cost: 4.5,
+        coverageSince: T,
         projects: [{ key: '/work/shared', tokens: 144, cacheRead: 180, cost: 4.5 }],
         providers: [{ key: 'claude', tokens: 144, cacheRead: 180, cost: 4.5 }],
     });
@@ -201,6 +202,7 @@ test('synchronous World updates persist once per microtask cohort', async (t) =>
     assert.equal(store.records.length, 2, 'the next cohort gets its own snapshot');
     assert.deepEqual(store.records[1].value, {
         tokens: 288, cacheRead: 360, cost: 9,
+        coverageSince: T,
         projects: [{ key: '/work/shared', tokens: 288, cacheRead: 360, cost: 9 }],
         providers: [{ key: 'claude', tokens: 288, cacheRead: 360, cost: 9 }],
     });
@@ -231,6 +233,8 @@ test('World events across midnight persist the old day before banking the new da
         key: 'usageLedger:2025-01-02',
         value: {
             tokens: 30, cacheRead: 200, cost: 0.5,
+            // UI-15: the day's coverage began when the ledger started.
+            coverageSince: new Date(2025, 0, 2, 23, 59, 59, 998).getTime(),
             projects: [{ key: '/work/shared', tokens: 30, cacheRead: 200, cost: 0.5 }],
             providers: [{ key: 'claude', tokens: 30, cacheRead: 200, cost: 0.5 }],
         },
@@ -238,6 +242,8 @@ test('World events across midnight persist the old day before banking the new da
         key: 'usageLedger:2025-01-03',
         value: {
             tokens: 10, cacheRead: 50, cost: 0.25,
+            // Watching across midnight covers the new day from its start.
+            coverageSince: new Date(2025, 0, 3).getTime(),
             projects: [{ key: '/work/shared', tokens: 10, cacheRead: 50, cost: 0.25 }],
             providers: [{ key: 'claude', tokens: 10, cacheRead: 50, cost: 0.25 }],
         },
@@ -317,6 +323,7 @@ test('World events baseline identities and recounts while splitting tokens, cach
     await settleEvents();
     assert.deepEqual(store.records[0].value, {
         tokens: 275, cacheRead: 775, cost: 2,
+        coverageSince: T,
         projects: [
             { key: '/work/shared', tokens: 150, cacheRead: 500, cost: 0.5 },
             { key: '/work/new', tokens: 125, cacheRead: 275, cost: 1.5 },
@@ -383,4 +390,18 @@ test('unchanged World telemetry banks no spend and writes no ledger record', asy
     assert.deepEqual(store.records, []);
     await ledger.stop();
     assert.deepEqual(store.records, [], 'stop does not manufacture an unchanged snapshot');
+});
+
+test('coverage says when today\'s observation began, restored across reloads (UI-15)', async (t) => {
+    t.mock.method(Date, 'now', () => T);
+    const storeWith = (value) => ({ ...countingStore(), async get() { return value ? { value } : null; } });
+    const fresh = (await startedLedger(t, new World())).ledger;
+    assert.equal(fresh.coverage(T).since, T, 'a day with no record starts now');
+
+    const restored = (await startedLedger(t, new World(), storeWith({ tokens: 5, coverageSince: T - 3_600_000 }))).ledger;
+    assert.equal(restored.coverage(T).since, T - 3_600_000, 'a reload keeps the first look');
+    assert.equal(restored.today.tokens, 5);
+
+    const legacy = (await startedLedger(t, new World(), storeWith({ tokens: 5 }))).ledger;
+    assert.equal(legacy.coverage(T).since, null, 'a stored day without the field is unknown, never guessed');
 });

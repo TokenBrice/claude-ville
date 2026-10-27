@@ -20,7 +20,7 @@ function listFor(world) {
     return AttentionService.prototype.list.call({ world });
 }
 
-test('World.getStats keeps legacy meanings while counting all actionable statuses', () => {
+test('World.getStats counts every actionable status, and its KPIs sum to the agent count (UI-1)', () => {
     const world = new World();
     const statuses = [
         AgentStatus.WORKING,
@@ -34,9 +34,8 @@ test('World.getStats keeps legacy meanings while counting all actionable statuse
     for (const status of statuses) world.agents.set(status, agent(status, status));
 
     const stats = world.getStats();
+    // UI-14: the unread `totalTokens`/`totalCost` (which added cost objects) are gone.
     const legacyKeys = [
-        'totalTokens',
-        'totalCost',
         'working',
         'idle',
         'waiting',
@@ -46,12 +45,16 @@ test('World.getStats keeps legacy meanings while counting all actionable statuse
     ];
 
     for (const key of legacyKeys) assert.equal(Object.hasOwn(stats, key), true, key);
+    assert.equal(Object.hasOwn(stats, 'totalTokens'), false);
+    assert.equal(Object.hasOwn(stats, 'totalCost'), false);
     assert.equal(stats.attention, 3);
     assert.equal(stats.working, 1);
-    assert.equal(stats.idle, 1);
+    // Q4: completed folds into idle (the idle agent plus the completed one).
+    assert.equal(stats.idle, 2);
     assert.equal(stats.waiting, 1);
     assert.equal(stats.errored, 1);
     assert.equal(stats.total, 7);
+    assert.equal(stats.working + stats.idle + stats.waiting + stats.attention, stats.total);
     assert.deepEqual(
         {
             needsYou: stats.needsYou,

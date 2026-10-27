@@ -7,7 +7,7 @@ import { sessionDetailsService } from './SessionDetailsService.js';
 import { el, replaceChildren } from './DomSafe.js';
 import { publishReservedRect } from './ReservedRects.js';
 import { bucketAgents, waitAnchor } from '../../domain/services/SignalLedger.js';
-import { VillagePhase } from '../../application/VillageState.js';
+import { linkDown, VillagePhase } from '../../application/VillageState.js';
 import {
     formatElapsed,
     formatRelative,
@@ -37,7 +37,11 @@ import {
 } from './AgentPresentation.js';
 import { AvatarCanvas } from '../dashboard-mode/AvatarCanvas.js';
 
+// EN-1: a degraded village whose link is down is the server, not a source.
+const SERVER_UNREACHABLE = 'server-unreachable';
+
 const SIDEBAR_EMPTY_COPY = Object.freeze({
+    [SERVER_UNREACHABLE]: Object.freeze({ title: 'SERVER UNREACHABLE', cta: 'The local ClaudeVille server is not answering. Agents reappear here once it does.' }),
     [VillagePhase.STARTING]: Object.freeze({ title: 'LISTENING…', cta: 'Reading local sessions. Agents appear here as each one is read.' }),
     [VillagePhase.SYNCING]: Object.freeze({ title: 'LISTENING…', cta: 'Reading local sessions. Agents appear here as each one is read.' }),
     [VillagePhase.DEGRADED]: Object.freeze({ title: 'SOURCES UNREADABLE', cta: 'A local session source could not be read, so this list may be incomplete.' }),
@@ -185,7 +189,9 @@ export class Sidebar {
         this._onSharedFilterRequest = () => this._publishSharedFilter(null, true);
         this._villagePhase = null;
         this._onVillageState = (state) => {
-            const phase = state?.phase || null;
+            const phase = state?.phase === VillagePhase.DEGRADED && linkDown(state)
+                ? SERVER_UNREACHABLE
+                : (state?.phase || null);
             if (phase === this._villagePhase) return;
             this._villagePhase = phase;
             if (this._emptyLegendEl) this._paintEmptyLegend(this._emptyLegendEl);
