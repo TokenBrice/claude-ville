@@ -114,3 +114,63 @@ test('VB-7: digest work stays bounded for an oversized git event list', () => {
     assert.ok(work.keyedRows <= 2_048, `keyed rows ${work.keyedRows}`);
     assert.ok(performance.now() - started < 500, 'oversized list digest is bounded');
 });
+
+// VB-16 (SV-5 client backstop): the server re-stamps `freshness.observedAt`
+// and `ageMs` on every collect. Only its state and observation minute count.
+function freshnessReplay(deltas, initial = { state: 'fresh', observedAt: T, ageMs: 0 }) {
+    const previousNow = Date.now;
+    let now = T;
+    Date.now = () => now;
+    const world = new World();
+    const manager = new AgentManager(world, null, { clock: () => now });
+    const counts = [];
+    let updates = 0;
+    const off = eventBus.on('agent:updated', () => { updates++; });
+    const N = 20;
+    const sessions = (freshness) => Array.from({ length: N }, (_, i) => ({
+        sessionId: `s-${i}`, provider: i % 2 ? 'codex' : 'claude', model: i % 2 ? 'gpt-5.1-codex' : 'claude-opus-4-1', project: '/tmp/p',
+        status: 'active', turnState: i < 3 ? 'tool_pending' : 'working', waitReason: i < 2 ? 'permission' : null, pendingTool: i < 3 ? 'Bash' : null,
+        currentTool: i >= 3 ? 'Edit' : null, currentToolInput: i >= 3 ? 'src/a.js' : null, lastTool: 'Edit', lastActivity: T - 5_000,
+        dialogue: { kind: 'message', text: `line ${i}`, source: 'assistant' }, tokens: { input: 100 * i, output: 10 * i },
+        freshness,
+    }));
+    const ids = Array.from({ length: N }, (_, i) => `s-${i}`);
+    try {
+        manager.handleWebSocketMessage({ sessions: sessions(initial) });
+        for (const delta of deltas) {
+            now = T + delta.at;
+            updates = 0;
+            manager.handleWebSocketMessage({ sessions: sessions(delta.freshness), changes: { sessionIds: ids, shared: false } });
+            counts.push(updates);
+        }
+        return { counts, world };
+    } finally {
+        off();
+        manager.stop();
+        Date.now = previousNow;
+    }
+}
+
+test('VB-16: a freshness re-stamp alone never re-upserts a villager', () => {
+    const deltas = Array.from({ length: 20 }, (_, k) => ({ at: (k + 1) * 500, freshness: { state: 'fresh', observedAt: T, ageMs: (k + 1) * 500 } }));
+    assert.deepEqual(freshnessReplay(deltas).counts, Array(20).fill(0));
+    // The server's other re-stamp, observedAt itself, inside one minute.
+    const restamped = Array.from({ length: 20 }, (_, k) => ({ at: (k + 1) * 2_000, freshness: { state: 'fresh', observedAt: T + (k + 1) * 2_000, ageMs: 0 } }));
+    assert.deepEqual(freshnessReplay(restamped).counts, Array(20).fill(0));
+});
+
+test('VB-16: a freshness state change still updates every villager', () => {
+    const { counts, world } = freshnessReplay([{ at: 1_000, freshness: { state: 'stale', observedAt: T, ageMs: 1_000 } }]);
+    assert.deepEqual(counts, [20]);
+    assert.equal(world.agents.get('s-0').freshness.state, 'stale');
+});
+
+test('VB-16: a new observation minute still updates every villager', () => {
+    // T is minute-aligned and every session's activity age stays in minute 0.
+    const { counts, world } = freshnessReplay(
+        [{ at: 2_000, freshness: { state: 'fresh', observedAt: T + 2_000, ageMs: 0 } }],
+        { state: 'fresh', observedAt: T - 1_000, ageMs: 0 },
+    );
+    assert.deepEqual(counts, [20]);
+    assert.equal(world.agents.get('s-0').freshness.observedAt, T + 2_000);
+});

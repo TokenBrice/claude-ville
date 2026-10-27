@@ -252,6 +252,15 @@ function mixDigestKeyPart(state, value) {
     for (let index = 0; index < length; index++) mixDigestCode(state, text.charCodeAt(index));
 }
 
+// VB-16 — the server re-stamps `freshness.observedAt` and `ageMs` on every
+// collect. Only the state and the observation minute count as a change, as
+// the activity age counts by minute, so a re-stamp alone never re-upserts.
+function freshnessDigestValue(freshness) {
+    if (!freshness || typeof freshness !== 'object') return freshness ?? null;
+    const observedAt = freshness.observedAt == null ? NaN : Number(freshness.observedAt);
+    return [freshness.state ?? null, Number.isFinite(observedAt) ? Math.floor(observedAt / 60_000) : null];
+}
+
 // One `id:status:sha:url` key per row (outcome, label, scan and landed set
 // included), so an edit at any index changes the digest.
 function mixDigestKeyedRows(state, rows) {
@@ -313,7 +322,7 @@ export function digestAgentPayload(payload, diagnostics = null) {
                 ? SIGNATURE_COLLECTION_CHARACTER_BUDGET
                 : SIGNATURE_FIELD_CHARACTER_BUDGET,
         };
-        mixDigestValue(state, payload?.[field], 0, budget);
+        mixDigestValue(state, field === 'freshness' ? freshnessDigestValue(payload?.freshness) : payload?.[field], 0, budget);
     }
     const activityAgeMinute = Number.isFinite(payload?.activityAgeMs)
         ? Math.floor(payload.activityAgeMs / 60_000)
