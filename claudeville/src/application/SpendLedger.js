@@ -35,6 +35,12 @@ function cacheReadTokens(usage) {
     return TokenUsage.normalize(usage).cacheRead;
 }
 
+function startOfLocalDay(ts) {
+    const date = new Date(ts);
+    date.setHours(0, 0, 0, 0);
+    return date.getTime();
+}
+
 function localDateKey(ts = Date.now()) {
     const date = new Date(ts);
     const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -86,6 +92,10 @@ export class SpendLedger {
         this.running = false;
         this.date = localDateKey();
         this.today = { tokens: 0, cacheRead: 0, cost: 0 };
+        // UI-15: when today's observation began (this profile's first look
+        // today, restored across reloads). Null when a stored day predates
+        // the field: its start is unknown, never guessed.
+        this.coverageSince = null;
         this._todayByProject = new Map();
         this._todayByProvider = new Map();
         this._lastSeen = new Map();   // agentId → counters + attribution keys
@@ -108,7 +118,8 @@ export class SpendLedger {
         if (this.running) return this;
         this._stopPromise = null;
         this.running = true;
-        await this._load();
+        const startedAt = Date.now();
+        await this._load(startedAt);
         this._onChange = (agent) => this.observe(agent);
         eventBus.on('agent:added', this._onChange);
         eventBus.on('agent:updated', this._onChange);
@@ -379,10 +390,21 @@ export class SpendLedger {
         });
     }
 
+    /**
+     * UI-15: when today's coverage began, or null when unknown. A page that
+     * watched across midnight covers the new day from its start.
+     */
+    coverage(now = Date.now()) {
+        this.current(now);
+        return { since: this.coverageSince, dayStart: startOfLocalDay(now) };
+    }
+
     _rollOver(date) {
         // Snapshot the old day before clearing it, even within one cohort.
         this._finishCohort();
         this.date = date;
+        const [year, month, day] = date.split('-').map(Number);
+        this.coverageSince = new Date(year, month - 1, day).getTime();
         this.today = { tokens: 0, cacheRead: 0, cost: 0 };
         this._todayByProject.clear();
         this._todayByProvider.clear();
@@ -394,11 +416,13 @@ export class SpendLedger {
         // its lifetime.
     }
 
-    async _load() {
-        if (!this.store || this._loaded) return;
+    async _load(startedAt = Date.now()) {
+        if (this._loaded) return;
         this._loaded = true;
+        // A day with no stored record starts its coverage now.
+        let since = startedAt;
         try {
-            const record = await this.store.get('meta', `${LEDGER_KEY_PREFIX}${this.date}`);
+            const record = this.store ? await this.store.get('meta', `${LEDGER_KEY_PREFIX}${this.date}`) : null;
             if (record?.value) {
                 this.today = {
                     tokens: Number(record.value.tokens) || 0,
@@ -407,8 +431,11 @@ export class SpendLedger {
                 };
                 this._todayByProject = restoreTotals(record.value.projects);
                 this._todayByProvider = restoreTotals(record.value.providers);
+                const stored = Number(record.value.coverageSince);
+                since = Number.isFinite(stored) && stored > 0 ? stored : null;
             }
         } catch { /* a missing ledger just starts the day at zero */ }
+        this.coverageSince = since;
     }
 
     _persist() {
@@ -417,6 +444,7 @@ export class SpendLedger {
         const serialize = (totals) => [...totals].map(([key, value]) => ({ key, ...value }));
         const value = {
             ...this.today,
+            coverageSince: this.coverageSince,
             projects: serialize(this._todayByProject),
             providers: serialize(this._todayByProvider),
         };

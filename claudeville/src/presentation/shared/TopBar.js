@@ -151,6 +151,12 @@ function storedSoundView(storage = globalThis.window?.localStorage) {
     };
 }
 
+// Local wall-clock `HH:MM`.
+function clockLabel(ts) {
+    const date = new Date(ts);
+    return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
 function stepReadout(step) {
     return `${step} / ${SOUND_STEP_MAX}`;
 }
@@ -262,6 +268,7 @@ export class TopBar {
             chronicleBtn: document.getElementById('topbarChronicle'),
             rate: document.getElementById('statRate'),
             rateWrap: document.getElementById('statRateWrap'),
+            tokensLabel: document.querySelector('#statRateWrap .topbar__stat-label'),
             fps: document.getElementById('statFps'),
         };
         this.els.center = this.els.root?.querySelector('.topbar__center') || null;
@@ -1281,10 +1288,18 @@ export class TopBar {
         this._spendRollups = this.spendLedger?.rollups?.(now) || { projects: [], providers: [] };
         const rateText = rate ? `${formatNumber(Math.round(rate.tokensPerHour))}/h` : '';
         setText(this.els.rate, pending ? '' : [rateText, incomplete ? 'partial' : ''].filter(Boolean).join(' · '));
+        // UI-15: the ledger counts only while a page is open in this browser,
+        // so a day it began watching late says when (`TOKENS SINCE 18:45`).
+        const observed = this.spendLedger?.coverage?.(now);
+        const since = Number(observed?.since);
+        const sinceText = Number.isFinite(since) && since > (Number(observed?.dayStart) || 0) + 60_000
+            ? clockLabel(since) : '';
+        setText(this.els.tokensLabel, sinceText ? `TOKENS SINCE ${sinceText}` : 'TOKENS SEEN TODAY');
         if (this.els.rateWrap) {
+            const seen = `Tokens seen today while ClaudeVille was open in this browser${sinceText ? `, since ${sinceText}` : ''}`;
             this.els.rateWrap.dataset.tip = rate
-                ? `Tokens observed today, now running at about ~${formatCost(rate.costPerHour)}/hour at estimated API rates. Rate match: mixed session models; revision ${TokenUsage.rateRevision}. Click for project and provider detail.`
-                : 'Tokens observed today by this page. A burn rate appears after a couple of minutes of activity. Click for project and provider detail.';
+                ? `${seen}, now running at about ~${formatCost(rate.costPerHour)}/hour at estimated API rates. Rate match: mixed session models; revision ${TokenUsage.rateRevision}. Click for project and provider detail.`
+                : `${seen}. A burn rate appears after a couple of minutes of activity. Click for project and provider detail.`;
         }
         if (this.els.rateWrap && this._coverageNote) this.els.rateWrap.dataset.tip += ` ${this._coverageNote}`;
         if (this._spendPanelEl?.style.display !== 'none') this._renderSpendPanel();
