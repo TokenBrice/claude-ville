@@ -86,7 +86,36 @@ const _sessionListCache = {
   normalizedThreshold: null,
 };
 const _sessionsByProvider = new Map();
+// When each provider's slice was last observed successfully. Retention of a
+// failed provider's sessions counts from here, since an unchanged session
+// keeps the stamp of its first observation (SV-5).
+const _providerObservedAt = new Map();
 const _dirtySessionProviders = new Set();
+
+function sameObservedValue(left, right) {
+  if (left === right) return true;
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+  if (Array.isArray(left) !== Array.isArray(right)) return false;
+  if (Array.isArray(left)) {
+    return left.length === right.length && left.every((item, index) => sameObservedValue(item, right[index]));
+  }
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length
+    && keys.every(key => Object.hasOwn(right, key) && sameObservedValue(left[key], right[key]));
+}
+
+// SV-5 — a rescan that observes a session exactly as before keeps its
+// freshness object, so the wire does not report every villager as changed
+// on every delta. `freshness.observedAt` is then when this content was first
+// observed; clients read `signalObservedAt` first.
+function carryFreshness(previous, session) {
+  if (previous?.freshness?.state !== 'fresh') return session;
+  const keys = Object.keys(session);
+  if (keys.length !== Object.keys(previous).length) return session;
+  const same = keys.every(key => key === 'freshness' || (Object.hasOwn(previous, key) && sameObservedValue(previous[key], session[key])));
+  if (same) session.freshness = previous.freshness;
+  return session;
+}
 
 const _sessionDetailCache = new Map();
 const _repositoryScanCache = {
@@ -411,8 +440,9 @@ function getAllSessions(activeThresholdMs, { force = false, overlayOnly = false 
   // dirty provider slices, then merge them in the original adapter order.
   for (const adapter of adaptersToScan) {
     const previous = _sessionsByProvider.get(adapter.provider) || [];
-    _sessionsByProvider.set(adapter.provider, previous.filter(session => now - session.freshness.observedAt < DEGRADED_RETENTION_MS)
-      .map(session => ({ ...session, freshness: { ...session.freshness, state: 'stale', ageMs: now - session.freshness.observedAt } })));
+    const retainedAt = session => _providerObservedAt.get(adapter.provider) ?? session.freshness.observedAt;
+    _sessionsByProvider.set(adapter.provider, previous.filter(session => now - retainedAt(session) < DEGRADED_RETENTION_MS)
+      .map(session => ({ ...session, freshness: { ...session.freshness, state: 'stale', observedAt: retainedAt(session), ageMs: now - retainedAt(session) } })));
     const lastScanStartedAt = Date.now();
     let available = false;
     const failuresBefore = readFailures.count;
@@ -443,10 +473,15 @@ function getAllSessions(activeThresholdMs, { force = false, overlayOnly = false 
         });
         continue;
       }
+      const previousById = new Map(previous.map(session => [session.sessionId, session]));
       _sessionsByProvider.set(
         adapter.provider,
-        sessions.map((session) => normalizeSession({ ...session, freshness: { state: 'fresh', observedAt: now, ageMs: 0 } }, { provider: adapter.provider })),
+        sessions.map((session) => {
+          const normalized = normalizeSession({ ...session, freshness: { state: 'fresh', observedAt: now, ageMs: 0 } }, { provider: adapter.provider });
+          return carryFreshness(previousById.get(normalized.sessionId), normalized);
+        }),
       );
+      _providerObservedAt.set(adapter.provider, now);
       const lastSuccessAt = Date.now();
       updateProviderHealth(adapter, {
         health: sessions.length > 0 ? 'healthy' : 'empty',

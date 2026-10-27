@@ -177,7 +177,7 @@ test('v2 keyed updates reconstruct the full roster and survive fresh resync base
     });
 
     await t.test('a fresh resync restarts an already-due full snapshot floor', () => {
-      now += 20_000;
+      now += wire.DELTA_SNAPSHOT_INTERVAL_MS;
       wire.handleTextMessage(modern, JSON.stringify({ type: 'resync' }));
       const fresh = modern.messages.at(-1);
       assert.equal(fresh.type, 'init');
@@ -264,12 +264,12 @@ test('v2 keyed updates reconstruct the full roster and survive fresh resync base
       }
     });
 
-    await t.test('large patches and the 20-second floor fall back to full updates', () => {
+    await t.test('large patches and the snapshot floor fall back to full updates', () => {
       const detail = Object.fromEntries(Array.from({ length: 600 }, (_, index) => [`field${index}`, index]));
       update([{ sessionId: 'large', lastActivity: now, detail }]);
       const changed = Object.fromEntries(Object.entries(detail).map(([key, value]) => [key, value + 1]));
       assert.equal(update([{ sessionId: 'large', lastActivity: now, detail: changed }]).type, 'update');
-      now += 20_000;
+      now += wire.DELTA_SNAPSHOT_INTERVAL_MS;
       assert.equal(update([{ ...rows[0], lastMessage: 'snapshot floor' }]).type, 'update');
     });
 
@@ -287,6 +287,31 @@ test('v2 keyed updates reconstruct the full roster and survive fresh resync base
       const next = { ...first, sessions: [{ sessionId: 'constructor', value: 3 }, { sessionId: '__proto__', value: 4 }] };
       const patch = wire.createJsonPatch(wire.keyedBroadcastState(first), wire.keyedBroadcastState(next));
       assert.deepEqual(reconstruct(applyPatch(wire.keyedBroadcastState(first), patch)), next);
+    });
+
+    await t.test('SV-5: keyed arrays patch by key and rebuild the target exactly', () => {
+      const result = (id, extra = {}) => ({ id, tool: 'Bash', detail: `run ${id}`, exitCode: 0, completedAt: 1, ...extra });
+      const base = { sessionsById: { a: { lastResults: ['r5', 'r4', 'r3', 'r2', 'r1'].map(id => result(id)) } }, sessionOrder: ['a', 'b', 'c', 'd'] };
+      const shifted = { sessionsById: { a: { lastResults: ['r6', 'r5', 'r4', 'r3', 'r2'].map(id => result(id)) } }, sessionOrder: ['d', 'a', 'b', 'c'] };
+      const patch = wire.createJsonPatch(base, shifted);
+      assert.deepEqual(applyPatch(base, patch), shifted);
+      const opsAt = prefix => patch.filter(op => op.path.startsWith(prefix)).map(op => op.op).sort();
+      assert.deepEqual(opsAt('/sessionsById/a/lastResults'), ['add', 'remove'], 'a new result is one insert and one removal');
+      assert.deepEqual(opsAt('/sessionOrder'), ['add', 'remove'], 'a session moving to the front is one move');
+      // Any reorder, insertion, removal or in-place change (duplicate keys
+      // fall back to the index-wise diff) rebuilds the target exactly.
+      let seed = 7;
+      const random = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+      const keys = () => Array.from({ length: 8 }, (_, index) => `k${index}`)
+        .filter(() => random() < 0.6).sort(() => random() - 0.5)
+        .concat(random() < 0.1 ? ['k0'] : []);
+      for (let round = 0; round < 400; round++) {
+        const strings = random() < 0.5;
+        const items = list => list.map(key => (strings ? key : { id: key, value: Math.floor(random() * 3) }));
+        const before = { list: items(keys()) };
+        const after = { list: items(keys()) };
+        assert.deepEqual(applyPatch(before, wire.createJsonPatch(before, after)), after, `round ${round}`);
+      }
     });
 
     await t.test('unnegotiated and non-exact hello versions receive full updates only', () => {
