@@ -17,7 +17,8 @@ const ev = (raw) => normalizeGitEvent({ project: '/r/cache', ...raw }, {}, 0, { 
 
 test('enriching a branch-less ship regroups it into its branch squad', () => {
     const e1 = ev({ id: 'c1', type: 'commit', sha: 'aaaaaaa1', label: 'one main commit', branch: 'main', timestamp: T });
-    const e2 = ev({ id: 'c2', type: 'commit', label: 'second commit here', timestamp: T + 1000 });
+    // A quiet commit that landed (its output named no sha).
+    const e2 = ev({ id: 'c2', type: 'commit', label: 'second commit here', timestamp: T + 1000, success: true });
     let state = reduceHarborTrafficState(null, [e1, e2], { now: T + 2000 });
     const before = snapshotHarborTrafficState(state).ships;
     assert.equal(before.find(ship => ship.id === 'c1').squadCount, 2, 'main and branch-less squads');
@@ -35,7 +36,7 @@ test('the live dock layout holds the current state ship objects', () => {
     const harbor = new HarborTraffic();
     agent.gitEvents = [
         { id: 'c1', type: 'commit', project: '/r/cache', sha: 'aaaaaaa1', label: 'one main commit', branch: 'main', timestamp: T },
-        { id: 'c2', type: 'commit', project: '/r/cache', label: 'second commit here', timestamp: T + 1000 },
+        { id: 'c2', type: 'commit', project: '/r/cache', label: 'second commit here', timestamp: T + 1000, success: true },
     ];
     harbor.reconcile([agent], T + 2000, { force: true });
     agent.gitEvents = [...agent.gitEvents,

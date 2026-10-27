@@ -954,7 +954,22 @@ function rawGitEventCompletionScore(event) {
     return 0;
 }
 
+// VB-11 — >0 when `a` is the newer scan of one event: a higher `scanSeq`,
+// else (an older server) a later `scannedAt`. 0 when neither orders them.
+function rawGitEventScanOrder(a, b) {
+    const scanSeq = (event) => (event?.scanSeq == null || event.scanSeq === '' ? NaN : Number(event.scanSeq));
+    const scannedAt = (event) => Number(event?.scannedAt) || 0;
+    const left = scanSeq(a);
+    const right = scanSeq(b);
+    if (Number.isFinite(left) && Number.isFinite(right) && left !== right) return left - right;
+    return scannedAt(a) && scannedAt(b) ? scannedAt(a) - scannedAt(b) : 0;
+}
+
 function preferCanonicalRawGitEvent(previous, candidate) {
+    // A departed agent keeps its frozen copy for 90 s: the newer scan of the
+    // same event wins, whichever agent the harbor meets first.
+    const scanOrder = rawGitEventScanOrder(candidate.event, previous.event);
+    if (scanOrder !== 0) return scanOrder > 0;
     const type = gitEventKind(candidate.event);
     const previousTime = rawGitEventTime(previous.event);
     const candidateTime = rawGitEventTime(candidate.event);
@@ -987,6 +1002,10 @@ function normalizeHarborPullRequestEvent(event, agent = {}, index = 0) {
         url: String(event.url || ''),
         title: String(event.title || ''),
         status: gitEventStatusLabel(event),
+        // VB-3 — the command's own result: no outcome yet is no PR yet.
+        success: typeof event.success === 'boolean' ? event.success : null,
+        exitCode: Number.isFinite(Number(event.exitCode ?? event.exit_code)) ? Number(event.exitCode ?? event.exit_code) : null,
+        completedAt: parseEventTime(event.completedAt || event.completed_at, 0),
         label: action === 'merge' ? 'PR merged' : 'PR opened',
         command: event.command ? String(event.command) : '',
         sha: '',
@@ -1000,8 +1019,9 @@ function normalizeHarborPullRequestEvent(event, agent = {}, index = 0) {
 }
 
 // One commit reported by two sessions (a detached-worktree scan and the
-// named-branch scan) collapses to the earliest report, which still adopts
-// the other's branch: a shared commit never stays branch-less.
+// named-branch scan) collapses to its newest scan, else the earliest report,
+// which still adopts the other's branch unless that copy is an older scan: a
+// shared commit never stays branch-less, and a reset branch stays gone.
 function withAdoptedBranch(kept, dropped) {
     if (gitEventKind(kept) !== 'commit' || kept.branch || !dropped?.branch) return kept;
     return { ...kept, branch: dropped.branch, targetRef: kept.targetRef || dropped.targetRef || dropped.branch, detached: false };
@@ -1036,7 +1056,8 @@ function collectHarborGitEvents(agents, options = {}, stats = null) {
                     ? [candidate, previous]
                     : [previous, candidate];
                 kept.order = previous.order;
-                kept.event = withAdoptedBranch(kept.event, dropped.event);
+                // An older scan's branch never overrides a newer scan's membership.
+                if (rawGitEventScanOrder(dropped.event, kept.event) >= 0) kept.event = withAdoptedBranch(kept.event, dropped.event);
                 canonicalCandidates.set(canonicalKey, kept);
                 candidates[previous.order] = kept;
             });
@@ -1163,6 +1184,7 @@ function harborEventsVersion(events) {
         // #6 — every field the reducer consumes, array contents included, so
         // a re-report that only enriches an event still reaches it.
         mix(event.tag);
+        mix(event.url);
         mix(event.reason);
         mix(event.stderr);
         mix(event.detached);
@@ -2824,6 +2846,11 @@ export class HarborTraffic {
     _batchFinaleDelay(batch) {
         const status = batch?.status || 'unknown';
         if (status === 'failed' || status === 'rejected' || status === 'cancelled' || this.motionScale === 0) return 0;
+        // VB-12 — as the batch's last hull reaches the horizon (the reducer's
+        // cast-off plan), 4 % of its own sail ahead, as for a lone 48 s run.
+        if (Number.isFinite(batch?.lastArrivalAt) && Number.isFinite(batch?.startedAt)) {
+            return Math.max(0, batch.lastArrivalAt - batch.startedAt - 0.04 * (Number(batch.lastSailMs) || 0));
+        }
         // 3.1 — force-push uses a shorter departure window, so fire the whirlpool earlier.
         const baseDeparture = batch?.force === true ? FORCE_DEPARTURE_MS : DEPARTURE_MS;
         return baseDeparture * 0.96;

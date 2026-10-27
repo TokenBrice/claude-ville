@@ -141,3 +141,47 @@ test('an observed event re-emitted with scan membership is authoritative too (th
     assert.equal(harbor.state.ships.get('obs-quiet').status, 'docked', "a feature push leaves main's cargo");
     harbor.dispose();
 });
+
+// VB-11 (lane 03 harness harbor/h11): two sessions report one scanned commit;
+// a departed session keeps its frozen copy for 90 s. The newer scan wins the
+// cross-agent de-duplication whichever session the harbor meets first.
+test('VB-11: a stale copy from another session never shadows a newer scan', () => {
+    const mainPush = {
+        id: 'p-main', type: 'push', project: REPO, repoRoot: REPO, branch: 'main', timestamp: T + 20 * S, completedAt: T + 20 * S,
+        success: true, exitCode: 0, status: 'success', refs: [{ src: 'main', dst: 'main', status: 'ok' }],
+    };
+    const session = (id, events) => ({ id, sessionId: id, projectPath: REPO, repoRoot: REPO, provider: 'claude', gitEvents: events });
+    const variants = {
+        scanSeq: [scan(1, T + S, ['main', 'feature']), scan(2, T + 9 * S, ['feature'])],
+        scannedAt: [scan(null, T + S, ['main', 'feature']), scan(null, T + 9 * S, ['feature'])],
+    };
+    for (const [key, [olderScan, newerScan]] of Object.entries(variants)) {
+        for (const order of ['stale-first', 'fresh-first']) {
+            const harbor = new HarborTraffic();
+            const stale = session('A', [olderScan]);
+            harbor.reconcile([stale, session('B', [olderScan])], T + 2 * S);
+            // Main moved back to its remote: B's newer scan drops it, A's copy is frozen.
+            const fresh = session('B', [newerScan]);
+            harbor.reconcile(order === 'stale-first' ? [stale, fresh] : [fresh, stale], T + 10 * S);
+            assert.deepEqual([...harbor.state.ships.get(ID).branches], ['feature'], `${key} ${order}: main is gone`);
+            const pushed = session('B', [newerScan, mainPush]);
+            harbor.reconcile(order === 'stale-first' ? [stale, pushed] : [pushed, stale], T + 21 * S);
+            assert.equal(harbor.state.ships.get(ID).status, 'docked', `${key} ${order}: a main push leaves it`);
+            harbor.dispose();
+        }
+    }
+});
+
+test('VB-11: a newer scan that finds the commit on no branch keeps it branch-less', () => {
+    const session = (id, events) => ({ id, sessionId: id, projectPath: REPO, repoRoot: REPO, provider: 'claude', gitEvents: events });
+    for (const order of ['stale-first', 'fresh-first']) {
+        const harbor = new HarborTraffic();
+        const stale = session('A', [scan(1, T + S, ['main'])]);
+        const fresh = session('B', [scan(2, T + 9 * S, [])]);
+        harbor.reconcile(order === 'stale-first' ? [stale, fresh] : [fresh, stale], T + 10 * S);
+        const ship = harbor.state.ships.get(ID);
+        assert.deepEqual([...ship.branches], [], `${order}: no stale branch adopted`);
+        assert.equal(ship.detachedHead, true);
+        harbor.dispose();
+    }
+});

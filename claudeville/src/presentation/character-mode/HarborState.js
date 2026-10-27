@@ -88,6 +88,9 @@ export const PR_QUAY_HOLD_MS = 10 * 60 * 1000;
 export const PR_MERGE_SAIL_MS = 20000;
 export const PR_ROADSTEAD_ROWS = 3;
 export const RELEASE_CONVOY_MIN_SHIPS = 2;
+// Event kinds whose re-report under a seen id re-applies when its signature
+// (outcome, URL, scan) changes: commits (X-4) and inbound commands (VB-3).
+const SETTLING_EVENT_TYPES = new Set(['commit', 'pull', 'fetch', 'pr']);
 
 // The repo identity of a normalized event (wire contract v1): the server's
 // `repoRoot` when it resolved one, else the session project. The reducer
@@ -419,7 +422,8 @@ export function ensureRepoAnchorage(state, project) {
 export function syncRepoAnchorages(state, activeProjects = null) {
     const keep = new Set();
     for (const ship of state.ships.values()) {
-        if (ship.status === 'docked') keep.add(repoAnchorageKey(ship.project));
+        // VB-2 — a docked pull hull, like an anchored fetch, never holds a slot.
+        if (ship.status === 'docked' && !ship.isInbound) keep.add(repoAnchorageKey(ship.project));
     }
     for (const project of activeProjects || []) keep.add(repoAnchorageKey(project));
     for (const key of [...state.repoAnchorages.keys()]) {
@@ -981,9 +985,10 @@ export function isHistoricalCommittedBeforePush(event, history, now, containment
 // How a push reaches a ship: 'sha' when the server verified the ship's commit
 // landed, 'branch' when the ship sits on a pushed branch, null otherwise.
 // A push with no target departs only branch-less work from its own checkout
-// (S-H2, S-M4): it never acts as a wildcard.
+// (S-H2, S-M4): it never acts as a wildcard. VB-2 — an inbound hull (a pull,
+// a fetch, a PR cutter) carries no local cargo, so no push ever sails it.
 export function pushMatchesShip(event, ship, target = pushTarget(event)) {
-    if (!ship || ship.project !== event.project || !target.cargo) return null;
+    if (!ship || ship.isInbound || ship.project !== event.project || !target.cargo) return null;
     const shas = shipShas(ship);
     if (target.landed.length && shas.length) {
         // P1-1 — the landed set is authoritative for sha-bearing cargo.
@@ -1288,10 +1293,31 @@ export function commitEventFailed(event = {}) {
     return exitCode != null && Number.isFinite(Number(exitCode)) && Number(exitCode) !== 0;
 }
 
+// VB-3 — a git command landed only when its own result says so: `success`,
+// a zero exit, or a success status. A command still waiting on its result (a
+// permission prompt, a long hook) has none, and absence is never success.
+export function gitEventLanded(event = {}) {
+    if (typeof event.success === 'boolean') return event.success;
+    const exitCode = event.exitCode ?? event.exit_code;
+    if (exitCode != null && exitCode !== '' && Number.isFinite(Number(exitCode))) return Number(exitCode) === 0;
+    return harborEventStatus(event) === 'success';
+}
+
+// A commit's sha (read from its own output or a follow-up `git log`) and a
+// repository scan listing it are the repo's own evidence that it exists.
+export function commitEventLanded(event = {}) {
+    return gitEventLanded(event)
+        || Boolean(normalizeSha(event.sha))
+        || hasScanSeq(event)
+        || commitAttribution(event).attribution === 'scanned';
+}
+
 // The fields whose change makes a re-reported event worth re-applying.
 export function harborEventSignature(event = {}) {
     return [
         event.sha || '',
+        // VB-3 — a PR URL known only once the command finished.
+        event.url || '',
         event.branch || event.targetRef || '',
         event.success ?? '',
         event.exitCode ?? '',
@@ -1506,16 +1532,28 @@ export function findMooredPullRequest(state, event) {
 }
 
 // Moored PR cutters fill the outer-roadstead anchorages in turn, a row
-// further out each lap, so two open PRs never moor on one tile.
+// further out each lap, so two open PRs never moor on one tile. VB-13 — a
+// new cutter takes the first free mooring: one a merged or expired cutter
+// left is reused, never the slot of one still moored.
 export function pullRequestRoadsteadTile(state) {
     const anchorages = HARBOR_SQUAD_ANCHORAGES.filter(anchorage => anchorage.zone === 'outer-roadstead');
-    let slot = 0;
+    const tileAt = (slot) => {
+        const anchorage = anchorages[slot % anchorages.length] || HARBOR_SQUAD_ANCHORAGES[0];
+        const row = Math.floor(slot / Math.max(1, anchorages.length)) % PR_ROADSTEAD_ROWS;
+        return { tileX: anchorage.tileX + anchorage.rowDx * row, tileY: anchorage.tileY + anchorage.rowDy * row };
+    };
+    const taken = new Set();
     for (const ship of state.ships.values()) {
-        if (ship.prShip && ship.arrivingKind === 'pr') slot++;
+        const tile = ship.prShip && ship.arrivingKind === 'pr' ? ship.inboundRoadsteadTile : null;
+        if (tile) taken.add(`${tile.tileX},${tile.tileY}`);
     }
-    const anchorage = anchorages[slot % anchorages.length] || HARBOR_SQUAD_ANCHORAGES[0];
-    const row = Math.floor(slot / Math.max(1, anchorages.length)) % PR_ROADSTEAD_ROWS;
-    return { tileX: anchorage.tileX + anchorage.rowDx * row, tileY: anchorage.tileY + anchorage.rowDy * row };
+    const slots = Math.max(1, anchorages.length) * PR_ROADSTEAD_ROWS;
+    for (let slot = 0; slot < slots; slot++) {
+        const tile = tileAt(slot);
+        if (!taken.has(`${tile.tileX},${tile.tileY}`)) return tile;
+    }
+    // Every mooring is taken: lap round as before.
+    return tileAt(taken.size);
 }
 
 export function pullRequestShipLabel(event = {}) {
@@ -1595,13 +1633,28 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
         return shipsByEventId.get(id) || null;
     };
     let scuttleLayout = null;
+    const returningHull = ship => ship.status === 'rejecting' || ship.status === 'cancelling';
     const scuttle = (ship) => {
+        // VB-10 — a hull still sailing home from a rejected or cancelled push
+        // fades once it has re-docked (`scuttleHeld` below).
+        if (returningHull(ship)) {
+            ship.scuttleOnDock = 'retire';
+            return;
+        }
         if (ship.status !== 'docked') return;
         scuttleLayout ||= buildDockLayoutFresh(state);
         const meta = scuttleLayout.byShipId.get(ship.id);
         if (meta) ship.departFromTile = { tileX: meta.tileX, tileY: meta.tileY };
         ship.status = 'scuttling';
         ship.scuttleStartedAt = now;
+    };
+    // A rewrite or a vanish held while the hull sailed home applies at its berth.
+    const scuttleHeld = (ship) => {
+        const held = ship.scuttleOnDock;
+        if (!held) return;
+        ship.scuttleOnDock = null;
+        scuttle(ship);
+        if (held === 'vanish') ship.vanished = true;
     };
     // Live-only repos claim coastal slots only after this tail's commits have,
     // so a fresh replay parks fleets first and idle agents fill what's left.
@@ -1635,11 +1688,13 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
             if (state.seenEventIds.has(event.id)) {
                 // X-4 — a later, richer report of an event already seen
                 // updates its ship (sha, branch, a failed completion) instead
-                // of being dropped as a duplicate.
+                // of being dropped as a duplicate. VB-3 — the seen set keys
+                // on id, status and URL: a pull, fetch or PR whose settled
+                // result (or URL) arrives later re-applies below.
                 const signature = harborEventSignature(event);
-                if (event.type !== 'commit' || state.seenEventSignatures.get(event.id) === signature) continue;
+                if (!SETTLING_EVENT_TYPES.has(event.type) || state.seenEventSignatures.get(event.id) === signature) continue;
                 state.seenEventSignatures.set(event.id, signature);
-                const ship = shipForEventId(event.id);
+                const ship = event.type === 'commit' ? shipForEventId(event.id) : null;
                 if (ship) {
                     if (ship.status !== 'docked') continue;
                     if (commitEventFailed(event)) {
@@ -1660,7 +1715,8 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
         }
 
         if (event.type === 'commit') {
-            if (commitEventFailed(event)) continue;
+            // VB-3 — a commit still waiting on its result has not run.
+            if (commitEventFailed(event) || !commitEventLanded(event)) continue;
             const containment = pushHistory.landed.has(event.project) || state.containmentRepos.has(event.project);
             if (commitIsAtOrBelowReplayFloor(state, event, containment)) continue;
             if (isHistoricalCommittedBeforePush(event, pushHistory, now, containment)) continue;
@@ -1730,7 +1786,8 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
             // they handled is no ghost.
             const handled = new Set();
             for (const ship of oldShas.size ? [...state.ships.values()] : []) {
-                if (ship.project !== event.project || ship.status !== 'docked') continue;
+                // VB-10 — a hull sailing home from a rejected push is rewritten too.
+                if (ship.project !== event.project || (ship.status !== 'docked' && !returningHull(ship))) continue;
                 const shas = shipShas(ship);
                 const oldSha = [...oldShas].find(candidate => shas.some(sha => shasMatch(sha, candidate)));
                 if (!oldSha) continue;
@@ -1751,7 +1808,14 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                     if (!shipShas(twin).some(sha => shasMatch(sha, newSha))) continue;
                     handled.add(twin);
                     unindexCommitShip(commitIdentityIndex, twin);
-                    retireHarborShip(state, twin.id, twin, now, { recordFloor: false });
+                    // The twin is the new sha's own report: the folded hull
+                    // carries its event ids on, so the report keeps it on the
+                    // wire (VB-10; retiring them left no hull at all).
+                    for (const id of twin.eventIds || [twin.id]) {
+                        if (!ship.eventIds.includes(id)) ship.eventIds.push(id);
+                        shipsByEventId?.set(id, ship);
+                    }
+                    state.ships.delete(twin.id);
                 }
                 ship.shas = [...shas.filter(sha => !shasMatch(sha, oldSha)), newSha];
                 ship.sha = newSha;
@@ -1764,7 +1828,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
             const oldIds = new Set(Array.isArray(event.oldIds) ? event.oldIds.map(String) : []);
             if (oldIds.size) {
                 for (const ship of [...state.ships.values()]) {
-                    if (handled.has(ship) || ship.project !== event.project || ship.status !== 'docked') continue;
+                    if (handled.has(ship) || ship.project !== event.project || (ship.status !== 'docked' && !returningHull(ship))) continue;
                     if ((ship.eventIds || [ship.id]).some(id => oldIds.has(id))) scuttle(ship);
                 }
             }
@@ -1773,15 +1837,15 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
 
         // 3.2 — pull/fetch as inbound ships sailing toward harbor.
         if (event.type === 'pull' || event.type === 'fetch') {
-            const inboundStatus = String(event.status || gitEventStatusLabel(event) || '').toLowerCase();
-            if (inboundStatus === 'failed' || inboundStatus === 'rejected'
-                || inboundStatus === 'cancelled' || inboundStatus === 'canceled') {
-                markHarborEventSeen(state, event, now);
-                continue;
-            }
+            // VB-3 — it sails in only on its reported success; a pending or
+            // failed command brings nothing in.
+            if (!gitEventLanded(event)) continue;
             if (motionScale === 0) continue;
-            const eventAge = Number.isFinite(event.timestamp) && event.timestamp > 0
-                ? Math.max(0, now - event.timestamp)
+            // Aged from its result, as a push is (VB-1): one held by an
+            // approval still landed just now.
+            const resultAt = event.completedAt || event.timestamp;
+            const eventAge = Number.isFinite(resultAt) && resultAt > 0
+                ? Math.max(0, now - resultAt)
                 : 0;
             if (eventAge > RECENT_PUSH_REPLAY_MS) continue;
             const inboundId = `inbound:${event.id}`;
@@ -1834,15 +1898,25 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
         // command sails nothing; a PR older than the replay window appears
         // already moored (or already at the quay) instead of re-sailing.
         if (event.type === 'pr') {
-            const prStatus = String(event.status || gitEventStatusLabel(event) || '').toLowerCase();
-            if (prStatus === 'failed' || prStatus === 'rejected'
-                || prStatus === 'cancelled' || prStatus === 'canceled') continue;
-            const eventAge = Number.isFinite(event.timestamp) && event.timestamp > 0
-                ? Math.max(0, now - event.timestamp)
+            // VB-3 — a cutter moors or sails only on the command's reported
+            // success, aged from that result.
+            if (!gitEventLanded(event)) continue;
+            const resultAt = event.completedAt || event.timestamp;
+            const eventAge = Number.isFinite(resultAt) && resultAt > 0
+                ? Math.max(0, now - resultAt)
                 : 0;
             const sail = motionScale !== 0 && eventAge <= RECENT_PUSH_REPLAY_MS;
             if (event.action === 'create') {
-                if (eventAge > PR_SHIP_MOOR_MS || state.ships.has(`pr:${event.id}`)) continue;
+                const moored = state.ships.get(`pr:${event.id}`);
+                if (moored) {
+                    // A URL reported after the cutter moored still attaches.
+                    if (event.url && !moored.prUrl) {
+                        moored.prUrl = String(event.url);
+                        moored.label = pullRequestShipLabel(moored);
+                    }
+                    continue;
+                }
+                if (eventAge > PR_SHIP_MOOR_MS) continue;
                 const ship = pullRequestShip(state, event, now, displayName);
                 Object.assign(ship, {
                     status: sail ? 'arriving' : 'anchored',
@@ -1856,6 +1930,8 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 continue;
             }
             if (event.action !== 'merge') continue;
+            // A merge already applied, re-reported richer, sails nothing more.
+            if (shipForEventId(event.id)) continue;
             const moored = findMooredPullRequest(state, event);
             if (eventAge > PR_QUAY_HOLD_MS) {
                 if (moored) retireHarborShip(state, moored.id, moored, now, { recordFloor: false });
@@ -2189,12 +2265,28 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                     ship.castOffStartedAt = ship.departStartedAt;
                 }
             }
+            // VB-12 — the finale and the batch's expiry run from its last
+            // hull's arrival at the horizon, not a fixed 48 s departure.
+            if (!skipDepartureAnimation && departing.length) {
+                const last = departing.reduce((latest, { ship }) => (
+                    !latest || ship.departStartedAt + ship.departMsOverride > latest.departStartedAt + latest.departMsOverride ? ship : latest
+                ), null);
+                batch.lastArrivalAt = last.departStartedAt + last.departMsOverride;
+                batch.lastSailMs = last.departMsOverride;
+            }
         }
     }
 
     if (liveEventIds) {
         for (const ship of state.ships.values()) {
-            if (ship.vanished || ship.status !== 'docked' || ship.isInbound || reportedLive(ship)) continue;
+            if (ship.vanished || ship.isInbound) continue;
+            // VB-10 — a hull sailing home holds its vanish until it re-docks:
+            // no complete reduce may follow its return.
+            if (returningHull(ship)) {
+                if (ship.scuttleOnDock !== 'retire') ship.scuttleOnDock = reportedLive(ship) ? null : 'vanish';
+                continue;
+            }
+            if (ship.status !== 'docked' || reportedLive(ship)) continue;
             scuttle(ship);
             ship.vanished = true;
         }
@@ -2214,6 +2306,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 ship.visualPackLeadId = null;
                 ship.visualPackSize = null;
                 ship.departEventId = null;
+                scuttleHeld(ship);
             }
             continue;
         }
@@ -2229,6 +2322,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 ship.visualPackLeadId = null;
                 ship.visualPackSize = null;
                 ship.departEventId = null;
+                scuttleHeld(ship);
             }
             continue;
         }
@@ -2248,6 +2342,14 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                     ship.status = 'docked';
                     ship.eventTime = ship.eventTime || now;
                 }
+            }
+            continue;
+        }
+        // VB-2 — a docked pull hull expires on the fetch clock below: no
+        // later event ever sails an inbound hull out.
+        if (ship.status === 'docked' && ship.isInbound) {
+            if (now - (ship.arrivingStartedAt || now) > INBOUND_DURATION_MS * 2) {
+                retireHarborShip(state, id, ship, now, { recordFloor: false });
             }
             continue;
         }
@@ -2301,8 +2403,12 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
     }
 
     for (const [id, batch] of state.batches) {
-        const age = now - (batch.startedAt || now);
-        if (age > SCREEN_SUMMARY_MS + FINALE_EFFECT_MS + DEPARTURE_MS) {
+        // VB-12 — a sailing batch lasts its finale and summary past its last
+        // arrival; one with no departure keeps the fixed clock.
+        const expiresAt = Number.isFinite(batch.lastArrivalAt)
+            ? batch.lastArrivalAt + SCREEN_SUMMARY_MS + FINALE_EFFECT_MS
+            : (batch.startedAt || now) + SCREEN_SUMMARY_MS + FINALE_EFFECT_MS + DEPARTURE_MS;
+        if (now > expiresAt) {
             state.batches.delete(id);
             const push = state.pushEvents.get(String(id).replace(/^push-batch:/, ''));
             if (push && push.status !== 'success') push.settledAt = now;
@@ -2322,7 +2428,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
 export function harborStateHasTimedLifecycle(state) {
     if (state?.batches?.size) return true;
     for (const ship of state?.ships?.values?.() || []) {
-        if (ship.status === 'docked') continue;
+        if (ship.status === 'docked' && !ship.isInbound) continue;
         // Moored and quayed PR cutters only expire, on the maintenance tick.
         if (ship.status === 'anchored' && ship.prShip) continue;
         return true;
