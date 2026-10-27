@@ -350,3 +350,52 @@ test('Q3: an account LIMIT never changes a Codex session\'s own status', () => {
   const idle = { provider: 'codex', sessionId: 'codex-b', turnState: 'awaiting_input', lastActivity: now };
   assert.equal(resolveAgentStatus(idle, { usage, now }), AgentStatus.COMPLETED);
 });
+
+// PV-14 on the detail path: a rollout with no token_count yet borrows its
+// model's observed window there too, and a detail read never records one
+// (its head names the opening model, which a switch may have replaced).
+test('PV-14: a Codex session detail borrows its model\'s observed context window', () => {
+  const root = makeTempDir('claudeville-codex-window-');
+  try {
+    const now = Date.now();
+    const project = path.join(root, 'work', 'codex-window');
+    const rolloutDir = path.join(root, '.codex', 'sessions', '2026', '10', '27');
+    fs.mkdirSync(project, { recursive: true });
+    fs.mkdirSync(rolloutDir, { recursive: true });
+    const at = (agoMs) => new Date(now - agoMs).toISOString();
+    const meta = (id, model) => ({ timestamp: at(60_000), type: 'session_meta', payload: { id, timestamp: at(60_000), cwd: project, model } });
+    const turn = (agoMs, model) => ({ timestamp: at(agoMs), type: 'turn_context', payload: { cwd: project, model, effort: 'high' } });
+    const event = (agoMs, payload) => ({ timestamp: at(agoMs), type: 'event_msg', payload });
+    const tokens = (agoMs, window) => event(agoMs, {
+      type: 'token_count',
+      info: {
+        total_token_usage: { input_tokens: 1200, cached_input_tokens: 800, output_tokens: 90, total_tokens: 1290 },
+        last_token_usage: { input_tokens: 1200, cached_input_tokens: 800, output_tokens: 90, total_tokens: 1290 },
+        model_context_window: window,
+      },
+    });
+    const write = (name, records) => fs.writeFileSync(path.join(rolloutDir, `rollout-${name}.jsonl`), `${records.map(r => JSON.stringify(r)).join('\n')}\n`);
+    write('2026-10-27T12-00-00-reported', [meta('reported', 'gpt-6-astra'), turn(60_000, 'gpt-6-astra'), event(59_000, { type: 'task_started' }), tokens(50_000, 258_400)]);
+    write('2026-10-27T12-01-00-fresh', [meta('fresh', 'gpt-6-astra'), turn(40_000, 'gpt-6-astra'), event(39_000, { type: 'task_started' })]);
+    write('2026-10-27T12-02-00-switched', [
+      meta('switched', 'gpt-6-astra'), turn(60_000, 'gpt-6-astra'), event(59_000, { type: 'task_started' }),
+      event(55_000, { type: 'task_complete', last_agent_message: 'Done.' }),
+      turn(30_000, 'gpt-6.1-sol'), event(29_000, { type: 'task_started' }), tokens(20_000, 475_000),
+    ]);
+    const script = `
+      const { CodexAdapter } = require('./claudeville/adapters/codex');
+      const adapter = new CodexAdapter();
+      adapter.getActiveSessions(10 * 60 * 1000, { force: true });
+      const windowOf = (name) => adapter.getSessionDetail('codex-2026-10-27T' + name).tokenUsage?.contextWindowMax ?? null;
+      process.stdout.write(JSON.stringify([windowOf('12-01-00-fresh'), windowOf('12-02-00-switched'), windowOf('12-01-00-fresh')]));
+    `;
+    const windows = JSON.parse(execFileSync(process.execPath, ['-e', script], {
+      cwd: REPO_ROOT,
+      env: { ...process.env, HOME: root, USERPROFILE: root },
+      encoding: 'utf8',
+    }));
+    assert.deepEqual(windows, [258_400, 475_000, 258_400]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

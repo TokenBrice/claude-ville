@@ -1423,6 +1423,17 @@ function withObservedContextWindow(tokenUsage, model) {
   return observed ? { ...tokenUsage, contextWindowMax: observed } : tokenUsage;
 }
 
+// PV-14 on the detail path: before a rollout's first `token_count` it
+// borrows its model's observed window, the model its head names (nothing
+// has run yet to change it). It never records one: the head names the
+// opening model, which a mid-session switch may no longer be.
+function withBorrowedContextWindow(tokenUsage, filePath) {
+  if (!tokenUsage || tokenUsage.contextWindowMax > 0) return tokenUsage;
+  const model = inferCodexModel(readEarlyMetadata(filePath) || {});
+  const observed = model ? _observedContextWindows.get(model) : null;
+  return observed ? { ...tokenUsage, contextWindowMax: observed } : tokenUsage;
+}
+
 // SV-6 / PV-7 — the account's Codex quota as each `token_count` reports it:
 // `rate_limits.primary`/`secondary` windows, `credits`, and
 // `rate_limit_reached_type`. Kept per `session_meta.creator_account_id`; the
@@ -2204,7 +2215,7 @@ class CodexAdapter {
       return createDetailResponse({
         toolHistory: getToolHistory(indexedPath),
         messages: getRecentMessages(indexedPath),
-        tokenUsage: getTokenUsage(indexedPath),
+        tokenUsage: withBorrowedContextWindow(getTokenUsage(indexedPath), indexedPath),
         sessionId,
       });
     }
@@ -2218,7 +2229,7 @@ class CodexAdapter {
         return createDetailResponse({
           toolHistory: getToolHistory(filePath),
           messages: getRecentMessages(filePath),
-          tokenUsage: getTokenUsage(filePath),
+          tokenUsage: withBorrowedContextWindow(getTokenUsage(filePath), filePath),
           sessionId,
         });
       }
