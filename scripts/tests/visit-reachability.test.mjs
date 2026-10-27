@@ -183,3 +183,55 @@ test('a body the renderer places runs no route search in its constructor (VB-15)
     new AgentSprite(agent('standalone'), options);
     assert.ok(searches > 0, 'a standalone sprite still picks a target at once');
 });
+
+// Boot residents in the gate mouth: the east gate lane's entry rounds to tile
+// 20,39, off the walk grid. A lane walk starts on its entry anyway (the path
+// snap had lifted every east-lane walker onto 20,38, where they stacked and
+// the entry queue saw that lane clear), and it finishes the lane before any
+// reroute, so its gate transit ends at the arch, not at its work.
+test('a gate lane walk starts on its entry and finishes before the body reroutes', () => {
+    const allocator = new VisitTileAllocator();
+    const options = {
+        pathfinder,
+        bridgeTiles,
+        getBuilding: (type) => buildings.get(type),
+        allocateVisitTile: (request) => allocator.allocate({ ...request, building: request.building || buildings.get(request.intent?.building) }) || null,
+        releaseVisitReservation: (id) => allocator.release?.(id),
+        renewVisitReservation: (id) => allocator.renew?.(id),
+        getRoadTiles: () => new Set(),
+        getRoutingContext: () => ({ laneTiles: new Map(), ...allocator.getCongestionSnapshot() }),
+        getDayHour: () => 15,
+        deferInitialTarget: true,
+    };
+    const toWorld = (tileX, tileY) => ({
+        x: (tileX - tileY) * TILE_WIDTH / 2,
+        y: (tileX + tileY) * TILE_HEIGHT / 2,
+    });
+    assert.equal(pathfinder.isWalkable(20, 39), false, 'the east lane entry tile is off the grid');
+    for (const laneX of [18.65, 19.55]) {
+        const id = `lane-${laneX}`;
+        const sprite = new AgentSprite(new Agent({
+            id, name: id, provider: 'claude', model: 'claude-sonnet-4-5', status: 'working',
+            currentTool: 'Edit', currentToolInput: { file_path: 'src/lane.js' },
+        }), options);
+        sprite.setTilePosition(laneX, 39.35);
+        sprite.walkStraightToTile(laneX, 37.6);
+        const entry = toWorld(laneX, 39.35);
+        const inside = toWorld(laneX, 37.6);
+        assert.ok(Math.hypot(sprite.x - entry.x, sprite.y - entry.y) < 0.01, `${laneX}: the walk starts on its entry`);
+        let frames = 0;
+        while (sprite.moving && frames++ < 600) {
+            sprite.update(null, 1000 / 60);
+            if (sprite.moving) {
+                assert.ok(Math.hypot(sprite.targetX - inside.x, sprite.targetY - inside.y) < 0.01, `${laneX}: no reroute mid-lane`);
+            }
+        }
+        assert.equal(sprite.moving, false, `${laneX}: the lane walk ends`);
+        assert.ok(sprite.hasReachedTarget(), `${laneX}: on the lane's inside point`);
+        // The renderer's hand-off at the arch (gate transit end): on to work.
+        sprite.waitTimer = 0;
+        sprite.update(null, 1000 / 60);
+        assert.equal(sprite.moving, true, `${laneX}: then it walks on to its work`);
+        assert.ok(Math.hypot(sprite.targetX - inside.x, sprite.targetY - inside.y) > 1, `${laneX}: toward its work`);
+    }
+});

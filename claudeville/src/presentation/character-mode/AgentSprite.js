@@ -1792,7 +1792,7 @@ export class AgentSprite {
     // not held) re-picks at once, so an idle body goes to sit, a new
     // petitioner joins the line, and a resumed worker stands up and leaves.
     _syncRestPlace(now) {
-        if (this.chatPartner || this.chatting || this.leaving || this.isArrivalPending?.()) return;
+        if (this.chatPartner || this.chatting || this.leaving || this.isArrivalPending?.() || this._straightWalk) return;
         const place = this._restPlaceForState();
         const wanted = place === REST_PLACE ? 'rest' : place === QUEUE_PLACE ? 'queue' : place?.role || null;
         if (wanted === (this.visitRole || null)) return;
@@ -1906,7 +1906,7 @@ export class AgentSprite {
             crowd.place = null;
             return;
         }
-        if (this.chatPartner || this.chatting || this.leaving || this.isArrivalPending?.()) return;
+        if (this.chatPartner || this.chatting || this.leaving || this.isArrivalPending?.() || this._straightWalk) return;
         if (status === AgentStatus.IDLE) this._advanceIdleLoop(now);
         else if (this._waitsForPint(now)) return;
         else if (status === AgentStatus.WORKING) this._advanceErrand(now);
@@ -2587,10 +2587,11 @@ export class AgentSprite {
 
     _assignTarget(targetScreenX, targetScreenY, targetTileX, targetTileY, viaWaypoints = null) {
         this._targetReachable = true;
-        // A new route: any fan place (7.4) and chat-approach mark belong to
-        // the old one.
+        // A new route: any fan place (7.4), chat-approach mark and straight
+        // walk belong to the old one.
         this._fanTarget = null;
         this._chatApproachRoute = false;
+        this._straightWalk = false;
         if (!this.pathfinder) {
             this.targetX = targetScreenX;
             this.targetY = targetScreenY;
@@ -3148,14 +3149,25 @@ export class AgentSprite {
 
     // 7.4 — a straight walk to a tile point, off the tile-centre path grid:
     // the gate lanes run parallel through the arch, which tile centres would
-    // fold into one file. The caller guarantees the line is walkable.
+    // fold into one file. The caller guarantees the line is walkable. The
+    // walk is finished before any reroute: a body sent to its work mid-lane
+    // would leave the lanes for the tile grid inside the arch, and its gate
+    // transit would last its whole trip instead of the lane.
     walkStraightToTile(tileX, tileY) {
+        const start = { x: this.x, y: this.y };
         this.walkToTile(tileX, tileY);
         if (!this.moving) return;
+        // The path's start snap lifts a body off a lane entry outside the walk
+        // grid (the east lane's rounds to 20,39) onto the nearest walkable
+        // tile in the gate mouth, where every file stacked and the entry
+        // queue saw its lane clear. The straight walk starts where it was put.
+        this.x = start.x;
+        this.y = start.y;
         const screen = tileToWorld(tileX, tileY);
         this.waypoints = [{ x: screen.x, y: screen.y }];
         this.targetX = screen.x;
         this.targetY = screen.y;
+        this._straightWalk = true;
     }
 
     retargetVisit() {
@@ -3326,8 +3338,9 @@ export class AgentSprite {
         if (!this.chatPartner) this._advanceCrowdRoutine(Date.now());
         // Reroute immediately when status or fresh tool changes the intended
         // building. A status that waits at a place (7.1 seat, 7.2 queue) owns
-        // its route through _syncRestPlace instead.
-        if (!this.chatPartner && !this._restPlaceForState()) {
+        // its route through _syncRestPlace instead. A straight gate walk
+        // finishes first (walkStraightToTile).
+        if (!this.chatPartner && !this._straightWalk && !this._restPlaceForState()) {
             const activeIntent = this._activeVisitIntent();
             let curBuilding = resolveUpdateRouteBuilding({
                 agent: this.agent,
@@ -3518,6 +3531,7 @@ export class AgentSprite {
         this._advanceWalkAnimation(travelled, headingX, headingY, dt, particleSystem);
         this._stepStartX = NaN;
         this.moving = false;
+        this._straightWalk = false;
         this.behavior.arrive({
             state: this._lastIntentId ? 'performing' : 'lingering',
             cooldownMs: this._lastIntentId ? 2000 : 0,
