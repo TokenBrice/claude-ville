@@ -91,3 +91,62 @@ test('Claude projects provider records, turn timing, and a canonical working set
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// PV-1: `api-request-blob` copies carry `message.role` and no timestamp, and
+// subagent files hold them without `isSidechain`. Only user and assistant
+// records are turns.
+test('Claude api-request records never become turns', () => {
+  const root = makeTempDir('claudeville-claude-blob-');
+  try {
+    const project = path.join(root, 'work', 'blob');
+    const projectDir = path.join(root, '.claude', 'projects', project.replaceAll('/', '-'));
+    fs.mkdirSync(project, { recursive: true });
+    fs.mkdirSync(path.join(projectDir, 'blob-main', 'subagents'), { recursive: true });
+    fs.copyFileSync(path.join(FIXTURE_ROOT, 'api-request-blob.jsonl'), path.join(projectDir, 'blob-main.jsonl'));
+    fs.copyFileSync(
+      path.join(FIXTURE_ROOT, 'api-request-blob-child.jsonl'),
+      path.join(projectDir, 'blob-main', 'subagents', 'agent-blobchild.jsonl'),
+    );
+    writeJsonLines(path.join(root, '.claude', 'history.jsonl'), [
+      { sessionId: 'blob-main', project, timestamp: Date.now(), display: 'Blob fixture' },
+    ]);
+
+    const childScript = `
+      const { ClaudeAdapter } = require('./claudeville/adapters/claude');
+      const adapter = new ClaudeAdapter();
+      const sessions = adapter.getActiveSessions(60 * 60 * 1000);
+      const main = sessions.find(session => session.sessionId === 'blob-main');
+      const child = sessions.find(session => session.sessionId === 'subagent-blobchild');
+      const detail = adapter.getSessionDetail('blob-main', ${JSON.stringify(project)});
+      process.stdout.write(JSON.stringify({ main, child, detail }));
+      adapter.shutdown();
+    `;
+    const { main, child, detail } = JSON.parse(execFileSync(process.execPath, ['-e', childScript], {
+      cwd: REPO_ROOT,
+      env: { ...process.env, HOME: root, USERPROFILE: root },
+      encoding: 'utf8',
+    }));
+
+    // A closed turn stays closed behind the copies a later request writes.
+    assert.equal(main.turnState, 'awaiting_input');
+    assert.equal(main.signalCertainty, 'observed');
+    assert.deepEqual(main.sendMessages.map(edge => [edge.recipient, edge.ts]), [
+      ['researcher', '2026-09-01T13:03:05.000Z'],
+    ]);
+    assert.deepEqual(detail.toolHistory.map(row => [row.tool, row.ts]), [
+      ['Agent', '2026-09-01T13:00:05.000Z'],
+      ['SendMessage', '2026-09-01T13:03:05.000Z'],
+    ]);
+    assert.ok(detail.messages.length > 0);
+    assert.ok(detail.messages.every(message => ['user', 'assistant'].includes(message.role) && message.ts));
+
+    // A subagent's pending tool stays pending behind its unflagged copies.
+    assert.equal(child.turnState, 'tool_pending');
+    assert.equal(child.pendingTool, 'Bash');
+    assert.equal(child.pendingSince, Date.parse('2026-09-01T13:00:45.000Z'));
+    assert.equal(child.agentName, 'Survey the parser');
+    assert.equal(child.subagentKind, 'Explore');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

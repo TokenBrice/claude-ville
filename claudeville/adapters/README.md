@@ -293,7 +293,7 @@ These show the minimal shape each adapter's parser reads. Real files are longer;
 }
 ```
 
-Subagent files at `~/.claude/projects/<encoded-project>/<sessionId>/subagents/agent-<id>.jsonl` follow the standard Claude message-event JSONL schema; the adapter reads `message.role`, `message.content`, and `usage` blocks from each line.
+Subagent files at `~/.claude/projects/<encoded-project>/<sessionId>/subagents/agent-<id>.jsonl` follow the standard Claude message-event JSONL schema; the adapter reads `message.role`, `message.content`, and `usage` blocks from each line. Only `user` and `assistant` records are turns: the `api-request-blob` copies of API messages (a `message.role`, no timestamp and, in subagent files, no `isSidechain`) and the `api-request`/`api-request-shape` bookkeeping lines never contribute a message (`claude/api-request-blob*.jsonl`).
 
 Workflow tool sub-agents use the same JSONL schema but live one level deeper, grouped per run id: `~/.claude/projects/<encoded-project>/<sessionId>/subagents/workflows/<wfRunId>/agent-<id>.jsonl`, each with a `agent-<id>.meta.json` sidecar (`{"agentType":"workflow-subagent"}`). The per-agent TUI label/phase shown in the Workflow runner is not persisted; only the workflow name is recoverable, from the run script at `<sessionId>/workflows/scripts/<workflowName>-<wfRunId>.js`. The adapter tags these sessions `agentType: 'workflow-subagent'` with `workflowId` / `workflowName`, and keeps a quiet orchestrator parent "active" off its (possibly nested) children's mtimes.
 

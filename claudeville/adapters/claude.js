@@ -608,6 +608,16 @@ function projectTranscriptContentBlock(block) {
   return null;
 }
 
+// Only conversation records are turns. Claude Code also writes
+// `api-request-blob` copies of API messages (a `message.role`, no timestamp)
+// beside `api-request` and `api-request-shape` bookkeeping. Read as turns,
+// a copy hides a closed turn or a pending tool behind a ghost message.
+const CLAUDE_CONVERSATION_RECORD_TYPES = new Set(['user', 'assistant']);
+
+function isClaudeConversationRecord(entry) {
+  return CLAUDE_CONVERSATION_RECORD_TYPES.has(entry?.type);
+}
+
 function projectClaudeTailEntry(entry) {
   _sessionProjectionStats.records++;
   if (!entry || typeof entry !== 'object') {
@@ -666,7 +676,7 @@ function projectClaudeTailEntry(entry) {
       );
     }
   }
-  if (entry.message && typeof entry.message === 'object') {
+  if (isClaudeConversationRecord(entry) && entry.message && typeof entry.message === 'object') {
     const needsSourceHash = !entry.uuid
       && !entry.id
       && Array.isArray(entry.message.content)
@@ -706,7 +716,7 @@ function readJsonLines(filePath, { from = 'end', count = GIT_EVENT_SCAN_LINES } 
     tailMaxBytes: MAX_TAIL_BYTES,
     source: 'claude',
     project: from === 'end' ? projectClaudeTailEntry : undefined,
-    projectionKey: from === 'end' ? 'claude-tail-v3' : undefined,
+    projectionKey: from === 'end' ? 'claude-tail-v4' : undefined,
   });
 }
 
@@ -985,7 +995,7 @@ function appendTranscriptGuard(aggregate, chunk) {
 }
 
 function addTranscriptEntry(aggregate, entry) {
-  const msg = entry?.message;
+  const msg = isClaudeConversationRecord(entry) ? entry.message : null;
   addTranscriptProjectionEntry(aggregate.projection, entry, msg);
   if (!msg) return;
 

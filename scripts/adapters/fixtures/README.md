@@ -12,6 +12,7 @@ These synthetic JSONL transcripts test parser contracts without reading real pro
 | Claude | `claude/agent-launch.jsonl` | Parent transcript with an `Agent` launch and declared child identity. |
 | Claude | `claude/agent-child.jsonl` | Paired child transcript proving parent/subagent identity linkage. |
 | Claude | `claude/teammate-child.jsonl` + `.meta.json` | Teammate transcript whose `<teammate-message>` prompt matches no launch, with the sibling meta file carrying name, team, colour and kind. |
+| Claude | `claude/api-request-blob.jsonl` + `-child.jsonl` | Current transcript shape: `api-request`, `api-request-shape` and timestamp-less `api-request-blob` copies interleaved with a parent's `Agent` launch, a `SendMessage` and a closed turn, and a subagent child whose unflagged copies trail a pending `Bash`. Only `user`/`assistant` records are turns. |
 | Codex | `codex/abort-after-pending.jsonl` | Pending tools followed by `turn_aborted`; pending state must clear. |
 | Codex | `codex/full-auto-pending.jsonl` | Old pending command under full-auto remains working, not permission-blocked. |
 | Codex | `codex/item-completed.jsonl` | Ordered file changes and a failed command with duration, stderr, and exit status. |
@@ -32,7 +33,7 @@ Author fixtures synthetic-first. If derived from provider output, replace every 
 `rg -l 'adapters/fixtures' scripts` identifies the direct consumers:
 
 - `scripts/tests/claude-identity.test.mjs` uses Claude launch, child, teammate-with-meta, and minimal records.
-- `scripts/tests/claude-projection.test.mjs` uses broad and minimal Claude records (it resolves the fixture root without spelling the full search string).
+- `scripts/tests/claude-projection.test.mjs` uses broad, minimal and `api-request-blob` Claude records (it resolves the fixture root without spelling the full search string).
 - `scripts/tests/turn-state.test.mjs` copies the Codex fixture directory into a synthetic provider home.
 - `scripts/tests/integration/session-payload-contract.test.mjs` replays the broad Claude fixture through an isolated server.
 - `scripts/tests/tool-results.test.mjs` materializes the Codex and Kimi Code result transcripts in a synthetic home, replays the OpenCode parts through `buildOpenCodeSession`, replays the Claude outcome fixture, and uses the broad Claude record as the no-flag, no-result control.
