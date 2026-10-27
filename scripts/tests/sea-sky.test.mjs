@@ -56,7 +56,9 @@ test('golden hour warms the sea and an overcast lifts it toward pewter', () => {
     const rb = c => c[0] - c[2];
     const goldenOff = graded(body, 18 * 60, WEATHERS.clear, false);
     const goldenOn = graded(body, 18 * 60, WEATHERS.clear, true);
-    assert.ok(rb(goldenOn) - rb(goldenOff) > 8 / 255, `golden R-B ${(rb(goldenOff) * 255).toFixed(1)} -> ${(rb(goldenOn) * 255).toFixed(1)}`);
+    // J29 — the weight is 0.16 (was 0.22), so the warm shift scales with it
+    // (about 10.6 -> 7.7 levels); it stays a visible course.
+    assert.ok(rb(goldenOn) - rb(goldenOff) > 6 / 255, `golden R-B ${(rb(goldenOff) * 255).toFixed(1)} -> ${(rb(goldenOn) * 255).toFixed(1)}`);
     const greyOff = graded(body, 12.5 * 60, WEATHERS.overcast, false);
     const greyOn = graded(body, 12.5 * 60, WEATHERS.overcast, true);
     assert.ok(luma(greyOn) > luma(greyOff) * 1.05, 'the overcast sea is lighter');
