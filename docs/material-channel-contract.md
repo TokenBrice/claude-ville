@@ -546,8 +546,12 @@ three ways; the record's flags choose the reading:
   shader's own storage layout and calls `assertRecordStride` (68, never 80).
 - Samplers become named bindings (no sampler arrays; *WebGPU bind groups*
   below). Both albedo bindings always exist; the inactive one is a 1×1
-  stand-in, as the page's is on unit 14. Every `texture()` read is
-  `textureSampleLevel(…, 0.0)` with the same filter, every `texelFetch` a
+  stand-in, as the page's is on unit 14. Every scene read is explicit LOD 0
+  on both sides, GLSL `textureLod(…, 0.0)` and WGSL
+  `textureSampleLevel(…, 0.0)`, with the same filter. GLSL ES 3.00 leaves
+  implicit derivatives undefined after a `discard` and in non-uniform
+  control flow, and an implicit-LOD albedo read made WebGL2 draw one frozen
+  frame differently on every render (VQ-6). Every `texelFetch` is a
   `textureLoad`, except the light records: the floats WebGL2 uploads as its
   256×4 RGBA32F record texture sit verbatim in a read-only storage buffer. The
   light walk reads them per light per pixel, and the buffer load costs

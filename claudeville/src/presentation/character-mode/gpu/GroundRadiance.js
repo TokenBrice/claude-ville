@@ -529,7 +529,7 @@ const float RADIANCE_LAND = ${RADIANCE_LAND.toFixed(2)};
 vec4 radianceAt(vec2 world, int panel) {
     vec2 size = vec2(${GRID.probesX}.0, ${GRID.probesY}.0);
     vec2 p = clamp((vec2(world.x, world.y * 2.0) - u_radianceGrid.xy) / u_radianceGrid.z, vec2(0.5), size - 0.5);
-    return texture(u_radiance, vec2((float(panel) * size.x + p.x) / (size.x * 3.0), p.y / size.y));
+    return textureLod(u_radiance, vec2((float(panel) * size.x + p.x) / (size.x * 3.0), p.y / size.y), 0.0);
 }
 // The shape a receiver's course is stepped on (0 = none) and the light it
 // adds (hue x strength): a ground point reads the fans and the bounce at its

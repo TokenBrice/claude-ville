@@ -1074,15 +1074,31 @@ export function isChromiumBrowser(nav = globalThis.navigator) {
 // pipelines before `show()`: `?renderer=webgpu` anywhere, or no forced mode
 // in a Chromium browser (`chromium`) whose WebGL2 rasterizer is hardware (a
 // software one takes the Canvas world before any adapter is requested).
-// Never under `?postfx=0` or without `navigator.gpu` (`gpu`).
-export function shouldProbeWebGpu(search = '', { chromium = false, gpu = false, softwareRaster = false } = {}) {
+// Never under `?postfx=0` or without `navigator.gpu` (`gpu`). FP-9: nor by
+// default when a recent boot of this browser build found no adapter
+// (`knownNoAdapter`, `webGpuOutcomeSkipsProbe`); `?renderer=webgpu` still
+// requests one.
+export function shouldProbeWebGpu(search = '', { chromium = false, gpu = false, softwareRaster = false, knownNoAdapter = false } = {}) {
     const params = search instanceof URLSearchParams
         ? search
         : new URLSearchParams(String(search || '').replace(/^\?/, ''));
     if (!gpu || params.get('postfx') === '0') return false;
     const forced = forcedGpuWorldRendererMode(params);
     if (forced) return forced === GPU_WORLD_RENDERER_MODES.WEBGPU;
-    return chromium && !softwareRaster;
+    return chromium && !softwareRaster && !knownNoAdapter;
+}
+
+// FP-9 — a browser with no WebGPU adapter (Linux Chrome without its WebGPU
+// flags) still imported the WebGPU module graph and asked for an adapter on
+// every boot. The boot that finds none stores `{ webgpu: 'no-adapter', ua,
+// at }`; a default boot of the same user agent within the recheck window
+// skips the resolution. A browser update (a new user agent) or a day later
+// probes again, so a newly enabled WebGPU is found within a day.
+export const WEBGPU_NO_ADAPTER_RECHECK_MS = 24 * 60 * 60 * 1000;
+export function webGpuOutcomeSkipsProbe(record, { userAgent = '', now = Date.now() } = {}) {
+    if (record?.webgpu !== 'no-adapter' || record.ua !== String(userAgent)) return false;
+    const age = now - Number(record.at);
+    return age >= 0 && age < WEBGPU_NO_ADAPTER_RECHECK_MS;
 }
 
 // Precedence, first match wins:
