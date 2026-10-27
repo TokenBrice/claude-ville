@@ -561,7 +561,7 @@ export class DashboardRenderer {
 
         this._onAgentAdded = (agent) => {
             this._tapes?.observe(agent);
-            if (this.active) this.render();
+            if (this.active) this._queueFlush({ render: true });
         };
         this._onAgentUpdated = (agent) => {
             this._tapes?.observe(agent);
@@ -571,15 +571,14 @@ export class DashboardRenderer {
                 const parent = parentId ? this.world.agents.get(parentId) : null;
                 const parentCard = parentId ? this.cards.get(parentId) : null;
                 if (parent && parentCard) this._updateChildProgress(parentCard, parent);
-                this._renderAttentionQueue(Array.from(this.world.agents.values()));
-                this._syncAnswerFirst();
+                this._queueFlush();
             }
         };
         this._onAgentRemoved = (agent) => {
             this._executionChildIdsByParent.delete(String(agent.id));
             this._tapes?.forget(agent.id);
             sessionDetailsService.deleteForAgent(agent);
-            if (this.active) this.render();
+            if (this.active) this._queueFlush({ render: true });
         };
         this._onModeChanged = (mode) => {
             this.active = mode === 'dashboard';
@@ -1054,10 +1053,32 @@ export class DashboardRenderer {
         const projectPath = projectKeyForAgent(agent);
         const status = normalizeStatus(agent.status);
         if (!cardEl || cardEl._projectPath !== projectPath || cardEl._status !== status) {
-            this.render();
+            this._queueFlush({ render: true });
             return;
         }
         this._updateCard(cardEl, agent);
+    }
+
+    // UI-3 — one render per message. A WebSocket message upserts every
+    // changed agent synchronously, so the work queued here runs once, after
+    // the last of them: a full render when a card must move, else only the
+    // fleet-wide controls (the attention queue and ANSWER FIRST).
+    _queueFlush({ render = false } = {}) {
+        if (render) this._flushRender = true;
+        if (this._flushQueued) return;
+        this._flushQueued = true;
+        queueMicrotask(() => {
+            const full = this._flushRender;
+            this._flushQueued = false;
+            this._flushRender = false;
+            if (!this.active || this._destroyed) return;
+            if (full) {
+                this.render();
+                return;
+            }
+            this._renderAttentionQueue(Array.from(this.world.agents.values()));
+            this._syncAnswerFirst();
+        });
     }
 
     // 4.3 — FLIP: keep each section's cards in status-sort order. When the
@@ -1092,9 +1113,13 @@ export class DashboardRenderer {
         for (const card of firstRects.keys()) {
             if (card.style.transform) this._stopFlip(card);
         }
+        // UI-3 — two passes: every last rect is read before any card is
+        // written, so the reads share one layout instead of forcing one per
+        // card after the previous card's transform write.
+        const lastRects = new Map([...firstRects.keys()].map(card => [card, card.getBoundingClientRect()]));
         const moved = [];
         for (const [card, first] of firstRects) {
-            const last = card.getBoundingClientRect();
+            const last = lastRects.get(card);
             const dx = Math.round(first.left - last.left);
             const dy = Math.round(first.top - last.top);
             if (!dx && !dy) {

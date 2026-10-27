@@ -694,7 +694,16 @@ export class Sidebar {
             return;
         }
         this._renderSignature = signature;
-        const transientState = this._captureTransientState();
+        // UI-3 — scroll, focus and selection are captured only before a
+        // placement that moves a node: reading scrollTop after the other
+        // components' writes forces a layout, and a render that only patches
+        // text (ages, status words) leaves all three intact.
+        let transientState = null;
+        const place = (parent, desired) => {
+            if (this._childrenInOrder(parent, desired)) return;
+            transientState ||= this._captureTransientState();
+            this._placeChildren(parent, desired);
+        };
 
         // Group by project
         const groups = [...groupAgentsByProject(agents)];
@@ -761,26 +770,26 @@ export class Sidebar {
                 for (const agent of members) {
                     memberNodes.push(this._getAgentRow(agent, profile, rowExtras.get(agent.id)));
                 }
-                this._placeChildren(wfEl._sidebarRefs.members, memberNodes);
+                place(wfEl._sidebarRefs.members, memberNodes);
                 groupNodes.push(wfEl);
             }
 
-            this._placeChildren(groupEl, groupNodes);
+            place(groupEl, groupNodes);
             nodes.push(groupEl);
         }
 
         this._prunePersistentElements(agents, visibleProjectPaths, visibleWorkflowKeys);
         if (agents.length === 0) {
             this._emptyLegendEl ||= this._emptyLegendNodes()[0];
-            this._placeChildren(this.listEl, [this._emptyLegendEl]);
+            place(this.listEl, [this._emptyLegendEl]);
         } else if (nodes.length === 0) {
             this._emptyNoMatchEl ||= el('div', {
                 className: 'sidebar__empty-nomatch',
                 text: 'No agents match your filter',
             });
-            this._placeChildren(this.listEl, [this._emptyNoMatchEl]);
+            place(this.listEl, [this._emptyNoMatchEl]);
         } else {
-            this._placeChildren(this.listEl, nodes);
+            place(this.listEl, nodes);
         }
         this._applyWorkflowToggleState();
         this._syncSelection(null, this.selection.selectedId);
@@ -922,6 +931,16 @@ export class Sidebar {
         if (node.parentNode !== parent || (before && node.nextSibling !== before)) {
             parent.insertBefore(node, before);
         }
+    }
+
+    // Whether `parent` already holds exactly `desired`, in order (no layout read).
+    _childrenInOrder(parent, desired) {
+        const children = parent.children;
+        if (children.length !== desired.length) return false;
+        for (let index = 0; index < desired.length; index++) {
+            if (children[index] !== desired[index]) return false;
+        }
+        return true;
     }
 
     _placeChildren(parent, desired) {
