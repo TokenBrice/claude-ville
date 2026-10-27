@@ -1,5 +1,5 @@
 import { eventBus } from '../domain/events/DomainEvent.js';
-import { actionableAgents } from '../domain/services/SignalLedger.js';
+import { actionableAgents, waitAnchor } from '../domain/services/SignalLedger.js';
 import { AgentStatus } from '../domain/value-objects/AgentStatus.js';
 import { getActiveChronicleLog } from './ChronicleLog.js';
 
@@ -31,6 +31,17 @@ export const AUDIO_BELL_STATE_EVENT = 'audio:bell-state';
 
 const DIGEST_NAME_LIMIT = 3;
 const DESKTOP_NOTIFICATION_MATCH_GRACE_MS = 5_000;
+
+// UI-7 — desktop alerts coalesce the way Toast does: more than
+// DESKTOP_BURST_MAX new waits inside DESKTOP_BURST_MS (a boot, a reconnect)
+// become one summary under its own tag. Every announced wait is kept as
+// `agentId|kind|waitAnchor` in sessionStorage, so a reload (the GPU-crash
+// auto-reload included) never re-alerts a wait it already announced.
+export const DESKTOP_BURST_MS = 1000;
+export const DESKTOP_BURST_MAX = 2;
+export const DESKTOP_SUMMARY_TAG = 'claudeville-attention-summary';
+export const DESKTOP_ANNOUNCED_KEY = 'claudeville.alerts.announced';
+const DESKTOP_ANNOUNCED_LIMIT = 256;
 
 const REASON_TEXT = {
     question: 'asked you a question',
@@ -75,6 +86,15 @@ function attentionNotificationKey(value) {
     const kind = attentionEventKind(value);
     if (!agentId || !kind) return null;
     return `${agentId}\u0000${kind}`;
+}
+
+// One wait, as a reload sees it again. An unknown anchor is never deduped:
+// it cannot tell a standing wait from a new one.
+function desktopAnnouncementKey(agent) {
+    const kind = attentionEventKind(agent);
+    const anchor = waitAnchor(agent);
+    if (!agent?.id || !kind || !(anchor > 0)) return null;
+    return `${agent.id}|${kind}|${anchor}`;
 }
 
 function nowFrom(clock) {
@@ -176,6 +196,7 @@ export class AttentionService {
         NotificationClass = null,
         chronicleLog = null,
         window: windowRef = null,
+        sessionStorage: sessionStore = undefined,
         now = () => Date.now(),
         unattendedDigestThresholdMs = UNATTENDED_DIGEST_THRESHOLD_MS,
     } = {}) {
@@ -200,6 +221,11 @@ export class AttentionService {
         this._destroyed = false;
         this._desktopAlertRequest = 0;
         this._desktopNotificationTimes = new Map();
+        this._session = sessionStore !== undefined ? sessionStore : this._defaultSessionStorage();
+        this._announced = this._readAnnounced();
+        this._desktopBurst = null;      // { at, last, ids, collapsed }
+        this._desktopSummary = null;    // { note, agentIds }
+        this._raiseBatch = 0;
         this._awaySince = null;
         this._digestGeneration = 0;
         this._villageRings = false;
@@ -274,13 +300,17 @@ export class AttentionService {
         const ids = new Set(agents.map(agent => agent.id));
         const summary = attentionSummary(agents);
 
-        for (const agent of agents) {
-            if (this._known.has(agent.id)) continue;
-            this._raise(agent, summary);
-        }
+        const fresh = agents.filter(agent => !this._known.has(agent.id));
+        // The waits this pass could announce: a pass that overflows the burst
+        // goes straight to the summary instead of showing and closing.
+        this._raiseBatch = fresh.filter(agent => !this._announcedBefore(agent)).length;
+        for (const agent of fresh) this._raise(agent, summary);
+        this._raiseBatch = 0;
+        this._flushDesktopSummary();
         for (const id of this._known) {
             if (!ids.has(id)) {
                 this._closeNotification(id);
+                this._dropFromDesktopSummary(id);
                 eventBus.emit('attention:cleared', { agentId: id });
             }
         }
@@ -482,6 +512,105 @@ export class AttentionService {
         if (this.NotificationClass.permission !== 'granted') return;
         // Only speak up when nobody is looking at the village.
         if (this.doc && this.doc.visibilityState === 'visible') return;
+        // A wait this tab session already announced stays announced (UI-7).
+        if (this._announcedBefore(agent)) return false;
+        const burst = this._desktopBurstFor(nowFrom(this._clock));
+        const collapse = burst.collapsed
+            || burst.ids.size + Math.max(1, this._raiseBatch) > DESKTOP_BURST_MAX;
+        const shown = collapse
+            ? this._foldIntoDesktopSummary(burst, agent)
+            : this._showDesktopNotification(agent, label);
+        if (!shown) return false;
+        if (!collapse) burst.ids.add(agent.id);
+        this._rememberDesktopNotification(agent);
+        this._rememberAnnounced(agent);
+        return true;
+    }
+
+    // The burst opens at its first alert and lasts DESKTOP_BURST_MS; once
+    // summarised, alerts within DESKTOP_BURST_MS of the last keep folding in.
+    _desktopBurstFor(now) {
+        const burst = this._desktopBurst;
+        if (burst && (now - burst.at <= DESKTOP_BURST_MS || (burst.collapsed && now - burst.last <= DESKTOP_BURST_MS))) {
+            burst.last = now;
+            return burst;
+        }
+        this._desktopBurst = { at: now, last: now, ids: new Set(), collapsed: false };
+        return this._desktopBurst;
+    }
+
+    // One summary under its own tag. The burst's single alerts fold into it,
+    // and agents of an earlier summary that still wait stay counted, so the
+    // replacement (same tag, so the OS swaps it in place) never undercounts.
+    // Inside a refresh pass the summary is shown once, at the pass's end.
+    _foldIntoDesktopSummary(burst, agent) {
+        const summary = this._desktopSummary || { note: null, agentIds: new Set(), dirty: false };
+        if (!burst.collapsed) {
+            for (const id of burst.ids) {
+                this._closeNotification(id);
+                summary.agentIds.add(id);
+            }
+            burst.collapsed = true;
+        }
+        summary.agentIds.add(agent.id);
+        summary.dirty = true;
+        this._desktopSummary = summary;
+        return this._raiseBatch > 1 ? true : this._flushDesktopSummary();
+    }
+
+    _flushDesktopSummary() {
+        const summary = this._desktopSummary;
+        if (!summary?.dirty) return true;
+        summary.dirty = false;
+        const members = [...summary.agentIds]
+            .map(id => this.world?.agents?.get?.(id))
+            .filter(Boolean);
+        const { oldestWaitMs } = attentionSummary(members, nowFrom(this._clock));
+        const minutes = oldestWaitMs > 0 ? Math.max(1, Math.round(oldestWaitMs / 60_000)) : 0;
+        const previous = summary.note;
+        if (previous) {
+            previous.onclick = null;
+            previous.onclose = null;
+        }
+        try {
+            const note = new this.NotificationClass(`${summary.agentIds.size} agents need you`, {
+                body: minutes ? `oldest ${minutes} min` : 'ClaudeVille',
+                tag: DESKTOP_SUMMARY_TAG,
+                icon: FAVICON_ALERT,
+                silent: this._villageRings,
+            });
+            summary.note = note;
+            note.onclose = () => {
+                if (this._desktopSummary?.note === note) this._desktopSummary = null;
+            };
+            note.onclick = () => {
+                try { window.focus(); } catch { /* no-op */ }
+                this._selectAgent(this.list()[0]);
+                this._closeDesktopSummary();
+            };
+            return true;
+        } catch { /* notifications are best effort */ }
+        return false;
+    }
+
+    // A cleared agent leaves the summary; the last one out closes it. A
+    // partial clear never re-issues the summary (that would alert again).
+    _dropFromDesktopSummary(agentId) {
+        const summary = this._desktopSummary;
+        if (!summary?.agentIds.delete(agentId) || summary.agentIds.size > 0) return;
+        this._closeDesktopSummary();
+    }
+
+    _closeDesktopSummary() {
+        const summary = this._desktopSummary;
+        this._desktopSummary = null;
+        if (!summary?.note) return;
+        summary.note.onclick = null;
+        summary.note.onclose = null;
+        try { summary.note.close(); } catch { /* notifications are best effort */ }
+    }
+
+    _showDesktopNotification(agent, label) {
         const agentId = agent.id;
         this._closeNotification(agentId);
         try {
@@ -503,10 +632,40 @@ export class AttentionService {
                 this._selectAgent(agentId);
                 this._closeNotification(agentId);
             };
-            this._rememberDesktopNotification(agent);
             return true;
         } catch { /* notifications are best effort */ }
         return false;
+    }
+
+    _defaultSessionStorage() {
+        try { return this.window?.sessionStorage ?? null; } catch { return null; }
+    }
+
+    _readAnnounced() {
+        try {
+            const keys = JSON.parse(this._session?.getItem?.(DESKTOP_ANNOUNCED_KEY) || '[]');
+            return new Set(Array.isArray(keys) ? keys.map(String).slice(-DESKTOP_ANNOUNCED_LIMIT) : []);
+        } catch {
+            return new Set();
+        }
+    }
+
+    _announcedBefore(agent) {
+        const key = desktopAnnouncementKey(agent);
+        return key !== null && this._announced.has(key);
+    }
+
+    _rememberAnnounced(agent) {
+        const key = desktopAnnouncementKey(agent);
+        if (key === null) return;
+        this._announced.delete(key);
+        this._announced.add(key);
+        while (this._announced.size > DESKTOP_ANNOUNCED_LIMIT) {
+            this._announced.delete(this._announced.values().next().value);
+        }
+        try {
+            this._session?.setItem?.(DESKTOP_ANNOUNCED_KEY, JSON.stringify([...this._announced]));
+        } catch { /* best effort: without storage a reload may alert again */ }
     }
 
     _rememberDesktopNotification(agent) {
@@ -531,6 +690,7 @@ export class AttentionService {
         for (const agentId of [...this._notifications.keys()]) {
             this._closeNotification(agentId);
         }
+        this._closeDesktopSummary();
     }
 
     _readDesktopAlertsPref() {
