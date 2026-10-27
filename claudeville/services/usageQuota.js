@@ -3,19 +3,19 @@
  *
  * Data source:
  *   A) ~/.claude/.credentials.json → subscriptionType, rateLimitTier
- *   B) ~/.claude/stats-cache.json → daily activity (messageCount, sessionCount, toolCallCount)
- *   C) claude auth status (once at server startup) → email
- *   D) api.anthropic.com/api/oauth/usage → 5h/7d quota utilization (refreshed every QUOTA_API_TTL)
+ *   B) ~/.claude/history.jsonl → today/this-week activity (bounded reverse scan)
+ *   C) api.anthropic.com/api/oauth/usage → 5h/7d quota utilization (refreshed every QUOTA_API_TTL)
+ *
+ * SV-10: it never spawns a CLI (a boot-time `claude auth status` fetched an
+ * email no client read) and serves no frozen `stats-cache.json` totals.
  */
 
 const fs = require('fs');
 const path = require('path');
-const { execFile } = require('child_process');
 const https = require('https');
 
 const CLAUDE_HOME = path.join(require('os').homedir(), '.claude');
 const CREDENTIALS_PATH = path.join(CLAUDE_HOME, '.credentials.json');
-const STATS_CACHE_PATH = path.join(CLAUDE_HOME, 'stats-cache.json');
 const HISTORY_PATH = path.join(CLAUDE_HOME, 'history.jsonl');
 
 // Cache TTL
@@ -31,7 +31,6 @@ const HISTORY_MAX_LINE_BYTES = 4 * 1024 * 1024;
 const cache = {
   credentials: { data: null, ts: 0 },
   stats: { data: null, ts: 0 },
-  email: null,
   quota: { data: null, ts: 0, available: false, lastSuccessTs: 0 },
 };
 
@@ -149,32 +148,7 @@ function readCredentials() {
   };
 }
 
-// ─── Email (once at server startup) ───────────────────────────────
-
-function fetchEmail() {
-  return new Promise((resolve) => {
-    execFile('claude', ['auth', 'status'], { timeout: 10_000 }, (err, stdout) => {
-      if (err) { resolve(null); return; }
-      // Current CLI emits JSON ({"loggedIn":true,...,"email":"..."}); older builds
-      // printed a plaintext "Logged in as user@example.com" line, so fall back to
-      // the legacy regex when the output is not JSON.
-      let email = null;
-      try {
-        const parsed = JSON.parse(stdout);
-        if (parsed && typeof parsed.email === 'string' && parsed.email.trim()) {
-          email = parsed.email.trim();
-        }
-      } catch {
-        const match = stdout.match(/(?:as|email[:\s]+)\s*([^\s]+@[^\s]+)/i);
-        email = match ? match[1] : null;
-      }
-      cache.email = email;
-      resolve(cache.email);
-    });
-  });
-}
-
-// ─── Real-time history.jsonl parsing plus stats-cache.json merge ────────
+// ─── Real-time history.jsonl parsing ────────
 
 function readStats() {
   const now = Date.now();
@@ -184,21 +158,9 @@ function readStats() {
 
   // Calculate today/this-week activity directly from history.jsonl (real time)
   const live = readHistoryLive();
-
-  // Read accumulated totals from stats-cache.json
-  let totalSessions = 0, totalMessages = 0;
-  try {
-    const raw = fs.readFileSync(STATS_CACHE_PATH, 'utf-8');
-    const json = JSON.parse(raw);
-    totalSessions = json.totalSessions || 0;
-    totalMessages = json.totalMessages || 0;
-  } catch { /* ignore */ }
-
   const result = {
     today: live.today,
     thisWeek: live.thisWeek,
-    totalSessions,
-    totalMessages,
   };
 
   cache.stats = { data: result, ts: now };
@@ -339,7 +301,6 @@ function fetchUsage() {
     account: {
       subscriptionType: credentials.subscriptionType,
       rateLimitTier: credentials.rateLimitTier,
-      email: cache.email,
     },
     quota: quotaFresh
       ? cache.quota.data
@@ -348,21 +309,11 @@ function fetchUsage() {
       today: stats.today,
       thisWeek: stats.thisWeek,
     },
-    totals: {
-      sessions: stats.totalSessions,
-      messages: stats.totalMessages,
-    },
     quotaAvailable: quotaFresh,
   };
 }
 
 function init() {
-  // Fetch email at server startup (async)
-  fetchEmail().then(email => {
-    if (email) console.log(`[Usage] Account: ${email}`);
-    else console.log('[Usage] Failed to fetch email (claude auth status)');
-  });
-
   // Initial quota API attempt
   tryFetchQuota();
 }

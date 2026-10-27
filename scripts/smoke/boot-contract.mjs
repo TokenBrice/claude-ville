@@ -552,9 +552,10 @@ function assertUsagePayload(payload) {
   assertObject(payload, '/api/usage payload');
   assert.equal(payload.provider, 'claude');
   assertObject(payload.account, '/api/usage.account');
+  assert.equal(Object.hasOwn(payload.account, 'email'), false, '/api/usage must not carry the unused account email');
   assertObject(payload.quota, '/api/usage.quota');
   assertObject(payload.activity, '/api/usage.activity');
-  assertObject(payload.totals, '/api/usage.totals');
+  assert.equal(Object.hasOwn(payload, 'totals'), false, '/api/usage must not carry frozen stats-cache totals');
   assert.equal(typeof payload.quotaAvailable, 'boolean');
 }
 

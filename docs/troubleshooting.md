@@ -196,16 +196,15 @@ If `/` hangs while `claudeville/index.html` is readable and `/api/providers` eve
 
 ## `/api/usage` returns nulls or partial data
 
-`claudeville/services/usageQuota.js` pulls data from four sources:
+`claudeville/services/usageQuota.js` pulls data from three sources and spawns no CLI:
 
 1. `~/.claude/.credentials.json` for subscription metadata.
-2. `~/.claude/stats-cache.json` and `~/.claude/history.jsonl` for activity counts.
-3. `claude auth status` (run once at server startup) for the account email.
-4. `https://api.anthropic.com/api/oauth/usage` for the 5h/7d quota figures.
+2. `~/.claude/history.jsonl` for activity counts.
+3. `https://api.anthropic.com/api/oauth/usage` for the 5h/7d quota figures.
 
-Source 4 is documented as "currently unavailable; retry periodically" (`claudeville/services/usageQuota.js:8`). When it fails, the response still returns with `quota: { fiveHour: null, sevenDay: null }` and `quotaAvailable: false`. The other fields keep working. This is expected and non-fatal.
+When source 3 fails, the response still returns with `quota: { fiveHour: null, sevenDay: null }` and `quotaAvailable: false`. The other fields keep working. This is expected and non-fatal.
 
-Credential and activity sources are cached briefly, and quota checks are best-effort. Missing local files, failed `claude auth status`, or failed Anthropic quota calls should return partial/null fields rather than breaking `/api/usage`.
+Credential and activity sources are cached briefly, and quota checks are best-effort. Missing local files or failed Anthropic quota calls should return partial/null fields rather than breaking `/api/usage`.
 
 ## Cost numbers look wrong
 
