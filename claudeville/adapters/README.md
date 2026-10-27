@@ -148,7 +148,7 @@ Registry metadata treats adapter-backed providers as detail-capable when `getSes
 `lastResults` answers a question invocation cannot: how a call ended. A record
 exists only where the provider wrote one down.
 
-- **Codex** — `item_completed` records of type `CommandExecution` (`codex.js`). `exit_code` may be absent on an interrupted command; `exitCode` is then `null` and the outcome stays explicitly unknown.
+- **Codex** — `item_completed` records of type `CommandExecution` (`codex.js`). `exit_code` may be absent on an interrupted command; `exitCode` is then `null` and the outcome stays explicitly unknown. Items carry `command` as argv (`[".../bash", "-lc", "<script>"]`); `detail`, `lastToolInput` and the tool-history row summarize the script past any `cd <dir> &&` hop, as Claude's `Bash` summaries do.
 - **Kimi Code** — `tool.result` loop events carrying an exit code, or an explicit `isError`/`is_error`/`error` flag (`kimi.js`). A result that only carries output is not an outcome and produces nothing.
 - **OpenCode** — tool parts with a numeric `state.metadata.exit` (`opencode.js`).
 - **OMP** — `toolResult` records paired with their `toolCall` id inside the bounded transcript tail (`omp.js`). An explicit `isError` flag maps to exit 1 or 0; an absent flag leaves `exitCode: null`. Unpaired results and still-open calls are not published.

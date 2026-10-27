@@ -15,7 +15,7 @@ These synthetic JSONL transcripts test parser contracts without reading real pro
 | Claude | `claude/api-request-blob.jsonl` + `-child.jsonl` | Current transcript shape: `api-request`, `api-request-shape` and timestamp-less `api-request-blob` copies interleaved with a parent's `Agent` launch, a `SendMessage` and a closed turn, and a subagent child whose unflagged copies trail a pending `Bash`. Only `user`/`assistant` records are turns. |
 | Codex | `codex/abort-after-pending.jsonl` | Pending tools followed by `turn_aborted`; pending state must clear. |
 | Codex | `codex/full-auto-pending.jsonl` | Old pending command under full-auto remains working, not permission-blocked. |
-| Codex | `codex/item-completed.jsonl` | Ordered file changes and a failed command with duration, stderr, and exit status. |
+| Codex | `codex/item-completed.jsonl` | Ordered file changes and a failed argv command (`bash -lc` behind a `cd` hop) with duration, stderr, and exit status; every summary is the bare script. |
 | Codex | `codex/long-running-turn.jsonl` | Old active turn with token events remains running rather than decaying idle. |
 | Codex | `codex/turn-durations.jsonl` | A completed turn with `duration_ms`, an aborted turn, then a completed turn without one: the last completed turn's span is the duration. |
 | Codex | `codex/tool-results.jsonl` | Command completions with exit 0, exit 1, an unknown exit, and one invocation that never completes. |
