@@ -365,35 +365,55 @@ export class AgentManager {
 
         const gitEventWire = this._gitEventWireFrom(data, data.sessions);
         const collisionsByAgent = this._collisionsByAgent(data.collisions || data.sessions.collisions);
+        let failures = 0;
+        let firstError = null;
         for (const session of data.sessions) {
-            currentIds.add(session.sessionId);
-            const agent = this.world.agents.get(session.sessionId);
-            if (changedIds && !changedIds.has(String(session.sessionId)) && agent && !agent.isDeparted) {
-                const { status, activityAgeMs } = this._sessionTiming(session);
-                const activityAgeMinute = Number.isFinite(activityAgeMs)
-                    ? Math.floor(activityAgeMs / 60_000)
-                    : null;
-                const previousAgeMinute = Number.isFinite(agent.activityAgeMs)
-                    ? Math.floor(agent.activityAgeMs / 60_000)
-                    : null;
-                // Status includes activity/quota thresholds and git-failure
-                // expiry; a change also refreshes status-derived tools/dialogue.
-                // Preserve the full signature's age-bucket update cadence.
-                if (status === agent.status && activityAgeMinute === previousAgeMinute) {
-                    this._refreshUnchangedAgent(agent, activityAgeMs);
-                    this._noteVerifiedGitOutcomes(session, agent.gitEvents);
-                    continue;
+            // EN-8 — one malformed session skips only itself: the rest of the
+            // update and its departure sweep still run.
+            try {
+                currentIds.add(session.sessionId);
+                const agent = this.world.agents.get(session.sessionId);
+                if (changedIds && !changedIds.has(String(session.sessionId)) && agent && !agent.isDeparted) {
+                    const { status, activityAgeMs } = this._sessionTiming(session);
+                    const activityAgeMinute = Number.isFinite(activityAgeMs)
+                        ? Math.floor(activityAgeMs / 60_000)
+                        : null;
+                    const previousAgeMinute = Number.isFinite(agent.activityAgeMs)
+                        ? Math.floor(agent.activityAgeMs / 60_000)
+                        : null;
+                    // Status includes activity/quota thresholds and git-failure
+                    // expiry; a change also refreshes status-derived tools/dialogue.
+                    // Preserve the full signature's age-bucket update cadence.
+                    if (status === agent.status && activityAgeMinute === previousAgeMinute) {
+                        this._refreshUnchangedAgent(agent, activityAgeMs);
+                        this._noteVerifiedGitOutcomes(session, agent.gitEvents);
+                        continue;
+                    }
                 }
+                this._upsertAgent(
+                    session,
+                    this._teamMembers,
+                    gitEventWire,
+                    collisionsByAgent.get(String(session.sessionId)) || [],
+                );
+            } catch (err) {
+                failures++;
+                firstError ??= err;
             }
-            this._upsertAgent(
-                session,
-                this._teamMembers,
-                gitEventWire,
-                collisionsByAgent.get(String(session.sessionId)) || [],
-            );
         }
+        if (failures) this._noteIngestFailures(failures, firstError);
 
         this._sweepDepartedAgents(currentIds);
+    }
+
+    // Counted for diagnostics; warned at most once a minute so a session that
+    // stays malformed cannot flood the console at the update rate.
+    _noteIngestFailures(count, error) {
+        this.ingestErrors = (this.ingestErrors || 0) + count;
+        const now = this._now();
+        if (this._lastIngestWarnAt && now - this._lastIngestWarnAt < 60_000) return;
+        this._lastIngestWarnAt = now;
+        console.warn(`[AgentManager] ${count} session(s) failed to ingest; the rest of the update applied:`, error?.message || error);
     }
 
     /**
