@@ -17,7 +17,9 @@ const REPO_ROOT = path.resolve(SCRIPT_DIR, '../..');
 const SERVER_MODULE = path.join(REPO_ROOT, 'claudeville', 'server.js');
 const SERVER_BOOTSTRAP = path.join(SCRIPT_DIR, 'r1-18.server-bootstrap.cjs');
 
-// These values mirror the production scheduler. The harness waits on actual
+// These values mirror the production scheduler, except the snapshot floor:
+// production waits 2 min, and the isolated server here is pinned to 20 s
+// through its override so the run stays short. The harness waits on actual
 // frames, rather than sleeping for an assumed fs.watch delivery time.
 const BROADCAST_POLL_INTERVAL_MS = 2_000;
 const DELTA_SNAPSHOT_INTERVAL_MS = 20_000;
@@ -569,6 +571,7 @@ function startIsolatedServer(fixtures) {
         HOME: fixtures.home,
         USERPROFILE: fixtures.home,
         CLAUDEVILLE_DISABLE_GIT_ENRICHMENT: '1',
+        CLAUDEVILLE_DELTA_SNAPSHOT_INTERVAL_MS: String(DELTA_SNAPSHOT_INTERVAL_MS),
         CLAUDEVILLE_OPENCODE_CONFIG_DIR: path.join(fixtures.home, '.config', 'opencode'),
         CLAUDEVILLE_OPENCODE_STATE_DIR: path.join(fixtures.home, '.local', 'share', 'opencode'),
         CLAUDEVILLE_OPENCODE_DB: path.join(fixtures.home, '.local', 'share', 'opencode', 'opencode.db'),
