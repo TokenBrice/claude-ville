@@ -65,10 +65,12 @@ function fixture(t, { timers = false } = {}) {
 function baseline(f) {
     assert.equal(f.renderer.render(f.input), true, f.renderer.failure?.message);
     assert.ok(f.work.passes > 0);
+    assert.equal(f.renderer.lastFrameReused, false, 'a submitted frame is not a confirmed static one');
     const before = { ...f.work };
     assert.equal(f.renderer.render(f.input), true);
     assert.deepEqual(f.work, before, 'identical staged input must issue no passes/submits/buffer writes');
     assert.equal(f.renderer.getDiagnostics().skippedFrames, 1, 'diagnostics report output reuse');
+    assert.equal(f.renderer.lastFrameReused, true, 'FP-2: the reuse confirms a static scene');
 }
 
 const poisons = {

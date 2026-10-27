@@ -571,14 +571,21 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     }
     // C-W1 — the environment reads the village's own timeline only: no agent,
     // mood or director input reaches the weather, sky, fog or grade (V3).
+    // FP-2 — under reduced motion the timeline advances in whole seconds, so
+    // a static scene's inputs hold within a second and its idle frames reuse
+    // the presented one (IsometricRenderer._hasTimedIdleTransition).
+    const atmosphereNow = (renderer.motionScale ?? 1) > 0 ? renderNow : renderNow - (renderNow % 1000);
+    renderer._atmosphereClockMs = atmosphereNow;
     const atmosphere = renderer.atmosphereState.update({
-        now: new Date(renderNow),
+        now: new Date(atmosphereNow),
         motionScale: renderer.motionScale,
     });
     renderer._lastAtmosphere = atmosphere;
     // 0.10 — one lightning schedule per frame on the one clock: the stepped
     // flash exposure both backends apply and the bolt WeatherRenderer draws.
     const strike = stormStrikeAt(renderer.motionTimeMs, atmosphere, renderer.motionScale ?? 1);
+    // FP-1b — a strike in flight holds the World at 60 fps.
+    renderer._frameStrikeActive = strike.active === true;
     const wx = atmosphere?.weather;
     // C-W2 — the ground remembers the village's own weather: wetness,
     // puddles, snow cover and frost integrated from the timeline history

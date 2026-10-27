@@ -111,7 +111,9 @@ const FIXTURE_FEET = Object.freeze([
 // its body sits on, whose table it may cover.
 export function standsOnFixture(x, y, seatId = null) {
     if (inVillageMasonry((x / (TILE_WIDTH / 2) + y / (TILE_HEIGHT / 2)) / 2, (y / (TILE_HEIGHT / 2) - x / (TILE_WIDTH / 2)) / 2, 0.3)) return true;
-    for (const foot of FIXTURE_FEET) {
+    // FP-8 — indexed: this runs per steering pair every refresh.
+    for (let index = 0; index < FIXTURE_FEET.length; index++) {
+        const foot = FIXTURE_FEET[index];
         if (seatId && foot.seatId === seatId) continue;
         const dy = y - foot.y;
         if (Math.abs(x - foot.x) < foot.xPx && dy > -FIXTURE_BODY.backPx && dy < foot.frontPx) return true;

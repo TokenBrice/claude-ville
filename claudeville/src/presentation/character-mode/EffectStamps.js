@@ -65,6 +65,19 @@ export function defineMoment(tier, { anticipation = 160, peak = 80, follow = 480
     });
 }
 
+// FP-1b — every C4 moment resolves its phase here, so a live phase
+// (anticipation, peak or follow; never the static residue) marks a moment as
+// playing. The renderer takes the mark once per frame: a playing moment holds
+// the World at 60 fps.
+let liveMomentSeen = false;
+
+/** Whether a moment resolved a live phase since the last call; clears the mark. */
+export function takeLiveMoment() {
+    const seen = liveMomentSeen;
+    liveMomentSeen = false;
+    return seen;
+}
+
 // Resolve where a moment is at `age` ms. Reduced motion skips straight to the
 // residue frame for the residue duration (nothing at all when there is none).
 // `step` is the integer quantum inside the phase so callers can key discrete
@@ -78,6 +91,7 @@ export function momentPhase(age, moment, { reduced = false } = {}) {
         return DONE;
     }
     if (t < 0) return DONE;
+    if (t < moment.anticipation + moment.peak + moment.follow) liveMomentSeen = true;
     if (t < moment.anticipation) {
         const u = t / Math.max(1, moment.anticipation);
         return { phase: 'anticipation', t: u, alpha: 1, step: quantStep(u, 3) };

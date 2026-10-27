@@ -728,6 +728,13 @@ function releaseSharedEntry(entry) {
     }
 }
 
+// FP-8 — the processed-sprite LRU holds at least every live distinct
+// identity (live profiles are pinned anyway), so a departed identity is not
+// evicted the moment the roster passes 24; the pixel cap still bounds memory.
+function processedSpriteEntryLimit() {
+    return Math.max(PROCESSED_SPRITE_CACHE_ENTRY_LIMIT, ACTIVE_PROFILE_REFS.size);
+}
+
 function oldestUnpinnedCacheKey(map) {
     const profiles = activeProfilePins();
     for (const [key, entry] of map) {
@@ -965,7 +972,7 @@ export class AgentSprite {
         return {
             processedSpriteSheets: PROCESSED_SPRITE_CACHE.size,
             processedSpritePixels: processedSpriteCachePixels,
-            processedSpriteEntryLimit: PROCESSED_SPRITE_CACHE_ENTRY_LIMIT,
+            processedSpriteEntryLimit: processedSpriteEntryLimit(),
             processedSpritePixelLimit: PROCESSED_SPRITE_CACHE_PIXEL_LIMIT,
             codexEquipmentAssets: CODEX_EQUIPMENT_CACHE.size,
             codexEquipmentPixels: codexEquipmentCachePixels,
@@ -3524,14 +3531,18 @@ export class AgentSprite {
     // crowd nudge never speeds a walker up, stalls it or pushes it past its
     // route progress. Null when the body did not step this refresh (a start
     // beat, a planted pivot, a stop, reduced motion): it never skates.
+    // FP-8 — one reused point per body: the renderer reads it at once.
     steeredPosition(x, y) {
         if (!Number.isFinite(this._stepStartX) || !(this._stepLength > 0)) return null;
         const dx = x - this._stepStartX;
         const dy = y - this._stepStartY;
-        const length = Math.hypot(dx, dy);
+        const length = Math.sqrt(dx * dx + dy * dy);
         if (!(length > 1e-6)) return null;
         const scale = this._stepLength / length;
-        return { x: this._stepStartX + dx * scale, y: this._stepStartY + dy * scale };
+        const out = this._steeredScratch ||= { x: 0, y: 0 };
+        out.x = this._stepStartX + dx * scale;
+        out.y = this._stepStartY + dy * scale;
+        return out;
     }
 
     // #42 — resolve the terrain class under the sprite's current world position
@@ -4666,7 +4677,7 @@ export class AgentSprite {
         canvas.__cvProfileKey = cacheKey;
         processedSpriteCachePixels += canvas.width * canvas.height;
         while (
-            PROCESSED_SPRITE_CACHE.size > PROCESSED_SPRITE_CACHE_ENTRY_LIMIT
+            PROCESSED_SPRITE_CACHE.size > processedSpriteEntryLimit()
             || processedSpriteCachePixels > PROCESSED_SPRITE_CACHE_PIXEL_LIMIT
         ) {
             const oldestKey = oldestUnpinnedCacheKey(PROCESSED_SPRITE_CACHE);

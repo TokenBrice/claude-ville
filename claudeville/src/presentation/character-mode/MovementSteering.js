@@ -28,6 +28,21 @@ export function constrainSteeringToTarget({
     targetX,
     targetY,
 }) {
+    return constrainSteeringInto({ x: 0, y: 0, constrained: false }, x, y, nextX, nextY, targetX, targetY);
+}
+
+function setSteer(out, x, y, constrained) {
+    out.x = x;
+    out.y = y;
+    out.constrained = constrained;
+    return out;
+}
+
+/**
+ * `constrainSteeringToTarget` written into `out` (`{ x, y, constrained }`)
+ * and returned, so the renderer's per-pair steering allocates nothing (FP-8).
+ */
+export function constrainSteeringInto(out, x, y, nextX, nextY, targetX, targetY) {
     const currentX = Number(x);
     const currentY = Number(y);
     const candidateX = Number(nextX);
@@ -42,22 +57,27 @@ export function constrainSteeringToTarget({
         || !Number.isFinite(waypointX)
         || !Number.isFinite(waypointY)
     ) {
-        return { x: nextX, y: nextY, constrained: false };
+        return setSteer(out, nextX, nextY, false);
     }
-    const currentDistance = Math.hypot(waypointX - currentX, waypointY - currentY);
-    const candidateDistance = Math.hypot(waypointX - candidateX, waypointY - candidateY);
+    const currentDx = waypointX - currentX;
+    const currentDy = waypointY - currentY;
+    const candidateDx = waypointX - candidateX;
+    const candidateDy = waypointY - candidateY;
+    const currentDistance = Math.sqrt(currentDx * currentDx + currentDy * currentDy);
+    const candidateDistance = Math.sqrt(candidateDx * candidateDx + candidateDy * candidateDy);
 
     if (candidateDistance <= currentDistance + DISTANCE_EPSILON) {
-        return { x: candidateX, y: candidateY, constrained: false };
+        return setSteer(out, candidateX, candidateY, false);
     }
     if (currentDistance <= DISTANCE_EPSILON || candidateDistance <= DISTANCE_EPSILON) {
-        return { x: currentX, y: currentY, constrained: true };
+        return setSteer(out, currentX, currentY, true);
     }
 
     const scale = currentDistance / candidateDistance;
-    return {
-        x: waypointX + (candidateX - waypointX) * scale,
-        y: waypointY + (candidateY - waypointY) * scale,
-        constrained: true,
-    };
+    return setSteer(
+        out,
+        waypointX + (candidateX - waypointX) * scale,
+        waypointY + (candidateY - waypointY) * scale,
+        true,
+    );
 }

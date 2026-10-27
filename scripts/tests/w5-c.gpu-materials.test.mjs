@@ -146,14 +146,28 @@ test('agent atlas revisions expose changed slots for incremental GPU uploads', (
         record.textureRevision = 'frame-2';
         const [packed] = packGpuAgentFrameAtlas(renderer, [record]);
 
-        // B.2 — the changed slot uploads as a sub-rect of the atlas itself.
+        // B.2 — the changed frame uploads as a sub-rect of the atlas itself:
+        // FP-6, into the next cell of the body's resident band (cell 1 of a
+        // 2-column grid), and the record samples it there.
         assert.equal(packed.textureUpdates.length, 1);
         const [update] = packed.textureUpdates;
         assert.deepEqual(
             { x: update.x, y: update.y, sx: update.sx, sy: update.sy, width: update.width, height: update.height },
-            { x: 0, y: 0, sx: 0, sy: 0, width: 8, height: 8 },
+            { x: 8, y: 0, sx: 8, sy: 0, width: 8, height: 8 },
         );
         assert.equal(update.source, renderer._gpuAgentFrameAtlas);
+        assert.deepEqual([packed.sx, packed.sy], [8, 0]);
+
+        // FP-6 — back to a frame the band holds: re-sampled, no draw, no
+        // upload, no texture revision.
+        const revision = packed.textureRevision;
+        // (The overlay rebuilds each record per frame; restore the sheet fields.)
+        renderer._gpuAgentAtlasUpdatedAt = -Infinity;
+        Object.assign(record, { source, textureKey: 'agent-sheet:codex', sx: 0, sy: 0, textureRevision: 'frame-1' });
+        const [back] = packGpuAgentFrameAtlas(renderer, [record]);
+        assert.equal(back.textureUpdates.length, 0);
+        assert.equal(back.textureRevision, revision);
+        assert.deepEqual([back.sx, back.sy], [0, 0]);
     } finally {
         if (previousDocument === undefined) delete globalThis.document;
         else globalThis.document = previousDocument;

@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
-import { createMotionClock } from '../../claudeville/src/presentation/character-mode/MotionClock.js';
+import { createMotionClock, SPEED_RUNGS } from '../../claudeville/src/presentation/character-mode/MotionClock.js';
+import { defineMoment, momentPhase } from '../../claudeville/src/presentation/character-mode/EffectStamps.js';
+import { VillageDirector } from '../../claudeville/src/presentation/character-mode/VillageDirector.js';
 import { FRAME_PACING_INTERVAL_MS, createFramePacing } from '../../claudeville/src/presentation/character-mode/FramePacing.js';
 
 function fixture() {
@@ -42,6 +44,67 @@ test('GPU frames must stage exact inputs rather than use the coarse tableau idle
     renderer._idleFrameDirty = false;
     renderer.gpuWorld = { isActive: () => true };
     assert.equal(renderer._canSkipIdleFrame(), false);
+});
+
+// FP-2: a static scene with every timed owner present but idle.
+function staticSceneFixture(now) {
+    const renderer = fixture();
+    delete renderer._canSkipIdleFrame;
+    Object.assign(renderer, {
+        _idleFrameDirty: false,
+        camera: { x: 4, y: 5, zoom: 2 },
+        _idleLastRenderCamera: { x: 4, y: 5, zoom: 2 },
+        agentSprites: new Map(),
+        gateTransits: new Map(),
+        gateDoorsOpen: false,
+        _gateDoorsOpenUntilMs: 0,
+        arrivalDeparture: { arrivals: new Map(), dispatches: new Map(), merges: new Map(), sigils: [], completionCues: [], orphanReturns: [] },
+        ritualConductor: { rituals: [] },
+        particleSystem: { particles: [] },
+        _chronicleNextUpdateAt: now + 500,
+        villageDirector: {
+            scenes: [], _recoveries: new Map(), _pendingBiographyBanners: [], toolEvents: [],
+            buildingPresence: new Map([['forge', { updatedAt: now - 1000 }], ['tavern', { updatedAt: now - 2000 }]]),
+            presenceExpiryDue: VillageDirector.prototype.presenceExpiryDue,
+        },
+        harborTraffic: { storageTransfers: new Map(), harborCrates: new Map(), state: { pushEvents: new Map() } },
+        atmosphereState: { _frozenDate: new Date(now) },
+        _lastAtmosphere: { weather: { type: 'clear', precipitation: 0 } },
+        _surfaceWetness: 0,
+        assets: {},
+    });
+    return renderer;
+}
+
+test('building presence is state: a populated presence map alone is not a timed transition', () => {
+    const now = 1_000_000;
+    const renderer = staticSceneFixture(now);
+    assert.equal(renderer._hasTimedIdleTransition(now), false);
+    assert.equal(renderer._canSkipIdleFrame(now), true, 'the Canvas idle skip fires on a static scene');
+    renderer.villageDirector.buildingPresence.get('forge').updatedAt = now - 46_000;
+    assert.equal(renderer._hasTimedIdleTransition(now), true, 'an entry past its 45 s TTL is due to expire');
+});
+
+test('a resident world skips only after its byte gate confirmed the static scene', () => {
+    const now = 1_000_000;
+    const renderer = staticSceneFixture(now);
+    renderer.gpuWorld = { isActive: () => true, lastFrameReused: false, hasPendingGpuQueries: () => false };
+    assert.equal(renderer._canSkipIdleFrame(now), false, 'a frame the gate did not reuse renders');
+    renderer.gpuWorld.lastFrameReused = true;
+    assert.equal(renderer._canSkipIdleFrame(now), true);
+    renderer._idleFrameDirty = true;
+    assert.equal(renderer._canSkipIdleFrame(now), false, 'a changed input still renders');
+});
+
+test('under reduced motion the live clock is timeless within the painted second', () => {
+    const now = 1_000_250;
+    const renderer = staticSceneFixture(now);
+    renderer.atmosphereState = {};
+    renderer._chronicleNextUpdateAt = now + 5000;
+    renderer._idleLastRenderClockMs = 1_000_000;
+    assert.equal(renderer._hasTimedIdleTransition(now), false);
+    assert.equal(renderer._hasTimedIdleTransition(1_000_999), false);
+    assert.equal(renderer._hasTimedIdleTransition(1_001_000), true, 'the next second renders');
 });
 
 for (const key of ['_firstFrameReason', '_revealSnapshotPending', '_idleFrameDirty', '_forceFreshGpuOutput', '_worldSwap', '_contextLost']) {
@@ -177,6 +240,59 @@ test('the ladder hears the paced interval, never the panel refresh', () => {
     assert.equal(renderer.updates, 4);
     assert.deepEqual(intervals.map(ms => Math.round(ms * 1000) / 1000), [16.667, 16.667, 16.667]);
     assert.ok(Math.abs(intervals[0] - FRAME_PACING_INTERVAL_MS) < 1e-9);
+});
+
+// FP-1b: the renderer's own ambient verdict, judged after each frame.
+function ambientFixture() {
+    const renderer = fixture();
+    renderer.motionScale = 1;
+    renderer._ambientHint = false;
+    renderer._ambientCamera = { x: NaN, y: NaN, zoom: NaN };
+    renderer._pointerInputAt = -Infinity;
+    renderer._visibleSortedSprites = [];
+    renderer.camera = { x: 10, y: 20, zoom: 2 };
+    renderer.arrivalDeparture = { dispatches: new Map(), merges: new Map(), orphanReturns: [] };
+    return renderer;
+}
+
+function renderedOver(renderer, fromMs, toMs, hz = 240) {
+    const before = renderer.updates;
+    for (let tick = Math.ceil(fromMs * hz / 1000); tick * 1000 / hz < toMs; tick++) renderer._loop(tick * 1000 / hz);
+    return renderer.updates - before;
+}
+
+test('an ambient-only village renders at 30 fps; a walker above the stroll rung restores 60', () => {
+    const renderer = ambientFixture();
+    assert.ok(renderedOver(renderer, 0, 1000) <= 32, 'ambient-only frames pace at 30 fps');
+    const walker = { moving: true, _gaitSpeed: SPEED_RUNGS[0] };
+    renderer._visibleSortedSprites.push(walker);
+    assert.ok(renderedOver(renderer, 1000, 2000) <= 32, 'a stroller stays ambient');
+    walker._gaitSpeed = SPEED_RUNGS[SPEED_RUNGS.length - 1];
+    const walking = renderedOver(renderer, 2000, 3000);
+    assert.ok(walking >= 59 && walking <= 61, `a WORKING walker on screen renders at 60 fps (${walking})`);
+});
+
+test('pointer input, camera easing, a comet, a strike and a playing moment each hold 60 fps', () => {
+    const causes = {
+        pointer: r => { r._pointerInputAt = 2500; },
+        camera: r => { r.camera._directorGlide = {}; },
+        follow: r => { r.camera.x += 1; },
+        comet: r => { r.arrivalDeparture.dispatches.set('child', {}); },
+        strike: r => { r._frameStrikeActive = true; },
+        moment: () => { momentPhase(10, defineMoment('minor')); },
+    };
+    for (const [name, apply] of Object.entries(causes)) {
+        const renderer = ambientFixture();
+        assert.ok(renderedOver(renderer, 0, 2000) <= 62, name);
+        // Each cause is re-applied every frame: follow moves the camera, a
+        // moment resolves its phase as it draws.
+        const update = renderer._update;
+        renderer._update = function (...args) { apply(this); return update.apply(this, args); };
+        apply(renderer);
+        renderer._noteAmbientFrame();
+        const rendered = renderedOver(renderer, 2000, 3000);
+        assert.ok(rendered >= 59, `${name} holds 60 fps (${rendered})`);
+    }
 });
 
 test('a stopped loop forgets its cadence: the first tick after a restart renders at once', () => {

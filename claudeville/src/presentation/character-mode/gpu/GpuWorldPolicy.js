@@ -1274,6 +1274,10 @@ export function normalizeGpuRecord(record = {}, sequence = 0, target = null) {
     normalized.pageable = record.pageable !== false;
     normalized.textureRevision = record.textureRevision ?? null;
     normalized.sidecarRevision = record.sidecarRevision ?? null;
+    // FP-6 — the agent atlas's per-channel revisions; reset like every field,
+    // so a scratch record's next occupant never inherits them.
+    normalized.materialRevision = record.materialRevision ?? null;
+    normalized.emissiveRevision = record.emissiveRevision ?? null;
     normalized.textureUpdates = record.textureUpdates ?? null;
     normalized.materialTextureUpdates = record.materialTextureUpdates ?? null;
     normalized.emissiveTextureUpdates = record.emissiveTextureUpdates ?? null;

@@ -4358,11 +4358,11 @@ export class GpuWorldRenderer {
             );
             batch.materialTexture = batch.materialSource
                 ? this._textureFor(`material:${sidecar}`, batch.materialSource,
-                    first?.sidecarRevision, first?.materialTextureUpdates)
+                    first?.materialRevision ?? first?.sidecarRevision, first?.materialTextureUpdates)
                 : null;
             batch.emissiveTexture = batch.emissiveSource
                 ? this._textureFor(`emissive:${sidecar}`, batch.emissiveSource,
-                    first?.sidecarRevision, first?.emissiveTextureUpdates)
+                    first?.emissiveRevision ?? first?.sidecarRevision, first?.emissiveTextureUpdates)
                 : null;
             if (!occluderChannelEnabled && batch.occluderSource) this.skippedOccluderUploads++;
             batch.occluderTexture = occluderChannelEnabled && batch.occluderSource
@@ -5309,6 +5309,9 @@ export class GpuWorldRenderer {
     render(input = {}, repeatOutput = false) {
         const { records = [], camera = null, feed = {}, particles = null, marks = null, forceFreshOutput = false } = input;
         this._freshOutputThisTask = false;
+        // FP-2 — true only after a frame the byte gate reused: its staged
+        // inputs equal the presented frame's (IsometricRenderer._canSkipIdleFrame).
+        this.lastFrameReused = false;
         if (!this.isActive() || !camera || !records.length) return false;
         const gl = this.gl;
         const timerWasPending = this.hasPendingGpuQueries();
@@ -5434,6 +5437,7 @@ export class GpuWorldRenderer {
                 || this._debugLoad || this.passSamplingEnabled;
             if (!fresh && reuse.unchanged()) {
                 this.skippedFrames = (this.skippedFrames || 0) + 1;
+                this.lastFrameReused = true;
                 return true;
             }
             this._uploadFrameVertices(byteLength);

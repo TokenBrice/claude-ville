@@ -3,6 +3,7 @@
 // Dashboard return, K-slope and vsync-unlocked arms) and
 // `scripts/world/gpu-burst.mjs` (real-frame throughput per level). Imported
 // helper; not directly executable.
+import fs from 'node:fs';
 import os from 'node:os';
 import { gpuLaunchArgs, launchChromium } from './chromium.mjs';
 import { startIsolatedServer } from './isolated-server.mjs';
@@ -23,11 +24,74 @@ export const BENCH_WEATHER = Object.freeze({
 export const GPU_LAUNCH_ARGS = Object.freeze(gpuLaunchArgs());
 export const UNLOCKED_LAUNCH_ARGS = Object.freeze(['--disable-gpu-vsync', '--disable-frame-rate-limit']);
 
-export function launchBenchBrowser({ headed = false, unlocked = false } = {}) {
+// A `tag` adds an inert `--cv-bench-tag=<tag>` switch (Chromium ignores
+// unknown switches) so `browserRootPid(tag)` can find the launched browser's
+// process tree in `/proc`.
+export function launchBenchBrowser({ headed = false, unlocked = false, tag = null } = {}) {
   return launchChromium({
     headless: !headed,
-    args: [...GPU_LAUNCH_ARGS, ...(unlocked ? UNLOCKED_LAUNCH_ARGS : [])],
+    args: [...GPU_LAUNCH_ARGS, ...(unlocked ? UNLOCKED_LAUNCH_ARGS : []), ...(tag ? [`--cv-bench-tag=${tag}`] : [])],
   });
+}
+
+function procCmdline(pid) {
+  try {
+    return fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').replace(/\0/g, ' ');
+  } catch {
+    return '';
+  }
+}
+
+// utime + stime in clock ticks (`/proc/<pid>/stat` fields 14 and 15; Linux
+// reports them in USER_HZ, 100 on every mainstream kernel), and the parent.
+function procStat(pid) {
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    return { ppid: Number(fields[1]), ticks: Number(fields[11]) + Number(fields[12]) };
+  } catch {
+    return null;
+  }
+}
+
+/** The browser process launched with `tag` (Linux `/proc` only), or null. */
+export function browserRootPid(tag) {
+  if (!tag || !fs.existsSync('/proc/self/stat')) return null;
+  for (const entry of fs.readdirSync('/proc')) {
+    if (!/^\d+$/.test(entry)) continue;
+    const cmdline = procCmdline(entry);
+    if (cmdline.includes(`--cv-bench-tag=${tag}`) && !cmdline.includes('--type=')) return Number(entry);
+  }
+  return null;
+}
+
+/**
+ * CPU seconds consumed so far by the process tree under `rootPid`, by
+ * Chromium process type: `browser`, `renderer`, `gpu` (the GPU process),
+ * `utility`, … Exited children no longer count, so sample a steady page.
+ */
+export function procTreeCpuSeconds(rootPid) {
+  const out = {};
+  if (!rootPid) return out;
+  const children = new Map();
+  for (const entry of fs.readdirSync('/proc')) {
+    if (!/^\d+$/.test(entry)) continue;
+    const stat = procStat(entry);
+    if (!stat) continue;
+    if (!children.has(stat.ppid)) children.set(stat.ppid, []);
+    children.get(stat.ppid).push(Number(entry));
+  }
+  const queue = [rootPid];
+  while (queue.length) {
+    const pid = queue.shift();
+    const stat = procStat(pid);
+    if (!stat) continue;
+    const type = /--type=([a-z-]+)/.exec(procCmdline(pid))?.[1] || 'browser';
+    const key = type === 'gpu-process' ? 'gpu' : type;
+    out[key] = (out[key] || 0) + stat.ticks / 100;
+    queue.push(...(children.get(pid) || []));
+  }
+  return out;
 }
 
 /** An explicit ClaudeVille URL, or an isolated server (OS port, temp HOME; never port 4000). */
@@ -55,11 +119,11 @@ export function parseConditions(value) {
 }
 
 /** Boot a fresh context on a sim scenario and wait for the World to be ready. */
-export async function openWorld(browser, { baseUrl, scenario, width, height, dpr = 1, query = {} }) {
+export async function openWorld(browser, { baseUrl, scenario, width, height, dpr = 1, query = {}, reducedMotion = false }) {
   const context = await browser.newContext({
     viewport: { width, height },
     deviceScaleFactor: dpr,
-    reducedMotion: 'no-preference',
+    reducedMotion: reducedMotion ? 'reduce' : 'no-preference',
   });
   await context.addInitScript(() => {
     try { localStorage.setItem('cv-auto-camera', '0'); } catch {}

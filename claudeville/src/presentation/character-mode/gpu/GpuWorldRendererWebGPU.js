@@ -1141,10 +1141,10 @@ export class GpuWorldRendererWebGPU {
             const sidecar = batch.sidecarKey || batch.textureKey;
             batch.albedoTexture = this._textureFor(batch.textureKey, batch.source, first?.textureRevision, first?.textureUpdates);
             batch.materialTexture = batch.materialSource
-                ? this._textureFor(`material:${sidecar}`, batch.materialSource, first?.sidecarRevision, first?.materialTextureUpdates)
+                ? this._textureFor(`material:${sidecar}`, batch.materialSource, first?.materialRevision ?? first?.sidecarRevision, first?.materialTextureUpdates)
                 : null;
             batch.emissiveTexture = batch.emissiveSource
-                ? this._textureFor(`emissive:${sidecar}`, batch.emissiveSource, first?.sidecarRevision, first?.emissiveTextureUpdates)
+                ? this._textureFor(`emissive:${sidecar}`, batch.emissiveSource, first?.emissiveRevision ?? first?.sidecarRevision, first?.emissiveTextureUpdates)
                 : null;
             if (!occluderChannelEnabled && batch.occluderSource) this.skippedOccluderUploads++;
             batch.occluderTexture = occluderChannelEnabled && batch.occluderSource
@@ -1539,6 +1539,9 @@ export class GpuWorldRendererWebGPU {
     render(input = {}, repeatOutput = false) {
         const { records = [], camera = null, feed = {}, particles = null, marks = null, forceFreshOutput = false } = input;
         this._freshOutputThisTask = false;
+        // FP-2 — true only after a frame the byte gate reused: its staged
+        // inputs equal the presented frame's (IsometricRenderer._canSkipIdleFrame).
+        this.lastFrameReused = false;
         if (!this.isActive() || !camera || !records.length) return false;
         const device = this.device;
         const timerWasPending = this.hasPendingGpuQueries();
@@ -1640,6 +1643,7 @@ export class GpuWorldRendererWebGPU {
                 || this._readbackPending || this._debugLoad || this.passSamplingEnabled;
             if (!fresh && reuse.unchanged()) {
                 this.skippedFrames = (this.skippedFrames || 0) + 1;
+                this.lastFrameReused = true;
                 return true;
             }
             device.queue.writeBuffer(this._recordBuffer, 0, this._recordStaging.f32.buffer, 0, byteLength);

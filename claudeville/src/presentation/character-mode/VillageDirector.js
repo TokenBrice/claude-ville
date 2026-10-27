@@ -974,6 +974,16 @@ export class VillageDirector {
         });
     }
 
+    // FP-2 — presence is state, not a timer: only an entry outliving
+    // BUILDING_SIGNAL_TTL_MS (pruned by the next update) changes what the
+    // village shows on its own.
+    presenceExpiryDue(now = Date.now()) {
+        for (const entry of this.buildingPresence.values()) {
+            if (now - (Number(entry.updatedAt) || 0) > BUILDING_SIGNAL_TTL_MS) return true;
+        }
+        return false;
+    }
+
     _onBuildingPresence(payload) {
         this.buildingPresence.clear();
         for (const [type, entry] of Object.entries(payload || {})) {

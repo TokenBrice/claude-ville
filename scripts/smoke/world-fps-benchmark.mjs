@@ -4,6 +4,7 @@ import os from 'node:os';
 import { writeFileSync } from 'node:fs';
 import {
   BENCH_WEATHER,
+  browserRootPid,
   hostSnapshot,
   launchBenchBrowser,
   median as medianOf,
@@ -11,6 +12,7 @@ import {
   parseConditions,
   parseViewport,
   poseWorld,
+  procTreeCpuSeconds,
   quantile,
   resolveServer,
   round as roundTo,
@@ -42,7 +44,7 @@ const FIXED_DATE = '2026-05-18T12:00:00.000Z';
 const VIEWPORT = Object.freeze({ width: 1600, height: 1000 });
 const CAMERA_POSE = Object.freeze({ x: -128, y: 704, zoom: 1.72 });
 
-const MODES = Object.freeze(['matrix', 'soak', 'inject', 'dashboard', 'kslope', 'unlocked']);
+const MODES = Object.freeze(['matrix', 'soak', 'inject', 'dashboard', 'kslope', 'unlocked', 'idle']);
 const MODE_DEFAULTS = Object.freeze({
   matrix: { durationSeconds: 30, warmupSeconds: 10, repetitions: 3 },
   soak: { durationSeconds: 180, warmupSeconds: 10, repetitions: 1 },
@@ -50,11 +52,18 @@ const MODE_DEFAULTS = Object.freeze({
   dashboard: { durationSeconds: 0, warmupSeconds: 10, repetitions: 1 },
   kslope: { durationSeconds: 24, warmupSeconds: 4, repetitions: 3 },
   unlocked: { durationSeconds: 12, warmupSeconds: 4, repetitions: 3 },
+  idle: { durationSeconds: 20, warmupSeconds: 4, repetitions: 1 },
 });
+// FP-11 — the idle-power arm's scene classes: an empty village is ambient
+// only; every other scenario is a walking scene (bodies on the move).
+const IDLE_DEFAULT_SCENARIOS = Object.freeze(['no-agents', 'dense-24-agents']);
+const IDLE_DEFAULT_CONDITIONS = '12:clear';
+const AMBIENT_SCENARIOS = new Set(['no-agents']);
 const MATRIX_ONLY_FLAGS = new Set(['--counts', '--weather', '--max-rain-regression-pct', '--profile']);
 const LADDER_ONLY_FLAGS = new Set([
   '--scenario', '--viewport', '--dpr', '--zoom', '--conditions', '--level', '--load-passes', '--load-levels',
   '--baseline-seconds', '--load-seconds', '--recover-seconds', '--away-seconds', '--returns', '--candidate-passes',
+  '--reduced-motion',
 ]);
 
 function usage() {
@@ -74,6 +83,12 @@ Modes:
   unlocked   V2 receipt: vsync, frame-rate limit and the World's 60 fps cap
              off, forced FULL vs MINIMAL in alternating 60-frame blocks; the
              rAF interval delta
+  idle       FP-11 idle power: per scene class (no-agents = empty ambient,
+             any other scenario = walking), the renderer's frames/s (admitted,
+             painted, GPU-submitted) and the launched browser's renderer and
+             GPU-process CPU-seconds per hour read from /proc (Linux). With
+             ambient pacing on (FramePacing.js), ambient scenes must render
+             at 31 fps or fewer and walking scenes at 59-61 fps
 
 Common options:
   --url=<url>                 ClaudeVille URL (default: an isolated server
@@ -116,6 +131,13 @@ Ladder and receipt options (soak, inject, dashboard, kslope, unlocked):
   --recover-seconds=<n>       inject: observation after removal (default: 90)
   --away-seconds=<n>          dashboard: time in the Dashboard (default: 5)
   --returns=<n>               dashboard: returns per run (default: 3)
+  --reduced-motion            idle: pages prefer reduced motion (the static path)
+
+Idle defaults: --scenario=${IDLE_DEFAULT_SCENARIOS.join(',')} --conditions=${IDLE_DEFAULT_CONDITIONS}, 20 s
+per case after a 4 s warmup. Headless Chromium composites in software and
+paces rAF at 60 Hz, so its CPU-seconds include compositor work a headed,
+GPU-composited window does not pay: compare arms run on one host, never a
+headless number with a real window's.
 
 Output is newline-delimited JSON per run followed by a summary object.`);
 }
@@ -153,6 +175,7 @@ function parseArgs(argv) {
     recoverSeconds: 90,
     awaySeconds: 5,
     returns: 3,
+    reducedMotion: false,
   };
   const seen = new Set();
 
@@ -171,6 +194,11 @@ function parseArgs(argv) {
       seen.add(arg);
       continue;
     }
+    if (arg === '--reduced-motion') {
+      options.reducedMotion = true;
+      seen.add(arg);
+      continue;
+    }
     const [flag, inlineValue] = arg.split('=', 2);
     if (![
       '--mode',
@@ -182,7 +210,7 @@ function parseArgs(argv) {
       '--renderer',
       ...MATRIX_ONLY_FLAGS,
       ...LADDER_ONLY_FLAGS,
-    ].includes(flag) || flag === '--profile') {
+    ].includes(flag) || flag === '--profile' || flag === '--reduced-motion') {
       throw new Error(`Unknown argument: ${arg}`);
     }
     const value = inlineValue ?? argv[++index];
@@ -218,6 +246,11 @@ function parseArgs(argv) {
   }
 
   if (!MODES.includes(options.mode)) throw new Error(`mode must be one of ${MODES.join(', ')}`);
+  if (options.reducedMotion && options.mode !== 'idle') throw new Error('--reduced-motion applies to --mode=idle only');
+  if (options.mode === 'idle') {
+    if (!seen.has('--scenario')) options.scenarios = [...IDLE_DEFAULT_SCENARIOS];
+    if (!seen.has('--conditions')) options.conditions = parseConditions(IDLE_DEFAULT_CONDITIONS);
+  }
   if (options.renderer != null && !['webgl', 'webgpu', 'canvas'].includes(options.renderer)) {
     throw new Error('renderer must be webgl, webgpu or canvas');
   }
@@ -230,7 +263,7 @@ function parseArgs(argv) {
   options.warmupSeconds ??= defaults.warmupSeconds;
   options.repetitions ??= defaults.repetitions;
 
-  if (['matrix', 'soak', 'kslope', 'unlocked'].includes(options.mode)
+  if (['matrix', 'soak', 'kslope', 'unlocked', 'idle'].includes(options.mode)
     && (!Number.isFinite(options.durationSeconds) || options.durationSeconds < 1)) {
     throw new Error('duration seconds must be at least 1');
   }
@@ -656,6 +689,7 @@ function* ladderCases(options) {
             hour: condition.hour,
             weather: condition.weather,
             renderer: options.renderer,
+            reducedMotion: options.reducedMotion,
           };
         }
       }
@@ -677,15 +711,16 @@ function caseFields(spec) {
 
 // Boot, let the opening glide finish, pose, warm up, and re-assert the pose
 // (director and idle glides can steal it).
-async function openPosedWorld(browser, baseUrl, spec, warmupSeconds) {
+async function openPosedWorld(browser, baseUrl, spec, warmupSeconds, { requireGpu = true } = {}) {
   const opened = await openWorld(browser, {
     baseUrl, scenario: spec.scenario, width: spec.width, height: spec.height, dpr: spec.dpr,
     query: spec.renderer ? { renderer: spec.renderer } : {},
+    reducedMotion: spec.reducedMotion === true,
   });
   try {
     await sleep(4500);
     const pose = await poseWorld(opened.page, spec);
-    if (!pose.gpuWorldActive) throw new Error(`resident GPU world inactive for ${spec.scenario} ${spec.viewport}`);
+    if (requireGpu && !pose.gpuWorldActive) throw new Error(`resident GPU world inactive for ${spec.scenario} ${spec.viewport}`);
     await sleep(warmupSeconds * 1000);
     await poseWorld(opened.page, spec);
     return { ...opened, pose };
@@ -1129,10 +1164,141 @@ async function runUnlocked(browser, baseUrl, options, spec, repetition) {
   }
 }
 
+// FP-11 — idle power. No input reaches the page (FP-1b holds 60 fps for 1 s
+// after pointer input). In-page counters wrap the renderer's own `_update`
+// (one call per admitted frame) and `_render` (one per painted frame); the
+// GPU world's diagnostics give its submitted frames. CPU comes from /proc
+// for the launched browser's whole tree, by process type.
+async function runIdle(browser, baseUrl, options, spec, repetition) {
+  const loadStart = os.loadavg();
+  const { context, page, errors, pose } = await openPosedWorld(browser, baseUrl, spec, options.warmupSeconds, {
+    requireGpu: spec.renderer !== 'canvas',
+  });
+  try {
+    const durationMs = options.durationSeconds * 1000;
+    const cpuStart = procTreeCpuSeconds(options.rootPid);
+    const wallStart = performance.now();
+    const measured = await page.evaluate(async (windowMs) => {
+      const renderer = window.__claudeVilleApp.renderer;
+      const counts = { ticks: 0, updates: 0, ambientUpdates: 0, paints: 0 };
+      const update = renderer._update;
+      const render = renderer._render;
+      renderer._update = function countedUpdate(...args) {
+        counts.updates++;
+        if (this._framePacing?.ambient) counts.ambientUpdates++;
+        return update.apply(this, args);
+      };
+      renderer._render = function countedRender(...args) {
+        counts.paints++;
+        return render.apply(this, args);
+      };
+      const gpuStart = renderer.gpuWorld?.getDiagnostics?.() || null;
+      const started = performance.now();
+      await new Promise((resolve) => {
+        const tick = (ts) => {
+          counts.ticks++;
+          if (ts - started >= windowMs) resolve();
+          else requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      });
+      const seconds = (performance.now() - started) / 1000;
+      delete renderer._update;
+      delete renderer._render;
+      const gpuEnd = renderer.gpuWorld?.getDiagnostics?.() || null;
+      let pacing = null;
+      try {
+        pacing = await import('/src/presentation/character-mode/FramePacing.js');
+      } catch { /* a build without the module */ }
+      return {
+        seconds,
+        counts,
+        // `frames` counts submitted frames; a byte-gate reuse is `skippedFrames`.
+        gpuSubmits: gpuStart && gpuEnd ? gpuEnd.frames - gpuStart.frames : null,
+        gpuReused: gpuStart && gpuEnd ? (gpuEnd.skippedFrames || 0) - (gpuStart.skippedFrames || 0) : null,
+        ambientPacing: pacing?.AMBIENT_FRAME_PACING === true,
+        motionScale: renderer.motionScale ?? null,
+        level: renderer.gpuWorld?.qualityLadder?.getLevel?.() ?? null,
+      };
+    }, durationMs);
+    const wallSeconds = (performance.now() - wallStart) / 1000;
+    const cpuEnd = procTreeCpuSeconds(options.rootPid);
+    // A walking scene's reference: the same page with the ambient cadence
+    // forced off, so "not paced down" holds on a host that cannot reach 60.
+    const referenceFps = measured.ambientPacing && !AMBIENT_SCENARIOS.has(spec.scenario) && !spec.reducedMotion
+      ? await page.evaluate(async (windowMs) => {
+        const renderer = window.__claudeVilleApp.renderer;
+        let updates = 0;
+        const update = renderer._update;
+        renderer._ambientTick = () => false;
+        renderer._update = function countedUpdate(...args) {
+          updates++;
+          return update.apply(this, args);
+        };
+        const started = performance.now();
+        await new Promise(resolve => setTimeout(resolve, windowMs));
+        delete renderer._update;
+        delete renderer._ambientTick;
+        return Math.round((updates / ((performance.now() - started) / 1000)) * 10) / 10;
+      }, Math.min(durationMs, 8000))
+      : null;
+    const cores = {};
+    for (const key of new Set([...Object.keys(cpuStart), ...Object.keys(cpuEnd)])) {
+      cores[key] = roundTo(((cpuEnd[key] || 0) - (cpuStart[key] || 0)) / wallSeconds, 3);
+    }
+    const appCores = (cores.renderer || 0) + (cores.gpu || 0);
+    const perSecond = value => (Number.isFinite(value) ? roundTo(value / measured.seconds, 1) : null);
+    // Under reduced motion no body walks (it cuts to its route's end).
+    const sceneClass = AMBIENT_SCENARIOS.has(spec.scenario) || spec.reducedMotion ? 'ambient' : 'walking';
+    const renderedFps = perSecond(measured.counts.updates);
+    return {
+      type: 'run',
+      mode: 'idle',
+      ...caseFields(spec),
+      reducedMotion: spec.reducedMotion === true,
+      sceneClass,
+      repetition,
+      durationSeconds: options.durationSeconds,
+      pose,
+      hostLoadAverage: { start: loadStart, end: os.loadavg() },
+      ambientPacing: measured.ambientPacing,
+      motionScale: measured.motionScale,
+      level: measured.level,
+      rafFps: perSecond(measured.counts.ticks),
+      renderedFps,
+      paintedFps: perSecond(measured.counts.paints),
+      gpuSubmitFps: perSecond(measured.gpuSubmits),
+      gpuReusedFps: perSecond(measured.gpuReused),
+      ambientShare: measured.counts.updates ? roundTo(measured.counts.ambientUpdates / measured.counts.updates, 3) : null,
+      cores,
+      appCores: roundTo(appCores, 3),
+      cpuSecondsPerHour: {
+        renderer: Math.round((cores.renderer || 0) * 3600),
+        gpu: Math.round((cores.gpu || 0) * 3600),
+        app: Math.round(appCores * 3600),
+      },
+      referenceFps,
+      // Walking: never paced below the 60 fps cadence's own rate, and 59-61
+      // fps wherever the host reaches 59 with the ambient cadence off.
+      acceptance: measured.ambientPacing
+        ? (sceneClass === 'ambient'
+          ? { ambientAtMost31Fps: renderedFps <= 31 }
+          : {
+            walkingNotPacedDown: renderedFps >= referenceFps - 1.5,
+            walkingAt59To61Fps: referenceFps < 59 || (renderedFps >= 59 && renderedFps <= 61),
+          })
+        : { atMost61Fps: renderedFps <= 61 },
+      errors: errors.slice(0, 5),
+    };
+  } finally {
+    await context.close();
+  }
+}
+
 function summarizeLadderRuns(mode, runs) {
   const groups = new Map();
   for (const run of runs) {
-    const key = [run.scenario, run.viewport, run.dpr, run.zoom, run.hour, run.weather].join('|');
+    const key = [run.scenario, run.viewport, run.dpr, run.zoom, run.hour, run.weather, run.reducedMotion].join('|');
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(run);
   }
@@ -1163,6 +1329,23 @@ function summarizeLadderRuns(mode, runs) {
         ...base,
         ok: passes,
         reachedPreviousMs: matches.flatMap(run => run.returns.map(item => item.reachedPreviousMs)),
+      };
+    }
+    if (mode === 'idle') {
+      const median = key => roundTo(medianOf(matches.map(run => run[key])), 3);
+      return {
+        ...base,
+        ok: passes && matches.every(run => run.errors.length === 0),
+        reducedMotion: matches[0].reducedMotion,
+        sceneClass: matches[0].sceneClass,
+        ambientPacing: matches[0].ambientPacing,
+        renderedFps: median('renderedFps'),
+        paintedFps: median('paintedFps'),
+        gpuSubmitFps: median('gpuSubmitFps'),
+        ambientShare: median('ambientShare'),
+        rendererCores: roundTo(medianOf(matches.map(run => run.cores.renderer)), 3),
+        gpuCores: roundTo(medianOf(matches.map(run => run.cores.gpu)), 3),
+        appCpuSecondsPerHour: Math.round(medianOf(matches.map(run => run.cpuSecondsPerHour.app))),
       };
     }
     if (mode === 'kslope') {
@@ -1197,12 +1380,18 @@ async function runLadderMode(options) {
     dashboard: runDashboard,
     kslope: runKSlope,
     unlocked: runUnlocked,
+    idle: runIdle,
   }[options.mode];
   const server = await resolveServer(options.urlExplicit ? options.url : null);
   const runs = [];
   let browser = null;
   try {
-    browser = await launchBenchBrowser({ headed: options.headed, unlocked: options.mode === 'unlocked' });
+    const tag = options.mode === 'idle' ? `idle-${process.pid}-${Date.now()}` : null;
+    browser = await launchBenchBrowser({ headed: options.headed, unlocked: options.mode === 'unlocked', tag });
+    if (tag) {
+      options.rootPid = browserRootPid(tag);
+      if (!options.rootPid) throw new Error('idle mode needs /proc to find the launched browser (Linux only)');
+    }
     for (let repetition = 1; repetition <= options.repetitions; repetition++) {
       for (const spec of ladderCases(options)) {
         const run = await runner(browser, server.baseUrl, options, spec, repetition);
@@ -1239,7 +1428,14 @@ async function runLadderMode(options) {
           recoverSeconds: options.recoverSeconds,
         } : {}),
         ...(options.mode === 'dashboard' ? { awaySeconds: options.awaySeconds, returns: options.returns } : {}),
+        ...(options.mode === 'idle' ? { reducedMotion: options.reducedMotion } : {}),
       },
+      ...(options.mode === 'idle' ? {
+        compositor: options.headed ? 'headed' : 'software (headless)',
+        caveat: options.headed
+          ? 'Headed: CPU includes this host\'s compositor; the rAF rate is the panel\'s.'
+          : 'Headless Chromium composites in software (viz SoftwareRenderer) and paces rAF at 60 Hz: renderer and GPU-process CPU include compositor work a headed, GPU-composited window does not pay. Compare arms from one host; never compare these cores with a real window\'s.',
+      } : {}),
       cases,
     };
     console.log(JSON.stringify(summary, null, 2));
