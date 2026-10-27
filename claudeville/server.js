@@ -52,6 +52,12 @@ const ACTIVE_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes
 // Sessions with unresolved tool calls are held past the active window so slow
 // work and prompts stay visible. Finished turns use the browser departure grace.
 const sessionResidency = new SessionResidency();
+// EN-4 — the server's identity on every full frame (`init`, `update`), so a
+// long-lived tab notices a restarted or upgraded server and can offer a reload.
+const SERVER_IDENTITY = Object.freeze({
+  version: readAppVersion(),
+  bootId: crypto.randomBytes(8).toString('hex'),
+});
 const STARTUP_BOOTSTRAP_DELAY_MS = 25;
 const STARTUP_STATS_WARNING_MS = 1500;
 const JSON_BODY_LIMIT_BYTES = 256 * 1024;
@@ -99,6 +105,15 @@ const GIT_STATE_SCAN_INTERVAL_MS = 5000;
 const GIT_STATE_MAX_PROJECTS = 40;
 
 // ─── Utility functions ──────────────────────────────────────
+
+function readAppVersion() {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+    return typeof pkg.version === 'string' && pkg.version ? pkg.version : null;
+  } catch {
+    return null;
+  }
+}
 
 function localHostValues(req) {
   const port = Number(req?.socket?.localPort) || PORT;
@@ -1261,6 +1276,7 @@ function sendInitialData(socket, { scanning = null, staleAt = null, forceFresh =
       collisions: state.collisions,
       teams: state.teams,
       usage: state.usage,
+      server: SERVER_IDENTITY,
       seq,
       scanning: isScanning,
       staleAt: snapshotStaleAt,
@@ -1278,8 +1294,39 @@ function sendInitialData(socket, { scanning = null, staleAt = null, forceFresh =
       }
     }
   } catch (err) {
-    // Ignore initial data send failures.
+    replySnapshotUnavailable(socket, err);
   }
+}
+
+// VB-8 — the reply to an init or resync whose fresh collection failed, so the
+// client never waits on a swallowed failure: the retained canonical baseline,
+// marked scanning so the client knows it may be stale (the next broadcast then
+// sends a full update), or an explicit `snapshot-error` when no baseline
+// exists yet.
+function replySnapshotUnavailable(socket, err) {
+  console.warn('[WS] Snapshot for a client failed:', err?.message || err);
+  const state = lastBroadcastState;
+  if (!state) {
+    wsSend(socket, { type: 'snapshot-error', code: 'snapshot-unavailable', server: SERVER_IDENTITY, timestamp: Date.now() });
+    return;
+  }
+  provisionalInitPending = true;
+  lastDeltaSnapshotAt = 0;
+  wsSend(socket, {
+    type: 'init',
+    sessions: state.sessions,
+    gitEventFields: state.gitEventFields,
+    gitEventStringTables: state.gitEventStringTables,
+    gitEventsById: state.gitEventsById,
+    collisions: state.collisions,
+    teams: state.teams,
+    usage: state.usage,
+    server: SERVER_IDENTITY,
+    seq: broadcastSeq,
+    scanning: true,
+    staleAt: sessionSnapshotStaleAt || serverPerf.lastDirty?.at || Date.now(),
+    timestamp: Date.now(),
+  });
 }
 
 let watchDebounce = null;
@@ -1735,6 +1782,7 @@ function collectBroadcastPayload({ force = false, overlayOnly = false } = {}) {
     collisions: sessionSnapshot.collisions,
     teams: stage('teams', () => getTeamsCached({ force })),
     usage: stage('usage', () => usageQuota.fetchUsage()),
+    server: SERVER_IDENTITY,
     scanning: pendingTranscript,
     staleAt: pendingTranscript ? sessionSnapshotStaleAt : null,
     timestamp: Date.now(),
@@ -2987,6 +3035,7 @@ module.exports = {
     markProviderDataDirty,
     wsClients,
     serverPerf,
+    SERVER_IDENTITY,
   },
   _staticTest: {
     serveContainedFile,

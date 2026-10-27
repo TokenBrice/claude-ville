@@ -36,6 +36,13 @@ The adapter contract has the extraction rules: [git event extraction](../claudev
   - `limitReached` is true at `usedPercent >= 100`, or whenever Codex reports `rate_limit_reached_type`. It drives account surfaces only (the top-bar LIMIT, the quota card and the Mine) and never a session's status.
   - `observedAt` is the record's own time, so it can be hours old when no Codex session is live.
 
+## WebSocket messages
+
+`/ws` sends JSON text frames. A full frame, `init` (on connect and on resync) or `update`, carries `sessions`, the git-event tables, `collisions`, `teams`, `usage`, `seq`, `scanning`, `staleAt` and `timestamp`. A client that sent `{ type: 'hello', deltas: true, deltaVersion: 2 }` also receives `update-delta` patches between full frames ([framing and sequencing](design-decisions.md#hand-written-websocket-framing)).
+
+- `server: { version, bootId }` rides on every full frame, never on a delta. It holds the `package.json` version and a random id minted at boot. `WebSocketClient` remembers the first identity it sees and emits `ws:server-changed` `{ from, to, versionChanged }` once per new identity, so a long-lived tab can offer a reload after a restart (`versionChanged: false`) or an upgrade.
+- `{ type: 'resync' }` asks for a fresh baseline, answered by an `init`. If the fresh collection fails, the retained baseline comes back as an `init` with `scanning: true`; before any baseline exists, the reply is `{ type: 'snapshot-error', code: 'snapshot-unavailable' }`. The client re-sends an unanswered resync after 10 s and drops the socket for a reconnect after a second miss.
+
 The server does not enable CORS and rejects `OPTIONS` requests. Missing or invalid routes receive JSON error responses.
 
 With `npm run dev` running, inspect provider detection and session discovery:

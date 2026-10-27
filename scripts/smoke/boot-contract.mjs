@@ -510,6 +510,8 @@ function sessionForId(sessions, sessionId = SESSION_ID) {
   return session;
 }
 
+const PACKAGE_VERSION = JSON.parse(fs.readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version;
+
 function assertSnapshot(message, label) {
   const expectedType = label === 'baseline' ? 'update' : 'init';
   assert.equal(message.type, expectedType, `${label} must be a full snapshot`);
@@ -517,6 +519,10 @@ function assertSnapshot(message, label) {
   assert.ok(Array.isArray(message.sessions), `${label}.sessions must be an array`);
   assert.ok(Array.isArray(message.teams), `${label}.teams must be an array`);
   assertObject(message.usage, `${label}.usage`);
+  // EN-4 — every full frame names the server that sent it.
+  assertObject(message.server, `${label}.server`);
+  assert.equal(message.server.version, PACKAGE_VERSION, `${label}.server.version must be the package version`);
+  assert.match(String(message.server.bootId), /^[0-9a-f]{16}$/, `${label}.server.bootId must be a boot id`);
   sessionForId(message.sessions);
 }
 
@@ -637,6 +643,7 @@ async function run(context) {
   );
   assertSnapshot(baseline, 'baseline');
   assert.ok(baseline.seq > initial.seq, 'Full update must advance the initial sequence');
+  assert.deepEqual(baseline.server, initial.server, 'One boot keeps one server identity');
 
   context.legacyWebsocket = new BootWebSocket(server.port);
   await context.legacyWebsocket.connect({ type: 'hello', deltas: true });
@@ -648,6 +655,7 @@ async function run(context) {
   assert.equal(delta.deltaVersion, 2, 'Delta must negotiate the keyed v2 protocol');
   assert.equal(delta.baseSeq, baseline.seq, 'Delta must use the full snapshot sequence as its base');
   assert.equal(delta.seq, baseline.seq + 1, 'Delta sequence must advance by one');
+  assert.equal(Object.hasOwn(delta, 'server'), false, 'Deltas leave the server identity to full frames');
   const reconstructed = reconstructState(applyJsonPatch(keyedState(baseline), delta.patch));
   const changedSession = sessionForId(reconstructed.sessions);
   assert.equal(changedSession.lastMessage, DELTA_MESSAGE);
@@ -662,6 +670,7 @@ async function run(context) {
     message => message?.type === 'init' && message.seq > delta.seq,
   );
   assertSnapshot(resynced, 'resync');
+  assert.deepEqual(resynced.server, initial.server);
   assert.equal(sessionForId(resynced.sessions).lastMessage, DELTA_MESSAGE);
 }
 

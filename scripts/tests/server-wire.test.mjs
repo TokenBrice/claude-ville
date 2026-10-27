@@ -311,6 +311,50 @@ test('v2 keyed updates reconstruct the full roster and survive fresh resync base
       wire.wsClients.delete(unsupported);
     });
 
+    await t.test('EN-4: every full frame carries the server identity; deltas do not', () => {
+      const identity = wire.SERVER_IDENTITY;
+      const pkg = JSON.parse(fs.readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
+      assert.equal(identity.version, pkg.version);
+      assert.match(identity.bootId, /^[0-9a-f]{16}$/);
+      const fulls = [...modern.messages, ...legacy.messages].filter(message => message.type === 'init' || message.type === 'update');
+      assert.ok(fulls.some(message => message.type === 'init') && fulls.some(message => message.type === 'update'));
+      for (const message of fulls) assert.deepEqual(message.server, identity);
+      const deltas = modern.messages.filter(message => message.type === 'update-delta');
+      assert.ok(deltas.length > 0);
+      for (const message of deltas) assert.equal(Object.hasOwn(message, 'server'), false);
+    });
+
+    await t.test('VB-8: a resync whose fresh collection fails is answered with the retained baseline', () => {
+      const adapter = registry.adapters.find(candidate => candidate.provider === 'claude');
+      const getTeams = adapter.getTeams;
+      const retained = legacy.messages.at(-1);
+      const frames = modern.messages.length;
+      const peerFrames = peer.messages.length;
+      const warn = console.warn;
+      adapter.getTeams = () => { throw new Error('teams unreadable'); };
+      console.warn = () => {};
+      try {
+        wire.handleTextMessage(modern, JSON.stringify({ type: 'resync' }));
+      } finally {
+        adapter.getTeams = getTeams;
+        console.warn = warn;
+      }
+      assert.equal(modern.messages.length, frames + 1, 'a failed resync is answered, not swallowed');
+      const reply = modern.messages.at(-1);
+      assert.equal(reply.type, 'init');
+      assert.equal(reply.seq, retained.seq, 'the retained canonical sequence');
+      assert.deepEqual(coreState(reply), coreState(retained));
+      assert.equal(reply.scanning, true, 'the reply says it may be stale');
+      assert.deepEqual(reply.server, wire.SERVER_IDENTITY);
+      assert.equal(peer.messages.length, peerFrames, 'peers keep their baseline');
+      previous = reply;
+      keyed = wire.keyedBroadcastState(coreState(reply));
+      const next = update(rows.map(row => ({ ...row, lastMessage: 'after a failed resync' })));
+      assert.equal(next.type, 'update', 'the next broadcast is a full update');
+      assert.equal(next.scanning, false);
+      assert.equal(next.sessions[0].lastMessage, 'after a failed resync');
+    });
+
     await t.test('EN-9: a heartbeat after a process pause refreshes every socket instead of closing it', () => {
       const sleeper = new Socket();
       wire.wsClients.add(sleeper);
