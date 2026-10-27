@@ -5104,23 +5104,35 @@ export class BuildingSprite {
             if (!tower.heights) return true;
             return wy - oy + tower.heights[i] > axisY + t * s * distance * 0.5 + 1;
         };
+        // FP-7: each texel's course is decided as before, but a row's run of
+        // same-course texels is one fillRect with its alpha and colour set
+        // once, not one per texel: the same pixels for a fraction of the calls.
         for (let y = minY; y <= maxY; y++) {
-            for (let x = minX; x <= maxX; x++) {
-                const px = x + 0.5;
-                const py = y + 0.5;
-                const t = (px * ny - py * nx) / determinant;
-                if (t < 6 / length || t >= 1) continue;
-                if (hides(ox + x, oy + y, t)) continue;
-                const width = 4 + (BEAM_NEAR_HALF_WIDTH - 4) * t;
-                const across = Math.abs((dx * py - dy * px) / determinant);
-                const coverage = Math.max(0, Math.min(1, (width - across) / 3))
-                    * (t < 0.78 ? 1 : t < 0.87 ? 0.75 : t < 0.94 ? 0.5 : 0.25);
-                const order = (bayer[((oy + y) & 3) * 4 + ((ox + x) & 3)] + 0.5) / 16;
-                if (coverage <= order) continue;
-                const course = t < 0.3 ? 0 : t < 0.65 ? 1 : 2;
-                ctx.globalAlpha = course === 0 ? 0.4 : course === 1 ? 0.27 : 0.16;
-                ctx.fillStyle = ART_RAMPS.beaconFire[course === 0 ? 5 : 4];
-                ctx.fillRect(ox + x, oy + y, 1, 1);
+            let runStart = minX;
+            let runCourse = -1;
+            for (let x = minX; x <= maxX + 1; x++) {
+                let course = -1;
+                if (x <= maxX) {
+                    const px = x + 0.5;
+                    const py = y + 0.5;
+                    const t = (px * ny - py * nx) / determinant;
+                    if (t >= 6 / length && t < 1 && !hides(ox + x, oy + y, t)) {
+                        const width = 4 + (BEAM_NEAR_HALF_WIDTH - 4) * t;
+                        const across = Math.abs((dx * py - dy * px) / determinant);
+                        const coverage = Math.max(0, Math.min(1, (width - across) / 3))
+                            * (t < 0.78 ? 1 : t < 0.87 ? 0.75 : t < 0.94 ? 0.5 : 0.25);
+                        const order = (bayer[((oy + y) & 3) * 4 + ((ox + x) & 3)] + 0.5) / 16;
+                        if (coverage > order) course = t < 0.3 ? 0 : t < 0.65 ? 1 : 2;
+                    }
+                }
+                if (course === runCourse) continue;
+                if (runCourse >= 0) {
+                    ctx.globalAlpha = runCourse === 0 ? 0.4 : runCourse === 1 ? 0.27 : 0.16;
+                    ctx.fillStyle = ART_RAMPS.beaconFire[runCourse === 0 ? 5 : 4];
+                    ctx.fillRect(ox + runStart, oy + y, x - runStart, 1);
+                }
+                runStart = x;
+                runCourse = course;
             }
         }
     }
