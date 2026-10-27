@@ -107,7 +107,7 @@ Registry metadata treats adapter-backed providers as detail-capable when `getSes
 | `teamName` | string \| null | Explicit team membership: Claude main sessions through `~/.claude/teams/` inboxes, Claude subagents and teammates through the meta file's `teamName`. Never inferred from paths. |
 | `agentColor` | string \| null | Claude-only. The colour name Claude assigned a teammate in its meta file (for example `'cyan'`). Published for consumers; the client does not read it yet. |
 | `project` | string \| null | Absolute working directory. Gemini may resolve this from a SHA-256 hash and return null on failure. |
-| `model` | string | Free-form. UI strips `claude-` and `-2025…` suffixes for display. |
+| `model` | string | Free-form. UI strips `claude-` and `-2025…` suffixes for display. Claude never reports a `<…>` stub such as `<synthetic>` (Claude Code's API-error text, which never speaks as dialogue either); with no model in the tail window it reports none, normalization falls back to the provider id, and the context limit comes from the transcript's own latest model. |
 | `status` | `'active'` | Currently always `'active'`; idle/terminated transitions are inferred client-side by `AgentManager`. |
 | `lastActivity` | number (ms epoch) | Latest of file mtime and any in-file timestamp. Sort key. |
 | `lastTool` | string \| null | Most recent tool name. |

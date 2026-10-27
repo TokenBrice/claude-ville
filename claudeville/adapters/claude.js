@@ -1508,6 +1508,12 @@ function getAgentLaunches(sessionFilePath) {
 
 // ─── Session parsing ────────────────────────────────────────
 
+// `<synthetic>` and other `<…>` model names mark Claude Code's own text, such
+// as an API error: they name no model and never speak as one.
+function isClaudeModelStub(model) {
+  return typeof model === 'string' && model.startsWith('<');
+}
+
 function getClaudeTranscriptSummary(filePath, tailCount, project = null) {
   const detail = {
     model: null,
@@ -1550,7 +1556,8 @@ function getClaudeTranscriptSummary(filePath, tailCount, project = null) {
         const msg = entry.message;
         if (!msg || msg.role !== 'assistant') continue;
 
-        if (!detail.model && msg.model) detail.model = msg.model;
+        const stub = isClaudeModelStub(msg.model);
+        if (!detail.model && msg.model && !stub) detail.model = msg.model;
 
         const content = msg.content;
         if (!Array.isArray(content)) continue;
@@ -1567,6 +1574,7 @@ function getClaudeTranscriptSummary(filePath, tailCount, project = null) {
             const text = block.text.trim();
             if (text.length > 0) detail.lastMessage = text.substring(0, 80);
           }
+          if (stub) continue;
 
           if (block.type === 'tool_use') {
             const input = block.input;
@@ -1673,16 +1681,20 @@ function getRecentMessages(sessionFilePath, maxItems = 5) {
   return messages.slice(-maxItems);
 }
 
+// Callers without a model (session detail, or a tail window that named none)
+// use the transcript's own latest model, skipping `<synthetic>` stubs, so the
+// limit isn't the 200K default.
+function latestTranscriptModel(aggregate) {
+  const history = aggregate?.projection?.modelHistory || [];
+  return history.findLast(item => !isClaudeModelStub(item.model))?.model || null;
+}
+
 function getTokenUsage(sessionFilePath, model = null) {
   try {
     const aggregate = getTranscriptAggregate(sessionFilePath);
-    // Session detail calls without a model; use the transcript's own latest
-    // model (skipping `<synthetic>` stubs) so the limit isn't the 200K default.
-    const history = aggregate?.projection?.modelHistory || [];
-    const transcriptModel = history.findLast(item => !item.model.startsWith('<'))?.model;
     return aggregate ? {
       ...(aggregate.displayUsage || aggregate.usage),
-      contextWindowMax: contextWindowMaxForClaudeModel(model || transcriptModel),
+      contextWindowMax: contextWindowMaxForClaudeModel(model || latestTranscriptModel(aggregate)),
     } : emptyTokenUsage();
   } catch { /* ignore */ }
   return emptyTokenUsage();
@@ -1748,7 +1760,7 @@ function getTranscriptProjection(sessionFilePath, projectPath, model) {
     projection.workingSet = newest;
     return {
       ...projection,
-      contextWindowMax,
+      contextWindowMax: contextWindowMaxForClaudeModel(model || latestTranscriptModel(aggregate)),
       ...(projection.cost ? { estimatedCost: projection.cost.usd } : {}),
     };
   } catch {
@@ -2323,7 +2335,7 @@ function buildSubAgentSession({ filePath, agentId, decodedProject, parentSession
   const detail = getSubAgentDetail(filePath, decodedProject);
   const sessionId = `subagent-${agentId}`;
   const permissionMode = getPermissionMode(filePath);
-  const model = detail.model || 'unknown';
+  const model = detail.model || null;
   return {
     ...getClaudeTurnState(filePath, permissionMode),
     ...getTranscriptProjection(filePath, decodedProject, model),
@@ -2433,7 +2445,7 @@ class ClaudeAdapter {
           provider: 'claude',
           agentId: entry.agentId || null,
           agentType: normalizeClaudeAgentType(entry.agentType, entry.agentId),
-          model: entry.model || 'unknown',
+          model: entry.model || null,
           status: 'active',
           lastActivity: entry.timestamp || 0,
           project: entry.project || null,
@@ -2663,7 +2675,7 @@ class ClaudeAdapter {
           const identity = getSessionIdentity(sessionId);
           const project = identity?.project || decodedProject;
           const agentType = teamName ? 'team-member' : identity?.agentType || 'team-member';
-          const model = detail.model || 'unknown';
+          const model = detail.model || null;
 
           results.push({
             ...getClaudeTurnState(filePath, permissionMode, now),

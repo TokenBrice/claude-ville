@@ -71,6 +71,72 @@ test('Claude keeps a seen main identity and separates Agent kind from agentType'
   }
 });
 
+// PV-4a / RG-12: a `<synthetic>` API-error stub never names the model or
+// speaks as it, and a tail window with no assistant record falls back to the
+// transcript's own model instead of an 'unknown' placeholder that reads 200K.
+test('Claude skips model stubs and falls back to the transcript model', () => {
+  const root = makeTempDir('claudeville-claude-model-');
+  try {
+    const project = path.join(root, 'work', 'model');
+    fs.mkdirSync(project, { recursive: true });
+    const projectDir = path.join(root, '.claude', 'projects', project.replaceAll('/', '-'));
+    const now = Date.now();
+    const at = msAgo => new Date(now - msAgo).toISOString();
+    const usage = { input_tokens: 1000, output_tokens: 20 };
+    writeJsonLines(path.join(projectDir, 'stub-main.jsonl'), [
+      { type: 'user', timestamp: at(60_000), message: { role: 'user', content: 'Read the parser.' } },
+      { type: 'assistant', timestamp: at(50_000), message: { role: 'assistant', model: 'claude-opus-5-5', stop_reason: 'tool_use', usage, content: [
+        { type: 'text', text: 'Reading the parser.' },
+        { type: 'tool_use', id: 'toolu_stub_read', name: 'Read', input: { file_path: 'src/parser.js' } },
+      ] } },
+      { type: 'user', timestamp: at(45_000), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_stub_read', content: 'export {};' }] } },
+      { type: 'assistant', timestamp: at(5_000), isApiErrorMessage: true, message: { role: 'assistant', model: '<synthetic>', stop_reason: 'stop_sequence', usage: { input_tokens: 0, output_tokens: 0 }, content: [
+        { type: 'text', text: 'API Error: 500 {"type":"error","error":{"type":"api_error","message":"Internal server error"}}' },
+      ] } },
+    ]);
+    writeJsonLines(path.join(projectDir, 'quiet-main.jsonl'), [
+      { type: 'user', timestamp: at(120_000), message: { role: 'user', content: 'Summarize the parser.' } },
+      { type: 'assistant', timestamp: at(110_000), message: { role: 'assistant', model: 'claude-opus-5-5', stop_reason: 'end_turn', usage, content: [{ type: 'text', text: 'The parser reads lines.' }] } },
+      ...Array.from({ length: 32 }, (_, i) => ({ type: 'queue-operation', operation: 'enqueue', timestamp: at(100_000 - i * 1000) })),
+    ]);
+    writeJsonLines(path.join(root, '.claude', 'history.jsonl'), [
+      { sessionId: 'stub-main', project, timestamp: now, display: 'Stub fixture' },
+      { sessionId: 'quiet-main', project, timestamp: now, display: 'Quiet fixture' },
+    ]);
+
+    const script = `
+      const { ClaudeAdapter } = require('./claudeville/adapters/claude');
+      const { normalizeSession } = require('./claudeville/adapters');
+      const adapter = new ClaudeAdapter();
+      const sessions = adapter.getActiveSessions(60 * 60 * 1000);
+      const pick = id => {
+        const s = sessions.find(session => session.sessionId === id);
+        return s && { model: s.model, published: normalizeSession(s).model, contextWindowMax: s.contextWindowMax, tokenMax: s.tokenUsage.contextWindowMax, dialogue: s.dialogue };
+      };
+      process.stdout.write(JSON.stringify({ stub: pick('stub-main'), quiet: pick('quiet-main') }));
+      adapter.shutdown();
+    `;
+    const repoRoot = path.resolve(import.meta.dirname, '../..');
+    const { stub, quiet } = JSON.parse(execFileSync(process.execPath, ['-e', script], {
+      cwd: repoRoot,
+      env: { ...process.env, HOME: root, USERPROFILE: root },
+      encoding: 'utf8',
+    }));
+
+    assert.equal(stub.model, 'claude-opus-5-5');
+    assert.equal(stub.tokenMax, 1_000_000);
+    assert.equal(stub.dialogue?.text, 'Reading the parser.');
+    assert.equal(stub.dialogue?.authorship, 'model');
+
+    assert.equal(quiet.model, null);
+    assert.equal(quiet.published, 'claude');
+    assert.equal(quiet.tokenMax, 1_000_000);
+    assert.equal(quiet.contextWindowMax, 1_000_000);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // SM-4: teammates' first prompt arrives wrapped in <teammate-message>, so the
 // launch prompt hash never matches; the sibling meta file names them.
 test('Claude subagents read their name, team and colour from agent-<id>.meta.json', () => {
