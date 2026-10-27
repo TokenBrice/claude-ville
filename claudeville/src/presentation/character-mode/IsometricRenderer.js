@@ -127,6 +127,7 @@ import {
     localLightPhaseForLighting,
     resolveGpuWorldRendererMode,
     shouldProbeWebGpu,
+    webGpuOutcomeSkipsProbe,
 } from './gpu/GpuWorldPolicy.js';
 import { NEUTRAL_GRADE } from './GradeEvaluator.js';
 import { poolReceiverMask } from './CanvasPoolMask.js';
@@ -173,12 +174,33 @@ const DEBUG_GLOBAL_OWNERS = new WeakMap();
 // `?renderer=webgpu` waits for it instead.
 let earlyWebGpu = null;
 
+// FP-9 — the last WebGPU resolution's outcome on this browser build
+// (`webGpuOutcomeSkipsProbe`): a found adapter clears it.
+const WEBGPU_OUTCOME_KEY = 'cv-webgpu-outcome';
+function knownNoWebGpuAdapter() {
+    try {
+        const record = JSON.parse(globalThis.localStorage?.getItem(WEBGPU_OUTCOME_KEY) || 'null');
+        return webGpuOutcomeSkipsProbe(record, { userAgent: globalThis.navigator?.userAgent });
+    } catch (_) {
+        return false;
+    }
+}
+function storeWebGpuOutcome(value) {
+    try {
+        if (value?.available) globalThis.localStorage?.removeItem(WEBGPU_OUTCOME_KEY);
+        else if (value?.reason === 'no-adapter') {
+            globalThis.localStorage?.setItem(WEBGPU_OUTCOME_KEY, JSON.stringify({ webgpu: 'no-adapter', ua: String(globalThis.navigator?.userAgent || ''), at: Date.now() }));
+        }
+    } catch (_) { /* storage unavailable */ }
+}
+
 function wantsWebGpu(params) {
     const softwareRaster = !forcedGpuWorldRendererMode(params) && probeWebgl2Raster().softwareRaster;
     return shouldProbeWebGpu(params, {
         chromium: isChromiumBrowser(globalThis.navigator),
         gpu: Boolean(globalThis.navigator?.gpu),
         softwareRaster,
+        knownNoAdapter: knownNoWebGpuAdapter(),
     });
 }
 
@@ -190,6 +212,7 @@ function resolveWebGpuWorld() {
         .then((value) => {
             entry.settled = true;
             entry.value = value;
+            storeWebGpuOutcome(value);
             return value;
         });
     return entry;
