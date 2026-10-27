@@ -60,6 +60,34 @@ test('a settled push replays again when its status changes', () => {
     assert.equal(state.ships.get('c1').status, 'departing');
 });
 
+// VB-1: a push ages from its result, not its request. A push held by an
+// approval prompt or a slow pre-push hook past the replay window still
+// landed just now, so its ships sail instead of retiring unseen.
+for (const durationS of [60, 110, 150, 300]) {
+    test(`a push that took ${durationS}s to land still sails`, () => {
+        const commit = ev({ id: 'c1', type: 'commit', sha: 'aaaaaaa1', label: 'first commit long', timestamp: T });
+        const request = { id: 'p1', type: 'push', timestamp: T + S };
+        let state = reduceHarborTrafficState(null, [commit, ev(request)], { now: T + 2 * S });
+        assert.equal(state.ships.get('c1').status, 'docked', 'a pending push sails nothing');
+
+        const landedAt = T + S + durationS * S;
+        const landed = ev({ ...request, completedAt: landedAt, success: true, exitCode: 0 });
+        state = reduceHarborTrafficState(state, [commit, landed], { now: landedAt + 500 });
+        const ship = state.ships.get('c1');
+        assert.equal(ship?.status, 'departing');
+        assert.ok(ship.departStartedAt >= landedAt, 'the departure starts when the push lands');
+    });
+}
+
+test('a landing first seen past the replay window retires without sailing', () => {
+    const commit = ev({ id: 'c1', type: 'commit', sha: 'aaaaaaa1', label: 'first commit long', timestamp: T });
+    const request = { id: 'p1', type: 'push', timestamp: T + S };
+    let state = reduceHarborTrafficState(null, [commit, ev(request)], { now: T + 2 * S });
+    const landed = ev({ ...request, completedAt: T + 200 * S, success: true, exitCode: 0 });
+    state = reduceHarborTrafficState(state, [commit, landed], { now: T + 200 * S + 3 * 60 * S });
+    assert.equal(state.ships.get('c1'), undefined, 'an old landing is already over');
+});
+
 test('a push never re-derives the start tile of a ship that is not docked', () => {
     const events = [
         ev({ id: 'c1', type: 'commit', sha: 'aaaaaaa1', label: 'first commit long', timestamp: T }),
