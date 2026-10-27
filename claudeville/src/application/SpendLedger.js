@@ -119,6 +119,8 @@ export class SpendLedger {
         this.running = true;
         const startedAt = Date.now();
         await this._load(startedAt);
+        // Stopped while loading: stop() found nothing to unsubscribe yet.
+        if (!this.running) return this;
         this._onChange = (agent) => this.observe(agent);
         eventBus.on('agent:added', this._onChange);
         eventBus.on('agent:updated', this._onChange);

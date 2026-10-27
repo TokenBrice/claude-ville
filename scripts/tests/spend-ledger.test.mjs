@@ -372,6 +372,26 @@ test('stop drains a pending World event cohort and waits for delayed storage', a
     assert.equal(ledger.today.tokens, 1000, 'stopped ledgers no longer observe World events');
 });
 
+test('a ledger stopped while it loads never subscribes', async () => {
+    const { eventBus } = await import('../../claudeville/src/domain/events/DomainEvent.js');
+    let releaseLoad;
+    const store = {
+        get() { return new Promise(resolve => { releaseLoad = () => resolve(null); }); },
+        async put(_name, record) { return record; },
+    };
+    const counts = () => ['agent:added', 'agent:updated', 'agent:removed']
+        .map(name => eventBus.listeners.get(name)?.size || 0);
+    const before = counts();
+    const ledger = new SpendLedger(worldOf([]), { store });
+    const started = ledger.start();
+    const stopped = ledger.stop();
+    releaseLoad();
+    await started;
+    await stopped;
+    assert.equal(ledger.running, false);
+    assert.deepEqual(counts(), before, 'an app destroyed during boot leaves no ledger listener');
+});
+
 test('unchanged World telemetry banks no spend and writes no ledger record', async (t) => {
     t.mock.method(Date, 'now', () => T);
     const world = new World();

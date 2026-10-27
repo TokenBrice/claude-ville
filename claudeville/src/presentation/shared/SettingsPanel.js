@@ -187,7 +187,7 @@ export function installReducedMotionOverride(root = globalThis.window) {
         record.lastMatches = next;
         const event = { type: 'change', media: record.media, matches: next };
         for (const listener of record.listeners) callMediaListener(listener, event);
-        callMediaListener(record.proxy.onchange, event);
+        callMediaListener(record.onchange, event);
     };
 
     root.matchMedia = (query) => {
@@ -200,22 +200,53 @@ export function installReducedMotionOverride(root = globalThis.window) {
             media: nativeQuery.media,
             nativeQuery,
             listeners: new Set(),
+            onchange: null,
             lastMatches: effectiveMatches(nativeQuery),
+            watching: false,
             proxy: null,
         };
         const onNativeChange = () => notify(record);
+        // The native query is watched only while someone listens here, so
+        // an app torn down leaves no listener on it.
+        const syncNativeWatch = () => {
+            const wanted = record.listeners.size > 0 || Boolean(record.onchange);
+            if (wanted === record.watching) return;
+            record.watching = wanted;
+            if (wanted) {
+                record.lastMatches = effectiveMatches(nativeQuery);
+                if (nativeQuery.addEventListener) nativeQuery.addEventListener('change', onNativeChange);
+                else nativeQuery.addListener?.(onNativeChange);
+            } else if (nativeQuery.removeEventListener) {
+                nativeQuery.removeEventListener('change', onNativeChange);
+            } else {
+                nativeQuery.removeListener?.(onNativeChange);
+            }
+        };
+        const listen = (listener) => {
+            if (!listener) return;
+            record.listeners.add(listener);
+            syncNativeWatch();
+        };
+        const unlisten = (listener) => {
+            record.listeners.delete(listener);
+            syncNativeWatch();
+        };
         const proxy = {
             media: nativeQuery.media,
-            onchange: null,
+            get onchange() { return record.onchange; },
+            set onchange(listener) {
+                record.onchange = listener || null;
+                syncNativeWatch();
+            },
             get matches() { return effectiveMatches(nativeQuery); },
             addEventListener(type, listener) {
-                if (type === 'change' && listener) record.listeners.add(listener);
+                if (type === 'change') listen(listener);
             },
             removeEventListener(type, listener) {
-                if (type === 'change') record.listeners.delete(listener);
+                if (type === 'change') unlisten(listener);
             },
-            addListener(listener) { if (listener) record.listeners.add(listener); },
-            removeListener(listener) { record.listeners.delete(listener); },
+            addListener: listen,
+            removeListener: unlisten,
             dispatchEvent(event) {
                 for (const listener of record.listeners) callMediaListener(listener, event);
                 return true;
@@ -223,8 +254,6 @@ export function installReducedMotionOverride(root = globalThis.window) {
         };
         record.proxy = proxy;
         reducedMotionRecord = record;
-        if (nativeQuery.addEventListener) nativeQuery.addEventListener('change', onNativeChange);
-        else nativeQuery.addListener?.(onNativeChange);
         return proxy;
     };
 

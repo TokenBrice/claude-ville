@@ -37,6 +37,8 @@ import { Modal } from './shared/Modal.js';
 import { shortcutBlocked } from './shared/ShortcutGuard.js';
 import { el } from './shared/DomSafe.js';
 import { emitAgentSelected, emitAgentDeselected, resetAgentSelection } from './shared/AgentSelection.js';
+import { installRepoColors, uninstallRepoColors } from './shared/RepoColor.js';
+import { installVerifiedOutcomeMemory, uninstallVerifiedOutcomeMemory } from './character-mode/ActionVocabulary.js';
 import { HARBOR_FOCUS_FLEET_EVENT } from './shared/HarborLedger.js';
 import { sessionDetailsService } from './shared/SessionDetailsService.js';
 import { ClientPerfMetrics } from './shared/ClientPerfMetrics.js';
@@ -241,6 +243,11 @@ export class App {
         this._bootState = 'booting';
         this._bootController = new AbortController();
         this._bindPageExit();
+        // The module-level registries live as long as a booted app; an
+        // earlier app's teardown uninstalled them.
+        installRepoColors();
+        installVerifiedOutcomeMemory();
+        this._ownsModuleRegistries = true;
         this._bootPromise = this._bootOnce();
         return this._bootPromise;
     }
@@ -2207,6 +2214,13 @@ export class App {
         this._firstRunHintRevealed = false;
         this.villageState = initialVillageState();
         resetAgentSelection();
+        // Only an app that booted owns them: a never-booted instance's
+        // teardown leaves a live app's registries alone.
+        if (this._ownsModuleRegistries) {
+            this._ownsModuleRegistries = false;
+            uninstallRepoColors();
+            uninstallVerifiedOutcomeMemory();
+        }
 
         if (this._onWindowResize) {
             window.removeEventListener('resize', this._onWindowResize);

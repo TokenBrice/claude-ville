@@ -47,6 +47,11 @@ test('reduced-motion reads reuse one native query and preserve override notifica
             nativeListenerCount++;
             notifyNative = listener;
         },
+        removeEventListener(type, listener) {
+            assert.equal(type, 'change');
+            assert.equal(listener, notifyNative);
+            nativeListenerCount--;
+        },
         addListener() { legacyListenerCount++; },
     };
     const unrelated = { media: '(min-width: 1280px)', matches: true };
@@ -58,12 +63,14 @@ test('reduced-motion reads reuse one native query and preserve override notifica
     const controller = installReducedMotionOverride(root);
     for (let index = 0; index < 100; index++) assert.equal(root.matchMedia(native.media).matches, false);
     assert.equal(queryCount, 1);
-    assert.equal(nativeListenerCount, 1);
+    assert.equal(nativeListenerCount, 0, 'reads alone retain no native listener');
     assert.equal(legacyListenerCount, 0);
     const query = root.matchMedia(native.media);
     const changes = [];
     const listener = event => changes.push(event.matches);
     query.addEventListener('change', listener);
+    root.matchMedia(native.media).addListener(listener);
+    assert.equal(nativeListenerCount, 1, 'observers share one native listener');
     controller.set(true);
     controller.set(true);
     native.matches = true;
@@ -74,6 +81,7 @@ test('reduced-motion reads reuse one native query and preserve override notifica
     notifyNative();
     assert.deepEqual(changes, [true, false]);
     query.removeEventListener('change', listener);
+    assert.equal(nativeListenerCount, 0, 'the last observer gone releases the native listener');
     controller.set(true);
     assert.deepEqual(changes, [true, false], 'removed observers are released');
     assert.equal(root.matchMedia(unrelated.media), unrelated, 'other queries retain native behavior');

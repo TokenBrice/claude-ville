@@ -129,9 +129,32 @@ function untrackAgent(agent) {
     if (agent?.id && liveAgentRepo.delete(agent.id)) registryDirty = true;
 }
 
-eventBus.on('agent:added', trackAgent);
-eventBus.on('agent:updated', trackAgent);
-eventBus.on('agent:removed', untrackAgent);
+// The registry hears the roster on the bus from import on, so every surface
+// and every test shares it from the start. The App re-installs it at boot
+// and uninstalls it at teardown, which also forgets the roster: a destroyed
+// app leaves no listener behind, and a second mount starts empty.
+let rosterUnsubscribers = null;
+
+export function installRepoColors() {
+    if (rosterUnsubscribers) return;
+    rosterUnsubscribers = [
+        eventBus.on('agent:added', trackAgent),
+        eventBus.on('agent:updated', trackAgent),
+        eventBus.on('agent:removed', untrackAgent),
+    ];
+}
+
+export function uninstallRepoColors() {
+    if (!rosterUnsubscribers) return;
+    for (const unsubscribe of rosterUnsubscribers) unsubscribe();
+    rosterUnsubscribers = null;
+    liveAgentRepo.clear();
+    visibleSlots.clear();
+    checkoutRepo.clear();
+    registryDirty = false;
+}
+
+installRepoColors();
 
 function resolveVisibleSlots() {
     if (!registryDirty) return;
