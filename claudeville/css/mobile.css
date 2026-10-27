@@ -480,6 +480,12 @@
     grid-row: 3;
 }
 
+/* UI-4 — the tape row is one 16 px line here: cache reads stay in the
+   cell's title. */
+:root[data-cv-profile="mobile"] .dash-card__usage-cache {
+    display: none;
+}
+
 :root[data-cv-profile="mobile"] .dash-card__usage-cost {
     grid-column: 4;
     grid-row: 3;
@@ -597,4 +603,9 @@
     :root[data-cv-profile="mobile"] .sidebar[data-cv-drawer="open"]::after {
         animation: none;
     }
+}
+
+/* Codex quota card: the observation age stays in the card's title. */
+:root[data-cv-profile="mobile"] .dashboard-quota__age {
+    display: none;
 }

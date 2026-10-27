@@ -7381,8 +7381,8 @@ export class AgentSprite {
         snapScreenOrigin(ctx);
         if (kind === 'completed') {
             // 0.4 — the small-victory check wears the completed status's own
-            // soft gold (STATUS_VISUALS.completed), not a foreign green.
-            drawOutlinedMotif(ctx, 'check', -4, -4, { color: STATUS_VISUALS.completed?.color || '#ffd873' });
+            // parchment stone (STATUS_VISUALS.completed), not a foreign green.
+            drawOutlinedMotif(ctx, 'check', -4, -4, { color: STATUS_VISUALS.completed.color });
         } else if (kind === 'thinking') {
             this._drawThinkingDotsGlyph(ctx, '#cfd6df');
         }

@@ -31,6 +31,7 @@ import { ATTENTION_PARTS } from './TopBar.js';
 import { Toast } from './Toast.js';
 import {
     currentToolPresentation,
+    DEPARTED_WORD,
     pixelIcon,
     inspectableText,
     replaceDetailRows,
@@ -779,7 +780,11 @@ export class ActivityPanel {
             }
         };
         this._onAgentRemoved = (agent) => {
-            if (agent?.id && agent.id === this._narrationAgentId) this._resetNarration();
+            // UI-13 — the open record outlives its session: the panel says the
+            // villager left, stops polling and waits for the operator to close
+            // it, instead of vanishing mid-read.
+            const holdOpen = this._mode === 'agent' && agent?.id && agent.id === this.currentAgent?.id;
+            if (agent?.id && agent.id === this._narrationAgentId && !holdOpen) this._resetNarration();
             sessionDetailsService.deleteForAgent(agent);
             if (this._mode === 'agent'
                 && this.currentAgent
@@ -787,10 +792,8 @@ export class ActivityPanel {
                 this._updateExecutionTree(this.currentAgent);
                 this._updateCausalWaterfall(this.currentAgent);
             }
-            if (this.currentAgent && agent.id === this.currentAgent.id) {
-                if (this._mode === 'agent') this.hide();
-                else this.currentAgent = null;
-            }
+            if (holdOpen) this._holdDepartedRecord(agent);
+            else if (this.currentAgent && agent.id === this.currentAgent.id) this.currentAgent = null;
             this._refreshPinCompare();
         };
         this._onBuildingSelected = (building) => {
@@ -1398,6 +1401,7 @@ export class ActivityPanel {
 
     show(agent) {
         if (this._destroyed) return;
+        this._heldDepartedId = null;
         if (this._viewMode === 'dashboard') {
             this.currentAgent = agent;
             return;
@@ -1482,6 +1486,7 @@ export class ActivityPanel {
 
     _close({ origin = 'panel' } = {}) {
         if (this._destroyed) return;
+        this._heldDepartedId = null;
         const wasAgent = this._mode === 'agent';
         const wasBuilding = this._mode === 'building';
         const keepCurrentAgent = origin === 'mode' && wasAgent;
@@ -1572,7 +1577,8 @@ export class ActivityPanel {
         // When the adapter knows why an agent is blocked, that is the headline.
         const reason = waitReasonLabel(agent);
         const observation = resolveObservation(agent, Date.now());
-        statusEl.textContent = observation.state === 'stale'
+        // UI-13 — a departed villager says so, aged from its departure.
+        statusEl.textContent = agent.isDeparted ? DEPARTED_WORD : observation.state === 'stale'
             ? observation.ageMs === null ? 'Last observed time unknown' : `Last observed ${Math.floor(observation.ageMs / 1000)}s ago`
             : (reason || sentenceCase(statusInfo.label));
         // The whole status line (square, label, time) wears the status colour.
@@ -1626,11 +1632,28 @@ export class ActivityPanel {
     }
 
     // `· 13s` after the status label: time in state, painted on open and on
+    // UI-13 — the selected villager left the World: its record stays open,
+    // read-only, until the operator closes it or selects another.
+    _holdDepartedRecord(agent) {
+        this._heldDepartedId = agent.id;
+        this._heldDepartedAt = Number(agent.departedAt) || Date.now();
+        this._stopPolling();
+        this._detailFetchSeq++;
+        this.dom.panelAgentStatus.textContent = DEPARTED_WORD;
+        if (this._detailFreshnessEl) {
+            this._detailFreshnessEl.textContent = `${DEPARTED_WORD} · this record no longer updates`;
+            this._detailFreshnessEl.hidden = false;
+        }
+    }
+
     // the shared 1 Hz tick; blank while the signal is stale.
     _statusAgeText(now = Date.now()) {
         if (this._mode !== 'agent' || !this.currentAgent) return '';
-        if (resolveObservation(this.currentAgent, now).state === 'stale') return '';
-        const since = Number(this.currentAgent.statusSince);
+        const departed = this.currentAgent.isDeparted || Boolean(this._heldDepartedId);
+        if (!departed && resolveObservation(this.currentAgent, now).state === 'stale') return '';
+        const since = Number(departed
+            ? this.currentAgent.departedAt || this._heldDepartedAt
+            : this.currentAgent.statusSince);
         return Number.isFinite(since) && since > 0 ? `\u00a0·\u00a0${formatElapsed(Math.max(0, now - since))}` : '';
     }
 
@@ -2279,7 +2302,7 @@ export class ActivityPanel {
 
     _startPolling() {
         this._stopPolling();
-        if (document.hidden || this._mode !== 'agent') return;
+        if (document.hidden || this._mode !== 'agent' || this._heldDepartedId) return;
         this._fetchDetail();
         this._fetchPinnedDetails();
         this._pollTimer = setInterval(() => {

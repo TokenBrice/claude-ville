@@ -24,6 +24,7 @@ import {
     formatRelative,
     formatTokens,
     formatToolDetail,
+    formatWaitAge,
     normalizeStatus,
     shortenHomePath,
     shortProjectName,
@@ -34,7 +35,6 @@ import {
 import { AgentSelectionMirror, emitAgentDeselected, emitAgentSelected } from '../shared/AgentSelection.js';
 import { HARBOR_FOCUS_FLEET_EVENT, harborLedger, ledgerFailureText, middleTruncate } from '../shared/HarborLedger.js';
 import { normalizeRepoBranch } from '../shared/GitEventIdentity.js';
-import { operatorStatusLabel } from '../shared/SemanticTriage.js';
 import { getTeamColor, shortTeamName } from '../shared/TeamColor.js';
 import { attentionAgentIds, isKeyboardEditTarget, nextCardId, recoveryCardId } from './DashboardKeyboardNavigation.js';
 import {
@@ -46,13 +46,18 @@ import {
     buildingClassForAgent,
     buildingPresentation,
     currentToolPresentation,
+    DEPARTED_WORD,
     groupAgentsByProject,
+    isAgedQuietRow,
+    silentSignal,
     projectKeyForAgent,
     worktreeLabel,
     modelPresentation,
     projectProfile,
     providerPresentation,
+    bucketWord,
     statusPresentation,
+    statusWord,
     waitReasonLabel,
     toolHistoryNodes,
     toolHistorySignature,
@@ -62,21 +67,21 @@ const DASHBOARD_TOOL_HISTORY_LIMIT = 12;
 const PROMPT_DETAIL_MAX_LENGTH = 200;
 const DASHBOARD_FILTER_EVENT = 'dashboard:filter-changed';
 const DASHBOARD_FILTER_REQUEST_EVENT = 'dashboard:filter-requested';
+// UI-1 — chips, the bell lane and section counts read the one status-word
+// map (AgentPresentation.STATUS_WORDS): rate-limited is LIMIT here too.
 const ROW_STATUS_FILTERS = Object.freeze([
-    { key: 'needsYou', label: 'Needs you', shape: 'needs-you' },
-    { key: 'errors', label: 'Errors', shape: 'errored' },
-    { key: 'quota', label: 'Quota', shape: 'quota' },
-    { key: 'working', label: 'Working', shape: 'working' },
-    { key: 'watchlist', label: 'Waiting', shape: 'watchlist' },
-    { key: 'quiet', label: 'Idle', shape: 'idle' },
-]);
+    { key: 'needsYou', shape: 'needs-you' },
+    { key: 'errors', shape: 'errored' },
+    { key: 'quota', shape: 'quota' },
+    { key: 'working', shape: 'working' },
+    { key: 'watchlist', shape: 'watchlist' },
+    { key: 'quiet', shape: 'idle' },
+].map(filter => Object.freeze({ ...filter, label: bucketWord(filter.key) })));
 // 7.9 — buckets that leave their project list for the bell lane.
 const BELL_BUCKETS = new Set(['needsYou', 'errors', 'quota']);
-const BELL_STATUS_WORD = Object.freeze({
-    waiting_on_user: 'NEEDS YOU',
-    errored: 'ERROR',
-    rate_limited: 'QUOTA',
-});
+const BELL_STATUS_WORD = Object.freeze(Object.fromEntries(
+    ['waiting_on_user', 'errored', 'rate_limited'].map(status => [status, statusWord(status, 'upper')]),
+));
 // 9.5 — the frame kit's attn slice per lane status (frame-kit.css).
 const CALL_FRAME_BY_STATUS = Object.freeze({
     waiting_on_user: 'cv-frame--attn',
@@ -132,10 +137,9 @@ function rowWaitAnchor(agent) {
 function rowPhase(agent) {
     if (agent?.currentTool) return agent.currentTool;
     const status = normalizeStatus(agent?.status);
-    if (status === 'idle' || status === 'completed') return statusPresentation(status, i18n).label;
+    if (status === 'idle' || status === 'completed') return statusWord(status);
     return TURN_STATE_LABELS[agent?.turnState]
-        || operatorStatusLabel(status)
-        || 'Unknown';
+        || statusWord(status);
 }
 
 function cleanMessage(text, max = 140) {
@@ -148,7 +152,7 @@ function blockerText(agent, reason = waitReasonLabel(agent)) {
     if (reason) return reason;
     if (status === 'waiting_on_user') return 'Waiting for input';
     if (status === 'errored') return cleanMessage(agent?.lastMessage, 90) || 'Session error';
-    if (status === 'rate_limited') return cleanMessage(agent?.lastMessage, 90) || 'Quota limit';
+    if (status === 'rate_limited') return cleanMessage(agent?.lastMessage, 90) || 'Usage limit reached';
     return '';
 }
 
@@ -159,6 +163,11 @@ function blockerText(agent, reason = waitReasonLabel(agent)) {
  */
 function rowNow(agent) {
     const status = normalizeStatus(agent?.status);
+    // UI-13 — a departed villager says so through its 90 s grace.
+    if (agent?.isDeparted) {
+        const last = cleanMessage(agent?.lastMessage);
+        return { kind: 'status', lead: DEPARTED_WORD, detail: last ? `· last: ${last}` : '', title: last ? `Last observed message: ${last}` : '' };
+    }
     if (BELL_STATUS_WORD[status]) {
         return { kind: 'blocker', lead: BELL_STATUS_WORD[status], detail: blockerText(agent) };
     }
@@ -213,12 +222,12 @@ export const SECTION_HEALTH_ORDER = Object.freeze([
 ]);
 
 const SECTION_HEALTH_PRESENTATION = Object.freeze({
-    errors: Object.freeze({ className: 'errored', label: 'error' }),
-    needsYou: Object.freeze({ className: 'needs-you', label: 'blocked' }),
-    quota: Object.freeze({ className: 'quota', label: 'quota' }),
-    working: Object.freeze({ className: 'working', label: 'working' }),
-    watchlist: Object.freeze({ className: 'watchlist', label: 'waiting' }),
-    idle: Object.freeze({ className: 'idle', label: 'idle' }),
+    errors: Object.freeze({ className: 'errored', label: bucketWord('errors', 'lower') }),
+    needsYou: Object.freeze({ className: 'needs-you', label: bucketWord('needsYou', 'lower') }),
+    quota: Object.freeze({ className: 'quota', label: bucketWord('quota', 'lower') }),
+    working: Object.freeze({ className: 'working', label: bucketWord('working', 'lower') }),
+    watchlist: Object.freeze({ className: 'watchlist', label: bucketWord('watchlist', 'lower') }),
+    idle: Object.freeze({ className: 'idle', label: bucketWord('quiet', 'lower') }),
 });
 
 /**
@@ -238,9 +247,75 @@ export function sectionHealthCounts(agents) {
     };
 }
 
+/**
+ * UI-16 (Q5) — the lead a subagent folds under: its root session when the
+ * adapter names one (`rootSessionId`, feature-detected), else its parent.
+ * '' for a lead itself.
+ */
+export function leadIdFor(agent) {
+    const lead = String(agent?.rootSessionId || agent?.parentSessionId || '');
+    return lead && lead !== String(agent?.id || '') ? lead : '';
+}
+
+/**
+ * A subagent's home is its lead's kid strip. Its full row shows only while
+ * it is selected, matched by an active search or filter, or needs you (the
+ * bell lane), or while its lead's toggle unfolds the crew; a child whose
+ * lead is gone keeps its row.
+ */
+export function childRowVisible(agent, { selectedId = null, filtered = false, expandedLeads = new Set(), liveIds = new Set() } = {}) {
+    const lead = leadIdFor(agent);
+    if (!lead || !liveIds.has(lead)) return true;
+    if (String(agent.id) === String(selectedId) || filtered) return true;
+    if (BELL_BUCKETS.has(bucketForStatus(agent.status))) return true;
+    return expandedLeads.has(lead);
+}
+
 /** Stable display order with zero-count buckets omitted. */
 export function nonZeroSectionHealthBuckets(counts) {
     return SECTION_HEALTH_ORDER.filter(bucket => Number(counts?.[bucket]) > 0);
+}
+
+/**
+ * UI-4 — the row's TOKENS cell: new tokens first (input, output and cache
+ * writes, the top bar's measure), cache reads second, so scanning rows for
+ * "who is burning" ranks by work, not by context size times turns.
+ */
+export function rowTokenCells(rawUsage) {
+    const usage = TokenUsage.normalize(rawUsage);
+    if (usage.availability === 'unavailable') return { newShort: '—', cacheShort: '', title: 'Usage unavailable' };
+    const fresh = formatTokens(TokenUsage.newTokens(usage));
+    const cache = usage.cacheRead > 0 ? formatTokens(usage.cacheRead) : '';
+    return {
+        newShort: fresh,
+        cacheShort: cache ? `+${cache}` : '',
+        title: `${fresh} new tokens (input, output, cache writes)${cache ? ` · ${cache} cache reads` : ''}${usage.availability === 'partial' ? ' · partial' : ''}`,
+    };
+}
+
+/**
+ * The Codex quota card's facts from `/api/usage.codex` (B1's contract), or
+ * null when the field is absent or null. Unknown stays unknown: a null
+ * percentage reads `—`, never 0 %. Q3: LIMIT is the account's (>= 100 % or
+ * the window reports it reached); villagers keep their own status.
+ */
+export function codexQuotaFacts(codex, now = Date.now()) {
+    if (!codex || typeof codex !== 'object') return null;
+    const known = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
+    const used = known(codex.usedPercent) ? Math.max(0, Number(codex.usedPercent)) : null;
+    const resetsAt = known(codex.resetsAt) && Number(codex.resetsAt) > now ? Number(codex.resetsAt) : null;
+    const credits = codex.credits || {};
+    const minutes = known(codex.windowMinutes) ? Number(codex.windowMinutes) : 0;
+    return {
+        usedText: used === null ? '—' : `${Math.round(used)}%`,
+        lit: used === null ? 0 : Math.min(GAUGE_SEGMENTS, Math.round((used / 100) * GAUGE_SEGMENTS)),
+        limit: codex.limitReached === true,
+        resetsAt,
+        credits: credits.unlimited === true ? 'unlimited credits'
+            : known(credits.balance) ? `${Number(credits.balance).toLocaleString('en-US', { maximumFractionDigits: 2 })} credits` : '',
+        observedAt: known(codex.observedAt) && Number(codex.observedAt) > 0 ? Number(codex.observedAt) : null,
+        windowLabel: minutes >= 7 * 24 * 60 ? 'weekly' : minutes >= 60 ? `${Math.round(minutes / 60)}h` : 'window',
+    };
 }
 
 /** The edge flash belongs only to a genuine errored status. */
@@ -523,6 +598,7 @@ export class DashboardRenderer {
         this._searchContexts = new Map();
         this._stableAgentOrder = new Map();
         this._stableProjectOrder = new Map();
+        this._expandedLeads = new Set();
         this._nextStableAgentOrder = 0;
         this._nextStableProjectOrder = 0;
         this._controlsSignature = '';
@@ -554,6 +630,8 @@ export class DashboardRenderer {
             notifyOnRepeat: true,
             onChange: (nextId, previousId) => {
                 this._selectedAgentId = nextId;
+                // UI-16 — selecting a folded subagent unfolds its row.
+                if (this.active && [nextId, previousId].some(id => leadIdFor(this.world.agents.get(id)))) this._queueFlush({ render: true });
                 this._syncSelectionControls(nextId, previousId);
                 if (this.active) void this._fetchAllDetails();
             },
@@ -561,7 +639,7 @@ export class DashboardRenderer {
 
         this._onAgentAdded = (agent) => {
             this._tapes?.observe(agent);
-            if (this.active) this.render();
+            if (this.active) this._queueFlush({ render: true });
         };
         this._onAgentUpdated = (agent) => {
             this._tapes?.observe(agent);
@@ -571,15 +649,14 @@ export class DashboardRenderer {
                 const parent = parentId ? this.world.agents.get(parentId) : null;
                 const parentCard = parentId ? this.cards.get(parentId) : null;
                 if (parent && parentCard) this._updateChildProgress(parentCard, parent);
-                this._renderAttentionQueue(Array.from(this.world.agents.values()));
-                this._syncAnswerFirst();
+                this._queueFlush();
             }
         };
         this._onAgentRemoved = (agent) => {
             this._executionChildIdsByParent.delete(String(agent.id));
             this._tapes?.forget(agent.id);
             sessionDetailsService.deleteForAgent(agent);
-            if (this.active) this.render();
+            if (this.active) this._queueFlush({ render: true });
         };
         this._onModeChanged = (mode) => {
             this.active = mode === 'dashboard';
@@ -631,6 +708,13 @@ export class DashboardRenderer {
             }
         };
         eventBus.on('harbor:updated', this._onHarborUpdated);
+        // Codex quota card: the account facts B1 adds to /api/usage.
+        this._latestUsage = null;
+        this._onUsageUpdated = (usage) => {
+            this._latestUsage = usage || null;
+            if (this.active) this._renderAttentionQueue(Array.from(this.world.agents.values()));
+        };
+        eventBus.on('usage:updated', this._onUsageUpdated);
         document.addEventListener('visibilitychange', this._onVisibilityChange);
         // The view's own box (window resize, sidebar collapse), never the
         // grid's, so toggling the roomy tier cannot re-trigger it.
@@ -675,7 +759,7 @@ export class DashboardRenderer {
             laneByProject.get(project).push(agent);
         }
 
-        const groups = [...groupAgentsByProject(visibleAgents.filter(agent => !laneIds.has(agent.id)))];
+        const groups = [...groupAgentsByProject(visibleAgents.filter(agent => !laneIds.has(agent.id) && this._showsFullRow(agent)))];
         this._sortProjectGroups(groups);
         // 9.7a — measured before any card or section moves.
         const flip = this._beginLaneFlip(laneIds);
@@ -1038,6 +1122,21 @@ export class DashboardRenderer {
             || (this._stableProjectOrder.get(a[0]) ?? 0) - (this._stableProjectOrder.get(b[0]) ?? 0));
     }
 
+    _showsFullRow(agent) {
+        return childRowVisible(agent, {
+            selectedId: this._selectedAgentId,
+            filtered: Boolean(this._searchMatches || this._statusFilters.size || this._providerFilters.size),
+            expandedLeads: this._expandedLeads,
+            liveIds: this.world.agents,
+        });
+    }
+
+    _crewSize(leadId) {
+        let size = 0;
+        for (const agent of this.world.agents.values()) if (leadIdFor(agent) === leadId) size++;
+        return size;
+    }
+
     _setFilteredEmpty(visible) {
         if (!this.gridEl) return;
         if (!this._filteredEmptyEl) {
@@ -1054,10 +1153,32 @@ export class DashboardRenderer {
         const projectPath = projectKeyForAgent(agent);
         const status = normalizeStatus(agent.status);
         if (!cardEl || cardEl._projectPath !== projectPath || cardEl._status !== status) {
-            this.render();
+            this._queueFlush({ render: true });
             return;
         }
         this._updateCard(cardEl, agent);
+    }
+
+    // UI-3 — one render per message. A WebSocket message upserts every
+    // changed agent synchronously, so the work queued here runs once, after
+    // the last of them: a full render when a card must move, else only the
+    // fleet-wide controls (the attention queue and ANSWER FIRST).
+    _queueFlush({ render = false } = {}) {
+        if (render) this._flushRender = true;
+        if (this._flushQueued) return;
+        this._flushQueued = true;
+        queueMicrotask(() => {
+            const full = this._flushRender;
+            this._flushQueued = false;
+            this._flushRender = false;
+            if (!this.active || this._destroyed) return;
+            if (full) {
+                this.render();
+                return;
+            }
+            this._renderAttentionQueue(Array.from(this.world.agents.values()));
+            this._syncAnswerFirst();
+        });
     }
 
     // 4.3 — FLIP: keep each section's cards in status-sort order. When the
@@ -1092,9 +1213,13 @@ export class DashboardRenderer {
         for (const card of firstRects.keys()) {
             if (card.style.transform) this._stopFlip(card);
         }
+        // UI-3 — two passes: every last rect is read before any card is
+        // written, so the reads share one layout instead of forcing one per
+        // card after the previous card's transform write.
+        const lastRects = new Map([...firstRects.keys()].map(card => [card, card.getBoundingClientRect()]));
         const moved = [];
         for (const [card, first] of firstRects) {
-            const last = card.getBoundingClientRect();
+            const last = lastRects.get(card);
             const dx = Math.round(first.left - last.left);
             const dy = Math.round(first.top - last.top);
             if (!dx && !dy) {
@@ -1138,7 +1263,7 @@ export class DashboardRenderer {
                 <span>NOW</span>
                 <span title="Tool calls this tab observed, one column per 15 s: a block per call (bright = write/run/task), a band while it needed you, errored or hit quota, dots before the tab was watching">LAST 10 MIN</span>
                 <span class="dashboard__col--num">FOR</span>
-                <span class="dashboard__col--num">TOKENS</span>
+                <span class="dashboard__col--num" title="New tokens (input, output, cache writes), as the top bar counts them; cache reads below">TOKENS</span>
                 <span class="dashboard__col--num">COST</span>
                 <span class="dashboard__col--work">WORKING SET</span>
                 <span class="dashboard__col--kids">CHILDREN</span>
@@ -1333,11 +1458,12 @@ export class DashboardRenderer {
                 <span class="dash-card__now">
                     <span class="dash-card__now-icon" aria-hidden="true"></span>
                     <span class="dash-card__phase"></span>
+                    <span class="dash-card__silent" hidden></span>
                     <span class="dash-card__phase-detail"></span>
                 </span>
                 <span class="dash-card__tape"></span>
                 <span class="dash-card__for"></span>
-                <span class="dash-card__usage-tokens"></span>
+                <span class="dash-card__usage-tokens"><span class="dash-card__usage-new"></span><span class="dash-card__usage-cache"></span></span>
                 <span class="dash-card__usage-cost"></span>
                 <span class="dash-card__work-cell"><span class="dash-card__work-summary"></span></span>
                 <span class="dash-card__children-cell">
@@ -1481,6 +1607,9 @@ export class DashboardRenderer {
             tools: card.querySelector('.dash-card__tools'),
             toolList: card.querySelector('.dash-card__tool-list'),
             usageTokens: card.querySelector('.dash-card__usage-tokens'),
+            usageNew: card.querySelector('.dash-card__usage-new'),
+            silent: card.querySelector('.dash-card__silent'),
+            usageCache: card.querySelector('.dash-card__usage-cache'),
             usageCost: card.querySelector('.dash-card__usage-cost'),
             buildingEmblem: card.querySelector('.dash-card__building-emblem'),
             strip: card.querySelector('.dash-card__strip'),
@@ -1493,6 +1622,16 @@ export class DashboardRenderer {
             const current = this.world.agents.get(card.dataset.agentId);
             const ms = statusSinceMs(current, now);
             return ms == null ? '—' : formatElapsed(ms);
+        });
+        // UI-5 — `silent 18m` rides in NOW on the shared 1 Hz tick, so a hung
+        // tool is raised even when no message arrives to re-render the row.
+        const silentEl = card._elements.silent;
+        card._silentUnsubscribe = subscribeElapsedText(silentEl, (now) => {
+            const signal = silentSignal(this.world.agents.get(card.dataset.agentId), now);
+            silentEl.hidden = !signal;
+            if (signal) silentEl.dataset.tier = String(signal.tier);
+            else delete silentEl.dataset.tier;
+            return signal?.text || '';
         });
         this._paintCardTape(card);
 
@@ -1587,7 +1726,7 @@ export class DashboardRenderer {
         refs.meta.title = `${provider.badge.label} · ${model.title || agent.model || ''} · ${agent.projectPath || ''}`;
 
         const status = normalizeStatus(agent.status);
-        this._setText(refs.blocker, `${BELL_STATUS_WORD[status] || operatorStatusLabel(status)} — ${blockerText(agent)}`);
+        this._setText(refs.blocker, `${BELL_STATUS_WORD[status] || statusWord(status)} — ${blockerText(agent)}`);
         const quote = safePromptDetail(agent);
         this._setText(refs.quote, quote ? `“${quote}”` : '');
         refs.quote.hidden = !quote;
@@ -1633,6 +1772,7 @@ export class DashboardRenderer {
             provider: [...this._providerFilters].sort(),
             search: this._searchQuery,
             matches: this._searchMatches?.size ?? agents.length,
+            codex: this._latestUsage?.codex ?? null,
         });
         this.attentionEl.hidden = false;
         if (signature === this._controlsSignature) return;
@@ -1714,12 +1854,43 @@ export class DashboardRenderer {
         legend.className = 'dashboard-attention__legend';
         legend.textContent = '≈ estimate · — unavailable';
         legend.title = '≈ cost estimated from token counts and published rates; — no usage reported';
-        replaceChildren(this.attentionEl, [heading, list, legend]);
+        replaceChildren(this.attentionEl, [heading, list, this._codexQuotaCard(), legend].filter(Boolean));
         if (focusedKey) {
             [...this.attentionEl.querySelectorAll('[data-filter-key]')]
                 .find(button => button.dataset.filterKey === focusedKey)
                 ?.focus({ preventScroll: true });
         }
+    }
+
+    // The Codex account card in the tally bar: `CODEX WEEKLY ▮▮▮ 100% LIMIT ·
+    // resets 5d12h · 2,510.33 credits · as of 3m`. Absent or null usage.codex
+    // (an older server, or no rollout with rate_limits) shows nothing.
+    _codexQuotaCard() {
+        const facts = codexQuotaFacts(this._latestUsage?.codex);
+        if (!facts) return null;
+        const part = (className, text = '') => Object.assign(document.createElement('span'), { className, textContent: text });
+        const card = part(`dashboard-quota${facts.limit ? ' dashboard-quota--limit' : ''}`);
+        card.title = 'Codex account quota from the newest rollout\'s rate limits. LIMIT means the account is at its window\'s limit '
+            + '(spending credits when it has them); Codex villagers keep their own status.';
+        const provider = part('dashboard-quota__provider', providerPresentation('codex').badge.label.toUpperCase());
+        provider.style.color = providerPresentation('codex').badge.color;
+        const gauge = part('dashboard-quota__gauge');
+        for (let index = 0; index < GAUGE_SEGMENTS; index++) gauge.appendChild(part(index < facts.lit ? 'on' : ''));
+        const parts = [provider, part('dashboard-quota__window', facts.windowLabel.toUpperCase()), gauge, part('dashboard-quota__used', facts.usedText)];
+        if (facts.limit) parts.push(part('dashboard-quota__word', bucketWord('quota', 'upper')));
+        if (facts.resetsAt) {
+            const reset = part('dashboard-quota__fact');
+            subscribeElapsedText(reset, now => `· resets in ${formatWaitAge(Math.max(0, facts.resetsAt - now))}`);
+            parts.push(reset);
+        }
+        if (facts.credits) parts.push(part('dashboard-quota__fact', `· ${facts.credits}`));
+        if (facts.observedAt) {
+            const age = part('dashboard-quota__age');
+            subscribeElapsedText(age, now => `· as of ${formatWaitAge(Math.max(0, now - facts.observedAt))} ago`);
+            parts.push(age);
+        }
+        card.append(...parts);
+        return card;
     }
 
     _filterButton({ key, label, pressed, onClick }) {
@@ -1738,7 +1909,7 @@ export class DashboardRenderer {
         const status = normalizeStatus(agent.status);
         const model = modelPresentation(agent);
         const provider = providerPresentation(agent.provider, model.identity);
-        const statusInfo = statusPresentation(status, i18n);
+        const statusInfo = statusPresentation(status);
         const building = buildingClassForAgent(agent);
         const inLane = Boolean(this._bellEl) && cardEl.parentElement === this._bellEl;
         const signature = [
@@ -1751,6 +1922,7 @@ export class DashboardRenderer {
             agent.role || '',
             agent.workflowName || '',
             agent.parentSessionId || '',
+            agent.departedAt || '',
             agent.teamName || '',
             status,
             agent.waitReason || '',
@@ -1777,7 +1949,8 @@ export class DashboardRenderer {
             // 9.5 / one ask, one frame: a lane card wears the call card's attn
             // slice in its status hue instead of the row's status spine.
             const frame = inLane ? ` cv-frame ${CALL_FRAME_BY_STATUS[status] || 'cv-frame--attn'}` : '';
-            const nextClass = `dash-card dash-card--${status}${inLane ? ' dash-card--call' : ''}${frame}${selected ? ' dash-card--selected' : ''}`;
+            const departed = agent.isDeparted ? ' dash-card--departed' : '';
+            const nextClass = `dash-card dash-card--${status}${departed}${inLane ? ' dash-card--call' : ''}${frame}${selected ? ' dash-card--selected' : ''}`;
             if (cardEl.className !== nextClass) cardEl.className = nextClass;
             const now = rowNow(agent);
             refs.select.setAttribute('aria-label', `Select agent ${agent.name || agent.id}, ${statusInfo.label}: ${now.lead} ${now.detail}`.trim());
@@ -1829,7 +2002,7 @@ export class DashboardRenderer {
             refs.signalSource.title = 'Signal source and certainty';
 
             const reason = waitReasonLabel(agent);
-            this._setText(refs.detailStatus, inLane ? '' : `${operatorStatusLabel(status)}${reason ? ` — ${reason}` : ''}`);
+            this._setText(refs.detailStatus, inLane ? '' : `${statusWord(status)}${reason ? ` — ${reason}` : ''}`);
             this._setStyle(refs.detailStatus, 'display', inLane ? 'none' : '');
             refs.detailStatus.dataset.status = status;
 
@@ -2024,7 +2197,7 @@ export class DashboardRenderer {
         }
         this._setText(target, `${progress.done}/${progress.total} done`);
         target.title = children.length
-            ? children.map(child => `${child.name || child.id}: ${child.isDeparted ? 'Unknown' : operatorStatusLabel(child.status)}`).join('; ')
+            ? children.map(child => `${child.name || child.id}: ${child.isDeparted ? 'Unknown' : statusWord(child.status)}`).join('; ')
             : 'Task-store progress';
         this._setText(sourceEl, String(progress.source || 'inferred').toUpperCase());
         sourceEl?.classList.remove('dash-card__children-source--exact', 'dash-card__children-source--inferred');
@@ -2036,15 +2209,15 @@ export class DashboardRenderer {
         }
     }
 
-    // 7.12 — children read under their parent, even across projects. Each
-    // child keeps its own row in its own project; this strip is a pointer.
+    // 7.12 — children read under their parent, even across projects. A
+    // child's full row folds into this strip unless it is unfolded (UI-16).
     _renderKidStrip(cardEl, agent, children) {
         const strip = cardEl._elements?.kids;
         if (!strip) return;
         const signature = JSON.stringify(children.map(child => [
             child.id, child.name, child.role, child.agentType, normalizeStatus(child.status), child.isDeparted === true,
             child.currentTool || '', child.currentToolInput || '', child.projectPath || '',
-        ]).concat([[agent.projectPath || '']]));
+        ]).concat([[agent.projectPath || '', this._crewSize(String(agent.id)), this._expandedLeads.has(String(agent.id))]]));
         if (strip._kidSignature === signature) return;
         strip._kidSignature = signature;
         const chips = cardEl._kidChips || (cardEl._kidChips = new Map());
@@ -2086,7 +2259,7 @@ export class DashboardRenderer {
             const detail = Object.assign(document.createElement('span'), { className: 'dash-card__kid-detail', textContent: facts });
             const state = Object.assign(document.createElement('span'), {
                 className: 'dash-card__kid-status',
-                textContent: child.isDeparted ? 'unknown' : operatorStatusLabel(child.status).toLowerCase(),
+                textContent: child.isDeparted ? 'unknown' : statusWord(child.status, 'lower'),
             });
             row.append(hook, face, name, detail, state);
             row.title = `Select ${child.name || id}`;
@@ -2095,10 +2268,31 @@ export class DashboardRenderer {
                 const current = this.world.agents.get(id);
                 if (!current) return;
                 emitAgentSelected(current);
-                this.cards.get(id)?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+                // After the queued render that unfolds a folded row (UI-16).
+                queueMicrotask(() => this.cards.get(id)?.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
             });
             return row;
         });
+        // UI-16 — the per-lead toggle: the crew's full rows fold into this
+        // strip unless the operator unfolds them.
+        const leadId = String(agent.id);
+        const crew = this._crewSize(leadId);
+        if (crew > 0) {
+            const expanded = this._expandedLeads.has(leadId);
+            const toggle = Object.assign(document.createElement('button'), {
+                type: 'button',
+                className: 'dash-card__kid-toggle',
+                textContent: expanded ? 'hide subagent rows' : `show ${crew} subagent row${crew === 1 ? '' : 's'}`,
+            });
+            toggle.setAttribute('aria-pressed', String(expanded));
+            toggle.addEventListener('click', (event) => {
+                event.stopPropagation();
+                if (this._expandedLeads.has(leadId)) this._expandedLeads.delete(leadId);
+                else this._expandedLeads.add(leadId);
+                this._queueFlush({ render: true });
+            });
+            rows.push(toggle);
+        }
         replaceChildren(strip, rows);
     }
 
@@ -2232,8 +2426,8 @@ export class DashboardRenderer {
 
     _updateActivityAge(cardEl, agent) {
         const chip = cardEl._elements?.activityAge;
-        const ageMs = Number(agent.activityAgeMs);
-        const isAged = Number.isFinite(ageMs) && ageMs > 15 * 60_000;
+        // UI-5 — only a quiet row dims with age; a silent working one is raised.
+        const isAged = isAgedQuietRow(agent);
         cardEl.classList.toggle('dash-card--aged', isAged);
         if (!chip) return;
 
@@ -2277,18 +2471,17 @@ export class DashboardRenderer {
     _usageFooterFor(agent, data) {
         const raw = data?.tokenUsage || data?.tokens || data?.usage || agent?.tokens || null;
         const usage = TokenUsage.normalize(raw);
-        const totalTokens = TokenUsage.totalTokens(usage);
+        const cells = rowTokenCells(usage);
         const reported = agent?.cost?.source === 'provider' ? agent.cost : null;
         const cost = reported || TokenUsage.estimateCost(usage, agent.model, agent.provider);
         const source = reported ? 'provider' : 'estimate';
         const revision = cost.rateRevision || TokenUsage.rateRevision;
-        const unavailableUsage = usage.availability === 'unavailable';
         return {
-            tokens: unavailableUsage ? 'Usage unavailable'
-                : `${formatTokens(totalTokens)} tokens${usage.availability === 'partial' ? ' · partial' : ''}`,
+            tokens: cells.title,
             cost: cost.usd == null ? 'Cost unavailable' : `${source === 'estimate' ? '~' : ''}${formatCost(cost.usd)}`,
             // 7.11 — row cells: `≈` marks an estimate, `—` means unavailable.
-            tokensShort: unavailableUsage ? '—' : formatTokens(totalTokens),
+            tokensShort: cells.newShort,
+            cacheShort: cells.cacheShort,
             partial: usage.availability === 'partial',
             costShort: cost.usd == null ? '—' : `${source === 'estimate' ? '≈' : ''}${formatCost(cost.usd)}`,
             costTitle: source === 'provider'
@@ -2302,7 +2495,8 @@ export class DashboardRenderer {
     _renderUsageFooter(cardEl, footer) {
         const refs = cardEl._elements;
         if (!refs?.usageTokens || !footer) return;
-        this._setText(refs.usageTokens, footer.tokensShort ?? footer.tokens);
+        this._setText(refs.usageNew, footer.tokensShort ?? footer.tokens);
+        this._setText(refs.usageCache, footer.cacheShort || '');
         refs.usageTokens.classList.toggle('dash-card__usage-tokens--partial', footer.partial === true);
         refs.usageTokens.title = footer.tokens;
         this._setText(refs.usageCost, footer.costShort ?? footer.cost);
@@ -2482,6 +2676,8 @@ export class DashboardRenderer {
             cardEl._elapsedUnsubscribe = null;
             cardEl._callElapsedUnsubscribe?.();
             cardEl._callElapsedUnsubscribe = null;
+            cardEl._silentUnsubscribe?.();
+            cardEl._silentUnsubscribe = null;
             cardEl._avatarCanvas?.destroy?.();
             cardEl._avatarCanvas = null;
             cardEl._heroCanvas?.destroy?.();
@@ -2586,5 +2782,6 @@ export class DashboardRenderer {
         eventBus.off('mode:changed', this._onModeChanged);
         eventBus.off(DASHBOARD_FILTER_EVENT, this._onSharedFilterChanged);
         eventBus.off('harbor:updated', this._onHarborUpdated);
+        eventBus.off('usage:updated', this._onUsageUpdated);
     }
 }

@@ -503,6 +503,11 @@
 .dash-card--aged:not(.dash-card--selected) .dash-card__niche { opacity: 0.62; }
 .dash-card--idle:not(.dash-card--selected) .dash-card__name,
 .dash-card--aged:not(.dash-card--selected) .dash-card__name { color: var(--ink-2); }
+/* UI-13 — a departed villager (its 90 s grace): the niche and name recede
+   like an aged row, and NOW reads "Left the village" in quiet ink. */
+.dash-card--departed:not(.dash-card--selected) .dash-card__niche { opacity: 0.62; }
+.dash-card--departed .dash-card__name,
+.dash-card--departed .dash-card__now--status .dash-card__phase { color: var(--ink-3); }
 
 /* 7.8 — the static 44×40 portrait niche */
 .dash-card__niche {
@@ -568,6 +573,11 @@
 .dash-card--waiting .dash-card__now--status .dash-card__phase { color: var(--cv-status-waiting); }
 .dash-card__now--blocker .dash-card__phase { color: var(--spine); }
 .dash-card__now--blocker .dash-card__phase-detail { color: var(--ink-2); }
+/* UI-5 — a silent working row: the elapsed word climbs the hourglass rungs
+   (2 / 5 / 15 min) in ink weight and a static rim, never an alarm hue. */
+.dash-card__silent { flex: none; padding: 0 4px; border: 1px solid transparent; color: var(--ink-3); }
+.dash-card__silent[data-tier="2"] { color: var(--ink-2); border-color: var(--line-2); }
+.dash-card__silent[data-tier="3"] { color: var(--ink-1); border-color: var(--ink-3); }
 
 .dash-card__tape {
     display: flex;
@@ -588,8 +598,11 @@
 .dash-card--waiting_on_user .dash-card__for,
 .dash-card--errored .dash-card__for,
 .dash-card--rate_limited .dash-card__for { color: var(--spine); }
-.dash-card__usage-tokens { color: var(--ink-2); }
-.dash-card__usage-tokens--partial::after { content: '±'; color: var(--ink-3); }
+/* UI-4 — new tokens over cache reads, one 16 px line each. */
+.dash-card__usage-tokens { display: grid; align-content: center; color: var(--ink-2); }
+.dash-card__usage-cache { color: var(--ink-3); }
+.dash-card__usage-cache:empty { display: none; }
+.dash-card__usage-tokens--partial .dash-card__usage-new::after { content: '±'; color: var(--ink-3); }
 .dash-card__usage-cost { color: var(--ink-2); }
 .dash-card__usage-cost--default-rate {
     text-decoration: underline dotted var(--ink-4);
@@ -666,6 +679,19 @@
 .dash-card__kid-name { color: var(--ink-1); font: var(--fs-label)/var(--lh-label) var(--font-display); }
 .dash-card__kid-detail { overflow: hidden; color: var(--ink-3); text-overflow: ellipsis; white-space: nowrap; }
 .dash-card__kid-status { color: var(--ink-3); }
+/* UI-16 — the per-lead toggle under the strip: ghost text, gold on hover. */
+.dash-card__kid-toggle {
+    justify-self: start;
+    padding: 0 6px;
+    border: 1px solid transparent;
+    background: none;
+    color: var(--ink-3);
+    font: var(--fs-body)/var(--lh-body) var(--font-body);
+    cursor: pointer;
+}
+.dash-card__kid-toggle:hover,
+.dash-card__kid-toggle:focus-visible { color: var(--gold-hi); background: var(--bg-2); outline: none; }
+.dash-card__kid-toggle[aria-pressed="true"] { border-color: var(--line-2); }
 .dash-card__kid--working .dash-card__kid-status { color: var(--cv-status-working); }
 .dash-card__kid--waiting .dash-card__kid-status { color: var(--cv-status-waiting); }
 .dash-card__kid--waiting_on_user .dash-card__kid-status { color: var(--cv-status-waiting-user); }
@@ -1075,3 +1101,32 @@
     .dashboard__healthbar-seg { transition: none; }
     .dashboard__section--errored-flash .dashboard__section-header { animation: none; }
 }
+
+/* Codex quota card (tally bar): the account's window, its reset and its
+   credits. LIMIT (Q3) rims the card in the rate-limit orchid; a quota that
+   is merely high stays in ink. */
+.dashboard-quota {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    gap: 6px;
+    height: 24px;
+    padding: 0 6px;
+    border: 1px solid var(--line-1);
+    color: var(--ink-2);
+    font: var(--fs-body)/var(--lh-body) var(--font-body);
+    white-space: nowrap;
+}
+.dashboard-quota--limit { border-color: color-mix(in srgb, var(--cv-status-rate-limited) 50%, transparent); }
+.dashboard-quota__provider,
+.dashboard-quota__window,
+.dashboard-quota__word { font: var(--fs-label)/var(--lh-label) var(--font-display); letter-spacing: 1px; }
+.dashboard-quota__window { color: var(--ink-3); }
+.dashboard-quota__word { color: var(--cv-status-rate-limited); }
+.dashboard-quota__used { color: var(--ink-1); font-variant-numeric: tabular-nums; }
+.dashboard-quota__fact,
+.dashboard-quota__age { color: var(--ink-3); }
+.dashboard-quota__gauge { display: inline-flex; gap: 1px; }
+.dashboard-quota__gauge > span { width: 3px; height: 8px; background: var(--line-2); }
+.dashboard-quota__gauge > span.on { background: var(--ink-2); }
+.dashboard-quota--limit .dashboard-quota__gauge > span.on { background: var(--cv-status-rate-limited); }

@@ -113,6 +113,14 @@ export class TokenUsage {
         return usage.totalInput + usage.totalOutput + usage.cacheRead + usage.cacheCreate;
     }
 
+    // Tokens that are genuinely new work: input, output and cache writes.
+    // Cache reads (the same prompt re-read every turn) stay out, as in the
+    // top bar's TOKENS SEEN TODAY and the Dashboard row's TOKENS.
+    static newTokens(rawUsage) {
+        const usage = rawUsage instanceof TokenUsage ? rawUsage : TokenUsage.normalize(rawUsage);
+        return usage.totalInput + usage.totalOutput + usage.cacheCreate;
+    }
+
     static get rateRevision() {
         return MODEL_REVISION;
     }

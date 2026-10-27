@@ -363,6 +363,13 @@
 .sidebar__agent--waiting_on_user .sidebar__agent-model:not(.sidebar__agent-match) { color: var(--cv-status-waiting-user); }
 .sidebar__agent--errored .sidebar__agent-model:not(.sidebar__agent-match) { color: var(--cv-status-errored); }
 .sidebar__agent--rate_limited .sidebar__agent-model:not(.sidebar__agent-match) { color: var(--cv-status-rate-limited); }
+/* UI-5 — a silent working agent: the elapsed word brightens on the hourglass
+   rungs (2 / 5 / 15 min), in ink, never in an alarm hue. */
+.sidebar__agent-silent[data-tier="2"] { color: var(--ink-2); }
+.sidebar__agent-silent[data-tier="3"] { color: var(--ink-1); }
+/* UI-13 — a departed villager recedes through its 90 s grace. */
+.sidebar__agent--departed .sidebar__bust { opacity: 0.62; }
+.sidebar__agent--departed .sidebar__agent-name { color: var(--ink-3); }
 
 .sidebar__agent-age {
     grid-column: 3;

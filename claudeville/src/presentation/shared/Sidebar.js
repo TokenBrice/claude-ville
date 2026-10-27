@@ -23,13 +23,16 @@ import {
     toggleAgentSelection,
 } from './AgentSelection.js';
 import {
+    bucketWord,
+    DEPARTED_WORD,
     groupAgentsByProject,
     projectKeyForAgent,
     worktreeLabel,
     modelPresentation,
     projectProfile,
     providerPresentation,
-    statusPresentation,
+    silentSignal,
+    statusWord,
     waitReasonLabel,
 } from './AgentPresentation.js';
 import { AvatarCanvas } from '../dashboard-mode/AvatarCanvas.js';
@@ -572,11 +575,9 @@ export class Sidebar {
         }
         // Only non-zero buckets speak (0.6: zeros dim or go), with the same
         // words as the World plates and the top bar's lit slot.
-        const heading = [
-            [buckets.needsYou.length, 'NEEDS YOU'],
-            [buckets.errors.length, 'ERROR'],
-            [buckets.quota.length, 'LIMIT'],
-        ].filter(([count]) => count > 0).map(([count, word]) => `${count} ${word}`).join(' · ');
+        const heading = ['needsYou', 'errors', 'quota']
+            .map(bucket => [buckets[bucket].length, bucketWord(bucket, 'upper')])
+            .filter(([count]) => count > 0).map(([count, word]) => `${count} ${word}`).join(' · ');
         this._setText(this._shelfHeading, heading);
         const lead = buckets.needsYou.length ? 'needsYou' : buckets.errors.length ? 'errors' : 'quota';
         if (this.shelfEl.dataset) this.shelfEl.dataset.lead = lead;
@@ -682,6 +683,7 @@ export class Sidebar {
                     agent.agentType,
                     agent.workflowId,
                     agent.parentSessionId,
+                    agent.departedAt,
                     rowExtras.get(agent.id).ageText,
                     rowExtras.get(agent.id).parentLabel,
                 ].join('|'))
@@ -693,7 +695,16 @@ export class Sidebar {
             return;
         }
         this._renderSignature = signature;
-        const transientState = this._captureTransientState();
+        // UI-3 — scroll, focus and selection are captured only before a
+        // placement that moves a node: reading scrollTop after the other
+        // components' writes forces a layout, and a render that only patches
+        // text (ages, status words) leaves all three intact.
+        let transientState = null;
+        const place = (parent, desired) => {
+            if (this._childrenInOrder(parent, desired)) return;
+            transientState ||= this._captureTransientState();
+            this._placeChildren(parent, desired);
+        };
 
         // Group by project
         const groups = [...groupAgentsByProject(agents)];
@@ -760,26 +771,26 @@ export class Sidebar {
                 for (const agent of members) {
                     memberNodes.push(this._getAgentRow(agent, profile, rowExtras.get(agent.id)));
                 }
-                this._placeChildren(wfEl._sidebarRefs.members, memberNodes);
+                place(wfEl._sidebarRefs.members, memberNodes);
                 groupNodes.push(wfEl);
             }
 
-            this._placeChildren(groupEl, groupNodes);
+            place(groupEl, groupNodes);
             nodes.push(groupEl);
         }
 
         this._prunePersistentElements(agents, visibleProjectPaths, visibleWorkflowKeys);
         if (agents.length === 0) {
             this._emptyLegendEl ||= this._emptyLegendNodes()[0];
-            this._placeChildren(this.listEl, [this._emptyLegendEl]);
+            place(this.listEl, [this._emptyLegendEl]);
         } else if (nodes.length === 0) {
             this._emptyNoMatchEl ||= el('div', {
                 className: 'sidebar__empty-nomatch',
                 text: 'No agents match your filter',
             });
-            this._placeChildren(this.listEl, [this._emptyNoMatchEl]);
+            place(this.listEl, [this._emptyNoMatchEl]);
         } else {
-            this._placeChildren(this.listEl, nodes);
+            place(this.listEl, nodes);
         }
         this._applyWorkflowToggleState();
         this._syncSelection(null, this.selection.selectedId);
@@ -921,6 +932,16 @@ export class Sidebar {
         if (node.parentNode !== parent || (before && node.nextSibling !== before)) {
             parent.insertBefore(node, before);
         }
+    }
+
+    // Whether `parent` already holds exactly `desired`, in order (no layout read).
+    _childrenInOrder(parent, desired) {
+        const children = parent.children;
+        if (children.length !== desired.length) return false;
+        for (let index = 0; index < desired.length; index++) {
+            if (children[index] !== desired[index]) return false;
+        }
+        return true;
     }
 
     _placeChildren(parent, desired) {
@@ -1084,6 +1105,7 @@ export class Sidebar {
             agent.teamName,
             agent.workflowName,
             agent.parentSessionId,
+            agent.departedAt,
             extras.ageText,
             extras.parentLabel,
             extras.searchContext,
@@ -1109,7 +1131,10 @@ export class Sidebar {
         const state = el('span', { className: 'sidebar__agent-state' });
         // State leads the sub-line so a narrow column clips the model, never
         // the one word that matters.
-        const model = el('span', { className: 'sidebar__agent-model' }, [state, modelText]);
+        // UI-5 — `working · silent 18m · Model`: the silent mark follows the
+        // state on the shared 1 Hz tick, so it climbs even without a render.
+        const silent = el('span', { className: 'sidebar__agent-silent' });
+        const model = el('span', { className: 'sidebar__agent-model' }, [state, silent, modelText]);
         const match = el('span', {
             className: ['sidebar__agent-model', 'sidebar__agent-match'],
         });
@@ -1131,13 +1156,19 @@ export class Sidebar {
             dataset: { agentId },
         }, [select]);
         row._sidebarRefs = {
-            nameText, workflow, name, modelText, state, age, model,
+            nameText, workflow, name, modelText, state, silent, age, model,
             match, info, dot, bust, select, parent,
             avatar: null, bustAgent: null, bustKey: '', bustObserved: false,
         };
         row._elapsedUnsubscribe = subscribeElapsedText(age, () => {
             const current = this.world.agents.get(agentId);
             return current ? shortStatusAge(current) : '';
+        });
+        row._silentUnsubscribe = subscribeElapsedText(silent, (now) => {
+            const signal = silentSignal(this.world.agents.get(agentId), now);
+            if (signal) silent.dataset.tier = String(signal.tier);
+            else delete silent.dataset.tier;
+            return signal ? ` · ${signal.text}` : '';
         });
         return row;
     }
@@ -1150,6 +1181,7 @@ export class Sidebar {
         const agentClasses = ['sidebar__agent', `sidebar__agent--${status}`];
         if (this.selection.isSelected(agent.id)) agentClasses.push('sidebar__agent--selected');
         if (agent.parentSessionId) agentClasses.push('sidebar__agent--child');
+        if (agent.isDeparted) agentClasses.push('sidebar__agent--departed');
         const refs = row._sidebarRefs;
         const className = agentClasses.join(' ');
         if (row.className !== className) row.className = className;
@@ -1170,7 +1202,8 @@ export class Sidebar {
         // worktree, D1: it sits in its repo's group). The adapter's wait
         // reason, when known, is the state ("waiting for approval — Bash").
         const reason = waitReasonLabel(agent);
-        const stateText = reason ? lowerFirst(reason) : statusPresentation(agent.status).label.toLowerCase();
+        const stateText = agent.isDeparted ? DEPARTED_WORD.toLowerCase()
+            : reason ? lowerFirst(reason) : statusWord(agent.status, 'lower');
         const worktree = worktreeLabel(agent);
         this._setNodeText(refs.modelText, `${model.label ? ` · ${model.label}` : ''}${worktree ? ` · ${worktree}` : ''}`);
         this._setText(refs.state, stateText);
@@ -1289,6 +1322,8 @@ export class Sidebar {
             if (liveIds.has(id)) continue;
             row._elapsedUnsubscribe?.();
             row._elapsedUnsubscribe = null;
+            row._silentUnsubscribe?.();
+            row._silentUnsubscribe = null;
             this._releaseBust(row);
             row.remove();
             this._agentRows.delete(id);

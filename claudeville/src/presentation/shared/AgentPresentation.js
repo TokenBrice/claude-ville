@@ -4,7 +4,8 @@ import { buildingForTool, toolCategory, toolIcon, shortToolName } from '../../do
 import { formatModelLabel, getModelVisualIdentity } from './ModelVisualIdentity.js';
 import { repoProfile } from './RepoColor.js';
 import { el } from './DomSafe.js';
-import { formatToolDetail, hashRows, formatRelative, formatElapsed, normalizeStatus } from './Formatters.js';
+import { formatToolDetail, hashRows, formatRelative, formatElapsed, formatWaitAge, normalizeStatus } from './Formatters.js';
+import { bucketForStatus } from '../../domain/services/SignalLedger.js';
 import { EVENT_SHAPES, eventShapeSvgPath, eventShapeSvgViewBox } from './EventShapes.js';
 
 export const UNKNOWN_PROJECT_KEY = '_unknown';
@@ -124,21 +125,77 @@ export function waitReasonLabel(agent) {
         : label;
 }
 
-export function statusPresentation(status, translator = i18n) {
+// UI-1 (Q4) — one word per status on every surface; a surface picks only the
+// case (`NEEDS YOU` on a plate, `Needs you` on a chip, `needs you` on a
+// sub-line). COMPLETED, a closed turn whose next move is yours, folds into
+// IDLE, the count that holds it; its ✓ and stone hue stay its second cue.
+// Rate-limited is LIMIT everywhere.
+export const STATUS_WORDS = Object.freeze({
+    working: 'Working',
+    waiting: 'Waiting',
+    idle: 'Idle',
+    completed: 'Idle',
+    waiting_on_user: 'Needs you',
+    errored: 'Error',
+    rate_limited: 'Limit',
+});
+
+// The status whose word names each SignalLedger bucket (`bucketForStatus`).
+const BUCKET_STATUS = Object.freeze({
+    needsYou: 'waiting_on_user',
+    errors: 'errored',
+    quota: 'rate_limited',
+    working: 'working',
+    watchlist: 'waiting',
+    quiet: 'idle',
+});
+
+// UI-13 — a departed villager, during the grace before its row leaves.
+export const DEPARTED_WORD = 'Left the village';
+
+const WORD_FORMS = Object.freeze({
+    upper: word => word.toUpperCase(),
+    lower: word => word.toLowerCase(),
+    title: word => word,
+});
+
+export function statusWord(status, form = 'title') {
     const normalized = normalizeStatus(status);
-    const statusKey = { working: 'statusWorking', idle: 'statusIdle', waiting: 'statusWaiting' };
-    const statusOverrideLabel = {
-        rate_limited: 'Rate-limited',
-        errored: 'Errored',
-        waiting_on_user: 'Waiting for you',
-        completed: 'Completed',
-    };
-    const fallbackLabel = normalized.charAt(0).toUpperCase() + normalized.slice(1);
+    const word = STATUS_WORDS[normalized] || normalized.charAt(0).toUpperCase() + normalized.slice(1);
+    return (WORD_FORMS[form] || WORD_FORMS.title)(word);
+}
+
+export function bucketWord(bucket, form = 'title') {
+    return statusWord(BUCKET_STATUS[bucket] || bucket, form);
+}
+
+// UI-5 (= SM-8) — a working or tool-pending agent whose session has gone
+// quiet. The rungs are the hourglass ladder's (2 / 5 / 15 min), and the mark
+// is an elapsed word in ink, never an alarm hue: a long build is still work.
+export const SILENT_TIER_MS = Object.freeze([2 * 60_000, 5 * 60_000, 15 * 60_000]);
+const AGED_QUIET_MS = 15 * 60_000;
+
+export function silentSignal(agent, now = Date.now()) {
+    if (!agent || agent.isDeparted || normalizeStatus(agent.status) !== 'working') return null;
+    const last = Number(agent.lastSessionActivity);
+    if (!Number.isFinite(last) || last <= 0) return null;
+    const ms = Math.max(0, now - last);
+    const tier = SILENT_TIER_MS.filter(threshold => ms >= threshold).length;
+    return tier ? { tier, ms, text: `silent ${formatWaitAge(ms)}` } : null;
+}
+
+// Only a quiet row (idle, completed, unknown) dims with age; a working agent
+// gone silent is raised by its silent mark instead.
+export function isAgedQuietRow(agent) {
+    const ageMs = Number(agent?.activityAgeMs);
+    return bucketForStatus(agent?.status) === 'quiet' && Number.isFinite(ageMs) && ageMs > AGED_QUIET_MS;
+}
+
+export function statusPresentation(status) {
+    const normalized = normalizeStatus(status);
     return {
         status: normalized,
-        label: statusOverrideLabel[normalized]
-            || translator?.t?.(statusKey[normalized] || normalized)
-            || fallbackLabel,
+        label: statusWord(normalized),
         color: STATUS_VISUALS[normalized]?.color || '#8b8b9e',
     };
 }
@@ -154,7 +211,7 @@ export function modelPresentation(agent) {
 }
 
 export function currentToolPresentation(agent, translator = i18n) {
-    const statusInfo = statusPresentation(agent?.status, translator);
+    const statusInfo = statusPresentation(agent?.status);
     if (agent?.currentTool) {
         return {
             isIdle: false,
@@ -163,9 +220,9 @@ export function currentToolPresentation(agent, translator = i18n) {
             detail: agent.currentToolInput || '',
         };
     }
-    // Tool-less fallback: terminal statuses read as themselves (idle → "Idle",
-    // completed → "Completed"); only genuinely in-flight tool-less statuses
-    // read as waiting. Fixes completed agents showing "Waiting...".
+    // Tool-less fallback: terminal statuses read as their word (idle and
+    // completed both "Idle", told apart by the glyph); only genuinely
+    // in-flight tool-less statuses read as waiting.
     const readsAsSelf = statusInfo.status === 'idle' || statusInfo.status === 'completed';
     return {
         isIdle: true,

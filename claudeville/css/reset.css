@@ -75,7 +75,7 @@
     --cv-status-errored: #e06c5b;
     --cv-status-waiting-user: #e8d44d;
     --cv-status-chatting: #f2d36b;
-    --cv-status-completed: #ffd873;
+    --cv-status-completed: #d5cbb6;
 
     /* Tool category colors (tool history items). Authority: TOOL_CATEGORY_COLORS
        in src/config/theme.js (status-free hues, plan 7.10); keep in sync — the
