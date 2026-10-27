@@ -101,6 +101,13 @@ const cases = [
   ["git commit -F - <<'EOF'\ndon't break\ngit push origin main\nEOF", ['commit:work']],
   ['git push origin feature:main', ['push:feature']],
   ['git push origin main feature', ['push:main']],
+  // SV-2a: the pre-filter must keep commands the tokenizer joins.
+  ['g"i"t commit -m quoted', ['commit:work']],
+  ['gi\\t push origin main', ['push:main']],
+  ['git pu\\sh origin main', ['push:main']],
+  ["bash -c 'g\\it pu\"sh\" origin main'", ['push:main']],
+  ['"/usr/bin/git" commit -m quotedpath', ['commit:work']],
+  ['cd ~/Documents/git/app && git status && npm test', []],
 ];
 
 for (const [command, expected] of cases) {

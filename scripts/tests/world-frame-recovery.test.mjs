@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
 import { createMotionClock } from '../../claudeville/src/presentation/character-mode/MotionClock.js';
+import { admitFrame, createFramePacing } from '../../claudeville/src/presentation/character-mode/FramePacing.js';
 import { eventBus } from '../../claudeville/src/domain/events/DomainEvent.js';
 import { Toast } from '../../claudeville/src/presentation/shared/Toast.js';
 
@@ -38,6 +39,8 @@ function scheduler(t) {
     const frames = new Map();
     const retries = new Map();
     let nextId = 1;
+    // rAF timestamps at 60 Hz: every tick clears the 60 fps cap (FP-1a).
+    let tick = 0;
     const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'document');
     Object.defineProperty(globalThis, 'document', {
         configurable: true,
@@ -73,11 +76,12 @@ function scheduler(t) {
     return {
         frames,
         retries,
+        get tick() { return tick; },
         frame() {
             assert.equal(frames.size, 1, 'a runnable World owns exactly one RAF');
             const [id, callback] = frames.entries().next().value;
             frames.delete(id);
-            callback(performance.now());
+            callback(tick += 1000 / 60);
         },
         retry() {
             assert.equal(retries.size, 1, 'a failed World owns exactly one retry');
@@ -113,7 +117,7 @@ function renderer() {
         motionScale: 1,
         _lastFrameTime: null,
         _lastLoopFrameTime: null,
-        _lastVsyncTime: null,
+        _framePacing: createFramePacing(),
         _fpsWindowStart: null,
         _fpsFrames: 0,
         _idleFrameDirty: true,
@@ -178,7 +182,8 @@ test('pacing and idle-check exceptions are frame faults rather than silent RAF l
         const r = renderer();
         const ordinaryIdleCheck = r._canSkipIdleFrame;
         r._lastFrameTime = r._lastLoopFrameTime = performance.now();
-        r._lastVsyncTime = performance.now();
+        // The previous tick rendered, so the next frame reports an interval.
+        admitFrame(r._framePacing, clock.tick);
         if (stage === 'pacing') r.gpuWorld = { notePresentInterval() { throw new Error('pacing fault'); } };
         else r._canSkipIdleFrame = () => { throw new Error('idle fault'); };
         failThree(r, clock);

@@ -1483,7 +1483,33 @@ function summarizeToolInput(input, { maxLength = 60, basenameFile = true } = {})
   });
 }
 
-function getFirstUserPrompt(filePath) {
+// SV-3: the head of an append-only transcript never changes, so its first
+// prompt is read once per file identity instead of re-reading a 512 KB head
+// per sub-agent per scan. A shrink or an older mtime means a rewrite; a
+// missing prompt is re-read while the file still grows inside the head
+// window. PV-15's toolUseId launch matching later replaces this read.
+const FIRST_PROMPT_CACHE_MAX_ENTRIES = 512;
+const _firstPromptCache = new Map();
+
+function getFirstUserPrompt(filePath, stat) {
+  const key = `${filePath}\0${stat.dev}:${stat.ino}`;
+  const cached = _firstPromptCache.get(key);
+  if (
+    cached
+    && stat.size >= cached.size
+    && stat.mtimeMs >= cached.mtimeMs
+    && (cached.prompt !== null || stat.size === cached.size || cached.size >= MAX_HEAD_BYTES)
+  ) return cached.prompt;
+  const prompt = readFirstUserPrompt(filePath);
+  _firstPromptCache.delete(key);
+  _firstPromptCache.set(key, { size: stat.size, mtimeMs: stat.mtimeMs, prompt });
+  if (_firstPromptCache.size > FIRST_PROMPT_CACHE_MAX_ENTRIES) {
+    _firstPromptCache.delete(_firstPromptCache.keys().next().value);
+  }
+  return prompt;
+}
+
+function readFirstUserPrompt(filePath) {
   const entries = readJsonLines(filePath, { from: 'start', count: 200 });
   for (const entry of entries) {
     if (entry.message?.role !== 'user') continue;
@@ -2368,30 +2394,47 @@ function buildSubAgentSession({ filePath, agentId, decodedProject, parentSession
   };
 }
 
+function readClaudeTaskGroup(groupName) {
+  const groupDir = path.join(TASKS_DIR, groupName);
+  const tasks = [];
+  try {
+    const files = fs.readdirSync(groupDir).filter(f => f.endsWith('.json'));
+    for (const file of files) {
+      try {
+        tasks.push(JSON.parse(fs.readFileSync(path.join(groupDir, file), 'utf-8')));
+      } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
+  return {
+    groupName,
+    tasks: tasks.sort((a, b) => Number(a.id || 0) - Number(b.id || 0)),
+    count: tasks.length,
+  };
+}
+
 function readClaudeTaskGroups() {
   if (!fs.existsSync(TASKS_DIR)) return [];
   const taskGroups = [];
   try {
     const taskDirs = fs.readdirSync(TASKS_DIR, { withFileTypes: true })
       .filter(d => d.isDirectory());
-    for (const dir of taskDirs) {
-      const groupDir = path.join(TASKS_DIR, dir.name);
-      const tasks = [];
-      try {
-        const files = fs.readdirSync(groupDir).filter(f => f.endsWith('.json'));
-        for (const file of files) {
-          try {
-            tasks.push(JSON.parse(fs.readFileSync(path.join(groupDir, file), 'utf-8')));
-          } catch { /* ignore */ }
-        }
-      } catch { /* ignore */ }
-      taskGroups.push({
-        groupName: dir.name,
-        tasks: tasks.sort((a, b) => Number(a.id || 0) - Number(b.id || 0)),
-        count: tasks.length,
-      });
-    }
+    for (const dir of taskDirs) taskGroups.push(readClaudeTaskGroup(dir.name));
   } catch { /* ignore */ }
+  return taskGroups;
+}
+
+// SV-4: a scan projects only groups named after its own sessions, so it
+// reads just those directories. The full sweep (`getTasks`, `/api/tasks`)
+// grows with every session Claude Code ever ran: it never prunes the dir.
+function readActiveClaudeTaskGroups(sessions) {
+  const taskGroups = [];
+  for (const groupName of new Set(sessions.map(session => String(session?.sessionId || '')))) {
+    if (!groupName || groupName === '.' || groupName === '..' || path.basename(groupName) !== groupName) continue;
+    try {
+      if (!fs.lstatSync(path.join(TASKS_DIR, groupName)).isDirectory()) continue;
+    } catch { continue; }
+    taskGroups.push(readClaudeTaskGroup(groupName));
+  }
   return taskGroups;
 }
 
@@ -2516,7 +2559,7 @@ class ClaudeAdapter {
     const subAgents = this._getActiveSubAgents(activeThresholdMs, activeSessionIdsByProject, projectPathMap);
 
     const sessions = [...mainSessions, ...subAgents, ...orphans];
-    return projectClaudeExecution(sessions, this.getTasks());
+    return projectClaudeExecution(sessions, _adapterShutdown ? [] : readActiveClaudeTaskGroups(sessions));
   }
 
   _getActiveSubAgents(activeThresholdMs, activeSessionIdsByProject = new Map(), projectPathMap = new Map()) {
@@ -2556,7 +2599,7 @@ class ClaudeAdapter {
             if (now - stat.mtimeMs > activeThresholdMs) continue;
 
             const agentId = agentFile.replace('agent-', '').replace('.jsonl', '');
-            const prompt = getFirstUserPrompt(filePath);
+            const prompt = getFirstUserPrompt(filePath, stat);
             const launch = prompt
               ? agentLaunches.find(item => item.promptHash === stableHash(prompt))
               : null;

@@ -71,8 +71,9 @@ Modes:
              the first frame and to the level held before leaving
   kslope     V2 receipt: per-frame interleaved K in {0,1,8} of one present
              pass beside an A/A arm set; price = (T8 - T0) / 8
-  unlocked   V2 receipt: vsync and frame-rate limit off, forced FULL vs
-             MINIMAL in alternating 60-frame blocks; the rAF interval delta
+  unlocked   V2 receipt: vsync, frame-rate limit and the World's 60 fps cap
+             off, forced FULL vs MINIMAL in alternating 60-frame blocks; the
+             rAF interval delta
 
 Common options:
   --url=<url>                 ClaudeVille URL (default: an isolated server
@@ -1065,6 +1066,13 @@ async function runUnlocked(browser, baseUrl, options, spec, repetition) {
       const gpu = renderer.gpuWorld;
       const previousFreshOutput = renderer._forceFreshGpuOutput;
       renderer._forceFreshGpuOutput = true;
+      // The rAF interval is the frame's cost only if every tick renders:
+      // lift the 60 fps cap (FP-1a) for the receipt.
+      const pacedLoop = renderer._loop;
+      renderer._loop = function uncappedLoop(frameTime) {
+        this._framePacing.lastRenderMs = null;
+        return pacedLoop.call(this, frameTime);
+      };
       const previous = gpu.qualityLadder.getState().override;
       const block = 60;
       const skip = 5;
@@ -1085,6 +1093,7 @@ async function runUnlocked(browser, baseUrl, options, spec, repetition) {
         if (ts - started >= durationMs) {
           gpu.qualityLadder.setOverride(previous);
           renderer._forceFreshGpuOutput = previousFreshOutput;
+          renderer._loop = pacedLoop;
           resolve({ arms, backing: [gpu.width, gpu.height] });
         } else {
           requestAnimationFrame(tick);

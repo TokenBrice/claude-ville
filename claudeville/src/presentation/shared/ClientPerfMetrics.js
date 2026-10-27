@@ -328,7 +328,9 @@ export function snapshotFrameEnvelope(envelope, extras) {
             },
         };
     }
-    const rings = envelope.rings;
+    // FP-3: percentiles only while the rings record. Disabling them keeps
+    // their last samples, and a reader of those would see a frozen frame.
+    const rings = envelope.ringsEnabled ? envelope.rings : null;
     const count = rings ? rings.count : 0;
     const p95 = (field) => (rings && count > 0)
         ? round(percentileAtSnapshot(rings[field], 0.95, count))

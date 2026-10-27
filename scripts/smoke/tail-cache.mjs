@@ -4,6 +4,9 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { makeTempDir } from '../tests/support/tmp.mjs';
 
+// The eviction check below writes 36 MB of pending records against a 32 MB
+// byte budget (the production default is 128 MB).
+process.env.CLAUDEVILLE_TAIL_STATE_CACHE_MAX_BYTES = String(32 * 1024 * 1024);
 const require = createRequire(import.meta.url);
 const {
   clearTailCache,

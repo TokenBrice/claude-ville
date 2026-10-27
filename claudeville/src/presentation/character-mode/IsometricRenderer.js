@@ -16,6 +16,7 @@ import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { AgentBiography } from '../../domain/value-objects/AgentBiography.js';
 import { Camera } from './Camera.js';
 import { createMotionClock, advanceMotionClock, virtualFramesFor } from './MotionClock.js';
+import { admitFrame, createFramePacing, resetFramePacing } from './FramePacing.js';
 import {
     createFrameEnvelope,
     recordFrameEnvelope,
@@ -628,6 +629,7 @@ export class IsometricRenderer {
         this._disposed = false;
         this.running = false;
         this.frameId = null;
+        this._framePacing = createFramePacing();
         this.terrainCache = null;
         this.terrainCacheBounds = null;
         this.terrainCacheKey = '';
@@ -2361,6 +2363,7 @@ export class IsometricRenderer {
             cancelAnimationFrame(this.frameId);
             this.frameId = null;
         }
+        resetFramePacing(this._framePacing);
         this._fpsFrames = 0;
         this._fpsWindowStart = null;
         eventBus.emit('fps:updated', null);
@@ -4774,6 +4777,12 @@ export class IsometricRenderer {
         this.frameId = null;
         if (!this._worldModeActive || this._contextLost) return;
         if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+        // FP-1a: at most 60 fps on every backend. A tick the cap holds only
+        // re-arms rAF: no update, clock, envelope or FPS sample.
+        if (!admitFrame(this._framePacing, Number.isFinite(frameTime) ? frameTime : performance.now())) {
+            this._startLoop();
+            return;
+        }
         let now = 0;
         let frameGapMs = 0;
         let perf = null;
@@ -4790,12 +4799,13 @@ export class IsometricRenderer {
             renderStart = now;
             frameGapMs = Number.isFinite(this._lastFrameTime) ? now - this._lastFrameTime : 0;
             const dt = this._lastFrameTime ? Math.min(50, now - this._lastFrameTime) : 16;
-            // Only uninterrupted rAF timestamps are display-interval samples.
-            const vsyncTime = Number.isFinite(frameTime) ? frameTime : now;
-            if (this._lastFrameTime === this._lastLoopFrameTime && Number.isFinite(this._lastVsyncTime)) {
-                this.gpuWorld?.notePresentInterval?.(vsyncTime - this._lastVsyncTime);
+            // Only uninterrupted rAF timestamps are display-interval samples,
+            // and the ladder hears the paced interval (FP-5): never under the
+            // 60 fps period, so a frame the cap held is not a missed frame.
+            const presentIntervalMs = this._framePacing.intervalMs;
+            if (this._lastFrameTime === this._lastLoopFrameTime && presentIntervalMs !== null) {
+                this.gpuWorld?.notePresentInterval?.(presentIntervalMs);
             }
-            this._lastVsyncTime = vsyncTime;
             this._lastLoopFrameTime = now;
             this._lastFrameTime = now;
             stage = 'fallback-prep';

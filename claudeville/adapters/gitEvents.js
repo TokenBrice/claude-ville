@@ -2400,8 +2400,30 @@ function pushEvidence(parsed, output) {
   return { evidence: null, relevant };
 }
 
+// SV-2a: every event comes from a segment whose command word is `gh`, or
+// `git` with a GIT_EVENT_TYPES subcommand (basename and token compared
+// exactly), so a command without those whole words cannot produce one. `git`
+// alone is not enough: it matches every path under a `~/…/git/` checkout
+// root, 82 % of one real fortnight of commands. The tokenizer joins quoted
+// and escaped pieces (`g"i"t`, `pu\sh`), so the words are also looked for
+// with every quote and backslash removed.
+const GH_WORD_RE = /\bgh\b/;
+const GIT_WORD_RE = /\bgit\b/;
+const GIT_EVENT_WORD_RE = new RegExp(`\\b(?:${[...GIT_EVENT_TYPES].join('|')})\\b`);
+const SHELL_QUOTING_RE = /["'\\]/g;
+
+function namesGitEventCommand(text) {
+  return GH_WORD_RE.test(text) || (GIT_WORD_RE.test(text) && GIT_EVENT_WORD_RE.test(text));
+}
+
+function mayNameGitCommand(command) {
+  if (namesGitEventCommand(command)) return true;
+  return /["'\\]/.test(command) && namesGitEventCommand(command.replace(SHELL_QUOTING_RE, ''));
+}
+
 function parseGitEventsFromCommand(command, context = {}, options = {}) {
   if (typeof command !== 'string' || !command.trim()) return [];
+  if (!mayNameGitCommand(command)) return [];
 
   const output = collectParserOutput(context, options);
   const forgeUrls = forgeUrlsByType(output);

@@ -14,7 +14,13 @@ const DEFAULT_HEAD_BYTES = 512 * 1024;
 const DEFAULT_TAIL_CHUNK_BYTES = 64 * 1024;
 const DEFAULT_TAIL_BYTES = 8 * 1024 * 1024;
 const TAIL_STATE_CACHE_MAX = 128;
-const TAIL_STATE_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+// PV-5 (a stopgap until SV-1): at 32 MB the cache held about two large Claude
+// tails, so one append re-read every tail. 128 MB keeps a 12-session fleet
+// resident for about 50 MB more RSS.
+const TAIL_STATE_CACHE_MAX_BYTES = Math.max(
+  64 * 1024,
+  Number(process.env.CLAUDEVILLE_TAIL_STATE_CACHE_MAX_BYTES || 128 * 1024 * 1024) || 128 * 1024 * 1024
+);
 const TAIL_GUARD_BYTES = 256;
 
 // Tail-offset cache: one largest requested window per path. Smaller callers

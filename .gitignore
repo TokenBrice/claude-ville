@@ -16,6 +16,8 @@ scripts/sprites/baselines/*-fresh.png
 .playwright-cli/
 .playwright-mcp/
 .worktrees/
+# Claude Code agent worktrees (RG-9): untracked, they block `release:prepare --tag`.
+.claude/worktrees/
 .superpowers/
 .env
 .env.*
