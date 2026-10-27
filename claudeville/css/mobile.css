@@ -111,11 +111,23 @@
     }
 
     /* The clipped-second-row overflow rule still holds: a unit that does not
-       fit disappears whole, and NEEDS YOU leads, so it is never the one. */
+       fit disappears whole, and NEEDS YOU leads, so it is never the one.
+       UI-9: the counts themselves wrap onto that clipped row, so `26 WORKING`
+       drops whole instead of running past the clip as `2 WOR`. */
     :root[data-cv-profile="mobile"] .topbar__center {
         grid-area: 2 / 1;
         height: 44px;
         padding-top: 6px;
+    }
+
+    :root[data-cv-profile="mobile"] .topbar__badges,
+    :root[data-cv-profile="mobile"] .topbar__status {
+        flex-shrink: 1;
+        min-width: 0;
+    }
+
+    :root[data-cv-profile="mobile"] .topbar__status {
+        flex-wrap: wrap;
     }
 
     :root[data-cv-profile="mobile"] #topbarChronicle {
@@ -424,14 +436,25 @@
     overscroll-behavior: contain;
 }
 
+/* UI-9 — the tally chips take their own full-width row under the heading
+   and the legend, instead of a 35px scroller squeezed between them; the
+   section headers stick below the taller bar. */
 :root[data-cv-profile="mobile"] .dashboard-attention {
     top: -12px;
+    flex-wrap: wrap;
+    row-gap: 4px;
+    height: auto;
     margin: -12px -12px 12px;
-    padding: 0 12px;
+    padding: 6px 12px;
+}
+
+:root[data-cv-profile="mobile"] .dashboard-attention__list {
+    order: 3;
+    flex: 1 0 100%;
 }
 
 :root[data-cv-profile="mobile"] .dashboard__section-header {
-    top: 28px;
+    top: 45px;
 }
 
 :root[data-cv-profile="mobile"] .dashboard__cols {
