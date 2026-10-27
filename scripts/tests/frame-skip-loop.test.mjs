@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
 import { createMotionClock, SPEED_RUNGS } from '../../claudeville/src/presentation/character-mode/MotionClock.js';
 import { defineMoment, momentPhase } from '../../claudeville/src/presentation/character-mode/EffectStamps.js';
+import { VillageDirector } from '../../claudeville/src/presentation/character-mode/VillageDirector.js';
 import { FRAME_PACING_INTERVAL_MS, createFramePacing } from '../../claudeville/src/presentation/character-mode/FramePacing.js';
 
 function fixture() {
@@ -43,6 +44,67 @@ test('GPU frames must stage exact inputs rather than use the coarse tableau idle
     renderer._idleFrameDirty = false;
     renderer.gpuWorld = { isActive: () => true };
     assert.equal(renderer._canSkipIdleFrame(), false);
+});
+
+// FP-2: a static scene with every timed owner present but idle.
+function staticSceneFixture(now) {
+    const renderer = fixture();
+    delete renderer._canSkipIdleFrame;
+    Object.assign(renderer, {
+        _idleFrameDirty: false,
+        camera: { x: 4, y: 5, zoom: 2 },
+        _idleLastRenderCamera: { x: 4, y: 5, zoom: 2 },
+        agentSprites: new Map(),
+        gateTransits: new Map(),
+        gateDoorsOpen: false,
+        _gateDoorsOpenUntilMs: 0,
+        arrivalDeparture: { arrivals: new Map(), dispatches: new Map(), merges: new Map(), sigils: [], completionCues: [], orphanReturns: [] },
+        ritualConductor: { rituals: [] },
+        particleSystem: { particles: [] },
+        _chronicleNextUpdateAt: now + 500,
+        villageDirector: {
+            scenes: [], _recoveries: new Map(), _pendingBiographyBanners: [], toolEvents: [],
+            buildingPresence: new Map([['forge', { updatedAt: now - 1000 }], ['tavern', { updatedAt: now - 2000 }]]),
+            presenceExpiryDue: VillageDirector.prototype.presenceExpiryDue,
+        },
+        harborTraffic: { storageTransfers: new Map(), harborCrates: new Map(), state: { pushEvents: new Map() } },
+        atmosphereState: { _frozenDate: new Date(now) },
+        _lastAtmosphere: { weather: { type: 'clear', precipitation: 0 } },
+        _surfaceWetness: 0,
+        assets: {},
+    });
+    return renderer;
+}
+
+test('building presence is state: a populated presence map alone is not a timed transition', () => {
+    const now = 1_000_000;
+    const renderer = staticSceneFixture(now);
+    assert.equal(renderer._hasTimedIdleTransition(now), false);
+    assert.equal(renderer._canSkipIdleFrame(now), true, 'the Canvas idle skip fires on a static scene');
+    renderer.villageDirector.buildingPresence.get('forge').updatedAt = now - 46_000;
+    assert.equal(renderer._hasTimedIdleTransition(now), true, 'an entry past its 45 s TTL is due to expire');
+});
+
+test('a resident world skips only after its byte gate confirmed the static scene', () => {
+    const now = 1_000_000;
+    const renderer = staticSceneFixture(now);
+    renderer.gpuWorld = { isActive: () => true, lastFrameReused: false, hasPendingGpuQueries: () => false };
+    assert.equal(renderer._canSkipIdleFrame(now), false, 'a frame the gate did not reuse renders');
+    renderer.gpuWorld.lastFrameReused = true;
+    assert.equal(renderer._canSkipIdleFrame(now), true);
+    renderer._idleFrameDirty = true;
+    assert.equal(renderer._canSkipIdleFrame(now), false, 'a changed input still renders');
+});
+
+test('under reduced motion the live clock is timeless within the painted second', () => {
+    const now = 1_000_250;
+    const renderer = staticSceneFixture(now);
+    renderer.atmosphereState = {};
+    renderer._chronicleNextUpdateAt = now + 5000;
+    renderer._idleLastRenderClockMs = 1_000_000;
+    assert.equal(renderer._hasTimedIdleTransition(now), false);
+    assert.equal(renderer._hasTimedIdleTransition(1_000_999), false);
+    assert.equal(renderer._hasTimedIdleTransition(1_001_000), true, 'the next second renders');
 });
 
 for (const key of ['_firstFrameReason', '_revealSnapshotPending', '_idleFrameDirty', '_forceFreshGpuOutput', '_worldSwap', '_contextLost']) {

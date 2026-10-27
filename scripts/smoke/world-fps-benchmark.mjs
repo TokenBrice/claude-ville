@@ -1225,7 +1225,7 @@ async function runIdle(browser, baseUrl, options, spec, repetition) {
     const cpuEnd = procTreeCpuSeconds(options.rootPid);
     // A walking scene's reference: the same page with the ambient cadence
     // forced off, so "not paced down" holds on a host that cannot reach 60.
-    const referenceFps = measured.ambientPacing && !AMBIENT_SCENARIOS.has(spec.scenario)
+    const referenceFps = measured.ambientPacing && !AMBIENT_SCENARIOS.has(spec.scenario) && !spec.reducedMotion
       ? await page.evaluate(async (windowMs) => {
         const renderer = window.__claudeVilleApp.renderer;
         let updates = 0;
@@ -1248,7 +1248,8 @@ async function runIdle(browser, baseUrl, options, spec, repetition) {
     }
     const appCores = (cores.renderer || 0) + (cores.gpu || 0);
     const perSecond = value => (Number.isFinite(value) ? roundTo(value / measured.seconds, 1) : null);
-    const sceneClass = AMBIENT_SCENARIOS.has(spec.scenario) ? 'ambient' : 'walking';
+    // Under reduced motion no body walks (it cuts to its route's end).
+    const sceneClass = AMBIENT_SCENARIOS.has(spec.scenario) || spec.reducedMotion ? 'ambient' : 'walking';
     const renderedFps = perSecond(measured.counts.updates);
     return {
       type: 'run',

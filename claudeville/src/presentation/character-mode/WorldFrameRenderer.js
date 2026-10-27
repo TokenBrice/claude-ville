@@ -571,8 +571,13 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     }
     // C-W1 — the environment reads the village's own timeline only: no agent,
     // mood or director input reaches the weather, sky, fog or grade (V3).
+    // FP-2 — under reduced motion the timeline advances in whole seconds, so
+    // a static scene's inputs hold within a second and its idle frames reuse
+    // the presented one (IsometricRenderer._hasTimedIdleTransition).
+    const atmosphereNow = (renderer.motionScale ?? 1) > 0 ? renderNow : renderNow - (renderNow % 1000);
+    renderer._atmosphereClockMs = atmosphereNow;
     const atmosphere = renderer.atmosphereState.update({
-        now: new Date(renderNow),
+        now: new Date(atmosphereNow),
         motionScale: renderer.motionScale,
     });
     renderer._lastAtmosphere = atmosphere;

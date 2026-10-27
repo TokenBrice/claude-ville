@@ -4703,7 +4703,7 @@ export class IsometricRenderer {
             || director?.scenes?.length
             || director?._recoveries?.size
             || director?._pendingBiographyBanners?.length
-            || director?.buildingPresence?.size
+            || director?.presenceExpiryDue?.(now)
             || director?.toolEvents?.length
         ) return true;
         const harbor = this.harborTraffic;
@@ -4715,10 +4715,15 @@ export class IsometricRenderer {
             || harbor?._pendingRepoSummaries?.length
         ) return true;
 
-        // The live clock continuously changes sky, light and deterministic
-        // weather. A frozen date or explicit hour is required before the scene
-        // can be considered timeless.
-        if (!this.atmosphereState?._frozenDate && !Number.isFinite(this.atmosphereState?._hourOverride)) {
+        // The live clock changes sky, light and deterministic weather. Under
+        // reduced motion (the only state that skips) the atmosphere reads it in
+        // whole seconds (FP-2, WorldFrameRenderer), so the scene is timeless
+        // until the second the last painted frame used has passed.
+        if (
+            !this.atmosphereState?._frozenDate
+            && !Number.isFinite(this.atmosphereState?._hourOverride)
+            && now - (now % 1000) !== this._idleLastRenderClockMs
+        ) {
             return true;
         }
         const atmosphere = this._lastAtmosphere;
@@ -4765,9 +4770,11 @@ export class IsometricRenderer {
     }
 
     _canSkipIdleFrame(now = Date.now()) {
-        // Resident frames always stage their exact GPU inputs. The tableau
-        // shortcut is only for Canvas; it must never bypass the byte gate.
-        if (this.gpuWorld?.isActive?.()) return false;
+        // FP-2 — a resident world skips only after its byte gate confirmed the
+        // static scene: the last rendered frame staged exactly the inputs it
+        // had already presented, so nothing this predicate cannot see was
+        // still changing. Every changed input renders and re-confirms.
+        if (this.gpuWorld?.isActive?.() && this.gpuWorld.lastFrameReused !== true) return false;
         return this.motionScale <= 0
             && !this._idleFrameDirty
             && this._cameraIdleStable()
@@ -4777,6 +4784,7 @@ export class IsometricRenderer {
 
     _recordIdleRenderState() {
         this._worldFramePresented = true;
+        this._idleLastRenderClockMs = this._atmosphereClockMs;
         const camera = this.camera;
         if (camera) {
             this._idleLastRenderCamera.x = camera.x;

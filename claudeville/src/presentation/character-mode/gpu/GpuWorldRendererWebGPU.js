@@ -1539,6 +1539,9 @@ export class GpuWorldRendererWebGPU {
     render(input = {}, repeatOutput = false) {
         const { records = [], camera = null, feed = {}, particles = null, marks = null, forceFreshOutput = false } = input;
         this._freshOutputThisTask = false;
+        // FP-2 — true only after a frame the byte gate reused: its staged
+        // inputs equal the presented frame's (IsometricRenderer._canSkipIdleFrame).
+        this.lastFrameReused = false;
         if (!this.isActive() || !camera || !records.length) return false;
         const device = this.device;
         const timerWasPending = this.hasPendingGpuQueries();
@@ -1640,6 +1643,7 @@ export class GpuWorldRendererWebGPU {
                 || this._readbackPending || this._debugLoad || this.passSamplingEnabled;
             if (!fresh && reuse.unchanged()) {
                 this.skippedFrames = (this.skippedFrames || 0) + 1;
+                this.lastFrameReused = true;
                 return true;
             }
             device.queue.writeBuffer(this._recordBuffer, 0, this._recordStaging.f32.buffer, 0, byteLength);

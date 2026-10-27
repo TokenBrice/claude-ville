@@ -55,12 +55,14 @@ function fixture({ radiance = false, timers = false } = {}) {
 function baseline(f) {
     assert.equal(f.renderer.render(f.input), true);
     assert.ok(f.work.draws > 0);
+    assert.equal(f.renderer.lastFrameReused, false, 'a drawn frame is not a confirmed static one');
     const draws = f.work.draws;
     const writes = f.work.writes;
     assert.equal(f.renderer.render(f.input), true);
     assert.equal(f.work.draws, draws, 'identical staged frame must retain pixels');
     assert.equal(f.work.writes, writes, 'retained frame must not rewrite staged buffers');
     assert.equal(f.renderer.getDiagnostics().skippedFrames, 1, 'diagnostics report output reuse');
+    assert.equal(f.renderer.lastFrameReused, true, 'FP-2: the reuse confirms a static scene');
 }
 
 const poisons = {
