@@ -11,7 +11,9 @@ import {
     statusPresentation,
     statusWord,
 } from '../../claudeville/src/presentation/shared/AgentPresentation.js';
-import { formatStatusElapsed } from '../../claudeville/src/presentation/shared/Formatters.js';
+import { formatStatusElapsed, formatTokens } from '../../claudeville/src/presentation/shared/Formatters.js';
+import { TokenUsage } from '../../claudeville/src/domain/value-objects/TokenUsage.js';
+import { rowTokenCells } from '../../claudeville/src/presentation/dashboard-mode/DashboardRenderer.js';
 import { operatorStatusLabel } from '../../claudeville/src/presentation/shared/SemanticTriage.js';
 import { offFrameTallyText } from '../../claudeville/src/presentation/character-mode/AttentionPlates.js';
 
@@ -63,6 +65,18 @@ test('UI-1: no surface keeps a private QUOTA, done or Completed status word', as
         const source = await readFile(new URL(`../../claudeville/src/presentation/${file}`, import.meta.url), 'utf8');
         assert.ok(!pattern.test(source), `${file} keeps a private status word: ${source.match(pattern)?.[0]}`);
     }
+});
+
+test('UI-4: row TOKENS leads with new tokens and puts cache reads second', () => {
+    // A live Claude row: 965K new tokens under 64M of cache reads.
+    const usage = { input: 15_000, output: 150_000, cacheCreate: 800_000, cacheRead: 64_000_000 };
+    const cells = rowTokenCells(usage);
+    assert.equal(TokenUsage.newTokens(usage), 965_000, 'input + output + cache writes, the top bar measure');
+    assert.equal(cells.newShort, formatTokens(965_000));
+    assert.equal(cells.cacheShort, `+${formatTokens(64_000_000)}`);
+    assert.match(cells.title, /new tokens \(input, output, cache writes\) · .* cache reads/);
+    assert.equal(rowTokenCells({ input: 10, output: 5 }).cacheShort, '', 'no cache line without cache reads');
+    assert.deepEqual(rowTokenCells(null), { newShort: '—', cacheShort: '', title: 'Usage unavailable' });
 });
 
 test('UI-13: a departed villager is aged from its departure', () => {

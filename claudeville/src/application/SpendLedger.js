@@ -27,8 +27,7 @@ const LEDGER_KEY_PREFIX = 'usageLedger:';
 // new; cache reads are tracked separately and priced into cost, where they
 // belong.
 function newTokens(usage) {
-    const normalized = TokenUsage.normalize(usage);
-    return normalized.totalInput + normalized.totalOutput + normalized.cacheCreate;
+    return TokenUsage.newTokens(usage);
 }
 
 function cacheReadTokens(usage) {

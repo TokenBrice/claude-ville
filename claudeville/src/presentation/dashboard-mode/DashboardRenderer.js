@@ -243,6 +243,23 @@ export function nonZeroSectionHealthBuckets(counts) {
     return SECTION_HEALTH_ORDER.filter(bucket => Number(counts?.[bucket]) > 0);
 }
 
+/**
+ * UI-4 — the row's TOKENS cell: new tokens first (input, output and cache
+ * writes, the top bar's measure), cache reads second, so scanning rows for
+ * "who is burning" ranks by work, not by context size times turns.
+ */
+export function rowTokenCells(rawUsage) {
+    const usage = TokenUsage.normalize(rawUsage);
+    if (usage.availability === 'unavailable') return { newShort: '—', cacheShort: '', title: 'Usage unavailable' };
+    const fresh = formatTokens(TokenUsage.newTokens(usage));
+    const cache = usage.cacheRead > 0 ? formatTokens(usage.cacheRead) : '';
+    return {
+        newShort: fresh,
+        cacheShort: cache ? `+${cache}` : '',
+        title: `${fresh} new tokens (input, output, cache writes)${cache ? ` · ${cache} cache reads` : ''}${usage.availability === 'partial' ? ' · partial' : ''}`,
+    };
+}
+
 /** The edge flash belongs only to a genuine errored status. */
 export function shouldFlashForStatus(status) {
     return bucketForStatus(status) === 'errors';
@@ -1163,7 +1180,7 @@ export class DashboardRenderer {
                 <span>NOW</span>
                 <span title="Tool calls this tab observed, one column per 15 s: a block per call (bright = write/run/task), a band while it needed you, errored or hit quota, dots before the tab was watching">LAST 10 MIN</span>
                 <span class="dashboard__col--num">FOR</span>
-                <span class="dashboard__col--num">TOKENS</span>
+                <span class="dashboard__col--num" title="New tokens (input, output, cache writes), as the top bar counts them; cache reads below">TOKENS</span>
                 <span class="dashboard__col--num">COST</span>
                 <span class="dashboard__col--work">WORKING SET</span>
                 <span class="dashboard__col--kids">CHILDREN</span>
@@ -1362,7 +1379,7 @@ export class DashboardRenderer {
                 </span>
                 <span class="dash-card__tape"></span>
                 <span class="dash-card__for"></span>
-                <span class="dash-card__usage-tokens"></span>
+                <span class="dash-card__usage-tokens"><span class="dash-card__usage-new"></span><span class="dash-card__usage-cache"></span></span>
                 <span class="dash-card__usage-cost"></span>
                 <span class="dash-card__work-cell"><span class="dash-card__work-summary"></span></span>
                 <span class="dash-card__children-cell">
@@ -1506,6 +1523,8 @@ export class DashboardRenderer {
             tools: card.querySelector('.dash-card__tools'),
             toolList: card.querySelector('.dash-card__tool-list'),
             usageTokens: card.querySelector('.dash-card__usage-tokens'),
+            usageNew: card.querySelector('.dash-card__usage-new'),
+            usageCache: card.querySelector('.dash-card__usage-cache'),
             usageCost: card.querySelector('.dash-card__usage-cost'),
             buildingEmblem: card.querySelector('.dash-card__building-emblem'),
             strip: card.querySelector('.dash-card__strip'),
@@ -2302,18 +2321,17 @@ export class DashboardRenderer {
     _usageFooterFor(agent, data) {
         const raw = data?.tokenUsage || data?.tokens || data?.usage || agent?.tokens || null;
         const usage = TokenUsage.normalize(raw);
-        const totalTokens = TokenUsage.totalTokens(usage);
+        const cells = rowTokenCells(usage);
         const reported = agent?.cost?.source === 'provider' ? agent.cost : null;
         const cost = reported || TokenUsage.estimateCost(usage, agent.model, agent.provider);
         const source = reported ? 'provider' : 'estimate';
         const revision = cost.rateRevision || TokenUsage.rateRevision;
-        const unavailableUsage = usage.availability === 'unavailable';
         return {
-            tokens: unavailableUsage ? 'Usage unavailable'
-                : `${formatTokens(totalTokens)} tokens${usage.availability === 'partial' ? ' · partial' : ''}`,
+            tokens: cells.title,
             cost: cost.usd == null ? 'Cost unavailable' : `${source === 'estimate' ? '~' : ''}${formatCost(cost.usd)}`,
             // 7.11 — row cells: `≈` marks an estimate, `—` means unavailable.
-            tokensShort: unavailableUsage ? '—' : formatTokens(totalTokens),
+            tokensShort: cells.newShort,
+            cacheShort: cells.cacheShort,
             partial: usage.availability === 'partial',
             costShort: cost.usd == null ? '—' : `${source === 'estimate' ? '≈' : ''}${formatCost(cost.usd)}`,
             costTitle: source === 'provider'
@@ -2327,7 +2345,8 @@ export class DashboardRenderer {
     _renderUsageFooter(cardEl, footer) {
         const refs = cardEl._elements;
         if (!refs?.usageTokens || !footer) return;
-        this._setText(refs.usageTokens, footer.tokensShort ?? footer.tokens);
+        this._setText(refs.usageNew, footer.tokensShort ?? footer.tokens);
+        this._setText(refs.usageCache, footer.cacheShort || '');
         refs.usageTokens.classList.toggle('dash-card__usage-tokens--partial', footer.partial === true);
         refs.usageTokens.title = footer.tokens;
         this._setText(refs.usageCost, footer.costShort ?? footer.cost);

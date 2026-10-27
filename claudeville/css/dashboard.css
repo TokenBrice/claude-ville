@@ -588,8 +588,11 @@
 .dash-card--waiting_on_user .dash-card__for,
 .dash-card--errored .dash-card__for,
 .dash-card--rate_limited .dash-card__for { color: var(--spine); }
-.dash-card__usage-tokens { color: var(--ink-2); }
-.dash-card__usage-tokens--partial::after { content: '±'; color: var(--ink-3); }
+/* UI-4 — new tokens over cache reads, one 16 px line each. */
+.dash-card__usage-tokens { display: grid; align-content: center; color: var(--ink-2); }
+.dash-card__usage-cache { color: var(--ink-3); }
+.dash-card__usage-cache:empty { display: none; }
+.dash-card__usage-tokens--partial .dash-card__usage-new::after { content: '±'; color: var(--ink-3); }
 .dash-card__usage-cost { color: var(--ink-2); }
 .dash-card__usage-cost--default-rate {
     text-decoration: underline dotted var(--ink-4);
