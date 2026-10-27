@@ -245,9 +245,18 @@ function scenicPlace(point) {
         containsVisitPoint: (tileX, tileY) => Math.hypot(Number(tileX) - point.tileX, Number(tileY) - point.tileY) <= 0.8,
     });
 }
+// VB-6 — the harbour's two loiter points stand in open water, so each quay
+// place keeps its point's identity (pose, label) but stands on the quay: the
+// pier landing, and the shore by the garden lamp above it. Both are walkable
+// ground off every visit slot, queue file and fixture box. A stop the
+// allocator or the router refuses rests at the Tavern (_crowdLegRefused).
+const QUAY_STANDING_TILES = Object.freeze({
+    'harbor-rail': Object.freeze({ tileX: 26, tileY: 20 }),
+    'harbor-ledger': Object.freeze({ tileX: 25, tileY: 19 }),
+});
 export const QUAY_PLACES = Object.freeze(AMBIENT_SCENIC_POINTS
-    .filter((point) => point.id === 'harbor-ledger' || point.id === 'harbor-rail')
-    .map((point) => scenicPlace(point)));
+    .filter((point) => QUAY_STANDING_TILES[point.id])
+    .map((point) => scenicPlace({ ...point, ...QUAY_STANDING_TILES[point.id] })));
 // W4.8 — the last wind-down leg: stand inside the gate, facing out.
 const GATE_PLACE = Object.freeze({
     type: 'ambient:gate-winddown',
@@ -2018,10 +2027,12 @@ export class AgentSprite {
 
     // A leg the allocator refused (cap reached, no free point) or the router
     // could not reach: the stroller stays seated and asks again later, the
-    // worker cools down, the wind-down gives way to the ordinary roam.
+    // worker cools down, a refused quay stop rests at the Tavern instead
+    // (VB-6), and a refused gate leg gives way to the ordinary roam.
     _crowdLegRefused(now) {
         const crowd = this._crowd;
         const role = crowd.place?.role || null;
+        const quayStop = role === 'winddown' && crowd.phase === 'winddown-stop';
         crowd.place = null;
         crowd.arrivedAt = null;
         if (role === 'stroll') {
@@ -2030,6 +2041,8 @@ export class AgentSprite {
             crowd.until = now + strollRetryMs(this.agent.id, crowd.cycle);
         } else if (role === 'errand') {
             crowd.cooldownUntil = now + errandCooldownMs(this.agent.id, crowd.cycle++);
+        } else if (quayStop) {
+            this._beginCrowdLeg(REST_PLACE, 'winddown-stop', now);
         } else if (role === 'winddown') {
             crowd.phase = 'done';
         }

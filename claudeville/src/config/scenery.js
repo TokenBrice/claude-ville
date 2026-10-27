@@ -519,15 +519,15 @@ export const DISTRICT_PROPS = [
     // the harbour quay spreads to its shores: a fishing nook on the lagoon
     // shore north of the Tavern (a fish rack), an
     // anchor washed up on the Pharos point's beach, north-west of the keeper's
-    // cottage (clear of its roof: a cache prop draws under the landmark), and
-    // the salt store and
-    // bollard pair on the beach west of the quay, beside its shore step (the
-    // crates one tile west of the bollards, so the pier pocket's land side
-    // stays open: VB-5).
+    // cottage (clear of its roof: a cache prop draws under the landmark), the
+    // bollard pair on the beach west of the quay, beside its shore step, and
+    // the salt store at the causeway's far end, past its dispatch places: the
+    // pier pocket's land side stays open, and no pier standing place or seat
+    // falls inside the crates' fixture box (VB-5).
     { tileX: 21, tileY: 12, id: 'prop.fishRack', layer: 'cache', district: 'harbor', walkBlock: true },
     { tileX: 25, tileY: 9, id: 'prop.anchorChain', layer: 'cache', district: 'harbor', walkBlock: true },
-    { tileX: 25, tileY: 20, id: 'prop.saltCrates', layer: 'cache', district: 'harbor', walkBlock: true },
     { tileX: 27, tileY: 20, id: 'prop.bollardPair', layer: 'cache', district: 'harbor', walkBlock: true },
+    { tileX: 31, tileY: 20, id: 'prop.saltCrates', layer: 'cache', district: 'harbor', walkBlock: true },
     // Forge smithy yard: the roofed log store on the shore behind the
     // hearth, the bellows bench on the shore past the hearth's east corner
     // (the door file and its ring hold the yard west of the door), barrels

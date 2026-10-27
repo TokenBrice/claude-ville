@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { AMBIENT_SCENIC_POINTS } from '../../claudeville/src/config/scenery.js';
 import { REST_SEATS } from '../../claudeville/src/config/townPlan.js';
 import { AgentStatus } from '../../claudeville/src/domain/value-objects/AgentStatus.js';
-import { AgentSprite } from '../../claudeville/src/presentation/character-mode/AgentSprite.js';
+import { AgentSprite, QUAY_PLACES } from '../../claudeville/src/presentation/character-mode/AgentSprite.js';
 import {
     ERRAND_GAP_MS,
     MAX_SIT_MS,
@@ -19,6 +19,7 @@ import {
     sitDurationMs,
     strollDwellMs,
     windDownDwellMs,
+    windDownStop,
 } from '../../claudeville/src/presentation/character-mode/CrowdRoutine.js';
 import {
     buildingWeightsForHour,
@@ -278,6 +279,30 @@ test('a finished session winds down at a stop, then waits inside the gate; resum
     agent.status = AgentStatus.WORKING;
     sprite._advanceCrowdRoutine(now + 16);
     assert.equal(sprite._restPlaceForState(), null, 'a resumed session drops the wind-down at once');
+});
+
+// VB-6 — a quay stop the allocator or the router refuses (both quay places
+// taken, no route) rests at the Tavern instead of roaming, where the body
+// could stand on a Harbor dispatch slot and read as git work.
+test('a refused quay stop rests at the Tavern; a refused gate leg ends the wind-down', t => {
+    let now = NOW;
+    t.mock.method(Date, 'now', () => now);
+    const id = Array.from({ length: 16 }, (_, i) => `done-quay-${i}`).find(candidate => windDownStop(candidate) === 'quay');
+    const agent = { id, status: AgentStatus.COMPLETED, provider: 'claude', model: 'claude-sonnet-4-6' };
+    const sprite = new AgentSprite(agent, {});
+    sprite.motionScale = 1;
+    sprite._advanceCrowdRoutine(now);
+    assert.ok(QUAY_PLACES.includes(sprite._restPlaceForState().building), 'the quay stop');
+    sprite._crowdLegRefused(now);
+    assert.equal(sprite._crowd.phase, 'winddown-stop');
+    assert.equal(sprite._restPlaceForState().restSeats, true, 'the Tavern rest place instead');
+    sprite.visitRole = 'rest';
+    sprite._markCrowdArrival(now);
+    now += windDownDwellMs(id);
+    sprite._advanceCrowdRoutine(now);
+    assert.equal(sprite._crowd.phase, 'winddown-gate', 'then the gate, as the Tavern half does');
+    sprite._crowdLegRefused(now);
+    assert.equal(sprite._crowd.phase, 'done');
 });
 
 test('an orchestrator blocked on its subagents goes for a pint, and the wait ending calls it back', t => {
