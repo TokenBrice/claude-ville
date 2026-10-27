@@ -45,7 +45,7 @@ Browser checks such as `verify:render` and `audio:probe` also need Playwright's 
 npx playwright install chromium
 ```
 
-CI runs `npm ci --ignore-scripts` and `npm run validate:full` on Node 22 and 24.
+CI runs `npm ci --ignore-scripts` and `npm run validate:full` on Node 22, 24 and 26.
 
 ## Validation
 

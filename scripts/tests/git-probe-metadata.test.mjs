@@ -12,8 +12,9 @@ function fixture(t) {
   const project = makeTempDir('claudeville-git-probe-');
   t.after(() => fs.rmSync(project, { recursive: true, force: true }));
   const gitDir = path.join(project, '.git');
-  fs.mkdirSync(gitDir);
-  return { project, gitDir };
+  // Like git, discovery takes a `.git` directory only when it holds HEAD.
+  const head = put(gitDir, 'HEAD', 'ref: refs/heads/main\n');
+  return { project, gitDir, head };
 }
 
 function put(gitDir, relative, content, seconds = 1_700_000_000) {
@@ -76,7 +77,7 @@ test('warm snapshots detect nested additions, deletion and replaced ref director
 });
 
 test('oversized roots keep the alphabetical 800-entry server boundary', (t) => {
-  const { project, gitDir } = fixture(t);
+  const { project, gitDir, head } = fixture(t);
   for (let index = 804; index >= 0; index--) {
     put(gitDir, `refs/heads/branch-${String(index).padStart(4, '0')}`, `${index}\n`);
   }
@@ -85,17 +86,17 @@ test('oversized roots keep the alphabetical 800-entry server boundary', (t) => {
     const name = `refs/heads/branch-${String(index).padStart(4, '0')}`;
     return part(path.join(gitDir, name), name);
   });
-  expected.push('refs/heads:truncated');
+  expected.push('refs/heads:truncated', part(head, 'HEAD'));
   assert.equal(signature, expected.sort().join('|'));
   assert.equal(projectGitStateSignature(project), signature);
 });
 
 test('the depth bound excludes deeper refs without losing a file at depth eight', (t) => {
-  const { project, gitDir } = fixture(t);
+  const { project, gitDir, head } = fixture(t);
   const nested = `refs/remotes/${Array.from({ length: 8 }, (_, index) => `d${index}`).join('/')}`;
   const included = put(gitDir, `${nested}/main`, 'a'.repeat(40));
   put(gitDir, `${nested}/too-deep/main`, 'b'.repeat(40));
-  assert.equal(projectGitStateSignature(project), part(included, `${nested}/main`));
+  assert.equal(projectGitStateSignature(project), [part(head, 'HEAD'), part(included, `${nested}/main`)].sort().join('|'));
 });
 
 test('worktree pointers sign checkout-local HEAD and the shared refs a push from the worktree moves', (t) => {

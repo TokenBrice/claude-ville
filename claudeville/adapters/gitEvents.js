@@ -276,6 +276,14 @@ function isBareRepository(dir) {
   return /^\s*bare\s*=\s*true\s*$/im.test(readFileSafe(path.join(dir, 'config')));
 }
 
+function holdsHead(gitDir) {
+  try {
+    return fs.statSync(path.join(gitDir, 'HEAD')).isFile();
+  } catch {
+    return false;
+  }
+}
+
 function dotGitStamp(dotGit) {
   try {
     const stat = fs.statSync(dotGit);
@@ -307,17 +315,23 @@ function resolveRepoIdentity(dir) {
     let stat = null;
     try { stat = fs.statSync(dotGit); } catch { /* keep walking up */ }
     let gitDir = null;
-    if (stat?.isDirectory()) gitDir = dotGit;
-    else if (stat?.isFile()) {
+    // Like git: a `.git` directory without HEAD (an empty one) is not a
+    // repository, so the search goes on up; a `.git` file that does not point
+    // at a git dir is a broken gitfile, and the search ends there.
+    if (stat?.isDirectory()) {
+      if (holdsHead(dotGit)) gitDir = dotGit;
+    } else if (stat?.isFile()) {
       const pointer = readFileSafe(dotGit).match(/^\s*gitdir:\s*(.+?)\s*$/im);
-      if (pointer) gitDir = path.resolve(current, pointer[1]);
+      const target = pointer ? path.resolve(current, pointer[1]) : null;
+      if (!target || !holdsHead(target)) break;
+      gitDir = target;
     }
     if (gitDir) {
       value = buildRepoIdentity(current, gitDir);
       foundDotGit = dotGit;
       break;
     }
-    if (!stat && isBareRepository(current)) {
+    if (isBareRepository(current)) {
       value = buildRepoIdentity(current, current);
       foundDotGit = path.join(current, 'HEAD');
       break;

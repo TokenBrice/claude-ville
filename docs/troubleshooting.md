@@ -385,7 +385,7 @@ If you renamed an agent in code and the rename was overwritten, check that the c
 
 ## Required runtime: Node 22.7+, no Windows path support in adapters
 
-`package.json` declares `"node": ">=22.7.0"` and CI runs Node 22 and 24. The server alone uses only Node built-ins, but the browser modules are `.js` ES modules, so the syntax checks and the unit suite need Node's unflagged module-syntax detection (22.7+).
+`package.json` declares `"node": ">=22.7.0"` and CI runs Node 22, 24 and 26. The server alone uses only Node built-ins, but the browser modules are `.js` ES modules, so the syntax checks and the unit suite need Node's unflagged module-syntax detection (22.7+).
 
 The adapters target POSIX path conventions and have no `process.platform === 'win32'` branches. Linux and macOS are tested. Windows path normalization is not implemented today.
 

@@ -3,15 +3,17 @@
 import os from 'node:os';
 import { writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { chromium } from 'playwright';
+import { launchChromium } from './support/chromium.mjs';
+import { resolveServer } from './support/world-bench.mjs';
 
-const defaultUrl = process.env.CLAUDEVILLE_URL || 'http://localhost:4000';
+const defaultUrl = process.env.CLAUDEVILLE_URL || null;
 
 function usage() {
     console.log(`Usage: node scripts/smoke/trail-camera-benchmark.mjs [options]
 
 Options:
-  --url=<url>             ClaudeVille server (default: ${defaultUrl})
+  --url=<url>             ClaudeVille server (default: CLAUDEVILLE_URL, else an
+                          isolated server from this checkout)
   --duration-ms=<n>       Sample window per camera mode (default: 2200)
   --samples-per-agent=<n> Seeded historical points (default: 120)
   --output=<path>         Also write the JSON report to this path
@@ -24,7 +26,7 @@ glide against the same deterministic dense-100 trail history.`);
 
 function parseArgs(argv) {
     const options = {
-        url: defaultUrl.replace(/\/+$/, ''),
+        url: defaultUrl,
         durationMs: 2200,
         samplesPerAgent: 120,
         output: null,
@@ -40,7 +42,7 @@ function parseArgs(argv) {
         }
         const value = inline ?? argv[++index];
         if (value == null || value === '') throw new Error(`Missing value for ${flag}`);
-        if (flag === '--url') options.url = value.replace(/\/+$/, '');
+        if (flag === '--url') options.url = value;
         if (flag === '--duration-ms') options.durationMs = Number(value);
         if (flag === '--samples-per-agent') options.samplesPerAgent = Number(value);
         if (flag === '--output') options.output = resolve(value);
@@ -193,7 +195,11 @@ async function measureMode(page, mode, durationMs) {
 
 async function main() {
     const options = parseArgs(process.argv.slice(2));
-    const browser = await chromium.launch({ headless: !options.headed });
+    const server = await resolveServer(options.url);
+    const browser = await launchChromium({ headless: !options.headed }).catch(async (error) => {
+        await server.stop();
+        throw error;
+    });
     const context = await browser.newContext({
         viewport: { width: 1920, height: 1080 },
         deviceScaleFactor: 1,
@@ -206,7 +212,7 @@ async function main() {
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
-    const url = new URL(options.url);
+    const url = new URL(server.baseUrl);
     url.searchParams.set('sim', '1');
     url.searchParams.set('scenario', 'dense-100-agents');
 
@@ -270,6 +276,7 @@ async function main() {
         await page.evaluate(() => window.__cvStopTrailBenchmarkMotion?.()).catch(() => {});
         await context.close();
         await browser.close();
+        await server.stop();
     }
 }
 
