@@ -310,6 +310,43 @@ test('a click on an armed control starts sound; only a sounding control turns it
     assert.equal(calls.at(-1), 'signals:true', 'off turns on the last preset');
 });
 
+test('sound paused while the page is away reads away, not armed, once a gesture exists (UI-6)', () => {
+    const controller = Object.create(AmbientAudioController.prototype);
+    Object.assign(controller, {
+        _destroyed: false,
+        _gestureSeen: true,
+        // Blurred with "Signals only": paused in place, not waiting for a click.
+        _windowBlurred: true,
+        background: 'signals',
+        _playingMode: null,
+        _quietActive: false,
+        _recalibrated: false,
+        hushedUntil: 0,
+        available: true,
+        enabled: true,
+        mode: 'signals',
+        volumeStep: 5,
+        quietHours: null,
+        output: 'speakers',
+        tone: 0,
+        soften: 'auto',
+        engine: { context: { state: 'suspended' } },
+        directors: { signals: { running: true, paused: true }, bgm: { running: false } },
+    });
+    let view = controller.soundView();
+    assert.equal(view.soundState, 'away');
+    assert.equal(view.needsGesture, false, 'no START SOUND: focus resumes it');
+    assert.equal(view.nowLine, 'Paused while you\'re away · signals still ring');
+    assert.equal(view.chipTitle, 'Sound paused while you\'re away — it resumes when you return');
+
+    // Without any gesture yet, returning cannot start it: that is armed.
+    controller._gestureSeen = false;
+    view = controller.soundView();
+    assert.equal(view.soundState, 'armed');
+    assert.equal(view.needsGesture, true);
+    assert.equal(view.chipTitle, 'Sound not started — click anywhere to start it');
+});
+
 function wakeHarness(events, { enabled = true, gestureSeen = true, owns = true } = {}) {
     const controller = Object.create(AmbientAudioController.prototype);
     Object.assign(controller, {

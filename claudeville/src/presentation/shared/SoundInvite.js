@@ -32,9 +32,13 @@ export const SOUND_START_COPY = Object.freeze({
     accept: 'START SOUND',
 });
 
-/** Pure eligibility of the armed offer (SND-2). */
-export function startEligible({ soundState, visible, offered }) {
-    return soundState === 'armed' && visible === true && offered !== true;
+/**
+ * Pure eligibility of the armed offer (SND-2): sound on but not started, on
+ * a visible page, once, and only while the browser genuinely waits for a
+ * gesture (UI-6: a paused or starting sound needs no click).
+ */
+export function startEligible({ soundState, visible, offered, needsGesture = true }) {
+    return soundState === 'armed' && needsGesture !== false && visible === true && offered !== true;
 }
 
 /**
@@ -90,8 +94,8 @@ export class SoundInvite {
      * SND-2: the armed offer for this notice, or null. The first eligible
      * notice of the page session spends it.
      */
-    offerStart(payload, { soundState = null, visible = false } = {}) {
-        if (!startEligible({ soundState, visible, offered: this._startOffered })) return null;
+    offerStart(payload, { soundState = null, visible = false, needsGesture = true } = {}) {
+        if (!startEligible({ soundState, visible, needsGesture, offered: this._startOffered })) return null;
         this._startOffered = true;
         return inviteTrigger(payload);
     }

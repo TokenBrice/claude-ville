@@ -1091,12 +1091,14 @@ export class AmbientAudioController {
 
     // ─── The one sound state (C-UX1, 7.3) ─────────────────────────────────
 
-    // off | armed | playing | hushed. Armed is on but not yet heard: the
-    // browser is waiting for a click, or the page is away. The chip never
-    // claims playing before the context runs.
+    // off | armed | away | playing | hushed. Armed is on but not yet heard
+    // because the browser waits for a click. Away (UI-6) is sound paused
+    // while the page is hidden or, with "Signals only", blurred: returning
+    // resumes it with no click, and urgent signals still ring meanwhile.
+    // The chip never claims playing before the context runs.
     _soundState() {
         if (!this.available || !this.enabled) return 'off';
-        if (!this.isRunning()) return 'armed';
+        if (!this.isRunning()) return this._pageInactive() && this.mayStart ? 'away' : 'armed';
         if (this.hushed) return 'hushed';
         return 'playing';
     }
@@ -1104,6 +1106,7 @@ export class AmbientAudioController {
     _nowLine(state) {
         if (state === 'off') return '';
         if (state === 'armed') return 'Waiting for a click — browsers start sound on your first click';
+        if (state === 'away') return 'Paused while you\'re away · signals still ring';
         if (state === 'hushed') {
             if (hushActive(this.hushedUntil, Date.now())) return `Hushed until ${clockTime(this.hushedUntil)}`;
             const ends = quietHoursEndsAt(this.quietHours, new Date());
@@ -1120,6 +1123,7 @@ export class AmbientAudioController {
         switch (state) {
             case 'off': return `Sound off — click to turn on ${label}`;
             case 'armed': return 'Sound not started — click anywhere to start it';
+            case 'away': return 'Sound paused while you\'re away — it resumes when you return';
             case 'hushed': {
                 if (hushActive(this.hushedUntil, Date.now())) return `Hushed until ${clockTime(this.hushedUntil)} — signals only`;
                 const ends = quietHoursEndsAt(this.quietHours, new Date());
@@ -1138,6 +1142,8 @@ export class AmbientAudioController {
             preset: this.preset,
             lastPreset: this.lastPreset,
             soundState,
+            // UI-6: only a browser still waiting for a gesture needs START SOUND.
+            needsGesture: !this.mayStart,
             volumeStep: this.volumeStep,
             nowLine: this._nowLine(soundState),
             chipTitle: this._chipTitle(soundState),

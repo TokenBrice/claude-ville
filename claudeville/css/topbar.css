@@ -700,9 +700,10 @@ body:has(#worldGrammar:popover-open) #topbarWorldControls {
     background: var(--bg-3);
 }
 
-/* The chip's five static states (7.3, `data-sound-state`); no animation.
+/* The chip's static states (7.3, `data-sound-state`); no animation.
    Off rests at --ink-3; armed (on, but the browser waits for a click) one
-   step brighter with a hollow gold pip; playing lit; resting gold on the
+   step brighter with a hollow gold pip; playing lit; resting, and away
+   (UI-6: paused while the page is away, resumed on return), gold on the
    quieter plate; hushed (signals only for now) with a filled pip. */
 #topbarSoundToggle[data-sound-state="armed"],
 #topbarSoundToggle[data-sound-state="hushed"] {
@@ -715,7 +716,8 @@ body:has(#worldGrammar:popover-open) #topbarWorldControls {
     background: var(--bg-3);
 }
 
-#topbarSoundToggle[data-sound-state="resting"] {
+#topbarSoundToggle[data-sound-state="resting"],
+#topbarSoundToggle[data-sound-state="away"] {
     color: var(--gold);
     background: var(--bg-2);
 }

@@ -381,8 +381,10 @@ export class Toast {
         // SND-2: the sound state the armed offer reads; a sound that starts
         // by any route retires an offer still showing.
         this._soundState = null;
+        this._soundNeedsGesture = true;
         on('audio:sound-state', (view) => {
             this._soundState = view?.soundState ?? null;
+            this._soundNeedsGesture = view?.needsGesture !== false;
             if (this._soundState !== 'armed') {
                 for (const entry of this.toasts.filter(entry => entry.invite?.start)) this._closeInvite(entry);
             }
@@ -560,7 +562,11 @@ export class Toast {
     // Static: it waits for the click (at most INVITE_MAX_SHOW_MS) and leaves
     // as soon as sound starts by any route.
     _offerStart(entry, payload, visible) {
-        const trigger = this._invite.offerStart?.(payload, { soundState: this._soundState, visible });
+        const trigger = this._invite.offerStart?.(payload, {
+            soundState: this._soundState,
+            visible,
+            needsGesture: this._soundNeedsGesture,
+        });
         if (!trigger) return;
         const doc = this.documentRef;
         const prompt = this._addLine(entry, SOUND_START_COPY.prompt);

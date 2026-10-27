@@ -332,7 +332,11 @@ const SOUND_ON = Object.freeze({ 'claudeville.sound.enabled': 'true', [SOUND_INV
 test('the armed offer needs sound on but not started, on a visible page, once (SND-2)', () => {
     const ok = { soundState: 'armed', visible: true, offered: false };
     assert.equal(startEligible(ok), true);
-    for (const soundState of ['off', 'playing', 'hushed', null]) assert.equal(startEligible({ ...ok, soundState }), false);
+    for (const soundState of ['off', 'playing', 'hushed', 'away', null]) assert.equal(startEligible({ ...ok, soundState }), false);
+    // UI-6: armed while a gesture already exists (starting, or the browser's
+    // own suspend) is not a missing click.
+    assert.equal(startEligible({ ...ok, needsGesture: false }), false);
+    assert.equal(startEligible({ ...ok, needsGesture: true }), true);
     assert.equal(startEligible({ ...ok, visible: false }), false);
     assert.equal(startEligible({ ...ok, offered: true }), false);
 
@@ -363,6 +367,21 @@ test('an armed sound puts START SOUND on the first needs-you notice; the click a
     // Once per page session.
     h.eventTarget.emit('attention:raised', raised('c', 'errored', 'Cedar'));
     assert.deepEqual(inviteButtons(h), []);
+    h.toast.destroy();
+});
+
+test('no START SOUND while sound is only paused or needs no gesture (UI-6)', () => {
+    const h = harness({ storage: new MemoryStorage(SOUND_ON) });
+    h.eventTarget.emit('audio:sound-state', { soundState: 'away', needsGesture: false });
+    h.eventTarget.emit('attention:raised', raised('a', 'waiting_on_user', 'Aurora'));
+    assert.deepEqual(inviteButtons(h), [], 'paused while away: focus resumes it');
+    h.eventTarget.emit('audio:sound-state', { soundState: 'armed', needsGesture: false });
+    h.eventTarget.emit('attention:raised', raised('b', 'errored', 'Birch'));
+    assert.deepEqual(inviteButtons(h), [], 'a gesture already exists: nothing to click for');
+    // The offer was never spent: a genuinely missing click still gets it.
+    h.eventTarget.emit('audio:sound-state', { soundState: 'armed', needsGesture: true });
+    h.eventTarget.emit('attention:raised', raised('c', 'errored', 'Cedar'));
+    assert.deepEqual(inviteButtons(h).map(b => b.textContent), [SOUND_START_COPY.accept]);
     h.toast.destroy();
 });
 
