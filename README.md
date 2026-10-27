@@ -105,7 +105,7 @@ Review screenshots before sharing: live sessions can show prompts, messages, com
 
 ## Requirements and rendering
 
-The runtime is a Node server plus static browser JavaScript, with no runtime dependencies. CI checks Node 22 and 24.
+The runtime is a Node server plus static browser JavaScript, with no runtime dependencies. CI checks Node 22, 24 and 26.
 
 World mode uses WebGPU on supported Chromium hardware, with WebGL2 and Canvas 2D fallbacks. Display P3 and WebGPU HDR highlights are available on compatible displays. If graphics fail, try [`?renderer=canvas`](http://localhost:4000/?renderer=canvas) and the [graphics troubleshooting guide](./docs/troubleshooting.md). Dashboard mode presents the same sessions as DOM rows.
 
