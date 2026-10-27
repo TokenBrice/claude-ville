@@ -6,7 +6,7 @@ const { noteReadFailure } = require('./shared');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { dedupeGitEvents, extractGitEventsFromCommandSource, stableHash } = require('./gitEvents');
+const { dedupeGitEvents, extractGitEventsFromCommandSource, frozenGitEventFields, stableHash } = require('./gitEvents');
 const {
   clearTailCache,
   createDetailResponse,
@@ -870,8 +870,25 @@ function estimateJsonValueBytes(value) {
   return bytes;
 }
 
+// SV-1 — projected records are shared, immutable objects, so each one is
+// estimated once: re-caching a window after an append estimates only the
+// new records, not the whole 5,000-line window again.
+const _entryEstimatedBytes = new WeakMap();
+
+function estimateEntryBytes(entry) {
+  if (!entry || typeof entry !== 'object') return estimateJsonValueBytes(entry);
+  let bytes = _entryEstimatedBytes.get(entry);
+  if (bytes === undefined) {
+    bytes = estimateJsonValueBytes(entry);
+    _entryEstimatedBytes.set(entry, bytes);
+  }
+  return bytes;
+}
+
 function estimateSessionEntryRecordBytes(filePath, key, entries) {
-  return 96 + estimateStringBytes(filePath) + estimateStringBytes(key) + estimateJsonValueBytes(entries);
+  let bytes = 96 + estimateStringBytes(filePath) + estimateStringBytes(key) + 32 + (entries.length * 8);
+  for (const entry of entries) bytes += estimateEntryBytes(entry);
+  return bytes;
 }
 
 function deleteSessionEntryRecord(filePath, { evicted = false, reason = null } = {}) {
@@ -941,6 +958,66 @@ function getSessionEntries(filePath) {
 function tailEntries(filePath, count) {
   const entries = getSessionEntries(filePath);
   return entries.slice(-count);
+}
+
+// SV-1 — what a scan derives from one transcript (summary inputs, turn
+// state, permission mode, edges, tool results, git events, projection) is
+// memoized on the file's identity, so rescanning an unchanged transcript
+// costs a stat per derivation and reads nothing. Clock-derived output
+// (dialogue freshness) is recomputed from the memoized inputs on every call.
+const DERIVED_MEMO_MAX = 1024;
+const _derivedMemo = new Map();
+const _derivedMemoStats = { hits: 0, misses: 0, evictions: 0 };
+
+function transcriptIdentity(filePath) {
+  try {
+    const stat = fs.statSync(filePath);
+    const identity = statIdentity(stat);
+    identity.ctimeMs = Number(stat.ctimeMs) || 0;
+    identity.key = `${identity.dev}:${identity.ino}:${identity.size}:${identity.mtimeMs}:${identity.ctimeMs}`;
+    return identity;
+  } catch {
+    return null;
+  }
+}
+
+function derivedMemoFor(filePath) {
+  const identity = filePath ? transcriptIdentity(filePath) : null;
+  if (!identity) {
+    if (filePath) _derivedMemo.delete(filePath);
+    return null;
+  }
+  let memo = _derivedMemo.get(filePath);
+  if (memo?.identity.key !== identity.key) memo = { identity, values: new Map() };
+  _derivedMemo.delete(filePath);
+  _derivedMemo.set(filePath, memo);
+  if (_derivedMemo.size > DERIVED_MEMO_MAX) {
+    _derivedMemo.delete(_derivedMemo.keys().next().value);
+    _derivedMemoStats.evictions++;
+  }
+  return memo;
+}
+
+// `derive(identity)` returns `{ value, cacheable, isCurrent }`: an
+// uncacheable value is recomputed next time, and `isCurrent()` re-validates
+// inputs that live outside the file (frozen git observation state).
+function memoizedDerivation(filePath, field, derive) {
+  const memo = derivedMemoFor(filePath);
+  if (!memo) return derive(null).value;
+  const cached = memo.values.get(field);
+  if (cached && (!cached.isCurrent || cached.isCurrent())) {
+    _derivedMemoStats.hits++;
+    return cached.value;
+  }
+  _derivedMemoStats.misses++;
+  const result = derive(memo.identity);
+  if (result.cacheable === false) memo.values.delete(field);
+  else memo.values.set(field, result);
+  return result.value;
+}
+
+function clearDerivedMemo() {
+  _derivedMemo.clear();
 }
 
 function readUsageNumber(usage, keys) {
@@ -1307,7 +1384,14 @@ function touchTranscriptRecord(filePath, record) {
     );
     _transcriptAggregateCache.delete(filePath);
   }
-  record.estimatedBytes = estimateTranscriptRecordBytes(filePath, record);
+  // A touch that changed nothing keeps its estimate: every session reads
+  // its aggregate several times per scan (SV-1).
+  const pending = Boolean(record.pendingTarget);
+  if (record.estimatedFor !== record.aggregate || record.estimatedPending !== pending || record.estimatedBytes === undefined) {
+    record.estimatedBytes = estimateTranscriptRecordBytes(filePath, record);
+    record.estimatedFor = record.aggregate;
+    record.estimatedPending = pending;
+  }
   _transcriptAggregateCache.set(filePath, record);
   _transcriptAggregateCacheBytes += record.estimatedBytes;
   while (
@@ -1586,6 +1670,7 @@ function shutdownClaudeAdapter() {
   _activeTranscriptScans = 0;
   clearTranscriptAggregateCache();
   clearSessionEntryCache();
+  clearDerivedMemo();
   clearTailCache('claude');
   _orphanScanCache.filesByProjectDir.clear();
   _orphanScanCache.projectDirMtimes.clear();
@@ -1714,6 +1799,20 @@ function isClaudeModelStub(model) {
 }
 
 function getClaudeTranscriptSummary(filePath, tailCount, project = null) {
+  const summary = filePath && fs.existsSync(filePath)
+    ? memoizedDerivation(filePath, `summary:${tailCount}:${project ?? ''}`, () => ({
+      value: readClaudeTranscriptSummary(filePath, tailCount, project),
+    }))
+    : readClaudeTranscriptSummary(null, tailCount, project);
+  // Dialogue freshness is clock-derived, so only the candidates are memoized.
+  return {
+    ...summary.detail,
+    observedSources: { ...summary.detail.observedSources },
+    dialogue: pickDialogue(summary.candidates, { now: Date.now() }),
+  };
+}
+
+function readClaudeTranscriptSummary(filePath, tailCount, project = null) {
   const detail = {
     model: null,
     lastTool: null,
@@ -1824,8 +1923,7 @@ function getClaudeTranscriptSummary(filePath, tailCount, project = null) {
     } catch { /* ignore */ }
   }
 
-  detail.dialogue = pickDialogue(candidates, { now: Date.now() });
-  return detail;
+  return { detail, candidates };
 }
 
 function getClaudeMainSessionSummary(sessionId, projectPath) {
@@ -1939,7 +2037,25 @@ function canonicalizeWorkingPath(filePath, projectPath) {
   return canonical.split(path.sep).join('/');
 }
 
+// A projection is memoized only once the aggregate has settled on the
+// memo's file identity: a pending async scan, or an aggregate of an older
+// size, must be read again when it lands.
+function aggregateSettledOn(filePath, identity) {
+  const record = _transcriptAggregateCache.get(filePath);
+  return Boolean(identity && record?.aggregate && !record.pendingTarget
+    && sameTranscriptTarget(record.aggregate, identity));
+}
+
 function getTranscriptProjection(sessionFilePath, projectPath, model) {
+  if (!sessionFilePath) return readTranscriptProjection(sessionFilePath, projectPath, model);
+  const projection = memoizedDerivation(sessionFilePath, `projection:${projectPath ?? ''}:${model ?? ''}`, identity => ({
+    value: readTranscriptProjection(sessionFilePath, projectPath, model),
+    cacheable: aggregateSettledOn(sessionFilePath, identity),
+  }));
+  return cloneTranscriptProjection(projection);
+}
+
+function readTranscriptProjection(sessionFilePath, projectPath, model) {
   const empty = createTranscriptProjection();
   const contextWindowMax = contextWindowMaxForClaudeModel(model);
   if (!sessionFilePath) return { ...empty, contextWindowMax };
@@ -2075,19 +2191,25 @@ function getClaudeTurnState(sessionFilePath, permissionMode = null, now = Date.n
   };
   if (!sessionFilePath) return unknown;
 
-  try {
-    const entries = tailEntries(sessionFilePath, TURN_STATE_TAIL_LINES);
-    if (!entries.length) return unknown;
+  // The turn state is a function of the tail and the permission mode only
+  // (`deriveTurnState` reads no clock), so it is memoized with the file.
+  return { ...memoizedDerivation(sessionFilePath, `turn:${permissionMode ?? ''}`, () => {
+    try {
+      const entries = tailEntries(sessionFilePath, TURN_STATE_TAIL_LINES);
+      if (!entries.length) return { value: unknown };
 
-    // Prefer the main thread. Subagent transcripts are sidechain end to end,
-    // so when skipping them leaves nothing to read, the whole file is the
-    // sidechain and every line counts.
-    return turnStateFromEntries(entries, { permissionMode, skipSidechain: true, now })
-      || turnStateFromEntries(entries, { permissionMode, skipSidechain: false, now })
-      || unknown;
-  } catch {
-    return unknown;
-  }
+      // Prefer the main thread. Subagent transcripts are sidechain end to end,
+      // so when skipping them leaves nothing to read, the whole file is the
+      // sidechain and every line counts.
+      return {
+        value: turnStateFromEntries(entries, { permissionMode, skipSidechain: true, now })
+          || turnStateFromEntries(entries, { permissionMode, skipSidechain: false, now })
+          || unknown,
+      };
+    } catch {
+      return { value: unknown, cacheable: false };
+    }
+  }) };
 }
 
 // Latest plan/act permission mode for a session. Transcripts carry sparse
@@ -2097,14 +2219,16 @@ function getClaudeTurnState(sessionFilePath, permissionMode = null, now = Date.n
 // marker in the cached tail window is the current mode. Best effort: null
 // when no marker is inside the window.
 function getPermissionMode(sessionFilePath) {
-  try {
-    const entries = getSessionEntries(sessionFilePath);
-    for (let i = entries.length - 1; i >= 0; i--) {
-      const mode = entries[i].permissionMode;
-      if (typeof mode === 'string' && mode) return mode;
-    }
-  } catch { /* ignore */ }
-  return null;
+  return memoizedDerivation(sessionFilePath, 'permissionMode', () => {
+    try {
+      const entries = getSessionEntries(sessionFilePath);
+      for (let i = entries.length - 1; i >= 0; i--) {
+        const mode = entries[i].permissionMode;
+        if (typeof mode === 'string' && mode) return { value: mode };
+      }
+    } catch { /* ignore */ }
+    return { value: null };
+  });
 }
 
 function readSendMessageRecipient(input) {
@@ -2121,6 +2245,12 @@ function readSendMessageRecipient(input) {
 // against agentName/name/agentId. Edges without a resolvable recipient
 // (e.g. shutdown_response replies keyed by request_id) are skipped.
 function getSendMessageEdges(sessionFilePath, maxItems = SEND_MESSAGE_MAX_EDGES) {
+  return memoizedDerivation(sessionFilePath, `send:${maxItems}`, () => ({
+    value: readSendMessageEdges(sessionFilePath, maxItems),
+  })).slice();
+}
+
+function readSendMessageEdges(sessionFilePath, maxItems) {
   const edges = [];
   try {
     const entries = getSessionEntries(sessionFilePath);
@@ -2196,8 +2326,51 @@ function claudeToolCompletion(entry, block) {
  *   agent launches (`isAsync`) only report that something started; interrupted
  *   or user-rejected calls never ran to an end. None of them is published.
  */
+// Tool-result parsing, incremental (SV-1): the record for one finished call
+// is a function of its tool_use block, its tool_result block and the
+// session id. Both blocks are the tail cache's projected objects, which keep
+// their identity across appends, so a rescan builds records only for calls
+// that are new or newly answered. Null marks a call that publishes nothing.
+const _toolResultRecords = new WeakMap();
+
+function claudeToolResultRecord(entry, block, use, sessionId) {
+  const cached = _toolResultRecords.get(block);
+  if (cached && cached.use === use.block && cached.sessionId === sessionId) return cached.record;
+  let record = null;
+  const tur = entry.toolUseResult && typeof entry.toolUseResult === 'object' ? entry.toolUseResult : null;
+  if (!(use.block.input?.run_in_background === true || tur?.backgroundTaskId || tur?.isAsync)) {
+    const completion = claudeToolCompletion(entry, block);
+    const completedAt = toEpochMs(entry.timestamp);
+    if (completion.status !== 'cancelled' && !CLAUDE_REJECTED_RESULT_PATTERN.test(completion.output) && completedAt) {
+      const exitMatch = block.is_error ? CLAUDE_EXIT_CODE_PATTERN.exec(completion.output) : null;
+      record = {
+        id: toolResultId({ provider: 'claude', sessionId, callId: block.tool_use_id }),
+        tool: use.block.name || 'unknown',
+        detail: summarizeToolInput(use.block.input, { maxLength: 80, basenameFile: false }) || '',
+        exitCode: exitMatch ? Number(exitMatch[1]) : (block.is_error ? 1 : 0),
+        exitCodeSource: exitMatch ? 'exit' : 'flag',
+        durationMs: use.at ? Math.max(0, completedAt - use.at) : null,
+        completedAt,
+        source: 'transcript',
+        // Where it ran (the session cwd plus any `cd` hop the summary drops)
+        // and whether it printed anything besides its exit line.
+        location: toolResultLocation({ cwd: use.cwd, command: use.block.input?.command }),
+        noOutput: !completion.output.replace(CLAUDE_EXIT_CODE_PATTERN, '').trim(),
+      };
+    }
+  }
+  _toolResultRecords.set(block, { use: use.block, sessionId, record });
+  return record;
+}
+
 function getClaudeToolResults(sessionFilePath, sessionId) {
   if (!sessionFilePath) return [];
+  return memoizedDerivation(sessionFilePath, `results:${sessionId ?? ''}`, () => ({
+    value: readClaudeToolResults(sessionFilePath, sessionId),
+  }));
+}
+
+function readClaudeToolResults(sessionFilePath, sessionId) {
   const results = [];
   try {
     const entries = getSessionEntries(sessionFilePath);
@@ -2215,28 +2388,9 @@ function getClaudeToolResults(sessionFilePath, sessionId) {
         if (block?.type !== 'tool_result' || !block.tool_use_id) continue;
         const use = uses.get(block.tool_use_id);
         if (!use || typeof block.is_error !== 'boolean') continue;
-        const tur = entry.toolUseResult && typeof entry.toolUseResult === 'object' ? entry.toolUseResult : null;
-        if (use.block.input?.run_in_background === true || tur?.backgroundTaskId || tur?.isAsync) continue;
-        const completion = claudeToolCompletion(entry, block);
-        if (completion.status === 'cancelled' || CLAUDE_REJECTED_RESULT_PATTERN.test(completion.output)) continue;
-        const completedAt = toEpochMs(entry.timestamp);
-        if (!completedAt) continue;
-        const exitMatch = block.is_error ? CLAUDE_EXIT_CODE_PATTERN.exec(completion.output) : null;
-        const tool = use.block.name || 'unknown';
-        results.push({
-          id: toolResultId({ provider: 'claude', sessionId, callId: block.tool_use_id }),
-          tool,
-          detail: summarizeToolInput(use.block.input, { maxLength: 80, basenameFile: false }) || '',
-          exitCode: exitMatch ? Number(exitMatch[1]) : (block.is_error ? 1 : 0),
-          exitCodeSource: exitMatch ? 'exit' : 'flag',
-          durationMs: use.at ? Math.max(0, completedAt - use.at) : null,
-          completedAt,
-          source: 'transcript',
-          // Where it ran (the session cwd plus any `cd` hop the summary drops)
-          // and whether it printed anything besides its exit line.
-          location: toolResultLocation({ cwd: use.cwd, command: use.block.input?.command }),
-          noOutput: !completion.output.replace(CLAUDE_EXIT_CODE_PATTERN, '').trim(),
-        });
+        const record = claudeToolResultRecord(entry, block, use, sessionId);
+        if (!record) continue;
+        results.push(record);
         uses.delete(block.tool_use_id);
       }
     }
@@ -2244,43 +2398,86 @@ function getClaudeToolResults(sessionFilePath, sessionId) {
   return normalizeToolResults(results);
 }
 
+// SV-2b — git events per tool call. A call's events are a function of its
+// tool_use block, its paired tool_result block and the scan context, plus
+// the observation state frozen per event id (a later repository scan can
+// freeze a full sha or landed shas, which a re-parse picks up). The memo is
+// keyed by the projected block and re-validated against that frozen state;
+// a call whose repository is unresolved is re-parsed each time, as before
+// (the repository may only exist once a pending `git init` has run).
+const _toolCallGitEvents = new WeakMap();
+
+function gitEventFrozenRefs(events) {
+  return events.map(event => [event.id, frozenGitEventFields(event.id)]);
+}
+
+function gitEventFrozenRefsCurrent(refs) {
+  return refs.every(([id, frozen]) => frozenGitEventFields(id) === frozen);
+}
+
+function toolCallGitEvents(entry, block, blockIndex, result, context, contextKey) {
+  const cached = _toolCallGitEvents.get(block);
+  if (cached && cached.result === (result?.block || null) && cached.contextKey === contextKey
+    && gitEventFrozenRefsCurrent(cached.frozen)) {
+    return cached.events;
+  }
+  const events = extractGitEventsFromCommandSource(block.input, {
+    ...context,
+    ts: entry.timestamp || entry.created_at || 0,
+    sourceId: block.id || entry.uuid || entry.id || `${entry._sourceHash || stableHash(JSON.stringify(entry))}:${blockIndex}`,
+    // The transcript records the shell's cwd and branch for each call.
+    cwd: typeof entry.cwd === 'string' && entry.cwd ? entry.cwd : undefined,
+    branchHint: typeof entry.gitBranch === 'string' && entry.gitBranch ? entry.gitBranch : undefined,
+    ...(result ? claudeToolCompletion(result.entry, result.block) : {}),
+  });
+  if (events.some(event => event?.unresolved === true)) _toolCallGitEvents.delete(block);
+  else _toolCallGitEvents.set(block, { result: result?.block || null, contextKey, events, frozen: gitEventFrozenRefs(events) });
+  return events;
+}
+
 function getGitEvents(sessionFilePath, context) {
+  const contextKey = JSON.stringify(context ?? null);
+  return memoizedDerivation(sessionFilePath, `git:${contextKey}`, () => {
+    const events = readGitEvents(sessionFilePath, context, contextKey);
+    return {
+      value: events,
+      cacheable: !events.some(event => event?.unresolved === true),
+      isCurrent: (refs => () => gitEventFrozenRefsCurrent(refs))(gitEventFrozenRefs(events)),
+    };
+  });
+}
+
+function readGitEvents(sessionFilePath, context, contextKey) {
   const events = [];
   try {
     const entries = getSessionEntries(sessionFilePath);
 
     // Index tool results by tool_use_id: success/exit code and output feed
-    // the parser (commit evidence, rejected vs. failed pushes).
+    // the parser (commit evidence, rejected vs. failed pushes). The last
+    // result wins; its completion is built only when its call is parsed.
     const resultsByToolUseId = new Map();
     for (const entry of entries) {
       const msg = entry.message;
       if (!msg || msg.role !== 'user' || !Array.isArray(msg.content)) continue;
       for (const block of msg.content) {
         if (block?.type !== 'tool_result' || !block.tool_use_id) continue;
-        resultsByToolUseId.set(block.tool_use_id, claudeToolCompletion(entry, block));
+        resultsByToolUseId.set(block.tool_use_id, { entry, block });
       }
     }
 
-    entries.forEach((entry, entryIndex) => {
+    entries.forEach((entry) => {
       const msg = entry.message;
       if (!msg || msg.role !== 'assistant' || !Array.isArray(msg.content)) return;
 
       msg.content.forEach((block, blockIndex) => {
         if (block.type !== 'tool_use' || !block.input) return;
         const result = block.id ? resultsByToolUseId.get(block.id) : null;
-        events.push(...extractGitEventsFromCommandSource(block.input, {
-          ...context,
-          ts: entry.timestamp || entry.created_at || 0,
-          sourceId: block.id || entry.uuid || entry.id || `${entry._sourceHash || stableHash(JSON.stringify(entry))}:${blockIndex}`,
-          // The transcript records the shell's cwd and branch for each call.
-          cwd: typeof entry.cwd === 'string' && entry.cwd ? entry.cwd : undefined,
-          branchHint: typeof entry.gitBranch === 'string' && entry.gitBranch ? entry.gitBranch : undefined,
-          ...(result || {}),
-        }));
+        events.push(...toolCallGitEvents(entry, block, blockIndex, result, context, contextKey));
       });
     });
   } catch { /* ignore */ }
-  return dedupeGitEvents(events);
+  // Each call's events left the parser already scrubbed.
+  return dedupeGitEvents(events, { scrubbed: true });
 }
 
 function resolveSessionFilePath(sessionId, project) {
@@ -3162,6 +3359,11 @@ class ClaudeAdapter {
       for (const filePath of _transcriptAggregateCache.keys()) {
         if (!fs.existsSync(filePath)) deleteTranscriptRecord(filePath);
       }
+      // Derived fields are keyed on file identity, so a reconcile keeps
+      // them; only files that are gone drop theirs (SV-1).
+      for (const filePath of _derivedMemo.keys()) {
+        if (!fs.existsSync(filePath)) _derivedMemo.delete(filePath);
+      }
     }
     if (dirty.kind === 'reconcile') {
       for (const projectDir of _orphanScanCache.filesByProjectDir.keys()) {
@@ -3178,6 +3380,7 @@ class ClaudeAdapter {
     clearTailCache('claude');
     clearSessionEntryCache();
     clearTranscriptAggregateCache();
+    clearDerivedMemo();
     _orphanScanCache.subagentActivityBySessionDir.clear();
     _sessionNamesCache.signature = '';
     _sessionNamesCache.value = new Map();
@@ -3212,6 +3415,11 @@ class ClaudeAdapter {
         entryLimit: SESSION_ENTRY_CACHE_MAX,
         byteLimit: SESSION_ENTRY_CACHE_MAX_BYTES,
         projection: { ..._sessionProjectionStats },
+      },
+      derivedMemo: {
+        ..._derivedMemoStats,
+        entries: _derivedMemo.size,
+        entryLimit: DERIVED_MEMO_MAX,
       },
       transcriptAggregate: {
         ..._transcriptAggregateStats,

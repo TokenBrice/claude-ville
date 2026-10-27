@@ -1900,7 +1900,10 @@ function frozenFields(id) {
 
 function freezeFields(id, fields) {
   const existing = _frozenGitEventFields.get(id);
-  const value = existing ? { ...existing, ...fields } : fields;
+  // Re-freezing the same values keeps the same object, so a memo of parsed
+  // events can tell "unchanged" by identity (SV-2b).
+  const unchanged = existing && Object.keys(fields).every((key) => existing[key] === fields[key]);
+  const value = unchanged ? existing : existing ? { ...existing, ...fields } : fields;
   _frozenGitEventFields.delete(id);
   _frozenGitEventFields.set(id, value);
   while (_frozenGitEventFields.size > GIT_FROZEN_EVENT_MAX) {
@@ -2677,16 +2680,20 @@ function scrubForgeEventOutput(event) {
   for (const field of ['stderr', 'stdout', 'output', 'result']) delete event[field];
 }
 
-function dedupeGitEvents(events) {
+// `scrubbed`: every event already left `parseGitEventsFromCommand`, whose
+// own pass scrubbed it; scrubbing is idempotent, so a merge skips the rerun.
+function dedupeGitEvents(events, { scrubbed = false } = {}) {
   const seen = new Set();
   const unique = [];
 
   for (const event of events) {
     const type = event?.type || event?.kind;
-    if (!isForgeEventType(type) && typeof event?.stderr === 'string') {
-      event.stderr = stripSecrets(event.stderr);
+    if (!scrubbed) {
+      if (!isForgeEventType(type) && typeof event?.stderr === 'string') {
+        event.stderr = stripSecrets(event.stderr);
+      }
+      scrubForgeEventOutput(event);
     }
-    scrubForgeEventOutput(event);
     if (!event || !event.id || seen.has(event.id)) continue;
     seen.add(event.id);
     unique.push(event);
@@ -4295,13 +4302,14 @@ function extractGitEventsFromCommandSource(source, context = {}, options = {}) {
 }
 
 module.exports = {
-  _test: { containmentSteps },
+  _test: { containmentSteps, freezeFields },
   MAX_FORGE_EVENTS_PER_PROJECT,
   compactGitEventsForWire,
   dedupeGitEvents,
   configureGitEnrichmentWorker,
   extractCommand,
   extractGitEventsFromCommandSource,
+  frozenGitEventFields: frozenFields,
   getGitEnrichmentPerfStats,
   getGitWorkerPerfStats,
   invalidateGitStatusCaches,
