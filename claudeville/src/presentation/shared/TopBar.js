@@ -1,6 +1,7 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { elapsedTickNow, formatCost, formatNumber, formatWaitAge, shortProjectName, subscribeElapsedText } from './Formatters.js';
 import { el, replaceChildren } from './DomSafe.js';
+import { emitAgentSelected } from './AgentSelection.js';
 import {
     installReducedMotionOverride,
     readReducedMotionOverride,
@@ -1315,6 +1316,13 @@ export class TopBar {
             }
         };
         this._onSpendResize = () => this._hideSpendPanel({ restoreFocus: false });
+        this._onSpendPanelClick = (event) => {
+            const id = event.target?.closest?.('[data-agent-id]')?.dataset.agentId;
+            const agent = id ? this.world?.agents?.get?.(id) : null;
+            if (!agent) return;
+            this._hideSpendPanel({ restoreFocus: false });
+            emitAgentSelected(agent);
+        };
         trigger.addEventListener('click', this._onSpendClick);
         trigger.addEventListener('keydown', this._onSpendKeydown);
         trigger.addEventListener('focusout', this._onSpendFocusOut);
@@ -1508,18 +1516,28 @@ export class TopBar {
         if (this.els.rateWrap) {
             const seen = `Tokens seen today while ClaudeVille was open in this browser${sinceText ? `, since ${sinceText}` : ''}`;
             this.els.rateWrap.dataset.tip = rate
-                ? `${seen}, now running at about ~${formatCost(rate.costPerHour)}/hour at estimated API rates, each session priced at its own model's rates (revision ${TokenUsage.rateRevision}). Click for project and provider detail.`
-                : `${seen}. A burn rate appears after a couple of minutes of activity. Click for project and provider detail.`;
+                ? `${seen}, now running at about ~${formatCost(rate.costPerHour)}/hour at estimated API rates, each session priced at its own model's rates (revision ${TokenUsage.rateRevision}). Click for project, provider and session detail.`
+                : `${seen}. A burn rate appears after a couple of minutes of activity. Click for project, provider and session detail.`;
         }
         if (this.els.rateWrap && this._coverageNote) this.els.rateWrap.dataset.tip += ` ${this._coverageNote}`;
-        if (this._spendPanelEl?.style.display !== 'none') this._renderSpendPanel();
+        if (this._spendPanelEl?.style.display !== 'none' && !this._spendPanelHeld()) this._renderSpendPanel();
+    }
+
+    // UI-12: the open popover follows the ledger but holds still under the
+    // pointer or a focused row, so a ranked session row is never replaced or
+    // reordered between the press and the click.
+    _spendPanelHeld() {
+        const panel = this._spendPanelEl;
+        if (!panel) return false;
+        const active = document.activeElement;
+        return panel.matches?.(':hover') === true || Boolean(active && active !== panel && panel.contains(active));
     }
 
     _ensureSpendPanel() {
         if (this._spendPanelEl || !document.body) return;
         this._spendPanelEl = el('div', {
             className: 'topbar__spend-panel',
-            ariaLabel: 'Spend by project and provider',
+            ariaLabel: 'Spend by project, provider and session',
             style: { display: 'none' },
         });
         this._spendPanelEl.id = 'spendBreakdownPanel';
@@ -1527,6 +1545,7 @@ export class TopBar {
         this._spendPanelEl.tabIndex = -1;
         this._spendPanelEl.addEventListener('keydown', this._onSpendPanelKeydown);
         this._spendPanelEl.addEventListener('focusout', this._onSpendFocusOut);
+        this._spendPanelEl.addEventListener('click', this._onSpendPanelClick);
         document.body.appendChild(this._spendPanelEl);
     }
 
@@ -1582,6 +1601,7 @@ export class TopBar {
         }, [
             this._spendSection('PROJECTS', rollups.projects, true),
             this._spendSection('PROVIDERS', rollups.providers, false),
+            this._spendSessionsSection(rollups.sessions || []),
         ]);
         replaceChildren(panel, [heading, note, columns]);
     }
@@ -1646,6 +1666,61 @@ export class TopBar {
         if (rows.length > visible.length) {
             section.appendChild(el('div', {
                 text: `+${rows.length - visible.length} quieter ${projects ? 'projects' : 'providers'}`,
+                className: 'topbar__spend-more',
+            }));
+        }
+        return section;
+    }
+
+    // UI-12: today's spend per session, costliest first, then by new tokens.
+    // A live session's row is a button that selects it; one that left keeps
+    // its banked row, read-only, under the name it last wore.
+    _spendSessionsSection(rows) {
+        const section = el('section', {
+            className: 'topbar__spend-section topbar__spend-section--sessions',
+        });
+        section.appendChild(el('div', {
+            text: 'SESSIONS',
+            className: 'topbar__spend-section-heading',
+        }));
+        const visible = rows.slice(0, 5);
+        if (visible.length === 0) {
+            section.appendChild(el('div', {
+                text: 'No session spend observed',
+                className: 'topbar__spend-empty',
+            }));
+            return section;
+        }
+        for (const row of visible) {
+            const agent = row.live ? this.world?.agents?.get?.(row.key) || null : null;
+            const name = agent?.displayName || row.name || 'Unnamed session';
+            const project = row.project === 'unattributed' ? 'Unattributed' : shortProjectName(row.project, 'Unattributed');
+            const where = `${project} · ${this._providerLabel(row.provider)}`;
+            const children = [
+                el('span', {
+                    text: `${agent ? '◆' : '·'} ${name}`,
+                    className: `topbar__spend-name${agent ? ' topbar__spend-name--active' : ''}`,
+                }),
+                el('span', { text: where, className: 'topbar__spend-detail' }),
+                el('span', {
+                    text: `~${formatCost(row.cost)} · ${formatNumber(row.tokens)} tokens`,
+                    className: 'topbar__spend-figures',
+                }),
+            ];
+            const title = `${name} · ${where} · today ${formatNumber(row.tokens)} new tokens, `
+                + `+${formatNumber(row.cacheRead)} cache reads, ~${formatCost(row.cost)} at estimated API rates `
+                + `(revision ${TokenUsage.rateRevision}) · ${agent ? 'click to select' : 'left the village'}`;
+            const node = el(agent ? 'button' : 'div', {
+                className: 'topbar__spend-session',
+                title,
+                dataset: agent ? { agentId: row.key } : undefined,
+            }, children);
+            if (agent) node.type = 'button';
+            section.appendChild(node);
+        }
+        if (rows.length > visible.length) {
+            section.appendChild(el('div', {
+                text: `+${rows.length - visible.length} quieter sessions`,
                 className: 'topbar__spend-more',
             }));
         }
@@ -2056,6 +2131,9 @@ export class TopBar {
         if (this._onSpendResize) window.removeEventListener('resize', this._onSpendResize);
         if (this._spendPanelEl && this._onSpendPanelKeydown) {
             this._spendPanelEl.removeEventListener('keydown', this._onSpendPanelKeydown);
+        }
+        if (this._spendPanelEl && this._onSpendPanelClick) {
+            this._spendPanelEl.removeEventListener('click', this._onSpendPanelClick);
         }
         if (this._spendPanelEl && this._onSpendFocusOut) {
             this._spendPanelEl.removeEventListener('focusout', this._onSpendFocusOut);

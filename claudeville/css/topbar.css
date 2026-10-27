@@ -308,6 +308,45 @@
     text-align: right;
 }
 
+/* UI-12: sessions span both columns, one line each: name, where, figures. */
+.topbar__spend-section--sessions {
+    grid-column: 1 / -1;
+}
+
+.topbar__spend-session {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: baseline;
+    width: 100%;
+    padding: 4px 0;
+    border: 0;
+    border-bottom: 1px solid var(--line-1);
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+}
+
+.topbar__spend-session .topbar__spend-detail {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+button.topbar__spend-session {
+    cursor: pointer;
+}
+
+button.topbar__spend-session:hover {
+    background: var(--bg-3);
+}
+
+.topbar__spend-figures {
+    color: var(--ink-2);
+    white-space: nowrap;
+}
+
 /* Presets: a real radiogroup, one 16 px-grid row each — the name on ink-1,
    what it plays on ink-3. */
 .topbar__sound-presets {

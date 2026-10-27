@@ -20,6 +20,9 @@ const RATE_WINDOW_MS = 5 * 60 * 1000;
 // until the window is wide enough for the number to mean something.
 const RATE_MIN_WINDOW_MS = 2 * 60 * 1000;
 const LEDGER_KEY_PREFIX = 'usageLedger:';
+// UI-12: the stored day keeps its costliest sessions; the rest stay in the
+// day's totals.
+const SESSION_PERSIST_LIMIT = 50;
 
 // Cache reads are the same prompt being re-read every turn, so they dominate
 // any raw token count — a busy hour can "spend" hundreds of millions of them
@@ -69,19 +72,29 @@ function addTo(map, key, { tokens = 0, cacheRead = 0, cost = 0 }) {
     map.set(key, total);
 }
 
-function restoreTotals(value) {
+function restoreTotals(value, { session = false } = {}) {
     const totals = new Map();
     if (!Array.isArray(value)) return totals;
     for (const row of value) {
         const key = String(row?.key || '').trim();
         if (!key) continue;
-        totals.set(key, {
+        const total = {
             tokens: Number(row.tokens) || 0,
             cacheRead: Number(row.cacheRead) || 0,
             cost: Number(row.cost) || 0,
-        });
+        };
+        if (session) {
+            total.name = typeof row.name === 'string' && row.name ? row.name : null;
+            total.project = String(row.project || '').trim() || 'unattributed';
+            total.provider = String(row.provider || '').trim() || 'unknown';
+        }
+        totals.set(key, total);
     }
     return totals;
+}
+
+function bySpend(a, b) {
+    return b.cost - a.cost || b.tokens - a.tokens || a.key.localeCompare(b.key);
 }
 
 export class SpendLedger {
@@ -97,6 +110,9 @@ export class SpendLedger {
         this.coverageSince = null;
         this._todayByProject = new Map();
         this._todayByProvider = new Map();
+        // UI-12: session id → today's totals and the label it last wore, so
+        // a session that left, or a reload, still reads by name.
+        this._todayBySession = new Map();
         this._lastSeen = new Map();   // agentId → counters + attribution keys
         this._samples = [];           // timestamp-exact attributed rate buckets
         this._sampleHead = 0;
@@ -166,6 +182,7 @@ export class SpendLedger {
             activeIds.add(agent.id);
             const observed = this._observe(agent);
             if (!observed) continue;
+            this._bankSession(agent, observed);
             addTo(projectDeltas, projectKey(agent), observed);
             addTo(providerDeltas, providerKey(agent), observed);
             delta.tokens += observed.tokens;
@@ -187,6 +204,7 @@ export class SpendLedger {
         if (!agent?.id) return this.today;
         const observed = this._observe(agent);
         if (observed) {
+            this._bankSession(agent, observed);
             addTo(this._todayByProject, observed.project, observed);
             addTo(this._todayByProvider, observed.provider, observed);
             this._recordRate('project', observed.project, observed, now);
@@ -244,6 +262,17 @@ export class SpendLedger {
         } else {
             this._activeAgents.delete(id);
         }
+    }
+
+    _bankSession(agent, observed) {
+        const row = this._todayBySession.get(agent.id) || { ...emptyTotal(), name: null };
+        row.tokens += observed.tokens;
+        row.cacheRead += observed.cacheRead;
+        row.cost += observed.cost;
+        row.name = String(agent.displayName || agent.name || '').trim() || row.name;
+        row.project = observed.project;
+        row.provider = observed.provider;
+        this._todayBySession.set(agent.id, row);
     }
 
     _bank(delta, projects, providers, now) {
@@ -358,6 +387,11 @@ export class SpendLedger {
         return {
             projects: this._rollupRows('project', this._todayByProject, this._activeProjects, now),
             providers: this._rollupRows('provider', this._todayByProvider, this._activeProviders, now),
+            // UI-12: sessions with spend today, costliest first, then by new
+            // tokens; `live` while the session is in the village.
+            sessions: [...this._todayBySession]
+                .map(([key, row]) => ({ key, ...row, live: this._activeAgents.has(key) }))
+                .sort(bySpend),
         };
     }
 
@@ -409,6 +443,7 @@ export class SpendLedger {
         this.today = { tokens: 0, cacheRead: 0, cost: 0 };
         this._todayByProject.clear();
         this._todayByProvider.clear();
+        this._todayBySession.clear();
         this._samples = [];
         this._sampleHead = 0;
         this._rates.clear();
@@ -432,6 +467,7 @@ export class SpendLedger {
                 };
                 this._todayByProject = restoreTotals(record.value.projects);
                 this._todayByProvider = restoreTotals(record.value.providers);
+                this._todayBySession = restoreTotals(record.value.sessions, { session: true });
                 const stored = Number(record.value.coverageSince);
                 since = Number.isFinite(stored) && stored > 0 ? stored : null;
             }
@@ -448,6 +484,9 @@ export class SpendLedger {
             coverageSince: this.coverageSince,
             projects: serialize(this._todayByProject),
             providers: serialize(this._todayByProvider),
+            sessions: serialize(this._todayBySession)
+                .sort(bySpend)
+                .slice(0, SESSION_PERSIST_LIMIT),
         };
         this._writeTail = this._writeTail
             .then(() => this.store.put('meta', { key, value }))

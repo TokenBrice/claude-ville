@@ -184,6 +184,16 @@ test('synchronous World updates persist once per microtask cohort', async (t) =>
             });
         }
     };
+    // UI-12: agent i grows by (i + 1) per cohort, so the last is costliest.
+    const sessionsAfter = (cohorts) => agents.map((one, index) => ({
+        key: one.id,
+        tokens: 4 * (index + 1) * cohorts,
+        cacheRead: 5 * (index + 1) * cohorts,
+        cost: ((index + 1) * cohorts) / 8,
+        name: one.displayName,
+        project: '/work/shared',
+        provider: 'claude',
+    })).reverse();
     fanOut(1);
     assert.deepEqual(ledger.today, { tokens: 144, cacheRead: 180, cost: 4.5 });
     assert.equal(store.records.length, 0, 'writes wait until the fan-out has finished');
@@ -194,6 +204,7 @@ test('synchronous World updates persist once per microtask cohort', async (t) =>
         coverageSince: T,
         projects: [{ key: '/work/shared', tokens: 144, cacheRead: 180, cost: 4.5 }],
         providers: [{ key: 'claude', tokens: 144, cacheRead: 180, cost: 4.5 }],
+        sessions: sessionsAfter(1),
     });
 
     fanOut(2);
@@ -205,6 +216,7 @@ test('synchronous World updates persist once per microtask cohort', async (t) =>
         coverageSince: T,
         projects: [{ key: '/work/shared', tokens: 288, cacheRead: 360, cost: 9 }],
         providers: [{ key: 'claude', tokens: 288, cacheRead: 360, cost: 9 }],
+        sessions: sessionsAfter(2),
     });
 });
 
@@ -237,6 +249,10 @@ test('World events across midnight persist the old day before banking the new da
             coverageSince: new Date(2025, 0, 2, 23, 59, 59, 998).getTime(),
             projects: [{ key: '/work/shared', tokens: 30, cacheRead: 200, cost: 0.5 }],
             providers: [{ key: 'claude', tokens: 30, cacheRead: 200, cost: 0.5 }],
+            sessions: [{
+                key: 'a', tokens: 30, cacheRead: 200, cost: 0.5,
+                name: one.displayName, project: '/work/shared', provider: 'claude',
+            }],
         },
     }, {
         key: 'usageLedger:2025-01-03',
@@ -246,6 +262,10 @@ test('World events across midnight persist the old day before banking the new da
             coverageSince: new Date(2025, 0, 3).getTime(),
             projects: [{ key: '/work/shared', tokens: 10, cacheRead: 50, cost: 0.25 }],
             providers: [{ key: 'claude', tokens: 10, cacheRead: 50, cost: 0.25 }],
+            sessions: [{
+                key: 'a', tokens: 10, cacheRead: 50, cost: 0.25,
+                name: one.displayName, project: '/work/shared', provider: 'claude',
+            }],
         },
     }]);
 });
@@ -319,6 +339,10 @@ test('World events baseline identities and recounts while splitting tokens, cach
             { key: 'codex', tokens: 85, cacheRead: 175, cost: 1.25, activeSessions: 1, burnRate: null },
             { key: 'claude', tokens: 190, cacheRead: 600, cost: 0.75, activeSessions: 0, burnRate: null },
         ],
+        sessions: [{
+            key: 'a', tokens: 275, cacheRead: 775, cost: 2,
+            name: one.displayName, project: '/work/new', provider: 'codex', live: true,
+        }],
     });
     await settleEvents();
     assert.deepEqual(store.records[0].value, {
@@ -332,6 +356,10 @@ test('World events baseline identities and recounts while splitting tokens, cach
             { key: 'claude', tokens: 190, cacheRead: 600, cost: 0.75 },
             { key: 'codex', tokens: 85, cacheRead: 175, cost: 1.25 },
         ],
+        sessions: [{
+            key: 'a', tokens: 275, cacheRead: 775, cost: 2,
+            name: one.displayName, project: '/work/new', provider: 'codex',
+        }],
     });
 });
 
@@ -424,4 +452,50 @@ test('coverage says when today\'s observation began, restored across reloads (UI
 
     const legacy = (await startedLedger(t, new World(), storeWith({ tokens: 5 }))).ledger;
     assert.equal(legacy.coverage(T).since, null, 'a stored day without the field is unknown, never guessed');
+});
+
+test('sessions rank by today\'s spend, keep a departed row, and survive a reload (UI-12)', async (t) => {
+    t.mock.method(Date, 'now', () => T);
+    const world = new World();
+    const cheap = liveAgent('cheap', { input: 100, cost: 1 });
+    const dear = liveAgent('dear', { input: 100, cost: 1 });
+    const wordy = liveAgent('wordy', { input: 100, cost: 1 });
+    for (const one of [cheap, dear, wordy]) world.addAgent(one);
+    const { ledger, store } = await startedLedger(t, world);
+    world.updateAgent(cheap.id, { tokens: { input: 150 }, cost: { usd: 1.25, source: 'provider' } });
+    world.updateAgent(dear.id, { tokens: { input: 120 }, cost: { usd: 3, source: 'provider' } });
+    // Same cost as `cheap`, more new tokens: tokens break the tie.
+    world.updateAgent(wordy.id, { tokens: { input: 900 }, cost: { usd: 1.25, source: 'provider' } });
+    world.removeAgent(dear.id);
+
+    const sessions = ledger.rollups().sessions;
+    assert.deepEqual(sessions.map(row => [row.key, row.tokens, row.cost, row.live]), [
+        ['dear', 20, 2, false],
+        ['wordy', 800, 0.25, true],
+        ['cheap', 50, 0.25, true],
+    ], 'a session that left keeps its banked spend, no longer live');
+    assert.equal(sessions[0].name, dear.displayName, 'it keeps the name it wore');
+
+    await settleEvents();
+    const stored = store.records.at(-1).value;
+    const reloaded = (await startedLedger(t, new World(), { ...countingStore(), async get() { return { value: stored }; } })).ledger;
+    assert.deepEqual(
+        reloaded.rollups().sessions.map(row => [row.key, row.name, row.cost, row.live]),
+        [['dear', dear.displayName, 2, false], ['wordy', wordy.displayName, 0.25, false], ['cheap', cheap.displayName, 0.25, false]],
+        'a reload restores the day\'s sessions by name',
+    );
+});
+
+test('the stored day keeps its 50 costliest sessions (UI-12)', async (t) => {
+    t.mock.method(Date, 'now', () => T);
+    const world = new World();
+    const agents = Array.from({ length: 60 }, (_, index) => liveAgent(`s${index}`, { input: 10, cost: 1 }));
+    for (const one of agents) world.addAgent(one);
+    const { ledger, store } = await startedLedger(t, world);
+    agents.forEach((one, index) => world.updateAgent(one.id, { tokens: { input: 20 }, cost: { usd: 1 + (index + 1) / 64, source: 'provider' } }));
+    assert.equal(ledger.rollups().sessions.length, 60, 'the page keeps every session');
+    await settleEvents();
+    const stored = store.records.at(-1).value.sessions;
+    assert.equal(stored.length, 50);
+    assert.deepEqual([stored[0].key, stored.at(-1).key], ['s59', 's10'], 'the quietest ten stay only in the totals');
 });
