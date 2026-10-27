@@ -292,11 +292,17 @@ test('Codex transcript fixtures preserve turn truth and project item_completed f
     ]);
     assert.ok(completed.workingSet.length <= 16);
     assert.ok(completed.workingSet.every((entry) => !entry.path.startsWith(project)));
+    // PV-3: real CommandExecution items carry argv; every summary is the
+    // script past its `cd` hop, never the shell wrapper or nothing.
+    assert.equal(completed.lastTool, 'Bash');
+    assert.equal(completed.lastToolInput, 'npm test');
+    assert.deepEqual(completed.lastResults.map((result) => result.detail), ['npm test']);
 
     const failedCommand = details['codex-item-completed'].toolHistory.find(
         (item) => item.toolExitCode === 1,
     );
     assert.ok(failedCommand);
     assert.equal(failedCommand.tool, 'Bash');
+    assert.equal(failedCommand.detail, 'npm test');
     assert.equal(failedCommand.durationMs, 1500);
 });

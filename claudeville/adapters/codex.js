@@ -23,6 +23,7 @@ const {
   readHeadText: readSharedHeadText,
   readJsonLineWindows: readSharedJsonLineWindows,
   readJsonLines: readSharedJsonLines,
+  stripShellLocationPrefix,
   summarizeToolInput: summarizeSharedToolInput,
 } = require('./shared');
 const { deriveTurnState, toEpochMs } = require('./turnState');
@@ -364,7 +365,12 @@ function summarizeCodexToolPayload(payload, { maxLength = MAX_CURRENT_TOOL_INPUT
     });
   }
   if (payload.command) {
-    return summarizeSharedToolInput(payload.command, {
+    // CommandExecution items carry argv (`[".../bash", "-lc", "<script>"]`):
+    // summarize the script, past any `cd <dir> &&` hop, not the wrapper.
+    const command = Array.isArray(payload.command)
+      ? stripShellLocationPrefix(commandFromExecPayload(payload))
+      : payload.command;
+    return summarizeSharedToolInput(command, {
       maxLength,
       missingValue,
       stringFallback: 'string',

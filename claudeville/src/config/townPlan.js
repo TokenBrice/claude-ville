@@ -333,14 +333,17 @@ export const REST_SEATS = Object.freeze([
 // the yard beside the wall tables, so a crowd of leads waiting on their
 // subagents grows in one place (VisitTileAllocator, before the seat stand
 // ring). Each stander faces the bar. None stands on a seat, a fixture, a
-// road or another building's standing place.
+// road or another building's standing place. VQ-1b — (22,17) and (23,17)
+// stand one tile in front of two bar stools, in their screen columns, and
+// would hide those sitters' tankards, so they fill last.
 export const REST_STANDS = Object.freeze({
     tavern: Object.freeze({
         facing: Object.freeze({ tileX: 22, tileY: 15 }),
         tiles: Object.freeze([
-            [22, 17], [21, 17], [23, 17],
+            [21, 17],
             [21, 18], [22, 18], [24, 18],
             [22, 19], [21, 19],
+            [22, 17], [23, 17],
         ].map(([tileX, tileY]) => Object.freeze({ tileX, tileY }))),
     }),
 });

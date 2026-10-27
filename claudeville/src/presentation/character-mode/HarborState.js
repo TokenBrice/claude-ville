@@ -1889,8 +1889,11 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
         }
 
         if (event.type === 'push') {
-            const eventAge = Number.isFinite(event.timestamp) && event.timestamp > 0
-                ? Math.max(0, now - event.timestamp)
+            // VB-1 — a push ages from its result: one held by an approval or a
+            // slow pre-push hook past the replay window still landed just now.
+            const resultAt = event.completedAt || event.timestamp;
+            const eventAge = Number.isFinite(resultAt) && resultAt > 0
+                ? Math.max(0, now - resultAt)
                 : 0;
             const skipOldReplay = eventAge > RECENT_PUSH_REPLAY_MS;
             const skipDepartureAnimation = motionScale === 0 || skipOldReplay;

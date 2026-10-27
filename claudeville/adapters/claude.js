@@ -608,6 +608,16 @@ function projectTranscriptContentBlock(block) {
   return null;
 }
 
+// Only conversation records are turns. Claude Code also writes
+// `api-request-blob` copies of API messages (a `message.role`, no timestamp)
+// beside `api-request` and `api-request-shape` bookkeeping. Read as turns,
+// a copy hides a closed turn or a pending tool behind a ghost message.
+const CLAUDE_CONVERSATION_RECORD_TYPES = new Set(['user', 'assistant']);
+
+function isClaudeConversationRecord(entry) {
+  return CLAUDE_CONVERSATION_RECORD_TYPES.has(entry?.type);
+}
+
 function projectClaudeTailEntry(entry) {
   _sessionProjectionStats.records++;
   if (!entry || typeof entry !== 'object') {
@@ -666,7 +676,7 @@ function projectClaudeTailEntry(entry) {
       );
     }
   }
-  if (entry.message && typeof entry.message === 'object') {
+  if (isClaudeConversationRecord(entry) && entry.message && typeof entry.message === 'object') {
     const needsSourceHash = !entry.uuid
       && !entry.id
       && Array.isArray(entry.message.content)
@@ -706,7 +716,7 @@ function readJsonLines(filePath, { from = 'end', count = GIT_EVENT_SCAN_LINES } 
     tailMaxBytes: MAX_TAIL_BYTES,
     source: 'claude',
     project: from === 'end' ? projectClaudeTailEntry : undefined,
-    projectionKey: from === 'end' ? 'claude-tail-v3' : undefined,
+    projectionKey: from === 'end' ? 'claude-tail-v4' : undefined,
   });
 }
 
@@ -985,7 +995,7 @@ function appendTranscriptGuard(aggregate, chunk) {
 }
 
 function addTranscriptEntry(aggregate, entry) {
-  const msg = entry?.message;
+  const msg = isClaudeConversationRecord(entry) ? entry.message : null;
   addTranscriptProjectionEntry(aggregate.projection, entry, msg);
   if (!msg) return;
 
@@ -1498,6 +1508,12 @@ function getAgentLaunches(sessionFilePath) {
 
 // ─── Session parsing ────────────────────────────────────────
 
+// `<synthetic>` and other `<…>` model names mark Claude Code's own text, such
+// as an API error: they name no model and never speak as one.
+function isClaudeModelStub(model) {
+  return typeof model === 'string' && model.startsWith('<');
+}
+
 function getClaudeTranscriptSummary(filePath, tailCount, project = null) {
   const detail = {
     model: null,
@@ -1540,7 +1556,8 @@ function getClaudeTranscriptSummary(filePath, tailCount, project = null) {
         const msg = entry.message;
         if (!msg || msg.role !== 'assistant') continue;
 
-        if (!detail.model && msg.model) detail.model = msg.model;
+        const stub = isClaudeModelStub(msg.model);
+        if (!detail.model && msg.model && !stub) detail.model = msg.model;
 
         const content = msg.content;
         if (!Array.isArray(content)) continue;
@@ -1557,6 +1574,7 @@ function getClaudeTranscriptSummary(filePath, tailCount, project = null) {
             const text = block.text.trim();
             if (text.length > 0) detail.lastMessage = text.substring(0, 80);
           }
+          if (stub) continue;
 
           if (block.type === 'tool_use') {
             const input = block.input;
@@ -1663,16 +1681,20 @@ function getRecentMessages(sessionFilePath, maxItems = 5) {
   return messages.slice(-maxItems);
 }
 
+// Callers without a model (session detail, or a tail window that named none)
+// use the transcript's own latest model, skipping `<synthetic>` stubs, so the
+// limit isn't the 200K default.
+function latestTranscriptModel(aggregate) {
+  const history = aggregate?.projection?.modelHistory || [];
+  return history.findLast(item => !isClaudeModelStub(item.model))?.model || null;
+}
+
 function getTokenUsage(sessionFilePath, model = null) {
   try {
     const aggregate = getTranscriptAggregate(sessionFilePath);
-    // Session detail calls without a model; use the transcript's own latest
-    // model (skipping `<synthetic>` stubs) so the limit isn't the 200K default.
-    const history = aggregate?.projection?.modelHistory || [];
-    const transcriptModel = history.findLast(item => !item.model.startsWith('<'))?.model;
     return aggregate ? {
       ...(aggregate.displayUsage || aggregate.usage),
-      contextWindowMax: contextWindowMaxForClaudeModel(model || transcriptModel),
+      contextWindowMax: contextWindowMaxForClaudeModel(model || latestTranscriptModel(aggregate)),
     } : emptyTokenUsage();
   } catch { /* ignore */ }
   return emptyTokenUsage();
@@ -1738,7 +1760,7 @@ function getTranscriptProjection(sessionFilePath, projectPath, model) {
     projection.workingSet = newest;
     return {
       ...projection,
-      contextWindowMax,
+      contextWindowMax: contextWindowMaxForClaudeModel(model || latestTranscriptModel(aggregate)),
       ...(projection.cost ? { estimatedCost: projection.cost.usd } : {}),
     };
   } catch {
@@ -2313,7 +2335,7 @@ function buildSubAgentSession({ filePath, agentId, decodedProject, parentSession
   const detail = getSubAgentDetail(filePath, decodedProject);
   const sessionId = `subagent-${agentId}`;
   const permissionMode = getPermissionMode(filePath);
-  const model = detail.model || 'unknown';
+  const model = detail.model || null;
   return {
     ...getClaudeTurnState(filePath, permissionMode),
     ...getTranscriptProjection(filePath, decodedProject, model),
@@ -2423,7 +2445,7 @@ class ClaudeAdapter {
           provider: 'claude',
           agentId: entry.agentId || null,
           agentType: normalizeClaudeAgentType(entry.agentType, entry.agentId),
-          model: entry.model || 'unknown',
+          model: entry.model || null,
           status: 'active',
           lastActivity: entry.timestamp || 0,
           project: entry.project || null,
@@ -2653,7 +2675,7 @@ class ClaudeAdapter {
           const identity = getSessionIdentity(sessionId);
           const project = identity?.project || decodedProject;
           const agentType = teamName ? 'team-member' : identity?.agentType || 'team-member';
-          const model = detail.model || 'unknown';
+          const model = detail.model || null;
 
           results.push({
             ...getClaudeTurnState(filePath, permissionMode, now),

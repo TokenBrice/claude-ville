@@ -69,3 +69,42 @@ test('the sprite faces the point for the window and then turns back', () => {
     assert.equal(sprite.direction, 2, 'turns back to the facing it had');
     sprite.dispose?.();
 });
+
+// RG-1: the turned back (NE, N, NW) is the errored body's one signature
+// (AG-6). A glance up-screen turns a healthy body to the profile on that side.
+test('a squad glance never turns a healthy body its back', () => {
+    const sprite = new AgentSprite({ id: 'patron', status: 'idle', provider: 'claude', model: 'claude-opus-5-5' }, {});
+    sprite.x = 0;
+    sprite.y = 0;
+    const now = 1_000;
+    const DIR_E = 2;
+    const DIR_W = 6;
+    for (const [point, expected] of [
+        [{ x: 40, y: -40 }, DIR_E],
+        [{ x: 2, y: -40 }, DIR_E],
+        [{ x: -2, y: -40 }, DIR_W],
+        [{ x: -40, y: -40 }, DIR_W],
+        [{ x: -40, y: 20 }, dirFromVelocity(-40, 20)],
+    ]) {
+        sprite.noticeSquadmate(point, now + 5000);
+        assert.equal(sprite._squadGlanceFacing(now), expected, `glance toward ${point.x},${point.y}`);
+    }
+    sprite.dispose?.();
+});
+
+test('a risen lead keeps facing its blocked child through a squad glance', () => {
+    const sprite = new AgentSprite({ id: 'lead', status: 'working', provider: 'claude', model: 'claude-opus-5-5' }, {});
+    sprite.motionScale = 0;
+    sprite.x = 0;
+    sprite.y = 0;
+    sprite.visitRole = 'rest';
+    sprite.moving = false;
+    sprite._subagentWait = { pint: true };
+    const child = { x: 60, y: 30 };
+    sprite.getBlockedChild = () => child;
+    const now = 1_000;
+    sprite.noticeSquadmate({ x: -60, y: 30 }, now + 5000);
+    sprite._holdRestPlace(now);
+    assert.equal(sprite.direction, dirFromVelocity(60, 30), 'AG-5: the standing lead faces its child');
+    sprite.dispose?.();
+});

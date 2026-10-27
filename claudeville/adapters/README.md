@@ -107,7 +107,7 @@ Registry metadata treats adapter-backed providers as detail-capable when `getSes
 | `teamName` | string \| null | Explicit team membership: Claude main sessions through `~/.claude/teams/` inboxes, Claude subagents and teammates through the meta file's `teamName`. Never inferred from paths. |
 | `agentColor` | string \| null | Claude-only. The colour name Claude assigned a teammate in its meta file (for example `'cyan'`). Published for consumers; the client does not read it yet. |
 | `project` | string \| null | Absolute working directory. Gemini may resolve this from a SHA-256 hash and return null on failure. |
-| `model` | string | Free-form. UI strips `claude-` and `-2025…` suffixes for display. |
+| `model` | string | Free-form. UI strips `claude-` and `-2025…` suffixes for display. Claude never reports a `<…>` stub such as `<synthetic>` (Claude Code's API-error text, which never speaks as dialogue either); with no model in the tail window it reports none, normalization falls back to the provider id, and the context limit comes from the transcript's own latest model. |
 | `status` | `'active'` | Currently always `'active'`; idle/terminated transitions are inferred client-side by `AgentManager`. |
 | `lastActivity` | number (ms epoch) | Latest of file mtime and any in-file timestamp. Sort key. |
 | `lastTool` | string \| null | Most recent tool name. |
@@ -148,7 +148,7 @@ Registry metadata treats adapter-backed providers as detail-capable when `getSes
 `lastResults` answers a question invocation cannot: how a call ended. A record
 exists only where the provider wrote one down.
 
-- **Codex** — `item_completed` records of type `CommandExecution` (`codex.js`). `exit_code` may be absent on an interrupted command; `exitCode` is then `null` and the outcome stays explicitly unknown.
+- **Codex** — `item_completed` records of type `CommandExecution` (`codex.js`). `exit_code` may be absent on an interrupted command; `exitCode` is then `null` and the outcome stays explicitly unknown. Items carry `command` as argv (`[".../bash", "-lc", "<script>"]`); `detail`, `lastToolInput` and the tool-history row summarize the script past any `cd <dir> &&` hop, as Claude's `Bash` summaries do.
 - **Kimi Code** — `tool.result` loop events carrying an exit code, or an explicit `isError`/`is_error`/`error` flag (`kimi.js`). A result that only carries output is not an outcome and produces nothing.
 - **OpenCode** — tool parts with a numeric `state.metadata.exit` (`opencode.js`).
 - **OMP** — `toolResult` records paired with their `toolCall` id inside the bounded transcript tail (`omp.js`). An explicit `isError` flag maps to exit 1 or 0; an absent flag leaves `exitCode: null`. Unpaired results and still-open calls are not published.
@@ -293,7 +293,7 @@ These show the minimal shape each adapter's parser reads. Real files are longer;
 }
 ```
 
-Subagent files at `~/.claude/projects/<encoded-project>/<sessionId>/subagents/agent-<id>.jsonl` follow the standard Claude message-event JSONL schema; the adapter reads `message.role`, `message.content`, and `usage` blocks from each line.
+Subagent files at `~/.claude/projects/<encoded-project>/<sessionId>/subagents/agent-<id>.jsonl` follow the standard Claude message-event JSONL schema; the adapter reads `message.role`, `message.content`, and `usage` blocks from each line. Only `user` and `assistant` records are turns: the `api-request-blob` copies of API messages (a `message.role`, no timestamp and, in subagent files, no `isSidechain`) and the `api-request`/`api-request-shape` bookkeeping lines never contribute a message (`claude/api-request-blob*.jsonl`).
 
 Workflow tool sub-agents use the same JSONL schema but live one level deeper, grouped per run id: `~/.claude/projects/<encoded-project>/<sessionId>/subagents/workflows/<wfRunId>/agent-<id>.jsonl`, each with a `agent-<id>.meta.json` sidecar (`{"agentType":"workflow-subagent"}`). The per-agent TUI label/phase shown in the Workflow runner is not persisted; only the workflow name is recoverable, from the run script at `<sessionId>/workflows/scripts/<workflowName>-<wfRunId>.js`. The adapter tags these sessions `agentType: 'workflow-subagent'` with `workflowId` / `workflowName`, and keeps a quiet orchestrator parent "active" off its (possibly nested) children's mtimes.
 

@@ -178,6 +178,14 @@ const DIR_N = 4;
 const DIR_NW = 5;
 const DIR_W = 6;
 const DIR_SW = 7;
+// The facing toward a world bearing for a body at rest: a back-facing bearing
+// (NE, N, NW) turns to the profile on its side, since the turned back is the
+// errored body's one signature (AG-6).
+function frontFacingDir(dx, dy) {
+    const dir = dirFromVelocity(dx, dy);
+    if (dir == null || FACING_FRONT_RANK[dir] !== 0) return dir;
+    return dir === DIR_NE ? DIR_E : dir === DIR_NW ? DIR_W : dx >= 0 ? DIR_E : DIR_W;
+}
 // 7.3 — the facings the work and wait strips are authored for (manifest
 // `directions: [se, e, w, sw]`, V7 work facings). A body about to play one
 // of those strips turns to the nearest of these, since any other column
@@ -1786,10 +1794,7 @@ export class AgentSprite {
         const child = this._risenForChild();
         if (child) {
             this._risenFacing = true;
-            const bearingX = child.x - this.x;
-            const dir = dirFromVelocity(bearingX, child.y - this.y);
-            this._setFacingGoal(dir == null || FACING_FRONT_RANK[dir] !== 0 ? dir
-                : dir === DIR_NE ? DIR_E : dir === DIR_NW ? DIR_W : bearingX >= 0 ? DIR_E : DIR_W);
+            this._setFacingGoal(frontFacingDir(child.x - this.x, child.y - this.y));
         } else if (this._risenFacing) {
             this._risenFacing = false;
             if (!this._restSeat) this._faceBuilding(this._buildingForType(this._lastBuildingType), this._lastVisitFacingPoint);
@@ -1800,7 +1805,7 @@ export class AgentSprite {
             if (!child) this._setFacingGoal(glance ?? SEAT_FACING_DIR[seat.facing]);
             return;
         }
-        if (glance != null) this._setFacingGoal(glance);
+        if (glance != null && !child) this._setFacingGoal(glance);
         if (this.visitRole === 'rest' && !this._restSeat && this._restBuilding && now >= (this._standRefreshAt || 0)) {
             // AG-2 — a patron standing at the Tavern takes a seat once one frees.
             this._standRefreshAt = now + STAND_REFRESH_MS;
@@ -1840,7 +1845,7 @@ export class AgentSprite {
             return null;
         }
         if (glance.restore == null) glance.restore = this._facingGoal ?? this.direction;
-        return dirFromVelocity(glance.x - this.x, glance.y - this.y);
+        return frontFacingDir(glance.x - this.x, glance.y - this.y);
     }
 
     // W4.9 — the local hour (fractional) of the atmosphere clock, or the
@@ -7804,6 +7809,9 @@ export class AgentSprite {
         if (!ACTION_PROP_PROVIDERS.has(provider) || this.moving || this._distressPose?.()) return;
         const action = resolveAgentAction(this.agent, { chatting: this.chatting });
         if (!action) return;
+        // VQ-1a — a lead resting at the Tavern on its subagents makes no work
+        // claim of its own: the rest tableau and the plaque carry the crew's.
+        if (action === AgentAction.WORK && this._subagentWait?.pint === true && this.visitRole === 'rest') return;
         // SM-7 — one chip per body: a chatting body already wears the message
         // bubble over its head, so the TALK scroll prop would be a second one.
         // A muted chatter (decision focus elsewhere) shows the prop instead,
