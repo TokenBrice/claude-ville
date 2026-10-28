@@ -2,6 +2,79 @@
 
 ---
 
+## v0.59.0 — *The Honest Lantern* · Oct 28, 2026
+
+The village tells the truth about what your agents are doing, runs on a fraction of the CPU, and the square beside Command has room to breathe.
+
+- **Status you can trust.**
+  - Current Claude Code transcripts carry `api-request` records that ClaudeVille read as conversation turns, so a third of finished Claude turns never showed COMPLETED. They are skipped now: in a 7-day replay of real sessions, finished turns show correctly 92.7 % of the time (49 % before), and none is lost.
+  - A lead whose background agents or shells are still running reads "Waiting on crew" and takes a Tavern seat after 60 s, instead of "done, your move".
+  - Codex commands keep their script; 60 % of Codex snapshots showed a bare "Bash".
+  - A Codex question asked while the model keeps working reads as needing you.
+  - After a server restart, a busy Codex turn no longer reads as done.
+  - Nested subagents hang under their real parent. A Claude API error reads ERRORED and is never spoken as the model's words. A Gemini, Grok or Kimi question still needs you after two minutes.
+- **A quieter lantern.**
+  - The World renders at most 60 fps; it drew every display refresh, 240 a second on a 240 Hz panel. When only ambient motion is on screen it renders at 30, while walkers, the camera, moments and pointer input keep 60.
+  - Reduced-motion and still scenes skip their frames on the GPU paths.
+  - Opening Settings no longer freezes the frame-pressure governor. The lighthouse beam is painted in runs, and agent atlas uploads and per-frame garbage are down.
+  - The server rescans only what changed: an unchanged rescan of twenty 1 MB transcripts went from 270 ms to 3 ms. It also skips git parsing for commands with no git work, reads only the active sessions' task folders, and sends deltas that carry only what changed. WebSocket traffic is down 53 %.
+  - A browser with no WebGPU adapter stops trying WebGPU on every boot.
+- **Quota you can see.**
+  - Codex's weekly window, its reset countdown and the credit balance reach the top bar, a Dashboard quota card and the Mine. At 100 % the account reads LIMIT, while its villagers keep working.
+  - Claude quota shows both reset times, and names an expired token or a rate limit instead of freezing for half an hour.
+  - Row tokens lead with new tokens, with cache reads second. The spend map ranks today's sessions by spend, and "tokens seen today" says when its count began.
+- **A glance that adds up.**
+  - The top-bar counts add up to the agent count: a finished turn counts as IDLE and reads one word on every surface. Completed now wears parchment stone, well clear of the needs-you gold, and a rate limit reads LIMIT everywhere.
+  - A working agent gone quiet is raised (`silent 18m`), never dimmed. A departed villager says so, and its open record stays.
+  - Subagent rows fold into their lead's strip.
+  - The link chip says RECONNECTING or STALE during an outage or on a frozen link.
+  - A reload chip appears after a server upgrade.
+  - One bad session no longer stalls an update, and a lost resync is retried.
+  - Desktop alerts group, and a reload no longer re-sends them.
+  - The sound chip tells "paused while away" from "not started".
+  - Shortcuts stay out of modals.
+  - Below 1280 px the top bar drops whole units instead of wrapping.
+  - A tab hidden for hours no longer replays every departure when you come back.
+- **The Harbor tells the truth.**
+  - A push approved after two minutes still sails.
+  - Pulled hulls leave instead of docking forever, and an unrelated push no longer sails them.
+  - Pending pulls, PRs and commits never count as landed.
+  - A rebase during a rejected push leaves one hull.
+  - The departure finale follows the convoy.
+  - A new PR cutter takes a free mooring.
+- **The wider square.**
+  - Command moved two rows back toward the lake, so the central bridge now lands on an open, paved square instead of in Command's queue.
+  - On the busiest scene, time stalled by the landing fell 74 %, and no queue or work place stands within a tile of it.
+  - The signpost and brazier moved with the steps.
+- **Bodies where they belong.**
+  - No boot spawn lands in a sealed pocket, and the boot crowd clears the gate in 8 s.
+  - The Harbor pier slots and seat are reachable again: the salt crates moved to the causeway end.
+  - Finished sessions wait at walkable quay places.
+  - The Pharos lookout stands in view.
+- **The world, mended.**
+  - At the Tavern: resting patrons wear no work chip, and standers no longer hide the bar. Healthy squadmates never show the errored back.
+  - Refused commands and empty searches show a neutral chit instead of a red "exit 1".
+  - Light and weather:
+    - The needs-you banner keeps its yellow in storms.
+    - Blue hour is brighter than the night again, and pre-dawn lamps hold their strength.
+    - The sea borrows less sky.
+    - The sea shower crosses the map edge.
+  - Buildings:
+    - Open doors glow in a single soft course.
+    - The Archive lancets light pane by pane.
+    - The banked Forge keeps a low ember at night.
+  - Rate-limited villagers get their frost tint on every renderer.
+  - Stack hulls hang their riding light at the masthead.
+- **Tooling.**
+  - WebGL2 now renders deterministically: an implicit-LOD texture read was undefined after a discard. The parity gate is down from 26 failing cases to 11, all on WebGPU.
+  - Git discovery matches git.
+  - Five browser smokes run again, on isolated servers, along with new reachability, scan-budget and renderer-fallback checks.
+  - `validate:full` gains five gates, and CI adds Node 26.
+
+Validation: `validate:full` passed after every wave, and the final `validate:quick` runs 2,402 unit tests. `world:golden-hours` was recalibrated twice, once for the blue-hour lift and once for the Command move; it passes on WebGPU, WebGL2 and Canvas. `verify:render`, `world-visit-paths`, `world-state-bounds` and `browser-lifecycle` pass. `smoke:webgpu-parity` fails 11 of 36 cases, all WebGPU-only (horizon seam rows and cloud-course thresholds); WebGL2 is now bit-stable. Replays of a week of real Claude and Codex sessions back the status and server numbers above.
+
+---
+
 ## v0.58.0.1 · Oct 26, 2026 — Hotfix
 
 - **Claude's context gauge reads 1M again.** Selecting a Claude Opus or Sonnet agent with a 1M-token context window showed `of 200.0K context` in the Activity Panel. The session list reported the right limit, but the session-detail request read the token usage without a model, fell back to the 200K default, and overwrote it. Session detail now takes the limit from the latest model in the session's own transcript.
