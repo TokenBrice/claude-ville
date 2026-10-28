@@ -2,6 +2,19 @@
 
 ---
 
+## v0.60.1 — *The Unseen Guild* · Oct 28, 2026
+
+DeepSeek agents launched through the deepseek-cc-mcp server now walk the village. They ran inside that server's own process and never reached a CLI session store, so ClaudeVille never saw them.
+
+- **DeepSeek MCP agents.**
+  - Each DeepSeek thread is one villager, named after its job label; a `continue` is the same villager's next turn.
+  - Status comes from the server's own records: working, running a tool, done, or ERRORED when a job fails or times out. A job whose server died no longer reads as working.
+  - Villagers wear the DeepSeek Flash body for their effort and carry their tokens and the server's own cost, which halves off-peak.
+  - Their reasoning speaks as thinking, and the Activity Panel lists their tool calls, missions and final reports.
+  - ClaudeVille reads `~/.local/state/deepseek-cc-mcp/`, or `DEEPSEEK_CC_STATE_DIR` when it is set.
+
+---
+
 ## v0.60.0 — *The Counted Sands* · Oct 28, 2026
 
 Your account quota leaves the top bar and stands in the village: an hourglass belfry on the north shore shows what is left of your Claude and Codex limits.
