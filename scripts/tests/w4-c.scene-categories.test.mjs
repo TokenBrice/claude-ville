@@ -112,7 +112,6 @@ test('mine ritual functional overlay draws once per frame in Canvas and GPU back
         // only about how many times the ritual mark reaches a backend.
         _roomInstrumentFor: () => null,
         _mineSeamColor: () => '#ffc15a',
-        _mineReserveRatio: () => 0.64,
         _mineRailSpan: () => ({
             railA: { x: 128, y: 158 },
             railB: { x: 148, y: 158 },
@@ -126,7 +125,6 @@ test('mine ritual functional overlay draws once per frame in Canvas and GPU back
             assert.strictEqual(record, ritual);
             ritualDraws++;
         },
-        _drawMineReserve: () => {},
         _drawAtmosphereBuildingReactions: () => {},
         _drawOccupancyPennant: () => {},
     });

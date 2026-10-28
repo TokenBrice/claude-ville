@@ -267,19 +267,17 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         // 4.5 — art-coupled points of the re-authored mine: `mouth` is the
         // plank floor just inside the tunnel, `railFrom`→`railTo` is the baked
         // track's centre line from the threshold out to its last sleeper (the
-        // ritual cart rolls out along it), `railsBaked` retires the drawn
-        // rails, and `reserve` is where the quota stockpile sits on the
-        // rubble with its gauge below.
+        // ritual cart rolls out along it), and `railsBaked` retires the drawn
+        // rails.
         effectAnchors: {
             mouth: [76, 186],
             railFrom: [77, 194],
             railTo: [47, 209],
             railsBaked: true,
-            reserve: [176, 190],
         },
         // 4.3 — the assay bench: two shallow trays and the coin-stamp rack,
         // standing on the open yard below the rubble foot, east of the
-        // cottage that sits in front of the track, clear of the reserve gauge.
+        // cottage that sits in front of the track.
         assay: {
             trays: [
                 { at: [104, 236], w: 26, h: 10, kind: 'input' },
