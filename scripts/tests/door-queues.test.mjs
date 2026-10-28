@@ -227,6 +227,25 @@ test('AG-7: the petitioners\' line stays on Command\'s forecourt, off every brid
     });
 });
 
+// CM-1 — Command stands two rows back from the central bridge, so its north
+// landing (the pond plank 16-17,22 and the deck's foot 18,22) opens onto an
+// open forecourt: no place a body waits or works on stands within a tile of it.
+test('CM-1: no queue, work or overflow place stands within a tile of the central bridge\'s north landing', () => {
+    const landing = [[16, 22], [17, 22], [18, 22]];
+    for (const [x, y] of landing) assert.ok(scenery.getBridgeTiles().has(`${x},${y}`) || walkable(x, y), `${x},${y} is the landing`);
+    const near = (place) => landing.some(([x, y]) => Math.max(Math.abs(place.tileX - x), Math.abs(place.tileY - y)) <= 1);
+    const places = [
+        ...COMMAND_QUEUE.slots.map((place) => ['command petitioner', place]),
+        ...COMMAND_QUEUE.overflow.map((place) => ['command petitioner overflow', place]),
+    ];
+    for (const def of BUILDING_DEFS) {
+        def.visitTiles.filter((tile) => tile.role !== 'ambient').forEach((tile) => places.push([`${def.type} ${tile.role}`, tile]));
+        VISIT_OVERFLOW_TILES[def.type].forEach((tile) => places.push([`${def.type} ring`, tile]));
+        APPROACH_FILES[def.type].forEach((tile) => places.push([`${def.type} file`, tile]));
+    }
+    for (const [label, place] of places) assert.equal(near(place), false, `${label} ${keyOf(place)} stands beside the landing`);
+});
+
 test('AG-2: the Tavern\'s standing room keeps off seats, fixtures and every other standing place', () => {
     const others = new Map();
     const claim = (place, owner) => others.set(keyOf(place), owner);

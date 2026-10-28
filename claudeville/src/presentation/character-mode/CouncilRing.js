@@ -15,7 +15,7 @@ import { cueNoteDue } from '../shared/audio/CueScore.js';
 const MAX_TALK_ARCS = 8;
 // #27 — slow band: one full mote traversal per ~1.8s travelling along the arc.
 const TALK_MOTE_PERIOD_MS = 1800;
-const COMMAND_PLAZA = { tileX: 16, tileY: 21 };
+const COMMAND_PLAZA = { tileX: 16, tileY: 19 };
 const TEAM_GATHER_COOLDOWN_MS = 5 * 60 * 1000;
 const TEAM_GATHER_RADIUS_TILES = 12;
 // 5.3 — one gather ceremony is legible at a time: its notches land on the

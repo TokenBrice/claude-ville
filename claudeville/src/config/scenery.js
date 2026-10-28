@@ -474,7 +474,12 @@ export const VILLAGE_NIGHT_LAMPS = Object.freeze([
 ].map(row => Object.freeze({ ...row, id: 'prop.lantern', layer: 'cache', walkBlock: true })));
 
 export const DISTRICT_PROPS = [
-    { tileX: 11, tileY: 19, id: 'prop.runeBrazier', layer: 'cache', district: 'command' },
+    // Command's rune brazier stands at the forecourt's north-west corner, by
+    // the west end of the gate steps (CM-1: it moved with the front from
+    // 11,19; two rows north is the Archive's reading lamp). Its stand and the
+    // alcove crates' keep the steps' row west of the door clear of standing
+    // places (COMMAND_QUEUE).
+    { tileX: 12, tileY: 18, id: 'prop.runeBrazier', layer: 'cache', district: 'command' },
     { tileX: 6.9, tileY: 27.3, id: 'prop.lakeShrine', layer: 'cache', district: 'elderwood' },
     { tileX: 32.3, tileY: 19.6, id: 'prop.netRack', layer: 'cache', district: 'harbor' },
     { tileX: 33.2, tileY: 22.2, id: 'prop.harborBeaconBuoy', layer: 'cache', district: 'harbor' },
@@ -498,7 +503,8 @@ export const DISTRICT_PROPS = [
     // the planks or the bridge landing. One mangrove root and a flower mark
     // the east bank, clear of the avenue and bridge. The plaza in front of
     // Command carries no fixture: it is where the briefing, the queue and the
-    // overflow crowd.
+    // overflow crowd. Since CM-1 that crowd stands on the forecourt two rows
+    // up from the pond, which sits in the square at the bridge's north landing.
     { tileX: 16.15, tileY: 20.95, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
     { tileX: 16.6, tileY: 20.8, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
     { tileX: 20.4, tileY: 22.7, id: 'prop.mangroveRoot.twisted', layer: 'sorted', district: 'civic' },
@@ -651,9 +657,10 @@ export const AMBIENT_GROUND_PROPS = [
     { tileX: 12.5, tileY: 35.4, type: 'lantern' },
 
     // Civic core: utility props around the square, not scattered through the
-    // woods. The Command gate steps own the front of the plaza (row 20); the
-    // village well stands on the south-bank green (DISTRICT_PROPS).
-    { tileX: 17.8, tileY: 19.4, type: 'signpost' },
+    // woods. The Command gate steps own the head of the forecourt (row 18;
+    // CM-1 moved the signpost with the gate's east corner from 17.8,19.4);
+    // the village well stands on the south-bank green (DISTRICT_PROPS).
+    { tileX: 17.8, tileY: 17.4, type: 'signpost' },
 
     // A reading lamp beside the Archive alcove's scroll crates, and the
     // Tavern's garden lamp on the yard's east edge, between the tables and
