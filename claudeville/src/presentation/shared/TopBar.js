@@ -157,88 +157,8 @@ function storedSoundView(storage = globalThis.window?.localStorage) {
 
 // Q10/UI-10: when the centre runs out of width it sheds whole units, least
 // needed first, instead of wrapping or clipping one: the burn rate, the
-// quota unit, the oldest wait, then the token total. Counts never shed.
-const CENTER_SHED_ORDER = Object.freeze(['rate', 'quota', 'age', 'total']);
-
-// A Claude window this full reads in the rate-limited hue (the pressure cue).
-export const QUOTA_PRESSURE_RATIO = 0.85;
-
-function quotaRatio(value) {
-    if (value === null || value === undefined || value === '') return null;
-    const ratio = Number(value);
-    return Number.isFinite(ratio) ? Math.min(1, Math.max(0, ratio)) : null;
-}
-
-function percentLabel(ratio) {
-    return `${Math.round(ratio * 100)}%`;
-}
-
-function resetsInText(at, now) {
-    const resetsAt = Number(at);
-    return Number.isFinite(resetsAt) && resetsAt > 0 ? `, resets in ${formatWaitAge(resetsAt - now)}` : '';
-}
-
-/**
- * The top bar's Claude quota unit (SV-7 contract, `/api/usage`): the fuller
- * of the 5-hour and 7-day windows with its reset countdown, both windows in
- * the tip, and "token expired" on a 401. Null when nothing is known.
- */
-export function claudeQuotaView(usage, now = Date.now()) {
-    if (Number(usage?.quotaError?.status) === 401) {
-        return {
-            value: '—', expired: true, pressure: false, window: null, resetsAt: null,
-            tip: 'Claude quota unknown: the sign-in token expired. Run claude to sign in again.',
-        };
-    }
-    const quota = usage?.quota;
-    const fiveHour = quotaRatio(quota?.fiveHour);
-    const sevenDay = quotaRatio(quota?.sevenDay);
-    if (fiveHour === null && sevenDay === null) return null;
-    const weekly = sevenDay !== null && (fiveHour === null || sevenDay >= fiveHour);
-    const used = weekly ? sevenDay : fiveHour;
-    const resetsAt = Number(weekly ? quota.sevenDayResetsAt : quota.fiveHourResetsAt);
-    const windows = [];
-    if (fiveHour !== null) windows.push(`5-hour ${percentLabel(fiveHour)}${resetsInText(quota.fiveHourResetsAt, now)}`);
-    if (sevenDay !== null) windows.push(`7-day ${percentLabel(sevenDay)}${resetsInText(quota.sevenDayResetsAt, now)}`);
-    const throttled = Number(usage?.quotaError?.status) === 429
-        ? ' · the quota check is throttled, so this is the last reading' : '';
-    return {
-        value: percentLabel(used),
-        expired: false,
-        pressure: used >= QUOTA_PRESSURE_RATIO,
-        window: weekly ? '7D' : '5H',
-        resetsAt: Number.isFinite(resetsAt) && resetsAt > 0 ? resetsAt : null,
-        tip: `Claude quota · ${windows.join(' · ')}${throttled}`,
-    };
-}
-
-/** The quota unit's caption at `now`: `7D · 2D3H`, `5H QUOTA`, `TOKEN EXPIRED`. */
-export function quotaCaption(view, now = Date.now()) {
-    if (!view) return '';
-    if (view.expired) return 'TOKEN EXPIRED';
-    if (!view.resetsAt) return `${view.window} QUOTA`;
-    return `${view.window} · ${formatWaitAge(Math.max(0, view.resetsAt - now)).toUpperCase()}`;
-}
-
-/**
- * Q3: the Codex account at its weekly limit, from `usage.codex` alone (never
- * from a session's status, so Codex villagers keep their real work). Null
- * while the window has room or the field is absent.
- */
-export function codexAccountLimit(usage, now = Date.now()) {
-    const codex = usage?.codex;
-    if (!codex || codex.limitReached !== true) return null;
-    const minutes = Number(codex.windowMinutes);
-    const span = minutes === 10080 ? 'weekly' : Number.isFinite(minutes) && minutes > 0 ? `${Math.round(minutes / 60)}-hour` : '';
-    const parts = [`Codex account at its ${span ? `${span} ` : ''}limit`];
-    if (Number.isFinite(Number(codex.usedPercent)) && codex.usedPercent !== null) parts.push(`${Math.round(codex.usedPercent)}% used`);
-    const resets = resetsInText(codex.resetsAt, now);
-    if (resets) parts.push(resets.slice(2));
-    if (codex.credits?.unlimited === true) parts.push('unlimited credits');
-    else if (Number.isFinite(codex.credits?.balance)) parts.push(`${formatNumber(Math.round(codex.credits.balance))} credits left`);
-    if (Number.isFinite(codex.observedAt) && codex.observedAt > 0) parts.push(`seen ${formatWaitAge(now - codex.observedAt)} ago`);
-    return { tip: parts.join(' · ') };
-}
+// oldest wait, then the token total. Counts never shed.
+const CENTER_SHED_ORDER = Object.freeze(['rate', 'age', 'total']);
 
 // `0.59.0` → `v0.59`; a hotfix keeps its fourth part.
 function shortVersion(version) {
@@ -408,16 +328,6 @@ export class TopBar {
             part.hidden = true;
             return [key, { part, num }];
         }));
-        // Q3 — the account limit (`CODEX` over `LIMIT`) lights from the
-        // usage contract alone. It is an account, not a session: it names
-        // the provider instead of a count, never joins the KPIs' sum, and
-        // sits calm beside the quota unit (placed below), never in the
-        // attention frame's alarm slice, which agents on a limit wear.
-        this.els.accountLimit = el('span', { className: 'topbar__seg-stat topbar__account-limit' }, [
-            el('span', { className: 'topbar__stat-value', text: 'CODEX' }),
-            el('span', { className: 'topbar__stat-label', text: 'LIMIT' }),
-        ]);
-        this.els.accountLimit.hidden = true;
         // W5.5b — the oldest actionable wait (`12m` over `OLDEST`), in the hue
         // of that agent's bucket, aged from `SignalLedger.waitAnchor` (the
         // anchor the plates and sidebar sort by) on the shared 1 Hz tick at
@@ -436,19 +346,8 @@ export class TopBar {
         this.els.attention.id = 'badgeAttention';
         this.els.attention.hidden = true;
         this.els.waiting?.parentElement?.parentElement?.prepend(this.els.attention);
-        // SV-7 — the Claude quota unit after the token total: the fuller
-        // window's percent over its reset countdown, hidden while unknown.
-        this.els.quotaValue = el('span', { className: 'topbar__stat-value', text: '–' });
-        this.els.quotaLabel = el('span', { className: 'topbar__stat-label' });
-        this.els.quota = el('span', { className: 'topbar__seg-stat topbar__quota' }, [this.els.quotaValue, this.els.quotaLabel]);
-        this.els.quota.hidden = true;
-        this.els.rateWrap?.insertAdjacentElement('afterend', this.els.quota);
-        this.els.quota.insertAdjacentElement('afterend', this.els.accountLimit);
-        this._quotaView = null;
-        this._unsubscribeQuota = null;
         this._fitKey = null;
         this._serverChange = null;
-        this._usage = null;
         this.timeInterval = null;
         this._lastFps = null;
         this._settingsPanel = null;
@@ -501,11 +400,6 @@ export class TopBar {
         this._onAtmosphere = snapshot => this._renderWitnessClock(snapshot);
         eventBus.on('atmosphere:updated', this._onAtmosphere);
 
-        this._onUsage = (usage) => {
-            this._usage = usage;
-            this._scheduleReactiveRender();
-        };
-        eventBus.on('usage:updated', this._onUsage);
         // EN-4: the server came back as another build or boot; this tab
         // still runs the client it loaded. A static chip offers the reload.
         this._onServerChanged = (change) => {
@@ -1346,7 +1240,6 @@ export class TopBar {
         this._renderCount(this.els.idle, stats.idle, pending);
         this._renderCount(this.els.waiting, stats.waiting, pending);
         this._renderAttention(stats, pending);
-        this._renderQuota(pending);
 
         this._renderActivityRail(stats);
         this._fitCenterIfChanged();
@@ -1367,11 +1260,6 @@ export class TopBar {
             }
             if (count > 0) lit.push({ key, count, noun });
         }
-        const account = pending ? null : codexAccountLimit(this._usage);
-        if (this.els.accountLimit) {
-            this.els.accountLimit.hidden = !account;
-            if (account) this.els.accountLimit.dataset.tip = account.tip;
-        }
         frame.hidden = lit.length === 0;
         this._renderOldestWait(lit.length ? this.world : null);
         if (frame.hidden) return;
@@ -1382,31 +1270,6 @@ export class TopBar {
         }
         frame.dataset.tip = `Needs action: ${lit.map(({ count, noun }) => `${count} ${noun}`).join(' · ')} · frame them`;
         frame.dataset.tipKey = 'A';
-    }
-
-    // SV-7 — the Claude quota unit: percent over a minute-grain reset
-    // countdown on the shared 1 Hz tick, the calm house lavender at 85 %
-    // (the pressure cue), `TOKEN EXPIRED` on a 401; hidden while unknown.
-    _renderQuota(pending) {
-        const node = this.els.quota;
-        if (!node) return;
-        const view = pending ? null : claudeQuotaView(this._usage);
-        this._quotaView = view;
-        node.hidden = !view;
-        if (!view) {
-            this._unsubscribeQuota?.();
-            this._unsubscribeQuota = null;
-            return;
-        }
-        node.classList.toggle('topbar__quota--pressure', view.pressure);
-        node.classList.toggle('topbar__quota--expired', view.expired);
-        setText(this.els.quotaValue, view.value);
-        node.dataset.tip = view.tip;
-        if (!this._unsubscribeQuota) {
-            this._unsubscribeQuota = subscribeElapsedText(this.els.quotaLabel, now => quotaCaption(this._quotaView, now));
-        } else {
-            setText(this.els.quotaLabel, quotaCaption(view, elapsedTickNow()));
-        }
     }
 
     // EN-4 — static, no blink: the version becomes `UPDATED v0.59 · RELOAD`
@@ -1428,9 +1291,8 @@ export class TopBar {
         if (!this.els.center) return;
         const parts = ATTENTION_PARTS.map(({ key }) => this.els.attentionParts?.[key]?.part?.hidden);
         const key = [
-            this.els.attention?.hidden, ...parts, this.els.accountLimit?.hidden, this.els.attentionAge?.part?.hidden,
+            this.els.attention?.hidden, ...parts, this.els.attentionAge?.part?.hidden,
             this.els.tokens?.textContent?.length, this.els.rate?.textContent, this.els.tokensLabel?.textContent,
-            this.els.quota?.hidden, this.els.quotaValue?.textContent?.length,
         ].join('|');
         if (key === this._fitKey) return;
         this._fitKey = key;
@@ -1486,8 +1348,9 @@ export class TopBar {
         node.parentElement?.classList.toggle('topbar__seg--zero', !pending && count === 0);
     }
 
-    // Today's observed spend, the live burn rate, and quota headroom — the
-    // three numbers that answer "am I burning tokens?". The old readout summed
+    // Today's observed spend and the live burn rate — the numbers that answer
+    // "am I burning tokens?" (quota headroom stands in the World, on the
+    // Hourglass Belfry). The old readout summed
     // the lifetime cost of whichever sessions happened to be resident, which
     // moved for reasons that had nothing to do with spending.
     _renderSpend(pending = this._countsPending) {
@@ -2063,9 +1926,6 @@ export class TopBar {
         this.els.attention?.remove();
         this._unsubscribeOldestWait?.();
         this._unsubscribeOldestWait = null;
-        this.els.quota?.remove();
-        this._unsubscribeQuota?.();
-        this._unsubscribeQuota = null;
         eventBus.off('ws:server-changed', this._onServerChanged);
         if (this.timeInterval) {
             clearInterval(this.timeInterval);
@@ -2082,7 +1942,6 @@ export class TopBar {
         eventBus.off('agent:updated', this._onUpdate);
         eventBus.off('agent:removed', this._onUpdate);
         eventBus.off('fps:updated', this._onFps);
-        eventBus.off('usage:updated', this._onUsage);
         eventBus.off('village:state', this._onVillageState);
         eventBus.off('chronicle:status', this._onChronicleStatus);
         if (this.els.connection) {

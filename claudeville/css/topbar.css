@@ -642,45 +642,12 @@ button.topbar__spend-session:hover {
 }
 
 /* UI-10 — TopBar sheds whole units, least needed first, when the centre
-   runs out of width: the burn rate, the quota unit, the oldest wait, then
-   the token total. The counts never shed. */
+   runs out of width: the burn rate, the oldest wait, then the token total.
+   The counts never shed. */
 .topbar__center--shed-rate #statRate,
-.topbar__center--shed-quota .topbar__quota,
-.topbar__center--shed-quota .topbar__account-limit,
 .topbar__center--shed-age .topbar__attn-part--age,
 .topbar__center--shed-total .topbar__ledger {
     display: none;
-}
-
-/* SV-7 — the Claude quota unit beside the total: the fuller window's
-   percent over `7D · 2D3H`, in the calm house lavender once the window is
-   85 % full (the pressure cue: an account state, not the rate-limited
-   alarm agents wear), `—` over `TOKEN EXPIRED` after a 401. Static. */
-.topbar__quota[hidden] {
-    display: none;
-}
-
-.topbar__quota--pressure .topbar__stat-value {
-    color: var(--cv-purple);
-}
-
-.topbar__quota--expired .topbar__stat-value {
-    color: var(--ink-4);
-}
-
-.topbar__quota--expired .topbar__stat-label {
-    color: var(--ink-2);
-}
-
-/* Q3 — the Codex account limit (`CODEX` over `LIMIT`) beside the quota
-   unit: an account state, so it stays calm in the house lavender, never
-   the attention frame's rate-limited alarm. Static. */
-.topbar__account-limit[hidden] {
-    display: none;
-}
-
-.topbar__account-limit .topbar__stat-value {
-    color: var(--cv-purple);
 }
 
 .topbar__kpi-row {

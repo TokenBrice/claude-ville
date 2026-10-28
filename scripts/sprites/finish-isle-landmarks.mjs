@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Living Isle W8.5b (AD-P10): finish the four non-semantic landmark props
+// Living Isle W8.5b (AD-P10): finish the three non-semantic landmark props
 // from their PixelLab `create_map_object` candidates, and bake the windmill's
 // sail strip.
 //
@@ -8,7 +8,7 @@
 //   1. Strip the baked ground plate (docs/building-style-contract.md,
 //      Grounding): below the plate's top row, every texel outside an authored
 //      keep polygon (the structure's own footing, steps and the wheel) is
-//      cleared, and grass inside it too (the ruin keeps its ivy). Islands under
+//      cleared, and grass inside it too. Islands under
 //      6 texels go, and a column whose foot lost a plate texel under it takes
 //      that texel two stops darker, so no wall ends in a raw cut.
 //   2. Snap the warm cream/white masonry and the pale stone onto the landmark
@@ -83,14 +83,12 @@ function inPolygon(x, y, poly) {
 
 // Keep polygons and plate rows in the raw (unmirrored) candidate's texels.
 const ASSETS = [
-    { id: 'prop.windmill', band: 152, keepGreen: false,
+    { id: 'prop.windmill', band: 152,
         keep: [[26, 140], [100, 140], [100, 178], [95, 186], [76, 188], [68, 181], [52, 180], [38, 176], [27, 170]] },
-    { id: 'prop.watermill', band: 98, keepGreen: false,
+    { id: 'prop.watermill', band: 98,
         keep: [[30, 40], [30, 112], [46, 112], [46, 130], [60, 140], [90, 140], [100, 133], [112, 142], [134, 133], [162, 118], [162, 40]] },
-    { id: 'prop.waysideChapel', band: 100, keepGreen: false, chapel: true,
+    { id: 'prop.waysideChapel', band: 100, chapel: true,
         keep: [[10, 30], [10, 104], [28, 112], [44, 120], [57, 128], [61, 119], [80, 108], [98, 99], [102, 97], [102, 30]] },
-    { id: 'prop.ruinedTower', band: 120, keepGreen: true,
-        keep: [[8, 40], [8, 128], [22, 138], [40, 147], [60, 154], [68, 150], [84, 142], [100, 135], [106, 130], [106, 40]] },
 ];
 // Chapel glass rects (raw texels, inclusive): the lit window, the lantern.
 const CHAPEL_WINDOW = { x0: 70, y0: 74, x1: 87, y1: 102 };
@@ -114,7 +112,7 @@ function finish(asset) {
             if (data[p + 3] === 0) continue;
             const [hue, s] = hsl(data[p], data[p + 1], data[p + 2]);
             const green = hue >= 65 && hue <= 160 && s > 0.2;
-            if (!inPolygon(x + 0.5, y + 0.5, asset.keep) || (green && !asset.keepGreen)) data[p + 3] = 0;
+            if (!inPolygon(x + 0.5, y + 0.5, asset.keep) || green) data[p + 3] = 0;
         }
     }
     // islands under 6 texels

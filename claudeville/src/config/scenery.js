@@ -573,20 +573,21 @@ export const DISTRICT_PROPS = [
     // whole-tile row keeps its walkBlock to two lattice nodes, neither a path
     // nor an approach-file place. Static everyday dressing, never an actor.
     { tileX: 27.5, tileY: 12.0, id: 'prop.handcart', layer: 'cache', district: 'knowledge', walkBlock: true },
-    // Living Isle W8.5b (AD-P10): three non-semantic landmarks, no occupancy,
-    // label or gate; `landmark` props are built by IsleLandmarks.js (the
-    // windmill's sails step on wind gusts, the chapel lantern on the lamps
-    // clock), sorted with the trees, and `walkBlock` keeps every body off
-    // them. Each stands on open grass no lane, visit slot, queue, seat,
-    // scenic point or building sightline zone reaches: the windmill on the
-    // north shore's open crest, the chapel on the Archive's north lawn (west
-    // of the farm pocket), the ruined tower at the north wood's edge on the
-    // lake's north-west beach. The
+    // Living Isle W8.5b (AD-P10): the isle landmarks, no occupancy, label or
+    // gate; `landmark` props are built by IsleLandmarks.js (the windmill's
+    // sails step on wind gusts, the chapel lantern on the lamps clock, the
+    // Hourglass Belfry's glasses on the account quota), sorted with the
+    // trees, and `walkBlock` keeps every body off them. Each stands on open
+    // grass no lane, visit slot, queue, seat, scenic point or building
+    // sightline zone reaches: the windmill on the north shore's open crest,
+    // the chapel on the Archive's north lawn (west of the farm pocket), the
+    // belfry at the north wood's edge on the lake's north-west beach, where
+    // the ruined tower stood. The
     // headland between the Tavern and the Lighthouse stays bare: it is
     // both buildings' tall-scenery sightline zone.
     { tileX: 9.6, tileY: 0.9, id: 'prop.windmill', layer: 'sorted', district: 'north', walkBlock: true, landmark: true },
     { tileX: 1.6, tileY: 9.0, id: 'prop.waysideChapel', layer: 'sorted', district: 'knowledge', walkBlock: true, landmark: true },
-    { tileX: 4.5, tileY: 3.6, id: 'prop.ruinedTower', layer: 'sorted', district: 'north', walkBlock: true, landmark: true },
+    { tileX: 4.5, tileY: 3.6, id: 'prop.hourglassBelfry', layer: 'sorted', district: 'north', walkBlock: true, landmark: true },
     // Living Isle W8.3c (AD-P5 group D): civic/garden and wetland/forest
     // dressing, all baked into the terrain (`cache`). Garden furniture stands
     // on lawns no lane, visit slot, queue place or scenic point reaches;

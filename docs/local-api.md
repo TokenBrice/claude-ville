@@ -33,7 +33,7 @@ The adapter contract has the extraction rules: [git event extraction](../claudev
 - `quotaError`: `{ status, at }` while the last quota check failed with 401 (the stored token expired; running `claude` refreshes it) or 429 (the check is throttled and backs off), where `at` is when the failure began. Otherwise null.
 - `codex`: the Codex account's quota from the newest `token_count.rate_limits` in its rollouts, or null when none was observed. It is `{ usedPercent, windowMinutes, resetsAt, credits: { balance, hasCredits, unlimited }, limitReached, observedAt }`:
   - `usedPercent` (0–100) and `resetsAt` (epoch ms) describe the binding window, the highest among windows that have not reset. Once its `resetsAt` passes, both are null: unknown, never 0 %.
-  - `limitReached` is true at `usedPercent >= 100`, or whenever Codex reports `rate_limit_reached_type`. It drives account surfaces only (the top-bar LIMIT, the quota card and the Mine) and never a session's status.
+  - `limitReached` is true at `usedPercent >= 100`, or whenever Codex reports `rate_limit_reached_type`. It drives account surfaces only (the Hourglass Belfry's lavender cord in the World and the Dashboard quota card) and never a session's status.
   - `observedAt` is the record's own time, so it can be hours old when no Codex session is live.
 
 ## WebSocket messages

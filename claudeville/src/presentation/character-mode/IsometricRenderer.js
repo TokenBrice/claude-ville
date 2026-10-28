@@ -2990,6 +2990,8 @@ export class IsometricRenderer {
     }
 
     setQuotaState(state) {
+        // The Hourglass Belfry reads both accounts, so it takes the whole usage.
+        (this.isleLandmarks ||= new IsleLandmarks(this)).setUsage(state);
         const quota = state?.quota || state || null;
         this.quotaState = quota;
         this.buildingRenderer?.setQuotaState?.(quota);
@@ -4571,6 +4573,10 @@ export class IsometricRenderer {
         const repoStone = (hoveredBuilding || hoveredShip || bridgeLantern || tokenItem)
             ? null
             : (this.chronicleMonuments?.repoStones?.hitTest?.(worldX, worldY) ?? null);
+        // The Hourglass Belfry reads out both accounts' quota windows.
+        const belfry = (hoveredBuilding || hoveredShip || bridgeLantern || tokenItem || repoStone)
+            ? null
+            : (this.isleLandmarks?.hitTestBelfry?.(worldX, worldY) ?? null);
         return hoveredBuilding
             ? this._buildingVisitorTooltip(hoveredBuilding)
             : (hoveredShip
@@ -4579,7 +4585,9 @@ export class IsometricRenderer {
                     ? this.bridgeLanterns.tooltipFor(bridgeLantern, Date.now())
                     : (tokenItem
                         ? this.landmarkActivity.tokenItemTooltip(tokenItem)
-                        : (repoStone ? this.chronicleMonuments.repoStones.tooltipFor(repoStone) : ''))));
+                        : (repoStone
+                            ? this.chronicleMonuments.repoStones.tooltipFor(repoStone)
+                            : (belfry ? this.isleLandmarks.belfryTooltip() : '')))));
     }
 
     // ─── U-P3 fleet card ────────────────────────────────────────────────

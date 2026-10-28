@@ -95,8 +95,12 @@ const PROP_TARGETS = {
         bodyStop: 4,
         region: [{ poly: [[63, 24], [33, 60], [34, 69], [64, 78], [95, 69], [96, 60]] }],
     },
-    // Roofless: checked so a regeneration that adds a roof cannot drift.
-    'prop.ruinedTower': { region: [] },
+    // The pyramid roof only, inside its cornice: the stage's dark stone and
+    // the cornice shadows are slate-hued too, and the glasses lie below it.
+    'prop.hourglassBelfry': {
+        bodyStop: 4,
+        region: [{ poly: [[64, 14], [25, 52], [64, 74], [102, 52]] }],
+    },
 };
 
 // Landmarks whose roofs --check holds to the family ramps.

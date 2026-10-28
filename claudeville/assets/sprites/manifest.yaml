@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-10-27-mended-tableau"
+  assetVersion: "2026-10-28-hourglass-belfry"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -2686,14 +2686,36 @@ props:
       sources:
         - { id: emissive.prop.waysideChapel.lantern, kind: lantern, geometry: authored-albedo, strength: 0.9 }
 
-  - id: prop.ruinedTower
+  # The Hourglass Belfry, the north shore's account instrument (2026-10-28:
+  # the account quota left the top bar for the World). It stands where the
+  # W8.5b ruined tower stood and is drawn by IsleLandmarks.js: Claude's glass
+  # in the lit west arch, Codex's in the shaded east arch, each glass's
+  # interior laid from `prop.hourglassBelfryGlass` per BelfryQuota.js. Base
+  # finished by scripts/sprites/bake-hourglass-belfry.mjs (stage fill, sill,
+  # empty glass, ashlar snap); roof onto roofSlate by harmonize-roofs.mjs.
+  - id: prop.hourglassBelfry
     tool: map_object
-    prompt: "isometric pixel art building sprite, true 2:1 dimetric isometric view from the south-east, a ruined old square stone watchtower: walls of cool pale grey weathered ashlar stone, its top broken off in a jagged stepped silhouette with missing blocks, no roof, two charred dark walnut timber beam stubs poking out of the broken top, thick dark green ivy climbing the left face, a broken stone stair climbing the right face and ending in mid-air, an empty dark arched doorway, a few fallen stone blocks lying against the footing, warm key light from the upper-left, cool shade on the right, stepped cel shading, 1px selective dark outline, structure only, walls end directly at their footings, empty transparent background, no ground tile, no grass, no slab, no plinth, no platform, no baked shadow, empty transparent corners"
-    width: 112
-    height: 176
-    anchor: [54, 131]
+    prompt: "isometric pixel art building sprite, true 2:1 dimetric isometric view from the south-east, a square stone clock tower holding two giant hourglasses: a broad square shaft of cool pale grey dressed ashlar stone in even courses, a small arched dark walnut timber door at its foot with two stone steps, the upper stage has one huge open round-headed arch on each of its two visible faces, each arch as wide as most of the face, and in each arch stands one giant upright hourglass that fills the whole arch, with a dark walnut and gold frame of top and bottom plates and three turned posts, big clear glass bulbs, the left hourglass holds warm amber sand, the right hourglass holds pale ice blue sand, a projecting stone cornice, a short pyramidal slate-blue tiled roof with a thin gold trim ring and a small gold finial, warm key light from the upper-left, cool shade on the right, stepped cel shading, 1px selective dark outline, structure only, empty transparent background, no ground tile, no grass, no slab, no plinth, no baked shadow, empty transparent corners"
+    width: 128
+    height: 208
+    anchor: [64, 177]
     materialClass: stone
-    provenance: { item: 'W8.5b', tool: create_map_object, objectId: 5f036128-7f08-4948-bfd3-8479afcd8532, finish: 'scripts/sprites/finish-isle-landmarks.mjs (plate strip, ashlar snap, mirrored to the upper-left key)', generatedAt: '2026-10-09' }
+    provenance: { item: 'Hourglass Belfry', tool: create_map_object, objectId: 7cddf73c-5795-46c3-bce4-d17a4e2a0439, generations: 6, candidates: 6, finish: 'scripts/sprites/bake-hourglass-belfry.mjs (stage fill, sill, empty glass, ashlar snap)', harmonize: 'roof onto roofSlate (scripts/sprites/harmonize-roofs.mjs)', generatedAt: '2026-10-28' }
+
+  # The belfry's glasses: 9 states x 2 glasses, 20 x 38 each
+  # (BELFRY_GLASS_STATES / _FRAME / _ORIGINS in IsleLandmarks.js): sand levels
+  # l0-l5, `limit` (the lavender cord), `unknown` (the shroud) and `peak` (the
+  # reset moment's cream frame), Claude's glass first. Each cell lies on its
+  # glass at its origin; states swap whole, never blend.
+  - id: prop.hourglassBelfryGlass
+    tool: procedural
+    width: 360
+    height: 38
+    frames: 18
+    frameW: 20
+    frameH: 38
+    anchor: [10, 19]
+    provenance: { item: 'Hourglass Belfry', source: 'scripts/sprites/bake-hourglass-belfry.mjs', generations: 0, generatedAt: '2026-10-28' }
 
   - id: prop.signpost
     tool: map_object
