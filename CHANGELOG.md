@@ -63,15 +63,16 @@ The village tells the truth about what your agents are doing, runs on a fraction
     - Open doors glow in a single soft course.
     - The Archive lancets light pane by pane.
     - The banked Forge keeps a low ember at night.
+  - Villagers on the central bridge's landing and first planks no longer vanish behind its near rail, a cut that had been there since September.
   - Rate-limited villagers get their frost tint on every renderer.
   - Stack hulls hang their riding light at the masthead.
 - **Tooling.**
-  - WebGL2 now renders deterministically: an implicit-LOD texture read was undefined after a discard. The parity gate is down from 26 failing cases to 11, all on WebGPU.
+  - WebGL2 now renders deterministically: an implicit-LOD texture read was undefined after a discard. The parity gate went from 26 failing cases to 10, all on WebGPU; one more sits on its threshold.
   - Git discovery matches git.
   - Five browser smokes run again, on isolated servers, along with new reachability, scan-budget and renderer-fallback checks.
   - `validate:full` gains five gates, and CI adds Node 26.
 
-Validation: `validate:full` passed after every wave, and the final `validate:quick` runs 2,402 unit tests. `world:golden-hours` was recalibrated twice, once for the blue-hour lift and once for the Command move; it passes on WebGPU, WebGL2 and Canvas. `verify:render`, `world-visit-paths`, `world-state-bounds` and `browser-lifecycle` pass. `smoke:webgpu-parity` fails 11 of 36 cases, all WebGPU-only (horizon seam rows and cloud-course thresholds); WebGL2 is now bit-stable. Replays of a week of real Claude and Codex sessions back the status and server numbers above.
+Validation: `gate:release` passes, including `validate:quick` (2,404 unit tests), `test:integration` and `verify:server`. `validate:full` passed after every implementation wave. `world:golden-hours` was recalibrated twice, for the blue-hour lift and then the Command move, and passes on WebGPU, WebGL2 and Canvas. `verify:render`, `world-visit-paths`, `world-state-bounds` and `browser-lifecycle` pass. `smoke:webgpu-parity` fails 10 of 36 cases, all WebGPU-only (horizon seam rows and cloud-course thresholds); WebGL2 is bit-stable. Replays of a week of real Claude and Codex sessions back the status and server numbers above.
 
 ---
 
