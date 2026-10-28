@@ -19,6 +19,7 @@ body:
         - Kimi (incl. Kimi Code)
         - OpenCode
         - OMP (Oh My Pi)
+        - DeepSeek MCP (deepseek-cc-mcp)
         - Other
     validations:
       required: true

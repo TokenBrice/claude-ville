@@ -1,0 +1,1 @@
+{"t_ms":1000,"type":"model","turn":1,"finish":"tool_calls","prompt_tokens":100,"cache_hit":0,"output_tokens":10,"reasoning_tokens":0,"content_chars":0,"tools":["Grep"],"cost_usd":0.0001}

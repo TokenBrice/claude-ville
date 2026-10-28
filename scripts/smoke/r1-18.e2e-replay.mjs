@@ -576,6 +576,7 @@ function startIsolatedServer(fixtures) {
         CLAUDEVILLE_OPENCODE_STATE_DIR: path.join(fixtures.home, '.local', 'share', 'opencode'),
         CLAUDEVILLE_OPENCODE_DB: path.join(fixtures.home, '.local', 'share', 'opencode', 'opencode.db'),
         CLAUDEVILLE_OPENCODE_SQLITE_STRATEGY: fixtures.openCodeStrategy,
+        CLAUDEVILLE_DEEPSEEK_STATE_DIR: path.join(fixtures.home, '.local', 'state', 'deepseek-cc-mcp'),
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     });

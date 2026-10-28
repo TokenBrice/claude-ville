@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "thread_id": "dsth_mvt0aaaa_0000000a",
+  "model": "deepseek-flash",
+  "effort": "max",
+  "cwd": "__PROJECT__",
+  "messages": [
+    { "role": "system", "content": "Synthetic system prompt." },
+    { "role": "user", "content": "Summarize the fixture module." },
+    { "role": "assistant", "content": "", "reasoning_content": "An older thought that must not speak.", "tool_calls": [{ "index": 0, "id": "call_1", "type": "function", "function": { "name": "Read", "arguments": "{\"file_path\": \"__PROJECT__/src/fixture.js\"}" } }] },
+    { "role": "tool", "tool_call_id": "call_1", "content": "export const fixture = 1;" },
+    { "role": "assistant", "content": "Fixture summary.", "reasoning_content": "The module exports one constant." },
+    { "role": "user", "content": "Now run the fixture tests." },
+    { "role": "assistant", "content": "", "reasoning_content": "Check the scripts in package.json before running the tests.", "tool_calls": [{ "index": 0, "id": "call_2", "type": "function", "function": { "name": "Read", "arguments": "{\"file_path\": \"__PROJECT__/package.json\"}" } }] },
+    { "role": "tool", "tool_call_id": "call_2", "content": "{\"role\":\"assistant\",\"content\":\"a quoted message inside a tool result\"}" }
+  ]
+}

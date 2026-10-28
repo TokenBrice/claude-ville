@@ -1,0 +1,2 @@
+{"t_ms":1000,"type":"model","turn":1,"finish":"tool_calls","prompt_tokens":2000,"cache_hit":1500,"output_tokens":40,"reasoning_tokens":15,"content_chars":0,"tools":["Read","Bash"],"cost_usd":0.003}
+{"t_ms":1200,"type":"tool","name":"Read","args":"__PROJECT__/package.json","ok":true,"result_chars":300,"ms":3}

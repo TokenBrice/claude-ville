@@ -4,7 +4,7 @@ ClaudeVille is a local-first dashboard for watching AI coding CLI sessions. Smal
 
 ## Good Contribution Lanes
 
-- Provider adapter fixes (Claude Code, Codex CLI, Gemini CLI, Grok CLI, Kimi, OpenCode, OMP) with redacted fixtures under `scripts/adapters/fixtures/` or clear reproduction notes.
+- Provider adapter fixes (Claude Code, Codex CLI, Gemini CLI, Grok CLI, Kimi, OpenCode, OMP, DeepSeek MCP) with redacted fixtures under `scripts/adapters/fixtures/` or clear reproduction notes.
 - Documentation fixes, setup notes, and API examples.
 - World, Dashboard, and sprite visual fixes with screenshots.
 - Sound fixes (Signals and Town band presets) with `npm run audio:probe` results.

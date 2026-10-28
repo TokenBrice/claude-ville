@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "thread_id": "dsth_mvt0bbbb_0000000c",
+  "model": "deepseek-flash",
+  "effort": "low",
+  "cwd": "__WORKTREE__",
+  "messages": [
+    { "role": "system", "content": "Synthetic system prompt." },
+    { "role": "user", "content": "Fix the failing fixture test." },
+    { "role": "assistant", "content": "Partial report.", "reasoning_content": "" }
+  ]
+}

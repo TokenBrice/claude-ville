@@ -29,6 +29,7 @@ These synthetic JSONL transcripts test parser contracts without reading real pro
 | Kimi Code | `kimi/tool-results.jsonl` | Wire loop events: a passing and a failing command result, plus a result carrying only output (no outcome). |
 | OpenCode | `opencode/tool-results.jsonl` | Normalized tool parts with `metadata.exit` 0 and 1, plus a part with no exit at all. |
 | OMP | `omp/tool-results-session-exit.jsonl` | Paired success, failure, and unknown results; an unpaired result and an unfinished call; explicit `session_exit`. |
+| DeepSeek | `deepseek/` (a whole state directory: `journal.jsonl`, `jobs/<job_id>/`, `threads/<thread_id>.json`) | deepseek-cc-mcp state: a thread finished once and continued with a pending `Bash` (its label, usage and cost carried across jobs; the last assistant message found past quoted JSON inside a tool result), a `failed` job in a worktree (`apiError`, `cd` hop, workspace-relative paths), an unfinished job whose server is gone, an hour-old job, and a journal record with a forged id. `__T-<seconds>__` placeholders are offsets from now; threads are pretty-printed here and compacted when materialized. |
 
 ## Redaction rule
 
@@ -47,5 +48,6 @@ Author fixtures synthetic-first. If derived from provider output, replace every 
 - `scripts/tests/harbor-ingest-adapters.test.mjs` materializes the Claude and Codex git fixtures over a temporary repository and checks outcomes, identity and per-segment status.
 - `scripts/tests/shell-location-prefix.test.mjs` replays the Claude shell-prefix fixture and pins the stripped summary.
 - `scripts/tests/living-isle-outcomes.test.mjs` replays the OMP outcomes/session-exit fixture, including explicit departure and resumed-session behavior.
+- `scripts/tests/deepseek-adapter.test.mjs` materializes the DeepSeek state directory and checks sessions, normalization, detail, and watch paths.
 
 `npm run check:adapter-fixtures` is a broad executable adapter contract. It creates synthetic ClaudeVille, Codex, Kimi, OpenCode, and OMP state and checks normalization, detail dispatch, discovery, fixture-backed turn states, and OMP outcomes/session ends. Unit fixtures are narrower named `node:test` cases run by `npm run test:unit`; the integration consumer runs only under `npm run test:integration`.

@@ -1,0 +1,5 @@
+{"t_ms":1000,"type":"model","turn":1,"finish":"tool_calls","prompt_tokens":200,"cache_hit":150,"output_tokens":20,"reasoning_tokens":0,"content_chars":0,"tools":["Edit","Bash"],"cost_usd":0.001}
+{"t_ms":1100,"type":"tool","name":"Edit","args":"__WORKTREE__/src/fixture.js","ok":true,"result_chars":40,"ms":9}
+{"t_ms":5000,"type":"tool","name":"Bash","args":"cd __WORKTREE__ && npm test","ok":true,"result_chars":900,"ms":3800}
+{"t_ms":6000,"type":"retry","attempt":1,"reason":"network"}
+{"t_ms":7000,"type":"model","turn":2,"finish":"stop","prompt_tokens":200,"cache_hit":150,"output_tokens":20,"reasoning_tokens":0,"content_chars":15,"tools":[],"cost_usd":0.002}

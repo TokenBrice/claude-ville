@@ -89,6 +89,7 @@ Choose **Signals** for attention bells or **Town band** for music with the same 
 | **Kimi / Kimi Code** | `~/.kimi/sessions/` and `~/.kimi-code/sessions/` |
 | **OpenCode** | `~/.local/share/opencode/opencode.db` |
 | **OMP (Oh My Pi)** | `~/.omp/agent/sessions/` |
+| **DeepSeek agents (deepseek-cc-mcp MCP server)** | `~/.local/state/deepseek-cc-mcp/` (or `DEEPSEEK_CC_STATE_DIR`) |
 
 Providers are detected independently; you only need one, and the simulator needs none. OpenCode requires Node's `node:sqlite` or the `sqlite3` CLI for read-only database access. Model families served through another provider retain their identity, including DeepSeek and z.AI GLM through OMP.
 
