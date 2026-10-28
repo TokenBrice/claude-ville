@@ -964,15 +964,19 @@ export const SHORE_FAUNA = [
 // ground clear of visit/queue tiles, rest seats and scenic points: the
 // paddock between the Archive and Command (OpusDressMarketFarm's fences,
 // trough and crops kept clear) — the cow at the trough's front east of the
-// gate, the sheep in front of the gate leaf and the goat at the hay cart,
-// none over a gate post, a rail or the Command roofline below — the
-// hens in front of it, the dog at the Forge's front and the cat on the
-// Archive plaza. `face` is the facing held at a point when it differs from
-// the arriving walk. Listed in draw priority: the zoom cap keeps the first
-// N (livestockBudget).
+// gate (drinking, then a step back to face out), the sheep in front of the
+// gate leaf and the goat at the hay cart, none over a gate post or a rail —
+// the hens in front of it, the dog at the Forge's front and the cat on the
+// Archive plaza. The livestock region draws above every building, so no
+// pose may overlap the art of a building it stands behind
+// (livestock-routes.test.mjs): since CM-1 put Command at 13,14, its west
+// tower and spire rise in front of the paddock's east end, so the cow and
+// the hens keep west of that tower. `face` is the facing held at a point
+// when it differs from the arriving walk. Listed in draw priority: the zoom
+// cap keeps the first N (livestockBudget).
 export const LIVESTOCK_ROUTES = [
     { id: 'cow', sprite: 'prop.fauna.cow', speed: 0.16, holdS: [34, 70], phase: 0.12, kind: 'grazer',
-        points: [{ tileX: 9.5, tileY: 13.75, face: 'west' }, { tileX: 9.55, tileY: 13.95, face: 'south' }] },
+        points: [{ tileX: 9.25, tileY: 13.95 }, { tileX: 9.35, tileY: 14.2 }] },
     { id: 'sheep', sprite: 'prop.fauna.sheep', speed: 0.18, holdS: [26, 58], phase: 0.57, kind: 'grazer',
         points: [{ tileX: 8.72, tileY: 14.41, face: 'east' }, { tileX: 8.75, tileY: 14.63, face: 'south' }] },
     { id: 'goat', sprite: 'prop.fauna.goat', speed: 0.22, holdS: [20, 44], phase: 0.31, kind: 'grazer',
@@ -982,7 +986,7 @@ export const LIVESTOCK_ROUTES = [
     { id: 'cat', sprite: 'prop.fauna.cat', speed: 0.4, holdS: [40, 90], phase: 0.73, kind: 'roamer', night: 'roam', wet: 'away',
         points: [{ tileX: 6.7, tileY: 20.5, face: 'south' }, { tileX: 8.8, tileY: 20.6, face: 'south' }] },
     { id: 'hen-b', sprite: 'prop.fauna.chicken', speed: 0.3, holdS: [10, 24], phase: 0.66, kind: 'hen', night: 'away', wet: 'away',
-        points: [{ tileX: 10.45, tileY: 14.45 }, { tileX: 10.1, tileY: 14.3 }, { tileX: 10.6, tileY: 14.95 }] },
+        points: [{ tileX: 9.75, tileY: 15.05 }, { tileX: 9.4, tileY: 14.9 }, { tileX: 9.9, tileY: 15.55 }] },
 ];
 
 // W8.4a (AW-P15) — the `deer-at-dawn` ambient event (AmbientEvents,
