@@ -242,6 +242,8 @@ export function appendDepthSortedDrawables(target, {
         pushDepthDrawable(target, pooledDepthDrawable(target, drawable.kind, drawable.sortY, drawable, drawBuilding));
     }
     const splitBuildings = collectSplitBuildings(buildingDrawables);
+    const bridgeRails = _bridgeRailScratch;
+    bridgeRails.length = 0;
     for (const drawable of propDrawables) {
         // 7.1 — a rest seat's back and front slices bracket their sitter. A
         // sitter standing behind a split building sorts just before its back
@@ -253,11 +255,13 @@ export function appendDepthSortedDrawables(target, {
             const own = propPartSortY(sprite, drawable.payload.part, drawable.payload.column);
             drawable.sortY = behind == null ? own : behind + (own - sprite.y) / 8;
         }
+        if (sprite?.bridgeWalk) bridgeRails.push(drawable);
         pushDepthDrawable(target, drawable);
     }
     for (const sprite of agentSprites) {
-        pushDepthDrawable(target, pooledDepthDrawable(target, 'agent', agentSortY(sprite, splitBuildings), sprite, drawAgent));
+        pushDepthDrawable(target, pooledDepthDrawable(target, 'agent', agentSortY(sprite, splitBuildings, bridgeRails), sprite, drawAgent));
     }
+    bridgeRails.length = 0;
     for (const entry of sceneCategoryFrame?.entries || []) {
         const category = entry.category;
         for (const item of entry.items) {
@@ -370,17 +374,54 @@ function behindSplitSortY(x, y, splitBuildings) {
     return split ? split.backSortY - 0.5 : null;
 }
 
+// A landmark bridge's near-rail slices (IsometricRenderer
+// `_buildBridgeNearRailSprites`) repaint the bridge image inside a band at the
+// camera-side handrail, sorted at the deck's near edge. The band also holds
+// the deck planks and the end posts, which stand behind a body on the bridge's
+// walk (its deck column and the landing tile at each end), and the deck is
+// painted above the walk plane, so a body standing there sorted before the
+// slices and took the rail across its legs while its feet stood on the deck.
+// Such a body stands on the bridge, above everything a slice repaints: it
+// sorts just after the bridge's last slice, so the rail and the posts never
+// cross a body on the deck or the landing, and the bodies on the walk keep
+// their ground order among themselves. A body anywhere else (the bank by the
+// end posts, the water under the arch) keeps its ground Y, so the rail still
+// covers what stands behind it.
+const _bridgeRailScratch = [];
+
+function onBridgeWalk(tileX, tileY, walk) {
+    if (!walk) return false;
+    const along = walk.axis === 'x' ? tileX : tileY;
+    const across = walk.axis === 'x' ? tileY : tileX;
+    return Math.abs(across - walk.line) < walk.halfWidth && along >= walk.from && along <= walk.to;
+}
+
+// The sortY that keeps `sprite` over the near-rail slices among
+// `railDrawables` (prop drawables whose sprite carries `bridgeWalk`), else
+// null. A prop paints before a body at an equal sortY, so the body takes the
+// last slice's sortY plus a hundredth that grows with its ground Y.
+function bridgeDeckSortY(sprite, railDrawables) {
+    if (!railDrawables?.length || !Number.isFinite(sprite?.x) || !Number.isFinite(sprite?.y)) return null;
+    const tile = worldToTile(sprite.x, sprite.y);
+    let top = -Infinity;
+    for (const drawable of railDrawables) {
+        if (onBridgeWalk(tile.tileX, tile.tileY, drawable?.payload?.sprite?.bridgeWalk)) top = Math.max(top, drawable.sortY);
+    }
+    if (!(top > sprite.y)) return null;
+    return top + 0.01 * Math.max(0, 1 - (top - sprite.y) / 1024);
+}
+
 // The painter sortY the sprite was sorted at this frame is kept on the
 // sprite (`_depthSortY`), so the particles it emits (footfalls, sweat, motes)
 // sort with the body that owns them, behind a building with it.
-function agentSortY(sprite, splitBuildings) {
+function agentSortY(sprite, splitBuildings, bridgeRails) {
     sprite._onOpenFloor = onOpenFloor(sprite.x, sprite.y, splitBuildings);
     const split = behindSplit(sprite.x, sprite.y, splitBuildings);
     sprite._behindBuilding = split != null;
     // W3.4 — the occluding building, so the overlay can lift this body's
     // thought above its crown while the body itself stays hidden.
     sprite._behindBuildingDrawable = split ? split.drawable : null;
-    sprite._depthSortY = split ? split.backSortY - 0.5 : sprite.y;
+    sprite._depthSortY = split ? split.backSortY - 0.5 : (bridgeDeckSortY(sprite, bridgeRails) ?? sprite.y);
     return sprite._depthSortY;
 }
 

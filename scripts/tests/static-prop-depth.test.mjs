@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { TILE_HEIGHT, TILE_WIDTH } from '../../claudeville/src/config/constants.js';
+import { BUILDING_DEFS } from '../../claudeville/src/config/buildings.js';
+import { MAP_SIZE, TILE_HEIGHT, TILE_WIDTH } from '../../claudeville/src/config/constants.js';
 import { VILLAGE_GATE, VILLAGE_GATE_BOUNDS } from '../../claudeville/src/config/townPlan.js';
+import { Building } from '../../claudeville/src/domain/entities/Building.js';
 import { appendDepthSortedDrawables } from '../../claudeville/src/presentation/character-mode/DrawablePass.js';
 import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
-import { tileToWorld } from '../../claudeville/src/presentation/character-mode/Projection.js';
+import { tileToWorld, worldToTile } from '../../claudeville/src/presentation/character-mode/Projection.js';
+import { SceneryEngine } from '../../claudeville/src/presentation/character-mode/SceneryEngine.js';
 import {
     StaticPropSprite,
     buildStaticPropDrawables,
@@ -124,6 +127,131 @@ test('the sea tower paints after the east run that ends in its drum, at every zo
             const towerAt = order.map(({ payload }, index) => (payload.sprite === tower ? index : -1)).filter((index) => index >= 0);
             assert.ok(runAt >= 0 && towerAt.length > 0, `${path} path: run and tower both draw`);
             assert.ok(towerAt.every((index) => index > runAt), `${path} path: a part of the sea tower paints before the run, so the run's parapet covers its drum`);
+        }
+    }
+});
+
+// The central bridge's near-rail slices, built as the renderer builds them:
+// the real bridge tiles (SceneryEngine on the renderer's own noise and the
+// real buildings), then its spans and slices.
+function centralBridge() {
+    const noise = Object.create(IsometricRenderer.prototype);
+    const terrainSeed = [];
+    for (let y = 0; y < MAP_SIZE; y++) for (let x = 0; x < MAP_SIZE; x++) terrainSeed.push(noise._tileNoise(x, y));
+    const scenery = new SceneryEngine({
+        world: { buildings: new Map(BUILDING_DEFS.map((def) => [def.type, new Building(def)])) },
+        terrainSeed,
+        tileNoise: (x, y) => noise._tileNoise(x, y),
+        smoothNoise: (x, y, scale) => noise._smoothNoise(x, y, scale),
+    });
+    scenery.generateBridges();
+    const renderer = Object.create(IsometricRenderer.prototype);
+    renderer.bridgeTiles = scenery.bridgeTiles;
+    renderer.assets = {};
+    renderer.bridgeSpans = renderer._buildBridgeSpans();
+    const span = renderer.bridgeSpans.find((entry) => entry.id === 'central-river-bridge');
+    const rails = renderer._buildBridgeNearRailSprites().filter((sprite) => sprite.id.startsWith('bridge.rail.central-river-bridge.'));
+    // Each slice's painted region: the clip quad its drawFn cuts.
+    const count = rails.length;
+    rails.forEach((rail, index) => { rail.quad = renderer._bridgeNearRailQuad(span, index / count, (index + 1) / count); });
+    return { renderer, rails };
+}
+
+// The walk the user saw a body cross: the deck column x=18 from the north
+// landing tile (18,22) to the south one (18,26). Deck tiles keep their lanes
+// 10 px either side of the line (LANE_STEERING.bridgeOffsetPx), the landings
+// at most an avenue's 4.4 px.
+function walkSamples() {
+    const samples = [];
+    for (let step = 0; step <= 48; step++) {
+        const tileY = 21.6 + step / 10;
+        const lane = tileY > 22.5 && tileY < 25.5 ? 10 : 4.4;
+        for (const lanePx of [-lane, 0, lane]) samples.push({ tileY, lanePx });
+    }
+    return samples;
+}
+
+// A body at a tile, `lanePx` across the walk, lifted along the arch as
+// AgentSprite lifts it.
+function body(renderer, tileX, tileY, lanePx = 0) {
+    const world = tileToWorld(tileX, tileY);
+    const x = world.x - 0.4472136 * lanePx;
+    const y = world.y - 0.8944272 * lanePx;
+    const tile = worldToTile(x, y);
+    const lift = Math.max(0, renderer.getBridgeLift(tile.tileX, tile.tileY));
+    return { x, y, lift, _currentBridgeLift: () => lift };
+}
+
+function bodySortY(rails, sprite) {
+    const target = [];
+    appendDepthSortedDrawables(target, { propDrawables: buildStaticPropDrawables(rails), agentSprites: [sprite] });
+    return target.find((drawable) => drawable.kind === 'agent').sortY;
+}
+
+function insideQuad(quad, x, y) {
+    let inside = false;
+    for (let i = 0, j = quad.length - 1; i < quad.length; j = i++) {
+        if ((quad[i].y > y) !== (quad[j].y > y)
+            && x < (quad[j].x - quad[i].x) * (y - quad[i].y) / (quad[j].y - quad[i].y) + quad[i].x) inside = !inside;
+    }
+    return inside;
+}
+
+// The slices whose painted quad crosses the body's drawn box (AgentSprite's
+// default body box, at its lifted feet), sampled every texel.
+function railsOver(rails, sprite) {
+    const footY = sprite.y - sprite.lift;
+    return rails.filter((rail) => {
+        for (let y = footY - 58; y <= footY + 3; y++) {
+            for (let x = sprite.x - 17; x <= sprite.x + 17; x++) if (insideQuad(rail.quad, x, y)) return true;
+        }
+        return false;
+    });
+}
+
+test('bridge-end: a body on the central bridge walk paints over every near-rail slice it overlaps', () => {
+    const { renderer, rails } = centralBridge();
+    assert.equal(rails.length, 6, 'the 3-tile span keeps six near-rail slices');
+    let overlapped = 0;
+    for (const { tileY, lanePx } of walkSamples()) {
+        const sprite = body(renderer, 18, tileY, lanePx);
+        const sortY = bodySortY(rails, sprite);
+        for (const rail of railsOver(rails, sprite)) {
+            overlapped++;
+            assert.ok(sortY > rail.sortY, `body at 18,${tileY.toFixed(1)} lane ${lanePx}: sorts at ${sortY.toFixed(2)}, under ${rail.id} (${rail.sortY.toFixed(2)})`);
+        }
+    }
+    assert.ok(overlapped > 0, 'the walk crosses the near-rail slices');
+    // The user's report: a body at the north landing, under the end posts.
+    const landing = body(renderer, 18, 22);
+    assert.ok(railsOver(rails, landing).length >= 2, 'the north landing sits under the end posts and the deck end');
+});
+
+test('bridge-end: off the walk a body keeps its ground Y, so the rail still covers what stands behind it', () => {
+    const { renderer, rails } = centralBridge();
+    // The bridge-east pause, the pond plank, the plaza north of the landing,
+    // and the water beside the deck under its near and far sides.
+    for (const [tileX, tileY] of [[19, 22], [17, 22], [18, 21], [19, 24], [17, 24], [20, 24]]) {
+        const sprite = body(renderer, tileX, tileY);
+        assert.equal(bodySortY(rails, sprite), sprite.y, `${tileX},${tileY} keeps its ground Y`);
+    }
+    const underArch = body(renderer, 19, 24);
+    assert.ok(railsOver(rails, underArch).some((rail) => rail.sortY > underArch.y), 'a body in the water beside the near side stays behind the rail');
+});
+
+test('bridge-end: two bodies on the walk that overlap keep their ground order', () => {
+    const { renderer, rails } = centralBridge();
+    const bodies = walkSamples().map(({ tileY, lanePx }) => {
+        const sprite = body(renderer, 18, tileY, lanePx);
+        return { sprite, sortY: bodySortY(rails, sprite) };
+    });
+    for (const a of bodies) {
+        for (const b of bodies) {
+            if (b.sprite.y - a.sprite.y < 1) continue;
+            const ay = a.sprite.y - a.sprite.lift;
+            const by = b.sprite.y - b.sprite.lift;
+            if (Math.abs(a.sprite.x - b.sprite.x) >= 34 || Math.abs(ay - by) >= 61) continue;
+            assert.ok(b.sortY > a.sortY, `nearer body (y ${b.sprite.y.toFixed(1)}) sorts after the farther (y ${a.sprite.y.toFixed(1)})`);
         }
     }
 });

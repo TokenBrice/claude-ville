@@ -8653,6 +8653,7 @@ export class IsometricRenderer {
         for (const span of this.bridgeSpans) {
             const rail = span.nearRail;
             if (!rail) continue;
+            const walk = this._bridgeWalk(span);
             const segmentCount = Math.max(1, span.lengthTiles * 2);
             for (let i = 0; i < segmentCount; i++) {
                 const t0 = i / segmentCount;
@@ -8667,7 +8668,7 @@ export class IsometricRenderer {
                 }));
                 const xs = localQuad.map((point) => point.x);
                 const ys = localQuad.map((point) => point.y);
-                sprites.push(new StaticPropSprite({
+                const slice = new StaticPropSprite({
                     tileX: propTile.tileX,
                     tileY: propTile.tileY,
                     id: `bridge.rail.${span.id}.${i}`,
@@ -8701,10 +8702,35 @@ export class IsometricRenderer {
                         );
                         ctx.restore();
                     },
-                }));
+                });
+                // The clip band also holds the deck and the end posts, which
+                // stand behind a body on the walk: DrawablePass
+                // (`bridgeDeckSortY`) sorts such a body after the last slice.
+                slice.bridgeWalk = walk;
+                sprites.push(slice);
             }
         }
         return sprites;
+    }
+
+    // The bridge's walk in tile space: the deck's walk column (the walkable
+    // centre line, lanes included) from the landing tile before the deck to
+    // the landing tile after it.
+    _bridgeWalk(span) {
+        const start = worldToTile(span.start.x, span.start.y);
+        const end = worldToTile(span.end.x, span.end.y);
+        const eastWest = span.orientation === 'EW';
+        const a = eastWest ? start.tileX : start.tileY;
+        const b = eastWest ? end.tileX : end.tileY;
+        // The span overhangs its first and last deck tile by 0.45, so 1.05
+        // more reaches the far edge of each landing tile.
+        return {
+            axis: eastWest ? 'x' : 'y',
+            line: eastWest ? start.tileY : start.tileX,
+            from: Math.min(a, b) - 1.05,
+            to: Math.max(a, b) + 1.05,
+            halfWidth: 0.5,
+        };
     }
 
     _bridgeNearRailQuad(span, t0, t1) {
