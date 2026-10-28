@@ -2,6 +2,22 @@
 
 ---
 
+## v0.60.0 — *The Counted Sands* · Oct 28, 2026
+
+Your account quota leaves the top bar and stands in the village: an hourglass belfry on the north shore shows what is left of your Claude and Codex limits.
+
+- **The Hourglass Belfry.**
+  - It stands on the north shore, where the ruined tower stood. Its two glasses are your two accounts: Claude in amber on the left, Codex in blue on the right.
+  - The sand left in each glass is the quota left in that account's window, in five steps. For Claude, that is the fuller of the 5-hour and 7-day windows.
+  - A glass with no reading is covered with a cloth, never shown as a false 0 % or 100 %. Codex at its limit shows a spent glass tied with a lavender cord.
+  - When a window resets, its glass flashes once and refills step by step. Reduced motion swaps it at once.
+  - Hover the belfry for both windows, their reset countdowns, Codex credits and how old the Codex reading is.
+- **A lighter top bar.**
+  - The Claude quota and CODEX LIMIT units leave the top bar, in the World and on the Dashboard. Tokens seen today and the spend map stay, and the Dashboard keeps its Codex quota card.
+  - The Mine drops its 5-hour reserve gauge.
+
+---
+
 ## v0.59.0 — *The Honest Lantern* · Oct 28, 2026
 
 The village tells the truth about what your agents are doing, runs on a fraction of the CPU, and the square beside Command has room to breathe.
