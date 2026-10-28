@@ -410,13 +410,12 @@ export class TopBar {
         }));
         // Q3 — the account limit (`CODEX` over `LIMIT`) lights from the
         // usage contract alone. It is an account, not a session: it names
-        // the provider instead of a count and never joins the KPIs' sum.
-        this.els.accountLimit = el('span', { className: 'topbar__attn-part topbar__attn-part--limit topbar__attn-part--account' }, [
-            el('span', { className: 'topbar__attn-count' }, [
-                attentionGlyph('limit-gate'),
-                el('span', { className: 'topbar__kpi-num', text: 'CODEX' }),
-            ]),
-            el('span', { className: 'topbar__kpi-cap', text: 'LIMIT' }),
+        // the provider instead of a count, never joins the KPIs' sum, and
+        // sits calm beside the quota unit (placed below), never in the
+        // attention frame's alarm slice, which agents on a limit wear.
+        this.els.accountLimit = el('span', { className: 'topbar__seg-stat topbar__account-limit' }, [
+            el('span', { className: 'topbar__stat-value', text: 'CODEX' }),
+            el('span', { className: 'topbar__stat-label', text: 'LIMIT' }),
         ]);
         this.els.accountLimit.hidden = true;
         // W5.5b — the oldest actionable wait (`12m` over `OLDEST`), in the hue
@@ -433,7 +432,7 @@ export class TopBar {
         this._oldestWaitAnchor = 0;
         this._unsubscribeOldestWait = null;
         this.els.attention = el('span', { className: 'topbar__seg topbar__seg--attention cv-frame cv-frame--attn' },
-            [...ATTENTION_PARTS.map(({ key }) => this.els.attentionParts[key].part), this.els.accountLimit, agePart]);
+            [...ATTENTION_PARTS.map(({ key }) => this.els.attentionParts[key].part), agePart]);
         this.els.attention.id = 'badgeAttention';
         this.els.attention.hidden = true;
         this.els.waiting?.parentElement?.parentElement?.prepend(this.els.attention);
@@ -444,6 +443,7 @@ export class TopBar {
         this.els.quota = el('span', { className: 'topbar__seg-stat topbar__quota' }, [this.els.quotaValue, this.els.quotaLabel]);
         this.els.quota.hidden = true;
         this.els.rateWrap?.insertAdjacentElement('afterend', this.els.quota);
+        this.els.quota.insertAdjacentElement('afterend', this.els.accountLimit);
         this._quotaView = null;
         this._unsubscribeQuota = null;
         this._fitKey = null;
@@ -1368,25 +1368,24 @@ export class TopBar {
             if (count > 0) lit.push({ key, count, noun });
         }
         const account = pending ? null : codexAccountLimit(this._usage);
-        if (this.els.accountLimit) this.els.accountLimit.hidden = !account;
-        frame.hidden = lit.length === 0 && !account;
+        if (this.els.accountLimit) {
+            this.els.accountLimit.hidden = !account;
+            if (account) this.els.accountLimit.dataset.tip = account.tip;
+        }
+        frame.hidden = lit.length === 0;
         this._renderOldestWait(lit.length ? this.world : null);
         if (frame.hidden) return;
-        // An account limit alone leads in the limit slice.
-        const lead = ATTENTION_PARTS.find(({ key }) => key === (lit[0]?.key || 'quota'));
+        const lead = ATTENTION_PARTS.find(({ key }) => key === lit[0].key);
         if (frame.dataset.lead !== lead.key) {
             for (const { frame: slice } of ATTENTION_PARTS) frame.classList.toggle(slice, slice === lead.frame);
             frame.dataset.lead = lead.key;
         }
-        const facts = [...lit.map(({ count, noun }) => `${count} ${noun}`), ...(account ? [account.tip] : [])];
-        // `A` frames agents; an account limit alone has none to frame.
-        frame.dataset.tip = lit.length ? `Needs action: ${facts.join(' · ')} · frame them` : facts.join(' · ');
-        if (lit.length) frame.dataset.tipKey = 'A';
-        else delete frame.dataset.tipKey;
+        frame.dataset.tip = `Needs action: ${lit.map(({ count, noun }) => `${count} ${noun}`).join(' · ')} · frame them`;
+        frame.dataset.tipKey = 'A';
     }
 
     // SV-7 — the Claude quota unit: percent over a minute-grain reset
-    // countdown on the shared 1 Hz tick, the rate-limited hue at 85 %
+    // countdown on the shared 1 Hz tick, the calm house lavender at 85 %
     // (the pressure cue), `TOKEN EXPIRED` on a 401; hidden while unknown.
     _renderQuota(pending) {
         const node = this.els.quota;

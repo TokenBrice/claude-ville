@@ -138,9 +138,13 @@ const PLAQUE_ATTENTION = Object.freeze({
     quota: Object.freeze({ motif: 'limit-gate', color: STATUS_VISUALS.rate_limited.color }),
 });
 // Q3 — an account at its limit (Codex at 100 % of its window, or an enforced
-// Claude quota) puts the same LIMIT cell on the Mine's plaque, worded instead
-// of counted: an account surface. Static; villagers keep their own status.
-const MINE_ACCOUNT_LIMIT = Object.freeze({ count: 1, text: 'LIMIT', bucket: 'quota', ...PLAQUE_ATTENTION.quota });
+// Claude quota) puts a LIMIT cell on the Mine's plaque, worded instead of
+// counted: an account surface, so it stays calm. It is carved like the
+// Tavern's patron cell (divider, motif and word in the house lavender,
+// `--cv-purple`), never the rate-limited alarm fill that agents on a limit
+// wear. Static; villagers keep their own status.
+const ACCOUNT_LIMIT_INK = '#b79ae6';
+const MINE_ACCOUNT_LIMIT = Object.freeze({ count: 1, text: 'LIMIT', bucket: 'quota', motif: 'limit-gate', color: ACCOUNT_LIMIT_INK, calm: true });
 const PLAQUE_ATTENTION_GAP = 4;
 // AG-1 (B3-07, G7-4) — the Tavern's tally: a patron cell after the head band,
 // `│ ⊔5 · 14m`, the district's own tankard motif, the exact patron count and
@@ -1575,14 +1579,20 @@ export class BuildingSprite {
             // Right-aligned inside the outline, over the head band's bevel
             // and shade rows like the T1 plate's status cell.
             const cellLeft = left + width - 1 - plaque.attentionCell;
-            ctx.fillStyle = plaque.attention.color;
-            ctx.fillRect(cellLeft, top + 1, plaque.attentionCell, PLAQUE_HEAD_H - 2);
+            const calm = plaque.attention.calm === true;
+            if (calm) {
+                ctx.fillStyle = WALNUT.divider;
+                ctx.fillRect(cellLeft, top + 2, 1, PLAQUE_HEAD_H - 4);
+            } else {
+                ctx.fillStyle = plaque.attention.color;
+                ctx.fillRect(cellLeft, top + 1, plaque.attentionCell, PLAQUE_HEAD_H - 2);
+            }
             drawOutlinedMotif(ctx, plaque.attention.motif, cellLeft + PLAQUE_PAD, top + 4, {
-                color: LABEL_INK.plate,
-                outline: 'transparent',
+                color: calm ? plaque.attention.color : LABEL_INK.plate,
+                outline: calm ? WALNUT.outline : 'transparent',
             });
             ctx.font = WORLD_BODY_FONT_11;
-            ctx.fillStyle = LABEL_INK.plate;
+            ctx.fillStyle = calm ? plaque.attention.color : LABEL_INK.plate;
             ctx.fillText(plaque.attentionText, cellLeft + PLAQUE_PAD + 8 + PLAQUE_ATTENTION_GAP, top + 12);
         }
         if (plaque.rows.length) {
