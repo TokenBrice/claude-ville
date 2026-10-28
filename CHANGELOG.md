@@ -20,7 +20,7 @@ The village tells the truth about what your agents are doing, runs on a fraction
   - The server rescans only what changed: an unchanged rescan of twenty 1 MB transcripts went from 270 ms to 3 ms. It also skips git parsing for commands with no git work, reads only the active sessions' task folders, and sends deltas that carry only what changed. WebSocket traffic is down 53 %.
   - A browser with no WebGPU adapter stops trying WebGPU on every boot.
 - **Quota you can see.**
-  - Codex's weekly window, its reset countdown and the credit balance reach the top bar, a Dashboard quota card and the Mine. At 100 % the account reads LIMIT, while its villagers keep working.
+  - Codex's weekly window, its reset countdown and the credit balance reach the top bar and a Dashboard quota card. At 100 % the top bar reads CODEX LIMIT in calm lavender, while its villagers keep working.
   - Claude quota shows both reset times, and names an expired token or a rate limit instead of freezing for half an hour.
   - Row tokens lead with new tokens, with cache reads second. The spend map ranks today's sessions by spend, and "tokens seen today" says when its count began.
 - **A glance that adds up.**
