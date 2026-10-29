@@ -2,6 +2,17 @@
 
 ---
 
+## v0.60.2 — *The Squire's Question* · Oct 29, 2026
+
+NEEDS YOU now means you. A question from a subagent, or from a Codex run another agent launched, is for the agent that launched it, and no longer rings your bell.
+
+- **Questions find their rightful hearer.**
+  - Codex runs started headless have no one on the other end: `codex exec` (how MCP servers launch Codex) and `codex mcp-server`. A question they ask mid-run no longer raises NEEDS YOU, and the villager keeps reading as Working.
+  - The same holds for any subagent's question or plan review: its parent answers it, not you.
+  - Permission prompts still need you, whichever agent raised them: your CLI shows them to you.
+
+---
+
 ## v0.60.1 — *The Unseen Guild* · Oct 28, 2026
 
 DeepSeek agents launched through the deepseek-cc-mcp server now walk the village. They ran inside that server's own process and never reached a CLI session store, so ClaudeVille never saw them.
