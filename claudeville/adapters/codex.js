@@ -56,6 +56,9 @@ const TOKEN_USAGE_SCAN_LINES = 500;
 const PROMPT_PLAN_SCAN_LINES = 600;
 // Codex injects these as user-role messages; none of them is a prompt.
 const INJECTED_USER_PREFIXES = /^\s*(<environment_context>|<recommended_plugins>|<INSTRUCTIONS|<image name=|# AGENTS\.md instructions)/;
+// `session_meta.source` of a run no person is attached to: `codex exec`
+// (how MCP servers launch Codex) and `codex mcp-server`.
+const HEADLESS_SOURCES = new Set(['exec', 'mcp']);
 const GIT_EVENT_SCAN_LINES = 5000;
 const MAX_CURRENT_TOOL_INPUT_CHARS = 500;
 const MAX_WORKING_SET_ITEMS = 16;
@@ -175,6 +178,7 @@ function extractSessionMetadataFromText(line) {
   const agentRole = extractJsonString(metadataPrefix, 'agent_role');
   const agentPath = extractJsonString(metadataPrefix, 'agent_path');
   const parentThreadId = extractJsonString(metadataPrefix, 'parent_thread_id');
+  const headless = HEADLESS_SOURCES.has(extractJsonString(metadataPrefix, 'source'));
   const model = extractJsonString(metadataPrefix, 'model');
   const project = extractJsonString(metadataPrefix, 'cwd');
   const accountId = extractJsonString(metadataPrefix, 'creator_account_id');
@@ -185,6 +189,7 @@ function extractSessionMetadataFromText(line) {
     agentType: agentRole || null,
     agentPath,
     parentThreadId,
+    headless,
     model,
     project,
     accountId,
@@ -322,6 +327,7 @@ function applySessionMetadata(detail, metadata) {
   if ((detail.agentType === 'main' || !detail.agentType) && metadata.agentType) detail.agentType = metadata.agentType;
   if (!detail.agentPath && metadata.agentPath) detail.agentPath = metadata.agentPath;
   if (!detail.parentThreadId && metadata.parentThreadId) detail.parentThreadId = metadata.parentThreadId;
+  if (metadata.headless) detail.headless = true;
   if (!detail.model && metadata.model) detail.model = metadata.model;
   if (!detail.project && metadata.project) detail.project = metadata.project;
   if (!detail.gitBranch && metadata.gitBranch) detail.gitBranch = metadata.gitBranch;
@@ -648,6 +654,7 @@ function readEarlyMetadata(filePath) {
     agentType: 'main',
     agentPath: null,
     parentThreadId: null,
+    headless: false,
     model: null,
     reasoningEffort: null,
     permissionMode: null,
@@ -678,6 +685,7 @@ function readEarlyMetadata(filePath) {
         agentType: entry.payload.agent_role || subagent?.agent_role || 'main',
         agentPath: entry.payload.agent_path || subagent?.agent_path || null,
         parentThreadId: subagent?.parent_thread_id || null,
+        headless: HEADLESS_SOURCES.has(entry.payload.source),
         model: entry.payload.model || null,
         project: entry.payload.cwd || null,
         gitBranch: entry.payload.git?.branch || entry.payload.gitBranch || entry.payload.git_branch || null,
@@ -910,6 +918,7 @@ function parseRollout(filePath, scanContext = null) {
     agentType: 'main',
     agentPath: null,
     parentThreadId: null,
+    headless: false,
     model: null,
     reasoningEffort: null,
     permissionMode: null,
@@ -2166,6 +2175,7 @@ class CodexAdapter {
         // The spawn path ("/root/composition"); its leaf is the name the
         // orchestrator's `send_message` addresses.
         agentPath: typeof detail.agentPath === 'string' && detail.agentPath ? detail.agentPath.slice(0, 512) : null,
+        headless: detail.headless === true,
         model: inferCodexModel(detail) || 'codex',
         reasoningEffort: detail.reasoningEffort,
         permissionMode: detail.permissionMode,

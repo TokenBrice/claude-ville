@@ -21,6 +21,7 @@ const {
     deriveTurnState,
     toEpochMs,
 } = require('../../claudeville/adapters/turnState.js');
+const { normalizeSession } = require('../../claudeville/adapters/index.js');
 
 const NOW = 1_700_000_000_000;
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -297,6 +298,19 @@ test('Codex transcript fixtures preserve turn truth and project item_completed f
     assert.equal(answered.turnState, TurnState.WORKING);
     assert.equal(answered.openQuestion, null);
     assert.equal(answered.waitReason, null);
+    // A headless `codex exec` run (how MCP servers launch Codex) asks its
+    // launcher, not you: normalization drops the wait and it reads working.
+    assert.equal(asking.headless, false);
+    const execAsking = byId.get('codex-exec-question');
+    assert.ok(execAsking);
+    assert.equal(execAsking.headless, true);
+    assert.equal(execAsking.waitReason, 'question');
+    const execNormalized = normalizeSession(execAsking);
+    assert.equal(execNormalized.turnState, TurnState.WORKING);
+    assert.equal(execNormalized.waitReason, null);
+    assert.equal(execNormalized.openQuestion, null);
+    assert.equal(execNormalized.awaitingSince, null);
+    assert.equal(normalizeSession(asking).waitReason, 'question');
 
     const longRunning = byId.get('codex-long-running-turn');
     assert.ok(longRunning);
@@ -336,4 +350,33 @@ test('Codex transcript fixtures preserve turn truth and project item_completed f
     assert.equal(failedCommand.tool, 'Bash');
     assert.equal(failedCommand.detail, 'npm test');
     assert.equal(failedCommand.durationMs, 1500);
+});
+
+test('only a session you talk to directly can wait on you with a question', () => {
+    const asked = {
+        sessionId: 'codex-child',
+        provider: 'codex',
+        turnState: TurnState.TOOL_PENDING,
+        pendingTool: 'request_user_input',
+        pendingSince: NOW - 60_000,
+        awaitingSince: NOW - 60_000,
+        waitReason: WaitReason.QUESTION,
+    };
+    const main = normalizeSession(asked);
+    assert.equal(main.waitReason, WaitReason.QUESTION);
+    assert.equal(main.awaitingSince, NOW - 60_000);
+
+    // A subagent's question and plan review go to its parent.
+    const child = normalizeSession({ ...asked, parentSessionId: 'codex-parent' });
+    assert.equal(child.waitReason, null);
+    assert.equal(child.awaitingSince, null);
+    assert.equal(child.turnState, TurnState.TOOL_PENDING);
+    assert.equal(child.pendingTool, 'request_user_input');
+    const plan = normalizeSession({ ...asked, parentSessionId: 'codex-parent', waitReason: WaitReason.PLAN_REVIEW });
+    assert.equal(plan.waitReason, null);
+
+    // A permission prompt reaches a person whichever agent raised it.
+    const approval = normalizeSession({ ...asked, headless: true, waitReason: WaitReason.APPROVAL });
+    assert.equal(approval.waitReason, WaitReason.APPROVAL);
+    assert.equal(approval.awaitingSince, NOW - 60_000);
 });

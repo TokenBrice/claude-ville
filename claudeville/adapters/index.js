@@ -206,7 +206,19 @@ function normalizeTasks(value) {
 }
 
 
-function normalizeSession(session, context = {}) {
+// A question or plan review from a session nobody talks to directly is
+// addressed to whoever launched it: a subagent asks its parent, and a headless
+// run (`codex exec`) has no person attached. Neither waits on you, so the
+// session reads as the work it still is. An approval stays: the host CLI shows
+// a permission prompt to a person, whichever agent raised it.
+function withoutLauncherWait(session) {
+  if (!session?.headless && !session?.parentSessionId) return session;
+  if (session.waitReason !== 'question' && session.waitReason !== 'plan_review') return session;
+  return { ...session, waitReason: null, openQuestion: null, awaitingSince: null };
+}
+
+function normalizeSession(rawSession, context = {}) {
+  const session = withoutLauncherWait(rawSession);
   const provider = normalizeProviderId(session?.provider, context.provider || 'unknown');
   const workingSet = Array.isArray(session?.workingSet)
     ? session.workingSet.slice(0, 16).flatMap((item) => {

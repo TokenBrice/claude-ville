@@ -1,0 +1,6 @@
+{"type":"session_meta","payload":{"id":"exec-question","cwd":"__PROJECT__","originator":"codex_exec","source":"exec","model":"gpt-6.1-sol"}}
+{"type":"turn_context","payload":{"cwd":"__PROJECT__","model":"gpt-6.1-sol","effort":"high","approval_policy":"never"}}
+{"timestamp":"__FIVE_MINUTES_AGO__","type":"event_msg","payload":{"type":"task_started"}}
+{"timestamp":"__FOUR_MINUTES_AGO__","type":"response_item","payload":{"type":"function_call","id":"fc_q1","name":"request_user_input_async","arguments":"{\"questions\": [{\"title\": \"Which commit SHA was reviewed?\"}]}","call_id":"call_q1"}}
+{"timestamp":"__FOUR_MINUTES_AGO__","type":"response_item","payload":{"type":"function_call_output","call_id":"call_q1","output":"{\"accepted\":true}"}}
+{"timestamp":"__THREE_MINUTES_AGO__","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"output_tokens":10},"last_token_usage":{"total_tokens":110},"model_context_window":475000}}}
