@@ -224,7 +224,7 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const RATE_LIMIT_FIXTURE = path.join(REPO_ROOT, 'scripts', 'adapters', 'fixtures', 'codex', 'rate-limits.jsonl');
 const FAR_RESET_MS = 4102444800 * 1000;
 
-function codexQuotaProjection({ mtimeAgoMs = 0 } = {}) {
+function codexQuotaProjection({ mtimeAgoMs = 0, newerStubAgoMs = null } = {}) {
   const root = makeTempDir('claudeville-codex-quota-');
   try {
     const now = Date.now();
@@ -243,6 +243,18 @@ function codexQuotaProjection({ mtimeAgoMs = 0 } = {}) {
     fs.writeFileSync(target, content);
     const mtime = (now - mtimeAgoMs) / 1000;
     fs.utimesSync(target, mtime, mtime);
+    if (newerStubAgoMs !== null) {
+      // A session opened and left before its first turn: session_meta only.
+      const stub = path.join(rolloutDir, 'rollout-2026-10-27T13-00-00-stub.jsonl');
+      const stubAt = new Date(now - newerStubAgoMs).toISOString();
+      fs.writeFileSync(stub, `${JSON.stringify({
+        timestamp: stubAt,
+        type: 'session_meta',
+        payload: { id: 'stub', timestamp: stubAt, creator_account_id: 'acct-fixture-0001', cwd: project, originator: 'codex-tui', source: 'cli' },
+      })}\n`);
+      const stubMtime = (now - newerStubAgoMs) / 1000;
+      fs.utimesSync(stub, stubMtime, stubMtime);
+    }
     const script = `
       const { CodexAdapter } = require('./claudeville/adapters/codex');
       const usageQuota = require('./claudeville/services/usageQuota');
@@ -298,6 +310,14 @@ test('SV-6: a server that boots with no live Codex session still reads the last 
   assert.equal(sessions.length, 0, 'the six-hour-old rollout is not live');
   assert.equal(codex.limitReached, true);
   assert.equal(codex.observedAt, observedAt, 'its age is stated, not hidden');
+});
+
+test('SV-6: the boot seed walks past a newer rollout that never reported a token_count', () => {
+  const { sessions, codex, observedAt } = codexQuotaProjection({ mtimeAgoMs: 6 * 60 * 60_000, newerStubAgoMs: 3 * 60 * 60_000 });
+  assert.equal(sessions.length, 0, 'neither rollout is live');
+  assert.ok(codex, 'the stub does not hide the older reading');
+  assert.equal(codex.usedPercent, 100);
+  assert.equal(codex.observedAt, observedAt);
 });
 
 test('PV-7 / Q3: LIMIT at 100 % or a reached type, the binding window, and resets read as unknown', () => {

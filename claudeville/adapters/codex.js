@@ -1450,8 +1450,11 @@ function withBorrowedContextWindow(tokenUsage, filePath) {
 // and never a session's status.
 const MAX_RATE_LIMIT_ACCOUNTS = 16;
 const _rateLimitsByAccount = new Map();
-// The first scan also reads the newest rollout's tail, once, so a server that
-// boots with no live Codex session still shows the last observed quota.
+// The first scan also reads the newest rollouts' tails, once, so a server that
+// boots with no live Codex session still shows the last observed quota. A
+// session left before its first turn has no `token_count`, so the seed walks
+// back (at most RATE_LIMIT_SEED_FILES) to the newest rollout that has one.
+const RATE_LIMIT_SEED_FILES = 8;
 let _rateLimitSeeded = false;
 
 function rateLimitWindow(window) {
@@ -1519,15 +1522,16 @@ function seedCodexRateLimits() {
   if (_rateLimitSeeded) return;
   _rateLimitSeeded = true;
   if (_rateLimitsByAccount.size > 0) return;
-  let newest = null;
-  for (const [filePath, cached] of _rolloutDiscoveryCache.filesByPath) {
-    if (!newest || (cached.mtime || 0) > newest.mtime) newest = { filePath, mtime: cached.mtime || 0 };
+  const newest = Array.from(_rolloutDiscoveryCache.filesByPath, ([filePath, cached]) => ({ filePath, mtime: cached.mtime || 0 }))
+    .sort((left, right) => right.mtime - left.mtime)
+    .slice(0, RATE_LIMIT_SEED_FILES);
+  for (const { filePath } of newest) {
+    noteCodexRateLimits(
+      readEarlyMetadata(filePath)?.accountId || null,
+      readJsonLines(filePath, { from: 'end', count: TOKEN_USAGE_SCAN_LINES }),
+    );
+    if (_rateLimitsByAccount.size > 0) return;
   }
-  if (!newest) return;
-  noteCodexRateLimits(
-    readEarlyMetadata(newest.filePath)?.accountId || null,
-    readJsonLines(newest.filePath, { from: 'end', count: TOKEN_USAGE_SCAN_LINES }),
-  );
 }
 
 function latestCodexRateLimits() {
