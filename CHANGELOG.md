@@ -2,6 +2,16 @@
 
 ---
 
+## v0.60.3 — *The Unveiled Glass* · Oct 29, 2026
+
+The belfry's Codex glass no longer hides under its cloth because your newest Codex session never got past its first prompt.
+
+- **The Codex glass finds its last reading.**
+  - On startup, ClaudeVille takes your Codex quota from the newest session. A session opened and closed before its first turn carries no reading, so the glass stayed covered even with most of the week's quota spent.
+  - It now looks back through up to eight recent sessions and shows the newest reading it finds.
+
+---
+
 ## v0.60.2 — *The Squire's Question* · Oct 29, 2026
 
 NEEDS YOU now means you. A question from a subagent, or from a Codex run another agent launched, is for the agent that launched it, and no longer rings your bell.
