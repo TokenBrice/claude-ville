@@ -1924,6 +1924,18 @@ float columnRampLuma(int stop, float lift) {
     return dot(c, GRADE_LUMA);
 }
 
+// LA-7 — sea fret: a fog-bank record (flag \`seaFret\`) carries the banks'
+// share over land as its own alpha. Over painted water (coast flag \`water\`,
+// not \`covered\`) and the open sea off the coast lattice the bank keeps the
+// tile's full alpha; with the field absent (MINIMAL) every texel reads as
+// sea, today's even banks. Canvas: WorldFrameRenderer \`drawGroundFog\`.
+float seaFretAlpha(vec2 world, float landShare) {
+    float sd;
+    uint flags;
+    if (!coastFieldAt(world, sd, flags)) return 1.0;
+    return (flags & ${COAST_FIELD_FLAGS.water}u) != 0u && (flags & ${COAST_FIELD_FLAGS.covered}u) == 0u ? 1.0 : landShare;
+}
+
 void main() {
     // V9 — sample inside the record's own source rect (never an atlas
     // neighbour), whatever sub-texel offset the record rests at.
@@ -1988,7 +2000,8 @@ void main() {
     }
     if (u_terrainBatch && u_waterFx.x > 0.0) uv = reflectionRippleUv(uv, uvStepX);
     vec4 albedo = sampleAlbedo(uv);
-    float alpha = albedo.a * v_alpha * rowKeep * (castOnWater ? ${GROUND_CAST_WATER_SHARE.toFixed(2)} : 1.0);
+    float recordAlpha = (v_flags & ${GPU_RECORD_FLAGS.seaFret}u) != 0u ? seaFretAlpha(v_world, v_alpha) : v_alpha;
+    float alpha = albedo.a * recordAlpha * rowKeep * (castOnWater ? ${GROUND_CAST_WATER_SHARE.toFixed(2)} : 1.0);
     if (alpha < 0.01) discard;
     if (reflectRecord) {
         float course = clamp(floor(reflectRow / max(1.0, v_reflect.y) * 3.0 + bayer4(floor(v_world)) - 0.5), 0.0, 2.0);

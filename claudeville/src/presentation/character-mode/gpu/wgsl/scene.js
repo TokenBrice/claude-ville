@@ -470,6 +470,17 @@ struct SurfaceSample {
   receiverLuma: f32,
 }
 
+// LA-7 — sea fret (GLSL \`seaFretAlpha\`): a fog-bank record's own alpha is
+// the banks' share over land; over painted water and the open sea off the
+// coast lattice (or with the field absent) the bank keeps its full alpha.
+fn seaFretAlpha(world: vec2f, landShare: f32) -> f32 {
+  var sd = 0.0;
+  var flags = 0u;
+  if (!coastFieldAt(world, &sd, &flags)) { return 1.0; }
+  if ((flags & ${COAST_FIELD_FLAGS.water}u) != 0u && (flags & ${COAST_FIELD_FLAGS.covered}u) == 0u) { return 1.0; }
+  return landShare;
+}
+
 // main() up to the receiver knee's floor: the sampled, weathered, water-state
 // and graded surface.
 fn sceneSurface() -> SurfaceSample {
@@ -519,7 +530,9 @@ fn sceneSurface() -> SurfaceSample {
   }
   if (batch.terrainBatch != 0u && frame.waterFx.x > 0.0) { uv = reflectionRippleUv(uv, uvStepX); }
   var albedoRgba = sampleAlbedo(uv);
-  var alpha = albedoRgba.a * v_alpha * rowKeep * select(1.0, ${GROUND_CAST_WATER_SHARE.toFixed(2)}, castOnWater);
+  var recordAlpha = v_alpha;
+  if ((v_flags & RECORD_FLAG_SEA_FRET) != 0u) { recordAlpha = seaFretAlpha(v_world, v_alpha); }
+  var alpha = albedoRgba.a * recordAlpha * rowKeep * select(1.0, ${GROUND_CAST_WATER_SHARE.toFixed(2)}, castOnWater);
   if (alpha < 0.01) { discard; }
   if (reflectRecord) {
     let course = clamp(floor(reflectRow / max(1.0, v_reflect.y) * 3.0 + bayer4(floor(v_world)) - 0.5), 0.0, 2.0);

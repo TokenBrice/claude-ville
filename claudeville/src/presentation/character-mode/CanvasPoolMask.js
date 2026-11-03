@@ -83,8 +83,9 @@ let groundCanvas = null;
 
 // The terrain's ground receivers at the coast field's 2-px cells: every cell
 // but open water (a covered cell — dock, deck, bridge span, foundation — is
-// ground). Outside the field lies the outer sea.
-function groundMaskFor(fields) {
+// ground). Outside the field lies the outer sea. Also the LA-7 sea fret's
+// Canvas land cut (WorldFrameRenderer `drawGroundFog`).
+export function groundMaskFor(fields) {
     if (groundFields === fields && groundCanvas) return groundCanvas;
     const { cols, rows, coastField } = fields;
     const canvas = groundCanvas || document.createElement('canvas');

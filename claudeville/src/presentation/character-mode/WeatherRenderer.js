@@ -14,6 +14,7 @@ import { ornamentPlan, sampleFramePressure } from './MarkGovernor.js';
 import { baseWindX, cloudCourseDrift, windAt } from './Wind.js';
 import { applyGradeToRgb } from './GradeEvaluator.js';
 import { OCEAN_HORIZON_WORLD_Y, RAIN_START_PRECIPITATION } from './CoastBake.js';
+import { lookStrength } from './LookStrengths.js';
 
 export function weatherEmbellishmentAllowed(level = 0) {
     return ornamentPlan({ level, motionScale: 1 }).ambientWeatherEmbellishment !== 'off';
@@ -160,6 +161,18 @@ const FOG_COURSE_ALPHA = Object.freeze([0.11, 0.2, 0.31]);
 const FOG_OCTAVES = Object.freeze([[3, 8, 0.62], [6, 16, 0.38]]);
 const FOG_SEAM_TEXELS = 1;
 const FOG_BUCKETS = 8;
+// LA-7 — sea fret: the banks lie full on the sea, the lake and the rivers
+// and thin to this share over land at look strength 1 (`la7`; 0 keeps
+// today's even banks). The share rides the layer to the ground pass: the
+// resident `ground:fog` records carry it as their alpha under the `seaFret`
+// flag (the scene fragment's `seaFretAlpha`), and the Canvas pass cuts the
+// land with the coast field's ground mask (WorldFrameRenderer
+// `drawGroundFog`). Covered water (docks, bridges) counts as land.
+export const SEA_FRET_LAND_SHARE = 0.4;
+
+export function seaFretLandShare() {
+    return 1 - (1 - SEA_FRET_LAND_SHARE) * lookStrength('la7');
+}
 
 // 0.10 — lightning. One schedule on the one motion clock drives the bolt
 // here and the flash exposure both backends apply (C4 stepped quanta: a
@@ -441,6 +454,7 @@ export class WeatherRenderer {
     // creep; reduced motion holds them). The frame renderer lays it on the
     // ground below the sea horizon, under every body, building and tree. The
     // tile is FOG_COLOR as-is (both backends grade the world downstream).
+    // `landShare` is the LA-7 sea fret's share over land (1 = even banks).
     groundFogLayer({ atmosphere = null, viewport = null, timeMs = null } = {}) {
         const weather = normalizeWeather(atmosphere);
         if (!weather || !(weather.intensity > 0) || typeof document === 'undefined') return null;
@@ -469,6 +483,7 @@ export class WeatherRenderer {
         layer.key = key;
         layer.x = Math.round(drift.x);
         layer.y = Math.round(drift.y);
+        layer.landShare = seaFretLandShare();
         return layer;
     }
 

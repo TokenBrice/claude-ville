@@ -32,7 +32,7 @@ import { castLightingFor, drawTreeCasts, setFrameCastLighting, setFramePointCast
 import { drawFlashExposure, stormStrikeAt, weatherPressureLevel } from './WeatherRenderer.js';
 import { OCEAN_HORIZON_WORLD_Y } from './CoastBake.js';
 import { drawOffshoreScenery, isOffshoreRecordId } from './OffshoreScenery.js';
-import { poolMaskRect, poolReceiverMask } from './CanvasPoolMask.js';
+import { groundMaskFor, poolMaskRect, poolReceiverMask } from './CanvasPoolMask.js';
 import { drawCanvasWaterColumns } from './CanvasWaterState.js';
 import { drawCanvasEmitterCuts, drawMineCrystalGlow } from './EmitterCuts.js';
 import { sourceEnergyFor } from './AtmosphereState.js';
@@ -1802,13 +1802,59 @@ function drawGroundFog(ctx, renderer, atmosphere, viewport) {
         cached = renderer._groundFogPattern = { key: layer.key, canvas: layer.canvas, pattern };
     }
     cached.pattern.setTransform?.(new DOMMatrix([layer.texel, 0, 0, layer.texel, layer.x, layer.y]));
+    const fret = seaFretBanks(renderer, layer, span);
     ctx.save();
     ctx.imageSmoothingEnabled = false;
     ctx.globalCompositeOperation = 'source-over';
     ctx.globalAlpha = 1;
-    ctx.fillStyle = cached.pattern;
-    ctx.fillRect(span.left, span.top, span.right - span.left, span.bottom - span.top);
+    if (fret) {
+        ctx.drawImage(fret, 0, 0, span.right - span.left, span.bottom - span.top, span.left, span.top, span.right - span.left, span.bottom - span.top);
+    } else {
+        ctx.fillStyle = cached.pattern;
+        ctx.fillRect(span.left, span.top, span.right - span.left, span.bottom - span.top);
+    }
     ctx.restore();
+}
+
+// LA-7 — the Canvas twin of the resident `seaFretAlpha`: the banks over the
+// span go into one reused world-px canvas, and the coast field's ground mask
+// (land and covered water, CanvasPoolMask `groundMaskFor`) cuts them to
+// `landShare` over land with one `destination-out`; the sea off the lattice
+// keeps the full banks. Null at share 1 (today's single fill) or before the
+// coast bake.
+function seaFretBanks(renderer, layer, span) {
+    const fields = renderer._coastBake?.waterFields;
+    if (!(layer.landShare < 1) || !fields?.coastField || typeof document === 'undefined') return null;
+    const w = span.right - span.left;
+    const h = span.bottom - span.top;
+    const fret = renderer._seaFretBanks ||= { canvas: document.createElement('canvas'), ctx: null, pattern: null, source: null };
+    if (fret.canvas.width < w || fret.canvas.height < h) {
+        fret.canvas.width = Math.max(fret.canvas.width, Math.ceil(w / 64) * 64);
+        fret.canvas.height = Math.max(fret.canvas.height, Math.ceil(h / 64) * 64);
+        fret.ctx = null;
+    }
+    const fctx = fret.ctx ||= fret.canvas.getContext('2d');
+    if (!fctx) return null;
+    if (fret.source !== layer.canvas || fret.key !== layer.key || !fret.pattern) {
+        fret.pattern = fctx.createPattern(layer.canvas, 'repeat');
+        fret.source = layer.canvas;
+        fret.key = layer.key;
+    }
+    if (!fret.pattern) return null;
+    fret.pattern.setTransform?.(new DOMMatrix([layer.texel, 0, 0, layer.texel, layer.x, layer.y]));
+    fctx.setTransform(1, 0, 0, 1, -span.left, -span.top);
+    fctx.imageSmoothingEnabled = false;
+    fctx.globalAlpha = 1;
+    fctx.globalCompositeOperation = 'source-over';
+    fctx.clearRect(span.left, span.top, w, h);
+    fctx.fillStyle = fret.pattern;
+    fctx.fillRect(span.left, span.top, w, h);
+    fctx.globalCompositeOperation = 'destination-out';
+    fctx.globalAlpha = 1 - layer.landShare;
+    fctx.drawImage(groundMaskFor(fields), fields.x, fields.y, fields.cols * 2, fields.rows * 2);
+    fctx.globalCompositeOperation = 'source-over';
+    fctx.globalAlpha = 1;
+    return fret.canvas;
 }
 
 // The resident path: one ground record per lattice cell in view, each cut to
@@ -1859,6 +1905,9 @@ function groundFogRecords(renderer, atmosphere, viewport) {
             record.width = x1 - x0;
             record.height = y1 - y0;
             record.textureRevision = layer.key;
+            // LA-7 — the sea fret's share over land rides the alpha.
+            record.alpha = layer.landShare;
+            record.seaFret = layer.landShare < 1;
             out.push(record);
         }
     }

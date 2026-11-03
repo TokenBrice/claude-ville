@@ -185,10 +185,10 @@ ground-cue chord. A cue batch holding dot runs and a batch holding building or
 tree ground casts stage the tail (their flags).
 
 **Flags** (`GPU_RECORD_FLAGS` in `gpu/GpuWorldPolicy.js`, loc3.w). One bit per
-meaning, never reused. `assignGpuRecordV9Fields` packs bits 1-256 from the
-record's booleans; the mark and cue producers set `flags` directly;
+meaning, never reused. `assignGpuRecordV9Fields` packs bits 1-256 and 1024
+from the record's booleans; the mark and cue producers set `flags` directly;
 `wgsl/common.js` generates the WGSL `RECORD_FLAG_*` constants from the same
-object. Bits 1024 and up are free.
+object. Bits 2048 and up are free.
 
 | Bit | Name | Writer | Reader |
 | ---: | --- | --- | --- |
@@ -202,6 +202,7 @@ object. Bits 1024 and up are free.
 | 128 | `cueRun` | `GroundCueRecords` dot runs (B.3) | vertex (`GroundCueRecords.CUE_RUN_GLSL`, `wgsl/cueRun.js`): loc1 holds four packed 24-bit integer words, not UVs; the batch draws `CUE_RUN_VERTICES` vertices per instance (a triangle list) and rebuilds each dot's rect and swatch uv |
 | 256 | `groundCast` | `GpuSceneBuilder` building and tree ground casts (2.9) | fragment: over coast flag `water` and not `covered`, alpha x `RakingLight.GROUND_CAST_WATER_SHARE`, broken by the water column's ripple rows |
 | 512 | `actionMark` | mark records with role 2 (T1 status pixels, the C4 verified-success peak cream) | mark pass: `MARK_P3_FRAGMENT` (WebGL2, P3) and `markRolesFs` (WebGPU, HDR/P3) apply the role; counted into `markRoleRecords` / `lateMarkRoleRecords` |
+| 1024 | `seaFret` | `WorldFrameRenderer.groundFogRecords` (LA-7), set while the `la7` land share is below 1; the record's alpha is that share | fragment (`seaFretAlpha`): over coast flag `water` and not `covered`, and off the coast lattice, the bank keeps alpha 1; elsewhere the record alpha |
 
 - **T1 mark records** (Wave 10 S5, WebGPU contract §7.4): `AttentionPlates
   .attentionMarkRecords(layout, { scale })` turns an attention layout's
