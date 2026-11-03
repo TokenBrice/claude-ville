@@ -59,6 +59,9 @@ const DRIFT_WIND_SCALE = 0.5;
 const RIVER_LEAF_FALL = 0.09;
 const RIVER_LEAF_FLOAT = 0.13;
 const RIVER_LEAF_FLOAT_FRAMES = [240, 360];
+// `windAt`'s reused result: scratch, not drift state (module scope keeps the
+// ambience's own fields what they were).
+const _spawnWind = { x: 0, gust: 0 };
 
 const SEASONS = {
     winter: { type: 'snow', token: 'winter' },
@@ -223,7 +226,6 @@ export class SeasonalAmbience {
             : null;
         this.enabled = true;
         this._spawnAccumulator = 0;
-        this._wind = { x: 0, gust: 0 };
     }
 
     setEnabled(flag) {
@@ -280,7 +282,7 @@ export class SeasonalAmbience {
         // BI-4a — leaves, petals and snow lean downwind with the local wind,
         // gusts included; butterflies fly their own way.
         const windX = season.type === 'butterfly' ? 0
-            : windAt(x, y, this.motionTimeGetter(), this.atmosphereStateGetter()?.weather, this._wind).x * DRIFT_WIND_SCALE;
+            : windAt(x, y, this.motionTimeGetter(), this.atmosphereStateGetter()?.weather, _spawnWind).x * DRIFT_WIND_SCALE;
         if (season.type === 'leaf' && anchor?.lift > 0 && this._spawnRiverLeaf(x, y, anchor.lift, windX)) return;
         this.particleSystem.spawn(season.type, x, y, 1, {
             tag: SEASONAL_TAG,
