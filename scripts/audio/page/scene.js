@@ -3,7 +3,8 @@
 // atmosphere snapshots, the sound settings a scene starts from, and the
 // scripted actions, all through the shipped modules' public surfaces.
 import { eventBus } from '/src/domain/events/DomainEvent.js';
-import { createAtmosphereSnapshot } from '/src/presentation/character-mode/AtmosphereState.js';
+import { createAtmosphereSnapshot, dayShiftFor } from '/src/presentation/character-mode/AtmosphereState.js';
+import { gradeKeyMinute } from '/src/presentation/character-mode/GradeEvaluator.js';
 import { seasonTokenForAtmosphere } from '/src/presentation/character-mode/SeasonalAmbience.js';
 import { STANDARD_VOLUME_STEP } from '/src/presentation/shared/audio/Loudness.js';
 
@@ -78,9 +79,21 @@ export function hourFor(phase, progress = 0.5, weatherOverride = null) {
     return best ? best.hour : 12.5;
 }
 
+// LA-2: the village keeps the real sun, so a clock hour is blue hour on one
+// date and night on another. A scene that means a place in the colour script
+// pins it by grade key (`key` plus `keyOffsetMin`) on FIXED_DATE's own day
+// shift, the way world:golden-hours pins its scenes.
+export function hourForKey(key, offsetMin = 0, weatherOverride = null) {
+    const snap = createAtmosphereSnapshot({ now: FIXED_DATE(), weatherOverride });
+    const minute = gradeKeyMinute(key, dayShiftFor(snap)) + offsetMin;
+    return (((minute % 1440) + 1440) % 1440) / 60;
+}
+
 export function atmosphereFor(spec = {}) {
     const weatherOverride = spec.weather || { type: 'clear' };
-    const hour = spec.hour ?? hourFor(spec.phase || 'day', spec.progress ?? 0.5, weatherOverride);
+    const hour = spec.hour ?? (spec.key
+        ? hourForKey(spec.key, spec.keyOffsetMin ?? 0, weatherOverride)
+        : hourFor(spec.phase || 'day', spec.progress ?? 0.5, weatherOverride));
     const snapshot = createAtmosphereSnapshot({ now: FIXED_DATE(), hourOverride: hour, weatherOverride });
     return { snapshot, hour };
 }
