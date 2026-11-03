@@ -603,12 +603,14 @@ export const DISTRICT_PROPS = [
     { tileX: 11.3, tileY: 27.8, id: 'prop.wellTrough', layer: 'cache', district: 'civic', walkBlock: true },
     // Reeds and cattails on dry bank tiles of the lagoon's south shore and
     // the west river's south bank: never on water, a heron shallow or a duck
-    // bank (CALM_WATER_FAUNA, HERON_SHALLOWS), never at a bridge foot.
-    { tileX: 9.2, tileY: 11.4, id: 'veg.cattailClump', layer: 'cache', district: 'lagoon' },
-    { tileX: 12.3, tileY: 12.6, id: 'veg.reedClump', layer: 'cache', district: 'lagoon' },
-    { tileX: 15.6, tileY: 13.6, id: 'veg.cattailClump', layer: 'cache', district: 'lagoon' },
-    { tileX: 3.4, tileY: 27.6, id: 'veg.cattailClump', layer: 'cache', district: 'civic' },
-    { tileX: 14.5, tileY: 27.1, id: 'veg.cattailClump', layer: 'cache', district: 'civic' },
+    // bank (CALM_WATER_FAUNA, HERON_SHALLOWS), never at a bridge foot. Live
+    // (BI-6, ReedBeds.js): sorted sprites that bow a texel downwind as a
+    // gust crosses them, instead of terrain-baked art.
+    { tileX: 9.2, tileY: 11.4, id: 'veg.cattailClump', layer: 'live', district: 'lagoon' },
+    { tileX: 12.3, tileY: 12.6, id: 'veg.reedClump', layer: 'live', district: 'lagoon' },
+    { tileX: 15.6, tileY: 13.6, id: 'veg.cattailClump', layer: 'live', district: 'lagoon' },
+    { tileX: 3.4, tileY: 27.6, id: 'veg.cattailClump', layer: 'live', district: 'civic' },
+    { tileX: 14.5, tileY: 27.1, id: 'veg.cattailClump', layer: 'live', district: 'civic' },
     // Fern and bramble where the woods meet the lagoon's west and north
     // shores (the world ash's islet and crown cover its north-east bank).
     { tileX: 0.5, tileY: 5.8, id: 'veg.fernCluster', layer: 'cache', district: 'elderwood' },

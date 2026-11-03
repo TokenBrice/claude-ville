@@ -38,6 +38,7 @@ import { AgentSprite, drawFamiliarMotes, familiarMoteLightSources } from './Agen
 import { BuildingSprite, SOURCE_HALO_RADIUS_CAP, lampsLitAt } from './BuildingSprite.js';
 import { VillageCalendar } from './VillageCalendar.js';
 import { IsleLandmarks } from './IsleLandmarks.js';
+import { buildReedSprites } from './ReedBeds.js';
 import { BehaviorTelemetry } from './BehaviorTelemetry.js';
 
 import { SceneryEngine } from './SceneryEngine.js';
@@ -8631,6 +8632,9 @@ export class IsometricRenderer {
                     },
                 });
             }));
+        // BI-6 — the live reed and cattail clumps (DISTRICT_PROPS `live`):
+        // their cache-era placements, kept whole (no tall-scenery filter).
+        sprites.push(...buildReedSprites(this));
         // W8.5b — the three non-semantic landmarks (windmill, chapel, ruined
         // tower): walkBlock placements, so they skip the
         // tall-scenery tile filter above, which their own block would trip.
