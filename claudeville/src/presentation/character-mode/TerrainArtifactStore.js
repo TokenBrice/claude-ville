@@ -8,7 +8,7 @@ import { captureGroundArtifact, restoreGroundArtifact, validGroundArtifact } fro
 import { captureCoastArtifact, restoreCoastArtifact, validCoastArtifact, coastArtifactInputsSettled } from './CoastBake.js';
 
 // Bump on ANY GroundBake, CoastBake or static terrain-pass pixel change.
-export const TERRAIN_BAKE_ALGORITHM_VERSION = 'cv0.50-terrain-3';
+export const TERRAIN_BAKE_ALGORITHM_VERSION = 'cv0.61-terrain-4';
 export const TERRAIN_ARTIFACT_DB = 'claudeville-terrain-artifacts';
 export const TERRAIN_ARTIFACT_MAX_BYTES = 96 * 1024 * 1024;
 const SCHEMA = 1;
@@ -62,7 +62,7 @@ export function terrainArtifactKey({ assetVersion, configHash, season, sceneryRe
     if (!assetVersion || !configHash || !['spring', 'summer', 'autumn', 'winter'].includes(season)
         || !Number.isInteger(sceneryRevision) || sceneryRevision < 0
         || !Number.isInteger(snowBucket) || snowBucket < 0 || snowBucket > 4
-        || (frost !== 0 && frost !== 1) || !algorithmVersion || !Number.isFinite(dpr) || dpr <= 0
+        || !Number.isInteger(frost) || frost < 0 || frost > 4 || !algorithmVersion || !Number.isFinite(dpr) || dpr <= 0
         || !bounds || !['x', 'y', 'w', 'h'].every(k => Number.isFinite(bounds[k])) || bounds.w <= 0 || bounds.h <= 0) return null;
     return JSON.stringify([SCHEMA, algorithmVersion, String(assetVersion), configHash, season, sceneryRevision, snowBucket, frost,
         bounds.x, bounds.y, bounds.w, bounds.h, dpr]);

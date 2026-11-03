@@ -59,7 +59,7 @@ import { setPennantWeather } from './PixelPennant.js';
 import { openGroundTiles } from './AmbientGround.js';
 import { TERRAIN_HAZE_COURSES, installGroundBake } from './GroundBake.js';
 import { OCEAN_HORIZON_WORLD_Y, coastDistanceProbe, drawCanvasWaterMood, drawOuterOcean, registerCoastBake } from './CoastBake.js';
-import { snowBucketOf } from './GroundState.js';
+import { frostQuarterOf, snowBucketOf } from './GroundState.js';
 import {
     TerrainArtifactStore, terrainArtifactConfiguration, terrainArtifactInputsSettled, terrainArtifactKey, terrainContentHash,
     captureTerrainArtifactFields, captureTerrainArtifact, restoreTerrainArtifact,
@@ -8245,7 +8245,7 @@ export class IsometricRenderer {
         const atmosphere = this._lastAtmosphere ?? this.atmosphereState?.snapshot?.();
         const ground = this._groundState ?? groundStateForAtmosphere(atmosphere);
         return { assetVersion: this.assets?.assetVersion, bounds, dpr, season,
-            sceneryRevision: this._terrainSceneryRevision || 0, snowBucket: snowBucketOf(ground?.snowCover), frost: ground?.frost ? 1 : 0 };
+            sceneryRevision: this._terrainSceneryRevision || 0, snowBucket: snowBucketOf(ground?.snowCover), frost: frostQuarterOf(ground) };
     }
 
     _persistedTerrainKey(bounds, dpr, season) {
