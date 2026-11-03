@@ -2474,6 +2474,37 @@ function riverArcAt(axes, u, v) {
     return best;
 }
 
+// BI-4b — the river's current at a world point: the downstream unit direction
+// (world px) of the nearest river axis where the resident water fields put the
+// point on the current course (cycle offsets 16–31), else null; never under a
+// bridge, dock or pier (`covered`). A leaf that lands there floats with it.
+let _riverAxes = null;
+export function riverCurrentAt(renderer, worldX, worldY) {
+    const fields = renderer?._coastBake?.waterFields;
+    if (!fields?.cycleOffset) return null;
+    const c = Math.floor((worldX - fields.x) / 2);
+    const r = Math.floor((worldY - fields.y) / 2);
+    if (c < 0 || r < 0 || c >= fields.cols || r >= fields.rows) return null;
+    const cell = r * fields.cols + c;
+    const offset = fields.cycleOffset[cell];
+    if (offset < CYCLE_CURRENT_GROUP || offset >= CYCLE_CURRENT_GROUP + 16
+        || (fields.coastField?.[cell * 2 + 1] & COAST_FIELD_FLAGS.covered)) return null;
+    const u = worldY / TILE_HEIGHT + worldX / TILE_WIDTH;
+    const v = worldY / TILE_HEIGHT - worldX / TILE_WIDTH;
+    let best = null;
+    let bestDistance = Infinity;
+    for (const seg of (_riverAxes ||= riverAxes())) {
+        const t = Math.max(0, Math.min(1, ((u - seg.ax) * seg.dx + (v - seg.ay) * seg.dy) / (seg.length * seg.length)));
+        const distance = Math.hypot(u - seg.ax - seg.dx * t, v - seg.ay - seg.dy * t);
+        if (distance < bestDistance) { bestDistance = distance; best = seg; }
+    }
+    if (!best) return null;
+    const x = (best.dx - best.dy) * TILE_WIDTH / 2;
+    const y = (best.dx + best.dy) * TILE_HEIGHT / 2;
+    const length = Math.hypot(x, y) || 1;
+    return { x: x / length, y: y / length };
+}
+
 // E2-05 — a coast cell's swash sd below the cliff's waterline, or null when
 // the cell is not wholly within CLIFF_SURF_ROWS rows under both its columns'
 // waterlines (a plain column under a building, slip or bridge has none).

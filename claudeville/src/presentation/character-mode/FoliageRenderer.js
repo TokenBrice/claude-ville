@@ -30,6 +30,17 @@ import { snowBucketOf } from './GroundState.js';
 // sheets carry no canopy remap (`canopy: false`), so one image per state
 // serves every variant.
 //
+// The Turning Year (BI-2): the season's plans move through the weekly stages
+// of `SeasonalAmbience.PHENOLOGY_STAGES`. Through September and October a
+// crown turns from the top in whole clumps over its summer colours
+// (`canopyPlan`'s `turn`); from mid-October each species sheds whole clumps
+// to its authored bare sheet by a fixed clump hash (`shedCanopy`: birches and
+// poplars first, oaks last), so the stages nest and the crown outline around a
+// fallen clump goes with it; a crown fully shed draws its bare sheet. Young
+// oaks keep a few russet clumps through December. Spring runs the shed back
+// as leaf-out, then the blossom. A stage change drops the images once, like
+// a season; the stage keys every image and texture.
+//
 // The world ash (user item 5): one authored record (`species: 'ash'`,
 // scenery.js WORLD_TREE) draws the colossal `ash.world` sheet, about 2.4× a
 // tall oak, on the northern lagoon islet. It is evergreen: its canopy plan
@@ -114,12 +125,13 @@ export function treeSpriteKey(tree) {
     return `${species}.${size}`;
 }
 
-// The sheet a leafy sprite shows now: bare in winter (deciduous), snow-laden
-// while snow lies on the ground (pines and the world ash, `snowBucket` > 0),
-// else itself.
-export function treeStateKey(spriteKey, season, snowBucket) {
+// The sheet a leafy sprite shows now: bare once its whole crown has shed
+// (deciduous; `shed`, the BI-2 stage's share, 1 by default in winter),
+// snow-laden while snow lies on the ground (pines and the world ash,
+// `snowBucket` > 0), else itself.
+export function treeStateKey(spriteKey, season, snowBucket, shed = season === 'winter' ? 1 : 0) {
     const sprite = TREE_SPRITES[spriteKey];
-    if (season === 'winter' && sprite?.bare) return sprite.bare;
+    if (shed >= 1 && sprite?.bare) return sprite.bare;
     if (snowBucket > 0 && sprite?.snow) return sprite.snow;
     return spriteKey;
 }
@@ -175,7 +187,13 @@ export function isCanopyPixel(data, index, y, height) {
     return data[index + 3] > 200 && y < height - 2 && g > r + 4 && g >= b - 6 && lumOf(r, g, b) >= 20;
 }
 
-const plan = (fields) => Object.freeze({ ramp: null, stops: 0, shift: 0, turning: null, blossom: false, ...fields });
+// The turning crown's line at peak colour (`turnedClump`), and how far one
+// unit of BI-2 turn progress moves it.
+const TURN_LINE = 0.35;
+const TURN_LINE_SPAN = 0.65;
+// `line`: the turning crown's line (`turnedClump`); `turningShift`: the stops
+// the turning ramp is lifted (a part-turned lit crown, BI-2).
+const plan = (fields) => Object.freeze({ ramp: null, stops: 0, shift: 0, turning: null, turningShift: 0, line: TURN_LINE, blossom: false, ...fields });
 const PLAN_DEEP = plan({ ramp: 'foliageDeep' });
 const PLAN_SUN = plan({ ramp: 'foliageSun' });
 // A sunlit pine stops short of the two yellow highlight stops: conifers stay
@@ -204,18 +222,54 @@ const WORLD_ASH_PLANS = Object.freeze({ spring: PLAN_SUN, summer: null, autumn: 
 // in three hue families instead of one russet mass; sunlit oaks blossom in
 // spring; pines never change with the season; the world ash follows
 // WORLD_ASH_PLANS whatever its variant.
-export function canopyPlan(species, variant, season) {
+//
+// BI-2 — `turn` is the autumn turn's progress (PHENOLOGY_STAGES `turned` plus
+// the species' `shed`): 1 is the peak plans above. Below it a crown turns
+// from the top in whole clumps over its summer colours (a fully recoloured
+// plan reaches the whole crown at 1, a crown-only plan its line); from 1 to
+// 2 the shed weeks carry a crown-only plan's line down the rest of the crown,
+// so a crown finishes turning as it empties.
+export function canopyPlan(species, variant, season, turn = 1) {
     if (species === 'ash') return WORLD_ASH_PLANS[season] ?? null;
     if (species === 'pine') return variant === 1 ? PLAN_DEEP : variant === 2 ? PLAN_PINE_SUN : null;
     if (season === 'autumn') {
-        if (species === 'willow' || species === 'poplar') return variant === 1 ? PLAN_DEEP : variant === 2 ? PLAN_WILLOW_GOLD_LIT : PLAN_WILLOW_GOLD;
-        if (species === 'birch') return variant === 1 ? PLAN_GOLD_TURNING : variant === 2 ? PLAN_WILLOW_GOLD : PLAN_WILLOW_GOLD_LIT;
-        if (species === 'maple') return variant === 1 ? PLAN_SCARLET_TURNING : variant === 2 ? PLAN_SCARLET_LIT : PLAN_SCARLET;
-        return variant === 1 ? PLAN_RUSSET : variant === 2 ? PLAN_OCHRE : PLAN_TURNING;
+        const peak = autumnPeakPlan(species, variant);
+        return turn === 1 ? peak : turningPlan(peak, canopyPlan(species, variant, 'summer'), turn);
     }
     if (variant === 1) return PLAN_DEEP;
     if (variant === 2) return species === 'oak' && season === 'spring' ? PLAN_SUN_BLOSSOM : PLAN_SUN;
     return null;
+}
+
+function autumnPeakPlan(species, variant) {
+    if (species === 'willow' || species === 'poplar') return variant === 1 ? PLAN_DEEP : variant === 2 ? PLAN_WILLOW_GOLD_LIT : PLAN_WILLOW_GOLD;
+    if (species === 'birch') return variant === 1 ? PLAN_GOLD_TURNING : variant === 2 ? PLAN_WILLOW_GOLD : PLAN_WILLOW_GOLD_LIT;
+    if (species === 'maple') return variant === 1 ? PLAN_SCARLET_TURNING : variant === 2 ? PLAN_SCARLET_LIT : PLAN_SCARLET;
+    return variant === 1 ? PLAN_RUSSET : variant === 2 ? PLAN_OCHRE : PLAN_TURNING;
+}
+
+// A peak plan at turn progress `turn` (memoized, so a stage's plans keep
+// their identity): a crown-only plan moves its line; a fully recoloured plan
+// becomes a crown turn of its ramp over the summer plan, the whole crown
+// from turn 1. A plan that never turns (the green-holding deep willows and
+// poplars) is itself.
+const _turnPlans = new Map();
+function turningPlan(peak, summer, turn) {
+    if (peak === summer || (!peak.ramp && !peak.turning)) return peak;
+    const crownOnly = !peak.ramp;
+    const progress = Math.max(0, Math.min(2, crownOnly ? turn : 2 * Math.min(1, turn)));
+    if (!crownOnly && progress >= 2) return peak;
+    const key = `${peak.ramp || ''}|${peak.turning || ''}|${peak.shift}|${summer?.ramp || ''}|${progress}`;
+    let turned = _turnPlans.get(key);
+    if (!turned) {
+        const line = TURN_LINE + TURN_LINE_SPAN * (progress - 1);
+        turned = crownOnly
+            ? plan({ ...peak, line })
+            : plan({ ramp: summer?.ramp || null, stops: summer?.stops || 0, shift: summer?.shift || 0,
+                turning: peak.ramp, turningShift: peak.shift, line });
+        _turnPlans.set(key, turned);
+    }
+    return turned;
 }
 
 function pixelHash(x, y, salt) {
@@ -322,10 +376,11 @@ export function canopyClumps(data, width, height, indices) {
 }
 
 // The turning crown: clumps whose centre sits above a line 35–65 % down the
-// canopy (hashed per clump) take the turning ramp, so the crown turns in
-// whole leaf clumps from the top.
-const turnedClump = (clump, top, bottom) => (clump.y - top) / Math.max(1, bottom - top)
-    < 0.35 + 0.3 * pixelHash(Math.round(clump.x), Math.round(clump.y), 5);
+// canopy (hashed per clump; `line` 0.35) take the turning ramp, so the crown
+// turns in whole leaf clumps from the top. A lower line turns fewer, a line
+// of 1 the whole crown (BI-2).
+const turnedClump = (clump, top, bottom, line = TURN_LINE) => (clump.y - top) / Math.max(1, bottom - top)
+    < line + 0.3 * pixelHash(Math.round(clump.x), Math.round(clump.y), 5);
 // Blossom: the lit pixels (rank from BLOSSOM_FROM) of a sunlit oak flower in
 // hashed 2×2 cells, so petals sit in small clusters on the lit side of the
 // puffs; about half the clumps are in full bloom (cell share BLOSSOM_FULL),
@@ -400,7 +455,7 @@ export function recolorCanopy(data, width, height, canopy) {
     const turning = canopy.turning ? canopyRamp(canopy.turning) : null;
     const blossom = canopy.blossom ? canopyRamp('blossom') : null;
     const clumps = turning || blossom ? canopyClumps(data, width, height, indices) : null;
-    const turned = turning ? turningMask(width, height, indices, clumps.label, clumps.clumps.map((c) => turnedClump(c, top, bottom))) : null;
+    const turned = turning ? turningMask(width, height, indices, clumps.label, clumps.clumps.map((c) => turnedClump(c, top, bottom, canopy.line))) : null;
     const flowering = blossom ? clumps.clumps.map((c) => (pixelHash(Math.round(c.x), Math.round(c.y), 8) < BLOSSOM_CLUMPS ? BLOSSOM_FULL : BLOSSOM_OPEN)) : null;
     const ranks = indices.map((i) => (lumOf(data[i], data[i + 1], data[i + 2]) - lo) / span);
     const set = (i, rgb) => { data[i] = rgb[0]; data[i + 1] = rgb[1]; data[i + 2] = rgb[2]; };
@@ -413,7 +468,7 @@ export function recolorCanopy(data, width, height, canopy) {
             const j = Math.max(0, Math.min(ramp.rgb.length - 1, rankStop(ramp, t) + canopy.shift));
             set(i, ramp.rgb[j]);
         }
-        if (turned && turned[p] === 1) set(i, turning.rgb[rankStop(turning, t)]);
+        if (turned && turned[p] === 1) set(i, turning.rgb[Math.min(turning.rgb.length - 1, rankStop(turning, t) + canopy.turningShift)]);
         if (flowering && t >= BLOSSOM_FROM && blossomCell(x, y) < flowering[clumps.label.get(p)]) {
             set(i, blossom.rgb[rankStop(blossom, (t - BLOSSOM_FROM) / (1 - BLOSSOM_FROM))]);
         }
@@ -446,6 +501,104 @@ export function dustSnowCanopy(data, laden, width, height, depth) {
             data[i] = laden[i]; data[i + 1] = laden[i + 1]; data[i + 2] = laden[i + 2]; data[i + 3] = laden[i + 3];
         }
     }
+}
+
+// BI-2 — the shed hash salt (plus 7 per canopy variant, so a sheet's three
+// variants drop different clumps), and the young oaks' marcescence: while
+// the stage is marcescent, `oak.small` keeps 15 % of its clumps, russet.
+const SHED_SALT = 11;
+const MARCESCENT_SPRITE = 'oak.small';
+const MARCESCENT_SHED = 0.85;
+
+/**
+ * BI-2 — sheds `share` (0..1) of a leafy crown to its authored bare sheet in
+ * place (pure; Node-safe). Whole leaf clumps of the authored `leafy` sheet
+ * (`canopyClumps`) fall when their fixed hash (`salt`) is under `share`, so a
+ * larger share sheds a superset: the stages nest, a fallen clump never
+ * returns while the share grows, and spring's falling share brings them back
+ * in reverse. A fallen clump takes the bare sheet's pixels (its branches, or
+ * open air); so does any other texel the two sheets differ on (the crown's
+ * outline and shade, a twig past the leaf mass) whose nearest canopy texel,
+ * through such texels, has fallen. A kept texel that now faces open air
+ * takes its clump's darkest colour, so a kept clump keeps an edge and every
+ * kept pixel stays on its canopy ramp. Returns the number of texels changed.
+ */
+export function shedCanopy(data, leafy, bare, width, height, share, salt) {
+    const n = width * height;
+    if (!(share > 0)) return 0;
+    if (share >= 1) {
+        data.set(bare.subarray(0, n * 4));
+        return n;
+    }
+    const indices = [];
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const i = (y * width + x) * 4;
+            if (isCanopyPixel(leafy, i, y, height)) indices.push(i);
+        }
+    }
+    const { label, clumps } = canopyClumps(leafy, width, height, indices);
+    const gone = clumps.map((c) => pixelHash(Math.round(c.x), Math.round(c.y), salt) < share);
+    // 1 = a kept canopy texel, 2 = a fallen one; `shed` marks texels now bare.
+    const canopy = new Uint8Array(n);
+    for (const i of indices) canopy[i >> 2] = gone[label.get(i >> 2)] ? 2 : 1;
+    const shed = new Uint8Array(n);
+    let changed = 0;
+    const toBare = (p) => {
+        const i = p * 4;
+        data[i] = bare[i]; data[i + 1] = bare[i + 1]; data[i + 2] = bare[i + 2]; data[i + 3] = bare[i + 3];
+        shed[p] = 1;
+        changed++;
+    };
+    for (let p = 0; p < n; p++) if (canopy[p] === 2) toBare(p);
+    // Every other texel the sheets differ on (the crown's outline and deep
+    // shade, a twig past the leaf mass) follows its nearest canopy texel
+    // through them, a breadth-first flood from the whole canopy: it goes
+    // bare with a fallen clump and stays with a kept one. Its owner is
+    // geometry alone, so the shed still nests.
+    const differs = (p) => {
+        const i = p * 4;
+        return leafy[i] !== bare[i] || leafy[i + 1] !== bare[i + 1] || leafy[i + 2] !== bare[i + 2] || leafy[i + 3] !== bare[i + 3];
+    };
+    const fate = Uint8Array.from(canopy);
+    const queue = new Int32Array(n);
+    let head = 0;
+    let tail = 0;
+    for (const i of indices) queue[tail++] = i >> 2;
+    while (head < tail) {
+        const p = queue[head++];
+        const x = p % width;
+        for (const q of [x > 0 ? p - 1 : -1, x < width - 1 ? p + 1 : -1, p - width, p + width]) {
+            if (q < 0 || q >= n || fate[q] || !differs(q)) continue;
+            fate[q] = fate[p];
+            queue[tail++] = q;
+        }
+    }
+    for (let p = 0; p < n; p++) if (!canopy[p] && fate[p] === 2) toBare(p);
+    // Each kept clump's darkest colour (luminance), before any edge is set.
+    const dark = new Array(clumps.length).fill(-1);
+    for (const i of indices) {
+        const id = label.get(i >> 2);
+        if (gone[id]) continue;
+        const d = dark[id];
+        if (d < 0 || lumOf(data[i], data[i + 1], data[i + 2]) < lumOf(data[d], data[d + 1], data[d + 2])) dark[id] = i;
+    }
+    const edges = [];
+    for (const i of indices) {
+        const p = i >> 2;
+        if (canopy[p] !== 1) continue;
+        const x = p % width;
+        for (const q of [x > 0 ? p - 1 : -1, x < width - 1 ? p + 1 : -1, p - width, p + width]) {
+            if (q < 0 || q >= n || !shed[q] || data[q * 4 + 3] !== 0) continue;
+            edges.push(i);
+            break;
+        }
+    }
+    for (const i of edges) {
+        const d = dark[label.get(i >> 2)];
+        data[i] = data[d]; data[i + 1] = data[d + 1]; data[i + 2] = data[d + 2];
+    }
+    return changed + edges.length;
 }
 
 // ---- lean frames -------------------------------------------------------------
@@ -569,6 +722,9 @@ export class FoliageRenderer {
         this.cache = new Map();
         this._canopies = new Map();
         this.season = 'summer';
+        // BI-2 — the woods' weekly stage (SeasonalAmbience PHENOLOGY_STAGES),
+        // or null for the season's own plans (bare all winter).
+        this.phenology = null;
         this._snowBucket = 0;
         this._wind = { x: 0, gust: 0 };
     }
@@ -590,13 +746,36 @@ export class FoliageRenderer {
         return this.cache.size;
     }
 
-    // The renderer's calendar season (`_currentSeasonToken`); a change drops
-    // every tree image so the next draw rebuilds them once for the new season.
-    setSeason(season) {
+    // The renderer's calendar season (`_currentSeasonToken`) and BI-2 stage
+    // (`_currentPhenology`); a change of either drops every tree image so the
+    // next draw rebuilds them once (about 18 times a year).
+    setSeason(season, phenology = null) {
         const next = CANOPY_SEASONS.includes(season) ? season : 'summer';
-        if (next === this.season) return;
+        if (next === this.season && (phenology?.id ?? '') === (this.phenology?.id ?? '')) return;
         this.season = next;
+        this.phenology = phenology;
         this.releaseCache();
+    }
+
+    // The share of a leafy sheet's crown fallen to its bare sheet this stage:
+    // the species' stage share (young oaks keep a few clumps while the stage
+    // is marcescent), else all of it in winter.
+    _shedOf(spriteKey) {
+        if (!TREE_SPRITES[spriteKey]?.bare) return 0;
+        const stage = this.phenology;
+        if (stage?.marcescent && spriteKey === MARCESCENT_SPRITE) return MARCESCENT_SHED;
+        return stage?.shed?.[spriteKey.slice(0, spriteKey.indexOf('.'))] ?? (this.season === 'winter' ? 1 : 0);
+    }
+
+    // The canopy plan of a leafy sheet this stage: the autumn turn's progress
+    // (turned plus shed), the spring plans without blossom until it is out,
+    // and a young oak's kept clumps russet while it is marcescent.
+    _planOf(spriteKey, species, variant) {
+        const stage = this.phenology;
+        if (stage?.marcescent && spriteKey === MARCESCENT_SPRITE) return PLAN_RUSSET;
+        const season = this.season === 'spring' && stage && !stage.blossom ? 'summer' : this.season;
+        const turn = season === 'autumn' && stage ? stage.turned + (stage.shed?.[species] || 0) : 1;
+        return canopyPlan(species, variant, season, turn);
     }
 
     createTreeProps(trees) {
@@ -670,22 +849,29 @@ export class FoliageRenderer {
 
     _frame(tree, frame) {
         const leafy = treeSpriteKey(tree);
-        const state = treeStateKey(leafy, this.season, this._snowBucket);
+        const shed = this._shedOf(leafy);
+        const state = treeStateKey(leafy, this.season, this._snowBucket, shed);
         // Snow quarters 1–3 dust the leafy sheet; a full cover draws the laden
-        // sheet. A state sheet still loading shows the leafy sheet meanwhile.
+        // sheet. A crown part-shed this stage (BI-2) draws the leafy sheet
+        // with its fallen clumps bare. A state or bare sheet still loading
+        // shows the whole leafy sheet meanwhile.
         const dust = state === TREE_SPRITES[leafy].snow && this._snowBucket < 4 ? this._snowBucket : 0;
         const shown = dust ? leafy : state;
-        return this._frameOf(shown, tree, frame, dust) || (shown !== leafy || dust ? this._frameOf(leafy, tree, frame) : null);
+        const part = shown === leafy && shed < 1 ? shed : 0;
+        return this._frameOf(shown, tree, frame, dust, part)
+            || (shown !== leafy || dust || part ? this._frameOf(leafy, tree, frame) : null);
     }
 
-    _frameOf(spriteKey, tree, frame, dust = 0) {
+    _frameOf(spriteKey, tree, frame, dust = 0, shed = 0) {
         const sprite = TREE_SPRITES[spriteKey];
         const variant = sprite.canopy === false ? 0 : canopyVariantOf(tree);
-        const canopyKey = `${spriteKey}|${variant}|${this.season}${dust ? `|snow${dust}` : ''}`;
+        // The BI-2 stage keys the image (and its GPU texture), so a new stage
+        // uploads new frames.
+        const canopyKey = `${spriteKey}|${variant}|${this.season}|${this.phenology?.id ?? ''}${dust ? `|snow${dust}` : ''}${shed ? '|shed' : ''}`;
         const key = `${canopyKey}|${frame}`;
         const existing = this.cache.get(key);
         if (existing) return existing;
-        const canopy = this._canopy(spriteKey, variant, canopyKey, dust);
+        const canopy = this._canopy(spriteKey, variant, canopyKey, dust, shed);
         if (!canopy) return null;
         const lean = leanFrameImage(canopy.data, canopy.width, canopy.height, frame, sprite.planted);
         const canvas = document.createElement('canvas');
@@ -721,18 +907,24 @@ export class FoliageRenderer {
     }
 
     // The recoloured canopy image (ImageData) of one sprite/variant for this
-    // season (and snow dusting), which every lean frame shears from.
-    _canopy(spriteKey, variant, canopyKey, dust = 0) {
+    // season and stage (and snow dusting, or a part-shed crown), which every
+    // lean frame shears from.
+    _canopy(spriteKey, variant, canopyKey, dust = 0, shed = 0) {
         const existing = this._canopies.get(canopyKey);
         if (existing) return existing;
         const sprite = TREE_SPRITES[spriteKey];
+        // The bare sheet first: while it loads, no leafy pixels are read.
+        const bare = shed ? this._sheetPixels(sprite.bare) : null;
+        if (shed && !bare) return null;
         const image = this._sheetPixels(spriteKey);
         const laden = dust ? this._sheetPixels(sprite.snow) : null;
         if (!image || (dust && !laden)) return null;
         const species = spriteKey.slice(0, spriteKey.indexOf('.'));
-        const plan = sprite.canopy === false ? null : canopyPlan(species, variant, this.season);
+        const plan = sprite.canopy === false ? null : this._planOf(spriteKey, species, variant);
+        const leafy = bare ? image.data.slice() : null;
         recolorCanopy(image.data, sprite.width, sprite.height, plan);
         if (laden) dustSnowCanopy(image.data, laden.data, sprite.width, sprite.height, dust);
+        if (bare) shedCanopy(image.data, leafy, bare.data, sprite.width, sprite.height, shed, SHED_SALT + variant * 7);
         this._canopies.set(canopyKey, image);
         return image;
     }

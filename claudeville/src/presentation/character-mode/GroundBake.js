@@ -38,13 +38,15 @@
 //                    along every path (dead stems in winter), twigs, moss and
 //                    pine needle duff under crowns, weeds at wall bases, rare
 //                    meadow pockets; by season, autumn leaf litter matching
-//                    the crown above and dry-grass patches, spring petals
-//                    under blossoming oaks, winter leaf mould.
+//                    the crown above (deepening with its species' BI-2 shed
+//                    share) and dry-grass patches, spring petals under
+//                    blossoming oaks once the blossom is out, winter leaf
+//                    mould.
 //   9. decals        sparse clusters at native texel density: meadow flower
 //                    pockets, grass tufts, low shrubs, bank reeds, pebbles.
 //
 // Registered as terrain bake pass 'ground-splat' (stage 'ground'). The result
-// is cached here per season/scenery/coast revision, so a terrain-cache rebake
+// is cached here per season/ground stage/scenery/coast revision, so a terrain-cache rebake
 // for any other reason reuses it. Zero per-frame cost; reduced-motion neutral
 // (static); reads no phase, weather or camera — the grade owns time of day.
 // The one exception is the winter ground (plan 5.2): the C-W2 ground
@@ -951,6 +953,15 @@ function cellCandidate(col, row, w, h, salt) {
         && row === cy * h + Math.floor(hash2(cx, cy, salt + 1) * h);
 }
 
+// BI-2 — autumn litter deepens as the crowns empty: under a crown it lies at
+// LITTER_FIRST of the full drop through the turning weeks, rising with the
+// species' shed share (the BI-2 stage) to the full drop once it is bare.
+const LITTER_FIRST = 0.25;
+function litterShare(tree, phenology) {
+    const shed = phenology?.shed?.[tree.species];
+    return Number.isFinite(shed) ? LITTER_FIRST + (1 - LITTER_FIRST) * shed : 1;
+}
+
 function litterFor(tree, season) {
     if (season === 'winter') return LITTER.mould;
     if (tree.species === 'willow' || tree.species === 'birch' || tree.species === 'poplar') return LITTER.willow;
@@ -974,6 +985,10 @@ function drawLivingGround(r, { cols, rows, x0, y0, surfaces, aoBuf, stepBuf, put
     const autumn = season === 'autumn';
     const spring = season === 'spring';
     const style = VERGE_STYLE[season] || VERGE_STYLE.summer;
+    // BI-2 — the woods' weekly stage: the litter's shed shares, and whether
+    // the spring blossom is out.
+    const phenology = r._terrainPhenology || null;
+    const blossom = phenology?.blossom ?? true;
 
     // A blade rising `tall` texels (base included); a tall blade throws its
     // root shadow one texel down-light (screen right).
@@ -1060,14 +1075,14 @@ function drawLivingGround(r, { cols, rows, x0, y0, surfaces, aoBuf, stepBuf, put
                     continue;
                 }
                 if ((autumn || winter) && tree.species !== 'ash' && cellCandidate(col, row, 3, 2, 1214)) {
-                    if (h < near ** 1.2 * (autumn ? 1.1 : 0.3) * drift) {
+                    if (h < near ** 1.2 * (autumn ? 1.1 * litterShare(tree, phenology) : 0.3) * drift) {
                         const litter = litterFor(tree, season);
                         const k = Math.floor(pick * litter.length);
                         clump(col, row, hash2(col, row, 1215), litter[k], litter[Math.max(0, k - 1)]);
                     }
                     continue;
                 }
-                if (spring && tree.species === 'oak' && tree.variant === 2 && cellCandidate(col, row, 3, 2, 1216)) {
+                if (spring && blossom && tree.species === 'oak' && tree.variant === 2 && cellCandidate(col, row, 3, 2, 1216)) {
                     if (h < near * 0.85 * drift) clump(col, row, hash2(col, row, 1215), BLOSSOM[3], BLOSSOM[2]);
                     continue;
                 }
@@ -1082,7 +1097,7 @@ function drawLivingGround(r, { cols, rows, x0, y0, surfaces, aoBuf, stepBuf, put
                 continue;
             }
             if (tree && autumn && tree.species !== 'pine' && tree.species !== 'ash' && cellCandidate(col, row, 3, 2, 1214)
-                && h < (CROWN_REACH - cd) * 0.25) {
+                && h < (CROWN_REACH - cd) * 0.25 * litterShare(tree, phenology)) {
                 // A few leaves blown past the drop zone.
                 const litter = litterFor(tree, season);
                 put(col, row, litter[Math.floor(pick * 2)]);
@@ -1463,7 +1478,7 @@ export function installGroundBake(renderer) {
         stage: 'ground',
         revision: () => `${sheetsKey()}${winterKeyOf(renderer)}`,
         draw(ctx) {
-            const key = `${getCoastField(renderer).key}|${sheetsKey()}|${renderer._terrainSeason || 'summer'}|${renderer._terrainSceneryRevision || 0}`;
+            const key = `${getCoastField(renderer).key}|${sheetsKey()}|${renderer._terrainSeason || 'summer'}|${renderer._terrainPhenology?.ground ?? ''}|${renderer._terrainSceneryRevision || 0}`;
             if (!cached || cached.key !== key) {
                 const baked = bakeGround(renderer);
                 cached = { key, ...baked };

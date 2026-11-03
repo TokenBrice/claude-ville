@@ -51,7 +51,9 @@ import {
     canopyPlan,
     isCanopyPixel,
     recolorCanopy,
+    shedCanopy,
 } from '../../claudeville/src/presentation/character-mode/FoliageRenderer.js';
+import { PHENOLOGY_STAGES } from '../../claudeville/src/presentation/character-mode/SeasonalAmbience.js';
 import {
     collectSpriteEntries,
     expectedPathsForEntry,
@@ -600,38 +602,70 @@ function rampStopSet(key, stops = 0) {
 // crown; those are counted as `authored`, not off-ramp. Winter state sheets
 // (plan 5.5 bare/snow, `canopy: false`) are never remapped, so they report no
 // plans; their palette is checked by the per-asset rows above.
+//
+// BI-2: the plans of every autumn stage's turn (PHENOLOGY_STAGES `turned` plus
+// the species' `shed`) are checked too, and every part-shed stage's crown
+// (`shedCanopy` over the stage plan, `shed` states): a fallen texel must be
+// the bare sheet's, every kept canopy texel on the plan's ramps.
 function canopyRemapReport() {
     return Object.entries(TREE_SPRITES).map(([key, sprite]) => {
         const absPath = join(spritesRoot, 'vegetation', `${sprite.id}.png`);
-        if (!existsSync(absPath)) return { sprite: key, missing: true, plans: 0, canopy: 0, remapped: 0, authored: 0, offRamp: 0 };
+        if (!existsSync(absPath)) return { sprite: key, missing: true, plans: 0, shed: 0, canopy: 0, remapped: 0, authored: 0, offRamp: 0 };
         const png = readPng(absPath);
         const width = png.width;
         const height = Math.min(sprite.height, png.height);
         const source = Uint8ClampedArray.from(png.data.subarray(0, width * height * 4));
         const species = key.slice(0, key.indexOf('.'));
         const plans = new Set();
+        const sheds = [];
         for (const season of sprite.canopy === false ? [] : CANOPY_SEASONS) {
             for (const variant of CANOPY_VARIANTS) {
                 const plan = canopyPlan(species, variant, season);
                 if (plan) plans.add(plan);
             }
         }
-        const row = { sprite: key, missing: false, plans: plans.size, canopy: 0, remapped: 0, authored: 0, offRamp: 0 };
-        for (const plan of plans) {
+        for (const stage of sprite.canopy === false ? [] : PHENOLOGY_STAGES) {
+            const share = stage.shed[species] || 0;
+            for (const variant of CANOPY_VARIANTS) {
+                const season = stage.season === 'spring' && !stage.blossom ? 'summer' : stage.season;
+                const plan = canopyPlan(species, variant, season, season === 'autumn' ? stage.turned + share : 1);
+                if (plan) plans.add(plan);
+                if (sprite.bare && share > 0 && share < 1) sheds.push({ plan, share, salt: 11 + variant * 7 });
+            }
+        }
+        const barePath = sprite.bare ? join(spritesRoot, 'vegetation', `${TREE_SPRITES[sprite.bare].id}.png`) : null;
+        const bare = barePath && existsSync(barePath) ? Uint8ClampedArray.from(readPng(barePath).data.subarray(0, width * height * 4)) : null;
+        const row = { sprite: key, missing: false, plans: plans.size, shed: bare ? sheds.length : 0, canopy: 0, remapped: 0, authored: 0, offRamp: 0 };
+        const checks = [...[...plans].map((plan) => ({ plan, share: 0 })), ...(bare ? sheds : [])];
+        // A kept clump's new edge under an authored plan takes one of the
+        // sheet's own canopy colours.
+        const authoredColours = new Set();
+        for (let i = 0; i < source.length; i += 4) {
+            if (isCanopyPixel(source, i, Math.floor(i / 4 / width), height)) authoredColours.add(packRgb(source[i], source[i + 1], source[i + 2]));
+        }
+        for (const { plan, share, salt } of checks) {
             const data = Uint8ClampedArray.from(source);
             recolorCanopy(data, width, height, plan);
+            if (share) shedCanopy(data, source, bare, width, height, share, salt);
             const allowed = new Set([
-                ...(plan.ramp ? rampStopSet(plan.ramp, plan.stops) : []),
-                ...(plan.turning ? rampStopSet(plan.turning) : []),
-                ...(plan.blossom ? rampStopSet('blossom') : []),
+                ...(plan?.ramp ? rampStopSet(plan.ramp, plan.stops) : []),
+                ...(plan?.turning ? rampStopSet(plan.turning) : []),
+                ...(plan?.blossom ? rampStopSet('blossom') : []),
             ]);
             for (let y = 0; y < height; y++) {
                 for (let x = 0; x < width; x++) {
                     const i = (y * width + x) * 4;
-                    if (!isCanopyPixel(source, i, y, height)) continue;
+                    const fallen = share && data[i] === bare[i] && data[i + 1] === bare[i + 1] && data[i + 2] === bare[i + 2] && data[i + 3] === bare[i + 3];
+                    if (!isCanopyPixel(source, i, y, height)) {
+                        // The shed swaps only whole texels to the bare sheet off the canopy.
+                        if (share && !fallen && (data[i] !== source[i] || data[i + 1] !== source[i + 1] || data[i + 2] !== source[i + 2] || data[i + 3] !== source[i + 3])) row.offRamp++;
+                        continue;
+                    }
+                    if (fallen) continue;
                     row.canopy++;
                     if (allowed.has(packRgb(data[i], data[i + 1], data[i + 2]))) row.remapped++;
-                    else if (!plan.ramp && data[i] === source[i] && data[i + 1] === source[i + 1] && data[i + 2] === source[i + 2]) row.authored++;
+                    else if (!plan?.ramp && data[i] === source[i] && data[i + 1] === source[i + 1] && data[i + 2] === source[i + 2]) row.authored++;
+                    else if (!plan?.ramp && share && authoredColours.has(packRgb(data[i], data[i + 1], data[i + 2]))) row.authored++;
                     else row.offRamp++;
                 }
             }
@@ -699,10 +733,11 @@ function printReport(results, summary, opts) {
         ]));
     }
     if (summary.canopyRemaps) {
-        console.log('\nTree canopy remaps (FoliageRenderer, every variant and season; offRamp must be 0):');
+        console.log('\nTree canopy remaps (FoliageRenderer, every variant, season and BI-2 stage, shed crowns included; offRamp must be 0):');
         console.log(table(summary.canopyRemaps, [
             { label: 'sprite', get: (r) => r.sprite },
             { label: 'plans', get: (r) => (r.missing ? 'missing' : r.plans), right: true },
+            { label: 'shed', get: (r) => r.shed, right: true },
             { label: 'canopy px', get: (r) => r.canopy, right: true },
             { label: 'on-ramp', get: (r) => r.remapped, right: true },
             { label: 'authored', get: (r) => r.authored, right: true },

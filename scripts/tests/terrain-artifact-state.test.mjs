@@ -14,6 +14,7 @@ for (const [name, change] of [
     ['assetVersion', { assetVersion: 'art-v2' }], ['configHash', { configHash: 'config-v2' }], ['season', { season: 'winter' }],
     ['sceneryRevision', { sceneryRevision: 1 }], ['snowBucket', { snowBucket: 1 }], ['frost', { frost: 1 }],
     ['algorithmVersion', { algorithmVersion: 'next-bake' }], ['DPR', { dpr: 2 }],
+    ['phenology', { phenology: 'shed:0.3/0.35/0.7/0.6/0.7' }],
     ...['x', 'y', 'w', 'h'].map(key => [`bounds.${key}`, { bounds: { ...inputs.bounds, [key]: inputs.bounds[key] + 2 } }]),
 ]) {
     test(`persistent terrain key invalidates ${name}`, () => {
