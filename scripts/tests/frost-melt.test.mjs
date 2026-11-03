@@ -108,7 +108,7 @@ test('the snapshot carries its sun into the ground state, with a fallback day', 
     assert.equal(frostQuarterOf({ frost: 3 }), 3);
     assert.equal(frostQuarterOf({ frost: 9 }), 4);
     assert.equal(frostQuarterOf(null), 0);
-    const inputs = { assetVersion: 'a', configHash: 'c', season: 'winter', sceneryRevision: 0, snowBucket: 0, bounds: { x: 0, y: 0, w: 1, h: 1 }, dpr: 1 };
+    const inputs = { assetVersion: 'a', configHash: 'c', season: 'winter', sceneryRevision: 0, snowBucket: 0, bounds: { x: 0, y: 0, w: 1, h: 1 }, dpr: 1, phenology: 'winter' };
     for (const frost of [0, 1, 2, 3, 4]) assert.ok(terrainArtifactKey({ ...inputs, frost }), `frost ${frost}`);
     for (const frost of [5, -1, 0.5, true]) assert.equal(terrainArtifactKey({ ...inputs, frost }), null);
 });
