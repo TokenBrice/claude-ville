@@ -8632,7 +8632,7 @@ export class IsometricRenderer {
                     },
                 });
             }));
-        // BI-6 — the live reed and cattail clumps (DISTRICT_PROPS `live`):
+        // BI-6 — the live reed and cattail clumps (DISTRICT_PROPS layer 'live'):
         // their cache-era placements, kept whole (no tall-scenery filter).
         sprites.push(...buildReedSprites(this));
         // W8.5b — the three non-semantic landmarks (windmill, chapel, ruined
