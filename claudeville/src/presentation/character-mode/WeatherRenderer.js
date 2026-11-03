@@ -13,7 +13,7 @@ import { TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
 import { ornamentPlan, sampleFramePressure } from './MarkGovernor.js';
 import { baseWindX, cloudCourseDrift, windAt } from './Wind.js';
 import { applyGradeToRgb } from './GradeEvaluator.js';
-import { OCEAN_HORIZON_WORLD_Y, RAIN_START_PRECIPITATION } from './CoastBake.js';
+import { OCEAN_HORIZON_WORLD_Y, overcastPearlShare, RAIN_START_PRECIPITATION } from './CoastBake.js';
 
 export function weatherEmbellishmentAllowed(level = 0) {
     return ornamentPlan({ level, motionScale: 1 }).ambientWeatherEmbellishment !== 'off';
@@ -140,6 +140,12 @@ const OVERCAST_WASH = Object.freeze([[0, 0.70], [0.45, 0.42], [1, 1]]);
 const FOG_WASH = Object.freeze([[0, 0], [0.36, 0.28], [1, 1]]);
 const OVERCAST_WASH_RGB = Object.freeze([48, 58, 64]);
 const FOG_WASH_RGB = Object.freeze([208, 222, 219]);
+// LA-5 (look `la5`) — pearl overcast: under a dry cloud deck the overcast
+// wash (and the drizzle's, which shares it) lifts toward this pale pearl
+// instead of the near-black veil, so the deck reads as a large soft source,
+// not a dimmer (CoastBake `overcastPearlShare`). Rain and storm keep the
+// dark wash.
+const OVERCAST_PEARL_RGB = Object.freeze([214, 220, 222]);
 
 // 0.10 — fog banks: world-locked courses cut from a tileable value-noise
 // field (period FOG_TILE_W × FOG_TILE_H world px at FOG_TEXEL world px per
@@ -300,6 +306,7 @@ export class WeatherRenderer {
             overcastIntensity,
             fogIntensity * washBudget,
             rainOvercastIntensity,
+            overcastPearlShare(weather),
         );
         profileMark?.('weather-wash');
 
@@ -354,7 +361,7 @@ export class WeatherRenderer {
     // tile (one texel per art pixel) and laid over the frame as a pattern on
     // the art-pixel grid: one fill, rebaked only when a bucketed intensity,
     // the cell, the height or the grade course changes. No gradient anywhere.
-    _drawWeatherWash(ctx, canvas, overcastIntensity, fogIntensity, rainOvercastIntensity = 0) {
+    _drawWeatherWash(ctx, canvas, overcastIntensity, fogIntensity, rainOvercastIntensity = 0, pearlShare = 0) {
         const overcast = washBucket(overcastIntensity);
         const fog = washBucket(fogIntensity);
         const rain = washBucket(rainOvercastIntensity);
@@ -363,7 +370,8 @@ export class WeatherRenderer {
         const { cell, ox, oy } = this._artGrid();
         const rows = Math.ceil(canvas.height / cell) + 2;
         const graded = this._gradedWashColors();
-        const key = `${rows}|${overcast}|${fog}|${rain}|${graded.key}`;
+        const pearl = washBucket(pearlShare);
+        const key = `${rows}|${overcast}|${fog}|${rain}|${pearl}|${graded.key}`;
         if (key !== this._washKey || !this._washPattern) {
             const tile = this._washTile || document.createElement('canvas');
             tile.width = 4;
@@ -371,9 +379,13 @@ export class WeatherRenderer {
             const tctx = tile.getContext('2d');
             const image = tctx.createImageData(4, rows);
             const layers = [];
-            if (overcast) layers.push({ stops: OVERCAST_WASH, alpha: (overcast / WASH_BUCKETS) * 0.14, rgb: graded.overcast });
+            // LA-5 — the overcast (and drizzle) veil, toward the pearl.
+            const veil = pearl
+                ? graded.overcast.map((channel, index) => channel + (graded.pearl[index] - channel) * (pearl / WASH_BUCKETS))
+                : graded.overcast;
+            if (overcast) layers.push({ stops: OVERCAST_WASH, alpha: (overcast / WASH_BUCKETS) * 0.14, rgb: veil });
             if (fog) layers.push({ stops: FOG_WASH, alpha: (fog / WASH_BUCKETS) * 0.12, rgb: graded.fog });
-            if (rain) layers.push({ stops: OVERCAST_WASH, alpha: (rain / WASH_BUCKETS) * 0.14, rgb: graded.overcast });
+            if (rain) layers.push({ stops: OVERCAST_WASH, alpha: (rain / WASH_BUCKETS) * 0.14, rgb: veil });
             for (let y = 0; y < rows; y++) {
                 const t = rows > 1 ? y / (rows - 1) : 1;
                 for (let x = 0; x < 4; x++) {
@@ -429,6 +441,7 @@ export class WeatherRenderer {
         this._washColors = {
             key,
             overcast: toGraded(OVERCAST_WASH_RGB),
+            pearl: toGraded(OVERCAST_PEARL_RGB),
             fog: toGraded(FOG_WASH_RGB),
         };
         return this._washColors;
