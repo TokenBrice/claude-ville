@@ -17,11 +17,15 @@ import {
 import { resetLookStrengths, setLookStrength } from '../../claudeville/src/presentation/character-mode/LookStrengths.js';
 
 const CLEAR = { type: 'clear', intensity: 0.18, cloudCover: 0.08 };
+// LA-2: the village keeps the real sun, so these dates read Belgrade's on
+// its own clock (3-4 Nov are CET) on any host: sunset 16:24, and the waning
+// half moon rises near midnight (LA-4a).
+const BELGRADE = { zone: 'Europe/Belgrade', lat: 44.8, lon: 20.5, offsetMinutes: () => 60 };
 
 function at(date, minute) {
     const now = new Date(`${date}T00:00:00`);
     now.setHours(0, minute, 0, 0);
-    return createAtmosphereSnapshot({ now, weatherOverride: CLEAR });
+    return createAtmosphereSnapshot({ now, weatherOverride: CLEAR, solarSite: BELGRADE });
 }
 
 test('LA-1: a high sun keeps today\'s road (pale at noon, gold at golden hour)', () => {
@@ -47,7 +51,7 @@ test('LA-1: a low sun keeps a gold road that narrows, then fades out with the su
 
 test('LA-1: the real dusk of 2026-11-03 sets the road without a pale field or a pop', () => {
     let prev = null;
-    for (let minute = 18 * 60; minute <= 20 * 60; minute += 1) {
+    for (let minute = 15 * 60; minute <= 17 * 60 + 30; minute += 1) {
         const atmosphere = at('2026-11-03', minute);
         const feed = { timeMs: 1000, motionScale: 1, atmosphere, weather: atmosphere.weather };
         const water = resolveWaterFx(feed, { zoom: 1 }, 0, atmosphere.lightGrade, atmosphere.lighting.moonFill, 2000, createWaterFx());
@@ -101,8 +105,8 @@ test('LA-1b: fog thins the sun\'s road and a fog bank hides it; at 0 it is the o
 
 test('LA-1b: a fogged afternoon and dusk on 2026-11-03 hide the road on both paths; la1b 0 keeps it', () => {
     try {
-        for (const minute of [15 * 60, 18 * 60 + 30, 19 * 60 + 15]) {
-            const atmosphere = createAtmosphereSnapshot({ now: localMinute('2026-11-03', minute), weatherOverride: FOG });
+        for (const minute of [14 * 60, 15 * 60 + 30, 16 * 60]) {
+            const atmosphere = createAtmosphereSnapshot({ now: localMinute('2026-11-03', minute), weatherOverride: FOG, solarSite: BELGRADE });
             setLookStrength('la1b', 0);
             assert.ok(roadAt(atmosphere).strength > 0, `the old road showed through fog at ${minute}`);
             setLookStrength('la1b', 1);
@@ -146,25 +150,26 @@ test('LA-4b: at la4 1 every visible moon lays a road, faint for a crescent, grow
     assert.ok(Math.abs(moonRoadFor(high, 0.3, 0.1, false, 0.5).strength - 0.15) < 1e-9, 'below it, half the look');
 });
 
-test('LA-4b: the half moon of 2026-11-03 lays a road all night with no pop; la4 0 lays none', () => {
+test('LA-4b: the half moon of 2026-11-03 lays its road from moonrise to dawn with no pop; la4 0 lays none', () => {
     try {
         let prev = 0;
         let lit = 0;
-        for (let minute = 19 * 60 + 30; minute <= 30 * 60 + 30; minute += 1) {
-            const atmosphere = createAtmosphereSnapshot({ now: localMinute('2026-11-03', minute), weatherOverride: CLEAR });
+        for (let minute = 17 * 60 + 30; minute <= 30 * 60 + 30; minute += 1) {
+            const atmosphere = createAtmosphereSnapshot({ now: localMinute('2026-11-03', minute), weatherOverride: CLEAR, solarSite: BELGRADE });
             if (atmosphere.sky.sun.visible) continue;
             setLookStrength('la4', 0);
             assert.equal(roadAt(atmosphere).kind, 0, `the old rule lays no road for a half moon at ${minute}`);
             setLookStrength('la4', 1);
             const road = roadAt(atmosphere);
             if (road.kind) assert.equal(road.kind, 3);
-            // The moon's phase is read per local date (`moonPhaseForDate`), so
-            // its fill steps once at midnight; the road follows that step.
-            if (minute !== 24 * 60) assert.ok(Math.abs(road.strength - prev) <= 0.05, `no pop at ${minute}: ${prev} -> ${road.strength}`);
+            // LA-4a: the fill follows the instant's age (no midnight step)
+            // and eases in and out of the night, so nothing pops anywhere.
+            assert.ok(Math.abs(road.strength - prev) <= 0.05, `no pop at ${minute}: ${prev} -> ${road.strength}`);
+            if (minute === 21 * 60) assert.equal(road.strength, 0, 'the waning half moon is not up at 21:00');
             if (road.strength > 0) lit += 1;
             prev = road.strength;
         }
-        assert.ok(lit > 8 * 60, `the road is down most of the night (${lit} minutes)`);
+        assert.ok(lit > 4 * 60, `the road lies from moonrise to dawn (${lit} minutes)`);
     } finally {
         resetLookStrengths();
     }

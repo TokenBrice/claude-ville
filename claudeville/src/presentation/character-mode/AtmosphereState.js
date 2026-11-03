@@ -1041,11 +1041,13 @@ const SUN_FALLBACK_NOON_ELEVATION_DEG = 44;
 // through a thunderhead); other weather thins it by its occlusion.
 // LA-2 — the disc rides the real sun. Its arc spans the real sunrise to the
 // real sunset, and its alpha is the real daylight: full from
-// SUN_FULL_ELEVATION_DEG up, gone as the upper limb meets the horizon. The
-// phases and grade keys keep their civil-twilight timing, so the sky still
-// glows gold and then blue after the disc is down, and the sun's road on
-// the sea ends with the real sunset.
-const SUN_FULL_ELEVATION_DEG = 10;
+// SUN_FULL_ELEVATION_DEG up, thinning through the low haze, gone as the
+// upper limb meets the horizon. The ramp is wide enough that the sun's road
+// (full at alpha 0.15, about 3.5 degrees) takes 16-22 min to set. The phases
+// and grade keys keep their civil-twilight timing, so the sky still glows
+// gold and then blue after the disc is down, and the road ends with the
+// real sunset.
+const SUN_FULL_ELEVATION_DEG = 18;
 
 function buildSun(minute, weather, solarDay, elevationNowDeg) {
     const progress = progressInInterval(minute, solarDay.sunriseMinute, solarDay.sunsetMinute);
@@ -1105,9 +1107,10 @@ function moonPhaseForAge(age) {
 // MOON_HORIZON_FADE of that arc. The phase still gates it: full at night, a
 // 0.34 shoulder through dusk and dawn, none by day. The night now ramps from
 // that shoulder over its first and last MOON_NIGHT_RAMP (the phase's own
-// edge window) instead of stepping 0.34 -> 0.92 at nightfall. So after
-// moonset the small hours are starlit, and `moonFill` (the grade's moon
-// term, the moon's road) follows `visible`.
+// edge window) instead of stepping 0.34 -> 0.92 at nightfall, and the fill
+// ramps with it (`nightWeight`). So after moonset the small hours are
+// starlit, and `moonFill` (the grade's moon term, the moon's road) follows
+// `visible` with no step at nightfall, midnight or dawn.
 const MOON_UP_DEG = 93;
 const MOON_HORIZON_FADE = 0.06;
 const MOON_NIGHT_RAMP = 0.08;
@@ -1131,9 +1134,10 @@ function moonArc(date, minute, solar, site) {
 
 function buildMoon(minute, phase, phaseProgress, weather, date, solar, site) {
     const { arc, ageDays, fade } = moonArc(date, minute, solar, site);
-    let base = phase === 'night'
-        ? 0.34 + 0.58 * smoothstep(phaseProgress / MOON_NIGHT_RAMP) * smoothstep((1 - phaseProgress) / MOON_NIGHT_RAMP)
+    const nightWeight = phase === 'night'
+        ? smoothstep(phaseProgress / MOON_NIGHT_RAMP) * smoothstep((1 - phaseProgress) / MOON_NIGHT_RAMP)
         : 0;
+    let base = phase === 'night' ? 0.34 + 0.58 * nightWeight : 0;
     if (phase === 'dusk') base = 0.34 * smoothstep(phaseProgress);
     if (phase === 'dawn') base = 0.34 * (1 - smoothstep(phaseProgress));
     const preset = WEATHER_PRESETS[weather.type] || WEATHER_PRESETS.clear;
@@ -1149,6 +1153,10 @@ function buildMoon(minute, phase, phaseProgress, weather, date, solar, site) {
         yFrac,
         ...horizon,
         phase: phaseState,
+        // 0 at nightfall and at dawn, 1 a MOON_NIGHT_RAMP into the night:
+        // the fill ramps with it (moonFillFor), so a moon already high at
+        // either edge of the night eases in and out instead of stepping.
+        nightWeight,
     };
 }
 
@@ -1308,13 +1316,16 @@ export function sourceEnergyFor(lighting) {
  * computes, the moon's own visibility alpha, and cloud transmission. Strictly
  * night-only: dusk and dawn shoulders keep their authored grade, and no
  * daylight surface is relit. Consumers turn this into one of three reviewed
- * night ambient courses through the shared grade table.
+ * night ambient courses through the shared grade table. LA-4a: it eases in
+ * and out with the moon's `nightWeight` (none for a moon built without one),
+ * so a moon that is up at nightfall or dawn never steps the grade or the road.
  */
 export function moonFillFor(phase, moon, weather) {
     if (phase !== 'night' || !moon?.visible) return 0;
     const illumination = clamp(moon.phase?.illumination ?? 0);
     const transmission = clamp(1 - clamp(weather?.cloudCover ?? 0) * 0.85);
-    return clamp(illumination * clamp(moon.alpha ?? 0) * transmission);
+    const ramp = Number.isFinite(moon.nightWeight) ? clamp(moon.nightWeight) : 1;
+    return clamp(illumination * clamp(moon.alpha ?? 0) * transmission * ramp);
 }
 
 function buildLighting(minute, shift, phase, phaseProgress, weather, moon = null) {

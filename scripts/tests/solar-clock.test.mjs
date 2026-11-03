@@ -241,12 +241,12 @@ test('Belgrade, 3 November: the lamps and the night come with the real dusk', ()
     // The round has lit every lamp by the lamplight course.
     assert.equal(lampRoundFor(at(16, 45))(4, 31), true);
     assert.equal(lampRoundFor(at(15, 0))(4, 31), false);
-    // The disc rides the real sun: low and fading at 16:10, gone at the
+    // The disc rides the real sun: low and fading at 16:00, gone at the
     // 16:24 sunset, while the sky keeps its golden-then-blue keys.
-    assert.ok(at(16, 10).sky.sun.visible && at(16, 10).sky.sun.alpha < at(15, 0).sky.sun.alpha);
+    assert.ok(at(16, 0).sky.sun.visible && at(16, 0).sky.sun.alpha < at(15, 0).sky.sun.alpha);
     assert.equal(at(16, 25).sky.sun.visible, false);
     assert.ok(at(16, 24).solar.elevationDeg < 0 && at(16, 10).solar.elevationDeg > 0);
-    assert.ok(at(6, 10).sky.sun.visible === false && at(6, 30).sky.sun.visible, 'and rises at the 06:18 sunrise');
+    assert.ok(at(6, 10).sky.sun.visible === false && at(6, 45).sky.sun.visible, 'and rises at the 06:18 sunrise');
 });
 
 test('Belgrade, 21 June: the evening stays gold past 19:30 and night keeps its distance', () => {
