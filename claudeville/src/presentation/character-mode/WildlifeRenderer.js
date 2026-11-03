@@ -28,6 +28,7 @@ import { monthIndexForAtmosphere, seasonTokenForAtmosphere } from './SeasonalAmb
 import { seasonShiftFor } from './AtmosphereState.js';
 import { ambientEventProgress, dayPartBeatLive } from './AmbientEvents.js';
 import { squallApproach } from './CoastBake.js';
+import { baseWindX } from './Wind.js';
 
 // 6.7 — the ambient-life budget (output/claudeville-opus55-aesthetic/
 // weather-life.md). One flock wave of gulls is the whole pool; 4–10 of them
@@ -213,6 +214,8 @@ const FISH_DIVE_REACH = 2.5;
 const FISH_WAKE_REACH = 56;
 // Roost points (sprite-local px of the building art, feet on the perch): the
 // lighthouse's seaward gallery rail and three pile tops of the harbor piers.
+// `facing` is the authored one (1 screen right, −1 left), kept in still air;
+// from a breeze up a roosting bird faces upwind (`upwindFacing`, QW-2).
 const GULL_ROOSTS = Object.freeze([
     Object.freeze({ building: 'watchtower', at: [193, 96], facing: -1 }),
     Object.freeze({ building: 'harbor', at: [64, 173], facing: 1 }),
@@ -538,10 +541,11 @@ export class WildlifeRenderer {
         }
         const event = this.host.ambientEvents?.occasional;
         const clock = this.host._lastAtmosphere?.effectiveDate?.getTime?.() ?? Date.now();
+        const windX = baseWindX(this.host._lastAtmosphere?.weather);
         const pose = this._heronPose;
         for (let index = 0; index < SHORE_FAUNA.length; index++) {
             const heron = SHORE_FAUNA[index];
-            heronPose(index, event, clock, pose);
+            heronPose(index, event, clock, pose, windX);
             const bx = Math.floor(pose.tileX);
             const by = Math.floor(pose.tileY);
             if (bx < visible.startX - 1 || bx > visible.endX + 1 || by < visible.startY - 1 || by > visible.endY + 1) continue;
@@ -554,6 +558,14 @@ export class WildlifeRenderer {
             }
             if (!this._isHeronTile(bx, by)) continue;
             const bob = this.host.motionScale ? Math.round(Math.sin(this.host.waterFrame * 0.4 + heron.tileX) * 0.5) : 0;
+            // The authored heron faces west; facing east (upwind in a wind
+            // from the west) mirrors it about its foot column, stab and all.
+            const mirror = pose.facing > 0;
+            if (mirror) {
+                ctx.save();
+                ctx.translate(gx * 2, 0);
+                ctx.scale(-1, 1);
+            }
             if (pose.stab >= 0) {
                 const [dx, dy] = HERON_STAB_DIP[pose.stab];
                 this._drawFaunaPart(ctx, heron.id, gx, gy + bob, 0, 0, 0, HERON_NECK_ROW, dx, dy);
@@ -561,6 +573,7 @@ export class WildlifeRenderer {
             } else {
                 this._drawFauna(ctx, heron.id, gx, gy + bob);
             }
+            if (mirror) ctx.restore();
             this._drawn.herons++;
         }
         ctx.restore();
@@ -742,6 +755,8 @@ export class WildlifeRenderer {
             this._livestockClocks = LIVESTOCK_ROUTES.map((_, index) => (reduced ? 0 : (clock + index * 7919) % 3600000));
         }
         const scale = Math.min(1, Number(this.host.motionScale) || 0);
+        // QW-3 — held in rain or storm, they stand tail to the weather.
+        const tailWind = wet ? baseWindX(this.host._lastAtmosphere?.weather) : 0;
         const order = this._livestockOrder;
         order.length = 0;
         const count = Math.min(budget.cap, LIVESTOCK_ROUTES.length);
@@ -759,7 +774,7 @@ export class WildlifeRenderer {
             const alpha = Math.round((1 - away) * 4) / 4;
             if (alpha <= 0) continue;
             const pose = this._livestockPoses[index];
-            livestockPose(route, reduced ? 0 : this._livestockClocks[index], { still: !walks }, pose);
+            livestockPose(route, reduced ? 0 : this._livestockClocks[index], { still: !walks, tailWind }, pose);
             if (pose.tileX < visible.startX - 1 || pose.tileX > visible.endX + 1
                 || pose.tileY < visible.startY - 1 || pose.tileY > visible.endY + 1) continue;
             pose.alpha = alpha;
@@ -1731,8 +1746,13 @@ export class WildlifeRenderer {
             altitude,
             frameId: GULL_FLIGHT_FRAMES[flap],
             fallbackFrameId: 'prop.gullFlight',
-            facing: Math.abs(screenVx) < 1e-6 ? roost.facing : screenVx < 0 ? -1 : 1,
+            facing: Math.abs(screenVx) < 1e-6 ? this._roostFacing(roost) : screenVx < 0 ? -1 : 1,
         };
+    }
+
+    // QW-2 — a perched gull's facing under the village's knot wind.
+    _roostFacing(roost) {
+        return upwindFacing(roost.facing, baseWindX(this.host._lastAtmosphere?.weather));
     }
 
     drawOpenSeaGulls(ctx) {
@@ -1762,7 +1782,7 @@ export class WildlifeRenderer {
                 const pose = wave >= 0 && index >= plan.grounded ? this._dawnLiftPose(roost, index, wave) : roost;
                 if (!pose || (pose === roost && !this._isGullInVisibleBounds(pose, bounds))) continue;
                 if (pose === roost) {
-                    this._drawGullSprite(ctx, { ...roost, frameId: perchFrame, fallbackFrameId: 'prop.gullFlight' });
+                    this._drawGullSprite(ctx, { ...roost, facing: this._roostFacing(roost), frameId: perchFrame, fallbackFrameId: 'prop.gullFlight' });
                     stats.roosting++;
                 } else {
                     this._drawGullSprite(ctx, pose);
@@ -2015,6 +2035,22 @@ function roostAt(x, y, facing, id) {
     return Object.freeze({ id, x, y, tileX, tileY, facing, altitude: 0 });
 }
 
+// QW-2 — the knot wind (Wind.baseWindX) from which a bird at rest turns its
+// beak into the wind: a clear day's breeze and up, never fog's still air.
+export const UPWIND_FACING_WIND = 0.35;
+
+/**
+ * QW-2 — a roosting gull's or standing heron's facing (1 screen right, −1
+ * left) under the knot wind `windX` (positive blows toward screen right):
+ * upwind from |windX| UPWIND_FACING_WIND, so in a storm every roosting gull
+ * faces the gale; the authored `facing` below it.
+ */
+export function upwindFacing(facing, windX) {
+    const wind = Number(windX) || 0;
+    if (Math.abs(wind) < UPWIND_FACING_WIND) return facing;
+    return wind > 0 ? -1 : 1;
+}
+
 // W0.2 / W6.1 — the pure budget rules the draw path, the Shift-D ambient
 // audit and `world:validate-ambient` share: `{ cap, reason }`, where
 // `reason` names the gate that zeroed the cap (null while open).
@@ -2143,15 +2179,19 @@ function walkFps(tilesPerS) {
  * W8.4a — livestock `route`'s pose at its walk clock `clockMs`: it stands
  * at each point for a seeded `holdS` span (a hen pecks now and then), then
  * walks to the next at `speed` tiles/s, round the loop. `still` holds the
- * standing frame wherever the clock left it. Writes `{ tileX, tileY,
- * walking, dir, frame }` into `out`.
+ * standing frame wherever the clock left it; held in the wet, the caller
+ * passes the knot wind as `tailWind` and the animal turns tail to the rain,
+ * facing downwind where its route's `tailFaces` allow (QW-3). Writes
+ * `{ tileX, tileY, walking, dir, frame }` into `out`.
  */
-export function livestockPose(route, clockMs, { still = false } = {}, out = {}) {
+export function livestockPose(route, clockMs, { still = false, tailWind = 0 } = {}, out = {}) {
     const points = route?.points;
     const n = points?.length || 0;
     out.walking = false;
     out.frame = 0;
     if (!n) return out;
+    const lee = still && Number(tailWind) ? (tailWind < 0 ? 'west' : 'east') : null;
+    const downwind = lee && (!route.tailFaces || route.tailFaces.includes(lee)) ? lee : null;
     const hen = route.kind === 'hen';
     const speed = Math.max(0.01, Number(route.speed) || 0.2);
     let period = 0;
@@ -2168,7 +2208,7 @@ export function livestockPose(route, clockMs, { still = false } = {}, out = {}) 
             out.tileX = from.tileX;
             out.tileY = from.tileY;
             const face = from.face && (!hen || from.face === 'east' || from.face === 'west') ? from.face : null;
-            out.dir = face || (n > 1 ? faceToward(points[(i - 1 + n) % n], from, hen) : 'east');
+            out.dir = downwind || face || (n > 1 ? faceToward(points[(i - 1 + n) % n], from, hen) : 'east');
             if (hen && !still && fract((t + 1) / HEN_PECK_EVERY_S) * HEN_PECK_EVERY_S < HEN_PECK_S) out.frame = 1;
             return out;
         }
@@ -2178,7 +2218,7 @@ export function livestockPose(route, clockMs, { still = false } = {}, out = {}) 
             const s = t / walk;
             out.tileX = from.tileX + (to.tileX - from.tileX) * s;
             out.tileY = from.tileY + (to.tileY - from.tileY) * s;
-            out.dir = faceToward(from, to, hen);
+            out.dir = downwind || faceToward(from, to, hen);
             if (!still) {
                 const step = Math.floor(t * walkFps(speed));
                 out.walking = true;
@@ -2190,7 +2230,7 @@ export function livestockPose(route, clockMs, { still = false } = {}, out = {}) 
     }
     out.tileX = points[0].tileX;
     out.tileY = points[0].tileY;
-    out.dir = points[0].face || 'south';
+    out.dir = downwind || points[0].face || 'south';
     return out;
 }
 
@@ -2423,8 +2463,10 @@ export function heronRelocation(event) {
  * occasional `event`: on its shallow; or, for the event's heron, a hop out
  * (two wingbeats then a glide, an arc `altitude` world px high), the stay
  * (with the stab frame index 0–2 at its middle, else -1), and the hop home.
+ * Standing, it faces west (its authored −1) in still air and upwind under the
+ * knot wind `windX` from a breeze up (QW-2); in flight, its heading.
  */
-export function heronPose(index, event, clockMs, out = {}) {
+export function heronPose(index, event, clockMs, out = {}, windX = 0) {
     const heron = SHORE_FAUNA[index];
     const home = HERON_SHALLOWS[heron?.shallow] || heron;
     out.tileX = home.tileX;
@@ -2432,7 +2474,7 @@ export function heronPose(index, event, clockMs, out = {}) {
     out.altitude = 0;
     out.flying = false;
     out.frame = 0;
-    out.facing = -1;
+    out.facing = upwindFacing(-1, windX);
     out.stab = -1;
     const plan = heronRelocation(event);
     if (!plan || plan.heron !== index) return out;
@@ -2470,6 +2512,7 @@ export function heronPose(index, event, clockMs, out = {}) {
     // Two wingbeats (0 up, 1 down, up, down) over the first half, then the
     // glide frame (2) in.
     out.frame = s < 0.5 ? Math.floor(s * 8) % 2 : 2;
-    out.facing = (b.tileX - b.tileY) - (a.tileX - a.tileY) > 0 ? 1 : -1;
+    // Airborne it faces its heading; at a hop's ground ends it still stands.
+    if (out.flying) out.facing = (b.tileX - b.tileY) - (a.tileX - a.tileY) > 0 ? 1 : -1;
     return out;
 }

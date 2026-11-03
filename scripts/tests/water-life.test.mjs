@@ -24,7 +24,9 @@ import {
     fishSchoolPoint,
     heronPose,
     heronRelocation,
+    upwindFacing,
 } from '../../claudeville/src/presentation/character-mode/WildlifeRenderer.js';
+import { WIND_SPEED_BY_TYPE } from '../../claudeville/src/presentation/character-mode/Wind.js';
 import { createAtmosphereSnapshot } from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
 import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
 import { SceneryEngine } from '../../claudeville/src/presentation/character-mode/SceneryEngine.js';
@@ -279,6 +281,40 @@ test('herons stand only on the five shallows and hop between them', () => {
     }
     heronPose(0, { kind: 'gull-fishing-run', startMs: 0, endMs: 1e9, seed: 0.5 }, 5000, pose);
     assert.equal(pose.flying, false);
+});
+
+test('roosting gulls and standing herons face into a real wind (QW-2)', () => {
+    // Facing 1 is screen right, -1 screen left; the knot wind blows toward +x.
+    const still = WIND_SPEED_BY_TYPE.fog;
+    for (const authored of [-1, 1]) {
+        assert.equal(upwindFacing(authored, still), authored, 'still air keeps the authored facing');
+        assert.equal(upwindFacing(authored, -still), authored);
+        assert.equal(upwindFacing(authored, 0), authored);
+        for (const type of ['clear', 'partly-cloudy', 'overcast', 'rain', 'storm']) {
+            const speed = WIND_SPEED_BY_TYPE[type];
+            assert.equal(upwindFacing(authored, speed), -1, `${type}: a wind toward the right is met facing left`);
+            assert.equal(upwindFacing(authored, -speed), 1, `${type}: a wind toward the left is met facing right`);
+        }
+    }
+    // In a storm all four roosts face the gale, whatever their authored side.
+    for (const authored of [-1, 1, -1, 1]) assert.equal(upwindFacing(authored, -WIND_SPEED_BY_TYPE.storm), 1);
+    // A standing heron faces west in still air and upwind in a wind; in
+    // flight it keeps its heading.
+    const pose = {};
+    for (let index = 0; index < SHORE_FAUNA.length; index++) {
+        assert.equal(heronPose(index, null, 0, pose, still).facing, -1);
+        assert.equal(heronPose(index, null, 0, pose).facing, -1);
+        assert.equal(heronPose(index, null, 0, pose, 0.9).facing, -1);
+        assert.equal(heronPose(index, null, 0, pose, -0.9).facing, 1);
+    }
+    const event = { kind: 'heron-relocation', tier: 'occasional', startMs: 1000000, endMs: 1030000, seed: 0.37 };
+    const plan = heronRelocation(event);
+    for (let t = 0; t < 30000; t += 50) {
+        const calm = heronPose(plan.heron, event, event.startMs + t, {}, still);
+        const windy = heronPose(plan.heron, event, event.startMs + t, {}, -1.3);
+        if (calm.flying) assert.equal(windy.facing, calm.facing, 'a flying heron keeps its heading');
+        else assert.equal(windy.facing, 1, 'a standing heron faces into the gale');
+    }
 });
 
 // World px → tile coords (Projection's inverse: 64 × 32 tiles).

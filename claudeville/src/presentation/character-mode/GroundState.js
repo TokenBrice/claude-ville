@@ -34,8 +34,19 @@
 //              a day integrates once and the cover changes only by snowfall
 //              or melt (never at a window edge). Snow lies only after it
 //              snowed.
-//   frost      1 on a clear, dry winter night (22:00–09:30) that has been
-//              clear for the last two hours, else 0.
+//   frost      the night's rime in quarters, 4 → 0 (BI-5). From November to
+//              February a clear, dry night (clear at the reading and two
+//              hours before it, from 22:00) rimes the grass: 4 through the
+//              night and until the sun clears FROST_MELT_ELEVATIONS[0] after
+//              sunrise, then one quarter less at each further step of the
+//              sun's elevation, and none from the last step or solar noon.
+//              Through the morning the reading is the night's own, at
+//              sunrise; rain or snow falling now melts it. The sun is the
+//              snapshot's real one (`atmosphere.solar`: sunrise, solar noon
+//              and elevation now, through `groundOptionsFor`), so the melt
+//              keeps the real day; never a fixed hour. GroundBake keeps the
+//              rime by quarter where the RakingLight casts lie and hard
+//              against walls (FrostMelt.js), so it melts from the sunny side.
 //
 // `rainClearedMinutesAgo` reads the same history for the after-rain rainbow
 // (5.8): minutes since the timeline went from rain to clearing, or null.
@@ -68,7 +79,15 @@ const WET_STEP_MINUTES = 5;
 const WET_HISTORY_MINUTES = 6 * 60;
 const SNOW_STEP_MINUTES = 10;
 const FROST_START = 22 * 60;
-const FROST_END = 9 * 60 + 30;
+// BI-5 — the sun's elevations (degrees) at which the rime steps down a
+// quarter after sunrise: whole until the first; the sunlit lawn clears over
+// the next two while the dawn casts still lie long across it; shade and its
+// edges only from the third; gone at the last (or at solar noon, wherever
+// the sun stays low).
+export const FROST_MELT_ELEVATIONS = Object.freeze([2, 5, 8, 18]);
+// A snapshot without the real sun (`atmosphere.solar`, older fixtures):
+// the default day's sunrise and noon, its noon elevation a winter mean.
+export const FROST_FALLBACK_SUN = Object.freeze({ sunriseMinute: 360, solarNoonMinute: 750, noonElevationDeg: 24 });
 const MELT_START = 11 * 60;
 const MELT_END = 16 * 60;
 const MEMO_MAX = 8;
@@ -89,6 +108,11 @@ function smoothstep(edge0, edge1, value) {
 
 export function isWinterMonth(monthIndex) {
     return monthIndex === 11 || monthIndex === 0 || monthIndex === 1;
+}
+
+// BI-5 — frost mornings run from November to February.
+export function isFrostMonth(monthIndex) {
+    return monthIndex === 10 || isWinterMonth(monthIndex);
 }
 
 function minuteOfDay(date) {
@@ -144,8 +168,57 @@ function clearNight(weather) {
     return (Number(weather.precipitation) || 0) <= PRECIPITATING && (Number(weather.cloudCover) || 0) < 0.4;
 }
 
-function inFrostHours(minute) {
-    return minute >= FROST_START || minute < FROST_END;
+function finiteOr(value, fallback) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : fallback;
+}
+
+/**
+ * BI-5 — the sun the rime melts by, from a snapshot: the real sun's
+ * `{ sunriseMinute, solarNoonMinute, elevationDeg }` (`atmosphere.solar`,
+ * local minutes and true degrees), else FROST_FALLBACK_SUN with its
+ * elevation on a sine arc from sunrise to noon.
+ */
+export function frostSunFor(atmosphere) {
+    const solar = atmosphere?.solar;
+    const sunriseMinute = finiteOr(solar?.sunriseMinute, FROST_FALLBACK_SUN.sunriseMinute);
+    const solarNoonMinute = finiteOr(solar?.solarNoonMinute, FROST_FALLBACK_SUN.solarNoonMinute);
+    let elevationDeg = finiteOr(solar?.elevationDeg, NaN);
+    if (!Number.isFinite(elevationDeg)) {
+        const minute = finiteOr(atmosphere?.clock?.minuteOfDay, NaN);
+        elevationDeg = Number.isFinite(minute) ? fallbackElevation(minute, sunriseMinute, solarNoonMinute) : 0;
+    }
+    return { sunriseMinute, solarNoonMinute, elevationDeg };
+}
+
+function fallbackElevation(minute, sunriseMinute, solarNoonMinute) {
+    const span = Math.max(1, solarNoonMinute - sunriseMinute);
+    const t = (minute - sunriseMinute) / span;
+    if (t <= 0) return 0;
+    return FROST_FALLBACK_SUN.noonElevationDeg * Math.sin(Math.PI / 2 * Math.min(1, t));
+}
+
+/**
+ * BI-5 — the melt clock at local `minute` under `sun` (`frostSunFor`): 4
+ * from FROST_START through the night and until the sun clears the first of
+ * FROST_MELT_ELEVATIONS, one quarter less per step it has climbed past, 0
+ * from the last step, from solar noon and through the afternoon.
+ */
+export function frostMeltQuarter(sun, minute) {
+    const sunrise = finiteOr(sun?.sunriseMinute, FROST_FALLBACK_SUN.sunriseMinute);
+    const noon = finiteOr(sun?.solarNoonMinute, FROST_FALLBACK_SUN.solarNoonMinute);
+    if (minute >= FROST_START || minute < sunrise) return 4;
+    if (minute >= noon) return 0;
+    const elevation = finiteOr(sun?.elevationDeg, fallbackElevation(minute, sunrise, noon));
+    let quarter = 4;
+    for (const step of FROST_MELT_ELEVATIONS) if (elevation >= step) quarter--;
+    return quarter;
+}
+
+/** The terrain's frost quarter (0–4) of a ground state. */
+export function frostQuarterOf(ground) {
+    const frost = Math.round(Number(ground?.frost) || 0);
+    return frost <= 0 ? 0 : frost >= 4 ? 4 : frost;
 }
 
 // One day of the snow path from `snow` at its 00:00, stepping t = 0, 10, …
@@ -212,18 +285,24 @@ export function groundOptionsFor(atmosphere) {
         seedOverride: timeline?.seedOverride ?? null,
         timelineMode: timeline?.mode || 'auto',
         timelineKnots: timeline?.knots || null,
+        // BI-5 — the frost melts by the snapshot's own sun.
+        sun: frostSunFor(atmosphere),
     };
 }
 
 /**
  * C-W2 ground state for `date` (its local minute, or `options.minute`).
  * `options`: `{ seedOverride, timelineMode, timelineKnots }` — the same
- * timeline inputs as the live snapshot (`atmosphere.timeline`).
+ * timeline inputs as the live snapshot (`atmosphere.timeline`) — and the
+ * frost's `sun` (`frostSunFor`; the fallback sun when omitted).
  */
 export function groundStateAt(date, options = {}) {
     const minute = Number.isFinite(options.minute) ? options.minute : minuteOfDay(date);
     const bucket = Math.floor(minute / GROUND_BUCKET_MINUTES) * GROUND_BUCKET_MINUTES;
-    const key = historyKey(date, bucket, options);
+    const sun = options.sun || { ...FROST_FALLBACK_SUN, elevationDeg: fallbackElevation(minute, FROST_FALLBACK_SUN.sunriseMinute, FROST_FALLBACK_SUN.solarNoonMinute) };
+    const sunrise = Math.round(finiteOr(sun.sunriseMinute, FROST_FALLBACK_SUN.sunriseMinute));
+    const melt = frostMeltQuarter(sun, minute);
+    const key = `${historyKey(date, bucket, options)}|r${sunrise}|f${melt}`;
     const cached = _groundMemo.get(key);
     if (cached) return cached;
 
@@ -243,10 +322,15 @@ export function groundStateAt(date, options = {}) {
 
     const snow = snowCoverAt(date, bucket, options);
 
+    // BI-5 — the night's rime, read at the bucket overnight and at sunrise
+    // through the morning, stepping down with the sun; rain or snow falling
+    // now melts it.
     const today = history.at(now);
-    const earlier = history.at(now - 120);
-    const frost = isWinterMonth(today.month) && inFrostHours(bucket)
-        && clearNight(today.weather) && clearNight(earlier.weather) ? 1 : 0;
+    let frost = 0;
+    if (melt > 0 && isFrostMonth(today.month) && (Number(today.weather.precipitation) || 0) <= PRECIPITATING) {
+        const reading = 2 * DAY_MINUTES + (bucket >= FROST_START ? bucket : Math.min(bucket, sunrise));
+        if (clearNight(history.at(reading).weather) && clearNight(history.at(reading - 120).weather)) frost = melt;
+    }
 
     return remember(_groundMemo, key, Object.freeze({
         wetness,
