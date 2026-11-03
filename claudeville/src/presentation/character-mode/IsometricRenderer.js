@@ -8190,8 +8190,9 @@ export class IsometricRenderer {
         // canopies (5.1) drop their images once when it changes.
         const season = this._currentSeasonToken();
         this._terrainSeason = season;
-        // BI-2 — the weekly stage: GroundBake's litter reads it, its `ground`
-        // part keys the bake, and the canopies rebuild once when it changes.
+        // BI-2 — the weekly stage keys the bake (the water reflections mirror
+        // the canopies, GroundBake's litter reads it), and the canopies
+        // rebuild once when it changes.
         this._terrainPhenology = this._currentPhenology();
         this.foliageRenderer.setSeason(season, this._terrainPhenology);
         const key = this._terrainBakeKey(bounds, dpr, season);
@@ -8261,7 +8262,7 @@ export class IsometricRenderer {
         const ground = this._groundState ?? groundStateForAtmosphere(atmosphere);
         return { assetVersion: this.assets?.assetVersion, bounds, dpr, season,
             sceneryRevision: this._terrainSceneryRevision || 0, snowBucket: snowBucketOf(ground?.snowCover), frost: ground?.frost ? 1 : 0,
-            phenology: phenologyForAtmosphere(atmosphere).ground };
+            phenology: phenologyForAtmosphere(atmosphere).id };
     }
 
     _persistedTerrainKey(bounds, dpr, season) {
@@ -8461,9 +8462,10 @@ export class IsometricRenderer {
     }
 
     // 0.3 — the bake is keyed only on what changes its pixels: the cache
-    // bounds, asset availability, the season and its BI-2 ground stage (the
-    // leaf litter's shed shares, a spring before the blossom), the scenery
-    // revision and each registered bake pass's own revision. Time of day is owned by the grade
+    // bounds, asset availability, the season and its BI-2 stage (the water
+    // reflections mirror the canopies; GroundBake's base re-keys only on the
+    // litter's `ground` part), the scenery revision and each registered bake
+    // pass's own revision. Time of day is owned by the grade
     // (C2) on both backends and nothing in the bake reads the camera, so a
     // phase boundary or a zoom step reuses the 26 MB surface instead of
     // rebaking and re-uploading it.
@@ -8472,7 +8474,7 @@ export class IsometricRenderer {
         for (const pass of this._terrainBakePasses || []) {
             passes += `${pass.id}:${pass.revision?.(this) ?? 0},`;
         }
-        return `${bounds.x},${bounds.y},${bounds.w},${bounds.h}@${dpr}|${this.assets ? 'assets' : 'fallback'}|season:${season}|ground:${this._currentPhenology().ground}|scenery:${this._terrainSceneryRevision || 0}|passes:${passes}`;
+        return `${bounds.x},${bounds.y},${bounds.w},${bounds.h}@${dpr}|${this.assets ? 'assets' : 'fallback'}|season:${season}|stage:${this._currentPhenology().id}|scenery:${this._terrainSceneryRevision || 0}|passes:${passes}`;
     }
 
     // The plug-in point for later terrain bakes (splat ground, coast field).

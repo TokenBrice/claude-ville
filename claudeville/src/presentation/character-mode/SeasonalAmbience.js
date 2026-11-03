@@ -79,10 +79,12 @@ const SEASONS = {
 //   blossom     the spring blossom is out (sunlit oaks, petal drift and
 //               litter);
 //   marcescent  young oaks keep a few russet clumps (December);
-//   ground      what the terrain bake keys on: the litter's shed shares in
-//               autumn, 'bud' for a spring before the blossom, else '' (the
-//               season's own ground), so the ground rebakes about ten times
-//               a year and the canopy images once a row.
+//   ground      what GroundBake's base bake keys on: the litter's shed shares
+//               in autumn, 'bud' for a spring before the blossom, else ''
+//               (the season's own ground), so the ground re-renders about
+//               ten times a year. The canopy images and the terrain bake key
+//               on the row's `id` (its water reflections mirror the trees):
+//               18 rows, 14 of them between season changes.
 const SPECIES_SHED = (oak, willow, birch, maple, poplar) => Object.freeze({ oak, willow, birch, maple, poplar });
 const SHED_NONE = SPECIES_SHED(0, 0, 0, 0, 0);
 const SHED_ALL = SPECIES_SHED(1, 1, 1, 1, 1);

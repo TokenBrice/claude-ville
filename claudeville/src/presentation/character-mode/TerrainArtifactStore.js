@@ -58,10 +58,10 @@ export async function terrainContentHash(value, allowFunctions = false) {
 }
 
 export function terrainArtifactKey({ assetVersion, configHash, season, sceneryRevision, snowBucket, frost, bounds, dpr,
-    algorithmVersion = TERRAIN_BAKE_ALGORITHM_VERSION, phenology = '' }) {
-    // BI-2 — `phenology`: the season's ground stage (SeasonalAmbience
-    // PHENOLOGY_STAGES `ground`; '' is the season's own ground).
-    if (typeof phenology !== 'string') return null;
+    algorithmVersion = TERRAIN_BAKE_ALGORITHM_VERSION, phenology }) {
+    // BI-2 — `phenology`: the woods' weekly stage id (SeasonalAmbience
+    // PHENOLOGY_STAGES; the litter and the water reflections follow it).
+    if (typeof phenology !== 'string' || !phenology) return null;
     if (!assetVersion || !configHash || !['spring', 'summer', 'autumn', 'winter'].includes(season)
         || !Number.isInteger(sceneryRevision) || sceneryRevision < 0
         || !Number.isInteger(snowBucket) || snowBucket < 0 || snowBucket > 4
