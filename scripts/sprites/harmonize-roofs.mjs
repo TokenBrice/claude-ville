@@ -85,17 +85,18 @@ const TARGETS = {
 // authored `region` (the whole sprite when omitted) and the one-ring growth
 // is skipped; their stone is every masonry texel off that roof.
 const PROP_TARGETS = {
-    // The near-black indigo roof lands on the ramp's dark half (its shadowed
-    // slope is the body, the lit slope two stops up); the violet-shaded walls
-    // take the Command's masonry by percentile, as the Forge's did. The
-    // window and lantern glass are kept.
+    // MB-6 (2026-11-03) — the redrawn chapel shows one lit slope, so its body
+    // is the family's main tile (stop 6, like the Tavern's). The roof is the
+    // slope inside its verges and the bell cote's cap: the door reveal, the
+    // lancet and the cote's shade are slate-hued too. finish-isle-landmarks.mjs
+    // already snapped the masonry onto `ashlar`, so the stone pass only holds it.
     'prop.waysideChapel': {
-        bodyStop: 2,
-        keep: [{ rect: [23, 77, 41, 101] }, { rect: [89, 75, 100, 93] }],
-        stone: {
-            reference: 'building.command',
-            keep: [{ rect: [23, 77, 41, 101] }, { rect: [89, 75, 100, 93] }],
-        },
+        bodyStop: 6,
+        region: [
+            { poly: [[24, 16], [63, 33], [63, 55], [73, 55], [58, 97], [1, 68]] },
+            { poly: [[60, 32], [68, 15], [77, 21], [75, 33], [64, 34]] },
+        ],
+        stone: { reference: 'building.command' },
     },
     // The cap only: the tower's cool mortar is slate-hued too. MB-2 — the
     // body is the family's main tile (stop 6, like the Tavern's), lifted from
