@@ -254,4 +254,12 @@ test('a leaf whose fall ends on the river floats downstream, held flat', () => {
     const { ambience: dry, spawned: drySpawned } = driftFixture({ riverAt: () => null });
     for (let k = 0; k < 20; k++) dry.update(100);
     assert.ok(drySpawned.length > 0 && drySpawned.every((s) => s.options.landY === undefined && s.options.spread === 2));
+    // Reduced motion: the static fallback is no leaf at all; a floating
+    // leaf goes with the rest of the drift when motion turns off.
+    particles.setMotionEnabled(false);
+    assert.equal(particles.particles.length, 0);
+    const { ambience: still, spawned: stillSpawned } = driftFixture({ riverAt: () => ({ x: 1, y: 0 }) });
+    still.motionScaleGetter = () => 0;
+    for (let k = 0; k < 20; k++) still.update(100);
+    assert.equal(stillSpawned.length, 0);
 });
