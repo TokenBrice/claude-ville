@@ -30,6 +30,7 @@ import { ART_RAMPS } from '../../../config/artPalette.js';
 import { POST_FX_LEVELS } from '../postfx/PostFxLadder.js';
 import { sourceEnergyFor } from '../AtmosphereState.js';
 import { baseWindX, cloudCourseDrift, gustinessFor, windAt } from '../Wind.js';
+import { lookStrength } from '../LookStrengths.js';
 
 // Shared crest density: a leaf export, also used by the WGSL beacon twin.
 export const DEEP_DASH_DENSITY = 0.5;
@@ -204,24 +205,60 @@ export function swellDriftRows(motionTimeMs) {
 // and the road narrows toward the body; below SUN_ROAD_FADE_ALPHA (its last
 // minutes) the road fades out with it. A body with no alpha reads as fully
 // up. Shared by `resolveWaterFx` (WebGL2, WebGPU) and CoastBake `canvasGlint`.
+// LA-1b (look `la1b`) — fog veils the road: from SUN_ROAD_FOG_START the
+// weather's fog thins its dashes, and a fog bank (SUN_ROAD_FOG_FULL and up,
+// the fog type's 0.78) hides it at the look's full strength. Before, the road
+// showed through fog, whose cover (0.61) sits under the 0.7 cloud gate.
 export const SUN_ROAD_FADE_ALPHA = 0.15;
 export const SUN_ROAD_NARROW_ALPHA = 0.5;
+export const SUN_ROAD_FOG_START = 0.05;
+export const SUN_ROAD_FOG_FULL = 0.6;
 function smooth01(t) {
     const x = clamp(t, 0, 1);
     return x * x * (3 - 2 * x);
 }
-export function sunRoadFor(sun, rake, cloudCover) {
+export function sunRoadFor(sun, rake, cloudCover, fog = 0, fogLook = lookStrength('la1b')) {
     if (!sun?.visible || !(finite(cloudCover, 0) < 0.7)) return null;
     const alpha = clamp(finite(sun.alpha, 1), 0, 1);
     const r = clamp(finite(rake, 0), 0, 1);
     const fade = smooth01((alpha - 0.02) / (SUN_ROAD_FADE_ALPHA - 0.02));
     const high = smooth01((alpha - 0.02) / (SUN_ROAD_NARROW_ALPHA - 0.02));
     const kind = r >= 0.4 || high < 1 ? 1 : 2;
+    const veil = clamp(finite(fogLook, 0), 0, 1)
+        * smooth01((finite(fog, 0) - SUN_ROAD_FOG_START) / (SUN_ROAD_FOG_FULL - SUN_ROAD_FOG_START));
     return {
         kind,
-        strength: (0.35 + 0.65 * r) * fade,
+        strength: (0.35 + 0.65 * r) * fade * (1 - veil),
         growScale: kind === 1 ? 0.55 + 0.45 * high : 1,
     };
+}
+
+// LA-4b (look `la4`) — the moon's road on every moonlit night. At 0 it is the
+// old rule: a moon at least MOON_ROAD_FILL full (moonFill: illumination x the
+// moon's alpha x cloud transmission) lays a road of strength moonFill, any
+// smaller moon none, so about 30 % of clear nights had one and it popped on
+// at full strength when the night began. At 1 every visible moon lays one:
+// its strength is the fill itself (a crescent's faint, a full moon's as
+// bright as before) times the moon's altitude, which grows the road in over
+// the first MOON_ROAD_RISE_Y of the sky plate above the arc's foot
+// (MOON_ARC_BASE_Y, where buildMoon rises and sets it) and fades it out over
+// the same span before it sets. A body without yFrac reads as high. Clear
+// air only, as before (cover < 0.5, no rain). Shared like `sunRoadFor`.
+export const MOON_ROAD_FILL = 0.5;
+export const MOON_ARC_BASE_Y = 0.44;
+export const MOON_ROAD_RISE_Y = 0.1;
+export function moonRoadFor(moon, moonFill, cloudCover, raining, look = lookStrength('la4')) {
+    if (!moon?.visible || !(finite(cloudCover, 0) < 0.5) || raining) return null;
+    const fill = clamp(finite(moonFill, 0), 0, 1);
+    const before = fill >= MOON_ROAD_FILL ? fill : 0;
+    const k = clamp(finite(look, 0), 0, 1);
+    let strength = before;
+    if (k > 0) {
+        const y = Number(moon.yFrac);
+        const altitude = Number.isFinite(y) ? smooth01((MOON_ARC_BASE_Y - y) / MOON_ROAD_RISE_Y) : 1;
+        strength += (fill * altitude - before) * k;
+    }
+    return strength > 0 ? { kind: 3, strength, growScale: 1 } : null;
 }
 
 // Night-only sparkle shares the water/path budget but not the moon-path gate:
@@ -270,30 +307,20 @@ export function resolveWaterFx(feed, camera, level, grade, moonFill, width, out 
         ? 1 : 0;
     fx[3] = effectBudgetMode('coastSwash', level) === 'on' && motion > 0 ? 1 : 0;
     // 3.2 — the sky body's screen x (the sky spans the canvas), gold near
-    // sunrise and golden hour (the grade's rake) at full strength, pale
-    // and sparse (0.35) toward noon, silver under a moon at least half
-    // full in clear air; none under heavy cloud or when the body is hidden.
+    // sunrise and golden hour (the grade's rake) at full strength and under
+    // a low sun, pale and sparse (0.35) toward noon (`sunRoadFor`, LA-1 and
+    // LA-1b), silver under the moon in clear air (`moonRoadFor`, LA-4b);
+    // none under heavy cloud or when the body is hidden.
     glint.fill(0);
     stops.fill(0);
     if (effectBudgetMode('glitterPath', level) === 'off') return out;
     const sun = feed.atmosphere?.sky?.sun;
     const moon = feed.atmosphere?.sky?.moon;
-    let kind = 0;
-    let strength = 0;
-    let xFrac = 0;
-    let growScale = 1;
-    const road = sunRoadFor(sun, grade.rake, cloudCover);
-    if (road) {
-        kind = road.kind;
-        strength = road.strength;
-        growScale = road.growScale;
-        xFrac = finite(sun.xFrac, 0.5);
-    } else if (moon?.visible && moonFill >= 0.5 && cloudCover < 0.5 && !raining) {
-        kind = 3;
-        strength = moonFill;
-        xFrac = finite(moon.xFrac, 0.5);
-    }
-    if (!kind || !(strength > 0)) return out;
+    const sunRoad = sunRoadFor(sun, grade.rake, cloudCover, weather.fog);
+    const road = sunRoad || moonRoadFor(moon, moonFill, cloudCover, raining);
+    if (!road || !(road.strength > 0)) return out;
+    const { kind, strength, growScale } = road;
+    const xFrac = finite((sunRoad ? sun : moon).xFrac, 0.5);
     const texelPx = Math.max(0.01, zoom * Math.max(0.25, finite(camera?._dpr?.(), 1)));
     glint[0] = xFrac * width;
     glint[1] = strength;

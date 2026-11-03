@@ -30,7 +30,7 @@ import { WATER_POLYLINES, WORLD_TREE, inWorldTreeIslet } from '../../config/scen
 import * as CanvasGrade from './CanvasGrade.js';
 import { emissiveSidecarFor } from './EmitterCuts.js';
 import { cloudCourseDrift } from './Wind.js';
-import { sunRoadFor } from './gpu/GpuFrameState.js';
+import { moonRoadFor, sunRoadFor } from './gpu/GpuFrameState.js';
 
 const HALF_W = TILE_WIDTH / 2;
 const HALF_H = TILE_HEIGHT / 2;
@@ -3200,22 +3200,21 @@ function oceanPalette(atmosphere, postFx) {
 }
 
 // The Canvas path's kind and strength (the resident pass resolves its own
-// `u_glint`): gold near golden hour, pale by day, silver under a moon at
-// least half full in clear air; none under heavy cloud. CanvasWaterState
+// `u_glint`): gold near golden hour and under a low sun, pale by day, silver
+// under the moon in clear air; none under heavy cloud. CanvasWaterState
 // lays the path on the in-map water and the open sea alike.
 export function canvasGlint(atmosphere) {
     const sky = atmosphere?.sky;
     const weather = atmosphere?.weather || {};
     const cover = clamp01(weather.cloudCover);
     const raining = weather.type === 'rain' || weather.type === 'storm';
-    // LA-1 — the same sun's road as the resident pass (`sunRoadFor`).
-    const road = sunRoadFor(sky?.sun, atmosphere?.lightGrade?.rake, cover);
+    // LA-1, LA-1b, LA-4b — the same roads as the resident pass
+    // (`sunRoadFor`, `moonRoadFor`).
+    const road = sunRoadFor(sky?.sun, atmosphere?.lightGrade?.rake, cover, weather.fog);
     if (road) return road.strength > 0 ? { ...road, body: sky.sun } : null;
     const moonFill = clamp01(atmosphere?.lighting?.moonFill ?? sky?.moon?.fill);
-    if (sky?.moon?.visible && moonFill >= 0.5 && cover < 0.5 && !raining) {
-        return { kind: 3, strength: moonFill, body: sky.moon };
-    }
-    return null;
+    const moonRoad = moonRoadFor(sky?.moon, moonFill, cover, raining);
+    return moonRoad ? { ...moonRoad, body: sky.moon } : null;
 }
 
 function oceanKey(atmosphere, postFx) {
