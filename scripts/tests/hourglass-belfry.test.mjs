@@ -122,6 +122,39 @@ test('hovering the belfry reads out both accounts', () => {
     assert.deepEqual(tip.map((line) => line.split(':')[0]), ['Hourglass Belfry · sand left = quota left', 'Claude', 'Codex']);
 });
 
+// MB-7 — 8 frames of 11.25° on 125 ms steps: one turn per 4 s, as the old
+// 4 frames of 22.5° on 250 ms, and still only while a gust crosses the mill.
+test('the windmill sails turn one 11.25° frame per 125 ms, only in a gust (MB-7)', () => {
+    const strip = PNG.sync.read(readFileSync(new URL('../../claudeville/assets/sprites/props/prop.windmillSails.png', import.meta.url)));
+    assert.deepEqual([strip.width, strip.height], [8 * 112, 112]);
+    const { host, landmarks } = world();
+    const mill = landmarks.buildSprites().find((sprite) => sprite.id === 'prop.windmill');
+    host._lastAtmosphere = { weather: { windX: 0.9, seed: 7 } };
+    let frame = mill.sailFrame();
+    let steppedAt = -Infinity;
+    const gaps = [];
+    for (let t = 0; t <= 120_000; t += 25) {
+        host.motionTimeMs = t;
+        const next = mill.sailFrame();
+        if (next === frame) continue;
+        assert.equal(next, (frame + 1) % 8, `one frame at a time (${t} ms)`);
+        gaps.push(t - steppedAt);
+        frame = next;
+        steppedAt = t;
+    }
+    assert.ok(gaps.length > 8, `a gust turns the sails (${gaps.length} steps)`);
+    assert.ok(gaps.every((gap) => gap >= 125), 'never faster than 8 fps');
+    assert.ok(gaps.includes(125), 'a held gust turns them at exactly 8 fps');
+
+    host._lastAtmosphere = { weather: { windX: 0.05 } };
+    for (let t = 120_000; t <= 130_000; t += 25) {
+        host.motionTimeMs = t;
+        assert.equal(mill.sailFrame(), frame, 'calm air holds the frame they stopped on');
+    }
+    host.motionScale = 0;
+    assert.equal(mill.sailFrame(), 0, 'reduced motion holds frame 0');
+});
+
 test('the baked strip holds every state of both glasses', () => {
     const strip = PNG.sync.read(readFileSync(new URL(`../../claudeville/assets/sprites/props/${GLASS}.png`, import.meta.url)));
     const [fw, fh] = BELFRY_GLASS_FRAME;

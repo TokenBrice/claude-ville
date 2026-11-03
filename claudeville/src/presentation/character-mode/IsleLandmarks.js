@@ -8,10 +8,10 @@
 // only; the belfry is the account instrument and reads the account quota
 // alone:
 //
-// - The windmill's sails (`prop.windmillSails`, 4 frames of the cross turned
-//   22.5° a step) advance one frame per 250 ms (4 fps, the `slow` ambient
-//   band) only while a gust of the one wind field (`Wind.windAt`) crosses the
-//   mill; calm air holds the frame they stopped on, and reduced motion
+// - The windmill's sails (`prop.windmillSails`, 8 frames of the cross turned
+//   11.25° a step, MB-7) advance one frame per 125 ms (8 fps, the `slow`
+//   ambient band; one turn per 4 s as before) only while a gust of the one
+//   wind field (`Wind.windAt`) crosses the mill; calm air holds the frame they stopped on, and reduced motion
 //   (`motionScale <= 0`) holds frame 0. Each frame is one cached composite of
 //   the tower and its sails, shared by the Canvas and GPU paths
 //   (`textureKey` per frame, like a tree's lean frame).
@@ -47,9 +47,9 @@ const BELFRY_ID = 'prop.hourglassBelfry';
 const BELFRY_GLASS_ID = 'prop.hourglassBelfryGlass';
 const BELFRY_PEAK_MS = 150;
 const BELFRY_STEP_MS = 150;
-const SAIL_FRAMES = 4;
+const SAIL_FRAMES = 8;
 const SAIL_FRAME_PX = 112;
-const SAIL_STEP_MS = 250;
+const SAIL_STEP_MS = 125;
 const SAIL_CALM = 0.15; // knot wind below this is still air (pennants rest too)
 // The chapel lantern's foot offset from the chapel's anchor tile, and its
 // height above the ground, for its night light record.

@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-11-03-landmark-ink"
+  assetVersion: "2026-11-03-windmill-sails"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -2649,19 +2649,20 @@ props:
     materialClass: stone
     provenance: { item: 'W8.5b', tool: create_map_object, objectId: 9e0d3633-5d2c-4848-b8f1-5387b7e531c2, finish: 'scripts/sprites/finish-isle-landmarks.mjs (plate strip, ashlar snap, mirrored to the upper-left key)', generatedAt: '2026-10-09', harmonize: 'cap remapped onto roofSlate (scripts/sprites/harmonize-roofs.mjs, B3-05, 2026-10-24), lifted to the family main tile stop 6 (--shift, MB-2, 2026-11-03)', outline: '1px warm ink on the external silhouette (scripts/sprites/outline-landmarks.mjs, MB-2, 2026-11-03)' }
 
-  # The sail cross, 4 frames of 112 x 112 (hub at the frame centre, seated on
+  # The sail cross, 8 frames of 112 x 112 (hub at the frame centre, seated on
   # the windmill's windshaft at base-local [50, 86]); frame k is the cross
-  # turned 22.5 deg * k. Rasterised on the sail plane by
-  # finish-isle-landmarks.mjs. Steps at 4 fps only while a wind gust crosses
-  # the mill (Wind.windAt); calm or reduced motion holds frame 0.
+  # turned 11.25 deg * k (MB-7: the even frames are the old 4-frame strip's).
+  # Rasterised on the sail plane by finish-isle-landmarks.mjs (`--sails`).
+  # Steps at 8 fps only while a wind gust crosses the mill (Wind.windAt);
+  # calm holds the frame it stopped on, reduced motion holds frame 0.
   - id: prop.windmillSails
     tool: procedural
     width: 112
     height: 112
-    frames: 4
+    frames: 8
     anchor: [56, 56]
     materialClass: timber
-    provenance: { item: 'W8.5b', source: 'scripts/sprites/finish-isle-landmarks.mjs', generations: 0, generatedAt: '2026-10-09' }
+    provenance: { item: 'W8.5b', source: 'scripts/sprites/finish-isle-landmarks.mjs', generations: 0, generatedAt: '2026-10-09', frames: '8 (MB-7, 2026-11-03)' }
 
   - id: prop.watermill
     tool: map_object
