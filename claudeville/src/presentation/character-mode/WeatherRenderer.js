@@ -14,6 +14,7 @@ import { ornamentPlan, sampleFramePressure } from './MarkGovernor.js';
 import { baseWindX, cloudCourseDrift, windAt } from './Wind.js';
 import { applyGradeToRgb } from './GradeEvaluator.js';
 import { OCEAN_HORIZON_WORLD_Y, overcastPearlShare, RAIN_START_PRECIPITATION } from './CoastBake.js';
+import { lookStrength } from './LookStrengths.js';
 
 export function weatherEmbellishmentAllowed(level = 0) {
     return ornamentPlan({ level, motionScale: 1 }).ambientWeatherEmbellishment !== 'off';
@@ -166,6 +167,31 @@ const FOG_COURSE_ALPHA = Object.freeze([0.11, 0.2, 0.31]);
 const FOG_OCTAVES = Object.freeze([[3, 8, 0.62], [6, 16, 0.38]]);
 const FOG_SEAM_TEXELS = 1;
 const FOG_BUCKETS = 8;
+// LA-7 — sea fret: the banks lie full on the sea (the open sea past the
+// shelf too), the lake and the rivers and thin to this share over land at
+// look strength 1 (`la7`; 0 keeps today's even banks). The share rides the
+// layer to the ground pass: the resident `ground:fog` records carry it as
+// their alpha under the `seaFret` flag (the scene fragment's
+// `seaFretAlpha`), and the Canvas pass cuts the land with the same rule's
+// mask (WorldFrameRenderer `seaFretLandMask`). Covered water (docks,
+// bridges) counts as land.
+export const SEA_FRET_LAND_SHARE = 0.4;
+// LA-7 — the thin mist: no fog weather and fog at or under this (every
+// overcast knot carries 0.06–0.10, and a dry overcast lays its own mist).
+// Its lowest-bucket banks read as camouflage blotches on the open sea, not
+// as weather, so with the sea fret on they fade out (gone at strength 1);
+// fog weather, rain (0.11–0.17) and storm keep their banks.
+export const SEA_FRET_THIN_FOG = 0.1;
+
+export function seaFretLandShare() {
+    return 1 - (1 - SEA_FRET_LAND_SHARE) * lookStrength('la7');
+}
+
+// The share of the banks a thin mist keeps (1 for real fog).
+export function seaFretMistShare(weather) {
+    const thin = weather?.type !== 'fog' && !(Number(weather?.fog) > SEA_FRET_THIN_FOG);
+    return thin ? 1 - lookStrength('la7') : 1;
+}
 
 // 0.10 — lightning. One schedule on the one motion clock drives the bolt
 // here and the flash exposure both backends apply (C4 stepped quanta: a
@@ -454,6 +480,7 @@ export class WeatherRenderer {
     // creep; reduced motion holds them). The frame renderer lays it on the
     // ground below the sea horizon, under every body, building and tree. The
     // tile is FOG_COLOR as-is (both backends grade the world downstream).
+    // `landShare` is the LA-7 sea fret's share over land (1 = even banks).
     groundFogLayer({ atmosphere = null, viewport = null, timeMs = null } = {}) {
         const weather = normalizeWeather(atmosphere);
         if (!weather || !(weather.intensity > 0) || typeof document === 'undefined') return null;
@@ -465,7 +492,7 @@ export class WeatherRenderer {
         });
         if (!weatherEmbellishmentAllowed(level)) return null;
         const legibility = weatherLegibilityGate(weather, atmosphere);
-        const strength = Math.round(clamp(fogBankIntensity(weather, legibility), 0, 1) * FOG_BUCKETS);
+        const strength = Math.round(clamp(fogBankIntensity(weather, legibility) * seaFretMistShare(weather), 0, 1) * FOG_BUCKETS);
         if (strength <= 0) return null;
         const key = `ground-fog-${strength}`;
         const variants = this._fogVariants ||= {};
@@ -482,6 +509,7 @@ export class WeatherRenderer {
         layer.key = key;
         layer.x = Math.round(drift.x);
         layer.y = Math.round(drift.y);
+        layer.landShare = seaFretLandShare();
         return layer;
     }
 

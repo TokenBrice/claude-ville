@@ -30,7 +30,7 @@ import { insertBodyReflectionRecords } from './WaterReflections.js';
 import { drawCanvasAerialHaze, drawResidentBackdropGrade } from './BackdropGrade.js';
 import { castLightingFor, drawTreeCasts, setFrameCastLighting, setFramePointCastLights } from './RakingLight.js';
 import { drawFlashExposure, stormStrikeAt, weatherPressureLevel } from './WeatherRenderer.js';
-import { OCEAN_HORIZON_WORLD_Y } from './CoastBake.js';
+import { COAST_FIELD_FLAGS, OCEAN_HORIZON_WORLD_Y } from './CoastBake.js';
 import { drawOffshoreScenery, isOffshoreRecordId } from './OffshoreScenery.js';
 import { poolMaskRect, poolReceiverMask } from './CanvasPoolMask.js';
 import { drawCanvasWaterColumns } from './CanvasWaterState.js';
@@ -681,11 +681,21 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     }
     markFrameTiming(frameTimer, 'horizon');
     renderer._gpuHazeStrength = 0;
+    // LA-6a / LA-6b — the sky's rare phenomena on the far sea: world stamps
+    // on the ground plane right after the terrain, on both paths (null on
+    // an ordinary day).
+    renderer._farSeaLayers = renderer.skyRenderer?.farSeaLayers?.({
+        atmosphere,
+        timeMs: renderer.motionTimeMs,
+        motionScale: renderer.motionScale ?? 1,
+        waterFields: renderer._coastBake?.waterFields || null,
+    }) || null;
     if (!gpuWorldActive) {
         renderer._drawTerrain(
             ctx,
             frameTimer ? label => markFrameTiming(frameTimer, label) : null,
         );
+        drawFarSeaLayers(ctx, renderer._farSeaLayers);
         // W8.5a — the offshore backdrop on the sea, in its painter order,
         // under puddles, cloud shadows, haze, fog and every island drawable.
         drawOffshoreScenery(ctx, renderer);
@@ -1769,6 +1779,20 @@ function drawGroundHaze(renderer, ctx, atmosphere, viewport) {
     ctx.restore();
 }
 
+// LA-6 — the Canvas twin of the resident far-sea records: each stamp at its
+// world rect, nearest-neighbour, at its alpha.
+function drawFarSeaLayers(ctx, layers) {
+    if (!layers?.length) return;
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    ctx.globalCompositeOperation = 'source-over';
+    for (const layer of layers) {
+        ctx.globalAlpha = Math.max(0, Math.min(1, layer.alpha));
+        ctx.drawImage(layer.canvas, layer.x, layer.y, layer.width, layer.height);
+    }
+    ctx.restore();
+}
+
 // 0.10 — the fog banks on the ground plane (WeatherRenderer
 // `groundFogLayer`): a world-locked tile lattice below the sea horizon,
 // under every body, building and tree. `groundFogSpan` is the visible world
@@ -1802,13 +1826,92 @@ function drawGroundFog(ctx, renderer, atmosphere, viewport) {
         cached = renderer._groundFogPattern = { key: layer.key, canvas: layer.canvas, pattern };
     }
     cached.pattern.setTransform?.(new DOMMatrix([layer.texel, 0, 0, layer.texel, layer.x, layer.y]));
+    const fret = seaFretBanks(renderer, layer, span);
     ctx.save();
     ctx.imageSmoothingEnabled = false;
     ctx.globalCompositeOperation = 'source-over';
     ctx.globalAlpha = 1;
-    ctx.fillStyle = cached.pattern;
-    ctx.fillRect(span.left, span.top, span.right - span.left, span.bottom - span.top);
+    if (fret) {
+        ctx.drawImage(fret, 0, 0, span.right - span.left, span.bottom - span.top, span.left, span.top, span.right - span.left, span.bottom - span.top);
+    } else {
+        ctx.fillStyle = cached.pattern;
+        ctx.fillRect(span.left, span.top, span.right - span.left, span.bottom - span.top);
+    }
     ctx.restore();
+}
+
+// LA-7 — the sea fret's land on the coast field's 2-px cells, the resident
+// `seaFretAlpha` rule: every covered cell (dock, deck, bridge span), and
+// every cell on the map grid without the coast flag `water`. Off the grid
+// is all open sea (the shelf's deep texels are left clear for the outer
+// pass, unclassified, their signed distance clamped), and so is outside
+// the field.
+let fretLandFields = null;
+let fretLandCanvas = null;
+function seaFretLandMask(fields) {
+    if (fretLandFields === fields && fretLandCanvas) return fretLandCanvas;
+    const { cols, rows, coastField } = fields;
+    const canvas = fretLandCanvas || document.createElement('canvas');
+    canvas.width = cols;
+    canvas.height = rows;
+    const mctx = canvas.getContext('2d');
+    const image = mctx.createImageData(cols, rows);
+    for (let cell = 0; cell < cols * rows; cell++) {
+        const flags = coastField[cell * 2 + 1];
+        if (!(flags & COAST_FIELD_FLAGS.covered)) {
+            if (flags & COAST_FIELD_FLAGS.water) continue;
+            const wx = fields.x + (cell % cols) * 2 + 1;
+            const wy = fields.y + Math.floor(cell / cols) * 2 + 1;
+            const u = wy / TILE_HEIGHT + wx / TILE_WIDTH;
+            const v = wy / TILE_HEIGHT - wx / TILE_WIDTH;
+            if (u < -0.5 || v < -0.5 || u > MAP_SIZE - 0.5 || v > MAP_SIZE - 0.5) continue;
+        }
+        image.data[cell * 4 + 3] = 255;
+    }
+    mctx.putImageData(image, 0, 0);
+    fretLandFields = fields;
+    fretLandCanvas = canvas;
+    return canvas;
+}
+
+// LA-7 — the Canvas twin of the resident `seaFretAlpha`: the banks over the
+// span go into one reused world-px canvas, and the land mask cuts them to
+// `landShare` over land with one `destination-out`; water and the sea off
+// the lattice keep the full banks. Null at share 1 (today's single fill) or
+// before the coast bake.
+function seaFretBanks(renderer, layer, span) {
+    const fields = renderer._coastBake?.waterFields;
+    if (!(layer.landShare < 1) || !fields?.coastField || typeof document === 'undefined') return null;
+    const w = span.right - span.left;
+    const h = span.bottom - span.top;
+    const fret = renderer._seaFretBanks ||= { canvas: document.createElement('canvas'), ctx: null, pattern: null, source: null };
+    if (fret.canvas.width < w || fret.canvas.height < h) {
+        fret.canvas.width = Math.max(fret.canvas.width, Math.ceil(w / 64) * 64);
+        fret.canvas.height = Math.max(fret.canvas.height, Math.ceil(h / 64) * 64);
+        fret.ctx = null;
+    }
+    const fctx = fret.ctx ||= fret.canvas.getContext('2d');
+    if (!fctx) return null;
+    if (fret.source !== layer.canvas || fret.key !== layer.key || !fret.pattern) {
+        fret.pattern = fctx.createPattern(layer.canvas, 'repeat');
+        fret.source = layer.canvas;
+        fret.key = layer.key;
+    }
+    if (!fret.pattern) return null;
+    fret.pattern.setTransform?.(new DOMMatrix([layer.texel, 0, 0, layer.texel, layer.x, layer.y]));
+    fctx.setTransform(1, 0, 0, 1, -span.left, -span.top);
+    fctx.imageSmoothingEnabled = false;
+    fctx.globalAlpha = 1;
+    fctx.globalCompositeOperation = 'source-over';
+    fctx.clearRect(span.left, span.top, w, h);
+    fctx.fillStyle = fret.pattern;
+    fctx.fillRect(span.left, span.top, w, h);
+    fctx.globalCompositeOperation = 'destination-out';
+    fctx.globalAlpha = 1 - layer.landShare;
+    fctx.drawImage(seaFretLandMask(fields), fields.x, fields.y, fields.cols * 2, fields.rows * 2);
+    fctx.globalCompositeOperation = 'source-over';
+    fctx.globalAlpha = 1;
+    return fret.canvas;
 }
 
 // The resident path: one ground record per lattice cell in view, each cut to
@@ -1859,6 +1962,9 @@ function groundFogRecords(renderer, atmosphere, viewport) {
             record.width = x1 - x0;
             record.height = y1 - y0;
             record.textureRevision = layer.key;
+            // LA-7 — the sea fret's share over land rides the alpha.
+            record.alpha = layer.landShare;
+            record.seaFret = layer.landShare < 1;
             out.push(record);
         }
     }

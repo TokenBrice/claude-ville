@@ -406,6 +406,49 @@ function recordForHaze(renderer) {
     };
 }
 
+// LA-6a / LA-6b — the sky's rare phenomena on the far sea (SkyRenderer
+// `farSeaLayers`, computed once per frame by the frame renderer): one ground
+// record per world stamp, right after the terrain. A stamp's texture key is
+// its own (the bow; a ribbon's phase), so a phase step swaps textures and
+// each uploads once per bake (`textureRevision` is the bake key). Fog never
+// lies with them (a bow needs a cleared sky, an aurora cover ≤ 0.35) and the
+// ground cues are on land, so the later inserts may land either side.
+function farSeaRecords(renderer, records) {
+    const layers = renderer?._farSeaLayers;
+    if (!layers?.length) return;
+    const pool = renderer._farSeaRecordPool || (renderer._farSeaRecordPool = []);
+    for (let index = 0; index < layers.length; index++) {
+        const layer = layers[index];
+        const record = pool[index] || (pool[index] = {
+            material: materialClassId('default'),
+            elevation: 0,
+            emissive: 0,
+            occluder: 0,
+            sequence: -0.95,
+            sourceKind: 'individual',
+            sx: 0,
+            sy: 0,
+            // A world-px stamp (not V9 screenSpace): kept off the albedo page.
+            pageable: false,
+        });
+        record.id = `ground:far-sea:${layer.id}`;
+        record.stableKey = record.id;
+        record.textureKey = record.id;
+        record.source = layer.canvas;
+        record.sourceWidth = layer.canvas.width;
+        record.sourceHeight = layer.canvas.height;
+        record.sw = layer.canvas.width;
+        record.sh = layer.canvas.height;
+        record.x = layer.x;
+        record.y = layer.y;
+        record.width = layer.width;
+        record.height = layer.height;
+        record.alpha = Math.min(1, Math.max(0, layer.alpha));
+        record.textureRevision = layer.key;
+        records.push(record);
+    }
+}
+
 // 1.5 — building ground casts: one stepped stamp per building, baked by
 // RakingLight per sun bucket (longer and violet at golden hour and sunrise)
 // and shared with the Canvas fallback. `textureRevision` is the bucket key,
@@ -1638,6 +1681,8 @@ export function buildGpuWorldRecords(renderer, { drawables = [] } = {}) {
     // 1.3 — terrain-baked emitter props (plaza braziers, street lanterns)
     // redraw over the terrain with their emissive sidecars.
     records.push(...cacheEmitterRecords(renderer, atlasChannelRevision));
+    // LA-6a / LA-6b — the far-sea phenomena, under the offshore backdrop.
+    farSeaRecords(renderer, records);
     // W8.5a — the offshore backdrop (`ground:offshore:*`): the open sea's
     // stacks, wreck and islets, ordered with the ground records right after
     // the terrain, under the island's casts, haze, fog and every drawable.

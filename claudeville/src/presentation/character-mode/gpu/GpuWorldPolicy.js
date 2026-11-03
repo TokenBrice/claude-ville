@@ -1180,6 +1180,10 @@ export const GPU_RECORD_FLAGS = Object.freeze({
     // status cell, notch status rows, beacon, edge arrow). Mark records are
     // `screenSpace`; the rest of a mark (rim, text cell, leader) is role 0.
     actionMark: 512,
+    // LA-7 — a sea-fret fog-bank record (`ground:fog`): its own alpha is the
+    // banks' share over land; over painted water and the open sea the scene
+    // fragment keeps the tile's full alpha (`seaFretAlpha`).
+    seaFret: 1024,
 });
 
 // V9 / 0.6 — painter's depth. A record's or particle's painter `sortY` is
@@ -1248,7 +1252,8 @@ export function assignGpuRecordV9Fields(target, record, alpha, blend) {
         | (record.surfaceCode === true ? GPU_RECORD_FLAGS.surfaceCode : 0)
         | (record.packedGeometry === true ? GPU_RECORD_FLAGS.packedGeometry : 0)
         | (record.receiverAxis === true ? GPU_RECORD_FLAGS.receiverAxis : 0)
-        | (record.groundCast === true ? GPU_RECORD_FLAGS.groundCast : 0);
+        | (record.groundCast === true ? GPU_RECORD_FLAGS.groundCast : 0)
+        | (record.seaFret === true ? GPU_RECORD_FLAGS.seaFret : 0);
     target.footY = finite(record.footY, Number.isFinite(depthSortY) ? depthSortY : -1);
     target.frontCornerX = finite(record.frontCornerX, 0);
     target.frontCornerY = finite(record.frontCornerY, -1);

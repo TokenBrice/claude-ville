@@ -59,6 +59,7 @@ import {
 } from '../GpuWorldRenderer.js';
 import { GRASS_GUST_STOPS } from '../../GroundBake.js';
 import { COAST_FIELD_FLAGS } from '../../CoastBake.js';
+import { MAP_SIZE, TILE_HEIGHT, TILE_WIDTH } from '../../../../config/constants.js';
 import { GROUND_CAST_WATER_SHARE } from '../../RakingLight.js';
 import { APERTURE_SPILL } from '../../LightSourceRegistry.js';
 
@@ -474,6 +475,21 @@ struct SurfaceSample {
   receiverLuma: f32,
 }
 
+// LA-7 — sea fret (GLSL \`seaFretAlpha\`): a fog-bank record's own alpha is
+// the banks' share over land; over water (coast flag \`water\`, or any cell
+// off the map grid; never a covered cell) and off the coast lattice (or with
+// the field absent) the bank keeps its full alpha.
+fn seaFretAlpha(world: vec2f, landShare: f32) -> f32 {
+  var sd = 0.0;
+  var flags = 0u;
+  if (!coastFieldAt(world, &sd, &flags)) { return 1.0; }
+  if ((flags & ${COAST_FIELD_FLAGS.covered}u) != 0u) { return landShare; }
+  let tile = vec2f(world.y / ${TILE_HEIGHT.toFixed(1)} + world.x / ${TILE_WIDTH.toFixed(1)}, world.y / ${TILE_HEIGHT.toFixed(1)} - world.x / ${TILE_WIDTH.toFixed(1)});
+  let offMap = any(tile < vec2f(-0.5)) || any(tile > vec2f(${(MAP_SIZE - 0.5).toFixed(1)}));
+  if ((flags & ${COAST_FIELD_FLAGS.water}u) != 0u || offMap) { return 1.0; }
+  return landShare;
+}
+
 // main() up to the receiver knee's floor: the sampled, weathered, water-state
 // and graded surface.
 fn sceneSurface() -> SurfaceSample {
@@ -523,7 +539,9 @@ fn sceneSurface() -> SurfaceSample {
   }
   if (batch.terrainBatch != 0u && frame.waterFx.x > 0.0) { uv = reflectionRippleUv(uv, uvStepX); }
   var albedoRgba = sampleAlbedo(uv);
-  var alpha = albedoRgba.a * v_alpha * rowKeep * select(1.0, ${GROUND_CAST_WATER_SHARE.toFixed(2)}, castOnWater);
+  var recordAlpha = v_alpha;
+  if ((v_flags & RECORD_FLAG_SEA_FRET) != 0u) { recordAlpha = seaFretAlpha(v_world, v_alpha); }
+  var alpha = albedoRgba.a * recordAlpha * rowKeep * select(1.0, ${GROUND_CAST_WATER_SHARE.toFixed(2)}, castOnWater);
   if (alpha < 0.01) { discard; }
   if (reflectRecord) {
     let course = clamp(floor(reflectRow / max(1.0, v_reflect.y) * 3.0 + bayer4(floor(v_world)) - 0.5), 0.0, 2.0);
