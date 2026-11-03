@@ -120,20 +120,25 @@ export function paintWalnutBoard(ctx, left, top, width, height, { nails = false,
 // dark outline outside it, so a thought reads in the same carved material as
 // the plaques. `tail` > 0 hangs a stepped speech notch at `tailX` (relative to
 // the plate's centre, clamped inside the corners); `puffs` hangs the two
-// thought puffs there instead (reasoning, never a quote). Opaque fill: alpha
-// belongs to the caller (older history rows fade with globalAlpha).
+// thought puffs there instead (reasoning, never a quote). Opaque fill, and
+// every texel is painted exactly once, so a caller's globalAlpha (older
+// history rows fade) dims the whole plate evenly instead of compounding its
+// layers.
 const PLATE_NOTCH_HALVES = Object.freeze([3, 3, 2, 2, 1, 0]);
-// The thought puffs in the notch's seven rows below the board, as
-// [row, from, to] column runs from the tail column: a 6×4 trim ring with a
-// 4×2 dark core, then a 3×2 bead whose foot sits on the tail column, where a
-// displaced head's leader starts. The ring trails to the side away from the
-// tail's lean, so puffs and leader read as one path to the speaker.
+// The thought puffs in the notch's rows below the board, as disjoint
+// [row, from, to] column runs from the tail column (row 0 is the board's own
+// bottom edge): a 6×4 trim ring with a 4×2 dark core, then a 3×2 bead whose
+// foot sits on the tail column, where a displaced head's leader starts. The
+// ring trails to the side away from the tail's lean, so puffs and leader read
+// as one path to the speaker.
 const PUFF_RUNS = Object.freeze({
     outline: Object.freeze([
-        [0, -6, -3], [1, -7, -2], [2, -8, -1], [3, -8, -1], [4, -7, -2], [5, -6, -3],
-        [3, 0, 2], [4, -1, 3], [5, -1, 3], [6, 0, 2],
+        [1, -7, -7], [1, -2, -2], [2, -8, -8], [2, -1, -1], [3, -8, -8], [3, -1, 2],
+        [4, -7, -7], [4, -2, -1], [4, 3, 3], [5, -6, -3], [5, -1, -1], [5, 3, 3], [6, 0, 2],
     ]),
-    trim: Object.freeze([[1, -6, -3], [2, -7, -2], [3, -7, -2], [4, -6, -3], [4, 0, 2], [5, 0, 2]]),
+    trim: Object.freeze([
+        [1, -6, -3], [2, -7, -7], [2, -2, -2], [3, -7, -7], [3, -2, -2], [4, -6, -3], [4, 0, 2], [5, 0, 2],
+    ]),
     fill: Object.freeze([[2, -6, -3], [3, -6, -3]]),
 });
 const PUFF_REACH = 9;
@@ -149,56 +154,75 @@ export function paintThoughtPlate(ctx, left, top, width, height, {
     const y = Math.round(top);
     const w = Math.max(6, Math.round(width));
     const h = Math.max(6, Math.round(height));
-    const rect = (px, py, pw, ph) => ctx.fillRect(px, py, pw, ph);
-    ctx.fillStyle = outline;
-    rect(x + 2, y - 1, w - 4, h + 2);
-    rect(x - 1, y + 2, w + 2, h - 4);
-    rect(x + 1, y, w - 2, h);
-    rect(x, y + 1, w, h - 2);
-    ctx.fillStyle = trim;
-    rect(x + 2, y, w - 4, h);
-    rect(x, y + 2, w, h - 4);
-    rect(x + 1, y + 1, w - 2, h - 2);
-    ctx.fillStyle = fill;
-    rect(x + 2, y + 1, w - 4, h - 2);
-    rect(x + 1, y + 2, w - 2, h - 4);
-    if (!tail && !puffs) return;
+    const right = x + w - 1;
+    const bottom = y + h - 1;
+    const base = y + h;
+    // One row from column a to b inclusive; nothing when b < a.
+    const run = (a, b, py) => {
+        if (b >= a) ctx.fillRect(a, py, b - a + 1, 1);
+    };
     // The tail column is a whole pixel: the board's middle column plus the
     // lean, the same column a displaced head's leader runs down.
     const lean = Math.round(tailX);
-    const inset = puffs ? PUFF_REACH : 5;
-    const cx = Math.max(x + inset, Math.min(x + w - 1 - inset, x + Math.floor(w / 2) + lean));
-    const base = y + h;
-    if (puffs) {
-        const side = lean < 0 ? -1 : 1;
-        for (const [style, runs] of [[outline, PUFF_RUNS.outline], [trim, PUFF_RUNS.trim], [fill, PUFF_RUNS.fill]]) {
-            ctx.fillStyle = style;
-            for (const [row, from, to] of runs) {
-                const a = cx + from * side;
-                const b = cx + to * side;
-                rect(Math.min(a, b), base + row, Math.abs(b - a) + 1, 1);
-            }
-        }
-        return;
+    const cx = Math.max(x + (puffs ? PUFF_REACH : 5),
+        Math.min(right - (puffs ? PUFF_REACH : 5), x + Math.floor(w / 2) + lean));
+    const notch = tail > 0 && !puffs;
+    const mouth = PLATE_NOTCH_HALVES[0];
+    const rows = notch ? Math.min(tail, PLATE_NOTCH_HALVES.length) : 0;
+    // Outline: the four edges, the eight corner steps and the notch's sides.
+    // A notch takes its mouth out of the bottom edge.
+    ctx.fillStyle = outline;
+    run(x + 2, right - 2, y - 1);
+    run(x + 2, notch ? cx - mouth - 2 : right - 2, base);
+    if (notch) run(cx + mouth + 2, right - 2, base);
+    ctx.fillRect(x - 1, y + 2, 1, h - 4);
+    ctx.fillRect(right + 1, y + 2, 1, h - 4);
+    ctx.fillRect(x + 1, y, 1, 1);
+    ctx.fillRect(x, y + 1, 1, 1);
+    ctx.fillRect(right - 1, y, 1, 1);
+    ctx.fillRect(right, y + 1, 1, 1);
+    ctx.fillRect(x + 1, bottom, 1, 1);
+    ctx.fillRect(x, bottom - 1, 1, 1);
+    ctx.fillRect(right - 1, bottom, 1, 1);
+    ctx.fillRect(right, bottom - 1, 1, 1);
+    for (let k = 0; k < rows; k++) {
+        ctx.fillRect(cx - PLATE_NOTCH_HALVES[k] - 1, base + k, 1, 1);
+        ctx.fillRect(cx + PLATE_NOTCH_HALVES[k] + 1, base + k, 1, 1);
     }
-    const rows = Math.min(tail, PLATE_NOTCH_HALVES.length);
-    // Open the bottom trim where the notch joins the board.
-    ctx.fillStyle = fill;
-    rect(cx - PLATE_NOTCH_HALVES[0] + 1, base - 1, PLATE_NOTCH_HALVES[0] * 2 - 1, 1);
+    if (notch) ctx.fillRect(cx, base + rows, 1, 1);
+    // Trim ring, opened where the notch joins the board.
+    ctx.fillStyle = trim;
+    run(x + 2, right - 2, y);
+    run(x + 2, notch ? cx - mouth : right - 2, bottom);
+    if (notch) run(cx + mouth, right - 2, bottom);
+    ctx.fillRect(x, y + 2, 1, h - 4);
+    ctx.fillRect(right, y + 2, 1, h - 4);
+    ctx.fillRect(x + 1, y + 1, 1, 1);
+    ctx.fillRect(right - 1, y + 1, 1, 1);
+    ctx.fillRect(x + 1, bottom - 1, 1, 1);
+    ctx.fillRect(right - 1, bottom - 1, 1, 1);
     for (let k = 0; k < rows; k++) {
         const half = PLATE_NOTCH_HALVES[k];
-        const py = base + k;
-        ctx.fillStyle = outline;
-        rect(cx - half - 1, py, half * 2 + 3, 1);
-        ctx.fillStyle = trim;
-        rect(cx - half, py, half * 2 + 1, 1);
-        if (half > 0) {
-            ctx.fillStyle = fill;
-            rect(cx - half + 1, py, half * 2 - 1, 1);
+        ctx.fillRect(cx - half, base + k, 1, 1);
+        if (half > 0) ctx.fillRect(cx + half, base + k, 1, 1);
+    }
+    // Fill, running on down into the notch.
+    ctx.fillStyle = fill;
+    ctx.fillRect(x + 2, y + 1, w - 4, h - 2);
+    ctx.fillRect(x + 1, y + 2, 1, h - 4);
+    ctx.fillRect(right - 1, y + 2, 1, h - 4);
+    if (notch) run(cx - mouth + 1, cx + mouth - 1, bottom);
+    for (let k = 0; k < rows; k++) run(cx - PLATE_NOTCH_HALVES[k] + 1, cx + PLATE_NOTCH_HALVES[k] - 1, base + k);
+    if (!puffs) return;
+    const side = lean < 0 ? -1 : 1;
+    for (const [style, runs] of [[outline, PUFF_RUNS.outline], [trim, PUFF_RUNS.trim], [fill, PUFF_RUNS.fill]]) {
+        ctx.fillStyle = style;
+        for (const [row, from, to] of runs) {
+            const a = cx + from * side;
+            const b = cx + to * side;
+            run(Math.min(a, b), Math.max(a, b), base + row);
         }
     }
-    ctx.fillStyle = outline;
-    rect(cx, base + rows, 1, 1);
 }
 
 // An authored 8×8 EventShapes motif with a one-pixel dark silhouette

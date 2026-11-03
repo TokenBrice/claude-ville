@@ -266,6 +266,7 @@ test('speech with null confidence never gains a classifier uncertainty mark', ()
 // never makes.
 function pixelCtx() {
     const pixels = new Map();
+    const writes = new Map();
     const paths = [];
     const ctx = {
         fillStyle: '',
@@ -273,7 +274,11 @@ function pixelCtx() {
         fillRect(x, y, w, h) {
             assert.ok([x, y, w, h].every(Number.isInteger), `fillRect(${x}, ${y}, ${w}, ${h}) is not whole pixels`);
             for (let py = y; py < y + h; py++) {
-                for (let px = x; px < x + w; px++) pixels.set(`${px},${py}`, this.fillStyle);
+                for (let px = x; px < x + w; px++) {
+                    const key = `${px},${py}`;
+                    pixels.set(key, this.fillStyle);
+                    writes.set(key, (writes.get(key) || 0) + 1);
+                }
             }
         },
         save() {}, restore() {}, translate() {}, scale() {},
@@ -281,8 +286,19 @@ function pixelCtx() {
     for (const op of ['beginPath', 'moveTo', 'lineTo', 'arc', 'ellipse', 'quadraticCurveTo', 'roundRect', 'fill', 'stroke']) {
         ctx[op] = () => paths.push(op);
     }
-    return { ctx, pixels, paths };
+    return { ctx, pixels, writes, paths };
 }
+
+test('a plate paints every texel once, so a fading history row dims evenly', () => {
+    for (const options of [{}, { tail: THOUGHT_HEAD.tail }, { puffs: true }, { tail: THOUGHT_HEAD.tail, tailX: -40 }]) {
+        for (const width of [22, 23, 195]) {
+            const { ctx, writes } = pixelCtx();
+            paintThoughtPlate(ctx, -width / 2, -28, width, 20, { trim: '#f2d36b', ...options });
+            const overlaps = [...writes].filter(([, count]) => count > 1).map(([key]) => key);
+            assert.deepEqual(overlaps, [], `${JSON.stringify(options)} at ${width} px overpaints`);
+        }
+    }
+});
 
 function paintHead(column, tailX = 0) {
     const recorder = pixelCtx();
