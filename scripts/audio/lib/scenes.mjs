@@ -622,11 +622,15 @@ export function quietMixScene({ blur = true } = {}) {
 
 // Every seat a voicing can admit.
 export const MUSIC_SEATS = SEATS;
-// The night the Town band is judged at: 22:30 (the `night` keyframe).
-const NIGHT_2230 = Object.freeze({ ...NIGHT, hour: 22.5 });
+// The Town band is judged half an hour into the `noon` and `night`
+// keyframes (13:00 and 22:30 on the authored day). LA-2 moves the night key
+// with the real dusk (about 23:10 in a Belgrade July), so both are pinned by
+// key, not clock hour (scene.js `hourForKey`).
+const DAY_KEYED = Object.freeze({ ...DAY, key: 'noon', keyOffsetMin: 30 });
+const NIGHT_KEYED = Object.freeze({ ...NIGHT, key: 'night', keyOffsetMin: 30 });
 
 // 6.1 / 6.2 / 6.3: one piece of the Town band pinned in its full band (3)
-// at 13:00 (the `noon` keyframe) or 22:30 (`night`)
+// half an hour into the `noon` or `night` keyframe
 // in one voice, every seat on its own stem (seat content never depends on
 // the band, so each lower band is the sum of the seats it admits), long
 // enough for one 16-bar rendition. `seconds` from the piece's own tempo.
@@ -635,7 +639,7 @@ const NIGHT_2230 = Object.freeze({ ...NIGHT, hour: 22.5 });
 export function musicStemScene({ piece, seconds, phase = 'day', voice = 'isle' }) {
     const f = workFixture(TOWN_BUSY, { seconds: seconds + 4, seed: 61 });
     return {
-        mode: 'bgm', world: f.world, actions: f.actions, atmosphere: phase === 'night' ? NIGHT_2230 : { ...DAY, hour: 13 },
+        mode: 'bgm', world: f.world, actions: f.actions, atmosphere: phase === 'night' ? NIGHT_KEYED : DAY_KEYED,
         bgm: { piece, band: 3, voice }, storage: { [TOWN_BAND_VOICE_KEY]: voice },
         warmup: 1, seconds, stems: ['music', 'airWet'], lint: false,
         musicProbe: { seatStems: MUSIC_SEATS, countNodes: true, stopLint: true },
