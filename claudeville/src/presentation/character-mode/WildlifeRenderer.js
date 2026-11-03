@@ -24,8 +24,8 @@ import { applyGradeToRgb } from './GradeEvaluator.js';
 import { ornamentPlan, readCalmGateOverride, sampleFramePressure } from './MarkGovernor.js';
 import { DRAGONFLY_POOL_MAX } from './ParticleSystem.js';
 import { buildingCenterToWorld } from './Projection.js';
-import { monthIndexForAtmosphere, seasonTokenForAtmosphere } from './SeasonalAmbience.js';
-import { seasonShiftFor } from './AtmosphereState.js';
+import { monthIndexForAtmosphere } from './SeasonalAmbience.js';
+import { dayShiftFor } from './AtmosphereState.js';
 import { ambientEventProgress, dayPartBeatLive } from './AmbientEvents.js';
 import { squallApproach } from './CoastBake.js';
 
@@ -1654,9 +1654,9 @@ export class WildlifeRenderer {
     }
 
     // W6.8 — the sunrise key the dawn-rise beat opens on: the grade's
-    // sunrise with the season's shift.
+    // sunrise with the day's shift (LA-2: the real sunrise).
     _sunriseMinute(atmosphere) {
-        return DAWN_SUNRISE_KEY_MINUTE + (Number(seasonShiftFor(seasonTokenForAtmosphere(atmosphere))?.sunriseShift) || 0);
+        return DAWN_SUNRISE_KEY_MINUTE + (Number(dayShiftFor(atmosphere).sunriseShift) || 0);
     }
 
     // W6.8 — watch the dawn-rise beat on the atmosphere's clock. The frame

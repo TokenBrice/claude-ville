@@ -38,7 +38,7 @@ import {
 } from '../../../application/OutcomeSignals.js';
 import { expectCueScore } from './CueScore.js';
 import { longTurnDetails } from './CueGovernor.js';
-import { createAtmosphereSnapshot } from '../../character-mode/AtmosphereState.js';
+import { createAtmosphereSnapshot, dayShiftFor } from '../../character-mode/AtmosphereState.js';
 import { seasonTokenForAtmosphere } from '../../character-mode/SeasonalAmbience.js';
 import { readCountHours, readTownBandVoice } from '../SoundSettings.js';
 import {
@@ -501,7 +501,7 @@ export class BgmDirector {
         this.player?.setArrangement({
             weather: arrangementWeatherFor(atmosphere.weather, season),
             season,
-            keyframe: arrangementKeyframeAt({ minuteOfDay: Number.isFinite(minute) ? minute : 12 * 60, season }),
+            keyframe: arrangementKeyframeAt({ minuteOfDay: Number.isFinite(minute) ? minute : 12 * 60, shift: dayShiftFor(atmosphere) }),
         });
     }
 

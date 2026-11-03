@@ -23,10 +23,17 @@
 // renderer consumers; the nested aliases are for downstream tooling (HUDs,
 // debug overlays) that already destructure `atmosphere.clock`.
 
-import { seasonTokenForMonth } from './SeasonalAmbience.js';
 import { applyGradeToRgb, evaluateGrade, lampCourseAt } from './GradeEvaluator.js';
 import { ART_RAMPS } from '../../config/artPalette.js';
 import { WIND_MAX, baseWindX, windAt, windSpeedForType } from './Wind.js';
+import {
+    SUNRISE_ALTITUDE_DEG,
+    runtimeSite,
+    siteForZone,
+    solarDayFor,
+    standardOffsetMinutes,
+    sunElevationAt,
+} from './SolarClock.js';
 
 const DAY_MINUTES = 24 * 60;
 const WEATHER_TIMELINE_KNOTS = 6;
@@ -38,15 +45,30 @@ const PHASES = [
     { name: 'night', start: 20 * 60, end: 5 * 60 + 30 },
 ];
 
-// 5.4 — seasonal day-length modulation. PHASES is the equinox (spring/autumn)
-// baseline; winter shifts sunrise later and sunset earlier, summer the
-// reverse. The season comes from the shared month→season mapping in
-// SeasonalAmbience so the sky clock stays in lockstep with seasonal terrain
-// and drift particles. Offsets are minutes applied to the phase boundaries.
-const SEASONAL_DAY_LENGTH_OFFSETS = {
-    winter: { sunrise: 40, sunset: -55 },
-    summer: { sunrise: -40, sunset: 55 },
-};
+// LA-2 (D1) — the real sun. PHASES and the grade keys are one authored day;
+// each date shifts it. Its dawn side moves so the grade's `sunrise` key
+// falls at the real sunrise, and its dusk side so the `blue-hour` key falls
+// at the real civil dusk (the sun 6 degrees down, the heart of the blue
+// hour). Every other dawn or dusk minute keeps its authored distance from
+// those keys: the night phase starts 15 min after civil dusk, the street
+// lamps catch 52 min before it.
+//
+// The real day is SolarClock's at the system timezone's city: DST-aware
+// through the Date's own offset, with no location access. It moves at most
+// 3 min a day and steps only with the wall clock at a DST change. Two bounds
+// keep the authored day expressible. The latitude is held within 58 degrees:
+// further north the real day moves faster than 3 min a day, and summer
+// nights have no blue hour. Each shift stays inside DAY_SHIFT_LIMITS, so the
+// 8 keys keep their order and gaps on every day of the year in every zone.
+const SUNRISE_KEY_MINUTE = 6 * 60;
+const BLUE_HOUR_KEY_MINUTE = 19 * 60 + 45;
+export const VILLAGE_MAX_LATITUDE_DEG = 58;
+export const DAY_SHIFT_LIMITS = Object.freeze({
+    sunrise: Object.freeze([-120, 180]),
+    sunset: Object.freeze([-270, 180]),
+});
+// The authored day itself: fixtures and feeds built without a snapshot.
+export const BASELINE_DAY_SHIFT = Object.freeze({ sunriseShift: 0, sunsetShift: 0 });
 
 const SOLAR_SHADOW_ANGLES = Object.freeze({
     dawnHorizon: -0.78,
@@ -56,26 +78,120 @@ const SOLAR_SHADOW_ANGLES = Object.freeze({
     duskHorizon: 0.82,
 });
 
-function phasesForSeason(seasonToken) {
-    const offsets = SEASONAL_DAY_LENGTH_OFFSETS[seasonToken];
-    if (!offsets) return PHASES;
+function phasesForShift(shift) {
+    const sunrise = Number(shift?.sunriseShift) || 0;
+    const sunset = Number(shift?.sunsetShift) || 0;
+    if (!sunrise && !sunset) return PHASES;
     return PHASES.map((phase) => {
         let { start, end } = phase;
-        if (phase.name === 'dawn') { start += offsets.sunrise; end += offsets.sunrise; }
-        else if (phase.name === 'day') { start += offsets.sunrise; end += offsets.sunset; }
-        else if (phase.name === 'dusk') { start += offsets.sunset; end += offsets.sunset; }
-        else if (phase.name === 'night') { start += offsets.sunset; end += offsets.sunrise; }
+        if (phase.name === 'dawn') { start += sunrise; end += sunrise; }
+        else if (phase.name === 'day') { start += sunrise; end += sunset; }
+        else if (phase.name === 'dusk') { start += sunset; end += sunset; }
+        else if (phase.name === 'night') { start += sunset; end += sunrise; }
         return { name: phase.name, start, end };
     });
 }
 
+// Tests and fixtures that assert the authored hours (a duck on its bank at
+// 19:54, lamps at 18:52): the authored day itself, on any host. The real sun
+// still runs at 45 N 0 E on a UTC clock for the moon and `atmosphere.solar`.
+export const AUTHORED_DAY_SITE = Object.freeze({
+    zone: 'authored',
+    lat: 45,
+    lon: 0,
+    source: 'authored',
+    offsetMinutes: () => 0,
+    dayShift: BASELINE_DAY_SHIFT,
+});
+
+const _normalizedSites = new WeakMap();
+
+/**
+ * A solar site from `{ zone }` (looked up like the system zone) or
+ * `{ lat, lon }`, either with an optional `offsetMinutes(date)` UTC-offset
+ * rule (east positive) in place of the host Date's and an optional fixed
+ * `dayShift`. One normalized object per input object.
+ */
+export function normalizeSolarSite(site) {
+    if (!site || typeof site !== 'object') return null;
+    const cached = _normalizedSites.get(site);
+    if (cached) return cached;
+    const rule = typeof site.offsetMinutes === 'function' ? site.offsetMinutes : null;
+    const pinned = Number.isFinite(Number(site.lat)) && Number.isFinite(Number(site.lon))
+        ? { zone: String(site.zone || ''), lat: Number(site.lat), lon: Number(site.lon), source: site.source || 'pinned' }
+        : { ...siteForZone(site.zone, { standardOffset: rule ? standardOffsetMinutes(new Date().getFullYear(), rule) : 0 }) };
+    if (rule) pinned.offsetMinutes = rule;
+    if (site.dayShift) pinned.dayShift = Object.freeze({ ...BASELINE_DAY_SHIFT, ...site.dayShift });
+    const normalized = Object.freeze(pinned);
+    _normalizedSites.set(site, normalized);
+    return normalized;
+}
+
+let _solarSiteOverride = null;
+
+/**
+ * QA and tests: pin the village's solar site for every snapshot (see
+ * `normalizeSolarSite`), or `null` for the system timezone's city. Never
+ * reached from agent, mood or director state (V3).
+ */
+export function setSolarSite(site = null) {
+    _solarSiteOverride = normalizeSolarSite(site);
+    return _solarSiteOverride;
+}
+
+const _villageSites = new WeakMap();
+
+// The site the village keeps: the pinned or system site, its latitude held
+// within VILLAGE_MAX_LATITUDE_DEG. One object per base site, so SolarClock's
+// day cache holds across frames.
+function villageSiteFor(date, site = null) {
+    const base = normalizeSolarSite(site) || _solarSiteOverride || runtimeSite(date);
+    let village = _villageSites.get(base);
+    if (!village) {
+        const lat = clamp(base.lat, -VILLAGE_MAX_LATITUDE_DEG, VILLAGE_MAX_LATITUDE_DEG);
+        village = lat === base.lat ? base : Object.freeze({ ...base, lat, trueLat: base.lat });
+        _villageSites.set(base, village);
+    }
+    return village;
+}
+
+/**
+ * The date's real sun at the village's site and the shifts it gives the
+ * authored day: `{ day, site, shift }`. `day` is SolarClock.solarDay (local
+ * minutes of the date's own clock).
+ */
+export function solarStateForDate(date, site = null) {
+    const village = villageSiteFor(date, site);
+    const day = solarDayFor(date, village);
+    return {
+        day,
+        site: village,
+        shift: village.dayShift || {
+            sunriseShift: clamp(day.sunriseMinute - SUNRISE_KEY_MINUTE, ...DAY_SHIFT_LIMITS.sunrise),
+            sunsetShift: clamp(day.civilDuskMinute - BLUE_HOUR_KEY_MINUTE, ...DAY_SHIFT_LIMITS.sunset),
+        },
+    };
+}
+
+/**
+ * The day shift a snapshot carries (`atmosphere.solar`), for every consumer
+ * of the grade keys and the lamp course; a fixture built without a snapshot
+ * keeps the authored day.
+ */
+export function dayShiftFor(atmosphere) {
+    const solar = atmosphere?.solar;
+    return solar && Number.isFinite(solar.sunriseShift) && Number.isFinite(solar.sunsetShift)
+        ? solar
+        : BASELINE_DAY_SHIFT;
+}
+
 // 1.8 — shared phase resolution for non-world surfaces (dashboard ambience
-// sync): one canonical table + seasonal day-length logic, so the dashboard
+// sync): one canonical table and the same real-sun shift, so the dashboard
 // clock can never drift from the world sky. Returns the phase name only;
 // render consumers keep using the full snapshot's phase/phaseProgress.
 export function phaseNameForDate(date) {
     const minute = minutesSinceMidnight(date);
-    const phases = phasesForSeason(seasonTokenForMonth(date.getMonth()));
+    const phases = phasesForShift(solarStateForDate(date).shift);
     return resolvePhase(minute, phases).phase;
 }
 
@@ -175,11 +291,13 @@ function easedSolarAngle(minute, start, end, fromAngle, toAngle) {
 // One clock-derived solar pose for every directional-light consumer. The
 // authored dawn, noon, and dusk angles remain calibration knots; smoothstep
 // only eases travel between them, while elevation follows the sky's sine arc.
-export function solarVectorForMinute(minuteOfDay, seasonToken = '') {
+// `shift` is the day's `{ sunriseShift, sunsetShift }` (the authored day
+// without one).
+export function solarVectorForMinute(minuteOfDay, shift = BASELINE_DAY_SHIFT) {
     const minuteValue = Number(minuteOfDay);
     const finiteMinute = Number.isFinite(minuteValue) ? minuteValue : 0;
     const minute = ((finiteMinute % DAY_MINUTES) + DAY_MINUTES) % DAY_MINUTES;
-    const phases = phasesForSeason(seasonToken);
+    const phases = phasesForShift(shift);
     const dawn = phases[0];
     const dusk = phases[2];
     const sunriseMinute = dawn.start;
@@ -913,15 +1031,25 @@ function celestialHorizonState(yFrac, horizonFrac) {
     };
 }
 
-// 5.8 — the sun's noon elevation by season (northern hemisphere, M9): the
-// rainbow needs the sun below 42 degrees.
-const SUN_NOON_ELEVATION_DEG = Object.freeze({ winter: 26, spring: 48, summer: 62, autumn: 40 });
+// 5.8 — the rainbow needs the sun below 42 degrees. LA-2: the drawn arc
+// peaks at the day's real noon elevation (it was a season table: winter 26,
+// spring 48, summer 62, autumn 40).
+const SUN_FALLBACK_NOON_ELEVATION_DEG = 44;
 
 // 0.10 — a storm's cover hides the sun entirely (no pale disc showing
 // through a thunderhead); other weather thins it by its occlusion.
-function buildSun(minute, phase, phaseProgress, weather, phases = PHASES, seasonToken = '') {
-    const progress = progressInInterval(minute, phases[0].start, phases[2].end);
-    const light = phaseLight(phase, phaseProgress);
+// LA-2 — the disc rides the real sun. Its arc spans the real sunrise to the
+// real sunset, and its alpha is the real daylight: full from
+// SUN_FULL_ELEVATION_DEG up, gone as the upper limb meets the horizon. The
+// phases and grade keys keep their civil-twilight timing, so the sky still
+// glows gold and then blue after the disc is down, and the sun's road on
+// the sea ends with the real sunset.
+const SUN_FULL_ELEVATION_DEG = 10;
+
+function buildSun(minute, weather, solarDay, elevationNowDeg) {
+    const progress = progressInInterval(minute, solarDay.sunriseMinute, solarDay.sunsetMinute);
+    const light = smoothstep((elevationNowDeg - SUNRISE_ALTITUDE_DEG) / (SUN_FULL_ELEVATION_DEG - SUNRISE_ALTITUDE_DEG));
+    const noonElevationDeg = solarDay.noonElevationDeg;
     const preset = WEATHER_PRESETS[weather.type] || WEATHER_PRESETS.clear;
     const alpha = weather.type === 'storm'
         ? 0
@@ -933,7 +1061,8 @@ function buildSun(minute, phase, phaseProgress, weather, phases = PHASES, season
         alpha: alpha * horizon.horizonFade,
         xFrac: 0.08 + progress * 0.84,
         yFrac,
-        elevationDeg: Math.sin(progress * Math.PI) * (SUN_NOON_ELEVATION_DEG[seasonToken] ?? 44),
+        elevationDeg: Math.sin(progress * Math.PI)
+            * (Number.isFinite(noonElevationDeg) ? noonElevationDeg : SUN_FALLBACK_NOON_ELEVATION_DEG),
         ...horizon,
     };
 }
@@ -1084,28 +1213,21 @@ const SOURCE_ENERGY_ORDER = ['daylight', 'settling', 'lamplight', 'deep-night'];
  * exactly one step (never past `lamplight`) because the sky really is that
  * much darker — it is a step, not another multiplier.
  */
-export function sourceEnergyEnvelope(minuteOfDay, weather = null, seasonShift = null) {
-    let index = lampCourseAt(minuteOfDay, seasonShift || undefined);
+export function sourceEnergyEnvelope(minuteOfDay, weather = null, dayShift = null) {
+    let index = lampCourseAt(minuteOfDay, dayShift || undefined);
     if (index < 2 && OVERCAST_WEATHER_TYPES.has(weather?.type) && clamp(weather?.intensity) >= 0.5) {
         index += 1;
     }
     return SOURCE_ENERGY_BUCKETS[SOURCE_ENERGY_ORDER[index]];
 }
 
-export function seasonShiftFor(seasonToken) {
-    const offsets = SEASONAL_DAY_LENGTH_OFFSETS[seasonToken];
-    return offsets
-        ? { sunriseShift: offsets.sunrise, sunsetShift: offsets.sunset }
-        : { sunriseShift: 0, sunsetShift: 0 };
-}
-
 // C2 — one evaluated grade per distinct (quarter-minute, weather, moon,
-// season) state. Snapshots are rebuilt every frame; the grade only changes
-// when one of its inputs moves a bucket.
+// day shift) state. Snapshots are rebuilt every frame; the grade only
+// changes when one of its inputs moves a bucket.
 let _lightGradeKey = '';
 let _lightGrade = null;
 
-function lightGradeFor(minute, weather, moonFill, seasonToken) {
+function lightGradeFor(minute, weather, moonFill, shift) {
     const key = [
         Math.round(minute * 4),
         weather.type,
@@ -1113,7 +1235,8 @@ function lightGradeFor(minute, weather, moonFill, seasonToken) {
         Math.round(clamp(weather.cloudCover ?? 0) * 20),
         Math.round(clamp(weather.fog ?? 0) * 20),
         Math.round(moonFill * 20),
-        seasonToken,
+        shift.sunriseShift.toFixed(2),
+        shift.sunsetShift.toFixed(2),
     ].join('|');
     if (_lightGrade && key === _lightGradeKey) return _lightGrade;
     _lightGradeKey = key;
@@ -1122,7 +1245,8 @@ function lightGradeFor(minute, weather, moonFill, seasonToken) {
             minuteOfDay: minute,
             weather,
             moonFill,
-            ...seasonShiftFor(seasonToken),
+            sunriseShift: shift.sunriseShift,
+            sunsetShift: shift.sunsetShift,
         }),
         cacheKey: key,
     });
@@ -1149,7 +1273,7 @@ export function moonFillFor(phase, moon, weather) {
     return clamp(illumination * clamp(moon.alpha ?? 0) * transmission);
 }
 
-function buildLighting(minute, seasonToken, phase, phaseProgress, weather, moon = null) {
+function buildLighting(minute, shift, phase, phaseProgress, weather, moon = null) {
     const light = phaseLight(phase, phaseProgress);
     const dark = 1 - light;
     const dawnWarmth = phase === 'dawn' ? 1 - smoothstep(phaseProgress) : 0;
@@ -1160,7 +1284,7 @@ function buildLighting(minute, seasonToken, phase, phaseProgress, weather, moon 
         : weather.type === 'fog'
             ? weather.intensity * 0.20
             : 0;
-    const solar = solarVectorForMinute(minute, seasonToken);
+    const solar = solarVectorForMinute(minute, shift);
     const shadowLength = clamp(0.72 + dark * 1.10 + sunWarmth * 0.72 + weatherDim * 0.28, 0.62, 2.35);
 
     return normalizeLightingState({
@@ -1182,7 +1306,7 @@ function buildLighting(minute, seasonToken, phase, phaseProgress, weather, moon 
         sunBloomScale: clamp(0.85 + sunWarmth * 0.95 - weatherDim * 0.35, 0.65, 1.85),
         beaconIntensity: clamp(dark * 0.9 + sunWarmth * 0.25 + weatherDim * 0.25, 0, 1),
         waterGlintScale: clamp(0.64 + light * 0.28 + sunWarmth * 0.48 - weatherDim * 0.22, 0.32, 1.42),
-        sourceEnergy: sourceEnergyEnvelope(minute, weather, seasonShiftFor(seasonToken)),
+        sourceEnergy: sourceEnergyEnvelope(minute, weather, shift),
         moonFill: moonFillFor(phase, moon, weather),
     });
 }
@@ -1290,13 +1414,13 @@ export function createAtmosphereSnapshot({
     seedOverride = null,
     timelineMode = 'auto',
     timelineKnots = null,
+    solarSite = null,
 } = {}) {
     const effectiveDate = applyHourOverride(normalizeDate(now), hourOverride);
     const minute = minutesSinceMidnight(effectiveDate);
-    // 5.4 — season-modulated phase table (day length follows the month→season
-    // mapping; equinox months keep the fixed PHASES baseline).
-    const seasonToken = seasonTokenForMonth(effectiveDate.getMonth());
-    const phases = phasesForSeason(seasonToken);
+    // LA-2 — the real sun's day shifts the authored phase table and keys.
+    const { day: solarDay, site, shift } = solarStateForDate(effectiveDate, solarSite);
+    const phases = phasesForShift(shift);
     const { phase, phaseProgress } = resolvePhase(minute, phases);
     const dayProgress = minute / DAY_MINUTES;
     const weather = resolveWeather(effectiveDate, weatherOverride, { seedOverride, timelineMode, timelineKnots });
@@ -1305,7 +1429,7 @@ export function createAtmosphereSnapshot({
     const cloudCover = Number.isFinite(weather.cloudCover) ? weather.cloudCover : preset.cloudCover;
     const transition = phaseTransition(phase, phaseProgress);
     const moon = buildMoon(minute, phase, phaseProgress, weather, effectiveDate, phases);
-    const lighting = buildLighting(minute, seasonToken, phase, phaseProgress, weather, moon);
+    const lighting = buildLighting(minute, shift, phase, phaseProgress, weather, moon);
     const timeBucket = Math.floor(dayProgress * 96);
     const lightBucket = Math.round(phaseLight(phase, phaseProgress) * 100);
     const intensityBucket = Math.round(intensity * 10);
@@ -1314,13 +1438,31 @@ export function createAtmosphereSnapshot({
     const fogBucket = Math.round((weather.fog || 0) * 10);
     const effectiveMotionScale = preferredMotionScale(motionScale);
     const driftEnabled = effectiveMotionScale > 0;
-    const lightGrade = lightGradeFor(minute, weather, lighting.moonFill, seasonToken);
+    const lightGrade = lightGradeFor(minute, weather, lighting.moonFill, shift);
+    const sunElevationNow = sunElevationAt(solarDay, minute);
 
     return {
         phase,
         phaseProgress,
         dayProgress,
         transition,
+        // LA-2 — the real sun at the village's site for this local date
+        // (minutes of the date's own clock, DST included; polar days and
+        // nights clamp) and the day shift every key and lamp consumer reads
+        // through `dayShiftFor`. `elevationDeg` is the real sun's height
+        // now; `sky.sun` is the drawn disc on the same real arc.
+        solar: {
+            sunriseShift: shift.sunriseShift,
+            sunsetShift: shift.sunsetShift,
+            civilDawnMinute: solarDay.civilDawnMinute,
+            sunriseMinute: solarDay.sunriseMinute,
+            solarNoonMinute: solarDay.solarNoonMinute,
+            sunsetMinute: solarDay.sunsetMinute,
+            civilDuskMinute: solarDay.civilDuskMinute,
+            noonElevationDeg: solarDay.noonElevationDeg,
+            elevationDeg: sunElevationNow,
+            site,
+        },
         // 3.4 — `mN` is the reviewed night ambient course: the cached Canvas
         // grade overlay and baked plates must re-bake when the moon changes it.
         cacheKey: `${phase}|${weather.type}|i${intensityBucket}|c${cloudBucket}|p${precipitationBucket}|f${fogBucket}|b${timeBucket}|l${lightBucket}|m${Math.round(lighting.moonFill * 10)}`,
@@ -1328,7 +1470,7 @@ export function createAtmosphereSnapshot({
         sky: {
             palette: skyPaletteFor(lightGrade),
             assetIds: SKY_ASSETS,
-            sun: buildSun(minute, phase, phaseProgress, weather, phases, seasonToken),
+            sun: buildSun(minute, weather, solarDay, sunElevationNow),
             moon,
             starsAlpha: starAlpha(lightGrade, weather),
             cloudCover,
@@ -1443,6 +1585,14 @@ export class AtmosphereState {
         return this.snapshot();
     }
 
+    // QA debug hook only (LA-2, see setSolarSite): pin the village's solar
+    // site, or `null` for the system timezone's city. Module-wide, so the
+    // sound's snapshots keep the same day as the picture.
+    setSolarSite(site) {
+        setSolarSite(site);
+        return this.snapshot();
+    }
+
     freeze() {
         const snapshot = this.snapshot();
         this._frozenDate = new Date(snapshot.effectiveDate.getTime());
@@ -1456,6 +1606,7 @@ export class AtmosphereState {
         this._timelineMode = 'auto';
         this._timelineKnots = null;
         this._frozenDate = null;
+        setSolarSite(null);
         return this.snapshot();
     }
 
@@ -1497,6 +1648,7 @@ export class AtmosphereState {
             setSeed: (seed) => this.setSeed(seed),
             setTimelineMode: (mode) => this.setTimelineMode(mode),
             setTimelineKnots: (knots) => this.setTimelineKnots(knots),
+            setSolarSite: (site) => this.setSolarSite(site),
             freeze: () => this.freeze(),
             clear: () => this.clear(),
             snapshot: () => this.snapshot(),

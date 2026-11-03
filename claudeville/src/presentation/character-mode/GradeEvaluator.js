@@ -97,9 +97,14 @@ const NEUTRAL = Object.freeze([1, 1, 1]);
 // that grass, roofs and water stay identifiable.
 const PURKINJE_BLUE = Object.freeze(lumaNormalized([0.93, 1.0, 1.07]));
 
-// The 8 authored daily keys. Minutes are the equinox baseline; the dawn-side
-// keys follow the season's sunrise shift and the dusk-side keys its sunset
-// shift, so the grade stays in step with the sky and the solar vector.
+// The 8 authored daily keys. Minutes are the authored day; the dawn-side
+// keys follow the day's sunrise shift and the dusk-side keys (golden hour,
+// blue hour and night) its sunset shift, so the grade stays in step with the
+// sky and the solar vector. LA-2: the shifts are the real sun's
+// (AtmosphereState.solarStateForDate): `sunrise` sits on the real sunrise
+// and `blue-hour` on the real civil dusk. Night keeps its authored 135 min
+// after blue hour, so a June evening never squeezes it under 90 min;
+// noon and deep night stay put.
 //
 //   exposure/saturation  scalar ambient and colourfulness
 //   gain                 per-channel ambient colour (the mid tint)
@@ -241,7 +246,7 @@ export const GRADE_KEYFRAMES = Object.freeze([
     // emission (exempt, added after the grade) carry the amber. Night/noon
     // saturation sits between 0.5x and 0.85x, and night is bluer than noon.
     Object.freeze({
-        name: 'night', minute: 22 * 60, side: 'night',
+        name: 'night', minute: 22 * 60, side: 'dusk',
         exposure: moonlit(0.76, 0.78), saturation: moonlit(0.58, 0.62),
         gain: [0.82, 0.94, 1.06], lift: moonlit3([0.024, 0.027, 0.034], [0.034, 0.040, 0.056]), gamma: 1.02,
         shadowTint: [0.82, 0.92, 1.12], highlightTint: [0.96, 1.04, 1.02],
@@ -272,6 +277,13 @@ function keyMinutes(key, sunriseShift, sunsetShift) {
     if (key.side === 'dawn') return key.minute + sunriseShift;
     if (key.side === 'dusk') return key.minute + sunsetShift;
     return key.minute;
+}
+
+/** The minute of the day (may pass 1440) at which key `name` falls for a day shift. */
+export function gradeKeyMinute(name, { sunriseShift = 0, sunsetShift = 0 } = {}) {
+    const key = GRADE_KEYFRAMES.find(row => row.name === name);
+    if (!key) throw new RangeError(`unknown grade key: ${name}`);
+    return keyMinutes(key, sunriseShift, sunsetShift);
 }
 
 /**
@@ -320,7 +332,7 @@ function weatherWeights(weather) {
  * weather object ({ type, intensity, cloudCover, fog }), `moonPhase` the
  * lunar illumination 0..1 (or `{ illumination }`); `moonFill` (visibility x
  * illumination x cloud transmission, 0 outside night) wins when given.
- * Optional `sunriseShift`/`sunsetShift` (minutes) follow the season.
+ * Optional `sunriseShift`/`sunsetShift` (minutes) follow the real sun's day.
  */
 export function evaluateGrade({
     minuteOfDay = 12 * 60,

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  AUTHORED_DAY_SITE,
   SOURCE_ENERGY_BUCKETS,
   createAtmosphereSnapshot,
   moonFillFor,
@@ -12,11 +13,15 @@ import {
 
 const CLEAR = { type: 'clear', intensity: 0, cloudCover: 0 };
 
+// The authored day (LA-2 shifts it by the real sun; the real-sun course is
+// covered in solar-clock.test.mjs), so the hours below mean the same on
+// every host timezone.
 function envelopeAtHour(hour, weather = 'clear') {
   const snapshot = createAtmosphereSnapshot({
     now: new Date(2026, 8, 6, 12, 0, 0),
     hourOverride: hour,
     weatherOverride: weather,
+    solarSite: AUTHORED_DAY_SITE,
   });
   return { snapshot, energy: snapshot.lighting.sourceEnergy };
 }
