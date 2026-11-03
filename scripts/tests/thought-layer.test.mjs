@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
+import { AgentSprite } from '../../claudeville/src/presentation/character-mode/AgentSprite.js';
 import {
-    createThoughtColumn, layoutThoughtColumn, needsConfidenceMark,
-    THOUGHT_CANDIDATE_COUNT, THOUGHT_CANDIDATE_SLOT, THOUGHT_CANDIDATE_LATERAL,
+    createThoughtColumn, layoutThoughtColumn, needsConfidenceMark, speakerTagFor, speakerTagsFor, thoughtLeader,
+    THOUGHT_CANDIDATE_COUNT, THOUGHT_CANDIDATE_SLOT, THOUGHT_CANDIDATE_LATERAL, THOUGHT_HEAD,
 } from '../../claudeville/src/presentation/character-mode/ThoughtColumn.js';
+import { LABEL_INK, paintThoughtPlate } from '../../claudeville/src/presentation/character-mode/WorldLabelKit.js';
 
 function rendererHost() {
     const renderer = Object.create(IsometricRenderer.prototype);
@@ -257,4 +259,172 @@ test('speech with null confidence never gains a classifier uncertainty mark', ()
     assert.equal(needsConfidenceMark('Checking the renderer', 0.5), true);
     assert.equal(needsConfidenceMark('Checking the renderer?', 0.5), false);
     assert.equal(needsConfidenceMark('Checking the renderer', 0.9), false);
+});
+
+// EF-1 — a recording context: every painted pixel (last write wins) in the
+// caller's whole-pixel units, and any vector path call, which the label kit
+// never makes.
+function pixelCtx() {
+    const pixels = new Map();
+    const writes = new Map();
+    const paths = [];
+    const ctx = {
+        fillStyle: '',
+        globalAlpha: 1,
+        fillRect(x, y, w, h) {
+            assert.ok([x, y, w, h].every(Number.isInteger), `fillRect(${x}, ${y}, ${w}, ${h}) is not whole pixels`);
+            for (let py = y; py < y + h; py++) {
+                for (let px = x; px < x + w; px++) {
+                    const key = `${px},${py}`;
+                    pixels.set(key, this.fillStyle);
+                    writes.set(key, (writes.get(key) || 0) + 1);
+                }
+            }
+        },
+        save() {}, restore() {}, translate() {}, scale() {},
+    };
+    for (const op of ['beginPath', 'moveTo', 'lineTo', 'arc', 'ellipse', 'quadraticCurveTo', 'roundRect', 'fill', 'stroke']) {
+        ctx[op] = () => paths.push(op);
+    }
+    return { ctx, pixels, writes, paths };
+}
+
+test('a plate paints every texel once, so a fading history row dims evenly', () => {
+    for (const options of [{}, { tail: THOUGHT_HEAD.tail }, { puffs: true }, { tail: THOUGHT_HEAD.tail, tailX: -40 }]) {
+        for (const width of [22, 23, 195]) {
+            const { ctx, writes } = pixelCtx();
+            paintThoughtPlate(ctx, -width / 2, -28, width, 20, { trim: '#f2d36b', ...options });
+            const overlaps = [...writes].filter(([, count]) => count > 1).map(([key]) => key);
+            assert.deepEqual(overlaps, [], `${JSON.stringify(options)} at ${width} px overpaints`);
+        }
+    }
+});
+
+function paintHead(column, tailX = 0) {
+    const recorder = pixelCtx();
+    paintThoughtPlate(recorder.ctx, -column.headWidth / 2, column.headTop, column.headWidth, column.headBottom - column.headTop, {
+        trim: '#f2d36b', tail: column.puffs ? 0 : column.tail, tailX, puffs: column.puffs,
+    });
+    return recorder;
+}
+
+for (const text of ['Weighing the two backends', 'Weighing the two backend']) {
+    test(`a reasoning chip trails puffs in the notch's reserved rows, never the notch (${text.length} chars)`, () => {
+        const chip = layoutThoughtColumn(createThoughtColumn(), [{ ...entry(text), shape: 'chip' }], false, true, 0);
+        const quote = layoutThoughtColumn(createThoughtColumn(), [entry(text)], false, true, 0);
+        assert.equal(chip.puffs, true);
+        assert.equal(quote.puffs, false);
+        // The reservation is the notch's either way: only the paint differs.
+        assert.equal(chip.tail, THOUGHT_HEAD.tail);
+        for (const key of ['top', 'bottom', 'left', 'right', 'tailTipY']) assert.equal(chip[key], quote[key], key);
+        const base = chip.headBottom;
+        const x = Math.round(-chip.headWidth / 2);
+        const tail = x + Math.floor(Math.round(chip.headWidth) / 2);
+        const puffs = paintHead(chip);
+        const notch = paintHead(quote);
+        for (const { pixels, paths } of [puffs, notch]) {
+            assert.deepEqual(paths, []);
+            for (const key of pixels.keys()) {
+                const [px, py] = key.split(',').map(Number);
+                assert.ok(px >= chip.left && px < chip.right && py >= chip.top && py < chip.bottom, `${key} outside the reserved column`);
+            }
+            // Both end on the tail column one row above the leader's start.
+            assert.equal(pixels.get(`${tail},${base + THOUGHT_HEAD.tail}`), LABEL_INK.outline);
+            assert.equal(pixels.has(`${tail},${base + THOUGHT_HEAD.tail + 1}`), false);
+        }
+        // A quote opens the board's bottom trim into its notch; puffs leave
+        // the board closed and float below it.
+        assert.equal(notch.pixels.get(`${tail},${base - 1}`), '#221813');
+        assert.equal(puffs.pixels.get(`${tail},${base - 1}`), '#f2d36b');
+        assert.ok(puffs.pixels.size > notch.pixels.size, 'the puffs carry more paint than the notch');
+    });
+}
+
+test('a displaced chip hangs its bead on the leader column, the puffs trailing away from the lean', () => {
+    const column = layoutThoughtColumn(createThoughtColumn(), [{ ...entry('Weighing the two backends'), shape: 'chip' }], false, true, 3);
+    for (const lateral of [-1, 1]) {
+        const shiftX = lateral * Math.ceil(column.width / 2);
+        const geo = thoughtLeader({}, column, shiftX, -24, -2);
+        const { pixels } = paintHead(column, geo.tailX);
+        const foot = column.headBottom + THOUGHT_HEAD.tail;
+        assert.equal(pixels.get(`${geo.tailX},${foot}`), LABEL_INK.outline, 'the bead foot sits on the leader column');
+        assert.equal(geo.fromY + 24, foot + 1, 'the leader starts on the next row down');
+        const ring = [...pixels.keys()].filter(key => Number(key.split(',')[1]) === column.headBottom + 2 && pixels.get(key) === '#221813');
+        const ringX = ring.map(key => Number(key.split(',')[0]));
+        // The 4×2 core of the larger puff lies on the far side from the anchor.
+        assert.equal(ringX.length, 4);
+        if (geo.tailX < 0) assert.ok(Math.min(...ringX) > geo.tailX);
+        else assert.ok(Math.max(...ringX) < geo.tailX);
+    }
+});
+
+test('the chat bubble is a carved plate with a notch, in whole pixels only', () => {
+    const { ctx, pixels, paths } = pixelCtx();
+    ctx.globalAlpha = 0.5; // paint straight through, not via the device stamp
+    AgentSprite.prototype._drawChatEffect.call({
+        decisionFocusMuted: false, _zoom: 1, _placeX: 0, _headTopY: () => 0,
+        _statusVisual: () => ({ color: '#f2d36b' }),
+        _drawOverlayStamp: AgentSprite.prototype._drawOverlayStamp,
+    }, ctx, 0);
+    assert.deepEqual(paths, []);
+    assert.equal(pixels.get('0,-9'), '#221813', 'the bottom trim opens into the notch');
+    assert.equal(pixels.get('0,-2'), LABEL_INK.outline, 'the notch tip');
+    assert.equal(pixels.get('-16,-20'), LABEL_INK.outline, 'the left outline');
+    assert.equal(pixels.get('-15,-20'), '#f2d36b', 'the trim ring');
+});
+
+// EF-4 — realistic rosters: the user's lanes, implementation lanes, Codex
+// thread names and job labels, and plain or numbered villager names.
+const ROSTERS = [
+    [['lane-01-light', 'lane-02-isle', 'lane-03-craft', 'lane-04-folk', 'main'], ['01L', '02I', '03C', '04F', 'MAI']],
+    [['impl-frost-reeds', 'impl-landmarks', 'impl-rare-skies', 'impl-sea-light', 'impl-turning-clock', 'impl-turning-woods', 'impl-water', 'impl-folk'],
+        ['FRO', 'LAN', 'RAR', 'SEA', 'CLO', 'WOO', 'WAT', 'FOL']],
+    [['Sync local main with remote', 'Sync local main with origin', 'Review and fix pending issues'], ['REM', 'ORI', 'REV']],
+    [['enchant-review-ef1', 'enchant-review-mb2', 'diag-sprite-01', 'diag-sprite-02'], ['EF1', 'MB2', 'D01', 'D02']],
+    [['Atlas', 'Atlas 2', 'Atlas 3', 'Nova', 'claude-ville-18'], ['ATL', 'AT2', 'AT3', 'NOV', 'CLA']],
+    [['claude-ville-18', 'claude-ville-19'], ['C18', 'C19']],
+];
+
+for (const [names, expected] of ROSTERS) {
+    test(`speaker tags tell ${names[0]} and its roster apart`, () => {
+        const tags = speakerTagsFor(names);
+        assert.deepEqual(names.map(name => tags.get(name)), expected);
+        // Deterministic in the set of names, not their order.
+        assert.deepEqual(speakerTagsFor([...names].reverse()), tags);
+    });
+}
+
+test('speaker tags stay distinct, three cells at most, and a lone name keeps its first letters', () => {
+    const fleet = ['impl-sea-light', 'impl-search', 'impl-seam', 'Atlas', 'Atlas 2', 'lane-01-light', 'lane-02-isle', ''];
+    const tags = speakerTagsFor(fleet);
+    // Still meeting after the shared words drop: the first in name order
+    // keeps the tag, the others step their last cell.
+    assert.deepEqual([tags.get('impl-sea-light'), tags.get('impl-seam'), tags.get('impl-search')], ['SEA', 'SE2', 'SE3']);
+    const shown = fleet.filter(Boolean).map(name => tags.get(name));
+    assert.equal(new Set(shown).size, shown.length);
+    for (const tag of shown) assert.ok(tag.length >= 1 && tag.length <= 3, tag);
+    assert.equal(tags.get(''), '');
+    for (const name of ['lane-01-light', 'claude-ville-18', 'Atlas 2', 'Žarko']) {
+        assert.equal(speakerTagsFor([name]).get(name), speakerTagFor(name));
+    }
+    assert.equal(speakerTagFor('lane-01-light'), 'LAN');
+});
+
+test("the renderer's tag table follows the live roster and holds between roster changes", (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: 1_000_000 });
+    const renderer = Object.create(IsometricRenderer.prototype);
+    const sprite = (name) => ({ agent: { name } });
+    renderer.agentSprites = new Map([['a', sprite('lane-01-light')]]);
+    assert.equal(renderer._speakerTagFor('lane-01-light'), 'LAN');
+    renderer.agentSprites.set('b', sprite('lane-02-isle'));
+    // Re-read at most once a second.
+    assert.equal(renderer._speakerTagFor('lane-01-light'), 'LAN');
+    assert.equal(renderer._speakerTagFor('lane-02-isle'), 'LAN');
+    t.mock.timers.tick(1000);
+    assert.equal(renderer._speakerTagFor('lane-01-light'), '01L');
+    assert.equal(renderer._speakerTagFor('lane-02-isle'), '02I');
+    const table = renderer._speakerTags.tags;
+    t.mock.timers.tick(1000);
+    renderer._speakerTagFor('lane-01-light');
+    assert.equal(renderer._speakerTags.tags, table, 'an unchanged roster keeps its table');
 });

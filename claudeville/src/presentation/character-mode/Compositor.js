@@ -1,3 +1,4 @@
+import { ART_RAMPS } from '../../config/artPalette.js';
 import { clearDetachedCodexWrench } from './CodexEngineerGrips.js';
 import { DEFAULT_CELL, DIRECTIONS, WALK_FRAMES, IDLE_FRAMES } from './SpriteSheet.js';
 
@@ -830,6 +831,49 @@ export function bakeSpriteOutline(ctx, width, height, cellSize = DEFAULT_CELL) {
         }
     }
     ctx.putImageData(image, 0, 0);
+}
+
+// EF-6 — snow on the still (AgentSprite._snowCapCell): the one course of snow
+// a body holds after standing still while snow lies in the village. Down each
+// column the first texel under the silhouette's ink edge takes it (the baked
+// rim and the authored outline keep their line, as on a roof's cap), kept
+// only where the top lies level: a texel beside a same-row neighbour, in a
+// run of at least SNOW_CAP_MIN_RUN such columns stepping at most one row. So
+// it rests on brims, hoods, crowns and pauldrons, never on a staff tip, a
+// mote, a spike or a 45° stick. The lighter half of the course (by the
+// texel's own luma) takes the top `snow` stop and the rest the next stop
+// down, so the line keeps the body's own light. Pure: the RGBA `data` of one
+// width × height cell in, [x, y, colour] texels out.
+export const SNOW_CAP_MIN_RUN = 3;
+const SNOW_INK_MAX = 48;
+const SNOW_CAP_LIT = ART_RAMPS.snow[4];
+const SNOW_CAP_SHADE = ART_RAMPS.snow[3];
+export function snowCapTexels(data, width, height) {
+    const solid = (p) => data[p * 4 + 3] >= 128;
+    const ink = (p) => Math.max(data[p * 4], data[p * 4 + 1], data[p * 4 + 2]) < SNOW_INK_MAX;
+    const cap = new Int16Array(width).fill(-1);
+    for (let x = 0; x < width; x++) {
+        let y = 0;
+        while (y < height && data[(y * width + x) * 4 + 3] < OPAQUE_ALPHA) y++;
+        for (let edge = 0; edge < 2 && y < height && solid(y * width + x) && ink(y * width + x); edge++) y++;
+        if (y < height && solid(y * width + x) && !ink(y * width + x)) cap[x] = y;
+    }
+    const level = (x) => cap[x] >= 0
+        && ((x > 0 && cap[x - 1] === cap[x]) || (x + 1 < width && cap[x + 1] === cap[x]));
+    const course = [];
+    for (let x = 0; x < width;) {
+        if (!level(x)) {
+            x++;
+            continue;
+        }
+        let end = x;
+        while (end + 1 < width && level(end + 1) && Math.abs(cap[end + 1] - cap[end]) <= 1) end++;
+        if (end - x + 1 >= SNOW_CAP_MIN_RUN) for (let k = x; k <= end; k++) course.push(k);
+        x = end + 1;
+    }
+    const luma = course.map(x => lodLuma(data, (cap[x] * width + x) * 4));
+    const mid = (Math.min(...luma) + Math.max(...luma)) / 2;
+    return course.map((x, i) => [x, cap[x], luma[i] >= mid ? SNOW_CAP_LIT : SNOW_CAP_SHADE]);
 }
 
 function lodLuma(data, offset) {

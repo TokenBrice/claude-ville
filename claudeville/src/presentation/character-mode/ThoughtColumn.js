@@ -36,7 +36,6 @@ export const THOUGHT_CLOCK_WIDTH = 22;
 // Older lines: smaller, fainter rows a 3 px gap above the head and each other.
 export const THOUGHT_HISTORY = Object.freeze({
     height: 14,
-    radius: 3,
     stroke: 1,
     pad: 7,
     gap: 3,
@@ -82,6 +81,7 @@ export function createThoughtColumn() {
         headTop: 0,
         headBottom: 0,
         tail: 0,
+        puffs: false,
         tailTipY: 0,
         chipZone: 0,
         tagWidth: 0,
@@ -127,17 +127,84 @@ export function needsConfidenceMark(text, confidence) {
 // Three upper-case letters or digits from the speaker's name ("Atlas 2" →
 // "ATL"); empty for a nameless agent.
 export function speakerTagFor(name) {
+    return nameTokens(name).join('').slice(0, THOUGHT_TAG.chars);
+}
+
+// The name as upper-case words: runs of ASCII letters or of digits, so
+// "lane-01-light" reads LANE, 01, LIGHT and "Atlas 2" reads ATLAS, 2.
+function nameTokens(name) {
     const source = String(name || '');
-    let tag = '';
-    for (let i = 0; i < source.length && tag.length < THOUGHT_TAG.chars; i++) {
+    const tokens = [];
+    let token = '';
+    let kind = 0;
+    for (let i = 0; i < source.length; i++) {
         const code = source.charCodeAt(i);
-        const digit = code >= 48 && code <= 57;
-        const upper = code >= 65 && code <= 90;
-        const lower = code >= 97 && code <= 122;
-        if (digit || upper) tag += source[i];
-        else if (lower) tag += String.fromCharCode(code - 32);
+        const next = code >= 48 && code <= 57 ? 2
+            : (code >= 65 && code <= 90) || (code >= 97 && code <= 122) ? 1 : 0;
+        if (next !== kind && token) {
+            tokens.push(token);
+            token = '';
+        }
+        kind = next;
+        if (next) token += source[i].toUpperCase();
     }
-    return tag;
+    if (token) tokens.push(token);
+    return tokens;
+}
+
+function sharedLead(a, b) {
+    let n = 0;
+    while (n < a.length && n < b.length && a[n] === b[n]) n++;
+    return n;
+}
+
+/**
+ * EF-4 — tags that tell a live roster apart. Each name drops the leading
+ * words it shares with another live name (keeping at least its last word),
+ * takes three letters or digits from what is left, and fills a shorter
+ * remainder from the front of the name: `lane-01-light` beside `lane-02-isle`
+ * reads 01L, `Atlas 2` beside `Atlas` reads AT2, and a name that shares no
+ * word keeps today's tag (`claude-ville-18` → CLA). Distinct names whose
+ * tags still meet keep the first in name order and step the others' last
+ * cell to a digit (SEA, SE2). Deterministic in the set of names, never their
+ * order. Returns Map(name → tag); a nameless speaker's tag is empty.
+ */
+export function speakerTagsFor(names) {
+    const unique = [...new Set(Array.from(names || [], name => String(name || '')))].sort();
+    const words = unique.map(nameTokens);
+    const tags = new Map();
+    const holders = new Map();
+    for (let i = 0; i < unique.length; i++) {
+        const tokens = words[i];
+        let shared = 0;
+        for (let j = 0; j < unique.length; j++) {
+            if (j !== i) shared = Math.max(shared, sharedLead(tokens, words[j]));
+        }
+        const drop = Math.min(shared, Math.max(0, tokens.length - 1));
+        const rest = tokens.slice(drop).join('');
+        const lead = tokens.slice(0, drop).join('').slice(0, Math.max(0, THOUGHT_TAG.chars - rest.length));
+        const tag = (lead + rest).slice(0, THOUGHT_TAG.chars);
+        tags.set(unique[i], tag);
+        if (tag) holders.set(tag, (holders.get(tag) || 0) + 1);
+    }
+    const taken = new Set(tags.values());
+    const seen = new Map();
+    for (const name of unique) {
+        const tag = tags.get(name);
+        if (!tag || holders.get(tag) < 2) continue;
+        const count = (seen.get(tag) || 0) + 1;
+        seen.set(tag, count);
+        if (count === 1) continue;
+        let step = count;
+        let next = '';
+        do {
+            const digits = String(step++);
+            next = tag.slice(0, Math.max(0, THOUGHT_TAG.chars - digits.length)) + digits;
+        } while (taken.has(next));
+        taken.add(next);
+        tags.set(name, next);
+    }
+    return tags;
 }
 
 function countDigits(value) {
@@ -167,6 +234,7 @@ export function layoutThoughtColumn(out, thread, clock = false, chip = false, ta
     if (clock) {
         out.headWidth = THOUGHT_CLOCK_WIDTH;
         out.tail = THOUGHT_HEAD.tail;
+        out.puffs = false;
         out.textLeft = 0;
     } else {
         const text = head?.text || '';
@@ -180,7 +248,10 @@ export function layoutThoughtColumn(out, thread, clock = false, chip = false, ta
         out.textLeft = out.chipZone + out.tagWidth;
         out.headWidth = out.textLeft + out.textWidth + out.countWidth + THOUGHT_HEAD.pad;
         // Long-form reasoning excerpts are chips, not quotes: no speech tail.
-        out.tail = head?.shape === 'chip' ? 0 : THOUGHT_HEAD.tail;
+        // They trail two thought puffs in the same rows instead, so the
+        // reservation is the notch's either way.
+        out.tail = THOUGHT_HEAD.tail;
+        out.puffs = head?.shape === 'chip';
     }
     out.tailTipY = out.headBottom + out.tail;
 

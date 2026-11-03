@@ -104,6 +104,8 @@ import {
     THOUGHT_STACK_STEP,
     createThoughtColumn,
     layoutThoughtColumn,
+    speakerTagFor,
+    speakerTagsFor,
     thoughtLateralShift,
     thoughtLeader,
 } from './ThoughtColumn.js';
@@ -3889,6 +3891,8 @@ export class IsometricRenderer {
                 }),
                 getTileType: (tileX, tileY) => this._surfaceMaterialAt(tileX, tileY),
                 motionClock: this._motionClock,
+                getSpeakerTag: (name) => this._speakerTagFor(name),
+                getSnowBucket: () => this.propWinter?.bucket || 0,
                 // VB-15 — _beginAgentGateArrival places it below.
                 deferInitialTarget: true,
             });
@@ -7503,6 +7507,26 @@ export class IsometricRenderer {
             : sprite.y;
         sprite.bubbleAnchorDy = THOUGHT_LEADER_TIP;
         return true;
+    }
+
+    // EF-4 — the speaker tag a displaced head carries, told apart across the
+    // live roster (ThoughtColumn.speakerTagsFor). The names are re-read at
+    // most once a second and the table rebuilt only when one came, went or
+    // changed, so a tag holds while the roster holds.
+    _speakerTagFor(name) {
+        const now = Date.now();
+        const table = this._speakerTags || (this._speakerTags = { checkedAt: -Infinity, signature: null, tags: new Map() });
+        if (!(now - table.checkedAt < 1000)) {
+            table.checkedAt = now;
+            const names = [];
+            for (const sprite of this.agentSprites.values()) names.push(sprite.agent?.name || sprite.agent?.displayName || '');
+            const signature = names.join('\n');
+            if (signature !== table.signature) {
+                table.signature = signature;
+                table.tags = speakerTagsFor(names);
+            }
+        }
+        return table.tags.get(name) ?? speakerTagFor(name);
     }
 
     _layoutThoughtColumns(sprite) {

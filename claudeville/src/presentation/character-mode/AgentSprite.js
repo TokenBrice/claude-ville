@@ -42,9 +42,10 @@ import {
     identityLabelTop,
     measureLabelText,
     paintOutlinedText,
+    paintThoughtPlate,
     snapScreenOrigin,
 } from './WorldLabelKit.js';
-import { Compositor, agentPaletteVariant, bakeSpriteOutline, resolveHeadAccessory } from './Compositor.js';
+import { Compositor, agentPaletteVariant, bakeSpriteOutline, resolveHeadAccessory, snowCapTexels } from './Compositor.js';
 import { fillPixelEllipse } from './PixelShapes.js';
 import {
     drawGroundMarks,
@@ -235,6 +236,13 @@ const GROUND_SIT_CLIPPED = new Set([
 // The rate-limited frost tint: the body's own silhouette in cold slate, laid
 // over it at this alpha (`_getFrozenTintCell`), on every backend (VQ-9).
 const FROZEN_TINT_ALPHA = 0.38;
+// EF-6 — snow on the still: how long a body stands still in lying snow before
+// its hat and shoulders hold a course of it, from which zoom that course
+// shows, and how it lights on the resident path (matte as cloth, so it never
+// wears the sheen of plate).
+const SNOW_STILL_MS = 6 * 60 * 1000;
+const SNOW_CAP_MIN_ZOOM = 2;
+const SNOW_CAP_MATERIAL = materialClassId('fabric');
 const QUEUE_PLACE = Object.freeze({ type: 'command', commandQueue: true, visitTiles: Object.freeze([]) });
 // W4.4 / W4.8 — a scenic point as a place (the renderer's scenic shape): the
 // harbour quay an errand or a wind-down walks to.
@@ -1143,6 +1151,8 @@ export class AgentSprite {
         getRoutingContext = null,
         getTileType = null,
         motionClock = null,
+        getSpeakerTag = null,
+        getSnowBucket = null,
         // VB-15 — the renderer places a new body itself (the gate or Portal
         // arrival), which drops any route picked here; it picks from there.
         deferInitialTarget = false,
@@ -1305,6 +1315,11 @@ export class AgentSprite {
         // AG-5 — this lead's first live child observed waiting on the
         // operator or errored (its sprite), else null (_risenForChild).
         this.getBlockedChild = typeof getBlockedChild === 'function' ? getBlockedChild : null;
+        // EF-4 — the renderer's roster-aware speaker tag for a name.
+        this.getSpeakerTag = typeof getSpeakerTag === 'function' ? getSpeakerTag : null;
+        // EF-6 — the village's C-W2 snow bucket (0 bare, 1–4 lying snow).
+        this.getSnowBucket = typeof getSnowBucket === 'function' ? getSnowBucket : null;
+        this._stillSince = null;
         this._risenFacing = false;
         this._subagentWait = null;
         // W4.3 / W4.4 / W4.8 — the living-crowd routine (_advanceCrowdRoutine).
@@ -3275,6 +3290,7 @@ export class AgentSprite {
             return;
         }
         this._departedResting = false;
+        this._trackStillness();
         const frameScale = Math.max(0, Math.min(3, dt / 16));
         this.statusAnim += 0.05 * this.motionScale * frameScale;
         this.bumpFlash = Math.max(0, this.bumpFlash - 0.08 * frameScale);
@@ -4632,6 +4648,25 @@ export class AgentSprite {
         }
         this._frostTint = frost;
         if (frozen && canvasBody) this._drawFrozenTint(ctx, bodyCell, dx, dy, poseSource);
+        // EF-6 — the snow course rides the cell it rests on: blitted here,
+        // under the front gear, on Canvas; one resident record over the body
+        // (`_snowCapRecord`) on the GPU path.
+        let snow = null;
+        if (this._snowSettled(zoom)) {
+            snow = this._snowCapState ||= {};
+            snow.cell = bodyCell;
+            snow.source = poseSource;
+            snow.dx = dx;
+            snow.dy = dy;
+            snow.identity = identity;
+            snow.frameGeometry = frameGeometry;
+            snow.frame = this._gpuFrameRecord;
+            if (canvasBody) {
+                const stamp = this._snowCapCell(bodyCell, poseSource);
+                if (stamp) ctx.drawImage(stamp, dx + stamp.__cvSnowX, dy + stamp.__cvSnowY);
+            }
+        }
+        this._snowCap = snow;
         if (canvasBody && !sheathed) this._drawCodexEquipment(ctx, identity, frameGeometry, 'front');
         // 7.1 — the stone seat's front faces over the sitter's legs; 7.2 — the
         // petitioner's floor candle; the Tavern patron's tankard. All after
@@ -5132,15 +5167,18 @@ export class AgentSprite {
     getGpuWorldRecords() {
         const records = this.gpuOverlayRenderer.getRecords();
         const frost = this._frostTintRecord();
+        const snow = this._snowCapRecord();
         const candle = this._queueCandleRecord();
         const tankard = this._tankardRecord();
         const stones = this._gpuFrameRecord ? this._seatStoneStamps() : null;
-        if (!stones && !candle && !tankard && !frost) return records;
+        if (!stones && !candle && !tankard && !frost && !snow) return records;
         // 7.1 — the stone seat's top face paints before the body, its front
         // faces after it (record order is paint order within the body slot);
-        // the frost tint lies on the body itself, before either.
+        // the frost tint and the snow course lie on the body itself, before
+        // either.
         const out = stones ? [this._seatStoneRecord(stones.back, 'back'), ...records] : [...records];
         if (frost) out.push(frost);
+        if (snow) out.push(snow);
         if (stones) out.push(this._seatStoneRecord(stones.front, 'front'));
         if (candle) out.push(candle);
         if (tankard) out.push(tankard);
@@ -5431,6 +5469,114 @@ export class AgentSprite {
         this._frozenTintCellCache.set(key, canvas);
         this._updatePrivateDerivedEstimate();
         return canvas;
+    }
+
+    // EF-6 — the body's own stillness: since when it has stood in one place.
+    // A step, or a relocation (reduced motion moves without walking), starts
+    // it over.
+    _trackStillness() {
+        if (this.moving || this.x !== this._stillX || this.y !== this._stillY) {
+            this._stillSince = null;
+            this._stillX = this.x;
+            this._stillY = this.y;
+        } else if (this._stillSince == null) {
+            this._stillSince = Date.now();
+        }
+    }
+
+    // EF-6 — snow on the still: a body that has stood in one place for
+    // SNOW_STILL_MS while snow lies in the village (the C-W2 bucket the flora
+    // props and walls carry) holds one course of it on its hat and shoulders,
+    // gone the moment it moves. Weather and the body's own stillness only,
+    // never its status, so it reads as weather rather than a state. A detail
+    // from SNOW_CAP_MIN_ZOOM: the overview shows the body as it is.
+    _snowSettled(zoom) {
+        return this._stillSince != null
+            && zoom >= SNOW_CAP_MIN_ZOOM
+            && Date.now() - this._stillSince >= SNOW_STILL_MS
+            && (this.getSnowBucket?.() || 0) > 0
+            && !this._onOpenFloor
+            && !departedTableau(this);
+    }
+
+    // EF-6 — one body cell's snow course (Compositor.snowCapTexels) as a
+    // stamp cropped to its texels, `__cvSnowX/Y` its offset in the cell; null
+    // when the cell has no level top. Cached with the frost tint cells, so a
+    // sheet change or a release drops both. `gear` (a resident body whose
+    // sampled sheet bakes its front gear in) clears that gear's texels, as the
+    // Canvas draws the gear over the snow.
+    _snowCapCell(cell, source = null, gear = null) {
+        const sheet = source || this.spriteCanvas;
+        if (!sheet) return null;
+        const key = `snow:${source ? 'strip' : 'base'}:${cell.sx},${cell.sy},${cell.sw},${cell.sh}${gear ? ':gear' : ''}`;
+        const cached = this._frozenTintCellCache.get(key);
+        if (cached !== undefined) return cached;
+        const scratch = document.createElement('canvas');
+        scratch.width = cell.sw;
+        scratch.height = cell.sh;
+        const scratchCtx = scratch.getContext('2d', { willReadFrequently: true });
+        scratchCtx.imageSmoothingEnabled = false;
+        scratchCtx.drawImage(sheet, cell.sx, cell.sy, cell.sw, cell.sh, 0, 0, cell.sw, cell.sh);
+        const texels = snowCapTexels(scratchCtx.getImageData(0, 0, cell.sw, cell.sh).data, cell.sw, cell.sh);
+        let stamp = null;
+        if (texels.length) {
+            let minX = cell.sw;
+            let minY = cell.sh;
+            let maxX = 0;
+            let maxY = 0;
+            for (const [x, y] of texels) {
+                minX = Math.min(minX, x);
+                minY = Math.min(minY, y);
+                maxX = Math.max(maxX, x);
+                maxY = Math.max(maxY, y);
+            }
+            stamp = document.createElement('canvas');
+            stamp.width = maxX - minX + 1;
+            stamp.height = maxY - minY + 1;
+            const stampCtx = stamp.getContext('2d');
+            for (const [x, y, color] of texels) {
+                stampCtx.fillStyle = color;
+                stampCtx.fillRect(x - minX, y - minY, 1, 1);
+            }
+            if (gear) {
+                stampCtx.globalCompositeOperation = 'destination-out';
+                this._drawCodexEquipment(stampCtx, gear.identity, { ...gear.frameGeometry, dx: -minX, dy: -minY }, 'front');
+            }
+            stamp.__cvSnowX = minX;
+            stamp.__cvSnowY = minY;
+            stamp.__cvSnowKey = `${this._spriteProfileKey}|${key}`;
+        }
+        this._frozenTintCellCache.set(key, stamp);
+        this._updatePrivateDerivedEstimate();
+        return stamp;
+    }
+
+    // EF-6 — the snow course on the resident path: one record over the body
+    // in its own depth slot, lit as the body is lit, and redrawn on the
+    // body's own pose cadence so it never parts from the hat for a frame.
+    _snowCapRecord() {
+        const snow = this._snowCap;
+        const body = this._gpuFrameRecord;
+        if (!snow || !body || snow.frame !== body) return null;
+        const stamp = this._snowCapCell(snow.cell, snow.source, body.bakedGear ? snow : null);
+        if (!stamp) return null;
+        const record = this._snowGpuRecord || (this._snowGpuRecord = {
+            sx: 0, sy: 0, elevation: 0.52, occluder: 0, emissive: 0, material: SNOW_CAP_MATERIAL,
+        });
+        record.id = `agent:${this.agent?.id}:snow-cap`;
+        record.stableKey = record.id;
+        record.textureKey = `agent-snow:${stamp.__cvSnowKey}`;
+        record.source = stamp;
+        record.sourceWidth = stamp.width;
+        record.sourceHeight = stamp.height;
+        record.sw = record.width = stamp.width;
+        record.sh = record.height = stamp.height;
+        record.x = snow.dx + stamp.__cvSnowX;
+        record.y = snow.dy + stamp.__cvSnowY;
+        record.alpha = body.alpha;
+        record.poseKey = body.poseKey;
+        record.urgentPose = body.urgentPose;
+        return record;
     }
 
     _getCellContentBounds(cell) {
@@ -6764,6 +6910,9 @@ export class AgentSprite {
 
     thoughtSpeakerTag() {
         const name = this.agent?.name || this.agent?.displayName || '';
+        // EF-4 — beside the live roster a fleet's shared words drop away
+        // (lane-01-light → 01L); a lone sprite keeps the first three letters.
+        if (this.getSpeakerTag) return this.getSpeakerTag(name) || '';
         if (name !== this._speakerTagName) {
             this._speakerTagName = name;
             this._speakerTag = speakerTagFor(name);
@@ -6771,71 +6920,27 @@ export class AgentSprite {
         return this._speakerTag || '';
     }
 
-    _thoughtBubblePath(ctx, left, width, top, bottom, radius, tail, tailX) {
-        const right = left + width;
-        const lo = left + radius + THOUGHT_HEAD.tailHalf;
-        const hi = right - radius - THOUGHT_HEAD.tailHalf;
-        const x = Math.max(lo, Math.min(hi, tailX));
-        ctx.beginPath();
-        ctx.moveTo(left + radius, top);
-        ctx.lineTo(right - radius, top);
-        ctx.quadraticCurveTo(right, top, right, top + radius);
-        ctx.lineTo(right, bottom - radius);
-        ctx.quadraticCurveTo(right, bottom, right - radius, bottom);
-        if (tail) {
-            ctx.lineTo(x + THOUGHT_HEAD.tailHalf, bottom);
-            ctx.lineTo(x, bottom + tail);
-            ctx.lineTo(x - THOUGHT_HEAD.tailHalf, bottom);
-        }
-        ctx.lineTo(left + radius, bottom);
-        ctx.quadraticCurveTo(left, bottom, left, bottom - radius);
-        ctx.lineTo(left, top + radius);
-        ctx.quadraticCurveTo(left, top, left + radius, top);
-        ctx.closePath();
-    }
-
     _drawLongWaitClock(ctx, accentColor, tailX = 0) {
         const top = THOUGHT_HEAD.centerY - THOUGHT_HEAD.height / 2;
-        ctx.fillStyle = 'rgba(34, 24, 19, 0.94)';
-        ctx.strokeStyle = accentColor;
-        ctx.lineWidth = THOUGHT_HEAD.stroke;
-        ctx.lineJoin = 'round';
-        this._thoughtBubblePath(ctx, -THOUGHT_CLOCK_WIDTH / 2, THOUGHT_CLOCK_WIDTH, top,
-            top + THOUGHT_HEAD.height, THOUGHT_HEAD.radius, THOUGHT_HEAD.tail, tailX);
-        ctx.fill();
-        ctx.stroke();
-        // 6-line clock glyph: outer ring + two hands.
-        const cy = THOUGHT_HEAD.centerY;
-        const r = 5;
-        ctx.lineWidth = 1.4;
-        ctx.beginPath();
-        ctx.arc(0, cy, r, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.moveTo(0, cy);
-        ctx.lineTo(0, cy - r + 1);
-        ctx.moveTo(0, cy);
-        ctx.lineTo(r - 2, cy);
-        ctx.stroke();
+        paintThoughtPlate(ctx, -THOUGHT_CLOCK_WIDTH / 2, top, THOUGHT_CLOCK_WIDTH, THOUGHT_HEAD.height, {
+            trim: accentColor, tail: THOUGHT_HEAD.tail, tailX,
+        });
+        // The turn-sand hourglass motif, not an anti-aliased clock face.
+        drawOutlinedMotif(ctx, 'turn-sand', -4, Math.round(THOUGHT_HEAD.centerY) - 4, { color: accentColor });
     }
 
     // Head bubble: [repo pennant][speaker tag][line][×N] with the provenance
-    // dot in the trailing corner. The stroke keeps the model trim; nothing in
-    // it is a status hue.
+    // dot in the trailing corner. The trim ring keeps the model trim; nothing
+    // in it is a status hue.
     _drawThoughtHead(ctx, column, head, accentColor, tailX, repoAccent, tag) {
         const left = -column.headWidth / 2;
         const top = column.headTop;
         const cy = THOUGHT_HEAD.centerY;
-        ctx.fillStyle = 'rgba(34, 24, 19, 0.94)';
-        ctx.strokeStyle = accentColor;
-        ctx.lineWidth = THOUGHT_HEAD.stroke;
-        ctx.lineJoin = 'round';
-        // Tailless for anything that is not the model's own quotable words:
-        // long-form reasoning excerpts must never wear speech styling.
-        this._thoughtBubblePath(ctx, left, column.headWidth, top, column.headBottom,
-            THOUGHT_HEAD.radius, column.tail, tailX);
-        ctx.fill();
-        ctx.stroke();
+        // Reasoning excerpts never wear speech styling: they trail thought
+        // puffs where a quote hangs its notch.
+        paintThoughtPlate(ctx, left, top, column.headWidth, column.headBottom - top, {
+            trim: accentColor, tail: column.puffs ? 0 : column.tail, tailX, puffs: column.puffs,
+        });
 
         const x0 = Math.round(left);
         if (repoAccent) {
@@ -6889,17 +6994,9 @@ export class AgentSprite {
             const layout = this._bubbleLayout(ctx, entry.text, textMax, true);
             ctx.save();
             ctx.globalAlpha *= i === 0 ? 0.74 : 0.56;
-            ctx.fillStyle = 'rgba(24, 18, 14, 0.88)';
-            ctx.strokeStyle = entry.accent || this._providerTrimColor();
-            ctx.lineWidth = THOUGHT_HISTORY.stroke;
-            ctx.beginPath();
-            if (ctx.roundRect) {
-                ctx.roundRect(left, cy - THOUGHT_HISTORY.height / 2, width, THOUGHT_HISTORY.height, THOUGHT_HISTORY.radius);
-            } else {
-                ctx.rect(left, cy - THOUGHT_HISTORY.height / 2, width, THOUGHT_HISTORY.height);
-            }
-            ctx.fill();
-            ctx.stroke();
+            paintThoughtPlate(ctx, left, cy - THOUGHT_HISTORY.height / 2, width, THOUGHT_HISTORY.height, {
+                trim: entry.accent || this._providerTrimColor(), fill: '#18120e',
+            });
             ctx.fillStyle = '#d9cbb0';
             this._applyReadableTextShadow(ctx);
             ctx.fillText(layout.displayText, Math.round(left) + THOUGHT_HISTORY.pad, cy, textMax);
@@ -7013,30 +7110,10 @@ export class AgentSprite {
         const bubbleY = -20;
         const w = 30;
         const h = 24;
-        const r = 5;
         this._drawOverlayStamp(ctx, `chat|${accent}`, -18, bubbleY - 15, 36, 36, (ctx) => {
-
-            // Parchment backplate (rounded scroll), with a small downward tail.
-            ctx.fillStyle = 'rgba(34, 24, 19, 0.94)';
-            ctx.strokeStyle = accent;
-            ctx.lineWidth = 1.5;
-            ctx.beginPath();
-            if (ctx.roundRect) {
-                ctx.roundRect(-w / 2, bubbleY - h / 2, w, h, r);
-            } else {
-                ctx.rect(-w / 2, bubbleY - h / 2, w, h);
-            }
-            ctx.fill();
-            ctx.stroke();
-
-            // Tail
-            ctx.fillStyle = 'rgba(34, 24, 19, 0.94)';
-            ctx.beginPath();
-            ctx.moveTo(-3, bubbleY + h / 2 - 1);
-            ctx.lineTo(0, bubbleY + h / 2 + 6);
-            ctx.lineTo(3, bubbleY + h / 2 - 1);
-            ctx.fill();
-
+            // EF-1 — the thought plate's carved board with its speech notch,
+            // so a conversation wears the same pixel cut as every thought.
+            paintThoughtPlate(ctx, -w / 2, bubbleY - h / 2, w, h, { trim: accent, tail: THOUGHT_HEAD.tail });
             drawEventShape(ctx, 'message-scroll', -8, bubbleY - 8, 1, accent);
         });
 
