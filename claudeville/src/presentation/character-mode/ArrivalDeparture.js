@@ -786,9 +786,10 @@ export class ArrivalDepartureController {
             });
         };
         for (const departure of this.departures.values()) {
-            const column = departureFrame(now - departure.startedAt).column;
+            const age = now - departure.startedAt;
+            const column = departureFrame(age).column;
             if (!column) {
-                glow(this._residueOf(departure));
+                if (age >= DEPARTURE.active) glow(this._residueOf(departure));
                 continue;
             }
             sources.push({
@@ -865,9 +866,10 @@ export class ArrivalDepartureController {
     // EF-2 — staged like the arrival (V8); off-screen it is an edge plate.
     // The body's marks draw only where it stood (`place`), never up a column.
     _drawDeparture(ctx, departure, now) {
-        const frame = departureFrame(now - departure.startedAt);
+        const age = now - departure.startedAt;
+        const frame = departureFrame(age);
         if (frame.phase === 'done') {
-            drawDepartureSigil(ctx, this._residueOf(departure), { now, motionScale: this.motionScale });
+            if (age >= DEPARTURE.active) drawDepartureSigil(ctx, this._residueOf(departure), { now, motionScale: this.motionScale });
             return;
         }
         const anchor = resolveMomentAnchor(departure.point, {

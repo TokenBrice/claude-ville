@@ -118,6 +118,13 @@ test('a column that sinks between update and render hands over with no dropped f
     assert.ok(ctx.calls.some(call => call[0] === 'fill' && call[1] === MAGIC_RAMP[0]), 'the sigil, not a blank frame');
     controller.update(1_820);
     assert.equal(`departure:${controller.sigils[0].id}`, light[0].id, 'the same light carries on');
+    // A column that has not begun (an earlier clock) lays nothing early.
+    const early = new ArrivalDepartureController();
+    early.beginDeparture(AGENT, body(), { now: 1_000 });
+    const before = recorder();
+    early.draw(before, { now: 999 });
+    assert.deepEqual(before.calls.filter(call => call[0] === 'rect'), []);
+    assert.deepEqual(departureLights(early, 999), []);
 });
 
 test('reduced motion keeps the sigil only, unlit', () => {
