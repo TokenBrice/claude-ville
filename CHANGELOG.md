@@ -2,6 +2,53 @@
 
 ---
 
+## v0.61.0 — *The Turning Year* · Nov 03, 2026
+
+The village keeps your real day and season, the sea carries the sky's light, and one wind moves the whole island.
+
+- **The real day.**
+  - The sun rises and sets on your timezone's real hours, DST included, and the lamps catch as your real dusk falls.
+    - For Europe/Belgrade on 3 November, the sun sets at 16:24 instead of 19:46.
+    - Nothing jumps 55 minutes overnight on 1 September or 1 December.
+    - No location access: the city comes from your timezone.
+  - The moon keeps its hours. It rises and sets with its phase, and its light changes smoothly through the night.
+  - Golden-hours checks are pinned by grade key instead of by clock hour.
+- **The turning woods.**
+  - The woods turn and fall week by week. Birches and poplars go first and oaks last, and young oaks keep a few russet leaves into December. Spring runs it back, and the litter deepens as the crowns empty.
+  - Clear mornings from November to February start white with frost. It melts from the sunny side as the sun climbs and lingers in the shade of walls.
+  - Leaves, petals and snow lean with the wind, and leaves that land on the river float downstream.
+  - In lying snow, a villager that has stood still a long while gathers a thin white line on its hat and shoulders (zoom 2 and closer).
+- **The sea carries the sky.** At the default framing the sky is off-frame, so the sea is where its light shows.
+  - The sun's road narrows and fades as the sun sets. It no longer turns into a white noon sparkle after sunset, and fog veils it.
+  - Every moonlit night lays a moon road on the sea: faint under a crescent, bright under a full moon.
+  - The golden-hour sea turns violet-blue under the amber island. Overcast reads pearl, with a pewter sea.
+  - Dawn fog lies on the water and thins over land, and the thin overcast mist no longer blots the open sea.
+  - Rare skies come down to the far sea: an after-rain bow about five times a year, and an aurora sheen about seven nights a year.
+  - On calm, moonless summer nights the breaking surf glows faintly along the beach.
+- **One wind.**
+  - The lake lies glassy on still days. In a breeze, dark ruffled patches slide downwind across it and break its reflections.
+  - The surf peels along the shore from the south point instead of the whole coast pulsing together, and lagoon banks lap at half reach.
+  - Reeds bow as a gust crosses, gulls and herons face into a gale, and livestock turn tail to the rain.
+- **Landmarks and framing.**
+  - AMBIENT opens on the whole island before it moves in on the busiest group.
+  - No automatic shot crops the Belfry's glasses, the windmill or the chapel.
+  - The Belfry and the windmill take the buildings' ink outline and slate roofs, and the windmill's sails turn in eight frames.
+  - The Portal rests dim until an agent uses web tools.
+  - The Belfry's sand runs while that account is spending.
+  - The wayside chapel is redrawn in the Tavern family at the same footprint: a small bronze bell in an open stone cote, even slate courses, and no chimney.
+- **Villagers.**
+  - Thoughts sit on pixel-cut plates in the building plaques' family, and reasoning trails thought puffs.
+  - Speaker tags tell a fleet apart: names that share a prefix read `01L`, `02I`, `03C` and `04F` instead of `LAN`.
+  - A departing villager leaves through a violet column that mirrors its arrival, and the column's sigil carries the light that follows.
+  - A mend rings: one resolving step on the commit mallet in the Town band, and a caption in Signals.
+- **Tooling.**
+  - `LookStrengths.js` holds one strength per new look. 0 is the previous frame exactly.
+  - `scripts/sprites/outline-landmarks.mjs` checks the isle landmarks' ink line in `world:validate-buildings`.
+
+Validation: `validate:full`, `world:golden-hours` (WebGPU, WebGL2 and Canvas), `verify:render` and the `smoke:v3-truth` static and motion arms pass. `smoke:webgpu-parity` fails the same 11 WebGPU-only cases of 36 as v0.60.3. The v3 truth arm's 14 wildlife-timer drifts and `audio:probe`'s real-time `transport` budget fail on v0.60.3 as well.
+
+---
+
 ## v0.60.3 — *The Unveiled Glass* · Oct 29, 2026
 
 The belfry's Codex glass no longer hides under its cloth because your newest Codex session never got past its first prompt.
