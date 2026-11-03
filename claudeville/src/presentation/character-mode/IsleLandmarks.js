@@ -27,26 +27,42 @@
 //   and repaints the cache once (static band). A rise of a known level is a
 //   window reset: that glass shows the C4 cream frame for 150 ms, then its
 //   sand climbs one level per 150 ms step to the new reading (at most 750 ms,
-//   the `medium` band); reduced motion swaps at once. Hovering it reads out
-//   both accounts' windows (`belfryTooltip`). It never reads a villager.
+//   the `medium` band); reduced motion swaps at once. MB-5 — while an
+//   account spends (its reading rose within the last 10 minutes,
+//   `belfryDraining`), its glass's one-texel sand stream steps down through
+//   BELFRY_STREAM_PHASES baked phases at 2 fps (the `slow` band), each step
+//   one repaint of the cache; reduced motion keeps today's static stream.
+//   Hovering it reads out both accounts' windows (`belfryTooltip`). It never
+//   reads a villager.
 
 import { StaticPropSprite } from './StaticPropDrawables.js';
 import { SpriteRenderer } from './SpriteRenderer.js';
 import { baseWindX, windAt } from './Wind.js';
 import { DISTRICT_PROPS } from '../../config/scenery.js';
-import { BELFRY_ACCOUNTS, belfryGlassKey, belfryGlasses, belfryTooltip } from './BelfryQuota.js';
+import {
+    BELFRY_ACCOUNTS,
+    BELFRY_LEVELS,
+    belfryDrainStep,
+    belfryDraining,
+    belfryGlassKey,
+    belfryGlasses,
+    belfryTooltip,
+} from './BelfryQuota.js';
 
 export const WINDMILL_SAIL_HUB = Object.freeze([50, 86]); // windmill base-local px
 // The belfry's glass strip (scripts/sprites/bake-hourglass-belfry.mjs): one
 // cell per state per glass, Claude's glass first, each laid on its glass at
-// its base-local origin.
+// its base-local origin; then (MB-5) the running-stream cells, per glass and
+// per level l1–l5, BELFRY_STREAM_PHASES phases each (`belfryStreamCell`).
 export const BELFRY_GLASS_STATES = Object.freeze(['l0', 'l1', 'l2', 'l3', 'l4', 'l5', 'limit', 'unknown', 'peak']);
+export const BELFRY_STREAM_PHASES = 3;
 export const BELFRY_GLASS_FRAME = Object.freeze([20, 38]);
 export const BELFRY_GLASS_ORIGINS = Object.freeze({ claude: Object.freeze([38, 95]), codex: Object.freeze([70, 95]) });
 const BELFRY_ID = 'prop.hourglassBelfry';
 const BELFRY_GLASS_ID = 'prop.hourglassBelfryGlass';
 const BELFRY_PEAK_MS = 150;
 const BELFRY_STEP_MS = 150;
+const BELFRY_STREAM_STEP_MS = 500; // 2 fps
 const SAIL_FRAMES = 8;
 const SAIL_FRAME_PX = 112;
 const SAIL_STEP_MS = 125;
@@ -155,6 +171,13 @@ function keyLevel(key) {
     return /^l\d$/.test(key) ? Number(key.slice(1)) : null;
 }
 
+/** MB-5 — the strip cell of a glass's running stream: after every state cell, per glass, level and phase. */
+export function belfryStreamCell(account, level, phase) {
+    const glass = BELFRY_ACCOUNTS.indexOf(account);
+    return BELFRY_ACCOUNTS.length * BELFRY_GLASS_STATES.length
+        + (glass * BELFRY_LEVELS + level - 1) * BELFRY_STREAM_PHASES + phase;
+}
+
 class BelfrySprite extends StaticPropSprite {
     constructor(host, prop, glasses) {
         super({
@@ -170,7 +193,24 @@ class BelfrySprite extends StaticPropSprite {
         this._targets = { claude: 'unknown', codex: 'unknown' };
         this._moments = { claude: null, codex: null };
         this._shown = { claude: 'unknown', codex: 'unknown' };
+        this._shownPhase = { claude: null, codex: null };
+        this._drain = null;
         this.setGlasses(glasses);
+    }
+
+    /** MB-5 — the drain record (`belfryDrainStep`) the streams run on. */
+    setDrain(drain) {
+        this._drain = drain || null;
+    }
+
+    /**
+     * MB-5 — a glass's running-stream phase now, or null: its account drains,
+     * sand remains (`l1`–`l5`, no reset moment playing) and motion is on.
+     */
+    streamPhase(account, now = Date.now()) {
+        if (!((this.host.motionScale ?? 1) > 0) || this._moments[account]) return null;
+        if (!(keyLevel(this._targets[account]) > 0) || !belfryDraining(this._drain, account, now)) return null;
+        return Math.floor((this.host.motionTimeMs || 0) / BELFRY_STREAM_STEP_MS) % BELFRY_STREAM_PHASES;
     }
 
     /**
@@ -227,8 +267,10 @@ class BelfrySprite extends StaticPropSprite {
         let changed = false;
         for (const account of BELFRY_ACCOUNTS) {
             const key = this.glassKey(account);
-            if (key === this._shown[account]) continue;
+            const phase = this.streamPhase(account);
+            if (key === this._shown[account] && phase === this._shownPhase[account]) continue;
             this._shown[account] = key;
+            this._shownPhase[account] = phase;
             changed = true;
         }
         if (changed && this._cacheCanvas) this.invalidateCache();
@@ -244,7 +286,10 @@ class BelfrySprite extends StaticPropSprite {
         const [ax, ay] = host.assets.getAnchor(this.id);
         const [fw, fh] = BELFRY_GLASS_FRAME;
         BELFRY_ACCOUNTS.forEach((account, index) => {
-            const cell = index * BELFRY_GLASS_STATES.length + BELFRY_GLASS_STATES.indexOf(this._shown[account]);
+            const phase = this._shownPhase[account];
+            const cell = phase === null
+                ? index * BELFRY_GLASS_STATES.length + BELFRY_GLASS_STATES.indexOf(this._shown[account])
+                : belfryStreamCell(account, keyLevel(this._shown[account]), phase);
             const [ox, oy] = BELFRY_GLASS_ORIGINS[account];
             ctx.drawImage(glass, cell * fw, 0, fw, fh, Math.round(x) - ax + ox, Math.round(y) - ay + oy, fw, fh);
         });
@@ -294,7 +339,7 @@ export class IsleLandmarks {
     constructor(host) {
         this.host = host;
         this._chapel = { lit: false, paintedLight: false, sprite: null, prop: null };
-        this._belfry = { sprite: null, usage: null, glasses: belfryGlasses(null), opaque: null };
+        this._belfry = { sprite: null, usage: null, glasses: belfryGlasses(null), drain: null, opaque: null };
     }
 
     /** One sorted sprite per landmark placement; built with the district props. */
@@ -304,6 +349,7 @@ export class IsleLandmarks {
             if (prop.id === 'prop.windmill') out.push(new WindmillSprite(this.host, prop));
             else if (prop.id === BELFRY_ID) {
                 this._belfry.sprite = new BelfrySprite(this.host, prop, this._belfry.glasses);
+                this._belfry.sprite.setDrain(this._belfry.drain);
                 out.push(this._belfry.sprite);
             } else if (prop.id === 'prop.waysideChapel') {
                 this._chapel.prop = prop;
@@ -325,11 +371,13 @@ export class IsleLandmarks {
         chapel.sprite?.invalidateCache();
     }
 
-    /** The account quota from `/api/usage` (IsometricRenderer.setQuotaState). */
-    setUsage(usage) {
+    /** The account quota from `/api/usage` (IsometricRenderer.setQuotaState), received at `now`. */
+    setUsage(usage, now = Date.now()) {
         const belfry = this._belfry;
         belfry.usage = usage || null;
         belfry.glasses = belfryGlasses(belfry.usage);
+        belfry.drain = belfryDrainStep(belfry.drain, belfry.glasses, now);
+        belfry.sprite?.setDrain(belfry.drain);
         // A still world (reduced motion) skips idle paints: a new reading asks for one.
         if (belfry.sprite?.setGlasses(belfry.glasses)) this.host._invalidateIdleFrame?.();
     }

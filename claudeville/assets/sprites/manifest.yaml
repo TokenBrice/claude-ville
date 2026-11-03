@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-11-03-portal-slumber"
+  assetVersion: "2026-11-03-belfry-streams"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -2723,17 +2723,20 @@ props:
   # The belfry's glasses: 9 states x 2 glasses, 20 x 38 each
   # (BELFRY_GLASS_STATES / _FRAME / _ORIGINS in IsleLandmarks.js): sand levels
   # l0-l5, `limit` (the lavender cord), `unknown` (the shroud) and `peak` (the
-  # reset moment's cream frame), Claude's glass first. Each cell lies on its
-  # glass at its origin; states swap whole, never blend.
+  # reset moment's cream frame), Claude's glass first. Then (MB-5) the running
+  # streams: per glass, per level l1-l5, 3 phases of the level's cell with
+  # every third stream texel left as glass, the gap a row lower each phase
+  # (`belfryStreamCell`), stepped at 2 fps while that account drains. Each
+  # cell lies on its glass at its origin; states swap whole, never blend.
   - id: prop.hourglassBelfryGlass
     tool: procedural
-    width: 360
+    width: 960
     height: 38
-    frames: 18
+    frames: 48
     frameW: 20
     frameH: 38
     anchor: [10, 19]
-    provenance: { item: 'Hourglass Belfry', source: 'scripts/sprites/bake-hourglass-belfry.mjs', generations: 0, generatedAt: '2026-10-28' }
+    provenance: { item: 'Hourglass Belfry', source: 'scripts/sprites/bake-hourglass-belfry.mjs', generations: 0, generatedAt: '2026-10-28', streams: 'MB-5 stream cells (--strip, 2026-11-03)' }
 
   - id: prop.signpost
     tool: map_object

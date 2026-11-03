@@ -2,7 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+    BELFRY_DRAIN_MS,
     BELFRY_LEVELS,
+    belfryDrainStep,
+    belfryDraining,
     belfryGlass,
     belfryGlassKey,
     belfryGlasses,
@@ -70,4 +73,30 @@ test('the hover names both windows, the reset countdowns, credits and the readin
     assert.match(belfryTooltip({ quotaError: { status: 401, at: now } }, now), /sign-in token expired/);
     assert.match(belfryTooltip({ codex: { usedPercent: null, limitReached: false } }, now), /Codex: window reset, no new reading yet/);
     assert.deepEqual(belfryTooltip(null, now).split('\n').slice(1), ['Claude: no quota reading yet.', 'Codex: no quota reading yet.']);
+});
+
+// MB-5 — a glass drains while its account spends: its reading rose within
+// the last 10 minutes. Only `/api/usage` readings feed it.
+test('a glass drains for ten minutes after its reading rises, and a fall or no reading stops it', () => {
+    assert.equal(BELFRY_DRAIN_MS, 10 * 60_000);
+    const read = (claude, codex) => belfryGlasses({
+        quota: { fiveHour: claude, sevenDay: 0 },
+        codex: codex === null ? null : { usedPercent: codex, limitReached: false },
+    });
+    let drain = belfryDrainStep(null, read(0.3, 40), 0);
+    assert.equal(belfryDraining(drain, 'claude', 0), false, 'a first reading is no rise');
+    drain = belfryDrainStep(drain, read(0.32, 40), 1000);
+    assert.equal(belfryDraining(drain, 'claude', 1000), true);
+    assert.equal(belfryDraining(drain, 'codex', 1000), false, 'each account its own');
+    drain = belfryDrainStep(drain, read(0.32, 40), 300_000);
+    assert.equal(belfryDraining(drain, 'claude', 300_000), true, 'an equal reading keeps the rise');
+    assert.equal(belfryDraining(drain, 'claude', 1000 + BELFRY_DRAIN_MS - 1), true);
+    assert.equal(belfryDraining(drain, 'claude', 1000 + BELFRY_DRAIN_MS), false, 'ten minutes on, it stands still');
+    drain = belfryDrainStep(drain, read(0.05, 41), 400_000);
+    assert.equal(belfryDraining(drain, 'claude', 400_000), false, 'a window reset is no spend');
+    assert.equal(belfryDraining(drain, 'codex', 400_000), true);
+    drain = belfryDrainStep(drain, read(0.05, null), 410_000);
+    assert.equal(belfryDraining(drain, 'codex', 410_000), false, 'no reading, no drain');
+    drain = belfryDrainStep(drain, read(0.05, 45), 420_000);
+    assert.equal(belfryDraining(drain, 'codex', 420_000), false, 'the first reading back is no rise');
 });
