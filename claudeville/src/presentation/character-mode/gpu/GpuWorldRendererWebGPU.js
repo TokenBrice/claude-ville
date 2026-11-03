@@ -1209,6 +1209,11 @@ export class GpuWorldRendererWebGPU {
         s.seaSunlit = finite(sea.sunlit, 0);
         // W6.11 — the scene's grass gust course reads the same field.
         s.grassGust = gust ? finite(sea.grassGust, 0) : 0;
+        // BI-1 — still water's paws (the same field) and the knot wind's share.
+        const still = this._stillWater || (this._stillWater = new Float32Array(2));
+        still[0] = gust ? finite(sea.stillPaws, 0) : 0;
+        still[1] = finite(sea.stillShare, 1);
+        s.stillWater = still;
         s.seaGustRect = gust ? this._seaWeather.gustState.rect : ZERO4;
         const energy = sourceEnergyFor(feed.lighting);
         this.sourceEnergy = energy;
@@ -1218,6 +1223,7 @@ export class GpuWorldRendererWebGPU {
         s.waterFx = water.fx;
         s.starlight = water.starlight;
         s.swellDrift = water.swellDrift;
+        s.surfGlow = water.surfGlow;
         s.glint = water.glint;
         s.glintStops = vec3Pair(water.stops);
         // 3.1 / 3.6 — the coast lattice fields (MINIMAL: absent).
