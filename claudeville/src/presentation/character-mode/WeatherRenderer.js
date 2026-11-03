@@ -169,9 +169,21 @@ const FOG_BUCKETS = 8;
 // land with the coast field's ground mask (WorldFrameRenderer
 // `drawGroundFog`). Covered water (docks, bridges) counts as land.
 export const SEA_FRET_LAND_SHARE = 0.4;
+// LA-7 — the thin mist: no fog weather and fog at or under this (every
+// overcast knot carries 0.06–0.10, and a dry overcast lays its own mist).
+// Its lowest-bucket banks read as camouflage blotches on the open sea, not
+// as weather, so with the sea fret on they fade out (gone at strength 1);
+// fog weather, rain (0.12–0.17) and storm keep their banks.
+export const SEA_FRET_THIN_FOG = 0.1;
 
 export function seaFretLandShare() {
     return 1 - (1 - SEA_FRET_LAND_SHARE) * lookStrength('la7');
+}
+
+// The share of the banks a thin mist keeps (1 for real fog).
+export function seaFretMistShare(weather) {
+    const thin = weather?.type !== 'fog' && !(Number(weather?.fog) > SEA_FRET_THIN_FOG);
+    return thin ? 1 - lookStrength('la7') : 1;
 }
 
 // 0.10 — lightning. One schedule on the one motion clock drives the bolt
@@ -466,7 +478,7 @@ export class WeatherRenderer {
         });
         if (!weatherEmbellishmentAllowed(level)) return null;
         const legibility = weatherLegibilityGate(weather, atmosphere);
-        const strength = Math.round(clamp(fogBankIntensity(weather, legibility), 0, 1) * FOG_BUCKETS);
+        const strength = Math.round(clamp(fogBankIntensity(weather, legibility) * seaFretMistShare(weather), 0, 1) * FOG_BUCKETS);
         if (strength <= 0) return null;
         const key = `ground-fog-${strength}`;
         const variants = this._fogVariants ||= {};
