@@ -5,7 +5,7 @@ import { cueCaptionShown, cueStratum } from '../../claudeville/src/presentation/
 
 const SIGNALS = ['summons', 'distress', 'limit', 'reminder', 'answered'];
 const EVENTS = [
-    'turnDone', 'subagentReturn', 'toolFailed', 'commit', 'push', 'release', 'pushFailed', 'dispatch',
+    'turnDone', 'subagentReturn', 'toolFailed', 'commit', 'mended', 'push', 'release', 'pushFailed', 'dispatch',
     'arrival', 'departure', 'recovery', 'council',
 ];
 const SCENERY = ['hourBell', 'aurora', 'linkLost', 'linkRestored'];

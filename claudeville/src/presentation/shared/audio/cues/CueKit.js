@@ -60,6 +60,7 @@ const COOLDOWNS_MS = {
     turnDone: 1500,
     subagentReturn: 1500,
     commit: 1500,
+    mended: 1500,
     dispatch: 3000,
     toolFailed: 3000,
     pushFailed: 3000,
@@ -86,6 +87,7 @@ const STRATUM_BY_KIND = Object.freeze({
     toolFailed: 'outcome',
     pushFailed: 'outcome',
     commit: 'outcome',
+    mended: 'outcome',
     push: 'outcome',
     release: 'outcome',
     dispatch: 'outcome',
@@ -157,6 +159,7 @@ const LANE_BY_KIND = Object.freeze({
     toolFailed: CUE_LANES.OUTCOME,
     pushFailed: CUE_LANES.OUTCOME,
     commit: CUE_LANES.OUTCOME,
+    mended: CUE_LANES.OUTCOME,
     push: CUE_LANES.OUTCOME,
     release: CUE_LANES.OUTCOME,
     dispatch: CUE_LANES.OUTCOME,
@@ -235,6 +238,7 @@ const VOICE_LEVEL_DB = Object.freeze({
     toolFailed: -4,
     pushFailed: -4,
     commit: -4,
+    mended: -4,
     push: -8,
     release: -9,
     turnDone: -1.8,
@@ -323,6 +327,7 @@ const CUE_LABELS = {
     toolFailed: 'Command failed',
     pushFailed: 'Push failed',
     commit: 'Committed',
+    mended: 'Mended',
     push: 'Pushed',
     release: 'Released',
     dispatch: 'Sub-agents dispatched',
@@ -379,6 +384,8 @@ const ERROR_GRACE_SEC = 0.025;
 const ANSWERED_SEMI = 0;
 // Outcomes: mode-neutral A and E (open fifths), the same by day and night.
 const OUTCOME_SEMIS = Object.freeze({ E4: -5, A3: -12, A5: 12, E6: 19, A6: 24 });
+// The mend's step over its bar (semitones): a whole tone, else a minor third.
+const MEND_LEADS = Object.freeze([2, 3]);
 // The hour count: the great bell (A2) stands for six, singles on A3.
 const GREAT_BELL_SEMI = -24;
 const HOUR_STRIKE_SEMI = -12;
@@ -741,6 +748,21 @@ export class CueKit {
             case 'commit':
                 strike(0, P.fixed(OUTCOME_SEMIS.A5, 0), material('glock'), { gain: G.glock * 0.9, Dmul: 1.7, lp: 2000, soft: true });
                 break;
+            // EF-5 — a mend is the commit's bar reached by one resolving step
+            // on the same soft mallet: a lighter strike a whole tone above the
+            // bar, then the bar left to ring. Over the band the bar takes its
+            // clash guard and the step stands just above it (a minor third
+            // where the chord would clash with the whole tone), so the pair
+            // never folds into one repeated pitch, the ship's bell's figure.
+            case 'mended': {
+                const glock = material('glock');
+                const barHz = P.fixed(OUTCOME_SEMIS.A5, 1);
+                const bar = Math.round(12 * Math.log2(barHz / noteHz(0)));
+                const lead = MEND_LEADS.find(up => !P.colourClashes(bar + up, at(0))) ?? MEND_LEADS[0];
+                strike(0, P.fixed(bar + lead, 0), glock, { gain: G.glock * 0.6, Dmul: 0.9, lp: 2000, soft: true });
+                strike(1, barHz, glock, { gain: G.glock * 0.9, Dmul: 1.7, lp: 2000, soft: true });
+                break;
+            }
             case 'push': {
                 const glock = material('glock');
                 strike(0, P.fixed(OUTCOME_SEMIS.A5, 0), glock, { gain: G.glock });

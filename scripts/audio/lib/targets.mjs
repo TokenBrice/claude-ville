@@ -44,7 +44,7 @@ export function buildTargets() {
     for (const level of [2, 3, 4]) t.push(cue(`cue-reminder-L${level}`, 'reminder', { level, family: 'needsYou', count: 1, oldestMs: 6 * 60000 }, { seconds: 6 }));
     t.push(cue('cue-reminder-errors-L3', 'reminder', { level: 3, family: 'errors', count: 1, oldestMs: 6 * 60000 }, { seconds: 6 }));
     t.push(cue('cue-answered', 'answered', {}, { seconds: 3 }));
-    for (const kind of ['turnDone', 'subagentReturn', 'toolFailed', 'commit', 'push', 'pushFailed']) t.push(cue(`cue-${kind}`, kind, { count: 1 }, { seconds: 4 }));
+    for (const kind of ['turnDone', 'subagentReturn', 'toolFailed', 'commit', 'mended', 'push', 'pushFailed']) t.push(cue(`cue-${kind}`, kind, { count: 1 }, { seconds: 4 }));
     t.push(cue('cue-dispatch', 'dispatch', { count: 3 }, { seconds: 4 }));
     t.push(cue('cue-release', 'release', {}, { seconds: 7 }));
     t.push(cue('cue-linkLost', 'linkLost', {}, { seconds: 4 }));
@@ -57,7 +57,7 @@ export function buildTargets() {
     // One gallery strip with every kind, 4.5 s apart, for side-by-side reading.
     const gallery = [
         'arrival', 'departure', 'recovery', 'council', 'aurora', 'hourBell', 'distress', 'limit', 'summons', 'reminder', 'answered',
-        'turnDone', 'subagentReturn', 'toolFailed', 'commit', 'push', 'release', 'pushFailed', 'dispatch', 'linkLost', 'linkRestored', 'digest',
+        'turnDone', 'subagentReturn', 'toolFailed', 'commit', 'mended', 'push', 'release', 'pushFailed', 'dispatch', 'linkLost', 'linkRestored', 'digest',
     ];
     t.push({
         name: 'cue-gallery', category: 'cues', method: 'offline', seconds: gallery.length * 4.5 + 3,

@@ -193,6 +193,9 @@ export const VOICE_REGISTRY = Object.freeze({
     'cue.toolFailed': Object.freeze({ nominalLufsM: -38.7, plr: 11.5 }),
     'cue.pushFailed': Object.freeze({ nominalLufsM: -38.7, plr: 11.5 }),
     'cue.commit': Object.freeze({ nominalLufsM: -45.0, plr: 4.8 }),
+    // EF-5: the commit's bar after one lighter step; offline `cue-mended`
+    // against `cue-commit` reads +0.3 LU M max and +1.6 dB sample peak.
+    'cue.mended': Object.freeze({ nominalLufsM: -44.7, plr: 6.1 }),
     'cue.push': Object.freeze({ nominalLufsM: -43.3, plr: 8.0 }),
     'cue.release': Object.freeze({ nominalLufsM: -40.0, plr: 8.5 }),
     'cue.dispatch': Object.freeze({ nominalLufsM: -45.0, plr: 10.1 }),

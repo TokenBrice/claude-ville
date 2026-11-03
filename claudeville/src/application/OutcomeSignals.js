@@ -29,7 +29,7 @@ export const DISPATCH_FRESH_MS = 30_000;
 
 // Held for the window and emitted once with a count; everything else is
 // emitted at once (a release is its own ceremony; a failed push is news now).
-const AGGREGATED_KINDS = new Set(['turnDone', 'subagentReturn', 'toolFailed', 'commit', 'push', 'dispatch']);
+const AGGREGATED_KINDS = new Set(['turnDone', 'subagentReturn', 'toolFailed', 'commit', 'push', 'dispatch', 'mended']);
 // 8.3 — a dispatch or a return carries a comet whose impact waits for its
 // note, so its batch closes this long after its LAST fact (a fan lands inside
 // it), never later than `OUTCOME_AGGREGATE_MS` after its first. With CueKit's
@@ -49,7 +49,10 @@ const TURN_END_STATUSES = new Set([
     AgentStatus.WAITING_ON_USER,
     AgentStatus.COMPLETED,
 ]);
-const VERIFIED_KINDS = new Set(['commit', 'push', 'release']);
+// EF-5 — a mend (the same failing command passing again, D2) is heard in
+// the Town band as the commit's bar reached by one resolving step, and is a
+// caption in Signals.
+const VERIFIED_KINDS = new Set(['commit', 'push', 'release', 'mended']);
 const MEMORY_LIMIT = 256;
 
 function finite(value) {

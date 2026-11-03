@@ -64,6 +64,8 @@ const NOTE_OFFSETS_MS = Object.freeze({
     toolFailed: Object.freeze([0, 110]),
     pushFailed: Object.freeze([0, 110]),
     commit: Object.freeze([0]),
+    // EF-5 — a mend: one resolving step onto the commit's bar.
+    mended: Object.freeze([0, 170]),
     push: Object.freeze([0, 140]),
     release: Object.freeze([0, 120, 240, 360, 720]),
     dispatch: Object.freeze([0]),

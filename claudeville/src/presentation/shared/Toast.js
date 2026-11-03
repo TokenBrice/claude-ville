@@ -38,6 +38,7 @@ const CUE_STRATUM = Object.freeze({
     subagentReturn: 'event',
     toolFailed: 'event',
     commit: 'event',
+    mended: 'event',
     push: 'event',
     release: 'event',
     pushFailed: 'event',
@@ -98,6 +99,7 @@ const CUE_TYPES = Object.freeze({
     toolFailed: 'warning',
     pushFailed: 'warning',
     commit: 'success',
+    mended: 'success',
     push: 'success',
     release: 'success',
     council: 'warning',
@@ -215,6 +217,10 @@ const FACT_CUE_COPY = Object.freeze({
             ? `${cueCount(payload)} commits${into}`
             : `${name || 'An agent'} committed${into}`;
     },
+    // EF-5 — the Chronicle's words for a mend.
+    mended: (payload, name) => (cueCount(payload) > 1
+        ? `${cueCount(payload)} failing commands mended`
+        : `${name || 'An agent'} mended a failing command`),
     push: (payload, name) => {
         const repo = cleanLabel(payload.repo);
         return cueCount(payload) > 1
