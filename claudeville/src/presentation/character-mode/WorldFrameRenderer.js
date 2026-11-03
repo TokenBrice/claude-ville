@@ -30,9 +30,9 @@ import { insertBodyReflectionRecords } from './WaterReflections.js';
 import { drawCanvasAerialHaze, drawResidentBackdropGrade } from './BackdropGrade.js';
 import { castLightingFor, drawTreeCasts, setFrameCastLighting, setFramePointCastLights } from './RakingLight.js';
 import { drawFlashExposure, stormStrikeAt, weatherPressureLevel } from './WeatherRenderer.js';
-import { OCEAN_HORIZON_WORLD_Y } from './CoastBake.js';
+import { COAST_FIELD_FLAGS, OCEAN_HORIZON_WORLD_Y } from './CoastBake.js';
 import { drawOffshoreScenery, isOffshoreRecordId } from './OffshoreScenery.js';
-import { groundMaskFor, poolMaskRect, poolReceiverMask } from './CanvasPoolMask.js';
+import { poolMaskRect, poolReceiverMask } from './CanvasPoolMask.js';
 import { drawCanvasWaterColumns } from './CanvasWaterState.js';
 import { drawCanvasEmitterCuts, drawMineCrystalGlow } from './EmitterCuts.js';
 import { sourceEnergyFor } from './AtmosphereState.js';
@@ -1816,12 +1816,45 @@ function drawGroundFog(ctx, renderer, atmosphere, viewport) {
     ctx.restore();
 }
 
+// LA-7 — the sea fret's land on the coast field's 2-px cells, the resident
+// `seaFretAlpha` rule: every covered cell (dock, deck, bridge span), and
+// every cell on the map grid without the coast flag `water`. Off the grid
+// is all open sea (the shelf's deep texels are left clear for the outer
+// pass, unclassified, their signed distance clamped), and so is outside
+// the field.
+let fretLandFields = null;
+let fretLandCanvas = null;
+function seaFretLandMask(fields) {
+    if (fretLandFields === fields && fretLandCanvas) return fretLandCanvas;
+    const { cols, rows, coastField } = fields;
+    const canvas = fretLandCanvas || document.createElement('canvas');
+    canvas.width = cols;
+    canvas.height = rows;
+    const mctx = canvas.getContext('2d');
+    const image = mctx.createImageData(cols, rows);
+    for (let cell = 0; cell < cols * rows; cell++) {
+        const flags = coastField[cell * 2 + 1];
+        if (!(flags & COAST_FIELD_FLAGS.covered)) {
+            if (flags & COAST_FIELD_FLAGS.water) continue;
+            const wx = fields.x + (cell % cols) * 2 + 1;
+            const wy = fields.y + Math.floor(cell / cols) * 2 + 1;
+            const u = wy / TILE_HEIGHT + wx / TILE_WIDTH;
+            const v = wy / TILE_HEIGHT - wx / TILE_WIDTH;
+            if (u < -0.5 || v < -0.5 || u > MAP_SIZE - 0.5 || v > MAP_SIZE - 0.5) continue;
+        }
+        image.data[cell * 4 + 3] = 255;
+    }
+    mctx.putImageData(image, 0, 0);
+    fretLandFields = fields;
+    fretLandCanvas = canvas;
+    return canvas;
+}
+
 // LA-7 — the Canvas twin of the resident `seaFretAlpha`: the banks over the
-// span go into one reused world-px canvas, and the coast field's ground mask
-// (land and covered water, CanvasPoolMask `groundMaskFor`) cuts them to
-// `landShare` over land with one `destination-out`; the sea off the lattice
-// keeps the full banks. Null at share 1 (today's single fill) or before the
-// coast bake.
+// span go into one reused world-px canvas, and the land mask cuts them to
+// `landShare` over land with one `destination-out`; water and the sea off
+// the lattice keep the full banks. Null at share 1 (today's single fill) or
+// before the coast bake.
 function seaFretBanks(renderer, layer, span) {
     const fields = renderer._coastBake?.waterFields;
     if (!(layer.landShare < 1) || !fields?.coastField || typeof document === 'undefined') return null;
@@ -1851,7 +1884,7 @@ function seaFretBanks(renderer, layer, span) {
     fctx.fillRect(span.left, span.top, w, h);
     fctx.globalCompositeOperation = 'destination-out';
     fctx.globalAlpha = 1 - layer.landShare;
-    fctx.drawImage(groundMaskFor(fields), fields.x, fields.y, fields.cols * 2, fields.rows * 2);
+    fctx.drawImage(seaFretLandMask(fields), fields.x, fields.y, fields.cols * 2, fields.rows * 2);
     fctx.globalCompositeOperation = 'source-over';
     fctx.globalAlpha = 1;
     return fret.canvas;

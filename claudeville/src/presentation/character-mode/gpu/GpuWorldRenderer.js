@@ -1925,15 +1925,20 @@ float columnRampLuma(int stop, float lift) {
 }
 
 // LA-7 — sea fret: a fog-bank record (flag \`seaFret\`) carries the banks'
-// share over land as its own alpha. Over painted water (coast flag \`water\`,
-// not \`covered\`) and the open sea off the coast lattice the bank keeps the
-// tile's full alpha; with the field absent (MINIMAL) every texel reads as
-// sea, today's even banks. Canvas: WorldFrameRenderer \`drawGroundFog\`.
+// share over land as its own alpha. Over water (coast flag \`water\`: the sea,
+// the shelf, the lake and the rivers; every cell off the map grid, the open
+// sea the outer pass paints; never a \`covered\` cell) and off the coast
+// lattice the bank keeps the tile's full alpha; with the field absent
+// (MINIMAL) every texel reads as water, today's even banks. Canvas:
+// WorldFrameRenderer \`seaFretLandMask\`.
 float seaFretAlpha(vec2 world, float landShare) {
     float sd;
     uint flags;
     if (!coastFieldAt(world, sd, flags)) return 1.0;
-    return (flags & ${COAST_FIELD_FLAGS.water}u) != 0u && (flags & ${COAST_FIELD_FLAGS.covered}u) == 0u ? 1.0 : landShare;
+    if ((flags & ${COAST_FIELD_FLAGS.covered}u) != 0u) return landShare;
+    vec2 tile = vec2(world.y / ${TILE_HEIGHT.toFixed(1)} + world.x / ${TILE_WIDTH.toFixed(1)}, world.y / ${TILE_HEIGHT.toFixed(1)} - world.x / ${TILE_WIDTH.toFixed(1)});
+    bool offMap = any(lessThan(tile, vec2(-0.5))) || any(greaterThan(tile, vec2(${(MAP_SIZE - 0.5).toFixed(1)})));
+    return (flags & ${COAST_FIELD_FLAGS.water}u) != 0u || offMap ? 1.0 : landShare;
 }
 
 void main() {

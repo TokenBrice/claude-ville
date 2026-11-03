@@ -58,21 +58,25 @@ test('a sea-fret fog record packs its own flag bit, and an even bank packs none'
     assert.equal(even.flags, 0);
 });
 
-// All three paths cut the same land: the coast field's `water` and not
-// `covered` cells keep the full bank; the lattice's outside is the sea.
+// All three paths cut the same land: a cell is water when it carries the
+// coast flag `water` or lies off the map grid (the open sea past the shelf
+// is left unclassified for the outer pass, its signed distance clamped, so
+// neither the flag nor the distance alone finds it), and no dock or bridge
+// covers it; outside the lattice is the sea.
 test('the GLSL, WGSL and Canvas fog passes share one sea-fret mask', () => {
     const glsl = read('gpu/GpuWorldRenderer.js');
-    assert.match(glsl, /float seaFretAlpha\(vec2 world, float landShare\) \{\n\s+float sd;\n\s+uint flags;\n\s+if \(!coastFieldAt\(world, sd, flags\)\) return 1\.0;/);
-    assert.match(glsl, /\(v_flags & \$\{GPU_RECORD_FLAGS\.seaFret\}u\) != 0u \? seaFretAlpha\(v_world, v_alpha\) : v_alpha/);
     const wgsl = read('gpu/wgsl/scene.js');
-    assert.match(wgsl, /fn seaFretAlpha\(world: vec2f, landShare: f32\) -> f32 \{/);
-    assert.match(wgsl, /if \(\(v_flags & RECORD_FLAG_SEA_FRET\) != 0u\) \{ recordAlpha = seaFretAlpha\(v_world, v_alpha\); \}/);
-    for (const source of [glsl, wgsl]) {
-        assert.match(source, /\(flags & \$\{COAST_FIELD_FLAGS\.water\}u\) != 0u && \(flags & \$\{COAST_FIELD_FLAGS\.covered\}u\) == 0u/);
-    }
     const frame = read('WorldFrameRenderer.js');
+    assert.match(glsl, /float seaFretAlpha\(vec2 world, float landShare\) \{\n\s+float sd;\n\s+uint flags;\n\s+if \(!coastFieldAt\(world, sd, flags\)\) return 1\.0;\n\s+if \(\(flags & \$\{COAST_FIELD_FLAGS\.covered\}u\) != 0u\) return landShare;/);
+    assert.match(glsl, /return \(flags & \$\{COAST_FIELD_FLAGS\.water\}u\) != 0u \|\| offMap \? 1\.0 : landShare;/);
+    assert.match(glsl, /\(v_flags & \$\{GPU_RECORD_FLAGS\.seaFret\}u\) != 0u \? seaFretAlpha\(v_world, v_alpha\) : v_alpha/);
+    assert.match(wgsl, /fn seaFretAlpha\(world: vec2f, landShare: f32\) -> f32 \{[^}]*\{ return 1\.0; \}\n\s+if \(\(flags & \$\{COAST_FIELD_FLAGS\.covered\}u\) != 0u\) \{ return landShare; \}/);
+    assert.match(wgsl, /if \(\(flags & \$\{COAST_FIELD_FLAGS\.water\}u\) != 0u \|\| offMap\) \{ return 1\.0; \}/);
+    assert.match(wgsl, /if \(\(v_flags & RECORD_FLAG_SEA_FRET\) != 0u\) \{ recordAlpha = seaFretAlpha\(v_world, v_alpha\); \}/);
+    // One off-map test: tile u, v outside [-0.5, MAP_SIZE - 0.5].
+    assert.match(glsl, /bool offMap = any\(lessThan\(tile, vec2\(-0\.5\)\)\) \|\| any\(greaterThan\(tile, vec2\(\$\{\(MAP_SIZE - 0\.5\)\.toFixed\(1\)\}\)\)\);/);
+    assert.match(wgsl, /let offMap = any\(tile < vec2f\(-0\.5\)\) \|\| any\(tile > vec2f\(\$\{\(MAP_SIZE - 0\.5\)\.toFixed\(1\)\}\)\);/);
+    assert.match(frame, /if \(u < -0\.5 \|\| v < -0\.5 \|\| u > MAP_SIZE - 0\.5 \|\| v > MAP_SIZE - 0\.5\) continue;/);
     assert.match(frame, /record\.alpha = layer\.landShare;\n\s+record\.seaFret = layer\.landShare < 1;/);
-    assert.match(frame, /fctx\.globalCompositeOperation = 'destination-out';\n\s+fctx\.globalAlpha = 1 - layer\.landShare;\n\s+fctx\.drawImage\(groundMaskFor\(fields\)/);
-    // The Canvas cut is the pool mask's ground: every cell but open water.
-    assert.match(read('CanvasPoolMask.js'), /if \(\(flags & COAST_FIELD_FLAGS\.water\) && !\(flags & COAST_FIELD_FLAGS\.covered\)\) continue;/);
+    assert.match(frame, /fctx\.globalCompositeOperation = 'destination-out';\n\s+fctx\.globalAlpha = 1 - layer\.landShare;\n\s+fctx\.drawImage\(seaFretLandMask\(fields\)/);
 });
