@@ -1444,8 +1444,9 @@ export function bakeWinterGround(r, base, snowBucket, frost) {
 // to a constant once they have) and the winter ground: the C-W2 snow bucket
 // and frost quarter from `renderer._groundState`, so the terrain rebakes only
 // when a quarter of snow cover or of the rime changes (at most five frost
-// bakes a frosty day: the night's rime, then quarters 3, 2, 1 and none). Season, scenery and the coast
-// field already key the terrain cache through their own entries. The cached
+// bakes a frosty day: the night's rime, then quarters 3, 2, 1 and none).
+// Season, scenery and the coast field already key the terrain cache through
+// their own entries. The cached
 // image is re-keyed on all of them at bake time only. Weather and time of day
 // never reach the base bake; the grade owns them.
 const SHEET_IDS = [...new Set(Object.values(TEXTURE_SOURCES).flat().map(([id]) => id))];
