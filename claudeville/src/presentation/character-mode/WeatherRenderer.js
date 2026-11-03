@@ -167,19 +167,20 @@ const FOG_COURSE_ALPHA = Object.freeze([0.11, 0.2, 0.31]);
 const FOG_OCTAVES = Object.freeze([[3, 8, 0.62], [6, 16, 0.38]]);
 const FOG_SEAM_TEXELS = 1;
 const FOG_BUCKETS = 8;
-// LA-7 — sea fret: the banks lie full on the sea, the lake and the rivers
-// and thin to this share over land at look strength 1 (`la7`; 0 keeps
-// today's even banks). The share rides the layer to the ground pass: the
-// resident `ground:fog` records carry it as their alpha under the `seaFret`
-// flag (the scene fragment's `seaFretAlpha`), and the Canvas pass cuts the
-// land with the coast field's ground mask (WorldFrameRenderer
-// `drawGroundFog`). Covered water (docks, bridges) counts as land.
+// LA-7 — sea fret: the banks lie full on the sea (the open sea past the
+// shelf too), the lake and the rivers and thin to this share over land at
+// look strength 1 (`la7`; 0 keeps today's even banks). The share rides the
+// layer to the ground pass: the resident `ground:fog` records carry it as
+// their alpha under the `seaFret` flag (the scene fragment's
+// `seaFretAlpha`), and the Canvas pass cuts the land with the same rule's
+// mask (WorldFrameRenderer `seaFretLandMask`). Covered water (docks,
+// bridges) counts as land.
 export const SEA_FRET_LAND_SHARE = 0.4;
 // LA-7 — the thin mist: no fog weather and fog at or under this (every
 // overcast knot carries 0.06–0.10, and a dry overcast lays its own mist).
 // Its lowest-bucket banks read as camouflage blotches on the open sea, not
 // as weather, so with the sea fret on they fade out (gone at strength 1);
-// fog weather, rain (0.12–0.17) and storm keep their banks.
+// fog weather, rain (0.11–0.17) and storm keep their banks.
 export const SEA_FRET_THIN_FOG = 0.1;
 
 export function seaFretLandShare() {
