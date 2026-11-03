@@ -60,6 +60,18 @@ const ARRIVAL_EXTENT = Object.freeze({ left: -17, top: -(ARRIVAL_COLUMN_HEIGHT +
 const DISPATCH_IMPACT_EXTENT = Object.freeze({ left: -12, top: -36, right: 12, bottom: 7 });
 const RETURN_IMPACT_EXTENT = Object.freeze({ left: -12, top: -(PARENT_LAUNCH_LIFT + 6), right: 12, bottom: 7 });
 const ARRIVAL_RESIDUE_AT = ARRIVAL.anticipation + ARRIVAL.peak + ARRIVAL.follow;
+// EF-2 — the departure column (Medium), the arrival's mirror where a walk out
+// ends (the gate's arch mouth, where the session arrived): the body's flat
+// violet silhouette while the column rises through it in three held steps,
+// one cream rim frame, the column sinking in three steps with dust chips. Its
+// residue is the departure sigil, which keeps the column's light.
+const DEPARTURE = defineMoment('medium', { anticipation: 200, peak: 80, follow: 520 });
+const DEPARTURE_RISE = Object.freeze([12, 24, 36]);
+const DEPARTURE_SINK = Object.freeze([30, 16, 6]);
+const DEPARTURE_SINK_WIDTH = Object.freeze([9, 7, 7]);
+// The column's light (the arrival's), then the sigil's ground glow.
+const COLUMN_LIGHT = Object.freeze({ radius: 42, alpha: 0.18, intensity: 0.2 });
+const SIGIL_GLOW = Object.freeze({ radius: 36, alpha: 0.16, intensity: 0.14 });
 
 const PROVIDER_COLORS = {
     claude: '#a78bfa',
@@ -79,8 +91,9 @@ const PORTAL_SPAWN_TILE = { tileX: 5, tileY: 34 };
 // W4.8 — the wind-down hand-off. A finished session's last leg ends on one
 // of these stand points just inside the gate, off both entry lanes (x 18.65 /
 // 19.55), facing out through the arch; when the session is really removed,
-// `recordDeparture` drops its sigil where the body stands. Nothing here
-// delays removal: a body still on the way leaves from wherever it is.
+// the body walks out and the departure column (EF-2) lays its sigil in the
+// arch mouth (reduced motion: where the body stands). Nothing here delays
+// removal: a body still on the way leaves from wherever it is.
 export const WIND_DOWN_GATE_FACING = Object.freeze({ x: 19.1, y: 39.1 });
 export const WIND_DOWN_GATE_TILES = Object.freeze([
     Object.freeze({ tileX: 17, tileY: 36 }),
@@ -150,21 +163,24 @@ function drawChildMiniature(ctx, x, y, { miniature = null, signature = null, acc
 // ---------------------------------------------------------------------------
 // Silhouette frame — the body's alpha mask filled cream, cached per sheet and
 // facing. Built once from the sprite's composed sheet; null until it loads.
+// `tone` fills every opaque texel flat in that colour instead (EF-2's
+// departing body), cached beside the rim.
 // ---------------------------------------------------------------------------
 
 const SILHOUETTES = new WeakMap();
 
-function bodySilhouette(sprite) {
+function bodySilhouette(sprite, { tone = null } = {}) {
     if (!sprite || typeof document === 'undefined') return null;
     const source = sprite.spriteCanvas || sprite._composeBaseSheet?.() || null;
     if (!source || !source.width || !source.height) return null;
     const dir = Number.isInteger(sprite.direction) ? sprite.direction : 0;
+    const key = tone ? `${dir}:${tone}` : dir;
     let byDir = SILHOUETTES.get(source);
     if (!byDir) {
         byDir = new Map();
         SILHOUETTES.set(source, byDir);
     }
-    if (byDir.has(dir)) return byDir.get(dir);
+    if (byDir.has(key)) return byDir.get(key);
     const sheet = source === sprite.spriteCanvas && sprite.spriteSheet ? sprite.spriteSheet : new SpriteSheet(source);
     const cell = sheet.cell('idle', dir, 0);
     const canvas = document.createElement('canvas');
@@ -191,27 +207,62 @@ function bodySilhouette(sprite) {
     if (maxX < 0) return null;
     // S16 — the cream peak frame is the body's 1-texel rim, not a filled
     // blob: keep opaque pixels with a transparent 4-neighbour (or the cell
-    // edge) and clear the interior.
+    // edge) and clear the interior. A tone keeps every opaque pixel.
     const w = canvas.width;
     const h = canvas.height;
     const opaque = (x, y) => x >= 0 && y >= 0 && x < w && y < h && data[(y * w + x) * 4 + 3] >= 24;
     const rim = ctx.createImageData(w, h);
-    const cream = Number.parseInt(PEAK.slice(1), 16);
+    const fill = Number.parseInt((tone || PEAK).slice(1), 16);
     for (let y = minY; y <= maxY; y++) {
         for (let x = minX; x <= maxX; x++) {
             if (!opaque(x, y)) continue;
-            if (opaque(x - 1, y) && opaque(x + 1, y) && opaque(x, y - 1) && opaque(x, y + 1)) continue;
+            if (!tone && opaque(x - 1, y) && opaque(x + 1, y) && opaque(x, y - 1) && opaque(x, y + 1)) continue;
             const i = (y * w + x) * 4;
-            rim.data[i] = (cream >> 16) & 0xff;
-            rim.data[i + 1] = (cream >> 8) & 0xff;
-            rim.data[i + 2] = cream & 0xff;
+            rim.data[i] = (fill >> 16) & 0xff;
+            rim.data[i + 1] = (fill >> 8) & 0xff;
+            rim.data[i + 2] = fill & 0xff;
             rim.data[i + 3] = 255;
         }
     }
     ctx.putImageData(rim, 0, 0);
     const silhouette = { canvas, minX, minY, maxX, maxY };
-    byDir.set(dir, silhouette);
+    byDir.set(key, silhouette);
     return silhouette;
+}
+
+/**
+ * EF-2 — the departure column's frame at `age` ms: its phase and step, the
+ * column it draws (`height`, `width`, a cream `core` at the peak), the body
+ * mark (`flat` violet silhouette, cream `rim`, or none), the rune ring and
+ * whether dust kicks. `done` once the follow ends: the sigil carries on.
+ */
+export function departureFrame(age) {
+    const phase = momentPhase(age, DEPARTURE);
+    const { step } = phase;
+    switch (phase.phase) {
+    case 'anticipation':
+        return {
+            phase: 'anticipation', step, t: phase.t, body: 'flat', dust: false,
+            column: { height: DEPARTURE_RISE[step], width: 7, core: null },
+            ring: { radius: 12, dot: 2, tone: PEAK },
+        };
+    case 'peak':
+        return {
+            phase: 'peak', step, t: phase.t, body: 'rim', dust: false,
+            column: { height: ARRIVAL_COLUMN_HEIGHT, width: 9, core: PEAK },
+            ring: { radius: 12, dot: 2, tone: PEAK },
+        };
+    case 'follow': {
+        const tone = [MAGIC_RAMP[1], MAGIC_RAMP[0], null][step];
+        return {
+            phase: 'follow', step, t: phase.t, body: null, dust: true,
+            column: { height: DEPARTURE_SINK[step], width: DEPARTURE_SINK_WIDTH[step], core: null },
+            ring: tone ? { radius: 12 + step * 2, dot: 1, tone } : null,
+        };
+    }
+    default:
+        return { phase: 'done', step: 0, t: 1, body: null, dust: false, column: null, ring: null };
+    }
 }
 
 // Draw the cream frame with its feet on (x, y) at the 1:1 body scale (C3/D1).
@@ -313,6 +364,7 @@ export class ArrivalDepartureController {
     constructor({ motionScale = 1 } = {}) {
         this.motionScale = motionScale === 0 ? 0 : 1;
         this.arrivals = new Map();
+        this.departures = new Map();
         this.dispatches = new Map();
         this.merges = new Map();
         this.sigils = [];
@@ -325,6 +377,16 @@ export class ArrivalDepartureController {
 
     setMotionScale(scale) {
         this.motionScale = scale === 0 ? 0 : 1;
+        // Reduced motion keeps the sigil only: a column still rising lays its
+        // sigil now, unlit.
+        if (this.motionScale !== 0) return;
+        for (const departure of this.departures.values()) this._pushSigil(departure, departure.point, { now: nowMs() });
+        this.departures.clear();
+    }
+
+    // Arrival and departure columns share one budget at the gate.
+    _columnsFull() {
+        return this.arrivals.size + this.departures.size >= MAX_ARRIVALS;
     }
 
     // 6.2 — the arrival no longer rides a carriage or boat glyph. The renderer
@@ -337,8 +399,9 @@ export class ArrivalDepartureController {
         this._landArrival(this.arrivals.get(agent.id));
         this.arrivals.delete(agent.id);
         // At most six materialize beats at once (a restart can land two dozen
-        // sessions in one frame); the rest simply walk in through the gate.
-        if (this.arrivals.size >= MAX_ARRIVALS) return null;
+        // sessions in one frame), departures included; the rest simply walk
+        // in through the gate.
+        if (this._columnsFull()) return null;
         const point = { x: Number(sprite.x) || 0, y: Number(sprite.y) || 0 };
         const reduced = this.motionScale === 0;
         if (!reduced) sprite.setArrivalState?.('pending');
@@ -527,24 +590,62 @@ export class ArrivalDepartureController {
         return entry;
     }
 
+    // The sigil alone, where the body stands: reduced motion, or a body that
+    // could not take a column. Unlit: its light belongs to the column.
     recordDeparture(agent, lastTile, { now = nowMs(), parentAlive = false } = {}) {
         if (!agent || parentAlive) return null;
         const tile = lastTile || (agent.position ? { tileX: agent.position.x, tileY: agent.position.y } : null);
         if (!tile) return null;
-        const point = tileToScreen(tile);
-        const sigil = {
-            id: `${agent.id}:${Math.round(now)}`,
-            agentId: agent.id,
-            provider: agent.provider || 'default',
+        return this._pushSigil({ id: agent.id, provider: agent.provider }, tileToScreen(tile), { now });
+    }
+
+    // EF-2 — a walk out has ended: the column takes the body home where it
+    // stands, as it arrived. The caller disposes the body in the same frame,
+    // and the moment paints only the silhouettes captured here, so no body
+    // outlives its session. Null under reduced motion or with six columns
+    // already at the gate; the caller then keeps the sigil alone.
+    beginDeparture(agent, sprite, { now = nowMs() } = {}) {
+        if (!agent?.id || !sprite || this.motionScale === 0 || this._columnsFull()) return null;
+        const departure = {
+            id: agent.id,
+            provider: agent.provider,
+            point: { x: Number(sprite.x) || 0, y: Number(sprite.y) || 0 },
+            startedAt: now,
+            seed: hashId(agent.id),
+            flat: bodySilhouette(sprite, { tone: MAGIC_RAMP[0] }),
+            rim: bodySilhouette(sprite),
+        };
+        this.departures.set(agent.id, departure);
+        noteMoment('departure');
+        return departure;
+    }
+
+    _sigilFor({ id, provider }, point, { now, glow = false }) {
+        return {
+            id: `${id}:${Math.round(now)}`,
+            agentId: id,
+            provider: provider || 'default',
             x: point.x,
             y: point.y,
             startedAt: now,
             duration: this.motionScale === 0 ? REDUCED_SIGIL_MS : DEPARTURE_SIGIL_MS,
-            color: providerColor(agent.provider),
+            color: providerColor(provider),
+            glow,
         };
+    }
+
+    _pushSigil(owner, point, options) {
+        const sigil = this._sigilFor(owner, point, options);
         this.sigils.push(sigil);
         if (this.sigils.length > MAX_SIGILS) this.sigils.splice(0, this.sigils.length - MAX_SIGILS);
         return sigil;
+    }
+
+    // The sigil a column lays once it has sunk (`update` keeps it). Draw and
+    // light read it too when the column sank after this frame's update, so
+    // the hand-over from column to sigil never drops a frame of mark or light.
+    _residueOf(departure) {
+        return this._sigilFor(departure, departure.point, { now: departure.startedAt + DEPARTURE.active, glow: true });
     }
 
     update(now = nowMs()) {
@@ -556,6 +657,14 @@ export class ArrivalDepartureController {
             }
             const phase = momentPhase(age, ARRIVAL, { reduced: arrival.reduced });
             if (phase.phase === 'done') this.arrivals.delete(id);
+        }
+        for (const [id, departure] of this.departures.entries()) {
+            // The column has sunk: its sigil lies where it stood, dated from
+            // the moment's own clock, so a frame gap never restarts it.
+            const residueAt = departure.startedAt + DEPARTURE.active;
+            if (now < residueAt) continue;
+            this._pushSigil(departure, departure.point, { now: residueAt, glow: true });
+            this.departures.delete(id);
         }
         for (const [id, dispatch] of this.dispatches.entries()) {
             // The character sheet may still be loading when a child is
@@ -620,6 +729,7 @@ export class ArrivalDepartureController {
         for (const merge of this.merges.values()) this._drawReturn(ctx, merge, now, zoom);
         for (const entry of this.orphanReturns) this._drawReturn(ctx, entry, now, zoom);
         for (const sigil of this.sigils) drawDepartureSigil(ctx, sigil, { now, motionScale: this.motionScale });
+        for (const departure of this.departures.values()) this._drawDeparture(ctx, departure, now);
         for (const cue of this.completionCues) drawSubagentCompletionCue(ctx, cue, { zoom, now, motionScale: this.motionScale });
         ctx.restore();
     }
@@ -653,20 +763,45 @@ export class ArrivalDepartureController {
             const source = cometLightSource(entry, `orphan-return:${entry.id}`, now);
             if (source) sources.push(source);
         }
-        for (const sigil of this.sigils) {
+        // EF-2 — the departure's light is the column's: it rises and sinks
+        // with the column (the arrival's strength), then stays in the sigil
+        // the column sank into as a ground glow that steps down with the
+        // sigil's own alpha quanta and ends with it. A sigil no column laid
+        // (reduced motion, a seventh column) throws no light.
+        const glow = (sigil) => {
+            if (!sigil.glow || this.motionScale === 0) return;
+            const step = steppedDecay(now - sigil.startedAt, sigil.duration);
+            if (step <= 0) return;
             sources.push({
                 id: `departure:${sigil.id}`,
                 kind: 'point',
                 x: sigil.x,
                 y: sigil.y,
                 color: MAGIC_RAMP[0],
-                radius: 36,
-                alpha: 0.16,
-                intensity: 0.14,
+                radius: SIGIL_GLOW.radius,
+                alpha: SIGIL_GLOW.alpha * step,
+                intensity: SIGIL_GLOW.intensity * step,
                 ttl: sigil.duration,
                 createdAt: sigil.startedAt,
             });
+        };
+        for (const departure of this.departures.values()) {
+            const age = now - departure.startedAt;
+            const column = departureFrame(age).column;
+            if (!column) {
+                if (age >= DEPARTURE.active) glow(this._residueOf(departure));
+                continue;
+            }
+            sources.push({
+                id: `departure:${departure.id}`,
+                kind: 'point',
+                x: departure.point.x,
+                y: departure.point.y - column.height / 2,
+                color: MAGIC_RAMP[1],
+                ...COLUMN_LIGHT,
+            });
         }
+        for (const sigil of this.sigils) glow(sigil);
         return sources;
     }
 
@@ -726,6 +861,40 @@ export class ArrivalDepartureController {
         default:
             break;
         }
+    }
+
+    // EF-2 — staged like the arrival (V8); off-screen it is an edge plate.
+    // The body's marks draw only where it stood (`place`), never up a column.
+    _drawDeparture(ctx, departure, now) {
+        const age = now - departure.startedAt;
+        const frame = departureFrame(age);
+        if (frame.phase === 'done') {
+            if (age >= DEPARTURE.active) drawDepartureSigil(ctx, this._residueOf(departure), { now, motionScale: this.motionScale });
+            return;
+        }
+        const anchor = resolveMomentAnchor(departure.point, {
+            actorId: departure.id,
+            extent: ARRIVAL_EXTENT,
+            id: `departure:${departure.id}`,
+            kind: 'departure',
+            tier: 'medium',
+            phase: frame.phase,
+        });
+        if (anchor.mode === 'edge') {
+            queueMomentEdgePlate(anchor, { word: 'DEPARTED', color: MAGIC_RAMP[1], peak: frame.phase === 'peak', ctx });
+            return;
+        }
+        const placed = anchor.mode === 'place';
+        const { x, y } = anchor;
+        const { ring, column: shaft } = frame;
+        if (ring) ringDots(ctx, x, y, ring.radius, { count: 8, dot: ring.dot, color: ring.tone, phase: Math.PI / 8 });
+        // Anticipation: the body is already gone; its flat violet silhouette
+        // stands in the ring and the column rises through it.
+        if (placed && frame.body === 'flat') drawSilhouette(ctx, departure.flat, x, y);
+        column(ctx, x, frame.dust ? y + 1 : y, { height: shaft.height, width: shaft.width, ramp: MAGIC_RAMP, core: shaft.core });
+        // The peak's one cream rim frame is the body's last.
+        if (placed && frame.body === 'rim') drawSilhouette(ctx, departure.rim, x, y);
+        if (placed && frame.dust) chips(ctx, x, y + 1, frame.t, { count: 6, seed: departure.seed, spread: 14, lift: 5, tones: DUST_TONES });
     }
 
     // 8.1 — where a comet's impact and splash stand (V8). Gather and flight

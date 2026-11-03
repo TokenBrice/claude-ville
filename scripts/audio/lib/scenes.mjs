@@ -340,6 +340,7 @@ export const GALLERY_VOICES = Object.freeze([
     { label: 'sub-agent return', kind: 'subagentReturn', payload: { count: 1 }, stratum: 'outcome' },
     { label: 'tool failed', kind: 'toolFailed', payload: { count: 1 }, stratum: 'outcome' },
     { label: 'commit', kind: 'commit', stratum: 'outcome' },
+    { label: 'mended', kind: 'mended', stratum: 'outcome' },
     { label: 'push', kind: 'push', stratum: 'outcome' },
     { label: 'release', kind: 'release', stratum: 'outcome', sec: 9 },
     { label: 'push failed', kind: 'pushFailed', stratum: 'outcome' },
@@ -530,7 +531,7 @@ export const CAPTION_MODES = Object.freeze(['signals', 'bgm']);
 export const CAPTION_SETTINGS = ['auto', 'signals', 'events', 'all'];
 export const CAPTION_KINDS = Object.freeze([
     ['summons', { level: 1 }], ['distress', {}], ['limit', {}], ['reminder', { level: 2, family: 'needsYou', count: 1, oldestMs: 120000 }],
-    ['turnDone', { count: 1 }], ['subagentReturn', { count: 1 }], ['toolFailed', { count: 1 }], ['commit', {}], ['push', {}],
+    ['turnDone', { count: 1 }], ['subagentReturn', { count: 1 }], ['toolFailed', { count: 1 }], ['commit', {}], ['mended', {}], ['push', {}],
     ['release', {}], ['pushFailed', {}], ['dispatch', { count: 2 }],
     ['arrival', {}], ['departure', {}], ['recovery', {}], ['council', { teamName: 'probe', teamSize: 3 }],
     ['hourBell', { hour: 15, count: false }], ['aurora', {}], ['linkLost', {}], ['linkRestored', {}],

@@ -43,6 +43,7 @@ export const OUTCOME_TIERS = Object.freeze({
     dispatch: 'minor',
     toolFailed: 'medium',
     commit: 'medium',
+    mended: 'medium',
     push: 'medium',
     pushFailed: 'medium',
     release: 'major',

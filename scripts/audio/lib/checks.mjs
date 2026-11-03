@@ -652,7 +652,7 @@ export function phaseLockedPairs(scores, { tolMs = 5 } = {}) {
 // the `attention:digest` notice).
 export const CUE_STRATUM = Object.freeze({
     summons: 'signal', distress: 'signal', limit: 'signal', reminder: 'signal', answered: 'signal',
-    turnDone: 'outcome', subagentReturn: 'outcome', toolFailed: 'outcome', commit: 'outcome', push: 'outcome',
+    turnDone: 'outcome', subagentReturn: 'outcome', toolFailed: 'outcome', commit: 'outcome', mended: 'outcome', push: 'outcome',
     release: 'outcome', pushFailed: 'outcome', dispatch: 'outcome',
     arrival: 'routine', departure: 'routine', recovery: 'routine', council: 'routine',
     hourBell: 'scenery', aurora: 'scenery', linkLost: 'scenery', linkRestored: 'scenery',
