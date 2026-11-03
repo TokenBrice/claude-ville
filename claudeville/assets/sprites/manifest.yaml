@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-10-28-hourglass-belfry"
+  assetVersion: "2026-11-03-belfry-streams"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -2159,8 +2159,10 @@ buildings:
     layers:
       # The vortex texels of base.png, cut out as a static overlay that is a
       # fixture: identical to the base by day, it emits its own violet through
-      # no occupancy gate, so the vortex keeps glowing on an empty night (like
-      # the Pharos lamp) while the runes and crystals wait for real work.
+      # no occupancy gate. MB-4 (D4) — only while the Portal is awake (a
+      # working visitor, `work.portal`): an empty Portal slumbers under
+      # `slumber` and this overlay stands down, so the vortex no longer glows
+      # on an empty night; the slumbering eye keeps a low ember instead.
       portalGlow:
         tool: hand-authored
         prompt: "the vortex texels of base.png (x 129-184, y 68-188) as an exact overlay; authored, not generated"
@@ -2191,6 +2193,20 @@ buildings:
         height: 264
         anchor: [156, 202]
         cycle: { gate: work.portal, frames: 8, bandPx: 4, riseStepPx: 2, fixedBelowRankFrac: 0.3333, rampStops: 6, heightFromMask: true, shearPx: 0, hz: 6 }
+      # MB-4 (D4) — the Portal slumbers until someone travels, the Forge's
+      # 4.6 rest recipe: the vortex is painted into base.png, so a Portal with
+      # no working visitor lays this mask over exactly those texels, two
+      # courses down the vortex's own violet ramp with chroma held (baked by
+      # scripts/sprites/bake-portal-slumber.mjs). A part only while the Portal
+      # slumbers; the slumbering eye's two courses keep a low ember while the
+      # lamps burn (BuildingVisualRegistry `rest.ember`).
+      slumber:
+        tool: hand-authored
+        prompt: "slumbering portal vortex mask: the vortex texels of base.png restated two courses down the vortex's own violet luma ramp, chroma held; authored, not generated"
+        width: 312
+        height: 264
+        anchor: [156, 202]
+        materialClass: glass-rune
     # Vortex heart and the right crystal brazier.
     emitters:
       sparkle: [156, 128]
@@ -2647,21 +2663,22 @@ props:
     height: 208
     anchor: [64, 168]
     materialClass: stone
-    provenance: { item: 'W8.5b', tool: create_map_object, objectId: 9e0d3633-5d2c-4848-b8f1-5387b7e531c2, finish: 'scripts/sprites/finish-isle-landmarks.mjs (plate strip, ashlar snap, mirrored to the upper-left key)', generatedAt: '2026-10-09', harmonize: 'cap remapped onto roofSlate (scripts/sprites/harmonize-roofs.mjs, B3-05, 2026-10-24)' }
+    provenance: { item: 'W8.5b', tool: create_map_object, objectId: 9e0d3633-5d2c-4848-b8f1-5387b7e531c2, finish: 'scripts/sprites/finish-isle-landmarks.mjs (plate strip, ashlar snap, mirrored to the upper-left key)', generatedAt: '2026-10-09', harmonize: 'cap remapped onto roofSlate (scripts/sprites/harmonize-roofs.mjs, B3-05, 2026-10-24), lifted to the family main tile stop 6 (--shift, MB-2, 2026-11-03)', outline: '1px warm ink on the external silhouette (scripts/sprites/outline-landmarks.mjs, MB-2, 2026-11-03)' }
 
-  # The sail cross, 4 frames of 112 x 112 (hub at the frame centre, seated on
+  # The sail cross, 8 frames of 112 x 112 (hub at the frame centre, seated on
   # the windmill's windshaft at base-local [50, 86]); frame k is the cross
-  # turned 22.5 deg * k. Rasterised on the sail plane by
-  # finish-isle-landmarks.mjs. Steps at 4 fps only while a wind gust crosses
-  # the mill (Wind.windAt); calm or reduced motion holds frame 0.
+  # turned 11.25 deg * k (MB-7: the even frames are the old 4-frame strip's).
+  # Rasterised on the sail plane by finish-isle-landmarks.mjs (`--sails`).
+  # Steps at 8 fps only while a wind gust crosses the mill (Wind.windAt);
+  # calm holds the frame it stopped on, reduced motion holds frame 0.
   - id: prop.windmillSails
     tool: procedural
     width: 112
     height: 112
-    frames: 4
+    frames: 8
     anchor: [56, 56]
     materialClass: timber
-    provenance: { item: 'W8.5b', source: 'scripts/sprites/finish-isle-landmarks.mjs', generations: 0, generatedAt: '2026-10-09' }
+    provenance: { item: 'W8.5b', source: 'scripts/sprites/finish-isle-landmarks.mjs', generations: 0, generatedAt: '2026-10-09', frames: '8 (MB-7, 2026-11-03)' }
 
   - id: prop.watermill
     tool: map_object
@@ -2692,7 +2709,8 @@ props:
   # in the lit west arch, Codex's in the shaded east arch, each glass's
   # interior laid from `prop.hourglassBelfryGlass` per BelfryQuota.js. Base
   # finished by scripts/sprites/bake-hourglass-belfry.mjs (stage fill, sill,
-  # empty glass, ashlar snap); roof onto roofSlate by harmonize-roofs.mjs.
+  # empty glass, ashlar snap); roof onto roofSlate by harmonize-roofs.mjs;
+  # the 1px warm ink outline by outline-landmarks.mjs (MB-2).
   - id: prop.hourglassBelfry
     tool: map_object
     prompt: "isometric pixel art building sprite, true 2:1 dimetric isometric view from the south-east, a square stone clock tower holding two giant hourglasses: a broad square shaft of cool pale grey dressed ashlar stone in even courses, a small arched dark walnut timber door at its foot with two stone steps, the upper stage has one huge open round-headed arch on each of its two visible faces, each arch as wide as most of the face, and in each arch stands one giant upright hourglass that fills the whole arch, with a dark walnut and gold frame of top and bottom plates and three turned posts, big clear glass bulbs, the left hourglass holds warm amber sand, the right hourglass holds pale ice blue sand, a projecting stone cornice, a short pyramidal slate-blue tiled roof with a thin gold trim ring and a small gold finial, warm key light from the upper-left, cool shade on the right, stepped cel shading, 1px selective dark outline, structure only, empty transparent background, no ground tile, no grass, no slab, no plinth, no baked shadow, empty transparent corners"
@@ -2700,22 +2718,25 @@ props:
     height: 208
     anchor: [64, 177]
     materialClass: stone
-    provenance: { item: 'Hourglass Belfry', tool: create_map_object, objectId: 7cddf73c-5795-46c3-bce4-d17a4e2a0439, generations: 6, candidates: 6, finish: 'scripts/sprites/bake-hourglass-belfry.mjs (stage fill, sill, empty glass, ashlar snap)', harmonize: 'roof onto roofSlate (scripts/sprites/harmonize-roofs.mjs)', generatedAt: '2026-10-28' }
+    provenance: { item: 'Hourglass Belfry', tool: create_map_object, objectId: 7cddf73c-5795-46c3-bce4-d17a4e2a0439, generations: 6, candidates: 6, finish: 'scripts/sprites/bake-hourglass-belfry.mjs (stage fill, sill, empty glass, ashlar snap)', harmonize: 'roof onto roofSlate (scripts/sprites/harmonize-roofs.mjs), lifted to the family main tile stop 6 (--shift, MB-2, 2026-11-03)', outline: '1px warm ink on the external silhouette (scripts/sprites/outline-landmarks.mjs, MB-2, 2026-11-03)', generatedAt: '2026-10-28' }
 
   # The belfry's glasses: 9 states x 2 glasses, 20 x 38 each
   # (BELFRY_GLASS_STATES / _FRAME / _ORIGINS in IsleLandmarks.js): sand levels
   # l0-l5, `limit` (the lavender cord), `unknown` (the shroud) and `peak` (the
-  # reset moment's cream frame), Claude's glass first. Each cell lies on its
-  # glass at its origin; states swap whole, never blend.
+  # reset moment's cream frame), Claude's glass first. Then (MB-5) the running
+  # streams: per glass, per level l1-l5, 3 phases of the level's cell with
+  # every third stream texel left as glass, the gap a row lower each phase
+  # (`belfryStreamCell`), stepped at 2 fps while that account drains. Each
+  # cell lies on its glass at its origin; states swap whole, never blend.
   - id: prop.hourglassBelfryGlass
     tool: procedural
-    width: 360
+    width: 960
     height: 38
-    frames: 18
+    frames: 48
     frameW: 20
     frameH: 38
     anchor: [10, 19]
-    provenance: { item: 'Hourglass Belfry', source: 'scripts/sprites/bake-hourglass-belfry.mjs', generations: 0, generatedAt: '2026-10-28' }
+    provenance: { item: 'Hourglass Belfry', source: 'scripts/sprites/bake-hourglass-belfry.mjs', generations: 0, generatedAt: '2026-10-28', streams: 'MB-5 stream cells (--strip, 2026-11-03)' }
 
   - id: prop.signpost
     tool: map_object

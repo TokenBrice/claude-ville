@@ -14,11 +14,16 @@
 //   cord: an account state, calm (Q3), never the rate-limited alarm that
 //   villagers wear. Claude reports no enforcement, so a full Claude window is
 //   the spent glass and is never worded LIMIT.
+// - MB-5 — a glass drains while its account spends: its reading's `used`
+//   rose within the last BELFRY_DRAIN_MS (`belfryDrainStep`, fed each
+//   reading; `belfryDraining`). A falling reading (a window reset) or no
+//   reading drains nothing.
 
 import { formatNumber, formatWaitAge } from '../shared/Formatters.js';
 
 export const BELFRY_LEVELS = 5;
 export const BELFRY_ACCOUNTS = Object.freeze(['claude', 'codex']);
+export const BELFRY_DRAIN_MS = 10 * 60_000;
 
 function ratio(value) {
     if (value === null || value === undefined || value === '') return null;
@@ -52,6 +57,33 @@ export function belfryGlass(account, usage) {
 
 export function belfryGlasses(usage) {
     return { claude: belfryGlass('claude', usage), codex: belfryGlass('codex', usage) };
+}
+
+/**
+ * MB-5 — the drain record after one more reading: per account `{ used,
+ * roseAt }`, its last known `used` and when a reading last rose above the
+ * one before it (`now`, ms). A fall or no reading clears the rise; an equal
+ * reading keeps it.
+ */
+export function belfryDrainStep(previous, glasses, now) {
+    const next = {};
+    for (const account of BELFRY_ACCOUNTS) {
+        const prior = previous?.[account];
+        const glass = glasses?.[account];
+        const used = glass?.state === 'level' && Number.isFinite(glass.used) ? glass.used : null;
+        const before = Number.isFinite(prior?.used) ? prior.used : null;
+        let roseAt = Number.isFinite(prior?.roseAt) ? prior.roseAt : null;
+        if (used === null || (before !== null && used < before)) roseAt = null;
+        else if (before !== null && used > before) roseAt = now;
+        next[account] = { used, roseAt };
+    }
+    return next;
+}
+
+/** Whether an account's glass drains at `now`: its reading rose within BELFRY_DRAIN_MS. */
+export function belfryDraining(drain, account, now) {
+    const roseAt = drain?.[account]?.roseAt;
+    return Number.isFinite(roseAt) && now >= roseAt && now - roseAt < BELFRY_DRAIN_MS;
 }
 
 /** A glass's drawn state as one key: `l0`–`l5`, `limit` or `unknown`. */

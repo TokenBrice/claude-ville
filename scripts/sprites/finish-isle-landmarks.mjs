@@ -19,13 +19,19 @@
 //      on the `emissive` ramp, lit at night on the lamps clock.
 //   4. Mirror: the candidates were keyed from the upper right; the family's
 //      key light is upper-left.
-// The sails (prop.windmillSails, 4 frames of 112 x 112, hub at the frame
+// The sails (prop.windmillSails, 8 frames of 112 x 112, hub at the frame
 // centre) are rasterised texel by texel on the sail plane, which faces the
 // lower-left like the windshaft: u = (0.8, 0.4) per plane unit (the iso
-// ground axis), v = straight up. Frame k is the cross turned 22.5 deg * k, so
-// the 4-frame loop is one 90-degree period of the four-fold sail cross.
+// ground axis), v = straight up. Frame k is the cross turned 11.25 deg * k, so
+// the 8-frame loop is one 90-degree period of the four-fold sail cross (MB-7;
+// the even frames are the old 4-frame strip's).
 //
-// Usage: node scripts/sprites/finish-isle-landmarks.mjs [--preview=<dir>]
+// Afterwards: harmonize-roofs.mjs (the roofs onto roofSlate), then
+// outline-landmarks.mjs (MB-2: the windmill's 1px ink line).
+//
+// `--sails` bakes the sail strip alone and leaves the props as they are.
+//
+// Usage: node scripts/sprites/finish-isle-landmarks.mjs [--sails] [--preview=<dir>]
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -36,6 +42,7 @@ import { ART_RAMPS } from '../../claudeville/src/config/artPalette.js';
 const args = process.argv.slice(2);
 const previewArg = args.find((arg) => arg.startsWith('--preview='));
 const previewDir = previewArg ? previewArg.slice('--preview='.length) : null;
+const sailsOnly = args.includes('--sails');
 const RAW = join(repoRoot, 'output', 'landmarks');
 const PROPS = join(repoRoot, 'claudeville', 'assets', 'sprites', 'props');
 
@@ -187,7 +194,7 @@ function finish(asset) {
 
 // --- sails -----------------------------------------------------------------
 const FRAME = 112;
-const FRAMES = 4;
+const FRAMES = 8;
 const HUB = FRAME / 2;
 const U = [0.8, 0.4];
 const SPAR_R = 51;
@@ -217,7 +224,7 @@ function sailTexel(a, b, theta) {
 function bakeSails() {
     const png = new PNG({ width: FRAME * FRAMES, height: FRAME });
     for (let f = 0; f < FRAMES; f++) {
-        const theta = Math.PI / 4 + (f * Math.PI) / 8;
+        const theta = Math.PI / 4 + (f * Math.PI) / (2 * FRAMES);
         const cell = new Array(FRAME * FRAME).fill(null);
         for (let y = 0; y < FRAME; y++) {
             for (let x = 0; x < FRAME; x++) {
@@ -253,7 +260,7 @@ function bakeSails() {
 }
 
 mkdirSync(PROPS, { recursive: true });
-const outputs = ASSETS.map((asset) => [asset.id, finish(asset)]);
+const outputs = sailsOnly ? [] : ASSETS.map((asset) => [asset.id, finish(asset)]);
 outputs.push(['prop.windmillSails', bakeSails()]);
 for (const [id, png] of outputs) console.log(`${id}: ${png.width}x${png.height}`);
 if (previewDir) {

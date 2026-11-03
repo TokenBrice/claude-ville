@@ -7,8 +7,11 @@ import {
     BELFRY_GLASS_FRAME,
     BELFRY_GLASS_ORIGINS,
     BELFRY_GLASS_STATES,
+    BELFRY_STREAM_PHASES,
     IsleLandmarks,
+    belfryStreamCell,
 } from '../../claudeville/src/presentation/character-mode/IsleLandmarks.js';
+import { BELFRY_DRAIN_MS, BELFRY_LEVELS } from '../../claudeville/src/presentation/character-mode/BelfryQuota.js';
 import { DISTRICT_PROPS } from '../../claudeville/src/config/scenery.js';
 
 const BELFRY = 'prop.hourglassBelfry';
@@ -122,14 +125,94 @@ test('hovering the belfry reads out both accounts', () => {
     assert.deepEqual(tip.map((line) => line.split(':')[0]), ['Hourglass Belfry · sand left = quota left', 'Claude', 'Codex']);
 });
 
-test('the baked strip holds every state of both glasses', () => {
+// MB-7 — 8 frames of 11.25° on 125 ms steps: one turn per 4 s, as the old
+// 4 frames of 22.5° on 250 ms, and still only while a gust crosses the mill.
+test('the windmill sails turn one 11.25° frame per 125 ms, only in a gust (MB-7)', () => {
+    const strip = PNG.sync.read(readFileSync(new URL('../../claudeville/assets/sprites/props/prop.windmillSails.png', import.meta.url)));
+    assert.deepEqual([strip.width, strip.height], [8 * 112, 112]);
+    const { host, landmarks } = world();
+    const mill = landmarks.buildSprites().find((sprite) => sprite.id === 'prop.windmill');
+    host._lastAtmosphere = { weather: { windX: 0.9, seed: 7 } };
+    let frame = mill.sailFrame();
+    let steppedAt = -Infinity;
+    const gaps = [];
+    for (let t = 0; t <= 120_000; t += 25) {
+        host.motionTimeMs = t;
+        const next = mill.sailFrame();
+        if (next === frame) continue;
+        assert.equal(next, (frame + 1) % 8, `one frame at a time (${t} ms)`);
+        gaps.push(t - steppedAt);
+        frame = next;
+        steppedAt = t;
+    }
+    assert.ok(gaps.length > 8, `a gust turns the sails (${gaps.length} steps)`);
+    assert.ok(gaps.every((gap) => gap >= 125), 'never faster than 8 fps');
+    assert.ok(gaps.includes(125), 'a held gust turns them at exactly 8 fps');
+
+    host._lastAtmosphere = { weather: { windX: 0.05 } };
+    for (let t = 120_000; t <= 130_000; t += 25) {
+        host.motionTimeMs = t;
+        assert.equal(mill.sailFrame(), frame, 'calm air holds the frame they stopped on');
+    }
+    host.motionScale = 0;
+    assert.equal(mill.sailFrame(), 0, 'reduced motion holds frame 0');
+});
+
+// MB-5 — while an account spends its glass's stream runs (3 phases at
+// 2 fps); a still reading, a reset, the shroud, the cord or reduced motion
+// keep today's static cell.
+test('a spending account runs its glass\'s stream at 2 fps for ten minutes, never under reduced motion', () => {
+    const { host, landmarks, belfry } = world();
+    const t0 = Date.now() - 400_000; // the cache reads the wall clock
+    landmarks.setUsage(usage(0.27, 16), t0);
+    assert.equal(belfry.streamPhase('claude', t0), null, 'a first reading is no spend');
+    landmarks.setUsage(usage(0.31, 16), t0 + 300_000);
+    const now = t0 + 300_000;
+    const phases = [];
+    for (let t = 0; t < 3000; t += 250) {
+        host.motionTimeMs = t;
+        phases.push(belfry.streamPhase('claude', now));
+    }
+    assert.deepEqual(phases, [0, 0, 1, 1, 2, 2, 0, 0, 1, 1, 2, 2]);
+    assert.equal(belfry.streamPhase('codex', now), null, 'the other account holds still');
+    assert.equal(belfry.streamPhase('claude', now + BELFRY_DRAIN_MS), null, 'ten minutes after the rise');
+
+    belfry._getCachedCanvas();
+    const draws = [];
+    belfry._paint({ drawImage: (...args) => draws.push(args) }, 1000, 500);
+    const [fw] = BELFRY_GLASS_FRAME;
+    assert.equal(draws[0][1], belfryStreamCell('claude', 4, belfry.streamPhase('claude')) * fw, 'the stream cell of its level');
+    assert.equal(draws[1][1], (BELFRY_GLASS_STATES.length + BELFRY_GLASS_STATES.indexOf('l5')) * fw);
+
+    host.motionScale = 0;
+    assert.equal(belfry.streamPhase('claude', now), null, 'reduced motion keeps the static stream');
+    host.motionScale = 1;
+    landmarks.setUsage(usage(0.31, 'limit'), now + 1000);
+    landmarks.setUsage(usage(0.31, 'limit'), now + 2000);
+    assert.equal(belfry.streamPhase('codex', now + 2000), null, 'the spent glass has no stream');
+});
+
+test('the baked strip holds every state of both glasses, then their running streams', () => {
     const strip = PNG.sync.read(readFileSync(new URL(`../../claudeville/assets/sprites/props/${GLASS}.png`, import.meta.url)));
     const [fw, fh] = BELFRY_GLASS_FRAME;
-    assert.deepEqual([strip.width, strip.height], [fw * BELFRY_GLASS_STATES.length * 2, fh]);
-    const opaque = (cell) => {
-        let n = 0;
-        for (let y = 0; y < fh; y++) for (let x = 0; x < fw; x++) if (strip.data[(y * strip.width + cell * fw + x) * 4 + 3]) n++;
-        return n;
+    const cells = 2 * (BELFRY_GLASS_STATES.length + BELFRY_LEVELS * BELFRY_STREAM_PHASES);
+    assert.deepEqual([strip.width, strip.height], [fw * cells, fh]);
+    const texels = (cell) => {
+        const out = [];
+        for (let y = 0; y < fh; y++) for (let x = 0; x < fw; x++) out.push(...strip.data.subarray((y * strip.width + cell * fw + x) * 4, (y * strip.width + cell * fw + x) * 4 + 4));
+        return out;
     };
-    for (let cell = 0; cell < BELFRY_GLASS_STATES.length * 2; cell++) assert.ok(opaque(cell) > 200, `cell ${cell} is painted`);
+    const opaque = (cell) => texels(cell).filter((_, i) => i % 4 === 3 && _ > 0).length;
+    for (let cell = 0; cell < cells; cell++) assert.ok(opaque(cell) > 200, `cell ${cell} is painted`);
+    for (const [g, account] of ['claude', 'codex'].entries()) {
+        for (let level = 1; level <= BELFRY_LEVELS; level++) {
+            const still = texels(g * BELFRY_GLASS_STATES.length + BELFRY_GLASS_STATES.indexOf(`l${level}`));
+            for (let phase = 0; phase < BELFRY_STREAM_PHASES; phase++) {
+                const run = texels(belfryStreamCell(account, level, phase));
+                let differ = 0;
+                for (let i = 0; i < run.length; i += 4) if (run[i] !== still[i] || run[i + 1] !== still[i + 1] || run[i + 2] !== still[i + 2]) differ++;
+                assert.ok(differ >= 1 && differ <= 8, `${account} l${level} phase ${phase}: only stream texels change (${differ})`);
+            }
+        }
+    }
 });

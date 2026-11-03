@@ -29,10 +29,20 @@
 //        house lavender (`--cv-purple` #b79ae6, the calm account hue of Q3).
 //      - `unknown`: a canvas shroud over the glass: no reading, no claim.
 //      - `peak`: the interior in C4 cream, the reset moment's one cream frame.
-// The roof is harmonized afterwards, like every isle landmark's:
+//      Then (MB-5) the running streams: per glass, per level l1–l5, the level's
+//      cell with its stream in BELFRY_STREAM_PHASES phases, every third texel
+//      of the stream showing the glass and that gap one row lower each phase,
+//      so the sand reads as falling at 2 fps (`belfryStreamCell` order).
+// The roof is harmonized afterwards, like every isle landmark's, then the
+// silhouette takes its ink line (MB-2):
 //   node scripts/sprites/harmonize-roofs.mjs --building=prop.hourglassBelfry
+//   node scripts/sprites/outline-landmarks.mjs --id=prop.hourglassBelfry
 //
-// Usage: node scripts/sprites/bake-hourglass-belfry.mjs [--preview=<dir>]
+// `--strip` bakes the glass strip alone, measuring the glasses on the
+// finished base, which it leaves as it is (its roof lift and ink line
+// included); it needs no raw candidate.
+//
+// Usage: node scripts/sprites/bake-hourglass-belfry.mjs [--strip] [--preview=<dir>]
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -44,11 +54,14 @@ import {
     BELFRY_GLASS_FRAME,
     BELFRY_GLASS_ORIGINS,
     BELFRY_GLASS_STATES,
+    BELFRY_STREAM_PHASES,
+    belfryStreamCell,
 } from '../../claudeville/src/presentation/character-mode/IsleLandmarks.js';
 
 const args = process.argv.slice(2);
 const previewArg = args.find((arg) => arg.startsWith('--preview='));
 const previewDir = previewArg ? previewArg.slice('--preview='.length) : null;
+const stripOnly = args.includes('--strip');
 const RAW = join(repoRoot, 'output', 'landmarks', 'prop.hourglassBelfry.a.raw');
 const PROPS = join(repoRoot, 'claudeville', 'assets', 'sprites', 'props');
 
@@ -232,8 +245,9 @@ function sandTone(glass, x, y, surface) {
     return glass.sand.body;
 }
 
-// One state's texels for a glass: Map(`x,y` base-local) -> rgb.
-function glassState(glass, state) {
+// One state's texels for a glass: Map(`x,y` base-local) -> rgb. `phase` (a
+// level's running stream, MB-5) leaves every third stream texel as glass.
+function glassState(glass, state, phase = null) {
     const out = new Map();
     const put = (x, y, rgb) => out.set(`${x},${y}`, rgb);
     for (const y of glass.ys) {
@@ -265,7 +279,9 @@ function glassState(glass, state) {
     // The stream: through the neck down to the mound while sand remains.
     if (level > 0) {
         const pileTop = glass.bottom[glass.bottom.length - pileRows] ?? glass.ys.at(-1) + 1;
-        for (let y = glass.neck[0]; y < pileTop; y++) put(glass.neckX, y, glass.sand.light);
+        for (let y = glass.neck[0]; y < pileTop; y++) {
+            if (phase === null || (y - glass.neck[0]) % BELFRY_STREAM_PHASES !== phase) put(glass.neckX, y, glass.sand.light);
+        }
     }
     if (state === 'limit') cord(glass, put);
     return out;
@@ -344,38 +360,51 @@ function finish() {
             if ((s < 0.18 && l > 0.38) || (s < 0.36 && l > 0.42 && hue >= 15 && hue <= 75)) setRgb(png, x, y, snap(ASHLAR, [r, g, b]));
         }
     }
-    writeFileSync(join(PROPS, 'prop.hourglassBelfry.png'), PNG.sync.write(png));
+    if (!stripOnly) writeFileSync(join(PROPS, 'prop.hourglassBelfry.png'), PNG.sync.write(png));
     return { png, glasses, filled };
+}
+
+// `--strip`: the finished base's glasses (each painted as empty glass inside
+// the same ink outline the candidate's interiors were found by).
+function measureFinished() {
+    const png = PNG.sync.read(readFileSync(join(PROPS, 'prop.hourglassBelfry.png')));
+    return { png, glasses: GLASSES.map((spec) => measureGlass(png, spec)), filled: 0 };
 }
 
 function bakeStrip(glasses) {
     const [fw, fh] = BELFRY_GLASS_FRAME;
-    const strip = new PNG({ width: fw * BELFRY_GLASS_STATES.length * glasses.length, height: fh });
-    glasses.forEach((glass, g) => {
+    const cells = glasses.length * (BELFRY_GLASS_STATES.length + BELFRY_LEVELS * BELFRY_STREAM_PHASES);
+    const strip = new PNG({ width: fw * cells, height: fh });
+    const paint = (glass, cellIndex, texels, label) => {
         const [ox, oy] = BELFRY_GLASS_ORIGINS[glass.account];
-        BELFRY_GLASS_STATES.forEach((state, s) => {
-            const cell = (g * BELFRY_GLASS_STATES.length + s) * fw;
-            for (const [key, rgb] of glassState(glass, state)) {
-                const [x, y] = key.split(',').map(Number);
-                const lx = x - ox;
-                const ly = y - oy;
-                if (lx < 0 || ly < 0 || lx >= fw || ly >= fh) throw new Error(`${glass.account} ${state}: texel ${x},${y} falls outside its cell`);
-                setRgb(strip, cell + lx, ly, rgb);
+        for (const [key, rgb] of texels) {
+            const [x, y] = key.split(',').map(Number);
+            const lx = x - ox;
+            const ly = y - oy;
+            if (lx < 0 || ly < 0 || lx >= fw || ly >= fh) throw new Error(`${glass.account} ${label}: texel ${x},${y} falls outside its cell`);
+            setRgb(strip, cellIndex * fw + lx, ly, rgb);
+        }
+    };
+    glasses.forEach((glass, g) => {
+        BELFRY_GLASS_STATES.forEach((state, s) => paint(glass, g * BELFRY_GLASS_STATES.length + s, glassState(glass, state), state));
+        for (let level = 1; level <= BELFRY_LEVELS; level++) {
+            for (let phase = 0; phase < BELFRY_STREAM_PHASES; phase++) {
+                paint(glass, belfryStreamCell(glass.account, level, phase), glassState(glass, `l${level}`, phase), `l${level} stream ${phase}`);
             }
-        });
+        }
     });
     writeFileSync(join(PROPS, 'prop.hourglassBelfryGlass.png'), PNG.sync.write(strip));
     return strip;
 }
 
 mkdirSync(PROPS, { recursive: true });
-const { png, glasses, filled } = finish();
+const { png, glasses, filled } = stripOnly ? measureFinished() : finish();
 const strip = bakeStrip(glasses);
 console.log(`prop.hourglassBelfry: ${png.width}x${png.height}, ${filled} stage texels filled`);
 for (const glass of glasses) {
     console.log(`  ${glass.account}: rows ${glass.ys[0]}-${glass.ys.at(-1)}, neck ${glass.neck.join('/')} at x ${glass.neckX}, bulbs ${glass.top.length}+${glass.bottom.length} rows, x ${glass.x0}-${glass.x1}`);
 }
-console.log(`prop.hourglassBelfryGlass: ${strip.width}x${strip.height} (${BELFRY_GLASS_STATES.length} states x ${glasses.length} glasses)`);
+console.log(`prop.hourglassBelfryGlass: ${strip.width}x${strip.height} (${BELFRY_GLASS_STATES.length} states and ${BELFRY_LEVELS * BELFRY_STREAM_PHASES} stream cells x ${glasses.length} glasses)`);
 if (previewDir) {
     mkdirSync(previewDir, { recursive: true });
     writeFileSync(join(previewDir, 'prop.hourglassBelfry.png'), PNG.sync.write(png));

@@ -28,8 +28,14 @@
 //
 // Usage:
 //   node scripts/sprites/harmonize-roofs.mjs [--building=<id>] [--dry-run] [--out=<dir>]
+//   node scripts/sprites/harmonize-roofs.mjs --shift [--building=<id>] [--dry-run] [--out=<dir>]
 //   node scripts/sprites/harmonize-roofs.mjs --check
 // Apply is idempotent: texels already on the target ramp are never remapped.
+// `--shift` (MB-2) moves a roof that is already on `roofSlate` along it
+// instead: every roofSlate texel in the roof mask steps by the same number
+// of stops (clamped at the ramp's ends), so its most common one lands on
+// `bodyStop` and the courses keep their steps. It is how a changed
+// `bodyStop` reaches a harmonized roof, and a re-run moves nothing.
 // `--check` fails when a landmark's roof (or the chapel's stone) has a texel
 // off its ramp; run it after any regeneration so the family cannot drift.
 // `PROP_TARGETS` (B3-05) brings the isle landmark props under the same rule.
@@ -43,6 +49,7 @@ import { loadSpriteManifest, spritesRoot } from './manifest-utils.mjs';
 const args = process.argv.slice(2);
 const dryRun = args.includes('--dry-run');
 const check = args.includes('--check');
+const shift = args.includes('--shift');
 const outDir = args.find((arg) => arg.startsWith('--out='))?.slice('--out='.length);
 const only = args.find((arg) => arg.startsWith('--building='))?.slice('--building='.length);
 
@@ -90,15 +97,18 @@ const PROP_TARGETS = {
             keep: [{ rect: [23, 77, 41, 101] }, { rect: [89, 75, 100, 93] }],
         },
     },
-    // The cap only: the tower's cool mortar is slate-hued too.
+    // The cap only: the tower's cool mortar is slate-hued too. MB-2 — the
+    // body is the family's main tile (stop 6, like the Tavern's), lifted from
+    // stop 4 with `--shift`; the cap's two lightest courses meet on stop 7.
     'prop.windmill': {
-        bodyStop: 4,
+        bodyStop: 6,
         region: [{ poly: [[63, 24], [33, 60], [34, 69], [64, 78], [95, 69], [96, 60]] }],
     },
     // The pyramid roof only, inside its cornice: the stage's dark stone and
     // the cornice shadows are slate-hued too, and the glasses lie below it.
+    // MB-2 — on stop 6 like the windmill's cap (lifted with `--shift`).
     'prop.hourglassBelfry': {
-        bodyStop: 4,
+        bodyStop: 6,
         region: [{ poly: [[64, 14], [25, 52], [64, 74], [102, 52]] }],
     },
 };
@@ -112,6 +122,7 @@ const toHex = (k) => `#${k.toString(16).padStart(6, '0')}`;
 const luma = (r, g, b) => 0.299 * r + 0.587 * g + 0.114 * b;
 
 const ROOF = ART_RAMPS.roofSlate.map(hex);
+const ROOF_STOP = new Map(ROOF.map((c, stop) => [key(...c), stop]));
 const ROOF_OK = new Set([...ART_RAMPS.roofSlate, ...ART_RAMPS.slate, ...ART_RAMPS.wetSlate].map((h) => key(...hex(h))));
 
 function hsv(r, g, b) {
@@ -237,6 +248,27 @@ function ratioLut(base, mask, ramp, bodyStop, done) {
         for (let s = 1; s < ramp.length; s++) if (Math.abs(rampLuma[s] - want) < Math.abs(rampLuma[best] - want)) best = s;
         lut.set(k, ramp[best]);
     }
+    return lut;
+}
+
+// `--shift` LUT: the masked roofSlate colours, each `bodyStop − (the body's
+// stop)` stops along the ramp, clamped; empty when the body is there. The
+// body is the most common one off the ramp's two end stops, where a clamp
+// merges courses (so a re-run finds the same body and moves nothing).
+function shiftLut(base, mask, bodyStop) {
+    const counts = new Map();
+    for (let i = 0; i < mask.length; i++) {
+        if (!mask[i]) continue;
+        const k = key(base.data[i * 4], base.data[i * 4 + 1], base.data[i * 4 + 2]);
+        if (ROOF_STOP.has(k)) counts.set(k, (counts.get(k) || 0) + 1);
+    }
+    const lut = new Map();
+    const inner = [...counts].filter(([k]) => ROOF_STOP.get(k) > 0 && ROOF_STOP.get(k) < ROOF.length - 1);
+    if (!inner.length) return lut;
+    const body = inner.sort((a, b) => b[1] - a[1])[0][0];
+    const steps = bodyStop - ROOF_STOP.get(body);
+    if (!steps) return lut;
+    for (const k of counts.keys()) lut.set(k, ROOF[Math.max(0, Math.min(ROOF.length - 1, ROOF_STOP.get(k) + steps))]);
     return lut;
 }
 
@@ -391,8 +423,8 @@ for (const [id, spec] of [...Object.entries(TARGETS), ...Object.entries(PROP_TAR
     const occ = occluderOf(id);
     const passes = [];
     const roof = roofMask(base, occ, spec.keep, spec.region);
-    passes.push({ name: 'roof', mask: roof, lut: ratioLut(base, roof, ROOF, spec.bodyStop, ROOF_OK) });
-    if (spec.stone) {
+    passes.push({ name: 'roof', mask: roof, lut: shift ? shiftLut(base, roof, spec.bodyStop) : ratioLut(base, roof, ROOF, spec.bodyStop, ROOF_OK) });
+    if (spec.stone && !shift) {
         const stone = stoneMask(base, occ, spec.stone.keep, roof);
         const masonry = familyMasonry(spec.stone.reference);
         const reference = wallTexels(spec.stone.reference).map((c) => luma(...c));
