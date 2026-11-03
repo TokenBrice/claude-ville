@@ -25,6 +25,9 @@
 // ground axis), v = straight up. Frame k is the cross turned 22.5 deg * k, so
 // the 4-frame loop is one 90-degree period of the four-fold sail cross.
 //
+// Afterwards: harmonize-roofs.mjs (the roofs onto roofSlate), then
+// outline-landmarks.mjs (MB-2: the windmill's 1px ink line).
+//
 // Usage: node scripts/sprites/finish-isle-landmarks.mjs [--preview=<dir>]
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';

@@ -29,8 +29,10 @@
 //        house lavender (`--cv-purple` #b79ae6, the calm account hue of Q3).
 //      - `unknown`: a canvas shroud over the glass: no reading, no claim.
 //      - `peak`: the interior in C4 cream, the reset moment's one cream frame.
-// The roof is harmonized afterwards, like every isle landmark's:
+// The roof is harmonized afterwards, like every isle landmark's, then the
+// silhouette takes its ink line (MB-2):
 //   node scripts/sprites/harmonize-roofs.mjs --building=prop.hourglassBelfry
+//   node scripts/sprites/outline-landmarks.mjs --id=prop.hourglassBelfry
 //
 // Usage: node scripts/sprites/bake-hourglass-belfry.mjs [--preview=<dir>]
 
