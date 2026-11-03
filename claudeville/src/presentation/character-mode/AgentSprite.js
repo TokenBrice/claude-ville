@@ -1144,6 +1144,7 @@ export class AgentSprite {
         getRoutingContext = null,
         getTileType = null,
         motionClock = null,
+        getSpeakerTag = null,
         // VB-15 — the renderer places a new body itself (the gate or Portal
         // arrival), which drops any route picked here; it picks from there.
         deferInitialTarget = false,
@@ -1306,6 +1307,8 @@ export class AgentSprite {
         // AG-5 — this lead's first live child observed waiting on the
         // operator or errored (its sprite), else null (_risenForChild).
         this.getBlockedChild = typeof getBlockedChild === 'function' ? getBlockedChild : null;
+        // EF-4 — the renderer's roster-aware speaker tag for a name.
+        this.getSpeakerTag = typeof getSpeakerTag === 'function' ? getSpeakerTag : null;
         this._risenFacing = false;
         this._subagentWait = null;
         // W4.3 / W4.4 / W4.8 — the living-crowd routine (_advanceCrowdRoutine).
@@ -6765,6 +6768,9 @@ export class AgentSprite {
 
     thoughtSpeakerTag() {
         const name = this.agent?.name || this.agent?.displayName || '';
+        // EF-4 — beside the live roster a fleet's shared words drop away
+        // (lane-01-light → 01L); a lone sprite keeps the first three letters.
+        if (this.getSpeakerTag) return this.getSpeakerTag(name) || '';
         if (name !== this._speakerTagName) {
             this._speakerTagName = name;
             this._speakerTag = speakerTagFor(name);

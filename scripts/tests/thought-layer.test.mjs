@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
 import { AgentSprite } from '../../claudeville/src/presentation/character-mode/AgentSprite.js';
 import {
-    createThoughtColumn, layoutThoughtColumn, needsConfidenceMark, thoughtLeader,
+    createThoughtColumn, layoutThoughtColumn, needsConfidenceMark, speakerTagFor, speakerTagsFor, thoughtLeader,
     THOUGHT_CANDIDATE_COUNT, THOUGHT_CANDIDATE_SLOT, THOUGHT_CANDIDATE_LATERAL, THOUGHT_HEAD,
 } from '../../claudeville/src/presentation/character-mode/ThoughtColumn.js';
 import { LABEL_INK, paintThoughtPlate } from '../../claudeville/src/presentation/character-mode/WorldLabelKit.js';
@@ -355,4 +355,60 @@ test('the chat bubble is a carved plate with a notch, in whole pixels only', () 
     assert.equal(pixels.get('0,-2'), LABEL_INK.outline, 'the notch tip');
     assert.equal(pixels.get('-16,-20'), LABEL_INK.outline, 'the left outline');
     assert.equal(pixels.get('-15,-20'), '#f2d36b', 'the trim ring');
+});
+
+// EF-4 — realistic rosters: the user's lanes, implementation lanes, Codex
+// thread names and job labels, and plain or numbered villager names.
+const ROSTERS = [
+    [['lane-01-light', 'lane-02-isle', 'lane-03-craft', 'lane-04-folk', 'main'], ['01L', '02I', '03C', '04F', 'MAI']],
+    [['impl-frost-reeds', 'impl-landmarks', 'impl-rare-skies', 'impl-sea-light', 'impl-turning-clock', 'impl-turning-woods', 'impl-water', 'impl-folk'],
+        ['FRO', 'LAN', 'RAR', 'SEA', 'CLO', 'WOO', 'WAT', 'FOL']],
+    [['Sync local main with remote', 'Sync local main with origin', 'Review and fix pending issues'], ['REM', 'ORI', 'REV']],
+    [['enchant-review-ef1', 'enchant-review-mb2', 'diag-sprite-01', 'diag-sprite-02'], ['EF1', 'MB2', 'D01', 'D02']],
+    [['Atlas', 'Atlas 2', 'Atlas 3', 'Nova', 'claude-ville-18'], ['ATL', 'AT2', 'AT3', 'NOV', 'CLA']],
+    [['claude-ville-18', 'claude-ville-19'], ['C18', 'C19']],
+];
+
+for (const [names, expected] of ROSTERS) {
+    test(`speaker tags tell ${names[0]} and its roster apart`, () => {
+        const tags = speakerTagsFor(names);
+        assert.deepEqual(names.map(name => tags.get(name)), expected);
+        // Deterministic in the set of names, not their order.
+        assert.deepEqual(speakerTagsFor([...names].reverse()), tags);
+    });
+}
+
+test('speaker tags stay distinct, three cells at most, and a lone name keeps its first letters', () => {
+    const fleet = ['impl-sea-light', 'impl-search', 'impl-seam', 'Atlas', 'Atlas 2', 'lane-01-light', 'lane-02-isle', ''];
+    const tags = speakerTagsFor(fleet);
+    // Still meeting after the shared words drop: the first in name order
+    // keeps the tag, the others step their last cell.
+    assert.deepEqual([tags.get('impl-sea-light'), tags.get('impl-seam'), tags.get('impl-search')], ['SEA', 'SE2', 'SE3']);
+    const shown = fleet.filter(Boolean).map(name => tags.get(name));
+    assert.equal(new Set(shown).size, shown.length);
+    for (const tag of shown) assert.ok(tag.length >= 1 && tag.length <= 3, tag);
+    assert.equal(tags.get(''), '');
+    for (const name of ['lane-01-light', 'claude-ville-18', 'Atlas 2', 'Žarko']) {
+        assert.equal(speakerTagsFor([name]).get(name), speakerTagFor(name));
+    }
+    assert.equal(speakerTagFor('lane-01-light'), 'LAN');
+});
+
+test("the renderer's tag table follows the live roster and holds between roster changes", (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: 1_000_000 });
+    const renderer = Object.create(IsometricRenderer.prototype);
+    const sprite = (name) => ({ agent: { name } });
+    renderer.agentSprites = new Map([['a', sprite('lane-01-light')]]);
+    assert.equal(renderer._speakerTagFor('lane-01-light'), 'LAN');
+    renderer.agentSprites.set('b', sprite('lane-02-isle'));
+    // Re-read at most once a second.
+    assert.equal(renderer._speakerTagFor('lane-01-light'), 'LAN');
+    assert.equal(renderer._speakerTagFor('lane-02-isle'), 'LAN');
+    t.mock.timers.tick(1000);
+    assert.equal(renderer._speakerTagFor('lane-01-light'), '01L');
+    assert.equal(renderer._speakerTagFor('lane-02-isle'), '02I');
+    const table = renderer._speakerTags.tags;
+    t.mock.timers.tick(1000);
+    renderer._speakerTagFor('lane-01-light');
+    assert.equal(renderer._speakerTags.tags, table, 'an unchanged roster keeps its table');
 });
