@@ -2981,7 +2981,7 @@ export class IsometricRenderer {
                     this.gateTransits.delete(agentId);
                 }
             }
-            for (const agentId of departures) this._removeAgentSprite(agentId);
+            for (const agentId of departures) this._finishGateDeparture(agentId);
         }
     }
 
@@ -4177,7 +4177,9 @@ export class IsometricRenderer {
             return true;
         }
 
-        this.arrivalDeparture?.recordDeparture?.(agent, lastTile, { now, parentAlive: false });
+        // EF-2 — a body that walks out takes the column at the gate, whose
+        // residue is its sigil; without motion the sigil lands where it stands.
+        if (this.motionScale <= 0) this.arrivalDeparture?.recordDeparture?.(agent, lastTile, { now, parentAlive: false });
         return false;
     }
 
@@ -4303,6 +4305,22 @@ export class IsometricRenderer {
         if (!sprite || sprite._archiveAnim || this._isGateTransit(sprite, 'departure')) return;
         const handled = this._beginRelationshipDeparture(agent);
         if (!handled) this._beginAgentGateDeparture(agent);
+    }
+
+    // EF-2 — a walk out has reached the gate's arch mouth: the column takes
+    // the body home from its own captured silhouette, so the body goes in
+    // this frame with no fade. Without a column (reduced motion, six at the
+    // gate already) the sigil lands here alone and the body keeps its fade.
+    _finishGateDeparture(agentId) {
+        const sprite = this.agentSprites.get(agentId);
+        if (!sprite) return;
+        const now = performance.now();
+        const column = this.arrivalDeparture?.beginDeparture?.(sprite.agent, sprite, { now }) || null;
+        if (!column) {
+            const tile = typeof sprite._screenToTile === 'function' ? sprite._screenToTile(sprite.x, sprite.y) : null;
+            this.arrivalDeparture?.recordDeparture?.(sprite.agent, tile, { now });
+        }
+        this._removeAgentSprite(agentId, { fade: !column });
     }
 
     // Session came back while its villager was still walking to the gate:
@@ -5534,7 +5552,7 @@ export class IsometricRenderer {
                 sprite._lastSortedY = sprite.y;
             }
         }
-        for (const agentId of completedDepartures) this._removeAgentSprite(agentId);
+        for (const agentId of completedDepartures) this._finishGateDeparture(agentId);
         if (shouldResort) {
             this._markSpritesDirty();
         }
