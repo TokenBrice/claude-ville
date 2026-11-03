@@ -3887,6 +3887,7 @@ export class IsometricRenderer {
                 getTileType: (tileX, tileY) => this._surfaceMaterialAt(tileX, tileY),
                 motionClock: this._motionClock,
                 getSpeakerTag: (name) => this._speakerTagFor(name),
+                getSnowBucket: () => this.propWinter?.bucket || 0,
                 // VB-15 — _beginAgentGateArrival places it below.
                 deferInitialTarget: true,
             });
