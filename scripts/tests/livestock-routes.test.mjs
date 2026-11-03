@@ -41,13 +41,14 @@ const buildings = BUILDING_DEFS.map((def) => {
 });
 
 // Every distinct drawn pose over an hour of the route's walk clock (each
-// loop is a few minutes), as WildlifeRenderer places it.
+// loop is a few minutes), as WildlifeRenderer places it: walking, held, and
+// held in the wet tail to a wind from either side (QW-3).
 function routePoses(route) {
     const poses = new Map();
     const pose = {};
-    for (const still of [false, true]) {
+    for (const [still, tailWind] of [[false, 0], [true, 0], [true, 0.9], [true, -0.9]]) {
         for (let clockMs = 0; clockMs < 3600000; clockMs += 100) {
-            livestockPose(route, clockMs, { still }, pose);
+            livestockPose(route, clockMs, { still, tailWind }, pose);
             const world = tileToWorld(pose.tileX, pose.tileY);
             const x = Math.round(world.x);
             const y = Math.round(world.y);
@@ -92,4 +93,25 @@ test('no livestock pose draws over a building it stands behind', () => {
         }
     }
     assert.ok(behind > 0, 'the paddock stands behind Command, so some pose must be checked');
+});
+
+test('held in the wet, livestock stand tail to the rain (QW-3)', () => {
+    // Every actor but the cow (Command's west tower) turns both ways.
+    assert.deepEqual(LIVESTOCK_ROUTES.filter((route) => route.tailFaces).map((route) => route.id), ['cow']);
+    const pose = {};
+    for (const route of LIVESTOCK_ROUTES) {
+        for (let clockMs = 0; clockMs < 600000; clockMs += 7919) {
+            // Walking, or dry (no tail wind), the route's own facing holds.
+            const free = livestockPose(route, clockMs, { still: true }, {}).dir;
+            for (const [tailWind, lee] of [[0.9, 'east'], [-1.3, 'west']]) {
+                livestockPose(route, clockMs, { still: true, tailWind }, pose);
+                const turns = !route.tailFaces || route.tailFaces.includes(lee);
+                assert.equal(pose.dir, turns ? lee : free, `${route.id} held tail to a wind blowing ${lee}`);
+                assert.equal(pose.walking, false);
+            }
+            assert.equal(livestockPose(route, clockMs, { still: true, tailWind: 0 }, pose).dir, free);
+            const walking = livestockPose(route, clockMs, { still: false }, {}).dir;
+            assert.equal(livestockPose(route, clockMs, { still: false, tailWind: 0.9 }, pose).dir, walking);
+        }
+    }
 });

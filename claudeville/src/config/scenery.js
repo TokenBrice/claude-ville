@@ -973,10 +973,13 @@ export const SHORE_FAUNA = [
 // (livestock-routes.test.mjs): since CM-1 put Command at 13,14, its west
 // tower and spire rise in front of the paddock's east end, so the cow and
 // the hens keep west of that tower. `face` is the facing held at a point
-// when it differs from the arriving walk. Listed in draw priority: the zoom
-// cap keeps the first N (livestockBudget).
+// when it differs from the arriving walk. `tailFaces` lists the downwind
+// facings an actor may hold tail to the rain (QW-3; both when omitted): a
+// cow facing west would cross that tower, so it turns tail only to a wind
+// toward the east. Listed in draw priority: the zoom cap keeps the first N
+// (livestockBudget).
 export const LIVESTOCK_ROUTES = [
-    { id: 'cow', sprite: 'prop.fauna.cow', speed: 0.16, holdS: [34, 70], phase: 0.12, kind: 'grazer',
+    { id: 'cow', sprite: 'prop.fauna.cow', speed: 0.16, holdS: [34, 70], phase: 0.12, kind: 'grazer', tailFaces: ['east'],
         points: [{ tileX: 9.25, tileY: 13.95 }, { tileX: 9.35, tileY: 14.2 }] },
     { id: 'sheep', sprite: 'prop.fauna.sheep', speed: 0.18, holdS: [26, 58], phase: 0.57, kind: 'grazer',
         points: [{ tileX: 8.72, tileY: 14.41, face: 'east' }, { tileX: 8.75, tileY: 14.63, face: 'south' }] },
