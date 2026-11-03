@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-11-03-windmill-sails"
+  assetVersion: "2026-11-03-portal-slumber"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -2159,8 +2159,10 @@ buildings:
     layers:
       # The vortex texels of base.png, cut out as a static overlay that is a
       # fixture: identical to the base by day, it emits its own violet through
-      # no occupancy gate, so the vortex keeps glowing on an empty night (like
-      # the Pharos lamp) while the runes and crystals wait for real work.
+      # no occupancy gate. MB-4 (D4) — only while the Portal is awake (a
+      # working visitor, `work.portal`): an empty Portal slumbers under
+      # `slumber` and this overlay stands down, so the vortex no longer glows
+      # on an empty night; the slumbering eye keeps a low ember instead.
       portalGlow:
         tool: hand-authored
         prompt: "the vortex texels of base.png (x 129-184, y 68-188) as an exact overlay; authored, not generated"
@@ -2191,6 +2193,20 @@ buildings:
         height: 264
         anchor: [156, 202]
         cycle: { gate: work.portal, frames: 8, bandPx: 4, riseStepPx: 2, fixedBelowRankFrac: 0.3333, rampStops: 6, heightFromMask: true, shearPx: 0, hz: 6 }
+      # MB-4 (D4) — the Portal slumbers until someone travels, the Forge's
+      # 4.6 rest recipe: the vortex is painted into base.png, so a Portal with
+      # no working visitor lays this mask over exactly those texels, two
+      # courses down the vortex's own violet ramp with chroma held (baked by
+      # scripts/sprites/bake-portal-slumber.mjs). A part only while the Portal
+      # slumbers; the slumbering eye's two courses keep a low ember while the
+      # lamps burn (BuildingVisualRegistry `rest.ember`).
+      slumber:
+        tool: hand-authored
+        prompt: "slumbering portal vortex mask: the vortex texels of base.png restated two courses down the vortex's own violet luma ramp, chroma held; authored, not generated"
+        width: 312
+        height: 264
+        anchor: [156, 202]
+        materialClass: glass-rune
     # Vortex heart and the right crystal brazier.
     emitters:
       sparkle: [156, 128]

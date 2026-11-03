@@ -79,6 +79,7 @@ import {
     getBuildingApertureProfile,
     getBuildingAssayProfile,
     getBuildingPlanTabProfile,
+    getBuildingRestCovers,
     getBuildingRestEmber,
     getBuildingRestLayer,
     getBuildingRoomProfile,
@@ -2877,8 +2878,12 @@ export class BuildingSprite {
         if (!baseAnchor) return out;
         const originX = Math.round(wx - baseAnchor[0]);
         const originY = Math.round(wy - baseAnchor[1]);
+        // MB-4 — a resting building's mask stands in for the overlays it
+        // `covers` (the Portal's `portalGlow`): they draw only while awake.
+        const covers = getBuildingRestCovers(type);
+        const resting = covers.length > 0 && this._restMaskShowing(building);
         for (const [name, layer] of Object.entries(entry.layers)) {
-            if (!layer || name === 'base') continue;
+            if (!layer || name === 'base' || (resting && covers.includes(name))) continue;
             const id = `${entry.id}.${name}`;
             let image;
             let frame;
@@ -5767,8 +5772,9 @@ export class BuildingSprite {
     // 4.6 / B3-03' — whether a building's authored rest mask lies over its
     // painted fire now. The Forge: the canonical empty village, or a hearth
     // watched fall quiet for ten minutes (4.4). The Tavern: no patron and no
-    // worker, at any hour (its hearth burns for its patrons). Never read from
-    // mood or director state.
+    // worker, at any hour (its hearth burns for its patrons). MB-4 — the
+    // Portal: no working visitor (`work.portal`, the gate its runes run on),
+    // at any hour. Never read from mood or director state.
     _restMaskShowing(building) {
         const type = building?.type;
         if (!type || !getBuildingRestLayer(type)) return false;
@@ -5777,6 +5783,7 @@ export class BuildingSprite {
             const working = this._visitorStatusByType?.get(type)?.working || 0;
             return working + (this._patronIdsByType?.get(type)?.size || 0) === 0;
         }
+        if (type === 'portal') return !this.partGates?.isOpen?.('work.portal');
         return false;
     }
 

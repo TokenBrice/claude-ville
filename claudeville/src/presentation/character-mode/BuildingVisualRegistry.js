@@ -400,6 +400,14 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
                 { offset: [-16, 3], w: 32, h: 1 },
             ],
         },
+        // MB-4 (D4) — the Portal slumbers until someone travels: the vortex
+        // is painted into base.png, so an empty Portal lays the authored
+        // `slumber.png` (two courses down the vortex's own violet ramp, chroma
+        // held) over exactly those texels, and the `portalGlow` fixture it
+        // `covers` stands down. It wakes on `work.portal` only (web tools).
+        // The ember floor: the slumbering eye's two courses glow low while
+        // the lamps burn, as the banked Forge's do.
+        rest: { layer: 'slumber', covers: ['portalGlow'], ember: { colors: ['#b775f6', '#9a58e6'], strength: 0.4 } },
         // The right tower's gilt finial.
         pennant: { at: [222, 62] },
         // 2026-10-01 re-author: `gate` is the vortex threshold on the dais
@@ -654,6 +662,13 @@ export function isBuildingApertureLayer(type, layerName) {
 export function getBuildingRestLayer(type) {
     const layer = getBuildingVisual(type)?.rest?.layer;
     return typeof layer === 'string' && layer ? layer : null;
+}
+
+// MB-4 — the static overlay layers a rest mask stands in for (the Portal's
+// `portalGlow`): they draw only while the building is awake.
+export function getBuildingRestCovers(type) {
+    const covers = getBuildingVisual(type)?.rest?.covers;
+    return Array.isArray(covers) ? covers : [];
 }
 
 // VQ-8 — the rest mask's ember floor `{ colors, strength }`, or null: which
