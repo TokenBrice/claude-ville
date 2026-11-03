@@ -3,20 +3,34 @@
 // scenes and calls these; `scripts/tests/golden-hours-metrics.test.mjs`
 // covers them. The committed curve is `golden-hours.json`: numbers only.
 
-// The scene matrix: fixed hours and weathers on one pinned date. Weather
-// profiles carry an explicit seed so cloud courses are the same every run.
+import { gradeKeyMinute } from '../../claudeville/src/presentation/character-mode/GradeEvaluator.js';
+
+// The scene matrix: weathers at fixed places in the colour script on one
+// pinned date. Weather profiles carry an explicit seed so cloud courses are
+// the same every run.
 const CLEAR = Object.freeze({ type: 'clear', intensity: 0.18, cloudCover: 0.08, precipitation: 0, fog: 0, windX: 0.1, seed: 4242 });
 // The user's real 2026-10-24 19:15 timeline state (storm 0.90, cover 0.97).
 const STORM = Object.freeze({ type: 'storm', intensity: 0.9, cloudCover: 0.97, precipitation: 0.92, fog: 0.18, windX: -0.6, seed: 4242 });
 
+// LA-2 — the village's day follows the real sun, so a clock hour is dusk on
+// one date and night on another. Each scene is pinned by grade key instead:
+// `offsetMin` from `key` on the pinned date, which keeps it on the same
+// stretch of the colour script whatever the date and zone. The ids keep the
+// scene's hour on the authored day (`clear-1915` is blue hour less 30 min).
 export const GOLDEN_SCENES = Object.freeze([
-  Object.freeze({ id: 'clear-0500', hour: 5, weather: CLEAR }),
-  Object.freeze({ id: 'clear-1200', hour: 12, weather: CLEAR }),
-  Object.freeze({ id: 'clear-1915', hour: 19.25, weather: CLEAR }),
-  Object.freeze({ id: 'storm-1915', hour: 19.25, weather: STORM }),
-  Object.freeze({ id: 'clear-2300', hour: 23, weather: CLEAR }),
-  Object.freeze({ id: 'storm-0200', hour: 2, weather: STORM }),
+  Object.freeze({ id: 'clear-0500', key: 'pre-dawn', offsetMin: 30, weather: CLEAR }),
+  Object.freeze({ id: 'clear-1200', key: 'noon', offsetMin: -30, weather: CLEAR }),
+  Object.freeze({ id: 'clear-1915', key: 'blue-hour', offsetMin: -30, weather: CLEAR }),
+  Object.freeze({ id: 'storm-1915', key: 'blue-hour', offsetMin: -30, weather: STORM }),
+  Object.freeze({ id: 'clear-2300', key: 'night', offsetMin: 60, weather: CLEAR }),
+  Object.freeze({ id: 'storm-0200', key: 'deep-night', offsetMin: 0, weather: STORM }),
 ]);
+
+/** The scene's hour of the day (0..24) for a day shift `{ sunriseShift, sunsetShift }`. */
+export function sceneHour(scene, shift = undefined) {
+  const minute = gradeKeyMinute(scene.key, shift) + scene.offsetMin;
+  return (((minute % 1440) + 1440) % 1440) / 60;
+}
 
 export const GOLDEN_BACKENDS = Object.freeze(['webgpu', 'webgl', 'canvas']);
 

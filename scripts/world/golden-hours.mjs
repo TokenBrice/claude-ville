@@ -7,9 +7,12 @@
 // data, no bodies), reduced motion from the first frame (the motion clock
 // stays at 0, so the swell, cloud drift and lightning hold still), the
 // atmosphere pinned to one date (`AtmosphereState.update` always sees it) in
-// fixed mode with a forced hour and a seeded weather, the camera pose pinned,
-// the quality ladder held FULL and the mark governor calm. Each scene is
-// captured until two captures 1.2 s apart agree.
+// fixed mode with a seeded weather, the camera pose pinned, the quality
+// ladder held FULL and the mark governor calm. LA-2: the page runs on the
+// user's zone (Europe/Belgrade) so the village keeps that city's real sun on
+// the pinned date, and each scene's hour is its grade key's minute plus its
+// offset (GOLDEN_SCENES). Each scene is captured until two captures 1.2 s
+// apart agree.
 //
 // Backends: WebGPU through the renderer's own `debugCaptureTargets()`
 // composite (headless screenshots miss the WebGPU swap chain), WebGL2 and
@@ -37,6 +40,7 @@ import {
   checkGoldenRun,
   frameMetrics,
   metricsSettled,
+  sceneHour,
 } from './golden-hours-metrics.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -44,6 +48,8 @@ const CURVE_PATH = path.join(HERE, 'golden-hours.json');
 const VIEWPORT = Object.freeze({ width: 1920, height: 1080 });
 // 2026-10-24 12:00 UTC: the season and moon phase every scene sees.
 const PINNED_DATE_MS = Date.UTC(2026, 9, 24, 12, 0, 0);
+// The page's zone: the village keeps this city's real sun (LA-2).
+const TIMEZONE = 'Europe/Belgrade';
 // The village from Command to the Harbor, zoom 1.
 const POSE = Object.freeze({ tile: [18, 20], zoom: 1 });
 const SETTLE_MS = 1200;
@@ -73,7 +79,7 @@ async function openBackend(browser, baseUrl, renderer) {
     viewport: VIEWPORT,
     deviceScaleFactor: 1,
     reducedMotion: 'reduce',
-    timezoneId: 'UTC',
+    timezoneId: TIMEZONE,
   });
   await context.addInitScript(() => {
     try { localStorage.setItem('cv-auto-camera', '0'); } catch {}
@@ -132,8 +138,17 @@ async function openBackend(browser, baseUrl, renderer) {
   }, { pinned: PINNED_DATE_MS, pose: POSE });
   const backend = await page.evaluate(() => {
     const r = window.__claudeVilleApp.renderer;
-    return { gpu: r.gpuWorld?.constructor?.name || null, postFx: Boolean(r.postFx), motionScale: r.motionScale, reason: r.worldBackendReason || null };
+    const solar = r.atmosphereState.snapshot().solar;
+    return {
+      gpu: r.gpuWorld?.constructor?.name || null,
+      postFx: Boolean(r.postFx),
+      motionScale: r.motionScale,
+      reason: r.worldBackendReason || null,
+      zone: solar?.site?.zone || null,
+      shift: solar ? { sunriseShift: solar.sunriseShift, sunsetShift: solar.sunsetShift } : null,
+    };
   });
+  if (!backend.shift) throw new Error(`${renderer}: the atmosphere carries no solar day shift`);
   return { context, page, errors, backend };
 }
 
@@ -166,12 +181,12 @@ async function captureFrame(page, renderer) {
   return decode(await page.locator('#worldStack').screenshot());
 }
 
-async function measureScene(page, renderer, scene, framesDir) {
+async function measureScene(page, renderer, scene, framesDir, hour) {
   await page.evaluate(({ hour, weather }) => {
     const a = window.__claudeVilleApp.renderer.atmosphereState;
     a.setWeather(weather);
     a.setHour(hour);
-  }, scene);
+  }, { hour, weather: scene.weather });
   let previous = null;
   for (let attempt = 0; attempt < MAX_CAPTURES; attempt++) {
     await page.waitForTimeout(SETTLE_MS);
@@ -217,6 +232,7 @@ async function main() {
   const run = {};
   const unavailable = [];
   const backends = {};
+  const sceneHours = {};
   const pageErrors = [];
   let browser = null;
   try {
@@ -235,7 +251,9 @@ async function main() {
       run[renderer] = {};
       try {
         for (const scene of scenes) {
-          run[renderer][scene.id] = await measureScene(opened.page, renderer, scene, options.frames);
+          const hour = sceneHour(scene, opened.backend.shift);
+          sceneHours[scene.id] = Number(hour.toFixed(4));
+          run[renderer][scene.id] = await measureScene(opened.page, renderer, scene, options.frames, hour);
         }
       } finally {
         pageErrors.push(...opened.errors.map(e => `${renderer}: ${e}`));
@@ -256,7 +274,14 @@ async function main() {
     const previous = (() => { try { return JSON.parse(readFileSync(CURVE_PATH, 'utf8')); } catch { return null; } })();
     const clean = Object.fromEntries(Object.entries(run).map(([backend, s]) => [backend,
       Object.fromEntries(Object.entries(s).map(([id, { captures, unsettled: _u, ...m }]) => [id, m]))]));
-    const curve = buildCurve(clean, previous, { viewport: VIEWPORT, pose: POSE, pinnedDate: new Date(PINNED_DATE_MS).toISOString(), region: ISLAND_REGION });
+    const curve = buildCurve(clean, previous, {
+      viewport: VIEWPORT,
+      pose: POSE,
+      pinnedDate: new Date(PINNED_DATE_MS).toISOString(),
+      timezone: TIMEZONE,
+      sceneHours,
+      region: ISLAND_REGION,
+    });
     failures = [...unsettled, ...checkGoldenRun(run, curve, { scenes })];
     if (!unsettled.length) {
       writeFileSync(CURVE_PATH, `${JSON.stringify(curve, null, 2)}\n`);
