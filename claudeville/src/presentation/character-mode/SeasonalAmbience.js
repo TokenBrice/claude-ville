@@ -21,6 +21,18 @@
 // the terrain rebake, so the honest static fallback is nothing (no
 // screen-locked specks). The drift reads only the calendar and the weather,
 // never agent or event state (V3).
+//
+// BI-4 — the fallers (leaves, petals, snow) ride the one wind (`Wind.windAt`
+// at the spawn point, scaled like the chimney smoke), and petals fall only
+// once the blossom is out (`phenologyAt`). A leaf whose fall ends on the
+// river's current (`riverCurrentAt`, the renderer's coast field) falls the
+// whole way and floats downstream, held flat, fading over its last seconds.
+//
+// BI-2 — the Turning Year: `phenologyAt(date)` is the woods' weekly calendar
+// (PHENOLOGY_STAGES), read by FoliageRenderer (turned and shed crowns) and
+// GroundBake (leaf litter, spring petals).
+
+import { windAt } from './Wind.js';
 
 const SPAWNS_PER_SECOND = 2;
 const SEASONAL_TAG = 'seasonal-drift';
@@ -37,6 +49,19 @@ export function seasonalDriftCap(zoom) {
 // The weather layer's own precipitation threshold (WeatherRenderer draws
 // rain, or snow in winter, above it).
 const PRECIPITATING = 0.02;
+// BI-4a — a faller's drift per knot of local wind, world px per 16 ms frame
+// (AtmosphereState's SMOKE_WIND_DRIFT_SCALE: leaves ride the air the smoke
+// shows).
+const DRIFT_WIND_SCALE = 0.5;
+// BI-4b — a river leaf falls at the leaf preset's fastest rate (world px per
+// 16 ms frame), then floats at about half the current course's march
+// (16 px/s), so it steps a texel every 125 ms or slower, for 4–6 s.
+const RIVER_LEAF_FALL = 0.09;
+const RIVER_LEAF_FLOAT = 0.13;
+const RIVER_LEAF_FLOAT_FRAMES = [240, 360];
+// `windAt`'s reused result: scratch, not drift state (module scope keeps the
+// ambience's own fields what they were).
+const _spawnWind = { x: 0, gust: 0 };
 
 const SEASONS = {
     winter: { type: 'snow', token: 'winter' },
@@ -44,6 +69,97 @@ const SEASONS = {
     summer: { type: 'butterfly', token: 'summer' },
     autumn: { type: 'leaf', token: 'autumn' },
 };
+
+// BI-2 — the Turning Year: the woods keep the real calendar in weekly stages
+// (northern hemisphere, about 45° N). Each row holds from its month (0–11)
+// and day until the next row:
+//   turned      the autumn turn's share of the crowns, 0 → 1 through
+//               September and October (1 = today's peak plans);
+//   shed        per deciduous species, the share of crown clumps fallen to
+//               the species' authored bare sheet: birches and poplars first,
+//               oaks last, from mid-October through November; 1 is the bare
+//               sheet. Spring mirrors it as leaf-out from the bare sheet;
+//   blossom     the spring blossom is out (sunlit oaks, petal drift and
+//               litter);
+//   marcescent  young oaks keep a few russet clumps (December);
+//   ground      what GroundBake's base bake keys on: the litter's shed shares
+//               in autumn, 'bud' for a spring before the blossom, else ''
+//               (the season's own ground), so the ground re-renders about
+//               ten times a year. The canopy images and the terrain bake key
+//               on the row's `id` (its water reflections mirror the trees):
+//               18 rows, 14 of them between season changes.
+const SPECIES_SHED = (oak, willow, birch, maple, poplar) => Object.freeze({ oak, willow, birch, maple, poplar });
+const SHED_NONE = SPECIES_SHED(0, 0, 0, 0, 0);
+const SHED_ALL = SPECIES_SHED(1, 1, 1, 1, 1);
+
+function phenologyStage(id, month, day, fields = {}) {
+    const season = seasonForMonth(month).token;
+    const row = { id, month, day, season, turned: season === 'autumn' ? 1 : 0, shed: SHED_NONE, blossom: false, marcescent: false, ...fields };
+    const s = row.shed;
+    row.ground = row.season === 'autumn' ? `shed:${s.oak}/${s.willow}/${s.birch}/${s.maple}/${s.poplar}`
+        : row.season === 'spring' && !row.blossom ? 'bud' : '';
+    return Object.freeze(row);
+}
+
+export const PHENOLOGY_STAGES = Object.freeze([
+    phenologyStage('winter', 0, 1, { shed: SHED_ALL }),
+    phenologyStage('spring-bare', 2, 1, { shed: SHED_ALL }),
+    phenologyStage('leaf-out-1', 2, 22, { shed: SPECIES_SHED(1, 0.6, 0.7, 0.85, 0.8) }),
+    phenologyStage('leaf-out-2', 3, 5, { shed: SPECIES_SHED(0.8, 0.25, 0.35, 0.5, 0.45), blossom: true }),
+    phenologyStage('leaf-out-3', 3, 19, { shed: SPECIES_SHED(0.4, 0, 0, 0.15, 0.1), blossom: true }),
+    phenologyStage('spring', 4, 3, { blossom: true }),
+    phenologyStage('summer', 5, 1),
+    phenologyStage('turning-1', 8, 1, { turned: 0.25 }),
+    phenologyStage('turning-2', 8, 15, { turned: 0.5 }),
+    phenologyStage('turning-3', 9, 1, { turned: 0.75 }),
+    // Peak colour: today's autumn crowns, whole.
+    phenologyStage('peak', 9, 13),
+    phenologyStage('fall-1', 9, 20, { shed: SPECIES_SHED(0.05, 0.1, 0.25, 0.2, 0.25) }),
+    phenologyStage('fall-2', 9, 27, { shed: SPECIES_SHED(0.15, 0.2, 0.45, 0.4, 0.45) }),
+    phenologyStage('fall-3', 10, 3, { shed: SPECIES_SHED(0.3, 0.35, 0.7, 0.6, 0.7) }),
+    phenologyStage('fall-4', 10, 10, { shed: SPECIES_SHED(0.5, 0.55, 0.85, 0.8, 0.85) }),
+    phenologyStage('fall-5', 10, 17, { shed: SPECIES_SHED(0.7, 0.75, 0.95, 0.9, 0.95) }),
+    phenologyStage('fall-6', 10, 24, { shed: SPECIES_SHED(0.85, 0.9, 1, 1, 1) }),
+    phenologyStage('winter-marcescent', 11, 1, { shed: SHED_ALL, marcescent: true }),
+]);
+const SUMMER_STAGE = PHENOLOGY_STAGES.find((row) => row.id === 'summer');
+
+function stageForDay(month, day) {
+    let stage = PHENOLOGY_STAGES[0];
+    for (const row of PHENOLOGY_STAGES) {
+        if (row.month > month || (row.month === month && row.day > day)) break;
+        stage = row;
+    }
+    return stage;
+}
+
+/**
+ * BI-2 — the woods' weekly stage (a PHENOLOGY_STAGES row) for a local Date.
+ * A missing or invalid date reads as summer, like the renderer's season.
+ */
+export function phenologyAt(date) {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return SUMMER_STAGE;
+    return stageForDay(date.getMonth(), date.getDate());
+}
+
+/**
+ * The stage for the atmosphere snapshot's local date (summer without one).
+ * The renderer asks every frame: a repeat of the last `clock.localDate` is a
+ * string compare.
+ */
+let _lastLocalDate = null;
+let _lastStage = SUMMER_STAGE;
+export function phenologyForAtmosphere(atmosphere) {
+    const localDate = atmosphere?.clock?.localDate;
+    if (localDate && localDate === _lastLocalDate) return _lastStage;
+    const day = calendarDayOf(atmosphere);
+    const stage = day ? stageForDay(day.month, day.day) : SUMMER_STAGE;
+    if (localDate) {
+        _lastLocalDate = localDate;
+        _lastStage = stage;
+    }
+    return stage;
+}
 
 // Season token for the current atmosphere, sharing this module's month→season
 // mapping so the renderer's seasonal terrain rebake stays in lockstep with the
@@ -74,6 +190,8 @@ export class SeasonalAmbience {
         viewportProvider = null,
         anchorsProvider = null,
         cameraGetter = null,
+        motionTimeGetter = null,
+        riverCurrentAt = null,
     } = {}) {
         this.particleSystem = particleSystem;
         this.atmosphereStateGetter = typeof atmosphereStateGetter === 'function'
@@ -97,6 +215,15 @@ export class SeasonalAmbience {
         this.cameraGetter = typeof cameraGetter === 'function'
             ? cameraGetter
             : () => null;
+        // BI-4 — the MotionClock time the gust field is read at, and the
+        // river's downstream direction (unit, world px) at a world point on
+        // its current, or null.
+        this.motionTimeGetter = typeof motionTimeGetter === 'function'
+            ? motionTimeGetter
+            : () => 0;
+        this.riverCurrentAt = typeof riverCurrentAt === 'function'
+            ? riverCurrentAt
+            : null;
         this.enabled = true;
         this._spawnAccumulator = 0;
     }
@@ -126,13 +253,15 @@ export class SeasonalAmbience {
 
     // The season whose drift may fall this frame, or null when the budget
     // says none: wide zoom, night, rain or storm for the fair-weather drifts,
-    // and a dry minute for winter snow.
+    // a dry minute for winter snow, and a spring before the blossom (BI-2).
     _driftSeason() {
         const camera = this.cameraGetter();
         if (!camera || !(Number(camera.zoom) >= SEASONAL_DRIFT_MIN_ZOOM)) return null;
         const atmosphere = this.atmosphereStateGetter() || null;
-        const season = seasonForMonth(monthFromAtmosphere(atmosphere));
+        const day = calendarDayOf(atmosphere);
+        const season = seasonForMonth(day?.month);
         if (!season) return null;
+        if (season.type === 'petal' && !stageForDay(day.month, day.day).blossom) return null;
         const phase = atmosphere?.phase || atmosphere?.clock?.phase || 'day';
         if (phase === 'night') return null;
         const weather = atmosphere?.weather;
@@ -145,12 +274,49 @@ export class SeasonalAmbience {
 
     _spawnDriftParticle(season) {
         const camera = this.cameraGetter();
-        const screen = this._sampleAnchor(season.type) || this._sampleViewport();
+        const anchor = this._sampleAnchor(season.type);
+        const screen = anchor || this._sampleViewport();
         const world = camera.screenToWorld(screen.x, screen.y);
-        this.particleSystem.spawn(season.type, Math.round(world.x), Math.round(world.y), 1, {
+        const x = Math.round(world.x);
+        const y = Math.round(world.y);
+        // BI-4a — leaves, petals and snow lean downwind with the local wind,
+        // gusts included; butterflies fly their own way.
+        const windX = season.type === 'butterfly' ? 0
+            : windAt(x, y, this.motionTimeGetter(), this.atmosphereStateGetter()?.weather, _spawnWind).x * DRIFT_WIND_SCALE;
+        if (season.type === 'leaf' && anchor?.lift > 0 && this._spawnRiverLeaf(x, y, anchor.lift, windX)) return;
+        this.particleSystem.spawn(season.type, x, y, 1, {
             tag: SEASONAL_TAG,
             spread: 2,
+            windX,
         });
+    }
+
+    // BI-4b — a leaf from a canopy `lift` world px above its tree's ground
+    // line, drifting `windX` a frame: when its fall would end on the river's
+    // current it falls the whole way (straight, no jitter, so the landing is
+    // known at spawn), then floats downstream held flat, fading only on the
+    // water. True when it spawned one.
+    _spawnRiverLeaf(x, y, lift, windX) {
+        if (!this.riverCurrentAt) return false;
+        const fall = lift / RIVER_LEAF_FALL;
+        const landY = y + lift;
+        const current = this.riverCurrentAt(x + windX * fall, landY);
+        if (!current) return false;
+        const float = RIVER_LEAF_FLOAT_FRAMES[0] + Math.random() * (RIVER_LEAF_FLOAT_FRAMES[1] - RIVER_LEAF_FLOAT_FRAMES[0]);
+        this.particleSystem.spawn('leaf', x, y, 1, {
+            tag: SEASONAL_TAG,
+            spread: 0,
+            speed: 0,
+            lateral: 0,
+            windX,
+            driftY: RIVER_LEAF_FALL,
+            life: fall + float,
+            landY,
+            afloat: { x: current.x * RIVER_LEAF_FLOAT, y: current.y * RIVER_LEAF_FLOAT },
+            fadeLife: float,
+            sortY: landY,
+        });
+        return true;
     }
 
     // Pick a screen-space anchor for types that read as coming from the
@@ -174,7 +340,8 @@ export class SeasonalAmbience {
 
         const p = points[Math.floor(Math.random() * points.length)];
         if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) return null;
-        return { x: p.x, y: p.y };
+        // A canopy anchor's `lift`: world px down to its tree's ground line.
+        return { x: p.x, y: p.y, lift: Number.isFinite(p.lift) ? p.lift : 0 };
     }
 
     _sampleViewport() {
@@ -202,22 +369,28 @@ export class SeasonalAmbience {
 }
 
 function monthFromAtmosphere(atmosphere) {
+    return calendarDayOf(atmosphere)?.month ?? null;
+}
+
+// The atmosphere's local calendar day `{ month (0–11), day (1–31) }`, or null.
+function calendarDayOf(atmosphere) {
     if (!atmosphere) return null;
     const clock = atmosphere.clock || null;
     const date = clock?.date;
     if (date instanceof Date && !Number.isNaN(date.getTime())) {
-        return date.getMonth();
+        return { month: date.getMonth(), day: date.getDate() };
     }
     const localDate = clock?.localDate || atmosphere?.effectiveDate;
     if (typeof localDate === 'string') {
         const parts = localDate.split('-');
         if (parts.length >= 2) {
             const m = Number(parts[1]);
-            if (Number.isFinite(m) && m >= 1 && m <= 12) return m - 1;
+            const d = Number(parts[2]);
+            if (Number.isFinite(m) && m >= 1 && m <= 12) return { month: m - 1, day: Number.isFinite(d) && d >= 1 ? d : 1 };
         }
     }
     if (atmosphere.effectiveDate instanceof Date && !Number.isNaN(atmosphere.effectiveDate.getTime())) {
-        return atmosphere.effectiveDate.getMonth();
+        return { month: atmosphere.effectiveDate.getMonth(), day: atmosphere.effectiveDate.getDate() };
     }
     return null;
 }

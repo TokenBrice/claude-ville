@@ -2,8 +2,9 @@
 //
 // C-W3 — the one wind. Every consumer that leans, drifts or sways (tree lean
 // frames, chimney smoke, rain lean, cloud-shadow courses, the sky's icon
-// clouds; flags and the sea's cat's paws later) reads it here, so they agree
-// in direction and scale with the same weather.
+// clouds, the seasonal drift's falling leaves, petals and snow (BI-4a); flags
+// and the sea's cat's paws later) reads it here, so they agree in direction
+// and scale with the same weather.
 //
 // Truth (V3): the wind is a pure function of the village's own weather
 // (`atmosphere.weather`, itself a pure function of the local date and minute),

@@ -8,12 +8,15 @@ import { IsometricRenderer } from '../../claudeville/src/presentation/character-
 import { eventBus } from '../../claudeville/src/domain/events/DomainEvent.js';
 
 const inputs = { assetVersion: 'art-v1', configHash: 'config-v1', season: 'summer', sceneryRevision: 0, snowBucket: 0, frost: 0,
+    // BI-2 — the woods' stage id (a renderer without a date reads summer).
+    phenology: 'summer',
     bounds: { x: -1600, y: -100, w: 3200, h: 2000 }, dpr: 1 };
 
 for (const [name, change] of [
     ['assetVersion', { assetVersion: 'art-v2' }], ['configHash', { configHash: 'config-v2' }], ['season', { season: 'winter' }],
     ['sceneryRevision', { sceneryRevision: 1 }], ['snowBucket', { snowBucket: 1 }], ['frost', { frost: 1 }],
     ['algorithmVersion', { algorithmVersion: 'next-bake' }], ['DPR', { dpr: 2 }],
+    ['phenology', { phenology: 'fall-3' }],
     ...['x', 'y', 'w', 'h'].map(key => [`bounds.${key}`, { bounds: { ...inputs.bounds, [key]: inputs.bounds[key] + 2 } }]),
 ]) {
     test(`persistent terrain key invalidates ${name}`, () => {
@@ -23,7 +26,7 @@ for (const [name, change] of [
 
 test('key excludes clock/readiness generations but refuses missing deterministic inputs', () => {
     assert.equal(terrainArtifactKey(inputs), terrainArtifactKey({ ...inputs, time: 123, sheetsReady: 2, generation: 8 }));
-    for (const missing of ['assetVersion', 'configHash', 'season', 'bounds', 'dpr']) assert.equal(terrainArtifactKey({ ...inputs, [missing]: undefined }), null);
+    for (const missing of ['assetVersion', 'configHash', 'season', 'bounds', 'dpr', 'phenology']) assert.equal(terrainArtifactKey({ ...inputs, [missing]: undefined }), null);
     assert.equal(terrainArtifactKey({ ...inputs, snowBucket: 5 }), null);
 });
 

@@ -52,13 +52,13 @@ import { WildlifeRenderer } from './WildlifeRenderer.js';
 import { FoliageRenderer } from './FoliageRenderer.js';
 import { PropWinter, WINTER_PROPS } from './PropWinter.js';
 import { WALL_BRAZIER, WALL_IVY_SPRITE, WALL_SPEC, WALL_STAIR, drawWallLantern, lanternLit, paintWallRun, wallLanternLight, wallRunLayout } from './VillageWall.js';
-import { SeasonalAmbience, seasonTokenForAtmosphere } from './SeasonalAmbience.js';
+import { SeasonalAmbience, phenologyForAtmosphere, seasonTokenForAtmosphere } from './SeasonalAmbience.js';
 import { ambientEventsForHost, ambientDebugSnapshot } from './AmbientEvents.js';
 import { ChimneySmoke } from './ChimneySmoke.js';
 import { setPennantWeather } from './PixelPennant.js';
 import { openGroundTiles } from './AmbientGround.js';
 import { TERRAIN_HAZE_COURSES, installGroundBake } from './GroundBake.js';
-import { OCEAN_HORIZON_WORLD_Y, coastDistanceProbe, drawCanvasWaterMood, drawOuterOcean, registerCoastBake } from './CoastBake.js';
+import { OCEAN_HORIZON_WORLD_Y, coastDistanceProbe, drawCanvasWaterMood, drawOuterOcean, registerCoastBake, riverCurrentAt } from './CoastBake.js';
 import { frostQuarterOf, snowBucketOf } from './GroundState.js';
 import {
     TerrainArtifactStore, terrainArtifactConfiguration, terrainArtifactInputsSettled, terrainArtifactKey, terrainContentHash,
@@ -586,6 +586,10 @@ export class IsometricRenderer {
             // camera maps them into world space and gates the zoom budget.
             anchorsProvider: (kind) => this._seasonalDriftAnchors(kind),
             cameraGetter: () => this.camera,
+            // BI-4 — the gust field's clock, and the river's current where a
+            // falling leaf lands (the coast bake's water fields).
+            motionTimeGetter: () => this.motionTimeMs || 0,
+            riverCurrentAt: (x, y) => riverCurrentAt(this, x, y),
         });
         this.landmarkActivity = new LandmarkActivity({ world: this.world, sprites: this.sprites });
         this.chronicleStore = options.chronicleStore || null;
@@ -8094,6 +8098,13 @@ export class IsometricRenderer {
         return seasonTokenForAtmosphere(atmosphere) || 'summer';
     }
 
+    // BI-2 — the woods' weekly stage for the same date (a frozen
+    // PHENOLOGY_STAGES row; summer without one): the canopies and the
+    // ground's leaf litter follow it.
+    _currentPhenology() {
+        return phenologyForAtmosphere(this._lastAtmosphere ?? this.atmosphereState?.snapshot?.() ?? null);
+    }
+
     // C2 — screen-space spawn anchors for SeasonalAmbience drift. 'canopy'
     // returns visible tree-canopy tops (leaves/petals fall from them), 'flower'
     // returns visible flower tiles (butterflies rise from them). Memoized per
@@ -8127,8 +8138,10 @@ export class IsometricRenderer {
             const p = camera.worldToScreen(wx, wy);
             if (p.x < -20 || p.y < -20 || p.x > vp.width + 20 || p.y > vp.height + 20) continue;
             // Up onto the canopy: 60 % of the sprite's height (30 texels on a
-            // 51-px oak, the crown of a tall woodland tree, plan 5.5).
-            out.push({ x: p.x, y: p.y - Math.round(-(tree.bounds?.top ?? -50) * 0.6) * zoom });
+            // 51-px oak, the crown of a tall woodland tree, plan 5.5); `lift`
+            // is that height in world px, down to the tree's ground line.
+            const lift = Math.round(-(tree.bounds?.top ?? -50) * 0.6);
+            out.push({ x: p.x, y: p.y - lift * zoom, lift });
             if (out.length >= 48) break;
         }
         return out;
@@ -8178,7 +8191,11 @@ export class IsometricRenderer {
         // canopies (5.1) drop their images once when it changes.
         const season = this._currentSeasonToken();
         this._terrainSeason = season;
-        this.foliageRenderer.setSeason(season);
+        // BI-2 — the weekly stage keys the bake (the water reflections mirror
+        // the canopies, GroundBake's litter reads it), and the canopies
+        // rebuild once when it changes.
+        this._terrainPhenology = this._currentPhenology();
+        this.foliageRenderer.setSeason(season, this._terrainPhenology);
         const key = this._terrainBakeKey(bounds, dpr, season);
         if (this.terrainCache && this.terrainCacheKey === key) {
             return { canvas: this.terrainCache, bounds };
@@ -8245,7 +8262,8 @@ export class IsometricRenderer {
         const atmosphere = this._lastAtmosphere ?? this.atmosphereState?.snapshot?.();
         const ground = this._groundState ?? groundStateForAtmosphere(atmosphere);
         return { assetVersion: this.assets?.assetVersion, bounds, dpr, season,
-            sceneryRevision: this._terrainSceneryRevision || 0, snowBucket: snowBucketOf(ground?.snowCover), frost: frostQuarterOf(ground) };
+            sceneryRevision: this._terrainSceneryRevision || 0, snowBucket: snowBucketOf(ground?.snowCover), frost: frostQuarterOf(ground),
+            phenology: phenologyForAtmosphere(atmosphere).id };
     }
 
     _persistedTerrainKey(bounds, dpr, season) {
@@ -8445,8 +8463,10 @@ export class IsometricRenderer {
     }
 
     // 0.3 — the bake is keyed only on what changes its pixels: the cache
-    // bounds, asset availability, the season, the scenery revision and each
-    // registered bake pass's own revision. Time of day is owned by the grade
+    // bounds, asset availability, the season and its BI-2 stage (the water
+    // reflections mirror the canopies; GroundBake's base re-keys only on the
+    // litter's `ground` part), the scenery revision and each registered bake
+    // pass's own revision. Time of day is owned by the grade
     // (C2) on both backends and nothing in the bake reads the camera, so a
     // phase boundary or a zoom step reuses the 26 MB surface instead of
     // rebaking and re-uploading it.
@@ -8455,7 +8475,7 @@ export class IsometricRenderer {
         for (const pass of this._terrainBakePasses || []) {
             passes += `${pass.id}:${pass.revision?.(this) ?? 0},`;
         }
-        return `${bounds.x},${bounds.y},${bounds.w},${bounds.h}@${dpr}|${this.assets ? 'assets' : 'fallback'}|season:${season}|scenery:${this._terrainSceneryRevision || 0}|passes:${passes}`;
+        return `${bounds.x},${bounds.y},${bounds.w},${bounds.h}@${dpr}|${this.assets ? 'assets' : 'fallback'}|season:${season}|stage:${this._currentPhenology().id}|scenery:${this._terrainSceneryRevision || 0}|passes:${passes}`;
     }
 
     // The plug-in point for later terrain bakes (splat ground, coast field).

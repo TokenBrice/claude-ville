@@ -155,6 +155,14 @@ class Particle {
         // 6.4 — the chimney mouth a smoke puff rose from: its alpha quantum
         // steps with height above it, and it is gone at SMOKE_COLUMN_PX.
         this.originY = Number.isFinite(opts.originY) ? opts.originY : y;
+        // BI-4b — a leaf that lands on water: at its ground line `landY` it
+        // stops falling and drifts at `afloat` (world px per 16 ms frame),
+        // held flat. It fades over its last `fadeLife` frames (default: its
+        // whole life, the linear fade every particle has).
+        this.landY = Number.isFinite(opts.landY) ? opts.landY : null;
+        this.afloat = opts.afloat || null;
+        this.floating = false;
+        this.fadeLife = opts.fadeLife > 0 ? Math.min(opts.fadeLife, life) : life;
     }
 
     update(dt = 16) {
@@ -163,6 +171,12 @@ class Particle {
         this.y += this.vy * frameScale;
         if (this.gravity) {
             this.vy += PARTICLE_GRAVITY * frameScale;
+        }
+        if (this.landY !== null && !this.floating && this.y >= this.landY) {
+            this.y = this.landY;
+            this.vx = this.afloat?.x || 0;
+            this.vy = this.afloat?.y || 0;
+            this.floating = true;
         }
         this.life -= frameScale;
         if (this.shape === 'smoke' && this.originY - this.y >= SMOKE_COLUMN_PX) this.life = 0;
@@ -179,7 +193,7 @@ class Particle {
         const age = this.maxLife - this.life;
         const cx = Math.round(this.x);
         const cy = Math.round(this.y);
-        let alpha = (this.life / this.maxLife) * this.alpha;
+        let alpha = Math.min(1, this.life / this.fadeLife) * this.alpha;
         let color = this.lit && this.gradedColor ? this.gradedColor : this.color;
         let flags = this.lit
             ? (this.gradedColor ? 0 : GPU_PARTICLE_FLAGS.graded)
@@ -222,7 +236,7 @@ class Particle {
             top = cy - (height >> 1);
             width = wingW * 2 + 1;
         } else if (this.shape === 'tumble') {
-            const upright = motionEnabled && Math.floor(age * this.animRate + this.phase) % 2 === 1;
+            const upright = motionEnabled && !this.floating && Math.floor(age * this.animRate + this.phase) % 2 === 1;
             left = cx;
             top = cy;
             width = upright ? 1 : 2;
@@ -272,7 +286,7 @@ class Particle {
     // halo are rounded to the world texel grid so no sub-pixel square blurs or
     // mixes under the camera zoom. `writeGpuInstance` cuts the same rects.
     draw(ctx, motionEnabled = true) {
-        const baseAlpha = (this.life / this.maxLife) * this.alpha;
+        const baseAlpha = Math.min(1, this.life / this.fadeLife) * this.alpha;
         const age = this.maxLife - this.life;
         const color = this.color;
         const cx = Math.round(this.x);
@@ -306,7 +320,7 @@ class Particle {
         // 6.7 — a leaf or petal tumbles: a 2×1 / 1×2 art-pixel pair that
         // alternates every few frames (held flat when motion is off).
         if (this.shape === 'tumble') {
-            const upright = motionEnabled && Math.floor(age * this.animRate + this.phase) % 2 === 1;
+            const upright = motionEnabled && !this.floating && Math.floor(age * this.animRate + this.phase) % 2 === 1;
             ctx.globalAlpha = baseAlpha;
             ctx.fillStyle = color;
             ctx.fillRect(cx, cy, upright ? 1 : 2, upright ? 2 : 1);
@@ -996,8 +1010,13 @@ export class ParticleSystem {
         const gravity = options.gravity ?? preset.gravity;
         const direction = options.direction || preset.direction;
         // 6.7 — sideways jitter for up/down presets (a chimney column wants
-        // almost none; the legacy default is ±0.3).
-        const lateral = Number.isFinite(preset.lateral) ? preset.lateral : 0.3;
+        // almost none; the legacy default is ±0.3). A spawn may override it
+        // (BI-4b: a river leaf falls straight to a landing known at spawn).
+        const lateral = Number.isFinite(options.lateral) ? options.lateral
+            : Number.isFinite(preset.lateral) ? preset.lateral : 0.3;
+        // BI-4b — the ground line a falling leaf lands at, its drift there and
+        // its fade (see Particle).
+        const landY = Number.isFinite(options.landY) ? options.landY : null;
         // 0.6 — the painter depth the whole burst sorts at (its emitter's).
         const sortY = particleSortY(type, y, options.sortY);
         const lit = LIT_PRESET_SET.has(type);
@@ -1058,6 +1077,7 @@ export class ParticleSystem {
             // Drawn shapes get a deterministic flap/tumble phase seeded from
             // the spawn rng so animation never calls Math.random in draw.
             const opts = { lit, tag, baseColor, sortY, originY: y, gradedColor: gradedColors ? gradedColors[colorIndex] : null };
+            if (landY !== null) Object.assign(opts, { landY, afloat: options.afloat, fadeLife: options.fadeLife });
             if (shape === 'butterfly' || shape === 'tumble' || shape === 'puff' || shape === 'smoke') {
                 opts.shape = shape;
                 opts.phase = rng() * Math.PI * 2;
