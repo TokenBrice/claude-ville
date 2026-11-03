@@ -145,7 +145,7 @@ async function openBackend(browser, baseUrl, renderer) {
       motionScale: r.motionScale,
       reason: r.worldBackendReason || null,
       zone: solar?.site?.zone || null,
-      shift: solar ? { sunriseShift: solar.sunriseShift, sunsetShift: solar.sunsetShift } : null,
+      shift: solar ? { sunriseShift: solar.sunriseShift, sunsetShift: solar.sunsetShift, goldenShift: solar.goldenShift } : null,
     };
   });
   if (!backend.shift) throw new Error(`${renderer}: the atmosphere carries no solar day shift`);
