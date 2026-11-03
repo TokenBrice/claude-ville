@@ -681,11 +681,21 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     }
     markFrameTiming(frameTimer, 'horizon');
     renderer._gpuHazeStrength = 0;
+    // LA-6a / LA-6b — the sky's rare phenomena on the far sea: world stamps
+    // on the ground plane right after the terrain, on both paths (null on
+    // an ordinary day).
+    renderer._farSeaLayers = renderer.skyRenderer?.farSeaLayers?.({
+        atmosphere,
+        timeMs: renderer.motionTimeMs,
+        motionScale: renderer.motionScale ?? 1,
+        waterFields: renderer._coastBake?.waterFields || null,
+    }) || null;
     if (!gpuWorldActive) {
         renderer._drawTerrain(
             ctx,
             frameTimer ? label => markFrameTiming(frameTimer, label) : null,
         );
+        drawFarSeaLayers(ctx, renderer._farSeaLayers);
         // W8.5a — the offshore backdrop on the sea, in its painter order,
         // under puddles, cloud shadows, haze, fog and every island drawable.
         drawOffshoreScenery(ctx, renderer);
@@ -1766,6 +1776,20 @@ function drawGroundHaze(renderer, ctx, atmosphere, viewport) {
     ctx.globalCompositeOperation = 'source-over';
     ctx.globalAlpha = strength;
     ctx.drawImage(field.canvas, field.x, field.y, field.w, field.h);
+    ctx.restore();
+}
+
+// LA-6 — the Canvas twin of the resident far-sea records: each stamp at its
+// world rect, nearest-neighbour, at its alpha.
+function drawFarSeaLayers(ctx, layers) {
+    if (!layers?.length) return;
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    ctx.globalCompositeOperation = 'source-over';
+    for (const layer of layers) {
+        ctx.globalAlpha = Math.max(0, Math.min(1, layer.alpha));
+        ctx.drawImage(layer.canvas, layer.x, layer.y, layer.width, layer.height);
+    }
     ctx.restore();
 }
 

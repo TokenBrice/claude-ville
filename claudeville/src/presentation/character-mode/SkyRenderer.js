@@ -7,7 +7,9 @@ import { AtmosphereState, sampleSkyLadder } from './AtmosphereState.js';
 import { canvasPixelCount, releaseCanvasBackingStore } from './CanvasBudget.js';
 import { ungradeRgb } from './CanvasGrade.js';
 import { applyGradeToRgb } from './GradeEvaluator.js';
-import { OCEAN_HORIZON_WORLD_Y } from './CoastBake.js';
+import { COAST_FIELD_FLAGS, OCEAN_HORIZON_WORLD_Y } from './CoastBake.js';
+import { lookStrength } from './LookStrengths.js';
+import { MAP_SIZE, TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
 import { cloudCourseDrift } from './Wind.js';
 import { groundOptionsFor, rainClearedMinutesAgo } from './GroundState.js';
 import {
@@ -210,6 +212,53 @@ const AURORA_RIBBONS = Object.freeze([
 const AURORA_MAX_CELL = 2;
 const AURORA_BAND_SHARE = 0.8;
 
+// LA-6 (D6) — the sky comes down to the sea. At the user's AUTO width the
+// sky is off-frame, so two of its rare phenomena also lie on the open sea
+// north of the island: world stamps on the coast field's 2-px cells, masked
+// to open sea when baked (never a lagoon, pond, river or covered cell) and
+// laid on the ground plane right after the terrain, so the island and every
+// sprite, hull and bird on it stand in front (`farSeaLayers`; Canvas and
+// both resident backends draw the same stamps). Both read the village's
+// clock and weather only, never agent state (V3), and both ship behind a
+// look strength (0 = today's frame).
+const FAR_SEA_CELL = 2;
+// LA-6a — the after-rain bow over the far sea (look `la6a`). A clearing
+// qualifies as the sky's bow does (5.8: the 20 minutes after rain, the sun
+// up and below 42°, so the bow stands opposite it), and also the sky has
+// cleared (clear or partly cloudy) and the sun shines (alpha ≥ 0.5). Then a
+// fixed hash of the clearing's own minute picks SEA_BOW_SHARE of them, so a
+// bow holds its whole window or never shows. The arc is the sky bow's six
+// stepped bands with Bayer rims, its apex behind the north shore and its
+// feet fading into the flank seas in three Bayer courses; its centre sits
+// opposite the sun (SEA_BOW_SWEEP across the island-wide frame), and it
+// keeps the sky bow's alpha quanta. The sky bow yields to it by the same
+// strength, so a frame that shows the sky never holds two bows.
+// About 11 clearings a year qualify (2025–2032 census, scripts/tests/
+// rare-skies.test.mjs), so about 5–6 sea bows a year.
+export const SEA_BOW_SHARE = 0.5;
+const SEA_BOW_MIN_SUN_ALPHA = 0.5;
+const SEA_BOW_RADIUS = 880;
+const SEA_BOW_APEX_Y = 24;
+const SEA_BOW_FADE_Y = Object.freeze([300, 440]);
+const SEA_BOW_SWEEP = 1000;
+const SEA_BOW_BAND_CELLS = 5;
+// LA-6b — the aurora sheen on the far sea (look `la6b`): on AURORA_SHEEN_SHARE
+// of the nights the aurora gate opens, by a fixed hash of the night (its
+// evening's date), each sky ribbon lays its reflection on the open sea: its
+// own phase strip mirrored, every third row dropped (the ripple rows), each
+// row shifted by a fixed whole-cell ripple, three Bayer alpha courses by
+// depth (AURORA_SHEEN_COURSES), world-anchored under where the island-wide
+// frame (tile 20,22 at z1, 2508 px) shows its ribbon and mirrored across a
+// nominal sky band. It steps with its sky ribbon (`auroraPhaseIndex`, slow
+// band) and fades in with the stars in three quanta.
+// The sky's aurora opens on about 106 nights a year (most winter nights),
+// so about 7 sheen nights a year: rare, never ordinary.
+export const AURORA_SHEEN_SHARE = 1 / 16;
+const AURORA_SHEEN_COURSES = Object.freeze([0.6, 0.4, 0.22]);
+const AURORA_SHEEN_MATCH = 3;
+const AURORA_SHEEN_SKY_BAND = 560;
+const AURORA_SHEEN_FRAME = Object.freeze({ centreX: -64, width: 2508 });
+
 export function liveTwinkleBudget({ calm = false, motionScale = 1 } = {}) {
     const plan = ornamentPlan({ calm, motionScale, level: 0 });
     if (plan.liveTwinkle === 'off') return { count: 0, rateScale: 0 };
@@ -237,6 +286,42 @@ export function auroraGateOpen(atmosphere) {
     const date = atmosphere.effectiveDate;
     if (!(date instanceof Date) || Number.isNaN(date.getTime())) return false;
     return AURORA_MONTHS.includes(date.getMonth());
+}
+
+// LA-6a — this minute's sea-bow window, or null: `{ since, cleared }`
+// (minutes since the rain cleared, and the clearing's minute of day).
+export function seaBowWindow(atmosphere) {
+    const sun = atmosphere?.sky?.sun;
+    if (!sun?.visible || !(Number(sun.alpha) >= SEA_BOW_MIN_SUN_ALPHA)) return null;
+    const elevation = Number(sun.elevationDeg);
+    if (!(elevation > 0 && elevation < RAINBOW_MAX_SUN_ELEVATION_DEG)) return null;
+    const type = atmosphere.weather?.type;
+    if (type !== 'clear' && type !== 'partly-cloudy') return null;
+    const date = atmosphere.effectiveDate;
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return null;
+    const since = rainClearedMinutesAgo(date, groundOptionsFor(atmosphere));
+    if (since == null) return null;
+    const cleared = date.getHours() * 60 + date.getMinutes() - since;
+    const key = `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}|${cleared}|sea-bow`;
+    return random01(hashString(key), 31) < SEA_BOW_SHARE ? { since, cleared } : null;
+}
+
+// LA-6b — whether tonight is a sheen night: the aurora gate is open and a
+// fixed hash of the night (the evening's date, so it holds past midnight)
+// falls under AURORA_SHEEN_SHARE.
+export function auroraSheenNight(atmosphere) {
+    if (!auroraGateOpen(atmosphere)) return false;
+    const date = atmosphere.effectiveDate;
+    const evening = new Date(date.getFullYear(), date.getMonth(), date.getDate() - (date.getHours() < 12 ? 1 : 0));
+    const key = `${evening.getFullYear()}-${evening.getMonth() + 1}-${evening.getDate()}|aurora-sheen`;
+    return random01(hashString(key), 37) < AURORA_SHEEN_SHARE;
+}
+
+// The bow's alpha quanta over its window (5.8): ⅓ → ⅔ → 1 → ⅔ → ⅓ in 2-minute
+// steps at each end; reduced motion holds ⅔.
+function rainbowQuanta(since, motionScale) {
+    if (motionScale === 0) return 2;
+    return since < 2 || since >= 18 ? 1 : since < 4 || since >= 16 ? 2 : 3;
 }
 
 // W8.8 — ribbon `ribbon`'s phase (0 A, 1 B, 2 C) at motion time `timeMs`:
@@ -1120,9 +1205,10 @@ export class SkyRenderer {
         if (!(date instanceof Date)) return false;
         const since = rainClearedMinutesAgo(date, groundOptionsFor(atmosphere));
         if (since == null) return false;
-        const quanta = motionScale === 0
-            ? 2
-            : since < 2 || since >= 18 ? 1 : since < 4 || since >= 16 ? 2 : 3;
+        const quanta = rainbowQuanta(since, motionScale);
+        // LA-6a — on a sea-bow clearing the sky bow yields to the sea's.
+        const yielded = seaBowWindow(atmosphere) ? lookStrength('la6a') : 0;
+        if (!(yielded < 1)) return false;
         const cell = RAINBOW_CELL_PX;
         const radius = Math.round(clamp(canvas.width * 0.2, 160, 520) / cell) * cell;
         const grade = atmosphere.lightGrade || null;
@@ -1142,7 +1228,7 @@ export class SkyRenderer {
         ctx.clip();
         ctx.imageSmoothingEnabled = false;
         ctx.globalCompositeOperation = 'source-over';
-        ctx.globalAlpha = RAINBOW_MAX_ALPHA * quanta / 3;
+        ctx.globalAlpha = RAINBOW_MAX_ALPHA * quanta / 3 * (1 - yielded);
         ctx.drawImage(this._rainbowStamp.canvas, cx - radius, cy - radius);
         ctx.restore();
         return true;
@@ -1180,6 +1266,126 @@ export class SkyRenderer {
         });
         ctx.restore();
         return true;
+    }
+
+    // LA-6 — this frame's far-sea stamps for the ground pass, in world px:
+    // `[{ id, canvas, key, x, y, width, height, alpha }]` (each canvas one
+    // texel per FAR_SEA_CELL world px), or null on an ordinary day. Both
+    // paths grade the world downstream, so every stamp paints its colours'
+    // preimage. `waterFields` is the coast bake's (null before it lands:
+    // nothing). `timeMs` is the motion clock (held under reduced motion).
+    farSeaLayers({ atmosphere = null, timeMs = null, motionScale = 1, waterFields = null } = {}) {
+        if (!atmosphere || !waterFields?.coastField || typeof document === 'undefined') return null;
+        const layers = this._farSeaLayers || (this._farSeaLayers = []);
+        layers.length = 0;
+        const grade = atmosphere.lightGrade || null;
+        const bowStrength = lookStrength('la6a');
+        const bow = bowStrength > 0 ? seaBowWindow(atmosphere) : null;
+        if (bow) {
+            const sun = atmosphere.sky.sun;
+            const cx = Math.round(((0.5 - clamp(Number(sun.xFrac) || 0.5)) * SEA_BOW_SWEEP) / FAR_SEA_CELL) * FAR_SEA_CELL;
+            const colors = this._farSeaPreimage(grade).bow;
+            const key = `${cx}|${colors.map(rgb => rgb.join(',')).join('|')}|${waterFields.revision}`;
+            if (this._seaBow?.key !== key) {
+                releaseCanvasBackingStore(this._seaBow?.canvas);
+                this._seaBow = { key, ...bakeSeaBowStamp(cx, colors, farSeaMask(waterFields)) };
+            }
+            const stamp = this._seaBow;
+            layers.push({
+                id: 'sea-bow',
+                canvas: stamp.canvas,
+                key,
+                x: stamp.x,
+                y: stamp.y,
+                width: stamp.canvas.width * FAR_SEA_CELL,
+                height: stamp.canvas.height * FAR_SEA_CELL,
+                alpha: RAINBOW_MAX_ALPHA * rainbowQuanta(bow.since, motionScale) / 3 * bowStrength,
+            });
+        }
+        const sheenStrength = lookStrength('la6b');
+        if (sheenStrength > 0 && this.assets && auroraSheenNight(atmosphere)) {
+            const sheen = this._auroraSheen(grade, waterFields);
+            const stars = Number(atmosphere.sky?.starsAlpha) || 0;
+            const quanta = stars >= 0.75 ? 3 : stars >= 0.6 ? 2 : 1;
+            const phaseTime = motionScale > 0 ? timeMs : null;
+            sheen?.ribbons.forEach((ribbon, index) => {
+                const phase = auroraPhaseIndex(index, phaseTime, motionScale);
+                const stamp = ribbon.stamps[phase];
+                layers.push({
+                    id: `aurora-sheen-${index}-${phase}`,
+                    canvas: stamp,
+                    key: sheen.key,
+                    x: ribbon.x,
+                    y: ribbon.y,
+                    width: stamp.width * FAR_SEA_CELL,
+                    height: stamp.height * FAR_SEA_CELL,
+                    alpha: AURORA_ALPHA * quanta / 3 * sheenStrength,
+                });
+            });
+        }
+        return layers.length ? layers : null;
+    }
+
+    // LA-6 — the bow's bands and the aurora's courses as the grade's
+    // preimage bytes (both paths grade the ground downstream), memoized on
+    // the grade's cache key.
+    _farSeaPreimage(grade) {
+        const key = grade?.cacheKey || 'neutral';
+        if (this._farSeaColors?.key === key) return this._farSeaColors;
+        const bytes = hex => ungradeRgb(hexToRgb01(hex), grade).map(c => Math.round(clamp(c) * 255));
+        this._farSeaColors = { key, bow: RAINBOW_BANDS.map(bytes), sheen: AURORA_COURSES.map(bytes) };
+        return this._farSeaColors;
+    }
+
+    // LA-6b — the nine sheen stamps (three ribbons × three phases), rebaked
+    // only when the preimage colours or the coast bake change.
+    _auroraSheen(grade, waterFields) {
+        if (!AURORA_IDS.every(id => this.assets.has(id))) return null;
+        const colors = this._farSeaPreimage(grade).sheen;
+        const key = `${colors.map(rgb => rgb.join(',')).join('|')}|${waterFields.revision}`;
+        if (this._sheen?.key === key) return this._sheen;
+        const images = AURORA_IDS.map(id => this.assets.get(id));
+        if (!images.every(img => img?.width > 0 && img?.height > 0)) return null;
+        this._releaseAuroraSheen();
+        // A canvas read-back un-premultiplies, so a course's RGB may come back
+        // a unit or two off its authored value (the courses' alphas are 217
+        // to 89): each texel takes the nearest authored course within
+        // AURORA_SHEEN_MATCH per channel.
+        const authored = AURORA_SOURCE.map(hex => hexToRgb01(hex).map(channel => Math.round(channel * 255)));
+        const lookup = (r, g, b) => {
+            for (let index = 0; index < authored.length; index++) {
+                const [ar, ag, ab] = authored[index];
+                if (Math.abs(r - ar) <= AURORA_SHEEN_MATCH && Math.abs(g - ag) <= AURORA_SHEEN_MATCH && Math.abs(b - ab) <= AURORA_SHEEN_MATCH) return colors[index];
+            }
+            return null;
+        };
+        const sources = images.map((img) => {
+            const canvas = document.createElement('canvas');
+            canvas.width = img.width;
+            canvas.height = img.height;
+            const sctx = canvas.getContext('2d', { willReadFrequently: true });
+            sctx.drawImage(img, 0, 0);
+            const pixels = sctx.getImageData(0, 0, img.width, img.height);
+            releaseCanvasBackingStore(canvas);
+            return pixels;
+        });
+        const seaAt = farSeaMask(waterFields);
+        const ribbons = AURORA_RIBBONS.map((placement) => {
+            const { width } = sources[0];
+            const centre = AURORA_SHEEN_FRAME.centreX + (placement.xFrac - 0.5) * AURORA_SHEEN_FRAME.width;
+            const x = Math.round((centre - (width * FAR_SEA_CELL) / 2) / FAR_SEA_CELL) * FAR_SEA_CELL;
+            const y = Math.round((OCEAN_HORIZON_WORLD_Y + placement.lift * AURORA_SHEEN_SKY_BAND) / FAR_SEA_CELL) * FAR_SEA_CELL;
+            return { x, y, stamps: sources.map(source => bakeAuroraSheenStamp(source, lookup, x, y, seaAt)) };
+        });
+        this._sheen = { key, ribbons };
+        return this._sheen;
+    }
+
+    _releaseAuroraSheen() {
+        for (const ribbon of this._sheen?.ribbons || []) {
+            for (const stamp of ribbon.stamps) releaseCanvasBackingStore(stamp);
+        }
+        this._sheen = null;
     }
 
     _auroraStamps(atmosphere) {
@@ -1393,6 +1599,9 @@ export class SkyRenderer {
         releaseCanvasBackingStore(this._rainbowStamp?.canvas);
         this._rainbowStamp = null;
         this._releaseAurora();
+        releaseCanvasBackingStore(this._seaBow?.canvas);
+        this._seaBow = null;
+        this._releaseAuroraSheen();
     }
 
     dispose() {
@@ -1618,6 +1827,119 @@ function bakeRainbowStamp(radius, cell, colors) {
     tctx.drawImage(small, 0, 0, scaled.width, scaled.height);
     releaseCanvasBackingStore(small);
     return scaled;
+}
+
+// LA-6 — the open sea the far-sea stamps may lie on, from the coast field
+// (world px in), below the horizon: its `sea` cells and every cell off the
+// map grid (the open sea the outer pass paints: the shelf's deep texels are
+// left unclassified, their signed distance clamped), and the sea off the
+// lattice; never a covered cell (dock, bridge) nor any water on the map
+// grid that is not sea (a lagoon, pond or river).
+function farSeaMask(fields) {
+    const { x, y, cols, rows, coastField } = fields;
+    return (worldX, worldY) => {
+        if (!(worldY > OCEAN_HORIZON_WORLD_Y)) return false;
+        const c = Math.floor((worldX - x) / 2);
+        const r = Math.floor((worldY - y) / 2);
+        if (c < 0 || r < 0 || c >= cols || r >= rows) return true;
+        const flags = coastField[(r * cols + c) * 2 + 1];
+        if (flags & COAST_FIELD_FLAGS.covered) return false;
+        if (flags & COAST_FIELD_FLAGS.sea) return true;
+        const u = worldY / TILE_HEIGHT + worldX / TILE_WIDTH;
+        const v = worldY / TILE_HEIGHT - worldX / TILE_WIDTH;
+        return u < -0.5 || v < -0.5 || u > MAP_SIZE - 0.5 || v > MAP_SIZE - 0.5;
+    };
+}
+
+// LA-6a — the sea bow's arc, opposite the sun at world x `cx`: six bands
+// (outer red → inner violet) of SEA_BOW_BAND_CELLS cells on FAR_SEA_CELL
+// world px, the outer and inner rims broken by a 4x4 Bayer threshold (the
+// sky bow's rule), the feet fading over SEA_BOW_FADE_Y in three Bayer
+// courses, and only on open sea. One texel per cell; `x`/`y` its world
+// origin.
+function bakeSeaBowStamp(cx, colors, seaAt) {
+    const cell = FAR_SEA_CELL;
+    const radius = SEA_BOW_RADIUS;
+    const bandWidth = SEA_BOW_BAND_CELLS * cell;
+    const centreY = SEA_BOW_APEX_Y + radius;
+    const x0 = cx - radius - 2 * cell;
+    const y0 = SEA_BOW_APEX_Y - 2 * cell;
+    const cols = Math.ceil((2 * radius + 4 * cell) / cell);
+    const rows = Math.ceil((SEA_BOW_FADE_Y[1] - y0) / cell);
+    const canvas = document.createElement('canvas');
+    canvas.width = cols;
+    canvas.height = rows;
+    const sctx = canvas.getContext('2d');
+    const image = sctx.createImageData(cols, rows);
+    const data = image.data;
+    const last = colors.length - 1;
+    const fadeSpan = SEA_BOW_FADE_Y[1] - SEA_BOW_FADE_Y[0];
+    for (let j = 0; j < rows; j++) {
+        const wy = y0 + (j + 0.5) * cell;
+        // The feet: three courses (⅔, ⅓, then none of the cells kept).
+        const keep = wy <= SEA_BOW_FADE_Y[0] ? 1 : 1 - Math.ceil(((wy - SEA_BOW_FADE_Y[0]) / fadeSpan) * 3) / 3;
+        if (keep <= 0) continue;
+        for (let i = 0; i < cols; i++) {
+            const wx = x0 + (i + 0.5) * cell;
+            const u = (radius - Math.hypot(wx - cx, wy - centreY)) / bandWidth;
+            if (u <= -0.75 || u >= last + 1.75) continue;
+            const order = BAYER4[(j % 4) * 4 + (i % 4)] / 16;
+            if (order >= keep) continue;
+            let band = Math.floor(u);
+            if (band < 0) {
+                if (order < 0.5 * (1 + u / 0.75)) band = 0;
+                else continue;
+            } else if (band > last) {
+                if (order < 0.5 * (1 - (u - last - 1) / 0.75)) band = last;
+                else continue;
+            }
+            if (!seaAt(wx, wy)) continue;
+            const c = colors[band];
+            const o = (j * cols + i) * 4;
+            data[o] = c[0];
+            data[o + 1] = c[1];
+            data[o + 2] = c[2];
+            data[o + 3] = 255;
+        }
+    }
+    sctx.putImageData(image, 0, 0);
+    return { canvas, x: x0, y: y0 };
+}
+
+// LA-6b — one ribbon phase's sheen at world origin (x, y): the phase strip's
+// texels (recoloured through `lookup`, alpha kept) mirrored top to bottom,
+// every third row dropped, each row shifted by its fixed ripple, three Bayer
+// alpha courses by depth, and only on open sea. One texel per FAR_SEA_CELL.
+function bakeAuroraSheenStamp(source, lookup, x, y, seaAt) {
+    const { width, height, data: src } = source;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const sctx = canvas.getContext('2d');
+    const image = sctx.createImageData(width, height);
+    const data = image.data;
+    for (let j = 0; j < height; j++) {
+        if (j % 3 === 2) continue;
+        const sourceRow = height - 1 - j;
+        const ripple = Math.max(-1, Math.min(1, Math.floor(1.5 * Math.sin(j * 0.9))));
+        const wy = y + (j + 0.5) * FAR_SEA_CELL;
+        for (let i = 0; i < width; i++) {
+            const sourceColumn = i - ripple;
+            if (sourceColumn < 0 || sourceColumn >= width) continue;
+            const s = (sourceRow * width + sourceColumn) * 4;
+            if (src[s + 3] === 0) continue;
+            const rgb = lookup(src[s], src[s + 1], src[s + 2]);
+            if (!rgb || !seaAt(x + (i + 0.5) * FAR_SEA_CELL, wy)) continue;
+            const course = Math.max(0, Math.min(2, Math.floor((j / height) * 3 + BAYER4[(j % 4) * 4 + (i % 4)] / 16 - 0.5)));
+            const o = (j * width + i) * 4;
+            data[o] = rgb[0];
+            data[o + 1] = rgb[1];
+            data[o + 2] = rgb[2];
+            data[o + 3] = Math.round(src[s + 3] * AURORA_SHEEN_COURSES[course]);
+        }
+    }
+    sctx.putImageData(image, 0, 0);
+    return canvas;
 }
 
 function hashString(value) {
