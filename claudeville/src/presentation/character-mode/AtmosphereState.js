@@ -30,6 +30,7 @@ import {
     SUNRISE_ALTITUDE_DEG,
     runtimeSite,
     siteForZone,
+    siteOffsetAt,
     solarDayFor,
     standardOffsetMinutes,
     sunElevationAt,
@@ -1067,11 +1068,18 @@ function buildSun(minute, weather, solarDay, elevationNowDeg) {
     };
 }
 
-function moonPhaseForDate(date) {
-    const synodicMonth = 29.530588853;
-    const referenceNewMoon = Date.UTC(2000, 0, 6, 18, 14);
-    const localNoon = Date.UTC(date.getFullYear(), date.getMonth(), date.getDate(), 12, 0);
-    const age = ((localNoon - referenceNewMoon) / 86400000 % synodicMonth + synodicMonth) % synodicMonth;
+const SYNODIC_MONTH_DAYS = 29.530588853;
+const REFERENCE_NEW_MOON_MS = Date.UTC(2000, 0, 6, 18, 14);
+
+function moonAgeDays(utcMs) {
+    return ((utcMs - REFERENCE_NEW_MOON_MS) / 86400000 % SYNODIC_MONTH_DAYS + SYNODIC_MONTH_DAYS) % SYNODIC_MONTH_DAYS;
+}
+
+// LA-4a — the phase follows the instant's age, so the fill (the grade's
+// moon term, the moon's road) changes smoothly instead of stepping at
+// midnight.
+function moonPhaseForAge(age) {
+    const synodicMonth = SYNODIC_MONTH_DAYS;
     const illumination = (1 - Math.cos((age / synodicMonth) * Math.PI * 2)) / 2;
     let phaseName = 'crescent';
     if (illumination < 0.08) phaseName = 'new';
@@ -1087,21 +1095,57 @@ function moonPhaseForDate(date) {
     };
 }
 
-function buildMoon(minute, phase, phaseProgress, weather, date, phases = PHASES) {
-    const progress = progressInInterval(minute, phases[3].start, phases[3].end);
-    let base = phase === 'night' ? 0.92 : 0;
+// LA-4a — the moon keeps its hours. Its hour angle is the sun's less its
+// elongation (age / synodic month x 360 degrees, read from the instant, so
+// the moon never jumps at midnight or at a DST change). A new moon transits
+// with the sun at noon, the first quarter at dusk, the full moon at
+// midnight and the last quarter at dawn. It is up for MOON_UP_DEG of hour
+// angle either side of transit (about 6.2 h), rising in the east (xFrac
+// 0.08) and setting in the west (0.92), and fades over the first and last
+// MOON_HORIZON_FADE of that arc. The phase still gates it: full at night, a
+// 0.34 shoulder through dusk and dawn, none by day. The night now ramps from
+// that shoulder over its first and last MOON_NIGHT_RAMP (the phase's own
+// edge window) instead of stepping 0.34 -> 0.92 at nightfall. So after
+// moonset the small hours are starlit, and `moonFill` (the grade's moon
+// term, the moon's road) follows `visible`.
+const MOON_UP_DEG = 93;
+const MOON_HORIZON_FADE = 0.06;
+const MOON_NIGHT_RAMP = 0.08;
+
+// 0 at moonrise, 1 at moonset (clamped outside), and the rise/set fade.
+function moonArc(date, minute, solar, site) {
+    const ruled = typeof site?.offsetMinutes === 'function';
+    const offsetNow = ruled ? siteOffsetAt(date, site) : -date.getTimezoneOffset();
+    const instantMs = ruled
+        ? Date.UTC(date.getFullYear(), date.getMonth(), date.getDate(), date.getHours(), date.getMinutes(), date.getSeconds(), date.getMilliseconds()) - offsetNow * 60000
+        : date.getTime();
+    const ageDays = moonAgeDays(instantMs);
+    const elongationDeg = (ageDays / SYNODIC_MONTH_DAYS) * 360;
+    // The sun's hour angle from this day's solar noon, on the offset of the
+    // instant (a DST night's small hours still keep the old offset).
+    const sunHourDeg = (minute - solar.solarNoonMinute + solar.offsetMinutes - offsetNow) / 4;
+    const hourDeg = ((((sunHourDeg - elongationDeg + 180) % 360) + 360) % 360) - 180;
+    const arc = clamp((hourDeg + MOON_UP_DEG) / (2 * MOON_UP_DEG));
+    return { arc, ageDays, fade: smoothstep(arc / MOON_HORIZON_FADE) * smoothstep((1 - arc) / MOON_HORIZON_FADE) };
+}
+
+function buildMoon(minute, phase, phaseProgress, weather, date, solar, site) {
+    const { arc, ageDays, fade } = moonArc(date, minute, solar, site);
+    let base = phase === 'night'
+        ? 0.34 + 0.58 * smoothstep(phaseProgress / MOON_NIGHT_RAMP) * smoothstep((1 - phaseProgress) / MOON_NIGHT_RAMP)
+        : 0;
     if (phase === 'dusk') base = 0.34 * smoothstep(phaseProgress);
     if (phase === 'dawn') base = 0.34 * (1 - smoothstep(phaseProgress));
     const preset = WEATHER_PRESETS[weather.type] || WEATHER_PRESETS.clear;
-    const phaseState = moonPhaseForDate(date);
+    const phaseState = moonPhaseForAge(ageDays);
     const moonBodyAlpha = 0.34 + phaseState.illumination * 0.66;
-    const alpha = clamp(base * moonBodyAlpha * (1 - preset.sunOcclusion * clamp(weather.intensity)));
-    const yFrac = 0.44 - Math.sin(progress * Math.PI) * 0.30;
+    const alpha = clamp(base * fade * moonBodyAlpha * (1 - preset.sunOcclusion * clamp(weather.intensity)));
+    const yFrac = 0.44 - Math.sin(arc * Math.PI) * 0.30;
     const horizon = celestialHorizonState(yFrac, 0.43);
     return {
         visible: alpha > 0.02,
         alpha: alpha * horizon.horizonFade,
-        xFrac: 0.08 + progress * 0.84,
+        xFrac: 0.08 + arc * 0.84,
         yFrac,
         ...horizon,
         phase: phaseState,
@@ -1428,7 +1472,7 @@ export function createAtmosphereSnapshot({
     const intensity = clamp(weather.intensity);
     const cloudCover = Number.isFinite(weather.cloudCover) ? weather.cloudCover : preset.cloudCover;
     const transition = phaseTransition(phase, phaseProgress);
-    const moon = buildMoon(minute, phase, phaseProgress, weather, effectiveDate, phases);
+    const moon = buildMoon(minute, phase, phaseProgress, weather, effectiveDate, solarDay, site);
     const lighting = buildLighting(minute, shift, phase, phaseProgress, weather, moon);
     const timeBucket = Math.floor(dayProgress * 96);
     const lightBucket = Math.round(phaseLight(phase, phaseProgress) * 100);

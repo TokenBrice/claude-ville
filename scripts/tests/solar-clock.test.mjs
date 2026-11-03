@@ -1,4 +1,4 @@
-// LA-2 (D1, the real sun). Every site
+// LA-2 (D1, the real sun) and LA-4a (the moon keeps its hours). Every site
 // here carries its own zone's UTC-offset rule, read from ICU, so the results
 // are the same on any host timezone (CI runs in UTC).
 import test from 'node:test';
@@ -267,5 +267,62 @@ test('the authored day site and fixtures without a snapshot keep the authored ke
     assert.equal(snapshot.lightGrade.key, 'golden-hour>blue-hour', '19:00 on the authored day');
     for (const field of ['civilDawnMinute', 'sunriseMinute', 'solarNoonMinute', 'sunsetMinute', 'civilDuskMinute', 'noonElevationDeg', 'elevationDeg']) {
         assert.ok(Number.isFinite(snapshot.solar[field]), field);
+    }
+});
+
+// LA-4a.
+function moonAt(date, hourOverride, site = BELGRADE) {
+    return createAtmosphereSnapshot({ now: date, hourOverride, weatherOverride: { type: 'clear', intensity: 0, cloudCover: 0 }, solarSite: site });
+}
+
+function dateWithAge(target, from = new Date(2026, 10, 1, 12)) {
+    for (let i = 0; i < 40; i++) {
+        const date = new Date(from.getTime() + i * DAY_MS);
+        const age = moonAt(date, 12).sky.moon.phase.age;
+        if (Math.abs(age - target) < 0.6) return date;
+    }
+    throw new Error(`no date with moon age ${target}`);
+}
+
+test('the moon keeps its hours: the full moon rises at dusk, the last quarter near midnight', () => {
+    const full = dateWithAge(14.8);
+    assert.equal(moonAt(full, 21).sky.moon.visible, true, 'full moon up in the evening');
+    assert.equal(moonAt(full, 0).sky.moon.visible, true, 'full moon up at midnight');
+    assert.ok(moonAt(full, 0).lighting.moonFill > 0.5, 'and it fills the night');
+    const quarter = dateWithAge(22.1);
+    assert.equal(moonAt(quarter, 20).sky.moon.visible, false, 'the last quarter is not up at 20:00');
+    assert.equal(moonAt(quarter, 20).lighting.moonFill, 0, 'so the evening is starlit');
+    assert.equal(moonAt(quarter, 4).sky.moon.visible, true, 'it is up before dawn');
+    const fresh = dateWithAge(0.6);
+    for (const hour of [21, 0, 3]) assert.equal(moonAt(fresh, hour).sky.moon.visible, false, `no new moon at ${hour}`);
+    // Rising in the east, setting in the west.
+    assert.ok(moonAt(quarter, 1).sky.moon.xFrac < moonAt(quarter, 5).sky.moon.xFrac);
+});
+
+test('the moon never jumps: its place moves smoothly through midnight and the DST night', () => {
+    // Real instants on a Belgrade wall clock (the host Date's own offset,
+    // so 03:00 CEST really turns back to 02:00 CET on 25 October).
+    const original = process.env.TZ;
+    process.env.TZ = 'Europe/Belgrade';
+    try {
+        const site = { zone: 'Europe/Belgrade', lat: 44.8, lon: 20.5 };
+        for (const evening of [new Date(2026, 10, 24, 18), new Date(2026, 9, 24, 18)]) {
+            let previous = null;
+            for (let step = 0; step <= 13 * 12; step++) {
+                const now = new Date(evening.getTime() + step * 5 * 60000);
+                const snapshot = createAtmosphereSnapshot({ now, weatherOverride: { type: 'clear', intensity: 0, cloudCover: 0 }, solarSite: site });
+                const moon = snapshot.sky.moon;
+                const label = `${now.toString().slice(4, 21)}`;
+                if (previous) {
+                    assert.ok(Math.abs(moon.xFrac - previous.xFrac) < 0.02, `${label}: x ${previous.xFrac.toFixed(3)} -> ${moon.xFrac.toFixed(3)}`);
+                    assert.ok(Math.abs(moon.alpha - previous.alpha) < 0.2, `${label}: alpha step`);
+                }
+                if (!moon.visible) assert.equal(snapshot.lighting.moonFill, 0, `${label}: no fill from a moon that is down`);
+                previous = moon;
+            }
+        }
+    } finally {
+        if (original === undefined) delete process.env.TZ;
+        else process.env.TZ = original;
     }
 });
