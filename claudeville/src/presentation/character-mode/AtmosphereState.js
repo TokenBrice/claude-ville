@@ -51,8 +51,12 @@ const PHASES = [
 // falls at the real sunrise, and its dusk side so the `blue-hour` key falls
 // at the real civil dusk (the sun 6 degrees down, the heart of the blue
 // hour). Every other dawn or dusk minute keeps its authored distance from
-// those keys: the night phase starts 15 min after civil dusk, the street
-// lamps catch 52 min before it.
+// those keys: the night phase starts 15 min after civil dusk. The user's
+// pick (2026-11-03, "warm until sunset"): `golden-hour` has its own anchor,
+// GOLDEN_BEFORE_SUNSET_MIN before the real sunset, so the light holds warm
+// until the sun sets and cools to blue hour over the civil twilight (about
+// 50 min in Belgrade); the street lamps, at the golden/blue midpoint, catch
+// about 5 min after sunset.
 //
 // The real day is SolarClock's at the system timezone's city: DST-aware
 // through the Date's own offset, with no location access. It moves at most
@@ -63,13 +67,21 @@ const PHASES = [
 // 8 keys keep their order and gaps on every day of the year in every zone.
 const SUNRISE_KEY_MINUTE = 6 * 60;
 const BLUE_HOUR_KEY_MINUTE = 19 * 60 + 45;
+const GOLDEN_HOUR_KEY_MINUTE = 18 * 60;
+const NOON_KEY_MINUTE = 12 * 60 + 30;
+export const GOLDEN_BEFORE_SUNSET_MIN = 20;
+// Golden hour stays at least 40 min before blue hour (the dusk lamp windows
+// need the golden/blue midpoint before blue hour less 15) and an hour after
+// noon, so the keys keep their order wherever the shift limits bind.
+const GOLDEN_MIN_BEFORE_BLUE_MIN = 40;
+const GOLDEN_MIN_AFTER_NOON_MIN = 60;
 export const VILLAGE_MAX_LATITUDE_DEG = 58;
 export const DAY_SHIFT_LIMITS = Object.freeze({
     sunrise: Object.freeze([-120, 180]),
     sunset: Object.freeze([-270, 180]),
 });
 // The authored day itself: fixtures and feeds built without a snapshot.
-export const BASELINE_DAY_SHIFT = Object.freeze({ sunriseShift: 0, sunsetShift: 0 });
+export const BASELINE_DAY_SHIFT = Object.freeze({ sunriseShift: 0, sunsetShift: 0, goldenShift: 0 });
 
 const SOLAR_SHADOW_ANGLES = Object.freeze({
     dawnHorizon: -0.78,
@@ -122,7 +134,11 @@ export function normalizeSolarSite(site) {
         ? { zone: String(site.zone || ''), lat: Number(site.lat), lon: Number(site.lon), source: site.source || 'pinned' }
         : { ...siteForZone(site.zone, { standardOffset: rule ? standardOffsetMinutes(new Date().getFullYear(), rule) : 0 }) };
     if (rule) pinned.offsetMinutes = rule;
-    if (site.dayShift) pinned.dayShift = Object.freeze({ ...BASELINE_DAY_SHIFT, ...site.dayShift });
+    if (site.dayShift) {
+        const dayShift = { sunriseShift: 0, sunsetShift: 0, ...site.dayShift };
+        if (!Number.isFinite(dayShift.goldenShift)) dayShift.goldenShift = dayShift.sunsetShift;
+        pinned.dayShift = Object.freeze(dayShift);
+    }
     const normalized = Object.freeze(pinned);
     _normalizedSites.set(site, normalized);
     return normalized;
@@ -167,11 +183,19 @@ export function solarStateForDate(date, site = null) {
     return {
         day,
         site: village,
-        shift: village.dayShift || {
-            sunriseShift: clamp(day.sunriseMinute - SUNRISE_KEY_MINUTE, ...DAY_SHIFT_LIMITS.sunrise),
-            sunsetShift: clamp(day.civilDuskMinute - BLUE_HOUR_KEY_MINUTE, ...DAY_SHIFT_LIMITS.sunset),
-        },
+        shift: village.dayShift || shiftForDay(day),
     };
+}
+
+function shiftForDay(day) {
+    const sunriseShift = clamp(day.sunriseMinute - SUNRISE_KEY_MINUTE, ...DAY_SHIFT_LIMITS.sunrise);
+    const sunsetShift = clamp(day.civilDuskMinute - BLUE_HOUR_KEY_MINUTE, ...DAY_SHIFT_LIMITS.sunset);
+    const golden = clamp(
+        day.sunsetMinute - GOLDEN_BEFORE_SUNSET_MIN,
+        NOON_KEY_MINUTE + GOLDEN_MIN_AFTER_NOON_MIN,
+        BLUE_HOUR_KEY_MINUTE + sunsetShift - GOLDEN_MIN_BEFORE_BLUE_MIN,
+    );
+    return { sunriseShift, sunsetShift, goldenShift: golden - GOLDEN_HOUR_KEY_MINUTE };
 }
 
 /**
@@ -1289,6 +1313,7 @@ function lightGradeFor(minute, weather, moonFill, shift) {
         Math.round(moonFill * 20),
         shift.sunriseShift.toFixed(2),
         shift.sunsetShift.toFixed(2),
+        (shift.goldenShift ?? shift.sunsetShift).toFixed(2),
     ].join('|');
     if (_lightGrade && key === _lightGradeKey) return _lightGrade;
     _lightGradeKey = key;
@@ -1299,6 +1324,7 @@ function lightGradeFor(minute, weather, moonFill, shift) {
             moonFill,
             sunriseShift: shift.sunriseShift,
             sunsetShift: shift.sunsetShift,
+            goldenShift: shift.goldenShift ?? shift.sunsetShift,
         }),
         cacheKey: key,
     });
@@ -1509,6 +1535,7 @@ export function createAtmosphereSnapshot({
         solar: {
             sunriseShift: shift.sunriseShift,
             sunsetShift: shift.sunsetShift,
+            goldenShift: shift.goldenShift ?? shift.sunsetShift,
             civilDawnMinute: solarDay.civilDawnMinute,
             sunriseMinute: solarDay.sunriseMinute,
             solarNoonMinute: solarDay.solarNoonMinute,

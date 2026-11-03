@@ -22,6 +22,7 @@ import {
 } from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
 import {
     GRADE_KEYFRAMES,
+    gradeKeyMinute,
     gradeKeysAt,
     lampCourseAt,
     lampSettlingWindows,
@@ -68,8 +69,7 @@ const dayOf = (index, year = 2026) => new Date(year, 0, 1 + index, 12);
 
 // The 8 key minutes the grade uses for a shift, in key order.
 function keyMinutesFor(shift) {
-    return Object.fromEntries(GRADE_KEYFRAMES.map(key => [key.name,
-        key.minute + (key.side === 'dawn' ? shift.sunriseShift : key.side === 'dusk' ? shift.sunsetShift : 0)]));
+    return Object.fromEntries(GRADE_KEYFRAMES.map(key => [key.name, gradeKeyMinute(key.name, shift)]));
 }
 
 test('Belgrade keeps its real sun within 3 minutes, on its own clock', () => {
@@ -176,7 +176,7 @@ test('the shifts move at most 3 min a day, and step only with the clock at DST',
             const date = dayOf(index);
             const current = solarStateForDate(date, site);
             const clockStep = site.offsetMinutes(date) - site.offsetMinutes(dayOf(index - 1));
-            for (const key of ['sunriseShift', 'sunsetShift']) {
+            for (const key of ['sunriseShift', 'sunsetShift', 'goldenShift']) {
                 const move = current.shift[key] - previous.shift[key] - clockStep;
                 assert.ok(Math.abs(move) <= 3, `${zone} ${date.toDateString()} ${key} moved ${move.toFixed(2)} min (clock ${clockStep})`);
             }
@@ -188,7 +188,7 @@ test('the shifts move at most 3 min a day, and step only with the clock at DST',
 test('the DST step equals the clock step (Belgrade, October and March)', () => {
     const shift = (month, day) => solarStateForDate(new Date(2026, month, day, 12), BELGRADE).shift;
     for (const [before, after, clock] of [[[9, 24], [9, 25], -60], [[2, 28], [2, 29], 60]]) {
-        for (const key of ['sunriseShift', 'sunsetShift']) {
+        for (const key of ['sunriseShift', 'sunsetShift', 'goldenShift']) {
             near(shift(...after)[key] - shift(...before)[key], clock, 3, `${key} ${after.join('-')}`);
         }
     }
@@ -231,9 +231,16 @@ test('Belgrade, 3 November: the lamps and the night come with the real dusk', ()
     const at = (h, m) => createAtmosphereSnapshot({ now: new Date(2026, 10, 3, 12), hourOverride: h + m / 60, weatherOverride: 'clear', solarSite: BELGRADE });
     const shift = dayShiftFor(at(12, 0));
     assert.equal(at(12, 0).phase, 'day');
-    assert.equal(at(15, 30).lightGrade.key, 'golden-hour>blue-hour', 'gold slants across the mid-afternoon');
+    // The user's pick: warm until sunset. Golden hour lands 20 min before
+    // the 16:24 sunset and the cool-down to blue hour ends at civil dusk.
+    near(gradeKeyMinute('golden-hour', shift), hm(16, 4), 3, 'golden hour 20 min before sunset');
+    near(gradeKeyMinute('blue-hour', shift), hm(16, 55), 3, 'blue hour at civil dusk');
+    assert.ok(gradeKeysAt(hm(15, 30), shift).t > 0.75, 'gold slants across the mid-afternoon');
+    assert.ok(gradeKeysAt(hm(16, 15), shift).t < 0.2, 'still warm a few minutes before sunset');
+    assert.ok(gradeKeysAt(hm(16, 24), shift).t < 0.4, 'and mostly warm at sunset');
     assert.equal(at(16, 24).phase, 'dusk', 'the real sunset is the village dusk');
-    assert.ok(lampCourseAt(hm(16, 24), shift) >= 1, 'the lamps are catching at sunset');
+    assert.equal(lampCourseAt(hm(16, 24), shift), 0, 'the lamps wait for the sunset');
+    assert.ok(lampCourseAt(hm(16, 32), shift) >= 1, 'and catch about 5 min after it');
     assert.equal(at(17, 0).lightGrade.key, 'blue-hour>night', 'the blue hour at civil dusk (16:55)');
     assert.equal(at(17, 15).phase, 'night');
     assert.equal(at(17, 0).lighting.sourceEnergy.bucket, 'lamplight');

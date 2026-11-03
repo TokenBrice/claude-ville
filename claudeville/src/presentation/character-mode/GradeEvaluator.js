@@ -101,8 +101,10 @@ const PURKINJE_BLUE = Object.freeze(lumaNormalized([0.93, 1.0, 1.07]));
 // keys follow the day's sunrise shift and the dusk-side keys (golden hour,
 // blue hour and night) its sunset shift, so the grade stays in step with the
 // sky and the solar vector. LA-2: the shifts are the real sun's
-// (AtmosphereState.solarStateForDate): `sunrise` sits on the real sunrise
-// and `blue-hour` on the real civil dusk. Night keeps its authored 135 min
+// (AtmosphereState.solarStateForDate): `sunrise` sits on the real sunrise,
+// `golden-hour` 20 min before the real sunset (its own `goldenShift`, so
+// the light stays warm until the sun sets) and `blue-hour` on the real
+// civil dusk. Night keeps its authored 135 min
 // after blue hour, so a June evening never squeezes it under 90 min;
 // noon and deep night stay put.
 //
@@ -216,7 +218,7 @@ export const GRADE_KEYFRAMES = Object.freeze([
     // the plates' yellow. The approach holds the afternoon: 15:00 is 13 %
     // golden, gold lands 16:30–17:45.
     Object.freeze({
-        name: 'golden-hour', minute: 18 * 60, side: 'dusk', approach: 2.4,
+        name: 'golden-hour', minute: 18 * 60, side: 'golden', approach: 2.4,
         exposure: 0.95, saturation: 1.15,
         gain: [1.05, 0.97, 0.88], lift: [0.004, 0.000, 0.040], gamma: 1.08,
         shadowTint: [0.72, 0.64, 1.40], highlightTint: [1.36, 1.10, 0.78],
@@ -273,32 +275,35 @@ const WEATHER_GREY = Object.freeze({
     fog: Object.freeze({ sky: '#9aa4ac', haze: '#aab2b8', void: '#18222a' }),
 });
 
-function keyMinutes(key, sunriseShift, sunsetShift) {
+// The golden key has its own shift (warm until the real sunset); without
+// one it keeps the authored 105 min before blue hour.
+function keyMinutes(key, sunriseShift, sunsetShift, goldenShift = sunsetShift) {
     if (key.side === 'dawn') return key.minute + sunriseShift;
+    if (key.side === 'golden') return key.minute + goldenShift;
     if (key.side === 'dusk') return key.minute + sunsetShift;
     return key.minute;
 }
 
 /** The minute of the day (may pass 1440) at which key `name` falls for a day shift. */
-export function gradeKeyMinute(name, { sunriseShift = 0, sunsetShift = 0 } = {}) {
+export function gradeKeyMinute(name, { sunriseShift = 0, sunsetShift = 0, goldenShift = sunsetShift } = {}) {
     const key = GRADE_KEYFRAMES.find(row => row.name === name);
     if (!key) throw new RangeError(`unknown grade key: ${name}`);
-    return keyMinutes(key, sunriseShift, sunsetShift);
+    return keyMinutes(key, sunriseShift, sunsetShift, goldenShift);
 }
 
 /**
  * The two keys around `minute` and the eased weight between them. Keys are
  * cyclic: deep night (02:00) follows night (22:00) across midnight.
  */
-export function gradeKeysAt(minuteOfDay, { sunriseShift = 0, sunsetShift = 0 } = {}) {
+export function gradeKeysAt(minuteOfDay, { sunriseShift = 0, sunsetShift = 0, goldenShift = sunsetShift } = {}) {
     const minute = ((finite(minuteOfDay) % DAY_MINUTES) + DAY_MINUTES) % DAY_MINUTES;
     const keys = GRADE_KEYFRAMES;
     const count = keys.length;
     for (let index = 0; index < count; index++) {
         const from = keys[index];
         const to = keys[(index + 1) % count];
-        const start = keyMinutes(from, sunriseShift, sunsetShift);
-        let end = keyMinutes(to, sunriseShift, sunsetShift);
+        const start = keyMinutes(from, sunriseShift, sunsetShift, goldenShift);
+        let end = keyMinutes(to, sunriseShift, sunsetShift, goldenShift);
         if (end <= start) end += DAY_MINUTES;
         let local = minute;
         if (local < start) local += DAY_MINUTES;
@@ -341,8 +346,9 @@ export function evaluateGrade({
     moonFill = null,
     sunriseShift = 0,
     sunsetShift = 0,
+    goldenShift = sunsetShift,
 } = {}) {
-    const { from, to, t } = gradeKeysAt(minuteOfDay, { sunriseShift, sunsetShift });
+    const { from, to, t } = gradeKeysAt(minuteOfDay, { sunriseShift, sunsetShift, goldenShift });
     let exposure = lerp(from.exposure, to.exposure, t);
     let saturation = lerp(from.saturation, to.saturation, t);
     let gain = lerp3(from.gain, to.gain, t);
@@ -448,7 +454,7 @@ export function evaluateGrade({
         poolGain: 0.15 + 1.05 * Math.max(
             1 - smoothstep((exposure - 0.55) / 0.35),
             night,
-            lampCarry(minuteOfDay, sunriseShift, sunsetShift),
+            lampCarry(minuteOfDay, { sunriseShift, sunsetShift, goldenShift }),
         ),
         sunBand: clamp(sunBand),
         daylight: clamp(daylight),
@@ -523,9 +529,9 @@ export const NEUTRAL_GRADE = Object.freeze(evaluateGrade({ minuteOfDay: 12 * 60 
  * at dusk the ambient falls first (golden hour -> blue hour) and the lamps
  * take over second, and at dawn the ambient rises before the lamps drop.
  */
-export function lampCourseAt(minuteOfDay, { sunriseShift = 0, sunsetShift = 0 } = {}) {
+export function lampCourseAt(minuteOfDay, { sunriseShift = 0, sunsetShift = 0, goldenShift = sunsetShift } = {}) {
     const minute = ((finite(minuteOfDay) % DAY_MINUTES) + DAY_MINUTES) % DAY_MINUTES;
-    const at = name => keyMinutes(GRADE_KEYFRAMES.find(key => key.name === name), sunriseShift, sunsetShift);
+    const at = name => keyMinutes(GRADE_KEYFRAMES.find(key => key.name === name), sunriseShift, sunsetShift, goldenShift);
     const preDawn = at('pre-dawn');
     const sunrise = at('sunrise');
     const golden = at('golden-hour');
@@ -546,8 +552,8 @@ export function lampCourseAt(minuteOfDay, { sunriseShift = 0, sunsetShift = 0 } 
  * each lamp's own step across the start of the first and the end of the
  * second.
  */
-export function lampSettlingWindows({ sunriseShift = 0, sunsetShift = 0 } = {}) {
-    const at = name => keyMinutes(GRADE_KEYFRAMES.find(key => key.name === name), sunriseShift, sunsetShift);
+export function lampSettlingWindows({ sunriseShift = 0, sunsetShift = 0, goldenShift = sunsetShift } = {}) {
+    const at = name => keyMinutes(GRADE_KEYFRAMES.find(key => key.name === name), sunriseShift, sunsetShift, goldenShift);
     const sunrise = at('sunrise');
     const golden = at('golden-hour');
     const blue = at('blue-hour');
@@ -564,10 +570,10 @@ export function lampSettlingWindows({ sunriseShift = 0, sunsetShift = 0 } = {}) 
 // course (pre-dawn key to the dawn settling) keeps the deep night's whole
 // share, so the pools hold their 23:00 strength until the round puts the
 // lamps out; the dusk course keeps its step.
-function lampCarry(minuteOfDay, sunriseShift, sunsetShift) {
-    const course = lampCourseAt(minuteOfDay, { sunriseShift, sunsetShift });
+function lampCarry(minuteOfDay, shift) {
+    const course = lampCourseAt(minuteOfDay, shift);
     if (course < 2) return 0;
     const minute = ((finite(minuteOfDay) % DAY_MINUTES) + DAY_MINUTES) % DAY_MINUTES;
-    if (course === 2 && minute < lampSettlingWindows({ sunriseShift, sunsetShift }).dawnStart) return 1;
+    if (course === 2 && minute < lampSettlingWindows(shift).dawnStart) return 1;
     return course / 3;
 }
