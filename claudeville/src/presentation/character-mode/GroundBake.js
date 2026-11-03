@@ -61,7 +61,8 @@ import { FOREST_FLOOR_REGIONS } from '../../config/scenery.js';
 import { YARD_MATERIALS } from '../../config/townPlan.js';
 import { readTerrainCellLuma } from './TerrainTileset.js';
 import { getCoastField } from './CoastBake.js';
-import { snowBucketOf } from './GroundState.js';
+import { frostQuarterOf, snowBucketOf } from './GroundState.js';
+import { frostHolds, frostShadeField } from './FrostMelt.js';
 import { treeSpriteKey } from './FoliageRenderer.js';
 import { releaseCanvasBackingStore } from './CanvasBudget.js';
 
@@ -1338,8 +1339,10 @@ function bakePuddleSites({ cols, rows, surfaces, aoBuf }) {
 // paving is swept (whole drifts only where the snow lies deepest, elsewhere a
 // dark seam in the deepest joints); cover thins under tree crowns and
 // at the eaves (contact AO). Doors, banners and status marks are sprites and
-// overlays drawn over the terrain, so snow never covers them. A clear winter
-// night (`frost`) rimes the grass tips instead.
+// overlays drawn over the terrain, so snow never covers them. A clear night
+// from November to February rimes the lawns white instead (`frost`, BI-5):
+// the whole rime at quarter 4, and at 3–1 only what FrostMelt keeps (the
+// shade of the raking casts and walls, and the open lawn far from the sun).
 const SNOW = ramp('snow');
 const lumaOf = (c) => c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722;
 const SNOW_RANK_LUMAS = SURFACES.map(s => s.ramp.map(lumaOf));
@@ -1348,6 +1351,8 @@ const SNOW_SLUSH = new Set([S_DIRT, S_CINDER, S_EARTH]);
 // Five ground ranks fold onto three snow stops, so a snowfield keeps the
 // ground's texture as a quiet read instead of five-stop noise.
 const SNOW_TONE_BY_RANK = Object.freeze([2, 2, 3, 3, 4]);
+// BI-5 — the share of the lit grass texels a frost rimes.
+const FROST_DENSITY = 0.8;
 
 function rankOf(luma, lumas) {
     let best = 0;
@@ -1366,6 +1371,8 @@ export function bakeWinterGround(r, base, snowBucket, frost) {
     const D = image.data;
     const cover = Math.max(0, Math.min(4, snowBucket)) / 4;
     const crowns = cover > 0 ? buildCrownField(r, { cols, rows, x0, y0 }) : null;
+    const rime = frostQuarterOf({ frost });
+    const shade = rime > 0 && rime < 4 ? frostShadeField(r, { cols, rows, x0, y0, texelW: TEXEL_W, aoBuf }) : null;
     const write = (o, c) => {
         D[o] = c[0]; D[o + 1] = c[1]; D[o + 2] = c[2];
         D[o + 4] = c[0]; D[o + 5] = c[1]; D[o + 6] = c[2];
@@ -1414,9 +1421,12 @@ export function bakeWinterGround(r, base, snowBucket, frost) {
                     write(o, SNOW[0]);
                 }
             }
-            if (!snowy && frost && s === S_GRASS && rank >= 3
-                && hash2(col, row, 1409) < 0.6 && fbm(sx / 44, row / 22, 1411) < 0.62) {
-                write(o, SNOW[1]);
+            // BI-5 — the rime: most of the lit grass (ranks 2–4) a stop under
+            // the snow, its dark creases left green so the lawn's texture
+            // reads through; kept by quarter in shade and far from the sun.
+            if (!snowy && rime && s === S_GRASS && rank >= 2 && hash2(col, row, 1409) < FROST_DENSITY
+                && (rime >= 4 || frostHolds(rime, shade, col, row, fbm(sx / 26, row / 13, 1413)))) {
+                write(o, SNOW[rank >= 3 ? 1 : 0]);
             }
         }
     }
@@ -1432,9 +1442,11 @@ export function bakeWinterGround(r, base, snowBucket, frost) {
 // Registers the bake on the renderer. The pass revision (read every frame
 // as part of the terrain-cache key) tracks the land sheets loading (settling
 // to a constant once they have) and the winter ground: the C-W2 snow bucket
-// and frost from `renderer._groundState`, so the terrain rebakes only when a
-// quarter of snow cover or the frost changes. Season, scenery and the coast
-// field already key the terrain cache through their own entries. The cached
+// and frost quarter from `renderer._groundState`, so the terrain rebakes only
+// when a quarter of snow cover or of the rime changes (at most five frost
+// bakes a frosty day: the night's rime, then quarters 3, 2, 1 and none).
+// Season, scenery and the coast field already key the terrain cache through
+// their own entries. The cached
 // image is re-keyed on all of them at bake time only. Weather and time of day
 // never reach the base bake; the grade owns them.
 const SHEET_IDS = [...new Set(Object.values(TEXTURE_SOURCES).flat().map(([id]) => id))];
@@ -1442,7 +1454,7 @@ const SHEET_IDS = [...new Set(Object.values(TEXTURE_SOURCES).flat().map(([id]) =
 function winterKeyOf(renderer) {
     const ground = renderer._groundState;
     const bucket = snowBucketOf(ground?.snowCover);
-    const frost = ground?.frost ? 1 : 0;
+    const frost = frostQuarterOf(ground);
     return bucket || frost ? `w${bucket}f${frost}` : '';
 }
 
@@ -1492,7 +1504,7 @@ export function installGroundBake(renderer) {
                 const started = performance.now();
                 winter = {
                     key: `${key}|${winterKey}`,
-                    canvas: bakeWinterGround(renderer, cached, snowBucketOf(ground?.snowCover), ground?.frost ? 1 : 0),
+                    canvas: bakeWinterGround(renderer, cached, snowBucketOf(ground?.snowCover), frostQuarterOf(ground)),
                 };
                 renderer.groundWinterBakeMs = Math.round(performance.now() - started);
             }

@@ -72,7 +72,7 @@ import {
     waterSunBandFor,
     waterSurfaceRgb,
 } from './CoastBake.js';
-import { BEAM_NEAR_HALF_WIDTH, DEEP_DASH_DENSITY, FOOTPRINT_MARCH_STEPS, NOON_GLINT_GROW_GAIN, resolveStarlight, swellDriftRows } from './gpu/GpuFrameState.js';
+import { BEAM_NEAR_HALF_WIDTH, DEEP_DASH_DENSITY, FOOTPRINT_MARCH_STEPS, NOON_GLINT_GROW_GAIN, resolveStarlight, resolveSurfGlow, stillWaterWindShare, swellDriftRows } from './gpu/GpuFrameState.js';
 import {
     DEEP_CREST_RUN,
     GLINT_DASH_DENSITY,
@@ -88,6 +88,12 @@ import {
     SEA_PAW_THRESHOLD,
     STARLIGHT_DENSITY,
     STARLIGHT_HOLD,
+    STILL_MIRROR_BREAK,
+    STILL_PAW_ORDER,
+    STILL_PAW_RIPPLE,
+    SURF_GLOW_RGB,
+    SWASH_PEEL_ROWS,
+    SWASH_STEP_RATE,
     SEA_BODY_ROWS,
     SEA_KEY_REACH,
     SEA_KEY_SHIFT,
@@ -158,6 +164,25 @@ const CLS_OTHER = 11;
 // W6.11 — a grass gust stop's `from` (GRASS_GUST_STOPS[k][0]) is CLS_GRASS + k.
 const CLS_GRASS = 12;
 const CLS_EMPTY = 255;
+// BI-3 — a swash code's class is its low nibble; SWASH_GLOW marks the sea's
+// crest front on the in-steps (BI-8's summer surf glow rides it).
+const SWASH_CLASS = 15;
+const SWASH_GLOW = 16;
+// BI-3 — the swash's global steps: a 12-step wave, every fourth wave of a
+// set (48 steps) reaching one lattice step further at its peak.
+const SWASH_WAVE = 12;
+const SWASH_SET = 48;
+// BI-1 — still-water paw candidates are grouped in blocks of this many world
+// px, so a rebuild skips a block the gust field cannot reach.
+const STILL_BLOCK_W = 16;
+const STILL_BLOCK_H = 8;
+// BI-1 — a coast cell of still water: painted water by a lagoon.
+const STILL_FLAGS = COAST_FIELD_FLAGS.water | COAST_FIELD_FLAGS.lagoon;
+// BI-1 — a still-paw candidate's colour code above the stops: FOAM_CREST.
+const STILL_CREST = 7;
+// BI-8 — the summer surf glow's crest stop, opaque (laid after the grade at
+// the glow's strength).
+const SURF_GLOW_U32 = ((255 << 24) | (SURF_GLOW_RGB[2] << 16) | (SURF_GLOW_RGB[1] << 8) | SURF_GLOW_RGB[0]) >>> 0;
 // W6.11 — the grass gust course's lifted colour per stop (hazed cache albedo,
 // like the terrain cache it lands on; the frame's grade applies to both).
 const GRASS_GUST_LIFT = GRASS_GUST_STOPS.map(pair => u32Of(to01(pair[1])));
@@ -512,11 +537,14 @@ function buildBase(renderer) {
     base.texelAt = texelAt;
 
     // 3.1 near-shore and river dashes by their course bucket (offset & 15).
+    // BI-1 — `still`: the dash's origin is on still water (a lagoon's
+    // shoreward band), whose density the knot wind sets.
     const nearCells = [];
     for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
             const offset = cycleOffset[r * cols + c];
             if (offset >= 32) continue;
+            const still = offset < 16 && (coastField[(r * cols + c) * 2 + 1] & STILL_FLAGS) === STILL_FLAGS ? 1 : 0;
             const X = fx + c * 2;
             const Y = fy + r * 2;
             for (let y = Y; y < Y + 2; y++) {
@@ -525,7 +553,7 @@ function buildBase(renderer) {
                     const cx = x / 3;
                     const h = hash12(cx, y);
                     if (h >= STORM_DASH_DENSITY) continue;
-                    nearCells.push([offset & 15, x, y, Math.floor(h * 256), hash12(cx + 17, y + 31) < 0.25 ? 1 : 0]);
+                    nearCells.push([offset & 15, x, y, Math.floor(h * 256), hash12(cx + 17, y + 31) < 0.25 ? 1 : 0, still]);
                 }
             }
         }
@@ -537,13 +565,15 @@ function buildBase(renderer) {
         y: new Int16Array(nearCells.length),
         h: new Uint8Array(nearCells.length),
         cap: new Uint8Array(nearCells.length),
+        still: new Uint8Array(nearCells.length),
     };
-    nearCells.forEach(([bucket, x, y, h, cap], i) => {
+    nearCells.forEach(([bucket, x, y, h, cap, still], i) => {
         near.start[bucket + 1] = i + 1;
         near.x[i] = x;
         near.y[i] = y;
         near.h[i] = h;
         near.cap[i] = cap;
+        near.still[i] = still;
     });
     for (let b = 1; b <= 16; b++) near.start[b] = Math.max(near.start[b], near.start[b - 1]);
     base.near = near;
@@ -569,8 +599,12 @@ function buildBase(renderer) {
     base.specks = Uint32Array.from(specks);
     base.caustic = caustic.map(list => Uint32Array.from(list));
 
-    // 3.6 swash states (8 x 200 ms) and 3.7 ripple texels, off the coast field.
-    const swash = Array.from({ length: 8 }, () => []);
+    // 3.6 swash states and 3.7 ripple texels, off the coast field. BI-3: one
+    // list per global step of the 12-step wave, each texel at its own band's
+    // step of it, and the texels a set's big wave turns at its peak, by the
+    // global step of the 48-step set their band meets it (`swashBig`).
+    const swash = Array.from({ length: SWASH_WAVE }, () => []);
+    const swashBig = Array.from({ length: SWASH_SET }, () => []);
     const ripple = [];
     const reflectionAt = (x, y) => {
         const c = Math.floor((x - fx) / 2);
@@ -593,10 +627,15 @@ function buildBase(renderer) {
                     if (i < 0) continue;
                     const k = cls[i];
                     if (flags & COAST_FIELD_FLAGS.swash) {
-                        for (let cyc = 0; cyc < 8; cyc++) {
-                            const code = swashCode(k, sd, cyc, x, y, (flags & COAST_FIELD_FLAGS.cliffSurf) !== 0);
-                            if (code) swash[cyc].push(i, code);
+                        const cliff = (flags & COAST_FIELD_FLAGS.cliffSurf) !== 0;
+                        const lagoon = (flags & COAST_FIELD_FLAGS.lagoon) !== 0;
+                        const band = Math.floor(y / SWASH_PEEL_ROWS);
+                        for (let step = 0; step < SWASH_WAVE; step++) {
+                            const code = swashCode(k, sd, posMod(step + band, SWASH_WAVE), x, y, cliff, lagoon);
+                            if (code) swash[step].push(i, code);
                         }
+                        const peak = lagoon ? 0 : swashCode(k, sd, 3, x, y, cliff, false, true);
+                        if (!lagoon && peak !== swashCode(k, sd, 3, x, y, cliff)) swashBig[posMod(3 - band, SWASH_SET)].push(i, peak);
                     }
                     if (flags & COAST_FIELD_FLAGS.reflection) {
                         const own = colourAt(i);
@@ -610,7 +649,9 @@ function buildBase(renderer) {
         }
     }
     base.swash = swash.map(list => Uint32Array.from(list));
+    base.swashBig = swashBig.map(list => Uint32Array.from(list));
     base.ripple = Uint32Array.from(ripple);
+    base.still = buildStillPaws(base, fields.mirrorStops);
 
     // 2.9 — the colour of every column-receiving texel (coast flag `water`,
     // not `covered`) that is no water class (a baked mirror, a dither
@@ -637,27 +678,133 @@ function buildBase(renderer) {
     return base;
 }
 
-// 3.6 applyCoastSwash on one texel of class `k`: 0 unchanged, else the class
-// it becomes (CLS_FOAM, CLS_CREST, CLS_WET, CLS_WET_DARK). E2-05: at the
-// cliff's foot (`cliff`) the front breaks over the mirror texels too.
-function swashCode(k, sd, cyc, x, y, cliff = false) {
-    const reach = cyc < 4 ? cyc : (cyc < 7 ? 6 - cyc : 0);
+// 3.6 applyCoastSwash on one texel of class `k` at its band's wave step
+// `cyc`: 0 unchanged, else the class it becomes (CLS_FOAM, CLS_CREST, CLS_WET,
+// CLS_WET_DARK) in the low nibble, with SWASH_GLOW on the sea's crest front
+// during the in-steps (BI-8; such a code keeps CLS_CREST even over a baked
+// crest). E2-05: at the cliff's foot (`cliff`) the front breaks over the
+// mirror texels too. QW-4: a lagoon bank laps at half reach; BI-3: a set's
+// big wave (`big`) reaches one lattice step further at its peak.
+function swashCode(k, sd, cyc, x, y, cliff = false, lagoon = false, big = false) {
+    let reach = cyc < 4 ? cyc : (cyc < 7 ? 6 - cyc : 0);
+    let extent = cyc < 4 ? cyc : 3;
+    if (lagoon) {
+        reach *= 0.5;
+        extent *= 0.5;
+    } else if (big && reach > 2.5) {
+        reach += 1;
+    }
     if (sd > 0) {
         if (k === CLS_EMPTY || (!cliff && k > 5 && k !== CLS_FOAM && k !== CLS_CREST)) return 0;
         const front = 0.05 + reach * 0.035;
         let out = 0;
         if (sd < front - 0.035) out = CLS_FOAM;
-        else if (sd < front) out = CLS_CREST;
-        else if (sd < front + 0.06 && waterBayer4(x, y) < 0.5) out = CLS_FOAM;
+        else if (sd < front) {
+            if (cyc < 4 && !lagoon) return CLS_CREST | SWASH_GLOW;
+            out = CLS_CREST;
+        } else if (sd < front + 0.06 && waterBayer4(x, y) < 0.5) out = CLS_FOAM;
         return out === k ? 0 : out;
     }
-    const extent = cyc < 4 ? cyc : 3;
     const darker = cyc < 4.5 ? 2 : (cyc < 6.5 ? 1 : 0);
     if (darker < 0.5 || sd <= -0.02 - extent * 0.035) return 0;
     if (k === CLS_WET_DARK) return 0;
     if (k === CLS_WET) return CLS_WET_DARK;
     if (k === CLS_BEACH) return darker > 1.5 ? CLS_WET_DARK : CLS_WET;
     return 0;
+}
+
+// BI-1 — still water's cat's paw candidates (the resident `stillPawAt`,
+// `mirrorStormColour` and still block of `applyWaterState`): every texel on
+// lagoon water a paw can turn, with the gust it must pass (`need`: the C-W3
+// paw rule's static ruffle and order, then the stop's deeper share or a
+// mirror's Bayer share) and the colour it takes (`colour`: a stop index,
+// STILL_CREST for FOAM_CREST). A water stop steps one deeper, or one lighter
+// on the static ripple set; a baked mirror gives way to the stop it was
+// painted over (that stop's own paw step listed after it, so it wins when
+// the gust passes both). Grouped by STILL_BLOCK_W x STILL_BLOCK_H world block
+// with the block's lowest need, so a rebuild skips a block the gust field
+// cannot reach.
+function buildStillPaws(base, mirrorStops) {
+    const { bx, by, cls, fx, fy, cols, rows, cycleOffset, coastField, texelAt } = base;
+    const stillAt = (x, y) => {
+        const c = Math.floor((Math.floor(x / 3) * 3 - fx) / 2);
+        const r = Math.floor((y - fy) / 2);
+        if (c < 0 || r < 0 || c >= cols || r >= rows) return false;
+        const offset = cycleOffset[r * cols + c];
+        return (offset < 16 || offset > 31) && (coastField[(r * cols + c) * 2 + 1] & STILL_FLAGS) === STILL_FLAGS;
+    };
+    const { base: deepBase, gain: deepGain, cap: deepCap } = STILL_PAW_ORDER;
+    const list = [];
+    for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+            const cell = r * cols + c;
+            const flags = coastField[cell * 2 + 1];
+            if ((flags & STILL_FLAGS) !== STILL_FLAGS) continue;
+            const mirror = (flags & COAST_FIELD_FLAGS.reflection) !== 0;
+            for (let oy = 0; oy < 2; oy++) {
+                for (let ox = 0; ox < 2; ox++) {
+                    const x = fx + c * 2 + ox;
+                    const y = fy + r * 2 + oy;
+                    const i = texelAt(x, y);
+                    if (i < 0) continue;
+                    const k = cls[i];
+                    const stop = mirror && mirrorStops ? ((mirrorStops[cell * 2 + oy] >> (ox ? 4 : 0)) & 15) - 1 : -1;
+                    if (k > 5 && stop < 0) continue;
+                    const bayer = waterBayer4(x, y);
+                    const ruffle = cloudTileSample(fract((x + 517) / 768) * 256, fract((y + 229) / 256) * 256);
+                    const pawNeed = Math.max(0, SEA_PAW_THRESHOLD - (ruffle - 0.5) * 0.36 - (bayer - 0.5) * 0.06);
+                    const block = Math.floor((y - by) / STILL_BLOCK_H) * 65536 + Math.floor((x - bx) / STILL_BLOCK_W);
+                    let need = pawNeed;
+                    let shown = k;
+                    if (k > 5) {
+                        if (bayer >= STILL_MIRROR_BREAK.cap) continue;
+                        need = Math.max(pawNeed, (bayer - STILL_MIRROR_BREAK.base) / STILL_MIRROR_BREAK.gain);
+                        shown = stop;
+                        if (need < 1) list.push([block, i, x, y, need, stop]);
+                    }
+                    if (!stillAt(x, y)) continue;
+                    const order = 0.55 * cloudTileSample(fract((x + 211) / 144) * 256, fract((y + 91) / 48) * 256) + 0.45 * bayer;
+                    if (hash12(x + 131, y + 57) < STILL_PAW_RIPPLE && order > 0.5) {
+                        if (need < 1) list.push([block, i, x, y, need, shown === 0 ? STILL_CREST : shown - 1]);
+                    } else if (order < deepCap) {
+                        const deep = Math.max(need, (order - deepBase) / deepGain);
+                        if (deep < 1) list.push([block, i, x, y, deep, Math.min(shown + 1, 4)]);
+                    }
+                }
+            }
+        }
+    }
+    list.sort((a, b) => a[0] - b[0]);
+    const n = list.length;
+    const out = {
+        x: new Int16Array(n),
+        y: new Int16Array(n),
+        need: new Float32Array(n),
+        colour: new Uint8Array(n),
+        start: [],
+        blockX: [],
+        blockY: [],
+        blockNeed: [],
+    };
+    let last = null;
+    list.forEach(([block, , x, y, need, colour], at) => {
+        if (block !== last) {
+            last = block;
+            out.start.push(at);
+            out.blockX.push(bx + (block % 65536) * STILL_BLOCK_W);
+            out.blockY.push(by + Math.floor(block / 65536) * STILL_BLOCK_H);
+            out.blockNeed.push(need);
+        }
+        const b = out.blockNeed.length - 1;
+        if (need < out.blockNeed[b]) out.blockNeed[b] = need;
+        out.x[at] = x;
+        out.y[at] = y;
+        out.need[at] = need;
+        out.colour[at] = colour;
+    });
+    out.start.push(n);
+    out.blocks = out.blockNeed.length;
+    return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -1005,12 +1152,19 @@ function resolveFx(renderer, atmosphere) {
         seaWeather: effectBudgetMode('sea-weather', level) === 'on',
         // W6.11 — the grass gust course: FULL only, never under reduced motion.
         grassGust: effectBudgetMode('grassGust', level) === 'on' && motion > 0,
+        // BI-1 — still water's paws (FULL and REDUCED, never under reduced
+        // motion) and the knot wind's share of its crests.
+        stillPaws: effectBudgetMode('stillPaws', level) === 'on' && motion > 0,
+        stillShare: stillWaterWindShare(weather),
+        // BI-8 — the summer surf glow on the swash's crest front.
+        surfGlow: resolveSurfGlow(atmosphere, weather, grade, atmosphere?.lighting?.moonFill ?? 0,
+            effectBudgetMode('coastSwash', level) === 'on' && motion > 0),
         // E2-03 — the swell sets' drift, on the unwrapped motion clock.
         swellDrift: swellDriftRows(renderer.motionTimeMs),
         deepTick: Math.floor(t * 0.006 * clock),
         nearTick: Math.floor(t * 0.004 * clock),
         ringTick: Math.floor(t * 0.007 * clock),
-        swashCyc: Math.floor(t * 0.005 * clock) % 8,
+        swashStep: Math.floor(t * SWASH_STEP_RATE * clock),
         rippleTick: Math.floor(t * 0.002 * clock),
         // 3.7 — heavy rain gives this share of the mirror texels back to
         // the water (the mood layer shows their stop); they no longer ripple.
@@ -1203,10 +1357,12 @@ function rebuildOverlay(state, base, fx, palette, rect, renderer, sea) {
         // shallower colour) and 15 (one stop lighter, or a cap's rise).
         const near = base.near;
         const density = (storm ? STORM_DASH_DENSITY : NEAR_SHORE_DASH_DENSITY) * 256;
+        // BI-1 — on still water the knot wind's share sets the density.
+        const stillDensity = storm ? density : NEAR_SHORE_DASH_DENSITY * fx.stillShare * 256;
         for (const course of [1, 2]) {
             const bucket = (((course === 2 ? 14 : 15) - fx.nearTick) % 16 + 16) % 16;
             for (let n = near.start[bucket]; n < near.start[bucket + 1]; n++) {
-                if (near.h[n] >= density) continue;
+                if (near.h[n] >= (near.still[n] ? stillDensity : density)) continue;
                 const ox = near.x[n];
                 const y = near.y[n];
                 if (y < y0 || y >= y1 || ox + 3 <= x0 || ox >= x1) continue;
@@ -1242,6 +1398,12 @@ function rebuildOverlay(state, base, fx, palette, rect, renderer, sea) {
             const r = Math.floor((y - fieldY) / 2);
             return c < 0 || r < 0 || c >= cols || r >= rows ? 255 : cycleOffset[r * cols + c];
         };
+        // BI-1 — a deep crest on still water takes the knot wind's share.
+        const stillOriginAt = (x, y) => {
+            const c = Math.floor((x - fieldX) / 2);
+            const r = Math.floor((y - fieldY) / 2);
+            return c >= 0 && r >= 0 && c < cols && r < rows && (base.coastField[(r * cols + c) * 2 + 1] & STILL_FLAGS) === STILL_FLAGS;
+        };
         for (let cy = Math.floor(y0 / CHUNK_H); cy * CHUNK_H < y1; cy++) {
             for (let cx = Math.floor(x0 / CHUNK_W); cx * CHUNK_W < x1; cx++) {
                 const chunk = state.chunks.get(`${cx},${cy},${storm}`);
@@ -1261,6 +1423,7 @@ function rebuildOverlay(state, base, fx, palette, rect, renderer, sea) {
                         if (hash12(wave + 59, Math.floor((ox - y * SWELL_SET_NORMAL[0]) / DEEP_CREST_RUN) + 11) >= SWELL_SET_SHARE) continue;
                         const cap = storm && hash12(cellX + 17, y + 31) < 0.25;
                         let origin = -1;
+                        let calm = 1;
                         for (let x = ox; x < ox + 3; x++) {
                             if (!inRect(x, y)) continue;
                             if (!isLead && waterBayer4(x, y) < 0.5) continue;
@@ -1270,9 +1433,12 @@ function rebuildOverlay(state, base, fx, palette, rect, renderer, sea) {
                                 if (y < OCEAN_HORIZON_WORLD_Y || hq >= seaDensity) continue;
                             } else {
                                 if (k0 > 5 || k0 < 2) continue;
-                                if (origin < 0) origin = offsetAt(ox, y);
+                                if (origin < 0) {
+                                    origin = offsetAt(ox, y);
+                                    if (origin === 255 && stillOriginAt(ox, y)) calm = fx.stillShare;
+                                }
                                 if (origin !== 255) continue;
-                                const density = (inMapDensity ?? (k0 >= 3 ? DEEP_DASH_DENSITY : NEAR_SHORE_DASH_DENSITY)) * 256;
+                                const density = (inMapDensity ?? (k0 >= 3 ? DEEP_DASH_DENSITY : NEAR_SHORE_DASH_DENSITY) * calm) * 256;
                                 if (hq >= density) continue;
                             }
                             const p = at(x, y);
@@ -1309,6 +1475,24 @@ function rebuildOverlay(state, base, fx, palette, rect, renderer, sea) {
                     }
                     out[p] = colour;
                 }
+            }
+        }
+    }
+    // BI-1 — still water's cat's paws on the gust step: a block the gust
+    // field cannot lift past its lowest need is skipped whole.
+    if (clock > 0 && fx.stillPaws && gust && base.still) {
+        const still = base.still;
+        for (let b = 0; b < still.blocks; b++) {
+            const bx0 = still.blockX[b];
+            const by0 = still.blockY[b];
+            if (bx0 + STILL_BLOCK_W <= x0 || bx0 >= x1 || by0 + STILL_BLOCK_H <= y0 || by0 >= y1) continue;
+            if (gustBound(gust, bx0, by0, STILL_BLOCK_W, STILL_BLOCK_H) <= still.blockNeed[b]) continue;
+            for (let n = still.start[b]; n < still.start[b + 1]; n++) {
+                const x = still.x[n];
+                const y = still.y[n];
+                if (!inRect(x, y) || gustAt(gust, x, y) <= still.need[n]) continue;
+                const c = still.colour[n];
+                out[at(x, y)] = c === STILL_CREST ? palette.classes[CLS_CREST] : palette.stops[c];
             }
         }
     }
@@ -1352,17 +1536,68 @@ function rebuildOverlay(state, base, fx, palette, rect, renderer, sea) {
     }
     // 3.6 — the swash runs before the water state on the resident terrain
     // batch: a texel it turns to foam or wet sand keeps that colour and never
-    // takes the path or the beam.
+    // takes the path or the beam. BI-3: the 12-step wave's list for this
+    // global step, then the set's big-wave peak where a band meets it (a
+    // texel it leaves at its baked class shows the terrain). BI-8: the crest
+    // front's glowing texels land on the glow layer, laid after the grade.
+    state.glowLive = false;
     if (clock > 0 && fx.swash) {
-        eachTexel(base.swash[fx.swashCyc], 2, (i, x, y, k) => {
+        const glow = fx.surfGlow > 0 ? layerCanvas(state.glow, w, h) : null;
+        const glowOut = glow?.u32;
+        const list = base.swash[posMod(fx.swashStep, SWASH_WAVE)];
+        let glowing = 0;
+        eachTexel(list, 2, (i, x, y, k) => {
             const p = at(x, y);
-            out[p] = palette.classes[base.swash[fx.swashCyc][k + 1]];
-            mask[p] = 1;
+            const code = list[k + 1];
+            const c = code & SWASH_CLASS;
+            if (c !== cls[i]) {
+                out[p] = palette.classes[c];
+                mask[p] = 1;
+            }
+            if (glowOut && (code & SWASH_GLOW)) {
+                glowOut[p] = SURF_GLOW_U32;
+                glowing++;
+            }
         });
+        const big = base.swashBig[posMod(fx.swashStep, SWASH_SET)];
+        eachTexel(big, 2, (i, x, y, k) => {
+            const p = at(x, y);
+            const code = big[k + 1];
+            const c = code & SWASH_CLASS;
+            out[p] = c && c !== cls[i] ? palette.classes[c] : 0;
+            mask[p] = 1;
+            if (glowOut) {
+                glowOut[p] = code & SWASH_GLOW ? SURF_GLOW_U32 : 0;
+                if (code & SWASH_GLOW) glowing++;
+            }
+        });
+        if (glow && glowing) {
+            glow.ctx.putImageData(glow.image, 0, 0);
+            glow.x = x0;
+            glow.y = y0;
+            state.glowLive = true;
+        }
     }
     layer.ctx.putImageData(layer.image, 0, 0);
     layer.x = x0;
     layer.y = y0;
+}
+
+// BI-1 — the most a rect of world px can read from the gust field: the
+// largest grid sample its bilinear fetch (`gustAt`) can weigh there.
+function gustBound(gust, x, y, w, h) {
+    const last = GUST_GRID - 1;
+    const i0 = Math.max(0, Math.floor((x + 0.5 - gust.x0) / gust.cellX - 0.5));
+    const i1 = Math.min(last, Math.floor((x + w - 0.5 - gust.x0) / gust.cellX - 0.5) + 1);
+    const j0 = Math.max(0, Math.floor((y + 0.5 - gust.y0) / gust.cellY - 0.5));
+    const j1 = Math.min(last, Math.floor((y + h - 0.5 - gust.y0) / gust.cellY - 0.5) + 1);
+    let most = 0;
+    for (let j = j0; j <= j1; j++) {
+        for (let i = i0; i <= i1; i++) {
+            if (gust.data[j * GUST_GRID + i] > most) most = gust.data[j * GUST_GRID + i];
+        }
+    }
+    return most;
 }
 
 // ---------------------------------------------------------------------------
@@ -1531,7 +1766,7 @@ function waterTexel(state, base, fx, x, y) {
 function rebuildPath(state, base, fx, palette, view, glint) {
     const moon = glint.kind === 3;
     const baseWidth = glint.kind === 2 ? GLINT_NOON_BASE : 5;
-    const grow = glint.kind === 2 ? 0.12 * NOON_GLINT_GROW_GAIN : 0.12;
+    const grow = (glint.kind === 2 ? 0.12 * NOON_GLINT_GROW_GAIN : 0.12) * (glint.growScale ?? 1);
     const gx = view.x0 + clamp01(glint.body?.xFrac ?? 0.5) * (view.x1 - view.x0);
     const top = Math.max(Math.floor(view.y0), fx.horizonTop);
     const bottom = Math.ceil(view.y1);
@@ -1934,11 +2169,19 @@ function rebuildColumns(state, base, fx, palette, rect, lights, grade, postFx, f
  */
 export function drawCanvasWaterColumns(overlayCtx, renderer) {
     const state = renderer?._canvasWater;
-    if (!state || (!state.columnsLive && !state.beamLive) || !renderer.camera) return;
+    const glow = state?.glowDraw === true;
+    if (!state || (!state.columnsLive && !state.beamLive && !glow) || !renderer.camera) return;
     overlayCtx.save();
     renderer.camera.applyTransform(overlayCtx);
     overlayCtx.imageSmoothingEnabled = false;
     overlayCtx.globalCompositeOperation = 'source-over';
+    // BI-8 — the summer surf glow over the graded crest, at its strength
+    // (the resident `mix(graded, SURF_GLOW, u_surfGlow)`), under the beam.
+    if (glow) {
+        state.glowDraw = false;
+        overlayCtx.globalAlpha = Math.min(1, state.glowAlpha);
+        drawCarvedTerrainLayer(overlayCtx, renderer, state.glow);
+    }
     overlayCtx.globalAlpha = 1;
     if (state.beamLive) {
         state.beamLive = false;
@@ -1967,6 +2210,11 @@ export function drawCanvasWaterState(ctx, renderer, atmosphere) {
         path: {},
         beam: {},
         sun: {},
+        // BI-8 — the swash's glowing crest front, laid after the grade.
+        glow: {},
+        glowLive: false,
+        glowDraw: false,
+        glowAlpha: 0,
         // 3.3 (a) — the cap chunks holding sea canvases (`chunkSeaCanvas`).
         seaCanvasChunks: new Set(),
         columns: {},
@@ -2130,7 +2378,8 @@ export function drawCanvasWaterState(ctx, renderer, atmosphere) {
     const overlayKey = [
         base.key, paletteKey, rect.x0, rect.y0, rect.w, rect.h, fx.clock > 0 ? 1 : 0,
         fx.starlight,
-        fx.deepTick, fx.nearTick, fx.ringTick, fx.swashCyc, fx.rippleTick,
+        fx.deepTick, fx.nearTick, fx.ringTick, posMod(fx.swashStep, SWASH_SET), fx.rippleTick,
+        fx.stillPaws ? 1 : 0, Math.round(fx.stillShare * 256), fx.surfGlow > 0 ? 1 : 0,
         fx.caustics ? Math.floor(fx.t * 0.004 * fx.clock) % 8 : -1,
         Math.round(fx.rain * 64), fx.swash ? 1 : 0, fx.grassGust ? 1 : 0, fx.horizonTop, pending,
         sun?.key ?? '', gust?.key ?? '', seaKey, state.capsDrift,
@@ -2154,11 +2403,14 @@ export function drawCanvasWaterState(ctx, renderer, atmosphere) {
         state.stats.overlayMs = performance.now() - started;
         state.stats.overlayBuilds++;
     }
+    // BI-8 — this frame's glow, consumed by `drawCanvasWaterColumns`.
+    state.glowAlpha = fx.surfGlow;
+    state.glowDraw = state.glowLive && fx.surfGlow > 0;
     ctx.drawImage(state.overlay.canvas, state.overlay.x, state.overlay.y);
     // 3.2 — the path.
     const glint = canvasGlint(atmosphere);
     if (glint) {
-        const pathKey = `${fx.deepTick}|${glint.kind}|${Math.round(glint.strength * 64)}|${Math.round((glint.body?.xFrac ?? 0.5) * 4096)}|${Math.round(view.x0)},${Math.round(view.y0)},${Math.round(view.x1)},${Math.round(view.y1)}|${view.texelPx}|${state.overlayKey}`;
+        const pathKey = `${fx.deepTick}|${glint.kind}|${Math.round(glint.strength * 64)}|${Math.round((glint.growScale ?? 1) * 64)}|${Math.round((glint.body?.xFrac ?? 0.5) * 4096)}|${Math.round(view.x0)},${Math.round(view.y0)},${Math.round(view.x1)},${Math.round(view.y1)}|${view.texelPx}|${state.overlayKey}`;
         if (pathKey !== state.pathKey) {
             const started = performance.now();
             state.pathOn = rebuildPath(state, base, fx, palette, view, glint);

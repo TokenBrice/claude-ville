@@ -82,6 +82,10 @@
 //                 receivers on water (okL <= 0.83; S < 0.40, so seaPath alone
 //                 owns saturated gold); stops 3..6 are the ember rim, flame
 //                 mid, hot glass and core of its dithered air shaft/halo.
+//   surfGlow      BI-8, the summer surf glow: the dim sea-green a breaking
+//                 crest front takes on a calm, moonless summer night, laid
+//                 over the graded crest (natural light, never bloom; Tier D,
+//                 L 0.14, S 0.59), so it stays far below the lamp pools.
 //
 // Ground (grass+dirt+road+plaza as they cover the island, grass-majority)
 // lands at median S ~0.46-0.50: inside GROUND_SATURATION.
@@ -113,6 +117,7 @@ export const ART_RAMPS = Object.freeze({
     emissive: ['#ff9d4a', '#ffcf7a', '#ffe9b8'],
     seaPath: ['#c48054', '#ecb068', '#969d8f', '#c0bea4', '#849ab0', '#c4d6e2'],
     beaconFire: ['#928575', '#b3a58f', '#d0c1a7', '#c8743a', '#f0a850', '#ffd88a', '#fff4d6'],
+    surfGlow: ['#2f7466'],
     // Seasonal and per-tree ramps (plan items 5.1 and 5.3 of
     // the Waking Isle plan). FoliageRenderer
     // remaps canopy pixels onto them by luminance rank, dark -> light; the

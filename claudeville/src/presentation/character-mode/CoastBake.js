@@ -30,6 +30,8 @@ import { WATER_POLYLINES, WORLD_TREE, inWorldTreeIslet } from '../../config/scen
 import * as CanvasGrade from './CanvasGrade.js';
 import { emissiveSidecarFor } from './EmitterCuts.js';
 import { cloudCourseDrift } from './Wind.js';
+import { moonRoadFor, sunRoadFor } from './gpu/GpuFrameState.js';
+import { lookStrength } from './LookStrengths.js';
 
 const HALF_W = TILE_WIDTH / 2;
 const HALF_H = TILE_HEIGHT / 2;
@@ -122,6 +124,22 @@ const WATER_NIGHT_FLOOR = 0.15;
 const WATER_SKY_WEIGHT = 0.16;
 const WATER_SKY_COVER = 0.12;
 const WATER_SKY_FOG = 0.08;
+// LA-3 (look `la3`) — the golden sea. At golden hour the land's split tone is
+// an amber key over violet shadows; the sea, half this frame, took the warm
+// horizon into water the violet shadow tint had already crushed and landed
+// grey, darker than the midnight sea. Instead it takes the cool of the
+// golden-hour sky (`goldenSeaSky`: the zenith blue shaded by the land's own
+// shadow violet) at up to GOLDEN_SEA_WEIGHT: the complementary violet-blue
+// under the amber island, at the water's value lifted at most WATER_SKY_LIFT
+// and capped by V6 after, so it stays cool and never turns amber
+// (`goldenSeaShare`).
+const GOLDEN_SEA_WEIGHT = 0.4;
+const GOLDEN_SEA_SPLIT = Object.freeze([0.3, 0.7]);
+// LA-5 (look `la5`) — pearl overcast: under a dry cloud deck the sea takes up
+// to OVERCAST_SEA_WEIGHT more of the deck's pewter (the grade's overcast sky
+// horizon), so the bright cover reaches the water (`overcastSeaShare`).
+const OVERCAST_SEA_WEIGHT = 0.15;
+const OVERCAST_SEA_COVER = Object.freeze([0.6, 0.85]);
 export { WATER_SKY_LIFT } from './CanvasGrade.js';
 // Canvas rebake buckets: the weight in 1/32, the sky in 1/32 a channel.
 const WATER_SKY_STEPS = 32;
@@ -2435,6 +2453,11 @@ export const COAST_FIELD_FLAGS = Object.freeze({
     // A water cell the terrain bake covered with a dock, pier deck, bridge
     // span or foundation (staticReflections' `covered`): land for 2.9 casts.
     covered: 64,
+    // QW-4 / BI-1 — a cell by sheltered still water (the tile's depth cap is
+    // a lagoon's, 3: a lagoon, pond or lake and its banks, never the sea's
+    // or a lone river's): its swash laps at half reach, and its water takes
+    // the still-water cat's paws.
+    lagoon: 128,
 });
 
 // Authored river axes (tile coords) with each segment's arc length from the
@@ -2538,6 +2561,7 @@ function bakeWaterFields(renderer, coast, field) {
                 && (sd > 0 || !landPaved(renderer, wx, wy, tx, ty))) {
                 flags |= COAST_FIELD_FLAGS.swash;
             }
+            if (inMap && field.caps[tile] === 3) flags |= COAST_FIELD_FLAGS.lagoon;
             if (cls >= CLASS_WATER && (!inMap || field.caps[tile] > 3)) flags |= COAST_FIELD_FLAGS.sea;
             const surfSd = cls >= CLASS_WATER && !inMap ? cliffSurfSd(coast, c, r) : null;
             if (surfSd != null) flags |= COAST_FIELD_FLAGS.swash | COAST_FIELD_FLAGS.cliffSurf;
@@ -2612,12 +2636,25 @@ export function waterMoodFor(atmosphere) {
     const intensity = Math.max(0, Math.min(1, Number(weather?.intensity) || 0));
     const storm = type === 'storm' ? 0.6 + 0.4 * intensity : type === 'rain' ? 0.45 * intensity : 0;
     const q = value => Math.round(Math.max(0, Math.min(1, value)) * WATER_SKY_STEPS) / WATER_SKY_STEPS;
-    const horizon = grade?.skyHorizon ? colourTo01(grade.skyHorizon) : null;
+    let horizon = grade?.skyHorizon ? colourTo01(grade.skyHorizon) : null;
     const cover = Math.max(0, Math.min(1, Number(weather?.cloudCover) || 0));
     const fog = Math.max(0, Math.min(1, Number(weather?.fog) || 0));
     const quantNight = Math.round(night * 8) / 8;
+    let weight = WATER_SKY_WEIGHT + WATER_SKY_COVER * cover + WATER_SKY_FOG * fog;
+    if (horizon) {
+        // LA-5 — the pearl overcast's pewter sea.
+        const deck = overcastSeaShare(weather);
+        if (deck > 0) weight += OVERCAST_SEA_WEIGHT * deck;
+        // LA-3 — the golden sea takes the cool of the golden-hour sky.
+        const golden = goldenSeaShare(grade);
+        if (golden > 0) {
+            const cool = goldenSeaSky(grade);
+            horizon = horizon.map((channel, index) => channel + (cool[index] - channel) * golden);
+            weight += (Math.max(weight, GOLDEN_SEA_WEIGHT) - weight) * golden;
+        }
+    }
     const skyWeight = horizon
-        ? q((WATER_SKY_WEIGHT + WATER_SKY_COVER * cover + WATER_SKY_FOG * fog) * (1 - 0.5 * quantNight))
+        ? q(weight * (1 - 0.5 * quantNight))
         : 0;
     return {
         night: quantNight,
@@ -2625,6 +2662,57 @@ export function waterMoodFor(atmosphere) {
         sky: skyWeight > 0 ? horizon.map(q) : [0, 0, 0],
         skyWeight,
     };
+}
+
+/**
+ * LA-3 (look `la3`) — the golden sea's share, 0..1: how violet the grade's
+ * shadow split is (blue over green, from GOLDEN_SEA_SPLIT[0] to [1]), times
+ * the look. The golden-hour key's split (0.76) is whole; sunrise (0.20), the
+ * blue hour (0.24) and noon never reach it, and a cloud deck flattens it with
+ * the land's split tone, so clock and weather alone set it.
+ */
+export function goldenSeaShare(grade, look = lookStrength('la3')) {
+    const tint = grade?.shadowTint;
+    if (!Array.isArray(tint) || !(look > 0)) return 0;
+    const t = Math.max(0, Math.min(1, (tint[2] - tint[1] - GOLDEN_SEA_SPLIT[0]) / (GOLDEN_SEA_SPLIT[1] - GOLDEN_SEA_SPLIT[0])));
+    return Math.min(1, look) * t * t * (3 - 2 * t);
+}
+
+/**
+ * LA-3 — the golden sea's sky, 0..1: half the grade's zenith blue (skyTop),
+ * half the land's shadow violet (shadowTint), each at full value (its peak
+ * channel 1), so blue leads and the mix is a violet-blue.
+ */
+function goldenSeaSky(grade) {
+    const tint = grade.shadowTint;
+    const top = colourTo01(grade.skyTop) || tint;
+    const tintPeak = Math.max(1e-6, ...tint);
+    const topPeak = Math.max(1e-6, ...top);
+    return tint.map((channel, index) => 0.5 * (channel / tintPeak + top[index] / topPeak));
+}
+
+/**
+ * LA-5 (look `la5`) — how pearl the overcast is, 0..1: the look on a dry sky,
+ * fading out as the precipitation rises past the overcast's drizzle (~0.04)
+ * over PEARL_RAIN_PRECIPITATION, so rain (0.56 and up) and storm keep their
+ * dark wash and sea, and a rain front's arrival never steps either. Weather
+ * only. WeatherRenderer's overcast wash reads it too.
+ */
+export const PEARL_RAIN_PRECIPITATION = Object.freeze([0.05, 0.3]);
+export function overcastPearlShare(weather, look = lookStrength('la5')) {
+    if (!(look > 0)) return 0;
+    const [start, full] = PEARL_RAIN_PRECIPITATION;
+    const t = Math.max(0, Math.min(1, ((Number(weather?.precipitation) || 0) - start) / (full - start)));
+    return Math.min(1, look) * (1 - t * t * (3 - 2 * t));
+}
+
+/** LA-5 — the pewter sea's share: the pearl times a cloud deck (OVERCAST_SEA_COVER). */
+export function overcastSeaShare(weather, look = lookStrength('la5')) {
+    const pearl = overcastPearlShare(weather, look);
+    if (!(pearl > 0)) return 0;
+    const cover = Math.max(0, Math.min(1, Number(weather?.cloudCover) || 0));
+    const t = Math.max(0, Math.min(1, (cover - OVERCAST_SEA_COVER[0]) / (OVERCAST_SEA_COVER[1] - OVERCAST_SEA_COVER[0])));
+    return pearl * t * t * (3 - 2 * t);
 }
 
 /** The Canvas rebake key of a `waterMoodFor` result. */
@@ -3199,23 +3287,21 @@ function oceanPalette(atmosphere, postFx) {
 }
 
 // The Canvas path's kind and strength (the resident pass resolves its own
-// `u_glint`): gold near golden hour, pale by day, silver under a moon at
-// least half full in clear air; none under heavy cloud. CanvasWaterState
+// `u_glint`): gold near golden hour and under a low sun, pale by day, silver
+// under the moon in clear air; none under heavy cloud. CanvasWaterState
 // lays the path on the in-map water and the open sea alike.
 export function canvasGlint(atmosphere) {
     const sky = atmosphere?.sky;
     const weather = atmosphere?.weather || {};
     const cover = clamp01(weather.cloudCover);
     const raining = weather.type === 'rain' || weather.type === 'storm';
-    if (sky?.sun?.visible && cover < 0.7) {
-        const rake = clamp01(atmosphere?.lightGrade?.rake);
-        return { kind: rake >= 0.4 ? 1 : 2, strength: 0.35 + 0.65 * rake, body: sky.sun };
-    }
+    // LA-1, LA-1b, LA-4b — the same roads as the resident pass
+    // (`sunRoadFor`, `moonRoadFor`).
+    const road = sunRoadFor(sky?.sun, atmosphere?.lightGrade?.rake, cover, weather.fog);
+    if (road) return road.strength > 0 ? { ...road, body: sky.sun } : null;
     const moonFill = clamp01(atmosphere?.lighting?.moonFill ?? sky?.moon?.fill);
-    if (sky?.moon?.visible && moonFill >= 0.5 && cover < 0.5 && !raining) {
-        return { kind: 3, strength: moonFill, body: sky.moon };
-    }
-    return null;
+    const moonRoad = moonRoadFor(sky?.moon, moonFill, cover, raining);
+    return moonRoad ? { ...moonRoad, body: sky.moon } : null;
 }
 
 function oceanKey(atmosphere, postFx) {

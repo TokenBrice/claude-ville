@@ -167,6 +167,9 @@ export const FRAME_UNIFORM_LAYOUT = uniformLayout('FrameUniforms', [
     ['waterSky', 'vec4f'],
     // E2-03 — the swell sets' drift in rows (GpuFrameState.swellDriftRows).
     ['swellDrift', 'f32'],
+    // BI-1 — still water (paws on, the knot wind's share) and BI-8 — the
+    // summer surf glow's strength (GpuFrameState); appended likewise.
+    ['stillWater', 'vec2f'], ['surfGlow', 'f32'],
 ]);
 
 // §2.6 — the per-batch block, one 256-byte slot per batch in a frame ring

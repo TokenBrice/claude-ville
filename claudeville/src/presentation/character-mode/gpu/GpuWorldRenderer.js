@@ -1036,6 +1036,8 @@ function glslRgb(rgb) {
 function glslRgbArray(name, list) {
     return `const vec3 ${name}[${list.length}] = vec3[${list.length}](${list.map(glslRgb).join(', ')});`;
 }
+// BI-8 — the summer surf glow's crest stop (C1 `surfGlow`), 0..255.
+export const SURF_GLOW_RGB = Object.freeze([1, 3, 5].map(at => parseInt(ART_RAMPS.surfGlow[0].slice(at, at + 2), 16)));
 const WATER_PALETTE_GLSL = [
     glslRgbArray('WATER_STOPS', COAST_PALETTE.stops),
     `const vec3 WATER_FOAM = ${glslRgb(COAST_PALETTE.foam)};`,
@@ -1051,6 +1053,8 @@ const WATER_PALETTE_GLSL = [
     // the depth stops, then the trough one stop below the deepest.
     `const vec3 WATER_TROUGH = ${glslRgb(COAST_PALETTE.trough)};`,
     'vec3 seaStopRgb(float stop) { return stop > 5.5 ? WATER_TROUGH : WATER_STOPS[int(max(stop, 0.0))]; }',
+    // BI-8 — the summer surf glow's crest stop (C1 `surfGlow`).
+    `const vec3 SURF_GLOW = ${glslRgb(SURF_GLOW_RGB)};`,
 ].join('\n');
 
 // W6.11 (AW-P13) — the grass gust course. On the terrain batch a texel at a
@@ -1068,6 +1072,22 @@ const WATER_PALETTE_GLSL = [
 export const GRASS_GUST_ORDER_BASE = 0.12;
 export const GRASS_GUST_ORDER_GAIN = 0.6;
 export const GRASS_GUST_ORDER_CAP = 0.55;
+// BI-3 — the swash's step clock: a 12-step wave (in 4, out 3, rest 5) of
+// 208 ms steps (2.5 s), every fourth wave of a set reaching one lattice step
+// further. 4800 steps fill the 1000 s shader-clock wrap with 100 whole sets,
+// so the wrap never cuts a wave. Each band of SWASH_PEEL_ROWS world rows
+// meets the wave one step before the band above it, so a front runs up
+// every shore from the island's south point.
+export const SWASH_STEP_RATE = 0.0048;
+export const SWASH_PEEL_ROWS = 6;
+// BI-1 — still water's cat's paws (the C-W3 paw rule, `seaPawAt`, on
+// lagoon water): inside a paw a static order (half a fine cloud-tile octave
+// stretched 3:1, half Bayer) under base + gain x gust (capped) steps one
+// stop deeper; a static 1-in-20 set of those texels a stop lighter are the
+// ripples; a baked mirror gives this share of its texels back to its stop.
+export const STILL_PAW_ORDER = Object.freeze({ base: 0.38, gain: 1.3, cap: 0.82 });
+export const STILL_PAW_RIPPLE = 0.05;
+export const STILL_MIRROR_BREAK = Object.freeze({ base: 0.35, gain: 1.5, cap: 0.75 });
 const GRASS_GUST_GLSL = `
 uniform float u_grassGust;
 ${glslRgbArray('GRASS_GUST_FROM', GRASS_GUST_STOPS.map(pair => pair[0]))}
@@ -1276,7 +1296,8 @@ uniform float u_coreEnergy;
 // swell band, 16-31 river current band, 255 none), unit 8 coast field (RGBA8,
 // \`coastFieldTexels\`: R = sd * 64 + 128 in tiles, > 0 water; G =
 // COAST_FIELD_FLAGS bits 1 reflection, 2 swash-eligible, 4 painted water, 8
-// wet sand, 16 sea, 64 covered by a dock or bridge; B / A = the 3.7 mirror
+// wet sand, 16 sea, 64 covered by a dock or bridge, 128 lagoon (QW-4, BI-1);
+// B / A = the 3.7 mirror
 // stops of the cell's top / bottom texel row, see mirrorBaseStop). u_coastRect =
 // (x0, y0, cols, rows) in world px / cells; z == 0 means absent.
 uniform sampler2D u_cycleOffset;
@@ -1287,6 +1308,13 @@ uniform vec4 u_coastRect;
 // z: 3.10 caustics on, w: 3.6 swash on.
 uniform vec4 u_waterFx;
 uniform float u_starlight;
+// BI-1 — still water (GpuFrameState.resolveSeaWeather): x 1 while its cat's
+// paws run (EFFECT_BUDGET stillPaws, the motion clock, a gust field), y the
+// near-shore dash share the knot wind lays on it (0 in fog, NEAR_SHORE_DASH_
+// DENSITY from a partly cloudy breeze up).
+uniform vec2 u_stillWater;
+// BI-8 — the summer surf glow's strength over the graded crest (0 = off).
+uniform float u_surfGlow;
 // 3.2 — the sky body's path: (screenX backing px, strength, kind 0 off /
 // 1 gold / 2 pale / 3 silver, grow = texels of half-width per backing row).
 uniform vec4 u_glint;
@@ -1517,18 +1545,34 @@ vec2 reflectionRippleUv(vec2 uv, float uvStepX) {
 }
 
 // 3.6 — lapping swash on the baked shore (terrain batch, swash cells only):
-// an 8-step cycle of 200 ms (in 4, out 3, hold 1). Seaward the foam sheet
-// grows through four lattice steps (FOAM, a FOAM_CREST front, a Bayer
-// FOAM wash edge) and falls back; up the beach the reach it left is wet
-// sand two ramp steps darker, then one, then dry. Only exact shore colours
-// change (stops, foam, the sand ramp, wet sand); roads, plazas, footprints
-// and bridges are excluded by the bake's swash flag.
+// BI-3, a 12-step wave of SWASH_STEP_RATE steps (in 4, out 3, rest 5) that
+// peels along the shore: each band of SWASH_PEEL_ROWS world rows meets it
+// one step before the band above it, and the wave index travels with its
+// front, so every fourth wave of a set reaches one lattice step further all
+// along the beach. QW-4: lagoon banks (coast flag 128) lap at half reach
+// and take no big wave. Seaward the foam sheet grows through four lattice
+// steps (FOAM, a FOAM_CREST front, a Bayer FOAM wash edge) and falls back;
+// up the beach the reach it left is wet sand two ramp steps darker, then
+// one, then dry. Only exact shore colours change (stops, foam, the sand
+// ramp, wet sand); roads, plazas, footprints and bridges are excluded by
+// the bake's swash flag. BI-8: on the in-steps the sea's crest front sets
+// surfGlowTexel while the summer surf glow is up (main() lays the glow).
+bool surfGlowTexel = false;
 vec3 applyCoastSwash(vec3 color, vec2 px) {
     float sd;
     uint flags;
     if (!coastFieldAt(px, sd, flags) || (flags & 2u) == 0u) return color;
-    float cyc = mod(floor(u_time * 0.005 * u_waterFx.x), 8.0);
+    float swashStep = floor(u_time * ${SWASH_STEP_RATE} * u_waterFx.x) + floor(px.y / ${SWASH_PEEL_ROWS.toFixed(1)});
+    float cyc = mod(swashStep, 12.0);
     float reach = cyc < 4.0 ? cyc : (cyc < 7.0 ? 6.0 - cyc : 0.0);
+    float extent = cyc < 4.0 ? cyc : 3.0;
+    bool lagoon = (flags & ${COAST_FIELD_FLAGS.lagoon}u) != 0u;
+    if (lagoon) {
+        reach *= 0.5;
+        extent *= 0.5;
+    } else if (mod(floor(swashStep / 12.0), 4.0) < 0.5 && reach > 2.5) {
+        reach += 1.0;
+    }
     if (sd > 0.0) {
         // E2-05 — at the cliff's foot the front breaks over the mirror too.
         if ((flags & 32u) == 0u && waterStopIndex(color) < 0 && !sameColour(color, WATER_FOAM) && !sameColour(color, WATER_FOAM_CREST)) {
@@ -1536,11 +1580,13 @@ vec3 applyCoastSwash(vec3 color, vec2 px) {
         }
         float front = 0.05 + reach * 0.035;
         if (sd < front - 0.035) return WATER_FOAM;
-        if (sd < front) return WATER_FOAM_CREST;
+        if (sd < front) {
+            surfGlowTexel = u_surfGlow > 0.0 && cyc < 3.5 && !lagoon;
+            return WATER_FOAM_CREST;
+        }
         if (sd < front + 0.06 && waterBayer4(floor(px)) < 0.5) return WATER_FOAM;
         return color;
     }
-    float extent = cyc < 4.0 ? cyc : 3.0;
     float darker = cyc < 4.5 ? 2.0 : (cyc < 6.5 ? 1.0 : 0.0);
     if (darker < 0.5 || sd <= -0.02 - extent * 0.035) return color;
     if (sameColour(color, WET_SAND_DARK)) return color;
@@ -1642,10 +1688,26 @@ float mirrorStormDrop() {
     float share = clamp((u_weather.x - ${MIRROR_STORM.from.toFixed(2)}) / ${MIRROR_STORM.span.toFixed(2)}, 0.0, 1.0);
     return floor(share * ${MIRROR_STORM.steps.toFixed(1)} + 0.5) / ${MIRROR_STORM.steps.toFixed(1)};
 }
+// BI-1 — the gust over a still-water texel where the C-W3 cat's paw passes
+// (seaPawAt, the open sea's own rule), else 0; only while u_stillWater.x.
+float stillPawAt(vec2 p) {
+    if (u_stillWater.x <= 0.0) return 0.0;
+    float gust = seaGustAt(p);
+    return seaPawAt(p, gust, waterBayer4(p)) ? gust : 0.0;
+}
 vec3 mirrorStormColour(vec3 color, vec2 px, out bool gone) {
     gone = false;
-    if (!u_terrainBatch || u_weather.x <= ${MIRROR_STORM.from.toFixed(2)}) return color;
-    float drop = mirrorStormDrop();
+    if (!u_terrainBatch) return color;
+    float drop = u_weather.x > ${MIRROR_STORM.from.toFixed(2)} ? mirrorStormDrop() : 0.0;
+    // BI-1 — a cat's paw crossing still water breaks its baked mirrors on a
+    // Bayer share that grows with the gust; they heal as it moves on. The
+    // reflection and lagoon flags gate it before any gust fetch.
+    float sd;
+    uint flags;
+    if (u_stillWater.x > 0.0 && coastFieldAt(px, sd, flags) && (flags & 1u) != 0u && (flags & ${COAST_FIELD_FLAGS.lagoon}u) != 0u) {
+        float paw = stillPawAt(floor(px));
+        if (paw > 0.0) drop = max(drop, min(${STILL_MIRROR_BREAK.cap.toFixed(2)}, ${STILL_MIRROR_BREAK.base.toFixed(2)} + ${STILL_MIRROR_BREAK.gain.toFixed(2)} * paw));
+    }
     if (drop <= 0.0 || waterBayer4(floor(px)) >= drop) return color;
     int stop = mirrorBaseStop(px);
     if (stop < 0) return color;
@@ -1751,17 +1813,41 @@ vec3 applyWaterState(vec3 color, vec2 px, out bool seaPath) {
     vec2 cell = floor(p / vec2(3.0, 1.0));
     vec2 origin = cell * vec2(3.0, 1.0);
     float offset = cycleOffsetAt(origin);
+    // BI-1 — still water (lagoon water, never a river's current band; read
+    // at the dash origin like the course) answers the wind: the knot wind's
+    // share sets its dashes (glassy in fog), and inside a gust's cat's paw a
+    // static order steps one stop deeper while a static few texels a stop
+    // lighter are the ripples; world-locked, so a texel changes only as the
+    // paw's front crosses it.
+    float originSd;
+    uint originFlags;
+    bool still = (offset < 15.5 || offset > 31.5) && coastFieldAt(origin, originSd, originFlags)
+        && (originFlags & ${COAST_FIELD_FLAGS.water}u) != 0u && (originFlags & ${COAST_FIELD_FLAGS.lagoon}u) != 0u;
+    if (still) {
+        float paw = stillPawAt(p);
+        if (paw > 0.0) {
+            float ruffle = textureLod(u_cloudTile, fract((p + vec2(211.0, 91.0)) / vec2(144.0, 48.0)), 0.0).r;
+            float order = 0.55 * ruffle + 0.45 * waterBayer4(p);
+            if (waterHash12(p + vec2(131.0, 57.0)) < ${STILL_PAW_RIPPLE.toFixed(2)} && order > 0.5) {
+                return applyWaterMood(base == 0 ? WATER_FOAM_CREST : WATER_STOPS[lighter]) * WATER_CAST;
+            }
+            if (order < min(${STILL_PAW_ORDER.cap.toFixed(2)}, ${STILL_PAW_ORDER.base.toFixed(2)} + ${STILL_PAW_ORDER.gain.toFixed(2)} * paw)) {
+                return applyWaterMood(WATER_STOPS[min(base + 1, 4)]) * WATER_CAST;
+            }
+        }
+    }
+    float calm = still ? u_stillWater.y : 1.0;
     float course = 0.0;
     if (offset < 31.5) {
         // Near shore and river current: lit on course entries 14 (the lead,
         // FOAM_CREST on the shallowest stops) and 15, stepping every 250 ms.
-        if (waterHash12(cell) < mix(${NEAR_SHORE_DASH_DENSITY.toFixed(2)}, 0.7, storm)) {
+        if (waterHash12(cell) < mix(${NEAR_SHORE_DASH_DENSITY.toFixed(2)} * calm, 0.7, storm)) {
             float entry = mod(mod(offset, 16.0) + floor(u_time * 0.004 * clock), 16.0);
             course = entry > 14.5 ? 1.0 : (entry > 13.5 ? 2.0 : 0.0);
             if (course > 0.0 && storm > 0.5 && waterHash12(cell + vec2(17.0, 31.0)) < 0.25) course = 3.0;
         }
     } else if (stop >= 2) {
-        float lit = deepSwellLit(p, deepTick, storm, stop >= 3 ? ${DEEP_DASH_DENSITY.toFixed(2)} : ${NEAR_SHORE_DASH_DENSITY.toFixed(2)});
+        float lit = deepSwellLit(p, deepTick, storm, (stop >= 3 ? ${DEEP_DASH_DENSITY.toFixed(2)} : ${NEAR_SHORE_DASH_DENSITY.toFixed(2)}) * calm);
         course = lit > 1.5 ? 3.0 : lit;
     }
     if (course > 2.5) return applyWaterMood(WATER_FOAM) * WATER_CAST;
@@ -1793,6 +1879,7 @@ vec3 fatTerrainSurface(float material, bool waterMaterial, out bool waterHue, ou
     bool dominantPath = false;
     bool dominantDash = false;
     bool dominantOpen = false;
+    bool dominantGlow = false;
     for (int i = 0; i < 4; i++) {
         float w = fatTapWeight(t, i) * fatTap[i].a;
         if (w <= 0.0) continue;
@@ -1802,6 +1889,7 @@ vec3 fatTerrainSurface(float material, bool waterMaterial, out bool waterHue, ou
         c = mirrorStormColour(c, world, gone);
         bool tapWater = waterMaterial || gone;
         anyWater = anyWater || gone;
+        surfGlowTexel = false;
         if (u_waterFx.w > 0.0) c = applyCoastSwash(c, world);
         if (!tapWater) c = applyGrassGust(c, world);
         if (weather && !tapWater) c = applyMaterialWeather(c, material, world);
@@ -1815,11 +1903,13 @@ vec3 fatTerrainSurface(float material, bool waterMaterial, out bool waterHue, ou
             dominantPath = tapPath;
             dominantDash = lighthouseDash;
             dominantOpen = seaOpenWater;
+            dominantGlow = surfGlowTexel;
         }
         surface += vec4(c, 1.0) * w;
     }
     lighthouseDash = dominantDash;
     seaOpenWater = dominantOpen;
+    surfGlowTexel = dominantGlow;
     seaPath = dominantPath;
     vec3 pre = before.rgb / max(before.a, 1e-6);
     waterHue = anyWater && !(pre.b < pre.r + 0.02 || pre.g < pre.r);
@@ -2092,6 +2182,10 @@ void main() {
     // emitters below): it keeps its beaconFire stop (okL <= 0.83) instead of
     // the night Purkinje grey.
     if (lighthouseDash) color = poolAlbedo;
+    // BI-8 — the summer surf glow: a glowing crest front takes its own light
+    // over the graded crest (albedo only: no emission, no bloom, no light
+    // record, so it lays no pool and stays far below the lamps).
+    if (surfGlowTexel) color = mix(color, SURF_GLOW, u_surfGlow);
     // 5.2 — puddles take the graded sky over the graded street.
     if (u_puddleGround && u_puddles > 0.0) color = applyPuddle(color, v_world);
     color = applyGradeVignette(color, px, u_resolution);
@@ -3531,7 +3625,7 @@ export class GpuWorldRenderer {
             'u_paletteLut', 'u_hasPaletteLut',
             ...ATMOSPHERE_COURSE_UNIFORM_NAMES,
             ...SEA_WEATHER_UNIFORM_NAMES,
-            'u_grassGust',
+            'u_grassGust', 'u_stillWater', 'u_surfGlow',
         ]);
         this.particleUniforms = uniformLocations(gl, this.particleProgram, [
             'u_camera', 'u_resolution', 'u_motifs', 'u_coreEnergy', ...GRADE_UNIFORM_NAMES,
@@ -4552,6 +4646,7 @@ export class GpuWorldRenderer {
         gl.uniform4fv(uniforms.u_waterFx, water.fx);
         gl.uniform1f(uniforms.u_starlight, water.starlight);
         gl.uniform1f(uniforms.u_swellDrift, water.swellDrift);
+        gl.uniform1f(uniforms.u_surfGlow, water.surfGlow);
         gl.uniform4fv(uniforms.u_glint, water.glint);
         gl.uniform3fv(uniforms['u_glintStops[0]'], water.stops);
         this._bindWaterFields(uniforms, feed.coastWater, qualityLevel);
@@ -5185,6 +5280,8 @@ export class GpuWorldRenderer {
         const gust = sea.gust;
         frame.sunlit = sea.sunlit;
         frame.grassGust = sea.grassGust;
+        frame.stillPaws = sea.stillPaws;
+        frame.stillShare = sea.stillShare;
         frame.gust = gust
             ? this.uploadTypedTexture('sea:gust', {
                 width: gust.width,
@@ -5214,6 +5311,8 @@ export class GpuWorldRenderer {
         gl.uniform1f(uniforms.u_squallFall, squall?.fall ?? 0);
         // W6.11 — the scene's grass gust course (the composite has no grass).
         if (uniforms.u_grassGust) gl.uniform1f(uniforms.u_grassGust, gust ? finite(frame?.grassGust, 0) : 0);
+        // BI-1 — still water's paws (the same field) and the knot wind's share.
+        if (uniforms.u_stillWater) gl.uniform2f(uniforms.u_stillWater, gust ? finite(frame?.stillPaws, 0) : 0, finite(frame?.stillShare, 1));
     }
 
     /**

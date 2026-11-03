@@ -364,6 +364,7 @@ fn fatTerrainSurface(material: f32, waterMaterial: bool, waterHue: ptr<function,
   var dominantPath = false;
   var dominantDash = false;
   var dominantOpen = false;
+  var dominantGlow = false;
   for (var i = 0; i < 4; i++) {
     let w = fatTapWeight(t, i) * fatTap[i].a;
     if (w <= 0.0) { continue; }
@@ -373,6 +374,7 @@ fn fatTerrainSurface(material: f32, waterMaterial: bool, waterHue: ptr<function,
     c = mirrorStormColour(c, world, &gone);
     let tapWater = waterMaterial || gone;
     anyWater = anyWater || gone;
+    surfGlowTexel = false;
     if (frame.waterFx.w > 0.0) { c = applyCoastSwash(c, world); }
     if (!tapWater) { c = applyGrassGust(c, world); }
     if (weather && !tapWater) { c = applyMaterialWeather(c, material, world); }
@@ -386,11 +388,13 @@ fn fatTerrainSurface(material: f32, waterMaterial: bool, waterHue: ptr<function,
       dominantPath = tapPath;
       dominantDash = lighthouseDash;
       dominantOpen = seaOpenWater;
+      dominantGlow = surfGlowTexel;
     }
     surface += vec4f(c, 1.0) * w;
   }
   lighthouseDash = dominantDash;
   seaOpenWater = dominantOpen;
+  surfGlowTexel = dominantGlow;
   *seaPath = dominantPath;
   let pre = before.rgb / max(before.a, 1e-6);
   *waterHue = anyWater && !(pre.b < pre.r + 0.02 || pre.g < pre.r);
@@ -610,6 +614,8 @@ fn sceneSurface() -> SurfaceSample {
   }
   // Fire glints preserve their beaconFire receiver stop.
   if (lighthouseDash) { color = poolAlbedo; }
+  // BI-8 — the summer surf glow over the graded crest (albedo only).
+  if (surfGlowTexel) { color = mix(color, SURF_GLOW, frame.surfGlow); }
   // 5.2 — puddles take the graded sky over the graded street.
   if (batch.puddleGround != 0u && frame.puddles > 0.0) { color = applyPuddle(color, v_world); }
   color = applyGradeVignette(color, px, frame.resolution);

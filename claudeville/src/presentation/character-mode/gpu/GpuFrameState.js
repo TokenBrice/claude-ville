@@ -28,8 +28,9 @@ import {
 import { NEUTRAL_GRADE } from '../GradeEvaluator.js';
 import { ART_RAMPS } from '../../../config/artPalette.js';
 import { POST_FX_LEVELS } from '../postfx/PostFxLadder.js';
-import { sourceEnergyFor } from '../AtmosphereState.js';
-import { baseWindX, cloudCourseDrift, gustinessFor, windAt } from '../Wind.js';
+import { localDateKey, sourceEnergyFor } from '../AtmosphereState.js';
+import { lookStrength } from '../LookStrengths.js';
+import { baseWindX, cloudCourseDrift, gustinessFor, WIND_SPEED_BY_TYPE, windAt } from '../Wind.js';
 
 // Shared crest density: a leaf export, also used by the WGSL beacon twin.
 export const DEEP_DASH_DENSITY = 0.5;
@@ -175,7 +176,60 @@ export function resolveFatPixels(camera, override = null) {
 }
 
 export function createWaterFx() {
-    return { fx: new Float32Array(4), glint: new Float32Array(4), stops: new Float32Array(6), starlight: 0, swellDrift: 0 };
+    return { fx: new Float32Array(4), glint: new Float32Array(4), stops: new Float32Array(6), starlight: 0, swellDrift: 0, surfGlow: 0 };
+}
+
+/**
+ * BI-1 — the share of still water's crests (the near-shore dashes and the
+ * deep crests on lagoon water) the knot wind lays: none in fog (glassy), all
+ * of today's from a partly cloudy breeze up. Weather only (V3).
+ */
+export const STILL_WATER_WIND = Object.freeze([WIND_SPEED_BY_TYPE.fog, WIND_SPEED_BY_TYPE['partly-cloudy']]);
+export function stillWaterWindShare(weather) {
+    const [glassy, breeze] = STILL_WATER_WIND;
+    return clamp((Math.abs(baseWindX(weather)) - glassy) / (breeze - glassy), 0, 1);
+}
+
+/**
+ * BI-8 (D6) — the summer surf glow, a rare clock-and-weather phenomenon: on
+ * a calm, moonless July-to-September night of a bloom (a seeded share of
+ * nights, keyed by the evening's local date so it never flips at midnight),
+ * the sea's breaking crest front glows. Strength in [0, 1]: the grade's
+ * night, the moon's light on the water (`moonFill`, none from 0.30), the
+ * knot wind (none from 0.45, a light breeze) and look `bi8`. Never in rain;
+ * never reads agent state (V3). 0 when the swash it rides is off (reduced
+ * motion, MINIMAL).
+ */
+export const SURF_GLOW_MONTHS = Object.freeze([6, 7, 8]);
+export const SURF_GLOW_BLOOM_SHARE = 0.15;
+const SURF_GLOW_MOON = Object.freeze([0.1, 0.3]);
+const SURF_GLOW_CALM_WIND = Object.freeze([0.35, 0.45]);
+const bloomMemo = { minute: NaN, bloom: false };
+export function surfGlowBloomNight(date) {
+    const minute = Math.floor(date.getTime() / 60000);
+    if (minute === bloomMemo.minute) return bloomMemo.bloom;
+    const evening = new Date(date.getTime() - 12 * 3600 * 1000);
+    let bloom = false;
+    if (SURF_GLOW_MONTHS.includes(evening.getMonth())) {
+        let h = 2166136261;
+        for (const ch of `${localDateKey(evening)}|surf-glow`) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
+        h = Math.imul(h ^ (h >>> 16), 0x85ebca6b);
+        h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+        bloom = ((h ^ (h >>> 16)) >>> 8) / 16777216 < SURF_GLOW_BLOOM_SHARE;
+    }
+    bloomMemo.minute = minute;
+    bloomMemo.bloom = bloom;
+    return bloom;
+}
+export function resolveSurfGlow(atmosphere, weather, grade, moonFill, swashOn) {
+    const night = clamp(finite(grade?.night, 0), 0, 1);
+    if (!swashOn || !(night > 0) || weather?.type === 'rain' || weather?.type === 'storm') return 0;
+    const strength = lookStrength('bi8');
+    const date = atmosphere?.effectiveDate || atmosphere?.clock?.date;
+    if (!(strength > 0) || !(date instanceof Date) || !surfGlowBloomNight(date)) return 0;
+    const dark = clamp((SURF_GLOW_MOON[1] - finite(moonFill, 0)) / (SURF_GLOW_MOON[1] - SURF_GLOW_MOON[0]), 0, 1);
+    const calm = clamp((SURF_GLOW_CALM_WIND[1] - Math.abs(baseWindX(weather))) / (SURF_GLOW_CALM_WIND[1] - SURF_GLOW_CALM_WIND[0]), 0, 1);
+    return strength * night * dark * calm;
 }
 
 /**
@@ -196,6 +250,75 @@ export function swellDriftRows(motionTimeMs) {
     if (!(t > 0)) return 0;
     return Math.floor(t / SWELL_DRIFT_STEP_MS) % SWELL_DRIFT_WRAP_ROWS;
 }
+
+// LA-1 — the sun's road follows the sun's own visibility (`sky.sun.alpha`)
+// instead of popping on and off at the 0.02 visibility edge: below
+// SUN_ROAD_NARROW_ALPHA (the last hour before sunset, the first half hour
+// after sunrise) a low sun keeps the gold road, never the pale noon sparkle,
+// and the road narrows toward the body; below SUN_ROAD_FADE_ALPHA (its last
+// minutes) the road fades out with it. A body with no alpha reads as fully
+// up. Shared by `resolveWaterFx` (WebGL2, WebGPU) and CoastBake `canvasGlint`.
+// LA-1b (look `la1b`) — fog veils the road: from SUN_ROAD_FOG_START the
+// weather's fog thins its dashes, and a fog bank (SUN_ROAD_FOG_FULL and up,
+// the fog type's 0.78) hides it at the look's full strength. Before, the road
+// showed through fog, whose cover (0.61) sits under the 0.7 cloud gate.
+export const SUN_ROAD_FADE_ALPHA = 0.15;
+export const SUN_ROAD_NARROW_ALPHA = 0.5;
+export const SUN_ROAD_FOG_START = 0.05;
+export const SUN_ROAD_FOG_FULL = 0.6;
+function smooth01(t) {
+    const x = clamp(t, 0, 1);
+    return x * x * (3 - 2 * x);
+}
+export function sunRoadFor(sun, rake, cloudCover, fog = 0, fogLook = lookStrength('la1b'), out = {}) {
+    if (!sun?.visible || !(finite(cloudCover, 0) < 0.7)) return null;
+    const alpha = clamp(finite(sun.alpha, 1), 0, 1);
+    const r = clamp(finite(rake, 0), 0, 1);
+    const fade = smooth01((alpha - 0.02) / (SUN_ROAD_FADE_ALPHA - 0.02));
+    const high = smooth01((alpha - 0.02) / (SUN_ROAD_NARROW_ALPHA - 0.02));
+    const kind = r >= 0.4 || high < 1 ? 1 : 2;
+    const veil = clamp(finite(fogLook, 0), 0, 1)
+        * smooth01((finite(fog, 0) - SUN_ROAD_FOG_START) / (SUN_ROAD_FOG_FULL - SUN_ROAD_FOG_START));
+    out.kind = kind;
+    out.strength = (0.35 + 0.65 * r) * fade * (1 - veil);
+    out.growScale = kind === 1 ? 0.55 + 0.45 * high : 1;
+    return out;
+}
+
+// LA-4b (look `la4`) — the moon's road on every moonlit night. At 0 it is the
+// old rule: a moon at least MOON_ROAD_FILL full (moonFill: illumination x the
+// moon's alpha x cloud transmission) lays a road of strength moonFill, any
+// smaller moon none, so about 30 % of clear nights had one and it popped on
+// at full strength when the night began. At 1 every visible moon lays one:
+// its strength is the fill itself (a crescent's faint, a full moon's as
+// bright as before) times the moon's altitude, which grows the road in over
+// the first MOON_ROAD_RISE_Y of the sky plate above the arc's foot
+// (MOON_ARC_BASE_Y, where buildMoon rises and sets it) and fades it out over
+// the same span before it sets. A body without yFrac reads as high. Clear
+// air only, as before (cover < 0.5, no rain). Shared like `sunRoadFor`.
+export const MOON_ROAD_FILL = 0.5;
+export const MOON_ARC_BASE_Y = 0.44;
+export const MOON_ROAD_RISE_Y = 0.1;
+export function moonRoadFor(moon, moonFill, cloudCover, raining, look = lookStrength('la4'), out = {}) {
+    if (!moon?.visible || !(finite(cloudCover, 0) < 0.5) || raining) return null;
+    const fill = clamp(finite(moonFill, 0), 0, 1);
+    const before = fill >= MOON_ROAD_FILL ? fill : 0;
+    const k = clamp(finite(look, 0), 0, 1);
+    let strength = before;
+    if (k > 0) {
+        const y = Number(moon.yFrac);
+        const altitude = Number.isFinite(y) ? smooth01((MOON_ARC_BASE_Y - y) / MOON_ROAD_RISE_Y) : 1;
+        strength += (fill * altitude - before) * k;
+    }
+    if (!(strength > 0)) return null;
+    out.kind = 3;
+    out.strength = strength;
+    out.growScale = 1;
+    return out;
+}
+
+// The per-frame road `resolveWaterFx` fills (a frame resolver never allocates).
+const ROAD_SCRATCH = { kind: 0, strength: 0, growScale: 1 };
 
 // Night-only sparkle shares the water/path budget but not the moon-path gate:
 // a small moon leaves the sea to the stars; a full moon takes it over.
@@ -242,35 +365,29 @@ export function resolveWaterFx(feed, camera, level, grade, moonFill, width, out 
         && zoom >= 2
         ? 1 : 0;
     fx[3] = effectBudgetMode('coastSwash', level) === 'on' && motion > 0 ? 1 : 0;
+    // BI-8 — the summer surf glow rides the swash's crest front.
+    out.surfGlow = resolveSurfGlow(feed.atmosphere, weather, grade, moonFill, fx[3] > 0);
     // 3.2 — the sky body's screen x (the sky spans the canvas), gold near
-    // sunrise and golden hour (the grade's rake) at full strength, pale
-    // and sparse (0.35) toward noon, silver under a moon at least half
-    // full in clear air; none under heavy cloud or when the body is hidden.
+    // sunrise and golden hour (the grade's rake) at full strength and under
+    // a low sun, pale and sparse (0.35) toward noon (`sunRoadFor`, LA-1 and
+    // LA-1b), silver under the moon in clear air (`moonRoadFor`, LA-4b);
+    // none under heavy cloud or when the body is hidden.
     glint.fill(0);
     stops.fill(0);
     if (effectBudgetMode('glitterPath', level) === 'off') return out;
     const sun = feed.atmosphere?.sky?.sun;
     const moon = feed.atmosphere?.sky?.moon;
-    let kind = 0;
-    let strength = 0;
-    let xFrac = 0;
-    if (sun?.visible && cloudCover < 0.7) {
-        const rake = clamp(finite(grade.rake, 0), 0, 1);
-        kind = rake >= 0.4 ? 1 : 2;
-        strength = 0.35 + 0.65 * rake;
-        xFrac = finite(sun.xFrac, 0.5);
-    } else if (moon?.visible && moonFill >= 0.5 && cloudCover < 0.5 && !raining) {
-        kind = 3;
-        strength = moonFill;
-        xFrac = finite(moon.xFrac, 0.5);
-    }
-    if (!kind) return out;
+    const sunRoad = sunRoadFor(sun, grade.rake, cloudCover, weather.fog, lookStrength('la1b'), ROAD_SCRATCH);
+    const road = sunRoad || moonRoadFor(moon, moonFill, cloudCover, raining, lookStrength('la4'), ROAD_SCRATCH);
+    if (!road || !(road.strength > 0)) return out;
+    const { kind, strength, growScale } = road;
+    const xFrac = finite((sunRoad ? sun : moon).xFrac, 0.5);
     const texelPx = Math.max(0.01, zoom * Math.max(0.25, finite(camera?._dpr?.(), 1)));
     glint[0] = xFrac * width;
     glint[1] = strength;
     glint[2] = kind;
     // The pale day path spreads into a broad sparse sparkle under a high sun.
-    glint[3] = (kind === 2 ? 0.12 * NOON_GLINT_GROW_GAIN : 0.12) / texelPx;
+    glint[3] = (kind === 2 ? 0.12 * NOON_GLINT_GROW_GAIN : 0.12) * growScale / texelPx;
     stops.set(SEA_PATH_STOPS[kind]);
     return out;
 }
@@ -418,7 +535,7 @@ export function resolveSeaGustRect(camera, feed, weather, width, height, state =
 }
 
 export function createSeaWeather() {
-    return { sunlit: 0, gust: null, grassGust: 0, gustState: createSeaGustState() };
+    return { sunlit: 0, gust: null, grassGust: 0, stillPaws: 0, stillShare: 1, gustState: createSeaGustState() };
 }
 
 /**
@@ -429,6 +546,10 @@ export function createSeaWeather() {
  * W6.11 — `grassGust` (1 or 0): the scene's grass gust course reads the same
  * field while `grassGust` is on (FULL only) and the motion clock runs; the
  * reduced-motion and shed frame is the baked grass, unlifted.
+ * BI-1 — `stillPaws` (1 or 0): still water's cat's paws read the same field
+ * while `stillPaws` is on (FULL and REDUCED) and the motion clock runs (the
+ * reduced-motion frame is the glassy baked lake); `stillShare`: the knot
+ * wind's share of still water's crests (`stillWaterWindShare`).
  */
 export function resolveSeaWeather(level, camera, feed, { courses = null, width = 0, height = 0 } = {}, out = createSeaWeather()) {
     const seaWeather = effectBudgetMode('sea-weather', level) === 'on';
@@ -437,6 +558,8 @@ export function resolveSeaWeather(level, camera, feed, { courses = null, width =
     out.gust = seaWeather ? resolveSeaGustRect(camera, feed, weather, width, height, out.gustState) : null;
     const moving = !feed.reducedMotion && finite(feed.motionScale, 1) > 0;
     out.grassGust = out.gust && moving && effectBudgetMode('grassGust', level) === 'on' ? 1 : 0;
+    out.stillPaws = out.gust && moving && effectBudgetMode('stillPaws', level) === 'on' ? 1 : 0;
+    out.stillShare = stillWaterWindShare(weather);
     return out;
 }
 

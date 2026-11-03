@@ -603,12 +603,14 @@ export const DISTRICT_PROPS = [
     { tileX: 11.3, tileY: 27.8, id: 'prop.wellTrough', layer: 'cache', district: 'civic', walkBlock: true },
     // Reeds and cattails on dry bank tiles of the lagoon's south shore and
     // the west river's south bank: never on water, a heron shallow or a duck
-    // bank (CALM_WATER_FAUNA, HERON_SHALLOWS), never at a bridge foot.
-    { tileX: 9.2, tileY: 11.4, id: 'veg.cattailClump', layer: 'cache', district: 'lagoon' },
-    { tileX: 12.3, tileY: 12.6, id: 'veg.reedClump', layer: 'cache', district: 'lagoon' },
-    { tileX: 15.6, tileY: 13.6, id: 'veg.cattailClump', layer: 'cache', district: 'lagoon' },
-    { tileX: 3.4, tileY: 27.6, id: 'veg.cattailClump', layer: 'cache', district: 'civic' },
-    { tileX: 14.5, tileY: 27.1, id: 'veg.cattailClump', layer: 'cache', district: 'civic' },
+    // bank (CALM_WATER_FAUNA, HERON_SHALLOWS), never at a bridge foot. Live
+    // (BI-6, ReedBeds.js): sorted sprites that bow a texel downwind as a
+    // gust crosses them, instead of terrain-baked art.
+    { tileX: 9.2, tileY: 11.4, id: 'veg.cattailClump', layer: 'live', district: 'lagoon' },
+    { tileX: 12.3, tileY: 12.6, id: 'veg.reedClump', layer: 'live', district: 'lagoon' },
+    { tileX: 15.6, tileY: 13.6, id: 'veg.cattailClump', layer: 'live', district: 'lagoon' },
+    { tileX: 3.4, tileY: 27.6, id: 'veg.cattailClump', layer: 'live', district: 'civic' },
+    { tileX: 14.5, tileY: 27.1, id: 'veg.cattailClump', layer: 'live', district: 'civic' },
     // Fern and bramble where the woods meet the lagoon's west and north
     // shores (the world ash's islet and crown cover its north-east bank).
     { tileX: 0.5, tileY: 5.8, id: 'veg.fernCluster', layer: 'cache', district: 'elderwood' },
@@ -973,10 +975,13 @@ export const SHORE_FAUNA = [
 // (livestock-routes.test.mjs): since CM-1 put Command at 13,14, its west
 // tower and spire rise in front of the paddock's east end, so the cow and
 // the hens keep west of that tower. `face` is the facing held at a point
-// when it differs from the arriving walk. Listed in draw priority: the zoom
-// cap keeps the first N (livestockBudget).
+// when it differs from the arriving walk. `tailFaces` lists the downwind
+// facings an actor may hold tail to the rain (QW-3; both when omitted): a
+// cow facing west would cross that tower, so it turns tail only to a wind
+// toward the east. Listed in draw priority: the zoom cap keeps the first N
+// (livestockBudget).
 export const LIVESTOCK_ROUTES = [
-    { id: 'cow', sprite: 'prop.fauna.cow', speed: 0.16, holdS: [34, 70], phase: 0.12, kind: 'grazer',
+    { id: 'cow', sprite: 'prop.fauna.cow', speed: 0.16, holdS: [34, 70], phase: 0.12, kind: 'grazer', tailFaces: ['east'],
         points: [{ tileX: 9.25, tileY: 13.95 }, { tileX: 9.35, tileY: 14.2 }] },
     { id: 'sheep', sprite: 'prop.fauna.sheep', speed: 0.18, holdS: [26, 58], phase: 0.57, kind: 'grazer',
         points: [{ tileX: 8.72, tileY: 14.41, face: 'east' }, { tileX: 8.75, tileY: 14.63, face: 'south' }] },
