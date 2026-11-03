@@ -5,14 +5,15 @@ import { GRADE_KEYFRAMES } from '../../claudeville/src/presentation/character-mo
 import { arrangementKeyframeAt } from '../../claudeville/src/presentation/shared/audio/DayArc.js';
 
 test('the arrangement key is the grade keyframe the day last passed, from its minute on', () => {
-    // Spring has no sunrise/sunset shift: its keys sit on the authored minutes.
+    // Without a shift the keys sit on the authored minutes.
     for (const key of GRADE_KEYFRAMES) {
-        assert.equal(arrangementKeyframeAt({ minuteOfDay: key.minute, season: 'spring' }), key.name);
+        assert.equal(arrangementKeyframeAt({ minuteOfDay: key.minute }), key.name);
     }
 });
 
-test('the keys follow the season\'s sunrise shift, like the picture', () => {
+test('the keys follow the day\'s sunrise shift, like the picture', () => {
+    // LA-2: the shift is the real sun's (a June and a December sunrise).
     const early = 5 * 60 + 30;
-    assert.equal(arrangementKeyframeAt({ minuteOfDay: early, season: 'summer' }), 'sunrise');
-    assert.equal(arrangementKeyframeAt({ minuteOfDay: early, season: 'winter' }), 'pre-dawn');
+    assert.equal(arrangementKeyframeAt({ minuteOfDay: early, shift: { sunriseShift: -40, sunsetShift: 55 } }), 'sunrise');
+    assert.equal(arrangementKeyframeAt({ minuteOfDay: early, shift: { sunriseShift: 40, sunsetShift: -55 } }), 'pre-dawn');
 });

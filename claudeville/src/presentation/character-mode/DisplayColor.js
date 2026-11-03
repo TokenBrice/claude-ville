@@ -24,8 +24,7 @@ import { P3_VARIANTS } from '../../config/p3Variants.js';
 import { STATUS_VISUALS, THEME } from '../../config/theme.js';
 import { EFFECT_COLORS } from '../../config/artPalette.js';
 import { lampCourseAt } from './GradeEvaluator.js';
-import { seasonShiftFor } from './AtmosphereState.js';
-import { seasonTokenForAtmosphere } from './SeasonalAmbience.js';
+import { dayShiftFor } from './AtmosphereState.js';
 
 export { HDR_HIGHLIGHT_MODES, HDR_HIGHLIGHTS_DEFAULT };
 
@@ -113,7 +112,7 @@ export const HDR_LAMP_COURSE = 1;
 export function hdrLampsLit(atmosphere) {
     const minute = Number(atmosphere?.clock?.minuteOfDay);
     if (!Number.isFinite(minute)) return false;
-    return lampCourseAt(minute, seasonShiftFor(seasonTokenForAtmosphere(atmosphere))) >= HDR_LAMP_COURSE;
+    return lampCourseAt(minute, dayShiftFor(atmosphere)) >= HDR_LAMP_COURSE;
 }
 
 /**

@@ -87,11 +87,11 @@ test('the renderer lights only the caught lamps, hearths included', () => {
 test('the round reads no session state (V3)', () => {
     const source = readFileSync(new URL('../../claudeville/src/presentation/character-mode/LamplighterRound.js', import.meta.url), 'utf8');
     const imports = [...source.matchAll(/^import .* from '([^']+)';$/gm)].map(match => match[1]);
+    // LA-2: the shift comes from the snapshot (`dayShiftFor`), not the season.
     assert.deepEqual(imports.sort(), [
         '../../config/buildings.js',
         './AtmosphereState.js',
         './GradeEvaluator.js',
-        './SeasonalAmbience.js',
     ]);
     const code = source.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
     assert.doesNotMatch(code, /agent|session|status|eventBus/i);

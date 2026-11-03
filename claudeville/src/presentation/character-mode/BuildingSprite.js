@@ -31,11 +31,10 @@ import { ledgerPlaqueRows } from '../shared/HarborLedger.js';
 import { squadMusterLines } from './RelationshipState.js';
 import { getReservedRects } from '../shared/ReservedRects.js';
 import { fireBreath, normalizeLightSource } from './LightSourceRegistry.js';
-import { normalizeLightingState, seasonShiftFor, smokeWindDrift, sourceEnergyFor } from './AtmosphereState.js';
+import { dayShiftFor, normalizeLightingState, smokeWindDrift, sourceEnergyFor } from './AtmosphereState.js';
 import { lampCourseAt } from './GradeEvaluator.js';
 import { lampRoundFor } from './LamplighterRound.js';
 import { canvasGradeKey, statusClothPreimage } from './CanvasGrade.js';
-import { seasonTokenForAtmosphere } from './SeasonalAmbience.js';
 import { isWorkingVisitor, NON_WORKING_VISIT_ROLES } from './VisitIntentManager.js';
 import { attentionBannerState, BuildingPartGates } from './BuildingPartGates.js';
 import { dayPartBeatsAt } from './AmbientEvents.js';
@@ -234,7 +233,7 @@ const LAMP_COURSE_LAMPLIGHT = 2;
 function lampCourseFor(atmosphere) {
     const minute = Number(atmosphere?.clock?.minuteOfDay);
     if (!Number.isFinite(minute)) return 0;
-    return lampCourseAt(minute, seasonShiftFor(seasonTokenForAtmosphere(atmosphere)));
+    return lampCourseAt(minute, dayShiftFor(atmosphere));
 }
 
 export function lampsLitAt(atmosphere) {

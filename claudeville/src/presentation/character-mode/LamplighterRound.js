@@ -5,16 +5,16 @@
 // first and the Pharos last. Each lamp changes state once per course; nothing
 // pulses. Bodiless: no lamplighter figure.
 //
-// V3: a pure function of the clock (minute of day, season shift) and fixed
-// geography (the lamp's tile). It never reads agents, weather or work, so a
-// page loaded mid-dusk shows the same partial round as one that watched it.
-// Reduced motion collapses the round: every lamp keeps the shared lamp
-// clock (`lampsLitAt`), lit at its final state from the first minute.
+// V3: a pure function of the clock (minute of day, the real sun's day shift)
+// and fixed geography (the lamp's tile). It never reads agents, weather or
+// work, so a page loaded mid-dusk shows the same partial round as one that
+// watched it. Reduced motion collapses the round: every lamp keeps the
+// shared lamp clock (`lampsLitAt`), lit at its final state from the first
+// minute.
 
 import { BUILDING_DEFS } from '../../config/buildings.js';
 import { lampCourseAt, lampSettlingWindows } from './GradeEvaluator.js';
-import { seasonShiftFor } from './AtmosphereState.js';
-import { seasonTokenForAtmosphere } from './SeasonalAmbience.js';
+import { dayShiftFor } from './AtmosphereState.js';
 
 // Real minutes from the Pharos lighting to the farthest lamp catching.
 export const ROUND_SPAN_MIN = 7;
@@ -61,7 +61,7 @@ export function roundLampLit(minuteOfDay, fraction, shift = undefined) {
 export function lampRoundFor(atmosphere, { motionScale = 1 } = {}) {
     const minute = Number(atmosphere?.clock?.minuteOfDay);
     if (!Number.isFinite(minute)) return () => false;
-    const shift = seasonShiftFor(seasonTokenForAtmosphere(atmosphere));
+    const shift = dayShiftFor(atmosphere);
     const course = lampCourseAt(minute, shift);
     if (course === 0) return () => false;
     if (course >= 2 || !(Number(motionScale) > 0)) return () => true;

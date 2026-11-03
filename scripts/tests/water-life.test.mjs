@@ -27,7 +27,7 @@ import {
     upwindFacing,
 } from '../../claudeville/src/presentation/character-mode/WildlifeRenderer.js';
 import { WIND_SPEED_BY_TYPE } from '../../claudeville/src/presentation/character-mode/Wind.js';
-import { createAtmosphereSnapshot } from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
+import { AUTHORED_DAY_SITE, createAtmosphereSnapshot } from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
 import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
 import { SceneryEngine } from '../../claudeville/src/presentation/character-mode/SceneryEngine.js';
 import { CALM_WATER_FAUNA, HERON_SHALLOWS, MARINE_FISH_SCHOOLS, SHORE_FAUNA } from '../../claudeville/src/config/scenery.js';
@@ -199,8 +199,10 @@ test('pinned dusk and night hours bring every duck to its bank and to sleep', ()
         waterFrame: 0,
         ambientEvents: null,
     });
-    // QA's path: a noon frame, then the hour pinned forward 16 ms later.
-    const at = hour => createAtmosphereSnapshot({ now: new Date(2026, 9, 9, 12, 0), hourOverride: hour, weatherOverride: 'clear', timelineMode: 'fixed' });
+    // QA's path: a noon frame, then the hour pinned forward 16 ms later. The
+    // authored day (LA-2 would shift dusk by the host's real sun), so 19.9 is
+    // late dusk on every host timezone.
+    const at = hour => createAtmosphereSnapshot({ now: new Date(2026, 9, 9, 12, 0), hourOverride: hour, weatherOverride: 'clear', timelineMode: 'fixed', solarSite: AUTHORED_DAY_SITE });
     const bankOf = duck => ({ x: (duck.bank.tileX - duck.bank.tileY) * 32, y: (duck.bank.tileX + duck.bank.tileY) * 16 });
     const noon = duckPoses(renderer, at(12), 1000);
     assert.equal(noon.length, CALM_WATER_FAUNA.length);

@@ -19,8 +19,7 @@ import { getBuildingEffectAnchor } from './BuildingVisualRegistry.js';
 import { drawSmokePuff, smokePuffAlpha, SMOKE_COOL_COLORS, SMOKE_WARM_COLORS } from './ParticleSystem.js';
 import { buildingCenterToWorld } from './Projection.js';
 import { applyGradeToRgb, lampCourseAt } from './GradeEvaluator.js';
-import { seasonShiftFor, smokeWindDrift } from './AtmosphereState.js';
-import { seasonTokenForAtmosphere } from './SeasonalAmbience.js';
+import { dayShiftFor, smokeWindDrift } from './AtmosphereState.js';
 import { baseWindX } from './Wind.js';
 
 // Spawn cadence per occupancy tier. With puffs living 1.7–2.2 s this keeps
@@ -65,7 +64,7 @@ function smokeInterval(source, presence, atmosphere) {
     if (source.type !== 'watchtower') return PUFF_INTERVAL_MS[presence?.get?.(source.type)?.tier] || 0;
     const minute = Number(atmosphere?.clock?.minuteOfDay);
     return Number.isFinite(minute)
-        && lampCourseAt(minute, seasonShiftFor(seasonTokenForAtmosphere(atmosphere))) >= 2 ? 700 : 0;
+        && lampCourseAt(minute, dayShiftFor(atmosphere)) >= 2 ? 700 : 0;
 }
 
 export class ChimneySmoke {
