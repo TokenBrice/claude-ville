@@ -115,6 +115,92 @@ export function paintWalnutBoard(ctx, left, top, width, height, { nails = false,
     }
 }
 
+// W3 thought plate in the label grammar: a whole-pixel board with 45° stepped
+// corners, a one-pixel trim ring in the speaker's model trim and a one-pixel
+// dark outline outside it, so a thought reads in the same carved material as
+// the plaques. `tail` > 0 hangs a stepped speech notch at `tailX` (relative to
+// the plate's centre, clamped inside the corners); `puffs` hangs the two
+// thought puffs there instead (reasoning, never a quote). Opaque fill: alpha
+// belongs to the caller (older history rows fade with globalAlpha).
+const PLATE_NOTCH_HALVES = Object.freeze([3, 3, 2, 2, 1, 0]);
+// The thought puffs in the notch's seven rows below the board, as
+// [row, from, to] column runs from the tail column: a 6×4 trim ring with a
+// 4×2 dark core, then a 3×2 bead whose foot sits on the tail column, where a
+// displaced head's leader starts. The ring trails to the side away from the
+// tail's lean, so puffs and leader read as one path to the speaker.
+const PUFF_RUNS = Object.freeze({
+    outline: Object.freeze([
+        [0, -6, -3], [1, -7, -2], [2, -8, -1], [3, -8, -1], [4, -7, -2], [5, -6, -3],
+        [3, 0, 2], [4, -1, 3], [5, -1, 3], [6, 0, 2],
+    ]),
+    trim: Object.freeze([[1, -6, -3], [2, -7, -2], [3, -7, -2], [4, -6, -3], [4, 0, 2], [5, 0, 2]]),
+    fill: Object.freeze([[2, -6, -3], [3, -6, -3]]),
+});
+const PUFF_REACH = 9;
+export function paintThoughtPlate(ctx, left, top, width, height, {
+    trim = LABEL_INK.gold,
+    fill = '#221813',
+    outline = LABEL_INK.outline,
+    tail = 0,
+    tailX = 0,
+    puffs = false,
+} = {}) {
+    const x = Math.round(left);
+    const y = Math.round(top);
+    const w = Math.max(6, Math.round(width));
+    const h = Math.max(6, Math.round(height));
+    const rect = (px, py, pw, ph) => ctx.fillRect(px, py, pw, ph);
+    ctx.fillStyle = outline;
+    rect(x + 2, y - 1, w - 4, h + 2);
+    rect(x - 1, y + 2, w + 2, h - 4);
+    rect(x + 1, y, w - 2, h);
+    rect(x, y + 1, w, h - 2);
+    ctx.fillStyle = trim;
+    rect(x + 2, y, w - 4, h);
+    rect(x, y + 2, w, h - 4);
+    rect(x + 1, y + 1, w - 2, h - 2);
+    ctx.fillStyle = fill;
+    rect(x + 2, y + 1, w - 4, h - 2);
+    rect(x + 1, y + 2, w - 2, h - 4);
+    if (!tail && !puffs) return;
+    // The tail column is a whole pixel: the board's middle column plus the
+    // lean, the same column a displaced head's leader runs down.
+    const lean = Math.round(tailX);
+    const inset = puffs ? PUFF_REACH : 5;
+    const cx = Math.max(x + inset, Math.min(x + w - 1 - inset, x + Math.floor(w / 2) + lean));
+    const base = y + h;
+    if (puffs) {
+        const side = lean < 0 ? -1 : 1;
+        for (const [style, runs] of [[outline, PUFF_RUNS.outline], [trim, PUFF_RUNS.trim], [fill, PUFF_RUNS.fill]]) {
+            ctx.fillStyle = style;
+            for (const [row, from, to] of runs) {
+                const a = cx + from * side;
+                const b = cx + to * side;
+                rect(Math.min(a, b), base + row, Math.abs(b - a) + 1, 1);
+            }
+        }
+        return;
+    }
+    const rows = Math.min(tail, PLATE_NOTCH_HALVES.length);
+    // Open the bottom trim where the notch joins the board.
+    ctx.fillStyle = fill;
+    rect(cx - PLATE_NOTCH_HALVES[0] + 1, base - 1, PLATE_NOTCH_HALVES[0] * 2 - 1, 1);
+    for (let k = 0; k < rows; k++) {
+        const half = PLATE_NOTCH_HALVES[k];
+        const py = base + k;
+        ctx.fillStyle = outline;
+        rect(cx - half - 1, py, half * 2 + 3, 1);
+        ctx.fillStyle = trim;
+        rect(cx - half, py, half * 2 + 1, 1);
+        if (half > 0) {
+            ctx.fillStyle = fill;
+            rect(cx - half + 1, py, half * 2 - 1, 1);
+        }
+    }
+    ctx.fillStyle = outline;
+    rect(cx, base + rows, 1, 1);
+}
+
 // An authored 8×8 EventShapes motif with a one-pixel dark silhouette
 // outline, baked once per (motif, colour, step, device scale) and blitted in
 // device pixels. `x`/`y` are the top-left of the 8×8 motif (not the padded

@@ -36,7 +36,6 @@ export const THOUGHT_CLOCK_WIDTH = 22;
 // Older lines: smaller, fainter rows a 3 px gap above the head and each other.
 export const THOUGHT_HISTORY = Object.freeze({
     height: 14,
-    radius: 3,
     stroke: 1,
     pad: 7,
     gap: 3,
@@ -82,6 +81,7 @@ export function createThoughtColumn() {
         headTop: 0,
         headBottom: 0,
         tail: 0,
+        puffs: false,
         tailTipY: 0,
         chipZone: 0,
         tagWidth: 0,
@@ -167,6 +167,7 @@ export function layoutThoughtColumn(out, thread, clock = false, chip = false, ta
     if (clock) {
         out.headWidth = THOUGHT_CLOCK_WIDTH;
         out.tail = THOUGHT_HEAD.tail;
+        out.puffs = false;
         out.textLeft = 0;
     } else {
         const text = head?.text || '';
@@ -180,7 +181,10 @@ export function layoutThoughtColumn(out, thread, clock = false, chip = false, ta
         out.textLeft = out.chipZone + out.tagWidth;
         out.headWidth = out.textLeft + out.textWidth + out.countWidth + THOUGHT_HEAD.pad;
         // Long-form reasoning excerpts are chips, not quotes: no speech tail.
-        out.tail = head?.shape === 'chip' ? 0 : THOUGHT_HEAD.tail;
+        // They trail two thought puffs in the same rows instead, so the
+        // reservation is the notch's either way.
+        out.tail = THOUGHT_HEAD.tail;
+        out.puffs = head?.shape === 'chip';
     }
     out.tailTipY = out.headBottom + out.tail;
 

@@ -42,6 +42,7 @@ import {
     identityLabelTop,
     measureLabelText,
     paintOutlinedText,
+    paintThoughtPlate,
     snapScreenOrigin,
 } from './WorldLabelKit.js';
 import { Compositor, agentPaletteVariant, bakeSpriteOutline, resolveHeadAccessory } from './Compositor.js';
@@ -6771,71 +6772,27 @@ export class AgentSprite {
         return this._speakerTag || '';
     }
 
-    _thoughtBubblePath(ctx, left, width, top, bottom, radius, tail, tailX) {
-        const right = left + width;
-        const lo = left + radius + THOUGHT_HEAD.tailHalf;
-        const hi = right - radius - THOUGHT_HEAD.tailHalf;
-        const x = Math.max(lo, Math.min(hi, tailX));
-        ctx.beginPath();
-        ctx.moveTo(left + radius, top);
-        ctx.lineTo(right - radius, top);
-        ctx.quadraticCurveTo(right, top, right, top + radius);
-        ctx.lineTo(right, bottom - radius);
-        ctx.quadraticCurveTo(right, bottom, right - radius, bottom);
-        if (tail) {
-            ctx.lineTo(x + THOUGHT_HEAD.tailHalf, bottom);
-            ctx.lineTo(x, bottom + tail);
-            ctx.lineTo(x - THOUGHT_HEAD.tailHalf, bottom);
-        }
-        ctx.lineTo(left + radius, bottom);
-        ctx.quadraticCurveTo(left, bottom, left, bottom - radius);
-        ctx.lineTo(left, top + radius);
-        ctx.quadraticCurveTo(left, top, left + radius, top);
-        ctx.closePath();
-    }
-
     _drawLongWaitClock(ctx, accentColor, tailX = 0) {
         const top = THOUGHT_HEAD.centerY - THOUGHT_HEAD.height / 2;
-        ctx.fillStyle = 'rgba(34, 24, 19, 0.94)';
-        ctx.strokeStyle = accentColor;
-        ctx.lineWidth = THOUGHT_HEAD.stroke;
-        ctx.lineJoin = 'round';
-        this._thoughtBubblePath(ctx, -THOUGHT_CLOCK_WIDTH / 2, THOUGHT_CLOCK_WIDTH, top,
-            top + THOUGHT_HEAD.height, THOUGHT_HEAD.radius, THOUGHT_HEAD.tail, tailX);
-        ctx.fill();
-        ctx.stroke();
-        // 6-line clock glyph: outer ring + two hands.
-        const cy = THOUGHT_HEAD.centerY;
-        const r = 5;
-        ctx.lineWidth = 1.4;
-        ctx.beginPath();
-        ctx.arc(0, cy, r, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.moveTo(0, cy);
-        ctx.lineTo(0, cy - r + 1);
-        ctx.moveTo(0, cy);
-        ctx.lineTo(r - 2, cy);
-        ctx.stroke();
+        paintThoughtPlate(ctx, -THOUGHT_CLOCK_WIDTH / 2, top, THOUGHT_CLOCK_WIDTH, THOUGHT_HEAD.height, {
+            trim: accentColor, tail: THOUGHT_HEAD.tail, tailX,
+        });
+        // The turn-sand hourglass motif, not an anti-aliased clock face.
+        drawOutlinedMotif(ctx, 'turn-sand', -4, Math.round(THOUGHT_HEAD.centerY) - 4, { color: accentColor });
     }
 
     // Head bubble: [repo pennant][speaker tag][line][×N] with the provenance
-    // dot in the trailing corner. The stroke keeps the model trim; nothing in
-    // it is a status hue.
+    // dot in the trailing corner. The trim ring keeps the model trim; nothing
+    // in it is a status hue.
     _drawThoughtHead(ctx, column, head, accentColor, tailX, repoAccent, tag) {
         const left = -column.headWidth / 2;
         const top = column.headTop;
         const cy = THOUGHT_HEAD.centerY;
-        ctx.fillStyle = 'rgba(34, 24, 19, 0.94)';
-        ctx.strokeStyle = accentColor;
-        ctx.lineWidth = THOUGHT_HEAD.stroke;
-        ctx.lineJoin = 'round';
-        // Tailless for anything that is not the model's own quotable words:
-        // long-form reasoning excerpts must never wear speech styling.
-        this._thoughtBubblePath(ctx, left, column.headWidth, top, column.headBottom,
-            THOUGHT_HEAD.radius, column.tail, tailX);
-        ctx.fill();
-        ctx.stroke();
+        // Reasoning excerpts never wear speech styling: they trail thought
+        // puffs where a quote hangs its notch.
+        paintThoughtPlate(ctx, left, top, column.headWidth, column.headBottom - top, {
+            trim: accentColor, tail: column.puffs ? 0 : column.tail, tailX, puffs: column.puffs,
+        });
 
         const x0 = Math.round(left);
         if (repoAccent) {
@@ -6889,17 +6846,9 @@ export class AgentSprite {
             const layout = this._bubbleLayout(ctx, entry.text, textMax, true);
             ctx.save();
             ctx.globalAlpha *= i === 0 ? 0.74 : 0.56;
-            ctx.fillStyle = 'rgba(24, 18, 14, 0.88)';
-            ctx.strokeStyle = entry.accent || this._providerTrimColor();
-            ctx.lineWidth = THOUGHT_HISTORY.stroke;
-            ctx.beginPath();
-            if (ctx.roundRect) {
-                ctx.roundRect(left, cy - THOUGHT_HISTORY.height / 2, width, THOUGHT_HISTORY.height, THOUGHT_HISTORY.radius);
-            } else {
-                ctx.rect(left, cy - THOUGHT_HISTORY.height / 2, width, THOUGHT_HISTORY.height);
-            }
-            ctx.fill();
-            ctx.stroke();
+            paintThoughtPlate(ctx, left, cy - THOUGHT_HISTORY.height / 2, width, THOUGHT_HISTORY.height, {
+                trim: entry.accent || this._providerTrimColor(), fill: '#18120e',
+            });
             ctx.fillStyle = '#d9cbb0';
             this._applyReadableTextShadow(ctx);
             ctx.fillText(layout.displayText, Math.round(left) + THOUGHT_HISTORY.pad, cy, textMax);
@@ -7013,30 +6962,10 @@ export class AgentSprite {
         const bubbleY = -20;
         const w = 30;
         const h = 24;
-        const r = 5;
         this._drawOverlayStamp(ctx, `chat|${accent}`, -18, bubbleY - 15, 36, 36, (ctx) => {
-
-            // Parchment backplate (rounded scroll), with a small downward tail.
-            ctx.fillStyle = 'rgba(34, 24, 19, 0.94)';
-            ctx.strokeStyle = accent;
-            ctx.lineWidth = 1.5;
-            ctx.beginPath();
-            if (ctx.roundRect) {
-                ctx.roundRect(-w / 2, bubbleY - h / 2, w, h, r);
-            } else {
-                ctx.rect(-w / 2, bubbleY - h / 2, w, h);
-            }
-            ctx.fill();
-            ctx.stroke();
-
-            // Tail
-            ctx.fillStyle = 'rgba(34, 24, 19, 0.94)';
-            ctx.beginPath();
-            ctx.moveTo(-3, bubbleY + h / 2 - 1);
-            ctx.lineTo(0, bubbleY + h / 2 + 6);
-            ctx.lineTo(3, bubbleY + h / 2 - 1);
-            ctx.fill();
-
+            // EF-1 — the thought plate's carved board with its speech notch,
+            // so a conversation wears the same pixel cut as every thought.
+            paintThoughtPlate(ctx, -w / 2, bubbleY - h / 2, w, h, { trim: accent, tail: THOUGHT_HEAD.tail });
             drawEventShape(ctx, 'message-scroll', -8, bubbleY - 8, 1, accent);
         });
 

@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
+import { AgentSprite } from '../../claudeville/src/presentation/character-mode/AgentSprite.js';
 import {
-    createThoughtColumn, layoutThoughtColumn, needsConfidenceMark,
-    THOUGHT_CANDIDATE_COUNT, THOUGHT_CANDIDATE_SLOT, THOUGHT_CANDIDATE_LATERAL,
+    createThoughtColumn, layoutThoughtColumn, needsConfidenceMark, thoughtLeader,
+    THOUGHT_CANDIDATE_COUNT, THOUGHT_CANDIDATE_SLOT, THOUGHT_CANDIDATE_LATERAL, THOUGHT_HEAD,
 } from '../../claudeville/src/presentation/character-mode/ThoughtColumn.js';
+import { LABEL_INK, paintThoughtPlate } from '../../claudeville/src/presentation/character-mode/WorldLabelKit.js';
 
 function rendererHost() {
     const renderer = Object.create(IsometricRenderer.prototype);
@@ -257,4 +259,100 @@ test('speech with null confidence never gains a classifier uncertainty mark', ()
     assert.equal(needsConfidenceMark('Checking the renderer', 0.5), true);
     assert.equal(needsConfidenceMark('Checking the renderer?', 0.5), false);
     assert.equal(needsConfidenceMark('Checking the renderer', 0.9), false);
+});
+
+// EF-1 — a recording context: every painted pixel (last write wins) in the
+// caller's whole-pixel units, and any vector path call, which the label kit
+// never makes.
+function pixelCtx() {
+    const pixels = new Map();
+    const paths = [];
+    const ctx = {
+        fillStyle: '',
+        globalAlpha: 1,
+        fillRect(x, y, w, h) {
+            assert.ok([x, y, w, h].every(Number.isInteger), `fillRect(${x}, ${y}, ${w}, ${h}) is not whole pixels`);
+            for (let py = y; py < y + h; py++) {
+                for (let px = x; px < x + w; px++) pixels.set(`${px},${py}`, this.fillStyle);
+            }
+        },
+        save() {}, restore() {}, translate() {}, scale() {},
+    };
+    for (const op of ['beginPath', 'moveTo', 'lineTo', 'arc', 'ellipse', 'quadraticCurveTo', 'roundRect', 'fill', 'stroke']) {
+        ctx[op] = () => paths.push(op);
+    }
+    return { ctx, pixels, paths };
+}
+
+function paintHead(column, tailX = 0) {
+    const recorder = pixelCtx();
+    paintThoughtPlate(recorder.ctx, -column.headWidth / 2, column.headTop, column.headWidth, column.headBottom - column.headTop, {
+        trim: '#f2d36b', tail: column.puffs ? 0 : column.tail, tailX, puffs: column.puffs,
+    });
+    return recorder;
+}
+
+for (const text of ['Weighing the two backends', 'Weighing the two backend']) {
+    test(`a reasoning chip trails puffs in the notch's reserved rows, never the notch (${text.length} chars)`, () => {
+        const chip = layoutThoughtColumn(createThoughtColumn(), [{ ...entry(text), shape: 'chip' }], false, true, 0);
+        const quote = layoutThoughtColumn(createThoughtColumn(), [entry(text)], false, true, 0);
+        assert.equal(chip.puffs, true);
+        assert.equal(quote.puffs, false);
+        // The reservation is the notch's either way: only the paint differs.
+        assert.equal(chip.tail, THOUGHT_HEAD.tail);
+        for (const key of ['top', 'bottom', 'left', 'right', 'tailTipY']) assert.equal(chip[key], quote[key], key);
+        const base = chip.headBottom;
+        const x = Math.round(-chip.headWidth / 2);
+        const tail = x + Math.floor(Math.round(chip.headWidth) / 2);
+        const puffs = paintHead(chip);
+        const notch = paintHead(quote);
+        for (const { pixels, paths } of [puffs, notch]) {
+            assert.deepEqual(paths, []);
+            for (const key of pixels.keys()) {
+                const [px, py] = key.split(',').map(Number);
+                assert.ok(px >= chip.left && px < chip.right && py >= chip.top && py < chip.bottom, `${key} outside the reserved column`);
+            }
+            // Both end on the tail column one row above the leader's start.
+            assert.equal(pixels.get(`${tail},${base + THOUGHT_HEAD.tail}`), LABEL_INK.outline);
+            assert.equal(pixels.has(`${tail},${base + THOUGHT_HEAD.tail + 1}`), false);
+        }
+        // A quote opens the board's bottom trim into its notch; puffs leave
+        // the board closed and float below it.
+        assert.equal(notch.pixels.get(`${tail},${base - 1}`), '#221813');
+        assert.equal(puffs.pixels.get(`${tail},${base - 1}`), '#f2d36b');
+        assert.ok(puffs.pixels.size > notch.pixels.size, 'the puffs carry more paint than the notch');
+    });
+}
+
+test('a displaced chip hangs its bead on the leader column, the puffs trailing away from the lean', () => {
+    const column = layoutThoughtColumn(createThoughtColumn(), [{ ...entry('Weighing the two backends'), shape: 'chip' }], false, true, 3);
+    for (const lateral of [-1, 1]) {
+        const shiftX = lateral * Math.ceil(column.width / 2);
+        const geo = thoughtLeader({}, column, shiftX, -24, -2);
+        const { pixels } = paintHead(column, geo.tailX);
+        const foot = column.headBottom + THOUGHT_HEAD.tail;
+        assert.equal(pixels.get(`${geo.tailX},${foot}`), LABEL_INK.outline, 'the bead foot sits on the leader column');
+        assert.equal(geo.fromY + 24, foot + 1, 'the leader starts on the next row down');
+        const ring = [...pixels.keys()].filter(key => Number(key.split(',')[1]) === column.headBottom + 2 && pixels.get(key) === '#221813');
+        const ringX = ring.map(key => Number(key.split(',')[0]));
+        // The 4×2 core of the larger puff lies on the far side from the anchor.
+        assert.equal(ringX.length, 4);
+        if (geo.tailX < 0) assert.ok(Math.min(...ringX) > geo.tailX);
+        else assert.ok(Math.max(...ringX) < geo.tailX);
+    }
+});
+
+test('the chat bubble is a carved plate with a notch, in whole pixels only', () => {
+    const { ctx, pixels, paths } = pixelCtx();
+    ctx.globalAlpha = 0.5; // paint straight through, not via the device stamp
+    AgentSprite.prototype._drawChatEffect.call({
+        decisionFocusMuted: false, _zoom: 1, _placeX: 0, _headTopY: () => 0,
+        _statusVisual: () => ({ color: '#f2d36b' }),
+        _drawOverlayStamp: AgentSprite.prototype._drawOverlayStamp,
+    }, ctx, 0);
+    assert.deepEqual(paths, []);
+    assert.equal(pixels.get('0,-9'), '#221813', 'the bottom trim opens into the notch');
+    assert.equal(pixels.get('0,-2'), LABEL_INK.outline, 'the notch tip');
+    assert.equal(pixels.get('-16,-20'), LABEL_INK.outline, 'the left outline');
+    assert.equal(pixels.get('-15,-20'), '#f2d36b', 'the trim ring');
 });
