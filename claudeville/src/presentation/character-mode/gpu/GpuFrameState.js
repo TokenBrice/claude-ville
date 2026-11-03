@@ -197,6 +197,33 @@ export function swellDriftRows(motionTimeMs) {
     return Math.floor(t / SWELL_DRIFT_STEP_MS) % SWELL_DRIFT_WRAP_ROWS;
 }
 
+// LA-1 — the sun's road follows the sun's own visibility (`sky.sun.alpha`)
+// instead of popping on and off at the 0.02 visibility edge: below
+// SUN_ROAD_NARROW_ALPHA (the last hour before sunset, the first half hour
+// after sunrise) a low sun keeps the gold road, never the pale noon sparkle,
+// and the road narrows toward the body; below SUN_ROAD_FADE_ALPHA (its last
+// minutes) the road fades out with it. A body with no alpha reads as fully
+// up. Shared by `resolveWaterFx` (WebGL2, WebGPU) and CoastBake `canvasGlint`.
+export const SUN_ROAD_FADE_ALPHA = 0.15;
+export const SUN_ROAD_NARROW_ALPHA = 0.5;
+function smooth01(t) {
+    const x = clamp(t, 0, 1);
+    return x * x * (3 - 2 * x);
+}
+export function sunRoadFor(sun, rake, cloudCover) {
+    if (!sun?.visible || !(finite(cloudCover, 0) < 0.7)) return null;
+    const alpha = clamp(finite(sun.alpha, 1), 0, 1);
+    const r = clamp(finite(rake, 0), 0, 1);
+    const fade = smooth01((alpha - 0.02) / (SUN_ROAD_FADE_ALPHA - 0.02));
+    const high = smooth01((alpha - 0.02) / (SUN_ROAD_NARROW_ALPHA - 0.02));
+    const kind = r >= 0.4 || high < 1 ? 1 : 2;
+    return {
+        kind,
+        strength: (0.35 + 0.65 * r) * fade,
+        growScale: kind === 1 ? 0.55 + 0.45 * high : 1,
+    };
+}
+
 // Night-only sparkle shares the water/path budget but not the moon-path gate:
 // a small moon leaves the sea to the stars; a full moon takes it over.
 export function resolveStarlight(atmosphere, weather, grade, moonFill, level) {
@@ -254,23 +281,25 @@ export function resolveWaterFx(feed, camera, level, grade, moonFill, width, out 
     let kind = 0;
     let strength = 0;
     let xFrac = 0;
-    if (sun?.visible && cloudCover < 0.7) {
-        const rake = clamp(finite(grade.rake, 0), 0, 1);
-        kind = rake >= 0.4 ? 1 : 2;
-        strength = 0.35 + 0.65 * rake;
+    let growScale = 1;
+    const road = sunRoadFor(sun, grade.rake, cloudCover);
+    if (road) {
+        kind = road.kind;
+        strength = road.strength;
+        growScale = road.growScale;
         xFrac = finite(sun.xFrac, 0.5);
     } else if (moon?.visible && moonFill >= 0.5 && cloudCover < 0.5 && !raining) {
         kind = 3;
         strength = moonFill;
         xFrac = finite(moon.xFrac, 0.5);
     }
-    if (!kind) return out;
+    if (!kind || !(strength > 0)) return out;
     const texelPx = Math.max(0.01, zoom * Math.max(0.25, finite(camera?._dpr?.(), 1)));
     glint[0] = xFrac * width;
     glint[1] = strength;
     glint[2] = kind;
     // The pale day path spreads into a broad sparse sparkle under a high sun.
-    glint[3] = (kind === 2 ? 0.12 * NOON_GLINT_GROW_GAIN : 0.12) / texelPx;
+    glint[3] = (kind === 2 ? 0.12 * NOON_GLINT_GROW_GAIN : 0.12) * growScale / texelPx;
     stops.set(SEA_PATH_STOPS[kind]);
     return out;
 }

@@ -30,6 +30,7 @@ import { WATER_POLYLINES, WORLD_TREE, inWorldTreeIslet } from '../../config/scen
 import * as CanvasGrade from './CanvasGrade.js';
 import { emissiveSidecarFor } from './EmitterCuts.js';
 import { cloudCourseDrift } from './Wind.js';
+import { sunRoadFor } from './gpu/GpuFrameState.js';
 
 const HALF_W = TILE_WIDTH / 2;
 const HALF_H = TILE_HEIGHT / 2;
@@ -3207,10 +3208,9 @@ export function canvasGlint(atmosphere) {
     const weather = atmosphere?.weather || {};
     const cover = clamp01(weather.cloudCover);
     const raining = weather.type === 'rain' || weather.type === 'storm';
-    if (sky?.sun?.visible && cover < 0.7) {
-        const rake = clamp01(atmosphere?.lightGrade?.rake);
-        return { kind: rake >= 0.4 ? 1 : 2, strength: 0.35 + 0.65 * rake, body: sky.sun };
-    }
+    // LA-1 — the same sun's road as the resident pass (`sunRoadFor`).
+    const road = sunRoadFor(sky?.sun, atmosphere?.lightGrade?.rake, cover);
+    if (road) return road.strength > 0 ? { ...road, body: sky.sun } : null;
     const moonFill = clamp01(atmosphere?.lighting?.moonFill ?? sky?.moon?.fill);
     if (sky?.moon?.visible && moonFill >= 0.5 && cover < 0.5 && !raining) {
         return { kind: 3, strength: moonFill, body: sky.moon };

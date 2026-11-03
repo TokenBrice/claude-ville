@@ -1531,7 +1531,7 @@ function waterTexel(state, base, fx, x, y) {
 function rebuildPath(state, base, fx, palette, view, glint) {
     const moon = glint.kind === 3;
     const baseWidth = glint.kind === 2 ? GLINT_NOON_BASE : 5;
-    const grow = glint.kind === 2 ? 0.12 * NOON_GLINT_GROW_GAIN : 0.12;
+    const grow = (glint.kind === 2 ? 0.12 * NOON_GLINT_GROW_GAIN : 0.12) * (glint.growScale ?? 1);
     const gx = view.x0 + clamp01(glint.body?.xFrac ?? 0.5) * (view.x1 - view.x0);
     const top = Math.max(Math.floor(view.y0), fx.horizonTop);
     const bottom = Math.ceil(view.y1);
@@ -2158,7 +2158,7 @@ export function drawCanvasWaterState(ctx, renderer, atmosphere) {
     // 3.2 — the path.
     const glint = canvasGlint(atmosphere);
     if (glint) {
-        const pathKey = `${fx.deepTick}|${glint.kind}|${Math.round(glint.strength * 64)}|${Math.round((glint.body?.xFrac ?? 0.5) * 4096)}|${Math.round(view.x0)},${Math.round(view.y0)},${Math.round(view.x1)},${Math.round(view.y1)}|${view.texelPx}|${state.overlayKey}`;
+        const pathKey = `${fx.deepTick}|${glint.kind}|${Math.round(glint.strength * 64)}|${Math.round((glint.growScale ?? 1) * 64)}|${Math.round((glint.body?.xFrac ?? 0.5) * 4096)}|${Math.round(view.x0)},${Math.round(view.y0)},${Math.round(view.x1)},${Math.round(view.y1)}|${view.texelPx}|${state.overlayKey}`;
         if (pathKey !== state.pathKey) {
             const started = performance.now();
             state.pathOn = rebuildPath(state, base, fx, palette, view, glint);
