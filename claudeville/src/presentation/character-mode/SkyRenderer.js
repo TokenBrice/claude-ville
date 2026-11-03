@@ -233,9 +233,9 @@ const FAR_SEA_CELL = 2;
 // opposite the sun (SEA_BOW_SWEEP across the island-wide frame), and it
 // keeps the sky bow's alpha quanta. The sky bow yields to it by the same
 // strength, so a frame that shows the sky never holds two bows.
-// About 11 clearings a year qualify (2025–2032 census, scripts/tests/
-// rare-skies.test.mjs), so about 5–6 sea bows a year.
-export const SEA_BOW_SHARE = 0.5;
+// Under the real sun (LA-2) about 8 clearings a year qualify (2025–2032
+// census, scripts/tests/rare-skies.test.mjs), so about 4–5 sea bows a year.
+export const SEA_BOW_SHARE = 0.6;
 const SEA_BOW_MIN_SUN_ALPHA = 0.5;
 const SEA_BOW_RADIUS = 880;
 const SEA_BOW_APEX_Y = 24;
