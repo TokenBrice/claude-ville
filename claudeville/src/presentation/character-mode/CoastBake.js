@@ -2435,6 +2435,11 @@ export const COAST_FIELD_FLAGS = Object.freeze({
     // A water cell the terrain bake covered with a dock, pier deck, bridge
     // span or foundation (staticReflections' `covered`): land for 2.9 casts.
     covered: 64,
+    // QW-4 / BI-1 — a cell by sheltered still water (the tile's depth cap is
+    // a lagoon's, 3: a lagoon, pond or lake and its banks, never the sea's
+    // or a lone river's): its swash laps at half reach, and its water takes
+    // the still-water cat's paws.
+    lagoon: 128,
 });
 
 // Authored river axes (tile coords) with each segment's arc length from the
@@ -2538,6 +2543,7 @@ function bakeWaterFields(renderer, coast, field) {
                 && (sd > 0 || !landPaved(renderer, wx, wy, tx, ty))) {
                 flags |= COAST_FIELD_FLAGS.swash;
             }
+            if (inMap && field.caps[tile] === 3) flags |= COAST_FIELD_FLAGS.lagoon;
             if (cls >= CLASS_WATER && (!inMap || field.caps[tile] > 3)) flags |= COAST_FIELD_FLAGS.sea;
             const surfSd = cls >= CLASS_WATER && !inMap ? cliffSurfSd(coast, c, r) : null;
             if (surfSd != null) flags |= COAST_FIELD_FLAGS.swash | COAST_FIELD_FLAGS.cliffSurf;
