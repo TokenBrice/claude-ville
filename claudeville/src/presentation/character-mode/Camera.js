@@ -1,5 +1,6 @@
 import { MAP_SIZE } from '../../config/constants.js';
 import { BUILDING_DEFS } from '../../config/buildings.js';
+import { DISTRICT_PROPS } from '../../config/scenery.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import {
     FOLLOW_ENTRY_MS,
@@ -126,8 +127,11 @@ const RELEASE_CUE_OWNER = 'cue:release';
 // columns. The pose moves on a 16 world px grid to the offset that crops
 // least — crowns first, then plates, then distance — never at the subject's
 // expense (see `_landmarkClearPose`) nor past the sea cap. A building wholly
-// above the frame is clear.
+// above the frame is clear. MB-1 — the isle landmarks (the windmill, the
+// wayside chapel and the Hourglass Belfry, the account instrument) keep their
+// crowns too; they draw no plate.
 const LANDMARK_PLATE_CLEARANCE_PX = 38;
+const ISLE_LANDMARK_PROPS = Object.freeze(DISTRICT_PROPS.filter((prop) => prop.landmark));
 const LANDMARK_PLATE_HALF_WIDTH_PX = 80;
 const LANDMARK_EDGE_AIR_PX = 4;
 const LANDMARK_SEARCH_STEPS = 24;
@@ -517,8 +521,9 @@ export class Camera {
     }
 
     // World boxes of every building's drawn silhouette (opaque crown to sprite
-    // bottom); empty until the renderer's assets resolve all of them (dims,
-    // anchor and alpha mask).
+    // bottom), then the isle landmarks' (`noPlate`; a prop carries no alpha
+    // mask, so its crown is its sprite top); empty until the renderer's assets
+    // resolve all of them (dims, anchor, and a building's alpha mask).
     _landmarkSilhouettes() {
         if (this._landmarkCache) return this._landmarkCache;
         if (!this._spriteMetrics) return [];
@@ -541,6 +546,28 @@ export class Camera {
                 minY: top + Math.floor(Math.max(0, firstOpaque) / w),
                 maxY: top + h,
                 centerX: center.x,
+            });
+        }
+        // MB-1 — the isle landmarks stand tallest on the north shore: no
+        // plate, so their plate term is the crown's.
+        for (const prop of ISLE_LANDMARK_PROPS) {
+            const metrics = this._spriteMetrics(prop.id);
+            const w = Number(metrics?.dims?.w);
+            const h = Number(metrics?.dims?.h);
+            if (!(w > 0) || !(h > 0) || !Array.isArray(metrics.anchor)) return [];
+            const [anchorX, anchorY] = metrics.anchor;
+            const firstOpaque = typeof metrics.mask?.indexOf === 'function' ? metrics.mask.indexOf(1) : 0;
+            const foot = tileToWorld(prop.tileX, prop.tileY);
+            const left = Math.round(foot.x - anchorX);
+            const top = Math.round(foot.y - anchorY);
+            out.push({
+                type: prop.id,
+                minX: left,
+                maxX: left + w,
+                minY: top + Math.floor(Math.max(0, firstOpaque) / w),
+                maxY: top + h,
+                centerX: foot.x,
+                noPlate: true,
             });
         }
         this._landmarkCache = out;
@@ -2034,16 +2061,17 @@ export class Camera {
                 const x0 = (mark.minX - left) * zoom;
                 const x1 = (mark.maxX - left) * zoom;
                 if (x1 <= 0 || x0 >= w || (mark.maxY - top) * zoom <= 0) continue;
+                // A plate reaches past a narrow crown; an isle landmark has none.
                 const plateX = (mark.centerX - left) * zoom;
-                const spanLeft = Math.min(x0, plateX - LANDMARK_PLATE_HALF_WIDTH_PX);
-                const spanRight = Math.max(x1, plateX + LANDMARK_PLATE_HALF_WIDTH_PX);
+                const spanLeft = mark.noPlate ? x0 : Math.min(x0, plateX - LANDMARK_PLATE_HALF_WIDTH_PX);
+                const spanRight = mark.noPlate ? x1 : Math.max(x1, plateX + LANDMARK_PLATE_HALF_WIDTH_PX);
                 let limit = LANDMARK_EDGE_AIR_PX;
                 for (const rect of reserved) {
                     if (rect.right > spanLeft && rect.left < spanRight) limit = Math.max(limit, rect.bottom + LANDMARK_EDGE_AIR_PX);
                 }
                 const crownY = (mark.minY - top) * zoom;
                 crown += Math.max(0, limit - crownY);
-                plate += Math.max(0, limit - (crownY - LANDMARK_PLATE_CLEARANCE_PX));
+                plate += Math.max(0, limit - (mark.noPlate ? crownY : crownY - LANDMARK_PLATE_CLEARANCE_PX));
             }
             return [crown, plate];
         };

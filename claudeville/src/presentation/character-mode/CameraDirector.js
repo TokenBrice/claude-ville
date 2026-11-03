@@ -661,7 +661,7 @@ export class CameraDirector {
         const distance = this._distanceFromCurrentCenter(boxCenter(box));
         if (distance > ORDINARY_MAX_DISTANCE) return;
 
-        const options = this._ordinaryGlideOptions();
+        const options = this._ordinaryGlideOptions(agents);
         if (!this._wouldMoveEnough(box, options)) return;
         if (!this._canCameraMove(now, { snapshot, ordinary: true })) return;
 
@@ -776,7 +776,17 @@ export class CameraDirector {
 
     _ambientGlideOptions(owner, { paddingPx, composition, letterboxHoldMs = 0, wide = false, bodies = null }) {
         const camera = this.camera;
-        const wideTier = camera?.shotTier?.('wide') ?? 1;
+        // MB-1 — where the wide and medium shot scales coincide (both z2 on
+        // the 2268 × 1350 world of a 2508 × 1398 window) the broadcast had no
+        // establishing shot and never zoomed: its wide steps out to the
+        // survey (z1 there, the opening's scale), so the tour opens on the
+        // whole island and dollies in to its cohorts. Elsewhere it is today's.
+        const mediumTier = camera?.shotTier?.('medium') ?? 2;
+        const surveyTier = camera?.shotTier?.('survey');
+        const plainWide = camera?.shotTier?.('wide') ?? 1;
+        const wideTier = plainWide === mediumTier && Number.isFinite(surveyTier) && surveyTier < plainWide
+            ? surveyTier
+            : plainWide;
         const base = {
             motion: 'ambient',
             paddingPx,
@@ -789,7 +799,8 @@ export class CameraDirector {
             userAdjustedOnComplete: true,
         };
         // 4.1 — the wide is a fixed shot scale: the active village at
-        // `scales.wide` from wherever the camera stands. 4.2 — as the
+        // `scales.wide` (or the survey, above) from wherever the camera
+        // stands. 4.2 — as the
         // establishing shot it keeps landmark crowns and plates whole, never
         // at the expense of a villager (`bodies`) it already shows whole.
         if (wide) return { ...base, maxZoom: wideTier, minZoom: wideTier, keepLandmarks: true, bodies };
@@ -1034,7 +1045,7 @@ export class CameraDirector {
 
     // 8.1 — glide durations come from CameraCurves (screen distance and zoom
     // ratio), so the options carry only framing.
-    _ordinaryGlideOptions() {
+    _ordinaryGlideOptions(bodies = null) {
         return {
             maxZoom: this._currentMaxZoom(),
             paddingPx: ORDINARY_PADDING_PX,
@@ -1043,6 +1054,11 @@ export class CameraDirector {
             preferPan: true,
             allowZoomIn: false,
             zoomHysteresis: 1.35,
+            // MB-1 (D8) — the policy above is unchanged; the frame it lands
+            // on keeps landmark crowns whole (the Belfry's glasses included),
+            // never at the expense of a villager it already shows whole.
+            keepLandmarks: true,
+            bodies,
         };
     }
 
