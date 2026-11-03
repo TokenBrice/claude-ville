@@ -217,7 +217,7 @@ function smooth01(t) {
     const x = clamp(t, 0, 1);
     return x * x * (3 - 2 * x);
 }
-export function sunRoadFor(sun, rake, cloudCover, fog = 0, fogLook = lookStrength('la1b')) {
+export function sunRoadFor(sun, rake, cloudCover, fog = 0, fogLook = lookStrength('la1b'), out = {}) {
     if (!sun?.visible || !(finite(cloudCover, 0) < 0.7)) return null;
     const alpha = clamp(finite(sun.alpha, 1), 0, 1);
     const r = clamp(finite(rake, 0), 0, 1);
@@ -226,11 +226,10 @@ export function sunRoadFor(sun, rake, cloudCover, fog = 0, fogLook = lookStrengt
     const kind = r >= 0.4 || high < 1 ? 1 : 2;
     const veil = clamp(finite(fogLook, 0), 0, 1)
         * smooth01((finite(fog, 0) - SUN_ROAD_FOG_START) / (SUN_ROAD_FOG_FULL - SUN_ROAD_FOG_START));
-    return {
-        kind,
-        strength: (0.35 + 0.65 * r) * fade * (1 - veil),
-        growScale: kind === 1 ? 0.55 + 0.45 * high : 1,
-    };
+    out.kind = kind;
+    out.strength = (0.35 + 0.65 * r) * fade * (1 - veil);
+    out.growScale = kind === 1 ? 0.55 + 0.45 * high : 1;
+    return out;
 }
 
 // LA-4b (look `la4`) — the moon's road on every moonlit night. At 0 it is the
@@ -247,7 +246,7 @@ export function sunRoadFor(sun, rake, cloudCover, fog = 0, fogLook = lookStrengt
 export const MOON_ROAD_FILL = 0.5;
 export const MOON_ARC_BASE_Y = 0.44;
 export const MOON_ROAD_RISE_Y = 0.1;
-export function moonRoadFor(moon, moonFill, cloudCover, raining, look = lookStrength('la4')) {
+export function moonRoadFor(moon, moonFill, cloudCover, raining, look = lookStrength('la4'), out = {}) {
     if (!moon?.visible || !(finite(cloudCover, 0) < 0.5) || raining) return null;
     const fill = clamp(finite(moonFill, 0), 0, 1);
     const before = fill >= MOON_ROAD_FILL ? fill : 0;
@@ -258,8 +257,15 @@ export function moonRoadFor(moon, moonFill, cloudCover, raining, look = lookStre
         const altitude = Number.isFinite(y) ? smooth01((MOON_ARC_BASE_Y - y) / MOON_ROAD_RISE_Y) : 1;
         strength += (fill * altitude - before) * k;
     }
-    return strength > 0 ? { kind: 3, strength, growScale: 1 } : null;
+    if (!(strength > 0)) return null;
+    out.kind = 3;
+    out.strength = strength;
+    out.growScale = 1;
+    return out;
 }
+
+// The per-frame road `resolveWaterFx` fills (a frame resolver never allocates).
+const ROAD_SCRATCH = { kind: 0, strength: 0, growScale: 1 };
 
 // Night-only sparkle shares the water/path budget but not the moon-path gate:
 // a small moon leaves the sea to the stars; a full moon takes it over.
@@ -316,8 +322,8 @@ export function resolveWaterFx(feed, camera, level, grade, moonFill, width, out 
     if (effectBudgetMode('glitterPath', level) === 'off') return out;
     const sun = feed.atmosphere?.sky?.sun;
     const moon = feed.atmosphere?.sky?.moon;
-    const sunRoad = sunRoadFor(sun, grade.rake, cloudCover, weather.fog);
-    const road = sunRoad || moonRoadFor(moon, moonFill, cloudCover, raining);
+    const sunRoad = sunRoadFor(sun, grade.rake, cloudCover, weather.fog, lookStrength('la1b'), ROAD_SCRATCH);
+    const road = sunRoad || moonRoadFor(moon, moonFill, cloudCover, raining, lookStrength('la4'), ROAD_SCRATCH);
     if (!road || !(road.strength > 0)) return out;
     const { kind, strength, growScale } = road;
     const xFrac = finite((sunRoad ? sun : moon).xFrac, 0.5);
