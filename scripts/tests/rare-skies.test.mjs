@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
     createAtmosphereSnapshot,
     normalizeTimelineKnots,
+    setSolarSite,
     weatherHistorySampler,
 } from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
 import { PRECIPITATING, rainClearedMinutesAgo } from '../../claudeville/src/presentation/character-mode/GroundState.js';
@@ -21,6 +22,23 @@ import { resetLookStrengths, setLookStrength } from '../../claudeville/src/prese
 // village clock and weather only, and both must stay rare: a census over
 // simulated years of the village's own timeline reports their fire rates.
 const YEARS = [2025, 2026, 2027, 2028];
+
+// The village keeps the real sun of the system zone (LA-2), so the census
+// and the poses pin the user's site, Belgrade, with its own offset rule:
+// the counts and gates then hold on any host.
+function belgradeOffset(date) {
+    const format = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'Europe/Belgrade', hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric',
+    });
+    const wall = Date.UTC(date.getFullYear(), date.getMonth(), date.getDate(), date.getHours(), date.getMinutes());
+    const offsetAt = (utcMs) => {
+        const parts = Object.fromEntries(format.formatToParts(new Date(utcMs)).map(part => [part.type, Number(part.value)]));
+        return Math.round((Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute) - utcMs) / 60000);
+    };
+    return offsetAt(wall - offsetAt(wall) * 60000);
+}
+test.before(() => setSolarSite({ zone: 'Europe/Belgrade', offsetMinutes: belgradeOffset }));
+test.after(() => setSolarSite(null));
 
 function census() {
     const out = { skyBows: 0, seaQualify: 0, seaBows: 0, auroraNights: 0, sheenNights: 0, strays: [] };
@@ -86,17 +104,17 @@ function pinned(at, knots) {
     snapshot.timeline = { mode: 'fixed', knots: timelineKnots, seedOverride: null };
     return snapshot;
 }
-const RAIN_TO_CLEAR = [{ minute: 0, type: 'rain' }, { minute: 840, type: 'rain' }, { minute: 930, type: 'clear' }, { minute: 1439, type: 'clear' }];
+const RAIN_TO_CLEAR = [{ minute: 0, type: 'rain' }, { minute: 660, type: 'rain' }, { minute: 750, type: 'clear' }, { minute: 1439, type: 'clear' }];
 const CLEAR = [{ minute: 0, type: 'clear' }, { minute: 1439, type: 'clear' }];
 
 // The capture board's poses (agents/research/.../board2/la6a, la6b) force
 // these timelines; they must keep opening their gates.
-test('the board poses open their gates: a bow on 4 Nov 15:30, a sheen on 17 Dec 22:00', () => {
-    const bow = seaBowWindow(pinned(new Date(2026, 10, 4, 15, 30), RAIN_TO_CLEAR));
+test('the board poses open their gates: a bow on 4 Nov 12:30, a sheen on 17 Dec 22:00', () => {
+    const bow = seaBowWindow(pinned(new Date(2026, 10, 4, 12, 30), RAIN_TO_CLEAR));
     assert.ok(bow, 'the forced clearing is a sea-bow clearing');
     assert.ok(bow.since >= 4 && bow.since < 16, `mid-window (since ${bow.since}): the full alpha quantum`);
-    assert.equal(seaBowWindow(pinned(new Date(2026, 10, 4, 13, 0), RAIN_TO_CLEAR)), null, 'not while it rains');
-    assert.equal(seaBowWindow(pinned(new Date(2026, 10, 4, 15, 50), RAIN_TO_CLEAR)), null, 'not past the 20-minute window');
+    assert.equal(seaBowWindow(pinned(new Date(2026, 10, 4, 11, 0), RAIN_TO_CLEAR)), null, 'not while it rains');
+    assert.equal(seaBowWindow(pinned(new Date(2026, 10, 4, 12, 50), RAIN_TO_CLEAR)), null, 'not past the 20-minute window');
     assert.equal(auroraSheenNight(pinned(new Date(2026, 11, 17, 22, 0), CLEAR)), true);
     assert.equal(auroraSheenNight(pinned(new Date(2026, 11, 18, 3, 0), CLEAR)), true, 'the sheen holds past midnight: the night is its evening');
     assert.equal(auroraSheenNight(pinned(new Date(2026, 11, 17, 13, 0), CLEAR)), false, 'never by day');
@@ -104,7 +122,7 @@ test('the board poses open their gates: a bow on 4 Nov 15:30, a sheen on 17 Dec 
 
 test('the far-sea gates never answer to agent state (V3)', () => {
     const agents = Array.from({ length: 24 }, (_, i) => ({ id: `a${i}`, status: i % 2 ? 'waiting' : 'working' }));
-    const bowAt = pinned(new Date(2026, 10, 4, 15, 30), RAIN_TO_CLEAR);
+    const bowAt = pinned(new Date(2026, 10, 4, 12, 30), RAIN_TO_CLEAR);
     const sheenAt = pinned(new Date(2026, 11, 17, 22, 0), CLEAR);
     for (const extra of [{ agents: [] }, { agents, attention: { level: 'needs-you', count: 9 } }, { roster: agents, mood: 'busy', director: { cue: 'release' } }]) {
         assert.deepEqual(seaBowWindow({ ...bowAt, ...extra }), seaBowWindow(bowAt));
@@ -120,7 +138,7 @@ test('at look strength 0 the far sea holds nothing, even on a bow clearing and a
         const sky = new SkyRenderer({ assets: { has: () => true, get: () => null } });
         setLookStrength('la6a', 0);
         setLookStrength('la6b', 0);
-        for (const atmosphere of [pinned(new Date(2026, 10, 4, 15, 30), RAIN_TO_CLEAR), pinned(new Date(2026, 11, 17, 22, 0), CLEAR)]) {
+        for (const atmosphere of [pinned(new Date(2026, 10, 4, 12, 30), RAIN_TO_CLEAR), pinned(new Date(2026, 11, 17, 22, 0), CLEAR)]) {
             assert.equal(sky.farSeaLayers({ atmosphere, waterFields: fields }), null);
         }
     } finally {
