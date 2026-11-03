@@ -620,8 +620,8 @@ export class ArrivalDepartureController {
         return departure;
     }
 
-    _pushSigil({ id, provider }, point, { now, glow = false }) {
-        const sigil = {
+    _sigilFor({ id, provider }, point, { now, glow = false }) {
+        return {
             id: `${id}:${Math.round(now)}`,
             agentId: id,
             provider: provider || 'default',
@@ -632,9 +632,20 @@ export class ArrivalDepartureController {
             color: providerColor(provider),
             glow,
         };
+    }
+
+    _pushSigil(owner, point, options) {
+        const sigil = this._sigilFor(owner, point, options);
         this.sigils.push(sigil);
         if (this.sigils.length > MAX_SIGILS) this.sigils.splice(0, this.sigils.length - MAX_SIGILS);
         return sigil;
+    }
+
+    // The sigil a column lays once it has sunk (`update` keeps it). Draw and
+    // light read it too when the column sank after this frame's update, so
+    // the hand-over from column to sigil never drops a frame of mark or light.
+    _residueOf(departure) {
+        return this._sigilFor(departure, departure.point, { now: departure.startedAt + DEPARTURE.active, glow: true });
     }
 
     update(now = nowMs()) {
@@ -757,22 +768,10 @@ export class ArrivalDepartureController {
         // the column sank into as a ground glow that steps down with the
         // sigil's own alpha quanta and ends with it. A sigil no column laid
         // (reduced motion, a seventh column) throws no light.
-        for (const departure of this.departures.values()) {
-            const column = departureFrame(now - departure.startedAt).column;
-            if (!column) continue;
-            sources.push({
-                id: `departure:${departure.id}`,
-                kind: 'point',
-                x: departure.point.x,
-                y: departure.point.y - column.height / 2,
-                color: MAGIC_RAMP[1],
-                ...COLUMN_LIGHT,
-            });
-        }
-        for (const sigil of this.sigils) {
-            if (!sigil.glow || this.motionScale === 0) continue;
+        const glow = (sigil) => {
+            if (!sigil.glow || this.motionScale === 0) return;
             const step = steppedDecay(now - sigil.startedAt, sigil.duration);
-            if (step <= 0) continue;
+            if (step <= 0) return;
             sources.push({
                 id: `departure:${sigil.id}`,
                 kind: 'point',
@@ -785,7 +784,23 @@ export class ArrivalDepartureController {
                 ttl: sigil.duration,
                 createdAt: sigil.startedAt,
             });
+        };
+        for (const departure of this.departures.values()) {
+            const column = departureFrame(now - departure.startedAt).column;
+            if (!column) {
+                glow(this._residueOf(departure));
+                continue;
+            }
+            sources.push({
+                id: `departure:${departure.id}`,
+                kind: 'point',
+                x: departure.point.x,
+                y: departure.point.y - column.height / 2,
+                color: MAGIC_RAMP[1],
+                ...COLUMN_LIGHT,
+            });
         }
+        for (const sigil of this.sigils) glow(sigil);
         return sources;
     }
 
@@ -851,7 +866,10 @@ export class ArrivalDepartureController {
     // The body's marks draw only where it stood (`place`), never up a column.
     _drawDeparture(ctx, departure, now) {
         const frame = departureFrame(now - departure.startedAt);
-        if (frame.phase === 'done') return;
+        if (frame.phase === 'done') {
+            drawDepartureSigil(ctx, this._residueOf(departure), { now, motionScale: this.motionScale });
+            return;
+        }
         const anchor = resolveMomentAnchor(departure.point, {
             actorId: departure.id,
             extent: ARRIVAL_EXTENT,

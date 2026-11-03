@@ -107,6 +107,19 @@ test('the light belongs to the column: it rises and sinks with it, then fades wi
     assert.equal(lightAt(1_800)[0].y, 200, 'on the ground where the column sank');
 });
 
+test('a column that sinks between update and render hands over with no dropped frame', () => {
+    const controller = new ArrivalDepartureController();
+    controller.beginDeparture(AGENT, body(), { now: 1_000 });
+    controller.update(1_799);
+    const light = departureLights(controller, 1_803);
+    assert.deepEqual(light.map(entry => Number(entry.alpha.toFixed(3))), [0.16], 'the glow, not a dark frame');
+    const ctx = recorder();
+    controller.draw(ctx, { now: 1_803 });
+    assert.ok(ctx.calls.some(call => call[0] === 'fill' && call[1] === MAGIC_RAMP[0]), 'the sigil, not a blank frame');
+    controller.update(1_820);
+    assert.equal(`departure:${controller.sigils[0].id}`, light[0].id, 'the same light carries on');
+});
+
 test('reduced motion keeps the sigil only, unlit', () => {
     const controller = new ArrivalDepartureController({ motionScale: 0 });
     assert.equal(controller.beginDeparture(AGENT, body(), { now: 1_000 }), null);
