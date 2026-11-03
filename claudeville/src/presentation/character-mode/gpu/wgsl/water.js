@@ -36,6 +36,12 @@ import {
     SEA_PAW_THRESHOLD,
     STARLIGHT_DENSITY,
     STARLIGHT_HOLD,
+    STILL_MIRROR_BREAK,
+    STILL_PAW_ORDER,
+    STILL_PAW_RIPPLE,
+    SURF_GLOW_RGB,
+    SWASH_PEEL_ROWS,
+    SWASH_STEP_RATE,
     SWELL_AMP_FLOOR,
     SWELL_AMP_RUN,
     SWELL_AMP_SPAN,
@@ -303,6 +309,7 @@ const WATER_PALETTE_WGSL = [
     // keeps call sites that index by a computed stop readable.
     'fn waterStopRgb(i: i32) -> vec3f { return WATER_STOPS[i]; }',
     'fn seaStopRgb(stop: f32) -> vec3f { if (stop > 5.5) { return WATER_TROUGH; } return WATER_STOPS[i32(max(stop, 0.0))]; }',
+    `const SURF_GLOW: vec3f = ${wgslRgb(SURF_GLOW_RGB)};`,
 ].join('\n');
 
 /** Shared by the scene and composite modules. */
@@ -357,23 +364,36 @@ fn reflectionRippleUv(uv: vec2f, uvStepX: f32) -> vec2f {
     if (!coastFieldAt(v_world + vec2f(dx, 0.0), &shiftedSd, &shiftedFlags) || (shiftedFlags & 1u) == 0u) { return uv; }
     return vec2f(clamp(uv.x + dx * uvStepX, v_uvClamp.x, v_uvClamp.z), uv.y);
 }
+// BI-8 — the swash's crest front glows (GLSL surfGlowTexel).
+var<private> surfGlowTexel: bool = false;
 fn applyCoastSwash(color: vec3f, px: vec2f) -> vec3f {
     var sd: f32;
     var flags: u32;
     if (!coastFieldAt(px, &sd, &flags) || (flags & 2u) == 0u) { return color; }
-    let cyc = glslMod(floor(frame.timeMs * 0.005 * frame.waterFx.x), 8.0);
-    let reach = select(select(0.0, 6.0 - cyc, cyc < 7.0), cyc, cyc < 4.0);
+    let swashStep = floor(frame.timeMs * ${SWASH_STEP_RATE} * frame.waterFx.x) + floor(px.y / ${SWASH_PEEL_ROWS.toFixed(1)});
+    let cyc = glslMod(swashStep, 12.0);
+    var reach = select(select(0.0, 6.0 - cyc, cyc < 7.0), cyc, cyc < 4.0);
+    var extent = select(3.0, cyc, cyc < 4.0);
+    let lagoon = (flags & ${COAST_FIELD_FLAGS.lagoon}u) != 0u;
+    if (lagoon) {
+        reach *= 0.5;
+        extent *= 0.5;
+    } else if (glslMod(floor(swashStep / 12.0), 4.0) < 0.5 && reach > 2.5) {
+        reach += 1.0;
+    }
     if (sd > 0.0) {
         if ((flags & ${COAST_FIELD_FLAGS.cliffSurf}u) == 0u && waterStopIndex(color) < 0 && !sameColour(color, WATER_FOAM) && !sameColour(color, WATER_FOAM_CREST)) {
             return color;
         }
         let front = 0.05 + reach * 0.035;
         if (sd < front - 0.035) { return WATER_FOAM; }
-        if (sd < front) { return WATER_FOAM_CREST; }
+        if (sd < front) {
+            surfGlowTexel = frame.surfGlow > 0.0 && cyc < 3.5 && !lagoon;
+            return WATER_FOAM_CREST;
+        }
         if (sd < front + 0.06 && waterBayer4(floor(px)) < 0.5) { return WATER_FOAM; }
         return color;
     }
-    let extent = select(3.0, cyc, cyc < 4.0);
     let darker = select(select(0.0, 1.0, cyc < 6.5), 2.0, cyc < 4.5);
     if (darker < 0.5 || sd <= -0.02 - extent * 0.035) { return color; }
     if (sameColour(color, WET_SAND_DARK)) { return color; }
@@ -445,10 +465,23 @@ fn mirrorStormDrop() -> f32 {
     let share = clamp((frame.weather.x - ${MIRROR_STORM.from.toFixed(2)}) / ${MIRROR_STORM.span.toFixed(2)}, 0.0, 1.0);
     return floor(share * ${MIRROR_STORM.steps.toFixed(1)} + 0.5) / ${MIRROR_STORM.steps.toFixed(1)};
 }
+fn stillPawAt(p: vec2f) -> f32 {
+    if (frame.stillWater.x <= 0.0) { return 0.0; }
+    let gust = seaGustAt(p);
+    if (seaPawAt(p, gust, waterBayer4(p))) { return gust; }
+    return 0.0;
+}
 fn mirrorStormColour(color: vec3f, px: vec2f, gone: ptr<function, bool>) -> vec3f {
     *gone = false;
-    if (batch.terrainBatch == 0u || frame.weather.x <= ${MIRROR_STORM.from.toFixed(2)}) { return color; }
-    let drop = mirrorStormDrop();
+    if (batch.terrainBatch == 0u) { return color; }
+    var drop = 0.0;
+    if (frame.weather.x > ${MIRROR_STORM.from.toFixed(2)}) { drop = mirrorStormDrop(); }
+    var sd: f32;
+    var flags: u32;
+    if (frame.stillWater.x > 0.0 && coastFieldAt(px, &sd, &flags) && (flags & 1u) != 0u && (flags & ${COAST_FIELD_FLAGS.lagoon}u) != 0u) {
+        let paw = stillPawAt(floor(px));
+        if (paw > 0.0) { drop = max(drop, min(${STILL_MIRROR_BREAK.cap.toFixed(2)}, ${STILL_MIRROR_BREAK.base.toFixed(2)} + ${STILL_MIRROR_BREAK.gain.toFixed(2)} * paw)); }
+    }
     if (drop <= 0.0 || waterBayer4(floor(px)) >= drop) { return color; }
     let stop = mirrorBaseStop(px);
     if (stop < 0) { return color; }
@@ -533,9 +566,28 @@ fn applyWaterState(color0: vec3f, px: vec2f, seaPath: ptr<function, bool>) -> ve
     let cell = floor(p / vec2f(3.0, 1.0));
     let origin = cell * vec2f(3.0, 1.0);
     let offset = cycleOffsetAt(origin);
+    var originSd: f32;
+    var originFlags: u32;
+    let still = (offset < 15.5 || offset > 31.5) && coastFieldAt(origin, &originSd, &originFlags)
+        && (originFlags & ${COAST_FIELD_FLAGS.water}u) != 0u && (originFlags & ${COAST_FIELD_FLAGS.lagoon}u) != 0u;
+    if (still) {
+        let paw = stillPawAt(p);
+        if (paw > 0.0) {
+            let ruffle = textureSampleLevel(cloudTile, cloudSampler, fract((p + vec2f(211.0, 91.0)) / vec2f(144.0, 48.0)), 0.0).r;
+            let order = 0.55 * ruffle + 0.45 * waterBayer4(p);
+            if (waterHash12(p + vec2f(131.0, 57.0)) < ${STILL_PAW_RIPPLE.toFixed(2)} && order > 0.5) {
+                if (base == 0) { return applyWaterMood(WATER_FOAM_CREST) * WATER_CAST; }
+                return applyWaterMood(WATER_STOPS[lighter]) * WATER_CAST;
+            }
+            if (order < min(${STILL_PAW_ORDER.cap.toFixed(2)}, ${STILL_PAW_ORDER.base.toFixed(2)} + ${STILL_PAW_ORDER.gain.toFixed(2)} * paw)) {
+                return applyWaterMood(WATER_STOPS[min(base + 1, 4)]) * WATER_CAST;
+            }
+        }
+    }
+    let calm = select(1.0, frame.stillWater.y, still);
     var course = 0.0;
     if (offset < 31.5) {
-        if (waterHash12(cell) < mix(${NEAR_SHORE_DASH_DENSITY.toFixed(2)}, 0.7, storm)) {
+        if (waterHash12(cell) < mix(${NEAR_SHORE_DASH_DENSITY.toFixed(2)} * calm, 0.7, storm)) {
             let entry = glslMod(glslMod(offset, 16.0) + floor(frame.timeMs * 0.004 * clock), 16.0);
             course = select(select(0.0, 2.0, entry > 13.5), 1.0, entry > 14.5);
             if (course > 0.0 && storm > 0.5 && waterHash12(cell + vec2f(17.0, 31.0)) < 0.25) { course = 3.0; }
@@ -543,7 +595,7 @@ fn applyWaterState(color0: vec3f, px: vec2f, seaPath: ptr<function, bool>) -> ve
     } else if (stop >= 2) {
         var density = ${NEAR_SHORE_DASH_DENSITY.toFixed(2)};
         if (stop >= 3) { density = ${DEEP_DASH_DENSITY.toFixed(2)}; }
-        let lit = deepSwellLit(p, deepTick, storm, density);
+        let lit = deepSwellLit(p, deepTick, storm, density * calm);
         course = select(lit, 3.0, lit > 1.5);
     }
     if (course > 2.5) { return applyWaterMood(WATER_FOAM) * WATER_CAST; }

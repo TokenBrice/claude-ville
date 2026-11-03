@@ -71,17 +71,22 @@ test('the appended WebGPU scalar stages without shifting the existing frame fiel
     const starlight = FRAME_UNIFORM_LAYOUT.fields.find(f => f.name === 'starlight');
     const cloudLone = FRAME_UNIFORM_LAYOUT.fields.find(f => f.name === 'cloudLone');
     assert.equal(starlight.offset, cloudLone.offset + 16);
-    // E2-01's sky on the sea and E2-03's swell drift are appended after it,
-    // so starlight keeps its slot.
+    // E2-01's sky on the sea, E2-03's swell drift, BI-1's still water and
+    // BI-8's surf glow are appended after it, so starlight keeps its slot.
     const names = FRAME_UNIFORM_LAYOUT.fields.map(f => f.name);
-    assert.deepEqual(names.slice(names.indexOf('starlight')), ['starlight', 'waterSky', 'swellDrift']);
+    assert.deepEqual(names.slice(names.indexOf('starlight')), ['starlight', 'waterSky', 'swellDrift', 'stillWater', 'surfGlow']);
     const sky = FRAME_UNIFORM_LAYOUT.fields.find(f => f.name === 'waterSky');
     const drift = FRAME_UNIFORM_LAYOUT.fields.find(f => f.name === 'swellDrift');
+    const still = FRAME_UNIFORM_LAYOUT.fields.find(f => f.name === 'stillWater');
+    const glow = FRAME_UNIFORM_LAYOUT.fields.find(f => f.name === 'surfGlow');
+    assert.ok(still.offset > drift.offset && glow.offset > still.offset, 'appended after the swell drift');
     const views = createUniformViews(FRAME_UNIFORM_LAYOUT.size);
-    writeFrameUniforms(views, { starlight: 0.375, waterSky: [0.25, 0.5, 0.75, 0.125], swellDrift: 4097 });
+    writeFrameUniforms(views, { starlight: 0.375, waterSky: [0.25, 0.5, 0.75, 0.125], swellDrift: 4097, stillWater: [1, 0.5], surfGlow: 0.25 });
     assert.equal(views.f32[starlight.offset / 4], 0.375);
     assert.deepEqual(Array.from(views.f32.slice(sky.offset / 4, sky.offset / 4 + 4)), [0.25, 0.5, 0.75, 0.125]);
     assert.equal(views.f32[drift.offset / 4], 4097);
+    assert.deepEqual(Array.from(views.f32.slice(still.offset / 4, still.offset / 4 + 2)), [1, 0.5]);
+    assert.equal(views.f32[glow.offset / 4], 0.25);
 });
 
 test('Canvas named crest keeps its own water stop and takes the same horizon haze', () => {

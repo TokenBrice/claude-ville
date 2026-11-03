@@ -28,9 +28,9 @@ import {
 import { NEUTRAL_GRADE } from '../GradeEvaluator.js';
 import { ART_RAMPS } from '../../../config/artPalette.js';
 import { POST_FX_LEVELS } from '../postfx/PostFxLadder.js';
-import { sourceEnergyFor } from '../AtmosphereState.js';
-import { baseWindX, cloudCourseDrift, gustinessFor, windAt } from '../Wind.js';
+import { localDateKey, sourceEnergyFor } from '../AtmosphereState.js';
 import { lookStrength } from '../LookStrengths.js';
+import { baseWindX, cloudCourseDrift, gustinessFor, WIND_SPEED_BY_TYPE, windAt } from '../Wind.js';
 
 // Shared crest density: a leaf export, also used by the WGSL beacon twin.
 export const DEEP_DASH_DENSITY = 0.5;
@@ -176,7 +176,60 @@ export function resolveFatPixels(camera, override = null) {
 }
 
 export function createWaterFx() {
-    return { fx: new Float32Array(4), glint: new Float32Array(4), stops: new Float32Array(6), starlight: 0, swellDrift: 0 };
+    return { fx: new Float32Array(4), glint: new Float32Array(4), stops: new Float32Array(6), starlight: 0, swellDrift: 0, surfGlow: 0 };
+}
+
+/**
+ * BI-1 — the share of still water's crests (the near-shore dashes and the
+ * deep crests on lagoon water) the knot wind lays: none in fog (glassy), all
+ * of today's from a partly cloudy breeze up. Weather only (V3).
+ */
+export const STILL_WATER_WIND = Object.freeze([WIND_SPEED_BY_TYPE.fog, WIND_SPEED_BY_TYPE['partly-cloudy']]);
+export function stillWaterWindShare(weather) {
+    const [glassy, breeze] = STILL_WATER_WIND;
+    return clamp((Math.abs(baseWindX(weather)) - glassy) / (breeze - glassy), 0, 1);
+}
+
+/**
+ * BI-8 (D6) — the summer surf glow, a rare clock-and-weather phenomenon: on
+ * a calm, moonless July-to-September night of a bloom (a seeded share of
+ * nights, keyed by the evening's local date so it never flips at midnight),
+ * the sea's breaking crest front glows. Strength in [0, 1]: the grade's
+ * night, the moon's light on the water (`moonFill`, none from 0.30), the
+ * knot wind (none from 0.45, a light breeze) and look `bi8`. Never in rain;
+ * never reads agent state (V3). 0 when the swash it rides is off (reduced
+ * motion, MINIMAL).
+ */
+export const SURF_GLOW_MONTHS = Object.freeze([6, 7, 8]);
+export const SURF_GLOW_BLOOM_SHARE = 0.15;
+const SURF_GLOW_MOON = Object.freeze([0.1, 0.3]);
+const SURF_GLOW_CALM_WIND = Object.freeze([0.35, 0.45]);
+const bloomMemo = { minute: NaN, bloom: false };
+export function surfGlowBloomNight(date) {
+    const minute = Math.floor(date.getTime() / 60000);
+    if (minute === bloomMemo.minute) return bloomMemo.bloom;
+    const evening = new Date(date.getTime() - 12 * 3600 * 1000);
+    let bloom = false;
+    if (SURF_GLOW_MONTHS.includes(evening.getMonth())) {
+        let h = 2166136261;
+        for (const ch of `${localDateKey(evening)}|surf-glow`) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
+        h = Math.imul(h ^ (h >>> 16), 0x85ebca6b);
+        h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+        bloom = ((h ^ (h >>> 16)) >>> 8) / 16777216 < SURF_GLOW_BLOOM_SHARE;
+    }
+    bloomMemo.minute = minute;
+    bloomMemo.bloom = bloom;
+    return bloom;
+}
+export function resolveSurfGlow(atmosphere, weather, grade, moonFill, swashOn) {
+    const night = clamp(finite(grade?.night, 0), 0, 1);
+    if (!swashOn || !(night > 0) || weather?.type === 'rain' || weather?.type === 'storm') return 0;
+    const strength = lookStrength('bi8');
+    const date = atmosphere?.effectiveDate || atmosphere?.clock?.date;
+    if (!(strength > 0) || !(date instanceof Date) || !surfGlowBloomNight(date)) return 0;
+    const dark = clamp((SURF_GLOW_MOON[1] - finite(moonFill, 0)) / (SURF_GLOW_MOON[1] - SURF_GLOW_MOON[0]), 0, 1);
+    const calm = clamp((SURF_GLOW_CALM_WIND[1] - Math.abs(baseWindX(weather))) / (SURF_GLOW_CALM_WIND[1] - SURF_GLOW_CALM_WIND[0]), 0, 1);
+    return strength * night * dark * calm;
 }
 
 /**
@@ -312,6 +365,8 @@ export function resolveWaterFx(feed, camera, level, grade, moonFill, width, out 
         && zoom >= 2
         ? 1 : 0;
     fx[3] = effectBudgetMode('coastSwash', level) === 'on' && motion > 0 ? 1 : 0;
+    // BI-8 — the summer surf glow rides the swash's crest front.
+    out.surfGlow = resolveSurfGlow(feed.atmosphere, weather, grade, moonFill, fx[3] > 0);
     // 3.2 — the sky body's screen x (the sky spans the canvas), gold near
     // sunrise and golden hour (the grade's rake) at full strength and under
     // a low sun, pale and sparse (0.35) toward noon (`sunRoadFor`, LA-1 and
@@ -480,7 +535,7 @@ export function resolveSeaGustRect(camera, feed, weather, width, height, state =
 }
 
 export function createSeaWeather() {
-    return { sunlit: 0, gust: null, grassGust: 0, gustState: createSeaGustState() };
+    return { sunlit: 0, gust: null, grassGust: 0, stillPaws: 0, stillShare: 1, gustState: createSeaGustState() };
 }
 
 /**
@@ -491,6 +546,10 @@ export function createSeaWeather() {
  * W6.11 — `grassGust` (1 or 0): the scene's grass gust course reads the same
  * field while `grassGust` is on (FULL only) and the motion clock runs; the
  * reduced-motion and shed frame is the baked grass, unlifted.
+ * BI-1 — `stillPaws` (1 or 0): still water's cat's paws read the same field
+ * while `stillPaws` is on (FULL and REDUCED) and the motion clock runs (the
+ * reduced-motion frame is the glassy baked lake); `stillShare`: the knot
+ * wind's share of still water's crests (`stillWaterWindShare`).
  */
 export function resolveSeaWeather(level, camera, feed, { courses = null, width = 0, height = 0 } = {}, out = createSeaWeather()) {
     const seaWeather = effectBudgetMode('sea-weather', level) === 'on';
@@ -499,6 +558,8 @@ export function resolveSeaWeather(level, camera, feed, { courses = null, width =
     out.gust = seaWeather ? resolveSeaGustRect(camera, feed, weather, width, height, out.gustState) : null;
     const moving = !feed.reducedMotion && finite(feed.motionScale, 1) > 0;
     out.grassGust = out.gust && moving && effectBudgetMode('grassGust', level) === 'on' ? 1 : 0;
+    out.stillPaws = out.gust && moving && effectBudgetMode('stillPaws', level) === 'on' ? 1 : 0;
+    out.stillShare = stillWaterWindShare(weather);
     return out;
 }
 

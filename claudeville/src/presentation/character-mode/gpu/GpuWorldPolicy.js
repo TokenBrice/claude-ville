@@ -170,6 +170,23 @@ export const EFFECT_BUDGET = Object.freeze({
         staticFallback: 'baked-grass',
         canvas: 'step-overlay',
     }),
+    // BI-1 — still water answers the wind: on lagoon water where the
+    // `sea-weather` gust field (no second texture) passes the C-W3 paw rule,
+    // a static order steps one stop deeper and a baked mirror gives a
+    // gust-scaled Bayer share of its texels back to its stop, for that 125 ms
+    // gust step. On water fragments one coast-field fetch at the dash origin;
+    // inside a lagoon paw one bilinear gust fetch and two cloud-tile fetches;
+    // the mirror test reads the coast field (already fetched by the 3.7
+    // ripple) before any gust fetch. No receipt yet (V2 quiet host pending):
+    // the band is [INFERENCE] the grass gust course's. The static frame is
+    // the glassy baked lake (also under reduced motion).
+    stillPaws: Object.freeze({
+        id: 'stillPaws',
+        levels: Object.freeze({ FULL: 'on', REDUCED: 'on', MINIMAL: 'off' }),
+        cost: Object.freeze({ gpuMsBand: [0, 0.24], cpuMsBand: [0, 0.3], bytes: 0, scope: 'shared-scene-envelope' }),
+        staticFallback: 'baked-mirror',
+        canvas: 'step-overlay',
+    }),
     // 1.6 — screen-Y aerial perspective toward the C2 horizon haze; ALU only,
     // in the composite, world layer only. Same rig as `cloud-courses`.
     'aerial-perspective': Object.freeze({

@@ -16,7 +16,9 @@ import {
     resolveSeaWeather,
     resolveWaterFx,
     resolveWeatherUniform,
+    stillWaterWindShare,
 } from '../../claudeville/src/presentation/character-mode/gpu/GpuFrameState.js';
+import { WIND_SPEED_BY_TYPE } from '../../claudeville/src/presentation/character-mode/Wind.js';
 
 // Wave 10 S0a: every resolver must reproduce the value the WebGL2 renderer
 // computed inline before the extraction (GOLDEN: 6559335's GpuWorldRenderer
@@ -308,6 +310,29 @@ test('resolveSeaWeather gates the W6.11 grass gust course on the motion clock, t
     const calm = at(0, { weather });
     assert.equal(calm.gust, null, 'calm air has no gust field');
     assert.equal(calm.grassGust, 0, 'no field, no lift');
+});
+
+// BI-1 — still water's cat's paws read the same field on FULL and REDUCED
+// while the motion clock runs; the knot wind's share of its crests runs from
+// none in fog (glassy) to all of today's from a partly cloudy breeze up.
+test('resolveSeaWeather gates the BI-1 still-water paws and carries the knot wind share', () => {
+    const feed = feeds().noon;
+    const opts = { courses: null, width: W, height: H };
+    const at = (level, patch = {}) => resolveSeaWeather(level, CAMERAS.z2, { ...feed, ...patch }, opts);
+    assert.equal(at(0).stillPaws, 1, 'FULL with the motion clock running');
+    assert.equal(at(1).stillPaws, 1, 'REDUCED keeps the paws');
+    assert.equal(at(2).stillPaws, 0, 'MINIMAL sheds them');
+    assert.equal(at(0, { reducedMotion: true }).stillPaws, 0, 'reduced motion holds the glassy baked lake');
+    assert.equal(at(0, { motionScale: 0 }).stillPaws, 0, 'a stopped motion clock holds it');
+    const weather = feed.weather || feed.atmosphere?.weather;
+    assert.equal(at(0, { weather: { ...weather, windX: 0 } }).stillPaws, 0, 'calm air has no field, no paws');
+    const share = windX => stillWaterWindShare({ type: 'clear', windX });
+    assert.equal(share(WIND_SPEED_BY_TYPE.fog), 0, 'fog: glassy');
+    assert.equal(share(-WIND_SPEED_BY_TYPE['partly-cloudy']), 1, 'a partly cloudy breeze lays all of today\'s dashes, either way');
+    assert.equal(share(WIND_SPEED_BY_TYPE.storm), 1, 'never more than today');
+    const clear = share(WIND_SPEED_BY_TYPE.clear);
+    assert.ok(clear > 0.4 && clear < 0.7, `a clear day's light air lays about half (${clear})`);
+    assert.equal(at(2, { weather: { ...weather, windX: 0.1 } }).stillShare, 0, 'the share is weather only, at every level');
 });
 
 test('resolveLights keeps admission, the light records, the tile index, wet slots and the footprint march', () => {
