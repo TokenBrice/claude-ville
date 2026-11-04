@@ -4522,6 +4522,7 @@ bridges:
     materialClass: timber
     emissiveSidecar: true
     anchor: [132, 124]
+    provenance: { item: 'bridge', source: 'REST pixflux on a grey card, keyed (b23cb5dd); no job id or seed recorded', generatedAt: '2026-09-02', edit: { item: 'BR-2b', route: 'scripted pixel edit, sprite palette only (the south stairs colours)', generations: 0, note: 'two timber steps (three risers) down from the deck north end to tile 18,22, between the first near rail post and the NE end post; canvas, anchor and candle flames unchanged; nothing drawn west of the walk column (pond plank 16..17,22)', editedAt: '2026-11-04' } }
 
   # QAWorld F18 — both plank tiles re-toned offline from plum onto the C1
   # timber ramp (artPalette.js ART_RAMPS.timber): OKLab lightness kept per

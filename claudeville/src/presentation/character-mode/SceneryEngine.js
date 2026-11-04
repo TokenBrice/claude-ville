@@ -773,7 +773,11 @@ export class SceneryEngine {
             bridgeId: meta.id || null,
             style: meta.style || 'civic',
             deckRise: Number(meta.deckRise) || 0,
+            deckProfile: meta.deckProfile || null,
             nearRail: meta.nearRail || null,
+            laneOffsetPx: Number.isFinite(meta.laneOffsetPx) ? meta.laneOffsetPx : null,
+            treeExclusion: meta.treeExclusion !== false,
+            underDeckShadow: meta.underDeckShadow !== false,
             walkable: meta.walkable !== false,
         });
     }
