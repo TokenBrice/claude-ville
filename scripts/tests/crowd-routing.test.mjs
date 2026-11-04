@@ -8,6 +8,8 @@ import { AgentSprite } from '../../claudeville/src/presentation/character-mode/A
 import { VisitTileAllocator } from '../../claudeville/src/presentation/character-mode/VisitTileAllocator.js';
 import { VisitIntentManager, isWorkingVisitor } from '../../claudeville/src/presentation/character-mode/VisitIntentManager.js';
 import { Pathfinder, routePersonalityFor, ROUTE_PERSONALITIES } from '../../claudeville/src/presentation/character-mode/Pathfinder.js';
+import { bridgeLaneShift } from '../../claudeville/src/presentation/character-mode/MovementSteering.js';
+import { tileToWorld, worldToTile } from '../../claudeville/src/presentation/character-mode/Projection.js';
 
 const fullGrid = () => new Uint8Array(MAP_SIZE * MAP_SIZE).fill(1);
 
@@ -145,6 +147,30 @@ test('congestion snapshots hold two seconds, round counts and reuse unchanged co
     assert.notEqual(next.congestionVersion, first.congestionVersion);
     assert.equal(allocator.getCongestionSnapshot(6000).congestionVersion, next.congestionVersion);
     assert.equal(allocator.occupancyBuckets, allocator._occupancyBuckets);
+});
+
+test('BR-4: an off-centre deck body counts on its walk-grid deck tile, never the side span', () => {
+    // Bodies on both 10 px lanes of the central deck tile (18, 24): one sits
+    // at tile (17.65, 23.79), which flooring counted on the unwalkable (17, 23).
+    const deck = { orientation: 'NS', kind: 'landmark' };
+    const centre = tileToWorld(18, 24);
+    const sprites = [-1, 1].map((sign) => {
+        const shift = bridgeLaneShift(deck, sign * -32, sign * 16);
+        return { agent: { id: `lane-${sign}` }, x: centre.x + shift.x, y: centre.y + shift.y, _screenToTile: worldToTile };
+    });
+    assert.deepEqual(sprites.map((s) => worldToTile(s.x, s.y)).map(({ tileX, tileY }) => `${Math.floor(tileX)},${Math.floor(tileY)}`).sort(),
+        ['17,23', '18,24'], 'the fixture straddles the old floor seam');
+    const allocator = new VisitTileAllocator();
+    allocator.updateContext({ agentSprites: sprites });
+    const { congestionTiles } = allocator.getCongestionSnapshot(0);
+    assert.deepEqual([...congestionTiles.keys()], ['18,24']);
+    assert.equal(congestionTiles.get('18,24'), 2);
+    // The radius lookups keep their meaning on rounded buckets.
+    assert.equal(allocator._tileOccupancy(18, 24, null), 2);
+    assert.equal(allocator._tileOccupancy(17, 23, null), 0);
+    // A lookup gathers every bucket its span reaches: (17.65, 23.79) now
+    // lives in bucket (18, 24), which a floored span from x 17.1-17.7 missed.
+    assert.ok(allocator._nearbyOccupancyEntries(17.4, 23.79, 0.3).some((entry) => entry.agentId === 'lane-1'));
 });
 
 test('long trips receive authored lanes, congestion and at most four route personality/cache buckets', () => {

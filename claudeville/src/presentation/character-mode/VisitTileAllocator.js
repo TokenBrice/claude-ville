@@ -247,8 +247,11 @@ export class VisitTileAllocator {
         this._crowdClusters = this._summarizeCrowdClustersFromEntries();
     }
 
+    // BR-4 — a body counts on the tile the walk grid puts it on (rounded,
+    // as the Pathfinder's keys are): flooring counted an off-centre deck
+    // body on the bridge's unwalkable side span.
     _occupancyBucketKey(tileX, tileY) {
-        return `${Math.floor(Number(tileX) || 0)},${Math.floor(Number(tileY) || 0)}`;
+        return `${Math.round(Number(tileX) || 0)},${Math.round(Number(tileY) || 0)}`;
     }
 
     _nearbyOccupancyEntries(tileX, tileY, radius) {
@@ -257,8 +260,9 @@ export class VisitTileAllocator {
         const r = Math.max(0, Number(radius) || 0);
         if (!Number.isFinite(x) || !Number.isFinite(y) || !this._occupancyBuckets?.size) return [];
         const out = [];
-        for (let bx = Math.floor(x - r); bx <= Math.floor(x + r); bx++) {
-            for (let by = Math.floor(y - r); by <= Math.floor(y + r); by++) {
+        // Rounded buckets: bucket b holds [b - 0.5, b + 0.5), so these cover [x - r, x + r].
+        for (let bx = Math.round(x - r); bx <= Math.round(x + r); bx++) {
+            for (let by = Math.round(y - r); by <= Math.round(y + r); by++) {
                 const bucket = this._occupancyBuckets.get(`${bx},${by}`);
                 if (bucket?.length) out.push(...bucket);
             }
