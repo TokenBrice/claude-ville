@@ -199,11 +199,34 @@ export const WATER_BASINS = [
 // these authored hints intentionally define the visible river crossings.
 // `orientation` is optional; when omitted the engine derives it from neighbor
 // water tiles.
+//
+// Optional per-hint span fields, carried onto every bridge tile and the span
+// (SceneryEngine `_addBridgeTile`, IsometricRenderer `_bridgeSpanFromTiles`),
+// so a new landmark bridge installs by data: a hint plus its manifest sprite.
+// - `deckProfile`: the body lift measured on the sprite, [along, px] pairs
+//   (`along` in tiles from the span's centre along its axis, + toward the
+//   larger tile coordinate), linear between points and 0 past the ends, so
+//   the first and last points are the feet of the stairs and the second and
+//   second-to-last the stair tops. Without it the lift is a sine x `deckRise`
+//   over the span (`deckRise` also arches the under-deck water shadow and
+//   the near-rail slices' sort anchors).
+// - `nearRail`: the band of the sprite the near-rail slices repaint in front
+//   of bodies on the deck: `inner`/`outer` px across the span (along its cross
+//   unit), `top` px above and `bottom` px below its base line, which rides
+//   `lift` ([along, px], the rail beam's own height over the water) when
+//   given, else `deckProfile`, else the sine. Cut it to the camera-side rail
+//   only: a plank or post inside it would cover the feet of a body behind it.
+// - `laneOffsetPx`: the two files' offset either side of the walk line
+//   (LANE_STEERING.bridgeOffsetPx, 10, without it).
+// - `treeExclusion` (default true): keep trees off the span and its ramps.
+// - `underDeckShadow` (default true): bake the multiply shadow under the deck.
 export const BRIDGE_HINTS = [
     // The deck is 3 tiles wide (17..19) x 3 long (23..25); only the center
-    // column is walkable. deckRise is the visual arch height in px used for
-    // the agent lift. nearRail is the span-space band (px) containing the
-    // sprite's camera-near handrail used for occlusion.
+    // column is walkable. Measured on bridge.landmark.civic.ns (BR-2): the
+    // planks stand ~25 px over the water (23 at the north end), steps down
+    // to (18,22) in the north and down to ~26.7 in the south; the near rail
+    // beam arches ~13 px from mid-span to its south end; the clear deck
+    // (36-40 px) holds two files 8 px either side of the walk line.
     {
         id: 'central-river-bridge',
         tileX: 18,
@@ -213,7 +236,15 @@ export const BRIDGE_HINTS = [
         widthRadius: 1,
         walkableRadius: 0,
         deckRise: 10,
-        nearRail: { inner: 30, outer: 76, top: 44, bottom: 10 },
+        deckProfile: [[-2, 0], [-1.75, 23], [-1, 25], [1.9, 25], [2.7, 0]],
+        nearRail: {
+            inner: 21.5,
+            outer: 21.5,
+            top: 1,
+            bottom: 6,
+            lift: [[-1.5, 42.3], [-1, 44.5], [-0.5, 46.1], [-0.1, 46.4], [0.3, 44], [0.65, 40.5], [1, 37.4], [1.5, 32.7]],
+        },
+        laneOffsetPx: 8,
     },
 ];
 
