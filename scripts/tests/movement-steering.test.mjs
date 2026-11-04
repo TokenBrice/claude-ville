@@ -182,12 +182,15 @@ test('BR-3: a route over the central deck keeps both files on their lanes and ne
             return { key, lane: ((point.x - base.x) * southLane.x + (point.y - base.y) * southLane.y) / 10 };
         });
     };
+    // The central hint's laneOffsetPx (8 px since BR-2d; 10 without one).
+    const offset = bridgeTiles.get('18,24')?.laneOffsetPx ?? 10;
+    assert.equal(offset, 8, 'the central bridge keeps its files 8 px off its centre line');
     const northbound = route({ tileX: 18, tileY: 28 }, { tileX: 18, tileY: 20 });
     const southbound = route({ tileX: 18, tileY: 20 }, { tileX: 18, tileY: 28 });
     for (const [label, points, side] of [['northbound', northbound, -1], ['southbound', southbound, 1]]) {
         const deck = points.filter((point) => ['18,23', '18,24', '18,25'].includes(point.key));
         assert.equal(deck.length, 3, `${label} keeps every deck tile as a waypoint`);
-        for (const point of deck) assert.ok(Math.abs(point.lane - side * 10) < 1e-6, `${label} ${point.key} on lane ${point.lane}`);
+        for (const point of deck) assert.ok(Math.abs(point.lane - side * offset) < 1e-6, `${label} ${point.key} on lane ${point.lane}`);
         assert.ok(Math.abs(points.at(-1).lane) < 1e-9, `${label} ends on its target`);
     }
     // A route that ends on the deck stops on its centre.
