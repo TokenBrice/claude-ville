@@ -2704,6 +2704,15 @@ export class AgentSprite {
         return this._crossingTileMap;
     }
 
+    // BR-5 — the body stands on a bridge deck or landing tile: no chat and no
+    // stop-and-look starts there.
+    standsOnCrossing() {
+        const crossings = this._crossingTiles();
+        if (!crossings.size) return false;
+        const tile = worldToTile(this.x, this.y);
+        return crossings.has(`${Math.round(tile.tileX)},${Math.round(tile.tileY)}`);
+    }
+
     // The fan place (7.4) this body's route ends on, when the renderer re-aimed
     // the route's last point there; else null.
     _routeEndFanPlace() {
@@ -3365,9 +3374,12 @@ export class AgentSprite {
             // 7.4 — a chat approach the renderer re-aimed onto a fan place
             // (another body already stands at its stop) walks on to that
             // place and begins the chat there; stopping at the first point
-            // within CHAT_START_PX would stand it inside that body.
+            // within CHAT_START_PX would stand it inside that body. BR-5 —
+            // no chat starts while either body stands on a bridge deck or
+            // landing: a pair heading across meets on the first tile past it.
             const fanPlace = this._chatApproachRoute ? this._routeEndFanPlace() : null;
-            if (fanPlace ? !this.moving && cpDist < CHAT_FAN_REACH_PX : cpDist < CHAT_START_PX) {
+            if ((fanPlace ? !this.moving && cpDist < CHAT_FAN_REACH_PX : cpDist < CHAT_START_PX)
+                && !this.standsOnCrossing() && !partner.standsOnCrossing?.()) {
                 this.chatting = true;
                 this.behavior.transition('chatting', 'chat');
                 this.chatBubbleAnim = 0;
@@ -4094,6 +4106,12 @@ export class AgentSprite {
         }
         this._stopLookCooldownMs -= dt;
         if (this._stopLookCooldownMs <= 0) {
+            // BR-5 — a look due on a bridge deck or landing is skipped, not
+            // saved for the far landing, so looks never bunch at a deck's ends.
+            if (this.standsOnCrossing()) {
+                this._stopLookCooldownMs = 18000 + Math.random() * 12000;
+                return false;
+            }
             // V7 — the stroller stops on a contact frame before it looks.
             this._beginStopBeat();
             const nearest = this._nearestLandmarkBuilding();
