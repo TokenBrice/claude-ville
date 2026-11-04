@@ -5409,7 +5409,9 @@ export class IsometricRenderer {
                 const recipient = extractRecipientName(agent.currentToolInput);
                 if (!recipient) continue;
                 const target = spriteByRecipient.get(recipient);
-                if (target && target !== sprite) {
+                // BR-5 — an approach starts once neither body stands on a
+                // bridge deck or landing: a walker finishes its crossing first.
+                if (target && target !== sprite && !sprite.standsOnCrossing?.() && !target.standsOnCrossing?.()) {
                     sprite.startChat(target);
                 }
             }

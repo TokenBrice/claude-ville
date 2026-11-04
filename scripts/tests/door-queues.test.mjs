@@ -6,6 +6,11 @@ import { BUILDING_DEFS, VISIT_OVERFLOW_TILES } from '../../claudeville/src/confi
 import { APPROACH_FILES, COMMAND_QUEUE, REST_SEATS, REST_STANDS } from '../../claudeville/src/config/townPlan.js';
 import { MAP_SIZE, TILE_HEIGHT, TILE_WIDTH } from '../../claudeville/src/config/constants.js';
 import { Building } from '../../claudeville/src/domain/entities/Building.js';
+import { AgentStatus } from '../../claudeville/src/domain/value-objects/AgentStatus.js';
+import { AgentSprite } from '../../claudeville/src/presentation/character-mode/AgentSprite.js';
+import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
+import { bridgeCrossingTiles } from '../../claudeville/src/presentation/character-mode/MovementSteering.js';
+import { tileToWorld } from '../../claudeville/src/presentation/character-mode/Projection.js';
 import { SceneryEngine } from '../../claudeville/src/presentation/character-mode/SceneryEngine.js';
 import {
     overCapacityPenalty,
@@ -229,9 +234,14 @@ test('AG-7: the petitioners\' line stays on Command\'s forecourt, off every brid
 
 // CM-1 — Command stands two rows back from the central bridge, so its north
 // landing (the pond plank 16-17,22 and the deck's foot 18,22) opens onto an
-// open forecourt: no place a body waits or works on stands within a tile of it.
-test('CM-1: no queue, work or overflow place stands within a tile of the central bridge\'s north landing', () => {
-    const landing = [[16, 22], [17, 22], [18, 22]];
+// open forecourt: no place a body waits or works on stands within a tile of
+// it. BR-5 — the same holds at the south landing (18,26).
+test('CM-1: no queue, work or overflow place stands within a tile of the central bridge\'s landings', () => {
+    // The landings are derived from the deck, as BR-3 and BR-5 read them.
+    const crossings = bridgeCrossingTiles(scenery.getBridgeTiles());
+    const landings = [...crossings].filter(([, crossing]) => crossing.landing).map(([key]) => key).sort();
+    assert.deepEqual(landings, ['18,22', '18,26']);
+    const landing = [[16, 22], [17, 22], [18, 22], [18, 26]];
     for (const [x, y] of landing) assert.ok(scenery.getBridgeTiles().has(`${x},${y}`) || walkable(x, y), `${x},${y} is the landing`);
     const near = (place) => landing.some(([x, y]) => Math.max(Math.abs(place.tileX - x), Math.abs(place.tileY - y)) <= 1);
     const places = [
@@ -244,6 +254,73 @@ test('CM-1: no queue, work or overflow place stands within a tile of the central
         APPROACH_FILES[def.type].forEach((tile) => places.push([`${def.type} file`, tile]));
     }
     for (const [label, place] of places) assert.equal(near(place), false, `${label} ${keyOf(place)} stands beside the landing`);
+});
+
+// BR-5 — no stops on the crossings: no standing place lies on a deck or
+// landing tile (the D3 pause points stand one tile off the walk line), and
+// no chat or stop-and-look starts while a body stands on one.
+test('BR-5: no chat or stop-and-look starts on a bridge deck or landing; pause points stand beside them', () => {
+    const bridgeTiles = scenery.getBridgeTiles();
+    const crossings = bridgeCrossingTiles(bridgeTiles);
+    const standing = [
+        ...REST_SEATS.map((place) => [`seat ${place.id}`, place]),
+        ...Object.values(REST_STANDS).flatMap((room) => room.tiles.map((place) => ['rest stand', place])),
+        ...AMBIENT_SCENIC_POINTS.map((point) => [`scenic ${point.id}`, point]),
+        ...[...COMMAND_QUEUE.slots, ...COMMAND_QUEUE.overflow].map((place) => ['command petitioner', place]),
+        ...BUILDING_DEFS.flatMap((def) => [...def.visitTiles, ...VISIT_OVERFLOW_TILES[def.type], ...APPROACH_FILES[def.type]].map((place) => [def.type, place])),
+    ];
+    for (const [label, place] of standing) {
+        const key = `${Math.round(place.tileX)},${Math.round(place.tileY)}`;
+        assert.equal(crossings.has(key), false, `${label} ${key} stands on a crossing`);
+    }
+
+    const body = (id, tileX, tileY, status = AgentStatus.IDLE) => {
+        const s = new AgentSprite({ id, name: id, status, provider: 'claude', position: { tileX, tileY } }, { bridgeTiles });
+        Object.assign(s, tileToWorld(tileX, tileY), { motionScale: 1, moving: false });
+        s.behavior = { transition() {}, finishVisit() {}, cooldownUntil: 0 };
+        s._pickTarget = () => {};
+        s._beginStopBeat = () => {};
+        return s;
+    };
+    for (const [x, y] of [[18, 22], [18, 23], [18, 24], [18, 25], [18, 26], [16, 22]]) {
+        assert.equal(body('on', x, y).standsOnCrossing(), true, `${x},${y} is a crossing`);
+    }
+    for (const [x, y] of [[18, 21], [18, 27], [19, 22], [17, 26], [7, 22]]) {
+        assert.equal(body('off', x, y).standsOnCrossing(), false, `${x},${y} is off the crossings`);
+    }
+
+    // A due stop-and-look on the south landing is skipped; past it, it fires.
+    const stroller = body('stroller', 18, 26);
+    stroller._stopLookCooldownMs = 1;
+    assert.equal(stroller._advanceIdleStopAndLook(16), false);
+    assert.equal(stroller._stopLookActiveMs ?? 0, 0);
+    assert.ok(stroller._stopLookCooldownMs >= 18000, 'the skipped look waits a full cycle');
+    const past = body('past', 18, 27);
+    past._stopLookCooldownMs = 1;
+    assert.equal(past._advanceIdleStopAndLook(16), true);
+
+    // A pair within chat reach meets only once neither body is on a crossing.
+    const meet = (approacher, partner) => {
+        approacher.chatPartner = partner;
+        approacher.update(null, 16);
+        return approacher.chatting && partner.chatting;
+    };
+    assert.equal(meet(body('a', 18, 26), body('b', 18.6, 26.6)), false, 'approacher on the landing');
+    assert.equal(meet(body('a', 18.3, 26.9), body('b', 18, 26)), false, 'partner on the landing');
+    assert.equal(meet(body('a', 18, 27), body('b', 18.6, 26.6)), true, 'both on the first tile past it');
+
+    // The renderer starts no approach while either body is on a crossing.
+    const sender = body('sender', 18, 24, AgentStatus.WORKING);
+    Object.assign(sender.agent, { currentTool: 'SendMessage', currentToolInput: '{"to":"listener"}' });
+    const listener = body('listener', 18, 30);
+    const started = [];
+    sender.startChat = (target) => started.push(target.agent.id);
+    const renderer = { agentSprites: new Map([[sender.agent.id, sender], [listener.agent.id, listener]]), _isGateTransit: () => false };
+    IsometricRenderer.prototype._updateChatMatching.call(renderer);
+    assert.deepEqual(started, [], 'the sender is on the deck');
+    Object.assign(sender, tileToWorld(18, 28));
+    IsometricRenderer.prototype._updateChatMatching.call(renderer);
+    assert.deepEqual(started, ['listener']);
 });
 
 test('AG-2: the Tavern\'s standing room keeps off seats, fixtures and every other standing place', () => {
