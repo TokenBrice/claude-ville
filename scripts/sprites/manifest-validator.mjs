@@ -249,6 +249,34 @@ function validateManifestEntry(entry) {
         errors += validateBuildingManifestEntry(entry);
     }
 
+    if (entry.id.startsWith('bridge.') && entry.lights !== undefined) {
+        errors += validateBridgeLights(entry);
+    }
+
+    return errors;
+}
+
+// BR-6 / C2 — a bridge sprite's night light points (IsometricRenderer
+// `_bridgeLightFixtures`): `at` an integer sprite px inside the sprite, a
+// non-negative `height`, and an optional `radius` under the street lamps'
+// 66 px pool.
+function validateBridgeLights(entry) {
+    const width = entry.width ?? entry.size;
+    const height = entry.height ?? entry.size;
+    if (!Array.isArray(entry.lights) || !entry.lights.length) {
+        console.error(`INVALID MANIFEST: ${entry.id} lights must be a non-empty list`);
+        return 1;
+    }
+    let errors = 0;
+    entry.lights.forEach((light, index) => {
+        const [x, y] = Array.isArray(light?.at) ? light.at : [];
+        const problems = [];
+        if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0 || x >= width || y >= height) problems.push(`at must be integer sprite px inside ${width}x${height}`);
+        if (!Number.isFinite(light?.height) || light.height < 0) problems.push('height must be a non-negative number');
+        if (light?.radius !== undefined && !(Number.isFinite(light.radius) && light.radius > 0 && light.radius < 66)) problems.push('radius must be under 66 world px');
+        for (const problem of problems) console.error(`INVALID MANIFEST: ${entry.id} lights[${index}] ${problem}`);
+        errors += problems.length;
+    });
     return errors;
 }
 

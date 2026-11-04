@@ -473,6 +473,12 @@ const BRAZIER_POOL_RADIUS = 70;
 // like any other clock-gated hearth (LightSourceRegistry).
 const WATCHFIRE_POOL_RADIUS = 52;
 const WATCHFIRE_FLAME_HEIGHT = 12;
+// BR-6 / C2 — a bridge sprite's painted flames (manifest `lights`) light as
+// candle-scale fixtures: a pool well inside the street lamps' and under
+// SOURCE_HALO_RADIUS_CAP, the emissive ramp's gold, held steady (no breath).
+const BRIDGE_LIGHT_POOL_RADIUS = 28;
+const BRIDGE_LIGHT_INTENSITY = 0.62;
+const BRIDGE_LIGHT_COLOR = '#ffcf7a';
 const AVENUE_TREE_CLEARANCE = 0.5;
 
 function rectIntersectionArea(a, b) {
@@ -10109,9 +10115,10 @@ export class IsometricRenderer {
     }
 
     // W6.9 / W6.10 — the hearths (gatehouse guard rooms, lake shrine), the
-    // calendar's lit bonfire and Command's watchfires: fixtures on the
-    // village lamp clock (LightSourceRegistry.hearthLightSources) that never
-    // read occupancy, so no work building lights without a working visitor.
+    // calendar's lit bonfire, Command's watchfires and the bridges' painted
+    // flames (BR-6): fixtures on the village lamp clock
+    // (LightSourceRegistry.hearthLightSources) that never read occupancy, so
+    // no work building lights without a working visitor.
     _hearthLightSources(lighting = null) {
         const lampsLit = lampsLitAt(this._lastAtmosphere);
         if (!lampsLit) return [];
@@ -10135,9 +10142,57 @@ export class IsometricRenderer {
         return hearthLightSources({
             lampsLit,
             core: sourceEnergyFor(lighting).core,
-            extra: extra.filter(caught),
+            // BR-6 — a bridge's lights catch together (bridgeLightsLit).
+            extra: [...extra.filter(caught), ...this._bridgeLightFixtures()],
             fixtures: HEARTH_FIXTURES.filter(caught),
         });
+    }
+
+    // BR-6 / C2 — the light points a bridge sprite declares in its manifest
+    // entry, `lights: [{ at: [x, y], height, radius? }]` in sprite px from
+    // the PNG's top-left (like `anchor`): `at` is a painted flame, `height`
+    // the px down to where its post stands (the light's foot, where its pool
+    // lands, as a street lamp's). The points belong to the art, so they live
+    // with the sprite, not its BRIDGE_HINTS entry, and sit wherever
+    // `_bridgeSpritePlacement` draws it: a new bridge sprite (the trestle's
+    // end-post lanterns) lights by manifest data alone. Rows for
+    // `_hearthLightSources`' extras: steady all night, and only once the
+    // bridge has caught on the round.
+    _bridgeLightFixtures() {
+        const out = [];
+        for (const span of this.bridgeSpans || []) {
+            const spriteId = this._bridgeSpriteId(span);
+            const lights = this.assets?.getEntry?.(spriteId)?.lights;
+            if (!Array.isArray(lights) || !lights.length || !this.bridgeLightsLit(span)) continue;
+            const placement = this._bridgeSpritePlacement(span);
+            if (!placement) continue;
+            lights.forEach((light, index) => {
+                const [sx, sy] = Array.isArray(light?.at) ? light.at : [];
+                if (!Number.isFinite(sx) || !Number.isFinite(sy)) return;
+                const height = Math.max(0, Number(light.height) || 0);
+                const foot = worldToTile(placement.x + sx, placement.y + sy + height);
+                out.push({
+                    id: `bridge-light:${span.id || spriteId}:${index}`,
+                    tileX: foot.tileX,
+                    tileY: foot.tileY,
+                    height,
+                    radius: Math.min(Number(light.radius) || BRIDGE_LIGHT_POOL_RADIUS, SOURCE_HALO_RADIUS_CAP),
+                    intensity: BRIDGE_LIGHT_INTENSITY,
+                    color: BRIDGE_LIGHT_COLOR,
+                });
+            });
+        }
+        return out;
+    }
+
+    // BR-6 — a bridge's lights (its declared light points and its flame
+    // sidecar, EmitterCuts) burn while the village lamps are lit and the
+    // Lamplighter's Round has reached the bridge's middle: one held step for
+    // the whole bridge, so its flames and pools never disagree.
+    bridgeLightsLit(span) {
+        if (!span || !this.villageLampsLit()) return false;
+        const middle = worldToTile((span.start.x + span.end.x) / 2, (span.start.y + span.end.y) / 2);
+        return this.lampRoundLit()(middle.tileX, middle.tileY) === true;
     }
 
     _attentionLightSources() {

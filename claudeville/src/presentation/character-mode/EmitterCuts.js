@@ -77,6 +77,7 @@ export function cacheEmitterRecords(renderer, channelRevision) {
     if (!assets) return [];
     const records = cacheWaterRecords(renderer);
     mirrorAccentRecords(renderer, records);
+    bridgeEmitterRecords(renderer, records);
     if (!renderer._gpuAtlasResident) return records;
     for (const prop of cacheLayerProps()) {
         if (!hasEmissiveSidecar(assets, prop.id)) continue;
@@ -203,22 +204,80 @@ function waterMaterialMap(image, key) {
 }
 
 // The record's source: the drawn sprite (authored or its winter state) cut
-// to the water texels, one canvas per prop, rebuilt when its texture key
-// changes.
-const waterSources = new Map();
+// to a mask's texels (the water map, or a bridge's flame sidecar), one
+// canvas per record, rebuilt when its texture key changes.
+const maskedSources = new Map();
 
-function waterOnlySource(source, materialSource, propKey, textureKey) {
-    const cached = waterSources.get(propKey);
+function maskedSource(source, mask, recordKey, textureKey) {
+    const cached = maskedSources.get(recordKey);
     if (cached?.textureKey === textureKey) return cached.canvas;
     const canvas = document.createElement('canvas');
-    canvas.width = materialSource.width;
-    canvas.height = materialSource.height;
+    canvas.width = mask.width;
+    canvas.height = mask.height;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     ctx.drawImage(source, 0, 0);
     ctx.globalCompositeOperation = 'destination-in';
-    ctx.drawImage(materialSource, 0, 0);
-    waterSources.set(propKey, { textureKey, canvas });
+    ctx.drawImage(mask, 0, 0);
+    maskedSources.set(recordKey, { textureKey, canvas });
     return canvas;
+}
+
+// BR-6 — the landmark bridges are baked into the terrain too. A bridge sprite
+// with an emissive sidecar (the south bridge's candle flames, derived over
+// its declared light points) redraws only its sidecar's texels, from the
+// drawn sprite (authored or winter), right after the terrain: the flames
+// become emitters on their own material whatever the terrain class under
+// them (part of the bridge stands over water-class texels), and everything
+// drawn later (villagers, the near-rail slices) still covers them. Only
+// while IsometricRenderer `bridgeLightsLit` (the step its light points
+// share): unlit, there is no record and the terrain's own texels stand, so
+// the day frame is untouched. GPU material companions only (Canvas takes
+// `drawCanvasEmitterCuts`).
+const BRIDGE_FLAME_MATERIAL = materialClassId('fire');
+
+function bridgeEmitterRecords(renderer, records) {
+    const assets = renderer.assets;
+    if (typeof document === 'undefined') return;
+    for (const span of renderer.bridgeSpans || []) {
+        const id = renderer._bridgeSpriteId?.(span);
+        if (!id || !hasEmissiveSidecar(assets, id) || renderer.bridgeLightsLit?.(span) !== true) continue;
+        const sidecar = assets.getCompanion?.(id, 'emissive');
+        const placement = sidecar ? renderer._bridgeSpritePlacement?.(span) : null;
+        if (!placement) continue;
+        const { w, h } = placement.dims;
+        const winter = placement.img !== assets.get?.(id);
+        const textureKey = `bridge-emitter:${id}:${assets.assetVersion || 0}${winter ? `:${renderer.propWinter?.key}` : ''}`;
+        const key = `bridge-emitter:${span.id || id}`;
+        records.push({
+            id: key,
+            stableKey: key,
+            textureKey,
+            sidecarKey: `${textureKey}:channels`,
+            source: maskedSource(placement.img, sidecar, key, textureKey),
+            materialSource: null,
+            emissiveSource: sidecar,
+            occluderSource: null,
+            sourceWidth: w,
+            sourceHeight: h,
+            sx: 0,
+            sy: 0,
+            sw: w,
+            sh: h,
+            x: placement.x,
+            y: placement.y,
+            width: w,
+            height: h,
+            material: BRIDGE_FLAME_MATERIAL,
+            elevation: 0,
+            emissive: 0,
+            emissiveGate: 1,
+            occluder: 0,
+            textureRevision: textureKey,
+            sidecarRevision: textureKey,
+            sequence: -0.5,
+            sourceKind: 'individual',
+        });
+    }
 }
 
 function cacheWaterRecords(renderer) {
@@ -239,7 +298,7 @@ function cacheWaterRecords(renderer) {
         const textureKey = winter ? `${waterKey}:${renderer.propWinter.key}` : waterKey;
         const [ax, ay] = assets.getAnchor(prop.id);
         const key = `cache-water:${prop.id}:${prop.tileX},${prop.tileY}`;
-        const source = waterOnlySource(winter || image, materialSource, key, textureKey);
+        const source = maskedSource(winter || image, materialSource, key, textureKey);
         records.push({
             id: key,
             stableKey: key,
@@ -466,6 +525,15 @@ function* emitterPlacements(renderer) {
         const gate = prop.id === 'prop.lantern' ? lanternGate(renderer, prop) : 1;
         if (!(gate > 0)) continue;
         yield { id: prop.id, x: prop.x, y: prop.y, sortY: -Infinity, staticSortY: -Infinity, gate };
+    }
+    // BR-6 — a terrain-baked bridge's flames, anchored at the span middle
+    // as `_bridgeSpritePlacement` draws the sprite.
+    for (const span of renderer.bridgeSpans || []) {
+        const id = renderer._bridgeSpriteId?.(span);
+        if (!id || !hasEmissiveSidecar(assets, id) || renderer.bridgeLightsLit?.(span) !== true) continue;
+        const x = (span.start.x + span.end.x) / 2;
+        const y = (span.start.y + span.end.y) / 2;
+        yield { id, x, y, sortY: -Infinity, staticSortY: -Infinity, gate: 1 };
     }
 }
 
