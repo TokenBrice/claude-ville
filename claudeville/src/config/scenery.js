@@ -196,7 +196,9 @@ export const WATER_BASINS = [
 
 // Bridge hints: explicit tile positions where a deck must exist.
 // SceneryEngine may auto-place extra crossings when no hints are present, but
-// these authored hints intentionally define the visible river crossings.
+// these authored hints intentionally define the visible river crossings: the
+// central landmark bridge and the Miner's trestle, each one span sprite
+// (`bridge.landmark.${style}.${orientation}`, the deck midpoint as anchor).
 // `orientation` is optional; when omitted the engine derives it from neighbor
 // water tiles.
 //
@@ -246,21 +248,41 @@ export const BRIDGE_HINTS = [
         },
         laneOffsetPx: 8,
     },
-];
-
-// Plank crossings: single-file walkable spans drawn per-tile from the
-// bridge.ew/ns plank assets (kind 'plank' — no landmark span treatment).
-// The west crossing meets the north-bank-promenade's river anchor (7, 23) so
-// the archive/promenade side links to the portal-grove and mine approach
-// without walking to the central landmark bridge. Walkability only ever
-// *adds* connectivity here, so routing risk is limited to new scenery.
-export const PLANK_BRIDGES = [
+    // The Miner's trestle (BR-7), the west crossing beside the Mine: deck
+    // tiles (7, 23..26), one walkable column. It meets the north bank
+    // promenade's river anchor (7, 23), so the archive side reaches the
+    // portal grove and the Mine without the central bridge. The id keeps
+    // "river": route personalities key on it. Measured on
+    // bridge.landmark.rustic.ns: the planks stand 16 px over the water from
+    // the north end bent to the south one (rows 22.5..26.5), with half-tile
+    // ramps onto the banks (7,22) and (7,27); the near handrail and mid-rail
+    // (31 and 23 px over the water on the near posts, 16.8 px across from the
+    // walk line) are the rail band; the clear deck (~29.6 px between the
+    // posts' inner faces) holds two files 6 px either side of the walk line.
+    // The maples south-east of the Mine keep their places, and the piles stand
+    // in open water, so no tree exclusion and no under-deck shadow.
     {
         id: 'west-river-plank',
         tileX: 7,
         tileY: 25,
         orientation: 'NS',
+        style: 'rustic',
+        widthRadius: 0,
+        walkableRadius: 0,
+        deckProfile: [[-2.55, 0], [-2, 16], [2, 16], [2.55, 0]],
+        nearRail: { inner: 16.8, outer: 16.8, top: 2, bottom: 10, lift: [[-2.05, 31], [2.05, 31]] },
+        laneOffsetPx: 6,
+        treeExclusion: false,
+        underDeckShadow: false,
     },
+];
+
+// Plank crossings: single-file walkable spans drawn per-tile from the
+// bridge.ew plank asset (kind 'plank' — no landmark span treatment). The
+// pond plank stays a plank: BridgeLanterns hangs the pending-branch lanterns
+// on its EW deck. Walkability only ever *adds* connectivity here, so routing
+// risk is limited to new scenery.
+export const PLANK_BRIDGES = [
     {
         id: 'command-pond-plank',
         tileX: 17,

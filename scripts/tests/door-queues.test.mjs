@@ -239,7 +239,9 @@ test('AG-7: the petitioners\' line stays on Command\'s forecourt, off every brid
 test('CM-1: no queue, work or overflow place stands within a tile of the central bridge\'s landings', () => {
     // The landings are derived from the deck, as BR-3 and BR-5 read them.
     const crossings = bridgeCrossingTiles(scenery.getBridgeTiles());
-    const landings = [...crossings].filter(([, crossing]) => crossing.landing).map(([key]) => key).sort();
+    const landings = [...crossings]
+        .filter(([, crossing]) => crossing.landing && crossing.info.bridgeId === 'central-river-bridge')
+        .map(([key]) => key).sort();
     assert.deepEqual(landings, ['18,22', '18,26']);
     const landing = [[16, 22], [17, 22], [18, 22], [18, 26]];
     for (const [x, y] of landing) assert.ok(scenery.getBridgeTiles().has(`${x},${y}`) || walkable(x, y), `${x},${y} is the landing`);
@@ -282,10 +284,14 @@ test('BR-5: no chat or stop-and-look starts on a bridge deck or landing; pause p
         s._beginStopBeat = () => {};
         return s;
     };
-    for (const [x, y] of [[18, 22], [18, 23], [18, 24], [18, 25], [18, 26], [16, 22]]) {
+    // BR-7 — the trestle is a landmark span too: its deck (7, 23..26) and
+    // the landings Flow derives past each end, (7,22) and (7,27).
+    const trestle = [...crossings].filter(([, crossing]) => crossing.info.bridgeId === 'west-river-plank');
+    assert.deepEqual(trestle.filter(([, crossing]) => crossing.landing).map(([key]) => key).sort(), ['7,22', '7,27']);
+    for (const [x, y] of [[18, 22], [18, 23], [18, 24], [18, 25], [18, 26], [16, 22], [7, 22], [7, 23], [7, 25], [7, 27]]) {
         assert.equal(body('on', x, y).standsOnCrossing(), true, `${x},${y} is a crossing`);
     }
-    for (const [x, y] of [[18, 21], [18, 27], [19, 22], [17, 26], [7, 22]]) {
+    for (const [x, y] of [[18, 21], [18, 27], [19, 22], [17, 26], [7, 21], [7, 28], [6, 24]]) {
         assert.equal(body('off', x, y).standsOnCrossing(), false, `${x},${y} is off the crossings`);
     }
 
