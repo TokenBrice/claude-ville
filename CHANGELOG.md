@@ -2,6 +2,31 @@
 
 ---
 
+## v0.61.1 — *The Bridgewright* · Nov 04, 2026
+
+Villagers walk on the south bridge's planks and pass in two clean files, its candles burn at night, and the west crossing becomes a miner's trestle.
+
+- **The south bridge.**
+  - Villagers stand on the painted planks, with the near rail crossing their legs. They no longer walk in front of the rail, below the deck. New north steps end the drop at the north landing.
+  - Each direction keeps its own side of the deck and landings, so villagers no longer pass through each other. With 100 agents, overlapping passes fall from about 10 per run to none, with slightly fewer stalls and the same traffic.
+  - No chat or stop-and-look starts on a bridge deck or landing.
+  - Its four candles burn at night and lay small steady pools on the deck.
+  - A villager on the deck mirrors in the water below, not on the planks.
+- **The Miner's trestle.** By the Token Mine, one timber trestle replaces the four dark plank tiles.
+  - It has square posts and rails on both sides, iron straps, braced bents in the river, and an iron lantern on each end post, lit at night.
+  - Its deck rises onto both banks, and its near rail hides walkers' legs as the south bridge's does.
+  - Its oak sits a step below the south bridge's, so the civic bridge stays the brightest.
+- **The pond plank.** The plank under the branch lanterns turns from its old dark plum to the village's timber, and the back rail that peeked out behind the south bridge is gone. The lanterns are unchanged.
+- **Fixes.** Crowding is counted on the tile a villager actually stands on. The south bridge's congestion was going to the unwalkable tile beside it.
+- **Tooling.**
+  - Bridge hints can set their own lift profile (`deckProfile`), near-rail band, lane offset (`laneOffsetPx`), tree exclusion and under-deck shadow.
+  - A bridge sprite can declare its night lights in the manifest (`lights: [{ at, height }]`).
+  - `scripts/sprites/retone-props.mjs` re-derives the pond plank from its plum original.
+
+Validation: `validate:full`, `world:golden-hours` (WebGPU, WebGL2 and Canvas) and `verify:render` pass. `smoke:webgpu-parity` fails the same 11 WebGPU-only cases of 36 as v0.61.0. `sprites:visual-diff` fails the same 14 stale building views as v0.61.0, with identical pixel counts.
+
+---
+
 ## v0.61.0 — *The Turning Year* · Nov 03, 2026
 
 The village keeps your real day and season, the sea carries the sky's light, and one wind moves the whole island.
