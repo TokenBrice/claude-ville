@@ -20,12 +20,24 @@
 //     prop.marketStall.canvas   A clothCrimson, B undyed canvas (ashlar's
 //                               three lit stops)
 //
+// bridge.ew (the pond plank, bridges BR-1): F18 kept the plum original's
+//   dark lightness, so the plank was the darkest wood in the village. This
+//   pass lifts it: L <= 0.16 is kept (ink, plank gaps), above it
+//   L' = 0.16 + (L - 0.16) * 1.89 (capped at 0.80), which puts the deck top's
+//   L50 at 0.58 (strength S2). Hue and chroma come from `timber` plus one
+//   oak-light stop sampled from the landmark deck's lit boards; HSV
+//   saturation is capped at 0.62 where V >= 0.5 (art:analyze Tier A). Then
+//   the back-rail posts and rope, all the plank shows from behind the
+//   landmark's far handrail, are erased.
+//
 // Idempotent: the stall colourways are always derived from the original
-// stall bytes (sha256-pinned).
+// stall bytes, and the plank from its plum original read from git (both
+// sha256-pinned).
 //
 // Usage:
 //   node scripts/sprites/retone-props.mjs [--dry-run] [--preview=<dir>]
 
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -50,6 +62,28 @@ const CLOTH_WIDEN = 0.08;
 // The awning in sprite px: PropWinter's roof polygon for prop.marketStall.
 const STALL_AWNING = [[30, 5], [62, 20], [60, 26], [33, 38], [5, 19]];
 
+const BRIDGES = join(repoRoot, 'claudeville', 'assets', 'sprites', 'bridges');
+const PLANK = {
+    file: 'bridge.ew.png',
+    source: '006e50a2:claudeville/assets/sprites/bridges/bridge.ew.png',
+    sha256: 'b61ff19ad68c1ed3fa0cb66e3f09739c795e7cc91e1a0ce435ee4329beef1651',
+};
+const PLANK_KNEE = 0.16;
+const PLANK_GAIN = 1.89;
+const PLANK_L_MAX = 0.80;
+const PLANK_S_CAP = 0.62;
+const OAK_LIGHT = '#d1874e';
+// The back rail in sprite px: every texel above the deck's top edge in
+// columns 2..29 is post or rope. The posts stand on the deck at the left and
+// top vertices; `deckTop` is the deck's first row under each post column,
+// and their feet (down to `foot`) are refilled from the deck one post-width
+// along the same edge (`from`), so the edge highlight runs on unbroken.
+const PLANK_RAIL = { x0: 2, x1: 29 };
+const PLANK_POSTS = [
+    { x0: 2, deckTop: [36, 36, 35, 35], foot: 37, from: [4, -2] },
+    { x0: 26, deckTop: [24, 23, 23, 22], foot: 26, from: [-4, 2] },
+];
+
 // ── market stall ────────────────────────────────────────────────────────────
 // All three colourways derive from the original stall bytes in one pass; once
 // the base file is re-toned the pass is skipped (restore the original to
@@ -66,6 +100,24 @@ const STALL_AWNING = [[30, 5], [62, 20], [60, 26], [33, 38], [5, 19]];
             const colours = quantise(png, STALL_MAX_COLOURS);
             emit(way.file, png, `stripe A ${counts.a} px, stripe B ${counts.b} px, frame ${counts.frame} px; ${colours} colours`);
         }
+    }
+}
+
+// ── pond plank ──────────────────────────────────────────────────────────────
+{
+    let bytes = null;
+    try {
+        bytes = execFileSync('git', ['show', PLANK.source], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch {
+        console.log(`[retone-props] skip ${PLANK.file} (git cannot read ${PLANK.source}; a full clone is needed)`);
+    }
+    if (bytes && sha256(bytes) !== PLANK.sha256) {
+        console.log(`[retone-props] skip ${PLANK.file} (hash ${sha256(bytes).slice(0, 12)} is not the plum original)`);
+    } else if (bytes) {
+        const png = PNG.sync.read(bytes);
+        liftPlank(png);
+        const cleared = eraseBackRail(png);
+        emit(PLANK.file, png, `lightness lift x${PLANK_GAIN} above L ${PLANK_KNEE}; back rail erased (${cleared} px cleared)`, BRIDGES);
     }
 }
 
@@ -117,6 +169,55 @@ function rankRemap(png, texels, ramp) {
         const L = tLo + t * (tHi - tLo);
         png.data.set(toRgb(rampAt(stops, L)), p);
     });
+}
+
+function liftPlank(png) {
+    const stops = rampStops([...ART_RAMPS.timber, OAK_LIGHT]);
+    forEachTexel(png, (p, rgb) => {
+        const L = oklab(rgb)[0];
+        const lifted = L <= PLANK_KNEE ? L : Math.min(PLANK_L_MAX, PLANK_KNEE + (L - PLANK_KNEE) * PLANK_GAIN);
+        png.data.set(capSaturation(rampAt(stops, lifted)), p);
+    });
+}
+
+// Scale chroma down until HSV S <= PLANK_S_CAP (only where V >= 0.5).
+function capSaturation([L, A, B]) {
+    let rgb = toRgb([L, A, B]);
+    for (let i = 0; i < 12; i++) {
+        const { s, v } = hsv(rgb);
+        if (s <= PLANK_S_CAP || v < 0.5) break;
+        A *= 0.93;
+        B *= 0.93;
+        rgb = toRgb([L, A, B]);
+    }
+    return rgb;
+}
+
+function eraseBackRail(png) {
+    const at = (x, y) => (y * png.width + x) * 4;
+    const deckTop = new Map();
+    for (const post of PLANK_POSTS) post.deckTop.forEach((y, i) => deckTop.set(post.x0 + i, y));
+    let cleared = 0;
+    for (let x = PLANK_RAIL.x0; x <= PLANK_RAIL.x1; x++) {
+        // Off the posts, the deck is the column's lowest opaque run.
+        let top = deckTop.get(x);
+        if (top === undefined) {
+            top = png.height - 1;
+            while (top > 0 && png.data[at(x, top) + 3] === 0) top--;
+            while (top > 0 && png.data[at(x, top - 1) + 3] !== 0) top--;
+        }
+        for (let y = 0; y < top; y++) {
+            if (png.data[at(x, y) + 3] === 0) continue;
+            png.data.fill(0, at(x, y), at(x, y) + 4);
+            cleared++;
+        }
+    }
+    for (const { x0, deckTop: tops, foot, from: [dx, dy] } of PLANK_POSTS) {
+        tops.forEach((top, i) => {
+            for (let y = top; y <= foot; y++) png.data.copyWithin(at(x0 + i, y), at(x0 + i + dx, y + dy), at(x0 + i + dx, y + dy) + 4);
+        });
+    }
+    return cleared;
 }
 
 function snapKeepLightness(rgb, ramp) {
@@ -174,14 +275,14 @@ function quantise(png, max) {
 
 // ── io + colour helpers ─────────────────────────────────────────────────────
 
-function emit(file, png, note) {
+function emit(file, png, note, dir = PROPS) {
     console.log(`[retone-props] ${file}: ${note}`);
     const out = PNG.sync.write(png);
     if (previewDir) {
         mkdirSync(previewDir, { recursive: true });
         writeFileSync(join(previewDir, file), out);
     } else if (!dryRun) {
-        writeFileSync(join(PROPS, file), out);
+        writeFileSync(join(dir, file), out);
     }
 }
 

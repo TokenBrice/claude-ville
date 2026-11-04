@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-11-03-wayside-chapel"
+  assetVersion: "2026-11-04-bridgewright"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -4508,7 +4508,10 @@ bridges:
 
   # QAWorld F18 — both plank tiles re-toned offline from plum onto the C1
   # timber ramp (artPalette.js ART_RAMPS.timber): OKLab lightness kept per
-  # colour, hue/chroma taken from the ramp at that lightness.
+  # colour, hue/chroma taken from the ramp at that lightness. Bridges BR-1
+  # re-derives bridge.ew from the plum original with a lightness lift (deck-top
+  # L50 0.58) and erases its back-rail posts and rope, which only peeked out
+  # behind the landmark's far handrail (scripts/sprites/retone-props.mjs).
   - id: bridge.ew
     tool: isometric_tile
     # Referenced by scenery.js PLANK_BRIDGES command-pond-plank and drawn
@@ -4516,6 +4519,7 @@ bridges:
     prompt: "weathered wooden bridge, plank deck, rope rails, east-west orientation, isometric"
     size: 64
     anchor: [32, 32]
+    provenance: { item: 'BR-1', source: 'scripts/sprites/retone-props.mjs', original: 'git 006e50a2 (plum, sha256 b61ff19a)', post: 'lightness lift x1.89 above L 0.16 onto timber + oak light #d1874e, HSV S <= 0.62; back-rail posts and rope erased', generations: 0, generatedAt: '2026-11-04' }
 
   - id: bridge.ns
     tool: isometric_tile
