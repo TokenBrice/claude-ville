@@ -60,6 +60,7 @@ import { dialogueSourceLabel } from '../../config/dialogue.js';
 import { tileToWorld, worldToTile } from './Projection.js';
 import { resolveUpdateRouteBuilding } from './MovementRouting.js';
 import { routePersonalityFor, ROUTE_PERSONALITIES } from './Pathfinder.js';
+import { bridgeCrossingTiles, bridgeLaneShift } from './MovementSteering.js';
 import {
     RESOURCE_OWNERSHIP,
     registerRendererResourceEstimateProvider,
@@ -2657,9 +2658,59 @@ export class AgentSprite {
         ) {
             this.waypoints[this.waypoints.length - 1] = { x: targetScreenX, y: targetScreenY };
         }
+        this._keepBridgeLanes(tilePath, fromTile);
         const head = this.waypoints[0];
         this.targetX = head.x;
         this.targetY = head.y;
+    }
+
+    // BR-3 — a route's waypoints on a landmark deck, and on a landing the
+    // route enters or leaves that deck by, move onto the walker's lane (the
+    // side IsometricRenderer._laneSideForSprite steers it to), so two-way
+    // traffic passes apart: lane steering lets go within
+    // LANE_STEERING.arrivalDistancePx of a waypoint, and centre-line deck
+    // waypoints pulled both files onto one line. The route's end never moves,
+    // nor does a waypoint whose lane point would leave the walk grid.
+    _keepBridgeLanes(tilePath, fromTile) {
+        const crossings = this._crossingTiles();
+        if (!crossings.size) return;
+        const points = this.waypoints;
+        const crossingAt = (index) => {
+            const tile = index < 0 ? fromTile : tilePath[index];
+            return tile ? crossings.get(`${Math.round(tile.tileX)},${Math.round(tile.tileY)}`) : undefined;
+        };
+        const isDeck = (crossing) => !!crossing && !crossing.landing && crossing.info.kind === 'landmark';
+        for (let index = 0; index < points.length - 1; index++) {
+            const crossing = crossingAt(index);
+            if (crossing?.info.kind !== 'landmark') continue;
+            if (crossing.landing && !isDeck(crossingAt(index - 1)) && !isDeck(crossingAt(index + 1))) continue;
+            const prev = index > 0 ? tileToWorld(tilePath[index - 1]) : { x: this.x, y: this.y };
+            const next = tileToWorld(tilePath[index + 1]);
+            const shift = bridgeLaneShift(crossing.info, next.x - prev.x, next.y - prev.y);
+            if (!shift) continue;
+            const x = points[index].x + shift.x;
+            const y = points[index].y + shift.y;
+            if (this._isScreenPointWalkable(x, y)) points[index] = { x, y };
+        }
+    }
+
+    // BR-3 / BR-5 — the crossing tiles of this body's bridge map, built once
+    // per map (the renderer builds the map once per terrain).
+    _crossingTiles() {
+        if (!this._crossingTileMap || this._crossingTilesFor !== this.bridgeTiles) {
+            this._crossingTilesFor = this.bridgeTiles;
+            this._crossingTileMap = bridgeCrossingTiles(this.bridgeTiles);
+        }
+        return this._crossingTileMap;
+    }
+
+    // BR-5 — the body stands on a bridge deck or landing tile: no chat and no
+    // stop-and-look starts there.
+    standsOnCrossing() {
+        const crossings = this._crossingTiles();
+        if (!crossings.size) return false;
+        const tile = worldToTile(this.x, this.y);
+        return crossings.has(`${Math.round(tile.tileX)},${Math.round(tile.tileY)}`);
     }
 
     // The fan place (7.4) this body's route ends on, when the renderer re-aimed
@@ -3323,9 +3374,12 @@ export class AgentSprite {
             // 7.4 — a chat approach the renderer re-aimed onto a fan place
             // (another body already stands at its stop) walks on to that
             // place and begins the chat there; stopping at the first point
-            // within CHAT_START_PX would stand it inside that body.
+            // within CHAT_START_PX would stand it inside that body. BR-5 —
+            // no chat starts while either body stands on a bridge deck or
+            // landing: a pair heading across meets on the first tile past it.
             const fanPlace = this._chatApproachRoute ? this._routeEndFanPlace() : null;
-            if (fanPlace ? !this.moving && cpDist < CHAT_FAN_REACH_PX : cpDist < CHAT_START_PX) {
+            if ((fanPlace ? !this.moving && cpDist < CHAT_FAN_REACH_PX : cpDist < CHAT_START_PX)
+                && !this.standsOnCrossing() && !partner.standsOnCrossing?.()) {
                 this.chatting = true;
                 this.behavior.transition('chatting', 'chat');
                 this.chatBubbleAnim = 0;
@@ -4052,6 +4106,12 @@ export class AgentSprite {
         }
         this._stopLookCooldownMs -= dt;
         if (this._stopLookCooldownMs <= 0) {
+            // BR-5 — a look due on a bridge deck or landing is skipped, not
+            // saved for the far landing, so looks never bunch at a deck's ends.
+            if (this.standsOnCrossing()) {
+                this._stopLookCooldownMs = 18000 + Math.random() * 12000;
+                return false;
+            }
             // V7 — the stroller stops on a contact frame before it looks.
             this._beginStopBeat();
             const nearest = this._nearestLandmarkBuilding();

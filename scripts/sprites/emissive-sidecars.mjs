@@ -2,12 +2,14 @@
 
 // Plan 1.3 (The Waking Isle) — emitters keep their own light.
 //
-// 1. Derives the emissive sidecars of three world props from their own albedo
-//    by colour, inside a reviewed rect: the rune brazier's flame and coal bed,
-//    the street lantern's glass, the bridge post's rune glass. A pixel joins
-//    the sidecar only when its hue, saturation and value match the reviewed
-//    rule for that prop; the rect keeps stone highlights and timber out. The
-//    sidecar carries the albedo colour at a fixed contribution alpha.
+// 1. Derives the emissive sidecars of three world props and one bridge from
+//    their own albedo by colour, inside reviewed rects: the rune brazier's
+//    flame and coal bed, the street lantern's glass, the bridge post's rune
+//    glass and the south bridge's candle flames (a box over each declared
+//    light point). A pixel joins the sidecar only when its hue, saturation
+//    and value match the reviewed rule for that sprite; the rect keeps stone
+//    highlights and timber out. The sidecar carries the albedo colour at a
+//    fixed contribution alpha.
 // 2. Puts warm emissive art on the reserved light ramp, ART_RAMPS.emissive ∪
 //    EFFECT_COLORS.work (M15). The sidecar RGB is the emitted light: a colour
 //    within OKLab ΔE 0.08 of a stop is on the ramp and is kept; a chromatic
@@ -22,7 +24,8 @@
 //    `emissiveFamily: 'cool'` (the Mine crystals, the bridge post's rune
 //    glass) keep their cool pixels; only their warm pixels ramp.
 //
-// Scope: world emitters (buildings and props that declare `emissiveSidecar`).
+// Scope: world emitters (buildings, props and bridges that declare
+// `emissiveSidecar`).
 // Character accents are provider identity colours, not lamps, and are left
 // alone. Deterministic and idempotent: a second run writes nothing.
 //
@@ -70,6 +73,16 @@ export const PROP_SIDECAR_RULES = Object.freeze({
         rect: [12, 9, 8, 7],
         alpha: 136,
         accept: ({ h, s, v }) => h >= 160 && h <= 215 && s >= 0.25 && v >= 0.45,
+    },
+    // BR-6 — the south bridge's four candle flames: a 7 x 14 box over each
+    // declared light point (manifest `lights`), its gold body and cream core;
+    // the dark-gold rim, the smoke wisp and the oak deck behind the
+    // south-near flame (hue under 33, or value under 0.92) stay albedo.
+    'bridge.landmark.civic.ns': {
+        rects: (entry) => entry.lights.map(({ at: [x, y] }) => [x - 3, y - 8, 7, 14]),
+        alpha: 144,
+        accept: ({ h, s, v }) => (h >= 33 && h <= 50 && s >= 0.2 && v >= 0.92)
+            || (h >= 25 && h <= 40 && s <= 0.15 && v >= 0.9),
     },
 });
 
@@ -157,19 +170,20 @@ function samePixels(a, b) {
     return a.width === b.width && a.height === b.height && Buffer.compare(a.data, b.data) === 0;
 }
 
-function derivePropSidecar(albedo, rule) {
+function derivePropSidecar(albedo, rule, entry) {
     const out = new PNG({ width: albedo.width, height: albedo.height, colorType: 6 });
-    const [rx, ry, rw, rh] = rule.rect;
-    for (let y = ry; y < Math.min(albedo.height, ry + rh); y++) {
-        for (let x = rx; x < Math.min(albedo.width, rx + rw); x++) {
-            const i = (y * albedo.width + x) * 4;
-            if (albedo.data[i + 3] === 0) continue;
-            const rgb = [albedo.data[i], albedo.data[i + 1], albedo.data[i + 2]];
-            if (!rule.accept(hsv(rgb))) continue;
-            out.data[i] = rgb[0];
-            out.data[i + 1] = rgb[1];
-            out.data[i + 2] = rgb[2];
-            out.data[i + 3] = rule.alpha;
+    for (const [rx, ry, rw, rh] of rule.rects ? rule.rects(entry) : [rule.rect]) {
+        for (let y = Math.max(0, ry); y < Math.min(albedo.height, ry + rh); y++) {
+            for (let x = Math.max(0, rx); x < Math.min(albedo.width, rx + rw); x++) {
+                const i = (y * albedo.width + x) * 4;
+                if (albedo.data[i + 3] === 0) continue;
+                const rgb = [albedo.data[i], albedo.data[i + 1], albedo.data[i + 2]];
+                if (!rule.accept(hsv(rgb))) continue;
+                out.data[i] = rgb[0];
+                out.data[i + 1] = rgb[1];
+                out.data[i + 2] = rgb[2];
+                out.data[i + 3] = rule.alpha;
+            }
         }
     }
     return out;
@@ -217,7 +231,7 @@ function rampSidecar(albedo, sidecar, { cool }) {
 }
 
 function emitterEntries(manifest) {
-    return collectSpriteEntries(manifest, ['buildings', 'props'])
+    return collectSpriteEntries(manifest, ['buildings', 'props', 'bridges'])
         .filter((entry) => entry?.emissiveSidecar === true || PROP_SIDECAR_RULES[entry?.id]);
 }
 
@@ -235,9 +249,9 @@ function run() {
             // Re-derived from the albedo's own colours on every run. A lime
             // albedo pixel snaps first, then the sidecar is derived again from
             // the snapped albedo, so a second run finds nothing to change.
-            ramped = rampSidecar(albedo, derivePropSidecar(albedo, rule), { cool });
+            ramped = rampSidecar(albedo, derivePropSidecar(albedo, rule, entry), { cool });
             if (!samePixels(albedo, ramped.albedo)) {
-                ramped = rampSidecar(ramped.albedo, derivePropSidecar(ramped.albedo, rule), { cool });
+                ramped = rampSidecar(ramped.albedo, derivePropSidecar(ramped.albedo, rule, entry), { cool });
             }
         } else {
             if (!existsSync(sidecarPath)) continue;

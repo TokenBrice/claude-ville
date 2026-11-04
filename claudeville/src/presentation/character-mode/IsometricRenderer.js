@@ -269,6 +269,17 @@ const TERRAIN_CACHE_MAX_SINGLE_SURFACE_PIXELS = CANVAS_BUDGET.maxWorldCachePixel
 const WORLD_EDGE_PAD_X = TILE_WIDTH / 2;
 const WORLD_EDGE_PAD_Y = TILE_HEIGHT / 2;
 const KEYBOARD_PAN_STEP = 90;
+// A bridge profile ([along, px] pairs, scenery.js BRIDGE_HINTS `deckProfile`
+// and `nearRail.lift`) at `along` tiles from the span's centre: linear between
+// points, 0 outside them.
+function bridgeProfileAt(points, along) {
+    if (!(along > points[0][0] && along < points[points.length - 1][0])) return 0;
+    let i = 1;
+    while (points[i][0] < along) i++;
+    const [a0, l0] = points[i - 1];
+    const [a1, l1] = points[i];
+    return l0 + (l1 - l0) * (along - a0) / (a1 - a0);
+}
 const LANE_STEERING = Object.freeze({
     correctionPx: 0.55,
     denseCorrectionPx: 0.42,
@@ -277,9 +288,11 @@ const LANE_STEERING = Object.freeze({
     avenueOffsetPx: 4.4,
     dirtOffsetPx: 3.4,
     plazaOffsetPx: 2.2,
-    // The landmark deck (not planks or docks) is walkable on its centre column only, but its rails
-    // stand ~30 px either side: 10 px lanes keep two-way traffic ~20 px apart
-    // (clear of the 14 px body box) and inside the rails.
+    // A landmark deck (not planks or docks) is walkable on its centre column
+    // only; its hint's `laneOffsetPx` (scenery.js BRIDGE_HINTS) sets the two
+    // files from the measured clear deck (the central bridge: 8 px, both
+    // files on the planks between the rails). This is the fallback for a
+    // hint without one.
     bridgeOffsetPx: 10,
 });
 const LOCAL_AVOIDANCE = Object.freeze({
@@ -473,6 +486,12 @@ const BRAZIER_POOL_RADIUS = 70;
 // like any other clock-gated hearth (LightSourceRegistry).
 const WATCHFIRE_POOL_RADIUS = 52;
 const WATCHFIRE_FLAME_HEIGHT = 12;
+// BR-6 / C2 — a bridge sprite's painted flames (manifest `lights`) light as
+// candle-scale fixtures: a pool well inside the street lamps' and under
+// SOURCE_HALO_RADIUS_CAP, the emissive ramp's gold, held steady (no breath).
+const BRIDGE_LIGHT_POOL_RADIUS = 28;
+const BRIDGE_LIGHT_INTENSITY = 0.62;
+const BRIDGE_LIGHT_COLOR = '#ffcf7a';
 const AVENUE_TREE_CLEARANCE = 0.5;
 
 function rectIntersectionArea(a, b) {
@@ -5409,7 +5428,9 @@ export class IsometricRenderer {
                 const recipient = extractRecipientName(agent.currentToolInput);
                 if (!recipient) continue;
                 const target = spriteByRecipient.get(recipient);
-                if (target && target !== sprite) {
+                // BR-5 — an approach starts once neither body stands on a
+                // bridge deck or landing: a walker finishes its crossing first.
+                if (target && target !== sprite && !sprite.standsOnCrossing?.() && !target.standsOnCrossing?.()) {
                     sprite.startChat(target);
                 }
             }
@@ -5739,7 +5760,8 @@ export class IsometricRenderer {
             const tile = this._parseTileKey(key);
             if (!tile) continue;
             if (this.pathfinder && !this.pathfinder.isWalkable(tile.tileX, tile.tileY)) continue;
-            const bridgeAxis = laneAxisForBridgeOrientation(this.bridgeTiles?.get?.(key)?.orientation);
+            const bridge = this.bridgeTiles?.get?.(key);
+            const bridgeAxis = laneAxisForBridgeOrientation(bridge?.orientation);
             const axis = bridgeAxis || this._bestRoadAxis(tile.tileX, tile.tileY);
             if (!axis) continue;
             const center = tileToWorld(tile.tileX, tile.tileY);
@@ -5759,8 +5781,8 @@ export class IsometricRenderer {
                 tangentY: vy / length,
                 perpX: -vy / length,
                 perpY: vx / length,
-                laneOffset: this.bridgeTiles?.get?.(key)?.kind === 'landmark'
-                    ? LANE_STEERING.bridgeOffsetPx
+                laneOffset: bridge?.kind === 'landmark'
+                    ? bridge.laneOffsetPx ?? LANE_STEERING.bridgeOffsetPx
                     : plazaLike
                     ? LANE_STEERING.plazaOffsetPx
                     : material === 'avenue'
@@ -8777,9 +8799,9 @@ export class IsometricRenderer {
                         ctx.restore();
                     },
                 });
-                // The clip band also holds the deck and the end posts, which
-                // stand behind a body on the walk: DrawablePass
-                // (`bridgeDeckSortY`) sorts such a body after the last slice.
+                // Past the deck's camera-side end a body stands in front of
+                // what the band repaints: DrawablePass (`bridgeDeckSortY`)
+                // sorts a body on that walk after the last slice.
                 slice.bridgeWalk = walk;
                 sprites.push(slice);
             }
@@ -8787,34 +8809,69 @@ export class IsometricRenderer {
         return sprites;
     }
 
-    // The bridge's walk in tile space: the deck's walk column (the walkable
-    // centre line, lanes included) from the landing tile before the deck to
-    // the landing tile after it.
+    // Where a body on the bridge stands in front of the near-rail slices, in
+    // tile space: the deck's walk column (the walkable centre line, lanes
+    // included) from the landing tile before the deck to the landing tile
+    // after it. Without a measured deck the band repaints planks and end
+    // posts, so that is the whole walk. With one (`deckProfile`) the band
+    // holds only the rail, which stands in front of every body on the deck:
+    // only a body as near as the deck's camera-side end (`minY`, the ground Y
+    // of the walk line at the profile's last stair top; `end` is the span's
+    // larger tile coordinate) stands in front of the rail's end, on the
+    // stairs and the landing, and the column runs on past them (`to`
+    // unbounded), so every body on it keeps its ground order: a depth
+    // threshold, not a tile one, never lets a file just past it paint over a
+    // nearer file just short of it.
     _bridgeWalk(span) {
         const start = worldToTile(span.start.x, span.start.y);
         const end = worldToTile(span.end.x, span.end.y);
         const eastWest = span.orientation === 'EW';
         const a = eastWest ? start.tileX : start.tileY;
         const b = eastWest ? end.tileX : end.tileY;
+        const line = eastWest ? start.tileY : start.tileX;
+        const profile = span.deckProfile;
+        const stairTop = profile
+            ? (eastWest ? span.centerTile.x : span.centerTile.y) + profile[profile.length - 2][0]
+            : null;
         // The span overhangs its first and last deck tile by 0.45, so 1.05
         // more reaches the far edge of each landing tile.
         return {
             axis: eastWest ? 'x' : 'y',
-            line: eastWest ? start.tileY : start.tileX,
+            line,
             from: Math.min(a, b) - 1.05,
-            to: Math.max(a, b) + 1.05,
+            to: stairTop == null ? Math.max(a, b) + 1.05 : Infinity,
             halfWidth: 0.5,
+            minY: stairTop == null
+                ? -Infinity
+                : (eastWest ? tileToWorld(stairTop, line) : tileToWorld(line, stairTop)).y,
         };
     }
 
     _bridgeNearRailQuad(span, t0, t1) {
         const rail = span.nearRail;
         return [
-            this._bridgePoint(span, t0, rail.inner, rail.top),
-            this._bridgePoint(span, t1, rail.inner, rail.top),
-            this._bridgePoint(span, t1, rail.outer, -rail.bottom),
-            this._bridgePoint(span, t0, rail.outer, -rail.bottom),
+            this._bridgeRailPoint(span, t0, rail.inner, rail.top),
+            this._bridgeRailPoint(span, t1, rail.inner, rail.top),
+            this._bridgeRailPoint(span, t1, rail.outer, -rail.bottom),
+            this._bridgeRailPoint(span, t0, rail.outer, -rail.bottom),
         ];
+    }
+
+    // A corner of the near-rail band, `height` px over its base line: the
+    // sine arch (`_bridgePoint`), or on a measured span the rail's own lift
+    // profile (`nearRail.lift`, [along, px] pairs like `deckProfile`: the
+    // rail curves more than the deck it stands on), else the deck profile.
+    _bridgeRailPoint(span, t, crossOffset, height) {
+        const profile = span.nearRail.lift || span.deckProfile;
+        if (!profile) return this._bridgePoint(span, t, crossOffset, height);
+        const x = span.start.x + (span.end.x - span.start.x) * t;
+        const y = span.start.y + (span.end.y - span.start.y) * t;
+        const tile = worldToTile(x, y);
+        const along = span.orientation === 'EW' ? tile.tileX - span.centerTile.x : tile.tileY - span.centerTile.y;
+        return {
+            x: x + span.crossUnit.x * crossOffset,
+            y: y + span.crossUnit.y * crossOffset - bridgeProfileAt(profile, along) - height,
+        };
     }
 
     // The two curtain runs (VillageWall), each one cached image with its 2.3
@@ -9801,7 +9858,12 @@ export class IsometricRenderer {
             crossUnit: { x: crossVector.x / crossLength, y: crossVector.y / crossLength },
             halfWidth: Math.max(34, Math.min(54, 24 + crossTiles * 8)),
             deckRise: info.deckRise || 0,
+            deckProfile: info.deckProfile || null,
             nearRail: info.nearRail || null,
+            laneOffsetPx: info.laneOffsetPx ?? null,
+            treeExclusion: info.treeExclusion !== false,
+            underDeckShadow: info.underDeckShadow !== false,
+            centerTile: { x: centerX, y: centerY },
             lengthTiles,
             depth: (centerX + centerY) * TILE_HEIGHT / 2,
         };
@@ -9833,6 +9895,11 @@ export class IsometricRenderer {
         if (!this.bridgeSpans?.length) return 0;
         const point = this._tileToScreen(tileX, tileY);
         for (const span of this.bridgeSpans) {
+            if (span.deckProfile) {
+                const lift = this._bridgeProfileLift(span, tileX, tileY);
+                if (lift > 0) return lift;
+                continue;
+            }
             const dx = point.x - span.start.x;
             const dy = point.y - span.start.y;
             const axisLength = Math.hypot(span.end.x - span.start.x, span.end.y - span.start.y) || 1;
@@ -9842,6 +9909,21 @@ export class IsometricRenderer {
             return Math.sin(Math.PI * along / axisLength) * span.deckRise;
         }
         return 0;
+    }
+
+    // A span's art-measured deck (`deckProfile`, scenery.js BRIDGE_HINTS):
+    // [along, lift] pairs, `along` in tiles from the span's centre along its
+    // axis (+ toward the larger tile coordinate), `lift` in px, linear between
+    // points and 0 past the first and last, so the stairs ramp the feet
+    // onto the planks. The lift holds across the walk column (half a tile
+    // either side of the centre line) and fades to 0 a tile out, so a body
+    // turning off the stairs onto the bank steps down rather than drops.
+    _bridgeProfileLift(span, tileX, tileY) {
+        const eastWest = span.orientation === 'EW';
+        const across = Math.abs(eastWest ? tileY - span.centerTile.y : tileX - span.centerTile.x);
+        if (across >= 1) return 0;
+        const lift = bridgeProfileAt(span.deckProfile, eastWest ? tileX - span.centerTile.x : tileY - span.centerTile.y);
+        return across <= 0.5 ? lift : lift * (1 - across) * 2;
     }
 
     // The busiest walk keeps a clear verge: no trunk within
@@ -9863,6 +9945,7 @@ export class IsometricRenderer {
         if (!this.bridgeSpans?.length) return false;
         const p = this._tileToScreen(tileX, tileY);
         for (const span of this.bridgeSpans) {
+            if (span.treeExclusion === false) continue;
             const dx = p.x - span.start.x;
             const dy = p.y - span.start.y;
             const axisLength = Math.hypot(span.end.x - span.start.x, span.end.y - span.start.y) || 1;
@@ -9896,6 +9979,7 @@ export class IsometricRenderer {
     // Bridge/water contact: a tight multiply shadow pooling under the deck.
     // Baked with the span; no motion.
     _drawBridgeUnderDeckWaterShadow(ctx, span) {
+        if (span.underDeckShadow === false) return;
         ctx.save();
         ctx.globalCompositeOperation = 'multiply';
         this._traceBridgeRibbon(
@@ -10107,9 +10191,10 @@ export class IsometricRenderer {
     }
 
     // W6.9 / W6.10 — the hearths (gatehouse guard rooms, lake shrine), the
-    // calendar's lit bonfire and Command's watchfires: fixtures on the
-    // village lamp clock (LightSourceRegistry.hearthLightSources) that never
-    // read occupancy, so no work building lights without a working visitor.
+    // calendar's lit bonfire, Command's watchfires and the bridges' painted
+    // flames (BR-6): fixtures on the village lamp clock
+    // (LightSourceRegistry.hearthLightSources) that never read occupancy, so
+    // no work building lights without a working visitor.
     _hearthLightSources(lighting = null) {
         const lampsLit = lampsLitAt(this._lastAtmosphere);
         if (!lampsLit) return [];
@@ -10133,9 +10218,57 @@ export class IsometricRenderer {
         return hearthLightSources({
             lampsLit,
             core: sourceEnergyFor(lighting).core,
-            extra: extra.filter(caught),
+            // BR-6 — a bridge's lights catch together (bridgeLightsLit).
+            extra: [...extra.filter(caught), ...this._bridgeLightFixtures()],
             fixtures: HEARTH_FIXTURES.filter(caught),
         });
+    }
+
+    // BR-6 / C2 — the light points a bridge sprite declares in its manifest
+    // entry, `lights: [{ at: [x, y], height, radius? }]` in sprite px from
+    // the PNG's top-left (like `anchor`): `at` is a painted flame, `height`
+    // the px down to where its post stands (the light's foot, where its pool
+    // lands, as a street lamp's). The points belong to the art, so they live
+    // with the sprite, not its BRIDGE_HINTS entry, and sit wherever
+    // `_bridgeSpritePlacement` draws it: a new bridge sprite (the trestle's
+    // end-post lanterns) lights by manifest data alone. Rows for
+    // `_hearthLightSources`' extras: steady all night, and only once the
+    // bridge has caught on the round.
+    _bridgeLightFixtures() {
+        const out = [];
+        for (const span of this.bridgeSpans || []) {
+            const spriteId = this._bridgeSpriteId(span);
+            const lights = this.assets?.getEntry?.(spriteId)?.lights;
+            if (!Array.isArray(lights) || !lights.length || !this.bridgeLightsLit(span)) continue;
+            const placement = this._bridgeSpritePlacement(span);
+            if (!placement) continue;
+            lights.forEach((light, index) => {
+                const [sx, sy] = Array.isArray(light?.at) ? light.at : [];
+                if (!Number.isFinite(sx) || !Number.isFinite(sy)) return;
+                const height = Math.max(0, Number(light.height) || 0);
+                const foot = worldToTile(placement.x + sx, placement.y + sy + height);
+                out.push({
+                    id: `bridge-light:${span.id || spriteId}:${index}`,
+                    tileX: foot.tileX,
+                    tileY: foot.tileY,
+                    height,
+                    radius: Math.min(Number(light.radius) || BRIDGE_LIGHT_POOL_RADIUS, SOURCE_HALO_RADIUS_CAP),
+                    intensity: BRIDGE_LIGHT_INTENSITY,
+                    color: BRIDGE_LIGHT_COLOR,
+                });
+            });
+        }
+        return out;
+    }
+
+    // BR-6 — a bridge's lights (its declared light points and its flame
+    // sidecar, EmitterCuts) burn while the village lamps are lit and the
+    // Lamplighter's Round has reached the bridge's middle: one held step for
+    // the whole bridge, so its flames and pools never disagree.
+    bridgeLightsLit(span) {
+        if (!span || !this.villageLampsLit()) return false;
+        const middle = worldToTile((span.start.x + span.end.x) / 2, (span.start.y + span.end.y) / 2);
+        return this.lampRoundLit()(middle.tileX, middle.tileY) === true;
     }
 
     _attentionLightSources() {

@@ -376,17 +376,18 @@ function behindSplitSortY(x, y, splitBuildings) {
 
 // A landmark bridge's near-rail slices (IsometricRenderer
 // `_buildBridgeNearRailSprites`) repaint the bridge image inside a band at the
-// camera-side handrail, sorted at the deck's near edge. The band also holds
-// the deck planks and the end posts, which stand behind a body on the bridge's
-// walk (its deck column and the landing tile at each end), and the deck is
-// painted above the walk plane, so a body standing there sorted before the
-// slices and took the rail across its legs while its feet stood on the deck.
-// Such a body stands on the bridge, above everything a slice repaints: it
-// sorts just after the bridge's last slice, so the rail and the posts never
-// cross a body on the deck or the landing, and the bodies on the walk keep
-// their ground order among themselves. A body anywhere else (the bank by the
-// end posts, the water under the arch) keeps its ground Y, so the rail still
-// covers what stands behind it.
+// camera-side handrail, sorted at the deck's near edge. On a measured deck
+// (`deckProfile`) the band holds only the rail beam, and a body on the deck
+// is lifted onto the planks behind it: it keeps its ground Y, sorts before
+// the slices, and the rail crosses the near file's legs. A body on the walk
+// at least as near as the deck's camera-side end (the slice's `bridgeWalk`
+// `minY`, IsometricRenderer `_bridgeWalk`: the stairs and the landing) stands
+// in front of the rail's end: it sorts just after the bridge's last slice.
+// The threshold is a depth, so every body on the walk keeps its ground order.
+// Without a measured deck the band also repaints planks and end posts, so
+// the whole deck column and both landing tiles take the rule. A
+// body anywhere else (the bank by the end posts, the water under the arch)
+// keeps its ground Y, so the rail still covers what stands behind it.
 const _bridgeRailScratch = [];
 
 function onBridgeWalk(tileX, tileY, walk) {
@@ -405,7 +406,8 @@ function bridgeDeckSortY(sprite, railDrawables) {
     const tile = worldToTile(sprite.x, sprite.y);
     let top = -Infinity;
     for (const drawable of railDrawables) {
-        if (onBridgeWalk(tile.tileX, tile.tileY, drawable?.payload?.sprite?.bridgeWalk)) top = Math.max(top, drawable.sortY);
+        const walk = drawable?.payload?.sprite?.bridgeWalk;
+        if (onBridgeWalk(tile.tileX, tile.tileY, walk) && sprite.y >= walk.minY) top = Math.max(top, drawable.sortY);
     }
     if (!(top > sprite.y)) return null;
     return top + 0.01 * Math.max(0, 1 - (top - sprite.y) / 1024);

@@ -63,11 +63,16 @@ export function insertBodyReflectionRecords(renderer, records) {
         const sprite = agentId ? chosen.get(agentId) : null;
         if (!sprite || !(record.height > 0) || !(record.sh > 0)) continue;
         // Crop the cell to the feet row so the mirror axis is the ground line.
-        const height = Math.max(1, Math.min(record.height, Math.round(sprite.y - record.y) + 1));
+        // A body lifted onto a bridge deck is drawn `lift` px up: crop at its
+        // drawn feet and move the twin down twice the lift, so it mirrors
+        // about the water under the body, not about the deck it stands on.
+        const lift = Math.round(Math.max(0, Number(sprite._currentBridgeLift?.()) || 0));
+        const height = Math.max(1, Math.min(record.height, Math.round(sprite.y - lift - record.y) + 1));
         const sh = record.sh * height / record.height;
         _reflections.push({
             ...record,
             id: `ground:reflect:${record.id}`,
+            y: record.y + 2 * lift,
             height,
             sh,
             reflect: true,

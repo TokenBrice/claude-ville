@@ -1,4 +1,12 @@
+import { TILE_HALF_HEIGHT, TILE_HALF_WIDTH } from './Projection.js';
+
 const DISTANCE_EPSILON = 1e-6;
+// BR-3 — a landmark deck tile whose hint names no laneOffsetPx keeps
+// today's lane (IsometricRenderer's LANE_STEERING.bridgeOffsetPx).
+const BRIDGE_LANE_OFFSET_FALLBACK_PX = 10;
+// Below this many px of travel along the lane, IsometricRenderer's
+// _laneSideForSprite has no direction to key a side on.
+const LANE_SIDE_EPSILON_PX = 0.05;
 
 /**
  * Bridge tiles already carry an authored grid orientation. Prefer it over
@@ -9,6 +17,58 @@ export function laneAxisForBridgeOrientation(orientation) {
     if (normalized === 'NS') return { dx: 0, dy: 1 };
     if (normalized === 'EW') return { dx: 1, dy: 0 };
     return null;
+}
+
+/**
+ * BR-3 / BR-5 — the crossing tiles of a bridge-tile map (key -> tile info),
+ * as key -> { info, landing }: every walkable deck tile (landmark spans and
+ * planks; harbour docks are quays, not crossings), plus the landing tiles,
+ * the tiles one step past each end of a landmark deck along its axis. A
+ * landing carries the info of the deck end it leads onto.
+ */
+export function bridgeCrossingTiles(bridgeTiles) {
+    const crossings = new Map();
+    if (!bridgeTiles?.size) return crossings;
+    for (const [key, info] of bridgeTiles) {
+        if (!info || info.kind === 'dock' || info.walkable === false) continue;
+        crossings.set(key, { info, landing: false });
+    }
+    for (const [key, info] of bridgeTiles) {
+        if (info?.kind !== 'landmark' || info.walkable === false) continue;
+        const axis = laneAxisForBridgeOrientation(info.orientation);
+        if (!axis) continue;
+        const comma = key.indexOf(',');
+        const tileX = Number(key.slice(0, comma));
+        const tileY = Number(key.slice(comma + 1));
+        for (const step of [-1, 1]) {
+            const end = `${tileX + axis.dx * step},${tileY + axis.dy * step}`;
+            if (!bridgeTiles.has(end)) crossings.set(end, { info, landing: true });
+        }
+    }
+    return crossings;
+}
+
+/**
+ * BR-3 — the world-px shift that puts a route waypoint on a landmark deck or
+ * landing tile onto its walker's lane: `info.laneOffsetPx` (10 without one)
+ * across the deck axis, on the side IsometricRenderer._laneSideForSprite
+ * steers to. The lane tangent runs from a tile toward tile + axis; travel
+ * along it is side +1, and the shift is side × offset along the lane's
+ * perpendicular (-tangentY, tangentX). `travelX/Y` is the route's course
+ * through the waypoint in world px. Null when the course has no component
+ * along the deck, or the tile has no lane axis.
+ */
+export function bridgeLaneShift(info, travelX, travelY) {
+    const axis = laneAxisForBridgeOrientation(info?.orientation);
+    if (!axis) return null;
+    const tangentX = (axis.dx - axis.dy) * TILE_HALF_WIDTH;
+    const tangentY = (axis.dx + axis.dy) * TILE_HALF_HEIGHT;
+    const length = Math.sqrt(tangentX * tangentX + tangentY * tangentY);
+    const along = (Number(travelX) * tangentX + Number(travelY) * tangentY) / length;
+    if (!(Math.abs(along) > LANE_SIDE_EPSILON_PX)) return null;
+    const offset = Number.isFinite(info.laneOffsetPx) ? info.laneOffsetPx : BRIDGE_LANE_OFFSET_FALLBACK_PX;
+    const scale = (along >= 0 ? offset : -offset) / length;
+    return { x: -tangentY * scale, y: tangentX * scale };
 }
 
 /**
