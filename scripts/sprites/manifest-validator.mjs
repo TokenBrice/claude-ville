@@ -44,7 +44,6 @@ const REFERENCE_CHECK_GROUPS = ['props', 'vegetation', 'bridges', 'atmosphere'];
 // Deliberately unreferenced today (documented keeps); everything else in the
 // reference-checked groups should have a live code path.
 const UNREFERENCED_ALLOWLIST = new Set([
-    'bridge.ew', // reserved for a future EW plank crossing (manifest comment)
     // 4.1 inspection interior kit: the six props are baked into
     // buildings/building.command/interior.png rather than drawn at runtime, so
     // no code path names them; they stay inventoried for the next aperture.
