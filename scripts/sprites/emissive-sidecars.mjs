@@ -2,14 +2,14 @@
 
 // Plan 1.3 (The Waking Isle) — emitters keep their own light.
 //
-// 1. Derives the emissive sidecars of three world props and one bridge from
+// 1. Derives the emissive sidecars of three world props and two bridges from
 //    their own albedo by colour, inside reviewed rects: the rune brazier's
 //    flame and coal bed, the street lantern's glass, the bridge post's rune
-//    glass and the south bridge's candle flames (a box over each declared
-//    light point). A pixel joins the sidecar only when its hue, saturation
-//    and value match the reviewed rule for that sprite; the rect keeps stone
-//    highlights and timber out. The sidecar carries the albedo colour at a
-//    fixed contribution alpha.
+//    glass, the south bridge's candle flames and the trestle's lantern glass
+//    (a box over each declared light point). A pixel joins the sidecar only
+//    when its hue, saturation and value match the reviewed rule for that
+//    sprite; the rect keeps stone highlights and timber out. The sidecar
+//    carries the albedo colour at a fixed contribution alpha.
 // 2. Puts warm emissive art on the reserved light ramp, ART_RAMPS.emissive ∪
 //    EFFECT_COLORS.work (M15). The sidecar RGB is the emitted light: a colour
 //    within OKLab ΔE 0.08 of a stop is on the ramp and is kept; a chromatic
@@ -83,6 +83,15 @@ export const PROP_SIDECAR_RULES = Object.freeze({
         alpha: 144,
         accept: ({ h, s, v }) => (h >= 33 && h <= 50 && s >= 0.2 && v >= 0.92)
             || (h >= 25 && h <= 40 && s <= 0.15 && v >= 0.9),
+    },
+    // BR-7 — the trestle's four end-post lanterns: a 7 x 8 box over each
+    // declared light point, its amber glass, cream core and orange foot; the
+    // slate iron housing and the oak behind the south-near lantern (value
+    // under 0.8) stay albedo.
+    'bridge.landmark.rustic.ns': {
+        rects: (entry) => entry.lights.map(({ at: [x, y] }) => [x - 3, y - 4, 7, 8]),
+        alpha: 144,
+        accept: ({ h, s, v }) => h >= 25 && h <= 45 && s >= 0.2 && s <= 0.7 && v >= 0.8,
     },
 });
 

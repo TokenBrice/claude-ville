@@ -135,7 +135,7 @@ test('the sea tower paints after the east run that ends in its drum, at every zo
 // The central bridge's near-rail slices, built as the renderer builds them:
 // the real bridge tiles (SceneryEngine on the renderer's own noise and the
 // real buildings), then its spans and slices.
-function centralBridge() {
+function centralBridge(bridgeId = 'central-river-bridge') {
     const noise = Object.create(IsometricRenderer.prototype);
     const terrainSeed = [];
     for (let y = 0; y < MAP_SIZE; y++) for (let x = 0; x < MAP_SIZE; x++) terrainSeed.push(noise._tileNoise(x, y));
@@ -150,8 +150,8 @@ function centralBridge() {
     renderer.bridgeTiles = scenery.bridgeTiles;
     renderer.assets = {};
     renderer.bridgeSpans = renderer._buildBridgeSpans();
-    const span = renderer.bridgeSpans.find((entry) => entry.id === 'central-river-bridge');
-    const rails = renderer._buildBridgeNearRailSprites().filter((sprite) => sprite.id.startsWith('bridge.rail.central-river-bridge.'));
+    const span = renderer.bridgeSpans.find((entry) => entry.id === bridgeId);
+    const rails = renderer._buildBridgeNearRailSprites().filter((sprite) => sprite.id.startsWith(`bridge.rail.${bridgeId}.`));
     // Each slice's painted region: the clip quad its drawFn cuts.
     const count = rails.length;
     rails.forEach((rail, index) => { rail.quad = renderer._bridgeNearRailQuad(span, index / count, (index + 1) / count); });
@@ -344,7 +344,7 @@ test('bridge-deck: the hint\'s span fields reach the tiles, the span, the lanes,
     assert.equal(deck.laneOffsetPx, hint.laneOffsetPx);
     assert.equal(deck.treeExclusion, true, 'treeExclusion defaults on');
     assert.equal(deck.underDeckShadow, true, 'underDeckShadow defaults on');
-    assert.equal(renderer.bridgeTiles.get('7,25')?.laneOffsetPx, null, 'a plank tile carries no lane offset (Flow falls back to 10)');
+    assert.equal(renderer.bridgeTiles.get('17,22')?.laneOffsetPx, null, 'a plank tile carries no lane offset (Flow falls back to 10)');
     const span = renderer.bridgeSpans.find((entry) => entry.id === 'central-river-bridge');
     assert.equal(span.deckProfile, hint.deckProfile);
     assert.equal(span.laneOffsetPx, hint.laneOffsetPx);
@@ -383,4 +383,138 @@ test('bridge-deck: a span without a measured profile keeps the sine lift and the
     const walk = renderer._bridgeWalk(renderer.bridgeSpans[0]);
     assert.equal(walk.minY, -Infinity);
     assert.ok(walk.from < 22 && walk.to > 26, 'both landing tiles take the rule');
+});
+
+// BR-7 — the Miner's trestle (west-river-plank), a landmark span installed by
+// data alone: walk column x=7, deck rows 22.5..26.5 16 px over the water,
+// half-tile ramps onto the banks (7,22) and (7,27), files at its hint's
+// laneOffsetPx, the near handrail and mid-rail as the rail band.
+const TRESTLE = BRIDGE_HINTS.find((hint) => hint.id === 'west-river-plank');
+const TRESTLE_LANE = TRESTLE.laneOffsetPx;
+const TRESTLE_FROM = 24.5 + TRESTLE.deckProfile[1][0];
+
+test('trestle: the deck lifts the feet onto its planks, ramps onto both banks and never drops', () => {
+    const { renderer } = centralBridge('west-river-plank');
+    for (const tileY of [23, 23.5, 24, 24.5, 25, 25.5, 26]) {
+        for (const lanePx of [-TRESTLE_LANE, 0, TRESTLE_LANE]) {
+            const { lift } = body(renderer, 7, tileY, lanePx);
+            assert.ok(lift >= 15 && lift <= 16, `7,${tileY} lane ${lanePx}: lift ${lift.toFixed(1)} is on the plateau`);
+        }
+    }
+    // Walking the column from the north bank to the south bank the lift
+    // moves by at most 2 px per 1/20 tile on every file: ramps, no drop.
+    for (const lanePx of [-TRESTLE_LANE, 0, TRESTLE_LANE]) {
+        let last = 0;
+        for (const { tileY } of samplesAlong(21.2, 27.8, [0])) {
+            const { lift } = body(renderer, 7, tileY, lanePx);
+            assert.ok(Math.abs(lift - last) <= 2, `lane ${lanePx}: lift jumps ${last.toFixed(1)} -> ${lift.toFixed(1)} at 7,${tileY.toFixed(2)}`);
+            last = lift;
+        }
+        assert.equal(last, 0, 'off the south ramp the body is back on the bank');
+    }
+    assert.equal(body(renderer, 7, 21.8).lift, 0, 'the north bank is ground');
+    // Turning off a ramp onto the bank fades the lift: no drop at the side.
+    for (const tileY of [22.3, 26.7]) {
+        let last = body(renderer, 7, tileY).lift;
+        for (let tileX = 7; tileX <= 8.1; tileX += 0.05) {
+            const { lift } = body(renderer, tileX, tileY);
+            assert.ok(Math.abs(lift - last) <= 5, `turning east at row ${tileY}: lift jumps ${last.toFixed(1)} -> ${lift.toFixed(1)} at x ${tileX.toFixed(2)}`);
+            last = lift;
+        }
+        assert.equal(last, 0, `the bank east of row ${tileY} is ground`);
+    }
+    // The water either side of the deck is ground.
+    for (const [tileX, tileY] of [[6, 24], [8, 24], [6, 26], [8, 23]]) {
+        assert.equal(body(renderer, tileX, tileY).lift, 0, `${tileX},${tileY} is not lifted`);
+    }
+});
+
+test('trestle: on the deck both files sort behind the rail, which crosses the near file\'s legs and never a far-file body', () => {
+    const { renderer, rails } = centralBridge('west-river-plank');
+    assert.equal(rails.length, 8, 'the 4-tile span keeps eight near-rail slices');
+    let nearCrossed = 0;
+    for (const { tileY, lanePx } of samplesAlong(22, 27, [-TRESTLE_LANE, 0, TRESTLE_LANE])) {
+        const sprite = body(renderer, 7, tileY, lanePx);
+        if (sprite.tile.tileY < TRESTLE_FROM || sprite.y >= rails[0].bridgeWalk.minY) continue;
+        const sortY = bodySortY(rails, sprite);
+        assert.equal(sortY, sprite.y, `body at 7,${tileY.toFixed(2)} lane ${lanePx} keeps its ground Y on the deck`);
+        for (const { rail, reach } of railsOver(rails, sprite)) {
+            assert.ok(sortY < rail.sortY, `body at 7,${tileY.toFixed(2)} lane ${lanePx}: sorts at ${sortY.toFixed(2)}, after ${rail.id} (${rail.sortY.toFixed(2)})`);
+            assert.ok(reach <= LEGS_PX, `body at 7,${tileY.toFixed(2)} lane ${lanePx}: ${rail.id} reaches ${reach.toFixed(0)} px up its box, above the legs`);
+            if (lanePx > 0) assert.ok(reach <= 1, `far-file body at 7,${tileY.toFixed(2)}: ${rail.id} reaches ${reach.toFixed(0)} px above its feet`);
+            if (lanePx < 0 && reach > 0) nearCrossed++;
+        }
+    }
+    assert.ok(nearCrossed > 20, `the rail crosses the near file's legs along the deck (${nearCrossed} samples)`);
+});
+
+test('trestle: on the south ramp and landing a body keeps the over-rail rule and the rail never cuts it', () => {
+    const { renderer, rails } = centralBridge('west-river-plank');
+    const last = Math.max(...rails.map((rail) => rail.sortY));
+    let ruled = 0;
+    for (const { tileY, lanePx } of samplesAlong(26.3, 27.4, [-TRESTLE_LANE, -4.4, 0, 4.4])) {
+        const sprite = body(renderer, 7, tileY, lanePx);
+        if (sprite.y < rails[0].bridgeWalk.minY) continue;
+        const sortY = bodySortY(rails, sprite);
+        assert.ok(sortY > last, `body at 7,${tileY.toFixed(2)} lane ${lanePx}: sorts at ${sortY.toFixed(2)}, before the last slice (${last.toFixed(2)})`);
+        for (const { rail } of railsOver(rails, sprite)) assert.ok(sortY > rail.sortY, `${rail.id} paints over the body at 7,${tileY.toFixed(2)}`);
+        ruled++;
+    }
+    assert.ok(ruled > 20, 'the ramp and the landing are sampled');
+});
+
+test('trestle: on the north ramp and landing, and off the walk, a body keeps its ground Y', () => {
+    const { renderer, rails } = centralBridge('west-river-plank');
+    for (const { tileY, lanePx } of samplesAlong(21.5, 22.4, [-4.4, 0, 4.4])) {
+        const sprite = body(renderer, 7, tileY, lanePx);
+        assert.equal(bodySortY(rails, sprite), sprite.y, `7,${tileY.toFixed(2)} lane ${lanePx} keeps its ground Y`);
+    }
+    for (const [tileX, tileY] of [[6, 24], [8, 24], [8, 22], [6, 22], [8, 26], [6, 27], [9, 25]]) {
+        const sprite = body(renderer, tileX, tileY);
+        assert.equal(bodySortY(rails, sprite), sprite.y, `${tileX},${tileY} keeps its ground Y`);
+    }
+});
+
+test('trestle: bodies on the walk that overlap keep their ground order', () => {
+    const { renderer, rails } = centralBridge('west-river-plank');
+    const bodies = samplesAlong(21.5, 27.4, [-TRESTLE_LANE, -4.4, 0, 4.4, TRESTLE_LANE]).map(({ tileY, lanePx }) => {
+        const sprite = body(renderer, 7, tileY, lanePx);
+        return { sprite, sortY: bodySortY(rails, sprite) };
+    });
+    for (const a of bodies) {
+        for (const b of bodies) {
+            if (b.sprite.y - a.sprite.y < 1) continue;
+            const ay = a.sprite.y - a.sprite.lift;
+            const by = b.sprite.y - b.sprite.lift;
+            if (Math.abs(a.sprite.x - b.sprite.x) >= 34 || Math.abs(ay - by) >= 61) continue;
+            assert.ok(b.sortY > a.sortY, `nearer body (y ${b.sprite.y.toFixed(1)}) sorts after the farther (y ${a.sprite.y.toFixed(1)})`);
+        }
+    }
+});
+
+test('trestle: installed by data, on the same walk tiles, keeping the maples and casting no under-deck shadow', () => {
+    const { renderer } = centralBridge('west-river-plank');
+    const span = renderer.bridgeSpans.find((entry) => entry.id === 'west-river-plank');
+    assert.equal(span.style, 'rustic');
+    assert.equal(renderer._bridgeSpriteId(span), 'bridge.landmark.rustic.ns');
+    assert.deepEqual(span.centerTile, { x: 7, y: 24.5 });
+    assert.equal(span.laneOffsetPx, TRESTLE_LANE);
+    // The walk grid is today's: the deck column (7, 23..26) only.
+    const deck = [...renderer.bridgeTiles].filter(([, info]) => info.bridgeId === 'west-river-plank');
+    assert.deepEqual(deck.map(([key]) => key).sort(), ['7,23', '7,24', '7,25', '7,26']);
+    for (const [, info] of deck) {
+        assert.equal(info.kind, 'landmark');
+        assert.equal(info.walkable, true);
+        assert.equal(info.treeExclusion, false);
+        assert.equal(info.underDeckShadow, false);
+    }
+    // The maples south-east of the Mine stay; the central bridge keeps its exclusion.
+    assert.equal(renderer._isInBridgeTreeExclusion(9.2, 27.8), false);
+    assert.equal(renderer._isInBridgeTreeExclusion(10.2, 27.8), false);
+    assert.equal(renderer._isInBridgeTreeExclusion(7, 24.5), false);
+    assert.equal(renderer._isInBridgeTreeExclusion(19, 26), true);
+    let fills = 0;
+    const ctx = { save() {}, restore() {}, beginPath() {}, moveTo() {}, lineTo() {}, closePath() {}, fill() { fills++; } };
+    renderer._drawBridgeUnderDeckWaterShadow(ctx, span);
+    assert.equal(fills, 0, 'a piled trestle bakes no under-deck shadow');
 });

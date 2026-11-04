@@ -4524,12 +4524,37 @@ bridges:
     anchor: [132, 124]
     provenance: { item: 'bridge', source: 'REST pixflux on a grey card, keyed (b23cb5dd); no job id or seed recorded', generatedAt: '2026-09-02', edit: { item: 'BR-2b', route: 'scripted pixel edit, sprite palette only (the south stairs colours)', generations: 0, note: 'two timber steps (three risers) down from the deck north end to tile 18,22, between the first near rail post and the NE end post; canvas, anchor and candle flames unchanged; nothing drawn west of the walk column (pond plank 16..17,22)', editedAt: '2026-11-04' } }
 
-  # QAWorld F18 — both plank tiles re-toned offline from plum onto the C1
+  # The Miner's trestle (BRIDGE_HINTS west-river-plank, bridges BR-7): the
+  # west crossing beside the Mine, (7, 23..26). Native 1x, `anchor` on the
+  # deck midpoint's ground-plane point, tile (7, 24.5); the deck stands 16 px
+  # over the water on X-braced bents, with half-tile ramps onto the bank
+  # tiles 22 and 27, and the near end posts run on down to the water. The
+  # four end-post lanterns are light points like the south bridge's candles:
+  # `at` the amber glass's centre, `height` the px down to the deck at the
+  # post (where the pool lands on the planks).
+  - id: bridge.landmark.rustic.ns
+    tool: create_image_pixflux
+    prompt: "narrow rustic timber trestle footbridge wide enough for two villagers to pass, crosswise warm oak deck planks with dark seams and small gaps, square timber posts at every section on both long sides, squared handrail and lower mid-rail on both sides, iron strap brackets at the joints, X-braced log pilings under the deck, a small iron lantern on each end post, runs diagonally from upper-right to lower-left, no water, no ground tile, no cast shadow, no text, no characters"
+    width: 224
+    height: 160
+    lights:
+      - { at: [161, 7], height: 26 }
+      - { at: [191, 23], height: 25 }
+      - { at: [33, 71], height: 26 }
+      - { at: [62, 87], height: 25 }
+    materialClass: timber
+    emissiveSidecar: true
+    anchor: [112, 88]
+    provenance: { item: 'BR-7', endpoint: create_image_pixflux, jobId: e7c610ee-7d24-4e6a-9028-7dc154f2dad3, seed: 7104, generationSize: 224x160, initImage: 'authored geometry sketch from the west-crossing span (4 deck tiles plus half-tile ramps, deck 16 px over the water, posts at every bent, X-braced bents, end-post lanterns)', initImageStrength: 220, colorImage: 'bridge.landmark.civic.ns wood palette (62 colours)', options: 'no_background, isometric, low top-down, single color black outline, detailed shading, highly detailed', generations: 1, candidates: 'D of 5 on the BR-7a board (5 generations, 1-generation routes only)', post: 'hard alpha; wood lightness mapped (L <= 0.16 kept, x0.785 above) to a deck-top L50 of 0.576 (D5), its own south-bridge hue and chroma kept; the four lantern housings repainted on ART_RAMPS.slate, the amber glass and the outline kept', generatedAt: '2026-11-04' }
+
+  # QAWorld F18 — the plank tiles re-toned offline from plum onto the C1
   # timber ramp (artPalette.js ART_RAMPS.timber): OKLab lightness kept per
   # colour, hue/chroma taken from the ramp at that lightness. Bridges BR-1
   # re-derives bridge.ew from the plum original with a lightness lift (deck-top
   # L50 0.58) and erases its back-rail posts and rope, which only peeked out
   # behind the landmark's far handrail (scripts/sprites/retone-props.mjs).
+  # bridge.ns retired to output/attic with BR-7: the west crossing it drew is
+  # the Miner's trestle span above.
   - id: bridge.ew
     tool: isometric_tile
     # Referenced by scenery.js PLANK_BRIDGES command-pond-plank and drawn
@@ -4538,12 +4563,6 @@ bridges:
     size: 64
     anchor: [32, 32]
     provenance: { item: 'BR-1', source: 'scripts/sprites/retone-props.mjs', original: 'git 006e50a2 (plum, sha256 b61ff19a)', post: 'lightness lift x1.89 above L 0.16 onto timber + oak light #d1874e, HSV S <= 0.62; back-rail posts and rope erased', generations: 0, generatedAt: '2026-11-04' }
-
-  - id: bridge.ns
-    tool: isometric_tile
-    prompt: "weathered wooden bridge, plank deck, rope rails, north-south orientation, isometric"
-    size: 64
-    anchor: [32, 32]
 
   # dock.ew / dock.ns retired to output/attic (visual-quality plan dead-inventory
   # sweep): HARBOR_DOCK_TILES are all style 'causeway', which draws the procedural

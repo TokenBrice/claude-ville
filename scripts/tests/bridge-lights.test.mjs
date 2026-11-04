@@ -22,8 +22,10 @@ import { SceneryEngine } from '../../claudeville/src/presentation/character-mode
 import { collectSpriteEntries, loadSpriteManifest, pathForEntry, spritesRoot } from '../sprites/manifest-utils.mjs';
 
 const CENTRAL_ID = 'bridge.landmark.civic.ns';
+const TRESTLE_ID = 'bridge.landmark.rustic.ns';
 const entries = new Map(collectSpriteEntries(loadSpriteManifest()).map((entry) => [entry.id, entry]));
 const central = entries.get(CENTRAL_ID);
+const trestle = entries.get(TRESTLE_ID);
 const date = new Date(2026, 9, 24, 19);
 const at = (minuteOfDay) => ({ clock: { minuteOfDay, date } });
 
@@ -61,8 +63,8 @@ function rendererWithBridges(assets = manifestAssets(entries)) {
     return renderer;
 }
 
-const bridgeLights = (renderer, lighting = null) => renderer._hearthLightSources(lighting)
-    .filter((light) => light.id.startsWith('bridge-light:'));
+const bridgeLights = (renderer, lighting = null, bridgeId = '') => renderer._hearthLightSources(lighting)
+    .filter((light) => light.id.startsWith(`bridge-light:${bridgeId}`));
 
 test('the south bridge declares its four painted candle flames, and only they glow', () => {
     assert.equal(central.lights.length, 4);
@@ -110,7 +112,7 @@ test('the declared flames light at their drawn world positions, only while the l
     assert.equal(renderer.villageLampsLit(), false);
     assert.deepEqual(bridgeLights(renderer), [], 'nothing at noon');
     renderer._lastAtmosphere = at(23 * 60);
-    const lights = bridgeLights(renderer, { sourceEnergy: { core: 1 } });
+    const lights = bridgeLights(renderer, { sourceEnergy: { core: 1 } }, 'central-river-bridge:');
     assert.equal(lights.length, central.lights.length);
     // The sprite is drawn with its anchor on the hint tile (18, 24), the
     // deck midpoint's ground point.
@@ -134,7 +136,7 @@ test('the declared flames light at their drawn world positions, only while the l
     // feed both read it).
     renderer._lanternGlowSources = () => [];
     const pools = renderer._lanternGroundLightSources({}).filter((light) => light.id.startsWith('bridge-light:'));
-    assert.equal(pools.length, central.lights.length);
+    assert.equal(pools.length, central.lights.length + trestle.lights.length);
 });
 
 test('the bridge catches on the Lamplighter\'s Round in one step, flames and pools together', () => {
@@ -143,16 +145,17 @@ test('the bridge catches on the Lamplighter\'s Round in one step, flames and poo
     const span = renderer.bridgeSpans.find((entry) => entry.id === 'central-river-bridge');
     const middle = worldToTile((span.start.x + span.end.x) / 2, (span.start.y + span.end.y) / 2);
     const minute = W.duskStart + roundFraction(middle.tileX, middle.tileY) * ROUND_SPAN_MIN;
+    const own = 'central-river-bridge:';
     renderer._lastAtmosphere = at(minute - 0.05);
     assert.equal(renderer.bridgeLightsLit(span), false);
-    assert.equal(bridgeLights(renderer).length, 0, 'the round has not reached the bridge');
+    assert.equal(bridgeLights(renderer, null, own).length, 0, 'the round has not reached the bridge');
     renderer._lastAtmosphere = at(minute + 0.05);
     assert.equal(renderer.bridgeLightsLit(span), true);
-    assert.equal(bridgeLights(renderer).length, central.lights.length);
+    assert.equal(bridgeLights(renderer, null, own).length, central.lights.length);
     // Reduced motion keeps the shared lamp clock: lit from the round's start.
     renderer.motionScale = 0;
     renderer._lastAtmosphere = at(minute - 0.05);
-    assert.equal(bridgeLights(renderer).length, central.lights.length);
+    assert.equal(bridgeLights(renderer, null, own).length, central.lights.length);
 });
 
 test('the flame sidecar redraws over the terrain only while the bridge is lit', () => {
@@ -179,17 +182,17 @@ test('the flame sidecar redraws over the terrain only while the bridge is lit', 
 });
 
 test('a new bridge sprite lights by manifest data alone', () => {
+    // The trestle's span (BRIDGE_HINTS west-river-plank) under a stand-in
+    // manifest entry: its lights follow the entry, not the code.
     const rustic = {
-        id: 'bridge.landmark.rustic.ns',
+        id: TRESTLE_ID,
         width: 224,
         height: 160,
         anchor: [112, 88],
         lights: [{ at: [20, 30], height: 4 }, { at: [200, 120], height: 4, radius: 34 }],
     };
     const renderer = rendererWithBridges(manifestAssets(new Map([...entries, [rustic.id, rustic]])));
-    const tiles = [23, 24, 25, 26].map((y) => ({ x: 7, y }));
-    const span = renderer._bridgeSpanFromTiles(tiles, 'NS', { bridgeId: 'west-river-plank', style: 'rustic' });
-    renderer.bridgeSpans.push(span);
+    const span = renderer.bridgeSpans.find((entry) => entry.id === 'west-river-plank');
     renderer._lastAtmosphere = at(23 * 60);
     const lights = bridgeLights(renderer).filter((light) => light.id.startsWith('bridge-light:west-river-plank:'));
     assert.equal(lights.length, 2);
@@ -200,4 +203,85 @@ test('a new bridge sprite lights by manifest data alone', () => {
     const bare = rendererWithBridges(manifestAssets(new Map([[CENTRAL_ID, { ...central, lights: undefined }]])));
     bare._lastAtmosphere = at(23 * 60);
     assert.deepEqual(bridgeLights(bare), []);
+});
+
+// BR-7 — the Miner's trestle's four end-post lanterns: amber glass at each
+// declared point, the iron housing round it, their sidecar on the glass
+// only, lit as fixtures at the glass with pools on the deck at the posts,
+// only once the Lamplighter's Round reaches the trestle's middle.
+test('the trestle declares its four lantern glasses, and only they glow', () => {
+    assert.equal(trestle.lights.length, 4);
+    assert.equal(trestle.emissiveSidecar, true);
+    const albedoPath = join(spritesRoot, pathForEntry(trestle));
+    const png = PNG.sync.read(readFileSync(albedoPath));
+    const texel = (x, y) => {
+        const i = (y * png.width + x) * 4;
+        return { rgb: [png.data[i], png.data[i + 1], png.data[i + 2]], a: png.data[i + 3] };
+    };
+    const amber = (x, y) => {
+        const { rgb: [r, g, b], a } = texel(x, y);
+        return a > 0 && r >= 0xd8 && r > g && g > b;
+    };
+    const iron = (x, y) => {
+        const { rgb: [r, g, b], a } = texel(x, y);
+        return a > 0 && b > r && b >= g;
+    };
+    for (const { at: [x, y], height } of trestle.lights) {
+        let glass = 0;
+        let housing = 0;
+        for (let dy = -4; dy <= 4; dy++) {
+            for (let dx = -3; dx <= 3; dx++) {
+                if (amber(x + dx, y + dy)) glass++;
+                if (iron(x + dx, y + dy)) housing++;
+            }
+        }
+        assert.ok(glass >= 10, `${x},${y}: ${glass} amber glass texels`);
+        assert.ok(housing >= 8, `${x},${y}: ${housing} iron housing texels`);
+        assert.ok(height >= 20 && height <= 30, `${x},${y} + ${height} reaches the deck at the post`);
+    }
+    const sidecar = PNG.sync.read(readFileSync(albedoPath.replace(/\.png$/, '.emissive.png')));
+    const perLight = trestle.lights.map(() => 0);
+    for (let y = 0; y < sidecar.height; y++) {
+        for (let x = 0; x < sidecar.width; x++) {
+            if (!sidecar.data[(y * sidecar.width + x) * 4 + 3]) continue;
+            const owner = trestle.lights.findIndex(({ at }) => Math.abs(x - at[0]) <= 3 && Math.abs(y - at[1]) <= 4);
+            assert.ok(owner >= 0, `sidecar texel ${x},${y} off every lantern`);
+            assert.equal(iron(x, y), false, `sidecar texel ${x},${y} lies on the iron housing`);
+            perLight[owner]++;
+        }
+    }
+    for (const count of perLight) assert.ok(count >= 12, `${count} emitting texels on a lantern`);
+});
+
+test('the trestle\'s lanterns light at their glass, with pools on the deck, only after the round reaches it', () => {
+    const W = lampSettlingWindows();
+    const renderer = rendererWithBridges();
+    const span = renderer.bridgeSpans.find((entry) => entry.id === 'west-river-plank');
+    const own = 'west-river-plank:';
+    renderer._lastAtmosphere = at(12 * 60);
+    assert.deepEqual(bridgeLights(renderer, null, own), [], 'nothing at noon');
+    const middle = worldToTile((span.start.x + span.end.x) / 2, (span.start.y + span.end.y) / 2);
+    const minute = W.duskStart + roundFraction(middle.tileX, middle.tileY) * ROUND_SPAN_MIN;
+    renderer._lastAtmosphere = at(minute - 0.05);
+    assert.equal(renderer.bridgeLightsLit(span), false);
+    assert.equal(bridgeLights(renderer, null, own).length, 0, 'the round has not reached the trestle');
+    renderer._lastAtmosphere = at(minute + 0.05);
+    const lights = bridgeLights(renderer, { sourceEnergy: { core: 1 } }, own);
+    assert.equal(lights.length, 4);
+    // Drawn with its anchor on the deck midpoint's ground point, tile (7, 24.5).
+    const origin = tileToWorld(7, 24.5);
+    const [anchorX, anchorY] = trestle.anchor;
+    trestle.lights.forEach(({ at: [sx, sy], height }, index) => {
+        const light = lights.find((record) => record.id === `bridge-light:${own}${index}`);
+        assert.ok(light, `lantern ${index}`);
+        const glass = { x: origin.x - anchorX + sx, y: origin.y - anchorY + sy };
+        assert.ok(Math.abs(light.x - glass.x) < 1e-6 && Math.abs(light.y - glass.y) < 1e-6, `lantern ${index} at its glass`);
+        assert.ok(Math.abs(light.ground.y - (glass.y + height)) < 1e-6, `lantern ${index} pool on the deck at its post`);
+        assert.equal(light.role, 'fixture');
+        assert.equal(light.fire, false);
+        assert.ok(light.radius < 66 && light.radius <= SOURCE_HALO_RADIUS_CAP, `radius ${light.radius}`);
+    });
+    // The four pools stand at the deck's four corners: two at each end.
+    const rows = lights.map((light) => worldToTile(light.ground.x, light.ground.y).tileY).sort((a, b) => a - b);
+    assert.ok(rows[1] < 23 && rows[2] > 25.5, `pool rows ${rows.map((row) => row.toFixed(2)).join(', ')}`);
 });

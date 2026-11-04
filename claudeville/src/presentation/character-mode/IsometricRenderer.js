@@ -9696,8 +9696,9 @@ export class IsometricRenderer {
                     if (this.sprites) this.sprites.drawSprite(ctx, `dock.${orientation}`, screenX, screenY);
                 }
             } else if (bInfo?.kind === 'plank') {
-                // 2.8 — single-file plank crossings use the per-tile bridge.ew/ns
-                // assets, mirroring the dock tile path.
+                // 2.8 — single-file plank crossings use the per-tile
+                // bridge.${orientation} asset (the pond plank's bridge.ew),
+                // mirroring the dock tile path.
                 const orientation = (bInfo.orientation || 'EW').toLowerCase();
                 if (this.sprites) this.sprites.drawSprite(ctx, `bridge.${orientation}`, screenX, screenY);
             }
