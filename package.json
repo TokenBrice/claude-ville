@@ -1,6 +1,6 @@
 {
   "name": "claude-ville",
-  "version": "0.61.3",
+  "version": "0.61.4",
   "description": "Local-first dashboard for watching Claude Code, Codex CLI, Gemini, Grok, Kimi, OpenCode, OMP, DeepSeek MCP, and GLM MCP sessions as an isometric pixel village and monitoring dashboard.",
   "private": true,
   "license": "MIT",

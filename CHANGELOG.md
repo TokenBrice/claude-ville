@@ -2,6 +2,23 @@
 
 ---
 
+## v0.61.4 — *The Cloistered Hands* · Nov 05, 2026
+
+GLM agents launched through the glm-cc-mcp server now walk the village. Each runs Claude Code in its own sealed cell, with a private config folder, so its transcript never reached `~/.claude` and ClaudeVille never saw it.
+
+- **GLM MCP agents.**
+  - Each GLM thread is one villager, named after its job label; a `continue` is the same villager's next turn.
+  - They wear the GLM and GLM Flash bodies in z.AI's colours, and the Archive is their home.
+  - Status comes from the server's own records: done when a job ends, ERRORED when it fails or times out, and unknown when its server died. While a job runs, its transcript shows whether it is working or running a tool.
+  - Their tools, command results, files, todos, commits and speech are read as for any Claude Code session, and the Activity Panel lists their tool calls and messages.
+  - Cost is estimated at z.AI's rates. Claude Code's own figure priced GLM as an unknown model, so it is ignored.
+  - ClaudeVille reads `~/.local/state/glm-cc-mcp/`, or `GLM_CC_STATE_DIR` when it is set.
+- **Tokens counted once.** Claude Code writes each answer as one transcript record per part (thinking, text, each tool call), and every record repeats the answer's token usage. ClaudeVille added up every copy, so Claude sessions showed about twice their real tokens and cost, and GLM sessions up to ten times. Each answer now counts once, and GLM totals match the glm-cc-mcp server's own. Today's spend keeps what it already counted and grows at the true rate from here.
+
+Validation: `validate:quick`, `verify:server` and `verify:architecture` pass, and the live server shows the running GLM agents. `verify:render` timed out waiting for the world canvas under heavy machine load, as an unchanged checkout of v0.61.3 did under the same load.
+
+---
+
 ## v0.61.3 — *The Northern Croft* · Nov 05, 2026
 
 The wayside chapel is withdrawn, the Hourglass Belfry takes its lawn by the Archive, and the farm leaves the town for the north shore.
