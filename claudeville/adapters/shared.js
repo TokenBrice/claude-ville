@@ -972,8 +972,35 @@ function createDetailResponse({
   return detail;
 }
 
+// The deepseek-cc-mcp and glm-cc-mcp servers' own rule (jobs.ts `pidAlive`):
+// a job without an end record runs only while its server does, and a pid is
+// that server only when its Linux start time (field 22 of /proc/<pid>/stat)
+// still matches.
+function pidStartTime(pid) {
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function mcpJobOwnerAlive(job) {
+  if (!Number.isInteger(job.ownerPid) || job.ownerPid <= 0) return false;
+  try {
+    process.kill(job.ownerPid, 0);
+  } catch {
+    // ESRCH: gone. EPERM: another user's process, so not the server.
+    return false;
+  }
+  if (!job.ownerStart) return true;
+  const start = pidStartTime(job.ownerPid);
+  return start === null || start === job.ownerStart;
+}
+
 module.exports = {
   readFailures,
+  mcpJobOwnerAlive,
   noteReadFailure,
   clearTailCache,
   createDetailResponse,

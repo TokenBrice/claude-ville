@@ -20,6 +20,7 @@ body:
         - OpenCode
         - OMP (Oh My Pi)
         - DeepSeek MCP (deepseek-cc-mcp)
+        - GLM MCP (glm-cc-mcp)
         - Other
     validations:
       required: true

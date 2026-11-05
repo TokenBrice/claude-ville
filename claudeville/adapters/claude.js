@@ -1172,6 +1172,7 @@ function createTranscriptAggregate(filePath) {
     trailing: Buffer.alloc(0),
     discardingLine: false,
     usage: emptyTokenUsage(),
+    lastUsage: null,
     launches: [],
     projection: createTranscriptProjection(),
     background: [],
@@ -1216,13 +1217,18 @@ function addTranscriptEntry(aggregate, entry) {
     const input = readUsageNumber(usage, ['input_tokens', 'inputTokens', 'prompt_tokens', 'promptTokens']);
     const output = readUsageNumber(usage, ['output_tokens', 'outputTokens', 'completion_tokens', 'completionTokens']);
     const { cacheRead, cacheCreate } = normalizeCacheTokens(usage, CLAUDE_CACHE_FIELD_MAP);
+    // Claude Code writes one record per content block, each repeating its
+    // message's usage, back to back: a repeat replaces the count, never adds.
+    const id = typeof msg.id === 'string' && msg.id ? msg.id : null;
+    const previous = id && aggregate.lastUsage?.id === id ? aggregate.lastUsage : null;
+    aggregate.lastUsage = { id, input, output, cacheRead, cacheCreate };
     aggregate.usage.availability = 'observed';
-    aggregate.usage.totalInput += input;
-    aggregate.usage.totalOutput += output;
-    aggregate.usage.cacheRead += cacheRead;
-    aggregate.usage.cacheCreate += cacheCreate;
+    aggregate.usage.totalInput += input - (previous?.input || 0);
+    aggregate.usage.totalOutput += output - (previous?.output || 0);
+    aggregate.usage.cacheRead += cacheRead - (previous?.cacheRead || 0);
+    aggregate.usage.cacheCreate += cacheCreate - (previous?.cacheCreate || 0);
     aggregate.usage.contextWindow = input + cacheRead + cacheCreate;
-    aggregate.usage.turnCount++;
+    if (!previous) aggregate.usage.turnCount++;
     aggregate.usage.input = aggregate.usage.totalInput;
     aggregate.usage.output = aggregate.usage.totalOutput;
   }
@@ -1463,6 +1469,7 @@ function finishTranscriptAggregate(aggregate, target) {
     try {
       const provisional = {
         usage: { ...aggregate.usage },
+        lastUsage: aggregate.lastUsage,
         launches: aggregate.launches.slice(),
         projection: cloneTranscriptProjection(aggregate.projection),
         background: aggregate.background,
@@ -3468,6 +3475,19 @@ class ClaudeAdapter {
 module.exports = {
   ClaudeAdapter,
   _test: { claudeProjectDirName, encodeClaudeProjectDir, foldBackgroundWork, getGitEvents, projectClaudeTailEntry },
+  // Path-based transcript readers for Claude Code runs kept outside
+  // ~/.claude (glm.js: one CLAUDE_CONFIG_DIR per glm-cc-mcp thread).
+  claudeTranscript: {
+    encodeProjectDir: encodeClaudeProjectDir,
+    gitEvents: getGitEvents,
+    recentMessages: getRecentMessages,
+    summary: getSubAgentDetail,
+    tokenUsage: getTokenUsage,
+    toolHistory: getToolHistory,
+    toolResults: getClaudeToolResults,
+    turnState: getClaudeTurnState,
+    projection: getTranscriptProjection,
+  },
   deriveTaskProgress,
   projectClaudeExecution,
   sanitizeTaskSubject,
