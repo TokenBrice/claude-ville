@@ -2,6 +2,26 @@
 
 ---
 
+## v0.61.3 — *The Northern Croft* · Nov 05, 2026
+
+The wayside chapel is withdrawn, the Hourglass Belfry takes its lawn by the Archive, and the farm leaves the town for the north shore.
+
+- **The chapel withdrawn.** The wayside chapel is removed, with its night lantern and its sprite.
+- **The Belfry by the Archive.** The Hourglass Belfry, which shows your Claude and Codex limits, now stands on the Archive's north lawn, where the chapel stood.
+  - It rises clear above the Archive, and hovering it still shows both windows.
+  - An oak and a pine partly hide its base, as they hid the chapel's, but not its glasses.
+- **The farm on the north shore.**
+  - The farm leaves its lawn behind the Archive for the north shore, between the west wood and the windmill, facing the lagoon. Its layout is unchanged, and the laundry line goes with it.
+  - The cow, sheep and goat graze its paddock, and the hen pecks by the beehives. In the rain, the cow now stands tail to the wind whichever way it blows; by the old paddock it could only face east, clear of Command's west tower.
+  - The wood is thinned where the farm stands, and a few pines still frame it.
+  - A fern on the north shore moves a few tiles west, off the sheep's legs.
+  - The lawn behind the Archive is now open grass.
+- **Tooling.** The chapel's recipe leaves `scripts/sprites/finish-isle-landmarks.mjs`, and `harmonize-roofs.mjs` and `outline-landmarks.mjs` no longer target it. Each browser rebakes the ground once, since the scenery changed.
+
+Validation: `validate:full`, `sprites:audit-refresh` and `verify:render` pass, and a capture of the live village shows the new layout.
+
+---
+
 ## v0.61.2 — *The Keeper's Road* · Nov 05, 2026
 
 One street stone runs through the whole village, and the Lighthouse finally has keepers: agents that wait or watch CI keep watch there.
