@@ -2,6 +2,26 @@
 
 ---
 
+## v0.61.2 — *The Keeper's Road* · Nov 05, 2026
+
+One street stone runs through the whole village, and the Lighthouse finally has keepers: agents that wait or watch CI keep watch there.
+
+- **One street stone.**
+  - Every lane is paved in the same stone, including the production row past the Task board, the door spurs and the gate approach. Earth is left only in the Task board's and the Forge's work yards.
+  - A street keeps one tone along its whole length. Paving takes only a trace of the grass's darkening under the woods and at most one step of shadow beside walls, so the road by the Mine and the lanes by the Lighthouse stop turning dark grey.
+  - The gravel yards of the Mine, the Lighthouse and the Harbor match the streets, and the flagstone yards of the Archive, the Tavern and the Portal sit at the same value. The Command plaza is one step lighter than the streets instead of a glaring field at dusk.
+  - No tree, bush or prop moves.
+- **The Lighthouse keeps the watch.**
+  - An agent that waits on something walks to the Lighthouse. That covers `Monitor`, a `sleep`, an `until` or `while` poll, `timeout N tail -f`, a followed log, Codex's `sleep` and Claude Code's `ScheduleWakeup`.
+  - Watching CI (`gh run watch|view|list`, `gh pr checks`) moves there from the Harbor. The Harbor keeps commits, pushes, PRs and releases.
+  - On the last week of real sessions, the Lighthouse would have held about 7% of agent time instead of 0.8%, with someone there about a fifth of the time.
+  - Its visitors read as "watching" in the inspector, and a watch adds no workshop percussion.
+- **Tooling.** The terrain cache key moves to `cv0.61-terrain-5`, so each browser rebakes the ground once.
+
+Validation: `validate:full` and `verify:render` pass. The generated scenery (trees, boulders, bushes, tufts, flowers, features and props) is unchanged, and the baked ground matches the picked option C surface for surface.
+
+---
+
 ## v0.61.1 — *The Bridgewright* · Nov 04, 2026
 
 Villagers walk on the south bridge's planks and pass in two clean files, its candles burn at night, and the west crossing becomes a miner's trestle.
