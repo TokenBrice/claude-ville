@@ -127,9 +127,9 @@ const RELEASE_CUE_OWNER = 'cue:release';
 // columns. The pose moves on a 16 world px grid to the offset that crops
 // least — crowns first, then plates, then distance — never at the subject's
 // expense (see `_landmarkClearPose`) nor past the sea cap. A building wholly
-// above the frame is clear. MB-1 — the isle landmarks (the windmill, the
-// wayside chapel and the Hourglass Belfry, the account instrument) keep their
-// crowns too; they draw no plate.
+// above the frame is clear. MB-1 — the isle landmarks (the windmill and the
+// Hourglass Belfry, the account instrument) keep their crowns too; they draw
+// no plate.
 const LANDMARK_PLATE_CLEARANCE_PX = 38;
 const ISLE_LANDMARK_PROPS = Object.freeze(DISTRICT_PROPS.filter((prop) => prop.landmark));
 const LANDMARK_PLATE_HALF_WIDTH_PX = 80;

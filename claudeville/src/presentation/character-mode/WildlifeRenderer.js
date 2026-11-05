@@ -247,11 +247,12 @@ const GRADE_PROBES = Object.freeze([[0.92, 0.94, 0.95], [0.5, 0.5, 0.5], [0.45, 
 const GULL_SHADOW = 'rgba(7, 18, 30, 0.22)';
 const SONGBIRD_SHADOW = 'rgba(0, 0, 0, 0.16)';
 // W8.4a (AD-P11 / AW-P15) — the livestock region: cow, sheep and goat in
-// the paddock, two hens before it, a dog at the Forge front and a cat on
-// the Archive plaza (LIVESTOCK_ROUTES), plus the `deer-at-dawn` stag. Each
-// is a small 4-direction sheet (FAUNA_SHEET_ROWS × stand + 4 walk columns,
-// `frameW`/`frameH` cells; the hen is one side-view row, mirrored) read by
-// `faunaSheetFrame`, never the 8 × 10 character contract. Caps by zoom like
+// the farm's paddock on the north shore, a hen by its skeps, a dog at the
+// Forge front and a cat on the Archive plaza (LIVESTOCK_ROUTES), plus the
+// `deer-at-dawn` stag. Each is a small 4-direction sheet (FAUNA_SHEET_ROWS
+// × stand + 4 walk columns, `frameW`/`frameH` cells; the hen is one
+// side-view row, mirrored) read by `faunaSheetFrame`, never the 8 × 10
+// character contract. Caps by zoom like
 // the songbirds: 7 from z2, 5 from z1.4, 3 from z0.9, the paddock pair at
 // the whole-island view. They answer to the clock and the village's
 // weather only (V3): walking stops at night (the cat still prowls), in

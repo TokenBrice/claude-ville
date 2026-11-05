@@ -1,12 +1,12 @@
-// Living Isle W8.5b (AD-P10) — the isle landmarks: windmill, wayside chapel
-// and the Hourglass Belfry (DISTRICT_PROPS `landmark`).
+// Living Isle W8.5b (AD-P10) — the isle landmarks: the windmill and the
+// Hourglass Belfry (DISTRICT_PROPS `landmark`; the wayside chapel was
+// withdrawn).
 //
 // They are not places: no occupancy, label, gate or session reading of any
 // kind (V3). Each is a sorted StaticPropSprite (tall, among the trees) whose
 // placement carries `walkBlock`, so no body ever stands on or behind one. The
-// windmill and the chapel are scenery and move or light from the environment
-// only; the belfry is the account instrument and reads the account quota
-// alone:
+// windmill is scenery and moves from the environment only; the belfry is the
+// account instrument and reads the account quota alone:
 //
 // - The windmill's sails (`prop.windmillSails`, 8 frames of the cross turned
 //   11.25° a step, MB-7) advance one frame per 125 ms (8 fps, the `slow`
@@ -15,10 +15,8 @@
 //   (`motionScale <= 0`) holds frame 0. Each frame is one cached composite of
 //   the tower and its sails, shared by the Canvas and GPU paths
 //   (`textureKey` per frame, like a tree's lean frame).
-// - The chapel lantern's glass texels (`prop.waysideChapel.emissive.png`)
-//   light on the lamps clock (`lampsLitAt`), painted over the albedo and as
-//   the record's own emissive channel; the flip repaints the cache once.
-// - The Hourglass Belfry (2026-10-28, where the ruined tower stood) holds one
+// - The Hourglass Belfry (2026-10-28, where the ruined tower stood; it now
+//   stands on the Archive's north lawn, the chapel's old place) holds one
 //   glass per account, Claude's in the lit west arch and Codex's in the
 //   shaded east arch: the sand left is the quota left (BelfryQuota.js, from
 //   `/api/usage` through `setUsage`), a shroud covers a glass with no reading,
@@ -67,9 +65,6 @@ const SAIL_FRAMES = 8;
 const SAIL_FRAME_PX = 112;
 const SAIL_STEP_MS = 125;
 const SAIL_CALM = 0.15; // knot wind below this is still air (pennants rest too)
-// The chapel lantern's foot offset from the chapel's anchor tile, and its
-// height above the ground, for its night light record.
-const CHAPEL_LANTERN = Object.freeze({ dTileX: 0.64, dTileY: -0.64, height: 18 });
 
 const LANDMARK_PROPS = Object.freeze(DISTRICT_PROPS.filter((prop) => prop.landmark));
 
@@ -296,30 +291,6 @@ class BelfrySprite extends StaticPropSprite {
     }
 }
 
-function chapelSprite(host, prop, state) {
-    const lantern = (ctx, x, y) => {
-        const image = state.lit ? host.assets?.getCompanion?.(prop.id, 'emissive') : null;
-        state.paintedLight = Boolean(image);
-        if (!image) return;
-        const [ax, ay] = host.assets.getAnchor(prop.id);
-        ctx.drawImage(image, Math.round(x) - ax, Math.round(y) - ay);
-    };
-    return new StaticPropSprite({
-        tileX: prop.tileX,
-        tileY: prop.tileY,
-        id: prop.id,
-        bounds: boundsFor(host.assets, prop.id),
-        splitForOcclusion: true,
-        materialClass: 'stone',
-        drawFn: (ctx, x, y) => {
-            host._drawPropContactShadow?.(ctx, x, y, prop.id, prop.tileX, prop.tileY);
-            host.sprites?.drawSprite(ctx, prop.id, x, y);
-            lantern(ctx, x, y);
-        },
-        channels: { emissive: lantern },
-    });
-}
-
 function plainSprite(host, prop) {
     return new StaticPropSprite({
         tileX: prop.tileX,
@@ -338,7 +309,6 @@ function plainSprite(host, prop) {
 export class IsleLandmarks {
     constructor(host) {
         this.host = host;
-        this._chapel = { lit: false, paintedLight: false, sprite: null, prop: null };
         this._belfry = { sprite: null, usage: null, glasses: belfryGlasses(null), drain: null, opaque: null };
     }
 
@@ -351,24 +321,9 @@ export class IsleLandmarks {
                 this._belfry.sprite = new BelfrySprite(this.host, prop, this._belfry.glasses);
                 this._belfry.sprite.setDrain(this._belfry.drain);
                 out.push(this._belfry.sprite);
-            } else if (prop.id === 'prop.waysideChapel') {
-                this._chapel.prop = prop;
-                this._chapel.sprite = chapelSprite(this.host, prop, this._chapel);
-                out.push(this._chapel.sprite);
             } else out.push(plainSprite(this.host, prop));
         }
         return out;
-    }
-
-    /** Per frame: the lamps clock flips the chapel lantern (repaint once). */
-    update(lampsLit) {
-        const chapel = this._chapel;
-        const lit = lampsLit === true;
-        // Repaint on the flip, and once more if the sidecar arrived after a lit paint.
-        const late = lit && !chapel.paintedLight && Boolean(this.host.assets?.getCompanion?.(chapel.prop?.id, 'emissive'));
-        if (lit === chapel.lit && !late) return;
-        chapel.lit = lit;
-        chapel.sprite?.invalidateCache();
     }
 
     /** The account quota from `/api/usage` (IsometricRenderer.setQuotaState), received at `now`. */
@@ -415,20 +370,5 @@ export class IsleLandmarks {
         belfry.opaque = new Uint8Array(image.width * image.height);
         for (let i = 0; i < belfry.opaque.length; i++) belfry.opaque[i] = data[i * 4 + 3] > 0 ? 1 : 0;
         return belfry.opaque;
-    }
-
-    /** The chapel lantern's night light record (a `lamps` fixture, never occupancy). */
-    lightFixtures() {
-        const prop = this._chapel.prop;
-        if (!this._chapel.lit || !prop) return [];
-        return [{
-            id: 'landmark.waysideChapel.lantern',
-            tileX: prop.tileX + CHAPEL_LANTERN.dTileX,
-            tileY: prop.tileY + CHAPEL_LANTERN.dTileY,
-            height: CHAPEL_LANTERN.height,
-            color: '#ffcf7a',
-            radius: 34,
-            intensity: 0.55,
-        }];
     }
 }

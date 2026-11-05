@@ -44,11 +44,11 @@ const gate = pathfinder.nearestWalkable(VILLAGE_GATE.inside.tileX, VILLAGE_GATE.
 const keyOf = (tile) => `${Math.round(tile.tileX)},${Math.round(tile.tileY)}`;
 
 // Walkable ground no route from the gate reaches, closed for routing (VB-15):
-// the shore tile under the pier lantern, and the far north-west shore behind
-// the farm's fences and the Archive. A new sealed pocket fails below.
+// the shore tile under the pier lantern, and the north shore behind the
+// farm's fences and the windmill. A new sealed pocket fails below.
 const SEALED_POCKETS = Object.freeze([
     { label: 'the shore tile under the pier lantern', has: (x, y) => x === 25 && y === 22 },
-    { label: 'the far north-west shore behind the farm', has: (x, y) => x <= 16 && y <= 17 },
+    { label: 'the north shore behind the farm and the windmill', has: (x, y) => x <= 16 && y <= 7 },
 ]);
 
 // Scenic loiter points that are open water today. The ambient picker skips

@@ -2689,27 +2689,11 @@ props:
     materialClass: stone
     provenance: { item: 'W8.5b', tool: create_map_object, objectId: 5bc38f00-7d60-4cd9-91ac-84383be697cf, finish: 'scripts/sprites/finish-isle-landmarks.mjs (plate strip, ashlar snap, mirrored to the upper-left key)', generatedAt: '2026-10-09' }
 
-  # MB-6 (2026-11-03): redrawn in the Tavern family at the same id, canvas,
-  # anchor and footing: a small bronze bell in an open stone cote, slate
-  # courses over the whole roof, no chimney. The draft came back 1.22x too
-  # large for the footing and is shrunk onto it (finish-isle-landmarks.mjs).
-  - id: prop.waysideChapel
-    tool: create_image_pro
-    prompt: "isometric pixel art building sprite, true 2:1 dimetric isometric view, a tiny old wayside chapel in the same craft as the style image's tavern: one small single-room nave of pale grey limestone ashlar in even courses; the long side wall faces the lower left and has one narrow pointed lancet window of unlit dark slate glass; the entrance gable end faces the lower right with a small round-arched dark oak plank door with black iron straps; one small black iron lantern with unlit dark glass hangs from a short bracket on the gable wall right of the door; a steep slate-blue tiled gable roof, the whole roof drawn in even staggered rows of slate tiles like the tavern's roof, with a thin dark oak verge board along the gable edges; on the apex of the entrance gable sits a small open stone bell cote, two short stone piers under a tiny slate-capped gable, with one small dull dark bronze bell hanging inside the opening; a little moss at the footing; warm key light from the upper left, the long wall lit, the gable end in cool shade; stepped cel shading, 1px selective warm dark outline; structure only, the walls end directly at their footings; no chimney, no smoke, no open front, no interior, no sign, no ground tile, no grass, no slab, no plinth, no baked shadow, empty transparent background"
-    width: 112
-    height: 144
-    anchor: [53, 104]
-    materialClass: stone
-    provenance: { item: 'MB-6', endpoint: create_image_pro, jobId: c34e8278-33f1-44b0-8119-1635dd85fcdf, candidate: 3, seed: 1103, styleImage: building.tavern, referenceImage: 'a flat massing block of the W8.5b footprint (cote on the entrance apex, door, lantern, lancet, no chimney)', generationSize: 112x144, shrink: '0.821 onto the 46 x 42 px footing at [7, 6] (finish-isle-landmarks.mjs CHAPEL)', generations: 21.2, takes: { 'c34e8278-33f1-44b0-8119-1635dd85fcdf': '4 drafts at 112x144, candidate 3 chosen (S3)', 'fabd7514-6ff4-4af9-8a12-dcae4af31b56': '4 at 92x118, not chosen', '00cc45e0-4afa-4d41-940c-833eb6c5f3d5': 'image_to_pixelart redraw, not chosen' }, finish: 'scripts/sprites/finish-isle-landmarks.mjs (shrink, tidy, ink -> #060402, masonry onto ashlar, bronze bell, lantern glass unlit, lantern emissive sidecar)', harmonize: 'roof onto roofSlate bodyStop 6 (scripts/sprites/harmonize-roofs.mjs)', outline: 'scripts/sprites/outline-landmarks.mjs', replaces: 'W8.5b create_map_object f2367bd7-2b9c-4bf9-9ca1-b45e87e89055', generatedAt: '2026-11-03' }
-    emissiveSidecar: true
-    emissive:
-      strength: 0.9
-      sources:
-        - { id: emissive.prop.waysideChapel.lantern, kind: lantern, geometry: authored-albedo, strength: 0.9 }
-
-  # The Hourglass Belfry, the north shore's account instrument (2026-10-28:
-  # the account quota left the top bar for the World). It stands where the
-  # W8.5b ruined tower stood and is drawn by IsleLandmarks.js: Claude's glass
+  # The Hourglass Belfry, the isle's account instrument (2026-10-28: the
+  # account quota left the top bar for the World). It took the W8.5b ruined
+  # tower's place on the north shore, and now stands on the Archive's north
+  # lawn where the wayside chapel stood (the chapel was withdrawn and the
+  # farm took the north shore). Drawn by IsleLandmarks.js: Claude's glass
   # in the lit west arch, Codex's in the shaded east arch, each glass's
   # interior laid from `prop.hourglassBelfryGlass` per BelfryQuota.js. Base
   # finished by scripts/sprites/bake-hourglass-belfry.mjs (stage fill, sill,

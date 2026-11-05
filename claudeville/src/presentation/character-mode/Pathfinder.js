@@ -118,7 +118,7 @@ export class Pathfinder {
 
     // VB-15 — keeps only the walk nodes a body can reach from `from` (the
     // village gate) under findPath's own step rule, so a sealed pocket (the
-    // shore tile under the pier lantern, the far shore behind the farm)
+    // shore tile under the pier lantern, the north shore behind the farm)
     // leaves the grid: no spawn, snap or nearest-walkable fallback lands
     // where every route fails. Closes the nodes in place and returns their
     // count.

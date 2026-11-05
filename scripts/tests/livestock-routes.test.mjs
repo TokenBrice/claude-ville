@@ -17,7 +17,8 @@ import { faunaSheetFrame, livestockPose } from '../../claudeville/src/presentati
 // livestockPose gives it) must keep its drawn texels off the opaque base art
 // of every building it stands behind: above the footprint's front edges at
 // its screen column (frontEdgeFoot). World texels, so it holds at every zoom.
-// CM-1 moved Command two rows north under the cow's and a hen's old points.
+// CM-1 moved Command two rows north under the cow's and a hen's old points;
+// the farm has since moved to the north shore, clear of every building.
 
 const SPRITES = new URL('../../claudeville/assets/sprites/', import.meta.url);
 const manifest = yaml.load(readFileSync(new URL('manifest.yaml', SPRITES), 'utf8'));
@@ -92,12 +93,13 @@ test('no livestock pose draws over a building it stands behind', () => {
             }
         }
     }
-    assert.ok(behind > 0, 'the paddock stands behind Command, so some pose must be checked');
+    assert.ok(behind > 0, 'some pose stands above a building\'s front edge line, so the texel check runs');
 });
 
 test('held in the wet, livestock stand tail to the rain (QW-3)', () => {
-    // Every actor but the cow (Command's west tower) turns both ways.
-    assert.deepEqual(LIVESTOCK_ROUTES.filter((route) => route.tailFaces).map((route) => route.id), ['cow']);
+    // Every actor turns both ways (the cow kept east of Command's west tower
+    // only while the paddock stood behind Command).
+    assert.deepEqual(LIVESTOCK_ROUTES.filter((route) => route.tailFaces).map((route) => route.id), []);
     const pose = {};
     for (const route of LIVESTOCK_ROUTES) {
         for (let clockMs = 0; clockMs < 600000; clockMs += 7919) {

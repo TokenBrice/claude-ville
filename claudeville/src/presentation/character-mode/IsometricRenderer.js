@@ -5706,7 +5706,6 @@ export class IsometricRenderer {
             lampsLit,
             revealLive: this.chronicleMonuments?.releaseRevealLive?.() === true,
         });
-        (this.isleLandmarks ||= new IsleLandmarks(this)).update(lampsLit);
         const pending = Promise.allSettled([
             this.chronicleMonuments?.update?.(agents, context, now),
             this.trailRenderer?.update?.(agents, now, this._lastAtmosphere),
@@ -8727,9 +8726,9 @@ export class IsometricRenderer {
         // BI-6 — the live reed and cattail clumps (DISTRICT_PROPS layer 'live'):
         // their cache-era placements, kept whole (no tall-scenery filter).
         sprites.push(...buildReedSprites(this));
-        // W8.5b — the three non-semantic landmarks (windmill, chapel, ruined
-        // tower): walkBlock placements, so they skip the
-        // tall-scenery tile filter above, which their own block would trip.
+        // W8.5b — the isle landmarks (the windmill and the Hourglass Belfry):
+        // walkBlock placements, so they skip the tall-scenery tile filter
+        // above, which their own block would trip.
         sprites.push(...(this.isleLandmarks ||= new IsleLandmarks(this)).buildSprites());
         // W6.10 / W8.4b — the calendar's prop dressing: fixed sprites that
         // paint only inside their date window (VillageCalendar), the authored
@@ -10208,7 +10207,7 @@ export class IsometricRenderer {
     _hearthLightSources(lighting = null) {
         const lampsLit = lampsLitAt(this._lastAtmosphere);
         if (!lampsLit) return [];
-        const extra = [...(this.villageCalendar?.lightFixtures?.() || []), ...(this.isleLandmarks?.lightFixtures?.() || [])];
+        const extra = [...(this.villageCalendar?.lightFixtures?.() || [])];
         for (const [index, prop] of (this.commandCenterGroundProps || []).entries()) {
             if (prop.type !== 'watchfire') continue;
             extra.push({

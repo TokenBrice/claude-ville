@@ -498,6 +498,12 @@ export const SCENERY_CLEARINGS = [
     { name: 'harbor-mouth', centerX: 32, centerY: 21, radius: 4.0, strength: 0.24 },
     { name: 'isle-promenade-bend', centerX: 14, centerY: 21, radius: 1.6, strength: 0.5 },
     { name: 'isle-bridge-bend', centerX: 19.5, centerY: 22.0, radius: 1.6, strength: 0.5 },
+    // The farm's clearing at the north wood's edge (DISTRICT_PROPS `farm`):
+    // no trunk within about 2.3 tiles of the beds or 1.8 of the paddock, so
+    // no crown covers the baked farm or stands behind a grazing animal (the
+    // livestock region draws over every tree); the wood closes in beyond.
+    { name: 'farm-crofts', centerX: 4.2, centerY: 2.0, radius: 3.4, strength: 1.4 },
+    { name: 'farm-paddock', centerX: 7.2, centerY: 3.0, radius: 2.6, strength: 1.4 },
 ];
 
 export const ANCIENT_RUINS = [
@@ -628,19 +634,17 @@ export const DISTRICT_PROPS = [
     { tileX: 27.5, tileY: 12.0, id: 'prop.handcart', layer: 'cache', district: 'knowledge', walkBlock: true },
     // Living Isle W8.5b (AD-P10): the isle landmarks, no occupancy, label or
     // gate; `landmark` props are built by IsleLandmarks.js (the windmill's
-    // sails step on wind gusts, the chapel lantern on the lamps clock, the
-    // Hourglass Belfry's glasses on the account quota), sorted with the
-    // trees, and `walkBlock` keeps every body off them. Each stands on open
-    // grass no lane, visit slot, queue, seat, scenic point or building
-    // sightline zone reaches: the windmill on the north shore's open crest,
-    // the chapel on the Archive's north lawn (west of the farm pocket), the
-    // belfry at the north wood's edge on the lake's north-west beach, where
-    // the ruined tower stood. The
-    // headland between the Tavern and the Lighthouse stays bare: it is
-    // both buildings' tall-scenery sightline zone.
+    // sails step on wind gusts, the Hourglass Belfry's glasses on the
+    // account quota), sorted with the trees, and `walkBlock` keeps every
+    // body off them. Each stands on open grass no lane, visit slot, queue,
+    // seat, scenic point or building sightline zone reaches: the windmill on
+    // the north shore's open crest, beside the farm, and the belfry on the
+    // Archive's north lawn, where the wayside chapel stood (the chapel was
+    // withdrawn, and the farm took the belfry's old place at the north
+    // wood's edge). The headland between the Tavern and the Lighthouse stays
+    // bare: it is both buildings' tall-scenery sightline zone.
     { tileX: 9.6, tileY: 0.9, id: 'prop.windmill', layer: 'sorted', district: 'north', walkBlock: true, landmark: true },
-    { tileX: 1.6, tileY: 9.0, id: 'prop.waysideChapel', layer: 'sorted', district: 'knowledge', walkBlock: true, landmark: true },
-    { tileX: 4.5, tileY: 3.6, id: 'prop.hourglassBelfry', layer: 'sorted', district: 'north', walkBlock: true, landmark: true },
+    { tileX: 1.6, tileY: 9.0, id: 'prop.hourglassBelfry', layer: 'sorted', district: 'knowledge', walkBlock: true, landmark: true },
     // Living Isle W8.3c (AD-P5 group D): civic/garden and wetland/forest
     // dressing, all baked into the terrain (`cache`). Garden furniture stands
     // on lawns no lane, visit slot, queue place or scenic point reaches;
@@ -648,11 +652,10 @@ export const DISTRICT_PROPS = [
     // and `walkBlock` takes the solid pieces out of the walk grid. The
     // Archive's south-west lawn takes a hedgerow on the lake shore, clear of
     // its door file, the west lawn a rose arbor beside the fountain (the
-    // tower hides its east side), its lake lawn a laundry line; the well
-    // green a trough.
+    // tower hides its east side); the well green a trough. (The laundry line
+    // that stood on its lake lawn went north with the farm.)
     { tileX: 0.9, tileY: 16.9, id: 'prop.trellisArch', layer: 'cache', district: 'knowledge', walkBlock: true },
     { tileX: 1.5, tileY: 21.0, id: 'veg.hedgerow', layer: 'cache', district: 'knowledge' },
-    { tileX: 6.85, tileY: 12.0, id: 'prop.laundryLine', layer: 'cache', district: 'knowledge', walkBlock: true },
     { tileX: 11.3, tileY: 27.8, id: 'prop.wellTrough', layer: 'cache', district: 'civic', walkBlock: true },
     // Reeds and cattails on dry bank tiles of the lagoon's south shore and
     // the west river's south bank: never on water, a heron shallow or a duck
@@ -665,10 +668,12 @@ export const DISTRICT_PROPS = [
     { tileX: 3.4, tileY: 27.6, id: 'veg.cattailClump', layer: 'live', district: 'civic' },
     { tileX: 14.5, tileY: 27.1, id: 'veg.cattailClump', layer: 'live', district: 'civic' },
     // Fern and bramble where the woods meet the lagoon's west and north
-    // shores (the world ash's islet and crown cover its north-east bank).
+    // shores (the world ash's islet and crown cover its north-east bank;
+    // the farm's paddock fronts the north shore's middle, so its fern stands
+    // at the west wood's foot, clear of the grazers).
     { tileX: 0.5, tileY: 5.8, id: 'veg.fernCluster', layer: 'cache', district: 'elderwood' },
     { tileX: 1.4, tileY: 11.6, id: 'veg.bramblePatch', layer: 'cache', district: 'elderwood' },
-    { tileX: 7.5, tileY: 4.4, id: 'veg.fernCluster', layer: 'cache', district: 'elderwood' },
+    { tileX: 3.3, tileY: 4.7, id: 'veg.fernCluster', layer: 'cache', district: 'elderwood' },
     { tileX: 1.3, tileY: 3.4, id: 'veg.bramblePatch', layer: 'cache', district: 'elderwood' },
     // W8.3b (AD-P5) — the gate avenue market: the bread stall on the
     // avenue's west verge, between the gate-green
@@ -681,25 +686,29 @@ export const DISTRICT_PROPS = [
     { tileX: 17.3, tileY: 32.9, id: 'prop.marketStall.bread', layer: 'cache', district: 'gate', walkBlock: true },
     // The avenue itself carries no stall, pillar or milestone: it is the
     // village's busiest walk, so its line stays open from bridge to gate.
-    // W8.3b (AD-P5) — the farm pocket on the lagoon lawn between the Archive
-    // gable and the seat park, around the laundry line and the repo stone:
-    // dovecote, scarecrow and two crop beds fenced on their back (bank and
-    // gable) edges, skeps against the Archive wall, and a small paddock east
-    // of the line (gate, back rail along the bank, trough) with the hay cart
-    // at its foot. Fences only run along back edges, so anything inside draws
-    // in front of them. Cache-baked in back-to-front order (tileX + tileY):
-    // the bake draws them in list order.
-    { tileX: 4.0, tileY: 11.6, id: 'prop.farm.dovecote', layer: 'cache', district: 'farm', walkBlock: true },
-    { tileX: 5.0, tileY: 11.95, id: 'prop.fence.nwSe', layer: 'cache', district: 'farm', walkBlock: true },
-    { tileX: 4.6, tileY: 12.4, id: 'prop.farm.scarecrow', layer: 'cache', district: 'farm', walkBlock: true },
-    { tileX: 4.1, tileY: 13.1, id: 'prop.fence.neSw', layer: 'cache', district: 'farm', walkBlock: true },
-    { tileX: 5.4, tileY: 12.7, id: 'prop.farm.cropRows.long', layer: 'cache', district: 'farm', walkBlock: true },
-    { tileX: 4.7, tileY: 13.7, id: 'prop.farm.beehives', layer: 'cache', district: 'farm', walkBlock: true },
-    { tileX: 6.5, tileY: 13.4, id: 'prop.farm.cropRows.short', layer: 'cache', district: 'farm', walkBlock: true },
-    { tileX: 6.9, tileY: 14.1, id: 'prop.farm.hayWagon', layer: 'cache', district: 'farm', walkBlock: true },
-    { tileX: 7.9, tileY: 13.6, id: 'prop.fence.gate', layer: 'cache', district: 'farm', walkBlock: true },
-    { tileX: 8.8, tileY: 12.85, id: 'prop.fence.nwSe', layer: 'cache', district: 'farm', walkBlock: true },
-    { tileX: 8.9, tileY: 13.6, id: 'prop.farm.trough', layer: 'cache', district: 'farm', walkBlock: true },
+    // W8.3b (AD-P5) — the farm, out of the town on the north shore: the
+    // clearing at the north wood's edge between the west cliff and the
+    // windmill, facing the lagoon (it stood on the lagoon lawn behind the
+    // Archive, which hid it; the Hourglass Belfry it replaced here took the
+    // chapel's place). Dovecote, scarecrow and two crop beds fenced on their
+    // back (wood-side) edges, the skeps and the laundry line beside them,
+    // and a small paddock east of the beds (gate, back rail, trough) with the
+    // hay cart at its foot. Fences only run along back edges, so anything
+    // inside draws in front of them. Cache-baked in back-to-front order
+    // (tileX + tileY): the bake draws them in list order. The farm clearings
+    // (SCENERY_CLEARINGS) keep the wood's trunks off it.
+    { tileX: 2.7, tileY: 0.8, id: 'prop.farm.dovecote', layer: 'cache', district: 'farm', walkBlock: true },
+    { tileX: 3.7, tileY: 1.15, id: 'prop.fence.nwSe', layer: 'cache', district: 'farm', walkBlock: true },
+    { tileX: 3.3, tileY: 1.6, id: 'prop.farm.scarecrow', layer: 'cache', district: 'farm', walkBlock: true },
+    { tileX: 2.8, tileY: 2.3, id: 'prop.fence.neSw', layer: 'cache', district: 'farm', walkBlock: true },
+    { tileX: 4.1, tileY: 1.9, id: 'prop.farm.cropRows.long', layer: 'cache', district: 'farm', walkBlock: true },
+    { tileX: 3.4, tileY: 2.9, id: 'prop.farm.beehives', layer: 'cache', district: 'farm', walkBlock: true },
+    { tileX: 5.55, tileY: 1.2, id: 'prop.laundryLine', layer: 'cache', district: 'farm', walkBlock: true },
+    { tileX: 5.2, tileY: 2.6, id: 'prop.farm.cropRows.short', layer: 'cache', district: 'farm', walkBlock: true },
+    { tileX: 5.6, tileY: 3.3, id: 'prop.farm.hayWagon', layer: 'cache', district: 'farm', walkBlock: true },
+    { tileX: 6.6, tileY: 2.8, id: 'prop.fence.gate', layer: 'cache', district: 'farm', walkBlock: true },
+    { tileX: 7.5, tileY: 2.05, id: 'prop.fence.nwSe', layer: 'cache', district: 'farm', walkBlock: true },
+    { tileX: 7.6, tileY: 2.8, id: 'prop.farm.trough', layer: 'cache', district: 'farm', walkBlock: true },
     ...VILLAGE_NIGHT_LAMPS,
 ];
 
@@ -1018,34 +1027,31 @@ export const SHORE_FAUNA = [
 // seeded `holdS` span, then walks to the next at `speed` tiles/s (a sheep
 // moves about a tile a minute), on its loop forever. Every point is open
 // ground clear of visit/queue tiles, rest seats and scenic points: the
-// paddock between the Archive and Command (OpusDressMarketFarm's fences,
-// trough and crops kept clear) — the cow at the trough's front east of the
-// gate (drinking, then a step back to face out), the sheep in front of the
-// gate leaf and the goat at the hay cart, none over a gate post or a rail —
-// the hens in front of it, the dog at the Forge's front and the cat on the
-// Archive plaza. The livestock region draws above every building, so no
-// pose may overlap the art of a building it stands behind
-// (livestock-routes.test.mjs): since CM-1 put Command at 13,14, its west
-// tower and spire rise in front of the paddock's east end, so the cow and
-// the hens keep west of that tower. `face` is the facing held at a point
-// when it differs from the arriving walk. `tailFaces` lists the downwind
-// facings an actor may hold tail to the rain (QW-3; both when omitted): a
-// cow facing west would cross that tower, so it turns tail only to a wind
-// toward the east. Listed in draw priority: the zoom cap keeps the first N
-// (livestockBudget).
+// farm's paddock on the north shore (its fences, trough and crops kept
+// clear) — the cow at the trough's front east of the gate (drinking, then
+// a step back to face out), the sheep in front of the gate leaf and the
+// goat at the hay cart, none over a gate post or a rail — the hen by the
+// skeps west of the cart, the dog at the Forge's front and the cat on the
+// Archive plaza. The livestock region draws above every building and tree,
+// so no pose may overlap the art of a building it stands behind
+// (livestock-routes.test.mjs), and the farm clearings keep the wood's
+// trunks off the farm. `face` is the facing held at a point when it
+// differs from the arriving walk. `tailFaces` lists the downwind facings an
+// actor may hold tail to the rain (QW-3; both when omitted). Listed in draw
+// priority: the zoom cap keeps the first N (livestockBudget).
 export const LIVESTOCK_ROUTES = [
-    { id: 'cow', sprite: 'prop.fauna.cow', speed: 0.16, holdS: [34, 70], phase: 0.12, kind: 'grazer', tailFaces: ['east'],
-        points: [{ tileX: 9.25, tileY: 13.95 }, { tileX: 9.35, tileY: 14.2 }] },
+    { id: 'cow', sprite: 'prop.fauna.cow', speed: 0.16, holdS: [34, 70], phase: 0.12, kind: 'grazer',
+        points: [{ tileX: 7.95, tileY: 3.15 }, { tileX: 8.05, tileY: 3.4 }] },
     { id: 'sheep', sprite: 'prop.fauna.sheep', speed: 0.18, holdS: [26, 58], phase: 0.57, kind: 'grazer',
-        points: [{ tileX: 8.72, tileY: 14.41, face: 'east' }, { tileX: 8.75, tileY: 14.63, face: 'south' }] },
+        points: [{ tileX: 7.42, tileY: 3.61, face: 'east' }, { tileX: 7.45, tileY: 3.83, face: 'south' }] },
     { id: 'goat', sprite: 'prop.fauna.goat', speed: 0.22, holdS: [20, 44], phase: 0.31, kind: 'grazer',
-        points: [{ tileX: 8.05, tileY: 14.3, face: 'east' }, { tileX: 8.1, tileY: 14.48, face: 'south' }] },
+        points: [{ tileX: 6.75, tileY: 3.5, face: 'east' }, { tileX: 6.8, tileY: 3.68, face: 'south' }] },
     { id: 'dog', sprite: 'prop.fauna.dog', speed: 0.55, holdS: [24, 60], phase: 0.44, kind: 'roamer', night: 'away', wet: 'away',
         points: [{ tileX: 26.4, tileY: 29.45, face: 'south' }, { tileX: 29.3, tileY: 29.45, face: 'west' }] },
     { id: 'cat', sprite: 'prop.fauna.cat', speed: 0.4, holdS: [40, 90], phase: 0.73, kind: 'roamer', night: 'roam', wet: 'away',
         points: [{ tileX: 6.7, tileY: 20.5, face: 'south' }, { tileX: 8.8, tileY: 20.6, face: 'south' }] },
     { id: 'hen-b', sprite: 'prop.fauna.chicken', speed: 0.3, holdS: [10, 24], phase: 0.66, kind: 'hen', night: 'away', wet: 'away',
-        points: [{ tileX: 9.75, tileY: 15.05 }, { tileX: 9.4, tileY: 14.9 }, { tileX: 9.9, tileY: 15.55 }] },
+        points: [{ tileX: 4.4, tileY: 3.5 }, { tileX: 4.15, tileY: 3.3 }, { tileX: 4.6, tileY: 3.85 }] },
 ];
 
 // W8.4a (AW-P15) — the `deer-at-dawn` ambient event (AmbientEvents,

@@ -21,9 +21,7 @@
 //
 // Run it after anything that rebuilds a target from its raw candidate
 // (finish-isle-landmarks.mjs, bake-hourglass-belfry.mjs), after
-// harmonize-roofs.mjs. A new target joins TARGETS once it is outlined; the
-// wayside chapel joined with its MB-6 redraw, whose pure-black line the
-// finish already turns into the ink.
+// harmonize-roofs.mjs. A new target joins TARGETS once it is outlined.
 //
 // Usage:
 //   node scripts/sprites/outline-landmarks.mjs [--id=<sprite id>[,<id>…]] [--dry-run]
@@ -34,7 +32,7 @@ import { join } from 'node:path';
 import { PNG } from 'pngjs';
 import { pathForEntry, spritesRoot } from './manifest-utils.mjs';
 
-const TARGETS = Object.freeze(['prop.hourglassBelfry', 'prop.windmill', 'prop.waysideChapel']);
+const TARGETS = Object.freeze(['prop.hourglassBelfry', 'prop.windmill']);
 const OUTLINE_INK = Object.freeze([0x06, 0x04, 0x02]);
 const OUTLINE_LUMA = 8;      // #060402–#040404: already the outline
 const CHECK_INK_LUMA = 24;   // harmonize-roofs' --check ink
