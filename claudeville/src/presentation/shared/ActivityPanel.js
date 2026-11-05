@@ -437,6 +437,7 @@ const BEHAVIOR_PHASE_LABELS = Object.freeze({
     researching: 'Researching',
     testing: 'Testing',
     waiting: 'Waiting',
+    watching: 'Watching',
 });
 
 const AGENT_GOAL_LABELS = Object.freeze({

@@ -893,6 +893,7 @@ const PHASE_MOTION = Object.freeze({
     git: { dwell: 0.88, speed: 1.1 },
     'quota/resource': { dwell: 1.22, speed: 0.9 },
     waiting: { dwell: 1.35, speed: 0.84 },
+    watching: { dwell: 1.35, speed: 0.84 },
 });
 const MIN_INTENT_STABLE_MS = 2200;
 const MAX_INTENT_STABLE_MS = 12000;

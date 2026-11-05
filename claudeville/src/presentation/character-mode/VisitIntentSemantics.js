@@ -7,6 +7,8 @@ export const WORKING_PHASES = Object.freeze([
     'git',
     'quota/resource',
     'waiting',
+    // v0.61.2 — keeping watch at the Lighthouse (a wait, a CI run).
+    'watching',
 ]);
 
 export const AGENT_GOALS = Object.freeze([

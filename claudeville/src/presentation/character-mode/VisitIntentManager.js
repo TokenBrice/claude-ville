@@ -98,6 +98,8 @@ function stringifyToolInput(input) {
 
 function phaseFromToolClassification(tool, input, classified) {
     const building = String(classified?.building || '').toLowerCase();
+    // A wait or a CI run reads as watching, whatever the command polls.
+    if (building === 'watchtower') return 'watching';
     const text = [
         tool,
         stringifyToolInput(input),

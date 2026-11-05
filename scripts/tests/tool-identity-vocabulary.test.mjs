@@ -18,6 +18,28 @@ const CASES = [
     ['Agent', 'Night and lighting lane', 'command', 'delegate-task', 'delegate'],
     // Waiting on a condition is a lookout's job.
     ['Monitor', 'until curl -s localhost:4000; do sleep 2; done', 'watchtower', 'watch-condition', 'watch'],
+    // v0.61.2 — every wait keeps watch at the Lighthouse, as the fleet runs it.
+    ['Bash', 'until grep -q "^exit" /tmp/run.log; do sleep 5; done', 'watchtower', 'watch-condition', 'watch'],
+    ['Bash', 'until curl -s localhost:4000; do sleep 2; done', 'watchtower', 'watch-condition', 'watch'],
+    ['Bash', 'timeout 100 tail -f /dev/null; echo "wait done"', 'watchtower', 'watch-condition', 'watch'],
+    ['Bash', 'sleep 240; cat /tmp/out.txt', 'watchtower', 'watch-condition', 'watch'],
+    ['Bash', 'cd /work/repo && sleep 30 && ls', 'watchtower', 'watch-condition', 'watch'],
+    ['Bash', 'while true; do curl -s localhost:4000 && break; sleep 1; done', 'watchtower', 'watch-condition', 'watch'],
+    ['Bash', 'journalctl --user -u app -f', 'watchtower', 'watch-condition', 'watch'],
+    ['exec_command', '{"cmd":"until test -f out.png; do sleep 1; done"}', 'watchtower', 'watch-condition', 'watch'],
+    ['sleep', '{"duration_ms":20000}', 'watchtower', 'watch-condition', 'watch'],
+    ['ScheduleWakeup', 'watching CI run', 'watchtower', 'watch-condition', 'watch'],
+    // CI runs and checks are the pushed branch's ships at sea.
+    ['Bash', 'gh run watch 41727392797 --exit-status --interval 20', 'watchtower', 'watch-ci', 'watch checks'],
+    ['Bash', 'gh pr checks 1854 --repo owner/repo', 'watchtower', 'watch-ci', 'watch checks'],
+    ['Bash', 'sleep 20; gh run list --branch main --limit 6', 'watchtower', 'watch-ci', 'watch checks'],
+    ['exec', 'const r = await tools.exec_command({cmd:"gh run view 41375551646 --json status"})', 'watchtower', 'watch-ci', 'watch checks'],
+    // The Harbor keeps sending ships; a loop over input stays a read.
+    ['Bash', 'git push origin main', 'harbor', 'git-flow', 'git'],
+    ['Bash', 'gh workflow run ci.yml', 'harbor', 'git-flow', 'git'],
+    ['Bash', 'gh pr create --fill', 'harbor', 'git-flow', 'git'],
+    ['Bash', 'git commit -m "fix the sleep 5 timer"', 'harbor', 'git-flow', 'git'],
+    ['Bash', 'while read f; do wc -l "$f"; done < files.txt', 'archive', 'search-local', 'search'],
     // This repo's own gates are verification.
     ['Bash', 'node --test scripts/tests/a.test.mjs', 'taskboard', 'verify', 'verify'],
     ['Bash', 'npm run validate:quick', 'taskboard', 'verify', 'verify'],

@@ -107,6 +107,20 @@ const TOOL_METADATA = Object.freeze({
         category: 'task',
         actionLabel: 'Watching',
     },
+    // Codex pauses for a span, Claude Code until its next wake-up: both wait
+    // on the clock, at the Lighthouse like any other watch.
+    sleep: {
+        classification: { building: 'watchtower', reason: 'watch-condition', confidence: 0.8 },
+        icon: '🔭',
+        category: 'task',
+        actionLabel: 'Watching',
+    },
+    ScheduleWakeup: {
+        classification: { building: 'watchtower', reason: 'watch-condition', confidence: 0.8 },
+        icon: '🔭',
+        category: 'task',
+        actionLabel: 'Watching',
+    },
     TeamCreate: {
         classification: { building: 'command', reason: 'form-team', confidence: 0.96 },
         icon: '👥',
@@ -336,6 +350,15 @@ const URL_PATTERN = /https?:\/\/[^\s"'<>`]+/i;
 const PLAYWRIGHT_PLUGIN_TOOL_PATTERN = /^mcp__plugin_playwright_/;
 const LOCAL_PREVIEW_INPUT_PATTERN = /localhost:|127\.0\.0\.1:/;
 
+// The Lighthouse keeps the watch on what the agent waits for (v0.61.2).
+// CI: a pushed branch's runs and checks, its ships at sea. The Harbor keeps
+// commits, pushes, PRs, releases and workflow dispatch. Condition: a command
+// that opens with a wait or polls on one: sleep, an until/while poll, watch,
+// or `timeout N tail -f`, Claude Code's stand-in for a blocked sleep. A
+// command that follows a log counts too. "Opens" is the command's head, any
+// `;`/`&&`/`|` segment's head, or the `cmd` of a Codex exec payload.
+const CI_WATCH_COMMAND_PATTERN = /\bgh\s+(run\s+(watch|view|list)|pr\s+checks)\b/;
+const WATCH_COMMAND_PATTERN = /(?:^|[;&|]\s*|\bcmd"?\s*:\s*\\?")(?:sleep\s+\d|timeout\s+\d+\s+tail\s+-f\b|until\s|while\s+(?!read\b|ifs\b)|watch\s+-|inotifywait\b)|\btail\s+-[fF]\b|\bjournalctl\b[^|;&]*\s-f\b/;
 const GIT_FLOW_COMMAND_PATTERN = /\b(git\s+(status|diff|show|log|branch|rev-list|fetch|pull|merge|rebase|commit|push|tag)|gh\s+(pr\s+create|release|workflow|run|repo)|wrangler\s+deploy|vercel\s+deploy|npm\s+run\s+deploy)\b/;
 const VALIDATION_COMMAND_PATTERN = /\b(npm\s+(test|run\s+(test|check|lint|build|validate|verify|gate|sprites:validate|sprites:visual-diff))|node\s+--(check|test)|xargs\s+-0\s+-n1\s+node\s+--check|pytest|vitest|playwright\s+test)\b/;
 const BROWSER_PREVIEW_COMMAND_PATTERN = /\b(npm\s+run\s+dev|node\s+claudeville\/server\.js|playwright|browser|chrome|chromium|firefox|screenshot|localhost|127\.0\.0\.1)\b/;
@@ -517,6 +540,12 @@ export function classifyShellInput(input) {
     const text = normalizeToolInput(input);
     if (!text) return null;
 
+    if (CI_WATCH_COMMAND_PATTERN.test(text)) {
+        return { building: 'watchtower', reason: 'watch-ci', confidence: 0.86, label: compactToolLabel(text, 'checks') };
+    }
+    if (WATCH_COMMAND_PATTERN.test(text)) {
+        return { building: 'watchtower', reason: 'watch-condition', confidence: 0.84, label: compactToolLabel(text, 'watch') };
+    }
     if (GIT_FLOW_COMMAND_PATTERN.test(text)) {
         return { building: 'harbor', reason: 'git-flow', confidence: 0.9, label: compactToolLabel(text, 'git') };
     }
@@ -844,6 +873,7 @@ const TOOL_VERBS = Object.freeze({
     'plan-mode-exit': 'plan',
     verify: 'verify',
     'watch-condition': 'watch',
+    'watch-ci': 'watch checks',
     'run-shell': 'run',
     'git-flow': 'git',
     'github-flow': 'github',

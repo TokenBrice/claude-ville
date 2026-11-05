@@ -269,6 +269,24 @@ test('busy or pressured fleets send no unrelated sentries to the Lighthouse or t
     assert.ok(intents.some(intent => intent.agentId === 'busy-0' && intent.reason === 'context-pressure'));
 });
 
+// v0.61.2 — a session's own wait or CI watch is its evidence for the
+// Lighthouse, and its visit reads as watching, whatever the command polls.
+test('a session that waits or watches CI keeps watch at the Lighthouse', t => {
+    const manager = new VisitIntentManager({ now: () => NOW });
+    t.after(() => manager.dispose());
+    const watchers = [
+        worker({ id: 'ci-watch', currentTool: 'Bash', currentToolInput: 'gh run watch 41727392797 --exit-status' }),
+        worker({ id: 'log-wait', currentTool: 'Bash', currentToolInput: 'until grep -q "^exit" /tmp/run.log; do sleep 5; done' }),
+        worker({ id: 'codex-sleep', provider: 'codex', currentTool: 'sleep', currentToolInput: '{"duration_ms":20000}' }),
+    ];
+    manager.reconcile(watchers, NOW);
+    for (const agent of watchers) {
+        const intent = manager.getIntentForAgent(agent.id, NOW);
+        assert.equal(intent?.building, 'watchtower', `${agent.id} keeps watch`);
+        assert.equal(intent?.phase, 'watching', `${agent.id} reads as watching`);
+    }
+});
+
 // AG-3: an unrecognized shell command is no evidence of a place.
 test('unrecognized shell commands work in the home district, not at Command', t => {
     const agent = worker({ id: 'shell-worker', sessionId: 'shell-worker', currentTool: 'Bash', currentToolInput: 'echo ready' });
