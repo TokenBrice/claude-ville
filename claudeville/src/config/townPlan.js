@@ -194,7 +194,10 @@ export const VILLAGE_WALL_ROUTES = Object.freeze([
 
 // `width` is in tiles (1 or 2). The three arms that leave the Command plaza
 // are 2-wide so the civic core reads as a hub with radiating avenues; the
-// rest of the network stays single-file.
+// rest of the network stays single-file. v0.61.2 — every route is laid in
+// the one street stone; `material` names its place in the network: `avenue`
+// and `dock` are the busy walk (trees keep a clear verge), `lane` a quieter
+// way (the production row, door spurs, the gate approach).
 export const TOWN_ROAD_ROUTES = Object.freeze([
     {
         id: 'north-bank-promenade',
@@ -222,7 +225,7 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
     },
     {
         id: 'production-row',
-        material: 'dirt',
+        material: 'lane',
         width: 1,
         points: [[6, 34], [13, 34], [18, 38], [22, 37], [28, 37], [28, 31], [25, 29]],
     },
@@ -282,8 +285,8 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
 // tinted by an alpha wash. `surface` picks the ground ramp and texture,
 // `edge` the low baked edging where the yard meets grass, and `paved` whether
 // footfall/lane material reads it as stone (avenue) or earth (dirt).
-//   flag    dressed flagstone (plaza ramp, one step darker than Command's)
-//   gravel  crushed stone (road ramp, fine texture)
+//   flag    dressed flagstone (plaza ramp, at the street's value)
+//   gravel  crushed stone (road ramp, the street's tone, fine texture)
 //   cinder  packed dark earth with slag flecks (dirt ramp, low)
 //   earth   trodden yard earth (dirt ramp)
 export const YARD_MATERIALS = Object.freeze({

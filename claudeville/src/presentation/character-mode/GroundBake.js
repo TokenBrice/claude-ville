@@ -18,13 +18,18 @@
 //   3. C1 ramps      every texel is a stop of ART_RAMPS (GROUND_RAMP_KEYS):
 //                    index = 2 + texture z + macro drift + Bayer 2×2. Grass is
 //                    the lowest land value, paths about +1.5 steps, the
-//                    Command plaza the lightest paved floor.
+//                    Command plaza the lightest paved floor, one step over
+//                    the one street stone (v0.61.2: gravel at the street's
+//                    tone, flagstone at its value).
 //   4. macro fields  6–7-tile value drift plus district-anchored warmth:
 //                    drier/warmer grass by the workshops, lusher/cooler under
 //                    the northern canopy and by the scholars' buildings; the
 //                    forest floor a further half ramp step darker (5.4).
+//                    Paving is laid stone: it takes PAVING_DRIFT_SHARE of the
+//                    drift, so one street keeps one tone (v0.61.2).
 //   5. contact AO    ramp-step darkening outside building footprints (longer
-//                    on the down-light sides), under tree canopies and props.
+//                    on the down-light sides), under tree canopies and props;
+//                    on paving at most PAVING_AO_CAP (about one step).
 //   6. thresholds    authored worn-earth corridors from each door along its
 //                    frontage spur, lighter along the trodden centre line.
 //   7. yards (4.7)   each district's frontage apron in its own material
@@ -153,12 +158,19 @@ const SURFACES = [
     /* sand   */ { ramp: SAND, tex: 'sand', offset: -0.2, contrast: 0.8, cls: GROUND_CLASS.SAND },
     /* dirt   */ { ramp: DIRT, tex: 'dirt', offset: 0, contrast: 1.0, cls: GROUND_CLASS.DIRT },
     /* road   */ { ramp: ROAD, tex: 'cobble', offset: 0.1, contrast: 0.95, cls: GROUND_CLASS.ROAD },
-    /* plaza  */ { ramp: PLAZA, tex: 'square', offset: 0.9, contrast: 0.85, cls: GROUND_CLASS.PLAZA },
-    /* flag   */ { ramp: PLAZA, tex: 'flag', offset: -0.7, contrast: 0.95, cls: GROUND_CLASS.PLAZA },
-    /* gravel */ { ramp: ROAD, tex: 'gravel', offset: -0.2, contrast: 0.75, cls: GROUND_CLASS.ROAD },
+    /* plaza  */ { ramp: PLAZA, tex: 'square', offset: -0.35, contrast: 0.8, cls: GROUND_CLASS.PLAZA },
+    /* flag   */ { ramp: PLAZA, tex: 'flag', offset: -1.05, contrast: 0.95, cls: GROUND_CLASS.PLAZA },
+    /* gravel */ { ramp: ROAD, tex: 'gravel', offset: 0.1, contrast: 0.75, cls: GROUND_CLASS.ROAD },
     /* cinder */ { ramp: DIRT, tex: 'cinder', offset: -1.5, contrast: 1.0, cls: GROUND_CLASS.DIRT },
     /* earth  */ { ramp: DIRT, tex: 'earth', offset: 0.3, contrast: 0.95, cls: GROUND_CLASS.DIRT },
 ];
+
+// v0.61.2 — laid stone keeps one tone: paving takes this share of the macro
+// value drift (the grass's dry/lush field and the forest floor) and a
+// contact-shadow weight of at most PAVING_AO_CAP (× 3.2 ≈ one ramp step).
+const PAVING_DRIFT_SHARE = 0.15;
+const PAVING_AO_CAP = 0.32;
+const isPavingSurface = (s) => s === S_ROAD || s === S_PLAZA || s === S_FLAG || s === S_GRAVEL;
 
 const SURFACE_EDGE = new Array(SURFACES.length).fill(null);
 SURFACE_EDGE[S_PLAZA] = 'kerb';
@@ -725,8 +737,9 @@ export function bakeGround(r) {
             const macro = lerp4(drift.value);
             const dither = BAYER[(row & 1) * 2 + (col & 1)];
 
-            let k = 2 + S.offset + contextStep + z * S.contrast + macro + dither * 0.75
-                + lip * 0.8 - tuck * 1.0 - ao * 3.2 + wearStep;
+            const paving = isPavingSurface(surface);
+            let k = 2 + S.offset + contextStep + z * S.contrast + (paving ? macro * PAVING_DRIFT_SHARE : macro)
+                + dither * 0.75 + lip * 0.8 - tuck * 1.0 - (paving ? Math.min(ao, PAVING_AO_CAP) : ao) * 3.2 + wearStep;
             if (surface === S_GRASS) k -= FOREST_FLOOR_STEP * forestW;
             k = k < 0 ? 0 : k > 4 ? 4 : Math.round(k);
 

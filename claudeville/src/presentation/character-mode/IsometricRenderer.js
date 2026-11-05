@@ -828,6 +828,7 @@ export class IsometricRenderer {
         this.townSquareTiles = new Set();
         this.mainAvenueTiles = new Set();
         this.dirtPathTiles = new Set();
+        this.busyWalkTiles = new Set();
         this.commandCenterRoadTiles = new Set();
         this._generatePaths();
 
@@ -859,10 +860,12 @@ export class IsometricRenderer {
         }
         this._generateFrontageSpurs();
         // Re-classify so newly-pathified bridge and spur tiles take their
-        // material. _classifyRoadMaterials *adds* to mainAvenueTiles and
-        // dirtPathTiles, so clear first to keep the two sets exclusive.
+        // material. _classifyRoadMaterials *adds* to mainAvenueTiles,
+        // dirtPathTiles and busyWalkTiles, so clear first to keep the paved and
+        // earth sets exclusive.
         this.mainAvenueTiles.clear();
         this.dirtPathTiles.clear();
+        this.busyWalkTiles.clear();
         const command = this._getCommandBuilding();
         const plazaHub = this._commandPlazaHub(command);
         this._classifyRoadMaterials(plazaHub.x, plazaHub.y);
@@ -1055,11 +1058,11 @@ export class IsometricRenderer {
         return keys;
     }
 
-    // 3.3 — every door connects to the road network by a short worn spur
-    // (the yard ring used to do this implicitly). Runs once water is known:
-    // a breadth-first walk from the entrance over dry, unbuilt tiles to the
-    // nearest authored road, plaza or bridge tile. Spur tiles are real path
-    // tiles, so routing and the painted ground agree.
+    // 3.3 — every door connects to the road network by a short spur, a paved
+    // `lane` since v0.61.2 (the yard ring used to do this implicitly). Runs
+    // once water is known: a breadth-first walk from the entrance over dry,
+    // unbuilt tiles to the nearest authored road, plaza or bridge tile. Spur
+    // tiles are real path tiles, so routing and the painted ground agree.
     _generateFrontageSpurs() {
         this.frontageSpurs = [];
         const footprints = new Set();
@@ -1103,7 +1106,7 @@ export class IsometricRenderer {
                 tiles.unshift(this._parseTileKey(key));
                 if (key === found) continue;
                 this.pathTiles.add(key);
-                if (!this.roadMaterialTiles.has(key)) this.roadMaterialTiles.set(key, 'dirt');
+                if (!this.roadMaterialTiles.has(key)) this.roadMaterialTiles.set(key, 'lane');
             }
             this.frontageSpurs.push({ type: b.type, tiles });
         }
@@ -1185,18 +1188,18 @@ export class IsometricRenderer {
 
     _generatePlannedRoads() {
         for (const route of TOWN_ROAD_ROUTES) {
-            this._addRoadPolyline(route.points, route.width || 1, route.material || 'dirt');
+            this._addRoadPolyline(route.points, route.width || 1, route.material || 'lane');
         }
     }
 
-    _addRoadPolyline(points = [], width = 1, material = 'dirt') {
+    _addRoadPolyline(points = [], width = 1, material = 'lane') {
         if (points.length < 2) return;
         for (let i = 0; i < points.length - 1; i++) {
             this._addRoadSegment(points[i], points[i + 1], width, material);
         }
     }
 
-    _addRoadSegment(from, to, width = 1, material = 'dirt') {
+    _addRoadSegment(from, to, width = 1, material = 'lane') {
         const [fromX, fromY] = from;
         const [toX, toY] = to;
         const steps = Math.max(Math.abs(toX - fromX), Math.abs(toY - fromY), 1) * 2;
@@ -1222,19 +1225,19 @@ export class IsometricRenderer {
     }
 
     _generateGateApproach() {
-        this._addRoadPolyline([[18, 38], [20, 38], [21, 38], [20, 39], [18, 39]], 1, 'dirt');
+        this._addRoadPolyline([[18, 38], [20, 38], [21, 38], [20, 39], [18, 39]], 1, 'lane');
         for (let x = 18; x <= 21; x++) {
             for (let y = 38; y <= 39; y++) {
                 if (!this._inMapBounds(x, y)) continue;
                 const key = `${x},${y}`;
                 this.pathTiles.add(key);
-                this._markRoadMaterial(key, 'dirt');
+                this._markRoadMaterial(key, 'lane');
             }
         }
     }
 
     // Records the authored material of a route tile. Where routes cross the
-    // paved one wins (avenue > dock > dirt), so material changes only at
+    // busier one wins (avenue > dock > lane), so material changes only at
     // junctions; `_classifyRoadMaterials` turns this into the tile sets.
     _markRoadMaterial(key, material) {
         const current = this.roadMaterialTiles.get(key);
@@ -1307,10 +1310,13 @@ export class IsometricRenderer {
         }
     }
 
-    // 3.3 — material follows the authored route that laid the tile (see
-    // `_markRoadMaterial`), so it changes only at junctions: no noise field,
-    // no (x + y) stripe. Tiles around the plaza hub, bridges and paved yards
-    // are avenue; yards, frontage spurs and fallback links are earth.
+    // v0.61.2 — every lane is laid in the street stone: a path tile is paved
+    // (`mainAvenueTiles`) unless it is an unpaved yard's own apron (the Task
+    // board's earth, the Forge's cinder, the gravel yards) that no avenue or
+    // dock crosses; the ground bake lays those in their yard material. The
+    // busy walk (`busyWalkTiles`: avenue and dock routes, the plaza hub,
+    // bridges and paved yards) is the authored avenue network, as 3.3 classed
+    // it, and alone keeps the trees' clear verge (`_nearMainAvenue`).
     _classifyRoadMaterials(plazaHubX, plazaHubY) {
         for (const key of this.pathTiles) {
             if (this.townSquareTiles.has(key)) continue;
@@ -1321,11 +1327,13 @@ export class IsometricRenderer {
             const dy = (y - plazaHubY) / 3.0;
             const nearPlaza = (dx * dx + dy * dy) <= 1.0;
             const material = this.roadMaterialTiles.get(key);
-            const yard = material ? null : this.yardTiles?.get(key);
-            const paved = material === 'avenue' || material === 'dock' || nearPlaza
+            const yard = this.yardTiles?.get(key);
+            const busy = material === 'avenue' || material === 'dock' || nearPlaza
                 || this.bridgeTiles?.has(key)
-                || Boolean(yard && YARD_MATERIALS[yard]?.paved);
-            if (paved) this.mainAvenueTiles.add(key);
+                || Boolean(!material && yard && YARD_MATERIALS[yard]?.paved);
+            const unpavedYard = Boolean(yard && YARD_MATERIALS[yard] && !YARD_MATERIALS[yard].paved);
+            if (busy) this.busyWalkTiles.add(key);
+            if (busy || !unpavedYard) this.mainAvenueTiles.add(key);
             else this.dirtPathTiles.add(key);
         }
     }
@@ -9928,12 +9936,13 @@ export class IsometricRenderer {
     }
 
     // The busiest walk keeps a clear verge: no trunk within
-    // AVENUE_TREE_CLEARANCE tiles of a main-avenue tile.
+    // AVENUE_TREE_CLEARANCE tiles of a busy-walk tile (the authored avenue
+    // network; a paved lane keeps its trees).
     _nearMainAvenue(tileX, tileY) {
         const reach = AVENUE_TREE_CLEARANCE;
         for (let y = Math.floor(tileY - reach); y <= Math.floor(tileY + reach); y++) {
             for (let x = Math.floor(tileX - reach); x <= Math.floor(tileX + reach); x++) {
-                if (!this.mainAvenueTiles.has(`${x},${y}`)) continue;
+                if (!this.busyWalkTiles?.has(`${x},${y}`)) continue;
                 const dx = tileX - Math.max(x, Math.min(tileX, x + 1));
                 const dy = tileY - Math.max(y, Math.min(tileY, y + 1));
                 if (dx * dx + dy * dy < reach * reach) return true;
