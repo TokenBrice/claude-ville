@@ -3,7 +3,12 @@ import assert from 'node:assert/strict';
 
 import { WebSocketClient } from '../../claudeville/src/infrastructure/WebSocketClient.js';
 import { eventBus } from '../../claudeville/src/domain/events/DomainEvent.js';
-import { ClientPerfMetrics } from '../../claudeville/src/presentation/shared/ClientPerfMetrics.js';
+import {
+  ClientPerfMetrics,
+  createHeapTrend,
+  recordHeapSample,
+  summarizeHeapTrend,
+} from '../../claudeville/src/presentation/shared/ClientPerfMetrics.js';
 
 function frameDriver() {
     let nextHandle = 1;
@@ -180,6 +185,133 @@ test('long tasks and event timing are bounded and attributed to observed windows
     metrics.stop();
     assert.equal(longTaskObserver.disconnected, true);
     assert.equal(eventObserver.disconnected, true);
+});
+
+test('heap trend min/max track only the samples inside the rolling window', () => {
+    const trend = createHeapTrend(8);
+    assert.equal(recordHeapSample(trend, 0, 100), true);
+    assert.equal(recordHeapSample(trend, 1000, 300), true);
+    assert.equal(recordHeapSample(trend, 2000, 200), true);
+    assert.deepEqual(summarizeHeapTrend(trend, 2000), {
+        sampleCount: 3,
+        lastBytes: 200,
+        lastAt: 2000,
+        minBytes: 100,
+        maxBytes: 300,
+    });
+    // The oldest sample left the window: it no longer anchors the minimum.
+    assert.deepEqual(summarizeHeapTrend(trend, 2000, 1500), {
+        sampleCount: 2,
+        lastBytes: 200,
+        lastAt: 2000,
+        minBytes: 200,
+        maxBytes: 300,
+    });
+    // Every sample aged out: min/max go null, while the last sample stays
+    // reported with its timestamp so staleness stays readable.
+    const empty = summarizeHeapTrend(trend, 620_000);
+    assert.equal(empty.sampleCount, 0);
+    assert.equal(empty.minBytes, null);
+    assert.equal(empty.maxBytes, null);
+    assert.equal(empty.lastBytes, 200);
+    assert.equal(empty.lastAt, 2000);
+});
+
+test('heap trend ring capacity bounds retention and rejects invalid samples', () => {
+    const trend = createHeapTrend(4);
+    for (let index = 0; index < 6; index++) {
+        assert.equal(recordHeapSample(trend, index * 1000, 10 * (index + 1)), true);
+    }
+    assert.equal(trend.count, 4);
+    assert.deepEqual(summarizeHeapTrend(trend, 5000), {
+        sampleCount: 4,
+        lastBytes: 60,
+        lastAt: 5000,
+        minBytes: 30,
+        maxBytes: 60,
+    });
+    assert.equal(recordHeapSample(trend, Number.NaN, 5), false);
+    assert.equal(recordHeapSample(trend, 6000, -1), false);
+    assert.equal(recordHeapSample(trend, 6000, Number.NaN), false);
+    assert.equal(summarizeHeapTrend(null).sampleCount, 0);
+    assert.equal(recordHeapSample(null, 0, 1), false);
+});
+
+test('heap trend samples at most once per second on the frame tick', () => {
+    let now = 0;
+    const frames = frameDriver();
+    const previousDocument = globalThis.document;
+    globalThis.document = { getElementsByTagName: () => ({ length: 42 }) };
+    let usedBytes = 20_000_000;
+    const metrics = new ClientPerfMetrics({
+        clock: () => now,
+        requestFrame: frames.requestFrame,
+        cancelFrame: frames.cancelFrame,
+        readMemory: () => ({
+            usedJSHeapSize: usedBytes,
+            totalJSHeapSize: usedBytes + 1_000_000,
+            jsHeapSizeLimit: 4_000_000_000,
+        }),
+    });
+    try {
+        // Before start(): the readout exists but holds no samples.
+        assert.equal(metrics.getSnapshot().memory.sampleCount, 0);
+        assert.equal(metrics.getDebugHelpers().memoryTrend().supported, true);
+
+        metrics.start();
+        for (let index = 1; index <= 10; index++) {
+            now = index * 250;
+            usedBytes = 20_000_000 + index * 1_000_000;
+            frames.tick(now);
+        }
+
+        const memory = metrics.getSnapshot().memory;
+        assert.equal(memory.supported, true);
+        // Ten frames at 250 ms took three samples (0.25 s, 1.25 s, 2.25 s),
+        // never one per frame.
+        assert.equal(memory.sampleCount, 3);
+        assert.equal(memory.lastAt, 2250);
+        assert.equal(memory.lastBytes, 29_000_000);
+        assert.equal(memory.minBytes, 21_000_000);
+        assert.equal(memory.maxBytes, 29_000_000);
+        assert.equal(memory.totalBytes, 30_000_000);
+        assert.equal(memory.limitBytes, 4_000_000_000);
+        assert.equal(memory.domNodes, 42);
+
+        // Stop retains the window; reset clears it.
+        metrics.stop();
+        assert.equal(metrics.getSnapshot().memory.sampleCount, 3);
+        metrics.reset();
+        const cleared = metrics.getSnapshot().memory;
+        assert.equal(cleared.sampleCount, 0);
+        assert.equal(cleared.lastBytes, null);
+        assert.equal(cleared.totalBytes, null);
+        assert.equal(cleared.domNodes, null);
+    } finally {
+        globalThis.document = previousDocument;
+    }
+});
+
+test('heap trend reports unsupported without performance.memory', () => {
+    let now = 0;
+    const frames = frameDriver();
+    const metrics = new ClientPerfMetrics({
+        clock: () => now,
+        requestFrame: frames.requestFrame,
+        cancelFrame: frames.cancelFrame,
+        readMemory: () => null,
+    });
+    metrics.start();
+    frames.tick(0);
+    now = 5000;
+    frames.tick(5000);
+    const memory = metrics.getSnapshot().memory;
+    assert.equal(memory.supported, false);
+    assert.equal(memory.sampleCount, 0);
+    assert.equal(memory.minBytes, null);
+    assert.equal(memory.maxBytes, null);
+    assert.equal(memory.domNodes, null);
+    metrics.stop();
 });
 
 test('bounded rings retain recent samples while counters retain totals', () => {

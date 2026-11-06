@@ -12,6 +12,12 @@ const FRAME_BUDGET_MS = 1000 / 60;
 const LONG_FRAME_MS = 50;
 export const FRAME_ENVELOPE_EMA_ALPHA = 0.125;
 export const FRAME_ENVELOPE_RING_CAPACITY = 120;
+// EN-1 — the JS-heap trend: one sample per second at most, on the frame tick,
+// retained for a rolling ten-minute window (the ring capacity is one sample
+// per second of that window).
+const HEAP_SAMPLE_INTERVAL_MS = 1000;
+const HEAP_WINDOW_MS = 600_000;
+const DEFAULT_HEAP_SAMPLES = 600;
 
 let lastClientPerfMetrics = null;
 
@@ -33,6 +39,12 @@ function defaultRequestFrame(callback) {
 
 function defaultCancelFrame(handle) {
     if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(handle);
+}
+
+// Chromium's non-standard heap reader; null elsewhere, and on Chromium before
+// the first measurement.
+function defaultReadMemory() {
+    return globalThis.performance?.memory || null;
 }
 
 function finite(value) {
@@ -215,6 +227,66 @@ export function writeBoundedRing(ring, value) {
     return dropped;
 }
 
+/**
+ * EN-1 — a rolling `usedJSHeapSize` trend. Samples are recorded in
+ * nondecreasing time order (the frame tick samples at most once per
+ * `HEAP_SAMPLE_INTERVAL_MS`); `summarizeHeapTrend` reports min/max over the
+ * retained window only, so a slow leak shows as a rising pair long before the
+ * ring's capacity matters.
+ */
+export function createHeapTrend(capacity = DEFAULT_HEAP_SAMPLES) {
+    const size = Math.max(1, Math.floor(Number(capacity) || 0));
+    return {
+        at: new Float64Array(size),
+        bytes: new Float64Array(size),
+        index: 0,
+        count: 0,
+        capacity: size,
+    };
+}
+
+export function recordHeapSample(trend, at, bytes) {
+    if (!trend) return false;
+    const time = Number(at);
+    const value = Number(bytes);
+    if (!Number.isFinite(time) || !Number.isFinite(value) || value < 0) return false;
+    trend.at[trend.index] = time;
+    trend.bytes[trend.index] = value;
+    trend.index += 1;
+    if (trend.index >= trend.capacity) trend.index = 0;
+    if (trend.count < trend.capacity) trend.count += 1;
+    return true;
+}
+
+export function summarizeHeapTrend(trend, now = NaN, windowMs = HEAP_WINDOW_MS) {
+    if (!trend || trend.count === 0) {
+        return { sampleCount: 0, lastBytes: null, lastAt: null, minBytes: null, maxBytes: null };
+    }
+    const start = trend.count < trend.capacity ? 0 : trend.index;
+    const lastIndex = (start + trend.count - 1) % trend.capacity;
+    const cutoff = Number.isFinite(now) ? now - windowMs : -Infinity;
+    let minBytes = Infinity;
+    let maxBytes = -Infinity;
+    let sampleCount = 0;
+    // Newest to oldest: the ring is time-ordered, so the first sample past the
+    // window ends the scan.
+    for (let offset = trend.count - 1; offset >= 0; offset--) {
+        const index = (start + offset) % trend.capacity;
+        if (trend.at[index] < cutoff) break;
+        const bytes = trend.bytes[index];
+        if (bytes < minBytes) minBytes = bytes;
+        if (bytes > maxBytes) maxBytes = bytes;
+        sampleCount++;
+    }
+    return {
+        sampleCount,
+        lastBytes: trend.bytes[lastIndex],
+        lastAt: trend.at[lastIndex],
+        minBytes: sampleCount > 0 ? minBytes : null,
+        maxBytes: sampleCount > 0 ? maxBytes : null,
+    };
+}
+
 export function createFrameEnvelope() {
     return {
         appUpdateMs: 0,
@@ -376,6 +448,11 @@ export function snapshotFrameEnvelope(envelope, extras) {
  * No observers, animation frames, or sample buffers are created until start()
  * is called. All retained samples are fixed-size rings so a long dashboard
  * session cannot grow memory just because diagnostics were enabled.
+ *
+ * While started, the frame tick also takes one `performance.memory` sample per
+ * second (EN-1): a rolling ten-minute `usedJSHeapSize` min/max plus the flat
+ * heap totals and document node count, in the snapshot's `memory` section and
+ * the `memoryTrend` debug helper, so a slow leak becomes visible.
  */
 export class ClientPerfMetrics {
     constructor({
@@ -391,11 +468,14 @@ export class ClientPerfMetrics {
         maxUpdateWindows = DEFAULT_UPDATE_WINDOWS,
         maxRenderWindows = DEFAULT_RENDER_WINDOWS,
         maxPendingDeltas = DEFAULT_PENDING_DELTAS,
+        maxHeapSamples = DEFAULT_HEAP_SAMPLES,
+        readMemory = defaultReadMemory,
     } = {}) {
         this._clock = typeof clock === 'function' ? clock : defaultNow;
         this._requestFrame = typeof requestFrame === 'function' ? requestFrame : defaultRequestFrame;
         this._cancelFrame = typeof cancelFrame === 'function' ? cancelFrame : defaultCancelFrame;
         this._PerformanceObserverClass = PerformanceObserverClass;
+        this._readMemory = typeof readMemory === 'function' ? readMemory : defaultReadMemory;
         this._limits = {
             deltaSamples: Math.max(1, Math.floor(maxDeltaSamples)),
             frameSamples: Math.max(1, Math.floor(maxFrameSamples)),
@@ -405,6 +485,7 @@ export class ClientPerfMetrics {
             updateWindows: Math.max(1, Math.floor(maxUpdateWindows)),
             renderWindows: Math.max(1, Math.floor(maxRenderWindows)),
             pendingDeltas: Math.max(1, Math.floor(maxPendingDeltas)),
+            heapSamples: Math.max(1, Math.floor(maxHeapSamples)),
         };
 
         this.enabled = false;
@@ -455,10 +536,17 @@ export class ClientPerfMetrics {
             maxDelayMs: 0,
             byName: {},
         };
+        // EN-1 — the heap trend and its flat counters. The ring allocates on
+        // the first eligible sample, so nothing is created before start().
+        this._heapTrend = null;
+        this._lastHeapSampleAt = null;
+        this._memorySupported = null;
+        this._memoryLast = { totalBytes: null, limitBytes: null, domNodes: null };
 
         this._onFrame = timestamp => this._handleFrame(timestamp);
         this._debugHelpers = {
             clientPerf: () => this.getSnapshot(),
+            memoryTrend: () => this._memorySnapshot(),
             startClientPerf: () => this.start(),
             stopClientPerf: () => this.stop(),
             resetClientPerf: () => this.reset(),
@@ -536,6 +624,9 @@ export class ClientPerfMetrics {
             maxDelayMs: 0,
             byName: {},
         };
+        this._heapTrend = null;
+        this._lastHeapSampleAt = null;
+        this._memoryLast = { totalBytes: null, limitBytes: null, domNodes: null };
     }
 
     beginMessage() {
@@ -701,6 +792,7 @@ export class ClientPerfMetrics {
                 byName: { ...this._inputTotals.byName },
                 samples: copyRecent(this._inputSamples),
             },
+            memory: this._memorySnapshot(),
             pendingDeltas: this._pendingDeltas.size,
             dropped: { ...this._dropped },
         };
@@ -765,7 +857,52 @@ export class ClientPerfMetrics {
         }
         this._lastFrameAt = frameAt;
 
+        this._sampleMemory(frameAt);
         this._scheduleFrame();
+    }
+
+    /**
+     * EN-1 — one heap sample per second at most, on the frame tick (never one
+     * per frame). A hidden tab stops the tick and so pauses the trend, which
+     * keeps the window honest about what the page actually ran through.
+     */
+    _sampleMemory(at) {
+        if (!Number.isFinite(at)) return;
+        if (this._lastHeapSampleAt !== null && at - this._lastHeapSampleAt < HEAP_SAMPLE_INTERVAL_MS) return;
+        this._lastHeapSampleAt = at;
+        const memory = this._readMemory();
+        if (!memory) {
+            if (this._memorySupported === null) this._memorySupported = false;
+            return;
+        }
+        if (this._memorySupported === null) this._memorySupported = true;
+        if (!this._heapTrend) this._heapTrend = createHeapTrend(this._limits.heapSamples);
+        if (recordHeapSample(this._heapTrend, at, memory.usedJSHeapSize)) {
+            this._memoryLast = {
+                totalBytes: finite(memory.totalJSHeapSize),
+                limitBytes: finite(memory.jsHeapSizeLimit),
+                domNodes: this._documentNodeCount(),
+            };
+        }
+    }
+
+    _memorySnapshot() {
+        if (this._memorySupported === null) {
+            this._memorySupported = this._readMemory() != null;
+        }
+        return {
+            supported: this._memorySupported,
+            intervalMs: HEAP_SAMPLE_INTERVAL_MS,
+            windowMs: HEAP_WINDOW_MS,
+            ...summarizeHeapTrend(this._heapTrend, this._clock()),
+            ...this._memoryLast,
+        };
+    }
+
+    _documentNodeCount() {
+        const doc = globalThis.document;
+        if (!doc || typeof doc.getElementsByTagName !== 'function') return null;
+        return doc.getElementsByTagName('*').length;
     }
 
     _recordPaintedDelta(token, frameAt, frameGapMs) {

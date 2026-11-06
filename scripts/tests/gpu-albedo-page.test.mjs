@@ -7,8 +7,153 @@ import {
 } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldPolicy.js';
 import {
   ALBEDO_PAGE_GUTTER,
+  GpuAlbedoPage,
   ShelfPacker,
 } from '../../claudeville/src/presentation/character-mode/gpu/GpuAlbedoPage.js';
+
+// EN-3 — a recording GL stand-in: `flushUploads` only needs the constants it
+// reads back and the calls it makes; sources can be any width/height object.
+function fakeGl() {
+  const calls = [];
+  const rec = (fn) => (...args) => {
+    calls.push({ fn, args });
+    return null;
+  };
+  let created = 0;
+  const gl = {
+    TEXTURE0: 0x84c0,
+    TEXTURE_2D: 0x0de1,
+    TEXTURE_2D_ARRAY: 0x8c1a,
+    READ_FRAMEBUFFER: 0x8ca8,
+    READ_FRAMEBUFFER_BINDING: 0x8caa,
+    COLOR_ATTACHMENT0: 0x8ce0,
+    RGBA: 0x1908,
+    RGBA8: 0x8058,
+    UNSIGNED_BYTE: 0x1401,
+    NEAREST: 0x2600,
+    TEXTURE_MIN_FILTER: 0x2801,
+    TEXTURE_MAG_FILTER: 0x2800,
+    TEXTURE_WRAP_S: 0x2802,
+    TEXTURE_WRAP_T: 0x2803,
+    CLAMP_TO_EDGE: 0x812f,
+    UNPACK_PREMULTIPLY_ALPHA_WEBGL: 0x9241,
+    UNPACK_FLIP_Y_WEBGL: 0x9240,
+    UNPACK_ROW_LENGTH: 0x0cf2,
+    UNPACK_SKIP_PIXELS: 0x0cf4,
+    UNPACK_SKIP_ROWS: 0x0cf3,
+    getParameter: rec('getParameter'),
+    createTexture: () => ({ id: ++created }),
+    createFramebuffer: () => ({}),
+    activeTexture: rec('activeTexture'),
+    bindTexture: rec('bindTexture'),
+    texParameteri: rec('texParameteri'),
+    pixelStorei: rec('pixelStorei'),
+    texImage2D: rec('texImage2D'),
+    texSubImage2D: rec('texSubImage2D'),
+    texImage3D: rec('texImage3D'),
+    copyTexSubImage3D: rec('copyTexSubImage3D'),
+    bindFramebuffer: rec('bindFramebuffer'),
+    framebufferTexture2D: rec('framebufferTexture2D'),
+    deleteTexture: rec('deleteTexture'),
+  };
+  return { gl, calls };
+}
+
+const sheet = (width, height) => ({ width, height });
+
+function sheetRecord(textureKey, source, textureRevision, textureUpdates = null) {
+  return {
+    textureKey,
+    source,
+    sourceWidth: source.width,
+    sourceHeight: source.height,
+    textureRevision,
+    textureUpdates,
+  };
+}
+
+// The first place() overflows an absent page; the repack allocates it and the
+// caller batches the frame again.
+function allocatePage(gl) {
+  const page = new GpuAlbedoPage(gl, 14);
+  page.beginFrame(0);
+  assert.equal(page.place(sheetRecord('seed', sheet(8, 8), 1)), null);
+  assert.equal(page.repackIfOverflowed(), true);
+  return page;
+}
+
+test('a continuous revision with sub-rect updates patches only the changed texels', () => {
+  const { gl, calls } = fakeGl();
+  const page = allocatePage(gl);
+  const source = sheet(64, 32);
+  const first = sheetRecord('agent-sheet:P', source, 1);
+  assert.ok(page.place(first));
+  let bytes = page.flushUploads();
+  // First fill: the whole slot, through the DOM-source texImage2D.
+  const whole = calls.filter((call) => call.fn === 'texImage2D' && call.args.length === 6);
+  assert.equal(whole.length, 1);
+  assert.equal(whole[0].args[5], source);
+  assert.equal(bytes, 64 * 32 * 4);
+  assert.equal(page.uploads, 1);
+
+  calls.length = 0;
+  page.beginFrame(1);
+  const patch = { x: 4, y: 2, sx: 4, sy: 2, width: 8, height: 4, source };
+  assert.ok(page.place(sheetRecord('agent-sheet:P', source, 2, [patch])));
+  bytes = page.flushUploads();
+  // The update path is chosen: a scratch sized to the patch, one sub-image
+  // upload from the sheet, and a copy of the patch rect alone.
+  const scratch = calls.filter(
+    (call) => call.fn === 'texImage2D' && call.args.length === 9 && call.args[3] === 8 && call.args[4] === 4,
+  );
+  assert.equal(scratch.length, 1);
+  const subImage = calls.find((call) => call.fn === 'texSubImage2D');
+  assert.equal(subImage.args[8], source);
+  assert.ok(calls.some((call) => call.fn === 'pixelStorei' && call.args[0] === gl.UNPACK_ROW_LENGTH && call.args[1] === 64));
+  const copy = calls.find((call) => call.fn === 'copyTexSubImage3D');
+  assert.deepEqual(
+    [copy.args[2], copy.args[3], copy.args[7], copy.args[8]],
+    [first.pageX + 4, first.pageY + 2, 8, 4],
+  );
+  assert.equal(bytes, 8 * 4 * 4);
+  assert.equal(page.uploads, 2);
+});
+
+test('whole-slot uploads remain wherever no sub-rect knowledge exists', () => {
+  const { gl, calls } = fakeGl();
+  const page = allocatePage(gl);
+  page.beginFrame(0);
+  const source = sheet(64, 32);
+  assert.ok(page.place(sheetRecord('agent-sheet:a', source, 1)));
+  page.flushUploads();
+
+  const assertWholeUpload = (lastSource) => {
+    assert.equal(calls.some((call) => call.fn === 'texSubImage2D'), false);
+    const whole = calls.filter((call) => call.fn === 'texImage2D' && call.args.length === 6);
+    assert.equal(whole.length, 1);
+    assert.equal(whole[0].args[5], lastSource);
+  };
+
+  // A re-baked sheet (a new source object) under the same key: whole, even if
+  // a patch list rode along, because the page never held this canvas.
+  calls.length = 0;
+  page.beginFrame(1);
+  const rebaked = sheet(64, 32);
+  assert.ok(page.place(sheetRecord('agent-sheet:a', rebaked, 2, [
+    { x: 0, y: 0, sx: 0, sy: 0, width: 8, height: 8, source: rebaked },
+  ])));
+  page.flushUploads();
+  assertWholeUpload(rebaked);
+
+  // A source back after a frame on its 2D texture (non-continuous): whole.
+  calls.length = 0;
+  page.beginFrame(3);
+  assert.ok(page.place(sheetRecord('agent-sheet:a', rebaked, 3, [
+    { x: 0, y: 0, sx: 0, sy: 0, width: 4, height: 4, source: rebaked },
+  ])));
+  page.flushUploads();
+  assertWholeUpload(rebaked);
+});
 
 // B.1b — a pager that places every pageable record on one page.
 function pagerFor(page) {
