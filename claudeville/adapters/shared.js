@@ -1,5 +1,25 @@
 const fs = require('fs');
 
+// The bounded readers stat a regular file, then open it by path. A FIFO
+// swapped in between would block a plain 'r' open forever, stalling every
+// adapter scan. O_NONBLOCK costs regular files nothing: the open returns at
+// once and a read with no writer yields 0 bytes or EAGAIN — both mean empty.
+// Fall back to 'r' where the flag is unsupported.
+const O_RDONLY_NONBLOCK = fs.constants.O_NONBLOCK
+  ? fs.constants.O_RDONLY | fs.constants.O_NONBLOCK
+  : 'r';
+
+// EAGAIN from a nonblocking read is "nothing to read right now", not a failed
+// read: report it as 0 bytes instead of throwing.
+function readSyncNonblocking(fd, buffer, offset, length, position) {
+  try {
+    return fs.readSync(fd, buffer, offset, length, position);
+  } catch (error) {
+    if (error?.code === 'EAGAIN') return 0;
+    throw error;
+  }
+}
+
 // Synchronous adapters may recover locally; the registry must still distinguish
 // a failed observation from a confirmed empty provider slice.
 const readFailures = { count: 0, code: null };
@@ -113,13 +133,13 @@ function shellLocationOf(command) {
 function readHeadText(filePath, maxBytes = DEFAULT_HEAD_BYTES) {
   try {
     if (!fs.existsSync(filePath)) return '';
-    const fd = fs.openSync(filePath, 'r');
+    const fd = fs.openSync(filePath, O_RDONLY_NONBLOCK);
     try {
       const stat = fs.fstatSync(fd);
       if (stat.size === 0) return '';
       const bytesToRead = Math.min(stat.size, maxBytes);
       const buffer = Buffer.allocUnsafe(bytesToRead);
-      const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, 0);
+      const bytesRead = readSyncNonblocking(fd, buffer, 0, bytesToRead, 0);
       _parsedTailStats.headBytesRead += bytesRead;
       return buffer.toString('utf-8', 0, bytesRead);
     } finally {
@@ -137,10 +157,10 @@ function readHeadLines(filePath, count, { maxBytes = DEFAULT_HEAD_BYTES } = {}) 
 }
 
 function readByteRangeText(filePath, start, length) {
-  const fd = fs.openSync(filePath, 'r');
+  const fd = fs.openSync(filePath, O_RDONLY_NONBLOCK);
   try {
     const buffer = Buffer.allocUnsafe(length);
-    const bytesRead = Math.max(0, fs.readSync(fd, buffer, 0, length, start));
+    const bytesRead = Math.max(0, readSyncNonblocking(fd, buffer, 0, length, start));
     return { text: buffer.toString('utf-8', 0, bytesRead), bytesRead, buffer: buffer.subarray(0, bytesRead) };
   } finally {
     fs.closeSync(fd);
@@ -157,7 +177,7 @@ function tailGuard(buffer) {
 }
 
 function readTailRaw(filePath, count, chunkBytes, maxBytes) {
-  const fd = fs.openSync(filePath, 'r');
+  const fd = fs.openSync(filePath, O_RDONLY_NONBLOCK);
   try {
     const stat = fs.fstatSync(fd);
     if (stat.size === 0) return { stat, buffer: Buffer.alloc(0), bytesCollected: 0 };
@@ -172,7 +192,7 @@ function readTailRaw(filePath, count, chunkBytes, maxBytes) {
       position -= bytesToRead;
 
       const buffer = Buffer.allocUnsafe(bytesToRead);
-      const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, position);
+      const bytesRead = readSyncNonblocking(fd, buffer, 0, bytesToRead, position);
       _parsedTailStats.bytesRead += Math.max(0, bytesRead);
       if (bytesRead <= 0) break;
 
@@ -188,7 +208,7 @@ function readTailRaw(filePath, count, chunkBytes, maxBytes) {
     let buffer = Buffer.concat(chunks, bytesCollected);
     if (position > 0) {
       const boundary = Buffer.allocUnsafe(1);
-      const boundaryBytes = fs.readSync(fd, boundary, 0, 1, position - 1);
+      const boundaryBytes = readSyncNonblocking(fd, boundary, 0, 1, position - 1);
       _parsedTailStats.bytesRead += Math.max(0, boundaryBytes);
       const startsOnLineBoundary = boundaryBytes === 1 && boundary[0] === 10;
       if (!startsOnLineBoundary) {

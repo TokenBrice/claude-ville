@@ -28,7 +28,6 @@ const {
   createDetailResponse,
   mcpJobOwnerAlive: ownerAlive,
   noteReadFailure,
-  readByteRangeText,
   readHeadText,
   readJsonLines,
   statCacheKey,
@@ -53,6 +52,9 @@ const JOURNAL_TAIL_LINES = 8000;
 const JOURNAL_TAIL_BYTES = 4 * 1024 * 1024;
 const TRANSCRIPT_TAIL_LINES = 2000;
 const THREAD_TAIL_BYTES = 512 * 1024;
+// A thread is one conversation rewritten after every turn: megabytes at most.
+// Anything larger is not a thread file, and the scan must not even open it.
+const THREAD_MAX_BYTES = 64 * 1024 * 1024;
 const MISSION_HEAD_BYTES = 4096;
 const CACHE_MAX = 256;
 const DETAIL_TOOL_LIMIT = 15;
@@ -88,6 +90,57 @@ function mtimeOf(filePath) {
   }
 }
 
+// The state dir belongs to deepseek-cc-mcp, whose agents run every command
+// under bwrap with the dir masked read-only, so nothing hostile should ever
+// write here. Robustness is still cheap insurance: a stray FIFO would hang a
+// synchronous open, a symlink would read outside the dir, and a huge file is
+// no thread at all. lstat the final path and require a regular file (no
+// symlink), open with O_NONBLOCK and O_NOFOLLOW where supported, then validate
+// the opened descriptor itself — still a regular file, the very file lstat
+// checked (same dev/ino), within the cap — so a swap between check and read
+// cannot block or redirect the read. The descriptor's own stat is the one
+// callers use for offsets and cache keys.
+function openStateFile(filePath, maxBytes) {
+  let stat;
+  try {
+    stat = fs.lstatSync(filePath);
+  } catch {
+    return null;
+  }
+  if (!stat.isFile() || stat.size > maxBytes) return null;
+  try {
+    const flags = fs.constants.O_RDONLY
+      | (fs.constants.O_NONBLOCK || 0)
+      | (fs.constants.O_NOFOLLOW || 0);
+    const fd = fs.openSync(filePath, flags);
+    const fdStat = fs.fstatSync(fd);
+    // Windows reports no inode numbers, so there is no identity to compare.
+    if (
+      !fdStat.isFile()
+      || fdStat.size > maxBytes
+      || (stat.ino && (fdStat.ino !== stat.ino || fdStat.dev !== stat.dev))
+    ) {
+      fs.closeSync(fd);
+      return null;
+    }
+    return { fd, stat: fdStat };
+  } catch (error) {
+    if (error?.code) noteReadFailure(error);
+    return null;
+  }
+}
+
+// The same regular-file requirement for reads handed to the shared readers,
+// which stat and open by path: the gate keeps a stray FIFO or symlink from
+// ever reaching them, and the readers' own byte and line bounds do the rest.
+function isStateFile(filePath) {
+  try {
+    return fs.lstatSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
 function finiteOrNull(value) {
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
@@ -97,11 +150,13 @@ function finiteOrNull(value) {
 
 function foldJournal() {
   const jobs = new Map();
-  const records = readJsonLines(JOURNAL_FILE, {
-    count: JOURNAL_TAIL_LINES,
-    tailMaxBytes: JOURNAL_TAIL_BYTES,
-    source: 'deepseek',
-  });
+  const records = isStateFile(JOURNAL_FILE)
+    ? readJsonLines(JOURNAL_FILE, {
+      count: JOURNAL_TAIL_LINES,
+      tailMaxBytes: JOURNAL_TAIL_BYTES,
+      source: 'deepseek',
+    })
+    : [];
   for (const record of records) {
     const jobId = record?.job_id;
     if (typeof jobId !== 'string' || !JOB_ID.test(jobId)) continue;
@@ -156,10 +211,13 @@ function readThreads() {
 // ─── Job transcript ─────────────────────────────────────
 
 function readTranscript(job) {
-  const records = readJsonLines(jobFile(job.jobId, 'transcript.jsonl'), {
-    count: TRANSCRIPT_TAIL_LINES,
-    source: 'deepseek',
-  });
+  const transcriptFile = jobFile(job.jobId, 'transcript.jsonl');
+  const records = isStateFile(transcriptFile)
+    ? readJsonLines(transcriptFile, {
+      count: TRANSCRIPT_TAIL_LINES,
+      source: 'deepseek',
+    })
+    : [];
   const fold = {
     tools: [],
     pendingTool: null,
@@ -224,20 +282,22 @@ const MESSAGE_START = '{"role":"';
 
 function readThreadTail(threadId) {
   const filePath = path.join(THREADS_DIR, `${threadId}.json`);
-  let stat;
-  try {
-    stat = fs.statSync(filePath);
-  } catch {
-    return null;
-  }
+  const opened = openStateFile(filePath, THREAD_MAX_BYTES);
+  if (!opened) return null;
+  const { fd, stat } = opened;
   const key = statCacheKey(filePath, stat);
   const cached = _threadTails.get(threadId);
-  if (cached?.key === key) return cached.tail;
+  if (cached?.key === key) {
+    fs.closeSync(fd);
+    return cached.tail;
+  }
 
   let tail = null;
   try {
-    const start = Math.max(0, stat.size - THREAD_TAIL_BYTES);
-    const { text } = readByteRangeText(filePath, start, stat.size - start);
+    const length = Math.min(THREAD_TAIL_BYTES, stat.size);
+    const buffer = Buffer.allocUnsafe(length);
+    const bytesRead = Math.max(0, fs.readSync(fd, buffer, 0, length, stat.size - length));
+    const text = buffer.toString('utf-8', 0, bytesRead);
     const open = text.lastIndexOf(ASSISTANT_START);
     if (open !== -1) {
       const next = text.indexOf(MESSAGE_START, open + 1);
@@ -252,6 +312,8 @@ function readThreadTail(threadId) {
     }
   } catch (error) {
     if (error?.code) noteReadFailure(error);
+  } finally {
+    fs.closeSync(fd);
   }
   _threadTails.delete(threadId);
   _threadTails.set(threadId, { key, tail });
@@ -259,9 +321,14 @@ function readThreadTail(threadId) {
   return tail;
 }
 
+function readJobHead(jobId, name) {
+  const filePath = jobFile(jobId, name);
+  return isStateFile(filePath) ? readHeadText(filePath, MISSION_HEAD_BYTES).trim() : '';
+}
+
 function readMission(jobId) {
   if (_missions.has(jobId)) return _missions.get(jobId);
-  const text = readHeadText(jobFile(jobId, 'mission.txt'), MISSION_HEAD_BYTES).trim();
+  const text = readJobHead(jobId, 'mission.txt');
   const mission = text ? text.slice(0, 200) : null;
   _missions.set(jobId, mission);
   trimCache(_missions, CACHE_MAX);
@@ -420,7 +487,7 @@ class DeepSeekAdapter {
     for (const job of jobs) {
       const mission = readMission(job.jobId);
       if (mission) messages.push({ role: 'user', text: mission, ts: job.startedAt });
-      const final = job.finishedAt ? readHeadText(jobFile(job.jobId, 'msg.txt'), MISSION_HEAD_BYTES).trim() : '';
+      const final = job.finishedAt ? readJobHead(job.jobId, 'msg.txt') : '';
       if (final) messages.push({ role: 'assistant', text: final.slice(0, 200), ts: job.finishedAt });
     }
 
