@@ -102,17 +102,24 @@ export function buildFleetCardModel({ ships = [], pushEvents = [], overflow = []
     const total = docked.length + overflowCount;
 
     // The lane's standing push: its newest push record, a failure standing
-    // until a later success.
+    // until a later success. A pending retry in flight does not displace the
+    // failure (GT-4): only a newer success clears it.
     let push = null;
+    let failure = null;
+    let lastSuccessAt = 0;
     for (const record of pushEvents) {
         if (!inLane(record) || record.tagsOnly || record.deleted) continue;
-        if (!push || (Number(record.eventTime) || 0) >= (Number(push.eventTime) || 0)) push = record;
+        const at = Number(record.eventTime) || 0;
+        if (!push || at >= (Number(push.eventTime) || 0)) push = record;
+        if (record.status === 'success') lastSuccessAt = Math.max(lastSuccessAt, at);
+        if ((record.status === 'failed' || record.status === 'rejected') && (!failure || at >= (Number(failure.eventTime) || 0))) failure = record;
     }
+    const standing = failure && (Number(failure.eventTime) || 0) >= lastSuccessAt ? failure : null;
     const pushStatus = push?.status || '';
-    const failed = pushStatus === 'failed' || pushStatus === 'rejected';
+    const failed = Boolean(standing);
     const oldest = docked.reduce((min, ship) => (ship.eventTime > 0 && (!min || ship.eventTime < min) ? ship.eventTime : min), 0);
     const pushLine = failed
-        ? ledgerFailureText({ status: pushStatus, at: push.eventTime, reason: '' }, now)
+        ? ledgerFailureText({ status: standing.status, at: standing.eventTime, reason: '' }, now)
         : total > 0
             ? `${total} unpushed${oldest ? ` · oldest ${ledgerAge(oldest, now)}` : ''}`
             : (pushStatus === 'success' ? `pushed ${ledgerAge(push.eventTime, now)}` : 'nothing docked');
@@ -138,11 +145,11 @@ export function buildFleetCardModel({ ships = [], pushEvents = [], overflow = []
         hiddenCommits,
         total,
         push: {
-            status: failed ? pushStatus : (total > 0 ? 'unpushed' : pushStatus || 'none'),
+            status: failed ? standing.status : (total > 0 ? 'unpushed' : pushStatus || 'none'),
             text: pushLine,
-            reason: failed ? String(push.reason || '') : '',
-            agentLabel: failed && push.agentId ? (agentName(push.agentId) || push.agentName || '') : '',
-            agentId: failed && push.agentId && agentName(push.agentId) ? push.agentId : '',
+            reason: failed ? String(standing.reason || '') : '',
+            agentLabel: failed && standing.agentId ? (agentName(standing.agentId) || standing.agentName || '') : '',
+            agentId: failed && standing.agentId && agentName(standing.agentId) ? standing.agentId : '',
         },
     };
 }

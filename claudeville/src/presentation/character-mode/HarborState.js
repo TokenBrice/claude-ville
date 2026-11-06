@@ -26,6 +26,10 @@ import {
     compactRouteMetadata,
     composeWaterRouteTiles,
     harborCruiseSpeed,
+    harborWaterField,
+    HARBOR_MOORING_CLEARANCE,
+    HARBOR_ROADSTEAD_PROP_CLEARANCE,
+    HARBOR_ROADSTEAD_PROP_OBSTACLES,
     planPackThresholds,
     harborHullLengthTiles,
     harborSailDurationMs,
@@ -1531,29 +1535,59 @@ export function findMooredPullRequest(state, event) {
     return best;
 }
 
-// Moored PR cutters fill the outer-roadstead anchorages in turn, a row
-// further out each lap, so two open PRs never moor on one tile. VB-13 — a
-// new cutter takes the first free mooring: one a merged or expired cutter
-// left is reused, never the slot of one still moored.
-export function pullRequestRoadsteadTile(state) {
+// Moored PR cutters and inbound fetch hulls share the outer-roadstead
+// lattice: the anchorages in fill order, a row further out each lap, so two
+// hulls never moor on one tile. VB-13 — a new hull takes the first free
+// mooring: one a merged or expired hull left is reused, never the tile of
+// one still moored. HN-1 — at saturation the lattice never wraps onto an
+// occupied tile: further rows extend it outward as an overflow anchorage,
+// and those additional moorings must sit on open water (the designed rows
+// already do), clear of the solid offshore props the outward rows reach (the
+// beacon rock), so every hull keeps its own buoy however many arrive.
+function firstFreeRoadsteadTile(state) {
     const anchorages = HARBOR_SQUAD_ANCHORAGES.filter(anchorage => anchorage.zone === 'outer-roadstead');
     const tileAt = (slot) => {
         const anchorage = anchorages[slot % anchorages.length] || HARBOR_SQUAD_ANCHORAGES[0];
-        const row = Math.floor(slot / Math.max(1, anchorages.length)) % PR_ROADSTEAD_ROWS;
+        const row = Math.floor(slot / Math.max(1, anchorages.length));
         return { tileX: anchorage.tileX + anchorage.rowDx * row, tileY: anchorage.tileY + anchorage.rowDy * row };
     };
     const taken = new Set();
     for (const ship of state.ships.values()) {
-        const tile = ship.prShip && ship.arrivingKind === 'pr' ? ship.inboundRoadsteadTile : null;
+        const atRoadstead = ship.arrivingKind === 'fetch' || (ship.prShip && ship.arrivingKind === 'pr');
+        const tile = atRoadstead ? ship.inboundRoadsteadTile : null;
         if (tile) taken.add(`${tile.tileX},${tile.tileY}`);
     }
-    const slots = Math.max(1, anchorages.length) * PR_ROADSTEAD_ROWS;
-    for (let slot = 0; slot < slots; slot++) {
+    // A mooring tile keeps a hull's footprint off a solid offshore prop rect
+    // (HN-2 obstacle pattern); unreachable props simply never match.
+    const hitsOffshoreProp = (tile) => HARBOR_ROADSTEAD_PROP_OBSTACLES.some((prop) => {
+        const dx = Math.max(prop.x0 - tile.tileX, 0, tile.tileX - prop.x1);
+        const dy = Math.max(prop.y0 - tile.tileY, 0, tile.tileY - prop.y1);
+        return Math.hypot(dx, dy) < HARBOR_ROADSTEAD_PROP_CLEARANCE;
+    });
+    const designed = Math.max(1, anchorages.length) * PR_ROADSTEAD_ROWS;
+    const field = harborWaterField();
+    // The roadstead can hold at most `taken.size` hulls, so a free tile is
+    // always reached before the rows run off the map: the loop ends (a prop
+    // rect only skips slots, and the rows extend outward past it).
+    for (let slot = 0; ; slot++) {
         const tile = tileAt(slot);
-        if (!taken.has(`${tile.tileX},${tile.tileY}`)) return tile;
+        if (taken.has(`${tile.tileX},${tile.tileY}`)) continue;
+        if (slot >= designed && (field.clearance(tile.tileX, tile.tileY) < HARBOR_MOORING_CLEARANCE
+            || hitsOffshoreProp(tile))) continue;
+        return tile;
     }
-    // Every mooring is taken: lap round as before.
-    return tileAt(taken.size);
+}
+
+export function pullRequestRoadsteadTile(state) {
+    return firstFreeRoadsteadTile(state);
+}
+
+// HN-1 — inbound fetch hulls take the first free mooring on the same
+// outer-roadstead lattice, counting the tiles of fetches still sailing in or
+// at anchor — and of moored PR cutters, the lattice the two kinds share — so
+// concurrent fetches never stack on one buoy.
+export function fetchRoadsteadTile(state) {
+    return firstFreeRoadsteadTile(state);
 }
 
 export function pullRequestShipLabel(event = {}) {
@@ -1853,11 +1887,9 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
             const branch = eventBranch(event);
             const laneIndex = stableHash(`${event.project}:${branch}:${event.id}:inbound`) % SEA_LANES.length;
             const cargoCount = parseIncomingCommits(event);
-            // Choose an outer-roadstead anchor for fetch (waits) or a berth for pull.
+            // A fetch anchors at the outer roadstead (first free mooring,
+            // HN-1); a pull sails to a berth.
             const isFetch = event.type === 'fetch';
-            const outerRoadsteads = HARBOR_SQUAD_ANCHORAGES.filter(a => a.zone === 'outer-roadstead');
-            const roadstead = outerRoadsteads[stableHash(`${event.project}:${event.id}:roadstead`) % outerRoadsteads.length]
-                || HARBOR_SQUAD_ANCHORAGES[0];
             const { berthIndex, quayIndex } = isFetch
                 ? { berthIndex: -1, quayIndex: assignedQuayIndex(state, event.project) }
                 : chooseBerthIndex(state, event.project, occupiedBerths);
@@ -1876,7 +1908,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 arrivingKind: isFetch ? 'fetch' : 'pull',
                 route: routeGraphMetadata(isFetch ? 'inbound.fetch-roadstead' : 'inbound.pull'),
                 inboundCargoCount: cargoCount,
-                inboundRoadsteadTile: isFetch ? { tileX: roadstead.tileX, tileY: roadstead.tileY } : null,
+                inboundRoadsteadTile: isFetch ? fetchRoadsteadTile(state) : null,
                 berthIndex: berthIndex >= 0 ? berthIndex : (state.nextSequence % BERTHS.length),
                 laneIndex,
                 arrivingStartedAt: now,

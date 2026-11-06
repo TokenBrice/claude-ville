@@ -166,6 +166,28 @@ test('fleet card states a standing failure with its reason and agent', () => {
     assert.equal(model.commits[0].status, 'rejected');
 });
 
+// GT-4 — a pending retry in flight does not hide the standing rejection;
+// only a later success clears it.
+test('fleet card keeps a rejection visible through a pending retry, until a success', () => {
+    const rejected = { id: 'p1', project: CV, branch: 'main', status: 'rejected', eventTime: NOW - 3 * MIN, reason: '! [rejected] main -> main (fetch first)', agentId: 'wren' };
+    const retrying = buildFleetCardModel({
+        ships: [ship('c0ffee1', { pushStatus: 'rejected' })],
+        pushEvents: [rejected, { id: 'p2', project: CV, branch: 'main', status: 'unknown', eventTime: NOW - 2 * MIN }],
+    }, { project: CV, branch: 'main' }, cardOptions);
+    assert.equal(retrying.push.status, 'rejected', 'the retry is not the lane\'s standing push');
+    assert.equal(retrying.push.text, 'push rejected 3m');
+    assert.equal(retrying.push.reason, '! [rejected] main -> main (fetch first)');
+    assert.equal(retrying.push.agentLabel, 'Wren');
+
+    const cleared = buildFleetCardModel({
+        ships: [],
+        pushEvents: [rejected, { id: 'p2', project: CV, branch: 'main', status: 'unknown', eventTime: NOW - 2 * MIN }, { id: 'p3', project: CV, branch: 'main', status: 'success', eventTime: NOW - MIN }],
+    }, { project: CV, branch: 'main' }, cardOptions);
+    assert.equal(cleared.push.status, 'success');
+    assert.equal(cleared.push.text, 'pushed 1m');
+    assert.equal(cleared.push.reason, '');
+});
+
 test('fleet card for a whole repo spans lanes; overflow and cut commits say +N', () => {
     const ships = Array.from({ length: 14 }, (_, index) => ship(`a${String(index).padStart(6, '0')}`, {
         eventTime: NOW - index * MIN,

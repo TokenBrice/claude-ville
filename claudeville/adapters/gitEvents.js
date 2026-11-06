@@ -10,7 +10,9 @@ const GH_EVENT_TYPES = new Set(['pr', 'issue', 'release']);
 const GH_EVENT_COMMANDS = Object.freeze({
   pr: new Set(['create', 'merge']),
   issue: new Set(['create']),
-  release: new Set(['create']),
+  // `release edit` counts only when it publishes a prior draft
+  // (`--draft=false`); the emitting branch filters ordinary metadata edits.
+  release: new Set(['create', 'edit']),
 });
 const GH_GLOBAL_FLAGS_WITH_VALUE = new Set([
   '--repo',
@@ -1117,14 +1119,49 @@ function tryParseJson(value) {
   }
 }
 
+// A shell argv[0]: a bare name or a path ending in one (`/bin/bash`, `./sh`).
+const SHELL_ARGV0_RE = /(?:^|\/)(?:bash|sh|zsh|dash|ksh|fish)$/;
+
+// One shell word: bare when every character is shell-safe, single-quoted
+// otherwise (an embedded quote closes, escapes itself and reopens).
+function shellQuoteArgvWord(part) {
+  if (part === '') return "''";
+  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(part)) return part;
+  return `'${part.replace(/'/g, "'\\''")}'`;
+}
+
+// An argv-array command (legacy Codex `function_call` arguments, OpenCode
+// `input.command`). When argv[0] is a shell, only its option run can carry
+// the payload: the element after a `-c` or a short cluster containing `c`
+// (`-lc`, `-ic`), reached before `--` or the first non-option operand — for
+// a shell that operand is the script, and everything after it is the
+// script's own data. No payload there, or any other executable: every
+// element joins as exactly one quoted shell word, so argument data can never
+// become a second command.
+function commandFromArgvArray(parts) {
+  if (!Array.isArray(parts) || !parts.length || !parts.every(part => typeof part === 'string')) return null;
+  if (SHELL_ARGV0_RE.test(parts[0])) {
+    for (let i = 1; i < parts.length; i++) {
+      const part = parts[i];
+      if (part === '--' || !part.startsWith('-')) break;
+      if (/^-[^-]*c/.test(part)) return typeof parts[i + 1] === 'string' ? parts[i + 1] : null;
+    }
+  }
+  return parts.map(shellQuoteArgvWord).join(' ');
+}
+
 function extractCommand(value, depth = 0) {
   if (!value || depth > 4) return null;
   const parsed = tryParseJson(value);
 
   if (typeof parsed === 'string') return parsed;
-  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-    if (typeof parsed.command === 'string') return parsed.command;
-    if (typeof parsed.cmd === 'string') return parsed.cmd;
+  if (Array.isArray(parsed)) return commandFromArgvArray(parsed);
+  if (parsed && typeof parsed === 'object') {
+    for (const key of ['command', 'cmd']) {
+      if (typeof parsed[key] === 'string') return parsed[key];
+      const argv = commandFromArgvArray(parsed[key]);
+      if (argv) return argv;
+    }
 
     for (const key of ['input', 'arguments', 'args', 'payload', 'data']) {
       const command = extractCommand(parsed[key], depth + 1);
@@ -1646,15 +1683,23 @@ function parseGitInvocation(tokens, start, cwd) {
 
 // Flags, option values and positionals of a git subcommand. Option values are
 // consumed (`-m "--dry-run"` is a message, not a flag), clusters like `-am`
-// are expanded, and everything after `--` is positional.
-function scanSubcommandArgs(tokens, subcommandIndex, { shortWithValue = '', longWithValue = new Set() } = {}) {
+// are expanded, and everything after `--` is positional. `bools` records each
+// flag's final boolean state in argument order (pflag semantics: a bare flag
+// or `=true` enables, an explicit false spelling disables, the last one
+// wins); `shortBools` maps a boolean short flag to its long name, so `-d` and
+// `-d=false` read as `--draft` and `--draft=false`.
+function scanSubcommandArgs(tokens, subcommandIndex, { shortWithValue = '', longWithValue = new Set(), shortBools = {} } = {}) {
   const flags = new Set();
   const values = new Map();
+  const bools = new Map();
   const positionals = [];
   const addValue = (flag, value) => {
     flags.add(flag);
     if (!values.has(flag)) values.set(flag, []);
     values.get(flag).push(value);
+  };
+  const addBool = (flag, text) => {
+    bools.set(flag, !['0', 'f', 'false'].includes(String(text).trim().toLowerCase()));
   };
   for (let i = subcommandIndex + 1; i < tokens.length; i++) {
     const token = tokens[i];
@@ -1664,26 +1709,43 @@ function scanSubcommandArgs(tokens, subcommandIndex, { shortWithValue = '', long
     }
     if (token.startsWith('--')) {
       const eq = token.indexOf('=');
-      if (eq > 0) addValue(token.slice(0, eq), token.slice(eq + 1));
-      else if (longWithValue.has(token)) addValue(token, tokens[++i] ?? '');
-      else flags.add(token);
+      if (eq > 0) {
+        addValue(token.slice(0, eq), token.slice(eq + 1));
+        addBool(token.slice(0, eq), token.slice(eq + 1));
+      } else if (longWithValue.has(token)) addValue(token, tokens[++i] ?? '');
+      else {
+        flags.add(token);
+        addBool(token, true);
+      }
       continue;
     }
     if (token.startsWith('-') && token.length > 1) {
       for (let c = 1; c < token.length; c++) {
-        const flag = `-${token[c]}`;
-        if (shortWithValue.includes(token[c])) {
+        const ch = token[c];
+        const flag = `-${ch}`;
+        if (shortWithValue.includes(ch)) {
           const rest = token.slice(c + 1);
           addValue(flag, rest || (tokens[++i] ?? ''));
           break;
         }
+        if (shortBools[ch]) {
+          const rest = token.slice(c + 1);
+          if (rest.startsWith('=')) {
+            addValue(shortBools[ch], rest.slice(1));
+            addBool(shortBools[ch], rest.slice(1));
+            break;
+          }
+          addBool(shortBools[ch], true);
+          continue;
+        }
         flags.add(flag);
+        addBool(flag, true);
       }
       continue;
     }
     positionals.push(token);
   }
-  return { flags, values, positionals };
+  return { flags, values, bools, positionals };
 }
 
 const COMMIT_ARG_SPEC = {
@@ -1842,6 +1904,43 @@ function findGhCommand(tokens) {
 
   return null;
 }
+
+// `gh` subcommand options that take a value, so a quoted flag spelling inside
+// one (`gh pr merge --subject "--auto"`) is that option's value, never a flag.
+const GH_PR_MERGE_ARG_SPEC = {
+  shortWithValue: 'tbFR',
+  longWithValue: new Set(['--subject', '--body', '--body-file', '--match-head-commit', '--repo', '--hostname', '--config']),
+};
+const GH_RELEASE_VALUE_FLAGS = new Set(['--title', '--tag', '--notes', '--notes-file', '--target', '--discussion-category', '--repo', '--hostname', '--config']);
+const GH_RELEASE_EDIT_ARG_SPEC = {
+  shortWithValue: 'tnFR',
+  longWithValue: GH_RELEASE_VALUE_FLAGS,
+};
+// `gh release create -d` is `--draft`, with its value attached (`-d=false`).
+const GH_RELEASE_CREATE_ARG_SPEC = {
+  ...GH_RELEASE_EDIT_ARG_SPEC,
+  shortBools: { d: '--draft' },
+};
+
+function ghForgeArgSpec(forge) {
+  if (forge.type === 'pr' && forge.action === 'merge') return GH_PR_MERGE_ARG_SPEC;
+  if (forge.type === 'release' && forge.action === 'create') return GH_RELEASE_CREATE_ARG_SPEC;
+  if (forge.type === 'release') return GH_RELEASE_EDIT_ARG_SPEC;
+  return {};
+}
+
+// The effective setting of a `gh` boolean option, pflag semantics: assignments
+// evaluate in argument order and the final one wins, so `--auto=false --auto`
+// defers while `--auto --auto=false` does not.
+function ghFlagEnabled(scan, flag) {
+  const value = scan.bools?.get(flag);
+  return value === undefined ? false : value;
+}
+
+// `gh pr merge --auto` output reporting the merge itself done (gh merges
+// immediately when the pull request is already mergeable). Enablement-only
+// output ("auto-merge enabled", "will be automatically merged") is not it.
+const GH_MERGE_LANDED_OUTPUT_RE = /\b(?:squashed and merged|rebased and merged|merged)\s+pull request\b/i;
 
 function normalizeRefName(ref) {
   const text = String(ref || '').trim();
@@ -2524,7 +2623,23 @@ function parseGitEventsFromCommand(command, context = {}, options = {}) {
       if (!forge || segment.tokens.some((token) => HELP_FLAGS.has(token))) return;
       const dryRun = segment.tokens.some((token) => token === '--dry-run' || token.startsWith('--dry-run='));
       if (dryRun && ignoreDryRun) return;
-      segment.candidate = { type: forge.type, forge, dryRun };
+      const scan = scanSubcommandArgs(segment.tokens.slice(segment.start), forge.actionIndex, ghForgeArgSpec(forge));
+      // Only an edit whose effective `--draft` is an explicit false publishes
+      // a prior draft; ordinary metadata edits and re-drafting stay out.
+      if (forge.type === 'release' && forge.action === 'edit' && scan.bools.get('--draft') !== false) return;
+      // `--disable-auto` only cancels a pending auto-merge: there is no merge
+      // outcome to report.
+      if (forge.type === 'pr' && forge.action === 'merge' && ghFlagEnabled(scan, '--disable-auto')) return;
+      // GT-1/GT-3 — `--auto` only enables a merge GitHub may never run, and a
+      // `--draft` (`-d`) release is not published: the call's own exit 0 is
+      // not that outcome, so the event reports no outcome (never a success).
+      segment.candidate = {
+        type: forge.type,
+        forge,
+        dryRun,
+        autoEnabled: forge.type === 'pr' && forge.action === 'merge' && ghFlagEnabled(scan, '--auto'),
+        deferred: forge.type === 'release' && forge.action === 'create' && ghFlagEnabled(scan, '--draft'),
+      };
       return;
     }
     const git = parseGitInvocation(segment.tokens, segment.start, segment.cwd);
@@ -2546,6 +2661,18 @@ function parseGitEventsFromCommand(command, context = {}, options = {}) {
     segment.switchedHead = branchByCheckout.get(checkoutKey(git.dir)) || null;
     segment.candidate = { type: git.subcommand };
   });
+
+  // Output reporting a merge itself done (GH_MERGE_LANDED_OUTPUT_RE) overrides
+  // the `--auto` deferral — but a landed line can only vouch for its own
+  // call's single merge. When one call holds several `gh pr merge` segments,
+  // which merge the line reports is ambiguous, so every `--auto` segment
+  // stays pending whatever the output says.
+  const mergeSegments = walk.segments.filter((segment) => segment.candidate?.forge?.type === 'pr'
+    && segment.candidate.forge.action === 'merge');
+  const landedMergeReported = mergeSegments.length === 1 && GH_MERGE_LANDED_OUTPUT_RE.test(output);
+  for (const segment of mergeSegments) {
+    if (segment.candidate.autoEnabled && !landedMergeReported) segment.candidate.deferred = true;
+  }
 
   const candidates = walk.segments.filter((segment) => segment.candidate);
   for (const segment of candidates) {
@@ -2660,7 +2787,12 @@ function parseGitEventsFromCommand(command, context = {}, options = {}) {
       const parsed = { action: candidate.forge.action, segmentIndex: segment.index };
       if (urls[urlIndex]) parsed.url = urls[urlIndex];
       forgeUrlIndexes.set(candidate.type, urlIndex + 1);
-      const forgeContext = { ...context, inferred: true, observed: false };
+      // A deferred forge action carries no outcome from the call: the merge
+      // or release it armed may never happen, and the client and monument
+      // gates already treat a pending event as landed-nothing.
+      const forgeContext = candidate.deferred
+        ? { ...context, inferred: true, observed: false, success: undefined, exitCode: undefined, status: undefined }
+        : { ...context, inferred: true, observed: false };
       events.push(createGitEvent(segment.text, candidate.type, candidate.dryRun, forgeContext, parsed));
       continue;
     }

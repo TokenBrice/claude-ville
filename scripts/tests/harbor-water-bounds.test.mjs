@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import { MAP_SIZE } from '../../claudeville/src/config/constants.js';
 import { BUILDING_DEFS } from '../../claudeville/src/config/buildings.js';
+import { OFFSHORE_SCENERY } from '../../claudeville/src/config/scenery.js';
 import {
     COAST_ANCHORAGE_SLOTS,
     COMMIT_LAGOON_SQUAD_ANCHORAGES,
@@ -86,13 +87,14 @@ test('every lane node is on open water and every node reaches every horizon exit
     }
 });
 
+const ROUTE_STARTS = [
+    ...SLOT_STARTS,
+    ...COMMIT_LAGOON_SQUAD_ANCHORAGES.map(a => ({ ...a, zone: 'commit-lagoon' })),
+    ...BERTHS.map((b, i) => ({ ...b, name: `berth ${i}`, zone: 'harbor' })),
+];
+
 test('every departure route stays on water and ends past the north-east horizon', () => {
-    const starts = [
-        ...SLOT_STARTS,
-        ...COMMIT_LAGOON_SQUAD_ANCHORAGES.map(a => ({ ...a, zone: 'commit-lagoon' })),
-        ...BERTHS.map((b, i) => ({ ...b, name: `berth ${i}`, zone: 'harbor' })),
-    ];
-    for (const start of starts) {
+    for (const start of ROUTE_STARTS) {
         const from = field.nearestClear(start, 0.6);
         for (let routeIndex = 0; routeIndex < 3; routeIndex++) {
             const route = composeWaterRouteTiles(from, { departWaterZone: start.zone, departRouteIndex: routeIndex });
@@ -100,6 +102,25 @@ test('every departure route stays on water and ends past the north-east horizon'
             const end = route[route.length - 1];
             assert.ok(end.tileY < 0, `${start.name} route ${routeIndex} ends on the map at (${end.tileX}, ${end.tileY})`);
             assert.ok(onMap(routeSeaTile(route)), 'the finale anchors on the map');
+        }
+    }
+});
+
+// HN-2 — a departing hull never draws over the offshore scenery: every route
+// family's sampled path keeps a full tile from every offshore prop (the
+// east channel bends round the sea stacks to its horizon exit).
+test('every departure route keeps a tile clear of the offshore scenery', () => {
+    for (const start of ROUTE_STARTS) {
+        const from = field.nearestClear(start, 0.6);
+        for (let routeIndex = 0; routeIndex < 3; routeIndex++) {
+            const route = composeWaterRouteTiles(from, { departWaterZone: start.zone, departRouteIndex: routeIndex });
+            for (const point of sample(route, 0.1)) {
+                for (const prop of OFFSHORE_SCENERY) {
+                    const distance = Math.hypot(point.tileX - prop.tileX, point.tileY - prop.tileY);
+                    assert.ok(distance >= 1,
+                        `${start.name} route ${routeIndex} passes ${prop.id} at ${distance.toFixed(2)} tiles (${point.tileX.toFixed(2)}, ${point.tileY.toFixed(2)})`);
+                }
+            }
         }
     }
 });

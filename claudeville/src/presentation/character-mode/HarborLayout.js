@@ -5,7 +5,7 @@
 // draws what this module places.
 import { MAP_SIZE } from '../../config/constants.js';
 import { BUILDING_DEFS } from '../../config/buildings.js';
-import { WORLD_TREE } from '../../config/scenery.js';
+import { OFFSHORE_SCENERY, WORLD_TREE } from '../../config/scenery.js';
 import { projectNameFromPath } from '../shared/GitEventIdentity.js';
 import { tileToWorld, worldToTile } from './Projection.js';
 
@@ -166,6 +166,48 @@ export const HARBOR_PIER_DECKS = Object.freeze([
     Object.freeze({ name: 'Middle', x0: 32.0, x1: 35.8, y0: 18.45, y1: 19.15 }),
     Object.freeze({ name: 'South', x0: 32.0, x1: 35.3, y0: 20.55, y1: 21.25 }),
 ]);
+
+// HN-2 — the offshore sea stacks are rocks in the east channel: open sea in
+// the water mask, but a hull never sails through them. Water obstacles in
+// the pier-deck pattern, each inflated a tile past the prop's centre, so
+// every route, berth search and taut shortcut keeps a full tile clear of
+// the drawn stack.
+const SEA_STACK_PROP_IDS = new Set(['prop.seaStack.a', 'prop.seaStack.c', 'prop.seaStack.b']);
+export const HARBOR_SEA_STACK_OBSTACLES = Object.freeze(
+    OFFSHORE_SCENERY
+        .filter(prop => SEA_STACK_PROP_IDS.has(prop.id))
+        .map(prop => Object.freeze({
+            id: prop.id,
+            x0: prop.tileX - 1,
+            x1: prop.tileX + 1,
+            y0: prop.tileY - 1,
+            y1: prop.tileY + 1,
+        })),
+);
+
+// The solid offshore prop an outward roadstead row can reach at saturation:
+// the beacon rock east of the fairway (the sea stacks already sit in the
+// water field's obstacles; the far shore and the wreck lie off every row's
+// bearing). Rects in the HN-2 sea-stack pattern, a tile past the prop's
+// centre. The water field does not see them, so berths and routes keep their
+// based geometry; the mooring allocator keeps a hull's footprint off the
+// rects instead.
+const ROADSTEAD_PROP_OBSTACLE_IDS = new Set(['prop.beaconRock']);
+export const HARBOR_ROADSTEAD_PROP_OBSTACLES = Object.freeze(
+    OFFSHORE_SCENERY
+        .filter(prop => ROADSTEAD_PROP_OBSTACLE_IDS.has(prop.id))
+        .map(prop => Object.freeze({
+            id: prop.id,
+            x0: prop.tileX - 1,
+            x1: prop.tileX + 1,
+            y0: prop.tileY - 1,
+            y1: prop.tileY + 1,
+        })),
+);
+// Ground distance (tiles) a moored hull keeps from those rects: the inbound
+// cutter's half strip in the worst screen direction plus the tall rock's art
+// past the one-tile rect, so no drawn hull touches the drawn prop.
+export const HARBOR_ROADSTEAD_PROP_CLEARANCE = 1.2;
 
 export const COAST_ANCHORAGE_ZONE = 'coast';
 
@@ -1233,6 +1275,12 @@ function buildHarborWaterField(land) {
             const d = Math.hypot(dx, dy);
             if (d < best) best = d;
         }
+        for (const stack of HARBOR_SEA_STACK_OBSTACLES) {
+            const dx = Math.max(stack.x0 - tileX, 0, tileX - stack.x1);
+            const dy = Math.max(stack.y0 - tileY, 0, tileY - stack.y1);
+            const d = Math.hypot(dx, dy);
+            if (d < best) best = d;
+        }
         return Math.max(0, Math.min(best, isletClearance(tileX, tileY)));
     };
     const field = {
@@ -1325,6 +1373,9 @@ export const HARBOR_LANE_NODES = Object.freeze([
     { id: 'lagoon.east', tileX: 25.2, tileY: 3.2 },
     { id: 'sea.north', tileX: 29.5, tileY: 3.0 },
     { id: 'sea.north-east', tileX: 35.5, tileY: 5.0 },
+    // HN-2 — open water east of the sea stacks: the waypoint that bends the
+    // east channel round the rocks to the east horizon exit.
+    { id: 'sea.stack-east', tileX: 44.5, tileY: 2.0 },
     { id: 'roadstead.far-north', tileX: 38.2, tileY: 8.5 },
     { id: 'roadstead.north', tileX: 37.6, tileY: 12.4 },
     { id: 'coast.pharos', tileX: 32.8, tileY: 11.0 },
@@ -1343,10 +1394,12 @@ export const HARBOR_LANE_NODES = Object.freeze([
     { id: 'coast.reed', tileX: 34.8, tileY: 30.8 },
     { id: 'coast.wall', tileX: 36.4, tileY: 35.0 },
     // Horizon exits, off the map's north-east edge: a departing hull sinks
-    // below the horizon on its last leg here (HarborTraffic).
+    // below the horizon on its last leg here (HarborTraffic). HN-2 — the
+    // east exit lies beyond the sea stacks, reached round `sea.stack-east`,
+    // so the beacon channel no longer threads the rocks.
     { id: 'horizon.north', tileX: 29.0, tileY: -7.0 },
     { id: 'horizon.north-east', tileX: 35.0, tileY: -6.5 },
-    { id: 'horizon.east', tileX: 41.5, tileY: -4.0 },
+    { id: 'horizon.east', tileX: 43.5, tileY: -5.0 },
 ]);
 
 export const HARBOR_SEA_EXITS = Object.freeze(['horizon.north-east', 'horizon.north', 'horizon.east']);

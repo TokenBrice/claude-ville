@@ -65,6 +65,17 @@ test('W7.9: a merged PR takes its title type district, else the harbor', () => {
     const [merge] = parseGitEventsFromCommand('gh pr merge 12 --squash', { ts: T0, success: true });
     assert.equal(merge.type, 'pr');
     assert.equal(merge.action, 'merge');
+    assert.equal(rules.classify({ ...merge, type: 'pr-merge' })?.kind, 'merge', 'a real squash merge plants');
+
+    // GT-1 — `gh pr merge --auto` only enables a merge GitHub may never run:
+    // the event reports no outcome, so it plants no stone and sails no cutter.
+    const [auto] = parseGitEventsFromCommand('gh pr merge 12 --squash --auto', {
+        ts: T0, success: true, exitCode: 0, output: '✓ Squash and merge enabled for pull request #12',
+    });
+    assert.equal(auto.action, 'merge');
+    assert.equal(auto.success, undefined);
+    assert.equal(rules.classify({ ...auto, type: 'pr-merge' }), null, 'auto-merge enabled plants nothing');
+    assert.equal(reduceHarborTrafficState(null, [auto], { now: T0 + 1000 }).ships.size, 0, 'auto-merge enabled sails nothing');
 });
 
 test('W7.9: upkeep never outranks a release in the ledger newest three or the cap', () => {
