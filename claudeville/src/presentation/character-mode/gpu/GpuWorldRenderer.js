@@ -3718,6 +3718,9 @@ export class GpuWorldRenderer {
         });
         gl.activeTexture(gl.TEXTURE0);
         this._textureEntries.clear();
+        // A restored context is a fresh binding namespace; the mirror is
+        // rebuilt with it (PF-5).
+        this._bindMirror = new GlBindMirror(gl);
     }
 
     // V9 typed-texture creation. `format` names a TEXTURE_FORMATS row: RGBA8
@@ -4148,6 +4151,13 @@ export class GpuWorldRenderer {
         }
         if (storageChanged || revisionChanged) {
             const started = performance.now();
+            // Binding-neutral like uploadTypedTexture: the upload binds on
+            // whatever unit is active, so restore that unit's texture — a
+            // caller that already bound its sampler keeps it for this frame's
+            // draw (and the bind mirror stays truthful, PF-5). A minimal gl
+            // stub may not implement the query; then bind nothing back.
+            const bound = typeof gl.getParameter === 'function'
+                ? gl.getParameter(gl.TEXTURE_BINDING_2D) : null;
             gl.bindTexture(gl.TEXTURE_2D, entry.texture);
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
@@ -4219,7 +4229,7 @@ export class GpuWorldRenderer {
                 gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
                 uploadedBytes = width * height * 4;
             }
-            gl.bindTexture(gl.TEXTURE_2D, null);
+            gl.bindTexture(gl.TEXTURE_2D, bound && gl.isTexture(bound) ? bound : null);
             // Canvas and image sources upload as RGBA8: 4 B per texel.
             const bytes = width * height * TEXTURE_FORMATS.rgba8.bytesPerTexel;
             entry.source = source;
@@ -4524,23 +4534,31 @@ export class GpuWorldRenderer {
         if (!paged) {
             gl.activeTexture(gl.TEXTURE0 + units.albedo);
             gl.bindTexture(gl.TEXTURE_2D, albedo);
-            gl.uniform1i(uniforms.u_albedo, units.albedo);
         }
-        gl.activeTexture(gl.TEXTURE0 + units.material);
-        gl.bindTexture(gl.TEXTURE_2D, material || this.emptyMaterialTexture);
-        gl.uniform1i(uniforms.u_materialMap, units.material);
+        // PF-5 — the has-map flags gate the shader's samples (ternaries in
+        // SCENE_FRAGMENT), so a batch without a sidecar need not rebind the
+        // unit: the last complete texture sits there (seeded to the empty
+        // texture once per frame in `_stageGlUniforms`) and is never read.
+        // The sampler-unit uniforms never change per batch either; they are
+        // staged once with the seed.
         gl.uniform1i(uniforms.u_hasMaterialMap, material ? 1 : 0);
+        if (material) {
+            gl.activeTexture(gl.TEXTURE0 + units.material);
+            gl.bindTexture(gl.TEXTURE_2D, material);
+        }
         if (uniforms.u_emissiveMap) {
-            gl.activeTexture(gl.TEXTURE0 + units.emissive);
-            gl.bindTexture(gl.TEXTURE_2D, batch.emissiveTexture || this.emptyMaterialTexture);
-            gl.uniform1i(uniforms.u_emissiveMap, units.emissive);
             gl.uniform1i(uniforms.u_hasEmissiveMap, batch.emissiveTexture ? 1 : 0);
+            if (batch.emissiveTexture) {
+                gl.activeTexture(gl.TEXTURE0 + units.emissive);
+                gl.bindTexture(gl.TEXTURE_2D, batch.emissiveTexture);
+            }
         }
         if (uniforms.u_occluderMap) {
-            gl.activeTexture(gl.TEXTURE0 + units.occluder);
-            gl.bindTexture(gl.TEXTURE_2D, batch.occluderTexture || this.emptyMaterialTexture);
-            gl.uniform1i(uniforms.u_occluderMap, units.occluder);
             gl.uniform1i(uniforms.u_hasOccluderMap, batch.occluderTexture ? 1 : 0);
+            if (batch.occluderTexture) {
+                gl.activeTexture(gl.TEXTURE0 + units.occluder);
+                gl.bindTexture(gl.TEXTURE_2D, batch.occluderTexture);
+            }
         }
         if (uniforms.u_puddleGround || uniforms.u_terrainBatch) {
             const terrain = batch.records[0]?.id === 'terrain:static';
@@ -4682,7 +4700,7 @@ export class GpuWorldRenderer {
         gl.uniform1i(uniforms.u_hasPaletteLut, lut ? 1 : 0);
         // Keep the existing time channel inside float32's precise range. The
         // one-million-ms period closes on both shader phase multipliers.
-        const shaderTimeMs = ((finite(feed.timeMs, Date.now()) % 1000000) + 1000000) % 1000000;
+        const shaderTimeMs = shaderClockMs(feed);
         gl.uniform1f(uniforms.u_time, shaderTimeMs);
         gl.uniform1f(uniforms.u_motionScale, feed.reducedMotion ? 0 : clamp(finite(feed.motionScale, 1), 0, 2));
         this._uploadBeamUniforms(uniforms, feed);
@@ -4807,7 +4825,10 @@ export class GpuWorldRenderer {
 
     _renderScene(batches, camera, feed, qualityLevel = POST_FX_LEVELS.FULL) {
         const gl = this.gl;
-        this._sceneCommands.replay();
+        // PF-1 — a direct frame issued the scene uniforms at staging time
+        // (nothing between touches program or unit state); a recorded frame
+        // replays them. Both paths run the binds through the mirror (PF-5).
+        if (!this._directFrame) this._sceneCommands.replay(this._bindMirror);
         const bloomEnabled = this._frameBloomStrength > 0;
         const roles = this._rolesWritten ? this._roleBlend : null;
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.sceneTarget.framebuffer);
@@ -4844,7 +4865,17 @@ export class GpuWorldRenderer {
                 depthWrites = batch.writesDepth === true;
                 gl.depthMask(depthWrites);
             }
-            this._batchCommands[index].replay();
+            if (this._directFrame) {
+                // PF-1 — per-batch uniforms must interleave with the draws, so
+                // a direct frame issues them here instead of replaying.
+                const stagingGl = this._bindMirror.gl;
+                this._uniformGl = stagingGl;
+                stagingGl.uniform1i(this.sceneUniforms.u_additive, add ? 1 : 0);
+                this._setBatchUniforms(this.sceneUniforms, batch);
+                this._uniformGl = null;
+            } else {
+                this._batchCommands[index].replay(this._bindMirror);
+            }
             this._drawBatch(batch);
         }
         if (boundRole) gl.blendColor(0, 0, 0, 0);
@@ -4875,7 +4906,14 @@ export class GpuWorldRenderer {
         const count = this._particleCount;
         if (!count || !this._particleMotifTexture) return;
         const gl = this.gl;
-        this._particleCommands.replay();
+        if (this._directFrame) {
+            // PF-1 — the particle uniforms are issued straight from the pass.
+            this._uniformGl = this._bindMirror.gl;
+            this._setParticleUniforms(camera);
+            this._uniformGl = null;
+        } else {
+            this._particleCommands.replay(this._bindMirror);
+        }
         gl.bindVertexArray(this.particleVao);
         gl.bindBuffer(gl.ARRAY_BUFFER, this.particleBuffer);
         gl.bufferSubData(gl.ARRAY_BUFFER, 0, this._particleViews.u8, 0, count * GPU_PARTICLE_INSTANCE_BYTES);
@@ -4910,18 +4948,29 @@ export class GpuWorldRenderer {
 
     _renderBloom() {
         const gl = this.gl;
+        // PF-5 — the pass's input binds route through the mirror so it stays
+        // truthful for the composite and mark passes that follow.
+        const binds = this._bindMirror.gl;
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.bloomA.framebuffer);
         gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
         gl.viewport(0, 0, this.bloomA.width, this.bloomA.height);
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, this.sceneTarget.textures[1]);
-        this._bloomCommandsA.replay();
+        binds.activeTexture(gl.TEXTURE0);
+        binds.bindTexture(gl.TEXTURE_2D, this.sceneTarget.textures[1]);
+        if (this._directFrame) {
+            this._uniformGl = binds;
+            this._setBloomUniforms(false);
+            this._uniformGl = null;
+        } else this._bloomCommandsA.replay(this._bindMirror);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
 
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.bloomB.framebuffer);
         gl.viewport(0, 0, this.bloomB.width, this.bloomB.height);
-        gl.bindTexture(gl.TEXTURE_2D, this.bloomA.textures[0]);
-        this._bloomCommandsB.replay();
+        binds.bindTexture(gl.TEXTURE_2D, this.bloomA.textures[0]);
+        if (this._directFrame) {
+            this._uniformGl = binds;
+            this._setBloomUniforms(true);
+            this._uniformGl = null;
+        } else this._bloomCommandsB.replay(this._bindMirror);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
 
@@ -4999,7 +5048,12 @@ export class GpuWorldRenderer {
         gl.viewport(0, 0, this.width, this.height);
         gl.clearColor(0, 0, 0, 0);
         gl.clear(gl.COLOR_BUFFER_BIT);
-        this._compositeCommands.replay();
+        if (this._directFrame) {
+            // PF-1 — the composite uniforms are issued straight from the pass.
+            this._uniformGl = this._bindMirror.gl;
+            this._setCompositeUniforms(qualityLevel, camera, feed);
+            this._uniformGl = null;
+        } else this._compositeCommands.replay(this._bindMirror);
         gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
         if (this._frameLoadPasses > 0) this._drawDebugLoad(this._frameLoadPasses);
@@ -5047,10 +5101,17 @@ export class GpuWorldRenderer {
         gl.disable(gl.DEPTH_TEST);
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
-        if (prepared) this._markCommands.replay();
-        else this._setMarkUniforms();
+        // PF-5 — the pass's binds route through the mirror; PF-1 has a direct
+        // frame (and the late pass) stage the mark uniforms right here.
+        const binds = this._bindMirror.gl;
+        if (prepared) this._markCommands.replay(this._bindMirror);
+        else {
+            this._uniformGl = binds;
+            this._setMarkUniforms();
+            this._uniformGl = null;
+        }
         gl.bindVertexArray(this.markVao);
-        gl.activeTexture(gl.TEXTURE0 + SCENE_SAMPLER_UNITS.albedo);
+        binds.activeTexture(gl.TEXTURE0 + SCENE_SAMPLER_UNITS.albedo);
         const stride = RECORD_INSTANCE_BYTES;
         let drawn = 0;
         let role = 0;
@@ -5059,7 +5120,7 @@ export class GpuWorldRenderer {
             const first = batch.records[0];
             const texture = this._textureFor(batch.textureKey, batch.source, first?.textureRevision);
             if (!texture) continue;
-            gl.bindTexture(gl.TEXTURE_2D, texture);
+            binds.bindTexture(gl.TEXTURE_2D, texture);
             const offset = batch.instanceOffset;
             gl.vertexAttribPointer(0, 4, gl.FLOAT, false, stride, offset + RECORD_OFFSETS.loc0);
             gl.vertexAttribPointer(1, 4, gl.FLOAT, false, stride, offset + RECORD_OFFSETS.loc1);
@@ -5244,7 +5305,7 @@ export class GpuWorldRenderer {
         gl.uniform2f(uniforms.u_waterMood, mood.night, mood.storm);
         gl.uniform4f(uniforms.u_waterSky, mood.sky[0], mood.sky[1], mood.sky[2], mood.skyWeight);
         gl.uniform4fv(uniforms.u_weather, this._frameWeather || resolveWeatherUniform(feed));
-        const shaderTimeMs = ((finite(feed.timeMs, Date.now()) % 1000000) + 1000000) % 1000000;
+        const shaderTimeMs = shaderClockMs(feed);
         gl.uniform1f(uniforms.u_time, shaderTimeMs);
         gl.uniform4fv(uniforms.u_waterFx, this._waterFx.fx);
         gl.uniform1f(uniforms.u_starlight, this._waterFx.starlight);
@@ -5389,7 +5450,18 @@ export class GpuWorldRenderer {
         return batches;
     }
 
-    _stageGlUniforms(feed, camera, qualityLevel, batches, marks) {
+    // PF-1 — a live clock (feed.timeMs advanced since the previous staged
+    // frame) puts a new value in u_time on both the scene and composite
+    // programs, so the byte gate below can never match: recording, tracking
+    // and replaying ~3,000 commands per frame would buy nothing. Such frames
+    // pass `direct = true`: the scene uniforms are issued straight to the GL
+    // (they are pure program/unit state, and nothing between staging and the
+    // scene pass touches it), while the per-batch, bloom, mark, particle and
+    // composite staging moves to the pass that draws it, preserving today's
+    // exact command order. Fixed-timeline frames (a frozen motion clock,
+    // reduced motion, a rescue repaint) keep the record/compare/replay path
+    // that FP-2's idle hold and the frame-skip tests rely on.
+    _stageGlUniforms(feed, camera, qualityLevel, batches, marks, direct = false) {
         const gl = this.gl;
         const scene = this._sceneCommands ||= new GlFrameCommands(gl);
         const particle = this._particleCommands ||= new GlFrameCommands(gl);
@@ -5405,19 +5477,35 @@ export class GpuWorldRenderer {
         bloomB.begin();
         mark.begin();
         try {
-            this._uniformGl = scene.gl;
-            if (this._radiance) this._radiance.gl = scene.gl;
-            scene.gl.useProgram(this.sceneProgram);
+            const stagingGl = direct ? this._bindMirror.gl : scene.gl;
+            this._uniformGl = stagingGl;
+            if (this._radiance) this._radiance.gl = stagingGl;
+            stagingGl.useProgram(this.sceneProgram);
             this._setSceneUniforms(feed, camera, qualityLevel);
             // B.1b — the albedo page (or its stand-in) stays on unit 14;
             // unit 0 starts empty in case a paged batch draws first.
-            scene.gl.activeTexture(gl.TEXTURE0 + SCENE_SAMPLER_UNITS.albedoPage);
-            scene.gl.bindTexture(gl.TEXTURE_2D_ARRAY, this._albedoPage?.texture || this.emptyAlbedoPage);
-            scene.gl.uniform1i(this.sceneUniforms.u_albedoPage, SCENE_SAMPLER_UNITS.albedoPage);
-            scene.gl.activeTexture(gl.TEXTURE0 + SCENE_SAMPLER_UNITS.albedo);
-            scene.gl.bindTexture(gl.TEXTURE_2D, this.emptyMaterialTexture);
-            scene.gl.uniform1i(this.sceneUniforms.u_albedo, SCENE_SAMPLER_UNITS.albedo);
-            scene.gl.uniform1i(this.sceneUniforms.u_albedoPaged, 0);
+            stagingGl.activeTexture(gl.TEXTURE0 + SCENE_SAMPLER_UNITS.albedoPage);
+            stagingGl.bindTexture(gl.TEXTURE_2D_ARRAY, this._albedoPage?.texture || this.emptyAlbedoPage);
+            stagingGl.uniform1i(this.sceneUniforms.u_albedoPage, SCENE_SAMPLER_UNITS.albedoPage);
+            stagingGl.activeTexture(gl.TEXTURE0 + SCENE_SAMPLER_UNITS.albedo);
+            stagingGl.bindTexture(gl.TEXTURE_2D, this.emptyMaterialTexture);
+            stagingGl.uniform1i(this.sceneUniforms.u_albedo, SCENE_SAMPLER_UNITS.albedo);
+            stagingGl.uniform1i(this.sceneUniforms.u_albedoPaged, 0);
+            // PF-5 — seed the sidecar units and their (never-changing) sampler
+            // uniforms once per frame: per-batch staging then only binds a
+            // sidecar that exists, instead of rebinding the empty texture for
+            // every batch without one.
+            const sidecarUnits = [
+                [this.sceneUniforms.u_materialMap, SCENE_SAMPLER_UNITS.material],
+                [this.sceneUniforms.u_emissiveMap, SCENE_SAMPLER_UNITS.emissive],
+                [this.sceneUniforms.u_occluderMap, SCENE_SAMPLER_UNITS.occluder],
+            ];
+            for (const [location, unit] of sidecarUnits) {
+                if (!location) continue;
+                stagingGl.uniform1i(location, unit);
+                stagingGl.activeTexture(gl.TEXTURE0 + unit);
+                stagingGl.bindTexture(gl.TEXTURE_2D, this.emptyMaterialTexture);
+            }
             const bloomMode = effectBudgetMode('bloom', qualityLevel);
             const strength = bloomMode === 'off' ? 0 : bloomMode === 'reduced' ? 0.42 : 0.72;
             this._frameBloomStrength = this.lightCount > 0
@@ -5427,6 +5515,13 @@ export class GpuWorldRenderer {
             this._rolesWritten = roles !== null;
             this._ensureTargets(bloomEnabled || roles !== null, bloomEnabled);
             this._albedoPagedBound = false;
+            if (direct) {
+                // A direct frame records nothing: the batch streams from the
+                // previous recorded frame are cleared too, so nothing stale
+                // can reach a later replay.
+                for (let index = 0; index < batches.length; index++) batchCommands[index]?.begin();
+                return;
+            }
             for (let index = 0; index < batches.length; index++) {
                 const commands = batchCommands[index] ||= new GlFrameCommands(gl);
                 commands.begin();
@@ -5460,6 +5555,7 @@ export class GpuWorldRenderer {
         // FP-2 — true only after a frame the byte gate reused: its staged
         // inputs equal the presented frame's (IsometricRenderer._canSkipIdleFrame).
         this.lastFrameReused = false;
+        this._directFrame = false;
         if (!this.isActive() || !camera || !records.length) return false;
         const gl = this.gl;
         const timerWasPending = this.hasPendingGpuQueries();
@@ -5563,30 +5659,49 @@ export class GpuWorldRenderer {
             } else if (load && (load.levels === 'all' || qualityLevel === POST_FX_LEVELS.FULL)) {
                 this._frameLoadPasses = load.passes;
             }
-            this._stageGlUniforms(feed, camera, qualityLevel, batches, marks);
-            const markBatches = this._stageMarkInputs(marks);
-            const reuse = (this._frameReuse ||= new GpuFrameReuse()).begin();
-            reuse.bytes(this._recordStaging.f32, byteLength);
-            reuse.bytes(this._particleViews.u8, this._particleCount * GPU_PARTICLE_INSTANCE_BYTES);
-            if (this._markStaging) reuse.bytes(this._markStaging.f32, this._markByteLength);
-            this._sceneCommands.track(reuse);
-            this._particleCommands.track(reuse);
-            this._compositeCommands.track(reuse);
-            this._bloomCommandsA.track(reuse);
-            this._bloomCommandsB.track(reuse);
-            this._markCommands.track(reuse);
-            for (let index = 0; index < batches.length; index++) this._batchCommands[index].track(reuse);
-            stageGpuFrameBindings(reuse, this, batches, markBatches);
-            // The radiance sampler is recorded above, but its cached texture
-            // is rewritten in place on each solve. Treat that solve count as
-            // a content revision, not "ready" as an unconditional repaint.
-            reuse.scalar(this._radiance?.solves);
-            const fresh = forceFreshOutput || timerWasPending || this.hasPendingGpuQueries()
-                || this._debugLoad || this.passSamplingEnabled;
-            if (!fresh && reuse.unchanged()) {
-                this.skippedFrames = (this.skippedFrames || 0) + 1;
-                this.lastFrameReused = true;
-                return true;
+            // PF-1 — the frame's shader clock, exactly as `_setSceneUniforms`
+            // will stage it into u_time. An advance since the previous staged
+            // frame makes the byte gate unable to match, so the whole
+            // record/track/replay machinery is skipped for this frame.
+            const shaderTimeMs = shaderClockMs(feed);
+            this._directFrame = this._stagedShaderTimeMs !== undefined
+                && !Object.is(shaderTimeMs, this._stagedShaderTimeMs);
+            this._stagedShaderTimeMs = shaderTimeMs;
+            // PF-5 — everything above this point (page uploads, batch texture
+            // uploads, the radiance solve) binds on its own; from here the
+            // staged binds go through the mirror.
+            this._bindMirror?.invalidate();
+            this._stageGlUniforms(feed, camera, qualityLevel, batches, marks, this._directFrame);
+            const markBatches = this._directFrame ? null : this._stageMarkInputs(marks);
+            let reuse = null;
+            if (this._directFrame) {
+                // The presented output no longer matches the committed reuse
+                // baseline; one recorded frame later re-primes it.
+                this._frameReuse?.invalidate();
+            } else {
+                reuse = (this._frameReuse ||= new GpuFrameReuse()).begin();
+                reuse.bytes(this._recordStaging.f32, byteLength);
+                reuse.bytes(this._particleViews.u8, this._particleCount * GPU_PARTICLE_INSTANCE_BYTES);
+                if (this._markStaging) reuse.bytes(this._markStaging.f32, this._markByteLength);
+                this._sceneCommands.track(reuse);
+                this._particleCommands.track(reuse);
+                this._compositeCommands.track(reuse);
+                this._bloomCommandsA.track(reuse);
+                this._bloomCommandsB.track(reuse);
+                this._markCommands.track(reuse);
+                for (let index = 0; index < batches.length; index++) this._batchCommands[index].track(reuse);
+                stageGpuFrameBindings(reuse, this, batches, markBatches);
+                // The radiance sampler is recorded above, but its cached texture
+                // is rewritten in place on each solve. Treat that solve count as
+                // a content revision, not "ready" as an unconditional repaint.
+                reuse.scalar(this._radiance?.solves);
+                const fresh = forceFreshOutput || timerWasPending || this.hasPendingGpuQueries()
+                    || this._debugLoad || this.passSamplingEnabled;
+                if (!fresh && reuse.unchanged()) {
+                    this.skippedFrames = (this.skippedFrames || 0) + 1;
+                    this.lastFrameReused = true;
+                    return true;
+                }
             }
             this._uploadFrameVertices(byteLength);
             const timeThisFrame = !repeatOutput
@@ -5611,7 +5726,9 @@ export class GpuWorldRenderer {
             this._endGpuTimer(gpuTimer, this._frameLoadArm !== null ? { arm: this._frameLoadArm } : null);
             gpuTimer = null;
             this._trimTextureCache();
-            gl.bindTexture(gl.TEXTURE_2D, null);
+            // PF-5 — the cleanup bind goes through the mirror so a later
+            // `drawLateMarks` cannot skip a bind the raw context lost.
+            this._bindMirror.gl.bindTexture(gl.TEXTURE_2D, null);
             gl.bindBuffer(gl.ARRAY_BUFFER, null);
             gl.bindVertexArray(null);
             let renderedRecords = 0;
@@ -5621,7 +5738,9 @@ export class GpuWorldRenderer {
             this.records = renderedRecords;
             this.batches = batches.length;
             this.frames++;
-            reuse.commit();
+            // A direct frame never began a reuse comparison; the baseline was
+            // invalidated above instead (PF-1).
+            if (reuse) reuse.commit();
             this._lastRenderInput = input;
             this._freshOutputThisTask = true;
             queueMicrotask(this._expireFreshOutput ||= () => { this._freshOutputThisTask = false; });
@@ -5853,6 +5972,66 @@ export class GpuWorldRenderer {
     }
 }
 
+// The shader clock's exact staged value: `u_time` reads this verbatim (kept
+// inside float32's precise range by wrapping at one million milliseconds).
+function shaderClockMs(feed) {
+    return ((finite(feed.timeMs, Date.now()) % 1000000) + 1000000) % 1000000;
+}
+
+// PF-5 — a mirror of the GL's active texture unit and per-unit bindings so
+// no-op `activeTexture`/`bindTexture` pairs (the per-batch sidecar rebinds of
+// `emptyMaterialTexture`) never reach the driver. The mirror is the truth
+// only between `invalidate()` calls: every writer outside it (albedo page
+// uploads, typed-texture restores, the marks pass) either restores the
+// binding it read from the raw GL or runs before the frame re-seeds it.
+class GlBindMirror {
+    constructor(gl) {
+        this._gl = gl;
+        this._unit = null;
+        this._bound = new Map();
+        const functions = new Map();
+        const mirror = this;
+        this.gl = new Proxy(gl, {
+            get(target, name) {
+                if (name === 'activeTexture') return unit => mirror.active(unit);
+                if (name === 'bindTexture') return (bindTarget, texture) => mirror.bind(bindTarget, texture);
+                let fn = functions.get(name);
+                if (!fn) {
+                    const value = target[name];
+                    fn = typeof value === 'function' ? value.bind(target) : value;
+                    functions.set(name, fn);
+                }
+                return fn;
+            },
+        });
+    }
+
+    active(unit) {
+        if (this._unit === unit) return;
+        this._unit = unit;
+        this._gl.activeTexture(unit);
+    }
+
+    bind(bindTarget, texture) {
+        let perUnit = this._bound.get(this._unit);
+        if (!perUnit) this._bound.set(this._unit, perUnit = new Map());
+        if (perUnit.get(bindTarget) === texture) return;
+        perUnit.set(bindTarget, texture);
+        this._gl.bindTexture(bindTarget, texture);
+    }
+
+    // Replay a recorded `activeTexture`/`bindTexture` command through the mirror.
+    issue(name, args) {
+        if (name === 'activeTexture') this.active(args[0]);
+        else this.bind(args[0], args[1]);
+    }
+
+    invalidate() {
+        this._unit = null;
+        this._bound.clear();
+    }
+}
+
 // Stage the actual uniform setter stream and its sampler bindings once, then
 // replay it only when repainting. Float/int conversion matches the GPU API.
 // Command arguments and vector storage grow only when the stream shape grows.
@@ -5869,11 +6048,16 @@ class GlFrameCommands {
                 if (typeof value !== 'function') return value;
                 let fn = functions.get(name);
                 if (!fn) {
-                    const recorded = String(name).startsWith('uniform')
-                        || name === 'useProgram' || name === 'activeTexture'
-                        || name === 'bindTexture' || name === 'texParameteri';
-                    fn = recorded
-                        ? function () { stage._record(name, arguments); }
+                    // The name is fixed per cached closure, so its command
+                    // flags are computed once here, not per recorded call.
+                    const spec = {
+                        name,
+                        uniform: String(name).startsWith('uniform'),
+                        bind: name === 'activeTexture' || name === 'bindTexture',
+                    };
+                    spec.integer = /[iu]v?$/.test(name);
+                    fn = spec.uniform || spec.bind || name === 'useProgram' || name === 'texParameteri'
+                        ? function () { stage._record(spec, arguments); }
                         : value.bind(target);
                     functions.set(name, fn);
                 }
@@ -5886,21 +6070,20 @@ class GlFrameCommands {
         this._count = 0;
     }
 
-    _record(name, args) {
+    _record(spec, args) {
         const index = this._count++;
         const command = this._commands[index] ||= {
             args: [], vectors: [], f32: new Float32Array(4), i32: new Int32Array(4),
         };
-        command.name = name;
-        command.uniform = String(name).startsWith('uniform');
-        command.integer = /[iu]v?$/.test(name);
+        command.name = spec.name;
+        command.spec = spec;
         command.args.length = args.length;
         command.args[0] = args[0];
-        const numeric = command.integer ? command.i32 : command.f32;
+        const numeric = spec.integer ? command.i32 : command.f32;
         for (let arg = 1; arg < args.length; arg++) {
             const value = args[arg];
-            if (command.uniform && (Array.isArray(value) || ArrayBuffer.isView(value))) {
-                const Type = command.integer ? Int32Array : Float32Array;
+            if (spec.uniform && (Array.isArray(value) || ArrayBuffer.isView(value))) {
+                const Type = spec.integer ? Int32Array : Float32Array;
                 let vector = command.vectors[arg];
                 if (!(vector instanceof Type) || vector.length !== value.length) {
                     vector = command.vectors[arg] = new Type(value.length);
@@ -5908,7 +6091,7 @@ class GlFrameCommands {
                 vector.set(value);
                 command.args[arg] = vector;
                 numeric[arg - 1] = 0;
-            } else if (command.uniform) {
+            } else if (spec.uniform) {
                 numeric[arg - 1] = value;
                 command.args[arg] = numeric[arg - 1];
             } else {
@@ -5921,11 +6104,12 @@ class GlFrameCommands {
         reuse.scalar(this._count);
         for (let index = 0; index < this._count; index++) {
             const command = this._commands[index];
+            const spec = command.spec;
             reuse.scalar(command.name);
             reuse.scalar(command.args.length);
             reuse.scalar(command.args[0]);
-            if (command.uniform) {
-                reuse.bytes(command.integer ? command.i32 : command.f32, (command.args.length - 1) * 4);
+            if (spec.uniform) {
+                reuse.bytes(spec.integer ? command.i32 : command.f32, (command.args.length - 1) * 4);
                 for (let arg = 1; arg < command.args.length; arg++) {
                     const value = command.args[arg];
                     if (ArrayBuffer.isView(value)) reuse.bytes(value);
@@ -5936,10 +6120,13 @@ class GlFrameCommands {
         }
     }
 
-    replay() {
+    // `mirror` (PF-5) drops no-op texture binds from the replayed stream; the
+    // recorded commands themselves are unchanged, so the reuse compare is not.
+    replay(mirror = null) {
         for (let index = 0; index < this._count; index++) {
             const command = this._commands[index];
-            this._gl[command.name].apply(this._gl, command.args);
+            if (mirror && command.spec.bind) mirror.issue(command.name, command.args);
+            else this._gl[command.name].apply(this._gl, command.args);
         }
     }
 }

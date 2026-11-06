@@ -5,7 +5,7 @@ import { NEUTRAL_GRADE } from '../../claudeville/src/presentation/character-mode
 import { GPU_RECORD_FLAGS } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldPolicy.js';
 
 function fixture({ radiance = false, timers = false } = {}) {
-    const work = { draws: 0, writes: 0, queryReady: false };
+    const work = { draws: 0, writes: 0, binds: 0, units: 0, queryReady: false };
     let id = 0;
     const constants = new Map();
     const functions = new Map();
@@ -32,6 +32,8 @@ function fixture({ radiance = false, timers = false } = {}) {
                 if (key === 'isContextLost') return false;
                 if (key.startsWith('drawArrays')) work.draws++;
                 if (key === 'bufferSubData') work.writes++;
+                if (key === 'bindTexture') work.binds++;
+                if (key === 'activeTexture') work.units++;
                 return null;
             });
             return functions.get(key);
@@ -180,4 +182,63 @@ test('WebGL rescue repaint preserves the primary pacing and timing sample', t =>
     f.input.feed.timeMs++;
     assert.equal(f.renderer.render(f.input), true);
     assert.equal(f.renderer.getDiagnostics().pacing.sampledAtMs, now, 'the next logical frame still records timing');
+});
+
+// PF-1 — a live clock puts a new u_time in every recorded stream, so the byte
+// gate can never match; such frames submit directly and record no commands.
+test('a live-clock frame submits directly, records nothing, and still presents', () => {
+    const f = fixture();
+    baseline(f);
+    const draws = f.work.draws;
+    f.input.feed.timeMs++;
+    assert.equal(f.renderer.render(f.input), true);
+    assert.ok(f.work.draws > draws, 'the direct frame still draws');
+    assert.equal(f.renderer.lastFrameReused, false);
+    assert.equal(f.renderer._sceneCommands._count, 0, 'scene stream records nothing');
+    assert.equal(f.renderer._particleCommands._count, 0, 'particle stream records nothing');
+    assert.equal(f.renderer._compositeCommands._count, 0, 'composite stream records nothing');
+    assert.equal(f.renderer._bloomCommandsA._count, 0, 'bloom streams record nothing');
+    assert.equal(f.renderer._batchCommands[0]._count, 0, 'batch streams record nothing');
+    f.renderer.dispose();
+});
+
+// A direct frame invalidates the reuse baseline (the presented output no
+// longer matches it); one further recorded frame re-primes it.
+test('a fixed clock re-engages output reuse after a direct frame', () => {
+    const f = fixture();
+    baseline(f);
+    const skipped = f.renderer.getDiagnostics().skippedFrames;
+    f.input.feed.timeMs++;
+    assert.equal(f.renderer.render(f.input), true);
+    assert.equal(f.renderer.getDiagnostics().skippedFrames, skipped, 'a direct frame is no skip');
+    assert.equal(f.renderer.render(f.input), true);
+    assert.equal(f.renderer.getDiagnostics().skippedFrames, skipped, 'the first re-priming frame repaints');
+    assert.equal(f.renderer.render(f.input), true);
+    assert.equal(f.renderer.getDiagnostics().skippedFrames, skipped + 1, 'reuse re-engages');
+    assert.equal(f.renderer.lastFrameReused, true);
+    f.renderer.dispose();
+});
+
+// PF-5 — the bind mirror drops no-op bindTexture calls (the per-batch sidecar
+// rebinds of emptyMaterialTexture) before the driver. Unit selects between
+// genuinely different units still issue: only binds that would not change the
+// context are skipped.
+test('a many-batch frame binds far fewer textures than it has batches', () => {
+    const f = fixture();
+    f.input.records = Array.from({ length: 24 }, (_, index) => ({
+        ...f.input.records[0], id: `sprite-${index}`, textureKey: `sprite-${index}`,
+    }));
+    assert.equal(f.renderer.render(f.input), true);
+    assert.equal(f.renderer.batches, 24);
+    const before = { binds: f.work.binds, units: f.work.units };
+    f.input.feed.timeMs++;
+    assert.equal(f.renderer.render(f.input), true);
+    const binds = f.work.binds - before.binds;
+    // Unmirrored, each batch rebinds albedo + its sidecar: the 24 batches
+    // alone cost ≥48 binds. The mirror keeps one bind per distinct
+    // (unit, target, texture): the empty sidecars settle once per frame and
+    // only the 24 genuinely different albedos pay.
+    assert.ok(binds <= 44, `expected ≤44 binds for 24 distinct-atlas batches, saw ${binds}`);
+    assert.ok(f.work.units > before.units, 'unit selects still flow for real unit changes');
+    f.renderer.dispose();
 });
