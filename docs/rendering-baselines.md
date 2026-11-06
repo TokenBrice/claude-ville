@@ -96,6 +96,8 @@ The following decorations are intentionally Canvas-only and must not be mistaken
 
 The fog banks, the lighthouse beam, and live world particles (footfall motes, agent rain-splash, token motes included) are cross-backend ground truth now, not Canvas-only: the fog banks and the beam run in both GPU scene shaders, and every live particle draws in the GPU scene pass as a depth-tested instanced quad (only the reduced-motion static chimney wisp stays on the upper overlay).
 
+Paired review has a unit-test half (QA-6): a new visual system that adds a shader term ships a parity twin in the style of the `sea-*` identifier twins (`scripts/tests/sea-weather.test.mjs`, `sea-sky.test.mjs`) — the same expression or constant asserted present in the WebGL2 GLSL and its WGSL twin — so a WGSL-only or GLSL-only drift fails `npm run test:unit` instead of waiting for a browser. The measured gate stays `npm run smoke:webgpu-parity`: on a host without a WebGPU adapter it reports n/a (exit 2) rather than failing, so it and a `smoke:v3-truth` subset are pinned as manual release checks in `.claude/skills/release/SKILL.md`, not CI jobs.
+
 ## Trail camera benchmark
 
 Persisted movement history remains available to diagnostics and replay, but routine history is not painted over the live village. Only a short recent route for the selected or action-needed agent draws directly; camera motion never allocates or repaints an ambient trail cache.
