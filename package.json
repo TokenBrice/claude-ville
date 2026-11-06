@@ -46,8 +46,8 @@
     "test:e2e:replay": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/smoke/r1-18.e2e-replay.mjs",
     "check:artifacts": "node scripts/agents/check-artifacts.mjs",
     "validate:quick": "npm run models:check && npm run verify:architecture && npm run check:server && npm run check:adapters && npm run check:services && npm run check:frontend-syntax && npm run check:scripts && npm run check:git-events && npm run check:adapter-fixtures && npm run check:theme-tokens && npm run check:artifacts && npm run test:unit && npm run sprites:audit-ids",
-    "validate:full": "npm run validate:quick && npm run test:integration && npm run test:e2e:replay && npm run verify:server && npm run world:validate-buildings && npm run world:validate-terrain && npm run world:validate-ambient && NODE_NO_WARNINGS=1 node scripts/smoke/world-state-bounds.mjs && npm run sprites:validate && npm run sprites:channels-validate && node scripts/sprites/author-roster-channels.mjs --check",
-    "gate:release": "npm run release:verify && npm run validate:quick && npm run test:integration && npm run verify:server",
+    "validate:full": "npm run validate:quick && npm run test:integration && npm run test:e2e:replay && NODE_NO_WARNINGS=1 node scripts/smoke/adapters.mjs && NODE_NO_WARNINGS=1 node scripts/smoke/tail-cache.mjs && NODE_NO_WARNINGS=1 node scripts/smoke/watcher-topology.mjs && NODE_NO_WARNINGS=1 node scripts/smoke/overlay-layout.mjs && NODE_NO_WARNINGS=1 node scripts/smoke/relationship.mjs && NODE_NO_WARNINGS=1 node scripts/smoke/usage-history-bounds.mjs && NODE_NO_WARNINGS=1 node scripts/smoke/claude-transcript-aggregate.mjs && NODE_NO_WARNINGS=1 node scripts/smoke/codex-warm-discovery.mjs && npm run verify:server && npm run world:validate-buildings && npm run world:validate-terrain && npm run world:validate-ambient && NODE_NO_WARNINGS=1 node scripts/smoke/world-state-bounds.mjs && npm run sprites:validate && npm run sprites:channels-validate && node scripts/sprites/author-roster-channels.mjs --check",
+    "gate:release": "npm run release:verify && npm run validate:full",
     "release:check": "node scripts/release/prepare.mjs",
     "release:prepare": "node scripts/release/prepare.mjs",
     "release:verify": "node scripts/release/prepare.mjs --verify",
@@ -84,6 +84,7 @@
     "world:golden-hours": "node scripts/world/golden-hours.mjs",
     "smoke:webgpu-parity": "NODE_NO_WARNINGS=1 node scripts/smoke/webgpu-parity.mjs",
     "smoke:v3-truth": "NODE_NO_WARNINGS=1 node scripts/smoke/v3-environment-truth.mjs",
+    "smoke:endurance-churn": "NODE_NO_WARNINGS=1 node scripts/smoke/endurance-churn.mjs",
     "vendor:refresh-js-yaml": "node scripts/vendor/refresh-js-yaml.mjs"
   },
   "devDependencies": {

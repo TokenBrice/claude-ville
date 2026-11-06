@@ -386,15 +386,26 @@ const finite = v => Number.isFinite(v);
 
 // ------------------------------------------------------------- transport ----
 // S4 / 2.1 (ENG-8): the Transport's own diagnostics plus the virtual clock's
-// timer attribution. `timers`: [{ site, fired, p95Ms, maxMs, starts }] per
-// timer call site ('harness' = the probe's own timers, 'untimed' = outside
+// timer attribution. `timers`: [{ site, fired, p95Ms, p995Ms, maxMs, starts }]
+// per timer call site ('harness' = the probe's own timers, 'untimed' = outside
 // any timer); `starts` counts continuous sources (the sequencer, bank
 // playback) — discrete cue voices, control-rate decisions placed on the
 // audio clock with a lead, are counted apart and exempt. Exactly one app
 // timer may start such sources, and it must be the Transport's; its tick
-// costs ≤ 0.5 ms p95, ≤ 2 ms max on the main thread.
+// costs ≤ 0.5 ms p95, ≤ 1.5 ms p99.5 and ≤ 10 ms max on the main thread. The
+// gate is dual on purpose: the virtual clock freezes during synchronous
+// callbacks, so a real application stall inside a tick reports zero virtual
+// stalls and zero underruns — the p99.5 alone lets a few expensive callbacks
+// through, while the max alone would fail on host noise. Calibration
+// evidence: across ~2k ticks per probe the p95 stays flat at 0.30–0.40 ms
+// while the max tracks host load (2.20 ms idle, 4.60 ms loaded, 6.30 ms at
+// load 55/16) — host noise stayed under ~7 ms, but 9 app callbacks of 50 ms
+// among 1,962 ticks pass the p99.5 (9 < 0.5% of 1,962) and blow the 10 ms
+// max. The SampleBank idle pump (SampleBank.js, its own timer site) can
+// only delay a tick's start — lateness, which has its own INFO-bounded
+// check — never its measured duration.
 export const TRANSPORT_LIMITS = Object.freeze({
-    horizonSec: 1.5, tickP95Ms: 0.5, tickMaxMs: 2, underruns: 0,
+    horizonSec: 1.5, tickP95Ms: 0.5, tickP995Ms: 1.5, tickMaxMs: 10, underruns: 0,
     site: /(^|\/)Transport\.js:\d+$/,
 });
 
@@ -410,7 +421,10 @@ export function judgeTransport(diag, timers, limits = TRANSPORT_LIMITS) {
         failures.push(`sound placed by ${soundSites.length} timer site(s): ${soundSites.map(s => s.site).join(', ') || 'none'}`);
     }
     if (!tick) failures.push('no Transport tick seen');
-    else if (!(tick.p95Ms <= limits.tickP95Ms) || !(tick.maxMs <= limits.tickMaxMs)) failures.push(`tick p95 ${tick.p95Ms?.toFixed(3)} ms / max ${tick.maxMs?.toFixed(2)} ms`);
+    else {
+        if (!(tick.p95Ms <= limits.tickP95Ms) || !(tick.p995Ms <= limits.tickP995Ms)) failures.push(`tick p95 ${tick.p95Ms?.toFixed(3)} ms / p99.5 ${tick.p995Ms?.toFixed(3)} ms`);
+        if (!(tick.maxMs <= limits.tickMaxMs)) failures.push(`tick max ${tick.maxMs?.toFixed(2)} ms (a real main-thread stall, past the ${limits.tickMaxMs} ms host-noise ceiling)`);
+    }
     return { pass: failures.length === 0, failures, processes, soundSites, tick };
 }
 

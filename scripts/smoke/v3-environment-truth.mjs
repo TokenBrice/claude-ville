@@ -27,7 +27,10 @@
 //   static - reduced motion. Thirteen environment-only scenes (no agents:
 //            day, harbor, shallows, golden hour, rainbow, night wide /
 //            lighthouse / command / harbor, storm, rain drips, snow, fog).
-//            Two captures 3 s apart: 0 changed px outside DOM chrome, the
+//            Frame A is taken only once the page is still — two consecutive
+//            captures must match (the truth arm's baseline rule, bounded at
+//            30 s), else the scene fails as never settled — and then two
+//            captures 3 s apart: 0 changed px outside DOM chrome, the
 //            motion clock reads 0, no running document animation.
 //   motion - full motion, the same scenes: two captures 2.5 s apart must
 //            differ by at least MIN_MOTION_PX, so a 0-px static result means
@@ -132,7 +135,7 @@ const IGNORED_PATHS = [
   /^frameState\.(light|lights|lightCount|tile|cluster|admission|wetReflectionCount|beamGround|footprint|radiance|mark|record)/i,
   /^weatherRenderer\.sceneContext\.camera\./,
   /^skyRenderer\.(deckBakes|plateBakes|_frameCacheKey)$/,
-  /^wildlife\.(_landBirdLastNow|_sceneFrameToken|_sceneFrameNow)$/,
+  /^wildlife\.(_landBirdLastNow|_sceneFrameToken|_sceneFrameNow|_duckCoverAt|_livestockAt)$/,
   /^postFx\.(light|attention|poolMask|hazeValues|maskRevision|_frameMaskUploadMs|textureBytes|resourceBytes|pendingGpuQueries|unifiedResources|gpuMs|cpuMs|frames|upload|_upload|timings|lastUpload|sourceUpload|maskUpload|diagnostics)/,
   /^postFx\.\w*(CpuMs|GpuMs|UploadMs|GapMs|EndMs)$/,
 ];
@@ -521,8 +524,9 @@ function pixelDiff(A, B, { canvas, horizonY, excluded }, overlay = false) {
 
 // The baseline must be still before it is a baseline (the fresh page's first
 // bakes and backend switch). Recapture until two frames 2 s apart match (at
-// most 30 s).
-async function settledBaseline(shot) {
+// most 30 s). With `neverSettles`, a frame that never goes still fails with
+// that message instead of returning a stale baseline.
+async function settledBaseline(shot, neverSettles = null) {
   let previous = await shot();
   for (let waited = 0; waited < 30_000; waited += 2000) {
     await new Promise(resolve => setTimeout(resolve, 2000));
@@ -530,6 +534,7 @@ async function settledBaseline(shot) {
     if (!compare(previous, next).changed) return next;
     previous = next;
   }
+  if (neverSettles) throw new Error(neverSettles);
   return previous;
 }
 
@@ -573,8 +578,25 @@ async function runScenes(page, options, record, { reduced }) {
     if (!options.scenes.includes(id)) continue;
     await pinTimeline(page, tl);
     await pinPose(page, pose, zoom);
-    await page.waitForTimeout(3500);
-    const a = await capture(page, { pose, zoom });
+    // A static frame A must be a settled still frame, not a mid-bake capture
+    // on a loaded host: like the truth arm's baseline, recapture until two
+    // consecutive captures match before taking it. Full motion never settles,
+    // so the motion arm keeps its fixed pre-capture wait.
+    let a;
+    if (reduced) {
+      try {
+        a = await settledBaseline(
+          () => capture(page, { pose, zoom }),
+          `never settled: no still frame within 30 s under reduced motion (still baking or drifting)`,
+        );
+      } catch (error) {
+        record({ arm, scene: id, failures: [error.message] });
+        continue;
+      }
+    } else {
+      await page.waitForTimeout(3500);
+      a = await capture(page, { pose, zoom });
+    }
     await page.waitForTimeout(reduced ? 3000 : 2500);
     const b = await capture(page, { pose, zoom });
     const d = compare(a, b);
@@ -642,7 +664,7 @@ async function main() {
           const label = row.state ? `${row.timeline} ${row.state}` : row.scene;
           if (row.failures.length) {
             failed++;
-            saveDiagnostics(out, `${renderer}-${arm}-${label.replace(' ', '-')}`, frames);
+            if (frames) saveDiagnostics(out, `${renderer}-${arm}-${label.replace(' ', '-')}`, frames);
             console.log(`[v3-truth] FAIL ${renderer} ${arm} ${label}: ${row.failures.join('; ')}`);
           } else {
             console.log(`[v3-truth] ok   ${renderer} ${arm} ${label}: ${row.px} px${row.state && row.state !== 'control' ? ` (sky ${row.sky}, env paths ${row.envPaths})` : ''}`);

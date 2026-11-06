@@ -85,6 +85,8 @@ npm run release:prepare -- <version> --write
 npm run gate:release
 ```
 
+`gate:release` runs `release:verify` and then everything CI's `validate:full` runs, so a release cannot pass a gate narrower than the one every commit faces.
+
 When publication is explicitly requested:
 
 1. Commit the release files and push `main`.

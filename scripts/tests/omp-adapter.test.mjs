@@ -8,6 +8,7 @@ import { makeTempDir } from './support/tmp.mjs';
 const require = createRequire(import.meta.url);
 const { OmpAdapter, parseOmpTranscript } = require('../../claudeville/adapters/omp.js');
 const { clearTailCache, readFailures } = require('../../claudeville/adapters/shared.js');
+const { _watcherTest } = require('../../claudeville/server.js');
 
 function captureFileIo(action, { onRead = null } = {}) {
   const original = { open: fs.openSync, close: fs.closeSync, read: fs.readSync, stat: fs.statSync, readdir: fs.readdirSync };
@@ -224,9 +225,82 @@ test('OMP adapter discovers parent and nested agent transcripts with details and
     assert.deepEqual(detail.messages, [{
       role: 'assistant', text: 'Parent completed the task.', ts: Date.parse('2026-08-12T10:00:20.000Z'),
     }]);
-    assert.deepEqual(adapter.getWatchPaths(), [{
-      type: 'directory', path: tmpRoot, recursive: true, filter: '.jsonl',
-    }]);
+    // The bounded-watcher contract (QA-2): scoped, non-recursive descriptors —
+    // a discovery root, plus per active session a probed active directory on
+    // its transcript's folder and a probed active file on the transcript itself
+    // (appends change the file's stat, not its directory's).
+    assert.deepEqual(adapter.getWatchPaths(), [
+      { type: 'directory', path: tmpRoot, scope: 'discovery', kind: 'discovery' },
+    ]);
+    const watchPaths = adapter.getWatchPaths({ sessions });
+    assert.ok(watchPaths.every(p => p.recursive !== true));
+    const active = watchPaths.filter(p => p.scope === 'active');
+    assert.ok(active.length >= 2, 'each active session contributes a probed active descriptor');
+    assert.ok(active.every(p => p.probe === true));
+    assert.ok(active.filter(p => p.type === 'directory').every(p => p.filters.join() === '.jsonl'));
+    assert.ok(active.some(p => p.type === 'file' && p.path === parentPath), 'the live parent transcript is probed as an active file');
+    assert.ok(active.some(p => p.type === 'file' && p.path === childPath), 'the live child transcript is probed as an active file');
+    assert.ok(active.some(p => p.path === projectDir), 'the parent transcript watches its project directory');
+    assert.ok(active.some(p => p.path === path.join(projectDir, `2026-08-12T10-00-00-000Z_${parentId}`)), 'child transcripts watch their session directory');
+    assert.ok(active.every(p => p.activity === sessions.find(s => s.sessionId === p.sessionId)?.lastActivity));
+  } finally {
+    adapter.shutdown();
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('OMP transcript appends reach stat probes when the dynamic watcher cap drops the transcript directory', () => {
+  const tmpRoot = makeTempDir('claudeville-omp-append-');
+  const projectDir = path.join(tmpRoot, '-workspace-fixture');
+  const parentId = '01900000-0000-7000-8000-000000000030';
+  const parentPath = path.join(projectDir, `2026-08-12T11-00-00-000Z_${parentId}.jsonl`);
+  const now = Date.parse('2026-08-12T11:01:00.000Z');
+  writeJsonl(parentPath, fixtureRecords(parentId, Date.parse('2026-08-12T11:00:20.000Z')));
+  stamp(parentPath, now);
+
+  const adapter = new OmpAdapter({ rootDir: tmpRoot, now: () => now });
+  try {
+    const sessions = adapter.getActiveSessions(2 * 60 * 1000);
+    assert.deepEqual(sessions.map(session => session.sessionId), [`omp-${parentId}`]);
+    const raw = adapter.getWatchPaths({ sessions }).map(descriptor => ({ ...descriptor, provider: 'omp' }));
+    const competitors = Array.from({ length: _watcherTest.constants.WATCH_DYNAMIC_CAP }, (_, index) => ({
+      type: 'file',
+      path: path.join(tmpRoot, `competitor-${index}.jsonl`),
+      scope: 'active',
+      activity: now + 1 + index,
+      probe: true,
+    }));
+    const pool = _watcherTest.canonicalizeWatchDescriptors([...raw, ...competitors]);
+    const selected = _watcherTest.selectWatchDescriptors(pool, { includeDynamic: true });
+    assert.equal(selected.selected.some(descriptor => descriptor.path === projectDir), false, 'the fixture fills the dynamic watcher cap');
+    assert.equal(selected.selected.some(descriptor => descriptor.path === parentPath), false, 'the transcript file is capped out too');
+    const probes = _watcherTest.selectProbeDescriptors(pool, { includeDynamic: true })
+      .filter(descriptor => descriptor.providers.includes('omp'));
+    const transcriptProbe = probes.find(descriptor => descriptor.type === 'file' && descriptor.path === parentPath);
+    const directoryProbe = probes.find(descriptor => descriptor.type === 'directory' && descriptor.path === projectDir);
+    assert.ok(transcriptProbe, 'the live transcript file keeps a stat probe');
+    assert.ok(directoryProbe, 'the transcript directory keeps a stat probe');
+    const signature = (wp) => {
+      const stat = fs.statSync(wp.path);
+      return `${stat.dev}:${stat.ino}:${Math.round(stat.mtimeMs)}:${stat.size}`;
+    };
+    const before = { transcript: signature(transcriptProbe), directory: signature(directoryProbe) };
+
+    // Appends change the transcript's own stat only: without the file probe the
+    // capped-out directory descriptor sees nothing until reconciliation.
+    fs.appendFileSync(parentPath, `${JSON.stringify(assistantMessage('appended', new Date(now).toISOString(), [{ type: 'text', text: 'Appended answer.' }]))}\n`);
+
+    assert.notEqual(signature(transcriptProbe), before.transcript, 'appends change the transcript file signature');
+    assert.equal(signature(directoryProbe), before.directory, 'appends leave the directory signature untouched');
+
+    const dirty = _watcherTest.dirtyDescriptorForWatch(transcriptProbe, 'active-probe');
+    assert.deepEqual(
+      { provider: dirty.provider, kind: dirty.kind, path: dirty.path },
+      { provider: 'omp', kind: 'transcript', path: parentPath },
+      'a probe change routes into the OMP transcript dirty path',
+    );
+    adapter.invalidateCachesForDirty(dirty);
+    assert.equal(adapter.getActiveSessions(2 * 60 * 1000)[0].lastMessage, 'Appended answer.');
   } finally {
     adapter.shutdown();
     fs.rmSync(tmpRoot, { recursive: true, force: true });

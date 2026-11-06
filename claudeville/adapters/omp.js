@@ -1101,8 +1101,49 @@ class OmpAdapter {
     return parsed.detail;
   }
 
-  getWatchPaths() {
-    return [{ type: 'directory', path: this.sessionsDir, recursive: true, filter: '.jsonl' }];
+  getWatchPaths({ sessions = [] } = {}) {
+    // Scoped and non-recursive like every sibling adapter (the bounded-watcher
+    // contract): the sessions root catches new project containers and root
+    // transcripts; per active session, the shallow project directory covers new
+    // session trees while the exact transcript file catches appends (appends
+    // change the file's stat, not its directory's). Deeper discovery stays with
+    // the bounded reconcile pass.
+    const paths = [];
+    if (fs.existsSync(this.sessionsDir)) {
+      paths.push({ type: 'directory', path: this.sessionsDir, scope: 'discovery', kind: 'discovery' });
+    }
+    for (const session of sessions) {
+      const entry = this._detailIndex.get(rawSessionId(session.sessionId))
+        || this._index.get(rawSessionId(session.sessionId));
+      const directory = entry ? path.dirname(entry.filePath) : null;
+      if (!directory || !directory.startsWith(`${this.sessionsDir}${path.sep}`) || !fs.existsSync(directory)) continue;
+      const dirtyTarget = { sessionId: session.sessionId, project: session.project };
+      if (path.dirname(directory) !== this.sessionsDir) {
+        paths.push({ type: 'directory', path: path.dirname(directory), scope: 'recent', kind: 'discovery', activity: session.lastActivity, ...dirtyTarget });
+      }
+      paths.push({
+        type: 'directory',
+        path: directory,
+        filters: ['.jsonl'],
+        scope: 'active',
+        kind: 'transcript',
+        probe: true,
+        activity: session.lastActivity,
+        ...dirtyTarget,
+      });
+      if (fs.existsSync(entry.filePath)) {
+        paths.push({
+          type: 'file',
+          path: entry.filePath,
+          scope: 'active',
+          kind: 'transcript',
+          probe: true,
+          activity: session.lastActivity,
+          ...dirtyTarget,
+        });
+      }
+    }
+    return paths;
   }
 
   invalidateCachesForDirty(dirty = {}) {

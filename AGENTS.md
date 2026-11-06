@@ -48,7 +48,7 @@ Match the command to the change:
 | World buildings / terrain config | `npm run world:validate-buildings`; `npm run world:validate-terrain` |
 | Sound / audio | `npm run audio:probe` (local gate; not in CI) |
 | Broad regression | `npm run validate:quick` (fast); `npm run validate:full` (CI) |
-| Release gate | `npm run gate:release` |
+| Release gate | `npm run gate:release` (`release:verify` + everything `validate:full` runs) |
 
 Set `CLAUDEVILLE_TEST_TMPDIR` to a writable directory when a sandbox cannot write to its default temp directory. Browser judgment remains manual; `verify:render` automates evidence capture.
 

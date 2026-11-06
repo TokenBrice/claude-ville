@@ -452,6 +452,30 @@ function installParityHelpers() {
     return { renderer, adapter: info ? { vendor: info.vendor, architecture: info.architecture, fallback: probe.isFallbackAdapter ?? info.isFallbackAdapter ?? null } : null };
   };
 
+  // The availability half of makeWebgpu: the app's own WebGPU probe (the same
+  // first stage the case path's n/a detection runs), without building a
+  // renderer or compiling pipelines. Hosts without a hardware adapter answer
+  // { available: false, reason } here, so callers report n/a instead of
+  // waiting out a freeze that can never succeed (the app takes such a page to
+  // the Canvas world, which records no GPU frame context).
+  T.webgpuProbe = async () => {
+    let module;
+    try {
+      module = await import(`${GPU}GpuWorldRendererWebGPU.js`);
+    } catch (error) {
+      return { available: false, reason: `GpuWorldRendererWebGPU.js not loadable: ${String(error?.message || error).slice(0, 160)}` };
+    }
+    const probe = module.probeWebGpu || module.prepareGpuWorldWebGPU;
+    if (typeof probe !== 'function') return { available: true, reason: null };
+    try {
+      const result = await probe();
+      if (!result?.available) return { available: false, reason: `${probe.name} unavailable: ${result?.reason || 'no reason'}` };
+    } catch (error) {
+      return { available: false, reason: `${probe.name} threw: ${error?.message || error}` };
+    }
+    return { available: true, reason: null };
+  };
+
   // rimTier: backing pixels a frame record samples from a source texel with
   // 0 < a < 255 (nearest mapping of the record's rect onto its source rect,
   // reflect mirrored, screen-space rects passed through), dilated by 1 px.
@@ -990,6 +1014,14 @@ async function runDeviceLoss(browser, baseUrl, size, settleSeconds) {
   const item = PARITY_SCENARIOS[0];
   const { context, page, errors } = await openCase(browser, baseUrl, { size, scenario: item.scenario, reducedMotion: false, renderer: 'webgpu' });
   try {
+    // Without a hardware WebGPU adapter this page boots the Canvas world, so
+    // the freeze wait below can never succeed. Detect it the way the case
+    // path does (the app's own probe) and report n/a, not a 30 s timeout
+    // recorded as fail.
+    const probe = await page.evaluate(() => window.__webgpuParity.webgpuProbe());
+    if (!probe.available) {
+      return { scenario: item.id, size: size.label, status: 'n/a', reason: probe.reason, errors: errors.slice(0, 5) };
+    }
     const { pose, frozen } = await poseAndFreeze(page, item, size, settleSeconds);
     const result = await page.evaluate(() => window.__webgpuParity.deviceLoss());
     return { scenario: item.id, size: size.label, pose, backing: frozen.backing, ...result, errors: errors.slice(0, 5) };
@@ -1003,6 +1035,16 @@ async function runWebglLoss(browser, baseUrl, size, settleSeconds) {
   const item = PARITY_SCENARIOS[0];
   const { context, page, errors } = await openCase(browser, baseUrl, { size, scenario: item.scenario, reducedMotion: false, renderer: 'webgl' });
   try {
+    // Same guard as runDeviceLoss: on a host whose WebGL2 is software the app
+    // boots the Canvas world, the freeze wait can never succeed, and the
+    // in-page check's own n/a ('no resident WebGL2 world') applies.
+    const resident = await page.evaluate(() => {
+      const r = window.__claudeVilleApp?.renderer;
+      return { mode: r?.worldRendererMode ?? null, reason: r?.worldBackendReason ?? null };
+    });
+    if (resident.mode !== 'webgl') {
+      return { scenario: item.id, size: size.label, status: 'n/a', reason: resident.reason || `resident world is ${resident.mode || 'not booted'}`, errors: errors.slice(0, 5) };
+    }
     const { pose, frozen } = await poseAndFreeze(page, item, size, settleSeconds);
     const result = await page.evaluate(() => window.__webgpuParity.webglLoss());
     return { scenario: item.id, size: size.label, pose, backing: frozen.backing, ...result, errors: errors.slice(0, 5) };

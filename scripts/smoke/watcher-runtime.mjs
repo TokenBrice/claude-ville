@@ -254,6 +254,7 @@ try {
   const detailDurationMs = performance.now() - detailStartedAt;
   assert.ok(detailDurationMs < 500, `oversized detail blocked for ${detailDurationMs.toFixed(1)}ms`);
   assert.deepEqual(pendingDetail.tokenUsage, {
+    availability: 'unavailable',
     input: 0,
     output: 0,
     totalInput: 0,
@@ -261,6 +262,7 @@ try {
     cacheRead: 0,
     cacheCreate: 0,
     contextWindow: 0,
+    contextWindowMax: 0,
     turnCount: 0,
   });
   const pendingPerf = await requestJson('/api/perf');

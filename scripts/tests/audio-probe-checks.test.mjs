@@ -99,7 +99,7 @@ test('the Town band scene holds S2 LUFS-I and its band stem short-term ceiling, 
     assert.deepEqual(judgeSceneTargets({}), []);
 });
 
-const TICK = { site: 'Transport.js:88', fired: 2400, p95Ms: 0.2, maxMs: 1.1, starts: 900 };
+const TICK = { site: 'Transport.js:88', fired: 2400, p95Ms: 0.2, p995Ms: 0.6, maxMs: 1.1, starts: 900 };
 
 test('the transport passes only when its own timer is the one that placed sound', () => {
     const diag = { underruns: 0, processes: [{ name: 'music', maxAheadSec: 1.5 }] };
@@ -119,7 +119,13 @@ test('the transport holds each process to its horizon and counts underruns and t
     assert.equal(judgeTransport({ ...ok, underruns: 1 }, [TICK]).pass, false);
     assert.equal(judgeTransport({ underruns: 0, processes: [{ name: 'music', maxAheadSec: 1.6 }] }, [TICK]).pass, false);
     assert.equal(judgeTransport(ok, [{ ...TICK, p95Ms: 0.7 }]).pass, false);
-    assert.equal(judgeTransport(ok, [{ ...TICK, maxMs: 2.5 }]).pass, false);
+    // The gate is dual: a single host-noise outlier (max ~6.3 ms, the largest
+    // measured under load 55/16 with p95 flat at 0.30–0.40 ms) must not fail
+    // the tick, but a real 50 ms app stall — which the frozen virtual clock
+    // reports as zero underruns — and a heavy tail beyond 1.5 ms p99.5 both do.
+    assert.equal(judgeTransport(ok, [{ ...TICK, maxMs: 6.3 }]).pass, true);
+    assert.equal(judgeTransport(ok, [{ ...TICK, maxMs: 50 }]).pass, false);
+    assert.equal(judgeTransport(ok, [{ ...TICK, p995Ms: 1.9 }]).pass, false);
     assert.equal(judgeTransport(null, [TICK]).pass, false);
 });
 

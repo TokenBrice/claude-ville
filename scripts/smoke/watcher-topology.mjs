@@ -63,6 +63,19 @@ touch(
 );
 touch(path.join(tmpRoot, '.local', 'share', 'opencode', 'opencode.db'));
 fs.mkdirSync(path.join(tmpRoot, '.config', 'opencode', 'agents'), { recursive: true });
+// The journal adapters need their state roots to report discovery descriptors;
+// their per-session active descriptors are pinned in glm-adapter.test.mjs and
+// deepseek-adapter.test.mjs.
+fs.mkdirSync(path.join(tmpRoot, '.local', 'state', 'deepseek-cc-mcp'), { recursive: true });
+fs.mkdirSync(path.join(tmpRoot, '.local', 'state', 'glm-cc-mcp'), { recursive: true });
+
+// OMP: one parent transcript inside a project container, so the contract loop
+// exercises its discovery root and a probed active descriptor alike.
+touch(
+  path.join(tmpRoot, '.omp', 'agent', 'sessions', '-home-demo', '2026-11-05T12-00-00-000Z_omp-fixture.jsonl'),
+  `${JSON.stringify({ type: 'session', id: 'omp-fixture', timestamp: new Date(now).toISOString(), cwd: project })}\n`
+  + `${JSON.stringify({ type: 'message', timestamp: new Date(now).toISOString(), message: { role: 'assistant', content: [{ type: 'text', text: 'fixture' }] } })}\n`,
+);
 
 const require = createRequire(import.meta.url);
 const { adapters, getAllWatchPaths } = require('../../claudeville/adapters');

@@ -238,7 +238,7 @@ function timerReport() {
     return stats.map((s) => {
         const d = s.durationsMs.slice().sort((a, b) => a - b);
         const q = p => (d.length ? d[Math.min(d.length - 1, Math.floor(p * d.length))] : null);
-        return { site: s.site, callers: s.callers.slice(0, 4), fired: s.fired, p95Ms: q(0.95), maxMs: d.length ? d[d.length - 1] : null, ...(perSite.get(s.site) || empty) };
+        return { site: s.site, callers: s.callers.slice(0, 4), fired: s.fired, p95Ms: q(0.95), p995Ms: q(0.995), maxMs: d.length ? d[d.length - 1] : null, ...(perSite.get(s.site) || empty) };
     }).concat(['harness', 'untimed'].filter(k => !stats.some(s => s.site === k) && perSite.has(k)).map(k => ({ site: k, callers: [], fired: 0, p95Ms: null, maxMs: null, ...perSite.get(k) })));
 }
 
