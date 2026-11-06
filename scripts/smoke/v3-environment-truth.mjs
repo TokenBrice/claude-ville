@@ -27,11 +27,13 @@
 //   static - reduced motion. Thirteen environment-only scenes (no agents:
 //            day, harbor, shallows, golden hour, rainbow, night wide /
 //            lighthouse / command / harbor, storm, rain drips, snow, fog).
-//            Frame A is taken only once the page is still — two consecutive
-//            captures must match (the truth arm's baseline rule, bounded at
-//            30 s), else the scene fails as never settled — and then two
-//            captures 3 s apart: 0 changed px outside DOM chrome, the
-//            motion clock reads 0, no running document animation.
+//            Frame A is taken only once the page is still — captures must
+//            stay identical across a 3.5 s window sampled every 500 ms (a
+//            stillness span longer than the A-to-B wait; a window must
+//            start within 30 s and may then run to completion), else the
+//            scene fails as never settled — and then two captures 3 s
+//            apart: 0 changed px outside DOM chrome, the motion clock
+//            reads 0, no running document animation.
 //   motion - full motion, the same scenes: two captures 2.5 s apart must
 //            differ by at least MIN_MOTION_PX, so a 0-px static result means
 //            the motion was held, not absent.
@@ -523,19 +525,29 @@ function pixelDiff(A, B, { canvas, horizonY, excluded }, overlay = false) {
 // Arms.
 
 // The baseline must be still before it is a baseline (the fresh page's first
-// bakes and backend switch). Recapture until two frames 2 s apart match (at
-// most 30 s). With `neverSettles`, a frame that never goes still fails with
-// that message instead of returning a stale baseline.
-async function settledBaseline(shot, neverSettles = null) {
-  let previous = await shot();
-  for (let waited = 0; waited < 30_000; waited += 2000) {
-    await new Promise(resolve => setTimeout(resolve, 2000));
+// bakes and backend switch). Recapture every `sampleMs` until captures stay
+// identical for `stillMs` of wall clock (defaults: the truth arm's rule, two
+// frames 2 s apart); any change restarts the stillness window. The 30 s cap
+// counts accumulated sleep time only (`waited += sampleMs`, so capture time
+// never eats it): a stillness window must start within it and may then run
+// to completion. With `neverSettles`, a frame that never goes still fails
+// with that message instead of returning a stale baseline.
+async function settledBaseline(shot, neverSettles = null, { sampleMs = 2000, stillMs = 2000 } = {}) {
+  let anchor = await shot();
+  let since = Date.now();
+  let waited = 0;
+  for (;;) {
+    await new Promise(resolve => setTimeout(resolve, sampleMs));
+    waited += sampleMs;
     const next = await shot();
-    if (!compare(previous, next).changed) return next;
-    previous = next;
+    if (compare(anchor, next).changed) {
+      if (waited >= 30_000) break; // no new stillness windows past the cap
+      anchor = next;
+      since = Date.now();
+    } else if (Date.now() - since >= stillMs) return next;
   }
   if (neverSettles) throw new Error(neverSettles);
-  return previous;
+  return anchor;
 }
 
 // One timeline on its own fresh page (a new context: no Harbor ships, release
@@ -579,15 +591,18 @@ async function runScenes(page, options, record, { reduced }) {
     await pinTimeline(page, tl);
     await pinPose(page, pose, zoom);
     // A static frame A must be a settled still frame, not a mid-bake capture
-    // on a loaded host: like the truth arm's baseline, recapture until two
-    // consecutive captures match before taking it. Full motion never settles,
-    // so the motion arm keeps its fixed pre-capture wait.
+    // on a loaded host: recapture until captures stay identical across a
+    // stillness window longer than the A-to-B wait, so asynchronous work a
+    // scene jump started (a bake, a texture load) lands inside the window
+    // and restarts it. Full motion never settles, so the motion arm keeps
+    // its fixed pre-capture wait.
     let a;
     if (reduced) {
       try {
         a = await settledBaseline(
           () => capture(page, { pose, zoom }),
-          `never settled: no still frame within 30 s under reduced motion (still baking or drifting)`,
+          `never settled: no 3.5 s still window started within 30 s under reduced motion (still baking or drifting)`,
+          { sampleMs: 500, stillMs: 3500 },
         );
       } catch (error) {
         record({ arm, scene: id, failures: [error.message] });
