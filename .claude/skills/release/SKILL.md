@@ -30,7 +30,8 @@ with `--tag`, a local Git tag.
 2. Choose the tier and prepend the matching `CHANGELOG.md` entry.
 3. Validate and preview: `npm run release:check -- <version>`.
 4. Apply both version edits and write release notes: `npm run release:prepare -- <version> --write`.
-5. Run the release gate: `npm run gate:release`.
+5. Run the release gate: `npm run gate:release` (it runs `release:verify` and then everything CI's `validate:full` runs).
+   - When the release touches rendering, also run the manual render pins on a WebGPU-capable host: `npm run smoke:webgpu-parity -- --case=git-harbor:12:clear:1` and `npm run smoke:v3-truth -- --renderers=webgl --timelines=partly-noon`. An exit 2 from `smoke:webgpu-parity` means n/a (no WebGPU adapter), not a pass. These stay manual; CI and `gate:release` are browser-free.
 6. Review status and commit only the intended release files.
 7. If publication was requested, push the release commit to `main`.
 8. From the clean committed tree, create the local tag: `npm run release:prepare -- <version> --tag`.
@@ -40,6 +41,7 @@ with `--tag`, a local Git tag.
 ## Verification
 
 - `npm run release:verify` confirms the top changelog, package version, and UI version agree.
+- `npm run gate:release` runs `npm run release:verify` and then everything `npm run validate:full` runs, so a release passes the same checks CI does.
 - The printed notes must equal that changelog section verbatim.
 - The UI version is always `v<major>.<minor>`.
 
