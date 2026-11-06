@@ -198,7 +198,7 @@ test('v2 keyed updates reconstruct the full roster and survive fresh resync base
       const peerFrames = peer.messages.length;
       const legacyFrames = legacy.messages.length;
       rows = [];
-      now += 300;
+      now += 300 + wire.RESYNC_FRESH_WINDOW_MS;
       wire.markProviderDataDirty({ provider: 'claude', kind: 'transcript', reason: 'temporarily-empty-resync' }, null, { coalesce: false });
       wire.handleTextMessage(modern, JSON.stringify({ type: 'resync' }));
       const stale = modern.messages.at(-1);
@@ -209,7 +209,7 @@ test('v2 keyed updates reconstruct the full roster and survive fresh resync base
       assert.equal(peer.messages.length, peerFrames);
       assert.equal(legacy.messages.length, legacyFrames);
       rows = preservedRows.map(row => ({ ...row, lastMessage: 'recovered resync' }));
-      now += 300;
+      now += 300 + wire.RESYNC_FRESH_WINDOW_MS;
       wire.handleTextMessage(modern, JSON.stringify({ type: 'resync' }));
       const recovered = modern.messages.at(-1);
       assert.equal(recovered.scanning, false);
@@ -222,9 +222,64 @@ test('v2 keyed updates reconstruct the full roster and survive fresh resync base
       assert.equal(next.baseSeq, recovered.seq);
     });
 
+    await t.test('SV-3: rapid resyncs share one fresh collect and still converge on a genuine gap', () => {
+      const adapter = registry.adapters.find(candidate => candidate.provider === 'claude');
+      const collect = adapter.getActiveSessions;
+      let collects = 0;
+      adapter.getActiveSessions = (...args) => {
+        collects += 1;
+        return collect(...args);
+      };
+      try {
+        now += wire.RESYNC_FRESH_WINDOW_MS;
+        rows = rows.map((row, index) => ({ ...row, lastMessage: `burst ${index}` }));
+        now += 300;
+        wire.markProviderDataDirty({ provider: 'claude', kind: 'transcript', reason: 'burst-append' }, null, { coalesce: false });
+        wire.handleTextMessage(modern, JSON.stringify({ type: 'resync' }));
+        const fresh = modern.messages.at(-1);
+        assert.equal(fresh.type, 'init');
+        assert.equal(fresh.scanning, false);
+        assert.equal(fresh.sessions[0].lastMessage, 'burst 0');
+        assert.equal(collects, 1);
+        const peerFramesAfterFresh = peer.messages.length;
+        const baselineSeq = fresh.seq;
+        // A second resync inside the window, with fresh dirty state behind it,
+        // is answered by the canonical snapshot: no collect, no new sequence,
+        // no peer frames.
+        rows = rows.map((row, index) => ({ ...row, lastMessage: `burst again ${index}` }));
+        now += 300;
+        wire.markProviderDataDirty({ provider: 'claude', kind: 'transcript', reason: 'burst-append-2' }, null, { coalesce: false });
+        wire.handleTextMessage(modern, JSON.stringify({ type: 'resync' }));
+        const throttled = modern.messages.at(-1);
+        assert.equal(throttled.type, 'init');
+        assert.equal(throttled.seq, baselineSeq, 'the shared snapshot keeps the canonical sequence');
+        assert.equal(collects, 1, 'two rapid resyncs produce one collect');
+        assert.equal(peer.messages.length, peerFramesAfterFresh, 'peers are not re-framed for the burst');
+        previous = throttled;
+        keyed = wire.keyedBroadcastState(coreState(throttled));
+        // The dirty state behind the throttled serve still reaches everyone,
+        // and a resync past the window collects fresh again (watchdog path).
+        const next = update(rows.map(row => ({ ...row, lastMessage: 'after burst' })));
+        assert.ok(next.seq > throttled.seq);
+        now += wire.RESYNC_FRESH_WINDOW_MS;
+        wire.handleTextMessage(modern, JSON.stringify({ type: 'resync' }));
+        const recovered = modern.messages.at(-1);
+        assert.equal(collects, 2, 'a resync past the fresh window collects again');
+        assert.ok(recovered.seq > next.seq);
+        assert.equal(recovered.scanning, false);
+        previous = recovered;
+        keyed = wire.keyedBroadcastState(coreState(recovered));
+      } finally {
+        adapter.getActiveSessions = collect;
+      }
+    });
+
     await t.test('a resync requested during a provider scan cannot replace the roster with an unavailable collect', () => {
       const adapter = registry.adapters.find(candidate => candidate.provider === 'claude');
       const collect = adapter.getActiveSessions;
+      // Age past the resync fresh window so the re-entrant resync below takes
+      // the fresh-collect path this subtest exercises.
+      now += wire.RESYNC_FRESH_WINDOW_MS;
       const baseline = coreState(legacy.messages.at(-1));
       const peerFrames = peer.messages.length;
       const baselineSeq = previous.seq;
@@ -356,6 +411,7 @@ test('v2 keyed updates reconstruct the full roster and survive fresh resync base
       const frames = modern.messages.length;
       const peerFrames = peer.messages.length;
       const warn = console.warn;
+      now += wire.RESYNC_FRESH_WINDOW_MS;
       adapter.getTeams = () => { throw new Error('teams unreadable'); };
       console.warn = () => {};
       try {

@@ -257,6 +257,30 @@ function clearTailCache(source = null) {
   }
 }
 
+// SV-2 — ended sessions must not hold their tail windows until the LRU cap
+// rejects the next large live one. An entry whose file has not been written
+// within maxAgeMs is stale for every source, so the file is re-statted (a
+// cached mtime could predate a live append) and the entry dropped; a file
+// that no longer exists is stale too. Returns the number of dropped entries.
+function pruneTailStates(maxAgeMs) {
+  const now = Date.now();
+  let pruned = 0;
+  for (const filePath of _tailStateCache.keys()) {
+    let mtimeMs = 0;
+    try {
+      mtimeMs = fs.statSync(filePath).mtimeMs;
+    } catch {
+      // Missing file: the session ended and its transcript was removed.
+    }
+    if (!mtimeMs || now - mtimeMs > maxAgeMs) {
+      deleteTailState(filePath);
+      pruned++;
+    }
+  }
+  _parsedTailStats.prunedEntries = (_parsedTailStats.prunedEntries || 0) + pruned;
+  return pruned;
+}
+
 function cacheTailState(filePath, entry) {
   deleteTailState(filePath);
   entry.estimatedBytes = tailStateBytes(entry);
@@ -1009,6 +1033,7 @@ module.exports = {
   getTailCacheDiagnostics,
   normalizeCacheTokens,
   parseJsonLines,
+  pruneTailStates,
   readByteRangeText,
   readHeadLines,
   readHeadText,

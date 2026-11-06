@@ -22,7 +22,7 @@ const {
   setAdapterDataReadyCallback,
   adapters,
 } = require('./adapters');
-const { clearTailCache, getTailCacheDiagnostics } = require('./adapters/shared');
+const { clearTailCache, getTailCacheDiagnostics, pruneTailStates } = require('./adapters/shared');
 const {
   compactGitEventsForWire,
   configureGitEnrichmentWorker,
@@ -90,6 +90,10 @@ const WS_HEARTBEAT_INTERVAL_MS = 30_000;
 const WS_STALE_AFTER_MS = 90_000;
 const WS_MAX_PAYLOAD_BYTES = 256 * 1024;
 const WS_MAX_BUFFER_BYTES = WS_MAX_PAYLOAD_BYTES + 32;
+// SV-3 — within this window of the last fresh resync collect, the canonical
+// snapshot answers further resyncs without collecting again. The client's
+// watchdog re-sends an unanswered resync after 10 s, past this window.
+const RESYNC_FRESH_WINDOW_MS = 5_000;
 const WATCH_FALLBACK_SCAN_INTERVAL_MS = 2000;
 const WATCH_FALLBACK_MAX_ENTRIES = 2000;
 const WATCH_FALLBACK_MAX_DEPTH = 10;
@@ -98,6 +102,9 @@ const WATCH_DYNAMIC_CAP = Math.max(1, Math.min(2048, Number(process.env.CLAUDEVI
 const WATCH_ACTIVE_PROBE_CAP = Math.max(1, Math.min(4096, Number(process.env.CLAUDEVILLE_WATCH_PROBE_CAP || 1024) || 1024));
 const WATCH_ZERO_CLIENT_GRACE_MS = Math.max(50, Number(process.env.CLAUDEVILLE_WATCH_ZERO_CLIENT_GRACE_MS || 15_000) || 15_000);
 const WATCH_RECONCILIATION_INTERVAL_MS = 30_000;
+// SV-2 — a tail window is stale once its transcript has been quiet for the
+// active window plus this grace, so ended sessions leave the shared cache.
+const TAIL_PRUNE_GRACE_MS = 10 * 60 * 1000;
 const PERF_SAMPLE_INTERVAL_MS = 5000;
 const PROCESS_ERROR_DETAIL_MAX_LENGTH = 256;
 const LINUX_WATCH_SAMPLE_INTERVAL_MS = 15_000;
@@ -1100,8 +1107,14 @@ function handleTextMessage(socket, message) {
       socket._cvDeltaVersion = data.deltas === true && data.deltaVersion === 2 ? 2 : null;
     } else if (data.type === 'resync') {
       // A delta client lost its patch baseline (missed frame or seq mismatch)
-      // and needs a fresh full snapshot to resume patching.
-      sendInitialData(socket, { forceFresh: true });
+      // and needs a full snapshot to resume patching. SV-3: a resync burst
+      // must not re-collect providers and re-frame every peer per request, so
+      // within the fresh window the canonical snapshot answers instead — still
+      // a full init, so the client rebuilds its baseline and its watchdog
+      // clears; a watchdog retry (10 s) lands past the window and collects.
+      const fresh = Date.now() - lastResyncFreshAt >= RESYNC_FRESH_WINDOW_MS;
+      if (fresh) lastResyncFreshAt = Date.now();
+      sendInitialData(socket, fresh ? { forceFresh: true } : {});
     }
   } catch { /* ignore */ }
 }
@@ -1389,6 +1402,8 @@ let broadcastSeq = 0;
 let lastBroadcastState = null;
 let lastBroadcastKeyedState = null;
 let lastDeltaSnapshotAt = 0;
+// SV-3 — when a resync last took the fresh-collect path (see RESYNC_FRESH_WINDOW_MS).
+let lastResyncFreshAt = 0;
 let provisionalInitPending = false;
 let sessionDirtyGeneration = 1;
 let sessionCollectionSnapshot = null;
@@ -1412,6 +1427,8 @@ let activeProbeDescriptors = new Map();
 let dynamicWatchersEnabled = false;
 const eventLoopDelayMonitor = monitorEventLoopDelay({ resolution: 20 });
 let lastEventLoopUtilization = performance.eventLoopUtilization();
+let lastProcessCpuUsage = process.cpuUsage();
+let lastCpuUsageSampleAt = 0;
 let lastGitPerfSample = null;
 let lastTailPerfSample = null;
 let lastLinuxWatchSampleAt = 0;
@@ -2771,10 +2788,22 @@ function sampleRuntimePerf() {
   const currentUtilization = performance.eventLoopUtilization();
   const utilizationDelta = performance.eventLoopUtilization(currentUtilization, lastEventLoopUtilization);
   lastEventLoopUtilization = currentUtilization;
+  // SV-4 — eventLoopUtilization over-reports while a sampling profiler is
+  // attached (an idle server reads 0.66–0.92 under --cpu-prof), so the
+  // process-wide cpuUsage delta sits beside it as the honest companion. It
+  // covers every thread of this process, so it can read above the loop value.
+  const currentCpuUsage = process.cpuUsage();
+  const previousCpuSampleAt = lastCpuUsageSampleAt || now - PERF_SAMPLE_INTERVAL_MS;
+  const cpuUsageDelta = process.cpuUsage(lastProcessCpuUsage);
+  lastProcessCpuUsage = currentCpuUsage;
+  lastCpuUsageSampleAt = now;
+  const cpuUtilization = (cpuUsageDelta.user + cpuUsageDelta.system) / 1000
+    / Math.max(1, now - previousCpuSampleAt);
   perfDiagnostics.eventLoop = {
     sampledAt: now,
     windowMs: PERF_SAMPLE_INTERVAL_MS,
     utilization: Math.round((utilizationDelta.utilization || 0) * 10_000) / 10_000,
+    processUtilization: Math.round(cpuUtilization * 10_000) / 10_000,
     delayMs: {
       min: millisecondsFromNanoseconds(eventLoopDelayMonitor.min),
       max: millisecondsFromNanoseconds(eventLoopDelayMonitor.max),
@@ -2888,6 +2917,9 @@ function reconcileWatchTopology() {
   if (wsClients.size > 0) {
     markProviderDataDirty({ kind: 'reconcile', reason: 'max-age-reconciliation' });
   }
+  // Runs with or without clients: the tail cache fills from transcript scans
+  // either way, and the LRU cap stays as the backstop (SV-2).
+  pruneTailStates(ACTIVE_THRESHOLD_MS + TAIL_PRUNE_GRACE_MS);
   refreshWatchPaths();
   lastReconciliationAt = now;
   serverPerf.reconciliations++;
@@ -3163,6 +3195,7 @@ module.exports = {
     serverPerf,
     SERVER_IDENTITY,
     DELTA_SNAPSHOT_INTERVAL_MS,
+    RESYNC_FRESH_WINDOW_MS,
   },
   _staticTest: {
     handleStaticFile,

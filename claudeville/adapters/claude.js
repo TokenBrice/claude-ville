@@ -1436,15 +1436,15 @@ function touchTranscriptRecord(filePath, record) {
     && _transcriptAggregateCacheBytes <= TRANSCRIPT_AGGREGATE_CACHE_MAX_BYTES;
 }
 
-function transcriptGuardMatches(filePath, aggregate) {
-  if (!aggregate || aggregate.guard.length === 0) return true;
+function transcriptWindowMatches(filePath, endOffset, window) {
+  if (!window || window.length === 0) return true;
   let fd;
   try {
     fd = fs.openSync(filePath, 'r');
-    const buffer = Buffer.allocUnsafe(aggregate.guard.length);
-    const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, aggregate.size - buffer.length);
+    const buffer = Buffer.allocUnsafe(window.length);
+    const bytesRead = fs.readSync(fd, buffer, 0, window.length, endOffset - window.length);
     _transcriptAggregateStats.guardBytesRead += bytesRead;
-    return bytesRead === aggregate.guard.length && buffer.equals(aggregate.guard);
+    return bytesRead === window.length && buffer.equals(window);
   } catch {
     return false;
   } finally {
@@ -1452,6 +1452,11 @@ function transcriptGuardMatches(filePath, aggregate) {
       try { fs.closeSync(fd); } catch { /* ignore */ }
     }
   }
+}
+
+function transcriptGuardMatches(filePath, aggregate) {
+  if (!aggregate) return true;
+  return transcriptWindowMatches(filePath, aggregate.size, aggregate.guard);
 }
 
 function finishTranscriptAggregate(aggregate, target) {
@@ -1538,6 +1543,11 @@ function runNextTranscriptScan() {
       : createTranscriptAggregate(task.filePath);
     let settled = false;
     let stream = null;
+    let received = 0;
+    let headGuard = null;
+    // A truncate-then-regrow race can deliver the head window across several
+    // small chunks, so the guard must accumulate to its full width.
+    const headGuardBytes = Math.min(TRANSCRIPT_GUARD_BYTES, task.target.size - task.start);
     const settle = (err = null) => {
       if (settled) return;
       settled = true;
@@ -1552,11 +1562,29 @@ function runNextTranscriptScan() {
         } else {
           let currentTarget = null;
           try { currentTarget = statIdentity(fs.statSync(task.filePath)); } catch { /* file disappeared */ }
-          if (!sameTranscriptTarget(currentTarget, task.target)) {
-            _transcriptAggregateStats.staleAsyncScans++;
-          } else {
-            currentRecord.aggregate = finishTranscriptAggregate(aggregate, task.target);
+          const finished = finishTranscriptAggregate(aggregate, task.target);
+          // The same dev/ino with a size that only grew means appends raced
+          // the scan, so the scanned range is still valid and the next pass
+          // appends the new bytes (SV-1); rotations, truncations and vanished
+          // files still discard. A file truncated mid-read ends its stream
+          // early without an error, so the scan must have received exactly
+          // the requested bytes. And a rewrite that raced the stream must
+          // not freeze stale content into the cache: the scanned range's
+          // head and tail windows must still match the file, and an append's
+          // inherited base must still match its guard.
+          const commit = Boolean(currentTarget)
+            && currentTarget.dev === task.target.dev
+            && currentTarget.ino === task.target.ino
+            && currentTarget.size >= task.target.size
+            && received === task.target.size - task.start
+            && transcriptGuardMatches(task.filePath, finished)
+            && (!headGuard || transcriptWindowMatches(task.filePath, task.start + headGuard.length, headGuard))
+            && (task.mode !== 'append' || transcriptGuardMatches(task.filePath, task.baseAggregate));
+          if (commit) {
+            currentRecord.aggregate = finished;
             _transcriptAggregateStats.asyncCompletions++;
+          } else {
+            _transcriptAggregateStats.staleAsyncScans++;
           }
         }
         touchTranscriptRecord(task.filePath, currentRecord);
@@ -1581,7 +1609,12 @@ function runNextTranscriptScan() {
     }
     _activeTranscriptStreams.set(stream, { task, aggregate });
     stream.on('data', (chunk) => {
+      received += chunk.length;
       if (_adapterShutdown || task.epoch !== _transcriptScanEpoch) return;
+      if (chunk.length > 0 && (!headGuard || headGuard.length < headGuardBytes)) {
+        const taken = chunk.subarray(0, headGuardBytes - (headGuard ? headGuard.length : 0));
+        headGuard = headGuard ? Buffer.concat([headGuard, taken]) : Buffer.from(taken);
+      }
       processTranscriptChunk(aggregate, chunk);
       _transcriptAggregateStats.bytesRead += chunk.length;
     });
