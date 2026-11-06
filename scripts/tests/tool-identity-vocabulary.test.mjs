@@ -8,6 +8,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
     classifyTool,
+    placedBuildingForTool,
     toolActionLabel,
     toolCategory,
     toolVerbLabel,
@@ -34,6 +35,29 @@ const CASES = [
     ['Bash', 'gh pr checks 1854 --repo owner/repo', 'watchtower', 'watch-ci', 'watch checks'],
     ['Bash', 'sleep 20; gh run list --branch main --limit 6', 'watchtower', 'watch-ci', 'watch checks'],
     ['exec', 'const r = await tools.exec_command({cmd:"gh run view 41375551646 --json status"})', 'watchtower', 'watch-ci', 'watch checks'],
+    // A trailing CI watch keeps the watch even behind a git-flow segment.
+    ['Bash', 'git push origin main && gh run watch 41727392797 --exit-status', 'watchtower', 'watch-ci', 'watch checks'],
+    // WL-2 — a mid-command wait alone never captures: real work wins.
+    ['Bash', 'pytest && sleep 2 && pytest -k other', 'taskboard', 'verify', 'verify'],
+    ['Bash', 'sleep 1 && git push', 'harbor', 'git-flow', 'git'],
+    // VT-fix-4 — a file mutation or a build segment is work, not a wait.
+    ['Bash', 'sleep 1 && cp source.js destination.js', 'forge', 'modify-files', 'edit'],
+    ['Bash', 'sleep 1 && cargo build', 'command', 'run-shell', 'run'],
+    // r3 — an executable `rm` is file-mutation work in every command position
+    // a shell can put it in, so cleanup never watches.
+    ['Bash', 'sleep 1 && rm source.js', 'forge', 'modify-files', 'edit'],
+    ['Bash', 'until rm -f /tmp/lock; do sleep 1; done', 'forge', 'modify-files', 'edit'],
+    // r3 — mutation words in arguments stay web work: URLs, HTTP methods and
+    // JSON payloads classify exactly as they did before the watch precedence.
+    ['Bash', 'curl https://example.com/docs/create', 'portal', 'external-research', 'research'],
+    ['Bash', 'curl -o /tmp/update.json https://example.com/api/items', 'portal', 'external-research', 'research'],
+    ['Bash', 'curl -X PATCH https://example.com/api/items/1', 'portal', 'external-research', 'research'],
+    ['Bash', 'curl -X DELETE https://example.com/api/items/1', 'portal', 'external-research', 'research'],
+    ['Bash', 'curl -d \'{"action":"delete"}\' https://example.com/api/items', 'portal', 'external-research', 'research'],
+    // VT-fix-2 — a pure wait keeps the watch inside every wrapper: a Codex
+    // exec payload, and past chdir segments joined by `;` as by `&&`.
+    ['exec', 'const r = await tools.exec_command({cmd:"sleep 30"})', 'watchtower', 'watch-condition', 'watch'],
+    ['Bash', 'cd /work; sleep 30', 'watchtower', 'watch-condition', 'watch'],
     // The Harbor keeps sending ships; a loop over input stays a read.
     ['Bash', 'git push origin main', 'harbor', 'git-flow', 'git'],
     ['Bash', 'gh workflow run ci.yml', 'harbor', 'git-flow', 'git'],
@@ -46,6 +70,21 @@ const CASES = [
     ['Bash', 'npm run verify:render', 'taskboard', 'verify', 'verify'],
     ['Bash', 'npm run gate:release', 'taskboard', 'verify', 'verify'],
     ['Bash', 'node --check claudeville/server.js', 'taskboard', 'verify', 'verify'],
+    // WL-4 — other languages' test runners are validation too.
+    ['Bash', 'cargo test', 'taskboard', 'verify', 'verify'],
+    ['Bash', 'go test ./...', 'taskboard', 'verify', 'verify'],
+    ['Bash', 'make test', 'taskboard', 'verify', 'verify'],
+    ['Bash', 'rake test', 'taskboard', 'verify', 'verify'],
+    // WL-4 — an MCP tool places by its verb when the building is unambiguous,
+    // but only after the name-specific rules (VT-fix-1): a browser MCP page
+    // listing stays a Portal preview and a GitHub MCP commit listing stays
+    // Harbor work even though both verbs ("list") map to the Archive.
+    ['mcp__chrome-devtools__list_pages', '{}', 'portal', 'browser-preview', 'preview'],
+    ['mcp__github__list_commits', '{"owner":"o","repo":"r"}', 'harbor', 'github-flow', 'github'],
+    ['mcp__pixellab__generate_sprite', '{"prompt":"a knight"}', 'forge', 'generate-asset', 'generate'],
+    ['mcp__serena__searchForPattern', '{"pattern":"TODO"}', 'archive', 'search-local', 'search'],
+    ['mcp__serena__read_file', '{"path":"src/a.js"}', 'archive', 'read-local', 'read'],
+    ['mcp__fetch__fetch_url', '{"url":"https://example.com"}', 'portal', 'external-research', 'research'],
     // Reading docs has a verb of its own, not the tool name.
     ['Bash', 'sed -n 1,80p docs/motion-budget.md', 'archive', 'read-docs', 'read'],
     ['exec', 'cat docs/README.md', 'archive', 'read-docs', 'read'],
@@ -73,4 +112,23 @@ test('Agent and Monitor carry task metadata like their neighbours', () => {
     assert.equal(toolActionLabel('Agent'), 'Delegating');
     assert.equal(toolCategory('Monitor'), 'task');
     assert.equal(toolActionLabel('Monitor'), 'Watching');
+});
+
+// WL-4 — a delegation-style MCP call (a chat with another agent) and an
+// unknown verb keep the honest null: no building is named, so the body falls
+// back to its last-known place and then its home district.
+test('MCP delegation and unknown verbs name no building', () => {
+    for (const tool of [
+        'mcp__deepseek__chat',
+        'mcp__glm__ask',
+        'mcp__codex__ask',
+        'mcp__claude_ai_ask',
+        'mcp__deepseek__start',
+        'mcp__deepseek__wait',
+        'mcp__glm-cc-mcp__review',
+    ]) {
+        assert.equal(placedBuildingForTool(tool, '{"prompt":"x"}'), null, tool);
+    }
+    // The browser MCPs keep their Portal placement.
+    assert.equal(placedBuildingForTool('mcp__playwright__browser_navigate', '{"url":"http://x"}'), 'portal');
 });

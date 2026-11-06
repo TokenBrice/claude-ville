@@ -169,6 +169,9 @@ const ARRIVED_BEHAVIOR_STATES = new Set(['performing', 'lingering', 'cooldown'])
 // a body that itself stands within CHAT_START_PX) begins it on arrival there.
 const CHAT_START_PX = 35;
 const CHAT_FAN_REACH_PX = CHAT_START_PX + 24;
+// AP-2 — how long a chat may stay one-sided (the partner never pointed back)
+// before the cleanup pass ends it and the body resumes its route.
+export const ONE_SIDED_CHAT_GRACE_MS = 8000;
 // Camera-facing rank per direction (S, SE, E, NE, N, NW, W, SW): S/SE/SW show
 // the face, E/W the profile, NE/N/NW the back. An exact reversal turns through
 // the side with the higher rank, so the operator sees a face, never a back.
@@ -1312,6 +1315,7 @@ export class AgentSprite {
         this.chatting = false;       // chatting flag
         this.chatTimer = 0;          // chat animation timer
         this.chatBubbleAnim = 0;     // speech bubble animation
+        this.chatSinceMs = null;     // AP-2 — when this chat began (one-sided grace)
 
         // Active pose-bearing tool ritual record from RitualConductor (per
         // building work gesture: hammer / page / pick / scroll / …), synced by
@@ -3258,6 +3262,7 @@ export class AgentSprite {
         this._releaseVisitReservation();
         this.chatPartner = null;
         this.chatting = false;
+        this.chatSinceMs = null;
         this.chatBubbleAnim = 0;
         this.setArrivalState('visible');
         this._lastPathTileKey = null;
@@ -3381,6 +3386,7 @@ export class AgentSprite {
                 this.moving = false;
                 this.chatting = false;
                 this.chatPartner = null;
+                this.chatSinceMs = null;
                 this.waypoints = [];
                 this.targetX = this.x;
                 this.targetY = this.y;
@@ -3430,7 +3436,15 @@ export class AgentSprite {
             const fanPlace = this._chatApproachRoute ? this._routeEndFanPlace() : null;
             if ((fanPlace ? !this.moving && cpDist < CHAT_FAN_REACH_PX : cpDist < CHAT_START_PX)
                 && !this.standsOnCrossing() && !partner.standsOnCrossing?.()) {
+                // AP-2 — the partner is already in (or promised to) another
+                // chat: this approach would stand one-sided, so it ends and
+                // the body resumes its route instead of stacking on the pair.
+                if (partner.chatting || (partner.chatPartner && partner.chatPartner !== this)) {
+                    this.endChat();
+                    return;
+                }
                 this.chatting = true;
+                this.chatSinceMs = Date.now();
                 this.behavior.transition('chatting', 'chat');
                 this.chatBubbleAnim = 0;
                 this.moving = false;
@@ -3440,6 +3454,7 @@ export class AgentSprite {
                 if (!partner.chatting) {
                     partner.chatPartner = this;
                     partner.chatting = true;
+                    partner.chatSinceMs = Date.now();
                     partner.behavior?.transition?.('chatting', 'chat');
                     partner.chatBubbleAnim = 0;
                     partner.moving = false;
@@ -4250,6 +4265,7 @@ export class AgentSprite {
         this._releaseVisitReservation();
         this.chatPartner = null;
         this.chatting = false;
+        this.chatSinceMs = null;
         this.chatBubbleAnim = 0;
         this.behavior.finishVisit();
         this.behavior.transition('cooldown', 'chat-ended');

@@ -737,13 +737,17 @@ export const AMBIENT_GROUND_PROPS = [
 export const AMBIENT_SCENIC_POINTS = Object.freeze([
     { id: 'bridge-west', tileX: 17, tileY: 26, district: 'civic', reason: 'bridge-pause', tags: ['bridge'] },
     { id: 'bridge-east', tileX: 19, tileY: 22, district: 'civic', reason: 'bridge-pause', tags: ['bridge'] },
-    { id: 'harbor-rail', tileX: 31, tileY: 23, district: 'harbor', reason: 'harbor-watch', tags: ['water'] },
-    { id: 'harbor-ledger', tileX: 33, tileY: 24, district: 'harbor', reason: 'dock-ledger', tags: ['harbor'] },
+    // AP-3 — the two harbor loiter points stood in open water after the quay
+    // settled; they stand on the quay tiles VB-6 picked for the same spots.
+    { id: 'harbor-rail', tileX: 26, tileY: 20, district: 'harbor', reason: 'harbor-watch', tags: ['water'] },
+    { id: 'harbor-ledger', tileX: 25, tileY: 19, district: 'harbor', reason: 'dock-ledger', tags: ['harbor'] },
     { id: 'portal-ruins', tileX: 4, tileY: 36, district: 'arcane', reason: 'portal-observe', tags: ['portal'] },
     { id: 'mine-cart', tileX: 15, tileY: 37, district: 'resource', reason: 'cart-path', tags: ['mine'] },
     { id: 'forest-edge', tileX: 25, tileY: 11, district: 'knowledge', reason: 'forest-edge', tags: ['quiet'] },
     { id: 'archive-alcove', tileX: 10, tileY: 18, district: 'knowledge', reason: 'reading-alcove', tags: ['archive'] },
-    { id: 'lighthouse-shore', tileX: 30, tileY: 15, district: 'harbor', reason: 'shore-watch', tags: ['watchtower'] },
+    // AP-3 — the shore point left the water for the walkable lawn at the
+    // water's edge east of the Lighthouse.
+    { id: 'lighthouse-shore', tileX: 28, tileY: 16, district: 'harbor', reason: 'shore-watch', tags: ['watchtower'] },
     { id: 'plaza-corner', tileX: 20, tileY: 22, district: 'civic', reason: 'plaza-pause', tags: ['command'] },
     { id: 'forge-handoff', tileX: 27, tileY: 31, district: 'workshop', reason: 'handoff-path', tags: ['forge', 'taskboard'] },
 ]);
@@ -759,8 +763,8 @@ export const AMBIENT_SCENIC_POINTS = Object.freeze([
 export const SCENIC_POINT_PROPS = [
     { scenicPoint: 'bridge-west', tileX: 16.5, tileY: 26.4, id: 'prop.lantern', layer: 'cache' },
     { scenicPoint: 'bridge-east', tileX: 19.6, tileY: 21.6, id: 'prop.lantern', layer: 'cache' },
-    // The harbor-rail and harbor-ledger loiter tiles sit in open water; their
-    // props stand on the quay where the causeway meets land, never afloat.
+    // The harbor loiter tiles stand on the quay (AP-3); their props stay by
+    // the causeway's end at the water's edge, composing with the loiterer.
     { scenicPoint: 'harbor-rail', tileX: 28.0, tileY: 20.8, id: 'prop.netRack', layer: 'cache' },
     { scenicPoint: 'portal-ruins', tileX: 4.5, tileY: 35.5, id: 'prop.runestone', layer: 'cache' },
     { scenicPoint: 'mine-cart', tileX: 15.4, tileY: 36.5, id: 'prop.oreCart', layer: 'cache' },

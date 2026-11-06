@@ -50,7 +50,21 @@ function isErrored(session, now) {
         for (const event of events) {
             const ts = Number(event?.completedAt || event?.ts || 0);
             if (!ts || ts < cutoff) continue;
-            if (event?.status === 'failed' || event?.success === false) return true;
+            if (event?.status === 'failed' || event?.success === false) {
+                // WL-1 — a failure the agent already mended does not read as an
+                // error: a later successful event of the same kind supersedes it,
+                // instead of holding the error pose until the failure ages out.
+                // Only the failing session's own retry mends: repository
+                // enrichment appends other sessions' pushes (synthetic upstream
+                // transitions included) to this list. Events carrying no
+                // sessionId on either side keep the plain same-kind rule.
+                const mended = events.some((other) => other !== event
+                    && other?.type === event?.type
+                    && (other?.success === true || other?.status === 'success')
+                    && Number(other?.completedAt || other?.ts || 0) > ts
+                    && (!event?.sessionId || !other?.sessionId || other.sessionId === event.sessionId));
+                if (!mended) return true;
+            }
         }
     }
     if (ENABLE_ERROR_HEURISTIC) {

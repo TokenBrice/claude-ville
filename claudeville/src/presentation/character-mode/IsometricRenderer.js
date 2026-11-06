@@ -34,7 +34,7 @@ import { HDR_HIGHLIGHTS_EVENT, overlayContextAttributes, publishDisplayStatus, r
 import { installP3OverlayInks, readDisplayMedia, setOverlayInksP3, watchDisplayMedia } from './DisplayColor.js';
 import { CameraDirector } from './CameraDirector.js';
 import { ParticleSystem } from './ParticleSystem.js';
-import { AgentSprite, drawFamiliarMotes, familiarMoteLightSources } from './AgentSprite.js';
+import { AgentSprite, drawFamiliarMotes, familiarMoteLightSources, ONE_SIDED_CHAT_GRACE_MS } from './AgentSprite.js';
 import { BuildingSprite, SOURCE_HALO_RADIUS_CAP, lampsLitAt } from './BuildingSprite.js';
 import { VillageCalendar } from './VillageCalendar.js';
 import { IsleLandmarks } from './IsleLandmarks.js';
@@ -5423,6 +5423,16 @@ export class IsometricRenderer {
             }
         }
 
+        // AP-2 — a recipient an approach already targets stays claimed by it
+        // until that approach ends, so a pile of senders naming the same body
+        // sends one walker, not a crowd.
+        const claims = this._chatApproachClaims ||= new Map();
+        for (const [claimed, claimant] of claims) {
+            if (claimant.chatPartner !== claimed || !this.agentSprites.has(claimant.agent?.id)) {
+                claims.delete(claimed);
+            }
+        }
+
         for (const sprite of this.agentSprites.values()) {
             if (this._isGateTransit(sprite)) continue;
             const agent = sprite.agent;
@@ -5436,17 +5446,34 @@ export class IsometricRenderer {
                 const recipient = extractRecipientName(agent.currentToolInput);
                 if (!recipient) continue;
                 const target = spriteByRecipient.get(recipient);
-                // BR-5 — an approach starts once neither body stands on a
-                // bridge deck or landing: a walker finishes its crossing first.
-                if (target && target !== sprite && !sprite.standsOnCrossing?.() && !target.standsOnCrossing?.()) {
+                const claimant = target ? claims.get(target) : null;
+                // AP-2 — start a chat only when the target has no partner and
+                // is not chatting (nor under another sender's live approach):
+                // a busy recipient is skipped and the sender retries on a later
+                // matching pass instead of stacking on it. BR-5 — an approach
+                // starts once neither body stands on a bridge deck or landing:
+                // a walker finishes its crossing first.
+                if (target && target !== sprite && !target.chatPartner && !target.chatting
+                    && (!claimant || claimant === sprite)
+                    && !sprite.standsOnCrossing?.() && !target.standsOnCrossing?.()) {
+                    claims.set(target, sprite);
                     sprite.startChat(target);
                 }
             }
         }
 
         // Clear chat state for agents not using SendMessage
+        const now = Date.now();
         for (const sprite of this.agentSprites.values()) {
             if (this._isGateTransit(sprite)) continue;
+            // AP-2 — a chat that has been one-sided for the grace period ends:
+            // the body stops facing a partner that never answered and resumes
+            // its route.
+            if (sprite.chatting && sprite.chatPartner?.chatPartner !== sprite
+                && now - (sprite.chatSinceMs || 0) > ONE_SIDED_CHAT_GRACE_MS) {
+                sprite.endChat();
+                continue;
+            }
             if (sprite.chatPartner && !senders.has(sprite)) {
                 // Keep it if the other side is still using SendMessage
                 if (senders.has(sprite.chatPartner)) continue;

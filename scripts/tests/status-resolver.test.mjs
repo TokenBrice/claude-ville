@@ -59,6 +59,71 @@ test('a recent failed git event resolves to ERRORED over the turn state', () => 
     assert.equal(status, AgentStatus.ERRORED);
 });
 
+// WL-1 — a failure the agent already retried successfully is mended, not
+// errored: a later successful event of the same kind supersedes it in the
+// 60 s window, in either event order.
+test('a failed git event superseded by a later success of the same kind is not ERRORED', () => {
+    const failure = { type: 'push', success: false, completedAt: NOW - 20_000 };
+    const success = { type: 'push', success: true, completedAt: NOW - 10_000 };
+    for (const gitEvents of [[failure, success], [success, failure]]) {
+        assert.equal(at({ ...fresh, turnState: 'working', gitEvents }), AgentStatus.WORKING);
+        // Without the mend, the failure still escalates a closed turn.
+    }
+    const awaiting = at({ ...fresh, turnState: 'awaiting_input', gitEvents: [failure, success] });
+    assert.equal(awaiting, AgentStatus.COMPLETED);
+});
+
+test('a failed git event with no later same-kind success stays ERRORED', () => {
+    const failure = { type: 'push', success: false, completedAt: NOW - 20_000 };
+    assert.equal(at({ ...fresh, turnState: 'working', gitEvents: [failure] }), AgentStatus.ERRORED);
+    // A later success of another kind mends nothing.
+    assert.equal(
+        at({ ...fresh, turnState: 'working', gitEvents: [failure, { type: 'commit', success: true, completedAt: NOW - 10_000 }] }),
+        AgentStatus.ERRORED,
+    );
+    // A success that predates the failure mends nothing either.
+    assert.equal(
+        at({ ...fresh, turnState: 'working', gitEvents: [{ type: 'push', success: true, completedAt: NOW - 30_000 }, failure] }),
+        AgentStatus.ERRORED,
+    );
+    // The old escalation of a closed turn still holds for an unmended failure.
+    assert.equal(
+        at({ ...fresh, turnState: 'awaiting_input', gitEvents: [failure] }),
+        AgentStatus.ERRORED,
+    );
+});
+
+// WL-1, session ownership — repository enrichment appends other sessions'
+// pushes (synthetic upstream transitions) to this session's event list; a
+// newer success on another branch from another session is not this agent's
+// retry and must not mend its failed push.
+test('another session\'s later success does not mend this session\'s failed git event', () => {
+    const failure = { type: 'push', sessionId: 'lane-a', success: false, completedAt: NOW - 20_000 };
+    // The synthetic shape `transitionPushEvent` gives repository enrichment.
+    const foreignSuccess = {
+        type: 'push', sessionId: 'git-repo-x1', success: true, status: 'success',
+        completedAt: NOW - 10_000, synthetic: 'transition', source: 'git-upstream-transition',
+    };
+    assert.equal(
+        at({ ...fresh, turnState: 'working', gitEvents: [failure, foreignSuccess] }),
+        AgentStatus.ERRORED,
+    );
+    // A plain success from another live session mends nothing either.
+    assert.equal(
+        at({ ...fresh, turnState: 'working', gitEvents: [failure, { ...foreignSuccess, sessionId: 'lane-b', synthetic: undefined }] }),
+        AgentStatus.ERRORED,
+    );
+    // The session's own retry still mends.
+    assert.equal(
+        at({ ...fresh, turnState: 'working', gitEvents: [failure, { ...foreignSuccess, sessionId: 'lane-a' }] }),
+        AgentStatus.WORKING,
+    );
+    // A success without a sessionId (legacy) keeps the same-kind rule.
+    const legacy = { type: 'push', success: true, completedAt: NOW - 10_000 };
+    assert.equal(at({ ...fresh, turnState: 'working', gitEvents: [failure, legacy] }), AgentStatus.WORKING);
+    assert.equal(at({ ...fresh, turnState: 'working', gitEvents: [{ ...failure, sessionId: undefined }, legacy] }), AgentStatus.WORKING);
+});
+
 test('an old failed git event is not held against the agent', () => {
     const status = at({
         ...fresh,

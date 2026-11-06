@@ -357,13 +357,29 @@ const LOCAL_PREVIEW_INPUT_PATTERN = /localhost:|127\.0\.0\.1:/;
 // or `timeout N tail -f`, Claude Code's stand-in for a blocked sleep. A
 // command that follows a log counts too. "Opens" is the command's head, any
 // `;`/`&&`/`|` segment's head, or the `cmd` of a Codex exec payload.
+// WL-2 — the wait keeps the watch only when no command-anchored work shares
+// the line: git flow, validation, a mutating executable at command position
+// and an executable build tool are checked first, so `pytest && sleep 2 &&
+// pytest`, `sleep 1 && git push`, `sleep 1 && cp a b`, `sleep 1 && rm x` and
+// `sleep 1 && cargo build` never watch.
 const CI_WATCH_COMMAND_PATTERN = /\bgh\s+(run\s+(watch|view|list)|pr\s+checks)\b/;
 const WATCH_COMMAND_PATTERN = /(?:^|[;&|]\s*|\bcmd"?\s*:\s*\\?")(?:sleep\s+\d|timeout\s+\d+\s+tail\s+-f\b|until\s|while\s+(?!read\b|ifs\b)|watch\s+-|inotifywait\b)|\btail\s+-[fF]\b|\bjournalctl\b[^|;&]*\s-f\b/;
 const GIT_FLOW_COMMAND_PATTERN = /\b(git\s+(status|diff|show|log|branch|rev-list|fetch|pull|merge|rebase|commit|push|tag)|gh\s+(pr\s+create|release|workflow|run|repo)|wrangler\s+deploy|vercel\s+deploy|npm\s+run\s+deploy)\b/;
-const VALIDATION_COMMAND_PATTERN = /\b(npm\s+(test|run\s+(test|check|lint|build|validate|verify|gate|sprites:validate|sprites:visual-diff))|node\s+--(check|test)|xargs\s+-0\s+-n1\s+node\s+--check|pytest|vitest|playwright\s+test)\b/;
+const VALIDATION_COMMAND_PATTERN = /\b(npm\s+(test|run\s+(test|check|lint|build|validate|verify|gate|sprites:validate|sprites:visual-diff))|node\s+--(check|test)|xargs\s+-0\s+-n1\s+node\s+--check|pytest|vitest|playwright\s+test|cargo\s+test|go\s+test|make\s+test|rake\s+test)\b/;
 const BROWSER_PREVIEW_COMMAND_PATTERN = /\b(npm\s+run\s+dev|node\s+claudeville\/server\.js|playwright|browser|chrome|chromium|firefox|screenshot|localhost|127\.0\.0\.1)\b/;
 const WEB_COMMAND_PATTERN = /\b(curl|wget|web|fetch|search_query|open\s+https?:\/\/)\b/;
 const FILE_MUTATION_COMMAND_PATTERN = /\b(apply_patch|patch|edit|write|create|update|delete|mv|cp|perl\s+-pi)\b/;
+// WL-2 (r3) — the mutation that outranks the watch is anchored on a mutating
+// executable at command position (line start, after a separator or newline,
+// after `do`/`then`/`until`/`while`, an opening `(`, or the `cmd` of a Codex
+// exec payload; an optional `sudo` may precede it), so `rm`, which the word
+// pattern cannot risk, still works the Forge. The word-based pattern above
+// keeps its base spot behind the web rules, so an argument word (`create` in
+// a URL, `-X PATCH`, a JSON payload) never forges a mutation.
+const MUTATION_COMMAND_PATTERN = /(?:^|[;&|\n]\s*|\bdo\s+|\bthen\s+|\buntil\s+|\bwhile\s+|\(\s*|\bcmd"?\s*:\s*\\?")(?:sudo\s+)?(?:cp|mv|rm|mkdir|rmdir|touch|ln|tee|chmod|chown|install|sed\s+-i|perl\s+-pi|truncate)\b/;
+// WL-2 — a build tool anchored on its executable: `cargo build` beside a
+// wait is real work, while a bare word (`tail -f /tmp/build.log`) never counts.
+const BUILD_COMMAND_PATTERN = /\b(?:cargo|go|make)\s+build\b/;
 const LOCAL_READ_COMMAND_PATTERN = /\b(rg|grep|find|fd|ls|cat|sed|head|tail|nl|wc|jq)\b/;
 const TASK_COMMAND_INPUT_PATTERN = /\b(test|check|lint|build|vitest|pytest|playwright\s+test|node\s+--check|sprites:validate)\b/;
 
@@ -376,6 +392,47 @@ const TEAM_TOOL_NAME_PATTERN = /team|parallel/;
 const TASK_TOOL_NAME_PATTERN = /task|todo|plan/;
 const READ_TOOL_NAME_PATTERN = /read|grep|glob|find|search/;
 const COMMAND_TOOL_NAME_PATTERN = /spawn_agent|send_input|resume_agent|close_agent|team|parallel/;
+
+// WL-4 — an MCP tool (`mcp__<server>__<tool>`) places by its tool verb when
+// the building is unambiguous: research verbs to the Archive, edit, write
+// and generate to the Forge. The verb runs after the name-specific rules
+// (browser, GitHub, web, mutation, team, task), so an MCP tool a name rule
+// already claims keeps that claim — a `fetch` verb, whose name always says
+// `fetch`, is the web pattern's Portal (VT-fix-1). Delegation verbs (`ask`,
+// `chat`, `start`, `wait`, `continue` — a call to another agent) and unknown
+// verbs stay unmapped, keeping the honest null of the no-evidence fallback:
+// the Lighthouse commit deliberately keeps MCP delegation out of Command.
+const MCP_TOOL_NAME_PREFIX = 'mcp__';
+const MCP_TOOL_VERB_CLASSIFICATIONS = Object.freeze({
+    read: { building: 'archive', reason: 'read-local', label: 'read' },
+    list: { building: 'archive', reason: 'list-local', label: 'list' },
+    search: { building: 'archive', reason: 'search-local', label: 'search' },
+    find: { building: 'archive', reason: 'find-local', label: 'find' },
+    grep: { building: 'archive', reason: 'search-local', label: 'search' },
+    glob: { building: 'archive', reason: 'find-local', label: 'find' },
+    edit: { building: 'forge', reason: 'modify-files', label: 'edit' },
+    write: { building: 'forge', reason: 'modify-files', label: 'write' },
+    patch: { building: 'forge', reason: 'patch-file', label: 'patch' },
+    generate: { building: 'forge', reason: 'generate-asset', label: 'generate' },
+});
+
+function mcpToolVerb(name) {
+    if (!name.startsWith(MCP_TOOL_NAME_PREFIX)) return null;
+    const segments = name.split('__');
+    if (segments.length < 3) return null;
+    // The verb is the tool name's first word: `generate_sprite` and
+    // `searchForPattern` both open with their verb.
+    const tool = segments.slice(2).join('__');
+    const verb = tool.replace(/([a-z0-9])([A-Z])/g, '$1 $2').split(/[\s_-]+/)[0]?.toLowerCase();
+    return verb || null;
+}
+
+function classifyMcpToolName(name) {
+    const verb = mcpToolVerb(name);
+    if (!verb) return null;
+    const classification = MCP_TOOL_VERB_CLASSIFICATIONS[verb];
+    return classification ? { ...classification, confidence: 0.8 } : null;
+}
 
 export function normalizeToolInput(input) {
     if (input == null) return '';
@@ -536,6 +593,12 @@ function isPortalPreviewInput(input) {
     return LOCAL_PREVIEW_INPUT_PATTERN.test(text);
 }
 
+function fileMutationClassification(text, input) {
+    return isDocumentationToolInput(input)
+        ? { building: 'archive', reason: 'edit-docs', confidence: 0.78, label: compactToolLabel(text, 'docs') }
+        : { building: 'forge', reason: 'modify-files', confidence: 0.9, label: compactToolLabel(text, 'edit') };
+}
+
 export function classifyShellInput(input) {
     const text = normalizeToolInput(input);
     if (!text) return null;
@@ -543,14 +606,21 @@ export function classifyShellInput(input) {
     if (CI_WATCH_COMMAND_PATTERN.test(text)) {
         return { building: 'watchtower', reason: 'watch-ci', confidence: 0.86, label: compactToolLabel(text, 'checks') };
     }
-    if (WATCH_COMMAND_PATTERN.test(text)) {
-        return { building: 'watchtower', reason: 'watch-condition', confidence: 0.84, label: compactToolLabel(text, 'watch') };
-    }
+    // WL-2 — real work wins over the wait wherever it sits in the line: the
+    // command-anchored git, validation and executable-anchored mutation
+    // patterns run before the watch, so a mid-command wait alone no longer
+    // captures.
     if (GIT_FLOW_COMMAND_PATTERN.test(text)) {
         return { building: 'harbor', reason: 'git-flow', confidence: 0.9, label: compactToolLabel(text, 'git') };
     }
     if (VALIDATION_COMMAND_PATTERN.test(text)) {
         return { building: 'taskboard', reason: 'verify', confidence: 0.94, label: compactToolLabel(text, 'check') };
+    }
+    if (MUTATION_COMMAND_PATTERN.test(text)) {
+        return fileMutationClassification(text, input);
+    }
+    if (WATCH_COMMAND_PATTERN.test(text) && !BUILD_COMMAND_PATTERN.test(text)) {
+        return { building: 'watchtower', reason: 'watch-condition', confidence: 0.84, label: compactToolLabel(text, 'watch') };
     }
     if (BROWSER_PREVIEW_COMMAND_PATTERN.test(text)) {
         return { building: 'portal', reason: 'browser-preview', confidence: 0.86, label: compactToolLabel(text, 'browser') };
@@ -559,9 +629,7 @@ export function classifyShellInput(input) {
         return { building: 'portal', reason: 'external-research', confidence: 0.86, label: compactToolLabel(text, 'web') };
     }
     if (FILE_MUTATION_COMMAND_PATTERN.test(text)) {
-        return isDocumentationToolInput(input)
-            ? { building: 'archive', reason: 'edit-docs', confidence: 0.78, label: compactToolLabel(text, 'docs') }
-            : { building: 'forge', reason: 'modify-files', confidence: 0.9, label: compactToolLabel(text, 'edit') };
+        return fileMutationClassification(text, input);
     }
     if (LOCAL_READ_COMMAND_PATTERN.test(text)) {
         if (TASK_COMMAND_INPUT_PATTERN.test(text)) {
@@ -690,6 +758,15 @@ export function classifyTool(toolName, input) {
     }
     if (TASK_TOOL_NAME_PATTERN.test(lowerTool)) {
         return { building: 'taskboard', reason: 'plan-work', confidence: 0.8, label: compactToolLabel(tool, 'task') };
+    }
+    if (tool.startsWith(MCP_TOOL_NAME_PREFIX)) {
+        // WL-4 — an unambiguous verb names the building, but only once every
+        // name-specific rule (browser, GitHub, web, mutation, team, task)
+        // has had its claim, so those keep their specific semantics; the
+        // verbs catch MCP tools nothing else names, and the rest keep the
+        // honest null of the no-evidence fallback.
+        const mcp = classifyMcpToolName(tool);
+        if (mcp) return { ...mcp, label: compactToolLabel(shortToolName(tool), mcp.label) };
     }
     if (READ_TOOL_NAME_PATTERN.test(lowerTool)) {
         const split = classifyShellInput(input);

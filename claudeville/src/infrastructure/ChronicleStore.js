@@ -18,6 +18,9 @@ const RETENTION_MS = {
     monuments: 30 * 24 * 60 * 60 * 1000,
     trailSamples: 24 * 60 * 60 * 1000,
     affinities: 30 * 24 * 60 * 60 * 1000,
+    // EN-2 — a villager nobody has seen for half a year leaves the book of
+    // lives; a returning identity is re-founded on sight.
+    biographies: 180 * 24 * 60 * 60 * 1000,
 };
 
 export function eventRetentionCutoff(now = nowMs(), retentionDays = EVENT_RETENTION_DAYS) {
@@ -72,7 +75,7 @@ function indexOrStore(store, index) {
     return index && store.indexNames.contains(index) ? store.index(index) : store;
 }
 
-const PRUNE_STORES = ['manifests', 'monuments', 'trailSamples', 'affinities', 'events', 'meta'];
+const PRUNE_STORES = ['manifests', 'monuments', 'trailSamples', 'affinities', 'biographies', 'events', 'meta'];
 
 function randomToken() {
     if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
@@ -420,7 +423,7 @@ export class ChronicleStore {
     async prune(now = nowMs()) {
         const manifestCutoff = now - RETENTION_MS.manifests;
         const pinnedCutoff = now - RETENTION_MS.pinnedManifest;
-        const deleted = { manifests: 0, monuments: 0, trailSamples: 0, affinities: 0, events: 0 };
+        const deleted = { manifests: 0, monuments: 0, trailSamples: 0, affinities: 0, biographies: 0, events: 0 };
         await this.open();
         // One readwrite transaction keeps the prune atomic and makes any later
         // transaction on these stores wait for all of it, instead of slipping
@@ -448,6 +451,14 @@ export class ChronicleStore {
             this._range(null, now - RETENTION_MS.affinities),
             {},
             count => { deleted.affinities = count; },
+        );
+        // EN-2 — biographies prune by their lastSeenAt index, so the book of
+        // lives stays bounded over years of one-off identities.
+        deleteByCursor(
+            indexOrStore(tx.objectStore('biographies'), 'lastSeenAt'),
+            this._range(null, now - RETENTION_MS.biographies),
+            {},
+            count => { deleted.biographies = count; },
         );
         // Keep complete local calendar days rather than a rolling duration:
         // yesterday should not disappear part-way through the afternoon. The

@@ -35,7 +35,7 @@ test('retention covers today plus thirteen complete local calendar days', () => 
 // Every request settles on a later macrotask and the transaction completes
 // once no request is pending, matching IndexedDB's auto-commit.
 function memoryDb(tables) {
-    const keyPaths = { manifests: 'id', monuments: 'id', trailSamples: 'id', affinities: 'pairKey', events: 'id', meta: 'key' };
+    const keyPaths = { manifests: 'id', monuments: 'id', trailSamples: 'id', affinities: 'pairKey', biographies: 'identityKey', events: 'id', meta: 'key' };
     let tx = null;
     let pending = 0;
     const settle = (request, produce) => {
@@ -104,6 +104,10 @@ test('pruning applies retention cutoffs and the event row ceiling', async (t) =>
         monuments: [{ id: 'ancient', plantedAt: now - 31 * day }, { id: 'recent', plantedAt: now - day }],
         trailSamples: [{ id: 'trail-old', ts: now - 2 * day }, { id: 'trail-new', ts: now }],
         affinities: [{ pairKey: 'a|b', lastInteractionAt: now - 31 * day }],
+        biographies: [
+            { identityKey: 'gone', lastSeenAt: now - 181 * day },
+            { identityKey: 'found:recently', lastSeenAt: now - 30 * day },
+        ],
         events: [...retained, ...expired],
         meta: [],
     };
@@ -115,8 +119,9 @@ test('pruning applies retention cutoffs and the event row ceiling', async (t) =>
 
     const deleted = await store.prune(now);
 
-    assert.deepEqual(deleted, { manifests: 1, monuments: 1, trailSamples: 1, affinities: 1, events: 5 });
+    assert.deepEqual(deleted, { manifests: 1, monuments: 1, trailSamples: 1, affinities: 1, biographies: 1, events: 5 });
     assert.deepEqual(tables.manifests.map(row => row.id), ['pinned', 'fresh']);
+    assert.deepEqual(tables.biographies.map(row => row.identityKey), ['found:recently']);
     assert.equal(tables.events.length, EVENT_RETENTION_MAX_ROWS);
     // The ceiling trims the oldest survivors; the calendar cutoff day itself
     // is otherwise retained.

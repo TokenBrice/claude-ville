@@ -14,6 +14,35 @@ import {
 
 const LEGACY_GENERATED_NAMES_STORAGE_KEY = 'claudeville.generatedAgentNames.v1';
 const GENERATED_NAME_STORAGE_PREFIX = 'claudeville.generatedAgentName.v2:';
+// EN-2 (r2) — the stored rows are bounded and evicted by use, not write
+// order: each row is `{"n": name, "t": lastUsedMs}`, a read or a remember
+// refreshes `t` at most once a day, and a prune past the cap drops the
+// oldest-unused rows no live roster is reading. The retired round-1
+// write-order index is only cleared away.
+const GENERATED_NAME_ORDER_STORAGE_KEY = 'claudeville.generatedAgentName.order.v2';
+// EN-2 — the generated-name cache is bounded: at the cap, the identity least
+// recently touched (a read or a write refreshes recency) leaves the Map, and
+// the stored set keeps the same cap.
+const GENERATED_NAME_CACHE_LIMIT = 512;
+// A read or a remember refreshes a row's `t` at most this often, so roster
+// updates do not rewrite storage constantly.
+const GENERATED_NAME_REFRESH_MS = 24 * 60 * 60 * 1000;
+
+// A stored row is `{"n": name, "t": lastUsedMs}`; a plain string row
+// predates the timestamp and reads as never used.
+function parseStoredNameRow(raw) {
+    if (typeof raw !== 'string' || !raw) return null;
+    try {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            if (typeof parsed.n !== 'string') return null;
+            return { name: parsed.n, lastUsedMs: Number.isFinite(parsed.t) ? parsed.t : 0 };
+        }
+    } catch {
+        // A plain name that is not valid JSON is a legacy row.
+    }
+    return { name: raw, lastUsedMs: 0 };
+}
 
 // Sessions leave the server's live roster after two quiet minutes. Keep their
 // villagers present just long enough for a short parallel fan-out to still be
@@ -369,6 +398,10 @@ export class AgentManager {
         this._agentSignatures = new Map();
         this._generatedNames = new Map();
         this._generatedNamesMigrationDone = false;
+        // EN-2 (r3) — the identity keys of the roster batch being ingested,
+        // protected from stored-name prunes until the batch completes.
+        this._rosterBatchIdentities = null;
+        this._initStoredGeneratedNames();
         this._verifiedOutcomeKeys = new Set();
         this._departureSweepTimer = null;
         this._unsubscribeVerifiedMilestones = [
@@ -410,13 +443,18 @@ export class AgentManager {
 
             const gitEventWire = this._gitEventWireFrom(sessions);
             const collisionsByAgent = this._collisionsByAgent(sessions.collisions);
-            for (const session of sessions) {
-                this._upsertAgent(
-                    session,
-                    this._teamMembers,
-                    gitEventWire,
-                    collisionsByAgent.get(String(session.sessionId)) || [],
-                );
+            this._rosterBatchIdentities = this._rosterIdentityKeys(sessions, this._teamMembers);
+            try {
+                for (const session of sessions) {
+                    this._upsertAgent(
+                        session,
+                        this._teamMembers,
+                        gitEventWire,
+                        collisionsByAgent.get(String(session.sessionId)) || [],
+                    );
+                }
+            } finally {
+                this._rosterBatchIdentities = null;
             }
 
             console.log(`[AgentManager] ${this.world.agents.size} agents loaded`);
@@ -443,6 +481,7 @@ export class AgentManager {
         const collisionsByAgent = this._collisionsByAgent(data.collisions || data.sessions.collisions);
         let failures = 0;
         let firstError = null;
+        this._rosterBatchIdentities = this._rosterIdentityKeys(data.sessions, this._teamMembers);
         for (const session of data.sessions) {
             // EN-8 — one malformed session skips only itself: the rest of the
             // update and its departure sweep still run.
@@ -477,6 +516,7 @@ export class AgentManager {
                 firstError ??= err;
             }
         }
+        this._rosterBatchIdentities = null;
         if (failures) this._noteIngestFailures(failures, firstError);
 
         this._sweepDepartedAgents(currentIds);
@@ -706,7 +746,7 @@ export class AgentManager {
             )) : []);
             for (const [identityKey, name] of entries) {
                 const key = `${GENERATED_NAME_STORAGE_PREFIX}${identityKey}`;
-                if (localStorage.getItem(key) === null) localStorage.setItem(key, name);
+                if (localStorage.getItem(key) === null && !this._storeGeneratedName(identityKey, name)) return;
             }
             // Keep the legacy record if any write failed, so quota-limited
             // profiles never lose names that have not yet been migrated.
@@ -718,13 +758,24 @@ export class AgentManager {
 
     _generatedNameFor(identityKey) {
         if (!identityKey) return null;
-        if (this._generatedNames.has(identityKey)) return this._generatedNames.get(identityKey);
+        if (this._generatedNames.has(identityKey)) {
+            // EN-2 (VT-fix-3) — a cache hit refreshes the LRU recency; EN-2
+            // (r2) — a read also refreshes the stored row's `t`, throttled.
+            const cached = this._generatedNames.get(identityKey);
+            this._touchGeneratedName(identityKey, cached);
+            this._refreshStoredGeneratedName(identityKey, cached);
+            return cached;
+        }
         this._migrateGeneratedNames();
         let name = null;
+        let lastUsedMs = 0;
         try {
             if (typeof localStorage !== 'undefined') {
-                name = localStorage.getItem(`${GENERATED_NAME_STORAGE_PREFIX}${identityKey}`);
-                if (name === null) {
+                const stored = parseStoredNameRow(localStorage.getItem(`${GENERATED_NAME_STORAGE_PREFIX}${identityKey}`));
+                if (stored) {
+                    name = stored.name;
+                    lastUsedMs = stored.lastUsedMs;
+                } else {
                     // Only degraded/partially migrated storage retains v1.
                     const record = localStorage.getItem(LEGACY_GENERATED_NAMES_STORAGE_KEY);
                     if (record !== null) {
@@ -742,19 +793,156 @@ export class AgentManager {
         } catch {
             // In-memory naming remains available even when reads fail.
         }
-        this._generatedNames.set(identityKey, name);
+        // EN-2 (VT-fix-3) — a stored row joins the cache through the same
+        // capped path as a write, so loading persisted identities cannot
+        // outgrow the cache.
+        this._touchGeneratedName(identityKey, name);
+        // EN-2 (r2) — a read is a use: refresh the row's `t` at most once a
+        // day, so a recently used resident survives prunes by recency.
+        if (name !== null && this._now() - lastUsedMs >= GENERATED_NAME_REFRESH_MS) {
+            this._storeGeneratedName(identityKey, name);
+        }
         return name;
     }
 
     _rememberGeneratedName(identityKey, name) {
-        if (!identityKey || !name || this._generatedNames.get(identityKey) === name) return;
+        if (!identityKey || !name) return;
+        const known = this._generatedNames.get(identityKey);
+        // EN-2 (VT-fix-3) — re-inserting refreshes recency even when the name
+        // is unchanged, so a same-value remember no longer skips the cap.
+        this._touchGeneratedName(identityKey, name);
+        if (known === name) {
+            // EN-2 (r2) — an unchanged remember is still a use of the row.
+            this._refreshStoredGeneratedName(identityKey, name);
+            return;
+        }
+        this._storeGeneratedName(identityKey, name);
+    }
+
+    // EN-2 — the one insert path for the cache: re-inserting refreshes
+    // recency, and every read and write passes through the cap. Eviction
+    // leaves the stored row alone: the stored set is bounded and evicted by
+    // its own last-used order below, so a row a live roster still reads
+    // survives its cache eviction and the name stays stable.
+    _touchGeneratedName(identityKey, name) {
+        this._generatedNames.delete(identityKey);
         this._generatedNames.set(identityKey, name);
+        while (this._generatedNames.size > GENERATED_NAME_CACHE_LIMIT) {
+            const [evictedKey] = this._generatedNames.keys();
+            this._generatedNames.delete(evictedKey);
+        }
+    }
+
+    // EN-2 (r2) — startup bounds the stored set from the real keys, not a
+    // cached index: the retired order-index key goes away, and rows a
+    // previous session (or another tab) left past the cap are pruned.
+    _initStoredGeneratedNames() {
         try {
-            if (typeof localStorage !== 'undefined') {
-                localStorage.setItem(`${GENERATED_NAME_STORAGE_PREFIX}${identityKey}`, name);
-            }
+            if (typeof localStorage === 'undefined') return;
+            localStorage.removeItem(GENERATED_NAME_ORDER_STORAGE_KEY);
+            this._pruneStoredGeneratedNames(new Set());
+        } catch {
+            // Storage can be unavailable in private or restricted contexts.
+        }
+    }
+
+    // Writes the row, then keeps the stored set bounded; false when any write
+    // failed, so the v1 migration keeps the legacy record recoverable.
+    _storeGeneratedName(identityKey, name) {
+        try {
+            if (typeof localStorage === 'undefined') return false;
+            const key = `${GENERATED_NAME_STORAGE_PREFIX}${identityKey}`;
+            const existed = localStorage.getItem(key) !== null;
+            localStorage.setItem(key, JSON.stringify({ n: name, t: this._now() }));
+            if (!existed) this._pruneStoredGeneratedNames(this._liveGeneratedNameIdentities(identityKey));
+            return true;
         } catch {
             // Names still persist for the lifetime of this manager in memory.
+            return false;
+        }
+    }
+
+    // EN-2 (r2) — refreshes a row's `t` when it is at least a day stale (or
+    // missing while the name stayed cached), through the capped store path.
+    _refreshStoredGeneratedName(identityKey, name) {
+        try {
+            if (typeof localStorage === 'undefined' || name == null) return;
+            const stored = parseStoredNameRow(localStorage.getItem(`${GENERATED_NAME_STORAGE_PREFIX}${identityKey}`));
+            if (stored && this._now() - stored.lastUsedMs < GENERATED_NAME_REFRESH_MS) return;
+            this._storeGeneratedName(identityKey, stored ? stored.name : name);
+        } catch {
+            // In-memory naming remains available even when reads fail.
+        }
+    }
+
+    // The identities a live roster can still read: every resident's identity
+    // key, the complete roster batch being ingested (EN-2 r3 — a newcomer
+    // processed first cannot evict a returning resident later in the same
+    // snapshot), and the row just written (a newcomer is named before it
+    // joins the world). Prunes spare them while colder rows exist.
+    _liveGeneratedNameIdentities(identityKey) {
+        const live = new Set(identityKey ? [identityKey] : []);
+        for (const identityKey of this._rosterBatchIdentities || []) live.add(identityKey);
+        for (const agent of this.world.agents.values()) {
+            const identity = AgentBiography.identityKeyFor(agent);
+            if (identity) live.add(identity);
+        }
+        return live;
+    }
+
+    // The identity keys a roster batch will read names under, computed the
+    // way `_upsertAgent` computes them (before any generated name is asked
+    // for), so the whole batch can be protected before the first write.
+    _rosterIdentityKeys(sessions, teamMembers) {
+        const keys = new Set();
+        for (const session of Array.isArray(sessions) ? sessions : []) {
+            // EN-8 — a malformed entry skips only itself, like ingestion does.
+            if (!session || typeof session !== 'object') continue;
+            const teamInfo = teamMembers ? teamMembers.get(session.agentId) : null;
+            const identityKey = AgentBiography.identityKeyFor({
+                id: session.sessionId,
+                provider: session.provider || 'claude',
+                agentName: teamInfo?.name || session.name || session.agentName || session.nickname || null,
+                projectPath: session.project || null,
+                agentType: session.agentType || null,
+                parentSessionId: session.parentSessionId || null,
+            });
+            if (identityKey) keys.add(identityKey);
+        }
+        return keys;
+    }
+
+    // Evicts the least recently used rows while the real prefixed keys exceed
+    // the cap. Scanning storage, not a cached index, is what keeps other tabs
+    // and failed writes honest. A live roster identity is never evicted while
+    // a colder row can go instead; only when every row is live does the cap
+    // win, still taking the oldest-used rows first.
+    _pruneStoredGeneratedNames(protectedIdentities) {
+        try {
+            if (typeof localStorage === 'undefined') return;
+            const rows = [];
+            for (let index = 0; index < localStorage.length; index++) {
+                const key = localStorage.key(index);
+                if (typeof key === 'string' && key.startsWith(GENERATED_NAME_STORAGE_PREFIX)) {
+                    rows.push({ key, index });
+                }
+            }
+            const excess = rows.length - GENERATED_NAME_CACHE_LIMIT;
+            if (excess <= 0) return;
+            const byOldestUse = (a, b) => a.lastUsedMs - b.lastUsedMs || a.index - b.index;
+            const evictable = [];
+            const guarded = [];
+            for (const row of rows) {
+                const stored = parseStoredNameRow(localStorage.getItem(row.key));
+                const entry = { ...row, lastUsedMs: stored ? stored.lastUsedMs : 0 };
+                if (protectedIdentities.has(row.key.slice(GENERATED_NAME_STORAGE_PREFIX.length))) guarded.push(entry);
+                else evictable.push(entry);
+            }
+            evictable.sort(byOldestUse);
+            guarded.sort(byOldestUse);
+            for (const row of [...evictable, ...guarded].slice(0, excess)) localStorage.removeItem(row.key);
+        } catch {
+            // Storage can be unavailable in private or restricted contexts.
         }
     }
 

@@ -51,14 +51,8 @@ const SEALED_POCKETS = Object.freeze([
     { label: 'the north shore behind the farm and the windmill', has: (x, y) => x <= 16 && y <= 7 },
 ]);
 
-// Scenic loiter points that are open water today. The ambient picker skips
-// them (dead destinations, not traps), and the quay places stand on the quay
-// instead (VB-6). They stay a todo below, never a silent pass.
-const KNOWN_GAPS = new Map([
-    ['harbor-rail', 'the harbor-rail and harbor-ledger loiter points stand in open water (QUAY_PLACES stand on the quay: VB-6)'],
-    ['harbor-ledger', 'the harbor-rail and harbor-ledger loiter points stand in open water (QUAY_PLACES stand on the quay: VB-6)'],
-    ['lighthouse-shore', 'lighthouse-shore is open water on the live grid (the ambient picker skips it: dead, not a trap)'],
-]);
+// AP-3 — the three harbor scenic points were repointed from open water onto
+// the walk grid, so every loiter point asserts reachability like the rest.
 function standingPlaces() {
     const places = [];
     const add = (tile, label) => places.push({ tileX: tile.tileX, tileY: tile.tileY, label });
@@ -70,7 +64,7 @@ function standingPlaces() {
     }
     for (const seat of REST_SEATS) add(seat, `rest seat ${seat.id}`);
     for (const [room, stand] of Object.entries(REST_STANDS)) for (const tile of stand.tiles) add(tile, `${room} rest stand`);
-    for (const point of AMBIENT_SCENIC_POINTS) if (!KNOWN_GAPS.has(point.id)) add(point, `scenic point ${point.id}`);
+    for (const point of AMBIENT_SCENIC_POINTS) add(point, `scenic point ${point.id}`);
     for (const slot of [...COMMAND_QUEUE.slots, ...COMMAND_QUEUE.overflow]) add(slot, 'command queue');
     add(VILLAGE_GATE.outside, 'gate arrival (outside)');
     add(PORTAL_SPAWN_TILE, 'portal arrival');
@@ -151,10 +145,12 @@ test('the allocator hands out both Harbor pier slots (VB-5)', () => {
     for (const pier of ['26,21', '27,21']) assert.ok(taken.has(pier), `the allocator uses the pier slot ${pier}`);
 });
 
-test('the water scenic points are reachable', { todo: [...new Set(KNOWN_GAPS.values())].join('; ') }, () => {
+// AP-3 — the harbor scenic points were open water once; they now stand on
+// the walk grid like every other loiter destination.
+test('the water scenic points are reachable', () => {
     const failures = [];
     for (const point of AMBIENT_SCENIC_POINTS) {
-        const why = KNOWN_GAPS.has(point.id) ? unreachable(point) : null;
+        const why = unreachable(point);
         if (why) failures.push(`scenic point ${point.id} ${keyOf(point)} is ${why}`);
     }
     assert.deepEqual(failures, []);
