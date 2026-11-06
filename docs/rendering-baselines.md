@@ -77,6 +77,7 @@ The ground-truth signals below must be present in both renderer modes. WebGL2 ke
 | Attention lights (waiting, errored, rate-limited) | The same stepped pool courses at small radii (34–40 world px, intensity ≤ 0.6), brightest-wins | The same courses; they never take a wet-reflection slot (`u_wetMask`) |
 | Building, tree, and villager casts | `RakingLight` stamps blitted per building, per tree (`drawTreeCasts`), and in villager contact stamps | The same stamps as `ground:building:<id>`, `ground:tree:<x>,<y>`, and villager ground records; uploaded only when the sun bucket changes |
 | Coherent ground haze | Quarter-resolution haze field | One additive `ground:haze` record using the same cached field and live strength |
+| Fog banks (fog weather) | `WeatherRenderer.groundFogLayer` world-locked stepped banks on the ground plane (`drawGroundFog`), under every body, building and tree | The same layer as `ground:fog` records each frame, plus the scene fragment's screen-Y fog mixing |
 | Cloud shadows | `CloudShadowCourses`: three dithered world-locked courses from the shared noise tile, as a cached multiply pattern | Three courses from the same 256² tile (`u_cloudTile`), scaled by cloud cover, shaded per record on each record's own texel grid (`ATMOSPHERE_COURSES_GLSL`: a sprite's origin fraction, the world grid for ground records and particles) so a body between world texels keeps whole k×k blocks |
 | Aerial perspective | `BackdropGrade.drawCanvasAerialHaze`: the stepped screen-Y haze before the frame grade, in the haze colour's preimage | Screen-Y haze shaded per record with the cloud courses (same grid rule; the screen row is read at the texel centre); `BackdropGrade.drawResidentBackdropGrade` lays the same haze and vignette courses over the 2D backdrop |
 | Outer ocean and horizon | `CoastBake.drawOuterOcean` on the 2D backdrop in the grade's preimage: horizon band four tiles above the north vertex, sun/moon glitter column, deep fill to every view edge | The same backdrop draw in final graded colours under the GPU canvas |
@@ -86,15 +87,14 @@ The ground-truth signals below must be present in both renderer modes. WebGL2 ke
 | Fish, waterfowl, gulls, land birds, landmark activity, and harbor traffic | Overlay-safe category in the Canvas depth stream | Skipped in the depth pass and replayed once above the GPU island |
 | Fireflies and ash-islet motes (zoom ≥ 0.9) | Shared `WildlifeRenderer` upper-overlay draw after the grade: Apr–Oct fireflies (caps 12 below z3, 16 from z3), twelve year-round night ash motes (eight round roots, four at trunk/canopy height), two glow courses; stepped MotionClock poses and budget/pressure gates | Identical shared upper-overlay draw (also WebGPU); both populations report live/cap/gate in ambient diagnostics |
 | Mine rock-crystal night glow | `EmitterCuts.drawMineCrystalGlow`: authored cyan/mint crystal cores restored at 0.65 alpha, with faint 2-/4-texel cyan halo courses (checker-dithered outer rim) on the same carved upper overlay, `lamps` clock gate; no quota/cargo/assay recolour | Identical cached core/halo cuts and silhouette carving on the upper overlay (also WebGPU) |
-| Open-air particles (chimney smoke, torch and forge embers, seasonal drift) | In the Canvas frame, graded with it | Replayed on the upper overlay with the frame's C2 light applied to lit presets |
+| Open-air particles (chimney smoke, torch and forge embers, seasonal drift) | In the Canvas frame, graded with it | Live particles draw in the GPU scene pass as depth-tested instanced quads; lit presets take the frame grade (C2). The reduced-motion static chimney wisp replays on the upper overlay |
 
 The following decorations are intentionally Canvas-only and must not be mistaken for a missing state signal during paired review:
 
-- the ten low-fog wisp sprites; WebGL2 carries the coherent haze field;
 - discrete ground and roof damp-mark stamps; WebGL2 carries material wetness instead;
-- building activity and hover ground-footprint decoration;
-- the directional lighthouse beam; WebGL2 retains the lighthouse local light and water reflection;
-- ground-level particle presets (footfall motes, rain-splash particles, token motes), which wait for GPU particle records because the overlay has no depth order.
+- the hovered building's ground-footprint decoration.
+
+The fog banks, the lighthouse beam, and live world particles (footfall motes, agent rain-splash, token motes included) are cross-backend ground truth now, not Canvas-only: the fog banks and the beam run in both GPU scene shaders, and every live particle draws in the GPU scene pass as a depth-tested instanced quad (only the reduced-motion static chimney wisp stays on the upper overlay).
 
 ## Trail camera benchmark
 

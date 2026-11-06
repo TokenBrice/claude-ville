@@ -27,7 +27,7 @@ npm run dev
 
 Open **[localhost:4000](http://localhost:4000)** and keep using your coding CLIs as usual. ClaudeVille discovers supported session stores on the same machine. No package install, build step, or ClaudeVille account is needed to run it.
 
-**Try it before running agents:** open the [simulated village](http://localhost:4000/?sim=1&scenario=readme-showcase) after starting the server. It uses fictional sessions across all seven providers, including agents waiting for approval. All screenshots in this README use this simulator, with synthetic detail data for the Activity Panel.
+**Try it before running agents:** open the [simulated village](http://localhost:4000/?sim=1&scenario=readme-showcase) after starting the server. It uses fictional sessions across all nine providers, including agents waiting for approval. All screenshots in this README use this simulator, with synthetic detail data for the Activity Panel.
 
 No agents showing up? Start a CLI session and check [provider detection and session visibility](./docs/troubleshooting.md). The `/m/` profile has a touch layout for a server running on the phone itself; the desktop server binds to loopback and is not reachable from another device over your LAN.
 

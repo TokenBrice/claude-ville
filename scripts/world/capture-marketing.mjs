@@ -14,6 +14,10 @@ const write = process.argv.includes('--write');
 const outDir = write ? join(repoRoot, 'docs', 'assets', 'github') : join(repoRoot, 'output', 'playwright');
 const prefix = write ? '' : 'marketing-';
 const url = 'http://localhost:4000/?sim=1&scenario=readme-showcase&renderer=webgl';
+// Sim session ids: the scenario's `readme-` ids plus the two adapter-shaped
+// thread ids (`deepseek-dsth_…`, `zai-glmth_…`).
+const SIM_SESSION_ID_PREFIXES = ['readme-', 'deepseek-', 'zai-'];
+const isSimSessionId = (id) => SIM_SESSION_ID_PREFIXES.some((prefix) => id?.startsWith(prefix));
 mkdirSync(outDir, { recursive: true });
 
 // Projection.js: tileToWorld with 64x32 tiles. Zoom snaps to the 1/2/3 pixel grid.
@@ -77,11 +81,11 @@ try {
         requests.push(pathname);
         let body = {};
         if (pathname === '/api/session-detail') {
-            assert.ok(searchParams.get('sessionId')?.startsWith('readme-'));
+            assert.ok(isSimSessionId(searchParams.get('sessionId')));
             body = searchParams.get('sessionId') === 'readme-astra' ? astraDetail() : {};
         } else if (pathname === '/api/session-details') {
             const items = request.postDataJSON().items;
-            assert.ok(items.every(item => item.sessionId.startsWith('readme-')));
+            assert.ok(items.every(item => isSimSessionId(item.sessionId)));
             body = { details: Object.fromEntries(items.map(item => [item.key, item.sessionId === 'readme-astra' ? astraDetail() : {}])) };
         } else {
             throw new Error(`Unexpected API request in simulation: ${pathname}`);
@@ -128,7 +132,7 @@ try {
         return { mode: app.renderer.worldRendererMode, active: app.renderer.gpuWorld?.isActive(), renderer: info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : null, agents: app.world.agents.size, simulated: app.simMode };
     });
     assert.equal(backend.simulated, true);
-    assert.equal(backend.agents, 31);
+    assert.equal(backend.agents, 33);
     assert.equal(backend.mode, 'webgl');
     assert.equal(backend.active, true);
     assert.ok(backend.renderer, 'GPU renderer identity must be available');
@@ -185,7 +189,7 @@ try {
       <div style="position:absolute;left:56px;bottom:48px;font-family:Georgia,'Times New Roman',serif">
         <div style="font-size:72px;font-weight:700;color:#f5c86e;letter-spacing:1px;line-height:1;text-shadow:0 2px 12px rgba(0,0,0,.6)">ClaudeVille</div>
         <div style="font-size:32px;color:#f2ead9;margin-top:14px;text-shadow:0 1px 6px rgba(0,0,0,.6)">Your coding agents, one living village</div>
-        <div style="font:18px Arial,sans-serif;color:#d2c5ab;margin-top:18px;letter-spacing:2px">LOCAL &nbsp;·&nbsp; READ-ONLY &nbsp;·&nbsp; 7 PROVIDERS</div>
+        <div style="font:18px Arial,sans-serif;color:#d2c5ab;margin-top:18px;letter-spacing:2px">LOCAL &nbsp;·&nbsp; READ-ONLY &nbsp;·&nbsp; 9 PROVIDERS</div>
       </div>
     </body></html>`);
     await card.waitForTimeout(400);

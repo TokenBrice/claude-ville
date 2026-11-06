@@ -28,15 +28,7 @@ ClaudeVille documentation stays current, task-oriented, and close to the code it
 
 ## Choosing Your Zoom
 
-The World's apparent size is set by two levers: the camera rungs (wheel, `+`/`-`) and the browser's own zoom, which changes the backing DPR the camera ladder is built on (`Camera.zoomTierLadder`, `CanvasBudget.effectiveCanvasDpr`). Every rung stays pixel-exact; what changes is how many device pixels one world texel covers and how much island fits. Measured on the 5120 × 1440 panel (physical DPR 1) with the window at 2508 × 1398 device px, which reports `devicePixelRatio` 1.5 at the browser zoom it runs today; the 100 % and 200 % rows are the same ladder resolved for that window:
-
-| Browser zoom | Backing DPR | Camera rungs (device px per texel) | Widest rung shows | Survey and half rungs |
-| --- | --- | --- | --- | --- |
-| 100 % | 1 | 1, 2, 3 (z1/z2/z3) | ≈ 2268 × 1207 world px: the whole island (the survey is z1), tips just cropped; villagers 1:1, routine names hidden (they need zoom 1.6) | Survey z1, wide z1, medium z2; no half rungs |
-| 150 % (measured) | 1.5 | 2, 4, 6 (z1.33/z2.67/z4) | 1218 × 592 world px (canvas 1624 × 789 CSS): about half the island's width; villagers twice as large | No survey, no half rungs; wide and medium are both z1.33 |
-| 200 % | 2 | 1, 2, 3, 4, 5, 6 (survey z0.5, z1, z1.5, z2, z2.5, z3) | The survey (z0.5) shows the whole island at 1 device px per texel; z1 shows ≈ 1014 × 580 world px | Survey z0.5, wide and medium z1, plus both half rungs |
-
-For a screen watched from across the room, 150 % doubles every body, plate and thought compared with 100 % but trades the whole-island view; 200 % keeps the same widest view as 100 % (its survey) while adding the 2× and 2.5× rungs in between. Automatic framing follows whichever ladder the browser zoom produces: ordinary Auto never rests closer than the wide shot scale or the rung you sit on, and at the widest rung it holds still (no idle breath) and pans only when the work leaves the frame. Frame rate was not recorded for this note: the measurement tab was throttled in the background, so no honest number was available.
+The World's apparent size has two levers: the camera rungs (wheel, `+`/`-`) and the browser's own zoom, which changes the backing DPR the camera ladder is built on (`Camera.zoomTierLadder`, `CanvasBudget.effectiveCanvasDpr`); every rung stays pixel-exact. The authoritative ladder — the `{1, 2, 3}` tiers, the survey step at backing DPR 2 or more, and the half rungs at DPR 2 — lives in the [World mode README](../claudeville/src/presentation/character-mode/README.md) (`Camera.js` row) and [`claudeville/CLAUDE.md`](../claudeville/CLAUDE.md). For a screen watched from across the room, a browser zoom near 150 % doubles every body, plate and thought while trading the whole-island view; automatic framing follows whichever ladder the browser zoom produces.
 
 ## Workflow Index
 

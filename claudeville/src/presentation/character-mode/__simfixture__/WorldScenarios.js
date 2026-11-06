@@ -1089,7 +1089,7 @@ const readmeAgent = (spec) => agentSpec({
 export const README_SHOWCASE_SCENARIO = {
     id: 'readme-showcase',
     label: 'README showcase',
-    description: 'Thirty-one agents across all seven CLIs and four projects for the README and social-card captures.',
+    description: 'Thirty-three agents across all nine CLIs and four projects for the README and social-card captures.',
     timeBase: SCENARIO_TIME_BASE,
     agents: [
         readmeAgent({ id: 'readme-rowan', name: 'Rowan', model: 'claude-fable-5-1', teamName: 'Ledger Crew', currentTool: 'Task', currentToolInput: 'description=Plan the harbor ledger rewrite', tokens: { input: 412000, output: 38600, cacheRead: 1820000, availability: 'observed' }, projectPath: README_PROJECTS.harbor, position: { tileX: 15, tileY: 21 } }),
@@ -1123,6 +1123,8 @@ export const README_SHOWCASE_SCENARIO = {
         readmeAgent({ id: 'readme-lark', name: 'Lark', provider: 'omp', underlyingProvider: 'zai', model: 'glm-5.3-flash', status: AgentStatus.WAITING_ON_USER, waitReason: 'approval', pendingTool: 'Bash', promptDetail: 'Allow `rm -rf dist` before the rebuild?', signalSource: 'hook', awaitingSince: SCENARIO_TIME_BASE - 20_000, tokens: { input: 36000, output: 2700, availability: 'observed' }, projectPath: README_PROJECTS.tidepool, position: { tileX: 15, tileY: 22 } }),
         readmeAgent({ id: 'readme-sable', name: 'Sable', provider: 'opencode', underlyingProvider: 'anthropic', model: 'claude-sonnet-5', currentTool: 'TodoWrite', currentToolInput: 'Plan the lantern docs pass', todos: [{ subject: 'Rewrite the quick start', status: 'in_progress' }, { subject: 'Check every flag', status: 'pending' }], tokens: { input: 58000, output: 4400, availability: 'observed' }, projectPath: README_PROJECTS.lantern, position: { tileX: 24, tileY: 38 } }),
         readmeAgent({ id: 'readme-tansy', name: 'Tansy', provider: 'opencode', underlyingProvider: 'openai', model: 'gpt-5.5', currentTool: 'Write', currentToolInput: 'file_path=src/app/TidepoolStore.ts', tokens: { input: 71000, output: 9600, availability: 'observed' }, projectPath: README_PROJECTS.tidepool, position: { tileX: 28, tileY: 31 } }),
+        readmeAgent({ id: 'deepseek-dsth_mpb5wjns_4d7a92c3', agentId: 'dsth_mpb5wjns_4d7a92c3', name: 'Cove', provider: 'deepseek', model: 'deepseek-v4-pro', effort: 'high', currentTool: 'Edit', currentToolInput: 'file_path=src/ledger/LedgerStore.ts', lastPrompt: 'Harden the ledger store against a torn write, then run the adapter fixture tests.', tokens: { input: 128000, output: 9600, cacheRead: 310000, availability: 'observed' }, projectPath: README_PROJECTS.harbor, position: { tileX: 13, tileY: 21 } }),
+        readmeAgent({ id: 'zai-glmth_mpb63pdk_1e8b50af', agentId: 'glmth_mpb63pdk_1e8b50af', name: 'Alder', provider: 'zai', model: 'glm-5.3', effort: 'max', currentTool: 'Read', currentToolInput: 'file_path=docs/providers.md', lastPrompt: 'Check every provider flag against the adapters, then report the gaps.', tokens: { input: 96000, output: 7400, cacheRead: 540000, availability: 'observed' }, projectPath: README_PROJECTS.lantern, position: { tileX: 19, tileY: 21 } }),
     ],
     timeline: [],
     metadata: {

@@ -1,7 +1,7 @@
 # GitHub images
 
 These are captures of the running application, refreshed for v0.55.1.1. The
-`readme-showcase` simulator supplies 31 fictional agents across seven providers
+`readme-showcase` simulator supplies 33 fictional agents across nine providers
 and four projects. Paths, messages, tool history, usage, and costs are sample
 data. The `SIMULATED` indicator remains visible in application screenshots.
 

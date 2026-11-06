@@ -66,6 +66,30 @@ The short caches are intentional. The browser, activity panel, dashboard mode, a
 
 The shared JSONL parser (`shared.js` `parseJsonLines` / `readJsonLines`) counts lines per adapter source: `parsedLines`, `skippedLines` (malformed lines mid-window — potential silent data loss), and `trailingPartials` (the benign partial final line of an actively-written file). Parsed tail records share the existing byte-bounded tail state, so unchanged polls reuse objects and safe appends parse only new lines. A parsed tail keeps only its records, never the raw line text, and its byte estimate is a running per-record sum, so an append reads, parses and estimates only its own bytes (SV-1). On top of that, Claude memoizes each transcript's derived session fields (summary inputs, turn state, permission mode, edges, tool results, git events and the projection) on the file's identity: an unchanged transcript costs a stat per field, and only clock-derived output (dialogue freshness) is recomputed. Tool results and git events are memoized per tool call as well; a memoized git event is re-parsed when its repository was unresolved or a repository scan froze new state for its id (SV-2b). Counts plus the most recent skip (file, byte offset relative to the read window, line size) are exposed via `/api/perf` as `jsonlDiagnostics`; parsed-tail hit/reuse counters are under `tailCache.parsed`. The shared tail state holds 128 MiB (`CLAUDEVILLE_TAIL_STATE_CACHE_MAX_BYTES`), and Claude's parsed-tail entries and transcript aggregates hold 32 MiB each (`CLAUDEVILLE_CLAUDE_PARSED_TAIL_CACHE_MAX_BYTES`, `CLAUDEVILLE_CLAUDE_TRANSCRIPT_CACHE_MAX_BYTES`). Each override is a byte count read at server start; `/api/perf` reports the shared limit as `tailCache.byteLimit`. Set `CLAUDEVILLE_DEBUG_JSONL=1` before starting the server to additionally log every skipped line with its offset and a snippet.
 
+### Runtime tuning and diagnostic overrides
+
+The remaining runtime environment variables the server and adapters read. Each is a diagnosis or tuning knob, not a supported configuration surface; unset behaviour is the tuned default, and byte/number caps clamp to the bounds shown.
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `CLAUDEVILLE_CODEX_ROLLOUT_FILE_CAP` | `100000` | Stops a Codex rollout discovery sweep (and trims its discovery cache) after this many files |
+| `CLAUDEVILLE_DIALOGUE_SOURCES` | all kinds | Comma-separated allowlist of dialogue kinds (`intent`, `plan`, `thinking`, `assistant`) extracted for the browser; an empty value disables dialogue entirely |
+| `CLAUDEVILLE_GIT_WORKER_CONCURRENCY` | `2` (1–8) | Concurrent git subprocesses in the enrichment worker |
+| `CLAUDEVILLE_GIT_WORKER_QUEUE_DEPTH` | `32` (1–256) | Queued git commands before new ones are shed |
+| `CLAUDEVILLE_GIT_WORKER_TIMEOUT_MS` | `750` (50–10000) | Timeout of one git subprocess command |
+| `CLAUDEVILLE_GIT_WORKER_RETRY_BASE_MS` | `1000` (100–60000) | Base delay of the doubling retry backoff |
+| `CLAUDEVILLE_GIT_WORKER_RETRY_MAX_MS` | `30000` (base–300000) | Cap of the retry backoff |
+| `CLAUDEVILLE_KIMI_INDEX_FALLBACK_MAX_BYTES` | 2 MiB (≥ 64 KiB) | Byte budget of one Kimi Code index fallback rescan (sessions the loaded index does not cover) |
+| `CLAUDEVILLE_KIMI_INDEX_FALLBACK_MAX_LINES` | `8192` | Line budget of the same rescan |
+| `CLAUDEVILLE_KIMI_INDEX_FALLBACK_MAX_MS` | `20` | Time budget of the same rescan |
+| `CLAUDEVILLE_OPENCODE_CONFIG_DIR` | `~/.config/opencode` | OpenCode config directory |
+| `CLAUDEVILLE_OPENCODE_STATE_DIR` | `~/.local/share/opencode` | OpenCode state directory |
+| `CLAUDEVILLE_OPENCODE_DB` | `<state dir>/opencode.db` | OpenCode SQLite database path |
+| `CLAUDEVILLE_OPENCODE_SQLITE_STRATEGY` | auto | `node` forces `node:sqlite`; `cli` forces the `sqlite3` CLI; auto prefers `node:sqlite` and falls back to the CLI |
+| `CLAUDEVILLE_REPOSITORY_UNPUSHED_EVENT_TTL_MS` | 7 days (≥ 1 h) | Unpushed-commit horizon: branches with a commit inside the window are scanned (checked-out and session-observed branches are scanned whatever their age), and commit events older than the window drop out of standalone Repo Watch sessions |
+| `CLAUDEVILLE_TRANSCRIPT_ASYNC_THRESHOLD_BYTES` | 8 MiB (≥ 64 KiB) | Claude transcript reads larger than this scan off the poll tick; the poll serves the cached aggregate until the scan lands |
+| `CLAUDEVILLE_WATCH_ZERO_CLIENT_GRACE_MS` | `15000` (≥ 50) | How long dynamic watchers stay up after the last WebSocket client leaves |
+
 ## Contract
 
 Each adapter class must expose the following getters and methods. Getters are JS class getters (no parentheses), not methods.
