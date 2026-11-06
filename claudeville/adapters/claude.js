@@ -10,7 +10,7 @@ const { dedupeGitEvents, extractGitEventsFromCommandSource, frozenGitEventFields
 const {
   clearTailCache,
   createDetailResponse,
-  normalizeCacheTokens,
+  deleteTailState,
   readJsonLines: readSharedJsonLines,
   statCacheKey,
   summarizeToolInput: summarizeSharedToolInput,
@@ -52,6 +52,9 @@ const TRANSCRIPT_SCAN_CHUNK_BYTES = 64 * 1024;
 const TRANSCRIPT_GUARD_BYTES = 256;
 const TRANSCRIPT_MAX_LINE_BYTES = 4 * 1024 * 1024;
 const TRANSCRIPT_MAX_AGENT_LAUNCHES = 2048;
+// Message ids whose usage contribution is remembered so repeats (possibly
+// interleaved across a few messages) replace their count instead of adding.
+const USAGE_ID_WINDOW = 32;
 const TRANSCRIPT_ASYNC_THRESHOLD_BYTES = Math.max(
   64 * 1024,
   Number(process.env.CLAUDEVILLE_TRANSCRIPT_ASYNC_THRESHOLD_BYTES || 8 * 1024 * 1024) || 8 * 1024 * 1024
@@ -1032,12 +1035,14 @@ function clearDerivedMemo() {
   _derivedMemo.clear();
 }
 
-function readUsageNumber(usage, keys) {
+// The first stated alias value, or null when the usage states none of them:
+// null keeps whatever an earlier record for the same message id counted.
+function readUsageField(usage, keys) {
   for (const key of keys) {
     const value = usage?.[key];
-    if (Number.isFinite(Number(value))) return Number(value);
+    if (value != null && Number.isFinite(Number(value))) return Number(value);
   }
-  return 0;
+  return null;
 }
 
 function emptyTokenUsage() {
@@ -1172,7 +1177,7 @@ function createTranscriptAggregate(filePath) {
     trailing: Buffer.alloc(0),
     discardingLine: false,
     usage: emptyTokenUsage(),
-    lastUsage: null,
+    usageById: new Map(),
     launches: [],
     projection: createTranscriptProjection(),
     background: [],
@@ -1190,6 +1195,7 @@ function cloneTranscriptAggregate(aggregate) {
     guard: Buffer.from(aggregate.guard),
     trailing: Buffer.from(aggregate.trailing),
     usage: { ...aggregate.usage },
+    usageById: new Map(aggregate.usageById),
     launches: aggregate.launches.map((launch) => ({ ...launch })),
     projection: cloneTranscriptProjection(aggregate.projection),
   };
@@ -1214,20 +1220,36 @@ function addTranscriptEntry(aggregate, entry) {
 
   if (msg.usage) {
     const usage = msg.usage;
-    const input = readUsageNumber(usage, ['input_tokens', 'inputTokens', 'prompt_tokens', 'promptTokens']);
-    const output = readUsageNumber(usage, ['output_tokens', 'outputTokens', 'completion_tokens', 'completionTokens']);
-    const { cacheRead, cacheCreate } = normalizeCacheTokens(usage, CLAUDE_CACHE_FIELD_MAP);
+    const input = readUsageField(usage, ['input_tokens', 'inputTokens', 'prompt_tokens', 'promptTokens']);
+    const output = readUsageField(usage, ['output_tokens', 'outputTokens', 'completion_tokens', 'completionTokens']);
+    const cacheRead = readUsageField(usage, CLAUDE_CACHE_FIELD_MAP.cacheRead);
+    const cacheCreate = readUsageField(usage, CLAUDE_CACHE_FIELD_MAP.cacheCreate);
     // Claude Code writes one record per content block, each repeating its
-    // message's usage, back to back: a repeat replaces the count, never adds.
+    // message's usage: a repeat replaces the count, never adds. A repeat may
+    // re-state only some fields (the rest keep their earlier values), and a
+    // few recent message ids are remembered, so repeats interleaved across
+    // messages (A, B, A) still count once.
     const id = typeof msg.id === 'string' && msg.id ? msg.id : null;
-    const previous = id && aggregate.lastUsage?.id === id ? aggregate.lastUsage : null;
-    aggregate.lastUsage = { id, input, output, cacheRead, cacheCreate };
+    const previous = id ? aggregate.usageById.get(id) ?? null : null;
+    const contribution = {
+      input: input ?? previous?.input ?? 0,
+      output: output ?? previous?.output ?? 0,
+      cacheRead: cacheRead ?? previous?.cacheRead ?? 0,
+      cacheCreate: cacheCreate ?? previous?.cacheCreate ?? 0,
+    };
+    if (id) {
+      aggregate.usageById.delete(id);
+      aggregate.usageById.set(id, contribution);
+      while (aggregate.usageById.size > USAGE_ID_WINDOW) {
+        aggregate.usageById.delete(aggregate.usageById.keys().next().value);
+      }
+    }
     aggregate.usage.availability = 'observed';
-    aggregate.usage.totalInput += input - (previous?.input || 0);
-    aggregate.usage.totalOutput += output - (previous?.output || 0);
-    aggregate.usage.cacheRead += cacheRead - (previous?.cacheRead || 0);
-    aggregate.usage.cacheCreate += cacheCreate - (previous?.cacheCreate || 0);
-    aggregate.usage.contextWindow = input + cacheRead + cacheCreate;
+    aggregate.usage.totalInput += contribution.input - (previous?.input || 0);
+    aggregate.usage.totalOutput += contribution.output - (previous?.output || 0);
+    aggregate.usage.cacheRead += contribution.cacheRead - (previous?.cacheRead || 0);
+    aggregate.usage.cacheCreate += contribution.cacheCreate - (previous?.cacheCreate || 0);
+    aggregate.usage.contextWindow = contribution.input + contribution.cacheRead + contribution.cacheCreate;
     if (!previous) aggregate.usage.turnCount++;
     aggregate.usage.input = aggregate.usage.totalInput;
     aggregate.usage.output = aggregate.usage.totalOutput;
@@ -1393,6 +1415,27 @@ function clearTranscriptAggregateCache() {
   _transcriptAggregateCacheBytes = 0;
 }
 
+// glm.js: a transcript read whose pre/post validation failed must leave
+// nothing behind. Every cache keyed on the path is dropped synchronously;
+// scans are bound to their record object, so a pending async scan for this
+// path can no longer match a record re-created later, and its settle()
+// cannot publish (settle() also discards a scan whose target changed).
+function invalidateTranscriptPath(filePath) {
+  if (!filePath) return;
+  const record = _transcriptAggregateCache.get(filePath);
+  if (record) {
+    record.generation = (record.generation || 0) + 1;
+    record.pendingTarget = null;
+  }
+  deleteTranscriptRecord(filePath);
+  deleteSessionEntryRecord(filePath);
+  _derivedMemo.delete(filePath);
+  for (const key of _firstPromptCache.keys()) {
+    if (key.startsWith(`${filePath}\0`)) _firstPromptCache.delete(key);
+  }
+  deleteTailState(filePath);
+}
+
 function touchTranscriptRecord(filePath, record) {
   const existing = _transcriptAggregateCache.get(filePath);
   if (existing) {
@@ -1474,7 +1517,7 @@ function finishTranscriptAggregate(aggregate, target) {
     try {
       const provisional = {
         usage: { ...aggregate.usage },
-        lastUsage: aggregate.lastUsage,
+        usageById: new Map(aggregate.usageById),
         launches: aggregate.launches.slice(),
         projection: cloneTranscriptProjection(aggregate.projection),
         background: aggregate.background,
@@ -1536,7 +1579,7 @@ function runNextTranscriptScan() {
     const task = _transcriptScanQueue.shift();
     if (task.epoch !== _transcriptScanEpoch) continue;
     const record = _transcriptAggregateCache.get(task.filePath);
-    if (!record || record.generation !== task.generation) continue;
+    if (!record || record !== task.record || record.generation !== task.generation) continue;
     _activeTranscriptScans++;
     const aggregate = task.mode === 'append'
       ? cloneTranscriptAggregate(task.baseAggregate)
@@ -1555,7 +1598,7 @@ function runNextTranscriptScan() {
       if (stream) _activeTranscriptStreams.delete(stream);
       _activeTranscriptScans--;
       const currentRecord = _transcriptAggregateCache.get(task.filePath);
-      if (currentRecord?.generation === task.generation) {
+      if (currentRecord === task.record && currentRecord?.generation === task.generation) {
         currentRecord.pendingTarget = null;
         if (err) {
           _transcriptAggregateStats.scanErrors++;
@@ -1639,6 +1682,10 @@ function scheduleTranscriptScan(filePath, record, target, mode, baseAggregate, s
   }
   _transcriptScanQueue.push({
     filePath,
+    // A task may only ever publish into the record object it was scheduled
+    // for: a record re-created after invalidation restarts at generation 0,
+    // so generations alone cannot tell an old task from the new one.
+    record,
     target,
     mode,
     baseAggregate,
@@ -3513,6 +3560,7 @@ module.exports = {
   claudeTranscript: {
     encodeProjectDir: encodeClaudeProjectDir,
     gitEvents: getGitEvents,
+    invalidate: invalidateTranscriptPath,
     recentMessages: getRecentMessages,
     summary: getSubAgentDetail,
     tokenUsage: getTokenUsage,

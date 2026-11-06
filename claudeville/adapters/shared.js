@@ -1027,6 +1027,7 @@ module.exports = {
   mcpJobOwnerAlive,
   noteReadFailure,
   clearTailCache,
+  deleteTailState,
   createDetailResponse,
   fileSignature,
   getJsonlDiagnostics,
