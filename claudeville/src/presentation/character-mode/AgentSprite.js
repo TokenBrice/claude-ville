@@ -346,15 +346,66 @@ const ACTION_PROP_PROVIDERS = new Set(['claude', 'codex', 'deepseek', 'zai']);
 const SEALED_SLIP_MS = 1800;
 
 // Immutable composed sheets share alpha archaeology, not body placement.
-const SHEET_CONTENT_METADATA = new WeakMap();
+// PF-3 — every sheet is indexed twice: by canvas identity (the live sheet's
+// own measurements, never evicted while the canvas lives) and by content
+// generation (the committed profile key plus the asset version it baked
+// against; the profile key already encodes sprite, palette, variant,
+// accessory, equipment, weapon-scrub class and team trim). A re-baked sheet
+// — a cache eviction behind identical pixels, fresh canvas object — inherits
+// its measured cells through the generation index instead of re-scanning
+// them. The generation index is bounded, least-recently-used first and never
+// smaller than the live profile set; a miss there only costs the measure the
+// identity index always cost.
+const SHEET_CONTENT_METADATA = new Map();
+const SHEET_CANVAS_METADATA = new WeakMap();
 
-function sheetContentMetadata(source) {
-    let metadata = SHEET_CONTENT_METADATA.get(source);
-    if (!metadata) {
-        metadata = new Map();
-        SHEET_CONTENT_METADATA.set(source, metadata);
+function sheetMetadataEntryLimit() {
+    return Math.max(48, ACTIVE_PROFILE_REFS.size);
+}
+
+function sheetContentMetadata(contentKey) {
+    let metadata = SHEET_CONTENT_METADATA.get(contentKey);
+    if (metadata) {
+        SHEET_CONTENT_METADATA.delete(contentKey);
+        SHEET_CONTENT_METADATA.set(contentKey, metadata);
+        return metadata;
+    }
+    metadata = new Map();
+    SHEET_CONTENT_METADATA.set(contentKey, metadata);
+    while (SHEET_CONTENT_METADATA.size > sheetMetadataEntryLimit()) {
+        SHEET_CONTENT_METADATA.delete(SHEET_CONTENT_METADATA.keys().next().value);
     }
     return metadata;
+}
+
+function sheetCanvasMetadata(source) {
+    let metadata = SHEET_CANVAS_METADATA.get(source);
+    if (!metadata) {
+        metadata = new Map();
+        SHEET_CANVAS_METADATA.set(source, metadata);
+    }
+    return metadata;
+}
+
+// One metadata entry under `key`, shared across a sheet's re-bakes: the
+// canvas-identity index answers first, the content generation inherits, and
+// only a miss under both computes (once) and writes both.
+function sheetMetadataEntry(source, contentKey, key, compute) {
+    const byCanvas = sheetCanvasMetadata(source);
+    let value = byCanvas.get(key);
+    if (value) return value;
+    const shared = contentKey != null ? sheetContentMetadata(contentKey) : null;
+    if (shared) {
+        value = shared.get(key);
+        if (value) {
+            byCanvas.set(key, value);
+            return value;
+        }
+    }
+    value = compute();
+    byCanvas.set(key, value);
+    if (shared) shared.set(key, value);
+    return value;
 }
 
 function validSpriteSource(source) {
@@ -366,37 +417,34 @@ function fallbackCellContentBounds(cell) {
 }
 
 // Opaque content bounds of one cell inside an immutable composed sheet.
-function measureCellContentBounds(source, cell) {
+function measureCellContentBounds(source, cell, contentKey = null) {
     if (!validSpriteSource(source)) return fallbackCellContentBounds(cell);
-    const metadata = sheetContentMetadata(source);
     const key = `${cell.sx},${cell.sy},${cell.sw},${cell.sh}`;
-    const cached = metadata.get(key);
-    if (cached) return cached;
-    const scratch = document.createElement('canvas');
-    scratch.width = cell.sw;
-    scratch.height = cell.sh;
-    const scratchCtx = scratch.getContext('2d', { willReadFrequently: true });
-    scratchCtx.imageSmoothingEnabled = false;
-    scratchCtx.drawImage(source, cell.sx, cell.sy, cell.sw, cell.sh, 0, 0, cell.sw, cell.sh);
-    const data = scratchCtx.getImageData(0, 0, cell.sw, cell.sh).data;
-    let minX = cell.sw;
-    let minY = cell.sh;
-    let maxX = 0;
-    let maxY = 0;
-    for (let y = 0; y < cell.sh; y++) {
-        for (let x = 0; x < cell.sw; x++) {
-            if (data[(y * cell.sw + x) * 4 + 3] < 16) continue;
-            if (x < minX) minX = x;
-            if (y < minY) minY = y;
-            if (x > maxX) maxX = x;
-            if (y > maxY) maxY = y;
+    return sheetMetadataEntry(source, contentKey, key, () => {
+        const scratch = document.createElement('canvas');
+        scratch.width = cell.sw;
+        scratch.height = cell.sh;
+        const scratchCtx = scratch.getContext('2d', { willReadFrequently: true });
+        scratchCtx.imageSmoothingEnabled = false;
+        scratchCtx.drawImage(source, cell.sx, cell.sy, cell.sw, cell.sh, 0, 0, cell.sw, cell.sh);
+        const data = scratchCtx.getImageData(0, 0, cell.sw, cell.sh).data;
+        let minX = cell.sw;
+        let minY = cell.sh;
+        let maxX = 0;
+        let maxY = 0;
+        for (let y = 0; y < cell.sh; y++) {
+            for (let x = 0; x < cell.sw; x++) {
+                if (data[(y * cell.sw + x) * 4 + 3] < 16) continue;
+                if (x < minX) minX = x;
+                if (y < minY) minY = y;
+                if (x > maxX) maxX = x;
+                if (y > maxY) maxY = y;
+            }
         }
-    }
-    const bounds = maxX > minX && maxY > minY
-        ? { minX, minY, maxX, maxY }
-        : fallbackCellContentBounds(cell);
-    metadata.set(key, bounds);
-    return bounds;
+        return maxX > minX && maxY > minY
+            ? { minX, minY, maxX, maxY }
+            : fallbackCellContentBounds(cell);
+    });
 }
 
 function easeOutCubic(t) {
@@ -1125,6 +1173,7 @@ export class AgentSprite {
         GPU_EQUIPPED_SHEET_CACHE.clear();
         PACKED_GEOMETRY_CACHE.clear();
         TOOL_CLASSIFICATION_CACHE.clear();
+        SHEET_CONTENT_METADATA.clear();
         AgentSprite.clearOverlayStampCache();
         clearAgentSignatureCache();
         clearEventShapeCache();
@@ -4815,6 +4864,9 @@ export class AgentSprite {
         bakeSpriteOutline(ctx, canvas.width, canvas.height, Math.round(canvas.width / DIRECTIONS.length) || DEFAULT_CELL);
         PROCESSED_SPRITE_CACHE.set(cacheKey, canvas);
         canvas.__cvProfileKey = cacheKey;
+        // The scrub derives from the composed sheet, so it inherits its
+        // source generation: its pixels moved when the composed sheet's did.
+        canvas.__cvSourceGeneration = baseCanvas.__cvSourceGeneration;
         processedSpriteCachePixels += canvas.width * canvas.height;
         while (
             PROCESSED_SPRITE_CACHE.size > processedSpriteEntryLimit()
@@ -5645,9 +5697,22 @@ export class AgentSprite {
         const key = `${cell.sx},${cell.sy},${cell.sw},${cell.sh}`;
         const cached = this._cellBoundsCache.get(key);
         if (cached) return cached;
-        const bounds = measureCellContentBounds(this.spriteCanvas, cell);
+        const bounds = measureCellContentBounds(this.spriteCanvas, cell, this._sheetContentKey());
         this._cellBoundsCache.set(key, bounds);
         return bounds;
+    }
+
+    // The generation this spriteCanvas baked against. The committed profile
+    // key encodes every bake input; the asset version plus the compositor's
+    // source-generation stamp (absent on sheets the compositor did not bake)
+    // name the sheet's pixels — a replaced base or overlay is a new
+    // generation even when assetVersion holds still. A re-bake of the same
+    // generation (a cache eviction behind an identical sheet) shares its
+    // measured metadata.
+    _sheetContentKey() {
+        const sourceGeneration = this.spriteCanvas?.__cvSourceGeneration;
+        return `${this._spriteProfileKey}|${this.assets?.assetVersion || 0}`
+            + (sourceGeneration ? `|${sourceGeneration}` : '');
     }
 
     // V7 — the foot anchor of one facing: `cx2` (minX + maxX) of idle row 6
@@ -5659,21 +5724,18 @@ export class AgentSprite {
             return { cx2: DEFAULT_CELL - 1, maxY: DEFAULT_CELL - 18 };
         }
         const key = FOOT_ANCHOR_KEYS[direction] ?? `anchor:${direction}`;
-        const metadata = sheetContentMetadata(this.spriteCanvas);
-        const cached = metadata.get(key);
-        if (cached) return cached;
-        const sheet = this.spriteSheet;
-        const idle = this._getCellContentBounds(sheet.cell('idle', direction, 0));
-        let maxY = idle.maxY;
-        for (let frame = 0; frame < WALK_FRAMES; frame++) {
-            maxY = Math.max(maxY, this._getCellContentBounds(sheet.cell('walk', direction, frame)).maxY);
-        }
-        for (let frame = 1; frame < IDLE_FRAMES; frame++) {
-            maxY = Math.max(maxY, this._getCellContentBounds(sheet.cell('idle', direction, frame)).maxY);
-        }
-        const anchor = { cx2: idle.minX + idle.maxX, maxY };
-        metadata.set(key, anchor);
-        return anchor;
+        return sheetMetadataEntry(this.spriteCanvas, this._sheetContentKey(), key, () => {
+            const sheet = this.spriteSheet;
+            const idle = this._getCellContentBounds(sheet.cell('idle', direction, 0));
+            let maxY = idle.maxY;
+            for (let frame = 0; frame < WALK_FRAMES; frame++) {
+                maxY = Math.max(maxY, this._getCellContentBounds(sheet.cell('walk', direction, frame)).maxY);
+            }
+            for (let frame = 1; frame < IDLE_FRAMES; frame++) {
+                maxY = Math.max(maxY, this._getCellContentBounds(sheet.cell('idle', direction, frame)).maxY);
+            }
+            return { cx2: idle.minX + idle.maxX, maxY };
+        });
     }
 
     _statusVisual() {

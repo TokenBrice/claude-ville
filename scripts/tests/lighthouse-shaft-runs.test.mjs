@@ -110,6 +110,20 @@ function syntheticTower(beacon, { heights }) {
     return { mask, heights: surface, dims, x, y };
 }
 
+// A 2D context that records every fillRect with the state it painted under,
+// so two draws can be compared as exact call sequences.
+function sequenceContext() {
+    const calls = [];
+    return {
+        calls,
+        globalAlpha: 1,
+        fillStyle: '#000000',
+        fillRect(x, y, w, h) {
+            calls.push([x, y, w, h, this.globalAlpha, this.fillStyle]);
+        },
+    };
+}
+
 test('run-length shaft paints exactly the per-texel pixels at every heading and tower state', () => {
     let referenceRects = 0;
     let runRects = 0;
@@ -137,4 +151,68 @@ test('run-length shaft paints exactly the per-texel pixels at every heading and 
     }
     assert.ok(painted > 100_000, `the cases paint real shafts (${painted} texels)`);
     assert.ok(runRects * 2 < referenceRects, `runs cut the fills (${runRects} vs ${referenceRects})`);
+});
+
+// PF-2 — the sweep angle quantizes to 140 ms motion-clock steps
+// (`searchlightAngleAt`), so consecutive night frames ask for identical
+// pixels; a held step replays one scan's runs and any input change rescans.
+// The step angle is derived exactly as the module does.
+const REST_ANGLE = 0.18;
+const angleAtStep = step => (REST_ANGLE + step * 0.14 * 0.2) % (Math.PI * 2);
+
+test('a held sweep step replays one scan; step, beacon or tower changes rescan', () => {
+    const beacon = { x: 1000, y: 1000 };
+    const tower = syntheticTower(beacon, { heights: true });
+    const stats = { lookups: 0 };
+    const countingTower = {
+        ...tower,
+        mask: new Proxy(tower.mask, {
+            get(target, prop, receiver) {
+                stats.lookups++;
+                return Reflect.get(target, prop, receiver);
+            },
+        }),
+    };
+    const host = Object.create(BuildingSprite.prototype);
+    const draw = (angle, towerState, at = beacon) => {
+        const ctx = sequenceContext();
+        BuildingSprite.prototype._fillBeaconShaft.call(host, ctx, { x: at.x, y: at.y, tower: towerState }, angle);
+        return ctx.calls;
+    };
+    // The callers rebuild the tower wrapper object every frame; the cache must
+    // key on what the scan reads (inner mask/heights/dims + tower origin),
+    // never on the wrapper's identity.
+    const first = draw(angleAtStep(0), countingTower);
+    const afterScan = stats.lookups;
+    assert.ok(afterScan > 1000, `a scan reads the mask (${afterScan} lookups)`);
+    assert.ok(first.length > 0, 'the front arc paints a shaft');
+    const replay = draw(angleAtStep(0), countingTower);
+    assert.equal(stats.lookups, afterScan, 'a held step never re-scans');
+    assert.deepEqual(replay, first, 'a held step repaints the exact rect sequence');
+    const nextStep = draw(angleAtStep(1), countingTower);
+    assert.ok(stats.lookups > afterScan, 'the next step re-scans');
+    assert.notDeepEqual(nextStep, first, 'the next step paints new geometry');
+    // Beacon position: it also sets the ordered-coverage Bayer phase.
+    const lookupsBeforeMove = stats.lookups;
+    draw(angleAtStep(1), countingTower, { x: beacon.x + 1, y: beacon.y });
+    assert.ok(stats.lookups > lookupsBeforeMove, 'a moved beacon re-scans');
+    // Tower-mask load (fresh mask object, identical contents) and surface
+    // heights arriving (null -> measured) must both invalidate.
+    const countingCopy = (overrides) => ({
+        ...tower,
+        mask: new Proxy(new Uint8Array(tower.mask), {
+            get(target, prop, receiver) {
+                stats.lookups++;
+                return Reflect.get(target, prop, receiver);
+            },
+        }),
+        ...overrides,
+    });
+    const lookupsBeforeMask = stats.lookups;
+    draw(angleAtStep(1), countingCopy());
+    assert.ok(stats.lookups > lookupsBeforeMask, 'a reloaded tower mask re-scans');
+    const lookupsBeforeHeights = stats.lookups;
+    const unmeasured = draw(angleAtStep(1), countingCopy({ heights: null }));
+    assert.ok(stats.lookups > lookupsBeforeHeights, 'newly loaded surface heights re-scan');
+    assert.notDeepEqual(unmeasured, nextStep, 'unmeasured heights hide differently');
 });

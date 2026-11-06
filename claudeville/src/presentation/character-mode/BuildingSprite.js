@@ -1233,7 +1233,9 @@ export class BuildingSprite {
         const matrix = ctx.getTransform();
         if (!matrix || typeof matrix.inverse !== 'function' || !matrix.a || !matrix.d) return out;
         const inverse = matrix.inverse();
-        const cssWidth = ctx.canvas?.clientWidth || 0;
+        // PF-4 — the renderer maintains the overlay's CSS width on the canvas
+        // (see Camera._viewportWidth); read it before any DOM layout state.
+        const cssWidth = ctx.canvas?._claudeVilleCssWidth || ctx.canvas?.clientWidth || 0;
         const dpr = cssWidth > 0 ? ctx.canvas.width / cssWidth : (globalThis.devicePixelRatio || 1);
         for (const rect of reserved) {
             const x0 = rect.left * dpr;
@@ -5008,6 +5010,16 @@ export class BuildingSprite {
     // Scan-convert the shaft between the glass and the exact sea landing,
     // in world texels. Ordered coverage breaks both edges and the tail;
     // alpha and colour hold in three courses, never a smooth gradient.
+    // PF-2 — the sweep angle quantizes to 140 ms motion-clock steps
+    // (`searchlightAngleAt`), so consecutive night frames ask for identical
+    // pixels: the run list is cached against everything the scan reads — the
+    // exact angle, the rounded beacon origin (it sets the ordered-coverage
+    // Bayer phase), and the tower mask/heights/dims generation including
+    // readiness — and a hit replays the recorded fillRects in recorded
+    // order. A held step costs one scan per 140 ms instead of one per frame;
+    // a tower-mask load or any other input change misses and re-scans. The
+    // tower wrapper is rebuilt by the callers each frame, so the cache
+    // compares the inner references, never the wrapper.
     _fillBeaconShaft(ctx, beacon, angle) {
         const distance = SEARCHLIGHT_LENGTH * SEARCHLIGHT_LANDING_SHARE;
         const c = Math.cos(angle);
@@ -5023,13 +5035,6 @@ export class BuildingSprite {
         const ny = c * 0.5;
         const determinant = dx * ny - dy * nx;
         if (Math.abs(determinant) < 1) return;
-        const spreadX = Math.abs(nx) * BEAM_NEAR_HALF_WIDTH + 2;
-        const spreadY = Math.abs(ny) * BEAM_NEAR_HALF_WIDTH + 2;
-        const minX = Math.floor(Math.min(0, dx) - spreadX);
-        const maxX = Math.ceil(Math.max(0, dx) + spreadX);
-        const minY = Math.floor(Math.min(0, dy) - spreadY);
-        const maxY = Math.ceil(Math.max(0, dy) + spreadY);
-        const bayer = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
         const ox = Math.round(beacon.x);
         const oy = Math.round(beacon.y);
         // Depth against the landmark's 2.3 surface heights: a building texel
@@ -5040,6 +5045,27 @@ export class BuildingSprite {
         // where it really runs in front of them. Without heights (still
         // loading) every tower texel hides it, the V-R6 silhouette cut.
         const tower = beacon.tower?.mask && beacon.tower?.dims ? beacon.tower : null;
+        const cache = this._beaconShaftCache;
+        if (cache
+            && cache.angle === angle && cache.ox === ox && cache.oy === oy
+            && cache.mask === (tower?.mask || null) && cache.heights === (tower?.heights || null)
+            && cache.dims === (tower?.dims || null)
+            && cache.tx === (tower?.x || 0) && cache.ty === (tower?.y || 0)) {
+            for (let i = 0; i < cache.runs.length; i += 4) {
+                const course = cache.runs[i + 3];
+                ctx.globalAlpha = course === 0 ? 0.4 : course === 1 ? 0.27 : 0.16;
+                ctx.fillStyle = ART_RAMPS.beaconFire[course === 0 ? 5 : 4];
+                ctx.fillRect(cache.runs[i], cache.runs[i + 1], cache.runs[i + 2], 1);
+            }
+            return;
+        }
+        const spreadX = Math.abs(nx) * BEAM_NEAR_HALF_WIDTH + 2;
+        const spreadY = Math.abs(ny) * BEAM_NEAR_HALF_WIDTH + 2;
+        const minX = Math.floor(Math.min(0, dx) - spreadX);
+        const maxX = Math.ceil(Math.max(0, dx) + spreadX);
+        const minY = Math.floor(Math.min(0, dy) - spreadY);
+        const maxY = Math.ceil(Math.max(0, dy) + spreadY);
+        const bayer = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
         const axisY = (WATCHTOWER_LANTERN_FIRE.axis || foot)[1] - WATCHTOWER_LANTERN_FIRE.flame[1];
         const hides = (wx, wy, t) => {
             if (!tower) return false;
@@ -5054,6 +5080,9 @@ export class BuildingSprite {
         // FP-7: each texel's course is decided as before, but a row's run of
         // same-course texels is one fillRect with its alpha and colour set
         // once, not one per texel: the same pixels for a fraction of the calls.
+        // PF-2 records each run as it closes, so the cache replays the exact
+        // same call sequence.
+        const runs = [];
         for (let y = minY; y <= maxY; y++) {
             let runStart = minX;
             let runCourse = -1;
@@ -5074,6 +5103,7 @@ export class BuildingSprite {
                 }
                 if (course === runCourse) continue;
                 if (runCourse >= 0) {
+                    runs.push(ox + runStart, oy + y, x - runStart, runCourse);
                     ctx.globalAlpha = runCourse === 0 ? 0.4 : runCourse === 1 ? 0.27 : 0.16;
                     ctx.fillStyle = ART_RAMPS.beaconFire[runCourse === 0 ? 5 : 4];
                     ctx.fillRect(ox + runStart, oy + y, x - runStart, 1);
@@ -5082,6 +5112,15 @@ export class BuildingSprite {
                 runCourse = course;
             }
         }
+        this._beaconShaftCache = {
+            angle, ox, oy,
+            mask: tower?.mask || null,
+            heights: tower?.heights || null,
+            dims: tower?.dims || null,
+            tx: tower?.x || 0,
+            ty: tower?.y || 0,
+            runs,
+        };
     }
 
     _spawnEmittersFor(b, dt = 16) {

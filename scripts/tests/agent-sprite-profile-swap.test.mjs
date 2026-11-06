@@ -214,3 +214,114 @@ test('new compositor registration reuses live composed pixels but not changed so
     assert.deepEqual([...replaced.pixels.subarray(0, 4)], [50, 50, 50, 255]);
     t.after(() => { a.dispose(); b.dispose(); c.dispose(); });
 });
+
+test('a re-baked sheet inherits measured bounds by content generation, bounded per generation', t => {
+    installRaster(t);
+    // Count only the scratch canvases the cell scan allocates.
+    let created = 0;
+    const stubs = globalThis.document;
+    globalThis.document = { createElement: tag => { created++; return canvas(); } };
+    t.after(() => { globalThis.document = stubs; AgentSprite.releaseSharedCaches(); });
+
+    const bounds = { minX: 19, minY: 7, maxX: 69, maxY: 84 };
+    const s = sprite(null, 're-baked');
+    s.assets = { assetVersion: 'v1' };
+    const commit = (source, profileKey) => {
+        s.spriteCanvas = source;
+        s.spriteSheet = new SpriteSheet(source);
+        s._spriteProfileKey = profileKey;
+        s._cellBoundsCache.clear();
+    };
+    const cellsOf = source => Array.from({ length: 3 }, (_, direction) => new SpriteSheet(source).cell('idle', direction, 0));
+    const measure = source => cellsOf(source).map(cell => s._getCellContentBounds(cell));
+
+    commit(bodySource(bounds), 'profile|one');
+    const firstPass = measure(s.spriteCanvas);
+    const firstCanvases = created;
+    assert.equal(firstCanvases, 3, 'each unmeasured cell scans once');
+    firstPass.forEach(b => assert.deepEqual(b, bounds));
+
+    // A re-baked sheet (fresh canvas object, identical pixels) keeps its
+    // generation: the commit clears the instance cache, but the shared
+    // metadata answers by content, so no cell re-scans.
+    commit(bodySource(bounds), 'profile|one');
+    const rebaked = measure(s.spriteCanvas);
+    assert.equal(created, firstCanvases, 'identical generation never re-measures');
+    rebaked.forEach(b => assert.deepEqual(b, bounds));
+
+    // A new generation (profile or asset version) re-measures every cell.
+    commit(bodySource(bounds), 'profile|two');
+    measure(s.spriteCanvas);
+    assert.equal(created, firstCanvases + 3, 'a new profile generation re-measures');
+    commit(bodySource(bounds), 'profile|two');
+    s.assets = { assetVersion: 'v2' };
+    s._cellBoundsCache.clear();
+    measure(s.spriteCanvas);
+    assert.equal(created, firstCanvases + 6, 'a new asset version re-measures');
+
+    // The shared metadata stays bounded: enough later generations push the
+    // first one out, and it measures again on its next use.
+    for (let generation = 0; generation < 60; generation++) {
+        commit(bodySource(bounds), `profile|fill|${generation}`);
+        measure(s.spriteCanvas);
+    }
+    commit(bodySource(bounds), 'profile|one');
+    measure(s.spriteCanvas);
+    assert.ok(created > firstCanvases + 6, 'an evicted generation re-measures');
+});
+
+test('a sheet composed from replaced sources re-measures even when assetVersion holds still', t => {
+    installRaster(t);
+    AgentSprite.releaseSharedCaches();
+    t.after(() => AgentSprite.releaseSharedCaches());
+    const oldBounds = { minX: 22, minY: 10, maxX: 65, maxY: 80 };
+    const newBounds = { minX: 16, minY: 5, maxX: 73, maxY: 85 };
+    let current = bodySource(oldBounds);
+    const assets = {
+        assetVersion: 'same-version', palettes: {},
+        get: id => (id.startsWith('agent.') ? current : null),
+        getDims: () => ({ w: current.width, h: current.height }),
+        getEntry: () => ({ headCovered: true }),
+    };
+    const ctx = canvas(100, 100).getContext('2d');
+    const compositorA = new Compositor(assets);
+    const a = sprite(compositorA, 'replaced-source');
+    a.assets = assets;
+    a.draw(ctx);
+    const direction = a.direction;
+    const profileKey = a._spriteProfileKey;
+    const sheetA = a.spriteCanvas;
+    const oldAnchor = { ...a._stableFootAnchor(direction) };
+    assert.deepEqual(a._getCellContentBounds(a.spriteSheet.cell('idle', direction, 0)),
+        { minX: 21, minY: 9, maxX: 66, maxY: 81 });
+    a.releaseRenderResources();
+    compositorA.dispose();
+
+    // Replace the source image object behind an unchanged assetVersion and
+    // register a fresh compositor: the bake is new pixels, not a new version.
+    current = bodySource(newBounds);
+    const compositorB = new Compositor(assets);
+    const b = sprite(compositorB, 'replaced-source');
+    b.assets = assets;
+    t.after(() => { b.releaseRenderResources(); compositorB.dispose(); });
+    b.draw(ctx);
+    assert.equal(b.direction, direction);
+    assert.equal(b._spriteProfileKey, profileKey);
+    assert.notEqual(b.spriteCanvas, sheetA, 'the compositor notices the replaced input');
+    // New source geometry must not inherit the previous sheet's metadata.
+    assert.deepEqual(b._getCellContentBounds(b.spriteSheet.cell('idle', direction, 0)),
+        { minX: 15, minY: 4, maxX: 74, maxY: 86 });
+    assert.deepEqual(b._stableFootAnchor(direction), { cx2: 89, maxY: 86 });
+    assert.notDeepEqual(b._stableFootAnchor(direction), oldAnchor);
+
+    // An equivalent re-bake — the same committed sources behind a fresh
+    // canvas object carrying the same source generation — still shares the
+    // measured metadata instead of re-scanning (PF-3).
+    const measured = b._getCellContentBounds(b.spriteSheet.cell('idle', direction, 0));
+    const rebaked = bodySource(newBounds);
+    rebaked.__cvSourceGeneration = b.spriteCanvas.__cvSourceGeneration;
+    b.spriteCanvas = rebaked;
+    b.spriteSheet = new SpriteSheet(rebaked);
+    b._cellBoundsCache.clear();
+    assert.equal(b._getCellContentBounds(b.spriteSheet.cell('idle', direction, 0)), measured);
+});

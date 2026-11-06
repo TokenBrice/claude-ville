@@ -34,6 +34,24 @@ function liveComposedSheets(assets) {
     return sheets;
 }
 
+// Monotonic generation per source image object. The reuse check below keeps
+// a canvas only when the very same base and overlay objects were drawn, so a
+// replaced image is a new source generation even when assetVersion did not
+// move. Freshly committed sheets carry that pair as __cvSourceGeneration so
+// consumers (AgentSprite's shared sheet metadata) can key off the pixels'
+// real provenance instead of the version string alone.
+const SOURCE_GENERATIONS = new WeakMap();
+let sourceGenerationSeq = 0;
+function sourceGeneration(img) {
+    if (!img) return 0;
+    let generation = SOURCE_GENERATIONS.get(img);
+    if (generation == null) {
+        generation = ++sourceGenerationSeq;
+        SOURCE_GENERATIONS.set(img, generation);
+    }
+    return generation;
+}
+
 // Direction columns that show the back of the head — face-side accessory
 // detail (goggle lenses, veil openings) must not appear here.
 const BACK_DIRECTIONS = new Set(['n', 'ne', 'nw']);
@@ -226,6 +244,7 @@ export class Compositor {
         this._applyPaletteSwap(ctx, canvas.width, canvas.height, palette, paletteVariant, teamTrim, sheetSource);
         if (runtimeAccessory) this._compositeAccessory(ctx, baseId, runtimeAccessory, palette);
         if (outline) bakeSpriteOutline(ctx, canvas.width, canvas.height, dims.w / DIRECTIONS.length || DEFAULT_CELL);
+        canvas.__cvSourceGeneration = `${sourceGeneration(baseImg)}|${sourceGeneration(overlayImg)}`;
         live.delete(generationKey);
         live.set(generationKey, { baseImg, overlayImg, canvas: new WeakRef(canvas) });
         while (live.size > CACHE_ENTRY_LIMIT) live.delete(live.keys().next().value);
