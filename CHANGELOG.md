@@ -2,6 +2,69 @@
 
 ---
 
+## v0.62.0 — *The Tempered Steel* · Nov 06, 2026
+
+A whole-village technical review, carried through. The World draws with less work on the WebGL2 path this machine runs. The server reads each large transcript once. The Harbor and the villagers tell the truth in more cases. The GLM and DeepSeek readers stop trusting their state folders. And the safety net that was quietly red works again.
+
+- **Lighter frames.**
+  - Measured on the RTX 5070 Ti with WebGL2 at 2508×1398, 24 agents: the main thread spends 4.5 ms per frame instead of 5.8, and the renderer process uses about 29% less CPU (0.20 cores instead of 0.29). An empty village at night costs 16% less.
+  - Live frames are now submitted directly. Before, each one recorded about 3,270 GL commands and compared them against the previous frame, but frame reuse can never match while the clock moves. Reduced-motion and frozen-time frames still reuse.
+  - About 400 redundant texture binds per frame are gone (from about 645 to about 254).
+  - The Lighthouse beam computes its sweep once per 140 ms step, not every night frame.
+  - Re-baked villager sheets reuse their measured cells instead of re-scanning them.
+  - Building labels stop reading the window width from the page layout on every frame.
+- **The server reads less.**
+  - **Large transcripts.** A transcript over 8 MiB that grows while it is being read now keeps the finished read and takes only the new lines. Before, it started again from the first byte. In a 12-transcript test, the server read 101 MB instead of about 250 MB. A rotated, truncated or rewritten file is still read again from the start.
+  - **Ended sessions.** Sessions that ended leave the tail cache ten minutes after they go quiet. They no longer hold it at its limit, which pushed new large sessions into full re-reads.
+  - **Reconnects.** A browser that asks for a full refresh within 5 s of the last one gets the current snapshot instead of a new scan.
+  - **`/api/perf`.** It adds `eventLoop.processUtilization`, which stays honest while a CPU profiler is attached.
+- **The Harbor counts only what landed.**
+  - These no longer count as landed: `gh pr merge --auto`, which only enables auto-merge, and `gh release create --draft`. Neither sends out a cutter or plants a merge stone.
+  - These do count:
+    - a merge whose output says it merged at once;
+    - `--disable-auto`, as a cancellation;
+    - `gh release edit --draft=false`, as a publication.
+  - Commands that Codex and OpenCode log as argument lists are now read. Arguments that only contain text never count as commands.
+  - The fleet card keeps a rejected push, with its reason, visible while a retry is still pending.
+  - Fetch hulls from several sessions each take their own mooring, so they no longer stack on four anchors.
+  - Departures pass east of the sea stacks instead of through them.
+- **Villagers stand where their work is.**
+  - **ERRORED after a fix.** A session no longer shows ERRORED for a minute after it has fixed its own failed git command.
+  - **Waiting versus working.** A `sleep` alongside real work no longer sends the villager to the Lighthouse. So `pytest && sleep 2 && pytest` stays at the Task board, and `sleep 1 && git push` stays at the Harbor. Commands that only wait still keep the watch there.
+  - **MCP tools.** They find a building from their verb: read and search go to the Archive; edit, write and generate go to the Forge.
+  - **Test runners.** `cargo`, `go`, `make` and `rake` test runs count as tests.
+  - **Messages.** When several sessions message one agent, they no longer crowd it in one-sided chats.
+  - **Scenic stops.** Three that stood in the water now sit on the shore.
+- **GLM and DeepSeek readers.**
+  - **GLM transcripts.** They are checked on every read, and only real files at their expected paths are read. A rejected read clears every cache it could have filled. A long-running GLM villager no longer disappears once the job log has rolled past its start.
+  - **GLM history.** Expired jobs are skipped before any file is opened.
+  - **DeepSeek state files.** They are read only as regular files, never through a link, and through a size cap.
+  - **Every adapter.** All of them now open files without blocking, so a stray pipe can never hang a scan.
+- **Bounded memories.**
+  - Chronicle biographies are pruned after 180 days.
+  - Generated villager names are capped at 512. Names in use and recently seen names are always kept.
+  - `__claudeVillePerf.memoryTrend()` keeps a ten-minute heap trend.
+- **The safety net works again.**
+  - **V3 environment-truth smoke.** It had failed on every run since v0.51.0 because of two wildlife clock stamps; it passes again. Its reduced-motion check now waits until the frame has held still for as long as the check itself.
+  - **`validate:full`.** It now runs eight fast smokes that were not part of any gate. OMP watches files the way the other providers do.
+  - **`smoke:webgpu-parity`.** It reports n/a, not a failure, on machines without WebGPU.
+  - **`gate:release`.** It runs everything CI runs.
+  - **The unit suite** passes when its temp folder sits inside a git checkout.
+  - **The harbor water map** is now checked against the live scenery.
+  - **The audio transport gate.** It now judges p99.5 together with a 10 ms ceiling, so host noise passes and a real stall still fails.
+  - **The hook latency test.** It is measured against plain Node start-up, so machine load no longer fails it.
+  - **A new opt-in smoke, `smoke:endurance-churn`.** It churns sessions for several minutes and fails if memory, canvases or GPU objects keep growing.
+- **Docs.**
+  - **The README showcase** counts nine providers: Cove (DeepSeek) and Alder (GLM) join it. The marketing captures still show the old 31-agent village.
+  - **The Lighthouse beam** is no longer listed as drawn only on Canvas.
+  - **Runtime tuning variables** are documented in a new table.
+  - **Status** has a single derivation, documented in `claudeville/CLAUDE.md`.
+  - **New visual systems** must ship a shader parity test.
+
+Validation: `validate:full`, `test:integration`, `verify:server` and `verify:render` pass. On this machine's RTX 5070 Ti, `smoke:v3-truth` passes all 40 checks on WebGL2. `smoke:webgpu-parity` passes its 1920×1080 and DPR 2 cases; the 5120×1440 composite still differs as it did in v0.61.4. `smoke:endurance-churn` passes an 8-minute run. Every change was reviewed adversarially before merging.
+
+---
+
 ## v0.61.4 — *The Cloistered Hands* · Nov 05, 2026
 
 GLM agents launched through the glm-cc-mcp server now walk the village. Each runs Claude Code in its own sealed cell, with a private config folder, so its transcript never reached `~/.claude` and ClaudeVille never saw it.
