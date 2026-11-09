@@ -2,6 +2,17 @@
 
 ---
 
+## v0.62.1 — *The Surveyor's Mark* · Nov 09, 2026
+
+The bridges and the farm stay on the map. On a busy Chrome, rebaking the ground partway through a session could drop every sprite drawn into it: both bridges, the farm, the building foundations and the other ground props. The ground and water stayed, and the bridges' front rails, drawn separately, hung over the river alone. That broken ground was then saved and came back on reload.
+
+- **The coast pass settles its write.** The coast pass reads the whole coast region back, paints the shore and writes it in again. When that read was the first since the ground was drawn, Chrome 156 could silently drop every later draw until the next read. One one-texel read straight after the write prevents it. On the RTX 5070 Ti, with the fault live, the old code lost the bridges and the farm in all six test bakes and the fixed code kept them in all three.
+- **Every bake is checked.** After each bake, ClaudeVille reads back one texel of each landmark bridge and each baked district prop, the farm's included: 63 in all, read in about 2 ms. A good bake matches 54 of them; a bake that lost its sprites matches none.
+  - A bake that matches fewer than half is still shown but is never stored, and the ground rebakes 30 seconds later. The console says so.
+- **Old bakes are retired.** The terrain cache key moves to `cv0.62-terrain-6`, so each browser rebakes the ground once, and a broken bake stored before this release is never shown again.
+
+---
+
 ## v0.62.0 — *The Tempered Steel* · Nov 06, 2026
 
 A whole-village technical review, carried through. The World draws with less work on the WebGL2 path this machine runs. The server reads each large transcript once. The Harbor and the villagers tell the truth in more cases. The GLM and DeepSeek readers stop trusting their state folders. And the safety net that was quietly red works again.
