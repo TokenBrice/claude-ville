@@ -165,7 +165,41 @@ const WORLD_FRAME_MAX_CONSECUTIVE_FAILURES = 3;
 const WORLD_FRAME_RETRY_INITIAL_MS = 1000;
 const WORLD_FRAME_RETRY_MAX_MS = 8000;
 const WORLD_FALLBACK_PREP_TIMEOUT_MS = 5000;
+// A terrain bake whose sprite layers did not land is shown but never stored,
+// and the terrain rebakes after this delay (`_terrainSpritesLanded`).
+const TERRAIN_BAKE_RETRY_MS = 30000;
 const DEBUG_GLOBAL_OWNERS = new WeakMap();
+
+// The opaque texel nearest a sprite's centre and its colour, once per image:
+// the probe `_terrainSpritesLanded` reads back from the terrain bake.
+const CENTRE_TEXELS = new WeakMap();
+function opaqueCentreTexel(img) {
+    if (CENTRE_TEXELS.has(img)) return CENTRE_TEXELS.get(img);
+    const w = img.naturalWidth || img.width || 0;
+    const h = img.naturalHeight || img.height || 0;
+    let texel = null;
+    if (w && h && typeof document !== 'undefined') {
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(img, 0, 0);
+        const data = ctx.getImageData(0, 0, w, h).data;
+        let best = Infinity;
+        for (let y = 0; y < h; y++) {
+            for (let x = 0; x < w; x++) {
+                const o = (y * w + x) * 4;
+                const d = (x - w / 2) ** 2 + (y - h / 2) ** 2;
+                if (data[o + 3] !== 255 || d >= best) continue;
+                best = d;
+                texel = { x, y, rgb: [data[o], data[o + 1], data[o + 2]] };
+            }
+        }
+        releaseCanvasBackingStore(canvas);
+    }
+    CENTRE_TEXELS.set(img, texel);
+    return texel;
+}
 
 // Stage B (webgpu contract §8.1) — the default WebGPU world (module, hardware
 // adapter, device, every pipeline) resolves from the moment App has loaded
@@ -8338,8 +8372,60 @@ export class IsometricRenderer {
         this._terrainArtifactStats.bakes++;
         this._terrainArtifactStats.misses++;
         this._terrainArtifactStats.state = 'baked';
-        this._queueTerrainArtifactWrite(canvas, bounds, dpr, season);
+        if (this._terrainSpritesLanded(cacheCtx, bounds)) {
+            this._queueTerrainArtifactWrite(canvas, bounds, dpr, season);
+        } else {
+            this._terrainArtifactStats.state = 'unlanded';
+            this._retryTerrainBake();
+        }
         return { canvas, bounds };
+    }
+
+    // Did the bake's sprite layers land? Each landmark bridge and baked
+    // district prop (the farm among them) must read back its opaque centre
+    // texel as drawn. A failed bake lost all of them at once (CoastBake
+    // `paintCoast`), so half the probes passing is enough: a later sprite or
+    // contact shadow may cover an earlier one's texel. Nothing to probe
+    // passes. The bake is one texel per world pixel.
+    _terrainSpritesLanded(ctx, bounds) {
+        const sprites = [];
+        for (const span of this.bridgeSpans || []) {
+            const placement = this._bridgeSpritePlacement(span);
+            if (placement) sprites.push(placement);
+        }
+        for (const prop of DISTRICT_PROPS) {
+            if (prop.layer !== 'cache') continue;
+            const img = this.propWinter?.image(prop.id) || this.assets?.get?.(prop.id);
+            if (!img) continue;
+            const [anchorX, anchorY] = this.assets.getAnchor(prop.id);
+            sprites.push({
+                img,
+                x: Math.round((prop.tileX - prop.tileY) * TILE_WIDTH / 2 - anchorX),
+                y: Math.round((prop.tileX + prop.tileY) * TILE_HEIGHT / 2 - anchorY),
+            });
+        }
+        let probed = 0;
+        let landed = 0;
+        for (const { img, x, y } of sprites) {
+            const texel = opaqueCentreTexel(img);
+            if (!texel) continue;
+            probed++;
+            const [r, g, b] = ctx.getImageData(x + texel.x - bounds.x, y + texel.y - bounds.y, 1, 1).data;
+            if (Math.abs(r - texel.rgb[0]) + Math.abs(g - texel.rgb[1]) + Math.abs(b - texel.rgb[2]) <= 12) landed++;
+        }
+        return landed * 2 >= probed;
+    }
+
+    // Rebake once TERRAIN_BAKE_RETRY_MS has passed: the retry count keys the
+    // bake (`_terrainBakeKey`), so the next frame bakes and re-uploads it.
+    _retryTerrainBake() {
+        console.warn(`[IsometricRenderer] terrain bake lost its sprite layers; not stored, rebaking in ${TERRAIN_BAKE_RETRY_MS / 1000} s`);
+        clearTimeout(this._terrainBakeRetryTimer);
+        this._terrainBakeRetryTimer = setTimeout(() => {
+            if (this._disposed) return;
+            this._terrainBakeRetry = (this._terrainBakeRetry || 0) + 1;
+            this._invalidateIdleFrame();
+        }, TERRAIN_BAKE_RETRY_MS);
     }
 
     // B.2 — drop the terrain bake's CPU canvas once the GPU holds its upload.
@@ -8573,7 +8659,7 @@ export class IsometricRenderer {
         for (const pass of this._terrainBakePasses || []) {
             passes += `${pass.id}:${pass.revision?.(this) ?? 0},`;
         }
-        return `${bounds.x},${bounds.y},${bounds.w},${bounds.h}@${dpr}|${this.assets ? 'assets' : 'fallback'}|season:${season}|stage:${this._currentPhenology().id}|scenery:${this._terrainSceneryRevision || 0}|passes:${passes}`;
+        return `${bounds.x},${bounds.y},${bounds.w},${bounds.h}@${dpr}|${this.assets ? 'assets' : 'fallback'}|season:${season}|stage:${this._currentPhenology().id}|scenery:${this._terrainSceneryRevision || 0}|passes:${passes}|retry:${this._terrainBakeRetry || 0}`;
     }
 
     // The plug-in point for later terrain bakes (splat ground, coast field).

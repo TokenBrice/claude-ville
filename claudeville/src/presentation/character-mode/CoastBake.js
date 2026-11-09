@@ -1475,6 +1475,12 @@ function paintCoast(ctx, coast, field, renderer) {
     paintStratifiedCliff(buf, coast, field, renderer);
     if (pure) {
         ctx.putImageData(image, px, py);
+        // Settle the write with a one-texel read. When the read above is the
+        // first readback of drawn content, Chrome (156, intermittently on a
+        // loaded GPU) otherwise drops every draw made after this put until the
+        // next read: the bridges, foundations and ground props (the farm
+        // included) vanished from the bake while the ground and water stayed.
+        ctx.getImageData(px, py, 1, 1);
         // The finish pass mirrors the statics over this exact bake.
         coast.baked = { data: image.data.slice(), role: buf.role, w, h };
         return;
