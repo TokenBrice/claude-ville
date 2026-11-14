@@ -4,16 +4,27 @@ import * as scenery from '../../config/scenery.js';
 import * as buildings from '../../config/buildings.js';
 import * as grounding from '../../config/buildingGrounding.js';
 import { MAP_SIZE, TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
-import { captureGroundArtifact, restoreGroundArtifact, validGroundArtifact } from './GroundBake.js';
+import { captureGroundArtifact, groundWeatherLooksOn, restoreGroundArtifact, validGroundArtifact } from './GroundBake.js';
+import { frostShadeKey } from './FrostMelt.js';
+import { lookStrength } from './LookStrengths.js';
 import { captureCoastArtifact, restoreCoastArtifact, validCoastArtifact, coastArtifactInputsSettled } from './CoastBake.js';
 
 // Bump on ANY GroundBake, CoastBake or static terrain-pass pixel change.
 // cv0.62-terrain-6: retires bakes stored without their sprite layers (CoastBake
 // `paintCoast`'s settling read).
-export const TERRAIN_BAKE_ALGORITHM_VERSION = 'cv0.62-terrain-6';
+// cv0.62-terrain-8: the ground weather field's shelter and sun shade sit on
+// the drawn building bases (GroundBake `buildSunOccluders`), its drying order
+// leaning on the sun shade over the noise.
+export const TERRAIN_BAKE_ALGORITHM_VERSION = 'cv0.62-terrain-8';
 export const TERRAIN_ARTIFACT_DB = 'claudeville-terrain-artifacts';
 export const TERRAIN_ARTIFACT_MAX_BYTES = 96 * 1024 * 1024;
-const SCHEMA = 1;
+// Artifact schema. 2: the ground field may carry the RGBA8 weather field
+// (GroundWeatherField.js; only while a GW look reads it, keyed 'weather');
+// a schema-1 artifact fails validation and rebakes.
+const SCHEMA = 2;
+// The IndexedDB version stays 1: its object stores never changed, and a
+// version bump would rerun `onupgradeneeded` over the existing stores.
+const DB_VERSION = 1;
 const ENTRY_LIMIT = 2;
 const TERRAIN_ID = /^(terrain\.|building\.|prop\.|veg\.|bridge\.|dock\.|village\.)/;
 const encoder = new TextEncoder();
@@ -60,17 +71,28 @@ export async function terrainContentHash(value, allowFunctions = false) {
 }
 
 export function terrainArtifactKey({ assetVersion, configHash, season, sceneryRevision, snowBucket, frost, bounds, dpr,
-    algorithmVersion = TERRAIN_BAKE_ALGORITHM_VERSION, phenology }) {
+    algorithmVersion = TERRAIN_BAKE_ALGORITHM_VERSION, phenology, frostPatches = lookStrength('gw3'),
+    groundWeather = groundWeatherLooksOn(frost) }) {
     // BI-2 — `phenology`: the woods' weekly stage id (SeasonalAmbience
     // PHENOLOGY_STAGES; the litter and the water reflections follow it).
+    // GW-3 — `frostPatches`: the frost-patch look's strength, keyed only
+    // when a frost is baked in.
     if (typeof phenology !== 'string' || !phenology) return null;
     if (!assetVersion || !configHash || !['spring', 'summer', 'autumn', 'winter'].includes(season)
         || !Number.isInteger(sceneryRevision) || sceneryRevision < 0
         || !Number.isInteger(snowBucket) || snowBucket < 0 || snowBucket > 4
         || !Number.isInteger(frost) || frost < 0 || frost > 4 || !algorithmVersion || !Number.isFinite(dpr) || dpr <= 0
         || !bounds || !['x', 'y', 'w', 'h'].every(k => Number.isFinite(bounds[k])) || bounds.w <= 0 || bounds.h <= 0) return null;
-    return JSON.stringify([SCHEMA, algorithmVersion, String(assetVersion), configHash, season, sceneryRevision, snowBucket, frost,
-        bounds.x, bounds.y, bounds.w, bounds.h, dpr, phenology]);
+    const key = [SCHEMA, algorithmVersion, String(assetVersion), configHash, season, sceneryRevision, snowBucket, frost,
+        bounds.x, bounds.y, bounds.w, bounds.h, dpr, phenology, frost > 0 ? frostPatches : 0];
+    // SD-1 — a melting frost baked in the sundial's shade (FrostMelt
+    // `frostShadeKey`); nothing is added with the look off, so today's keys hold.
+    const shade = frostShadeKey(frost);
+    if (shade) key.push(shade);
+    // GW-1 / GW-2 / GW-3 — a bake that carries the ground weather field
+    // (any of its looks on); nothing is added at looks 0.
+    if (groundWeather) key.push('weather');
+    return JSON.stringify(key);
 }
 
 export function terrainArtifactInputsSettled(renderer) {
@@ -163,6 +185,17 @@ export function restoreTerrainArtifact(renderer, artifact) {
     }
 }
 
+// GW — a saved bake holds the ground weather field exactly when its key says
+// 'weather' (the key is backend-aware: IsometricRenderer passes
+// GroundBake.groundWeatherWanted). A mismatch is never saved and never
+// restored: it is deleted and the frame rebakes.
+export function weatherMatchesKey(key, artifact) {
+    let parts;
+    try { parts = JSON.parse(key); } catch { return true; }
+    if (!Array.isArray(parts)) return true;
+    return parts.includes('weather') === Boolean(artifact?.ground?.field?.weather);
+}
+
 function artifactBytes(value) {
     if (ArrayBuffer.isView(value)) return value.byteLength;
     if (value && typeof value === 'object') return Object.values(value).reduce((sum, item) => sum + artifactBytes(item), 0);
@@ -203,7 +236,7 @@ export class TerrainArtifactStore {
             };
             const timer = setTimeout(() => finish(null), 1500);
             try {
-                const request = this.indexedDB.open(this.name, SCHEMA);
+                const request = this.indexedDB.open(this.name, DB_VERSION);
                 request.onupgradeneeded = () => {
                     const db = request.result;
                     db.createObjectStore('artifacts');
@@ -262,6 +295,7 @@ export class TerrainArtifactStore {
                 : await requested(db.transaction('artifacts', 'readonly').objectStore('artifacts').get(key));
             if (!entry) { await this.delete(key); return null; }
             if (!Number.isFinite(entry.bytes) || entry.bytes > TERRAIN_ARTIFACT_MAX_BYTES || !validTerrainArtifact(entry.artifact)
+                || !weatherMatchesKey(key, entry.artifact)
                 || artifactBytes(entry.artifact) !== entry.bytes || await terrainContentHash(entry.artifact) !== entry.checksum) {
                 await this.delete(key);
                 return null;
@@ -283,7 +317,7 @@ export class TerrainArtifactStore {
         try {
             const db = await this._open();
             if (!db || !canWrite()) return false;
-            if (!validTerrainArtifact(artifact)) { await this.delete(key); return false; }
+            if (!validTerrainArtifact(artifact) || !weatherMatchesKey(key, artifact)) { await this.delete(key); return false; }
             const bytes = artifactBytes(artifact);
             if (bytes > TERRAIN_ARTIFACT_MAX_BYTES) { await this.delete(key); return false; }
             const checksum = await terrainContentHash(artifact);

@@ -41,7 +41,7 @@ import { dayPartBeatsAt } from './AmbientEvents.js';
 import { paintWreath } from './VillageCalendar.js';
 import { bakeEmitterCycle, emitterCyclePhase } from './EmitterCycle.js';
 import { ART_RAMPS } from '../../config/artPalette.js';
-import { castLightingFor, castOverWater, structureCast } from './RakingLight.js';
+import { castLightingFor, castOverWater, stampCastFor, structureCast } from './RakingLight.js';
 import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
 import { buildingCenterToWorld, tileToWorld, worldToTile } from './Projection.js';
 import { frontEdgeFoot, landmarkFootprint } from './FootprintField.js';
@@ -1000,7 +1000,7 @@ export class BuildingSprite {
     // resident fields) break a cast's texels over painted water.
     drawShadows(ctx, waterFields = null) {
         // 1.5 — the same baked RakingLight cast the resident path uploads.
-        const cast = castLightingFor(this.atmosphereState);
+        const cast = stampCastFor(castLightingFor(this.atmosphereState));
         for (const b of this.buildings) {
             const grounding = getBuildingVisual(b.type)?.grounding;
             const contact = grounding?.contact;

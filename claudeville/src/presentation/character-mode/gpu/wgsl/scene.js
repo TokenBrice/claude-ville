@@ -58,10 +58,13 @@ import {
     GRASS_GUST_ORDER_GAIN,
 } from '../GpuWorldRenderer.js';
 import { GRASS_GUST_STOPS } from '../../GroundBake.js';
+import { GROUND_WET_WGSL } from '../GroundWetShader.js';
 import { COAST_FIELD_FLAGS } from '../../CoastBake.js';
 import { MAP_SIZE, TILE_HEIGHT, TILE_WIDTH } from '../../../../config/constants.js';
 import { GROUND_CAST_WATER_SHARE } from '../../RakingLight.js';
 import { APERTURE_SPILL } from '../../LightSourceRegistry.js';
+import { FIRELIGHT_DARK_SHARE, FIRELIGHT_PILOT_LANDMARK } from '../Firelight.js';
+import { SUN_SHADE_WGSL } from '../SunShade.js';
 
 const LIGHT_ROLE_ATTENTION = LIGHT_ROLE_CODES.attention;
 // GpuWorldRenderer glslRgb in WGSL spelling (channel / 255 at six decimals).
@@ -276,6 +279,9 @@ fn orderedDither4(px: vec2f) -> f32 {
   return glslMod(floor(px.x) + 2.0 * floor(px.y), 4.0) / 3.0;
 }
 
+// GW-1 / GW-2 — the ground weather field (GroundWetShader.js).
+${GROUND_WET_WGSL}
+
 fn applyMaterialWeather(color0: vec3f, material: f32, px: vec2f) -> vec3f {
   var color = color0;
   let rain = frame.weather.x;
@@ -285,7 +291,12 @@ fn applyMaterialWeather(color0: vec3f, material: f32, px: vec2f) -> vec3f {
   let phase = select(frame.timeMs * 0.001 * frame.motionScale, 0.37, frame.motionScale <= 0.0);
   let ordered = orderedDither4(px);
   // 3.2 — darkening follows the accumulated surface wetness.
-  let wet = max(rain, frame.wetness) * wetness;
+  var wet = max(rain, frame.wetness) * wetness;
+  // GW-1 — on the terrain the field steps wet texels one ramp stop down and
+  // keeps (1 - gw1) of the uniform darkening below.
+  let groundWet = applyGroundWet(color, px);
+  color = groundWet.rgb;
+  wet *= groundWet.a;
   color *= mix(1.0, 0.80, wet);
   color = mix(color, color * vec3f(0.82, 0.94, 1.08), wet * 0.24);
   let glintShare = select(1.0, 0.30, frame.wetReflectionCount > 0);
@@ -297,7 +308,7 @@ fn applyMaterialWeather(color0: vec3f, material: f32, px: vec2f) -> vec3f {
 
 fn puddleAt(cell: vec2i) -> f32 {
   if (cell.x < 0 || cell.y < 0 || cell.x >= i32(frame.puddleRect.z) || cell.y >= i32(frame.puddleRect.w)) { return 0.0; }
-  let mask = textureLoad(puddleMask, cell, 0).r;
+  let mask = puddleByte(cell);
   return select(0.0, 1.0, mask > 0.0 && mask >= 1.0 - frame.puddles);
 }
 
@@ -324,7 +335,7 @@ fn applyPuddle(color: vec3f, world: vec2f) -> vec3f {
       return edge;
     }
   }
-  let depth = textureLoad(puddleMask, cell, 0).r - (1.0 - frame.puddles);
+  let depth = puddleByte(cell) - (1.0 - frame.puddles);
   if (depth < 0.12) { return mix(body, color, 0.5); }
   return body;
 }
@@ -365,6 +376,7 @@ fn fatTerrainSurface(material: f32, waterMaterial: bool, waterHue: ptr<function,
   var dominantDash = false;
   var dominantOpen = false;
   var dominantGlow = false;
+  var dominantTake = 0.0;
   for (var i = 0; i < 4; i++) {
     let w = fatTapWeight(t, i) * fatTap[i].a;
     if (w <= 0.0) { continue; }
@@ -382,6 +394,7 @@ fn fatTerrainSurface(material: f32, waterMaterial: bool, waterHue: ptr<function,
     var tapPath = false;
     lighthouseDash = false;
     seaOpenWater = false;
+    seaSkyTake = 0.0;
     if (tapWater) { c = applyWaterState(c, world, &tapPath); }
     if (w > dominant) {
       dominant = w;
@@ -389,19 +402,21 @@ fn fatTerrainSurface(material: f32, waterMaterial: bool, waterHue: ptr<function,
       dominantDash = lighthouseDash;
       dominantOpen = seaOpenWater;
       dominantGlow = surfGlowTexel;
+      dominantTake = seaSkyTake;
     }
     surface += vec4f(c, 1.0) * w;
   }
   lighthouseDash = dominantDash;
   seaOpenWater = dominantOpen;
   surfGlowTexel = dominantGlow;
+  seaSkyTake = dominantTake;
   *seaPath = dominantPath;
   let pre = before.rgb / max(before.a, 1e-6);
   *waterHue = anyWater && !(pre.b < pre.r + 0.02 || pre.g < pre.r);
   if (surface.a > 0.0) { return surface.rgb / surface.a; }
   return pre;
 }
-
+${SUN_SHADE_WGSL}
 fn applyAuthoredSunBand(color: vec3f, material: f32) -> vec3f {
   var response = 0.36;
   response = mix(response, 0.62, materialNear(material, 1.0));
@@ -413,7 +428,9 @@ fn applyAuthoredSunBand(color: vec3f, material: f32) -> vec3f {
   response = mix(response, 0.24, materialNear(material, 8.0));
   let keyFacing = clamp(0.5 + (-frame.sun.x - frame.sun.y) * 0.25, 0.0, 1.0);
   let rawBand = 0.84 + response * (0.12 + keyFacing * 0.12);
-  let quantized = select(1.0, 0.86, rawBand < 0.93);
+  var quantized = select(1.0, 0.86, rawBand < 0.93);
+  // SEA-1 — water's dim fades out with the look (sunlit water lifts instead).
+  if (frame.cloud.w > 0.0) { quantized = mix(quantized, 1.0, materialNear(material, 8.0) * frame.cloud.w); }
   return color * mix(1.0, quantized, clamp(frame.sun.w, 0.0, 1.0));
 }
 
@@ -600,6 +617,12 @@ fn sceneSurface() -> SurfaceSample {
     if (waterMaterial) { color = applyWaterState(color, v_world, &seaPath); }
   }
   color = applyAuthoredSunBand(color, material);
+  // SD-2 — a receiver steps down under the sun's shade, before the grade; a
+  // sun trail the field already covers is not drawn.
+  if (frame.shadeRect.w > 0.0 && batch.additive == 0u) {
+    if (sunTrailHidden()) { discard; }
+    color *= sunShadeStep(geometry, surfaceCoded, select(0.0, clamp(emissive, 0.0, 1.0), batch.hasEmissiveMap != 0u));
+  }
   // 1.2 — the pools light the ungraded surface.
   let poolAlbedo = color;
   // 1.1 — C2 time-of-day and weather grade.
@@ -610,12 +633,16 @@ fn sceneSurface() -> SurfaceSample {
       color = seaPathCap(color);
     } else {
       color = capSaturation(applyWaterSky(capSaturation(color, WATER_MAX_SATURATION)), WATER_MAX_SATURATION);
+      // SEA-2 / SEA-3 — open water's share of the cool sky (applyWaterState).
+      if (seaSkyTake > 0.0) { color = capSaturation(seaSkyHue(color, frame.waterSky.rgb, seaSkyTake), WATER_MAX_SATURATION); }
     }
   }
   // Fire glints preserve their beaconFire receiver stop.
   if (lighthouseDash) { color = poolAlbedo; }
   // BI-8 — the summer surf glow over the graded crest (albedo only).
   if (surfGlowTexel) { color = mix(color, SURF_GLOW, frame.surfGlow); }
+  // GW-1 — wet paving tops take one course of the graded sky.
+  color = applyWetSheen(color, v_world);
   // 5.2 — puddles take the graded sky over the graded street.
   if (batch.puddleGround != 0u && frame.puddles > 0.0) { color = applyPuddle(color, v_world); }
   color = applyGradeVignette(color, px, frame.resolution);
@@ -668,14 +695,20 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
   var wetReceiver = -1.0;
   let waterReceiver = materialNear(material, 8.0);
   // 3.5 — a pilot pixel collects the admitted light as one scalar.
-  let rampPixel = frame.hasPaletteLut != 0u && v_ramp > 0.5;
+  var rampPixel = frame.hasPaletteLut != 0u && v_ramp > 0.5;
   var admitted = 0.0;
   var rampHue = vec3f(0.0);
   var rampSteps = 0.0;
+  // NL-1 — whether the strongest ramp light is the landmark's own low light.
+  var rampOwn = false;
   // 1.2 — ambient light pools, accumulated and landed once after the loop.
   var poolLight = vec3f(0.0);
   var poolDepth = 0.0;
   var reflectionLight = vec3f(0.0);
+  // GW-2 — the strongest lamp mirror at this texel (applyGroundMirror) and
+  // the texel's mirror share (groundMirrorAt, read lazily; -1 unread).
+  var groundMirror = vec3f(0.0);
+  var mirrorReceiver = -1.0;
   var attentionLight = vec3f(0.0);
   var attentionLuma = 0.0;
   var attentionDepth = 0.0;
@@ -730,6 +763,8 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
   }
   // R3 — a wall or a raised face-0 landmark texel takes its courses per 2x2
   // art cell; an upright 3.5 ramp record the same cells about its own foot.
+  // NL-1 — with the tuned ramp on, a landmark's ground texels take the pools.
+  if (frame.firelight.y > 0.5 && recvClass == 0 && recvH <= 16.0 && ownLandmark != ${FIRELIGHT_PILOT_LANDMARK}u) { rampPixel = false; }
   let rampUpright = rampPixel && recvClass == 3;
   if (rampUpright || (ownLandmark != 0u && (recvClass == 1 || (recvClass == 0 && recvH > 0.5 && !rampPixel)))) {
     let cellShift = floor(artCell * 0.5) * 2.0 + 0.5 - artCell;
@@ -856,9 +891,13 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
     // An aperture emits into its face's half-space; R3 — a wall takes a
     // window's light only across the street.
     let ahead = dot(lightShape.yz, toReceiver.xy);
+    // NL-1 — a low door or arch lights its own reveal on a tuned ramp record.
+    var ownJamb = false;
     if (facadeAperture) {
-      falloff *= clamp(0.30 + 1.4 * ahead / max(length(toReceiver.xy), 1.0), 0.0, 1.0);
-      if (recvClass == 1 && (ahead < ${APERTURE_WALL_AHEAD.toFixed(1)} || recvH > lightH)) { falloff = 0.0; }
+      ownJamb = frame.firelight.y > 0.5 && ownLandmark != ${FIRELIGHT_PILOT_LANDMARK}u && rampPixel && recvClass == 1 && lightH <= 40.0
+        && abs(recvGround.x - light.x) <= 14.0 && recvH <= lightH + 24.0;
+      falloff *= select(clamp(0.30 + 1.4 * ahead / max(length(toReceiver.xy), 1.0), 0.0, 1.0), 0.35, ownJamb);
+      if (!ownJamb && recvClass == 1 && (ahead < ${APERTURE_WALL_AHEAD.toFixed(1)} || recvH > lightH)) { falloff = 0.0; }
     }
     // Receiver response: up-facing, wall facing, body/hull Lambert + fill,
     // or the backlit two-texel rim.
@@ -874,16 +913,34 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
         if (!(attention || planar < 2.0)) { front = -axisTo.y / planar; }
         if (front < -0.3) {
           response = 0.0;
-          if (falloff > 0.12 && abs(axisTo.x) >= 0.8 * recvHalfWidth) {
+          // NL-2 — a straight-behind lamp lights it too; the rim also takes
+          // level top edges, lamp side and top only.
+          let lateral = abs(axisTo.x) >= 0.8 * recvHalfWidth;
+          if (falloff > 0.12 && (lateral || frame.firelight.x > 0.0)) {
             backReach = max(backReach, falloff);
-            let rimStep = vec2f(select(-1.0, 1.0, axisTo.x < 0.0) * uvStepX, 0.0);
-            let rimUv = uv + rimStep;
-            let innerUv = uv + 2.0 * rimStep;
-            let outer = any(rimUv < v_uvClamp.xy) || any(rimUv > v_uvClamp.zw)
-              || albedoTexture(rimUv).a < 0.01;
-            let inner = !outer && (any(innerUv < v_uvClamp.xy) || any(innerUv > v_uvClamp.zw)
-              || albedoTexture(innerUv).a < 0.01);
-            if ((outer || inner) && recvH <= lightH + 28.0 && falloff >= rimReach) {
+            var outer = false;
+            var inner = false;
+            if (lateral) {
+              let rimStep = vec2f(select(-1.0, 1.0, axisTo.x < 0.0) * uvStepX, 0.0);
+              let rimUv = uv + rimStep;
+              let innerUv = uv + 2.0 * rimStep;
+              outer = any(rimUv < v_uvClamp.xy) || any(rimUv > v_uvClamp.zw)
+                || albedoTexture(rimUv).a < 0.01;
+              inner = !outer && (any(innerUv < v_uvClamp.xy) || any(innerUv > v_uvClamp.zw)
+                || albedoTexture(innerUv).a < 0.01);
+            }
+            if (frame.firelight.x > 0.0 && !outer
+              && albedoTexture(uv + vec2f(uvStepX, 0.0)).a >= 0.01
+              && albedoTexture(uv - vec2f(uvStepX, 0.0)).a >= 0.01) {
+              let upStep = vec2f(0.0, -1.0 / f32(albedoSize().y));
+              let topUv = uv + upStep;
+              let topInnerUv = uv + 2.0 * upStep;
+              outer = any(topUv < v_uvClamp.xy) || any(topUv > v_uvClamp.zw)
+                || albedoTexture(topUv).a < 0.01;
+              inner = !outer && (inner || any(topInnerUv < v_uvClamp.xy)
+                || any(topInnerUv > v_uvClamp.zw) || albedoTexture(topInnerUv).a < 0.01);
+            }
+            if ((outer || inner) && recvH <= lightH + 28.0 + 36.0 * frame.firelight.x && falloff >= rimReach) {
               response = 0.95;
               backlitRim = true;
               rimInner = inner;
@@ -898,6 +955,7 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
         }
       } else {
         response = clamp(select(0.15, 0.0, facadeAperture && recvClass == 1) + 0.85 * facing, 0.0, 1.0);
+        if (ownJamb) { response = max(response, 0.5); }
       }
     }
     var shape = falloff * response;
@@ -958,14 +1016,20 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
       }
       continue;
     }
-    let steps = select(ambientPoolSteps(shape, poolOrder), poolSteps(shape, poolOrder), rampPixel);
-    if (rampPixel) {
+    // NL-1 — the tuned ramp is firelight: a cool light lands as a pool.
+    let lightHue = lightColor.rgb / max(dot(lightColor.rgb, GRADE_LUMA), 0.001);
+    let rampLight = rampPixel && !(frame.firelight.y > 0.5 && ownLandmark != ${FIRELIGHT_PILOT_LANDMARK}u && clamp((lightHue.r - lightHue.b) * 1.25, 0.0, 1.0) < 0.5);
+    let steps = select(ambientPoolSteps(shape, poolOrder), poolSteps(shape, poolOrder), rampLight);
+    if (rampLight) {
       // 3.5 / 2.1 — a ramp pixel takes the strongest light's stepped course.
       let rampShare = steps * 0.15 * light.w * lightColor.a;
+      // NL-1 — only the landmark's own low lights earn the floor.
+      let rampOwnLight = u32(lightMeta.y + 0.5) == ownLandmark && lightH <= 40.0;
       if (rampShare > admitted) {
         admitted = rampShare;
         rampHue = lightColor.rgb;
         rampSteps = steps;
+        rampOwn = rampOwnLight;
       }
     } else {
       poolLight += lightColor.rgb * ambientPoolWeight(steps) * light.w * lightColor.a;
@@ -980,14 +1044,25 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
       }
     }
     // The source's own hue lies on wet ground in front of its foot.
-    if (recvClass == 0 && (lightFlags & ${LIGHT_RECORD_FLAGS.wetReflection}u) != 0u) {
+    if (recvClass == 0 && (lightFlags & ${LIGHT_RECORD_FLAGS.wetReflection | LIGHT_RECORD_FLAGS.groundMirror}u) != 0u) {
+      // GW-2 — on flat ground over the field (the terrain, and the
+      // ground-self aprons drawn over it) a puddle or wet paving texel
+      // takes a groundMirror light's column over the streak.
+      if ((lightFlags & ${LIGHT_RECORD_FLAGS.groundMirror}u) != 0u && frame.groundWeather.y > 0.0 && frame.groundWeather.z > 0.5 && recvH < 0.5) {
+        if (mirrorReceiver < 0.0) { mirrorReceiver = groundMirrorAt(recvGround); }
+        if (mirrorReceiver > 0.0) {
+          let mirror = lightColor.rgb * mirrorReceiver * groundMirrorColumn(light.xy, lightH, recvGround)
+            * frame.groundWeather.y * light.w * lightColor.a * (1.0 - blocked);
+          if (dot(mirror, GRADE_LUMA) > dot(groundMirror, GRADE_LUMA)) { groundMirror = mirror; }
+        }
+      }
       if (wetReceiver < 0.0) {
         wetReceiver = max(
           materialNear(material, 7.0),
           max(materialNear(material, 1.0), materialNear(material, 6.0))
         ) * frame.wetness * materialWetness(material);
       }
-      if (wetReceiver > 0.01) {
+      if (wetReceiver > 0.01 && (lightFlags & ${LIGHT_RECORD_FLAGS.wetReflection}u) != 0u) {
         let drop = v_world.y - light.y;
         let footReach = step(0.0, drop) * (1.0 - smoothstep(0.0, light.z * 1.30, drop));
         let lateral = 1.0 - smoothstep(0.0, light.z * 0.26, abs(v_world.x - light.x));
@@ -1042,13 +1117,16 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
   // 3.5 — the authored ramp landing: two thresholds pick the course, and a
   // lit course lands on the strongest light's C1 stop.
   if (rampPixel && admitted > 0.0) {
-    let course = step(0.14, admitted) + step(0.45, admitted);
+    // NL-1 — inside its own low light's second pool course, the tuned ramp
+    // lands at least its first course.
+    var course = step(0.14, admitted) + step(0.45, admitted);
+    if (frame.firelight.y > 0.5 && ownLandmark != ${FIRELIGHT_PILOT_LANDMARK}u && rampOwn) { course = max(course, step(1.5, rampSteps)); }
     let ramp = textureSampleLevel(paletteLut, nearestSampler, vec2f(
       (material + 0.5) / 11.0,
       (course + 0.5) / 3.0
     ), 0.0);
     var rampLit = receiverKnee(
-      color * (ramp.rgb * 2.0) + vec3f(ramp.a * 0.25) * step(0.14, admitted) + reflectionLight,
+      color * (ramp.rgb * 2.0) + vec3f(ramp.a * 0.25) * step(0.5, course) + reflectionLight,
       receiverLuma
     );
     if (course > 0.5) {
@@ -1064,12 +1142,19 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
     reflectionLight = vec3f(0.0);
   }
   // 1.2 / V5 — the pools land once, stepped (stepPool, grade.js).
+  // NL-2 — a firmer lit side; NL-2 / NL-1 — dark receivers take a further
+  // albedo-free share of the pool (all under the knee).
+  let darkness = 1.0 - smoothstep(0.04, 0.18, dot(poolAlbedo, GRADE_LUMA));
+  let darkShare = select(select(0.0, ${FIRELIGHT_DARK_SHARE.toFixed(3)}, recvClass == 0 && frame.firelight.y > 0.5 && ownLandmark != ${FIRELIGHT_PILOT_LANDMARK}u),
+    ${FIRELIGHT_DARK_SHARE.toFixed(3)} * frame.firelight.x, recvClass == 2);
   var bodyLift = vec3f(0.0);
   if (recvClass == 2) {
-    bodyLift = poolLight * min(0.15 * frame.poolGain, 0.045 / max(dot(poolLight, GRADE_LUMA), 0.01));
+    bodyLift = poolLight * min((0.15 + 0.15 * frame.firelight.x) * frame.poolGain,
+      (0.045 + 0.055 * frame.firelight.x) / max(dot(poolLight, GRADE_LUMA), 0.01));
   }
+  bodyLift += poolLight * (darkShare * darkness);
   // 2.10 — a pixel lit only by the bounce keeps more of its own colour.
-  let poolLand = select(select(1.0, RADIANCE_LAND, bounceOnly), 0.4, recvClass == 2);
+  let poolLand = select(select(1.0, RADIANCE_LAND, bounceOnly), 0.4 + 0.3 * frame.firelight.x, recvClass == 2);
   if (poolTaps) {
     // 4.6 — each covered cell's pools land and blend by coverage; a cell
     // whose lights equal the previous cell's reuses that landing.
@@ -1092,23 +1177,40 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
     color = stepPool(color, poolLight, poolDepth, attentionLight, attentionDepth, poolAlbedo, reflectionLight + bodyLift,
       poolLand);
   }
+  // GW-2 — a lamp mirror lands over the lit ground as its own course.
+  if (any(groundMirror != vec3f(0.0))) { color = applyGroundMirror(color, groundMirror); }
   // 2.1 — a lit rim texel takes the lamp's own hue at a stepped value.
   if (rimReach > 0.0 && rimReach >= backReach - 0.001 && rimSteps > 0.5) {
     let rimCourse = select(rimSteps, rimSteps - 1.0, rimInner);
-    let rimY = 0.26 + 0.1 * rimCourse;
+    // NL-2 — the rim lands up to one course brighter with the strength.
+    let rimY = 0.26 + 0.10 * frame.firelight.x + (0.1 + 0.02 * frame.firelight.x) * rimCourse;
     let rimHue = rimLight / max(dot(rimLight, GRADE_LUMA), 0.01);
     let rimStop = select(select(LAND_CORE, LAND_MID, rimCourse < 2.5), LAND_RIM, rimCourse < 1.5);
     let rim = receiverKnee(onStop(mix(rimHue, rimStop, 0.6), rimY), receiverLuma);
     if (dot(rim, GRADE_LUMA) > dot(color, GRADE_LUMA)) { color = rim; }
   }
 
-  let fog = clamp(frame.weather.y, 0.0, 1.0);
-  let groundFog = fog * (1.0 - (*surf).elevation * 0.72) * smoothstep(0.18, 0.98, glFragCoord.y / max(1.0, frame.resolution.y));
-  // Fog veils toward the C2 haze colour but may raise luma by at most 0.06.
-  var fogged = mix(color, frame.fogColor, groundFog * 0.48);
-  let fogRise = dot(fogged - color, GRADE_LUMA);
-  if (fogRise > 0.06) { fogged = mix(color, fogged, 0.06 / fogRise); }
-  color = fogged;
+  if (frame.mist.w > 0.0) {
+    // MS-1 — the low mist (MIST_WGSL) replaces the screen-Y veil.
+    if (frame.mist.x > 0.0) {
+      var mistSd = 0.0;
+      var mistFlags = 0u;
+      var mistNear = select(0.0, 1.0, frame.coastRect.z > 0.0);
+      if (coastFieldAt(recvGround, &mistSd, &mistFlags)) { mistNear = clamp((mistSd + 2.0) * 0.5, 0.0, 1.0); }
+      let mistH = select((*surf).elevation * 128.0, recvH, v_receiver.x > -0.5);
+      var mist = mistCourse(recvGround, mistH, mistNear, mistH > 0.5, bayer4(floor(artCell * 0.5)));
+      if (recvClass == 2) { mist = min(mist, 1.0); }
+      color = applyMist(color, mist, frame.fogColor, batch.additive != 0u);
+    }
+  } else {
+    let fog = clamp(frame.weather.y, 0.0, 1.0);
+    let groundFog = fog * (1.0 - (*surf).elevation * 0.72) * smoothstep(0.18, 0.98, glFragCoord.y / max(1.0, frame.resolution.y));
+    // Fog veils toward the C2 haze colour but may raise luma by at most 0.06.
+    var fogged = mix(color, frame.fogColor, groundFog * 0.48);
+    let fogRise = dot(fogged - color, GRADE_LUMA);
+    if (fogRise > 0.06) { fogged = mix(color, fogged, 0.06 / fogRise); }
+    color = fogged;
+  }
   let emission = (*surf).emissionColor * (*surf).emissive;
   color += emission * 0.42;
   // 1.3 — hue-preserving protection after emission.

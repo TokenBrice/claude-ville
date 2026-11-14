@@ -28,8 +28,11 @@ import { ornamentPlan } from './MarkGovernor.js';
 import { GroundCueRecorder, insertGroundCueRecords } from './GroundCueRecords.js';
 import { insertBodyReflectionRecords } from './WaterReflections.js';
 import { drawCanvasAerialHaze, drawResidentBackdropGrade } from './BackdropGrade.js';
-import { castLightingFor, drawTreeCasts, setFrameCastLighting, setFramePointCastLights } from './RakingLight.js';
-import { drawFlashExposure, stormStrikeAt, weatherPressureLevel } from './WeatherRenderer.js';
+import { castLightingFor, drawShadeLayer, drawTreeCasts, frameSunShade, setFrameCastLighting, setFramePointCastLights } from './RakingLight.js';
+import { drawFlashExposure, mistBurnFor, stormStrikeAt, weatherPressureLevel } from './WeatherRenderer.js';
+import { insertMistHaloRecords, mistHaloRecords } from './MistHalos.js';
+import { seaSunLift, slewSeaLift } from './gpu/GpuFrameState.js';
+import { lookStrength } from './LookStrengths.js';
 import { COAST_FIELD_FLAGS, OCEAN_HORIZON_WORLD_Y } from './CoastBake.js';
 import { drawOffshoreScenery, isOffshoreRecordId } from './OffshoreScenery.js';
 import { poolMaskRect, poolReceiverMask } from './CanvasPoolMask.js';
@@ -629,8 +632,9 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
 
     renderer._resetScreenTransform(ctx);
     ctx.clearRect(0, 0, viewport.width, viewport.height);
-    // 1.5 — this frame's sun bucket for the villager contact stamps.
-    setFrameCastLighting(castLightingFor(atmosphere));
+    // 1.5 — this frame's sun bucket for the villager contact stamps. SD-1 —
+    // and this frame's shade layer (Canvas bakes the over-water rule into it).
+    setFrameCastLighting(castLightingFor(atmosphere), renderer, !gpuWorldActive, renderer._coastBake?.waterFields || null);
     // 2.8 — the lamps that may throw villager casts this frame (from their
     // feet), ranked for the crowd cap from the view centre.
     setFramePointCastLights(
@@ -730,6 +734,8 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
         drawBuildingLightReflections(renderer, ctx, atmosphere);
         // 2.9 — casts over painted water stay faint and ripple-broken.
         const waterFields = renderer._coastBake?.waterFields || null;
+        // SD-1 — the sun's shade layer, under the contact stamps.
+        drawShadeLayer(ctx);
         renderer.buildingRenderer?.drawShadows(ctx, waterFields);
         // 1.5 — tree casts on the ground layer (the resident path emits them
         // as ground records with each tree).
@@ -884,15 +890,45 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
         // 3.1 + 3.6 — the coast bake's resident water fields (cycle offset,
         // coast field), uploaded once per coast bake on units 7 and 8.
         gpuFeed.coastWater = renderer._coastBake?.waterFields || null;
+        // RN-1 — where the world rain may splash (the overlay's open ground),
+        // read only while the look is on.
+        gpuFeed.rainSplashTiles = renderer.weatherRenderer?.sceneContext?.openGroundTiles || null;
+        // RN-1 — the overlay weather's own viewport: one pressure-latch size key.
+        gpuFeed.rainViewport = viewport;
+        // MS-1 — the low mist's density (fog weather or the dawn mist);
+        // MS-2 — its burn-off shares (land, sea) as the sun climbs.
+        const mistBurn = mistBurnFor(atmosphere);
+        gpuFeed.mistDensity = mistBurn.density;
+        const burnShares = gpuFeed.mistBurn || (gpuFeed.mistBurn = [1, 1]);
+        burnShares[0] = mistBurn.land;
+        burnShares[1] = mistBurn.sea;
+        // SEA-1 (r8) — the sea lift, slewed a sixteenth a second toward its
+        // target on this app's own clock and carried in the feed, so a frozen
+        // frame draws the same on any renderer (GpuFrameState uses it).
+        const liftState = renderer._seaLiftSlew || (renderer._seaLiftSlew = { lift: 0, liftTick: null });
+        const liftMoving = (renderer.motionScale ?? 1) > 0;
+        liftState.lift = slewSeaLift(liftState,
+            seaSunLift(lookStrength('sea1'), atmosphere?.lightGrade, atmosphere?.weather, atmosphere?.solar?.elevationDeg),
+            liftMoving ? Math.floor((Number(renderer.motionTimeMs) || 0) * 0.006) : null);
+        gpuFeed.seaLift = liftState.lift;
+        // SD-2 — the shade field the scene fragments read, or null.
+        gpuFeed.sunShade = frameSunShade();
         renderer.gpuWorld.prepareFrame(gpuFeed);
+        // MS-1 — while the resident mist runs (look `ms1` > 0, FULL and
+        // REDUCED: `gpuWorld.mist`, GpuFrameState.resolveMist) it replaces
+        // the fog-bank records and the ground haze field on the GPU paths.
+        const residentMist = renderer.gpuWorld.mist?.[3] > 0;
+        if (residentMist) renderer._gpuHazeStrength = 0;
         const records = insertGroundFogRecords(
             insertGroundCueRecords(
                 // 3.11 — reflect twins of bodies at the water (after the agent atlas packs).
                 insertBodyReflectionRecords(renderer, buildGpuWorldRecords(renderer, gpuBuildContext)),
                 renderer._groundCueRecords,
             ),
-            groundFogRecords(renderer, atmosphere, viewport),
+            residentMist ? null : groundFogRecords(renderer, atmosphere, viewport),
         );
+        // MS-2 — lamp halos in the mist, each at its lamp's painter position.
+        if (residentMist) insertMistHaloRecords(records, mistHaloRecords(renderer, atmosphere, renderer._mistHaloRecords || (renderer._mistHaloRecords = [])));
         const gpuRenderContext = renderer._gpuRenderContext || (renderer._gpuRenderContext = {});
         gpuRenderContext.records = records;
         gpuRenderContext.camera = renderer.camera;
@@ -976,6 +1012,7 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
         strike,
         seaAt: strikeSeaAt(renderer),
         profileMark: frameTimer ? label => markFrameTiming(frameTimer, label) : null,
+        gpuRainShare: gpuWorldRendered ? renderer.gpuWorld?.rainShare || 0 : 0,
     });
     renderer.camera.applyTransform(overlayCtx);
     if (gpuWorldRendered) {

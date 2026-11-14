@@ -113,7 +113,7 @@ test('initial WebGL programs compile and link as a batch before status checks or
     const renderer = rendererFor(gl);
     assert.equal(renderer.contextHealthy, true);
     assert.deepEqual(programs, [
-        renderer.sceneProgram, renderer.particleProgram, renderer.bloomProgram,
+        renderer.sceneProgram, renderer.particleProgram, renderer.rainProgram, renderer.bloomProgram,
         renderer.compositeProgram, renderer.markProgram,
     ]);
     assertBatchOrdering(events, programs);
@@ -124,7 +124,7 @@ test('initial WebGL programs compile and link as a batch before status checks or
     }
     assert.ok(shaders.every(shader => shader.checked));
     for (const [programKey, uniformsKey] of [
-        ['sceneProgram', 'sceneUniforms'], ['particleProgram', 'particleUniforms'],
+        ['sceneProgram', 'sceneUniforms'], ['particleProgram', 'particleUniforms'], ['rainProgram', 'rainUniforms'],
         ['bloomProgram', 'bloomUniforms'], ['compositeProgram', 'compositeUniforms'],
         ['markProgram', 'markUniforms'],
     ]) {
@@ -211,7 +211,7 @@ test('P3 and debug-load programs remain synchronous lazy creations', () => {
 test('a lazy P3 shader failure keeps the existing sRGB fallback', t => {
     const warn = t.mock.method(console, 'warn', () => {});
     const { gl } = fakeGl({
-        shaderFailure: (shader, programs) => programs.find(program => program.shaders.includes(shader))?.index >= 5,
+        shaderFailure: (shader, programs) => programs.find(program => program.shaders.includes(shader))?.index >= 6,
         shaderLog: 'P3 compile failure',
     });
     const renderer = rendererFor(gl);

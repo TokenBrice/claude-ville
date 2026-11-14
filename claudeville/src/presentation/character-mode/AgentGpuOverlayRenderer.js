@@ -174,6 +174,8 @@ export class AgentGpuOverlayRenderer {
             record.x = mark.x;
             record.y = mark.y;
             record.sequence = sequence + index * 0.001;
+            // SD-2 — a sun trail the shade field clips (V9 flag `sunSelf`).
+            record.sunSelf = mark.sunCast === true;
         }
         return records;
     }
@@ -340,6 +342,9 @@ export class AgentGpuOverlayRenderer {
             poseKey: `${pose ? `${pose.group}:${bodyCell.sy}` : host.animState}:${host.direction}:${host.agent?.currentTool || ''}`,
             urgentPose: host.selected || host.hovered
                 || [AgentStatus.WAITING_ON_USER, AgentStatus.ERRORED, AgentStatus.RATE_LIMITED].includes(status),
+            // SD-2 — attention loses nothing in the sun's shade (V9 flag
+            // `shadeExempt`, gpu/SunShade.js).
+            shadeExempt: isAttentionStatus(status) && !departedTableau(host),
             frameGeometry,
             // VQ-9 — the sampled cell carries the runtime gear baked over the
             // body (a padded equipped sheet or strip).

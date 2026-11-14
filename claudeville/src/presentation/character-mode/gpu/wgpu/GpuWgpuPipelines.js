@@ -26,6 +26,7 @@ import {
     assembleScene,
 } from '../wgsl/index.js';
 import { COMPOSITE_ROLES_BINDING, HDR_READOUT_WGSL } from '../wgsl/composite.js';
+import { assembleRain, RAIN_BINDING, RAIN_UNIFORM_BYTES } from '../wgsl/rain.js';
 
 export const SCENE_COLOR_FORMAT = 'rgba8unorm';
 // Stage A keeps the emission target 8-bit (contract P14): the parity gate
@@ -92,6 +93,7 @@ export function createWorldLayouts(device) {
             texture(F.paletteLut), sampler(F.nearestSampler),
             texture(F.radianceTex), sampler(F.radianceSampler),
             texture(F.motifs), sampler(F.linearSampler),
+            texture(F.shadeField),
         ],
     });
     const batch = device.createBindGroupLayout({
@@ -129,8 +131,18 @@ export function createWorldLayouts(device) {
         label: 'world-debug-load',
         entries: [texture(DEBUG_LOAD_BINDING.scene), sampler(DEBUG_LOAD_BINDING.sampler)],
     });
+    // RN-1 — the world rain's own uniforms and open-ground splash mask.
+    const rain = device.createBindGroupLayout({
+        label: 'world-rain',
+        entries: [
+            { binding: RAIN_BINDING.rain, visibility: stages(), buffer: { type: 'uniform', minBindingSize: RAIN_UNIFORM_BYTES } },
+            texture(RAIN_BINDING.mask),
+        ],
+    });
     const pipelineLayout = (label, groups) => device.createPipelineLayout({ label, bindGroupLayouts: groups });
     return {
+        rain,
+        rainPipeline: pipelineLayout('world-rain', [frame, rain]),
         frame,
         batch,
         composite,
@@ -208,6 +220,26 @@ function particleDescriptor(layouts, module, { roles = null, attachment = true }
     };
 }
 
+// RN-1 — the world rain: the particle draw's depth and blend, no vertex
+// buffers, two quads (a triangle list) per instance.
+function rainDescriptor(layouts, module, { roles = null, attachment = true } = {}) {
+    return {
+        label: `world-rain${roles ? `-roles-${roles}` : ''}${attachment ? '' : '-color-only'}`,
+        layout: layouts.rainPipeline,
+        vertex: { module, entryPoint: 'rainVs' },
+        primitive: { topology: 'triangle-list', cullMode: 'none' },
+        depthStencil: { format: SCENE_DEPTH_FORMAT, depthWriteEnabled: false, depthCompare: 'less-equal' },
+        fragment: {
+            module,
+            entryPoint: 'rainFs',
+            targets: [
+                { format: SCENE_COLOR_FORMAT, blend: BLEND_NORMAL },
+                ...(attachment ? [emissionTarget(false, roles)] : []),
+            ],
+        },
+    };
+}
+
 /**
  * Compiles the world's modules and base pipelines for `canvasFormat`. Throws
  * (with the first WGSL errors) on any failure; never returns a half-built set.
@@ -262,6 +294,10 @@ export async function prepareWorldPipelines(device, canvasFormat) {
         ]);
         const sceneVariants = new Map([['0000', sceneBase]]);
         const particleVariants = new Map([['1', particleBase]]);
+        // RN-1 — the world rain module and its variants (keyed as particles).
+        const rainModule = await compileModule(device, assembleRain(), 'rain.wgsl');
+        modules.rain = rainModule;
+        const rainVariants = new Map();
         // Stage B — every reachable non-role scene and particle variant:
         // emission is always written when attached, otherwise the pass is
         // color-only. Compile asynchronously here (in parallel, off the frame)
@@ -284,6 +320,8 @@ export async function prepareWorldPipelines(device, canvasFormat) {
             }),
             device.createRenderPipelineAsync(particleDescriptor(layouts, particle, { attachment: false }))
                 .then(pipeline => particleVariants.set('0:color', pipeline)),
+            ...[true, false].map(attachment => device.createRenderPipelineAsync(rainDescriptor(layouts, rainModule, { attachment }))
+                .then(pipeline => rainVariants.set(attachment ? '1' : '0:color', pipeline))),
         ]);
         // 10.2 / 10.3 — the display variants (an HDR and/or P3 canvas): the
         // roles composite, the roles mark fragment and a debug-load pipeline
@@ -341,6 +379,8 @@ export async function prepareWorldPipelines(device, canvasFormat) {
                 }),
                 device.createRenderPipelineAsync(particleDescriptor(layouts, particle, { roles }))
                     .then(pipeline => particleVariants.set(`1${roles}`, pipeline)),
+                device.createRenderPipelineAsync(rainDescriptor(layouts, rainModule, { roles }))
+                    .then(pipeline => rainVariants.set(`1${roles}`, pipeline)),
             ]);
             return Object.freeze({
                 hdr,
@@ -373,6 +413,12 @@ export async function prepareWorldPipelines(device, canvasFormat) {
                 const key = `${emission ? '1' : '0'}${roles || ''}${attachment ? '' : ':color'}`;
                 const pipeline = particleVariants.get(key);
                 if (!pipeline) throw new Error(`World particle pipeline was not prepared: ${key}`);
+                return pipeline;
+            },
+            rain(emission, roles = null, attachment = true) {
+                const key = `${emission ? '1' : '0'}${roles || ''}${attachment ? '' : ':color'}`;
+                const pipeline = rainVariants.get(key);
+                if (!pipeline) throw new Error(`World rain pipeline was not prepared: ${key}`);
                 return pipeline;
             },
             /** Resolves to the frozen display variant for `{ hdr, p3 }` (at least one true). */

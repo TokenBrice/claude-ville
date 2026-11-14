@@ -14,6 +14,8 @@ import {
     cloudCoveredShare,
     cloudFieldAt,
     CLOUD_FIELD_PERIOD,
+    CLOUD_PLANE_CORE,
+    cloudPlaneScale,
     CLOUD_TILE_SIZE,
     CLOUD_TILE_WORLD_SCALE,
     LONE_CLOUD_MIX,
@@ -21,6 +23,18 @@ import {
 } from './gpu/GpuWorldPolicy.js';
 import { baseWindX, cloudCourseDrift, cloudDriftSpeed } from './Wind.js';
 import { TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
+import { lookStrength } from './LookStrengths.js';
+
+// SEA-1 (look `sea1` > 0) — the Canvas field on the ground plane, as the
+// shaders read it (GpuWorldPolicy CLOUD_PLANE): a world point reads the tile
+// at (x × sx, y × sy), so the course tile spans PERIOD / sx × PERIOD / sy
+// world px (3200 × 1280, whole 2-px texels) and the drift moves in plane
+// units. Off: sx = sy = 1, today's 1024 px square tile.
+export function cloudPlane() {
+    const strength = Math.max(0, Math.min(1, Number(lookStrength('sea1')) || 0));
+    const [sx, sy] = cloudPlaneScale(strength);
+    return { on: strength > 0, strength, sx, sy, width: Math.round(PERIOD / sx), height: Math.round(PERIOD / sy) };
+}
 
 // W6.3 — the lone fair-weather cumulus. On a fair sky (the field casts no
 // courses) an AmbientEvents `lone-cloud` slot sends one soft patch across
@@ -71,25 +85,29 @@ let _loneKey = '';
 // the same dome, cut at the same two thresholds on 2 world px texels, with
 // the courses' ordered seam.
 function loneCanvas(pose, darkening) {
-    const key = `${pose.fieldX},${pose.fieldY},${pose.radius},${Math.round(darkening * 200)}`;
+    // SEA-1 — on the plane the dome is read in plane units, so the patch is
+    // an ellipse stretched along the wind (the shaders' dome on p).
+    const { sx, sy } = cloudPlane();
+    const key = `${pose.fieldX},${pose.fieldY},${pose.radius},${Math.round(darkening * 200)},${sx},${sy}`;
     if (_loneCanvas && key === _loneKey) return _loneCanvas;
     _loneTile ||= buildCloudShadowTile(CLOUD_TILE_SIZE);
-    const half = Math.ceil((pose.radius * 0.72) / WORLD_PX_PER_TEXEL);
-    const size = half * 2;
+    const halfX = Math.ceil((pose.radius * 0.72) / sx / WORLD_PX_PER_TEXEL);
+    const halfY = Math.ceil((pose.radius * 0.72) / sy / WORLD_PX_PER_TEXEL);
     const canvas = _loneCanvas || document.createElement('canvas');
-    canvas.width = size;
-    canvas.height = size;
+    canvas.width = halfX * 2;
+    canvas.height = halfY * 2;
     const ctx = canvas.getContext('2d');
-    const image = ctx.createImageData(size, size);
+    const image = ctx.createImageData(canvas.width, canvas.height);
+    const size = canvas.width;
     const [t1, t2] = LONE_CLOUD_THRESHOLDS;
     const value = (dx, dy) => {
-        const n = cloudFieldAt(_loneTile, pose.fieldX + dx, pose.fieldY + dy);
-        return n + ((1 - Math.hypot(dx, dy) / pose.radius) - n) * LONE_CLOUD_MIX;
+        const n = cloudFieldAt(_loneTile, pose.fieldX + dx * sx, pose.fieldY + dy * sy);
+        return n + ((1 - Math.hypot(dx * sx, dy * sy) / pose.radius) - n) * LONE_CLOUD_MIX;
     };
-    for (let y = 0; y < size; y++) {
+    for (let y = 0; y < canvas.height; y++) {
         for (let x = 0; x < size; x++) {
-            const dx = (x - half + 0.5) * WORLD_PX_PER_TEXEL;
-            const dy = (y - half + 0.5) * WORLD_PX_PER_TEXEL;
+            const dx = (x - halfX + 0.5) * WORLD_PX_PER_TEXEL;
+            const dy = (y - halfY + 0.5) * WORLD_PX_PER_TEXEL;
             let v = value(dx, dy);
             if (Math.min(Math.abs(v - t1), Math.abs(v - t2)) < 0.03) {
                 const slope = Math.max(Math.abs(value(dx + WORLD_PX_PER_TEXEL, dy) - v), Math.abs(value(dx, dy + WORLD_PX_PER_TEXEL) - v));
@@ -148,31 +166,36 @@ function sample(values, u, v) {
 let _courseCanvas = null;
 let _courseKey = '';
 
-function courseCanvas(covered, darkening) {
-    const key = `${Math.round(covered * 40)}|${Math.round(darkening * 200)}`;
+function courseCanvas(covered, darkening, plane = cloudPlane()) {
+    const key = `${Math.round(covered * 40)}|${Math.round(darkening * 200)}|${plane.width}x${plane.height}`;
     if (_courseCanvas && key === _courseKey) return _courseCanvas;
+    // SEA-1 — on the plane: the tile spans plane.width × plane.height world
+    // px, and one firm course with its one-step rim replaces the three rings.
+    const W = plane.width / WORLD_PX_PER_TEXEL;
+    const H = plane.height / WORLD_PX_PER_TEXEL;
     const canvas = _courseCanvas || document.createElement('canvas');
-    canvas.width = COURSE_SIZE;
-    canvas.height = COURSE_SIZE;
+    canvas.width = W;
+    canvas.height = H;
     const ctx = canvas.getContext('2d');
-    const image = ctx.createImageData(COURSE_SIZE, COURSE_SIZE);
+    const image = ctx.createImageData(W, H);
     const { values } = field();
     const t1 = threshold(covered);
-    const t2 = threshold(covered * 0.55);
-    const t3 = threshold(covered * 0.22);
-    const texelsPerCourse = WORLD_PX_PER_TEXEL / CLOUD_TILE_WORLD_SCALE;
+    const t2 = threshold(covered * (plane.on ? CLOUD_PLANE_CORE : 0.55));
+    const t3 = plane.on ? Infinity : threshold(covered * 0.22);
+    const stepU = (WORLD_PX_PER_TEXEL / CLOUD_TILE_WORLD_SCALE) * plane.sx;
+    const stepV = (WORLD_PX_PER_TEXEL / CLOUD_TILE_WORLD_SCALE) * plane.sy;
     const near = n => Math.min(Math.abs(n - t1), Math.abs(n - t2), Math.abs(n - t3));
-    for (let y = 0; y < COURSE_SIZE; y++) {
-        for (let x = 0; x < COURSE_SIZE; x++) {
-            const u = (x + 0.5) * texelsPerCourse;
-            const v = (y + 0.5) * texelsPerCourse;
+    for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x++) {
+            const u = (x + 0.5) * stepU;
+            const v = (y + 0.5) * stepV;
             let n = sample(values, u, v);
             if (near(n) < 0.03) {
-                const slope = Math.max(Math.abs(sample(values, u + texelsPerCourse, v) - n), Math.abs(sample(values, u, v + texelsPerCourse) - n));
+                const slope = Math.max(Math.abs(sample(values, u + stepU, v) - n), Math.abs(sample(values, u, v + stepV) - n));
                 n += (BAYER4[(y % 4) * 4 + (x % 4)] / 16 - 0.5) * 2 * slope;
             }
             const course = (n >= t1 ? 1 : 0) + (n >= t2 ? 1 : 0) + (n >= t3 ? 1 : 0);
-            const offset = (y * COURSE_SIZE + x) * 4;
+            const offset = (y * W + x) * 4;
             image.data[offset] = Math.round(255 * (1 - course * darkening));
             image.data[offset + 1] = Math.round(255 * (1 - course * darkening * 0.96));
             image.data[offset + 2] = Math.round(255 * (1 - course * darkening * 0.84));
@@ -188,10 +211,21 @@ function courseCanvas(covered, darkening) {
 /** The course field's world offset (whole world px) at `timeMs`: the pattern
  * shift the courses draw with (frozen under reduced motion). */
 export function cloudCourseOffset(timeMs, weather, reducedMotion = false) {
-    const drift = cloudCourseDrift(reducedMotion ? null : (Number(timeMs) || 0), weather);
+    const plane = cloudPlane();
+    const { x, y } = planeDriftOffset(reducedMotion ? null : (Number(timeMs) || 0), weather, plane);
+    return { x: Math.round(x) % plane.width, y: Math.round(y) % plane.height };
+}
+
+// The drift as a world offset into the plane tile (unrounded): wrapped in
+// plane units on PERIOD, as the shaders' u_cloud.xy, then back to world px.
+function planeDriftOffset(timeMs, weather, plane) {
+    const drift = cloudCourseDrift(timeMs, weather);
+    if (!plane.on) {
+        return { x: ((-drift.x % PERIOD) + PERIOD) % PERIOD, y: ((-drift.y % PERIOD) + PERIOD) % PERIOD };
+    }
     return {
-        x: Math.round(((-drift.x % PERIOD) + PERIOD) % PERIOD) % PERIOD,
-        y: Math.round(((-drift.y % PERIOD) + PERIOD) % PERIOD) % PERIOD,
+        x: (((-drift.x * plane.sx) % PERIOD) + PERIOD) % PERIOD / plane.sx,
+        y: (((-drift.y * plane.sy) % PERIOD) + PERIOD) % PERIOD / plane.sy,
     };
 }
 
@@ -210,36 +244,46 @@ let _sunlit = null;
  * lighter; `canvas` the same as an alpha mask. Offset it by
  * `cloudCourseOffset`, as the courses are.
  */
+// SEA-1 (plane on) — the mask is instead every texel outside the shade (the
+// field under the rim's threshold; all of it with no courses), on the plane
+// tile (`width` × `height`), and the sea there lifts by the lift's stops.
 export function cloudSunlitTile(covered) {
-    const key = Math.round(Math.max(0, Math.min(1, covered)) * 40);
+    const plane = cloudPlane();
+    const share = Math.round(Math.max(0, Math.min(1, covered)) * 40);
+    const key = plane.on ? `plane:${share}:${plane.width}x${plane.height}` : share;
     if (_sunlit?.key === key) return _sunlit;
     const { values } = field();
-    const t = threshold(1 - (key / 40) * 0.8);
-    const size = PERIOD;
-    const mask = new Uint8Array(size * size);
+    const t = plane.on ? (share > 0 ? threshold(share / 40) : Infinity) : threshold(1 - (share / 40) * 0.8);
+    // On the plane the mask holds whole 2-px texels (the course tile's grid),
+    // so its 3200 × 1280 world px stay a 1600 × 640 mask.
+    const texel = plane.on ? WORLD_PX_PER_TEXEL : 1;
+    const width = plane.width / texel;
+    const height = plane.height / texel;
+    const mask = new Uint8Array(width * height);
     const canvas = _sunlit?.canvas || document.createElement('canvas');
-    canvas.width = size;
-    canvas.height = size;
+    canvas.width = width;
+    canvas.height = height;
     const ctx = canvas.getContext('2d');
-    const image = ctx.createImageData(size, size);
-    const step = 1 / CLOUD_TILE_WORLD_SCALE;
-    for (let y = 0; y < size; y++) {
-        for (let x = 0; x < size; x++) {
-            const u = (x + 0.5) * step;
-            const v = (y + 0.5) * step;
+    const image = ctx.createImageData(width, height);
+    const stepU = (plane.sx * texel) / CLOUD_TILE_WORLD_SCALE;
+    const stepV = (plane.sy * texel) / CLOUD_TILE_WORLD_SCALE;
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const u = (x + 0.5) * stepU;
+            const v = (y + 0.5) * stepV;
             let n = sample(values, u, v);
             if (Math.abs(n - t) < 0.03) {
-                const slope = Math.max(Math.abs(sample(values, u + step, v) - n), Math.abs(sample(values, u, v + step) - n));
+                const slope = Math.max(Math.abs(sample(values, u + stepU, v) - n), Math.abs(sample(values, u, v + stepV) - n));
                 n += (BAYER4[(y % 4) * 4 + (x % 4)] / 16 - 0.5) * 2 * slope;
             }
             if (n >= t) continue;
-            const i = y * size + x;
+            const i = y * width + x;
             mask[i] = 1;
             image.data[i * 4 + 3] = 255;
         }
     }
     ctx.putImageData(image, 0, 0);
-    _sunlit = { key, mask, canvas, size };
+    _sunlit = { key, mask, canvas, size: width, width, height, texel };
     return _sunlit;
 }
 
@@ -255,12 +299,11 @@ export function drawCloudShadowCourses(ctx, { atmosphere = null, region = null, 
     const cover = Math.max(0, Math.min(1, Number(atmosphere?.weather?.cloudCover) || 0));
     const covered = cloudCoveredShare(cover);
     if (covered <= 0) return reducedMotion ? false : drawLoneCloud(ctx, region, lone, 0.085 * strength);
-    const tile = courseCanvas(covered, 0.085 * strength);
+    const plane = cloudPlane();
+    const tile = courseCanvas(covered, 0.085 * strength, plane);
     const pattern = ctx.createPattern(tile, 'repeat');
     if (!pattern) return false;
-    const drift = cloudCourseDrift(reducedMotion ? null : (Number(timeMs) || 0), atmosphere?.weather);
-    const driftX = ((-drift.x % PERIOD) + PERIOD) % PERIOD;
-    const driftY = ((-drift.y % PERIOD) + PERIOD) % PERIOD;
+    const { x: driftX, y: driftY } = planeDriftOffset(reducedMotion ? null : (Number(timeMs) || 0), atmosphere?.weather, plane);
     pattern.setTransform?.(new DOMMatrix([
         WORLD_PX_PER_TEXEL, 0, 0, WORLD_PX_PER_TEXEL,
         -Math.round(driftX), -Math.round(driftY),
@@ -282,6 +325,7 @@ function drawLoneCloud(ctx, region, lone, darkening) {
     if (!lone?.active || !(lone.radius > 0)) return false;
     const tile = loneCanvas(lone, darkening);
     const extent = tile.width * WORLD_PX_PER_TEXEL;
+    const extentY = tile.height * WORLD_PX_PER_TEXEL;
     ctx.save();
     ctx.imageSmoothingEnabled = false;
     ctx.beginPath();
@@ -290,7 +334,7 @@ function drawLoneCloud(ctx, region, lone, darkening) {
     ctx.closePath();
     ctx.clip();
     ctx.globalCompositeOperation = 'multiply';
-    ctx.drawImage(tile, Math.round(lone.x - extent / 2), Math.round(lone.y - extent / 2), extent, extent);
+    ctx.drawImage(tile, Math.round(lone.x - extent / 2), Math.round(lone.y - extentY / 2), extent, extentY);
     ctx.restore();
     return true;
 }

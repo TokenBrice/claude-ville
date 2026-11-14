@@ -78,6 +78,7 @@ import { REF_DT_MS, SPEED_RUNGS, snapBodyPx, speedRungIndex } from './MotionCloc
 import { gradeTone } from './EffectStamps.js';
 import { CANDLE_OFFSET, DRINK_FRAME_BY_STEP, FALLBACK_SEAT_DROP, SEAT_FACING_DIR, queueCandleStamp, seatLineOffset, seatStoneStamps, tankardLift, tankardSipStep, tankardStamp } from './RestSeats.js';
 import { materialClassId } from './MaterialRegistry.js';
+import { LANTERN_SET_DOWN, carriedLanternStamp } from './CarriedLantern.js';
 import { waitAgeTier, waitAnchor } from '../../domain/services/SignalLedger.js';
 import { AMBIENT_SCENIC_POINTS } from '../../config/scenery.js';
 import {
@@ -101,6 +102,8 @@ import { WIND_DOWN_GATE_FACING, WIND_DOWN_GATE_TILES } from './ArrivalDeparture.
 
 // 7.1 — a stone seat drawn under its sitter lights as masonry, not as cloth.
 const SEAT_STONE_MATERIAL = materialClassId('stone');
+// NL-4 — the carried lantern's record shades as fire (no key response).
+const LANTERN_MATERIAL = materialClassId('fire');
 
 // Plan 2.1 (C3): villagers draw at exactly one world texel per authored pixel,
 // the same density as buildings, trees and tiles. Hit bounds come from the
@@ -4712,6 +4715,7 @@ export class AgentSprite {
             poseFrame: poseGripFrame,
         };
         if (poseGripFrame >= 0 && this.gpuWorldEnabled) pose.equipped = this._gpuEquippedPoseStrip(identity, pose);
+        this._layoutLanternMark(frameGeometry);
         this._setGpuFrameRecord({
             cell: pose ? cell : bodyCell,
             dx,
@@ -4803,6 +4807,8 @@ export class AgentSprite {
             if (candle) ctx.drawImage(candle.stamp, candle.x, candle.y);
             const tankard = this._tankardMark();
             if (tankard) ctx.drawImage(tankard.stamp, tankard.x, tankard.y);
+            const lantern = this._lanternMark;
+            if (lantern) ctx.drawImage(lantern.stamp, lantern.x, lantern.y);
         }
         if (departedBody) ctx.restore();
         // These five marks belong to the body frame and have exactly one owner
@@ -5225,11 +5231,76 @@ export class AgentSprite {
         return record;
     }
 
+    // NL-4 — the carried lantern (CarriedLantern.js): the renderer sets
+    // `lanternCarried` each frame from presence, the lamp clock and the
+    // round alone. Walking, the stamp's ring hangs at the hand (the prop
+    // chip's hand point, on the facing side); standing, it is set down beside
+    // the feet. One static stamp for every status that carries one.
+    _layoutLanternMark(frameGeometry) {
+        const stamp = this.lanternCarried === true && !departedTableau(this) ? carriedLanternStamp() : null;
+        if (!stamp) {
+            this._lanternMark = null;
+            return;
+        }
+        const mark = this._lanternMarkState || (this._lanternMarkState = { kind: 'carried-lantern', stamp: null, x: 0, y: 0 });
+        mark.stamp = stamp;
+        const west = /w$/.test(DIRECTIONS[this.direction] || '');
+        const { dx, dy, bounds } = frameGeometry || {};
+        if (this.moving && bounds && Number.isFinite(dx) && Number.isFinite(dy)) {
+            const width = Math.max(1, bounds.maxX - bounds.minX);
+            const height = Math.max(1, bounds.maxY - bounds.minY);
+            const handX = dx + bounds.minX + width * (west ? 0.28 : 0.72);
+            mark.x = Math.round(handX - (stamp.width >> 1));
+            mark.y = Math.round(dy + bounds.minY + height * 0.62);
+        } else {
+            mark.x = Math.round(this._placeX + (west ? -LANTERN_SET_DOWN.x - stamp.width : LANTERN_SET_DOWN.x));
+            mark.y = Math.round(this._placeY + LANTERN_SET_DOWN.y) - stamp.height;
+        }
+        this._lanternMark = mark;
+    }
+
+    _lanternRecord() {
+        const mark = this._lanternMark;
+        if (!mark || !this._gpuFrameRecord) return null;
+        const stamp = mark.stamp;
+        // The core and glass emit through the stamp's emissive companion (as
+        // the bridge candles' flames do: ungraded, into bloom); the iron
+        // frame is plain albedo. Its id is not `agent:`-prefixed, so it stays
+        // one shared individual texture instead of taking a slot in the
+        // packed agent frame atlas (whose slots for extra per-agent records
+        // are only reset on a roster change: twelve lanterns coming and going
+        // overflowed it and sampled outside the atlas). Owner slot 0: it
+        // takes light as a small prop, not as part of its carrier's body, so
+        // its own pool (on the carrier's foot, 14 px up) lands one low
+        // course on it instead of the body's full landing (a walker's stamp
+        // at the hand measured 206-208; as a prop <= 167 away from a lamp).
+        const record = this._lanternGpuRecord || (this._lanternGpuRecord = {
+            sx: 0, sy: 0, alpha: 1, elevation: 0.3, occluder: 0, emissive: 0, emissiveGate: 1, ownerSlot: 0,
+            material: LANTERN_MATERIAL, materialSource: null, occluderSource: null, sourceKind: 'individual',
+        });
+        record.id = `carried-lantern:${this.agent?.id}`;
+        record.stableKey = record.id;
+        record.textureKey = stamp.__cvGroundKey;
+        record.sidecarKey = `${record.textureKey}:channels`;
+        record.emissiveSource = stamp.__cvEmissive || null;
+        record.textureRevision = record.textureKey;
+        record.sidecarRevision = record.textureKey;
+        record.source = stamp;
+        record.sourceWidth = stamp.width;
+        record.sourceHeight = stamp.height;
+        record.sw = record.width = stamp.width;
+        record.sh = record.height = stamp.height;
+        record.x = mark.x;
+        record.y = mark.y;
+        return record;
+    }
+
     _queueCandleRecord() {
         const mark = this._queueCandleMark();
         if (!mark || !this._gpuFrameRecord) return null;
         const stamp = mark.stamp;
-        const record = this._candleRecord || (this._candleRecord = { sx: 0, sy: 0, alpha: 1, elevation: 0.3, occluder: 0 });
+        // SD-2 — a wait's own mark: the sun's shade never dims it (`shadeExempt`).
+        const record = this._candleRecord || (this._candleRecord = { sx: 0, sy: 0, alpha: 1, elevation: 0.3, occluder: 0, shadeExempt: true });
         record.id = `agent:${this.agent?.id}:queue-candle`;
         record.stableKey = record.id;
         record.textureKey = `agent-ground:${stamp.__cvGroundKey}`;
@@ -5299,8 +5370,9 @@ export class AgentSprite {
         const snow = this._snowCapRecord();
         const candle = this._queueCandleRecord();
         const tankard = this._tankardRecord();
+        const lantern = this._lanternRecord();
         const stones = this._gpuFrameRecord ? this._seatStoneStamps() : null;
-        if (!stones && !candle && !tankard && !frost && !snow) return records;
+        if (!stones && !candle && !tankard && !frost && !snow && !lantern) return records;
         // 7.1 — the stone seat's top face paints before the body, its front
         // faces after it (record order is paint order within the body slot);
         // the frost tint and the snow course lie on the body itself, before
@@ -5311,6 +5383,7 @@ export class AgentSprite {
         if (stones) out.push(this._seatStoneRecord(stones.front, 'front'));
         if (candle) out.push(candle);
         if (tankard) out.push(tankard);
+        if (lantern) out.push(lantern);
         return out;
     }
 
@@ -5326,7 +5399,7 @@ export class AgentSprite {
         const canvas = this._getFrozenTintCell(tint.cell, tint.source, body.bakedGear ? tint : null);
         if (!canvas) return null;
         const record = this._frostGpuRecord || (this._frostGpuRecord = {
-            sx: 0, sy: 0, elevation: 0.52, occluder: 0, emissive: 0, urgentPose: true,
+            sx: 0, sy: 0, elevation: 0.52, occluder: 0, emissive: 0, urgentPose: true, shadeExempt: true,
         });
         record.id = `agent:${this.agent?.id}:frost-tint`;
         record.stableKey = record.id;
@@ -5705,6 +5778,7 @@ export class AgentSprite {
         record.alpha = body.alpha;
         record.poseKey = body.poseKey;
         record.urgentPose = body.urgentPose;
+        record.shadeExempt = body.shadeExempt;
         return record;
     }
 

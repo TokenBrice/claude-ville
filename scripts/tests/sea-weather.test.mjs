@@ -75,8 +75,9 @@ test('the squall and shower reach the in-map open water on both GPU backends', (
     assert.match(glsl, /float edge = length\(d\) \+ \(n - 0\.5\) \* 0\.5 \+ \(order - 0\.5\) \* 3\.0 \/ u_squall\.z;/);
     assert.match(water, /let edge = length\(d\) \+ \(n - 0\.5\) \* 0\.5 \+ \(order - 0\.5\) \* 3\.0 \/ frame\.squall\.z;/);
     // Open terrain water (as deep as the open sea on its row) is flagged ...
-    assert.match(glsl, /seaOpenWater = u_terrainBatch && u_squall\.w > 0\.0 && stop >= 2\s+&& float\(stop\) >= openSeaStop\(openSeaDepth\(p\), waterBayer4\(p\)\);/);
-    assert.match(water, /seaOpenWater = batch\.terrainBatch != 0u && frame\.squall\.w > 0\.0 && stop >= 2\s+&& f32\(stop\) >= openSeaStop\(openSeaDepth\(p\), waterBayer4\(p\)\);/);
+    // (SEA-1: also under any sky while the look is on, for its cloud rule)
+    assert.match(glsl, /seaOpenWater = u_terrainBatch && \(u_squall\.w > 0\.0 \|\| u_cloud\.w > 0\.0\) && stop >= 2\s+&& float\(stop\) >= openSeaStop\(openSeaDepth\(p\), waterBayer4\(p\)\);/);
+    assert.match(water, /seaOpenWater = batch\.terrainBatch != 0u && \(frame\.squall\.w > 0\.0 \|\| frame\.cloud\.w > 0\.0\) && stop >= 2\s+&& f32\(stop\) >= openSeaStop\(openSeaDepth\(p\), waterBayer4\(p\)\);/);
     // ... and takes the darker of the cloud and squall courses, resting and fat.
     assert.match(glsl, /color \*= vec3\(1\.0\) - max\(cloud, squall \* 0\.085\) \* vec3\(1\.0, 0\.96, 0\.84\);/);
     assert.match(atmosphere, /color0 \* \(vec3f\(1\.0\) - max\(cloud, squall \* 0\.085\) \* vec3f\(1\.0, 0\.96, 0\.84\)\)/);
@@ -85,7 +86,9 @@ test('the squall and shower reach the in-map open water on both GPU backends', (
     assert.match(glsl, /sum \+= applySeaCourses\(color, cell, bayer4\(cell\), rowPx, u_additive\) \* w;/);
     assert.match(atmosphere, /sum \+= applySeaCourses\(color, cell, bayer4\(cell\), rowPx, batch\.additive != 0u\) \* w;/);
     // WebGL: resolved once a frame, uploaded to both passes.
-    assert.match(glsl, /const SEA_WEATHER_UNIFORM_NAMES = \['u_seaSunlit', 'u_seaGust', 'u_seaGustRect', 'u_squall', 'u_squallFall'\];/);
+    // SEA-1 adds the sunlit water's lift (u_seaLift), SEA-2 / SEA-3 the sea
+    // state (u_seaState), to the same upload.
+    assert.match(glsl, /const SEA_WEATHER_UNIFORM_NAMES = \['u_seaSunlit', 'u_seaLift', 'u_seaState', 'u_seaGust', 'u_seaGustRect', 'u_squall', 'u_squallFall'\];/);
     assert.match(glsl, /frame\.squall = effectBudgetMode\('sea-weather', qualityLevel\) === 'on'/);
     // The pass the in-map rule exists for: the shower crosses the island row.
     const reach = MAP_SIZE * TILE_WIDTH / 2;

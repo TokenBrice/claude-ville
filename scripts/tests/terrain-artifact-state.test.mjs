@@ -43,7 +43,8 @@ function groundFixture() {
     const classes = new Uint8Array(w / 2 * h);
     classes[0] = GROUND_CLASS.GRASS;
     classes[classes.length - 1] = GROUND_CLASS.ROAD;
-    return { field: { bounds: { x: -w / 2, y: -TILE_HEIGHT / 2, w, h }, cols: w / 2, rows: h, texelW: 2, classes },
+    const weather = { data: new Uint8Array(classes.length * 4), cols: w / 2, rows: h, x0: -w / 2, y0: -TILE_HEIGHT / 2, texelW: 2 };
+    return { field: { bounds: { x: -w / 2, y: -TILE_HEIGHT / 2, w, h }, cols: w / 2, rows: h, texelW: 2, classes, weather },
         puddleMask: { data: new Uint8Array(classes.length), cols: w / 2, rows: h, x0: -w / 2, y0: -TILE_HEIGHT / 2, texelW: 2, revision: 'sites' },
         groundBakeMs: 12, groundWinterBakeMs: 4 };
 }
@@ -178,7 +179,7 @@ function terrainFrameFixture(t, { matchingCandidate = true, presented = false } 
     const source = { world: renderer.world, waterTiles: new Set() };
     const field = getCoastField(source);
     source._coastBake = { key: field.key, fieldMs: field.buildMs, bakeMs: 1, coast: null, waterFields: null };
-    const artifact = { schema: 1, bounds, dpr: 1, width: 2, height: 2,
+    const artifact = { schema: 2, bounds, dpr: 1, width: 2, height: 2,
         rgba: new Uint8ClampedArray([17, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255]),
         ground: groundFixture(), coast: captureCoastArtifact(source) };
     return {

@@ -19,6 +19,17 @@ import {
     stillWaterWindShare,
 } from '../../claudeville/src/presentation/character-mode/gpu/GpuFrameState.js';
 import { WIND_SPEED_BY_TYPE } from '../../claudeville/src/presentation/character-mode/Wind.js';
+import { resetLookStrengths, setLookStrength } from '../../claudeville/src/presentation/character-mode/LookStrengths.js';
+
+// The goldens predate the looks: each golden test states the looks it reads at 0.
+function atLooks(looks, fn) {
+    try {
+        for (const [id, value] of Object.entries(looks)) setLookStrength(id, value);
+        fn();
+    } finally {
+        resetLookStrengths();
+    }
+}
 
 // Wave 10 S0a: every resolver must reproduce the value the WebGL2 renderer
 // computed inline before the extraction (GOLDEN: 6559335's GpuWorldRenderer
@@ -266,23 +277,23 @@ test('resolveWaterFx keeps the water clock, rings, caustics, swash and the sun/m
     });
 });
 
-test('resolveAtmosphereCourses keeps the cloud courses, thresholds, aerial haze and the sea sunlit ceiling', () => {
-    eachCase(({ key, feed, camera, level, grade }) => {
+test('resolveAtmosphereCourses at sea1 0 keeps the cloud courses, thresholds, aerial haze and the sea sunlit ceiling', () => {
+    atLooks({ sea1: 0 }, () => eachCase(({ key, feed, camera, level, grade }) => {
         const c = resolveAtmosphereCourses(level, camera, feed, grade);
         assert.deepEqual({
             cloud: Array.from(c.cloud), thresholds: Array.from(c.thresholds), haze: Array.from(c.haze),
             sunlit: c.sunlit, courses: c.courses, aerialHaze: c.aerialHaze,
         }, GOLDEN.atmosphere[key], key);
-    });
+    }));
 });
 
-test('resolveSeaWeather keeps the sunlit course and the gust field, re-baked only when its step moves', () => {
-    eachCase(({ key, feed, camera, level, grade }) => {
+test('resolveSeaWeather keeps the sunlit course (at sea1 0) and the gust field, re-baked only when its step moves', () => {
+    atLooks({ sea1: 0 }, () => eachCase(({ key, feed, camera, level, grade }) => {
         const courses = resolveAtmosphereCourses(level, camera, feed, grade);
         const sea = resolveSeaWeather(level, camera, feed, { courses, width: W, height: H });
         const gust = sea.gust && { rect: Array.from(sea.gust.rect), revision: sea.gust.revision, data: digest(sea.gust.data) };
         assert.deepEqual({ sunlit: sea.sunlit, gust }, GOLDEN.sea[key], key);
-    });
+    }));
     const feed = feeds().noon;
     const out = createSeaWeather();
     const opts = { courses: null, width: W, height: H };
@@ -335,8 +346,8 @@ test('resolveSeaWeather gates the BI-1 still-water paws and carries the knot win
     assert.equal(at(2, { weather: { ...weather, windX: 0.1 } }).stillShare, 0, 'the share is weather only, at every level');
 });
 
-test('resolveLights keeps admission, the light records, the tile index, wet slots and the footprint march', () => {
-    eachCase(({ key, feed, camera, level }) => {
+test('resolveLights at gw2 0 keeps admission, the light records, the tile index, wet slots and the footprint march', () => {
+    atLooks({ gw2: 0 }, () => eachCase(({ key, feed, camera, level }) => {
         const lights = resolveLights(feed, camera, level, { width: W, height: H });
         const golden = GOLDEN.lights[key];
         const lanes = [0, 1, 2, 3].map(row => Array.from(lights.records.subarray(row * 1024, row * 1024 + lights.count * 4)));
@@ -347,7 +358,7 @@ test('resolveLights keeps admission, the light records, the tile index, wet slot
         assert.equal(lights.marchSteps, golden.marchSteps, key);
         assert.equal(lights.tiles ? digest(lights.tiles) : null, golden.tiles, key);
         assert.equal(lights.localLightPhase, golden.localLightPhase, key);
-    });
+    }));
 });
 
 test('resolveLights moves the record revision only when a light changes', () => {

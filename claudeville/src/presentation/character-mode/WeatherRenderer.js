@@ -9,7 +9,7 @@
 // timeline); nothing here reads agent, mood or director state (V3).
 
 import { WEATHER_PRESETS, WEATHER_TYPES } from './AtmosphereState.js';
-import { TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
+import { MAP_SIZE, TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
 import { ornamentPlan, sampleFramePressure } from './MarkGovernor.js';
 import { baseWindX, cloudCourseDrift, windAt } from './Wind.js';
 import { applyGradeToRgb } from './GradeEvaluator.js';
@@ -98,13 +98,13 @@ const SPLASH_STATIC_SHARE = 0.05;
 // 6.7 — a splash is a 7×4 art-pixel crown in three frames (impact, crown,
 // ring), anchored bottom-centre on the tile's ground point. `#` light, `+`
 // dim rain tone.
-const SPLASH_FRAMES = Object.freeze([
+export const SPLASH_FRAMES = Object.freeze([
     Object.freeze(['.......', '.......', '...#...', '..+++..']),
     Object.freeze(['.#...#.', '.......', '.......', '.+...+.']),
     Object.freeze(['.......', '.......', '.......', '+.....+']),
 ]);
-const RAIN_LIGHT = '#c4d6e2';
-const RAIN_DIM = '#96aabb';
+export const RAIN_LIGHT = '#c4d6e2';
+export const RAIN_DIM = '#96aabb';
 
 const DEFAULT_INTENSITY = {
     overcast: 0.38,
@@ -118,7 +118,7 @@ const DEFAULT_INTENSITY = {
 // step sideways with the wind. Far streaks are short, dim and dashed; near
 // ones long, light and solid. saltOffset keeps each layer's streak positions
 // disjoint.
-const RAIN_LAYERS = [
+export const RAIN_LAYERS = [
     { frac: 0.45, speedMul: 0.72, cells: [5, 7], color: RAIN_DIM, alpha: 0.5, dashed: true, windMul: 0.82, saltOffset: 0 },
     { frac: 0.35, speedMul: 1.0, cells: [6, 8], color: '#aebfcc', alpha: 0.62, dashed: false, windMul: 1.0, saltOffset: 1300 },
     { frac: 0.2, speedMul: 1.4, cells: [8, 11], color: RAIN_LIGHT, alpha: 0.78, dashed: false, windMul: 1.18, saltOffset: 2600 },
@@ -191,6 +191,92 @@ export function seaFretLandShare() {
 export function seaFretMistShare(weather) {
     const thin = weather?.type !== 'fog' && !(Number(weather?.fog) > SEA_FRET_THIN_FOG);
     return thin ? 1 - lookStrength('la7') : 1;
+}
+
+// MS-1 — the dawn mist's share of the low mist's density at the dawn
+// phase's middle (it rises and burns off as sin(progress × π), the ground
+// haze field's dawn rule). r2: 0.35 (was 0.6), so a clear morning's mist
+// over the water stays thin enough for the swell and the sun's road to read
+// through it (the reviewer's ms1 0.5–0.7 captures); fog weather is unchanged.
+export const DAWN_MIST_SHARE = 0.35;
+
+/**
+ * MS-1 — the resident low mist's density (look `ms1`, GpuFrameState
+ * `resolveMist`): the fog banks' own strength (fog weather, rain's and the
+ * storm's fog, a dry overcast's thin mist, the sea fret's share) or the
+ * daily dawn mist, whichever is thicker, in FOG_BUCKETS steps. Weather and
+ * clock only (V3); the banks' pressure gate does not apply (the mist is a
+ * per-fragment term, not extra layers).
+ */
+export function mistDensity(atmosphere) {
+    return mistBurnFor(atmosphere).density;
+}
+
+// MS-2 (look `ms2`) — the mist burns off: the real sun's elevation from
+// `startDeg` to `fullDeg` sets a burn b in BURN_STEPS steps (minutes apart,
+// never visibly animating). The land clears first (its share of the mist
+// top falls over the first half of b), the water and the low shore last
+// (over the second half). The dawn mist rises with the dawn phase and holds
+// through the morning until the sun burns it off; fog weather keeps its
+// weather density and the water, and only thins over the land, to
+// `fogLandKeep` of it. No sun (night, b = 0): no change.
+// r6: steps 32 (was 8): the mist's top and density move in 32nds, so a
+// burn or rise step moves a thin share of the water, never a whole course.
+export const MIST_BURN = Object.freeze({ startDeg: 0, fullDeg: 12, steps: 32, fogLandKeep: 0.3 });
+
+/**
+ * MS-1 / MS-2 — the low mist's density and its burn-off shares: `land`
+ * multiplies the mist top's inland share, `sea` its share over water and
+ * the waterline (GpuFrameState resolveMist -> u_mistBurn). At `look` 0 (or
+ * at night) land = sea = 1 and the density is MS-1's. Date, clock, weather
+ * and seed only.
+ */
+export function mistBurnFor(atmosphere, look = lookStrength('ms2')) {
+    const weather = normalizeWeather(atmosphere);
+    const banks = weather && weather.intensity > 0
+        ? clamp(fogBankIntensity(weather, weatherLegibilityGate(weather, atmosphere)) * seaFretMistShare(weather), 0, 1)
+        : 0;
+    const progress = clamp(Number(atmosphere?.phaseProgress) || 0, 0, 1);
+    const phase = atmosphere?.phase;
+    const riseAndFall = phase === 'dawn' ? Math.sin(progress * Math.PI) * DAWN_MIST_SHARE : 0;
+    const quantize = value => Math.round(clamp(value, 0, 1) * FOG_BUCKETS) / FOG_BUCKETS;
+    const s = clamp(Number(look) || 0, 0, 1);
+    if (!(s > 0)) return { density: quantize(Math.max(banks, riseAndFall)), land: 1, sea: 1, burn: 0 };
+    const solar = atmosphere?.solar || {};
+    const elevation = Number(solar.elevationDeg);
+    const minute = Number(atmosphere?.clock?.minuteOfDay);
+    const noon = Number(solar.solarNoonMinute);
+    const morning = Number.isFinite(minute) && Number.isFinite(noon) ? minute < noon : phase === 'dawn';
+    // The burn completes at MIST_BURN.fullDeg, or at the day's own noon
+    // elevation where the sun never climbs that high (a high-latitude
+    // winter), so the held dawn mist is gone by solar noon, never cut there.
+    const noonDeg = Number(solar.noonElevationDeg);
+    const fullDeg = Math.max(MIST_BURN.startDeg + 1, Math.min(MIST_BURN.fullDeg, Number.isFinite(noonDeg) ? noonDeg : MIST_BURN.fullDeg));
+    const burn = Number.isFinite(elevation)
+        ? Math.round(clamp((elevation - MIST_BURN.startDeg) / (fullDeg - MIST_BURN.startDeg), 0, 1) * MIST_BURN.steps) / MIST_BURN.steps
+        : 0;
+    // The dawn mist rises with the dawn phase, then holds until it burns off
+    // (fully burnt by solar noon, so the hold ending there changes nothing).
+    const held = phase === 'dawn' ? (progress < 0.5 ? Math.sin(progress * Math.PI) : 1) : (phase === 'day' && morning ? 1 : 0);
+    const dawn = riseAndFall + (held * DAWN_MIST_SHARE - riseAndFall) * s;
+    const landBurn = clamp(burn * 2, 0, 1);
+    const seaBurn = clamp((burn - 0.5) * 2, 0, 1);
+    // Each source lays its own top over land and over water; the higher wins
+    // (no switch between them, so neither a thin bank nor rising fog steps
+    // the whole layer in or out). The banks keep the water and thin over
+    // land to fogLandKeep; the dawn mist burns off land first, water last.
+    // The weather's banks in their own eighths (fog weather as before).
+    const bankTop = quantize(banks);
+    const bankLand = bankTop * (1 - s * (1 - MIST_BURN.fogLandKeep) * landBurn);
+    const dawnLand = dawn * (1 - s * landBurn);
+    const dawnSea = dawn * (1 - s * seaBurn);
+    const landTop = Math.max(bankLand, dawnLand);
+    const seaTop = Math.max(bankTop, dawnSea);
+    // The dawn mist's rise and burn move in MIST_BURN.steps.
+    const density = Math.round(clamp(Math.max(landTop, seaTop), 0, 1) * MIST_BURN.steps) / MIST_BURN.steps;
+    if (!(density > 0)) return { density: 0, land: 1, sea: 1, burn };
+    const step = value => Math.round(clamp(value, 0, 1) * MIST_BURN.steps) / MIST_BURN.steps;
+    return { density, land: step(landTop / density), sea: step(seaTop / density), burn };
 }
 
 // 0.10 — lightning. One schedule on the one motion clock drives the bolt
@@ -271,6 +357,9 @@ export class WeatherRenderer {
         strike = null,
         seaAt = null,
         profileMark = null,
+        // RN-1 — the share of the rain streaks and splashes the GPU world drew
+        // this frame (`gpuRainField`); the overlay draws the rest.
+        gpuRainShare = 0,
     } = {}) {
         if (!ctx || !canvas || !canvas.width || !canvas.height) return;
 
@@ -337,7 +426,10 @@ export class WeatherRenderer {
         profileMark?.('weather-wash');
 
         // The fog banks themselves lie on the ground plane, under the bodies
-        // (`groundFogLayer`, drawn by the frame's ground pass).
+        // (`groundFogLayer`, drawn by the frame's ground pass). MS-1 (look
+        // `ms1` > 0) retires the banks, the ground haze and the scene veil on
+        // the GPU paths but keeps this wash: it is the overlay's stepped
+        // distance veil, shared with Canvas, under the labels and marks.
 
         if (rainActive) {
             const storm = weather.type === 'storm';
@@ -347,7 +439,7 @@ export class WeatherRenderer {
             if (isWinterMonth(atmosphere)) {
                 this._drawSnow(ctx, canvas, { ...weather, intensity: rainIntensity }, phaseMs, seed, particleEnabled);
             } else {
-                this._drawRain(ctx, canvas, { ...weather, intensity: rainIntensity }, phaseMs, seed, particleEnabled, timeMs);
+                this._drawRain(ctx, canvas, { ...weather, intensity: rainIntensity }, phaseMs, seed, particleEnabled, timeMs, gpuRainShare);
             }
         }
         // Reduced motion: `stormStrikeAt` never strikes, so no bolt and no flash.
@@ -513,7 +605,7 @@ export class WeatherRenderer {
         return layer;
     }
 
-    _drawRain(ctx, canvas, weather, phaseMs, seed, particleEnabled, timeMs = 0) {
+    _drawRain(ctx, canvas, weather, phaseMs, seed, particleEnabled, timeMs = 0, gpuShare = 0) {
         const intensity = clamp(weather.intensity, 0, 1);
         const storm = weather.type === 'storm';
         const grid = this._artGrid();
@@ -522,6 +614,9 @@ export class WeatherRenderer {
         if (grid.zoom <= RAIN_WIDE_ZOOM) count = Math.round(count * RAIN_WIDE_GAIN);
         if (!particleEnabled) count = Math.round(count * 0.5);
         if (!this._allowEmbellishment) count = Math.round(count * 0.62);
+        // RN-1 — the GPU world draws `gpuShare` of the field in the world.
+        const overlayShare = gpuShare > 0 ? clamp(1 - gpuShare, 0, 1) : 1;
+        if (overlayShare < 1) count = Math.round(count * overlayShare);
 
         // C-W3 — the rain leans with the one wind: the streak slope reads the
         // gust at the view centre (stepped, so the whole field leans harder
@@ -573,6 +668,7 @@ export class WeatherRenderer {
                 particleEnabled,
                 seed,
                 alphaScale,
+                overlayShare,
             });
         }
     }
@@ -709,7 +805,8 @@ export class WeatherRenderer {
     // walkable, dry, and not behind a building's opaque art (the overlay has
     // no depth). Each is a three-frame pixel crown in world-anchored cells, so
     // it pans with the ground. Water keeps its own rain ripples.
-    _drawRainSplashes(ctx, grid, { intensity, precipitation, particleEnabled, seed, alphaScale }) {
+    _drawRainSplashes(ctx, grid, { intensity, precipitation, particleEnabled, seed, alphaScale, overlayShare = 1 }) {
+        if (!(overlayShare > 0)) return;
         const camera = grid.camera;
         const tiles = this.sceneContext?.openGroundTiles?.() || null;
         if (!camera?.worldToScreen || !camera?.screenToWorld || !tiles?.length) return;
@@ -721,7 +818,7 @@ export class WeatherRenderer {
             // Reduced motion: a static ring on a fixed share of the visible
             // open tiles, chosen by each tile's own hash so it never re-rolls.
             for (const tile of tiles) {
-                if (tile.seed >= SPLASH_STATIC_SHARE || !inRect(tile, view)) continue;
+                if (tile.seed >= SPLASH_STATIC_SHARE * overlayShare || !inRect(tile, view)) continue;
                 this._stampSplash(ctx, grid, tile.x, tile.y, 2, alpha);
             }
             return;
@@ -735,7 +832,8 @@ export class WeatherRenderer {
             const visible = [];
             for (const tile of tiles) if (inRect(tile, view)) visible.push(tile);
             if (visible.length) {
-                const count = Math.round(SPLASH_STAMP_MIN_COUNT + (SPLASH_STAMP_MAX_COUNT - SPLASH_STAMP_MIN_COUNT) * driveT);
+                let count = Math.round(SPLASH_STAMP_MIN_COUNT + (SPLASH_STAMP_MAX_COUNT - SPLASH_STAMP_MIN_COUNT) * driveT);
+                if (overlayShare < 1) count = Math.round(count * overlayShare);
                 const stampSeed = (seed + Math.imul(this._splashStampSeed + 1, 0x85ebca6b)) >>> 0;
                 for (let i = 0; i < count; i++) {
                     const tile = visible[Math.floor(random01(stampSeed, i + 11) * visible.length)];
@@ -932,6 +1030,171 @@ export function drawFlashExposure(ctx, width, height, strike) {
     ctx.fillRect(0, 0, width, height);
     ctx.restore();
     return true;
+}
+
+// RN-1 (look `rn1`) — rain that falls in the world. On the GPU paths the
+// streaks and their splashes are one instanced draw in the scene pass
+// (GpuWorldRenderer RAIN_VERTEX / RAIN_FRAGMENT, wgsl/rain.js), depth-tested
+// LEQUAL against the painter depth: every RAIN_GROUND_CELL-square cell of the
+// ground owns one candidate streak on a seeded ground point (a hash of the
+// cell and the weather seed, so the field is world-anchored and nothing is
+// packed per frame); it falls RAIN_FALL_HEIGHT world px onto that point,
+// sorts at its painter depth (so a nearer building front, tower or crown
+// hides it) and, on open ground (the overlay's own `openGroundTiles` rule),
+// may land as the overlay's three-frame splash. The amount is the overlay's:
+// the same streaks per screen area by zoom, storm, wide-shot gain, pressure
+// and reduced-motion rules, the same layers (shares, lengths, colours,
+// alphas, dashes, wind gains), the same lean (the gust under the view
+// centre) and drift (the knot wind). The fall height is tall enough that a
+// streak passing a landmark's upper face still has its ground point in front
+// of it (the field thins over a tower's upper face by at most the tower's
+// height over RAIN_FALL_HEIGHT). The look's strength is the share of the
+// field that moves into the world: the overlay keeps the rest, so the amount
+// of rain is the same at every strength. Snow, the storm curtains and the
+// lightning stay on the overlay; MINIMAL and Canvas keep the overlay.
+export const RAIN_GROUND_CELL = 32;
+export const RAIN_FALL_HEIGHT = 2048;
+// World px per ms of fall per overlay screen px per ms: the overlay's screen
+// speed at zoom 4/3, so a zoom-1 shot reads a little calmer and a zoom-2 one
+// a little brisker than today's screen-space field.
+export const RAIN_WORLD_SPEED_SHARE = 0.75;
+export const RAIN_MAX_INSTANCES = 65536;
+export const RAIN_UNIFORM_FLAGS = Object.freeze({ static: 1, mask: 2 });
+// The streak's sideways drift per px of fall (the overlay's `fall * drift * 0.34`).
+export const RAIN_DRIFT_SLOPE = 0.34;
+export const RAIN_SPLASH_FRAME_MS = SPLASH_FRAME_MS;
+
+export function createGpuRainField() {
+    return {
+        share: 0,
+        instances: 0,
+        // view (cellX0, cellY0, cols, seed), fall (density, height, drift,
+        // lean), phase (far, mid, near, alpha scale), splash (share, frame
+        // fraction per unit speed, alpha, flags).
+        uniforms: new Float32Array(16),
+        phase: [0, 0, 0],
+        lastTimeMs: null,
+        seed: null,
+    };
+}
+
+/**
+ * RN-1 — this frame's world rain for the GPU draw, or `share` 0 (no draw):
+ * a pure function of the weather, its seed, the clock and the camera (V3),
+ * plus the per-renderer fall phase it integrates (like the overlay's elapsed
+ * clock). `on` is the quality ladder's answer (`EFFECT_BUDGET['world-rain']`),
+ * `splashMask` whether the open-ground mask is bound.
+ */
+export function gpuRainField(atmosphere, camera, { timeMs = 0, on = true, splashMask = false, viewport = null } = {}, out = createGpuRainField()) {
+    out.share = 0;
+    out.instances = 0;
+    const share = on ? lookStrength('rn1') : 0;
+    if (!(share > 0) || !camera?.screenToWorld) return out;
+    const weather = normalizeWeather(atmosphere);
+    if (!weather || !(weather.intensity > 0) || isWinterMonth(atmosphere)) return out;
+    const precipitation = clamp(weather.precipitation, 0, 1);
+    if (!(RAIN_TYPES.has(weather.type) || precipitation > RAIN_START_PRECIPITATION)) return out;
+    // The overlay's own viewport (`drawForeground`'s canvas) when given, so
+    // the reduced-motion pressure latch sees one size key per frame.
+    const width = Number(viewport?.width ?? camera._viewportWidth?.()) || 0;
+    const height = Number(viewport?.height ?? camera._viewportHeight?.()) || 0;
+    if (!(width > 0) || !(height > 0)) return out;
+    const particleEnabled = atmosphere?.motion?.particleEnabled !== false;
+    const zoom = Math.max(0.1, Number(camera.zoom) || 1);
+    const embellish = weatherEmbellishmentAllowed(weatherPressureLevel(atmosphere, !particleEnabled, { zoom: camera.zoom, width, height }));
+    const storm = weather.type === 'storm';
+    const intensity = clamp(Math.max(precipitation, weather.intensity * (storm ? 0.86 : 0.72)) * weatherLegibilityGate(weather, atmosphere).rain, 0, 1);
+    // The overlay's streaks per CSS px², as candidates per ground cell.
+    let perArea = (storm ? STORM_STREAKS : RAIN_STREAKS) * (0.45 + intensity * 0.55) / RAIN_REFERENCE_AREA;
+    if (zoom <= RAIN_WIDE_ZOOM) perArea *= RAIN_WIDE_GAIN;
+    if (!particleEnabled) perArea *= 0.5;
+    if (!embellish) perArea *= 0.62;
+    const density = clamp(perArea * zoom * zoom * RAIN_GROUND_CELL * RAIN_GROUND_CELL, 0, 1) * share;
+    out.intensity = intensity;
+    out.embellish = embellish;
+    const rainWeather = { ...weather, intensity };
+    const drift = baseWindX(rainWeather);
+    const centre = camera.screenToWorld(width / 2, height / 2);
+    const lean = windAt(centre.x, centre.y, particleEnabled ? timeMs : 0, rainWeather, (out._wind ||= { x: 0, gust: 0 })).x;
+    const speed = (0.42 + intensity * 0.34) * RAIN_WORLD_SPEED_SHARE;
+    const seed = seedFromAtmosphere(atmosphere, weather);
+    const time = Number(timeMs) || 0;
+    const resume = particleEnabled && out.lastTimeMs !== null && out.seed === seed;
+    const dt = resume ? clamp(time - out.lastTimeMs, 0, MAX_FRAME_DT) : 0;
+    for (let layer = 0; layer < RAIN_LAYERS.length; layer++) {
+        const rate = speed * RAIN_LAYERS[layer].speedMul / RAIN_FALL_HEIGHT;
+        const next = !particleEnabled ? random01(seed, 401 + layer)
+            : resume ? out.phase[layer] + dt * rate
+                : time * rate;
+        out.phase[layer] = next - Math.floor(next);
+    }
+    out.lastTimeMs = particleEnabled ? time : null;
+    out.seed = seed;
+    const night = clamp(Number(atmosphere?.lightGrade?.night) || 0, 0, 1);
+    const alphaScale = (0.8 + intensity * 0.2) * (1 - night * 0.4);
+    const driveT = Math.min(1, Math.max(intensity, precipitation));
+    let splashShare = 0;
+    if (splashMask && embellish && (precipitation > SPLASH_PRECIP_THRESHOLD || intensity > SPLASH_PRECIP_THRESHOLD)) {
+        if (!particleEnabled) {
+            // A ground cell spans two tiles: the overlay's static share of tiles.
+            splashShare = clamp(SPLASH_STATIC_SHARE * 2 * share, 0, 1);
+        } else {
+            // The overlay's splashes per ms over the landings per ms in view.
+            const stamps = (SPLASH_STAMP_MIN_COUNT + (SPLASH_STAMP_MAX_COUNT - SPLASH_STAMP_MIN_COUNT) * driveT) / SPLASH_STAMP_INTERVAL_MS;
+            let speedShare = 0;
+            for (const layer of RAIN_LAYERS) speedShare += layer.frac * layer.speedMul;
+            const streaks = density / (RAIN_GROUND_CELL * RAIN_GROUND_CELL) * (width * height) / (zoom * zoom);
+            const landings = streaks * speed * speedShare / RAIN_FALL_HEIGHT;
+            splashShare = landings > 0 ? clamp(stamps * share / landings, 0, 1) : 0;
+        }
+    }
+    if (!(density > 0) && !(splashShare > 0)) return out;
+    const a = camera.screenToWorld(0, 0);
+    const b = camera.screenToWorld(width, height);
+    const reachX = RAIN_FALL_HEIGHT * Math.abs(drift) * 1.18 * RAIN_DRIFT_SLOPE + 24;
+    const x0 = Math.floor((a.x - reachX) / RAIN_GROUND_CELL);
+    const y0 = Math.floor((a.y - 16) / RAIN_GROUND_CELL);
+    const cols = Math.floor((b.x + reachX) / RAIN_GROUND_CELL) - x0 + 1;
+    const rows = Math.floor((b.y + RAIN_FALL_HEIGHT + 16) / RAIN_GROUND_CELL) - y0 + 1;
+    const u = out.uniforms;
+    u[0] = x0;
+    u[1] = y0;
+    u[2] = cols;
+    u[3] = seed & 0xffffff;
+    u[4] = density;
+    u[5] = RAIN_FALL_HEIGHT;
+    u[6] = drift;
+    u[7] = lean;
+    u[8] = out.phase[0];
+    u[9] = out.phase[1];
+    u[10] = out.phase[2];
+    u[11] = alphaScale;
+    u[12] = splashShare;
+    u[13] = SPLASH_FRAME_MS * speed / RAIN_FALL_HEIGHT;
+    u[14] = clamp((0.35 + driveT * 0.3) * alphaScale, 0, 1);
+    u[15] = (particleEnabled ? 0 : RAIN_UNIFORM_FLAGS.static) | (splashMask ? RAIN_UNIFORM_FLAGS.mask : 0);
+    out.instances = Math.min(RAIN_MAX_INSTANCES, cols * rows);
+    out.share = share;
+    return out;
+}
+
+/**
+ * RN-1 — the open-ground splash mask: one R8 texel per map tile, 255 where
+ * the overlay would splash (`openGroundTiles`). Cached per tile list.
+ */
+const _splashMasks = new WeakMap();
+let _splashMaskRevision = 0;
+export function rainSplashMask(tiles) {
+    if (!Array.isArray(tiles) || !tiles.length) return null;
+    let mask = _splashMasks.get(tiles);
+    if (mask) return mask;
+    const data = new Uint8Array(MAP_SIZE * MAP_SIZE);
+    for (const tile of tiles) {
+        if (tile.tileX >= 0 && tile.tileY >= 0 && tile.tileX < MAP_SIZE && tile.tileY < MAP_SIZE) data[tile.tileY * MAP_SIZE + tile.tileX] = 255;
+    }
+    mask = Object.freeze({ width: MAP_SIZE, height: MAP_SIZE, format: 'r8', data, revision: `rain-splash-${++_splashMaskRevision}` });
+    _splashMasks.set(tiles, mask);
+    return mask;
 }
 
 // Endpoint first: open sea below the horizon, tried at hashed candidates,

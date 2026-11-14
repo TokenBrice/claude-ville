@@ -3,6 +3,10 @@ import { tileToWorld, TILE_HALF_HEIGHT, TILE_HALF_WIDTH } from '../Projection.js
 import { offshoreSceneryRecords } from '../OffshoreScenery.js';
 import { landmarkFootprint } from '../FootprintField.js';
 import { ownerSlotFor } from '../LightSourceRegistry.js';
+import { lookStrength } from '../LookStrengths.js';
+import { lampSilhouetteFor, setLampSilhouetteMode } from '../RakingLight.js';
+import { lampSilhouetteRecords, releaseLampSilhouettes } from '../LampSilhouette.js';
+import { effectBudgetMode } from './GpuWorldPolicy.js';
 import {
     atlasSourceRect,
     shouldUseAtlasForCategory,
@@ -10,7 +14,8 @@ import {
 import { getBuildingVisual } from '../BuildingVisualRegistry.js';
 import { paintCoastWaterMaterial } from '../CoastBake.js';
 import { GROUND_CLASS, paintGroundMaterial } from '../GroundBake.js';
-import { castLightingFor, structureCast, treeCast, TREE_CAST_ALPHA } from '../RakingLight.js';
+import { castLightingFor, frameShadeLayer, stampCastFor, structureCast, treeCast, TREE_CAST_ALPHA } from '../RakingLight.js';
+import { shadeSelfProp } from '../ShadeField.js';
 import { cacheEmitterRecords } from '../EmitterCuts.js';
 import { IDLE_FRAMES, WALK_FRAMES } from '../SpriteSheet.js';
 
@@ -57,6 +62,17 @@ export const GPU_LANDMARK_IDS = Object.freeze({
 // are only deterministic defaults for agent records that do not name a
 // material; authored record/atlas values remain authoritative. Unknown
 // providers use the material contract's safe albedo-only fallback.
+// Look `nl1` — the landmarks that take the firelight ramp beyond Command, on
+// the tuned landing (Firelight.js: ground texels to the pools, warm light
+// only, a door lights its own reveal, its own fire's first course). Judged
+// at 22:00, z2/z3, with workers (s4a-firelight boards). Off: the Harbor (a
+// street lamp one tile from the quay lays a hard-edged ochre slab on the
+// quay's stone face) and the Mine (its cave mouth's warm glow lands as a
+// flat brown course, darker than today), the Portal (its own lilac wash is
+// lost to the warm-only rule) and the Archive (its right door jamb becomes
+// a flat orange post).
+export const RAMP_LANDMARKS = new Set(['forge', 'tavern', 'taskboard', 'watchtower']);
+
 export const DEFAULT_PROVIDER_MATERIAL_CLASS = 'unlit';
 export const PROVIDER_MATERIAL_PROFILES = Object.freeze({
     claude: Object.freeze({ defaultMaterialClass: 'fabric' }),
@@ -459,7 +475,7 @@ function buildingShadowRecords(renderer, drawable, sequence) {
     const grounding = getBuildingVisual(building?.type)?.grounding;
     const contact = grounding?.contact;
     if (grounding?.shadow === 'none' || !(contact?.width > 0) || !(contact?.depth > 0)) return [];
-    const cast = castLightingFor(renderer?._lastAtmosphere);
+    const cast = stampCastFor(castLightingFor(renderer?._lastAtmosphere));
     const buildingId = String(building?.type || drawable?.entry?.id || sequence).replace(/^building\./, '');
     const baked = structureCast(buildingId, grounding, contact, cast);
     if (!baked) return [];
@@ -503,7 +519,7 @@ function treeCastRecords(renderer, sprite, part, sequence) {
     const bounds = sprite.bounds || {};
     const width = finite(bounds.right) - finite(bounds.left);
     const height = -finite(bounds.top);
-    const cast = castLightingFor(renderer?._lastAtmosphere);
+    const cast = stampCastFor(castLightingFor(renderer?._lastAtmosphere));
     const baked = treeCast(width, height, cast);
     if (!baked) return [];
     const source = baked.canvas;
@@ -532,6 +548,46 @@ function treeCastRecords(renderer, sprite, part, sequence) {
         textureRevision: baked.key,
         sourceKind: 'individual',
     }];
+}
+
+// SD-1 — the sun's shade as ONE ground record: the world-locked shade field
+// (ShadeField; RakingLight `frameShadeLayer`) over its own world rect, a texel
+// per 2x1 field cell, in place of the per-building and per-tree sun trails
+// (which then bake contact only, `stampCastFor`), so overlapping shadows
+// never darken twice. It keeps the 2.9 over-water rule (`groundCast`) and
+// uploads once per field build (`textureRevision`), never per pan.
+function shadeFieldRecord(renderer) {
+    const shade = castLightingFor(renderer?._lastAtmosphere).shade;
+    const layer = shade ? frameShadeLayer() : null;
+    if (!layer) return null;
+    const { field, canvas } = layer;
+    return {
+        id: 'ground:shade',
+        stableKey: 'ground:shade',
+        textureKey: 'ground-shade-field',
+        source: canvas,
+        sourceWidth: canvas.width,
+        sourceHeight: canvas.height,
+        sx: 0,
+        sy: 0,
+        sw: canvas.width,
+        sh: canvas.height,
+        x: field.originX,
+        y: field.originY,
+        width: field.cols * field.cellW,
+        height: field.rows * field.cellH,
+        alpha: shade.alpha,
+        material: materialClassId('default'),
+        elevation: 0,
+        occluder: 0,
+        emissive: 0,
+        sequence: -0.5,
+        groundCast: true,
+        // A world-px field (not V9 screenSpace): kept off the albedo page.
+        pageable: false,
+        textureRevision: layer.revision,
+        sourceKind: 'individual',
+    };
 }
 
 function recordForBuilding(renderer, drawable, sequence) {
@@ -633,11 +689,12 @@ function recordForBuilding(renderer, drawable, sequence) {
             ? (active ? finite(materialMeta.activeEmissive, 0.12) : finite(materialMeta.emissive, 0.03))
             : 0,
         emissiveGate,
-        // 3.5 pilot opt-in: only Command's authored material pixels quantize
-        // admitted local light to the palette ramp. Every other landmark keeps
-        // today's additive response, so the ramp cannot leak through a shared
-        // atlas batch.
-        paletteRamp: buildingType === 'command',
+        // 3.5 pilot opt-in: Command's authored material pixels quantize
+        // admitted local light to the palette ramp. Look `nl1` (a switch: a
+        // ramp is on or off per building) extends it to RAMP_LANDMARKS. A
+        // landmark outside them keeps today's additive response, so the ramp
+        // cannot leak through a shared atlas batch.
+        paletteRamp: buildingType === 'command' || (RAMP_LANDMARKS.has(buildingType) && lookStrength('nl1') > 0),
         occluder: finite(materialMeta.occluder, 0.86),
         // V5 / V9 — the landmark's analytic receiver geometry (2.1): its
         // footprint's front corner; a pixel above the front edges is a wall
@@ -973,6 +1030,8 @@ function recordForProp(renderer, drawable, sequence) {
         // V5 — a prop (split halves and columns alike) receives light at its
         // own ground line, not its painter sort.
         footY: Math.round(finite(sprite.y)),
+        // SD-2 — a prop the shade field holds as a mass of its own.
+        sunSelf: shadeSelfProp(propId),
         material: materialClassId(materialName),
         elevation: materialName === 'foliage' ? 0.64 : elevated > 70 ? 0.58 : 0.34,
         emissive: emissiveSource || ownEmissive ? 0 : (materialName === 'fire' ? 0.35 : 0),
@@ -1331,10 +1390,6 @@ export function packGpuAgentFrameAtlas(renderer, records) {
         hasMaterialSource ||= Boolean(record.materialSource);
         hasEmissiveSource ||= Boolean(record.emissiveSource);
     }
-    const capacity = Math.max(agentRecords.length, renderer?.agentSprites?.size || 0, 1);
-    const bandCells = agentBandCells(capacity, cell);
-    const columns = Math.max(1, Math.ceil(Math.sqrt(capacity * bandCells)));
-    const rows = Math.max(1, Math.ceil((capacity * bandCells) / columns));
     const slots = renderer._gpuAgentAtlasSlots ||= new Map();
     const roster = [...(renderer?.agentSprites?.keys?.() || [])].sort();
     const rosterSignature = roster.join('|');
@@ -1356,6 +1411,13 @@ export function packGpuAgentFrameAtlas(renderer, records) {
         newSlot = true;
     }
     renderer._gpuAgentAtlasNextSlot = nextSlot;
+    // The grid holds every assigned slot: an extra record id (a candle, a
+    // tankard, a seat stone) keeps its slot until the roster changes, so the
+    // records present can be fewer than the slots handed out.
+    const capacity = Math.max(agentRecords.length, renderer?.agentSprites?.size || 0, nextSlot, 1);
+    const bandCells = agentBandCells(capacity, cell);
+    const columns = Math.max(1, Math.ceil(Math.sqrt(capacity * bandCells)));
+    const rows = Math.max(1, Math.ceil((capacity * bandCells) / columns));
     // 4.7 — walk strips sit in a band below the slot grid, WALK_FRAMES cells
     // wide; the band exists only while someone walks on screen.
     const stripCandidates = agentRecords.filter(record => walkStripEligible(record, cell));
@@ -1671,6 +1733,57 @@ function stampPainterDepth(records, from, drawable) {
     }
 }
 
+// NL-3 (look `nl3`, LampSilhouette.js) — each body `pointCastFor` gave a lamp
+// this frame lays its silhouette down, read from its own packed atlas cell
+// (no slot of its own). Sets next frame's silhouette mode (RakingLight): on
+// while `nl3` > 0 and EFFECT_BUDGET `lamp-silhouettes` keeps it.
+// Close-up only: below the settled zoom tier 2 (where the silhouette stops
+// reading) the mode stays off and the stepped trails stay, as at `nl3` 0;
+// the gate changes only on a settled camera (no wheel step, snap or glide
+// in flight), never mid-flight. This frame's casts were decided under last
+// frame's mode, so they are always drawn: a hand-over frame never shows both
+// or neither.
+const LAMP_SILHOUETTE_MIN_ZOOM = 2;
+
+function lampSilhouetteZoomGate(renderer) {
+    const camera = renderer?.camera;
+    const settled = camera && !camera._zoomAnimation && !camera._snapZoom && !camera._directorGlide;
+    if (settled) renderer._lampSilhouetteGate = camera.zoom >= LAMP_SILHOUETTE_MIN_ZOOM - 1e-3;
+    return renderer?._lampSilhouetteGate === true;
+}
+
+function insertLampSilhouetteRecords(renderer, records, at) {
+    const strength = lookStrength('nl3');
+    const level = renderer?.gpuWorld?._compositeQualityLevel ?? 0;
+    setLampSilhouetteMode(strength > 0 && effectBudgetMode('lamp-silhouettes', level) === 'on'
+        && lampSilhouetteZoomGate(renderer));
+    if (!(strength > 0) || !renderer?.agentSprites?.size) {
+        releaseLampSilhouettes();
+        return;
+    }
+    const bodies = [];
+    const frameKeys = renderer._gpuAgentAtlasFrameKeys;
+    for (const [agentId, sprite] of renderer.agentSprites) {
+        const cast = lampSilhouetteFor(sprite);
+        if (!cast) continue;
+        const id = `agent:${agentId}`;
+        const record = records.find(r => r.id === id);
+        if (!record?.source || !(record.width > 0) || !(record.height > 0)) continue;
+        // The frame in the body's atlas cell: its walk-strip key and frame,
+        // else the packer's frame key for the slot.
+        const contentKey = record.walkStrip
+            ? `w:${record.walkStrip.key}:${record.walkStrip.frame}:${record.sx},${record.sy}`
+            : `f:${frameKeys?.get(id) || ''}:${record.sx},${record.sy}`;
+        bodies.push({ agentId, sprite, record, cast, contentKey });
+    }
+    const shadows = lampSilhouetteRecords(bodies, {
+        strength,
+        field: renderer._footprintField || null,
+        coast: renderer._coastField || renderer.coastField || null,
+    });
+    if (shadows.length) records.splice(at, 0, ...shadows);
+}
+
 export function buildGpuWorldRecords(renderer, { drawables = [] } = {}) {
     const decision = decideAtlasCategories(renderer, drawables);
     if (renderer) renderer._gpuAtlasDecision = decision;
@@ -1707,6 +1820,13 @@ export function buildGpuWorldRecords(renderer, { drawables = [] } = {}) {
             // B.2 — the redraw's dirty rect (null = full upload).
             textureUpdates: renderer._semanticGroundUpdates || null });
     }
+    // SD-1 — the sun's shade: over the haze and the ground cues, under every
+    // contact stamp and villager mark, where the sun trails lay before it.
+    const shade = shadeFieldRecord(renderer);
+    if (shade) records.push(shade);
+    // NL-3 — the lamp silhouettes join the ground band here (under every
+    // body's contact shadow, ring and candle), once the agent atlas is packed.
+    const lampShadeAt = records.length;
     let sequence = 0;
     for (const drawable of drawables || []) {
         let next = null;
@@ -1731,6 +1851,7 @@ export function buildGpuWorldRecords(renderer, { drawables = [] } = {}) {
         sequence++;
     }
     packGpuAgentFrameAtlas(renderer, records);
+    insertLampSilhouetteRecords(renderer, records, lampShadeAt);
     const ordered = renderer?._gpuWorldOrderedRecords || [];
     ordered.length = 0;
     for (let index = 0; index < records.length; index++) {

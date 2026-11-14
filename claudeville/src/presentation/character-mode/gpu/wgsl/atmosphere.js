@@ -10,13 +10,60 @@
 // the scene and composite modules; ATMOSPHERE_SCENE_WGSL reads the scene's
 // `var<private> v_originFrac` and `seaOpenWater` (RG-5's `applySeaCourses`,
 // the squall on open water) and the batch block, so it is scene-only.
-import { CLOUD_SECOND_OCTAVE, CLOUD_TILE_SIZE, CLOUD_TILE_WORLD_SCALE } from '../GpuWorldPolicy.js';
+import { CLOUD_PLANE, CLOUD_SECOND_OCTAVE, CLOUD_TILE_SIZE, CLOUD_TILE_WORLD_SCALE } from '../GpuWorldPolicy.js';
+import { MIST } from '../GpuFrameState.js';
 
 const CLOUD_FIELD_SPAN = (CLOUD_TILE_WORLD_SCALE * CLOUD_TILE_SIZE).toFixed(1);
+const mistNumber = value => value.toFixed(2);
+
+// MS-1 — the WGSL twin of GpuWorldRenderer MIST_GLSL (low mist with a top),
+// expression for expression; u_mist -> frame.mist. Part of ATMOSPHERE_WGSL.
+export const MIST_WGSL = /* wgsl */ `
+fn mistTopAt(ground: vec2f, near: f32) -> f32 {
+    let p = floor(ground * 0.5) * 2.0 + frame.mist.yz;
+    let n1 = textureSampleLevel(cloudTile, cloudSampler, fract(p / vec2f(${MIST.scaleA.map(mistNumber).join(', ')})), 0.0).r;
+    let n2 = textureSampleLevel(cloudTile, cloudSampler, fract(p / vec2f(${MIST.scaleB.map(mistNumber).join(', ')}) + vec2f(${MIST.offsetB.map(mistNumber).join(', ')})), 0.0).r;
+    let swell = clamp((0.55 * n1 + 0.45 * n2 - 0.30) / 0.30, 0.0, 1.0);
+    // MS-2 — the burn-off shares (land, sea) (GLSL u_mistBurn).
+    return frame.mist.x * frame.mist.w * mix(${mistNumber(MIST.inland)} * frame.mistBurn.x, frame.mistBurn.y, near) * (${mistNumber(MIST.topBase)} + ${mistNumber(MIST.topSwell)} * swell);
+}
+fn mistCourseAt(depth: f32, slope: f32, order: f32) -> f32 {
+    let f = max(depth / ${mistNumber(MIST.coursePx)} + 1.0, 0.0);
+    var k = floor(f);
+    let seam = clamp(slope / ${mistNumber(MIST.coursePx)}, ${mistNumber(MIST.seamMin)}, 0.5);
+    if (f - k > 1.0 - seam && (f - k - (1.0 - seam)) / seam > order) { k += 1.0; }
+    return min(k, 3.0);
+}
+fn mistCourse(ground: vec2f, h: f32, near: f32, upright: bool, order: f32) -> f32 {
+    let top = mistTopAt(ground, near);
+    let f = max((top - h) / ${mistNumber(MIST.coursePx)} + 1.0, 0.0);
+    var slope = select(0.0, 2.0, upright);
+    if (f - floor(f) > 0.5) {
+        slope += max(abs(mistTopAt(ground + vec2f(2.0, 0.0), near) - top), abs(mistTopAt(ground + vec2f(0.0, 2.0), near) - top));
+    }
+    var k = mistCourseAt(top - h, slope, order);
+    // r6 — under one course of top, the first course through the ordered
+    // dither (GLSL mistCourse).
+    if (top < ${mistNumber(MIST.coursePx)} && top / ${mistNumber(MIST.coursePx)} <= order) { k = 0.0; }
+    return k;
+}
+fn applyMist(color: vec3f, course: f32, fogColor: vec3f, additive: bool) -> vec3f {
+    if (course < 0.5) { return color; }
+    let w = select(select(${mistNumber(MIST.courseMix[2])}, ${mistNumber(MIST.courseMix[1])}, course < 2.5), ${mistNumber(MIST.courseMix[0])}, course < 1.5);
+    if (additive) { return color * (1.0 - w); }
+    var misted = mix(color, fogColor, w);
+    let rise = dot(misted - color, GRADE_LUMA);
+    let cap = ${mistNumber(MIST.riseShare)} * max(dot(fogColor - color, GRADE_LUMA), 0.0) + ${mistNumber(MIST.riseFloor)};
+    if (rise > cap) { misted = mix(color, misted, cap / rise); }
+    return misted;
+}
+`;
 
 export const ATMOSPHERE_WGSL = /* wgsl */ `
 fn cloudNoiseAt(cell: vec2f) -> f32 {
-    let p = cell + 0.5 + frame.cloud.xy;
+    var p = cell + 0.5 + frame.cloud.xy;
+    // SEA-1 — the field on the ground plane (GLSL cloudNoiseAt).
+    if (frame.cloud.w > 0.0) { p = (cell + 0.5) * vec2f(${CLOUD_PLANE.map(v => v.toFixed(2)).join(', ')}) + frame.cloud.xy; }
     let n1 = textureSampleLevel(cloudTile, cloudSampler, fract(p / ${CLOUD_FIELD_SPAN}), 0.0).r;
     let n2 = textureSampleLevel(cloudTile, cloudSampler, fract((p / ${CLOUD_SECOND_OCTAVE.scale.toFixed(4)} + vec2f(${CLOUD_SECOND_OCTAVE.offset.map(v => v.toFixed(1)).join(', ')}))
         / ${CLOUD_FIELD_SPAN}), 0.0).r;
@@ -71,15 +118,18 @@ fn applyAtmosphereCourses(color0: vec3f, cell: vec2f, order: f32, cellCentreY: f
     if (frame.cloud.z > 0.0) { color = applyCloudCourse(color, cloudCourseAt(cloudSeamField(cell, cloudNoiseAt(cell), order, 2.0))); }
     return applyAerialHaze(color, order, cellCentreY, additive);
 }
-`;
+${MIST_WGSL}`;
 
 export const ATMOSPHERE_SCENE_WGSL = /* wgsl */ `
 fn applySeaCourses(color0: vec3f, cell: vec2f, order: f32, cellCentreY: f32, additive: bool) -> vec3f {
     var squall = 0.0;
     if (seaOpenWater) { squall = squallShade(cell, cloudNoiseAt(cell), order); }
-    if (squall <= 0.0) { return applyAtmosphereCourses(color0, cell, order, cellCentreY, additive); }
+    // SEA-1 — no cloud multiply on open water (GLSL applySeaCourses).
+    let oneCourse = seaOpenWater && frame.cloud.w > 0.0;
+    if (squall <= 0.0 && !oneCourse) { return applyAtmosphereCourses(color0, cell, order, cellCentreY, additive); }
     var cloud = 0.0;
     if (frame.cloud.z > 0.0) { cloud = cloudCourseAt(cloudSeamField(cell, cloudNoiseAt(cell), order, 2.0)) * frame.cloud.z; }
+    if (oneCourse) { cloud = 0.0; }
     let color = color0 * (vec3f(1.0) - max(cloud, squall * 0.085) * vec3f(1.0, 0.96, 0.84));
     return applyAerialHaze(color, order, cellCentreY, additive);
 }

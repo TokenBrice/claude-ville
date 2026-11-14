@@ -49,7 +49,7 @@ import { ART_RAMPS } from '../../config/artPalette.js';
 import { MAP_SIZE, TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
 import { sourceEnergyFor } from './AtmosphereState.js';
 import * as CanvasGrade from './CanvasGrade.js';
-import { cloudCourseOffset, cloudSunlitTile, cloudTileSample } from './CloudShadowCourses.js';
+import { cloudCourseOffset, cloudPlane, cloudSunlitTile, cloudTileSample } from './CloudShadowCourses.js';
 import { drawCarvedTerrainLayer } from './EmitterCuts.js';
 import { footprintFieldFor } from './FootprintField.js';
 import {
@@ -72,7 +72,7 @@ import {
     waterSunBandFor,
     waterSurfaceRgb,
 } from './CoastBake.js';
-import { BEAM_NEAR_HALF_WIDTH, DEEP_DASH_DENSITY, FOOTPRINT_MARCH_STEPS, NOON_GLINT_GROW_GAIN, resolveStarlight, resolveSurfGlow, stillWaterWindShare, swellDriftRows } from './gpu/GpuFrameState.js';
+import { BEAM_NEAR_HALF_WIDTH, DEEP_DASH_DENSITY, FOOTPRINT_MARCH_STEPS, NOON_GLINT_GROW_GAIN, resolveStarlight, resolveSurfGlow, seaSunLift, stillWaterWindShare, swellDriftRows } from './gpu/GpuFrameState.js';
 import {
     DEEP_CREST_RUN,
     GLINT_DASH_DENSITY,
@@ -145,6 +145,7 @@ import { GPU_LANDMARK_IDS } from './gpu/GpuSceneBuilder.js';
 import {
     cloudCoveredShare,
     effectBudgetMode,
+    SEA_SUN_LIFT_FLOOR,
     isAttentionLight,
     LIGHT_ROLE_CODES,
     lightLaysColumn,
@@ -1043,6 +1044,9 @@ function buildCapChunk(base, cx, cy, drift = 0, prev = null) {
         bodyKey: '',
         liftCanvas: null,
         liftKey: '',
+        // SEA-1 — the cloud shade's lift (one stop below the lit water).
+        shadeCanvas: null,
+        shadeKey: '',
     };
 }
 
@@ -1222,13 +1226,23 @@ function rebuildOverlay(state, base, fx, palette, rect, renderer, sea) {
     };
     // 3.4 — one stop lighter on open water inside the sunlit course.
     const sun = sea.sun;
-    const sunWrap = sun ? sun.size - 1 : 0;
-    const sunAt = (v, x, y) => (sun && (v & SEA_OPEN) && sun.mask[((y + sun.oy) & sunWrap) * sun.size + ((x + sun.ox) & sunWrap)] ? 1 : 0);
+    // SEA-1 — the plane tile is not square nor a power of two: wrap by modulo.
+    // SEA-1 — the plane mask holds 2-px texels; outside it (the cloud shade)
+    // the sea lifts one stop less (`shadeLift`, 0 without the look).
+    const sunT = sun?.texel || 1;
+    const sunAt = (v, x, y) => {
+        if (!sun || !(v & SEA_OPEN)) return 0;
+        const lit = sun.mask[posMod(Math.floor((y + sun.oy) / sunT), sun.height) * sun.width + posMod(Math.floor((x + sun.ox) / sunT), sun.width)];
+        return lit ? sun.lift : (sun.shadeLift || 0);
+    };
     // The stop an in-map texel of class `k` shows: an open texel's body stop
-    // (3.3 (a)), less the sunlit course.
+    // (3.3 (a)), less the sunlit course (SEA-1: the lift, floored).
+    const liftOf = (stop, lift) => (sun?.floor != null && lift ? stop - Math.max(stop - lift, Math.min(stop, sun.floor)) : lift);
+    const sunDrop = (v, x, y) => liftOf(v & 7, sunAt(v, x, y));
     const shownStop = (k, x, y) => {
         const v = infoAt(x, y);
-        return ((v & SEA_OPEN) ? (v & 7) : k) - sunAt(v, x, y);
+        const stop = (v & SEA_OPEN) ? (v & 7) : k;
+        return stop - liftOf(stop, sunAt(v, x, y));
     };
     // A marked sea texel `lighter` stops above its stop: the open sea's by its
     // band and haze course, the in-map water's stop.
@@ -1270,7 +1284,7 @@ function rebuildOverlay(state, base, fx, palette, rect, renderer, sea) {
                 const rise = v >> SEA_RISE_SHIFT & 3;
                 const p = at(x, y);
                 riseMap[p] = rise;
-                out[p] = markColour(v, x, y, rise + sunAt(v, x, y));
+                out[p] = markColour(v, x, y, rise + sunDrop(v, x, y));
             }
             if (!gust) continue;
             // The chunk's paw caps for this gust step (static otherwise).
@@ -1294,7 +1308,7 @@ function rebuildOverlay(state, base, fx, palette, rect, renderer, sea) {
                 const rise = chunk.pawRise[n];
                 const p = at(x, y);
                 riseMap[p] = rise;
-                out[p] = markColour(v, x, y, rise + sunAt(v, x, y));
+                out[p] = markColour(v, x, y, rise + sunDrop(v, x, y));
             }
             if (!fx.grassGust) continue;
             // W6.11 — the chunk's grass gust course for this gust step: the
@@ -1450,7 +1464,7 @@ function rebuildOverlay(state, base, fx, palette, rect, renderer, sea) {
                             if (k0 === CLS_EMPTY && v === SEA_NONE) continue;
                             const crest = (v & 7) !== SEA_NONE && seaNearAt(x, y) > 0.8 ? 2 : 1;
                             const lighter = Math.max(riseMap[p], crest);
-                            out[p] = (v & 7) === SEA_NONE ? palette.stops[Math.max(k0 - lighter, 0)] : markColour(v, x, y, lighter + sunAt(v, x, y));
+                            out[p] = (v & 7) === SEA_NONE ? palette.stops[Math.max(k0 - lighter, 0)] : markColour(v, x, y, lighter + sunDrop(v, x, y));
                         }
                     }
                 }
@@ -1656,10 +1670,30 @@ function resolveSun(renderer, atmosphere, fx) {
     const grade = atmosphere?.lightGrade || {};
     const weather = atmosphere?.weather || {};
     const covered = cloudCoveredShare(clamp01(weather.cloudCover));
+    // SEA-1 (look `sea1` > 0) — sunlit water lifts by seaSunLiftStops (never
+    // past SEA_SUN_LIFT_FLOOR) everywhere outside the cloud shade, also under
+    // a clear sky; the lone cloud casts no gap in it (Canvas lower tier).
+    const plane = cloudPlane();
+    if (plane.on) {
+        // r2 — whole stops on Canvas (its lift layers are cached per stop;
+        // the GPU paths dither the fraction in): a declared lower tier.
+        const lift = Math.round(seaSunLift(plane.strength, grade, weather, atmosphere?.solar?.elevationDeg));
+        if (!fx.seaWeather || lift <= 0) return null;
+        const shade = clamp01(grade.cloudShadow) > 0.02 ? covered : 0;
+        const tile = cloudSunlitTile(shade);
+        const offset = cloudCourseOffset(renderer.motionTimeMs, weather, !((renderer.motionScale ?? 1) > 0));
+        // The cloud shade sits one stop below the lit water (seaLiftedStop).
+        const shadeLift = shade > 0 ? lift - 1 : lift;
+        return {
+            tile, mask: tile.mask, width: tile.width, height: tile.height, texel: tile.texel, ox: offset.x, oy: offset.y,
+            lift, shadeLift, floor: SEA_SUN_LIFT_FLOOR,
+            key: `${tile.key}|${lift}|${shadeLift}|${offset.x},${offset.y}`,
+        };
+    }
     if (!fx.seaWeather || clamp01(grade.cloudShadow) <= 0.02 || covered <= 0 || !(clamp01(grade.sunBand) > 0.3)) return null;
     const tile = cloudSunlitTile(covered);
     const offset = cloudCourseOffset(renderer.motionTimeMs, weather, !((renderer.motionScale ?? 1) > 0));
-    return { tile, mask: tile.mask, size: tile.size, ox: offset.x, oy: offset.y, key: `${tile.key}|${offset.x},${offset.y}` };
+    return { tile, mask: tile.mask, width: tile.width, height: tile.height, ox: offset.x, oy: offset.y, lift: 1, floor: null, key: `${tile.key}|${offset.x},${offset.y}` };
 }
 
 // 3.3 (a) / 3.4 — a cap chunk's sea layer, cached per palette and ocean
@@ -1671,7 +1705,11 @@ function resolveSun(renderer, atmosphere, fx) {
 // paint.
 function chunkSeaCanvas(state, chunk, cx, cy, palette, key, renderer, lift) {
     if (!lift && !chunk.body.length) return null;
-    if ((lift ? chunk.liftKey : chunk.bodyKey) === key) return lift ? chunk.liftCanvas : chunk.bodyCanvas;
+    // SEA-1 — the cloud shade's lift (one stop below the lit water) keeps its
+    // own cached layer beside the lit one (`lift.slot`).
+    const name = lift ? (lift.slot === 'shade' ? 'shadeCanvas' : 'liftCanvas') : 'bodyCanvas';
+    const keyName = lift ? (lift.slot === 'shade' ? 'shadeKey' : 'liftKey') : 'bodyKey';
+    if (chunk[keyName] === key) return chunk[name];
     const scratch = state.chunkScratch ||= (() => {
         const image = new ImageData(CHUNK_W, CHUNK_H);
         return { image, u32: new Uint32Array(image.data.buffer) };
@@ -1695,21 +1733,24 @@ function chunkSeaCanvas(state, chunk, cx, cy, palette, key, renderer, lift) {
         u32[idx] = palette.stops[stop];
     };
     if (lift) {
+        // SEA-1 — `lift` is the sun ({ lift, floor }): its stops, floored.
+        const steps = lift.lift ?? 1;
+        const floor = lift.floor ?? null;
         for (let idx = 0; idx < info.length; idx++) {
-            if (info[idx] & SEA_OPEN) paint(idx, Math.max((info[idx] & 7) - 1, 0));
+            if (!(info[idx] & SEA_OPEN)) continue;
+            const s = info[idx] & 7;
+            paint(idx, floor != null ? Math.max(s - steps, Math.min(s, floor)) : Math.max(s - 1, 0));
         }
     } else {
         for (const idx of chunk.body) paint(idx, info[idx] & 7);
     }
-    const name = lift ? 'liftCanvas' : 'bodyCanvas';
     if (!chunk[name]) {
         chunk[name] = document.createElement('canvas');
         chunk[name].width = CHUNK_W;
         chunk[name].height = CHUNK_H;
     }
     chunk[name].getContext('2d').putImageData(scratch.image, 0, 0);
-    if (lift) chunk.liftKey = key;
-    else chunk.bodyKey = key;
+    chunk[keyName] = key;
     state.seaCanvasChunks.add(chunk);
     return chunk[name];
 }
@@ -1734,14 +1775,26 @@ function rebuildSun(state, renderer, rect, sun, palette, key) {
     for (let cy = Math.floor(y0 / CHUNK_H); cy * CHUNK_H < y0 + h; cy++) {
         for (let cx = Math.floor(x0 / CHUNK_W); cx * CHUNK_W < x0 + w; cx++) {
             const chunk = state.caps.get(chunkId(cx, cy));
-            if (chunk) c.drawImage(chunkSeaCanvas(state, chunk, cx, cy, palette, key, renderer, true), cx * CHUNK_W, cy * CHUNK_H);
+            if (chunk) c.drawImage(chunkSeaCanvas(state, chunk, cx, cy, palette, sun.floor != null ? `${key}|lift${sun.lift}` : key, renderer, sun), cx * CHUNK_W, cy * CHUNK_H);
         }
     }
+    const t = sun.texel || 1;
     const pattern = c.createPattern(sun.tile.canvas, 'repeat');
-    pattern?.setTransform?.(new DOMMatrix([1, 0, 0, 1, -sun.ox, -sun.oy]));
+    pattern?.setTransform?.(new DOMMatrix([t, 0, 0, t, -sun.ox, -sun.oy]));
     c.globalCompositeOperation = 'destination-in';
     c.fillStyle = pattern;
     c.fillRect(x0, y0, w, h);
+    // SEA-1 — under the lit layer, the shade's own lift (one stop less).
+    if (sun.shadeLift > 0) {
+        c.globalCompositeOperation = 'destination-over';
+        const shade = { lift: sun.shadeLift, floor: sun.floor, slot: 'shade' };
+        for (let cy = Math.floor(y0 / CHUNK_H); cy * CHUNK_H < y0 + h; cy++) {
+            for (let cx = Math.floor(x0 / CHUNK_W); cx * CHUNK_W < x0 + w; cx++) {
+                const chunk = state.caps.get(chunkId(cx, cy));
+                if (chunk) c.drawImage(chunkSeaCanvas(state, chunk, cx, cy, palette, `${key}|lift${sun.shadeLift}`, renderer, shade), cx * CHUNK_W, cy * CHUNK_H);
+            }
+        }
+    }
     c.globalCompositeOperation = 'source-over';
     layer.x = x0;
     layer.y = y0;
@@ -2370,6 +2423,8 @@ export function drawCanvasWaterState(ctx, renderer, atmosphere) {
         chunk.bodyKey = '';
         chunk.liftCanvas = null;
         chunk.liftKey = '';
+        chunk.shadeCanvas = null;
+        chunk.shadeKey = '';
         state.seaCanvasChunks.delete(chunk);
     }
     const weather = atmosphere?.weather || {};

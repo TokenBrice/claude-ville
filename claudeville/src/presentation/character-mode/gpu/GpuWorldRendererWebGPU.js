@@ -35,6 +35,10 @@ import {
     resolveFatPixels,
     resolveFrameGrade,
     resolveLights,
+    resolveMist,
+    resolveMistBurn,
+    resolveSeaState,
+    createSeaState,
     resolveOccluderChannel,
     resolvePaletteLut,
     resolvePuddles,
@@ -79,7 +83,12 @@ import {
     writeTextureRows,
 } from './wgpu/GpuWgpuTextures.js';
 import { GpuWgpuTimer } from './wgpu/GpuWgpuTimestamps.js';
+import { resolveFirelight } from './Firelight.js';
+import { resolveSunShade } from './SunShade.js';
 import { GpuFrameReuse, stageGpuFrameBindings } from './GpuFrameReuse.js';
+import { createGpuRainField, gpuRainField, rainSplashMask } from '../WeatherRenderer.js';
+import { lookStrength } from '../LookStrengths.js';
+import { RAIN_BINDING, RAIN_UNIFORM_BYTES } from './wgsl/rain.js';
 
 export { probeWebGpu };
 
@@ -256,6 +265,11 @@ export class GpuWorldRendererWebGPU {
         this._particleCount = 0;
         this._particleMotifTexture = null;
         this.particleInstances = 0;
+        // RN-1 — the world rain field (WeatherRenderer.gpuRainField).
+        this._rain = createGpuRainField();
+        this._rainMaskView = null;
+        this.rainShare = 0;
+        this.rainInstances = 0;
         this._batchScratch = [];
         this._albedoPage = null;
         this.emptyAlbedoPage = null;
@@ -269,6 +283,9 @@ export class GpuWorldRendererWebGPU {
         this._camera = { xy: [0, 0], scale: 0 };
         this._waterFx = createWaterFx();
         this._atmosphereCourses = createAtmosphereCourses();
+        this.mist = new Float32Array(4);
+        this.mistBurn = Float32Array.from([1, 1]);
+        this._seaState = createSeaState();
         this._seaWeather = createSeaWeather();
         this._seaWeatherFrame = { sunlit: 0, gust: null };
         this._beam = createBeamUniforms();
@@ -589,6 +606,9 @@ export class GpuWorldRendererWebGPU {
         this._markRecordBufferBytes = 0;
         this._bloomParamBuffer = device.createBuffer({ size: 512, usage: u.UNIFORM | u.COPY_DST, label: 'world-bloom-params' });
         this._particleBuffer = device.createBuffer({ size: this._particleBytes.byteLength, usage: u.VERTEX | u.COPY_DST, label: 'world-particles' });
+        this._rainBuffer = device.createBuffer({ size: RAIN_UNIFORM_BYTES, usage: u.UNIFORM | u.COPY_DST, label: 'world-rain' });
+        this._rainBindGroup = null;
+        this._rainBindGroupView = null;
         this._lightRecordBuffer = device.createBuffer({ size: LIGHT_RECORD_BUFFER_BYTES, usage: u.STORAGE | u.COPY_DST, label: 'world-light-records' });
         this._lightRecordsSource = null;
         this._lightRecordsRevision = null;
@@ -625,7 +645,7 @@ export class GpuWorldRendererWebGPU {
         this._albedoPage?.release();
         for (const texture of [this.emptyMaterialTexture, this.emptyAlbedoPage, this.cloudTileTexture]) texture?.destroy?.();
         for (const buffer of [this._frameBuffer, this._batchBuffer, this._recordBuffer, this._markRecordBuffer,
-            this._bloomParamBuffer, this._particleBuffer, this._lightRecordBuffer]) buffer?.destroy?.();
+            this._bloomParamBuffer, this._particleBuffer, this._lightRecordBuffer, this._rainBuffer]) buffer?.destroy?.();
         this._timer?.destroy();
         this._abandonGpuResources();
     }
@@ -656,6 +676,10 @@ export class GpuWorldRendererWebGPU {
         this._markRecordBufferBytes = 0;
         this._bloomParamBuffer = null;
         this._particleBuffer = null;
+        this._rainBuffer = null;
+        this._rainBindGroup = null;
+        this._rainBindGroupView = null;
+        this._rainMaskView = null;
         this._lightRecordBuffer = null;
         this._lightRecordsSource = null;
         this._particleMotifTexture = null;
@@ -1184,6 +1208,10 @@ export class GpuWorldRendererWebGPU {
         s.overcast = clamp((cloudCover - 0.7) / 0.2, 0, 1);
         s.weather = weather;
         this._frameWeather = weather;
+        // MS-1 — the low mist (prepareFrame's resolveMist; zero = today's veil).
+        s.mist = this.mist;
+        // MS-2 — the burn-off shares of the mist's top.
+        s.mistBurn = this.mistBurn;
         const sun = feed.lighting?.sunDirIso || {};
         s.sun = [finite(sun.x, -0.7071), finite(sun.y, -0.7071), clamp(finite(feed.lighting?.sunWarmth), 0, 1), clamp(finite(grade.sunBand, 1), 0, 1)];
         this._frameGradeForComposite = grade;
@@ -1194,6 +1222,10 @@ export class GpuWorldRendererWebGPU {
         s.cloud = courses.cloud;
         s.cloudThresholds = courses.thresholds;
         s.cloudLone = courses.lone;
+        // SEA-1 — the sunlit water's lift in stops.
+        s.seaLift = courses.lift;
+        // SEA-2 / SEA-3 — the sky on lit water and the sea state (prepareFrame).
+        s.seaState = this._seaState.uniform;
         s.haze = courses.haze;
         // Sea weather: the sunlit ceiling and the C-W3 gust field.
         const sea = resolveSeaWeather(qualityLevel, camera, feed, {
@@ -1252,14 +1284,17 @@ export class GpuWorldRendererWebGPU {
         this.wetReflectionCount = lightFrame.wetReflectionCount;
         s.wetReflectionCount = this.wetReflectionCount;
         // 5.2 — puddles.
-        const puddles = resolvePuddles(feed, this._puddles);
+        const puddles = resolvePuddles(feed, this._puddles, qualityLevel);
+        // GW-1 / GW-2 — the ground weather field (RGBA8, raw bytes) takes
+        // this binding instead of the R8 mask while either look is on.
         const puddleMask = puddles.mask
-            ? this.uploadTypedTexture('ground:puddle-mask', {
-                width: puddles.mask.cols, height: puddles.mask.rows, format: 'r8', data: puddles.mask.data, revision: puddles.mask.revision,
+            ? this.uploadTypedTexture(puddles.textureKey, {
+                width: puddles.mask.cols, height: puddles.mask.rows, format: puddles.format, data: puddles.mask.data, revision: puddles.revision,
             })
             : null;
         this._puddleActive = Boolean(puddleMask);
         s.puddles = puddleMask ? puddles.puddles : 0;
+        s.groundWeather = puddleMask ? puddles.groundWeather : ZERO4;
         if (puddleMask) {
             s.puddleRect = puddles.rect;
             s.puddleSky = vec3Pair(puddles.sky);
@@ -1268,6 +1303,8 @@ export class GpuWorldRendererWebGPU {
         const lut = lutSource ? this._textureFor('lut:palette-ramp', lutSource, feed.paletteLutRevision ?? null) : null;
         this.paletteLutActive = Boolean(lut);
         s.hasPaletteLut = Boolean(lut);
+        // NL-2 / NL-1 — firelight on people and the tuned ramp (Firelight.js).
+        s.firelight = resolveFirelight(this._firelight ||= new Float32Array(2));
         const shaderTimeMs = ((finite(feed.timeMs, Date.now()) % 1000000) + 1000000) % 1000000;
         s.timeMs = shaderTimeMs;
         s.motionScale = feed.reducedMotion ? 0 : clamp(finite(feed.motionScale, 1), 0, 2);
@@ -1298,6 +1335,12 @@ export class GpuWorldRendererWebGPU {
         s.footprintRect = [finite(field?.originX), finite(field?.originY), footprint ? finite(field.cell, 4) : 0];
         s.footprintSize = [footprint ? field.width : 0, footprint ? field.height : 0];
         s.marchSteps = this.footprintMarchSteps;
+        // SD-2 — the sun's shade field, uploaded once per built field (off:
+        // the empty view and a zero rect, so no fragment reads it).
+        const sunShade = resolveSunShade(feed, this._sunShade ||= {});
+        const shadeField = sunShade.texture ? this.uploadTypedTexture('field:shade', sunShade.texture) : null;
+        s.shadeRect = shadeField ? sunShade.rect : ZERO4;
+        s.shade = sunShade.steps;
         // 2.10 — declared exclusion: the reader stays off (w = 0).
         s.radianceGrid = ZERO4;
         // The composite's open sea and present terms.
@@ -1344,6 +1387,7 @@ export class GpuWorldRendererWebGPU {
             puddleMask,
             paletteLut: lut,
             motifs: this._particleCount > 0 ? this._particleMotifTexture : null,
+            shadeField,
         });
     }
 
@@ -1361,6 +1405,7 @@ export class GpuWorldRendererWebGPU {
             [F.paletteLut, views.paletteLut || empty],
             [F.radianceTex, empty],
             [F.motifs, views.motifs || empty],
+            [F.shadeField, views.shadeField || empty],
         ];
         const key = resources.map(([, view]) => gpuId(view)).join(',');
         if (key === this._frameBindKey && this._frameBindGroup) return;
@@ -1520,6 +1565,13 @@ export class GpuWorldRendererWebGPU {
         const qualityLevel = Math.min(this.qualityLadder.getLevel(), POST_FX_LEVELS.MINIMAL);
         this._preparedQualityLevel = qualityLevel;
         this._preparedFeed = feed;
+        // MS-1 — the low mist; WorldFrameRenderer reads it to drop the fog-bank records.
+        this.mist = resolveMist(feed, qualityLevel, this.mist);
+        // MS-2 — the burn-off shares (land, sea) of the mist's top.
+        this.mistBurn = resolveMistBurn(feed, this.mist, this.mistBurn);
+        // SEA-2 / SEA-3 — the sky on lit water and the sea state, once a frame.
+        const seaNight = waterMoodFor({ lightGrade: resolveFrameGrade(feed), weather: feed.weather || feed.atmosphere?.weather }).night;
+        this._seaState = resolveSeaState(feed, qualityLevel, seaNight, this._seaState);
         return resolveOccluderChannel(feed);
     }
 
@@ -1540,6 +1592,38 @@ export class GpuWorldRendererWebGPU {
         } finally {
             input.forceFreshOutput = previous;
         }
+    }
+
+    // RN-1 — this frame's world rain (look `rn1`; EFFECT_BUDGET `world-rain`,
+    // off at MINIMAL, where the overlay keeps the whole field) and its
+    // open-ground splash mask (GpuWorldRenderer `_prepareRain`'s twin).
+    _prepareRain(feed, camera, qualityLevel) {
+        const mask = lookStrength('rn1') > 0 ? rainSplashMask(feed?.rainSplashTiles?.()) : null;
+        this._rainMaskView = mask ? this.uploadTypedTexture('rain:splash-mask', mask) : null;
+        const field = gpuRainField(feed?.atmosphere, camera, {
+            timeMs: feed?.timeMs,
+            viewport: feed?.rainViewport,
+            on: effectBudgetMode('world-rain', qualityLevel) === 'on' && Boolean(this._rainBuffer),
+            splashMask: Boolean(this._rainMaskView),
+        }, this._rain);
+        this.rainInstances = field.instances;
+        this.rainShare = field.instances > 0 ? field.share : 0;
+    }
+
+    _rainGroup() {
+        const view = this._rainMaskView || this.emptyMaterialView;
+        if (!this._rainBindGroup || this._rainBindGroupView !== view) {
+            this._rainBindGroup = this.device.createBindGroup({
+                label: 'world-rain',
+                layout: this.pipelines.layouts.rain,
+                entries: [
+                    { binding: RAIN_BINDING.rain, resource: { buffer: this._rainBuffer } },
+                    { binding: RAIN_BINDING.mask, resource: view },
+                ],
+            });
+            this._rainBindGroupView = view;
+        }
+        return this._rainBindGroup;
     }
 
     render(input = {}, repeatOutput = false) {
@@ -1599,6 +1683,7 @@ export class GpuWorldRendererWebGPU {
                     width: motifs.width, height: motifs.height, format: 'r8', data: motifs.data, revision: motifs.revision,
                 });
             }
+            this._prepareRain(feed, camera, qualityLevel);
             let atlasRecords = 0;
             let individualRecords = 0;
             for (let index = 0; index < records.length; index++) {
@@ -1642,6 +1727,10 @@ export class GpuWorldRendererWebGPU {
             reuse.bytes(this._frameViews.buffer);
             reuse.bytes(this._batchViews.buffer, batchByteLength);
             reuse.bytes(this._particleBytes, this._particleCount * GPU_PARTICLE_INSTANCE_BYTES);
+            // RN-1 — the rain field's uniforms and instance count.
+            reuse.bytes(this._rain.uniforms, this.rainInstances > 0 ? RAIN_UNIFORM_BYTES : 0);
+            reuse.scalar(this.rainInstances);
+            reuse.scalar(this._rainMaskView);
             reuse.bytes(this._markStaging.f32, this._markByteLength);
             reuse.bytes(this._bloomParams.buffer);
             stageGpuFrameBindings(reuse, this, batches, markBatches);
@@ -1656,6 +1745,7 @@ export class GpuWorldRendererWebGPU {
             device.queue.writeBuffer(this._frameBuffer, 0, this._frameViews.buffer);
             device.queue.writeBuffer(this._batchBuffer, 0, this._batchViews.buffer, 0, batchByteLength);
             if (this._particleCount) device.queue.writeBuffer(this._particleBuffer, 0, this._particleBytes, 0, this._particleCount * GPU_PARTICLE_INSTANCE_BYTES);
+            if (this.rainInstances) device.queue.writeBuffer(this._rainBuffer, 0, this._rain.uniforms);
             if (this._markByteLength) device.queue.writeBuffer(this._markRecordBuffer, 0, this._markStaging.f32.buffer, 0, this._markByteLength);
             passCpu.upload = { cpuMs: performance.now() - mark, draws: 0, bytes: byteLength + this.uploadBytes - passUploadBytes };
             // GPU timer: 1 frame in 4 (every frame while the pacing window
@@ -1714,6 +1804,13 @@ export class GpuWorldRendererWebGPU {
                 scene.setPipeline(this.pipelines.particles(writeEmission, roles, writeEmission));
                 scene.setVertexBuffer(0, this._particleBuffer);
                 scene.draw(4, this._particleCount, 0, 0);
+            }
+            // RN-1 — the world rain, after the particles, on the same depth.
+            if (this.rainInstances > 0) {
+                if (boundRole) scene.setBlendConstant({ r: 0, g: 0, b: 0, a: 0 });
+                scene.setPipeline(this.pipelines.rain(writeEmission, roles, writeEmission));
+                scene.setBindGroup(1, this._rainGroup());
+                scene.draw(12, this.rainInstances, 0, 0);
             }
             scene.end();
             passCpu.scene = { cpuMs: performance.now() - mark, draws, bytes: this.width * this.height * 4 * (writeEmission ? 2 : 1) };

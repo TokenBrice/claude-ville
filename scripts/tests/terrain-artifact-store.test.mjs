@@ -79,10 +79,11 @@ function artifactFixture(value = 17) {
     const source = { world: { buildings: new Map() }, waterTiles: new Set() };
     const field = getCoastField(source);
     source._coastBake = { key: field.key, fieldMs: field.buildMs, bakeMs: 1, coast: null, waterFields: null };
-    return { schema: 1, bounds: { x: 0, y: 0, w: 2, h: 2 }, dpr: 1, width: 2, height: 2,
+    return { schema: 2, bounds: { x: 0, y: 0, w: 2, h: 2 }, dpr: 1, width: 2, height: 2,
         rgba: new Uint8ClampedArray([value, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255]),
         ground: { field: { bounds: { x: -w / 2, y: -TILE_HEIGHT / 2, w, h }, cols: w / 2, rows: h, texelW: 2,
-            classes: new Uint8Array(count) }, puddleMask: { data: new Uint8Array(count), cols: w / 2, rows: h,
+            classes: new Uint8Array(count),
+            weather: { data: new Uint8Array(count * 4), cols: w / 2, rows: h, x0: -w / 2, y0: -TILE_HEIGHT / 2, texelW: 2 } }, puddleMask: { data: new Uint8Array(count), cols: w / 2, rows: h,
             x0: -w / 2, y0: -TILE_HEIGHT / 2, texelW: 2, revision: 'ground' }, groundBakeMs: 3 },
         coast: captureCoastArtifact(source) };
 }
@@ -122,6 +123,8 @@ for (const [label, corrupt] of [
     ['RGBA byte', entry => { entry.artifact.rgba[0] ^= 1; }],
     ['semantic byte', entry => { entry.artifact.ground.puddleMask.data[4] ^= 1; }],
     ['missing field', entry => { delete entry.artifact.ground.puddleMask; }],
+    ['weather byte', entry => { entry.artifact.ground.field.weather.data[7] ^= 1; }],
+    ['schema-1 artifact without its weather field', entry => { entry.artifact.schema = 1; delete entry.artifact.ground.field.weather; }],
     ['oversize entry', entry => { entry.bytes = TERRAIN_ARTIFACT_MAX_BYTES + 1; }],
 ]) {
     test(`${label} is rejected and deleted together with its LRU row`, async () => {
@@ -158,4 +161,43 @@ test('an empty completed transaction is not a successful put', async () => {
     const { store, indexedDB, name } = fixture({ omitGetAllSuccess: true });
     assert.equal(await store.put('terrain', artifactFixture()), false);
     assert.equal(indexedDB.records(name, 'artifacts').has('terrain'), false);
+});
+
+// GW — the saved-bake key says whether the bake holds the ground weather
+// field (IsometricRenderer passes GroundBake.groundWeatherWanted per backend).
+test('GW: Canvas with gw1 on saves and restores a field-less bake; a GPU session misses it and saves its own with the field', async () => {
+    const { terrainArtifactKey } = await import('../../claudeville/src/presentation/character-mode/TerrainArtifactStore.js');
+    const { groundWeatherWanted } = await import('../../claudeville/src/presentation/character-mode/GroundBake.js');
+    const { resetLookStrengths, setLookStrength } = await import('../../claudeville/src/presentation/character-mode/LookStrengths.js');
+    const inputs = { assetVersion: 'a', configHash: 'c', season: 'autumn', sceneryRevision: 0, snowBucket: 0, frost: 0,
+        phenology: 'fall-4', bounds: { x: 0, y: 0, w: 2, h: 2 }, dpr: 1 };
+    const keyFor = (mode) => terrainArtifactKey({ ...inputs, groundWeather: groundWeatherWanted({ worldRendererMode: mode }, inputs.frost) });
+    try {
+        for (const id of ['gw1', 'gw2', 'gw3']) setLookStrength(id, 0);
+        const today = terrainArtifactKey({ ...inputs, groundWeather: false });
+        assert.equal(keyFor('canvas'), today, 'looks 0: Canvas key byte-identical to today');
+        assert.equal(keyFor('webgl'), today, 'looks 0: GPU key byte-identical to today');
+        setLookStrength('gw1', 0.5);
+        const { store } = fixture();
+        const canvasKey = keyFor('canvas');
+        const gpuKey = keyFor('webgl');
+        assert.equal(canvasKey, today, 'Canvas with gw1 on: the field-less key');
+        assert.notEqual(gpuKey, canvasKey);
+        const bare = artifactFixture(5);
+        delete bare.ground.field.weather;
+        assert.equal(await store.put(canvasKey, bare), true, 'Canvas saves its field-less bake');
+        assert.ok(await store.get(canvasKey), 'and restores it on the next Canvas boot');
+        assert.equal(await store.get(gpuKey), null, 'a GPU session misses it by key');
+        assert.equal(await store.put(gpuKey, bare), false, 'a field-less bake is never saved under the field key');
+        const withField = artifactFixture(6);
+        assert.equal(await store.put(gpuKey, withField), true, 'the GPU rebake saves under its own key with the field');
+        assert.ok((await store.get(gpuKey)).ground.field.weather, 'and restores with the field');
+        // A backend that changes after its key was computed (WebGPU fails, the
+        // renderer falls back to Canvas): the new key is the Canvas one, and a
+        // bake whose contents disagree with its key is deleted, never restored.
+        assert.notEqual(keyFor('canvas'), gpuKey);
+        assert.equal(await store.put(canvasKey, withField), false, 'a field bake never lands under a field-less key');
+    } finally {
+        resetLookStrengths();
+    }
 });

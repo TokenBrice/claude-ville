@@ -6,7 +6,9 @@ import {
     createAtmosphereSnapshot,
     resolveWeather,
     resolveWeatherAt,
+    weatherTypeFromRoll,
 } from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
+import { resetLookStrengths, setLookStrength } from '../../claudeville/src/presentation/character-mode/LookStrengths.js';
 import { SeasonalAmbience } from '../../claudeville/src/presentation/character-mode/SeasonalAmbience.js';
 import { WIND_SPEED_BY_TYPE, baseWindX, windAt } from '../../claudeville/src/presentation/character-mode/Wind.js';
 import { stormStrikeAt } from '../../claudeville/src/presentation/character-mode/WeatherRenderer.js';
@@ -34,8 +36,18 @@ test('two dates yield different weather timelines (no null seed coerces to 0)', 
     assert.equal(resolveWeather(date, { type: 'rain' }, { seedOverride: 7 }).seed, 7);
 });
 
-test('a year of village weather covers every type near the authored odds', () => {
-    const expected = { clear: 38.6, 'partly-cloudy': 29.8, overcast: 13.3, fog: 13.7, rain: 3.4, storm: 1.2 };
+// WX-1 (look `wx1`, on by default since the operator approved it): night
+// takes its extra fog from overcast, so rain and storm keep their daytime
+// bands at night. The off figures are the pre-WX-1 model's 2026 census.
+const AUTHORED_ODDS = {
+    on: { clear: 38.4, 'partly-cloudy': 29.7, overcast: 11.2, fog: 12.9, rain: 6.0, storm: 1.8 },
+    off: { clear: 38.6, 'partly-cloudy': 29.8, overcast: 13.3, fog: 13.7, rain: 3.4, storm: 1.2 },
+};
+
+for (const [label, wx1] of [['on', 1], ['off', 0]]) test(`a year of village weather covers every type near the authored odds (night rain ${label})`, () => {
+    resetLookStrengths();
+    setLookStrength('wx1', wx1);
+    const expected = AUTHORED_ODDS[label];
     const counts = {};
     let total = 0;
     for (let day = 0; day < 365; day++) {
@@ -50,6 +62,41 @@ test('a year of village weather covers every type near the authored odds', () =>
         const actual = (100 * (counts[type] || 0)) / total;
         assert.ok(Math.abs(actual - share) <= 2, `${type}: ${actual.toFixed(1)} % vs ${share} %`);
     }
+    resetLookStrengths();
+});
+
+test('WX-1: rain and storm can start at night only with the switch on; the day is untouched', () => {
+    const night = [0, 60, 200, 330, 400, 21 * 60, 23 * 60 + 59];
+    const day = [7 * 60, 9 * 60, 13 * 60, 18 * 60, 20 * 60 + 59];
+    const rolls = Array.from({ length: 1000 }, (_, i) => i / 1000);
+    for (const minute of night) {
+        const off = rolls.map(roll => weatherTypeFromRoll(roll, minute, false));
+        const on = rolls.map(roll => weatherTypeFromRoll(roll, minute, true));
+        assert.ok(!off.includes('rain') && !off.includes('storm'), 'off: the fog ceiling swallows rain at night');
+        assert.ok(on.includes('rain') && on.includes('storm'), 'on: rain and storm keep their bands');
+        // Off, fog is [0.86, 1.02) clipped to 0.14 of the rolls; on, the
+        // night fog band is [0.78, 0.94), 0.16 wide, cut from overcast.
+        assert.equal(off.filter(t => t === 'fog').length, 140);
+        assert.equal(on.filter(t => t === 'fog').length, 160);
+        assert.equal(on.filter(t => t === 'rain' || t === 'storm').length, 60);
+        assert.equal(on.filter(t => t === 'clear').length, off.filter(t => t === 'clear').length);
+        assert.equal(on.filter(t => t === 'partly-cloudy').length, off.filter(t => t === 'partly-cloudy').length);
+    }
+    for (const minute of day) {
+        assert.deepEqual(rolls.map(roll => weatherTypeFromRoll(roll, minute, true)), rolls.map(roll => weatherTypeFromRoll(roll, minute, false)));
+    }
+    // The look reaches the date-seeded timeline, and only through the switch.
+    resetLookStrengths();
+    const date = new Date(2026, 10, 13, 12);
+    setLookStrength('wx1', 0);
+    const off = knotsOf(buildWeatherTimeline(date));
+    setLookStrength('wx1', 0.49);
+    assert.deepEqual(knotsOf(buildWeatherTimeline(date)), off);
+    setLookStrength('wx1', 0.5);
+    const on = knotsOf(buildWeatherTimeline(date));
+    setLookStrength('wx1', 1);
+    assert.deepEqual(knotsOf(buildWeatherTimeline(date)), on);
+    resetLookStrengths();
 });
 
 test('resolveWeather ignores any agent input: the weather is the timeline', () => {

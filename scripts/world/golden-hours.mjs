@@ -25,6 +25,7 @@
 //   --renderers=webgpu,webgl,canvas  --scenes=clear-1200,storm-1915
 //   --url=<ClaudeVille URL> (default: an isolated server)  --json=<report path>
 //   --frames=<dir>  also write each settled frame as PNG there, for review
+//   --look=<id:value,...>  LookStrengths overrides (report a look; not with --update)
 // Exit: 0 pass; 1 a failure; 2 nothing failed but a backend was unavailable.
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
@@ -56,6 +57,9 @@ const SETTLE_MS = 1200;
 const MAX_CAPTURES = 8;
 
 class BackendUnavailable extends Error {}
+// `--look=id:value,...` — LookStrengths overrides set in the page before any
+// scene, for reporting a look's numbers (never with --update).
+const LOOK_OVERRIDES = {};
 
 function parseArgs(argv) {
   const options = { renderers: [...GOLDEN_BACKENDS], scenes: null, update: false, url: process.env.CLAUDEVILLE_URL || null, json: null, frames: null };
@@ -68,8 +72,15 @@ function parseArgs(argv) {
     else if (flag === '--url') options.url = value || null;
     else if (flag === '--json') options.json = value || null;
     else if (flag === '--frames') options.frames = value || null;
-    else throw new Error(`unknown option ${arg}`);
+    else if (flag === '--look') {
+      for (const pair of value.split(',')) {
+        const [id, strength] = pair.split(':');
+        if (!id || !Number.isFinite(Number(strength))) throw new Error(`look must be id:value, received ${pair}`);
+        LOOK_OVERRIDES[id] = Number(strength);
+      }
+    } else throw new Error(`unknown option ${arg}`);
   }
+  if (options.update && Object.keys(LOOK_OVERRIDES).length) throw new Error('--look cannot recalibrate the curve (--update)');
   for (const r of options.renderers) if (!GOLDEN_BACKENDS.includes(r)) throw new Error(`unknown renderer ${r}`);
   return options;
 }
@@ -108,7 +119,11 @@ async function openBackend(browser, baseUrl, renderer) {
     await context.close();
     throw new BackendUnavailable(`${renderer} backend did not start (${reason || 'no reason reported'})`);
   }
-  await page.evaluate(async ({ pinned, pose }) => {
+  await page.evaluate(async ({ pinned, pose, looks }) => {
+    if (Object.keys(looks).length) {
+      const L = await import('/src/presentation/character-mode/LookStrengths.js');
+      for (const [id, strength] of Object.entries(looks)) L.setLookStrength(id, strength);
+    }
     // Hold the ladder FULL and the mark governor calm: no shed or admit
     // decision depends on host load.
     window.__claudeVillePerf ||= {};
@@ -135,7 +150,7 @@ async function openBackend(browser, baseUrl, renderer) {
     const style = document.createElement('style');
     style.textContent = 'body * { visibility: hidden !important; } #worldStack, #worldCanvas, #worldFxCanvas { visibility: visible !important; } #worldOverlayCanvas { visibility: hidden !important; }';
     document.head.appendChild(style);
-  }, { pinned: PINNED_DATE_MS, pose: POSE });
+  }, { pinned: PINNED_DATE_MS, pose: POSE, looks: LOOK_OVERRIDES });
   const backend = await page.evaluate(() => {
     const r = window.__claudeVilleApp.renderer;
     const solar = r.atmosphereState.snapshot().solar;

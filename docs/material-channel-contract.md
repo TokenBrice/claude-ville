@@ -70,8 +70,24 @@ Stable material classes, in numeric encoding order, are:
 Append new classes; never reorder these indices. The authored key convention is
 warm light from screen upper-left. The GPU sun-key material response
 (`applyAuthoredSunBand`) has two restrained material-wide bands, `0.86 / 1.00`,
-and infers no roof or wall normal; only the local-light loop reads faces (the
-2.3 surface code or a landmark's analytic footprint, below).
+and by itself infers no roof or wall normal. With look `sd2` above 0 (SD-2,
+`gpu/SunShade.js` `sunShadeStep`, right after the band and before the grade) a
+sprite fragment then drops one stepped course where another mass's shadow falls
+on it (cast shade), read from the shade field (*Sun shade field*, below). A
+face turned from the sun takes no step: the art already paints that side
+darker, so nothing is added that does not move with the sun. The faces are the
+ones the local-light loop reads (the 2.3 surface code or a landmark's analytic
+footprint, below): a right wall (face 2) is turned all day, the authored sun
+standing screen-left, and is never stepped; a left wall, a roof or a raised
+deck takes the massing's verdict at its drawn position (lit, in cast shade, or
+turned, which keeps it out of the cast test its own mass would always answer),
+so a roof texel is judged at its true height, which its surface code does not
+hold. The step has one weight all day (a low sun is a weaker light) and is
+gone, with the ground layer, once the real sun is at or under the horizon.
+Emitting texels are exempt in proportion to their emission; additive batches,
+`screenSpace` marks and `shadeExempt` records (an action-needed villager's
+body, a petitioner's candle) are never stepped; and ground-self records keep
+the SD-1 ground layer, so no texel is darkened twice.
 
 ## Manifest Fields
 
@@ -185,10 +201,11 @@ ground-cue chord. A cue batch holding dot runs and a batch holding building or
 tree ground casts stage the tail (their flags).
 
 **Flags** (`GPU_RECORD_FLAGS` in `gpu/GpuWorldPolicy.js`, loc3.w). One bit per
-meaning, never reused. `assignGpuRecordV9Fields` packs bits 1-256 and 1024
-from the record's booleans; the mark and cue producers set `flags` directly;
-`wgsl/common.js` generates the WGSL `RECORD_FLAG_*` constants from the same
-object. Bits 2048 and up are free.
+meaning, never reused. `assignGpuRecordV9Fields` packs bits 1-256, 1024, 4096
+and 8192 from the record's booleans; the mark and cue producers set `flags`
+directly; `wgsl/common.js` generates the WGSL `RECORD_FLAG_*` constants from
+the same object. Bit 2048 is held for the 2.8 lamp-shadow twin (look `nl3`);
+bits 16384 and up are free.
 
 | Bit | Name | Writer | Reader |
 | ---: | --- | --- | --- |
@@ -203,6 +220,8 @@ object. Bits 2048 and up are free.
 | 256 | `groundCast` | `GpuSceneBuilder` building and tree ground casts (2.9) | fragment: over coast flag `water` and not `covered`, alpha x `RakingLight.GROUND_CAST_WATER_SHARE`, broken by the water column's ripple rows |
 | 512 | `actionMark` | mark records with role 2 (T1 status pixels, the C4 verified-success peak cream) | mark pass: `MARK_P3_FRAGMENT` (WebGL2, P3) and `markRolesFs` (WebGPU, HDR/P3) apply the role; counted into `markRoleRecords` / `lateMarkRoleRecords` |
 | 1024 | `seaFret` | `WorldFrameRenderer.groundFogRecords` (LA-7), set while the `la7` land share is below 1; the record's alpha is that share | fragment (`seaFretAlpha`): over coast flag `water` and not `covered`, and off the coast lattice, the bank keeps alpha 1; elsewhere the record alpha |
+| 4096 | `sunSelf` | SD-2: `AgentGpuOverlayRenderer.getGroundRecords` on a villager's sun trail (its own `cast` ground mark while the resident path reads the shade field), and `GpuSceneBuilder.recordForProp` on a prop the field holds as a mass of its own (`config/landmarkMassing.js` `PROP_MASSING`: the windmill) | fragment (`gpu/SunShade.js`), only while the shade field is bound: a ground-self record is discarded wherever the field's ground rule already shades its texel (trail and shade never add, and a body crossing a shade edge hands its shadow over texel by texel); an upright record takes the massing's verdict at its drawn position instead of the ceiling at its foot, so it is never under its own mass |
+| 8192 | `shadeExempt` | SD-2: `AgentGpuOverlayRenderer.setFrameRecord` on the body of an action-needed villager (waiting on you, errored, rate-limited; not a departed tableau), `AgentSprite` on what lies on that body (the rate-limited frost tint, a snow course) and on a petitioner's floor candle | fragment (`gpu/SunShade.js`), only while the shade field is bound: the record is never stepped, so attention loses nothing in the sun's shade |
 
 - **T1 mark records** (Wave 10 S5, WebGPU contract §7.4): `AttentionPlates
   .attentionMarkRecords(layout, { scale })` turns an attention layout's
@@ -363,16 +382,16 @@ guarantees 16 fragment units). Terrain, water and sprites share one program,
 | ---: | --- | --- | --- | --- |
 | 0 | `u_albedo` | an unpaged batch's albedo | RGBA8 | every unpaged record |
 | 1 | `u_materialMap` | material sidecar, or the B.2 packed geometry map (flag 32) | RGBA8 | material class; packed geometry |
-| 2 | — | free (2.2 deleted the screen occlusion target) | | |
+| 2 | `u_shadeField` | SD-2 sun shade field (`ShadeField.js` `field.texels`, 1408x1536, 2x1 world px a texel, `texelFetch`): R shade ceiling (2 world px a unit), G ground coverage, B the trees' canopy coverage, A the massing's verdict at the drawn position (`SHADE_SURFACE` x 32). 8,650,752 B, uploaded once per built field (`field:shade`: about every 5 minutes of daylight); the 1x1 stand-in and `u_shadeRect` 0 while `sd2` is 0, at MINIMAL, with no sun up or before the first build lands | RGBA8 | `sunShadeStep` on sprite records (the unit 2.2's deleted screen occlusion target left free) |
 | 3 | `u_emissiveMap` | emissive sidecar | RGBA8 | authored emission (RGB hue, A contribution) |
 | 4 | `u_occluderMap` | occluder companion | RGBA8 | elevation; 2.3 surface code |
-| 5 | `u_paletteLut` | palette-ramp LUT, 11 material classes x 3 courses | RGBA8 | 3.5 ramp records (`paletteRamp`: the Command gate) |
+| 5 | `u_paletteLut` | palette-ramp LUT, 11 material classes x 3 courses | RGBA8 | 3.5 ramp records (`paletteRamp`: the Command gate; with look `nl1` > 0 also `GpuSceneBuilder.RAMP_LANDMARKS`, today the Forge, Tavern, Taskboard and Lighthouse, on the tuned landing `u_firelight.y`, which never touches Command) |
 | 6 | `u_footprint` | footprint height (R, world px) + landmark id (G) (`FootprintField.js`, 704x384, 4 world px/texel) | RG8 | 2.2 light loop: the footprint march |
 | 7 | `u_cycleOffset` | 3.1 water cycle offset per coast cell | R8 | water crests and the near-shore cycle |
 | 8 | `u_coastField` | 3.6 coast field: R signed distance, G `COAST_FIELD_FLAGS`; BA 3.7 mirror stops | RGBA8 | swash, reflection ripple, the open-sea shelf, 2.9 water columns; `reflect` and `groundCast` records |
 | 9 | `u_lightData` | light records, 256 x 4 (`highp sampler2D`, `texelFetch`) | RGBA32F | 2.4 light loop: admitted light i is column i; row 0 (foot x, foot y, ground radius, intensity) world px, row 1 (emitter height, face normal nx, ng, role code 0 point / 1 aperture / 2 fixture / 3 attention), row 2 (shader rgb, envelope share), row 3 (owner slot, landmark id, `LIGHT_RECORD_FLAGS` 1 wet reflection / 2 water column / 4 water only, column reach). 16 KiB, uploaded only on change |
 | 10 | `u_lightTiles` | light tile index (`highp usampler2D`), tilesX*17 x tilesY | R16UI | 2.4 clustered walk (`light-clusters` on): per 64x64 backing-px tile (tx, ty), texel (tx*17, ty) = count (<= 16), the next `count` texels the admitted light indices in admission order; a 1x1 zero texture when the flat walk runs. 57,596 B at 4880x1392 |
-| 11 | `u_puddleMask` | 5.2 puddle site mask (GroundBake) | R8 | puddle courses on the terrain batch, while C-W2 holds puddles |
+| 11 | `u_puddleMask` | 5.2 puddle site mask (GroundBake); with GW-1 / GW-2 on, the ground weather field (`GroundWeatherField.js`, its A the same puddle byte) | R8, or RGBA8 while `u_groundWeather.z` = 1 | puddle courses on the terrain batch, while C-W2 holds puddles; GW-1 wet step and sheen on the terrain, GW-2 lamp mirrors on flat ground |
 | 12 | `u_cloudTile` | cloud-course noise tile, 256² | RGBA8 (linear) | 1.4 cloud courses + 1.6 aerial haze, per record; 3.4 sunlit course on in-map open water |
 | 13 | `u_seaGust` | C-W3 sea gust field (the composite's own field, one upload per frame) | R8 (linear) | 3.4 cat's paws on in-map open water |
 | 14 | `u_albedoPage` | albedo page (`highp sampler2DArray`, also read by the vertex stage for the rect clamp) | RGBA8 `TEXTURE_2D_ARRAY` | B.1b: every paged record, layer at loc3.x |
@@ -437,7 +456,7 @@ height, view, clusterOverride, state })` → the light records, `count`,
 (`getDiagnostics().lightAdmission`), `wetReflectionCount`, `footprint`,
 `marchSteps`, `localLightPhase` and the record/tile revisions;
 `resolveBeam(feed, out)` → `{ active, ground, shape, courseEnds, courseShares
-}`; `resolvePuddles(feed, out)` → `{ mask, rect, puddles, sky, ground }`;
+}`; `resolvePuddles(feed, out, level)` → `{ mask, rect, puddles, sky, ground, format, textureKey, revision, groundWeather }` (GW-1 / GW-2: `mask` is the ground weather field, `format` `rgba8`, while `resolveGroundWeather` binds it);
 `resolvePaletteLut(level, feed)` → the 11x3 ramp source or null. The `create*`
 factories build the per-backend scratch the resolvers fill in place;
 `scripts/tests/gpu-frame-state.test.mjs` pins each resolver to the values the
@@ -489,13 +508,35 @@ three ways; the record's flags choose the reading:
   fronts, 2 on SE faces, 0 on the walk, merlon and ledge tops, so a lamp
   pool lands on the stone by its own base line. `channels.emissive` is bound
   the same way (the wall lanterns' lit glass, A 144 like `prop.lantern`).
+- **Sun shade field** (SD-2, look `sd2`; `ShadeField.js`, read by
+  `gpu/SunShade.js` on unit 2 / binding 17). The face class has one more
+  reader by day: `sunShadeStep` steps a sprite fragment by its face and the
+  field's four bytes (R shade ceiling, G ground coverage, B canopy coverage,
+  A the massing's verdict at the drawn position: nothing, or a wall or a top
+  that is lit, in cast shade or turned from the sun). The verdict is computed
+  when the field is built, from `config/landmarkMassing.js` itself (true roof
+  heights and wall normals from the solids, so it cannot drift from them; no
+  baked sidecar). Only cast shade is stepped: a turned verdict takes nothing,
+  and face 2 (turned all day) is left without a read. Face 1, face 3 and a
+  raised face 0 take the verdict; a ground-level face 0 takes the ground's
+  own Bayer rule (G), so an apron joins the SD-1 layer around it. A landmark
+  part drawn over its base (`BuildingSprite.partChannelsFor`: a door, a
+  cycled strip) carries the base's surface code and is read the same way
+  although its record has no flag 16; an added part (a lamp, a pennant, the
+  bell banner) is never stepped, and a `sunSelf` prop takes the verdict
+  alone. A body or prop reads R at its foot and at its own
+  height above it (B too for a body, where the sun's ray through the texel
+  meets the ground), unless the massing draws a top or a sunward wall under
+  its feet: then it stands on that mass and takes its verdict. A record
+  flagged `shadeExempt` (attention) reads nothing.
 - G has no GPU reader: the screen occlusion pass that read it was deleted by
   2.2 (the footprint field on unit 6 replaced it), and the record's own
   `occluder` strength is normalized but never staged (loc3.x carries the page
   layer). The bakes still write G and the packer keeps it, as B, for presence.
 - The packed map is read as `geometry = vec4(G, B, 0, 1)`, and the occluder
   companion at all, only while `GpuFrameState.resolveOccluderChannel` holds
-  (the local-light phase is up, or fog reads elevation); otherwise the
+  (the local-light phase is up, fog reads elevation, or, SD-2, the sun shade
+  field is bound and reads each texel's face by day); otherwise the
   occluder uploads are skipped and `u_packedGeometry` is off. A source that
   carries 2.3 surface codes keeps the separate occluder companion, so the two
   B channels never collide.
@@ -591,13 +632,14 @@ stages). Group 0 is rebound per frame, group 1 per batch:
 | 0 / 7 | `footprint` | `texture_2d<f32>` | footprint field, RG8 |
 | 0 / 8 | `cycleOffset` | `texture_2d<f32>` | water cycle offset, R8 |
 | 0 / 9 | `coastField` | `texture_2d<f32>` | coast field + mirror stops, RGBA8 |
-| 0 / 10 | `puddleMask` | `texture_2d<f32>` | puddle mask, R8 |
+| 0 / 10 | `puddleMask` | `texture_2d<f32>` | puddle mask, R8; the GW-1 / GW-2 ground weather field, RGBA8, while `frame.groundWeather.z` = 1 |
 | 0 / 11 | `paletteLut` | `texture_2d<f32>` | 3.5 ramp LUT |
 | 0 / 12 | `nearestSampler` | sampler | nearest, clamp |
 | 0 / 13 | `radianceTex` | `texture_2d<f32>` | always the 1x1 stand-in: the 2.10 solve is not ported (`radianceGrid.w` 0) |
 | 0 / 14 | `radianceSampler` | sampler | linear, clamp |
 | 0 / 15 | `motifs` | `texture_2d<f32>` | particle motif masks, R8 |
 | 0 / 16 | `linearSampler` | sampler | linear, clamp |
+| 0 / 17 | `shadeField` | `texture_2d<f32>` | SD-2 sun shade field, RGBA8 (`textureLoad`; `frame.shadeRect` / `frame.shade`), else the 1x1 stand-in |
 | 1 / 0 | `batch` | uniform buffer, dynamic offset (one 256-byte slot per batch) | `BatchUniforms` |
 | 1 / 1 | `recs` | read-only storage buffer, `array<RecordInstance>` | the frame's 68-byte records (the mark pass binds its own record buffer) |
 | 1 / 2 | `albedo` | `texture_2d<f32>` | unpaged albedo, else a 1x1 stand-in |

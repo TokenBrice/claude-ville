@@ -59,7 +59,9 @@
 // a day), never the live weather.
 //
 // Publishes `renderer.groundField` (class per texel) for Water's coast pass
-// and any later ground consumer, and `renderer.groundPuddleMask` (5.2: the
+// and any later ground consumer, with `renderer.groundField.weather` (item 5:
+// the RGBA8 ground weather field, layout in GroundWeatherField.js), and
+// `renderer.groundPuddleMask` (5.2: the
 // R8 puddle-site mask, one byte per 2×1 texel) for the puddle courses.
 
 import { ART_RAMPS } from '../../config/artPalette.js';
@@ -69,9 +71,11 @@ import { YARD_MATERIALS } from '../../config/townPlan.js';
 import { readTerrainCellLuma } from './TerrainTileset.js';
 import { getCoastField } from './CoastBake.js';
 import { frostQuarterOf, snowBucketOf } from './GroundState.js';
-import { frostHolds, frostShadeField } from './FrostMelt.js';
+import { frostHolds, frostShadeField, frostShadeKey } from './FrostMelt.js';
 import { treeSpriteKey } from './FoliageRenderer.js';
 import { releaseCanvasBackingStore } from './CanvasBudget.js';
+import { lookStrength } from './LookStrengths.js';
+import { BARE_CROWN_COVER, EAVE_REACH, packGroundWeather, validGroundWeather } from './GroundWeatherField.js';
 
 export const GROUND_CLASS = Object.freeze({
     NONE: 0,
@@ -470,6 +474,52 @@ function buildOccluders(r) {
     return buckets;
 }
 
+// Item 5 — building footprints bucketed for the weather field's eaves and
+// long sun shade (SUN_SHADE_REACH tiles on the down-light sides, the contact
+// AO's own asymmetry stretched).
+const SUN_SHADE_REACH = 1.6;
+function buildSunOccluders(r) {
+    const N = MAP_SIZE;
+    const buckets = new Array(N * N);
+    for (const b of r.world?.buildings?.values?.() || []) {
+        // The drawn base: sprites stand on [tileX, tileX + width] in the
+        // bake's tile coordinates (Projection.buildingCenterToWorld), half a
+        // tile down-screen of the contact AO's logical footprint.
+        const minX = b.position.tileX;
+        const minY = b.position.tileY;
+        const occ = { minX, minY, maxX: minX + b.width, maxY: minY + b.height };
+        const reach = SUN_SHADE_REACH * 1.4;
+        for (let y = Math.max(0, Math.floor(minY - reach)); y <= Math.min(N - 1, Math.ceil(occ.maxY + reach)); y++) {
+            for (let x = Math.max(0, Math.floor(minX - reach)); x <= Math.min(N - 1, Math.ceil(occ.maxX + reach)); x++) {
+                (buckets[y * N + x] ||= []).push(occ);
+            }
+        }
+    }
+    return buckets;
+}
+
+// Eave cover (full within 60 % of EAVE_REACH of the wall, then fading) and
+// sun shade (1 at the wall's foot, 0 at SUN_SHADE_REACH on the down-light
+// sides, far shorter on the lit sides), 0–1 each, into `out`.
+function sunShadeAt(bucket, tx, ty, out) {
+    let eave = 0;
+    let shade = 0;
+    for (let i = 0; i < bucket.length; i++) {
+        const o = bucket[i];
+        const dx = tx < o.minX ? o.minX - tx : tx > o.maxX ? tx - o.maxX : 0;
+        const dy = ty < o.minY ? o.minY - ty : ty > o.maxY ? ty - o.maxY : 0;
+        const d = Math.hypot(dx, dy);
+        const e = d < EAVE_REACH * 0.6 ? 1 : d < EAVE_REACH ? (EAVE_REACH - d) / (EAVE_REACH * 0.4) : 0;
+        if (e > eave) eave = e;
+        const ex = tx < o.minX ? dx / 0.35 : dx / 1.35;
+        const ey = ty < o.minY ? dy / 0.6 : dy / 1.0;
+        const s = 1 - Math.hypot(ex, ey) / SUN_SHADE_REACH;
+        if (s > shade) shade = s;
+    }
+    out[0] = eave;
+    out[1] = shade > 0 ? shade ** 0.7 : 0;
+}
+
 function occlusionAt(bucket, tx, ty) {
     let ao = 0;
     for (let i = 0; i < bucket.length; i++) {
@@ -543,13 +593,15 @@ function segmentDistance(s, x, y) {
 
 // ---- bake -----------------------------------------------------------------
 
-function groundFieldFrom({ bounds, cols, rows, texelW, classes }) {
+function groundFieldFrom({ bounds, cols, rows, texelW, classes, weather }) {
     return {
         bounds,
         cols,
         rows,
         texelW,
         classes,
+        // GroundWeatherField.js: the RGBA8 weather field on this grid.
+        weather,
         CLASS: GROUND_CLASS,
         classAt(worldX, worldY) {
             const col = Math.floor((worldX - bounds.x) / texelW);
@@ -560,7 +612,10 @@ function groundFieldFrom({ bounds, cols, rows, texelW, classes }) {
     };
 }
 
-export function bakeGround(r) {
+// `withWeather`: build the ground weather field (GroundWeatherField.js) in
+// the same pass. Only on first need (groundWeatherWanted): at looks 0 nothing
+// of it is allocated, baked or saved.
+export function bakeGround(r, withWeather = false) {
     const started = performance.now();
     const N = MAP_SIZE;
     const x0 = -N * HALF_W;
@@ -590,6 +645,11 @@ export function bakeGround(r) {
     // Ramp stop index per texel, so the living-ground pass can re-tone grass
     // (dry patches) on the same value ladder.
     const stepBuf = new Uint8Array(cols * rows);
+    // Item 5 — the weather field's eave cover and sun shade per texel.
+    const sunOccluders = withWeather ? buildSunOccluders(r) : null;
+    const eaveBuf = withWeather ? new Float32Array(cols * rows) : null;
+    const sunShadeBuf = withWeather ? new Float32Array(cols * rows) : null;
+    const sunOut = [0, 0];
     const image = new ImageData(w, h);
     const D = image.data;
     const clampI = (v) => (v < 0 ? 0 : v >= N ? N - 1 : v);
@@ -701,6 +761,12 @@ export function bakeGround(r) {
             const ob = occluders[clampI(Math.round(ty)) * N + clampI(Math.round(tx))];
             const ao = ob ? occlusionAt(ob, tx, ty) : 0;
             aoBuf[ti] = Math.round(ao * 255);
+            const sb = sunOccluders?.[clampI(Math.round(ty)) * N + clampI(Math.round(tx))];
+            if (sb) {
+                sunShadeAt(sb, tx, ty, sunOut);
+                eaveBuf[ti] = sunOut[0];
+                sunShadeBuf[ti] = sunOut[1];
+            }
 
             const bx = clampI(Math.floor(tx));
             const by = clampI(Math.floor(ty));
@@ -765,17 +831,70 @@ export function bakeGround(r) {
         D[o + 4] = c[0]; D[o + 5] = c[1]; D[o + 6] = c[2]; D[o + 7] = 255;
     };
 
+    const season = r._terrainSeason || 'summer';
+    const crowns = buildCrownField(r, { cols, rows, x0, y0 });
     drawYardEdges({ cols, rows, surfaces, put });
-    drawLivingGround(r, { cols, rows, x0, y0, surfaces, aoBuf, stepBuf, put, season: r._terrainSeason || 'summer' });
-    drawDecals(r, { cols, rows, x0, y0, surfaces, sdBuf, aoBuf, put, season: r._terrainSeason || 'summer' });
+    drawLivingGround(r, { cols, rows, x0, y0, surfaces, aoBuf, stepBuf, put, season, crowns });
+    drawDecals(r, { cols, rows, x0, y0, surfaces, sdBuf, aoBuf, put, season });
 
     const canvas = document.createElement('canvas');
     canvas.width = w;
     canvas.height = h;
     canvas.getContext('2d').putImageData(image, 0, 0);
-    const field = groundFieldFrom({ bounds: { x: x0, y: y0, w, h }, cols, rows, texelW: TEXEL_W, classes });
     const puddleMask = bakePuddleSites({ cols, rows, surfaces, aoBuf });
-    return { canvas, field, ms: performance.now() - started, x0, y0, cols, rows, surfaces, aoBuf, puddleMask };
+    const weather = withWeather
+        ? bakeGroundWeather({ cols, rows, surfaces, stepBuf, eaveBuf, sunShadeBuf, crowns, puddleMask, season, phenology: r._terrainPhenology || null })
+        : undefined;
+    const field = groundFieldFrom({ bounds: { x: x0, y: y0, w, h }, cols, rows, texelW: TEXEL_W, classes, weather });
+    return { canvas, field, ms: performance.now() - started, x0, y0, cols, rows, surfaces, aoBuf, puddleMask, weather };
+}
+
+// ---- item 5: the ground weather field --------------------------------------
+
+// Shelter = max(eave cover, crown cover); drying order = sun shade (walls and
+// crowns), joints and hollows, puddle sites, and world-locked noise. Layout
+// and scales: GroundWeatherField.js.
+const DRY_SHADE = 0.6;
+const DRY_HOLLOW = 0.2;
+const DRY_PUDDLE = 0.2;
+const DRY_NOISE = 0.12;
+const HOLLOW_BY_STOP_PAVED = Object.freeze([1, 0.55, 0, 0, 0]);
+const HOLLOW_BY_STOP_SOFT = Object.freeze([0.8, 0.4, 0.1, 0, 0]);
+
+// A crown's leaf share is the tree sprite's own leaf state
+// (FoliageRenderer.treeStateKey): the BI-2 stage's shed share of its species,
+// all shed by default in winter; evergreens keep theirs. A bare crown spares
+// at most BARE_CROWN_COVER of the rain.
+function crownCover(crowns, i, season, phenology) {
+    const cd = crowns.dist[i];
+    if (!(cd < 1.15)) return 0;
+    const tree = crowns.trees[crowns.owner[i]];
+    const evergreen = tree?.species === 'pine' || tree?.species === 'ash';
+    const shedShare = phenology?.shed?.[tree?.species];
+    const shed = evergreen ? 0 : Number.isFinite(shedShare) ? shedShare : season === 'winter' ? 1 : 0;
+    const leafy = Math.max(BARE_CROWN_COVER, 1 - shed);
+    const c = cd < 0.7 ? 1 : (1.15 - cd) / 0.45;
+    return c * leafy;
+}
+
+function bakeGroundWeather({ cols, rows, surfaces, stepBuf, eaveBuf, sunShadeBuf, crowns, puddleMask, season, phenology }) {
+    const n = cols * rows;
+    const shelter = new Float32Array(n);
+    const order = new Float32Array(n);
+    for (let row = 0; row < rows; row++) {
+        for (let col = 0; col < cols; col++) {
+            const i = row * cols + col;
+            const s = surfaces[i];
+            if (s === 255) continue;
+            const crown = crownCover(crowns, i, season, phenology);
+            shelter[i] = Math.max(eaveBuf[i], crown);
+            const hollow = (isPavingSurface(s) ? HOLLOW_BY_STOP_PAVED : HOLLOW_BY_STOP_SOFT)[stepBuf[i]] || 0;
+            const shade = Math.max(sunShadeBuf[i], crown * 0.8);
+            const noise = fbm(col / 9, row / 4.5, 1501) - 0.5;
+            order[i] = 0.12 + DRY_SHADE * shade + DRY_HOLLOW * hollow + DRY_PUDDLE * (puddleMask[i] / 255) + DRY_NOISE * noise;
+        }
+    }
+    return packGroundWeather({ cols, rows, surfaces, stops: stepBuf, shelter, order, puddleMask });
 }
 
 // Kerbs and wattle where a paved or fenced yard meets grass/sand (4.7).
@@ -992,9 +1111,8 @@ const CLUMPS = Object.freeze([
     [[-1, 0], [0, 0], [0, -1], [1, 0]],
 ]);
 
-function drawLivingGround(r, { cols, rows, x0, y0, surfaces, aoBuf, stepBuf, put, season }) {
+function drawLivingGround(r, { cols, rows, x0, y0, surfaces, aoBuf, stepBuf, put, season, crowns }) {
     const edge = chamferToPaths(cols, rows, surfaces);
-    const crowns = buildCrownField(r, { cols, rows, x0, y0 });
     const winter = season === 'winter';
     const autumn = season === 'autumn';
     const spring = season === 'spring';
@@ -1381,6 +1499,34 @@ const SNOW_SLUSH = new Set([S_DIRT, S_CINDER, S_EARTH]);
 const SNOW_TONE_BY_RANK = Object.freeze([2, 2, 3, 3, 4]);
 // BI-5 — the share of the lit grass texels a frost rimes.
 const FROST_DENSITY = 0.8;
+// GW-3 (look `gw3`) — frost in patches: a texel rimes where a low-frequency
+// world-locked field (FROST_PATCH_SCALE texels across, 2:1 on the ground)
+// (the hollows and open ground where cold air pools) pushed up under shelter
+// (no rime forms under eaves or crowns) stays under FROST_PATCH_ON. The strength s scales
+// the per-texel grain (FROST_PATCH_GRAIN at 1, ragged at 0.5) and fills the
+// dark creases (share s of them rime inside a patch, all at 1). The tone
+// rides the frost quarter: the night's whole rime (quarter 4) is calm, one
+// snow stop with a lit stop only on the brightest blades and a dithered
+// rim; the melting dawn quarters are crisp, two stops and a hard dark wet
+// edge where the rime has gone.
+const FROST_PATCH_SCALE = 12;
+const FROST_PATCH_ON = 0.5;
+const FROST_PATCH_GRAIN = 0.05;
+const FROST_PATCH_SHELTER = 0.5;
+const FROST_PATCH_RIM = 0.035;
+
+// Whether a grass texel rimes at patch strength `s` (> 0); 2 = the rim
+// course, 1 = inside, 0 = none.
+function frostPatchAt(col, row, rank, s, weather) {
+    const o = (row * weather.cols + col) * 4;
+    const shelter = weather.data[o + 1] / 255;
+    const field = fbm(col / FROST_PATCH_SCALE, row / (FROST_PATCH_SCALE / 2), 1409)
+        + (hash2(col, row, 1409) - 0.5) * (FROST_PATCH_GRAIN + (1 - s) * 0.5)
+        + FROST_PATCH_SHELTER * shelter;
+    if (field >= FROST_PATCH_ON) return 0;
+    if (rank < 2 && hash2(col, row, 1411) >= s) return 0;
+    return FROST_PATCH_ON - field < FROST_PATCH_RIM ? 2 : 1;
+}
 
 function rankOf(luma, lumas) {
     let best = 0;
@@ -1392,8 +1538,9 @@ function rankOf(luma, lumas) {
     return best;
 }
 
-export function bakeWinterGround(r, base, snowBucket, frost) {
-    const { cols, rows, x0, y0, surfaces, aoBuf } = base;
+export function bakeWinterGround(r, base, snowBucket, frost, frostPatches = 0) {
+    const { cols, rows, x0, y0, surfaces, aoBuf, weather } = base;
+    const patches = weather ? frostPatches : 0;
     const w = cols * TEXEL_W;
     const image = base.canvas.getContext('2d').getImageData(0, 0, w, rows);
     const D = image.data;
@@ -1452,7 +1599,20 @@ export function bakeWinterGround(r, base, snowBucket, frost) {
             // BI-5 — the rime: most of the lit grass (ranks 2–4) a stop under
             // the snow, its dark creases left green so the lawn's texture
             // reads through; kept by quarter in shade and far from the sun.
-            if (!snowy && rime && s === S_GRASS && rank >= 2 && hash2(col, row, 1409) < FROST_DENSITY
+            if (snowy || !rime || s !== S_GRASS) continue;
+            if (patches > 0) {
+                // GW-3 — frost in patches (see FROST_PATCH_ON).
+                const patch = frostPatchAt(col, row, rank, patches, weather);
+                if (!patch || !(rime >= 4 || frostHolds(rime, shade, col, row, fbm(sx / 26, row / 13, 1413)))) continue;
+                if (rime >= 4) {
+                    if (patch === 2 && BAYER[(row & 1) * 2 + (col & 1)] > 0) continue;
+                    write(o, SNOW[rank >= 4 ? 1 : 0]);
+                } else {
+                    write(o, patch === 2 ? GRASS[0] : SNOW[rank >= 3 ? 1 : 0]);
+                }
+                continue;
+            }
+            if (rank >= 2 && hash2(col, row, 1409) < FROST_DENSITY
                 && (rime >= 4 || frostHolds(rime, shade, col, row, fbm(sx / 26, row / 13, 1413)))) {
                 write(o, SNOW[rank >= 3 ? 1 : 0]);
             }
@@ -1483,7 +1643,34 @@ function winterKeyOf(renderer) {
     const ground = renderer._groundState;
     const bucket = snowBucketOf(ground?.snowCover);
     const frost = frostQuarterOf(ground);
-    return bucket || frost ? `w${bucket}f${frost}` : '';
+    // GW-3: the patch strength keys only a frosty bake, and only when on, so
+    // the look at 0 keeps today's key.
+    const patches = frost ? frostPatchStrength() : 0;
+    // SD-1: a melting frost lies in the sundial's shade while that look is on
+    // (FrostMelt `frostShadeKey`, '' with it off).
+    return bucket || frost ? `w${bucket}f${frost}${patches ? `p${patches}` : ''}${frostShadeKey(frost)}` : '';
+}
+
+export function frostPatchStrength() {
+    return lookStrength('gw3');
+}
+
+// The looks that read the ground weather field: GW-3's frost patches (baked
+// into the terrain, so every backend, and only while a frost lies) and
+// GW-1 / GW-2 (the GPU scene only).
+export function groundWeatherLooksOn(frost = 0) {
+    return (frost > 0 && lookStrength('gw3') > 0) || lookStrength('gw1') > 0 || lookStrength('gw2') > 0;
+}
+
+// Whether this renderer's bake needs the field: never at looks 0, for GW-3
+// only while a frost lies, and for GW-1 / GW-2 never on Canvas, which does
+// not read it.
+// `frost` defaults to the renderer's own ground state (the saved-bake key
+// passes the quarter it keys on). The saved-bake key carries 'weather' on
+// exactly this answer, so it says what the bake holds on every backend.
+export function groundWeatherWanted(renderer, frost = frostQuarterOf(renderer?._groundState)) {
+    return (lookStrength('gw3') > 0 && frost > 0)
+        || ((lookStrength('gw1') > 0 || lookStrength('gw2') > 0) && renderer?.worldRendererMode !== 'canvas');
 }
 
 export function installGroundBake(renderer) {
@@ -1501,11 +1688,13 @@ export function installGroundBake(renderer) {
     return renderer.registerTerrainBakePass({
         id: 'ground-splat',
         stage: 'ground',
-        revision: () => `${sheetsKey()}${winterKeyOf(renderer)}`,
+        // GW: 'w' while the ground weather field is wanted ('' at looks 0).
+        revision: () => `${sheetsKey()}${winterKeyOf(renderer)}${groundWeatherWanted(renderer) ? 'w' : ''}`,
         draw(ctx) {
-            const key = `${getCoastField(renderer).key}|${sheetsKey()}|${renderer._terrainSeason || 'summer'}|${renderer._terrainPhenology?.ground ?? ''}|${renderer._terrainSceneryRevision || 0}`;
+            const withWeather = groundWeatherWanted(renderer);
+            const key = `${getCoastField(renderer).key}|${sheetsKey()}|${renderer._terrainSeason || 'summer'}|${renderer._terrainPhenology?.ground ?? ''}|${renderer._terrainSceneryRevision || 0}${withWeather ? '|weather' : ''}`;
             if (!cached || cached.key !== key) {
-                const baked = bakeGround(renderer);
+                const baked = bakeGround(renderer, withWeather);
                 cached = { key, ...baked };
                 renderer.groundField = baked.field;
                 renderer.groundBakeMs = Math.round(baked.ms);
@@ -1518,6 +1707,7 @@ export function installGroundBake(renderer) {
                     texelW: TEXEL_W,
                     revision: key,
                 };
+                withWeatherField(renderer.groundPuddleMask, baked.weather);
             }
             const winterKey = winterKeyOf(renderer);
             if (!winterKey) {
@@ -1532,13 +1722,24 @@ export function installGroundBake(renderer) {
                 const started = performance.now();
                 winter = {
                     key: `${key}|${winterKey}`,
-                    canvas: bakeWinterGround(renderer, cached, snowBucketOf(ground?.snowCover), frostQuarterOf(ground)),
+                    canvas: bakeWinterGround(renderer, cached, snowBucketOf(ground?.snowCover), frostQuarterOf(ground),
+                        frostQuarterOf(ground) ? frostPatchStrength() : 0),
                 };
                 renderer.groundWinterBakeMs = Math.round(performance.now() - started);
             }
             ctx.drawImage(winter.canvas, cached.x0, cached.y0);
         },
     });
+}
+
+// GW-1 / GW-2 — the puddle mask carries a reference to the ground weather
+// field on its grid, so the GPU feed (which already forwards the mask) can
+// bind the field to the puddle unit. Non-enumerable: the persisted artifact
+// keeps the field once, in `field.weather`, and the mask's spread copy and
+// digest stay as they were.
+function withWeatherField(mask, weather) {
+    if (mask && weather) Object.defineProperty(mask, 'weather', { value: weather, enumerable: false, configurable: true });
+    return mask;
 }
 
 // Complete installed ground outputs. The base/winter canvases and their scratch
@@ -1548,7 +1749,9 @@ export function captureGroundArtifact(renderer) {
     const field = renderer.groundField;
     if (!field || !renderer.groundPuddleMask) return null;
     return {
-        field: { bounds: { ...field.bounds }, cols: field.cols, rows: field.rows, texelW: field.texelW, classes: field.classes },
+        field: { bounds: { ...field.bounds }, cols: field.cols, rows: field.rows, texelW: field.texelW, classes: field.classes,
+            // Saved only when baked (a look reads it; never at looks 0).
+            ...(field.weather ? { weather: field.weather } : {}) },
         puddleMask: { ...renderer.groundPuddleMask },
         groundBakeMs: renderer.groundBakeMs,
         groundWinterBakeMs: renderer.groundWinterBakeMs,
@@ -1565,6 +1768,7 @@ export function validGroundArtifact(ground) {
         && field.bounds?.x === -MAP_SIZE * HALF_W && field.bounds.y === -HALF_H
         && field.bounds.w === w && field.bounds.h === h
         && field.classes instanceof Uint8Array && field.classes.length === cols * h
+        && (field.weather === undefined || validGroundWeather(field.weather))
         && mask?.cols === cols && mask.rows === h && mask.texelW === TEXEL_W
         && mask.x0 === field.bounds.x && mask.y0 === field.bounds.y
         && mask.data instanceof Uint8Array && mask.data.length === cols * h
@@ -1576,7 +1780,7 @@ export function validGroundArtifact(ground) {
 export function restoreGroundArtifact(renderer, ground) {
     if (!validGroundArtifact(ground)) throw new Error('Invalid terrain ground artifact');
     renderer.groundField = groundFieldFrom(ground.field);
-    renderer.groundPuddleMask = ground.puddleMask;
+    renderer.groundPuddleMask = withWeatherField(ground.puddleMask, ground.field.weather);
     renderer.groundBakeMs = ground.groundBakeMs;
     renderer.groundWinterBakeMs = ground.groundWinterBakeMs;
 }

@@ -17,7 +17,7 @@
 import { RESERVED_STATUS } from '../../config/artPalette.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { releaseCanvasBackingStore } from './CanvasBudget.js';
-import { frameCastLighting, pointCastFor, rasterizeCourses, villagerCastStamps } from './RakingLight.js';
+import { frameCastLighting, pointCastFor, rasterizeCourses, villagerCastLighting, villagerCastStamps } from './RakingLight.js';
 
 // Warm near-black shared with the body rim (plan 2.4).
 const SHADOW_RGB = [26, 20, 16];
@@ -165,6 +165,44 @@ export function contactShadowStamp(width, cast = frameCastLighting(), pointCast 
     return canvas;
 }
 
+// SD-2 — the sun trail as a stamp of its own (RakingLight's `clip` twin),
+// painted over the bare contact stamp: the resident scene hides it texel by
+// texel wherever the shade field already shades the ground. Inside the
+// contact's ellipse it keeps only what the trail adds over the contact course
+// (the stronger still wins, never a sum), so the pair reads as the one stamp
+// above in the sun and as the bare contact in a building's shade.
+export function sunTrailStamp(width, cast) {
+    const w = evenWidth(width);
+    const key = `trail|${w}|${cast.key}`;
+    const cached = STAMP_CACHE.get(key);
+    if (cached) return cached;
+    const trail = villagerCastStamps(w, cast);
+    const raster = trail.length ? rasterizeCourses(trail, cast.color) : null;
+    if (!raster) return null;
+    pruneCastStamps(cast.key);
+    const h = Math.max(5, Math.round(w * SHADOW_ASPECT) | 1);
+    const outer = ellipseMask(w, h);
+    const core = ellipseMask(w, h, 3, 1.5);
+    const canvas = raster.canvas;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    // The contact box (top-left at the feet's -w/2, -h/2) on the raster.
+    const left = -Math.floor(w / 2) - raster.offsetX;
+    const top = -Math.floor(h / 2) - raster.offsetY;
+    const image = ctx.getImageData(left, top, w, h);
+    for (let i = 0; i < outer.length; i++) {
+        if (!outer[i]) continue;
+        const contact = (core[i] ? SHADOW_CORE_ALPHA : SHADOW_OUTER_ALPHA) / 255;
+        const alpha = image.data[i * 4 + 3] / 255;
+        image.data[i * 4 + 3] = alpha > contact ? Math.round(255 * (1 - (1 - alpha) / (1 - contact))) : 0;
+    }
+    ctx.putImageData(image, left, top);
+    canvas.__cvGroundKey = key;
+    canvas.__anchorX = -raster.offsetX;
+    canvas.__anchorY = -raster.offsetY;
+    STAMP_CACHE.set(key, canvas);
+    return canvas;
+}
+
 // 2.8 — an LRU over the composed point-cast contact stamps.
 function prunePointCastStamps() {
     let count = 0;
@@ -181,7 +219,7 @@ function prunePointCastStamps() {
 // Keep only the current sun bucket's trail stamps.
 function pruneCastStamps(castKey) {
     for (const [key, canvas] of STAMP_CACHE) {
-        if (!key.startsWith('shadow|') || key.split('|').length < 3 || key.endsWith(`|${castKey}`)) continue;
+        if (!/^(?:shadow|trail)\|/.test(key) || key.split('|').length < 3 || key.endsWith(`|${castKey}`)) continue;
         releaseCanvasBackingStore(canvas);
         STAMP_CACHE.delete(key);
     }
@@ -257,17 +295,23 @@ export function resolveGroundMarks({ x, y, contentWidth, status, selected = fals
     const cy = y + GROUND_MARK_FOOT_Y;
     const shadowW = contactShadowWidth(contentWidth);
     const marks = [];
-    const push = (stamp, kind) => {
+    const push = (stamp, kind, sunCast = false) => {
         if (!stamp) return;
         marks.push({
             kind,
             stamp,
             x: cx - (stamp.__anchorX ?? Math.floor(stamp.width / 2)),
             y: cy - (stamp.__anchorY ?? Math.floor(stamp.height / 2)),
+            sunCast,
         });
     };
-    const cast = frameCastLighting();
-    push(contactShadowStamp(shadowW, cast, pointCastFor(owner, cx, cy, shadowW, cast)), 'shadow');
+    // SD-1 — the frame's cast, or its twin for a body in the sun or in shade.
+    // SD-2 — a `clip` twin lays its trail as a second stamp over the contact.
+    const cast = villagerCastLighting(cx, cy);
+    const pointCast = pointCastFor(owner, cx, cy, shadowW, cast);
+    const clipTrail = cast?.clip === true && !pointCast;
+    push(contactShadowStamp(shadowW, clipTrail ? cast.base : cast, pointCast), 'shadow');
+    if (clipTrail) push(sunTrailStamp(shadowW, cast), 'cast', true);
     for (const ring of groundRingPlan({ status, selected, hovered, repo })) {
         const width = shadowW + ring.pad;
         if (ring.kind === 'repo') push(ringStamp('repo', width, ring.color, REPO_RING_ALPHA, REPO_KEYLINE_ALPHA), 'repo');

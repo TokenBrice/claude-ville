@@ -57,7 +57,7 @@ import { ambientEventsForHost, ambientDebugSnapshot } from './AmbientEvents.js';
 import { ChimneySmoke } from './ChimneySmoke.js';
 import { setPennantWeather } from './PixelPennant.js';
 import { openGroundTiles } from './AmbientGround.js';
-import { TERRAIN_HAZE_COURSES, installGroundBake } from './GroundBake.js';
+import { TERRAIN_HAZE_COURSES, groundWeatherWanted, installGroundBake } from './GroundBake.js';
 import { OCEAN_HORIZON_WORLD_Y, coastDistanceProbe, drawCanvasWaterMood, drawOuterOcean, registerCoastBake, riverCurrentAt } from './CoastBake.js';
 import { frostQuarterOf, snowBucketOf } from './GroundState.js';
 import {
@@ -123,8 +123,13 @@ import {
 import { createPostFx } from './postfx/PostFx.js';
 import { createPostFxFeed } from './postfx/PostFxFeed.js';
 import { createGpuWorldRenderer, probeWebgl2Raster, snapshotWebglFence } from './gpu/GpuWorldRenderer.js';
+import { lookStrength } from './LookStrengths.js';
+import {
+    LANTERN_COLOR, LANTERN_HEIGHT, LANTERN_ID_PREFIX, lanternCandidate, lanternIntensity, lanternPoolRadius, selectLanternCarriers,
+} from './CarriedLantern.js';
 import {
     GPU_ATTENTION_LIGHT_PRIORITY,
+    effectBudgetMode,
     forcedGpuWorldRendererMode,
     isChromiumBrowser,
     localLightPhaseForLighting,
@@ -8447,7 +8452,9 @@ export class IsometricRenderer {
         const ground = this._groundState ?? groundStateForAtmosphere(atmosphere);
         return { assetVersion: this.assets?.assetVersion, bounds, dpr, season,
             sceneryRevision: this._terrainSceneryRevision || 0, snowBucket: snowBucketOf(ground?.snowCover), frost: frostQuarterOf(ground),
-            phenology: phenologyForAtmosphere(atmosphere).id };
+            phenology: phenologyForAtmosphere(atmosphere).id,
+            // GW — 'weather' in the key exactly when this backend's bake holds the field.
+            groundWeather: groundWeatherWanted(this, frostQuarterOf(ground)) };
     }
 
     _persistedTerrainKey(bounds, dpr, season) {
@@ -10429,14 +10436,70 @@ export class IsometricRenderer {
         return sources;
     }
 
+    // NL-4 (look `nl4`, CarriedLantern.js) — marks this frame's lantern
+    // carriers (`sprite.lanternCarried`, read by the body's draw: every
+    // eligible body, whatever the camera) and returns one small fixture light
+    // per carrier that keeps a pool: EFFECT_BUDGET `carried-lanterns` (FULL
+    // 12, REDUCED 6, MINIMAL 0) nearest the view centre. The light's foot is
+    // the carrier's foot (no 2.8 cast on its own carrier), it never breathes
+    // (`fire` false), and status never enters: only presence, place, the lamp
+    // clock and the round at its tile.
+    _carriedLanternLightSources(lighting) {
+        const sprites = this.agentSprites;
+        if (!sprites?.size) return [];
+        for (const sprite of sprites.values()) sprite.lanternCarried = false;
+        const strength = lookStrength('nl4');
+        if (!(strength > 0) || !this.villageLampsLit()) return [];
+        const candidates = [];
+        for (const [id, sprite] of sprites) candidates.push(lanternCandidate(id, sprite, worldToTile));
+        const camera = this.camera;
+        const canvas = camera?.canvas;
+        const zoom = camera?.zoom || 1;
+        const centre = camera ? {
+            x: -camera.x + (canvas?._claudeVilleCssWidth || canvas?.clientWidth || 0) / (2 * zoom),
+            y: -camera.y + (canvas?._claudeVilleCssHeight || canvas?.clientHeight || 0) / (2 * zoom),
+        } : null;
+        const carriers = selectLanternCarriers(candidates, {
+            strength,
+            lampsLit: true,
+            roundLit: this.lampRoundLit(),
+            centre,
+        });
+        const level = this.gpuWorld?._compositeQualityLevel
+            ?? (this.postFx?.isActive?.() === true ? (this.postFx?.ladder?.effectiveLevel ?? 0) : 0);
+        const pools = effectBudgetMode('carried-lanterns', level);
+        const core = sourceEnergyFor(lighting).core;
+        const out = [];
+        carriers.forEach((carrier, index) => {
+            carrier.sprite.lanternCarried = true;
+            if (index >= pools) return;
+            const foot = { x: carrier.x, y: carrier.y };
+            out.push(normalizeLightSource({
+                id: `${LANTERN_ID_PREFIX}${carrier.id}`,
+                kind: 'point',
+                role: 'fixture',
+                x: foot.x,
+                y: foot.y - LANTERN_HEIGHT,
+                ground: foot,
+                height: LANTERN_HEIGHT,
+                color: LANTERN_COLOR,
+                radius: lanternPoolRadius(strength, carrier.crowded),
+                intensity: lanternIntensity(strength, core),
+                priority: -1,
+            }));
+        });
+        return out;
+    }
+
     _computeFrameLightSources(atmosphere = null, now = performance.now()) {
         const lighting = atmosphere?.lighting || null;
         const building = this.buildingRenderer?.getLightSources?.(lighting) || [];
         // V3 — council rings and talk arcs are the relationship status
         // grammar (drawn as ground cues); they throw no light, so no pool,
         // column or cast ever restates agent state on the ground.
+        const attention = this._attentionLightSources();
         const ambient = [
-            ...this._attentionLightSources(),
+            ...attention,
             ...building,
             ...this._familiarMoteLightSources(lighting),
             ...(this.arrivalDeparture?.getLightSources?.({ now }) || []),
@@ -10445,6 +10508,9 @@ export class IsometricRenderer {
             ...(this.bridgeLanterns?.getLightSources?.(lighting) || []),
             // 5.3 — moored and sailing ships' lamps (fixtures, budget-capped).
             ...(this.harborTraffic?.lampLightSources?.(sourceEnergyFor(lighting).core) || []),
+            // NL-4 — last, so no feed or admission cap ever trades a street
+            // lamp or an attention light for a lantern.
+            ...this._carriedLanternLightSources(lighting),
         ];
         // 2.6 — fire sources (forge door and spill, torches, village and gate
         // braziers) breathe in stepped 140 ms quanta on the one motion clock;

@@ -31,3 +31,42 @@ test('unknown ids and non-numbers are refused', () => {
     assert.throws(() => setLookStrength('nope', 1), RangeError);
     assert.throws(() => setLookStrength('la3', 'bright'), RangeError);
 });
+
+function assertShipsAt(expected) {
+    for (const [id, value] of Object.entries(expected)) {
+        assert.ok(LOOK_IDS.includes(id), id);
+        assert.equal(DEFAULT_LOOK_STRENGTHS[id], value, id);
+    }
+}
+
+test('NL-1 landmark ramp, NL-2 firelight on people, NL-3 silhouettes and NL-4 carried lanterns ship at their reviewed strengths', () => {
+    assertShipsAt({ nl1: 1, nl2: 0.5, nl3: 1, nl4: 1 });
+});
+
+test('GW-1 wet ground, GW-2 lamp mirrors and GW-3 frost patches ship at their reviewed strengths; WX-1 night rain ships on (operator-approved)', () => {
+    assertShipsAt({ gw1: 0.5, gw2: 1, gw3: 1, wx1: 1 });
+});
+
+test('MS-1 low mist ships at its reviewed strength', () => {
+    assertShipsAt({ ms1: 1 });
+});
+
+test('SD-1 sundial shade, its length cap and SD-2 receivers ship at their reviewed strengths', () => {
+    assertShipsAt({ sd1: 1, sd1len: 0.5, sd2: 1 });
+});
+
+test('SEA-1 sea light and shade ships at its reviewed strength', () => {
+    assertShipsAt({ sea1: 0.5 });
+});
+
+test('RN-1 rain in the world ships at its reviewed strength', () => {
+    assertShipsAt({ rn1: 1 });
+});
+
+test('SEA-2 and SEA-3 ship at their reviewed strengths', () => {
+    assertShipsAt({ sea2: 1, sea3: 1 });
+});
+
+test('MS-2 mist follow-ons ship at their reviewed strength', () => {
+    assertShipsAt({ ms2: 1 });
+});

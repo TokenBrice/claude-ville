@@ -10,6 +10,12 @@ import {
     buildCloudShadowTile,
     clampGpuLights,
     CLOUD_FIELD_PERIOD,
+    CLOUD_PLANE_CORE,
+    cloudPlaneScale,
+    SEA_LIFT_SLEW,
+    SEA_SKY_WEIGHT,
+    SEA_STATE,
+    seaSunLiftStops,
     LONE_CLOUD_THRESHOLDS,
     CLOUD_TILE_SIZE,
     cloudCoveredShare,
@@ -30,6 +36,8 @@ import { ART_RAMPS } from '../../../config/artPalette.js';
 import { POST_FX_LEVELS } from '../postfx/PostFxLadder.js';
 import { localDateKey, sourceEnergyFor } from '../AtmosphereState.js';
 import { lookStrength } from '../LookStrengths.js';
+import { GROUND_BUCKET_MINUTES, groundOptionsFor, groundStateAt } from '../GroundState.js';
+import { LANTERN_ID_PREFIX } from '../CarriedLantern.js';
 import { baseWindX, cloudCourseDrift, gustinessFor, WIND_SPEED_BY_TYPE, windAt } from '../Wind.js';
 
 // Shared crest density: a leaf export, also used by the WGSL beacon twin.
@@ -140,7 +148,111 @@ export function resolveWeatherUniform(feed = {}, level = POST_FX_LEVELS.FULL) {
  */
 export function resolveOccluderChannel(feed = {}) {
     return localLightPhaseForLighting(feed.lighting) > LOCAL_LIGHT_VISIBILITY_FLOOR
-        || resolveWeatherUniform(feed)[1] !== 0;
+        || resolveWeatherUniform(feed)[1] !== 0
+        // MS-1 — the low mist reads the surface-coded height too (dawn mist).
+        || (finite(feed.mistDensity, 0) > 0 && lookStrength('ms1') > 0)
+        // SD-2 — the sun's shade reads each texel's face by day (`feed.sunShade`).
+        || Boolean(feed.sunShade);
+}
+
+// MS-1 (look `ms1`) — low mist with a top. Its top over a ground point is
+// density × look × mix(inland, 1, near) × (topBase + topSwell × swell) world
+// px, `near` the coast field's nearness to water (1 on water and the
+// waterline, 0 two tiles inland) and `swell` two stretched reads of the cloud
+// tile (scales in world px, the drift's wrap period their common multiple).
+// A fragment takes up to three solid courses of `coursePx` by how far its own
+// height above ground lies below the top, mixed `courseMix` toward the C2 fog
+// colour; the luma rise never passes `riseShare` of the way to the fog colour
+// plus `riseFloor` (today's top bank course under the old veil's cap). A body
+// takes at most course 1. The density (fog weather or the daily dawn mist)
+// comes from WeatherRenderer.mistDensity.
+export const MIST = Object.freeze({
+    // The two reads lie 8:1 and ~5:1 along the wind's axis, so the mist's
+    // gaps over open water are long low wisps, never round holes.
+    scaleA: Object.freeze([2048, 256]),
+    scaleB: Object.freeze([1024, 192]),
+    offsetB: Object.freeze([0.31, 0.17]),
+    wrap: Object.freeze([2048, 768]),
+    topBase: 14,
+    topSwell: 34,
+    inland: 0.3,
+    coursePx: 12,
+    seamMin: 0.04,
+    courseMix: Object.freeze([0.14, 0.26, 0.38]),
+    riseShare: 0.31,
+    riseFloor: 0.06,
+});
+
+/**
+ * MS-1 — the frame's mist uniform: [density, drift x, drift y, look]. The
+ * density is the feed's stepped `mistDensity` (weather and clock only); the
+ * drift is the one wind's cloud-course drift (Wind.js), wrapped to MIST.wrap
+ * and stepped to whole 2-px mist cells, held under reduced motion; the look
+ * is `ms1`. All zero at look 0 or MINIMAL (`low-mist` off): the shaders then
+ * run today's veil and the frame keeps its fog-bank records.
+ */
+export function resolveMist(feed = {}, level = POST_FX_LEVELS.FULL, out = new Float32Array(4)) {
+    out.fill(0);
+    const look = effectBudgetMode('low-mist', level) === 'on' ? clamp(lookStrength('ms1'), 0, 1) : 0;
+    if (!(look > 0)) return out;
+    out[3] = look;
+    out[0] = clamp(finite(feed.mistDensity, 0), 0, 1);
+    if (out[0] > 0) {
+        const moving = !feed.reducedMotion && finite(feed.motionScale, 1) > 0;
+        const drift = cloudCourseDrift(moving ? finite(feed.timeMs, 0) : null, feed.atmosphere?.weather);
+        const step = (value, period) => Math.round((((-value % period) + period) % period) / 2) * 2 % period;
+        out[1] = step(drift.x, MIST.wrap[0]);
+        out[2] = step(drift.y, MIST.wrap[1]);
+    }
+    return out;
+}
+
+/**
+ * MS-2 — the mist's burn-off shares `u_mistBurn` (land, sea): the feed's
+ * `mistBurn` (WeatherRenderer.mistBurnFor) while the mist runs, else (1, 1),
+ * which leaves MS-1's top as it is.
+ */
+export function resolveMistBurn(feed = {}, mist = null, out = Float32Array.from([1, 1])) {
+    const on = mist && mist[3] > 0;
+    out[0] = on ? clamp(finite(feed.mistBurn?.[0], 1), 0, 1) : 1;
+    out[1] = on ? clamp(finite(feed.mistBurn?.[1], 1), 0, 1) : 1;
+    return out;
+}
+
+// The cloud tile's red channel at (u, v) in [0, 1), bilinear with repeat on
+// texel centres: the shaders' linear sampler (the CPU twin for the mist top).
+function cloudTileAt(u, v) {
+    const { data } = cloudTile();
+    const size = CLOUD_TILE_SIZE;
+    const x = u * size - 0.5;
+    const y = v * size - 0.5;
+    const x0 = Math.floor(x);
+    const y0 = Math.floor(y);
+    const fx = x - x0;
+    const fy = y - y0;
+    const at = (ix, iy) => data[((((iy % size) + size) % size) * size + (((ix % size) + size) % size)) * 4] / 255;
+    const top = at(x0, y0) + (at(x0 + 1, y0) - at(x0, y0)) * fx;
+    const bottom = at(x0, y0 + 1) + (at(x0 + 1, y0 + 1) - at(x0, y0 + 1)) * fx;
+    return top + (bottom - top) * fy;
+}
+
+/**
+ * MS-1 / MS-2 — the CPU twin of MIST_GLSL `mistTopAt`: the mist's top (world
+ * px above the ground) over `ground` with nearness `near` (1 water, 0 two
+ * tiles inland), the frame's `mist` uniform and `burn` (land, sea). The
+ * halo gate (MistHalos) reads it; within a float's rounding of the shaders.
+ */
+export function mistTopAt(ground, near, mist, burn = [1, 1]) {
+    if (!mist || !(mist[0] > 0) || !(mist[3] > 0)) return 0;
+    const fract = value => value - Math.floor(value);
+    const px = Math.floor(ground.x * 0.5) * 2 + mist[1];
+    const py = Math.floor(ground.y * 0.5) * 2 + mist[2];
+    const n1 = cloudTileAt(fract(px / MIST.scaleA[0]), fract(py / MIST.scaleA[1]));
+    const n2 = cloudTileAt(fract(px / MIST.scaleB[0] + MIST.offsetB[0]), fract(py / MIST.scaleB[1] + MIST.offsetB[1]));
+    const swell = clamp((0.55 * n1 + 0.45 * n2 - 0.30) / 0.30, 0, 1);
+    const n = clamp(near, 0, 1);
+    const share = MIST.inland * burn[0] + (burn[1] - MIST.inland * burn[0]) * n;
+    return mist[0] * mist[3] * share * (MIST.topBase + MIST.topSwell * swell);
 }
 
 /**
@@ -270,6 +382,109 @@ function smooth01(t) {
     const x = clamp(t, 0, 1);
     return x * x * (3 - 2 * x);
 }
+/**
+ * SEA-1 — the sunlit water's lift in stops (GpuWorldPolicy
+ * seaSunLiftStops; fractional on the real sun's elevation, the shaders
+ * dither the fraction in) at a `sea1` strength under the C2 sun band, veiled by fog
+ * on the sun road's own rule (a fog bank hides the sun, so nothing lifts).
+ * Both GPU backends (`u_seaLift`) and Canvas (CanvasWaterState) read it.
+ */
+/**
+ * r6 — move the frame's shown lift (`state.lift`) toward `target` by at most
+ * SEA_LIFT_SLEW a 6 Hz water tick. `tick` null (a held clock: reduced
+ * motion, a frozen frame), the first frame (no tick yet) and a gap of more
+ * than SEA_LIFT_SNAP_TICKS (a hidden tab, a resumed clock) land on the
+ * target at once, so pinned captures stay deterministic. Returns the lift.
+ */
+export const SEA_LIFT_SNAP_TICKS = 12;
+export function slewSeaLift(state, target, tick) {
+    const last = state.liftTick;
+    state.liftTick = tick;
+    if (tick == null || last == null || tick < last || tick - last > SEA_LIFT_SNAP_TICKS) return target;
+    const step = SEA_LIFT_SLEW * (tick - last);
+    const shown = finite(state.lift, target);
+    return shown + Math.max(-step, Math.min(step, target - shown));
+}
+
+export function seaSunLift(strength, grade, weather, elevationDeg) {
+    const veil = smooth01((finite(weather?.fog, 0) - SUN_ROAD_FOG_START) / (SUN_ROAD_FOG_FULL - SUN_ROAD_FOG_START));
+    // r2 — on the real sun's elevation (fractional, in sixteenths): a stop
+    // per SEA_LIFT_ELEVATIONS entry, the fog veil scaling the whole lift.
+    const lift = seaSunLiftStops(strength, finite(grade?.sunBand, 0), elevationDeg);
+    return Number.isFinite(Number(elevationDeg)) ? Math.round(lift * (1 - veil) * 16) / 16
+        : seaSunLiftStops(strength, finite(grade?.sunBand, 0) * (1 - veil));
+}
+
+/**
+ * SEA-3 — the sea state at a `sea3` strength from the knot wind (Wind.js
+ * baseWindX; date, clock and seed only): 0 calm, 1 breeze (today's sea),
+ * 2 fresh, 3 storm (the weather's own storm, today's storm sea). `prev`
+ * holds a state across its threshold by SEA_STATE.hysteresis.
+ */
+export function seaStateFor(weather, strength, prev = -1) {
+    if (weather?.type === 'storm') return 3;
+    const speed = Math.abs(baseWindX(weather));
+    const calm = SEA_STATE.calm * strength;
+    const fresh = SEA_STATE.fresh + (1 - strength) * 0.4;
+    const h = SEA_STATE.hysteresis;
+    if (prev === 0 && speed < calm + h) return 0;
+    if (prev === 2 && speed >= fresh - h) return 2;
+    return speed < calm ? 0 : speed >= fresh ? 2 : 1;
+}
+
+export function createSeaState() {
+    return { uniform: Float32Array.from([0, -1, 0, 0]), state: -1, tick: null, shift: 0 };
+}
+
+/**
+ * SEA-2 / SEA-3 — `u_seaState`: (the sky's share on lit open water, the sea
+ * state −1 off / 0 calm / 1 breeze / 2 fresh / 3 storm, the whitecap
+ * streaks' downwind shift in whole world px, the streak density). Off
+ * (0, −1, 0, 0) at MINIMAL (`sea-weather`) or with both looks at 0. The
+ * state follows the knot wind and changes only on a new 6 Hz water tick;
+ * the shift slides one px downwind per two ticks, held under reduced motion
+ * (a static frame). `night` is the water mood's night (CoastBake
+ * waterMoodFor): the sky's share fades with it, so night is unchanged.
+ */
+export function resolveSeaState(feed = {}, level = POST_FX_LEVELS.FULL, night = 0, out = createSeaState()) {
+    const on = effectBudgetMode('sea-weather', level) === 'on';
+    const sky = on ? clamp(lookStrength('sea2'), 0, 1) : 0;
+    const sea = on ? clamp(lookStrength('sea3'), 0, 1) : 0;
+    const u = out.uniform;
+    u[0] = sky > 0 ? Math.round(sky * SEA_SKY_WEIGHT * (1 - clamp(finite(night, 0), 0, 1)) * 32) / 32 : 0;
+    if (!(sea > 0)) {
+        out.state = -1;
+        out.tick = null;
+        u[1] = -1;
+        u[2] = 0;
+        u[3] = 0;
+        return out;
+    }
+    const weather = feed.atmosphere?.weather || feed.weather || {};
+    const moving = !feed.reducedMotion && finite(feed.motionScale, 1) > 0;
+    const tick = Math.floor(finite(feed.timeMs, 0) * 0.006);
+    // r2 (D3) — the state follows the weather under reduced motion too (a
+    // static frame per state; the motion clock is held there, so it is read
+    // every frame); only the streak shift needs the clock.
+    if (out.state < 0 || !moving || tick !== out.stateTick) {
+        out.state = seaStateFor(weather, sea, out.state);
+        out.stateTick = tick;
+    }
+    if (moving) {
+        if (out.tick !== null && tick > out.tick) {
+            const steps = Math.min(8, Math.floor(tick / 2) - Math.floor(out.tick / 2));
+            const wrap = SEA_STATE.streakWrap;
+            out.shift = (((out.shift + (baseWindX(weather) < 0 ? -steps : steps)) % wrap) + wrap) % wrap;
+        }
+        out.tick = tick;
+    }
+    u[1] = out.state;
+    u[2] = out.shift;
+    // The density, signed by the wind (the streaks' downwind lead).
+    u[3] = out.state === 2 ? (baseWindX(weather) < 0 ? -1 : 1) * SEA_STATE.streakDensity * sea : 0;
+    return out;
+}
+
 export function sunRoadFor(sun, rake, cloudCover, fog = 0, fogLook = lookStrength('la1b'), out = {}) {
     if (!sun?.visible || !(finite(cloudCover, 0) < 0.7)) return null;
     const alpha = clamp(finite(sun.alpha, 1), 0, 1);
@@ -401,6 +616,8 @@ export function createAtmosphereCourses() {
         lone: new Float32Array(4),
         // 3.4 — noise ceiling of the open sea's sunlit course (0 = off).
         sunlit: 0,
+        // SEA-1 — the sunlit water's lift in whole stops (0 = off).
+        lift: 0,
         // Diagnostics: courses drawn (0 or 3) and the aerial haze strength.
         courses: 0,
         aerialHaze: 0,
@@ -430,21 +647,28 @@ export function resolveAtmosphereCourses(level, camera, feed, grade, out = creat
     // jumps them; frozen under reduced motion.
     const moving = !feed.reducedMotion && finite(feed.motionScale, 1) > 0;
     const drift = cloudCourseDrift(moving ? finite(feed.timeMs, 0) : null, feed.atmosphere?.weather);
+    // SEA-1 (look `sea1`, FULL and REDUCED: `sea-weather`) — the field on the
+    // ground plane (CLOUD_PLANE: the drift in plane units), one firm course
+    // with a one-step rim, and the sunlit water's lift (the shaders read the
+    // strength from `cloud[3]`; 0 = today's field, rings and sunlit course).
+    const plane = effectBudgetMode('sea-weather', level) === 'on' ? clamp(lookStrength('sea1'), 0, 1) : 0;
+    const [planeX, planeY] = cloudPlaneScale(plane);
     out.courses = cloudStrength > 0.02 && covered > 0 ? 3 : 0;
     if (out.courses) {
         // Wrapped to the combined field's period for float precision.
         const period = CLOUD_FIELD_PERIOD;
-        out.cloud[0] = ((-drift.x % period) + period) % period;
-        out.cloud[1] = ((-drift.y % period) + period) % period;
+        out.cloud[0] = ((-drift.x * planeX % period) + period) % period;
+        out.cloud[1] = ((-drift.y * planeY % period) + period) % period;
         out.cloud[2] = 0.085 * cloudStrength;
         out.thresholds[0] = cloudThreshold(covered);
-        out.thresholds[1] = cloudThreshold(covered * 0.55);
-        out.thresholds[2] = cloudThreshold(covered * 0.22);
+        out.thresholds[1] = cloudThreshold(covered * (plane > 0 ? CLOUD_PLANE_CORE : 0.55));
+        out.thresholds[2] = plane > 0 ? 2 : cloudThreshold(covered * 0.22);
         // 3.4 — sun on water: the sea's clearest share, 0.8 of the
         // covered share (where the field is lowest), takes one stop
         // lighter while the sun band is up; no clouds, no course (the
         // sea keeps its own stops, uniform).
-        out.sunlit = clamp(finite(grade.sunBand, 0), 0, 1) > 0.3 ? cloudThreshold(1 - covered * 0.8) : 0;
+        // SEA-1 replaces it with the lift outside the shade (the shaders).
+        out.sunlit = plane <= 0 && clamp(finite(grade.sunBand, 0), 0, 1) > 0.3 ? cloudThreshold(1 - covered * 0.8) : 0;
     } else {
         out.cloud.fill(0);
         out.thresholds.fill(2);
@@ -460,8 +684,8 @@ export function resolveAtmosphereCourses(level, camera, feed, grade, out = creat
     if (!out.courses && moving && cloudStrength > 0.02 && lone?.active && lone.radius > 0) {
         const period = CLOUD_FIELD_PERIOD;
         out.courses = 2;
-        out.cloud[0] = (((lone.fieldX - lone.x) % period) + period) % period;
-        out.cloud[1] = (((lone.fieldY - lone.y) % period) + period) % period;
+        out.cloud[0] = (((lone.fieldX - lone.x * planeX) % period) + period) % period;
+        out.cloud[1] = (((lone.fieldY - lone.y * planeY) % period) + period) % period;
         out.cloud[2] = 0.085 * cloudStrength;
         out.thresholds[0] = LONE_CLOUD_THRESHOLDS[0];
         out.thresholds[1] = LONE_CLOUD_THRESHOLDS[1];
@@ -470,6 +694,13 @@ export function resolveAtmosphereCourses(level, camera, feed, grade, out = creat
         out.lone[1] = lone.fieldY;
         out.lone[2] = lone.radius;
     }
+    out.cloud[3] = plane;
+    // r6 / r8 — the lift. The frame's slewed value travels in the feed
+    // (`seaLift`, WorldFrameRenderer slews it a sixteenth a second), so a
+    // frozen frame context draws identically on any renderer; without it
+    // (a bare feed) the target, unslewed.
+    const liftTarget = seaSunLift(plane, grade, feed.atmosphere?.weather, feed.atmosphere?.solar?.elevationDeg);
+    out.lift = plane > 0 && Number.isFinite(feed.seaLift) ? feed.seaLift : liftTarget;
 
     const hazeMode = effectBudgetMode('aerial-perspective', level);
     const fog = clamp(finite(feed.atmosphere?.weather?.fog, 0), 0, 1);
@@ -580,6 +811,7 @@ export function createLightFrameState() {
             clusters: false, tiles: 0, daylight: true,
         },
         wetReflectionCount: 0,
+        groundMirrorCount: 0,
         marchSteps: 0,
         footprint: null,
         localLightPhase: 0,
@@ -646,6 +878,15 @@ export function resolveLights(feed, camera, level, {
     state.wetReflectionCount = wetness <= 0.01 || level >= POST_FX_LEVELS.MINIMAL
         ? 0
         : level >= POST_FX_LEVELS.REDUCED ? 4 : 8;
+    // GW-2 — with the lamp mirrors on, every admitted fixed light (never an
+    // attention light or a carried lantern) carries LIGHT_RECORD_FLAGS.
+    // groundMirror at FULL, the first 8 at REDUCED: a mirror is a short
+    // column on puddle and wet paving texels only, no new light record, and
+    // admission order is not nearness, so a cap would pick the mirrored
+    // lamps arbitrarily. The 3.2 streak keeps its own 8 / 4 slots.
+    state.groundMirrorCount = state.wetReflectionCount > 0 && lookStrength('gw2') > 0
+        ? (level >= POST_FX_LEVELS.REDUCED ? 8 : MAX_LIGHT_RECORDS)
+        : 0;
     const energy = sourceEnergyFor(feed.lighting);
     state.energy = energy;
     state.localLightPhase = localLightPhaseForLighting(feed.lighting);
@@ -690,6 +931,7 @@ export function resolveLights(feed, camera, level, {
     const records = state.records;
     const rowStride = MAX_LIGHT_RECORDS * 4;
     let wetSlots = state.wetReflectionCount;
+    let mirrorSlots = state.groundMirrorCount;
     for (let index = 0; index < lights.length; index++) {
         const light = lights[index];
         const color = gpuLightColorForShader(light, DEFAULT_LIGHT_COLOR, state.colorScratch);
@@ -712,9 +954,17 @@ export function resolveLights(feed, camera, level, {
             ? clamp(finite(feed.lighting?.beaconIntensity, 0), 0, 1)
             : 1) * (attention ? 1 : clamp(finite(energy.spill, 1), 0, 2));
         let flags = 0;
-        if (!attention && wetSlots > 0) {
+        // A carried lantern (NL-4) lights its carrier's ground; it never
+        // takes a wet reflection or mirror (the column would lie under the
+        // body), nor a slot a fixed lamp could use.
+        const fixed = !attention && !String(light.id || '').startsWith(LANTERN_ID_PREFIX);
+        if (fixed && wetSlots > 0) {
             flags |= LIGHT_RECORD_FLAGS.wetReflection;
             wetSlots--;
+        }
+        if (fixed && mirrorSlots > 0) {
+            flags |= LIGHT_RECORD_FLAGS.groundMirror;
+            mirrorSlots--;
         }
         if (light.waterOnly === true) flags |= LIGHT_RECORD_FLAGS.waterOnly | LIGHT_RECORD_FLAGS.waterColumn;
         else if (lightLaysColumn(light)) flags |= LIGHT_RECORD_FLAGS.waterColumn;
@@ -795,8 +1045,74 @@ export function resolveBeam(feed, out = createBeamUniforms()) {
     return out;
 }
 
+// GW-1 — the wet level the field's drying order is read against: the C-W2
+// ground history's wetness only (GroundState.groundStateAt over the frame's
+// own atmosphere; a feed may pin it as `groundWetness`). It is 0 under
+// overcast drizzle and in winter (snow), which the history ignores. The
+// history steps once per 10-minute bucket; through the first
+// GROUND_EASE_MINUTES after each bucket edge the level eases from the
+// previous bucket's value to this one's, a pure function of the clock (no
+// stored state: a pinned or frozen frame, or reduced motion, reads the level
+// of its instant), so the per-texel thresholds wet and dry the street
+// progressively through that minute instead of in one frame.
+export const GROUND_EASE_MINUTES = 1;
+
+/** The eased ground history at the frame's clock: { wetness, puddles }, or null without a date. */
+export function easedGroundState(atmosphere) {
+    const date = atmosphere?.effectiveDate;
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return null;
+    const options = groundOptionsFor(atmosphere);
+    const now = groundStateAt(date, options);
+    const minute = date.getHours() * 60 + date.getMinutes() + date.getSeconds() / 60 + date.getMilliseconds() / 60000;
+    const t = (minute - now.bucketMinute) / GROUND_EASE_MINUTES;
+    if (!(t < 1)) return now;
+    const prev = groundStateAt(new Date(date.getTime() - GROUND_BUCKET_MINUTES * 60000), options);
+    const k = clamp(t, 0, 1);
+    return { wetness: prev.wetness + (now.wetness - prev.wetness) * k, puddles: prev.puddles + (now.puddles - prev.puddles) * k,
+        bucketPuddles: now.puddles };
+}
+
+// The puddle level the feed carries (the bucket's), eased the same way when
+// it is the frame atmosphere's own history.
+function easedPuddlesFor(feed) {
+    const puddles = finite(feed.puddles, 0);
+    const eased = feed.atmosphere ? easedGroundState(feed.atmosphere) : null;
+    const bucket = eased?.bucketPuddles ?? eased?.puddles;
+    return eased && Math.abs(bucket - puddles) < 1e-6 ? eased.puddles : puddles;
+}
+
+function groundWetnessFor(feed) {
+    if (Number.isFinite(feed.groundWetness)) return feed.groundWetness;
+    return easedGroundState(feed.atmosphere)?.wetness ?? 0;
+}
+
+/**
+ * GW-1 / GW-2 — the frame's ground-weather uniform: [gw1, gw2, field bound
+ * 0/1, wet level]. All zero with both looks at 0, without a weather field,
+ * or while the ground is dry and unpuddled: the shaders then run today's
+ * uniform wet darkening and the R8 puddle mask.
+ */
+export function resolveGroundWeather(feed = {}, out = new Float32Array(4), level = POST_FX_LEVELS.FULL) {
+    out.fill(0);
+    const gw1 = clamp(finite(lookStrength('gw1'), 0), 0, 1);
+    const gw2 = clamp(finite(lookStrength('gw2'), 0), 0, 1);
+    const field = feed.puddleMask?.weather;
+    if (!(gw1 > 0 || gw2 > 0) || !field?.data || effectBudgetMode('wet-ground', level) !== 'on') return out;
+    const wet = clamp(finite(groundWetnessFor(feed), 0), 0, 1);
+    if (!(wet > 0.001 || finite(feed.puddles, 0) > 0.001)) return out;
+    out[0] = gw1;
+    out[1] = gw2;
+    out[2] = 1;
+    out[3] = wet;
+    return out;
+}
+
 export function createPuddleUniforms() {
     return {
+        groundWeather: new Float32Array(4),
+        format: 'r8',
+        textureKey: 'ground:puddle-mask',
+        revision: null,
         mask: null,
         rect: new Float32Array(4),
         puddles: 0,
@@ -814,10 +1130,19 @@ export function createPuddleUniforms() {
  * [upper band, horizon] the water reflects. `ground`: the terrain record
  * takes puddles this frame.
  */
-export function resolvePuddles(feed, out = createPuddleUniforms()) {
-    const puddles = clamp(finite(feed.puddles, 0), 0, 1);
-    const mask = puddles > 0.001 && feed.puddleMask?.data ? feed.puddleMask : null;
+export function resolvePuddles(feed, out = createPuddleUniforms(), level = POST_FX_LEVELS.FULL) {
+    const puddles = clamp(easedPuddlesFor(feed), 0, 1);
+    // GW-1 / GW-2 — with either look on, the ground weather field (RGBA8 on
+    // the same grid; its A is the puddle byte) takes the puddle unit while
+    // the ground is wet or puddled, and the R8 mask is not uploaded.
+    const groundWeather = resolveGroundWeather(feed, out.groundWeather, level);
+    out.groundWeather = groundWeather;
+    const field = groundWeather[2] > 0 ? feed.puddleMask.weather : null;
+    const mask = field || (puddles > 0.001 && feed.puddleMask?.data ? feed.puddleMask : null);
     out.mask = mask;
+    out.format = field ? 'rgba8' : 'r8';
+    out.textureKey = field ? 'ground:weather-field' : 'ground:puddle-mask';
+    out.revision = mask ? feed.puddleMask.revision : null;
     out.ground = Boolean(mask);
     out.puddles = mask ? puddles : 0;
     if (!mask) return out;

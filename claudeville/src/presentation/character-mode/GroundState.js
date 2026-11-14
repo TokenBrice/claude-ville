@@ -14,7 +14,8 @@
 //
 //   wetness    a capped reservoir over the last six hours, stepped every
 //              5 minutes: rain above PRECIPITATING fills it by
-//              precip·dt / WET_GAIN_MINUTES (an hour of 0.68 rain fills it),
+//              precip·dt / WET_GAIN_MINUTES (about 20 minutes of 0.68 rain
+//              fill it),
 //              it drains WET_DRAIN_PER_MINUTE every step and holds at most
 //              WET_CAP, clamped to 1. Draining is linear and the cap is
 //              small, so however long it rained a road is puddled half an
@@ -51,10 +52,12 @@
 // `rainClearedMinutesAgo` reads the same history for the after-rain rainbow
 // (5.8): minutes since the timeline went from rain to clearing, or null.
 
-import { weatherHistorySampler } from './AtmosphereState.js';
+import { nightRainOn, weatherHistorySampler } from './AtmosphereState.js';
 
 export const GROUND_BUCKET_MINUTES = 10;
-export const WET_GAIN_MINUTES = 30;
+// 10 (was 30): a street under steady rain is wet along its drying order
+// within about 15 minutes instead of an hour (GW-1 reads this history).
+export const WET_GAIN_MINUTES = 10;
 export const WET_DRAIN_PER_MINUTE = 0.008;
 export const WET_CAP = 1.1;
 export const PUDDLE_ON = 0.35;
@@ -62,8 +65,10 @@ export const PUDDLE_FULL = 0.7;
 export const SNOW_GAIN_PER_HOUR = 0.5;
 export const SNOW_MELT_PER_HOUR = 0.02;
 // A dry, not overcast winter afternoon (11:00–16:00) thaws faster in the sun:
-// a full cover lasts about three such afternoons.
-export const SNOW_SUN_MELT_PER_HOUR = 0.06;
+// a full cover lasts about two such afternoons. 0.10 (was 0.06) since the
+// night rain (WX-1) made winter snowfall more frequent: snow then lies on
+// about three winter hours in four instead of nine in ten.
+export const SNOW_SUN_MELT_PER_HOUR = 0.10;
 // Precipitation that settles as snow: rain- and storm-strength winter
 // weather, not the 0.04 drizzle of an overcast day.
 export const SNOWFALL_ON = 0.18;
@@ -133,7 +138,10 @@ function timelineKey(options) {
     const knots = options.timelineKnots
         ? options.timelineKnots.map(k => `${k.minute}:${k.type}:${k.precipitation}:${k.cloudCover}`).join(',')
         : '';
-    return `${options.timelineMode || 'auto'}|${options.seedOverride ?? ''}|${knots}`;
+    // WX-1 — the date-seeded weather differs with the night-rain switch;
+    // pinned knots do not.
+    const nightRain = knots || nightRainOn() ? '' : '|wx0';
+    return `${options.timelineMode || 'auto'}|${options.seedOverride ?? ''}|${knots}${nightRain}`;
 }
 
 function historyKey(date, minute, options) {

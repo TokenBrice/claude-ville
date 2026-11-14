@@ -71,7 +71,19 @@ const WEATHER = {
   golden: BENCH_WEATHER.clear,
   'clear-rain-35': transitionWeather(0.35),
   'clear-rain-50': transitionWeather(0.5),
+  // MS-1 — fog weather (the low mist, or with `--look=ms1:0` the banks).
+  fog: Object.freeze({ type: 'fog', intensity: 0.85, precipitation: 0, fog: 0.89, cloudCover: 0.6, windX: 0.1 }),
+  // SEA-1 — a partly cloudy morning: cloud courses on land and sea, sunlit water.
+  partly: Object.freeze({ type: 'partly-cloudy', intensity: 0.5, precipitation: 0, fog: 0.02, cloudCover: 0.41, windX: 0.5 }),
+  // SEA-3 — a fresh wind: whitecap streak rows.
+  windy: Object.freeze({ type: 'partly-cloudy', intensity: 0.5, precipitation: 0, fog: 0.02, cloudCover: 0.41, windX: 1.0 }),
+  // GW-1 / GW-2 — a clear night after a day of rain: `knots` pins the
+  // ground history (setTimelineKnots), so wetness and puddles are real.
+  'wet-night': Object.freeze({ type: 'clear', intensity: 0, precipitation: 0, fog: 0, cloudCover: 0.1, windX: 0.2,
+    knots: Object.freeze([{ minute: 0, type: 'rain' }, { minute: 1260, type: 'rain' }, { minute: 1275, type: 'clear' }, { minute: 1435, type: 'clear' }]) }),
 };
+// `--look=id:value,...` — LookStrengths overrides set in the page before posing.
+let LOOK_OVERRIDES = {};
 const PARITY_SCENARIOS = Object.freeze([
   { n: 1, id: 'readme-noon', scenario: 'readme-showcase', hour: 12, weather: 'clear', zoom: 2, why: 'reference daylight frame' },
   { n: 2, id: 'readme-night', scenario: 'readme-showcase', hour: 22, weather: 'clear', zoom: 3, why: 'full night composition' },
@@ -85,6 +97,12 @@ const PARITY_SCENARIOS = Object.freeze([
   { n: 10, id: 'release-morning', scenario: 'release-parade', hour: 9, weather: 'clear', zoom: 2, why: 'second daytime grade' },
   { n: 11, id: 'transition-partly', scenario: 'readme-showcase', hour: 14, weather: 'clear-rain-35', zoom: 1, why: 'clear -> rain at cover 0.37: cloud and sunlit course edges' },
   { n: 12, id: 'transition-mid', scenario: 'readme-showcase', hour: 14, weather: 'clear-rain-50', zoom: 1, why: 'clear -> rain at cover 0.50: rain-side courses mid-crossfade' },
+  { n: 13, id: 'fog-dawn', scenario: 'readme-showcase', hour: 7.8, weather: 'fog', zoom: 1, why: 'fog in frame: the MS-1 low mist, or banks and veil with --look=ms1:0' },
+  { n: 14, id: 'partly-sea', scenario: 'readme-showcase', hour: 10.5, weather: 'partly', zoom: 1, why: 'daytime partly cloudy sea and land: cloud courses, sunlit water (SEA-1)' },
+  { n: 15, id: 'windy-sea', scenario: 'readme-showcase', hour: 10.5, weather: 'windy', zoom: 2, why: 'a fresh wind on the sea: whitecap streaks and the sky on lit water (SEA-3 / SEA-2)' },
+  { n: 16, id: 'rain-noon', scenario: 'readme-showcase', hour: 14, weather: 'rain', zoom: 2, why: 'rain in frame: the RN-1 world streaks and splashes, depth-sorted' },
+  { n: 17, id: 'wet-night', scenario: 'readme-showcase', hour: 21.6, weather: 'wet-night', zoom: 2, why: 'a clear night after rain, real wetness and puddles: GW-1 wet ground and GW-2 lamp mirrors' },
+  { n: 18, id: 'fog-night', scenario: 'readme-showcase', hour: 22, weather: 'fog', zoom: 2, why: 'a foggy night: lamps in the low mist (MS-1 / MS-2 halos, NL-4 lanterns)' },
 ]);
 
 // Viewports whose World backing is the plan's gate sizes (1680x1032,
@@ -103,6 +121,7 @@ Options:
   --settle-seconds=<n>    Wait after posing before freezing (default: 4)
   --out=<dir>             Report directory (default: output/webgpu-parity/<timestamp>)
   --url=<url>             Existing ClaudeVille server (default: an isolated server)
+  --look=<id:value,...>   LookStrengths overrides set in the page before posing (e.g. ms1:1)
   --no-device-loss        Skip the device-loss and WebGL context-loss checks
   --burst                 Also run gpu-burst FULL (level 0) per backend at 1680 and 4880
   --no-images             Skip the frame/diff PNGs
@@ -143,6 +162,13 @@ function parseArgs(argv) {
       case '--settle-seconds': options.settleSeconds = Number(value); break;
       case '--out': options.out = value; break;
       case '--url': options.url = value; break;
+      case '--look':
+        for (const pair of value.split(',')) {
+          const [id, strength] = pair.split(':');
+          if (!id || !Number.isFinite(Number(strength))) throw new Error(`look must be id:value, received ${pair}`);
+          LOOK_OVERRIDES[id] = Number(strength);
+        }
+        break;
       default: throw new Error(`Unknown argument: ${arg}`);
     }
   }
@@ -213,8 +239,12 @@ function installParityHelpers() {
     return toBase64(await canvas.convertToBlob({ type: 'image/png' }));
   };
 
-  T.pose = async ({ scenario, hour, weather, zoom, flight }) => {
+  T.pose = async ({ scenario, hour, weather, zoom, flight, looks }) => {
     const r = window.__claudeVilleApp.renderer;
+    if (looks && Object.keys(looks).length) {
+      const L = await import('/src/presentation/character-mode/LookStrengths.js');
+      for (const [id, strength] of Object.entries(looks)) L.setLookStrength(id, strength);
+    }
     r._startLoop?.();
     // B.2 releases the terrain bake's CPU canvas once the app's own GPU world
     // holds it (a GPU-resident stand-in keys the record), which a fresh
@@ -227,6 +257,7 @@ function installParityHelpers() {
     const atmosphere = r.atmosphereState || window.__claudeVilleAtmosphere;
     atmosphere?.setTimelineMode?.('fixed');
     atmosphere?.setHour?.(hour);
+    if (weather?.knots) atmosphere?.setTimelineKnots?.(weather.knots);
     atmosphere?.setWeather?.(weather);
     const camera = r.camera;
     camera.abortDirectorGlide?.();
@@ -978,7 +1009,7 @@ async function poseAndFreeze(page, item, size, settleSeconds) {
   // backing is the gate size.
   await page.waitForTimeout(4500);
   await page.keyboard.press('Escape');
-  const args = { scenario: item.scenario, hour: item.hour, weather: WEATHER[item.weather], zoom: item.zoom, flight: size.flight };
+  const args = { scenario: item.scenario, hour: item.hour, weather: WEATHER[item.weather], zoom: item.zoom, flight: size.flight, looks: LOOK_OVERRIDES };
   const pose = await page.evaluate(a => window.__webgpuParity.pose(a), args);
   await page.waitForTimeout(settleSeconds * 1000);
   await page.evaluate(a => window.__webgpuParity.pose(a), args);

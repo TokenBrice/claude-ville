@@ -14,6 +14,7 @@ import {
     OPEN_SEA_BAND_WEIGHTS,
 } from '../../CoastBake.js';
 import { DEEP_DASH_DENSITY } from '../GpuFrameState.js';
+import { SEA_STATE } from '../GpuWorldPolicy.js';
 
 export const OPEN_SEA_WGSL = /* wgsl */ `
 const OPEN_SEA_BAND: f32 = ${OPEN_SEA_BAND_DEPTH.toFixed(1)};
@@ -46,22 +47,46 @@ fn shadeOpenSea(cell: vec2f) -> vec3f {
         marked = true;
     } else {
         let s = swellPhase(cell);
+        let horizonStop = stop;
         stop = seaBodyStop(cell, s, stop, excess, order);
-        let cap = swellCap(cell, s, near, seaPawCaps(cell, order));
+        // SEA-2 — a set's lit slope.
+        let litSlope = stop < horizonStop;
+        // SEA-1 — sunlit water lifts outside the cloud shade.
+        if (frame.cloud.w > 0.0) { stop = seaLiftedStop(stop, frame.seaLift, m, order); }
+        // SEA-3 — calm: no caps or deep dashes; fresh: more caps and streaks.
+        let calm = seaCalm();
+        var paw = seaPawCaps(cell, order);
+        if (seaFresh()) { paw += ${SEA_STATE.freshCaps.toFixed(2)}; }
+        var cap = 0.0;
+        if (!calm) { cap = swellCap(cell, s, near, paw); }
         var lighter = cap;
         var whitecap = false;
-        if (clock > 0.0) {
+        if (clock > 0.0 && !calm) {
             let lit = deepSwellLit(cell, tick, storm, ${DEEP_DASH_DENSITY.toFixed(2)});
             whitecap = lit > 1.5;
             if (lit > 0.5) { lighter = max(lighter, select(1.0, 2.0, near > 0.8)); }
         }
+        var streak = 0.0;
+        if (clock > 0.0) { streak = seaStreakAt(cell); }
+        if (streak > 1.5) { whitecap = true; } else if (streak > 0.5) { lighter = max(lighter, 1.0); }
         marked = lighter > 0.0 || whitecap;
         if (frame.seaSunlit > 0.0 && m < frame.seaSunlit) { lighter += 1.0; }
         var albedo = WATER_FOAM;
         if (!whitecap) { albedo = seaStopRgb(max(stop - lighter, 0.0)); }
         if (starlightAt(cell, cap, frame.starlight, tick)) { albedo = WATER_FOAM_CREST; }
-        c = applyWaterMood(albedo) * WATER_CAST * mix(1.0, 0.86, frame.seaSunBand);
+        // SEA-1 — the sun band's dim fades out with the look.
+        c = applyWaterMood(albedo) * WATER_CAST * mix(1.0, 0.86, frame.seaSunBand * (1.0 - frame.cloud.w));
         c = capSaturation(applyWaterSky(capSaturation(applyTimeGrade(c, true), WATER_MAX_SATURATION)), WATER_MAX_SATURATION);
+        // SEA-2 / SEA-3 — lit slopes, static caps and calm lanes take the
+        // sky's hue: the warm horizon inside the sun's road, cool outside.
+        var take = 0.0;
+        if (!whitecap && (litSlope || cap > 0.0)) { take = frame.seaState.x; }
+        if (calm && seaCalmLane(cell)) { take = max(take, ${SEA_STATE.laneWeight.toFixed(2)}); }
+        if (take > 0.0) {
+            var sky = frame.waterSky.rgb;
+            if (inSunRoad(texelPx, frame.glint, frame.cameraScale)) { sky = frame.seaSky; }
+            c = capSaturation(seaSkyHue(c, sky, take), WATER_MAX_SATURATION);
+        }
     }
     let hazeRows = frame.seaHaze.a;
     let band = max(0.0, t - hazeRows) + floor(contour * clamp((t - hazeRows) / 96.0, 0.0, 1.0) + 0.5);
@@ -87,15 +112,22 @@ fn shadeOpenSea(cell: vec2f) -> vec3f {
         c = mix(c, frame.seaHaze.rgb, hw);
     }
     c = applyGradeVignette(c, texelPx, frame.resolution);
-    let groundFog = clamp(frame.weather.y, 0.0, 1.0) * smoothstep(0.18, 0.98, 1.0 - texelPx.y / max(1.0, frame.resolution.y));
-    var fogged = mix(c, frame.fogColor, groundFog * 0.48);
-    let fogRise = dot(fogged - c, GRADE_LUMA);
-    if (fogRise > 0.06) { fogged = mix(c, fogged, 0.06 / fogRise); }
-    c = fogged;
+    if (frame.mist.w > 0.0) {
+        // MS-1 — the low mist at height 0 on open water.
+        if (frame.mist.x > 0.0) { c = applyMist(c, mistCourse(cell + 0.5, 0.0, 1.0, false, waterBayer4(floor(cell * 0.5))), frame.fogColor, false); }
+    } else {
+        let groundFog = clamp(frame.weather.y, 0.0, 1.0) * smoothstep(0.18, 0.98, 1.0 - texelPx.y / max(1.0, frame.resolution.y));
+        var fogged = mix(c, frame.fogColor, groundFog * 0.48);
+        let fogRise = dot(fogged - c, GRADE_LUMA);
+        if (fogRise > 0.06) { fogged = mix(c, fogged, 0.06 / fogRise); }
+        c = fogged;
+    }
     var shade = 0.0;
     if (frame.cloud.z > 0.0) {
         shade = step(frame.cloudThresholds.x, m) + step(frame.cloudThresholds.y, m) + step(mix(frame.cloudThresholds.z, 1.2, reach), m);
     }
+    // SEA-1 — no cloud multiply on open water: its shade is the lift's one stop.
+    if (frame.cloud.w > 0.0) { shade = 0.0; }
     shade = max(shade, squallShade(cell, n, order));
     if (shade > 0.0) { c *= vec3f(1.0) - shade * 0.085 * vec3f(1.0, 0.96, 0.84); }
     return applyAerialHaze(c, order, (cell.y + 0.5 + seaContourRows(cell) + frame.cameraXy.y) * frame.cameraScale, false);

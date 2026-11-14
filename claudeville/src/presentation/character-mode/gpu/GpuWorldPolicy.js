@@ -146,7 +146,15 @@ export const EFFECT_BUDGET = Object.freeze({
     // refilled from `Wind.windAt` on 125 ms motion steps) and the forecast
     // squall. The island's cloud courses reach the sea under `cloud-courses`.
     // No receipt yet (V2 quiet host pending): the band is the resolvable
-    // limit of the rig that priced `cloud-courses`.
+    // limit of the rig that priced `cloud-courses`. SEA-1 (look `sea1`) lives
+    // here too and is ALU only: the plane field is a multiply-add before the
+    // same two fetches, and the sunlit lift reuses the open sea's field (one
+    // extra field read on in-map open water). MINIMAL keeps today's look.
+    // SEA-2 / SEA-3 (looks `sea2`, `sea3`) live here as well: ALU and two
+    // integer hashes per open-water texel (the streak rows), one cloud-tile
+    // fetch per texel only on a calm sea (its lanes); no new texture, no new
+    // pass. FULL and REDUCED; MINIMAL keeps today's static sea; Canvas keeps
+    // today's sea (declared lower tier).
     'sea-weather': Object.freeze({
         id: 'sea-weather',
         levels: Object.freeze({ FULL: 'on', REDUCED: 'on', MINIMAL: 'off' }),
@@ -195,6 +203,56 @@ export const EFFECT_BUDGET = Object.freeze({
         cost: Object.freeze({ gpuMsBand: [0, 0.24], cpuMsBand: [0, 0.005], bytes: 0, scope: 'shared-composite-envelope' }),
         staticFallback: 'none',
         canvas: 'cached-haze-stamp',
+    }),
+    // MS-1 (look `ms1`) — low mist with a top: in the scene fragment, only
+    // while the mist has density, one coast-field fetch and two cloud-tile
+    // fetches per fragment (two more mist-top reads, four fetches, on a
+    // course seam only) and ~30 ALU; the open sea in the composite the same
+    // minus the coast field. It retires the fog-bank `ground:fog` records
+    // (up to ~6 full-viewport layers of the scene shader) and the
+    // `ground:haze` record on the GPU paths. No receipt yet (quiet host
+    // pending; the spike's loaded-host GPU timer read 4.3-6.4 ms against
+    // today's fog 3.3-7.1 ms, not a receipt): the band is [INFERENCE] the
+    // grass gust course's. MINIMAL keeps today's flat veil and banks; the
+    // static frame holds the drift; Canvas keeps today's banks (lower tier).
+    // MS-2 (look `ms2`) extends this row: the burn-off is one more uniform
+    // (u_mistBurn) and one multiply-add in the same top; the lamp halos are
+    // at most 64 small scene records a frame (MistHalos: cached 21-37 px
+    // stamps, one texture per radius and colour, placed in painter order),
+    // only while the mist runs at night. Loaded-host figures (r2 review,
+    // awaiting a quiet-host receipt): at dense-100 in fog, 56 halos add 64
+    // draw batches (210 -> 274) and 0.05 ms renderer CPU; on a foggy night
+    // about +55 records and +70 batches, main thread 3.6 -> 3.9 ms at
+    // 1920x1200 zoom 2 and 5.1 -> 5.4 ms at 5120x1440. MINIMAL: the mist
+    // is off, so neither runs; Canvas: neither (declared lower tier).
+    'low-mist': Object.freeze({
+        id: 'low-mist',
+        levels: Object.freeze({ FULL: 'on', REDUCED: 'on', MINIMAL: 'off' }),
+        cost: Object.freeze({ gpuMsBand: [0, 0.24], cpuMsBand: [0, 0.3], bytes: 0, scope: 'shared-scene-envelope' }),
+        staticFallback: 'frozen-offset',
+        canvas: 'fog-banks',
+    }),
+    // GW-1 / GW-2 (looks `gw1`, `gw2`) — wet ground read from the ground
+    // weather field (GroundWetShader.js). While either look is on and the
+    // ground is wet or puddled, the RGBA8 field (1280 x 1280, 6,553,600
+    // bytes, uploaded once per ground bake) takes the puddle unit in place of
+    // the R8 mask (1,638,400 bytes): +4.9 MB resident. Per terrain fragment
+    // one texelFetch for the wet step and one for the sheen, a puddle texel
+    // as before; per flat-ground fragment a lazy fetch and one column test
+    // per wet-reflection light for the lamp mirrors. No receipt yet (quiet
+    // host pending): the band is [INFERENCE] the puddle courses' order of
+    // cost. FULL mirrors every admitted fixed light (no attention light, no
+    // carried lantern), REDUCED 8; the field is built only while a GW look
+    // reads it (nothing at looks 0);
+    // MINIMAL sheds the field (today's uniform darkening and R8 puddles).
+    // Static: no motion. Canvas keeps today's uniform wet darkening and
+    // puddle courses (declared lower tier).
+    'wet-ground': Object.freeze({
+        id: 'wet-ground',
+        levels: Object.freeze({ FULL: 'on', REDUCED: 'on', MINIMAL: 'off' }),
+        cost: Object.freeze({ gpuMsBand: [0, 0.3], cpuMsBand: [0, 0.01], bytes: 4915200, scope: 'shared-scene-envelope' }),
+        staticFallback: 'static',
+        canvas: 'uniform-wet',
     }),
     'water-reflection': Object.freeze({
         id: 'water-reflection',
@@ -410,6 +468,24 @@ export const EFFECT_BUDGET = Object.freeze({
         staticFallback: 'same-depth-pass',
         canvas: 'depth-sorted-drawables',
     }),
+    // RN-1 (look `rn1`, WeatherRenderer `gpuRainField`) — rain in the world:
+    // one instanced draw after the particles on the same painter depth, two
+    // quads per 32-px ground cell of the view plus the fall height below it
+    // (about 5,000-25,000 instances, most of them degenerate, a few hundred to ~2,000 of them drawn,
+    // each a streak of <= 11 texels or a 7x4 splash), no attributes, no
+    // per-frame packing. It replaces the overlay's 100-1,600 rect fills a
+    // frame (CPU, not priced here). `bytes`: the 64-B uniform block and the
+    // 40x40 R8 splash mask. MINIMAL hands the whole field back to the overlay
+    // (`canvas-weather`), as Canvas keeps it. No receipt yet (quiet host
+    // pending): the band is [INFERENCE] the particle-depth prototype's (a
+    // depth-tested instanced draw of small quads, <= 0.15 ms at 4880x1392).
+    'world-rain': Object.freeze({
+        id: 'world-rain',
+        levels: Object.freeze({ FULL: 'on', REDUCED: 'on', MINIMAL: 'off' }),
+        cost: Object.freeze({ gpuMsBand: [0, 0.15], cpuMsBand: [0, 0.03], bytes: 1664, scope: 'shared-scene-envelope' }),
+        staticFallback: 'canvas-weather',
+        canvas: 'canvas-weather',
+    }),
     // 3.11 (M11) — bodies standing on piers, bridges and banks (feet within
     // 0.3 tiles of water) get a `reflect` twin record in the ground band:
     // water-only, row ripple, dropped rows, three alpha courses. At most 12,
@@ -422,6 +498,95 @@ export const EFFECT_BUDGET = Object.freeze({
         cost: Object.freeze({ gpuMsBand: [0, 0.03], cpuMsBand: [0, 0.02], bytes: 0, scope: 'shared-scene-envelope' }),
         staticFallback: 'none',
         canvas: 'none',
+    }),
+    // NL-4 (look `nl4`, CarriedLantern.js) — every eligible carrier keeps its
+    // stamp; this caps how many of them, nearest the view centre, lay a
+    // pool: one small fixture light each, admitted after every other light
+    // (`binGpuLights`), so it only ever spends a leftover slot of
+    // `light-admission`. MINIMAL keeps the lit 6x7 stamps (one tiny record
+    // per carrier) with no pool. No receipt yet (quiet host pending): the
+    // band is [INFERENCE] a dozen more lights in an already-admitted list of
+    // up to 128. Canvas lands the pool as it lands every fixture pool
+    // (`_drawLightGlowStamps`): the stepped dodge courses over the finished
+    // frame, so they also wash the carrier's own lower robe.
+    'carried-lanterns': Object.freeze({
+        id: 'carried-lanterns',
+        levels: Object.freeze({ FULL: 12, REDUCED: 6, MINIMAL: 0 }),
+        cost: Object.freeze({ gpuMsBand: [0, 0.05], cpuMsBand: [0, 0.02], bytes: 0, scope: 'shared-scene-envelope' }),
+        staticFallback: 'static-stamp',
+        canvas: 'frame-pool-courses',
+    }),
+    // NL-3 (look `nl3`, LampSilhouette.js) — the 2.8 lamp casts as the
+    // body's own silhouette (the stepped trails had no row: they ride the
+    // contact-shadow stamps). CPU: one inverse-mapped mask per cluster of
+    // overlapping shadows (<= 24 bodies, cached by frame cell, foot and
+    // lamp), one small ground record each; GPU: those few records. MINIMAL
+    // falls back to the stepped trails. No receipt yet (quiet host pending):
+    // the bands are [INFERENCE] a handful of ground records.
+    'lamp-silhouettes': Object.freeze({
+        id: 'lamp-silhouettes',
+        levels: Object.freeze({ FULL: 'on', REDUCED: 'on', MINIMAL: 'off' }),
+        cost: Object.freeze({ gpuMsBand: [0, 0.05], cpuMsBand: [0, 0.5], bytes: 0, scope: 'shared-scene-envelope' }),
+        staticFallback: 'stepped-trails',
+        canvas: 'stepped-trails',
+    }),
+    // SD-1 (look `sd1`, ShadeField.js) — the sun's shade as one `ground:shade`
+    // record: the shade field's canvas (1408x1536 RGBA) over its world rect
+    // through the scene fragment, in place of the sun trails of the
+    // per-building and per-tree stamps. No shader work of its own: an albedo
+    // fetch and discard across its rect, the scene shader on the texels it
+    // shades. The field is rebuilt each time the sun's sweep leaves its
+    // bucket: measured 104 times on 13 November and 187 on 15 July, about
+    // once per 5 minutes of daylight (and repainted when the cast colour
+    // steps, 9 colours a day). A rebuild runs in idle slices (measured in
+    // review with receivers on: 66 slices, 69 ms in all, none over 4 ms,
+    // landing 3.5 s or more after the bucket) and ends in one 8.25 MiB
+    // canvas upload, which lands in a 25 ms frame against a 16 ms median.
+    // Memory, measured on WebGL2: 12.4 MiB at rest (the 4.1 MiB field
+    // buffer and the 8.25 MiB canvas; 4.8 MiB more while a rebuild runs)
+    // plus the 8.25 MiB texture (`bytes`). Canvas holds the same 12.4 MiB
+    // and, while it repaints, 8.25 MiB more of ImageData. MINIMAL sheds the
+    // record and its texture and keeps today's sun stamps
+    // (`RakingLight.castLightingFor` reads this row). No frame-time receipt
+    // yet (quiet host pending): the band is [INFERENCE] the grass gust
+    // course's. Canvas draws the same field canvas.
+    'sundial-shade': Object.freeze({
+        id: 'sundial-shade',
+        levels: Object.freeze({ FULL: 'on', REDUCED: 'on', MINIMAL: 'off' }),
+        cost: Object.freeze({ gpuMsBand: [0, 0.24], cpuMsBand: [0, 0.01], bytes: 8650752, scope: 'shared-scene-envelope' }),
+        staticFallback: 'none',
+        canvas: 'shade-field',
+    }),
+    // SD-2 (look `sd2`, gpu/SunShade.js) — receivers take the sun's shade:
+    // per sprite fragment (never terrain; a ground record only if it is a
+    // sun trail) texel fetches of the shade field's RGBA8 texels on unit 2,
+    // before the grade: none for a right wall or an attention record
+    // (`shadeExempt`), one for any other landmark texel (the massing's
+    // verdict; a second only where the massing draws nothing there), two or
+    // three for a body or prop (what it stands on, the ceiling at its foot,
+    // a body's canopy), one for a trail; about 30 ALU. By day it also keeps
+    // the occluder companions bound (one more sample a sprite fragment,
+    // `resolveOccluderChannel`), which a clear day otherwise skips. Its
+    // texture is the field's second upload per rebuild (1408x1536 RGBA8,
+    // 8.25 MiB, the frame after the layer's; about once per 5 minutes of
+    // daylight, see `sundial-shade`); the build's texel pass and the view
+    // plane (once per scenery) stay in the field's idle slices. Memory,
+    // measured on WebGL2, over `sundial-shade`: 12.4 MiB of buffers (the
+    // 8.25 MiB texels and the 4.1 MiB view plane; 2.1 MiB more while the
+    // view plane is built) plus the 8.25 MiB texture (`bytes`), so the two
+    // rows together hold 24.8 MiB and two 8.25 MiB textures. MINIMAL sheds
+    // the fetches, the texture and the occluder samples
+    // (`RakingLight.setFrameCastLighting` reads this row; `sundial-shade`
+    // sheds the ground layer at the same level); Canvas keeps the ground
+    // layer only. No frame-time receipt yet (quiet host pending): the band
+    // is [INFERENCE] the footprint march's, which reads a like field per
+    // light per fragment.
+    'sundial-receivers': Object.freeze({
+        id: 'sundial-receivers',
+        levels: Object.freeze({ FULL: 'on', REDUCED: 'on', MINIMAL: 'off' }),
+        cost: Object.freeze({ gpuMsBand: [0, 0.17], cpuMsBand: [0, 0.01], bytes: 8650752, scope: 'shared-scene-envelope' }),
+        staticFallback: 'none',
+        canvas: 'ground-layer-only',
     }),
 });
 
@@ -816,6 +981,100 @@ export const CLOUD_FIELD_PERIOD = 7168;
 // these values, so the patch reaches about 0.35–0.6 of its radius.
 export const LONE_CLOUD_MIX = 0.7;
 export const LONE_CLOUD_THRESHOLDS = Object.freeze([0.55, 0.68]);
+// SEA-1 (look `sea1` > 0) — the cloud field lies on the ground plane: a world
+// point (x, y) reads the field at (x * 0.32, y * 0.8), so a cloud's shade is
+// foreshortened like every other ground shape and stretched along the wind's
+// axis (2.5:1 on screen) and read at half the old frequency (s6b: a few
+// broad masses, five to eight across a 5120 z1 frame, instead of a field of
+// blotches; land and sea read the same field, so their shade meets at the
+// coast). The drift is carried in those field units (wrapped to
+// CLOUD_FIELD_PERIOD). 1024 / 0.32 = 3200 and 1024 / 0.8 = 1280 world px,
+// so the Canvas course tile keeps whole 2-px texels. On land one firm course
+// replaces the three nested rings: the rim (the covered share) one course,
+// its core (CLOUD_PLANE_CORE of the share) two; open water takes no multiply
+// (its shade is one stop of the lift).
+export const CLOUD_PLANE = Object.freeze([0.32, 0.8]);
+export const CLOUD_PLANE_CORE = 0.85;
+// SEA-1 — sunlit water lifts by up to this many palette stops (by day, under
+// a visible sun, outside the cloud shade), never lighter than stop
+// SEA_SUN_LIFT_FLOOR (a stop already lighter keeps its own), so a lifted
+// body (5 -> 3), its lit slope (3 -> 2) and trough (6 -> 4) stay three tones.
+export const SEA_SUN_LIFT_STOPS = 2;
+export const SEA_SUN_LIFT_FLOOR = 2;
+// SEA-2 (look `sea2`) — the sky's share on lit open water (a set's lit slope
+// and the static swell caps; never the body, troughs, shade or moving
+// dashes), at the texel's own value (hue only), times the look and the day
+// (1 − the water's night). Warm horizon inside the sun's road on the open
+// sea, the cool water sky outside it.
+export const SEA_SKY_WEIGHT = 0.3;
+// SEA-3 (look `sea3`) — the sea state from the one wind's knot speed
+// |windX| (Wind.baseWindX): calm below `calm` × strength, fresh from
+// `fresh` + (1 − strength) × 0.4, storm on the weather's storm flag,
+// breeze (today's sea) between; `hysteresis` keeps a state from flapping.
+// Calm: no caps or deep dashes on open water, glassy lanes (the cloud tile
+// at `lane` scale over `laneThreshold`) take the sky's hue at `laneWeight`.
+// Fresh: `freshCaps` more cap clusters, and whitecap streak rows: one texel
+// row in every `streakRow`, `streakCell`-px cells holding a streak of
+// `streakLength[0]` + up to `streakLength[1]` − 1 px at `streakDensity` ×
+// strength, its two downwind texels FOAM, the rest one
+// stop lighter, sliding downwind one world px per two 6 Hz water ticks.
+export const SEA_STATE = Object.freeze({
+    calm: 0.25,
+    fresh: 0.7,
+    hysteresis: 0.04,
+    lane: Object.freeze([1536, 64]),
+    laneOffset: Object.freeze([0.61, 0.27]),
+    laneThreshold: 0.56,
+    laneWeight: 0.4,
+    freshCaps: 0.2,
+    streakRow: 6,
+    streakCell: 32,
+    streakLength: Object.freeze([6, 10]),
+    streakDensity: 0.28,
+    // Wrap of the streak shift: a multiple of streakCell (~9 h at 3 px/s).
+    streakWrap: 98304,
+});
+
+/** SEA-1 — the field's scale per axis at a `sea1` strength (1, 1 when off). */
+export function cloudPlaneScale(strength) {
+    return strength > 0 ? CLOUD_PLANE : [1, 1];
+}
+
+// r2 — the two stops arrive on the real sun: the first as it clears the
+// horizon, the second above about 10°, each swept in across SEA_LIFT_BAND
+// degrees of elevation (the shaders take floor(lift + the sea's own Bayer
+// order), so a stop arrives a sixteenth of the sea per JS step, world-
+// anchored, never the whole sea in one frame).
+export const SEA_LIFT_ELEVATIONS = Object.freeze([0, 10]);
+export const SEA_LIFT_BAND = 2;
+// r6 — the C2 sun band from which the lift is on (whole at the second).
+export const SEA_LIFT_SUN_GATE = Object.freeze([0.5, 0.7]);
+// r6 — the frame lift moves at most this many stops per 6 Hz water tick
+// toward its target (GpuFrameState.slewSeaLift): a sixteenth a second, so a
+// weather change spreads a stop over 16 s (under a stop in any 10 s) and
+// never steps the whole sea at once.
+export const SEA_LIFT_SLEW = 1 / 96;
+
+/**
+ * SEA-1 — the sunlit water's lift in stops at a strength and sun band.
+ * With `elevationDeg` (the real sun) it is fractional, in sixteenths: each
+ * stop sweeps in over SEA_LIFT_BAND degrees above its SEA_LIFT_ELEVATIONS
+ * entry. Without it (no solar snapshot), whole stops on the sun band.
+ */
+export function seaSunLiftStops(strength, sunBand, elevationDeg) {
+    if (!(strength > 0)) return 0;
+    const band = Math.max(0, Math.min(1, Number(sunBand) || 0));
+    const elevation = Number(elevationDeg);
+    if (!Number.isFinite(elevation)) return Math.floor(SEA_SUN_LIFT_STOPS * strength * band + 0.5);
+    const unit = value => Math.max(0, Math.min(1, value));
+    const stops = SEA_LIFT_ELEVATIONS.reduce((sum, at) => sum + unit((elevation - at) / SEA_LIFT_BAND), 0);
+    // The sun band only gates, never dims: from SEA_LIFT_SUN_GATE, above the
+    // steady overcast band (0.2), so overcast, rain and night have none.
+    const sun = unit((band - SEA_LIFT_SUN_GATE[0]) / (SEA_LIFT_SUN_GATE[1] - SEA_LIFT_SUN_GATE[0]));
+    // r6 — the strength is a ceiling on the stops (2 × strength), never a
+    // multiplier: at 0.5 the first stop sweeps in whole and nothing follows.
+    return Math.round(Math.min(stops * sun, SEA_SUN_LIFT_STOPS * Math.min(1, strength)) * 16) / 16;
+}
 
 /**
  * 1.4 / 3.4 — the share of the ground and sea under a cloud course at a
@@ -1184,6 +1443,16 @@ export const GPU_RECORD_FLAGS = Object.freeze({
     // banks' share over land; over painted water and the open sea the scene
     // fragment keeps the tile's full alpha (`seaFretAlpha`).
     seaFret: 1024,
+    // SD-2 — a record the shade field already holds (gpu/SunShade.js): a
+    // ground stamp of the sun's own shade (a villager's trail) is hidden
+    // wherever the field shades the ground, and an upright prop standing in
+    // its own mass (PROP_MASSING) takes no shade from it. (2048 is the 2.8
+    // lamp-shadow twin's.)
+    sunSelf: 4096,
+    // SD-2 — a record the sun's shade never dims (gpu/SunShade.js): the body
+    // of an action-needed villager (and what lies on it) and a petitioner's
+    // floor candle. Attention loses nothing in shade.
+    shadeExempt: 8192,
 });
 
 // V9 / 0.6 — painter's depth. A record's or particle's painter `sortY` is
@@ -1253,7 +1522,9 @@ export function assignGpuRecordV9Fields(target, record, alpha, blend) {
         | (record.packedGeometry === true ? GPU_RECORD_FLAGS.packedGeometry : 0)
         | (record.receiverAxis === true ? GPU_RECORD_FLAGS.receiverAxis : 0)
         | (record.groundCast === true ? GPU_RECORD_FLAGS.groundCast : 0)
-        | (record.seaFret === true ? GPU_RECORD_FLAGS.seaFret : 0);
+        | (record.seaFret === true ? GPU_RECORD_FLAGS.seaFret : 0)
+        | (record.sunSelf === true ? GPU_RECORD_FLAGS.sunSelf : 0)
+        | (record.shadeExempt === true ? GPU_RECORD_FLAGS.shadeExempt : 0);
     target.footY = finite(record.footY, Number.isFinite(depthSortY) ? depthSortY : -1);
     target.frontCornerX = finite(record.frontCornerX, 0);
     target.frontCornerY = finite(record.frontCornerY, -1);
@@ -1436,8 +1707,16 @@ export const LIGHT_ROLE_CODES = Object.freeze({ point: 0, aperture: 1, fixture: 
 // 2.4 — admission order by role: attention > aperture > fixture > point.
 const LIGHT_ROLE_RANK = Object.freeze([3, 1, 2, 0]);
 
+// NL-4 — a carried lantern ranks after every other light and holds no
+// fixture reserve, so it never takes a slot or a tile from a street lamp, a
+// window or an attention light.
+function isCarriedLantern(light) {
+    return String(light?.id || '').startsWith('carried-lantern:');
+}
+
 function lightRoleRank(light) {
     if (isAttentionLight(light)) return 0;
+    if (isCarriedLantern(light)) return 4;
     const code = Math.round(finite(light?.role, LIGHT_ROLE_CODES.point));
     return LIGHT_ROLE_RANK[code] ?? 3;
 }
@@ -1523,6 +1802,10 @@ export const LIGHT_RECORD_FLAGS = Object.freeze({
     waterColumn: 2,
     // 2.9 — lights nothing but its column (the Lighthouse lamp).
     waterOnly: 4,
+    // GW-2 — lays its mirror column on wet paving and puddles (every
+    // admitted fixed light at FULL with look `gw2` on, never a carried
+    // lantern or an attention light; GpuFrameState.resolveLights).
+    groundMirror: 8,
 });
 // 2.9 — a column runs this many ground radii toward the camera from the foot.
 export const WATER_COLUMN_REACH = 1.8;
@@ -1602,7 +1885,8 @@ export function createLightBinScratch() {
 export const FIXTURE_LIGHT_RESERVE = 12;
 
 function isFixtureLight(light) {
-    return !isAttentionLight(light) && Math.round(finite(light?.role, LIGHT_ROLE_CODES.point)) === LIGHT_ROLE_CODES.fixture;
+    return !isAttentionLight(light) && !isCarriedLantern(light)
+        && Math.round(finite(light?.role, LIGHT_ROLE_CODES.point)) === LIGHT_ROLE_CODES.fixture;
 }
 
 /**

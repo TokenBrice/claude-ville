@@ -12,6 +12,9 @@
 //          stamps, never re-derived, so the frost lies under the shadows the
 //          viewer sees. The bake holds for its quarter while the sun moves
 //          on, so the rime trails the shortening shadows as real frost does.
+//          SD-1 — with the sundial on (look `sd1` > 0) the cast is the shade
+//          field's instead: one field built for the bake's sun, so the rime
+//          lingers in each building's real shade (`frostShadeKey` keys it).
 //   wall   the bake's contact AO hard against buildings, the village wall's
 //          runs and props, which no cast reaches.
 //   near   a coarse shelter field (the shaded share of each SHELTER_CELL
@@ -22,12 +25,27 @@
 // quarter steps 3, 2 and 1); nothing per frame.
 
 import { getBuildingVisual } from './BuildingVisualRegistry.js';
+import { lookStrength } from './LookStrengths.js';
 import { buildingCenterToWorld } from './Projection.js';
-import { castLightingFor, structureCast, treeCast } from './RakingLight.js';
+import { castLightingFor, structureCast, sundialShadeFor, treeCast } from './RakingLight.js';
+import { SHADE_MASSING_REVISION, buildShadeFieldFor } from './ShadeField.js';
 
 export const FROST_SHADE = Object.freeze({ OPEN: 0, WALL: 1, CAST: 2 });
 // A cast course this dense or denser is shade (its cores and trails).
 const CAST_SHADE_ALPHA = 64;
+// SD-1 — a shade-field cell covered this far or further is shade (0–255: the
+// solid shadow and the firmer half of its dissolving tip).
+const FIELD_SHADE_COVER = 128;
+
+/**
+ * SD-1 — what a melting frost bake keys on beyond its quarter while the
+ * sundial is on ('' with it off, so the look at 0 keeps today's keys): the
+ * length cap and the massing the field sweeps. GroundBake's pass revision and
+ * the persisted terrain artifact key both carry it.
+ */
+export function frostShadeKey(frost) {
+    return frost > 0 && frost < 4 && lookStrength('sd1') > 0 ? `s${lookStrength('sd1len')}m${SHADE_MASSING_REVISION}` : '';
+}
 // Contact AO (0–255) from which the ground counts as the lee of a wall.
 const WALL_SHADE_AO = 96;
 // Shelter blocks (texels) and their blur reach (blocks).
@@ -52,6 +70,22 @@ function finite(value, fallback = 0) {
 export function frostShadeField(renderer, { cols, rows, x0, y0, texelW = 2, aoBuf = null }) {
     const shade = new Uint8Array(cols * rows);
     if (aoBuf) for (let i = 0; i < shade.length; i++) if (aoBuf[i] >= WALL_SHADE_AO) shade[i] = FROST_SHADE.WALL;
+    // SD-1 — with the sundial on, the rime lies in the shade the field
+    // draws: one whole field for the bake's sun, its solid ground coverage.
+    const field = buildShadeFieldFor(renderer, sundialShadeFor(renderer?._lastAtmosphere));
+    if (field) {
+        const bounds = field.bounds || { r0: 0, r1: -1 };
+        for (let fieldRow = bounds.r0; fieldRow <= bounds.r1; fieldRow++) {
+            const row = Math.floor(field.originY + (fieldRow + 0.5) * field.cellH - y0);
+            if (row < 0 || row >= rows) continue;
+            for (let fieldCol = bounds.c0; fieldCol <= bounds.c1; fieldCol++) {
+                if (field.data[(fieldRow * field.cols + fieldCol) * 2 + 1] < FIELD_SHADE_COVER) continue;
+                const col = Math.floor((field.originX + (fieldCol + 0.5) * field.cellW - x0) / texelW);
+                if (col >= 0 && col < cols) shade[row * cols + col] = FROST_SHADE.CAST;
+            }
+        }
+        return { shade, shelter: shelterField(shade, cols, rows), cols, rows };
+    }
     const cast = castLightingFor(renderer?._lastAtmosphere);
     const alphas = new Map();
     const stamp = (baked, left, top) => {

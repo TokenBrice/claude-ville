@@ -170,6 +170,29 @@ export const FRAME_UNIFORM_LAYOUT = uniformLayout('FrameUniforms', [
     // BI-1 — still water (paws on, the knot wind's share) and BI-8 — the
     // summer surf glow's strength (GpuFrameState); appended likewise.
     ['stillWater', 'vec2f'], ['surfGlow', 'f32'],
+    // MS-1 — the low mist (GpuFrameState.resolveMist: density, drift xy,
+    // look); appended likewise.
+    ['mist', 'vec4f'],
+    // SEA-1 — the sunlit water's lift in stops (GpuFrameState.seaSunLift).
+    ['seaLift', 'f32'],
+    // NL-2 / NL-1 — firelight on people and the tuned ramp
+    // (Firelight.resolveFirelight: nl2 strength, tuned 0/1); appended likewise.
+    ['firelight', 'vec2f'],
+    // SEA-2 / SEA-3 — the sky on lit water and the sea state
+    // (GpuFrameState.resolveSeaState); appended likewise.
+    ['seaState', 'vec4f'],
+    // GW-1 / GW-2 — the ground weather field on the puddle binding
+    // (GpuFrameState.resolveGroundWeather: gw1, gw2, field bound, wet
+    // level); appended likewise.
+    ['groundWeather', 'vec4f'],
+    // MS-2 — the mist's burn-off shares (land, sea)
+    // (GpuFrameState.resolveMistBurn); appended likewise.
+    ['mistBurn', 'vec2f'],
+    // SD-2 — the sun's shade field (gpu/SunShade.js resolveSunShade): its
+    // rect (origin xy, cell wh; cell h 0 = none) and (cast step, unused,
+    // sweep xy); appended likewise.
+    ['shadeRect', 'vec4f'],
+    ['shade', 'vec4f'],
 ]);
 
 // §2.6 — the per-batch block, one 256-byte slot per batch in a frame ring
@@ -254,6 +277,8 @@ export const FRAME_BINDING = Object.freeze({
     lightData: 5, lightTiles: 6, footprint: 7, cycleOffset: 8, coastField: 9,
     puddleMask: 10, paletteLut: 11, nearestSampler: 12, radianceTex: 13, radianceSampler: 14,
     motifs: 15, linearSampler: 16,
+    // SD-2 — the sun's shade field (RGBA8, textureLoad).
+    shadeField: 17,
 });
 export const FRAME_BINDINGS_WGSL = `
 ${FRAME_UNIFORM_LAYOUT.wgsl}
@@ -274,6 +299,7 @@ ${FRAME_UNIFORM_LAYOUT.wgsl}
 @group(0) @binding(${FRAME_BINDING.radianceSampler}) var radianceSampler: sampler;
 @group(0) @binding(${FRAME_BINDING.motifs}) var motifs: texture_2d<f32>;
 @group(0) @binding(${FRAME_BINDING.linearSampler}) var linearSampler: sampler;
+@group(0) @binding(${FRAME_BINDING.shadeField}) var shadeField: texture_2d<f32>;
 `;
 
 // §2.3 — group 1 of the scene (and mark) pipelines, per batch. Both albedo

@@ -2787,8 +2787,11 @@ export function applyWaterMood(rgb, mood) {
 // band), quantized to 1/16 of the band so the Canvas layers rebake rarely.
 export const WATER_CAST = Object.freeze([0.94, 0.98, 1.03]);
 export const WATER_SUN_BAND = 0.86;
+// SEA-1 (look `sea1`) — the dim fades out with the look, as the resident
+// `mix(1, 0.86, band × (1 − sea1))`: sunlit water lifts instead.
 export function waterSunBandFor(atmosphere) {
-    return Math.round(Math.max(0, Math.min(1, Number(atmosphere?.lightGrade?.sunBand) || 0)) * 16) / 16;
+    const fade = 1 - Math.max(0, Math.min(1, lookStrength('sea1')));
+    return Math.round(Math.max(0, Math.min(1, Number(atmosphere?.lightGrade?.sunBand) || 0)) * fade * 16) / 16;
 }
 
 /** Canvas: the resident water colour before the grade (mood, cast, band). */

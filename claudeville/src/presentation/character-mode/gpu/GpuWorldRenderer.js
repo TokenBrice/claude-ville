@@ -17,7 +17,10 @@ import {
     uploadGradeUniforms,
     CLOUD_TILE_SIZE,
     CLOUD_TILE_WORLD_SCALE,
+    CLOUD_PLANE,
     CLOUD_SECOND_OCTAVE,
+    SEA_STATE,
+    SEA_SUN_LIFT_FLOOR,
     EFFECT_BUDGET,
     GPU_PARTICLE_FLAGS,
     GPU_PARTICLE_INSTANCE_BYTES,
@@ -39,6 +42,7 @@ import {
     createSeaWeather,
     createWaterFx,
     LOCAL_LIGHT_VISIBILITY_FLOOR,
+    MIST,
     PALETTE_LUT_HEIGHT,
     PALETTE_LUT_WIDTH,
     resolveAtmosphereCourses,
@@ -47,8 +51,12 @@ import {
     resolveFatPixels,
     resolveFrameGrade,
     resolveLights,
+    resolveMist,
+    resolveMistBurn,
     resolveOccluderChannel,
     resolvePaletteLut,
+    resolveSeaState,
+    createSeaState,
     resolvePuddles,
     resolveSeaWeather,
     resolveWaterFx,
@@ -66,7 +74,9 @@ import {
 } from './GpuRecordLayout.js';
 import { GpuFrameReuse, stageGpuFrameBindings } from './GpuFrameReuse.js';
 import { ALBEDO_PAGE_GUTTER, ALBEDO_PAGE_SIZE, GpuAlbedoPage } from './GpuAlbedoPage.js';
+import { FIRELIGHT_DARK_SHARE, FIRELIGHT_PILOT_LANDMARK, resolveFirelight } from './Firelight.js';
 import { buildRadianceEmitters, GroundRadiance, RADIANCE_MIN_SOLVE_MS, RADIANCE_SCENE_GLSL } from './GroundRadiance.js';
+import { SUN_SHADE_GLSL, resolveSunShade } from './SunShade.js';
 import { NEUTRAL_GRADE } from '../GradeEvaluator.js';
 import {
     COAST_FIELD_FLAGS,
@@ -93,6 +103,7 @@ import {
     WATER_SKY_LIFT,
 } from '../CoastBake.js';
 import { GRASS_GUST_STOPS } from '../GroundBake.js';
+import { GROUND_WET_GLSL, GROUND_WET_UNIFORMS_GLSL, GROUND_WET_MIRROR_GLSL } from './GroundWetShader.js';
 import { MAP_SIZE, TILE_HEIGHT, TILE_WIDTH } from '../../../config/constants.js';
 import { ART_RAMPS } from '../../../config/artPalette.js';
 import {
@@ -118,6 +129,20 @@ import { particleMotifMask } from '../ParticleSystem.js';
 import { CUE_RUN_GLSL, CUE_RUN_VERTICES } from '../GroundCueRecords.js';
 import { GROUND_CAST_WATER_SHARE } from '../RakingLight.js';
 import { APERTURE_SPILL } from '../LightSourceRegistry.js';
+import { lookStrength } from '../LookStrengths.js';
+import { GPU_DEPTH_KEY_MAX, GPU_DEPTH_KEY_STEPS_PER_PX, GPU_DEPTH_SORT_Y_MIN } from './GpuWorldPolicy.js';
+import {
+    createGpuRainField,
+    gpuRainField,
+    RAIN_DIM,
+    RAIN_DRIFT_SLOPE,
+    RAIN_GROUND_CELL,
+    RAIN_LAYERS,
+    RAIN_LIGHT,
+    RAIN_UNIFORM_FLAGS,
+    rainSplashMask,
+    SPLASH_FRAMES,
+} from '../WeatherRenderer.js';
 
 const OPEN_SEA_ZERO4 = new Float32Array(4);
 
@@ -281,13 +306,17 @@ export const SWELL_SHORE_SD = 0.8;
 // base instance: every batch re-points its attributes at its own byte range
 // (`_pointRecordInstances`).
 const SCENE_DEPTH_BYTES_PER_PIXEL = EFFECT_BUDGET['particle-depth'].cost.attachmentBytesPerPixel;
+// GW-1 / GW-2 — the ground-weather uniform with no field bound.
+const ZERO_GROUND_WEATHER = new Float32Array(4);
 // V9 sampler table: one fixed texture unit per field per program, never
 // reassigned (WebGL2 guarantees 16 fragment units). A `reserved` unit is held
 // for the named item and bound only by it; see the channel contract doc.
 export const SCENE_SAMPLER_UNITS = Object.freeze({
     albedo: 0,
     material: 1,
-    // 2 is free: 2.2 deleted the screen occlusion target.
+    // SD-2 — the sun's shade field (gpu/SunShade.js), on the unit 2.2's
+    // deleted screen occlusion target left free.
+    shadeField: 2,
     emissive: 3,
     occluder: 4,
     paletteLut: 5,
@@ -499,6 +528,76 @@ const QUAD_VERTEX = quadVertexSource();
 // 5120 z1 view; the thresholds are calibrated on that combined field. The
 // open sea (COMPOSITE_FRAGMENT) calls the same helpers on the world grid, so
 // a cloud edge crosses the coastline with no seam and no hue step.
+// MS-1 (look `ms1`) — low mist with a top (GpuFrameState MIST, resolveMist):
+// the top is a function of the ground point (the coast field's nearness to
+// water, two stretched reads of the cloud tile drifting on the one wind), and
+// a texel takes stepped courses by how far its own height above ground lies
+// below it, so wall bases, quays, decks and water sit in banded mist while
+// roofs, crowns, masts and upper bodies stand clear. Solid courses; the
+// world-anchored ordered dither lies only in a seam scaled by the depth's
+// slope per 2-px mist cell (the spike's fixed 0.8-course seam mottled flat
+// water). The scene fragment and the open sea (height 0) call it; at u_mist.w
+// 0 neither does and today's screen-Y veil runs. Of today's five fog layers
+// the mist replaces the veil, the `ground:fog` banks and the `ground:haze`
+// field (WorldFrameRenderer drops both records; the dawn mist feeds the
+// density); the overlay wash (WeatherRenderer) and the aerial haze
+// (applyAerialHaze, C2 aerial perspective) stay. Needs u_cloudTile and
+// GRADE_LUMA. WGSL twin: wgsl/atmosphere.js MIST_WGSL.
+const mistNumber = value => value.toFixed(2);
+export const MIST_GLSL = `
+// x: density (0 = none), yz: the wind drift (world px, whole mist cells),
+// w: the look strength (0 = today's veil and fog-bank records).
+uniform vec4 u_mist;
+// MS-2 — the burn-off shares (land, sea) of the top (WeatherRenderer
+// mistBurnFor; (1, 1) = MS-1's top): the land clears first as the sun climbs.
+uniform vec2 u_mistBurn;
+float mistTopAt(vec2 ground, float near) {
+    vec2 p = floor(ground * 0.5) * 2.0 + u_mist.yz;
+    float n1 = textureLod(u_cloudTile, fract(p / vec2(${MIST.scaleA.map(mistNumber).join(', ')})), 0.0).r;
+    float n2 = textureLod(u_cloudTile, fract(p / vec2(${MIST.scaleB.map(mistNumber).join(', ')}) + vec2(${MIST.offsetB.map(mistNumber).join(', ')})), 0.0).r;
+    float swell = clamp((0.55 * n1 + 0.45 * n2 - 0.30) / 0.30, 0.0, 1.0);
+    return u_mist.x * u_mist.w * mix(${mistNumber(MIST.inland)} * u_mistBurn.x, u_mistBurn.y, near) * (${mistNumber(MIST.topBase)} + ${mistNumber(MIST.topSwell)} * swell);
+}
+// Course 0-3 for a point depth world px below the top: course 1 from the top
+// down, each ${MIST.coursePx} px deep; the ordered dither only in a seam above each
+// course edge as wide as the depth's own change per mist cell.
+float mistCourseAt(float depth, float slope, float order) {
+    float f = max(depth / ${mistNumber(MIST.coursePx)} + 1.0, 0.0);
+    float k = floor(f);
+    float seam = clamp(slope / ${mistNumber(MIST.coursePx)}, ${mistNumber(MIST.seamMin)}, 0.5);
+    if (f - k > 1.0 - seam && (f - k - (1.0 - seam)) / seam > order) k += 1.0;
+    return min(k, 3.0);
+}
+// The course of a texel h world px above ground; an upright texel's own
+// height adds 2 px per cell to the slope; the top's slope is read from two
+// neighbour cells only in the upper half of a course (where a seam can lie).
+float mistCourse(vec2 ground, float h, float near, bool upright, float order) {
+    float top = mistTopAt(ground, near);
+    float f = max((top - h) / ${mistNumber(MIST.coursePx)} + 1.0, 0.0);
+    float slope = upright ? 2.0 : 0.0;
+    if (f - floor(f) > 0.5) {
+        slope += max(abs(mistTopAt(ground + vec2(2.0, 0.0), near) - top), abs(mistTopAt(ground + vec2(0.0, 2.0), near) - top));
+    }
+    float k = mistCourseAt(top - h, slope, order);
+    // r6 — while the top is under one course, the first course is admitted
+    // through the world-anchored ordered dither (top / course > order), so
+    // the mist grows in and thins out texel by texel, never in one frame.
+    if (top < ${mistNumber(MIST.coursePx)} && top / ${mistNumber(MIST.coursePx)} <= order) k = 0.0;
+    return k;
+}
+// Toward the C2 fog colour by course; the luma rise held under
+// ${MIST.riseShare} of the way to the fog colour + ${MIST.riseFloor} (today's top bank course under
+// the old veil's cap). Additive records only dim: mist adds no light.
+vec3 applyMist(vec3 color, float course, vec3 fogColor, bool additive) {
+    if (course < 0.5) return color;
+    float w = course < 1.5 ? ${mistNumber(MIST.courseMix[0])} : course < 2.5 ? ${mistNumber(MIST.courseMix[1])} : ${mistNumber(MIST.courseMix[2])};
+    if (additive) return color * (1.0 - w);
+    vec3 misted = mix(color, fogColor, w);
+    float rise = dot(misted - color, GRADE_LUMA);
+    float cap = ${mistNumber(MIST.riseShare)} * max(dot(fogColor - color, GRADE_LUMA), 0.0) + ${mistNumber(MIST.riseFloor)};
+    if (rise > cap) misted = mix(color, misted, cap / rise);
+    return misted;
+}`;
 const ATMOSPHERE_COURSES_GLSL = `
 uniform sampler2D u_cloudTile;
 // xy: world-space drift offset (world px, wrapped to CLOUD_FIELD_PERIOD),
@@ -513,8 +612,11 @@ uniform vec4 u_cloudLone;
 uniform vec3 u_cloudThresholds;
 // rgb: C2 horizon haze, a: strength at the top of the frame (0 = off).
 uniform vec4 u_haze;
+// SEA-1 — u_cloud.w is the sea1 look strength: above 0 the field lies on the
+// ground plane (GpuWorldPolicy CLOUD_PLANE; u_cloud.xy then in plane units).
 float cloudNoiseAt(vec2 cell) {
     vec2 p = cell + 0.5 + u_cloud.xy;
+    if (u_cloud.w > 0.0) p = (cell + 0.5) * vec2(${CLOUD_PLANE.map(v => v.toFixed(2)).join(', ')}) + u_cloud.xy;
     float n1 = textureLod(u_cloudTile, fract(p / ${(CLOUD_TILE_WORLD_SCALE * CLOUD_TILE_SIZE).toFixed(1)}), 0.0).r;
     float n2 = textureLod(u_cloudTile, fract((p / ${CLOUD_SECOND_OCTAVE.scale.toFixed(4)} + vec2(${CLOUD_SECOND_OCTAVE.offset.map(v => v.toFixed(1)).join(', ')}))
         / ${(CLOUD_TILE_WORLD_SCALE * CLOUD_TILE_SIZE).toFixed(1)}), 0.0).r;
@@ -570,8 +672,9 @@ vec3 applyAerialHaze(vec3 color, float order, float cellCentreY, bool additive) 
 vec3 applyAtmosphereCourses(vec3 color, vec2 cell, float order, float cellCentreY, bool additive) {
     if (u_cloud.z > 0.0) color = applyCloudCourse(color, cloudCourseAt(cloudSeamField(cell, cloudNoiseAt(cell), order, 2.0)));
     return applyAerialHaze(color, order, cellCentreY, additive);
-}`;
-const ATMOSPHERE_COURSE_UNIFORM_NAMES = ['u_cloudTile', 'u_cloud', 'u_cloudThresholds', 'u_haze', 'u_cloudLone'];
+}
+${MIST_GLSL}`;
+const ATMOSPHERE_COURSE_UNIFORM_NAMES = ['u_cloudTile', 'u_cloud', 'u_cloudThresholds', 'u_haze', 'u_cloudLone', 'u_mist', 'u_mistBurn'];
 
 // 3.4 — water mood (x: night, y: storm), CoastBake.waterMoodFor: night sits
 // shallow water below lit ground in value, storm reads grey-green. The
@@ -704,6 +807,13 @@ float glintDash(vec2 p, vec2 fragPx, vec4 glint, float texelPx, float tick) {
     float density = ${GLINT_DASH_DENSITY.toFixed(2)} * (pale ? min(1.0, ${NOON_GLINT_FULL_TEXEL.toFixed(1)} / max(texelPx, 1e-3)) : 1.0);
     if (waterHash12(cell + vec2(tick * 7.0, tick * 3.0)) >= density * glint.y * weight) return 0.0;
     return waterHash12(cell + vec2(5.0, tick * 11.0)) < weight ? 2.0 : 1.0;
+}
+// SEA-2 — whether a texel lies inside the sun's road (glintDash's lane, a
+// sun path only, never the moon's): the warm sky stays inside it.
+bool inSunRoad(vec2 fragPx, vec4 glint, float texelPx) {
+    if (glint.z < 0.5 || glint.z > 2.5 || glint.y <= 0.0) return false;
+    float base = glint.z > 1.5 ? ${GLINT_NOON_BASE.toFixed(1)} : 5.0;
+    return abs(fragPx.x - glint.x) / max(texelPx, 1e-3) < base + fragPx.y * glint.w;
 }
 vec3 seaPathCap(vec3 c) {
     float l = 0.5 * (max(c.r, max(c.g, c.b)) + min(c.r, min(c.g, c.b)));
@@ -929,8 +1039,62 @@ float openSeaStop(float depth, float order) {
 // Needs ATMOSPHERE_COURSES_GLSL (u_cloudTile) and waterHash12.
 const SEA_WEATHER_GLSL = `
 uniform float u_seaSunlit;
+// SEA-1 — the sunlit water's lift in whole stops (GpuFrameState seaSunLift:
+// sea1 x the C2 sun band, veiled by fog; 0 = off).
+uniform float u_seaLift;
+// SEA-2 / SEA-3 (GpuFrameState resolveSeaState, GpuWorldPolicy SEA_STATE):
+// x the sky's share on lit open water (0 = off), y the sea state (-1 off =
+// today's sea, 0 calm, 1 breeze, 2 fresh, 3 storm), z the whitecap streaks'
+// downwind shift (whole world px, wrapped non-negative), w the streak
+// density signed by the wind (< 0: the wind blows toward -x).
+uniform vec4 u_seaState;
+bool seaCalm() { return u_seaState.y > -0.5 && u_seaState.y < 0.5; }
+bool seaFresh() { return u_seaState.y > 1.5 && u_seaState.y < 2.5; }
+// SEA-3 — a calm sea's glassy lanes: long low bands of the cloud tile, static.
+bool seaCalmLane(vec2 p) {
+    return textureLod(u_cloudTile, fract(p / vec2(${SEA_STATE.lane.map(v => v.toFixed(1)).join(', ')}) + vec2(${SEA_STATE.laneOffset.map(v => v.toFixed(2)).join(', ')})), 0.0).r > ${SEA_STATE.laneThreshold.toFixed(2)};
+}
+// SEA-3 — a fresh sea's whitecap streak rows at world texel p: 2 a streak's
+// two downwind texels (FOAM), 1 the rest of it (one stop lighter), else 0.
+// Integer lattice hashes on whole texels: bit-exact on every backend.
+float seaStreakAt(vec2 p) {
+    float density = abs(u_seaState.w);
+    if (density <= 0.0) return 0.0;
+    float row = floor(p.y / ${SEA_STATE.streakRow.toFixed(1)});
+    if (p.y - row * ${SEA_STATE.streakRow.toFixed(1)} > 0.5) return 0.0;
+    float x = p.x - u_seaState.z;
+    float seg = floor(x / ${SEA_STATE.streakCell.toFixed(1)});
+    if (waterLatticeHash(vec2(seg, row) + vec2(401.0, 19.0)) >= density) return 0.0;
+    float len = ${SEA_STATE.streakLength[0].toFixed(1)} + floor(waterLatticeHash(vec2(seg, row) + vec2(409.0, 23.0)) * ${SEA_STATE.streakLength[1].toFixed(1)});
+    float local = x - seg * ${SEA_STATE.streakCell.toFixed(1)};
+    if (local >= len) return 0.0;
+    float lead = u_seaState.w < 0.0 ? local : len - 1.0 - local;
+    return lead < 2.0 ? 2.0 : 1.0;
+}
+// SEA-2 — the sky's hue at the water's own value (no lift), share w.
+vec3 seaSkyHue(vec3 c, vec3 sky, float w) {
+    float ls = dot(sky, GRADE_LUMA);
+    if (ls < 0.01) return c;
+    float l = dot(c, GRADE_LUMA);
+    return clamp(mix(c, sky * (l / ls), w), 0.0, 1.0);
+}
 uniform sampler2D u_seaGust;
 uniform vec4 u_seaGustRect;
+// SEA-1 — open water's body stop under the sun: outside the cloud shade (m,
+// the seamed field, under the rim's threshold; everywhere under a clear sky)
+// it rises \`lift\` stops (seaSunLift), inside it one stop less (the shade sits
+// one stop below the lit water), never past SEA_SUN_LIFT_FLOOR, so the far
+// rows never turn shoal-coloured and the swell's lit slope, body and trough
+// stay three tones inside the lit water.
+float seaLiftedStop(float stop, float lift, float m, float order) {
+    // In the cloud shade the water sits one stop below the lit water.
+    if (u_cloud.z > 0.0 && m >= u_cloudThresholds.x) lift -= 1.0;
+    // r2 — a stop arriving with the sun sweeps in on the sea's own Bayer
+    // order (the lift is in sixteenths), never the whole sea in one frame.
+    lift = floor(lift + order);
+    if (lift <= 0.0) return stop;
+    return max(stop - lift, min(stop, ${SEA_SUN_LIFT_FLOOR.toFixed(1)}));
+}
 float seaGustAt(vec2 cell) {
     if (u_seaGustRect.z <= 0.0) return 0.0;
     vec2 g = (cell + 0.5 - u_seaGustRect.xy) / (u_seaGustRect.zw * 128.0);
@@ -968,7 +1132,7 @@ float squallShade(vec2 cell, float n, float order) {
     if (h < 0.45 && mod(cell.y - u_squallFall + floor(h * 97.0), 24.0) < 12.0 + h * 10.0) courses += 1.0;
     return courses * u_squall.w;
 }`;
-const SEA_WEATHER_UNIFORM_NAMES = ['u_seaSunlit', 'u_seaGust', 'u_seaGustRect', 'u_squall', 'u_squallFall'];
+const SEA_WEATHER_UNIFORM_NAMES = ['u_seaSunlit', 'u_seaLift', 'u_seaState', 'u_seaGust', 'u_seaGustRect', 'u_squall', 'u_squallFall'];
 
 // One warm cone beyond the shaft's sea landing, shared across the map edge.
 // Only existing static swell crests / moving wave texels can catch its light.
@@ -1333,6 +1497,9 @@ uniform int u_wetReflectionCount;
 // scaled by PALETTE_LUT_LIFT. Nearest-sampled; absent table = today response.
 uniform sampler2D u_paletteLut;
 uniform bool u_hasPaletteLut;
+// NL-2 / NL-1 (Firelight.resolveFirelight): x the firelight-on-people
+// strength (look nl2), y 1 while the tuned ramp landing is on (look nl1 > 0).
+uniform vec2 u_firelight;
 // 3.2 — the first u_wetReflectionCount non-attention lights in admission
 // order carry LIGHT_RECORD_FLAGS.wetReflection (light record row 3 z).
 // 5.2 — puddles on the terrain record only (u_puddleGround): GroundBake's R8
@@ -1345,6 +1512,7 @@ uniform vec4 u_puddleRect;
 uniform float u_puddles;
 uniform vec3 u_puddleSky[2];
 uniform bool u_puddleGround;
+${GROUND_WET_UNIFORMS_GLSL}
 
 float materialNear(float value, float target) {
     return 1.0 - step(0.45, abs(value - target));
@@ -1411,6 +1579,10 @@ float bayer4(vec2 p) {
     return bayer2(0.5 * p) * 0.25 + bayer2(p);
 }
 
+// GW-1 / GW-2 — the ground weather field (GroundWetShader.js).
+${GROUND_WET_GLSL}
+${GROUND_WET_MIRROR_GLSL}
+
 vec3 applyMaterialWeather(vec3 color, float material, vec2 px) {
     float rain = u_weather.x;
     float wetness = materialWetness(material);
@@ -1422,6 +1594,11 @@ vec3 applyMaterialWeather(vec3 color, float material, vec2 px) {
     // precipitation, so a street stays wet as the rain stops and MINIMAL (with
     // weather amplitude shed) still shows the static wet course.
     float wet = max(rain, u_wetness) * wetness;
+    // GW-1 — on the terrain the field steps wet texels one ramp stop down and
+    // keeps (1 - gw1) of the uniform darkening below.
+    vec4 groundWet = applyGroundWet(color, px);
+    color = groundWet.rgb;
+    wet *= groundWet.a;
     color *= mix(1.0, 0.80, wet);
     color = mix(color, color * vec3(0.82, 0.94, 1.08), wet * 0.24);
     // Where an admitted source reflection carries the read, the anonymous
@@ -1435,7 +1612,7 @@ vec3 applyMaterialWeather(vec3 color, float material, vec2 px) {
 
 float puddleAt(ivec2 cell) {
     if (cell.x < 0 || cell.y < 0 || cell.x >= int(u_puddleRect.z) || cell.y >= int(u_puddleRect.w)) return 0.0;
-    float mask = texelFetch(u_puddleMask, cell, 0).r;
+    float mask = puddleByte(cell);
     return mask > 0.0 && mask >= 1.0 - u_puddles ? 1.0 : 0.0;
 }
 
@@ -1470,7 +1647,7 @@ vec3 applyPuddle(vec3 color, vec2 world) {
     // The shallow rim (the last 0.12 of the level above this texel's
     // threshold) lets more of the street through: the puddle reads as a
     // dish that dries from its edge.
-    float depth = texelFetch(u_puddleMask, cell, 0).r - (1.0 - u_puddles);
+    float depth = puddleByte(cell) - (1.0 - u_puddles);
     return depth < 0.12 ? mix(body, color, 0.5) : body;
 }
 
@@ -1729,8 +1906,12 @@ vec3 mirrorStormColour(vec3 color, vec2 px, out bool gone) {
 // dashes included, so main() lays the squall's courses on it as the
 // composite does on the open sea (applySeaCourses).
 bool seaOpenWater = false;
+// SEA-2 / SEA-3 — the sky's share main() lays on this open-water texel
+// after the grade (seaSkyHue with the cool water sky; 0 = none).
+float seaSkyTake = 0.0;
 vec3 applyWaterState(vec3 color, vec2 px, out bool seaPath) {
     seaPath = false;
+    seaSkyTake = 0.0;
     // The material map is quarter resolution: a coast block can hold sand or
     // foam pixels. Water stops are teal/blue-dominant; anything else keeps
     // its land response.
@@ -1748,7 +1929,9 @@ vec3 applyWaterState(vec3 color, vec2 px, out bool seaPath) {
     float clock = u_waterFx.x;
     vec2 p = floor(px);
     if (stop < 0) return clock <= 0.0 ? staticWaterDashes(color, px) : applyWaterMood(color) * WATER_CAST;
-    seaOpenWater = u_terrainBatch && u_squall.w > 0.0 && stop >= 2
+    // SEA-1 — with the look on, open water is flagged under any sky, so
+    // applySeaCourses gives it the open sea's cloud rule (the map edge).
+    seaOpenWater = u_terrainBatch && (u_squall.w > 0.0 || u_cloud.w > 0.0) && stop >= 2
         && float(stop) >= openSeaStop(openSeaDepth(p), waterBayer4(p));
     float storm = step(0.5, u_weather.z);
     float deepTick = floor(u_time * 0.006 * clock);
@@ -1776,9 +1959,11 @@ vec3 applyWaterState(vec3 color, vec2 px, out bool seaPath) {
     // they wrap the island's halo and cross the map edge unbroken.
     float cap = 0.0;
     float near = 0.0;
+    bool openWater = false;
     if (stop >= 2) {
         float order = waterBayer4(p);
         bool open = float(stop) >= openSeaStop(openSeaDepth(p), order);
+        openWater = open;
         float sd;
         uint flags;
         bool shelf = !open && coastFieldAt(p, sd, flags) && (flags & ${COAST_FIELD_FLAGS.sea}u) != 0u && sd > ${SWELL_SHORE_SD.toFixed(2)};
@@ -1787,8 +1972,27 @@ vec3 applyWaterState(vec3 color, vec2 px, out bool seaPath) {
             float s = swellPhase(p);
             near = seaNear(excess);
             if (open) base = int(seaBodyStop(p, s, float(stop), excess, order));
+            // SEA-2 — a set's lit slope (lighter than the row's own stop).
+            bool litSlope = base < stop;
             if (open && u_seaSunlit > 0.0 && cloudSeamField(p, cloudNoiseAt(p), order, u_seaSunlit) < u_seaSunlit) base = max(base - 1, 0);
-            cap = swellCap(p, s, near, open ? seaPawCaps(p, order) : 0.0);
+            // SEA-1 — the open sea's lift (shadeOpenSea), so it crosses the map edge unbroken.
+            if (open && u_seaLift > 0.0) {
+                float m = u_cloud.z > 0.0 ? cloudSeamField(p, cloudNoiseAt(p), order, u_seaSunlit) : 1.0;
+                base = int(seaLiftedStop(float(base), u_seaLift, m, order));
+            }
+            // SEA-3 — the open sea's sea state (shadeOpenSea): calm, no caps;
+            // fresh, more cap clusters.
+            float paw = open ? seaPawCaps(p, order) : 0.0;
+            if (open && seaFresh()) paw += ${SEA_STATE.freshCaps.toFixed(2)};
+            cap = open && seaCalm() ? 0.0 : swellCap(p, s, near, paw);
+            // SEA-2 / SEA-3 — the cool sky on lit slopes, static caps and calm
+            // lanes; inside the sun's road in-map water keeps its own colour
+            // (the warm horizon is the open sea's).
+            if (open) {
+                float take = litSlope || cap > 0.0 ? u_seaState.x : 0.0;
+                if (seaCalm() && seaCalmLane(p)) take = max(take, ${SEA_STATE.laneWeight.toFixed(2)});
+                if (take > 0.0 && !inSunRoad((p + 0.5 + u_camera.xy) * u_camera.z, u_glint, u_camera.z)) seaSkyTake = take;
+            }
             if (starlightAt(p, cap, u_starlight, deepTick)) {
                 return applyWaterMood(WATER_FOAM_CREST) * WATER_CAST;
             }
@@ -1846,15 +2050,20 @@ vec3 applyWaterState(vec3 color, vec2 px, out bool seaPath) {
             course = entry > 14.5 ? 1.0 : (entry > 13.5 ? 2.0 : 0.0);
             if (course > 0.0 && storm > 0.5 && waterHash12(cell + vec2(17.0, 31.0)) < 0.25) course = 3.0;
         }
-    } else if (stop >= 2) {
+    } else if (stop >= 2 && !(openWater && seaCalm())) {
         float lit = deepSwellLit(p, deepTick, storm, (stop >= 3 ? ${DEEP_DASH_DENSITY.toFixed(2)} : ${NEAR_SHORE_DASH_DENSITY.toFixed(2)}) * calm);
         course = lit > 1.5 ? 3.0 : lit;
     }
-    if (course > 2.5) return applyWaterMood(WATER_FOAM) * WATER_CAST;
+    // SEA-3 — a fresh sea's whitecap streaks on open water (shadeOpenSea).
+    float streak = openWater ? seaStreakAt(p) : 0.0;
+    if (course > 2.5 || streak > 1.5) {
+        seaSkyTake = 0.0;
+        return applyWaterMood(WATER_FOAM) * WATER_CAST;
+    }
     if (course > 1.5) return applyWaterMood(shallower) * WATER_CAST;
     // A swell cap, or a deep crest one stop lighter (two where the swell
     // shoals near the island), whichever is lighter.
-    int rise = max(int(cap), course > 0.5 ? (offset > 31.5 && near > 0.8 ? 2 : 1) : 0);
+    int rise = max(max(int(cap), int(streak)), course > 0.5 ? (offset > 31.5 && near > 0.8 ? 2 : 1) : 0);
     if (rise > 0) return applyWaterMood(WATER_STOPS[max(base - rise, 0)]) * WATER_CAST;
     if (shallows && u_waterFx.z > 0.0 && causticAt(p, clock)) return applyWaterMood(CAUSTICS[stop]) * WATER_CAST;
     return applyWaterMood(color) * WATER_CAST;
@@ -1880,6 +2089,7 @@ vec3 fatTerrainSurface(float material, bool waterMaterial, out bool waterHue, ou
     bool dominantDash = false;
     bool dominantOpen = false;
     bool dominantGlow = false;
+    float dominantTake = 0.0;
     for (int i = 0; i < 4; i++) {
         float w = fatTapWeight(t, i) * fatTap[i].a;
         if (w <= 0.0) continue;
@@ -1897,6 +2107,7 @@ vec3 fatTerrainSurface(float material, bool waterMaterial, out bool waterHue, ou
         bool tapPath = false;
         lighthouseDash = false;
         seaOpenWater = false;
+        seaSkyTake = 0.0;
         if (tapWater) c = applyWaterState(c, world, tapPath);
         if (w > dominant) {
             dominant = w;
@@ -1904,18 +2115,20 @@ vec3 fatTerrainSurface(float material, bool waterMaterial, out bool waterHue, ou
             dominantDash = lighthouseDash;
             dominantOpen = seaOpenWater;
             dominantGlow = surfGlowTexel;
+            dominantTake = seaSkyTake;
         }
         surface += vec4(c, 1.0) * w;
     }
     lighthouseDash = dominantDash;
     seaOpenWater = dominantOpen;
     surfGlowTexel = dominantGlow;
+    seaSkyTake = dominantTake;
     seaPath = dominantPath;
     vec3 pre = before.rgb / max(before.a, 1e-6);
     waterHue = anyWater && !(pre.b < pre.r + 0.02 || pre.g < pre.r);
     return surface.a > 0.0 ? surface.rgb / surface.a : pre;
 }
-
+${SUN_SHADE_GLSL}
 vec3 applyAuthoredSunBand(vec3 color, float material) {
     float response = 0.36;
     response = mix(response, 0.62, materialNear(material, 1.0));
@@ -1929,6 +2142,8 @@ vec3 applyAuthoredSunBand(vec3 color, float material) {
     float rawBand = 0.84 + response * (0.12 + keyFacing * 0.12);
     // Two restrained material-wide bands preserve the baked upper-left key.
     float quantized = rawBand < 0.93 ? 0.86 : 1.0;
+    // SEA-1 — water's dim fades out with the look (sunlit water lifts instead).
+    if (u_cloud.w > 0.0) quantized = mix(quantized, 1.0, materialNear(material, 8.0) * u_cloud.w);
     return color * mix(1.0, quantized, clamp(u_sun.w, 0.0, 1.0));
 }
 
@@ -1938,8 +2153,13 @@ vec3 applyAuthoredSunBand(vec3 color, float material) {
 // edge unbroken. Every other texel takes applyAtmosphereCourses as is.
 vec3 applySeaCourses(vec3 color, vec2 cell, float order, float cellCentreY, bool additive) {
     float squall = seaOpenWater ? squallShade(cell, cloudNoiseAt(cell), order) : 0.0;
-    if (squall <= 0.0) return applyAtmosphereCourses(color, cell, order, cellCentreY, additive);
+    // SEA-1 — open water carries its light and shade in the lift (shade sits
+    // one stop below the lit water, seaLiftedStop), so it takes no cloud
+    // multiply (shadeOpenSea's rule): one firm edge, no contour ring.
+    bool oneCourse = seaOpenWater && u_cloud.w > 0.0;
+    if (squall <= 0.0 && !oneCourse) return applyAtmosphereCourses(color, cell, order, cellCentreY, additive);
     float cloud = u_cloud.z > 0.0 ? cloudCourseAt(cloudSeamField(cell, cloudNoiseAt(cell), order, 2.0)) * u_cloud.z : 0.0;
+    if (oneCourse) cloud = 0.0;
     color *= vec3(1.0) - max(cloud, squall * 0.085) * vec3(1.0, 0.96, 0.84);
     return applyAerialHaze(color, order, cellCentreY, additive);
 }
@@ -2167,6 +2387,13 @@ void main() {
         if (waterMaterial) color = applyWaterState(color, v_world, seaPath);
     }
     color = applyAuthoredSunBand(color, material);
+    // SD-2 — a receiver steps down under the sun's shade, before the grade
+    // (so shade takes the hour's tint); a sun trail the field already covers
+    // is not drawn. u_shadeRect.w 0 = no field this frame.
+    if (u_shadeRect.w > 0.0 && !u_additive) {
+        if (sunTrailHidden()) discard;
+        color *= sunShadeStep(geometry, surfaceCoded, u_hasEmissiveMap ? clamp(emissive, 0.0, 1.0) : 0.0);
+    }
     // 1.2 — the pools light the ungraded surface, so warm light shows the real
     // cobble, grass and wall texture instead of a desaturated night albedo.
     vec3 poolAlbedo = color;
@@ -2178,6 +2405,8 @@ void main() {
     // path is the one exception (M7): its seaPath stop keeps its colour and
     // is held at HSL L <= 0.70 instead.
     if (waterHue) color = seaPath ? seaPathCap(color) : capSaturation(applyWaterSky(capSaturation(color, WATER_MAX_SATURATION)), WATER_MAX_SATURATION);
+    // SEA-2 / SEA-3 — open water's share of the cool sky (applyWaterState).
+    if (waterHue && !seaPath && seaSkyTake > 0.0) color = capSaturation(seaSkyHue(color, u_waterSky.rgb, seaSkyTake), WATER_MAX_SATURATION);
     // 2.7 — a Lighthouse-lit dash is the lamp's own light (like 1.3's
     // emitters below): it keeps its beaconFire stop (okL <= 0.83) instead of
     // the night Purkinje grey.
@@ -2186,6 +2415,8 @@ void main() {
     // over the graded crest (albedo only: no emission, no bloom, no light
     // record, so it lays no pool and stays far below the lamps).
     if (surfGlowTexel) color = mix(color, SURF_GLOW, u_surfGlow);
+    // GW-1 — wet paving tops take one course of the graded sky.
+    color = applyWetSheen(color, v_world);
     // 5.2 — puddles take the graded sky over the graded street.
     if (u_puddleGround && u_puddles > 0.0) color = applyPuddle(color, v_world);
     color = applyGradeVignette(color, px, u_resolution);
@@ -2213,6 +2444,9 @@ void main() {
     // The strongest ramp light's own colour and pool course (3.5 landing).
     vec3 rampHue = vec3(0.0);
     float rampSteps = 0.0;
+    // NL-1 — whether the strongest ramp light is one of the landmark's own
+    // low lights (the tuned ramp's first-course floor).
+    bool rampOwn = false;
     // 1.2 — ambient light pools: each light is stepped on its own falloff
     // (poolSteps), accumulated, and lands once after the loop. Distances are
     // measured from the art-pixel centre so course edges sit on the world
@@ -2224,6 +2458,10 @@ void main() {
     // V5 — water and wet-ground reflections accumulate apart from the graded
     // colour and land through the same receiver knee as the pools.
     vec3 reflectionLight = vec3(0.0);
+    // GW-2 — the strongest lamp mirror at this texel (applyGroundMirror) and
+    // the texel's mirror share (groundMirrorAt, read lazily; -1 unread).
+    vec3 groundMirror = vec3(0.0);
+    float mirrorReceiver = -1.0;
     // Action-needed lights take the same stepped courses, but the strongest
     // one at the pixel wins instead of summing: a crowd of waiting agents
     // reads as one warm ground course under the bodies, never a bloom that
@@ -2313,6 +2551,11 @@ void main() {
     // takes the same cells about its own foot, so its warm landing never
     // leaves single orange texels on the stone. Flat ground, bodies, props
     // and the 3.5 ramp's steps keep the per-texel course.
+    // NL-1 — with the tuned ramp on, a landmark's ground texels (an apron, a
+    // deck, a quay, a plinth top: at most 16 px up) take the ground pools,
+    // not the ramp (a high ledge keeps the ramp's response); the
+    // Command pilot keeps its authored threshold landing.
+    if (u_firelight.y > 0.5 && recvClass == 0 && recvH <= 16.0 && ownLandmark != ${FIRELIGHT_PILOT_LANDMARK}u) rampPixel = false;
     bool rampUpright = rampPixel && recvClass == 3;
     if (rampUpright || (ownLandmark != 0u && (recvClass == 1 || (recvClass == 0 && recvH > 0.5 && !rampPixel)))) {
         vec2 cellShift = floor(artCell * 0.5) * 2.0 + 0.5 - artCell;
@@ -2494,9 +2737,16 @@ void main() {
         // lower house's wall facing the same way — stays dark, instead of
         // catching a thin course that the dither breaks into speckle.
         float ahead = dot(lightShape.yz, toReceiver.xy);
+        // NL-1 — with the tuned ramp on, a low door or arch (emitter at most
+        // 40 px up) lights its own reveal on a ramp record: wall texels within
+        // 14 px of its axis and up to 24 px above it, at a third of its
+        // falloff. A window stands higher and still never washes its own wall.
+        bool ownJamb = false;
         if (facadeAperture) {
-            falloff *= clamp(0.30 + 1.4 * ahead / max(length(toReceiver.xy), 1.0), 0.0, 1.0);
-            if (recvClass == 1 && (ahead < ${APERTURE_WALL_AHEAD.toFixed(1)} || recvH > lightH)) falloff = 0.0;
+            ownJamb = u_firelight.y > 0.5 && ownLandmark != ${FIRELIGHT_PILOT_LANDMARK}u && rampPixel && recvClass == 1 && lightH <= 40.0
+                && abs(recvGround.x - light.x) <= 14.0 && recvH <= lightH + 24.0;
+            falloff *= ownJamb ? 0.35 : clamp(0.30 + 1.4 * ahead / max(length(toReceiver.xy), 1.0), 0.0, 1.0);
+            if (!ownJamb && recvClass == 1 && (ahead < ${APERTURE_WALL_AHEAD.toFixed(1)} || recvH > lightH)) falloff = 0.0;
         }
         // Receiver response: an up-facing surface takes the light while the
         // lamp stands above it, and a deck, step or apron (face 0) up to 12
@@ -2529,16 +2779,41 @@ void main() {
                 float front = attention || planar < 2.0 ? 1.0 : -axisTo.y / planar;
                 if (front < -0.3) {
                     response = 0.0;
-                    if (falloff > 0.12 && abs(axisTo.x) >= 0.8 * recvHalfWidth) {
+                    // NL-2 — with firelight on people (u_firelight.x > 0) a
+                    // lamp straight behind the figure lights it too, and the
+                    // rim also takes the top edges (an empty texel straight
+                    // above, two deep as the side bevel), reaching up to
+                    // 36 px x the strength higher: lamp side and top only,
+                    // never the far side, so it never reads as an outline.
+                    bool lateral = abs(axisTo.x) >= 0.8 * recvHalfWidth;
+                    if (falloff > 0.12 && (lateral || u_firelight.x > 0.0)) {
                         backReach = max(backReach, falloff);
-                        vec2 rimStep = vec2((axisTo.x < 0.0 ? 1.0 : -1.0) * uvStepX, 0.0);
-                        vec2 rimUv = uv + rimStep;
-                        vec2 innerUv = uv + 2.0 * rimStep;
-                        bool outer = any(lessThan(rimUv, v_uvClamp.xy)) || any(greaterThan(rimUv, v_uvClamp.zw))
-                            || albedoTexture(rimUv).a < 0.01;
-                        bool inner = !outer && (any(lessThan(innerUv, v_uvClamp.xy)) || any(greaterThan(innerUv, v_uvClamp.zw))
-                            || albedoTexture(innerUv).a < 0.01);
-                        if ((outer || inner) && recvH <= lightH + 28.0 && falloff >= rimReach) {
+                        bool outer = false;
+                        bool inner = false;
+                        if (lateral) {
+                            vec2 rimStep = vec2((axisTo.x < 0.0 ? 1.0 : -1.0) * uvStepX, 0.0);
+                            vec2 rimUv = uv + rimStep;
+                            vec2 innerUv = uv + 2.0 * rimStep;
+                            outer = any(lessThan(rimUv, v_uvClamp.xy)) || any(greaterThan(rimUv, v_uvClamp.zw))
+                                || albedoTexture(rimUv).a < 0.01;
+                            inner = !outer && (any(lessThan(innerUv, v_uvClamp.xy)) || any(greaterThan(innerUv, v_uvClamp.zw))
+                                || albedoTexture(innerUv).a < 0.01);
+                        }
+                        // A top texel is one on a level run of the contour
+                        // (both side neighbours opaque): a slope's stair
+                        // steps would trace the far side as an outline.
+                        if (u_firelight.x > 0.0 && !outer
+                            && albedoTexture(uv + vec2(uvStepX, 0.0)).a >= 0.01
+                            && albedoTexture(uv - vec2(uvStepX, 0.0)).a >= 0.01) {
+                            vec2 upStep = vec2(0.0, -1.0 / float(albedoSize().y));
+                            vec2 topUv = uv + upStep;
+                            vec2 topInnerUv = uv + 2.0 * upStep;
+                            outer = any(lessThan(topUv, v_uvClamp.xy)) || any(greaterThan(topUv, v_uvClamp.zw))
+                                || albedoTexture(topUv).a < 0.01;
+                            inner = !outer && (inner || any(lessThan(topInnerUv, v_uvClamp.xy))
+                                || any(greaterThan(topInnerUv, v_uvClamp.zw)) || albedoTexture(topInnerUv).a < 0.01);
+                        }
+                        if ((outer || inner) && recvH <= lightH + 28.0 + 36.0 * u_firelight.x && falloff >= rimReach) {
                             response = 0.95;
                             backlitRim = true;
                             rimInner = inner;
@@ -2552,6 +2827,7 @@ void main() {
                 }
             } else {
                 response = clamp((facadeAperture && recvClass == 1 ? 0.0 : 0.15) + 0.85 * facing, 0.0, 1.0);
+                if (ownJamb) response = max(response, 0.5);
             }
         }
         float shape = falloff * response;
@@ -2616,8 +2892,12 @@ void main() {
             }
             continue;
         }
-        float steps = rampPixel ? poolSteps(shape, poolOrder) : ambientPoolSteps(shape, poolOrder);
-        if (rampPixel) {
+        // NL-1 — the tuned ramp is firelight: a light that is not warm (the
+        // Portal's lilac) lands on a ramp record as an ordinary pool.
+        vec3 lightHue = lightColor.rgb / max(dot(lightColor.rgb, GRADE_LUMA), 0.001);
+        bool rampLight = rampPixel && !(u_firelight.y > 0.5 && ownLandmark != ${FIRELIGHT_PILOT_LANDMARK}u && clamp((lightHue.r - lightHue.b) * 1.25, 0.0, 1.0) < 0.5);
+        float steps = rampLight ? poolSteps(shape, poolOrder) : ambientPoolSteps(shape, poolOrder);
+        if (rampLight) {
             // 3.5 / 2.1 — a ramp pixel takes the strongest light's stepped
             // course (0.15 per course of its own intensity, on the pools'
             // Bayer order), as a pool takes its deepest step, so the ramp's
@@ -2625,10 +2905,17 @@ void main() {
             // on its steps lays its core on the middle of the flight and its
             // mid course round it, not one flat band.
             float rampShare = steps * 0.15 * light.w * lightColor.a;
+            // NL-1 — only the landmark's own low lights (its fire, a door, a
+            // hearth: at most 40 px up) earn the first-course floor; the
+            // street's lamps keep the pilot response. (Summing several
+            // lights' shares was tried and dropped: a row of the Archive's
+            // windows striped its buttresses in 2x2 cells.)
+            bool rampOwnLight = uint(lightMeta.y + 0.5) == ownLandmark && lightH <= 40.0;
             if (rampShare > admitted) {
                 admitted = rampShare;
                 rampHue = lightColor.rgb;
                 rampSteps = steps;
+                rampOwn = rampOwnLight;
             }
         } else {
             poolLight += lightColor.rgb * ambientPoolWeight(steps) * light.w * lightColor.a;
@@ -2646,14 +2933,25 @@ void main() {
         // broken on the world grid and clipped by the footprint march, so it
         // never crosses a building. Action-needed lights never spend one of
         // these slots (LIGHT_RECORD_FLAGS.wetReflection).
-        if (recvClass == 0 && (lightFlags & ${LIGHT_RECORD_FLAGS.wetReflection}u) != 0u) {
+        if (recvClass == 0 && (lightFlags & ${LIGHT_RECORD_FLAGS.wetReflection | LIGHT_RECORD_FLAGS.groundMirror}u) != 0u) {
+            // GW-2 — on flat ground over the field (the terrain, and the
+            // ground-self aprons drawn over it) a puddle or wet paving texel
+            // takes a groundMirror light's column over the streak.
+            if ((lightFlags & ${LIGHT_RECORD_FLAGS.groundMirror}u) != 0u && u_groundWeather.y > 0.0 && u_groundWeather.z > 0.5 && recvH < 0.5) {
+                if (mirrorReceiver < 0.0) mirrorReceiver = groundMirrorAt(recvGround);
+                if (mirrorReceiver > 0.0) {
+                    vec3 mirror = lightColor.rgb * mirrorReceiver * groundMirrorColumn(light.xy, lightH, recvGround)
+                        * u_groundWeather.y * light.w * lightColor.a * (1.0 - blocked);
+                    if (dot(mirror, GRADE_LUMA) > dot(groundMirror, GRADE_LUMA)) groundMirror = mirror;
+                }
+            }
             if (wetReceiver < 0.0) {
                 wetReceiver = max(
                     materialNear(material, 7.0),
                     max(materialNear(material, 1.0), materialNear(material, 6.0))
                 ) * u_wetness * materialWetness(material);
             }
-            if (wetReceiver > 0.01) {
+            if (wetReceiver > 0.01 && (lightFlags & ${LIGHT_RECORD_FLAGS.wetReflection}u) != 0u) {
                 float drop = v_world.y - light.y;
                 float footprint = step(0.0, drop) * (1.0 - smoothstep(0.0, light.z * 1.30, drop));
                 float lateral = 1.0 - smoothstep(0.0, light.z * 0.26, abs(v_world.x - light.x));
@@ -2737,13 +3035,17 @@ void main() {
     // landing only names its hue): blue-grey stone plus amber alone reads as
     // a cool grey lift, not lamplight.
     if (rampPixel && admitted > 0.0) {
+        // NL-1 — inside its own low light's second pool course, the tuned
+        // ramp lands at least its first ramp course, so dark stone beside
+        // its fire never stays unlit.
         float course = step(0.14, admitted) + step(0.45, admitted);
+        if (u_firelight.y > 0.5 && ownLandmark != ${FIRELIGHT_PILOT_LANDMARK}u && rampOwn) course = max(course, step(1.5, rampSteps));
         vec4 ramp = textureLod(u_paletteLut, vec2(
             (material + 0.5) / 11.0,
             (course + 0.5) / 3.0
         ), 0.0);
         vec3 rampLit = receiverKnee(
-            color * (ramp.rgb * 2.0) + vec3(ramp.a * 0.25) * step(0.14, admitted) + reflectionLight,
+            color * (ramp.rgb * 2.0) + vec3(ramp.a * 0.25) * step(0.5, course) + reflectionLight,
             receiverLuma
         );
         if (course > 0.5) {
@@ -2766,12 +3068,22 @@ void main() {
     // multiply (at most 0.045 luma): a multiply leaves its dark outline and
     // shadow texels black, so a lit figure's outline turns a dark warm tone
     // of the light (selective outline), never a bright line round it.
-    vec3 bodyLift = recvClass == 2
-        ? poolLight * min(0.15 * u_poolGain, 0.045 / max(dot(poolLight, GRADE_LUMA), 0.01))
-        : vec3(0.0);
+    // NL-2 — firelight on people lands the lit side firmer: the additive
+    // share and its cap grow with u_firelight.x (0.15 -> 0.30 of the pool,
+    // 0.045 -> 0.10 luma) and the landing share 0.4 -> 0.7. NL-2 / NL-1 — a
+    // dark receiver (dark cloth with nl2, dark earth or stone with the tuned
+    // ramp) takes a further albedo-free share of the pool, so the strongest
+    // fire shows at least its first course on it; all under the knee.
+    float darkness = 1.0 - smoothstep(0.04, 0.18, dot(poolAlbedo, GRADE_LUMA));
+    float darkShare = recvClass == 2 ? ${FIRELIGHT_DARK_SHARE.toFixed(3)} * u_firelight.x
+        : (recvClass == 0 && u_firelight.y > 0.5 && ownLandmark != ${FIRELIGHT_PILOT_LANDMARK}u ? ${FIRELIGHT_DARK_SHARE.toFixed(3)} : 0.0);
+    vec3 bodyLift = (recvClass == 2
+        ? poolLight * min((0.15 + 0.15 * u_firelight.x) * u_poolGain,
+            (0.045 + 0.055 * u_firelight.x) / max(dot(poolLight, GRADE_LUMA), 0.01))
+        : vec3(0.0)) + poolLight * (darkShare * darkness);
     // 2.10 — a pixel lit only by the bounce keeps more of its own colour
     // (RADIANCE_LAND of the warm landing): a warm cast, never a painted band.
-    float poolLand = recvClass == 2 ? 0.4 : (bounceOnly ? RADIANCE_LAND : 1.0);
+    float poolLand = recvClass == 2 ? 0.4 + 0.3 * u_firelight.x : (bounceOnly ? RADIANCE_LAND : 1.0);
     if (poolTaps) {
         // 4.6 — each covered cell's pools land on this pixel's colour and
         // blend by coverage; a cell whose lights equal the previous cell's
@@ -2795,6 +3107,8 @@ void main() {
         color = stepPool(color, poolLight, poolDepth, attentionLight, attentionDepth, poolAlbedo, reflectionLight + bodyLift,
             poolLand);
     }
+    // GW-2 — a lamp mirror lands over the lit ground as its own course.
+    if (groundMirror != vec3(0.0)) color = applyGroundMirror(color, groundMirror);
     // 2.1 — a lit rim texel is the silhouette's outline on the lamp's side:
     // a multiply would leave the dark outline dark, so the rim takes the
     // lamp's own hue at a stepped value (one step per course), the pixel art
@@ -2804,21 +3118,40 @@ void main() {
     // texel on that lamp's course and the second texel one course down.
     if (rimReach > 0.0 && rimReach >= backReach - 0.001 && rimSteps > 0.5) {
         float rimCourse = rimInner ? rimSteps - 1.0 : rimSteps;
-        float rimY = 0.26 + 0.1 * rimCourse;
+        // NL-2 — the rim lands up to one course brighter with the strength.
+        float rimY = 0.26 + 0.10 * u_firelight.x + (0.1 + 0.02 * u_firelight.x) * rimCourse;
         vec3 rimHue = rimLight / max(dot(rimLight, GRADE_LUMA), 0.01);
         vec3 rimStop = rimCourse < 1.5 ? LAND_RIM : rimCourse < 2.5 ? LAND_MID : LAND_CORE;
         vec3 rim = receiverKnee(onStop(mix(rimHue, rimStop, 0.6), rimY), receiverLuma);
         if (dot(rim, GRADE_LUMA) > dot(color, GRADE_LUMA)) color = rim;
     }
 
-    float fog = clamp(u_weather.y, 0.0, 1.0);
-    float groundFog = fog * (1.0 - elevation * 0.72) * smoothstep(0.18, 0.98, gl_FragCoord.y / max(1.0, u_resolution.y));
-    // Fog veils toward the C2 haze colour but may raise a pixel's luma by at
-    // most 0.06: storm fog no longer lifts the blacks.
-    vec3 fogged = mix(color, u_fogColor, groundFog * 0.48);
-    float fogRise = dot(fogged - color, GRADE_LUMA);
-    if (fogRise > 0.06) fogged = mix(color, fogged, 0.06 / fogRise);
-    color = fogged;
+    if (u_mist.w > 0.0) {
+        // MS-1 — the low mist (MIST_GLSL) replaces the screen-Y veil: the
+        // receiver's ground point and height above it (a record without a
+        // receiver stands at its authored elevation x 128 px, the 2.3 fog
+        // lift's scale), courses on 2x2 art cells, a body at most course 1.
+        if (u_mist.x > 0.0) {
+            float mistSd;
+            uint mistFlags;
+            float mistNear = coastFieldAt(recvGround, mistSd, mistFlags)
+                ? clamp((mistSd + 2.0) * 0.5, 0.0, 1.0)
+                : (u_coastRect.z > 0.0 ? 1.0 : 0.0);
+            float mistH = v_receiver.x > -0.5 ? recvH : elevation * 128.0;
+            float mist = mistCourse(recvGround, mistH, mistNear, mistH > 0.5, bayer4(floor(artCell * 0.5)));
+            if (recvClass == 2) mist = min(mist, 1.0);
+            color = applyMist(color, mist, u_fogColor, u_additive);
+        }
+    } else {
+        float fog = clamp(u_weather.y, 0.0, 1.0);
+        float groundFog = fog * (1.0 - elevation * 0.72) * smoothstep(0.18, 0.98, gl_FragCoord.y / max(1.0, u_resolution.y));
+        // Fog veils toward the C2 haze colour but may raise a pixel's luma by at
+        // most 0.06: storm fog no longer lifts the blacks.
+        vec3 fogged = mix(color, u_fogColor, groundFog * 0.48);
+        float fogRise = dot(fogged - color, GRADE_LUMA);
+        if (fogRise > 0.06) fogged = mix(color, fogged, 0.06 / fogRise);
+        color = fogged;
+    }
     vec3 emission = emissionColor * emissive;
     color += emission * 0.42;
     // 1.3 — hue-preserving protection after emission: a lit emitter pushed
@@ -2951,22 +3284,46 @@ vec3 shadeOpenSea(vec2 cell) {
         // ride over them, two stops lighter near the island. The same rule
         // as the in-map open water.
         float s = swellPhase(cell);
+        float horizonStop = stop;
         stop = seaBodyStop(cell, s, stop, excess, order);
-        float cap = swellCap(cell, s, near, seaPawCaps(cell, order));
+        // SEA-2 — a set's lit slope (lighter than the row's own stop).
+        bool litSlope = stop < horizonStop;
+        // SEA-1 — sunlit water lifts outside the cloud shade.
+        if (u_cloud.w > 0.0) stop = seaLiftedStop(stop, u_seaLift, m, order);
+        // SEA-3 — a calm sea lays no caps and no deep dashes; a fresh one
+        // gathers more cap clusters and runs whitecap streak rows downwind.
+        bool calm = seaCalm();
+        float paw = seaPawCaps(cell, order);
+        if (seaFresh()) paw += ${SEA_STATE.freshCaps.toFixed(2)};
+        float cap = calm ? 0.0 : swellCap(cell, s, near, paw);
         float lighter = cap;
         bool whitecap = false;
-        if (clock > 0.0) {
+        if (clock > 0.0 && !calm) {
             float lit = deepSwellLit(cell, tick, storm, ${DEEP_DASH_DENSITY.toFixed(2)});
             whitecap = lit > 1.5;
             if (lit > 0.5) lighter = max(lighter, near > 0.8 ? 2.0 : 1.0);
         }
+        float streak = clock > 0.0 ? seaStreakAt(cell) : 0.0;
+        if (streak > 1.5) whitecap = true;
+        else if (streak > 0.5) lighter = max(lighter, 1.0);
         marked = lighter > 0.0 || whitecap;
         // Sun on water: one stop lighter where the cloud field is lowest.
         if (u_seaSunlit > 0.0 && m < u_seaSunlit) lighter += 1.0;
         vec3 albedo = whitecap ? WATER_FOAM : seaStopRgb(max(stop - lighter, 0.0));
         if (starlightAt(cell, cap, u_starlight, tick)) albedo = WATER_FOAM_CREST;
-        c = applyWaterMood(albedo) * WATER_CAST * mix(1.0, 0.86, u_seaSunBand);
+        // SEA-1 — the sun band's dim fades out with the look (the lift replaces it).
+        c = applyWaterMood(albedo) * WATER_CAST * mix(1.0, 0.86, u_seaSunBand * (1.0 - u_cloud.w));
         c = capSaturation(applyWaterSky(capSaturation(applyTimeGrade(c, true), WATER_MAX_SATURATION)), WATER_MAX_SATURATION);
+        // SEA-2 / SEA-3 — lit slopes and static caps (never the body, a
+        // trough, a moving dash or foam) and a calm sea's glassy lanes take
+        // the sky's hue at their own value: the warm horizon inside the
+        // sun's road, the cool water sky outside it.
+        float take = !whitecap && (litSlope || cap > 0.0) ? u_seaState.x : 0.0;
+        if (calm && seaCalmLane(cell)) take = max(take, ${SEA_STATE.laneWeight.toFixed(2)});
+        if (take > 0.0) {
+            vec3 sky = inSunRoad(texelPx, u_glint, u_camera.z) ? u_seaSky : u_waterSky.rgb;
+            c = capSaturation(seaSkyHue(c, sky, take), WATER_MAX_SATURATION);
+        }
     }
     float hazeRows = u_seaHaze.a;
     // 3.3 (d) / WS-11 — the sky-reflection band: the sky's own horizon colour
@@ -3000,18 +3357,27 @@ vec3 shadeOpenSea(vec2 cell) {
         c = mix(c, u_seaHaze.rgb, k < 0.5 ? 1.0 : k < 1.5 ? 0.6 : k < 2.5 ? 0.28 : 0.0);
     }
     c = applyGradeVignette(c, texelPx, u_resolution);
-    // The scene pass's ground fog at elevation 0 (luma rise held at 0.06).
-    float groundFog = clamp(u_weather.y, 0.0, 1.0) * smoothstep(0.18, 0.98, 1.0 - texelPx.y / max(1.0, u_resolution.y));
-    vec3 fogged = mix(c, u_fogColor, groundFog * 0.48);
-    float fogRise = dot(fogged - c, GRADE_LUMA);
-    if (fogRise > 0.06) fogged = mix(c, fogged, 0.06 / fogRise);
-    c = fogged;
+    if (u_mist.w > 0.0) {
+        // MS-1 — the low mist at height 0 on open water (near 1: the scene's
+        // in-map water reads the same top, so the map edge shows no seam).
+        if (u_mist.x > 0.0) c = applyMist(c, mistCourse(cell + 0.5, 0.0, 1.0, false, waterBayer4(floor(cell * 0.5))), u_fogColor, false);
+    } else {
+        // The scene pass's ground fog at elevation 0 (luma rise held at 0.06).
+        float groundFog = clamp(u_weather.y, 0.0, 1.0) * smoothstep(0.18, 0.98, 1.0 - texelPx.y / max(1.0, u_resolution.y));
+        vec3 fogged = mix(c, u_fogColor, groundFog * 0.48);
+        float fogRise = dot(fogged - c, GRADE_LUMA);
+        if (fogRise > 0.06) fogged = mix(c, fogged, 0.06 / fogRise);
+        c = fogged;
+    }
     float shade = 0.0;
     if (u_cloud.z > 0.0) {
         // At most two courses on the open sea: the third fades out past the
         // island as its threshold climbs above the field.
         shade = step(u_cloudThresholds.x, m) + step(u_cloudThresholds.y, m) + step(mix(u_cloudThresholds.z, 1.2, reach), m);
     }
+    // SEA-1 — no cloud multiply on open water: its shade is the lift's one
+    // stop (seaLiftedStop); the squall keeps its courses.
+    if (u_cloud.w > 0.0) shade = 0.0;
     shade = max(shade, squallShade(cell, n, order));
     if (shade > 0.0) c *= vec3(1.0) - shade * 0.085 * vec3(1.0, 0.96, 0.84);
     // N3 — the aerial haze's courses on water follow the swell contours (the
@@ -3286,6 +3652,180 @@ void main() {
     outEmission = vec4(emission * alpha, alpha);
 }`;
 
+// RN-1 — rain in the world (look `rn1`, WeatherRenderer `gpuRainField`): one
+// instanced draw after the particles, two quads per ground cell of the view
+// (the streak, then its splash), LEQUAL against the painter depth and never
+// writing it, so a streak passes behind every building front, tower and
+// crown nearer than its ground point. No attributes and no per-frame
+// packing: the cell's ground point, layer, length and fall offset are hashes
+// of the cell and the weather seed. The overlay's grammar on the world grid:
+// a streak is one texel per row stepping sideways round(row x lean), the far
+// layer dashed, in the overlay's ungraded rain colours and alphas; a splash
+// is the overlay's three-frame 7x4 crown on open ground (the R8 tile mask),
+// held on its ring frame under reduced motion. Nothing feeds bloom.
+const rainRgb = hex => [1, 3, 5].map(index => parseInt(hex.slice(index, index + 2), 16) / 255);
+const rainBits = mark => SPLASH_FRAMES.map(rows => rows.reduce((bits, line, row) => {
+    for (let col = 0; col < line.length; col++) if (line[col] === mark) bits |= 1 << (row * line.length + col);
+    return bits >>> 0;
+}, 0));
+export const RAIN_SPLASH_BITS = Object.freeze({ light: Object.freeze(rainBits('#')), dim: Object.freeze(rainBits('+')) });
+const rainF = value => value.toFixed(5);
+// A per-layer constant as one nested choice on `layer` (GLSL and WGSL forms).
+export function rainLayerChoice(values, wgsl = false) {
+    const [a, b, c] = values;
+    return wgsl ? `select(select(${c}, ${b}, layer == 1), ${a}, layer == 0)` : `(layer == 0 ? ${a} : (layer == 1 ? ${b} : ${c}))`;
+}
+export function rainFrameChoice(bits, wgsl = false) {
+    const [a, b, c] = bits.map(value => `${value}u`);
+    return wgsl ? `select(select(${c}, ${b}, frame == 1), ${a}, frame == 0)` : `(frame == 0 ? ${a} : (frame == 1 ? ${b} : ${c}))`;
+}
+// The layer tables both twins read (WeatherRenderer RAIN_LAYERS).
+export const RAIN_LAYER_TABLE = Object.freeze({
+    cut0: RAIN_LAYERS[0].frac,
+    cut1: RAIN_LAYERS[0].frac + RAIN_LAYERS[1].frac,
+    windMul: RAIN_LAYERS.map(layer => rainF(layer.windMul)),
+    speedMul: RAIN_LAYERS.map(layer => rainF(layer.speedMul)),
+    alpha: RAIN_LAYERS.map(layer => rainF(layer.alpha)),
+    minCells: RAIN_LAYERS.map(layer => String(layer.cells[0])),
+    maxCells: RAIN_LAYERS.map(layer => String(layer.cells[1])),
+    dashed: RAIN_LAYERS.map(layer => (layer.dashed ? '1' : '0')),
+    rgb: RAIN_LAYERS.map(layer => rainRgb(layer.color).map(rainF).join(', ')),
+    light: rainRgb(RAIN_LIGHT).map(rainF).join(', '),
+    dim: rainRgb(RAIN_DIM).map(rainF).join(', '),
+});
+const RT = RAIN_LAYER_TABLE;
+export const RAIN_HASH_GLSL = `
+uint rainHash(uint v) {
+    uint x = v;
+    x ^= x >> 16u;
+    x *= 0x7feb352du;
+    x ^= x >> 15u;
+    x *= 0x846ca68bu;
+    x ^= x >> 16u;
+    return x;
+}
+float rainU01(uint h) {
+    return float(h >> 8u) / 16777216.0;
+}`;
+
+export const RAIN_VERTEX = `#version 300 es
+precision highp float;
+precision highp int;
+uniform vec3 u_camera;
+uniform vec2 u_resolution;
+// (cell x0, cell y0, cols, seed), (density, fall height, drift, lean),
+// (phase far, mid, near, alpha scale), (splash share, frame fraction,
+// splash alpha, flags: 1 static, 2 mask).
+uniform vec4 u_rainView;
+uniform vec4 u_rainFall;
+uniform vec4 u_rainPhase;
+uniform vec4 u_rainSplash;
+uniform sampler2D u_rainMask;
+out vec2 v_local;
+flat out vec4 v_color;
+flat out ivec4 v_shape;
+flat out float v_lean;
+${RAIN_HASH_GLSL}
+void main() {
+    int quad = gl_VertexID / 6;
+    int vi = gl_VertexID - quad * 6;
+    vec2 corner = vec2(vi == 1 || vi >= 4 ? 1.0 : 0.0, vi == 2 || vi == 3 || vi == 5 ? 1.0 : 0.0);
+    int cols = max(1, int(u_rainView.z));
+    int cx = int(u_rainView.x) + gl_InstanceID % cols;
+    int cy = int(u_rainView.y) + gl_InstanceID / cols;
+    uint h = rainHash((uint(cx + 32768) * 0x8da6b343u) ^ (uint(cy + 32768) * 0xd8163841u) ^ uint(u_rainView.w));
+    uint flags = uint(u_rainSplash.w + 0.5);
+    bool still = (flags & ${RAIN_UNIFORM_FLAGS.static}u) != 0u;
+    float pick = rainU01(rainHash(h ^ 0x68e31da4u));
+    int layer = still ? 1 : (pick < ${rainF(RT.cut0)} ? 0 : (pick < ${rainF(RT.cut1)} ? 1 : 2));
+    vec2 ground = vec2(float(cx), float(cy)) * ${RAIN_GROUND_CELL}.0
+        + floor(vec2(rainU01(rainHash(h + 1u)), rainU01(rainHash(h + 2u))) * ${RAIN_GROUND_CELL}.0);
+    float phase = layer == 0 ? u_rainPhase.x : (layer == 1 ? u_rainPhase.y : u_rainPhase.z);
+    float fall = fract(phase + rainU01(rainHash(h + 3u)));
+    bool streak = rainU01(h) < u_rainFall.x;
+    vec2 origin = vec2(0.0);
+    vec2 size = vec2(0.0);
+    vec4 color = vec4(0.0);
+    ivec4 shape = ivec4(-1, 0, 0, 0);
+    float leanOut = 0.0;
+    if (quad == 0 && streak) {
+        float windMul = ${rainLayerChoice(RT.windMul)};
+        float lean = clamp(u_rainFall.w * 0.8 * windMul, -1.5, 1.5);
+        int minCells = ${rainLayerChoice(RT.minCells)};
+        int maxCells = ${rainLayerChoice(RT.maxCells)};
+        int cells = minCells + int(floor(rainU01(rainHash(h + 4u)) * float(maxCells - minCells + 1)));
+        float height = u_rainFall.y * (1.0 - fall);
+        float bottomY = floor(ground.y - height);
+        float bottomX = floor(ground.x - height * u_rainFall.z * windMul * ${rainF(RAIN_DRIFT_SLOPE)});
+        float tail = floor(float(cells - 1) * lean + 0.5);
+        float left = min(0.0, tail);
+        origin = vec2(bottomX - tail + left, bottomY - float(cells - 1));
+        size = vec2(abs(tail) + 1.0, float(cells));
+        color = vec4(${rainLayerChoice(RT.rgb.map(rgb => `vec3(${rgb})`))}, ${rainLayerChoice(RT.alpha)} * u_rainPhase.w);
+        shape = ivec4(0, int(left), ${rainLayerChoice(RT.dashed)}, 0);
+        leanOut = lean;
+    } else if (quad == 1 && (flags & ${RAIN_UNIFORM_FLAGS.mask}u) != 0u && (still || streak)
+        && rainU01(rainHash(h + 5u)) < u_rainSplash.x) {
+        float speedMul = ${rainLayerChoice(RT.speedMul)};
+        int frame = still ? 2 : int(floor(fall / max(u_rainSplash.y * speedMul, 0.000001)));
+        vec2 iso = vec2(ground.x / ${TILE_WIDTH / 2}.0 + ground.y / ${TILE_HEIGHT / 2}.0, ground.y / ${TILE_HEIGHT / 2}.0 - ground.x / ${TILE_WIDTH / 2}.0) * 0.5;
+        ivec2 tile = ivec2(floor(iso + 0.5));
+        if (frame < 3 && tile.x >= 0 && tile.y >= 0 && tile.x < ${MAP_SIZE} && tile.y < ${MAP_SIZE}
+            && texelFetch(u_rainMask, tile, 0).r > 0.5) {
+            origin = ground - vec2(3.0, 3.0);
+            size = vec2(7.0, 4.0);
+            color = vec4(0.0, 0.0, 0.0, u_rainSplash.z);
+            shape = ivec4(1, frame, 0, 0);
+        }
+    }
+    v_local = corner * size;
+    v_color = color;
+    v_shape = shape;
+    v_lean = leanOut;
+    if (shape.x < 0) {
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+        return;
+    }
+    vec2 world = origin + corner * size;
+    vec2 screen = (world + u_camera.xy) * u_camera.z;
+    vec2 clip = vec2(
+        screen.x / max(1.0, u_resolution.x) * 2.0 - 1.0,
+        1.0 - screen.y / max(1.0, u_resolution.y) * 2.0
+    );
+    float key = clamp(floor((ground.y - (${GPU_DEPTH_SORT_Y_MIN}.0)) * ${GPU_DEPTH_KEY_STEPS_PER_PX}.0 + 0.5), 0.0, ${GPU_DEPTH_KEY_MAX}.0);
+    gl_Position = vec4(clip, (1.0 - key / ${GPU_DEPTH_KEY_MAX}.0) * 2.0 - 1.0, 1.0);
+}`;
+
+export const RAIN_FRAGMENT = `#version 300 es
+precision highp float;
+precision highp int;
+in vec2 v_local;
+flat in vec4 v_color;
+flat in ivec4 v_shape;
+flat in float v_lean;
+layout(location = 0) out vec4 outColor;
+layout(location = 1) out vec4 outEmission;
+void main() {
+    ivec2 cell = ivec2(floor(v_local));
+    vec3 rgb = v_color.rgb;
+    if (v_shape.x == 0) {
+        if (cell.x != int(floor(float(cell.y) * v_lean + 0.5)) - v_shape.y) discard;
+        if (v_shape.z != 0 && (cell.y & 1) == 1) discard;
+    } else {
+        int frame = v_shape.y;
+        uint bit = 1u << uint(cell.y * 7 + cell.x);
+        if ((${rainFrameChoice(RAIN_SPLASH_BITS.light)} & bit) != 0u) {
+            rgb = vec3(${RT.light});
+        } else if ((${rainFrameChoice(RAIN_SPLASH_BITS.dim)} & bit) != 0u) {
+            rgb = vec3(${RT.dim});
+        } else {
+            discard;
+        }
+    }
+    outColor = vec4(rgb * v_color.a, v_color.a);
+    outEmission = vec4(0.0);
+}`;
+
 function finite(value, fallback = 0) {
     const number = Number(value);
     return Number.isFinite(number) ? number : fallback;
@@ -3496,6 +4036,12 @@ export class GpuWorldRenderer {
         this._particleCount = 0;
         this._particleMotifTexture = null;
         this.particleInstances = 0;
+        // RN-1 — the world rain field (WeatherRenderer.gpuRainField) and the
+        // share of the rain this frame drew (the overlay draws the rest).
+        this._rain = createGpuRainField();
+        this._rainMaskTexture = null;
+        this.rainShare = 0;
+        this.rainInstances = 0;
         this._batchScratch = [];
         // B.1b — the albedo texture-array page and the pager the batcher
         // calls for every normalized record.
@@ -3515,6 +4061,9 @@ export class GpuWorldRenderer {
         this._camera = { xy: [0, 0], scale: 0 };
         this._waterFx = createWaterFx();
         this._atmosphereCourses = createAtmosphereCourses();
+        this.mist = new Float32Array(4);
+        this.mistBurn = Float32Array.from([1, 1]);
+        this._seaState = createSeaState();
         this._seaWeather = createSeaWeather();
         this._beam = createBeamUniforms();
         this._puddles = createPuddleUniforms();
@@ -3602,6 +4151,7 @@ export class GpuWorldRenderer {
         const pendingPrograms = [];
         this.sceneProgram = createProgram(gl, QUAD_VERTEX, SCENE_FRAGMENT, pendingPrograms);
         this.particleProgram = createProgram(gl, PARTICLE_VERTEX, PARTICLE_FRAGMENT, pendingPrograms);
+        this.rainProgram = createProgram(gl, RAIN_VERTEX, RAIN_FRAGMENT, pendingPrograms);
         this.bloomProgram = createProgram(gl, FULLSCREEN_VERTEX, BLOOM_FRAGMENT, pendingPrograms);
         this.compositeProgram = createProgram(gl, FULLSCREEN_VERTEX, COMPOSITE_FRAGMENT, pendingPrograms);
         this.markProgram = createProgram(gl, QUAD_VERTEX, MARK_FRAGMENT, pendingPrograms);
@@ -3616,13 +4166,14 @@ export class GpuWorldRenderer {
             'u_lightCount', 'u_lightData', 'u_lightTiles', 'u_lightTileGrid',
             'u_radiance', 'u_radianceGrid', 'u_radianceGain', 'u_radianceStrength',
             'u_footprint', 'u_footprintRect', 'u_footprintSize', 'u_marchSteps',
+            'u_shadeField', 'u_shadeRect', 'u_shade',
             'u_coreEnergy', 'u_waterMood', 'u_waterSky', 'u_swellDrift',
             'u_cycleOffset', 'u_coastField', 'u_coastRect', 'u_waterFx', 'u_glint', 'u_glintStops[0]',
             'u_starlight',
             'u_terrainBatch', 'u_cueRuns',
             'u_wetness', 'u_wetReflectionCount', 'u_beamGround', 'u_beamShape', 'u_beamCourseEnds', 'u_beamCourseShares',
-            'u_puddleMask', 'u_puddleRect', 'u_puddles', 'u_puddleSky', 'u_puddleGround',
-            'u_paletteLut', 'u_hasPaletteLut',
+            'u_puddleMask', 'u_puddleRect', 'u_puddles', 'u_puddleSky', 'u_puddleGround', 'u_groundWeather',
+            'u_paletteLut', 'u_hasPaletteLut', 'u_firelight',
             ...ATMOSPHERE_COURSE_UNIFORM_NAMES,
             ...SEA_WEATHER_UNIFORM_NAMES,
             'u_grassGust', 'u_stillWater', 'u_surfGlow',
@@ -3631,6 +4182,9 @@ export class GpuWorldRenderer {
             'u_camera', 'u_resolution', 'u_motifs', 'u_coreEnergy', ...GRADE_UNIFORM_NAMES,
             ...ATMOSPHERE_COURSE_UNIFORM_NAMES,
         ]);
+        this.rainUniforms = uniformLocations(gl, this.rainProgram, [
+            'u_camera', 'u_resolution', 'u_rainView', 'u_rainFall', 'u_rainPhase', 'u_rainSplash', 'u_rainMask',
+        ]);
         this.bloomUniforms = uniformLocations(gl, this.bloomProgram, ['u_input', 'u_texel', 'u_blur']);
         this.compositeUniforms = uniformLocations(gl, this.compositeProgram, [
             'u_scene', 'u_bloom', 'u_bloomStrength', 'u_flash',
@@ -3638,7 +4192,7 @@ export class GpuWorldRenderer {
             ...GRADE_UNIFORM_NAMES, ...ATMOSPHERE_COURSE_UNIFORM_NAMES,
             'u_waterMood', 'u_waterSky', 'u_swellDrift', 'u_seaOn', 'u_time', 'u_weather', 'u_waterFx', 'u_glint', 'u_glintStops[0]',
             'u_starlight',
-            'u_seaSunBand', 'u_fogColor', 'u_seaHaze', 'u_seaSky', 'u_seaSunlit',
+            'u_seaSunBand', 'u_fogColor', 'u_seaHaze', 'u_seaSky', 'u_seaSunlit', 'u_seaLift', 'u_seaState',
             'u_seaGust', 'u_seaGustRect', 'u_squall', 'u_squallFall', 'u_fatPixels',
         ]);
         this.markUniforms = uniformLocations(gl, this.markProgram, [
@@ -3685,6 +4239,8 @@ export class GpuWorldRenderer {
         for (let location = 0; location <= 3; location++) gl.vertexAttribDivisor(location, 1);
         gl.bindVertexArray(null);
         gl.bindBuffer(gl.ARRAY_BUFFER, null);
+        // RN-1 — the rain draw reads no attributes (gl_VertexID / gl_InstanceID).
+        this.rainVao = gl.createVertexArray();
         this.emptyMaterialTexture = this._createTexture(1, 1, {
             data: new Uint8Array([0, 0, 0, 0]),
             filter: gl.NEAREST,
@@ -3912,9 +4468,10 @@ export class GpuWorldRenderer {
         if (this.vao) gl.deleteVertexArray(this.vao);
         if (this.particleBuffer) gl.deleteBuffer(this.particleBuffer);
         if (this.particleVao) gl.deleteVertexArray(this.particleVao);
+        if (this.rainVao) gl.deleteVertexArray(this.rainVao);
         if (this.markBuffer) gl.deleteBuffer(this.markBuffer);
         if (this.markVao) gl.deleteVertexArray(this.markVao);
-        for (const program of [this.sceneProgram, this.particleProgram, this.bloomProgram, this.compositeProgram, this.markProgram, this.compositeP3Program, this.markP3Program]) {
+        for (const program of [this.sceneProgram, this.particleProgram, this.rainProgram, this.bloomProgram, this.compositeProgram, this.markProgram, this.compositeP3Program, this.markP3Program]) {
             if (program) gl.deleteProgram(program);
         }
         this.compositeP3Program = null;
@@ -3926,8 +4483,10 @@ export class GpuWorldRenderer {
         this.vao = null;
         this.particleBuffer = null;
         this.particleVao = null;
+        this.rainVao = null;
         this.sceneProgram = null;
         this.particleProgram = null;
+        this.rainProgram = null;
         this.bloomProgram = null;
         this.compositeProgram = null;
         this.markProgram = null;
@@ -3936,6 +4495,7 @@ export class GpuWorldRenderer {
         this.markBufferBytes = 0;
         this._pointedInstance = -1;
         this._particleMotifTexture = null;
+        this._rainMaskTexture = null;
         // The next _initResources creates a zero-size VBO; a stale capacity
         // here would make _uploadVertices skip its bufferData allocation and
         // leave every draw without geometry after suspend/resume.
@@ -3975,6 +4535,9 @@ export class GpuWorldRenderer {
         this.markBufferBytes = 0;
         this._pointedInstance = -1;
         this._particleMotifTexture = null;
+        this.rainVao = null;
+        this.rainProgram = null;
+        this._rainMaskTexture = null;
         this.textureBytes = 0;
         this._cachedTextureBytes = 0;
         this._textureCacheNeedsTrim = false;
@@ -4686,7 +5249,7 @@ export class GpuWorldRenderer {
         gl.uniform1f(uniforms.u_wetness, wetness);
         this.wetReflectionCount = lightFrame.wetReflectionCount;
         gl.uniform1i(uniforms.u_wetReflectionCount, this.wetReflectionCount);
-        this._uploadPuddles(uniforms, feed);
+        this._uploadPuddles(uniforms, feed, qualityLevel);
         // 3.5 — the authored ramp table. An absent, wrong-sized, or shed table
         // leaves the pilot with today's additive response.
         const lutSource = resolvePaletteLut(qualityLevel, feed);
@@ -4698,6 +5261,9 @@ export class GpuWorldRenderer {
         gl.bindTexture(gl.TEXTURE_2D, lut || this.emptyMaterialTexture);
         gl.uniform1i(uniforms.u_paletteLut, SCENE_SAMPLER_UNITS.paletteLut);
         gl.uniform1i(uniforms.u_hasPaletteLut, lut ? 1 : 0);
+        // NL-2 / NL-1 — firelight on people and the tuned ramp (Firelight.js).
+        const firelight = resolveFirelight(this._firelight ||= new Float32Array(2));
+        gl.uniform2f(uniforms.u_firelight, firelight[0], firelight[1]);
         // Keep the existing time channel inside float32's precise range. The
         // one-million-ms period closes on both shader phase multipliers.
         const shaderTimeMs = shaderClockMs(feed);
@@ -4752,6 +5318,16 @@ export class GpuWorldRenderer {
         gl.uniform3f(uniforms.u_footprintRect, finite(field?.originX), finite(field?.originY), fieldTexture ? finite(field.cell, 4) : 0);
         gl.uniform2i(uniforms.u_footprintSize, fieldTexture ? field.width : 0, fieldTexture ? field.height : 0);
         gl.uniform1i(uniforms.u_marchSteps, this.footprintMarchSteps);
+        // SD-2 — the sun's shade field on unit 2, uploaded once per built
+        // field (off: the empty texture and u_shadeRect 0, so no fragment
+        // reads it).
+        const sunShade = resolveSunShade(feed, this._sunShade ||= {});
+        const shadeTexture = sunShade.texture ? this.uploadTypedTexture('field:shade', sunShade.texture) : null;
+        gl.activeTexture(gl.TEXTURE0 + SCENE_SAMPLER_UNITS.shadeField);
+        gl.bindTexture(gl.TEXTURE_2D, shadeTexture || this.emptyMaterialTexture);
+        gl.uniform1i(uniforms.u_shadeField, SCENE_SAMPLER_UNITS.shadeField);
+        gl.uniform4f(uniforms.u_shadeRect, sunShade.rect[0], sunShade.rect[1], sunShade.rect[2], shadeTexture ? sunShade.rect[3] : 0);
+        gl.uniform4fv(uniforms.u_shade, sunShade.steps);
         // 2.10 — the ground radiance field on unit 15 (off: the empty texture
         // and u_radianceGrid.w 0, so the branch never runs by day).
         this._radiance?.bind(uniforms, this.emptyMaterialTexture);
@@ -4880,6 +5456,7 @@ export class GpuWorldRenderer {
         }
         if (boundRole) gl.blendColor(0, 0, 0, 0);
         this._renderParticles(camera, roles);
+        this._renderRain(camera, roles);
         // The painter depth never leaves the pass.
         gl.invalidateFramebuffer(gl.FRAMEBUFFER, [gl.DEPTH_ATTACHMENT]);
         return bloomEnabled;
@@ -4925,6 +5502,54 @@ export class GpuWorldRenderer {
         gl.depthFunc(gl.ALWAYS);
         gl.bindVertexArray(this.vao);
         gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
+    }
+
+    // RN-1 — this frame's world rain (look `rn1`; EFFECT_BUDGET `world-rain`,
+    // off at MINIMAL, where the overlay keeps the whole field) and its
+    // open-ground splash mask, before the scene pass binds anything.
+    _prepareRain(feed, camera, qualityLevel) {
+        const mask = lookStrength('rn1') > 0 ? rainSplashMask(feed?.rainSplashTiles?.()) : null;
+        this._rainMaskTexture = mask ? this.uploadTypedTexture('rain:splash-mask', mask) : null;
+        const field = gpuRainField(feed?.atmosphere, camera, {
+            timeMs: feed?.timeMs,
+            viewport: feed?.rainViewport,
+            on: effectBudgetMode('world-rain', qualityLevel) === 'on',
+            splashMask: Boolean(this._rainMaskTexture),
+        }, this._rain);
+        this.rainInstances = field.instances;
+        this.rainShare = field.instances > 0 ? field.share : 0;
+    }
+
+    // RN-1 — the world rain in one instanced draw of two quads per ground
+    // cell (the streak and its splash), LEQUAL against the painter depth,
+    // never writing it. No attributes: the field is the cell grid hashed in
+    // the vertex stage. Its uniforms are issued straight from the pass (a
+    // live field changes every frame; the reuse gate reads the same floats).
+    _renderRain(camera, roles = null) {
+        const count = this.rainInstances;
+        if (!count || !this.rainProgram) return;
+        const gl = this.gl;
+        const bind = this._bindMirror.gl;
+        const uniforms = this.rainUniforms;
+        const u = this._rain.uniforms;
+        gl.useProgram(this.rainProgram);
+        this._setCameraUniforms(uniforms, camera, 1);
+        gl.uniform2f(uniforms.u_resolution, this.width, this.height);
+        gl.uniform4f(uniforms.u_rainView, u[0], u[1], u[2], u[3]);
+        gl.uniform4f(uniforms.u_rainFall, u[4], u[5], u[6], u[7]);
+        gl.uniform4f(uniforms.u_rainPhase, u[8], u[9], u[10], u[11]);
+        gl.uniform4f(uniforms.u_rainSplash, u[12], u[13], u[14], u[15]);
+        bind.activeTexture(gl.TEXTURE0 + PARTICLE_SAMPLER_UNITS.motifs);
+        bind.bindTexture(gl.TEXTURE_2D, this._rainMaskTexture || this.emptyMaterialTexture);
+        gl.uniform1i(uniforms.u_rainMask, PARTICLE_SAMPLER_UNITS.motifs);
+        gl.bindVertexArray(this.rainVao);
+        gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+        if (roles) this._blendRole(roles, false);
+        gl.depthFunc(gl.LEQUAL);
+        gl.depthMask(false);
+        gl.drawArraysInstanced(gl.TRIANGLES, 0, 12, count);
+        gl.depthFunc(gl.ALWAYS);
+        gl.bindVertexArray(this.vao);
     }
 
     // 10.3 — attachment 1 (emission) under staged roles: colour exactly as
@@ -5251,17 +5876,19 @@ export class GpuWorldRenderer {
     // the V9 typed path, bound only while the C-W2 ground history holds
     // puddles), the puddle level, and the graded sky palette's upper band
     // and horizon the water reflects.
-    _uploadPuddles(uniforms, feed) {
+    _uploadPuddles(uniforms, feed, qualityLevel) {
         const gl = this._uniformGl || this.gl;
-        const puddles = resolvePuddles(feed, this._puddles);
+        const puddles = resolvePuddles(feed, this._puddles, qualityLevel);
         const mask = puddles.mask;
+        // GW-1 / GW-2 — the ground weather field (RGBA8, raw bytes) takes
+        // this unit instead of the R8 mask while either look is on.
         const texture = mask
-            ? this.uploadTypedTexture('ground:puddle-mask', {
+            ? this.uploadTypedTexture(puddles.textureKey, {
                 width: mask.cols,
                 height: mask.rows,
-                format: 'r8',
+                format: puddles.format,
                 data: mask.data,
-                revision: mask.revision,
+                revision: puddles.revision,
             })
             : null;
         this._puddleActive = Boolean(texture);
@@ -5269,6 +5896,7 @@ export class GpuWorldRenderer {
         gl.bindTexture(gl.TEXTURE_2D, texture || this.emptyMaterialTexture);
         gl.uniform1i(uniforms.u_puddleMask, SCENE_SAMPLER_UNITS.puddleMask);
         gl.uniform1f(uniforms.u_puddles, texture ? puddles.puddles : 0);
+        gl.uniform4fv(uniforms.u_groundWeather, texture ? puddles.groundWeather : ZERO_GROUND_WEATHER);
         if (!texture) return;
         gl.uniform4fv(uniforms.u_puddleRect, puddles.rect);
         gl.uniform3fv(uniforms.u_puddleSky, puddles.sky);
@@ -5284,6 +5912,9 @@ export class GpuWorldRenderer {
         gl.uniform3fv(uniforms.u_cloudThresholds, courses.thresholds);
         gl.uniform4fv(uniforms.u_cloudLone, courses.lone);
         gl.uniform4fv(uniforms.u_haze, courses.haze);
+        // MS-1 — the low mist (prepareFrame's resolveMist; zero = today's veil).
+        gl.uniform4fv(uniforms.u_mist, this.mist);
+        gl.uniform2fv(uniforms.u_mistBurn, this.mistBurn);
     }
 
     // 3.3 / 3.4 — the composite's open sea: the scene pass's grade, water
@@ -5359,6 +5990,10 @@ export class GpuWorldRenderer {
         const frame = this._seaWeatherFrame;
         const gust = frame?.gust || null;
         gl.uniform1f(uniforms.u_seaSunlit, finite(frame?.sunlit, 0));
+        // SEA-1 — the sunlit water's lift in stops (resolveAtmosphereCourses).
+        gl.uniform1f(uniforms.u_seaLift, finite(this._atmosphereCourses?.lift, 0));
+        // SEA-2 / SEA-3 — the sky on lit water and the sea state (prepareFrame).
+        gl.uniform4fv(uniforms.u_seaState, this._seaState.uniform);
         gl.activeTexture(gl.TEXTURE0 + unit);
         gl.bindTexture(gl.TEXTURE_2D, gust || this.emptyMaterialTexture);
         if (gust) {
@@ -5412,6 +6047,13 @@ export class GpuWorldRenderer {
         const qualityLevel = Math.min(this.qualityLadder.getLevel(), POST_FX_LEVELS.MINIMAL);
         this._preparedQualityLevel = qualityLevel;
         this._preparedFeed = feed;
+        // MS-1 — the low mist; WorldFrameRenderer reads it to drop the fog-bank records.
+        this.mist = resolveMist(feed, qualityLevel, this.mist);
+        // MS-2 — the burn-off shares (land, sea) of the mist's top.
+        this.mistBurn = resolveMistBurn(feed, this.mist, this.mistBurn);
+        // SEA-2 / SEA-3 — the sky on lit water and the sea state, once a frame.
+        const seaNight = waterMoodFor({ lightGrade: resolveFrameGrade(feed), weather: feed.weather || feed.atmosphere?.weather }).night;
+        this._seaState = resolveSeaState(feed, qualityLevel, seaNight, this._seaState);
         return resolveOccluderChannel(feed);
     }
 
@@ -5624,6 +6266,7 @@ export class GpuWorldRenderer {
                     revision: motifs.revision,
                 });
             }
+            this._prepareRain(feed, camera, qualityLevel);
             this._endPass('upload', 0, this._vertexScratchUsed * 4);
             // 2.10 — the radiance solve renders into its own targets, so it
             // runs before the scene pass binds anything.
@@ -5682,6 +6325,9 @@ export class GpuWorldRenderer {
                 reuse = (this._frameReuse ||= new GpuFrameReuse()).begin();
                 reuse.bytes(this._recordStaging.f32, byteLength);
                 reuse.bytes(this._particleViews.u8, this._particleCount * GPU_PARTICLE_INSTANCE_BYTES);
+                // RN-1 — the rain field's uniforms and instance count.
+                reuse.bytes(this._rain.uniforms, this.rainInstances > 0 ? this._rain.uniforms.byteLength : 0);
+                reuse.scalar(this.rainInstances);
                 if (this._markStaging) reuse.bytes(this._markStaging.f32, this._markByteLength);
                 this._sceneCommands.track(reuse);
                 this._particleCommands.track(reuse);

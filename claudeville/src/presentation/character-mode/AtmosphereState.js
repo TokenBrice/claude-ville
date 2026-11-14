@@ -25,6 +25,7 @@
 
 import { applyGradeToRgb, evaluateGrade, lampCourseAt } from './GradeEvaluator.js';
 import { ART_RAMPS } from '../../config/artPalette.js';
+import { lookStrength } from './LookStrengths.js';
 import { WIND_MAX, baseWindX, windAt, windSpeedForType } from './Wind.js';
 import {
     SUNRISE_ALTITUDE_DEG,
@@ -416,14 +417,23 @@ function seededRandom(seed) {
     };
 }
 
-function weatherTypeFromRoll(roll, minute) {
+// WX-1 (look `wx1`, a switch: on at ≥ 0.5) — the night's extra fog is taken
+// from the overcast band's lower side, so the rain and storm bands keep their
+// daytime width at night. Off, the fog ceiling rises by the bias instead
+// (0.94 + 0.08 = 1.02), which swallowed rain and storm between 21:00 and
+// 07:00 (the pre-v0.63 model, byte for byte).
+export function nightRainOn() {
+    return lookStrength('wx1') >= 0.5;
+}
+
+export function weatherTypeFromRoll(roll, minute, nightRain = nightRainOn()) {
     const hour = minute / 60;
     const fogBias = hour < 7 || hour >= 21 ? 0.08 : 0;
     const stormBias = hour >= 13 && hour <= 20 ? 0.018 : 0.004;
     if (roll < 0.42 - fogBias * 0.4) return 'clear';
     if (roll < 0.72 - fogBias * 0.2) return 'partly-cloudy';
-    if (roll < 0.86) return 'overcast';
-    if (roll < 0.94 + fogBias) return 'fog';
+    if (roll < 0.86 - (nightRain ? fogBias : 0)) return 'overcast';
+    if (roll < 0.94 + (nightRain ? 0 : fogBias)) return 'fog';
     if (roll < 0.992 - stormBias) return 'rain';
     return 'storm';
 }
