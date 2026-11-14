@@ -2,6 +2,60 @@
 
 ---
 
+## v0.63.0 — *The Sundial's Shadow* · Nov 14, 2026
+
+The village's light and weather now land on the village itself. Shadows take the shape of what casts them and turn with the real sun. The sea carries the sky. Fog lies low and the town rises out of it. Night lights the people as well as the walls. Rain and frost can be read on the ground. Every look has one strength from 0 to 1 in `LookStrengths.js`, and 0 turns it off.
+
+- **Sundial shadows.**
+  - Buildings, trees, props and villagers throw shade in their own shape. It falls on the ground and on every wall, roof, prop and villager it reaches, and it follows the real sun through the day and the season: short at a July noon, long on a November afternoon.
+  - The shade comes from one world-locked field, rebuilt in idle slices each time the sun has moved a step, about every five minutes in daylight. Where it draws, the old stepped sun trails are retired.
+  - A low sun's shade stops at 2.25 times its caster's height.
+  - A villager who needs you is never dimmed by shade, and neither is the candle beside them.
+- **A sea that carries the sky.**
+  - Broad cloud shade drifts over the water, and sunlit water lifts one step.
+  - Lit swell and whitecaps take the sky's hue.
+  - The wind sets the sea state, from a glassy calm under fog to streaked whitecaps in a fresh wind.
+- **Low mist.**
+  - Fog is now a low mist. The ground and the water sink into it, and roofs and towers stand clear. On the GPU backends it replaces the fog banks and the screen-height veil.
+  - Lit lamps glow in it, each with a small dithered halo.
+  - After dawn it burns off land first as the sun climbs.
+- **A night that lights its people.**
+  - The Forge, the Tavern, the Task board and the Lighthouse take their own fire's light on a stepped palette ramp.
+  - A villager near a lamp takes a warm rim on the lamp side and a firmer lit side.
+  - A lamp throws the villager's own silhouette, where it used to throw a stepped trail.
+  - Villagers abroad after the lamps are lit carry a lantern. The twelve nearest the view centre also throw a pool of light.
+  - The NEEDS YOU bell and candle stay the brightest marks on screen. No new light outshines them.
+- **Weather on the ground.**
+  - Rain falls in the world. Its streaks and splashes pass behind roofs and in front of walls instead of lying over the picture.
+  - Wet ground darkens one step and takes a sheen of the sky. The ground under the eaves stays dry, and a street dries sun side first.
+  - Puddles and wet paving mirror the lamps beside them.
+  - Frost lies in solid patches.
+- **The weather itself.**
+  - **Rain at night.** Between 21:00 and 07:00 the night's extra fog swallowed every rain and storm. That fog now comes out of the overcast band, so rain and storms keep their daytime share at night.
+  - **Faster wetting.** The ground's wetness fills over 10 minutes of rain instead of 30, so the wet look and the puddles arrive sooner. Wet ground covers 11.6% of daytime hours instead of 10.0%, and 16.6% of night hours instead of 14.0%.
+  - **Faster thaw.** Snow melts in the winter sun at 0.10 of a full cover per hour instead of 0.06. Night rain brings more snowfall, and this keeps snow on about three winter hours in four (74%), where the old rate would have left it on nine in ten. v0.62.1 had 70%.
+- **Fixed: the waiting candle on the GPU backends.** After two different villagers had waited, the candle beside a waiting villager could stop drawing. Extra marks such as a candle, a tankard or a seat stone keep their slot in the villager atlas, and the atlas grid was sized for the marks present, so a late slot fell outside it. The grid now holds every assigned slot. v0.62.1 has the fault too.
+- **Backends and quality levels.**
+  - WebGPU and WebGL2 draw every look alike. The parity smoke gains four scenes (a windy sea, rain at noon, a wet night, a foggy night) and passes all 54 cases.
+  - Canvas 2D, which the mobile profile uses, is a declared lower tier. It draws the ground shade, the frost patches and whole-step sea light. It has no firelight on villagers, no mist or halos and no in-world rain.
+  - At the MINIMAL quality level the old shadow stamps and the old fog return.
+  - The terrain cache key moves to `cv0.62-terrain-8`, so each browser rebakes the ground once.
+- **What it costs.** Measured on an Apple M5 Pro against v0.62.1, in alternating runs.
+  - **Main thread.** At 1920×1200 a frame takes 0.2 to 0.4 ms more on both GPU backends, out of 5 to 6 ms.
+  - **Memory.** The JS heap is unchanged. The shade field and the occluder textures it reads hold 23 MB more in typed arrays and 31 to 38 MB more in GPU textures. Twelve forced shade rebuilds grew nothing, and none cost a frame over 16.7 ms.
+  - **GPU at 5120×1440.** The heaviest scene, a rainy night at zoom 2, takes 15.0 ms on WebGPU instead of 13.3, and 17.5 ms on WebGL2 instead of 12.8. On WebGL2 that misses 60 fps while the operator interacts. The 30 fps idle pace holds on both.
+- **Known limits.**
+  - The firelight ramp covers four landmarks. The Harbor, the Mine, the Portal and the Archive keep their old night.
+  - On a clear frosty dawn at 5120×1440 the mist flattens the sea into one pale plane.
+  - The new `EFFECT_BUDGET` rows are estimates. None has a measured receipt yet.
+- **Tooling.**
+  - `smoke:webgpu-parity` and `world:golden-hours` take `--look=id:value,...` to run with a look overridden.
+  - Fifteen new unit test files pin the looks, their defaults and their GLSL and WGSL twins.
+
+Validation: `validate:full`, `verify:render`, `world:validate-terrain` and `world:validate-buildings` pass. On an Apple M5 Pro, `smoke:webgpu-parity` passes all 54 cases with its device-loss and context-loss checks, and `smoke:v3-truth` passes all 225 checks. `world:golden-hours` fails the same nine entries v0.62.1 fails on this machine and no new one, so its curve is not recalibrated. Every look was reviewed adversarially, and the whole set once more with everything on.
+
+---
+
 ## v0.62.1 — *The Surveyor's Mark* · Nov 09, 2026
 
 The bridges and the farm stay on the map. On a busy Chrome, rebaking the ground partway through a session could drop every sprite drawn into it: both bridges, the farm, the building foundations and the other ground props. The ground and water stayed, and the bridges' front rails, drawn separately, hung over the river alone. That broken ground was then saved and came back on reload.
