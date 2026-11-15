@@ -2,6 +2,31 @@
 
 ---
 
+## v0.63.1 — *The Hooded Oracle* · Nov 15, 2026
+
+Claude Mythos walks the village as itself. Until now the registry folded every Mythos model into Fable on purpose, so a Mythos session wore Fable's body, carried Fable's name, and was priced as Fable 5. Neither 5.2 model had rates of its own.
+
+- **Mythos, not Fable.**
+  - `claude-mythos-5-2`, `claude-mythos-5-1` and `claude-mythos-5` resolve to a Claude Mythos identity: the "Mythos" label, the mythic tier, an ember colour (`#ffb8a0`) and the mythic star on the dashboard badge.
+  - The Fable rows no longer match Mythos strings.
+  - A later Mythos 5.x string falls back to the Mythos 5 row and keeps the Mythos body.
+- **The hooded oracle.**
+  - `agent.claude.mythos` is a hooded oracle in obsidian and ember robes with bronze rune trim. It holds a carved stone rune tablet and a bronze staff crowned by an ouroboros ring.
+  - It walks and idles in all eight directions, from a PixelLab pro-mode rig at 76 px.
+  - Its action strip carries every group Fable has: read, wait, sit, strike, tinker, gaze, celebrate, drink and think. When it reads, it raises the rune tablet rather than a book.
+  - Every authored facing passes the feet audit. Two think facings first let go of the staff; they were generated again with the grip held.
+  - The tablet is plain stone, so no glow is authored. `assetVersion` moves to `2026-11-15-mythos-oracle`.
+  - The `model-lineup` sprite review scenario shows Mythos.
+- **5.2 pricing.**
+  - Claude Fable 5.2 and Claude Mythos 5.2 cost $8 in and $40 out per MTok, with $0.20 cache reads, $10 cache writes and a 1M-token context.
+  - Both strings used to fall through to the Fable 5 row ($10 / $50, $1 cache reads), so their sessions showed cost about 25% too high and their cache reads five times too high.
+  - Mythos 5.1 keeps Fable 5.1's rates and Mythos 5 keeps Fable 5's.
+  - The source is the Claude API model table cached on Nov 3, 2026. The registry revision is 2026-11-15.
+
+Validation: `gate:release`, `verify:render`, `smoke:webgpu-parity` and `smoke:v3-truth` pass, and so do the sprite audit, the manifest validator and the feet audit for the new body. A live Mythos session shows its own name and body.
+
+---
+
 ## v0.63.0 — *The Sundial's Shadow* · Nov 14, 2026
 
 The village's light and weather now land on the village itself. Shadows take the shape of what casts them and turn with the real sun. The sea carries the sky. Fog lies low and the town rises out of it. Night lights the people as well as the walls. Rain and frost can be read on the ground. Every look has one strength from 0 to 1 in `LookStrengths.js`, and 0 turns it off.
