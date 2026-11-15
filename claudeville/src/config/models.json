@@ -1,15 +1,43 @@
 {
-    "revision": "2026-09-30",
+    "revision": "2026-11-15",
     "models": [
         {
-            "id": "claude.fable-5-1", "provider": "claude", "match": ["fable-5-1", "mythos-5-1"], "sample": "claude-fable-5-1",
+            "id": "claude.mythos-5-2", "provider": "claude", "match": ["mythos-5-2"], "sample": "claude-mythos-5-2",
+            "label": "Claude Mythos", "shortLabel": "Mythos", "modelClass": "mythos", "modelTier": "mythic", "mood": "deliberate",
+            "spriteId": "agent.claude.mythos", "paletteKey": "claude", "color": "#ffb8a0",
+            "trim": ["#ffb8a0", "#ffe7a8", "#9fd8ff"], "accent": ["#ffe3d8", "#fff4cf", "#cdeeff"],
+            "contextWindow": 1000000, "pricing": { "input": 8, "output": 40, "cacheRead": 0.2, "cacheCreate": 10 }
+        },
+        {
+            "id": "claude.fable-5-2", "provider": "claude", "match": ["fable-5-2"], "sample": "claude-fable-5-2",
+            "label": "Claude Fable", "shortLabel": "Fable", "modelClass": "fable", "modelTier": "mythic", "mood": "deliberate",
+            "spriteId": "agent.claude.fable", "paletteKey": "claude", "color": "#ffd6f0",
+            "trim": ["#ffd6f0", "#ffe7a8", "#c8a3ff"], "accent": ["#fff0fa", "#fff4cf", "#d8bcff"],
+            "contextWindow": 1000000, "pricing": { "input": 8, "output": 40, "cacheRead": 0.2, "cacheCreate": 10 }
+        },
+        {
+            "id": "claude.mythos-5-1", "provider": "claude", "match": ["mythos-5-1"], "sample": "claude-mythos-5-1",
+            "label": "Claude Mythos", "shortLabel": "Mythos", "modelClass": "mythos", "modelTier": "mythic", "mood": "deliberate",
+            "spriteId": "agent.claude.mythos", "paletteKey": "claude", "color": "#ffb8a0",
+            "trim": ["#ffb8a0", "#ffe7a8", "#9fd8ff"], "accent": ["#ffe3d8", "#fff4cf", "#cdeeff"],
+            "contextWindow": 1000000, "pricing": { "input": 10, "output": 50, "cacheRead": 0.25, "cacheCreate": 12.5 }
+        },
+        {
+            "id": "claude.mythos-5", "provider": "claude", "match": ["mythos-5"], "sample": "claude-mythos-5",
+            "label": "Claude Mythos", "shortLabel": "Mythos", "modelClass": "mythos", "modelTier": "mythic", "mood": "deliberate",
+            "spriteId": "agent.claude.mythos", "paletteKey": "claude", "color": "#ffb8a0",
+            "trim": ["#ffb8a0", "#ffe7a8", "#9fd8ff"], "accent": ["#ffe3d8", "#fff4cf", "#cdeeff"],
+            "contextWindow": 1000000, "pricing": { "input": 10, "output": 50, "cacheRead": 1, "cacheCreate": 12.5 }
+        },
+        {
+            "id": "claude.fable-5-1", "provider": "claude", "match": ["fable-5-1"], "sample": "claude-fable-5-1",
             "label": "Claude Fable", "shortLabel": "Fable", "modelClass": "fable", "modelTier": "mythic", "mood": "deliberate",
             "spriteId": "agent.claude.fable", "paletteKey": "claude", "color": "#ffd6f0",
             "trim": ["#ffd6f0", "#ffe7a8", "#c8a3ff"], "accent": ["#fff0fa", "#fff4cf", "#d8bcff"],
             "contextWindow": 1000000, "pricing": { "input": 10, "output": 50, "cacheRead": 0.25, "cacheCreate": 12.5 }
         },
         {
-            "id": "claude.fable-5", "provider": "claude", "match": ["fable-5", "mythos-5"], "sample": "claude-fable-5",
+            "id": "claude.fable-5", "provider": "claude", "match": ["fable-5"], "sample": "claude-fable-5",
             "label": "Claude Fable", "shortLabel": "Fable", "modelClass": "fable", "modelTier": "mythic", "mood": "deliberate",
             "spriteId": "agent.claude.fable", "paletteKey": "claude", "color": "#ffd6f0",
             "trim": ["#ffd6f0", "#ffe7a8", "#c8a3ff"], "accent": ["#fff0fa", "#fff4cf", "#d8bcff"],

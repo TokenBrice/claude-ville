@@ -1,7 +1,139 @@
 // GENERATED FROM models.json + scripts/models/resolver.template.js — DO NOT EDIT
 
-const MODEL_REVISION = "2026-09-30";
+const MODEL_REVISION = "2026-11-15";
 const MODEL_REGISTRY = [
+    {
+        "accent": [
+            "#ffe3d8",
+            "#fff4cf",
+            "#cdeeff"
+        ],
+        "color": "#ffb8a0",
+        "contextWindow": 1000000,
+        "id": "claude.mythos-5-2",
+        "label": "Claude Mythos",
+        "match": [
+            "mythos-5-2"
+        ],
+        "modelClass": "mythos",
+        "modelTier": "mythic",
+        "mood": "deliberate",
+        "paletteKey": "claude",
+        "pricing": {
+            "cacheCreate": 10,
+            "cacheRead": 0.2,
+            "input": 8,
+            "output": 40
+        },
+        "provider": "claude",
+        "sample": "claude-mythos-5-2",
+        "shortLabel": "Mythos",
+        "spriteId": "agent.claude.mythos",
+        "trim": [
+            "#ffb8a0",
+            "#ffe7a8",
+            "#9fd8ff"
+        ]
+    },
+    {
+        "accent": [
+            "#fff0fa",
+            "#fff4cf",
+            "#d8bcff"
+        ],
+        "color": "#ffd6f0",
+        "contextWindow": 1000000,
+        "id": "claude.fable-5-2",
+        "label": "Claude Fable",
+        "match": [
+            "fable-5-2"
+        ],
+        "modelClass": "fable",
+        "modelTier": "mythic",
+        "mood": "deliberate",
+        "paletteKey": "claude",
+        "pricing": {
+            "cacheCreate": 10,
+            "cacheRead": 0.2,
+            "input": 8,
+            "output": 40
+        },
+        "provider": "claude",
+        "sample": "claude-fable-5-2",
+        "shortLabel": "Fable",
+        "spriteId": "agent.claude.fable",
+        "trim": [
+            "#ffd6f0",
+            "#ffe7a8",
+            "#c8a3ff"
+        ]
+    },
+    {
+        "accent": [
+            "#ffe3d8",
+            "#fff4cf",
+            "#cdeeff"
+        ],
+        "color": "#ffb8a0",
+        "contextWindow": 1000000,
+        "id": "claude.mythos-5-1",
+        "label": "Claude Mythos",
+        "match": [
+            "mythos-5-1"
+        ],
+        "modelClass": "mythos",
+        "modelTier": "mythic",
+        "mood": "deliberate",
+        "paletteKey": "claude",
+        "pricing": {
+            "cacheCreate": 12.5,
+            "cacheRead": 0.25,
+            "input": 10,
+            "output": 50
+        },
+        "provider": "claude",
+        "sample": "claude-mythos-5-1",
+        "shortLabel": "Mythos",
+        "spriteId": "agent.claude.mythos",
+        "trim": [
+            "#ffb8a0",
+            "#ffe7a8",
+            "#9fd8ff"
+        ]
+    },
+    {
+        "accent": [
+            "#ffe3d8",
+            "#fff4cf",
+            "#cdeeff"
+        ],
+        "color": "#ffb8a0",
+        "contextWindow": 1000000,
+        "id": "claude.mythos-5",
+        "label": "Claude Mythos",
+        "match": [
+            "mythos-5"
+        ],
+        "modelClass": "mythos",
+        "modelTier": "mythic",
+        "mood": "deliberate",
+        "paletteKey": "claude",
+        "pricing": {
+            "cacheCreate": 12.5,
+            "cacheRead": 1,
+            "input": 10,
+            "output": 50
+        },
+        "provider": "claude",
+        "sample": "claude-mythos-5",
+        "shortLabel": "Mythos",
+        "spriteId": "agent.claude.mythos",
+        "trim": [
+            "#ffb8a0",
+            "#ffe7a8",
+            "#9fd8ff"
+        ]
+    },
     {
         "accent": [
             "#fff0fa",
@@ -13,8 +145,7 @@ const MODEL_REGISTRY = [
         "id": "claude.fable-5-1",
         "label": "Claude Fable",
         "match": [
-            "fable-5-1",
-            "mythos-5-1"
+            "fable-5-1"
         ],
         "modelClass": "fable",
         "modelTier": "mythic",
@@ -47,8 +178,7 @@ const MODEL_REGISTRY = [
         "id": "claude.fable-5",
         "label": "Claude Fable",
         "match": [
-            "fable-5",
-            "mythos-5"
+            "fable-5"
         ],
         "modelClass": "fable",
         "modelTier": "mythic",

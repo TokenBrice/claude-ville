@@ -64,12 +64,16 @@ test('registry model identities stay aligned across browser and server presentat
     }
 });
 
-test('legacy Mythos aliases use the canonical Fable identity', () => {
-    const identity = getModelVisualIdentity('claude-mythos-5-1', 'high', 'claude');
-    assert.equal(identity.label, 'Claude Fable');
-    assert.equal(identity.shortLabel, 'Fable');
-    assert.equal(identity.spriteId, 'agent.claude.fable');
-    assert.equal(formatServerModelLabel('claude-mythos-5-1', 'high', 'claude'), 'Fable high');
+test('Mythos keeps its own identity instead of folding into Fable', () => {
+    for (const model of ['claude-mythos-5-2', 'claude-mythos-5-1']) {
+        const identity = getModelVisualIdentity(model, 'high', 'claude');
+        assert.equal(identity.label, 'Claude Mythos');
+        assert.equal(identity.shortLabel, 'Mythos');
+        assert.equal(identity.modelClass, 'mythos');
+        assert.equal(identity.spriteId, 'agent.claude.mythos');
+        assert.equal(formatServerModelLabel(model, 'high', 'claude'), 'Mythos high');
+    }
+    assert.equal(getModelVisualIdentity('claude-fable-5-2', 'high', 'claude').shortLabel, 'Fable');
 });
 
 test('ClaudeDataSource preserves a failed session request as a rejection', async () => {

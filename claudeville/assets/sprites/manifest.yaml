@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-11-04-bridgewright"
+  assetVersion: "2026-11-15-mythos-oracle"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -108,6 +108,53 @@ characters:
       strength: 0
       sources:
         - { id: emissive.agent.claude.fable.constellations, kind: rune, geometry: sidecar, strength: 0.1 }
+    occluder: { mode: alpha-silhouette, strength: 1 }
+
+  # Mythos is its own model (verified organizations only), not a Fable alias:
+  # a hooded oracle in obsidian and ember so the silhouette never reads as
+  # Fable's crowned storyteller.
+  - id: agent.claude.mythos
+    tool: create_character
+    prompt: "Claude Mythos primordial oracle of origin myths, ancient hooded seer who keeps the oldest stories, layered obsidian-black and ember-coral ceremonial robe with engraved bronze rune trim, deep hood with a thin bronze circlet across the brow, calm ageless face in the hood shadow, glowing carved stone rune tablet clasped at the chest, tall bronze staff topped with a coiled ouroboros serpent ring held upright close to the body, faint ember motes near the hands, compact solemn old-school RPG sage, identical outfit and colors from every viewing angle, no wings, no horns, no tail, no revealing outfit"
+    n_directions: 8
+    size: 92
+    generationSize: 76
+    generationMode: pro
+    animations: [walk, breathing-idle]
+    animationGroups: { walk: { rows: [0, 5] }, breathingIdle: { rows: [6, 9] } }
+    actionStrip:
+      path: characters/agent.claude.mythos/actions.png
+      cell: 92
+      groups:
+        read: { rows: [0, 3], hold: 3, directions: [s, se, e, ne, nw, w, sw] }
+        wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
+        sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 64, south-west: 65 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "e9e58719-c7c9-483b-84dd-988c643956ef", sw: "b26ed396-182b-49ba-8298-fea501a35e48" } }, directions: [se, sw] }
+        strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [61, 47], w: [38, 48], se: [50, 52], sw: [41, 52] } }
+        tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [59, 48], w: [40, 49], se: [49, 53], sw: [42, 53] } }
+        gaze: { rows: [21, 24], hold: 22, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [50, 30], w: [47, 32], se: [42, 34], sw: [50, 32] } }
+        celebrate: { rows: [25, 27], hold: 27, directions: [se, e, w, sw] }
+        drink: { rows: [28, 32], hold: 28, seatLine: { south-east: 64, south-west: 65 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose + tankard, scripts/sprites/generate-pose-strip.mjs --groups=drink)", jobs: { se: "f22d70a6-b8e0-42ec-9c5e-4e9cf7096351", sw: "798da86e-6de1-4e15-b938-e92b260e94b1" } }, directions: [se, sw] }
+        think: { rows: [33, 35], hold: 35, directions: [se, e, w, sw] }
+      grip: { hand: both, sheathe: true }
+      provenance:
+        characterId: "315e38ff-ffc8-49a2-81c2-1062e34351eb"
+        generationSize: 128
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "8dc48034-cc01-409c-8e08-7499dceb7076", w: "65904eff-3b6d-4669-abcb-0c51a7e9d4ae", se: "e660d5d7-6d85-4779-a798-be1c69427024", sw: "6a2a7f6a-5d47-4ee5-bd40-e48310c3041e" }, gaze: { e: "c9f7c53d-5dd1-4b2d-acd9-d460ec743ee7", w: "7c73170f-e827-4072-bbb7-21d48f09c82b", se: "818df9f2-7368-4494-9c3d-aa0192b84a9b", sw: "35a563a4-6c8e-4e27-b6d9-c1849f1c7713" }, drink: { se: "f22d70a6-b8e0-42ec-9c5e-4e9cf7096351", sw: "798da86e-6de1-4e15-b938-e92b260e94b1" } } }
+        animationStrips: { groups: { read: { s: "3bf107c6-92c2-499c-8575-0f68dba182b1", se: "aa5ebade-2e50-4cb8-a3d6-a617b184cde2", e: "81f378a4-ef83-40b2-82c4-445664fd3851", ne: "1719c56c-9f71-41fd-aa8d-5263a973aaf1", nw: "bff633d2-91b9-4dbe-91bb-ac87657b0988", w: "e5495c02-a8aa-4856-8740-d940a2c98403", sw: "89ccb05a-c375-4263-884b-6473691bdf70" }, think: { se: "2773e90d-c28b-48fe-a334-0c2741d652c7", e: "485d3324-a890-4972-822a-3052196e3903", w: "dba7a1ec-3fbd-4ae5-87c0-ae1d4d27f656", sw: "cb892fa3-2b48-448e-ba2e-9017d2234c9b" }, celebrate: { se: "4f795552-93d5-4bf2-8d8a-3f06b7aae759", e: "0e8aff22-5442-4bcc-969a-3941bf125b7e", w: "f263c693-cc0f-41a8-bb7d-19d726d41d4b", sw: "eb44e92d-b07e-4b3b-9150-6fa6b45c2232" } } }
+    portraitCrop: { x: 31, y: 17, w: 34, h: 30 }
+    provenance: { characterId: 315e38ff-ffc8-49a2-81c2-1062e34351eb, generationSize: 76, generationMode: pro }
+    palette_layer: claude
+    # Sampled from sheet.png: obsidian robe, ember inner robe, bronze trim.
+    paletteSource: { robe: ['#1e1d28', '#2a2a32'], pants: '#be5743', trim: '#c18f74' }
+    headCovered: true
+    anchor: [46, 80]
+    materialClass: fabric
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
+    elevation: { base: 0, top: 80, unit: sprite-px }
+    # The rune tablet is pale stone, not a light source: no glow is authored.
+    emissive: { strength: 0, sources: [] }
     occluder: { mode: alpha-silhouette, strength: 1 }
 
   - id: agent.claude.opus

@@ -26,6 +26,8 @@ const check = process.argv.includes('--check');
 // in emissive alpha and deliberately remains below 0.20 for daylight restraint.
 const PROFILES = Object.freeze({
     'agent.claude.fable': character('fabric', 0.10, ['#f9c855', '#f9cc57', '#f6c658']),
+    // The rune tablet is pale stone: no reviewed glow source on this body.
+    'agent.claude.mythos': character('fabric'),
     'agent.claude.opus': character('fabric'),
     'agent.claude.sonnet': {
         ...character('fabric', 0.12, ['#d59cfb', '#c15df4', '#dba4f2']),

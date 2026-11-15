@@ -1395,7 +1395,7 @@ const lineup = (id, name, provider, model, tileX, extra = {}) => agentSpec({
 export const MODEL_LINEUP_SCENARIO = {
     id: 'model-lineup',
     label: 'Model lineup',
-    description: 'Sprite review: both GLM bodies, GLM Flash, Sonnet, Haiku, Fable and the three DeepSeek Flash rungs beside Opus and Luna.',
+    description: 'Sprite review: both GLM bodies, GLM Flash, Sonnet, Haiku, Fable, Mythos and the three DeepSeek Flash rungs beside Opus and Luna.',
     timeBase: SCENARIO_TIME_BASE,
     agents: [
         lineup('opus-hero', 'Opus', 'claude', 'claude-opus-5', 14),
@@ -1410,11 +1410,12 @@ export const MODEL_LINEUP_SCENARIO = {
         lineup('ds-flash-high', 'DS high', 'omp', 'deepseek-flash', 22, { underlyingProvider: 'deepseek', effort: 'high' }),
         lineup('ds-flash-xhigh', 'DS xhigh', 'omp', 'deepseek-flash', 23, { underlyingProvider: 'deepseek', effort: 'xhigh' }),
         lineup('luna', 'Luna', 'codex', 'gpt-6-luna', 24),
+        lineup('mythos', 'Mythos', 'claude', 'claude-mythos-5-2', 25),
     ],
     timeline: [],
     metadata: {
         qaTags: ['sprites', 'lineup', 'scale'],
-        camera: { centerTile: { tileX: 18, tileY: 22 }, zoom: 2.6 },
+        camera: { centerTile: { tileX: 19, tileY: 22 }, zoom: 2.6 },
     },
 };
 
