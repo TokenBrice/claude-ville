@@ -2,6 +2,23 @@
 
 ---
 
+## v0.63.2 — *The Twin Heralds* · Nov 17, 2026
+
+OpenAI released GPT-6.2 Astra and GPT-6.2 Sol on Nov 17. Neither ID matched a registry row, so every 6.2 agent walked in as the generic Codex battle-engineer, labelled `Codex` and priced at the default OpenAI rate. Both now arrive under their own names and in their own armor.
+
+- **Astra and Sol, 6.2.**
+  - `gpt-6.2-astra` wears the silver and violet star-knight armor with the halberd, labelled `6.2 Astra`. It keeps Astra's effort rings and crests from `low` to `ultra`.
+  - `gpt-6.2-sol` wears the sun-warlord armor with the dawnblade, labelled `6.2 Sol`, with the celestial effort ladder.
+  - Bare, `openai/`-qualified and `openai-codex/`-qualified IDs all resolve. Both reuse existing bodies, so no PNG changed.
+- **Honest prices and context.**
+  - GPT-6.2 Astra costs $8 in and $40 out per MTok, with $0.40 cache reads and $10 cache writes. GPT-6.2 Sol costs $2 in and $10 out, with $0.10 cache reads and $2.50 cache writes. Both carry a 1,050,000-token context.
+  - Both used to fall through to the default OpenAI row ($1.25 / $10, a 258,400-token context), so Astra sessions showed cost far too low and both showed the wrong context window.
+  - The source is OpenAI's model pages, checked Nov 17, 2026. The registry revision is 2026-11-17. The static estimate does not apply the >272K-input long-context multipliers.
+
+Validation: `gate:release`, `models:check` and `test:unit` pass. `models:resolve` maps the bare, `openai/` and `openai-codex/` forms of both IDs to their rows, with matching server and browser pricing, context, label and sprite.
+
+---
+
 ## v0.63.1 — *The Hooded Oracle* · Nov 15, 2026
 
 Claude Mythos walks the village as itself. Until now the registry folded every Mythos model into Fable on purpose, so a Mythos session wore Fable's body, carried Fable's name, and was priced as Fable 5. Neither 5.2 model had rates of its own.
