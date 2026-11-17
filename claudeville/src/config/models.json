@@ -1,5 +1,5 @@
 {
-    "revision": "2026-11-15",
+    "revision": "2026-11-17",
     "models": [
         {
             "id": "claude.mythos-5-2", "provider": "claude", "match": ["mythos-5-2"], "sample": "claude-mythos-5-2",
@@ -124,6 +124,21 @@
             "spriteId": "agent.claude.sonnet", "paletteKey": "claude", "color": "#f2d36b",
             "trim": ["#f2d36b", "#b7ccff", "#e9b85f"], "accent": ["#ffe39a", "#dfe8ff", "#f7bf6d"],
             "contextWindow": 1000000, "pricing": { "input": 3, "output": 15, "cacheRead": 0.3, "cacheCreate": 3.75 }
+        },
+        {
+            "id": "codex.gpt-6-2-astra", "provider": "codex", "match": ["gpt-6-2-astra"], "sample": "gpt-6.2-astra",
+            "label": "GPT-6.2 Astra", "shortLabel": "6.2 Astra", "modelClass": "gpt6astra", "modelTier": "mythic", "mood": "deliberate",
+            "spriteId": "agent.codex.gpt6astra", "paletteKey": "codex", "color": "#d8bcff",
+            "trim": ["#d8bcff", "#e6f1ff", "#8be9f5"], "accent": ["#f3eaff", "#c6efff", "#bff7ee"],
+            "contextWindow": 1050000, "pricing": { "input": 8, "output": 40, "cacheRead": 0.4, "cacheCreate": 10 }
+        },
+        {
+            "id": "codex.gpt-6-2-sol", "provider": "codex", "match": ["gpt-6-2-sol"], "sample": "gpt-6.2-sol",
+            "label": "GPT-6.2 Sol", "shortLabel": "6.2 Sol", "modelClass": "gpt56sol", "modelTier": "mythic", "mood": "deliberate",
+            "spriteId": "agent.codex.gpt56sol", "paletteKey": "codex", "color": "#ffd76a",
+            "spriteVariants": ["agent.codex.gpt56sol", "agent.codex.gpt56sol.b"],
+            "trim": ["#ffd76a", "#ffedb3", "#7be3d7"], "accent": ["#fff6d8", "#ffd76a", "#bff7ee"],
+            "contextWindow": 1050000, "pricing": { "input": 2, "output": 10, "cacheRead": 0.1, "cacheCreate": 2.5 }
         },
         {
             "id": "codex.gpt-6-astra", "provider": "codex", "match": ["gpt-6-astra"], "sample": "gpt-6-astra",

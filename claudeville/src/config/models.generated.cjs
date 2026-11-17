@@ -1,6 +1,6 @@
 // GENERATED FROM models.json + scripts/models/resolver.template.js — DO NOT EDIT
 
-const MODEL_REVISION = "2026-11-15";
+const MODEL_REVISION = "2026-11-17";
 const MODEL_REGISTRY = [
     {
         "accent": [
@@ -581,6 +581,76 @@ const MODEL_REGISTRY = [
             "#f2d36b",
             "#b7ccff",
             "#e9b85f"
+        ]
+    },
+    {
+        "accent": [
+            "#f3eaff",
+            "#c6efff",
+            "#bff7ee"
+        ],
+        "color": "#d8bcff",
+        "contextWindow": 1050000,
+        "id": "codex.gpt-6-2-astra",
+        "label": "GPT-6.2 Astra",
+        "match": [
+            "gpt-6-2-astra"
+        ],
+        "modelClass": "gpt6astra",
+        "modelTier": "mythic",
+        "mood": "deliberate",
+        "paletteKey": "codex",
+        "pricing": {
+            "cacheCreate": 10,
+            "cacheRead": 0.4,
+            "input": 8,
+            "output": 40
+        },
+        "provider": "codex",
+        "sample": "gpt-6.2-astra",
+        "shortLabel": "6.2 Astra",
+        "spriteId": "agent.codex.gpt6astra",
+        "trim": [
+            "#d8bcff",
+            "#e6f1ff",
+            "#8be9f5"
+        ]
+    },
+    {
+        "accent": [
+            "#fff6d8",
+            "#ffd76a",
+            "#bff7ee"
+        ],
+        "color": "#ffd76a",
+        "contextWindow": 1050000,
+        "id": "codex.gpt-6-2-sol",
+        "label": "GPT-6.2 Sol",
+        "match": [
+            "gpt-6-2-sol"
+        ],
+        "modelClass": "gpt56sol",
+        "modelTier": "mythic",
+        "mood": "deliberate",
+        "paletteKey": "codex",
+        "pricing": {
+            "cacheCreate": 2.5,
+            "cacheRead": 0.1,
+            "input": 2,
+            "output": 10
+        },
+        "provider": "codex",
+        "sample": "gpt-6.2-sol",
+        "shortLabel": "6.2 Sol",
+        "spriteId": "agent.codex.gpt56sol",
+        "spriteVariants": [
+            "agent.codex.gpt56sol",
+            "agent.codex.gpt56sol.b"
+        ],
+        "trim": [
+            "#ffd76a",
+            "#ffedb3",
+            "#7be3d7"
         ]
     },
     {
