@@ -6,19 +6,21 @@
 //
 //   - sd3 at 1 lifts: at least LIFT_SHARE of the frame brightens, and no
 //     pixel darkens;
-//   - the cap: no pixel under CANDLE (the waiting candle's 192) ends above it
-//     (one 8-bit step of slack); a pixel already above it is reported
-//     (`brightRise`, its largest rise), not failed;
+//   - the cap: no pixel under CANDLE (the waiting candle's 192) ends above
+//     it, and no pixel already above it rises (SLACK luma for the 8-bit
+//     rounding of the Canvas luminosity round trip);
+//   - every frame is captured by this run: a missing frame, or one older
+//     than the run, fails (no PNG is ever reused);
 //   - with --baseline-root=<tree> (a checkout or `git archive` of the base,
 //     e.g. council/integration, with node_modules linked), sd3 at 0 renders
 //     that tree's frame byte for byte (--max-diff pixels allowed, default 0).
 //
 // Usage: node scripts/smoke/sun-lift.mjs [--renderers=webgpu,webgl,canvas]
 //          [--baseline-root=<dir>] [--max-diff=<n>] [--out=<dir>]
-// Exit: 0 pass, 1 a check failed, 2 a backend produced no frame.
+// Exit: 0 pass, 1 a check failed or a backend produced no fresh frame.
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,6 +30,12 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const SCENE = 'clear-1200';
 const CANDLE = 192;
 const LIFT_SHARE = 0.01;
+const SLACK = 2;
+const STARTED = Date.now();
+// A frame this run did not write is no evidence.
+function fresh(file) {
+  return existsSync(file) && statSync(file).mtimeMs >= STARTED;
+}
 
 const args = Object.fromEntries(process.argv.slice(2).map((arg) => {
   const [flag, value = ''] = arg.split(/=(.*)/s);
@@ -71,11 +79,11 @@ function zeroDiff(renderer, name) {
     // Both sides once more (a frame can also catch a bake mid-flight on the base).
     const again = path.join(out, `zero-${renderer}`);
     frames(ROOT, again, 'sd3:0', [renderer]);
-    if (existsSync(path.join(again, name))) diff = Math.min(diff, count(path.join(again, name)));
+    if (fresh(path.join(again, name))) diff = Math.min(diff, count(path.join(again, name)));
     const baseAgain = path.join(out, `base-${renderer}`);
     frames(path.resolve(args['baseline-root']), baseAgain, null, [renderer]);
-    if (existsSync(path.join(baseAgain, name))) {
-      const zeroNow = path.join(existsSync(path.join(again, name)) ? again : path.join(out, 'zero'), name);
+    if (fresh(path.join(baseAgain, name))) {
+      const zeroNow = path.join(fresh(path.join(again, name)) ? again : path.join(out, 'zero'), name);
       const rebased = read(path.join(baseAgain, name));
       const zero = read(zeroNow);
       let d = 0;
@@ -93,8 +101,8 @@ let missing = false;
 for (const renderer of renderers) {
   const name = `${renderer}-${SCENE}.png`;
   const [zeroFile, oneFile, baseFile] = ['zero', 'one', 'base'].map(dir => path.join(out, dir, name));
-  if (!existsSync(zeroFile) || !existsSync(oneFile)) {
-    console.log(`${renderer}: no frame (backend unavailable?)`);
+  if (!fresh(zeroFile) || !fresh(oneFile)) {
+    failures.push(`${renderer}: no fresh frame from this run (backend unavailable, or a capture failed)`);
     missing = true;
     continue;
   }
@@ -110,7 +118,7 @@ for (const renderer of renderers) {
   if (darkened(one) > 0) {
     const again = path.join(out, `one-${renderer}`);
     frames(ROOT, again, 'sd3:1', [renderer]);
-    if (existsSync(path.join(again, name))) {
+    if (fresh(path.join(again, name))) {
       const retry = read(path.join(again, name));
       if (darkened(retry) < darkened(one)) one = retry;
     }
@@ -127,7 +135,7 @@ for (const renderer of renderers) {
       lifted++;
       brightest = Math.max(brightest, b);
       // One 8-bit step of slack: the Canvas luminosity round trip rounds.
-      if (a < CANDLE && b > CANDLE + 1.5) overCap++;
+      if (a < CANDLE ? b > CANDLE + SLACK : b > a + SLACK) overCap++;
       if (a >= CANDLE) brightRise = Math.max(brightRise, b - a);
     } else if (b < a - 2) {
       darker++;
@@ -137,10 +145,10 @@ for (const renderer of renderers) {
   const row = { renderer, lifted: `${(100 * lifted / pixels).toFixed(2)}%`, darker, overCap, brightest: brightest.toFixed(1), brightRise: brightRise.toFixed(1) };
   if (lifted / pixels < LIFT_SHARE) failures.push(`${renderer}: sd3 1 lifts ${row.lifted} of the frame (< ${LIFT_SHARE * 100}%)`);
   if (darker) failures.push(`${renderer}: sd3 1 darkens ${darker} pixels`);
-  if (overCap) failures.push(`${renderer}: ${overCap} lifted pixels cross the candle's ${CANDLE}`);
+  if (overCap) failures.push(`${renderer}: ${overCap} lifted pixels cross the candle's ${CANDLE} or rise above it`);
   if (args['baseline-root']) {
-    if (!existsSync(baseFile)) {
-      failures.push(`${renderer}: the baseline tree produced no frame`);
+    if (!fresh(baseFile)) {
+      failures.push(`${renderer}: the baseline tree produced no fresh frame`);
     } else {
       const diff = zeroDiff(renderer, name);
       row.zeroHash = hash(zeroFile);
@@ -153,5 +161,5 @@ for (const renderer of renderers) {
 }
 console.log(`frames: ${out}`);
 for (const failure of failures) console.log(`FAIL ${failure}`);
-if (!failures.length) console.log(missing ? 'PASS (a backend was unavailable)' : 'PASS');
-process.exitCode = failures.length ? 1 : (missing ? 2 : 0);
+if (!failures.length) console.log('PASS');
+process.exitCode = failures.length ? 1 : 0;

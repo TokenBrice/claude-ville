@@ -28,7 +28,7 @@ import { ornamentPlan } from './MarkGovernor.js';
 import { GroundCueRecorder, insertGroundCueRecords } from './GroundCueRecords.js';
 import { insertBodyReflectionRecords } from './WaterReflections.js';
 import { drawCanvasAerialHaze, drawResidentBackdropGrade } from './BackdropGrade.js';
-import { castLightingFor, drawShadeLayer, drawSunLift, drawTreeCasts, frameSunShade, setFrameCastLighting, setFramePointCastLights } from './RakingLight.js';
+import { castLightingFor, drawShadeLayer, drawTreeCasts, frameSunShade, setFrameCastLighting, setFramePointCastLights } from './RakingLight.js';
 import { drawFlashExposure, mistBurnFor, stormStrikeAt, weatherPressureLevel } from './WeatherRenderer.js';
 import { insertMistHaloRecords, mistHaloRecords } from './MistHalos.js';
 import { seaSunLift, slewSeaLift } from './gpu/GpuFrameState.js';
@@ -700,8 +700,6 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
             ctx,
             frameTimer ? label => markFrameTiming(frameTimer, label) : null,
         );
-        // SD-3 — the sun's lift on the lit land, on the bare terrain.
-        drawSunLift(ctx);
         drawFarSeaLayers(ctx, renderer._farSeaLayers);
         // W8.5a — the offshore backdrop on the sea, in its painter order,
         // under puddles, cloud shadows, haze, fog and every island drawable.

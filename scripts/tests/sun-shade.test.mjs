@@ -25,7 +25,7 @@ import {
     shadeSelfProp,
     solidFacets,
 } from '../../claudeville/src/presentation/character-mode/ShadeField.js';
-import { SUN_LIFT_CEILING, SUN_SHADE_GLSL, SUN_SHADE_WGSL, resolveSunShade } from '../../claudeville/src/presentation/character-mode/gpu/SunShade.js';
+import { SUN_LIFT_CEILING, SUN_LIFT_GRADED_CEILING, SUN_SHADE_GLSL, SUN_SHADE_WGSL, resolveSunShade } from '../../claudeville/src/presentation/character-mode/gpu/SunShade.js';
 import { EFFECT_BUDGET, GPU_RECORD_FLAGS, assignGpuRecordV9Fields, effectBudgetMode } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldPolicy.js';
 import { resolveOccluderChannel } from '../../claudeville/src/presentation/character-mode/gpu/GpuFrameState.js';
 import { FRAME_BINDING, FRAME_BINDINGS_WGSL, FRAME_UNIFORM_LAYOUT } from '../../claudeville/src/presentation/character-mode/gpu/wgsl/common.js';
@@ -201,7 +201,7 @@ test('a sliced receivers\' build is the build run at once', () => {
 
 test('the GLSL and WGSL twins carry the same functions, constants and tests', () => {
     const functions = (source, re) => [...source.matchAll(re)].map(match => match[1]);
-    const names = ['shadeFieldAt', 'shadeGroundAt', 'sunTrailHidden', 'shadeCeilingOver', 'shadeSurfaceAt', 'sunShadeStep', 'sunLift'];
+    const names = ['shadeFieldAt', 'shadeGroundAt', 'sunTrailHidden', 'shadeCeilingOver', 'shadeSurfaceAt', 'sunShadeStep', 'sunLift', 'sunLiftGraded'];
     assert.deepEqual(functions(SUN_SHADE_GLSL, /^(?:bool|vec3|vec4|float)\s+(\w+)\(/gm), names);
     assert.deepEqual(functions(SUN_SHADE_WGSL, /^fn\s+(\w+)\(/gm), names);
     const numbers = source => (source.match(/(?<![\w.])\d+\.\d+/g) || []).join(' ');
@@ -524,4 +524,36 @@ test('the sun\'s lift alone never clips a villager\'s sun trail (that is SD-2\'s
         setFrameCastLighting(null);
         resetLookStrengths();
     }
+});
+
+test('the lit mask is the sea fret\'s land: an unclassified cell off the map grid is sea', () => {
+    // One lattice row at world y 1: cell 0 sits on the map's north vertex
+    // (land), cell 1 far west of the diamond (off the grid, no flags).
+    const field = { cols: 2, rows: 1, originX: 0, originY: 0, cellW: 2, cellH: 1, data: new Uint8Array(4) };
+    const offshore = { cols: 2, rows: 1, originX: -4000, originY: 0, cellW: 2, cellH: 1, data: new Uint8Array(4) };
+    const lattice = x => ({ fields: { x, y: 0, cols: 2, rows: 1, coastField: new Uint8Array(4) }, waterBit: 1, coveredBit: 2 });
+    const out = new Uint8Array(8);
+    paintLitCells(field, out, [1, 1, 1], lattice(0));
+    assert.equal(out[3], 255, 'on the grid, no water flag: land');
+    paintLitCells(offshore, out, [1, 1, 1], lattice(-4000));
+    assert.deepEqual([out[3], out[7]], [0, 0], 'off the grid: unclassified shelf, not land');
+    const covered = lattice(-4000);
+    covered.fields.coastField[1] = 2 | 1;
+    paintLitCells(offshore, out, [1, 1, 1], covered);
+    assert.equal(out[3], 255, 'a covered cell (a dock) is land wherever it lies');
+});
+
+test('both scene shaders hold a lifted texel after the grade, and a bright one keeps its unlifted value', () => {
+    const read = path => readFileSync(new URL(`../../claudeville/src/presentation/character-mode/${path}`, import.meta.url), 'utf8');
+    for (const [source, grade, hold] of [
+        [read('gpu/GpuWorldRenderer.js'), 'color = applyTimeGrade(color, !u_additive);', 'if (sunLifted) color = sunLiftGraded(color, applyTimeGrade(sunBase, true));'],
+        [read('gpu/wgsl/scene.js'), 'color = applyTimeGrade(color, batch.additive == 0u);', 'if (sunLifted) { color = sunLiftGraded(color, applyTimeGrade(sunBase, true)); }'],
+    ]) {
+        const at = source.indexOf(grade);
+        assert.ok(at > 0 && source.indexOf(hold) > at && source.indexOf(hold) - at < 200, 'right after the grade');
+    }
+    for (const source of [SUN_SHADE_GLSL, SUN_SHADE_WGSL]) {
+        assert.ok(source.includes(`>= ${SUN_LIFT_GRADED_CEILING.toFixed(4)}) `), 'already bright: the unlifted value');
+    }
+    assert.ok(SUN_LIFT_GRADED_CEILING * 255 < 192, 'the hold sits under the waiting candle');
 });

@@ -633,17 +633,22 @@ fn sceneSurface() -> SurfaceSample {
   color = applyAuthoredSunBand(color, material);
   // SD-2 — a receiver steps down under the sun's shade, before the grade; a
   // sun trail the field already covers is not drawn.
+  var sunBase = color;
   if (frame.shadeRect.w > 0.0 && batch.additive == 0u) {
     if (sunTrailHidden()) { discard; }
     color *= sunShadeStep(geometry, surfaceCoded, select(0.0, clamp(emissive, 0.0, 1.0), batch.hasEmissiveMap != 0u));
     // SD-3 — then the sun lifts what it reaches (frame.shade.y 0 = off;
     // water is SEA-1's).
+    sunBase = color;
     if (frame.shade.y > 0.0 && !waterMaterial) { color = sunLift(color, batch.terrainBatch != 0u && v_receiver.x < -0.5, frame.shade.y, select(0.0, clamp(emissive, 0.0, 1.0), batch.hasEmissiveMap != 0u)); }
   }
   // 1.2 — the pools light the ungraded surface.
   let poolAlbedo = color;
   // 1.1 — C2 time-of-day and weather grade.
+  // SD-3 — a lifted texel is held under the candle after the grade too.
+  let sunLifted = any(color != sunBase);
   color = applyTimeGrade(color, batch.additive == 0u);
+  if (sunLifted) { color = sunLiftGraded(color, applyTimeGrade(sunBase, true)); }
   // V6 — graded water stays quiet; the 3.2 path is held at HSL L <= 0.70.
   if (waterHue) {
     if (seaPath) {

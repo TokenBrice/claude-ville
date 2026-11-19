@@ -90,6 +90,11 @@ const LEFT_WALL_OUT = 'vec2(-0.70710678, 0.35355339)';
 // composite (smoke:sun-lift reads it back on every backend).
 export const SUN_LIFT_CEILING = 0.64;
 const LIFT_CEILING = SUN_LIFT_CEILING.toFixed(4);
+// SD-3 — the same hold after the grade: a lifted texel that the grade (and
+// what the composite adds over it) would carry past the waiting candle is
+// held here, and one already this bright unlifted keeps its unlifted value.
+export const SUN_LIFT_GRADED_CEILING = 0.68;
+const GRADED_CEILING = SUN_LIFT_GRADED_CEILING.toFixed(4);
 
 // u_shadeField (unit 2): the field's RGBA8 texels. u_shadeRect = (origin x,
 // origin y, cell w, cell h) in world px; cell h 0 = no field (the look off,
@@ -249,6 +254,15 @@ vec3 sunLift(vec3 color, bool ground, float lift, float lit) {
     float gain = 1.0 + lift;
     return color * min(gain, max(1.0, ${LIFT_CEILING} / max(luma, 0.0001)));
 }
+
+// SD-3 — after the grade: \`lifted\` and \`base\` (the same texel graded
+// unlifted). A texel already at the graded ceiling keeps its unlifted value;
+// a lifted one stops there.
+vec3 sunLiftGraded(vec3 lifted, vec3 base) {
+    if (dot(base, GRADE_LUMA) >= ${GRADED_CEILING}) return base;
+    float luma = dot(lifted, GRADE_LUMA);
+    return luma > ${GRADED_CEILING} ? lifted * (${GRADED_CEILING} / luma) : lifted;
+}
 `;
 
 // The WGSL twin: frame.shadeRect / frame.shade (common.js FRAME_UNIFORM_LAYOUT)
@@ -402,6 +416,15 @@ fn sunLift(color: vec3f, ground: bool, lift: f32, lit: f32) -> vec3f {
   let luma = dot(color, GRADE_LUMA);
   let gain = 1.0 + lift;
   return color * min(gain, max(1.0, ${LIFT_CEILING} / max(luma, 0.0001)));
+}
+
+// SD-3 — after the grade: \`lifted\` and \`base\` (the same texel graded
+// unlifted). A texel already at the graded ceiling keeps its unlifted value;
+// a lifted one stops there.
+fn sunLiftGraded(lifted: vec3f, base: vec3f) -> vec3f {
+  if (dot(base, GRADE_LUMA) >= ${GRADED_CEILING}) { return base; }
+  let luma = dot(lifted, GRADE_LUMA);
+  return select(lifted, lifted * (${GRADED_CEILING} / luma), luma > ${GRADED_CEILING});
 }
 `;
 
