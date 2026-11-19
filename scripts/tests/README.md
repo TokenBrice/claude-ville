@@ -39,7 +39,7 @@ Set `CLAUDEVILLE_TEST_TMPDIR` to a writable directory when the normal temporary 
 | `release-changelog.test.mjs` | Release header parsing, exact extraction, version rejection, and read-only/write preparation behavior. |
 | `catalog-check.test.mjs` | Smoke files, verification npm scripts, and `docs/*.md` files remain cataloged. |
 | `gpu-resource-lifecycle.test.mjs` | Fragment integer precision, binding restoration for typed uploads, and scene flags across direct draws and replay. |
-| `shade-field.test.mjs`, `agent-atlas-slots.test.mjs` | Shade backing release after suspension and retained channel pixels when an atlas slot changes owner. |
+| `shade-field.test.mjs`, `agent-atlas-slots.test.mjs` | Shade backing release after suspension, dense atlas dimensions, page resize counts during roster growth, walk frames across row boundaries and retained channel pixels when a slot changes owner. |
 | `ground-weather-field.test.mjs`, `weather-truth.test.mjs` | Weather bake allocation count, atmosphere freeze across midnight, and active rain and wet-ground parity fixtures. |
 | `o2-prompt-plan-mapping.test.mjs` | Prompt, TodoWrite, and branch payload bounds plus signature-driven live Agent updates. |
 | `agent-manager-digest.test.mjs` | The AgentManager change digest sees a git event or tool result edited at any index (one bounded key per row), and a freshness re-stamp alone never re-upserts a villager. |

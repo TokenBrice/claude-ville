@@ -114,7 +114,7 @@ test('important and turning atlas slots refresh immediately while ambient frames
 });
 
 // VQ-9 — one more record (a frost tint, a tankard) can widen the slot grid by
-// a column while a walker's strip band keeps the atlas the same size: every
+// a column while a walker holds a strip. With the resized atlas every
 // slot then redraws at its new place, so no body samples another's old cell.
 test('a record that widens the atlas slot grid redraws every slot at its new place', () => {
     const previousDocument = globalThis.document;
@@ -148,7 +148,7 @@ test('a record that widens the atlas slot grid redraws every slot at its new pla
         const size = `${renderer._gpuAgentFrameAtlas.width}x${renderer._gpuAgentFrameAtlas.height}`;
         assert.equal(sampled(packed, 'agent:b-sit'), 'sitter@8,0');
         packed = packGpuAgentFrameAtlas(renderer, records(true));
-        assert.equal(`${renderer._gpuAgentFrameAtlas.width}x${renderer._gpuAgentFrameAtlas.height}`, size, 'the atlas keeps its size');
+        assert.notEqual(`${renderer._gpuAgentFrameAtlas.width}x${renderer._gpuAgentFrameAtlas.height}`, size, 'the slot grid widens');
         assert.equal(sampled(packed, 'agent:b-sit'), 'sitter@8,0', 'the sitter samples its own cell');
         assert.equal(sampled(packed, 'agent:b-sit:frost-tint'), 'tint@0,0');
         packed = packGpuAgentFrameAtlas(renderer, records(false));

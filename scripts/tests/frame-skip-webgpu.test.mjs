@@ -162,3 +162,32 @@ test('diagnostics defer resource accounting until resources are read', t => {
     assert.deepEqual(diagnostics.resources, { pinnedBytes: 123 });
     assert.equal(accounting.mock.callCount(), 1);
 });
+
+test('reopening the WebGPU occluder gate uploads only changed versioned sources', t => {
+    const { renderer, input } = fixture(t);
+    const record = input.records[0];
+    Object.assign(record, { occluderSource: { width: 8, height: 8 }, sidecarKey: 'tile', sidecarRevision: 1 });
+    const copies = t.mock.method(renderer.device.queue, 'copyExternalImageToTexture');
+    const render = ambientLight => {
+        input.feed.lighting = { ambientLight };
+        assert.equal(renderer.render(input), true);
+    };
+    render(0);
+    const occluder = renderer._textureEntries.get('occluder:tile').texture;
+    const uploads = () => copies.mock.calls.filter(call => call.arguments[1].texture === occluder);
+    assert.equal(uploads().length, 1);
+    render(1);
+    render(0);
+    assert.equal(uploads().length, 1);
+    render(1);
+    record.sidecarRevision++;
+    record.occluderTextureUpdates = [{ source: record.occluderSource, sx: 1, sy: 1, x: 1, y: 1, width: 2, height: 2 }];
+    render(0);
+    assert.equal(uploads().length, 2);
+    assert.equal(uploads().at(-1).arguments[2].width, 8, 'a missed update restores the whole occluder');
+
+    const d = renderer.getDiagnostics();
+    assert.equal(d.sceneTextureBindings.groupsBound, 1);
+    assert.equal(d.sceneTextureBindings.records.other, 1);
+    assert.equal(Object.values(d.uploadBytesByKind).reduce((a, b) => a + b, 0), d.uploadBytes);
+});

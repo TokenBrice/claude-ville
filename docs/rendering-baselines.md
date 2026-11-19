@@ -66,6 +66,32 @@ Each capture records:
 
 The census is deliberately descriptive. It freezes the current vocabulary until the scene-salience governor exposes authoritative admission counts.
 
+## Atlas and WebGPU upload counters
+
+The 24-agent fixture with 140 px cells, four pose cells per agent and 17 six-frame walk strips needs 198 cells. Ten columns need 20 rows. Allocating rows in groups of three gives a 1400 × 2940 page that also fits the 25th agent. The previous 1400 × 3780 layout used 26.92 MiB more across three CPU canvases and three GPU textures. Cropping the four pilot pages from 2048² to 2026 × 1801 saves another 16.65 MiB across decoded images and GPU textures. These figures count RGBA8 backing stores.
+
+In a sweep from 2 to 30 equipped walkers, exact-height pages resized on 22 of 28 arrivals. Two-row groups resized 15 times for 2.00 MiB of mean extra backing. Three-row groups resized 12 times for 4.19 MiB mean and 9.87 MiB peak extra backing across all six copies. Four-row groups resized 14 times and cost 4.25 MiB on average. These counts exclude the initial allocation and include width changes.
+
+WebGPU's `atlasRecords` and `individualRecords` count producer labels before batching. Read `sceneTextureBindings` for the scene draws that actually bound a group and the records that sampled the runtime albedo page, pilot, agent atlas, cue atlas or another texture. The runtime page accepts small albedo-only sources. Records with sidecars, oversize sources, screen-space geometry or explicit exclusions keep their own bindings. Blend, depth and painter order can split draws that use the same page.
+
+Take differences of `uploadBytesByKind` across a settled window to distinguish whole images, image patches, runtime albedo-page fills, typed fields and light records. Their sum is `uploadBytes`. One image revision can issue many patch copies. Per-draw record and uniform buffer writes, particles, rain and marks are additional traffic. `uploadMs` measures CPU elapsed time issuing the counted uploads, smoothed across frames.
+
+In the RTX 5070 Ti night capture at 2268 × 1350 backing and host load 17–27, 175 of 426 records used the runtime albedo page and the scene built 183 batches. Across 1,465 frames the renderer counted 831,438,070 bytes, including startup (567.5 kB or 554.2 KiB per frame). Its 177,888,500 pinned source bytes exceeded the 167,477,116-byte cache ceiling. Substituting the two compact atlas sizes in that same snapshot yields 155,048,852 source bytes and 11.85 MiB of headroom. Check actual eviction and re-upload counts on the same camera path before adjusting the ceiling.
+
+A same-process SwiftShader replay of the 24-agent night scene at 1040 × 720 backing recorded the following short windows before row grouping. Both final frames contained 284 records and 116 scene binds. The compact frame had 102 runtime-page, 31 pilot, 24 agent-atlas, 57 cue-atlas and 70 other records.
+
+| | Before | Compact |
+| --- | ---: | ---: |
+| Submitted frames in window | 7 | 5 |
+| Counted uploads / bytes in window | 69 / 25,714,688 | 51 / 10,473,884 |
+| Agent albedo and channel bytes per frame | 3,379,109 | 1,675,405 |
+| Resident texture bytes / lifetime evictions | 175,768,276 / 4 | 157,165,812 / 0 |
+| Final CPU `uploadMs` / one-minute host load | 620 ms / 38.1–38.5 | 1,448 ms / 46.0–46.5 |
+
+The queue trace also recorded ground semantics, building glass, runtime page fills, light tiles and light records. Different loads and animation samples limit timing comparisons. A renderer with the compact pilot saves a further 14,595,304-byte copy whenever the occluder gate reopens with the same resident pilot revision.
+
+On one frozen 296-record night frame, the old and compact atlas layouts produced identical scene, emission and composite hashes within each software backend. An eight-frame fixture also matched albedo, material and emissive texels across walk, prop, roster and LOD changes, including after WebGL2 context restoration and WebGPU device replacement.
+
 ## Canvas and WebGL2 effect parity
 
 The ground-truth signals below must be present in both renderer modes. WebGL2 keeps them inside existing scene records, overlay-safe categories, or the scene/composite shaders; it does not add a pass.
