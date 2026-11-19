@@ -54,6 +54,8 @@ Desktop-first constraint: shared UI at `/` only needs to support browser widths 
 
 ## Session Detail Fetching
 
+The current-tool detail shows “Waiting on crew” for observed crew waits and “Watching” when Poll is waiting only on background shells or monitors. Other pending scripts read “Running a script”. Watches and scripts use the model's description when the session supplies one.
+
 Use `sessionDetailsService.fetchSessionDetail(agent)` for one-agent surfaces or `sessionDetailsService.fetchSessionDetailsBatch(agents)` for card grids that need tools/messages/tokens. Do not add direct `/api/session-detail` or `/api/session-details` fetches in components.
 
 Activity Panel and Dashboard expose complete available message/tool text through native disclosures, preserve unchanged DOM across refresh, and show cache/server observation age when stale. Provider truncation flags remain visible. Empty successful activity sections collapse; loading and unavailable states remain explicit. Usage and cost distinguish unavailable, partial, and observed zero, and the spend headline discloses incomplete active-session coverage.

@@ -1,3 +1,4 @@
+import { isBlockingMcpDelegationTool } from '../../domain/services/StatusResolver.js';
 import {
     clampRouteIndex,
     cloneItinerary,
@@ -16,6 +17,7 @@ const PLAN_MODE_PERSIST_MS = 1000;
 const RETRY_WINDOW_MS = 20000;
 const RETRY_BUFFER_LIMIT = 8;
 const RETRY_INPUT_NORMALIZE_LIMIT = 64;
+const RETRY_EXEMPT_TOOLS = new Set(['Poll', 'wait_agent', 'functions.wait_agent']);
 const ACCEPTED_INTENT_HISTORY_LIMIT = 8;
 const COMPLETED_VISIT_HISTORY_LIMIT = 8;
 const BLOCKED_REASON_HISTORY_LIMIT = 10;
@@ -379,7 +381,7 @@ export class AgentBehaviorState {
             }
         }
 
-        if (toolKey) {
+        if (toolKey && !RETRY_EXEMPT_TOOLS.has(toolKey) && !isBlockingMcpDelegationTool(toolKey)) {
             const normalized = normalizeToolInput(input);
             const key = `${toolKey}${normalized}`;
             const cutoff = time - RETRY_WINDOW_MS;

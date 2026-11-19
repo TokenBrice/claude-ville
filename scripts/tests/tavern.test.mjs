@@ -6,7 +6,9 @@ import { REST_SEATS, REST_STANDS } from '../../claudeville/src/config/townPlan.j
 import { MAP_SIZE } from '../../claudeville/src/config/constants.js';
 import { Building } from '../../claudeville/src/domain/entities/Building.js';
 import { WAIT_AGE_STEPS_MS } from '../../claudeville/src/domain/services/SignalLedger.js';
+import { isAttentionStatus, resolveAgentStatus } from '../../claudeville/src/domain/services/StatusResolver.js';
 import { classifyTool } from '../../claudeville/src/domain/services/ToolIdentity.js';
+import { AgentStatus } from '../../claudeville/src/domain/value-objects/AgentStatus.js';
 import { AgentSprite } from '../../claudeville/src/presentation/character-mode/AgentSprite.js';
 import { BuildingSprite } from '../../claudeville/src/presentation/character-mode/BuildingSprite.js';
 import { restSeatStepBias } from '../../claudeville/src/presentation/character-mode/DayRoutine.js';
@@ -14,6 +16,7 @@ import { MIDNIGHT_OIL_RISE_MS } from '../../claudeville/src/presentation/charact
 import { SceneryEngine } from '../../claudeville/src/presentation/character-mode/SceneryEngine.js';
 import { VisitTileAllocator } from '../../claudeville/src/presentation/character-mode/VisitTileAllocator.js';
 import { LABEL_INK, WALNUT } from '../../claudeville/src/presentation/character-mode/WorldLabelKit.js';
+import { currentToolPresentation } from '../../claudeville/src/presentation/shared/AgentPresentation.js';
 import {
     DRINK_FRAME_BY_STEP,
     TANKARD_SIP_LIFT,
@@ -22,6 +25,29 @@ import {
 } from '../../claudeville/src/presentation/character-mode/RestSeats.js';
 
 // The Tavern replaced the Observatory: a rest place, never a workplace.
+
+test('FK-2: the crew label takes precedence over the last real tool or script', () => {
+    const backgroundPending = { count: 4, kinds: ['teammate'] };
+    for (const [turnState, pendingTool, crew, detail] of [
+        ['tool_pending', 'Poll', backgroundPending, '4 background tasks'],
+        ['tool_pending', 'mcp__codex__wait', null, ''],
+        ['tool_pending', 'mcp__glm__ask', null, ''],
+        ['tool_pending', 'mcp__deepseek__wait', null, ''],
+        ['awaiting_input', null, { ...backgroundPending, count: 1 }, '1 background task'],
+    ]) {
+        const agent = {
+            turnState, pendingTool, backgroundPending: crew,
+            currentTool: pendingTool && 'Edit',
+            script: pendingTool === 'Poll' ? { tool: 'Poll', description: 'Wait for the crew', since: 1 } : null,
+        };
+        agent.status = resolveAgentStatus(agent);
+        assert.equal(agent.status, AgentStatus.WORKING);
+        assert.equal(isAttentionStatus(agent.status), false);
+        const presentation = currentToolPresentation(agent);
+        assert.equal(presentation.name, 'Waiting on crew');
+        assert.equal(presentation.detail, detail);
+    }
+});
 
 test('web research works at the Portal; no tool routes to the Tavern', () => {
     assert.equal(BUILDING_DEFS.some((def) => def.type === 'observatory'), false);
