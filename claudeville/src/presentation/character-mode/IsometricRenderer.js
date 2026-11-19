@@ -4650,7 +4650,7 @@ export class IsometricRenderer {
             if (this._disposed) return;
             const hit = this._applyAgentHover(this._agentHoverX, this._agentHoverY);
             const plate = this._hoverPlateContent(hit, this._hoverLore);
-            if (this._hoverPoint) this._ensureHoverPlate()?.update(plate.text, this._hoverPoint, plate.target);
+            if (this._hoverPoint) this._ensureHoverPlate()?.update(plate.text, this._hoverPoint, plate.target, plate.key ?? plate.text);
         });
     }
 
@@ -4671,7 +4671,7 @@ export class IsometricRenderer {
         if (!plate?.tracking || !this._hoverPoint || now - (this._hoverPlateSampledAt || 0) < HOVER_PLATE_RESAMPLE_MS) return;
         this._hoverPlateSampledAt = now;
         const sample = this._sampleHoverPlate();
-        if (sample) plate.update(sample.text, this._hoverPoint, sample.target);
+        if (sample) plate.update(sample.text, this._hoverPoint, sample.target, sample.key ?? sample.text);
     }
 
     _applyAgentHover(worldX, worldY) {
@@ -4709,6 +4709,19 @@ export class IsometricRenderer {
         return this._hoverPlate;
     }
 
+    // An arrival proves the building only where the body stands on one of
+    // that building's visit tiles (a chat approach records an arrival too,
+    // wherever the partner stood).
+    _standsOnVisitTile(sprite, buildingType) {
+        const building = sprite._buildingForType?.(buildingType);
+        const tiles = building?.visitTiles;
+        if (!Array.isArray(tiles) || !tiles.length) return false;
+        const at = worldToTile(sprite.x, sprite.y);
+        return tiles.some((tile) => tile
+            && Math.abs(Number(tile.tileX) - at.tileX) <= 0.5
+            && Math.abs(Number(tile.tileY) - at.tileY) <= 0.5);
+    }
+
     _screenRectForWorld(left, top, right, bottom) {
         const a = this.camera.worldToScreen(left, top);
         const b = this.camera.worldToScreen(right, bottom);
@@ -4722,18 +4735,19 @@ export class IsometricRenderer {
     // source, excerpt, redaction, held), never the words themselves. Else the
     // scenery's lore beside the scenery's own bounds.
     _hoverPlateContent(hit, lore = null) {
-        if (!hit) return { text: lore?.text || '', target: lore?.target || null };
+        if (!hit) return { text: lore?.text || '', target: lore?.target || null, key: lore?.key ?? null };
         const box = hit._bodyBox;
         const target = box
             ? this._screenRectForWorld(hit.x + box.left, hit.y + box.top, hit.x + box.right, hit.y + Math.max(box.bottom, 4))
             : null;
         const behavior = hit.behavior;
         const arrived = !hit.moving && hit._lastBuildingType
-            && behavior?.arrivedAt != null && behavior.building === hit._lastBuildingType;
+            && behavior?.arrivedAt != null && behavior.building === hit._lastBuildingType
+            && this._standsOnVisitTile(hit, hit._lastBuildingType);
         const line = villagerHoverLine(hit.agent, { buildingType: arrived ? hit._lastBuildingType : null });
         const entry = hit._activitySnapshot;
         const source = entry?.text && entry.source ? dialogueSourceLabel(entry) : '';
-        return { text: source ? `${line}\n${source}` : line, target };
+        return { text: source ? `${line}\n${source}` : line, target, key: `agent:${hit.agent?.id ?? ''}` };
     }
 
     _setHoveredAgentSprite(sprite) {
@@ -4745,8 +4759,8 @@ export class IsometricRenderer {
     }
 
     // The scenery under a world point as `{ text, target }`: its lore and the
-    // screen rect the plate keeps clear of (a building's drawn bounds, else a
-    // pointer-sized box round the hit), or null for bare ground.
+    // screen rect the plate keeps clear of (the hit's drawn bounds where it
+    // has them, else a pointer-sized box round the hit), or null for bare ground.
     _worldHoverInfo(worldX, worldY) {
         const hoveredBuilding = this.buildingRenderer?.hitTest(worldX, worldY) ?? null;
         this.buildingRenderer?.setHovered(hoveredBuilding);
@@ -4782,11 +4796,20 @@ export class IsometricRenderer {
                             ? this.chronicleMonuments.repoStones.tooltipFor(repoStone)
                             : (belfry ? this.isleLandmarks.belfryTooltip() : '')))));
         if (!text) return null;
-        const bounds = hoveredBuilding ? this.buildingRenderer?.worldBounds?.(hoveredBuilding) : null;
-        if (bounds) return { text, target: this._screenRectForWorld(bounds.left, bounds.top, bounds.right, bounds.bottom) };
+        const key = hoveredBuilding ? `building:${hoveredBuilding.type}`
+            : hoveredShip ? `ship:${hoveredShip.id}`
+                : repoStone ? `stone:${repoStone.worldX},${repoStone.worldY}`
+                    : belfry ? 'belfry' : `lore:${text}`;
+        // Drawn bounds where the hit has them (buildings, ships, repo stones,
+        // the belfry tower); small marks (lanterns, token items) take the pad.
+        const bounds = hoveredBuilding ? this.buildingRenderer?.worldBounds?.(hoveredBuilding)
+            : hoveredShip ? this.harborTraffic?.shipWorldBounds?.(hoveredShip)
+                : repoStone ? this.chronicleMonuments?.repoStones?.worldBounds?.(repoStone)
+                    : belfry ? this.isleLandmarks?.belfryWorldBounds?.() : null;
+        if (bounds) return { text, key, target: this._screenRectForWorld(bounds.left, bounds.top, bounds.right, bounds.bottom) };
         const point = this.camera.worldToScreen(worldX, worldY);
         const pad = HOVER_PLATE_POINTER_PAD;
-        return { text, target: { left: point.x - pad, top: point.y - pad, right: point.x + pad, bottom: point.y + pad } };
+        return { text, key, target: { left: point.x - pad, top: point.y - pad, right: point.x + pad, bottom: point.y + pad } };
     }
 
     // ─── U-P3 fleet card ────────────────────────────────────────────────

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-    HOVER_PLATE_DELAY_MS,
+    WorldHoverPlate,
     hoverPlateLines,
     placeHoverPlate,
     villagerHoverLine,
@@ -10,6 +10,7 @@ import {
 import { Agent } from '../../claudeville/src/domain/entities/Agent.js';
 import { AgentStatus } from '../../claudeville/src/domain/value-objects/AgentStatus.js';
 import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
+import { worldToTile } from '../../claudeville/src/presentation/character-mode/Projection.js';
 
 // XP-4: the World's hover plate replaces the OS title bubble.
 
@@ -106,16 +107,20 @@ function worldHarness(t) {
         _activitySnapshot: { text: 'I will refactor the router now', source: 'claude.transcript', kind: 'assistant', fidelity: 'excerpt' },
         agent: { id: 'v1', name: 'Kael', status: AgentStatus.WORKING, currentTool: 'Edit', statusSince: Date.now() - 3000 },
         hitTest(x, y) { return this.hits && Math.abs(x - this.x) < 15 && y > this.y - 54 && y < this.y + 3; },
+        // The Forge's visit tile is where this body was placed.
+        _buildingForType: (type) => (type === 'forge' ? { type, visitTiles: [worldToTile(400, 300)] } : null),
         setHovered() {},
     };
     const ship = { id: 's1', project: '/r/demo', branch: 'main' };
+    const belfrySprite = { id: 'belfry' };
+    const state = { forgeEverywhere: false };
     let fleetCards = 0;
     const renderer = Object.assign(Object.create(IsometricRenderer.prototype), {
         canvas: { parentElement: host, getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 }) },
         camera: { screenToWorld: (x, y) => ({ x, y }), worldToScreen: (x, y) => ({ x, y }) },
         agentSprites: new Map([['v1', villager]]),
         buildingRenderer: {
-            hitTest: (x, y) => (x >= 100 && x <= 300 && y >= 100 && y <= 260 ? forge : null),
+            hitTest: (x, y) => (state.forgeEverywhere || (x >= 100 && x <= 300 && y >= 100 && y <= 260) ? forge : null),
             setHovered() {},
             worldBounds: (building) => (building === forge ? { left: 100, top: 60, right: 300, bottom: 260 } : null),
         },
@@ -125,6 +130,11 @@ function worldHarness(t) {
             shipTooltip: () => 'demo · main - fix the gate',
         },
         _agentHoverRafId: null,
+        isleLandmarks: {
+            hitTestBelfry: (x, y) => (x >= 500 && x <= 540 && y >= 20 && y <= 180 ? belfrySprite : null),
+            belfryWorldBounds: () => ({ left: 490, top: 10, right: 550, bottom: 190 }),
+            belfryTooltip: () => 'Hourglass Belfry · sand left = quota left',
+        },
         _isGateTransit: () => false,
         _openFleetCard() { fleetCards++; },
         _onMouseLeaveMain() {},
@@ -136,7 +146,7 @@ function worldHarness(t) {
         renderer._scheduleAgentHoverTest(x, y);
     };
     const plate = () => (host.plate && !host.plate.hidden ? host.plate : null);
-    return { renderer, host, villager, move, plate, forge, fleetCards: () => fleetCards };
+    return { renderer, host, villager, move, plate, forge, state, fleetCards: () => fleetCards };
 }
 
 test('renderer: the plate reveals 250 ms after the pointer settles, with the villager line and its source', (t) => {
@@ -171,6 +181,52 @@ test('renderer: the building shows only after an arrival there, standing still',
     villager.moving = false;
     villager.behavior.building = 'archive';
     assert.ok(!text().includes('Forge'), 'an arrival elsewhere does not count');
+    // A finished chat approach records an arrival wherever the partner stood,
+    // while the Forge stays the last building: off its visit tile, no Forge.
+    villager.behavior.building = 'forge';
+    villager.x = 520;
+    villager.y = 360;
+    assert.ok(!text().includes('Forge'), 'chatting away from the Forge is not being there');
+});
+
+test('renderer: the belfry passes its drawn tower bounds, and the plate keeps clear of them', (t) => {
+    const { move, plate } = worldHarness(t);
+    move(500, 120);
+    t.mock.timers.tick(250);
+    assert.deepEqual(plate().lines, ['Hourglass Belfry · sand left = quota left']);
+    const left = Number.parseInt(plate().style.left, 10);
+    const top = Number.parseInt(plate().style.top, 10);
+    const rect = { left, top, right: left + 160, bottom: top + 28 };
+    assert.ok(rect.left >= 550 || rect.right <= 490 || rect.top >= 190 || rect.bottom <= 10, JSON.stringify(rect));
+});
+
+test('renderer: the dwell belongs to what is hovered, so a replacement at reveal waits its own 250 ms', (t) => {
+    const { move, plate, villager, state } = worldHarness(t);
+    move(400, 280);
+    t.mock.timers.tick(240);
+    villager.hits = false;
+    state.forgeEverywhere = true;
+    t.mock.timers.tick(10);
+    assert.equal(plate(), null, 'the Forge took the pointer 10 ms ago');
+    t.mock.timers.tick(249);
+    assert.equal(plate(), null);
+    t.mock.timers.tick(1);
+    assert.deepEqual(plate().lines, ['FORGE: 0 active']);
+});
+
+test('the plate keeps one dwell per identity while its text changes', (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const previous = globalThis.document;
+    globalThis.document = { createElement: () => fakeElement() };
+    t.after(() => { globalThis.document = previous; });
+    const host = { clientWidth: 800, clientHeight: 600, append(el) { this.plate = el; } };
+    const hover = new WorldHoverPlate({ host });
+    hover.update('Kael · Edit · 3s', { x: 10, y: 10 }, null, 'agent:v1');
+    t.mock.timers.tick(200);
+    hover.update('Kael · Edit · 4s', { x: 10, y: 10 }, null, 'agent:v1');
+    t.mock.timers.tick(50);
+    assert.ok(hover.visible, 'a ticking age does not restart the dwell');
+    assert.deepEqual(host.plate.lines, ['Kael · Edit · 4s']);
 });
 
 test('renderer: a villager that walks off during the delay or after the reveal takes its plate along', (t) => {

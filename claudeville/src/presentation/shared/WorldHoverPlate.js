@@ -128,13 +128,16 @@ export class WorldHoverPlate {
 
     // Pointer hover: `text` is the lore for what is under the pointer ('' for
     // nothing), `point` the pointer in host pixels, `target` the inspected
-    // thing's host rect when known.
-    update(text, point, target = null) {
+    // thing's host rect when known, `key` its identity. The dwell belongs to
+    // the identity: new text for the same thing (a ticking age) keeps it, a
+    // different thing starts it again.
+    update(text, point, target = null, key = text) {
         this._point = point;
         this._target = target;
         if (!text) {
             clearTimeout(this._showTimer);
             this._pending = null;
+            this._pendingKey = null;
             if (this.visible && !this._hideTimer) {
                 this._hideTimer = setTimeout(() => this.hide(), HIDE_GRACE_MS);
             }
@@ -151,19 +154,35 @@ export class WorldHoverPlate {
             this._show(text);
             return;
         }
-        if (this._pending === text) return;
+        if (this._pending && this._pendingKey === key) {
+            this._pending = text;
+            return;
+        }
         clearTimeout(this._showTimer);
         this._pending = text;
-        this._showTimer = setTimeout(() => {
-            let pending = this._pending;
-            this._pending = null;
-            if (pending && this.resample) {
-                const now = this.resample();
-                pending = now?.text || '';
-                if (now) this._target = now.target || null;
+        this._pendingKey = key;
+        this._showTimer = setTimeout(() => this._reveal(), HOVER_PLATE_DELAY_MS);
+    }
+
+    // The dwell ran out: re-read the pointer. The same thing shows; a
+    // replacement starts its own dwell; nothing shows nothing.
+    _reveal() {
+        const key = this._pendingKey;
+        let text = this._pending;
+        this._pending = null;
+        this._pendingKey = null;
+        if (text && this.resample) {
+            const now = this.resample();
+            if (!now?.text) return;
+            const nowKey = now.key ?? now.text;
+            if (nowKey !== key) {
+                this.update(now.text, this._point, now.target || null, nowKey);
+                return;
             }
-            if (pending) this._show(pending);
-        }, HOVER_PLATE_DELAY_MS);
+            text = now.text;
+            this._target = now.target || null;
+        }
+        if (text) this._show(text);
     }
 
     // A held finger: at once, then gone after `holdMs`.
@@ -184,6 +203,7 @@ export class WorldHoverPlate {
         clearTimeout(this._holdTimer);
         this._showTimer = this._hideTimer = this._holdTimer = 0;
         this._pending = null;
+        this._pendingKey = null;
         this._held = false;
         if (!this.visible) return;
         this.el.hidden = true;
