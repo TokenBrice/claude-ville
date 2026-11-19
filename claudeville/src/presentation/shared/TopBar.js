@@ -245,6 +245,14 @@ export function countsPending(state) {
     return phase === VillagePhase.FAILED && !state?.link?.lastSnapshotAt;
 }
 
+// XP-6 — the doors between the operator's own village and a simulated one:
+// the showcase day with its time-lapse, and the plain page back.
+export const SIMULATED_VILLAGE_SEARCH = '?sim=1&scenario=readme-showcase&timelapse=1';
+
+export function villageDoorHref(pathname, { simulated = false } = {}) {
+    return `${pathname || '/'}${simulated ? SIMULATED_VILLAGE_SEARCH : ''}`;
+}
+
 /**
  * The connection chip follows the village phase: it never says LIVE (or
  * lights green) while the village is still syncing, and says DEGRADED while
@@ -253,6 +261,8 @@ export function countsPending(state) {
  * provider that cannot be read.
  */
 export function connectionChip(state, now = Date.now()) {
+    // XP-2 — RETOLD sits where SIMULATED does, from the first frame.
+    if (state?.retold) return { label: 'RETOLD', state: LinkState.LIVE, stale: false };
     const phase = state?.phase;
     if (phase === VillagePhase.STARTING || phase === VillagePhase.SYNCING) {
         return { label: 'SYNCING', state: LinkState.SYNCING, stale: false };
@@ -1803,6 +1813,11 @@ export class TopBar {
         }
         const code = link.lastErrorCode || this._villageState.failureCode;
         if (code) rows.push(el('div', { text: `Reason: ${connectionReasonText(code)}` }));
+        if (this._villageState.retold || this._villageState.source === 'simulator') {
+            const back = el('a', { className: 'topbar__connection-return', text: 'RETURN TO YOUR VILLAGE' });
+            back.href = villageDoorHref(location.pathname);
+            rows.push(back);
+        }
         replaceChildren(panel, rows);
     }
 
