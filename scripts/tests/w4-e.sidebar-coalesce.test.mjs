@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { Sidebar } from '../../claudeville/src/presentation/shared/Sidebar.js';
+import { Sidebar, crewLeadsById, nestCrewRows } from '../../claudeville/src/presentation/shared/Sidebar.js';
+import { isImplicitSessionTeam } from '../../claudeville/src/presentation/shared/TeamColor.js';
+import { projectKeyForAgent } from '../../claudeville/src/presentation/shared/AgentPresentation.js';
+import { getWorldScenario } from '../../claudeville/src/presentation/character-mode/__simfixture__/WorldScenarios.js';
 
 function makeSidebar() {
     const frames = [];
@@ -133,4 +136,75 @@ test('destroy cancels the pending frame and prevents its callback from rendering
     frames[0]();
     assert.equal(sidebar._renderCalls, 0);
     assert.deepEqual(sidebar._indexedAgents, []);
+});
+
+// FK-4 — a fleet reads as a fleet: the crew nests under its lead, in the
+// lead's group, whatever directory a child works in.
+function councilAgents() {
+    return getWorldScenario('council-fleet').agents.map(spec => ({
+        ...spec,
+        parentSessionId: spec.parentId || null,
+    }));
+}
+
+test('council-fleet: every child groups with its lead and nests after it', () => {
+    const agents = councilAgents();
+    const leads = crewLeadsById(agents);
+    const lead = agents.find(agent => !agent.parentSessionId);
+    assert.equal(leads.size, 20);
+    const groupKeys = new Set(agents.map(agent => projectKeyForAgent(leads.get(agent.id) || agent)));
+    assert.deepEqual([...groupKeys], [lead.projectPath], 'MCP jobs in their own directory nest under the lead group');
+
+    // Arrival order interleaves; the nesting does not.
+    const early = [agents[3], agents[6]];
+    const unique = [...early, ...agents.filter(agent => !early.includes(agent))];
+    assert.notEqual(unique[0].id, lead.id);
+    const { topLevel, workflows, crews } = nestCrewRows(unique, leads);
+    assert.deepEqual(topLevel.map(agent => agent.id), [lead.id]);
+    assert.equal(workflows.size, 0, 'workflow members ride inside the crew');
+    assert.equal(crews.get(lead.id).length, 20);
+});
+
+test('a nested crew climbs to its topmost live lead; an ended lead leaves a top-level child', () => {
+    const agents = [
+        { id: 'lead', parentSessionId: null },
+        { id: 'mid', parentSessionId: 'lead' },
+        { id: 'leaf', parentSessionId: 'mid' },
+        { id: 'orphan', parentSessionId: 'gone' },
+    ];
+    const leads = crewLeadsById(agents);
+    assert.equal(leads.get('leaf').id, 'lead');
+    assert.equal(leads.has('orphan'), false);
+    const { topLevel, crews } = nestCrewRows(agents, leads);
+    assert.deepEqual(topLevel.map(agent => agent.id), ['lead', 'orphan']);
+    assert.deepEqual(crews.get('lead').map(agent => agent.id), ['mid', 'leaf']);
+
+    // A filtered-out lead: its visible child stands alone and keeps its link.
+    const alone = nestCrewRows(agents.slice(1), leads);
+    assert.deepEqual(alone.topLevel.map(agent => agent.id), ['mid', 'leaf', 'orphan']);
+});
+
+test('the implicit session- team of one lead shows no team swatch', () => {
+    const agents = councilAgents();
+    const team = agents.find(agent => agent.teamName)?.teamName;
+    assert.ok(team.startsWith('session-'));
+    assert.equal(isImplicitSessionTeam(team, agents.filter(agent => agent.teamName === team)), true);
+    assert.equal(isImplicitSessionTeam('Gather Blue', [{ parentSessionId: 'lead' }]), false);
+    assert.equal(isImplicitSessionTeam('session-x', [{ parentSessionId: 'a' }, { parentSessionId: 'b' }]), false);
+});
+
+test('CX-3: a renamed linked worktree repaints the row', () => {
+    const sidebar = Object.assign(Object.create(Sidebar.prototype), {
+        _agentRows: new Map(),
+        world: { agents: new Map() },
+    });
+    const patched = [];
+    sidebar._createAgentRow = () => ({});
+    sidebar._patchAgentRow = (_row, agent, _profile, extras) => patched.push([agent.worktree.name, Boolean(extras.nested)]);
+    const agent = { id: 'a', name: 'Ada', worktree: { name: 'one', path: '/r/one', isMain: false } };
+    sidebar._getAgentRow(agent, { accent: '#123456' }, {});
+    agent.worktree = { ...agent.worktree, name: 'two' };
+    sidebar._getAgentRow(agent, { accent: '#123456' }, {});
+    sidebar._getAgentRow(agent, { accent: '#123456' }, { nested: true });
+    assert.deepEqual(patched, [['one', false], ['two', false], ['two', true]]);
 });
