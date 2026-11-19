@@ -201,6 +201,32 @@ export function castLightingFor(atmosphere) {
 }
 
 // SD-1 — the shade the sun throws under this grade, or null with no sun.
+// The shade's sweep buckets for a sun at `elevation` (deg) and shadow angle
+// `rawAngle` (rad): a sun on the horizon throws the cap.
+function shadeSweepBuckets(elevation, rawAngle) {
+    const [short, long] = SHADE_LENGTH_CAP;
+    const cap = short + (long - short) * clamp(lookStrength('sd1len'));
+    const real = HEIGHT_GROUND_PX / Math.tan(Math.max(1, elevation) * Math.PI / 180);
+    const eased = real / Math.pow(1 + Math.pow(real / cap, SHADE_CAP_KNEE), 1 / SHADE_CAP_KNEE);
+    const lengthBucket = Math.max(1, Math.round(eased * SHADE_LENGTH_STEPS));
+    const angleBucket = Math.round(rawAngle * SHADE_ANGLE_STEPS);
+    return { lengthBucket, angleBucket, length: lengthBucket / SHADE_LENGTH_STEPS, angle: angleBucket / SHADE_ANGLE_STEPS };
+}
+
+/**
+ * EN-6 — the sun's sweep `{ sx, sy, key }` for an atmosphere snapshot, the
+ * same buckets the shade field casts with, but independent of the shade
+ * looks and the quality tier (null with the sun down), so every renderer
+ * and tier can judge a roof plane's facing and cast shade alike.
+ */
+export function sunSweepFor(atmosphere) {
+    const elevation = finite(atmosphere?.solar?.elevationDeg, 45);
+    if (!(elevation > 0)) return null;
+    const rawAngle = Number.isFinite(atmosphere?.lighting?.shadowAngleRad) ? atmosphere.lighting.shadowAngleRad : 0.28;
+    const { lengthBucket, angleBucket, length, angle } = shadeSweepBuckets(elevation, rawAngle);
+    return Object.freeze({ sx: Math.cos(angle) * length, sy: Math.sin(angle) * length * 0.5, key: `${angleBucket}|${lengthBucket}` });
+}
+
 function shadeLightingFor(strength, grade, solar, rawAngle, color, cloudCover = 0) {
     const elevation = finite(solar?.elevationDeg, 45);
     // The sun's share, in eighths: the grade's sun band times the real sun's
@@ -209,15 +235,7 @@ function shadeLightingFor(strength, grade, solar, rawAngle, color, cloudCover = 
         * clamp(elevation / SHADE_SUN_RISEN_DEG) * 8) / 8;
     const alpha = Math.round(SHADE_ALPHA * strength * share * 32) / 32;
     if (!(alpha > 0)) return null;
-    const [short, long] = SHADE_LENGTH_CAP;
-    const cap = short + (long - short) * clamp(lookStrength('sd1len'));
-    // A sun on the horizon throws the cap.
-    const real = HEIGHT_GROUND_PX / Math.tan(Math.max(1, elevation) * Math.PI / 180);
-    const eased = real / Math.pow(1 + Math.pow(real / cap, SHADE_CAP_KNEE), 1 / SHADE_CAP_KNEE);
-    const lengthBucket = Math.max(1, Math.round(eased * SHADE_LENGTH_STEPS));
-    const angleBucket = Math.round(rawAngle * SHADE_ANGLE_STEPS);
-    const length = lengthBucket / SHADE_LENGTH_STEPS;
-    const angle = angleBucket / SHADE_ANGLE_STEPS;
+    const { lengthBucket, angleBucket, length, angle } = shadeSweepBuckets(elevation, rawAngle);
     // SD-2 — the step a receiver in cast shade drops under this sun (a
     // multiplier, in 1/64).
     const receive = clamp(lookStrength('sd2')) * share;

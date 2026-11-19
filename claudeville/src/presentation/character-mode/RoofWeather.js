@@ -82,6 +82,7 @@
 import { ART_RAMPS } from '../../config/artPalette.js';
 import { releaseCanvasBackingStore } from './CanvasBudget.js';
 import { liquidPrecipitation, PRECIPITATING, snowBucketOf } from './GroundState.js';
+import { SHADE_CELL_H, SHADE_CELL_W, SHADE_SURFACE, buildShadeField, createShadeViewBuild, shadeFieldRect, shadeSurfaceAt } from './ShadeField.js';
 
 export const ROOF_WET_QUANTA = 4;
 export const ROOF_DRIP_FRAMES = 12;
@@ -775,6 +776,36 @@ export function roofGlintRun(map, side, lit = null, litKey = '') {
     return run;
 }
 
+// Texel A codes where the low sun does not reach a roof texel.
+const SUN_SHADED = new Set([
+    SHADE_SURFACE.wallCast, SHADE_SURFACE.wallTurned, SHADE_SURFACE.topCast, SHADE_SURFACE.topTurned, SHADE_SURFACE.flatTurned,
+]);
+
+/**
+ * Pure (EN-6): the sun's verdict over `map`'s roof box, from the massing
+ * itself, so every renderer and quality tier reads the same answer: the
+ * view planes and a shade field of `facets` (the landmarks' CPU massing,
+ * ShadeField `massingFacets`) under `sweep` (RakingLight `sunSweepFor`),
+ * built only over the box on the village field's cell grid. `ox`, `oy`
+ * are the sprite's world top-left. Returns `lit(x, y)` in sprite texels:
+ * false where the plane under that texel is turned from the sun or another
+ * mass casts on it.
+ */
+export function roofSunVerdict(map, { ox, oy, sweep, facets }) {
+    const grid = shadeFieldRect();
+    const x0 = ox + map.left;
+    const y0 = oy + map.top;
+    const originX = grid.originX + Math.floor((x0 - grid.originX) / SHADE_CELL_W) * SHADE_CELL_W;
+    const originY = grid.originY + Math.floor((y0 - grid.originY) / SHADE_CELL_H) * SHADE_CELL_H;
+    const cols = Math.ceil((x0 + map.w - originX) / SHADE_CELL_W) + 1;
+    const rows = Math.ceil((y0 + map.h - originY) / SHADE_CELL_H) + 1;
+    const rect = { originX, originY, cellW: SHADE_CELL_W, cellH: SHADE_CELL_H, cols, rows };
+    const view = createShadeViewBuild({ rect, facets });
+    while (!view.step(Infinity));
+    const field = buildShadeField({ rect, sweep, facets, texels: new Uint8Array(cols * rows * 4), view: view.view });
+    return (x, y) => !SUN_SHADED.has(shadeSurfaceAt(field, ox + x + 0.5, oy + y + 0.5));
+}
+
 /** Pure (EN-6): the run's bounding box `{ left, top, w, h }` in sprite texels, or null. */
 export function roofGlintBox(map, run) {
     if (!run?.length) return null;
@@ -1104,6 +1135,7 @@ export class RoofWeather {
         this._maps = new Map();
         this._patches = new Map();
         this._drips = new Map();
+        this._verdicts = new Map();
     }
 
     get key() {
@@ -1196,13 +1228,22 @@ export class RoofWeather {
         if (!this.bucket && !this.wetQ && !this.glint) return null;
         const map = this.map(type);
         if (!map?.albedo) return null;
-        // `shade`: `{ lit(x, y), key }`, the frame's shade-field verdict in
-        // sprite texels (BuildingSprite.roofPatchFor), or null without a field.
-        const lit = this.glint && shade?.lit ? shade.lit : null;
-        const litKey = lit ? String(shade.key ?? '') : '';
+        // `shade`: `{ ox, oy, sweep, facets }` (BuildingSprite.roofPatchFor):
+        // the sprite's world top-left, the sun's sweep and the massing, for
+        // the sun verdict (roofSunVerdict), cached per sweep and position.
+        const litKey = this.glint && shade?.sweep ? `${shade.sweep.key}|${shade.ox},${shade.oy}` : '';
         const key = `${this.key}|${litKey}`;
         let entry = this._patches.get(type);
         if (entry?.key === key) return entry.empty ? null : entry;
+        let lit = null;
+        if (litKey) {
+            let verdict = this._verdicts.get(type);
+            if (verdict?.key !== litKey) {
+                verdict = { key: litKey, lit: roofSunVerdict(map, shade) };
+                this._verdicts.set(type, verdict);
+            }
+            lit = verdict.lit;
+        }
         // EN-6: a dry, snowless roof patches only the glint run's box (at
         // most ROOF_GLINT_BOX), with its own channel crops; weather keeps the
         // whole roof box.
@@ -1268,5 +1309,6 @@ export class RoofWeather {
         this._patches.clear();
         this._drips.clear();
         this._maps.clear();
+        this._verdicts.clear();
     }
 }

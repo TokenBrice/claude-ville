@@ -41,8 +41,9 @@ import { dayPartBeatsAt } from './AmbientEvents.js';
 import { paintWreath } from './VillageCalendar.js';
 import { bakeEmitterCycle, emitterCyclePhase } from './EmitterCycle.js';
 import { ART_RAMPS } from '../../config/artPalette.js';
-import { castLightingFor, castOverWater, frameShadeLayer, stampCastFor, structureCast } from './RakingLight.js';
-import { SHADE_SURFACE, shadeSurfaceAt } from './ShadeField.js';
+import { castLightingFor, castOverWater, stampCastFor, structureCast, sunSweepFor } from './RakingLight.js';
+import { massingFacets } from './ShadeField.js';
+import { LANDMARK_MASSING } from '../../config/landmarkMassing.js';
 import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
 import { buildingCenterToWorld, tileToWorld, worldToTile } from './Projection.js';
 import { frontEdgeFoot, landmarkFootprint } from './FootprintField.js';
@@ -336,11 +337,6 @@ function compareBuildingDrawableDepth(a, b) {
         || (BUILDING_DRAWABLE_SORT_BAND[a.kind] - BUILDING_DRAWABLE_SORT_BAND[b.kind]);
 }
 
-// EN-6 — texel A codes where the low sun does not reach a roof texel.
-const ROOF_GLINT_SHADED = new Set([
-    SHADE_SURFACE.wallCast, SHADE_SURFACE.wallTurned, SHADE_SURFACE.topCast, SHADE_SURFACE.topTurned, SHADE_SURFACE.flatTurned,
-]);
-
 function lerp(a, b, t) {
     return a + (b - a) * t;
 }
@@ -593,6 +589,7 @@ export class BuildingSprite {
         // Accepts a Map (preferred — matches world.buildings) or an Array.
         this.buildings = map instanceof Map ? Array.from(map.values()) : Array.from(map);
         this._drawablesCache = null;
+        this._glintFacets = null;
         this._lightSourcesCache = null;
         this._labelMetricsCache.clear();
     }
@@ -5413,23 +5410,21 @@ export class BuildingSprite {
         return type ? this.roofWeather.patch(type, this.roofWeather.glint ? this._roofGlintShade(building) : null) : null;
     }
 
-    // EN-6 — the shade field's verdict for the low-sun glint in `building`'s
-    // sprite texels: false where the massing turns the plane from the sun or
-    // another mass casts on it (texel A, the SD-2 receivers' own read), so
-    // the run lies only where the sun reaches. Null while the frame's field
-    // carries no receiver texels (then the run keeps the lit pitch alone).
+    // EN-6 — what the low-sun glint's sun verdict needs for `building`
+    // (RoofWeather.roofSunVerdict): the sprite's world top-left, the sun's
+    // sweep (RakingLight.sunSweepFor, independent of looks and tier) and
+    // the landmarks' CPU massing, so Canvas and both GPU paths at every
+    // quality tier keep the run off a plane turned from the sun or in cast
+    // shade. Null with the sun down.
     _roofGlintShade(building) {
-        const field = frameShadeLayer()?.field;
-        if (!field?.texels) return null;
+        const sweep = sunSweepFor(this.atmosphereState);
+        if (!sweep) return null;
         const anchor = this.assets.getAnchor?.(`building.${building.type}`);
         if (!anchor) return null;
         const center = this._buildingScreenCenter(building);
-        const ox = Math.round(center.x - anchor[0]);
-        const oy = Math.round(center.y - anchor[1]);
-        return {
-            key: `${field.key}|${ox},${oy}`,
-            lit: (x, y) => !ROOF_GLINT_SHADED.has(shadeSurfaceAt(field, ox + x + 0.5, oy + y + 0.5)),
-        };
+        this._glintFacets ||= this.buildings.flatMap((b) => (LANDMARK_MASSING[b.type]?.solids?.length
+            ? massingFacets(LANDMARK_MASSING[b.type], b, buildingCenterToWorld(b)) : []));
+        return { ox: Math.round(center.x - anchor[0]), oy: Math.round(center.y - anchor[1]), sweep, facets: this._glintFacets };
     }
 
     // The eave-drip strip of `building` at the current drip frame, while it

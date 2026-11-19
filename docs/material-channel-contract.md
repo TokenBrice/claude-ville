@@ -917,5 +917,5 @@ onto existing stops (`OAK_FROM`: the plum-shaded oak onto `timber`, the
 warm oak kept; `IRON_FROM`: the straps, rings and braziers off the ashlar
 mauve onto `slate`, their highlights onto `wetSlate[2]`), and the same
 edits on the gate strip (frame 0 restated from the base crop, the ajar and
-open frames inside the door's arch), so `restIsBase` holds. Re-bake, validate, and inspect the
+open frames inside the door's arch), so `restIsBase` holds. An edit that would change the roof map (roof class, trim or snow-cap mask; `RoofWeather.roofWeatherMap` reads colour) is undone, so roof weather is exactly the pre-edit art's: 110 Tavern fascia texels keep their plum oak. Re-bake, validate, and inspect the
 channel contact sheet before committing a sidecar.

@@ -275,23 +275,21 @@ test('Command and Tavern facades carry timber and metal in the world atlas', asy
 });
 
 // EN-2 — the ramp edits: no facade fitting keeps the ashlar mauve or the
-// plum oak, and the gate strip's closed frame is still the base crop.
+// plum oak, except the texels the roof guard holds (a recolour there would
+// move the roof class or snow-cap mask: the Tavern fascia).
 test('Command and Tavern fittings sit on the oak and iron ramps', async () => {
     const { readFileSync } = await import('node:fs');
     const { createRequire } = await import('node:module');
     const { PNG } = createRequire(import.meta.url)('pngjs');
-    const { OAK_FROM, IRON_FROM } = await import('../sprites/paint-facade-materials.mjs');
+    const { facadeAlbedo } = await import('../sprites/paint-facade-materials.mjs');
     const root = new URL('../../claudeville/assets/sprites/buildings/', import.meta.url);
-    const hex = (d, i) => `#${[0, 1, 2].map((k) => d[i + k].toString(16).padStart(2, '0')).join('')}`;
+    const read = (type, name) => PNG.sync.read(readFileSync(new URL(`building.${type}/${name}`, root)));
     for (const type of ['command', 'tavern']) {
-        const albedo = PNG.sync.read(readFileSync(new URL(`building.${type}/base.png`, root)));
-        const material = PNG.sync.read(readFileSync(new URL(`building.${type}/base.material.png`, root)));
-        let left = 0;
-        for (let i = 0; i < albedo.data.length; i += 4) {
-            if (!albedo.data[i + 3]) continue;
-            const c = material.data[i];
-            if ((c === MATERIAL_CLASS_IDS.timber && OAK_FROM[hex(albedo.data, i)]) || (c === MATERIAL_CLASS_IDS.metal && IRON_FROM[hex(albedo.data, i)])) left++;
-        }
-        assert.equal(left, 0, `${type}: fittings still off the oak/iron ramps`);
+        const albedo = read(type, 'base.png');
+        const material = read(type, 'base.material.png');
+        const unguarded = facadeAlbedo(albedo, material);
+        const guarded = facadeAlbedo(albedo, material, { occluder: read(type, 'base.occluder.png'), emissive: read(type, 'base.emissive.png') });
+        assert.equal(guarded.changed, 0, `${type}: fittings still off the oak/iron ramps`);
+        assert.ok(unguarded.changed <= (type === 'tavern' ? 110 : 0), `${type}: only the guarded fascia keeps its colour (${unguarded.changed})`);
     }
 });

@@ -6,6 +6,7 @@ import { PNG } from 'pngjs';
 import {
     ROOF_GLINT_BOX,
     roofGlintBox,
+    roofSunVerdict,
     ROOF_GLINT_TEXELS,
     paintRoofWeather,
     roofGlintRun,
@@ -17,7 +18,8 @@ import {
 import { createAtmosphereSnapshot } from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
 import { BuildingSprite } from '../../claudeville/src/presentation/character-mode/BuildingSprite.js';
 import { ART_RAMPS } from '../../claudeville/src/config/artPalette.js';
-import { castLightingFor } from '../../claudeville/src/presentation/character-mode/RakingLight.js';
+import { castLightingFor, sunSweepFor } from '../../claudeville/src/presentation/character-mode/RakingLight.js';
+import { collectSpriteEntries, loadSpriteManifest } from '../sprites/manifest-utils.mjs';
 import {
     SHADE_SURFACE,
     buildShadeField,
@@ -417,10 +419,14 @@ function receiverField(atmosphere) {
 const SHADED = new Set([SHADE_SURFACE.wallCast, SHADE_SURFACE.wallTurned, SHADE_SURFACE.topCast, SHADE_SURFACE.topTurned, SHADE_SURFACE.flatTurned]);
 const ATLAS = JSON.parse(readFileSync(new URL('../../claudeville/assets/sprites/atlases/world-pilot.json', import.meta.url)));
 
-test('the glint lies only where the shade field lets the sun reach (the Forge roof is turned at dusk)', () => {
+test('the glint lies only where the sun reaches, judged from the massing on every path and tier', () => {
     for (const [hour, minute] of [[17, 30], [18, 30]]) {
         const atmosphere = equinox(hour, minute);
         const field = receiverField(atmosphere);
+        const sweep = sunSweepFor(atmosphere);
+        assert.ok(sweep, 'the sun is up');
+        // The tier-free sweep is the frame field's own (same buckets).
+        assert.equal(sweep.key, castLightingFor(atmosphere).shade.key);
         const side = roofGlintSide(atmosphere);
         for (const def of BUILDING_DEFS) {
             const sprite = landmark(def.type);
@@ -430,15 +436,18 @@ test('the glint lies only where the shade field lets the sun reach (the Forge ro
             const ox = Math.round(centre.x - anchor[0]);
             const oy = Math.round(centre.y - anchor[1]);
             const code = (x, y) => shadeSurfaceAt(field, ox + x + 0.5, oy + y + 0.5);
+            const lit = roofSunVerdict(sprite.map, { ox, oy, sweep, facets: MASSING_FACETS });
             const unfiltered = roofGlintRun(sprite.map, side);
-            const run = roofGlintRun(sprite.map, side, (x, y) => !SHADED.has(code(x, y)), `test-${hour}`);
+            const run = roofGlintRun(sprite.map, side, lit, `verdict-${hour}`);
             for (const p of run) {
                 const x = p % sprite.albedo.width;
-                assert.ok(!SHADED.has(code(x, Math.floor(p / sprite.albedo.width))), `${def.type} ${hour}:${minute}: a glint texel the sun does not reach`);
+                const y = Math.floor(p / sprite.albedo.width);
+                assert.ok(!SHADED.has(code(x, y)), `${def.type} ${hour}:${minute}: a glint texel the village field shades`);
             }
             if (def.type === 'forge') {
-                assert.ok(unfiltered.every((p) => code(p % sprite.albedo.width, Math.floor(p / sprite.albedo.width)) === SHADE_SURFACE.topTurned),
-                    'without the field the Forge run lies on its turned pitch');
+                assert.ok(unfiltered.length && unfiltered.every((p) => code(p % sprite.albedo.width, Math.floor(p / sprite.albedo.width)) === SHADE_SURFACE.topTurned),
+                    'without the verdict the Forge run lies on its turned pitch');
+                assert.ok(run.every((p) => !unfiltered.includes(p)), 'the Forge glint leaves its turned pitch');
             }
         }
     }
@@ -463,20 +472,54 @@ test('after rain the glint steps up from the wet course, never below it, and the
     }
 });
 
+const MANIFEST = new Map(collectSpriteEntries(loadSpriteManifest()).map((entry) => [entry.id, entry]));
+
 test('a glint-only patch is its run box, at most 16x4, inside one split half', () => {
+    let split = 0;
     for (const type of LANDMARKS) {
         const sprite = landmark(type);
         if (!sprite.map) continue;
-        const entry = ATLAS.frames[`building.${type}`];
-        sprite.map.horizonY = Number.isFinite(entry.horizonY) ? entry.horizonY : null;
+        const entry = MANIFEST.get(`building.${type}`);
+        sprite.map.horizonY = entry?.splitForOcclusion && Number.isFinite(Number(entry.horizonY)) ? Number(entry.horizonY) : null;
         const run = roofGlintRun(sprite.map, '-1,-1', null, 'split');
         const box = roofGlintBox(sprite.map, run);
         if (!box) continue;
         assert.ok(box.w <= ROOF_GLINT_BOX[0] && box.h <= ROOF_GLINT_BOX[1], `${type} box ${box.w}x${box.h}`);
         if (sprite.map.horizonY != null) {
+            split++;
             assert.ok(box.top + box.h <= sprite.map.horizonY || box.top >= sprite.map.horizonY, `${type}: one split half`);
         }
         const out = new Uint8ClampedArray(box.w * box.h * 4);
         assert.equal(paintRoofWeather(sprite.map, sprite.albedo.data, out, { glint: '-1,-1', box }), run.length);
+    }
+    assert.ok(split >= 2, `the manifest horizons reach the split landmarks (${split})`);
+});
+
+test('a run that would straddle the split horizon keeps to its seed half', () => {
+    const sprite = landmark('tavern');
+    sprite.map.horizonY = null;
+    const whole = roofGlintRun(sprite.map, '-1,-1', null, 'whole');
+    const box = roofGlintBox(sprite.map, whole);
+    assert.ok(box.h >= 2, 'the free run spans rows');
+    // A horizon through the middle of the free run.
+    sprite.map.horizonY = box.top + 1;
+    const cut = roofGlintRun(sprite.map, '-1,-1', null, 'cut');
+    const rows = cut.map((p) => Math.floor(p / sprite.albedo.width));
+    assert.ok(cut.length > 0 && cut.length < whole.length, 'the cut run is shorter');
+    const back = rows[0] < sprite.map.horizonY;
+    assert.ok(rows.every((y) => (y < sprite.map.horizonY) === back), 'one half only');
+});
+
+// EN-2 — the facade recolour leaves roof weather exactly as it was: the
+// counts below are the snow-cap mask and the full-cover paint of the art
+// before the ramp edits (integration 4e601945).
+test('the facade ramp edits keep the roof class and snow-cap masks', () => {
+    for (const [type, caps, cover] of [['tavern', 174, 10985], ['command', 203, 8824]]) {
+        const { map, albedo } = landmark(type);
+        let capped = 0;
+        for (let p = 0; p < map.cap.length; p++) if (map.cap[p] >= 0) capped++;
+        assert.equal(capped, caps, `${type} cap mask`);
+        const out = new Uint8ClampedArray(map.w * map.h * 4);
+        assert.equal(paintRoofWeather(map, albedo.data, out, { bucket: 4 }), cover, `${type} full cover`);
     }
 });

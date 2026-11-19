@@ -19,6 +19,7 @@ import { PNG } from 'pngjs';
 import { spritesRoot } from './manifest-utils.mjs';
 import { materialClassId } from '../../claudeville/src/presentation/character-mode/MaterialRegistry.js';
 import { ART_RAMPS } from '../../claudeville/src/config/artPalette.js';
+import { roofWeatherMap } from '../../claudeville/src/presentation/character-mode/RoofWeather.js';
 
 const STONE = materialClassId('stone');
 const TIMBER = materialClassId('timber');
@@ -207,10 +208,15 @@ export function facadeMaterial(type, albedo, emissive) {
 const read = (rel) => PNG.sync.read(readFileSync(join(spritesRoot, rel)));
 
 // The ramp edits on `albedo` (a copy) for the classes in `material` (R).
-export function facadeAlbedo(albedo, material) {
+// `roof` ({ occluder, emissive }, the landmark's companions) guards roof
+// weather: an edit that would change the roof class, trim or snow-cap mask
+// of the roof map (RoofWeather.roofWeatherMap reads colour: a plum fascia is
+// vivid and takes no cap, the darker oak stop would) is undone, until the
+// edited map's masks equal the input's exactly.
+export function facadeAlbedo(albedo, material, roof = null) {
     const out = new PNG({ width: albedo.width, height: albedo.height, colorType: 6 });
     albedo.data.copy(out.data);
-    let changed = 0;
+    const edited = [];
     for (let p = 0; p < albedo.width * albedo.height; p++) {
         const i = p * 4;
         if (!albedo.data[i + 3]) continue;
@@ -220,9 +226,37 @@ export function facadeAlbedo(albedo, material) {
         out.data[i] = parseInt(to.slice(1, 3), 16);
         out.data[i + 1] = parseInt(to.slice(3, 5), 16);
         out.data[i + 2] = parseInt(to.slice(5, 7), 16);
-        changed++;
+        edited.push(p);
     }
-    return { png: out, changed };
+    let kept = edited.length;
+    if (roof?.occluder && edited.length) {
+        const mapOf = (data) => roofWeatherMap({ width: albedo.width, height: albedo.height, albedo: data, occluder: roof.occluder.data, material: material.data, emissive: roof.emissive?.data || null });
+        const base = mapOf(albedo.data);
+        const live = new Set(edited);
+        for (let pass = 0; pass < 8; pass++) {
+            const now = mapOf(out.data);
+            const moved = roofMaskDiff(base, now);
+            const undo = moved.filter((p) => live.has(p));
+            if (!moved.length) break;
+            if (!undo.length) throw new Error('facade ramp edits moved the roof masks off the edited texels');
+            for (const p of undo) {
+                for (let k = 0; k < 3; k++) out.data[p * 4 + k] = albedo.data[p * 4 + k];
+                live.delete(p);
+            }
+        }
+        kept = live.size;
+    }
+    return { png: out, changed: kept };
+}
+
+// Texels whose roof class, trim or cap differs between two roof maps.
+function roofMaskDiff(a, b) {
+    if (!a || !b) return a === b ? [] : [-1];
+    const out = [];
+    for (let p = 0; p < a.cls.length; p++) {
+        if (a.cls[p] !== b.cls[p] || a.cap[p] !== b.cap[p] || a.trimmed[p] !== b.trimmed[p]) out.push(p);
+    }
+    return out;
 }
 
 // Command's gate strip (manifest layers.gate: 3 frames of 40x80, bottom-centre
@@ -267,7 +301,8 @@ function main() {
         const albedo = read(`${dir}/base.png`);
         const emissive = existsSync(join(spritesRoot, dir, 'base.emissive.png')) ? read(`${dir}/base.emissive.png`) : null;
         const first = facadeMaterial(type, albedo, emissive);
-        const { png: edited, changed } = facadeAlbedo(albedo, first);
+        const occluder = existsSync(join(spritesRoot, dir, 'base.occluder.png')) ? read(`${dir}/base.occluder.png`) : null;
+        const { png: edited, changed } = facadeAlbedo(albedo, first, { occluder, emissive });
         const png = facadeMaterial(type, edited, emissive);
         const target = join(spritesRoot, dir, 'base.material.png');
         const counts = {};
