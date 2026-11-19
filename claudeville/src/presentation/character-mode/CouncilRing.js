@@ -11,6 +11,7 @@ import { gradeColor } from './AtmosphereState.js';
 import { dottedCurve, snap } from './EffectStamps.js';
 import { drawSquadPennon, SQUAD_DEVICES } from './PixelPennant.js';
 import { cueNoteDue } from '../shared/audio/CueScore.js';
+import { postcardFrame } from './Postcard.js';
 
 const MAX_TALK_ARCS = 8;
 // #27 — slow band: one full mote traversal per ~1.8s travelling along the arc.
@@ -492,7 +493,8 @@ function drawGatherRollCall(ctx, {
         ctx.fillRect(left, top, COUNCIL_NOTCH_SIZE, COUNCIL_NOTCH_SIZE);
     }
 
-    if (immediate || cueNoteDue('council', teamName, total - 1, now)) {
+    // XP-5 — the team plate names the team: a postcard frame keeps the notches.
+    if (!postcardFrame() && (immediate || cueNoteDue('council', teamName, total - 1, now))) {
         const plaza = tileToScreen(COMMAND_PLAZA);
         const centroid = present.reduce(
             (acc, sprite) => ({

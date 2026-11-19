@@ -44,6 +44,7 @@ import { ungradeRgb } from './CanvasGrade.js';
 import { PEAK, armPeakMarks, drawMomentEdgePlates, setMomentStage, takePeakMarks } from './EffectStamps.js';
 import { THOUGHT_PAINT } from './ThoughtColumn.js';
 import { getReservedRects, publishReservedBox } from '../shared/ReservedRects.js';
+import { postcardFrame } from './Postcard.js';
 
 const FRAME_TIMING_RING_CAPACITY = 90;
 const FRAME_TIMER_MAX_MARKS = 48;
@@ -527,6 +528,9 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
         for (const kind in paintCounts.upper) paintCounts.upper[kind] = 0;
     }
     const renderNow = Date.now();
+    // XP-5 — a postcard frame (Postcard.js): every label tier below stands
+    // down; weather, light and marks draw as on any frame.
+    const postcard = postcardFrame();
     const villageSnapshot = renderer.villageDirector?.getSnapshot?.() || null;
     const viewport = renderer._screenViewport();
     // V8 — the frame's moment stage: every C4 moment (and the building chits)
@@ -945,7 +949,7 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
         // device scale and the same backing size (a fractional DPR edge is the
         // overlay's antialiased fill, which the plates keep drawing).
         const markScale = renderer._screenDpr();
-        gpuRenderContext.marks = renderer._attentionLayout?.count
+        gpuRenderContext.marks = !postcard && renderer._attentionLayout?.count
             && Number.isInteger(markScale)
             && overlayCtx.canvas?.width === renderer.gpuWorld.width
             && overlayCtx.canvas?.height === renderer.gpuWorld.height
@@ -999,7 +1003,7 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     // moment's cream peak frame goes to the GPU mark pass after the overlay
     // is drawn (EffectStamps.peakMarkSink, drawPeakMarks below); otherwise it
     // stays on the overlay.
-    const peakMarksArmed = gpuWorldRendered
+    const peakMarksArmed = !postcard && gpuWorldRendered
         && typeof renderer.gpuWorld?.drawLateMarks === 'function'
         && Number.isInteger(renderer._screenDpr())
         && overlayCtx.canvas?.width === renderer.gpuWorld.width
@@ -1037,7 +1041,7 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
         lighting: atmosphere?.lighting,
         grade: atmosphere?.grade,
     });
-    drawCrowdClusterBadges(overlayCtx, {
+    if (!postcard) drawCrowdClusterBadges(overlayCtx, {
         crowdStats: renderer._crowdStats,
         agentSprites: renderer.agentSprites,
         zoom,
@@ -1082,11 +1086,11 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     if (!gpuWorldRendered) {
         for (const sprite of sortedSprites) sprite.drawDeferredNameTag?.(overlayCtx);
     }
-    drawThoughtLayer(overlayCtx, sortedSprites, zoom);
+    if (!postcard) drawThoughtLayer(overlayCtx, sortedSprites, zoom);
     // 4.5 — the shared-file overlap plate. The thread and knot live in the
     // occluded ground texture; the exact counts belong here, once, in both
     // backends, so dense load keeps the numbers when the lines are dropped.
-    drawSharedFileOverlapLabel(overlayCtx, {
+    if (!postcard) drawSharedFileOverlapLabel(overlayCtx, {
         overlap: renderer.relationshipState?.getSnapshot?.()?.fileOverlap || null,
         agentSprites: renderer.agentSprites,
         zoom,
@@ -1111,7 +1115,7 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
             return { left: topLeft.x, top: topLeft.y, right: bottomRight.x, bottom: bottomRight.y };
         })()
         : null;
-    renderer.buildingRenderer?.drawLabels(overlayCtx, {
+    if (!postcard) renderer.buildingRenderer?.drawLabels(overlayCtx, {
         zoom,
         scaleMode: 'screen-fixed',
         occupiedBoxes: captionWorldBox
@@ -1146,6 +1150,12 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     markFrameTiming(frameTimer, 'labels');
 
     renderer._resetScreenTransform(overlayCtx);
+    // XP-5 — the screen tier (summaries, edge cues, letterbox, T1 plates, the
+    // caption, debug) is chrome: a postcard frame ends here.
+    if (postcard) {
+        finishFrameTiming(renderer, frameTimer);
+        return true;
+    }
     renderer.harborTraffic?.drawScreenSummary(overlayCtx, viewport, renderer.camera, renderNow);
     drawVillageDirectorScreen(overlayCtx, villageSnapshot, viewport);
     // 5.4 — the work score's badge and every exact count, once, on the shared
@@ -1422,6 +1432,9 @@ export function prepareSemanticGround(renderer, viewport, snapshot, atmosphere) 
         state.animated ? Math.floor((renderer.motionTimeMs || 0) / 125) : 0,
         renderer.motionScale,
         state.signature,
+        // XP-5 — a postcard frame redraws the retained cues (text-free) and
+        // the next live frame redraws them again.
+        postcardFrame(),
         // Light boost changes continuously through the day. Sub-byte alpha
         // drift must not turn a static cue texture into a per-frame upload.
         Math.round((atmosphere?.lighting?.lightBoost ?? 1) * 64), atmosphere?.grade?.worldTint,

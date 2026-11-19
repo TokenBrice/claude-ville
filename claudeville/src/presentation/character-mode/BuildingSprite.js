@@ -94,6 +94,7 @@ import { drawPennant, pennantFrame, pennantWind } from './PixelPennant.js';
 import { resolveObservation } from './ObservationCertainty.js';
 import { VillagePhase } from '../../application/VillageState.js';
 import { GOLD, GOLD_RAMP, dottedCurve, fillConvex, gradeTone, pixelLine, ringDots, snap } from './EffectStamps.js';
+import { postcardFrame } from './Postcard.js';
 
 // READ translates canonical classifier reasons, never tool names or input text.
 const READ_VERBS = Object.freeze({
@@ -2404,7 +2405,8 @@ export class BuildingSprite {
     // Returns true when drawn.
     _drawInstrumentPlate(ctx, x, y, text, { color = '#e8e2d6', align = 'center', type = null, border = null } = {}) {
         const line = String(text || '');
-        if (!line || !this._chitsVisible(type)) return false;
+        // XP-5 — a postcard frame prints no instrument plate.
+        if (!line || postcardFrame() || !this._chitsVisible(type)) return false;
         const zoom = this._zoom > 0 ? this._zoom : 1;
         ctx.save();
         ctx.font = WORLD_BODY_FONT_11;
@@ -2536,7 +2538,7 @@ export class BuildingSprite {
     // when the drop steps, and is absent when no one needs action.
     _drawAttentionBannerBoard(ctx, building, entry, wx, wy, splitPass = 'whole', horizonY = null) {
         const state = this.attentionBanner;
-        if (!state?.count) return;
+        if (!state?.count || postcardFrame()) return;
         const banner = getBuildingAttentionBanner(building.type);
         if (!banner) return;
         const drop = banner.drops[Math.max(0, Math.min(banner.drops.length - 1, state.tier | 0))];
@@ -4558,7 +4560,10 @@ export class BuildingSprite {
             : this._taskboardViewFor(board?.agent || null, 3);
         if (!view) return false;
         const zoom = this._zoom > 0 ? this._zoom : 1;
-        this._drawOnTaskboardSlate(ctx, localPoint, `board|${zoom}|${JSON.stringify(view)}`, (slateCtx, slateTopLeft) => (
+        // XP-5 — a postcard frame shows the slate wiped (its own cache key):
+        // the chalk names tasks and agents.
+        if (postcardFrame()) this._drawOnTaskboardSlate(ctx, localPoint, `board|${zoom}|postcard`, () => {}, { stepped: true });
+        else this._drawOnTaskboardSlate(ctx, localPoint, `board|${zoom}|${JSON.stringify(view)}`, (slateCtx, slateTopLeft) => (
             this._paintTaskboardChalk(slateCtx, slateTopLeft, view, zoom)
         ), { stepped: true });
         return true;
@@ -4774,7 +4779,7 @@ export class BuildingSprite {
     // never overhangs the chalk at any zoom.
     _drawTaskboardPlanTabs(ctx, localPoint) {
         const profile = getBuildingPlanTabProfile('taskboard');
-        if (!profile || !this._chitsVisible('taskboard')) return;
+        if (!profile || postcardFrame() || !this._chitsVisible('taskboard')) return;
         const summaries = this._taskboardBoardModel.summaries({
             candidates: this._taskboardCandidates || [],
             agentSprites: this.agentSprites,
@@ -5766,7 +5771,7 @@ export class BuildingSprite {
     // and an exact `+N more`. Counts, never percentages.
     _drawApertureLegend(ctx, localPoint, building, model, profile) {
         const legend = profile.legend;
-        if (!legend?.at) return;
+        if (!legend?.at || postcardFrame()) return;
         const rooms = this._roomSlotsByType.get(model.buildingType);
         const working = rooms ? rooms.working : 0;
         const waiting = rooms ? rooms.waiting : 0;

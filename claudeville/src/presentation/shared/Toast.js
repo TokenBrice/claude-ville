@@ -384,6 +384,10 @@ export class Toast {
         on('sound:status', (payload) => {
             this.showStatus(payload?.message);
         });
+        // XP-5: the P key's one static confirmation ("Postcard saved · …").
+        on('postcard:status', (payload) => {
+            this.showStatus(payload?.message);
+        });
         // SND-2: the sound state the armed offer reads; a sound that starts
         // by any route retires an offer still showing.
         this._soundState = null;
