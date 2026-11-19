@@ -8,8 +8,11 @@
 //
 // Pure arithmetic, allocation-free on reuse: Departure Mono at 11 px is a
 // fixed 7 px advance and Press Start 2P at 8 px a fixed 8 px advance, so every
-// width comes from a character count, never from measureText. The painter
-// fits its text into these boxes, so a fallback font can only leave slack.
+// width comes from a character count, never from measureText. The cut of an
+// overlong line is taken here too (`thoughtTextKeep`), and the painter draws
+// exactly the kept characters, so every box fits its line. The painter
+// re-fits only a line whose glyphs Departure Mono lacks, so a fallback face
+// can only leave slack.
 //
 // Static band: nothing here moves. A placement changes only when the layout
 // commits a new candidate (sticky, W3.3), never on a timer of its own.
@@ -87,10 +90,12 @@ export function createThoughtColumn() {
         tagWidth: 0,
         textLeft: 0,
         textWidth: 0,
+        headKeep: 0,
         countWidth: 0,
         historyCount: 0,
         historyWidth: [0, 0],
         historyTextWidth: [0, 0],
+        historyKeep: [0, 0],
         historyCenterY: [0, 0],
         left: 0,
         right: 0,
@@ -101,12 +106,41 @@ export function createThoughtColumn() {
     };
 }
 
-// Width of a line once the painter has fitted it: whole characters, with the
-// ellipsis taking the last cell when the line is cut.
-export function thoughtTextWidth(length, maxWidth) {
-    const full = length * THOUGHT_CHAR_ADVANCE;
-    if (full <= maxWidth) return full;
-    return Math.floor(maxWidth / THOUGHT_CHAR_ADVANCE) * THOUGHT_CHAR_ADVANCE;
+// How many leading characters of `text` a row `maxWidth` px wide shows. All of
+// them when the line fits, `suffix` cells after it included (the confidence
+// '?'). Otherwise the longest prefix that leaves the ellipsis its cell, pulled
+// back to the last word boundary when that keeps more than half of it (a path
+// or a command with no space is cut hard instead), never splitting a surrogate
+// pair, and without the spaces and stops that would dangle before the
+// ellipsis. A box sized from the kept characters fits its line; one sized from
+// the whole line would keep the cells the word boundary gave back.
+export function thoughtTextKeep(text, maxWidth, suffix = 0) {
+    if ((text.length + suffix) * THOUGHT_CHAR_ADVANCE <= maxWidth) return text.length;
+    let cut = Math.max(0, Math.floor(maxWidth / THOUGHT_CHAR_ADVANCE) - 1);
+    const boundary = text.lastIndexOf(' ', cut);
+    if (boundary > cut * 0.5) cut = boundary;
+    const code = text.charCodeAt(cut - 1);
+    if (code >= 0xd800 && code <= 0xdbff) cut--;
+    while (cut > 0 && danglesBeforeEllipsis(text.charCodeAt(cut - 1))) cut--;
+    return cut;
+}
+
+// A space (sanitation leaves no other whitespace) or one of , ; : . -
+function danglesBeforeEllipsis(code) {
+    return code <= 32 || code === 44 || code === 45 || code === 46 || code === 58 || code === 59;
+}
+
+// Width of a line `length` characters long that keeps `keep` of them: the
+// ellipsis takes one more cell when the line is cut, the `suffix` cells follow
+// a whole one.
+export function thoughtTextWidth(length, keep, suffix = 0) {
+    return (keep < length ? keep + 1 : length + suffix) * THOUGHT_CHAR_ADVANCE;
+}
+
+// The characters a fitted row paints: the whole line and its `suffix`, or the
+// kept prefix and the ellipsis.
+export function thoughtFittedText(text, keep, suffix = '') {
+    return keep < text.length ? `${text.slice(0, keep)}…` : text + suffix;
 }
 
 // A tool label below the classifier's confidence threshold carries a '?',
@@ -231,15 +265,17 @@ export function layoutThoughtColumn(out, thread, clock = false, chip = false, ta
     out.tagWidth = 0;
     out.countWidth = 0;
     out.textWidth = 0;
+    out.headKeep = 0;
     if (clock) {
         out.headWidth = THOUGHT_CLOCK_WIDTH;
         out.tail = THOUGHT_HEAD.tail;
         out.puffs = false;
         out.textLeft = 0;
     } else {
-        const text = head?.text || '';
-        const length = text.length + (needsConfidenceMark(text, head?.confidence) ? 1 : 0);
-        out.textWidth = thoughtTextWidth(length, THOUGHT_HEAD.maxText);
+        const text = String(head?.text || '');
+        const mark = needsConfidenceMark(text, head?.confidence) ? 1 : 0;
+        out.headKeep = thoughtTextKeep(text, THOUGHT_HEAD.maxText, mark);
+        out.textWidth = thoughtTextWidth(text.length, out.headKeep, mark);
         out.chipZone = chip ? THOUGHT_CHIP.inset + THOUGHT_CHIP.width + THOUGHT_CHIP.gap : THOUGHT_HEAD.pad;
         out.tagWidth = tagLength > 0 ? tagLength * THOUGHT_DISPLAY_ADVANCE + THOUGHT_TAG.gap : 0;
         out.countWidth = mergedCount > 1
@@ -261,9 +297,11 @@ export function layoutThoughtColumn(out, thread, clock = false, chip = false, ta
     let top = out.headTop - THOUGHT_HEAD.stroke / 2;
     let half = out.headWidth / 2 + THOUGHT_HEAD.stroke / 2;
     for (let i = 0; i < historyCount; i++) {
-        const entry = thread[i + 1];
-        const textWidth = thoughtTextWidth(String(entry?.text || '').length, THOUGHT_HISTORY.maxText);
+        const text = String(thread[i + 1]?.text || '');
+        const keep = thoughtTextKeep(text, THOUGHT_HISTORY.maxText);
+        const textWidth = thoughtTextWidth(text.length, keep);
         const width = textWidth + THOUGHT_HISTORY.pad * 2;
+        out.historyKeep[i] = keep;
         out.historyTextWidth[i] = textWidth;
         out.historyWidth[i] = width;
         out.historyCenterY[i] = rowBottom - THOUGHT_HISTORY.height / 2;

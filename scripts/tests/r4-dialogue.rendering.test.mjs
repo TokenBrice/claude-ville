@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 
 import { AgentSprite, CODEX_WEAPON_ASSETS } from '../../claudeville/src/presentation/character-mode/AgentSprite.js';
 import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
-import { createThoughtColumn, layoutThoughtColumn, THOUGHT_HEAD, THOUGHT_STACK_STEP, THOUGHT_PAINT } from '../../claudeville/src/presentation/character-mode/ThoughtColumn.js';
+import { createThoughtColumn, layoutThoughtColumn, THOUGHT_CHAR_ADVANCE, THOUGHT_HEAD, THOUGHT_STACK_STEP, THOUGHT_PAINT } from '../../claudeville/src/presentation/character-mode/ThoughtColumn.js';
 import { Agent } from '../../claudeville/src/domain/entities/Agent.js';
 import { AgentGpuOverlayRenderer } from '../../claudeville/src/presentation/character-mode/AgentGpuOverlayRenderer.js';
 
@@ -253,6 +253,52 @@ test('column reservation widens with the real line length and stays bounded', ()
     // The capped text cells plus padding and the stroke are all reserved.
     assert.equal(width('x'.repeat(400)), width('x'.repeat(Math.floor(THOUGHT_HEAD.maxText / 7))));
     assert.ok(width('x'.repeat(400)) <= THOUGHT_HEAD.maxText + THOUGHT_HEAD.pad * 2 + 2);
+});
+
+// Departure Mono stand-in: every glyph advances 7 px, as the real face does.
+function lineCtx() {
+    const lines = [];
+    return {
+        lines, font: '', fillStyle: '', globalAlpha: 1,
+        fillRect() {}, save() {}, restore() {}, translate() {}, scale() {},
+        measureText: text => ({ width: String(text).length * THOUGHT_CHAR_ADVANCE }),
+        fillText(text) { lines.push(text); },
+    };
+}
+
+test('a cut line keeps no empty cells: every plate fits the words it paints', () => {
+    // The word boundary gives back the cells of the split word; the box used
+    // to keep them ("I'll check Herald's cited…" in a 33-cell box).
+    const line = (text, confidence = null) => ({ text, confidence, accent: '#ffffff' });
+    const thread = [
+        line("I'll check Herald's cited sources before answering"),
+        line('Checking the adapter, then the renderer and the rest of it'),
+        line('Running the checks'),
+    ];
+    const host = Object.assign(Object.create(AgentSprite.prototype), { bubbleMergedCount: 1 });
+    const paint = (rows) => {
+        const column = layoutThoughtColumn(createThoughtColumn(), rows, false, true, 0);
+        const ctx = lineCtx();
+        host._drawThoughtHead(ctx, column, rows[0], '#ffffff', 0, '#77aa88', '');
+        host._drawThoughtHistory(ctx, column, rows);
+        return { column, lines: ctx.lines };
+    };
+    const { column, lines } = paint(thread);
+    assert.deepEqual(lines, ["I'll check Herald's cited…", 'Checking the adapter, then…', 'Running the checks']);
+    assert.equal(column.textWidth, lines[0].length * THOUGHT_CHAR_ADVANCE);
+    for (let i = 0; i < column.historyCount; i++) {
+        assert.equal(column.historyTextWidth[i], lines[i + 1].length * THOUGHT_CHAR_ADVANCE);
+    }
+    // A low-confidence label keeps its '?' while whole and gives it up to the
+    // ellipsis once cut; the box follows either way.
+    for (const [text, painted] of [
+        ['Reading the adapter registry', 'Reading the adapter registry?'],
+        ['Reading the adapter registry rows', 'Reading the adapter registry…'],
+    ]) {
+        const marked = paint([line(text, 0.5)]);
+        assert.deepEqual(marked.lines, [painted]);
+        assert.equal(marked.column.textWidth, painted.length * THOUGHT_CHAR_ADVANCE);
+    }
 });
 
 test('stacked candidates step upward and placement avoids occupied column geometry', () => {

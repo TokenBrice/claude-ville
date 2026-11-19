@@ -29,6 +29,7 @@ import {
     layoutThoughtColumn,
     needsConfidenceMark,
     speakerTagFor,
+    thoughtFittedText,
     thoughtLateralShift,
     thoughtLeader,
 } from './ThoughtColumn.js';
@@ -7174,8 +7175,10 @@ export class AgentSprite {
             ctx.fillText(tag, x0 + column.chipZone, cy + 0.5);
         }
         ctx.font = WORLD_BODY_FONT_11;
-        const text = needsConfidenceMark(head?.text, head?.confidence) ? `${head.text}?` : (head?.text || '');
-        // The box was sized from whole 7 px cells; the fit only ever leaves slack.
+        // The line the column sized and cut, so it fills its box; the measured
+        // fit only re-cuts glyphs a fallback face draws wider, leaving slack.
+        const source = String(head?.text || '');
+        const text = thoughtFittedText(source, column.headKeep, needsConfidenceMark(source, head?.confidence) ? '?' : '');
         const textMax = column.textWidth + THOUGHT_CHAR_ADVANCE - 1;
         const layout = this._bubbleLayout(ctx, text, textMax, true);
         ctx.fillStyle = LABEL_INK.text;
@@ -7205,7 +7208,8 @@ export class AgentSprite {
             const left = -width / 2;
             const cy = column.historyCenterY[i];
             const textMax = column.historyTextWidth[i] + THOUGHT_CHAR_ADVANCE - 1;
-            const layout = this._bubbleLayout(ctx, entry.text, textMax, true);
+            const text = thoughtFittedText(String(entry.text || ''), column.historyKeep[i]);
+            const layout = this._bubbleLayout(ctx, text, textMax, true);
             ctx.save();
             ctx.globalAlpha *= i === 0 ? 0.74 : 0.56;
             paintThoughtPlate(ctx, left, cy - THOUGHT_HISTORY.height / 2, width, THOUGHT_HISTORY.height, {

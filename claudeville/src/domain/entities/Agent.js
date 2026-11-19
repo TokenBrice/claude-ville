@@ -382,8 +382,9 @@ export class Agent {
      * faster; an agent blocked on the operator holds its question until the
      * wait ends, and that held line is flagged so the tooltip can say so.
      *
-     * Text is NOT truncated here. The renderer fits it by measured pixel width,
-     * so truncation happens once, where the font and bubble width are known.
+     * Text is NOT truncated here. The renderer fits it to the bubble
+     * (ThoughtColumn.thoughtTextKeep), so truncation happens once, where the
+     * font and bubble width are known.
      */
     speech(now = Date.now()) {
         if (this.isDeparted) return null;
