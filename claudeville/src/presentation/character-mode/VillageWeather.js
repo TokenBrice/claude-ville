@@ -1,18 +1,18 @@
 import { localDateKey, normalizeTimelineKnots, WEATHER_PRESETS } from './AtmosphereState.js';
 import { WIND_MAX } from './Wind.js';
 
-// Open-Meteo WMO codes (including 97). The seasonal engine still chooses
-// how the rain family, including snow and freezing rain, lands in the village.
+// Snow shares the precipitation types and carries its own phase flag.
+const SNOW_CODES = new Set([71, 73, 75, 77, 85, 86]);
 const TYPE_BY_CODE = new Map([
     [0, 'clear'], [1, 'partly-cloudy'], [2, 'partly-cloudy'], [3, 'overcast'],
     [45, 'fog'], [48, 'fog'],
-    ...[51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 71, 73, 75, 77, 80, 81, 82, 85, 86].map(code => [code, 'rain']),
+    ...[51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82, ...SNOW_CODES].map(code => [code, 'rain']),
     ...[95, 96, 97, 99].map(code => [code, 'storm']),
 ]);
 
 const clamp01 = value => Math.max(0, Math.min(1, value));
 
-export function forecastKnot({ minute, code, cloud, mm, visibility, windSpeed, windDirection }) {
+export function forecastKnot({ minute, code, cloud, mm, snowfall, visibility, windSpeed, windDirection }) {
     let type = TYPE_BY_CODE.get(code);
     if (!type) return null;
     const wet = type === 'rain' || type === 'storm';
@@ -32,6 +32,7 @@ export function forecastKnot({ minute, code, cloud, mm, visibility, windSpeed, w
         intensity: Math.max(preset.intensity * 0.5, cloudCover * 0.7, precipitation, fog),
         cloudCover,
         precipitation,
+        frozen: wet && (SNOW_CODES.has(code) || (Number.isFinite(snowfall) && snowfall > 0)),
         fog: type === 'fog' ? Math.max(0.55, fog) : fog,
         windX,
     };
@@ -49,6 +50,7 @@ export function forecastKnotsByDate(hourly) {
             code: hourly.weather_code?.[i],
             cloud: hourly.cloud_cover?.[i],
             mm: hourly.precipitation?.[i],
+            snowfall: hourly.snowfall?.[i],
             visibility: hourly.visibility?.[i],
             windSpeed: hourly.wind_speed_10m?.[i],
             windDirection: hourly.wind_direction_10m?.[i],
@@ -62,8 +64,10 @@ export function forecastKnotsByDate(hourly) {
     const days = Object.create(null);
     for (const [key, knots] of rows) {
         const day = normalizeTimelineKnots([...knots.values()]);
-        // Skip partial horizon dates. Leave room for the missing DST hour.
-        if (day[0].minute >= 60 || day.at(-1).minute < 1380
+        // Local midnight advances to the first valid hour when DST skips it.
+        const start = new Date(`${key}T00:00:00`);
+        const firstHourEnd = start.getHours() * 60 + start.getMinutes() + 60;
+        if (day[0].minute >= firstHourEnd || day.at(-1).minute < 1380
             || day.some((knot, i) => i > 0 && knot.minute - day[i - 1].minute > 120)) continue;
         days[key] = day;
     }

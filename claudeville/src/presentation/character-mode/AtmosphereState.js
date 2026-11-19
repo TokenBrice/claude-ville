@@ -26,6 +26,7 @@ import { applyGradeToRgb, evaluateGrade, lampCourseAt } from './GradeEvaluator.j
 import { ART_RAMPS } from '../../config/artPalette.js';
 import { lookStrength } from './LookStrengths.js';
 import { readVillageForecast } from '../shared/VillageWeatherSettings.js';
+import { PRECIPITATING, snowfallOn } from './GroundState.js';
 import { WIND_MAX, baseWindX, windAt, windSpeedForType } from './Wind.js';
 import {
     SUNRISE_ALTITUDE_DEG,
@@ -539,6 +540,7 @@ function timelineStateAt(minute, knots, joined = false, realSky = false) {
     const precipitation = clamp(interpolateNumber(previous.precipitation, next.precipitation, transitionProgress));
     const fog = clamp(interpolateNumber(previous.fog, next.fog, transitionProgress));
     const nearer = transitionProgress < 0.5 ? previous : next;
+    const wetKnot = nearer.precipitation > 0 ? nearer : nearer === previous ? next : previous;
     let type = nearer.type;
     if (!realSky) {
         if (previous.type === 'storm' || next.type === 'storm') {
@@ -563,6 +565,7 @@ function timelineStateAt(minute, knots, joined = false, realSky = false) {
         precipitation,
         fog,
         type,
+        ...(realSky ? { frozen: precipitation > PRECIPITATING && wetKnot.frozen === true } : {}),
     };
 }
 
@@ -672,6 +675,7 @@ export function resolveWeatherAt(minute, timeline) {
         cloudCover: state.cloudCover,
         precipitation: state.precipitation,
         fog: state.fog,
+        ...(timeline.realSky ? { frozen: state.frozen } : {}),
         windX: timeline.realSky
             ? interpolateNumber(state.previous.windX, state.next.windX, state.transitionProgress)
             : timelineWindAt(minute, joined || knots, Boolean(joined)),
@@ -1038,6 +1042,7 @@ export function normalizeTimelineKnots(knots) {
             precipitation: pick('precipitation', preset.precipitation),
             fog: pick('fog', preset.fog),
             windX: Number.isFinite(windX) ? clamp(windX, -WIND_MAX, WIND_MAX) : windSpeedForType(type),
+            ...(typeof knot.frozen === 'boolean' ? { frozen: knot.frozen } : {}),
             seed: 0,
         });
     }
@@ -1342,7 +1347,7 @@ export function sourceEnergyEnvelope(minuteOfDay, weather = null, dayShift = nul
 let _lightGradeKey = '';
 let _lightGrade = null;
 
-function lightGradeFor(minute, weather, moonFill, shift) {
+function lightGradeFor(minute, weather, moonFill, shift, snowfall = 0) {
     const key = [
         Math.round(minute * 4),
         weather.type,
@@ -1353,7 +1358,8 @@ function lightGradeFor(minute, weather, moonFill, shift) {
         shift.sunriseShift.toFixed(2),
         shift.sunsetShift.toFixed(2),
         (shift.goldenShift ?? shift.sunsetShift).toFixed(2),
-    ].join('|');
+        snowfall,
+    ].join('|') + (weather.frozen === true ? '|snow' : '');
     if (_lightGrade && key === _lightGradeKey) return _lightGrade;
     _lightGradeKey = key;
     _lightGrade = Object.freeze({
@@ -1364,6 +1370,7 @@ function lightGradeFor(minute, weather, moonFill, shift) {
             sunriseShift: shift.sunriseShift,
             sunsetShift: shift.sunsetShift,
             goldenShift: shift.goldenShift ?? shift.sunsetShift,
+            snowfall,
         }),
         cacheKey: key,
     });
@@ -1576,7 +1583,9 @@ export function createAtmosphereSnapshot({
     const fogBucket = Math.round((weather.fog || 0) * 10);
     const effectiveMotionScale = preferredMotionScale(motionScale);
     const driftEnabled = effectiveMotionScale > 0;
-    const lightGrade = lightGradeFor(minute, weather, lighting.moonFill, shift);
+    // EY-4 — settling snow wears its own grade (date and weather only, V3).
+    const snowfall = snowfallOn(effectiveDate.getMonth(), weather) ? lookStrength('ey4') : 0;
+    const lightGrade = lightGradeFor(minute, weather, lighting.moonFill, shift, snowfall);
     const sunElevationNow = sunElevationAt(solarDay, minute);
 
     return {
@@ -1604,7 +1613,7 @@ export function createAtmosphereSnapshot({
         },
         // 3.4 — `mN` is the reviewed night ambient course: the cached Canvas
         // grade overlay and baked plates must re-bake when the moon changes it.
-        cacheKey: `${phase}|${weather.type}|i${intensityBucket}|c${cloudBucket}|p${precipitationBucket}|f${fogBucket}|b${timeBucket}|l${lightBucket}|m${Math.round(lighting.moonFill * 10)}`,
+        cacheKey: `${phase}|${weather.type}|i${intensityBucket}|c${cloudBucket}|p${precipitationBucket}|f${fogBucket}|b${timeBucket}|l${lightBucket}|m${Math.round(lighting.moonFill * 10)}${weather.frozen ? '|snow' : ''}`,
         weather,
         weatherSource,
         sky: {

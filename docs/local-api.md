@@ -19,6 +19,10 @@ The server is hardcoded to port `4000` and the IPv4 loopback interface. Requests
 
 Claude sessions on `/api/sessions` expose `script` while `pendingTool` is a REPL or Poll wrapper. It contains `tool`, a sanitized `description` of up to 120 characters (or null), and `since` in epoch ms. Poll uses the latest REPL description from the same turn. Otherwise `script` is null. `lastTool` and `lastToolInput` retain the newest inner call. In `lastResults`, failures take priority within a tied burst.
 
+A Linux Claude main can report `signalSource: 'registry'` and `signalCertainty: 'observed'`. A registry-confirmed busy or waiting main stays listed with `resident: false` even after its transcript falls outside the activity window. A recognized wait supplies `approval`, `plan_review`, or `question` in `waitReason`. A pending hook for the same call can supply `pendingTool` and redacted `promptDetail`. An observed process exit sets `sessionEndedAt`, which survives removal of the PID file for the active window. A resumed process or newer transcript turn supersedes that exit.
+
+Codex, GLM and DeepSeek fleet threads carry `subagentKind: 'mcp'`, their recorded job label in `agentName`, and `parentSessionId` when launch evidence identifies a lead. For GLM and DeepSeek, both detail endpoints return `jobs`, newest first, capped at three. Each row has `kind` (ask or continue), `model`, `effort`, `startedAt`, `endedAt`, `status` and `durationMs`. Times are epoch milliseconds and missing fields are null. Duration covers only the recorded job.
+
 Claude's `turnStartedAt`, `model`, `reasoningEffort`, and `tokenUsage.contextWindow` survive virtual tool bursts. `cost.source` is `estimate` before a provider total, `provider` at that total, and `mixed` when `cost.usd` includes both the provider total and estimated usage after resume. One-hour cache writes cost twice the model's input rate.
 
 Git identity on `/api/sessions` (all fields optional; a client keys a repository on `repoRoot || project`, so older servers still work):
@@ -46,7 +50,7 @@ The adapter contract has the extraction rules: [git event extraction](../claudev
 
 `GET /api/weather` requires `X-ClaudeVille-Weather: real-sky` to opt in. An ordinary GET returns `{ fetchedAt: null, hourly: null, refreshAt: null }` without contacting the provider. Coordinates come from the server’s timezone city table. The route ignores query parameters.
 
-Opted-in responses are `{ fetchedAt, hourly, refreshAt }` with `Cache-Control: no-store`. The timestamps are epoch milliseconds. `refreshAt` is the earliest next upstream attempt. `hourly` contains parallel arrays for `time` (epoch seconds in UTC), `weather_code`, `cloud_cover` (%), `precipitation` (mm), `wind_speed_10m` (km/h), `wind_direction_10m` (degrees from north), and `visibility` (m). A null `hourly` means the forecast is unavailable or expired. `fetchedAt` retains the last successful fetch time for the timezone if the forecast expires.
+Opted-in responses are `{ fetchedAt, hourly, refreshAt }` with `Cache-Control: no-store`. The timestamps are epoch milliseconds. `refreshAt` is the earliest next upstream attempt. `hourly` contains parallel arrays for `time` (epoch seconds in UTC), `weather_code`, `cloud_cover` (%), `precipitation` (mm), `snowfall` (cm), `wind_speed_10m` (km/h), `wind_direction_10m` (degrees from north), and `visibility` (m). A null `hourly` means the forecast is unavailable or expired. `fetchedAt` retains the last successful fetch time for the timezone if the forecast expires.
 
 The village adapts forecast data from [Open-Meteo](https://open-meteo.com/) under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The keyless endpoint is for [non-commercial use](https://open-meteo.com/en/terms).
 

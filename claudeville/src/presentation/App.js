@@ -487,6 +487,7 @@ export class App {
                 simulation: this.simMode,
                 readDashboardAtmosphere: () => this.modeManager?.getCurrentMode() === 'dashboard'
                     ? this.renderer?.atmosphereState?.snapshot() : null,
+                refreshAtmosphere: snapshot => this.renderer?.atmosphereState?.update({ now: snapshot.effectiveDate }),
                 frameAttention: () => {
                     if (this.modeManager?.getCurrentMode() === 'dashboard') return false;
                     this.renderer?.cameraDirector?.frameAttention(this.renderer.agentSprites);

@@ -10,6 +10,7 @@ import { ChronicleEventKind, summarizeDay } from '../../claudeville/src/applicat
 import { Toast } from '../../claudeville/src/presentation/shared/Toast.js';
 import { BgmDirector } from '../../claudeville/src/presentation/shared/audio/BgmDirector.js';
 import { TopBar } from '../../claudeville/src/presentation/shared/TopBar.js';
+import { installChromeTooltip } from '../../claudeville/src/presentation/shared/ChromeTooltip.js';
 import { DashboardRenderer } from '../../claudeville/src/presentation/dashboard-mode/DashboardRenderer.js';
 import { eventBus } from '../../claudeville/src/domain/events/DomainEvent.js';
 import { AtmosphereState } from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
@@ -337,6 +338,62 @@ test('the existing header timer keeps village time in visible Dashboard mode', (
     t.mock.timers.tick(60_000);
     assert.equal(clock.textContent, '14:30');
     assert.equal(fields.get('.topbar__clock-override').textContent, 'FIXED');
+});
+
+test('forecast changes refresh the World clock from its last atmosphere without another frame', () => {
+    const fields = new Map(['time', 'phase', 'override'].map(name => [`.topbar__clock-${name}`, {}]));
+    fields.set('path', { setAttribute() {} });
+    const clock = { dataset: {}, querySelector: selector => fields.get(selector) };
+    const last = { clock: { label: '12:00' }, weather: { type: 'clear' } };
+    const topBar = Object.assign(Object.create(TopBar.prototype), {
+        els: { clock },
+        _villageState: {},
+        readDashboardAtmosphere: () => null,
+        refreshAtmosphere: snapshot => {
+            assert.equal(snapshot, last);
+            return { ...last, weather: { type: 'rain', frozen: true }, weatherSource: { kind: 'forecast', ageMinutes: 1 } };
+        },
+    });
+    topBar._renderWitnessClock(last);
+    topBar._refreshWitnessClock();
+    assert.match(clock.dataset.tip, /Real sky.*fetched 1m ago.*snow/);
+});
+
+test('the clock credit can open its parent tooltip from keyboard focus', (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    globalThis.MutationObserver = class {
+        observe() {}
+        disconnect() {}
+    };
+    globalThis.getComputedStyle = () => ({ anchorName: 'none' });
+    t.after(() => {
+        delete globalThis.MutationObserver;
+        delete globalThis.getComputedStyle;
+    });
+    let opens = 0;
+    const style = { setProperty() {}, removeProperty() {} };
+    const handlers = {};
+    const tip = { showPopover() { opens++; }, matches: () => false, replaceChildren() {} };
+    const uninstall = installChromeTooltip({
+        getElementById: () => tip,
+        createTextNode: () => ({}),
+        addEventListener: (type, handler) => { handlers[type] = handler; },
+        removeEventListener() {},
+    });
+    const parent = { isConnected: true, dataset: { tip: 'Weather' }, style, matches: () => false, closest: () => parent };
+    const focus = (credit) => handlers.focusin({
+        target: { closest: () => parent, matches: selector => selector === ':focus-visible' || credit },
+    });
+    try {
+        focus(false);
+        t.mock.timers.tick(400);
+        assert.equal(opens, 0);
+        focus(true);
+        t.mock.timers.tick(400);
+        assert.equal(opens, 1);
+    } finally {
+        uninstall();
+    }
 });
 
 test('Dashboard Escape only deselects from a focused card with no open surface', () => {

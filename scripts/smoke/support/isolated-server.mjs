@@ -87,6 +87,7 @@ export async function startIsolatedServer({ home, env } = {}) {
       CLAUDEVILLE_OPENCODE_CONFIG_DIR: path.join(isolatedHome, '.config', 'opencode'),
       CLAUDEVILLE_OPENCODE_STATE_DIR: path.join(isolatedHome, '.local', 'share', 'opencode'),
       CLAUDEVILLE_OPENCODE_DB: path.join(isolatedHome, '.local', 'share', 'opencode', 'opencode.db'),
+      CLAUDEVILLE_CODEX_STATE_DIR: path.join(isolatedHome, '.local', 'state', 'codex-cc-mcp'),
       CLAUDEVILLE_DEEPSEEK_STATE_DIR: path.join(isolatedHome, '.local', 'state', 'deepseek-cc-mcp'),
       CLAUDEVILLE_GLM_STATE_DIR: path.join(isolatedHome, '.local', 'state', 'glm-cc-mcp'),
       ...env,

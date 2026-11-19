@@ -46,7 +46,7 @@ Approval and status signals depend on what each CLI records. ClaudeVille disting
 
 ### World mode: awareness at a glance
 
-Villagers head to the Forge to code, the Archive to read, and the Tavern to rest. Model families have their own sprites. The island follows the local clock and seasons, with modeled weather by default. For non-commercial use, **Settings → Village weather → Real sky** adapts the latest forecast for your system timezone’s city. Working buildings light up after dark.
+Villagers head to the Forge to code, the Archive to read, and the Tavern to rest. Model families have their own sprites. The island follows the local clock and seasons, with modeled weather by default. For non-commercial use, **Settings → Village weather → Real sky** adapts the latest forecast for your system timezone’s city, including rain and snow in any month. Modeled weather treats December through February precipitation as snow. Working buildings light up after dark.
 
 Use the World dock to choose **FREE**, **AUTO**, or **AMBIENT** camera behavior. Press **F** to frame the village, hold **B** to read work labels, and use **/** or **Ctrl/Cmd+K** to find an agent. Click an agent to inspect its session.
 

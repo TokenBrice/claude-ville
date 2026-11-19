@@ -270,7 +270,7 @@ export function connectionChip(state, now = Date.now()) {
 }
 
 export class TopBar {
-    constructor(world, { modal, attention, chronicle, spendLedger, frameAttention, readDashboardAtmosphere, simulation } = {}) {
+    constructor(world, { modal, attention, chronicle, spendLedger, frameAttention, readDashboardAtmosphere, refreshAtmosphere, simulation } = {}) {
         this._motionOverride = installReducedMotionOverride();
         this.world = world;
         this.modal = modal || null;
@@ -279,6 +279,7 @@ export class TopBar {
         this.chronicle = chronicle || null;
         this.spendLedger = spendLedger || null;
         this.readDashboardAtmosphere = readDashboardAtmosphere;
+        this.refreshAtmosphere = refreshAtmosphere;
         // V8 — the top bar is chrome over (or above) the World: moments,
         // plates and director framing read its box as occluded screen.
         this._unpublishReservedRect = publishReservedRect('top-bar', document.getElementById('topbar'), {
@@ -448,7 +449,7 @@ export class TopBar {
 
         this._villageWeather = watchVillageWeather({
             simulation,
-            onChange: () => this._renderWitnessClock(this.readDashboardAtmosphere?.()),
+            onChange: () => this._refreshWitnessClock(),
         });
         this._startTimer();
         this.render();
@@ -477,11 +478,18 @@ export class TopBar {
         this._reactiveFrame = null;
     }
 
+    _refreshWitnessClock() {
+        const last = this._lastWitnessAtmosphere;
+        const snapshot = this.readDashboardAtmosphere?.() ?? (last && this.refreshAtmosphere?.(last));
+        this._renderWitnessClock(snapshot);
+    }
+
     _renderWitnessClock(snapshot) {
         const clock = snapshot?.clock;
         const node = this.els.clock;
         if (!node || !clock?.label) return;
-        const weather = snapshot.weather?.type || 'clear';
+        this._lastWitnessAtmosphere = snapshot;
+        const weather = snapshot.weather?.frozen ? 'snow' : snapshot.weather?.type || 'clear';
         const source = snapshot.weatherSource;
         const age = source?.ageMinutes == null ? '' : ` · fetched ${formatWaitAge(source.ageMinutes * 60_000)} ago`;
         const usingForecast = source?.kind === 'forecast';

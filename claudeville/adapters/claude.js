@@ -11,6 +11,10 @@ const {
   clearTailCache,
   createDetailResponse,
   deleteTailState,
+  readLinuxProcess,
+  readStateWindow,
+  stateFileStat,
+  trimCache,
   readJsonLines: readSharedJsonLines,
   statCacheKey,
   summarizeToolInput: summarizeSharedToolInput,
@@ -307,8 +311,7 @@ const _transcriptAggregateStats = {
   cancelledQueuedScans: 0,
   cancelledActiveScans: 0,
 };
-const _sessionNamesCache = { signature: '', value: new Map() };
-const _teamMembershipCache = { signature: '', value: new Map() };
+const _teamMembershipCache = { signature: '', value: new Map(), leads: new Map() };
 const _teamMembershipWarned = new Set();
 const _teamsCache = { signature: '', value: [] };
 const _sessionIdentityCache = new Map();
@@ -748,40 +751,113 @@ function readJsonLines(filePath, { from = 'end', count = GIT_EVENT_SCAN_LINES } 
   });
 }
 
-function readClaudeSessionNames() {
-  const signature = directorySignature(SESSIONS_DIR, { extension: '.json' });
-  if (_sessionNamesCache.signature === signature) return _sessionNamesCache.value;
-  const names = new Map();
-  try {
-    if (!fs.existsSync(SESSIONS_DIR)) return names;
-    const files = fs.readdirSync(SESSIONS_DIR)
-      .filter(file => file.endsWith('.json') && !file.startsWith('.'));
+function registryWaitReason(value) {
+  if (typeof value !== 'string') return null;
+  const reason = value.split(':', 1)[0].trim().toLowerCase();
+  if (reason === 'approve plan') return 'plan_review';
+  if (/^approve(?:\s|$)/.test(reason) || reason === 'sandbox request') return 'approval';
+  if (reason === 'input needed' || reason === 'dialog open') return 'question';
+  return null;
+}
 
-    for (const file of files) {
-      try {
-        const meta = JSON.parse(fs.readFileSync(path.join(SESSIONS_DIR, file), 'utf-8'));
-        const sessionId = typeof meta.sessionId === 'string' ? meta.sessionId.trim() : '';
-        const name = typeof meta.name === 'string' ? meta.name.trim() : '';
-        if (sessionId && name) names.set(sessionId, name);
-      } catch { /* ignore malformed session metadata */ }
+function readMetadata(file, stat = stateFileStat(file)) {
+  try { return JSON.parse(readStateWindow(file, stat, 64 * 1024)); }
+  catch { return null; }
+}
+
+function readRegistryFile(file, stat, filename, now) {
+  const meta = readMetadata(file, stat);
+  const sessionId = typeof meta?.sessionId === 'string' ? meta.sessionId.trim() : '';
+  if (!sessionId || sessionId.length > 256) return null;
+  const name = typeof meta.name === 'string' ? meta.name.trim() : '';
+  const record = { sessionId, name };
+  const { pid, procStart, status, statusUpdatedAt: at } = meta;
+  const waitReason = registryWaitReason(meta.waitingFor);
+  if (!Number.isSafeInteger(pid) || pid <= 0 || filename !== `${pid}.json`
+    || typeof procStart !== 'string' || !/^\d{1,20}$/.test(procStart)
+    || !Number.isSafeInteger(at) || at <= 0 || at > now
+    || !['busy', 'waiting', 'idle'].includes(status) || (status === 'waiting' && !waitReason)) return record;
+  return { ...record, pid, procStart, status, at, waitReason };
+}
+
+function readSessionRegistry(previousFiles, previousSessions, readProcess, now, cutoff) {
+  const files = new Map();
+  const byId = new Map();
+  for (const [id, record] of previousSessions) {
+    if (record.endedAt != null && record.endedAt >= cutoff) byId.set(id, record);
+  }
+  let dir;
+  try {
+    if (fs.realpathSync(SESSIONS_DIR) !== SESSIONS_DIR) return { files, byId };
+    dir = fs.opendirSync(SESSIONS_DIR);
+    for (let i = 0, entry; i < 1024 && (entry = dir.readSync()); i++) {
+      if (!entry.isFile() || !entry.name.endsWith('.json') || entry.name.startsWith('.')) continue;
+      const file = path.join(SESSIONS_DIR, entry.name);
+      const stat = stateFileStat(file);
+      if (!stat) continue;
+      const key = statCacheKey(file, stat);
+      const previous = previousFiles.get(file);
+      const record = previous?.key === key ? previous.record : readRegistryFile(file, stat, entry.name, now);
+      if (!record) continue;
+      const proc = record.status ? readProcess(record.pid) : null;
+      const live = Boolean(proc && !proc.dead && proc.start === record.procStart);
+      const sameProcess = previous?.record.procStart === record.procStart && previous?.record.sessionId === record.sessionId;
+      // A reused pid on first sight is stale metadata. After a confirmed live
+      // observation its disappearance (including reuse) is an observed exit.
+      const reused = proc?.start && proc.start !== record.procStart;
+      const gone = (proc?.dead && !reused) || (sameProcess && previous.live && reused);
+      let endedAt = null;
+      let endEvidenceAt = null;
+      const current = byId.get(record.sessionId);
+      if (!live && sameProcess && previous.endedAt) {
+        endedAt = previous.endedAt;
+        endEvidenceAt = previous.endEvidenceAt;
+      } else if (!live && current?.endedAt && current.pid === record.pid && current.procStart === record.procStart) {
+        endedAt = current.endedAt;
+        endEvidenceAt = current.endEvidenceAt;
+      } else if (gone) {
+        endedAt = now;
+        // Cold discovery of a dead pid cannot date its exit past a later turn.
+        endEvidenceAt = sameProcess && previous.live ? now : record.at;
+      }
+      files.set(file, { key, record, live, endedAt, endEvidenceAt });
+      const observed = { ...record, status: live ? record.status : null, endedAt, endEvidenceAt };
+      // Resuming a session can leave its previous pid file behind.
+      if (current?.status && !live) continue;
+      if (current?.endedAt && !live && !endedAt) continue;
+      if (!current || (live && !current.status) || (record.at || 0) >= (current.at || 0)) {
+        byId.set(record.sessionId, observed);
+      }
     }
-  } catch { /* ignore */ }
-  _sessionNamesCache.signature = signature;
-  _sessionNamesCache.value = names;
-  return names;
+  } catch { /* optional registry */ }
+  finally { dir?.closeSync(); }
+  return { files, byId };
+}
+
+function registryKeepsSession(record, cutoff) {
+  if (record?.status === 'busy' || record?.status === 'waiting') return true;
+  return record?.endedAt != null && record.endEvidenceAt >= cutoff;
 }
 
 function readClaudeTeamMembership() {
   const signature = directorySignature(TEAMS_DIR, { recursive: true, extension: '.json' });
   if (_teamMembershipCache.signature === signature) return _teamMembershipCache.value;
   const members = new Map();
+  _teamMembershipCache.leads = new Map();
   if (!fs.existsSync(TEAMS_DIR)) return members;
   try {
     const teamDirs = fs.readdirSync(TEAMS_DIR, { withFileTypes: true })
       .filter(dir => dir.isDirectory())
       .sort((a, b) => a.name.localeCompare(b.name));
     const collisions = new Map();
-
+    for (const teamDir of teamDirs.slice(0, 512)) {
+      const config = readMetadata(path.join(TEAMS_DIR, teamDir.name, 'config.json'));
+      if (Number.isSafeInteger(config?.leadProcess?.pid) && typeof config.leadProcess.procStart === 'string'
+        && /^\d{1,20}$/.test(config.leadProcess.procStart)
+        && typeof config.leadSessionId === 'string' && config.leadSessionId.length <= 256) {
+        _teamMembershipCache.leads.set(`${config.leadProcess.pid}:${config.leadProcess.procStart}`, config.leadSessionId);
+      }
+    }
     for (const teamDir of teamDirs) {
       const inboxDir = path.join(TEAMS_DIR, teamDir.name, 'inboxes');
       if (!fs.existsSync(inboxDir)) continue;
@@ -1807,8 +1883,6 @@ function shutdownClaudeAdapter() {
   _orphanScanCache.projectDirMtimes.clear();
   _orphanScanCache.subagentActivityBySessionDir.clear();
   _teamMembershipWarned.clear();
-  _sessionNamesCache.signature = '';
-  _sessionNamesCache.value = new Map();
   _teamMembershipCache.signature = '';
   _teamMembershipCache.value = new Map();
   _teamsCache.signature = '';
@@ -2264,8 +2338,39 @@ function foldClaudeActivity(activity, entry, msg) {
   return prompt;
 }
 
+// Keep only ids returned by fleet launch calls. Ordinary conversation and
+// command output can mention the same id without establishing parentage.
+const FLEET_LAUNCH = /^mcp__(codex|glm|deepseek)(?:-cc-mcp)?__(?:start|ask|continue|batch|review)(?:_|$)/i;
+
+function resultJobIds(block, result) {
+  const ids = new Set();
+  const parts = Array.isArray(block.content) ? block.content.slice(0, 32) : [block.content];
+  if (Array.isArray(result)) parts.push(...result.slice(0, 32));
+  else parts.push(result?.structuredContent || result);
+  for (const part of parts) {
+    if (typeof part?.job_id === 'string' && /^[a-z0-9][a-z0-9_-]{0,127}$/i.test(part.job_id)) ids.add(part.job_id);
+    const text = typeof part === 'string' ? part : part?.text;
+    if (typeof text !== 'string') continue;
+    // Some start tools return a labelled field, others print the minted id in a sentence.
+    const jobId = /\bjob[_ -]?id["']?\s*[:=]\s*["']?([a-z0-9][a-z0-9_-]{0,127})(?![a-z0-9_/-])|\b[a-z]{1,12}_[a-z0-9]{1,24}_[a-f0-9]{8}\b/gi;
+    for (const match of text.slice(0, 32 * 1024).matchAll(jobId)) {
+      ids.add(match[1] || match[0]);
+      if (ids.size >= 32) return [...ids];
+    }
+  }
+  return [...ids];
+}
+
+function recordMcpLaunch(turn, fleet, ids) {
+  for (const id of ids) {
+    const key = `${fleet}:${id}`;
+    if (!turn.mcpJobs?.includes(key)) turn.mcpJobs = [...(turn.mcpJobs || []).slice(-255), key];
+  }
+}
+
 function foldClaudeTurn(turn, entry, msg) {
   const at = toEpochMs(entry.timestamp ?? entry.created_at);
+  if (at != null) turn.lastMessageAt = Math.max(turn.lastMessageAt || 0, at);
   if (msg.role === 'user') {
     if (!isToolResultOnly(msg.content)) {
       if (entry.isMeta && at !== null && turn.assistantAt != null && at < turn.assistantAt) return false;
@@ -2281,10 +2386,13 @@ function foldClaudeTurn(turn, entry, msg) {
       if (typeof block.tool_use_id !== 'string') continue;
       const id = block.tool_use_id.slice(0, TRANSCRIPT_PROJECTION_FIELD_BYTES);
       const index = turn.pending.findIndex(call => call.id === id);
-      if (index >= 0) turn.pending.splice(index, 1);
-      else {
+      if (index >= 0) {
+        const fleet = !entry.isSidechain && FLEET_LAUNCH.exec(turn.pending[index].name)?.[1];
+        if (fleet) recordMcpLaunch(turn, fleet, resultJobIds(block, entry.toolUseResult));
+        turn.pending.splice(index, 1);
+      } else {
         // A buffered result can be written before the corresponding call.
-        turn.earlyResults.push(id);
+        turn.earlyResults.push({ id, jobIds: entry.isSidechain ? [] : resultJobIds(block, entry.toolUseResult) });
         if (turn.earlyResults.length > PENDING_CALL_LIMIT) turn.earlyResults.shift();
       }
     }
@@ -2317,9 +2425,11 @@ function foldClaudeTurn(turn, entry, msg) {
     }
     if (typeof block.id !== 'string' || !block.id) continue;
     const id = block.id.slice(0, TRANSCRIPT_PROJECTION_FIELD_BYTES);
-    const early = turn.earlyResults.indexOf(id);
+    const early = turn.earlyResults.findIndex(result => result.id === id);
     if (early >= 0) {
-      turn.earlyResults.splice(early, 1);
+      const [result] = turn.earlyResults.splice(early, 1);
+      const fleet = !entry.isSidechain && FLEET_LAUNCH.exec(name)?.[1];
+      if (fleet) recordMcpLaunch(turn, fleet, result.jobIds);
       continue;
     }
     if (turn.pending.some(call => call.id === id)) continue;
@@ -2352,8 +2462,7 @@ function getTranscriptTurn(filePath) {
   }
 }
 
-function getClaudeTurnState(sessionFilePath, permissionMode = null, now = Date.now()) {
-  const turn = getTranscriptTurn(sessionFilePath);
+function getClaudeTurnState(sessionFilePath, permissionMode = null, now = Date.now(), turn = getTranscriptTurn(sessionFilePath)) {
   const pending = turn?.pending[0];
   const apiError = pending ? null : turn?.apiError ?? null;
   return {
@@ -3009,6 +3118,58 @@ function readActiveClaudeTaskGroups(sessions) {
 // ─── Adapter class ────────────────────────────────────
 
 class ClaudeAdapter {
+  constructor({ readProcess = readLinuxProcess } = {}) {
+    this.readProcess = readProcess;
+    this.registryFiles = new Map();
+    this.registry = new Map();
+    this.processLeads = new Map();
+    this.jobLeads = new Map();
+  }
+
+  registryProcessChanged() {
+    for (const { record, live } of this.registryFiles.values()) {
+      if (!live) continue;
+      const proc = this.readProcess(record.pid);
+      if (proc?.dead || proc?.start !== record.procStart) return true;
+    }
+    return false;
+  }
+
+  registrySettled(session) {
+    if (session.provider !== 'claude' || session.agentType !== 'main') return false;
+    const record = this.registry.get(session.sessionId);
+    const since = session.pendingSince || session.turnStartedAt || 0;
+    if (record?.endedAt) return record.endEvidenceAt >= since;
+    return record?.status === 'idle' && record.at >= since;
+  }
+
+  mainTurn(file, permissionMode, now, sessionId, record) {
+    const turn = getTranscriptTurn(file);
+    for (const key of turn?.mcpJobs || []) this.jobLeads.set(key, sessionId);
+    trimCache(this.jobLeads, 4096);
+    const state = getClaudeTurnState(file, permissionMode, now, turn);
+    if (!record) return state;
+    const observed = { signalSource: 'registry', signalCertainty: 'observed', signalObservedAt: record.at };
+    if (record.endedAt && record.endEvidenceAt >= (turn?.startedAt || 0)) {
+      return {
+        ...state, ...deriveTurnState({ known: false }), ...observed,
+        script: null, sessionEndedAt: record.endedAt, signalObservedAt: record.endedAt,
+      };
+    }
+    if (!record.status || record.at < (turn?.startedAt || 0)) return state;
+    if (record.status === 'busy') {
+      if (state.turnState === 'awaiting_input' && record.at <= state.awaitingSince) return state;
+      return { ...state, ...(state.pendingTool ? {} : deriveTurnState()), ...observed };
+    }
+    if (record.at < (turn?.lastMessageAt || 0)) return state;
+    if (record.status === 'waiting') {
+      return { ...state, ...observed, turnState: 'tool_pending', waitReason: state.waitReason || record.waitReason,
+        awaitingSince: record.at };
+    }
+    if (state.pendingTool || state.turnState === 'awaiting_input') return state;
+    return { ...state, ...deriveTurnState({ turnEnded: true, turnEndedAt: record.at }), ...observed };
+  }
+
   get name() { return 'Claude Code'; }
   get provider() { return 'claude'; }
   get homeDir() { return CLAUDE_DIR; }
@@ -3024,8 +3185,14 @@ class ClaudeAdapter {
     const sessionsMap = new Map();
     const projectPathMap = new Map(); // Encoded directory name to real path
     const activeSessionIdsByProject = new Map();
-    const sessionNames = readClaudeSessionNames();
+    const { files, byId: registry } = readSessionRegistry(this.registryFiles, this.registry, this.readProcess, now, now - activeThresholdMs);
+    this.registryFiles = files;
+    this.registry = registry;
     const teamMembership = readClaudeTeamMembership();
+    this.processLeads = new Map(_teamMembershipCache.leads);
+    for (const record of registry.values()) {
+      if (record.status) this.processLeads.set(`${record.pid}:${record.procStart}`, record.sessionId);
+    }
 
     const HISTORY_SCAN_MS = 10 * 60 * 1000;
     for (const entry of entries) {
@@ -3040,7 +3207,10 @@ class ClaudeAdapter {
       }
 
       if (!entry.sessionId) continue;
-      if (now - (entry.timestamp || 0) > HISTORY_SCAN_MS) continue;
+      if (now - (entry.timestamp || 0) > HISTORY_SCAN_MS) {
+        const record = registry.get(entry.sessionId);
+        if (!record?.status && !record?.endedAt) continue;
+      }
 
       rememberSessionIdentity(entry.sessionId, entry, now);
 
@@ -3078,18 +3248,24 @@ class ClaudeAdapter {
         )
         : 0;
       const lastActive = Math.max(session.lastActivity, fileMtime, childMtime);
-      if (now - lastActive > activeThresholdMs) continue;
+      const record = session.agentType === 'main' ? registry.get(session.sessionId) : null;
+      const quiet = now - lastActive > activeThresholdMs;
+      if (quiet && !registryKeepsSession(record, now - activeThresholdMs)) continue;
 
       session.lastActivity = lastActive;
       const sessionFilePath = resolveSessionFilePath(session.sessionId, session.project);
       const detail = getClaudeTranscriptSummary(sessionFilePath, 30, session.project);
-      const sessionName = sessionNames.get(session.sessionId) || null;
+      const sessionName = registry.get(session.sessionId)?.name || null;
       const teamName = sessionName ? teamMembership.get(sessionName) || null : null;
       const permissionMode = sessionFilePath ? getPermissionMode(sessionFilePath) : null;
       const model = detail.model || session.model;
+      const state = session.agentType === 'main'
+        ? this.mainTurn(sessionFilePath, permissionMode, now, session.sessionId, record)
+        : getClaudeTurnState(sessionFilePath, permissionMode, now);
+      if (quiet && state.signalSource !== 'registry') continue;
       mainSessions.push({
         ...session,
-        ...getClaudeTurnState(sessionFilePath, permissionMode, now),
+        ...state,
         ...getTranscriptProjection(sessionFilePath, session.project, model),
         backgroundPending: readBackgroundPending(sessionFilePath, {
           subagentsDir: mainSubagentsDir(sessionFilePath),
@@ -3121,7 +3297,7 @@ class ClaudeAdapter {
     // Orphan sessions (active .jsonl files whose history entry is older than HISTORY_SCAN_MS).
     // Computed before subagents so their session IDs feed into the subagent scan — otherwise
     // long-running parents that haven't logged a recent prompt would have their subagents missed.
-    const orphans = this._getOrphanSessions(activeThresholdMs, projectPathMap, new Set(sessionsMap.keys()), sessionNames, teamMembership);
+    const orphans = this._getOrphanSessions(activeThresholdMs, projectPathMap, new Set(sessionsMap.keys()), registry, teamMembership);
     for (const orphan of orphans) {
       if (!orphan.project || !orphan.sessionId) continue;
       const encoded = claudeProjectDirName(orphan.project);
@@ -3260,7 +3436,7 @@ class ClaudeAdapter {
     return results;
   }
 
-  _getOrphanSessions(activeThresholdMs, projectPathMap = new Map(), knownIds = new Set(), sessionNames = new Map(), teamMembership = new Map()) {
+  _getOrphanSessions(activeThresholdMs, projectPathMap = new Map(), knownIds = new Set(), registry = new Map(), teamMembership = new Map()) {
     const projectsDir = path.join(CLAUDE_DIR, 'projects');
     if (!fs.existsSync(projectsDir)) return [];
 
@@ -3299,20 +3475,28 @@ class ClaudeAdapter {
             latestSubAgentActivity(path.join(projPath, sessionId), activeThresholdMs, now),
           );
 
-          if (now - lastActivity > activeThresholdMs) continue;
+          const record = registry.get(sessionId);
+          const quiet = now - lastActivity > activeThresholdMs;
+          if (quiet && !registryKeepsSession(record, now - activeThresholdMs)) continue;
 
           const decodedProject = resolveProjectPathFromMap(projectPathMap, projDir.name, filePath);
           const detail = getSubAgentDetail(filePath, decodedProject);
-          const sessionName = sessionNames.get(sessionId) || null;
+          const sessionName = record?.name || null;
           const teamName = sessionName ? teamMembership.get(sessionName) || null : null;
           const permissionMode = getPermissionMode(filePath);
           const identity = getSessionIdentity(sessionId);
           const project = identity?.project || decodedProject;
-          const agentType = teamName ? 'team-member' : identity?.agentType || 'team-member';
+          const teamLead = record && _teamMembershipCache.leads.get(`${record.pid}:${record.procStart}`) === sessionId;
+          const fallbackType = record?.status || record?.endedAt ? 'main' : 'team-member';
+          const agentType = teamName && !teamLead ? 'team-member' : identity?.agentType || fallbackType;
           const model = detail.model || null;
 
+          const state = agentType === 'main' || (!teamName && !identity)
+            ? this.mainTurn(filePath, permissionMode, now, sessionId, agentType === 'main' ? record : null)
+            : getClaudeTurnState(filePath, permissionMode, now);
+          if (quiet && state.signalSource !== 'registry') continue;
           results.push({
-            ...getClaudeTurnState(filePath, permissionMode, now),
+            ...state,
             ...getTranscriptProjection(filePath, project, model),
             backgroundPending: readBackgroundPending(filePath, {
               subagentsDir: mainSubagentsDir(filePath),
@@ -3520,8 +3704,6 @@ class ClaudeAdapter {
       return;
     }
 
-    _sessionNamesCache.signature = '';
-    _sessionNamesCache.value = new Map();
     if (dirty.kind === 'discovery' || dirty.kind === 'reconcile') {
       clearSessionEntryCache();
       for (const filePath of _transcriptAggregateCache.keys()) {
@@ -3550,8 +3732,6 @@ class ClaudeAdapter {
     clearTranscriptAggregateCache();
     clearDerivedMemo();
     _orphanScanCache.subagentActivityBySessionDir.clear();
-    _sessionNamesCache.signature = '';
-    _sessionNamesCache.value = new Map();
     _teamMembershipCache.signature = '';
     _teamMembershipCache.value = new Map();
     _teamsCache.signature = '';
@@ -3559,11 +3739,15 @@ class ClaudeAdapter {
   }
 
   shutdown() {
+    this.registryFiles.clear();
+    this.registry.clear();
+    this.processLeads.clear();
+    this.jobLeads.clear();
     shutdownClaudeAdapter();
   }
 
   dispose() {
-    shutdownClaudeAdapter();
+    this.shutdown();
   }
 
   getPerfStats() {

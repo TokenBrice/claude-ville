@@ -1,7 +1,7 @@
 const HOUR_MS = 60 * 60_000;
 const MAX_STALE_MS = 3 * HOUR_MS;
 const MAX_BYTES = 64 * 1024;
-const HOURLY_FIELDS = ['weather_code', 'cloud_cover', 'precipitation', 'wind_speed_10m', 'wind_direction_10m', 'visibility'];
+const HOURLY_FIELDS = ['weather_code', 'cloud_cover', 'precipitation', 'snowfall', 'wind_speed_10m', 'wind_direction_10m', 'visibility'];
 const PAST_HOURS = 72;
 const FORECAST_HOURS = 48;
 

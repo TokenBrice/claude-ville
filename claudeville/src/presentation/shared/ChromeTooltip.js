@@ -69,7 +69,11 @@ export function installChromeTooltip(doc = document) {
     const handlers = {
         pointerover: event => { if (event.pointerType !== 'touch') request(targetOf(event.target)); },
         pointerout: event => leave(event, targetOf(event.target)),
-        focusin: event => { if (event.target?.matches?.(':focus-visible')) request(targetOf(event.target)); },
+        focusin: event => {
+            const target = targetOf(event.target);
+            const focus = event.target?.matches?.('#villageClock .topbar__clock-source') ? event.target : target;
+            if (focus?.matches(':focus-visible')) request(target);
+        },
         focusout: event => leave(event, targetOf(event.target)),
         pointerdown: hide,
         keydown: event => { if (event.key === 'Escape') hide(); },

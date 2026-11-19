@@ -240,6 +240,21 @@ fn sampleAlbedo(uv: vec2f) -> vec4f {
   return vec4f(0.0);
 }
 
+fn sampleEmission(uv: vec2f, albedoAlpha: f32) -> vec4f {
+  if (!fatOn || !fatSeam(fatAlbedoTaps) || v_gate == 0.0) { return textureSampleLevel(emissiveMap, albedoSampler, uv, 0.0); }
+  var sum = vec4f(0.0);
+  for (var i = 0; i < 4; i++) {
+    let coverage = fatTapWeight(fatAlbedoTaps, i) * fatTap[i].a;
+    if (coverage == 0.0) { continue; }
+    let local = clamp(fatAlbedoTaps.base + fatTapOffset(i), vec2f(0.0), vec2f(v_texelRect.zw));
+    let tapUv = (vec2f(v_texelRect.xy) + local + 0.5) / vec2f(albedoSize());
+    sum += coverage * fatPremultiplied(textureSampleLevel(emissiveMap, albedoSampler, tapUv, 0.0));
+  }
+  // Output applies albedo alpha once.
+  if (sum.a > 0.0) { return vec4f(sum.rgb / sum.a, sum.a / albedoAlpha); }
+  return vec4f(0.0);
+}
+
 fn materialNear(value: f32, goal: f32) -> f32 {
   return 1.0 - step(0.45, abs(value - goal));
 }
@@ -567,14 +582,13 @@ fn sceneSurface() -> SurfaceSample {
   }
   var sidecar = vec4f(0.0);
   if (batch.hasMaterialMap != 0u) { sidecar = textureSampleLevel(materialMap, albedoSampler, uv, 0.0); }
-  var authoredEmission = vec4f(0.0);
-  if (batch.hasEmissiveMap != 0u) { authoredEmission = textureSampleLevel(emissiveMap, albedoSampler, uv, 0.0); }
   let packedMap = (v_flags & RECORD_FLAG_PACKED_GEOMETRY) != 0u;
   let materialId = floor(sidecar.r * 255.0 + 0.5);
   let material = select(v_material, materialId, sidecar.a > 0.0 && !(packedMap && materialId > 254.5));
   var emissive = v_emissive;
   var emissionColor = albedoRgba.rgb;
   if (batch.hasEmissiveMap != 0u) {
+    let authoredEmission = sampleEmission(uv, albedoRgba.a);
     // The emissive channel owns both hue (RGB) and contribution (A).
     emissionColor = authoredEmission.rgb;
     emissive = authoredEmission.a * 2.0 * clamp(v_gate, 0.0, 1.0);

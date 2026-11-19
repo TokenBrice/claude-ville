@@ -33,6 +33,7 @@
 // GroundBake (leaf litter, spring petals).
 
 import { windAt } from './Wind.js';
+import { PRECIPITATING, precipitationIsFrozen } from './GroundState.js';
 
 const SPAWNS_PER_SECOND = 2;
 const SEASONAL_TAG = 'seasonal-drift';
@@ -46,9 +47,6 @@ export function seasonalDriftCap(zoom) {
     if (z >= 2) return SEASONAL_DRIFT_CAP;
     return z >= SEASONAL_DRIFT_MIN_ZOOM ? SEASONAL_DRIFT_WIDE_CAP : 0;
 }
-// The weather layer's own precipitation threshold (WeatherRenderer draws
-// rain, or snow in winter, above it).
-const PRECIPITATING = 0.02;
 // BI-4a — a faller's drift per knot of local wind, world px per 16 ms frame
 // (AtmosphereState's SMOKE_WIND_DRIFT_SCALE: leaves ride the air the smoke
 // shows).
@@ -261,15 +259,15 @@ export class SeasonalAmbience {
         const day = calendarDayOf(atmosphere);
         const season = seasonForMonth(day?.month);
         if (!season) return null;
-        if (season.type === 'petal' && !stageForDay(day.month, day.day).blossom) return null;
         const phase = atmosphere?.phase || atmosphere?.clock?.phase || 'day';
         if (phase === 'night') return null;
         const weather = atmosphere?.weather;
         const precipitating = weather?.type === 'rain'
             || weather?.type === 'storm'
             || (Number(weather?.precipitation) || 0) > PRECIPITATING;
-        if (season.type === 'snow') return precipitating ? season : null;
-        return precipitating ? null : season;
+        if (precipitating) return precipitationIsFrozen(day.month, weather) ? SEASONS.winter : null;
+        if (season.type === 'snow' || (season.type === 'petal' && !stageForDay(day.month, day.day).blossom)) return null;
+        return season;
     }
 
     _spawnDriftParticle(season) {

@@ -266,12 +266,16 @@ export const GRADE_WEATHER_ROWS = Object.freeze({
     rain: Object.freeze({ saturation: 0.74, tint: '#b2c4d6', flatten: 0.7, nightCourse: 1 }),
     storm: Object.freeze({ saturation: 0.62, tint: '#8e9fb4', flatten: 0.85, nightCourse: 0.94 }),
     overcast: Object.freeze({ saturation: 0.82, tint: '#c4ccd4', flatten: 0.55, nightCourse: 1 }),
+    // EY-4 — falling snow: a pearl sky, lighter and softer than overcast
+    // (the rain weight blends toward it while settling snow falls).
+    snow: Object.freeze({ saturation: 0.84, tint: '#d6dde6', flatten: 0.45, nightCourse: 1 }),
     fog: Object.freeze({ saturation: 0.80, tint: '#dfe3e6', flatten: 0.45, nightCourse: 1 }),
 });
 const WEATHER_GREY = Object.freeze({
     rain: Object.freeze({ sky: '#5b6674', haze: '#6e7a88', void: '#121a21' }),
     storm: Object.freeze({ sky: '#3a4150', haze: '#4a5262', void: '#0e1419' }),
     overcast: Object.freeze({ sky: '#7a8590', haze: '#8a949e', void: '#141d24' }),
+    snow: Object.freeze({ sky: '#9aa4b0', haze: '#b0b8c2', void: '#161f27' }),
     fog: Object.freeze({ sky: '#9aa4ac', haze: '#aab2b8', void: '#18222a' }),
 });
 
@@ -315,16 +319,24 @@ export function gradeKeysAt(minuteOfDay, { sunriseShift = 0, sunsetShift = 0, go
     return { from: keys[0], to: keys[0], t: 0 };
 }
 
-function weatherWeights(weather) {
+function weatherWeights(weather, snowfall = 0) {
     const type = String(weather?.type || 'clear');
     const intensity = clamp(finite(weather?.intensity, 0.6));
     const cloudCover = clamp(finite(weather?.cloudCover, 0));
     const weight = clamp(0.4 + intensity * 0.75);
+    // EY-4 — the snow row takes the rain weight and forecast snowstorm weight.
+    // Modeled storms keep the authored storm grade.
+    const rain = type === 'rain' ? weight : 0;
+    const storm = type === 'storm' ? weight : 0;
+    const snowMix = clamp(finite(snowfall, 0));
+    const snowRain = rain * snowMix;
+    const snowStorm = weather?.frozen === true ? storm * snowMix : 0;
     return {
         type,
         cloudCover,
-        rain: type === 'rain' ? weight : 0,
-        storm: type === 'storm' ? weight : 0,
+        rain: rain - snowRain,
+        snow: snowRain + snowStorm,
+        storm: storm - snowStorm,
         // Overcast flattening follows real cover (> 0.7), whatever the label.
         overcast: type === 'overcast' ? weight : 0,
         fog: type === 'fog' ? weight : clamp(finite(weather?.fog, 0)) * 0.5,
@@ -338,6 +350,8 @@ function weatherWeights(weather) {
  * lunar illumination 0..1 (or `{ illumination }`); `moonFill` (visibility x
  * illumination x cloud transmission, 0 outside night) wins when given.
  * Optional `sunriseShift`/`sunsetShift` (minutes) follow the real sun's day.
+ * `snowfall` (0..1, EY-4) blends rain toward the snow row while settling
+ * snow falls (GroundState `snowfallOn` times the `ey4` look strength).
  */
 export function evaluateGrade({
     minuteOfDay = 12 * 60,
@@ -347,6 +361,7 @@ export function evaluateGrade({
     sunriseShift = 0,
     sunsetShift = 0,
     goldenShift = sunsetShift,
+    snowfall = 0,
 } = {}) {
     const { from, to, t } = gradeKeysAt(minuteOfDay, { sunriseShift, sunsetShift, goldenShift });
     let exposure = lerp(from.exposure, to.exposure, t);
@@ -380,8 +395,8 @@ export function evaluateGrade({
     exposure += moonlit(0.05, 0.08) * moon * night;
     saturation += moonlit(0.03, 0.05) * moon * night;
 
-    const w = weatherWeights(weather);
-    for (const kind of ['rain', 'storm', 'overcast', 'fog']) {
+    const w = weatherWeights(weather, snowfall);
+    for (const kind of ['rain', 'snow', 'storm', 'overcast', 'fog']) {
         const weight = w[kind];
         if (weight <= 0) continue;
         const row = GRADE_WEATHER_ROWS[kind];
@@ -414,7 +429,7 @@ export function evaluateGrade({
         voidColor = lerp3(voidColor, hexToRgb01(grey.void), weight * 0.6);
     }
     // Overcast: a covered sun leaves no raking band and no cloud shadows.
-    const flat = Math.max(w.flat, w.rain, w.storm);
+    const flat = Math.max(w.flat, w.rain + w.snow, w.storm);
     sunBand *= 1 - flat;
     const cloudShadow = daylight * clamp((0.85 - w.cloudCover) / 0.15);
     daylight *= 1 - flat * 0.7;

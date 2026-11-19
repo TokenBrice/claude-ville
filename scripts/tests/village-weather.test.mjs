@@ -5,9 +5,13 @@ import villageWeather from '../../claudeville/services/villageWeather.js';
 import {
     AtmosphereState, WEATHER_TYPES, localDateKey, weatherHistorySampler,
 } from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
-import { groundOptionsFor, groundStateAt } from '../../claudeville/src/presentation/character-mode/GroundState.js';
+import { groundOptionsFor, groundStateAt, liquidPrecipitation, snowfallOn } from '../../claudeville/src/presentation/character-mode/GroundState.js';
+import { SeasonalAmbience } from '../../claudeville/src/presentation/character-mode/SeasonalAmbience.js';
+import { RoofWeather } from '../../claudeville/src/presentation/character-mode/RoofWeather.js';
+import { gpuRainField } from '../../claudeville/src/presentation/character-mode/WeatherRenderer.js';
+import { resetLookStrengths, setLookStrength } from '../../claudeville/src/presentation/character-mode/LookStrengths.js';
 import { forecastKnot, forecastKnotsByDate } from '../../claudeville/src/presentation/character-mode/VillageWeather.js';
-import { VILLAGE_WEATHER_KEY, setVillageForecast, watchVillageWeather } from '../../claudeville/src/presentation/shared/VillageWeatherSettings.js';
+import { VILLAGE_WEATHER_KEY, readVillageForecast, setVillageForecast, watchVillageWeather } from '../../claudeville/src/presentation/shared/VillageWeatherSettings.js';
 
 const fixture = JSON.parse(readFileSync(new URL('./fixtures/open-meteo-london.json', import.meta.url)));
 const HOUR = 3_600_000;
@@ -40,6 +44,10 @@ test('Open-Meteo WMO codes map to the six village weather types', () => {
     assert.ok(rain.precipitation > 0.2 && rain.precipitation < storm.precipitation);
     assert.equal(rain.windX, -0.7);
     assert.equal(storm.windX, 1.4);
+    assert.equal(rain.frozen, false);
+    assert.equal(forecastKnot({ code: 86 }).frozen, true);
+    assert.equal(forecastKnot({ code: 95, snowfall: 0.2 }).frozen, true);
+    assert.equal(forecastKnot({ code: 0, snowfall: 0.2 }).frozen, false);
 });
 
 test('recorded UTC forecast normalizes to complete local days with bounded knots', () => {
@@ -54,6 +62,7 @@ test('recorded UTC forecast normalizes to complete local days with bounded knots
         const index = fixture.hourly.time.indexOf(Date.parse('2026-11-19T00:00:00Z') / 1000);
         const knot = day.find(knot => knot.minute === 345);
         assert.equal(knot.type, 'rain');
+        assert.equal(knot.frozen, false);
         assert.equal(knot.cloudCover, fixture.hourly.cloud_cover[index] / 100);
         assert.ok(knot.precipitation > 0.5);
         assert.ok(knot.windX < 0);
@@ -66,10 +75,78 @@ test('recorded UTC forecast normalizes to complete local days with bounded knots
         assert.equal(fold.length, 24);
         assert.equal(fold[1].minute, 60);
         assert.equal(fold[1].type, 'rain');
+
+        process.env.TZ = 'America/Santiago';
+        const firstHour = new Date(2026, 8, 6);
+        assert.equal(firstHour.getHours(), 1);
+        const skippedMidnight = Array.from({ length: 23 }, (_, i) => (firstHour.getTime() + i * HOUR) / 1000);
+        const shortDay = forecastKnotsByDate({ time: skippedMidnight, weather_code: skippedMidnight.map(() => 0) });
+        assert.equal(shortDay['2026-09-06'].length, 23);
+        assert.equal(shortDay['2026-09-06'][0].minute, 60);
+        assert.equal(forecastKnotsByDate({
+            time: skippedMidnight.slice(1), weather_code: skippedMidnight.slice(1).map(() => 0),
+        }), null, 'a forecast missing the first valid hour is still incomplete');
     } finally {
         if (originalZone === undefined) delete process.env.TZ;
         else process.env.TZ = originalZone;
     }
+});
+
+test('forecast phase controls wet ground, snow cover, rain rendering and grade outside the modeled season', (t) => {
+    t.after(() => {
+        setVillageForecast(null);
+        resetLookStrengths();
+    });
+    setLookStrength('rn1', 1);
+    setLookStrength('ey4', 1);
+    const state = new AtmosphereState();
+    const camera = { zoom: 2, screenToWorld: (x, y) => ({ x, y }) };
+    const roof = new RoofWeather();
+    let snapshot;
+    const ambience = new SeasonalAmbience({ cameraGetter: () => camera, atmosphereStateGetter: () => snapshot });
+    function at(month, code, snowfall) {
+        const now = new Date(2026, month, 1, 12);
+        const time = Array.from({ length: 72 }, (_, i) => (now.getTime() + (i - 36) * HOUR) / 1000);
+        const days = forecastKnotsByDate({
+            time, weather_code: time.map(() => code), precipitation: time.map(() => 2),
+            cloud_cover: time.map(() => 90), snowfall: time.map(() => snowfall),
+        });
+        setVillageForecast({ days, fetchedAt: now.getTime() + snowfall });
+        snapshot = state.update({ now });
+        return groundStateAt(now, groundOptionsFor(snapshot));
+    }
+
+    const winterRain = at(11, 61, 0);
+    const winterRainGrade = snapshot.lightGrade.skyTop;
+    assert.equal(snapshot.weather.frozen, false);
+    assert.ok(liquidPrecipitation(snapshot) > 0);
+    assert.equal(snowfallOn(11, snapshot.weather), false);
+    assert.equal(winterRain.snowCover, 0);
+    assert.ok(winterRain.wetness > 0.5);
+    assert.equal(ambience._driftSeason(), null);
+    assert.ok(gpuRainField(snapshot, camera, { viewport: { width: 1440, height: 900 } }).instances > 0);
+    roof.sync(snapshot, winterRain);
+    assert.equal(roof.raining, true);
+
+    at(11, 61, 0.6);
+    assert.equal(snapshot.weather.frozen, true);
+    assert.notDeepEqual(snapshot.lightGrade.skyTop, winterRainGrade);
+
+    const novemberSnow = at(10, 73, 0.6);
+    assert.equal(liquidPrecipitation(snapshot), 0);
+    assert.equal(snowfallOn(10, snapshot.weather), true);
+    assert.ok(novemberSnow.snowCover > 0.5);
+    assert.equal(novemberSnow.wetness, 0);
+    assert.equal(ambience._driftSeason()?.type, 'snow');
+    assert.equal(gpuRainField(snapshot, camera, { viewport: { width: 1440, height: 900 } }).instances, 0);
+    roof.sync(snapshot, novemberSnow);
+    assert.equal(roof.raining, false);
+    assert.ok(roof.bucket > 0);
+
+    const afterMidnight = new Date(2026, 10, 2);
+    setVillageForecast({ ...readVillageForecast(), fetchedAt: afterMidnight.getTime() });
+    const next = state.update({ now: afterMidnight });
+    assert.ok(groundStateAt(afterMidnight, groundOptionsFor(next)).snowCover > 0.5);
 });
 
 test('live weather and ground share date-keyed hours until the forecast expires', (t) => {
@@ -103,7 +180,7 @@ test('live weather and ground share date-keyed hours until the forecast expires'
         days: forecastKnotsByDate({ time, weather_code: time.map(() => 0) }),
     });
     const clearGround = groundStateAt(midnight, groundOptionsFor(atmosphere.snapshot()));
-    assert.equal(clearGround.frost, 4, 'yesterday’s clear hours allow full frost after midnight');
+    assert.equal(clearGround.frost, 3, 'yesterday’s clear hours allow the midnight frost quarter');
     setVillageForecast(forecast);
     const beforeMidnight = atmosphere.update({ now: new Date(midnight.getTime() - 1) });
     assert.ok(Math.abs(beforeMidnight.weather.precipitation - live.weather.precipitation) < 1e-6);
@@ -133,6 +210,7 @@ test('server shares hourly attempts, retains good data on failure and expires it
             assert.equal(url.pathname, '/v1/forecast');
             assert.equal(url.searchParams.get('latitude'), '44.8');
             assert.equal(url.searchParams.get('longitude'), '20.5');
+            assert.ok(url.searchParams.get('hourly').split(',').includes('snowfall'));
             assert.deepEqual([...url.searchParams.keys()],
                 ['latitude', 'longitude', 'hourly', 'timeformat', 'past_hours', 'forecast_hours']);
             assert.equal(options.redirect, 'error');

@@ -48,11 +48,11 @@ import {
 } from './GpuFrameState.js';
 import { createRecordStaging, RECORD_INSTANCE_BYTES, stageGpuRecords } from './GpuRecordLayout.js';
 import { ALBEDO_PAGE_GUTTER, ALBEDO_PAGE_SIZE } from './GpuAlbedoPage.js';
-import { coastFieldTexels, openSeaHazeRows, openSeaSky, openSeaSquall, waterMoodFor } from '../CoastBake.js';
+import { coastFieldTexels, mirrorStormDrop, openSeaHazeRows, openSeaSky, openSeaSquall, waterMoodFor } from '../CoastBake.js';
 import { createPostFxLadder, POST_FX_LEVELS } from '../postfx/PostFxLadder.js';
 import { NEUTRAL_SOURCE_ENERGY, sourceEnergyFor } from '../AtmosphereState.js';
 import { particleMotifMask } from '../ParticleSystem.js';
-import { CUE_RUN_VERTICES } from '../GroundCueRecords.js';
+import { CUE_RUN_VERTICES, GROUND_CUE_TEXTURE_KEY } from '../GroundCueRecords.js';
 import {
     BATCH_UNIFORM_LAYOUT,
     BATCH_UNIFORM_STRIDE,
@@ -212,6 +212,7 @@ export class GpuWorldRendererWebGPU {
         this.frameGapMs = null;
         this.uploads = 0;
         this.uploadBytes = 0;
+        this._uploadByteKinds = { wholeImages: 0, imagePatches: 0, albedoPage: 0, typedFields: 0, lightRecords: 0 };
         this.skippedOccluderUploads = 0;
         this.textureBytes = 0;
         this.textureEvictions = 0;
@@ -1003,6 +1004,7 @@ export class GpuWorldRendererWebGPU {
             entry.bytes = bytes;
             this.uploads++;
             this.uploadBytes += uploadedBytes;
+            this._uploadByteKinds[canPatch ? 'imagePatches' : 'wholeImages'] += uploadedBytes;
             this._frameUploadMs += performance.now() - started;
             if (storageChanged) {
                 this._textureCacheNeedsTrim = true;
@@ -1051,6 +1053,7 @@ export class GpuWorldRendererWebGPU {
             entry.bytes = bytes;
             this.uploads++;
             this.uploadBytes += bytes;
+            this._uploadByteKinds.typedFields += bytes;
             this._frameUploadMs += performance.now() - started;
             if (storageChanged) {
                 this._textureCacheNeedsTrim = true;
@@ -1149,6 +1152,7 @@ export class GpuWorldRendererWebGPU {
             if (bytes) {
                 this.uploads += page.uploads - uploads;
                 this.uploadBytes += bytes;
+                this._uploadByteKinds.albedoPage += bytes;
                 this._frameUploadMs += performance.now() - started;
             }
         }
@@ -1263,16 +1267,23 @@ export class GpuWorldRendererWebGPU {
         let cycle = null;
         let coast = null;
         const live = effectBudgetMode('waterCrests', qualityLevel) === 'on' || effectBudgetMode('coastSwash', qualityLevel) === 'on';
-        if (live && fields?.cols > 0 && fields?.rows > 0) {
+        const baked = fields?.cols > 0 && fields?.rows > 0;
+        if (live && baked) {
             cycle = this.uploadTypedTexture('field:cycle-offset', {
                 width: fields.cols, height: fields.rows, format: 'r8', data: fields.cycleOffset, revision: fields.revision,
             });
+        }
+        // EN-7 — the coast field stays bound at MINIMAL for its mirror stops
+        // alone (`mirrorRect`); every other reader keeps `coastRect` 0 there.
+        if (baked) {
             coast = this.uploadTypedTexture('field:coast', {
                 width: fields.cols, height: fields.rows, format: 'rgba8', data: coastFieldTexels(fields), revision: fields.revision,
             });
         }
         const present = Boolean(cycle && coast);
         s.coastRect = present ? [fields.x, fields.y, fields.cols, fields.rows] : ZERO4;
+        s.mirrorRect = coast ? [fields.x, fields.y, fields.cols, fields.rows] : ZERO4;
+        s.mirrorBreak = mirrorStormDrop(feed.weather || feed.atmosphere?.weather, feed.atmosphere || null);
         this.waterFieldsActive = present;
         const mood = waterMoodFor({ lightGrade: grade, weather: feed.weather || feed.atmosphere?.weather });
         s.waterMood = [mood.night, mood.storm];
@@ -1383,7 +1394,7 @@ export class GpuWorldRendererWebGPU {
             lightTiles: tiles,
             footprint,
             cycleOffset: present ? cycle : null,
-            coastField: present ? coast : null,
+            coastField: coast,
             puddleMask,
             paletteLut: lut,
             motifs: this._particleCount > 0 ? this._particleMotifTexture : null,
@@ -1437,6 +1448,7 @@ export class GpuWorldRendererWebGPU {
         this._lightRecordsRevision = revision;
         this.uploads++;
         this.uploadBytes += LIGHT_RECORD_BUFFER_BYTES;
+        this._uploadByteKinds.lightRecords += LIGHT_RECORD_BUFFER_BYTES;
         this._frameUploadMs += performance.now() - started;
     }
 
@@ -1647,7 +1659,9 @@ export class GpuWorldRendererWebGPU {
         this._preparedFeed = null;
         if (occluderChannelEnabled && this._occluderChannelSkipped) {
             for (const [key, entry] of this._textureEntries) {
-                if (key.startsWith('occluder:')) entry.source = null;
+                // A versioned sidecar stays resident. _textureFor compares its source,
+                // dimensions and revision, and falls back to a full copy after missed patches.
+                if (entry.revision == null && key.startsWith('occluder:')) entry.source = null;
             }
         }
         this._occluderChannelSkipped = !occluderChannelEnabled;
@@ -1779,6 +1793,7 @@ export class GpuWorldRendererWebGPU {
             let bound = null;
             let boundRole = 0;
             let draws = 0;
+            const bindingRecords = { albedoPage: 0, pilotAtlas: 0, agentAtlas: 0, cueAtlas: 0, other: 0 };
             for (let index = 0; index < batches.length; index++) {
                 const batch = batches[index];
                 if (!batch.albedoTexture) continue;
@@ -1798,7 +1813,13 @@ export class GpuWorldRendererWebGPU {
                 scene.setBindGroup(1, this._batchBindGroup(this._recordBuffer, batch), [index * BATCH_UNIFORM_STRIDE]);
                 scene.draw(cue ? CUE_RUN_VERTICES : 4, batch.count, 0, batch.instanceOffset / RECORD_INSTANCE_BYTES);
                 draws++;
+                if (batch.page) bindingRecords.albedoPage += batch.count;
+                else if (batch.textureKey === 'agent-frame-atlas') bindingRecords.agentAtlas += batch.count;
+                else if (batch.textureKey === 'world-pilot') bindingRecords.pilotAtlas += batch.count;
+                else if (batch.textureKey === GROUND_CUE_TEXTURE_KEY) bindingRecords.cueAtlas += batch.count;
+                else bindingRecords.other += batch.count;
             }
+            this._sceneTextureBindings = { groupsBound: draws, records: bindingRecords };
             if (this._particleCount > 0 && this._particleMotifTexture) {
                 if (boundRole) scene.setBlendConstant({ r: 0, g: 0, b: 0, a: 0 });
                 scene.setPipeline(this.pipelines.particles(writeEmission, roles, writeEmission));
@@ -2249,6 +2270,8 @@ export class GpuWorldRendererWebGPU {
             aerialHaze: this.aerialHaze,
             uploads: this.uploads,
             uploadBytes: this.uploadBytes,
+            uploadBytesByKind: { ...this._uploadByteKinds },
+            sceneTextureBindings: this._sceneTextureBindings,
             skippedOccluderUploads: this.skippedOccluderUploads,
             uploadMs: this.uploadMs ?? 0,
             cpuMs: this.cpuMs ?? 0,

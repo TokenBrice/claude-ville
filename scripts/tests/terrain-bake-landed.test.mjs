@@ -96,3 +96,116 @@ test('a terrain bake that lost its sprites is shown, never stored, and rebakes a
     assert.notEqual(f.renderer.terrainCacheKey, key);
     assert.equal(f.renderer._terrainArtifactStats.bakes, 2);
 });
+
+test('EY-5: a winter stage change re-stages the terrain in idle slices, never in the frame', t => {
+    const f = bakingRenderer(t, { lands: true });
+    const r = f.renderer;
+    let stage = 'f1r';
+    let frameBakes = 0;
+    let bands = 0;
+    r._drawStaticTerrainSurface = () => { frameBakes++; };
+    r._terrainSurfaceSteps = (ctx) => [() => ctx.drawImage({ width: 4, height: 4, pixels: new Uint8ClampedArray(64).fill(255) }, 2, 2)];
+    r._terrainBakePasses.push({
+        id: 'ground-splat', stage: 'ground', draw() {},
+        revision: () => `sheets${stage}`, baseRevision: () => 'sheets',
+        prepare: () => { let left = 3; return () => { bands++; return --left === 0; }; },
+    });
+    const first = r._getTerrainCache().canvas;
+    assert.equal(frameBakes, 1, 'the first surface bakes in its frame');
+    r._worldFramePresented = true;
+    stage = 'f2r';
+    for (let frame = 0; frame < 3; frame++) {
+        assert.equal(r._getTerrainCache().canvas, first, 'the current terrain keeps presenting');
+    }
+    assert.equal(frameBakes, 1, 'no bake inside a frame');
+    assert.equal(bands, 0, 'nothing prepared inside a frame');
+    for (let slice = 0; slice < 8 && r._terrainRestage; slice++) t.mock.timers.tick(1);
+    assert.equal(bands, 3, 'one band per idle slice');
+    assert.equal(r._terrainRestage, null);
+    const next = r._getTerrainCache().canvas;
+    assert.notEqual(next, first, 'the prepared stage swaps in whole');
+    assert.equal(frameBakes, 1);
+    assert.match(r.terrainCacheKey, /ground-splat:sheetsf2r/);
+    // A change outside the winter stage still bakes in the frame.
+    r._terrainSceneryRevision = 1;
+    r._getTerrainCache();
+    assert.equal(frameBakes, 2);
+});
+
+// A restaging renderer whose ground stage is `state.stage`: its surface
+// paints one texel the stage's colour, its coast and finish steps write the
+// renderer's water fields as CoastBake does.
+function stagingRenderer(t) {
+    const f = bakingRenderer(t, { lands: true });
+    const r = f.renderer;
+    const state = { stage: 'f1r', slices: 0 };
+    const colour = (stage) => ({ width: 1, height: 1, pixels: new Uint8ClampedArray([stage === 'f1r' ? 10 : 20, 0, 0, 255]) });
+    const bridge = r._bridgeSpritePlacement();
+    r._drawStaticTerrainSurface = (ctx) => { ctx.drawImage(bridge.img, 2, 2); ctx.drawImage(colour(state.stage), 1, 1); };
+    r._terrainSurfaceSteps = (ctx) => [
+        () => { ctx.drawImage(bridge.img, 2, 2); ctx.drawImage(colour(state.stage), 1, 1); },
+        () => { r._coastBake = { stage: state.stage, waterFields: null }; },
+        () => { r._coastBake.waterFields = `water-${r._coastBake.stage}`; },
+    ];
+    r._terrainBakePasses.push({
+        id: 'ground-splat', stage: 'ground', draw() {},
+        revision: () => `sheets${state.stage}`, baseRevision: () => 'sheets',
+        prepare: () => () => true,
+    });
+    r._coastBake = { stage: 'f1r', waterFields: 'water-f1r' };
+    r._getTerrainCache();
+    r._worldFramePresented = true;
+    // One idle slice per tick.
+    const queue = [];
+    globalThis.requestIdleCallback = (callback) => queue.push(callback);
+    t.after(() => { delete globalThis.requestIdleCallback; });
+    const tick = () => { state.slices++; queue.shift()?.(); };
+    const texel = () => r.terrainCache.pixels[(1 * 8 + 1) * 4];
+    return { r, state, tick, texel };
+}
+
+test('EY-5: a clock scrub back to the shown stage drops the pending restage', t => {
+    const { r, state, tick, texel } = stagingRenderer(t);
+    state.stage = 'f2r';
+    r._getTerrainCache();
+    tick();
+    state.stage = 'f1r';
+    r._getTerrainCache();
+    assert.equal(r._terrainRestage, null, 'the return to the shown stage cancels the job');
+    for (let i = 0; i < 4; i++) tick();
+    state.stage = 'f2r';
+    r._getTerrainCache();
+    for (let i = 0; i < 12 && r._terrainRestage; i++) tick();
+    r._getTerrainCache();
+    assert.match(r.terrainCacheKey, /sheetsf2r/);
+    assert.equal(texel(), 20, 'the quarter-2 key holds quarter-2 pixels');
+    // A slice whose stage moved on under it stops at once.
+    state.stage = 'f1r';
+    r._getTerrainCache();
+    const job = r._terrainRestage;
+    assert.ok(job);
+    state.stage = 'f2r';
+    tick();
+    assert.equal(r._terrainRestage, null, 'a slice validates the key first');
+});
+
+test('EY-5: a restage keeps its water fields private and publishes them with its canvas', t => {
+    const { r, state, tick, texel } = stagingRenderer(t);
+    const shown = r._coastBake;
+    state.stage = 'f2r';
+    r._getTerrainCache();
+    let slices = 0;
+    while (r._terrainRestage) {
+        slices++;
+        tick();
+        if (r._terrainRestage) {
+            assert.equal(r._coastBake, shown, 'frames in between keep the shown water fields');
+            assert.equal(r._coastBake.waterFields, 'water-f1r');
+        }
+    }
+    assert.ok(slices >= 5, `one step per slice: ${slices}`);
+    assert.equal(r._coastBake.stage, 'f2r');
+    assert.equal(r._coastBake.waterFields, 'water-f2r', 'published together with the canvas');
+    assert.equal(texel(), 20);
+    assert.match(r.terrainCacheKey, /sheetsf2r/);
+});

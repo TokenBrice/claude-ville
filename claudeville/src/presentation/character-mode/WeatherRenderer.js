@@ -15,6 +15,7 @@ import { baseWindX, cloudCourseDrift, windAt } from './Wind.js';
 import { applyGradeToRgb } from './GradeEvaluator.js';
 import { OCEAN_HORIZON_WORLD_Y, overcastPearlShare, RAIN_START_PRECIPITATION } from './CoastBake.js';
 import { lookStrength } from './LookStrengths.js';
+import { precipitationIsFrozen } from './GroundState.js';
 
 export function weatherEmbellishmentAllowed(level = 0) {
     return ornamentPlan({ level, motionScale: 1 }).ambientWeatherEmbellishment !== 'off';
@@ -434,9 +435,7 @@ export class WeatherRenderer {
         if (rainActive) {
             const storm = weather.type === 'storm';
             const rainIntensity = Math.max(precipitation, weather.intensity * (storm ? 0.86 : 0.72)) * legibility.rain;
-            // Winter (Dec–Feb) precipitation falls as drifting snow; the storm's
-            // lightning below still strikes.
-            if (isWinterMonth(atmosphere)) {
+            if (frozenPrecipitation(atmosphere)) {
                 this._drawSnow(ctx, canvas, { ...weather, intensity: rainIntensity }, phaseMs, seed, particleEnabled);
             } else {
                 this._drawRain(ctx, canvas, { ...weather, intensity: rainIntensity }, phaseMs, seed, particleEnabled, timeMs, gpuRainShare);
@@ -1089,7 +1088,7 @@ export function gpuRainField(atmosphere, camera, { timeMs = 0, on = true, splash
     const share = on ? lookStrength('rn1') : 0;
     if (!(share > 0) || !camera?.screenToWorld) return out;
     const weather = normalizeWeather(atmosphere);
-    if (!weather || !(weather.intensity > 0) || isWinterMonth(atmosphere)) return out;
+    if (!weather || !(weather.intensity > 0) || frozenPrecipitation(atmosphere)) return out;
     const precipitation = clamp(weather.precipitation, 0, 1);
     if (!(RAIN_TYPES.has(weather.type) || precipitation > RAIN_START_PRECIPITATION)) return out;
     // The overlay's own viewport (`drawForeground`'s canvas) when given, so
@@ -1505,7 +1504,7 @@ function weatherLegibilityGate(weather, atmosphere) {
     };
 }
 
-function isWinterMonth(atmosphere) {
+function frozenPrecipitation(atmosphere) {
     const localDate = atmosphere?.clock?.localDate;
     let month = NaN;
     if (typeof localDate === 'string' && localDate.length >= 7) {
@@ -1515,7 +1514,7 @@ function isWinterMonth(atmosphere) {
         const date = atmosphere?.effectiveDate;
         if (date instanceof Date) month = date.getMonth() + 1;
     }
-    return month === 12 || month === 1 || month === 2;
+    return precipitationIsFrozen(month - 1, atmosphere?.weather);
 }
 
 function normalizeType(type) {
