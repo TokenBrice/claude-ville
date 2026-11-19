@@ -96,3 +96,38 @@ test('a terrain bake that lost its sprites is shown, never stored, and rebakes a
     assert.notEqual(f.renderer.terrainCacheKey, key);
     assert.equal(f.renderer._terrainArtifactStats.bakes, 2);
 });
+
+test('EY-5: a winter stage change re-stages the terrain in idle slices, never in the frame', t => {
+    const f = bakingRenderer(t, { lands: true });
+    const r = f.renderer;
+    let stage = 'f1r';
+    let frameBakes = 0;
+    let bands = 0;
+    r._drawStaticTerrainSurface = () => { frameBakes++; };
+    r._terrainSurfaceSteps = (ctx) => [() => ctx.drawImage({ width: 4, height: 4, pixels: new Uint8ClampedArray(64).fill(255) }, 2, 2)];
+    r._terrainBakePasses.push({
+        id: 'ground-splat', stage: 'ground', draw() {},
+        revision: () => `sheets${stage}`, baseRevision: () => 'sheets',
+        prepare: () => { let left = 3; return () => { bands++; return --left === 0; }; },
+    });
+    const first = r._getTerrainCache().canvas;
+    assert.equal(frameBakes, 1, 'the first surface bakes in its frame');
+    r._worldFramePresented = true;
+    stage = 'f2r';
+    for (let frame = 0; frame < 3; frame++) {
+        assert.equal(r._getTerrainCache().canvas, first, 'the current terrain keeps presenting');
+    }
+    assert.equal(frameBakes, 1, 'no bake inside a frame');
+    assert.equal(bands, 0, 'nothing prepared inside a frame');
+    for (let slice = 0; slice < 8 && r._terrainRestage; slice++) t.mock.timers.tick(1);
+    assert.equal(bands, 3, 'one band per idle slice');
+    assert.equal(r._terrainRestage, null);
+    const next = r._getTerrainCache().canvas;
+    assert.notEqual(next, first, 'the prepared stage swaps in whole');
+    assert.equal(frameBakes, 1);
+    assert.match(r.terrainCacheKey, /ground-splat:sheetsf2r/);
+    // A change outside the winter stage still bakes in the frame.
+    r._terrainSceneryRevision = 1;
+    r._getTerrainCache();
+    assert.equal(frameBakes, 2);
+});

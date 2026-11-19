@@ -2,6 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { MAP_SIZE, TILE_WIDTH, TILE_HEIGHT } from '../../claudeville/src/config/constants.js';
+import { BUILDING_DEFS } from '../../claudeville/src/config/buildings.js';
+import { BUILDING_GROUNDING_PROFILES } from '../../claudeville/src/config/buildingGrounding.js';
+import { buildingCenterToWorld } from '../../claudeville/src/presentation/character-mode/Projection.js';
 import {
     GROUND_WEATHER_COLS,
     GROUND_WEATHER_NEUTRAL,
@@ -182,13 +185,46 @@ function texelAt(base, tx, ty) {
     return Math.floor(sy - base.y0) * base.cols + Math.floor((sx - base.x0) / 2);
 }
 
-test('EN-3: the Command contact AO starts at the painted plinth, the Archive keeps its logical footprint', t => {
+// EN-3 — the manifest's sprite anchors of the three seated buildings.
+const ANCHORS = { command: [199, 164], tavern: [158, 218], forge: [128, 169] };
+
+test('EN-3: the contact AO and its exclusions sit on the authored plinth edges of the real footprints', t => {
     const renderer = groundBakeFixture(t);
-    renderer.world.buildings.set('command', { type: 'command', position: { tileX: 17, tileY: 17 }, width: 2, height: 2 });
+    renderer.assets = { getAnchor: (id) => ANCHORS[id.replace('building.', '')] || [0, 0] };
+    renderer._coastField = { key: 'land', signedDistance: () => -9 };
+    renderer.world.buildings = new Map(BUILDING_DEFS.filter(def => ANCHORS[def.type]).map(def =>
+        [def.type, { type: def.type, position: { tileX: def.x, tileY: def.y }, width: def.width, height: def.height }]));
     const base = bakeGround(renderer);
-    // Inside the drawn base by its front corner, outside the logical footprint.
-    assert.equal(base.aoBuf[texelAt(base, 17 + 2 - 0.25, 17 + 2 - 0.25)], 255, 'command: full contact at the plinth');
-    assert.ok(base.aoBuf[texelAt(base, 21 + 2 - 0.25, 20 + 2 - 0.25)] < 255, 'archive: the logical footprint');
+    const aoAtWorld = (wx, wy) => {
+        const col = Math.floor((wx - base.x0) / 2);
+        const row = Math.floor(wy - base.y0);
+        return base.aoBuf[row * base.cols + col];
+    };
+    for (const building of renderer.world.buildings.values()) {
+        const { plinth } = BUILDING_GROUNDING_PROFILES[building.type];
+        const centre = buildingCenterToWorld(building);
+        const [ax, ay] = ANCHORS[building.type];
+        const world = ([px, py]) => [centre.x + px - ax, centre.y + py - ay];
+        const edges = [[plinth.left, plinth.bottom], [plinth.bottom, plinth.right]];
+        for (const [a, b] of edges) {
+            for (const share of [0.2, 0.5, 0.8]) {
+                const [x, y] = world([a[0] + (b[0] - a[0]) * share, a[1] + (b[1] - a[1]) * share]);
+                // On the painted foot (2 px up): full contact; just in front of
+                // it (3 px down): still the contact course's core, so a puddle
+                // (PUDDLE_WALL_AO 70) never reaches the foot; a tile below: open.
+                assert.equal(aoAtWorld(x, y - 2), 255, `${building.type} foot at ${share}`);
+                assert.ok(aoAtWorld(x, y + 3) >= 180, `${building.type} contact at ${share}: ${aoAtWorld(x, y + 3)}`);
+                assert.ok(aoAtWorld(x, y + 40) < 70, `${building.type} open ground at ${share}: ${aoAtWorld(x, y + 40)}`);
+            }
+        }
+        const puddleNearFoot = edges.some(([a, b]) => [0.2, 0.5, 0.8].some(share => {
+            const [x, y] = world([a[0] + (b[0] - a[0]) * share, a[1] + (b[1] - a[1]) * share]);
+            const col = Math.floor((x - base.x0) / 2);
+            const row = Math.floor(y + 3 - base.y0);
+            return base.puddleMask[row * base.cols + col] > 0;
+        }));
+        assert.equal(puddleNearFoot, false, `${building.type}: no puddle at the foot`);
+    }
 });
 
 test('EY-3: snow lies under the open Task board, not under a solid building', t => {
@@ -221,6 +257,12 @@ test('EY-3: snow lies under the open Task board, not under a solid building', t 
     const archive = snowyShare(plot(21, 20));
     assert.ok(board > 0.5, `snow under the Task board: ${board}`);
     assert.ok(archive < 0.2, `thinned under a solid building: ${archive}`);
+    // The same share spares the rain: the ground under the board wets (the
+    // wet test's shelter cut is 0.5), under the Archive it stays dry.
+    const { weather } = bakeGround(renderer, true);
+    const shelterAt = (tx, ty) => weather.data[texelAt(base, tx, ty) * 4 + 1] / 255;
+    assert.ok(shelterAt(19, 18) < 0.5, `rain under the Task board: ${shelterAt(19, 18)}`);
+    assert.ok(shelterAt(22, 21) > 0.9, `no rain under the Archive: ${shelterAt(22, 21)}`);
 });
 
 test('EY-5: the rising rime grows on the GW-3 patch field, each quarter holding the last', t => {

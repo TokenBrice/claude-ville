@@ -30,11 +30,13 @@ export const BUILDING_GROUNDING_SHADOWS = Object.freeze([
 // World-pixel contact geometry is measured at zoom 1. Foundations are baked
 // into the static terrain cache; shadow/contact shapes are the only per-frame
 // physical grounding marks. Optional, read by GroundBake's contact AO:
-// `contactSeat: 'plinth'` (EN-3) starts the AO at the painted plinth, the
-// drawn base half a tile down-screen of the logical footprint, where the art's
-// front edges stand (Command, Tavern, Forge; the Mine's foot sits up-screen of
-// it and keeps the logical one); `shelter` (EY-3, default 1) is the share of
-// the snow the AO keeps off, low for an open frame.
+// `plinth` (EN-3) is the artist's visual base, the left, bottom (front
+// corner) and right points of the 2:1 front edges where the art meets the
+// ground, in sprite px of base.png (the same anchors
+// scripts/sprites/bake-surface-channel.mjs bakes the surface channel on); the
+// contact AO's front edges run along them (Command, Tavern, Forge; the
+// others keep the logical footprint). `shelter` (EY-3, default 1) is the
+// share of the snow and rain the eaves keep off, low for an open frame.
 export const BUILDING_GROUNDING_PROFILES = Object.freeze({
     command: Object.freeze({
         mode: 'terrain-apron',
@@ -43,8 +45,8 @@ export const BUILDING_GROUNDING_PROFILES = Object.freeze({
         shadow: 'structure-contact',
         foundation: Object.freeze({ enabled: false, owner: 'sprite-reference', opacity: 0 }),
         contact: Object.freeze({ offsetX: 0, offsetY: -9, width: 190, depth: 34, opacity: 0.78 }),
-        // EN-3 — the contact AO starts at the painted plinth (the drawn base).
-        contactSeat: 'plinth',
+        // EN-3 — the painted plinth's front edges (sprite px of base.png).
+        plinth: Object.freeze({ left: Object.freeze([58, 171]), bottom: Object.freeze([213, 238]), right: Object.freeze([343, 174]) }),
     }),
     taskboard: Object.freeze({
         mode: 'terrain-apron',
@@ -64,8 +66,8 @@ export const BUILDING_GROUNDING_PROFILES = Object.freeze({
         shadow: 'structure-contact',
         foundation: Object.freeze({ enabled: true, owner: 'terrain-cache', opacity: 0.5, density: 0.5, thresholdReach: 0.56 }),
         contact: Object.freeze({ offsetX: -8, offsetY: -7, width: 152, depth: 32, opacity: 0.76 }),
-        // EN-3 — the contact AO starts at the painted plinth (the drawn base).
-        contactSeat: 'plinth',
+        // EN-3 — the painted plinth's front edges (sprite px of base.png).
+        plinth: Object.freeze({ left: Object.freeze([24, 166]), bottom: Object.freeze([137, 222]), right: Object.freeze([224, 183]) }),
     }),
     mine: Object.freeze({
         mode: 'terrain-apron',
@@ -90,8 +92,8 @@ export const BUILDING_GROUNDING_PROFILES = Object.freeze({
         shadow: 'tower-cast',
         foundation: Object.freeze({ enabled: true, owner: 'terrain-cache', opacity: 0.48, density: 0.48, thresholdReach: 0.62 }),
         contact: Object.freeze({ offsetX: -8, offsetY: -7, width: 108, depth: 28, opacity: 0.76, castLength: 52 }),
-        // EN-3 — the contact AO starts at the painted plinth (the drawn base).
-        contactSeat: 'plinth',
+        // EN-3 — the painted plinth's front edges (sprite px of base.png).
+        plinth: Object.freeze({ left: Object.freeze([30, 218]), bottom: Object.freeze([158, 282]), right: Object.freeze([286, 218]) }),
     }),
     portal: Object.freeze({
         mode: 'intentional-dais',

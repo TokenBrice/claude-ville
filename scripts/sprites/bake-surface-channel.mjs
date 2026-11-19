@@ -32,6 +32,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PNG } from 'pngjs';
 import { BUILDING_DEFS } from '../../claudeville/src/config/buildings.js';
+import { BUILDING_GROUNDING_PROFILES } from '../../claudeville/src/config/buildingGrounding.js';
 import { buildingCenterToWorld, tileToWorld } from '../../claudeville/src/presentation/character-mode/Projection.js';
 import { collectSpriteEntries, loadSpriteManifest, spritesRoot } from './manifest-utils.mjs';
 
@@ -50,7 +51,8 @@ const GOLD = { hue: [20, 60], minSat: 0.45, minValue: 0.2 };
 // visual base (where the art meets the ground); regions are first-match.
 export const SURFACE_SPECS = Object.freeze({
     command: {
-        base: { left: [58, 171], bottom: [213, 238], right: [343, 174] },
+        // EN-3 — shared with the ground bake's contact AO (buildingGrounding.js).
+        base: BUILDING_GROUNDING_PROFILES.command.plinth,
         roof: [SLATE],
         regions: [
             // Two broad stone steps climbing to the gate sill.
@@ -89,7 +91,7 @@ export const SURFACE_SPECS = Object.freeze({
     },
     forge: {
         // B3-04 (draft D) — measured on the 2026-10-24 re-author.
-        base: { left: [24, 166], bottom: [137, 222], right: [224, 183] },
+        base: BUILDING_GROUNDING_PROFILES.forge.plinth,
         roof: [SLATE],
         regions: [
             // Chimney stack above the roof: its own corner at the back right.
@@ -160,7 +162,7 @@ export const SURFACE_SPECS = Object.freeze({
     },
     tavern: {
         // The 4x4 footprint's front edges, under the veranda's post feet.
-        base: { left: [30, 218], bottom: [158, 282], right: [286, 218] },
+        base: BUILDING_GROUNDING_PROFILES.tavern.plinth,
         roof: [SLATE],
         regions: [
             // Below the eaves the slate-toned glass and ironwork is no roof.

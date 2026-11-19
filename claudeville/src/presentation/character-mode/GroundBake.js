@@ -70,6 +70,7 @@ import { FOREST_FLOOR_REGIONS } from '../../config/scenery.js';
 import { YARD_MATERIALS } from '../../config/townPlan.js';
 import { BUILDING_GROUNDING_PROFILES } from '../../config/buildingGrounding.js';
 import { readTerrainCellLuma } from './TerrainTileset.js';
+import { buildingCenterToWorld } from './Projection.js';
 import { getCoastField } from './CoastBake.js';
 import { frostQuarterOf, frostRisingOf, snowBucketOf } from './GroundState.js';
 import { frostHolds, frostShadeField, frostShadeKey } from './FrostMelt.js';
@@ -458,15 +459,15 @@ function buildOccluders(r) {
     };
     for (const b of r.world?.buildings?.values?.() || []) {
         const profile = BUILDING_GROUNDING_PROFILES[b.type];
-        // EN-3 — `contactSeat: 'plinth'`: the AO starts at the painted plinth
-        // (the drawn base, half a tile down-screen of the logical footprint).
-        const seat = profile?.contactSeat === 'plinth' ? 0.5 : 0;
-        const minX = b.position.tileX - 0.5 + seat;
-        const minY = b.position.tileY - 0.5 + seat;
+        const minX = b.position.tileX - 0.5;
+        const minY = b.position.tileY - 0.5;
         // EY-3 — `shelter`: the share of the snow its contact AO keeps off
         // (buildingGrounding.js; an open frame like the Task board spares little).
         const shelter = profile?.shelter ?? 1;
-        add({ kind: 0, minX, minY, maxX: minX + b.width, maxY: minY + b.height, reach: 0.95, strength: 1, shelter }, 1.4);
+        // EN-3 — the painted plinth's front edges where the profile has them.
+        const plinth = plinthOccluder(r, b, profile, minX, minY);
+        if (plinth) add({ ...plinth, reach: 0.95, strength: 1, shelter }, 1.4);
+        else add({ kind: 0, minX, minY, maxX: minX + b.width, maxY: minY + b.height, reach: 0.95, strength: 1, shelter }, 1.4);
     }
     for (const t of r.scenery?.getTreeProps?.() || []) {
         const cx = t.tileX + 0.1;
@@ -495,7 +496,10 @@ function buildSunOccluders(r) {
         // tile down-screen of the contact AO's logical footprint.
         const minX = b.position.tileX;
         const minY = b.position.tileY;
-        const occ = { minX, minY, maxX: minX + b.width, maxY: minY + b.height };
+        // EY-3 — the eaves spare the rain by the profile's shelter share too,
+        // so the ground under the open Task board wets.
+        const shelter = BUILDING_GROUNDING_PROFILES[b.type]?.shelter ?? 1;
+        const occ = { minX, minY, maxX: minX + b.width, maxY: minY + b.height, shelter };
         const reach = SUN_SHADE_REACH * 1.4;
         for (let y = Math.max(0, Math.floor(minY - reach)); y <= Math.min(N - 1, Math.ceil(occ.maxY + reach)); y++) {
             for (let x = Math.max(0, Math.floor(minX - reach)); x <= Math.min(N - 1, Math.ceil(occ.maxX + reach)); x++) {
@@ -517,7 +521,7 @@ function sunShadeAt(bucket, tx, ty, out) {
         const dx = tx < o.minX ? o.minX - tx : tx > o.maxX ? tx - o.maxX : 0;
         const dy = ty < o.minY ? o.minY - ty : ty > o.maxY ? ty - o.maxY : 0;
         const d = Math.hypot(dx, dy);
-        const e = d < EAVE_REACH * 0.6 ? 1 : d < EAVE_REACH ? (EAVE_REACH - d) / (EAVE_REACH * 0.4) : 0;
+        const e = (d < EAVE_REACH * 0.6 ? 1 : d < EAVE_REACH ? (EAVE_REACH - d) / (EAVE_REACH * 0.4) : 0) * o.shelter;
         if (e > eave) eave = e;
         const ex = tx < o.minX ? dx / 0.35 : dx / 1.35;
         const ey = ty < o.minY ? dy / 0.6 : dy / 1.0;
@@ -528,6 +532,41 @@ function sunShadeAt(bucket, tx, ty, out) {
     out[1] = shade > 0 ? shade ** 0.7 : 0;
 }
 
+// EN-3 — a building's contact occluder on its painted plinth: the profile's
+// `plinth` front edges (sprite px of base.png, the surface channel's own
+// anchors) placed through the sprite anchor and turned into the bake's tile
+// coordinates. Its front sides are the two authored edges (left → bottom
+// faces +ty, bottom → right faces +tx), each with its outward unit normal;
+// the back sides stay the logical footprint's, under the sprite. Null
+// without a plinth or the sprite anchor.
+function plinthOccluder(r, b, profile, minX, minY) {
+    const base = profile?.plinth;
+    const anchor = base && r.assets?.getAnchor?.(`building.${b.type}`);
+    if (!anchor) return null;
+    const centre = buildingCenterToWorld(b);
+    const tile = ([px, py]) => {
+        const sx = centre.x + px - anchor[0];
+        const sy = centre.y + py - anchor[1];
+        return { x: sx / TILE_WIDTH + sy / TILE_HEIGHT, y: sy / TILE_HEIGHT - sx / TILE_WIDTH };
+    };
+    const left = tile(base.left);
+    const corner = tile(base.bottom);
+    const right = tile(base.right);
+    const normal = (a, c, axis) => {
+        const dx = c.x - a.x;
+        const dy = c.y - a.y;
+        const len = Math.hypot(dx, dy) || 1;
+        const n = { x: dy / len, y: -dx / len };
+        return n[axis] >= 0 ? n : { x: -n.x, y: -n.y };
+    };
+    return {
+        kind: 2, minX, minY, corner,
+        maxX: Math.max(corner.x, right.x, left.x), maxY: Math.max(corner.y, left.y, right.y),
+        ny: normal(left, corner, 'y'),
+        nx: normal(corner, right, 'x'),
+    };
+}
+
 // `sheltered`: each occluder weighted by its shelter share (EY-3: the snow
 // the eaves keep off), instead of the contact AO itself.
 function occlusionAt(bucket, tx, ty, sheltered = false) {
@@ -535,7 +574,21 @@ function occlusionAt(bucket, tx, ty, sheltered = false) {
     for (let i = 0; i < bucket.length; i++) {
         const o = bucket[i];
         let d;
-        if (o.kind === 0) {
+        if (o.kind === 2) {
+            // EN-3 — beyond the painted plinth's front edges, as kind 0.
+            const ox = tx - o.corner.x;
+            const oy = ty - o.corner.y;
+            const beyondX = ox * o.nx.x + oy * o.nx.y;
+            const beyondY = ox * o.ny.x + oy * o.ny.y;
+            const ex = beyondX > 0 ? beyondX / 1.35 : tx < o.minX ? (o.minX - tx) / 0.65 : 0;
+            const ey = beyondY > 0 ? beyondY / 1.0 : ty < o.minY ? (o.minY - ty) / 0.8 : 0;
+            if (ex === 0 && ey === 0) {
+                if (!sheltered) return 1;
+                if (o.shelter > ao) ao = o.shelter;
+                continue;
+            }
+            d = Math.sqrt(ex * ex + ey * ey);
+        } else if (o.kind === 0) {
             // Down-light sides (+tx is screen lower-right, +ty lower-left)
             // take the longer contact shadow; the lit up-left side the least.
             const ex = tx < o.minX ? (o.minX - tx) / 0.65 : tx > o.maxX ? (tx - o.maxX) / 1.35 : 0;
@@ -1570,6 +1623,19 @@ function rankOf(luma, lumas) {
 // `rising` (EY-5): a frost quarter of the night's rising rime (1–3), which
 // grows on the patch field in the calm night tone instead of melting.
 export function bakeWinterGround(r, base, snowBucket, frost, frostPatches = 0, rising = false) {
+    const bands = winterGroundBands(r, base, snowBucket, frost, frostPatches, rising);
+    let step = bands.next();
+    while (!step.done) step = bands.next();
+    return step.value;
+}
+
+// Rows of the winter bake per idle slice when a stage is prepared off the
+// frame (`prepare` below): about a tenth of the ground.
+const WINTER_BAND_ROWS = 128;
+
+// The winter bake in bands of WINTER_BAND_ROWS rows: yields between bands,
+// returns the canvas.
+function* winterGroundBands(r, base, snowBucket, frost, frostPatches = 0, rising = false) {
     const { cols, rows, x0, y0, surfaces, aoBuf, weather } = base;
     const patches = weather ? frostPatches : 0;
     const w = cols * TEXEL_W;
@@ -1589,6 +1655,7 @@ export function bakeWinterGround(r, base, snowBucket, frost, frostPatches = 0, r
         D[o + 4] = c[0]; D[o + 5] = c[1]; D[o + 6] = c[2];
     };
     for (let row = 0; row < rows; row++) {
+        if (row > 0 && row % WINTER_BAND_ROWS === 0) yield;
         for (let col = 0; col < cols; col++) {
             const i = row * cols + col;
             const s = surfaces[i];
@@ -1730,6 +1797,35 @@ export function installGroundBake(renderer) {
         stage: 'ground',
         // GW: 'w' while the ground weather field is wanted ('' at looks 0).
         revision: () => `${sheetsKey()}${winterKeyOf(renderer)}${groundWeatherWanted(renderer) ? 'w' : ''}`,
+        // EY-5 — the revision without the winter stage: a change of snow
+        // bucket or frost quarter alone is re-staged off the frame
+        // (IsometricRenderer `_stageTerrainOffFrame`), the current terrain
+        // presenting until the new one is complete.
+        baseRevision: () => `${sheetsKey()}${groundWeatherWanted(renderer) ? 'w' : ''}`,
+        // EY-5 — the next winter stage in bands, one per idle slice: a
+        // stepper that returns true once the stage's canvas is ready (null
+        // when there is nothing to prepare). `draw` then only blits it.
+        prepare() {
+            const winterKey = winterKeyOf(renderer);
+            if (!cached || !winterKey) return null;
+            const key = `${cached.key}|${winterKey}`;
+            if (winter?.key === key) return null;
+            const ground = renderer._groundState;
+            const frost = frostQuarterOf(ground);
+            const bands = winterGroundBands(renderer, cached, snowBucketOf(ground?.snowCover), frost,
+                frost ? frostPatchStrength() : 0, frostRisingOf(ground));
+            let ms = 0;
+            return () => {
+                const started = performance.now();
+                const step = bands.next();
+                ms += performance.now() - started;
+                if (!step.done) return false;
+                if (winter) releaseCanvasBackingStore(winter.canvas);
+                winter = { key, canvas: step.value };
+                renderer.groundWinterBakeMs = Math.round(ms);
+                return true;
+            };
+        },
         draw(ctx) {
             const withWeather = groundWeatherWanted(renderer);
             const key = `${getCoastField(renderer).key}|${sheetsKey()}|${renderer._terrainSeason || 'summer'}|${renderer._terrainPhenology?.ground ?? ''}|${renderer._terrainSceneryRevision || 0}${withWeather ? '|weather' : ''}`;

@@ -16,8 +16,9 @@ import { captureCoastArtifact, restoreCoastArtifact, validCoastArtifact, coastAr
 // the drawn building bases (GroundBake `buildSunOccluders`), its drying order
 // leaning on the sun shade over the noise.
 // cv0.64-terrain-9: snow under the open Task board (EY-3, the eaves' shelter
-// share), the night's rising rime (EY-5) and the contact AO of Command,
-// Tavern and Forge seated at the painted plinth (EN-3).
+// share), the night's rising rime (EY-5), the contact AO of Command,
+// Tavern and Forge on the authored plinth edges (EN-3) and rain under the
+// open Task board.
 export const TERRAIN_BAKE_ALGORITHM_VERSION = 'cv0.64-terrain-9';
 export const TERRAIN_ARTIFACT_DB = 'claudeville-terrain-artifacts';
 export const TERRAIN_ARTIFACT_MAX_BYTES = 96 * 1024 * 1024;

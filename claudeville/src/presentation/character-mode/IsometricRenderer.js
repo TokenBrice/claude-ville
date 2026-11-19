@@ -735,6 +735,7 @@ export class IsometricRenderer {
         this.terrainCache = null;
         this.terrainCacheBounds = null;
         this.terrainCacheKey = '';
+        this._cancelTerrainRestage();
         this.terrainCacheMeta = null;
         this._terrainCacheLimitWarningKey = '';
         this.foliageRenderer = new FoliageRenderer(this);
@@ -2585,6 +2586,7 @@ export class IsometricRenderer {
         this.terrainCache = null;
         this._terrainResident = null;
         this.terrainCacheKey = '';
+        this._cancelTerrainRestage();
         this.terrainCacheBounds = null;
         this.terrainCacheMeta = null;
         releaseCanvasBackingStore(this.atmosphereVignetteCache);
@@ -8338,6 +8340,7 @@ export class IsometricRenderer {
             releaseCanvasBackingStore(this.terrainCache);
             this.terrainCache = null;
             this.terrainCacheKey = '';
+            this._cancelTerrainRestage();
             this._emitTerrainCacheLimitWarning(meta);
             return null;
         }
@@ -8360,6 +8363,8 @@ export class IsometricRenderer {
         if (allowResident && this._terrainResident?.key === key) {
             return { canvas: this._terrainResident, bounds, resident: true };
         }
+        const staged = this._stageTerrainOffFrame(key, bounds, dpr, season, allowResident);
+        if (staged) return staged;
         this._terrainResident = null;
         const persistedKey = this._persistedTerrainKey(bounds, dpr, season);
         const ready = this._terrainArtifactRead?.ready;
@@ -8370,6 +8375,7 @@ export class IsometricRenderer {
             this.terrainCache = ready.canvas;
             this.terrainCacheBounds = bounds;
             this.terrainCacheKey = key;
+            this.terrainCacheBaseKey = this._terrainBakeKey(bounds, dpr, season, false);
             this._terrainArtifactRead = null;
             this._terrainArtifactStats.hits++;
             this._terrainArtifactStats.state = 'hit';
@@ -8379,6 +8385,7 @@ export class IsometricRenderer {
         // Every other miss keeps today's synchronous bake in this same frame.
         this._discardTerrainArtifactRead();
         this._discardTerrainArtifactWrite();
+        this._cancelTerrainRestage();
 
         releaseCanvasBackingStore(this.terrainCache);
 
@@ -8394,6 +8401,12 @@ export class IsometricRenderer {
         this.terrainCache = canvas;
         this.terrainCacheBounds = bounds;
         this.terrainCacheKey = key;
+        this.terrainCacheBaseKey = this._terrainBakeKey(bounds, dpr, season, false);
+        this._landTerrainBake(cacheCtx, canvas, bounds, dpr, season);
+        return { canvas, bounds };
+    }
+
+    _landTerrainBake(cacheCtx, canvas, bounds, dpr, season) {
         this._terrainArtifactStats.bakes++;
         this._terrainArtifactStats.misses++;
         this._terrainArtifactStats.state = 'baked';
@@ -8403,7 +8416,85 @@ export class IsometricRenderer {
             this._terrainArtifactStats.state = 'unlanded';
             this._retryTerrainBake();
         }
-        return { canvas, bounds };
+    }
+
+    // EY-5 — a change of the winter ground's stage alone (a snow bucket, a
+    // frost quarter rising or melting: the passes' `baseRevision` keys are
+    // unchanged) never bakes in the frame once the World has presented. The
+    // current terrain keeps presenting while the next one is prepared in idle
+    // slices (each pass's `prepare` stepper, then one surface step per
+    // slice) and swapped in whole; a stage that moved on meanwhile is dropped
+    // and prepared again. Anything else, a missing surface or a ready artifact
+    // takes the synchronous bake as before.
+    _stageTerrainOffFrame(key, bounds, dpr, season, allowResident) {
+        const presented = this.terrainCache ? { canvas: this.terrainCache, bounds: this.terrainCacheBounds || bounds }
+            : allowResident && this._terrainResident ? { canvas: this._terrainResident, bounds, resident: true } : null;
+        if (!presented || !this._worldFramePresented || this._terrainArtifactRead?.ready
+            || this.terrainCacheBaseKey !== this._terrainBakeKey(bounds, dpr, season, false)) {
+            this._cancelTerrainRestage();
+            return null;
+        }
+        if (this._terrainRestage?.key !== key) {
+            this._cancelTerrainRestage();
+            const job = { key, bounds: { ...bounds }, dpr, season, prepare: null, steps: null, canvas: null, ctx: null };
+            this._terrainRestage = job;
+            whenIdle(() => this._stepTerrainRestage(job));
+        }
+        return presented;
+    }
+
+    _cancelTerrainRestage() {
+        const job = this._terrainRestage;
+        if (!job) return;
+        this._terrainRestage = null;
+        releaseCanvasBackingStore(job.canvas);
+    }
+
+    // One idle slice of a restage: one prepare band or one surface step.
+    _stepTerrainRestage(job) {
+        if (this._terrainRestage !== job || this._disposed) return;
+        const previousMotionScale = this.motionScale;
+        try {
+            this.motionScale = 0;
+            if (!job.prepare) {
+                job.prepare = (this._terrainBakePasses || []).map(pass => pass.prepare?.(this)).filter(Boolean);
+            } else if (job.prepare.length) {
+                if (job.prepare[0]()) job.prepare.shift();
+            } else if (!job.steps) {
+                const { bounds, dpr } = job;
+                job.canvas = document.createElement('canvas');
+                job.canvas.width = Math.max(1, Math.round(bounds.w * dpr));
+                job.canvas.height = Math.max(1, Math.round(bounds.h * dpr));
+                job.ctx = job.canvas.getContext('2d');
+                SpriteRenderer.disableSmoothing(job.ctx);
+                job.ctx.setTransform(dpr, 0, 0, dpr, -bounds.x * dpr, -bounds.y * dpr);
+                job.steps = this._terrainSurfaceSteps(job.ctx);
+            } else if (job.steps.length) {
+                job.steps.shift()();
+            }
+        } finally {
+            this.motionScale = previousMotionScale;
+        }
+        if (!job.steps || job.steps.length) {
+            whenIdle(() => this._stepTerrainRestage(job));
+            return;
+        }
+        this._terrainRestage = null;
+        if (this._terrainBakeKey(job.bounds, job.dpr, this._currentSeasonToken()) !== job.key) {
+            releaseCanvasBackingStore(job.canvas);
+            this._invalidateIdleFrame?.();
+            return;
+        }
+        this._discardTerrainArtifactRead();
+        this._discardTerrainArtifactWrite();
+        releaseCanvasBackingStore(this.terrainCache);
+        this._terrainResident = null;
+        this.terrainCache = job.canvas;
+        this.terrainCacheBounds = job.bounds;
+        this.terrainCacheKey = job.key;
+        this._terrainRestages = (this._terrainRestages || 0) + 1;
+        this._landTerrainBake(job.ctx, job.canvas, job.bounds, job.dpr, job.season);
+        this._invalidateIdleFrame?.();
     }
 
     // Did the bake's sprite layers land? Each landmark bridge and baked
@@ -8682,10 +8773,13 @@ export class IsometricRenderer {
     // (C2) on both backends and nothing in the bake reads the camera, so a
     // phase boundary or a zoom step reuses the 26 MB surface instead of
     // rebaking and re-uploading it.
-    _terrainBakeKey(bounds, dpr, season) {
+    // `staged` false: each pass's `baseRevision` where it has one (EY-5,
+    // the key without the winter ground's stage).
+    _terrainBakeKey(bounds, dpr, season, staged = true) {
         let passes = '';
         for (const pass of this._terrainBakePasses || []) {
-            passes += `${pass.id}:${pass.revision?.(this) ?? 0},`;
+            const revision = !staged && pass.baseRevision ? pass.baseRevision(this) : pass.revision?.(this) ?? 0;
+            passes += `${pass.id}:${revision},`;
         }
         return `${bounds.x},${bounds.y},${bounds.w},${bounds.h}@${dpr}|${this.assets ? 'assets' : 'fallback'}|season:${season}|stage:${this._currentPhenology().id}|scenery:${this._terrainSceneryRevision || 0}|passes:${passes}|retry:${this._terrainBakeRetry || 0}`;
     }
@@ -8720,27 +8814,34 @@ export class IsometricRenderer {
         const previousMotionScale = this.motionScale;
         try {
             this.motionScale = 0;
+            for (const step of this._terrainSurfaceSteps(ctx)) step();
+        } finally {
+            this.motionScale = previousMotionScale;
+        }
+    }
 
+    // The static terrain surface in order, one step each (EY-5: a restage
+    // runs one per idle slice).
+    _terrainSurfaceSteps(ctx) {
+        return [
             // 3.2 — GroundBake paints every land texel (class field, C1 ramps,
             // AO, thresholds, yards, decals) in one cached image.
-            this._runTerrainBakePasses(ctx, 'ground');
+            () => this._runTerrainBakePasses(ctx, 'ground'),
             // The far-row haze multiplies the ground only: water, foam and wet
             // sand stay exact CoastBake colours, which the resident water
             // cycles match by ungraded albedo (3.1, 3.6); baked props, bridges
             // and foundations take 1.6's aerial haze like every sprite.
-            this._bakeAtmosphericPerspective(ctx);
+            () => this._bakeAtmosphericPerspective(ctx),
             // 3.4/3.5 — CoastBake: one continuous coast field paints wet sand,
             // foam and every water pixel, then the stratified cliff under land
             // edge tiles only (the sea meets the cached outer ocean).
-            this._runTerrainBakePasses(ctx, 'coast');
-            this._drawTerrainOverlayTiles(ctx);
-            this._drawLandmarkBridgeSpans(ctx);
-            this.buildingRenderer?.drawGroundFoundations?.(ctx);
-            this._drawAmbientGroundProps(ctx);
-            this._runTerrainBakePasses(ctx, 'finish');
-        } finally {
-            this.motionScale = previousMotionScale;
-        }
+            () => this._runTerrainBakePasses(ctx, 'coast'),
+            () => this._drawTerrainOverlayTiles(ctx),
+            () => this._drawLandmarkBridgeSpans(ctx),
+            () => this.buildingRenderer?.drawGroundFoundations?.(ctx),
+            () => this._drawAmbientGroundProps(ctx),
+            () => this._runTerrainBakePasses(ctx, 'finish'),
+        ];
     }
 
     // Atmospheric perspective: a faint top-to-bottom cool-lighter wash baked into
