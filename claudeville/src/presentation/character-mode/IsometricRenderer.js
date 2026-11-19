@@ -60,7 +60,7 @@ import { ChimneySmoke } from './ChimneySmoke.js';
 import { setPennantWeather } from './PixelPennant.js';
 import { openGroundTiles } from './AmbientGround.js';
 import { TERRAIN_HAZE_COURSES, groundWeatherWanted, installGroundBake } from './GroundBake.js';
-import { releaseFrameShade } from './RakingLight.js';
+import { drawSunLift, releaseFrameShade } from './RakingLight.js';
 import { releaseShadeField, shadeFieldBufferBytes } from './ShadeField.js';
 import { OCEAN_HORIZON_WORLD_Y, coastDistanceProbe, drawCanvasWaterMood, drawOuterOcean, registerCoastBake, riverCurrentAt } from './CoastBake.js';
 import { frostQuarterOf, frostRisingOf, snowBucketOf } from './GroundState.js';
@@ -8336,6 +8336,8 @@ export class IsometricRenderer {
         } else {
             this._drawStaticTerrainSurface(ctx);
         }
+        // SD-3 — the sun's lift on the bare terrain, before anything lies on it.
+        drawSunLift(ctx);
         profileMark?.('terrain-surface');
         this._drawDynamicWaterHighlights(ctx);
         profileMark?.('water-highlights');
