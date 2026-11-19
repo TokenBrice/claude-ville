@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { BUILDING_EVENTS, eventBus } from '../../claudeville/src/domain/events/DomainEvent.js';
 
 import {
     resolveClose,
@@ -107,6 +108,54 @@ test('activity panel close initiated by the panel emits once and restores focus 
     };
     if (decision.emit) bus.emit('agent:deselected');
     assert.equal(bus.emissions, 1);
+});
+
+test('lazy Activity opens only the latest selection still valid when it loads', async (t) => {
+    globalThis.window = Object.assign(new EventTarget(), {
+        location: { origin: 'http://fixture.invalid' },
+        __claudeVillePerf: {},
+    });
+    globalThis.document = Object.assign(new EventTarget(), { getElementById: () => null });
+    t.after(() => {
+        delete globalThis.window;
+        delete globalThis.document;
+    });
+    const { App } = await import('../../claudeville/src/presentation/App.js');
+    const agent = { id: 'a' };
+    const building = { id: 'forge' };
+    for (const scenario of [
+        ['agent deselected', () => eventBus.emit('agent:deselected'), []],
+        ['agent removed', () => eventBus.emit('agent:removed', { id: agent.id }), []],
+        ['another agent removed', () => eventBus.emit('agent:removed', { id: 'b' }), ['a']],
+        ['agent superseded by agent', () => eventBus.emit('agent:selected', { id: 'b' }), ['b']],
+        ['agent superseded by building', () => eventBus.emit(BUILDING_EVENTS.SELECTED, building), ['forge']],
+        ['building deselected', () => {
+            eventBus.emit(BUILDING_EVENTS.SELECTED, building);
+            eventBus.emit(BUILDING_EVENTS.DESELECTED);
+        }, []],
+        ['app torn down', app => app.destroy(), []],
+    ]) {
+        const [name, changeSelection, expected] = scenario;
+        await t.test(name, async () => {
+            const app = new App();
+            const loaded = Promise.withResolvers();
+            const shown = [];
+            app._loadActivityPanel = () => loaded.promise;
+            app._bindDeferredActivityPanel();
+            try {
+                eventBus.emit('agent:selected', agent);
+                await changeSelection(app);
+                loaded.resolve({
+                    show: value => shown.push(value.id),
+                    showBuilding: value => shown.push(value.id),
+                });
+                await loaded.promise;
+                assert.deepEqual(shown, expected);
+            } finally {
+                await app.destroy();
+            }
+        });
+    }
 });
 
 test('every animated sidebar status dot is stilled under reduced motion, with no viewport media queries', async () => {

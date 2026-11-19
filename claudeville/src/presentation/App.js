@@ -484,6 +484,8 @@ export class App {
                 attention: this.attentionService,
                 chronicle: this.chroniclePanel,
                 spendLedger: this.spendLedger,
+                readDashboardAtmosphere: () => this.modeManager?.getCurrentMode() === 'dashboard'
+                    ? this.renderer?.atmosphereState?.snapshot() : null,
                 frameAttention: () => {
                     if (this.modeManager?.getCurrentMode() === 'dashboard') return false;
                     this.renderer?.cameraDirector?.frameAttention(this.renderer.agentSprites);
@@ -1548,23 +1550,31 @@ export class App {
         document.addEventListener('click', this._onDeferredInteractionClick, true);
         document.addEventListener('keydown', this._onDeferredInteractionKeydown, true);
 
-        this._eventUnsubscribers.push(eventBus.on('agent:selected', (agent) => {
-            if (!agent || this.activityPanel) return;
-            const intent = this._deferredSelectionIntent;
+        const queueSelection = (target, kind) => {
+            if (!target) return;
+            const selection = { target, kind, intent: this._deferredSelectionIntent };
+            this._pendingActivitySelection = this.activityPanel ? null : selection;
+            if (this.activityPanel) return;
             void this._loadActivityPanel().then((panel) => {
+                if (this._pendingActivitySelection !== selection) return;
+                this._pendingActivitySelection = null;
                 if (!panel || this._destroyed) return;
-                if (intent) panel._selectionIntent = intent;
-                panel.show(agent);
+                if (selection.intent) panel._selectionIntent = selection.intent;
+                if (kind === 'agent') panel.show(target);
+                else panel.showBuilding(target);
             });
+        };
+        this._eventUnsubscribers.push(eventBus.on('agent:selected', agent => queueSelection(agent, 'agent')));
+        this._eventUnsubscribers.push(eventBus.on(BUILDING_EVENTS.SELECTED, building => queueSelection(building, 'building')));
+        this._eventUnsubscribers.push(eventBus.on('agent:deselected', () => {
+            if (this._pendingActivitySelection?.kind === 'agent') this._pendingActivitySelection = null;
         }));
-        this._eventUnsubscribers.push(eventBus.on(BUILDING_EVENTS.SELECTED, (building) => {
-            if (!building || this.activityPanel) return;
-            const intent = this._deferredSelectionIntent;
-            void this._loadActivityPanel().then((panel) => {
-                if (!panel || this._destroyed) return;
-                if (intent) panel._selectionIntent = intent;
-                panel.showBuilding(building);
-            });
+        this._eventUnsubscribers.push(eventBus.on('agent:removed', (agent) => {
+            const pending = this._pendingActivitySelection;
+            if (pending?.kind === 'agent' && pending.target.id === agent?.id) this._pendingActivitySelection = null;
+        }));
+        this._eventUnsubscribers.push(eventBus.on(BUILDING_EVENTS.DESELECTED, () => {
+            if (this._pendingActivitySelection?.kind === 'building') this._pendingActivitySelection = null;
         }));
     }
 
@@ -2178,6 +2188,7 @@ export class App {
             this._onDeferredInteractionKeydown = null;
         }
         this._deferredSelectionIntent = null;
+        this._pendingActivitySelection = null;
         this._readControlCleanup?.();
         this._cameraModeCleanup?.();
         this._worldDockCleanup?.();

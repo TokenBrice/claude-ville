@@ -144,10 +144,9 @@ function causalBaseEvents(session, options) {
         });
     }
 
-    const permissionAt = causalFirstTimestamp(
-        session?.awaitingSince,
-        session?.waitReason ? session?.pendingSince : null,
-    );
+    const permissionAt = session?.waitReason
+        ? causalFirstTimestamp(session.awaitingSince, session.pendingSince)
+        : null;
     if (permissionAt !== null) {
         causalAddEvent(events, {
             kind: 'permission',
@@ -159,8 +158,8 @@ function causalBaseEvents(session, options) {
             label: 'Permission wait',
             detail: causalText(
                 session?.pendingTool
-                    ? `${session.waitReason || 'waiting'} · ${session.pendingTool}`
-                    : session?.waitReason || 'waiting',
+                    ? `${session.waitReason} · ${session.pendingTool}`
+                    : session.waitReason,
             ),
         });
     }

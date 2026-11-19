@@ -267,7 +267,7 @@ export function connectionChip(state, now = Date.now()) {
 }
 
 export class TopBar {
-    constructor(world, { modal, attention, chronicle, spendLedger, frameAttention } = {}) {
+    constructor(world, { modal, attention, chronicle, spendLedger, frameAttention, readDashboardAtmosphere } = {}) {
         this._motionOverride = installReducedMotionOverride();
         this.world = world;
         this.modal = modal || null;
@@ -275,6 +275,7 @@ export class TopBar {
         this.frameAttention = frameAttention;
         this.chronicle = chronicle || null;
         this.spendLedger = spendLedger || null;
+        this.readDashboardAtmosphere = readDashboardAtmosphere;
         // V8 — the top bar is chrome over (or above) the World: moments,
         // plates and director framing read its box as occluded screen.
         this._unpublishReservedRect = publishReservedRect('top-bar', document.getElementById('topbar'), {
@@ -1817,12 +1818,20 @@ export class TopBar {
     }
 
     _startTimer() {
+        let dashboardMinute = null;
         this.timeInterval = setInterval(() => {
             const seconds = this.world.activeTime;
             const h = String(Math.floor(seconds / 3600)).padStart(2, '0');
             const m = String(Math.floor((seconds % 3600) / 60)).padStart(2, '0');
             const s = String(seconds % 60).padStart(2, '0');
             setText(this.els.time, `${h}:${m}:${s}`);
+
+            const minute = Math.floor(Date.now() / 60_000);
+            if (document.hidden || minute === dashboardMinute) return;
+            const snapshot = this.readDashboardAtmosphere?.();
+            if (!snapshot) return;
+            dashboardMinute = minute;
+            this._renderWitnessClock(snapshot);
         }, 1000);
     }
 

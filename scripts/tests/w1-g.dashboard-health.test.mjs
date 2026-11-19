@@ -3,14 +3,158 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import {
+    DashboardRenderer,
     SECTION_HEALTH_ORDER,
     nonZeroSectionHealthBuckets,
     sectionHealthCounts,
     shouldFlashForStatus,
 } from '../../claudeville/src/presentation/dashboard-mode/DashboardRenderer.js';
+import { eventBus } from '../../claudeville/src/domain/events/DomainEvent.js';
+import { AgentSearchIndex } from '../../claudeville/src/presentation/shared/SearchIndex.js';
+import workingSets from '../../claudeville/services/workingSet.js';
 
 const rendererUrl = new URL('../../claudeville/src/presentation/dashboard-mode/DashboardRenderer.js', import.meta.url);
 const dashboardCssUrl = new URL('../../claudeville/css/dashboard.css', import.meta.url);
+
+function dashboardRows(t, agents) {
+    class StubElement {
+        children = [];
+        dataset = {};
+        style = { getPropertyValue() {}, setProperty() {}, removeProperty() {} };
+        classList = { contains: () => false, toggle() {} };
+        setAttribute() {}
+        appendChild(child) { this.children.push(child); }
+        append(child) { this.appendChild(child); }
+        replaceChildren(...children) { this.children = children; }
+        contains(child) { return this.children.includes(child); }
+    }
+    const node = () => new StubElement();
+    globalThis.Node = StubElement;
+    globalThis.window = new EventTarget();
+    globalThis.document = Object.assign(new EventTarget(), {
+        getElementById: () => null,
+        createElement: node,
+        createElementNS: node,
+    });
+    const dash = new DashboardRenderer({ agents: new Map(agents.map(agent => [agent.id, agent])) });
+    t.after(() => {
+        dash.cards.clear();
+        dash.destroy();
+        delete globalThis.document;
+        delete globalThis.window;
+        delete globalThis.Node;
+    });
+    const section = {
+        _sectionRefs: { name: node(), count: node(), path: node(), lift: node() },
+        style: node().style,
+        classList: { toggle: (name, visible) => section.classes.set(name, visible) },
+        classes: new Map(),
+    };
+    dash._updateSectionHealth = () => {};
+    dash._rememberStableOrder(agents);
+    const render = t.mock.method(dash, 'render', () => {
+        const ordered = dash._sortAgentsExceptionFirst(dash._filteredAgents(agents));
+        dash._updateSectionHeader(section, '/fixture', ordered);
+        for (const agent of ordered) dash._updateCard(dash.cards.get(agent.id), agent);
+        section.order = ordered.map(agent => agent.id);
+    });
+    const fields = ['select', 'name', 'model', 'branch', 'workflowBadge', 'role', 'teamBadge',
+        'providerBadge', 'signalSource', 'detailStatus', 'currentTool', 'toolIcon', 'toolName',
+        'toolDetail', 'now', 'nowIcon', 'phase', 'phaseDetail', 'searchContext', 'message',
+        'workingSet', 'workSummary'];
+    for (const agent of agents) dash.cards.set(agent.id, Object.assign(node(), {
+        _elements: Object.fromEntries(fields.map(name => [name, node()])),
+    }));
+    dash.active = true;
+    dash.render();
+    render.mock.resetCalls();
+    return { dash, section, render };
+}
+
+for (const startsWithWork of [false, true]) {
+    test(`write collisions update one project layout per batch (existing work: ${startsWithWork})`, async (t) => {
+        const now = Date.now();
+        const agents = Array.from({ length: 25 }, (_, index) => {
+            const id = String(index).padStart(2, '0');
+            return {
+                id, sessionId: id, name: id, project: '/fixture', projectPath: '/fixture', status: 'working',
+                workingSet: startsWithWork ? [{ path: `${id}.js`, op: 'read', at: now }] : [],
+            };
+        });
+        const { dash, section, render } = dashboardRows(t, agents);
+        const hasWork = () => section.classes.get('dashboard__section--has-work');
+        assert.equal(hasWork(), startsWithWork);
+        assert.deepEqual(section.order.slice(0, 3), ['00', '01', '02']);
+        for (const agent of agents.slice(1, 3)) {
+            agent.workingSet = [{ path: 'fixture.js', op: 'write', at: now }, ...agent.workingSet];
+        }
+        const [collision] = workingSets.detectCollisions(agents, now);
+        assert.equal(collision.kind, 'write-write');
+        for (const agent of agents) {
+            agent.collisions = collision.agents.includes(agent.id) ? [collision] : [];
+            eventBus.emit('agent:updated', agent);
+        }
+        await Promise.resolve();
+        eventBus.emit('dashboard:filter-changed', { query: '', matches: agents.map(agent => ({ agentId: agent.id })) });
+        await Promise.resolve();
+        assert.equal(render.mock.callCount(), 1);
+        assert.equal(hasWork(), true);
+        assert.deepEqual(section.order.slice(0, 3), ['01', '02', '00']);
+        assert.equal(dash.cards.get('01')._elements.workSummary.textContent, '1 overlap · fixture.js');
+
+        render.mock.resetCalls();
+        for (const agent of agents) {
+            agent.workingSet = [];
+            agent.collisions = [];
+            eventBus.emit('agent:updated', agent);
+        }
+        await Promise.resolve();
+        assert.equal(render.mock.callCount(), 1);
+        assert.equal(hasWork(), false);
+        assert.deepEqual(section.order.slice(0, 3), ['00', '01', '02']);
+
+        render.mock.resetCalls();
+        agents[0].workingSet = [{ path: 'solo.js', op: 'read', at: now }];
+        eventBus.emit('agent:updated', agents[0]);
+        await Promise.resolve();
+        assert.equal(render.mock.callCount(), 1);
+        assert.equal(hasWork(), true);
+    });
+}
+
+test('checkout and file-search text refresh on the same Dashboard row', async (t) => {
+    const agent = {
+        id: 'a', name: 'Fixture', status: 'working', provider: 'codex', projectPath: '/fixture',
+        gitBranch: 'main', currentToolInput: { path: 'fixture.js' },
+    };
+    const { dash } = dashboardRows(t, [agent]);
+    const index = new AgentSearchIndex();
+    index.upsert(agent);
+    const row = dash.cards.get(agent.id);
+    const { branch, searchContext, select } = row._elements;
+    globalThis.document.activeElement = select;
+    assert.equal(branch.textContent, 'on main');
+    agent.gitBranch = 'fix-light';
+    agent.worktree = { name: 'one', path: '/fixture/one', isMain: false };
+    eventBus.emit('agent:updated', agent);
+    assert.equal(branch.textContent, 'on fix-light · wt one');
+    assert.equal(branch.title, 'branch fix-light - worktree /fixture/one');
+    eventBus.emit('dashboard:filter-changed', { query: 'fixture.js', matches: index.search('fixture.js', [agent.id]) });
+    await Promise.resolve();
+    assert.equal(searchContext.textContent, 'File · fixture.js');
+    assert.equal(searchContext.style.display, '');
+
+    agent.worktree = { name: 'main', path: '/fixture', isMain: true };
+    eventBus.emit('agent:updated', agent);
+    eventBus.emit('dashboard:filter-changed', { query: '', matches: index.search('', [agent.id]) });
+    await Promise.resolve();
+    assert.equal(branch.textContent, 'on fix-light');
+    assert.equal(branch.title, 'branch fix-light - worktree /fixture');
+    assert.equal(searchContext.textContent, '');
+    assert.equal(searchContext.style.display, 'none');
+    assert.equal(dash.cards.get(agent.id), row);
+    assert.equal(globalThis.document.activeElement, select);
+});
 
 test('section health keeps all six SignalLedger buckets distinct', () => {
     const agents = [

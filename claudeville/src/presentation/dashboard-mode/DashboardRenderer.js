@@ -211,6 +211,10 @@ function rowExceptionRank(agent) {
     return statusRank + 1;
 }
 
+function rowHasWork(agent) {
+    return Boolean(workingSetForAgent(agent).length || collisionsForAgent(agent).length);
+}
+
 /** Dashboard health display precedence: error, blocked, quota, working, waiting, idle. */
 export const SECTION_HEALTH_ORDER = Object.freeze([
     'errors',
@@ -684,7 +688,10 @@ export class DashboardRenderer {
             this._syncCardTabStops();
         };
         this._onSharedFilterChanged = (payload = {}) => {
-            this._searchQuery = String(payload.query || '').trim().toLowerCase();
+            const query = String(payload.query || '').trim().toLowerCase();
+            // The sidebar republishes its index as agents change, even with no filter.
+            if (!query && !this._searchQuery) return;
+            this._searchQuery = query;
             const matches = Array.isArray(payload.matches) ? payload.matches : [];
             this._searchMatches = this._searchQuery
                 ? new Set(matches.map(match => String(match.agentId)))
@@ -692,7 +699,7 @@ export class DashboardRenderer {
             this._searchContexts = new Map(matches
                 .filter(match => match?.context)
                 .map(match => [String(match.agentId), String(match.context)]));
-            if (this.active) this.render();
+            if (this.active) this._queueFlush({ render: true });
         };
         eventBus.on('agent:added', this._onAgentAdded);
         eventBus.on('agent:updated', this._onAgentUpdated);
@@ -1153,7 +1160,8 @@ export class DashboardRenderer {
         const cardEl = this.cards.get(agent.id);
         const projectPath = projectKeyForAgent(agent);
         const status = normalizeStatus(agent.status);
-        if (!cardEl || cardEl._projectPath !== projectPath || cardEl._status !== status) {
+        if (!cardEl || cardEl._projectPath !== projectPath || cardEl._status !== status
+            || cardEl._exceptionRank !== rowExceptionRank(agent) || cardEl._hasWork !== rowHasWork(agent)) {
             this._queueFlush({ render: true });
             return;
         }
@@ -1327,7 +1335,7 @@ export class DashboardRenderer {
         refs.lift.title = lifted ? laneAgents.map(agent => agent.name || agent.id).join(', ') : '';
 
         // 7.7 — optional columns exist only while some row has data for them.
-        const hasWork = agents.some(agent => workingSetForAgent(agent).length || collisionsForAgent(agent).length);
+        const hasWork = agents.some(rowHasWork);
         const hasKids = agents.some(agent => this._hasChildProgress(agent));
         sectionEl.classList.toggle('dashboard__section--has-work', hasWork);
         sectionEl.classList.toggle('dashboard__section--has-kids', hasKids);
@@ -1943,6 +1951,18 @@ export class DashboardRenderer {
 
         cardEl._projectPath = projectKeyForAgent(agent);
         cardEl._status = status;
+        cardEl._exceptionRank = rowExceptionRank(agent);
+        cardEl._hasWork = rowHasWork(agent);
+        // U-P8 — checkout labels and search matches can change on their own.
+        const branch = normalizeRepoBranch(agent.gitBranch);
+        const worktree = worktreeLabel(agent);
+        this._setText(refs.branch, [branch ? `on ${middleTruncate(branch, 22)}` : '', worktree ? middleTruncate(worktree, 20) : ''].filter(Boolean).join(' · '));
+        const branchTitle = [branch ? `branch ${branch}` : '', agent.worktree?.path ? `worktree ${agent.worktree.path}` : ''].filter(Boolean).join(' - ');
+        if (refs.branch.title !== branchTitle) refs.branch.title = branchTitle;
+        const searchContext = this._searchContexts.get(String(agent.id)) || '';
+        this._setText(refs.searchContext, searchContext);
+        this._setStyle(refs.searchContext, 'display', searchContext ? '' : 'none');
+
         if (this._cardRenderSignatures.get(agent.id) !== signature) {
             this._cardRenderSignatures.set(agent.id, signature);
 
@@ -1964,11 +1984,6 @@ export class DashboardRenderer {
             // Codex-style labels repeat the provider; say it once.
             this._setText(refs.model, model.label === provider.badge.label ? '' : model.label);
             refs.model.title = model.title;
-            // U-P8 — the branch the agent is on, and its linked worktree (`wt x`).
-            const branch = normalizeRepoBranch(agent.gitBranch);
-            const worktree = worktreeLabel(agent);
-            this._setText(refs.branch, [branch ? `on ${middleTruncate(branch, 22)}` : '', worktree ? middleTruncate(worktree, 20) : ''].filter(Boolean).join(' · '));
-            refs.branch.title = [branch ? `branch ${branch}` : '', agent.worktree?.path ? `worktree ${agent.worktree.path}` : ''].filter(Boolean).join(' - ');
 
             // Workflow swarm members read as one unit via a shared workflow chip;
             // it stands in for the generic 'workflow-subagent' role text.
@@ -2021,9 +2036,6 @@ export class DashboardRenderer {
             refs.now.title = now.title || `${now.lead} ${now.detail}`.trim();
 
             const promptDetail = safePromptDetail(agent);
-            const searchContext = this._searchContexts.get(String(agent.id)) || '';
-            this._setText(refs.searchContext, searchContext);
-            this._setStyle(refs.searchContext, 'display', searchContext ? '' : 'none');
 
             if (agent.lastMessage) {
                 replaceDetailRows(refs.message, [inspectableText(agent.lastMessage, { summary: truncateText(agent.lastMessage, 100), key: 'latest-message', truncated: agent.lastMessageTruncated === true })]);
