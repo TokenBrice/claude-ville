@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-11-19-second-bodies"
+  assetVersion: "2026-11-19-second-bodies-r1"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -633,8 +633,11 @@ characters:
     provenance:
       characterId: 920eb6ae-2a05-4fcd-8154-548fbbab190e
       # The template walk dropped the cape facing north-west; that column is a
-      # skeleton-v3 re-walk (group c050c00f-b516-46c9-9bb6-211fa24b5e5d).
-      animationGroupId: astra-b-caped-walk-repair
+      # skeleton-v3 re-walk. Its PixelLab group is below; the local assembly
+      # read it from the export ZIP under its animation name
+      # `astra-b-caped-walk-repair` (generate-character-mcp.mjs
+      # --animation-group-id takes that ZIP key, not the UUID).
+      animationGroupId: c050c00f-b516-46c9-9bb6-211fa24b5e5d
       repairedDirections:
         - north-west
       skippedReference: false
