@@ -2343,6 +2343,21 @@ export function mirrorAccentGate(renderer, layer, atmosphere) {
     return Math.max(0, Math.min(1, Number(gate) || 0));
 }
 
+// The Bayer ranks (0..15) a mirror accent layer holds texels at, once per layer.
+function mirrorAccentRanks(layer) {
+    if (layer.ranks) return layer.ranks;
+    const { width, height } = layer.canvas;
+    const data = layer.canvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, width, height).data;
+    const ranks = new Array(16).fill(false);
+    for (let j = 0; j < height; j++) {
+        for (let i = 0; i < width; i++) {
+            if (data[(j * width + i) * 4 + 3] > 0) ranks[bayer(layer.x + i, layer.y + j) * 16] = true;
+        }
+    }
+    layer.ranks = ranks;
+    return ranks;
+}
+
 /**
  * EN-7 — the texels of a mirror accent layer drawn now: an accent texel
  * lies on its mirror's texel and goes with it in the rain, on the same
@@ -2351,14 +2366,22 @@ export function mirrorAccentGate(renderer, layer, atmosphere) {
  * where its mirror survives. `share` (Canvas: the room gate x core; the GPU
  * dims the whole cut instead, 1) keeps that share of the surviving ranks,
  * lowest first, so a fading room thins what the rain left and goes dark
- * only at its gate's 0. `drop` is the frame's one mirror break
+ * only at its gate's 0 (any gate above 0 keeps at least the lowest occupied
+ * surviving rank). `drop` is the frame's one mirror break
  * (`mirrorStormDrop`). `layer` itself while dry and whole, null when no
  * texel is kept; each (drop, share) step is cut once per layer (`key` names
  * the step).
  */
 export function mirrorAccentRainCut(layer, drop, share = 1) {
     const lo = Math.max(0, Math.min(16, Math.round((Number(drop) || 0) * 16)));
-    const hi = lo + Math.round(Math.max(0, Math.min(1, Number(share) || 0)) * (16 - lo));
+    const gate = Math.max(0, Math.min(1, Number(share) || 0));
+    let hi = lo + Math.round(gate * (16 - lo));
+    if (gate > 0) {
+        const occupied = mirrorAccentRanks(layer);
+        let any = false;
+        for (let rank = lo; rank < hi; rank++) any ||= occupied[rank];
+        while (!any && hi < 16) any = occupied[hi++];
+    }
     if (hi <= lo) return null;
     if (lo === 0 && hi === 16) return layer;
     const cuts = layer.rainCuts ||= new Map();
@@ -2387,7 +2410,7 @@ export function mirrorAccentRainCut(layer, drop, share = 1) {
     };
     const emissive = cutCanvas(layer.emissive);
     const canvas = cutCanvas(layer.canvas);
-    const result = kept > 0 ? { ...layer, canvas, emissive, rainCuts: null, key: `${layer.key}:cut${id}` } : null;
+    const result = kept > 0 ? { ...layer, canvas, emissive, rainCuts: null, ranks: null, key: `${layer.key}:cut${id}` } : null;
     cuts.set(id, result);
     return result;
 }

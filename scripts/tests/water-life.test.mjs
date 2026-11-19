@@ -485,10 +485,16 @@ test('EN-7: a fading room thins the accents the rain left and goes dark only at 
             const drawn = cut ? ranks.filter(t => cut.canvas.data[(t.j * 4 + t.i) * 4 + 3] > 0) : [];
             // Only rain survivors, a share of them in rank order, never more than before.
             assert.ok(drawn.every(t => t.rank >= drop * 16), gate.toFixed(2));
-            assert.equal(drawn.length, Math.round(Math.max(0, gate) * surviving.length), gate.toFixed(2));
+            assert.equal(drawn.length, gate > 0 ? Math.max(1, Math.round(gate * surviving.length)) : 0, gate.toFixed(2));
             assert.ok(drawn.length <= previous);
             previous = drawn.length;
         }
+        // A faint gate on two survivors keeps one lit until the source is off.
+        const faint = mirrorAccentRainCut(layer, mirrorRainDrop(0.65), 0.2);
+        assert.equal(mirrorRainDrop(0.65), 0.875);
+        assert.ok(faint, 'a 20 % gate at 0.65 still draws');
+        assert.equal(ranks.filter(t => faint.canvas.data[(t.j * 4 + t.i) * 4 + 3] > 0).length, 1);
+        assert.equal(mirrorAccentRainCut(layer, mirrorRainDrop(0.65), 0), null);
         // A half-lit room shows half the survivors; source off shows none.
         assert.equal(mirrorAccentRainCut(layer, drop, 0.5) && 3, 3);
         assert.equal(mirrorAccentRainCut(layer, drop, 0), null);
