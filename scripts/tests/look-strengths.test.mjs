@@ -55,6 +55,10 @@ test('SD-1 sundial shade, its length cap and SD-2 receivers ship at their review
     assertShipsAt({ sd1: 1, sd1len: 0.5, sd2: 1 });
 });
 
+test('SD-3 the sun\'s lift ships at the strength picked from its board', () => {
+    assertShipsAt({ sd3: 0.5 });
+});
+
 test('SEA-1 sea light and shade ships at its reviewed strength', () => {
     assertShipsAt({ sea1: 0.5 });
 });

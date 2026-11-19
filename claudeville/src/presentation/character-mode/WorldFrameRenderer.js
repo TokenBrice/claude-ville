@@ -735,7 +735,7 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
         // 2.9 — casts over painted water stay faint and ripple-broken.
         const waterFields = renderer._coastBake?.waterFields || null;
         // SD-1 — the sun's shade layer, under the contact stamps.
-        drawShadeLayer(ctx);
+        drawShadeLayer(ctx, renderer._groundState?.snowCover);
         renderer.buildingRenderer?.drawShadows(ctx, waterFields);
         // 1.5 — tree casts on the ground layer (the resident path emits them
         // as ground records with each tree).

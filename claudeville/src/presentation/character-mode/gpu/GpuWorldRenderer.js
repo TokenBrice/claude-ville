@@ -2394,6 +2394,9 @@ void main() {
     if (u_shadeRect.w > 0.0 && !u_additive) {
         if (sunTrailHidden()) discard;
         color *= sunShadeStep(geometry, surfaceCoded, u_hasEmissiveMap ? clamp(emissive, 0.0, 1.0) : 0.0);
+        // SD-3 — then the sun lifts what it reaches (u_shade.y 0 = off;
+        // water is SEA-1's).
+        if (u_shade.y > 0.0 && !waterMaterial) color = sunLift(color, u_terrainBatch && v_receiver.x < -0.5, u_shade.y, u_hasEmissiveMap ? clamp(emissive, 0.0, 1.0) : 0.0);
     }
     // 1.2 — the pools light the ungraded surface, so warm light shows the real
     // cobble, grass and wall texture instead of a desaturated night albedo.

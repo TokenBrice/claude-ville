@@ -53,6 +53,12 @@
 // A ground stamp flagged `sunSelf` (a villager's sun trail) is hidden
 // wherever the field already shades the ground, so trail and shade never add.
 //
+// SD-3 (look `sd3`): a texel the field calls lit takes the sun's lift
+// (`sunLift`) right after its step: the ground by the ground rule, a
+// receiver whose verdict is lit (a landmark's left wall, roof or deck, a
+// prop). Never a body, a right wall, a face turned from the sun, a texel in
+// cast shade, water (SEA-1 lifts the sea) or anything the step skips.
+//
 // One block of GLSL and its WGSL twin, expression for expression; the scene
 // shaders interpolate them and call `sunShadeStep` after the authored band.
 
@@ -78,16 +84,24 @@ const GRAZE = (SHADE_GRAZE * Math.SQRT2).toFixed(5);
 const SKIP_FLAGS = GPU_RECORD_FLAGS.screenSpace | GPU_RECORD_FLAGS.reflect | GPU_RECORD_FLAGS.shadeExempt;
 // A left wall's outward normal on the ground, in world px (y at half scale).
 const LEFT_WALL_OUT = 'vec2(-0.70710678, 0.35355339)';
+// SD-3 — a lifted texel's luma stops here unless it already stood above it
+// (lifted snow keeps its value): under the waiting candle's 192 and the NEEDS
+// YOU bell's 207 after the brightest noon grade.
+export const SUN_LIFT_CEILING = 0.68;
+const LIFT_CEILING = SUN_LIFT_CEILING.toFixed(4);
 
 // u_shadeField (unit 2): the field's RGBA8 texels. u_shadeRect = (origin x,
 // origin y, cell w, cell h) in world px; cell h 0 = no field (the look off,
-// MINIMAL, night, not yet built). u_shade = (cast step, unused, the sweep
-// x, y: world px of shadow per px of height): the step is a multiplier,
-// 1 = none.
+// MINIMAL, night, not yet built). u_shade = (cast step, SD-3 lift, the
+// sweep x, y: world px of shadow per px of height): the step is a
+// multiplier, 1 = none; the lift a gain over 1, 0 = none.
 export const SUN_SHADE_GLSL = `
 uniform sampler2D u_shadeField;
 uniform vec4 u_shadeRect;
 uniform vec4 u_shade;
+// SD-3 — sunShadeStep's verdict on this texel: -1 not a receiver, else 0 or
+// 1 lit, 2 in cast shade, 3 turned (sunLift reads it).
+float sunVerdict = -1.0;
 
 vec4 shadeFieldAt(vec2 world, out vec2 cell) {
     cell = floor((world - u_shadeRect.xy) / u_shadeRect.zw);
@@ -174,6 +188,7 @@ float sunShadeStep(vec4 geometry, bool surfaceCoded, float lit) {
             // just outside its own foot, a deck at its own point, ground
             // by the ground's rule. A roof has no true height of its own
             // and stays lit.
+            sunVerdict = 0.0;
             float kind = 0.0;
             float seen = shadeSurfaceAt(artPoint, kind);
             bool leftWall = face > 0.5 && face < 1.5;
@@ -194,6 +209,7 @@ float sunShadeStep(vec4 geometry, bool surfaceCoded, float lit) {
             }
         }
     } else {
+        sunVerdict = 0.0;
         bool body = v_identity.x != 0u;
         float h = max(0.0, v_receiver.x - artPoint.y);
         vec2 foot = vec2(artPoint.x, v_receiver.x);
@@ -215,14 +231,31 @@ float sunShadeStep(vec4 geometry, bool surfaceCoded, float lit) {
             if (shadeFieldAt(foot + u_shade.zw * h, cell).b > 0.5) verdict = 2.0;
         }
     }
+    if (sunVerdict > -0.5) sunVerdict = verdict;
     if (verdict > 1.5 && verdict < 2.5) return mix(u_shade.x, 1.0, lit);
     return 1.0;
+}
+
+// SD-3 — the sun's lift on a texel the field calls lit (\`ground\`: a
+// ground-self terrain texel, by the ground rule; else sunShadeStep's
+// verdict, never a body): \`lift\` less the texel's emission share \`lit\`,
+// held under the ceiling luma unless the texel already stood above it.
+vec3 sunLift(vec3 color, bool ground, float lift, float lit) {
+    bool sunlit = ground ? !shadeGroundAt(v_world) : sunVerdict > -0.5 && sunVerdict < 1.5 && v_identity.x == 0u;
+    if (!sunlit) return color;
+    float luma = dot(color, GRADE_LUMA);
+    float gain = 1.0 + lift * (1.0 - lit);
+    return color * min(gain, max(1.0, ${LIFT_CEILING} / max(luma, 0.0001)));
 }
 `;
 
 // The WGSL twin: frame.shadeRect / frame.shade (common.js FRAME_UNIFORM_LAYOUT)
 // and the \`shadeField\` frame binding.
 export const SUN_SHADE_WGSL = `
+// SD-3 — sunShadeStep's verdict on this texel: -1 not a receiver, else 0 or
+// 1 lit, 2 in cast shade, 3 turned (sunLift reads it).
+var<private> sunVerdict: f32 = -1.0;
+
 fn shadeFieldAt(world: vec2f, cell: ptr<function, vec2f>) -> vec4f {
   *cell = floor((world - frame.shadeRect.xy) / frame.shadeRect.zw);
   let size = vec2f(textureDimensions(shadeField));
@@ -308,6 +341,7 @@ fn sunShadeStep(geometry: vec4f, surfaceCoded: bool, lit: f32) -> f32 {
       // just outside its own foot, a deck at its own point, ground
       // by the ground's rule. A roof has no true height of its own
       // and stays lit.
+      sunVerdict = 0.0;
       var kind = 0.0;
       let seen = shadeSurfaceAt(artPoint, &kind);
       let leftWall = face > 0.5 && face < 1.5;
@@ -328,6 +362,7 @@ fn sunShadeStep(geometry: vec4f, surfaceCoded: bool, lit: f32) -> f32 {
       }
     }
   } else {
+    sunVerdict = 0.0;
     let body = v_identity.x != 0u;
     let h = max(0.0, v_receiver.x - artPoint.y);
     var foot = vec2f(artPoint.x, v_receiver.x);
@@ -349,8 +384,21 @@ fn sunShadeStep(geometry: vec4f, surfaceCoded: bool, lit: f32) -> f32 {
       if (shadeFieldAt(foot + frame.shade.zw * h, &cell).b > 0.5) { verdict = 2.0; }
     }
   }
+  if (sunVerdict > -0.5) { sunVerdict = verdict; }
   if (verdict > 1.5 && verdict < 2.5) { return mix(frame.shade.x, 1.0, lit); }
   return 1.0;
+}
+
+// SD-3 — the sun's lift on a texel the field calls lit (\`ground\`: a
+// ground-self terrain texel, by the ground rule; else sunShadeStep's
+// verdict, never a body): \`lift\` less the texel's emission share \`lit\`,
+// held under the ceiling luma unless the texel already stood above it.
+fn sunLift(color: vec3f, ground: bool, lift: f32, lit: f32) -> vec3f {
+  let sunlit = select(sunVerdict > -0.5 && sunVerdict < 1.5 && v_identity.x == 0u, !shadeGroundAt(v_world), ground);
+  if (!sunlit) { return color; }
+  let luma = dot(color, GRADE_LUMA);
+  let gain = 1.0 + lift * (1.0 - lit);
+  return color * min(gain, max(1.0, ${LIFT_CEILING} / max(luma, 0.0001)));
 }
 `;
 
@@ -372,7 +420,8 @@ export function resolveSunShade(feed, out = {}) {
     rect[2] = texture ? texture.cell[0] : 0;
     rect[3] = texture ? texture.cell[1] : 0;
     steps[0] = texture ? shade.cast : 1;
-    steps[1] = 0;
+    // SD-3 — the sun's lift (0 = off).
+    steps[1] = texture ? Math.max(0, Number(shade.lift) || 0) : 0;
     steps[2] = texture ? shade.sweepX : 0;
     steps[3] = texture ? shade.sweepY : 0;
     return out;

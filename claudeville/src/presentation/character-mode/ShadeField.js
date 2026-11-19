@@ -1044,6 +1044,36 @@ export function paintShadeCells(field, out, rgb, row0 = 0, row1 = field.rows, wa
     }
 }
 
+/**
+ * SD-3 — the sun's lift as RGBA cells for the Canvas backend: `rgb` at alpha
+ * 255 where the ground rule calls the cell lit, clear where it is shaded and
+ * over painted open water (`water`, as `paintShadeCells`: SEA-1 lifts the
+ * sea). The whole field into `out` (`field.cols` wide).
+ */
+export function paintLitCells(field, out, rgb, water = null) {
+    const { cols, rows, data } = field;
+    const lattice = water?.fields?.coastField ? water.fields : null;
+    for (let row = 0; row < rows; row++) {
+        const wy = field.originY + row * field.cellH;
+        const waterRow = lattice ? Math.floor((wy - lattice.y) / 2) : -1;
+        let o = row * cols * 4;
+        for (let col = 0; col < cols; col++, o += 4) {
+            let lit = !(data[(row * cols + col) * 2 + 1] > shadeBayer(col, row) * 255);
+            if (lit && waterRow >= 0 && waterRow < lattice.rows) {
+                const waterCol = Math.floor((field.originX + col * field.cellW - lattice.x) / 2);
+                if (waterCol >= 0 && waterCol < lattice.cols) {
+                    const flags = lattice.coastField[(waterRow * lattice.cols + waterCol) * 2 + 1];
+                    if ((flags & water.waterBit) && !(flags & water.coveredBit)) lit = false;
+                }
+            }
+            out[o] = rgb[0];
+            out[o + 1] = rgb[1];
+            out[o + 2] = rgb[2];
+            out[o + 3] = lit ? 255 : 0;
+        }
+    }
+}
+
 // ---------------------------------------------------------------- runtime
 
 // Props the lathe leaves alone: the masonry is facets, bridge pieces are

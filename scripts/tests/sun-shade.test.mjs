@@ -18,25 +18,30 @@ import {
     createShadeFieldBuild,
     createShadeViewBuild,
     latheStamp,
+    paintLitCells,
     shadeCeilingAt,
     shadeCoverageAt,
     shadeFieldTexture,
     shadeSelfProp,
     solidFacets,
 } from '../../claudeville/src/presentation/character-mode/ShadeField.js';
-import { SUN_SHADE_GLSL, SUN_SHADE_WGSL, resolveSunShade } from '../../claudeville/src/presentation/character-mode/gpu/SunShade.js';
+import { SUN_LIFT_CEILING, SUN_SHADE_GLSL, SUN_SHADE_WGSL, resolveSunShade } from '../../claudeville/src/presentation/character-mode/gpu/SunShade.js';
 import { EFFECT_BUDGET, GPU_RECORD_FLAGS, assignGpuRecordV9Fields, effectBudgetMode } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldPolicy.js';
 import { resolveOccluderChannel } from '../../claudeville/src/presentation/character-mode/gpu/GpuFrameState.js';
 import { FRAME_BINDING, FRAME_BINDINGS_WGSL, FRAME_UNIFORM_LAYOUT } from '../../claudeville/src/presentation/character-mode/gpu/wgsl/common.js';
 import { SCENE_SAMPLER_UNITS } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldRenderer.js';
 import {
     SHADE_RECEIVER_CAST,
+    SUN_LIFT,
+    canvasSunLiftSteps,
     castLightingFor,
     frameSunShade,
     setFrameCastLighting,
+    sunLiftFor,
     sundialShadeFor,
     villagerCastLighting,
 } from '../../claudeville/src/presentation/character-mode/RakingLight.js';
+import { applyGradeToRgb, evaluateGrade } from '../../claudeville/src/presentation/character-mode/GradeEvaluator.js';
 import { frostShadeKey } from '../../claudeville/src/presentation/character-mode/FrostMelt.js';
 import { terrainArtifactKey } from '../../claudeville/src/presentation/character-mode/TerrainArtifactStore.js';
 import { resetLookStrengths, setLookStrength } from '../../claudeville/src/presentation/character-mode/LookStrengths.js';
@@ -195,14 +200,14 @@ test('a sliced receivers\' build is the build run at once', () => {
 
 test('the GLSL and WGSL twins carry the same functions, constants and tests', () => {
     const functions = (source, re) => [...source.matchAll(re)].map(match => match[1]);
-    const names = ['shadeFieldAt', 'shadeGroundAt', 'sunTrailHidden', 'shadeCeilingOver', 'shadeSurfaceAt', 'sunShadeStep'];
-    assert.deepEqual(functions(SUN_SHADE_GLSL, /^(?:bool|vec4|float)\s+(\w+)\(/gm), names);
+    const names = ['shadeFieldAt', 'shadeGroundAt', 'sunTrailHidden', 'shadeCeilingOver', 'shadeSurfaceAt', 'sunShadeStep', 'sunLift'];
+    assert.deepEqual(functions(SUN_SHADE_GLSL, /^(?:bool|vec3|vec4|float)\s+(\w+)\(/gm), names);
     assert.deepEqual(functions(SUN_SHADE_WGSL, /^fn\s+(\w+)\(/gm), names);
     const numbers = source => (source.match(/(?<![\w.])\d+\.\d+/g) || []).join(' ');
     assert.equal(numbers(SUN_SHADE_GLSL), numbers(SUN_SHADE_WGSL), 'every constant, in order');
     // The same comparisons and connectives in the same order (the WGSL
     // return arrows and pointer types are not comparisons).
-    const logic = source => (source.replace(/\/\/.*$/gm, '').replace(/->|ptr<function, \w+>/g, '').match(/&&|\|\||[<>!=]=|[<>]/g) || []).join(' ');
+    const logic = source => (source.replace(/\/\/.*$/gm, '').replace(/->|ptr<function, \w+>|var<private>/g, '').match(/&&|\|\||[<>!=]=|[<>]/g) || []).join(' ');
     assert.equal(logic(SUN_SHADE_GLSL), logic(SUN_SHADE_WGSL));
     assert.ok(logic(SUN_SHADE_GLSL).split(' ').length > 60);
     for (const source of [SUN_SHADE_GLSL, SUN_SHADE_WGSL]) {
@@ -313,10 +318,11 @@ test('sd2 at 0 asks for nothing; above 0 it scales the cast step and follows the
     try {
         setLookStrength('sd1', 1);
         setLookStrength('sd2', 0);
+        setLookStrength('sd3', 0);
         assert.equal(castLightingFor(atmosphere()).shade.receivers, null, 'sd2 0');
         setLookStrength('sd2', 1);
         const noon = castLightingFor(atmosphere()).shade.receivers;
-        assert.deepEqual(noon, { cast: 1 - Math.round(SHADE_RECEIVER_CAST * 64) / 64 }, 'one step: a face turned from the sun takes none');
+        assert.deepEqual(noon, { cast: 1 - Math.round(SHADE_RECEIVER_CAST * 64) / 64, lift: 0 }, 'one step: a face turned from the sun takes none');
         const low = castLightingFor(atmosphere({ rake: 1, elevation: 5 })).shade.receivers;
         assert.equal(low.cast, noon.cast, 'a raking sun is a weaker light: cast shade gains no weight');
         setLookStrength('sd2', 0.5);
@@ -383,4 +389,102 @@ test('a prop with a mass of its own passes the same fitting check as a landmark'
         assert.equal(report.pass, true, `${type}: ${report.failures.join('; ')}`);
         assert.ok(report.numbers.spill <= 4, 'inside its sprite\'s canvas');
     }
+});
+
+// SD-3 — the sun lifts what it reaches: the lift's ladder, the twins'
+// wiring, the ceiling under attention, and the Canvas tier.
+
+test('sd3 at 0 lifts nothing; above 0 the lift follows the sun\'s height and the clear sky', () => {
+    assert.equal(sunLiftFor(0, 1, 68, 0.1), 0, 'strength 0');
+    assert.equal(sunLiftFor(1, 0, 68, 0.1), 0, 'no sun share (night, overcast)');
+    assert.equal(sunLiftFor(1, 1, 68, 0.1), SUN_LIFT, 'a high clear sun: one whole step');
+    const july = sunLiftFor(1, 1, 68, 0.1);
+    const november = sunLiftFor(1, 1, 24, 0.1);
+    const golden = sunLiftFor(1, 1, 9, 0.1);
+    assert.ok(july > november && november > golden && golden > 0, `${july} > ${november} > ${golden}`);
+    assert.ok(sunLiftFor(1, 1, 24, 0.42) < november, 'partly cloudy lifts less');
+    assert.equal(sunLiftFor(1, 1, 24, 0.86), 0, 'overcast lifts nothing');
+    assert.equal(sunLiftFor(1, 1, -2, 0.1), 0, 'a set sun lifts nothing');
+    assert.equal(sunLiftFor(0.5, 1, 68, 0.1), SUN_LIFT / 2, 'the strength scales it');
+    for (const value of [july, november, golden, sunLiftFor(0.5, 0.625, 31, 0.3)]) assert.equal(value * 64, Math.round(value * 64), 'in 1/64');
+    try {
+        setLookStrength('sd1', 1);
+        setLookStrength('sd2', 0);
+        setLookStrength('sd3', 0);
+        assert.equal(castLightingFor(atmosphere()).shade.receivers, null, 'sd2 0 and sd3 0: no receivers, today\'s frame');
+        setLookStrength('sd3', 1);
+        const lifted = castLightingFor(atmosphere({ elevation: 50 })).shade.receivers;
+        assert.deepEqual(lifted, { cast: 1, lift: SUN_LIFT }, 'the lift alone asks for the texels, and steps nothing');
+        assert.equal(castLightingFor({ ...atmosphere({ elevation: 50 }), sky: { cloudCover: 0.86 } }).shade.receivers, null, 'a covered sky: no lift');
+    } finally {
+        resetLookStrengths();
+    }
+    // The bound lift: steps[1] (u_shade.y / frame.shade.y), 0 without a field.
+    const texture = { width: 4, height: 2, format: 'rgba8', data: new Uint8Array(32), revision: 3, origin: [0, 0], cell: [2, 1] };
+    assert.equal(resolveSunShade({ sunShade: { texture, cast: 1, lift: 0.0625, sweepX: 1, sweepY: 0 } }).steps[1], 0.0625);
+    assert.equal(resolveSunShade({ sunShade: { texture: null, cast: 1, lift: 0.0625 } }).steps[1], 0);
+});
+
+test('both scene shaders lift after the step and before the grade, off at 0, never water', () => {
+    const read = path => readFileSync(new URL(`../../claudeville/src/presentation/character-mode/${path}`, import.meta.url), 'utf8');
+    for (const [source, step, call, grade] of [
+        [read('gpu/GpuWorldRenderer.js'), 'color *= sunShadeStep(geometry',
+            'if (u_shade.y > 0.0 && !waterMaterial) color = sunLift(color, u_terrainBatch && v_receiver.x < -0.5, u_shade.y,', 'color = applyTimeGrade('],
+        [read('gpu/wgsl/scene.js'), 'color *= sunShadeStep(geometry',
+            'if (frame.shade.y > 0.0 && !waterMaterial) { color = sunLift(color, batch.terrainBatch != 0u && v_receiver.x < -0.5, frame.shade.y,', 'color = applyTimeGrade('],
+    ]) {
+        const at = [step, call, grade].map(text => source.indexOf(text));
+        assert.ok(at.every(index => index >= 0), 'every line is there');
+        assert.deepEqual(at, at.slice().sort((a, b) => a - b), 'in this order');
+        assert.equal(source.split('sunLift(color').length, 2, 'one call site');
+    }
+    for (const source of [SUN_SHADE_GLSL, SUN_SHADE_WGSL]) {
+        // Never a body; the ground by the ground rule; a receiver by a lit verdict.
+        assert.ok(/sunVerdict > -0\.5 && sunVerdict < 1\.5 && v_identity\.x == 0u/.test(source));
+        assert.ok(source.includes('!shadeGroundAt(v_world)'));
+        assert.ok(source.includes(SUN_LIFT_CEILING.toFixed(4)), 'the ceiling');
+        assert.equal(source.split('sunVerdict = 0.0;').length, 3, 'two receiver branches');
+    }
+});
+
+test('a lifted texel never outshines the waiting candle or the NEEDS YOU bell, and snow keeps its value', () => {
+    // The scene shaders' sunLift on the CPU: the gain, held under the ceiling luma.
+    const luma = rgb => 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+    const lift = (rgb, gain) => {
+        const l = luma(rgb);
+        const g = Math.min(1 + gain, Math.max(1, SUN_LIFT_CEILING / Math.max(l, 0.0001)));
+        return rgb.map(channel => channel * g);
+    };
+    const CANDLE = 192; // CarriedLantern: a waiting candle lands 192-207, the bell 207
+    let worst = 0;
+    for (let minute = 6 * 60; minute <= 19 * 60; minute += 30) {
+        const grade = evaluateGrade({ minuteOfDay: minute });
+        for (let r = 0; r <= 20; r++) for (let g = 0; g <= 20; g++) for (let b = 0; b <= 20; b += 2) {
+            const rgb = [r / 20, g / 20, b / 20];
+            if (luma(rgb) > SUN_LIFT_CEILING) continue;
+            const lifted = lift(rgb, SUN_LIFT);
+            if (Math.max(...lifted) > 1) continue;
+            worst = Math.max(worst, luma(applyGradeToRgb(lifted, grade)) * 255);
+        }
+    }
+    assert.ok(worst < CANDLE, `brightest lifted texel ${worst.toFixed(1)} under the candle's ${CANDLE}`);
+    // A texel already above the ceiling (snow, a lamp's glass) is not lifted at all.
+    for (const snow of [[0.9, 0.93, 0.96], [0.82, 0.84, 0.88]]) assert.deepEqual(lift(snow, SUN_LIFT), snow);
+    // And one under it never passes it.
+    assert.ok(luma(lift([0.6, 0.62, 0.6], SUN_LIFT)) <= SUN_LIFT_CEILING + 1e-9);
+});
+
+test('Canvas takes the lift in whole steps on the lit land only, and none while snow lies', () => {
+    assert.equal(canvasSunLiftSteps(0), 0);
+    assert.equal(canvasSunLiftSteps(SUN_LIFT * 0.4), 0, 'under half a step: none');
+    assert.equal(canvasSunLiftSteps(SUN_LIFT * 0.5), 1);
+    assert.equal(canvasSunLiftSteps(SUN_LIFT), 1);
+    assert.equal(canvasSunLiftSteps(SUN_LIFT, 0.3), 0, 'snow lying: a whole step would clip it');
+    // Two cells shaded, one over open water, one lit: only the lit land paints.
+    const field = { cols: 4, rows: 1, originX: 0, originY: 0, cellW: 2, cellH: 1, data: new Uint8Array([0, 255, 0, 255, 0, 0, 0, 0]) };
+    const water = { fields: { x: 0, y: 0, cols: 4, rows: 1, coastField: new Uint8Array([0, 0, 0, 0, 0, 0, 0, 1]) }, waterBit: 1, coveredBit: 2 };
+    const out = new Uint8Array(16);
+    paintLitCells(field, out, [35, 35, 35], water);
+    assert.deepEqual([3, 7, 11, 15].map(i => out[i]), [0, 0, 255, 0], 'shade, shade, lit land, open water');
+    assert.equal(out[8], 35);
 });
