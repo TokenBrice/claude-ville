@@ -212,8 +212,12 @@ export class AgentBiography {
         errorsRecovered,
         milestones,
         extensions,
+        displayName,
     } = {}) {
         this.identityKey = String(identityKey || '');
+        // XP-8 — the name the lineage last wore, for the Hall of Lives.
+        // Legacy rows have none.
+        this.displayName = boundedString(displayName, 80);
         this.schemaVersion = Number(schemaVersion) || BIOGRAPHY_SCHEMA_VERSION;
         this.firstSeenAt = nonNegativeNumber(firstSeenAt);
         this.lastSeenAt = nonNegativeNumber(lastSeenAt) || this.firstSeenAt;
@@ -289,6 +293,7 @@ export class AgentBiography {
             lifetimeTokens: this.lifetimeTokens,
             errorsRecovered: this.errorsRecovered,
             milestones: this.milestones.map(m => ({ ...m })),
+            ...(this.displayName ? { displayName: this.displayName } : {}),
             extensions: {
                 ...this.extensions,
                 biographyEvents: {

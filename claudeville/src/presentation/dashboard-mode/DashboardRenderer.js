@@ -327,6 +327,26 @@ export function codexQuotaFacts(codex, now = Date.now()) {
     };
 }
 
+// A tally-bar account card holds two lines inside the bar's 40 px: the
+// reading on top, its facts (joined by ` · ` in CSS) below.
+function quotaRows(part, head, facts) {
+    const rows = document.createDocumentFragment();
+    const top = part('dashboard-quota__head');
+    top.append(...head);
+    rows.append(top);
+    if (facts.length) {
+        const bottom = part('dashboard-quota__facts');
+        bottom.append(...facts);
+        rows.append(bottom);
+    }
+    return rows;
+}
+
+/** What the tally bar's account cards read from `/api/usage`: a change to either repaints them. */
+export function quotaCardsSignature(usage) {
+    return { codex: usage?.codex ?? null, claudeLimit: usage?.quota?.highestActiveLimit ?? null };
+}
+
 /** The edge flash belongs only to a genuine errored status. */
 export function shouldFlashForStatus(status) {
     return bucketForStatus(status) === 'errors';
@@ -1786,7 +1806,7 @@ export class DashboardRenderer {
             provider: [...this._providerFilters].sort(),
             search: this._searchQuery,
             matches: this._searchMatches?.size ?? agents.length,
-            codex: this._latestUsage?.codex ?? null,
+            quota: quotaCardsSignature(this._latestUsage),
         });
         this.attentionEl.hidden = false;
         if (signature === this._controlsSignature) return;
@@ -1866,7 +1886,10 @@ export class DashboardRenderer {
         // 7.11 — one legend replaces the per-row ESTIMATE / UNAVAILABLE pills.
         const legend = document.createElement('span');
         legend.className = 'dashboard-attention__legend';
-        legend.textContent = '≈ includes estimates · — unavailable';
+        legend.append(
+            Object.assign(document.createElement('span'), { textContent: '≈ includes estimates' }),
+            Object.assign(document.createElement('span'), { textContent: '— unavailable' }),
+        );
         legend.title = '≈ cost includes estimated usage (token counts x published rates); — no usage reported';
         replaceChildren(this.attentionEl, [heading, list, this._claudeLimitCard(), this._codexQuotaCard(), legend].filter(Boolean));
         if (focusedKey) {
@@ -1876,8 +1899,8 @@ export class DashboardRenderer {
         }
     }
 
-    // The Codex account card in the tally bar: `CODEX WEEKLY ▮▮▮ 100% LIMIT ·
-    // resets 5d12h · 2,510.33 credits · as of 3m`. Absent or null usage.codex
+    // The Codex account card in the tally bar: `CODEX WEEKLY ▮▮▮ 100% LIMIT` over
+    // `resets 5d12h · 2,510.33 credits · fell 31.83 in 1m · 3m ago`. Absent or null usage.codex
     // (an older server, or no rollout with rate_limits) shows nothing.
     _codexQuotaCard() {
         const facts = codexQuotaFacts(this._latestUsage?.codex);
@@ -1890,26 +1913,27 @@ export class DashboardRenderer {
         provider.style.color = providerPresentation('codex').badge.color;
         const gauge = part('dashboard-quota__gauge');
         for (let index = 0; index < GAUGE_SEGMENTS; index++) gauge.appendChild(part(index < facts.lit ? 'on' : ''));
-        const parts = [provider, part('dashboard-quota__window', facts.windowLabel.toUpperCase()), gauge, part('dashboard-quota__used', facts.usedText)];
-        if (facts.limit) parts.push(part('dashboard-quota__word', bucketWord('quota', 'upper')));
+        const head = [provider, part('dashboard-quota__window', facts.windowLabel.toUpperCase()), gauge, part('dashboard-quota__used', facts.usedText)];
+        if (facts.limit) head.push(part('dashboard-quota__word', bucketWord('quota', 'upper')));
+        const facts2 = [];
         if (facts.resetsAt) {
             const reset = part('dashboard-quota__fact');
-            subscribeElapsedText(reset, now => `· resets in ${formatWaitAge(Math.max(0, facts.resetsAt - now))}`);
-            parts.push(reset);
+            subscribeElapsedText(reset, now => `resets ${formatWaitAge(Math.max(0, facts.resetsAt - now))}`);
+            facts2.push(reset);
         }
-        if (facts.credits) parts.push(part('dashboard-quota__fact', `· ${facts.credits}`));
-        if (facts.creditChange) parts.push(part('dashboard-quota__fact', `· ${facts.creditChange}`));
+        if (facts.credits) facts2.push(part('dashboard-quota__fact', facts.credits));
+        if (facts.creditChange) facts2.push(part('dashboard-quota__fact', facts.creditChange));
         if (facts.observedAt) {
             const age = part('dashboard-quota__age');
-            subscribeElapsedText(age, now => `· as of ${formatWaitAge(Math.max(0, now - facts.observedAt))} ago`);
-            parts.push(age);
+            subscribeElapsedText(age, now => `${formatWaitAge(Math.max(0, now - facts.observedAt))} ago`);
+            facts2.push(age);
         }
-        card.append(...parts);
+        card.append(quotaRows(part, head, facts2));
         return card;
     }
 
     // The Claude account's highest active limit (registry lane): `CLAUDE WEEKLY
-    // ▮▮▮ 68% WARNING · resets in 2d`. Calm by default; a severity
+    // ▮▮▮ 68% WARNING` over `resets 2d`. Calm by default; a severity
     // other than normal takes the card's one existing severity frame, worded
     // with the reported severity, never LIMIT (Claude reports no enforcement).
     _claudeLimitCard() {
@@ -1924,14 +1948,15 @@ export class DashboardRenderer {
         const gauge = part('dashboard-quota__gauge');
         const lit = Math.min(GAUGE_SEGMENTS, Math.round((Math.max(0, facts.used) / 100) * GAUGE_SEGMENTS));
         for (let index = 0; index < GAUGE_SEGMENTS; index++) gauge.appendChild(part(index < lit ? 'on' : ''));
-        const parts = [provider, part('dashboard-quota__window', facts.label.toUpperCase()), gauge, part('dashboard-quota__used', facts.usedText)];
-        if (facts.warn) parts.push(part('dashboard-quota__word', facts.severity.toUpperCase()));
+        const head = [provider, part('dashboard-quota__window', facts.label.toUpperCase()), gauge, part('dashboard-quota__used', facts.usedText)];
+        if (facts.warn) head.push(part('dashboard-quota__word', facts.severity.toUpperCase()));
+        const facts2 = [];
         if (facts.resetsAt) {
             const reset = part('dashboard-quota__fact');
-            subscribeElapsedText(reset, now => `· resets in ${formatWaitAge(Math.max(0, facts.resetsAt - now))}`);
-            parts.push(reset);
+            subscribeElapsedText(reset, now => `resets ${formatWaitAge(Math.max(0, facts.resetsAt - now))}`);
+            facts2.push(reset);
         }
-        card.append(...parts);
+        card.append(quotaRows(part, head, facts2));
         return card;
     }
 

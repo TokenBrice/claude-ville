@@ -87,10 +87,7 @@ function hallLineage(identityKey) {
     const match = /^(named|project):([a-z0-9-]+):(.+)$/.exec(identityKey);
     if (!match) return null;
     const [, scope, provider, slugName] = match;
-    const name = scope === 'named'
-        ? slugName.split('-').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ')
-        : slugName;
-    return { scope, provider, name };
+    return { scope, provider, slugName };
 }
 
 /**
@@ -109,7 +106,10 @@ export function buildHallOfLives(records = [], { now = Date.now() } = {}) {
             const providerLabel = providerPresentation(lineage.provider).badge.label;
             return {
                 identityKey,
-                ...lineage,
+                scope: lineage.scope,
+                provider: lineage.provider,
+                // The name the lineage last wore; a legacy row keeps its slug.
+                name: biography.displayName || lineage.slugName,
                 role: lineage.scope === 'named' ? `${providerLabel} villager` : `${providerLabel} project lead`,
                 nickname: biography.nickname || '',
                 lastSeenAt: book.lastSeenAt,
@@ -480,8 +480,12 @@ function downloadText(text, filename, mimeType) {
 }
 
 export class ChroniclePanel {
-    constructor({ modal, chronicleLog, spendLedger = null, usageGetter = null, toast = null }) {
+    constructor({ modal, chronicleLog, spendLedger = null, usageGetter = null, toast = null, liveHistory = true }) {
         this.modal = modal;
+        // XP-2 — a retold window reads the live book, so only the live
+        // Chronicle may offer a day to watch (simulator samples never do).
+        this.liveHistory = liveHistory;
+        this._viewSeq = 0;
         this.log = chronicleLog;
         this.spendLedger = spendLedger;
         this.usageGetter = usageGetter;
@@ -534,7 +538,9 @@ export class ChroniclePanel {
             this._readTimelinePage(dateKey),
             this._readSpend(dateKey),
             // XP-2 — only a day with trail samples can be retold.
-            Promise.resolve(this.log.hasTrailSamples?.(dateKey)).then(Boolean, () => false),
+            this.liveHistory
+                ? Promise.resolve(this.log.hasTrailSamples?.(dateKey)).then(Boolean, () => false)
+                : false,
         ]);
         return { ...page, spend, replayable };
     }
@@ -554,6 +560,7 @@ export class ChroniclePanel {
     async _showDate(dateKey, request) {
         if (!dateKey || request !== this._request) return;
         const readSeq = ++this._dateReadSeq;
+        this._viewSeq++;
         if (dateKey === this._selectedDateKey) return;
         let page;
         try {
@@ -683,8 +690,7 @@ export class ChroniclePanel {
             if (key !== active) {
                 button.addEventListener('click', () => (key === 'hall'
                     ? this._showHall(request)
-                    : this._selectedPage && this.modal?.isRequestCurrent(request)
-                        && this._renderPage(this._selectedPage, this._selectedDateKey, request)));
+                    : this._showDayBook(request)));
             }
             return button;
         };
@@ -694,8 +700,19 @@ export class ChroniclePanel {
         ]);
     }
 
+    _showDayBook(request) {
+        // A pending Hall read must not reopen the Hall after this switch.
+        this._viewSeq++;
+        if (this._selectedPage && this.modal?.isRequestCurrent(request)) {
+            this._renderPage(this._selectedPage, this._selectedDateKey, request);
+        }
+    }
+
     async _showHall(request) {
         if (this._destroyed || request !== this._request) return;
+        const viewSeq = ++this._viewSeq;
+        // Nor may a pending date read reopen the Day book.
+        this._dateReadSeq++;
         let records;
         try {
             records = typeof this.log.readBiographies === 'function' ? await this.log.readBiographies() : [];
@@ -705,7 +722,8 @@ export class ChroniclePanel {
             }
             return;
         }
-        if (this._destroyed || request !== this._request || !this.modal.isRequestCurrent(request)) return;
+        if (this._destroyed || request !== this._request || viewSeq !== this._viewSeq
+            || !this.modal.isRequestCurrent(request)) return;
         const content = this.modal.contentEl;
         if (!content) return;
         this._releaseAvatars();

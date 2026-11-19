@@ -200,6 +200,8 @@ test('XP-2: only a day with trail samples offers WATCH THIS DAY, opening ?retold
         chronicleLog: { async readDay() { return []; }, async hasTrailSamples() { throw new Error('closed'); } },
     });
     assert.equal((await failing._readPage(DAY)).replayable, false, 'an unreadable store offers nothing');
+    const simulated = new ChroniclePanel({ modal: {}, chronicleLog: log, liveHistory: false });
+    assert.equal((await simulated._readPage(withSamples)).replayable, false, 'simulator samples never offer the live replay');
     const legacy = new ChroniclePanel({ modal: {}, chronicleLog: { async readDay() { return []; } } });
     assert.equal((await legacy._readPage(DAY)).replayable, false);
     assert.equal(retoldVillageHref('/', '2026-11-18'), '/?retold=2026-11-18');
@@ -215,19 +217,19 @@ test('XP-8: the Hall of Lives lists remembered lineages by last seen, with no st
     const lives = buildHallOfLives([
         { identityKey: 'project:claude:claude-ville', firstSeenAt: now - 40 * day, lastSeenAt: now - 2 * day,
             sessionsCompleted: 900, commitsPushed: 400, milestones: [], extensions: { lifeEpisodes: episodes } },
-        { identityKey: 'named:codex:ada-lovelace', firstSeenAt: now - 9 * day, lastSeenAt: now - day,
+        { identityKey: 'named:codex:r-d', displayName: 'R&D', firstSeenAt: now - 9 * day, lastSeenAt: now - day,
             sessionsCompleted: 1, milestones: [{ id: 'nickname-commitsPushed-25', kind: 'nickname', nickname: 'the Shipwright', at: now - day }] },
         { identityKey: 'anonymous:claude:session-1', firstSeenAt: now, lastSeenAt: now },
         { identityKey: '', lastSeenAt: now },
         null,
     ], { now });
-    assert.deepEqual(lives.map(life => life.identityKey), ['named:codex:ada-lovelace', 'project:claude:claude-ville'],
+    assert.deepEqual(lives.map(life => life.identityKey), ['named:codex:r-d', 'project:claude:claude-ville'],
         'session-scoped rows are not lineages; order is last seen, not stats');
     const [ada, lead] = lives;
-    assert.equal(ada.name, 'Ada Lovelace');
+    assert.equal(ada.name, 'R&D', 'the saved display name, as authored');
     assert.equal(ada.nickname, 'the Shipwright');
     assert.match(ada.role, /villager$/);
-    assert.equal(lead.name, 'claude-ville');
+    assert.equal(lead.name, 'claude-ville', 'a legacy row without a saved name keeps its slug untouched');
     assert.match(lead.role, /project lead$/);
     assert.equal(lead.chapters.length, HALL_OF_LIVES_CHAPTER_LIMIT);
     assert.equal(lead.chapters[0].at, episodes.at(-1).at, 'newest chapter first');
@@ -236,4 +238,27 @@ test('XP-8: the Hall of Lives lists remembered lineages by last seen, with no st
             assert.equal(Object.hasOwn(life, key), false, key);
         }
     }
+});
+
+test('XP-8: the Hall keeps the name a lineage last wore, and a returned Day book is not reopened by a slow Hall read', async () => {
+    const { AgentBiography } = await import('../../claudeville/src/domain/value-objects/AgentBiography.js');
+    const biography = AgentBiography.fromRecord({ identityKey: 'project:claude:claude-ville', displayName: 'Wren', firstSeenAt: 1 });
+    assert.equal(biography.toRecord().displayName, 'Wren');
+    assert.equal(Object.hasOwn(AgentBiography.fromRecord({ identityKey: 'named:x:y', firstSeenAt: 1 }).toRecord(), 'displayName'), false);
+    assert.equal(buildHallOfLives([biography.toRecord()])[0].name, 'Wren');
+
+    let release;
+    const modal = { contentEl: {}, isRequestCurrent: request => request === 1 };
+    const panel = new ChroniclePanel({ modal, chronicleLog: { readBiographies: () => new Promise(resolve => { release = resolve; }) } });
+    panel._request = 1;
+    const rendered = [];
+    panel._renderHall = lives => { rendered.push('hall'); return []; };
+    panel._tabs = () => 'tabs';
+    panel._renderPage = () => rendered.push('day');
+    panel._selectedPage = { events: [] };
+    const hall = panel._showHall(1);
+    panel._showDayBook(1);
+    release([]);
+    await hall;
+    assert.deepEqual(rendered, ['day'], 'the slower Hall read is dropped after the switch back');
 });

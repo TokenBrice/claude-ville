@@ -669,6 +669,17 @@ body:has(#worldGrammar:popover-open) .first-run-hint {
     -webkit-font-smoothing: none;
 }
 
+/* A retold day with no trail samples has no world to show: the card covers
+   the empty band instead of floating on it. */
+.world-empty[data-phase="no-recorded-samples"] {
+    inset: 0;
+    width: auto;
+    transform: none;
+    justify-content: center;
+    background: var(--bg-0);
+    box-shadow: none;
+}
+
 /* A healthy empty village stays visible and available to explore. */
 .world-empty[data-phase="ready-empty"] {
     left: 24px;

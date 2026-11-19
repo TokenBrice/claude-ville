@@ -1697,6 +1697,7 @@ export class App {
                     spendLedger: this.spendLedger,
                     usageGetter: () => this.latestUsage,
                     toast: this.toast,
+                    liveHistory: !this.simMode,
                 });
                 this.chroniclePanel = panel;
                 return panel;
