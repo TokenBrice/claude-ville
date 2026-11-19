@@ -3,11 +3,16 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { PNG } from 'pngjs';
 
-import { Compositor, HEAD_APEX_COLUMNS, STRIP_HEAD_MATCHED } from '../../claudeville/src/presentation/character-mode/Compositor.js';
+import { Compositor, HEAD_APEX_COLUMNS, STRIP_HEAD_MATCHED, overlayOpaqueBounds } from '../../claudeville/src/presentation/character-mode/Compositor.js';
 
 const CELL = 92;
 const DIRECTIONS = ['s', 'se', 'e', 'ne', 'n', 'nw', 'w', 'sw'];
-const OVERLAY = { w: 16, h: 12, anchor: [8, 10] };
+// The shipped crest art and anchors (manifest overlay.accessory.effort*).
+const CRESTS = { effortXhigh: [16, 18], effortMax: [16, 20], effortUltra: [16, 20] };
+function overlay(name) {
+    const img = PNG.sync.read(readFileSync(new URL(`../../claudeville/assets/sprites/overlays/overlay.accessory.${name}.png`, import.meta.url)));
+    return { img, w: img.width, h: img.height, anchor: CRESTS[name] };
+}
 
 function png(id, name) {
     return PNG.sync.read(readFileSync(new URL(`../../claudeville/assets/sprites/characters/${id}/${name}.png`, import.meta.url)));
@@ -15,7 +20,8 @@ function png(id, name) {
 
 // Drives the real _compositeAccessory over a sheet or strip and returns the
 // crest stamps it draws, as cell-local overlay anchor points.
-function crestStamps(id, name) {
+function crestStamps(id, name, crest = 'effortXhigh') {
+    const OVERLAY = overlay(crest);
     const base = png(id, 'sheet');
     const target = name === 'sheet' ? base : png(id, name);
     const draws = [];
@@ -25,7 +31,8 @@ function crestStamps(id, name) {
         rect(x, y) { this.cell = [x, y]; },
         drawImage(img, ...args) {
             const [x, y] = args.length === 4 ? args : args.slice(4, 6);
-            draws.push({ cellX: this.cell[0], cellY: this.cell[1], x, y });
+            const cropH = args.length === 4 ? OVERLAY.h : args[3];
+            draws.push({ cellX: this.cell[0], cellY: this.cell[1], x, y, cropH });
         },
     };
     const comp = Object.create(Compositor.prototype);
@@ -35,7 +42,11 @@ function crestStamps(id, name) {
         getAnchor: () => OVERLAY.anchor,
         palettes: {},
     };
-    comp._harmonizeOverlay = () => ({ front: 'front', back: 'back', colBottom: new Int16Array(OVERLAY.w).fill(-1) });
+    comp._harmonizeOverlay = () => ({
+        front: 'front', back: 'back',
+        colBottom: new Int16Array(OVERLAY.w).fill(-1),
+        opaque: overlayOpaqueBounds(OVERLAY.img.data, OVERLAY.w, OVERLAY.h),
+    });
     comp._baseSheetAlpha = () => ({ data: base.data, width: base.width });
     const grid = name === 'sheet' ? null
         : { dims: { w: target.width, h: target.height }, rows: target.height / CELL, cellSize: CELL };
@@ -46,11 +57,25 @@ function crestStamps(id, name) {
         }
         return false;
     };
+    // Visible crest pixels the cell clip would cut off.
+    const outside = (d) => {
+        let n = 0;
+        for (let oy = 0; oy < d.cropH; oy++) {
+            for (let ox = 0; ox < OVERLAY.w; ox++) {
+                if (OVERLAY.img.data[(oy * OVERLAY.w + ox) * 4 + 3] < 16) continue;
+                const px = d.x + ox - d.cellX;
+                const py = d.y + oy - d.cellY;
+                if (px < 0 || py < 0 || px >= CELL || py >= CELL) n++;
+            }
+        }
+        return n;
+    };
     return draws.filter((d) => occupied(d.cellX, d.cellY)).map((d) => ({
         dir: DIRECTIONS[d.cellX / CELL],
         row: d.cellY / CELL,
         x: d.x + OVERLAY.anchor[0] - d.cellX,
         y: d.y + OVERLAY.anchor[1] - d.cellY,
+        clipped: outside(d),
     }));
 }
 
@@ -75,6 +100,20 @@ test('second-body and Mythos action crests follow the head, not a raised hand', 
             const head = idle.get(s.dir);
             assert.ok(Math.abs(s.x - head.x) <= 6, `${id} ${s.dir} row ${s.row}: x ${s.x} vs head ${head.x}`);
             assert.ok(s.y >= head.y - 4 && s.y <= head.y + 16, `${id} ${s.dir} row ${s.row}: y ${s.y} vs head ${head.y}`);
+        }
+    }
+});
+
+// Astra B's plume puts its head near the cell top, and wait or celebrate
+// raise it further: every crest tier must stay whole inside its cell.
+test('no crest tier loses a visible pixel to the cell clip on these bodies', () => {
+    for (const id of STRIP_HEAD_MATCHED) {
+        for (const crest of Object.keys(CRESTS)) {
+            for (const name of ['sheet', 'actions']) {
+                for (const s of crestStamps(id, name, crest)) {
+                    assert.equal(s.clipped, 0, `${id} ${name} ${crest} ${s.dir} row ${s.row}: ${s.clipped} crest px clipped`);
+                }
+            }
         }
     }
 });

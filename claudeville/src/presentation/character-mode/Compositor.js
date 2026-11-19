@@ -82,11 +82,28 @@ export const HEAD_APEX_COLUMNS = Object.freeze({
 // Action strips whose poses raise a hand, a staff or a gauntlet above the
 // head (wait, strike) or drop the head onto a seat (sit, drink): their crest
 // follows the head itself, found by matching the base sheet's idle head
-// (row 6, same facing) inside each strip cell, not the cell's topmost pixels.
+// (row 6, same facing) inside each strip cell, not the cell's topmost pixels,
+// and their crest is kept whole inside every cell (sheet and strip).
 export const STRIP_HEAD_MATCHED = new Set([
     'agent.claude.mythos', 'agent.claude.fable.b', 'agent.codex.gpt6astra.b',
 ]);
 const HEAD_TEMPLATE_H = 8;
+
+// Opaque bounds of an overlay's pixels (alpha >= 16), or null when empty.
+export function overlayOpaqueBounds(data, w, h) {
+    let top = h;
+    let left = w;
+    let right = -1;
+    for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+            if (data[(y * w + x) * 4 + 3] < 16) continue;
+            if (y < top) top = y;
+            if (x < left) left = x;
+            if (x > right) right = x;
+        }
+    }
+    return right < 0 ? null : { top, left, right };
+}
 const HEAD_TEMPLATE_HALF_W = 7;
 const HEAD_MATCH_DX = 5;
 const HEAD_MATCH_DY = [-4, 16];
@@ -465,7 +482,7 @@ export class Compositor {
         const [ax, ay] = this.assets.getAnchor(overlayId);
         const palette = this.assets.palettes?.[paletteKey];
         const name = overlayId.slice('overlay.accessory.'.length);
-        const { front, back, colBottom } = this._harmonizeOverlay(overlayImg, overlayDims, palette, {
+        const { front, back, colBottom, opaque } = this._harmonizeOverlay(overlayImg, overlayDims, palette, {
             tint: !COSMETIC_SET.has(name),
             fillBack: ACCESSORY_BACK_FILL.has(name),
         });
@@ -479,6 +496,7 @@ export class Compositor {
         const width = dims.w;
         const stamps = [];
         const apexColumns = HEAD_APEX_COLUMNS[baseId] || null;
+        const keepWhole = STRIP_HEAD_MATCHED.has(baseId);
         const headTemplates = grid && STRIP_HEAD_MATCHED.has(baseId)
             ? this._headTemplates(this._baseSheetAlpha(baseId), cellSize, apexColumns)
             : null;
@@ -495,8 +513,15 @@ export class Compositor {
 
                 const anchorX = apex.found ? apex.centroidX : cellX + Math.floor(cellSize / 2);
                 const anchorY = apex.found ? apex.topY + ACCESSORY_TOP_INSET : cellY + Math.floor(cellSize * 0.22);
-                const stampX = Math.round(anchorX - ax);
-                const stampY = Math.round(anchorY - ay);
+                let stampX = Math.round(anchorX - ax);
+                let stampY = Math.round(anchorY - ay);
+                // A head near the cell top (Astra B's plume, a raised pose)
+                // would lose the crest's top to the cell clip: keep it whole,
+                // nudged down onto the head, and inside the cell's sides.
+                if (keepWhole && opaque) {
+                    stampY = Math.max(stampY, cellY - opaque.top);
+                    stampX = Math.min(Math.max(stampX, cellX - opaque.left), cellX + cellSize - 1 - opaque.right);
+                }
                 const cropH = isBack ? Math.max(1, Math.round(overlayDims.h * cropFrac)) : overlayDims.h;
                 stamps.push({ cellX, cellY, stampX, stampY, isBack, cropH });
 
@@ -717,7 +742,7 @@ export class Compositor {
                 }
             }
         }
-        return { front, back, colBottom };
+        return { front, back, colBottom, opaque: overlayOpaqueBounds(fdata, dims.w, dims.h) };
     }
 
     // Plan 2.7 — the 0.5x crowd LOD copy of a composed sheet, baked once per
