@@ -1,5 +1,6 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { worldToTile } from './Projection.js';
+import { isImplicitSessionTeam } from '../shared/TeamColor.js';
 
 const ARRIVAL_WINDOW_MS = 8000;
 const DEPARTURE_WINDOW_MS = 12000;
@@ -374,6 +375,11 @@ export class RelationshipState {
         }
 
         for (const [team, members] of this.teamToMembers) {
+            const agents = [...members].map(id => this.world.agents.get(id));
+            if (isImplicitSessionTeam(team, agents)) {
+                this.teamToMembers.delete(team);
+                continue;
+            }
             this._cachedSnapshotTeamToMembersArrays.set(team, [...members]);
         }
     }
