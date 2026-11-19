@@ -38,6 +38,7 @@ const WINDOWS = {
   five_hour: { utilization: 17, resets_at: '2026-10-27T15:00:00.000000+00:00' },
   seven_day: { utilization: 88, resets_at: '2026-10-29T09:30:00+00:00' },
 };
+const LIMITS_RESPONSE = fs.readFileSync(new URL('./fixtures/claude-usage-limits.json', import.meta.url));
 
 function usageAt(now) {
   const originalNow = Date.now;
@@ -133,6 +134,103 @@ test('SV-7: a good response forwards both windows with their reset times', () =>
   assert.equal(usage.quotaError, null);
   assert.equal(Object.hasOwn(usage, 'totals'), false);
   assert.equal(Object.hasOwn(usage.account, 'email'), false);
+});
+
+test('Claude quota exposes the active weekly limit and fills five hours from the inactive session limit', () => {
+  resetQuotaCache();
+  const response = new FakeResponse(200);
+  consumeQuotaResponse(response, data => recordQuotaSuccess(data, NOW));
+  response.emit('data', LIMITS_RESPONSE);
+  response.emit('end');
+
+  const usage = usageAt(NOW);
+  assert.equal(usage.quotaAvailable, true);
+  assert.deepEqual(usage.quota, {
+    provider: 'claude',
+    fiveHour: 0.82,
+    fiveHourSource: 'limits',
+    sevenDay: 0.68,
+    fiveHourResetsAt: Date.UTC(2026, 9, 27, 15),
+    sevenDayResetsAt: Date.UTC(2026, 9, 29, 9, 30),
+    highestActiveLimit: {
+      kind: 'weekly_all', scope: null, severity: 'warning',
+      usedPercent: 68, resetsAt: Date.UTC(2026, 9, 29, 9, 30),
+    },
+  });
+  assert.equal(resolveAgentStatus({ provider: 'claude', model: 'claude-opus-5-5', turnState: 'working' }, { usage }), AgentStatus.WORKING);
+});
+
+test('Claude quota prefers explicit windows and uses only a single unscoped session limit as fallback', () => {
+  const [session] = JSON.parse(LIMITS_RESPONSE).limits;
+  resetQuotaCache();
+  recordQuotaSuccess({ ...WINDOWS, five_hour: { utilization: 0 }, limits: [session] }, NOW);
+  assert.equal(usageAt(NOW).quota.fiveHour, 0);
+  assert.equal(usageAt(NOW).quota.fiveHourResetsAt, null);
+  assert.equal(Object.hasOwn(usageAt(NOW).quota, 'fiveHourSource'), false);
+
+  recordQuotaSuccess({ five_hour: { utilization: null }, limits: [session] }, NOW);
+  assert.equal(usageAt(NOW).quota.fiveHour, 0.82);
+
+  recordQuotaSuccess({ limits: [{ ...session, percent: 101, is_active: true }] }, NOW);
+  assert.equal(usageAt(NOW).quota.fiveHour, 1);
+  assert.equal(usageAt(NOW).quota.highestActiveLimit.usedPercent, 101);
+
+  for (const limits of [
+    [session, { ...session, percent: 50 }],
+    [session, { ...session, percent: null }],
+    [{ ...session, scope: { model: 'claude-opus-5-5' } }],
+    [{ ...session, kind: 'weekly_all' }],
+  ]) {
+    recordQuotaSuccess({ seven_day: WINDOWS.seven_day, limits }, NOW);
+    assert.equal(usageAt(NOW).quota.fiveHour, null);
+    assert.equal(usageAt(NOW).quota.fiveHourResetsAt, null);
+    assert.equal(Object.hasOwn(usageAt(NOW).quota, 'fiveHourSource'), false);
+  }
+});
+
+test('Claude quota leaves null or missing legacy utilization unknown without a fallback', () => {
+  resetQuotaCache();
+  for (const five_hour of [{ utilization: null }, {}]) {
+    recordQuotaSuccess({ five_hour, seven_day: WINDOWS.seven_day }, NOW);
+    assert.equal(usageAt(NOW).quota.fiveHour, null);
+    assert.equal(Object.hasOwn(usageAt(NOW).quota, 'fiveHourSource'), false);
+  }
+});
+
+test('Claude quota treats missing limit scopes as account-wide', () => {
+  const { limits: [session, weekly] } = JSON.parse(LIMITS_RESPONSE);
+  delete session.scope;
+  delete weekly.scope;
+  resetQuotaCache();
+  recordQuotaSuccess({ limits: [session, weekly] }, NOW);
+  const { quota } = usageAt(NOW);
+  assert.equal(quota.fiveHour, 0.82);
+  assert.equal(quota.fiveHourSource, 'limits');
+  assert.equal(quota.highestActiveLimit?.scope, null);
+});
+
+test('Claude quota skips malformed limits and ages out a limits-only snapshot', () => {
+  const [, weekly] = JSON.parse(LIMITS_RESPONSE).limits;
+  const scoped = { ...weekly, kind: 'weekly_scoped', scope: { model: 'claude-opus-5-5' }, percent: 98 };
+  resetQuotaCache();
+  recordQuotaSuccess({ ...WINDOWS, limits: { ...scoped } }, NOW);
+  assert.equal(Object.hasOwn(usageAt(NOW).quota, 'highestActiveLimit'), false);
+
+  recordQuotaSuccess({ limits: [
+    null, [], {}, { ...scoped, percent: '99' }, { ...scoped, percent: -1 }, { ...scoped, percent: null },
+    { ...scoped, percent: 99, is_active: 'true' }, { ...scoped, percent: 99, kind: null },
+    { ...scoped, percent: 99, severity: {} }, { ...scoped, percent: 99, scope: { model: {} } },
+    { ...scoped, resets_at: 'later', scope: { ...scoped.scope, extra: 'ignored' } },
+  ] }, NOW);
+  const fresh = usageAt(NOW);
+  assert.equal(fresh.quotaAvailable, true);
+  assert.equal(fresh.quota.fiveHour, null);
+  assert.equal(fresh.quota.sevenDay, null);
+  assert.deepEqual(fresh.quota.highestActiveLimit, {
+    kind: 'weekly_scoped', scope: { model: 'claude-opus-5-5' }, severity: 'warning', usedPercent: 98, resetsAt: null,
+  });
+  assert.equal(usageAt(NOW + QUOTA_MAX_STALE_MS + 1).quotaAvailable, false);
+  assert.equal(Object.hasOwn(usageAt(NOW + QUOTA_MAX_STALE_MS + 1).quota, 'highestActiveLimit'), false);
 });
 
 test('SV-7: a reset time the API omits or garbles is unknown, never zero', () => {

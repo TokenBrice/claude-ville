@@ -1,5 +1,5 @@
 {
-    "revision": "2026-11-17",
+    "revision": "2026-11-19",
     "models": [
         {
             "id": "claude.mythos-5-2", "provider": "claude", "match": ["mythos-5-2"], "sample": "claude-mythos-5-2",
@@ -44,6 +44,14 @@
             "contextWindow": 1000000, "pricing": { "input": 10, "output": 50, "cacheRead": 1, "cacheCreate": 12.5 }
         },
         {
+            "id": "claude.opus-5-5", "provider": "claude", "match": ["opus-5-5"], "sample": "claude-opus-5-5",
+            "label": "Claude Opus", "shortLabel": "Opus", "modelClass": "opus", "modelTier": "apex", "mood": "deliberate",
+            "spriteId": "agent.claude.opus", "paletteKey": "claude", "color": "#ffe7a8",
+            "spriteVariants": ["agent.claude.opus", "agent.claude.opus.b"],
+            "trim": ["#ffe7a8", "#c8a3ff", "#f4b15f"], "accent": ["#fff4cf", "#d8bcff", "#ffca7a"],
+            "contextWindow": 1000000, "pricing": { "input": 4, "output": 20, "cacheRead": 0.2, "cacheCreate": 5 }
+        },
+        {
             "id": "claude.opus-5", "provider": "claude", "match": ["opus-5"], "sample": "claude-opus-5",
             "label": "Claude Opus", "shortLabel": "Opus", "modelClass": "opus", "modelTier": "apex", "mood": "deliberate",
             "spriteId": "agent.claude.opus", "paletteKey": "claude", "color": "#ffe7a8",
@@ -76,6 +84,21 @@
             "contextWindow": 1000000, "pricing": { "input": 5, "output": 25, "cacheRead": 0.5, "cacheCreate": 6.25 }
         },
         {
+            "id": "claude.opus-4-5", "provider": "claude", "match": ["opus-4-5"], "sample": "claude-opus-4-5",
+            "label": "Claude Opus", "shortLabel": "Opus", "modelClass": "opus", "modelTier": "apex", "mood": "deliberate",
+            "spriteId": "agent.claude.opus", "paletteKey": "claude", "color": "#ffe7a8",
+            "spriteVariants": ["agent.claude.opus", "agent.claude.opus.b"],
+            "trim": ["#ffe7a8", "#c8a3ff", "#f4b15f"], "accent": ["#fff4cf", "#d8bcff", "#ffca7a"],
+            "contextWindow": 200000, "pricing": { "input": 5, "output": 25, "cacheRead": 0.5, "cacheCreate": 6.25 }
+        },
+        {
+            "id": "claude.sonnet-5-5", "provider": "claude", "match": ["sonnet-5-5"], "sample": "claude-sonnet-5-5",
+            "label": "Claude Sonnet", "shortLabel": "Sonnet", "modelClass": "sonnet", "modelTier": "balanced", "mood": "balanced",
+            "spriteId": "agent.claude.sonnet", "paletteKey": "claude", "color": "#f2d36b",
+            "trim": ["#f2d36b", "#b7ccff", "#e9b85f"], "accent": ["#ffe39a", "#dfe8ff", "#f7bf6d"],
+            "contextWindow": 1000000, "pricing": { "input": 2, "output": 10, "cacheRead": 0.1, "cacheCreate": 2.5 }
+        },
+        {
             "id": "claude.sonnet-5", "provider": "claude", "match": ["sonnet-5"], "sample": "claude-sonnet-5",
             "label": "Claude Sonnet", "shortLabel": "Sonnet", "modelClass": "sonnet", "modelTier": "balanced", "mood": "balanced",
             "spriteId": "agent.claude.sonnet", "paletteKey": "claude", "color": "#f2d36b",
@@ -87,7 +110,14 @@
             "label": "Claude Sonnet", "shortLabel": "Sonnet", "modelClass": "sonnet", "modelTier": "balanced", "mood": "balanced",
             "spriteId": "agent.claude.sonnet", "paletteKey": "claude", "color": "#f2d36b",
             "trim": ["#f2d36b", "#b7ccff", "#e9b85f"], "accent": ["#ffe39a", "#dfe8ff", "#f7bf6d"],
-            "contextWindow": 200000, "pricing": { "input": 3, "output": 15, "cacheRead": 0.3, "cacheCreate": 3.75 }
+            "contextWindow": 1000000, "pricing": { "input": 3, "output": 15, "cacheRead": 0.3, "cacheCreate": 3.75 }
+        },
+        {
+            "id": "claude.haiku-5-5", "provider": "claude", "match": ["haiku-5-5"], "sample": "claude-haiku-5-5",
+            "label": "Claude Haiku", "shortLabel": "Haiku", "modelClass": "haiku", "modelTier": "light", "mood": "quick",
+            "spriteId": "agent.claude.haiku", "paletteKey": "claude", "color": "#ffd47a",
+            "trim": ["#ffd47a", "#ffe39a", "#f6c25c"], "accent": ["#fff1c2", "#ffe39a", "#ffcc7a"],
+            "contextWindow": 1000000, "pricing": { "input": 0.1, "output": 0.5, "cacheRead": 0.01, "cacheCreate": 0.125 }
         },
         {
             "id": "claude.haiku-4-5", "provider": "claude", "match": ["haiku-4-5"], "sample": "claude-haiku-4-5",
@@ -97,7 +127,7 @@
             "contextWindow": 200000, "pricing": { "input": 1, "output": 5, "cacheRead": 0.1, "cacheCreate": 1.25 }
         },
         {
-            "id": "claude.opus", "provider": "claude", "match": ["opus"], "sample": "claude-opus-4-5",
+            "id": "claude.opus", "provider": "claude", "match": ["opus"], "sample": "claude-opus-4-1",
             "label": "Claude Opus", "shortLabel": "Opus", "modelClass": "opus", "modelTier": "apex", "mood": "deliberate",
             "spriteId": "agent.claude.opus", "paletteKey": "claude", "color": "#ffe7a8",
             "spriteVariants": ["agent.claude.opus", "agent.claude.opus.b"],
