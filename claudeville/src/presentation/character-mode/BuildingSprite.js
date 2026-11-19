@@ -4247,8 +4247,8 @@ export class BuildingSprite {
 
     // 4.3 — the assay bench. Two shallow trays retain the last 60 s of
     // observed fresh-input ore and cache-read crystal, an assay rack states
-    // provenance one coin stamp at a time (solid = provider-reported cost,
-    // hollow = estimate), and the ledger carries exact counts. A class the
+    // provenance one coin stamp at a time (solid = provider, hollow = estimate,
+    // half-filled = mixed), and the ledger carries exact counts. A class the
     // provider does not report reads `unknown`; nothing here is a percentage.
     // S5 — an empty tray or rack is not drawn (the ledger already says `0`);
     // furniture gives way to T1 plates and bodies; the ledger rows stack on
@@ -4386,9 +4386,7 @@ export class BuildingSprite {
         }
     }
 
-    // One coin stamp per covered session: struck solid for a provider-reported
-    // cost, left hollow for an estimate. The rack never states an amount — the
-    // measured window does that once, on the slate.
+    // One coin stamp per covered session. The measured window on the slate gives the amount.
     _drawAssayRack(ctx, at, rack, cost) {
         const w = Math.max(12, Math.round(rack.w || 30));
         const h = Math.max(8, Math.round(rack.h || 12));
@@ -4410,6 +4408,10 @@ export class BuildingSprite {
                 ctx.fillRect(cx - 2, cy + 1, 4, 1);
                 ctx.fillRect(cx - 2, cy - 1, 1, 2);
                 ctx.fillRect(cx + 1, cy - 1, 1, 2);
+                if (source === 'mixed') {
+                    ctx.fillStyle = '#f6d384';
+                    ctx.fillRect(cx - 2, cy - 2, 2, 4);
+                }
             }
         });
         if (cost?.stampOverflow > 0) {

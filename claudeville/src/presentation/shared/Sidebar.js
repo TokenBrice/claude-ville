@@ -27,6 +27,7 @@ import {
     DEPARTED_WORD,
     projectKeyForAgent,
     worktreeLabel,
+    mcpJobLabel,
     modelPresentation,
     projectProfile,
     providerPresentation,
@@ -86,6 +87,7 @@ export function sidebarListRowKey(agent, extras = {}) {
         agent.teamName,
         agent.workflowName,
         agent.agentType,
+        mcpJobLabel(agent),
         agent.workflowId,
         agent.parentSessionId,
         agent.rootSessionId,
@@ -1404,7 +1406,8 @@ export class Sidebar {
         const stateText = agent.isDeparted ? DEPARTED_WORD.toLowerCase()
             : reason ? lowerFirst(reason) : statusWord(agent.status, 'lower');
         const worktree = worktreeLabel(agent);
-        this._setNodeText(refs.modelText, `${model.label ? ` · ${model.label}` : ''}${worktree ? ` · ${worktree}` : ''}`);
+        const jobLabel = mcpJobLabel(agent);
+        this._setNodeText(refs.modelText, [jobLabel, model.label, worktree].filter(Boolean).map(label => ` · ${label}`).join(''));
         this._setText(refs.state, stateText);
         this._setAttribute(refs.age, 'data-tip', extras.ageText || '');
         this._toggleOptional(refs.info, refs.match, Boolean(extras.searchContext));
@@ -1441,12 +1444,13 @@ export class Sidebar {
                 extras.ageText || stateText,
                 teamLabel,
                 workflowLabel,
+                jobLabel,
             ].filter(Boolean).join(' · '),
         );
         this._setAttribute(
             refs.select,
             'aria-label',
-            `Select ${agent.name || agent.id}, ${status.replaceAll('_', ' ')}`,
+            [`Select ${agent.name || agent.id}`, status.replaceAll('_', ' '), jobLabel].filter(Boolean).join(', '),
         );
         this._setAttribute(
             refs.select,

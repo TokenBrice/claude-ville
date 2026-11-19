@@ -132,6 +132,8 @@ test('a newer registry observation keeps pending hook details for the same turn'
   assert.equal(waiting.signalObservedAt, now);
   assert.equal(waiting.pendingTool, 'Bash');
   assert.equal(waiting.promptDetail, 'npm test token=[REDACTED]');
+  assert.equal(waiting.lastTool, 'Bash');
+  assert.equal(waiting.lastToolInput, waiting.promptDetail);
   assert.doesNotMatch(JSON.stringify(waiting), /registry private text|token=secret/);
 
   write(transcript(id), [{ ...source[0], timestamp: now - 50 }]);
@@ -153,6 +155,14 @@ test('a newer registry observation keeps pending hook details for the same turn'
   assert.equal(busy.waitReason, null);
   assert.equal(busy.pendingTool, 'Read');
   assert.equal(busy.promptDetail, 'notes.txt');
+  assert.equal(busy.lastTool, 'Read');
+  assert.equal(busy.lastToolInput, busy.promptDetail);
+  hookOverlay.ingest({ sessionId: id, provider: 'claude', kind: 'PreToolUse', ts: now - 5,
+    tool: 'Poll', input: { description: 'Wait for the build' } });
+  const wrapper = find(scan(), id);
+  assert.equal(wrapper.pendingTool, 'Poll');
+  assert.equal(wrapper.lastTool, null);
+  assert.equal(wrapper.lastToolInput, null);
   write(transcript(id), [source[0], { type: 'assistant', timestamp: now - 20, message: { role: 'assistant',
     content: [{ type: 'tool_use', id: 'real', name: 'Edit', input: { file_path: 'recorded.txt' } }] } }]);
   const recorded = find(scan(), id);
