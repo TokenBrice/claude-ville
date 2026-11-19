@@ -127,19 +127,32 @@
     z-index: 2;
 }
 
-/* A held finger has no native title bubble. Keep its readout inside the
-   canvas stack, above the marks but below the surrounding chrome. */
-.world-touch-tip {
+/* XP-4 — the World's hover plate (WorldHoverPlate.js), for the pointer and a
+   held finger alike: inside the canvas stack, above the marks but below the
+   surrounding chrome. Two lines at most, each clipped rather than wrapped;
+   no transition, like the chrome tooltip. */
+.world-hover-plate {
     position: absolute;
     z-index: 3;
-    max-width: min(320px, calc(100% - 16px));
+    display: flex;
+    flex-direction: column;
+    width: max-content;
+    max-width: min(360px, calc(100% - 16px));
     box-sizing: border-box;
-    padding: 6px 8px;
+    padding: 3px 5px;
     color: var(--ink-1);
     font: var(--fs-body)/var(--lh-body) var(--font-body);
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
     pointer-events: none;
+}
+
+.world-hover-plate[hidden] {
+    display: none;
+}
+
+.world-hover-plate__line {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
 }
 
 /* U-P3 — the fleet card: a pinned bg2 popover beside the fleet it reads.

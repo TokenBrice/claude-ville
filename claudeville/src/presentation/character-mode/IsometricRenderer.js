@@ -29,6 +29,7 @@ import {
 import { getReservedRects } from '../shared/ReservedRects.js';
 import { HARBOR_FOCUS_FLEET_EVENT } from '../shared/HarborLedger.js';
 import { HarborFleetCard, isInFleetCard } from '../shared/HarborFleetCard.js';
+import { WorldHoverPlate, villagerHoverLine } from '../shared/WorldHoverPlate.js';
 import { emitAgentSelected } from '../shared/AgentSelection.js';
 import { HDR_HIGHLIGHTS_EVENT, overlayContextAttributes, publishDisplayStatus, readHdrHighlights } from '../shared/DisplaySettings.js';
 import { installP3OverlayInks, readDisplayMedia, setOverlayInksP3, watchDisplayMedia } from './DisplayColor.js';
@@ -2240,7 +2241,10 @@ export class IsometricRenderer {
             const screenX = e.clientX - rect.left;
             const screenY = e.clientY - rect.top;
             const worldPos = this.camera.screenToWorld(screenX, screenY);
-            canvas.title = this._worldHoverInfo(worldPos.x, worldPos.y);
+            // XP-4 — the lore waits for the agent pass, which picks the plate's
+            // text once per frame (a villager wins over the scenery).
+            this._hoverWorldText = this._worldHoverInfo(worldPos.x, worldPos.y);
+            this._hoverPoint = { x: screenX, y: screenY };
             this._scheduleAgentHoverTest(worldPos.x, worldPos.y);
         };
         canvas.addEventListener('mousemove', this._onMouseMoveMain);
@@ -2259,7 +2263,8 @@ export class IsometricRenderer {
             this.villageDirector?.setHoveredBuilding?.(null);
             this.harborTraffic?.setHoveredShip?.(null);
             this.bridgeLanterns?.setHovered?.(null);
-            canvas.title = '';
+            this._hoverWorldText = '';
+            this._hoverPlate?.hide();
         };
         canvas.addEventListener('mouseleave', this._onMouseLeaveMain);
         this.camera.onTouchStart = this._onMouseLeaveMain;
@@ -2383,8 +2388,9 @@ export class IsometricRenderer {
                 this.canvas.removeEventListener(type, this._onPointerInputMain, { capture: true });
             }
             this.canvas.removeEventListener('mouseleave', this._onMouseLeaveMain);
-            this.canvas.title = '';
         }
+        this._hoverPlate?.dispose();
+        this._hoverPlate = null;
         if (this._agentHoverRafId !== null) {
             cancelAnimationFrame(this._agentHoverRafId);
             this._agentHoverRafId = null;
@@ -4628,7 +4634,9 @@ export class IsometricRenderer {
         this._agentHoverRafId = requestAnimationFrame(() => {
             this._agentHoverRafId = null;
             if (this._disposed) return;
-            this._applyAgentHover(this._agentHoverX, this._agentHoverY);
+            const hit = this._applyAgentHover(this._agentHoverX, this._agentHoverY);
+            const plate = this._hoverPlateContent(hit, this._hoverWorldText);
+            if (this._hoverPoint) this._ensureHoverPlate()?.update(plate.text, this._hoverPoint, plate.target);
         });
     }
 
@@ -4652,11 +4660,30 @@ export class IsometricRenderer {
             this.buildingRenderer?.setHovered(null);
             this.villageDirector?.setHoveredBuilding?.(null);
             this.harborTraffic?.setHoveredShip?.(null);
-            // Hovering a villager surfaces where its line actually came from,
-            // so the provenance badge on the bubble is legible rather than
-            // merely decorative.
-            if (this.canvas) this.canvas.title = hit.dialogueTooltip?.() || '';
         }
+        return hit;
+    }
+
+    _ensureHoverPlate() {
+        const host = this.canvas?.parentElement;
+        if (!host) return null;
+        this._hoverPlate ||= new WorldHoverPlate({ host, reservedRects: getReservedRects });
+        return this._hoverPlate;
+    }
+
+    // XP-4 — the plate's text and the screen rect it must not cover: for a
+    // villager its `name · building · tool · age` line beside its body (never
+    // its speech), else the scenery's lore beside the pointer.
+    _hoverPlateContent(hit, worldText) {
+        if (!hit) return { text: worldText || '', target: null };
+        const box = hit._bodyBox;
+        let target = null;
+        if (box) {
+            const a = this.camera.worldToScreen(hit.x + box.left, hit.y + box.top);
+            const b = this.camera.worldToScreen(hit.x + box.right, hit.y + Math.max(box.bottom, 4));
+            target = { left: a.x, top: a.y, right: b.x, bottom: b.y };
+        }
+        return { text: villagerHoverLine(hit.agent, { buildingType: hit._lastBuildingType }), target };
     }
 
     _setHoveredAgentSprite(sprite) {
@@ -4781,43 +4808,17 @@ export class IsometricRenderer {
             this._openFleetCard({ project: heldShip.project, branch: heldShip.branch || '', shipId: heldShip.id });
             return true;
         }
-        this.canvas.title = this._worldHoverInfo(world.x, world.y);
-        // The agent pass uses the same front-most/arrival filters and dialogue
-        // provenance as mouse hover, which wins over the scenery underneath.
-        this._applyAgentHover(world.x, world.y);
-        const text = this.canvas.title;
+        const worldText = this._worldHoverInfo(world.x, world.y);
+        // The agent pass uses the same front-most/arrival filters as mouse
+        // hover, and a villager wins over the scenery underneath.
+        const plate = this._hoverPlateContent(this._applyAgentHover(world.x, world.y), worldText);
         this._onMouseLeaveMain();
-        if (!text) return false;
-        this._dismissTouchInfo();
-        const tip = document.createElement('div');
-        tip.className = 'world-touch-tip cv-frame cv-frame--bg2';
-        tip.setAttribute('role', 'tooltip');
-        tip.textContent = text;
-        this.canvas.parentElement.append(tip);
-        const width = tip.offsetWidth;
-        const height = tip.offsetHeight;
-        const x = Math.max(8, Math.min(rect.width - width - 8, clientX - rect.left - width / 2));
-        let y = Math.max(8, Math.min(rect.height - height - 8, clientY - rect.top - height - 24));
-        // The dock and mobile ledger tab reserve screen space just as they do
-        // for canvas labels. A held readout must not disappear underneath them.
-        for (const reserved of getReservedRects()) {
-            if (x < reserved.right && x + width > reserved.left
-                && y < reserved.bottom && y + height > reserved.top) {
-                y = Math.max(8, Math.min(rect.height - height - 8, reserved.bottom + 8));
-            }
-        }
-        tip.style.left = `${Math.round(x)}px`;
-        tip.style.top = `${Math.round(y)}px`;
-        this._touchInfo = tip;
-        this._touchInfoTimer = setTimeout(() => this._dismissTouchInfo(), 4000);
-        return true;
+        if (!plate.text) return false;
+        return this._ensureHoverPlate()?.showNow(plate.text, { x: clientX - rect.left, y: clientY - rect.top }, { target: plate.target }) || false;
     }
 
     _dismissTouchInfo() {
-        clearTimeout(this._touchInfoTimer);
-        this._touchInfoTimer = null;
-        this._touchInfo?.remove();
-        this._touchInfo = null;
+        this._hoverPlate?.hide();
     }
 
     _buildingVisitorTooltip(building) {
