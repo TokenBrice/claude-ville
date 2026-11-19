@@ -1,0 +1,3 @@
+{"type":"user","timestamp":900,"message":{"role":"user","content":"Start the fixture fleet."}}
+{"type":"assistant","timestamp":900,"isVirtual":true,"message":{"role":"assistant","content":[{"type":"tool_use","id":"launch","name":"mcp__codex__start","input":{}}]}}
+{"type":"user","timestamp":900,"isVirtual":true,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"launch","content":[{"type":"text","text":"{\"job_id\":\"codex_fixture_run\"}"}]}]}}

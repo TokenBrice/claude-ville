@@ -1,0 +1,2 @@
+{"type":"session_meta","timestamp":600,"payload":{"id":"thread-run","cwd":"/fixture","source":"exec"}}
+{"type":"event_msg","timestamp":610,"payload":{"type":"task_started"}}

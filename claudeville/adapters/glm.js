@@ -34,12 +34,16 @@ const { claudeTranscript } = require('./claude');
 const { deriveTurnState } = require('./turnState');
 const {
   createDetailResponse,
+  recentMcpJobs,
   mcpJobOwnerAlive,
   noteReadFailure,
   readByteRangeText,
   readHeadText,
   readJsonLines,
   statCacheKey,
+  stateFileStat,
+  sameStateVersion,
+  deleteTailState,
   trimCache,
 } = require('./shared');
 
@@ -77,7 +81,7 @@ const CACHE_MAX = 256;
 // any active window the server asks for (server.js: 2 minutes).
 const RETAINED_COMPLETED_MS = 10 * 60 * 1000;
 const END_EVENTS = new Set(['finished', 'cancelled']);
-const FAILED_STATUSES = new Set(['failed', 'timeout']);
+const FAILED_STATUSES = new Set(['failed', 'timeout', 'crashed']);
 
 let _journal = { key: null, threads: new Map(), jobs: new Map(), cursor: null };
 const _threadFiles = new Map();
@@ -117,6 +121,7 @@ function applyJournalRecord(jobs, record) {
   // `continue` names it as `thread_id` already when queued.
   const threadId = record.session_id || record.thread_id;
   if (typeof threadId === 'string' && THREAD_ID.test(threadId)) job.threadId = threadId;
+  if (record.kind === 'ask' || record.kind === 'continue') job.kind = record.kind;
   if (record.model) job.model = String(record.model);
   if (record.effort) job.effort = String(record.effort);
   if (record.cwd) job.cwd = String(record.cwd);
@@ -250,12 +255,8 @@ function foldJournal(retained, cursor, stat) {
 }
 
 function readThreads() {
-  let stat;
-  try {
-    stat = fs.statSync(JOURNAL_FILE);
-  } catch {
-    return new Map();
-  }
+  const stat = stateFileStat(path.resolve(JOURNAL_FILE));
+  if (!stat) return new Map();
   const key = statCacheKey(JOURNAL_FILE, stat);
   const cursor = _journal.cursor;
   // A fold consumes appends in bounded chunks, so after a burst larger than
@@ -263,7 +264,13 @@ function readThreads() {
   // folding while complete unread records remain, not only on stat changes.
   const behind = Boolean(cursor && cursor.dev === stat.dev && cursor.ino === stat.ino && cursor.size < stat.size);
   if (_journal.key !== key || behind) {
-    _journal = { key, ...foldJournal(_journal.jobs, cursor, stat) };
+    const folded = foldJournal(_journal.jobs, cursor, stat);
+    const after = stateFileStat(path.resolve(JOURNAL_FILE));
+    if (!sameStateVersion(stat, after)) {
+      deleteTailState(JOURNAL_FILE);
+      return _journal.threads;
+    }
+    _journal = { key, ...folded };
   }
   return _journal.threads;
 }
@@ -486,6 +493,7 @@ function buildSession(threadId, jobs, { now, activeThresholdMs }) {
     tokenUsage: target ? readTranscript(target, f => claudeTranscript.tokenUsage(f, model)) : null,
     lastResults: readTranscript(target, f => claudeTranscript.toolResults(f, sessionId)),
     gitEvents: target ? readTranscript(target, f => claudeTranscript.gitEvents(f, { provider: 'zai', sessionId, project })) : [],
+    subagentKind: 'mcp',
     parentSessionId: null,
   };
 }
@@ -511,13 +519,17 @@ class GlmAdapter {
     return sessions.sort((a, b) => b.lastActivity - a.lastActivity);
   }
 
+  getMcpJobs(threadId) { return _journal.threads.get(threadId); }
+
   getSessionDetail(sessionId, project) {
     const threadId = threadIdOf(sessionId);
-    const target = readThreads().has(threadId) ? transcriptFile(threadId) : null;
-    if (!target) return createDetailResponse({ sessionId, project });
+    const jobs = readThreads().get(threadId);
+    if (!jobs) return createDetailResponse({ sessionId, project, jobs: [] });
+    const target = transcriptFile(threadId);
     return createDetailResponse({
       sessionId,
       project,
+      jobs: recentMcpJobs(jobs),
       toolHistory: readTranscript(target, claudeTranscript.toolHistory),
       messages: readTranscript(target, claudeTranscript.recentMessages),
       tokenUsage: readTranscript(target, claudeTranscript.tokenUsage),
