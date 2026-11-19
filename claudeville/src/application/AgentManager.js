@@ -74,6 +74,7 @@ const AGENT_SIGNATURE_FIELDS = Object.freeze([
     'status',
     'role',
     'teamName',
+    'agentColor',
     'tokens',
     'estimatedCost',
     'taskProgress',
@@ -993,6 +994,10 @@ export class AgentManager {
             status,
             role: teamInfo?.agentType || session.agentType || 'general',
             teamName,
+            // FK-7 — the colour name Claude Code gave a teammate ('blue').
+            agentColor: typeof session.agentColor === 'string' && session.agentColor.trim()
+                ? session.agentColor.trim().toLowerCase().slice(0, 32)
+                : null,
             tokens: session.tokenUsage || session.tokens || session.usage || null,
             estimatedCost: session.estimatedCost !== null
                 && session.estimatedCost !== undefined

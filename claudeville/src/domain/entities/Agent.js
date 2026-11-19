@@ -56,6 +56,7 @@ export class Agent {
         cost,
         messages,
         teamName,
+        agentColor,
         projectPath,
         currentTool,
         currentToolInput,
@@ -131,6 +132,7 @@ export class Agent {
         this.cost = cost;
         this.messages = messages || [];
         this.teamName = teamName;
+        this.agentColor = agentColor || null;
         this.projectPath = projectPath;
         this.provider = provider || 'claude';
         this.currentTool = currentTool || null;

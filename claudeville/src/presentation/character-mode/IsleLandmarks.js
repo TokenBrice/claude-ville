@@ -351,6 +351,18 @@ export class IsleLandmarks {
         return !opaque || opaque[y * image.width + x] ? sprite : null;
     }
 
+    /** XP-4 — the belfry base's drawn world rect, for the hover plate to keep clear of. */
+    belfryWorldBounds() {
+        const sprite = this._belfry.sprite;
+        const assets = this.host.assets;
+        const image = assets?.get?.(BELFRY_ID);
+        if (!sprite || !image) return null;
+        const [ax, ay] = assets.getAnchor(BELFRY_ID);
+        const left = Math.round(sprite.x) - ax;
+        const top = Math.round(sprite.y) - ay;
+        return { left, top, right: left + image.width, bottom: top + image.height };
+    }
+
     /** The belfry's hover text: both accounts' windows, at `now`. */
     belfryTooltip(now = Date.now()) {
         return belfryTooltip(this._belfry.usage, now);

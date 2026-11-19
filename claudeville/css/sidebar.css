@@ -623,6 +623,12 @@
     border-left-color: transparent;
 }
 
+/* FK-7 — a teammate's own rail segment, beside the squad rail, in the house
+   hue of the colour Claude Code gave it (TeamColor.harnessAccent). */
+.sidebar__agent--nested.sidebar__agent--harness:not(.sidebar__agent--selected) {
+    border-left-color: var(--cv-harness-color);
+}
+
 /* A nested name wraps to a second line rather than losing its tail, the
    part that tells lanes apart. */
 .sidebar__agent--nested .sidebar__agent-name {

@@ -2351,6 +2351,25 @@ export class BuildingSprite {
         return null;
     }
 
+    // XP-4 — the world rect a building's drawn front sprites cover, for the
+    // hover plate to keep clear of; null before its sprites are enumerated.
+    worldBounds(building) {
+        let box = null;
+        for (const d of this.enumerateDrawables()) {
+            if (d.building !== building || d.kind === 'building-back') continue;
+            const id = d.entry.id;
+            const dims = this.assets.getDims(id);
+            if (!dims) continue;
+            const [ax, ay] = this.assets.getAnchor(id);
+            const left = d.wx - ax;
+            const top = d.wy - ay;
+            box = box
+                ? { left: Math.min(box.left, left), top: Math.min(box.top, top), right: Math.max(box.right, left + dims.w), bottom: Math.max(box.bottom, top + dims.h) }
+                : { left, top, right: left + dims.w, bottom: top + dims.h };
+        }
+        return box;
+    }
+
     // 4.4 / 4.7 — the selectable world instruments this renderer draws (result
     // tiles, plan tabs). World-space rects, newest first, so the front-most
     // instrument wins exactly like the sprite hit test.
