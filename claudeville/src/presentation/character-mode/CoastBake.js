@@ -3026,10 +3026,10 @@ function drawCanvasMoodLayer(ctx, renderer, atmosphere) {
  * baked coast cells, so GPU water state (shimmer, night mood, reflections)
  * follows the organic shore and the outer shelf instead of the tile
  * diamonds. A block counts as water if any of its lattice cells is foam or
- * water; the shader's colour gate keeps wet-sand pixels inside such a block
- * out of the water response. Only blocks whose class is water or one of
- * `replaceableIds` (bare ground classes) change, so bridge timber and paved
- * classes keep theirs.
+ * water. In a mixed block G marks exposed wet-sand cells (one bit per
+ * 2×2 quadrant in row order), and B holds their land class. Only water and
+ * `replaceableIds` (bare ground classes) change, so bridge timber and
+ * paving retain their materials.
  */
 export function paintCoastWaterMaterial(ctx, renderer, cached, scale, waterId, landId, replaceableIds = []) {
     const coast = renderer._coastBake?.coast;
@@ -3056,17 +3056,26 @@ export function paintCoastWaterMaterial(ctx, renderer, cached, scale, waterId, l
             if (!unpainted && current !== waterId && !replaceableIds.includes(current)) continue;
             const c0 = Math.floor((cached.bounds.x + px * step - coast.x) / 2);
             let water = false;
-            for (let dr = 0; dr < span && !water; dr++) {
+            let wetSand = 0;
+            for (let dr = 0; dr < span; dr++) {
                 const r = r0 + dr;
                 if (r < 0 || r >= coast.rows) continue;
                 for (let dc = 0; dc < span; dc++) {
                     const c = c0 + dc;
                     if (c < 0 || c >= coast.cols) continue;
-                    if (coast.classes[r * coast.cols + c] >= CLASS_FOAM) { water = true; break; }
+                    const cell = r * coast.cols + c;
+                    const cls = coast.classes[cell];
+                    if (cls >= CLASS_FOAM) water = true;
+                    if (span === 2 && cls === CLASS_WET && !coast.covered?.[cell] && !coast.reflect?.[cell]) {
+                        wetSand |= 1 << (dr * 2 + dc);
+                    }
                 }
             }
             if (unpainted && !water) continue;
-            data[o] = water ? waterId : (current === waterId ? landId : current);
+            const land = unpainted || current === waterId ? landId : current;
+            data[o] = water ? waterId : land;
+            data[o + 1] = water ? wetSand : 0;
+            data[o + 2] = water && wetSand ? land : 0;
             data[o + 3] = 255;
         }
     }

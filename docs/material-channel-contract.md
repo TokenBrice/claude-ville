@@ -133,11 +133,17 @@ not extend alpha beyond albedo.
 The committed pilot atlas has identical rectangles and padding in every channel:
 
 - `albedo`: original RGBA pixels.
-- `material`: R = stable material-class index; G/B reserved; A = albedo alpha.
+- `material`: R = stable material-class index; G/B reserved (the baked terrain map: see below); A = albedo alpha.
 - `emissive`: authored RGB with A as contribution; transparent black by default.
 - `occluder`: R = authored height (zero in the flat default), G = occlusion
   strength, B = surface code on surface-coded landmarks (*Occluder channel
   contract*, below), A = albedo alpha. `mode: none` is transparent.
+
+The baked terrain material map holds one RGBA texel per 4×4 world pixels.
+In mixed water blocks, bits 0–3 of G mark exposed 2×2 wet-sand cells in row
+order from the top left. B holds their original land class. Both scene
+shaders use B on the two wet-sand palette stops after swash, including each
+covered sample during a glide. Foam and water stops keep the class in R.
 
 The GPU samples the occluder companion separately from the raw material map.
 Material alpha also marks presence: opaque class zero is authored unlit, not

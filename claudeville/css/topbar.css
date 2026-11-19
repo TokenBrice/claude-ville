@@ -212,6 +212,19 @@
     border-top: 1px solid var(--line-1);
 }
 
+/* XP-6 — in a simulated or retold window the chip's details offer the way home. */
+.topbar__connection-return {
+    color: var(--gold);
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
+    letter-spacing: 1px;
+    text-decoration: none;
+}
+
+.topbar__connection-return:hover,
+.topbar__connection-return:focus-visible {
+    color: var(--gold-hi);
+}
+
 .topbar__spend-panel {
     width: 500px;
 }

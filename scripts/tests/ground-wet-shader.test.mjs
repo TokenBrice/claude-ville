@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { ART_RAMPS } from '../../claudeville/src/config/artPalette.js';
+import { paintCoastWaterMaterial } from '../../claudeville/src/presentation/character-mode/CoastBake.js';
 import { GROUND_WET_STEPS, GROUND_WET_SURFACES } from '../../claudeville/src/presentation/character-mode/GroundWeatherField.js';
 import {
     GROUND_WET,
@@ -26,6 +27,48 @@ const read = path => readFileSync(new URL(`../../claudeville/src/presentation/ch
 const GLSL = `${GROUND_WET_UNIFORMS_GLSL}\n${GROUND_WET_GLSL}\n${GROUND_WET_MIRROR_GLSL}`;
 const numbers = (source) => (source.match(/-?\d+\.\d{4}/g) || []).join(',');
 const functions = (source, re) => [...source.matchAll(re)].map(m => m[1]).sort();
+
+test('mixed coast blocks retain the land class for each exposed wet-sand quadrant', () => {
+    const wet = 1, foam = 2, water = 8, earth = 6, foliage = 4, timber = 2;
+    const bounds = { x: -12, y: -4 };
+    function paint(classes, material, extra = {}, alpha = 255) {
+        const data = Uint8ClampedArray.of(material, 0, 0, alpha);
+        const ctx = { canvas: { width: 1, height: 1 }, getImageData: () => ({ data }), putImageData() {} };
+        const coast = { ...bounds, cols: 2, rows: 2, classes, ...extra };
+        paintCoastWaterMaterial(ctx, { _coastBake: { coast } }, { bounds }, 0.25, water, earth, [earth, foliage]);
+        return [...data];
+    }
+    for (let mask = 1; mask < 15; mask++) {
+        const classes = Array.from({ length: 4 }, (_, q) => mask & (1 << q) ? wet : foam);
+        assert.deepEqual(paint(classes, foliage), [water, mask, foliage, 255]);
+        assert.deepEqual(paint(classes, water), [water, mask, earth, 255]);
+    }
+    const mixed = [wet, wet, wet, foam];
+    assert.deepEqual(paint(mixed, earth, { covered: [1, 0, 0, 0], reflect: [0, 2, 0, 0] }), [water, 4, earth, 255]);
+    assert.deepEqual(paint(mixed, timber), [timber, 0, 0, 255]);
+    assert.deepEqual(paint(mixed, 0, {}, 0), [water, 7, earth, 255]);
+    assert.deepEqual(paint([wet, wet, wet, wet], foliage), [foliage, 0, 0, 255]);
+    assert.deepEqual(paint([foam, 0, foam, 0], earth), [water, 0, 0, 255]);
+    // The first coast column starts in the right half of this material block.
+    assert.deepEqual(paint([wet, 0, foam, 0], foliage, { x: bounds.x + 2 }), [water, 2, foliage, 255]);
+});
+
+test('both scene shaders resolve wet sand after swash at rest and on each covered flight tap', () => {
+    for (const [file, crossBlockRead] of [
+        ['gpu/GpuWorldRenderer.js', 'texelFetch(u_materialMap, texel / 4, 0)'],
+        ['gpu/wgsl/scene.js', 'textureLoad(materialMap, texel / 4, 0)'],
+    ]) {
+        const shader = read(file);
+        assert.ok(shader.includes('sameColour(color, WET_SAND) || sameColour(color, WET_SAND_DARK)'));
+        const swash = shader.indexOf('applyCoastSwash(color, v_world)');
+        const land = shader.indexOf('wetSandMaterial(sidecar,');
+        assert.ok(swash >= 0 && swash < land && land < shader.indexOf('applyMaterialWeather(color, material, v_world)'));
+        const taps = shader.slice(shader.indexOf('c = applyCoastSwash(c, world)'), shader.indexOf('lighthouseDash = dominantDash'));
+        assert.ok(taps.includes('if (crossesBlock)') && taps.includes(crossBlockRead));
+        assert.ok(taps.includes('tapMaterial = wetSandMaterial(block, texel)'));
+        assert.ok(taps.includes('applyMaterialWeather(c, tapMaterial, world)') && taps.includes('applyAuthoredSunBand(c, tapMaterial)'));
+    }
+});
 
 test('the GLSL and WGSL twins carry the same functions and the same numbers', () => {
     const glslFns = functions(GLSL, /^(?:bool|vec[34]|ivec2|float)\s+(\w+)\(/gm);

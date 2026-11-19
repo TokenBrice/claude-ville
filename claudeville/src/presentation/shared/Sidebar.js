@@ -46,6 +46,7 @@ const SIDEBAR_EMPTY_COPY = Object.freeze({
     [VillagePhase.SYNCING]: Object.freeze({ title: 'LISTENING…', cta: 'Reading local sessions. Agents appear here as each one is read.' }),
     [VillagePhase.DEGRADED]: Object.freeze({ title: 'SOURCES UNREADABLE', cta: 'A local session source could not be read, so this list may be incomplete.' }),
     [VillagePhase.FAILED]: Object.freeze({ title: 'NOT OPENED', cta: 'The village did not finish opening; no sessions have been read.' }),
+    [VillagePhase.NO_RECORDED_SAMPLES]: Object.freeze({ title: 'NOTHING TO RETELL', cta: 'This window replays a recorded day; no trail samples were kept for this one.' }),
     [VillagePhase.READY_NO_PROVIDERS]: Object.freeze({ title: 'NO PROVIDERS FOUND', cta: 'No supported coding CLI is installed on this machine.' }),
     [VillagePhase.READY_EMPTY]: Object.freeze({ title: 'THE VILLAGE AWAITS', cta: 'Start a coding session to populate the village.' }),
     [VillagePhase.READY_LIVE]: Object.freeze({ title: 'THE VILLAGE AWAITS', cta: 'Start a coding session to populate the village.' }),

@@ -117,9 +117,10 @@
     white-space: nowrap;
 }
 .dashboard-attention__heading--quiet { color: var(--ink-2); }
+/* At 1280 the counts keep a scrollable 160 px; the legend gives way first. */
 .dashboard-attention__list {
     display: flex;
-    flex: 1;
+    flex: 1 1 160px;
     align-items: center;
     gap: 2px;
     min-width: 0;
@@ -192,8 +193,14 @@
     font: var(--fs-body)/var(--lh-body) var(--font-body);
     white-space: nowrap;
 }
+/* The least important token in the bar: it gives way first (the account
+   cards never shrink; the counts keep their basis), on two short lines. */
 .dashboard-attention__legend {
-    flex: none;
+    display: flex;
+    flex: 0 100 auto;
+    flex-direction: column;
+    min-width: 0;
+    overflow: hidden;
     color: var(--ink-3);
     font: var(--fs-body)/var(--lh-body) var(--font-body);
     white-space: nowrap;
@@ -1105,13 +1112,14 @@
 /* Codex quota card (tally bar): the account's window, its reset and its
    credits. LIMIT (Q3) rims the card in the rate-limit orchid; a quota that
    is merely high stays in ink. */
+/* Two lines inside the 40 px bar: the reading, then its facts. */
 .dashboard-quota {
     display: inline-flex;
     flex: none;
-    align-items: center;
-    gap: 6px;
-    height: 24px;
-    padding: 0 6px;
+    flex-direction: column;
+    justify-content: center;
+    min-height: 24px;
+    padding: 1px 6px;
     border: 1px solid var(--line-1);
     color: var(--ink-2);
     font: var(--fs-body)/var(--lh-body) var(--font-body);
@@ -1126,6 +1134,8 @@
 .dashboard-quota__used { color: var(--ink-1); font-variant-numeric: tabular-nums; }
 .dashboard-quota__fact,
 .dashboard-quota__age { color: var(--ink-3); }
+.dashboard-quota__head { display: flex; align-items: center; gap: 6px; height: 16px; }
+.dashboard-quota__facts > * + *::before { content: ' · '; }
 .dashboard-quota__gauge { display: inline-flex; gap: 1px; }
 .dashboard-quota__gauge > span { width: 3px; height: 8px; background: var(--line-2); }
 .dashboard-quota__gauge > span.on { background: var(--ink-2); }

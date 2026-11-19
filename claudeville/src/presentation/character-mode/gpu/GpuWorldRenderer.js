@@ -1356,9 +1356,9 @@ ivec2 albedoSize() {
 // are measured in record-local texels (v_texel), the slot or atlas origin is
 // added as an integer in the fetch, so a paged record is bit-identical to
 // its unpaged twin. The footprints are
-// fwidth taken at the top of main(), before any discard or record branch;
-// material and occluder sidecars stay nearest. Resting frames never
-// enter this path.
+// fwidth taken at the top of main(), before any discard or record branch.
+// Material and occluder sidecars stay nearest. Each wet-sand tap resolves
+// its own material. Resting frames never enter this path.
 uniform bool u_fatPixels;
 ${FAT_TAPS_GLSL}
 bool fatOn = false;
@@ -1925,9 +1925,7 @@ float seaSkyTake = 0.0;
 vec3 applyWaterState(vec3 color, vec2 px, out bool seaPath) {
     seaPath = false;
     seaSkyTake = 0.0;
-    // The material map is quarter resolution: a coast block can hold sand or
-    // foam pixels. Water stops are teal/blue-dominant; anything else keeps
-    // its land response.
+    // Only blue/teal albedo enters the water-stop path. Warm mirrors still take the water mood.
     if (color.b < color.r + 0.02 || color.g < color.r) {
         // 3.7 — a baked reflection of warm timber or sandstone is still water:
         // it takes the night and storm mood like the stops around it.
@@ -2082,6 +2080,16 @@ vec3 applyWaterState(vec3 color, vec2 px, out bool seaPath) {
     return applyWaterMood(color) * WATER_CAST;
 }
 
+// The terrain record's local texels are world pixels from the bake origin.
+// A wet cell may still contain a painted foam texel at the dithered edge.
+bool wetSandColour(vec3 color) { return sameColour(color, WET_SAND) || sameColour(color, WET_SAND_DARK); }
+float wetSandMaterial(vec4 block, ivec2 texel) {
+    int quadrant = ((texel.x >> 1) & 1) + (texel.y & 2);
+    if ((int(block.g * 255.0 + 0.5) & (1 << quadrant)) != 0) return floor(block.b * 255.0 + 0.5);
+    return block.a > 0.0 ? floor(block.r * 255.0 + 0.5) : v_material;
+}
+vec3 applyAuthoredSunBand(vec3 color, float material);
+
 // 4.6 — a terrain pixel a world-texel seam crosses on a flight frame: the
 // per-cell surface chain (3.6 swash, 3.2 weather, 3.1–3.10 water state) runs
 // on each tap's own authored texel at that texel's world point, and the
@@ -2090,12 +2098,15 @@ vec3 applyWaterState(vec3 color, vec2 px, out bool seaPath) {
 // instead of a 2- or 3-px cell, and exact-colour tests never see a blend.
 // The seaPath and lighthouse flags follow the dominant tap; waterHue reads
 // the blended colour before the water state, as the resting path does.
-vec3 fatTerrainSurface(float material, bool waterMaterial, out bool waterHue, out bool seaPath) {
+vec3 fatTerrainSurface(vec4 centerBlock, inout float material, out bool waterHue, out bool seaPath) {
     FatTaps t = fatAlbedoTaps;
     vec2 worldPerTexel = fatWorldFw / fatTexelFw;
     bool weather = u_weather.x > 0.001 || u_wetness > 0.001;
-    bool anyWater = waterMaterial;
-    vec4 surface = vec4(0.0);
+    ivec2 centerBlockPos = ivec2(fatAlbedoPix) / 4;
+    float baseMaterial = material;
+    bool anyWater = false;
+    vec3 surface = vec3(0.0);
+    vec3 sandKeyed = vec3(0.0);
     vec4 before = vec4(0.0);
     float dominant = -1.0;
     bool dominantPath = false;
@@ -2110,12 +2121,20 @@ vec3 fatTerrainSurface(float material, bool waterMaterial, out bool waterHue, ou
         vec3 c = fatTap[i].rgb;
         bool gone;
         c = mirrorStormColour(c, world, gone);
-        bool tapWater = waterMaterial || gone;
-        anyWater = anyWater || gone;
         surfGlowTexel = false;
         if (u_waterFx.w > 0.0) c = applyCoastSwash(c, world);
+        ivec2 texel = ivec2(t.base + fatTapOffset(i));
+        bool crossesBlock = any(notEqual(texel / 4, centerBlockPos));
+        float tapMaterial = baseMaterial;
+        if ((centerBlock.g > 0.0 || crossesBlock) && wetSandColour(c) && u_hasMaterialMap) {
+            vec4 block = centerBlock;
+            if (crossesBlock) block = texelFetch(u_materialMap, texel / 4, 0);
+            tapMaterial = wetSandMaterial(block, texel);
+        }
+        bool tapWater = materialNear(tapMaterial, 8.0) > 0.5 || gone;
+        anyWater = anyWater || tapWater;
         if (!tapWater) c = applyGrassGust(c, world);
-        if (weather && !tapWater) c = applyMaterialWeather(c, material, world);
+        if (weather && !tapWater) c = applyMaterialWeather(c, tapMaterial, world);
         before += vec4(c, 1.0) * w;
         bool tapPath = false;
         lighthouseDash = false;
@@ -2124,13 +2143,16 @@ vec3 fatTerrainSurface(float material, bool waterMaterial, out bool waterHue, ou
         if (tapWater) c = applyWaterState(c, world, tapPath);
         if (w > dominant) {
             dominant = w;
+            material = tapMaterial;
             dominantPath = tapPath;
             dominantDash = lighthouseDash;
             dominantOpen = seaOpenWater;
             dominantGlow = surfGlowTexel;
             dominantTake = seaSkyTake;
         }
-        surface += vec4(c, 1.0) * w;
+        // Key the sand separately so the other taps retain their original coverage and rounding.
+        if (tapMaterial != baseMaterial) sandKeyed += applyAuthoredSunBand(c, tapMaterial) * w;
+        else surface += c * w;
     }
     lighthouseDash = dominantDash;
     seaOpenWater = dominantOpen;
@@ -2139,7 +2161,7 @@ vec3 fatTerrainSurface(float material, bool waterMaterial, out bool waterHue, ou
     seaPath = dominantPath;
     vec3 pre = before.rgb / max(before.a, 1e-6);
     waterHue = anyWater && !(pre.b < pre.r + 0.02 || pre.g < pre.r);
-    return surface.a > 0.0 ? surface.rgb / surface.a : pre;
+    return before.a > 0.0 ? applyAuthoredSunBand(surface / before.a, baseMaterial) + sandKeyed / before.a : pre;
 }
 ${SUN_SHADE_GLSL}
 vec3 applyAuthoredSunBand(vec3 color, float material) {
@@ -2376,7 +2398,7 @@ void main() {
     // mathematically zero; rainy output remains byte-for-byte equivalent.
     // Water is never "wet": its storm/rain look is the water mood (mirrored
     // by the outer ocean), so the island's sea and the ocean stay one value.
-    bool waterMaterial = materialNear(material, 8.0) > 0.5;
+    bool waterMaterial;
     bool seaPath = false;
     // V6 — the water cap holds the sea's own stops. A sprite record carrying
     // the water material (a red buoy) and a baked full-colour mirror (3.7)
@@ -2385,21 +2407,23 @@ void main() {
     bool waterHue = false;
     if (u_terrainBatch && fatOn && fatSeam(fatAlbedoTaps)) {
         // 4.6 — a seam pixel on a flight frame runs the chain below per tap.
-        color = fatTerrainSurface(material, waterMaterial, waterHue, seaPath);
+        color = fatTerrainSurface(sidecar, material, waterHue, seaPath);
+        waterMaterial = materialNear(material, 8.0) > 0.5;
     } else {
         // 3.7 — a mirror texel the rain gave back to the water is water.
         bool mirrorGone;
         color = mirrorStormColour(color, v_world, mirrorGone);
-        waterMaterial = waterMaterial || mirrorGone;
         // 3.6 — the swash laps the baked shore before any weather darkening.
         if (u_terrainBatch && u_waterFx.w > 0.0) color = applyCoastSwash(color, v_world);
+        if (u_terrainBatch && sidecar.g > 0.0 && wetSandColour(color)) material = wetSandMaterial(sidecar, ivec2(v_texel));
+        waterMaterial = materialNear(material, 8.0) > 0.5 || mirrorGone;
         // W6.11 — the grass gust course steps the authored albedo first.
         if (u_terrainBatch && !waterMaterial) color = applyGrassGust(color, v_world);
         if (!waterMaterial && (u_weather.x > 0.001 || u_wetness > 0.001)) color = applyMaterialWeather(color, material, v_world);
         waterHue = waterMaterial && !(color.b < color.r + 0.02 || color.g < color.r);
         if (waterMaterial) color = applyWaterState(color, v_world, seaPath);
+        color = applyAuthoredSunBand(color, material);
     }
-    color = applyAuthoredSunBand(color, material);
     // SD-2 — a receiver steps down under the sun's shade, before the grade
     // (so shade takes the hour's tint); a sun trail the field already covers
     // is not drawn. u_shadeRect.w 0 = no field this frame.

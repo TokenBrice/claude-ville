@@ -278,6 +278,8 @@ export function bootStatusText(state) {
  * contract exists to remove.
  */
 export function linkStatusText(state, now = Date.now()) {
+    // XP-2 — a recorded day replayed in its own window is never live.
+    if (state?.retold) return 'RETOLD';
     if (state?.source === 'simulator') return 'SIMULATED';
     const link = state?.link || {};
     if (!link.lastSnapshotAt) return 'SYNCING';
