@@ -58,6 +58,8 @@ import { ChimneySmoke } from './ChimneySmoke.js';
 import { setPennantWeather } from './PixelPennant.js';
 import { openGroundTiles } from './AmbientGround.js';
 import { TERRAIN_HAZE_COURSES, groundWeatherWanted, installGroundBake } from './GroundBake.js';
+import { releaseFrameShade } from './RakingLight.js';
+import { releaseShadeField, shadeFieldBufferBytes } from './ShadeField.js';
 import { OCEAN_HORIZON_WORLD_Y, coastDistanceProbe, drawCanvasWaterMood, drawOuterOcean, registerCoastBake, riverCurrentAt } from './CoastBake.js';
 import { frostQuarterOf, snowBucketOf } from './GroundState.js';
 import {
@@ -156,6 +158,8 @@ import {
     unifiedRendererResourceAccounting,
 } from './CanvasBudget.js';
 
+// Keep the field through a quick return so midday shade is already in the first frame.
+const SHADE_SUSPEND_GRACE_MS = 2000;
 // #8 — cadence of harbor reconciliation while the World loop is stopped.
 const HARBOR_SEMANTICS_IDLE_MS = 1000;
 const WATER_FRAME_STEP = 0.03;
@@ -2495,7 +2499,7 @@ export class IsometricRenderer {
     setWorldModeActive(active) {
         const nextActive = Boolean(active);
         if (this._worldModeActive === nextActive) {
-            if (!nextActive) this._suspendWorldModeResources();
+            if (!nextActive) this._suspendWorldModeResources({ deferShade: true });
             else void this._beginWorldModeResume();
             return;
         }
@@ -2506,7 +2510,7 @@ export class IsometricRenderer {
         } else {
             this._worldResourceGeneration++;
             this._stopLoop();
-            this._suspendWorldModeResources();
+            this._suspendWorldModeResources({ deferShade: true });
         }
     }
 
@@ -2515,7 +2519,7 @@ export class IsometricRenderer {
         this._worldResourceGeneration++;
         this._stopLoop();
         if (this._worldResourcesSuspended) this.assets?.suspend?.();
-        this.releaseVolatileCaches();
+        this.releaseVolatileCaches({ deferShade: true });
     }
 
     resumeFromVisibility({ active = true } = {}) {
@@ -2561,7 +2565,19 @@ export class IsometricRenderer {
         return this._beginWorldModeResume();
     }
 
-    releaseVolatileCaches() {
+    _releaseWorldShade() {
+        clearTimeout(this._shadeReleaseTimer);
+        this._shadeReleaseTimer = null;
+        releaseFrameShade(this);
+        releaseShadeField(this);
+    }
+
+    releaseVolatileCaches({ deferShade = false } = {}) {
+        if (deferShade && this._shadeFieldState?.ready) {
+            this._shadeReleaseTimer ??= setTimeout(() => this._releaseWorldShade(), SHADE_SUSPEND_GRACE_MS);
+        } else {
+            this._releaseWorldShade();
+        }
         this._releaseTerrainArtifactWork();
         releaseCanvasBackingStore(this.terrainCache);
         this.terrainCache = null;
@@ -2639,13 +2655,13 @@ export class IsometricRenderer {
     // `keepSurfaces` (a context restore): the viewport canvases stay sized, so
     // the page's loading bands show through the cleared surfaces while the
     // resources rebuild, never a black 0x0 opaque canvas.
-    _suspendWorldModeResources({ keepSurfaces = false } = {}) {
+    _suspendWorldModeResources({ keepSurfaces = false, deferShade = false } = {}) {
         this._cancelFrameFailureRecovery();
         // Always forward suspension so an in-flight decoded-asset reload is
         // aborted even when the renderer already released its own surfaces.
         this.assets?.suspend?.();
         if (this._worldResourcesSuspended) return;
-        this.releaseVolatileCaches();
+        this.releaseVolatileCaches({ deferShade });
         for (const sprite of this.agentSprites.values()) sprite?.releaseRenderResources?.();
         AgentSprite.releaseSharedCaches?.();
         this.compositor?.releaseCache?.();
@@ -2677,6 +2693,8 @@ export class IsometricRenderer {
             || (typeof document !== 'undefined' && document.visibilityState === 'hidden')
         ) return Promise.resolve(false);
 
+        clearTimeout(this._shadeReleaseTimer);
+        this._shadeReleaseTimer = null;
         const generation = this._worldResourceGeneration;
         if (this._worldResumePromise && this._worldResumeGeneration === generation) {
             return this._worldResumePromise;
@@ -11307,16 +11325,19 @@ export class IsometricRenderer {
             gpuAgentEmissiveAtlas: canvasPixelCount(this._gpuAgentEmissiveAtlas),
             semanticGround: canvasPixelCount(this._semanticGroundCanvas),
             groundCueAtlas: canvasPixelCount(this._groundCueRecorder?.atlas?.canvas),
+            shadeField: canvasPixelCount(this._shadeFieldState?.canvas),
         };
         const volatilePixels = Object.values(volatile).reduce((sum, value) => sum + value, 0);
         const visibleCanvasPixels = canvasPixelCount(this.canvas);
         const overlayCanvasPixels = canvasPixelCount(this.overlayCanvas);
         const retainedAssetPixels = this.foliageRenderer?.getRetainedPixels?.() || 0;
+        const shadeBufferBytes = shadeFieldBufferBytes(this);
         const resources = unifiedRendererResourceAccounting({
             visibleCanvasPixels: visibleCanvasPixels + overlayCanvasPixels,
             volatileCanvasPixels: volatilePixels,
             retainedCanvasPixels: retainedAssetPixels,
             gpu: gpuResources,
+            cpuDerivedEstimates: { 'shadeField.buffers': shadeBufferBytes },
         });
         return {
             budgets: CANVAS_BUDGET,
@@ -11330,6 +11351,7 @@ export class IsometricRenderer {
             visibleCanvasPixels,
             volatile,
             volatilePixels,
+            shadeFieldBufferBytes: shadeBufferBytes,
             retainedAssetPixels,
             domCanvasPixels: canvasPixelCount(this.fxCanvas) + overlayCanvasPixels,
             resources,

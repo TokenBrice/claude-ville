@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { MAP_SIZE, TILE_WIDTH, TILE_HEIGHT } from '../../claudeville/src/config/constants.js';
 import {
     GROUND_WEATHER_COLS,
@@ -12,7 +13,7 @@ import {
     packGroundWeather,
     validGroundWeather,
 } from '../../claudeville/src/presentation/character-mode/GroundWeatherField.js';
-import { validGroundArtifact } from '../../claudeville/src/presentation/character-mode/GroundBake.js';
+import { bakeGround, validGroundArtifact } from '../../claudeville/src/presentation/character-mode/GroundBake.js';
 
 // Item 5 — the ground weather field: RGBA8 on the ground bake's grid.
 
@@ -61,6 +62,56 @@ test('no land and off-grid read the neutral texel', () => {
     }
     assert.deepEqual(GROUND_WEATHER_NEUTRAL, [255, 0, 128, 0]);
     assert.equal(decodeGroundWeather(GROUND_WEATHER_NEUTRAL).land, false);
+});
+
+function groundBakeFixture(t) {
+    globalThis.ImageData = class {
+        constructor(width, height) { this.data = new Uint8ClampedArray(width * height * 4); }
+    };
+    globalThis.document = { createElement: () => ({ getContext: () => ({ putImageData() {} }) }) };
+    t.after(() => {
+        delete globalThis.ImageData;
+        delete globalThis.document;
+    });
+    return {
+        _coastField: { key: '0:0:0:0:0:0', signedDistance: (x, y) => Math.hypot(x - 20, y - 20) - 5 },
+        townSquareTiles: new Set(['20,20']),
+        world: { buildings: new Map([['archive', { type: 'archive', position: { tileX: 21, tileY: 20 }, width: 2, height: 2 }]]) },
+        scenery: { getTreeProps: () => [{ species: 'oak', size: 'large', tileX: 19, tileY: 20 }] },
+    };
+}
+
+test('weather bake adds only two Float32 planes to the ground bake', t => {
+    const renderer = groundBakeFixture(t);
+    const FloatPlane = globalThis.Float32Array;
+    let allocations = 0;
+    globalThis.Float32Array = new Proxy(FloatPlane, {
+        construct(target, args) {
+            if (args[0] === n) allocations++;
+            return new target(...args);
+        },
+    });
+    t.after(() => { globalThis.Float32Array = FloatPlane; });
+    bakeGround(renderer);
+    const dryAllocations = allocations;
+    allocations = 0;
+    const { weather } = bakeGround(renderer, true);
+    assert.ok(validGroundWeather(weather));
+    assert.equal(allocations - dryAllocations, 2, 'the consumed eave and sun-shade planes hold the weather outputs');
+});
+
+test('persisted summer and winter weather bytes match the non-aliased bake', t => {
+    const renderer = groundBakeFixture(t);
+    // SHA-256 from the pre-PF-5 bake over grass, sand, dirt, road, plaza and off-island texels.
+    const reference = {
+        summer: 'c3f128d37c1d06798692485a5e41a64445ce61b7997ecd4c5d3fd02e74b1775e',
+        winter: '400b3859fc6c658cf19de7da32b44dc9930070cbf2dede1632cd4aa6dd63a64d',
+    };
+    for (const [season, expected] of Object.entries(reference)) {
+        renderer._terrainSeason = season;
+        const { field } = bakeGround(renderer, true);
+        assert.equal(createHash('sha256').update(field.weather.data).digest('hex'), expected, season);
+    }
 });
 
 test('the weather field is optional in a ground artifact, but a wrong-sized one is never valid', () => {

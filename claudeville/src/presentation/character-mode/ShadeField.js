@@ -588,7 +588,7 @@ export function createShadeFieldBuild({ rect = shadeFieldRect(), sweep, facets =
     let facetRow = -1;
     let facetPlan = null;
     let latheIndex = 0;
-    const job = { field: null, done: false, cells: 0 };
+    const job = { field: null, done: false, cells: 0, backing: [out, seen?.height, seen?.facet] };
 
     const planFacet = (f) => {
         let minX = Infinity;
@@ -1175,8 +1175,12 @@ function gatherCasters(renderer) {
 }
 
 function idle(callback) {
-    if (typeof requestIdleCallback === 'function') return requestIdleCallback(callback, { timeout: IDLE_TIMEOUT_MS });
-    return setTimeout(() => callback(null), 32);
+    if (typeof requestIdleCallback === 'function') {
+        const handle = requestIdleCallback(callback, { timeout: IDLE_TIMEOUT_MS });
+        return () => globalThis.cancelIdleCallback?.(handle);
+    }
+    const handle = setTimeout(() => callback(null), 32);
+    return () => clearTimeout(handle);
 }
 
 function stateFor(renderer) {
@@ -1189,7 +1193,7 @@ function stateFor(renderer) {
         // What is up: `{ key, fieldKey, field, canvas, revision }`.
         ready: null,
         job: null,
-        scheduled: false,
+        cancelIdle: null,
         // SD-2 — the view plane (`{ key, facet, bounds }`, good while the
         // casters hold) and the receivers' texels.
         view: null,
@@ -1304,11 +1308,14 @@ function runJob(state, budgetMs) {
 }
 
 function schedule(state, renderer) {
-    if (state.scheduled) return;
-    state.scheduled = true;
-    idle((deadline) => {
-        state.scheduled = false;
+    if (state.cancelIdle) return;
+    state.cancelIdle = idle((deadline) => {
+        state.cancelIdle = null;
         if (renderer._shadeFieldState !== state || !state.want) return;
+        if (renderer._visibilityPaused || renderer._worldModeActive === false) {
+            state.want = null;
+            return;
+        }
         const room = deadline && !deadline.didTimeout ? Math.min(IDLE_SLICE_MS, Math.max(1, deadline.timeRemaining() - 1)) : IDLE_SLICE_MS;
         planJob(state, renderer);
         runJob(state, room);
@@ -1378,9 +1385,27 @@ export function buildShadeFieldFor(renderer, shade) {
 export function releaseShadeField(renderer) {
     const state = renderer?._shadeFieldState;
     if (!state) return;
+    renderer._shadeFieldState = null;
+    state.cancelIdle?.();
     if (state.canvas) {
         state.canvas.width = 0;
         state.canvas.height = 0;
     }
-    renderer._shadeFieldState = null;
+    // Both resident backends cache the uploaded array alongside the GPU texture.
+    const world = renderer.gpuWorld;
+    const receiver = world?._textureEntries?.get('field:shade');
+    if (receiver) receiver.source = null;
+    if (world?._sunShade) world._sunShade.texture = null;
+}
+
+export function shadeFieldBufferBytes(renderer) {
+    const state = renderer._shadeFieldState;
+    if (!state) return 0;
+    const field = state.ready?.field;
+    const planes = [field?.data, field?.texels, state.texels, state.view?.facet, state.image?.data,
+        ...(state.job?.build?.backing || []), ...(state.job?.viewBuild?.backing || [])];
+    const buffers = new Set(planes.map(plane => plane?.buffer).filter(Boolean));
+    let bytes = 0;
+    for (const buffer of buffers) bytes += buffer.byteLength;
+    return bytes;
 }

@@ -1601,11 +1601,7 @@ export class AtmosphereState {
     }
 
     update({ now = null, motionScale = null } = {}) {
-        const baseNow = now
-            ? new Date(now.getTime ? now.getTime() : now)
-            : this._frozenDate
-                ? new Date(this._frozenDate.getTime())
-                : this.nowProvider();
+        const baseNow = this._frozenDate ?? now ?? this.nowProvider();
         this._lastSnapshot = createAtmosphereSnapshot({
             now: baseNow,
             motionScale,
@@ -1686,7 +1682,7 @@ export class AtmosphereState {
     }
 
     freeze() {
-        const snapshot = this.snapshot();
+        const snapshot = this._lastSnapshot ?? this.snapshot();
         this._frozenDate = new Date(snapshot.effectiveDate.getTime());
         return this.snapshot();
     }

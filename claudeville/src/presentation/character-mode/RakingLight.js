@@ -74,6 +74,7 @@ let _cast = null;
 let _shadeTier = true;
 let _frameCast = null;
 let _frameShade = null;
+let _frameShadeRenderer = null;
 // SD-2 — the frame's receiver steps while the resident path reads the field
 // (null: the look off, Canvas, MINIMAL, or the texels not built yet).
 let _frameReceivers = null;
@@ -243,6 +244,7 @@ export function setFrameCastLighting(cast, renderer = null, canvas = false, wate
         receiverTier = !canvas && effectBudgetMode('sundial-receivers', level) === 'on';
     }
     _frameCast = cast || null;
+    _frameShadeRenderer = renderer;
     _frameReceivers = null;
     const shade = cast?.shade || null;
     // No shade to resolve and no field to let go of: nothing to do.
@@ -259,6 +261,16 @@ export function setFrameCastLighting(cast, renderer = null, canvas = false, wate
         receivers: Boolean(receivers),
     });
     if (receivers && _frameShade?.field?.texels) _frameReceivers = receivers;
+}
+
+export function releaseFrameShade(renderer) {
+    if (_frameShadeRenderer !== renderer) return;
+    _frameShadeRenderer = null;
+    _frameCast = null;
+    _frameShade = null;
+    _frameReceivers = null;
+    _sunShadeHeld = null;
+    _sunShadeFeed.texture = null;
 }
 
 /**
@@ -284,6 +296,7 @@ export function sundialShadeFor(atmosphere) {
 export function frameSunShade() {
     if (!_frameReceivers) {
         _sunShadeHeld = null;
+        _sunShadeFeed.texture = null;
         return null;
     }
     let field = _frameShade.field;

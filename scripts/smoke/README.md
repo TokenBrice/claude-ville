@@ -47,6 +47,8 @@ These checks complement `node:test`. Most are deterministic Node programs; brows
 
 Executable smokes exit nonzero on failed assertions or budgets. Temp-backed scripts clean unique fixture directories on normal success/failure paths.
 
+The WebGPU parity cases `rain-noon` and `wet-night` start on July 15, 2026. Their reports record the frozen frame's date and effect inputs. The weather checks require rain instances or a bound wet-ground field with wetness and puddles when the corresponding looks are enabled.
+
 ## Change-to-check matrix
 
 | Change | Focused checks |
