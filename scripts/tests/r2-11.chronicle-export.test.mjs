@@ -8,6 +8,7 @@ import {
     csvEscapeCell,
 } from '../../claudeville/src/presentation/shared/ChroniclePanel.js';
 import { ChronicleEventKind, chronicleDateKey, summarizeDay } from '../../claudeville/src/application/ChronicleLog.js';
+import { SpendLedger } from '../../claudeville/src/application/SpendLedger.js';
 
 const DAY = chronicleDateKey();
 
@@ -47,19 +48,28 @@ test('Markdown export is a paste-ready selected-day recap with optional spend', 
     assert.doesNotMatch(markdown, /```|\{\s*"/);
 });
 
-test('historical Markdown export omits the non-retained spend summary', () => {
-    const historical = new Date();
-    historical.setDate(historical.getDate() - 1);
-    const historicalKey = chronicleDateKey(historical);
-    const events = [event({ ts: localTimestamp(-1) })];
-    const markdown = buildChronicleMarkdown({
-        dateKey: historicalKey,
-        events,
-        summary: summarizeDay(events),
-        spend: { tokens: 99, cacheRead: 88, cost: 0.77, costLabel: 'Est. cost' },
-    });
-
-    assert.doesNotMatch(markdown, /Spend summary|New tokens|Cache reads|Est\. cost/);
+test('SG-4: both historical exports disclose coverage, missing days and recorded zero', () => {
+    const coverageSince = localTimestamp(-1);
+    const dateKey = chronicleDateKey(coverageSince);
+    const data = { dateKey, spend: {
+        tokens: 0, cacheRead: 0, cost: 0, costLabel: 'Recorded cost', coverageSince, historical: true,
+    } };
+    const markdown = buildChronicleMarkdown(data);
+    const csv = buildChronicleCsv(data);
+    assert.match(markdown, /\| New tokens \| 0 \|/);
+    assert.match(markdown, /\| Recorded cost \| \$0\.00 \|/);
+    assert.match(markdown, /\| Coverage began \| 09:05 \|/);
+    assert.match(csv, new RegExp(`spend,${dateKey},,+New tokens,0`));
+    assert.match(csv, new RegExp(`spend,${dateKey},,+Coverage began,${coverageSince}`));
+    for (const output of [markdown, csv]) {
+        assert.match(output, /this browser/);
+        assert.match(output, /Per-model totals are unavailable/);
+    }
+    for (const build of [buildChronicleMarkdown, buildChronicleCsv]) {
+        const missing = build({ dateKey });
+        assert.match(missing, /No spend record was saved for this day/);
+        assert.doesNotMatch(missing, /New tokens|Recorded cost/);
+    }
 });
 
 test('CSV quotes special cells and neutralizes formula-leading cells', () => {
@@ -88,13 +98,13 @@ test('CSV quotes special cells and neutralizes formula-leading cells', () => {
     assert.match(csv, /\r\n$/);
 });
 
-test('export data reads the complete currently selected day and hides historical spend', async () => {
-    const today = chronicleDateKey();
-    const historical = new Date();
-    historical.setDate(historical.getDate() - 1);
-    const historicalKey = chronicleDateKey(historical);
+test('SG-4: the last selected day wins a slow spend read and its export reuses the displayed record', async () => {
+    const historicalKey = chronicleDateKey(localTimestamp(-1));
+    const olderKey = chronicleDateKey(localTimestamp(-2));
     const calls = [];
+    const pending = new Map();
     const log = {
+        async readDayPage() { return { events: [], summary: summarizeDay([]), totalCount: 0 }; },
         async readDay(dateKey) {
             calls.push(dateKey);
             return Array.from({ length: 101 }, (_, index) => event({
@@ -103,12 +113,72 @@ test('export data reads the complete currently selected day and hides historical
         },
     };
     const panel = new ChroniclePanel({
+        modal: { isRequestCurrent: request => request === 1 },
         chronicleLog: log,
-        spendLedger: { date: today, today: { tokens: 42, cacheRead: 7, cost: 0.01 } },
+        spendLedger: { readDay: dateKey => new Promise(resolve => pending.set(dateKey, resolve)) },
     });
+    panel._request = 1;
+    panel._selectedDateKey = DAY;
+    const pages = [];
+    panel._renderPage = (page, dateKey) => pages.push({ page, dateKey });
+    const oldRead = panel._showDate(olderKey, 1);
+    const latestRead = panel._showDate(historicalKey, 1);
+    pending.get(historicalKey)({ tokens: 30, cacheRead: 200, cost: 0.5, largest: { kind: 'project', key: '/repo/two/shared' } });
+    await latestRead;
+    pending.get(olderKey)(null);
+    await oldRead;
+    assert.deepEqual(pages.map(page => page.dateKey), [historicalKey]);
 
     const data = await panel._readExportData(historicalKey);
     assert.deepEqual(calls, [historicalKey]);
     assert.equal(data.events.length, 101);
-    assert.equal(data.spend, null);
+    assert.strictEqual(data.spend, pages[0].page.spend);
+    for (const build of [buildChronicleMarkdown, buildChronicleCsv]) {
+        assert.match(build(data), /Largest project by new tokens.+\/repo\/two\/shared/);
+    }
+
+    const cancelledRead = panel._showDate(olderKey, 1);
+    await panel._showDate(historicalKey, 1);
+    pending.get(olderKey)(null);
+    await cancelledRead;
+    assert.equal(panel._selectedDateKey, historicalKey);
+});
+
+test('R1-1: a spend read failure leaves the selected timeline and its exports available', async t => {
+    const dateKey = chronicleDateKey(localTimestamp(-1));
+    const events = [event({ ts: localTimestamp(-1) })];
+    const panel = new ChroniclePanel({
+        modal: { isRequestCurrent: request => request === 1 },
+        chronicleLog: { async readDay() { return events; } },
+        spendLedger: new SpendLedger(null, {
+            store: { async get() { throw new Error('IndexedDB meta read failed'); } },
+        }),
+    });
+    panel._request = 1;
+    let rendered;
+    panel._renderPage = page => { rendered = page; };
+    await panel._showDate(dateKey, 1);
+    assert.equal(panel._selectedDateKey, dateKey);
+    assert.deepEqual(rendered.events, events);
+
+    const { document, Node } = globalThis;
+    t.after(() => Object.assign(globalThis, { document, Node }));
+    globalThis.Node = class {};
+    globalThis.document = {
+        createElement: tag => ({ tag, classList: { add() {} }, append(text) { this.textContent = text; } }),
+        createTextNode: text => text,
+    };
+    const rows = panel._spendNodes(rendered.spend, dateKey);
+    assert.deepEqual(rows.map(({ tag, textContent }) => [tag, textContent]), [
+        ['p', 'Spend ledger · Could not read the spend ledger for this day.'],
+    ]);
+
+    const data = await panel._readExportData(dateKey);
+    assert.strictEqual(data.spend, rendered.spend);
+    for (const build of [buildChronicleMarkdown, buildChronicleCsv]) {
+        const output = build(data);
+        assert.match(output, /Could not read the spend ledger for this day/);
+        assert.match(output, /Ada committed Ship the chronicle/);
+        assert.doesNotMatch(output, /No spend record was saved|New tokens/);
+    }
 });

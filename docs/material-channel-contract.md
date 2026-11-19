@@ -431,7 +431,7 @@ fields' bytes and revisions (light records and tile index, sea gust, footprint,
 puddle mask) come from `gpu/GpuFrameState.js` (below). Every cache
 entry counts its real bytes (`width x height x bytesPerTexel`), so the 160 MiB
 cached-source ceiling and Shift-D see an R8 field at a quarter of an RGBA
-canvas. The ceiling was 48 MiB until B.2; every frame already samples
+canvas. The ceiling was 48 MiB until B.2; the measured frames then sampled
 105-137 MB of sources (terrain bake 25 MB, four world-pilot pages 64 MB,
 ground fields ~10.5 MB, agent atlases 6-30 MB), so a 48 MiB cap was
 permanently exceeded and only evicted what the camera had just left.
@@ -543,9 +543,8 @@ three ways; the record's flags choose the reading:
 - **Deviation from plan B.2 (world-pilot stays unpacked).** B.2 asked for the
   world-pilot channel atlases to be packed like the agent atlas. They are not:
   `world-pilot` holds all nine landmarks, whose occluder page carries 2.3
-  surface codes in B, so it keeps four separate 2048² channel pages (albedo,
-  material, emissive, occluder: 16 MB of GL texture each). Packing it would
-  have saved one page (~16.8 MB) at the cost of the surface channel.
+  surface codes in B, so it keeps four separate 2026 × 1801 RGBA8 pages for albedo,
+  material, emissive and occluder (13.92 MiB per GPU texture).
 - B.2 memory rules (agents): `packGeometryPixels` (`GpuSceneBuilder.js`)
   packs one canvas per material + occluder sidecar pair
   (`AgentSprite` packed-geometry cache, 16 M px; a frame crop packs inline, a

@@ -253,6 +253,24 @@ test('HTTP fallback and WebSocket delta hydration preserve F1, F2, and F3', asyn
     assert.equal(wsUpdate.sessions[0].turnStartedAt, 10);
     assert.deepEqual(wsUpdate.sessions[0].workingSet, [file('src/router.ts', 'write')]);
     assert.deepEqual(wsUpdate.collisions, collisions);
+
+    const mixed = { usd: 1.42, source: 'mixed' };
+    const registryWait = {
+        ...sessionsPayload[0], sessionId: 'lead', provider: 'claude', cost: mixed, estimatedCost: mixed.usd,
+        signalSource: 'registry', signalCertainty: 'observed', turnState: 'tool_pending', waitReason: 'approval',
+        pendingTool: 'Bash', lastTool: 'Bash', lastToolInput: 'npm test', promptDetail: 'npm test',
+    };
+    manager.handleWebSocketMessage({ sessions: [registryWait] });
+    const lead = world.agents.get('lead');
+    assert.equal(lead.signalSource, 'registry');
+    assert.equal(lead.promptDetail, 'npm test');
+    assert.equal(lead.cost.source, 'mixed');
+    assert.equal(lead.cost.usd, lead.estimatedCost);
+    manager.handleWebSocketMessage({ sessions: [{ ...registryWait, promptDetail: 'npm run build' }] });
+    assert.equal(lead.promptDetail, 'npm run build');
+    manager.handleWebSocketMessage({ sessions: [{ ...registryWait, signalSource: '__proto__', promptDetail: undefined }] });
+    assert.equal(lead.signalSource, null);
+    assert.equal(lead.promptDetail, null);
 });
 
 const ompWorkingSetFixture = fs.readFileSync(

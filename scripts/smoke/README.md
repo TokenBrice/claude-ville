@@ -9,7 +9,7 @@ These checks complement `node:test`. Most are deterministic Node programs; brows
 | `adapters.mjs` | Claude discovery, parent linkage, and team membership. | Temp dir; no dependencies/server | <1 s | `validate:full` |
 | `astra-height-smoke.mjs` | GPU pixel readback proves 2.2's footprint march: a footprint taller than the ray shadows a ground receiver from a raised lamp, a short one does not; authored-unlit material stays darker than the metal fallback. Runs on an isolated server unless `CLAUDEVILLE_URL` is set; Chromium through `support/chromium.mjs`. | `node_modules`, Playwright, isolated socket or `CLAUDEVILLE_URL` | <1 s | None |
 | `architecture.mjs` | Layer boundaries and adapter-helper allowlists. | No dependencies/server | <1 s | `verify:architecture` |
-| `boot-contract.mjs` | HTML, APIs, and WebSocket init/delta/resync. | Temp dir; isolated socket | Seconds | `verify:server` |
+| `boot-contract.mjs` | HTML, APIs, WebSocket init/delta/resync, and Linux registry residency and wait updates. | Temp dir; isolated socket | Seconds | `verify:server` |
 | `browser-lifecycle.mjs` | Repeated mode switches preserve lifecycle and resource invariants. `--count` sets the switches (default 250; `--count=20` for a short run). Runs on an isolated server unless `--url` or `CLAUDEVILLE_URL` names one; Chromium through `support/chromium.mjs`. | `node_modules`, Playwright, isolated socket or `--url`/`CLAUDEVILLE_URL` | Minutes | None |
 | `claude-transcript-aggregate.mjs` | Incremental transcript aggregation and bounded rereads. | Temp dir; no server | <1 s | `validate:full` |
 | `codex-warm-discovery.mjs` | Warm discovery caches while detecting changes. | Temp dir; no server | <1 s | `validate:full` |

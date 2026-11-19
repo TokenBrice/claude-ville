@@ -2434,6 +2434,15 @@ export class HarborTraffic {
         return null;
     }
 
+    // XP-4 — a ship's world rect, hull to mast head (its class's label lift),
+    // for the hover plate to keep clear of.
+    shipWorldBounds(ship) {
+        if (!ship) return null;
+        const radius = harborShipCollisionRadius(ship);
+        const lift = Number(harborShipClass(ship)?.labelLift) || 48;
+        return { left: ship.x - radius, top: ship.y - lift, right: ship.x + radius, bottom: ship.y + 8 };
+    }
+
     setHoveredShip(shipId) {
         this.hoveredShipId = shipId || null;
     }

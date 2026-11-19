@@ -6,7 +6,7 @@ import { BUILDING_DEFS, normalizeBuildingType } from '../../config/buildings.js'
 import { THEME, STATUS_VISUALS, PROVIDER_HUES, WORLD_BODY_FONT_11, WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
 import { packGeometryPixels } from './gpu/GpuSceneBuilder.js';
 import { agentSignature, drawAgentSignature, clearAgentSignatureCache, getModelVisualIdentity, providerPaletteKey } from '../shared/ModelVisualIdentity.js';
-import { getTeamColor } from '../shared/TeamColor.js';
+import { agentTrimAccent } from '../shared/TeamColor.js';
 import { SpriteSheet, dirFromVelocity, resolveActionFrame, WALK_FRAMES, IDLE_FRAMES, DIRECTIONS, DEFAULT_CELL } from './SpriteSheet.js';
 import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
 import { RITUAL_GESTURE_PERIOD_MS, SCENIC_POINT_POSTURE } from './RitualConductor.js';
@@ -7479,16 +7479,11 @@ export class AgentSprite {
         return gate && !gate.draw ? null : accent;
     }
 
-    // The team accent (#rrggbb) used as the secondary trim/sash palette swap
-    // target, or null when the agent is not part of any team (skip swap).
+    // The sash accent (#rrggbb) used as the secondary trim palette swap
+    // target: the teammate's harness colour, else the team hash, else null
+    // when the agent is not part of any team (skip swap).
     _teamTrimAccent() {
-        const name = this.agent?.teamName;
-        if (!name) return null;
-        const accent = getTeamColor(name)?.accent;
-        if (!accent || typeof accent !== 'string') return null;
-        // Only return well-formed hex; getTeamColor falls back to a neutral grey
-        // when teamName is empty, which we already filter above by truthiness.
-        return /^#?[0-9a-fA-F]{6}$/.test(accent.trim()) ? accent.trim() : null;
+        return agentTrimAccent(this.agent);
     }
 
     // Archive fade progress in [0, 1]. IsometricRenderer sets

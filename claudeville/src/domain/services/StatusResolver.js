@@ -97,6 +97,10 @@ export function isWatchingOnPoll(session) {
         && kinds.every(kind => kind === 'bash' || kind === 'monitor');
 }
 
+export function normalizeSignalSource(source) {
+    return ['hook', 'registry', 'transcript'].includes(source) ? source : null;
+}
+
 // Fallback for providers with no turn state: the old name-and-punctuation
 // guess. Weak, but better than reporting nothing for Gemini/Grok/Kimi.
 function looksLikeAskWithoutTurnState(session, baseStatus) {

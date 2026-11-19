@@ -8,6 +8,7 @@ import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { startIsolatedServer } from './support/isolated-server.mjs';
+import { resolveAgentStatus } from '../../claudeville/src/domain/services/StatusResolver.js';
 import { makeTempDir } from '../tests/support/tmp.mjs';
 
 const REQUEST_TIMEOUT_MS = 2_000;
@@ -98,7 +99,22 @@ function createFixture(home) {
   touch(historyFile, now);
   touch(sessionFile, now);
 
+  const registryFile = path.join(claudeDir, 'sessions', process.pid + '.json');
+  if (process.platform === 'linux' && fs.existsSync('/proc/self/stat')) {
+    const quietAt = now - 5 * 60_000;
+    const quietFile = path.join(projectDir, 'quiet-main.jsonl');
+    const lines = fs.readFileSync(new URL('../adapters/fixtures/lineage/claude/lead.jsonl', import.meta.url), 'utf8');
+    writeJsonLines(quietFile, lines.trim().split('\n').map(line => ({
+      ...JSON.parse(line), timestamp: quietAt, cwd: project,
+    })));
+    touch(quietFile, quietAt);
+    const proc = fs.readFileSync('/proc/self/stat', 'utf8');
+    writeJsonLines(registryFile, [{ pid: process.pid, procStart: proc.slice(proc.lastIndexOf(')') + 2).split(' ')[19],
+      sessionId: 'quiet-main', status: 'busy', statusUpdatedAt: quietAt }]);
+  }
+
   return {
+    registryFile,
     home,
     project,
     binDir,
@@ -625,6 +641,12 @@ async function run(context) {
 
   const sessions = await requestJson(server.port, '/api/sessions');
   assertSessionsPayload(sessions);
+  if (fs.existsSync(fixture.registryFile)) {
+    const quiet = sessionForId(sessions.sessions, 'quiet-main');
+    assert.equal(quiet.resident, false);
+    assert.equal(quiet.signalSource, 'registry');
+    assert.equal(resolveAgentStatus(quiet), 'working');
+  }
 
   const usage = await requestJson(server.port, '/api/usage');
   assertUsagePayload(usage);
@@ -672,6 +694,18 @@ async function run(context) {
   assertSnapshot(resynced, 'resync');
   assert.deepEqual(resynced.server, initial.server);
   assert.equal(sessionForId(resynced.sessions).lastMessage, DELTA_MESSAGE);
+
+  if (fs.existsSync(fixture.registryFile)) {
+    const record = JSON.parse(fs.readFileSync(fixture.registryFile, 'utf8'));
+    writeJsonLines(fixture.registryFile, [{ ...record, status: 'waiting',
+      statusUpdatedAt: Date.now(), waitingFor: 'approve Bash: private smoke command' }]);
+    const update = await context.legacyWebsocket.waitForMessage(message =>
+      message.sessions?.some(row => row.sessionId === 'quiet-main' && row.waitReason === 'approval'));
+    const waiting = sessionForId(update.sessions, 'quiet-main');
+    assert.equal(waiting.resident, false);
+    assert.equal(resolveAgentStatus(waiting), 'waiting_on_user');
+    assert.doesNotMatch(JSON.stringify(waiting), /private smoke command/);
+  }
 }
 
 async function main() {

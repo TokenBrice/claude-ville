@@ -289,12 +289,15 @@ test('the SOUND popover opens on the checked preset, closes the Spend Map, and r
     }
 });
 
-test('the existing header timer keeps village time in visible Dashboard mode', (t) => {
+test('the header timer starts before World mounts and honors the mounted atmosphere', async (t) => {
     const now = new Date(2026, 10, 19, 12);
     t.mock.timers.enable({ apis: ['Date', 'setInterval'], now });
     const documentRef = { hidden: false };
     globalThis.document = documentRef;
     t.after(() => { delete globalThis.document; });
+    globalThis.window = Object.assign(new EventTarget(), { location: { origin: 'http://localhost' } });
+    t.after(() => { delete globalThis.window; });
+    const { App } = await import('../../claudeville/src/presentation/App.js');
     const atmosphere = new AtmosphereState();
     const fields = new Map(['time', 'phase', 'override'].map(name => [`.topbar__clock-${name}`, {}]));
     fields.set('path', { setAttribute() {} });
@@ -303,30 +306,38 @@ test('the existing header timer keeps village time in visible Dashboard mode', (
         els: { time: {}, clock: { dataset: {}, querySelector: selector => fields.get(selector) } },
         _villageState: {},
     });
-    let dashboard = false;
+    let mode = 'dashboard';
     let snapshots = 0;
+    const app = Object.assign(Object.create(App.prototype), {
+        modeManager: { getCurrentMode: () => mode },
+    });
     topBar.readDashboardAtmosphere = () => {
-        if (!dashboard) return null;
-        snapshots++;
-        return atmosphere.snapshot();
+        const snapshot = app._readDashboardAtmosphere();
+        if (snapshot) snapshots++;
+        return snapshot;
     };
     const clock = fields.get('.topbar__clock-time');
-    topBar._renderWitnessClock(atmosphere.snapshot());
     topBar._startTimer();
+    t.mock.timers.tick(1_000);
+    assert.equal(clock.textContent, '12:00');
+    assert.equal(snapshots, 1);
+
+    mode = 'character';
     t.mock.timers.tick(60_000);
     assert.equal(clock.textContent, '12:00');
-    assert.equal(snapshots, 0);
-
-    dashboard = true;
-    t.mock.timers.tick(5_000);
-    assert.equal(clock.textContent, '12:01');
     assert.equal(snapshots, 1);
+
+    mode = 'dashboard';
+    app.renderer = { atmosphereState: atmosphere };
+    t.mock.timers.tick(4_000);
+    assert.equal(clock.textContent, '12:01');
+    assert.equal(snapshots, 2);
     assert.equal(topBar.els.time.textContent, '00:01:05');
 
     documentRef.hidden = true;
     t.mock.timers.tick(60_000);
     assert.equal(clock.textContent, '12:01');
-    assert.equal(snapshots, 1);
+    assert.equal(snapshots, 2);
     documentRef.hidden = false;
     t.mock.timers.tick(1_000);
     assert.equal(clock.textContent, '12:02');

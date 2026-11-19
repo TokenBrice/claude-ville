@@ -53,6 +53,10 @@ const isLikelyNormalized = (raw) => {
     return ['input', 'output', 'cacheRead', 'cacheCreate'].every((key) => Number.isFinite(Number(raw[key])));
 };
 
+export function normalizeCostSource(source) {
+    return source === 'provider' || source === 'mixed' ? source : 'estimate';
+}
+
 export class TokenUsage {
     constructor(raw = null) {
         Object.assign(this, TokenUsage.normalize(raw));

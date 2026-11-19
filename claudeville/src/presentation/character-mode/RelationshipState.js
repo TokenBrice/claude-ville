@@ -216,7 +216,8 @@ export class RelationshipState {
                 const prev = this._lastMembership.get(agent.id);
                 const nextParent = agent.parentSessionId || null;
                 const nextTeam = agent.teamName || null;
-                if (!prev || prev.parentSessionId !== nextParent || prev.teamName !== nextTeam) {
+                if (!prev || prev.parentSessionId !== nextParent || prev.teamName !== nextTeam
+                    || prev.isAdvisor !== Boolean(agent.isAdvisor)) {
                     this._membershipDirty = true;
                 }
             }),
@@ -351,7 +352,8 @@ export class RelationshipState {
         for (const agent of this.world?.agents?.values?.() || []) {
             const parentSessionId = agent.parentSessionId || null;
             const teamName = agent.teamName || null;
-            this._lastMembership.set(agent.id, { parentSessionId, teamName });
+            const isAdvisor = Boolean(agent.isAdvisor);
+            this._lastMembership.set(agent.id, { parentSessionId, teamName, isAdvisor });
             if (parentSessionId) {
                 this.childToParent.set(agent.id, parentSessionId);
                 let bucket = this.parentToChildren.get(parentSessionId);
@@ -361,7 +363,7 @@ export class RelationshipState {
                 }
                 bucket.add(agent.id);
             }
-            if (agent.isAdvisor) {
+            if (isAdvisor) {
                 this.advisorPairs.push({ advisorId: agent.id, parentId: parentSessionId });
             }
             if (teamName) {
