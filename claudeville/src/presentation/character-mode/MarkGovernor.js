@@ -371,7 +371,6 @@ export class MarkGovernor {
         if (tier === MarkTier.PRIMARY) return { draw: true, alpha: 1 };
         const policy = markPolicyFor(tier, this.pressureLevel);
         if (policy.hard === 0) return { draw: false, alpha: 0 };
-        if (this.motionScale <= 0) return { draw: true, alpha: policy.alphaCap };
         const { key, region } = this._region(x, y); const index = region[tier]++;
         if (index >= policy.hard) return { draw: false, alpha: 0 };
         let alpha = policy.alphaCap;

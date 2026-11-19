@@ -8,7 +8,8 @@ import { AgentStatus } from '../../claudeville/src/domain/value-objects/AgentSta
 import { LandmarkActivity } from '../../claudeville/src/presentation/character-mode/LandmarkActivity.js';
 import { FAILURE } from '../../claudeville/src/presentation/character-mode/EffectStamps.js';
 import { groundMarkDepth, groundRingPlan } from '../../claudeville/src/presentation/character-mode/AgentGroundMarks.js';
-import { drawFamilyTethers, resolveSquads, squadPennonSide, SQUAD_MIN_CHILDREN, SQUAD_TETHER_PATTERNS } from '../../claudeville/src/presentation/character-mode/CouncilRing.js';
+import { drawFamilyTethers, resolveSquads, squadCordChildIds, squadPennonSide, SQUAD_MIN_CHILDREN, SQUAD_TETHER_PATTERNS } from '../../claudeville/src/presentation/character-mode/CouncilRing.js';
+import { MarkGovernor, MarkTier, PRESSURE_LEVELS, setActiveMarkGovernor } from '../../claudeville/src/presentation/character-mode/MarkGovernor.js';
 import { drawSquadPennon } from '../../claudeville/src/presentation/character-mode/PixelPennant.js';
 import { tileToWorld } from '../../claudeville/src/presentation/character-mode/Projection.js';
 import { AMBIENT_KNOT_LIMIT, RelationshipState, ambientFileKnots } from '../../claudeville/src/presentation/character-mode/RelationshipState.js';
@@ -239,6 +240,85 @@ test('W7.4: squad cords lie on the ground, feet to feet, and drop out between cl
         }
     }
     assert.ok(cord.every(fill => Math.abs(fill.y - fill.x / 2) <= 3), 'no cord toward the one-tile neighbour');
+});
+
+// FK-3 — a squad grammar past seven: every member carries the notch, cords
+// are admitted per squad (all of them up to four children, one per building
+// cluster above that, every one while the leader is selected or hovered),
+// and reduced motion admits exactly what motion does.
+function fleet(n, { buildings = 1, selected = false } = {}) {
+    const lead = { ...squadSprite('lead', 0, 0), selected };
+    const sprites = new Map([['lead', lead]]);
+    const kids = new Set();
+    for (let i = 0; i < n; i++) {
+        const angle = (i / n) * Math.PI * 2;
+        const child = squadSprite(`c${String(i).padStart(2, '0')}`, Math.round(Math.cos(angle) * 400), Math.round(Math.sin(angle) * 200));
+        child._lastBuildingType = `building-${i % buildings}`;
+        sprites.set(child.agent.id, child);
+        kids.add(child.agent.id);
+    }
+    return { lead, sprites, kids, relationship: { parentToChildren: new Map([['lead', kids]]) } };
+}
+
+function notchTips(ctx, color = '#5aa0d8') {
+    // The notch's one-texel tip, lit in the squad accent at full alpha.
+    return ctx.fills.filter(fill => fill.w === 1 && fill.h === 1 && fill.alpha === 1 && fill.color === color);
+}
+
+for (const n of [8, 23]) {
+    test(`FK-3: a squad of ${n} notches every member and cords one member per building cluster`, () => {
+        const { lead, sprites, kids, relationship } = fleet(n, { buildings: 3 });
+        const corded = squadCordChildIds(lead, [...kids], sprites);
+        assert.equal(corded.size, 3, 'one cord per building cluster');
+        const selected = fleet(n, { buildings: 3, selected: true });
+        assert.equal(squadCordChildIds(selected.lead, [...selected.kids], selected.sprites).size, n, 'the selected leader shows the whole squad');
+
+        for (const motionScale of [1, 0]) {
+            const governor = new MarkGovernor();
+            governor.beginFrame({ pressureLevel: PRESSURE_LEVELS.GLYPHS, motionScale });
+            let admits = 0;
+            const admit = governor.admit.bind(governor);
+            governor.admit = (...args) => { admits++; return admit(...args); };
+            setActiveMarkGovernor(governor);
+            const ctx = recordingCtx();
+            try {
+                drawFamilyTethers(ctx, { relationship, agentSprites: sprites, motionScale });
+            } finally {
+                setActiveMarkGovernor(null);
+            }
+            assert.equal(admits, 1, 'the squad is admitted once, not once per cord');
+            assert.equal(notchTips(ctx).length, n + 1, 'a notch under the leader and every member');
+        }
+    });
+}
+
+test('FK-3: a small squad cords every far member; reduced motion keeps region admission', () => {
+    const { lead, sprites, kids } = fleet(4, { buildings: 1 });
+    assert.equal(squadCordChildIds(lead, [...kids], sprites).size, 4);
+    for (const motionScale of [1, 0]) {
+        const governor = new MarkGovernor();
+        governor.beginFrame({ pressureLevel: PRESSURE_LEVELS.FULL, motionScale });
+        const drawn = Array.from({ length: 10 }, () => governor.admit(MarkTier.SECONDARY, 10, 10)).filter(gate => gate.draw);
+        assert.equal(drawn.length, 7, `motionScale ${motionScale}: the region cap holds`);
+    }
+});
+
+test('FK-3: a session- team whose members share one parent is that parent squad, not a ring', t => {
+    const agents = new Map([
+        ['lead', { id: 'lead', parentSessionId: null, teamName: null }],
+        ['m1', { id: 'm1', parentSessionId: 'lead', teamName: 'session-lead' }],
+        ['m2', { id: 'm2', parentSessionId: 'lead', teamName: 'session-lead' }],
+        ['x1', { id: 'x1', parentSessionId: 'lead', teamName: 'session-mixed' }],
+        ['x2', { id: 'x2', parentSessionId: 'other', teamName: 'session-mixed' }],
+        ['b1', { id: 'b1', parentSessionId: 'lead', teamName: 'Gather Blue' }],
+        ['b2', { id: 'b2', parentSessionId: 'lead', teamName: 'Gather Blue' }],
+    ]);
+    const state = new RelationshipState({ agents });
+    t.after(() => state.dispose());
+    state.reconcile({ agentSprites: new Map() });
+    const snapshot = state.getSnapshot();
+    assert.deepEqual([...snapshot.teamToMembers.keys()].sort(), ['Gather Blue', 'session-mixed']);
+    assert.deepEqual([...snapshot.parentToChildren.get('lead')].sort(), ['b1', 'b2', 'm1', 'm2', 'x1']);
 });
 
 test('W7.4: the standard stands beside the leader feet, mirrored away from a covering neighbour', () => {
