@@ -95,6 +95,7 @@ const REQUIRED_CHARACTER_ASSETS = [
   'agent.codex.gpt56terra',
   'agent.codex.gpt56luna',
   'agent.codex.gpt6astra',
+  'agent.codex.gpt6astra.b',
   'agent.codex.gpt53spark',
   'agent.codex.gpt54',
   'agent.codex.gpt55',
@@ -333,8 +334,9 @@ async function verifyGpuFrames(page) {
     let cells = 0;
     let rasterTies = 0;
     for (const model of models) for (const effort of efforts) {
-      const identity = getModelVisualIdentity(model.model, effort, 'codex');
       const agent = new Agent({ id: `gpu-${model.key}-${effort}`, model: model.model, effort, provider: 'codex' });
+      // The agent id picks the body (spriteVariants): compare with that body's grip.
+      const identity = getModelVisualIdentity(model.model, effort, 'codex', agent.id);
       const sprite = new AgentSprite(agent, { assets, compositor });
       sprite.setMotionScale(0);
       sprite.draw(ctx, 1);

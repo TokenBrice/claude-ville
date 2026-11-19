@@ -12,6 +12,7 @@
             "id": "claude.fable-5-2", "provider": "claude", "match": ["fable-5-2"], "sample": "claude-fable-5-2",
             "label": "Claude Fable", "shortLabel": "Fable", "modelClass": "fable", "modelTier": "mythic", "mood": "deliberate",
             "spriteId": "agent.claude.fable", "paletteKey": "claude", "color": "#ffd6f0",
+            "spriteVariants": ["agent.claude.fable", "agent.claude.fable.b"],
             "trim": ["#ffd6f0", "#ffe7a8", "#c8a3ff"], "accent": ["#fff0fa", "#fff4cf", "#d8bcff"],
             "contextWindow": 1000000, "pricing": { "input": 8, "output": 40, "cacheRead": 0.2, "cacheCreate": 10 }
         },
@@ -33,6 +34,7 @@
             "id": "claude.fable-5-1", "provider": "claude", "match": ["fable-5-1"], "sample": "claude-fable-5-1",
             "label": "Claude Fable", "shortLabel": "Fable", "modelClass": "fable", "modelTier": "mythic", "mood": "deliberate",
             "spriteId": "agent.claude.fable", "paletteKey": "claude", "color": "#ffd6f0",
+            "spriteVariants": ["agent.claude.fable", "agent.claude.fable.b"],
             "trim": ["#ffd6f0", "#ffe7a8", "#c8a3ff"], "accent": ["#fff0fa", "#fff4cf", "#d8bcff"],
             "contextWindow": 1000000, "pricing": { "input": 10, "output": 50, "cacheRead": 0.25, "cacheCreate": 12.5 }
         },
@@ -40,6 +42,7 @@
             "id": "claude.fable-5", "provider": "claude", "match": ["fable-5"], "sample": "claude-fable-5",
             "label": "Claude Fable", "shortLabel": "Fable", "modelClass": "fable", "modelTier": "mythic", "mood": "deliberate",
             "spriteId": "agent.claude.fable", "paletteKey": "claude", "color": "#ffd6f0",
+            "spriteVariants": ["agent.claude.fable", "agent.claude.fable.b"],
             "trim": ["#ffd6f0", "#ffe7a8", "#c8a3ff"], "accent": ["#fff0fa", "#fff4cf", "#d8bcff"],
             "contextWindow": 1000000, "pricing": { "input": 10, "output": 50, "cacheRead": 1, "cacheCreate": 12.5 }
         },
@@ -159,6 +162,7 @@
             "id": "codex.gpt-6-2-astra", "provider": "codex", "match": ["gpt-6-2-astra"], "sample": "gpt-6.2-astra",
             "label": "GPT-6.2 Astra", "shortLabel": "6.2 Astra", "modelClass": "gpt6astra", "modelTier": "mythic", "mood": "deliberate",
             "spriteId": "agent.codex.gpt6astra", "paletteKey": "codex", "color": "#d8bcff",
+            "spriteVariants": ["agent.codex.gpt6astra", "agent.codex.gpt6astra.b"],
             "trim": ["#d8bcff", "#e6f1ff", "#8be9f5"], "accent": ["#f3eaff", "#c6efff", "#bff7ee"],
             "contextWindow": 1050000, "pricing": { "input": 8, "output": 40, "cacheRead": 0.4, "cacheCreate": 10 }
         },
@@ -174,6 +178,7 @@
             "id": "codex.gpt-6-astra", "provider": "codex", "match": ["gpt-6-astra"], "sample": "gpt-6-astra",
             "label": "GPT-6 Astra", "shortLabel": "6 Astra", "modelClass": "gpt6astra", "modelTier": "mythic", "mood": "deliberate",
             "spriteId": "agent.codex.gpt6astra", "paletteKey": "codex", "color": "#d8bcff",
+            "spriteVariants": ["agent.codex.gpt6astra", "agent.codex.gpt6astra.b"],
             "trim": ["#d8bcff", "#e6f1ff", "#8be9f5"], "accent": ["#f3eaff", "#c6efff", "#bff7ee"],
             "contextWindow": 1050000, "pricing": { "input": 10, "output": 50, "cacheRead": 1, "cacheCreate": 12.5 }
         },

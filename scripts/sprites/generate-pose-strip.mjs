@@ -298,6 +298,7 @@ const DRINK_GROUP = Object.freeze({
 // the prop hand, frozen in every frame, and the gesture moves the other arm.
 const PROPS = Object.freeze({
     'agent.claude.fable': { prop: 'a tall golden staff', hands: { 'south-east': 'right', 'south-west': 'left' } },
+    'agent.claude.fable.b': { prop: 'a rolled parchment scroll', hands: { 'south-east': 'right', east: 'right', west: 'left', 'south-west': 'left' } },
     'agent.claude.mythos': { prop: 'a tall bronze staff topped with a coiled serpent ring', hands: { south: 'left', 'south-east': 'right', east: 'right', 'north-east': 'right', north: 'right', 'north-west': 'left', west: 'left', 'south-west': 'left' } },
     'agent.claude.opus': { prop: 'a tall wooden staff with a crystal head', hands: { 'south-east': 'right', west: 'left', 'south-west': 'left' } },
     'agent.claude.opus.b': { prop: 'a tall wooden staff with a crystal head', hands: { 'south-east': 'right', east: 'right', west: 'left', 'south-west': 'left' } },
