@@ -127,17 +127,17 @@ test('the fall phase integrates the motion clock, holds under reduced motion, an
         const camera = cameraOf();
         const field = createGpuRainField();
         gpuRainField(atmosphereOf(), camera, { timeMs: 10000 }, field);
-        const first = field.phase.slice();
+        const first = field.motion.phase.slice();
         gpuRainField(atmosphereOf(), camera, { timeMs: 10016 }, field);
         const speed = (0.42 + field.intensity * 0.34) * 0.75;
         for (let layer = 0; layer < 3; layer++) {
-            const step = ((field.phase[layer] - first[layer]) + 1) % 1;
+            const step = ((field.motion.phase[layer] - first[layer]) + 1) % 1;
             assert.ok(Math.abs(step - 16 * speed * RAIN_LAYERS[layer].speedMul / RAIN_FALL_HEIGHT) < 1e-9);
         }
         // A frame gap past the overlay's MAX_FRAME_DT advances at most 80 ms.
-        const before = field.phase[1];
+        const before = field.motion.phase[1];
         gpuRainField(atmosphereOf(), camera, { timeMs: 60000 }, field);
-        assert.ok(Math.abs((((field.phase[1] - before) + 1) % 1) - 80 * speed / RAIN_FALL_HEIGHT) < 1e-9);
+        assert.ok(Math.abs((((field.motion.phase[1] - before) + 1) % 1) - 80 * speed / RAIN_FALL_HEIGHT) < 1e-9);
         // Reduced motion: a static, seeded frame (mid layer, half the streaks, splash rings).
         const reduced = atmosphereOf(RAIN, { motion: { particleEnabled: false } });
         const a = gpuRainField(reduced, camera, { timeMs: 1000, splashMask: true }, createGpuRainField());
