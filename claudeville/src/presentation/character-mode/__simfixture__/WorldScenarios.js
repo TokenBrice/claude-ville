@@ -1657,7 +1657,7 @@ export const COUNCIL_FLEET_SCENARIO = {
             backgroundPending: { count: 4, kinds: ['teammate'], since: SCENARIO_TIME_BASE - 9 * 60_000 },
             script: { tool: 'Poll', description: 'Wait for the four council lanes', since: SCENARIO_TIME_BASE - 6 * 60_000 },
             lastTool: 'Read',
-            lastToolInput: 'file_path=agents/plans/2026-11-19-council.md',
+            lastToolInput: 'file_path=docs/design-decisions.md',
             projectPath: COUNCIL_PROJECT,
             position: { tileX: 18, tileY: 20 },
         }),
