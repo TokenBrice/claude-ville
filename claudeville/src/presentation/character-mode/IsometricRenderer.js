@@ -270,6 +270,12 @@ function releaseWebGpuWorld(entry) {
 
 // Work kept off the frame (a WebGPU failure's WebGL2 build and terrain
 // re-bake): an idle task, or the next task where idle callbacks are missing.
+// EY-5 — the renderer fields the terrain bake passes write (GroundBake's
+// ground field and puddle mask, CoastBake's field, bake and its water fields):
+// a restage keeps them private until its canvas publishes.
+const TERRAIN_STAGED_FIELDS = Object.freeze(['groundField', 'groundPuddleMask', 'groundBakeMs', 'groundWinterBakeMs',
+    '_coastField', 'coastField', '_coastBake', '_coastMoodLayer', '_mirrorAccentLayers']);
+
 function whenIdle(callback) {
     if (typeof requestIdleCallback === 'function') requestIdleCallback(() => callback(), { timeout: 100 });
     else setTimeout(callback, 0);
@@ -8357,6 +8363,9 @@ export class IsometricRenderer {
         this._terrainPhenology = this._currentPhenology();
         this.foliageRenderer.setSeason(season, this._terrainPhenology);
         const key = this._terrainBakeKey(bounds, dpr, season);
+        // EY-5 — a restage for another key (the clock scrubbed back to the
+        // shown stage) never outlives the return to it.
+        if (this._terrainRestage && this._terrainRestage.key !== key) this._cancelTerrainRestage();
         if (this.terrainCache && this.terrainCacheKey === key) {
             return { canvas: this.terrainCache, bounds };
         }
@@ -8436,7 +8445,7 @@ export class IsometricRenderer {
         }
         if (this._terrainRestage?.key !== key) {
             this._cancelTerrainRestage();
-            const job = { key, bounds: { ...bounds }, dpr, season, prepare: null, steps: null, canvas: null, ctx: null };
+            const job = { key, bounds: { ...bounds }, dpr, season, prepare: null, steps: null, canvas: null, ctx: null, fields: {} };
             this._terrainRestage = job;
             whenIdle(() => this._stepTerrainRestage(job));
         }
@@ -8450,10 +8459,24 @@ export class IsometricRenderer {
         releaseCanvasBackingStore(job.canvas);
     }
 
-    // One idle slice of a restage: one prepare band or one surface step.
+    // One idle slice of a restage: one prepare band or one surface step. The
+    // passes' renderer fields (TERRAIN_STAGED_FIELDS) stay the job's own
+    // between slices and publish with its canvas, so frames in between draw
+    // the shown terrain with its own water and ground fields. A slice first
+    // checks the job still matches the wanted terrain.
     _stepTerrainRestage(job) {
         if (this._terrainRestage !== job || this._disposed) return;
+        if (this._terrainBakeKey(job.bounds, job.dpr, this._currentSeasonToken()) !== job.key) {
+            this._cancelTerrainRestage();
+            this._invalidateIdleFrame?.();
+            return;
+        }
         const previousMotionScale = this.motionScale;
+        const live = {};
+        for (const field of TERRAIN_STAGED_FIELDS) {
+            live[field] = this[field];
+            if (field in job.fields) this[field] = job.fields[field];
+        }
         try {
             this.motionScale = 0;
             if (!job.prepare) {
@@ -8474,6 +8497,10 @@ export class IsometricRenderer {
             }
         } finally {
             this.motionScale = previousMotionScale;
+            for (const field of TERRAIN_STAGED_FIELDS) {
+                if (field in job.fields || this[field] !== live[field]) job.fields[field] = this[field];
+                this[field] = live[field];
+            }
         }
         if (!job.steps || job.steps.length) {
             whenIdle(() => this._stepTerrainRestage(job));
@@ -8485,6 +8512,7 @@ export class IsometricRenderer {
             this._invalidateIdleFrame?.();
             return;
         }
+        Object.assign(this, job.fields);
         this._discardTerrainArtifactRead();
         this._discardTerrainArtifactWrite();
         releaseCanvasBackingStore(this.terrainCache);

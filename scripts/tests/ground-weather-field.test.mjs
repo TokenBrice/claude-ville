@@ -16,7 +16,7 @@ import {
     packGroundWeather,
     validGroundWeather,
 } from '../../claudeville/src/presentation/character-mode/GroundWeatherField.js';
-import { bakeGround, bakeWinterGround, validGroundArtifact } from '../../claudeville/src/presentation/character-mode/GroundBake.js';
+import { bakeGround, bakeWinterGround, installGroundBake, validGroundArtifact } from '../../claudeville/src/presentation/character-mode/GroundBake.js';
 
 // Item 5 — the ground weather field: RGBA8 on the ground bake's grid.
 
@@ -282,4 +282,35 @@ test('EY-5: the rising rime grows on the GW-3 patch field, each quarter holding 
         for (const i of quarters[q - 1]) assert.ok(quarters[q].has(i), `quarter ${q} inside ${q + 1}`);
     }
     assert.ok(quarters[0].size > 0);
+});
+
+test('EY-5: on Canvas the first frost quarter stages its weather field off the frame', t => {
+    const renderer = groundBakeFixture(t);
+    globalThis.document = { createElement: () => ({ width: 0, height: 0, getContext: () => ({
+        putImageData() {}, drawImage() {}, getImageData: (x, y, w, h) => ({ data: new Uint8ClampedArray(w * h * 4) }),
+    }) }) };
+    let pass = null;
+    Object.assign(renderer, {
+        worldRendererMode: 'canvas',
+        registerTerrainBakePass: (p) => { pass = p; return () => {}; },
+        _groundState: { frost: 0 },
+    });
+    installGroundBake(renderer);
+    const ctx = { drawImage() {} };
+    pass.draw(ctx);
+    const shown = renderer.groundField;
+    assert.equal(shown.weather, undefined, 'no frost, no weather field on Canvas');
+    const base = pass.baseRevision();
+    const revision = pass.revision();
+    renderer._groundState = { frost: 1, frostRising: true };
+    assert.equal(pass.baseRevision(), base, 'the first quarter is a stage change, staged off the frame');
+    assert.notEqual(pass.revision(), revision);
+    const step = pass.prepare();
+    let slices = 1;
+    while (!step()) slices++;
+    assert.ok(slices > 10, `prepared in slices: ${slices}`);
+    assert.equal(renderer.groundField, shown, 'the shown field stays until the stage publishes');
+    assert.equal(pass.prepare(), null, 'nothing left for the frame to bake');
+    pass.draw(ctx);
+    assert.ok(validGroundWeather(renderer.groundField.weather), 'the weather field publishes with the stage');
 });

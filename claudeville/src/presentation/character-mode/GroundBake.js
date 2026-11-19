@@ -683,7 +683,23 @@ function groundFieldFrom({ bounds, cols, rows, texelW, classes, weather }) {
 // the same pass. Only on first need (groundWeatherWanted): at looks 0 nothing
 // of it is allocated, baked or saved.
 export function bakeGround(r, withWeather = false) {
-    const started = performance.now();
+    const bands = groundBands(r, withWeather);
+    let step = bands.next();
+    while (!step.done) step = bands.next();
+    return step.value;
+}
+
+// Rows of the base bake per idle slice when it is prepared off the frame
+// (EY-5: the first frost quarter's weather field on Canvas).
+const GROUND_BAND_ROWS = 128;
+
+// The base bake in slices: yields between row bands and between its later
+// passes, returns the bake. `ms` counts only the time spent baking.
+function* groundBands(r, withWeather = false) {
+    let busy = 0;
+    let started = performance.now();
+    const pause = () => { busy += performance.now() - started; };
+    const resume = () => { started = performance.now(); };
     const N = MAP_SIZE;
     const x0 = -N * HALF_W;
     const y0 = -HALF_H;
@@ -722,6 +738,7 @@ export function bakeGround(r, withWeather = false) {
     const clampI = (v) => (v < 0 ? 0 : v >= N ? N - 1 : v);
 
     for (let row = 0; row < rows; row++) {
+        if (row > 0 && row % GROUND_BAND_ROWS === 0) { pause(); yield; resume(); }
         const sy = y0 + row + 0.5;
         for (let col = 0; col < cols; col++) {
             const sx = x0 + col * TEXEL_W + 1;
@@ -898,22 +915,27 @@ export function bakeGround(r, withWeather = false) {
         D[o + 4] = c[0]; D[o + 5] = c[1]; D[o + 6] = c[2]; D[o + 7] = 255;
     };
 
+    pause(); yield; resume();
     const season = r._terrainSeason || 'summer';
     const crowns = buildCrownField(r, { cols, rows, x0, y0 });
     drawYardEdges({ cols, rows, surfaces, put });
+    pause(); yield; resume();
     drawLivingGround(r, { cols, rows, x0, y0, surfaces, aoBuf, stepBuf, put, season, crowns });
+    pause(); yield; resume();
     drawDecals(r, { cols, rows, x0, y0, surfaces, sdBuf, aoBuf, put, season });
 
+    pause(); yield; resume();
     const canvas = document.createElement('canvas');
     canvas.width = w;
     canvas.height = h;
     canvas.getContext('2d').putImageData(image, 0, 0);
     const puddleMask = bakePuddleSites({ cols, rows, surfaces, aoBuf });
+    pause(); yield; resume();
     const weather = withWeather
         ? bakeGroundWeather({ cols, rows, surfaces, stepBuf, eaveBuf, sunShadeBuf, crowns, puddleMask, season, phenology: r._terrainPhenology || null })
         : undefined;
     const field = groundFieldFrom({ bounds: { x: x0, y: y0, w, h }, cols, rows, texelW: TEXEL_W, classes, weather });
-    return { canvas, field, ms: performance.now() - started, x0, y0, cols, rows, surfaces, aoBuf, puddleMask, weather };
+    return { canvas, field, ms: busy + performance.now() - started, x0, y0, cols, rows, surfaces, aoBuf, puddleMask, weather };
 }
 
 // ---- item 5: the ground weather field --------------------------------------
@@ -1792,59 +1814,89 @@ export function installGroundBake(renderer) {
         sheetsReady = loaded === SHEET_IDS.length;
         return sheetsReady ? 'sheets' : `sheets:${loaded}`;
     };
+    // The base bake's key: what `bakeGround` reads.
+    const baseKeyOf = (withWeather) => `${getCoastField(renderer).key}|${sheetsKey()}|${renderer._terrainSeason || 'summer'}|${renderer._terrainPhenology?.ground ?? ''}|${renderer._terrainSceneryRevision || 0}${withWeather ? '|weather' : ''}`;
+    const adopt = (key, baked) => {
+        const mask = {
+            data: baked.puddleMask,
+            cols: baked.cols,
+            rows: baked.rows,
+            x0: baked.x0,
+            y0: baked.y0,
+            texelW: TEXEL_W,
+            revision: key,
+        };
+        withWeatherField(mask, baked.weather);
+        cached = { key, ...baked, mask };
+    };
+    // The renderer's ground fields follow the base the terrain was drawn
+    // from (a restage publishes them with its canvas; a dropped one leaves
+    // the next draw to publish them).
+    const publish = () => {
+        if (renderer.groundField === cached.field && renderer.groundPuddleMask === cached.mask) return;
+        renderer.groundField = cached.field;
+        renderer.groundBakeMs = Math.round(cached.ms);
+        renderer.groundPuddleMask = cached.mask;
+    };
+    // One generator to completion, a step per call: true once done.
+    const stepper = (bands, done) => {
+        let ms = 0;
+        return () => {
+            const started = performance.now();
+            const step = bands.next();
+            ms += performance.now() - started;
+            if (!step.done) return false;
+            done(step.value, ms);
+            return true;
+        };
+    };
     return renderer.registerTerrainBakePass({
         id: 'ground-splat',
         stage: 'ground',
         // GW: 'w' while the ground weather field is wanted ('' at looks 0).
         revision: () => `${sheetsKey()}${winterKeyOf(renderer)}${groundWeatherWanted(renderer) ? 'w' : ''}`,
         // EY-5 — the revision without the winter stage: a change of snow
-        // bucket or frost quarter alone is re-staged off the frame
-        // (IsometricRenderer `_stageTerrainOffFrame`), the current terrain
-        // presenting until the new one is complete.
-        baseRevision: () => `${sheetsKey()}${groundWeatherWanted(renderer) ? 'w' : ''}`,
+        // bucket or frost quarter alone (and the ground weather field GW-3's
+        // frost brings with it) is re-staged off the frame (IsometricRenderer
+        // `_stageTerrainOffFrame`), the current terrain presenting until the
+        // new one is complete.
+        baseRevision: () => `${sheetsKey()}${groundWeatherWanted(renderer, 0) ? 'w' : ''}`,
         // EY-5 — the next winter stage in bands, one per idle slice: a
-        // stepper that returns true once the stage's canvas is ready (null
-        // when there is nothing to prepare). `draw` then only blits it.
+        // stepper that returns true once the stage is ready (null when there
+        // is nothing to prepare): first the base with the weather field when
+        // the stage brings it, then the winter canvas. `draw` then only
+        // blits it.
         prepare() {
-            const winterKey = winterKeyOf(renderer);
-            if (!cached || !winterKey) return null;
-            const key = `${cached.key}|${winterKey}`;
-            if (winter?.key === key) return null;
-            const ground = renderer._groundState;
-            const frost = frostQuarterOf(ground);
-            const bands = winterGroundBands(renderer, cached, snowBucketOf(ground?.snowCover), frost,
-                frost ? frostPatchStrength() : 0, frostRisingOf(ground));
-            let ms = 0;
-            return () => {
-                const started = performance.now();
-                const step = bands.next();
-                ms += performance.now() - started;
-                if (!step.done) return false;
-                if (winter) releaseCanvasBackingStore(winter.canvas);
-                winter = { key, canvas: step.value };
-                renderer.groundWinterBakeMs = Math.round(ms);
+            const withWeather = groundWeatherWanted(renderer);
+            const key = baseKeyOf(withWeather);
+            const steps = [];
+            if (!cached || cached.key !== key) {
+                steps.push(stepper(groundBands(renderer, withWeather), (baked) => adopt(key, baked)));
+            }
+            steps.push(() => {
+                const winterKey = winterKeyOf(renderer);
+                if (!winterKey || winter?.key === `${key}|${winterKey}`) return true;
+                const ground = renderer._groundState;
+                const frost = frostQuarterOf(ground);
+                steps.push(stepper(winterGroundBands(renderer, cached, snowBucketOf(ground?.snowCover), frost,
+                    frost ? frostPatchStrength() : 0, frostRisingOf(ground)), (canvas, ms) => {
+                    if (winter) releaseCanvasBackingStore(winter.canvas);
+                    winter = { key: `${key}|${winterKey}`, canvas };
+                    renderer.groundWinterBakeMs = Math.round(ms);
+                }));
                 return true;
+            });
+            if (cached?.key === key && winter?.key === `${key}|${winterKeyOf(renderer)}`) return null;
+            return () => {
+                if (steps[0]()) steps.shift();
+                return steps.length === 0;
             };
         },
         draw(ctx) {
             const withWeather = groundWeatherWanted(renderer);
-            const key = `${getCoastField(renderer).key}|${sheetsKey()}|${renderer._terrainSeason || 'summer'}|${renderer._terrainPhenology?.ground ?? ''}|${renderer._terrainSceneryRevision || 0}${withWeather ? '|weather' : ''}`;
-            if (!cached || cached.key !== key) {
-                const baked = bakeGround(renderer, withWeather);
-                cached = { key, ...baked };
-                renderer.groundField = baked.field;
-                renderer.groundBakeMs = Math.round(baked.ms);
-                renderer.groundPuddleMask = {
-                    data: baked.puddleMask,
-                    cols: baked.cols,
-                    rows: baked.rows,
-                    x0: baked.x0,
-                    y0: baked.y0,
-                    texelW: TEXEL_W,
-                    revision: key,
-                };
-                withWeatherField(renderer.groundPuddleMask, baked.weather);
-            }
+            const key = baseKeyOf(withWeather);
+            if (!cached || cached.key !== key) adopt(key, bakeGround(renderer, withWeather));
+            publish();
             const winterKey = winterKeyOf(renderer);
             if (!winterKey) {
                 if (winter) releaseCanvasBackingStore(winter.canvas);
