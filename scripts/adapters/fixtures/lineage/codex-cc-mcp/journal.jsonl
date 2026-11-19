@@ -1,0 +1,6 @@
+{"ts":600,"event":"queued","job_id":"codex_fixture_run","kind":"ask","label":"Survey"}
+{"ts":610,"event":"started","job_id":"codex_fixture_run","pid":501,"pid_start":"5010","cwd":"/fixture","label":"Survey"}
+{"ts":620,"event":"started","job_id":"codex_fixture_done","pid":502,"pid_start":"5020","cwd":"/fixture","label":"Cartography"}
+{"ts":800,"event":"finished","job_id":"codex_fixture_done","session_id":"thread-done","status":"succeeded","error_kind":null}
+{"ts":630,"event":"started","job_id":"codex_fixture_crash","pid":503,"pid_start":"5030","cwd":"/fixture","label":"Archive"}
+{"ts":850,"event":"finished","job_id":"codex_fixture_crash","session_id":"thread-crash","status":"crashed","error_kind":"worker_exit"}

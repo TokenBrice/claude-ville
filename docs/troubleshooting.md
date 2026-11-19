@@ -23,6 +23,8 @@ New session discovery uses `ACTIVE_THRESHOLD_MS` in `claudeville/server.js`, cur
 
 This is not a universal two-minute expiry. Once observed, unresolved `tool_pending` sessions can remain as stale residents for up to 45 minutes after their last live observation, with a cap of 24 retained sessions. Hook-derived waits expire after 30 minutes from their signal. Completed turns are not retained by the server; the browser gives them a shorter departure grace. These rules live in [`sessionResidency.js`](../claudeville/services/sessionResidency.js), and stale residency does not prove the CLI is still running or waiting for approval.
 
+On Linux, a live Claude registry entry marked `busy` or `waiting` can keep a quiet main in the roster. An idle entry ages out on the ordinary schedule.
+
 Confirm by running a CLI command in a real session, then refresh `/api/sessions` within two minutes.
 
 Provider scan windows also matter:
@@ -39,6 +41,8 @@ Provider scan windows also matter:
 Repository-only `git` sessions can also appear when git enrichment detects unpushed or pushed GitHub repository activity outside a live provider session. That scan defaults to `~/Documents/git`, can be narrowed with `CLAUDEVILLE_REPOSITORY_SCAN_ROOT`, capped with `CLAUDEVILLE_REPOSITORY_SCAN_MAX`, and disabled with `CLAUDEVILLE_DISABLE_GIT_ENRICHMENT=1`. Synthetic git session detail returns a reason string rather than a provider transcript.
 
 ## Permission prompts are inferred or arrive late
+
+On Linux, a Claude main can report an approval directly from its session registry without hook setup. Look for `signalSource: 'registry'` and `waitReason` in `/api/sessions`. The adapter verifies the process start time and publishes only the wait category. A stale or unrecognized registry record falls back to the transcript.
 
 Transcript parsing remains the default and requires no configuration. An elapsed tool duration never proves a permission prompt: long builds remain work, while explicit question/review tools and approval hooks provide waiting evidence. The route accepts the normalized schema `{ provider, sessionId, cwd, ts, kind, tool, input, decision? }` at `POST /api/ingest/hook`, keeps at most 256 sessions in memory, and never persists or logs request bodies. `kind` must be a supported lifecycle event such as `PreToolUse`, `PostToolUse`, or `Stop`. `input` may contain only operator-facing command/path context; displayed detail is secret-stripped and capped at 200 characters. This is the canonical payload schema; other documentation should link here instead of duplicating it.
 

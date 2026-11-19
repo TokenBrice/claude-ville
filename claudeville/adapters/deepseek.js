@@ -26,11 +26,15 @@ const { deriveTurnState } = require('./turnState');
 const { emptyObservedSources, makeDialogue, pickDialogue } = require('./dialogue');
 const {
   createDetailResponse,
+  recentMcpJobs,
   mcpJobOwnerAlive: ownerAlive,
   noteReadFailure,
   readHeadText,
   readJsonLines,
   statCacheKey,
+  stateFileStat,
+  sameStateVersion,
+  deleteTailState,
   summarizeToolInput,
   trimCache,
 } = require('./shared');
@@ -59,7 +63,7 @@ const MISSION_HEAD_BYTES = 4096;
 const CACHE_MAX = 256;
 const DETAIL_TOOL_LIMIT = 15;
 const DETAIL_MESSAGE_LIMIT = 5;
-const FAILED_STATUSES = new Set(['failed', 'timeout']);
+const FAILED_STATUSES = new Set(['failed', 'timeout', 'crashed']);
 
 // The server's tools copy Claude Code's names; its transcript keeps only the
 // one argument `brief()` picked, so the tool name says which field it was.
@@ -169,6 +173,7 @@ function foldJournal() {
     // names it as `thread_id` already when queued.
     const threadId = record.session_id || record.thread_id;
     if (typeof threadId === 'string' && THREAD_ID.test(threadId)) job.threadId = threadId;
+    if (record.kind === 'ask' || record.kind === 'continue') job.kind = record.kind;
     if (record.model) job.model = String(record.model);
     if (record.effort) job.effort = String(record.effort);
     if (record.cwd) job.cwd = String(record.cwd);
@@ -198,13 +203,18 @@ function foldJournal() {
 }
 
 function readThreads() {
-  let key;
-  try {
-    key = statCacheKey(JOURNAL_FILE, fs.statSync(JOURNAL_FILE));
-  } catch {
-    return new Map();
+  const stat = stateFileStat(path.resolve(JOURNAL_FILE));
+  if (!stat) return new Map();
+  const key = statCacheKey(JOURNAL_FILE, stat);
+  if (_journal.key !== key) {
+    const folded = { threads: foldJournal() };
+    const after = stateFileStat(path.resolve(JOURNAL_FILE));
+    if (!sameStateVersion(stat, after)) {
+      deleteTailState(JOURNAL_FILE);
+      return _journal.threads;
+    }
+    _journal = { key, ...folded };
   }
-  if (_journal.key !== key) _journal = { key, threads: foldJournal() };
   return _journal.threads;
 }
 
@@ -442,6 +452,7 @@ function buildSession(threadId, jobs, { now, activeThresholdMs }) {
       rateRevision: MODEL_REVISION,
       unknownModel: false,
     },
+    subagentKind: 'mcp',
     parentSessionId: null,
   };
 }
@@ -467,10 +478,12 @@ class DeepSeekAdapter {
     return sessions.sort((a, b) => b.lastActivity - a.lastActivity);
   }
 
+  getMcpJobs(threadId) { return _journal.threads.get(threadId); }
+
   getSessionDetail(sessionId, project) {
     const threadId = String(sessionId || '').replace(/^deepseek-/, '');
     const jobs = readThreads().get(threadId);
-    if (!jobs) return createDetailResponse({ sessionId, project });
+    if (!jobs) return createDetailResponse({ sessionId, project, jobs: [] });
 
     const toolHistory = [];
     for (const job of [...jobs].reverse()) {
@@ -495,6 +508,7 @@ class DeepSeekAdapter {
     return createDetailResponse({
       sessionId,
       project,
+      jobs: recentMcpJobs(jobs),
       toolHistory: toolHistory.slice(-DETAIL_TOOL_LIMIT),
       messages: messages.slice(-DETAIL_MESSAGE_LIMIT),
       tokenUsage: threadUsage(jobs, latest, readTranscript(latest)).usage,
