@@ -31,6 +31,7 @@ const {
 
 // ─── Usage quota service ──────────────────────────────
 const usageQuota = require('./services/usageQuota');
+const villageWeather = require('./services/villageWeather');
 const { SessionResidency } = require('./services/sessionResidency');
 const { detectCollisions } = require('./services/workingSet');
 const { hookOverlay } = require('./adapters/hooks');
@@ -618,6 +619,20 @@ function handleGetProviders(req, res) {
  */
 function handleGetUsage(req, res) {
   sendApiPayload(res, 'Failed to fetch usage', () => usageQuota.fetchUsage(), 'Unable to load usage information.');
+}
+
+async function handleGetWeather(req, res) {
+  res.setHeader('Cache-Control', 'no-store');
+  // A custom header keeps a cross-site navigation or embed from opting in.
+  if (req.headers['x-claudeville-weather'] !== 'real-sky') {
+    return sendJson(res, 200, { fetchedAt: null, hourly: null, refreshAt: null });
+  }
+  try {
+    const forecast = await villageWeather.getForecast();
+    if (!res.destroyed) sendJson(res, 200, forecast);
+  } catch {
+    if (!res.destroyed) sendJson(res, 200, { fetchedAt: null, hourly: null, refreshAt: null });
+  }
 }
 
 /**
@@ -2955,6 +2970,7 @@ const API_ROUTES = {
     ['/api/session-detail', handleGetSessionDetail],
     ['/api/providers', handleGetProviders],
     ['/api/usage', handleGetUsage],
+    ['/api/weather', handleGetWeather],
     ['/api/perf', handleGetPerf],
     ['/api/changelog', handleGetChangelog],
   ]),

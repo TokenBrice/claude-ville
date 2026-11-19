@@ -491,6 +491,8 @@ export class App {
                 chronicle: this.chroniclePanel,
                 spendLedger: this.spendLedger,
                 readDashboardAtmosphere: () => this._readDashboardAtmosphere(),
+                simulation: this.simMode,
+                refreshAtmosphere: snapshot => this.renderer?.atmosphereState?.update({ now: snapshot.effectiveDate }),
                 frameAttention: () => {
                     if (this.modeManager?.getCurrentMode() === 'dashboard') return false;
                     this.renderer?.cameraDirector?.frameAttention(this.renderer.agentSprites);

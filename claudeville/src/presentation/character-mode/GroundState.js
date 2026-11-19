@@ -20,8 +20,8 @@
 //              WET_CAP, clamped to 1. Draining is linear and the cap is
 //              small, so however long it rained a road is puddled half an
 //              hour after the rain stops, down to its deepest puddle cores
-//              at 75 minutes and dry about two hours after. Winter
-//              precipitation falls as snow and feeds snowCover instead.
+//              at 75 minutes and dry about two hours after. Snow feeds
+//              snowCover. Its phase comes from the forecast or the calendar.
 //   puddles    smoothstep(0.35, 0.7, wetness).
 //   snowCover  one continuous path since 00:00 on 1 December (M9 winter
 //              opens with bare ground), stepped every 10 minutes: real
@@ -76,12 +76,11 @@ export const SNOWFALL_ON = 0.18;
 // snow in winter).
 export const PRECIPITATING = 0.02;
 
-// EN-4 / EY-4 — what a snapshot's sky lets fall, from its date and weather
-// only (V3). Winter (Dec–Feb) precipitation falls as snow: WeatherRenderer
-// draws flakes and the ground and roofs stay dry, so its liquid share is 0
-// and the water takes no rain rings, wet sheen or rain mirror break; storm
-// wind, sea state, fog and the grade still follow the weather. `snowfallOn`
-// is the snowfall that settles (above SNOWFALL_ON), the grade's snow row.
+// EN-4 / EY-4 — use the forecast phase when present, or the modeled calendar.
+export function precipitationIsFrozen(monthIndex, weather) {
+    return weather?.frozen ?? isWinterMonth(monthIndex);
+}
+
 function snapshotMonth(atmosphere) {
     const date = atmosphere?.effectiveDate;
     return date instanceof Date && !Number.isNaN(date.getTime()) ? date.getMonth() : -1;
@@ -94,7 +93,7 @@ const _liquidMemo = new WeakMap();
 export function liquidPrecipitation(atmosphere, weather = atmosphere?.weather) {
     const own = atmosphere && typeof atmosphere === 'object' && weather === atmosphere.weather;
     if (own && _liquidMemo.has(atmosphere)) return _liquidMemo.get(atmosphere);
-    const liquid = !weather || isWinterMonth(snapshotMonth(atmosphere))
+    const liquid = !weather || precipitationIsFrozen(snapshotMonth(atmosphere), weather)
         ? 0
         : clamp01(Number(weather.precipitation ?? weather.intensity) || 0);
     if (own) _liquidMemo.set(atmosphere, liquid);
@@ -103,7 +102,7 @@ export function liquidPrecipitation(atmosphere, weather = atmosphere?.weather) {
 
 /** Whether settling snow falls in month `monthIndex` (0..11) under `weather`. */
 export function snowfallOn(monthIndex, weather) {
-    return isWinterMonth(monthIndex) && (Number(weather?.precipitation) || 0) > SNOWFALL_ON;
+    return precipitationIsFrozen(monthIndex, weather) && (Number(weather?.precipitation) || 0) > SNOWFALL_ON;
 }
 // Minimum precipitation that counts as rain for the rainbow.
 const RAIN_ON = SNOWFALL_ON;
@@ -174,7 +173,8 @@ function timelineKey(options) {
     // WX-1 — the date-seeded weather differs with the night-rain switch;
     // pinned knots do not.
     const nightRain = knots || nightRainOn() ? '' : '|wx0';
-    return `${options.timelineMode || 'auto'}|${options.seedOverride ?? ''}|${knots}${nightRain}`;
+    const forecast = options.forecast ? `|forecast:${options.forecast.fetchedAt}` : '';
+    return `${options.timelineMode || 'auto'}|${options.seedOverride ?? ''}|${knots}${nightRain}${forecast}`;
 }
 
 function historyKey(date, minute, options) {
@@ -292,7 +292,7 @@ function stepSnowDay(snow, day, sample, untilMinute) {
     for (let t = 0; t <= untilMinute; t += SNOW_STEP_MINUTES) {
         const weather = sample(t);
         const precip = Number(weather.precipitation) || 0;
-        if (isWinterMonth(month) && precip > SNOWFALL_ON) {
+        if (snowfallOn(month, weather)) {
             snow = Math.min(1, snow + precip * SNOW_GAIN_PER_HOUR * (SNOW_STEP_MINUTES / 60));
         } else if (snow > 0 && aboveFreezing(month, t, weather)) {
             const melt = isWinterMonth(month) ? SNOW_SUN_MELT_PER_HOUR : SNOW_MELT_PER_HOUR;
@@ -302,18 +302,21 @@ function stepSnowDay(snow, day, sample, untilMinute) {
     return snow;
 }
 
-// Snow cover at 00:00 of `date`. The path starts bare on 1 December; from
-// April to November it is bare (March melts any February cover within
-// 50 hours). Each midnight is memoized per timeline, so the walk back stops
-// at the latest known day and a new day integrates once.
+// Modeled cover starts on 1 December and runs through March. Forecast
+// history can add snowfall outside that span. Each midnight is memoized.
 function snowAtMidnight(date, options) {
     const month = date.getMonth();
-    if (month >= 3 && month <= 10) return 0;
+    const inModeledSpan = month < 3 || month === 11;
+    const firstForecastDate = Object.keys(options.forecast?.days ?? {}).sort()[0];
+    if (!inModeledSpan && !firstForecastDate) return 0;
+    const modeledStart = new Date(date.getFullYear() - (month < 3 ? 1 : 0), 11, 1);
+    const forecastStart = firstForecastDate ? new Date(`${firstForecastDate}T00:00:00`) : modeledStart;
+    const start = inModeledSpan && modeledStart < forecastStart ? modeledStart : forecastStart;
     const tkey = timelineKey(options);
     const pending = [];
     let day = new Date(date.getFullYear(), date.getMonth(), date.getDate());
     let snow = 0;
-    while (!(day.getMonth() === 11 && day.getDate() === 1)) {
+    while (day > start) {
         const known = _snowDayMemo.get(`${tkey}|${dateKey(day)}`);
         if (known !== undefined) {
             snow = known;
@@ -334,13 +337,13 @@ function snowAtMidnight(date, options) {
 function snowCoverAt(date, bucket, options) {
     const start = snowAtMidnight(date, options);
     const month = date.getMonth();
-    if (start <= 0 && !isWinterMonth(month)) return 0;
+    if (start <= 0 && !isWinterMonth(month) && !options.forecast) return 0;
     return stepSnowDay(start, date, weatherHistorySampler(date, options), bucket);
 }
 
 /**
  * The timeline inputs of an atmosphere snapshot (`atmosphere.timeline`: seed
- * override, fixed/auto mode, pinned QA knots), so history readers integrate
+ * override, fixed/auto mode, pinned QA knots, forecast), so history readers integrate
  * exactly what the live weather resolved from.
  */
 export function groundOptionsFor(atmosphere) {
@@ -349,6 +352,7 @@ export function groundOptionsFor(atmosphere) {
         seedOverride: timeline?.seedOverride ?? null,
         timelineMode: timeline?.mode || 'auto',
         timelineKnots: timeline?.knots || null,
+        forecast: timeline?.forecast || null,
         // BI-5 — the frost melts by the snapshot's own sun.
         sun: frostSunFor(atmosphere),
     };
@@ -356,7 +360,7 @@ export function groundOptionsFor(atmosphere) {
 
 /**
  * C-W2 ground state for `date` (its local minute, or `options.minute`).
- * `options`: `{ seedOverride, timelineMode, timelineKnots }` — the same
+ * `options`: `{ seedOverride, timelineMode, timelineKnots, forecast }` — the same
  * timeline inputs as the live snapshot (`atmosphere.timeline`) — and the
  * frost's `sun` (`frostSunFor`; the fallback sun when omitted).
  */
@@ -378,7 +382,7 @@ export function groundStateAt(date, options = {}) {
     for (let t = now - WET_HISTORY_MINUTES; t <= now; t += WET_STEP_MINUTES) {
         const { month, weather } = history.at(t);
         const precip = Number(weather.precipitation) || 0;
-        const fill = precip > PRECIPITATING && !isWinterMonth(month)
+        const fill = precip > PRECIPITATING && !precipitationIsFrozen(month, weather)
             ? precip * (WET_STEP_MINUTES / WET_GAIN_MINUTES)
             : 0;
         wet = Math.max(0, Math.min(WET_CAP, wet + fill - WET_DRAIN_PER_MINUTE * WET_STEP_MINUTES));
@@ -429,12 +433,16 @@ export function rainClearedMinutesAgo(date, options = {}) {
     const now = 2 * DAY_MINUTES + minute;
     let result = null;
     const current = history.at(now);
-    if (!isWinterMonth(current.month) && (Number(current.weather.precipitation) || 0) <= PRECIPITATING) {
+    if ((current.weather.frozen !== undefined || !isWinterMonth(current.month))
+        && (Number(current.weather.precipitation) || 0) <= PRECIPITATING) {
         for (let t = now - 1; t >= now - RAINBOW_WINDOW_MINUTES; t--) {
-            if ((Number(history.at(t).weather.precipitation) || 0) <= PRECIPITATING) continue;
+            const { weather } = history.at(t);
+            if ((Number(weather.precipitation) || 0) <= PRECIPITATING) continue;
+            if (weather.frozen === true) break;
             // It precipitated at t: a rainbow only after real rain.
             for (let back = t; back >= t - 60; back -= 5) {
-                if ((Number(history.at(back).weather.precipitation) || 0) > RAIN_ON) {
+                const earlier = history.at(back).weather;
+                if (earlier.frozen !== true && (Number(earlier.precipitation) || 0) > RAIN_ON) {
                     result = now - t;
                     break;
                 }

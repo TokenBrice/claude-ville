@@ -324,16 +324,19 @@ function weatherWeights(weather, snowfall = 0) {
     const intensity = clamp(finite(weather?.intensity, 0.6));
     const cloudCover = clamp(finite(weather?.cloudCover, 0));
     const weight = clamp(0.4 + intensity * 0.75);
-    // EY-4 — while settling snow falls, `snowfall` of the rain weight takes
-    // the snow row; a winter storm stays a storm.
+    // EY-4 — the snow row takes the rain weight and forecast snowstorm weight.
+    // Modeled storms keep the authored storm grade.
     const rain = type === 'rain' ? weight : 0;
-    const snow = rain * clamp(finite(snowfall, 0));
+    const storm = type === 'storm' ? weight : 0;
+    const snowMix = clamp(finite(snowfall, 0));
+    const snowRain = rain * snowMix;
+    const snowStorm = weather?.frozen === true ? storm * snowMix : 0;
     return {
         type,
         cloudCover,
-        rain: rain - snow,
-        snow,
-        storm: type === 'storm' ? weight : 0,
+        rain: rain - snowRain,
+        snow: snowRain + snowStorm,
+        storm: storm - snowStorm,
         // Overcast flattening follows real cover (> 0.7), whatever the label.
         overcast: type === 'overcast' ? weight : 0,
         fog: type === 'fog' ? weight : clamp(finite(weather?.fog, 0)) * 0.5,

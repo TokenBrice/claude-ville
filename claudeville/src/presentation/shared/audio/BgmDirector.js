@@ -38,7 +38,7 @@ import {
 } from '../../../application/OutcomeSignals.js';
 import { expectCueScore } from './CueScore.js';
 import { longTurnDetails } from './CueGovernor.js';
-import { createAtmosphereSnapshot, dayShiftFor } from '../../character-mode/AtmosphereState.js';
+import { createLiveAtmosphereSnapshot, dayShiftFor } from '../../character-mode/AtmosphereState.js';
 import { seasonTokenForAtmosphere } from '../../character-mode/SeasonalAmbience.js';
 import { readCountHours, readTownBandVoice } from '../SoundSettings.js';
 import {
@@ -448,7 +448,7 @@ export class BgmDirector {
             return this._atmosphere;
         }
         this._atmosphereSource = 'local';
-        return createAtmosphereSnapshot({});
+        return createLiveAtmosphereSnapshot();
     }
 
     _tick() {
