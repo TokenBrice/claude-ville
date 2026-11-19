@@ -16,6 +16,7 @@ const binDir = path.join(tmpHome, 'bin');
 fs.mkdirSync(binDir, { recursive: true });
 let child = null;
 let childOutput = '';
+let weatherAttempts = 0;
 
 function reserveEphemeralPort() {
   return new Promise((resolve, reject) => {
@@ -205,6 +206,12 @@ try {
       if (args[0] === 4000) args[0] = Number(process.env.CLAUDEVILLE_SMOKE_PORT);
       return originalListen.apply(this, args);
     };
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (url, options) => {
+      if (url.hostname !== 'api.open-meteo.com') return originalFetch(url, options);
+      process.send?.('offline-weather-attempt');
+      throw new Error('Network unavailable');
+    };
     const runtime = require(${JSON.stringify(path.join(repoRoot, 'claudeville', 'server.js'))});
     process.once('SIGTERM', () => runtime.shutdownRuntime({ reason: 'SIGTERM' }));
     const instance = runtime.startServer();
@@ -219,8 +226,12 @@ try {
       CLAUDEVILLE_DISABLE_GIT_ENRICHMENT: '1',
       CLAUDEVILLE_INGEST_TOKEN: 'security-smoke-token',
       CLAUDEVILLE_SMOKE_PORT: String(port),
+      TZ: 'Europe/London',
     },
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+  });
+  child.on('message', message => {
+    if (message === 'offline-weather-attempt') weatherAttempts++;
   });
   const listeningAddress = new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('server address was not reported')), 2000);
@@ -245,21 +256,38 @@ try {
   const noOrigin = await request(port);
   assert.equal(noOrigin.statusCode, 200, 'origin-less CLI requests must remain supported');
 
+  const weatherPath = '/api/weather?latitude=1&longitude=2&mode=real-sky';
+  const weatherHeaders = { 'X-ClaudeVille-Weather': 'real-sky' };
+  const optedOut = await request(port, { pathname: weatherPath });
+  assert.equal(optedOut.statusCode, 200);
+  assert.equal(optedOut.headers['cache-control'], 'no-store');
+  assert.deepEqual(JSON.parse(optedOut.body), { fetchedAt: null, hourly: null, refreshAt: null });
+  assert.equal(weatherAttempts, 0, 'weather requires explicit opt-in');
+
   for (const pathname of [
     '/api/providers',
     '/api/sessions',
     '/api/session-detail?provider=claude&sessionId=secret&project=%2Ftmp',
     '/api/tasks',
     '/api/usage',
+    weatherPath,
   ]) {
     const hostileOrigin = await request(port, {
       pathname,
       origin: 'https://attacker.example',
+      headers: pathname === weatherPath ? weatherHeaders : {},
     });
     assert.equal(hostileOrigin.statusCode, 403, `${pathname} accepted a hostile origin`);
     assert.doesNotMatch(hostileOrigin.body, /providers|sessions|homeDir|subscription|quota/);
     assert.equal(hostileOrigin.headers['access-control-allow-origin'], undefined);
   }
+  assert.equal(weatherAttempts, 0, 'a hostile origin cannot opt in');
+  const offline = await request(port, { pathname: weatherPath, headers: weatherHeaders });
+  assert.equal(offline.statusCode, 200);
+  assert.equal(JSON.parse(offline.body).hourly, null, 'weather is optional offline');
+  assert.equal(weatherAttempts, 1, 'opted-in weather tries the provider');
+  await request(port, { pathname: weatherPath, headers: weatherHeaders });
+  assert.equal(weatherAttempts, 1, 'a failed forecast is throttled');
 
   const hostileHost = await request(port, { host: 'attacker.example' });
   assert.equal(hostileHost.statusCode, 421);

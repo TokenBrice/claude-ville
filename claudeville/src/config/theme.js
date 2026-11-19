@@ -221,3 +221,20 @@ export const TEAM_HUES = Object.freeze([
     '#a26e88', '#8a814f', '#da9fa5', '#4d897e', '#c294b4',
     '#b38e5c', '#9c775e', '#7b7ba6', '#bcab92', '#bb9587',
 ]);
+
+// FK-7 — the eight colours Claude Code assigns teammates (`agentColor` in the
+// session payload), mapped onto painted house hues under the same contract:
+// OKLab L 0.59-0.69, chroma <= 0.104, dE >= 0.074 from every status hue,
+// >= 0.06 apart, >= 4.5:1 on --bg-1. Yellow is ochre, green sage and orange
+// clay, so none reads as needs-you, working or waiting; red is held darker
+// than error coral.
+export const HARNESS_HUES = Object.freeze({
+    red: '#b56760',
+    blue: '#5f86b8',
+    green: '#6f9a5e',
+    yellow: '#ad9a58',
+    purple: '#9a7cc0',
+    orange: '#b87a4c',
+    pink: '#c27f9e',
+    cyan: '#559fa8',
+});

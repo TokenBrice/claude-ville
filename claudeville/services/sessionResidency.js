@@ -22,7 +22,8 @@ const DEFAULT_MAX_RESIDENTS = 24;
 const RETAINED_TURN_STATES = new Set(['tool_pending']);
 
 class SessionResidency {
-  constructor({ ttlMs = DEFAULT_TTL_MS, maxResidents = DEFAULT_MAX_RESIDENTS } = {}) {
+  constructor({ ttlMs = DEFAULT_TTL_MS, maxResidents = DEFAULT_MAX_RESIDENTS, registrySettled = () => false } = {}) {
+    this.registrySettled = registrySettled;
     this.ttlMs = ttlMs;
     this.maxResidents = maxResidents;
     this._residents = new Map(); // sessionId → { session, residentSince, lastLiveAt }
@@ -47,7 +48,9 @@ class SessionResidency {
       // resumed; refreshing a still-live retained session is not a resumption.
       if (previous?.absent) this._stats.resumed++;
       this._residents.delete(id);
-      if (RETAINED_TURN_STATES.has(session.turnState) && session.freshness?.state !== 'stale') {
+      // Registry presence is checked live on each scan. A cached copy could outlive its pid.
+      if (RETAINED_TURN_STATES.has(session.turnState) && session.signalSource !== 'registry'
+        && !session.sessionEndedAt && session.freshness?.state !== 'stale') {
         if (!previous) this._stats.admitted++;
         this._residents.set(id, {
           session: { ...session },
@@ -64,7 +67,7 @@ class SessionResidency {
       if (liveIds.has(id)) continue;
       const hookExpired = record.session.signalSource === 'hook' && record.session.waitReason
         && record.session.signalObservedAt != null && now - record.session.signalObservedAt >= HOOK_WAIT_RETENTION_MS;
-      if (hookExpired || now - record.lastLiveAt > this.ttlMs) {
+      if (hookExpired || this.registrySettled(record.session) || now - record.lastLiveAt > this.ttlMs) {
         this._residents.delete(id);
         this._stats.expired++;
       }

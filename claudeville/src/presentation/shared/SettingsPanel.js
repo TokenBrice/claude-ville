@@ -3,6 +3,7 @@ import { eventBus } from '../../domain/events/DomainEvent.js';
 import { TokenUsage } from '../../domain/value-objects/TokenUsage.js';
 import { el, replaceChildren } from './DomSafe.js';
 import { getClientPerfMetrics } from './ClientPerfMetrics.js';
+import { OPEN_METEO_URL, WEATHER_LICENCE_URL, weatherMode } from './VillageWeatherSettings.js';
 import {
     HUSH_DURATION_MS,
     SOUND_PRESETS,
@@ -95,6 +96,7 @@ const TOWN_BAND_VOICE_CHOICES = Object.freeze([
 // but still focusable, so keyboard and screen-reader users reach the reason.
 const HDR_HIGHLIGHT_CHOICES = Object.freeze(HDR_HIGHLIGHT_MODES.map(mode => [mode, HDR_HIGHLIGHT_LABELS[mode]]));
 const HDR_DETAIL_ID = 'settingsHdrHighlightsDetail';
+const WEATHER_CHOICES = [['modeled', 'Modeled'], ['real-sky', 'Real sky']];
 
 function hdrHighlightsAvailability(status) {
     if (status && status.backend !== 'webgpu') {
@@ -318,6 +320,7 @@ export class SettingsPanel {
         onSidebarCollapsed,
         onReducedMotion,
         onHdrHighlights,
+        onVillageWeather,
         onReset,
         getVillageState,
         getChronicleStatus,
@@ -361,6 +364,7 @@ export class SettingsPanel {
         this.onSidebarCollapsed = onSidebarCollapsed;
         this.onReducedMotion = onReducedMotion;
         this.onHdrHighlights = onHdrHighlights || (value => writeHdrHighlights(value, storage));
+        this.onVillageWeather = onVillageWeather;
         this.onReset = onReset;
         this.getVillageState = getVillageState;
         this.getChronicleStatus = getChronicleStatus;
@@ -496,6 +500,23 @@ export class SettingsPanel {
         });
         this._renderHdr(readDisplayStatus());
         this._offDisplayStatus = onDisplayStatus(status => this._renderHdr(status));
+        const weatherRow = this._select('villageWeather', 'Village weather',
+            'For non-commercial use. Real sky shares your timezone city’s coordinates with ',
+            WEATHER_CHOICES, weatherMode(settings.villageWeather), this.onVillageWeather);
+        const detail = weatherRow.querySelector('.settings-control__detail');
+        const links = [
+            ['Open-Meteo', OPEN_METEO_URL, '. Forecast adapted under '],
+            ['CC BY 4.0', WEATHER_LICENCE_URL, '.'],
+        ];
+        for (const [label, href, suffix] of links) {
+            const link = el('a', { text: label });
+            link.href = href;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            detail.append(link, suffix);
+        }
+        detail.id = 'settingsVillageWeatherDetail';
+        this.controls.get('villageWeather').setAttribute('aria-describedby', detail.id);
         grid.append(
             this._checkbox('autoCamera', 'Automatic camera', 'Frame live action while the World is idle.', settings.autoCamera, this.onAutoCamera),
             this._checkbox('desktopAlerts', 'Desktop alerts', this.alertsAvailable
@@ -504,6 +525,7 @@ export class SettingsPanel {
             this._checkbox('sidebarCollapsed', 'Collapse sidebar', 'Keep the agent roster folded.', settings.sidebarCollapsed, this.onSidebarCollapsed),
             this._checkbox('reducedMotion', 'Reduce motion', 'Override the system preference for this browser.', settings.reducedMotion, this.onReducedMotion),
             hdrRow,
+            weatherRow,
         );
         return this._section('CONTROLS', 'settings-section--controls', [grid]);
     }
@@ -858,6 +880,9 @@ export class SettingsPanel {
         const hdrSelect = this.controls.get('hdrHighlights');
         const hdrMode = normalizeHdrHighlights(settings.hdrHighlights);
         if (hdrSelect && hdrSelect.value !== hdrMode) hdrSelect.value = hdrMode;
+        const weatherSelect = this.controls.get('villageWeather');
+        const mode = weatherMode(settings.villageWeather);
+        if (weatherSelect && weatherSelect.value !== mode) weatherSelect.value = mode;
         this._syncSound(settings);
         this._refreshOperationalRows();
     }

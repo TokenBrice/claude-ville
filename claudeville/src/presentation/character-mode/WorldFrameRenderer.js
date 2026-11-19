@@ -39,7 +39,7 @@ import { poolMaskRect, poolReceiverMask } from './CanvasPoolMask.js';
 import { drawCanvasWaterColumns } from './CanvasWaterState.js';
 import { drawCanvasEmitterCuts, drawMineCrystalGlow } from './EmitterCuts.js';
 import { sourceEnergyFor } from './AtmosphereState.js';
-import { groundOptionsFor, groundStateAt } from './GroundState.js';
+import { groundOptionsFor, groundStateAt, liquidPrecipitation } from './GroundState.js';
 import { ungradeRgb } from './CanvasGrade.js';
 import { PEAK, armPeakMarks, drawMomentEdgePlates, setMomentStage, takePeakMarks } from './EffectStamps.js';
 import { THOUGHT_PAINT } from './ThoughtColumn.js';
@@ -605,7 +605,8 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     renderer._setPostFxCanvasVisible?.(gpuWorldActive || postFxActive);
     renderer._resetScreenTransform(overlayCtx);
     overlayCtx.clearRect(0, 0, viewport.width, viewport.height);
-    renderer._surfaceWetness = Math.max(clamp01(Number(wx?.precipitation) || 0), renderer._groundState.wetness);
+    // EN-4 — live wetness from liquid rain only (winter snow keeps it dry).
+    renderer._surfaceWetness = Math.max(wx ? liquidPrecipitation(atmosphere, wx) : 0, renderer._groundState.wetness);
     // 5.2 roofs / 6.6 — roof snow, wet slate and eave drips step with the
     // same ground state and the live precipitation.
     renderer.buildingRenderer?.syncRoofWeather?.(atmosphere, renderer._groundState, renderer.motionScale ?? 1, renderer.motionTimeMs);

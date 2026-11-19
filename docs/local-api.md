@@ -12,13 +12,18 @@ The server is hardcoded to port `4000` and the IPv4 loopback interface. Requests
 | `GET /api/tasks` | Claude Code task groups from `~/.claude/tasks/`. Diagnostic; the UI does not fetch it. |
 | `GET /api/providers` | Detected providers, home directories, and per-provider health. |
 | `GET /api/usage` | Claude subscription, activity and quota, plus the Codex account quota ([fields](#usage-and-quota)). |
+| `GET /api/weather` | Optional hourly forecast for the server’s timezone city ([request and response](#village-weather)). |
 | `GET /api/perf` | Runtime counters: watchers, caches, adapter scan cost, event loop, memory. `eventLoop.processUtilization` (a `process.cpuUsage()` delta) is the honest idle measure; `eventLoop.utilization` over-reports while a sampling profiler such as `--cpu-prof` is attached. |
 | `GET /api/changelog` | Raw `CHANGELOG.md` text for the in-app changelog modal. |
 | `ws://localhost:4000/ws` | Same-origin snapshot, delta updates, and ping/pong heartbeats. |
 
 Claude sessions on `/api/sessions` expose `script` while `pendingTool` is a REPL or Poll wrapper. It contains `tool`, a sanitized `description` of up to 120 characters (or null), and `since` in epoch ms. Poll uses the latest REPL description from the same turn. Otherwise `script` is null. `lastTool` and `lastToolInput` retain the newest inner call. In `lastResults`, failures take priority within a tied burst.
 
-Claude's `turnStartedAt`, `model`, `reasoningEffort`, and `tokenUsage.contextWindow` survive virtual tool bursts. `cost.source` is `estimate` before a provider total, `provider` at that total, and `mixed` when `cost.usd` includes both the provider total and estimated usage after resume. One-hour cache writes cost twice the model's input rate.
+A Linux Claude main can report `signalSource: 'registry'` and `signalCertainty: 'observed'`. A registry-confirmed busy or waiting main stays listed with `resident: false` even after its transcript falls outside the activity window. A recognized wait supplies `approval`, `plan_review`, or `question` in `waitReason`. A pending hook for the same call can supply `pendingTool` and redacted `promptDetail`. It also mirrors a real pending call into `lastTool` and `lastToolInput`. An observed process exit sets `sessionEndedAt`, which survives removal of the PID file for the active window. A resumed process or newer transcript turn supersedes that exit.
+
+Codex, GLM and DeepSeek fleet threads carry `subagentKind: 'mcp'`, their recorded job label in `agentName`, and `parentSessionId` when launch evidence identifies a lead. For GLM and DeepSeek, both detail endpoints return `jobs`, newest first, capped at three. Each row has `kind` (ask or continue), `model`, `effort`, `startedAt`, `endedAt`, `status` and `durationMs`. Times are epoch milliseconds and missing fields are null. Duration covers only the recorded job.
+
+Claude's `turnStartedAt`, `model`, `reasoningEffort`, and `tokenUsage.contextWindow` survive virtual tool bursts. `cost.source` is `estimate` before a provider total, `provider` at that total, and `mixed` when `cost.usd` and `estimatedCost` both include the provider total plus estimated usage after resume. One-hour cache writes cost twice the model's input rate.
 
 Git identity on `/api/sessions` (all fields optional; a client keys a repository on `repoRoot || project`, so older servers still work):
 
@@ -40,6 +45,17 @@ The adapter contract has the extraction rules: [git event extraction](../claudev
   - `usedPercent` (0–100) and `resetsAt` (epoch ms) describe the binding window, the highest among windows that have not reset. Once its `resetsAt` passes, both are null: unknown, never 0 %.
   - `limitReached` is true at `usedPercent >= 100`, or whenever Codex reports `rate_limit_reached_type`. It drives account surfaces only (the Hourglass Belfry's lavender cord in the World and the Dashboard quota card) and never a session's status.
   - `observedAt` is the record's own time, so it can be hours old when no Codex session is live.
+  - `creditChange`, when present, is `{ delta, intervalMs, ageMs }`. `delta` is the newer finite balance minus the older one for the same private account and limit, calculated at the source decimal precision. A positive value is a balance rise, a negative value is a fall, and zero means the two readings agreed. `intervalMs` is the time between readings. `ageMs` is the age of `observedAt` when the payload was built, rounded down to whole minutes. Clients can use `observedAt` for a live age. Both readings must be within the last 30 minutes. The change measures the account balance only. Account and limit identifiers stay private.
+
+The Chronicle's spend ledger lives in the browser's IndexedDB. The panel reads the selected local date's `usageLedger:YYYY-MM-DD` record on demand and uses the displayed snapshot in Markdown and CSV. Historical rows contain observed new tokens, cache reads, recorded cost and the largest project by new tokens, with a provider fallback when no project is attributed. The coverage start is included when known (epoch ms in CSV). The record covers activity ClaudeVille observed while open in that browser. Recorded cost can mix provider-reported values and API estimates. Per-model totals are unavailable for past days. A missing date, a recorded zero, and a ledger read error each have distinct output. The timeline remains available when its read succeeds.
+
+## Village weather
+
+`GET /api/weather` requires `X-ClaudeVille-Weather: real-sky` to opt in. An ordinary GET returns `{ fetchedAt: null, hourly: null, refreshAt: null }` without contacting the provider. Coordinates come from the server’s timezone city table. The route ignores query parameters.
+
+Opted-in responses are `{ fetchedAt, hourly, refreshAt }` with `Cache-Control: no-store`. The timestamps are epoch milliseconds. `refreshAt` is the earliest next upstream attempt. `hourly` contains parallel arrays for `time` (epoch seconds in UTC), `weather_code`, `cloud_cover` (%), `precipitation` (mm), `snowfall` (cm), `wind_speed_10m` (km/h), `wind_direction_10m` (degrees from north), and `visibility` (m). A null `hourly` means the forecast is unavailable or expired. `fetchedAt` retains the last successful fetch time for the timezone if the forecast expires.
+
+The village adapts forecast data from [Open-Meteo](https://open-meteo.com/) under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The keyless endpoint is for [non-commercial use](https://open-meteo.com/en/terms).
 
 ## WebSocket messages
 

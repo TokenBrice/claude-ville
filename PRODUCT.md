@@ -10,7 +10,7 @@ A solo developer who runs several AI coding CLIs at once (Claude Code, Codex, Ge
 
 ## Product Purpose
 
-ClaudeVille turns invisible local agent activity into a place you can look at. It reads session files from multiple coding-CLI providers, normalizes them into one session model, and renders them two ways: an isometric pixel-art **World** (a medieval-fantasy village that runs on real time, its sky and light shifting from bright midday to torchlit night with the actual hour and weather, where agents are little adventurers and durable concepts are buildings) and a dense DOM **Dashboard** for precise scanning.
+ClaudeVille turns invisible local agent activity into a place you can look at. It reads session files from multiple coding-CLI providers, normalizes them into one session model, and renders them two ways: an isometric pixel-art **World** (a medieval-fantasy village where agents are little adventurers and durable concepts are buildings) and a dense DOM **Dashboard** for precise scanning. The World follows the actual local hour, from bright midday to torchlit night. Weather is modeled by default. The opt-in Real sky setting adapts a forecast for the system timezone’s city and returns to modeled weather when the forecast is unavailable or over three hours old.
 
 The village is the product. Success is not "an accurate dashboard"; it's a place worth leaving open. A developer keeps ClaudeVille on a second screen because watching their agents inhabit a living town is a genuine small joy, and because a glance tells them what is happening without breaking flow. Dashboard mode is the product-shaped escape hatch for when someone needs to read exact state; World mode is where the brand lives.
 

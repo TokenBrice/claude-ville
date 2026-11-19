@@ -270,7 +270,7 @@ test('both scene shaders wire the step the same way: after the sun band, before 
     assert.equal(new Set(Object.values(FRAME_BINDING)).size, Object.keys(FRAME_BINDING).length);
     assert.ok(FRAME_BINDINGS_WGSL.includes('@group(0) @binding(17) var shadeField: texture_2d<f32>;'));
     const fields = FRAME_UNIFORM_LAYOUT.fields.map(field => field.name);
-    assert.deepEqual(fields.slice(-2), ['shadeRect', 'shade']);
+    assert.deepEqual(fields.slice(fields.indexOf('mistBurn') + 1, fields.indexOf('mistBurn') + 3), ['shadeRect', 'shade']);
     assert.ok(glsl.includes("'u_shadeField', 'u_shadeRect', 'u_shade',"));
 });
 

@@ -223,6 +223,7 @@ test('FK-2: a shell or monitor Poll routes like Monitor using background evidenc
         assert.equal(toolVerbLabel('Poll', session.script.description, watcher), 'watch');
         const aperture = BuildingSprite.prototype._inspectionSessions.call({ agentSprites: [{ agent: watcher }] }, 'watchtower', now);
         assert.equal(aperture[0]?.tool, 'watch');
+        assert.equal(currentToolPresentation({ ...watcher, status: 'completed' }).isIdle, true);
     }
     const crewPoll = { turnState: 'tool_pending', pendingTool: 'Poll', backgroundPending: { count: 1, kinds: ['agent', 'bash'] } };
     assert.equal(toolVerbLabel('Poll', '', crewPoll), 'wait on crew');

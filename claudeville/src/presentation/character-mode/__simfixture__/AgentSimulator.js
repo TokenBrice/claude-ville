@@ -73,6 +73,7 @@ function buildAgent(spec, timeBase, rebase = value => value) {
         agentId: spec.agentId || spec.id,
         agentName: spec.name,
         agentType: spec.agentType || 'main',
+        subagentKind: spec.subagentKind,
         parentSessionId: spec.parentId || null,
         workflowId: spec.workflowId || null,
         workflowName: spec.workflowName || null,
@@ -113,7 +114,6 @@ function buildAgent(spec, timeBase, rebase = value => value) {
     agent.promptDetail = spec.promptDetail || null;
     // Wire fields the client reads off the agent but Agent's constructor does
     // not take (AgentManager assigns them the same way).
-    if (spec.subagentKind) agent.subagentKind = spec.subagentKind;
     if (spec.agentColor) agent.agentColor = spec.agentColor;
     if (spec.script) agent.script = { ...spec.script, since: rebase(Number(spec.script.since)) };
     const position = positionFromSpec(spec.position);

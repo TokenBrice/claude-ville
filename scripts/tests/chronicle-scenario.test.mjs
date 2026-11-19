@@ -14,7 +14,8 @@ const time = minute => bounds.lower + minute * 60_000;
 const dayRows = {
     events: [
         { id: 'a0', ts: time(-1), kind: 'arrived', agentId: 'yesterday' },
-        { id: 'a1', ts: time(1), kind: 'arrived', agentId: 'one', agentName: 'Reed', provider: 'codex', project: 'village' },
+        { id: 'a1', ts: time(1), kind: 'arrived', agentId: 'one', agentName: 'Reed', project: 'village' },
+        { id: 'turn', ts: time(4), kind: 'completed', agentId: 'one' },
         { id: 'a2', ts: time(5), kind: 'waiting', agentId: 'two', provider: 'claude', lastMessage: 'never stored' },
         { id: 'a3', ts: time(8), kind: 'commit', agentId: 'git-repo', provider: 'git', project: 'village', sha: 'a123bde' },
         { id: 'a4', ts: time(10), kind: 'completed', sessionEndedAt: time(10), agentId: 'one' },
@@ -24,9 +25,9 @@ const dayRows = {
         { id: 'a8', ts: time(1440), kind: 'arrived', agentId: 'tomorrow' },
     ],
     samples: [
-        { ts: time(6), agentId: 'one', tileX: 21, tileY: 20, model: 'gpt-6-astra' },
+        { ts: time(6), agentId: 'one', tileX: 21, tileY: 20, model: 'gpt-6-sol' },
         { ts: time(3), agentId: 'one', tileX: 18, tileY: 19, model: 'gpt-6-astra' },
-        { ts: time(2), agentId: 'one', tileX: 17, tileY: 19, model: 'gpt-6-astra' },
+        { ts: time(2), agentId: 'one', tileX: 17, tileY: 19, model: 'gpt-6-astra', provider: 'codex' },
         { ts: time(12), agentId: 'one', tileX: 24, tileY: 24 }, // retained grace-period sample
         { ts: time(3), agentId: 'trail-only', provider: 'gemini', tileX: 2, tileY: 9 },
     ],
@@ -44,12 +45,16 @@ test('recorded day keeps observed positions and lifecycle, independent harbor ev
     sim.advanceReplay(1.5 * minute, false);
     assert.equal(world.agents.size, 1);
     assert.deepEqual({ ...world.agents.get('one').position }, VILLAGE_GATE.inside);
+    assert.equal(world.agents.get('one').model, 'gpt-6-astra');
+    assert.equal(world.agents.get('one').provider, 'codex');
     sim.advanceReplay(2 * minute, false);
     assert.deepEqual({ ...world.agents.get('one').position }, { tileX: 17, tileY: 19 });
     assert.equal(world.agents.get('one').model, 'gpt-6-astra');
     assert.equal(world.agents.get('trail-only').provider, 'gemini');
     sim.advanceReplay(5 * minute, false);
     assert.deepEqual(world.agents.get('one').position, { tileX: 21, tileY: 20 });
+    assert.equal(world.agents.get('one').model, 'gpt-6-sol');
+    assert.equal(world.agents.get('one').status, 'completed');
     const gate = world.agents.get('two');
     assert.equal(gate.status, 'waiting_on_user');
     assert.deepEqual({ ...gate.position }, VILLAGE_GATE.inside);
@@ -65,6 +70,7 @@ test('recorded day keeps observed positions and lifecycle, independent harbor ev
     assert.equal(sim.pendingGit[1].success, undefined);
     sim.advanceReplay(90 * minute, false);
     assert.deepEqual({ ...world.agents.get('one').position }, VILLAGE_GATE.inside);
+    assert.equal(world.agents.get('one').model, 'unknown');
     sim.advanceReplay(90000, false);
     assert.equal(sim.replayClock.now, bounds.upper);
     assert.ok(!world.agents.has('one'));

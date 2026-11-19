@@ -69,7 +69,7 @@
 
 import { ART_RAMPS } from '../../config/artPalette.js';
 import { releaseCanvasBackingStore } from './CanvasBudget.js';
-import { isWinterMonth, PRECIPITATING, snowBucketOf } from './GroundState.js';
+import { liquidPrecipitation, PRECIPITATING, snowBucketOf } from './GroundState.js';
 
 export const ROOF_WET_QUANTA = 4;
 export const ROOF_DRIP_FRAMES = 12;
@@ -906,13 +906,11 @@ export class RoofWeather {
      * C-W2 `ground` state, the renderer's motion scale and MotionClock time.
      */
     sync(atmosphere, ground, motionScale = 1, motionTimeMs = 0) {
-        const date = atmosphere?.effectiveDate;
-        const winter = date instanceof Date && !Number.isNaN(date.getTime()) && isWinterMonth(date.getMonth());
-        const precipitation = Number(atmosphere?.weather?.precipitation) || 0;
-        const raining = !winter && precipitation > PRECIPITATING;
+        const precipitation = atmosphere?.weather?.precipitation == null ? 0 : liquidPrecipitation(atmosphere);
+        const raining = precipitation > PRECIPITATING;
         // Live rain wets the slate at once; the ground state keeps it wet
         // after (the same rule as the street's `_surfaceWetness`).
-        const wetness = winter ? Number(ground?.wetness) || 0 : Math.max(raining ? precipitation : 0, Number(ground?.wetness) || 0);
+        const wetness = Math.max(raining ? precipitation : 0, Number(ground?.wetness) || 0);
         this.bucket = snowBucketOf(ground?.snowCover);
         this.wetQ = roofWetQuantum(wetness);
         this.raining = raining && motionScale > 0;

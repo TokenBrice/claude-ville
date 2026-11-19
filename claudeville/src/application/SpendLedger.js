@@ -72,17 +72,21 @@ function addTo(map, key, { tokens = 0, cacheRead = 0, cost = 0 }) {
     map.set(key, total);
 }
 
+function restoreTotal(row) {
+    return {
+        tokens: Number(row.tokens) || 0,
+        cacheRead: Number(row.cacheRead) || 0,
+        cost: Number(row.cost) || 0,
+    };
+}
+
 function restoreTotals(value, { session = false } = {}) {
     const totals = new Map();
     if (!Array.isArray(value)) return totals;
     for (const row of value) {
         const key = String(row?.key || '').trim();
         if (!key) continue;
-        const total = {
-            tokens: Number(row.tokens) || 0,
-            cacheRead: Number(row.cacheRead) || 0,
-            cost: Number(row.cost) || 0,
-        };
+        const total = restoreTotal(row);
         if (session) {
             total.name = typeof row.name === 'string' && row.name ? row.name : null;
             total.project = String(row.project || '').trim() || 'unattributed';
@@ -95,6 +99,18 @@ function restoreTotals(value, { session = false } = {}) {
 
 function bySpend(a, b) {
     return b.cost - a.cost || b.tokens - a.tokens || a.key.localeCompare(b.key);
+}
+
+function coverageStart(value) {
+    const timestamp = Number(value);
+    return Number.isFinite(timestamp) && timestamp > 0 ? timestamp : null;
+}
+
+function largestObserved(totals, kind, unattributedKey) {
+    const byTokens = (a, b) => b.tokens - a.tokens || b.cacheRead - a.cacheRead || bySpend(a, b);
+    const rows = [...totals].filter(([key, row]) => key !== unattributedKey && (row.tokens || row.cacheRead || row.cost));
+    const largest = rows.map(([key, row]) => ({ key, ...row })).sort(byTokens)[0];
+    return largest ? { kind, key: largest.key } : null;
 }
 
 export class SpendLedger {
@@ -434,6 +450,28 @@ export class SpendLedger {
         return { since: this.coverageSince, dayStart: startOfLocalDay(now) };
     }
 
+    /** Dated totals for the Chronicle, with null for an absent historical record. */
+    async readDay(dateKey) {
+        this.current();
+        let total = this.today;
+        let since = this.coverageSince;
+        let projects = this._todayByProject;
+        let providers = this._todayByProvider;
+        if (dateKey !== this.date) {
+            await this._writeTail;
+            total = await this._readStoredDay(dateKey);
+            if (!total) return null;
+            since = coverageStart(total.coverageSince);
+            projects = restoreTotals(total.projects);
+            providers = restoreTotals(total.providers);
+        }
+        return {
+            ...restoreTotal(total),
+            coverageSince: since,
+            largest: largestObserved(projects, 'project', 'unattributed') || largestObserved(providers, 'provider', 'unknown'),
+        };
+    }
+
     _rollOver(date) {
         // Snapshot the old day before clearing it, even within one cohort.
         this._finishCohort();
@@ -452,24 +490,24 @@ export class SpendLedger {
         // its lifetime.
     }
 
+    async _readStoredDay(dateKey) {
+        const record = await this.store?.get('meta', `${LEDGER_KEY_PREFIX}${dateKey}`);
+        return record?.value ?? null;
+    }
+
     async _load(startedAt = Date.now()) {
         if (this._loaded) return;
         this._loaded = true;
         // A day with no stored record starts its coverage now.
         let since = startedAt;
         try {
-            const record = this.store ? await this.store.get('meta', `${LEDGER_KEY_PREFIX}${this.date}`) : null;
-            if (record?.value) {
-                this.today = {
-                    tokens: Number(record.value.tokens) || 0,
-                    cacheRead: Number(record.value.cacheRead) || 0,
-                    cost: Number(record.value.cost) || 0,
-                };
-                this._todayByProject = restoreTotals(record.value.projects);
-                this._todayByProvider = restoreTotals(record.value.providers);
-                this._todayBySession = restoreTotals(record.value.sessions, { session: true });
-                const stored = Number(record.value.coverageSince);
-                since = Number.isFinite(stored) && stored > 0 ? stored : null;
+            const value = await this._readStoredDay(this.date);
+            if (value) {
+                this.today = restoreTotal(value);
+                this._todayByProject = restoreTotals(value.projects);
+                this._todayByProvider = restoreTotals(value.providers);
+                this._todayBySession = restoreTotals(value.sessions, { session: true });
+                since = coverageStart(value.coverageSince);
             }
         } catch { /* a missing ledger just starts the day at zero */ }
         this.coverageSince = since;

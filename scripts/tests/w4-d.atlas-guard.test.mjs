@@ -6,6 +6,8 @@ import {
     channelsForManifest,
     companionChannels,
 } from '../sprites/channel-registry.mjs';
+import { createAtlasPlan, resolveAtlasDefinition } from '../sprites/atlas-layout.mjs';
+import { loadSpriteManifest } from '../sprites/manifest-utils.mjs';
 import { packFrames } from '../sprites/atlas-packing.mjs';
 
 test('atlas packing fails loudly when the power-of-two page exceeds max height', () => {
@@ -39,4 +41,16 @@ test('channel enumeration follows the manifest contract and derives companions',
     const manifest = { materialContract: { channels: futureChannels } };
     assert.deepEqual(channelsForManifest(manifest), futureChannels);
     assert.deepEqual(companionChannels(futureChannels), futureChannels.slice(1));
+});
+
+test('the pilot trims only the unused power-of-two margins', () => {
+    const manifest = loadSpriteManifest();
+    const atlas = resolveAtlasDefinition(manifest, 'world-pilot');
+    const compact = createAtlasPlan(manifest, atlas);
+    const padded = createAtlasPlan(manifest, { ...atlas, powerOfTwo: true });
+    assert.deepEqual(compact.frames, padded.frames);
+    assert.deepEqual(compact.packOrder, padded.packOrder);
+    const rects = Object.values(compact.frames).map(frame => frame.paddedRect);
+    assert.equal(compact.width, Math.max(...rects.map(r => r.x + r.w)));
+    assert.equal(compact.height, Math.max(...rects.map(r => r.y + r.h)));
 });

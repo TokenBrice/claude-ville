@@ -88,8 +88,18 @@ export function buildChronicleScenario({ lower, upper }, { events, samples }) {
                 tokens: null,
             };
             timeline.push({ ts, event: 'agent:add', agent });
-            present.set(agentId, { ...agent });
+            present.set(agentId, { ...agent, gateArrival: sample ? null : agent });
         } else {
+            if (sample && previous.gateArrival) {
+                // The first retained tile identifies this visit's body before it leaves the gate.
+                for (const key of ['model', 'provider']) {
+                    if (row[key] && previous.gateArrival[key] === 'unknown') {
+                        if (previous[key] === 'unknown') previous[key] = row[key];
+                        previous.gateArrival[key] = previous[key];
+                    }
+                }
+                previous.gateArrival = null;
+            }
             const update = {};
             if (position && (position.tileX !== previous.position.tileX || position.tileY !== previous.position.tileY)) update.position = position;
             if (row.model && row.model !== previous.model) update.model = row.model;

@@ -12,7 +12,6 @@
 import {
     COAST_FIELD_FLAGS,
     COAST_PALETTE,
-    MIRROR_STORM,
     OPEN_SEA_DEEPEST,
     OPEN_SEA_LIGHT_REACH,
     OPEN_SEA_STOP_SEAM,
@@ -496,17 +495,13 @@ fn staticWaterDashes(color0: vec3f, px: vec2f) -> vec3f {
     return color * WATER_CAST * (1.0 + contrast * onDash * lit);
 }
 fn mirrorBaseStop(world: vec2f) -> i32 {
-    if (frame.coastRect.z <= 0.0) { return -1; }
-    let texel = vec2i(floor(world - frame.coastRect.xy));
+    if (frame.mirrorRect.z <= 0.0) { return -1; }
+    let texel = vec2i(floor(world - frame.mirrorRect.xy));
     let cell = texel >> vec2u(1u);
-    if (cell.x < 0 || cell.y < 0 || cell.x >= i32(frame.coastRect.z) || cell.y >= i32(frame.coastRect.w)) { return -1; }
+    if (cell.x < 0 || cell.y < 0 || cell.x >= i32(frame.mirrorRect.z) || cell.y >= i32(frame.mirrorRect.w)) { return -1; }
     let rows = textureLoad(coastField, cell, 0).ba;
     let packed = i32(select(rows.y, rows.x, (texel.y & 1) == 0) * 255.0 + 0.5);
     return (select(packed >> 4u, packed, (texel.x & 1) == 0) & 15) - 1;
-}
-fn mirrorStormDrop() -> f32 {
-    let share = clamp((frame.weather.x - ${MIRROR_STORM.from.toFixed(2)}) / ${MIRROR_STORM.span.toFixed(2)}, 0.0, 1.0);
-    return floor(share * ${MIRROR_STORM.steps.toFixed(1)} + 0.5) / ${MIRROR_STORM.steps.toFixed(1)};
 }
 fn stillPawAt(p: vec2f) -> f32 {
     if (frame.stillWater.x <= 0.0) { return 0.0; }
@@ -517,8 +512,8 @@ fn stillPawAt(p: vec2f) -> f32 {
 fn mirrorStormColour(color: vec3f, px: vec2f, gone: ptr<function, bool>) -> vec3f {
     *gone = false;
     if (batch.terrainBatch == 0u) { return color; }
-    var drop = 0.0;
-    if (frame.weather.x > ${MIRROR_STORM.from.toFixed(2)}) { drop = mirrorStormDrop(); }
+    // EN-7 — the frame's one rain break (GLSL u_mirrorBreak).
+    var drop = frame.mirrorBreak;
     var sd: f32;
     var flags: u32;
     if (frame.stillWater.x > 0.0 && coastFieldAt(px, &sd, &flags) && (flags & 1u) != 0u && (flags & ${COAST_FIELD_FLAGS.lagoon}u) != 0u) {
