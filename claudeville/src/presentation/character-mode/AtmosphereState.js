@@ -26,6 +26,7 @@
 import { applyGradeToRgb, evaluateGrade, lampCourseAt } from './GradeEvaluator.js';
 import { ART_RAMPS } from '../../config/artPalette.js';
 import { lookStrength } from './LookStrengths.js';
+import { snowfallOn } from './GroundState.js';
 import { WIND_MAX, baseWindX, windAt, windSpeedForType } from './Wind.js';
 import {
     SUNRISE_ALTITUDE_DEG,
@@ -1313,7 +1314,7 @@ export function sourceEnergyEnvelope(minuteOfDay, weather = null, dayShift = nul
 let _lightGradeKey = '';
 let _lightGrade = null;
 
-function lightGradeFor(minute, weather, moonFill, shift) {
+function lightGradeFor(minute, weather, moonFill, shift, snowfall = 0) {
     const key = [
         Math.round(minute * 4),
         weather.type,
@@ -1324,6 +1325,7 @@ function lightGradeFor(minute, weather, moonFill, shift) {
         shift.sunriseShift.toFixed(2),
         shift.sunsetShift.toFixed(2),
         (shift.goldenShift ?? shift.sunsetShift).toFixed(2),
+        Math.round(snowfall * 20),
     ].join('|');
     if (_lightGrade && key === _lightGradeKey) return _lightGrade;
     _lightGradeKey = key;
@@ -1335,6 +1337,7 @@ function lightGradeFor(minute, weather, moonFill, shift) {
             sunriseShift: shift.sunriseShift,
             sunsetShift: shift.sunsetShift,
             goldenShift: shift.goldenShift ?? shift.sunsetShift,
+            snowfall,
         }),
         cacheKey: key,
     });
@@ -1529,7 +1532,9 @@ export function createAtmosphereSnapshot({
     const fogBucket = Math.round((weather.fog || 0) * 10);
     const effectiveMotionScale = preferredMotionScale(motionScale);
     const driftEnabled = effectiveMotionScale > 0;
-    const lightGrade = lightGradeFor(minute, weather, lighting.moonFill, shift);
+    // EY-4 — settling snow wears its own grade (date and weather only, V3).
+    const snowfall = snowfallOn(effectiveDate.getMonth(), weather) ? lookStrength('ey4') : 0;
+    const lightGrade = lightGradeFor(minute, weather, lighting.moonFill, shift, snowfall);
     const sunElevationNow = sunElevationAt(solarDay, minute);
 
     return {
