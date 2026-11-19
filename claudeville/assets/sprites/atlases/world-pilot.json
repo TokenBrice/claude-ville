@@ -753,7 +753,7 @@
   "channelSha256": {
     "albedo": "96f6f8415bb6854448d05f09ceffd8bb7a405a23a79cf4b4435e717c2da80cea",
     "emissive": "6e577e0bdba53a99a8c751ff1b142ab3e425e2be0f2a125e1a0357a408c36148",
-    "material": "eb51a554e9afdf2bdbc1dfbe266043f487d206c25d7453c76f56b0f0bba17b8b",
+    "material": "6c6000746aea3e5d6652601889fd59a45c0c3a4507a5206dd1b5efad2a1db420",
     "occluder": "5195402566b90d815619e4fc632e87d023c98b2e84e25d6bfd4412fe58980981"
   },
   "channels": {
@@ -11380,7 +11380,7 @@
       },
       "sidecars": {
         "emissive": "buildings/building.tavern/base.emissive.png",
-        "material": null,
+        "material": "buildings/building.tavern/base.material.png",
         "occluder": "buildings/building.tavern/base.occluder.png"
       },
       "sourcePath": "buildings/building.tavern/base.png",

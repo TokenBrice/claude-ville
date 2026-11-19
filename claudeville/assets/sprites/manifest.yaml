@@ -2129,6 +2129,9 @@ buildings:
     height: 288
     anchor: [158, 218]
     materialClass: stone
+    # EN-2 — base.material.png: the oak arcade, bar, kegs and half-timbering
+    # are timber (scripts/sprites/paint-facade-materials.mjs).
+    materialSidecar: true
     emissiveSidecar: true
     occluderSidecar: true
     surfaceCode: true

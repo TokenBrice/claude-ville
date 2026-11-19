@@ -892,5 +892,17 @@ npm run sprites:sidecar-mask-fix -- \
 ```
 
 Remove `--dry-run` only after reviewing the target and then add the matching
-`<channel>Sidecar: true` manifest opt-in. Re-bake, validate, and inspect the
+`<channel>Sidecar: true` manifest opt-in.
+
+Command's and the Tavern's material sidecars (EN-2) come from
+`node scripts/sprites/paint-facade-materials.mjs` (`--check` runs inside
+`npm run sprites:audit-refresh`): reviewed regions plus a hue rule inside
+them, never luminance. Command's arched gate leaves are timber and their
+straps, ring pulls and nails metal, as are the gilt crest over the gate and
+the two iron braziers; the Tavern's oak arcade, bar, kegs, half-timbering and
+eave boards are timber, while its ashlar wall, plaster, slate and glass stay
+stone. No class from the roof-snow exclusion set (foliage, fabric,
+glass-rune, fire) is painted, so roof weather is unchanged, and the
+firelight exclusions (`RAMP_LANDMARKS`) are untouched. The albedo is not
+edited: the art already paints oak and iron, so Canvas and MINIMAL keep it. Re-bake, validate, and inspect the
 channel contact sheet before committing a sidecar.
