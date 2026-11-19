@@ -1,4 +1,4 @@
-import { astraWeaponPose } from './AstraWeaponPose.js';
+import { ASTRA_WRIST_TABLES, astraWeaponPose } from './AstraWeaponPose.js';
 import { DEFAULT_CELL, DIRECTIONS } from './SpriteSheet.js';
 import { CODEX_CELESTIAL_GRIPS } from './CodexCelestialGrips.js';
 import { CODEX_PALADIN_GRIPS } from './CodexPaladinGrips.js';
@@ -22,8 +22,8 @@ export function codexPoseGripped(spriteId, group) {
 // `geometry.cell` is the base sheet cell (walk/idle row); an authored strip
 // pose names its group and frame instead (`poseGroup`, `poseFrame`).
 export function codexWeaponPose(spriteId, geometry, direction, equipment) {
-    if (spriteId === 'agent.codex.gpt6astra') {
-        const pose = astraWeaponPose(geometry, direction, equipment);
+    if (Object.hasOwn(ASTRA_WRIST_TABLES, spriteId)) {
+        const pose = astraWeaponPose(geometry, direction, equipment, spriteId);
         return pose && { ...pose, backLayer: pose.behindBody || direction === 'n', palette: ASTRA_PALETTE };
     }
     const profile = CODEX_GRIP_PROFILES[spriteId];
