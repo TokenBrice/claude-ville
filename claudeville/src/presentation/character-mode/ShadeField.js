@@ -1192,6 +1192,8 @@ function stateFor(renderer) {
         castersAt: -Infinity,
         // What is up: `{ key, fieldKey, field, canvas, revision }`.
         ready: null,
+        canvasDirty: false,
+        receiversDirty: false,
         job: null,
         cancelIdle: null,
         // SD-2 — the view plane (`{ key, facet, bounds }`, good while the
@@ -1232,9 +1234,16 @@ function planJob(state, renderer) {
     const { shade, water, waterRevision, atomic, receivers } = state.want;
     const fieldKey = `${state.casters.key}#${shade.key}${receivers ? '#r' : ''}`;
     const key = `${fieldKey}#${shade.color.join(',')}#${waterRevision ?? ''}${atomic ? '#a' : ''}`;
-    if (state.ready?.key === key || state.job?.key === key) return;
+    if (state.job?.key === key) return;
+    // The resident painter reuses the published backing. Rebuild anything an
+    // abandoned job changed before treating the ready key as a cache hit.
+    if (state.ready?.key === key && !state.canvasDirty && !state.receiversDirty) {
+        state.job = null;
+        state.image = null;
+        return;
+    }
     const job = { key, fieldKey, rgb: shade.color, water, atomic, viewBuild: null, build: null, field: null, paintRow: -1 };
-    if (state.ready?.fieldKey === fieldKey) {
+    if (state.ready?.fieldKey === fieldKey && !state.receiversDirty) {
         job.field = state.ready.field;
         job.paintRow = 0;
     } else {
@@ -1279,7 +1288,11 @@ function runJob(state, budgetMs) {
             job.viewBuild = null;
             if (performance.now() >= deadline) return;
         }
-        if (!job.build) job.build = createShadeFieldBuild({ ...job.options, view: job.options.texels ? state.view : null });
+        if (!job.build) {
+            const { texels } = job.options;
+            if (texels && texels === state.ready?.field.texels) state.receiversDirty = true;
+            job.build = createShadeFieldBuild({ ...job.options, view: texels ? state.view : null });
+        }
         if (!job.build.step(Math.max(0, deadline - performance.now()))) return;
         job.field = job.build.field;
         job.paintRow = 0;
@@ -1294,6 +1307,7 @@ function runJob(state, budgetMs) {
         } else {
             paintShadeCells(field, state.image.data, job.rgb, job.paintRow, row1, job.water);
             state.ctx.putImageData(state.image, 0, job.paintRow, 0, 0, field.cols, row1 - job.paintRow);
+            if (state.canvas === state.ready?.canvas) state.canvasDirty = true;
         }
         job.paintRow = row1;
     }
@@ -1304,6 +1318,8 @@ function runJob(state, budgetMs) {
     state.revision++;
     if (job.build) field.revision = state.revision;
     state.ready = { key: job.key, fieldKey: job.fieldKey, field, canvas: state.canvas, revision: state.revision };
+    state.canvasDirty = false;
+    state.receiversDirty = false;
     state.job = null;
 }
 

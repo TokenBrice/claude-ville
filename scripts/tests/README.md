@@ -39,8 +39,9 @@ Set `CLAUDEVILLE_TEST_TMPDIR` to a writable directory when the normal temporary 
 | `release-changelog.test.mjs` | Release header parsing, exact extraction, version rejection, and read-only/write preparation behavior. |
 | `catalog-check.test.mjs` | Smoke files, verification npm scripts, and `docs/*.md` files remain cataloged. |
 | `gpu-resource-lifecycle.test.mjs` | Fragment integer precision, binding restoration for typed uploads, and scene flags across direct draws and replay. |
-| `shade-field.test.mjs`, `agent-atlas-slots.test.mjs` | Shade backing release after suspension and retained channel pixels when an atlas slot changes owner. |
-| `ground-weather-field.test.mjs`, `weather-truth.test.mjs` | Weather bake allocation count, atmosphere freeze across midnight, and active rain and wet-ground parity fixtures. |
+| `shade-field.test.mjs`, `lamp-silhouette.test.mjs`, `agent-atlas-slots.test.mjs` | Shade backing release after suspension, restoration after a withdrawn build, silhouette clipping after scene changes, and retained channel pixels when an atlas slot changes owner. |
+| `ground-weather-field.test.mjs`, `weather-truth.test.mjs` | Weather bake allocation count, atmosphere freeze and generated front continuity across midnight, live and ground-history agreement, and active rain and wet-ground parity fixtures. |
+| `world-rain.test.mjs`, `webgpu-fallback-swap.test.mjs` | Seeded static rain, bounded fall motion, and phase continuity through both resident backend swap directions. |
 | `o2-prompt-plan-mapping.test.mjs` | Prompt, TodoWrite, and branch payload bounds plus signature-driven live Agent updates. |
 | `agent-manager-digest.test.mjs` | The AgentManager change digest sees a git event or tool result edited at any index (one bounded key per row), and a freshness re-stamp alone never re-upserts a villager. |
 | `tool-identity-lowercase.test.mjs` | Lower-case OMP tool buildings, reasons, verbs and glyph categories; code-inspection and documentation exceptions; unchanged capitalized tool buildings. |

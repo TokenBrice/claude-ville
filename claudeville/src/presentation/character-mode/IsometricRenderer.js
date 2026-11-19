@@ -1731,6 +1731,8 @@ export class IsometricRenderer {
         this._worldSwap = null;
         swap.previous = this.gpuWorld;
         swap.gpuWorld.resize?.(swap.previous.width, swap.previous.height);
+        // Both backends keep the same fall history even if the swap frame is retried.
+        if (swap.previous._rain && swap.gpuWorld._rain) swap.gpuWorld._rain.motion = swap.previous._rain.motion;
         const ladder = swap.previous.qualityLadder?.getState?.();
         if (ladder && swap.gpuWorld.qualityLadder) {
             swap.gpuWorld.qualityLadder.reset(ladder.level);

@@ -7,6 +7,7 @@ import {
     createAtmosphereSnapshot,
     resolveWeather,
     resolveWeatherAt,
+    weatherHistorySampler,
     weatherTypeFromRoll,
 } from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
 import { groundOptionsFor, groundStateAt } from '../../claudeville/src/presentation/character-mode/GroundState.js';
@@ -73,6 +74,26 @@ test('two dates yield different weather timelines (no null seed coerces to 0)', 
         assert.notEqual(resolveWeather(date, { type: 'rain', seed: null }, { seedOverride }).seed, 0);
     }
     assert.equal(resolveWeather(date, { type: 'rain' }, { seedOverride: 7 }).seed, 7);
+});
+
+test('generated fronts and wind cross every local midnight, including DST dates and New Year', () => {
+    for (let day = 1; day <= 365; day++) {
+        const midnight = new Date(2026, 0, 1 + day);
+        const beforeDate = new Date(+midnight - 1);
+        const before = resolveWeather(beforeDate);
+        const after = resolveWeather(midnight);
+        const boundary = midnight.toDateString();
+        assert.equal(after.type, before.type, boundary);
+        for (const key of ['precipitation', 'cloudCover', 'fog', 'intensity', 'windX']) {
+            assert.ok(Math.abs(after[key] - before[key]) < 1e-6, `${boundary} ${key}: ${before[key]} → ${after[key]}`);
+        }
+        const historyBefore = weatherHistorySampler(beforeDate)(1440 - 1 / 60000);
+        const historyAfter = weatherHistorySampler(midnight)(0);
+        for (const key of ['type', 'precipitation', 'cloudCover']) {
+            assert.equal(historyBefore[key], before[key], boundary);
+            assert.equal(historyAfter[key], after[key], boundary);
+        }
+    }
 });
 
 // WX-1 (look `wx1`, on by default since the operator approved it): night
