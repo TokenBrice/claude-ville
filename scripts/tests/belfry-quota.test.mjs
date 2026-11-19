@@ -100,3 +100,43 @@ test('a glass drains for ten minutes after its reading rises, and a fall or no r
     drain = belfryDrainStep(drain, read(0.05, 45), 420_000);
     assert.equal(belfryDraining(drain, 'codex', 420_000), false, 'the first reading back is no rise');
 });
+
+test('SG-3: the Belfry words the last Codex balance change; zero means the readings agreed', () => {
+    const now = 10 * HOUR;
+    const codex = { usedPercent: 100, limitReached: true, credits: { balance: 2510.33 }, observedAt: now - 3 * 60_000 };
+    const fell = belfryTooltip({ codex: { ...codex, creditChange: { delta: -31.83273775, intervalMs: 60_000, ageMs: 180_000 } } }, now);
+    assert.match(fell, /balance fell 31\.83 credits between readings 1m apart · seen 3m ago/);
+    const rose = belfryTooltip({ codex: { ...codex, creditChange: { delta: 500, intervalMs: 120_000, ageMs: 0 } } }, now);
+    assert.match(rose, /balance rose 500 credits between readings 2m apart/);
+    const agreed = belfryTooltip({ codex: { ...codex, creditChange: { delta: 0, intervalMs: 60_000, ageMs: 0 } } }, now);
+    assert.match(agreed, /two balance readings 1m apart agreed/);
+    assert.doesNotMatch(agreed, /no spend|fell|rose/);
+    assert.doesNotMatch(belfryTooltip({ codex }, now), /balance/);
+});
+
+test('the Belfry names the highest active Claude limit with kind, scope and severity', () => {
+    const now = 10 * HOUR;
+    const quota = { fiveHour: null, sevenDay: 0.68, highestActiveLimit: {
+        kind: 'weekly_all', scope: null, severity: 'warning', usedPercent: 68, resetsAt: now + 2 * 24 * HOUR,
+    } };
+    assert.match(belfryTooltip({ quota }, now), /Claude: 7-day 68% used · highest active limit weekly 68% used \(warning\), resets in 2d/);
+    const calm = belfryTooltip({ quota: { highestActiveLimit: {
+        kind: 'weekly_scoped', scope: { model: 'claude-opus-5-5' }, severity: 'normal', usedPercent: 12, resetsAt: null,
+    } } }, now);
+    assert.match(calm, /Claude: highest active limit weekly \(claude-opus-5-5\) 12% used$/m, 'calm: no severity word');
+    assert.doesNotMatch(belfryTooltip({ quota }, now), /LIMIT/);
+});
+
+test('SG-3: the Dashboard quota card carries the short balance change and the Claude limit facts', async () => {
+    const { formatCreditChange, quotaLimitFacts } = await import('../../claudeville/src/presentation/shared/Formatters.js');
+    assert.equal(formatCreditChange({ delta: -31.83273775, intervalMs: 60_000 }, { short: true }), 'fell 31.83 in 1m');
+    assert.equal(formatCreditChange({ delta: 0, intervalMs: 60_000 }, { short: true }), '2 readings 1m apart agreed');
+    assert.equal(formatCreditChange({ delta: 1e-14, intervalMs: 60_000 }), 'balance rose under 0.01 credits between readings 1m apart');
+    assert.equal(formatCreditChange(null), '');
+    assert.equal(formatCreditChange({ delta: 'x', intervalMs: 1 }), '');
+    assert.deepEqual(quotaLimitFacts({ kind: 'weekly_all', scope: null, severity: 'warning', usedPercent: 68.4, resetsAt: 5 }),
+        { label: 'weekly', used: 68.4, usedText: '68%', severity: 'warning', warn: true, resetsAt: 5 });
+    assert.equal(quotaLimitFacts({ kind: 'session', severity: 'normal', usedPercent: 3 }).warn, false, 'calm by default');
+    assert.equal(quotaLimitFacts({ kind: 'opus_daily', severity: 'normal', usedPercent: 3 }).label, 'opus daily');
+    assert.equal(quotaLimitFacts(undefined), null);
+});
