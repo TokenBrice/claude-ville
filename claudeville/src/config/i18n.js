@@ -21,6 +21,7 @@ const STRINGS = {
     noActiveAgentsSub: 'Start a coding CLI session to see agents here',
     toolHistory: 'TOOL HISTORY',
     noToolUsage: 'No tool usage yet',
+    toolRunningScript: 'Running a script',
     nAgents: (n) => `${n} agents`,
 
     model: 'MODEL',

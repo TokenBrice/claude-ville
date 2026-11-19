@@ -104,6 +104,27 @@ test('marks inferred elapsed timing separately from provider-reported timing', (
   assert.equal(permission.derived, true);
 });
 
+test('a closed turn keeps its end time and has no ongoing permission row', () => {
+  const session = {
+    turnState: 'awaiting_input',
+    waitReason: null,
+    awaitingSince: NOW - MINUTE,
+    turnStartedAt: NOW - 3 * MINUTE,
+    lastTurnDurationMs: 2 * MINUTE,
+  };
+  const rows = build(session);
+  assert.deepEqual(rows.map(row => row.kind), ['turn']);
+  assert.equal(rows[0].endAt, session.awaitingSince);
+  assert.deepEqual(build(session, { now: NOW + MINUTE }), rows);
+});
+
+test('a permission wait can use the pending tool timestamp', () => {
+  const [row] = build({ waitReason: 'permission', pendingTool: 'Bash', pendingSince: NOW - MINUTE });
+  assert.equal(row.kind, 'permission');
+  assert.equal(row.durationMs, MINUTE);
+  assert.equal(row.ongoing, true);
+});
+
 test('returns no rows when no usable timeline timestamp exists', () => {
   assert.deepEqual(build({ status: 'working', lastTurnDurationMs: 5_000 }), []);
   assert.deepEqual(build({ toolHistory: [{ tool: 'missing-ts', durationMs: 5_000 }] }), []);

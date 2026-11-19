@@ -10,6 +10,7 @@ const LATEST_COMMIT_IDS_PER_PROJECT_LIMIT = 64;
 const FOUNDING_META_KEY = 'founding';
 const EVENT_RETENTION_DAYS = 14;
 const EVENT_RETENTION_MAX_ROWS = 20_000;
+export const RECORDED_TRAIL_INTERVAL_MS = 5 * 60_000;
 const CHRONICLE_OPEN_TIMEOUT_MS = 5000;
 
 const RETENTION_MS = {
@@ -108,6 +109,74 @@ function storeConfig(name) {
         affinities: { keyPath: 'pairKey', indexes: ['lastInteractionAt'] },
         meta: { keyPath: 'key', indexes: [] },
     }[name];
+}
+
+export function trailSampleId(agentId, ts) {
+    return `${agentId}:${Math.floor(ts / 1000)}`;
+}
+
+// Seek on the writer's primary key. Even a full day at 1 Hz needs only one
+// value per agent per interval. Seek directly to the next distinct agentId
+// since a cursor walking repeated index entries can scan the whole day.
+function readTrailIntervals(store, lower, upper) {
+    const rows = [];
+    const agents = store.index('agentId');
+    function seekAfter(previous) {
+        const next = agents.openKeyCursor(previous ? IDBKeyRange.lowerBound(previous, true) : null);
+        next.onsuccess = () => {
+            const id = next.result?.key;
+            if (!id) return;
+            readAgent(id);
+            seekAfter(id);
+        };
+    }
+    function readAgent(id) {
+        for (let start = lower; start <= upper; start += RECORDED_TRAIL_INTERVAL_MS) {
+            const end = Math.min(upper, start + RECORDED_TRAIL_INTERVAL_MS - 1);
+            const range = IDBKeyRange.bound(trailSampleId(id, start), trailSampleId(id, end));
+            const first = store.get(range);
+            first.onsuccess = () => {
+                if (first.result?.agentId === id) rows.push(first.result);
+            };
+        }
+    }
+    const any = store.index('ts').getKey(IDBKeyRange.bound(lower, upper));
+    any.onsuccess = () => {
+        if (any.result !== undefined) seekAfter(null);
+    };
+    return rows;
+}
+
+// A replay has no live writer, lease, broadcast channel or schema upgrade.
+// Opening a missing database raises upgradeneeded; aborting leaves it absent.
+export async function readRecordedDay({ lower, upper }) {
+    const open = indexedDB.open(DB_NAME);
+    let absent = false;
+    open.onupgradeneeded = () => {
+        absent = true;
+        open.transaction.abort();
+    };
+    let db;
+    try {
+        db = await requestToPromise(open);
+    } catch (error) {
+        if (absent) return { events: [], samples: [] };
+        throw error;
+    }
+    try {
+        const names = ['events', 'trailSamples'].filter(name => db.objectStoreNames.contains(name));
+        if (!names.length) return { events: [], samples: [] };
+        const tx = db.transaction(names, 'readonly');
+        const done = txDone(tx);
+        const samples = names.includes('trailSamples')
+            ? readTrailIntervals(tx.objectStore('trailSamples'), lower, upper) : [];
+        const events = names.includes('events')
+            ? requestToPromise(tx.objectStore('events').index('ts').getAll(IDBKeyRange.bound(lower, upper), EVENT_RETENTION_MAX_ROWS)) : [];
+        const [rows] = await Promise.all([events, done]);
+        return { events: rows, samples };
+    } finally {
+        db.close();
+    }
 }
 
 export class ChronicleStore {

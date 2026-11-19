@@ -290,6 +290,11 @@
     color: var(--ink-3);
 }
 
+#settingsVillageWeatherDetail a {
+    color: var(--ink-2);
+    text-decoration: underline;
+}
+
 /* A row whose control is a button group spans both columns (SND-7's calls). */
 .settings-control--wide {
     grid-column: 1 / -1;
@@ -578,6 +583,88 @@
 /* ── Village Chronicle: the day's recap ─────────────────────────────────
    A ledger of counts over a newest-first timeline. Deliberately quiet — the
    Chronicle is read on purpose, so it never competes with the live view. */
+
+/* XP-8 — Day book | Hall of Lives: text tabs, the active one in ink-1 over
+   a gold rule; nothing else in the modal is lit. */
+.chronicle__tabs {
+    display: flex;
+    gap: 16px;
+    margin: 0 0 16px;
+    border-bottom: 1px solid var(--line-1);
+}
+
+.chronicle__tab {
+    padding: 0 0 8px;
+    color: var(--ink-3);
+    background: none;
+    border: 0;
+    box-shadow: none;
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    cursor: pointer;
+}
+
+.chronicle__tab:hover { color: var(--ink-1); }
+
+.chronicle__tab--active {
+    color: var(--ink-1);
+    box-shadow: inset 0 -1px 0 var(--gold);
+    cursor: default;
+}
+
+.chronicle__lives {
+    list-style: none;
+    margin: 0 0 16px;
+    padding: 0;
+    border-top: 1px solid var(--line-1);
+}
+
+.chronicle__life {
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr);
+    gap: 12px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--line-1);
+}
+
+.chronicle__life-bust canvas { display: block; }
+
+.chronicle__life-heading {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+}
+
+.chronicle__life-name { color: var(--ink-1); }
+
+.chronicle__life-nickname,
+.chronicle__life-meta,
+.chronicle__life-empty,
+.chronicle__life-chapter-date { color: var(--ink-3); }
+
+.chronicle__life-nickname { font-style: italic; }
+
+.chronicle__life-meta,
+.chronicle__life-empty { margin: 0; }
+
+.chronicle__life-chapters {
+    list-style: none;
+    margin: 4px 0 0;
+    padding: 0;
+}
+
+.chronicle__life-chapter {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    color: var(--ink-2);
+}
+
+.chronicle__life-chapter-date {
+    flex-shrink: 0;
+    font-variant-numeric: tabular-nums;
+}
 
 .chronicle__opening {
     margin: 0 0 16px;

@@ -5,12 +5,13 @@ import { getTeamColor } from '../shared/TeamColor.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { BUILDING_DEFS } from '../../config/buildings.js';
 import { tileToWorld, worldToTile } from './Projection.js';
-import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
+import { getActiveMarkGovernor, markPolicyFor, MarkTier } from './MarkGovernor.js';
 import { pulseBand01 } from './PulsePolicy.js';
 import { gradeColor } from './AtmosphereState.js';
 import { dottedCurve, snap } from './EffectStamps.js';
 import { drawSquadPennon, SQUAD_DEVICES } from './PixelPennant.js';
 import { cueNoteDue } from '../shared/audio/CueScore.js';
+import { postcardFrame } from './Postcard.js';
 
 const MAX_TALK_ARCS = 8;
 // #27 — slow band: one full mote traversal per ~1.8s travelling along the arc.
@@ -194,19 +195,68 @@ function scaleHex(hex, k) {
     return `#${c.map(v => v.toString(16).padStart(2, '0')).join('')}`;
 }
 
+// FK-3 — which members get a cord. Every member of a small squad does; a
+// larger squad draws one cord per building cluster (to the member nearest the
+// leader), and every cord while the leader is selected or hovered. Members
+// within about a tile of the leader never need one: their closeness says it.
+export const SQUAD_ALL_CORDS_MAX = 4;
+const SQUAD_CLUSTER_TILES = 4;
+
+// A member clusters by its building only on recorded arrival: its behavior
+// state logged an arrival (`AgentBehaviorState.arrive`, called when the body
+// reaches its route's end) for that same building, and it stands still. A
+// walker, or a member whose route failed short of the door (no arrival is
+// recorded for a failed route), clusters by the tile it stands on, never by
+// where it was headed.
+function squadClusterKey(sprite) {
+    const behavior = sprite?.behavior;
+    const arrived = !sprite?.moving && sprite?._lastBuildingType
+        && behavior?.arrivedAt != null && behavior.building === sprite._lastBuildingType;
+    if (arrived) return `b:${sprite._lastBuildingType}`;
+    const tile = worldToTile(sprite.x, sprite.y);
+    return `t:${Math.floor(tile.tileX / SQUAD_CLUSTER_TILES)},${Math.floor(tile.tileY / SQUAD_CLUSTER_TILES)}`;
+}
+
+export function squadCordChildIds(leader, childIds, agentSprites) {
+    const far = [];
+    for (const id of childIds || []) {
+        const child = agentSprites?.get?.(id);
+        if (child && tileGap(leader, child) >= NEAR_PAIR_TILES) far.push({ id, child, gap: tileGap(leader, child) });
+    }
+    const ids = childIds?.length ?? childIds?.size ?? 0;
+    if (ids <= SQUAD_ALL_CORDS_MAX || leader?.selected || leader?.hovered) return new Set(far.map(entry => entry.id));
+    const nearestByCluster = new Map();
+    for (const entry of far) {
+        const key = squadClusterKey(entry.child);
+        const best = nearestByCluster.get(key);
+        if (!best || entry.gap < best.gap || (entry.gap === best.gap && entry.id < best.id)) nearestByCluster.set(key, entry);
+    }
+    return new Set([...nearestByCluster.values()].map(entry => entry.id));
+}
+
 function squadAccent(parent) {
     return parent?.thoughtRepoAccent?.() || parent?._providerTrimColor?.() || parent?.providerTrimColor || '#8b8b9e';
 }
 
-// The leader's static ground notch: a 5-texel wedge pointing at its feet,
-// in front of its rings, with a keyline under each lit texel.
-function drawSquadNotch(ctx, x, y, color, keyline) {
-    const left = snap(x);
-    const top = snap(y) + SQUAD_NOTCH_DROP;
-    ctx.fillStyle = keyline;
+// The static ground notch: a 5-texel wedge pointing at the feet, in front of
+// the rings. A one-texel outline in a darker step of the same accent keeps it
+// legible on ground of its own hue (a green repo on grass), and the keyline
+// sits one texel under the outline.
+const NOTCH_OUTLINE_STEP = 0.45;
+function notchWedge(ctx, left, top) {
+    ctx.fillRect(left - 3, top - 1, 7, 2);
     ctx.fillRect(left - 2, top + 1, 5, 1);
     ctx.fillRect(left - 1, top + 2, 3, 1);
     ctx.fillRect(left, top + 3, 1, 1);
+}
+
+function drawSquadNotch(ctx, x, y, color, keyline, outline = keyline) {
+    const left = snap(x);
+    const top = snap(y) + SQUAD_NOTCH_DROP;
+    ctx.fillStyle = keyline;
+    notchWedge(ctx, left, top + 1);
+    ctx.fillStyle = outline;
+    notchWedge(ctx, left, top);
     ctx.fillStyle = color;
     ctx.fillRect(left - 2, top, 5, 1);
     ctx.fillRect(left - 1, top + 1, 3, 1);
@@ -443,7 +493,8 @@ function drawGatherRollCall(ctx, {
         ctx.fillRect(left, top, COUNCIL_NOTCH_SIZE, COUNCIL_NOTCH_SIZE);
     }
 
-    if (immediate || cueNoteDue('council', teamName, total - 1, now)) {
+    // XP-5 — the team plate names the team: a postcard frame keeps the notches.
+    if (!postcardFrame() && (immediate || cueNoteDue('council', teamName, total - 1, now))) {
         const plaza = tileToScreen(COMMAND_PLAZA);
         const centroid = present.reduce(
             (acc, sprite) => ({
@@ -578,6 +629,18 @@ export function drawFamilyTethers(ctx, {
         const feet = squad
             ? [parent, ...squad.childIds.map(id => agentSprites.get(id))].filter(Boolean).map(squadFoot)
             : null;
+        // FK-3 — a squad is one mark: admitted once at the leader's feet, so
+        // the region counter limits squads, never one squad's own cords.
+        const corded = squad ? squadCordChildIds(parent, squad.childIds, agentSprites) : null;
+        let squadGate = squad && governor
+            ? governor.admit(MarkTier.SECONDARY, squadFoot(parent).x, squadFoot(parent).y)
+            : { draw: true, alpha: 1 };
+        // The selected or hovered leader's squad always draws, at the
+        // secondary cap, however full its region already is.
+        if (squad && governor && (parent.selected || parent.hovered)) {
+            const cap = markPolicyFor(MarkTier.SECONDARY, governor.pressureLevel).alphaCap;
+            if (!squadGate.draw || squadGate.alpha < cap) squadGate = { draw: true, alpha: cap };
+        }
 
         for (const childId of childIds) {
             // Advisor pairs get their own explicit tether pass below.
@@ -586,15 +649,11 @@ export function drawFamilyTethers(ctx, {
             if (!child || child.isArrivalPending?.()) continue;
 
             if (squad) {
-                if (tileGap(parent, child) < NEAR_PAIR_TILES) continue;
+                if (!squadGate.draw || !corded.has(childId)) continue;
                 const start = squadFoot(parent);
                 const end = squadFoot(child);
-                const gate = governor
-                    ? governor.admit(MarkTier.SECONDARY, start.x, start.y)
-                    : { draw: true, alpha: 1 };
-                if (!gate.draw) continue;
                 ctx.save();
-                ctx.globalAlpha = steppedAlpha(SQUAD_TETHER_ALPHA * Math.min(1.2, boost) * gate.alpha);
+                ctx.globalAlpha = steppedAlpha(SQUAD_TETHER_ALPHA * Math.min(1.2, boost) * squadGate.alpha);
                 patternLine(ctx, start.x, start.y, end.x, end.y, SQUAD_TETHER_PATTERNS[squad.shape], trim, keyline, feet);
                 ctx.restore();
                 continue;
@@ -627,9 +686,16 @@ export function drawFamilyTethers(ctx, {
         const leader = agentSprites.get(squad.parentId);
         const accent = gradeColor(squadAccent(leader), grade);
         const keyline = gradeColor('#1c130d', grade);
+        const outline = gradeColor(scaleHex(squadAccent(leader), NOTCH_OUTLINE_STEP), grade);
         ctx.save();
         ctx.globalAlpha = 1;
-        drawSquadNotch(ctx, leader.x, leader.y, accent, keyline);
+        // FK-3 — membership reads on every body at any squad size: the same
+        // static notch under the leader and under each live member.
+        drawSquadNotch(ctx, leader.x, leader.y, accent, keyline, outline);
+        for (const childId of squad.childIds) {
+            const member = agentSprites.get(childId);
+            if (member) drawSquadNotch(ctx, member.x, member.y, accent, keyline, outline);
+        }
         const side = squadPennonSide(leader, agentSprites);
         const poleX = snap(leader.x) + side * (bodyHalfWidth(leader) + SQUAD_PENNON_GAP);
         drawSquadPennon(ctx, poleX, snap(leader.y) + 1, {

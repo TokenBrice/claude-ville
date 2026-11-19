@@ -1,6 +1,6 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { i18n } from '../../config/i18n.js';
-import { getTeamColor, shortTeamName } from './TeamColor.js';
+import { agentTrimAccent, getTeamColor, harnessAccent, isImplicitSessionTeam, shortTeamName } from './TeamColor.js';
 import { HARBOR_FOCUS_FLEET_EVENT, harborLedger, ledgerFailureText, ledgerLaneLabel, middleTruncate } from './HarborLedger.js';
 import { AgentSearchIndex } from './SearchIndex.js';
 import { sessionDetailsService } from './SessionDetailsService.js';
@@ -25,9 +25,9 @@ import {
 import {
     bucketWord,
     DEPARTED_WORD,
-    groupAgentsByProject,
     projectKeyForAgent,
     worktreeLabel,
+    mcpJobLabel,
     modelPresentation,
     projectProfile,
     providerPresentation,
@@ -46,6 +46,7 @@ const SIDEBAR_EMPTY_COPY = Object.freeze({
     [VillagePhase.SYNCING]: Object.freeze({ title: 'LISTENING…', cta: 'Reading local sessions. Agents appear here as each one is read.' }),
     [VillagePhase.DEGRADED]: Object.freeze({ title: 'SOURCES UNREADABLE', cta: 'A local session source could not be read, so this list may be incomplete.' }),
     [VillagePhase.FAILED]: Object.freeze({ title: 'NOT OPENED', cta: 'The village did not finish opening; no sessions have been read.' }),
+    [VillagePhase.NO_RECORDED_SAMPLES]: Object.freeze({ title: 'NOTHING TO RETELL', cta: 'This window replays a recorded day; no trail samples were kept for this one.' }),
     [VillagePhase.READY_NO_PROVIDERS]: Object.freeze({ title: 'NO PROVIDERS FOUND', cta: 'No supported coding CLI is installed on this machine.' }),
     [VillagePhase.READY_EMPTY]: Object.freeze({ title: 'THE VILLAGE AWAITS', cta: 'Start a coding session to populate the village.' }),
     [VillagePhase.READY_LIVE]: Object.freeze({ title: 'THE VILLAGE AWAITS', cta: 'Start a coding session to populate the village.' }),
@@ -62,9 +63,126 @@ const SHELF_FRAME = Object.freeze({
 // while bounding remembered state to live workflows plus a small recent tail.
 const WORKFLOW_STATE_GRACE_MS = 60 * 1000;
 const WORKFLOW_STATE_GRACE_LIMIT = 32;
+// FK-4 — a crew past this many rows folds behind its 'N crew' toggle.
+const CREW_FOLD_ROWS = 8;
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'claudeville.sidebarCollapsed';
 const DASHBOARD_FILTER_EVENT = 'dashboard:filter-changed';
 const DASHBOARD_FILTER_REQUEST_EVENT = 'dashboard:filter-requested';
+
+// One agent's part of the list render signature: every field that moves a
+// row between groups, crews or folds, or changes its text. `rootSessionId`
+// is here because a child that learns its root changes crew.
+export function sidebarListRowKey(agent, extras = {}) {
+    return [
+        agent.id,
+        agent.name,
+        agent.status,
+        agent.waitReason,
+        agent.pendingTool,
+        agent.model,
+        agent.effort,
+        agent.provider,
+        agent.projectPath,
+        agent.repoRoot,
+        worktreeLabel(agent),
+        agent.teamName,
+        agent.workflowName,
+        agent.agentType,
+        mcpJobLabel(agent),
+        agent.workflowId,
+        agent.parentSessionId,
+        agent.rootSessionId,
+        agent.departedAt,
+        extras.ageText,
+        extras.parentLabel,
+    ].join('|');
+}
+
+function hasDeparted(agent) {
+    return Boolean(agent?.isDeparted) || Number.isFinite(agent?.departedAt);
+}
+
+// FK-4 — each child's lead, by id: its recorded root (PV-15 `rootSessionId`)
+// while that root is live, as the Dashboard groups it, else its topmost live
+// ancestor. A departed parent leads no one: its child stands on its own with
+// the ended-parent link.
+export function crewLeadsById(agents) {
+    const byId = new Map(agents.map(agent => [agent.id, agent]));
+    const leads = new Map();
+    for (const agent of agents) {
+        if (!agent?.parentSessionId) continue;
+        const root = agent.rootSessionId && agent.rootSessionId !== agent.id ? byId.get(agent.rootSessionId) : null;
+        if (root && !hasDeparted(root)) {
+            leads.set(agent.id, root);
+            continue;
+        }
+        let lead = null;
+        let cursor = agent;
+        for (let depth = 0; depth < 8 && cursor?.parentSessionId; depth++) {
+            const parent = byId.get(cursor.parentSessionId);
+            if (!parent || parent === agent || hasDeparted(parent)) break;
+            lead = parent;
+            cursor = parent;
+        }
+        if (lead) leads.set(agent.id, lead);
+    }
+    return leads;
+}
+
+// A crew member the fold must never hide: it needs the operator.
+function needsAttention(agent) {
+    return !hasDeparted(agent) && (agent?.status === 'waiting_on_user' || agent?.status === 'errored');
+}
+
+// FK-4 — how a lead's crew reads: rows as the operator sees them (each direct
+// child one row, each workflow one row), folded past CREW_FOLD_ROWS unless a
+// search runs or the operator unfolded it. A folded crew keeps its members
+// that need attention outside the fold. The toggle names the whole crew.
+export function crewFoldPlan(crew, { filter = '', expanded = false, collapsedWorkflows = new Set() } = {}) {
+    const workflowIds = new Set();
+    let directRows = 0;
+    for (const member of crew) {
+        if (member.agentType === 'workflow-subagent' && member.workflowId) workflowIds.add(member.workflowId);
+        else directRows++;
+    }
+    const rows = directRows + workflowIds.size;
+    const foldable = rows > CREW_FOLD_ROWS;
+    const collapsed = foldable && !filter && !expanded;
+    return {
+        rows,
+        foldable,
+        collapsed,
+        // Pinned whenever either fold would hide it: the crew's, or its
+        // own workflow's (a search opens both).
+        pinnedIds: new Set(crew.filter(member => needsAttention(member) && (collapsed
+            || (!filter && member.agentType === 'workflow-subagent' && member.workflowId
+                && collapsedWorkflows.has(member.workflowId)))).map(member => member.id)),
+        label: `${crew.length} crew`,
+    };
+}
+
+// One project group's rows: lead rows first, each followed by its crew (the
+// visible members whose lead is visible here); workflow subagents without a
+// visible lead keep their own collapsible group.
+export function nestCrewRows(visible, crewLeadOf) {
+    const visibleIds = new Set(visible.map(agent => agent.id));
+    const topLevel = [];
+    const workflows = new Map();
+    const crews = new Map();
+    for (const agent of visible) {
+        const lead = crewLeadOf.get(agent.id);
+        if (lead && visibleIds.has(lead.id)) {
+            if (!crews.has(lead.id)) crews.set(lead.id, []);
+            crews.get(lead.id).push(agent);
+        } else if (agent.agentType === 'workflow-subagent' && agent.workflowId) {
+            if (!workflows.has(agent.workflowId)) workflows.set(agent.workflowId, []);
+            workflows.get(agent.workflowId).push(agent);
+        } else {
+            topLevel.push(agent);
+        }
+    }
+    return { topLevel, workflows, crews };
+}
 
 function safeStorageGet(key) {
     try {
@@ -98,7 +216,7 @@ function lowerFirst(text) {
 // 9.3 — what a row's bust depends on. The avatar repaints only when this
 // changes (AvatarCanvas.draw also skips an unchanged render key).
 function bustIdentityKey(agent) {
-    return [agent?.id, agent?.name, agent?.agentName, agent?.model, agent?.effort, agent?.provider, agent?.teamName]
+    return [agent?.id, agent?.name, agent?.agentName, agent?.model, agent?.effort, agent?.provider, agent?.teamName, agentTrimAccent(agent)]
         .map(value => value ?? '')
         .join('\u0001');
 }
@@ -131,6 +249,7 @@ export class Sidebar {
         this._highlightedAgentId = null;
         this.searchIndex = new AgentSearchIndex();
         this._collapsedWorkflows = new Set();
+        this._expandedCrews = new Set();
         this._seenWorkflows = new Set();
         this._workflowLastSeenAt = new Map();
         this._workflowPruneTimer = null;
@@ -145,6 +264,7 @@ export class Sidebar {
         this._bustObserver = null;
         this._projectGroups = new Map();
         this._workflowGroups = new Map();
+        this._crewGroups = new Map();
         this._emptyLegendEl = null;
         this._emptyNoMatchEl = null;
         this._renderWhileHidden = false;
@@ -455,6 +575,16 @@ export class Sidebar {
                 this.render();
                 return;
             }
+            const crewToggle = event.target.closest('.sidebar__crew-toggle[data-crew-lead]');
+            if (crewToggle && this.listEl.contains(crewToggle)) {
+                this._flushPendingReactiveChanges();
+                const leadId = crewToggle.dataset.crewLead;
+                if (this._expandedCrews.has(leadId)) this._expandedCrews.delete(leadId);
+                else this._expandedCrews.add(leadId);
+                this._renderSignature = '';
+                this.render();
+                return;
+            }
             // 4.12 — subagent parent link: select the parent instead of
             // toggling the row's own selection.
             const parentLink = event.target.closest('.sidebar__agent-parent[data-parent-id]');
@@ -490,7 +620,8 @@ export class Sidebar {
 
     _visibleAgentSelects() {
         return [...(this.listEl?.querySelectorAll('.sidebar__agent-select[data-agent-id]') || [])]
-            .filter(select => !select.closest('.sidebar__workflow-group--collapsed'));
+            .filter(select => !select.closest('.sidebar__workflow-group--collapsed')
+                && !select.closest('.sidebar__crew-members:not(.sidebar__crew-pinned)')?.closest('.sidebar__crew--collapsed'));
     }
 
     _syncRovingTabindex(preferredId = this._highlightedAgentId) {
@@ -659,7 +790,8 @@ export class Sidebar {
             const ageText = formatStatusElapsed(agent, now);
             let parentLabel = '';
             if (agent.parentSessionId) {
-                parentLabel = this.world.agents.get(agent.parentSessionId)?.name || 'ended';
+                const parent = this.world.agents.get(agent.parentSessionId);
+                parentLabel = parent && !hasDeparted(parent) ? parent.name : 'ended';
             }
             rowExtras.set(agent.id, {
                 ageText,
@@ -671,28 +803,9 @@ export class Sidebar {
             this._filter,
             this.searchIndex.revision,
             [...this._collapsedWorkflows].sort().join(','),
+            [...this._expandedCrews].sort().join(','),
             agents
-                .map(agent => [
-                    agent.id,
-                    agent.name,
-                    agent.status,
-                    agent.waitReason,
-                    agent.pendingTool,
-                    agent.model,
-                    agent.effort,
-                    agent.provider,
-                    agent.projectPath,
-                    agent.repoRoot,
-                    agent.worktree?.name,
-                    agent.teamName,
-                    agent.workflowName,
-                    agent.agentType,
-                    agent.workflowId,
-                    agent.parentSessionId,
-                    agent.departedAt,
-                    rowExtras.get(agent.id).ageText,
-                    rowExtras.get(agent.id).parentLabel,
-                ].join('|'))
+                .map(agent => sidebarListRowKey(agent, rowExtras.get(agent.id)))
                 .join('\n'),
         ].join('');
         if (signature === this._renderSignature) {
@@ -712,8 +825,17 @@ export class Sidebar {
             this._placeChildren(parent, desired);
         };
 
-        // Group by project
-        const groups = [...groupAgentsByProject(agents)];
+        // FK-4 — a crew nests under its lead (its topmost live ancestor), in
+        // the lead's project group even when a child works in another
+        // directory, as the Dashboard folds it.
+        const crewLeadOf = crewLeadsById(agents);
+        const groupMap = new Map();
+        for (const agent of agents) {
+            const key = projectKeyForAgent(crewLeadOf.get(agent.id) || agent);
+            if (!groupMap.has(key)) groupMap.set(key, []);
+            groupMap.get(key).push(agent);
+        }
+        const groups = [...groupMap];
         if (this._filter) {
             groups.sort((a, b) => {
                 const bestScore = group => Math.max(
@@ -726,6 +848,7 @@ export class Sidebar {
         const nodes = [];
         const visibleProjectPaths = new Set();
         const visibleWorkflowKeys = new Set();
+        const visibleCrewLeads = new Set();
         for (const [projectPath, groupAgents] of groups) {
             const visible = groupAgents
                 .filter(agent => this._matchesFilter(agent))
@@ -733,17 +856,7 @@ export class Sidebar {
             if (visible.length === 0) continue;
             visibleProjectPaths.add(projectPath);
 
-            // Split workflow subagents (collapsible per workflow) from top-level rows.
-            const topLevel = [];
-            const workflows = new Map();
-            for (const agent of visible) {
-                if (agent.agentType === 'workflow-subagent' && agent.workflowId) {
-                    if (!workflows.has(agent.workflowId)) workflows.set(agent.workflowId, []);
-                    workflows.get(agent.workflowId).push(agent);
-                } else {
-                    topLevel.push(agent);
-                }
-            }
+            const { topLevel, workflows, crews } = nestCrewRows(visible, crewLeadOf);
 
             const projectName = shortProjectName(projectPath, i18n.t('unknownProject'));
             const profile = projectProfile(projectPath, { surface: 'sidebar' });
@@ -752,15 +865,13 @@ export class Sidebar {
                 groupEl = this._createProjectGroup();
                 this._projectGroups.set(projectPath, groupEl);
             }
-            const teamNames = [...new Set(visible.map(agent => agent.teamName).filter(Boolean))];
+            // FK-3 — an implicit `session-` team is its parent's squad: no swatch.
+            const teamNames = [...new Set(visible.map(agent => agent.teamName).filter(Boolean))]
+                .filter(teamName => !isImplicitSessionTeam(teamName, agents.filter(agent => agent.teamName === teamName)));
             this._patchProjectGroup(groupEl, projectName, visible.length, profile, teamNames);
             const groupNodes = [groupEl._sidebarRefs.header];
 
-            for (const agent of topLevel) {
-                groupNodes.push(this._getAgentRow(agent, profile, rowExtras.get(agent.id)));
-            }
-
-            for (const [workflowId, members] of workflows) {
+            const workflowNode = (workflowId, members, nested) => {
                 const workflowName = members[0]?.workflowName || workflowId;
                 // A search reveals matching workflow members without mutating
                 // the operator's persisted collapsed/expanded preference.
@@ -775,17 +886,55 @@ export class Sidebar {
                 this._patchWorkflowGroup(wfEl, workflowName, members.length, collapsed);
                 const memberNodes = [];
                 for (const agent of members) {
-                    memberNodes.push(this._getAgentRow(agent, profile, rowExtras.get(agent.id)));
+                    memberNodes.push(this._getAgentRow(agent, profile, { ...rowExtras.get(agent.id), nested }));
                 }
                 place(wfEl._sidebarRefs.members, memberNodes);
-                groupNodes.push(wfEl);
+                return wfEl;
+            };
+
+            for (const agent of topLevel) {
+                groupNodes.push(this._getAgentRow(agent, profile, rowExtras.get(agent.id)));
+                const crew = crews.get(agent.id);
+                if (!crew) continue;
+                visibleCrewLeads.add(agent.id);
+                const plan = crewFoldPlan(crew, {
+                    filter: this._filter,
+                    expanded: this._expandedCrews.has(agent.id),
+                    collapsedWorkflows: this._collapsedWorkflows,
+                });
+                const pinned = [];
+                const rows = [];
+                const crewWorkflows = new Map();
+                for (const member of crew) {
+                    const row = () => this._getAgentRow(member, profile, { ...rowExtras.get(member.id), nested: true });
+                    if (plan.pinnedIds.has(member.id)) {
+                        pinned.push(row());
+                    } else if (member.agentType === 'workflow-subagent' && member.workflowId) {
+                        if (!crewWorkflows.has(member.workflowId)) crewWorkflows.set(member.workflowId, []);
+                        crewWorkflows.get(member.workflowId).push(member);
+                    } else {
+                        rows.push(row());
+                    }
+                }
+                for (const [workflowId, members] of crewWorkflows) rows.push(workflowNode(workflowId, members, true));
+                let crewEl = this._crewGroups.get(agent.id);
+                if (!crewEl) {
+                    crewEl = this._createCrewGroup(agent.id);
+                    this._crewGroups.set(agent.id, crewEl);
+                }
+                this._patchCrewGroup(crewEl, plan, profile);
+                place(crewEl._sidebarRefs.pinned, pinned);
+                place(crewEl._sidebarRefs.members, rows);
+                groupNodes.push(crewEl);
             }
+
+            for (const [workflowId, members] of workflows) groupNodes.push(workflowNode(workflowId, members, false));
 
             place(groupEl, groupNodes);
             nodes.push(groupEl);
         }
 
-        this._prunePersistentElements(agents, visibleProjectPaths, visibleWorkflowKeys);
+        this._prunePersistentElements(agents, visibleProjectPaths, visibleWorkflowKeys, visibleCrewLeads);
         if (agents.length === 0) {
             this._emptyLegendEl ||= this._emptyLegendNodes()[0];
             place(this.listEl, [this._emptyLegendEl]);
@@ -1091,15 +1240,50 @@ export class Sidebar {
         this._setAttribute(refs.toggle, 'aria-expanded', String(!collapsed));
     }
 
+    // FK-4 — a lead's crew: its rows on an indented rail in the squad accent
+    // (the lead's repo colour), behind an 'N crew' toggle once it folds.
+    _createCrewGroup(leadId) {
+        const count = el('span', { className: 'sidebar__workflow-name' });
+        const toggle = el('button', {
+            className: ['sidebar__workflow-toggle', 'sidebar__crew-toggle'],
+            dataset: { crewLead: leadId },
+        }, [
+            el('span', { className: 'sidebar__workflow-caret', text: '▶' }),
+            count,
+        ]);
+        toggle.type = 'button';
+        // Members that need attention stay outside a folded crew.
+        const pinned = el('div', { className: 'sidebar__crew-members sidebar__crew-pinned' });
+        const members = el('div', { className: 'sidebar__crew-members' });
+        const group = el('div', { className: 'sidebar__crew' }, [pinned, toggle, members]);
+        group._sidebarRefs = { toggle, count, pinned, members };
+        return group;
+    }
+
+    _patchCrewGroup(group, { foldable, collapsed, label }, profile) {
+        const refs = group._sidebarRefs;
+        const className = collapsed ? 'sidebar__crew sidebar__crew--collapsed' : 'sidebar__crew';
+        if (group.className !== className) group.className = className;
+        if (profile.accent && group._sidebarRepoColor !== profile.accent) {
+            group.style.setProperty('--cv-repo-color', profile.accent);
+            group._sidebarRepoColor = profile.accent;
+        }
+        if (refs.toggle.hidden !== !foldable) refs.toggle.hidden = !foldable;
+        this._setText(refs.count, label);
+        this._setAttribute(refs.toggle, 'aria-expanded', String(!collapsed));
+    }
+
     _getAgentRow(agent, profile, extras = {}) {
         let row = this._agentRows.get(agent.id);
         if (!row) {
             row = this._createAgentRow(agent.id);
             this._agentRows.set(agent.id, row);
         }
-        const parent = agent.parentSessionId
+        const liveParent = agent.parentSessionId
             ? this.world.agents.get(agent.parentSessionId)
             : null;
+        // A departed parent is an ended one: the link shows, disabled.
+        const parent = hasDeparted(liveParent) ? null : liveParent;
         const signature = [
             agent.name,
             agent.status,
@@ -1109,12 +1293,15 @@ export class Sidebar {
             agent.effort,
             agent.provider,
             agent.teamName,
+            agent.agentColor,
             agent.workflowName,
             agent.parentSessionId,
             agent.departedAt,
+            worktreeLabel(agent),
             extras.ageText,
             extras.parentLabel,
             extras.searchContext,
+            Boolean(extras.nested),
             Boolean(parent),
             profile.accent,
         ].join('\u0001');
@@ -1186,7 +1373,12 @@ export class Sidebar {
         const status = statusClass(agent.status);
         const agentClasses = ['sidebar__agent', `sidebar__agent--${status}`];
         if (this.selection.isSelected(agent.id)) agentClasses.push('sidebar__agent--selected');
-        if (agent.parentSessionId) agentClasses.push('sidebar__agent--child');
+        // A nested crew row sits under its lead, so it needs no parent link.
+        if (agent.parentSessionId && !extras.nested) agentClasses.push('sidebar__agent--child');
+        if (extras.nested) agentClasses.push('sidebar__agent--nested');
+        // FK-7 — a teammate's crew rail segment wears its harness colour.
+        const harness = extras.nested ? harnessAccent(agent.agentColor) : null;
+        if (harness) agentClasses.push('sidebar__agent--harness');
         if (agent.isDeparted) agentClasses.push('sidebar__agent--departed');
         const refs = row._sidebarRefs;
         const className = agentClasses.join(' ');
@@ -1194,6 +1386,10 @@ export class Sidebar {
         if (profile.accent && row._sidebarRepoColor !== profile.accent) {
             row.style.setProperty('--cv-repo-color', profile.accent);
             row._sidebarRepoColor = profile.accent;
+        }
+        if (harness && row._sidebarHarnessColor !== harness) {
+            row.style.setProperty('--cv-harness-color', harness);
+            row._sidebarHarnessColor = harness;
         }
         this._setNodeText(refs.nameText, agent.name || '');
 
@@ -1211,7 +1407,8 @@ export class Sidebar {
         const stateText = agent.isDeparted ? DEPARTED_WORD.toLowerCase()
             : reason ? lowerFirst(reason) : statusWord(agent.status, 'lower');
         const worktree = worktreeLabel(agent);
-        this._setNodeText(refs.modelText, `${model.label ? ` · ${model.label}` : ''}${worktree ? ` · ${worktree}` : ''}`);
+        const jobLabel = mcpJobLabel(agent);
+        this._setNodeText(refs.modelText, [jobLabel, model.label, worktree].filter(Boolean).map(label => ` · ${label}`).join(''));
         this._setText(refs.state, stateText);
         this._setAttribute(refs.age, 'data-tip', extras.ageText || '');
         this._toggleOptional(refs.info, refs.match, Boolean(extras.searchContext));
@@ -1220,7 +1417,7 @@ export class Sidebar {
             this._setAttribute(refs.match, 'data-tip', extras.searchContext);
         }
 
-        const hasParent = Boolean(agent.parentSessionId);
+        const hasParent = Boolean(agent.parentSessionId) && !extras.nested;
         this._toggleOptional(row, refs.parent, hasParent);
         if (hasParent) {
             const parentLabel = parentAgent
@@ -1248,12 +1445,13 @@ export class Sidebar {
                 extras.ageText || stateText,
                 teamLabel,
                 workflowLabel,
+                jobLabel,
             ].filter(Boolean).join(' · '),
         );
         this._setAttribute(
             refs.select,
             'aria-label',
-            `Select ${agent.name || agent.id}, ${status.replaceAll('_', ' ')}`,
+            [`Select ${agent.name || agent.id}`, status.replaceAll('_', ' '), jobLabel].filter(Boolean).join(', '),
         );
         this._setAttribute(
             refs.select,
@@ -1318,7 +1516,7 @@ export class Sidebar {
         refs.bustAgent = null;
     }
 
-    _prunePersistentElements(agents, visibleProjectPaths, visibleWorkflowKeys) {
+    _prunePersistentElements(agents, visibleProjectPaths, visibleWorkflowKeys, visibleCrewLeads = new Set()) {
         const liveIds = new Set(agents.map(agent => agent.id));
         const liveProjects = new Set(agents.map(agent => projectKeyForAgent(agent)));
         const liveWorkflows = new Set(agents
@@ -1343,6 +1541,14 @@ export class Sidebar {
             if (liveWorkflows.has(key) || visibleWorkflowKeys.has(key)) continue;
             group.remove();
             this._workflowGroups.delete(key);
+        }
+        for (const [leadId, group] of this._crewGroups) {
+            if (visibleCrewLeads.has(leadId)) continue;
+            group.remove();
+            this._crewGroups.delete(leadId);
+        }
+        for (const leadId of this._expandedCrews) {
+            if (!liveIds.has(leadId)) this._expandedCrews.delete(leadId);
         }
     }
 
@@ -1520,12 +1726,14 @@ export class Sidebar {
         this._highlightedAgentId = null;
         this._projectGroups?.clear?.();
         this._workflowGroups?.clear?.();
+        this._crewGroups?.clear?.();
         this._emptyLegendEl = null;
         this._emptyNoMatchEl = null;
         this._renderWhileHidden = false;
         this.searchIndex.clear();
         this._seenWorkflows.clear();
         this._collapsedWorkflows.clear();
+        this._expandedCrews?.clear?.();
         this._workflowLastSeenAt.clear();
     }
 }

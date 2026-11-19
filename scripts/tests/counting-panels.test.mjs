@@ -15,7 +15,7 @@ import {
 } from '../../claudeville/src/presentation/shared/AgentPresentation.js';
 import { formatStatusElapsed, formatTokens } from '../../claudeville/src/presentation/shared/Formatters.js';
 import { TokenUsage } from '../../claudeville/src/domain/value-objects/TokenUsage.js';
-import { childRowVisible, codexQuotaFacts, leadIdFor, rowTokenCells } from '../../claudeville/src/presentation/dashboard-mode/DashboardRenderer.js';
+import { childRowVisible, codexQuotaFacts, leadIdFor, quotaCardsSignature, rowTokenCells } from '../../claudeville/src/presentation/dashboard-mode/DashboardRenderer.js';
 import { sessionDetailsService } from '../../claudeville/src/presentation/shared/SessionDetailsService.js';
 import { operatorStatusLabel } from '../../claudeville/src/presentation/shared/SemanticTriage.js';
 import { offFrameTallyText } from '../../claudeville/src/presentation/character-mode/AttentionPlates.js';
@@ -174,4 +174,14 @@ test('UI-13: a departed villager is aged from its departure', () => {
     const now = 2_000_000;
     const departed = { status: AgentStatus.COMPLETED, statusSince: now - 600_000, departedAt: now - 30_000, isDeparted: true };
     assert.equal(formatStatusElapsed(departed, now), `${DEPARTED_WORD} 30s ago`);
+});
+
+test('the tally bar repaints on a Claude-only limit change and on its removal', () => {
+    const codex = { usedPercent: 40 };
+    const limit = { kind: 'weekly_all', scope: null, severity: 'normal', usedPercent: 40, resetsAt: null };
+    const key = usage => JSON.stringify(quotaCardsSignature(usage));
+    const before = key({ codex, quota: { highestActiveLimit: limit } });
+    assert.notEqual(key({ codex, quota: { highestActiveLimit: { ...limit, severity: 'warning' } } }), before, 'Claude-only update');
+    assert.notEqual(key({ codex, quota: {} }), before, 'the reading expired');
+    assert.equal(key({ codex, quota: { highestActiveLimit: { ...limit } } }), before);
 });

@@ -30,7 +30,10 @@
 //            Frame A is taken only once the page is still — captures must
 //            stay identical across a 3.5 s window sampled every 500 ms (a
 //            stillness span longer than the A-to-B wait; a window must
-//            start within 30 s and may then run to completion), else the
+//            start within 30 s of scheduled sleeps and may then run to
+//            completion), with no bake in flight at any capture's repaint
+//            or screenshot (the sundial shade field, a staged terrain: such
+//            a capture never anchors or closes a window), else the
 //            scene fails as never settled — and then two captures 3 s
 //            apart: 0 changed px outside DOM chrome, the motion clock
 //            reads 0, no running document animation.
@@ -451,15 +454,29 @@ async function capture(page, { pose, zoom, keepAmbient = false }) {
   if (keepAmbient) await reassertPose(page, pose, zoom);
   else await pinPose(page, pose, zoom);
   await page.waitForTimeout(300);
-  await page.evaluate(() => {
-    if (!window.__claudeVilleApp.renderer.renderNow()) throw new Error('environment capture repaint failed');
-  });
+  // A bake in flight changes the frame when it lands: the sundial shade field
+  // (cast shade and the sun's lift read it) or a staged terrain surface. It is
+  // read in the task of this repaint and again after the screenshot, which may
+  // show a later frame: pending at either read, or a field or a terrain
+  // published between them, marks the capture as taken during a bake.
+  const bakeState = repaint => page.evaluate(async repaint => {
+    const { shadeFieldPending } = await import('/src/presentation/character-mode/ShadeField.js');
+    const r = window.__claudeVilleApp.renderer;
+    if (repaint && !r.renderNow()) throw new Error('environment capture repaint failed');
+    return {
+      pending: shadeFieldPending(r) || !!r._terrainRestage,
+      revision: `${r._shadeFieldState?.revision ?? 0}/${r._terrainRestages ?? 0}`,
+    };
+  }, repaint);
+  const bakeBefore = await bakeState(true);
   const before = await collectDom(page);
   const png = PNG.sync.read(await page.screenshot());
   const after = await collectDom(page);
+  const bakeAfter = await bakeState(false);
+  const baking = bakeBefore.pending || bakeAfter.pending || bakeBefore.revision !== bakeAfter.revision;
   const { env, agents, running } = await collectEnv(page);
   const geometry = await collectGeometry(page);
-  return { png, env, agents, running, dom: [...before, ...after], ...geometry };
+  return { png, env, agents, running, baking, dom: [...before, ...after], ...geometry };
 }
 
 // ---------------------------------------------------------------------------
@@ -527,27 +544,33 @@ function pixelDiff(A, B, { canvas, horizonY, excluded }, overlay = false) {
 // The baseline must be still before it is a baseline (the fresh page's first
 // bakes and backend switch). Recapture every `sampleMs` until captures stay
 // identical for `stillMs` of wall clock (defaults: the truth arm's rule, two
-// frames 2 s apart); any change restarts the stillness window. The 30 s cap
-// counts accumulated sleep time only (`waited += sampleMs`, so capture time
-// never eats it): a stillness window must start within it and may then run
-// to completion. With `neverSettles`, a frame that never goes still fails
-// with that message instead of returning a stale baseline.
+// frames 2 s apart); any change restarts the stillness window. A capture
+// taken with a bake in flight (`capture().baking`: its landing would change
+// the frame after the window) never anchors or closes a window: the window
+// starts at the next clean capture. The 30 s cap counts the scheduled sleeps
+// only (`waited += sampleMs`, so capture time never eats it): a stillness
+// window must start within it and may then run to completion. With
+// `neverSettles`, a frame that never goes still fails with that message
+// instead of returning a stale baseline.
 async function settledBaseline(shot, neverSettles = null, { sampleMs = 2000, stillMs = 2000 } = {}) {
-  let anchor = await shot();
+  let last = await shot();
+  let anchor = last.baking ? null : last;
   let since = Date.now();
   let waited = 0;
   for (;;) {
     await new Promise(resolve => setTimeout(resolve, sampleMs));
     waited += sampleMs;
-    const next = await shot();
-    if (compare(anchor, next).changed) {
-      if (waited >= 30_000) break; // no new stillness windows past the cap
-      anchor = next;
-      since = Date.now();
-    } else if (Date.now() - since >= stillMs) return next;
+    const next = last = await shot();
+    if (anchor && !next.baking && !compare(anchor, next).changed) {
+      if (Date.now() - since >= stillMs) return next;
+      continue;
+    }
+    if (waited >= 30_000) break; // no new stillness windows past the cap
+    anchor = next.baking ? null : next;
+    since = Date.now();
   }
   if (neverSettles) throw new Error(neverSettles);
-  return anchor;
+  return anchor || last;
 }
 
 // One timeline on its own fresh page (a new context: no Harbor ships, release

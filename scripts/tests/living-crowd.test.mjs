@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 
 import { AMBIENT_SCENIC_POINTS } from '../../claudeville/src/config/scenery.js';
 import { REST_SEATS } from '../../claudeville/src/config/townPlan.js';
+import { isWaitingOnCrew, resolveAgentStatus } from '../../claudeville/src/domain/services/StatusResolver.js';
 import { AgentStatus } from '../../claudeville/src/domain/value-objects/AgentStatus.js';
+import { AgentBehaviorState } from '../../claudeville/src/presentation/character-mode/AgentBehaviorState.js';
 import { AgentSprite, QUAY_PLACES } from '../../claudeville/src/presentation/character-mode/AgentSprite.js';
 import {
     ERRAND_GAP_MS,
@@ -321,6 +323,66 @@ test('an orchestrator blocked on its subagents goes for a pint, and the wait end
 
     Object.assign(sprite.agent, { turnState: 'working', pendingTool: null, pendingSince: null });
     assert.equal(sprite._restPlaceForState(), null, 'the wait ending sends it back to work');
+});
+
+test('FK-2: a lead in Poll takes its Tavern seat after sixty seconds', t => {
+    const { sprite, calls, advance, now } = workerSprite(t);
+    Object.assign(sprite.agent, {
+        turnState: 'tool_pending', pendingTool: 'Poll', pendingSince: now(),
+        lastTool: 'Edit', backgroundPending: { count: 4, kinds: ['teammate'], since: now() - 90_000 },
+    });
+    assert.equal(sprite._restPlaceForState(), null);
+    advance(SUBAGENT_WAIT_PINT_MS - 1);
+    assert.equal(sprite._restPlaceForState(), null);
+    sprite._advanceCrowdRoutine(advance(1));
+    assert.equal(sprite._subagentWait?.since, NOW);
+    assert.ok(sprite._routeToRestPlace());
+    assert.equal(sprite.visitRole, 'rest');
+    assert.equal(calls.at(-1).restAt, 'tavern');
+
+    sprite.agent.backgroundPending = { count: 1, kinds: ['monitor'], since: NOW };
+    assert.equal(sprite._restPlaceForState(), null);
+});
+
+test('FK-2: observed crew blocks share the pint clock and stay in the working family', () => {
+    const since = NOW - 20 * 60_000;
+    const crew = { count: 4, kinds: ['teammate'], since };
+    for (const [tool, backgroundPending, blocked, pint] of [
+        ['Poll', crew, true, true],
+        ['Poll', { ...crew, kinds: ['agent', 'bash'] }, true, true],
+        ['mcp__codex__wait', null, true, true],
+        ['mcp__glm__ask', null, true, true],
+        ['mcp__deepseek__wait', null, true, true],
+        ['mcp__codex__continue', null, true, true],
+        ['mcp__codex__start', crew, false, false],
+        ['Poll', { ...crew, kinds: ['bash', 'monitor'] }, false, false],
+        ['Poll', null, false, false],
+        ['Agent', null, false, true],
+        [null, crew, true, true],
+    ]) {
+        const session = {
+            provider: 'claude', lastActivity: NOW - 1000, currentTool: tool, pendingTool: tool,
+            turnState: tool ? 'tool_pending' : 'awaiting_input', pendingSince: since, awaitingSince: since,
+            backgroundPending,
+        };
+        const status = resolveAgentStatus(session, { now: NOW });
+        assert.equal(status, AgentStatus.WORKING, tool);
+        assert.equal(isWaitingOnCrew(session), blocked, tool);
+        assert.equal(advanceSubagentWait(null, { ...session, status }, NOW)?.pint === true, pint, tool);
+    }
+    assert.equal(isWaitingOnCrew({ turnState: 'working', pendingTool: 'Poll', backgroundPending: crew }), false);
+});
+
+test('FK-2: repeating a wait call does not raise the retry glyph', () => {
+    for (const tool of ['Poll', 'wait_agent', 'functions.wait_agent', 'mcp__codex__wait',
+        'mcp__glm__ask', 'mcp__deepseek__continue', 'Bash', 'mcp__codex__start']) {
+        let now = NOW;
+        const behavior = new AgentBehaviorState({ now: () => now });
+        behavior.observeToolTransition({ tool, input: 'same input' });
+        now += 10_000;
+        behavior.observeToolTransition({ tool, input: 'same input' });
+        assert.equal(behavior.isRetryGlyphActive(), tool === 'Bash' || tool === 'mcp__codex__start', tool);
+    }
 });
 
 test('every harness wait on subagents counts, and nothing else does', () => {

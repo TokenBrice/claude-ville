@@ -4,8 +4,10 @@ These synthetic JSONL transcripts test parser contracts without reading real pro
 
 | Provider | File | Purpose |
 | --- | --- | --- |
+| Claude and Codex MCP | `lineage/` | Busy, waiting, and idle PID files, a launch result, a matching rollout, and journal success and crash records. The lineage test supplies synthetic process ancestry. |
 | Claude | `claude/all-records.jsonl` | Broad projection: tools/results, tokens/cost, branch/effort, todos, changes, duration, hooks, and bounded text. |
 | Claude | `claude/minimal.jsonl` | Completed turn proving defaults and estimated cost without richer records. |
+| Claude | `claude/models-5-5.jsonl` | Three completed turns preserve the raw Opus, Sonnet, and Haiku 5.5 IDs. The final Haiku turn has observed usage for the price estimate. |
 | Claude | `claude/git-outcomes.jsonl` | Git calls with outcomes: an `is_error` hook rejection, a chained commit with `[branch sha]` output, a rejected push behind `|| true`, and a push from a subdirectory `cwd`. |
 | Claude | `claude/shell-prefix.jsonl` | Bash calls behind `cd <dir> &&`, `cd <dir>;` and `git -C <dir>`; the summary must keep the command. |
 | Claude | `claude/tool-results.jsonl` | Flagged results (`Exit code 1`, a codeless error, an `Edit` miss, an explicit success), plus an unflagged read, a background command, an async agent launch, an interrupted and a rejected call, and one pending call: only the four flagged outcomes publish. |
@@ -25,7 +27,7 @@ These synthetic JSONL transcripts test parser contracts without reading real pro
 | Codex | `codex/long-running-turn.jsonl` | Old active turn with token events remains running rather than decaying idle. |
 | Codex | `codex/turn-durations.jsonl` | A completed turn with `duration_ms`, an aborted turn (no duration of its own, RG-4), then a completed turn without one: the last completed turn's span is the duration. |
 | Codex | `codex/tool-results.jsonl` | Command completions with exit 0, exit 1, an unknown exit, and one invocation that never completes. |
-| Codex | `codex/rate-limits.jsonl` | Account quota on `token_count`: `session_meta.creator_account_id`, a 99 % then 100 % weekly primary window (`resets_at` in epoch seconds), `secondary: null`, a decimal-string `credits.balance` and no `rate_limit_reached_type`. The newest observation wins and LIMITs the account, never the session. |
+| Codex | `codex/rate-limits.jsonl` | Account quota on `token_count` with a private account and limit, a weekly window that moves from 99 % to 100 %, and a falling decimal-string credit balance one minute apart. |
 | Codex | `codex/git-commit-push.jsonl` | Current rollout shape: `custom_tool_call` plus `item_completed` `CommandExecution` (command array, `file://` cwd) for a commit, a nothing-to-commit failure, a `push -u origin HEAD \| tail` and a `git -C` commit in a nested repository. |
 | Kimi Code | `kimi/tool-results.jsonl` | Wire loop events: a passing and a failing command result, plus a result carrying only output (no outcome). |
 | OpenCode | `opencode/tool-results.jsonl` | Normalized tool parts with `metadata.exit` 0 and 1, plus a part with no exit at all. |
@@ -42,9 +44,9 @@ Author fixtures synthetic-first. If derived from provider output, replace every 
 `rg -l 'adapters/fixtures' scripts` identifies the direct consumers:
 
 - `scripts/tests/claude-identity.test.mjs` uses Claude launch, child, teammate-with-meta, and minimal records.
-- `scripts/tests/claude-projection.test.mjs` uses broad, minimal and `api-request-blob` Claude records (it resolves the fixture root without spelling the full search string).
+- `scripts/tests/claude-projection.test.mjs` uses broad, minimal, `models-5-5`, and `api-request-blob` Claude records (it resolves the fixture root without spelling the full search string).
 - `scripts/tests/turn-state.test.mjs` copies the Codex fixture directory into a synthetic provider home.
-- `scripts/tests/usage-quota.test.mjs` materializes the Codex rate-limit fixture, live and six hours old, and reads `/api/usage.codex` through the adapter.
+- `scripts/tests/usage-quota.test.mjs` replays the Codex rate-limit fixture through the adapter and its account usage projection. It also reorders and extends the readings to cover cold seeding, staleness, and pairing across scans.
 - `scripts/tests/integration/session-payload-contract.test.mjs` replays the broad Claude fixture through an isolated server.
 - `scripts/tests/tool-results.test.mjs` materializes the Codex and Kimi Code result transcripts in a synthetic home, replays the OpenCode parts through `buildOpenCodeSession`, replays the Claude outcome fixture, and uses the broad Claude record as the no-flag, no-result control.
 - `scripts/tests/harbor-ingest-adapters.test.mjs` materializes the Claude and Codex git fixtures over a temporary repository and checks outcomes, identity and per-segment status.

@@ -1,18 +1,19 @@
-// AgentSimulator — development-only behavior fixture (B-R10).
+// AgentSimulator — authored scenarios and read-only Chronicle replays.
 //
 // Drives the live World with synthetic agents and a scripted tool/event
 // timeline so renderer/behavior changes can be exercised without a real CLI
-// session. Gated by `?sim=1` in `App.js`; production loads never construct
+// session. Gated by `?sim=1` or `?retold=<date>` in App; live loads never construct
 // this class.
 //
 // Contract:
 //   - Pushes fake agents into `world` directly via `world.addAgent` /
 //     `world.updateAgent` (real `Agent` constructor; no adapter, no WS).
 //   - Steps a timeline (`[{ ts, agentId, tool|event|status, ... }]`) using
-//     `setTimeout` keyed off step `ts` offsets.
+//     timeout offsets, or one frame-driven cursor for a time-lapse.
 //   - Calls `world.removeAgent(id)` for every sim agent on `stop()`.
 //   - Never writes to `~/.claude` or any session file.
 
+import { ReplayClock } from './ReplayClock.js';
 import { Agent } from '../../../domain/entities/Agent.js';
 import { AgentStatus } from '../../../domain/value-objects/AgentStatus.js';
 import { Position } from '../../../domain/value-objects/Position.js';
@@ -68,11 +69,14 @@ function buildAgent(spec, timeBase, rebase = value => value) {
         role: spec.role || 'general',
         provider: spec.provider || 'claude',
         teamName: spec.teamName || null,
-        projectPath: spec.projectPath || '/sim/project',
+        projectPath: spec.projectPath === undefined ? '/sim/project' : spec.projectPath,
         agentId: spec.agentId || spec.id,
         agentName: spec.name,
         agentType: spec.agentType || 'main',
+        subagentKind: spec.subagentKind,
         parentSessionId: spec.parentId || null,
+        workflowId: spec.workflowId || null,
+        workflowName: spec.workflowName || null,
         tokens: spec.tokens === undefined ? { input: 0, output: 0 } : spec.tokens,
         cost: spec.cost,
         effort: spec.effort,
@@ -82,6 +86,9 @@ function buildAgent(spec, timeBase, rebase = value => value) {
             : null,
         pendingTool: spec.pendingTool,
         turnState: spec.turnState,
+        backgroundPending: spec.backgroundPending
+            ? { ...spec.backgroundPending, since: rebase(Number(spec.backgroundPending.since)) }
+            : null,
         pendingSince: Number.isFinite(Number(spec.pendingSince)) && spec.pendingSince !== null
             ? rebase(Number(spec.pendingSince))
             : null,
@@ -105,6 +112,10 @@ function buildAgent(spec, timeBase, rebase = value => value) {
     });
     agent.underlyingProvider = spec.underlyingProvider || null;
     agent.promptDetail = spec.promptDetail || null;
+    // Wire fields the client reads off the agent but Agent's constructor does
+    // not take (AgentManager assigns them the same way).
+    if (spec.agentColor) agent.agentColor = spec.agentColor;
+    if (spec.script) agent.script = { ...spec.script, since: rebase(Number(spec.script.since)) };
     const position = positionFromSpec(spec.position);
     if (position) agent.position = position;
     const targetPosition = positionFromSpec(spec.targetPosition);
@@ -143,14 +154,17 @@ function materializeScenario(input, fallbackId = DEFAULT_WORLD_SCENARIO_ID) {
 }
 
 export default class AgentSimulator {
-    constructor({ world, agentManager = null, eventBus = null, scenario = null, scenarioId = null } = {}) {
+    constructor({ world, agentManager = null, eventBus = null, scenario = null, scenarioId = null, recordedDay = null, timelapse = false } = {}) {
         if (!world || typeof world.addAgent !== 'function') {
             throw new Error('AgentSimulator requires a World with addAgent()');
         }
         this.world = world;
         this.agentManager = agentManager;
         this.eventBus = eventBus;
-        this._scenarioInput = scenario || scenarioId || browserScenarioId() || DEFAULT_WORLD_SCENARIO_ID;
+        this.recorded = Boolean(recordedDay);
+        this.replayClock = timelapse || recordedDay ? new ReplayClock(recordedDay) : null;
+        this.pendingGit = [];
+        this._scenarioInput = recordedDay?.scenario || scenario || scenarioId || browserScenarioId() || DEFAULT_WORLD_SCENARIO_ID;
         this._scenario = null;
         this._timeBase = Date.now();
         this._scenarioTimeBase = this._timeBase;
@@ -175,7 +189,7 @@ export default class AgentSimulator {
             return;
         }
         this._active = true;
-        const scenario = materializeScenario(input || this._scenarioInput);
+        const scenario = this.recorded ? this._scenarioInput : materializeScenario(input || this._scenarioInput);
         this._scenario = scenario;
         const configuredTimeBase = Number(scenario.timeBase);
         const liveTimeBase = Date.now();
@@ -186,9 +200,8 @@ export default class AgentSimulator {
         this._timeBase = this._preserveScenarioTimestamps
             ? this._scenarioTimeBase
             : liveTimeBase;
-        this._timeline = Array.isArray(scenario.timeline)
-            ? [...scenario.timeline].sort((a, b) => (a.ts || 0) - (b.ts || 0))
-            : [];
+        this._timeline = scenario.timeline || [];
+        if (!this.recorded) this._timeline = [...this._timeline].sort((a, b) => (a.ts || 0) - (b.ts || 0));
 
         // Seed the cast immediately.
         for (const spec of scenario.agents || []) {
@@ -198,11 +211,29 @@ export default class AgentSimulator {
         }
         debug(`seeded ${this._agentIds.size} agents for ${scenario.id}`);
 
+        if (this.replayClock) {
+            this.replayClock.reset();
+            this._nextStep = 0;
+            this._timelineSpan = this.recorded
+                ? this.replayClock.end - this.replayClock.start
+                : Math.max(this.replayClock.duration, this._timeline.at(-1)?.ts || 0);
+            return;
+        }
         // Schedule each step against its `ts` offset.
         for (const step of this._timeline) {
             const delay = Math.max(0, Number(step.ts) || 0);
             const handle = setTimeout(() => this._applyStep(step), delay);
             this._timers.push(handle);
+        }
+    }
+
+    advanceReplay(dt, reduced) {
+        if (!this._active || !this.replayClock) return;
+        const clock = this.replayClock;
+        clock.advance(dt, reduced);
+        const offset = clock.playhead / clock.duration * this._timelineSpan;
+        while (this._nextStep < this._timeline.length && this._timeline[this._nextStep].ts <= offset) {
+            this._applyStep(this._timeline[this._nextStep++]);
         }
     }
 
@@ -215,6 +246,7 @@ export default class AgentSimulator {
             this.world.removeAgent(id);
         }
         this._agentIds.clear();
+        this.pendingGit.length = 0;
         this._timeline = null;
         this._scenario = null;
         debug('stopped');
@@ -239,6 +271,16 @@ export default class AgentSimulator {
                 this._removeAgent(step.agentId || step.id);
                 return;
             }
+            if (step.event === 'agent:observed') {
+                this.world.updateAgent(step.agentId, step.update);
+                return;
+            }
+            if (this.recorded && step.event === 'git:event') {
+                // The harbor consumes this batch even if its session leaves on the same frame.
+                const age = (this.replayClock.now - this.replayClock.start - step.ts) / this._timelineSpan * this.replayClock.duration;
+                this.pendingGit.push({ ...step.gitEvent, timestamp: Date.now() - Math.max(0, age) });
+                return;
+            }
             if (step.event === 'git:event') {
                 this._applyGitEventStep(step);
                 return;
@@ -251,7 +293,8 @@ export default class AgentSimulator {
 
     _addAgent(spec) {
         if (!spec?.id || this.world.agents.has(spec.id)) return;
-        const agent = buildAgent(spec, this._timeBase, value => this._rebaseScenarioTimestamp(value));
+        const agent = buildAgent(spec, this.recorded ? Date.now() : this._timeBase, value => this._rebaseScenarioTimestamp(value));
+        if (this.recorded) agent.isRecorded = true;
         this.world.addAgent(agent);
         this._agentIds.add(agent.id);
     }
@@ -288,7 +331,7 @@ export default class AgentSimulator {
         const explicit = step?.timestamp ?? step?.time;
         if (Number.isFinite(Number(explicit))) return Number(explicit) + offset;
         const ts = Number.isFinite(Number(step?.ts)) ? Number(step.ts) : 0;
-        return this._timeBase + ts + offset;
+        return (this.replayClock ? Date.now() : this._timeBase + ts) + offset;
     }
 
     _rebaseScenarioTimestamp(value) {

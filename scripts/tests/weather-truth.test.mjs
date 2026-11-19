@@ -2,18 +2,60 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+    AtmosphereState,
     buildWeatherTimeline,
     createAtmosphereSnapshot,
     resolveWeather,
     resolveWeatherAt,
+    weatherHistorySampler,
     weatherTypeFromRoll,
 } from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
+import { groundOptionsFor, groundStateAt, liquidPrecipitation } from '../../claudeville/src/presentation/character-mode/GroundState.js';
+import { resolveWaterFx, resolveWeatherUniform } from '../../claudeville/src/presentation/character-mode/gpu/GpuFrameState.js';
+import { mirrorStormDrop } from '../../claudeville/src/presentation/character-mode/CoastBake.js';
 import { resetLookStrengths, setLookStrength } from '../../claudeville/src/presentation/character-mode/LookStrengths.js';
 import { SeasonalAmbience } from '../../claudeville/src/presentation/character-mode/SeasonalAmbience.js';
 import { WIND_SPEED_BY_TYPE, baseWindX, windAt } from '../../claudeville/src/presentation/character-mode/Wind.js';
-import { stormStrikeAt } from '../../claudeville/src/presentation/character-mode/WeatherRenderer.js';
+import { gpuRainField, stormStrikeAt } from '../../claudeville/src/presentation/character-mode/WeatherRenderer.js';
+import { PARITY_SCENARIOS, WEATHER } from '../smoke/webgpu-parity.mjs';
 
 const knotsOf = timeline => timeline.knots.map(knot => [knot.minute, knot.type, knot.windX]);
+
+test('QA freeze keeps the painted date and weather when the frame clock crosses midnight', () => {
+    const before = new Date(2026, 10, 19, 23, 59, 50);
+    const after = new Date(+before + 30_000);
+    const state = new AtmosphereState({ nowProvider: () => after });
+    state.update({ now: before });
+    const frozen = state.freeze();
+    assert.equal(+frozen.effectiveDate, +before);
+    const frame = state.update({ now: after, motionScale: 0 });
+    assert.equal(frame.timeline.frozen, true);
+    assert.equal(+frame.effectiveDate, +before);
+    assert.deepEqual(frame.weather, frozen.weather);
+    assert.equal(frame.motion.particleEnabled, false);
+    assert.equal(+state.clear().effectiveDate, +after);
+});
+
+test('the weather parity fixtures activate rain and wet ground with a winter host date', () => {
+    for (const id of ['rain-noon', 'wet-night']) {
+        const item = PARITY_SCENARIOS.find(candidate => candidate.id === id);
+        const preset = WEATHER[item.weather];
+        const state = new AtmosphereState({
+            nowProvider: () => item.date ? new Date(`${item.date}T12:00:00`) : new Date(2026, 0, 15, 12),
+        });
+        state.setTimelineMode('fixed');
+        state.setHour(item.hour);
+        if (preset.knots) state.setTimelineKnots(preset.knots);
+        const frame = state.setWeather(preset);
+        if (id === 'rain-noon') {
+            const camera = { zoom: item.zoom, screenToWorld: (x, y) => ({ x: x / item.zoom, y: y / item.zoom }) };
+            assert.ok(gpuRainField(frame, camera, { viewport: { width: 1920, height: 1080 } }).instances > 0);
+        } else {
+            const ground = groundStateAt(frame.effectiveDate, groundOptionsFor(frame));
+            assert.ok(ground.wetness > 0 && ground.puddles > 0);
+        }
+    }
+});
 
 test('two dates yield different weather timelines (no null seed coerces to 0)', () => {
     const a = buildWeatherTimeline(new Date(2026, 8, 27, 12));
@@ -34,6 +76,26 @@ test('two dates yield different weather timelines (no null seed coerces to 0)', 
         assert.notEqual(resolveWeather(date, { type: 'rain', seed: null }, { seedOverride }).seed, 0);
     }
     assert.equal(resolveWeather(date, { type: 'rain' }, { seedOverride: 7 }).seed, 7);
+});
+
+test('generated fronts and wind cross every local midnight, including DST dates and New Year', () => {
+    for (let day = 1; day <= 365; day++) {
+        const midnight = new Date(2026, 0, 1 + day);
+        const beforeDate = new Date(+midnight - 1);
+        const before = resolveWeather(beforeDate);
+        const after = resolveWeather(midnight);
+        const boundary = midnight.toDateString();
+        assert.equal(after.type, before.type, boundary);
+        for (const key of ['precipitation', 'cloudCover', 'fog', 'intensity', 'windX']) {
+            assert.ok(Math.abs(after[key] - before[key]) < 1e-6, `${boundary} ${key}: ${before[key]} → ${after[key]}`);
+        }
+        const historyBefore = weatherHistorySampler(beforeDate)(1440 - 1 / 60000);
+        const historyAfter = weatherHistorySampler(midnight)(0);
+        for (const key of ['type', 'precipitation', 'cloudCover']) {
+            assert.equal(historyBefore[key], before[key], boundary);
+            assert.equal(historyAfter[key], after[key], boundary);
+        }
+    }
 });
 
 // WX-1 (look `wx1`, on by default since the operator approved it): night
@@ -168,4 +230,42 @@ test('lightning strikes only in a storm, in C4 quanta, and never under reduced m
     assert.equal(reduced, 0);
     for (const scalar of scalars) assert.ok([0.30, 0.18, 0.12, 0.07, 0.035, 0.16].includes(scalar), String(scalar));
     assert.ok(scalars.has(0.30) && scalars.has(0.16));
+});
+
+test('EN-4: a winter knot falls as snow, so the water takes no rain rings, wet sheen or rain mirror break', () => {
+    const knot = { type: 'rain', precipitation: 0.7, intensity: 0.7, cloudCover: 0.85, fog: 0.18, windX: 0.12, minute: 0 };
+    const camera = { zoom: 1, _dpr: () => 1, screenToWorld: (x, y) => ({ x, y }) };
+    const at = (date, reducedMotion) => {
+        const state = new AtmosphereState({ nowProvider: () => date });
+        state.setTimelineKnots([knot]);
+        const snap = state.update();
+        const feed = { atmosphere: snap, weather: snap.weather, motionScale: reducedMotion ? 0 : 1, reducedMotion };
+        return {
+            liquid: liquidPrecipitation(snap),
+            rings: resolveWaterFx(feed, camera, 0, snap.lightGrade, snap.lighting.moonFill, 2268).fx[1],
+            weather: resolveWeatherUniform(feed),
+            mirror: mirrorStormDrop(snap.weather, snap),
+            precipitation: snap.weather.precipitation,
+        };
+    };
+    for (const reducedMotion of [false, true]) {
+        const winter = at(new Date(2027, 0, 12, 15), reducedMotion);
+        const spring = at(new Date(2027, 4, 12, 15), reducedMotion);
+        assert.deepEqual([winter.liquid, winter.rings, winter.weather[0], winter.mirror], [0, 0, 0, 0]);
+        assert.ok(spring.precipitation > 0.6 && winter.precipitation === spring.precipitation);
+        for (const value of [spring.liquid, spring.rings, spring.weather[0]]) assert.ok(Math.abs(value - spring.precipitation) < 1e-6);
+        assert.ok(spring.mirror > 0.5);
+        // Fog, storm and intensity still follow the weather.
+        assert.deepEqual(winter.weather.slice(1), spring.weather.slice(1));
+    }
+    // One answer per snapshot: later reads share the first.
+    const state = new AtmosphereState({ nowProvider: () => new Date(2027, 4, 12, 15) });
+    state.setTimelineKnots([knot]);
+    const snap = state.update();
+    const first = liquidPrecipitation(snap);
+    snap.weather.precipitation = 0;
+    assert.equal(liquidPrecipitation(snap), first);
+    // The season boundary: February snows, March rains.
+    assert.equal(at(new Date(2027, 1, 28, 15)).liquid, 0);
+    assert.ok(at(new Date(2027, 2, 1, 15)).liquid > 0.6);
 });

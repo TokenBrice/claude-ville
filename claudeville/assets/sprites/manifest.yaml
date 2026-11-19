@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-11-15-mythos-oracle"
+  assetVersion: "2026-11-19-facade-materials-r2"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -16,7 +16,7 @@ atlases:
   - id: world-pilot
     maxWidth: 2048
     padding: 2
-    powerOfTwo: true
+    powerOfTwo: false
     metadata: assets/sprites/atlases/world-pilot.json
     channels:
       albedo: assets/sprites/atlases/world-pilot.albedo.png
@@ -108,6 +108,72 @@ characters:
       strength: 0
       sources:
         - { id: emissive.agent.claude.fable.constellations, kind: rune, geometry: sidecar, strength: 0.1 }
+    occluder: { mode: alpha-silhouette, strength: 1 }
+
+  # Body variant of agent.claude.fable (models.json `spriteVariants`): the same
+  # ivory-crimson gown, gold filigree and violet star cloth on a young auburn
+  # scribe with a circlet and a rolled scroll, so a Fable crowd is not a
+  # chorus of crowned silver queens (council 2026-11-19, FK-6; candidate A).
+  - id: agent.claude.fable.b
+    animationGroups:
+      walk:
+        rows:
+          - 0
+          - 5
+      breathingIdle:
+        rows:
+          - 6
+          - 9
+    # read: v3 claudeville-read-v1 groups 213e4d7f-b493-410f-abac-ea002eab0818
+    # (seven facings) and 56e383f9-6347-4bed-a34b-02324a8679ea (north).
+    actionStrip:
+      path: characters/agent.claude.fable.b/actions.png
+      cell: 92
+      groups:
+        read: { rows: [0, 3], hold: 3 }
+        wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
+        sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 64, south-west: 63 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "7c816bd6-ee76-43b9-9ad2-56663646f4a4", sw: "4077cd47-53a5-499f-a873-2f743c177187" } }, directions: [se, sw] }
+        strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [57, 47], w: [25, 46], se: [64, 51], sw: [39, 51] } }
+        tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [55, 48], w: [26, 46], se: [62, 52], sw: [40, 52] } }
+        gaze: { rows: [21, 24], hold: 22, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [44, 27], w: [41, 23], se: [54, 28], sw: [48, 29] } }
+        celebrate: { rows: [25, 27], hold: 27, directions: [se, e, w, sw] }
+        drink: { rows: [28, 32], hold: 28, seatLine: { south-east: 64, south-west: 63 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose + tankard, scripts/sprites/generate-pose-strip.mjs --groups=drink)", jobs: { se: "ae032f0f-ea27-49c9-a852-71eaf885be71", sw: "0c70f1d2-3bc4-4dc8-a99a-bfe1a9d560cd" } }, directions: [se, sw] }
+        think: { rows: [33, 35], hold: 35, directions: [se, e, w, sw] }
+      grip: { hand: both, sheathe: true }
+      provenance:
+        characterId: "a568b43f-ec70-4ae7-ba50-998b1b1798de"
+        animationGroupId: "56e383f9-6347-4bed-a34b-02324a8679ea"
+        generationSize: 76
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "f42f6575-8524-486d-a011-8bdb71536d4d", w: "e340c7cc-180a-4bfb-9a44-2f922db7107d", se: "ea0de5f5-0530-40d5-b003-5a89426d270a", sw: "10479326-5503-4764-915c-3c587bedbcf1" }, gaze: { e: "f1b5080a-7caf-485b-8ad6-0793154dc395", w: "b53bd140-cf3f-4966-9154-667e08dfb6d3", se: "a1000e23-418e-4ec7-a499-fcfbcfbde661", sw: "98efbf2f-86ea-4b92-bc78-3d5b18f17674" }, drink: { se: "ae032f0f-ea27-49c9-a852-71eaf885be71", sw: "0c70f1d2-3bc4-4dc8-a99a-bfe1a9d560cd" } } }
+        animationStrips: { groups: { celebrate: { se: "5dbfea15-f9f0-4cb9-a5b3-7ff57e449a1e", e: "b6797699-c6c9-4735-a6a7-108c9359713e", w: "ad62faae-407d-4fe4-8456-8415173710bf", sw: "73ce5478-4e00-4b6b-9b07-3ec271d1cd83" }, think: { se: "0895530d-2bd8-4bdb-90a2-9182a088f13f", e: "4043ca4a-07ee-496a-b4d5-5cda39e455dc", w: "6257c59f-86f9-4af5-8e38-625873ddfedd", sw: "74e2b757-f638-46de-982a-1d00471d0029" } } }
+    portraitCrop: { x: 29, y: 15, w: 34, h: 30 }
+    # Sampled from sheet.png: crimson gown and violet capelet as robe; the gold
+    # circlet and filigree as trim (3.1 % of opaque sheet pixels within the
+    # swap's +-12 per channel).
+    paletteSource: { robe: ['#8b1d2b', '#3e2d56'], trim: ['#edc37e', '#e9bd6e'] }
+    # The south breathing-idle frame 3 came back with a red mask over the face;
+    # row 9 south repeats frame 1 (row 7), so that loop reads 0-1-2-1.
+    provenance:
+      characterId: a568b43f-ec70-4ae7-ba50-998b1b1798de
+      generationSize: 76
+      generationMode: pro
+    tool: create_character
+    prompt: "Claude Fable young scribe-bard storyteller, slender woman with a short auburn bob and a slim gold circlet, floor-length ivory and royal crimson ceremonial robe with ornate gold filigree, short deep violet starfield shoulder capelet with gold constellation embroidery, long rolled parchment scroll held in both hands at the chest, calm attentive stance, identical outfit and colors from every viewing angle, no crown, no long hair, no staff, no floating objects, no wings, no horns, no revealing outfit"
+    n_directions: 8
+    size: 92
+    generationSize: 76
+    generationMode: pro
+    animations: [walk, breathing-idle]
+    palette_layer: claude
+    headCovered: true
+    anchor: [46, 80]
+    materialClass: fabric
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
+    elevation: { base: 0, top: 80, unit: sprite-px }
+    # Fable's glow is her shoulder motes; this body carries none, so no glow.
+    emissive: { strength: 0, sources: [] }
     occluder: { mode: alpha-silhouette, strength: 1 }
 
   # Mythos is its own model (verified organizations only), not a Fable alias:
@@ -520,6 +586,81 @@ characters:
       strength: 0
       sources:
         - { id: emissive.agent.codex.gpt6astra.visor, kind: rune, geometry: sidecar, strength: 0.16 }
+    occluder: { mode: alpha-silhouette, strength: 1 }
+
+  # Body variant of agent.codex.gpt6astra (models.json `spriteVariants`): the
+  # same gunmetal star-knight plate, gold borders, breastplate star and violet
+  # cape, open-faced under a plumed helm (council 2026-11-19, FK-6; candidate
+  # B). Empty-handed: the halberd is the runtime overlay.
+  - id: agent.codex.gpt6astra.b
+    animationGroups:
+      walk:
+        rows:
+          - 0
+          - 5
+      breathingIdle:
+        rows:
+          - 6
+          - 9
+    # read: v3 claudeville-read-v1 groups e1f581cd-7487-4115-8db5-b877c3ab0f3c
+    # (seven facings) and 893374f4-53e5-4130-9b48-c2c7931750d0 (north).
+    actionStrip:
+      path: characters/agent.codex.gpt6astra.b/actions.png
+      cell: 92
+      groups:
+        read: { rows: [0, 3], hold: 3 }
+        wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
+        sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 68, south-west: 68 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "2439441c-312b-41e7-9ffe-63510ebd47d4", sw: "bf4d4038-e91d-4f11-acaa-25ebd91441fa" } }, directions: [se, sw] }
+        strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [60, 48], w: [27, 45], se: [51, 53], sw: [21, 49] } }
+        tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [60, 45], w: [36, 48], se: [48, 55], sw: [45, 52] } }
+        gaze: { rows: [21, 24], hold: 22, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [48, 27], w: [38, 25], se: [41, 28], sw: [30, 24] } }
+        celebrate: { rows: [25, 27], hold: 27, directions: [se, e, w, sw] }
+        drink: { rows: [28, 32], hold: 28, seatLine: { south-east: 68, south-west: 68 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose + tankard, scripts/sprites/generate-pose-strip.mjs --groups=drink)", jobs: { se: "d238f894-2d1c-4fdc-93c2-3bc969681aad", sw: "9be9422d-90ce-4cff-8928-25fac66dc0ef" } }, directions: [se, sw] }
+        think: { rows: [33, 35], hold: 35, directions: [se, e, w, sw] }
+      grip: { hand: both, sheathe: true }
+      provenance:
+        characterId: "920eb6ae-2a05-4fcd-8154-548fbbab190e"
+        animationGroupId: "e1f581cd-7487-4115-8db5-b877c3ab0f3c"
+        generationSize: 76
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "282c129d-0ca8-4b13-af8b-bc24c6a61e14", w: "0c98cf37-488f-4e30-880b-2917964f3a35", se: "f241b5ac-9ba2-426f-80de-6cec79ae2726", sw: "9a433021-ced7-48a0-8537-b0855a3c766b" }, gaze: { e: "e90a85c5-5ba0-48c1-9cca-192d010d0378", w: "a9e61a6b-e8bb-4dba-b7f8-716aaf6fd265", se: "22bb4345-eaea-486f-ac6f-55dcf6fb44c9", sw: "1cdef8d9-f9b5-4bfa-9717-91e36b8c3dee" }, drink: { se: "d238f894-2d1c-4fdc-93c2-3bc969681aad", sw: "9be9422d-90ce-4cff-8928-25fac66dc0ef" } } }
+        animationStrips: { groups: { celebrate: { se: "e6a1f193-b982-4444-b9a8-3303c903aa11", e: "eaf0b7fd-68fa-4d6a-bc10-a6d7c4545ad9", w: "e35d630d-3d42-4f9e-99ad-9ce65ecf0537", sw: "0b1db905-d81b-48c5-9f27-5de3d71bd03f" }, think: { se: "dccb2f25-927b-4f68-aa8d-98cffb41c5ec", e: "478a0808-ca0c-4558-a54b-cf887624f237", w: "0608de7c-1255-4408-83f9-38e633622a01", sw: "7391cd54-6e72-4d0d-8e62-45575354fd85" } } }
+    portraitCrop: { x: 23, y: 12, w: 46, h: 42 }
+    portraitFace: { x: 44, y: 30 }
+    # Sampled from sheet.png: the aged-gold armour borders as trim (2.8 % of
+    # opaque sheet pixels within the swap's +-12 per channel); plate and cape
+    # stay authored, as on the first Astra body.
+    paletteSource: { trim: ['#b58d60', '#c8aa84', '#98724d', '#d8b381'] }
+    provenance:
+      characterId: 920eb6ae-2a05-4fcd-8154-548fbbab190e
+      # The template walk dropped the cape facing north-west; that column is a
+      # skeleton-v3 re-walk. Its PixelLab group is below; the local assembly
+      # read it from the export ZIP under its animation name
+      # `astra-b-caped-walk-repair` (generate-character-mcp.mjs
+      # --animation-group-id takes that ZIP key, not the UUID).
+      animationGroupId: c050c00f-b516-46c9-9bb6-211fa24b5e5d
+      repairedDirections:
+        - north-west
+      skippedReference: false
+      animationSourceSize: 112
+      generationSize: 76
+      generationMode: pro
+    tool: create_character
+    prompt: "Codex GPT-6.2 Astra open-faced star-knight, broad compact old-school RPG proportions, stern bearded face visible under a rounded dark blue gunmetal helm with a tall imperial violet plume and a gold star brow plate, layered dark blue gunmetal plate armor with wide pauldrons and restrained aged gold borders, one four-point gold breastplate star, layered scale-mail skirt, heavy articulated gauntlets and broad planted boots, calf-length imperial violet cape with aged gold border, clear joints and leg separation, identical outfit and colors from every viewing angle, empty visible hands near waist for runtime halberd grip, no held weapon, no shield, no floating halo, no particles"
+    n_directions: 8
+    size: 92
+    generationSize: 76
+    generationMode: pro
+    animations: [walk, breathing-idle]
+    palette_layer: codex
+    headCovered: true
+    anchor: [46, 80]
+    materialClass: metal
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
+    elevation: { base: 0, top: 80, unit: sprite-px }
+    # Astra's glow is the visor slit; this open face has none, so no glow.
+    emissive: { strength: 0, sources: [] }
     occluder: { mode: alpha-silhouette, strength: 1 }
 
   # GPT-5.6 celestial warrior triad (Sol/Terra/Luna). Base sprites are
@@ -2129,6 +2270,9 @@ buildings:
     height: 288
     anchor: [158, 218]
     materialClass: stone
+    # EN-2 — base.material.png: the oak arcade, bar, kegs and half-timbering
+    # are timber (scripts/sprites/paint-facade-materials.mjs).
+    materialSidecar: true
     emissiveSidecar: true
     occluderSidecar: true
     surfaceCode: true

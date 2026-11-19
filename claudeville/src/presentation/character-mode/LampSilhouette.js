@@ -104,8 +104,8 @@ export function rasterSilhouette({ footX, footY, rect, top, geometry, alphaAt, p
 // re-rasters only when its frame changes (an idle breath, a glance, a turn).
 // LRU of RASTER_CACHE_MAX keys. The atlas pixels are read (getImageData)
 // only for a key not in the cache. A group's mask canvas is redrawn and
-// re-uploaded only when a member's key or foot moves; canvases are reused by
-// index and the ones past this frame's group count are released.
+// re-uploaded when a member's key or foot, the footprints or the coast
+// change. Canvases are reused by index and released past this frame's group count.
 
 const _canvases = [];
 const _rasters = new Map();
@@ -187,7 +187,7 @@ function bodySilhouette(record, cast, contentKey, footX, footY) {
 
 // Per field cell (4 world px): 1 clear, 2 blocked (water at the cell's
 // centre, any occluder in it, or a building within the clearance), cached
-// per field and coast revision.
+// per footprint identity and revision and coast identity.
 let _blockCache = null;
 
 function blocked(field, coast, wx, wy) {
@@ -266,6 +266,7 @@ export function lampSilhouetteRecords(bodies, { strength = 0, field = null, coas
         if (!home) clusters.push({ box: { ...shadow.box }, members: [shadow] });
     }
     const out = [];
+    const fieldRevision = field?.revision;
     clusters.forEach((cluster, index) => {
         const { x0, y0, x1, y1 } = cluster.box;
         const w = x1 - x0 + 1;
@@ -273,7 +274,7 @@ export function lampSilhouetteRecords(bodies, { strength = 0, field = null, coas
         const key = cluster.members.map(m => m.key).join(';');
         let slot = _canvases[index];
         if (!slot) slot = _canvases[index] = { canvas: document.createElement('canvas'), key: '', revision: 0 };
-        if (slot.key !== key) {
+        if (slot.key !== key || slot.field !== field || slot.fieldRevision !== fieldRevision || slot.coast !== coast) {
             slot.canvas.width = w;
             slot.canvas.height = h;
             const ctx = slot.canvas.getContext('2d');
@@ -293,6 +294,9 @@ export function lampSilhouetteRecords(bodies, { strength = 0, field = null, coas
             }
             ctx.putImageData(image, 0, 0);
             slot.key = key;
+            slot.field = field;
+            slot.fieldRevision = fieldRevision;
+            slot.coast = coast;
             slot.revision++;
         }
         const id = `ground:lampshade:${index}`;

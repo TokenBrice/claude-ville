@@ -15,6 +15,7 @@ import { baseWindX, cloudCourseDrift, windAt } from './Wind.js';
 import { applyGradeToRgb } from './GradeEvaluator.js';
 import { OCEAN_HORIZON_WORLD_Y, overcastPearlShare, RAIN_START_PRECIPITATION } from './CoastBake.js';
 import { lookStrength } from './LookStrengths.js';
+import { precipitationIsFrozen } from './GroundState.js';
 
 export function weatherEmbellishmentAllowed(level = 0) {
     return ornamentPlan({ level, motionScale: 1 }).ambientWeatherEmbellishment !== 'off';
@@ -434,9 +435,7 @@ export class WeatherRenderer {
         if (rainActive) {
             const storm = weather.type === 'storm';
             const rainIntensity = Math.max(precipitation, weather.intensity * (storm ? 0.86 : 0.72)) * legibility.rain;
-            // Winter (Dec–Feb) precipitation falls as drifting snow; the storm's
-            // lightning below still strikes.
-            if (isWinterMonth(atmosphere)) {
+            if (frozenPrecipitation(atmosphere)) {
                 this._drawSnow(ctx, canvas, { ...weather, intensity: rainIntensity }, phaseMs, seed, particleEnabled);
             } else {
                 this._drawRain(ctx, canvas, { ...weather, intensity: rainIntensity }, phaseMs, seed, particleEnabled, timeMs, gpuRainShare);
@@ -1072,17 +1071,15 @@ export function createGpuRainField() {
         // lean), phase (far, mid, near, alpha scale), splash (share, frame
         // fraction per unit speed, alpha, flags).
         uniforms: new Float32Array(16),
-        phase: [0, 0, 0],
-        lastTimeMs: null,
-        seed: null,
+        motion: { phase: [0, 0, 0], lastTimeMs: null, seed: null },
     };
 }
 
 /**
  * RN-1 — this frame's world rain for the GPU draw, or `share` 0 (no draw):
  * a pure function of the weather, its seed, the clock and the camera (V3),
- * plus the per-renderer fall phase it integrates (like the overlay's elapsed
- * clock). `on` is the quality ladder's answer (`EFFECT_BUDGET['world-rain']`),
+ * plus the integrated fall phase, which survives a GPU backend swap.
+ * `on` is the quality ladder's answer (`EFFECT_BUDGET['world-rain']`),
  * `splashMask` whether the open-ground mask is bound.
  */
 export function gpuRainField(atmosphere, camera, { timeMs = 0, on = true, splashMask = false, viewport = null } = {}, out = createGpuRainField()) {
@@ -1091,7 +1088,7 @@ export function gpuRainField(atmosphere, camera, { timeMs = 0, on = true, splash
     const share = on ? lookStrength('rn1') : 0;
     if (!(share > 0) || !camera?.screenToWorld) return out;
     const weather = normalizeWeather(atmosphere);
-    if (!weather || !(weather.intensity > 0) || isWinterMonth(atmosphere)) return out;
+    if (!weather || !(weather.intensity > 0) || frozenPrecipitation(atmosphere)) return out;
     const precipitation = clamp(weather.precipitation, 0, 1);
     if (!(RAIN_TYPES.has(weather.type) || precipitation > RAIN_START_PRECIPITATION)) return out;
     // The overlay's own viewport (`drawForeground`'s canvas) when given, so
@@ -1119,17 +1116,18 @@ export function gpuRainField(atmosphere, camera, { timeMs = 0, on = true, splash
     const speed = (0.42 + intensity * 0.34) * RAIN_WORLD_SPEED_SHARE;
     const seed = seedFromAtmosphere(atmosphere, weather);
     const time = Number(timeMs) || 0;
-    const resume = particleEnabled && out.lastTimeMs !== null && out.seed === seed;
-    const dt = resume ? clamp(time - out.lastTimeMs, 0, MAX_FRAME_DT) : 0;
+    const motion = out.motion;
+    const resume = particleEnabled && motion.lastTimeMs !== null && motion.seed === seed;
+    const dt = resume ? clamp(time - motion.lastTimeMs, 0, MAX_FRAME_DT) : 0;
     for (let layer = 0; layer < RAIN_LAYERS.length; layer++) {
         const rate = speed * RAIN_LAYERS[layer].speedMul / RAIN_FALL_HEIGHT;
         const next = !particleEnabled ? random01(seed, 401 + layer)
-            : resume ? out.phase[layer] + dt * rate
+            : resume ? motion.phase[layer] + dt * rate
                 : time * rate;
-        out.phase[layer] = next - Math.floor(next);
+        motion.phase[layer] = next - Math.floor(next);
     }
-    out.lastTimeMs = particleEnabled ? time : null;
-    out.seed = seed;
+    motion.lastTimeMs = particleEnabled ? time : null;
+    motion.seed = seed;
     const night = clamp(Number(atmosphere?.lightGrade?.night) || 0, 0, 1);
     const alphaScale = (0.8 + intensity * 0.2) * (1 - night * 0.4);
     const driveT = Math.min(1, Math.max(intensity, precipitation));
@@ -1165,9 +1163,9 @@ export function gpuRainField(atmosphere, camera, { timeMs = 0, on = true, splash
     u[5] = RAIN_FALL_HEIGHT;
     u[6] = drift;
     u[7] = lean;
-    u[8] = out.phase[0];
-    u[9] = out.phase[1];
-    u[10] = out.phase[2];
+    u[8] = motion.phase[0];
+    u[9] = motion.phase[1];
+    u[10] = motion.phase[2];
     u[11] = alphaScale;
     u[12] = splashShare;
     u[13] = SPLASH_FRAME_MS * speed / RAIN_FALL_HEIGHT;
@@ -1506,7 +1504,7 @@ function weatherLegibilityGate(weather, atmosphere) {
     };
 }
 
-function isWinterMonth(atmosphere) {
+function frozenPrecipitation(atmosphere) {
     const localDate = atmosphere?.clock?.localDate;
     let month = NaN;
     if (typeof localDate === 'string' && localDate.length >= 7) {
@@ -1516,7 +1514,7 @@ function isWinterMonth(atmosphere) {
         const date = atmosphere?.effectiveDate;
         if (date instanceof Date) month = date.getMonth() + 1;
     }
-    return month === 12 || month === 1 || month === 2;
+    return precipitationIsFrozen(month - 1, atmosphere?.weather);
 }
 
 function normalizeType(type) {

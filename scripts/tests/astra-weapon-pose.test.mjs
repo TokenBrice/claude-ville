@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { astraWeaponPose } from '../../claudeville/src/presentation/character-mode/AstraWeaponPose.js';
+import { codexWeaponPose } from '../../claudeville/src/presentation/character-mode/CodexWeaponPose.js';
 import { AgentSprite } from '../../claudeville/src/presentation/character-mode/AgentSprite.js';
 import { SpriteSheet, DIRECTIONS } from '../../claudeville/src/presentation/character-mode/SpriteSheet.js';
 
@@ -71,4 +72,24 @@ test('Astra hides the far hand with its blade; unprofiled sprites keep their fal
     sprite._drawCodexEquipment(null, { ...identity, spriteId: 'agent.codex.unprofiled' }, geometry, 'front', 's');
     assert.deepEqual(calls.map(call => call.part), ['asset', 'hands']);
     assert.ok(calls.every(call => call.grip === null));
+});
+
+test('the second Astra body carries the halberd on its own measured wrists', () => {
+    const sheet = new SpriteSheet(null);
+    for (const [state, count] of [['walk', 6], ['idle', 4]]) {
+        for (let direction = 0; direction < 8; direction++) {
+            for (let frame = 0; frame < count; frame++) {
+                const geometry = { cell: sheet.cell(state, direction, frame), dx: 0, dy: 0 };
+                const pose = codexWeaponPose('agent.codex.gpt6astra.b', geometry, DIRECTIONS[direction], 'worldsplitter');
+                assert.ok(pose, `${state} ${DIRECTIONS[direction]} #${frame} needs a grip`);
+                assert.ok(pose.x >= 20 && pose.x <= 70 && pose.y >= 44 && pose.y <= 66);
+            }
+        }
+    }
+    const idleS = { cell: sheet.cell('idle', 0, 0), dx: 0, dy: 0 };
+    assert.notDeepEqual(
+        codexWeaponPose('agent.codex.gpt6astra.b', idleS, 's', 'worldsplitter'),
+        codexWeaponPose('agent.codex.gpt6astra', idleS, 's', 'worldsplitter'),
+        'the .b body must not borrow the first body\'s wrists',
+    );
 });

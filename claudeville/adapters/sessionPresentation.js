@@ -111,6 +111,8 @@ function estimateCost(rawUsage, model, provider) {
   // Reasoning tokens are billed at the output rate. Skip them when the
   // provider already counts them inside output (e.g. Codex) to avoid
   // double pricing.
+  const longWrites = provider === 'claude'
+    ? normalizeNumber(rawUsage?.cacheCreate1h ?? rawUsage?.cache_creation?.ephemeral_1h_input_tokens) : 0;
   const billableReasoning = usage.reasoningInOutput ? 0 : usage.reasoningTokens;
   return {
     availability: usage.availability,
@@ -118,7 +120,7 @@ function estimateCost(rawUsage, model, provider) {
       usage.input * rate.input +
       (usage.output + billableReasoning) * rate.output +
       usage.cacheRead * rate.cacheRead +
-      usage.cacheCreate * rate.cacheCreate
+      (usage.cacheCreate - longWrites) * rate.cacheCreate + longWrites * 2 * rate.input
     ) / 1000000,
     rateMatch: match,
     unknownModel: isDefault,
@@ -247,13 +249,13 @@ function decorateSessionPresentation(session) {
   const estimatedCost = Number.isFinite(explicitCost) && explicitCost >= 0
     ? explicitCost
     : estimate.usd;
-  const providerCost = session.cost?.source === 'provider' && session.cost.usd != null && Number.isFinite(Number(session.cost.usd))
+  const reportedCost = ['provider', 'mixed'].includes(session.cost?.source) && session.cost.usd != null && Number.isFinite(Number(session.cost.usd))
     ? session.cost
     : null;
   return {
     ...session,
     estimatedCost,
-    cost: providerCost || {
+    cost: reportedCost || {
       usd: estimatedCost,
       availability: Number.isFinite(explicitCost) ? session.cost?.availability || 'observed' : estimate.availability,
       source: 'estimate',

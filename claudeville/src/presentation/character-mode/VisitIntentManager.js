@@ -1,4 +1,5 @@
-import { classifyTool, compactToolLabel as compactLabel } from '../../domain/services/ToolIdentity.js';
+import { classifyTool, compactToolLabel as compactLabel, isScriptWrapperTool } from '../../domain/services/ToolIdentity.js';
+import { isWaitingOnCrew } from '../../domain/services/StatusResolver.js';
 import { normalizeGitEvent, parseEventTime } from '../shared/GitEventIdentity.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import {
@@ -119,6 +120,7 @@ function phaseFromToolClassification(tool, input, classified) {
 }
 
 function phaseFromIntentDraft(draft) {
+    if (draft?.reason === 'run-script') return null;
     const explicit = normalizeWorkingPhase(draft?.phase || draft?.workingPhase);
     if (explicit) return explicit;
     const source = String(draft?.source || '').toLowerCase();
@@ -454,16 +456,27 @@ export class VisitIntentManager {
 
     _deriveToolIntent(agent, now) {
         const tool = agent.currentTool || null;
-        if (!tool) return;
-        if (String(agent.status || '').toLowerCase() !== 'working') return;
-        const raw = classifyTool(tool, agent.currentToolInput ?? agent.lastToolInput);
+        const working = String(agent.status || '').toLowerCase() === 'working';
+        const scriptBuilding = working && agent.script && !tool && !isWaitingOnCrew(agent)
+            ? agent.lastKnownBuildingType : null;
+        if (scriptBuilding) {
+            // A long script can outlive the last tool's intent without becoming an errand.
+            this._upsertIntent(agent.id, {
+                source: 'tool', sourceKey: 'script', building: scriptBuilding,
+                reason: 'run-script', confidence: 1, label: agent.script.description || '',
+            }, now);
+            return;
+        }
+        this.intentsByAgent.get(agent.id)?.delete(`${agent.id}:tool:script`);
+        if (!tool || !working) return;
+        const input = agent.currentToolInput ?? (isScriptWrapperTool(tool) ? null : agent.lastToolInput);
+        const raw = classifyTool(tool, input, agent);
         if (!raw?.building) return;
         // An unrecognized shell command is no evidence of a place: the body
         // works in its stable home district instead of crowding Command.
         const classified = placedToolBuilding(raw)
             ? raw
             : { ...raw, building: homeDistrictFor(agent, { now }) };
-        const input = agent.currentToolInput ?? agent.lastToolInput;
         // The phase reads the call itself, not the district it was given.
         const phase = phaseFromToolClassification(tool, input, raw);
         this.lastToolBuildingByAgent.set(agent.id, {

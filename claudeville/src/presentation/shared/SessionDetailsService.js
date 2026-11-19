@@ -251,7 +251,7 @@ class SessionDetailsService {
     }
 
     fetchSessionDetail(agent) {
-        if (!agent || !agent.id) return Promise.resolve(null);
+        if (!agent?.id || agent.isRecorded) return Promise.resolve(null);
 
         const key = this.getSessionDetailKey(agent);
         const now = Date.now();
@@ -297,7 +297,7 @@ class SessionDetailsService {
         const callTokens = new Map();
 
         for (const agent of agents) {
-            if (!agent?.id) continue;
+            if (!agent?.id || agent.isRecorded) continue;
             const key = this.getSessionDetailKey(agent);
             const token = this._keyTokenFor(key);
             callTokens.set(agent.id, { key, token });

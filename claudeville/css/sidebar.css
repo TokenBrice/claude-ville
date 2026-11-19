@@ -601,6 +601,49 @@
     display: none;
 }
 
+/* FK-4 — a lead's crew sits under the lead on an indented rail in the squad
+   accent (the lead's repo colour). Nested rows drop the parent link, so the
+   name keeps the full width; the crew folds behind 'N crew' past 8 rows. */
+.sidebar__crew-members {
+    margin-left: 16px;
+    border-left: 2px solid color-mix(in srgb, var(--cv-repo-color, var(--line-2)) 62%, transparent);
+}
+
+.sidebar__crew--collapsed .sidebar__crew-members:not(.sidebar__crew-pinned),
+.sidebar__crew-pinned:empty {
+    display: none;
+}
+
+.sidebar__crew-toggle[hidden] {
+    display: none;
+}
+
+.sidebar__agent--nested {
+    padding-left: 8px;
+    border-left-color: transparent;
+}
+
+/* FK-7 — a teammate's own rail segment, beside the squad rail, in the house
+   hue of the colour Claude Code gave it (TeamColor.harnessAccent). */
+.sidebar__agent--nested.sidebar__agent--harness:not(.sidebar__agent--selected) {
+    border-left-color: var(--cv-harness-color);
+}
+
+/* A nested name wraps to a second line rather than losing its tail, the
+   part that tells lanes apart. */
+.sidebar__agent--nested .sidebar__agent-name {
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+.sidebar__crew-members .sidebar__workflow-toggle {
+    padding-left: 8px;
+}
+
+.sidebar__crew-members .sidebar__workflow-members {
+    margin-left: 8px;
+}
+
 /* ─── Empty-world onboarding legend ─── */
 .sidebar__empty {
     display: flex;

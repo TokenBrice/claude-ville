@@ -10,8 +10,10 @@ import { ChronicleEventKind, summarizeDay } from '../../claudeville/src/applicat
 import { Toast } from '../../claudeville/src/presentation/shared/Toast.js';
 import { BgmDirector } from '../../claudeville/src/presentation/shared/audio/BgmDirector.js';
 import { TopBar } from '../../claudeville/src/presentation/shared/TopBar.js';
+import { installChromeTooltip } from '../../claudeville/src/presentation/shared/ChromeTooltip.js';
 import { DashboardRenderer } from '../../claudeville/src/presentation/dashboard-mode/DashboardRenderer.js';
 import { eventBus } from '../../claudeville/src/domain/events/DomainEvent.js';
+import { AtmosphereState } from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
 
 class FakeClassList {
     constructor(owner) {
@@ -285,6 +287,123 @@ test('the SOUND popover opens on the checked preset, closes the Spend Map, and r
     } finally {
         if (previousWindow === undefined) delete globalThis.window;
         else globalThis.window = previousWindow;
+    }
+});
+
+test('the header timer starts before World mounts and honors the mounted atmosphere', async (t) => {
+    const now = new Date(2026, 10, 19, 12);
+    t.mock.timers.enable({ apis: ['Date', 'setInterval'], now });
+    const documentRef = { hidden: false };
+    globalThis.document = documentRef;
+    t.after(() => { delete globalThis.document; });
+    globalThis.window = Object.assign(new EventTarget(), { location: { origin: 'http://localhost' } });
+    t.after(() => { delete globalThis.window; });
+    const { App } = await import('../../claudeville/src/presentation/App.js');
+    const atmosphere = new AtmosphereState();
+    const fields = new Map(['time', 'phase', 'override'].map(name => [`.topbar__clock-${name}`, {}]));
+    fields.set('path', { setAttribute() {} });
+    const topBar = Object.assign(Object.create(TopBar.prototype), {
+        world: { get activeTime() { return Math.floor((Date.now() - now.getTime()) / 1000); } },
+        els: { time: {}, clock: { dataset: {}, querySelector: selector => fields.get(selector) } },
+        _villageState: {},
+    });
+    let mode = 'dashboard';
+    let snapshots = 0;
+    const app = Object.assign(Object.create(App.prototype), {
+        modeManager: { getCurrentMode: () => mode },
+    });
+    topBar.readDashboardAtmosphere = () => {
+        const snapshot = app._readDashboardAtmosphere();
+        if (snapshot) snapshots++;
+        return snapshot;
+    };
+    const clock = fields.get('.topbar__clock-time');
+    topBar._startTimer();
+    t.mock.timers.tick(1_000);
+    assert.equal(clock.textContent, '12:00');
+    assert.equal(snapshots, 1);
+
+    mode = 'character';
+    t.mock.timers.tick(60_000);
+    assert.equal(clock.textContent, '12:00');
+    assert.equal(snapshots, 1);
+
+    mode = 'dashboard';
+    app.renderer = { atmosphereState: atmosphere };
+    t.mock.timers.tick(4_000);
+    assert.equal(clock.textContent, '12:01');
+    assert.equal(snapshots, 2);
+    assert.equal(topBar.els.time.textContent, '00:01:05');
+
+    documentRef.hidden = true;
+    t.mock.timers.tick(60_000);
+    assert.equal(clock.textContent, '12:01');
+    assert.equal(snapshots, 2);
+    documentRef.hidden = false;
+    t.mock.timers.tick(1_000);
+    assert.equal(clock.textContent, '12:02');
+
+    atmosphere.setHour(14.5);
+    t.mock.timers.tick(60_000);
+    assert.equal(clock.textContent, '14:30');
+    t.mock.timers.tick(60_000);
+    assert.equal(clock.textContent, '14:30');
+    assert.equal(fields.get('.topbar__clock-override').textContent, 'FIXED');
+});
+
+test('forecast changes refresh the World clock from its last atmosphere without another frame', () => {
+    const fields = new Map(['time', 'phase', 'override'].map(name => [`.topbar__clock-${name}`, {}]));
+    fields.set('path', { setAttribute() {} });
+    const clock = { dataset: {}, querySelector: selector => fields.get(selector) };
+    const last = { clock: { label: '12:00' }, weather: { type: 'clear' } };
+    const topBar = Object.assign(Object.create(TopBar.prototype), {
+        els: { clock },
+        _villageState: {},
+        readDashboardAtmosphere: () => null,
+        refreshAtmosphere: snapshot => {
+            assert.equal(snapshot, last);
+            return { ...last, weather: { type: 'rain', frozen: true }, weatherSource: { kind: 'forecast', ageMinutes: 1 } };
+        },
+    });
+    topBar._renderWitnessClock(last);
+    topBar._refreshWitnessClock();
+    assert.match(clock.dataset.tip, /Real sky.*fetched 1m ago.*snow/);
+});
+
+test('the clock credit can open its parent tooltip from keyboard focus', (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    globalThis.MutationObserver = class {
+        observe() {}
+        disconnect() {}
+    };
+    globalThis.getComputedStyle = () => ({ anchorName: 'none' });
+    t.after(() => {
+        delete globalThis.MutationObserver;
+        delete globalThis.getComputedStyle;
+    });
+    let opens = 0;
+    const style = { setProperty() {}, removeProperty() {} };
+    const handlers = {};
+    const tip = { showPopover() { opens++; }, matches: () => false, replaceChildren() {} };
+    const uninstall = installChromeTooltip({
+        getElementById: () => tip,
+        createTextNode: () => ({}),
+        addEventListener: (type, handler) => { handlers[type] = handler; },
+        removeEventListener() {},
+    });
+    const parent = { isConnected: true, dataset: { tip: 'Weather' }, style, matches: () => false, closest: () => parent };
+    const focus = (credit) => handlers.focusin({
+        target: { closest: () => parent, matches: selector => selector === ':focus-visible' || credit },
+    });
+    try {
+        focus(false);
+        t.mock.timers.tick(400);
+        assert.equal(opens, 0);
+        focus(true);
+        t.mock.timers.tick(400);
+        assert.equal(opens, 1);
+    } finally {
+        uninstall();
     }
 });
 

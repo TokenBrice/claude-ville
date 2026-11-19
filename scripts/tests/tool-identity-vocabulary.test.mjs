@@ -6,6 +6,8 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { AgentManager } from '../../claudeville/src/application/AgentManager.js';
+import { World } from '../../claudeville/src/domain/entities/World.js';
 import {
     classifyTool,
     placedBuildingForTool,
@@ -13,6 +15,10 @@ import {
     toolCategory,
     toolVerbLabel,
 } from '../../claudeville/src/domain/services/ToolIdentity.js';
+import { AgentAction, resolveAgentAction } from '../../claudeville/src/presentation/character-mode/ActionVocabulary.js';
+import { BuildingSprite } from '../../claudeville/src/presentation/character-mode/BuildingSprite.js';
+import { VisitIntentManager } from '../../claudeville/src/presentation/character-mode/VisitIntentManager.js';
+import { currentToolPresentation } from '../../claudeville/src/presentation/shared/AgentPresentation.js';
 
 const CASES = [
     // Claude's subagent launcher is delegation, like the `Task` it replaced.
@@ -131,4 +137,115 @@ test('MCP delegation and unknown verbs name no building', () => {
     }
     // The browser MCPs keep their Portal placement.
     assert.equal(placedBuildingForTool('mcp__playwright__browser_navigate', '{"url":"http://x"}'), 'portal');
+});
+
+test('TR-2: wrapper descriptions produce a script verb and no building', () => {
+    for (const tool of ['REPL', 'Poll']) {
+        for (const input of ['Edit server.js and run npm test', 'git push the branch',
+            'Fetch https://example.com', { description: 'Patch server.js' }, null]) {
+            assert.equal(placedBuildingForTool(tool, input), null);
+            assert.equal(toolVerbLabel(tool, input), 'run a script');
+            assert.equal(toolActionLabel(tool), 'Running a script');
+        }
+        const calls = { tool_uses: [{ tool, input: { description: 'git push the branch' } }] };
+        assert.equal(placedBuildingForTool('multi_tool_use', calls), null);
+        calls.tool_uses.push({ tool: 'Grep', input: { pattern: 'village' } });
+        assert.equal(placedBuildingForTool('multi_tool_use', calls), 'archive');
+    }
+});
+
+test('TR-2: snapshots and deltas carry the script label and retain real tool placement', t => {
+    let now = Date.now();
+    const world = new World();
+    const manager = new AgentManager(world, null, { clock: () => now });
+    const visits = new VisitIntentManager({ world, now: () => now });
+    t.after(() => { manager.stop(); visits.dispose(); });
+    const session = {
+        sessionId: 's', provider: 'claude', turnState: 'tool_pending', lastActivity: now,
+        pendingTool: 'REPL', lastTool: 'Read', lastToolInput: 'README.md',
+        script: { tool: 'REPL', description: 'Edit server.js and run npm test', since: now },
+    };
+    manager.handleWebSocketMessage({ sessions: [session] });
+    const agent = world.agents.get('s');
+    assert.deepEqual(agent.script, session.script);
+    assert.equal(agent.currentTool, null);
+    assert.equal(agent.lastKnownBuildingType, 'archive');
+    assert.equal(currentToolPresentation(agent).name, 'Running a script');
+    assert.equal(currentToolPresentation(agent).detail, session.script.description);
+    now += 60_000;
+    visits.reconcile();
+    assert.equal(visits.getIntentForAgent('s')?.building, 'archive');
+    assert.equal(visits.getIntentForAgent('s')?.phase, null);
+
+    const update = (patch) => manager.handleWebSocketMessage({
+        sessions: [{ ...session, ...patch }], changes: { sessionIds: ['s'], shared: false },
+    });
+    update({ script: { ...session.script, description: null } });
+    assert.equal(currentToolPresentation(agent).name, 'Running a script');
+    assert.equal(currentToolPresentation(agent).detail, '');
+    update({ script: null, pendingTool: null, turnState: 'working' });
+    assert.equal(agent.script, null);
+    assert.equal(currentToolPresentation(agent).name, 'Read');
+    assert.equal(currentToolPresentation(agent).detail, 'README.md');
+    visits.reconcile();
+    assert.equal(visits.getIntentForAgent('s')?.reason, 'read-local');
+
+    update({});
+    manager.handleWebSocketMessage({ sessions: [] });
+    assert.equal(agent.script, null);
+});
+
+test('FK-2: a shell or monitor Poll routes like Monitor using background evidence', t => {
+    const now = Date.now();
+    const world = new World();
+    const manager = new AgentManager(world, null, { clock: () => now });
+    const visits = new VisitIntentManager({ world, now: () => now });
+    t.after(() => { manager.stop(); visits.dispose(); });
+    for (const kinds of [['bash'], ['monitor'], ['bash', 'monitor']]) {
+        const session = {
+            sessionId: 'watch', provider: 'claude', turnState: 'tool_pending', lastActivity: now,
+            pendingTool: 'Poll', lastTool: 'Edit', lastToolInput: 'server.js',
+            backgroundPending: { count: kinds.length, kinds, since: now },
+            script: { tool: 'Poll', description: 'Commit the build results', since: now },
+        };
+        manager.handleWebSocketMessage({ sessions: [session] });
+        const watcher = world.agents.get('watch');
+        assert.equal(watcher.pendingTool, 'Poll');
+        assert.equal(watcher.lastTool, 'Edit');
+        assert.equal(watcher.targetBuildingType, 'watchtower');
+        visits.reconcile();
+        const intent = visits.getIntentForAgent('watch');
+        assert.equal(intent?.building, 'watchtower');
+        assert.equal(intent?.phase, 'watching');
+        assert.equal(intent?.payload?.tool, 'Poll');
+        assert.equal(currentToolPresentation(watcher).name, 'Watching');
+        assert.equal(currentToolPresentation(watcher).detail, session.script.description);
+        assert.equal(toolVerbLabel('Poll', session.script.description, watcher), 'watch');
+        const aperture = BuildingSprite.prototype._inspectionSessions.call({ agentSprites: [{ agent: watcher }] }, 'watchtower', now);
+        assert.equal(aperture[0]?.tool, 'watch');
+        assert.equal(currentToolPresentation({ ...watcher, status: 'completed' }).isIdle, true);
+    }
+    const crewPoll = { turnState: 'tool_pending', pendingTool: 'Poll', backgroundPending: { count: 1, kinds: ['agent', 'bash'] } };
+    assert.equal(toolVerbLabel('Poll', '', crewPoll), 'wait on crew');
+});
+
+test('FK-9: the action pose uses tool categories and observed blocking', () => {
+    for (const [currentTool, expected] of [
+        ['Task', AgentAction.WORK], ['TaskCreate', AgentAction.WORK], ['TaskUpdate', AgentAction.WORK],
+        ['mcp__glm__ask', AgentAction.WORK], ['merge', AgentAction.WORK], ['Bash', AgentAction.WORK],
+        ['Read', AgentAction.READ], ['Grep', AgentAction.READ], ['rg', AgentAction.READ],
+        ['ToolSearch', AgentAction.READ], ['NotebookRead', AgentAction.READ], ['TodoRead', AgentAction.READ],
+        ['grep_search', AgentAction.READ], ['codebase_search', AgentAction.READ], ['file_search', AgentAction.READ],
+        ['searchTools', AgentAction.READ], ['mcp__sequential-thinking__sequentialthinking', AgentAction.THINK],
+        ['mcp__data__read_file', AgentAction.READ], ['EnterPlanMode', AgentAction.THINK],
+        ['AskUserQuestion', AgentAction.THINK], ['SendMessage', AgentAction.TALK],
+    ]) {
+        assert.equal(resolveAgentAction({ currentTool, status: 'working' }), expected, currentTool);
+    }
+    assert.equal(resolveAgentAction({ status: 'working', turnState: 'tool_pending',
+        pendingTool: 'mcp__glm__ask', currentTool: 'Edit' }), null);
+});
+
+test('FK-9: searchTools has a read pose without changing its shared category', () => {
+    assert.equal(toolCategory('searchTools'), 'other');
 });

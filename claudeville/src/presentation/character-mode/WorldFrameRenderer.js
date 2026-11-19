@@ -39,11 +39,12 @@ import { poolMaskRect, poolReceiverMask } from './CanvasPoolMask.js';
 import { drawCanvasWaterColumns } from './CanvasWaterState.js';
 import { drawCanvasEmitterCuts, drawMineCrystalGlow } from './EmitterCuts.js';
 import { sourceEnergyFor } from './AtmosphereState.js';
-import { groundOptionsFor, groundStateAt } from './GroundState.js';
+import { groundOptionsFor, groundStateAt, liquidPrecipitation } from './GroundState.js';
 import { ungradeRgb } from './CanvasGrade.js';
 import { PEAK, armPeakMarks, drawMomentEdgePlates, setMomentStage, takePeakMarks } from './EffectStamps.js';
 import { THOUGHT_PAINT } from './ThoughtColumn.js';
 import { getReservedRects, publishReservedBox } from '../shared/ReservedRects.js';
+import { postcardFrame } from './Postcard.js';
 
 const FRAME_TIMING_RING_CAPACITY = 90;
 const FRAME_TIMER_MAX_MARKS = 48;
@@ -527,6 +528,9 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
         for (const kind in paintCounts.upper) paintCounts.upper[kind] = 0;
     }
     const renderNow = Date.now();
+    // XP-5 — a postcard frame (Postcard.js): every label tier below stands
+    // down; weather, light and marks draw as on any frame.
+    const postcard = postcardFrame();
     const villageSnapshot = renderer.villageDirector?.getSnapshot?.() || null;
     const viewport = renderer._screenViewport();
     // V8 — the frame's moment stage: every C4 moment (and the building chits)
@@ -577,7 +581,8 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     // FP-2 — under reduced motion the timeline advances in whole seconds, so
     // a static scene's inputs hold within a second and its idle frames reuse
     // the presented one (IsometricRenderer._hasTimedIdleTransition).
-    const atmosphereNow = (renderer.motionScale ?? 1) > 0 ? renderNow : renderNow - (renderNow % 1000);
+    const atmosphereNow = renderer.replay?.replayClock.now
+        ?? ((renderer.motionScale ?? 1) > 0 ? renderNow : renderNow - (renderNow % 1000));
     renderer._atmosphereClockMs = atmosphereNow;
     const atmosphere = renderer.atmosphereState.update({
         now: new Date(atmosphereNow),
@@ -604,7 +609,8 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     renderer._setPostFxCanvasVisible?.(gpuWorldActive || postFxActive);
     renderer._resetScreenTransform(overlayCtx);
     overlayCtx.clearRect(0, 0, viewport.width, viewport.height);
-    renderer._surfaceWetness = Math.max(clamp01(Number(wx?.precipitation) || 0), renderer._groundState.wetness);
+    // EN-4 — live wetness from liquid rain only (winter snow keeps it dry).
+    renderer._surfaceWetness = Math.max(wx ? liquidPrecipitation(atmosphere, wx) : 0, renderer._groundState.wetness);
     // 5.2 roofs / 6.6 — roof snow, wet slate and eave drips step with the
     // same ground state and the live precipitation.
     renderer.buildingRenderer?.syncRoofWeather?.(atmosphere, renderer._groundState, renderer.motionScale ?? 1, renderer.motionTimeMs);
@@ -950,6 +956,8 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
             ? attentionMarkRecords(renderer._attentionLayout, {
                 scale: markScale,
                 out: renderer._attentionMarkRecords || (renderer._attentionMarkRecords = []),
+                // XP-5 — a postcard keeps the beacons and drops the plates.
+                beaconsOnly: postcard,
             })
             : null;
         gpuRenderContext.forceFreshOutput = renderer._requiresFreshGpuOutput?.() === true;
@@ -997,7 +1005,7 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     // moment's cream peak frame goes to the GPU mark pass after the overlay
     // is drawn (EffectStamps.peakMarkSink, drawPeakMarks below); otherwise it
     // stays on the overlay.
-    const peakMarksArmed = gpuWorldRendered
+    const peakMarksArmed = !postcard && gpuWorldRendered
         && typeof renderer.gpuWorld?.drawLateMarks === 'function'
         && Number.isInteger(renderer._screenDpr())
         && overlayCtx.canvas?.width === renderer.gpuWorld.width
@@ -1035,7 +1043,7 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
         lighting: atmosphere?.lighting,
         grade: atmosphere?.grade,
     });
-    drawCrowdClusterBadges(overlayCtx, {
+    if (!postcard) drawCrowdClusterBadges(overlayCtx, {
         crowdStats: renderer._crowdStats,
         agentSprites: renderer.agentSprites,
         zoom,
@@ -1080,11 +1088,11 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     if (!gpuWorldRendered) {
         for (const sprite of sortedSprites) sprite.drawDeferredNameTag?.(overlayCtx);
     }
-    drawThoughtLayer(overlayCtx, sortedSprites, zoom);
+    if (!postcard) drawThoughtLayer(overlayCtx, sortedSprites, zoom);
     // 4.5 — the shared-file overlap plate. The thread and knot live in the
     // occluded ground texture; the exact counts belong here, once, in both
     // backends, so dense load keeps the numbers when the lines are dropped.
-    drawSharedFileOverlapLabel(overlayCtx, {
+    if (!postcard) drawSharedFileOverlapLabel(overlayCtx, {
         overlap: renderer.relationshipState?.getSnapshot?.()?.fileOverlap || null,
         agentSprites: renderer.agentSprites,
         zoom,
@@ -1109,7 +1117,7 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
             return { left: topLeft.x, top: topLeft.y, right: bottomRight.x, bottom: bottomRight.y };
         })()
         : null;
-    renderer.buildingRenderer?.drawLabels(overlayCtx, {
+    if (!postcard) renderer.buildingRenderer?.drawLabels(overlayCtx, {
         zoom,
         scaleMode: 'screen-fixed',
         occupiedBoxes: captionWorldBox
@@ -1144,6 +1152,14 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     markFrameTiming(frameTimer, 'labels');
 
     renderer._resetScreenTransform(overlayCtx);
+    // XP-5 — the screen tier (summaries, edge cues, letterbox, T1 plates, the
+    // caption, debug) is chrome: a postcard frame keeps only the T1 beacons
+    // (marks, no word or name) and ends here.
+    if (postcard) {
+        drawAttentionPlates(overlayCtx, renderer._attentionLayout, { inkOnly: gpuMarksDrawn, beaconsOnly: true });
+        finishFrameTiming(renderer, frameTimer);
+        return true;
+    }
     renderer.harborTraffic?.drawScreenSummary(overlayCtx, viewport, renderer.camera, renderNow);
     drawVillageDirectorScreen(overlayCtx, villageSnapshot, viewport);
     // 5.4 — the work score's badge and every exact count, once, on the shared
@@ -1420,6 +1436,9 @@ export function prepareSemanticGround(renderer, viewport, snapshot, atmosphere) 
         state.animated ? Math.floor((renderer.motionTimeMs || 0) / 125) : 0,
         renderer.motionScale,
         state.signature,
+        // XP-5 — a postcard frame redraws the retained cues (text-free) and
+        // the next live frame redraws them again.
+        postcardFrame(),
         // Light boost changes continuously through the day. Sub-byte alpha
         // drift must not turn a static cue texture into a per-frame upload.
         Math.round((atmosphere?.lighting?.lightBoost ?? 1) * 64), atmosphere?.grade?.worldTint,

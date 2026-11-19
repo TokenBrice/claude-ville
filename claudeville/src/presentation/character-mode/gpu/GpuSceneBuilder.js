@@ -175,11 +175,8 @@ function packedLandmarkChannels(renderer, id, { crop = false } = {}) {
 
 // The material/emissive sidecar cache key is scoped to the atlas page, because
 // one whole-page channel image is shared by every frame packed into that page.
-// Its revision must be scoped identically: a per-record revision makes
-// GpuWorldRenderer._textureFor see a mismatch on every batch that binds the
-// page, which re-uploads the full 2048x2048 channel image several times per
-// frame (~96 MB/frame measured, uploadMs ~50) and pins the GPU quality ladder
-// at "disabled:uploadMs".
+// A per-record revision would re-upload the whole channel page whenever
+// the next batch binds a different record from that same atlas.
 function atlasChannelRevision(assets, atlasId) {
     return `${assets?.assetVersion || ''}::${atlasId}::channels`;
 }
@@ -647,10 +644,8 @@ function recordForBuilding(renderer, drawable, sequence) {
     // Material/emissive are sampled with the albedo's UVs (see the GL fragment
     // shaders), so a channel source must share the albedo's geometry. When the
     // albedo comes from an atlas page the channels must be that page's channel
-    // pages; a per-landmark sidecar keyed under the shared `<atlas>:channels`
-    // key sampled the wrong pixels and made every batch rebind the key with a
-    // different source, re-uploading the full 2048x2048 page several times per
-    // frame.
+    // pages. A per-landmark source under the shared `<atlas>:channels` key
+    // sampled the wrong pixels and triggered a full upload on every rebind.
     const resolved = useAtlas ? null : packedLandmarkChannels(renderer, id, { crop: true });
     const materialSource = (useAtlas
         ? assets.getAtlas?.(atlasFrame.atlas, 'material')
@@ -838,7 +833,7 @@ function glassPatchRecord(renderer, drawable, record, horizon, front) {
 // shades exactly like the slate under it (roofs stay unlit by lamps, 2.3),
 // then the eave-drip strip frame while it rains. Both after the glass patch
 // and before the parts, so doors, banners and pennants stay on top. Clear,
-// dry weather emits nothing.
+// dry weather emits nothing but the EN-6 low-sun glint run.
 const NO_ROOF_RECORDS = Object.freeze([]);
 
 function roofWeatherRecords(renderer, drawable, record, horizon, front, sequence) {
@@ -1093,7 +1088,7 @@ function createAgentAtlasCanvas() {
     return atlas;
 }
 
-function ensureAgentChannelAtlas(renderer, property, width, height, state) {
+function ensureAgentChannelAtlas(renderer, property, width, height, cell, state) {
     let atlas = renderer[property];
     let resized = false;
     if (!atlas && typeof document !== 'undefined') {
@@ -1106,58 +1101,42 @@ function ensureAgentChannelAtlas(renderer, property, width, height, state) {
         state.resized = false;
         return state;
     }
-    if (atlas.width !== width || atlas.height !== height) {
+    if (atlas.width !== width || atlas.height !== height || state.cell !== cell) {
         atlas.width = width;
         atlas.height = height;
         resized = true;
     }
+    if (resized) state.occupied = new Map();
+    state.cell = cell;
     state.atlas = atlas;
     state.resized = resized;
     return state;
 }
 
-function drawAgentChannelFrame(ctx, record, channel, x, y) {
-    const source = record[channel];
-    if (!source) return;
-    // B.2 — an equipped body's channel companions keep the unpadded sheet
-    // layout: its cell lands at the pad offset inside the padded slot.
-    const rect = record.channelRect;
-    if (rect) {
-        ctx.drawImage(source, rect.sx, rect.sy, rect.sw, rect.sh, x + rect.dx, y + rect.dy, rect.sw, rect.sh);
-        return;
+function agentChannelRect(record, source) {
+    // Equipped bodies use an unpadded channel sheet inside the padded slot.
+    if (record.channelRect) return record.channelRect;
+    const { width, height } = source;
+    if (width === record.sw && height === record.sh) {
+        return { sx: 0, sy: 0, sw: width, sh: height, dx: 0, dy: 0 };
     }
-    const srcW = source.width || 0;
-    const srcH = source.height || 0;
-    if (srcW === record.sw && srcH === record.sh) {
-        ctx.drawImage(source, 0, 0, srcW, srcH, x, y, record.sw, record.sh);
-        return;
+    if (width >= (record.sx || 0) + record.sw && height >= (record.sy || 0) + record.sh) {
+        return { sx: record.sx, sy: record.sy, sw: record.sw, sh: record.sh, dx: 0, dy: 0 };
     }
-    if (srcW >= (record.sx || 0) + record.sw && srcH >= (record.sy || 0) + record.sh) {
-        ctx.drawImage(
-            source,
-            record.sx,
-            record.sy,
-            record.sw,
-            record.sh,
-            x,
-            y,
-            record.sw,
-            record.sh,
-        );
-        return;
-    }
-    const ox = Math.max(0, Math.floor((record.sw - srcW) / 2));
-    const oy = Math.max(0, Math.floor((record.sh - srcH) / 2));
-    ctx.drawImage(source, 0, 0, srcW, srcH, x + ox, y + oy, srcW, srcH);
+    return {
+        sx: 0, sy: 0, sw: width, sh: height,
+        dx: Math.max(0, Math.floor((record.sw - width) / 2)),
+        dy: Math.max(0, Math.floor((record.sh - height) / 2)),
+    };
 }
 
 // 4.7 — full-rate gait on the resident path. A walking, on-screen, non-LOD
 // body (its record carries `walkStrip`, built by AgentGpuOverlayRenderer)
-// holds a strip of WALK_FRAMES cells in a band below the slot grid, and each
-// frame samples `stripX + frame * cell`. A strip cell is copied and uploaded
+// holds WALK_FRAMES consecutive cells after the pose bands, wrapping across
+// rows just like a pose cell. A strip cell is copied and uploaded
 // the first time its frame shows, so a strip costs at most one cell upload
-// per frame change and none once the stride has cycled; it refills only when
-// its key (direction, tool, sheet, channels, pose) moves. Idle, posed and
+// per frame change and none once the stride has cycled. Moving the strip or
+// changing its key (direction, tool, sheet, channels, pose) refills it. Idle, posed and
 // crowd-LOD bodies keep their single slot on the 125 ms cadence. The band
 // grows in quanta, capped by count and by pixels per atlas (albedo and every
 // channel atlas share the geometry), so the agent atlases stay a bounded
@@ -1254,26 +1233,52 @@ function assignWalkStrips(renderer, eligible) {
     return assigned;
 }
 
-function walkStripOrigin(index, layout) {
-    return {
-        x: (index % layout.stripsPerRow) * WALK_FRAMES * layout.cell,
-        y: (layout.slotRows + Math.floor(index / layout.stripsPerRow)) * layout.cell,
-    };
+function atlasCellUpdate(source, { x, y }, width, height) {
+    return { x, y, sx: x, sy: y, width: Math.ceil(width), height: Math.ceil(height), source };
 }
 
-// One freshly filled strip cell as a sub-rect patch read straight from its
-// atlas canvas (GpuWorldRenderer._textureFor honours `sx/sy`).
-function walkStripCellUpdate(atlas, x, y, source) {
-    return { x, y, sx: x, sy: y, width: source.sw, height: source.sh, source: atlas };
+// Occupancy belongs to the physical cell. A replacement without a sidecar
+// must erase the previous owner's pixels, even if its pose band was discarded.
+function paintAgentChannels(channels, record, cellIndex, origin, cell) {
+    for (const { name, state, updates } of channels) {
+        if (!state.atlas) continue;
+        const old = state.occupied.get(cellIndex);
+        const source = record[name];
+        if (!source && !old) continue;
+        const ctx = state.atlas.getContext('2d', { alpha: true });
+        ctx.imageSmoothingEnabled = false;
+        if (old) ctx.clearRect(old.x, old.y, old.width, old.height);
+        let painted;
+        if (source) {
+            const rect = agentChannelRect(record, source);
+            const x = origin.x + rect.dx;
+            const y = origin.y + rect.dy;
+            const width = Math.min(rect.sw, cell - rect.dx);
+            const height = Math.min(rect.sh, cell - rect.dy);
+            ctx.drawImage(source, rect.sx, rect.sy, width, height, x, y, width, height);
+            painted = { x, y, width: Math.ceil(width), height: Math.ceil(height) };
+            state.occupied.set(cellIndex, painted);
+        } else {
+            state.occupied.delete(cellIndex);
+        }
+        if (!state.resized) {
+            // Include the vacated border when a padded or clipped pose shrinks.
+            const before = old || painted;
+            const after = painted || old;
+            const x = Math.min(before.x, after.x);
+            const y = Math.min(before.y, after.y);
+            const width = Math.max(before.x + before.width, after.x + after.width) - x;
+            const height = Math.max(before.y + before.height, after.y + after.height) - y;
+            updates.push(atlasCellUpdate(state.atlas, { x, y }, width, height));
+        }
+    }
 }
 
 function fillWalkStrips(renderer, agentRecords, assigned, layout) {
     const strips = renderer._gpuAgentStrips || [];
-    const { cell, atlas, resized, channels } = layout;
-    // A new or cleared canvas empties every strip, held or waiting for its
-    // walker to return; a holder's slot was not redrawn into it either, so
-    // the slot repacks when the body returns to it.
-    if (resized || channels.some(channel => channel.state.resized)) {
+    const { cell, columns, stripBase, atlas, resized, stripsMoved, channels } = layout;
+    // A moved base invalidates even the strips whose walkers are off screen.
+    if (stripsMoved) {
         for (const strip of strips) strip.filled = 0;
         for (const id of assigned.keys()) renderer._gpuAgentAtlasFrameKeys?.delete(id);
     }
@@ -1281,13 +1286,12 @@ function fillWalkStrips(renderer, agentRecords, assigned, layout) {
     const ctx = atlas.getContext('2d', { alpha: true });
     ctx.imageSmoothingEnabled = false;
     let fills = 0;
-    let channelFills = 0;
     for (const record of agentRecords) {
         const index = assigned.get(record.id);
         if (index === undefined) continue;
         const strip = strips[index];
         // The walk-strip key moves whenever a probed cell's sheet or channel
-        // source moves; a channel atlas that appears arrives as a resize.
+        // source moves. A reactivated channel also invalidates the filled bits.
         const key = [
             record.textureKey,
             record.textureRevision,
@@ -1302,30 +1306,16 @@ function fillWalkStrips(renderer, agentRecords, assigned, layout) {
         const bit = 1 << frame;
         if (strip.filled & bit) continue;
         const source = record.walkStrip.cells[frame];
-        const origin = walkStripOrigin(index, layout);
-        const x = origin.x + frame * cell;
-        ctx.clearRect(x, origin.y, cell, cell);
-        ctx.drawImage(source.source, source.sx, source.sy, source.sw, source.sh, x, origin.y, source.sw, source.sh);
-        if (!resized) {
-            renderer._gpuAgentAlbedoTextureUpdates.push(walkStripCellUpdate(atlas, x, origin.y, source));
-        }
-        for (const channel of channels) {
-            const channelAtlas = channel.state.atlas;
-            if (!channelAtlas) continue;
-            const channelCtx = channelAtlas.getContext('2d', { alpha: true });
-            channelCtx.imageSmoothingEnabled = false;
-            channelCtx.clearRect(x, origin.y, cell, cell);
-            drawAgentChannelFrame(channelCtx, source, channel.name, x, origin.y);
-            if (!channel.state.resized) {
-                renderer[channel.updates].push(walkStripCellUpdate(channelAtlas, x, origin.y, source));
-            }
-            channelFills++;
-        }
+        const cellIndex = stripBase + index * WALK_FRAMES + frame;
+        const origin = agentCellOrigin(cellIndex, columns, cell);
+        ctx.clearRect(origin.x, origin.y, cell, cell);
+        ctx.drawImage(source.source, source.sx, source.sy, source.sw, source.sh, origin.x, origin.y, source.sw, source.sh);
+        if (!resized) renderer._gpuAgentAlbedoTextureUpdates.push(atlasCellUpdate(atlas, origin, source.sw, source.sh));
+        paintAgentChannels(channels, source, cellIndex, origin, cell);
         strip.filled |= bit;
         fills++;
     }
     if (fills) renderer._gpuAgentFrameAtlasRevision++;
-    if (channelFills) renderer._gpuAgentSidecarRevision = (renderer._gpuAgentSidecarRevision || 0) + 1;
 }
 
 // FP-6 — resident idle and pose bands. A body cycles a few frames (four
@@ -1339,7 +1329,7 @@ function fillWalkStrips(renderer, agentRecords, assigned, layout) {
 // that sidecar stay transparent and are never patched again.
 const AGENT_BAND_CELLS = IDLE_FRAMES;
 const AGENT_BAND_BUDGET_PX = 2 * 1024 * 1024;
-const AGENT_CHANNELS = Object.freeze(['materialSource', 'emissiveSource']);
+const AGENT_ATLAS_ROW_QUANTUM = 3;
 
 function agentBandCells(capacity, cell) {
     const fit = Math.floor(AGENT_BAND_BUDGET_PX / Math.max(1, capacity * cell * cell));
@@ -1353,7 +1343,6 @@ function agentBandFor(bands, id, size) {
             keys: new Array(size).fill(''),
             used: new Array(size).fill(0),
             shown: 0,
-            filled: { materialSource: new Array(size).fill(false), emissiveSource: new Array(size).fill(false) },
         };
         bands.set(id, band);
     }
@@ -1390,19 +1379,18 @@ export function packGpuAgentFrameAtlas(renderer, records) {
         hasMaterialSource ||= Boolean(record.materialSource);
         hasEmissiveSource ||= Boolean(record.emissiveSource);
     }
-    const slots = renderer._gpuAgentAtlasSlots ||= new Map();
+    let slots = renderer._gpuAgentAtlasSlots ||= new Map();
     const roster = [...(renderer?.agentSprites?.keys?.() || [])].sort();
     const rosterSignature = roster.join('|');
     let nextSlot = renderer._gpuAgentAtlasNextSlot || 0;
     let newSlot = false;
     const rosterChanged = rosterSignature !== renderer._gpuAgentAtlasRosterSignature;
+    const oldSlots = slots;
     if (rosterChanged) {
-        slots.clear();
+        slots = renderer._gpuAgentAtlasSlots = new Map();
         roster.forEach((id, index) => slots.set(`agent:${id}`, index));
         nextSlot = roster.length;
         renderer._gpuAgentAtlasRosterSignature = rosterSignature;
-        renderer._gpuAgentAtlasFrameKeys?.clear?.();
-        renderer._gpuAgentAtlasPoses?.clear?.();
         newSlot = true;
     }
     for (const record of agentRecords) {
@@ -1410,25 +1398,31 @@ export function packGpuAgentFrameAtlas(renderer, records) {
         slots.set(record.id, nextSlot++);
         newSlot = true;
     }
+    if (rosterChanged) {
+        for (const [id, index] of oldSlots) {
+            if (slots.get(id) === index) continue;
+            renderer._gpuAgentAtlasFrameKeys?.delete(id);
+            renderer._gpuAgentAtlasBands?.delete(id);
+            renderer._gpuAgentAtlasPoses?.delete(id);
+        }
+    }
     renderer._gpuAgentAtlasNextSlot = nextSlot;
     // The grid holds every assigned slot: an extra record id (a candle, a
     // tankard, a seat stone) keeps its slot until the roster changes, so the
     // records present can be fewer than the slots handed out.
     const capacity = Math.max(agentRecords.length, renderer?.agentSprites?.size || 0, nextSlot, 1);
     const bandCells = agentBandCells(capacity, cell);
-    const columns = Math.max(1, Math.ceil(Math.sqrt(capacity * bandCells)));
-    const rows = Math.max(1, Math.ceil((capacity * bandCells) / columns));
-    // 4.7 — walk strips sit in a band below the slot grid, WALK_FRAMES cells
-    // wide; the band exists only while someone walks on screen.
+    const stripBase = capacity * bandCells;
+    const columns = Math.ceil(Math.sqrt(stripBase));
+    const cellChanged = renderer._gpuAgentStripCell !== cell;
     const stripCandidates = agentRecords.filter(record => walkStripEligible(record, cell));
     const stripCapacity = walkStripCapacity(renderer, stripCandidates.length, cell, rosterChanged);
-    const atlasColumns = stripCapacity ? Math.max(columns, WALK_FRAMES) : columns;
-    const stripsPerRow = Math.max(1, Math.floor(atlasColumns / WALK_FRAMES));
-    const stripRows = stripCapacity ? Math.ceil(stripCapacity / stripsPerRow) : 0;
-    const width = atlasColumns * cell;
-    const height = (rows + stripRows) * cell;
+    const width = columns * cell;
+    // A spare row lets arrivals move the strips without reallocating all three pages.
+    const cells = stripBase + stripCapacity * WALK_FRAMES;
+    const rowGroups = Math.ceil(cells / (columns * AGENT_ATLAS_ROW_QUANTUM));
+    const height = rowGroups * AGENT_ATLAS_ROW_QUANTUM * cell;
     const stripped = assignWalkStrips(renderer, stripCandidates);
-    const stripLayout = { cell, slotRows: rows, stripsPerRow };
     let atlas = renderer._gpuAgentFrameAtlas;
     let resized = false;
     if (!atlas || atlas.width !== width || atlas.height !== height) {
@@ -1477,35 +1471,30 @@ export function packGpuAgentFrameAtlas(renderer, records) {
     }
     const materialAtlasState = renderer._gpuAgentMaterialAtlasState ||= { atlas: null, resized: false };
     const emissiveAtlasState = renderer._gpuAgentEmissiveAtlasState ||= { atlas: null, resized: false };
+    const layoutChanged = cellChanged || renderer._gpuAgentAtlasBandCells !== bandCells;
+    const channelAppeared = (hasMaterialSource && !materialAtlasState.atlas) || (hasEmissiveSource && !emissiveAtlasState.atlas);
     if (hasMaterialSource) {
-        ensureAgentChannelAtlas(renderer, '_gpuAgentMaterialAtlas', width, height, materialAtlasState);
+        ensureAgentChannelAtlas(renderer, '_gpuAgentMaterialAtlas', width, height, cell, materialAtlasState);
     } else {
         materialAtlasState.atlas = null;
         materialAtlasState.resized = false;
     }
     if (hasEmissiveSource) {
-        ensureAgentChannelAtlas(renderer, '_gpuAgentEmissiveAtlas', width, height, emissiveAtlasState);
+        ensureAgentChannelAtlas(renderer, '_gpuAgentEmissiveAtlas', width, height, cell, emissiveAtlasState);
     } else {
         emissiveAtlasState.atlas = null;
         emissiveAtlasState.resized = false;
     }
-    const channelStates = { materialSource: materialAtlasState, emissiveSource: emissiveAtlasState };
-    // A new or cleared canvas (albedo or channel), a new roster or a new band
-    // size empties every band: each body draws its current frame afresh.
-    const channelResized = materialAtlasState.resized || emissiveAtlasState.resized;
-    const rebuild = resized || channelResized;
+    const rebuild = resized || layoutChanged || channelAppeared;
     const bands = renderer._gpuAgentAtlasBands ||= new Map();
-    // A new band size or slot grid moves every slot's cells, even when the
-    // atlas keeps its size (one more record, a frost tint or a tankard, can
-    // widen the grid by a column): every body redraws at its new place in
-    // this pass, never sampling another slot's old cell.
-    if (rebuild || rosterChanged || renderer._gpuAgentAtlasBandCells !== bandCells || renderer._gpuAgentAtlasColumns !== columns) {
+    if (rebuild) {
         bands.clear();
-        if (!resized) frameKeys.clear();
-        renderer._gpuAgentAtlasBandCells = bandCells;
-        renderer._gpuAgentAtlasColumns = columns;
+        frameKeys.clear();
         changed = true;
     }
+    const stripsMoved = rebuild || renderer._gpuAgentStripBase !== stripBase;
+    renderer._gpuAgentAtlasBandCells = bandCells;
+    renderer._gpuAgentStripBase = stripBase;
     const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
     const cadenceElapsed = now - (renderer._gpuAgentAtlasUpdatedAt || 0) >= 125;
     // Direction/tool changes and individually important actors must keep body
@@ -1518,8 +1507,11 @@ export function packGpuAgentFrameAtlas(renderer, records) {
     renderer._gpuAgentEmissiveTextureUpdates = [];
     const tick = renderer._gpuAgentBandTick = (renderer._gpuAgentBandTick || 0) + 1;
     let drawnCells = 0;
-    let channelPatches = 0;
-    if ((changed || rebuild) && (force || cadenceElapsed || immediate.size)) {
+    const channels = [
+        { name: 'materialSource', state: materialAtlasState, updates: renderer._gpuAgentMaterialTextureUpdates },
+        { name: 'emissiveSource', state: emissiveAtlasState, updates: renderer._gpuAgentEmissiveTextureUpdates },
+    ];
+    if (changed && (force || cadenceElapsed || immediate.size)) {
         const ctx = atlas.getContext('2d', { alpha: true });
         ctx.imageSmoothingEnabled = false;
         for (let index = 0; index < agentRecords.length; index++) {
@@ -1537,29 +1529,8 @@ export function packGpuAgentFrameAtlas(renderer, records) {
                 const origin = agentCellOrigin(cellIndex, columns, cell);
                 ctx.clearRect(origin.x, origin.y, cell, cell);
                 ctx.drawImage(record.source, record.sx, record.sy, record.sw, record.sh, origin.x, origin.y, record.sw, record.sh);
-                if (!resized) {
-                    renderer._gpuAgentAlbedoTextureUpdates.push({
-                        x: origin.x, y: origin.y, sx: origin.x, sy: origin.y, width: record.sw, height: record.sh, source: atlas,
-                    });
-                }
-                for (const channel of AGENT_CHANNELS) {
-                    const state = channelStates[channel];
-                    if (!state.atlas) continue;
-                    const authored = Boolean(record[channel]);
-                    // A profile without this sidecar leaves an empty cell empty.
-                    if (!authored && !band.filled[channel][bandIndex]) continue;
-                    const channelCtx = state.atlas.getContext('2d', { alpha: true });
-                    channelCtx.imageSmoothingEnabled = false;
-                    channelCtx.clearRect(origin.x, origin.y, cell, cell);
-                    if (authored) drawAgentChannelFrame(channelCtx, record, channel, origin.x, origin.y);
-                    band.filled[channel][bandIndex] = authored;
-                    channelPatches++;
-                    if (!state.resized) {
-                        renderer[channel === 'materialSource' ? '_gpuAgentMaterialTextureUpdates' : '_gpuAgentEmissiveTextureUpdates'].push({
-                            x: origin.x, y: origin.y, sx: origin.x, sy: origin.y, width: record.sw, height: record.sh, source: state.atlas,
-                        });
-                    }
-                }
+                if (!resized) renderer._gpuAgentAlbedoTextureUpdates.push(atlasCellUpdate(atlas, origin, record.sw, record.sh));
+                paintAgentChannels(channels, record, cellIndex, origin, cell);
                 band.keys[bandIndex] = key;
                 drawnCells++;
             }
@@ -1572,38 +1543,33 @@ export function packGpuAgentFrameAtlas(renderer, records) {
         // A frame re-sampled from its band changes no texel: the revision (and
         // with it an upload) moves only when a cell was drawn.
         if (drawnCells || resized) renderer._gpuAgentFrameAtlasRevision++;
-        if (channelPatches || channelResized) {
-            renderer._gpuAgentSidecarRevision = (renderer._gpuAgentSidecarRevision || 0) + 1;
-        }
         if (cadenceElapsed || force) renderer._gpuAgentAtlasUpdatedAt = now;
     }
     fillWalkStrips(renderer, agentRecords, stripped, {
-        ...stripLayout,
-        atlas,
-        resized,
-        channels: [
-            { name: 'materialSource', state: materialAtlasState, updates: '_gpuAgentMaterialTextureUpdates' },
-            { name: 'emissiveSource', state: emissiveAtlasState, updates: '_gpuAgentEmissiveTextureUpdates' },
-        ],
+        cell, columns, stripBase, atlas, resized, stripsMoved, channels,
     });
+    if (channels.some(({ updates, state }) => updates.length || state.resized)) {
+        renderer._gpuAgentSidecarRevision = (renderer._gpuAgentSidecarRevision || 0) + 1;
+    }
     // FP-6 — each channel atlas has its own revision: a frame that patches
     // only the material atlas (a profile without an emissive sidecar) must not
     // re-upload the emissive one, which a revision without patches would.
-    for (const channel of AGENT_CHANNELS) {
-        const updates = renderer[channel === 'materialSource' ? '_gpuAgentMaterialTextureUpdates' : '_gpuAgentEmissiveTextureUpdates'];
+    for (const { name: channel, state, updates } of channels) {
         const revisionKey = channel === 'materialSource' ? '_gpuAgentMaterialRevision' : '_gpuAgentEmissiveRevision';
-        if (updates.length || channelStates[channel].resized) renderer[revisionKey] = (renderer[revisionKey] || 0) + 1;
+        if (updates.length || state.resized) renderer[revisionKey] = (renderer[revisionKey] || 0) + 1;
     }
     for (const record of agentRecords) {
         const slot = slots.get(record.id) || 0;
         const stripIndex = stripped.get(record.id);
-        const stripOrigin = stripIndex === undefined ? null : walkStripOrigin(stripIndex, stripLayout);
-        const shown = stripOrigin ? null : agentCellOrigin(slot * bandCells + (bands.get(record.id)?.shown || 0), columns, cell);
+        const cellIndex = stripIndex === undefined
+            ? slot * bandCells + (bands.get(record.id)?.shown || 0)
+            : stripBase + stripIndex * WALK_FRAMES + record.walkStrip.frame;
+        const origin = agentCellOrigin(cellIndex, columns, cell);
         record.source = atlas;
         record.sourceWidth = width;
         record.sourceHeight = height;
-        record.sx = stripOrigin ? stripOrigin.x + record.walkStrip.frame * cell : shown.x;
-        record.sy = stripOrigin ? stripOrigin.y : shown.y;
+        record.sx = origin.x;
+        record.sy = origin.y;
         record.textureKey = 'agent-frame-atlas';
         record.textureRevision = renderer._gpuAgentFrameAtlasRevision;
         record.textureUpdates = renderer._gpuAgentAlbedoTextureUpdates;

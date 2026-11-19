@@ -11,13 +11,18 @@ const {
   clearTailCache,
   createDetailResponse,
   deleteTailState,
+  readLinuxProcess,
+  readStateWindow,
+  stateFileStat,
+  trimCache,
   readJsonLines: readSharedJsonLines,
   statCacheKey,
   summarizeToolInput: summarizeSharedToolInput,
 } = require('./shared');
 const { deriveTurnState, toEpochMs } = require('./turnState');
 const { normalizeToolResults, toolResultId, toolResultLocation } = require('./toolResults');
-const { emptyObservedSources, makeDialogue, pickDialogue } = require('./dialogue');
+const { estimateCost } = require('./sessionPresentation');
+const { emptyObservedSources, makeDialogue, pickDialogue, sanitizeDialogueText } = require('./dialogue');
 const { MODEL_REVISION, contextWindowForModel } = require('../src/config/models.generated.cjs');
 
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
@@ -306,8 +311,7 @@ const _transcriptAggregateStats = {
   cancelledQueuedScans: 0,
   cancelledActiveScans: 0,
 };
-const _sessionNamesCache = { signature: '', value: new Map() };
-const _teamMembershipCache = { signature: '', value: new Map() };
+const _teamMembershipCache = { signature: '', value: new Map(), leads: new Map() };
 const _teamMembershipWarned = new Set();
 const _teamsCache = { signature: '', value: [] };
 const _sessionIdentityCache = new Map();
@@ -437,7 +441,7 @@ function addModelHistory(projection, entry, msg) {
     : typeof entry?.model === 'string' && entry.model.trim()
       ? entry.model.trim()
       : null;
-  if (!model) return;
+  if (!model || entry.isVirtual || entry.isApiErrorMessage || isClaudeModelStub(model)) return;
   const effort = typeof entry?.effort === 'string' && entry.effort.trim()
     ? entry.effort.trim()
     : typeof msg?.effort === 'string' && msg.effort.trim()
@@ -454,7 +458,7 @@ function isToolResultOnly(content) {
   return Array.isArray(content) && content.length > 0 && content.every(block => block?.type === 'tool_result');
 }
 
-function addTranscriptProjectionEntry(projection, entry, msg) {
+function addTranscriptProjectionEntry(projection, entry, msg, prompt) {
   if (!entry || typeof entry !== 'object') return;
   const at = toEpochMs(entry.timestamp ?? entry.created_at);
 
@@ -475,12 +479,8 @@ function addTranscriptProjectionEntry(projection, entry, msg) {
     if (linesRemoved !== null) projection.linesRemoved = Math.max(0, linesRemoved);
   }
 
-  // RG-4: a prompt opens a turn that has reported no duration yet, so an
-  // aborted turn, or one paused on a question, never re-reports the turn
-  // before it. A prompt is what moves turnStartedAt (turnStateFromEntries):
-  // a user record that is not only tool results; sidechain records belong
-  // to subagents.
-  if (msg?.role === 'user' && entry.isSidechain !== true && !isToolResultOnly(msg.content)) {
+  // A prompt clears the preceding turn's duration until the new one reports its own.
+  if (prompt && entry.isSidechain !== true) {
     projection.lastTurnDurationMs = null;
   }
   if (entry.type === 'system' && entry.subtype === 'turn_duration') {
@@ -657,6 +657,8 @@ function projectClaudeTailEntry(entry) {
     'uuid',
     'id',
     'isSidechain',
+    'isMeta',
+    'isVirtual',
     'permissionMode',
     'sessionId',
     'project',
@@ -749,40 +751,113 @@ function readJsonLines(filePath, { from = 'end', count = GIT_EVENT_SCAN_LINES } 
   });
 }
 
-function readClaudeSessionNames() {
-  const signature = directorySignature(SESSIONS_DIR, { extension: '.json' });
-  if (_sessionNamesCache.signature === signature) return _sessionNamesCache.value;
-  const names = new Map();
-  try {
-    if (!fs.existsSync(SESSIONS_DIR)) return names;
-    const files = fs.readdirSync(SESSIONS_DIR)
-      .filter(file => file.endsWith('.json') && !file.startsWith('.'));
+function registryWaitReason(value) {
+  if (typeof value !== 'string') return null;
+  const reason = value.split(':', 1)[0].trim().toLowerCase();
+  if (reason === 'approve plan') return 'plan_review';
+  if (/^approve(?:\s|$)/.test(reason) || reason === 'sandbox request') return 'approval';
+  if (reason === 'input needed' || reason === 'dialog open') return 'question';
+  return null;
+}
 
-    for (const file of files) {
-      try {
-        const meta = JSON.parse(fs.readFileSync(path.join(SESSIONS_DIR, file), 'utf-8'));
-        const sessionId = typeof meta.sessionId === 'string' ? meta.sessionId.trim() : '';
-        const name = typeof meta.name === 'string' ? meta.name.trim() : '';
-        if (sessionId && name) names.set(sessionId, name);
-      } catch { /* ignore malformed session metadata */ }
+function readMetadata(file, stat = stateFileStat(file)) {
+  try { return JSON.parse(readStateWindow(file, stat, 64 * 1024)); }
+  catch { return null; }
+}
+
+function readRegistryFile(file, stat, filename, now) {
+  const meta = readMetadata(file, stat);
+  const sessionId = typeof meta?.sessionId === 'string' ? meta.sessionId.trim() : '';
+  if (!sessionId || sessionId.length > 256) return null;
+  const name = typeof meta.name === 'string' ? meta.name.trim() : '';
+  const record = { sessionId, name };
+  const { pid, procStart, status, statusUpdatedAt: at } = meta;
+  const waitReason = registryWaitReason(meta.waitingFor);
+  if (!Number.isSafeInteger(pid) || pid <= 0 || filename !== `${pid}.json`
+    || typeof procStart !== 'string' || !/^\d{1,20}$/.test(procStart)
+    || !Number.isSafeInteger(at) || at <= 0 || at > now
+    || !['busy', 'waiting', 'idle'].includes(status) || (status === 'waiting' && !waitReason)) return record;
+  return { ...record, pid, procStart, status, at, waitReason };
+}
+
+function readSessionRegistry(previousFiles, previousSessions, readProcess, now, cutoff) {
+  const files = new Map();
+  const byId = new Map();
+  for (const [id, record] of previousSessions) {
+    if (record.endedAt != null && record.endedAt >= cutoff) byId.set(id, record);
+  }
+  let dir;
+  try {
+    if (fs.realpathSync(SESSIONS_DIR) !== SESSIONS_DIR) return { files, byId };
+    dir = fs.opendirSync(SESSIONS_DIR);
+    for (let i = 0, entry; i < 1024 && (entry = dir.readSync()); i++) {
+      if (!entry.isFile() || !entry.name.endsWith('.json') || entry.name.startsWith('.')) continue;
+      const file = path.join(SESSIONS_DIR, entry.name);
+      const stat = stateFileStat(file);
+      if (!stat) continue;
+      const key = statCacheKey(file, stat);
+      const previous = previousFiles.get(file);
+      const record = previous?.key === key ? previous.record : readRegistryFile(file, stat, entry.name, now);
+      if (!record) continue;
+      const proc = record.status ? readProcess(record.pid) : null;
+      const live = Boolean(proc && !proc.dead && proc.start === record.procStart);
+      const sameProcess = previous?.record.procStart === record.procStart && previous?.record.sessionId === record.sessionId;
+      // A reused pid on first sight is stale metadata. After a confirmed live
+      // observation its disappearance (including reuse) is an observed exit.
+      const reused = proc?.start && proc.start !== record.procStart;
+      const gone = (proc?.dead && !reused) || (sameProcess && previous.live && reused);
+      let endedAt = null;
+      let endEvidenceAt = null;
+      const current = byId.get(record.sessionId);
+      if (!live && sameProcess && previous.endedAt) {
+        endedAt = previous.endedAt;
+        endEvidenceAt = previous.endEvidenceAt;
+      } else if (!live && current?.endedAt && current.pid === record.pid && current.procStart === record.procStart) {
+        endedAt = current.endedAt;
+        endEvidenceAt = current.endEvidenceAt;
+      } else if (gone) {
+        endedAt = now;
+        // Cold discovery of a dead pid cannot date its exit past a later turn.
+        endEvidenceAt = sameProcess && previous.live ? now : record.at;
+      }
+      files.set(file, { key, record, live, endedAt, endEvidenceAt });
+      const observed = { ...record, status: live ? record.status : null, endedAt, endEvidenceAt };
+      // Resuming a session can leave its previous pid file behind.
+      if (current?.status && !live) continue;
+      if (current?.endedAt && !live && !endedAt) continue;
+      if (!current || (live && !current.status) || (record.at || 0) >= (current.at || 0)) {
+        byId.set(record.sessionId, observed);
+      }
     }
-  } catch { /* ignore */ }
-  _sessionNamesCache.signature = signature;
-  _sessionNamesCache.value = names;
-  return names;
+  } catch { /* optional registry */ }
+  finally { dir?.closeSync(); }
+  return { files, byId };
+}
+
+function registryKeepsSession(record, cutoff) {
+  if (record?.status === 'busy' || record?.status === 'waiting') return true;
+  return record?.endedAt != null && record.endEvidenceAt >= cutoff;
 }
 
 function readClaudeTeamMembership() {
   const signature = directorySignature(TEAMS_DIR, { recursive: true, extension: '.json' });
   if (_teamMembershipCache.signature === signature) return _teamMembershipCache.value;
   const members = new Map();
+  _teamMembershipCache.leads = new Map();
   if (!fs.existsSync(TEAMS_DIR)) return members;
   try {
     const teamDirs = fs.readdirSync(TEAMS_DIR, { withFileTypes: true })
       .filter(dir => dir.isDirectory())
       .sort((a, b) => a.name.localeCompare(b.name));
     const collisions = new Map();
-
+    for (const teamDir of teamDirs.slice(0, 512)) {
+      const config = readMetadata(path.join(TEAMS_DIR, teamDir.name, 'config.json'));
+      if (Number.isSafeInteger(config?.leadProcess?.pid) && typeof config.leadProcess.procStart === 'string'
+        && /^\d{1,20}$/.test(config.leadProcess.procStart)
+        && typeof config.leadSessionId === 'string' && config.leadSessionId.length <= 256) {
+        _teamMembershipCache.leads.set(`${config.leadProcess.pid}:${config.leadProcess.procStart}`, config.leadSessionId);
+      }
+    }
     for (const teamDir of teamDirs) {
       const inboxDir = path.join(TEAMS_DIR, teamDir.name, 'inboxes');
       if (!fs.existsSync(inboxDir)) continue;
@@ -1178,6 +1253,7 @@ function createTranscriptAggregate(filePath) {
     discardingLine: false,
     usage: emptyTokenUsage(),
     usageById: new Map(),
+    activity: {},
     launches: [],
     projection: createTranscriptProjection(),
     background: [],
@@ -1196,6 +1272,7 @@ function cloneTranscriptAggregate(aggregate) {
     trailing: Buffer.from(aggregate.trailing),
     usage: { ...aggregate.usage },
     usageById: new Map(aggregate.usageById),
+    activity: cloneClaudeActivity(aggregate.activity),
     launches: aggregate.launches.map((launch) => ({ ...launch })),
     projection: cloneTranscriptProjection(aggregate.projection),
   };
@@ -1214,11 +1291,12 @@ function appendTranscriptGuard(aggregate, chunk) {
 
 function addTranscriptEntry(aggregate, entry) {
   const msg = isClaudeConversationRecord(entry) ? entry.message : null;
-  addTranscriptProjectionEntry(aggregate.projection, entry, msg);
+  const prompt = msg && foldClaudeActivity(aggregate.activity, entry, msg);
+  addTranscriptProjectionEntry(aggregate.projection, entry, msg, prompt);
   aggregate.background = foldBackgroundWork(aggregate.background || [], entry);
   if (!msg) return;
 
-  if (msg.usage) {
+  if (msg.usage && !entry.isVirtual && !isClaudeModelStub(msg.model || entry.model)) {
     const usage = msg.usage;
     const input = readUsageField(usage, ['input_tokens', 'inputTokens', 'prompt_tokens', 'promptTokens']);
     const output = readUsageField(usage, ['output_tokens', 'outputTokens', 'completion_tokens', 'completionTokens']);
@@ -1231,12 +1309,36 @@ function addTranscriptEntry(aggregate, entry) {
     // messages (A, B, A) still count once.
     const id = typeof msg.id === 'string' && msg.id ? msg.id : null;
     const previous = id ? aggregate.usageById.get(id) ?? null : null;
+    const previousLongWrites = previous?.cacheCreate1h ?? 0;
+    const longWrites = readUsageField(usage.cache_creation, ['ephemeral_1h_input_tokens']) ?? previousLongWrites;
+    const shortWrites = readUsageField(usage.cache_creation, ['ephemeral_5m_input_tokens'])
+      ?? (previous?.cacheCreate ?? 0) - previousLongWrites;
+    const writes = cacheCreate ?? shortWrites + longWrites;
     const contribution = {
       input: input ?? previous?.input ?? 0,
       output: output ?? previous?.output ?? 0,
       cacheRead: cacheRead ?? previous?.cacheRead ?? 0,
-      cacheCreate: cacheCreate ?? previous?.cacheCreate ?? 0,
+      cacheCreate: writes,
+      cacheCreate1h: Math.max(0, Math.min(longWrites, writes)),
     };
+    const delta = {
+      input: contribution.input - (previous?.input ?? 0),
+      output: contribution.output - (previous?.output ?? 0),
+      cacheRead: contribution.cacheRead - (previous?.cacheRead ?? 0),
+      cacheCreate: contribution.cacheCreate - (previous?.cacheCreate ?? 0),
+      cacheCreate1h: contribution.cacheCreate1h - previousLongWrites,
+    };
+    // A cost-state already covers earlier blocks, even repeats of this message.
+    const cost = aggregate.projection.cost;
+    if (cost) {
+      const estimate = estimateCost(delta, msg.model || aggregate.projection.modelHistory.at(-1)?.model, 'claude');
+      if (estimate.usd) {
+        cost.usd += estimate.usd;
+        cost.rateMatch = cost.source === 'provider' || cost.rateMatch === estimate.rateMatch ? estimate.rateMatch : null;
+        cost.source = 'mixed';
+        cost.unknownModel ||= estimate.unknownModel;
+      }
+    }
     if (id) {
       aggregate.usageById.delete(id);
       aggregate.usageById.set(id, contribution);
@@ -1245,10 +1347,11 @@ function addTranscriptEntry(aggregate, entry) {
       }
     }
     aggregate.usage.availability = 'observed';
-    aggregate.usage.totalInput += contribution.input - (previous?.input || 0);
-    aggregate.usage.totalOutput += contribution.output - (previous?.output || 0);
-    aggregate.usage.cacheRead += contribution.cacheRead - (previous?.cacheRead || 0);
-    aggregate.usage.cacheCreate += contribution.cacheCreate - (previous?.cacheCreate || 0);
+    aggregate.usage.totalInput += delta.input;
+    aggregate.usage.totalOutput += delta.output;
+    aggregate.usage.cacheRead += delta.cacheRead;
+    aggregate.usage.cacheCreate += delta.cacheCreate;
+    if (delta.cacheCreate1h) aggregate.usage.cacheCreate1h = (aggregate.usage.cacheCreate1h || 0) + delta.cacheCreate1h;
     aggregate.usage.contextWindow = contribution.input + contribution.cacheRead + contribution.cacheCreate;
     if (!previous) aggregate.usage.turnCount++;
     aggregate.usage.input = aggregate.usage.totalInput;
@@ -1353,6 +1456,8 @@ function estimateTranscriptAggregateBytes(aggregate) {
     + (aggregate.trailing?.byteLength || 0)
     + estimateJsonValueBytes(aggregate.usage);
   bytes += estimateJsonValueBytes(aggregate.projection);
+  bytes += estimateJsonValueBytes(aggregate.activity);
+  if (aggregate.displayActivity !== aggregate.activity) bytes += estimateJsonValueBytes(aggregate.displayActivity);
   if (aggregate.displayUsage && aggregate.displayUsage !== aggregate.usage) {
     bytes += estimateJsonValueBytes(aggregate.displayUsage);
   }
@@ -1507,6 +1612,7 @@ function finishTranscriptAggregate(aggregate, target) {
   aggregate.ino = target.ino;
   aggregate.size = target.size;
   aggregate.mtimeMs = target.mtimeMs;
+  aggregate.displayActivity = aggregate.activity;
   aggregate.displayUsage = aggregate.usage;
   aggregate.displayLaunches = aggregate.launches;
   aggregate.displayProjection = aggregate.projection;
@@ -1518,11 +1624,13 @@ function finishTranscriptAggregate(aggregate, target) {
       const provisional = {
         usage: { ...aggregate.usage },
         usageById: new Map(aggregate.usageById),
+        activity: cloneClaudeActivity(aggregate.activity),
         launches: aggregate.launches.slice(),
         projection: cloneTranscriptProjection(aggregate.projection),
         background: aggregate.background,
       };
       addTranscriptEntry(provisional, JSON.parse(trailing.toString('utf8')));
+      aggregate.displayActivity = provisional.activity;
       aggregate.displayUsage = provisional.usage;
       aggregate.displayLaunches = provisional.launches;
       aggregate.displayProjection = provisional.projection;
@@ -1775,8 +1883,6 @@ function shutdownClaudeAdapter() {
   _orphanScanCache.projectDirMtimes.clear();
   _orphanScanCache.subagentActivityBySessionDir.clear();
   _teamMembershipWarned.clear();
-  _sessionNamesCache.signature = '';
-  _sessionNamesCache.value = new Map();
   _teamMembershipCache.signature = '';
   _teamMembershipCache.value = new Map();
   _teamsCache.signature = '';
@@ -1903,15 +2009,22 @@ function getClaudeTranscriptSummary(filePath, tailCount, project = null) {
       value: readClaudeTranscriptSummary(filePath, tailCount, project),
     }))
     : readClaudeTranscriptSummary(null, tailCount, project);
+  // A whole tail may consist of virtual pairs or wrappers.
+  const turn = filePath && !summary.detail.lastTool ? getTranscriptTurn(filePath) : null;
+  const model = summary.detail.model || (filePath && latestTranscriptModel(getTranscriptAggregate(filePath))) || summary.earlierModel;
   // Dialogue freshness is clock-derived, so only the candidates are memoized.
   return {
     ...summary.detail,
+    model,
+    lastTool: summary.detail.lastTool || turn?.lastTool || null,
+    lastToolInput: summary.detail.lastTool ? summary.detail.lastToolInput : turn?.lastToolInput ?? null,
     observedSources: { ...summary.detail.observedSources },
     dialogue: pickDialogue(summary.candidates, { now: Date.now() }),
   };
 }
 
 function readClaudeTranscriptSummary(filePath, tailCount, project = null) {
+  let earlierModel = null;
   const detail = {
     model: null,
     lastTool: null,
@@ -1946,16 +2059,25 @@ function readClaudeTranscriptSummary(filePath, tailCount, project = null) {
 
   if (filePath && fs.existsSync(filePath)) {
     try {
-      const entries = tailEntries(filePath, tailCount);
+      const entries = getSessionEntries(filePath);
+      const summaryStart = Math.max(0, entries.length - tailCount);
 
       for (let i = entries.length - 1; i >= 0; i--) {
+        if (i < summaryStart && detail.model) break;
         const entry = entries[i];
         const msg = entry.message;
         if (!msg || msg.role !== 'assistant') continue;
 
         // An API-error record is Claude Code's own text, whatever its model.
-        const stub = isClaudeModelStub(msg.model) || entry.isApiErrorMessage === true;
-        if (!detail.model && msg.model && !stub) detail.model = msg.model;
+        const stub = entry.isVirtual || isClaudeModelStub(msg.model) || entry.isApiErrorMessage === true;
+        if (!detail.model && msg.model && !stub) {
+          if (i < summaryStart) {
+            earlierModel = msg.model;
+            break;
+          }
+          detail.model = msg.model;
+        }
+        if (i < summaryStart) continue;
 
         const content = msg.content;
         if (!Array.isArray(content)) continue;
@@ -1963,11 +2085,14 @@ function readClaudeTranscriptSummary(filePath, tailCount, project = null) {
         const observedAt = typeof entry.timestamp === 'string' || typeof entry.timestamp === 'number'
           ? toEpochMs(entry.timestamp)
           : null;
-        for (const block of content) {
-          if (!detail.lastTool && block.type === 'tool_use') {
-            detail.lastTool = block.name || null;
-            detail.lastToolInput = summarizeToolInput(block.input, { maxLength: 60, basenameFile: true });
+        if (!detail.lastTool) {
+          const latest = content.findLast(block => block.type === 'tool_use' && block.name && !isClaudeWrapper(block.name));
+          if (latest) {
+            detail.lastTool = latest.name;
+            detail.lastToolInput = summarizeToolInput(latest.input);
           }
+        }
+        for (const block of content) {
           if (!detail.lastMessage && block.type === 'text' && block.text) {
             const text = block.text.trim();
             if (text.length > 0) detail.lastMessage = text.substring(0, 80);
@@ -2022,13 +2147,7 @@ function readClaudeTranscriptSummary(filePath, tailCount, project = null) {
     } catch { /* ignore */ }
   }
 
-  return { detail, candidates };
-}
-
-function getClaudeMainSessionSummary(sessionId, projectPath) {
-  if (!projectPath) return getClaudeTranscriptSummary(null, 30, projectPath);
-  const encoded = claudeProjectDirName(projectPath);
-  return getClaudeTranscriptSummary(path.join(CLAUDE_DIR, 'projects', encoded, `${sessionId}.jsonl`), 30, projectPath);
+  return { detail, candidates, earlierModel };
 }
 
 function getSubAgentDetail(filePath, project = null) {
@@ -2082,8 +2201,8 @@ function getRecentMessages(sessionFilePath, maxItems = 5) {
 // use the transcript's own latest model, skipping `<synthetic>` stubs, so the
 // limit isn't the 200K default.
 function latestTranscriptModel(aggregate) {
-  const history = aggregate?.projection?.modelHistory || [];
-  return history.findLast(item => !isClaudeModelStub(item.model))?.model || null;
+  const projection = aggregate?.displayProjection || aggregate?.projection;
+  return projection?.modelHistory.at(-1)?.model || null;
 }
 
 function getTokenUsage(sessionFilePath, model = null) {
@@ -2155,7 +2274,7 @@ function getTranscriptProjection(sessionFilePath, projectPath, model) {
 }
 
 function readTranscriptProjection(sessionFilePath, projectPath, model) {
-  const empty = createTranscriptProjection();
+  const empty = { ...createTranscriptProjection(), reasoningEffort: null };
   const contextWindowMax = contextWindowMaxForClaudeModel(model);
   if (!sessionFilePath) return { ...empty, contextWindowMax };
   try {
@@ -2173,8 +2292,10 @@ function readTranscriptProjection(sessionFilePath, projectPath, model) {
       newest.push({ path: canonicalPath, op: item.op, at: item.at, source: 'transcript' });
     }
     projection.workingSet = newest;
+    const effort = projection.modelHistory.at(-1)?.effort;
     return {
       ...projection,
+      reasoningEffort: ['low', 'medium', 'high', 'xhigh', 'max'].includes(effort) ? effort : null,
       contextWindowMax: contextWindowMaxForClaudeModel(model || latestTranscriptModel(aggregate)),
       ...(projection.cost ? { estimatedCost: projection.cost.usd } : {}),
     };
@@ -2183,132 +2304,183 @@ function readTranscriptProjection(sessionFilePath, projectPath, model) {
   }
 }
 
-// Transcript-derived turn state: is the model working, is a tool call
-// unanswered, or did the turn close and hand control back to the user?
-//
-// Reads the cached tail window, so this costs no extra IO beyond what the
-// session summary already pays. Sidechain lines belong to subagents running
-// inside the parent's transcript; a subagent finishing its turn says nothing
-// about the parent, so they are skipped when judging the main session.
-const TURN_STATE_TAIL_LINES = 60;
+// Fold the same bounded state for the full transcript and for the provisional
+// tail shown while a large transcript's first asynchronous scan is running.
+const PENDING_CALL_LIMIT = 64;
 
-function turnStateFromEntries(entries, { permissionMode, skipSidechain, now }) {
-  const skip = (entry) => skipSidechain && entry?.isSidechain === true;
-
-  let turnStartedAt = null;
-  for (let i = entries.length - 1; i >= 0; i--) {
-    const entry = entries[i];
-    if (skip(entry) || entry?.message?.role !== 'user') continue;
-    const content = entry.message.content;
-    const isToolResultOnly = Array.isArray(content)
-      && content.length > 0
-      && content.every(block => block?.type === 'tool_result');
-    if (isToolResultOnly) continue;
-    turnStartedAt = toEpochMs(entry.timestamp ?? entry.created_at);
-    break;
-  }
-  const withSignal = state => ({ ...state, signalSource: 'transcript', turnStartedAt });
-
-  // Every tool_use id that already has a result, from anywhere in the window.
-  const resolved = new Set();
-  for (const entry of entries) {
-    const content = entry?.message?.content;
-    if (!Array.isArray(content)) continue;
-    for (const block of content) {
-      if (block?.type === 'tool_result' && block.tool_use_id) resolved.add(block.tool_use_id);
-    }
-  }
-
-  let lastAssistantIndex = -1;
-  for (let i = entries.length - 1; i >= 0; i--) {
-    const entry = entries[i];
-    if (skip(entry)) continue;
-    if (entry?.message?.role === 'assistant') { lastAssistantIndex = i; break; }
-  }
-  if (lastAssistantIndex === -1) return null;
-
-  // A real user message after the last assistant turn means the model owes a
-  // reply — it is thinking, not waiting, whatever the previous turn said.
-  for (let i = lastAssistantIndex + 1; i < entries.length; i++) {
-    const entry = entries[i];
-    if (skip(entry)) continue;
-    if (entry?.message?.role !== 'user') continue;
-    const content = entry.message.content;
-    const isToolResultOnly = Array.isArray(content)
-      && content.length > 0
-      && content.every(block => block?.type === 'tool_result');
-    if (!isToolResultOnly) {
-      return withSignal(deriveTurnState({ turnEnded: false, permissionMode }, now));
-    }
-  }
-
-  // Earliest unanswered tool call in the trailing assistant turns — the
-  // longest-waiting call is the one that decides how blocked the session is.
-  let pendingTool = null;
-  let pendingSince = null;
-  for (let i = Math.max(0, lastAssistantIndex - 8); i <= lastAssistantIndex && !pendingTool; i++) {
-    const entry = entries[i];
-    if (skip(entry)) continue;
-    if (entry?.message?.role !== 'assistant') continue;
-    const content = entry.message.content;
-    if (!Array.isArray(content)) continue;
-    for (const block of content) {
-      if (block?.type !== 'tool_use' || !block.id) continue;
-      if (resolved.has(block.id)) continue;
-      pendingTool = block.name || 'unknown';
-      pendingSince = toEpochMs(entry.timestamp);
-      break;
-    }
-  }
-
-  const lastAssistant = entries[lastAssistantIndex];
-  const stopReason = lastAssistant?.message?.stop_reason || null;
-  // PV-4b — the turn died on an API error Claude Code already retried: it
-  // is over, and it ended in an error.
-  const apiError = lastAssistant?.isApiErrorMessage === true && !pendingTool
-    ? {
-      kind: typeof lastAssistant.error === 'string' && lastAssistant.error ? lastAssistant.error.slice(0, 64) : 'api_error',
-      status: Number.isFinite(lastAssistant.apiErrorStatus) ? lastAssistant.apiErrorStatus : null,
-      at: toEpochMs(lastAssistant.timestamp),
-    }
-    : null;
-
-  return withSignal({ rateLimit: { enforced: stopReason === 'rate_limited' }, apiError, ...deriveTurnState({
-    turnEnded: !pendingTool && (stopReason === 'end_turn' || apiError !== null),
-    turnEndedAt: toEpochMs(lastAssistant?.timestamp),
-    pendingTool,
-    pendingSince,
-    permissionMode,
-  }, now) });
+function isClaudeWrapper(name) {
+  return name === 'REPL' || name === 'Poll';
 }
 
-function getClaudeTurnState(sessionFilePath, permissionMode = null, now = Date.now()) {
-  const unknown = {
-    ...deriveTurnState({ known: false }, now),
-    signalSource: 'transcript',
-    turnStartedAt: null,
-  };
-  if (!sessionFilePath) return unknown;
+function cloneClaudeActivity(activity) {
+  const clone = { ...activity };
+  for (const key of ['main', 'whole']) {
+    const turn = activity[key];
+    if (turn) clone[key] = { ...turn, pending: turn.pending.slice(), earlyResults: turn.earlyResults.slice() };
+  }
+  return clone;
+}
 
-  // The turn state is a function of the tail and the permission mode only
-  // (`deriveTurnState` reads no clock), so it is memoized with the file.
-  return { ...memoizedDerivation(sessionFilePath, `turn:${permissionMode ?? ''}`, () => {
-    try {
-      const entries = tailEntries(sessionFilePath, TURN_STATE_TAIL_LINES);
-      if (!entries.length) return { value: unknown };
+function foldClaudeActivity(activity, entry, msg) {
+  // Until a main-thread assistant appears, a subagent may still be the only
+  // speaker. Its unmarked prompts and results belong to the whole-file turn.
+  let prompt = false;
+  if (!entry.isSidechain) {
+    activity.main ??= { pending: [], earlyResults: [] };
+    prompt = foldClaudeTurn(activity.main, entry, msg);
+  }
+  if (!activity.main?.hasAssistant) {
+    activity.whole ??= { pending: [], earlyResults: [] };
+    foldClaudeTurn(activity.whole, entry, msg);
+  } else if (activity.whole) {
+    delete activity.whole;
+  }
+  return prompt;
+}
 
-      // Prefer the main thread. Subagent transcripts are sidechain end to end,
-      // so when skipping them leaves nothing to read, the whole file is the
-      // sidechain and every line counts.
-      return {
-        value: turnStateFromEntries(entries, { permissionMode, skipSidechain: true, now })
-          || turnStateFromEntries(entries, { permissionMode, skipSidechain: false, now })
-          || unknown,
-      };
-    } catch {
-      return { value: unknown, cacheable: false };
+// Keep only ids returned by fleet launch calls. Ordinary conversation and
+// command output can mention the same id without establishing parentage.
+const FLEET_LAUNCH = /^mcp__(codex|glm|deepseek)(?:-cc-mcp)?__(?:start|ask|continue|batch|review)(?:_|$)/i;
+
+function resultJobIds(block, result) {
+  const ids = new Set();
+  const parts = Array.isArray(block.content) ? block.content.slice(0, 32) : [block.content];
+  if (Array.isArray(result)) parts.push(...result.slice(0, 32));
+  else parts.push(result?.structuredContent || result);
+  for (const part of parts) {
+    if (typeof part?.job_id === 'string' && /^[a-z0-9][a-z0-9_-]{0,127}$/i.test(part.job_id)) ids.add(part.job_id);
+    const text = typeof part === 'string' ? part : part?.text;
+    if (typeof text !== 'string') continue;
+    // Some start tools return a labelled field, others print the minted id in a sentence.
+    const jobId = /\bjob[_ -]?id["']?\s*[:=]\s*["']?([a-z0-9][a-z0-9_-]{0,127})(?![a-z0-9_/-])|\b[a-z]{1,12}_[a-z0-9]{1,24}_[a-f0-9]{8}\b/gi;
+    for (const match of text.slice(0, 32 * 1024).matchAll(jobId)) {
+      ids.add(match[1] || match[0]);
+      if (ids.size >= 32) return [...ids];
     }
-  }) };
+  }
+  return [...ids];
+}
+
+function recordMcpLaunch(turn, fleet, ids) {
+  for (const id of ids) {
+    const key = `${fleet}:${id}`;
+    if (!turn.mcpJobs?.includes(key)) turn.mcpJobs = [...(turn.mcpJobs || []).slice(-255), key];
+  }
+}
+
+function foldClaudeTurn(turn, entry, msg) {
+  const at = toEpochMs(entry.timestamp ?? entry.created_at);
+  if (at != null) turn.lastMessageAt = Math.max(turn.lastMessageAt || 0, at);
+  if (msg.role === 'user') {
+    if (!isToolResultOnly(msg.content)) {
+      if (entry.isMeta && at !== null && turn.assistantAt != null && at < turn.assistantAt) return false;
+      turn.startedAt = at;
+      turn.stopReason = null;
+      turn.apiError = null;
+      turn.replDescription = null;
+      turn.pending = [];
+      turn.earlyResults = [];
+      return true;
+    }
+    for (const block of msg.content) {
+      if (typeof block.tool_use_id !== 'string') continue;
+      const id = block.tool_use_id.slice(0, TRANSCRIPT_PROJECTION_FIELD_BYTES);
+      const index = turn.pending.findIndex(call => call.id === id);
+      if (index >= 0) {
+        const fleet = !entry.isSidechain && FLEET_LAUNCH.exec(turn.pending[index].name)?.[1];
+        if (fleet) recordMcpLaunch(turn, fleet, resultJobIds(block, entry.toolUseResult));
+        turn.pending.splice(index, 1);
+      } else {
+        // A buffered result can be written before the corresponding call.
+        turn.earlyResults.push({ id, jobIds: entry.isSidechain ? [] : resultJobIds(block, entry.toolUseResult) });
+        if (turn.earlyResults.length > PENDING_CALL_LIMIT) turn.earlyResults.shift();
+      }
+    }
+    return false;
+  }
+  if (msg.role !== 'assistant') return false;
+  turn.hasAssistant = true;
+  turn.assistantAt = at;
+  turn.stopReason = msg.stop_reason === 'end_turn' || msg.stop_reason === 'rate_limited' ? msg.stop_reason : null;
+  turn.apiError = entry.isApiErrorMessage ? {
+    kind: typeof entry.error === 'string' && entry.error ? entry.error.slice(0, 64) : 'api_error',
+    status: Number.isFinite(entry.apiErrorStatus) ? entry.apiErrorStatus : null,
+    at,
+  } : null;
+  if (turn.stopReason === 'end_turn' || turn.apiError) {
+    turn.pending.length = 0;
+    turn.replDescription = null;
+  }
+  if (!Array.isArray(msg.content)) return false;
+  for (const block of msg.content) {
+    if (block?.type !== 'tool_use') continue;
+    const name = typeof block.name === 'string' ? block.name.slice(0, TRANSCRIPT_PROJECTION_FIELD_BYTES) : null;
+    if (name === 'REPL') {
+      const raw = block.input?.description;
+      turn.replDescription = typeof raw === 'string'
+        ? sanitizeDialogueText(raw, { project: entry.cwd }).text.slice(0, 120) || null : null;
+    } else if (name && name !== 'Poll') {
+      turn.lastTool = name;
+      turn.lastToolInput = summarizeToolInput(block.input);
+    }
+    if (typeof block.id !== 'string' || !block.id) continue;
+    const id = block.id.slice(0, TRANSCRIPT_PROJECTION_FIELD_BYTES);
+    const early = turn.earlyResults.findIndex(result => result.id === id);
+    if (early >= 0) {
+      const [result] = turn.earlyResults.splice(early, 1);
+      const fleet = !entry.isSidechain && FLEET_LAUNCH.exec(name)?.[1];
+      if (fleet) recordMcpLaunch(turn, fleet, result.jobIds);
+      continue;
+    }
+    if (turn.pending.some(call => call.id === id)) continue;
+    turn.pending.push({ id, name, at, description: isClaudeWrapper(name) ? turn.replDescription : null });
+    if (turn.pending.length > PENDING_CALL_LIMIT) turn.pending.shift();
+  }
+  return false;
+}
+
+function getTranscriptTurn(filePath) {
+  if (!filePath) return null;
+  try {
+    const aggregate = getTranscriptAggregate(filePath);
+    const activity = aggregate?.displayActivity;
+    const published = activity?.main?.hasAssistant ? activity.main : activity?.whole;
+    if (sameTranscriptTarget(aggregate, transcriptIdentity(filePath))) return published;
+    return memoizedDerivation(filePath, 'tailTurn', identity => {
+      // A new prompt could lie outside the tail. Keep the previous turn together until a verified append settles.
+      if (published?.startedAt != null && identity
+        && identity.dev === aggregate.dev && identity.ino === aggregate.ino && identity.size > aggregate.size
+        && transcriptGuardMatches(filePath, aggregate)) return { value: published };
+      const tail = {};
+      for (const entry of getSessionEntries(filePath)) {
+        if (entry?.message) foldClaudeActivity(tail, entry, entry.message);
+      }
+      return { value: tail.main?.hasAssistant ? tail.main : tail.whole };
+    });
+  } catch {
+    return null;
+  }
+}
+
+function getClaudeTurnState(sessionFilePath, permissionMode = null, now = Date.now(), turn = getTranscriptTurn(sessionFilePath)) {
+  const pending = turn?.pending[0];
+  const apiError = pending ? null : turn?.apiError ?? null;
+  return {
+    ...deriveTurnState({
+      known: turn?.hasAssistant === true,
+      pendingTool: pending ? pending.name || 'unknown' : null,
+      pendingSince: pending?.at,
+      turnEnded: turn?.stopReason === 'end_turn' || Boolean(apiError),
+      turnEndedAt: turn?.assistantAt,
+      permissionMode,
+    }, now),
+    rateLimit: { enforced: turn?.stopReason === 'rate_limited' },
+    apiError,
+    signalSource: 'transcript',
+    turnStartedAt: turn?.startedAt ?? null,
+    script: isClaudeWrapper(pending?.name) && pending.at != null
+      ? { tool: pending.name, description: pending.description, since: pending.at } : null,
+  };
 }
 
 // Latest plan/act permission mode for a session. Transcripts carry sparse
@@ -2470,7 +2642,8 @@ function getClaudeToolResults(sessionFilePath, sessionId) {
 }
 
 function readClaudeToolResults(sessionFilePath, sessionId) {
-  const results = [];
+  const failures = [];
+  const successes = [];
   try {
     const entries = getSessionEntries(sessionFilePath);
     const uses = new Map();
@@ -2479,7 +2652,9 @@ function readClaudeToolResults(sessionFilePath, sessionId) {
       if (!Array.isArray(content)) continue;
       if (entry.message.role === 'assistant') {
         for (const block of content) {
-          if (block?.type === 'tool_use' && block.id) uses.set(block.id, { block, at: toEpochMs(entry.timestamp), cwd: entry.cwd });
+          if (block?.type === 'tool_use' && block.id && !isClaudeWrapper(block.name)) {
+            uses.set(block.id, { block, at: toEpochMs(entry.timestamp), cwd: entry.cwd, virtual: entry.isVirtual });
+          }
         }
         continue;
       }
@@ -2487,14 +2662,17 @@ function readClaudeToolResults(sessionFilePath, sessionId) {
         if (block?.type !== 'tool_result' || !block.tool_use_id) continue;
         const use = uses.get(block.tool_use_id);
         if (!use || typeof block.is_error !== 'boolean') continue;
+        if ((entry.isVirtual || use.virtual) && !block.is_error && !['Bash', 'PowerShell'].includes(use.block.name)) continue;
         const record = claudeToolResultRecord(entry, block, use, sessionId);
         if (!record) continue;
-        results.push(record);
+        if (record.exitCode !== 0) failures.push(record);
+        else successes.push(record);
         uses.delete(block.tool_use_id);
       }
     }
   } catch { /* ignore */ }
-  return normalizeToolResults(results);
+  // The shared date sort is stable. Supply the order for one tied burst.
+  return normalizeToolResults(failures.reverse().concat(successes.reverse()));
 }
 
 // SV-2b — git events per tool call. A call's events are a function of its
@@ -2940,6 +3118,58 @@ function readActiveClaudeTaskGroups(sessions) {
 // ─── Adapter class ────────────────────────────────────
 
 class ClaudeAdapter {
+  constructor({ readProcess = readLinuxProcess } = {}) {
+    this.readProcess = readProcess;
+    this.registryFiles = new Map();
+    this.registry = new Map();
+    this.processLeads = new Map();
+    this.jobLeads = new Map();
+  }
+
+  registryProcessChanged() {
+    for (const { record, live } of this.registryFiles.values()) {
+      if (!live) continue;
+      const proc = this.readProcess(record.pid);
+      if (proc?.dead || proc?.start !== record.procStart) return true;
+    }
+    return false;
+  }
+
+  registrySettled(session) {
+    if (session.provider !== 'claude' || session.agentType !== 'main') return false;
+    const record = this.registry.get(session.sessionId);
+    const since = session.pendingSince || session.turnStartedAt || 0;
+    if (record?.endedAt) return record.endEvidenceAt >= since;
+    return record?.status === 'idle' && record.at >= since;
+  }
+
+  mainTurn(file, permissionMode, now, sessionId, record) {
+    const turn = getTranscriptTurn(file);
+    for (const key of turn?.mcpJobs || []) this.jobLeads.set(key, sessionId);
+    trimCache(this.jobLeads, 4096);
+    const state = getClaudeTurnState(file, permissionMode, now, turn);
+    if (!record) return state;
+    const observed = { signalSource: 'registry', signalCertainty: 'observed', signalObservedAt: record.at };
+    if (record.endedAt && record.endEvidenceAt >= (turn?.startedAt || 0)) {
+      return {
+        ...state, ...deriveTurnState({ known: false }), ...observed,
+        script: null, sessionEndedAt: record.endedAt, signalObservedAt: record.endedAt,
+      };
+    }
+    if (!record.status || record.at < (turn?.startedAt || 0)) return state;
+    if (record.status === 'busy') {
+      if (state.turnState === 'awaiting_input' && record.at <= state.awaitingSince) return state;
+      return { ...state, ...(state.pendingTool ? {} : deriveTurnState()), ...observed };
+    }
+    if (record.at < (turn?.lastMessageAt || 0)) return state;
+    if (record.status === 'waiting') {
+      return { ...state, ...observed, turnState: 'tool_pending', waitReason: state.waitReason || record.waitReason,
+        awaitingSince: record.at };
+    }
+    if (state.pendingTool || state.turnState === 'awaiting_input') return state;
+    return { ...state, ...deriveTurnState({ turnEnded: true, turnEndedAt: record.at }), ...observed };
+  }
+
   get name() { return 'Claude Code'; }
   get provider() { return 'claude'; }
   get homeDir() { return CLAUDE_DIR; }
@@ -2955,8 +3185,14 @@ class ClaudeAdapter {
     const sessionsMap = new Map();
     const projectPathMap = new Map(); // Encoded directory name to real path
     const activeSessionIdsByProject = new Map();
-    const sessionNames = readClaudeSessionNames();
+    const { files, byId: registry } = readSessionRegistry(this.registryFiles, this.registry, this.readProcess, now, now - activeThresholdMs);
+    this.registryFiles = files;
+    this.registry = registry;
     const teamMembership = readClaudeTeamMembership();
+    this.processLeads = new Map(_teamMembershipCache.leads);
+    for (const record of registry.values()) {
+      if (record.status) this.processLeads.set(`${record.pid}:${record.procStart}`, record.sessionId);
+    }
 
     const HISTORY_SCAN_MS = 10 * 60 * 1000;
     for (const entry of entries) {
@@ -2971,7 +3207,10 @@ class ClaudeAdapter {
       }
 
       if (!entry.sessionId) continue;
-      if (now - (entry.timestamp || 0) > HISTORY_SCAN_MS) continue;
+      if (now - (entry.timestamp || 0) > HISTORY_SCAN_MS) {
+        const record = registry.get(entry.sessionId);
+        if (!record?.status && !record?.endedAt) continue;
+      }
 
       rememberSessionIdentity(entry.sessionId, entry, now);
 
@@ -2987,7 +3226,7 @@ class ClaudeAdapter {
           provider: 'claude',
           agentId: entry.agentId || null,
           agentType: normalizeClaudeAgentType(entry.agentType, entry.agentId),
-          model: entry.model || null,
+          model: isClaudeModelStub(entry.model) ? null : entry.model || null,
           status: 'active',
           lastActivity: entry.timestamp || 0,
           project: entry.project || null,
@@ -3009,18 +3248,24 @@ class ClaudeAdapter {
         )
         : 0;
       const lastActive = Math.max(session.lastActivity, fileMtime, childMtime);
-      if (now - lastActive > activeThresholdMs) continue;
+      const record = session.agentType === 'main' ? registry.get(session.sessionId) : null;
+      const quiet = now - lastActive > activeThresholdMs;
+      if (quiet && !registryKeepsSession(record, now - activeThresholdMs)) continue;
 
       session.lastActivity = lastActive;
-      const detail = getClaudeMainSessionSummary(session.sessionId, session.project);
       const sessionFilePath = resolveSessionFilePath(session.sessionId, session.project);
-      const sessionName = sessionNames.get(session.sessionId) || null;
+      const detail = getClaudeTranscriptSummary(sessionFilePath, 30, session.project);
+      const sessionName = registry.get(session.sessionId)?.name || null;
       const teamName = sessionName ? teamMembership.get(sessionName) || null : null;
       const permissionMode = sessionFilePath ? getPermissionMode(sessionFilePath) : null;
       const model = detail.model || session.model;
+      const state = session.agentType === 'main'
+        ? this.mainTurn(sessionFilePath, permissionMode, now, session.sessionId, record)
+        : getClaudeTurnState(sessionFilePath, permissionMode, now);
+      if (quiet && state.signalSource !== 'registry') continue;
       mainSessions.push({
         ...session,
-        ...getClaudeTurnState(sessionFilePath, permissionMode, now),
+        ...state,
         ...getTranscriptProjection(sessionFilePath, session.project, model),
         backgroundPending: readBackgroundPending(sessionFilePath, {
           subagentsDir: mainSubagentsDir(sessionFilePath),
@@ -3052,7 +3297,7 @@ class ClaudeAdapter {
     // Orphan sessions (active .jsonl files whose history entry is older than HISTORY_SCAN_MS).
     // Computed before subagents so their session IDs feed into the subagent scan — otherwise
     // long-running parents that haven't logged a recent prompt would have their subagents missed.
-    const orphans = this._getOrphanSessions(activeThresholdMs, projectPathMap, new Set(sessionsMap.keys()), sessionNames, teamMembership);
+    const orphans = this._getOrphanSessions(activeThresholdMs, projectPathMap, new Set(sessionsMap.keys()), registry, teamMembership);
     for (const orphan of orphans) {
       if (!orphan.project || !orphan.sessionId) continue;
       const encoded = claudeProjectDirName(orphan.project);
@@ -3191,7 +3436,7 @@ class ClaudeAdapter {
     return results;
   }
 
-  _getOrphanSessions(activeThresholdMs, projectPathMap = new Map(), knownIds = new Set(), sessionNames = new Map(), teamMembership = new Map()) {
+  _getOrphanSessions(activeThresholdMs, projectPathMap = new Map(), knownIds = new Set(), registry = new Map(), teamMembership = new Map()) {
     const projectsDir = path.join(CLAUDE_DIR, 'projects');
     if (!fs.existsSync(projectsDir)) return [];
 
@@ -3230,20 +3475,28 @@ class ClaudeAdapter {
             latestSubAgentActivity(path.join(projPath, sessionId), activeThresholdMs, now),
           );
 
-          if (now - lastActivity > activeThresholdMs) continue;
+          const record = registry.get(sessionId);
+          const quiet = now - lastActivity > activeThresholdMs;
+          if (quiet && !registryKeepsSession(record, now - activeThresholdMs)) continue;
 
           const decodedProject = resolveProjectPathFromMap(projectPathMap, projDir.name, filePath);
           const detail = getSubAgentDetail(filePath, decodedProject);
-          const sessionName = sessionNames.get(sessionId) || null;
+          const sessionName = record?.name || null;
           const teamName = sessionName ? teamMembership.get(sessionName) || null : null;
           const permissionMode = getPermissionMode(filePath);
           const identity = getSessionIdentity(sessionId);
           const project = identity?.project || decodedProject;
-          const agentType = teamName ? 'team-member' : identity?.agentType || 'team-member';
+          const teamLead = record && _teamMembershipCache.leads.get(`${record.pid}:${record.procStart}`) === sessionId;
+          const fallbackType = record?.status || record?.endedAt ? 'main' : 'team-member';
+          const agentType = teamName && !teamLead ? 'team-member' : identity?.agentType || fallbackType;
           const model = detail.model || null;
 
+          const state = agentType === 'main' || (!teamName && !identity)
+            ? this.mainTurn(filePath, permissionMode, now, sessionId, agentType === 'main' ? record : null)
+            : getClaudeTurnState(filePath, permissionMode, now);
+          if (quiet && state.signalSource !== 'registry') continue;
           results.push({
-            ...getClaudeTurnState(filePath, permissionMode, now),
+            ...state,
             ...getTranscriptProjection(filePath, project, model),
             backgroundPending: readBackgroundPending(filePath, {
               subagentsDir: mainSubagentsDir(filePath),
@@ -3451,8 +3704,6 @@ class ClaudeAdapter {
       return;
     }
 
-    _sessionNamesCache.signature = '';
-    _sessionNamesCache.value = new Map();
     if (dirty.kind === 'discovery' || dirty.kind === 'reconcile') {
       clearSessionEntryCache();
       for (const filePath of _transcriptAggregateCache.keys()) {
@@ -3481,8 +3732,6 @@ class ClaudeAdapter {
     clearTranscriptAggregateCache();
     clearDerivedMemo();
     _orphanScanCache.subagentActivityBySessionDir.clear();
-    _sessionNamesCache.signature = '';
-    _sessionNamesCache.value = new Map();
     _teamMembershipCache.signature = '';
     _teamMembershipCache.value = new Map();
     _teamsCache.signature = '';
@@ -3490,11 +3739,15 @@ class ClaudeAdapter {
   }
 
   shutdown() {
+    this.registryFiles.clear();
+    this.registry.clear();
+    this.processLeads.clear();
+    this.jobLeads.clear();
     shutdownClaudeAdapter();
   }
 
   dispose() {
-    shutdownClaudeAdapter();
+    this.shutdown();
   }
 
   getPerfStats() {

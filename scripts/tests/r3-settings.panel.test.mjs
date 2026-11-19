@@ -110,6 +110,7 @@ test('settings review reads every operator preference, sound levels as steps', (
         'claudeville.alerts.desktop': '1',
         'claudeville.sidebarCollapsed': 'true',
         'claudeville.display.hdrHighlights': 'full',
+        'claudeville.villageWeather': 'real-sky',
     });
 
     assert.deepEqual(readPersistedSettings(storage), {
@@ -133,6 +134,7 @@ test('settings review reads every operator preference, sound levels as steps', (
         desktopAlerts: true,
         sidebarCollapsed: true,
         hdrHighlights: 'full',
+        villageWeather: 'real-sky',
     });
 });
 
@@ -143,6 +145,7 @@ test('an uncalibrated profile reads as the standard level before the controller 
 
 test('reminder, caption and hour-count preferences read their defaults and reject unknown values', () => {
     const fresh = readPersistedSettings(new MemoryStorage());
+    assert.equal(fresh.villageWeather, 'modeled');
     assert.equal(fresh.soundReminders, 'standard');
     assert.equal(fresh.captions, 'auto');
     assert.equal(fresh.soundCountHours, false);
@@ -218,6 +221,7 @@ test('reset writes defaults in place without clearing unrelated local data', () 
     assert.equal(result.soundReminders, 'standard');
     assert.equal(result.soundCountHours, false);
     assert.equal(result.captions, 'auto');
+    assert.equal(result.villageWeather, 'modeled');
 });
 
 test('reset returns a user-changed profile to the standard step in every preset', () => {

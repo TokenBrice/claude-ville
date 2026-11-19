@@ -16,10 +16,12 @@ import { i18n } from '../../config/i18n.js';
 import { sessionDetailsService } from '../shared/SessionDetailsService.js';
 import { SESSION_DETAIL_REFRESH_INTERVAL } from '../../config/constants.js';
 import { replaceChildren } from '../shared/DomSafe.js';
-import { TokenUsage } from '../../domain/value-objects/TokenUsage.js';
+import { normalizeCostSource, TokenUsage } from '../../domain/value-objects/TokenUsage.js';
 import {
     collisionsForAgent,
     formatCost,
+    formatCreditChange,
+    costSourceTitle,
     formatElapsed,
     formatRelative,
     formatTokens,
@@ -31,6 +33,7 @@ import {
     subscribeElapsedText,
     truncateText,
     workingSetForAgent,
+    quotaLimitFacts,
 } from '../shared/Formatters.js';
 import { AgentSelectionMirror, emitAgentDeselected, emitAgentSelected } from '../shared/AgentSelection.js';
 import { HARBOR_FOCUS_FLEET_EVENT, harborLedger, ledgerFailureText, middleTruncate } from '../shared/HarborLedger.js';
@@ -43,6 +46,7 @@ import {
     replaceDetailRows,
     detailFreshnessLabel,
     signalProvenance,
+    mcpJobLabel,
     buildingClassForAgent,
     buildingPresentation,
     currentToolPresentation,
@@ -211,6 +215,10 @@ function rowExceptionRank(agent) {
     return statusRank + 1;
 }
 
+function rowHasWork(agent) {
+    return Boolean(workingSetForAgent(agent).length || collisionsForAgent(agent).length);
+}
+
 /** Dashboard health display precedence: error, blocked, quota, working, waiting, idle. */
 export const SECTION_HEALTH_ORDER = Object.freeze([
     'errors',
@@ -314,8 +322,29 @@ export function codexQuotaFacts(codex, now = Date.now()) {
         credits: credits.unlimited === true ? 'unlimited credits'
             : known(credits.balance) ? `${Number(credits.balance).toLocaleString('en-US', { maximumFractionDigits: 2 })} credits` : '',
         observedAt: known(codex.observedAt) && Number(codex.observedAt) > 0 ? Number(codex.observedAt) : null,
+        creditChange: formatCreditChange(codex.creditChange, { short: true }),
         windowLabel: minutes >= 7 * 24 * 60 ? 'weekly' : minutes >= 60 ? `${Math.round(minutes / 60)}h` : 'window',
     };
+}
+
+// A tally-bar account card holds two lines inside the bar's 40 px: the
+// reading on top, its facts (joined by ` · ` in CSS) below.
+function quotaRows(part, head, facts) {
+    const rows = document.createDocumentFragment();
+    const top = part('dashboard-quota__head');
+    top.append(...head);
+    rows.append(top);
+    if (facts.length) {
+        const bottom = part('dashboard-quota__facts');
+        bottom.append(...facts);
+        rows.append(bottom);
+    }
+    return rows;
+}
+
+/** What the tally bar's account cards read from `/api/usage`: a change to either repaints them. */
+export function quotaCardsSignature(usage) {
+    return { codex: usage?.codex ?? null, claudeLimit: usage?.quota?.highestActiveLimit ?? null };
 }
 
 /** The edge flash belongs only to a genuine errored status. */
@@ -585,7 +614,7 @@ export class DashboardRenderer {
         this._appendEmptyHints();
         this.cards = new Map();
         this.toolHistories = new Map();
-        this.usageFooters = new Map();
+        this.detailUsage = new Map();
         this.toolHistoryRenderSignatures = new Map();
         this._cardRenderSignatures = new Map();
         this._executionChildIdsByParent = new Map();
@@ -684,7 +713,10 @@ export class DashboardRenderer {
             this._syncCardTabStops();
         };
         this._onSharedFilterChanged = (payload = {}) => {
-            this._searchQuery = String(payload.query || '').trim().toLowerCase();
+            const query = String(payload.query || '').trim().toLowerCase();
+            // The sidebar republishes its index as agents change, even with no filter.
+            if (!query && !this._searchQuery) return;
+            this._searchQuery = query;
             const matches = Array.isArray(payload.matches) ? payload.matches : [];
             this._searchMatches = this._searchQuery
                 ? new Set(matches.map(match => String(match.agentId)))
@@ -692,7 +724,7 @@ export class DashboardRenderer {
             this._searchContexts = new Map(matches
                 .filter(match => match?.context)
                 .map(match => [String(match.agentId), String(match.context)]));
-            if (this.active) this.render();
+            if (this.active) this._queueFlush({ render: true });
         };
         eventBus.on('agent:added', this._onAgentAdded);
         eventBus.on('agent:updated', this._onAgentUpdated);
@@ -1153,7 +1185,8 @@ export class DashboardRenderer {
         const cardEl = this.cards.get(agent.id);
         const projectPath = projectKeyForAgent(agent);
         const status = normalizeStatus(agent.status);
-        if (!cardEl || cardEl._projectPath !== projectPath || cardEl._status !== status) {
+        if (!cardEl || cardEl._projectPath !== projectPath || cardEl._status !== status
+            || cardEl._exceptionRank !== rowExceptionRank(agent) || cardEl._hasWork !== rowHasWork(agent)) {
             this._queueFlush({ render: true });
             return;
         }
@@ -1327,7 +1360,7 @@ export class DashboardRenderer {
         refs.lift.title = lifted ? laneAgents.map(agent => agent.name || agent.id).join(', ') : '';
 
         // 7.7 — optional columns exist only while some row has data for them.
-        const hasWork = agents.some(agent => workingSetForAgent(agent).length || collisionsForAgent(agent).length);
+        const hasWork = agents.some(rowHasWork);
         const hasKids = agents.some(agent => this._hasChildProgress(agent));
         sectionEl.classList.toggle('dashboard__section--has-work', hasWork);
         sectionEl.classList.toggle('dashboard__section--has-kids', hasKids);
@@ -1721,7 +1754,7 @@ export class DashboardRenderer {
         providerEl.style.color = provider.badge.color;
         refs.meta.replaceChildren(
             providerEl,
-            document.createTextNode([model.label === provider.badge.label ? '' : model.label, agent.role || '', project]
+            document.createTextNode([model.label === provider.badge.label ? '' : model.label, mcpJobLabel(agent) || agent.role || '', project]
                 .filter(Boolean).map(text => ` · ${text}`).join('')),
         );
         refs.meta.title = `${provider.badge.label} · ${model.title || agent.model || ''} · ${agent.projectPath || ''}`;
@@ -1773,7 +1806,7 @@ export class DashboardRenderer {
             provider: [...this._providerFilters].sort(),
             search: this._searchQuery,
             matches: this._searchMatches?.size ?? agents.length,
-            codex: this._latestUsage?.codex ?? null,
+            quota: quotaCardsSignature(this._latestUsage),
         });
         this.attentionEl.hidden = false;
         if (signature === this._controlsSignature) return;
@@ -1853,9 +1886,12 @@ export class DashboardRenderer {
         // 7.11 — one legend replaces the per-row ESTIMATE / UNAVAILABLE pills.
         const legend = document.createElement('span');
         legend.className = 'dashboard-attention__legend';
-        legend.textContent = '≈ estimate · — unavailable';
-        legend.title = '≈ cost estimated from token counts and published rates; — no usage reported';
-        replaceChildren(this.attentionEl, [heading, list, this._codexQuotaCard(), legend].filter(Boolean));
+        legend.append(
+            Object.assign(document.createElement('span'), { textContent: '≈ includes estimates' }),
+            Object.assign(document.createElement('span'), { textContent: '— unavailable' }),
+        );
+        legend.title = '≈ cost includes estimated usage (token counts x published rates); — no usage reported';
+        replaceChildren(this.attentionEl, [heading, list, this._claudeLimitCard(), this._codexQuotaCard(), legend].filter(Boolean));
         if (focusedKey) {
             [...this.attentionEl.querySelectorAll('[data-filter-key]')]
                 .find(button => button.dataset.filterKey === focusedKey)
@@ -1863,8 +1899,8 @@ export class DashboardRenderer {
         }
     }
 
-    // The Codex account card in the tally bar: `CODEX WEEKLY ▮▮▮ 100% LIMIT ·
-    // resets 5d12h · 2,510.33 credits · as of 3m`. Absent or null usage.codex
+    // The Codex account card in the tally bar: `CODEX WEEKLY ▮▮▮ 100% LIMIT` over
+    // `resets 5d12h · 2,510.33 credits · fell 31.83 in 1m · 3m ago`. Absent or null usage.codex
     // (an older server, or no rollout with rate_limits) shows nothing.
     _codexQuotaCard() {
         const facts = codexQuotaFacts(this._latestUsage?.codex);
@@ -1877,20 +1913,50 @@ export class DashboardRenderer {
         provider.style.color = providerPresentation('codex').badge.color;
         const gauge = part('dashboard-quota__gauge');
         for (let index = 0; index < GAUGE_SEGMENTS; index++) gauge.appendChild(part(index < facts.lit ? 'on' : ''));
-        const parts = [provider, part('dashboard-quota__window', facts.windowLabel.toUpperCase()), gauge, part('dashboard-quota__used', facts.usedText)];
-        if (facts.limit) parts.push(part('dashboard-quota__word', bucketWord('quota', 'upper')));
+        const head = [provider, part('dashboard-quota__window', facts.windowLabel.toUpperCase()), gauge, part('dashboard-quota__used', facts.usedText)];
+        if (facts.limit) head.push(part('dashboard-quota__word', bucketWord('quota', 'upper')));
+        const facts2 = [];
         if (facts.resetsAt) {
             const reset = part('dashboard-quota__fact');
-            subscribeElapsedText(reset, now => `· resets in ${formatWaitAge(Math.max(0, facts.resetsAt - now))}`);
-            parts.push(reset);
+            subscribeElapsedText(reset, now => `resets ${formatWaitAge(Math.max(0, facts.resetsAt - now))}`);
+            facts2.push(reset);
         }
-        if (facts.credits) parts.push(part('dashboard-quota__fact', `· ${facts.credits}`));
+        if (facts.credits) facts2.push(part('dashboard-quota__fact', facts.credits));
+        if (facts.creditChange) facts2.push(part('dashboard-quota__fact', facts.creditChange));
         if (facts.observedAt) {
             const age = part('dashboard-quota__age');
-            subscribeElapsedText(age, now => `· as of ${formatWaitAge(Math.max(0, now - facts.observedAt))} ago`);
-            parts.push(age);
+            subscribeElapsedText(age, now => `${formatWaitAge(Math.max(0, now - facts.observedAt))} ago`);
+            facts2.push(age);
         }
-        card.append(...parts);
+        card.append(quotaRows(part, head, facts2));
+        return card;
+    }
+
+    // The Claude account's highest active limit (registry lane): `CLAUDE WEEKLY
+    // ▮▮▮ 68% WARNING` over `resets 2d`. Calm by default; a severity
+    // other than normal takes the card's one existing severity frame, worded
+    // with the reported severity, never LIMIT (Claude reports no enforcement).
+    _claudeLimitCard() {
+        const facts = quotaLimitFacts(this._latestUsage?.quota?.highestActiveLimit);
+        if (!facts) return null;
+        const part = (className, text = '') => Object.assign(document.createElement('span'), { className, textContent: text });
+        const card = part(`dashboard-quota dashboard-quota--claude${facts.warn ? ' dashboard-quota--limit' : ''}`);
+        card.title = 'The Claude account limit with the highest reported percentage, with its kind, scope and severity. '
+            + 'Claude villagers keep their own status.';
+        const provider = part('dashboard-quota__provider', providerPresentation('claude').badge.label.toUpperCase());
+        provider.style.color = providerPresentation('claude').badge.color;
+        const gauge = part('dashboard-quota__gauge');
+        const lit = Math.min(GAUGE_SEGMENTS, Math.round((Math.max(0, facts.used) / 100) * GAUGE_SEGMENTS));
+        for (let index = 0; index < GAUGE_SEGMENTS; index++) gauge.appendChild(part(index < lit ? 'on' : ''));
+        const head = [provider, part('dashboard-quota__window', facts.label.toUpperCase()), gauge, part('dashboard-quota__used', facts.usedText)];
+        if (facts.warn) head.push(part('dashboard-quota__word', facts.severity.toUpperCase()));
+        const facts2 = [];
+        if (facts.resetsAt) {
+            const reset = part('dashboard-quota__fact');
+            subscribeElapsedText(reset, now => `resets ${formatWaitAge(Math.max(0, facts.resetsAt - now))}`);
+            facts2.push(reset);
+        }
+        card.append(quotaRows(part, head, facts2));
         return card;
     }
 
@@ -1920,7 +1986,7 @@ export class DashboardRenderer {
             agent.model || '',
             agent.effort || '',
             agent.provider || '',
-            agent.role || '',
+            mcpJobLabel(agent) || agent.role || '',
             agent.workflowName || '',
             agent.parentSessionId || '',
             agent.departedAt || '',
@@ -1943,6 +2009,18 @@ export class DashboardRenderer {
 
         cardEl._projectPath = projectKeyForAgent(agent);
         cardEl._status = status;
+        cardEl._exceptionRank = rowExceptionRank(agent);
+        cardEl._hasWork = rowHasWork(agent);
+        // U-P8 — checkout labels and search matches can change on their own.
+        const branch = normalizeRepoBranch(agent.gitBranch);
+        const worktree = worktreeLabel(agent);
+        this._setText(refs.branch, [branch ? `on ${middleTruncate(branch, 22)}` : '', worktree ? middleTruncate(worktree, 20) : ''].filter(Boolean).join(' · '));
+        const branchTitle = [branch ? `branch ${branch}` : '', agent.worktree?.path ? `worktree ${agent.worktree.path}` : ''].filter(Boolean).join(' - ');
+        if (refs.branch.title !== branchTitle) refs.branch.title = branchTitle;
+        const searchContext = this._searchContexts.get(String(agent.id)) || '';
+        this._setText(refs.searchContext, searchContext);
+        this._setStyle(refs.searchContext, 'display', searchContext ? '' : 'none');
+
         if (this._cardRenderSignatures.get(agent.id) !== signature) {
             this._cardRenderSignatures.set(agent.id, signature);
 
@@ -1964,11 +2042,6 @@ export class DashboardRenderer {
             // Codex-style labels repeat the provider; say it once.
             this._setText(refs.model, model.label === provider.badge.label ? '' : model.label);
             refs.model.title = model.title;
-            // U-P8 — the branch the agent is on, and its linked worktree (`wt x`).
-            const branch = normalizeRepoBranch(agent.gitBranch);
-            const worktree = worktreeLabel(agent);
-            this._setText(refs.branch, [branch ? `on ${middleTruncate(branch, 22)}` : '', worktree ? middleTruncate(worktree, 20) : ''].filter(Boolean).join(' · '));
-            refs.branch.title = [branch ? `branch ${branch}` : '', agent.worktree?.path ? `worktree ${agent.worktree.path}` : ''].filter(Boolean).join(' - ');
 
             // Workflow swarm members read as one unit via a shared workflow chip;
             // it stands in for the generic 'workflow-subagent' role text.
@@ -1979,7 +2052,7 @@ export class DashboardRenderer {
                 this._setText(refs.role, '');
             } else {
                 this._setStyle(refs.workflowBadge, 'display', 'none');
-                this._setText(refs.role, agent.role || '');
+                this._setText(refs.role, mcpJobLabel(agent) || agent.role || '');
             }
 
             if (agent.teamName) {
@@ -2021,9 +2094,6 @@ export class DashboardRenderer {
             refs.now.title = now.title || `${now.lead} ${now.detail}`.trim();
 
             const promptDetail = safePromptDetail(agent);
-            const searchContext = this._searchContexts.get(String(agent.id)) || '';
-            this._setText(refs.searchContext, searchContext);
-            this._setStyle(refs.searchContext, 'display', searchContext ? '' : 'none');
 
             if (agent.lastMessage) {
                 replaceDetailRows(refs.message, [inspectableText(agent.lastMessage, { summary: truncateText(agent.lastMessage, 100), key: 'latest-message', truncated: agent.lastMessageTruncated === true })]);
@@ -2098,9 +2168,8 @@ export class DashboardRenderer {
 
         // The compact row always uses the live session payload. Detail fetches
         // are reserved for the one selected row and may refine token totals.
-        this._renderUsageFooter(cardEl, this.selection.isSelected(agent.id)
-            ? (this.usageFooters.get(agent.id) || this._usageFooterFor(agent, null))
-            : this._usageFooterFor(agent, null));
+        const detailUsage = this.selection.isSelected(agent.id) ? this.detailUsage.get(agent.id) : null;
+        this._renderUsageFooter(cardEl, this._usageFooterFor(agent, detailUsage));
 
         this._updateStaleBadge(cardEl, agent);
     }
@@ -2216,7 +2285,7 @@ export class DashboardRenderer {
         const strip = cardEl._elements?.kids;
         if (!strip) return;
         const signature = JSON.stringify(children.map(child => [
-            child.id, child.name, child.role, child.agentType, normalizeStatus(child.status), child.isDeparted === true,
+            child.id, child.name, mcpJobLabel(child) || child.role, child.agentType, normalizeStatus(child.status), child.isDeparted === true,
             child.currentTool || '', child.currentToolInput || '', child.projectPath || '',
         ]).concat([[agent.projectPath || '', this._crewSize(String(agent.id)), this._expandedLeads.has(String(agent.id))]]));
         if (strip._kidSignature === signature) return;
@@ -2253,7 +2322,7 @@ export class DashboardRenderer {
             const name = Object.assign(document.createElement('span'), { className: 'dash-card__kid-name', textContent: child.name || id });
             const otherProject = (child.projectPath || '') !== (agent.projectPath || '');
             const facts = [
-                child.role || child.agentType || '',
+                mcpJobLabel(child) || child.role || child.agentType || '',
                 `${now.lead}${now.detail ? ` ${now.detail}` : ''}`,
                 otherProject ? `in ${shortProjectName(child.projectPath || '_unknown', i18n.t('unknownProject'))}` : '',
             ].filter(Boolean).join(' · ');
@@ -2337,9 +2406,7 @@ export class DashboardRenderer {
                     this._syncHero(card, agent);
                     this._paintStrip(card, id);
                 }
-                this._renderUsageFooter(card, selected
-                    ? (this.usageFooters.get(id) || this._usageFooterFor(agent, null))
-                    : this._usageFooterFor(agent, null));
+                this._renderUsageFooter(card, this._usageFooterFor(agent, selected ? this.detailUsage.get(id) : null));
             }
         }
         const focusIsInDashboard = this.gridEl?.contains?.(document.activeElement);
@@ -2469,25 +2536,21 @@ export class DashboardRenderer {
         });
     }
 
-    _usageFooterFor(agent, data) {
-        const raw = data?.tokenUsage || data?.tokens || data?.usage || agent?.tokens || null;
-        const usage = TokenUsage.normalize(raw);
+    _usageFooterFor(agent, detailUsage) {
+        const usage = TokenUsage.normalize(detailUsage || agent?.tokens || null);
         const cells = rowTokenCells(usage);
-        const reported = agent?.cost?.source === 'provider' ? agent.cost : null;
-        const cost = reported || TokenUsage.estimateCost(usage, agent.model, agent.provider);
-        const source = reported ? 'provider' : 'estimate';
-        const revision = cost.rateRevision || TokenUsage.rateRevision;
+        const supplied = agent?.cost;
+        const source = normalizeCostSource(supplied?.source);
+        const cost = source === 'estimate' ? TokenUsage.estimateCost(usage, agent.model, agent.provider) : supplied;
+        const approximate = source !== 'provider';
         return {
             tokens: cells.title,
-            cost: cost.usd == null ? 'Cost unavailable' : `${source === 'estimate' ? '~' : ''}${formatCost(cost.usd)}`,
-            // 7.11 — row cells: `≈` marks an estimate, `—` means unavailable.
+            cost: cost.usd == null ? 'Cost unavailable' : `${approximate ? '~' : ''}${formatCost(cost.usd)}`,
             tokensShort: cells.newShort,
             cacheShort: cells.cacheShort,
             partial: usage.availability === 'partial',
-            costShort: cost.usd == null ? '—' : `${source === 'estimate' ? '≈' : ''}${formatCost(cost.usd)}`,
-            costTitle: source === 'provider'
-                ? `Reported by ${agent.provider || 'provider'}`
-                : `Estimated using ${cost.rateMatch || 'default'} rates, revision ${revision}`,
+            costShort: cost.usd == null ? '—' : `${approximate ? '≈' : ''}${formatCost(cost.usd)}`,
+            costTitle: costSourceTitle(cost, agent.provider || 'provider'),
             source: cost.usd == null ? 'unavailable' : source,
             unknownModel: cost.unknownModel,
         };
@@ -2523,7 +2586,7 @@ export class DashboardRenderer {
     _updateStaleBadge(cardEl, agent) {
         const badge = cardEl._elements?.staleBadge;
         if (!badge) return;
-        const hasDetail = this.toolHistories.has(agent.id) || this.usageFooters.has(agent.id);
+        const hasDetail = this.toolHistories.has(agent.id) || this.detailUsage.has(agent.id);
         const cacheState = hasDetail ? sessionDetailsService.detailCacheState(agent) : null;
         const label = detailFreshnessLabel(agent, cacheState);
         this._setText(badge, label);
@@ -2631,10 +2694,9 @@ export class DashboardRenderer {
                     if (cardEl) this._updateStaleBadge(cardEl, agent);
                     continue;
                 }
-                const footer = this._usageFooterFor(agent, data);
-                if (footer) this.usageFooters.set(agent.id, footer);
-                else this.usageFooters.delete(agent.id);
-                if (cardEl) this._renderUsageFooter(cardEl, footer);
+                const usage = data.tokenUsage || data.tokens || data.usage || null;
+                this.detailUsage.set(agent.id, usage);
+                if (cardEl) this._renderUsageFooter(cardEl, this._usageFooterFor(agent, usage));
                 // The strip places every fetched call; the list shows the newest.
                 const toolHistory = Array.isArray(data.toolHistory) ? data.toolHistory : [];
                 this.toolHistories.set(agent.id, toolHistory);
@@ -2652,7 +2714,7 @@ export class DashboardRenderer {
     _clearAllCardsAndSections() {
         for (const id of [...this.cards.keys()]) this._removeCard(id, { removeEmptySection: false });
         this.toolHistories.clear();
-        this.usageFooters.clear();
+        this.detailUsage.clear();
         this.toolHistoryRenderSignatures.clear();
         this._cardRenderSignatures.clear();
 
@@ -2694,7 +2756,7 @@ export class DashboardRenderer {
             if (focusWasInCard && this._focusedAgentId) this._focusCard(this._focusedAgentId);
         }
         this.toolHistories.delete(agentId);
-        this.usageFooters.delete(agentId);
+        this.detailUsage.delete(agentId);
         this.toolHistoryRenderSignatures.delete(agentId);
         this._cardRenderSignatures.delete(agentId);
 

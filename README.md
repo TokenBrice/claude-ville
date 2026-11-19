@@ -27,7 +27,7 @@ npm run dev
 
 Open **[localhost:4000](http://localhost:4000)** and keep using your coding CLIs as usual. ClaudeVille discovers supported session stores on the same machine. No package install, build step, or ClaudeVille account is needed to run it.
 
-**Try it before running agents:** open the [simulated village](http://localhost:4000/?sim=1&scenario=readme-showcase) after starting the server. It uses fictional sessions across all nine providers, including agents waiting for approval. All screenshots in this README use this simulator, with synthetic detail data for the Activity Panel.
+**Try it before running agents:** open the [simulated village](http://localhost:4000/?sim=1&scenario=readme-showcase) after starting the server, or choose **VISIT A SIMULATED VILLAGE** when ClaudeVille finds no provider; the chip in the top bar reads SIMULATED and offers the way back. It uses fictional sessions across all nine providers, including agents waiting for approval. All screenshots in this README use this simulator, with synthetic detail data for the Activity Panel.
 
 No agents showing up? Start a CLI session and check [provider detection and session visibility](./docs/troubleshooting.md). The `/m/` profile has a touch layout for a server running on the phone itself; the desktop server binds to loopback and is not reachable from another device over your LAN.
 
@@ -46,7 +46,7 @@ Approval and status signals depend on what each CLI records. ClaudeVille disting
 
 ### World mode: awareness at a glance
 
-Villagers head to the Forge to code, the Archive to read, and the Tavern to rest. Model families have their own sprites. The island changes with the local clock, seasons, and simulated weather; working buildings light up after dark.
+Villagers head to the Forge to code, the Archive to read, and the Tavern to rest. Model families have their own sprites. The island follows the local clock and seasons, with modeled weather by default. For non-commercial use, **Settings → Village weather → Real sky** adapts the latest forecast for your system timezone’s city, including rain and snow in any month. Modeled weather treats December through February precipitation as snow. Working buildings light up after dark.
 
 Use the World dock to choose **FREE**, **AUTO**, or **AMBIENT** camera behavior. Press **F** to frame the village, hold **B** to read work labels, and use **/** or **Ctrl/Cmd+K** to find an agent. Click an agent to inspect its session.
 
@@ -102,6 +102,7 @@ See the [adapter reference](./claudeville/adapters/README.md) for provider-speci
 - **Git inspection is read-only.** The Harbor queries active project repositories and GitHub checkouts under `~/Documents/git`. [Configure or disable repository discovery](./docs/troubleshooting.md#providers-detected-but-apisessions-is-empty) to suit your workspace.
 - **Dashboard history stays in that browser.** Settings, the Chronicle, and the spend ledger use localStorage and IndexedDB.
 - **Claude quota reporting makes an outbound request.** When existing Claude OAuth credentials include a subscription and access token, the server uses that token to request usage limits from Anthropic's API. Session transcripts are not sent with this request.
+- **Real sky is opt-in.** While a live tab has it on, the server can request a forecast at most once an hour. The request sends the timezone city’s coarse coordinates and fixed forecast parameters. Open-Meteo may log the IP address and coordinates. The clock shows the forecast source and fetch age. Forecasts older than three hours give way to modeled weather. [Open-Meteo terms and privacy](https://open-meteo.com/en/terms) · [Forecast attribution and mapping](./docs/design-decisions.md#village-weather-uses-an-hourly-forecast-only-on-opt-in)
 
 Review screenshots before sharing: live sessions can show prompts, messages, commands, project names, and file paths. Use the simulator for public captures. Report vulnerabilities through [the security policy](./SECURITY.md).
 

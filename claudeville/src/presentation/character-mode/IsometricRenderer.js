@@ -29,6 +29,8 @@ import {
 import { getReservedRects } from '../shared/ReservedRects.js';
 import { HARBOR_FOCUS_FLEET_EVENT } from '../shared/HarborLedger.js';
 import { HarborFleetCard, isInFleetCard } from '../shared/HarborFleetCard.js';
+import { WorldHoverPlate, villagerHoverLine } from '../shared/WorldHoverPlate.js';
+import { dialogueSourceLabel } from '../../config/dialogue.js';
 import { emitAgentSelected } from '../shared/AgentSelection.js';
 import { HDR_HIGHLIGHTS_EVENT, overlayContextAttributes, publishDisplayStatus, readHdrHighlights } from '../shared/DisplaySettings.js';
 import { installP3OverlayInks, readDisplayMedia, setOverlayInksP3, watchDisplayMedia } from './DisplayColor.js';
@@ -58,8 +60,10 @@ import { ChimneySmoke } from './ChimneySmoke.js';
 import { setPennantWeather } from './PixelPennant.js';
 import { openGroundTiles } from './AmbientGround.js';
 import { TERRAIN_HAZE_COURSES, groundWeatherWanted, installGroundBake } from './GroundBake.js';
+import { drawSunLift, releaseFrameShade } from './RakingLight.js';
+import { releaseShadeField, shadeFieldBufferBytes } from './ShadeField.js';
 import { OCEAN_HORIZON_WORLD_Y, coastDistanceProbe, drawCanvasWaterMood, drawOuterOcean, registerCoastBake, riverCurrentAt } from './CoastBake.js';
-import { frostQuarterOf, snowBucketOf } from './GroundState.js';
+import { frostQuarterOf, frostRisingOf, snowBucketOf } from './GroundState.js';
 import {
     TerrainArtifactStore, terrainArtifactConfiguration, terrainArtifactInputsSettled, terrainArtifactKey, terrainContentHash,
     captureTerrainArtifactFields, captureTerrainArtifact, restoreTerrainArtifact,
@@ -79,6 +83,7 @@ import VisitTileAllocator, { standsOnFixture } from './VisitTileAllocator.js';
 import { scenicScoreBias } from './DayRoutine.js';
 import { getPulsePriority } from './PulsePolicy.js';
 import { annotationModeForPressure, calculateScenePressure, getActiveMarkGovernor, MarkGovernor, setActiveMarkGovernor } from './MarkGovernor.js';
+import { strikePostcard } from './Postcard.js';
 import { fireBreath, fireBreathDepth, fixturePoolReach, groundCourseHeight, HEARTH_FIXTURES, HEARTH_TONE, hearthLightSources, lightSourceCacheKey, normalizeLightSource } from './LightSourceRegistry.js';
 import { lampRoundFor } from './LamplighterRound.js';
 import { applyTeamPlazaPreferences, getCouncilRingDiagnostics, releaseCouncilRingState } from './CouncilRing.js';
@@ -156,8 +161,14 @@ import {
     unifiedRendererResourceAccounting,
 } from './CanvasBudget.js';
 
+// Keep the field through a quick return so midday shade is already in the first frame.
+const SHADE_SUSPEND_GRACE_MS = 2000;
 // #8 — cadence of harbor reconciliation while the World loop is stopped.
 const HARBOR_SEMANTICS_IDLE_MS = 1000;
+// XP-4 — the hover plate re-reads a still pointer's target at this cadence,
+// and keeps this many CSS px clear round a point hit with no drawn bounds.
+const HOVER_PLATE_RESAMPLE_MS = 100;
+const HOVER_PLATE_POINTER_PAD = 24;
 const WATER_FRAME_STEP = 0.03;
 const STATIC_WATER_SHIMMER = 0.08;
 const LIGHT_FADE_COLOR_CACHE_LIMIT = 1024;
@@ -266,6 +277,12 @@ function releaseWebGpuWorld(entry) {
 
 // Work kept off the frame (a WebGPU failure's WebGL2 build and terrain
 // re-bake): an idle task, or the next task where idle callbacks are missing.
+// EY-5 — the renderer fields the terrain bake passes write (GroundBake's
+// ground field and puddle mask, CoastBake's field, bake and its water fields):
+// a restage keeps them private until its canvas publishes.
+const TERRAIN_STAGED_FIELDS = Object.freeze(['groundField', 'groundPuddleMask', 'groundBakeMs', 'groundWinterBakeMs',
+    '_coastField', 'coastField', '_coastBake', '_coastMoodLayer', '_mirrorAccentLayers']);
+
 function whenIdle(callback) {
     if (typeof requestIdleCallback === 'function') requestIdleCallback(() => callback(), { timeout: 100 });
     else setTimeout(callback, 0);
@@ -579,6 +596,7 @@ const VILLAGE_WALL_SEEDS = Object.freeze({ west: 101, east: 211 });
 export class IsometricRenderer {
     constructor(world, options = {}) {
         this.world = world;
+        this.replay = options.replay || null;
         this.assets = options.assets || null;
         this.sprites = this.assets ? new SpriteRenderer(this.assets) : null;
         installGroundBake(this);
@@ -619,7 +637,8 @@ export class IsometricRenderer {
             : null;
         this.visitIntentManager = new VisitIntentManager({ world: this.world });
         this.visitTileAllocator = new VisitTileAllocator();
-        this.atmosphereState = new AtmosphereState();
+        this.atmosphereState = new AtmosphereState(this.replay
+            ? { nowProvider: () => new Date(this.replay.replayClock.now) } : undefined);
         this.skyRenderer = new SkyRenderer({ assets: this.assets });
         this.weatherRenderer = new WeatherRenderer();
         // Weather renderer needs the AssetManager so its sprite-stamp helpers
@@ -731,6 +750,7 @@ export class IsometricRenderer {
         this.terrainCache = null;
         this.terrainCacheBounds = null;
         this.terrainCacheKey = '';
+        this._cancelTerrainRestage();
         this.terrainCacheMeta = null;
         this._terrainCacheLimitWarningKey = '';
         this.foliageRenderer = new FoliageRenderer(this);
@@ -1727,6 +1747,8 @@ export class IsometricRenderer {
         this._worldSwap = null;
         swap.previous = this.gpuWorld;
         swap.gpuWorld.resize?.(swap.previous.width, swap.previous.height);
+        // Both backends keep the same fall history even if the swap frame is retried.
+        if (swap.previous._rain && swap.gpuWorld._rain) swap.gpuWorld._rain.motion = swap.previous._rain.motion;
         const ladder = swap.previous.qualityLadder?.getState?.();
         if (ladder && swap.gpuWorld.qualityLadder) {
             swap.gpuWorld.qualityLadder.reset(ladder.level);
@@ -2234,7 +2256,10 @@ export class IsometricRenderer {
             const screenX = e.clientX - rect.left;
             const screenY = e.clientY - rect.top;
             const worldPos = this.camera.screenToWorld(screenX, screenY);
-            canvas.title = this._worldHoverInfo(worldPos.x, worldPos.y);
+            // XP-4 — the lore waits for the agent pass, which picks the plate's
+            // text once per frame (a villager wins over the scenery).
+            this._hoverLore = this._worldHoverInfo(worldPos.x, worldPos.y);
+            this._hoverPoint = { x: screenX, y: screenY };
             this._scheduleAgentHoverTest(worldPos.x, worldPos.y);
         };
         canvas.addEventListener('mousemove', this._onMouseMoveMain);
@@ -2253,7 +2278,9 @@ export class IsometricRenderer {
             this.villageDirector?.setHoveredBuilding?.(null);
             this.harborTraffic?.setHoveredShip?.(null);
             this.bridgeLanterns?.setHovered?.(null);
-            canvas.title = '';
+            this._hoverLore = null;
+            this._hoverPoint = null;
+            this._hoverPlate?.hide();
         };
         canvas.addEventListener('mouseleave', this._onMouseLeaveMain);
         this.camera.onTouchStart = this._onMouseLeaveMain;
@@ -2377,8 +2404,9 @@ export class IsometricRenderer {
                 this.canvas.removeEventListener(type, this._onPointerInputMain, { capture: true });
             }
             this.canvas.removeEventListener('mouseleave', this._onMouseLeaveMain);
-            this.canvas.title = '';
         }
+        this._hoverPlate?.dispose();
+        this._hoverPlate = null;
         if (this._agentHoverRafId !== null) {
             cancelAnimationFrame(this._agentHoverRafId);
             this._agentHoverRafId = null;
@@ -2495,7 +2523,7 @@ export class IsometricRenderer {
     setWorldModeActive(active) {
         const nextActive = Boolean(active);
         if (this._worldModeActive === nextActive) {
-            if (!nextActive) this._suspendWorldModeResources();
+            if (!nextActive) this._suspendWorldModeResources({ deferShade: true });
             else void this._beginWorldModeResume();
             return;
         }
@@ -2506,7 +2534,7 @@ export class IsometricRenderer {
         } else {
             this._worldResourceGeneration++;
             this._stopLoop();
-            this._suspendWorldModeResources();
+            this._suspendWorldModeResources({ deferShade: true });
         }
     }
 
@@ -2515,7 +2543,7 @@ export class IsometricRenderer {
         this._worldResourceGeneration++;
         this._stopLoop();
         if (this._worldResourcesSuspended) this.assets?.suspend?.();
-        this.releaseVolatileCaches();
+        this.releaseVolatileCaches({ deferShade: true });
     }
 
     resumeFromVisibility({ active = true } = {}) {
@@ -2561,12 +2589,25 @@ export class IsometricRenderer {
         return this._beginWorldModeResume();
     }
 
-    releaseVolatileCaches() {
+    _releaseWorldShade() {
+        clearTimeout(this._shadeReleaseTimer);
+        this._shadeReleaseTimer = null;
+        releaseFrameShade(this);
+        releaseShadeField(this);
+    }
+
+    releaseVolatileCaches({ deferShade = false } = {}) {
+        if (deferShade && this._shadeFieldState?.ready) {
+            this._shadeReleaseTimer ??= setTimeout(() => this._releaseWorldShade(), SHADE_SUSPEND_GRACE_MS);
+        } else {
+            this._releaseWorldShade();
+        }
         this._releaseTerrainArtifactWork();
         releaseCanvasBackingStore(this.terrainCache);
         this.terrainCache = null;
         this._terrainResident = null;
         this.terrainCacheKey = '';
+        this._cancelTerrainRestage();
         this.terrainCacheBounds = null;
         this.terrainCacheMeta = null;
         releaseCanvasBackingStore(this.atmosphereVignetteCache);
@@ -2639,13 +2680,13 @@ export class IsometricRenderer {
     // `keepSurfaces` (a context restore): the viewport canvases stay sized, so
     // the page's loading bands show through the cleared surfaces while the
     // resources rebuild, never a black 0x0 opaque canvas.
-    _suspendWorldModeResources({ keepSurfaces = false } = {}) {
+    _suspendWorldModeResources({ keepSurfaces = false, deferShade = false } = {}) {
         this._cancelFrameFailureRecovery();
         // Always forward suspension so an in-flight decoded-asset reload is
         // aborted even when the renderer already released its own surfaces.
         this.assets?.suspend?.();
         if (this._worldResourcesSuspended) return;
-        this.releaseVolatileCaches();
+        this.releaseVolatileCaches({ deferShade });
         for (const sprite of this.agentSprites.values()) sprite?.releaseRenderResources?.();
         AgentSprite.releaseSharedCaches?.();
         this.compositor?.releaseCache?.();
@@ -2677,6 +2718,8 @@ export class IsometricRenderer {
             || (typeof document !== 'undefined' && document.visibilityState === 'hidden')
         ) return Promise.resolve(false);
 
+        clearTimeout(this._shadeReleaseTimer);
+        this._shadeReleaseTimer = null;
         const generation = this._worldResourceGeneration;
         if (this._worldResumePromise && this._worldResumeGeneration === generation) {
             return this._worldResumePromise;
@@ -2799,6 +2842,7 @@ export class IsometricRenderer {
         const lastFrameAt = this._lastLoopFrameTime;
         if (!Number.isFinite(lastFrameAt) || now - lastFrameAt <= LONG_FRAME_GAP_MS) return;
         if (this._worldSpritesDirty) this._reconcileSpritesWithWorld();
+        if (this.replay?.recorded) return;
         const wallNow = Date.now();
         for (const [agentId, sprite] of Array.from(this.agentSprites)) {
             const transit = this.gateTransits.get(agentId);
@@ -3355,6 +3399,11 @@ export class IsometricRenderer {
         return measured ? { ...measured, horizonY, cell: this._revealCell() } : null;
     }
 
+    // XP-5 — one postcard frame of this view, composited and saved as a PNG.
+    strikePostcard(options) {
+        return strikePostcard(this, options);
+    }
+
     // 0.3 (b) — draw one frame synchronously, outside the loop. The resize
     // closure calls it after reallocating the canvases (which clears them), so
     // a cleared backing store never presents. Nothing draws before the loop's
@@ -3412,12 +3461,12 @@ export class IsometricRenderer {
             ?? (metadata.reducedMotion ? 0 : NaN)
         );
         if (Number.isFinite(motionScale)) {
-            this._setMotionScale(Math.max(0, Math.min(1, motionScale)));
+            this._setMotionScale(this.replay && this.motionQuery?.matches ? 0 : Math.max(0, Math.min(1, motionScale)));
         }
 
         const clock = atmosphere.clock || null;
         const hour = Number(clock?.hours);
-        if (Number.isFinite(hour)) {
+        if (!this.replay && Number.isFinite(hour)) {
             const minutes = Number(clock?.minutes);
             const seconds = Number(clock?.seconds);
             const hourValue = hour
@@ -3777,6 +3826,12 @@ export class IsometricRenderer {
             event.preventDefault();
             return;
         }
+        // XP-5 — P strikes a postcard of the current view (Postcard.js).
+        if (event.code === 'KeyP' && !event.shiftKey && !event.repeat) {
+            this.strikePostcard();
+            event.preventDefault();
+            return;
+        }
         if (event.code === 'Escape') {
             this.selectAgentById(null);
             this.onAgentSelect?.(null);
@@ -4081,6 +4136,7 @@ export class IsometricRenderer {
     }
 
     _beginRelationshipArrival(agent) {
+        if (this.replay?.recorded) return false;
         const sprite = this.agentSprites.get(agent?.id);
         if (!sprite || !this.arrivalDeparture) return false;
         const parentSprite = this._parentSpriteFor(agent);
@@ -4268,6 +4324,10 @@ export class IsometricRenderer {
 
     _beginAgentGateArrival(agent, sprite) {
         if (!sprite) return;
+        if (this.replay?.recorded) {
+            sprite.setTilePosition(agent.position.tileX, agent.position.tileY);
+            return;
+        }
 
         // Subagents step out of the Portal Gate toward their parent; with
         // motion, the dispatch comet (6.3) relocates them beside the parent.
@@ -4376,6 +4436,7 @@ export class IsometricRenderer {
     // Subagents merge back into their parent, orphans return to the Portal
     // Gate, and top-level sessions walk out through the village gate.
     _beginAgentDeparture(agent) {
+        if (this.replay?.recorded) return this._removeAgentSprite(agent.id, { fade: false });
         const sprite = this.agentSprites.get(agent?.id);
         if (!sprite || sprite._archiveAnim || this._isGateTransit(sprite, 'departure')) return;
         const handled = this._beginRelationshipDeparture(agent);
@@ -4608,8 +4669,30 @@ export class IsometricRenderer {
         this._agentHoverRafId = requestAnimationFrame(() => {
             this._agentHoverRafId = null;
             if (this._disposed) return;
-            this._applyAgentHover(this._agentHoverX, this._agentHoverY);
+            const hit = this._applyAgentHover(this._agentHoverX, this._agentHoverY);
+            const plate = this._hoverPlateContent(hit, this._hoverLore);
+            if (this._hoverPoint) this._ensureHoverPlate()?.update(plate.text, this._hoverPoint, plate.target, plate.key ?? plate.text);
         });
+    }
+
+    // XP-4 — what is under the resting pointer now: the plate re-reads it when
+    // it reveals and while the scene moves beneath a still pointer, so a
+    // villager that walked off takes its plate with it.
+    _sampleHoverPlate() {
+        const point = this._hoverPoint;
+        if (!point || !this.camera) return null;
+        const world = this.camera.screenToWorld(point.x, point.y);
+        const lore = this._worldHoverInfo(world.x, world.y);
+        this._hoverLore = lore;
+        return this._hoverPlateContent(this._applyAgentHover(world.x, world.y), lore);
+    }
+
+    _refreshHoverPlate(now = performance.now()) {
+        const plate = this._hoverPlate;
+        if (!plate?.tracking || !this._hoverPoint || now - (this._hoverPlateSampledAt || 0) < HOVER_PLATE_RESAMPLE_MS) return;
+        this._hoverPlateSampledAt = now;
+        const sample = this._sampleHoverPlate();
+        if (sample) plate.update(sample.text, this._hoverPoint, sample.target, sample.key ?? sample.text);
     }
 
     _applyAgentHover(worldX, worldY) {
@@ -4632,11 +4715,60 @@ export class IsometricRenderer {
             this.buildingRenderer?.setHovered(null);
             this.villageDirector?.setHoveredBuilding?.(null);
             this.harborTraffic?.setHoveredShip?.(null);
-            // Hovering a villager surfaces where its line actually came from,
-            // so the provenance badge on the bubble is legible rather than
-            // merely decorative.
-            if (this.canvas) this.canvas.title = hit.dialogueTooltip?.() || '';
         }
+        return hit;
+    }
+
+    _ensureHoverPlate() {
+        const host = this.canvas?.parentElement;
+        if (!host) return null;
+        this._hoverPlate ||= new WorldHoverPlate({
+            host,
+            reservedRects: getReservedRects,
+            resample: () => this._sampleHoverPlate(),
+        });
+        return this._hoverPlate;
+    }
+
+    // An arrival proves the building only where the body stands on one of
+    // that building's visit tiles (a chat approach records an arrival too,
+    // wherever the partner stood).
+    _standsOnVisitTile(sprite, buildingType) {
+        const building = sprite._buildingForType?.(buildingType);
+        const tiles = building?.visitTiles;
+        if (!Array.isArray(tiles) || !tiles.length) return false;
+        const at = worldToTile(sprite.x, sprite.y);
+        return tiles.some((tile) => tile
+            && Math.abs(Number(tile.tileX) - at.tileX) <= 0.5
+            && Math.abs(Number(tile.tileY) - at.tileY) <= 0.5);
+    }
+
+    _screenRectForWorld(left, top, right, bottom) {
+        const a = this.camera.worldToScreen(left, top);
+        const b = this.camera.worldToScreen(right, bottom);
+        return { left: a.x, top: a.y, right: b.x, bottom: b.y };
+    }
+
+    // XP-4 — the plate's text and the screen rect it must not cover. A
+    // villager gets its `name · building · tool · age` line beside its body,
+    // the building only once it has arrived there and stands still, and a
+    // second line naming where its last words came from (dialogueSourceLabel:
+    // source, excerpt, redaction, held), never the words themselves. Else the
+    // scenery's lore beside the scenery's own bounds.
+    _hoverPlateContent(hit, lore = null) {
+        if (!hit) return { text: lore?.text || '', target: lore?.target || null, key: lore?.key ?? null };
+        const box = hit._bodyBox;
+        const target = box
+            ? this._screenRectForWorld(hit.x + box.left, hit.y + box.top, hit.x + box.right, hit.y + Math.max(box.bottom, 4))
+            : null;
+        const behavior = hit.behavior;
+        const arrived = !hit.moving && hit._lastBuildingType
+            && behavior?.arrivedAt != null && behavior.building === hit._lastBuildingType
+            && this._standsOnVisitTile(hit, hit._lastBuildingType);
+        const line = villagerHoverLine(hit.agent, { buildingType: arrived ? hit._lastBuildingType : null });
+        const entry = hit._activitySnapshot;
+        const source = entry?.text && entry.source ? dialogueSourceLabel(entry) : '';
+        return { text: source ? `${line}\n${source}` : line, target, key: `agent:${hit.agent?.id ?? ''}` };
     }
 
     _setHoveredAgentSprite(sprite) {
@@ -4647,6 +4779,9 @@ export class IsometricRenderer {
         if (this._hoveredAgentSprite) this._hoveredAgentSprite.setHovered(true);
     }
 
+    // The scenery under a world point as `{ text, target }`: its lore and the
+    // screen rect the plate keeps clear of (the hit's drawn bounds where it
+    // has them, else a pointer-sized box round the hit), or null for bare ground.
     _worldHoverInfo(worldX, worldY) {
         const hoveredBuilding = this.buildingRenderer?.hitTest(worldX, worldY) ?? null;
         this.buildingRenderer?.setHovered(hoveredBuilding);
@@ -4670,7 +4805,7 @@ export class IsometricRenderer {
         const belfry = (hoveredBuilding || hoveredShip || bridgeLantern || tokenItem || repoStone)
             ? null
             : (this.isleLandmarks?.hitTestBelfry?.(worldX, worldY) ?? null);
-        return hoveredBuilding
+        const text = hoveredBuilding
             ? this._buildingVisitorTooltip(hoveredBuilding)
             : (hoveredShip
                 ? this.harborTraffic.shipTooltip(hoveredShip)
@@ -4681,6 +4816,21 @@ export class IsometricRenderer {
                         : (repoStone
                             ? this.chronicleMonuments.repoStones.tooltipFor(repoStone)
                             : (belfry ? this.isleLandmarks.belfryTooltip() : '')))));
+        if (!text) return null;
+        const key = hoveredBuilding ? `building:${hoveredBuilding.type}`
+            : hoveredShip ? `ship:${hoveredShip.id}`
+                : repoStone ? `stone:${repoStone.worldX},${repoStone.worldY}`
+                    : belfry ? 'belfry' : `lore:${text}`;
+        // Drawn bounds where the hit has them (buildings, ships, repo stones,
+        // the belfry tower); small marks (lanterns, token items) take the pad.
+        const bounds = hoveredBuilding ? this.buildingRenderer?.worldBounds?.(hoveredBuilding)
+            : hoveredShip ? this.harborTraffic?.shipWorldBounds?.(hoveredShip)
+                : repoStone ? this.chronicleMonuments?.repoStones?.worldBounds?.(repoStone)
+                    : belfry ? this.isleLandmarks?.belfryWorldBounds?.() : null;
+        if (bounds) return { text, key, target: this._screenRectForWorld(bounds.left, bounds.top, bounds.right, bounds.bottom) };
+        const point = this.camera.worldToScreen(worldX, worldY);
+        const pad = HOVER_PLATE_POINTER_PAD;
+        return { text, key, target: { left: point.x - pad, top: point.y - pad, right: point.x + pad, bottom: point.y + pad } };
     }
 
     // ─── U-P3 fleet card ────────────────────────────────────────────────
@@ -4752,52 +4902,18 @@ export class IsometricRenderer {
     _showTouchInfo(clientX, clientY) {
         const rect = this.canvas.getBoundingClientRect();
         const world = this.camera.screenToWorld(clientX - rect.left, clientY - rect.top);
-        // U-P3 — a held finger on a ship opens its fleet card (the touch
-        // twin of a click), not the one-line tip.
-        const heldShip = this.harborTraffic?.hitTestShip?.(world.x, world.y) ?? null;
-        if (heldShip) {
-            this._onMouseLeaveMain();
-            this._dismissTouchInfo();
-            this._openFleetCard({ project: heldShip.project, branch: heldShip.branch || '', shipId: heldShip.id });
-            return true;
-        }
-        this.canvas.title = this._worldHoverInfo(world.x, world.y);
-        // The agent pass uses the same front-most/arrival filters and dialogue
-        // provenance as mouse hover, which wins over the scenery underneath.
-        this._applyAgentHover(world.x, world.y);
-        const text = this.canvas.title;
+        // A held finger reads the same plate as mouse hover, ships included
+        // (a tap still opens the fleet card). The agent pass uses the same
+        // front-most/arrival filters, and a villager wins over the scenery.
+        const lore = this._worldHoverInfo(world.x, world.y);
+        const plate = this._hoverPlateContent(this._applyAgentHover(world.x, world.y), lore);
         this._onMouseLeaveMain();
-        if (!text) return false;
-        this._dismissTouchInfo();
-        const tip = document.createElement('div');
-        tip.className = 'world-touch-tip cv-frame cv-frame--bg2';
-        tip.setAttribute('role', 'tooltip');
-        tip.textContent = text;
-        this.canvas.parentElement.append(tip);
-        const width = tip.offsetWidth;
-        const height = tip.offsetHeight;
-        const x = Math.max(8, Math.min(rect.width - width - 8, clientX - rect.left - width / 2));
-        let y = Math.max(8, Math.min(rect.height - height - 8, clientY - rect.top - height - 24));
-        // The dock and mobile ledger tab reserve screen space just as they do
-        // for canvas labels. A held readout must not disappear underneath them.
-        for (const reserved of getReservedRects()) {
-            if (x < reserved.right && x + width > reserved.left
-                && y < reserved.bottom && y + height > reserved.top) {
-                y = Math.max(8, Math.min(rect.height - height - 8, reserved.bottom + 8));
-            }
-        }
-        tip.style.left = `${Math.round(x)}px`;
-        tip.style.top = `${Math.round(y)}px`;
-        this._touchInfo = tip;
-        this._touchInfoTimer = setTimeout(() => this._dismissTouchInfo(), 4000);
-        return true;
+        if (!plate.text) return false;
+        return this._ensureHoverPlate()?.showNow(plate.text, { x: clientX - rect.left, y: clientY - rect.top }, { target: plate.target }) || false;
     }
 
     _dismissTouchInfo() {
-        clearTimeout(this._touchInfoTimer);
-        this._touchInfoTimer = null;
-        this._touchInfo?.remove();
-        this._touchInfo = null;
+        this._hoverPlate?.hide();
     }
 
     _buildingVisitorTooltip(building) {
@@ -4899,7 +5015,7 @@ export class IsometricRenderer {
         if (
             !this.atmosphereState?._frozenDate
             && !Number.isFinite(this.atmosphereState?._hourOverride)
-            && now - (now % 1000) !== this._idleLastRenderClockMs
+            && (this.replay?.replayClock.now ?? (now - (now % 1000))) !== this._idleLastRenderClockMs
         ) {
             return true;
         }
@@ -5087,10 +5203,13 @@ export class IsometricRenderer {
                 this._failFallbackPrep(prep, new Error('World fallback preparation exceeded its 5 s frame hold'));
             }
             if (this._frameFailureStats.paused) return;
-            stage = 'idle';
-            const skipIdlePaint = this._canSkipIdleFrame(Date.now());
             stage = 'clock';
             advanceMotionClock(this._motionClock, dt, this.motionScale ?? 1);
+            // Keep the film at real playback speed across a missed frame.
+            // Scene motion still uses its short, clamped stride delta.
+            if (this._worldFramePresented) this.replay?.advanceReplay(frameGapMs || dt, this.motionScale <= 0);
+            stage = 'idle';
+            const skipIdlePaint = this._canSkipIdleFrame(Date.now());
             this.waterFrame = virtualFramesFor(this.motionTimeMs) * WATER_FRAME_STEP;
             perf = getClientPerfMetrics();
             stage = 'update';
@@ -5590,6 +5709,7 @@ export class IsometricRenderer {
             this.camera.updateFollow(dt);
         }
         if (this._fleetCard?.isOpen) this._updateFleetCard();
+        this._refreshHoverPlate();
 
         // Chat matching only depends on session/tool state, not frame-perfect motion.
         this._chatMatchAccumulator += dt;
@@ -5597,8 +5717,10 @@ export class IsometricRenderer {
         if (this._chatMatchAccumulator >= 250) {
             this._chatMatchAccumulator = 0;
             slowSystemsTick = true;
-            this._updateChatMatching();
-            this.agentEventStream?.reconcileChatPairs?.(this.agentSprites);
+            if (!this.replay?.recorded) {
+                this._updateChatMatching();
+                this.agentEventStream?.reconcileChatPairs?.(this.agentSprites);
+            }
         }
         const now = performance.now();
         const chronicleNow = Date.now();
@@ -5638,7 +5760,15 @@ export class IsometricRenderer {
             const particleSink = this._agentVisibleOnScreen(sprite, viewport)
                 ? this.particleSystem
                 : null;
-            sprite.update(particleSink, dt);
+            if (this.replay?.recorded) {
+                const position = sprite.agent.position;
+                if (position !== sprite._lastRecordedPosition) {
+                    sprite.setTilePosition(position.tileX, position.tileY);
+                    sprite._lastRecordedPosition = position;
+                }
+            } else {
+                sprite.update(particleSink, dt);
+            }
             const transit = this.gateTransits.get(sprite.agent?.id);
             if (transit && !sprite.moving && sprite.hasReachedTarget?.()) {
                 if (transit.type === 'departure') {
@@ -5683,7 +5813,7 @@ export class IsometricRenderer {
         this._stationaryOverlapAccumulator += dt;
         if (this._stationaryOverlapAccumulator >= 420) {
             this._stationaryOverlapAccumulator = 0;
-            this._resolveStationaryOverlaps();
+            if (!this.replay?.recorded) this._resolveStationaryOverlaps();
         } else if (walkerStopped) {
             // 7.4 — two bodies that land on one point the same refresh
             // settle onto the fan ring at once, not up to 420 ms later.
@@ -5700,8 +5830,11 @@ export class IsometricRenderer {
         // Ship motion is visual and stays frame-smooth. Git/source semantics
         // only need the existing 250ms application cadence.
         this.harborTraffic?.advance?.(dt);
-        if (slowSystemsTick) {
-            this.harborTraffic?.reconcile?.(agents, chronicleNow);
+        const pendingGit = this.replay?.pendingGit;
+        if (slowSystemsTick || pendingGit?.length) {
+            const harborSources = pendingGit?.length
+                ? [...this.world.agents.values(), { gitEvents: pendingGit.splice(0) }] : agents;
+            this.harborTraffic?.reconcile?.(harborSources, chronicleNow, this.replay?.recorded ? { incremental: true } : undefined);
             this._harborFailedPushState = this.harborTraffic?.getFailedPushState?.(chronicleNow) || null;
             let activeWorkingCount = 0;
             for (const agent of agents) {
@@ -8215,6 +8348,8 @@ export class IsometricRenderer {
         } else {
             this._drawStaticTerrainSurface(ctx);
         }
+        // SD-3 — the sun's lift on the bare terrain, before anything lies on it.
+        drawSunLift(ctx);
         profileMark?.('terrain-surface');
         this._drawDynamicWaterHighlights(ctx);
         profileMark?.('water-highlights');
@@ -8318,6 +8453,7 @@ export class IsometricRenderer {
             releaseCanvasBackingStore(this.terrainCache);
             this.terrainCache = null;
             this.terrainCacheKey = '';
+            this._cancelTerrainRestage();
             this._emitTerrainCacheLimitWarning(meta);
             return null;
         }
@@ -8334,12 +8470,17 @@ export class IsometricRenderer {
         this._terrainPhenology = this._currentPhenology();
         this.foliageRenderer.setSeason(season, this._terrainPhenology);
         const key = this._terrainBakeKey(bounds, dpr, season);
+        // EY-5 — a restage for another key (the clock scrubbed back to the
+        // shown stage) never outlives the return to it.
+        if (this._terrainRestage && this._terrainRestage.key !== key) this._cancelTerrainRestage();
         if (this.terrainCache && this.terrainCacheKey === key) {
             return { canvas: this.terrainCache, bounds };
         }
         if (allowResident && this._terrainResident?.key === key) {
             return { canvas: this._terrainResident, bounds, resident: true };
         }
+        const staged = this._stageTerrainOffFrame(key, bounds, dpr, season, allowResident);
+        if (staged) return staged;
         this._terrainResident = null;
         const persistedKey = this._persistedTerrainKey(bounds, dpr, season);
         const ready = this._terrainArtifactRead?.ready;
@@ -8350,6 +8491,7 @@ export class IsometricRenderer {
             this.terrainCache = ready.canvas;
             this.terrainCacheBounds = bounds;
             this.terrainCacheKey = key;
+            this.terrainCacheBaseKey = this._terrainBakeKey(bounds, dpr, season, false);
             this._terrainArtifactRead = null;
             this._terrainArtifactStats.hits++;
             this._terrainArtifactStats.state = 'hit';
@@ -8359,6 +8501,7 @@ export class IsometricRenderer {
         // Every other miss keeps today's synchronous bake in this same frame.
         this._discardTerrainArtifactRead();
         this._discardTerrainArtifactWrite();
+        this._cancelTerrainRestage();
 
         releaseCanvasBackingStore(this.terrainCache);
 
@@ -8374,6 +8517,12 @@ export class IsometricRenderer {
         this.terrainCache = canvas;
         this.terrainCacheBounds = bounds;
         this.terrainCacheKey = key;
+        this.terrainCacheBaseKey = this._terrainBakeKey(bounds, dpr, season, false);
+        this._landTerrainBake(cacheCtx, canvas, bounds, dpr, season);
+        return { canvas, bounds };
+    }
+
+    _landTerrainBake(cacheCtx, canvas, bounds, dpr, season) {
         this._terrainArtifactStats.bakes++;
         this._terrainArtifactStats.misses++;
         this._terrainArtifactStats.state = 'baked';
@@ -8383,7 +8532,104 @@ export class IsometricRenderer {
             this._terrainArtifactStats.state = 'unlanded';
             this._retryTerrainBake();
         }
-        return { canvas, bounds };
+    }
+
+    // EY-5 — a change of the winter ground's stage alone (a snow bucket, a
+    // frost quarter rising or melting: the passes' `baseRevision` keys are
+    // unchanged) never bakes in the frame once the World has presented. The
+    // current terrain keeps presenting while the next one is prepared in idle
+    // slices (each pass's `prepare` stepper, then one surface step per
+    // slice) and swapped in whole; a stage that moved on meanwhile is dropped
+    // and prepared again. Anything else, a missing surface or a ready artifact
+    // takes the synchronous bake as before.
+    _stageTerrainOffFrame(key, bounds, dpr, season, allowResident) {
+        const presented = this.terrainCache ? { canvas: this.terrainCache, bounds: this.terrainCacheBounds || bounds }
+            : allowResident && this._terrainResident ? { canvas: this._terrainResident, bounds, resident: true } : null;
+        if (!presented || !this._worldFramePresented || this._terrainArtifactRead?.ready
+            || this.terrainCacheBaseKey !== this._terrainBakeKey(bounds, dpr, season, false)) {
+            this._cancelTerrainRestage();
+            return null;
+        }
+        if (this._terrainRestage?.key !== key) {
+            this._cancelTerrainRestage();
+            const job = { key, bounds: { ...bounds }, dpr, season, prepare: null, steps: null, canvas: null, ctx: null, fields: {} };
+            this._terrainRestage = job;
+            whenIdle(() => this._stepTerrainRestage(job));
+        }
+        return presented;
+    }
+
+    _cancelTerrainRestage() {
+        const job = this._terrainRestage;
+        if (!job) return;
+        this._terrainRestage = null;
+        releaseCanvasBackingStore(job.canvas);
+    }
+
+    // One idle slice of a restage: one prepare band or one surface step. The
+    // passes' renderer fields (TERRAIN_STAGED_FIELDS) stay the job's own
+    // between slices and publish with its canvas, so frames in between draw
+    // the shown terrain with its own water and ground fields. A slice first
+    // checks the job still matches the wanted terrain.
+    _stepTerrainRestage(job) {
+        if (this._terrainRestage !== job || this._disposed) return;
+        if (this._terrainBakeKey(job.bounds, job.dpr, this._currentSeasonToken()) !== job.key) {
+            this._cancelTerrainRestage();
+            this._invalidateIdleFrame?.();
+            return;
+        }
+        const previousMotionScale = this.motionScale;
+        const live = {};
+        for (const field of TERRAIN_STAGED_FIELDS) {
+            live[field] = this[field];
+            if (field in job.fields) this[field] = job.fields[field];
+        }
+        try {
+            this.motionScale = 0;
+            if (!job.prepare) {
+                job.prepare = (this._terrainBakePasses || []).map(pass => pass.prepare?.(this)).filter(Boolean);
+            } else if (job.prepare.length) {
+                if (job.prepare[0]()) job.prepare.shift();
+            } else if (!job.steps) {
+                const { bounds, dpr } = job;
+                job.canvas = document.createElement('canvas');
+                job.canvas.width = Math.max(1, Math.round(bounds.w * dpr));
+                job.canvas.height = Math.max(1, Math.round(bounds.h * dpr));
+                job.ctx = job.canvas.getContext('2d');
+                SpriteRenderer.disableSmoothing(job.ctx);
+                job.ctx.setTransform(dpr, 0, 0, dpr, -bounds.x * dpr, -bounds.y * dpr);
+                job.steps = this._terrainSurfaceSteps(job.ctx);
+            } else if (job.steps.length) {
+                job.steps.shift()();
+            }
+        } finally {
+            this.motionScale = previousMotionScale;
+            for (const field of TERRAIN_STAGED_FIELDS) {
+                if (field in job.fields || this[field] !== live[field]) job.fields[field] = this[field];
+                this[field] = live[field];
+            }
+        }
+        if (!job.steps || job.steps.length) {
+            whenIdle(() => this._stepTerrainRestage(job));
+            return;
+        }
+        this._terrainRestage = null;
+        if (this._terrainBakeKey(job.bounds, job.dpr, this._currentSeasonToken()) !== job.key) {
+            releaseCanvasBackingStore(job.canvas);
+            this._invalidateIdleFrame?.();
+            return;
+        }
+        Object.assign(this, job.fields);
+        this._discardTerrainArtifactRead();
+        this._discardTerrainArtifactWrite();
+        releaseCanvasBackingStore(this.terrainCache);
+        this._terrainResident = null;
+        this.terrainCache = job.canvas;
+        this.terrainCacheBounds = job.bounds;
+        this.terrainCacheKey = job.key;
+        this._terrainRestages = (this._terrainRestages || 0) + 1;
+        this._landTerrainBake(job.ctx, job.canvas, job.bounds, job.dpr, job.season);
+        this._invalidateIdleFrame?.();
     }
 
     // Did the bake's sprite layers land? Each landmark bridge and baked
@@ -8452,6 +8698,7 @@ export class IsometricRenderer {
         const ground = this._groundState ?? groundStateForAtmosphere(atmosphere);
         return { assetVersion: this.assets?.assetVersion, bounds, dpr, season,
             sceneryRevision: this._terrainSceneryRevision || 0, snowBucket: snowBucketOf(ground?.snowCover), frost: frostQuarterOf(ground),
+            frostRising: frostRisingOf(ground),
             phenology: phenologyForAtmosphere(atmosphere).id,
             // GW — 'weather' in the key exactly when this backend's bake holds the field.
             groundWeather: groundWeatherWanted(this, frostQuarterOf(ground)) };
@@ -8661,10 +8908,13 @@ export class IsometricRenderer {
     // (C2) on both backends and nothing in the bake reads the camera, so a
     // phase boundary or a zoom step reuses the 26 MB surface instead of
     // rebaking and re-uploading it.
-    _terrainBakeKey(bounds, dpr, season) {
+    // `staged` false: each pass's `baseRevision` where it has one (EY-5,
+    // the key without the winter ground's stage).
+    _terrainBakeKey(bounds, dpr, season, staged = true) {
         let passes = '';
         for (const pass of this._terrainBakePasses || []) {
-            passes += `${pass.id}:${pass.revision?.(this) ?? 0},`;
+            const revision = !staged && pass.baseRevision ? pass.baseRevision(this) : pass.revision?.(this) ?? 0;
+            passes += `${pass.id}:${revision},`;
         }
         return `${bounds.x},${bounds.y},${bounds.w},${bounds.h}@${dpr}|${this.assets ? 'assets' : 'fallback'}|season:${season}|stage:${this._currentPhenology().id}|scenery:${this._terrainSceneryRevision || 0}|passes:${passes}|retry:${this._terrainBakeRetry || 0}`;
     }
@@ -8699,27 +8949,34 @@ export class IsometricRenderer {
         const previousMotionScale = this.motionScale;
         try {
             this.motionScale = 0;
+            for (const step of this._terrainSurfaceSteps(ctx)) step();
+        } finally {
+            this.motionScale = previousMotionScale;
+        }
+    }
 
+    // The static terrain surface in order, one step each (EY-5: a restage
+    // runs one per idle slice).
+    _terrainSurfaceSteps(ctx) {
+        return [
             // 3.2 — GroundBake paints every land texel (class field, C1 ramps,
             // AO, thresholds, yards, decals) in one cached image.
-            this._runTerrainBakePasses(ctx, 'ground');
+            () => this._runTerrainBakePasses(ctx, 'ground'),
             // The far-row haze multiplies the ground only: water, foam and wet
             // sand stay exact CoastBake colours, which the resident water
             // cycles match by ungraded albedo (3.1, 3.6); baked props, bridges
             // and foundations take 1.6's aerial haze like every sprite.
-            this._bakeAtmosphericPerspective(ctx);
+            () => this._bakeAtmosphericPerspective(ctx),
             // 3.4/3.5 — CoastBake: one continuous coast field paints wet sand,
             // foam and every water pixel, then the stratified cliff under land
             // edge tiles only (the sea meets the cached outer ocean).
-            this._runTerrainBakePasses(ctx, 'coast');
-            this._drawTerrainOverlayTiles(ctx);
-            this._drawLandmarkBridgeSpans(ctx);
-            this.buildingRenderer?.drawGroundFoundations?.(ctx);
-            this._drawAmbientGroundProps(ctx);
-            this._runTerrainBakePasses(ctx, 'finish');
-        } finally {
-            this.motionScale = previousMotionScale;
-        }
+            () => this._runTerrainBakePasses(ctx, 'coast'),
+            () => this._drawTerrainOverlayTiles(ctx),
+            () => this._drawLandmarkBridgeSpans(ctx),
+            () => this.buildingRenderer?.drawGroundFoundations?.(ctx),
+            () => this._drawAmbientGroundProps(ctx),
+            () => this._runTerrainBakePasses(ctx, 'finish'),
+        ];
     }
 
     // Atmospheric perspective: a faint top-to-bottom cool-lighter wash baked into
@@ -9568,8 +9825,9 @@ export class IsometricRenderer {
     // reflection ripple, the Lighthouse sheen, the sun/moon path and the 2.9
     // lamp columns).
     _drawDynamicWaterHighlights(ctx) {
-        drawCanvasWaterMood(ctx, this, this._lastAtmosphere);
-        drawCanvasWaterState(ctx, this, this._lastAtmosphere);
+        const atmosphere = this._replaySea?.atmosphere ?? this._lastAtmosphere;
+        drawCanvasWaterMood(ctx, this, atmosphere);
+        drawCanvasWaterState(ctx, this, atmosphere);
     }
 
     _drawWeatherPuddles(ctx) {
@@ -10177,6 +10435,13 @@ export class IsometricRenderer {
     // resident path the 2D canvas is ungraded, so the palette arrives
     // pre-graded; Canvas grades the whole frame afterwards.
     _drawDistantSeaHorizon(ctx, atmosphere, { gpuGraded = false } = {}) {
+        if (this.replay && !gpuGraded) {
+            // Recolor the baked sea strip and its water chunks together. The
+            // sky and the procedural swell continue at the frame clock.
+            const second = Math.floor(this.replay.replayClock.playhead / 1000);
+            if (this._replaySea?.second !== second) this._replaySea = { second, atmosphere };
+            atmosphere = this._replaySea.atmosphere;
+        }
         drawOuterOcean(ctx, this, atmosphere, { gpuGraded });
     }
 
@@ -11307,16 +11572,19 @@ export class IsometricRenderer {
             gpuAgentEmissiveAtlas: canvasPixelCount(this._gpuAgentEmissiveAtlas),
             semanticGround: canvasPixelCount(this._semanticGroundCanvas),
             groundCueAtlas: canvasPixelCount(this._groundCueRecorder?.atlas?.canvas),
+            shadeField: canvasPixelCount(this._shadeFieldState?.canvas),
         };
         const volatilePixels = Object.values(volatile).reduce((sum, value) => sum + value, 0);
         const visibleCanvasPixels = canvasPixelCount(this.canvas);
         const overlayCanvasPixels = canvasPixelCount(this.overlayCanvas);
         const retainedAssetPixels = this.foliageRenderer?.getRetainedPixels?.() || 0;
+        const shadeBufferBytes = shadeFieldBufferBytes(this);
         const resources = unifiedRendererResourceAccounting({
             visibleCanvasPixels: visibleCanvasPixels + overlayCanvasPixels,
             volatileCanvasPixels: volatilePixels,
             retainedCanvasPixels: retainedAssetPixels,
             gpu: gpuResources,
+            cpuDerivedEstimates: { 'shadeField.buffers': shadeBufferBytes },
         });
         return {
             budgets: CANVAS_BUDGET,
@@ -11330,6 +11598,7 @@ export class IsometricRenderer {
             visibleCanvasPixels,
             volatile,
             volatilePixels,
+            shadeFieldBufferBytes: shadeBufferBytes,
             retainedAssetPixels,
             domCanvasPixels: canvasPixelCount(this.fxCanvas) + overlayCanvasPixels,
             resources,

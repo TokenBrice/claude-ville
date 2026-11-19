@@ -26,6 +26,8 @@ const check = process.argv.includes('--check');
 // in emissive alpha and deliberately remains below 0.20 for daylight restraint.
 const PROFILES = Object.freeze({
     'agent.claude.fable': character('fabric', 0.10, ['#f9c855', '#f9cc57', '#f6c658']),
+    // Second Fable body: no shoulder motes, so no reviewed glow source.
+    'agent.claude.fable.b': character('fabric'),
     // The rune tablet is pale stone: no reviewed glow source on this body.
     'agent.claude.mythos': character('fabric'),
     'agent.claude.opus': character('fabric'),
@@ -56,6 +58,8 @@ const PROFILES = Object.freeze({
     'agent.codex.gpt56sol': character('metal', 0.18, ['#cb6728', '#d26e1b', '#9b3c0f']),
     // Sampled 2026-10-13 from the sheet: the violet visor slit only (head rows).
     'agent.codex.gpt6astra': character('metal', 0.16, ['#9d73d4', '#8e6dc3']),
+    // Second Astra body: open-faced, no visor slit, so no reviewed glow source.
+    'agent.codex.gpt6astra.b': character('metal'),
     'agent.codex.gpt54': character('metal'),
     'agent.codex.gpt53spark': character('metal'),
     'agent.claude.base': character('fabric'),
@@ -75,17 +79,9 @@ const PROFILES = Object.freeze({
     'agent.zai.glm': character('fabric', 0.12, ['#40865d', '#569c77', '#70ca84']),
     'agent.zai.glm.b': character('fabric', 0.12, ['#3f906e']),
     'agent.zai.flash': character('fabric'),
-    'building.command': {
-        ...terrain('stone'),
-        channels: ['material'],
-        // Blue roof tiles remain stone; these authored palette groups distinguish
-        // the crimson cloth and planted edges from masonry. Shared wall/door
-        // colors deliberately stay stone; a palette cannot disambiguate them.
-        materialColors: {
-            fabric: ['9f1f1f', '96201a', '912323', 'a01322', 'a32b21', 'b82821', '823022'],
-            foliage: ['255a18', '2a5f1c', '29611a', '12240e'],
-        },
-    },
+    // building.command's material sidecar: scripts/sprites/paint-facade-materials.mjs
+    // (EN-2), whose reviewed regions separate the oak gate and iron fittings
+    // from wall colours a palette alone cannot disambiguate.
     'terrain.grass-dirt': terrain('earth'),
     'terrain.grass-cobble': terrain('cobble'),
     'terrain.grass-shore': terrain('foliage'),

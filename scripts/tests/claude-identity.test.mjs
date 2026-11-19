@@ -128,8 +128,8 @@ test('Claude skips model stubs and falls back to the transcript model', () => {
     assert.equal(stub.dialogue?.text, 'Reading the parser.');
     assert.equal(stub.dialogue?.authorship, 'model');
 
-    assert.equal(quiet.model, null);
-    assert.equal(quiet.published, 'claude');
+    assert.equal(quiet.model, 'claude-opus-5-5');
+    assert.equal(quiet.published, quiet.model);
     assert.equal(quiet.tokenMax, 1_000_000);
     assert.equal(quiet.contextWindowMax, 1_000_000);
   } finally {

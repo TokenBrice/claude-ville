@@ -3,6 +3,7 @@ import { WORLD_BODY_FONT_11 } from '../../config/theme.js';
 import { measureLabelText } from './WorldLabelKit.js';
 import { tileToWorld, worldToTile } from './Projection.js';
 import { compactToolLabel, isAgentMessageTool, isCommandToolName, isTaskCommandInput, toolVerbLabel } from '../../domain/services/ToolIdentity.js';
+import { normalizeCostSource } from '../../domain/value-objects/TokenUsage.js';
 import { providerColor } from './ArrivalDeparture.js';
 import { resolveObservation } from './ObservationCertainty.js';
 import { ALPHA_QUANTA, FAILURE, FAILURE_OUTLINE, PEAK, STONE_RAMP, bracket, defineMoment, diamond, dottedCurve, gradeTone, momentPhase, momentRectClear, resolveMomentAnchor, snap } from './EffectStamps.js';
@@ -752,6 +753,7 @@ export class LandmarkActivity {
         let costCovered = 0;
         let missing = 0;
         let gap = false;
+        let mixed = false;
         const stamps = [];
         for (const record of this._assayByAgent.values()) {
             if (project && record.project !== project) continue;
@@ -771,8 +773,10 @@ export class LandmarkActivity {
             }
             costCovered += 1;
             usd += ringSum(window.ring, now);
+            const source = normalizeCostSource(window.source);
+            if (source === 'mixed') mixed = true;
             if (stamps.length < ASSAY_COST_STAMP_LIMIT) {
-                stamps.push(window.source === 'provider' ? 'provider' : 'estimate');
+                stamps.push(source);
             }
         }
         const sessions = covered + unknown;
@@ -797,7 +801,7 @@ export class LandmarkActivity {
                 stamps,
                 stampOverflow: Math.max(0, costCovered - stamps.length),
                 label: costCovered > 0
-                    ? `${formatWindowUsd(usd)} / last min`
+                    ? `${formatWindowUsd(usd)} / last min${mixed ? ' · incl. est.' : ''}`
                     : 'insufficient coverage',
                 note: missing > 0
                     ? `${missing} session${missing === 1 ? '' : 's'} uncovered`
@@ -981,7 +985,7 @@ export class LandmarkActivity {
             createdAt: now,
             expiresAt: now + SNAPSHOT_TTL_MS,
             slot,
-            label: toolVerbLabel(agent.currentTool, agent.currentToolInput),
+            label: toolVerbLabel(agent.currentTool, agent.currentToolInput, agent),
             detail: fileBaseName(agent.currentToolInput),
             sortOffset: 6,
         });
@@ -1003,7 +1007,7 @@ export class LandmarkActivity {
             createdAt: now,
             expiresAt: now + SNAPSHOT_TTL_MS,
             slot,
-            label: isTaskCommand(agent) ? 'verify' : toolVerbLabel(agent.currentTool, agent.currentToolInput),
+            label: isTaskCommand(agent) ? 'verify' : toolVerbLabel(agent.currentTool, agent.currentToolInput, agent),
             isCheck: isTaskCommand(agent),
             sortOffset: 5,
         });
@@ -1037,7 +1041,7 @@ export class LandmarkActivity {
             createdAt: now,
             expiresAt: now + COMMAND_ITEM_TTL_MS,
             slot,
-            label: toolVerbLabel(agent.currentTool, agent.currentToolInput),
+            label: toolVerbLabel(agent.currentTool, agent.currentToolInput, agent),
             sortOffset: -2,
         });
         this._recencyByType.set('command', now);

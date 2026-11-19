@@ -133,11 +133,17 @@ not extend alpha beyond albedo.
 The committed pilot atlas has identical rectangles and padding in every channel:
 
 - `albedo`: original RGBA pixels.
-- `material`: R = stable material-class index; G/B reserved; A = albedo alpha.
+- `material`: R = stable material-class index; G/B reserved (the baked terrain map: see below); A = albedo alpha.
 - `emissive`: authored RGB with A as contribution; transparent black by default.
 - `occluder`: R = authored height (zero in the flat default), G = occlusion
   strength, B = surface code on surface-coded landmarks (*Occluder channel
   contract*, below), A = albedo alpha. `mode: none` is transparent.
+
+The baked terrain material map holds one RGBA texel per 4×4 world pixels.
+In mixed water blocks, bits 0–3 of G mark exposed 2×2 wet-sand cells in row
+order from the top left. B holds their original land class. Both scene
+shaders use B on the two wet-sand palette stops after swash, including each
+covered sample during a glide. Foam and water stops keep the class in R.
 
 The GPU samples the occluder companion separately from the raw material map.
 Material alpha also marks presence: opaque class zero is authored unlit, not
@@ -431,7 +437,7 @@ fields' bytes and revisions (light records and tile index, sea gust, footprint,
 puddle mask) come from `gpu/GpuFrameState.js` (below). Every cache
 entry counts its real bytes (`width x height x bytesPerTexel`), so the 160 MiB
 cached-source ceiling and Shift-D see an R8 field at a quarter of an RGBA
-canvas. The ceiling was 48 MiB until B.2; every frame already samples
+canvas. The ceiling was 48 MiB until B.2; the measured frames then sampled
 105-137 MB of sources (terrain bake 25 MB, four world-pilot pages 64 MB,
 ground fields ~10.5 MB, agent atlases 6-30 MB), so a 48 MiB cap was
 permanently exceeded and only evicted what the camera had just left.
@@ -543,9 +549,8 @@ three ways; the record's flags choose the reading:
 - **Deviation from plan B.2 (world-pilot stays unpacked).** B.2 asked for the
   world-pilot channel atlases to be packed like the agent atlas. They are not:
   `world-pilot` holds all nine landmarks, whose occluder page carries 2.3
-  surface codes in B, so it keeps four separate 2048² channel pages (albedo,
-  material, emissive, occluder: 16 MB of GL texture each). Packing it would
-  have saved one page (~16.8 MB) at the cost of the surface channel.
+  surface codes in B, so it keeps four separate 2026 × 1801 RGBA8 pages for albedo,
+  material, emissive and occluder (13.92 MiB per GPU texture).
 - B.2 memory rules (agents): `packGeometryPixels` (`GpuSceneBuilder.js`)
   packs one canvas per material + occluder sidecar pair
   (`AgentSprite` packed-geometry cache, 16 M px; a frame crop packs inline, a
@@ -893,5 +898,24 @@ npm run sprites:sidecar-mask-fix -- \
 ```
 
 Remove `--dry-run` only after reviewing the target and then add the matching
-`<channel>Sidecar: true` manifest opt-in. Re-bake, validate, and inspect the
+`<channel>Sidecar: true` manifest opt-in.
+
+Command's and the Tavern's material sidecars (EN-2) come from
+`node scripts/sprites/paint-facade-materials.mjs` (`--check` runs inside
+`npm run sprites:audit-refresh`): reviewed regions plus a hue rule inside
+them, never luminance. Command's arched gate leaves are timber and their
+straps, ring pulls and nails metal, as are the gilt crest over the gate and
+the two iron braziers, and its four crimson wall banners (cloth and gilt
+emblem) are fabric; the Tavern's oak arcade, bar, kegs, half-timbering and
+eave boards are timber, while its ashlar wall, plaster, slate and glass stay
+stone. No roof (surface face 3) texel takes fabric and no other class from
+the roof-snow exclusion set is painted, so roof weather is unchanged, and
+the firelight exclusions (`RAMP_LANDMARKS`) are untouched. The same script
+makes the restrained albedo ramp edits that let the materials read without
+the channel (Canvas, MINIMAL): reviewed source colours on those classes only,
+onto existing stops (`OAK_FROM`: the plum-shaded oak onto `timber`, the
+warm oak kept; `IRON_FROM`: the straps, rings and braziers off the ashlar
+mauve onto `slate`, their highlights onto `wetSlate[2]`), and the same
+edits on the gate strip (frame 0 restated from the base crop, the ajar and
+open frames inside the door's arch), so `restIsBase` holds. An edit that would change the roof map (roof class, trim or snow-cap mask; `RoofWeather.roofWeatherMap` reads colour) is undone, so roof weather is exactly the pre-edit art's: 110 Tavern fascia texels keep their plum oak. Re-bake, validate, and inspect the
 channel contact sheet before committing a sidecar.

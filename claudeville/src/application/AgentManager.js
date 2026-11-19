@@ -1,6 +1,7 @@
 import { Agent, normalizeTodoList } from '../domain/entities/Agent.js';
 import { AgentStatus } from '../domain/value-objects/AgentStatus.js';
-import { resolveAgentStatus } from '../domain/services/StatusResolver.js';
+import { isWaitingOnCrew, isWatchingOnPoll, normalizeSignalSource, resolveAgentStatus, TurnState } from '../domain/services/StatusResolver.js';
+import { isScriptWrapperTool } from '../domain/services/ToolIdentity.js';
 import { eventBus } from '../domain/events/DomainEvent.js';
 import { AgentBiography } from '../domain/value-objects/AgentBiography.js';
 import { dialogueIsHeldable } from '../config/dialogue.js';
@@ -73,6 +74,7 @@ const AGENT_SIGNATURE_FIELDS = Object.freeze([
     'status',
     'role',
     'teamName',
+    'agentColor',
     'tokens',
     'estimatedCost',
     'taskProgress',
@@ -93,12 +95,14 @@ const AGENT_SIGNATURE_FIELDS = Object.freeze([
     'backgroundPending',
     'pendingTool',
     'pendingSince',
+    'script',
     'waitReason',
     'awaitingSince',
     'turnStartedAt',
     'sessionEndedAt',
     'lastTurnDurationMs',
     'signalSource',
+    'promptDetail',
     'signalCertainty',
     'signalObservedAt',
     'signalStale',
@@ -564,6 +568,7 @@ export class AgentManager {
                     currentTool: null,
                     currentToolInput: null,
                     pendingTool: null,
+                    script: null,
                     waitReason: null,
                     awaitingSince: null,
                     resident: false,
@@ -650,7 +655,6 @@ export class AgentManager {
         } else {
             this._agentSignatures.set(id, signature);
             const agent = new Agent(payload);
-            agent.subagentKind = payload.subagentKind;
             agent.agentPath = payload.agentPath;
             agent.taskProgress = payload.taskProgress;
             agent.tasks = payload.tasks;
@@ -951,9 +955,19 @@ export class AgentManager {
         const teamInfo = teamMembers ? teamMembers.get(session.agentId) : null;
         const agentName = teamInfo?.name || session.name || session.agentName || session.nickname || null;
         const { status, lastSessionActivity, activityAgeMs } = this._sessionTiming(session);
-        // A closed turn waiting on its crew (PV-2) runs no tool of its own.
-        const hasFreshTool = status === AgentStatus.WORKING && !!session.lastTool
-            && session.turnState !== 'awaiting_input';
+        const wireScript = session.script;
+        const script = isScriptWrapperTool(wireScript?.tool) && Number.isFinite(wireScript.since)
+            ? {
+                tool: wireScript.tool,
+                description: typeof wireScript.description === 'string' ? wireScript.description : null,
+                since: wireScript.since,
+            }
+            : null;
+        const watch = status === AgentStatus.WORKING && isWatchingOnPoll(session);
+        const signalSource = normalizeSignalSource(session.signalSource);
+        // The last real tool remains placement evidence during a script or crew wait.
+        const hasFreshTool = status === AgentStatus.WORKING && !!session.lastTool && !script && !watch
+            && session.turnState !== TurnState.AWAITING_INPUT && !isWaitingOnCrew(session);
 
         // Team name is an explicit provider field. Do not infer it from project
         // paths; Codex/Gemini intentionally degrade to null.
@@ -980,6 +994,10 @@ export class AgentManager {
             status,
             role: teamInfo?.agentType || session.agentType || 'general',
             teamName,
+            // FK-7 — the colour name Claude Code gave a teammate ('blue').
+            agentColor: typeof session.agentColor === 'string' && session.agentColor.trim()
+                ? session.agentColor.trim().toLowerCase().slice(0, 32)
+                : null,
             tokens: session.tokenUsage || session.tokens || session.usage || null,
             estimatedCost: session.estimatedCost !== null
                 && session.estimatedCost !== undefined
@@ -997,7 +1015,7 @@ export class AgentManager {
                 })
                 : [],
             todos: normalizeTodoList(session.todos),
-            currentTool: hasFreshTool ? session.lastTool : null,
+            currentTool: watch ? session.pendingTool : hasFreshTool ? session.lastTool : null,
             currentToolInput: hasFreshTool ? session.lastToolInput || null : null,
             lastTool: session.lastTool || null,
             lastToolInput: session.lastToolInput || null,
@@ -1018,6 +1036,7 @@ export class AgentManager {
             turnState: session.turnState ?? 'unknown',
             backgroundPending: normalizeBackgroundPending(session.backgroundPending),
             pendingTool: session.pendingTool ?? null,
+            script,
             pendingSince: session.pendingSince !== null
                 && session.pendingSince !== undefined
                 && Number.isFinite(Number(session.pendingSince))
@@ -1044,8 +1063,9 @@ export class AgentManager {
                 && Number.isFinite(Number(session.lastTurnDurationMs))
                 ? Math.max(0, Number(session.lastTurnDurationMs))
                 : null,
-            signalSource: session.signalSource === 'hook' || session.signalSource === 'transcript'
-                ? session.signalSource
+            signalSource,
+            promptDetail: (signalSource === 'hook' || signalSource === 'registry') && typeof session.promptDetail === 'string'
+                ? session.promptDetail.slice(0, 200)
                 : null,
             signalCertainty: session.signalCertainty || 'unavailable',
             signalObservedAt: session.signalObservedAt ?? null,

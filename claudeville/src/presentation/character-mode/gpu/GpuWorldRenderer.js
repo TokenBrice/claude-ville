@@ -81,8 +81,8 @@ import { NEUTRAL_GRADE } from '../GradeEvaluator.js';
 import {
     COAST_FIELD_FLAGS,
     COAST_PALETTE,
-    MIRROR_STORM,
     coastFieldTexels,
+    mirrorStormDrop,
     OCEAN_HORIZON_WORLD_Y,
     OPEN_SEA_BAND_DEPTH,
     OPEN_SEA_BAND_MARK_LIFT,
@@ -364,12 +364,10 @@ const EMA_ALPHA = 0.1;
 // cached-source ceiling gives up exactly that much.
 // B.2 — the ceiling is 160 MiB, not the shipped 48 MiB: the sources every
 // frame samples already exceed 48 MiB, so the old cap was always "exceeded"
-// and only evicted what the camera had just left (re-upload churn). Measured
-// resident set, all of it sampled in the current frame: terrain bake 25.0 MB
-// + four 2048² world-pilot channels 64.0 MB + ground fields ~10.5 MB +
-// agent atlases (0.7 k² slots: 1.9 MB each; 4.7 walk strips at 840x3080:
-// 9.9 MB each, three channels) = 105-111 MB at dense-100 / readme-showcase,
-// 134-137 MB at dense-24 (2560 and 5120 wide).
+// and only evicted what the camera had just left (re-upload churn). The
+// original dense fixtures sampled 105–137 MB of terrain, ground fields,
+// agent atlases and pilot channels. The four current 2026×1801 RGBA8
+// world-pilot channels together use 55.7 MiB of GPU memory.
 const PALETTE_LUT_BYTES = PALETTE_LUT_WIDTH * PALETTE_LUT_HEIGHT * 4;
 const SPILL_FIELD_WIDTH = 256;
 const SPILL_FIELD_HEIGHT = 144;
@@ -831,7 +829,7 @@ const float OPEN_SEA_HORIZON_Y = ${OCEAN_HORIZON_WORLD_Y.toFixed(1)};
 //  - seaContourRows: the reflection band's and the aerial haze's seams on
 //    water (GPU only, the same function in the scene and the composite).
 float seaSeamLattice(float k, float salt) {
-    uint h = (uint(int(k)) * 1597334677u) ^ (uint(int(salt) + 4096) * 3812015801u);
+    highp uint h = (uint(int(k)) * 1597334677u) ^ (uint(int(salt) + 4096) * 3812015801u);
     h = (h ^ (h >> 16u)) * 2246822519u;
     h ^= h >> 13u;
     return float(h >> 8u) / 16777216.0;
@@ -1305,6 +1303,7 @@ float fatTapWeight(FatTaps t, int i) {
 
 const SCENE_FRAGMENT = `#version 300 es
 precision highp float;
+precision highp int;
 in vec2 v_uv;
 in vec2 v_world;
 in float v_alpha;
@@ -1357,9 +1356,9 @@ ivec2 albedoSize() {
 // are measured in record-local texels (v_texel), the slot or atlas origin is
 // added as an integer in the fetch, so a paged record is bit-identical to
 // its unpaged twin. The footprints are
-// fwidth taken at the top of main(), before any discard or record branch;
-// material, emissive and occluder sidecars stay nearest. Resting frames never
-// enter this path.
+// fwidth taken at the top of main(), before any discard or record branch.
+// Material and occluder sidecars stay nearest. Each wet-sand tap resolves
+// its own material. Resting frames never enter this path.
 uniform bool u_fatPixels;
 ${FAT_TAPS_GLSL}
 bool fatOn = false;
@@ -1401,6 +1400,19 @@ vec4 sampleAlbedo(vec2 uv) {
 }
 uniform sampler2D u_materialMap;
 uniform sampler2D u_emissiveMap;
+vec4 sampleEmission(vec2 uv, float albedoAlpha) {
+    if (!fatOn || !fatSeam(fatAlbedoTaps) || v_gate == 0.0) return textureLod(u_emissiveMap, uv, 0.0);
+    vec4 sum = vec4(0.0);
+    for (int i = 0; i < 4; i++) {
+        float coverage = fatTapWeight(fatAlbedoTaps, i) * fatTap[i].a;
+        if (coverage == 0.0) continue;
+        vec2 local = clamp(fatAlbedoTaps.base + fatTapOffset(i), vec2(0.0), vec2(v_texelRect.zw));
+        vec2 tapUv = (vec2(v_texelRect.xy) + local + 0.5) / vec2(albedoSize());
+        sum += coverage * fatPremultiplied(textureLod(u_emissiveMap, tapUv, 0.0));
+    }
+    // Return straight hue and contribution per covered texel. Output applies albedo alpha once.
+    return sum.a > 0.0 ? vec4(sum.rgb / sum.a, sum.a / albedoAlpha) : vec4(0.0);
+}
 uniform bool u_hasMaterialMap;
 uniform sampler2D u_occluderMap;
 uniform bool u_hasOccluderMap;
@@ -1467,6 +1479,12 @@ uniform float u_coreEnergy;
 uniform sampler2D u_cycleOffset;
 uniform sampler2D u_coastField;
 uniform vec4 u_coastRect;
+// EN-7 — the 3.7 mirror stops' rect (the coast field's, bound at every
+// ladder level so the rain breaks mirrors at MINIMAL too; z == 0 absent) and
+// the frame's one rain break (CoastBake \`mirrorStormDrop\`: 0..1 in eighths,
+// unscaled by the ladder; the accent cuts read the same value).
+uniform vec4 u_mirrorRect;
+uniform float u_mirrorBreak;
 // x: the water clock's scale (u_motionScale; 0 under reduced motion and at
 // MINIMAL = the static frame), y: precipitation for rain rings (0 = none),
 // z: 3.10 caustics on, w: 3.6 swash on.
@@ -1846,25 +1864,15 @@ vec3 staticWaterDashes(vec3 color, vec2 px) {
 // deck or bridge covers (CoastBake \`mirrorStops\`: one nibble a texel, stop +
 // 1, B the cell's top row, A its bottom row, low nibble the left texel).
 int mirrorBaseStop(vec2 world) {
-    if (u_coastRect.z <= 0.0) return -1;
-    ivec2 texel = ivec2(floor(world - u_coastRect.xy));
+    if (u_mirrorRect.z <= 0.0) return -1;
+    ivec2 texel = ivec2(floor(world - u_mirrorRect.xy));
     ivec2 cell = texel >> 1;
-    if (cell.x < 0 || cell.y < 0 || cell.x >= int(u_coastRect.z) || cell.y >= int(u_coastRect.w)) return -1;
+    if (cell.x < 0 || cell.y < 0 || cell.x >= int(u_mirrorRect.z) || cell.y >= int(u_mirrorRect.w)) return -1;
     vec2 rows = texelFetch(u_coastField, cell, 0).ba;
     int packed = int(((texel.y & 1) == 0 ? rows.x : rows.y) * 255.0 + 0.5);
     return (((texel.x & 1) == 0 ? packed : packed >> 4) & 15) - 1;
 }
 
-// 3.7 — heavy rain breaks the still mirrors: past MIRROR_STORM.from
-// precipitation a baked mirror texel gives way to the exact water stop the
-// bake painted it over, on a Bayer share, all of them by from + span
-// (CoastBake \`mirrorStormDrop\`; the Canvas mood layer reads the same
-// stops). \`gone\` says the texel is water again, so it takes the water state
-// (the open sea's body, crests, mood) exactly as the stops beside it.
-float mirrorStormDrop() {
-    float share = clamp((u_weather.x - ${MIRROR_STORM.from.toFixed(2)}) / ${MIRROR_STORM.span.toFixed(2)}, 0.0, 1.0);
-    return floor(share * ${MIRROR_STORM.steps.toFixed(1)} + 0.5) / ${MIRROR_STORM.steps.toFixed(1)};
-}
 // BI-1 — the gust over a still-water texel where the C-W3 cat's paw passes
 // (seaPawAt, the open sea's own rule), else 0; only while u_stillWater.x.
 float stillPawAt(vec2 p) {
@@ -1875,7 +1883,12 @@ float stillPawAt(vec2 p) {
 vec3 mirrorStormColour(vec3 color, vec2 px, out bool gone) {
     gone = false;
     if (!u_terrainBatch) return color;
-    float drop = u_weather.x > ${MIRROR_STORM.from.toFixed(2)} ? mirrorStormDrop() : 0.0;
+    // 3.7 — heavy rain breaks the still mirrors: \`u_mirrorBreak\` of the
+    // baked mirror texels, on the Bayer order, give way to the exact water
+    // stop the bake painted them over (the Canvas mood layer reads the same
+    // stops). \`gone\` says the texel is water again, so it takes the water
+    // state (the open sea's body, crests, mood) exactly as the stops beside it.
+    float drop = u_mirrorBreak;
     // BI-1 — a cat's paw crossing still water breaks its baked mirrors on a
     // Bayer share that grows with the gust; they heal as it moves on. The
     // reflection and lagoon flags gate it before any gust fetch.
@@ -1912,9 +1925,7 @@ float seaSkyTake = 0.0;
 vec3 applyWaterState(vec3 color, vec2 px, out bool seaPath) {
     seaPath = false;
     seaSkyTake = 0.0;
-    // The material map is quarter resolution: a coast block can hold sand or
-    // foam pixels. Water stops are teal/blue-dominant; anything else keeps
-    // its land response.
+    // Only blue/teal albedo enters the water-stop path. Warm mirrors still take the water mood.
     if (color.b < color.r + 0.02 || color.g < color.r) {
         // 3.7 — a baked reflection of warm timber or sandstone is still water:
         // it takes the night and storm mood like the stops around it.
@@ -2069,6 +2080,16 @@ vec3 applyWaterState(vec3 color, vec2 px, out bool seaPath) {
     return applyWaterMood(color) * WATER_CAST;
 }
 
+// The terrain record's local texels are world pixels from the bake origin.
+// A wet cell may still contain a painted foam texel at the dithered edge.
+bool wetSandColour(vec3 color) { return sameColour(color, WET_SAND) || sameColour(color, WET_SAND_DARK); }
+float wetSandMaterial(vec4 block, ivec2 texel) {
+    int quadrant = ((texel.x >> 1) & 1) + (texel.y & 2);
+    if ((int(block.g * 255.0 + 0.5) & (1 << quadrant)) != 0) return floor(block.b * 255.0 + 0.5);
+    return block.a > 0.0 ? floor(block.r * 255.0 + 0.5) : v_material;
+}
+vec3 applyAuthoredSunBand(vec3 color, float material);
+
 // 4.6 — a terrain pixel a world-texel seam crosses on a flight frame: the
 // per-cell surface chain (3.6 swash, 3.2 weather, 3.1–3.10 water state) runs
 // on each tap's own authored texel at that texel's world point, and the
@@ -2077,12 +2098,15 @@ vec3 applyWaterState(vec3 color, vec2 px, out bool seaPath) {
 // instead of a 2- or 3-px cell, and exact-colour tests never see a blend.
 // The seaPath and lighthouse flags follow the dominant tap; waterHue reads
 // the blended colour before the water state, as the resting path does.
-vec3 fatTerrainSurface(float material, bool waterMaterial, out bool waterHue, out bool seaPath) {
+vec3 fatTerrainSurface(vec4 centerBlock, inout float material, out bool waterHue, out bool seaPath) {
     FatTaps t = fatAlbedoTaps;
     vec2 worldPerTexel = fatWorldFw / fatTexelFw;
     bool weather = u_weather.x > 0.001 || u_wetness > 0.001;
-    bool anyWater = waterMaterial;
-    vec4 surface = vec4(0.0);
+    ivec2 centerBlockPos = ivec2(fatAlbedoPix) / 4;
+    float baseMaterial = material;
+    bool anyWater = false;
+    vec3 surface = vec3(0.0);
+    vec3 sandKeyed = vec3(0.0);
     vec4 before = vec4(0.0);
     float dominant = -1.0;
     bool dominantPath = false;
@@ -2097,12 +2121,20 @@ vec3 fatTerrainSurface(float material, bool waterMaterial, out bool waterHue, ou
         vec3 c = fatTap[i].rgb;
         bool gone;
         c = mirrorStormColour(c, world, gone);
-        bool tapWater = waterMaterial || gone;
-        anyWater = anyWater || gone;
         surfGlowTexel = false;
         if (u_waterFx.w > 0.0) c = applyCoastSwash(c, world);
+        ivec2 texel = ivec2(t.base + fatTapOffset(i));
+        bool crossesBlock = any(notEqual(texel / 4, centerBlockPos));
+        float tapMaterial = baseMaterial;
+        if ((centerBlock.g > 0.0 || crossesBlock) && wetSandColour(c) && u_hasMaterialMap) {
+            vec4 block = centerBlock;
+            if (crossesBlock) block = texelFetch(u_materialMap, texel / 4, 0);
+            tapMaterial = wetSandMaterial(block, texel);
+        }
+        bool tapWater = materialNear(tapMaterial, 8.0) > 0.5 || gone;
+        anyWater = anyWater || tapWater;
         if (!tapWater) c = applyGrassGust(c, world);
-        if (weather && !tapWater) c = applyMaterialWeather(c, material, world);
+        if (weather && !tapWater) c = applyMaterialWeather(c, tapMaterial, world);
         before += vec4(c, 1.0) * w;
         bool tapPath = false;
         lighthouseDash = false;
@@ -2111,13 +2143,16 @@ vec3 fatTerrainSurface(float material, bool waterMaterial, out bool waterHue, ou
         if (tapWater) c = applyWaterState(c, world, tapPath);
         if (w > dominant) {
             dominant = w;
+            material = tapMaterial;
             dominantPath = tapPath;
             dominantDash = lighthouseDash;
             dominantOpen = seaOpenWater;
             dominantGlow = surfGlowTexel;
             dominantTake = seaSkyTake;
         }
-        surface += vec4(c, 1.0) * w;
+        // Key the sand separately so the other taps retain their original coverage and rounding.
+        if (tapMaterial != baseMaterial) sandKeyed += applyAuthoredSunBand(c, tapMaterial) * w;
+        else surface += c * w;
     }
     lighthouseDash = dominantDash;
     seaOpenWater = dominantOpen;
@@ -2126,7 +2161,7 @@ vec3 fatTerrainSurface(float material, bool waterMaterial, out bool waterHue, ou
     seaPath = dominantPath;
     vec3 pre = before.rgb / max(before.a, 1e-6);
     waterHue = anyWater && !(pre.b < pre.r + 0.02 || pre.g < pre.r);
-    return surface.a > 0.0 ? surface.rgb / surface.a : pre;
+    return before.a > 0.0 ? applyAuthoredSunBand(surface / before.a, baseMaterial) + sandKeyed / before.a : pre;
 }
 ${SUN_SHADE_GLSL}
 vec3 applyAuthoredSunBand(vec3 color, float material) {
@@ -2324,13 +2359,13 @@ void main() {
         albedo.rgb = mix(albedo.rgb, WATER_STOPS[waterStopForSd(reflectSd)], 0.38);
     }
     vec4 sidecar = u_hasMaterialMap ? textureLod(u_materialMap, uv, 0.0) : vec4(0.0);
-    vec4 authoredEmission = u_hasEmissiveMap ? textureLod(u_emissiveMap, uv, 0.0) : vec4(0.0);
     bool packedMap = (v_flags & ${GPU_RECORD_FLAGS.packedGeometry}u) != 0u;
     float materialId = floor(sidecar.r * 255.0 + 0.5);
     float material = sidecar.a > 0.0 && !(packedMap && materialId > 254.5) ? materialId : v_material;
     float emissive = v_emissive;
     vec3 emissionColor = albedo.rgb;
     if (u_hasEmissiveMap) {
+        vec4 authoredEmission = sampleEmission(uv, albedo.a);
         // The emissive channel owns both hue (RGB) and contribution (A). Do
         // not reconstruct authored emission from the albedo texture.
         emissionColor = authoredEmission.rgb;
@@ -2363,7 +2398,7 @@ void main() {
     // mathematically zero; rainy output remains byte-for-byte equivalent.
     // Water is never "wet": its storm/rain look is the water mood (mirrored
     // by the outer ocean), so the island's sea and the ocean stay one value.
-    bool waterMaterial = materialNear(material, 8.0) > 0.5;
+    bool waterMaterial;
     bool seaPath = false;
     // V6 — the water cap holds the sea's own stops. A sprite record carrying
     // the water material (a red buoy) and a baked full-colour mirror (3.7)
@@ -2372,34 +2407,45 @@ void main() {
     bool waterHue = false;
     if (u_terrainBatch && fatOn && fatSeam(fatAlbedoTaps)) {
         // 4.6 — a seam pixel on a flight frame runs the chain below per tap.
-        color = fatTerrainSurface(material, waterMaterial, waterHue, seaPath);
+        color = fatTerrainSurface(sidecar, material, waterHue, seaPath);
+        waterMaterial = materialNear(material, 8.0) > 0.5;
     } else {
         // 3.7 — a mirror texel the rain gave back to the water is water.
         bool mirrorGone;
         color = mirrorStormColour(color, v_world, mirrorGone);
-        waterMaterial = waterMaterial || mirrorGone;
         // 3.6 — the swash laps the baked shore before any weather darkening.
         if (u_terrainBatch && u_waterFx.w > 0.0) color = applyCoastSwash(color, v_world);
+        if (u_terrainBatch && sidecar.g > 0.0 && wetSandColour(color)) material = wetSandMaterial(sidecar, ivec2(v_texel));
+        waterMaterial = materialNear(material, 8.0) > 0.5 || mirrorGone;
         // W6.11 — the grass gust course steps the authored albedo first.
         if (u_terrainBatch && !waterMaterial) color = applyGrassGust(color, v_world);
         if (!waterMaterial && (u_weather.x > 0.001 || u_wetness > 0.001)) color = applyMaterialWeather(color, material, v_world);
         waterHue = waterMaterial && !(color.b < color.r + 0.02 || color.g < color.r);
         if (waterMaterial) color = applyWaterState(color, v_world, seaPath);
+        color = applyAuthoredSunBand(color, material);
     }
-    color = applyAuthoredSunBand(color, material);
     // SD-2 — a receiver steps down under the sun's shade, before the grade
     // (so shade takes the hour's tint); a sun trail the field already covers
     // is not drawn. u_shadeRect.w 0 = no field this frame.
+    vec3 sunBase = color;
     if (u_shadeRect.w > 0.0 && !u_additive) {
         if (sunTrailHidden()) discard;
         color *= sunShadeStep(geometry, surfaceCoded, u_hasEmissiveMap ? clamp(emissive, 0.0, 1.0) : 0.0);
+        // SD-3 — then the sun lifts what it reaches (u_shade.y 0 = off;
+        // water is SEA-1's).
+        sunBase = color;
+        if (u_shade.y > 0.0 && !waterMaterial) color = sunLift(color, u_terrainBatch && v_receiver.x < -0.5, u_shade.y, u_hasEmissiveMap ? clamp(emissive, 0.0, 1.0) : 0.0);
     }
     // 1.2 — the pools light the ungraded surface, so warm light shows the real
     // cobble, grass and wall texture instead of a desaturated night albedo.
-    vec3 poolAlbedo = color;
+    // SD-3 — the pools light the unlifted surface (the sun's lift is not lamp light).
+    vec3 poolAlbedo = sunBase;
     // 1.1 — C2 time-of-day and weather grade, before any local light or
     // authored emission.
+    // SD-3 — a lifted texel is held under the candle after the grade too.
+    bool sunLifted = color != sunBase;
     color = applyTimeGrade(color, !u_additive);
+    if (sunLifted) color = sunLiftGraded(color, applyTimeGrade(sunBase, true));
     // V6 — graded water stays quiet at every hour (CoastBake's outer ocean
     // takes the same cap, so the two still meet without a seam). The 3.2
     // path is the one exception (M7): its seaPath stop keeps its colour and
@@ -3167,6 +3213,8 @@ void main() {
         : applySeaCourses(color, artCell, poolOrder,
             artTopLeftPx.y + (waterMaterial ? seaContourRows(artCell) * u_camera.z : 0.0), u_additive);
     if (bakedRim && !u_additive) alpha = mix(alpha, max(alpha, v_alpha), nightCarry);
+    // SD-3 — the finished lifted texel stays under the waiting candle.
+    color = sunLiftFinal(color);
     outColor = vec4(max(color, vec3(0.0)) * alpha, alpha);
     outEmission = vec4(emission * alpha, alpha > 0.0 ? 1.0 : 0.0);
 }`;
@@ -3183,6 +3231,7 @@ void main() {
 
 const BLOOM_FRAGMENT = `#version 300 es
 precision highp float;
+precision highp int;
 in vec2 v_uv;
 layout(location = 0) out vec4 outColor;
 uniform sampler2D u_input;
@@ -3395,6 +3444,7 @@ vec3 shadeOpenSea(vec2 cell) {
 // applies here, per record — the SDR frame writes the texel unchanged.
 const MARK_FRAGMENT = `#version 300 es
 precision highp float;
+precision highp int;
 in vec2 v_uv;
 flat in vec4 v_uvClamp;
 layout(location = 0) out vec4 outColor;
@@ -3406,6 +3456,7 @@ void main() {
 
 const COMPOSITE_FRAGMENT = `#version 300 es
 precision highp float;
+precision highp int;
 in vec2 v_uv;
 layout(location = 0) out vec4 outColor;
 uniform sampler2D u_scene;
@@ -4168,7 +4219,7 @@ export class GpuWorldRenderer {
             'u_footprint', 'u_footprintRect', 'u_footprintSize', 'u_marchSteps',
             'u_shadeField', 'u_shadeRect', 'u_shade',
             'u_coreEnergy', 'u_waterMood', 'u_waterSky', 'u_swellDrift',
-            'u_cycleOffset', 'u_coastField', 'u_coastRect', 'u_waterFx', 'u_glint', 'u_glintStops[0]',
+            'u_cycleOffset', 'u_coastField', 'u_coastRect', 'u_mirrorRect', 'u_mirrorBreak', 'u_waterFx', 'u_glint', 'u_glintStops[0]',
             'u_starlight',
             'u_terrainBatch', 'u_cueRuns',
             'u_wetness', 'u_wetReflectionCount', 'u_beamGround', 'u_beamShape', 'u_beamCourseEnds', 'u_beamCourseShares',
@@ -4368,7 +4419,7 @@ export class GpuWorldRenderer {
                 gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, w, h, gl[spec.format], gl[spec.type], data);
                 gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
             }
-            gl.bindTexture(gl.TEXTURE_2D, bound && gl.isTexture(bound) ? bound : null);
+            gl.bindTexture(gl.TEXTURE_2D, storageChanged && bound && !gl.isTexture(bound) ? null : bound);
             this._cachedTextureBytes += bytes - entry.bytes;
             entry.source = data;
             entry.revision = revision;
@@ -5082,7 +5133,7 @@ export class GpuWorldRenderer {
         }
     }
 
-    _setBatchUniforms(uniforms, batch) {
+    _setBatchUniforms(uniforms, batch, flags) {
         const gl = this._uniformGl || this.gl;
         const albedo = batch.albedoTexture;
         if (!albedo) return 0;
@@ -5104,20 +5155,21 @@ export class GpuWorldRenderer {
         // texture once per frame in `_stageGlUniforms`) and is never read.
         // The sampler-unit uniforms never change per batch either; they are
         // staged once with the seed.
-        gl.uniform1i(uniforms.u_hasMaterialMap, material ? 1 : 0);
+        setBatchFlag(gl, flags, uniforms.u_additive, batch.blend === 'add' ? 1 : 0);
+        setBatchFlag(gl, flags, uniforms.u_hasMaterialMap, material ? 1 : 0);
         if (material) {
             gl.activeTexture(gl.TEXTURE0 + units.material);
             gl.bindTexture(gl.TEXTURE_2D, material);
         }
         if (uniforms.u_emissiveMap) {
-            gl.uniform1i(uniforms.u_hasEmissiveMap, batch.emissiveTexture ? 1 : 0);
+            setBatchFlag(gl, flags, uniforms.u_hasEmissiveMap, batch.emissiveTexture ? 1 : 0);
             if (batch.emissiveTexture) {
                 gl.activeTexture(gl.TEXTURE0 + units.emissive);
                 gl.bindTexture(gl.TEXTURE_2D, batch.emissiveTexture);
             }
         }
         if (uniforms.u_occluderMap) {
-            gl.uniform1i(uniforms.u_hasOccluderMap, batch.occluderTexture ? 1 : 0);
+            setBatchFlag(gl, flags, uniforms.u_hasOccluderMap, batch.occluderTexture ? 1 : 0);
             if (batch.occluderTexture) {
                 gl.activeTexture(gl.TEXTURE0 + units.occluder);
                 gl.bindTexture(gl.TEXTURE_2D, batch.occluderTexture);
@@ -5125,17 +5177,17 @@ export class GpuWorldRenderer {
         }
         if (uniforms.u_puddleGround || uniforms.u_terrainBatch) {
             const terrain = batch.records[0]?.id === 'terrain:static';
-            if (uniforms.u_puddleGround) gl.uniform1i(uniforms.u_puddleGround, this._puddleActive && terrain ? 1 : 0);
-            if (uniforms.u_terrainBatch) gl.uniform1i(uniforms.u_terrainBatch, terrain ? 1 : 0);
+            if (uniforms.u_puddleGround) setBatchFlag(gl, flags, uniforms.u_puddleGround, this._puddleActive && terrain ? 1 : 0);
+            if (uniforms.u_terrainBatch) setBatchFlag(gl, flags, uniforms.u_terrainBatch, terrain ? 1 : 0);
         }
         // 4.6 — fat pixels per batch: on a flight frame, unless the batch's
         // records opt out (V9 fatOptOut: backing-pixel textures such as the
         // ground-cue layer).
         if (uniforms.u_fatPixels) {
             const optOut = ((batch.records[0]?.flags || 0) & GPU_RECORD_FLAGS.fatOptOut) !== 0;
-            gl.uniform1i(uniforms.u_fatPixels, this.fatPixelsFrame && !optOut ? 1 : 0);
+            setBatchFlag(gl, flags, uniforms.u_fatPixels, this.fatPixelsFrame && !optOut ? 1 : 0);
         }
-        gl.uniform1i(uniforms.u_cueRuns, batch.cueRuns ? 1 : 0);
+        setBatchFlag(gl, flags, uniforms.u_cueRuns, batch.cueRuns ? 1 : 0);
     }
 
     _drawBatch(batch) {
@@ -5161,10 +5213,16 @@ export class GpuWorldRenderer {
         let coast = null;
         const live = effectBudgetMode('waterCrests', qualityLevel) === 'on'
             || effectBudgetMode('coastSwash', qualityLevel) === 'on';
-        if (live && fields?.cols > 0 && fields?.rows > 0) {
+        const baked = fields?.cols > 0 && fields?.rows > 0;
+        if (live && baked) {
             cycle = this.uploadTypedTexture('field:cycle-offset', {
                 width: fields.cols, height: fields.rows, format: 'r8', data: fields.cycleOffset, revision: fields.revision,
             });
+        }
+        // EN-7 — the coast field stays bound at MINIMAL for its mirror
+        // stops alone (`u_mirrorRect`); every other reader keeps
+        // `u_coastRect` 0 there.
+        if (baked) {
             coast = this.uploadTypedTexture('field:coast', {
                 width: fields.cols, height: fields.rows, format: 'rgba8', data: coastFieldTexels(fields), revision: fields.revision,
             });
@@ -5174,10 +5232,12 @@ export class GpuWorldRenderer {
         gl.bindTexture(gl.TEXTURE_2D, present ? cycle : this.emptyMaterialTexture);
         gl.uniform1i(uniforms.u_cycleOffset, SCENE_SAMPLER_UNITS.cycleOffset);
         gl.activeTexture(gl.TEXTURE0 + SCENE_SAMPLER_UNITS.coastField);
-        gl.bindTexture(gl.TEXTURE_2D, present ? coast : this.emptyMaterialTexture);
+        gl.bindTexture(gl.TEXTURE_2D, coast || this.emptyMaterialTexture);
         gl.uniform1i(uniforms.u_coastField, SCENE_SAMPLER_UNITS.coastField);
         if (present) gl.uniform4f(uniforms.u_coastRect, fields.x, fields.y, fields.cols, fields.rows);
         else gl.uniform4f(uniforms.u_coastRect, 0, 0, 0, 0);
+        if (coast) gl.uniform4f(uniforms.u_mirrorRect, fields.x, fields.y, fields.cols, fields.rows);
+        else gl.uniform4f(uniforms.u_mirrorRect, 0, 0, 0, 0);
         this.waterFieldsActive = present;
     }
 
@@ -5193,7 +5253,6 @@ export class GpuWorldRenderer {
         gl.uniform2f(uniforms.u_resolution, this.width, this.height);
         uploadGradeUniforms(gl, uniforms, grade);
         gl.uniform3fv(uniforms.u_fogColor, grade.fogColor);
-        gl.uniform1i(uniforms.u_additive, 0);
         const cloudCover = clamp(finite(feed.atmosphere?.weather?.cloudCover, 0), 0, 1);
         gl.uniform1f(uniforms.u_overcast, clamp((cloudCover - 0.7) / 0.2, 0, 1));
         gl.uniform4fv(uniforms.u_weather, weather);
@@ -5231,6 +5290,8 @@ export class GpuWorldRenderer {
         gl.uniform4fv(uniforms.u_glint, water.glint);
         gl.uniform3fv(uniforms['u_glintStops[0]'], water.stops);
         this._bindWaterFields(uniforms, feed.coastWater, qualityLevel);
+        const atmosphere = feed.atmosphere || null;
+        gl.uniform1f(uniforms.u_mirrorBreak, mirrorStormDrop(feed.weather || atmosphere?.weather, atmosphere));
         const mood = waterMoodFor({ lightGrade: grade, weather: feed.weather || feed.atmosphere?.weather });
         gl.uniform2f(uniforms.u_waterMood, mood.night, mood.storm);
         gl.uniform4f(uniforms.u_waterSky, mood.sky[0], mood.sky[1], mood.sky[2], mood.skyWeight);
@@ -5405,6 +5466,7 @@ export class GpuWorldRenderer {
         // (nothing between touches program or unit state); a recorded frame
         // replays them. Both paths run the binds through the mirror (PF-5).
         if (!this._directFrame) this._sceneCommands.replay(this._bindMirror);
+        const flags = this._directFrame ? new Map() : null;
         const bloomEnabled = this._frameBloomStrength > 0;
         const roles = this._rolesWritten ? this._roleBlend : null;
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.sceneTarget.framebuffer);
@@ -5444,10 +5506,8 @@ export class GpuWorldRenderer {
             if (this._directFrame) {
                 // PF-1 — per-batch uniforms must interleave with the draws, so
                 // a direct frame issues them here instead of replaying.
-                const stagingGl = this._bindMirror.gl;
-                this._uniformGl = stagingGl;
-                stagingGl.uniform1i(this.sceneUniforms.u_additive, add ? 1 : 0);
-                this._setBatchUniforms(this.sceneUniforms, batch);
+                this._uniformGl = this._bindMirror.gl;
+                this._setBatchUniforms(this.sceneUniforms, batch, flags);
                 this._uniformGl = null;
             } else {
                 this._batchCommands[index].replay(this._bindMirror);
@@ -6164,12 +6224,13 @@ export class GpuWorldRenderer {
                 for (let index = 0; index < batches.length; index++) batchCommands[index]?.begin();
                 return;
             }
+            // The first batch records every flag, so replay starts from known values.
+            const flags = new Map();
             for (let index = 0; index < batches.length; index++) {
                 const commands = batchCommands[index] ||= new GlFrameCommands(gl);
                 commands.begin();
                 this._uniformGl = commands.gl;
-                commands.gl.uniform1i(this.sceneUniforms.u_additive, batches[index].blend === 'add' ? 1 : 0);
-                this._setBatchUniforms(this.sceneUniforms, batches[index]);
+                this._setBatchUniforms(this.sceneUniforms, batches[index], flags);
             }
             if (bloomEnabled) {
                 this._uniformGl = bloomA.gl;
@@ -6676,6 +6737,12 @@ class GlBindMirror {
         this._unit = null;
         this._bound.clear();
     }
+}
+
+function setBatchFlag(gl, flags, location, value) {
+    if (flags.get(location) === value) return;
+    gl.uniform1i(location, value);
+    flags.set(location, value);
 }
 
 // Stage the actual uniform setter stream and its sampler bindings once, then

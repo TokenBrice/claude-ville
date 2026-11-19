@@ -74,15 +74,31 @@ function isErrored(session, now) {
     return false;
 }
 
-/**
- * PV-2 (Q2) — a closed turn whose own background crew (async agents,
- * teammates, background shells; adapter `backgroundPending`) still works:
- * the session waits on that crew, not on you. WORKING-family, never
- * COMPLETED and never an attention status.
- */
+export function isBlockingMcpDelegationTool(tool) {
+    return typeof tool === 'string' && /^mcp__.+?__(?:wait|ask|continue)$/.test(tool);
+}
+
+/** A closed turn with background work, or an open call waiting on its crew. */
 export function isWaitingOnCrew(session) {
-    return session?.turnState === TurnState.AWAITING_INPUT
-        && Number(session.backgroundPending?.count) > 0;
+    if (session?.turnState === TurnState.AWAITING_INPUT) {
+        return Number(session.backgroundPending?.count) > 0;
+    }
+    if (session?.turnState !== TurnState.TOOL_PENDING) return false;
+    const { pendingTool, backgroundPending } = session;
+    return isBlockingMcpDelegationTool(pendingTool)
+        || (pendingTool === 'Poll' && Array.isArray(backgroundPending?.kinds)
+            && backgroundPending.kinds.some(kind => kind === 'teammate' || kind === 'agent'));
+}
+
+export function isWatchingOnPoll(session) {
+    const kinds = session?.backgroundPending?.kinds;
+    return session?.turnState === TurnState.TOOL_PENDING && session.pendingTool === 'Poll'
+        && Array.isArray(kinds) && kinds.length > 0
+        && kinds.every(kind => kind === 'bash' || kind === 'monitor');
+}
+
+export function normalizeSignalSource(source) {
+    return ['hook', 'registry', 'transcript'].includes(source) ? source : null;
 }
 
 // Fallback for providers with no turn state: the old name-and-punctuation

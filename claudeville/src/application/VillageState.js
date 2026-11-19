@@ -17,6 +17,7 @@ export const VillagePhase = Object.freeze({
     SYNCING: 'syncing',
     READY_LIVE: 'ready-live',
     READY_EMPTY: 'ready-empty',
+    NO_RECORDED_SAMPLES: 'no-recorded-samples',
     READY_NO_PROVIDERS: 'ready-no-providers',
     DEGRADED: 'degraded',
     FAILED: 'failed',
@@ -61,6 +62,7 @@ export function initialVillageState() {
         providersKnown: false,
         agentCount: 0,
         source: null,
+        retold: false,
         sourceFailed: false,
         failureCode: null,
         storage: { chronicle: 'unknown' },
@@ -104,6 +106,7 @@ export function degradedProviders(providers = []) {
  */
 export function derivePhase(state) {
     if (state.failureCode) return VillagePhase.FAILED;
+    if (state.phase === VillagePhase.NO_RECORDED_SAMPLES) return state.phase;
     if (!state.providersKnown || state.link.lastSnapshotAt === null) {
         return state.phase === VillagePhase.STARTING ? VillagePhase.STARTING : VillagePhase.SYNCING;
     }
@@ -143,7 +146,13 @@ export function reduceVillageState(state = initialVillageState(), action = {}) {
 
     switch (action.type) {
         case 'sync-start':
+            if (action.retold !== undefined) next.retold = action.retold;
             next.link.state = LinkState.SYNCING;
+            break;
+
+        case 'no-recorded-samples':
+            next.phase = VillagePhase.NO_RECORDED_SAMPLES;
+            next.source = 'simulator';
             break;
 
         case 'providers':
@@ -244,6 +253,7 @@ const PHASE_TEXT = Object.freeze({
     [VillagePhase.SYNCING]: 'LISTENING FOR LOCAL SESSIONS',
     [VillagePhase.READY_NO_PROVIDERS]: 'NO PROVIDERS FOUND',
     [VillagePhase.READY_EMPTY]: 'PROVIDERS FOUND / NOTHING ACTIVE',
+    [VillagePhase.NO_RECORDED_SAMPLES]: 'NO RECORDED TRAIL SAMPLES',
     [VillagePhase.DEGRADED]: 'A WATCHTOWER IS UNREADABLE',
     [VillagePhase.FAILED]: 'THE VILLAGE DID NOT OPEN',
 });
@@ -251,6 +261,7 @@ const PHASE_TEXT = Object.freeze({
 /** Short operator copy for a phase. English only, no paths, no stack text. */
 export function bootStatusText(state) {
     const phase = state?.phase;
+    if (state?.retold && (phase === VillagePhase.READY_EMPTY || phase === VillagePhase.READY_LIVE)) return 'REPLAYING THE RECORDED DAY';
     if (phase === VillagePhase.READY_LIVE) {
         const count = Math.max(0, Number(state?.agentCount) || 0);
         return count === 1 ? 'WATCHING 1 AGENT' : `WATCHING ${count} AGENTS`;
@@ -267,6 +278,8 @@ export function bootStatusText(state) {
  * contract exists to remove.
  */
 export function linkStatusText(state, now = Date.now()) {
+    // XP-2 — a recorded day replayed in its own window is never live.
+    if (state?.retold) return 'RETOLD';
     if (state?.source === 'simulator') return 'SIMULATED';
     const link = state?.link || {};
     if (!link.lastSnapshotAt) return 'SYNCING';

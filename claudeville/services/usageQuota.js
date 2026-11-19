@@ -4,7 +4,7 @@
  * Data source:
  *   A) ~/.claude/.credentials.json → subscriptionType, rateLimitTier
  *   B) ~/.claude/history.jsonl → today/this-week activity (bounded reverse scan)
- *   C) api.anthropic.com/api/oauth/usage → 5h/7d quota utilization (refreshed every QUOTA_API_TTL)
+ *   C) api.anthropic.com/api/oauth/usage → Claude account quota windows and limits (refreshed every QUOTA_API_TTL)
  *   D) the Codex adapter's newest `token_count.rate_limits` → `codex` (no I/O here)
  *
  * SV-10: it never spawns a CLI (a boot-time `claude auth status` fetched an
@@ -213,6 +213,7 @@ function readHistoryLive() {
  * consumers expect a 0-1 ratio.
  */
 function quotaRatio(window) {
+  if (window?.utilization == null) return null;
   const utilization = Number(window?.utilization);
   if (!Number.isFinite(utilization)) return null;
   return Math.min(1, Math.max(0, utilization / 100));
@@ -228,6 +229,25 @@ function resetsAtMs(value) {
     ? (number > 1e12 ? number : number * 1000)
     : Date.parse(value);
   return Number.isFinite(ms) && ms > 0 ? Math.round(ms) : null;
+}
+
+function isQuotaLabel(value) {
+  return typeof value === 'string' && /^[a-z0-9][a-z0-9_.:/-]{0,127}$/i.test(value);
+}
+
+function activeQuotaLimit(limit) {
+  if (limit?.is_active !== true) return null;
+  const { kind, percent, severity, scope = null } = limit;
+  if (!Number.isFinite(percent) || percent < 0) return null;
+  if (!isQuotaLabel(kind) || !isQuotaLabel(severity)) return null;
+  if (scope !== null && !isQuotaLabel(scope?.model)) return null;
+  return {
+    kind,
+    usedPercent: percent,
+    severity,
+    scope: scope === null ? null : { model: scope.model },
+    resetsAt: resetsAtMs(limit.resets_at),
+  };
 }
 
 // SV-7 — the two failures that matter get a name instead of a silent drain:
@@ -261,17 +281,25 @@ function quotaRetryDelayMs(retryAfter, now = Date.now()) {
 }
 
 function recordQuotaSuccess(data, now = Date.now()) {
-  // Response shape: { five_hour: { utilization, resets_at },
-  //                   seven_day: { utilization, resets_at }, ... }
-  const fiveHour = quotaRatio(data?.five_hour);
+  const limits = Array.isArray(data?.limits) ? data.limits : [];
+  const highestActiveLimit = limits.map(activeQuotaLimit).filter(Boolean).reduce((best, limit) => (
+    !best || limit.usedPercent > best.usedPercent ? limit : best
+  ), null);
+  const sessionLimits = limits.filter(limit => limit?.kind === 'session' && limit.scope == null);
+  const sessionLimit = sessionLimits.length === 1 ? sessionLimits[0] : null;
+  const legacyFiveHour = quotaRatio(data?.five_hour);
+  const useSessionLimit = legacyFiveHour === null && Number.isFinite(sessionLimit?.percent) && sessionLimit.percent >= 0;
+  const fiveHour = useSessionLimit ? Math.min(1, sessionLimit.percent / 100) : legacyFiveHour;
   const sevenDay = quotaRatio(data?.seven_day);
-  if (fiveHour === null && sevenDay === null) return;
+  if (fiveHour === null && sevenDay === null && highestActiveLimit === null) return;
   cache.quota.data = {
     provider: 'claude',
     fiveHour,
     sevenDay,
-    fiveHourResetsAt: resetsAtMs(data.five_hour?.resets_at),
+    fiveHourResetsAt: resetsAtMs(useSessionLimit ? sessionLimit.resets_at : data.five_hour?.resets_at),
     sevenDayResetsAt: resetsAtMs(data.seven_day?.resets_at),
+    ...(useSessionLimit && { fiveHourSource: 'limits' }),
+    ...(highestActiveLimit && { highestActiveLimit }),
   };
   cache.quota.lastSuccessTs = now;
   cache.quota.error = null;
@@ -366,7 +394,7 @@ function tryFetchQuota(now = Date.now()) {
 // ─── Codex quota (SV-6 / PV-7) ─────────────────────────────────
 
 /**
- * `/api/usage.codex` from the newest observation (see `extractCodexRateLimits`
+ * `/api/usage.codex` from the newest observation (see `noteCodexRateLimits`
  * in `adapters/codex.js`), or null when no rollout carried `rate_limits`.
  *
  * The reported window is the binding one: the highest `used_percent` among
@@ -385,6 +413,10 @@ function codexQuotaFromObservation(observation, now = Date.now()) {
   const shape = binding || highest(windows);
   const allReset = windows.length > 0 && current.length === 0;
   const credits = observation.credits || {};
+  const change = observation.creditChange;
+  const ageMs = now - observation.observedAt;
+  const comparable = Number.isFinite(change?.delta) && Number.isFinite(change.intervalMs)
+    && change.intervalMs > 0 && ageMs >= 0 && ageMs + change.intervalMs <= QUOTA_MAX_STALE_MS;
   return {
     usedPercent: binding ? binding.usedPercent : null,
     windowMinutes: shape ? shape.windowMinutes : null,
@@ -396,6 +428,8 @@ function codexQuotaFromObservation(observation, now = Date.now()) {
     },
     limitReached: !allReset && ((binding?.usedPercent ?? 0) >= 100 || observation.reached === true),
     observedAt: observation.observedAt,
+    // Minute-grain age keeps transcript-only updates from rewriting usage on every scan.
+    ...(comparable ? { creditChange: { delta: change.delta, intervalMs: change.intervalMs, ageMs: Math.floor(ageMs / 60_000) * 60_000 } } : {}),
   };
 }
 

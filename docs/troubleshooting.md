@@ -23,6 +23,8 @@ New session discovery uses `ACTIVE_THRESHOLD_MS` in `claudeville/server.js`, cur
 
 This is not a universal two-minute expiry. Once observed, unresolved `tool_pending` sessions can remain as stale residents for up to 45 minutes after their last live observation, with a cap of 24 retained sessions. Hook-derived waits expire after 30 minutes from their signal. Completed turns are not retained by the server; the browser gives them a shorter departure grace. These rules live in [`sessionResidency.js`](../claudeville/services/sessionResidency.js), and stale residency does not prove the CLI is still running or waiting for approval.
 
+On Linux, a live Claude registry entry marked `busy` or `waiting` can keep a quiet main in the roster. An idle entry ages out on the ordinary schedule.
+
 Confirm by running a CLI command in a real session, then refresh `/api/sessions` within two minutes.
 
 Provider scan windows also matter:
@@ -39,6 +41,8 @@ Provider scan windows also matter:
 Repository-only `git` sessions can also appear when git enrichment detects unpushed or pushed GitHub repository activity outside a live provider session. That scan defaults to `~/Documents/git`, can be narrowed with `CLAUDEVILLE_REPOSITORY_SCAN_ROOT`, capped with `CLAUDEVILLE_REPOSITORY_SCAN_MAX`, and disabled with `CLAUDEVILLE_DISABLE_GIT_ENRICHMENT=1`. Synthetic git session detail returns a reason string rather than a provider transcript.
 
 ## Permission prompts are inferred or arrive late
+
+On Linux, a Claude main can report an approval directly from its session registry without hook setup. Look for `signalSource: 'registry'` and `waitReason` in `/api/sessions`. The adapter verifies the process start time and publishes only the wait category. A stale or unrecognized registry record falls back to the transcript.
 
 Transcript parsing remains the default and requires no configuration. An elapsed tool duration never proves a permission prompt: long builds remain work, while explicit question/review tools and approval hooks provide waiting evidence. The route accepts the normalized schema `{ provider, sessionId, cwd, ts, kind, tool, input, decision? }` at `POST /api/ingest/hook`, keeps at most 256 sessions in memory, and never persists or logs request bodies. `kind` must be a supported lifecycle event such as `PreToolUse`, `PostToolUse`, or `Stop`. `input` may contain only operator-facing command/path context; displayed detail is secret-stripped and capped at 200 characters. This is the canonical payload schema; other documentation should link here instead of duplicating it.
 
@@ -200,9 +204,9 @@ If `/` hangs while `claudeville/index.html` is readable and `/api/providers` eve
 
 1. `~/.claude/.credentials.json` for subscription metadata.
 2. `~/.claude/history.jsonl` for activity counts.
-3. `https://api.anthropic.com/api/oauth/usage` for the 5h/7d quota figures.
+3. `https://api.anthropic.com/api/oauth/usage` for the 5h/7d quota figures and the highest active account limit.
 
-When source 3 fails, the response still returns with `quota: { fiveHour: null, sevenDay: null }` and `quotaAvailable: false`. The other fields keep working. This is expected and non-fatal. Two failures are named in `quotaError: { status, at }` (`at` is when the failure began):
+Without a fresh snapshot, the response still returns null `fiveHour` and `sevenDay` values and `quotaAvailable: false`. The other fields keep working. Two failures are named in `quotaError: { status, at }` (`at` is when the failure began):
 
 - **401**: the stored OAuth token expired or was revoked. The numbers drop to null at once instead of freezing; running `claude` refreshes the token, and the next check (within 5 minutes) clears the error.
 - **429**: the quota check is throttled. The last snapshot stays until its 30-minute staleness cutoff, and the next check waits at least 10 minutes, or the response's `Retry-After` when that is longer.
@@ -211,11 +215,15 @@ Any other failure keeps retrying every 5 minutes, and the last snapshot ages out
 
 Credential and activity sources are cached briefly, and quota checks are best-effort. Missing local files or failed Anthropic quota calls should return partial/null fields rather than breaking `/api/usage`.
 
+If `quotaAvailable` is true and `fiveHour` is null, the response may still contain the seven-day window or an active account limit. Five-hour fallback requires a single `session` limit with no model scope and sets `fiveHourSource` to `'limits'`. [Usage payload](local-api.md#usage-and-quota)
+
 ## Cost numbers look wrong
 
 Cost is computed locally from token counts in session files multiplied by static per-million-token rates. `claudeville/src/config/models.json` is the canonical source for pricing, model aliases, and provider defaults; generated ESM and CommonJS resolvers keep browser and server estimates aligned. The numbers are estimates, not billing truth. DeepSeek-backed OpenCode sessions still use `provider: "opencode"` but resolve DeepSeek rates from the model string. OMP sessions backed by z.AI keep `provider: "omp"` but resolve GLM 5.3 / GLM 5.3 Flash rates and the `zai` identity from the model string, which surfaces as `zai/glm-*` from the `model_change` record or as the bare `glm-*` id once assistant messages arrive. Grok sessions currently surface cumulative `contextWindow` occupancy from ACP metadata rather than a full input/output split, so estimated cost often stays near zero until richer usage is written on disk. An unmatched model uses its provider's `defaults` entry.
 
-If a model is missing or its price has changed, update one row in `claudeville/src/config/models.json`, run `npm run models:generate`, inspect it with `npm run models:resolve <provider> <model>`, and run the model registry and pricing tests before verifying browser and `/api/sessions` cost displays.
+Claude Opus 5.5, Sonnet 5.5, and Haiku 5.5 have dedicated rates. The Haiku 5.5 estimate uses the rate for prompts of up to 100,000 tokens. [Static pricing estimates](design-decisions.md#static-pricing-estimates)
+
+If a model is missing or its price has changed, update one row in `claudeville/src/config/models.json`, run `npm run models:generate`, inspect it with `npm run models:resolve -- <provider> <model>`, and run the model registry and pricing tests before verifying browser and `/api/sessions` cost displays.
 
 ## World looks flatter than the screenshots, runs the Canvas renderer, or you need a different GPU backend
 

@@ -8,6 +8,7 @@ import { homeDistrictFor } from '../../claudeville/src/presentation/character-mo
 import { resolveUpdateRouteBuilding } from '../../claudeville/src/presentation/character-mode/MovementRouting.js';
 import { VisitIntentManager } from '../../claudeville/src/presentation/character-mode/VisitIntentManager.js';
 import { AgentSprite } from '../../claudeville/src/presentation/character-mode/AgentSprite.js';
+import { BuildingSprite } from '../../claudeville/src/presentation/character-mode/BuildingSprite.js';
 import { tileToWorld } from '../../claudeville/src/presentation/character-mode/Projection.js';
 import { LandmarkActivity } from '../../claudeville/src/presentation/character-mode/LandmarkActivity.js';
 
@@ -16,6 +17,28 @@ const worker = (extra = {}) => ({
     id: 'routing-worker', status: AgentStatus.WORKING,
     provider: 'claude', model: 'claude-sonnet-4-6', tokens: { input: 1000 },
     ...extra,
+});
+
+test('the Mine keeps mixed cost stamps and marks the tally as partly estimated', t => {
+    const activity = new LandmarkActivity();
+    t.after(() => activity.dispose());
+    const agent = worker({ signalObservedAt: NOW, cost: { usd: 1, source: 'mixed' } });
+    activity.reconcile([agent], [], NOW);
+    agent.cost = { ...agent.cost, usd: 1.25 };
+    activity.reconcile([agent], [], NOW + 1000);
+    const { cost } = activity.getMineAssay(NOW + 1000);
+    assert.equal(cost.usd, 0.25);
+    assert.deepEqual(cost.stamps, ['mixed']);
+    assert.match(cost.label, /incl\. est\./);
+
+    const paint = source => {
+        const fills = [];
+        BuildingSprite.prototype._drawAssayRack.call({}, { fillRect: (...args) => fills.push(args) },
+            { x: 0, y: 0 }, { w: 30, h: 12 }, { stamps: [source] });
+        return fills;
+    };
+    assert.notDeepEqual(paint('mixed'), paint('provider'));
+    assert.notDeepEqual(paint('mixed'), paint('estimate'));
 });
 
 function tokenIntents(manager, now) {

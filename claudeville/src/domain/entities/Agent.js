@@ -3,8 +3,9 @@ import { Position } from '../value-objects/Position.js';
 import { Appearance } from '../value-objects/Appearance.js';
 import { AgentBiography } from '../value-objects/AgentBiography.js';
 import { i18n } from '../../config/i18n.js';
-import { TokenUsage } from '../value-objects/TokenUsage.js';
+import { normalizeCostSource, TokenUsage } from '../value-objects/TokenUsage.js';
 import { normalizeMood } from '../value-objects/AgentMood.js';
+import { normalizeSignalSource } from '../services/StatusResolver.js';
 import { placedBuildingForTool } from '../services/ToolIdentity.js';
 import { DIALOGUE_STALE_MS, dialogueShape, dialogueWindowMs } from '../../config/dialogue.js';
 
@@ -55,6 +56,7 @@ export class Agent {
         cost,
         messages,
         teamName,
+        agentColor,
         projectPath,
         currentTool,
         currentToolInput,
@@ -73,6 +75,7 @@ export class Agent {
         agentId,
         agentName,
         agentType,
+        subagentKind,
         parentSessionId,
         rootSessionId,
         workflowId,
@@ -83,12 +86,14 @@ export class Agent {
         backgroundPending,
         pendingTool,
         pendingSince,
+        script,
         waitReason,
         awaitingSince,
         turnStartedAt,
         sessionEndedAt,
         lastTurnDurationMs,
         signalSource,
+        promptDetail,
         signalCertainty,
         signalObservedAt,
         signalStale,
@@ -107,6 +112,7 @@ export class Agent {
         this.agentId = agentId || null;
         this.agentName = agentName || name || null;
         this.agentType = agentType || null;
+        this.subagentKind = subagentKind || null;
         this.parentSessionId = parentSessionId || null;
         // PV-15 — the main session at the top of a nested crew, or null.
         this.rootSessionId = rootSessionId || null;
@@ -126,6 +132,7 @@ export class Agent {
         this.cost = cost;
         this.messages = messages || [];
         this.teamName = teamName;
+        this.agentColor = agentColor || null;
         this.projectPath = projectPath;
         this.provider = provider || 'claude';
         this.currentTool = currentTool || null;
@@ -153,14 +160,14 @@ export class Agent {
         this.backgroundPending = backgroundPending || null;
         this.pendingTool = pendingTool || null;
         this.pendingSince = optionalNumber(pendingSince);
+        this.script = script || null;
         this.waitReason = waitReason || null;
         this.awaitingSince = optionalNumber(awaitingSince);
         this.turnStartedAt = optionalNumber(turnStartedAt);
         this.sessionEndedAt = optionalNumber(sessionEndedAt);
         this.lastTurnDurationMs = optionalNumber(lastTurnDurationMs, { nonnegative: true });
-        this.signalSource = signalSource === 'hook' || signalSource === 'transcript'
-            ? signalSource
-            : null;
+        this.signalSource = normalizeSignalSource(signalSource);
+        this.promptDetail = promptDetail || null;
         this.signalCertainty = signalCertainty || 'unavailable';
         this.signalObservedAt = signalObservedAt ?? null;
         this.signalStale = signalStale === true;
@@ -257,7 +264,7 @@ export class Agent {
     // relationship in the village (tether + shadowing), so detect it here
     // once instead of re-matching the raw name in every consumer.
     get isAdvisor() {
-        return !!this.parentSessionId && String(this.agentName || '') === '__advisor';
+        return this.subagentKind !== 'mcp' && !!this.parentSessionId && String(this.agentName || '') === '__advisor';
     }
 
     get isToolFresh() {
@@ -280,7 +287,7 @@ export class Agent {
         const normalized = {
             usd: value.usd === null ? null : Math.max(0, Number(value.usd)),
             availability: value.availability || (value.usd === null ? 'unavailable' : 'observed'),
-            source: value.source === 'provider' ? 'provider' : 'estimate',
+            source: normalizeCostSource(value.source),
             rateMatch: value.rateMatch == null ? null : String(value.rateMatch),
             rateRevision: String(value.rateRevision || TokenUsage.rateRevision),
             unknownModel: value.unknownModel === true,
@@ -351,7 +358,7 @@ export class Agent {
     get targetBuildingType() {
         const toolName = this.currentTool;
         if (!toolName) return null;
-        return placedBuildingForTool(toolName, this.currentToolInput || this.lastToolInput);
+        return placedBuildingForTool(toolName, this.currentToolInput || this.lastToolInput, this);
     }
 
     get lastKnownBuildingType() {

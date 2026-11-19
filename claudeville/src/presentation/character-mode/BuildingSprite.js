@@ -41,7 +41,9 @@ import { dayPartBeatsAt } from './AmbientEvents.js';
 import { paintWreath } from './VillageCalendar.js';
 import { bakeEmitterCycle, emitterCyclePhase } from './EmitterCycle.js';
 import { ART_RAMPS } from '../../config/artPalette.js';
-import { castLightingFor, castOverWater, stampCastFor, structureCast } from './RakingLight.js';
+import { castLightingFor, castOverWater, stampCastFor, structureCast, sunSweepFor } from './RakingLight.js';
+import { massingFacets } from './ShadeField.js';
+import { LANDMARK_MASSING } from '../../config/landmarkMassing.js';
 import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
 import { buildingCenterToWorld, tileToWorld, worldToTile } from './Projection.js';
 import { frontEdgeFoot, landmarkFootprint } from './FootprintField.js';
@@ -93,7 +95,8 @@ import { RoofWeather } from './RoofWeather.js';
 import { drawPennant, pennantFrame, pennantWind } from './PixelPennant.js';
 import { resolveObservation } from './ObservationCertainty.js';
 import { VillagePhase } from '../../application/VillageState.js';
-import { GOLD, GOLD_RAMP, dottedCurve, fillConvex, gradeTone, pixelLine, ringDots, snap } from './EffectStamps.js';
+import { GOLD, GOLD_RAMP, dottedCurve, fillConvex, gradeTone, ringDots, snap } from './EffectStamps.js';
+import { postcardFrame } from './Postcard.js';
 
 // READ translates canonical classifier reasons, never tool names or input text.
 const READ_VERBS = Object.freeze({
@@ -335,16 +338,6 @@ function compareBuildingDrawableDepth(a, b) {
         || (BUILDING_DRAWABLE_SORT_BAND[a.kind] - BUILDING_DRAWABLE_SORT_BAND[b.kind]);
 }
 
-function shadowAngleForLighting(lighting) {
-    if (Number.isFinite(lighting?.shadowAngleRad)) return lighting.shadowAngleRad;
-    const sunX = Number(lighting?.sunDirIso?.x);
-    const sunY = Number(lighting?.sunDirIso?.y);
-    if (Number.isFinite(sunX) && Number.isFinite(sunY) && Math.hypot(sunX, sunY) > 0) {
-        return Math.atan2(-sunY, -sunX);
-    }
-    return 0.28;
-}
-
 function lerp(a, b, t) {
     return a + (b - a) * t;
 }
@@ -387,8 +380,8 @@ function paperLabel(ritual, fallback) {
 // 4.1 — the aperture's tool label: the shared humanised verb (`message`,
 // `spawn agent`), never the raw tool id; the exact invocation stays in the
 // panel.
-function compactToolLabel(tool) {
-    return wordFitLabel(toolVerbLabel(tool), 13);
+function compactToolLabel(agent) {
+    return wordFitLabel(toolVerbLabel(agent.currentTool, undefined, agent), 13);
 }
 
 function hashText(value) {
@@ -597,6 +590,7 @@ export class BuildingSprite {
         // Accepts a Map (preferred — matches world.buildings) or an Array.
         this.buildings = map instanceof Map ? Array.from(map.values()) : Array.from(map);
         this._drawablesCache = null;
+        this._glintFacets = null;
         this._lightSourcesCache = null;
         this._labelMetricsCache.clear();
     }
@@ -2351,6 +2345,25 @@ export class BuildingSprite {
         return null;
     }
 
+    // XP-4 — the world rect a building's drawn front sprites cover, for the
+    // hover plate to keep clear of; null before its sprites are enumerated.
+    worldBounds(building) {
+        let box = null;
+        for (const d of this.enumerateDrawables()) {
+            if (d.building !== building || d.kind === 'building-back') continue;
+            const id = d.entry.id;
+            const dims = this.assets.getDims(id);
+            if (!dims) continue;
+            const [ax, ay] = this.assets.getAnchor(id);
+            const left = d.wx - ax;
+            const top = d.wy - ay;
+            box = box
+                ? { left: Math.min(box.left, left), top: Math.min(box.top, top), right: Math.max(box.right, left + dims.w), bottom: Math.max(box.bottom, top + dims.h) }
+                : { left, top, right: left + dims.w, bottom: top + dims.h };
+        }
+        return box;
+    }
+
     // 4.4 / 4.7 — the selectable world instruments this renderer draws (result
     // tiles, plan tabs). World-space rects, newest first, so the front-most
     // instrument wins exactly like the sprite hit test.
@@ -2385,7 +2398,8 @@ export class BuildingSprite {
     // Returns true when drawn.
     _drawInstrumentPlate(ctx, x, y, text, { color = '#e8e2d6', align = 'center', type = null, border = null } = {}) {
         const line = String(text || '');
-        if (!line || !this._chitsVisible(type)) return false;
+        // XP-5 — a postcard frame prints no instrument plate.
+        if (!line || postcardFrame() || !this._chitsVisible(type)) return false;
         const zoom = this._zoom > 0 ? this._zoom : 1;
         ctx.save();
         ctx.font = WORLD_BODY_FONT_11;
@@ -2517,7 +2531,7 @@ export class BuildingSprite {
     // when the drop steps, and is absent when no one needs action.
     _drawAttentionBannerBoard(ctx, building, entry, wx, wy, splitPass = 'whole', horizonY = null) {
         const state = this.attentionBanner;
-        if (!state?.count) return;
+        if (!state?.count || postcardFrame()) return;
         const banner = getBuildingAttentionBanner(building.type);
         if (!banner) return;
         const drop = banner.drops[Math.max(0, Math.min(banner.drops.length - 1, state.tier | 0))];
@@ -2611,9 +2625,9 @@ export class BuildingSprite {
     _drawAtmosphereBuildingReactions(ctx, building, entry, wx, wy, splitPass = 'whole', horizonY = null) {
         const reactions = this.atmosphereState?.reactions || {};
         const windowWarmth = reactions.windowWarmth || 0;
-        const roofGlint = reactions.roofGlintAlpha || 0;
-        const warmGlint = reactions.warmGlint || 0;
-        if (windowWarmth <= 0.035 && roofGlint <= 0.025) return;
+        // EN-6 — the low sun on a roof is RoofWeather's glint run (the shared
+        // roof patch, every backend), not a stroke here.
+        if (windowWarmth <= 0.035) return;
         const baseAnchor = this.assets.getAnchor(entry.id);
         const dims = this.assets.getDims(entry.id);
         if (!dims) return;
@@ -2696,34 +2710,6 @@ export class BuildingSprite {
             }
         }
 
-        if (roofGlint > 0.025) {
-            // Golden hour lays a warm rim-light along the ridgeline; a wet roof
-            // adds a brighter rain sheen. `warmGlint` (dawn/dusk) tilts the hue
-            // from cool wet silver toward gold and lengthens the highlight.
-            // Its orientation mirrors the canonical solar vector, matching
-            // the opposite cast-shadow direction without another light model.
-            const goldTilt = Math.min(1, warmGlint * 1.4);
-            const rimColor = goldTilt > 0.2
-                ? `rgba(255, 214, 138, ${Math.min(0.30, roofGlint * (0.5 + goldTilt * 0.4 + pulse * 0.24))})`
-                : `rgba(255, 231, 166, ${Math.min(0.22, roofGlint * (0.48 + pulse * 0.34))})`;
-            const count = roofGlint > 0.16 || goldTilt > 0.4 ? 2 : 1;
-            const span = 7 + goldTilt * 6;
-            const sunDir = this.lightingState?.sunDirIso;
-            const hasSunDir = Number.isFinite(sunDir?.x) && Number.isFinite(sunDir?.y);
-            const shadowAngle = shadowAngleForLighting(this.lightingState);
-            const glintDx = hasSunDir ? -sunDir.x * span : Math.cos(shadowAngle) * span;
-            const glintDy = hasSunDir ? sunDir.y * span : -Math.sin(shadowAngle) * span;
-            // A one-texel stepped glint run (no AA stroke or round cap).
-            ctx.fillStyle = rimColor;
-            const thick = goldTilt > 0.4 ? 2 : 1;
-            for (let i = 0; i < count; i++) {
-                const lx = dims.w * (0.28 + ((seed >> (i * 5)) % 42) / 100);
-                const ly = dims.h * (0.22 + ((seed >> (i * 7 + 3)) % 18) / 100);
-                if (!shouldDrawLocalY(ly)) continue;
-                const p = localPoint(lx, ly);
-                pixelLine(ctx, p.x - glintDx, p.y - glintDy, p.x + glintDx, p.y + glintDy, thick);
-            }
-        }
         ctx.restore();
     }
 
@@ -4228,8 +4214,8 @@ export class BuildingSprite {
 
     // 4.3 — the assay bench. Two shallow trays retain the last 60 s of
     // observed fresh-input ore and cache-read crystal, an assay rack states
-    // provenance one coin stamp at a time (solid = provider-reported cost,
-    // hollow = estimate), and the ledger carries exact counts. A class the
+    // provenance one coin stamp at a time (solid = provider, hollow = estimate,
+    // half-filled = mixed), and the ledger carries exact counts. A class the
     // provider does not report reads `unknown`; nothing here is a percentage.
     // S5 — an empty tray or rack is not drawn (the ledger already says `0`);
     // furniture gives way to T1 plates and bodies; the ledger rows stack on
@@ -4367,9 +4353,7 @@ export class BuildingSprite {
         }
     }
 
-    // One coin stamp per covered session: struck solid for a provider-reported
-    // cost, left hollow for an estimate. The rack never states an amount — the
-    // measured window does that once, on the slate.
+    // One coin stamp per covered session. The measured window on the slate gives the amount.
     _drawAssayRack(ctx, at, rack, cost) {
         const w = Math.max(12, Math.round(rack.w || 30));
         const h = Math.max(8, Math.round(rack.h || 12));
@@ -4391,6 +4375,10 @@ export class BuildingSprite {
                 ctx.fillRect(cx - 2, cy + 1, 4, 1);
                 ctx.fillRect(cx - 2, cy - 1, 1, 2);
                 ctx.fillRect(cx + 1, cy - 1, 1, 2);
+                if (source === 'mixed') {
+                    ctx.fillStyle = '#f6d384';
+                    ctx.fillRect(cx - 2, cy - 2, 2, 4);
+                }
             }
         });
         if (cost?.stampOverflow > 0) {
@@ -4537,7 +4525,10 @@ export class BuildingSprite {
             : this._taskboardViewFor(board?.agent || null, 3);
         if (!view) return false;
         const zoom = this._zoom > 0 ? this._zoom : 1;
-        this._drawOnTaskboardSlate(ctx, localPoint, `board|${zoom}|${JSON.stringify(view)}`, (slateCtx, slateTopLeft) => (
+        // XP-5 — a postcard frame shows the slate wiped (its own cache key):
+        // the chalk names tasks and agents.
+        if (postcardFrame()) this._drawOnTaskboardSlate(ctx, localPoint, `board|${zoom}|postcard`, () => {}, { stepped: true });
+        else this._drawOnTaskboardSlate(ctx, localPoint, `board|${zoom}|${JSON.stringify(view)}`, (slateCtx, slateTopLeft) => (
             this._paintTaskboardChalk(slateCtx, slateTopLeft, view, zoom)
         ), { stepped: true });
         return true;
@@ -4753,7 +4744,7 @@ export class BuildingSprite {
     // never overhangs the chalk at any zoom.
     _drawTaskboardPlanTabs(ctx, localPoint) {
         const profile = getBuildingPlanTabProfile('taskboard');
-        if (!profile || !this._chitsVisible('taskboard')) return;
+        if (!profile || postcardFrame() || !this._chitsVisible('taskboard')) return;
         const summaries = this._taskboardBoardModel.summaries({
             candidates: this._taskboardCandidates || [],
             agentSprites: this.agentSprites,
@@ -5416,12 +5407,29 @@ export class BuildingSprite {
         this.roofWeather.sync(atmosphere, ground, motionScale, motionTimeMs);
     }
 
-    // The roof snow / wet-course patch of `building` (RoofWeather.patch),
-    // shared by the resident patch record and the Canvas building pass; null
-    // in clear, dry weather.
+    // The roof snow / wet-course / low-sun glint patch of `building`
+    // (RoofWeather.patch), shared by the resident patch record and the Canvas
+    // building pass; null in clear, dry weather with no low sun.
     roofPatchFor(building) {
         const type = building?.type;
-        return type ? this.roofWeather.patch(type) : null;
+        return type ? this.roofWeather.patch(type, this.roofWeather.glint ? this._roofGlintShade(building) : null) : null;
+    }
+
+    // EN-6 — what the low-sun glint's sun verdict needs for `building`
+    // (RoofWeather.roofSunVerdict): the sprite's world top-left, the sun's
+    // sweep (RakingLight.sunSweepFor, independent of looks and tier) and
+    // the landmarks' CPU massing, so Canvas and both GPU paths at every
+    // quality tier keep the run off a plane turned from the sun or in cast
+    // shade. Null with the sun down.
+    _roofGlintShade(building) {
+        const sweep = sunSweepFor(this.atmosphereState);
+        if (!sweep) return null;
+        const anchor = this.assets.getAnchor?.(`building.${building.type}`);
+        if (!anchor) return null;
+        const center = this._buildingScreenCenter(building);
+        this._glintFacets ||= this.buildings.flatMap((b) => (LANDMARK_MASSING[b.type]?.solids?.length
+            ? massingFacets(LANDMARK_MASSING[b.type], b, buildingCenterToWorld(b)) : []));
+        return { ox: Math.round(center.x - anchor[0]), oy: Math.round(center.y - anchor[1]), sweep, facets: this._glintFacets };
     }
 
     // The eave-drip strip of `building` at the current drip frame, while it
@@ -5581,7 +5589,7 @@ export class BuildingSprite {
             sessions.push({
                 agentId: agent.id,
                 name: agent.displayName || agent.name || agent.id,
-                tool: compactToolLabel(agent.currentTool),
+                tool: compactToolLabel(agent),
                 status: agent.status,
                 observation,
                 visiting,
@@ -5745,7 +5753,7 @@ export class BuildingSprite {
     // and an exact `+N more`. Counts, never percentages.
     _drawApertureLegend(ctx, localPoint, building, model, profile) {
         const legend = profile.legend;
-        if (!legend?.at) return;
+        if (!legend?.at || postcardFrame()) return;
         const rooms = this._roomSlotsByType.get(model.buildingType);
         const working = rooms ? rooms.working : 0;
         const waiting = rooms ? rooms.waiting : 0;

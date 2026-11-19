@@ -1,6 +1,6 @@
 // GENERATED FROM models.json + scripts/models/resolver.template.js — DO NOT EDIT
 
-const MODEL_REVISION = "2026-11-17";
+const MODEL_REVISION = "2026-11-19";
 const MODEL_REGISTRY = [
     {
         "accent": [
@@ -62,6 +62,10 @@ const MODEL_REGISTRY = [
         "sample": "claude-fable-5-2",
         "shortLabel": "Fable",
         "spriteId": "agent.claude.fable",
+        "spriteVariants": [
+            "agent.claude.fable",
+            "agent.claude.fable.b"
+        ],
         "trim": [
             "#ffd6f0",
             "#ffe7a8",
@@ -161,6 +165,10 @@ const MODEL_REGISTRY = [
         "sample": "claude-fable-5-1",
         "shortLabel": "Fable",
         "spriteId": "agent.claude.fable",
+        "spriteVariants": [
+            "agent.claude.fable",
+            "agent.claude.fable.b"
+        ],
         "trim": [
             "#ffd6f0",
             "#ffe7a8",
@@ -194,10 +202,51 @@ const MODEL_REGISTRY = [
         "sample": "claude-fable-5",
         "shortLabel": "Fable",
         "spriteId": "agent.claude.fable",
+        "spriteVariants": [
+            "agent.claude.fable",
+            "agent.claude.fable.b"
+        ],
         "trim": [
             "#ffd6f0",
             "#ffe7a8",
             "#c8a3ff"
+        ]
+    },
+    {
+        "accent": [
+            "#fff4cf",
+            "#d8bcff",
+            "#ffca7a"
+        ],
+        "color": "#ffe7a8",
+        "contextWindow": 1000000,
+        "id": "claude.opus-5-5",
+        "label": "Claude Opus",
+        "match": [
+            "opus-5-5"
+        ],
+        "modelClass": "opus",
+        "modelTier": "apex",
+        "mood": "deliberate",
+        "paletteKey": "claude",
+        "pricing": {
+            "cacheCreate": 5,
+            "cacheRead": 0.2,
+            "input": 4,
+            "output": 20
+        },
+        "provider": "claude",
+        "sample": "claude-opus-5-5",
+        "shortLabel": "Opus",
+        "spriteId": "agent.claude.opus",
+        "spriteVariants": [
+            "agent.claude.opus",
+            "agent.claude.opus.b"
+        ],
+        "trim": [
+            "#ffe7a8",
+            "#c8a3ff",
+            "#f4b15f"
         ]
     },
     {
@@ -350,6 +399,76 @@ const MODEL_REGISTRY = [
     },
     {
         "accent": [
+            "#fff4cf",
+            "#d8bcff",
+            "#ffca7a"
+        ],
+        "color": "#ffe7a8",
+        "contextWindow": 200000,
+        "id": "claude.opus-4-5",
+        "label": "Claude Opus",
+        "match": [
+            "opus-4-5"
+        ],
+        "modelClass": "opus",
+        "modelTier": "apex",
+        "mood": "deliberate",
+        "paletteKey": "claude",
+        "pricing": {
+            "cacheCreate": 6.25,
+            "cacheRead": 0.5,
+            "input": 5,
+            "output": 25
+        },
+        "provider": "claude",
+        "sample": "claude-opus-4-5",
+        "shortLabel": "Opus",
+        "spriteId": "agent.claude.opus",
+        "spriteVariants": [
+            "agent.claude.opus",
+            "agent.claude.opus.b"
+        ],
+        "trim": [
+            "#ffe7a8",
+            "#c8a3ff",
+            "#f4b15f"
+        ]
+    },
+    {
+        "accent": [
+            "#ffe39a",
+            "#dfe8ff",
+            "#f7bf6d"
+        ],
+        "color": "#f2d36b",
+        "contextWindow": 1000000,
+        "id": "claude.sonnet-5-5",
+        "label": "Claude Sonnet",
+        "match": [
+            "sonnet-5-5"
+        ],
+        "modelClass": "sonnet",
+        "modelTier": "balanced",
+        "mood": "balanced",
+        "paletteKey": "claude",
+        "pricing": {
+            "cacheCreate": 2.5,
+            "cacheRead": 0.1,
+            "input": 2,
+            "output": 10
+        },
+        "provider": "claude",
+        "sample": "claude-sonnet-5-5",
+        "shortLabel": "Sonnet",
+        "spriteId": "agent.claude.sonnet",
+        "trim": [
+            "#f2d36b",
+            "#b7ccff",
+            "#e9b85f"
+        ]
+    },
+    {
+        "accent": [
             "#ffe39a",
             "#dfe8ff",
             "#f7bf6d"
@@ -388,7 +507,7 @@ const MODEL_REGISTRY = [
             "#f7bf6d"
         ],
         "color": "#f2d36b",
-        "contextWindow": 200000,
+        "contextWindow": 1000000,
         "id": "claude.sonnet-4-6",
         "label": "Claude Sonnet",
         "match": [
@@ -412,6 +531,39 @@ const MODEL_REGISTRY = [
             "#f2d36b",
             "#b7ccff",
             "#e9b85f"
+        ]
+    },
+    {
+        "accent": [
+            "#fff1c2",
+            "#ffe39a",
+            "#ffcc7a"
+        ],
+        "color": "#ffd47a",
+        "contextWindow": 1000000,
+        "id": "claude.haiku-5-5",
+        "label": "Claude Haiku",
+        "match": [
+            "haiku-5-5"
+        ],
+        "modelClass": "haiku",
+        "modelTier": "light",
+        "mood": "quick",
+        "paletteKey": "claude",
+        "pricing": {
+            "cacheCreate": 0.125,
+            "cacheRead": 0.01,
+            "input": 0.1,
+            "output": 0.5
+        },
+        "provider": "claude",
+        "sample": "claude-haiku-5-5",
+        "shortLabel": "Haiku",
+        "spriteId": "agent.claude.haiku",
+        "trim": [
+            "#ffd47a",
+            "#ffe39a",
+            "#f6c25c"
         ]
     },
     {
@@ -471,7 +623,7 @@ const MODEL_REGISTRY = [
             "output": 75
         },
         "provider": "claude",
-        "sample": "claude-opus-4-5",
+        "sample": "claude-opus-4-1",
         "shortLabel": "Opus",
         "spriteId": "agent.claude.opus",
         "spriteVariants": [
@@ -610,6 +762,10 @@ const MODEL_REGISTRY = [
         "sample": "gpt-6.2-astra",
         "shortLabel": "6.2 Astra",
         "spriteId": "agent.codex.gpt6astra",
+        "spriteVariants": [
+            "agent.codex.gpt6astra",
+            "agent.codex.gpt6astra.b"
+        ],
         "trim": [
             "#d8bcff",
             "#e6f1ff",
@@ -680,6 +836,10 @@ const MODEL_REGISTRY = [
         "sample": "gpt-6-astra",
         "shortLabel": "6 Astra",
         "spriteId": "agent.codex.gpt6astra",
+        "spriteVariants": [
+            "agent.codex.gpt6astra",
+            "agent.codex.gpt6astra.b"
+        ],
         "trim": [
             "#d8bcff",
             "#e6f1ff",

@@ -464,6 +464,18 @@ export class ChronicleLog {
             .catch(() => { /* the day book is best effort; never break the app */ });
     }
 
+    async hasTrailSamples(date) {
+        if (!this.store) return false;
+        const rows = await this.store.queryRange('trailSamples', { ...dayBounds(date), limit: 1 });
+        return rows.length > 0;
+    }
+
+    /** XP-8 — remembered biographies (180-day retention), most recently seen first. */
+    async readBiographies() {
+        if (!this.store) return [];
+        return this.store.queryRange('biographies', { index: 'lastSeenAt', direction: 'prev' });
+    }
+
     /** Events for a local day, oldest first. */
     async readDay(date = new Date()) {
         if (!this.store) return [];
@@ -594,7 +606,7 @@ export class ChronicleLog {
  * Roll a day's events into the numbers a recap needs. Pure, so it can be
  * tested without IndexedDB.
  */
-function dayBounds(date) {
+export function dayBounds(date) {
     const start = typeof date === 'string' ? chronicleDateFromKey(date) : new Date(date);
     start.setHours(0, 0, 0, 0);
     const end = new Date(start);

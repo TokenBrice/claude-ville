@@ -29,6 +29,36 @@ try {
     manifestImportError = error;
 }
 
+test('Claude 5.5 rates and context resolve for bare and qualified IDs', () => {
+    const models = [
+        ['opus', 4, 20, 0.20, 5],
+        ['sonnet', 2, 10, 0.10, 2.50],
+        ['haiku', 0.10, 0.50, 0.01, 0.125],
+    ];
+    for (const [family, input, output, cacheRead, cacheCreate] of models) {
+        const match = `${family}-5-5`;
+        for (const raw of [`claude-${match}`, `anthropic/claude-${match}`]) {
+            for (const registry of [browserRegistry, serverRegistry]) {
+                assert.equal(registry.findModelRow(raw, 'claude').row.id, `claude.${match}`);
+                assert.equal(registry.contextWindowForModel(raw, 'claude'), 1_000_000);
+                assert.deepEqual(registry.ratesForModel(raw, 'claude'), {
+                    rate: { match, input, output, cacheRead, cacheCreate }, match, isDefault: false,
+                });
+            }
+        }
+    }
+});
+
+test('Claude Opus 4.5 rates and Sonnet 4.6 context match the audited pricing table', () => {
+    for (const registry of [browserRegistry, serverRegistry]) {
+        assert.deepEqual(registry.ratesForModel('claude-opus-4-5-20251101', 'claude').rate,
+            { match: 'opus-4-5', input: 5, output: 25, cacheRead: 0.50, cacheCreate: 6.25 });
+        assert.deepEqual(registry.ratesForModel('claude-opus-4-1-20250805', 'claude').rate,
+            { match: 'opus', input: 15, output: 75, cacheRead: 1.50, cacheCreate: 18.75 });
+        assert.equal(registry.contextWindowForModel('claude-sonnet-4-6', 'claude'), 1_000_000);
+    }
+});
+
 test('Astra identity resolves canonical and provider-qualified IDs without claiming other models', () => {
     for (const raw of ['gpt-6-astra', 'GPT-6-Astra', 'gpt_6_astra', 'openai/gpt-6-astra']) {
         for (const registry of [browserRegistry, serverRegistry]) {
@@ -150,7 +180,24 @@ test('body variants: base body without an agent id, one stable body per agent, e
     assert.equal(agentBodySpriteId('agent.x', ['agent.x'], 'a'), 'agent.x');
     assert.equal(agentBodySpriteId('agent.x', null, 'a'), 'agent.x');
     // Rows without variants keep their single body for every agent.
-    assert.equal(getModelVisualIdentity('gpt-6-astra', 'high', 'codex', 'agent-1').spriteId, 'agent.codex.gpt6astra');
+    assert.equal(getModelVisualIdentity('claude-mythos-5-2', 'high', 'claude', 'agent-1').spriteId, 'agent.claude.mythos');
+});
+
+test('Fable and Astra bodies: two per model, stable per agent, base body without an id (FK-6)', () => {
+    for (const [model, provider, base] of [
+        ['claude-fable-5-2', 'claude', 'agent.claude.fable'], ['claude-fable-5', 'claude', 'agent.claude.fable'],
+        ['gpt-6.2-astra', 'codex', 'agent.codex.gpt6astra'], ['gpt-6-astra', 'codex', 'agent.codex.gpt6astra'],
+    ]) {
+        assert.equal(getModelVisualIdentity(model, 'high', provider).spriteId, base);
+        const bodies = new Set();
+        for (let i = 0; i < 64; i++) {
+            const id = `agent-${i}`;
+            const body = getModelVisualIdentity(model, 'high', provider, id).spriteId;
+            assert.equal(getModelVisualIdentity(model, 'max', provider, id).spriteId, body, 'effort never changes the body');
+            bodies.add(body);
+        }
+        assert.deepEqual([...bodies].sort(), [base, `${base}.b`], model);
+    }
 });
 
 test('GLM bodies: the grandmaster and the abbot, for omp-hosted and unknown z.AI models alike', () => {

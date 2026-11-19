@@ -37,7 +37,7 @@ import {
     toolFailedFact,
     verifiedOutcomeFact,
 } from '../../../application/OutcomeSignals.js';
-import { createAtmosphereSnapshot } from '../../character-mode/AtmosphereState.js';
+import { createAtmosphereSnapshot, createLiveAtmosphereSnapshot } from '../../character-mode/AtmosphereState.js';
 import { cueLifecycleDecision, longTurnDetails } from './CueGovernor.js';
 import { cuePlacementKind, laneForCueKind } from './cues/CueKit.js';
 import { buildingOf, explicitSpot, resolveCueSpot } from './SpatialField.js';
@@ -600,7 +600,7 @@ export class SignalDirector {
             return this._atmosphere;
         }
         this._atmosphereSource = 'local';
-        return createAtmosphereSnapshot({});
+        return createLiveAtmosphereSnapshot();
     }
 
     _tick() {

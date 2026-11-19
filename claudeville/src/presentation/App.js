@@ -30,7 +30,7 @@ import { AgentBiographyService } from '../application/AgentBiographyService.js';
 import { MoodService } from '../application/MoodService.js';
 import { RelationshipAffinityService } from '../application/RelationshipAffinityService.js';
 
-import { TopBar } from './shared/TopBar.js';
+import { TopBar, villageDoorHref } from './shared/TopBar.js';
 import { Sidebar } from './shared/Sidebar.js';
 import { Toast } from './shared/Toast.js';
 import { Modal } from './shared/Modal.js';
@@ -49,6 +49,7 @@ import { overlayContextAttributes } from './shared/DisplaySettings.js';
 import { isKeyboardEditTarget } from './dashboard-mode/DashboardKeyboardNavigation.js';
 
 import { AssetManager } from './character-mode/AssetManager.js';
+import { createAtmosphereSnapshot } from './character-mode/AtmosphereState.js';
 import { effectiveCanvasDpr } from './character-mode/CanvasBudget.js';
 import { paintRevealBands } from './character-mode/RevealBands.js';
 
@@ -99,6 +100,11 @@ const EMPTY_SURFACE_COPY = Object.freeze({
             Object.freeze({ label: 'Mine', value: 'Token usage' }),
         ]),
     }),
+    [VillagePhase.NO_RECORDED_SAMPLES]: Object.freeze({
+        title: 'NO RECORDED TRAIL SAMPLES',
+        copy: 'The village kept no trails for this day, so there is nothing to retell.',
+        next: 'Trails are kept for 24 hours, and only while ClaudeVille is open.',
+    }),
     [VillagePhase.DEGRADED]: Object.freeze({
         title: 'A WATCHTOWER IS UNREADABLE',
         copy: 'The village cannot read one or more local session sources.',
@@ -111,6 +117,13 @@ const EMPTY_SURFACE_COPY = Object.freeze({
     }),
 });
 
+// XP-6 — the door each empty card offers: a newcomer with no provider can
+// visit the simulated village; a recorded day with no trails goes back home.
+const EMPTY_SURFACE_DOORS = Object.freeze({
+    [VillagePhase.READY_NO_PROVIDERS]: Object.freeze({ text: 'VISIT A SIMULATED VILLAGE', simulated: true }),
+    [VillagePhase.NO_RECORDED_SAMPLES]: Object.freeze({ text: 'RETURN TO YOUR VILLAGE', simulated: false }),
+});
+
 const BOOT_FAILURE_COPY = Object.freeze({
     'network-failed': 'Could not reach the local village server.',
     'server-error': 'The village server returned an error.',
@@ -118,6 +131,8 @@ const BOOT_FAILURE_COPY = Object.freeze({
     'session-read-failed': 'Could not read local sessions.',
     'providers-failed': 'Could not read installed providers.',
     'assets-failed': 'Village art failed to load.',
+    'retold-date-invalid': 'Choose a valid Chronicle date in YYYY-MM-DD format.',
+    'retold-read-failed': 'The recorded village history could not be read.',
     'renderer-failed': 'The world renderer failed to open.',
     'aborted': 'Opening the village was interrupted.',
     'boot-failed': 'The village did not finish opening.',
@@ -264,18 +279,31 @@ export class App {
             await new Promise((resolve) => requestAnimationFrame(resolve));
             if (this._destroyed) return null;
 
-            this._dispatchVillage({ type: 'sync-start' });
+            const params = new URLSearchParams(location.search);
+            const retold = params.has('retold');
+            this._dispatchVillage({ type: 'sync-start', retold });
             this._advanceFromStarting();
 
-            // 4-1. Behavior simulator (?sim=1, dev only — overrides session ingestion)
-            const simMode = new URLSearchParams(location.search).get('sim') === '1';
+            const simMode = retold || params.get('sim') === '1';
             this.simMode = simMode;
             this._bootFoundation();
             this._bindVillageObservations();
             if (simMode && !this.agentSimulator) {
                 const mod = await import('./character-mode/__simfixture__/AgentSimulator.js');
                 if (this._destroyed) return null;
-                this.agentSimulator = new mod.default({ world: this.world, agentManager: this.agentManager, eventBus });
+                const recordedDay = retold
+                    ? await (await import('../application/ChronicleScenario.js')).loadChronicleScenario(params.get('retold'))
+                    : null;
+                if (this._destroyed) return null;
+                if (retold && !recordedDay) {
+                    this._dispatchVillage({ type: 'no-recorded-samples' });
+                    this._bootState = 'ready';
+                    return this;
+                }
+                this.agentSimulator = new mod.default({
+                    world: this.world, agentManager: this.agentManager, eventBus,
+                    recordedDay, timelapse: params.get('timelapse') === '1',
+                });
                 this.agentSimulator.start();
             }
 
@@ -416,6 +444,11 @@ export class App {
         }
     }
 
+    _readDashboardAtmosphere() {
+        if (this.modeManager?.getCurrentMode() !== 'dashboard') return null;
+        return this.renderer?.atmosphereState?.snapshot() ?? createAtmosphereSnapshot();
+    }
+
     _bootFoundation() {
         if (this._foundationReady) return;
 
@@ -484,6 +517,9 @@ export class App {
                 attention: this.attentionService,
                 chronicle: this.chroniclePanel,
                 spendLedger: this.spendLedger,
+                readDashboardAtmosphere: () => this._readDashboardAtmosphere(),
+                simulation: this.simMode,
+                refreshAtmosphere: snapshot => this.renderer?.atmosphereState?.update({ now: snapshot.effectiveDate }),
                 frameAttention: () => {
                     if (this.modeManager?.getCurrentMode() === 'dashboard') return false;
                     this.renderer?.cameraDirector?.frameAttention(this.renderer.agentSprites);
@@ -796,6 +832,7 @@ export class App {
 
     _failureCode(err, fallback = 'boot-failed') {
         if (!err) return fallback;
+        if (Object.hasOwn(BOOT_FAILURE_COPY, err.code)) return err.code;
         if (err.name === 'AbortError') return 'aborted';
         const message = String(err.message || '');
         if (/failed to fetch|networkerror|net::/i.test(message)) return 'network-failed';
@@ -952,7 +989,8 @@ export class App {
 
         const copy = EMPTY_SURFACE_COPY[phase] || EMPTY_SURFACE_COPY[VillagePhase.SYNCING];
         const occupied = (state.agentCount || 0) > 0 || (this.world?.agents?.size || 0) > 0;
-        const showEmpty = phase !== VillagePhase.READY_LIVE && !occupied;
+        const playingDay = state.retold && phase === VillagePhase.READY_EMPTY;
+        const showEmpty = !playingDay && phase !== VillagePhase.READY_LIVE && !occupied;
         // One voice: while an empty-state card is up it carries the words, the
         // failure detail and the retry button; the banner only speaks when no
         // card does (a degraded source behind a populated village, or a
@@ -1025,6 +1063,22 @@ export class App {
         if (visibleClass) root.classList.toggle(visibleClass, show);
         const hints = root.querySelector('.dashboard__empty-hints');
         if (hints) hints.hidden = copy !== EMPTY_SURFACE_COPY[VillagePhase.READY_EMPTY];
+        const doorSpec = EMPTY_SURFACE_DOORS[this.villageState?.phase] || null;
+        let door = root.querySelector('.empty-door');
+        if (!door && doorSpec) {
+            door = el('a', { className: 'empty-door' });
+            root.appendChild(door);
+        }
+        if (door) {
+            if (doorSpec) {
+                this._setTextIfChanged(door, doorSpec.text);
+                const href = villageDoorHref(location.pathname, { simulated: doorSpec.simulated });
+                if (door.getAttribute('href') !== href) door.setAttribute('href', href);
+                // After TRY AGAIN, which the card adopts once it shows.
+                if (root.lastElementChild !== door) root.appendChild(door);
+            }
+            door.hidden = !doorSpec;
+        }
     }
 
     _setTextIfChanged(node, text) {
@@ -1036,7 +1090,13 @@ export class App {
     _bindWorldEmptyState() {
         if (this._surfacesBound) return;
         this._surfacesBound = true;
-        const sync = () => this._renderVillageSurfaces();
+        const sync = () => {
+            if (this.agentSimulator?.recorded && this.villageState.source === 'simulator') {
+                this._dispatchVillage({ type: 'snapshot', agentCount: this.world.agents.size });
+            } else {
+                this._renderVillageSurfaces();
+            }
+        };
         this._eventUnsubscribers.push(eventBus.on('agent:added', sync));
         this._eventUnsubscribers.push(eventBus.on('agent:removed', sync));
         sync();
@@ -1548,23 +1608,31 @@ export class App {
         document.addEventListener('click', this._onDeferredInteractionClick, true);
         document.addEventListener('keydown', this._onDeferredInteractionKeydown, true);
 
-        this._eventUnsubscribers.push(eventBus.on('agent:selected', (agent) => {
-            if (!agent || this.activityPanel) return;
-            const intent = this._deferredSelectionIntent;
+        const queueSelection = (target, kind) => {
+            if (!target) return;
+            const selection = { target, kind, intent: this._deferredSelectionIntent };
+            this._pendingActivitySelection = this.activityPanel ? null : selection;
+            if (this.activityPanel) return;
             void this._loadActivityPanel().then((panel) => {
+                if (this._pendingActivitySelection !== selection) return;
+                this._pendingActivitySelection = null;
                 if (!panel || this._destroyed) return;
-                if (intent) panel._selectionIntent = intent;
-                panel.show(agent);
+                if (selection.intent) panel._selectionIntent = selection.intent;
+                if (kind === 'agent') panel.show(target);
+                else panel.showBuilding(target);
             });
+        };
+        this._eventUnsubscribers.push(eventBus.on('agent:selected', agent => queueSelection(agent, 'agent')));
+        this._eventUnsubscribers.push(eventBus.on(BUILDING_EVENTS.SELECTED, building => queueSelection(building, 'building')));
+        this._eventUnsubscribers.push(eventBus.on('agent:deselected', () => {
+            if (this._pendingActivitySelection?.kind === 'agent') this._pendingActivitySelection = null;
         }));
-        this._eventUnsubscribers.push(eventBus.on(BUILDING_EVENTS.SELECTED, (building) => {
-            if (!building || this.activityPanel) return;
-            const intent = this._deferredSelectionIntent;
-            void this._loadActivityPanel().then((panel) => {
-                if (!panel || this._destroyed) return;
-                if (intent) panel._selectionIntent = intent;
-                panel.showBuilding(building);
-            });
+        this._eventUnsubscribers.push(eventBus.on('agent:removed', (agent) => {
+            const pending = this._pendingActivitySelection;
+            if (pending?.kind === 'agent' && pending.target.id === agent?.id) this._pendingActivitySelection = null;
+        }));
+        this._eventUnsubscribers.push(eventBus.on(BUILDING_EVENTS.DESELECTED, () => {
+            if (this._pendingActivitySelection?.kind === 'building') this._pendingActivitySelection = null;
         }));
     }
 
@@ -1629,6 +1697,7 @@ export class App {
                     spendLedger: this.spendLedger,
                     usageGetter: () => this.latestUsage,
                     toast: this.toast,
+                    liveHistory: !this.simMode,
                 });
                 this.chroniclePanel = panel;
                 return panel;
@@ -1668,6 +1737,7 @@ export class App {
             }
 
             candidate = new module.IsometricRenderer(this.world, {
+                replay: this.agentSimulator?.replayClock ? this.agentSimulator : null,
                 assets: this.assets,
                 terrainArtifactBoot: this._terrainArtifactBoot,
                 chronicleStore: this.chronicleStore,
@@ -1699,7 +1769,7 @@ export class App {
                 else emitAgentDeselected();
             };
 
-            const scenarioMetadata = this.agentSimulator?.getScenario?.()?.metadata || null;
+            const scenarioMetadata = this.agentSimulator?.recorded ? null : this.agentSimulator?.getScenario?.()?.metadata || null;
             const scenarioApplied = candidate.applyScenarioMetadata?.(scenarioMetadata) || false;
             if (this._destroyed) {
                 candidate.hide?.();
@@ -2178,6 +2248,7 @@ export class App {
             this._onDeferredInteractionKeydown = null;
         }
         this._deferredSelectionIntent = null;
+        this._pendingActivitySelection = null;
         this._readControlCleanup?.();
         this._cameraModeCleanup?.();
         this._worldDockCleanup?.();

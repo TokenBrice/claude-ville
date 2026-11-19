@@ -240,6 +240,21 @@ fn sampleAlbedo(uv: vec2f) -> vec4f {
   return vec4f(0.0);
 }
 
+fn sampleEmission(uv: vec2f, albedoAlpha: f32) -> vec4f {
+  if (!fatOn || !fatSeam(fatAlbedoTaps) || v_gate == 0.0) { return textureSampleLevel(emissiveMap, albedoSampler, uv, 0.0); }
+  var sum = vec4f(0.0);
+  for (var i = 0; i < 4; i++) {
+    let coverage = fatTapWeight(fatAlbedoTaps, i) * fatTap[i].a;
+    if (coverage == 0.0) { continue; }
+    let local = clamp(fatAlbedoTaps.base + fatTapOffset(i), vec2f(0.0), vec2f(v_texelRect.zw));
+    let tapUv = (vec2f(v_texelRect.xy) + local + 0.5) / vec2f(albedoSize());
+    sum += coverage * fatPremultiplied(textureSampleLevel(emissiveMap, albedoSampler, tapUv, 0.0));
+  }
+  // Output applies albedo alpha once.
+  if (sum.a > 0.0) { return vec4f(sum.rgb / sum.a, sum.a / albedoAlpha); }
+  return vec4f(0.0);
+}
+
 fn materialNear(value: f32, goal: f32) -> f32 {
   return 1.0 - step(0.45, abs(value - goal));
 }
@@ -361,15 +376,27 @@ fn applyGrassGust(color: vec3f, world: vec2f) -> vec3f {
   return GRASS_GUST_TO[k];
 }
 
+// The terrain record's local texels are world pixels from the bake origin.
+// A wet cell may still contain a painted foam texel at the dithered edge.
+fn wetSandColour(color: vec3f) -> bool { return sameColour(color, WET_SAND) || sameColour(color, WET_SAND_DARK); }
+fn wetSandMaterial(block: vec4f, texel: vec2i) -> f32 {
+  let quadrant = u32(((texel.x >> 1u) & 1) + (texel.y & 2));
+  if ((u32(block.g * 255.0 + 0.5) & (1u << quadrant)) != 0u) { return floor(block.b * 255.0 + 0.5); }
+  return select(v_material, floor(block.r * 255.0 + 0.5), block.a > 0.0);
+}
+
 // 4.6 — a terrain pixel a world-texel seam crosses on a flight frame: the
 // per-cell surface chain runs on each tap's own authored texel at that
 // texel's world point, blended by coverage.
-fn fatTerrainSurface(material: f32, waterMaterial: bool, waterHue: ptr<function, bool>, seaPath: ptr<function, bool>) -> vec3f {
+fn fatTerrainSurface(centerBlock: vec4f, material: ptr<function, f32>, waterHue: ptr<function, bool>, seaPath: ptr<function, bool>) -> vec3f {
   let t = fatAlbedoTaps;
   let worldPerTexel = fatWorldFw / fatTexelFw;
   let weather = frame.weather.x > 0.001 || frame.wetness > 0.001;
-  var anyWater = waterMaterial;
-  var surface = vec4f(0.0);
+  let centerBlockPos = vec2i(fatAlbedoPix) / 4;
+  let baseMaterial = *material;
+  var anyWater = false;
+  var surface = vec3f(0.0);
+  var sandKeyed = vec3f(0.0);
   var before = vec4f(0.0);
   var dominant = -1.0;
   var dominantPath = false;
@@ -384,12 +411,20 @@ fn fatTerrainSurface(material: f32, waterMaterial: bool, waterHue: ptr<function,
     var c = fatTap[i].rgb;
     var gone = false;
     c = mirrorStormColour(c, world, &gone);
-    let tapWater = waterMaterial || gone;
-    anyWater = anyWater || gone;
     surfGlowTexel = false;
     if (frame.waterFx.w > 0.0) { c = applyCoastSwash(c, world); }
+    let texel = vec2i(t.base + fatTapOffset(i));
+    let crossesBlock = any(texel / 4 != centerBlockPos);
+    var tapMaterial = baseMaterial;
+    if ((centerBlock.g > 0.0 || crossesBlock) && wetSandColour(c) && batch.hasMaterialMap != 0u) {
+      var block = centerBlock;
+      if (crossesBlock) { block = textureLoad(materialMap, texel / 4, 0); }
+      tapMaterial = wetSandMaterial(block, texel);
+    }
+    let tapWater = materialNear(tapMaterial, 8.0) > 0.5 || gone;
+    anyWater = anyWater || tapWater;
     if (!tapWater) { c = applyGrassGust(c, world); }
-    if (weather && !tapWater) { c = applyMaterialWeather(c, material, world); }
+    if (weather && !tapWater) { c = applyMaterialWeather(c, tapMaterial, world); }
     before += vec4f(c, 1.0) * w;
     var tapPath = false;
     lighthouseDash = false;
@@ -398,13 +433,16 @@ fn fatTerrainSurface(material: f32, waterMaterial: bool, waterHue: ptr<function,
     if (tapWater) { c = applyWaterState(c, world, &tapPath); }
     if (w > dominant) {
       dominant = w;
+      *material = tapMaterial;
       dominantPath = tapPath;
       dominantDash = lighthouseDash;
       dominantOpen = seaOpenWater;
       dominantGlow = surfGlowTexel;
       dominantTake = seaSkyTake;
     }
-    surface += vec4f(c, 1.0) * w;
+    // Key the sand separately so the other taps retain their original coverage and rounding.
+    if (tapMaterial != baseMaterial) { sandKeyed += applyAuthoredSunBand(c, tapMaterial) * w; }
+    else { surface += c * w; }
   }
   lighthouseDash = dominantDash;
   seaOpenWater = dominantOpen;
@@ -413,7 +451,7 @@ fn fatTerrainSurface(material: f32, waterMaterial: bool, waterHue: ptr<function,
   *seaPath = dominantPath;
   let pre = before.rgb / max(before.a, 1e-6);
   *waterHue = anyWater && !(pre.b < pre.r + 0.02 || pre.g < pre.r);
-  if (surface.a > 0.0) { return surface.rgb / surface.a; }
+  if (before.a > 0.0) { return applyAuthoredSunBand(surface / before.a, baseMaterial) + sandKeyed / before.a; }
   return pre;
 }
 ${SUN_SHADE_WGSL}
@@ -567,14 +605,13 @@ fn sceneSurface() -> SurfaceSample {
   }
   var sidecar = vec4f(0.0);
   if (batch.hasMaterialMap != 0u) { sidecar = textureSampleLevel(materialMap, albedoSampler, uv, 0.0); }
-  var authoredEmission = vec4f(0.0);
-  if (batch.hasEmissiveMap != 0u) { authoredEmission = textureSampleLevel(emissiveMap, albedoSampler, uv, 0.0); }
   let packedMap = (v_flags & RECORD_FLAG_PACKED_GEOMETRY) != 0u;
   let materialId = floor(sidecar.r * 255.0 + 0.5);
-  let material = select(v_material, materialId, sidecar.a > 0.0 && !(packedMap && materialId > 254.5));
+  var material = select(v_material, materialId, sidecar.a > 0.0 && !(packedMap && materialId > 254.5));
   var emissive = v_emissive;
   var emissionColor = albedoRgba.rgb;
   if (batch.hasEmissiveMap != 0u) {
+    let authoredEmission = sampleEmission(uv, albedoRgba.a);
     // The emissive channel owns both hue (RGB) and contribution (A).
     emissionColor = authoredEmission.rgb;
     emissive = authoredEmission.a * 2.0 * clamp(v_gate, 0.0, 1.0);
@@ -597,36 +634,47 @@ fn sceneSurface() -> SurfaceSample {
   if (geometry.a > 0.0) { elevation = select(geometry.r, min(1.0, geometry.r * 255.0 / 128.0), surfaceCoded); }
   let px = vec2f(glFragCoord.x, frame.resolution.y - glFragCoord.y);
   var color = albedoRgba.rgb;
-  var waterMaterial = materialNear(material, 8.0) > 0.5;
+  var waterMaterial = false;
   var seaPath = false;
   var waterHue = false;
   if (batch.terrainBatch != 0u && fatOn && fatSeam(fatAlbedoTaps)) {
     // 4.6 — a seam pixel on a flight frame runs the chain below per tap.
-    color = fatTerrainSurface(material, waterMaterial, &waterHue, &seaPath);
+    color = fatTerrainSurface(sidecar, &material, &waterHue, &seaPath);
+    waterMaterial = materialNear(material, 8.0) > 0.5;
   } else {
     // 3.7 — a mirror texel the rain gave back to the water is water.
     var mirrorGone = false;
     color = mirrorStormColour(color, v_world, &mirrorGone);
-    waterMaterial = waterMaterial || mirrorGone;
     // 3.6 — the swash laps the baked shore before any weather darkening.
     if (batch.terrainBatch != 0u && frame.waterFx.w > 0.0) { color = applyCoastSwash(color, v_world); }
+    if (batch.terrainBatch != 0u && sidecar.g > 0.0 && wetSandColour(color)) { material = wetSandMaterial(sidecar, vec2i(v_texel)); }
+    waterMaterial = materialNear(material, 8.0) > 0.5 || mirrorGone;
     // W6.11 — the grass gust course steps the authored albedo first.
     if (batch.terrainBatch != 0u && !waterMaterial) { color = applyGrassGust(color, v_world); }
     if (!waterMaterial && (frame.weather.x > 0.001 || frame.wetness > 0.001)) { color = applyMaterialWeather(color, material, v_world); }
     waterHue = waterMaterial && !(color.b < color.r + 0.02 || color.g < color.r);
     if (waterMaterial) { color = applyWaterState(color, v_world, &seaPath); }
+    color = applyAuthoredSunBand(color, material);
   }
-  color = applyAuthoredSunBand(color, material);
   // SD-2 — a receiver steps down under the sun's shade, before the grade; a
   // sun trail the field already covers is not drawn.
+  var sunBase = color;
   if (frame.shadeRect.w > 0.0 && batch.additive == 0u) {
     if (sunTrailHidden()) { discard; }
     color *= sunShadeStep(geometry, surfaceCoded, select(0.0, clamp(emissive, 0.0, 1.0), batch.hasEmissiveMap != 0u));
+    // SD-3 — then the sun lifts what it reaches (frame.shade.y 0 = off;
+    // water is SEA-1's).
+    sunBase = color;
+    if (frame.shade.y > 0.0 && !waterMaterial) { color = sunLift(color, batch.terrainBatch != 0u && v_receiver.x < -0.5, frame.shade.y, select(0.0, clamp(emissive, 0.0, 1.0), batch.hasEmissiveMap != 0u)); }
   }
   // 1.2 — the pools light the ungraded surface.
-  let poolAlbedo = color;
+  // SD-3 — the pools light the unlifted surface (the sun's lift is not lamp light).
+  let poolAlbedo = sunBase;
   // 1.1 — C2 time-of-day and weather grade.
+  // SD-3 — a lifted texel is held under the candle after the grade too.
+  let sunLifted = any(color != sunBase);
   color = applyTimeGrade(color, batch.additive == 0u);
+  if (sunLifted) { color = sunLiftGraded(color, applyTimeGrade(sunBase, true)); }
   // V6 — graded water stays quiet; the 3.2 path is held at HSL L <= 0.70.
   if (waterHue) {
     if (seaPath) {
@@ -1266,7 +1314,8 @@ struct SceneOut {
   v_texelRect = in.texelRect;
   v_layer = in.layer;
   var surf = sceneSurface();
-  let color = sceneLight(&surf);
+  // SD-3 — the finished lifted texel stays under the waiting candle.
+  let color = sunLiftFinal(sceneLight(&surf));
   var out: SceneOut;
   out.color = vec4f(max(color, vec3f(0.0)) * surf.alpha, surf.alpha);
   out.emission = sceneEmission(surf);

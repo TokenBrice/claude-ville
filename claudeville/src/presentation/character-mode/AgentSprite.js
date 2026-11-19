@@ -6,7 +6,7 @@ import { BUILDING_DEFS, normalizeBuildingType } from '../../config/buildings.js'
 import { THEME, STATUS_VISUALS, PROVIDER_HUES, WORLD_BODY_FONT_11, WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
 import { packGeometryPixels } from './gpu/GpuSceneBuilder.js';
 import { agentSignature, drawAgentSignature, clearAgentSignatureCache, getModelVisualIdentity, providerPaletteKey } from '../shared/ModelVisualIdentity.js';
-import { getTeamColor } from '../shared/TeamColor.js';
+import { agentTrimAccent } from '../shared/TeamColor.js';
 import { SpriteSheet, dirFromVelocity, resolveActionFrame, WALK_FRAMES, IDLE_FRAMES, DIRECTIONS, DEFAULT_CELL } from './SpriteSheet.js';
 import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
 import { RITUAL_GESTURE_PERIOD_MS, SCENIC_POINT_POSTURE } from './RitualConductor.js';
@@ -99,6 +99,7 @@ import {
 import { buildingWeightForHour, buildingWeightsForHour, sitScaleForHour, strollCapForHour } from './DayRoutine.js';
 import { homeDistrictFor } from './HomeDistrict.js';
 import { WIND_DOWN_GATE_FACING, WIND_DOWN_GATE_TILES } from './ArrivalDeparture.js';
+import { postcardFrame } from './Postcard.js';
 
 // 7.1 — a stone seat drawn under its sitter lights as masonry, not as cloth.
 const SEAT_STONE_MATERIAL = materialClassId('stone');
@@ -7353,7 +7354,9 @@ export class AgentSprite {
     }
 
     _drawNameTag(ctx) {
-        if (this.decisionFocusRoutine || this.isArrivalPending()) return;
+        // XP-5 — a postcard frame names no one (the T2 and T4 stamps are
+        // cached text, out of the postcard text guard's reach).
+        if (postcardFrame() || this.decisionFocusRoutine || this.isArrivalPending()) return;
         const plate = this.selected || this.labelPlate === true;
         if (plate) {
             // S13 — `plateOffFrame`: the body is outside the visible canvas,
@@ -7479,16 +7482,11 @@ export class AgentSprite {
         return gate && !gate.draw ? null : accent;
     }
 
-    // The team accent (#rrggbb) used as the secondary trim/sash palette swap
-    // target, or null when the agent is not part of any team (skip swap).
+    // The sash accent (#rrggbb) used as the secondary trim palette swap
+    // target: the teammate's harness colour, else the team hash, else null
+    // when the agent is not part of any team (skip swap).
     _teamTrimAccent() {
-        const name = this.agent?.teamName;
-        if (!name) return null;
-        const accent = getTeamColor(name)?.accent;
-        if (!accent || typeof accent !== 'string') return null;
-        // Only return well-formed hex; getTeamColor falls back to a neutral grey
-        // when teamName is empty, which we already filter above by truthiness.
-        return /^#?[0-9a-fA-F]{6}$/.test(accent.trim()) ? accent.trim() : null;
+        return agentTrimAccent(this.agent);
     }
 
     // Archive fade progress in [0, 1]. IsometricRenderer sets
@@ -8149,7 +8147,7 @@ export class AgentSprite {
         ctx.scale(1 / (this._zoom || 1), 1 / (this._zoom || 1));
         ctx.globalAlpha *= gate?.alpha ?? 1;
         drawEventShape(ctx, 'stale-seal', -8, -8, 1, '#d4c9ae');
-        if (emphasized) {
+        if (emphasized && !postcardFrame()) {
             const second = Math.floor(Date.now() / 1000);
             if (this._observationSecond !== second) {
                 this._observationSecond = second;
@@ -8200,7 +8198,7 @@ export class AgentSprite {
             ctx.font = WORLD_BODY_FONT_11;
             ctx.textAlign = 'left';
             ctx.textBaseline = 'middle';
-            ctx.fillText(this._turnSandText, 10, 0);
+            if (!postcardFrame()) ctx.fillText(this._turnSandText, 10, 0);
         } else ctx.fillRect(-2, -3, 2, 6);
         ctx.restore();
     }
@@ -8759,7 +8757,7 @@ export function drawFamiliarMotes(ctx, {
         ctx.fillRect(Math.round(orbitX - 1), Math.round(orbitY - radius + 1), 2, 2);
     }
 
-    if (hiddenCount > 0) {
+    if (hiddenCount > 0 && !postcardFrame()) {
         ctx.globalAlpha = parentSprite.selected ? 0.98 : 0.82;
         ctx.fillStyle = 'rgba(20, 14, 10, 0.88)';
         ctx.strokeStyle = '#f6cf60';

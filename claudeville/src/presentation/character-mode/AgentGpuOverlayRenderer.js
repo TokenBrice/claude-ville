@@ -5,6 +5,7 @@ import { gpuMaterialNameForProvider } from './gpu/GpuSceneBuilder.js';
 import { materialClassId } from './gpu/GpuWorldPolicy.js';
 import { isAttentionStatus } from './AttentionPlates.js';
 import { DEFAULT_CELL, WALK_FRAMES } from './SpriteSheet.js';
+import { postcardFrame } from './Postcard.js';
 
 // 4.7 — a walking body's strip descriptor (six probe records, one per walk
 // frame of its facing) is rebuilt only when what it samples changes. A strip
@@ -112,6 +113,8 @@ export class AgentGpuOverlayRenderer {
     // sees the identical resting plaque. The muted body is applied at its blit
     // site; this label keeps the state explicit at every annotation LOD.
     drawDepartedTreatment(ctx) {
+        // XP-5 — a postcard frame carries no plaque; the muted body stays.
+        if (postcardFrame()) return;
         const centerX = Math.round(this.host.x);
         const y = Math.round(this.host.y + 10);
         const width = 74;

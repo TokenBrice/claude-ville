@@ -1395,7 +1395,7 @@ const lineup = (id, name, provider, model, tileX, extra = {}) => agentSpec({
 export const MODEL_LINEUP_SCENARIO = {
     id: 'model-lineup',
     label: 'Model lineup',
-    description: 'Sprite review: both GLM bodies, GLM Flash, Sonnet, Haiku, Fable, Mythos and the three DeepSeek Flash rungs beside Opus and Luna.',
+    description: 'Sprite review: both GLM, Fable and Astra bodies, GLM Flash, Sonnet, Haiku, Mythos and the three DeepSeek Flash rungs beside Opus and Luna.',
     timeBase: SCENARIO_TIME_BASE,
     agents: [
         lineup('opus-hero', 'Opus', 'claude', 'claude-opus-5', 14),
@@ -1411,11 +1411,15 @@ export const MODEL_LINEUP_SCENARIO = {
         lineup('ds-flash-xhigh', 'DS xhigh', 'omp', 'deepseek-flash', 23, { underlyingProvider: 'deepseek', effort: 'xhigh' }),
         lineup('luna', 'Luna', 'codex', 'gpt-6-luna', 24),
         lineup('mythos', 'Mythos', 'claude', 'claude-mythos-5-2', 25),
+        // These ids hash to the second Fable body and to each Astra body.
+        lineup('fable-b', 'Fable Scribe', 'claude', 'claude-fable-5-1', 26),
+        lineup('astra-2', 'Astra', 'codex', 'gpt-6.2-astra', 27),
+        lineup('astra-plume', 'Astra Plume', 'codex', 'gpt-6.2-astra', 28),
     ],
     timeline: [],
     metadata: {
         qaTags: ['sprites', 'lineup', 'scale'],
-        camera: { centerTile: { tileX: 19, tileY: 22 }, zoom: 2.6 },
+        camera: { centerTile: { tileX: 21, tileY: 22 }, zoom: 2.6 },
     },
 };
 
@@ -1619,6 +1623,98 @@ export const STALE_CARGO_SCENARIO = {
     },
 };
 
+// FK-8 — the 2026-11-19 council in miniature: one lead whose open turn is
+// pending on `Poll` while its crew works, four coloured teammates on the
+// implicit `session-<lead>` team, four headless MCP jobs in their own
+// directory, and a twelve-member workflow fan-out. Every child names the lead
+// as its parent, so the crew is 20 bodies. Synthetic and structural only.
+const COUNCIL_LEAD_ID = 'sim-council-lead';
+const COUNCIL_PROJECT = '/sim/repos/council';
+const COUNCIL_TEAMMATES = [
+    { slug: 'eye', color: 'blue', tool: 'Read', input: 'file_path=src/presentation/character-mode/CouncilRing.js', tile: { tileX: 23, tileY: 18 } },
+    { slug: 'folk', color: 'green', tool: 'Grep', input: 'pattern=parentSessionId', tile: { tileX: 25, tileY: 19 } },
+    { slug: 'truth', color: 'yellow', tool: 'Bash', input: 'command=npm run test:integration', tile: { tileX: 27, tileY: 15 } },
+    { slug: 'experiences', color: 'purple', tool: 'Edit', input: 'file_path=docs/world-visual-qa-checklist.md', tile: { tileX: 9, tileY: 18 } },
+];
+const COUNCIL_MCP_JOBS = ['lane-sidebar', 'lane-crew', 'lane-lineage', 'lane-engine'];
+const COUNCIL_WORKFLOW_COUNT = 12;
+
+export const COUNCIL_FLEET_SCENARIO = {
+    id: 'council-fleet',
+    label: 'Council fleet',
+    description: 'A lead waits in Poll on four coloured teammates, four MCP jobs and a twelve-member workflow fan-out: one crew of 20.',
+    timeBase: SCENARIO_TIME_BASE,
+    agents: [
+        agentSpec({
+            id: COUNCIL_LEAD_ID,
+            name: 'Council',
+            model: 'claude-fable-5-2',
+            effort: 'xhigh',
+            status: AgentStatus.WORKING,
+            turnState: 'tool_pending',
+            pendingTool: 'Poll',
+            pendingSince: SCENARIO_TIME_BASE - 6 * 60_000,
+            backgroundPending: { count: 4, kinds: ['teammate'], since: SCENARIO_TIME_BASE - 9 * 60_000 },
+            script: { tool: 'Poll', description: 'Wait for the four council lanes', since: SCENARIO_TIME_BASE - 6 * 60_000 },
+            lastTool: 'Read',
+            lastToolInput: 'file_path=agents/plans/2026-11-19-council.md',
+            projectPath: COUNCIL_PROJECT,
+            position: { tileX: 18, tileY: 20 },
+        }),
+        ...COUNCIL_TEAMMATES.map(({ slug, color, tool, input, tile }, index) => agentSpec({
+            id: `sim-council-0${index + 1}`,
+            name: `council-0${index + 1}-${slug}`,
+            model: 'claude-opus-5',
+            effort: 'xhigh',
+            agentType: 'sub-agent',
+            subagentKind: 'general-purpose',
+            agentColor: color,
+            teamName: `session-${COUNCIL_LEAD_ID}`,
+            parentId: COUNCIL_LEAD_ID,
+            status: AgentStatus.WORKING,
+            currentTool: tool,
+            currentToolInput: input,
+            projectPath: COUNCIL_PROJECT,
+            position: tile,
+        })),
+        ...COUNCIL_MCP_JOBS.map((label, index) => agentSpec({
+            id: `sim-council-mcp-${index + 1}`,
+            name: label,
+            provider: 'codex',
+            model: 'gpt-6.2-astra',
+            effort: 'high',
+            agentType: 'sub-agent',
+            subagentKind: 'mcp',
+            parentId: COUNCIL_LEAD_ID,
+            status: AgentStatus.WORKING,
+            currentTool: 'exec_command',
+            currentToolInput: 'cmd=npm run validate:quick',
+            projectPath: `/sim/jobs/codex-cc-mcp/${label}`,
+            position: { tileX: 12 + index * 2, tileY: 26 },
+        })),
+        ...Array.from({ length: COUNCIL_WORKFLOW_COUNT }, (_, index) => agentSpec({
+            id: `sim-council-wf-${String(index + 1).padStart(2, '0')}`,
+            name: `sweep-${String(index + 1).padStart(2, '0')}`,
+            model: 'claude-haiku-4-5',
+            agentType: 'workflow-subagent',
+            workflowId: 'wf-council-sweep',
+            workflowName: 'council-sweep',
+            parentId: COUNCIL_LEAD_ID,
+            status: index % 3 === 2 ? AgentStatus.IDLE : AgentStatus.WORKING,
+            currentTool: index % 3 === 2 ? null : (index % 2 ? 'Grep' : 'Read'),
+            currentToolInput: index % 3 === 2 ? null : `file_path=src/sweep/part-${index + 1}.js`,
+            projectPath: COUNCIL_PROJECT,
+            position: { tileX: 14 + (index % 6) * 2, tileY: 30 + Math.floor(index / 6) * 2 },
+        })),
+    ],
+    timeline: [],
+    metadata: {
+        qaTags: ['fleet', 'parent-child', 'squad', 'sidebar-nesting', 'subagent-wait'],
+        selectedAgentId: COUNCIL_LEAD_ID,
+        expectedCrewSize: 20,
+        camera: { centerTile: { tileX: 19, tileY: 22 }, zoom: 2 },
+    },
+};
 
 export const WORLD_SCENARIOS = [
     NO_AGENTS_SCENARIO,
@@ -1652,6 +1748,7 @@ export const WORLD_SCENARIOS = [
     CACHE_ORE_SCENARIO,
     TASKBOARD_LIVE_SCENARIO,
     STALE_CARGO_SCENARIO,
+    COUNCIL_FLEET_SCENARIO,
 ];
 
 const WORLD_SCENARIO_BY_ID = new Map(WORLD_SCENARIOS.map((scenario) => [scenario.id, scenario]));

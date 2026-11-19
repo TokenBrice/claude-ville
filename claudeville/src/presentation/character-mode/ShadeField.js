@@ -88,7 +88,7 @@
 // Pure apart from `shadeFieldFor` and its helpers (they need a document):
 // everything else imports and runs in Node.
 
-import { MAP_SIZE } from '../../config/constants.js';
+import { MAP_SIZE, TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
 import { LANDMARK_MASSING, PROP_MASSING } from '../../config/landmarkMassing.js';
 import { VILLAGE_GATE, VILLAGE_GATE_GEOMETRY, VILLAGE_WALL_ROUTES } from '../../config/townPlan.js';
 import { footprintFieldRect } from './FootprintField.js';
@@ -588,7 +588,7 @@ export function createShadeFieldBuild({ rect = shadeFieldRect(), sweep, facets =
     let facetRow = -1;
     let facetPlan = null;
     let latheIndex = 0;
-    const job = { field: null, done: false, cells: 0 };
+    const job = { field: null, done: false, cells: 0, backing: [out, seen?.height, seen?.facet] };
 
     const planFacet = (f) => {
         let minX = Infinity;
@@ -978,6 +978,17 @@ export function shadePointAt(field, x, y, h = 0, bias = SHADE_POINT_BIAS) {
     return shadeCeilingAt(field, x, y) > h + bias;
 }
 
+/**
+ * Texel A at a drawn position: the SHADE_SURFACE code (lit, cast or turned
+ * wall or top; 0 = no massing surface there), or null for a field built
+ * without receivers (no `texels`).
+ */
+export function shadeSurfaceAt(field, x, y) {
+    if (!field?.texels) return null;
+    const index = cellIndex(field, x, y);
+    return index < 0 ? SHADE_SURFACE.none : Math.floor(field.texels[index * 4 + 3] / SHADE_SURFACE_STEP);
+}
+
 /** The sunlit share (0-1) of the air column from the ground to `top` px here. */
 export function shadeLitShareAt(field, x, y, top) {
     if (!(top > 0)) return 1;
@@ -1040,6 +1051,48 @@ export function paintShadeCells(field, out, rgb, row0 = 0, row1 = field.rows, wa
             out[o + 1] = rgb[1];
             out[o + 2] = rgb[2];
             out[o + 3] = alpha;
+        }
+    }
+}
+
+/**
+ * SD-3 — the sun's lift as RGBA cells for the Canvas backend: `rgb` at alpha
+ * 255 on confirmed land the ground rule calls lit, clear elsewhere. Land is
+ * the LA-7 sea fret's rule (WorldFrameRenderer `seaFretLandMask`) on the
+ * coast lattice (`water`: `{ fields, waterBit, coveredBit }`, the coast
+ * bake's resident fields and flag bits): a covered cell (dock, deck, bridge
+ * span), or a cell without the water flag on the map grid; open water, the
+ * unclassified shelf off the grid and anything outside the lattice are not.
+ * Without a lattice nothing is lit. The whole field into `out`.
+ */
+export function paintLitCells(field, out, rgb, water = null) {
+    const { cols, rows, data } = field;
+    const lattice = water?.fields?.coastField ? water.fields : null;
+    for (let row = 0; row < rows; row++) {
+        const wy = field.originY + row * field.cellH;
+        const waterRow = lattice ? Math.floor((wy - lattice.y) / 2) : -1;
+        let o = row * cols * 4;
+        for (let col = 0; col < cols; col++, o += 4) {
+            let lit = false;
+            if (waterRow >= 0 && waterRow < lattice.rows && !(data[(row * cols + col) * 2 + 1] > shadeBayer(col, row) * 255)) {
+                const waterCol = Math.floor((field.originX + col * field.cellW - lattice.x) / 2);
+                if (waterCol >= 0 && waterCol < lattice.cols) {
+                    const flags = lattice.coastField[(waterRow * lattice.cols + waterCol) * 2 + 1];
+                    if (flags & water.coveredBit) {
+                        lit = true;
+                    } else if (!(flags & water.waterBit)) {
+                        const wx = lattice.x + waterCol * 2 + 1;
+                        const wy = lattice.y + waterRow * 2 + 1;
+                        const u = wy / TILE_HEIGHT + wx / TILE_WIDTH;
+                        const v = wy / TILE_HEIGHT - wx / TILE_WIDTH;
+                        lit = u >= -0.5 && v >= -0.5 && u <= MAP_SIZE - 0.5 && v <= MAP_SIZE - 0.5;
+                    }
+                }
+            }
+            out[o] = rgb[0];
+            out[o + 1] = rgb[1];
+            out[o + 2] = rgb[2];
+            out[o + 3] = lit ? 255 : 0;
         }
     }
 }
@@ -1175,8 +1228,12 @@ function gatherCasters(renderer) {
 }
 
 function idle(callback) {
-    if (typeof requestIdleCallback === 'function') return requestIdleCallback(callback, { timeout: IDLE_TIMEOUT_MS });
-    return setTimeout(() => callback(null), 32);
+    if (typeof requestIdleCallback === 'function') {
+        const handle = requestIdleCallback(callback, { timeout: IDLE_TIMEOUT_MS });
+        return () => globalThis.cancelIdleCallback?.(handle);
+    }
+    const handle = setTimeout(() => callback(null), 32);
+    return () => clearTimeout(handle);
 }
 
 function stateFor(renderer) {
@@ -1188,8 +1245,10 @@ function stateFor(renderer) {
         castersAt: -Infinity,
         // What is up: `{ key, fieldKey, field, canvas, revision }`.
         ready: null,
+        canvasDirty: false,
+        receiversDirty: false,
         job: null,
-        scheduled: false,
+        cancelIdle: null,
         // SD-2 — the view plane (`{ key, facet, bounds }`, good while the
         // casters hold) and the receivers' texels.
         view: null,
@@ -1217,6 +1276,13 @@ function ensureCanvas(state, field, atomic) {
     if (state.image?.height !== imageRows) state.image = state.ctx.createImageData(field.cols, imageRows);
 }
 
+// The keys of what the frame last asked for, over the casters last read.
+function wantKeys(state) {
+    const { shade, waterRevision, atomic, receivers } = state.want;
+    const fieldKey = `${state.casters.key}#${shade.key}${receivers ? '#r' : ''}`;
+    return { fieldKey, key: `${fieldKey}#${shade.color.join(',')}#${waterRevision ?? ''}${atomic ? '#a' : ''}` };
+}
+
 // What the frame last asked for against what is up: start the build that
 // closes the gap, or only a repaint when the colour or the water moved.
 function planJob(state, renderer) {
@@ -1225,12 +1291,18 @@ function planJob(state, renderer) {
         state.casters = gatherCasters(renderer);
         state.castersAt = now;
     }
-    const { shade, water, waterRevision, atomic, receivers } = state.want;
-    const fieldKey = `${state.casters.key}#${shade.key}${receivers ? '#r' : ''}`;
-    const key = `${fieldKey}#${shade.color.join(',')}#${waterRevision ?? ''}${atomic ? '#a' : ''}`;
-    if (state.ready?.key === key || state.job?.key === key) return;
+    const { shade, water, atomic, receivers } = state.want;
+    const { fieldKey, key } = wantKeys(state);
+    if (state.job?.key === key) return;
+    // The resident painter reuses the published backing. Rebuild anything an
+    // abandoned job changed before treating the ready key as a cache hit.
+    if (state.ready?.key === key && !state.canvasDirty && !state.receiversDirty) {
+        state.job = null;
+        state.image = null;
+        return;
+    }
     const job = { key, fieldKey, rgb: shade.color, water, atomic, viewBuild: null, build: null, field: null, paintRow: -1 };
-    if (state.ready?.fieldKey === fieldKey) {
+    if (state.ready?.fieldKey === fieldKey && !state.receiversDirty) {
         job.field = state.ready.field;
         job.paintRow = 0;
     } else {
@@ -1275,7 +1347,11 @@ function runJob(state, budgetMs) {
             job.viewBuild = null;
             if (performance.now() >= deadline) return;
         }
-        if (!job.build) job.build = createShadeFieldBuild({ ...job.options, view: job.options.texels ? state.view : null });
+        if (!job.build) {
+            const { texels } = job.options;
+            if (texels && texels === state.ready?.field.texels) state.receiversDirty = true;
+            job.build = createShadeFieldBuild({ ...job.options, view: texels ? state.view : null });
+        }
         if (!job.build.step(Math.max(0, deadline - performance.now()))) return;
         job.field = job.build.field;
         job.paintRow = 0;
@@ -1290,6 +1366,7 @@ function runJob(state, budgetMs) {
         } else {
             paintShadeCells(field, state.image.data, job.rgb, job.paintRow, row1, job.water);
             state.ctx.putImageData(state.image, 0, job.paintRow, 0, 0, field.cols, row1 - job.paintRow);
+            if (state.canvas === state.ready?.canvas) state.canvasDirty = true;
         }
         job.paintRow = row1;
     }
@@ -1300,15 +1377,20 @@ function runJob(state, budgetMs) {
     state.revision++;
     if (job.build) field.revision = state.revision;
     state.ready = { key: job.key, fieldKey: job.fieldKey, field, canvas: state.canvas, revision: state.revision };
+    state.canvasDirty = false;
+    state.receiversDirty = false;
     state.job = null;
 }
 
 function schedule(state, renderer) {
-    if (state.scheduled) return;
-    state.scheduled = true;
-    idle((deadline) => {
-        state.scheduled = false;
+    if (state.cancelIdle) return;
+    state.cancelIdle = idle((deadline) => {
+        state.cancelIdle = null;
         if (renderer._shadeFieldState !== state || !state.want) return;
+        if (renderer._visibilityPaused || renderer._worldModeActive === false) {
+            state.want = null;
+            return;
+        }
         const room = deadline && !deadline.didTimeout ? Math.min(IDLE_SLICE_MS, Math.max(1, deadline.timeRemaining() - 1)) : IDLE_SLICE_MS;
         planJob(state, renderer);
         runJob(state, room);
@@ -1365,6 +1447,18 @@ export function shadeFieldFor(renderer, shade, { water = null, atomic = false, r
 }
 
 /**
+ * True while the field the frame last asked for is not the one that is up: a
+ * build or a repaint is queued or in flight, and its landing will change the
+ * frame. Read by the still-frame smokes; nothing in the product reads it.
+ */
+export function shadeFieldPending(renderer) {
+    const state = renderer?._shadeFieldState;
+    if (!state?.want) return false;
+    if (state.job || !state.ready || !state.casters || state.canvasDirty || state.receiversDirty) return true;
+    return state.ready.key !== wantKeys(state).key;
+}
+
+/**
  * One whole field for `shade`'s sweep from the renderer's casters, built at
  * once: a bake's shade (the frost), not a frame's. Null without a document.
  */
@@ -1378,9 +1472,27 @@ export function buildShadeFieldFor(renderer, shade) {
 export function releaseShadeField(renderer) {
     const state = renderer?._shadeFieldState;
     if (!state) return;
+    renderer._shadeFieldState = null;
+    state.cancelIdle?.();
     if (state.canvas) {
         state.canvas.width = 0;
         state.canvas.height = 0;
     }
-    renderer._shadeFieldState = null;
+    // Both resident backends cache the uploaded array alongside the GPU texture.
+    const world = renderer.gpuWorld;
+    const receiver = world?._textureEntries?.get('field:shade');
+    if (receiver) receiver.source = null;
+    if (world?._sunShade) world._sunShade.texture = null;
+}
+
+export function shadeFieldBufferBytes(renderer) {
+    const state = renderer._shadeFieldState;
+    if (!state) return 0;
+    const field = state.ready?.field;
+    const planes = [field?.data, field?.texels, state.texels, state.view?.facet, state.image?.data,
+        ...(state.job?.build?.backing || []), ...(state.job?.viewBuild?.backing || [])];
+    const buffers = new Set(planes.map(plane => plane?.buffer).filter(Boolean));
+    let bytes = 0;
+    for (const buffer of buffers) bytes += buffer.byteLength;
+    return bytes;
 }

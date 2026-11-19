@@ -198,6 +198,12 @@ body:has(#btnModeDashboard.topbar__mode-btn--active) .toast[data-cue-kind="summo
     animation: toast-out 240ms steps(4, end) forwards;
 }
 
+/* XP-5 — the postcard confirmation is one static notice: no fade in or out. */
+.toast--still,
+.toast--still.toast--fadeout {
+    animation: none;
+}
+
 @keyframes toast-in {
     from { opacity: 0; }
     to { opacity: 1; }
