@@ -62,6 +62,10 @@ const MODEL_REGISTRY = [
         "sample": "claude-fable-5-2",
         "shortLabel": "Fable",
         "spriteId": "agent.claude.fable",
+        "spriteVariants": [
+            "agent.claude.fable",
+            "agent.claude.fable.b"
+        ],
         "trim": [
             "#ffd6f0",
             "#ffe7a8",
@@ -161,6 +165,10 @@ const MODEL_REGISTRY = [
         "sample": "claude-fable-5-1",
         "shortLabel": "Fable",
         "spriteId": "agent.claude.fable",
+        "spriteVariants": [
+            "agent.claude.fable",
+            "agent.claude.fable.b"
+        ],
         "trim": [
             "#ffd6f0",
             "#ffe7a8",
@@ -194,6 +202,10 @@ const MODEL_REGISTRY = [
         "sample": "claude-fable-5",
         "shortLabel": "Fable",
         "spriteId": "agent.claude.fable",
+        "spriteVariants": [
+            "agent.claude.fable",
+            "agent.claude.fable.b"
+        ],
         "trim": [
             "#ffd6f0",
             "#ffe7a8",
@@ -750,6 +762,10 @@ const MODEL_REGISTRY = [
         "sample": "gpt-6.2-astra",
         "shortLabel": "6.2 Astra",
         "spriteId": "agent.codex.gpt6astra",
+        "spriteVariants": [
+            "agent.codex.gpt6astra",
+            "agent.codex.gpt6astra.b"
+        ],
         "trim": [
             "#d8bcff",
             "#e6f1ff",
@@ -820,6 +836,10 @@ const MODEL_REGISTRY = [
         "sample": "gpt-6-astra",
         "shortLabel": "6 Astra",
         "spriteId": "agent.codex.gpt6astra",
+        "spriteVariants": [
+            "agent.codex.gpt6astra",
+            "agent.codex.gpt6astra.b"
+        ],
         "trim": [
             "#d8bcff",
             "#e6f1ff",
