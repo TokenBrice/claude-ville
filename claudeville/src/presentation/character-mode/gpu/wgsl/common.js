@@ -193,6 +193,10 @@ export const FRAME_UNIFORM_LAYOUT = uniformLayout('FrameUniforms', [
     // sweep xy); appended likewise.
     ['shadeRect', 'vec4f'],
     ['shade', 'vec4f'],
+    // EN-7 — the 3.7 mirror stops' rect (bound at every ladder level) and
+    // the frame's one rain break (CoastBake mirrorStormDrop); appended likewise.
+    ['mirrorRect', 'vec4f'],
+    ['mirrorBreak', 'f32'],
 ]);
 
 // §2.6 — the per-batch block, one 256-byte slot per batch in a frame ring

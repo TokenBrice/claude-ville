@@ -81,8 +81,8 @@ import { NEUTRAL_GRADE } from '../GradeEvaluator.js';
 import {
     COAST_FIELD_FLAGS,
     COAST_PALETTE,
-    MIRROR_STORM,
     coastFieldTexels,
+    mirrorStormDrop,
     OCEAN_HORIZON_WORLD_Y,
     OPEN_SEA_BAND_DEPTH,
     OPEN_SEA_BAND_MARK_LIFT,
@@ -1359,7 +1359,7 @@ ivec2 albedoSize() {
 // added as an integer in the fetch, so a paged record is bit-identical to
 // its unpaged twin. The footprints are
 // fwidth taken at the top of main(), before any discard or record branch;
-// material, emissive and occluder sidecars stay nearest. Resting frames never
+// material and occluder sidecars stay nearest. Resting frames never
 // enter this path.
 uniform bool u_fatPixels;
 ${FAT_TAPS_GLSL}
@@ -1402,6 +1402,19 @@ vec4 sampleAlbedo(vec2 uv) {
 }
 uniform sampler2D u_materialMap;
 uniform sampler2D u_emissiveMap;
+vec4 sampleEmission(vec2 uv, float albedoAlpha) {
+    if (!fatOn || !fatSeam(fatAlbedoTaps) || v_gate == 0.0) return textureLod(u_emissiveMap, uv, 0.0);
+    vec4 sum = vec4(0.0);
+    for (int i = 0; i < 4; i++) {
+        float coverage = fatTapWeight(fatAlbedoTaps, i) * fatTap[i].a;
+        if (coverage == 0.0) continue;
+        vec2 local = clamp(fatAlbedoTaps.base + fatTapOffset(i), vec2(0.0), vec2(v_texelRect.zw));
+        vec2 tapUv = (vec2(v_texelRect.xy) + local + 0.5) / vec2(albedoSize());
+        sum += coverage * fatPremultiplied(textureLod(u_emissiveMap, tapUv, 0.0));
+    }
+    // Return straight hue and contribution per covered texel. Output applies albedo alpha once.
+    return sum.a > 0.0 ? vec4(sum.rgb / sum.a, sum.a / albedoAlpha) : vec4(0.0);
+}
 uniform bool u_hasMaterialMap;
 uniform sampler2D u_occluderMap;
 uniform bool u_hasOccluderMap;
@@ -1468,6 +1481,12 @@ uniform float u_coreEnergy;
 uniform sampler2D u_cycleOffset;
 uniform sampler2D u_coastField;
 uniform vec4 u_coastRect;
+// EN-7 — the 3.7 mirror stops' rect (the coast field's, bound at every
+// ladder level so the rain breaks mirrors at MINIMAL too; z == 0 absent) and
+// the frame's one rain break (CoastBake \`mirrorStormDrop\`: 0..1 in eighths,
+// unscaled by the ladder; the accent cuts read the same value).
+uniform vec4 u_mirrorRect;
+uniform float u_mirrorBreak;
 // x: the water clock's scale (u_motionScale; 0 under reduced motion and at
 // MINIMAL = the static frame), y: precipitation for rain rings (0 = none),
 // z: 3.10 caustics on, w: 3.6 swash on.
@@ -1847,25 +1866,15 @@ vec3 staticWaterDashes(vec3 color, vec2 px) {
 // deck or bridge covers (CoastBake \`mirrorStops\`: one nibble a texel, stop +
 // 1, B the cell's top row, A its bottom row, low nibble the left texel).
 int mirrorBaseStop(vec2 world) {
-    if (u_coastRect.z <= 0.0) return -1;
-    ivec2 texel = ivec2(floor(world - u_coastRect.xy));
+    if (u_mirrorRect.z <= 0.0) return -1;
+    ivec2 texel = ivec2(floor(world - u_mirrorRect.xy));
     ivec2 cell = texel >> 1;
-    if (cell.x < 0 || cell.y < 0 || cell.x >= int(u_coastRect.z) || cell.y >= int(u_coastRect.w)) return -1;
+    if (cell.x < 0 || cell.y < 0 || cell.x >= int(u_mirrorRect.z) || cell.y >= int(u_mirrorRect.w)) return -1;
     vec2 rows = texelFetch(u_coastField, cell, 0).ba;
     int packed = int(((texel.y & 1) == 0 ? rows.x : rows.y) * 255.0 + 0.5);
     return (((texel.x & 1) == 0 ? packed : packed >> 4) & 15) - 1;
 }
 
-// 3.7 — heavy rain breaks the still mirrors: past MIRROR_STORM.from
-// precipitation a baked mirror texel gives way to the exact water stop the
-// bake painted it over, on a Bayer share, all of them by from + span
-// (CoastBake \`mirrorStormDrop\`; the Canvas mood layer reads the same
-// stops). \`gone\` says the texel is water again, so it takes the water state
-// (the open sea's body, crests, mood) exactly as the stops beside it.
-float mirrorStormDrop() {
-    float share = clamp((u_weather.x - ${MIRROR_STORM.from.toFixed(2)}) / ${MIRROR_STORM.span.toFixed(2)}, 0.0, 1.0);
-    return floor(share * ${MIRROR_STORM.steps.toFixed(1)} + 0.5) / ${MIRROR_STORM.steps.toFixed(1)};
-}
 // BI-1 — the gust over a still-water texel where the C-W3 cat's paw passes
 // (seaPawAt, the open sea's own rule), else 0; only while u_stillWater.x.
 float stillPawAt(vec2 p) {
@@ -1876,7 +1885,12 @@ float stillPawAt(vec2 p) {
 vec3 mirrorStormColour(vec3 color, vec2 px, out bool gone) {
     gone = false;
     if (!u_terrainBatch) return color;
-    float drop = u_weather.x > ${MIRROR_STORM.from.toFixed(2)} ? mirrorStormDrop() : 0.0;
+    // 3.7 — heavy rain breaks the still mirrors: \`u_mirrorBreak\` of the
+    // baked mirror texels, on the Bayer order, give way to the exact water
+    // stop the bake painted them over (the Canvas mood layer reads the same
+    // stops). \`gone\` says the texel is water again, so it takes the water
+    // state (the open sea's body, crests, mood) exactly as the stops beside it.
+    float drop = u_mirrorBreak;
     // BI-1 — a cat's paw crossing still water breaks its baked mirrors on a
     // Bayer share that grows with the gust; they heal as it moves on. The
     // reflection and lagoon flags gate it before any gust fetch.
@@ -2325,13 +2339,13 @@ void main() {
         albedo.rgb = mix(albedo.rgb, WATER_STOPS[waterStopForSd(reflectSd)], 0.38);
     }
     vec4 sidecar = u_hasMaterialMap ? textureLod(u_materialMap, uv, 0.0) : vec4(0.0);
-    vec4 authoredEmission = u_hasEmissiveMap ? textureLod(u_emissiveMap, uv, 0.0) : vec4(0.0);
     bool packedMap = (v_flags & ${GPU_RECORD_FLAGS.packedGeometry}u) != 0u;
     float materialId = floor(sidecar.r * 255.0 + 0.5);
     float material = sidecar.a > 0.0 && !(packedMap && materialId > 254.5) ? materialId : v_material;
     float emissive = v_emissive;
     vec3 emissionColor = albedo.rgb;
     if (u_hasEmissiveMap) {
+        vec4 authoredEmission = sampleEmission(uv, albedo.a);
         // The emissive channel owns both hue (RGB) and contribution (A). Do
         // not reconstruct authored emission from the albedo texture.
         emissionColor = authoredEmission.rgb;
@@ -4172,7 +4186,7 @@ export class GpuWorldRenderer {
             'u_footprint', 'u_footprintRect', 'u_footprintSize', 'u_marchSteps',
             'u_shadeField', 'u_shadeRect', 'u_shade',
             'u_coreEnergy', 'u_waterMood', 'u_waterSky', 'u_swellDrift',
-            'u_cycleOffset', 'u_coastField', 'u_coastRect', 'u_waterFx', 'u_glint', 'u_glintStops[0]',
+            'u_cycleOffset', 'u_coastField', 'u_coastRect', 'u_mirrorRect', 'u_mirrorBreak', 'u_waterFx', 'u_glint', 'u_glintStops[0]',
             'u_starlight',
             'u_terrainBatch', 'u_cueRuns',
             'u_wetness', 'u_wetReflectionCount', 'u_beamGround', 'u_beamShape', 'u_beamCourseEnds', 'u_beamCourseShares',
@@ -5166,10 +5180,16 @@ export class GpuWorldRenderer {
         let coast = null;
         const live = effectBudgetMode('waterCrests', qualityLevel) === 'on'
             || effectBudgetMode('coastSwash', qualityLevel) === 'on';
-        if (live && fields?.cols > 0 && fields?.rows > 0) {
+        const baked = fields?.cols > 0 && fields?.rows > 0;
+        if (live && baked) {
             cycle = this.uploadTypedTexture('field:cycle-offset', {
                 width: fields.cols, height: fields.rows, format: 'r8', data: fields.cycleOffset, revision: fields.revision,
             });
+        }
+        // EN-7 — the coast field stays bound at MINIMAL for its mirror
+        // stops alone (`u_mirrorRect`); every other reader keeps
+        // `u_coastRect` 0 there.
+        if (baked) {
             coast = this.uploadTypedTexture('field:coast', {
                 width: fields.cols, height: fields.rows, format: 'rgba8', data: coastFieldTexels(fields), revision: fields.revision,
             });
@@ -5179,10 +5199,12 @@ export class GpuWorldRenderer {
         gl.bindTexture(gl.TEXTURE_2D, present ? cycle : this.emptyMaterialTexture);
         gl.uniform1i(uniforms.u_cycleOffset, SCENE_SAMPLER_UNITS.cycleOffset);
         gl.activeTexture(gl.TEXTURE0 + SCENE_SAMPLER_UNITS.coastField);
-        gl.bindTexture(gl.TEXTURE_2D, present ? coast : this.emptyMaterialTexture);
+        gl.bindTexture(gl.TEXTURE_2D, coast || this.emptyMaterialTexture);
         gl.uniform1i(uniforms.u_coastField, SCENE_SAMPLER_UNITS.coastField);
         if (present) gl.uniform4f(uniforms.u_coastRect, fields.x, fields.y, fields.cols, fields.rows);
         else gl.uniform4f(uniforms.u_coastRect, 0, 0, 0, 0);
+        if (coast) gl.uniform4f(uniforms.u_mirrorRect, fields.x, fields.y, fields.cols, fields.rows);
+        else gl.uniform4f(uniforms.u_mirrorRect, 0, 0, 0, 0);
         this.waterFieldsActive = present;
     }
 
@@ -5235,6 +5257,8 @@ export class GpuWorldRenderer {
         gl.uniform4fv(uniforms.u_glint, water.glint);
         gl.uniform3fv(uniforms['u_glintStops[0]'], water.stops);
         this._bindWaterFields(uniforms, feed.coastWater, qualityLevel);
+        const atmosphere = feed.atmosphere || null;
+        gl.uniform1f(uniforms.u_mirrorBreak, mirrorStormDrop(feed.weather || atmosphere?.weather, atmosphere));
         const mood = waterMoodFor({ lightGrade: grade, weather: feed.weather || feed.atmosphere?.weather });
         gl.uniform2f(uniforms.u_waterMood, mood.night, mood.storm);
         gl.uniform4f(uniforms.u_waterSky, mood.sky[0], mood.sky[1], mood.sky[2], mood.skyWeight);

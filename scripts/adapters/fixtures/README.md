@@ -4,6 +4,7 @@ These synthetic JSONL transcripts test parser contracts without reading real pro
 
 | Provider | File | Purpose |
 | --- | --- | --- |
+| Claude and Codex MCP | `lineage/` | Busy, waiting, and idle PID files, a launch result, a matching rollout, and journal success and crash records. The lineage test supplies synthetic process ancestry. |
 | Claude | `claude/all-records.jsonl` | Broad projection: tools/results, tokens/cost, branch/effort, todos, changes, duration, hooks, and bounded text. |
 | Claude | `claude/minimal.jsonl` | Completed turn proving defaults and estimated cost without richer records. |
 | Claude | `claude/models-5-5.jsonl` | Three completed turns preserve the raw Opus, Sonnet, and Haiku 5.5 IDs. The final Haiku turn has observed usage for the price estimate. |

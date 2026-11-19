@@ -8,6 +8,8 @@ import {
   evaluateGrade,
   gradeKeysAt,
 } from '../../claudeville/src/presentation/character-mode/GradeEvaluator.js';
+import { AtmosphereState } from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
+import { resetLookStrengths, setLookStrength } from '../../claudeville/src/presentation/character-mode/LookStrengths.js';
 
 // V6 — the colour script, asserted on the C1 ramps in rough island
 // proportions (grass-majority land, landmarks, a sea share), graded through
@@ -111,4 +113,42 @@ test('gold arrives late: the afternoon holds noon until the approach', () => {
   assert.ok(at(15).t < 0.2, `15:00 is ${Math.round(at(15).t * 100)} % golden`);
   assert.ok(at(17.5).t > 0.9, `17:30 is ${Math.round(at(17.5).t * 100)} % golden`);
   assert.ok(at(17.5).t < 1 && at(17).t < at(17.5).t, 'still easing in');
+});
+
+test('EY-4: falling snow wears a pearl grade, lighter and softer than rain; 0 restores rain, a storm stays a storm', () => {
+  const rain = { type: 'rain', precipitation: 0.7, intensity: 0.7, cloudCover: 0.85, fog: 0.18 };
+  const storm = { ...rain, type: 'storm' };
+  const ambient = grade => luma(grade.ambientTint);
+  for (const minuteOfDay of [12 * 60, 18 * 60 + 30, 22 * 60]) {
+    const today = evaluateGrade({ minuteOfDay, weather: rain });
+    assert.deepEqual(evaluateGrade({ minuteOfDay, weather: rain, snowfall: 0 }), today);
+    const half = evaluateGrade({ minuteOfDay, weather: rain, snowfall: 0.5 });
+    const snow = evaluateGrade({ minuteOfDay, weather: rain, snowfall: 1 });
+    const clear = evaluateGrade({ minuteOfDay, weather: CLEAR });
+    assert.ok(ambient(today) < ambient(half) && ambient(half) < ambient(snow), String(minuteOfDay));
+    assert.ok(ambient(snow) < ambient(clear), String(minuteOfDay));
+    assert.ok(snow.saturation > today.saturation);
+    assert.deepEqual(evaluateGrade({ minuteOfDay, weather: storm, snowfall: 1 }), evaluateGrade({ minuteOfDay, weather: storm }));
+  }
+  // The snapshot: settling snow (a winter rain knot) takes the row at the
+  // look strength; the same knot in May, or ey4 at 0, keeps today's rain.
+  const snapshotGrade = month => {
+    const state = new AtmosphereState({ nowProvider: () => new Date(2027, month, 12, 12) });
+    state.setTimelineKnots([{ ...rain, minute: 0 }]);
+    return state.update().lightGrade;
+  };
+  try {
+    const may = snapshotGrade(4);
+    const january = snapshotGrade(0);
+    setLookStrength('ey4', 0);
+    assert.ok(ambient(january) > ambient(snapshotGrade(0)) + 0.04);
+    assert.equal(ambient(snapshotGrade(4)), ambient(may));
+    // The memo keys on the exact strength: a faint snow row never lingers at 0.
+    setLookStrength('ey4', 0.02);
+    const faint = ambient(snapshotGrade(0));
+    setLookStrength('ey4', 0);
+    assert.ok(faint > ambient(snapshotGrade(0)));
+  } finally {
+    resetLookStrengths();
+  }
 });

@@ -48,7 +48,7 @@ import {
 } from './GpuFrameState.js';
 import { createRecordStaging, RECORD_INSTANCE_BYTES, stageGpuRecords } from './GpuRecordLayout.js';
 import { ALBEDO_PAGE_GUTTER, ALBEDO_PAGE_SIZE } from './GpuAlbedoPage.js';
-import { coastFieldTexels, openSeaHazeRows, openSeaSky, openSeaSquall, waterMoodFor } from '../CoastBake.js';
+import { coastFieldTexels, mirrorStormDrop, openSeaHazeRows, openSeaSky, openSeaSquall, waterMoodFor } from '../CoastBake.js';
 import { createPostFxLadder, POST_FX_LEVELS } from '../postfx/PostFxLadder.js';
 import { NEUTRAL_SOURCE_ENERGY, sourceEnergyFor } from '../AtmosphereState.js';
 import { particleMotifMask } from '../ParticleSystem.js';
@@ -1263,16 +1263,23 @@ export class GpuWorldRendererWebGPU {
         let cycle = null;
         let coast = null;
         const live = effectBudgetMode('waterCrests', qualityLevel) === 'on' || effectBudgetMode('coastSwash', qualityLevel) === 'on';
-        if (live && fields?.cols > 0 && fields?.rows > 0) {
+        const baked = fields?.cols > 0 && fields?.rows > 0;
+        if (live && baked) {
             cycle = this.uploadTypedTexture('field:cycle-offset', {
                 width: fields.cols, height: fields.rows, format: 'r8', data: fields.cycleOffset, revision: fields.revision,
             });
+        }
+        // EN-7 — the coast field stays bound at MINIMAL for its mirror stops
+        // alone (`mirrorRect`); every other reader keeps `coastRect` 0 there.
+        if (baked) {
             coast = this.uploadTypedTexture('field:coast', {
                 width: fields.cols, height: fields.rows, format: 'rgba8', data: coastFieldTexels(fields), revision: fields.revision,
             });
         }
         const present = Boolean(cycle && coast);
         s.coastRect = present ? [fields.x, fields.y, fields.cols, fields.rows] : ZERO4;
+        s.mirrorRect = coast ? [fields.x, fields.y, fields.cols, fields.rows] : ZERO4;
+        s.mirrorBreak = mirrorStormDrop(feed.weather || feed.atmosphere?.weather, feed.atmosphere || null);
         this.waterFieldsActive = present;
         const mood = waterMoodFor({ lightGrade: grade, weather: feed.weather || feed.atmosphere?.weather });
         s.waterMood = [mood.night, mood.storm];
@@ -1383,7 +1390,7 @@ export class GpuWorldRendererWebGPU {
             lightTiles: tiles,
             footprint,
             cycleOffset: present ? cycle : null,
-            coastField: present ? coast : null,
+            coastField: coast,
             puddleMask,
             paletteLut: lut,
             motifs: this._particleCount > 0 ? this._particleMotifTexture : null,
