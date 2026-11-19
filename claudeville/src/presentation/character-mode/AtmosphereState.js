@@ -1347,7 +1347,7 @@ function lightGradeFor(minute, weather, moonFill, shift, snowfall = 0) {
         shift.sunriseShift.toFixed(2),
         shift.sunsetShift.toFixed(2),
         (shift.goldenShift ?? shift.sunsetShift).toFixed(2),
-        Math.round(snowfall * 20),
+        snowfall,
     ].join('|');
     if (_lightGrade && key === _lightGradeKey) return _lightGrade;
     _lightGradeKey = key;

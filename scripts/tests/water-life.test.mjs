@@ -463,3 +463,59 @@ test('EN-7: reflected window light breaks with its mirror, texel by texel on the
         globalThis.document = original;
     }
 });
+
+test('EN-7: a fading room thins the accents the rain left and goes dark only at its gate\'s 0', () => {
+    const original = globalThis.document;
+    globalThis.document = { createElement: () => pixelCanvas(0, 0) };
+    try {
+        const BAYER4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+        const x = 40;
+        const y = 17;
+        const layer = { key: 'mirror-accent:forge:1', x, y, w: 4, h: 4, group: 1, type: 'forge',
+            canvas: pixelCanvas(4, 4, () => 255), emissive: pixelCanvas(4, 4, () => 128) };
+        const drop = mirrorRainDrop(0.55);
+        assert.equal(drop, 0.625);
+        const ranks = [];
+        for (let j = 0; j < 4; j++) for (let i = 0; i < 4; i++) ranks.push({ i, j, rank: BAYER4[(((y + j) & 3) << 2) | ((x + i) & 3)] });
+        const surviving = ranks.filter(t => t.rank >= drop * 16);
+        assert.equal(surviving.length, 6);
+        let previous = Infinity;
+        for (let gate = 1; gate >= -0.001; gate -= 0.05) {
+            const cut = mirrorAccentRainCut(layer, drop, gate);
+            const drawn = cut ? ranks.filter(t => cut.canvas.data[(t.j * 4 + t.i) * 4 + 3] > 0) : [];
+            // Only rain survivors, a share of them in rank order, never more than before.
+            assert.ok(drawn.every(t => t.rank >= drop * 16), gate.toFixed(2));
+            assert.equal(drawn.length, Math.round(Math.max(0, gate) * surviving.length), gate.toFixed(2));
+            assert.ok(drawn.length <= previous);
+            previous = drawn.length;
+        }
+        // A half-lit room shows half the survivors; source off shows none.
+        assert.equal(mirrorAccentRainCut(layer, drop, 0.5) && 3, 3);
+        assert.equal(mirrorAccentRainCut(layer, drop, 0), null);
+        // Dry: the gate alone keeps its lowest ranks, as before EN-7.
+        const dry = mirrorAccentRainCut(layer, 0, 0.5);
+        assert.equal(ranks.filter(t => dry.canvas.data[(t.j * 4 + t.i) * 4 + 3] > 0).every(t => t.rank < 8), true);
+    } finally {
+        globalThis.document = original;
+    }
+});
+
+test('EN-7: both GPU shaders break the mirrors on one unscaled value, with the mirror stops bound at every level', async () => {
+    const { FRAME_UNIFORM_LAYOUT } = await import('../../claudeville/src/presentation/character-mode/gpu/wgsl/common.js');
+    const fs = await import('node:fs');
+    const glsl = fs.readFileSync(new URL('../../claudeville/src/presentation/character-mode/gpu/GpuWorldRenderer.js', import.meta.url), 'utf8');
+    const wgsl = fs.readFileSync(new URL('../../claudeville/src/presentation/character-mode/gpu/wgsl/water.js', import.meta.url), 'utf8');
+    const webgpu = fs.readFileSync(new URL('../../claudeville/src/presentation/character-mode/gpu/GpuWorldRendererWebGPU.js', import.meta.url), 'utf8');
+    assert.ok(FRAME_UNIFORM_LAYOUT.fields.some(field => field.name === 'mirrorBreak'));
+    assert.ok(FRAME_UNIFORM_LAYOUT.fields.some(field => field.name === 'mirrorRect'));
+    assert.match(glsl, /float drop = u_mirrorBreak;/);
+    assert.match(wgsl, /var drop = frame\.mirrorBreak;/);
+    for (const [source, rect] of [[glsl, 'u_mirrorRect'], [wgsl, 'frame.mirrorRect']]) {
+        const body = source.slice(source.indexOf('mirrorBaseStop('), source.indexOf('mirrorBaseStop(') + 400);
+        assert.ok(body.includes(rect) && !/coastRect/i.test(body.replace(/mirrorRect/g, '')), rect);
+    }
+    // The shaders no longer derive the break from the ladder-scaled rain.
+    assert.doesNotMatch(glsl, /u_weather\.x - [0-9.]+\) \/ /);
+    assert.doesNotMatch(wgsl, /frame\.weather\.x - [0-9.]+\) \/ /);
+    assert.match(webgpu, /coastField: coast,/);
+});

@@ -258,6 +258,13 @@ test('EN-4: a winter knot falls as snow, so the water takes no rain rings, wet s
         // Fog, storm and intensity still follow the weather.
         assert.deepEqual(winter.weather.slice(1), spring.weather.slice(1));
     }
+    // One answer per snapshot: later reads share the first.
+    const state = new AtmosphereState({ nowProvider: () => new Date(2027, 4, 12, 15) });
+    state.setTimelineKnots([knot]);
+    const snap = state.update();
+    const first = liquidPrecipitation(snap);
+    snap.weather.precipitation = 0;
+    assert.equal(liquidPrecipitation(snap), first);
     // The season boundary: February snows, March rains.
     assert.equal(at(new Date(2027, 1, 28, 15)).liquid, 0);
     assert.ok(at(new Date(2027, 2, 1, 15)).liquid > 0.6);

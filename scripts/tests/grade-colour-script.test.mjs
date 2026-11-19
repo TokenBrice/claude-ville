@@ -143,6 +143,11 @@ test('EY-4: falling snow wears a pearl grade, lighter and softer than rain; 0 re
     setLookStrength('ey4', 0);
     assert.ok(ambient(january) > ambient(snapshotGrade(0)) + 0.04);
     assert.equal(ambient(snapshotGrade(4)), ambient(may));
+    // The memo keys on the exact strength: a faint snow row never lingers at 0.
+    setLookStrength('ey4', 0.02);
+    const faint = ambient(snapshotGrade(0));
+    setLookStrength('ey4', 0);
+    assert.ok(faint > ambient(snapshotGrade(0)));
   } finally {
     resetLookStrengths();
   }

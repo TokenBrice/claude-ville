@@ -1630,8 +1630,10 @@ const MIRROR_FADE_ROWS = 16;
  * or storm) a share of every mirror texel gives way to its water stop on the
  * Bayer order, all of them at from + span, in `steps` buckets. The resident
  * shader (`mirrorStormColour`, on `u_weather.x`) and the Canvas mood layer
- * read the same rule (`mirrorRainDrop`). EN-4 — only liquid rain breaks
- * them: winter precipitation falls as snow (`atmosphere`'s date).
+ * read the same rule. EN-4 — only liquid rain breaks them: winter
+ * precipitation falls as snow (`atmosphere`'s date). EN-7 — one value per
+ * frame, unscaled by the quality ladder: the GPU shaders' `u_mirrorBreak`,
+ * the Canvas mood layer and both accent paths read `mirrorStormDrop`.
  */
 export const MIRROR_STORM = Object.freeze({ from: 0.3, span: 0.4, steps: 8 });
 export function mirrorRainDrop(precipitation) {
@@ -2342,20 +2344,26 @@ export function mirrorAccentGate(renderer, layer, atmosphere) {
 }
 
 /**
- * EN-7 — what a rain break leaves of a mirror accent layer: an accent texel
- * lies on its mirror's texel and goes with it, on the same world-locked
- * Bayer rank (`bayer(x, y) < drop`: the shader's `waterBayer4`, the mood
- * layer's orders), so a lamp keeps its reflection where its mirror survives.
- * `drop` is the break the path's mirror reads (`mirrorRainDrop` of its
- * own precipitation). `layer` itself while dry, null when no texel
- * survives; each drop step is cut once per layer (`key` names the step).
+ * EN-7 — the texels of a mirror accent layer drawn now: an accent texel
+ * lies on its mirror's texel and goes with it in the rain, on the same
+ * world-locked Bayer rank (`bayer(x, y) < drop`: the shaders'
+ * `waterBayer4`, the mood layer's orders), so a lamp keeps its reflection
+ * where its mirror survives. `share` (Canvas: the room gate x core; the GPU
+ * dims the whole cut instead, 1) keeps that share of the surviving ranks,
+ * lowest first, so a fading room thins what the rain left and goes dark
+ * only at its gate's 0. `drop` is the frame's one mirror break
+ * (`mirrorStormDrop`). `layer` itself while dry and whole, null when no
+ * texel is kept; each (drop, share) step is cut once per layer (`key` names
+ * the step).
  */
-export function mirrorAccentRainCut(layer, drop) {
-    if (!(drop > 0)) return layer;
-    const step = Math.round(drop * 16);
-    if (step >= 16) return null;
+export function mirrorAccentRainCut(layer, drop, share = 1) {
+    const lo = Math.max(0, Math.min(16, Math.round((Number(drop) || 0) * 16)));
+    const hi = lo + Math.round(Math.max(0, Math.min(1, Number(share) || 0)) * (16 - lo));
+    if (hi <= lo) return null;
+    if (lo === 0 && hi === 16) return layer;
     const cuts = layer.rainCuts ||= new Map();
-    if (cuts.has(step)) return cuts.get(step);
+    const id = `${lo}:${hi}`;
+    if (cuts.has(id)) return cuts.get(id);
     let kept = 0;
     const cutCanvas = source => {
         const canvas = document.createElement('canvas');
@@ -2369,7 +2377,8 @@ export function mirrorAccentRainCut(layer, drop) {
             for (let i = 0; i < canvas.width; i++) {
                 const o = (j * canvas.width + i) * 4 + 3;
                 if (image.data[o] === 0) continue;
-                if (bayer(layer.x + i, layer.y + j) * 16 < step) image.data[o] = 0;
+                const rank = bayer(layer.x + i, layer.y + j) * 16;
+                if (rank < lo || rank >= hi) image.data[o] = 0;
                 else kept++;
             }
         }
@@ -2378,8 +2387,8 @@ export function mirrorAccentRainCut(layer, drop) {
     };
     const emissive = cutCanvas(layer.emissive);
     const canvas = cutCanvas(layer.canvas);
-    const result = kept > 0 ? { ...layer, canvas, emissive, rainCuts: null, key: `${layer.key}:rain${step}` } : null;
-    cuts.set(step, result);
+    const result = kept > 0 ? { ...layer, canvas, emissive, rainCuts: null, key: `${layer.key}:cut${id}` } : null;
+    cuts.set(id, result);
     return result;
 }
 

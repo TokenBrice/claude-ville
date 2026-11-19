@@ -87,10 +87,18 @@ function snapshotMonth(atmosphere) {
     return date instanceof Date && !Number.isNaN(date.getTime()) ? date.getMonth() : -1;
 }
 
+// One answer per atmosphere snapshot, shared by every consumer.
+const _liquidMemo = new WeakMap();
+
 /** The liquid precipitation (0..1) of `weather` under snapshot `atmosphere`'s date. */
 export function liquidPrecipitation(atmosphere, weather = atmosphere?.weather) {
-    if (!weather || isWinterMonth(snapshotMonth(atmosphere))) return 0;
-    return clamp01(Number(weather.precipitation ?? weather.intensity) || 0);
+    const own = atmosphere && typeof atmosphere === 'object' && weather === atmosphere.weather;
+    if (own && _liquidMemo.has(atmosphere)) return _liquidMemo.get(atmosphere);
+    const liquid = !weather || isWinterMonth(snapshotMonth(atmosphere))
+        ? 0
+        : clamp01(Number(weather.precipitation ?? weather.intensity) || 0);
+    if (own) _liquidMemo.set(atmosphere, liquid);
+    return liquid;
 }
 
 /** Whether settling snow falls in month `monthIndex` (0..11) under `weather`. */
