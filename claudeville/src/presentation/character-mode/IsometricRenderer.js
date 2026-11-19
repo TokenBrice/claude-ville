@@ -595,6 +595,7 @@ const VILLAGE_WALL_SEEDS = Object.freeze({ west: 101, east: 211 });
 export class IsometricRenderer {
     constructor(world, options = {}) {
         this.world = world;
+        this.replay = options.replay || null;
         this.assets = options.assets || null;
         this.sprites = this.assets ? new SpriteRenderer(this.assets) : null;
         installGroundBake(this);
@@ -635,7 +636,8 @@ export class IsometricRenderer {
             : null;
         this.visitIntentManager = new VisitIntentManager({ world: this.world });
         this.visitTileAllocator = new VisitTileAllocator();
-        this.atmosphereState = new AtmosphereState();
+        this.atmosphereState = new AtmosphereState(this.replay
+            ? { nowProvider: () => new Date(this.replay.replayClock.now) } : undefined);
         this.skyRenderer = new SkyRenderer({ assets: this.assets });
         this.weatherRenderer = new WeatherRenderer();
         // Weather renderer needs the AssetManager so its sprite-stamp helpers
@@ -2839,6 +2841,7 @@ export class IsometricRenderer {
         const lastFrameAt = this._lastLoopFrameTime;
         if (!Number.isFinite(lastFrameAt) || now - lastFrameAt <= LONG_FRAME_GAP_MS) return;
         if (this._worldSpritesDirty) this._reconcileSpritesWithWorld();
+        if (this.replay?.recorded) return;
         const wallNow = Date.now();
         for (const [agentId, sprite] of Array.from(this.agentSprites)) {
             const transit = this.gateTransits.get(agentId);
@@ -3452,12 +3455,12 @@ export class IsometricRenderer {
             ?? (metadata.reducedMotion ? 0 : NaN)
         );
         if (Number.isFinite(motionScale)) {
-            this._setMotionScale(Math.max(0, Math.min(1, motionScale)));
+            this._setMotionScale(this.replay && this.motionQuery?.matches ? 0 : Math.max(0, Math.min(1, motionScale)));
         }
 
         const clock = atmosphere.clock || null;
         const hour = Number(clock?.hours);
-        if (Number.isFinite(hour)) {
+        if (!this.replay && Number.isFinite(hour)) {
             const minutes = Number(clock?.minutes);
             const seconds = Number(clock?.seconds);
             const hourValue = hour
@@ -4121,6 +4124,7 @@ export class IsometricRenderer {
     }
 
     _beginRelationshipArrival(agent) {
+        if (this.replay?.recorded) return false;
         const sprite = this.agentSprites.get(agent?.id);
         if (!sprite || !this.arrivalDeparture) return false;
         const parentSprite = this._parentSpriteFor(agent);
@@ -4308,6 +4312,10 @@ export class IsometricRenderer {
 
     _beginAgentGateArrival(agent, sprite) {
         if (!sprite) return;
+        if (this.replay?.recorded) {
+            sprite.setTilePosition(agent.position.tileX, agent.position.tileY);
+            return;
+        }
 
         // Subagents step out of the Portal Gate toward their parent; with
         // motion, the dispatch comet (6.3) relocates them beside the parent.
@@ -4416,6 +4424,7 @@ export class IsometricRenderer {
     // Subagents merge back into their parent, orphans return to the Portal
     // Gate, and top-level sessions walk out through the village gate.
     _beginAgentDeparture(agent) {
+        if (this.replay?.recorded) return this._removeAgentSprite(agent.id, { fade: false });
         const sprite = this.agentSprites.get(agent?.id);
         if (!sprite || sprite._archiveAnim || this._isGateTransit(sprite, 'departure')) return;
         const handled = this._beginRelationshipDeparture(agent);
@@ -4994,7 +5003,7 @@ export class IsometricRenderer {
         if (
             !this.atmosphereState?._frozenDate
             && !Number.isFinite(this.atmosphereState?._hourOverride)
-            && now - (now % 1000) !== this._idleLastRenderClockMs
+            && (this.replay?.replayClock.now ?? (now - (now % 1000))) !== this._idleLastRenderClockMs
         ) {
             return true;
         }
@@ -5182,10 +5191,13 @@ export class IsometricRenderer {
                 this._failFallbackPrep(prep, new Error('World fallback preparation exceeded its 5 s frame hold'));
             }
             if (this._frameFailureStats.paused) return;
-            stage = 'idle';
-            const skipIdlePaint = this._canSkipIdleFrame(Date.now());
             stage = 'clock';
             advanceMotionClock(this._motionClock, dt, this.motionScale ?? 1);
+            // Keep the film at real playback speed across a missed frame.
+            // Scene motion still uses its short, clamped stride delta.
+            if (this._worldFramePresented) this.replay?.advanceReplay(frameGapMs || dt, this.motionScale <= 0);
+            stage = 'idle';
+            const skipIdlePaint = this._canSkipIdleFrame(Date.now());
             this.waterFrame = virtualFramesFor(this.motionTimeMs) * WATER_FRAME_STEP;
             perf = getClientPerfMetrics();
             stage = 'update';
@@ -5693,8 +5705,10 @@ export class IsometricRenderer {
         if (this._chatMatchAccumulator >= 250) {
             this._chatMatchAccumulator = 0;
             slowSystemsTick = true;
-            this._updateChatMatching();
-            this.agentEventStream?.reconcileChatPairs?.(this.agentSprites);
+            if (!this.replay?.recorded) {
+                this._updateChatMatching();
+                this.agentEventStream?.reconcileChatPairs?.(this.agentSprites);
+            }
         }
         const now = performance.now();
         const chronicleNow = Date.now();
@@ -5734,7 +5748,15 @@ export class IsometricRenderer {
             const particleSink = this._agentVisibleOnScreen(sprite, viewport)
                 ? this.particleSystem
                 : null;
-            sprite.update(particleSink, dt);
+            if (this.replay?.recorded) {
+                const position = sprite.agent.position;
+                if (position !== sprite._lastRecordedPosition) {
+                    sprite.setTilePosition(position.tileX, position.tileY);
+                    sprite._lastRecordedPosition = position;
+                }
+            } else {
+                sprite.update(particleSink, dt);
+            }
             const transit = this.gateTransits.get(sprite.agent?.id);
             if (transit && !sprite.moving && sprite.hasReachedTarget?.()) {
                 if (transit.type === 'departure') {
@@ -5779,7 +5801,7 @@ export class IsometricRenderer {
         this._stationaryOverlapAccumulator += dt;
         if (this._stationaryOverlapAccumulator >= 420) {
             this._stationaryOverlapAccumulator = 0;
-            this._resolveStationaryOverlaps();
+            if (!this.replay?.recorded) this._resolveStationaryOverlaps();
         } else if (walkerStopped) {
             // 7.4 — two bodies that land on one point the same refresh
             // settle onto the fan ring at once, not up to 420 ms later.
@@ -5796,8 +5818,11 @@ export class IsometricRenderer {
         // Ship motion is visual and stays frame-smooth. Git/source semantics
         // only need the existing 250ms application cadence.
         this.harborTraffic?.advance?.(dt);
-        if (slowSystemsTick) {
-            this.harborTraffic?.reconcile?.(agents, chronicleNow);
+        const pendingGit = this.replay?.pendingGit;
+        if (slowSystemsTick || pendingGit?.length) {
+            const harborSources = pendingGit?.length
+                ? [...this.world.agents.values(), { gitEvents: pendingGit.splice(0) }] : agents;
+            this.harborTraffic?.reconcile?.(harborSources, chronicleNow, this.replay?.recorded ? { incremental: true } : undefined);
             this._harborFailedPushState = this.harborTraffic?.getFailedPushState?.(chronicleNow) || null;
             let activeWorkingCount = 0;
             for (const agent of agents) {
@@ -9786,8 +9811,9 @@ export class IsometricRenderer {
     // reflection ripple, the Lighthouse sheen, the sun/moon path and the 2.9
     // lamp columns).
     _drawDynamicWaterHighlights(ctx) {
-        drawCanvasWaterMood(ctx, this, this._lastAtmosphere);
-        drawCanvasWaterState(ctx, this, this._lastAtmosphere);
+        const atmosphere = this._replaySea?.atmosphere ?? this._lastAtmosphere;
+        drawCanvasWaterMood(ctx, this, atmosphere);
+        drawCanvasWaterState(ctx, this, atmosphere);
     }
 
     _drawWeatherPuddles(ctx) {
@@ -10395,6 +10421,13 @@ export class IsometricRenderer {
     // resident path the 2D canvas is ungraded, so the palette arrives
     // pre-graded; Canvas grades the whole frame afterwards.
     _drawDistantSeaHorizon(ctx, atmosphere, { gpuGraded = false } = {}) {
+        if (this.replay && !gpuGraded) {
+            // Recolor the baked sea strip and its water chunks together. The
+            // sky and the procedural swell continue at the frame clock.
+            const second = Math.floor(this.replay.replayClock.playhead / 1000);
+            if (this._replaySea?.second !== second) this._replaySea = { second, atmosphere };
+            atmosphere = this._replaySea.atmosphere;
+        }
         drawOuterOcean(ctx, this, atmosphere, { gpuGraded });
     }
 

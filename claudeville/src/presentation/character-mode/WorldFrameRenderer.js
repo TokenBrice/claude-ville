@@ -577,7 +577,8 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     // FP-2 — under reduced motion the timeline advances in whole seconds, so
     // a static scene's inputs hold within a second and its idle frames reuse
     // the presented one (IsometricRenderer._hasTimedIdleTransition).
-    const atmosphereNow = (renderer.motionScale ?? 1) > 0 ? renderNow : renderNow - (renderNow % 1000);
+    const atmosphereNow = renderer.replay?.replayClock.now
+        ?? ((renderer.motionScale ?? 1) > 0 ? renderNow : renderNow - (renderNow % 1000));
     renderer._atmosphereClockMs = atmosphereNow;
     const atmosphere = renderer.atmosphereState.update({
         now: new Date(atmosphereNow),
