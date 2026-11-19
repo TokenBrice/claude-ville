@@ -833,7 +833,7 @@ function glassPatchRecord(renderer, drawable, record, horizon, front) {
 // shades exactly like the slate under it (roofs stay unlit by lamps, 2.3),
 // then the eave-drip strip frame while it rains. Both after the glass patch
 // and before the parts, so doors, banners and pennants stay on top. Clear,
-// dry weather emits nothing.
+// dry weather emits nothing but the EN-6 low-sun glint run.
 const NO_ROOF_RECORDS = Object.freeze([]);
 
 function roofWeatherRecords(renderer, drawable, record, horizon, front, sequence) {

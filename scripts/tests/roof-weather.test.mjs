@@ -4,11 +4,18 @@ import { readFileSync } from 'node:fs';
 import { PNG } from 'pngjs';
 
 import {
+    ROOF_GLINT_BOX,
+    ROOF_GLINT_TEXELS,
     paintRoofWeather,
+    roofGlintRun,
+    roofGlintSide,
     roofSnowPixels,
     roofWeatherMap,
     roofWetQuantum,
 } from '../../claudeville/src/presentation/character-mode/RoofWeather.js';
+import { createAtmosphereSnapshot } from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
+import { BuildingSprite } from '../../claudeville/src/presentation/character-mode/BuildingSprite.js';
+import { ART_RAMPS } from '../../claudeville/src/config/artPalette.js';
 import { WINTER_PROPS } from '../../claudeville/src/presentation/character-mode/PropWinter.js';
 
 // A baked scenery prop and its roof polygons (PropWinter's spec, without caps).
@@ -298,4 +305,78 @@ test('the Lighthouse finial stays brass under any cover', () => {
         const finial = texels.filter((p) => Math.floor(p / width) < ridge && brass(sprite, p));
         assert.equal(finial.length, 0, `b${bucket}: ${finial.length} snow texels on the finial`);
     }
+});
+
+// EN-6 — the low sun on an actual roof edge.
+const LANDMARKS = ['archive', 'command', 'forge', 'harbor', 'mine', 'portal', 'taskboard', 'tavern', 'watchtower'];
+const equinox = (hour, minute, type = 'clear') => createAtmosphereSnapshot({
+    now: new Date(2026, 8, 22, hour, minute),
+    weatherOverride: { type },
+    motionScale: 0,
+});
+
+test('the low-sun glint side opens only for a low, unclouded sun and no snow', () => {
+    assert.equal(roofGlintSide(equinox(18, 30)), '-1,-1', 'dusk: the sun stands upper-left');
+    assert.equal(roofGlintSide(equinox(17, 30)), '-1,-1');
+    assert.equal(roofGlintSide(equinox(7, 0)), '-1,1', 'dawn: the sun stands lower-left');
+    assert.equal(roofGlintSide(equinox(12, 0)), '', 'no glint at noon');
+    assert.equal(roofGlintSide(equinox(19, 30)), '', 'none once the sun is down');
+    assert.equal(roofGlintSide(equinox(18, 30, 'rain')), '', 'none in live rain');
+    assert.equal(roofGlintSide(equinox(18, 30, 'overcast')), '', 'none under overcast (deep shade)');
+    assert.equal(roofGlintSide(equinox(18, 30), 1), '', 'none under snow');
+});
+
+test('the low-sun glint is a short run on real roof slate, one palette step up', () => {
+    const stops = new Set([...ART_RAMPS.roofSlate, ...ART_RAMPS.domeSlate, ART_RAMPS.wetSlate[3]]);
+    const hex = (d, o) => `#${[d[o], d[o + 1], d[o + 2]].map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+    let glinting = 0;
+    for (const type of LANDMARKS) {
+        const sprite = landmark(type);
+        const run = roofGlintRun(sprite.map, '-1,-1');
+        assert.ok(run.length <= ROOF_GLINT_TEXELS, type);
+        if (!run.length) continue;
+        glinting++;
+        const xs = run.map((p) => p % sprite.albedo.width);
+        const ys = run.map((p) => Math.floor(p / sprite.albedo.width));
+        assert.ok(Math.max(...xs) - Math.min(...xs) < ROOF_GLINT_BOX[0], `${type} run width`);
+        assert.ok(Math.max(...ys) - Math.min(...ys) < ROOF_GLINT_BOX[1], `${type} run height`);
+        for (const p of run) {
+            assert.ok(sprite.albedo.data[p * 4 + 3] >= 128, `${type}: the glint lands on opaque art`);
+            assert.equal(face(sprite, p), 3, `${type}: the glint lands on roof`);
+        }
+        const { map, albedo } = sprite;
+        const out = new Uint8ClampedArray(map.w * map.h * 4);
+        assert.equal(paintRoofWeather(map, albedo.data, out, { glint: '-1,-1' }), run.length);
+        for (const p of run) {
+            const x = p % albedo.width;
+            const o = ((Math.floor(p / albedo.width) - map.top) * map.w + x - map.left) * 4;
+            assert.ok(stops.has(hex(out, o)), `${type}: ${hex(out, o)} is a roof ramp stop`);
+            assert.notEqual(hex(out, o), hex(albedo.data, p * 4), `${type}: the glint steps the slate`);
+        }
+    }
+    assert.ok(glinting >= 7, `most landmark roofs glint (${glinting})`);
+});
+
+test('snow buries the low-sun glint', () => {
+    const { map, albedo } = landmark('tavern');
+    const plain = new Uint8ClampedArray(map.w * map.h * 4);
+    const lit = new Uint8ClampedArray(map.w * map.h * 4);
+    paintRoofWeather(map, albedo.data, plain, { bucket: 2 });
+    paintRoofWeather(map, albedo.data, lit, { bucket: 2, glint: '-1,-1' });
+    assert.deepEqual(lit, plain);
+});
+
+test('the seeded Canvas roof stroke is gone: the building reaction paints no glint', () => {
+    const atmosphere = equinox(18, 30);
+    const fills = [];
+    const ctx = { save() {}, restore() {}, fillRect(...args) { fills.push(args); }, set fillStyle(v) {}, set globalCompositeOperation(v) {}, set globalAlpha(v) {} };
+    BuildingSprite.prototype._drawAtmosphereBuildingReactions.call({
+        atmosphereState: { reactions: { ...atmosphere.reactions, windowWarmth: 0 } },
+        lightingState: atmosphere.lighting,
+        assets: { getAnchor: () => [100, 100], getDims: () => ({ w: 200, h: 200 }) },
+        _clipToSplitPass() {},
+        motionScale: 0,
+        frame: 0,
+    }, ctx, { type: 'tavern', position: { tileX: 21, tileY: 14 } }, { id: 'building.tavern' }, 300, 300);
+    assert.equal(fills.length, 0);
 });

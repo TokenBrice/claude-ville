@@ -93,7 +93,7 @@ import { RoofWeather } from './RoofWeather.js';
 import { drawPennant, pennantFrame, pennantWind } from './PixelPennant.js';
 import { resolveObservation } from './ObservationCertainty.js';
 import { VillagePhase } from '../../application/VillageState.js';
-import { GOLD, GOLD_RAMP, dottedCurve, fillConvex, gradeTone, pixelLine, ringDots, snap } from './EffectStamps.js';
+import { GOLD, GOLD_RAMP, dottedCurve, fillConvex, gradeTone, ringDots, snap } from './EffectStamps.js';
 
 // READ translates canonical classifier reasons, never tool names or input text.
 const READ_VERBS = Object.freeze({
@@ -333,16 +333,6 @@ function clamp01(value) {
 function compareBuildingDrawableDepth(a, b) {
     return (a.sortY - b.sortY)
         || (BUILDING_DRAWABLE_SORT_BAND[a.kind] - BUILDING_DRAWABLE_SORT_BAND[b.kind]);
-}
-
-function shadowAngleForLighting(lighting) {
-    if (Number.isFinite(lighting?.shadowAngleRad)) return lighting.shadowAngleRad;
-    const sunX = Number(lighting?.sunDirIso?.x);
-    const sunY = Number(lighting?.sunDirIso?.y);
-    if (Number.isFinite(sunX) && Number.isFinite(sunY) && Math.hypot(sunX, sunY) > 0) {
-        return Math.atan2(-sunY, -sunX);
-    }
-    return 0.28;
 }
 
 function lerp(a, b, t) {
@@ -2630,9 +2620,9 @@ export class BuildingSprite {
     _drawAtmosphereBuildingReactions(ctx, building, entry, wx, wy, splitPass = 'whole', horizonY = null) {
         const reactions = this.atmosphereState?.reactions || {};
         const windowWarmth = reactions.windowWarmth || 0;
-        const roofGlint = reactions.roofGlintAlpha || 0;
-        const warmGlint = reactions.warmGlint || 0;
-        if (windowWarmth <= 0.035 && roofGlint <= 0.025) return;
+        // EN-6 — the low sun on a roof is RoofWeather's glint run (the shared
+        // roof patch, every backend), not a stroke here.
+        if (windowWarmth <= 0.035) return;
         const baseAnchor = this.assets.getAnchor(entry.id);
         const dims = this.assets.getDims(entry.id);
         if (!dims) return;
@@ -2715,34 +2705,6 @@ export class BuildingSprite {
             }
         }
 
-        if (roofGlint > 0.025) {
-            // Golden hour lays a warm rim-light along the ridgeline; a wet roof
-            // adds a brighter rain sheen. `warmGlint` (dawn/dusk) tilts the hue
-            // from cool wet silver toward gold and lengthens the highlight.
-            // Its orientation mirrors the canonical solar vector, matching
-            // the opposite cast-shadow direction without another light model.
-            const goldTilt = Math.min(1, warmGlint * 1.4);
-            const rimColor = goldTilt > 0.2
-                ? `rgba(255, 214, 138, ${Math.min(0.30, roofGlint * (0.5 + goldTilt * 0.4 + pulse * 0.24))})`
-                : `rgba(255, 231, 166, ${Math.min(0.22, roofGlint * (0.48 + pulse * 0.34))})`;
-            const count = roofGlint > 0.16 || goldTilt > 0.4 ? 2 : 1;
-            const span = 7 + goldTilt * 6;
-            const sunDir = this.lightingState?.sunDirIso;
-            const hasSunDir = Number.isFinite(sunDir?.x) && Number.isFinite(sunDir?.y);
-            const shadowAngle = shadowAngleForLighting(this.lightingState);
-            const glintDx = hasSunDir ? -sunDir.x * span : Math.cos(shadowAngle) * span;
-            const glintDy = hasSunDir ? sunDir.y * span : -Math.sin(shadowAngle) * span;
-            // A one-texel stepped glint run (no AA stroke or round cap).
-            ctx.fillStyle = rimColor;
-            const thick = goldTilt > 0.4 ? 2 : 1;
-            for (let i = 0; i < count; i++) {
-                const lx = dims.w * (0.28 + ((seed >> (i * 5)) % 42) / 100);
-                const ly = dims.h * (0.22 + ((seed >> (i * 7 + 3)) % 18) / 100);
-                if (!shouldDrawLocalY(ly)) continue;
-                const p = localPoint(lx, ly);
-                pixelLine(ctx, p.x - glintDx, p.y - glintDy, p.x + glintDx, p.y + glintDy, thick);
-            }
-        }
         ctx.restore();
     }
 
@@ -5437,9 +5399,9 @@ export class BuildingSprite {
         this.roofWeather.sync(atmosphere, ground, motionScale, motionTimeMs);
     }
 
-    // The roof snow / wet-course patch of `building` (RoofWeather.patch),
-    // shared by the resident patch record and the Canvas building pass; null
-    // in clear, dry weather.
+    // The roof snow / wet-course / low-sun glint patch of `building`
+    // (RoofWeather.patch), shared by the resident patch record and the Canvas
+    // building pass; null in clear, dry weather with no low sun.
     roofPatchFor(building) {
         const type = building?.type;
         return type ? this.roofWeather.patch(type) : null;
