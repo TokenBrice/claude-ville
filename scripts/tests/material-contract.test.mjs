@@ -257,8 +257,41 @@ test('Command and Tavern facades carry timber and metal in the world atlas', asy
     assert.ok(command[MATERIAL_CLASS_IDS.stone] > 30000, 'Command masonry and roofs stay stone');
     assert.ok(tavern[MATERIAL_CLASS_IDS.timber] > 15000, 'the Tavern oak is timber');
     assert.ok(tavern[MATERIAL_CLASS_IDS.stone] > 15000, 'the Tavern ashlar, plaster and slate stay stone');
-    for (const cls of ['foliage', 'fabric', 'glass-rune', 'fire']) {
+    assert.ok(command[MATERIAL_CLASS_IDS.fabric] > 400, 'the Command wall banners are fabric');
+    for (const cls of ['foliage', 'glass-rune', 'fire']) {
         assert.equal(command[MATERIAL_CLASS_IDS[cls]] ?? 0, 0, `no ${cls} on Command (roof-snow exclusions unchanged)`);
+    }
+    for (const cls of ['foliage', 'fabric', 'glass-rune', 'fire']) {
         assert.equal(tavern[MATERIAL_CLASS_IDS[cls]] ?? 0, 0, `no ${cls} on the Tavern (roof-snow exclusions unchanged)`);
+    }
+    // The banners hang on walls: no roof (surface face 3) texel takes fabric.
+    const occluder = PNG.sync.read(readFileSync(new URL('buildings/building.command/base.occluder.png', root)));
+    const sidecar = PNG.sync.read(readFileSync(new URL('buildings/building.command/base.material.png', root)));
+    for (let p = 0; p < sidecar.width * sidecar.height; p++) {
+        if (sidecar.data[p * 4 + 3] && sidecar.data[p * 4] === MATERIAL_CLASS_IDS.fabric) {
+            assert.notEqual(occluder.data[p * 4 + 2] >> 6, 3, 'a banner texel on the roof');
+        }
+    }
+});
+
+// EN-2 — the ramp edits: no facade fitting keeps the ashlar mauve or the
+// plum oak, and the gate strip's closed frame is still the base crop.
+test('Command and Tavern fittings sit on the oak and iron ramps', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { createRequire } = await import('node:module');
+    const { PNG } = createRequire(import.meta.url)('pngjs');
+    const { OAK_FROM, IRON_FROM } = await import('../sprites/paint-facade-materials.mjs');
+    const root = new URL('../../claudeville/assets/sprites/buildings/', import.meta.url);
+    const hex = (d, i) => `#${[0, 1, 2].map((k) => d[i + k].toString(16).padStart(2, '0')).join('')}`;
+    for (const type of ['command', 'tavern']) {
+        const albedo = PNG.sync.read(readFileSync(new URL(`building.${type}/base.png`, root)));
+        const material = PNG.sync.read(readFileSync(new URL(`building.${type}/base.material.png`, root)));
+        let left = 0;
+        for (let i = 0; i < albedo.data.length; i += 4) {
+            if (!albedo.data[i + 3]) continue;
+            const c = material.data[i];
+            if ((c === MATERIAL_CLASS_IDS.timber && OAK_FROM[hex(albedo.data, i)]) || (c === MATERIAL_CLASS_IDS.metal && IRON_FROM[hex(albedo.data, i)])) left++;
+        }
+        assert.equal(left, 0, `${type}: fittings still off the oak/iron ramps`);
     }
 });

@@ -899,10 +899,17 @@ Command's and the Tavern's material sidecars (EN-2) come from
 `npm run sprites:audit-refresh`): reviewed regions plus a hue rule inside
 them, never luminance. Command's arched gate leaves are timber and their
 straps, ring pulls and nails metal, as are the gilt crest over the gate and
-the two iron braziers; the Tavern's oak arcade, bar, kegs, half-timbering and
+the two iron braziers, and its four crimson wall banners (cloth and gilt
+emblem) are fabric; the Tavern's oak arcade, bar, kegs, half-timbering and
 eave boards are timber, while its ashlar wall, plaster, slate and glass stay
-stone. No class from the roof-snow exclusion set (foliage, fabric,
-glass-rune, fire) is painted, so roof weather is unchanged, and the
-firelight exclusions (`RAMP_LANDMARKS`) are untouched. The albedo is not
-edited: the art already paints oak and iron, so Canvas and MINIMAL keep it. Re-bake, validate, and inspect the
+stone. No roof (surface face 3) texel takes fabric and no other class from
+the roof-snow exclusion set is painted, so roof weather is unchanged, and
+the firelight exclusions (`RAMP_LANDMARKS`) are untouched. The same script
+makes the restrained albedo ramp edits that let the materials read without
+the channel (Canvas, MINIMAL): reviewed source colours on those classes only,
+onto existing stops (`OAK_FROM`: the plum-shaded oak onto `timber`, the
+warm oak kept; `IRON_FROM`: the straps, rings and braziers off the ashlar
+mauve onto `slate`, their highlights onto `wetSlate[2]`), and the same
+edits on the gate strip (frame 0 restated from the base crop, the ajar and
+open frames inside the door's arch), so `restIsBase` holds. Re-bake, validate, and inspect the
 channel contact sheet before committing a sidecar.
