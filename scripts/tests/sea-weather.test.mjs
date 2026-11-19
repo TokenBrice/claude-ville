@@ -178,7 +178,7 @@ test('the summer surf glow fires on a few calm, moonless summer nights a year an
     const night = new Date(2026, 6, 13, 1, 0);
     assert.ok(glowAt(night) > 0.9, 'a calm new-moon bloom night glows');
     assert.equal(surfGlowBloomNight(new Date(2026, 6, 12, 22, 0)), true, 'the night keeps its evening\'s bloom past midnight');
-    assert.equal(glowAt(new Date(2026, 6, 12, 23, 30)), 0, 'the same night\'s partly cloudy breeze keeps it dark');
+    assert.equal(glowAt(new Date(2026, 6, 12, 23, 30), { weather: { type: 'partly-cloudy', windX: 0.55 } }), 0, 'a partly cloudy breeze keeps the bloom dark');
     assert.equal(glowAt(night, { swash: false }), 0, 'no swash, no glow (reduced motion, MINIMAL)');
     assert.equal(glowAt(night, { moonFill: 0.6 }), 0, 'a bright moon puts it out');
     assert.equal(glowAt(night, { weather: { type: 'clear', windX: 0.55 } }), 0, 'a breeze breaks it');

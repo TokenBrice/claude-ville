@@ -43,6 +43,20 @@ export function getTeamColor(teamName) {
     };
 }
 
+// FK-3 — Claude Code gives every teammate a team named `session-<id>`. When
+// all its members share one parent the team is that parent's squad, not a
+// team anyone made: no council ring and no sidebar swatch of its own.
+export function isImplicitSessionTeam(teamName, members) {
+    if (!String(teamName || '').startsWith('session-')) return false;
+    let parentId = null;
+    for (const member of members || []) {
+        const memberParent = member?.parentSessionId || null;
+        if (!memberParent || (parentId && memberParent !== parentId)) return false;
+        parentId = memberParent;
+    }
+    return parentId !== null;
+}
+
 export function shortTeamName(teamName) {
     const text = String(teamName || '').trim();
     if (!text) return '';

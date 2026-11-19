@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 
 import {
     SHADE_CEILING_STEP,
@@ -16,10 +17,12 @@ import {
     masonryFacets,
     massingFacets,
     paintShadeCells,
+    releaseShadeField,
     shadeBayer,
     shadeCeilingAt,
     shadeCoverageAt,
     shadeFieldRect,
+    shadeFieldFor,
     shadeFieldTexture,
     shadeGroundAt,
     shadeLitShareAt,
@@ -258,6 +261,80 @@ test('convexHull drops interior points', () => {
     assert.deepEqual(new Set(hull.map(p => p.join())), new Set(['0,0', '4,0', '4,4', '0,4']));
     assert.equal(facet([[0, 0, 5], [4, 0, 5], [4, 4, 5]]).top, 5);
 });
+
+for (const [label, atomic, repaint] of [['resident', false, false], ['resident repaint', false, true], ['Canvas', true, false]]) {
+    test(`withdrawing a partial shade build keeps both the ready key and its pixels (${label})`, t => {
+        const queue = [];
+        let now = 0;
+        const digest = data => data && createHash('sha256').update(data).digest('hex');
+        t.mock.method(performance, 'now', () => now += 0.3);
+        globalThis.requestIdleCallback = callback => queue.push(callback);
+        globalThis.document = {
+            createElement: () => {
+                const canvas = { data: null };
+                canvas.getContext = () => ({
+                    createImageData: (w, h) => ({ height: h, data: new Uint8ClampedArray(w * h * 4) }),
+                    putImageData(image, x, y, dirtyX, dirtyY, width = canvas.width, height = image.height) {
+                        canvas.data ||= new Uint8ClampedArray(canvas.width * canvas.height * 4);
+                        const span = width * height * 4;
+                        const target = canvas.data.subarray(y * canvas.width * 4, y * canvas.width * 4 + span);
+                        target.set(image.data.subarray(0, span));
+                        // The canvas's premultiplied backing drops RGB for transparent texels.
+                        for (let i = 0; i < target.length; i += 4) if (!target[i + 3]) target.fill(0, i, i + 3);
+                    },
+                });
+                return canvas;
+            },
+        };
+        const building = BUILDING_DEFS.find(item => item.type === 'command');
+        assert.ok(building);
+        const renderer = { buildingRenderer: { buildings: [building] } };
+        t.after(() => {
+            releaseShadeField(renderer);
+            delete globalThis.document;
+            delete globalThis.requestIdleCallback;
+        });
+        const step = () => {
+            assert.ok(queue.length, 'idle work is queued');
+            queue.shift()({ didTimeout: false, timeRemaining: () => 2 });
+        };
+        const drain = () => {
+            for (let n = 0; queue.length; n++) {
+                assert.ok(n < 2000, 'idle work eventually completes');
+                step();
+            }
+        };
+        const options = { atomic, receivers: !atomic };
+        const a = { key: 'A', sx: 1, sy: 0, color: [20, 30, 40] };
+        const b = { ...(repaint ? a : { key: 'B', sx: 0, sy: 1 }), color: [40, 30, 20] };
+        shadeFieldFor(renderer, a, options);
+        drain();
+        const state = renderer._shadeFieldState;
+        const first = state.ready;
+        const ground = digest(first.canvas.data);
+        const texels = digest(first.field.texels);
+        shadeFieldFor(renderer, b, options);
+        for (let n = 0; !(state.job?.paintRow > 0); n++) {
+            assert.ok(n < 2000, 'B reaches a partial paint');
+            step();
+        }
+        if (!atomic) {
+            for (let n = 0; digest(first.canvas.data) === ground; n++) {
+                assert.ok(n < 2000 && state.job, 'B overwrites part of the canvas before publishing');
+                step();
+            }
+            if (!repaint) assert.notEqual(digest(first.field.texels), texels, 'B overwrites the receiver texture');
+        }
+        assert.equal(state.ready, first, 'A is still published');
+        shadeFieldFor(renderer, a, options);
+        drain();
+        assert.equal(state.ready.key, first.key);
+        if (atomic) assert.equal(state.ready, first, 'the atomic painter had no visible pixels to restore');
+        if (repaint) assert.equal(state.ready.field, first.field, 'repainting reuses the clean receiver texture');
+        assert.equal(digest(state.ready.canvas.data), ground);
+        assert.equal(digest(state.ready.field.texels), texels);
+    });
+}
 
 test('visibility pauses shade builds and expiry releases the field and frame references', t => {
     const idle = new Map();

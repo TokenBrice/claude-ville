@@ -17,7 +17,8 @@ const {
 } = require('./shared');
 const { deriveTurnState, toEpochMs } = require('./turnState');
 const { normalizeToolResults, toolResultId, toolResultLocation } = require('./toolResults');
-const { emptyObservedSources, makeDialogue, pickDialogue } = require('./dialogue');
+const { estimateCost } = require('./sessionPresentation');
+const { emptyObservedSources, makeDialogue, pickDialogue, sanitizeDialogueText } = require('./dialogue');
 const { MODEL_REVISION, contextWindowForModel } = require('../src/config/models.generated.cjs');
 
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
@@ -437,7 +438,7 @@ function addModelHistory(projection, entry, msg) {
     : typeof entry?.model === 'string' && entry.model.trim()
       ? entry.model.trim()
       : null;
-  if (!model) return;
+  if (!model || entry.isVirtual || entry.isApiErrorMessage || isClaudeModelStub(model)) return;
   const effort = typeof entry?.effort === 'string' && entry.effort.trim()
     ? entry.effort.trim()
     : typeof msg?.effort === 'string' && msg.effort.trim()
@@ -454,7 +455,7 @@ function isToolResultOnly(content) {
   return Array.isArray(content) && content.length > 0 && content.every(block => block?.type === 'tool_result');
 }
 
-function addTranscriptProjectionEntry(projection, entry, msg) {
+function addTranscriptProjectionEntry(projection, entry, msg, prompt) {
   if (!entry || typeof entry !== 'object') return;
   const at = toEpochMs(entry.timestamp ?? entry.created_at);
 
@@ -475,12 +476,8 @@ function addTranscriptProjectionEntry(projection, entry, msg) {
     if (linesRemoved !== null) projection.linesRemoved = Math.max(0, linesRemoved);
   }
 
-  // RG-4: a prompt opens a turn that has reported no duration yet, so an
-  // aborted turn, or one paused on a question, never re-reports the turn
-  // before it. A prompt is what moves turnStartedAt (turnStateFromEntries):
-  // a user record that is not only tool results; sidechain records belong
-  // to subagents.
-  if (msg?.role === 'user' && entry.isSidechain !== true && !isToolResultOnly(msg.content)) {
+  // A prompt clears the preceding turn's duration until the new one reports its own.
+  if (prompt && entry.isSidechain !== true) {
     projection.lastTurnDurationMs = null;
   }
   if (entry.type === 'system' && entry.subtype === 'turn_duration') {
@@ -657,6 +654,8 @@ function projectClaudeTailEntry(entry) {
     'uuid',
     'id',
     'isSidechain',
+    'isMeta',
+    'isVirtual',
     'permissionMode',
     'sessionId',
     'project',
@@ -1178,6 +1177,7 @@ function createTranscriptAggregate(filePath) {
     discardingLine: false,
     usage: emptyTokenUsage(),
     usageById: new Map(),
+    activity: {},
     launches: [],
     projection: createTranscriptProjection(),
     background: [],
@@ -1196,6 +1196,7 @@ function cloneTranscriptAggregate(aggregate) {
     trailing: Buffer.from(aggregate.trailing),
     usage: { ...aggregate.usage },
     usageById: new Map(aggregate.usageById),
+    activity: cloneClaudeActivity(aggregate.activity),
     launches: aggregate.launches.map((launch) => ({ ...launch })),
     projection: cloneTranscriptProjection(aggregate.projection),
   };
@@ -1214,11 +1215,12 @@ function appendTranscriptGuard(aggregate, chunk) {
 
 function addTranscriptEntry(aggregate, entry) {
   const msg = isClaudeConversationRecord(entry) ? entry.message : null;
-  addTranscriptProjectionEntry(aggregate.projection, entry, msg);
+  const prompt = msg && foldClaudeActivity(aggregate.activity, entry, msg);
+  addTranscriptProjectionEntry(aggregate.projection, entry, msg, prompt);
   aggregate.background = foldBackgroundWork(aggregate.background || [], entry);
   if (!msg) return;
 
-  if (msg.usage) {
+  if (msg.usage && !entry.isVirtual && !isClaudeModelStub(msg.model || entry.model)) {
     const usage = msg.usage;
     const input = readUsageField(usage, ['input_tokens', 'inputTokens', 'prompt_tokens', 'promptTokens']);
     const output = readUsageField(usage, ['output_tokens', 'outputTokens', 'completion_tokens', 'completionTokens']);
@@ -1231,12 +1233,36 @@ function addTranscriptEntry(aggregate, entry) {
     // messages (A, B, A) still count once.
     const id = typeof msg.id === 'string' && msg.id ? msg.id : null;
     const previous = id ? aggregate.usageById.get(id) ?? null : null;
+    const previousLongWrites = previous?.cacheCreate1h ?? 0;
+    const longWrites = readUsageField(usage.cache_creation, ['ephemeral_1h_input_tokens']) ?? previousLongWrites;
+    const shortWrites = readUsageField(usage.cache_creation, ['ephemeral_5m_input_tokens'])
+      ?? (previous?.cacheCreate ?? 0) - previousLongWrites;
+    const writes = cacheCreate ?? shortWrites + longWrites;
     const contribution = {
       input: input ?? previous?.input ?? 0,
       output: output ?? previous?.output ?? 0,
       cacheRead: cacheRead ?? previous?.cacheRead ?? 0,
-      cacheCreate: cacheCreate ?? previous?.cacheCreate ?? 0,
+      cacheCreate: writes,
+      cacheCreate1h: Math.max(0, Math.min(longWrites, writes)),
     };
+    const delta = {
+      input: contribution.input - (previous?.input ?? 0),
+      output: contribution.output - (previous?.output ?? 0),
+      cacheRead: contribution.cacheRead - (previous?.cacheRead ?? 0),
+      cacheCreate: contribution.cacheCreate - (previous?.cacheCreate ?? 0),
+      cacheCreate1h: contribution.cacheCreate1h - previousLongWrites,
+    };
+    // A cost-state already covers earlier blocks, even repeats of this message.
+    const cost = aggregate.projection.cost;
+    if (cost) {
+      const estimate = estimateCost(delta, msg.model || aggregate.projection.modelHistory.at(-1)?.model, 'claude');
+      if (estimate.usd) {
+        cost.usd += estimate.usd;
+        cost.rateMatch = cost.source === 'provider' || cost.rateMatch === estimate.rateMatch ? estimate.rateMatch : null;
+        cost.source = 'mixed';
+        cost.unknownModel ||= estimate.unknownModel;
+      }
+    }
     if (id) {
       aggregate.usageById.delete(id);
       aggregate.usageById.set(id, contribution);
@@ -1245,10 +1271,11 @@ function addTranscriptEntry(aggregate, entry) {
       }
     }
     aggregate.usage.availability = 'observed';
-    aggregate.usage.totalInput += contribution.input - (previous?.input || 0);
-    aggregate.usage.totalOutput += contribution.output - (previous?.output || 0);
-    aggregate.usage.cacheRead += contribution.cacheRead - (previous?.cacheRead || 0);
-    aggregate.usage.cacheCreate += contribution.cacheCreate - (previous?.cacheCreate || 0);
+    aggregate.usage.totalInput += delta.input;
+    aggregate.usage.totalOutput += delta.output;
+    aggregate.usage.cacheRead += delta.cacheRead;
+    aggregate.usage.cacheCreate += delta.cacheCreate;
+    if (delta.cacheCreate1h) aggregate.usage.cacheCreate1h = (aggregate.usage.cacheCreate1h || 0) + delta.cacheCreate1h;
     aggregate.usage.contextWindow = contribution.input + contribution.cacheRead + contribution.cacheCreate;
     if (!previous) aggregate.usage.turnCount++;
     aggregate.usage.input = aggregate.usage.totalInput;
@@ -1353,6 +1380,8 @@ function estimateTranscriptAggregateBytes(aggregate) {
     + (aggregate.trailing?.byteLength || 0)
     + estimateJsonValueBytes(aggregate.usage);
   bytes += estimateJsonValueBytes(aggregate.projection);
+  bytes += estimateJsonValueBytes(aggregate.activity);
+  if (aggregate.displayActivity !== aggregate.activity) bytes += estimateJsonValueBytes(aggregate.displayActivity);
   if (aggregate.displayUsage && aggregate.displayUsage !== aggregate.usage) {
     bytes += estimateJsonValueBytes(aggregate.displayUsage);
   }
@@ -1507,6 +1536,7 @@ function finishTranscriptAggregate(aggregate, target) {
   aggregate.ino = target.ino;
   aggregate.size = target.size;
   aggregate.mtimeMs = target.mtimeMs;
+  aggregate.displayActivity = aggregate.activity;
   aggregate.displayUsage = aggregate.usage;
   aggregate.displayLaunches = aggregate.launches;
   aggregate.displayProjection = aggregate.projection;
@@ -1518,11 +1548,13 @@ function finishTranscriptAggregate(aggregate, target) {
       const provisional = {
         usage: { ...aggregate.usage },
         usageById: new Map(aggregate.usageById),
+        activity: cloneClaudeActivity(aggregate.activity),
         launches: aggregate.launches.slice(),
         projection: cloneTranscriptProjection(aggregate.projection),
         background: aggregate.background,
       };
       addTranscriptEntry(provisional, JSON.parse(trailing.toString('utf8')));
+      aggregate.displayActivity = provisional.activity;
       aggregate.displayUsage = provisional.usage;
       aggregate.displayLaunches = provisional.launches;
       aggregate.displayProjection = provisional.projection;
@@ -1903,15 +1935,22 @@ function getClaudeTranscriptSummary(filePath, tailCount, project = null) {
       value: readClaudeTranscriptSummary(filePath, tailCount, project),
     }))
     : readClaudeTranscriptSummary(null, tailCount, project);
+  // A whole tail may consist of virtual pairs or wrappers.
+  const turn = filePath && !summary.detail.lastTool ? getTranscriptTurn(filePath) : null;
+  const model = summary.detail.model || (filePath && latestTranscriptModel(getTranscriptAggregate(filePath))) || summary.earlierModel;
   // Dialogue freshness is clock-derived, so only the candidates are memoized.
   return {
     ...summary.detail,
+    model,
+    lastTool: summary.detail.lastTool || turn?.lastTool || null,
+    lastToolInput: summary.detail.lastTool ? summary.detail.lastToolInput : turn?.lastToolInput ?? null,
     observedSources: { ...summary.detail.observedSources },
     dialogue: pickDialogue(summary.candidates, { now: Date.now() }),
   };
 }
 
 function readClaudeTranscriptSummary(filePath, tailCount, project = null) {
+  let earlierModel = null;
   const detail = {
     model: null,
     lastTool: null,
@@ -1946,16 +1985,25 @@ function readClaudeTranscriptSummary(filePath, tailCount, project = null) {
 
   if (filePath && fs.existsSync(filePath)) {
     try {
-      const entries = tailEntries(filePath, tailCount);
+      const entries = getSessionEntries(filePath);
+      const summaryStart = Math.max(0, entries.length - tailCount);
 
       for (let i = entries.length - 1; i >= 0; i--) {
+        if (i < summaryStart && detail.model) break;
         const entry = entries[i];
         const msg = entry.message;
         if (!msg || msg.role !== 'assistant') continue;
 
         // An API-error record is Claude Code's own text, whatever its model.
-        const stub = isClaudeModelStub(msg.model) || entry.isApiErrorMessage === true;
-        if (!detail.model && msg.model && !stub) detail.model = msg.model;
+        const stub = entry.isVirtual || isClaudeModelStub(msg.model) || entry.isApiErrorMessage === true;
+        if (!detail.model && msg.model && !stub) {
+          if (i < summaryStart) {
+            earlierModel = msg.model;
+            break;
+          }
+          detail.model = msg.model;
+        }
+        if (i < summaryStart) continue;
 
         const content = msg.content;
         if (!Array.isArray(content)) continue;
@@ -1963,11 +2011,14 @@ function readClaudeTranscriptSummary(filePath, tailCount, project = null) {
         const observedAt = typeof entry.timestamp === 'string' || typeof entry.timestamp === 'number'
           ? toEpochMs(entry.timestamp)
           : null;
-        for (const block of content) {
-          if (!detail.lastTool && block.type === 'tool_use') {
-            detail.lastTool = block.name || null;
-            detail.lastToolInput = summarizeToolInput(block.input, { maxLength: 60, basenameFile: true });
+        if (!detail.lastTool) {
+          const latest = content.findLast(block => block.type === 'tool_use' && block.name && !isClaudeWrapper(block.name));
+          if (latest) {
+            detail.lastTool = latest.name;
+            detail.lastToolInput = summarizeToolInput(latest.input);
           }
+        }
+        for (const block of content) {
           if (!detail.lastMessage && block.type === 'text' && block.text) {
             const text = block.text.trim();
             if (text.length > 0) detail.lastMessage = text.substring(0, 80);
@@ -2022,13 +2073,7 @@ function readClaudeTranscriptSummary(filePath, tailCount, project = null) {
     } catch { /* ignore */ }
   }
 
-  return { detail, candidates };
-}
-
-function getClaudeMainSessionSummary(sessionId, projectPath) {
-  if (!projectPath) return getClaudeTranscriptSummary(null, 30, projectPath);
-  const encoded = claudeProjectDirName(projectPath);
-  return getClaudeTranscriptSummary(path.join(CLAUDE_DIR, 'projects', encoded, `${sessionId}.jsonl`), 30, projectPath);
+  return { detail, candidates, earlierModel };
 }
 
 function getSubAgentDetail(filePath, project = null) {
@@ -2082,8 +2127,8 @@ function getRecentMessages(sessionFilePath, maxItems = 5) {
 // use the transcript's own latest model, skipping `<synthetic>` stubs, so the
 // limit isn't the 200K default.
 function latestTranscriptModel(aggregate) {
-  const history = aggregate?.projection?.modelHistory || [];
-  return history.findLast(item => !isClaudeModelStub(item.model))?.model || null;
+  const projection = aggregate?.displayProjection || aggregate?.projection;
+  return projection?.modelHistory.at(-1)?.model || null;
 }
 
 function getTokenUsage(sessionFilePath, model = null) {
@@ -2155,7 +2200,7 @@ function getTranscriptProjection(sessionFilePath, projectPath, model) {
 }
 
 function readTranscriptProjection(sessionFilePath, projectPath, model) {
-  const empty = createTranscriptProjection();
+  const empty = { ...createTranscriptProjection(), reasoningEffort: null };
   const contextWindowMax = contextWindowMaxForClaudeModel(model);
   if (!sessionFilePath) return { ...empty, contextWindowMax };
   try {
@@ -2173,8 +2218,10 @@ function readTranscriptProjection(sessionFilePath, projectPath, model) {
       newest.push({ path: canonicalPath, op: item.op, at: item.at, source: 'transcript' });
     }
     projection.workingSet = newest;
+    const effort = projection.modelHistory.at(-1)?.effort;
     return {
       ...projection,
+      reasoningEffort: ['low', 'medium', 'high', 'xhigh', 'max'].includes(effort) ? effort : null,
       contextWindowMax: contextWindowMaxForClaudeModel(model || latestTranscriptModel(aggregate)),
       ...(projection.cost ? { estimatedCost: projection.cost.usd } : {}),
     };
@@ -2183,132 +2230,148 @@ function readTranscriptProjection(sessionFilePath, projectPath, model) {
   }
 }
 
-// Transcript-derived turn state: is the model working, is a tool call
-// unanswered, or did the turn close and hand control back to the user?
-//
-// Reads the cached tail window, so this costs no extra IO beyond what the
-// session summary already pays. Sidechain lines belong to subagents running
-// inside the parent's transcript; a subagent finishing its turn says nothing
-// about the parent, so they are skipped when judging the main session.
-const TURN_STATE_TAIL_LINES = 60;
+// Fold the same bounded state for the full transcript and for the provisional
+// tail shown while a large transcript's first asynchronous scan is running.
+const PENDING_CALL_LIMIT = 64;
 
-function turnStateFromEntries(entries, { permissionMode, skipSidechain, now }) {
-  const skip = (entry) => skipSidechain && entry?.isSidechain === true;
+function isClaudeWrapper(name) {
+  return name === 'REPL' || name === 'Poll';
+}
 
-  let turnStartedAt = null;
-  for (let i = entries.length - 1; i >= 0; i--) {
-    const entry = entries[i];
-    if (skip(entry) || entry?.message?.role !== 'user') continue;
-    const content = entry.message.content;
-    const isToolResultOnly = Array.isArray(content)
-      && content.length > 0
-      && content.every(block => block?.type === 'tool_result');
-    if (isToolResultOnly) continue;
-    turnStartedAt = toEpochMs(entry.timestamp ?? entry.created_at);
-    break;
+function cloneClaudeActivity(activity) {
+  const clone = { ...activity };
+  for (const key of ['main', 'whole']) {
+    const turn = activity[key];
+    if (turn) clone[key] = { ...turn, pending: turn.pending.slice(), earlyResults: turn.earlyResults.slice() };
   }
-  const withSignal = state => ({ ...state, signalSource: 'transcript', turnStartedAt });
+  return clone;
+}
 
-  // Every tool_use id that already has a result, from anywhere in the window.
-  const resolved = new Set();
-  for (const entry of entries) {
-    const content = entry?.message?.content;
-    if (!Array.isArray(content)) continue;
-    for (const block of content) {
-      if (block?.type === 'tool_result' && block.tool_use_id) resolved.add(block.tool_use_id);
+function foldClaudeActivity(activity, entry, msg) {
+  // Until a main-thread assistant appears, a subagent may still be the only
+  // speaker. Its unmarked prompts and results belong to the whole-file turn.
+  let prompt = false;
+  if (!entry.isSidechain) {
+    activity.main ??= { pending: [], earlyResults: [] };
+    prompt = foldClaudeTurn(activity.main, entry, msg);
+  }
+  if (!activity.main?.hasAssistant) {
+    activity.whole ??= { pending: [], earlyResults: [] };
+    foldClaudeTurn(activity.whole, entry, msg);
+  } else if (activity.whole) {
+    delete activity.whole;
+  }
+  return prompt;
+}
+
+function foldClaudeTurn(turn, entry, msg) {
+  const at = toEpochMs(entry.timestamp ?? entry.created_at);
+  if (msg.role === 'user') {
+    if (!isToolResultOnly(msg.content)) {
+      if (entry.isMeta && at !== null && turn.assistantAt != null && at < turn.assistantAt) return false;
+      turn.startedAt = at;
+      turn.stopReason = null;
+      turn.apiError = null;
+      turn.replDescription = null;
+      turn.pending = [];
+      turn.earlyResults = [];
+      return true;
     }
-  }
-
-  let lastAssistantIndex = -1;
-  for (let i = entries.length - 1; i >= 0; i--) {
-    const entry = entries[i];
-    if (skip(entry)) continue;
-    if (entry?.message?.role === 'assistant') { lastAssistantIndex = i; break; }
-  }
-  if (lastAssistantIndex === -1) return null;
-
-  // A real user message after the last assistant turn means the model owes a
-  // reply — it is thinking, not waiting, whatever the previous turn said.
-  for (let i = lastAssistantIndex + 1; i < entries.length; i++) {
-    const entry = entries[i];
-    if (skip(entry)) continue;
-    if (entry?.message?.role !== 'user') continue;
-    const content = entry.message.content;
-    const isToolResultOnly = Array.isArray(content)
-      && content.length > 0
-      && content.every(block => block?.type === 'tool_result');
-    if (!isToolResultOnly) {
-      return withSignal(deriveTurnState({ turnEnded: false, permissionMode }, now));
+    for (const block of msg.content) {
+      if (typeof block.tool_use_id !== 'string') continue;
+      const id = block.tool_use_id.slice(0, TRANSCRIPT_PROJECTION_FIELD_BYTES);
+      const index = turn.pending.findIndex(call => call.id === id);
+      if (index >= 0) turn.pending.splice(index, 1);
+      else {
+        // A buffered result can be written before the corresponding call.
+        turn.earlyResults.push(id);
+        if (turn.earlyResults.length > PENDING_CALL_LIMIT) turn.earlyResults.shift();
+      }
     }
+    return false;
   }
-
-  // Earliest unanswered tool call in the trailing assistant turns — the
-  // longest-waiting call is the one that decides how blocked the session is.
-  let pendingTool = null;
-  let pendingSince = null;
-  for (let i = Math.max(0, lastAssistantIndex - 8); i <= lastAssistantIndex && !pendingTool; i++) {
-    const entry = entries[i];
-    if (skip(entry)) continue;
-    if (entry?.message?.role !== 'assistant') continue;
-    const content = entry.message.content;
-    if (!Array.isArray(content)) continue;
-    for (const block of content) {
-      if (block?.type !== 'tool_use' || !block.id) continue;
-      if (resolved.has(block.id)) continue;
-      pendingTool = block.name || 'unknown';
-      pendingSince = toEpochMs(entry.timestamp);
-      break;
-    }
+  if (msg.role !== 'assistant') return false;
+  turn.hasAssistant = true;
+  turn.assistantAt = at;
+  turn.stopReason = msg.stop_reason === 'end_turn' || msg.stop_reason === 'rate_limited' ? msg.stop_reason : null;
+  turn.apiError = entry.isApiErrorMessage ? {
+    kind: typeof entry.error === 'string' && entry.error ? entry.error.slice(0, 64) : 'api_error',
+    status: Number.isFinite(entry.apiErrorStatus) ? entry.apiErrorStatus : null,
+    at,
+  } : null;
+  if (turn.stopReason === 'end_turn' || turn.apiError) {
+    turn.pending.length = 0;
+    turn.replDescription = null;
   }
-
-  const lastAssistant = entries[lastAssistantIndex];
-  const stopReason = lastAssistant?.message?.stop_reason || null;
-  // PV-4b — the turn died on an API error Claude Code already retried: it
-  // is over, and it ended in an error.
-  const apiError = lastAssistant?.isApiErrorMessage === true && !pendingTool
-    ? {
-      kind: typeof lastAssistant.error === 'string' && lastAssistant.error ? lastAssistant.error.slice(0, 64) : 'api_error',
-      status: Number.isFinite(lastAssistant.apiErrorStatus) ? lastAssistant.apiErrorStatus : null,
-      at: toEpochMs(lastAssistant.timestamp),
+  if (!Array.isArray(msg.content)) return false;
+  for (const block of msg.content) {
+    if (block?.type !== 'tool_use') continue;
+    const name = typeof block.name === 'string' ? block.name.slice(0, TRANSCRIPT_PROJECTION_FIELD_BYTES) : null;
+    if (name === 'REPL') {
+      const raw = block.input?.description;
+      turn.replDescription = typeof raw === 'string'
+        ? sanitizeDialogueText(raw, { project: entry.cwd }).text.slice(0, 120) || null : null;
+    } else if (name && name !== 'Poll') {
+      turn.lastTool = name;
+      turn.lastToolInput = summarizeToolInput(block.input);
     }
-    : null;
+    if (typeof block.id !== 'string' || !block.id) continue;
+    const id = block.id.slice(0, TRANSCRIPT_PROJECTION_FIELD_BYTES);
+    const early = turn.earlyResults.indexOf(id);
+    if (early >= 0) {
+      turn.earlyResults.splice(early, 1);
+      continue;
+    }
+    if (turn.pending.some(call => call.id === id)) continue;
+    turn.pending.push({ id, name, at, description: isClaudeWrapper(name) ? turn.replDescription : null });
+    if (turn.pending.length > PENDING_CALL_LIMIT) turn.pending.shift();
+  }
+  return false;
+}
 
-  return withSignal({ rateLimit: { enforced: stopReason === 'rate_limited' }, apiError, ...deriveTurnState({
-    turnEnded: !pendingTool && (stopReason === 'end_turn' || apiError !== null),
-    turnEndedAt: toEpochMs(lastAssistant?.timestamp),
-    pendingTool,
-    pendingSince,
-    permissionMode,
-  }, now) });
+function getTranscriptTurn(filePath) {
+  if (!filePath) return null;
+  try {
+    const aggregate = getTranscriptAggregate(filePath);
+    const activity = aggregate?.displayActivity;
+    const published = activity?.main?.hasAssistant ? activity.main : activity?.whole;
+    if (sameTranscriptTarget(aggregate, transcriptIdentity(filePath))) return published;
+    return memoizedDerivation(filePath, 'tailTurn', identity => {
+      // A new prompt could lie outside the tail. Keep the previous turn together until a verified append settles.
+      if (published?.startedAt != null && identity
+        && identity.dev === aggregate.dev && identity.ino === aggregate.ino && identity.size > aggregate.size
+        && transcriptGuardMatches(filePath, aggregate)) return { value: published };
+      const tail = {};
+      for (const entry of getSessionEntries(filePath)) {
+        if (entry?.message) foldClaudeActivity(tail, entry, entry.message);
+      }
+      return { value: tail.main?.hasAssistant ? tail.main : tail.whole };
+    });
+  } catch {
+    return null;
+  }
 }
 
 function getClaudeTurnState(sessionFilePath, permissionMode = null, now = Date.now()) {
-  const unknown = {
-    ...deriveTurnState({ known: false }, now),
+  const turn = getTranscriptTurn(sessionFilePath);
+  const pending = turn?.pending[0];
+  const apiError = pending ? null : turn?.apiError ?? null;
+  return {
+    ...deriveTurnState({
+      known: turn?.hasAssistant === true,
+      pendingTool: pending ? pending.name || 'unknown' : null,
+      pendingSince: pending?.at,
+      turnEnded: turn?.stopReason === 'end_turn' || Boolean(apiError),
+      turnEndedAt: turn?.assistantAt,
+      permissionMode,
+    }, now),
+    rateLimit: { enforced: turn?.stopReason === 'rate_limited' },
+    apiError,
     signalSource: 'transcript',
-    turnStartedAt: null,
+    turnStartedAt: turn?.startedAt ?? null,
+    script: isClaudeWrapper(pending?.name) && pending.at != null
+      ? { tool: pending.name, description: pending.description, since: pending.at } : null,
   };
-  if (!sessionFilePath) return unknown;
-
-  // The turn state is a function of the tail and the permission mode only
-  // (`deriveTurnState` reads no clock), so it is memoized with the file.
-  return { ...memoizedDerivation(sessionFilePath, `turn:${permissionMode ?? ''}`, () => {
-    try {
-      const entries = tailEntries(sessionFilePath, TURN_STATE_TAIL_LINES);
-      if (!entries.length) return { value: unknown };
-
-      // Prefer the main thread. Subagent transcripts are sidechain end to end,
-      // so when skipping them leaves nothing to read, the whole file is the
-      // sidechain and every line counts.
-      return {
-        value: turnStateFromEntries(entries, { permissionMode, skipSidechain: true, now })
-          || turnStateFromEntries(entries, { permissionMode, skipSidechain: false, now })
-          || unknown,
-      };
-    } catch {
-      return { value: unknown, cacheable: false };
-    }
-  }) };
 }
 
 // Latest plan/act permission mode for a session. Transcripts carry sparse
@@ -2470,7 +2533,8 @@ function getClaudeToolResults(sessionFilePath, sessionId) {
 }
 
 function readClaudeToolResults(sessionFilePath, sessionId) {
-  const results = [];
+  const failures = [];
+  const successes = [];
   try {
     const entries = getSessionEntries(sessionFilePath);
     const uses = new Map();
@@ -2479,7 +2543,9 @@ function readClaudeToolResults(sessionFilePath, sessionId) {
       if (!Array.isArray(content)) continue;
       if (entry.message.role === 'assistant') {
         for (const block of content) {
-          if (block?.type === 'tool_use' && block.id) uses.set(block.id, { block, at: toEpochMs(entry.timestamp), cwd: entry.cwd });
+          if (block?.type === 'tool_use' && block.id && !isClaudeWrapper(block.name)) {
+            uses.set(block.id, { block, at: toEpochMs(entry.timestamp), cwd: entry.cwd, virtual: entry.isVirtual });
+          }
         }
         continue;
       }
@@ -2487,14 +2553,17 @@ function readClaudeToolResults(sessionFilePath, sessionId) {
         if (block?.type !== 'tool_result' || !block.tool_use_id) continue;
         const use = uses.get(block.tool_use_id);
         if (!use || typeof block.is_error !== 'boolean') continue;
+        if ((entry.isVirtual || use.virtual) && !block.is_error && !['Bash', 'PowerShell'].includes(use.block.name)) continue;
         const record = claudeToolResultRecord(entry, block, use, sessionId);
         if (!record) continue;
-        results.push(record);
+        if (record.exitCode !== 0) failures.push(record);
+        else successes.push(record);
         uses.delete(block.tool_use_id);
       }
     }
   } catch { /* ignore */ }
-  return normalizeToolResults(results);
+  // The shared date sort is stable. Supply the order for one tied burst.
+  return normalizeToolResults(failures.reverse().concat(successes.reverse()));
 }
 
 // SV-2b — git events per tool call. A call's events are a function of its
@@ -2987,7 +3056,7 @@ class ClaudeAdapter {
           provider: 'claude',
           agentId: entry.agentId || null,
           agentType: normalizeClaudeAgentType(entry.agentType, entry.agentId),
-          model: entry.model || null,
+          model: isClaudeModelStub(entry.model) ? null : entry.model || null,
           status: 'active',
           lastActivity: entry.timestamp || 0,
           project: entry.project || null,
@@ -3012,8 +3081,8 @@ class ClaudeAdapter {
       if (now - lastActive > activeThresholdMs) continue;
 
       session.lastActivity = lastActive;
-      const detail = getClaudeMainSessionSummary(session.sessionId, session.project);
       const sessionFilePath = resolveSessionFilePath(session.sessionId, session.project);
+      const detail = getClaudeTranscriptSummary(sessionFilePath, 30, session.project);
       const sessionName = sessionNames.get(session.sessionId) || null;
       const teamName = sessionName ? teamMembership.get(sessionName) || null : null;
       const permissionMode = sessionFilePath ? getPermissionMode(sessionFilePath) : null;

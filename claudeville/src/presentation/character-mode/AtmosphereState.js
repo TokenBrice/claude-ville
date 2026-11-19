@@ -467,25 +467,38 @@ function resolveSeed(seedOverride, fallbackKey) {
         : Number(seedOverride) >>> 0;
 }
 
-export function buildWeatherTimeline(date, seedOverride = null) {
-    const dateKey = localDateKey(date);
-    const seed = resolveSeed(seedOverride, `${dateKey}|weather-timeline`);
+function weatherKnotsFor(seed, count = WEATHER_TIMELINE_KNOTS) {
     const random = seededRandom(seed);
     const knots = [];
 
-    for (let i = 0; i < WEATHER_TIMELINE_KNOTS; i++) {
+    for (let i = 0; i < count; i++) {
         const baseMinute = Math.round((DAY_MINUTES / WEATHER_TIMELINE_KNOTS) * i);
         const jitter = i === 0 ? 0 : Math.round((random() - 0.5) * 90);
         const minute = clamp(baseMinute + jitter, 0, DAY_MINUTES - 1);
         knots.push(buildWeatherKnot(weatherTypeFromRoll(random(), minute), minute, random, seed + i * 997));
     }
+    return knots;
+}
 
-    knots.sort((a, b) => a.minute - b.minute);
-    knots[0] = { ...knots[0], minute: 0 };
+export function buildWeatherTimeline(date, seedOverride = null) {
+    const dateKey = localDateKey(date);
+    const seedFor = key => resolveSeed(seedOverride, `${key}|weather-timeline`);
+    const seed = seedFor(dateKey);
+    const knots = weatherKnotsFor(seed);
+    // Use calendar neighbours so a short or long DST day still joins its own midnight.
+    const neighbourKey = offset => localDateKey(new Date(date.getFullYear(), date.getMonth(), date.getDate() + offset, 12));
+    const previous = weatherKnotsFor(seedFor(neighbourKey(-1))).at(-1);
+    const next = weatherKnotsFor(seedFor(neighbourKey(1)), 2);
     return {
         seed,
         dateKey,
         knots,
+        // Include the fronts on both sides of midnight so wind easing sees the same edges.
+        joinedKnots: [
+            { ...previous, minute: previous.minute - DAY_MINUTES },
+            ...knots,
+            ...next.map(knot => ({ ...knot, minute: knot.minute + DAY_MINUTES })),
+        ],
     };
 }
 
@@ -496,18 +509,18 @@ function interpolateNumber(from, to, weight) {
 // The minute's weather between two knots, without wind: the smoothstepped
 // blend and the type it resolves to (the nearer knot's, re-derived from the
 // blended fog / precipitation / cloud), plus the nearer knot (its wind sign).
-function timelineStateAt(minute, knots) {
-    let previous = knots[knots.length - 1];
-    let next = knots[0];
+function timelineStateAt(minute, knots, joined = false) {
+    let previous = knots[knots.length - (joined ? 2 : 1)];
+    let next = joined ? knots.at(-1) : knots[0];
     let adjustedMinute = minute;
 
-    for (let i = 0; i < knots.length; i++) {
+    for (let i = 0; i < knots.length - (joined ? 1 : 0); i++) {
         const current = knots[i];
         const candidate = knots[(i + 1) % knots.length];
         const candidateMinute = candidate.minute <= current.minute
             ? candidate.minute + DAY_MINUTES
             : candidate.minute;
-        const localMinute = minute < current.minute ? minute + DAY_MINUTES : minute;
+        const localMinute = !joined && minute < current.minute ? minute + DAY_MINUTES : minute;
         if (localMinute >= current.minute && localMinute < candidateMinute) {
             previous = current;
             next = candidate;
@@ -523,9 +536,12 @@ function timelineStateAt(minute, knots) {
     const cloudCover = clamp(interpolateNumber(previous.cloudCover, next.cloudCover, transitionProgress));
     const precipitation = clamp(interpolateNumber(previous.precipitation, next.precipitation, transitionProgress));
     const fog = clamp(interpolateNumber(previous.fog, next.fog, transitionProgress));
-    let type = transitionProgress < 0.5 ? previous.type : next.type;
+    const nearer = transitionProgress < 0.5 ? previous : next;
+    let type = nearer.type;
     if (previous.type === 'storm' || next.type === 'storm') {
-        if (precipitation > 0.34 && cloudCover > 0.78) type = 'storm';
+        // Rain already meets the storm thresholds, so honour a shared rain knot on either side.
+        const boundaryRain = joined && type === 'rain' && nearer.minute % DAY_MINUTES === 0;
+        if (!boundaryRain && precipitation > 0.34 && cloudCover > 0.78) type = 'storm';
     } else if (precipitation > 0.18) {
         type = 'rain';
     } else if (fog > 0.24) {
@@ -536,7 +552,7 @@ function timelineStateAt(minute, knots) {
     return {
         previous,
         next,
-        nearer: transitionProgress < 0.5 ? previous : next,
+        nearer,
         transitionProgress,
         intensity,
         cloudCover,
@@ -556,8 +572,8 @@ const WIND_SCAN_STEP_MINUTES = 0.25;
 const WIND_EDGE_PRECISION_MINUTES = 1 / 600;
 const _windPlans = new Map();
 
-function windTargetAt(minute, knots) {
-    const state = timelineStateAt(minute, knots);
+function windTargetAt(minute, knots, joined) {
+    const state = timelineStateAt(minute, knots, joined);
     return (Number(state.nearer.windX) < 0 ? -1 : 1) * windSpeedForType(state.type);
 }
 
@@ -566,35 +582,40 @@ function circularOffset(from, to) {
     return d < 0 ? d + DAY_MINUTES : d;
 }
 
-// The day's wind stretches (circular): every edge where the target changes,
-// found on a quarter-minute scan and bisected, with its ease window.
-function timelineWindPlan(knots) {
+// Scan and bisect the wind edges across midnight for generated fronts, or
+// around the daily loop for pinned knots.
+function timelineWindPlan(knots, joined) {
     const key = knots.map(knot => `${knot.minute},${knot.type},${knot.windX},${knot.intensity},${knot.cloudCover},${knot.precipitation},${knot.fog}`).join('|');
     const cached = _windPlans.get(key);
     if (cached) return cached;
-    const steps = Math.round(DAY_MINUTES / WIND_SCAN_STEP_MINUTES);
     const edges = [];
-    let before = windTargetAt(DAY_MINUTES - WIND_SCAN_STEP_MINUTES, knots);
-    for (let i = 0; i < steps; i++) {
-        const at = i * WIND_SCAN_STEP_MINUTES;
-        const target = windTargetAt(at, knots);
+    const start = joined ? knots[0].minute + WIND_SCAN_STEP_MINUTES : 0;
+    const end = joined ? knots.at(-1).minute : DAY_MINUTES;
+    const wrap = minute => joined || minute >= 0 ? minute : minute + DAY_MINUTES;
+    let before = windTargetAt(wrap(start - WIND_SCAN_STEP_MINUTES), knots, joined);
+    for (let at = start; at < end; at += WIND_SCAN_STEP_MINUTES) {
+        const target = windTargetAt(at, knots, joined);
         if (target !== before) {
             let lo = at - WIND_SCAN_STEP_MINUTES;
             let hi = at;
             while (hi - lo > WIND_EDGE_PRECISION_MINUTES) {
                 const mid = (lo + hi) / 2;
-                if (windTargetAt(mid < 0 ? mid + DAY_MINUTES : mid, knots) === before) lo = mid;
+                if (windTargetAt(wrap(mid), knots, joined) === before) lo = mid;
                 else hi = mid;
             }
-            edges.push({ at: hi < 0 ? hi + DAY_MINUTES : hi, from: before, to: target, lead: 0, lag: 0 });
+            edges.push({ at: wrap(hi), from: before, to: target, lead: 0, lag: 0 });
         }
         before = target;
     }
     edges.sort((a, b) => a.at - b.at);
     for (let i = 0; i < edges.length; i++) {
         const edge = edges[i];
-        const prevSpan = edges.length === 1 ? DAY_MINUTES : circularOffset(edges[(i - 1 + edges.length) % edges.length].at, edge.at);
-        const nextSpan = edges.length === 1 ? DAY_MINUTES : circularOffset(edge.at, edges[(i + 1) % edges.length].at);
+        const prevSpan = joined
+            ? edge.at - (edges[i - 1]?.at ?? knots[0].minute)
+            : edges.length === 1 ? DAY_MINUTES : circularOffset(edges[(i - 1 + edges.length) % edges.length].at, edge.at);
+        const nextSpan = joined
+            ? (edges[i + 1]?.at ?? end) - edge.at
+            : edges.length === 1 ? DAY_MINUTES : circularOffset(edge.at, edges[(i + 1) % edges.length].at);
         const calmer = Math.abs(edge.to) - Math.abs(edge.from);
         if (calmer < 0) edge.lead = Math.min(WIND_EASE_MINUTES, prevSpan / 2);
         else if (calmer > 0) edge.lag = Math.min(WIND_EASE_MINUTES, nextSpan / 2);
@@ -603,40 +624,41 @@ function timelineWindPlan(knots) {
             edge.lag = Math.min(WIND_EASE_MINUTES / 2, nextSpan / 2);
         }
     }
-    const plan = { edges, constant: edges.length ? 0 : windTargetAt(0, knots) };
+    const plan = { edges, constant: edges[0]?.from ?? before };
     if (_windPlans.size >= 8) _windPlans.delete(_windPlans.keys().next().value);
     _windPlans.set(key, plan);
     return plan;
 }
 
-function timelineWindAt(minute, knots) {
-    const plan = timelineWindPlan(knots);
+function timelineWindAt(minute, knots, joined) {
+    const plan = timelineWindPlan(knots, joined);
     if (!plan.edges.length) return plan.constant;
-    const m = circularOffset(0, minute);
+    const m = joined ? minute : circularOffset(0, minute);
     let latest = null;
     let latestOffset = Infinity;
     for (const edge of plan.edges) {
-        const after = circularOffset(edge.at, m);
-        if (after <= edge.lag && edge.lag > 0) {
+        const after = joined ? m - edge.at : circularOffset(edge.at, m);
+        if (after >= 0 && after <= edge.lag && edge.lag > 0) {
             return edge.from + (edge.to - edge.from) * smoothstep((edge.lead + after) / (edge.lead + edge.lag));
         }
-        const ahead = circularOffset(m, edge.at);
+        const ahead = joined ? -after : circularOffset(m, edge.at);
         if (ahead > 0 && ahead <= edge.lead) {
             return edge.from + (edge.to - edge.from) * smoothstep((edge.lead - ahead) / (edge.lead + edge.lag));
         }
-        if (after < latestOffset) {
+        if (after >= 0 && after < latestOffset) {
             latestOffset = after;
             latest = edge;
         }
     }
-    return latest.to;
+    return latest?.to ?? plan.constant;
 }
 
 export function resolveWeatherAt(minute, timeline) {
     const knots = timeline?.knots || [];
     if (!knots.length) return normalizeWeatherOverride({ type: 'clear' }, timeline?.seed);
 
-    const state = timelineStateAt(minute, knots);
+    const joined = timeline.joinedKnots;
+    const state = timelineStateAt(minute, joined || knots, Boolean(joined));
     return {
         type: state.type,
         previousType: state.previous.type,
@@ -646,7 +668,7 @@ export function resolveWeatherAt(minute, timeline) {
         cloudCover: state.cloudCover,
         precipitation: state.precipitation,
         fog: state.fog,
-        windX: timelineWindAt(minute, knots),
+        windX: timelineWindAt(minute, joined || knots, Boolean(joined)),
         seed: timeline.seed,
         cause: 'timeline',
         timelineMode: 'auto',
@@ -1039,8 +1061,8 @@ export function weatherHistorySampler(date, { seedOverride = null, timelineMode 
             return deterministicWeather(at, seedOverride);
         };
     }
-    const knots = timelineFor(date, seedOverride, timelineKnots).knots;
-    return (minute) => timelineStateAt(minute, knots);
+    const { knots, joinedKnots } = timelineFor(date, seedOverride, timelineKnots);
+    return (minute) => timelineStateAt(minute, joinedKnots || knots, Boolean(joinedKnots));
 }
 
 function phaseLight(phase, phaseProgress) {
