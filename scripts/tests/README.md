@@ -39,7 +39,7 @@ Set `CLAUDEVILLE_TEST_TMPDIR` to a writable directory when the normal temporary 
 | `release-changelog.test.mjs` | Release header parsing, exact extraction, version rejection, and read-only/write preparation behavior. |
 | `catalog-check.test.mjs` | Smoke files, verification npm scripts, and `docs/*.md` files remain cataloged. |
 | `gpu-resource-lifecycle.test.mjs` | Fragment integer precision, binding restoration for typed uploads, and scene flags across direct draws and replay. |
-| `shade-field.test.mjs`, `lamp-silhouette.test.mjs`, `agent-atlas-slots.test.mjs` | Shade backing release after suspension, restoration after a withdrawn build, silhouette clipping after scene changes, and retained channel pixels when an atlas slot changes owner. |
+| `shade-field.test.mjs`, `lamp-silhouette.test.mjs`, `agent-atlas-slots.test.mjs` | Shade backing release after suspension, restoration after a withdrawn build, silhouette clipping after scene changes, dense atlas dimensions, page resize counts during roster growth, walk frames across row boundaries, and retained channel pixels when an atlas slot changes owner. |
 | `ground-weather-field.test.mjs`, `weather-truth.test.mjs` | Weather bake allocation count, atmosphere freeze and generated front continuity across midnight, live and ground-history agreement, and active rain and wet-ground parity fixtures. |
 | `world-rain.test.mjs`, `webgpu-fallback-swap.test.mjs` | Seeded static rain, bounded fall motion, and phase continuity through both resident backend swap directions. |
 | `o2-prompt-plan-mapping.test.mjs` | Prompt, TodoWrite, and branch payload bounds plus signature-driven live Agent updates. |

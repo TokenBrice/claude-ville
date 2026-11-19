@@ -364,12 +364,10 @@ const EMA_ALPHA = 0.1;
 // cached-source ceiling gives up exactly that much.
 // B.2 — the ceiling is 160 MiB, not the shipped 48 MiB: the sources every
 // frame samples already exceed 48 MiB, so the old cap was always "exceeded"
-// and only evicted what the camera had just left (re-upload churn). Measured
-// resident set, all of it sampled in the current frame: terrain bake 25.0 MB
-// + four 2048² world-pilot channels 64.0 MB + ground fields ~10.5 MB +
-// agent atlases (0.7 k² slots: 1.9 MB each; 4.7 walk strips at 840x3080:
-// 9.9 MB each, three channels) = 105-111 MB at dense-100 / readme-showcase,
-// 134-137 MB at dense-24 (2560 and 5120 wide).
+// and only evicted what the camera had just left (re-upload churn). The
+// original dense fixtures sampled 105–137 MB of terrain, ground fields,
+// agent atlases and pilot channels. The four current 2026×1801 RGBA8
+// world-pilot channels together use 55.7 MiB of GPU memory.
 const PALETTE_LUT_BYTES = PALETTE_LUT_WIDTH * PALETTE_LUT_HEIGHT * 4;
 const SPILL_FIELD_WIDTH = 256;
 const SPILL_FIELD_HEIGHT = 144;
