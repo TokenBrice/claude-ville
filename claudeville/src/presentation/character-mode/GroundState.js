@@ -141,7 +141,8 @@ function timelineKey(options) {
     // WX-1 — the date-seeded weather differs with the night-rain switch;
     // pinned knots do not.
     const nightRain = knots || nightRainOn() ? '' : '|wx0';
-    return `${options.timelineMode || 'auto'}|${options.seedOverride ?? ''}|${knots}${nightRain}`;
+    const forecast = options.forecast ? `|forecast:${options.forecast.fetchedAt}` : '';
+    return `${options.timelineMode || 'auto'}|${options.seedOverride ?? ''}|${knots}${nightRain}${forecast}`;
 }
 
 function historyKey(date, minute, options) {
@@ -284,7 +285,7 @@ function snowCoverAt(date, bucket, options) {
 
 /**
  * The timeline inputs of an atmosphere snapshot (`atmosphere.timeline`: seed
- * override, fixed/auto mode, pinned QA knots), so history readers integrate
+ * override, fixed/auto mode, pinned QA knots, forecast), so history readers integrate
  * exactly what the live weather resolved from.
  */
 export function groundOptionsFor(atmosphere) {
@@ -293,6 +294,7 @@ export function groundOptionsFor(atmosphere) {
         seedOverride: timeline?.seedOverride ?? null,
         timelineMode: timeline?.mode || 'auto',
         timelineKnots: timeline?.knots || null,
+        forecast: timeline?.forecast || null,
         // BI-5 — the frost melts by the snapshot's own sun.
         sun: frostSunFor(atmosphere),
     };
@@ -300,7 +302,7 @@ export function groundOptionsFor(atmosphere) {
 
 /**
  * C-W2 ground state for `date` (its local minute, or `options.minute`).
- * `options`: `{ seedOverride, timelineMode, timelineKnots }` — the same
+ * `options`: `{ seedOverride, timelineMode, timelineKnots, forecast }` — the same
  * timeline inputs as the live snapshot (`atmosphere.timeline`) — and the
  * frost's `sun` (`frostSunFor`; the fallback sun when omitted).
  */

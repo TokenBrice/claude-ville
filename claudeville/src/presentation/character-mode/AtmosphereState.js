@@ -1,8 +1,7 @@
 // claudeville/src/presentation/character-mode/AtmosphereState.js
 //
-// Local-clock atmosphere snapshots for world rendering. This module is pure
-// browser-local state: no geolocation, network weather, or render-loop time is
-// used to decide semantic time of day.
+// Local-clock atmosphere snapshots for world rendering. An optional forecast
+// supplies weather knots. Semantic time of day still comes from the local clock.
 //
 // Snapshot field layout (top-level vs nested):
 //   atmosphere.phase / phaseProgress / dayProgress  — semantic time-of-day
@@ -26,6 +25,7 @@
 import { applyGradeToRgb, evaluateGrade, lampCourseAt } from './GradeEvaluator.js';
 import { ART_RAMPS } from '../../config/artPalette.js';
 import { lookStrength } from './LookStrengths.js';
+import { readVillageForecast } from '../shared/VillageWeatherSettings.js';
 import { WIND_MAX, baseWindX, windAt, windSpeedForType } from './Wind.js';
 import {
     SUNRISE_ALTITUDE_DEG,
@@ -479,19 +479,23 @@ function weatherKnotsFor(seed, count = WEATHER_TIMELINE_KNOTS) {
     return knots;
 }
 
-export function buildWeatherTimeline(date, seedOverride = null) {
+export function buildWeatherTimeline(date, seedOverride = null, forecastDays = null) {
     const dateKey = localDateKey(date);
     const seedFor = key => resolveSeed(seedOverride, `${key}|weather-timeline`);
     const seed = seedFor(dateKey);
-    const knots = weatherKnotsFor(seed);
+    const forecastKnots = forecastDays?.[dateKey];
+    const knots = forecastKnots || weatherKnotsFor(seed);
     // Use calendar neighbours so a short or long DST day still joins its own midnight.
     const neighbourKey = offset => localDateKey(new Date(date.getFullYear(), date.getMonth(), date.getDate() + offset, 12));
-    const previous = weatherKnotsFor(seedFor(neighbourKey(-1))).at(-1);
-    const next = weatherKnotsFor(seedFor(neighbourKey(1)), 2);
+    const prevKey = neighbourKey(-1);
+    const nextKey = neighbourKey(1);
+    const previous = (forecastDays?.[prevKey] || weatherKnotsFor(seedFor(prevKey))).at(-1);
+    const next = forecastDays?.[nextKey]?.slice(0, 2) || weatherKnotsFor(seedFor(nextKey), 2);
     return {
         seed,
         dateKey,
         knots,
+        realSky: Boolean(forecastKnots),
         // Include the fronts on both sides of midnight so wind easing sees the same edges.
         joinedKnots: [
             { ...previous, minute: previous.minute - DAY_MINUTES },
@@ -505,10 +509,9 @@ function interpolateNumber(from, to, weight) {
     return from + (to - from) * weight;
 }
 
-// The minute's weather between two knots, without wind: the smoothstepped
-// blend and the type it resolves to (the nearer knot's, re-derived from the
-// blended fog / precipitation / cloud), plus the nearer knot (its wind sign).
-function timelineStateAt(minute, knots, joined = false) {
+// Ease continuous values between knots. Forecasts keep the nearest reported
+// type, while the authored timeline derives its fronts from the eased values.
+function timelineStateAt(minute, knots, joined = false, realSky = false) {
     let previous = knots[knots.length - (joined ? 2 : 1)];
     let next = joined ? knots.at(-1) : knots[0];
     let adjustedMinute = minute;
@@ -537,16 +540,18 @@ function timelineStateAt(minute, knots, joined = false) {
     const fog = clamp(interpolateNumber(previous.fog, next.fog, transitionProgress));
     const nearer = transitionProgress < 0.5 ? previous : next;
     let type = nearer.type;
-    if (previous.type === 'storm' || next.type === 'storm') {
-        // Rain already meets the storm thresholds, so honour a shared rain knot on either side.
-        const boundaryRain = joined && type === 'rain' && nearer.minute % DAY_MINUTES === 0;
-        if (!boundaryRain && precipitation > 0.34 && cloudCover > 0.78) type = 'storm';
-    } else if (precipitation > 0.18) {
-        type = 'rain';
-    } else if (fog > 0.24) {
-        type = 'fog';
-    } else if (cloudCover > 0.74) {
-        type = 'overcast';
+    if (!realSky) {
+        if (previous.type === 'storm' || next.type === 'storm') {
+            // Rain already meets the storm thresholds, so honour a shared rain knot on either side.
+            const boundaryRain = joined && type === 'rain' && nearer.minute % DAY_MINUTES === 0;
+            if (!boundaryRain && precipitation > 0.34 && cloudCover > 0.78) type = 'storm';
+        } else if (precipitation > 0.18) {
+            type = 'rain';
+        } else if (fog > 0.24) {
+            type = 'fog';
+        } else if (cloudCover > 0.74) {
+            type = 'overcast';
+        }
     }
     return {
         previous,
@@ -657,7 +662,7 @@ export function resolveWeatherAt(minute, timeline) {
     if (!knots.length) return normalizeWeatherOverride({ type: 'clear' }, timeline?.seed);
 
     const joined = timeline.joinedKnots;
-    const state = timelineStateAt(minute, joined || knots, Boolean(joined));
+    const state = timelineStateAt(minute, joined || knots, Boolean(joined), timeline.realSky);
     return {
         type: state.type,
         previousType: state.previous.type,
@@ -667,7 +672,9 @@ export function resolveWeatherAt(minute, timeline) {
         cloudCover: state.cloudCover,
         precipitation: state.precipitation,
         fog: state.fog,
-        windX: timelineWindAt(minute, joined || knots, Boolean(joined)),
+        windX: timeline.realSky
+            ? interpolateNumber(state.previous.windX, state.next.windX, state.transitionProgress)
+            : timelineWindAt(minute, joined || knots, Boolean(joined)),
         seed: timeline.seed,
         cause: 'timeline',
         timelineMode: 'auto',
@@ -998,13 +1005,13 @@ function normalizeWeatherOverride(override, fallbackSeed = null) {
 }
 
 // C-W1 — the weather is a pure function of (local date, minute, optional
-// explicit seed or debug override). Nothing about agents, moods, the
+// explicit seed, forecast or debug override). Nothing about agents, moods, the
 // director, pushes or the Chronicle can reach it.
-export function resolveWeather(date, override = null, { seedOverride = null, timelineMode = 'auto', timelineKnots = null } = {}) {
+export function resolveWeather(date, override = null, { seedOverride = null, timelineMode = 'auto', timelineKnots = null, forecast = null } = {}) {
     if (override) return normalizeWeatherOverride(override, seedOverride);
     // Pinned QA knots win in both modes: fixed mode only drops the date hash.
     if (timelineMode === 'fixed' && !timelineKnots) return deterministicWeather(date, seedOverride);
-    return resolveWeatherAt(minutesSinceMidnight(date), timelineFor(date, seedOverride, timelineKnots));
+    return resolveWeatherAt(minutesSinceMidnight(date), timelineFor(date, seedOverride, timelineKnots, forecast));
 }
 
 // QA debug hook (5.2 acceptance): a pinned knot list replaces the date-hashed
@@ -1039,8 +1046,8 @@ export function normalizeTimelineKnots(knots) {
     return Object.freeze(out.map(knot => Object.freeze(knot)));
 }
 
-function timelineFor(date, seedOverride, timelineKnots) {
-    if (!timelineKnots) return buildWeatherTimeline(date, seedOverride);
+function timelineFor(date, seedOverride, timelineKnots, forecast) {
+    if (!timelineKnots) return buildWeatherTimeline(date, seedOverride, forecast?.days);
     const dateKey = localDateKey(date);
     return { seed: resolveSeed(seedOverride, `${dateKey}|weather-timeline`), dateKey, knots: timelineKnots };
 }
@@ -1048,11 +1055,11 @@ function timelineFor(date, seedOverride, timelineKnots) {
 /**
  * C-W2 — the weather history reader for `GroundState.groundStateAt`: one
  * date's sampler `(minute) → { type, precipitation, cloudCover }` over the
- * same resolution the live snapshot uses (the date-hashed or pinned timeline,
- * or the fixed-mode deterministic weather). Debug weather overrides are a
+ * same resolution the live snapshot uses (the date-hashed, forecast, pinned
+ * or fixed timeline). Debug weather overrides are a
  * live-only look and never enter the history.
  */
-export function weatherHistorySampler(date, { seedOverride = null, timelineMode = 'auto', timelineKnots = null } = {}) {
+export function weatherHistorySampler(date, { seedOverride = null, timelineMode = 'auto', timelineKnots = null, forecast = null } = {}) {
     if (timelineMode === 'fixed' && !timelineKnots) {
         const at = new Date(date.getFullYear(), date.getMonth(), date.getDate());
         return (minute) => {
@@ -1060,8 +1067,8 @@ export function weatherHistorySampler(date, { seedOverride = null, timelineMode 
             return deterministicWeather(at, seedOverride);
         };
     }
-    const { knots, joinedKnots } = timelineFor(date, seedOverride, timelineKnots);
-    return (minute) => timelineStateAt(minute, joinedKnots || knots, Boolean(joinedKnots));
+    const { knots, joinedKnots, realSky } = timelineFor(date, seedOverride, timelineKnots, forecast);
+    return (minute) => timelineStateAt(minute, joinedKnots || knots, Boolean(joinedKnots), realSky);
 }
 
 function phaseLight(phase, phaseProgress) {
@@ -1519,6 +1526,20 @@ function buildClock(date, minute, phase, phaseProgress) {
     };
 }
 
+const FORECAST_MAX_AGE_MS = 3 * 60 * 60_000;
+
+function forecastSource(date, forecast) {
+    if (!forecast) return null;
+    const age = forecast.fetchedAt === null ? null : Math.max(0, date.getTime() - forecast.fetchedAt);
+    const kind = age !== null && age > FORECAST_MAX_AGE_MS ? 'stale'
+        : forecast.days?.[localDateKey(date)] ? 'forecast' : 'unavailable';
+    return { kind, ageMinutes: age === null ? null : Math.floor(age / 60_000) };
+}
+
+export function createLiveAtmosphereSnapshot() {
+    return createAtmosphereSnapshot({ forecast: readVillageForecast() });
+}
+
 export function createAtmosphereSnapshot({
     now = new Date(),
     motionScale = null,
@@ -1527,6 +1548,7 @@ export function createAtmosphereSnapshot({
     seedOverride = null,
     timelineMode = 'auto',
     timelineKnots = null,
+    forecast = null,
     solarSite = null,
 } = {}) {
     const effectiveDate = applyHourOverride(normalizeDate(now), hourOverride);
@@ -1536,7 +1558,10 @@ export function createAtmosphereSnapshot({
     const phases = phasesForShift(shift);
     const { phase, phaseProgress } = resolvePhase(minute, phases);
     const dayProgress = minute / DAY_MINUTES;
-    const weather = resolveWeather(effectiveDate, weatherOverride, { seedOverride, timelineMode, timelineKnots });
+    const weatherSource = weatherOverride || hourOverride != null || seedOverride != null || timelineMode === 'fixed' || timelineKnots
+        ? null : forecastSource(effectiveDate, forecast);
+    const activeForecast = weatherSource?.kind === 'forecast' ? forecast : null;
+    const weather = resolveWeather(effectiveDate, weatherOverride, { seedOverride, timelineMode, timelineKnots, forecast: activeForecast });
     const preset = WEATHER_PRESETS[weather.type] || WEATHER_PRESETS.clear;
     const intensity = clamp(weather.intensity);
     const cloudCover = Number.isFinite(weather.cloudCover) ? weather.cloudCover : preset.cloudCover;
@@ -1581,6 +1606,7 @@ export function createAtmosphereSnapshot({
         // grade overlay and baked plates must re-bake when the moon changes it.
         cacheKey: `${phase}|${weather.type}|i${intensityBucket}|c${cloudBucket}|p${precipitationBucket}|f${fogBucket}|b${timeBucket}|l${lightBucket}|m${Math.round(lighting.moonFill * 10)}`,
         weather,
+        weatherSource,
         sky: {
             palette: skyPaletteFor(lightGrade),
             assetIds: SKY_ASSETS,
@@ -1624,6 +1650,7 @@ export class AtmosphereState {
 
     update({ now = null, motionScale = null } = {}) {
         const baseNow = this._frozenDate ?? now ?? this.nowProvider();
+        const forecast = this._frozenDate ? null : readVillageForecast();
         this._lastSnapshot = createAtmosphereSnapshot({
             now: baseNow,
             motionScale,
@@ -1632,6 +1659,7 @@ export class AtmosphereState {
             seedOverride: this._seedOverride,
             timelineMode: this._timelineMode,
             timelineKnots: this._timelineKnots,
+            forecast,
         });
         // C-W2 — everything `groundStateAt` needs to integrate the same
         // history the live weather resolves from.
@@ -1641,6 +1669,7 @@ export class AtmosphereState {
             frozen: this._frozenDate !== null,
             seedOverride: this._seedOverride,
             knots: this._timelineKnots,
+            forecast: this._lastSnapshot.weatherSource?.kind === 'forecast' ? forecast : null,
         };
         return this._lastSnapshot;
     }

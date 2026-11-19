@@ -39,6 +39,8 @@ Desktop-first constraint: shared UI at `/` only needs to support browser widths 
 
 ## Event Ownership
 
+Settings stores the Village weather choice per browser and resets it to Modeled. TopBar starts and stops the opt-in watcher in `VillageWeatherSettings.js` and uses the atmosphere snapshot for its clock tooltip. The weather icon links to Open-Meteo while its forecast is active. An open chrome tooltip follows changes to its control’s `data-tip`.
+
 - Emit `agent:selected` and `agent:deselected` through `AgentSelection.js` helpers so future event-shape changes stay centralized.
 - `agent:selected` can be emitted by World mode, Dashboard cards, or Sidebar rows.
 - In World mode, `ActivityPanel` opens on `agent:selected`, refreshes its selected agent on matching `agent:updated`, and reads `Left the village · 1m` through a departed villager's 90 s grace. When that agent is removed it does not close mid-read: it stops polling, shows `Left the village · this record no longer updates`, and stays open, read-only, until the operator closes it or selects another (UI-13). Sidebar and Dashboard rows wear the same departed marker (receding niche and name, `left the village` as the state). Dashboard keeps this panel hidden and expands selected detail inline.

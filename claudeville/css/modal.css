@@ -290,6 +290,11 @@
     color: var(--ink-3);
 }
 
+#settingsVillageWeatherDetail a {
+    color: var(--ink-2);
+    text-decoration: underline;
+}
+
 /* A row whose control is a button group spans both columns (SND-7's calls). */
 .settings-control--wide {
     grid-column: 1 / -1;

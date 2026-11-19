@@ -484,6 +484,7 @@ export class App {
                 attention: this.attentionService,
                 chronicle: this.chroniclePanel,
                 spendLedger: this.spendLedger,
+                simulation: this.simMode,
                 readDashboardAtmosphere: () => this.modeManager?.getCurrentMode() === 'dashboard'
                     ? this.renderer?.atmosphereState?.snapshot() : null,
                 frameAttention: () => {

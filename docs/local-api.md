@@ -12,6 +12,7 @@ The server is hardcoded to port `4000` and the IPv4 loopback interface. Requests
 | `GET /api/tasks` | Claude Code task groups from `~/.claude/tasks/`. Diagnostic; the UI does not fetch it. |
 | `GET /api/providers` | Detected providers, home directories, and per-provider health. |
 | `GET /api/usage` | Claude subscription, activity and quota, plus the Codex account quota ([fields](#usage-and-quota)). |
+| `GET /api/weather` | Optional hourly forecast for the server’s timezone city ([request and response](#village-weather)). |
 | `GET /api/perf` | Runtime counters: watchers, caches, adapter scan cost, event loop, memory. `eventLoop.processUtilization` (a `process.cpuUsage()` delta) is the honest idle measure; `eventLoop.utilization` over-reports while a sampling profiler such as `--cpu-prof` is attached. |
 | `GET /api/changelog` | Raw `CHANGELOG.md` text for the in-app changelog modal. |
 | `ws://localhost:4000/ws` | Same-origin snapshot, delta updates, and ping/pong heartbeats. |
@@ -40,6 +41,14 @@ The adapter contract has the extraction rules: [git event extraction](../claudev
   - `usedPercent` (0–100) and `resetsAt` (epoch ms) describe the binding window, the highest among windows that have not reset. Once its `resetsAt` passes, both are null: unknown, never 0 %.
   - `limitReached` is true at `usedPercent >= 100`, or whenever Codex reports `rate_limit_reached_type`. It drives account surfaces only (the Hourglass Belfry's lavender cord in the World and the Dashboard quota card) and never a session's status.
   - `observedAt` is the record's own time, so it can be hours old when no Codex session is live.
+
+## Village weather
+
+`GET /api/weather` requires `X-ClaudeVille-Weather: real-sky` to opt in. An ordinary GET returns `{ fetchedAt: null, hourly: null, refreshAt: null }` without contacting the provider. Coordinates come from the server’s timezone city table. The route ignores query parameters.
+
+Opted-in responses are `{ fetchedAt, hourly, refreshAt }` with `Cache-Control: no-store`. The timestamps are epoch milliseconds. `refreshAt` is the earliest next upstream attempt. `hourly` contains parallel arrays for `time` (epoch seconds in UTC), `weather_code`, `cloud_cover` (%), `precipitation` (mm), `wind_speed_10m` (km/h), `wind_direction_10m` (degrees from north), and `visibility` (m). A null `hourly` means the forecast is unavailable or expired. `fetchedAt` retains the last successful fetch time for the timezone if the forecast expires.
+
+The village adapts forecast data from [Open-Meteo](https://open-meteo.com/) under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The keyless endpoint is for [non-commercial use](https://open-meteo.com/en/terms).
 
 ## WebSocket messages
 

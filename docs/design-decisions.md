@@ -60,9 +60,9 @@ The CLIs append to these files concurrently and may change their format in any r
 
 If you change this, update: every adapter under `claudeville/adapters/`, `claudeville/CLAUDE.md`, and add a clear ownership story in README.
 
-## The quota API is the only outbound network exception
+## Claude quota uses the authenticated Anthropic API
 
-`claudeville/services/usageQuota.js` makes one deliberate outbound request: Node's `https.request` sends an authenticated `GET` to `api.anthropic.com/api/oauth/usage` when Claude OAuth credentials include both a subscription type and access token (`tryFetchQuota` in `claudeville/services/usageQuota.js`). This is an exception to ClaudeVille's otherwise loopback-only serving and local-data model; it is not a hosted proxy or a general network surface.
+`claudeville/services/usageQuota.js` uses Node's `https.request` to send an authenticated `GET` to `api.anthropic.com/api/oauth/usage` when Claude OAuth credentials include both a subscription type and access token (`tryFetchQuota` in `claudeville/services/usageQuota.js`). The server continues to serve clients only over loopback.
 
 The request is attempted at most once per `QUOTA_API_TTL` interval, which is `5 * 60_000` (5 minutes). Only an HTTP 200 response is parsed, and the production response accumulator destroys a body once it exceeds `QUOTA_RESPONSE_MAX_BYTES` (`256 * 1024`, or 256 KiB). The request timeout is 5 seconds (`tryFetchQuota`, `consumeQuotaResponse`). A valid response with at least one usable quota window or active limit updates the snapshot, including reset times, and clears any error. The highest active limit describes the account and lives in the [usage payload](local-api.md#usage-and-quota). Two failures are named in `quotaError: { status, at }` (SV-7, `recordQuotaFailure`):
 
@@ -74,6 +74,14 @@ Malformed, other non-200, oversized, and network-failed requests change nothing.
 This keeps quota telemetry useful without making the local dashboard depend on the remote service for its core operation. The retry interval limits background traffic, the response cap bounds remote input, and the stale cutoff prevents a frozen quota snapshot from looking current when the machine has been offline or the service is failing.
 
 If you change this, update: `claudeville/services/usageQuota.js`, the local-only/proxy descriptions in `README.md` and `claudeville/CLAUDE.md`, the quota troubleshooting note in `docs/troubleshooting.md`, and this entry plus the loopback claim in the `Port 4000 is hardcoded` entry.
+
+## Village weather uses an hourly forecast only on opt-in
+
+**Modeled** follows the authored local-date timeline. **Real sky** opts a browser into the local [weather API](local-api.md#village-weather). Its server makes at most one attempt per hour across tabs, with a five-second deadline, a 64 KiB response cap, and redirects disabled. The forecast stays in memory. A timezone without a city entry, missing forecast hours, or a fetch age over three hours can return the village to Modeled. The clock tooltip shows the source, age, and fallback.
+
+The request to Open-Meteo contains only the coarse city coordinates used for the village’s solar site and fixed forecast fields. The provider may log the IP address and coordinates for up to 90 days. The free endpoint allows non-commercial use below 600 requests per minute, 5,000 per hour, and 10,000 per day. [Open-Meteo terms and privacy](https://open-meteo.com/en/terms)
+
+ClaudeVille adapts forecast data to its six weather types and joins hourly knots on the local calendar. Recent forecast dates feed wet ground, frost and snow history. The calendar still governs how precipitation becomes snow, and rarer effects and history outside the forecast window follow the authored rules. Simulations use modeled weather and explicit QA overrides take priority. The weather inputs are independent of session state. The clock’s weather icon links to the provider, and Settings links to the license. [Open-Meteo attribution requirements](https://open-meteo.com/en/licence) · [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
 
 ## 2-second polling on top of `fs.watch`
 

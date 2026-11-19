@@ -21,6 +21,7 @@ import { bucketForStatus, oldestActionable, waitAnchor } from '../../domain/serv
 import { eventShapeSvgPath } from './EventShapes.js';
 import { publishReservedRect } from './ReservedRects.js';
 import { shortcutBlocked } from './ShortcutGuard.js';
+import { OPEN_METEO_URL, VILLAGE_WEATHER_KEY, readVillageWeather, watchVillageWeather, weatherMode } from './VillageWeatherSettings.js';
 import {
     DEFAULT_TOWN_BAND_VOICE,
     HUSH_DURATION_MS,
@@ -106,6 +107,7 @@ export const PERSISTED_SETTING_DEFAULTS = Object.freeze({
     'claudeville.alerts.desktop': '0',
     'claudeville.sidebarCollapsed': 'false',
     [HDR_HIGHLIGHTS_STORAGE_KEY]: HDR_HIGHLIGHTS_DEFAULT,
+    [VILLAGE_WEATHER_KEY]: 'modeled',
 });
 
 function storageValue(storage, key) {
@@ -124,6 +126,7 @@ export function readPersistedSettings(storage = globalThis.window?.localStorage)
         desktopAlerts: storageValue(storage, 'claudeville.alerts.desktop') === '1',
         sidebarCollapsed: storageValue(storage, 'claudeville.sidebarCollapsed') === 'true',
         hdrHighlights: readHdrHighlights(storage),
+        villageWeather: readVillageWeather(storage),
     };
 }
 
@@ -267,7 +270,7 @@ export function connectionChip(state, now = Date.now()) {
 }
 
 export class TopBar {
-    constructor(world, { modal, attention, chronicle, spendLedger, frameAttention, readDashboardAtmosphere } = {}) {
+    constructor(world, { modal, attention, chronicle, spendLedger, frameAttention, readDashboardAtmosphere, simulation } = {}) {
         this._motionOverride = installReducedMotionOverride();
         this.world = world;
         this.modal = modal || null;
@@ -443,6 +446,10 @@ export class TopBar {
             this.els.version.addEventListener('keydown', this._onVersionKeydown);
         }
 
+        this._villageWeather = watchVillageWeather({
+            simulation,
+            onChange: () => this._renderWitnessClock(this.readDashboardAtmosphere?.()),
+        });
         this._startTimer();
         this.render();
     }
@@ -475,11 +482,17 @@ export class TopBar {
         const node = this.els.clock;
         if (!node || !clock?.label) return;
         const weather = snapshot.weather?.type || 'clear';
+        const source = snapshot.weatherSource;
+        const age = source?.ageMinutes == null ? '' : ` · fetched ${formatWaitAge(source.ageMinutes * 60_000)} ago`;
+        const usingForecast = source?.kind === 'forecast';
+        const sourceLine = usingForecast ? `Real sky · Open-Meteo forecast adapted for the village${age}`
+            : source?.kind === 'stale' ? `Modeled village weather · Open-Meteo forecast expired${age}`
+                : source ? `Modeled village weather · Open-Meteo forecast unavailable${age}` : 'Modeled village weather';
         const timeline = snapshot.timeline;
         const override = timeline?.hourOverride != null || timeline?.frozen || timeline?.mode === 'fixed'
             ? 'FIXED' : this._villageState.source === 'simulator' ? 'SIM' : '';
         const phase = String(snapshot.phase || '').toUpperCase();
-        const signature = `${clock.label}|${phase}|${weather}|${override}`;
+        const signature = `${clock.label}|${phase}|${weather}|${override}|${sourceLine}`;
         if (signature === this._clockSignature) return;
         this._clockSignature = signature;
         node.hidden = false;
@@ -491,7 +504,15 @@ export class TopBar {
         const glyph = /rain|storm|snow/.test(weather) ? 'weather-rain'
             : /cloud|fog|overcast/.test(weather) ? 'weather-cloud' : 'weather-clear';
         node.querySelector('path').setAttribute('d', eventShapeSvgPath(glyph));
-        node.dataset.tip = `Modeled village weather: ${weather}${override ? ` · ${override.toLowerCase()} timeline` : ''}`;
+        const credit = node.querySelector('.topbar__clock-source');
+        if (credit && usingForecast) {
+            setAttr(credit, 'href', OPEN_METEO_URL);
+            node.removeAttribute('tabindex');
+        } else if (credit) {
+            credit.removeAttribute('href');
+            setAttr(node, 'tabindex', '0');
+        }
+        node.dataset.tip = `${sourceLine} · ${weather}${override ? ` · ${override.toLowerCase()} timeline` : ''}`;
     }
 
     // The `A` hotkey jumps to the longest-waiting actionable agent, and ALERTS
@@ -620,6 +641,7 @@ export class TopBar {
             onSidebarCollapsed: (collapsed) => this._setSidebarCollapsed(collapsed),
             onReducedMotion: (reduced) => this._setReducedMotion(reduced),
             onHdrHighlights: (mode) => this._setHdrHighlights(mode),
+            onVillageWeather: (mode) => this._setVillageWeather(mode),
             onReset: () => this._resetSettings(),
             getVillageState: () => this._villageState,
             getChronicleStatus: () => globalThis.window?.__chronicle?.status || this._chronicleStatus,
@@ -635,6 +657,7 @@ export class TopBar {
     // sound Off, every level and listening preference at its default.
     _resetSettings() {
         resetPersistedSettings();
+        this._villageWeather.setMode('modeled');
         this._setReducedMotion(false);
         const audio = this.audio;
         if (audio) {
@@ -722,6 +745,13 @@ export class TopBar {
     _setHdrHighlights(mode) {
         const kept = writeHdrHighlights(mode);
         eventBus.emit(HDR_HIGHLIGHTS_EVENT, { mode: kept });
+        return kept;
+    }
+
+    _setVillageWeather(mode) {
+        const kept = weatherMode(mode);
+        try { window.localStorage?.setItem(VILLAGE_WEATHER_KEY, kept); } catch { /* persistence is optional */ }
+        this._villageWeather.setMode(kept);
         return kept;
     }
 
@@ -1929,6 +1959,7 @@ export class TopBar {
     destroy() {
         if (this._destroyed) return this._destroyPromise;
         this._destroyed = true;
+        this._villageWeather?.destroy();
         this._cancelReactiveFrame();
         eventBus.off('atmosphere:updated', this._onAtmosphere);
         this._unpublishReservedRect?.();

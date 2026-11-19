@@ -18,6 +18,10 @@ export function installChromeTooltip(doc = document) {
     let pending = null;
     let timer = 0;
     let closedAt = -Infinity;
+    const tipText = doc.createTextNode('');
+    const liveTip = new MutationObserver(() => {
+        if (anchor) tipText.data = anchor.dataset.tip;
+    });
 
     const targetOf = node => {
         const target = node?.closest?.('[data-tip]');
@@ -27,6 +31,7 @@ export function installChromeTooltip(doc = document) {
         clearTimeout(timer);
         pending = null;
         if (!anchor) return;
+        liveTip.disconnect();
         anchor.style.removeProperty('anchor-name');
         anchor = null;
         if (tip.matches(':popover-open')) tip.hidePopover();
@@ -38,13 +43,15 @@ export function installChromeTooltip(doc = document) {
         if (anchor) hide();
         const names = getComputedStyle(target).anchorName;
         target.style.setProperty('anchor-name', names && names !== 'none' ? `${names}, ${ANCHOR}` : ANCHOR);
-        tip.replaceChildren(target.dataset.tip);
+        tipText.data = target.dataset.tip;
+        tip.replaceChildren(tipText);
         if (target.dataset.tipKey) {
             const key = doc.createElement('kbd');
             key.textContent = target.dataset.tipKey;
             tip.append(key);
         }
         anchor = target;
+        liveTip.observe(target, { attributeFilter: ['data-tip'] });
         tip.showPopover();
     };
     const request = target => {
@@ -62,7 +69,7 @@ export function installChromeTooltip(doc = document) {
     const handlers = {
         pointerover: event => { if (event.pointerType !== 'touch') request(targetOf(event.target)); },
         pointerout: event => leave(event, targetOf(event.target)),
-        focusin: event => { const target = targetOf(event.target); if (target?.matches(':focus-visible')) request(target); },
+        focusin: event => { if (event.target?.matches?.(':focus-visible')) request(targetOf(event.target)); },
         focusout: event => leave(event, targetOf(event.target)),
         pointerdown: hide,
         keydown: event => { if (event.key === 'Escape') hide(); },
