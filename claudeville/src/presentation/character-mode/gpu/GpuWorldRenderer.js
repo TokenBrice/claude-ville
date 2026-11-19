@@ -1359,7 +1359,7 @@ ivec2 albedoSize() {
 // added as an integer in the fetch, so a paged record is bit-identical to
 // its unpaged twin. The footprints are
 // fwidth taken at the top of main(), before any discard or record branch;
-// material, emissive and occluder sidecars stay nearest. Resting frames never
+// material and occluder sidecars stay nearest. Resting frames never
 // enter this path.
 uniform bool u_fatPixels;
 ${FAT_TAPS_GLSL}
@@ -1402,6 +1402,19 @@ vec4 sampleAlbedo(vec2 uv) {
 }
 uniform sampler2D u_materialMap;
 uniform sampler2D u_emissiveMap;
+vec4 sampleEmission(vec2 uv, float albedoAlpha) {
+    if (!fatOn || !fatSeam(fatAlbedoTaps) || v_gate == 0.0) return textureLod(u_emissiveMap, uv, 0.0);
+    vec4 sum = vec4(0.0);
+    for (int i = 0; i < 4; i++) {
+        float coverage = fatTapWeight(fatAlbedoTaps, i) * fatTap[i].a;
+        if (coverage == 0.0) continue;
+        vec2 local = clamp(fatAlbedoTaps.base + fatTapOffset(i), vec2(0.0), vec2(v_texelRect.zw));
+        vec2 tapUv = (vec2(v_texelRect.xy) + local + 0.5) / vec2(albedoSize());
+        sum += coverage * fatPremultiplied(textureLod(u_emissiveMap, tapUv, 0.0));
+    }
+    // Return straight hue and contribution per covered texel. Output applies albedo alpha once.
+    return sum.a > 0.0 ? vec4(sum.rgb / sum.a, sum.a / albedoAlpha) : vec4(0.0);
+}
 uniform bool u_hasMaterialMap;
 uniform sampler2D u_occluderMap;
 uniform bool u_hasOccluderMap;
@@ -2326,13 +2339,13 @@ void main() {
         albedo.rgb = mix(albedo.rgb, WATER_STOPS[waterStopForSd(reflectSd)], 0.38);
     }
     vec4 sidecar = u_hasMaterialMap ? textureLod(u_materialMap, uv, 0.0) : vec4(0.0);
-    vec4 authoredEmission = u_hasEmissiveMap ? textureLod(u_emissiveMap, uv, 0.0) : vec4(0.0);
     bool packedMap = (v_flags & ${GPU_RECORD_FLAGS.packedGeometry}u) != 0u;
     float materialId = floor(sidecar.r * 255.0 + 0.5);
     float material = sidecar.a > 0.0 && !(packedMap && materialId > 254.5) ? materialId : v_material;
     float emissive = v_emissive;
     vec3 emissionColor = albedo.rgb;
     if (u_hasEmissiveMap) {
+        vec4 authoredEmission = sampleEmission(uv, albedo.a);
         // The emissive channel owns both hue (RGB) and contribution (A). Do
         // not reconstruct authored emission from the albedo texture.
         emissionColor = authoredEmission.rgb;
