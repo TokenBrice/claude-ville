@@ -12,7 +12,9 @@ import {
 import {
     LAMP_SHADOW_TIP,
     bucketCast,
+    lampSilhouetteRecords,
     rasterSilhouette,
+    releaseLampSilhouettes,
     silhouetteGeometry,
 } from '../../claudeville/src/presentation/character-mode/LampSilhouette.js';
 import { EFFECT_BUDGET, effectBudgetMode } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldPolicy.js';
@@ -108,4 +110,52 @@ test('NL-3: a body\'s cached silhouette keys on lamp buckets, so a lamp moving u
 test('NL-3: the ladder keeps silhouettes at FULL and REDUCED, trails at MINIMAL', () => {
     assert.ok(EFFECT_BUDGET['lamp-silhouettes']);
     assert.deepEqual([0, 1, 2].map(level => effectBudgetMode('lamp-silhouettes', level)), ['on', 'on', 'off']);
+});
+
+test('a stationary lamp shadow repaints when the footprint or coast changes and reuses its body raster', t => {
+    let painted;
+    let bodyReads = 0;
+    globalThis.document = {
+        createElement: () => ({
+            getContext: () => ({
+                createImageData: (w, h) => ({ data: new Uint8ClampedArray(w * h * 4) }),
+                putImageData: image => { painted = image.data; },
+            }),
+        }),
+    };
+    t.after(() => {
+        releaseLampSilhouettes();
+        delete globalThis.document;
+    });
+    const source = { getContext: () => ({ getImageData: () => {
+        bodyReads++;
+        return { data: new Uint8ClampedArray(10 * 40 * 4).fill(255) };
+    } }) };
+    const bodies = [{
+        sprite: { x: 60, y: 60 }, contentKey: 'blocked-lamp-fixture',
+        cast: { dx: 30, dy: 0, distance: 30, height: 24, room: 26 },
+        record: { source, sx: 0, sy: 0, sw: 10, sh: 40, x: 55, y: 20, width: 10, height: 40 },
+    }];
+    const field = { originX: 0, originY: 0, width: 40, height: 40, cell: 4, revision: 1, data: new Uint8Array(40 * 40 * 2) };
+    const render = (currentField = field, coast = null) => {
+        const [record] = lampSilhouetteRecords(bodies, { strength: 1, field: currentField, coast });
+        return { opaque: painted.filter((value, i) => i % 4 === 3 && value === 255).length, revision: record.textureRevision };
+    };
+    const before = render();
+    assert.ok(before.opaque > 0);
+    assert.deepEqual(render(), before);
+    for (let y = 12; y <= 17; y++) {
+        for (let x = 12; x <= 24; x++) field.data[(y * field.width + x) * 2] = 255;
+    }
+    field.revision++;
+    const blocked = render();
+    assert.equal(blocked.opaque, 0);
+    assert.notEqual(blocked.revision, before.revision);
+    field.data.fill(0);
+    field.revision++;
+    assert.equal(render().opaque, before.opaque);
+    assert.equal(render({ ...field, data: new Uint8Array(field.data.length).fill(255) }).opaque, 0);
+    assert.equal(render(field, { signedDistanceAtWorld: () => 1 }).opaque, 0);
+    assert.equal(render(field, { signedDistanceAtWorld: () => -1 }).opaque, before.opaque);
+    assert.equal(bodyReads, 1);
 });

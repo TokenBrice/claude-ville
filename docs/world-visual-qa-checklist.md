@@ -31,6 +31,7 @@ World scenarios are deterministic fixtures for `?sim=1&scenario=<id>` (ids in `c
 - Prop density (v0.52.0): no prop, stall or monument stands on the gate avenue or a plaza lane; no tree trunk stands on or past the drawn shoreline (willows root at the bank, never in the water); no two tree crowns stack on one another; outside the farm pocket no spot gathers more than three props within 1.5 tiles. At night the lamp chain still reads continuous: one post per stretch with a wide pool, the Command watchfires lighting the plaza, the moved braziers lighting the Command west steps and the Forge yard.
 - `team-gather`: team members cluster around intended Command/Task Board areas with readable chat pairing.
 - `parent-subagents`: parent/child agents are visually distinguishable; completed child cleanup leaves no stale label or marker.
+- `council-fleet` (FK-8): one lead pending on `Poll` with a crew of 20 (four coloured `xhigh` teammates on its `session-` team, four Codex MCP jobs in their own directory, a twelve-member workflow). The sidebar lists the lead first with its crew folded under it behind `20 crew` (nine rows: eight children and the workflow); unfolded, the crew sits on the lead's rail with names wrapping at 240 px, never cut. Every live member carries the outlined squad notch, legible on grass at z1 day and night.
 - `building-inspection-replay`: Command building opens selected, replay is active, and selected-building route lines are more prominent than hover previews.
 
 ## Harbor And Git

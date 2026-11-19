@@ -8,9 +8,10 @@ import { AgentStatus } from '../../claudeville/src/domain/value-objects/AgentSta
 import { LandmarkActivity } from '../../claudeville/src/presentation/character-mode/LandmarkActivity.js';
 import { FAILURE } from '../../claudeville/src/presentation/character-mode/EffectStamps.js';
 import { groundMarkDepth, groundRingPlan } from '../../claudeville/src/presentation/character-mode/AgentGroundMarks.js';
-import { drawFamilyTethers, resolveSquads, squadPennonSide, SQUAD_MIN_CHILDREN, SQUAD_TETHER_PATTERNS } from '../../claudeville/src/presentation/character-mode/CouncilRing.js';
+import { drawFamilyTethers, resolveSquads, squadCordChildIds, squadPennonSide, SQUAD_MIN_CHILDREN, SQUAD_TETHER_PATTERNS } from '../../claudeville/src/presentation/character-mode/CouncilRing.js';
+import { MarkGovernor, MarkTier, PRESSURE_LEVELS, setActiveMarkGovernor } from '../../claudeville/src/presentation/character-mode/MarkGovernor.js';
 import { drawSquadPennon } from '../../claudeville/src/presentation/character-mode/PixelPennant.js';
-import { tileToWorld } from '../../claudeville/src/presentation/character-mode/Projection.js';
+import { tileToWorld, worldToTile } from '../../claudeville/src/presentation/character-mode/Projection.js';
 import { AMBIENT_KNOT_LIMIT, RelationshipState, ambientFileKnots } from '../../claudeville/src/presentation/character-mode/RelationshipState.js';
 
 const NOW = 1_000_000;
@@ -239,6 +240,162 @@ test('W7.4: squad cords lie on the ground, feet to feet, and drop out between cl
         }
     }
     assert.ok(cord.every(fill => Math.abs(fill.y - fill.x / 2) <= 3), 'no cord toward the one-tile neighbour');
+});
+
+// FK-3 — a squad grammar past seven: every member carries the notch, cords
+// are admitted per squad (all of them up to four children, one per building
+// cluster above that, every one while the leader is selected or hovered),
+// and reduced motion admits exactly what motion does.
+function fleet(n, { buildings = 1, selected = false } = {}) {
+    const lead = { ...squadSprite('lead', 0, 0), selected };
+    const sprites = new Map([['lead', lead]]);
+    const kids = new Set();
+    for (let i = 0; i < n; i++) {
+        const angle = (i / n) * Math.PI * 2;
+        const child = squadSprite(`c${String(i).padStart(2, '0')}`, Math.round(Math.cos(angle) * 400), Math.round(Math.sin(angle) * 200));
+        child._lastBuildingType = `building-${i % buildings}`;
+        child.behavior = { building: child._lastBuildingType, arrivedAt: 1 }; // arrived at its slot
+        sprites.set(child.agent.id, child);
+        kids.add(child.agent.id);
+    }
+    return { lead, sprites, kids, relationship: { parentToChildren: new Map([['lead', kids]]) } };
+}
+
+function notchTips(ctx, color = '#5aa0d8') {
+    // The notch's one-texel tip, lit in the squad accent at full alpha.
+    return ctx.fills.filter(fill => fill.w === 1 && fill.h === 1 && fill.alpha === 1 && fill.color === color);
+}
+
+for (const n of [8, 23]) {
+    test(`FK-3: a squad of ${n} notches every member and cords one member per building cluster`, () => {
+        const { lead, sprites, kids, relationship } = fleet(n, { buildings: 3 });
+        const corded = squadCordChildIds(lead, [...kids], sprites);
+        assert.equal(corded.size, 3, 'one cord per building cluster');
+        const selected = fleet(n, { buildings: 3, selected: true });
+        assert.equal(squadCordChildIds(selected.lead, [...selected.kids], selected.sprites).size, n, 'the selected leader shows the whole squad');
+
+        for (const motionScale of [1, 0]) {
+            const governor = new MarkGovernor();
+            governor.beginFrame({ pressureLevel: PRESSURE_LEVELS.GLYPHS, motionScale });
+            let admits = 0;
+            const admit = governor.admit.bind(governor);
+            governor.admit = (...args) => { admits++; return admit(...args); };
+            setActiveMarkGovernor(governor);
+            const ctx = recordingCtx();
+            try {
+                drawFamilyTethers(ctx, { relationship, agentSprites: sprites, motionScale });
+            } finally {
+                setActiveMarkGovernor(null);
+            }
+            assert.equal(admits, 1, 'the squad is admitted once, not once per cord');
+            assert.equal(notchTips(ctx).length, n + 1, 'a notch under the leader and every member');
+        }
+    });
+}
+
+test('FK-3: the focused squad keeps its cords at the secondary cap in a saturated region', () => {
+    for (const focus of ['selected', 'hovered']) {
+        const { lead, sprites, relationship } = fleet(8, { buildings: 3 });
+        lead[focus] = true;
+        const governor = new MarkGovernor();
+        governor.beginFrame({ pressureLevel: PRESSURE_LEVELS.GLYPHS, motionScale: 1 });
+        for (let i = 0; i < 10; i++) governor.admit(MarkTier.SECONDARY, 0, 1);
+        setActiveMarkGovernor(governor);
+        const ctx = recordingCtx();
+        try {
+            drawFamilyTethers(ctx, { relationship, agentSprites: sprites, motionScale: 1 });
+        } finally {
+            setActiveMarkGovernor(null);
+        }
+        const cord = ctx.fills.filter(fill => fill.alpha < 1);
+        assert.ok(cord.length > 0, `${focus}: the focused squad draws its cords`);
+        // SQUAD_TETHER_ALPHA 0.88 × the 0.78 cap, in 1/16 steps (neutral lighting).
+        const expected = Math.round(0.88 * 0.78 * 16) / 16;
+        assert.ok(cord.every(fill => Math.abs(fill.alpha - expected) < 1e-9), `${focus}: at the cap`);
+    }
+    // Unfocused, the same saturated region refuses the squad.
+    const { sprites, relationship } = fleet(8, { buildings: 3 });
+    const governor = new MarkGovernor();
+    governor.beginFrame({ pressureLevel: PRESSURE_LEVELS.GLYPHS, motionScale: 1 });
+    for (let i = 0; i < 10; i++) governor.admit(MarkTier.SECONDARY, 0, 1);
+    setActiveMarkGovernor(governor);
+    const ctx = recordingCtx();
+    try {
+        drawFamilyTethers(ctx, { relationship, agentSprites: sprites, motionScale: 1 });
+    } finally {
+        setActiveMarkGovernor(null);
+    }
+    assert.equal(ctx.fills.filter(fill => fill.alpha < 1).length, 0);
+});
+
+test('FK-3: walkers and stranded members cluster where they are, recorded arrivals by their building', () => {
+    const lead = squadSprite('lead', 0, 0);
+    const sprites = new Map([['lead', lead]]);
+    const ids = [];
+    const add = (id, x, y, extra) => { sprites.set(id, Object.assign(squadSprite(id, x, y), extra)); ids.push(id); };
+    const enRoute = { building: 'forge', arrivedAt: null };
+    // Two walkers in different districts, both bound for the forge.
+    add('w1', 400, 200, { moving: true, _lastBuildingType: 'forge', behavior: enRoute });
+    add('w2', -400, 200, { moving: true, _lastBuildingType: 'forge', behavior: enRoute });
+    // Two whose route failed far apart: standing still, no arrival recorded.
+    add('f1', 600, -100, { moving: false, _lastBuildingType: 'forge', behavior: enRoute });
+    add('f2', -600, -100, { moving: false, _lastBuildingType: 'forge', behavior: enRoute });
+    // Three arrived at the archive, apart from one another.
+    for (const [id, x, y] of [['s1', 300, -150], ['s2', 340, -130], ['s3', 380, -110]]) {
+        add(id, x, y, { moving: false, _lastBuildingType: 'archive', behavior: { building: 'archive', arrivedAt: 5 } });
+    }
+    // An arrival recorded for an earlier building does not count for this one.
+    add('old', -300, -300, { moving: false, _lastBuildingType: 'forge', behavior: { building: 'archive', arrivedAt: 5 } });
+    assert.deepEqual([...squadCordChildIds(lead, ids, sprites)].sort(), ['f1', 'f2', 'old', 's1', 'w1', 'w2']);
+});
+
+test('FK-3: two routes failing diagonally just short of their Forge slots keep two cords', () => {
+    // The reviewer's case: both within 1.5 tiles of their slots, in separate
+    // tile clusters, neither recorded an arrival.
+    const lead = squadSprite('lead', 0, 0);
+    const sprites = new Map([['lead', lead]]);
+    const ids = [];
+    for (const [id, slot] of [['d1', { tileX: 10, tileY: 2 }], ['d2', { tileX: 2, tileY: 10 }], ['p1', { tileX: -6, tileY: -6 }], ['p2', { tileX: -9, tileY: 3 }], ['p3', { tileX: 3, tileY: -9 }]]) {
+        const at = tileToWorld({ tileX: slot.tileX + 1, tileY: slot.tileY + 1 }); // one diagonal step short
+        sprites.set(id, Object.assign(squadSprite(id, at.x, at.y), {
+            moving: false,
+            _lastBuildingType: 'forge',
+            _lastTargetTile: slot,
+            behavior: { building: 'forge', arrivedAt: null },
+        }));
+        ids.push(id);
+    }
+    const corded = squadCordChildIds(lead, ids, sprites);
+    assert.ok(corded.has('d1') && corded.has('d2'), 'separate tile clusters, separate cords');
+});
+
+test('FK-3: a small squad cords every far member; reduced motion keeps region admission', () => {
+    const { lead, sprites, kids } = fleet(4, { buildings: 1 });
+    assert.equal(squadCordChildIds(lead, [...kids], sprites).size, 4);
+    for (const motionScale of [1, 0]) {
+        const governor = new MarkGovernor();
+        governor.beginFrame({ pressureLevel: PRESSURE_LEVELS.FULL, motionScale });
+        const drawn = Array.from({ length: 10 }, () => governor.admit(MarkTier.SECONDARY, 10, 10)).filter(gate => gate.draw);
+        assert.equal(drawn.length, 7, `motionScale ${motionScale}: the region cap holds`);
+    }
+});
+
+test('FK-3: a session- team whose members share one parent is that parent squad, not a ring', t => {
+    const agents = new Map([
+        ['lead', { id: 'lead', parentSessionId: null, teamName: null }],
+        ['m1', { id: 'm1', parentSessionId: 'lead', teamName: 'session-lead' }],
+        ['m2', { id: 'm2', parentSessionId: 'lead', teamName: 'session-lead' }],
+        ['x1', { id: 'x1', parentSessionId: 'lead', teamName: 'session-mixed' }],
+        ['x2', { id: 'x2', parentSessionId: 'other', teamName: 'session-mixed' }],
+        ['b1', { id: 'b1', parentSessionId: 'lead', teamName: 'Gather Blue' }],
+        ['b2', { id: 'b2', parentSessionId: 'lead', teamName: 'Gather Blue' }],
+    ]);
+    const state = new RelationshipState({ agents });
+    t.after(() => state.dispose());
+    state.reconcile({ agentSprites: new Map() });
+    const snapshot = state.getSnapshot();
+    assert.deepEqual([...snapshot.teamToMembers.keys()].sort(), ['Gather Blue', 'session-mixed']);
+    assert.deepEqual([...snapshot.parentToChildren.get('lead')].sort(), ['b1', 'b2', 'm1', 'm2', 'x1']);
 });
 
 test('W7.4: the standard stands beside the leader feet, mirrored away from a covering neighbour', () => {
