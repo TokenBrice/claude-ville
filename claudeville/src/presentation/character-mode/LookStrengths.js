@@ -36,6 +36,7 @@ export const DEFAULT_LOOK_STRENGTHS = Object.freeze({
     sd1len: 0.5, // SD-1: how long a low sun's shade may grow (0 = 1.0, 1 = 3.5 times a caster's height)
     sd2: 1, // SD-2: walls, roofs, props and villagers take the sun's shade (needs sd1 > 0; scales the step they drop)
     sd3: 0.5, // SD-3: the sun lifts the land and the surfaces it reaches, one stepped course before the grade (needs sd1 > 0; scales the lift)
+    ey4: 1, // EY-4: falling snow wears a pearl grade, lighter and softer than rain's (the share of the rain row that blends toward the snow row)
     rn1: 1, // RN-1: rain falls in the world, depth-sorted on the GPU paths (the share of streaks and splashes moved off the overlay)
 });
 

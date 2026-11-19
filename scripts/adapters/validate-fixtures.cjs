@@ -93,6 +93,67 @@ assert.deepEqual(gitDetail.toolHistory, []);
 assert.deepEqual(gitDetail.messages, []);
 assert.equal(typeof gitDetail.reason, 'string');
 
+if (kimiFixture) {
+  const { ClaudeAdapter } = require('../../claudeville/adapters/claude');
+  const { ratesForModel } = require('../../claudeville/adapters/sessionPresentation');
+  const adapter = new ClaudeAdapter();
+  const project = '/fixture';
+  const store = path.join(kimiFixture.root, '.claude');
+  const dir = path.join(store, 'projects', '-fixture');
+  const file = path.join(dir, 'repl.jsonl');
+  const child = path.join(dir, 'repl', 'subagents', 'agent-fixture.jsonl');
+  fs.mkdirSync(path.dirname(child), { recursive: true });
+  fs.writeFileSync(path.join(store, 'history.jsonl'), JSON.stringify({ project, timestamp: now, sessionId: 'repl' }) + '\n');
+  const records = fs.readFileSync(path.join(__dirname, 'fixtures/claude/repl-mode.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  const final = records.findIndex(r => r.message?.id === 'final');
+  const anchor = records.findIndex(r => r.type === 'cost-state');
+  const jsonl = rows => rows.map(r => JSON.stringify(r)).join('\n') + '\n';
+  const stub = records.find(r => r.isVirtual);
+  const padding = Array.from({ length: 35 }, (_, i) => ({
+    ...stub, isVirtual: i % 2 === 0, effort: 'invalid', message: {
+      ...stub.message, model: i % 2 === 0 ? 'virtual-only-model' : '<synthetic>', content: [], usage: { input_tokens: 99 },
+    },
+  }));
+  fs.writeFileSync(file, jsonl([...records.slice(0, final), ...padding]));
+  fs.copyFileSync(file, child);
+  fs.copyFileSync(file, path.join(dir, 'orphan.jsonl'));
+  const sessions = () => adapter.getActiveSessions(60_000).map(row => normalizeSession(row));
+  const first = sessions();
+  assert.equal(first.length, 3);
+  const model = 'claude-fable-5-1';
+  const { rate } = ratesForModel(model, 'claude');
+  for (const row of first) {
+    assert.equal(row.model, model);
+    assert.equal(row.reasoningEffort, 'xhigh');
+    assert.ok(row.modelHistory.every(item => item.model === model));
+    assert.equal(row.tokenUsage.contextWindow, 1200);
+    assert.equal(row.tokenUsage.turnCount, 2);
+    assert.equal(row.lastToolInput, 'node fixture.js 8');
+    assert.equal(row.cost.source, 'estimate');
+    const expected = (110 * rate.input + 22 * rate.output + 1000 * rate.cacheRead + 60 * rate.cacheCreate + 40 * 2 * rate.input) / 1e6;
+    assert.ok(Math.abs(row.cost.usd - expected) < 1e-12);
+  }
+  const main = () => sessions().find(row => row.sessionId === 'repl');
+  fs.appendFileSync(file, jsonl(records.slice(final, anchor + 1)));
+  assert.deepEqual([main().cost.source, main().cost.usd], ['provider', 1]);
+  fs.appendFileSync(file, jsonl(records.slice(anchor + 1)));
+  const mixed = main();
+  const resumed = (1000 * rate.input + 100 * rate.output + 120 * rate.cacheRead + 25 * rate.cacheCreate + 75 * 2 * rate.input) / 1e6;
+  assert.equal(mixed.cost.source, 'mixed');
+  assert.ok(Math.abs(mixed.cost.usd - (1 + resumed)) < 1e-12);
+  assert.equal(mixed.estimatedCost, mixed.cost.usd);
+  const resume = records.find(r => r.message?.id === 'resume');
+  fs.appendFileSync(file, jsonl([resume]));
+  assert.deepEqual(main().cost, mixed.cost, 'a repeated usage block is already priced');
+  fs.appendFileSync(file, jsonl([{ type: 'cost-state', totalCostUSD: 1.25 }]));
+  fs.appendFileSync(file, jsonl([resume]));
+  assert.deepEqual([main().cost.source, main().cost.usd], ['provider', 1.25], 'a repeat across the anchor adds nothing');
+  fs.appendFileSync(file, jsonl([{ ...resume, message: { ...resume.message, usage: {
+    cache_creation: { ephemeral_1h_input_tokens: 100 },
+  } } }]));
+  assert.ok(Math.abs(main().cost.usd - (1.25 + 25 * 2 * rate.input / 1e6)) < 1e-12);
+}
+
 if (codexFixture) {
   const adapter = new CodexAdapter();
   assert.equal(adapter.isAvailable(), true);

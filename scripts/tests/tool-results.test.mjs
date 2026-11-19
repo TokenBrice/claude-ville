@@ -137,6 +137,24 @@ function openCodeSession(project) {
     }, parts, NOW);
 }
 
+test('a tied Claude REPL burst publishes the sixth call when it failed, then the newest successes', (t) => {
+    const { claudeTranscript } = require('../../claudeville/adapters/claude.js');
+    const root = makeTempDir('claudeville-repl-results-');
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const file = path.join(root, 'burst.jsonl');
+    const lines = fs.readFileSync(path.join(FIXTURE_ROOT, 'claude', 'repl-mode.jsonl'), 'utf8').trimEnd().split('\n');
+    const results = () => normalizeSession({ provider: 'claude', lastResults: claudeTranscript.toolResults(file, 'test') }).lastResults;
+    const burst = lines.findIndex(line => JSON.parse(line).isVirtual);
+    fs.writeFileSync(file, lines.slice(0, burst).join('\n') + '\n');
+    assert.deepEqual(results(), [], 'wrappers have no outcomes');
+    // Five successes precede the failure. Check it in the first eligible snapshot.
+    fs.appendFileSync(file, lines.slice(burst, burst + 12).join('\n') + '\n');
+    assert.deepEqual(results().map(r => r.detail), [6, 5, 4, 3, 2].map(n => `node fixture.js ${n}`));
+    fs.appendFileSync(file, lines.slice(burst + 12).join('\n') + '\n');
+    assert.deepEqual(results().map(r => r.detail), [6, 8, 5, 4, 3].map(n => `node fixture.js ${n}`));
+    assert.deepEqual([results()[0].exitCode, results()[0].exitCodeSource], [3, 'exit']);
+});
+
 test('Codex, Kimi Code, OpenCode and Claude publish bounded command outcomes', (t) => {
     const { root, project } = buildProviderHome(t);
     const { first, second } = readProviderProjections(root);

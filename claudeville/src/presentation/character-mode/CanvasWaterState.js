@@ -154,6 +154,7 @@ import {
 } from './gpu/GpuWorldPolicy.js';
 import { baseWindX, gustinessFor, windAt } from './Wind.js';
 import { GRASS_GUST_STOPS } from './GroundBake.js';
+import { liquidPrecipitation } from './GroundState.js';
 
 // Texel classes of the terrain bake (one byte per world texel).
 const CLS_FOAM = 6;
@@ -1142,8 +1143,9 @@ function resolveFx(renderer, atmosphere) {
         t,
         starlight: resolveStarlight(atmosphere, weather, grade, atmosphere?.lighting?.moonFill ?? atmosphere?.sky?.moon?.fill, level),
         storm: type === 'storm' ? 1 : 0,
+        // EN-4 — rings only where rain falls as rain (snow leaves none).
         rain: raining && effectBudgetMode('rainRings', level) !== 'off'
-            ? clamp01(weather.precipitation ?? weather.intensity)
+            ? liquidPrecipitation(atmosphere, weather)
             : 0,
         caustics: effectBudgetMode('shallowCaustics', level) === 'on'
             && !raining
@@ -1172,7 +1174,7 @@ function resolveFx(renderer, atmosphere) {
         rippleTick: Math.floor(t * 0.002 * clock),
         // 3.7 — heavy rain gives this share of the mirror texels back to
         // the water (the mood layer shows their stop); they no longer ripple.
-        mirrorDrop: mirrorStormDrop(weather),
+        mirrorDrop: mirrorStormDrop(weather, atmosphere),
         columnTick: Math.floor(t * COLUMN_TICK_RATE * clock),
         // 2.2 — the column's footprint march (FULL 8, REDUCED 4, MINIMAL 0).
         march: FOOTPRINT_MARCH_STEPS[effectBudgetMode('footprint-occlusion', level)] ?? 0,

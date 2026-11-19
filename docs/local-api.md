@@ -16,6 +16,10 @@ The server is hardcoded to port `4000` and the IPv4 loopback interface. Requests
 | `GET /api/changelog` | Raw `CHANGELOG.md` text for the in-app changelog modal. |
 | `ws://localhost:4000/ws` | Same-origin snapshot, delta updates, and ping/pong heartbeats. |
 
+Claude sessions on `/api/sessions` expose `script` while `pendingTool` is a REPL or Poll wrapper. It contains `tool`, a sanitized `description` of up to 120 characters (or null), and `since` in epoch ms. Poll uses the latest REPL description from the same turn. Otherwise `script` is null. `lastTool` and `lastToolInput` retain the newest inner call. In `lastResults`, failures take priority within a tied burst.
+
+Claude's `turnStartedAt`, `model`, `reasoningEffort`, and `tokenUsage.contextWindow` survive virtual tool bursts. `cost.source` is `estimate` before a provider total, `provider` at that total, and `mixed` when `cost.usd` includes both the provider total and estimated usage after resume. One-hour cache writes cost twice the model's input rate.
+
 Git identity on `/api/sessions` (all fields optional; a client keys a repository on `repoRoot || project`, so older servers still work):
 
 - Sessions inside a repository carry `repoRoot` (its main worktree path, shared by every linked worktree and subdirectory) and `worktree: { name, path, isMain }`.

@@ -65,6 +65,15 @@ test('fixture and maintained live model ids select concrete pricing rates', () =
   }
 });
 
+test('the Claude server estimate prices five-minute and one-hour cache writes separately', () => {
+  const raw = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 1_000_000 };
+  const model = 'claude-fable-5-1';
+  const { rate } = ratesForModel(model, 'claude');
+  assert.equal(estimateServerCost(raw, model, 'claude').usd, rate.cacheCreate);
+  raw.cache_creation = { ephemeral_5m_input_tokens: 750_000, ephemeral_1h_input_tokens: 250_000 };
+  assert.equal(estimateServerCost(raw, model, 'claude').usd, 0.75 * rate.cacheCreate + 0.25 * 2 * rate.input);
+});
+
 test('unknown Claude ids disclose use of the default rate', () => {
   const server = estimateServerCost(SAMPLE_USAGE, 'claude-zeta-9', 'claude');
   const browser = TokenUsage.estimateCost(SAMPLE_USAGE, 'claude-zeta-9', 'claude');

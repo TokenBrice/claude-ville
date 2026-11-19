@@ -74,3 +74,7 @@ test('SEA-2 and SEA-3 ship at their reviewed strengths', () => {
 test('MS-2 mist follow-ons ship at their reviewed strength', () => {
     assertShipsAt({ ms2: 1 });
 });
+
+test('EY-4 snowfall grade ships at its proposed strength', () => {
+    assertShipsAt({ ey4: 1 });
+});
