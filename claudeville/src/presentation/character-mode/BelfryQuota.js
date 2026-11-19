@@ -19,7 +19,7 @@
 //   reading; `belfryDraining`). A falling reading (a window reset) or no
 //   reading drains nothing.
 
-import { formatNumber, formatWaitAge } from '../shared/Formatters.js';
+import { formatCreditChange, formatNumber, formatWaitAge, quotaLimitFacts } from '../shared/Formatters.js';
 
 export const BELFRY_LEVELS = 5;
 export const BELFRY_ACCOUNTS = Object.freeze(['claude', 'codex']);
@@ -111,6 +111,11 @@ function claudeLine(usage, now) {
     const sevenDay = ratio(quota?.sevenDay);
     if (fiveHour !== null) windows.push(`5-hour ${percent(fiveHour)} used${resetsIn(quota.fiveHourResetsAt, now)}`);
     if (sevenDay !== null) windows.push(`7-day ${percent(sevenDay)} used${resetsIn(quota.sevenDayResetsAt, now)}`);
+    const limit = quotaLimitFacts(quota?.highestActiveLimit);
+    if (limit) {
+        const severity = limit.warn ? ` (${limit.severity})` : '';
+        windows.push(`highest active limit ${limit.label} ${limit.usedText} used${severity}${resetsIn(limit.resetsAt, now)}`);
+    }
     if (!windows.length) return 'Claude: no quota reading yet.';
     const throttled = status === 429 ? ' · the quota check is throttled, so this is the last reading' : '';
     return `Claude: ${windows.join(' · ')}${throttled}`;
@@ -132,6 +137,8 @@ function codexLine(usage, now) {
     }
     if (codex.credits?.unlimited === true) parts.push('unlimited credits');
     else if (Number.isFinite(codex.credits?.balance)) parts.push(`${formatNumber(Math.round(codex.credits.balance))} credits left`);
+    const change = formatCreditChange(codex.creditChange);
+    if (change) parts.push(change);
     if (Number.isFinite(codex.observedAt) && codex.observedAt > 0) parts.push(`seen ${formatWaitAge(now - codex.observedAt)} ago`);
     return `Codex: ${parts.join(' · ')}`;
 }

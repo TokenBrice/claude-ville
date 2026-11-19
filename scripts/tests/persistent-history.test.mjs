@@ -675,3 +675,12 @@ test('unchanged git history cannot cycle the durable dedup window and recount co
     service._handleAgentSeen(bess);
     assert.equal(affinity.sharedCommits, 65, 'unrelated updates do not replay unchanged history');
 });
+
+test('XP-8: a biography saves the villager-facing name for the Hall of Lives', async () => {
+    const store = biographyStore();
+    const advisor = agent('advisor-1', { agentName: '__advisor', name: 'Advisor', provider: 'claude' });
+    const service = new AgentBiographyService({ store }).start();
+    eventBus.emit('agent:added', advisor);
+    await service.stop();
+    assert.equal(store.biographies.get(AgentBiography.identityKeyFor(advisor)).displayName, 'Advisor');
+});

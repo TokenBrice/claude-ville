@@ -279,6 +279,7 @@ test('ChroniclePanel ignores out-of-order and superseded reads', async () => {
     };
     const panel = new ChroniclePanel({ modal, chronicleLog: log });
     panel._render = events => [events[0]?.id || 'empty'];
+    panel._tabs = () => 'tabs';
     const page = id => ({
         events: [{ id }],
         summary: summarizeDay([]),
@@ -292,7 +293,7 @@ test('ChroniclePanel ignores out-of-order and superseded reads', async () => {
         await second;
         pending[0](page('stale'));
         await first;
-        assert.deepEqual(contentEl.children, ['newest']);
+        assert.deepEqual(contentEl.children, ['tabs', 'newest']);
 
         const chronicle = panel.open();
         const changelogRequest = modal.beginRequest();
@@ -300,7 +301,7 @@ test('ChroniclePanel ignores out-of-order and superseded reads', async () => {
         pending[2](page('late-chronicle'));
         await chronicle;
         assert.equal(modal.title, 'Changelog');
-        assert.deepEqual(contentEl.children, ['newest']);
+        assert.deepEqual(contentEl.children, ['tabs', 'newest']);
 
         const destroyed = panel.open();
         panel.destroy();

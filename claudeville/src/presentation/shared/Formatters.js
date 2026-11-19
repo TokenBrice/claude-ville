@@ -113,6 +113,47 @@ export function formatWaitAge(ms) {
     return remainingHours ? `${days}d${remainingHours}h` : `${days}d`;
 }
 
+// SG-3 — the net change between the two newest Codex balance readings of one
+// account. Zero means the two readings agreed, which is not evidence that
+// nothing was spent between them.
+// `short` is the Dashboard card's form, beside a balance already worded.
+export function formatCreditChange(change, { short = false } = {}) {
+    const delta = Number(change?.delta);
+    const interval = Number(change?.intervalMs);
+    if (!change || !Number.isFinite(delta) || !Number.isFinite(interval) || interval < 0) return '';
+    const apart = formatWaitAge(interval);
+    if (delta === 0) return short ? `2 readings ${apart} apart agreed` : `two balance readings ${apart} apart agreed`;
+    const amount = Math.abs(delta);
+    const text = amount < 0.01 ? 'under 0.01' : amount.toLocaleString('en-US', { maximumFractionDigits: 2 });
+    const verb = delta < 0 ? 'fell' : 'rose';
+    return short ? `${verb} ${text} in ${apart}` : `balance ${verb} ${text} credits between readings ${apart} apart`;
+}
+
+const QUOTA_LIMIT_KINDS = Object.freeze({
+    session: '5-hour session',
+    weekly_all: 'weekly',
+    weekly_scoped: 'weekly',
+});
+
+// The registry's highest active Claude limit as words: kind, scope, the
+// reported percentage and severity. `warn` is any severity other than normal.
+export function quotaLimitFacts(limit) {
+    const used = Number(limit?.usedPercent);
+    if (!limit || typeof limit.kind !== 'string' || !Number.isFinite(used)) return null;
+    const kind = QUOTA_LIMIT_KINDS[limit.kind] || limit.kind.replace(/[_-]+/g, ' ');
+    const model = typeof limit.scope?.model === 'string' ? limit.scope.model : '';
+    const severity = typeof limit.severity === 'string' ? limit.severity : '';
+    const resetsAt = Number(limit.resetsAt);
+    return {
+        label: model ? `${kind} (${model})` : kind,
+        used,
+        usedText: `${Math.round(used)}%`,
+        severity,
+        warn: Boolean(severity) && severity !== 'normal',
+        resetsAt: Number.isFinite(resetsAt) && resetsAt > 0 ? resetsAt : null,
+    };
+}
+
 export function workingSetForAgent(agent) {
     return Array.isArray(agent?.workingSet) ? agent.workingSet.slice(0, 16) : [];
 }
