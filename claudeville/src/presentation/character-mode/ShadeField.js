@@ -88,7 +88,7 @@
 // Pure apart from `shadeFieldFor` and its helpers (they need a document):
 // everything else imports and runs in Node.
 
-import { MAP_SIZE } from '../../config/constants.js';
+import { MAP_SIZE, TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
 import { LANDMARK_MASSING, PROP_MASSING } from '../../config/landmarkMassing.js';
 import { VILLAGE_GATE, VILLAGE_GATE_GEOMETRY, VILLAGE_WALL_ROUTES } from '../../config/townPlan.js';
 import { footprintFieldRect } from './FootprintField.js';
@@ -1040,6 +1040,48 @@ export function paintShadeCells(field, out, rgb, row0 = 0, row1 = field.rows, wa
             out[o + 1] = rgb[1];
             out[o + 2] = rgb[2];
             out[o + 3] = alpha;
+        }
+    }
+}
+
+/**
+ * SD-3 — the sun's lift as RGBA cells for the Canvas backend: `rgb` at alpha
+ * 255 on confirmed land the ground rule calls lit, clear elsewhere. Land is
+ * the LA-7 sea fret's rule (WorldFrameRenderer `seaFretLandMask`) on the
+ * coast lattice (`water`: `{ fields, waterBit, coveredBit }`, the coast
+ * bake's resident fields and flag bits): a covered cell (dock, deck, bridge
+ * span), or a cell without the water flag on the map grid; open water, the
+ * unclassified shelf off the grid and anything outside the lattice are not.
+ * Without a lattice nothing is lit. The whole field into `out`.
+ */
+export function paintLitCells(field, out, rgb, water = null) {
+    const { cols, rows, data } = field;
+    const lattice = water?.fields?.coastField ? water.fields : null;
+    for (let row = 0; row < rows; row++) {
+        const wy = field.originY + row * field.cellH;
+        const waterRow = lattice ? Math.floor((wy - lattice.y) / 2) : -1;
+        let o = row * cols * 4;
+        for (let col = 0; col < cols; col++, o += 4) {
+            let lit = false;
+            if (waterRow >= 0 && waterRow < lattice.rows && !(data[(row * cols + col) * 2 + 1] > shadeBayer(col, row) * 255)) {
+                const waterCol = Math.floor((field.originX + col * field.cellW - lattice.x) / 2);
+                if (waterCol >= 0 && waterCol < lattice.cols) {
+                    const flags = lattice.coastField[(waterRow * lattice.cols + waterCol) * 2 + 1];
+                    if (flags & water.coveredBit) {
+                        lit = true;
+                    } else if (!(flags & water.waterBit)) {
+                        const wx = lattice.x + waterCol * 2 + 1;
+                        const wy = lattice.y + waterRow * 2 + 1;
+                        const u = wy / TILE_HEIGHT + wx / TILE_WIDTH;
+                        const v = wy / TILE_HEIGHT - wx / TILE_WIDTH;
+                        lit = u >= -0.5 && v >= -0.5 && u <= MAP_SIZE - 0.5 && v <= MAP_SIZE - 0.5;
+                    }
+                }
+            }
+            out[o] = rgb[0];
+            out[o + 1] = rgb[1];
+            out[o + 2] = rgb[2];
+            out[o + 3] = lit ? 255 : 0;
         }
     }
 }

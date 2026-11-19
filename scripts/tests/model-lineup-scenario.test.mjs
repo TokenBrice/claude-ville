@@ -15,10 +15,10 @@ test('model-lineup is registered and shows every reviewed body', () => {
         getModelVisualIdentity(agent.model, agent.effort ?? null, agent.provider, agent.id).spriteId
     )));
     for (const spriteId of [
-        'agent.claude.opus', 'agent.claude.fable', 'agent.claude.mythos', 'agent.claude.sonnet', 'agent.claude.haiku',
+        'agent.claude.opus', 'agent.claude.fable', 'agent.claude.fable.b', 'agent.claude.mythos', 'agent.claude.sonnet', 'agent.claude.haiku',
         'agent.zai.glm', 'agent.zai.glm.b', 'agent.zai.flash',
         'agent.deepseek.flash', 'agent.deepseek.flash.high', 'agent.deepseek.flash.xhigh',
-        'agent.codex.gpt56luna',
+        'agent.codex.gpt56luna', 'agent.codex.gpt6astra', 'agent.codex.gpt6astra.b',
     ]) {
         assert.ok(bodies.has(spriteId), `lineup shows ${spriteId}`);
     }
