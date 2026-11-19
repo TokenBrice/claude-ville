@@ -1,7 +1,7 @@
 import { i18n } from '../../config/i18n.js';
 import { BUILDING_ACCENTS, BUILDING_ACCENTS_RGB, PROVIDER_HUES, STATUS_VISUALS } from '../../config/theme.js';
 import { buildingForTool, placedBuildingForTool, toolActionLabel, toolCategory, toolIcon, shortToolName } from '../../domain/services/ToolIdentity.js';
-import { isWaitingOnCrew, isWatchingOnPoll, TurnState } from '../../domain/services/StatusResolver.js';
+import { isWaitingOnCrew, isWatchingOnPoll, normalizeSignalSource, TurnState } from '../../domain/services/StatusResolver.js';
 import { formatModelLabel, getModelVisualIdentity } from './ModelVisualIdentity.js';
 import { repoProfile } from './RepoColor.js';
 import { el } from './DomSafe.js';
@@ -211,9 +211,14 @@ export function modelPresentation(agent) {
     };
 }
 
+export function mcpJobLabel(agent) {
+    return agent?.subagentKind === 'mcp' ? 'MCP job' : '';
+}
+
 export function currentToolPresentation(agent, translator = i18n) {
     const statusInfo = statusPresentation(agent?.status);
-    if (statusInfo.status === 'working' && isWaitingOnCrew(agent)) {
+    const working = statusInfo.status === 'working';
+    if (working && isWaitingOnCrew(agent)) {
         const count = Number(agent.backgroundPending?.count);
         return {
             isIdle: agent.turnState === TurnState.AWAITING_INPUT,
@@ -222,7 +227,7 @@ export function currentToolPresentation(agent, translator = i18n) {
             detail: count > 0 ? `${count} background ${count === 1 ? 'task' : 'tasks'}` : '',
         };
     }
-    if (isWatchingOnPoll(agent)) {
+    if (working && isWatchingOnPoll(agent)) {
         return {
             isIdle: false,
             icon: toolIcon('Monitor'),
@@ -230,7 +235,7 @@ export function currentToolPresentation(agent, translator = i18n) {
             detail: agent.script?.description || '',
         };
     }
-    if (agent?.script) {
+    if (agent?.script && (working || agent.script.tool !== 'Poll')) {
         return {
             isIdle: false,
             icon: toolIcon(agent.script.tool),
@@ -238,7 +243,7 @@ export function currentToolPresentation(agent, translator = i18n) {
             detail: agent.script.description || '',
         };
     }
-    if (agent?.currentTool) {
+    if (agent?.currentTool && (working || agent.currentTool !== 'Poll')) {
         return {
             isIdle: false,
             icon: toolIcon(agent.currentTool),
@@ -382,9 +387,9 @@ export function detailFreshnessLabel(agent, cacheState, now = Date.now()) {
 }
 
 export function signalProvenance(agent) {
-    const source = agent?.signalSource === 'hook' ? 'HOOK' : 'TRANSCRIPT';
-    const certainty = agent?.signalCertainty || (agent?.signalSource === 'hook' ? 'observed' : 'inferred');
-    return `${source} · ${certainty}${agent?.signalStale ? ' · stale' : ''}`;
+    const source = normalizeSignalSource(agent?.signalSource) || 'transcript';
+    const certainty = agent?.signalCertainty || (source === 'transcript' ? 'inferred' : 'observed');
+    return `${source.toUpperCase()} · ${certainty}${agent?.signalStale ? ' · stale' : ''}`;
 }
 
 export function toolHistoryNodes(tools, options = {}) {

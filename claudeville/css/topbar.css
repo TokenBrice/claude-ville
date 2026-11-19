@@ -89,7 +89,9 @@
 
 .topbar__clock { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; color: var(--ink-2); }
 .topbar__clock[hidden] { display: none; }
+.topbar__clock-source { display: inline-flex; }
 .topbar__clock svg { width: 16px; height: 16px; shape-rendering: crispEdges; color: var(--ink-3); }
+.topbar__clock-source[href] svg { color: var(--gold-hi); }
 .topbar__clock-time { color: var(--ink-2); font-variant-numeric: tabular-nums; }
 .topbar__clock-phase,
 .topbar__clock-override { color: var(--ink-3); text-transform: lowercase; }

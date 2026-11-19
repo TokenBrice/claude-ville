@@ -16,7 +16,7 @@ atlases:
   - id: world-pilot
     maxWidth: 2048
     padding: 2
-    powerOfTwo: true
+    powerOfTwo: false
     metadata: assets/sprites/atlases/world-pilot.json
     channels:
       albedo: assets/sprites/atlases/world-pilot.albedo.png

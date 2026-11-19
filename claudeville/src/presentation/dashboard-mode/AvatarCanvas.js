@@ -3,7 +3,7 @@
  * Static recreation of AgentSprite drawing logic
  */
 import { getModelVisualIdentity, providerPaletteKey } from '../shared/ModelVisualIdentity.js';
-import { getTeamColor } from '../shared/TeamColor.js';
+import { agentTrimAccent } from '../shared/TeamColor.js';
 import { Compositor, agentPaletteVariant, resolveHeadAccessory } from '../character-mode/Compositor.js';
 
 let SPRITE_METADATA_PROMISE = null;
@@ -558,13 +558,9 @@ export class AvatarCanvas {
         return agentPaletteVariant(this.agent?.id, this.agent?.model, providerKey);
     }
 
-    // Mirrors AgentSprite._teamTrimAccent (team sash override, null solo).
+    // Mirrors AgentSprite._teamTrimAccent (harness or team sash, null solo).
     _teamTrimAccent() {
-        const name = this.agent?.teamName;
-        if (!name) return null;
-        const accent = getTeamColor(name)?.accent;
-        if (!accent || typeof accent !== 'string') return null;
-        return /^#?[0-9a-fA-F]{6}$/.test(accent.trim()) ? accent.trim() : null;
+        return agentTrimAccent(this.agent);
     }
 
     _ensureSpriteImage(spriteId) {

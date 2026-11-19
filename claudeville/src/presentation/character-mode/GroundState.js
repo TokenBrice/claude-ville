@@ -20,8 +20,8 @@
 //              WET_CAP, clamped to 1. Draining is linear and the cap is
 //              small, so however long it rained a road is puddled half an
 //              hour after the rain stops, down to its deepest puddle cores
-//              at 75 minutes and dry about two hours after. Winter
-//              precipitation falls as snow and feeds snowCover instead.
+//              at 75 minutes and dry about two hours after. Snow feeds
+//              snowCover. Its phase comes from the forecast or the calendar.
 //   puddles    smoothstep(0.35, 0.7, wetness).
 //   snowCover  one continuous path since 00:00 on 1 December (M9 winter
 //              opens with bare ground), stepped every 10 minutes: real
@@ -75,6 +75,35 @@ export const SNOWFALL_ON = 0.18;
 // The weather layer's own threshold: above it WeatherRenderer draws rain (or
 // snow in winter).
 export const PRECIPITATING = 0.02;
+
+// EN-4 / EY-4 — use the forecast phase when present, or the modeled calendar.
+export function precipitationIsFrozen(monthIndex, weather) {
+    return weather?.frozen ?? isWinterMonth(monthIndex);
+}
+
+function snapshotMonth(atmosphere) {
+    const date = atmosphere?.effectiveDate;
+    return date instanceof Date && !Number.isNaN(date.getTime()) ? date.getMonth() : -1;
+}
+
+// One answer per atmosphere snapshot, shared by every consumer.
+const _liquidMemo = new WeakMap();
+
+/** The liquid precipitation (0..1) of `weather` under snapshot `atmosphere`'s date. */
+export function liquidPrecipitation(atmosphere, weather = atmosphere?.weather) {
+    const own = atmosphere && typeof atmosphere === 'object' && weather === atmosphere.weather;
+    if (own && _liquidMemo.has(atmosphere)) return _liquidMemo.get(atmosphere);
+    const liquid = !weather || precipitationIsFrozen(snapshotMonth(atmosphere), weather)
+        ? 0
+        : clamp01(Number(weather.precipitation ?? weather.intensity) || 0);
+    if (own) _liquidMemo.set(atmosphere, liquid);
+    return liquid;
+}
+
+/** Whether settling snow falls in month `monthIndex` (0..11) under `weather`. */
+export function snowfallOn(monthIndex, weather) {
+    return precipitationIsFrozen(monthIndex, weather) && (Number(weather?.precipitation) || 0) > SNOWFALL_ON;
+}
 // Minimum precipitation that counts as rain for the rainbow.
 const RAIN_ON = SNOWFALL_ON;
 export const RAINBOW_WINDOW_MINUTES = 20;
@@ -84,6 +113,9 @@ const WET_STEP_MINUTES = 5;
 const WET_HISTORY_MINUTES = 6 * 60;
 const SNOW_STEP_MINUTES = 10;
 const FROST_START = 22 * 60;
+// EY-5 — the night's rime rises a quarter per FROST_RISE_MINUTES from
+// FROST_START (1 at 22:00, 2 at 23:00, 3 at midnight, whole at 01:00).
+const FROST_RISE_MINUTES = 60;
 // BI-5 — the sun's elevations (degrees) at which the rime steps down a
 // quarter after sunrise: whole until the first; the sunlit lawn clears over
 // the next two while the dawn casts still lie long across it; shade and its
@@ -141,7 +173,8 @@ function timelineKey(options) {
     // WX-1 — the date-seeded weather differs with the night-rain switch;
     // pinned knots do not.
     const nightRain = knots || nightRainOn() ? '' : '|wx0';
-    return `${options.timelineMode || 'auto'}|${options.seedOverride ?? ''}|${knots}${nightRain}`;
+    const forecast = options.forecast ? `|forecast:${options.forecast.fetchedAt}` : '';
+    return `${options.timelineMode || 'auto'}|${options.seedOverride ?? ''}|${knots}${nightRain}${forecast}`;
 }
 
 function historyKey(date, minute, options) {
@@ -207,20 +240,43 @@ function fallbackElevation(minute, sunriseMinute, solarNoonMinute) {
 }
 
 /**
- * BI-5 — the melt clock at local `minute` under `sun` (`frostSunFor`): 4
- * from FROST_START through the night and until the sun clears the first of
- * FROST_MELT_ELEVATIONS, one quarter less per step it has climbed past, 0
- * from the last step, from solar noon and through the afternoon.
+ * EY-5 — whether local `minute` lies in the night's rising rime (22:00 to
+ * 01:00), when the frost quarter grows instead of melting.
+ */
+export function frostRisingAt(minute) {
+    return frostRiseQuarter(minute) < 4;
+}
+
+function frostRiseQuarter(minute) {
+    const since = (minute - FROST_START + DAY_MINUTES) % DAY_MINUTES;
+    return since < 3 * FROST_RISE_MINUTES ? 1 + Math.floor(since / FROST_RISE_MINUTES) : 4;
+}
+
+/**
+ * BI-5 — the frost clock at local `minute` under `sun` (`frostSunFor`):
+ * rising 1 → 4 from FROST_START (EY-5, one quarter an hour), 4 through the
+ * night and until the sun clears the first of FROST_MELT_ELEVATIONS, one
+ * quarter less per step it has climbed past, 0 from the last step, from
+ * solar noon and through the afternoon.
  */
 export function frostMeltQuarter(sun, minute) {
     const sunrise = finiteOr(sun?.sunriseMinute, FROST_FALLBACK_SUN.sunriseMinute);
     const noon = finiteOr(sun?.solarNoonMinute, FROST_FALLBACK_SUN.solarNoonMinute);
-    if (minute >= FROST_START || minute < sunrise) return 4;
+    if (minute >= FROST_START || minute < sunrise) return Math.min(4, frostRiseQuarter(minute));
     if (minute >= noon) return 0;
     const elevation = finiteOr(sun?.elevationDeg, fallbackElevation(minute, sunrise, noon));
     let quarter = 4;
     for (const step of FROST_MELT_ELEVATIONS) if (elevation >= step) quarter--;
     return quarter;
+}
+
+/**
+ * EY-5 — whether a ground state's frost is the night's rising rime (its
+ * quarter growing on the GW-3 patch field) rather than the dawn melt.
+ */
+export function frostRisingOf(ground) {
+    const frost = frostQuarterOf(ground);
+    return frost > 0 && frost < 4 && ground?.frostRising === true;
 }
 
 /** The terrain's frost quarter (0–4) of a ground state. */
@@ -236,7 +292,7 @@ function stepSnowDay(snow, day, sample, untilMinute) {
     for (let t = 0; t <= untilMinute; t += SNOW_STEP_MINUTES) {
         const weather = sample(t);
         const precip = Number(weather.precipitation) || 0;
-        if (isWinterMonth(month) && precip > SNOWFALL_ON) {
+        if (snowfallOn(month, weather)) {
             snow = Math.min(1, snow + precip * SNOW_GAIN_PER_HOUR * (SNOW_STEP_MINUTES / 60));
         } else if (snow > 0 && aboveFreezing(month, t, weather)) {
             const melt = isWinterMonth(month) ? SNOW_SUN_MELT_PER_HOUR : SNOW_MELT_PER_HOUR;
@@ -246,18 +302,21 @@ function stepSnowDay(snow, day, sample, untilMinute) {
     return snow;
 }
 
-// Snow cover at 00:00 of `date`. The path starts bare on 1 December; from
-// April to November it is bare (March melts any February cover within
-// 50 hours). Each midnight is memoized per timeline, so the walk back stops
-// at the latest known day and a new day integrates once.
+// Modeled cover starts on 1 December and runs through March. Forecast
+// history can add snowfall outside that span. Each midnight is memoized.
 function snowAtMidnight(date, options) {
     const month = date.getMonth();
-    if (month >= 3 && month <= 10) return 0;
+    const inModeledSpan = month < 3 || month === 11;
+    const firstForecastDate = Object.keys(options.forecast?.days ?? {}).sort()[0];
+    if (!inModeledSpan && !firstForecastDate) return 0;
+    const modeledStart = new Date(date.getFullYear() - (month < 3 ? 1 : 0), 11, 1);
+    const forecastStart = firstForecastDate ? new Date(`${firstForecastDate}T00:00:00`) : modeledStart;
+    const start = inModeledSpan && modeledStart < forecastStart ? modeledStart : forecastStart;
     const tkey = timelineKey(options);
     const pending = [];
     let day = new Date(date.getFullYear(), date.getMonth(), date.getDate());
     let snow = 0;
-    while (!(day.getMonth() === 11 && day.getDate() === 1)) {
+    while (day > start) {
         const known = _snowDayMemo.get(`${tkey}|${dateKey(day)}`);
         if (known !== undefined) {
             snow = known;
@@ -278,13 +337,13 @@ function snowAtMidnight(date, options) {
 function snowCoverAt(date, bucket, options) {
     const start = snowAtMidnight(date, options);
     const month = date.getMonth();
-    if (start <= 0 && !isWinterMonth(month)) return 0;
+    if (start <= 0 && !isWinterMonth(month) && !options.forecast) return 0;
     return stepSnowDay(start, date, weatherHistorySampler(date, options), bucket);
 }
 
 /**
  * The timeline inputs of an atmosphere snapshot (`atmosphere.timeline`: seed
- * override, fixed/auto mode, pinned QA knots), so history readers integrate
+ * override, fixed/auto mode, pinned QA knots, forecast), so history readers integrate
  * exactly what the live weather resolved from.
  */
 export function groundOptionsFor(atmosphere) {
@@ -293,6 +352,7 @@ export function groundOptionsFor(atmosphere) {
         seedOverride: timeline?.seedOverride ?? null,
         timelineMode: timeline?.mode || 'auto',
         timelineKnots: timeline?.knots || null,
+        forecast: timeline?.forecast || null,
         // BI-5 — the frost melts by the snapshot's own sun.
         sun: frostSunFor(atmosphere),
     };
@@ -300,7 +360,7 @@ export function groundOptionsFor(atmosphere) {
 
 /**
  * C-W2 ground state for `date` (its local minute, or `options.minute`).
- * `options`: `{ seedOverride, timelineMode, timelineKnots }` — the same
+ * `options`: `{ seedOverride, timelineMode, timelineKnots, forecast }` — the same
  * timeline inputs as the live snapshot (`atmosphere.timeline`) — and the
  * frost's `sun` (`frostSunFor`; the fallback sun when omitted).
  */
@@ -310,7 +370,8 @@ export function groundStateAt(date, options = {}) {
     const sun = options.sun || { ...FROST_FALLBACK_SUN, elevationDeg: fallbackElevation(minute, FROST_FALLBACK_SUN.sunriseMinute, FROST_FALLBACK_SUN.solarNoonMinute) };
     const sunrise = Math.round(finiteOr(sun.sunriseMinute, FROST_FALLBACK_SUN.sunriseMinute));
     const melt = frostMeltQuarter(sun, minute);
-    const key = `${historyKey(date, bucket, options)}|r${sunrise}|f${melt}`;
+    const rising = frostRisingAt(minute);
+    const key = `${historyKey(date, bucket, options)}|r${sunrise}|f${melt}${rising ? 'r' : ''}`;
     const cached = _groundMemo.get(key);
     if (cached) return cached;
 
@@ -321,7 +382,7 @@ export function groundStateAt(date, options = {}) {
     for (let t = now - WET_HISTORY_MINUTES; t <= now; t += WET_STEP_MINUTES) {
         const { month, weather } = history.at(t);
         const precip = Number(weather.precipitation) || 0;
-        const fill = precip > PRECIPITATING && !isWinterMonth(month)
+        const fill = precip > PRECIPITATING && !precipitationIsFrozen(month, weather)
             ? precip * (WET_STEP_MINUTES / WET_GAIN_MINUTES)
             : 0;
         wet = Math.max(0, Math.min(WET_CAP, wet + fill - WET_DRAIN_PER_MINUTE * WET_STEP_MINUTES));
@@ -345,6 +406,8 @@ export function groundStateAt(date, options = {}) {
         puddles: smoothstep(PUDDLE_ON, PUDDLE_FULL, wetness),
         snowCover: snow,
         frost,
+        // EY-5 — the rime is still rising (22:00–01:00), not melting.
+        frostRising: rising && frost > 0 && frost < 4,
         bucketMinute: bucket,
     }));
 }
@@ -370,12 +433,16 @@ export function rainClearedMinutesAgo(date, options = {}) {
     const now = 2 * DAY_MINUTES + minute;
     let result = null;
     const current = history.at(now);
-    if (!isWinterMonth(current.month) && (Number(current.weather.precipitation) || 0) <= PRECIPITATING) {
+    if ((current.weather.frozen !== undefined || !isWinterMonth(current.month))
+        && (Number(current.weather.precipitation) || 0) <= PRECIPITATING) {
         for (let t = now - 1; t >= now - RAINBOW_WINDOW_MINUTES; t--) {
-            if ((Number(history.at(t).weather.precipitation) || 0) <= PRECIPITATING) continue;
+            const { weather } = history.at(t);
+            if ((Number(weather.precipitation) || 0) <= PRECIPITATING) continue;
+            if (weather.frozen === true) break;
             // It precipitated at t: a rainbow only after real rain.
             for (let back = t; back >= t - 60; back -= 5) {
-                if ((Number(history.at(back).weather.precipitation) || 0) > RAIN_ON) {
+                const earlier = history.at(back).weather;
+                if (earlier.frozen !== true && (Number(earlier.precipitation) || 0) > RAIN_ON) {
                     result = now - t;
                     break;
                 }

@@ -130,6 +130,15 @@ export class RepoStones {
         return hit;
     }
 
+    /** XP-4 — a stone's drawn world rect, for the hover plate to keep clear of. */
+    worldBounds(stone) {
+        const baked = stone && this.image(stone);
+        if (!baked) return null;
+        const left = Math.round(stone.worldX - baked.ax);
+        const top = Math.round(stone.worldY - baked.ay);
+        return { left, top, right: left + baked.canvas.width, bottom: top + baked.canvas.height };
+    }
+
     tooltipFor(stone) {
         return repoStoneLore(stone);
     }

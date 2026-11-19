@@ -7,7 +7,14 @@ import {
     buildAmbientSchedule,
     createAmbientScheduler,
 } from '../../claudeville/src/presentation/character-mode/AmbientEvents.js';
-import { OCEAN_HORIZON_WORLD_Y, distantShowerFront, squallApproach } from '../../claudeville/src/presentation/character-mode/CoastBake.js';
+import {
+    OCEAN_HORIZON_WORLD_Y,
+    distantShowerFront,
+    mirrorAccentGate,
+    mirrorAccentRainCut,
+    mirrorRainDrop,
+    squallApproach,
+} from '../../claudeville/src/presentation/character-mode/CoastBake.js';
 import {
     FAR_SEA_STATIONS,
     HORIZON_BAND_ROWS,
@@ -396,4 +403,125 @@ test('far-sea life surfaces in the open sea east of the island, the shower in th
     calls.length = 0;
     drawHorizonLife(ctx, { ...renderer, motionScale: 0 });
     assert.equal(calls.length, 0, 'reduced motion draws nothing');
+});
+
+// A pixel canvas just large enough for the accent cut (alpha only matters).
+function pixelCanvas(width, height, alpha = null) {
+    const canvas = { width, height, data: new Uint8ClampedArray(width * height * 4) };
+    if (alpha) for (let k = 0; k < width * height; k++) canvas.data[k * 4 + 3] = alpha(k % width, Math.floor(k / width));
+    canvas.getContext = () => ({
+        drawImage: source => { canvas.data = new Uint8ClampedArray(source.data); },
+        getImageData: () => ({ data: new Uint8ClampedArray(canvas.data) }),
+        putImageData: image => { canvas.data = new Uint8ClampedArray(image.data); },
+    });
+    return canvas;
+}
+
+test('EN-7: reflected window light breaks with its mirror, texel by texel on the mirror\'s Bayer rank', () => {
+    const original = globalThis.document;
+    globalThis.document = { createElement: () => pixelCanvas(0, 0) };
+    try {
+        const BAYER4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+        // A Pharos-like lamp patch at an odd world origin, a few holes in it.
+        const x = 1301;
+        const y = 418;
+        const lit = (i, j) => ((i * 7 + j * 3) % 11 === 0 ? 0 : 255);
+        const layer = { key: 'mirror-accent:pharos:-2', x, y, w: 13, h: 9, group: -2, type: 'pharos',
+            canvas: pixelCanvas(13, 9, lit), emissive: pixelCanvas(13, 9, (i, j) => (lit(i, j) ? 128 : 0)) };
+        // The room / beacon gate no longer goes dark in rain: the cut does.
+        const buildingRenderer = { lighthouseColumnSource: () => true };
+        assert.equal(mirrorAccentGate({ buildingRenderer }, layer, { weather: { type: 'rain', precipitation: 0.33 } }), 1);
+        assert.equal(mirrorAccentRainCut(layer, 0), layer);
+        let previous = Infinity;
+        for (let p = 0.30; p <= 0.701; p += 0.01) {
+            const drop = mirrorRainDrop(p);
+            const cut = mirrorAccentRainCut(layer, drop);
+            if (drop >= 1) {
+                assert.equal(cut, null, p.toFixed(2));
+                continue;
+            }
+            const source = cut ? cut.canvas.data : null;
+            let kept = 0;
+            for (let j = 0; j < layer.h; j++) {
+                for (let i = 0; i < layer.w; i++) {
+                    const rank = BAYER4[(((y + j) & 3) << 2) | ((x + i) & 3)] / 16;
+                    const want = lit(i, j) > 0 && rank >= drop;
+                    const got = source ? source[(j * layer.w + i) * 4 + 3] > 0 : false;
+                    assert.equal(got, want, `${p.toFixed(2)} ${i},${j}`);
+                    if (cut) assert.equal(cut.emissive.data[(j * layer.w + i) * 4 + 3] > 0, want);
+                    kept += want;
+                }
+            }
+            // At 0.33 the mirror has lost one course of eight: most of the
+            // lamp still shines; the survivors only shrink as the rain grows.
+            if (Math.abs(p - 0.33) < 1e-6) assert.ok(kept > 0.8 * 13 * 9 * 0.85, String(kept));
+            assert.ok(kept <= previous);
+            previous = kept;
+            if (cut && drop > 0) assert.equal(mirrorAccentRainCut(layer, drop), cut, 'one cut per step');
+        }
+    } finally {
+        globalThis.document = original;
+    }
+});
+
+test('EN-7: a fading room thins the accents the rain left and goes dark only at its gate\'s 0', () => {
+    const original = globalThis.document;
+    globalThis.document = { createElement: () => pixelCanvas(0, 0) };
+    try {
+        const BAYER4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+        const x = 40;
+        const y = 17;
+        const layer = { key: 'mirror-accent:forge:1', x, y, w: 4, h: 4, group: 1, type: 'forge',
+            canvas: pixelCanvas(4, 4, () => 255), emissive: pixelCanvas(4, 4, () => 128) };
+        const drop = mirrorRainDrop(0.55);
+        assert.equal(drop, 0.625);
+        const ranks = [];
+        for (let j = 0; j < 4; j++) for (let i = 0; i < 4; i++) ranks.push({ i, j, rank: BAYER4[(((y + j) & 3) << 2) | ((x + i) & 3)] });
+        const surviving = ranks.filter(t => t.rank >= drop * 16);
+        assert.equal(surviving.length, 6);
+        let previous = Infinity;
+        for (let gate = 1; gate >= -0.001; gate -= 0.05) {
+            const cut = mirrorAccentRainCut(layer, drop, gate);
+            const drawn = cut ? ranks.filter(t => cut.canvas.data[(t.j * 4 + t.i) * 4 + 3] > 0) : [];
+            // Only rain survivors, a share of them in rank order, never more than before.
+            assert.ok(drawn.every(t => t.rank >= drop * 16), gate.toFixed(2));
+            assert.equal(drawn.length, gate > 0 ? Math.max(1, Math.round(gate * surviving.length)) : 0, gate.toFixed(2));
+            assert.ok(drawn.length <= previous);
+            previous = drawn.length;
+        }
+        // A faint gate on two survivors keeps one lit until the source is off.
+        const faint = mirrorAccentRainCut(layer, mirrorRainDrop(0.65), 0.2);
+        assert.equal(mirrorRainDrop(0.65), 0.875);
+        assert.ok(faint, 'a 20 % gate at 0.65 still draws');
+        assert.equal(ranks.filter(t => faint.canvas.data[(t.j * 4 + t.i) * 4 + 3] > 0).length, 1);
+        assert.equal(mirrorAccentRainCut(layer, mirrorRainDrop(0.65), 0), null);
+        // A half-lit room shows half the survivors; source off shows none.
+        assert.equal(mirrorAccentRainCut(layer, drop, 0.5) && 3, 3);
+        assert.equal(mirrorAccentRainCut(layer, drop, 0), null);
+        // Dry: the gate alone keeps its lowest ranks, as before EN-7.
+        const dry = mirrorAccentRainCut(layer, 0, 0.5);
+        assert.equal(ranks.filter(t => dry.canvas.data[(t.j * 4 + t.i) * 4 + 3] > 0).every(t => t.rank < 8), true);
+    } finally {
+        globalThis.document = original;
+    }
+});
+
+test('EN-7: both GPU shaders break the mirrors on one unscaled value, with the mirror stops bound at every level', async () => {
+    const { FRAME_UNIFORM_LAYOUT } = await import('../../claudeville/src/presentation/character-mode/gpu/wgsl/common.js');
+    const fs = await import('node:fs');
+    const glsl = fs.readFileSync(new URL('../../claudeville/src/presentation/character-mode/gpu/GpuWorldRenderer.js', import.meta.url), 'utf8');
+    const wgsl = fs.readFileSync(new URL('../../claudeville/src/presentation/character-mode/gpu/wgsl/water.js', import.meta.url), 'utf8');
+    const webgpu = fs.readFileSync(new URL('../../claudeville/src/presentation/character-mode/gpu/GpuWorldRendererWebGPU.js', import.meta.url), 'utf8');
+    assert.ok(FRAME_UNIFORM_LAYOUT.fields.some(field => field.name === 'mirrorBreak'));
+    assert.ok(FRAME_UNIFORM_LAYOUT.fields.some(field => field.name === 'mirrorRect'));
+    assert.match(glsl, /float drop = u_mirrorBreak;/);
+    assert.match(wgsl, /var drop = frame\.mirrorBreak;/);
+    for (const [source, rect] of [[glsl, 'u_mirrorRect'], [wgsl, 'frame.mirrorRect']]) {
+        const body = source.slice(source.indexOf('mirrorBaseStop('), source.indexOf('mirrorBaseStop(') + 400);
+        assert.ok(body.includes(rect) && !/coastRect/i.test(body.replace(/mirrorRect/g, '')), rect);
+    }
+    // The shaders no longer derive the break from the ladder-scaled rain.
+    assert.doesNotMatch(glsl, /u_weather\.x - [0-9.]+\) \/ /);
+    assert.doesNotMatch(wgsl, /frame\.weather\.x - [0-9.]+\) \/ /);
+    assert.match(webgpu, /coastField: coast,/);
 });

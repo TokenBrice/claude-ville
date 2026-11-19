@@ -49,6 +49,7 @@ import { overlayContextAttributes } from './shared/DisplaySettings.js';
 import { isKeyboardEditTarget } from './dashboard-mode/DashboardKeyboardNavigation.js';
 
 import { AssetManager } from './character-mode/AssetManager.js';
+import { createAtmosphereSnapshot } from './character-mode/AtmosphereState.js';
 import { effectiveCanvasDpr } from './character-mode/CanvasBudget.js';
 import { paintRevealBands } from './character-mode/RevealBands.js';
 
@@ -416,6 +417,11 @@ export class App {
         }
     }
 
+    _readDashboardAtmosphere() {
+        if (this.modeManager?.getCurrentMode() !== 'dashboard') return null;
+        return this.renderer?.atmosphereState?.snapshot() ?? createAtmosphereSnapshot();
+    }
+
     _bootFoundation() {
         if (this._foundationReady) return;
 
@@ -484,8 +490,9 @@ export class App {
                 attention: this.attentionService,
                 chronicle: this.chroniclePanel,
                 spendLedger: this.spendLedger,
-                readDashboardAtmosphere: () => this.modeManager?.getCurrentMode() === 'dashboard'
-                    ? this.renderer?.atmosphereState?.snapshot() : null,
+                readDashboardAtmosphere: () => this._readDashboardAtmosphere(),
+                simulation: this.simMode,
+                refreshAtmosphere: snapshot => this.renderer?.atmosphereState?.update({ now: snapshot.effectiveDate }),
                 frameAttention: () => {
                     if (this.modeManager?.getCurrentMode() === 'dashboard') return false;
                     this.renderer?.cameraDirector?.frameAttention(this.renderer.agentSprites);

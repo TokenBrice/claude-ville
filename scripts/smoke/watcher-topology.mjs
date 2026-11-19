@@ -8,6 +8,7 @@ import { makeTempDir } from '../tests/support/tmp.mjs';
 const tmpRoot = makeTempDir('claudeville-watch-');
 const previousHome = process.env.HOME;
 process.env.HOME = tmpRoot;
+process.env.CLAUDEVILLE_CODEX_STATE_DIR = path.join(tmpRoot, '.local', 'state', 'codex-cc-mcp');
 process.env.CLAUDEVILLE_WATCH_ZERO_CLIENT_GRACE_MS = '50';
 
 function writeJson(filePath, value) {
@@ -66,6 +67,7 @@ fs.mkdirSync(path.join(tmpRoot, '.config', 'opencode', 'agents'), { recursive: t
 // The journal adapters need their state roots to report discovery descriptors;
 // their per-session active descriptors are pinned in glm-adapter.test.mjs and
 // deepseek-adapter.test.mjs.
+touch(path.join(tmpRoot, '.local', 'state', 'codex-cc-mcp', 'journal.jsonl'));
 fs.mkdirSync(path.join(tmpRoot, '.local', 'state', 'deepseek-cc-mcp'), { recursive: true });
 fs.mkdirSync(path.join(tmpRoot, '.local', 'state', 'glm-cc-mcp'), { recursive: true });
 
@@ -95,6 +97,9 @@ try {
   }
 
   const descriptors = getAllWatchPaths({ sessions, activeThresholdMs: 10 * 60 * 1000 });
+  assert.ok(descriptors.some(d => d.path === path.join(tmpRoot, '.local', 'state', 'codex-cc-mcp', 'journal.jsonl')
+    && d.provider === 'codex' && d.probe));
+  assert.ok(descriptors.some(d => d.path === path.join(tmpRoot, '.claude', 'sessions') && d.kind === 'metadata'));
   assert.ok(descriptors.length > 0, 'adapter registry should return watch descriptors');
   assert.ok(descriptors.every((descriptor) => descriptor.recursive !== true), 'recursive descriptors are forbidden');
 

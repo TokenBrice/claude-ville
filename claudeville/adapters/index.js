@@ -15,10 +15,10 @@ const { execFileSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { getJsonlDiagnostics, trimCache, readFailures } = require('./shared');
+const { getJsonlDiagnostics, trimCache, readFailures, mcpProcessParent } = require('./shared');
 const { decorateSessionPresentation } = require('./sessionPresentation');
 const { normalizeDialogue, normalizeObservedSources } = require('./dialogue');
-const { hookOverlay, mergeOverlay } = require('./hooks');
+const { hookOverlay, mergeOverlay, HOOK_MERGE_WINDOW_MS } = require('./hooks');
 const { normalizeToolResults } = require('./toolResults');
 const {
   getGitEnrichmentPerfStats,
@@ -285,7 +285,7 @@ function normalizeSession(rawSession, context = {}) {
       : null,
     signalObservedAt: session?.signalObservedAt ?? session?.pendingSince ?? session?.awaitingSince ?? session?.lastActivity ?? null,
     signalCertainty: session?.signalCertainty || (session?.turnState && session.turnState !== 'unknown' ? 'observed' : 'unavailable'),
-    signalSource: session?.signalSource === 'hook' ? 'hook' : 'transcript',
+    signalSource: ['hook', 'registry'].includes(session?.signalSource) ? session.signalSource : 'transcript',
     promptDetail: session?.signalSource === 'hook' && typeof session?.promptDetail === 'string'
       ? session.promptDetail.slice(0, 200)
       : undefined,
@@ -407,6 +407,34 @@ function getRepositoryScanProjects() {
   return _repositoryScanCache.projects;
 }
 
+const mcpParents = new Map();
+
+function linkMcpSession(session) {
+  const adapter = ADAPTER_BY_PROVIDER[session.provider];
+  if (!adapter?.getMcpJobs || !session.agentId || session.parentSessionId) return session;
+  const thread = `${session.provider}:${session.agentId}`;
+  const cached = mcpParents.get(thread);
+  if (session.subagentKind !== 'mcp' && !cached) return session;
+  const jobs = adapter.getMcpJobs(session.agentId) || [];
+  const claude = ADAPTER_BY_PROVIDER.claude;
+  const fleet = session.provider === 'zai' ? 'glm' : session.provider;
+  let parent = null;
+  for (let i = jobs.length - 1; i >= 0 && !parent; i--) {
+    parent = claude.jobLeads.get(`${fleet}:${jobs[i].jobId}`);
+  }
+  parent ||= cached?.parentSessionId;
+  for (let i = jobs.length - 1; i >= 0 && !parent; i--) {
+    parent = mcpProcessParent(jobs[i], claude.processLeads, claude.readProcess);
+  }
+  if (!parent) return session;
+  const agentName = jobs.findLast(job => job.label)?.label || cached?.agentName || session.agentName;
+  const link = { parentSessionId: parent, agentType: 'sub-agent', subagentKind: 'mcp', agentName };
+  mcpParents.delete(thread);
+  mcpParents.set(thread, link);
+  trimCache(mcpParents, 4096);
+  return { ...session, ...link };
+}
+
 function foldSessionOverlays(sessions, now) {
   hookOverlay.prune(now);
   return sessions.map((normalized) => {
@@ -415,6 +443,24 @@ function foldSessionOverlays(sessions, now) {
       normalized.sessionId.startsWith(prefix) ? normalized.sessionId.slice(prefix.length) : normalized.sessionId].filter(Boolean);
     const overlay = aliases.map(id => hookOverlay.overlayFor(id, now, normalized.provider)).filter(Boolean)
       .sort((a, b) => b.eventAt - a.eventAt)[0];
+    if (normalized.signalSource === 'registry' && overlay?.eventAt < normalized.signalObservedAt) {
+      // The registry dates the lifecycle. A hook can still describe the pending call.
+      if (normalized.sessionEndedAt || normalized.turnState === 'awaiting_input' || overlay.turnState !== 'tool_pending'
+        || overlay.sessionEndedAt || Math.max(normalized.turnStartedAt, normalized.pendingSince) > overlay.eventAt
+        || (normalized.pendingTool && overlay.pendingTool && normalized.pendingTool !== overlay.pendingTool)
+        || (!(normalized.waitReason && overlay.waitReason) && now - overlay.lastHookAt >= HOOK_MERGE_WINDOW_MS)) return normalized;
+      const { promptDetail } = overlay;
+      const pendingTool = normalized.pendingTool ?? overlay.pendingTool;
+      const wrapper = pendingTool === 'REPL' || pendingTool === 'Poll';
+      return {
+        ...normalized,
+        pendingTool,
+        pendingSince: normalized.pendingSince ?? overlay.pendingSince,
+        promptDetail: promptDetail ?? undefined,
+        lastTool: (!wrapper && overlay.pendingTool) || normalized.lastTool || null,
+        lastToolInput: (!wrapper && promptDetail) || normalized.lastToolInput || null,
+      };
+    }
     return mergeOverlay(normalized, overlay, now);
   }).sort((a, b) => b.lastActivity - a.lastActivity);
 }
@@ -521,7 +567,7 @@ function getAllSessions(activeThresholdMs, { force = false, overlayOnly = false 
   const repositoryScanProjects = isGitEnrichmentDisabled() ? [] : getRepositoryScanProjects();
   const normalizedSessions = inferPushedGitEventsForSessions(inferUnpushedGitEventsForSessions(allSessions, {
     projects: repositoryScanProjects,
-  })).map(session => normalizeSession(session));
+  })).map(session => normalizeSession(linkMcpSession(session)));
   const sessions = foldSessionOverlays(normalizedSessions, now);
 
   _sessionListCache.at = Date.now();

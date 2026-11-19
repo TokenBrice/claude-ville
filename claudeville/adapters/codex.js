@@ -19,6 +19,10 @@ const {
   createDetailResponse,
   fileSignature,
   normalizeCacheTokens,
+  readLinuxProcess,
+  readStateWindow,
+  stateFileStat,
+  statCacheKey,
   parseJsonLines,
   readHeadText: readSharedHeadText,
   readJsonLineWindows: readSharedJsonLineWindows,
@@ -33,6 +37,52 @@ const { TOOL_RESULT_LIMIT, toolResultId, toolResultLocation } = require('./toolR
 const CODEX_DIR = path.join(os.homedir(), '.codex');
 const SESSIONS_DIR = path.join(CODEX_DIR, 'sessions');
 const SESSION_INDEX_FILE = path.join(CODEX_DIR, 'session_index.jsonl');
+
+const MCP_STATE_DIR = path.resolve(process.env.CLAUDEVILLE_CODEX_STATE_DIR || process.env.CODEX_CC_STATE_DIR
+  || path.join(os.homedir(), '.local', 'state', 'codex-cc-mcp'));
+const MCP_JOURNAL = path.join(MCP_STATE_DIR, 'journal.jsonl');
+const MCP_ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/;
+
+function readMcpJournal(stat) {
+  const jobs = new Map();
+  const text = readStateWindow(MCP_JOURNAL, stat, 4 * 1024 * 1024, 'tail');
+  if (text === null) return null;
+  for (const line of text.split('\n').slice(-8000)) {
+    let row;
+    try { row = JSON.parse(line); } catch { continue; }
+    if (typeof row?.job_id !== 'string' || !MCP_ID.test(row.job_id)
+      || !['queued', 'started', 'finished'].includes(row.event) || !Number.isSafeInteger(row.ts) || row.ts <= 0) continue;
+    const job = jobs.get(row.job_id) || { jobId: row.job_id };
+    jobs.set(row.job_id, job);
+    if (typeof row.label === 'string' && row.label.trim()) job.label = row.label.trim().slice(0, 128);
+    if (row.event === 'started') {
+      job.startedAt = row.ts;
+      job.ownerPid = row.pid;
+      job.ownerStart = typeof row.pid_start === 'string' ? row.pid_start : null;
+    }
+    if (row.event === 'finished') {
+      job.endedAt = row.ts;
+      job.status = row.status;
+      job.errorKind = typeof row.error_kind === 'string' && /^[a-z0-9_-]{1,64}$/i.test(row.error_kind) ? row.error_kind : null;
+      if (typeof row.session_id === 'string' && MCP_ID.test(row.session_id)) job.threadId = row.session_id;
+    }
+  }
+  return [...jobs.values()].reverse();
+}
+
+function mcpThreadFromEvents(jobDir, previousThread) {
+  const file = path.join(jobDir, 'events.jsonl');
+  const stat = stateFileStat(file);
+  if (!stat) return null;
+  const text = readStateWindow(file, stat, 4096, 'head');
+  if (text === null) return previousThread;
+  if (!text) return null;
+  try {
+    const event = JSON.parse(text.split('\n', 1)[0]);
+    return event?.type === 'thread.started' && typeof event.thread_id === 'string' && MCP_ID.test(event.thread_id)
+      ? event.thread_id : null;
+  } catch { return null; }
+}
 
 // ─── Utilities ─────────────────────────────────────────────
 
@@ -1445,15 +1495,13 @@ function withBorrowedContextWindow(tokenUsage, filePath) {
 
 // SV-6 / PV-7 — the account's Codex quota as each `token_count` reports it:
 // `rate_limits.primary`/`secondary` windows, `credits`, and
-// `rate_limit_reached_type`. Kept per `session_meta.creator_account_id`; the
-// newest observation wins. It feeds `/api/usage.codex` (account surfaces only)
-// and never a session's status.
+// `rate_limit_reached_type`. The newest observation feeds `/api/usage.codex`.
+// Balance comparisons stay within a private account and limit.
 const MAX_RATE_LIMIT_ACCOUNTS = 16;
+const MAX_RATE_LIMITS_PER_ACCOUNT = 16;
 const _rateLimitsByAccount = new Map();
-// The first scan also reads the newest rollouts' tails, once, so a server that
-// boots with no live Codex session still shows the last observed quota. A
-// session left before its first turn has no `token_count`, so the seed walks
-// back (at most RATE_LIMIT_SEED_FILES) to the newest rollout that has one.
+// Read a bounded set of recent tails at boot, including older rollouts that
+// may hold the previous reading or the only reading when no session is live.
 const RATE_LIMIT_SEED_FILES = 8;
 let _rateLimitSeeded = false;
 
@@ -1474,72 +1522,115 @@ function rateLimitWindow(window) {
 function rateLimitCredits(credits) {
   if (!credits || typeof credits !== 'object') return null;
   // `balance` is a decimal string ("2510.3272622500").
-  const balance = typeof credits.balance === 'string' || typeof credits.balance === 'number'
-    ? Number(credits.balance)
-    : NaN;
+  const raw = credits.balance;
+  const balance = typeof raw === 'number' || (typeof raw === 'string' && raw.trim() !== '') ? Number(raw) : NaN;
   return {
-    balance: credits.balance !== '' && Number.isFinite(balance) ? balance : null,
+    balance: Number.isFinite(balance) ? balance : null,
     hasCredits: typeof credits.has_credits === 'boolean' ? credits.has_credits : null,
     unlimited: typeof credits.unlimited === 'boolean' ? credits.unlimited : null,
   };
 }
 
-function extractCodexRateLimits(entries) {
-  let latest = null;
-  for (const entry of Array.isArray(entries) ? entries : []) {
+function creditBalanceDecimal(raw, balance) {
+  if (balance === 0) return { units: 0n, exponent: 0 };
+  const decimal = /^([+-]?)(\d*)(?:\.(\d*))?(?:e([+-]?\d+))?$/i;
+  const [, sign, whole, fraction = '', exponent = '0'] = decimal.exec(String(raw).trim()) || decimal.exec(String(balance));
+  return { units: BigInt(`${sign}${whole}${fraction}`), exponent: Number(exponent) - fraction.length };
+}
+
+function creditBalanceDifference(current, previous) {
+  const exponent = Math.min(current.exponent, previous.exponent);
+  const scale = reading => reading.units * 10n ** BigInt(reading.exponent - exponent);
+  return { units: scale(current) - scale(previous), exponent };
+}
+
+function noteCreditReading(byLimit, limitId, { observedAt, credits, rawBalance }) {
+  const balance = credits?.unlimited === true ? null : credits?.balance;
+  if (balance == null && credits?.unlimited !== true) return;
+  const readings = byLimit.get(limitId) || [];
+  if (readings.length === 2 && observedAt < readings[1].observedAt) return;
+  const decimal = balance === null ? null : creditBalanceDecimal(rawBalance, balance);
+  const sameTime = readings.find(reading => reading.observedAt === observedAt);
+  if (sameTime) {
+    // A conflicting timestamp or unlimited reading breaks the comparison.
+    if (!decimal || (sameTime.decimal && creditBalanceDifference(decimal, sameTime.decimal).units !== 0n)) {
+      sameTime.decimal = null;
+    }
+    return;
+  }
+  readings.push({ observedAt, balance, decimal });
+  readings.sort((a, b) => b.observedAt - a.observedAt);
+  readings.length = Math.min(readings.length, 2);
+  byLimit.delete(limitId);
+  byLimit.set(limitId, readings);
+  if (byLimit.size > MAX_RATE_LIMITS_PER_ACCOUNT) byLimit.delete(byLimit.keys().next().value);
+}
+
+function noteCodexRateLimits(accountId, entries) {
+  const key = typeof accountId === 'string' ? accountId.trim() : '';
+  const account = _rateLimitsByAccount.get(key) || { latest: null, limitId: null, byLimit: new Map() };
+  const previous = account.latest;
+  for (const entry of entries) {
     const payload = entry?.payload;
     if (payload?.type !== 'token_count') continue;
     const limits = payload.rate_limits;
     if (!limits || typeof limits !== 'object') continue;
     const observedAt = parseTimestampMs(entry.timestamp);
-    if (!observedAt || (latest && observedAt < latest.observedAt)) continue;
+    if (!observedAt) continue;
+    const limitId = typeof limits.limit_id === 'string' ? limits.limit_id.trim() : '';
+    const credits = rateLimitCredits(limits.credits);
+    if (key && limitId) noteCreditReading(account.byLimit, limitId, { observedAt, credits, rawBalance: limits.credits?.balance });
+    if ((previous && observedAt <= previous.observedAt) || (account.latest && observedAt < account.latest.observedAt)) continue;
     const reached = limits.rate_limit_reached_type;
-    latest = {
+    account.limitId = limitId;
+    account.latest = {
       observedAt,
       primary: rateLimitWindow(limits.primary),
       secondary: rateLimitWindow(limits.secondary),
-      credits: rateLimitCredits(limits.credits),
+      credits,
       reached: reached !== null && reached !== undefined && reached !== false && reached !== '',
     };
   }
-  return latest;
-}
-
-function noteCodexRateLimits(accountId, entries) {
-  const observation = extractCodexRateLimits(entries);
-  if (!observation) return;
-  const key = typeof accountId === 'string' ? accountId : '';
-  const previous = _rateLimitsByAccount.get(key);
-  if (previous && previous.observedAt >= observation.observedAt) return;
+  if (account.latest === previous) return;
   _rateLimitsByAccount.delete(key);
-  _rateLimitsByAccount.set(key, observation);
-  while (_rateLimitsByAccount.size > MAX_RATE_LIMIT_ACCOUNTS) {
+  _rateLimitsByAccount.set(key, account);
+  if (_rateLimitsByAccount.size > MAX_RATE_LIMIT_ACCOUNTS) {
     _rateLimitsByAccount.delete(_rateLimitsByAccount.keys().next().value);
   }
 }
 
-function seedCodexRateLimits() {
+function seedCodexRateLimits(parsedRollouts) {
   if (_rateLimitSeeded) return;
   _rateLimitSeeded = true;
-  if (_rateLimitsByAccount.size > 0) return;
+  const scanned = new Set(parsedRollouts.map(({ filePath }) => filePath));
   const newest = Array.from(_rolloutDiscoveryCache.filesByPath, ([filePath, cached]) => ({ filePath, mtime: cached.mtime || 0 }))
     .sort((left, right) => right.mtime - left.mtime)
     .slice(0, RATE_LIMIT_SEED_FILES);
   for (const { filePath } of newest) {
+    if (scanned.has(filePath)) continue;
     noteCodexRateLimits(
       readEarlyMetadata(filePath)?.accountId || null,
-      readJsonLines(filePath, { from: 'end', count: TOKEN_USAGE_SCAN_LINES }),
+      readJsonLines(filePath, { from: 'end', count: TOKEN_USAGE_SCAN_LINES }) || [],
     );
-    if (_rateLimitsByAccount.size > 0) return;
   }
 }
 
 function latestCodexRateLimits() {
   let latest = null;
-  for (const observation of _rateLimitsByAccount.values()) {
-    if (!latest || observation.observedAt > latest.observedAt) latest = observation;
+  for (const account of _rateLimitsByAccount.values()) {
+    if (!latest || account.latest.observedAt > latest.latest.observedAt) latest = account;
   }
-  return latest;
+  if (!latest) return null;
+  const observation = latest.latest;
+  const [current, previous] = latest.byLimit.get(latest.limitId) || [];
+  if (current?.observedAt !== observation.observedAt || !current.decimal
+    || current.balance !== observation.credits?.balance || !previous?.decimal) return observation;
+  // Subtract at the source precision before converting the result to a wire number.
+  const { units, exponent } = creditBalanceDifference(current.decimal, previous.decimal);
+  return {
+    ...observation,
+    creditChange: { delta: Number(`${units}e${exponent}`), intervalMs: current.observedAt - previous.observedAt },
+  };
 }
 
 function normalizeCommand(command) {
@@ -1923,7 +2014,15 @@ function pruneRolloutDiscoveryCache({ validateDayDirs = false } = {}) {
   }
 }
 
-function collectWarmRollouts(activeCutoffMs, recentCutoffMs, counters) {
+// A journal end can arrive after the rollout stopped writing. Its filename
+// locates a candidate cheaply; session_meta must still confirm its thread.
+function mcpRolloutCandidate(fileName, activeThreads) {
+  if (!activeThreads?.size) return false;
+  const thread = /^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-(.+)\.jsonl$/.exec(fileName)?.[1];
+  return activeThreads.has(thread);
+}
+
+function collectWarmRollouts(activeCutoffMs, recentCutoffMs, counters, activeThreads) {
   const results = [];
 
   for (const filePath of _rolloutDiscoveryCache.warmFilePaths) {
@@ -1937,22 +2036,24 @@ function collectWarmRollouts(activeCutoffMs, recentCutoffMs, counters) {
 
     const cached = _rolloutDiscoveryCache.filesByPath.get(filePath);
     if (cached) cached.mtime = mtime;
-    if (mtime < recentCutoffMs) {
+    const fileName = cached?.fileName || path.basename(filePath);
+    const fleet = mtime < activeCutoffMs && mcpRolloutCandidate(fileName, activeThreads);
+    if (mtime < recentCutoffMs && !fleet) {
       _rolloutDiscoveryCache.warmFilePaths.delete(filePath);
     }
-    if (mtime < activeCutoffMs) continue;
+    if (mtime < activeCutoffMs && !fleet) continue;
 
     results.push({
       filePath,
       mtime,
-      fileName: cached?.fileName || path.basename(filePath),
+      fileName,
     });
   }
 
   return results;
 }
 
-function scanRolloutDayDir(dayDir, activeCutoffMs, recentCutoffMs, resultsByPath, counters) {
+function scanRolloutDayDir(dayDir, activeCutoffMs, recentCutoffMs, resultsByPath, counters, activeThreads) {
   const fileNames = readRolloutFileNames(dayDir);
 
   for (const fileName of fileNames) {
@@ -1967,12 +2068,13 @@ function scanRolloutDayDir(dayDir, activeCutoffMs, recentCutoffMs, resultsByPath
     if (mtime === null) continue;
 
     rememberRolloutFile(filePath, fileName, mtime, dayDir);
-    if (mtime >= recentCutoffMs) {
+    const fleet = mtime < activeCutoffMs && mcpRolloutCandidate(fileName, activeThreads);
+    if (mtime >= recentCutoffMs || fleet) {
       _rolloutDiscoveryCache.warmFilePaths.add(filePath);
     } else {
       _rolloutDiscoveryCache.warmFilePaths.delete(filePath);
     }
-    if (mtime < activeCutoffMs) continue;
+    if (mtime < activeCutoffMs && !fleet) continue;
 
     resultsByPath.set(filePath, { filePath, mtime, fileName });
   }
@@ -2008,7 +2110,7 @@ function collectWarmRolloutDayDirs() {
   return dayDirs;
 }
 
-function scanRecentRollouts(activeThresholdMs, { force = false } = {}) {
+function scanRecentRollouts(activeThresholdMs, { force = false, activeThreads } = {}) {
   const startedAt = Date.now();
   const normalizedThresholdMs = Number.isFinite(activeThresholdMs)
     ? Math.max(0, activeThresholdMs)
@@ -2032,7 +2134,7 @@ function scanRecentRollouts(activeThresholdMs, { force = false } = {}) {
   }
 
   if (!reconcile) {
-    for (const rollout of collectWarmRollouts(activeCutoffMs, recentCutoffMs, counters)) {
+    for (const rollout of collectWarmRollouts(activeCutoffMs, recentCutoffMs, counters, activeThreads)) {
       resultsByPath.set(rollout.filePath, rollout);
     }
   }
@@ -2058,7 +2160,7 @@ function scanRecentRollouts(activeThresholdMs, { force = false } = {}) {
           continue;
         }
 
-        scanRolloutDayDir(dayDir, activeCutoffMs, recentCutoffMs, resultsByPath, counters);
+        scanRolloutDayDir(dayDir, activeCutoffMs, recentCutoffMs, resultsByPath, counters, activeThreads);
         if (counters.limited) break;
       }
     } else {
@@ -2087,7 +2189,7 @@ function scanRecentRollouts(activeThresholdMs, { force = false } = {}) {
             counters.dayDirs++;
             _rolloutDiscoveryCache.dayDirMtimes.set(dayDir, dayDirMtime);
 
-            scanRolloutDayDir(dayDir, activeCutoffMs, recentCutoffMs, resultsByPath, counters);
+            scanRolloutDayDir(dayDir, activeCutoffMs, recentCutoffMs, resultsByPath, counters, activeThreads);
             if (counters.limited) break yearLoop;
           }
         }
@@ -2134,6 +2236,39 @@ function recordRolloutDiscoveryStats(startedAt, activeThresholdMs, counters, res
 // ─── Adapter class ────────────────────────────────────
 
 class CodexAdapter {
+  readMcpThreads() {
+    const stat = stateFileStat(MCP_JOURNAL);
+    const key = stat && statCacheKey(MCP_JOURNAL, stat);
+    if (this.mcpJournal?.key !== key) {
+      const jobs = stat ? readMcpJournal(stat) : [];
+      if (!jobs) return this.mcpThreads ?? new Map();
+      this.mcpJournal = { key, jobs };
+    }
+    const threads = new Map();
+    const eventThreads = new Map();
+    this.pendingMcpDirs = [];
+    let heads = 0;
+    for (const job of this.mcpJournal.jobs) {
+      let threadId = job.threadId;
+      if (!threadId && (job.startedAt || job.endedAt) && heads < 256) {
+        heads++;
+        const dir = path.join(MCP_STATE_DIR, 'jobs', job.jobId);
+        threadId = mcpThreadFromEvents(dir, this.mcpEventThreads?.get(job.jobId));
+        if (threadId) eventThreads.set(job.jobId, threadId);
+        if (!threadId && !job.endedAt && this.pendingMcpDirs.length < 64) this.pendingMcpDirs.push(dir);
+      }
+      if (!threadId) continue;
+      if (!threads.has(threadId)) threads.set(threadId, []);
+      threads.get(threadId).push(job);
+    }
+    for (const jobs of threads.values()) jobs.sort((a, b) => (a.startedAt || a.endedAt) - (b.startedAt || b.endedAt));
+    this.mcpEventThreads = eventThreads;
+    this.mcpThreads = threads;
+    return threads;
+  }
+
+  getMcpJobs(threadId) { return this.mcpThreads?.get(threadId); }
+
   get name() { return 'Codex CLI'; }
   get provider() { return 'codex'; }
   get homeDir() { return CODEX_DIR; }
@@ -2143,7 +2278,19 @@ class CodexAdapter {
   }
 
   getActiveSessions(activeThresholdMs, { force = false } = {}) {
-    const rollouts = scanRecentRollouts(activeThresholdMs, { force });
+    const mcpThreads = this.readMcpThreads();
+    const activeThreads = new Set();
+    const cutoff = Date.now() - activeThresholdMs;
+    for (const [threadId, jobs] of mcpThreads) {
+      const job = jobs.at(-1);
+      if (job.endedAt) {
+        if (job.endedAt >= cutoff) activeThreads.add(threadId);
+      } else if (job.ownerStart) {
+        const proc = readLinuxProcess(job.ownerPid);
+        if (!proc?.dead && proc?.start === job.ownerStart) activeThreads.add(threadId);
+      }
+    }
+    const rollouts = scanRecentRollouts(activeThresholdMs, { force, activeThreads });
     const sessionNames = readCodexSessionNames();
     const sessions = [];
     const parsedRollouts = [];
@@ -2152,6 +2299,7 @@ class CodexAdapter {
     for (const { filePath, mtime, fileName } of rollouts) {
       const scanContext = createActiveRolloutScanContext(filePath);
       const detail = parseRollout(filePath, scanContext);
+      if (mtime < cutoff && !activeThreads.has(detail.agentId)) continue;
       noteCodexRateLimits(detail.accountId, scanContext.tokenEntries);
       // Extract session ID from the filename: rollout-2025-01-22T10-30-00-abc123.jsonl
       const fullSessionId = rolloutSessionId(fileName);
@@ -2161,14 +2309,17 @@ class CodexAdapter {
       sessionIdByThreadId.set(threadId, fullSessionId);
       parsedRollouts.push({ filePath, mtime, detail, scanContext, sessionId, fullSessionId, threadId });
     }
-    seedCodexRateLimits();
+    seedCodexRateLimits(parsedRollouts);
     const activeSessionIds = new Set(parsedRollouts.map((rollout) => rollout.fullSessionId));
     for (const sessionId of _rolloutFileBySessionId.keys()) {
       if (!activeSessionIds.has(sessionId)) _rolloutFileBySessionId.delete(sessionId);
     }
 
     for (const { filePath, mtime, detail, scanContext, sessionId, fullSessionId, threadId } of parsedRollouts) {
-      const sessionName = sessionNames.get(threadId) || sessionNames.get(sessionId) || detail.agentName || null;
+      const jobs = mcpThreads.get(threadId);
+      const job = jobs?.at(-1);
+      const finished = job?.endedAt && job.endedAt >= (detail.turnStartedAt || 0);
+      const sessionName = jobs?.findLast(item => item.label)?.label || sessionNames.get(threadId) || sessionNames.get(sessionId) || detail.agentName || null;
       sessions.push({
         sessionId: fullSessionId,
         provider: 'codex',
@@ -2212,6 +2363,15 @@ class CodexAdapter {
           sessionId: fullSessionId,
           project: detail.project || null,
         }, scanContext.gitEntries),
+        ...(job ? { subagentKind: 'mcp' } : {}),
+        ...(finished ? {
+          ...deriveTurnState({ turnEnded: true, turnEndedAt: job.endedAt }),
+          openQuestion: null,
+          signalObservedAt: job.endedAt,
+          lastActivity: Math.max(mtime, job.endedAt),
+          apiError: ['failed', 'timeout', 'crashed'].includes(job.status)
+            ? { kind: job.errorKind || job.status, status: null, at: job.endedAt } : null,
+        } : {}),
         parentSessionId: detail.parentThreadId
           ? sessionIdByThreadId.get(detail.parentThreadId) || `codex-${detail.parentThreadId}`
           : null,
@@ -2254,6 +2414,17 @@ class CodexAdapter {
 
   getWatchPaths({ sessions = [] } = {}) {
     const paths = [];
+    for (const dir of [MCP_STATE_DIR, ...(this.pendingMcpDirs || [])]) {
+      try {
+        if (fs.realpathSync(dir) !== dir || !fs.lstatSync(dir).isDirectory()) continue;
+        const journal = dir === MCP_STATE_DIR;
+        paths.push({ type: 'directory', path: dir, filters: [journal ? 'journal.jsonl' : 'events.jsonl'],
+          scope: journal ? 'discovery' : 'recent', kind: 'metadata' });
+      } catch { /* optional fleet metadata */ }
+    }
+    if (stateFileStat(MCP_JOURNAL)) {
+      paths.push({ type: 'file', path: MCP_JOURNAL, scope: 'discovery', kind: 'metadata', probe: true });
+    }
     if (fs.existsSync(CODEX_DIR)) {
       paths.push({ type: 'directory', path: CODEX_DIR, filters: ['sessions', 'session_index.jsonl'], scope: 'discovery', kind: 'discovery' });
     }

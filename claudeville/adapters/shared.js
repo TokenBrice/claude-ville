@@ -1020,12 +1020,15 @@ function createDetailResponse({
 // a job without an end record runs only while its server does, and a pid is
 // that server only when its Linux start time (field 22 of /proc/<pid>/stat)
 // still matches.
-function pidStartTime(pid) {
+function readLinuxProcess(pid) {
+  if (process.platform !== 'linux' || !Number.isSafeInteger(pid) || pid <= 0) return null;
   try {
     const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
-    return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19] ?? null;
-  } catch {
-    return null;
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    if (!/^\d+$/.test(fields[19])) return null;
+    return { start: fields[19], parentPid: Number(fields[1]), dead: ['Z', 'X'].includes(fields[0]) };
+  } catch (error) {
+    return error.code === 'ENOENT' && fs.existsSync('/proc/self/stat') ? { dead: true } : null;
   }
 }
 
@@ -1038,13 +1041,79 @@ function mcpJobOwnerAlive(job) {
     return false;
   }
   if (!job.ownerStart) return true;
-  const start = pidStartTime(job.ownerPid);
+  const start = readLinuxProcess(job.ownerPid)?.start ?? null;
   return start === null || start === job.ownerStart;
+}
+
+// Check the entire path before trusting a cached identity or opening a file.
+function stateFileStat(file) {
+  try {
+    if (fs.realpathSync(file) !== file) return null;
+    const stat = fs.lstatSync(file);
+    return stat.isFile() ? stat : null;
+  } catch { return null; }
+}
+
+function sameStateVersion(before, after) {
+  return after != null && after.dev === before.dev && after.ino === before.ino
+    && after.size === before.size && after.mtimeMs === before.mtimeMs && after.ctimeMs === before.ctimeMs;
+}
+
+function readStateWindow(file, stat, limit, mode = 'whole') {
+  if (!stat || (mode === 'whole' && stat.size > limit)) return null;
+  let fd;
+  try {
+    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0));
+    const opened = fs.fstatSync(fd);
+    if (!opened.isFile() || !sameStateVersion(stat, opened) || fs.realpathSync(file) !== file) return null;
+    const length = Math.min(opened.size, limit);
+    const offset = mode === 'tail' ? opened.size - length : 0;
+    const bytes = Buffer.allocUnsafe(length);
+    if (fs.readSync(fd, bytes, 0, length, offset) !== length || !sameStateVersion(stat, stateFileStat(file))) return null;
+    const text = bytes.toString('utf8');
+    if (offset) {
+      const newline = text.indexOf('\n');
+      return newline < 0 ? '' : text.slice(newline + 1);
+    }
+    return text;
+  } catch { return null; }
+  finally { if (fd !== undefined) fs.closeSync(fd); }
+}
+
+function mcpProcessParent(job, leads, readProcess = readLinuxProcess) {
+  if (!leads.size || !job.ownerStart || !Number.isSafeInteger(job.ownerPid)) return null;
+  let pid = job.ownerPid;
+  for (let depth = 0; pid > 0 && depth < 32; depth++) {
+    const proc = readProcess(pid);
+    if (!proc?.start || proc.dead || (depth === 0 && proc.start !== job.ownerStart)) break;
+    const lead = leads.get(`${pid}:${proc.start}`);
+    if (lead) return lead;
+    pid = proc.parentPid;
+  }
+  return null;
+}
+
+function recentMcpJobs(jobs) {
+  return jobs.slice(-3).reverse().map(job => ({
+    kind: job.kind ?? null,
+    model: job.model,
+    effort: job.effort,
+    startedAt: job.startedAt,
+    endedAt: job.endedAt ?? job.finishedAt ?? null,
+    status: job.status || null,
+    durationMs: job.durationMs ?? null,
+  }));
 }
 
 module.exports = {
   readFailures,
   mcpJobOwnerAlive,
+  mcpProcessParent,
+  readLinuxProcess,
+  readStateWindow,
+  sameStateVersion,
+  stateFileStat,
+  recentMcpJobs,
   noteReadFailure,
   clearTailCache,
   deleteTailState,
