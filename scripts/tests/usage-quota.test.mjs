@@ -322,7 +322,7 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const RATE_LIMIT_FIXTURE = path.join(REPO_ROOT, 'scripts', 'adapters', 'fixtures', 'codex', 'rate-limits.jsonl');
 const FAR_RESET_MS = 4102444800 * 1000;
 
-function codexQuotaProjection({ mtimeAgoMs = 0, newerStubAgoMs = null } = {}) {
+function codexQuotaProjection({ mtimeAgoMs = 0, newerStubAgoMs = null, firstReadings, olderReadings, followups = [] } = {}) {
   const root = makeTempDir('claudeville-codex-quota-');
   try {
     const now = Date.now();
@@ -337,10 +337,25 @@ function codexQuotaProjection({ mtimeAgoMs = 0, newerStubAgoMs = null } = {}) {
       ['__FOUR_MINUTES_AGO__', new Date(now - mtimeAgoMs - 4 * 60_000).toISOString()],
       ['__THREE_MINUTES_AGO__', new Date(now - mtimeAgoMs - 3 * 60_000).toISOString()],
     ]) content = content.replaceAll(placeholder, value);
+    const rows = content.trimEnd().split('\n').map(line => JSON.parse(line));
+    const reading = (secondsAgo, balance, { unlimited = false, limitId = 'codex' } = {}) => {
+      const row = structuredClone(rows[4]);
+      row.timestamp = new Date(now - mtimeAgoMs - secondsAgo * 1000).toISOString();
+      row.payload.rate_limits.limit_id = limitId;
+      row.payload.rate_limits.credits = balance === null && !unlimited ? null : { balance, unlimited };
+      return row;
+    };
+    const jsonl = entries => `${entries.map(row => JSON.stringify(row)).join('\n')}\n`;
+    if (firstReadings) content = jsonl([...rows.slice(0, 3), ...firstReadings.map(args => reading(...args))]);
     const target = path.join(rolloutDir, 'rollout-2026-10-27T12-00-00-rate-limits.jsonl');
     fs.writeFileSync(target, content);
     const mtime = (now - mtimeAgoMs) / 1000;
     fs.utimesSync(target, mtime, mtime);
+    if (olderReadings) {
+      const older = path.join(rolloutDir, 'rollout-2026-10-27T11-00-00-older.jsonl');
+      fs.writeFileSync(older, jsonl([...rows.slice(0, 3), ...olderReadings.map(args => reading(...args))]));
+      fs.utimesSync(older, mtime - 60, mtime - 60);
+    }
     if (newerStubAgoMs !== null) {
       // A session opened and left before its first turn: session_meta only.
       const stub = path.join(rolloutDir, 'rollout-2026-10-27T13-00-00-stub.jsonl');
@@ -354,16 +369,34 @@ function codexQuotaProjection({ mtimeAgoMs = 0, newerStubAgoMs = null } = {}) {
       fs.utimesSync(stub, stubMtime, stubMtime);
     }
     const script = `
+      const fs = require('node:fs');
       const { CodexAdapter } = require('./claudeville/adapters/codex');
       const usageQuota = require('./claudeville/services/usageQuota');
       const adapter = new CodexAdapter();
       const sessions = adapter.getActiveSessions(2 * 60 * 1000, { force: true });
       usageQuota._test.resetQuotaCache();
       usageQuota._test.setCodexRateLimitsSource(() => adapter.getRateLimitObservation());
+      const codex = usageQuota.fetchUsage().codex;
+      const observation = adapter.getRateLimitObservation();
+      const next = ${JSON.stringify(followups.map(({ account = rows[0].payload.creator_account_id, readings }) => {
+        const meta = structuredClone(rows[0]);
+        meta.payload.creator_account_id = account;
+        meta.payload.id = account;
+        return {
+          file: path.join(rolloutDir, `rollout-2026-10-27T14-00-00-${account}.jsonl`),
+          content: jsonl([meta, ...rows.slice(1, 3), ...readings.map(args => reading(...args))]),
+        };
+      }))}.map(({ file, content }) => {
+        fs.writeFileSync(file, content);
+        adapter.invalidateCaches();
+        adapter.getActiveSessions(2 * 60 * 1000, { force: true });
+        return usageQuota.fetchUsage().codex;
+      });
       process.stdout.write(JSON.stringify({
         sessions,
-        observation: adapter.getRateLimitObservation(),
-        codex: usageQuota.fetchUsage().codex,
+        observation,
+        codex,
+        next,
       }));
     `;
     const output = execFileSync(process.execPath, ['-e', script], {
@@ -380,14 +413,17 @@ function codexQuotaProjection({ mtimeAgoMs = 0, newerStubAgoMs = null } = {}) {
 
 test('SV-6: a live rollout feeds /api/usage.codex from its newest token_count', () => {
   const { sessions, observation, codex, observedAt } = codexQuotaProjection();
+  const { creditChange, ...quota } = codex;
+  const delta = -31.83273775;
   assert.deepEqual(observation, {
     observedAt,
     primary: { usedPercent: 100, windowMinutes: 10080, resetsAt: FAR_RESET_MS },
     secondary: null,
     credits: { balance: 2510.32726225, hasCredits: true, unlimited: false },
     reached: false,
+    creditChange: { delta, intervalMs: 60_000 },
   });
-  assert.deepEqual(codex, {
+  assert.deepEqual(quota, {
     usedPercent: 100,
     windowMinutes: 10080,
     resetsAt: FAR_RESET_MS,
@@ -395,10 +431,13 @@ test('SV-6: a live rollout feeds /api/usage.codex from its newest token_count', 
     limitReached: true,
     observedAt,
   });
+  assert.equal(creditChange.delta, delta);
+  assert.equal(creditChange.intervalMs, 60_000);
+  assert.ok(creditChange.ageMs >= 180_000);
   // Account data stays off the session wire: no account id, no quota fields.
   const session = sessions.find(row => row.sessionId === 'codex-2026-10-27T12-00-00-rate-limits');
   assert.ok(session, 'the fixture rollout is a live session');
-  for (const field of ['accountId', 'rateLimits', 'rateLimit', 'credits', 'quota']) {
+  for (const field of ['accountId', 'rateLimits', 'rateLimit', 'credits', 'quota', 'creditChange']) {
     assert.equal(Object.hasOwn(session, field), false, field);
   }
 });
@@ -408,6 +447,66 @@ test('SV-6: a server that boots with no live Codex session still reads the last 
   assert.equal(sessions.length, 0, 'the six-hour-old rollout is not live');
   assert.equal(codex.limitReached, true);
   assert.equal(codex.observedAt, observedAt, 'its age is stated, not hidden');
+  assert.equal(codex.creditChange, undefined, 'old comparisons expire independently of quota');
+});
+
+test('SG-3: cold seeding pairs readings across two inactive rollouts', () => {
+  const { sessions, codex } = codexQuotaProjection({
+    mtimeAgoMs: 5 * 60_000,
+    firstReadings: [[180, '80']],
+    olderReadings: [[240, '100']],
+  });
+  assert.equal(sessions.length, 0);
+  assert.equal(codex.creditChange.delta, -20);
+  assert.equal(codex.creditChange.intervalMs, 60_000);
+});
+
+test('SG-3: the change retains fractional credits lost when the individual balances become numbers', () => {
+  const { codex } = codexQuotaProjection({
+    firstReadings: [[240, '10000.00000000000001'], [180, '10000.00000000000002']],
+  });
+  assert.equal(codex.creditChange.delta, 0.00000000000001);
+});
+
+test('SG-3: a conflicting balance at the latest timestamp suppresses a previously valid change', () => {
+  const { codex, next } = codexQuotaProjection({
+    firstReadings: [[240, '100.00'], [180, '80.00']],
+    followups: [{ readings: [[180, '79.00']] }],
+  });
+  assert.equal(codex.creditChange.delta, -20);
+  assert.equal(next[0].creditChange, undefined);
+});
+
+test('SG-3: reversed and incremental scans keep account and limit identities private', () => {
+  const other = 'other-fixture-account';
+  const { codex, next } = codexQuotaProjection({
+    firstReadings: [[180, '80'], [180, '80'], [210, null], [240, '100']],
+    followups: [
+      { account: other, readings: [[120, '200']] },
+      { readings: [[110, '150']] },
+      { account: other, readings: [[100, '195', { limitId: 'other' }]] },
+      { readings: [[90, '135'], [110, '149']] },
+      { readings: [[80, '130', { unlimited: true }]] },
+      { readings: [[70, '125']] },
+      { readings: [[60, '125']] },
+      { readings: [[50, null]] },
+    ],
+  });
+  const change = quota => quota.creditChange && [quota.creditChange.delta, quota.creditChange.intervalMs];
+  assert.deepEqual(change(codex), [-20, 60_000]);
+  assert.deepEqual(next.map(change), [undefined, [70, 70_000], undefined, undefined, undefined, undefined, [0, 10_000], undefined]);
+  assert.ok(next[4].credits.unlimited);
+  assert.equal(next[7].credits.balance, null);
+  assert.doesNotMatch(JSON.stringify([codex, ...next]), /acct-fixture|other-fixture-account|limitId/);
+});
+
+test('SG-3: the wire age advances by minutes and a stale predecessor suppresses the comparison', () => {
+  const observation = { observedAt: NOW, creditChange: { delta: 12, intervalMs: 2 * 60_000 } };
+  const read = ageMs => codexQuotaFromObservation(observation, NOW + ageMs).creditChange;
+  assert.deepEqual(read(1), { delta: 12, intervalMs: 120_000, ageMs: 0 });
+  assert.deepEqual(read(59_999), read(1));
+  assert.equal(read(60_000).ageMs, 60_000);
+  assert.equal(read(QUOTA_MAX_STALE_MS - 119_999), undefined);
 });
 
 test('SV-6: the boot seed walks past a newer rollout that never reported a token_count', () => {
