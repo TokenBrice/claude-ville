@@ -1395,7 +1395,7 @@ const lineup = (id, name, provider, model, tileX, extra = {}) => agentSpec({
 export const MODEL_LINEUP_SCENARIO = {
     id: 'model-lineup',
     label: 'Model lineup',
-    description: 'Sprite review: both GLM bodies, GLM Flash, Sonnet, Haiku, Fable, Mythos and the three DeepSeek Flash rungs beside Opus and Luna.',
+    description: 'Sprite review: both GLM, Fable and Astra bodies, GLM Flash, Sonnet, Haiku, Mythos and the three DeepSeek Flash rungs beside Opus and Luna.',
     timeBase: SCENARIO_TIME_BASE,
     agents: [
         lineup('opus-hero', 'Opus', 'claude', 'claude-opus-5', 14),
@@ -1411,11 +1411,15 @@ export const MODEL_LINEUP_SCENARIO = {
         lineup('ds-flash-xhigh', 'DS xhigh', 'omp', 'deepseek-flash', 23, { underlyingProvider: 'deepseek', effort: 'xhigh' }),
         lineup('luna', 'Luna', 'codex', 'gpt-6-luna', 24),
         lineup('mythos', 'Mythos', 'claude', 'claude-mythos-5-2', 25),
+        // These ids hash to the second Fable body and to each Astra body.
+        lineup('fable-b', 'Fable Scribe', 'claude', 'claude-fable-5-1', 26),
+        lineup('astra-2', 'Astra', 'codex', 'gpt-6.2-astra', 27),
+        lineup('astra-plume', 'Astra Plume', 'codex', 'gpt-6.2-astra', 28),
     ],
     timeline: [],
     metadata: {
         qaTags: ['sprites', 'lineup', 'scale'],
-        camera: { centerTile: { tileX: 19, tileY: 22 }, zoom: 2.6 },
+        camera: { centerTile: { tileX: 21, tileY: 22 }, zoom: 2.6 },
     },
 };
 
