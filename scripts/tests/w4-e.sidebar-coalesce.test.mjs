@@ -3,7 +3,10 @@ import test from 'node:test';
 
 import { Sidebar, crewFoldPlan, crewLeadsById, nestCrewRows, sidebarListRowKey } from '../../claudeville/src/presentation/shared/Sidebar.js';
 import { isImplicitSessionTeam } from '../../claudeville/src/presentation/shared/TeamColor.js';
-import { projectKeyForAgent } from '../../claudeville/src/presentation/shared/AgentPresentation.js';
+import { mcpJobLabel, projectKeyForAgent } from '../../claudeville/src/presentation/shared/AgentPresentation.js';
+import { Agent } from '../../claudeville/src/domain/entities/Agent.js';
+import { World } from '../../claudeville/src/domain/entities/World.js';
+import { RelationshipState } from '../../claudeville/src/presentation/character-mode/RelationshipState.js';
 import { getWorldScenario } from '../../claudeville/src/presentation/character-mode/__simfixture__/WorldScenarios.js';
 
 function makeSidebar() {
@@ -163,6 +166,28 @@ test('council-fleet: every child groups with its lead and nests after it', () =>
     assert.deepEqual(topLevel.map(agent => agent.id), [lead.id]);
     assert.equal(workflows.size, 0, 'workflow members ride inside the crew');
     assert.equal(crews.get(lead.id).length, 20);
+});
+
+test('MCP jobs retain their parent and job label, including names used by native Claude roles', t => {
+    const lead = new Agent({ id: 'lead', name: 'Lead' });
+    const child = new Agent({ id: 'child', name: '__advisor', parentSessionId: lead.id, subagentKind: 'mcp' });
+    const world = new World();
+    world.addAgent(lead);
+    world.addAgent(child);
+    const relationships = new RelationshipState(world);
+    t.after(() => relationships.dispose());
+    const snapshot = relationships.update();
+    assert.equal(snapshot.childToParent.get(child.id), lead.id);
+    assert.deepEqual(snapshot.advisorPairs, []);
+    assert.equal(child.name, '__advisor');
+    assert.equal(mcpJobLabel(child), 'MCP job');
+    const unknown = { ...child, subagentKind: 'future-kind' };
+    assert.equal(mcpJobLabel(unknown), '');
+    assert.notEqual(sidebarListRowKey(child), sidebarListRowKey(unknown));
+    world.updateAgent(child.id, { subagentKind: 'general-purpose', name: '__advisor' });
+    assert.deepEqual(relationships.update().advisorPairs, [{ advisorId: child.id, parentId: lead.id }]);
+    world.updateAgent(child.id, { subagentKind: 'mcp', name: '__advisor' });
+    assert.deepEqual(relationships.update().advisorPairs, []);
 });
 
 test('a nested crew climbs to its topmost live lead; an ended lead leaves a top-level child', () => {

@@ -1,4 +1,5 @@
 import { AgentStatus, normalizeAgentStatus } from '../../domain/value-objects/AgentStatus.js';
+import { TokenUsage } from '../../domain/value-objects/TokenUsage.js';
 // A cycle (AgentPresentation imports this module); both use the other's
 // bindings only inside functions, never while evaluating.
 import { DEPARTED_WORD, statusWord } from './AgentPresentation.js';
@@ -180,6 +181,13 @@ export function formatCost(cost) {
     if (value < 0.001) return '<$0.001';
     if (value >= 1) return `$${value.toFixed(2)}`;
     return `$${value.toFixed(3)}`;
+}
+
+export function costSourceTitle(cost, provider) {
+    if (cost.source === 'provider') return provider ? `Reported by ${provider}` : 'Provider-reported cost';
+    const rates = `${cost.rateMatch || 'default'} rates, revision ${cost.rateRevision || TokenUsage.rateRevision}`;
+    if (cost.source === 'mixed') return `Provider total + estimated usage (${rates})`;
+    return `Estimated using ${rates}`;
 }
 
 export function shortenHomePath(path) {

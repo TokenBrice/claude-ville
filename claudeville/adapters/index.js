@@ -449,8 +449,17 @@ function foldSessionOverlays(sessions, now) {
         || overlay.sessionEndedAt || Math.max(normalized.turnStartedAt, normalized.pendingSince) > overlay.eventAt
         || (normalized.pendingTool && overlay.pendingTool && normalized.pendingTool !== overlay.pendingTool)
         || (!(normalized.waitReason && overlay.waitReason) && now - overlay.lastHookAt >= HOOK_MERGE_WINDOW_MS)) return normalized;
-      return { ...normalized, pendingTool: normalized.pendingTool ?? overlay.pendingTool,
-        pendingSince: normalized.pendingSince ?? overlay.pendingSince, promptDetail: overlay.promptDetail ?? undefined };
+      const { promptDetail } = overlay;
+      const pendingTool = normalized.pendingTool ?? overlay.pendingTool;
+      const wrapper = pendingTool === 'REPL' || pendingTool === 'Poll';
+      return {
+        ...normalized,
+        pendingTool,
+        pendingSince: normalized.pendingSince ?? overlay.pendingSince,
+        promptDetail: promptDetail ?? undefined,
+        lastTool: (!wrapper && overlay.pendingTool) || normalized.lastTool || null,
+        lastToolInput: (!wrapper && promptDetail) || normalized.lastToolInput || null,
+      };
     }
     return mergeOverlay(normalized, overlay, now);
   }).sort((a, b) => b.lastActivity - a.lastActivity);
