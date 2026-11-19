@@ -10,6 +10,7 @@ import {
     shouldFlashForStatus,
 } from '../../claudeville/src/presentation/dashboard-mode/DashboardRenderer.js';
 import { eventBus } from '../../claudeville/src/domain/events/DomainEvent.js';
+import { ActivityPanel } from '../../claudeville/src/presentation/shared/ActivityPanel.js';
 import { AgentSearchIndex } from '../../claudeville/src/presentation/shared/SearchIndex.js';
 import workingSets from '../../claudeville/services/workingSet.js';
 
@@ -21,7 +22,7 @@ function dashboardRows(t, agents) {
         children = [];
         dataset = {};
         style = { getPropertyValue() {}, setProperty() {}, removeProperty() {} };
-        classList = { contains: () => false, toggle() {} };
+        classList = { contains: () => false, toggle() {}, add() {}, remove() {} };
         setAttribute() {}
         appendChild(child) { this.children.push(child); }
         append(child) { this.appendChild(child); }
@@ -35,6 +36,7 @@ function dashboardRows(t, agents) {
         getElementById: () => null,
         createElement: node,
         createElementNS: node,
+        createTextNode: textContent => ({ textContent }),
     });
     const dash = new DashboardRenderer({ agents: new Map(agents.map(agent => [agent.id, agent])) });
     t.after(() => {
@@ -265,6 +267,8 @@ test('unknown CLI badges and stale detail never claim another provider or fresh 
     assert.equal(detailFreshnessLabel({}, { hasEntry: true, isFresh: true, value: { freshness: { state: 'stale', observedAt: now - 30000 } } }, now), 'Cached · updated 30s ago');
     assert.equal(detailFreshnessLabel({}, { hasEntry: true, isFresh: true }, now), '');
     assert.equal(signalProvenance({ signalSource: 'hook', signalCertainty: 'observed', signalStale: true }), 'HOOK · observed · stale');
+    assert.equal(signalProvenance({ signalSource: 'registry' }), 'REGISTRY · observed');
+    assert.equal(signalProvenance({ signalSource: 'future-source' }), 'TRANSCRIPT · inferred');
 });
 
 test('dashboard cost keeps unavailable billing distinct from observed zero', async () => {
@@ -272,6 +276,36 @@ test('dashboard cost keeps unavailable billing distinct from observed zero', asy
     const footer = agent => DashboardRenderer.prototype._usageFooterFor.call({}, agent, null);
     assert.equal(footer({ tokens: { availability: 'unavailable', contextWindow: 2000 }, provider: 'grok' }).cost, 'Cost unavailable');
     assert.match(footer({ tokens: { availability: 'observed', input: 0, output: 0 }, provider: 'codex' }).cost, /0/);
+});
+
+test('Dashboard keeps the live mixed total even when detail supplies newer token counts', () => {
+    const agent = { provider: 'claude', model: 'claude-opus-5-5', cost: { usd: 3.22, source: 'mixed' } };
+    const detailUsage = { input: 1, output: 1 };
+    const footer = DashboardRenderer.prototype._usageFooterFor(agent, detailUsage);
+    assert.equal(footer.costShort, '≈$3.22');
+    assert.equal(footer.source, 'mixed');
+    assert.match(footer.costTitle, /Provider total \+ estimated usage/);
+    agent.cost.usd = 4.61;
+    assert.equal(DashboardRenderer.prototype._usageFooterFor(agent, detailUsage).costShort, '≈$4.61');
+});
+
+test('the Activity Panel labels the combined total in the sheet and pinned cost', t => {
+    dashboardRows(t, []);
+    const dom = {
+        panelEstCost: document.createElement('span'),
+        panelCostRow: document.createElement('div'),
+        panelCostLabel: document.createElement('span'),
+    };
+    const agent = { id: 'lead', name: 'Lead', cost: { usd: 3.22, source: 'mixed', availability: 'partial' } };
+    const panel = Object.assign(Object.create(ActivityPanel.prototype), { currentAgent: agent, dom });
+    const cost = panel._costForUsage({ input: 1, output: 1 });
+    panel._renderCost(cost);
+    assert.equal(dom.panelEstCost.textContent, '~$3.22');
+    assert.equal(dom.panelCostLabel.children[0].textContent, 'mixed · partial');
+    assert.match(dom.panelEstCost.title, /Provider total \+ estimated usage/);
+    const pinCost = panel._pinCell({ agent, cost }).children[3];
+    assert.match(pinCost.title, /Provider total \+ estimated usage/);
+    assert.equal(pinCost.children[0].textContent, '~$3.22 · partial');
 });
 
 test('seven-provider fixture retains hosted identity, stale certainty and unavailable versus zero usage', async () => {

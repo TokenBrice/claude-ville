@@ -45,7 +45,9 @@ Set `CLAUDEVILLE_TEST_TMPDIR` to a writable directory when the normal temporary 
 | `o2-prompt-plan-mapping.test.mjs` | Prompt, TodoWrite, and branch payload bounds plus signature-driven live Agent updates. |
 | `agent-manager-digest.test.mjs` | The AgentManager change digest sees a git event or tool result edited at any index (one bounded key per row), and a freshness re-stamp alone never re-upserts a villager. |
 | `tool-identity-lowercase.test.mjs` | Lower-case OMP tool buildings, reasons, verbs and glyph categories; code-inspection and documentation exceptions; unchanged capitalized tool buildings. |
-| `tool-identity-vocabulary.test.mjs` | Tool placement and labels, script projection through session snapshots and deltas, Poll watches and action pose categories. |
+| `tool-identity-vocabulary.test.mjs` | Tool placement and labels, script projection through session snapshots and deltas, working-only Poll watches and action pose categories. |
+| `session-lineage.test.mjs`, `working-set.test.mjs` | Registry provenance and compatible redacted hook detail through session payloads and Agent projection, alongside validated MCP parent links. |
+| `w1-g.dashboard-health.test.mjs`, `w5-b.ui-fixes.test.mjs` | Mixed billing provenance on Dashboard and in the Activity Panel, plus the Dashboard clock before World mounts. |
 | `tavern.test.mjs`, `living-crowd.test.mjs` | Tavern seating and crowd routines, including crew wait labels, seating after 60 seconds and retry glyph exemptions. |
 | `c10-taskboard-board.test.mjs` | Selected/pinned Task Board precedence, honest row shaping, overflow, and completed-only strikes. |
 | `session-activity-time.test.mjs` | VB-14: talk-arc ranking, the incident scene id and start, and the Task Board tie-break read the session's own `lastSessionActivity`, never `lastActive` (the last WebSocket touch). |

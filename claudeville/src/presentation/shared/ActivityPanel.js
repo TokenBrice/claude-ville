@@ -1,6 +1,6 @@
 import { resolveObservation } from '../character-mode/ObservationCertainty.js';
 import { eventBus, BUILDING_EVENTS } from '../../domain/events/DomainEvent.js';
-import { TokenUsage } from '../../domain/value-objects/TokenUsage.js';
+import { normalizeCostSource, TokenUsage } from '../../domain/value-objects/TokenUsage.js';
 import { AgentBiography } from '../../domain/value-objects/AgentBiography.js';
 import { sessionDetailsService } from './SessionDetailsService.js';
 import { SESSION_DETAIL_PANEL_REFRESH_INTERVAL } from '../../config/constants.js';
@@ -12,6 +12,7 @@ import {
     collisionsForAgent,
     formatCdCommand,
     formatCost,
+    costSourceTitle,
     formatElapsed,
     formatRelative,
     formatStatusElapsed,
@@ -37,6 +38,7 @@ import {
     replaceDetailRows,
     detailFreshnessLabel,
     signalProvenance,
+    mcpJobLabel,
     modelPresentation,
     statusPresentation,
     waitReasonLabel,
@@ -1383,9 +1385,7 @@ export class ActivityPanel {
             el('span', { className: 'activity-panel__pin-tool', text: row.tool?.icon || '-' }),
             el('span', {
                 className: 'activity-panel__pin-cost',
-                title: estimated
-                    ? `Estimated using ${row.cost.rateMatch || 'default'} rates, revision ${row.cost.rateRevision || TokenUsage.rateRevision}`
-                    : 'Provider-reported cost',
+                title: costSourceTitle(row.cost),
             }, [
                 row.cost.usd == null ? 'Cost unavailable' : `${estimated ? '~' : ''}${formatCost(row.cost.usd)}${row.cost.availability === 'partial' ? ' · partial' : ''}`,
                 row.cost.unknownModel ? ' ' : null,
@@ -1597,7 +1597,7 @@ export class ActivityPanel {
             this.dom.panelProvenance.textContent = [
                 model.label || agent.model || '',
                 agent.provider || 'claude',
-                agent.role || 'general',
+                mcpJobLabel(agent) || agent.role || 'general',
             ].filter(Boolean).join(' · ');
             this.dom.panelProvenance.title = model.title;
         }
@@ -1829,7 +1829,7 @@ export class ActivityPanel {
         const status = kind === 'subagent' ? String(node.status || 'unknown') : '';
         const heading = kind === 'workflow'
             ? `WORKFLOW · ${label}`
-            : `${status ? `${status.toUpperCase()} · ` : ''}${label}`;
+            : [status.toUpperCase(), mcpJobLabel(node), label].filter(Boolean).join(' · ');
         return el('div', {
             className: [
                 'activity-panel__execution-node',
@@ -2576,7 +2576,7 @@ export class ActivityPanel {
             return {
                 usd: Math.max(0, Number(supplied.usd)),
                 availability: supplied.availability,
-                source: supplied.source === 'provider' ? 'provider' : 'estimate',
+                source: normalizeCostSource(supplied.source),
                 rateMatch: supplied.rateMatch ?? null,
                 rateRevision: supplied.rateRevision || TokenUsage.rateRevision,
                 unknownModel: supplied.unknownModel === true,
@@ -2594,8 +2594,7 @@ export class ActivityPanel {
         };
     }
 
-    // 7.4 — the cost numeral leads; its provenance (`estimate` / `provider`,
-    // `partial`, `default rate`) is the caption under it, verbatim.
+    // The cost numeral leads, with provenance and coverage in its caption.
     _renderCost(cost) {
         const numeral = this.dom.panelEstCost;
         if (!cost || cost.usd == null || !Number.isFinite(Number(cost.usd))) {
@@ -2606,17 +2605,15 @@ export class ActivityPanel {
             this.dom.panelCostLabel.textContent = 'cost unavailable';
             return;
         }
-        const estimated = cost.source !== 'provider';
+        const source = normalizeCostSource(cost.source);
         this.dom.panelCostRow.hidden = false;
         numeral.classList.remove('activity-panel__stat-value--empty');
-        numeral.title = estimated
-            ? `Estimated using ${cost.rateMatch || 'default'} rates, revision ${cost.rateRevision || TokenUsage.rateRevision}`
-            : 'Provider-reported cost';
-        numeral.textContent = `${estimated ? '~' : ''}${formatCost(cost.usd)}`;
+        numeral.title = costSourceTitle(cost);
+        numeral.textContent = `${source === 'provider' ? '' : '~'}${formatCost(cost.usd)}`;
         replaceChildren(this.dom.panelCostLabel, [
             el('span', {
                 className: 'activity-panel__cost-source',
-                text: `${estimated ? 'estimate' : 'provider'}${cost.availability === 'partial' ? ' · partial' : ''}`,
+                text: `${source}${cost.availability === 'partial' ? ' · partial' : ''}`,
             }),
             cost.unknownModel ? ' · ' : null,
             cost.unknownModel ? el('span', { className: 'activity-panel__cost-source', text: 'default rate' }) : null,
@@ -2678,7 +2675,7 @@ export class ActivityPanel {
         const suppliedUsd = Number(supplied?.usd);
         const measured = (supplied && supplied.usd != null && Number.isFinite(suppliedUsd)
                 && supplied.availability !== 'unavailable'
-                && (supplied.source === 'provider' || suppliedUsd > 0))
+                && (normalizeCostSource(supplied.source) !== 'estimate' || suppliedUsd > 0))
             || (tokens && TokenUsage.totalTokens(TokenUsage.normalize(tokens)) > 0);
         // A "no usage" label never captions the context beside a cost
         // numeral: with a measured cost the context stat hides instead.

@@ -1,6 +1,6 @@
 import { Agent, normalizeTodoList } from '../domain/entities/Agent.js';
 import { AgentStatus } from '../domain/value-objects/AgentStatus.js';
-import { isWaitingOnCrew, isWatchingOnPoll, resolveAgentStatus, TurnState } from '../domain/services/StatusResolver.js';
+import { isWaitingOnCrew, isWatchingOnPoll, normalizeSignalSource, resolveAgentStatus, TurnState } from '../domain/services/StatusResolver.js';
 import { isScriptWrapperTool } from '../domain/services/ToolIdentity.js';
 import { eventBus } from '../domain/events/DomainEvent.js';
 import { AgentBiography } from '../domain/value-objects/AgentBiography.js';
@@ -101,6 +101,7 @@ const AGENT_SIGNATURE_FIELDS = Object.freeze([
     'sessionEndedAt',
     'lastTurnDurationMs',
     'signalSource',
+    'promptDetail',
     'signalCertainty',
     'signalObservedAt',
     'signalStale',
@@ -653,7 +654,6 @@ export class AgentManager {
         } else {
             this._agentSignatures.set(id, signature);
             const agent = new Agent(payload);
-            agent.subagentKind = payload.subagentKind;
             agent.agentPath = payload.agentPath;
             agent.taskProgress = payload.taskProgress;
             agent.tasks = payload.tasks;
@@ -963,6 +963,7 @@ export class AgentManager {
             }
             : null;
         const watch = status === AgentStatus.WORKING && isWatchingOnPoll(session);
+        const signalSource = normalizeSignalSource(session.signalSource);
         // The last real tool remains placement evidence during a script or crew wait.
         const hasFreshTool = status === AgentStatus.WORKING && !!session.lastTool && !script && !watch
             && session.turnState !== TurnState.AWAITING_INPUT && !isWaitingOnCrew(session);
@@ -1057,8 +1058,9 @@ export class AgentManager {
                 && Number.isFinite(Number(session.lastTurnDurationMs))
                 ? Math.max(0, Number(session.lastTurnDurationMs))
                 : null,
-            signalSource: session.signalSource === 'hook' || session.signalSource === 'transcript'
-                ? session.signalSource
+            signalSource,
+            promptDetail: (signalSource === 'hook' || signalSource === 'registry') && typeof session.promptDetail === 'string'
+                ? session.promptDetail.slice(0, 200)
                 : null,
             signalCertainty: session.signalCertainty || 'unavailable',
             signalObservedAt: session.signalObservedAt ?? null,

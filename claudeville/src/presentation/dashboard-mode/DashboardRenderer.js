@@ -16,10 +16,11 @@ import { i18n } from '../../config/i18n.js';
 import { sessionDetailsService } from '../shared/SessionDetailsService.js';
 import { SESSION_DETAIL_REFRESH_INTERVAL } from '../../config/constants.js';
 import { replaceChildren } from '../shared/DomSafe.js';
-import { TokenUsage } from '../../domain/value-objects/TokenUsage.js';
+import { normalizeCostSource, TokenUsage } from '../../domain/value-objects/TokenUsage.js';
 import {
     collisionsForAgent,
     formatCost,
+    costSourceTitle,
     formatElapsed,
     formatRelative,
     formatTokens,
@@ -43,6 +44,7 @@ import {
     replaceDetailRows,
     detailFreshnessLabel,
     signalProvenance,
+    mcpJobLabel,
     buildingClassForAgent,
     buildingPresentation,
     currentToolPresentation,
@@ -589,7 +591,7 @@ export class DashboardRenderer {
         this._appendEmptyHints();
         this.cards = new Map();
         this.toolHistories = new Map();
-        this.usageFooters = new Map();
+        this.detailUsage = new Map();
         this.toolHistoryRenderSignatures = new Map();
         this._cardRenderSignatures = new Map();
         this._executionChildIdsByParent = new Map();
@@ -1729,7 +1731,7 @@ export class DashboardRenderer {
         providerEl.style.color = provider.badge.color;
         refs.meta.replaceChildren(
             providerEl,
-            document.createTextNode([model.label === provider.badge.label ? '' : model.label, agent.role || '', project]
+            document.createTextNode([model.label === provider.badge.label ? '' : model.label, mcpJobLabel(agent) || agent.role || '', project]
                 .filter(Boolean).map(text => ` · ${text}`).join('')),
         );
         refs.meta.title = `${provider.badge.label} · ${model.title || agent.model || ''} · ${agent.projectPath || ''}`;
@@ -1861,7 +1863,7 @@ export class DashboardRenderer {
         // 7.11 — one legend replaces the per-row ESTIMATE / UNAVAILABLE pills.
         const legend = document.createElement('span');
         legend.className = 'dashboard-attention__legend';
-        legend.textContent = '≈ estimate · — unavailable';
+        legend.textContent = '≈ includes estimates · — unavailable';
         legend.title = '≈ cost estimated from token counts and published rates; — no usage reported';
         replaceChildren(this.attentionEl, [heading, list, this._codexQuotaCard(), legend].filter(Boolean));
         if (focusedKey) {
@@ -1928,7 +1930,7 @@ export class DashboardRenderer {
             agent.model || '',
             agent.effort || '',
             agent.provider || '',
-            agent.role || '',
+            mcpJobLabel(agent) || agent.role || '',
             agent.workflowName || '',
             agent.parentSessionId || '',
             agent.departedAt || '',
@@ -1994,7 +1996,7 @@ export class DashboardRenderer {
                 this._setText(refs.role, '');
             } else {
                 this._setStyle(refs.workflowBadge, 'display', 'none');
-                this._setText(refs.role, agent.role || '');
+                this._setText(refs.role, mcpJobLabel(agent) || agent.role || '');
             }
 
             if (agent.teamName) {
@@ -2110,9 +2112,8 @@ export class DashboardRenderer {
 
         // The compact row always uses the live session payload. Detail fetches
         // are reserved for the one selected row and may refine token totals.
-        this._renderUsageFooter(cardEl, this.selection.isSelected(agent.id)
-            ? (this.usageFooters.get(agent.id) || this._usageFooterFor(agent, null))
-            : this._usageFooterFor(agent, null));
+        const detailUsage = this.selection.isSelected(agent.id) ? this.detailUsage.get(agent.id) : null;
+        this._renderUsageFooter(cardEl, this._usageFooterFor(agent, detailUsage));
 
         this._updateStaleBadge(cardEl, agent);
     }
@@ -2228,7 +2229,7 @@ export class DashboardRenderer {
         const strip = cardEl._elements?.kids;
         if (!strip) return;
         const signature = JSON.stringify(children.map(child => [
-            child.id, child.name, child.role, child.agentType, normalizeStatus(child.status), child.isDeparted === true,
+            child.id, child.name, mcpJobLabel(child) || child.role, child.agentType, normalizeStatus(child.status), child.isDeparted === true,
             child.currentTool || '', child.currentToolInput || '', child.projectPath || '',
         ]).concat([[agent.projectPath || '', this._crewSize(String(agent.id)), this._expandedLeads.has(String(agent.id))]]));
         if (strip._kidSignature === signature) return;
@@ -2265,7 +2266,7 @@ export class DashboardRenderer {
             const name = Object.assign(document.createElement('span'), { className: 'dash-card__kid-name', textContent: child.name || id });
             const otherProject = (child.projectPath || '') !== (agent.projectPath || '');
             const facts = [
-                child.role || child.agentType || '',
+                mcpJobLabel(child) || child.role || child.agentType || '',
                 `${now.lead}${now.detail ? ` ${now.detail}` : ''}`,
                 otherProject ? `in ${shortProjectName(child.projectPath || '_unknown', i18n.t('unknownProject'))}` : '',
             ].filter(Boolean).join(' · ');
@@ -2349,9 +2350,7 @@ export class DashboardRenderer {
                     this._syncHero(card, agent);
                     this._paintStrip(card, id);
                 }
-                this._renderUsageFooter(card, selected
-                    ? (this.usageFooters.get(id) || this._usageFooterFor(agent, null))
-                    : this._usageFooterFor(agent, null));
+                this._renderUsageFooter(card, this._usageFooterFor(agent, selected ? this.detailUsage.get(id) : null));
             }
         }
         const focusIsInDashboard = this.gridEl?.contains?.(document.activeElement);
@@ -2481,25 +2480,21 @@ export class DashboardRenderer {
         });
     }
 
-    _usageFooterFor(agent, data) {
-        const raw = data?.tokenUsage || data?.tokens || data?.usage || agent?.tokens || null;
-        const usage = TokenUsage.normalize(raw);
+    _usageFooterFor(agent, detailUsage) {
+        const usage = TokenUsage.normalize(detailUsage || agent?.tokens || null);
         const cells = rowTokenCells(usage);
-        const reported = agent?.cost?.source === 'provider' ? agent.cost : null;
-        const cost = reported || TokenUsage.estimateCost(usage, agent.model, agent.provider);
-        const source = reported ? 'provider' : 'estimate';
-        const revision = cost.rateRevision || TokenUsage.rateRevision;
+        const supplied = agent?.cost;
+        const source = normalizeCostSource(supplied?.source);
+        const cost = source === 'estimate' ? TokenUsage.estimateCost(usage, agent.model, agent.provider) : supplied;
+        const approximate = source !== 'provider';
         return {
             tokens: cells.title,
-            cost: cost.usd == null ? 'Cost unavailable' : `${source === 'estimate' ? '~' : ''}${formatCost(cost.usd)}`,
-            // 7.11 — row cells: `≈` marks an estimate, `—` means unavailable.
+            cost: cost.usd == null ? 'Cost unavailable' : `${approximate ? '~' : ''}${formatCost(cost.usd)}`,
             tokensShort: cells.newShort,
             cacheShort: cells.cacheShort,
             partial: usage.availability === 'partial',
-            costShort: cost.usd == null ? '—' : `${source === 'estimate' ? '≈' : ''}${formatCost(cost.usd)}`,
-            costTitle: source === 'provider'
-                ? `Reported by ${agent.provider || 'provider'}`
-                : `Estimated using ${cost.rateMatch || 'default'} rates, revision ${revision}`,
+            costShort: cost.usd == null ? '—' : `${approximate ? '≈' : ''}${formatCost(cost.usd)}`,
+            costTitle: costSourceTitle(cost, agent.provider || 'provider'),
             source: cost.usd == null ? 'unavailable' : source,
             unknownModel: cost.unknownModel,
         };
@@ -2535,7 +2530,7 @@ export class DashboardRenderer {
     _updateStaleBadge(cardEl, agent) {
         const badge = cardEl._elements?.staleBadge;
         if (!badge) return;
-        const hasDetail = this.toolHistories.has(agent.id) || this.usageFooters.has(agent.id);
+        const hasDetail = this.toolHistories.has(agent.id) || this.detailUsage.has(agent.id);
         const cacheState = hasDetail ? sessionDetailsService.detailCacheState(agent) : null;
         const label = detailFreshnessLabel(agent, cacheState);
         this._setText(badge, label);
@@ -2643,10 +2638,9 @@ export class DashboardRenderer {
                     if (cardEl) this._updateStaleBadge(cardEl, agent);
                     continue;
                 }
-                const footer = this._usageFooterFor(agent, data);
-                if (footer) this.usageFooters.set(agent.id, footer);
-                else this.usageFooters.delete(agent.id);
-                if (cardEl) this._renderUsageFooter(cardEl, footer);
+                const usage = data.tokenUsage || data.tokens || data.usage || null;
+                this.detailUsage.set(agent.id, usage);
+                if (cardEl) this._renderUsageFooter(cardEl, this._usageFooterFor(agent, usage));
                 // The strip places every fetched call; the list shows the newest.
                 const toolHistory = Array.isArray(data.toolHistory) ? data.toolHistory : [];
                 this.toolHistories.set(agent.id, toolHistory);
@@ -2664,7 +2658,7 @@ export class DashboardRenderer {
     _clearAllCardsAndSections() {
         for (const id of [...this.cards.keys()]) this._removeCard(id, { removeEmptySection: false });
         this.toolHistories.clear();
-        this.usageFooters.clear();
+        this.detailUsage.clear();
         this.toolHistoryRenderSignatures.clear();
         this._cardRenderSignatures.clear();
 
@@ -2706,7 +2700,7 @@ export class DashboardRenderer {
             if (focusWasInCard && this._focusedAgentId) this._focusCard(this._focusedAgentId);
         }
         this.toolHistories.delete(agentId);
-        this.usageFooters.delete(agentId);
+        this.detailUsage.delete(agentId);
         this.toolHistoryRenderSignatures.delete(agentId);
         this._cardRenderSignatures.delete(agentId);
 

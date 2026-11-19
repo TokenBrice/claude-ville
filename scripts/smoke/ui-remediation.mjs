@@ -195,8 +195,9 @@ try {
             dashboard._stopDetailFetching();
             dashboard.active = true;
             const card = dashboard.cards.get(agentA.id);
-            dashboard.usageFooters.set(agentA.id, { tokens: '999 tokens', cost: '$9.99' });
-            dashboard._renderUsageFooter(card, dashboard.usageFooters.get(agentA.id));
+            const obsoleteUsage = { input: 999, output: 0 };
+            dashboard.detailUsage.set(agentA.id, obsoleteUsage);
+            dashboard._renderUsageFooter(card, dashboard._usageFooterFor(agentA, obsoleteUsage));
             sessionDetailsService.fetchSessionDetailsBatch = async candidates => (
                 new Map(candidates.map(agent => [agent.id, {}]))
             );
@@ -234,9 +235,8 @@ try {
                 snapshotUsage,
                 // The flat row has no footer to hide: an empty detail
                 // recomputes the usage cells, so the stale numbers must go.
-                obsoleteFooterCleared: dashboard.usageFooters.get(agentA.id)?.tokens !== '999 tokens'
-                    && !card._elements.usageTokens.textContent.includes('999')
-                    && !card._elements.usageCost.textContent.includes('9.99'),
+                obsoleteFooterCleared: dashboard.detailUsage.get(agentA.id) === null
+                    && !card._elements.usageTokens.textContent.includes('999'),
                 teamInvalidatesAvatar: teamSignature !== baseSignature,
                 teamRemovalInvalidatesAvatar: teamRemovedSignature !== teamSignature,
                 appearanceInvalidatesAvatar: appearanceSignature !== teamSignature,
