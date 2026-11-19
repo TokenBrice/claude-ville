@@ -6,10 +6,9 @@
 //
 //   - sd3 at 1 lifts: at least LIFT_SHARE of the frame brightens, and no
 //     pixel darkens;
-//   - the cap: no pixel at or under CANDLE (the waiting candle's 192) at
-//     sd3 0 ends above it (SLACK luma for the 8-bit rounding of the Canvas
-//     luminosity round trip), and a pixel already above it rises by at most
-//     BRIGHT_RISE. That bound covers a handful of bridge-plank highlights
+//   - the cap, on one integer luma (support/sun-lift-check.mjs): no pixel
+//     at or under CANDLE (the waiting candle's 192) at sd3 0 ends above it,
+//     and a pixel already above it rises by at most BRIGHT_RISE. That bound covers a handful of bridge-plank highlights
 //     already at 192-210 under the bridge candles: as understood (not
 //     verified) the candles' additive glow is composited after the scene
 //     pass over the lifted surface, out of the shader's hold. Their count
@@ -30,13 +29,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PNG } from 'pngjs';
+import { BRIGHT_RISE, CANDLE, liftVerdict, lumaAt } from './support/sun-lift-check.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SCENE = 'clear-1200';
-const CANDLE = 192;
 const LIFT_SHARE = 0.01;
-const SLACK = 2;
-const BRIGHT_RISE = 5;
 const STARTED = Date.now();
 // A frame this run did not write is no evidence.
 function fresh(file) {
@@ -56,11 +53,14 @@ function frames(tree, dir, look, only = renderers) {
   const runArgs = ['scripts/world/golden-hours.mjs', `--scenes=${SCENE}`, `--renderers=${only.join(',')}`, `--frames=${dir}`];
   if (look) runArgs.push(`--look=${look}`);
   // The curve's own verdict is not this check's: only the frames are read.
-  try { execFileSync(process.execPath, runArgs, { cwd: tree, stdio: 'ignore', env: { ...process.env, NODE_NO_WARNINGS: '1' } }); } catch {}
+  // Each tree starts its own isolated server: an inherited CLAUDEVILLE_URL
+  // would send baseline and candidate to one server, so it is dropped.
+  const { CLAUDEVILLE_URL: _inherited, ...env } = process.env;
+  try { execFileSync(process.execPath, runArgs, { cwd: tree, stdio: 'ignore', env: { ...env, NODE_NO_WARNINGS: '1' } }); } catch {}
 }
 
 const read = file => PNG.sync.read(readFileSync(file));
-const luma = (d, i) => 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+const luma = lumaAt;
 const hash = file => createHash('sha256').update(readFileSync(file)).digest('hex').slice(0, 16);
 
 frames(ROOT, path.join(out, 'zero'), 'sd3:0');
@@ -138,19 +138,21 @@ for (const renderer of renderers) {
   for (let i = 0; i < zero.data.length; i += 4) {
     const a = luma(zero.data, i);
     const b = luma(one.data, i);
-    if (b > a + 0.5) {
+    const verdict = liftVerdict(a, b);
+    if (verdict.over) overCap++;
+    if (verdict.brightRise > 0) {
+      brightRisen++;
+      brightRise = Math.max(brightRise, verdict.brightRise);
+    }
+    if (b > a) {
       lifted++;
       brightest = Math.max(brightest, b);
-      // One 8-bit step of slack: the Canvas luminosity round trip rounds.
-      if (a <= CANDLE ? b > CANDLE + SLACK : b > a + BRIGHT_RISE) overCap++;
-      if (a > CANDLE && b > a + SLACK) brightRisen++;
-      if (a > CANDLE) brightRise = Math.max(brightRise, b - a);
     } else if (b < a - 2) {
       darker++;
     }
   }
   const pixels = zero.data.length / 4;
-  const row = { renderer, lifted: `${(100 * lifted / pixels).toFixed(2)}%`, darker, overCap, brightest: brightest.toFixed(1), brightRisen, brightRise: brightRise.toFixed(1) };
+  const row = { renderer, lifted: `${(100 * lifted / pixels).toFixed(2)}%`, darker, overCap, brightest, brightRisen, brightRise };
   if (lifted / pixels < LIFT_SHARE) failures.push(`${renderer}: sd3 1 lifts ${row.lifted} of the frame (< ${LIFT_SHARE * 100}%)`);
   if (darker) failures.push(`${renderer}: sd3 1 darkens ${darker} pixels`);
   if (overCap) failures.push(`${renderer}: ${overCap} lifted pixels cross the candle's ${CANDLE}, or rise more than ${BRIGHT_RISE} above it`);
