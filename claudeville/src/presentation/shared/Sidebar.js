@@ -1,6 +1,6 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { i18n } from '../../config/i18n.js';
-import { getTeamColor, harnessAccent, isImplicitSessionTeam, shortTeamName } from './TeamColor.js';
+import { agentTrimAccent, getTeamColor, harnessAccent, isImplicitSessionTeam, shortTeamName } from './TeamColor.js';
 import { HARBOR_FOCUS_FLEET_EVENT, harborLedger, ledgerFailureText, ledgerLaneLabel, middleTruncate } from './HarborLedger.js';
 import { AgentSearchIndex } from './SearchIndex.js';
 import { sessionDetailsService } from './SessionDetailsService.js';
@@ -213,7 +213,7 @@ function lowerFirst(text) {
 // 9.3 — what a row's bust depends on. The avatar repaints only when this
 // changes (AvatarCanvas.draw also skips an unchanged render key).
 function bustIdentityKey(agent) {
-    return [agent?.id, agent?.name, agent?.agentName, agent?.model, agent?.effort, agent?.provider, agent?.teamName]
+    return [agent?.id, agent?.name, agent?.agentName, agent?.model, agent?.effort, agent?.provider, agent?.teamName, agentTrimAccent(agent)]
         .map(value => value ?? '')
         .join('\u0001');
 }

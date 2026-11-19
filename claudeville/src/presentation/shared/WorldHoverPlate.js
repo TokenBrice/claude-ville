@@ -45,13 +45,16 @@ export function villagerHoverLine(agent, { buildingType = null, now = Date.now()
     return parts.filter(Boolean).join(' · ');
 }
 
-function overlaps(a, b) {
-    return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+function overlapArea(a, b) {
+    return Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left))
+        * Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
 }
 
 // Where a w x h plate goes in a W x H host: beside `target` (the inspected
-// thing's screen rect) when given, else off the pointer; the first spot that
-// fits the host and clears every reserved rect wins, else the first, clamped.
+// thing's screen rect) when given, else off the pointer. The first spot that
+// fits the host and clears the target and every reserved rect wins; else each
+// spot is clamped into the host and judged again, and the one covering the
+// least of the target (then of the chrome) wins.
 export function placeHoverPlate({ point, target = null, width, height, hostWidth, hostHeight, reserved = [] }) {
     const candidates = target
         ? [
@@ -70,19 +73,38 @@ export function placeHoverPlate({ point, target = null, width, height, hostWidth
         x: Math.round(Math.max(EDGE, Math.min(hostWidth - width - EDGE, x))),
         y: Math.round(Math.max(EDGE, Math.min(hostHeight - height - EDGE, y))),
     });
+    // With no bounds, the pointer itself is what the plate must not cover.
+    const avoid = target || { left: point.x - 4, top: point.y - 4, right: point.x + 4, bottom: point.y + 4 };
+    // First a spot that fits as it is (a flip), then the clamped spots.
     for (const [x, y] of candidates) {
         const rect = { left: x, top: y, right: x + width, bottom: y + height };
         const inside = x >= EDGE && y >= EDGE && rect.right <= hostWidth - EDGE && rect.bottom <= hostHeight - EDGE;
-        if (inside && !reserved.some((r) => overlaps(rect, r))
-            && !(target && overlaps(rect, target))) return clamp([x, y]);
+        if (inside && overlapArea(rect, avoid) === 0 && !reserved.some((r) => overlapArea(rect, r) > 0)) {
+            return { x: Math.round(x), y: Math.round(y) };
+        }
     }
-    return clamp(candidates[0]);
+    let best = null;
+    for (const candidate of candidates) {
+        const spot = clamp(candidate);
+        const rect = { left: spot.x, top: spot.y, right: spot.x + width, bottom: spot.y + height };
+        const covered = overlapArea(rect, avoid);
+        const chrome = reserved.reduce((sum, r) => sum + overlapArea(rect, r), 0);
+        if (covered === 0 && chrome === 0) return spot;
+        if (!best || covered < best.covered || (covered === best.covered && chrome < best.chrome)) {
+            best = { spot, covered, chrome };
+        }
+    }
+    return best.spot;
 }
 
 export class WorldHoverPlate {
-    constructor({ host, reservedRects = () => [] } = {}) {
+    // `resample()` returns what is under the pointer now (`{ text, target }`),
+    // read again when a delayed plate reveals.
+    constructor({ host, reservedRects = () => [], resample = null } = {}) {
         this.host = host;
         this.reservedRects = reservedRects;
+        this.resample = resample;
+        this._held = false;
         this.el = null;
         this.text = '';
         this._pending = null;
@@ -96,6 +118,12 @@ export class WorldHoverPlate {
 
     get visible() {
         return Boolean(this.el && !this.el.hidden);
+    }
+
+    // A pointer plate, shown or about to be, that follows the scene; a held
+    // finger's plate stays put.
+    get tracking() {
+        return Boolean(this._pending) || (this.visible && !this._held);
     }
 
     // Pointer hover: `text` is the lore for what is under the pointer ('' for
@@ -127,8 +155,13 @@ export class WorldHoverPlate {
         clearTimeout(this._showTimer);
         this._pending = text;
         this._showTimer = setTimeout(() => {
-            const pending = this._pending;
+            let pending = this._pending;
             this._pending = null;
+            if (pending && this.resample) {
+                const now = this.resample();
+                pending = now?.text || '';
+                if (now) this._target = now.target || null;
+            }
             if (pending) this._show(pending);
         }, HOVER_PLATE_DELAY_MS);
     }
@@ -140,6 +173,7 @@ export class WorldHoverPlate {
         this._point = point;
         this._target = target;
         this._show(text);
+        this._held = true;
         this._holdTimer = setTimeout(() => this.hide(), holdMs);
         return true;
     }
@@ -150,6 +184,7 @@ export class WorldHoverPlate {
         clearTimeout(this._holdTimer);
         this._showTimer = this._hideTimer = this._holdTimer = 0;
         this._pending = null;
+        this._held = false;
         if (!this.visible) return;
         this.el.hidden = true;
         this.text = '';

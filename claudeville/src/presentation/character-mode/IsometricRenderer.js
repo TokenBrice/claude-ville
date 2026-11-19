@@ -30,6 +30,7 @@ import { getReservedRects } from '../shared/ReservedRects.js';
 import { HARBOR_FOCUS_FLEET_EVENT } from '../shared/HarborLedger.js';
 import { HarborFleetCard, isInFleetCard } from '../shared/HarborFleetCard.js';
 import { WorldHoverPlate, villagerHoverLine } from '../shared/WorldHoverPlate.js';
+import { dialogueSourceLabel } from '../../config/dialogue.js';
 import { emitAgentSelected } from '../shared/AgentSelection.js';
 import { HDR_HIGHLIGHTS_EVENT, overlayContextAttributes, publishDisplayStatus, readHdrHighlights } from '../shared/DisplaySettings.js';
 import { installP3OverlayInks, readDisplayMedia, setOverlayInksP3, watchDisplayMedia } from './DisplayColor.js';
@@ -163,6 +164,10 @@ import {
 const SHADE_SUSPEND_GRACE_MS = 2000;
 // #8 — cadence of harbor reconciliation while the World loop is stopped.
 const HARBOR_SEMANTICS_IDLE_MS = 1000;
+// XP-4 — the hover plate re-reads a still pointer's target at this cadence,
+// and keeps this many CSS px clear round a point hit with no drawn bounds.
+const HOVER_PLATE_RESAMPLE_MS = 100;
+const HOVER_PLATE_POINTER_PAD = 24;
 const WATER_FRAME_STEP = 0.03;
 const STATIC_WATER_SHIMMER = 0.08;
 const LIGHT_FADE_COLOR_CACHE_LIMIT = 1024;
@@ -2250,7 +2255,7 @@ export class IsometricRenderer {
             const worldPos = this.camera.screenToWorld(screenX, screenY);
             // XP-4 — the lore waits for the agent pass, which picks the plate's
             // text once per frame (a villager wins over the scenery).
-            this._hoverWorldText = this._worldHoverInfo(worldPos.x, worldPos.y);
+            this._hoverLore = this._worldHoverInfo(worldPos.x, worldPos.y);
             this._hoverPoint = { x: screenX, y: screenY };
             this._scheduleAgentHoverTest(worldPos.x, worldPos.y);
         };
@@ -2270,7 +2275,8 @@ export class IsometricRenderer {
             this.villageDirector?.setHoveredBuilding?.(null);
             this.harborTraffic?.setHoveredShip?.(null);
             this.bridgeLanterns?.setHovered?.(null);
-            this._hoverWorldText = '';
+            this._hoverLore = null;
+            this._hoverPoint = null;
             this._hoverPlate?.hide();
         };
         canvas.addEventListener('mouseleave', this._onMouseLeaveMain);
@@ -4643,9 +4649,29 @@ export class IsometricRenderer {
             this._agentHoverRafId = null;
             if (this._disposed) return;
             const hit = this._applyAgentHover(this._agentHoverX, this._agentHoverY);
-            const plate = this._hoverPlateContent(hit, this._hoverWorldText);
+            const plate = this._hoverPlateContent(hit, this._hoverLore);
             if (this._hoverPoint) this._ensureHoverPlate()?.update(plate.text, this._hoverPoint, plate.target);
         });
+    }
+
+    // XP-4 — what is under the resting pointer now: the plate re-reads it when
+    // it reveals and while the scene moves beneath a still pointer, so a
+    // villager that walked off takes its plate with it.
+    _sampleHoverPlate() {
+        const point = this._hoverPoint;
+        if (!point || !this.camera) return null;
+        const world = this.camera.screenToWorld(point.x, point.y);
+        const lore = this._worldHoverInfo(world.x, world.y);
+        this._hoverLore = lore;
+        return this._hoverPlateContent(this._applyAgentHover(world.x, world.y), lore);
+    }
+
+    _refreshHoverPlate(now = performance.now()) {
+        const plate = this._hoverPlate;
+        if (!plate?.tracking || !this._hoverPoint || now - (this._hoverPlateSampledAt || 0) < HOVER_PLATE_RESAMPLE_MS) return;
+        this._hoverPlateSampledAt = now;
+        const sample = this._sampleHoverPlate();
+        if (sample) plate.update(sample.text, this._hoverPoint, sample.target);
     }
 
     _applyAgentHover(worldX, worldY) {
@@ -4675,23 +4701,39 @@ export class IsometricRenderer {
     _ensureHoverPlate() {
         const host = this.canvas?.parentElement;
         if (!host) return null;
-        this._hoverPlate ||= new WorldHoverPlate({ host, reservedRects: getReservedRects });
+        this._hoverPlate ||= new WorldHoverPlate({
+            host,
+            reservedRects: getReservedRects,
+            resample: () => this._sampleHoverPlate(),
+        });
         return this._hoverPlate;
     }
 
-    // XP-4 — the plate's text and the screen rect it must not cover: for a
-    // villager its `name · building · tool · age` line beside its body (never
-    // its speech), else the scenery's lore beside the pointer.
-    _hoverPlateContent(hit, worldText) {
-        if (!hit) return { text: worldText || '', target: null };
+    _screenRectForWorld(left, top, right, bottom) {
+        const a = this.camera.worldToScreen(left, top);
+        const b = this.camera.worldToScreen(right, bottom);
+        return { left: a.x, top: a.y, right: b.x, bottom: b.y };
+    }
+
+    // XP-4 — the plate's text and the screen rect it must not cover. A
+    // villager gets its `name · building · tool · age` line beside its body,
+    // the building only once it has arrived there and stands still, and a
+    // second line naming where its last words came from (dialogueSourceLabel:
+    // source, excerpt, redaction, held), never the words themselves. Else the
+    // scenery's lore beside the scenery's own bounds.
+    _hoverPlateContent(hit, lore = null) {
+        if (!hit) return { text: lore?.text || '', target: lore?.target || null };
         const box = hit._bodyBox;
-        let target = null;
-        if (box) {
-            const a = this.camera.worldToScreen(hit.x + box.left, hit.y + box.top);
-            const b = this.camera.worldToScreen(hit.x + box.right, hit.y + Math.max(box.bottom, 4));
-            target = { left: a.x, top: a.y, right: b.x, bottom: b.y };
-        }
-        return { text: villagerHoverLine(hit.agent, { buildingType: hit._lastBuildingType }), target };
+        const target = box
+            ? this._screenRectForWorld(hit.x + box.left, hit.y + box.top, hit.x + box.right, hit.y + Math.max(box.bottom, 4))
+            : null;
+        const behavior = hit.behavior;
+        const arrived = !hit.moving && hit._lastBuildingType
+            && behavior?.arrivedAt != null && behavior.building === hit._lastBuildingType;
+        const line = villagerHoverLine(hit.agent, { buildingType: arrived ? hit._lastBuildingType : null });
+        const entry = hit._activitySnapshot;
+        const source = entry?.text && entry.source ? dialogueSourceLabel(entry) : '';
+        return { text: source ? `${line}\n${source}` : line, target };
     }
 
     _setHoveredAgentSprite(sprite) {
@@ -4702,6 +4744,9 @@ export class IsometricRenderer {
         if (this._hoveredAgentSprite) this._hoveredAgentSprite.setHovered(true);
     }
 
+    // The scenery under a world point as `{ text, target }`: its lore and the
+    // screen rect the plate keeps clear of (a building's drawn bounds, else a
+    // pointer-sized box round the hit), or null for bare ground.
     _worldHoverInfo(worldX, worldY) {
         const hoveredBuilding = this.buildingRenderer?.hitTest(worldX, worldY) ?? null;
         this.buildingRenderer?.setHovered(hoveredBuilding);
@@ -4725,7 +4770,7 @@ export class IsometricRenderer {
         const belfry = (hoveredBuilding || hoveredShip || bridgeLantern || tokenItem || repoStone)
             ? null
             : (this.isleLandmarks?.hitTestBelfry?.(worldX, worldY) ?? null);
-        return hoveredBuilding
+        const text = hoveredBuilding
             ? this._buildingVisitorTooltip(hoveredBuilding)
             : (hoveredShip
                 ? this.harborTraffic.shipTooltip(hoveredShip)
@@ -4736,6 +4781,12 @@ export class IsometricRenderer {
                         : (repoStone
                             ? this.chronicleMonuments.repoStones.tooltipFor(repoStone)
                             : (belfry ? this.isleLandmarks.belfryTooltip() : '')))));
+        if (!text) return null;
+        const bounds = hoveredBuilding ? this.buildingRenderer?.worldBounds?.(hoveredBuilding) : null;
+        if (bounds) return { text, target: this._screenRectForWorld(bounds.left, bounds.top, bounds.right, bounds.bottom) };
+        const point = this.camera.worldToScreen(worldX, worldY);
+        const pad = HOVER_PLATE_POINTER_PAD;
+        return { text, target: { left: point.x - pad, top: point.y - pad, right: point.x + pad, bottom: point.y + pad } };
     }
 
     // ─── U-P3 fleet card ────────────────────────────────────────────────
@@ -4807,19 +4858,11 @@ export class IsometricRenderer {
     _showTouchInfo(clientX, clientY) {
         const rect = this.canvas.getBoundingClientRect();
         const world = this.camera.screenToWorld(clientX - rect.left, clientY - rect.top);
-        // U-P3 — a held finger on a ship opens its fleet card (the touch
-        // twin of a click), not the one-line tip.
-        const heldShip = this.harborTraffic?.hitTestShip?.(world.x, world.y) ?? null;
-        if (heldShip) {
-            this._onMouseLeaveMain();
-            this._dismissTouchInfo();
-            this._openFleetCard({ project: heldShip.project, branch: heldShip.branch || '', shipId: heldShip.id });
-            return true;
-        }
-        const worldText = this._worldHoverInfo(world.x, world.y);
-        // The agent pass uses the same front-most/arrival filters as mouse
-        // hover, and a villager wins over the scenery underneath.
-        const plate = this._hoverPlateContent(this._applyAgentHover(world.x, world.y), worldText);
+        // A held finger reads the same plate as mouse hover, ships included
+        // (a tap still opens the fleet card). The agent pass uses the same
+        // front-most/arrival filters, and a villager wins over the scenery.
+        const lore = this._worldHoverInfo(world.x, world.y);
+        const plate = this._hoverPlateContent(this._applyAgentHover(world.x, world.y), lore);
         this._onMouseLeaveMain();
         if (!plate.text) return false;
         return this._ensureHoverPlate()?.showNow(plate.text, { x: clientX - rect.left, y: clientY - rect.top }, { target: plate.target }) || false;
@@ -5619,6 +5662,7 @@ export class IsometricRenderer {
             this.camera.updateFollow(dt);
         }
         if (this._fleetCard?.isOpen) this._updateFleetCard();
+        this._refreshHoverPlate();
 
         // Chat matching only depends on session/tool state, not frame-perfect motion.
         this._chatMatchAccumulator += dt;
