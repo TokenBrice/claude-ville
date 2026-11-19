@@ -878,9 +878,9 @@ function crownCover(crowns, i, season, phenology) {
 }
 
 function bakeGroundWeather({ cols, rows, surfaces, stepBuf, eaveBuf, sunShadeBuf, crowns, puddleMask, season, phenology }) {
-    const n = cols * rows;
-    const shelter = new Float32Array(n);
-    const order = new Float32Array(n);
+    // Each cover sample is consumed before its texel becomes a weather output.
+    const shelter = eaveBuf;
+    const order = sunShadeBuf;
     for (let row = 0; row < rows; row++) {
         for (let col = 0; col < cols; col++) {
             const i = row * cols + col;

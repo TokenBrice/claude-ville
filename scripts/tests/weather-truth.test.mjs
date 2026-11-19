@@ -2,18 +2,57 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+    AtmosphereState,
     buildWeatherTimeline,
     createAtmosphereSnapshot,
     resolveWeather,
     resolveWeatherAt,
     weatherTypeFromRoll,
 } from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
+import { groundOptionsFor, groundStateAt } from '../../claudeville/src/presentation/character-mode/GroundState.js';
 import { resetLookStrengths, setLookStrength } from '../../claudeville/src/presentation/character-mode/LookStrengths.js';
 import { SeasonalAmbience } from '../../claudeville/src/presentation/character-mode/SeasonalAmbience.js';
 import { WIND_SPEED_BY_TYPE, baseWindX, windAt } from '../../claudeville/src/presentation/character-mode/Wind.js';
-import { stormStrikeAt } from '../../claudeville/src/presentation/character-mode/WeatherRenderer.js';
+import { gpuRainField, stormStrikeAt } from '../../claudeville/src/presentation/character-mode/WeatherRenderer.js';
+import { PARITY_SCENARIOS, WEATHER } from '../smoke/webgpu-parity.mjs';
 
 const knotsOf = timeline => timeline.knots.map(knot => [knot.minute, knot.type, knot.windX]);
+
+test('QA freeze keeps the painted date and weather when the frame clock crosses midnight', () => {
+    const before = new Date(2026, 10, 19, 23, 59, 50);
+    const after = new Date(+before + 30_000);
+    const state = new AtmosphereState({ nowProvider: () => after });
+    state.update({ now: before });
+    const frozen = state.freeze();
+    assert.equal(+frozen.effectiveDate, +before);
+    const frame = state.update({ now: after, motionScale: 0 });
+    assert.equal(frame.timeline.frozen, true);
+    assert.equal(+frame.effectiveDate, +before);
+    assert.deepEqual(frame.weather, frozen.weather);
+    assert.equal(frame.motion.particleEnabled, false);
+    assert.equal(+state.clear().effectiveDate, +after);
+});
+
+test('the weather parity fixtures activate rain and wet ground with a winter host date', () => {
+    for (const id of ['rain-noon', 'wet-night']) {
+        const item = PARITY_SCENARIOS.find(candidate => candidate.id === id);
+        const preset = WEATHER[item.weather];
+        const state = new AtmosphereState({
+            nowProvider: () => item.date ? new Date(`${item.date}T12:00:00`) : new Date(2026, 0, 15, 12),
+        });
+        state.setTimelineMode('fixed');
+        state.setHour(item.hour);
+        if (preset.knots) state.setTimelineKnots(preset.knots);
+        const frame = state.setWeather(preset);
+        if (id === 'rain-noon') {
+            const camera = { zoom: item.zoom, screenToWorld: (x, y) => ({ x: x / item.zoom, y: y / item.zoom }) };
+            assert.ok(gpuRainField(frame, camera, { viewport: { width: 1920, height: 1080 } }).instances > 0);
+        } else {
+            const ground = groundStateAt(frame.effectiveDate, groundOptionsFor(frame));
+            assert.ok(ground.wetness > 0 && ground.puddles > 0);
+        }
+    }
+});
 
 test('two dates yield different weather timelines (no null seed coerces to 0)', () => {
     const a = buildWeatherTimeline(new Date(2026, 8, 27, 12));

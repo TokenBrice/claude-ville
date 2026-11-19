@@ -6,8 +6,8 @@
 // pinned (Auto camera off, fixed hour and weather, scenario camera tile, tier
 // zoom; DPR != 1 sizes as a flight frame), settles, and its loop is stopped.
 // The last resident frame context (`renderer._gpuRenderContext`: records,
-// camera, feed, particles, marks) is frozen — canvas record sources copied,
-// the particle system cloned — and rendered by two fresh renderers built in
+// camera, feed, particles, marks) is frozen — canvas record sources, the
+// shade texture's bytes and particles copied — and rendered by two fresh renderers built in
 // the page at the app's backing size — `GpuWorldRenderer` on a WebGL2 canvas
 // and `GpuWorldRendererWebGPU` on a WebGPU canvas — with the quality ladder
 // forced to FULL, and both are read back through `debugCaptureTargets()`
@@ -66,7 +66,7 @@ const transitionWeather = p => Object.freeze({
   type: p < 0.5 ? 'clear' : 'rain', previousType: 'clear', nextType: 'rain', transitionProgress: p,
   intensity: 0.82 * p, precipitation: 0.9 * p, cloudCover: 0.08 + 0.84 * p, fog: 0.16 * p, windX: -0.4 * p,
 });
-const WEATHER = {
+export const WEATHER = {
   ...BENCH_WEATHER,
   golden: BENCH_WEATHER.clear,
   'clear-rain-35': transitionWeather(0.35),
@@ -84,7 +84,7 @@ const WEATHER = {
 };
 // `--look=id:value,...` — LookStrengths overrides set in the page before posing.
 let LOOK_OVERRIDES = {};
-const PARITY_SCENARIOS = Object.freeze([
+export const PARITY_SCENARIOS = Object.freeze([
   { n: 1, id: 'readme-noon', scenario: 'readme-showcase', hour: 12, weather: 'clear', zoom: 2, why: 'reference daylight frame' },
   { n: 2, id: 'readme-night', scenario: 'readme-showcase', hour: 22, weather: 'clear', zoom: 3, why: 'full night composition' },
   { n: 3, id: 'midnight-oil', scenario: 'midnight-oil', hour: 22, weather: 'clear', zoom: 2, why: 'night emitters and windows' },
@@ -100,8 +100,8 @@ const PARITY_SCENARIOS = Object.freeze([
   { n: 13, id: 'fog-dawn', scenario: 'readme-showcase', hour: 7.8, weather: 'fog', zoom: 1, why: 'fog in frame: the MS-1 low mist, or banks and veil with --look=ms1:0' },
   { n: 14, id: 'partly-sea', scenario: 'readme-showcase', hour: 10.5, weather: 'partly', zoom: 1, why: 'daytime partly cloudy sea and land: cloud courses, sunlit water (SEA-1)' },
   { n: 15, id: 'windy-sea', scenario: 'readme-showcase', hour: 10.5, weather: 'windy', zoom: 2, why: 'a fresh wind on the sea: whitecap streaks and the sky on lit water (SEA-3 / SEA-2)' },
-  { n: 16, id: 'rain-noon', scenario: 'readme-showcase', hour: 14, weather: 'rain', zoom: 2, why: 'rain in frame: the RN-1 world streaks and splashes, depth-sorted' },
-  { n: 17, id: 'wet-night', scenario: 'readme-showcase', hour: 21.6, weather: 'wet-night', zoom: 2, why: 'a clear night after rain, real wetness and puddles: GW-1 wet ground and GW-2 lamp mirrors' },
+  { n: 16, id: 'rain-noon', scenario: 'readme-showcase', hour: 14, weather: 'rain', zoom: 2, date: '2026-07-15', why: 'rain in frame: the RN-1 world streaks and splashes, depth-sorted' },
+  { n: 17, id: 'wet-night', scenario: 'readme-showcase', hour: 21.6, weather: 'wet-night', zoom: 2, date: '2026-07-15', why: 'a clear night after rain, real wetness and puddles: GW-1 wet ground and GW-2 lamp mirrors' },
   { n: 18, id: 'fog-night', scenario: 'readme-showcase', hour: 22, weather: 'fog', zoom: 2, why: 'a foggy night: lamps in the low mist (MS-1 / MS-2 halos, NL-4 lanterns)' },
 ]);
 
@@ -333,7 +333,7 @@ function installParityHelpers() {
     return { records: frozen, copies: copies.size };
   };
 
-  T.freeze = ({ flight } = {}) => {
+  T.freeze = ({ flight, id, date, looks = {} } = {}) => {
     const r = window.__claudeVilleApp.renderer;
     r._stopLoop();
     if (flight) {
@@ -342,13 +342,33 @@ function installParityHelpers() {
     }
     const ctx = r._gpuRenderContext;
     if (!ctx?.records?.length) throw new Error('no resident frame context to freeze');
+    let effects;
+    if (date) {
+      const { atmosphere, puddles, wetness } = ctx.feed;
+      const rainInstances = r.gpuWorld.rainInstances;
+      const wetFieldBound = r.gpuWorld._puddles?.groundWeather[2] === 1 && r.gpuWorld._puddleActive;
+      effects = { date: atmosphere.clock.localDate, rainInstances, wetFieldBound, wetness, puddles };
+      if (effects.date !== date) throw new Error(`expected a frame on ${date}, got ${effects.date}`);
+      if (id === 'rain-noon' && (looks.rn1 ?? 1) > 0 && !(rainInstances > 0)) {
+        throw new Error('rain-noon has no world rain instances');
+      }
+      if (id === 'wet-night' && ((looks.gw1 ?? 1) > 0 || (looks.gw2 ?? 1) > 0)
+          && !(wetFieldBound && wetness > 0 && puddles > 0)) {
+        throw new Error('wet-night needs a bound weather field, wetness and puddles');
+      }
+    }
     const records = snapshotSources(ctx.records);
     const marks = ctx.marks ? snapshotSources(ctx.marks) : null;
+    const sunShade = ctx.feed.sunShade;
+    const shadeTexture = sunShade?.texture;
     T.frame = {
       forceFreshOutput: true,
       records: records.records,
       camera: ctx.camera,
-      feed: ctx.feed,
+      feed: {
+        ...ctx.feed,
+        sunShade: shadeTexture ? { ...sunShade, texture: { ...shadeTexture, data: shadeTexture.data.slice() } } : null,
+      },
       // A frozen copy of the live particle system: the app loop (restarted
       // for the device-loss fallback) must not move the frame's particles.
       particles: ctx.particles ? freezeParticles(ctx.particles) : null,
@@ -358,7 +378,7 @@ function installParityHelpers() {
     T.sourceCopies = records.copies + (marks?.copies || 0);
     T.width = r.gpuWorld.width;
     T.height = r.gpuWorld.height;
-    return { backing: [T.width, T.height], records: T.frame.records.length, marks: T.frame.marks?.length || 0, sourceCopies: T.sourceCopies };
+    return { backing: [T.width, T.height], records: T.frame.records.length, marks: T.frame.marks?.length || 0, sourceCopies: T.sourceCopies, effects };
   };
 
   const flipRows = (bytes, width, height) => {
@@ -969,7 +989,7 @@ function installParityHelpers() {
 }
 
 // ---------------------------------------------------------------------------
-async function openCase(browser, baseUrl, { size, scenario, reducedMotion, renderer }) {
+async function openCase(browser, baseUrl, { size, scenario, reducedMotion, renderer, date }) {
   const context = await browser.newContext({
     viewport: { width: size.width, height: size.height },
     deviceScaleFactor: size.dpr,
@@ -979,6 +999,7 @@ async function openCase(browser, baseUrl, { size, scenario, reducedMotion, rende
     try { localStorage.setItem('cv-auto-camera', '0'); } catch {}
   });
   const page = await context.newPage();
+  if (date) await page.clock.setFixedTime(new Date(`${date}T12:00:00`));
   const errors = [];
   page.on('pageerror', error => errors.push(String(error?.message || error).slice(0, 300)));
   page.on('console', (message) => {
@@ -1015,7 +1036,7 @@ async function poseAndFreeze(page, item, size, settleSeconds) {
   await page.evaluate(a => window.__webgpuParity.pose(a), args);
   await page.waitForFunction(() => Boolean(window.__claudeVilleApp?.renderer?._gpuRenderContext?.records?.length), null, { timeout: 30_000 });
   await page.waitForTimeout(500);
-  const frozen = await page.evaluate(a => window.__webgpuParity.freeze(a), { flight: size.flight });
+  const frozen = await page.evaluate(a => window.__webgpuParity.freeze(a), { flight: size.flight, id: item.id, date: item.date, looks: LOOK_OVERRIDES });
   return { pose, frozen };
 }
 
@@ -1153,7 +1174,7 @@ async function main() {
       for (const item of options.scenarios) {
         const name = `${item.id}-${size.label.replace('@', 'dpr')}`;
         const row = { case: name, n: item.n, scenario: item.scenario, size: size.label, hour: item.hour, weather: item.weather, zoom: item.zoom };
-        const { context, page, errors } = await openCase(browser, server.baseUrl, { size, scenario: item.scenario, reducedMotion: item.reducedMotion, renderer: 'webgl' });
+        const { context, page, errors } = await openCase(browser, server.baseUrl, { size, scenario: item.scenario, reducedMotion: item.reducedMotion, renderer: 'webgl', date: item.date });
         try {
           const { pose, frozen } = await poseAndFreeze(page, item, size, options.settleSeconds);
           Object.assign(row, { pose, ...frozen });
@@ -1237,7 +1258,9 @@ async function main() {
   process.exit(failed ? 1 : incomplete ? 2 : 0);
 }
 
-main().catch((error) => {
-  console.error(`[webgpu-parity] FAIL: ${error.stack || error.message}`);
-  process.exit(1);
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error(`[webgpu-parity] FAIL: ${error.stack || error.message}`);
+    process.exit(1);
+  });
+}

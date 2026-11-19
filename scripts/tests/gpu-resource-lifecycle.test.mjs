@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { GpuWorldRenderer } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldRenderer.js';
+import { GPU_RECORD_FLAGS } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldPolicy.js';
 
 // A small WebGL stub with the object-creation and status responses needed by
 // _initResources(). Lifecycle tests still observe calls, but never depend on
@@ -38,6 +39,7 @@ function stubGl(calls = []) {
             return (...args) => {
                 const name = String(property);
                 calls.push({ name, args });
+                if (name === 'createShader') return { ...handle(name), type: args[0] };
                 if (name.startsWith('create') || name === 'getUniformLocation') {
                     return handle(name);
                 }
@@ -101,6 +103,90 @@ test('releasing GPU resources clears the vertex buffer capacity it just invalida
         0,
         'a stale capacity makes the next upload skip bufferData and draw no geometry',
     );
+});
+
+test('fragment shaders with integer math declare high precision', () => {
+    const calls = [];
+    const renderer = initializedRenderer(calls);
+    assert.ok(renderer._ensureP3Programs());
+    renderer.setDebugLoad(1);
+    renderer._drawDebugLoad(1);
+    const fragments = calls.filter(call => call.name === 'shaderSource' && call.args[0].type === renderer.gl.FRAGMENT_SHADER);
+    assert.ok(fragments.length >= 9);
+    for (const { args: [, source] } of fragments) {
+        const code = source.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '');
+        if (/\b(?:u?int|[iu]vec[234])\b|\b\d+u\b/.test(code)) {
+            assert.match(code, /^precision highp int;/m, code.split('\n').slice(0, 5).join('\n'));
+        }
+        if (code.includes('float seaSeamLattice(')) assert.match(code, /highp uint h = .*1597334677u/);
+    }
+});
+
+test('typed uploads restore the binding directly only when storage holds', () => {
+    const calls = [];
+    const renderer = detachedRenderer(calls);
+    const upload = (width, revision) => renderer.uploadTypedTexture('lights', {
+        width, height: 1, format: 'rgba32f', data: new Float32Array(width * 4), revision,
+    });
+    const first = upload(1, 1);
+    renderer.gl.getParameter = () => first;
+    renderer.gl.isTexture = texture => {
+        calls.push({ name: 'isTexture', args: [texture] });
+        return false;
+    };
+
+    calls.length = 0;
+    assert.equal(upload(1, 2), first);
+    assert.ok(calls.some(call => call.name === 'texSubImage2D'));
+    assert.ok(!calls.some(call => call.name === 'isTexture'));
+    assert.equal(calls.filter(call => call.name === 'bindTexture').at(-1).args[1], first);
+
+    calls.length = 0;
+    assert.notEqual(upload(2, 3), first);
+    assert.ok(calls.some(call => call.name === 'deleteTexture' && call.args[0] === first));
+    assert.ok(calls.some(call => call.name === 'isTexture' && call.args[0] === first));
+    assert.equal(calls.filter(call => call.name === 'bindTexture').at(-1).args[1], null);
+});
+
+test('scene batch flags write only transitions and initialize every direct or replayed pass', () => {
+    const calls = [];
+    const renderer = initializedRenderer(calls);
+    renderer._setSceneUniforms = () => { renderer._puddleActive = true; };
+    renderer.fatPixelsFrame = true;
+    const flags = ['u_additive', 'u_hasMaterialMap', 'u_hasEmissiveMap', 'u_hasOccluderMap',
+        'u_puddleGround', 'u_terrainBatch', 'u_fatPixels', 'u_cueRuns'];
+    const plain = { albedoTexture: {}, records: [{}] };
+    const lit = {
+        ...plain,
+        blend: 'add',
+        materialTexture: {},
+        emissiveTexture: {},
+        occluderTexture: {},
+        cueRuns: true,
+        records: [{ id: 'terrain:static', flags: GPU_RECORD_FLAGS.fatOptOut }],
+    };
+    const batches = [plain, plain, lit, lit, plain];
+    for (const [direct, restore] of [[false, false], [true, false], [false, true]]) {
+        if (restore) {
+            renderer.suspend();
+            assert.equal(renderer.resume(), true);
+        }
+        renderer._directFrame = direct;
+        const values = flags.map(flag => flag === 'u_fatPixels' ? [1, 0, 1] : [0, 1, 0]);
+        const drawn = [];
+        renderer._drawBatch = () => {
+            drawn.push(flags.map(flag => calls.findLast(call => call.name === 'uniform1i'
+                && call.args[0] === renderer.sceneUniforms[flag])?.args[1]));
+        };
+        calls.length = 0;
+        renderer._stageGlUniforms({}, {}, 0, batches, null, direct);
+        renderer._renderScene(batches, {}, {});
+        assert.deepEqual(drawn, [0, 0, 1, 1, 2].map(index => values.map(value => value[index])));
+        for (const [index, flag] of flags.entries()) {
+            assert.deepEqual(calls.filter(call => call.name === 'uniform1i' && call.args[0] === renderer.sceneUniforms[flag])
+                .map(call => call.args[1]), values[index], flag);
+        }
+    }
 });
 
 test('abandoning GPU resources after context loss clears the same capacity', () => {

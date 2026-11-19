@@ -831,7 +831,7 @@ const float OPEN_SEA_HORIZON_Y = ${OCEAN_HORIZON_WORLD_Y.toFixed(1)};
 //  - seaContourRows: the reflection band's and the aerial haze's seams on
 //    water (GPU only, the same function in the scene and the composite).
 float seaSeamLattice(float k, float salt) {
-    uint h = (uint(int(k)) * 1597334677u) ^ (uint(int(salt) + 4096) * 3812015801u);
+    highp uint h = (uint(int(k)) * 1597334677u) ^ (uint(int(salt) + 4096) * 3812015801u);
     h = (h ^ (h >> 16u)) * 2246822519u;
     h ^= h >> 13u;
     return float(h >> 8u) / 16777216.0;
@@ -1305,6 +1305,7 @@ float fatTapWeight(FatTaps t, int i) {
 
 const SCENE_FRAGMENT = `#version 300 es
 precision highp float;
+precision highp int;
 in vec2 v_uv;
 in vec2 v_world;
 in float v_alpha;
@@ -3183,6 +3184,7 @@ void main() {
 
 const BLOOM_FRAGMENT = `#version 300 es
 precision highp float;
+precision highp int;
 in vec2 v_uv;
 layout(location = 0) out vec4 outColor;
 uniform sampler2D u_input;
@@ -3395,6 +3397,7 @@ vec3 shadeOpenSea(vec2 cell) {
 // applies here, per record — the SDR frame writes the texel unchanged.
 const MARK_FRAGMENT = `#version 300 es
 precision highp float;
+precision highp int;
 in vec2 v_uv;
 flat in vec4 v_uvClamp;
 layout(location = 0) out vec4 outColor;
@@ -3406,6 +3409,7 @@ void main() {
 
 const COMPOSITE_FRAGMENT = `#version 300 es
 precision highp float;
+precision highp int;
 in vec2 v_uv;
 layout(location = 0) out vec4 outColor;
 uniform sampler2D u_scene;
@@ -4368,7 +4372,7 @@ export class GpuWorldRenderer {
                 gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, w, h, gl[spec.format], gl[spec.type], data);
                 gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
             }
-            gl.bindTexture(gl.TEXTURE_2D, bound && gl.isTexture(bound) ? bound : null);
+            gl.bindTexture(gl.TEXTURE_2D, storageChanged && bound && !gl.isTexture(bound) ? null : bound);
             this._cachedTextureBytes += bytes - entry.bytes;
             entry.source = data;
             entry.revision = revision;
@@ -5082,7 +5086,7 @@ export class GpuWorldRenderer {
         }
     }
 
-    _setBatchUniforms(uniforms, batch) {
+    _setBatchUniforms(uniforms, batch, flags) {
         const gl = this._uniformGl || this.gl;
         const albedo = batch.albedoTexture;
         if (!albedo) return 0;
@@ -5104,20 +5108,21 @@ export class GpuWorldRenderer {
         // texture once per frame in `_stageGlUniforms`) and is never read.
         // The sampler-unit uniforms never change per batch either; they are
         // staged once with the seed.
-        gl.uniform1i(uniforms.u_hasMaterialMap, material ? 1 : 0);
+        setBatchFlag(gl, flags, uniforms.u_additive, batch.blend === 'add' ? 1 : 0);
+        setBatchFlag(gl, flags, uniforms.u_hasMaterialMap, material ? 1 : 0);
         if (material) {
             gl.activeTexture(gl.TEXTURE0 + units.material);
             gl.bindTexture(gl.TEXTURE_2D, material);
         }
         if (uniforms.u_emissiveMap) {
-            gl.uniform1i(uniforms.u_hasEmissiveMap, batch.emissiveTexture ? 1 : 0);
+            setBatchFlag(gl, flags, uniforms.u_hasEmissiveMap, batch.emissiveTexture ? 1 : 0);
             if (batch.emissiveTexture) {
                 gl.activeTexture(gl.TEXTURE0 + units.emissive);
                 gl.bindTexture(gl.TEXTURE_2D, batch.emissiveTexture);
             }
         }
         if (uniforms.u_occluderMap) {
-            gl.uniform1i(uniforms.u_hasOccluderMap, batch.occluderTexture ? 1 : 0);
+            setBatchFlag(gl, flags, uniforms.u_hasOccluderMap, batch.occluderTexture ? 1 : 0);
             if (batch.occluderTexture) {
                 gl.activeTexture(gl.TEXTURE0 + units.occluder);
                 gl.bindTexture(gl.TEXTURE_2D, batch.occluderTexture);
@@ -5125,17 +5130,17 @@ export class GpuWorldRenderer {
         }
         if (uniforms.u_puddleGround || uniforms.u_terrainBatch) {
             const terrain = batch.records[0]?.id === 'terrain:static';
-            if (uniforms.u_puddleGround) gl.uniform1i(uniforms.u_puddleGround, this._puddleActive && terrain ? 1 : 0);
-            if (uniforms.u_terrainBatch) gl.uniform1i(uniforms.u_terrainBatch, terrain ? 1 : 0);
+            if (uniforms.u_puddleGround) setBatchFlag(gl, flags, uniforms.u_puddleGround, this._puddleActive && terrain ? 1 : 0);
+            if (uniforms.u_terrainBatch) setBatchFlag(gl, flags, uniforms.u_terrainBatch, terrain ? 1 : 0);
         }
         // 4.6 — fat pixels per batch: on a flight frame, unless the batch's
         // records opt out (V9 fatOptOut: backing-pixel textures such as the
         // ground-cue layer).
         if (uniforms.u_fatPixels) {
             const optOut = ((batch.records[0]?.flags || 0) & GPU_RECORD_FLAGS.fatOptOut) !== 0;
-            gl.uniform1i(uniforms.u_fatPixels, this.fatPixelsFrame && !optOut ? 1 : 0);
+            setBatchFlag(gl, flags, uniforms.u_fatPixels, this.fatPixelsFrame && !optOut ? 1 : 0);
         }
-        gl.uniform1i(uniforms.u_cueRuns, batch.cueRuns ? 1 : 0);
+        setBatchFlag(gl, flags, uniforms.u_cueRuns, batch.cueRuns ? 1 : 0);
     }
 
     _drawBatch(batch) {
@@ -5193,7 +5198,6 @@ export class GpuWorldRenderer {
         gl.uniform2f(uniforms.u_resolution, this.width, this.height);
         uploadGradeUniforms(gl, uniforms, grade);
         gl.uniform3fv(uniforms.u_fogColor, grade.fogColor);
-        gl.uniform1i(uniforms.u_additive, 0);
         const cloudCover = clamp(finite(feed.atmosphere?.weather?.cloudCover, 0), 0, 1);
         gl.uniform1f(uniforms.u_overcast, clamp((cloudCover - 0.7) / 0.2, 0, 1));
         gl.uniform4fv(uniforms.u_weather, weather);
@@ -5405,6 +5409,7 @@ export class GpuWorldRenderer {
         // (nothing between touches program or unit state); a recorded frame
         // replays them. Both paths run the binds through the mirror (PF-5).
         if (!this._directFrame) this._sceneCommands.replay(this._bindMirror);
+        const flags = this._directFrame ? new Map() : null;
         const bloomEnabled = this._frameBloomStrength > 0;
         const roles = this._rolesWritten ? this._roleBlend : null;
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.sceneTarget.framebuffer);
@@ -5444,10 +5449,8 @@ export class GpuWorldRenderer {
             if (this._directFrame) {
                 // PF-1 — per-batch uniforms must interleave with the draws, so
                 // a direct frame issues them here instead of replaying.
-                const stagingGl = this._bindMirror.gl;
-                this._uniformGl = stagingGl;
-                stagingGl.uniform1i(this.sceneUniforms.u_additive, add ? 1 : 0);
-                this._setBatchUniforms(this.sceneUniforms, batch);
+                this._uniformGl = this._bindMirror.gl;
+                this._setBatchUniforms(this.sceneUniforms, batch, flags);
                 this._uniformGl = null;
             } else {
                 this._batchCommands[index].replay(this._bindMirror);
@@ -6164,12 +6167,13 @@ export class GpuWorldRenderer {
                 for (let index = 0; index < batches.length; index++) batchCommands[index]?.begin();
                 return;
             }
+            // The first batch records every flag, so replay starts from known values.
+            const flags = new Map();
             for (let index = 0; index < batches.length; index++) {
                 const commands = batchCommands[index] ||= new GlFrameCommands(gl);
                 commands.begin();
                 this._uniformGl = commands.gl;
-                commands.gl.uniform1i(this.sceneUniforms.u_additive, batches[index].blend === 'add' ? 1 : 0);
-                this._setBatchUniforms(this.sceneUniforms, batches[index]);
+                this._setBatchUniforms(this.sceneUniforms, batches[index], flags);
             }
             if (bloomEnabled) {
                 this._uniformGl = bloomA.gl;
@@ -6676,6 +6680,12 @@ class GlBindMirror {
         this._unit = null;
         this._bound.clear();
     }
+}
+
+function setBatchFlag(gl, flags, location, value) {
+    if (flags.get(location) === value) return;
+    gl.uniform1i(location, value);
+    flags.set(location, value);
 }
 
 // Stage the actual uniform setter stream and its sampler bindings once, then

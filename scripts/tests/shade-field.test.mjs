@@ -31,6 +31,8 @@ import { LANDMARK_MASSING } from '../../claudeville/src/config/landmarkMassing.j
 import { VILLAGE_WALL_ROUTES } from '../../claudeville/src/config/townPlan.js';
 import { footprintFieldRect } from '../../claudeville/src/presentation/character-mode/FootprintField.js';
 import { buildingCenterToWorld } from '../../claudeville/src/presentation/character-mode/Projection.js';
+import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
+import { frameShadeLayer, frameSunShade, setFrameCastLighting } from '../../claudeville/src/presentation/character-mode/RakingLight.js';
 
 // A small field in plain world px: 2x1 cells from (0, 0).
 const RECT = Object.freeze({ originX: 0, originY: 0, cellW: SHADE_CELL_W, cellH: SHADE_CELL_H, cols: 200, rows: 200 });
@@ -255,4 +257,71 @@ test('convexHull drops interior points', () => {
     assert.equal(hull.length, 4);
     assert.deepEqual(new Set(hull.map(p => p.join())), new Set(['0,0', '4,0', '4,4', '0,4']));
     assert.equal(facet([[0, 0, 5], [4, 0, 5], [4, 4, 5]]).top, 5);
+});
+
+test('visibility pauses shade builds and expiry releases the field and frame references', t => {
+    const idle = new Map();
+    const timers = new Map();
+    const queue = (jobs, callback) => {
+        const id = Symbol();
+        jobs.set(id, callback);
+        return id;
+    };
+    globalThis.document = {};
+    globalThis.requestIdleCallback = callback => queue(idle, callback);
+    globalThis.cancelIdleCallback = id => idle.delete(id);
+    t.mock.method(globalThis, 'setTimeout', callback => queue(timers, callback));
+    t.mock.method(globalThis, 'clearTimeout', id => timers.delete(id));
+    t.after(() => {
+        delete globalThis.document;
+        delete globalThis.requestIdleCallback;
+        delete globalThis.cancelIdleCallback;
+        setFrameCastLighting(null);
+    });
+
+    const canvas = { width: 10, height: 10 };
+    const field = { cols: 10, rows: 10, data: new Uint8Array(200), texels: new Uint8Array(400), sweep: { sx: 1, sy: 0 } };
+    const textureEntry = { source: field.texels };
+    const renderer = Object.assign(Object.create(IsometricRenderer.prototype), {
+        gpuWorld: { _textureEntries: new Map([['field:shade', textureEntry]]) },
+        _stopLoop() {},
+        _releaseTerrainArtifactWork() {},
+        _screenDpr: () => 1,
+        getTerrainCacheDiagnostics: () => null,
+        getWorldPerformanceDiagnostics: () => null,
+    });
+    const cast = { shade: { key: 'noon', color: [1, 2, 3], receivers: { cast: 0.7 } } };
+    setFrameCastLighting(cast, renderer);
+    const state = renderer._shadeFieldState;
+    state.ready = { field, canvas, revision: 1 };
+    state.canvas = canvas;
+    state.texels = field.texels;
+    state.view = { facet: new Uint16Array(100) };
+    setFrameCastLighting(cast, renderer);
+    const receiverFeed = frameSunShade();
+    assert.equal(receiverFeed.texture.data, field.texels);
+    renderer.gpuWorld._sunShade = { texture: receiverFeed.texture };
+    const budget = renderer.getCanvasBudget();
+    assert.equal(budget.volatile.shadeField, 100);
+    assert.equal(budget.shadeFieldBufferBytes, 800, 'shared receiver texels count once');
+
+    renderer.pauseForVisibility();
+    assert.equal(frameShadeLayer().field, field, 'a short visibility flip can reuse the shade');
+    const [queued] = idle.values();
+    queued({ didTimeout: true });
+    assert.equal(state.want, null, 'idle work could not publish while paused');
+    assert.equal(state.ready.revision, 1);
+    const [expire] = timers.values();
+    expire();
+
+    assert.equal(renderer._shadeFieldState, null);
+    assert.equal(canvas.width * canvas.height, 0);
+    assert.equal(frameShadeLayer(), null);
+    assert.equal(frameSunShade(), null);
+    assert.equal(receiverFeed.texture, null);
+    assert.equal(textureEntry.source, null);
+    assert.equal(renderer.gpuWorld._sunShade.texture, null);
+    assert.equal(renderer.getCanvasBudget().shadeFieldBufferBytes, 0);
+    queued({ didTimeout: true });
+    assert.equal(renderer._shadeFieldState, null, 'an old callback cannot revive a released field');
 });
