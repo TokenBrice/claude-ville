@@ -292,6 +292,56 @@ for (const n of [8, 23]) {
     });
 }
 
+test('FK-3: the focused squad keeps its cords at the secondary cap in a saturated region', () => {
+    for (const focus of ['selected', 'hovered']) {
+        const { lead, sprites, relationship } = fleet(8, { buildings: 3 });
+        lead[focus] = true;
+        const governor = new MarkGovernor();
+        governor.beginFrame({ pressureLevel: PRESSURE_LEVELS.GLYPHS, motionScale: 1 });
+        for (let i = 0; i < 10; i++) governor.admit(MarkTier.SECONDARY, 0, 1);
+        setActiveMarkGovernor(governor);
+        const ctx = recordingCtx();
+        try {
+            drawFamilyTethers(ctx, { relationship, agentSprites: sprites, motionScale: 1 });
+        } finally {
+            setActiveMarkGovernor(null);
+        }
+        const cord = ctx.fills.filter(fill => fill.alpha < 1);
+        assert.ok(cord.length > 0, `${focus}: the focused squad draws its cords`);
+        // SQUAD_TETHER_ALPHA 0.88 × the 0.78 cap, in 1/16 steps (neutral lighting).
+        const expected = Math.round(0.88 * 0.78 * 16) / 16;
+        assert.ok(cord.every(fill => Math.abs(fill.alpha - expected) < 1e-9), `${focus}: at the cap`);
+    }
+    // Unfocused, the same saturated region refuses the squad.
+    const { sprites, relationship } = fleet(8, { buildings: 3 });
+    const governor = new MarkGovernor();
+    governor.beginFrame({ pressureLevel: PRESSURE_LEVELS.GLYPHS, motionScale: 1 });
+    for (let i = 0; i < 10; i++) governor.admit(MarkTier.SECONDARY, 0, 1);
+    setActiveMarkGovernor(governor);
+    const ctx = recordingCtx();
+    try {
+        drawFamilyTethers(ctx, { relationship, agentSprites: sprites, motionScale: 1 });
+    } finally {
+        setActiveMarkGovernor(null);
+    }
+    assert.equal(ctx.fills.filter(fill => fill.alpha < 1).length, 0);
+});
+
+test('FK-3: walkers cluster where they are, settled members by the building they occupy', () => {
+    const lead = squadSprite('lead', 0, 0);
+    const sprites = new Map([['lead', lead]]);
+    const ids = [];
+    const add = (id, x, y, extra) => { sprites.set(id, Object.assign(squadSprite(id, x, y), extra)); ids.push(id); };
+    // Two walkers in different districts, both bound for the forge.
+    add('w1', 400, 200, { moving: true, _lastBuildingType: 'forge', agent: { id: 'w1', targetBuildingType: 'forge' } });
+    add('w2', -400, 200, { moving: true, _lastBuildingType: 'forge', agent: { id: 'w2', targetBuildingType: 'forge' } });
+    // Three settled at the archive, apart from one another.
+    add('s1', 300, -150, { _lastBuildingType: 'archive' });
+    add('s2', 340, -130, { _lastBuildingType: 'archive' });
+    add('s3', 380, -110, { _lastBuildingType: 'archive' });
+    assert.deepEqual([...squadCordChildIds(lead, ids, sprites)].sort(), ['s1', 'w1', 'w2']);
+});
+
 test('FK-3: a small squad cords every far member; reduced motion keeps region admission', () => {
     const { lead, sprites, kids } = fleet(4, { buildings: 1 });
     assert.equal(squadCordChildIds(lead, [...kids], sprites).size, 4);

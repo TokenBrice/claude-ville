@@ -609,7 +609,8 @@
     border-left: 2px solid color-mix(in srgb, var(--cv-repo-color, var(--line-2)) 62%, transparent);
 }
 
-.sidebar__crew--collapsed .sidebar__crew-members {
+.sidebar__crew--collapsed .sidebar__crew-members:not(.sidebar__crew-pinned),
+.sidebar__crew-pinned:empty {
     display: none;
 }
 
@@ -620,6 +621,13 @@
 .sidebar__agent--nested {
     padding-left: 8px;
     border-left-color: transparent;
+}
+
+/* A nested name wraps to a second line rather than losing its tail, the
+   part that tells lanes apart. */
+.sidebar__agent--nested .sidebar__agent-name {
+    white-space: normal;
+    overflow-wrap: anywhere;
 }
 
 .sidebar__crew-members .sidebar__workflow-toggle {

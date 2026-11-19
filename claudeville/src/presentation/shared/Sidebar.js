@@ -67,22 +67,63 @@ const SIDEBAR_COLLAPSED_STORAGE_KEY = 'claudeville.sidebarCollapsed';
 const DASHBOARD_FILTER_EVENT = 'dashboard:filter-changed';
 const DASHBOARD_FILTER_REQUEST_EVENT = 'dashboard:filter-requested';
 
-// FK-4 — each child's topmost live ancestor (a nested crew included), by id.
+function hasDeparted(agent) {
+    return Boolean(agent?.isDeparted) || Number.isFinite(agent?.departedAt);
+}
+
+// FK-4 — each child's lead, by id: its recorded root (PV-15 `rootSessionId`)
+// while that root is live, as the Dashboard groups it, else its topmost live
+// ancestor. A departed parent leads no one: its child stands on its own with
+// the ended-parent link.
 export function crewLeadsById(agents) {
     const byId = new Map(agents.map(agent => [agent.id, agent]));
     const leads = new Map();
     for (const agent of agents) {
+        if (!agent?.parentSessionId) continue;
+        const root = agent.rootSessionId && agent.rootSessionId !== agent.id ? byId.get(agent.rootSessionId) : null;
+        if (root && !hasDeparted(root)) {
+            leads.set(agent.id, root);
+            continue;
+        }
         let lead = null;
         let cursor = agent;
         for (let depth = 0; depth < 8 && cursor?.parentSessionId; depth++) {
             const parent = byId.get(cursor.parentSessionId);
-            if (!parent || parent === agent) break;
+            if (!parent || parent === agent || hasDeparted(parent)) break;
             lead = parent;
             cursor = parent;
         }
         if (lead) leads.set(agent.id, lead);
     }
     return leads;
+}
+
+// A crew member the fold must never hide: it needs the operator.
+function needsAttention(agent) {
+    return !hasDeparted(agent) && (agent?.status === 'waiting_on_user' || agent?.status === 'errored');
+}
+
+// FK-4 — how a lead's crew reads: rows as the operator sees them (each direct
+// child one row, each workflow one row), folded past CREW_FOLD_ROWS unless a
+// search runs or the operator unfolded it. A folded crew keeps its members
+// that need attention outside the fold. The toggle names the whole crew.
+export function crewFoldPlan(crew, { filter = '', expanded = false } = {}) {
+    const workflowIds = new Set();
+    let directRows = 0;
+    for (const member of crew) {
+        if (member.agentType === 'workflow-subagent' && member.workflowId) workflowIds.add(member.workflowId);
+        else directRows++;
+    }
+    const rows = directRows + workflowIds.size;
+    const foldable = rows > CREW_FOLD_ROWS;
+    const collapsed = foldable && !filter && !expanded;
+    return {
+        rows,
+        foldable,
+        collapsed,
+        pinnedIds: new Set(collapsed ? crew.filter(needsAttention).map(member => member.id) : []),
+        label: `${crew.length} crew`,
+    };
 }
 
 // One project group's rows: lead rows first, each followed by its crew (the
@@ -544,7 +585,8 @@ export class Sidebar {
 
     _visibleAgentSelects() {
         return [...(this.listEl?.querySelectorAll('.sidebar__agent-select[data-agent-id]') || [])]
-            .filter(select => !select.closest('.sidebar__workflow-group--collapsed, .sidebar__crew--collapsed'));
+            .filter(select => !select.closest('.sidebar__workflow-group--collapsed')
+                && !select.closest('.sidebar__crew-members:not(.sidebar__crew-pinned)')?.closest('.sidebar__crew--collapsed'));
     }
 
     _syncRovingTabindex(preferredId = this._highlightedAgentId) {
@@ -713,7 +755,8 @@ export class Sidebar {
             const ageText = formatStatusElapsed(agent, now);
             let parentLabel = '';
             if (agent.parentSessionId) {
-                parentLabel = this.world.agents.get(agent.parentSessionId)?.name || 'ended';
+                const parent = this.world.agents.get(agent.parentSessionId);
+                parentLabel = parent && !hasDeparted(parent) ? parent.name : 'ended';
             }
             rowExtras.set(agent.id, {
                 ageText,
@@ -839,27 +882,29 @@ export class Sidebar {
                 const crew = crews.get(agent.id);
                 if (!crew) continue;
                 visibleCrewLeads.add(agent.id);
+                const plan = crewFoldPlan(crew, { filter: this._filter, expanded: this._expandedCrews.has(agent.id) });
+                const pinned = [];
                 const rows = [];
                 const crewWorkflows = new Map();
                 for (const member of crew) {
-                    if (member.agentType === 'workflow-subagent' && member.workflowId) {
+                    const row = () => this._getAgentRow(member, profile, { ...rowExtras.get(member.id), nested: true });
+                    if (plan.pinnedIds.has(member.id)) {
+                        pinned.push(row());
+                    } else if (member.agentType === 'workflow-subagent' && member.workflowId) {
                         if (!crewWorkflows.has(member.workflowId)) crewWorkflows.set(member.workflowId, []);
                         crewWorkflows.get(member.workflowId).push(member);
                     } else {
-                        rows.push(this._getAgentRow(member, profile, { ...rowExtras.get(member.id), nested: true }));
+                        rows.push(row());
                     }
                 }
-                // Fold a crew whose own rows pass CREW_FOLD_ROWS, as workflows
-                // fold (a workflow already folds on its own); a search unfolds it.
-                const foldable = rows.length > CREW_FOLD_ROWS;
                 for (const [workflowId, members] of crewWorkflows) rows.push(workflowNode(workflowId, members, true));
                 let crewEl = this._crewGroups.get(agent.id);
                 if (!crewEl) {
                     crewEl = this._createCrewGroup(agent.id);
                     this._crewGroups.set(agent.id, crewEl);
                 }
-                const collapsed = foldable && !this._filter && !this._expandedCrews.has(agent.id);
-                this._patchCrewGroup(crewEl, crew.length, profile, foldable, collapsed);
+                this._patchCrewGroup(crewEl, plan, profile);
+                place(crewEl._sidebarRefs.pinned, pinned);
                 place(crewEl._sidebarRefs.members, rows);
                 groupNodes.push(crewEl);
             }
@@ -1188,13 +1233,15 @@ export class Sidebar {
             count,
         ]);
         toggle.type = 'button';
+        // Members that need attention stay outside a folded crew.
+        const pinned = el('div', { className: 'sidebar__crew-members sidebar__crew-pinned' });
         const members = el('div', { className: 'sidebar__crew-members' });
-        const group = el('div', { className: 'sidebar__crew' }, [toggle, members]);
-        group._sidebarRefs = { toggle, count, members };
+        const group = el('div', { className: 'sidebar__crew' }, [pinned, toggle, members]);
+        group._sidebarRefs = { toggle, count, pinned, members };
         return group;
     }
 
-    _patchCrewGroup(group, size, profile, foldable, collapsed) {
+    _patchCrewGroup(group, { foldable, collapsed, label }, profile) {
         const refs = group._sidebarRefs;
         const className = collapsed ? 'sidebar__crew sidebar__crew--collapsed' : 'sidebar__crew';
         if (group.className !== className) group.className = className;
@@ -1203,7 +1250,7 @@ export class Sidebar {
             group._sidebarRepoColor = profile.accent;
         }
         if (refs.toggle.hidden !== !foldable) refs.toggle.hidden = !foldable;
-        this._setText(refs.count, `${size} crew`);
+        this._setText(refs.count, label);
         this._setAttribute(refs.toggle, 'aria-expanded', String(!collapsed));
     }
 
@@ -1213,9 +1260,11 @@ export class Sidebar {
             row = this._createAgentRow(agent.id);
             this._agentRows.set(agent.id, row);
         }
-        const parent = agent.parentSessionId
+        const liveParent = agent.parentSessionId
             ? this.world.agents.get(agent.parentSessionId)
             : null;
+        // A departed parent is an ended one: the link shows, disabled.
+        const parent = hasDeparted(liveParent) ? null : liveParent;
         const signature = [
             agent.name,
             agent.status,
