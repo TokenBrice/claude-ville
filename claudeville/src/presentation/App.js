@@ -99,6 +99,11 @@ const EMPTY_SURFACE_COPY = Object.freeze({
             Object.freeze({ label: 'Mine', value: 'Token usage' }),
         ]),
     }),
+    [VillagePhase.NO_RECORDED_SAMPLES]: Object.freeze({
+        title: 'NO RECORDED TRAIL SAMPLES',
+        copy: 'No village trail samples remain for this day.',
+        next: 'The village keeps its trails for 24 hours.',
+    }),
     [VillagePhase.DEGRADED]: Object.freeze({
         title: 'A WATCHTOWER IS UNREADABLE',
         copy: 'The village cannot read one or more local session sources.',
@@ -118,6 +123,8 @@ const BOOT_FAILURE_COPY = Object.freeze({
     'session-read-failed': 'Could not read local sessions.',
     'providers-failed': 'Could not read installed providers.',
     'assets-failed': 'Village art failed to load.',
+    'retold-date-invalid': 'Choose a valid Chronicle date in YYYY-MM-DD format.',
+    'retold-read-failed': 'The recorded village history could not be read.',
     'renderer-failed': 'The world renderer failed to open.',
     'aborted': 'Opening the village was interrupted.',
     'boot-failed': 'The village did not finish opening.',
@@ -264,18 +271,31 @@ export class App {
             await new Promise((resolve) => requestAnimationFrame(resolve));
             if (this._destroyed) return null;
 
-            this._dispatchVillage({ type: 'sync-start' });
+            const params = new URLSearchParams(location.search);
+            const retold = params.has('retold');
+            this._dispatchVillage({ type: 'sync-start', retold });
             this._advanceFromStarting();
 
-            // 4-1. Behavior simulator (?sim=1, dev only — overrides session ingestion)
-            const simMode = new URLSearchParams(location.search).get('sim') === '1';
+            const simMode = retold || params.get('sim') === '1';
             this.simMode = simMode;
             this._bootFoundation();
             this._bindVillageObservations();
             if (simMode && !this.agentSimulator) {
                 const mod = await import('./character-mode/__simfixture__/AgentSimulator.js');
                 if (this._destroyed) return null;
-                this.agentSimulator = new mod.default({ world: this.world, agentManager: this.agentManager, eventBus });
+                const recordedDay = retold
+                    ? await (await import('../application/ChronicleScenario.js')).loadChronicleScenario(params.get('retold'))
+                    : null;
+                if (this._destroyed) return null;
+                if (retold && !recordedDay) {
+                    this._dispatchVillage({ type: 'no-recorded-samples' });
+                    this._bootState = 'ready';
+                    return this;
+                }
+                this.agentSimulator = new mod.default({
+                    world: this.world, agentManager: this.agentManager, eventBus,
+                    recordedDay, timelapse: params.get('timelapse') === '1',
+                });
                 this.agentSimulator.start();
             }
 
@@ -798,6 +818,7 @@ export class App {
 
     _failureCode(err, fallback = 'boot-failed') {
         if (!err) return fallback;
+        if (Object.hasOwn(BOOT_FAILURE_COPY, err.code)) return err.code;
         if (err.name === 'AbortError') return 'aborted';
         const message = String(err.message || '');
         if (/failed to fetch|networkerror|net::/i.test(message)) return 'network-failed';
@@ -954,7 +975,8 @@ export class App {
 
         const copy = EMPTY_SURFACE_COPY[phase] || EMPTY_SURFACE_COPY[VillagePhase.SYNCING];
         const occupied = (state.agentCount || 0) > 0 || (this.world?.agents?.size || 0) > 0;
-        const showEmpty = phase !== VillagePhase.READY_LIVE && !occupied;
+        const playingDay = state.retold && phase === VillagePhase.READY_EMPTY;
+        const showEmpty = !playingDay && phase !== VillagePhase.READY_LIVE && !occupied;
         // One voice: while an empty-state card is up it carries the words, the
         // failure detail and the retry button; the banner only speaks when no
         // card does (a degraded source behind a populated village, or a
@@ -1038,7 +1060,13 @@ export class App {
     _bindWorldEmptyState() {
         if (this._surfacesBound) return;
         this._surfacesBound = true;
-        const sync = () => this._renderVillageSurfaces();
+        const sync = () => {
+            if (this.agentSimulator?.recorded && this.villageState.source === 'simulator') {
+                this._dispatchVillage({ type: 'snapshot', agentCount: this.world.agents.size });
+            } else {
+                this._renderVillageSurfaces();
+            }
+        };
         this._eventUnsubscribers.push(eventBus.on('agent:added', sync));
         this._eventUnsubscribers.push(eventBus.on('agent:removed', sync));
         sync();
@@ -1678,6 +1706,7 @@ export class App {
             }
 
             candidate = new module.IsometricRenderer(this.world, {
+                replay: this.agentSimulator?.replayClock ? this.agentSimulator : null,
                 assets: this.assets,
                 terrainArtifactBoot: this._terrainArtifactBoot,
                 chronicleStore: this.chronicleStore,
@@ -1709,7 +1738,7 @@ export class App {
                 else emitAgentDeselected();
             };
 
-            const scenarioMetadata = this.agentSimulator?.getScenario?.()?.metadata || null;
+            const scenarioMetadata = this.agentSimulator?.recorded ? null : this.agentSimulator?.getScenario?.()?.metadata || null;
             const scenarioApplied = candidate.applyScenarioMetadata?.(scenarioMetadata) || false;
             if (this._destroyed) {
                 candidate.hide?.();

@@ -1,3 +1,4 @@
+import { trailSampleId } from '../../infrastructure/ChronicleStore.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { canvasPixelCount, releaseCanvasBackingStore } from './CanvasBudget.js';
 import { tileToWorld, worldToTile } from './Projection.js';
@@ -31,10 +32,6 @@ const PHASE_COLORS = {
     dusk: '255, 164, 96',
     night: '112, 174, 255',
 };
-
-function sampleId(agentId, ts) {
-    return `${agentId}:${Math.floor(ts / 1000)}`;
-}
 
 function pageIsVisible() {
     return typeof document === 'undefined' || document.visibilityState === 'visible';
@@ -290,7 +287,7 @@ export class TrailRenderer {
             const tileY = Number(position.tileY);
             if (!Number.isFinite(tileX) || !Number.isFinite(tileY)) continue;
             const sample = {
-                id: sampleId(agent.id, now),
+                id: trailSampleId(agent.id, now),
                 agentId: agent.id,
                 provider: agent.provider || '',
                 model: agent.model || '',

@@ -218,6 +218,7 @@ function shadeLightingFor(strength, grade, solar, rawAngle, color) {
  * twin while the shade field owns the sun's shade (SD-1).
  */
 export function stampCastFor(cast) {
+    cast = _frameShadeRenderer?._replayCast?.cast ?? cast;
     return cast?.contact || cast;
 }
 
@@ -240,6 +241,17 @@ export function setFrameCastLighting(cast, renderer = null, canvas = false, wate
         if (tier !== _shadeTier) {
             _shadeTier = tier;
             cast = castLightingFor(renderer._lastAtmosphere);
+        }
+        if (renderer.replay) {
+            const now = renderer.replay.replayClock.playhead;
+            const last = renderer._replayCast;
+            // Share one sun bucket across the Canvas stamps and resident uploads.
+            // Finish a sliced field before requesting the next daylight direction.
+            if (!last || last.tier !== tier || now < last.at
+                || (now - last.at >= 1000 && !(cast?.shade && renderer._shadeFieldState?.job))) {
+                renderer._replayCast = { at: now, tier, cast };
+            }
+            cast = renderer._replayCast.cast;
         }
         receiverTier = !canvas && effectBudgetMode('sundial-receivers', level) === 'on';
     }
