@@ -73,6 +73,13 @@ const ACCESSORY_BACK_CROP = Object.freeze({
 // between the hood's outer pixels with the hood's own cloth colour.
 const ACCESSORY_BACK_FILL = new Set(['hoodUp', 'pinnedHood']);
 
+// Bodies whose held staff head rises level with the hood: their head apex is
+// scanned only inside these cell-local columns around the 46px feet anchor,
+// or the crest centroid drifts onto the staff (Mythos's ouroboros ring).
+export const HEAD_APEX_COLUMNS = Object.freeze({
+    'agent.claude.mythos': [37, 54],
+});
+
 // W8.2a (AD-P1b) — cosmetic head overlays. A villager whose sheet shows a
 // bare head and who carries no effort crest wears one of these, picked by a
 // hash of the agent id: same-model crowds stop being a clone army without any
@@ -459,13 +466,14 @@ export class Compositor {
         const sdata = sheet.data;
         const width = dims.w;
         const stamps = [];
+        const apexColumns = HEAD_APEX_COLUMNS[baseId] || null;
 
         for (let r = 0; r < rows; r++) {
             for (let c = 0; c < cols; c++) {
                 const cellX = c * cellSize;
                 const cellY = r * cellSize;
                 const isBack = BACK_DIRECTIONS.has(DIRECTIONS[c]);
-                const apex = this._cellHeadApex(sdata, width, cellX, cellY, cellSize);
+                const apex = this._cellHeadApex(sdata, width, cellX, cellY, cellSize, apexColumns);
 
                 const anchorX = apex.found ? apex.centroidX : cellX + Math.floor(cellSize / 2);
                 const anchorY = apex.found ? apex.topY + ACCESSORY_TOP_INSET : cellY + Math.floor(cellSize * 0.22);
@@ -519,8 +527,10 @@ export class Compositor {
 
     // Scans one cell of the accessory-free sheet: topmost opaque row and the
     // alpha-weighted centroid X of the top ~6 opaque rows (the head apex the
-    // overlay anchors to).
-    _cellHeadApex(data, width, cellX, cellY, cellSize) {
+    // overlay anchors to). `columns` limits the scan to [x0, x1] in the cell.
+    _cellHeadApex(data, width, cellX, cellY, cellSize, columns = null) {
+        const x0 = columns ? columns[0] : 0;
+        const x1 = columns ? columns[1] + 1 : cellSize;
         let topY = -1;
         let minX = cellSize;
         let minY = cellSize;
@@ -530,7 +540,7 @@ export class Compositor {
         for (let y = 0; y < cellSize; y++) {
             let rowHas = false;
             const base = ((cellY + y) * width + cellX) * 4;
-            for (let x = 0; x < cellSize; x++) {
+            for (let x = x0; x < x1; x++) {
                 if (data[base + x * 4 + 3] < 16) continue;
                 rowHas = true;
                 found = true;
@@ -547,7 +557,7 @@ export class Compositor {
         const bandEnd = Math.min(cellSize, topY + 6);
         for (let y = topY; y < bandEnd; y++) {
             const base = ((cellY + y) * width + cellX) * 4;
-            for (let x = 0; x < cellSize; x++) {
+            for (let x = x0; x < x1; x++) {
                 const a = data[base + x * 4 + 3];
                 if (a < 16) continue;
                 sumA += a;
