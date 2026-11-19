@@ -255,23 +255,51 @@ test('a postcard frame never blits a warmed name stamp (T2 plate or T4 name)', (
     }
 });
 
-test('a postcard frame never blits the warmed taskboard chalk', () => {
-    const slates = [];
-    let chalk = 0;
-    const board = Object.assign(Object.create(BuildingSprite.prototype), {
-        _zoom: 1,
-        _taskboardBoard: () => ({ agent: { id: 'a' } }),
-        _taskboardViewFor: () => ({ title: 'secret-repo · fix login', rows: [] }),
-        _paintTaskboardChalk: () => { chalk += 1; },
-        _drawOnTaskboardSlate(ctx, localPoint, signature, paint) {
-            slates.push(signature);
-            paint(fakeContext(), { x: 0, y: 0 });
-        },
-    });
-    board._drawTaskboardBoard(fakeContext(), () => ({ x: 0, y: 0 }));
-    assert.equal(chalk, 1);
-    assert.match(slates[0], /secret-repo/, 'the live frame warms the chalk raster under its view key');
-    withPostcardFrame(() => board._drawTaskboardBoard(fakeContext(), () => ({ x: 0, y: 0 })));
-    assert.equal(chalk, 1, 'no chalk is painted');
-    assert.equal(slates[1], 'board|1|postcard', 'the wiped slate has its own key, never the chalk raster');
+// A canvas whose "pixels" are the text painted into it: clearRect over the
+// whole canvas wipes it, drawImage copies the source's ink into the target.
+class InkCanvas {
+    constructor(width = 1, height = 1) {
+        this.width = width;
+        this.height = height;
+        this.ink = [];
+    }
+
+    getContext() {
+        const canvas = this;
+        return Object.assign(fakeContext(), {
+            fillText: text => canvas.ink.push(String(text)),
+            clearRect: (x, y, w, h) => {
+                if (x <= 0 && y <= 0 && x + w >= canvas.width && y + h >= canvas.height) canvas.ink = [];
+            },
+            drawImage: source => canvas.ink.push(...(source?.ink || [])),
+            canvas,
+        });
+    }
+}
+
+test('a postcard frame never blits the warmed taskboard chalk (the pixels drawn, not the key)', () => {
+    const previous = globalThis.OffscreenCanvas;
+    globalThis.OffscreenCanvas = InkCanvas;
+    try {
+        const board = Object.assign(Object.create(BuildingSprite.prototype), {
+            _zoom: 1,
+            _taskboardBoard: () => ({ agent: { id: 'a' } }),
+            _taskboardViewFor: () => ({ title: 'secret-repo · fix login', rows: [] }),
+            // The chalk itself: the view's words into the real slate raster.
+            _paintTaskboardChalk: (slateCtx, origin, view) => slateCtx.fillText(view.title, 0, 0),
+        });
+        const localPoint = () => ({ x: 0, y: 0 });
+        const live = new InkCanvas(400, 300);
+        board._drawTaskboardBoard(live.getContext('2d'), localPoint);
+        assert.ok(live.ink.some(text => text.includes('secret-repo')), 'the live frame warms the slate raster with chalk and blits it');
+        const postcard = new InkCanvas(400, 300);
+        withPostcardFrame(() => board._drawTaskboardBoard(postcard.getContext('2d'), localPoint));
+        assert.ok(board._taskboardSlateRaster?.canvas, 'the postcard frame blits the slate raster');
+        assert.deepEqual(postcard.ink, [], 'the postcard blit carries no chalk');
+        const after = new InkCanvas(400, 300);
+        board._drawTaskboardBoard(after.getContext('2d'), localPoint);
+        assert.ok(after.ink.some(text => text.includes('secret-repo')), 'the next live frame writes its chalk again');
+    } finally {
+        globalThis.OffscreenCanvas = previous;
+    }
 });

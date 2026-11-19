@@ -16,7 +16,7 @@
 // day, dusk-rain and night samples to output/council-postcards/.
 //
 // Usage: node scripts/smoke/postcard.mjs [--backends=webgpu,webgl,canvas]
-//          [--scenarios=a,b] [--size=1440x900] [--dpr=1] [--trace] [--save]
+//          [--scenarios=a,b] [--size=1440x900] [--dpr=1] [--dpr2=false] [--trace] [--save]
 // Exit: 0 every case passed; 1 any failure; 2 a requested backend was absent.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -95,10 +95,13 @@ async function strike(page, { trace, sample = false }) {
           layer = { kind: 'canvas-getImageData', rows: 'top-down', px: renderer.canvas.getContext('2d').getImageData(0, 0, w, h).data };
         }
         const layout = renderer._attentionLayout || {};
+        // Layout rects are CSS px; the readbacks are backing px.
+        const k = renderer.canvas._claudeVilleDpr || window.devicePixelRatio || 1;
+        const backing = r => ({ left: r.left * k, top: r.top * k, right: r.right * k, bottom: r.bottom * k });
         independent = {
           w, h, overlay, layer,
-          beacons: (layout.beacons || []).map(b => ({ left: b.left, top: b.top, right: b.right ?? b.left + 8, bottom: b.bottom })),
-          plates: (layout.plates || []).map(p => ({ ...p.rect })),
+          beacons: (layout.beacons || []).map(b => backing({ left: b.left, top: b.top, right: b.right ?? b.left + 8, bottom: b.bottom })),
+          plates: (layout.plates || []).map(p => backing(p.rect)),
           marks: renderer._gpuRenderContext?.marks?.length ?? null,
         };
       }
@@ -251,9 +254,13 @@ const failures = [];
 let absent = false;
 const rows = [];
 try {
-  for (const backend of BACKENDS) {
-    for (const scenario of SCENARIOS) {
-      const { context, page, errors } = await openWorld(browser, { baseUrl: server.baseUrl, scenario, width, height, dpr, query: QUERY[backend] });
+  const cases = BACKENDS.flatMap(backend => SCENARIOS.map(scenario => ({ backend, scenario, dpr })));
+  // One DPR 2 case: the T1 probes read the overlay in backing px (Canvas
+  // keeps its beacons on the overlay, so a mis-scaled probe misses them).
+  if (args.dpr2 !== 'false' && dpr !== 2 && BACKENDS.includes('canvas')) cases.push({ backend: 'canvas', scenario: 'waiting-on-user', dpr: 2 });
+  for (const { backend, scenario, dpr: caseDpr } of cases) {
+    {
+      const { context, page, errors } = await openWorld(browser, { baseUrl: server.baseUrl, scenario, width, height, dpr: caseDpr, query: QUERY[backend] });
       try {
         await prepare(page, backend, { hour: 16, weather: 'clear', zoom: 2, tile: [20, 21] });
         const got = await strike(page, { trace: args.trace === 'true' });
@@ -281,8 +288,8 @@ try {
         }
         if (errors.length) problems.push(`page errors: ${errors.slice(0, 3).join(' | ')}`);
         const status = problems.length ? 'FAIL' : 'ok';
-        if (problems.length) failures.push({ backend, scenario, problems });
-        console.log(`${status} ${backend} ${scenario} distinct=${got.distinct} text=${got.textCalls} island=${got.island}@${((got.islandShare || 0) * 100).toFixed(1)}% beacons=${got.beacons} ${problems.join('; ')}`);
+        if (problems.length) failures.push({ backend, scenario, dpr: caseDpr, problems });
+        console.log(`${status} ${backend} ${scenario}${caseDpr !== 1 ? ` dpr=${caseDpr}` : ''} distinct=${got.distinct} text=${got.textCalls} island=${got.island}@${((got.islandShare || 0) * 100).toFixed(1)}% beacons=${got.beacons} ${problems.join('; ')}`);
       } finally {
         await context.close();
       }
