@@ -23,6 +23,7 @@ import {
     shadeCoverageAt,
     shadeFieldRect,
     shadeFieldFor,
+    shadeFieldPending,
     shadeFieldTexture,
     shadeGroundAt,
     shadeLitShareAt,
@@ -335,6 +336,60 @@ for (const [label, atomic, repaint] of [['resident', false, false], ['resident r
         assert.equal(digest(state.ready.field.texels), texels);
     });
 }
+
+test('shadeFieldPending reads a queued or running build, never a no-op poll', t => {
+    const queue = [];
+    let now = 0;
+    t.mock.method(performance, 'now', () => now += 0.3);
+    globalThis.requestIdleCallback = callback => queue.push(callback);
+    globalThis.document = {
+        createElement: () => {
+            const canvas = {};
+            canvas.getContext = () => ({
+                createImageData: (w, h) => ({ height: h, data: new Uint8ClampedArray(w * h * 4) }),
+                putImageData() {},
+            });
+            return canvas;
+        },
+    };
+    const building = BUILDING_DEFS.find(item => item.type === 'command');
+    const renderer = { buildingRenderer: { buildings: [building] } };
+    t.after(() => {
+        releaseShadeField(renderer);
+        delete globalThis.document;
+        delete globalThis.requestIdleCallback;
+    });
+    const step = () => queue.shift()({ didTimeout: false, timeRemaining: () => 2 });
+    const drain = () => {
+        for (let n = 0; queue.length; n++) {
+            assert.ok(n < 2000, 'idle work eventually completes');
+            step();
+        }
+    };
+    const options = { atomic: false, receivers: true };
+    const a = { key: 'A', sx: 1, sy: 0, color: [20, 30, 40] };
+    assert.equal(shadeFieldPending(renderer), false, 'no field was ever asked for');
+    shadeFieldFor(renderer, a, options);
+    assert.equal(shadeFieldPending(renderer), true, 'wanted, nothing up and not yet planned');
+    step();
+    assert.ok(renderer._shadeFieldState.job, 'the build is in flight');
+    assert.equal(shadeFieldPending(renderer), true);
+    drain();
+    assert.equal(shadeFieldPending(renderer), false, 'A is up');
+    now += 600; // past the scene check: the next frame queues a poll with nothing to do
+    shadeFieldFor(renderer, a, options);
+    assert.ok(queue.length, 'a poll is queued');
+    assert.equal(shadeFieldPending(renderer), false, 'a queued no-op poll is not a bake');
+    drain();
+    assert.equal(shadeFieldPending(renderer), false);
+    shadeFieldFor(renderer, { key: 'B', sx: 0, sy: 1, color: [20, 30, 40] }, options);
+    assert.equal(renderer._shadeFieldState.job, null);
+    assert.equal(shadeFieldPending(renderer), true, 'a rebuild queued over the old field');
+    step();
+    assert.ok(renderer._shadeFieldState.job, 'B is in flight');
+    shadeFieldFor(renderer, null);
+    assert.equal(shadeFieldPending(renderer), false, 'an abandoned build nobody wants');
+});
 
 test('visibility pauses shade builds and expiry releases the field and frame references', t => {
     const idle = new Map();

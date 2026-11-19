@@ -1276,6 +1276,13 @@ function ensureCanvas(state, field, atomic) {
     if (state.image?.height !== imageRows) state.image = state.ctx.createImageData(field.cols, imageRows);
 }
 
+// The keys of what the frame last asked for, over the casters last read.
+function wantKeys(state) {
+    const { shade, waterRevision, atomic, receivers } = state.want;
+    const fieldKey = `${state.casters.key}#${shade.key}${receivers ? '#r' : ''}`;
+    return { fieldKey, key: `${fieldKey}#${shade.color.join(',')}#${waterRevision ?? ''}${atomic ? '#a' : ''}` };
+}
+
 // What the frame last asked for against what is up: start the build that
 // closes the gap, or only a repaint when the colour or the water moved.
 function planJob(state, renderer) {
@@ -1284,9 +1291,8 @@ function planJob(state, renderer) {
         state.casters = gatherCasters(renderer);
         state.castersAt = now;
     }
-    const { shade, water, waterRevision, atomic, receivers } = state.want;
-    const fieldKey = `${state.casters.key}#${shade.key}${receivers ? '#r' : ''}`;
-    const key = `${fieldKey}#${shade.color.join(',')}#${waterRevision ?? ''}${atomic ? '#a' : ''}`;
+    const { shade, water, atomic, receivers } = state.want;
+    const { fieldKey, key } = wantKeys(state);
     if (state.job?.key === key) return;
     // The resident painter reuses the published backing. Rebuild anything an
     // abandoned job changed before treating the ready key as a cache hit.
@@ -1438,6 +1444,18 @@ export function shadeFieldFor(renderer, shade, { water = null, atomic = false, r
         schedule(state, renderer);
     }
     return state.ready;
+}
+
+/**
+ * True while the field the frame last asked for is not the one that is up: a
+ * build or a repaint is queued or in flight, and its landing will change the
+ * frame. Read by the still-frame smokes; nothing in the product reads it.
+ */
+export function shadeFieldPending(renderer) {
+    const state = renderer?._shadeFieldState;
+    if (!state?.want) return false;
+    if (state.job || !state.ready || !state.casters || state.canvasDirty || state.receiversDirty) return true;
+    return state.ready.key !== wantKeys(state).key;
 }
 
 /**
