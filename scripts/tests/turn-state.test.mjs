@@ -27,6 +27,43 @@ const NOW = 1_700_000_000_000;
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const CODEX_FIXTURES = path.join(REPO_ROOT, 'scripts', 'adapters', 'fixtures', 'codex');
 
+test('Claude REPL and Poll keep the turn clock and inner tool through a long burst', (t) => {
+    const { claudeTranscript: transcript } = require('../../claudeville/adapters/claude.js');
+    const root = makeTempDir('claudeville-repl-turn-');
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const file = path.join(root, 'turn.jsonl');
+    const fixture = fs.readFileSync(path.join(CODEX_FIXTURES, '../claude/repl-mode.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+    const append = row => fs.appendFileSync(file, JSON.stringify(row) + '\n');
+    const turn = () => transcript.turnState(file);
+    const pad = () => { for (let i = 0; i < 70; i++) append({ type: 'system', subtype: 'progress' }); };
+    const description = 'Check fixture results for [redacted]';
+    for (const row of fixture) {
+        append(row);
+        const id = row.message?.content?.[0]?.id;
+        if (id === 'script' || id === 'poll') {
+            pad();
+            const tool = id === 'poll' ? 'Poll' : 'REPL';
+            assert.deepEqual(turn().script, { tool, description, since: Date.parse(row.timestamp) });
+            assert.equal(turn().pendingTool, tool);
+            assert.equal(turn().turnStartedAt, Date.parse(fixture[0].timestamp));
+            const summary = transcript.summary(file);
+            assert.deepEqual([summary.lastTool, summary.lastToolInput], ['Read', 'fixture.md']);
+        }
+        if (row.isVirtual && row.message.role === 'user') {
+            assert.equal(turn().script, null);
+            assert.equal(turn().turnStartedAt, Date.parse(fixture[0].timestamp));
+        }
+        if (row.isMeta) {
+            const stale = Date.parse(row.timestamp) < Date.parse(fixture[3].timestamp);
+            assert.equal(turn().turnState, stale ? 'awaiting_input' : 'working');
+            assert.equal(turn().turnStartedAt, Date.parse(stale ? fixture[0].timestamp : row.timestamp));
+            assert.equal(transcript.projection(file).lastTurnDurationMs, stale ? 8000 : null);
+        }
+    }
+    assert.deepEqual(turn().script, { tool: 'Poll', description: null, since: Date.parse(fixture.at(-1).timestamp) });
+    assert.equal(transcript.summary(file).lastToolInput, 'node fixture.js 8');
+});
+
 function materializeCodexFixtures(root, now) {
     const project = path.join(root, 'work', 'codex-fixture');
     const rolloutDir = path.join(root, '.codex', 'sessions', '2026', '09', '01');

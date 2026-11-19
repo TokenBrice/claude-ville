@@ -17,7 +17,7 @@ process.env.HOME = tmpHome;
 process.env.CLAUDEVILLE_DISABLE_GIT_ENRICHMENT = '1';
 process.env.CLAUDEVILLE_TRANSCRIPT_ASYNC_THRESHOLD_BYTES = String(64 * 1024);
 const require = createRequire(import.meta.url);
-const { ClaudeAdapter } = require('../../claudeville/adapters/claude.js');
+const { ClaudeAdapter, claudeTranscript } = require('../../claudeville/adapters/claude.js');
 
 const stamp = new Date().toISOString();
 const project = path.join(tmpHome, 'workspace', 'race');
@@ -54,6 +54,60 @@ async function settleScans() {
   }
   assert.equal(adapter.getPerfStats().transcriptAggregate.pending, 0, 'the async scans must settle');
 }
+
+const replRows = fs.readFileSync(path.join(import.meta.dirname, '../adapters/fixtures/claude/repl-mode.jsonl'), 'utf8').trim().split('\n');
+const virtual = replRows.find(line => JSON.parse(line).isVirtual);
+
+test('a cold scan can name the real model behind a stub-only summary window', async () => {
+  const file = transcript('cold-model');
+  fs.writeFileSync(file, content([...paddingLines(80), ...replRows.slice(0, 6), ...Array(40).fill(virtual)]));
+  claudeTranscript.tokenUsage(file);
+  assert.equal(stats().pending, 1);
+  assert.equal(claudeTranscript.summary(file).model, 'claude-fable-5-1');
+  await settleScans();
+  assert.equal(claudeTranscript.summary(file).model, 'claude-fable-5-1');
+  fs.appendFileSync(file, content([JSON.stringify({
+    type: 'assistant', model: 'claude-sonnet-4-5', message: { role: 'assistant', content: [] },
+  })]));
+  assert.equal(claudeTranscript.summary(file).model, 'claude-sonnet-4-5', 'the aggregate takes precedence over an older tail model');
+});
+
+test('a provisional turn read fails soft and retries on the next read', async (t) => {
+  const file = transcript('bad-turn');
+  fs.writeFileSync(file, content([...paddingLines(80), ...replRows.slice(0, 4)]));
+  const fault = t.mock.method(require('node:os'), 'homedir', () => { throw new Error('fixture sanitizer failure'); });
+  try {
+    const state = claudeTranscript.turnState(file);
+    assert.equal(state.turnState, 'unknown');
+    assert.equal(state.turnStartedAt, null);
+    assert.equal(state.script, null);
+  } finally {
+    fault.mock.restore();
+  }
+  assert.equal(claudeTranscript.turnState(file).pendingTool, 'REPL');
+  await settleScans();
+});
+
+test('a long append keeps the published turn until the scan can see the next prompt', async () => {
+  const file = transcript('burst-clock');
+  fs.writeFileSync(file, content(replRows.slice(0, 6)));
+  const before = claudeTranscript.turnState(file);
+  assert.equal(before.pendingTool, 'Poll');
+  assert.equal(before.turnStartedAt, Date.parse(JSON.parse(replRows[0]).timestamp));
+
+  const wake = replRows.find(line => JSON.parse(line).wakeupSource);
+  const burst = (virtual + '\n').repeat(5001);
+  fs.appendFileSync(file, content([replRows[6], wake]) + burst);
+  assert.deepEqual(claudeTranscript.turnState(file), before);
+  assert.equal(stats().pending, 1);
+  await settleScans();
+  assert.equal(claudeTranscript.turnState(file).turnStartedAt, Date.parse(JSON.parse(wake).timestamp));
+
+  fs.renameSync(file, file + '.previous');
+  fs.writeFileSync(file, burst);
+  assert.equal(claudeTranscript.turnState(file).turnStartedAt, null, 'a replacement cannot inherit the clock');
+  await settleScans();
+});
 
 // Reads one transcript through the adapter with fs.createReadStream wrapped,
 // so the mutation can race the async scan the way a live producer would.
