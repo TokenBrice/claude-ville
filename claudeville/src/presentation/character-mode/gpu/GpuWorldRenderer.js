@@ -2403,16 +2403,25 @@ void main() {
     // SD-2 — a receiver steps down under the sun's shade, before the grade
     // (so shade takes the hour's tint); a sun trail the field already covers
     // is not drawn. u_shadeRect.w 0 = no field this frame.
+    vec3 sunBase = color;
     if (u_shadeRect.w > 0.0 && !u_additive) {
         if (sunTrailHidden()) discard;
         color *= sunShadeStep(geometry, surfaceCoded, u_hasEmissiveMap ? clamp(emissive, 0.0, 1.0) : 0.0);
+        // SD-3 — then the sun lifts what it reaches (u_shade.y 0 = off;
+        // water is SEA-1's).
+        sunBase = color;
+        if (u_shade.y > 0.0 && !waterMaterial) color = sunLift(color, u_terrainBatch && v_receiver.x < -0.5, u_shade.y, u_hasEmissiveMap ? clamp(emissive, 0.0, 1.0) : 0.0);
     }
     // 1.2 — the pools light the ungraded surface, so warm light shows the real
     // cobble, grass and wall texture instead of a desaturated night albedo.
-    vec3 poolAlbedo = color;
+    // SD-3 — the pools light the unlifted surface (the sun's lift is not lamp light).
+    vec3 poolAlbedo = sunBase;
     // 1.1 — C2 time-of-day and weather grade, before any local light or
     // authored emission.
+    // SD-3 — a lifted texel is held under the candle after the grade too.
+    bool sunLifted = color != sunBase;
     color = applyTimeGrade(color, !u_additive);
+    if (sunLifted) color = sunLiftGraded(color, applyTimeGrade(sunBase, true));
     // V6 — graded water stays quiet at every hour (CoastBake's outer ocean
     // takes the same cap, so the two still meet without a seam). The 3.2
     // path is the one exception (M7): its seaPath stop keeps its colour and
@@ -3180,6 +3189,8 @@ void main() {
         : applySeaCourses(color, artCell, poolOrder,
             artTopLeftPx.y + (waterMaterial ? seaContourRows(artCell) * u_camera.z : 0.0), u_additive);
     if (bakedRim && !u_additive) alpha = mix(alpha, max(alpha, v_alpha), nightCarry);
+    // SD-3 — the finished lifted texel stays under the waiting candle.
+    color = sunLiftFinal(color);
     outColor = vec4(max(color, vec3(0.0)) * alpha, alpha);
     outEmission = vec4(emission * alpha, alpha > 0.0 ? 1.0 : 0.0);
 }`;

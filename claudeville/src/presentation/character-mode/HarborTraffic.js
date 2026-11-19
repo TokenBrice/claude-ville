@@ -1512,7 +1512,7 @@ export class HarborTraffic {
         this.frame += (dt / 16) * this.motionScale;
     }
 
-    reconcile(agents, now = Date.now(), { force = false } = {}) {
+    reconcile(agents, now = Date.now(), { force = false, incremental = false } = {}) {
         if (this._disposed) return this;
         this._reconcileCalls++;
         const sourceSnapshot = harborEventSourceSnapshot(agents);
@@ -1552,7 +1552,7 @@ export class HarborTraffic {
                 motionScale: this.motionScale,
                 activeProjects,
                 repoDisplayName: trafficShortName,
-                complete,
+                complete: complete && !incremental,
             });
             this._lastEventsVersion = eventsVersion;
             this._activeProjectsKey = activeProjectsKey;

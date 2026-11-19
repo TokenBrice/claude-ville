@@ -26,8 +26,9 @@
 import { releaseCanvasBackingStore } from './CanvasBudget.js';
 import { COAST_FIELD_FLAGS } from './CoastBake.js';
 import { lookStrength, lookStrengthsVersion } from './LookStrengths.js';
-import { shadeCoverageAt, shadeFieldFor, shadeFieldTexture } from './ShadeField.js';
+import { paintLitCells, shadeCoverageAt, shadeFieldFor, shadeFieldTexture } from './ShadeField.js';
 import { effectBudgetMode } from './gpu/GpuWorldPolicy.js';
+import { SUN_LIFT_CEILING } from './gpu/SunShade.js';
 import { LANTERN_ID_PREFIX } from './CarriedLantern.js';
 
 const COLD = [15, 22, 30];      // #0f161e — the midday contact shadow
@@ -62,10 +63,23 @@ export const SHADE_SUN_RISEN_DEG = 4;
 // climbs a wall. A face turned from the sun gives up nothing: the art already
 // paints that side darker.
 export const SHADE_RECEIVER_CAST = 0.3;
+// SD-3 (look `sd3`) — the sun lifts what it reaches: the gain a sunlit
+// texel (the ground, a lit wall, roof or prop) takes before the grade at
+// strength 1 under a high, clear sun, in 1/64. One palette step: about the
+// inverse of the sun band's own 0.86 course. Shade keeps its value, so it reads by contrast.
+export const SUN_LIFT = 10 / 64;
+// The real sun's elevation (degrees) from which the lift is whole; under it
+// the lift follows the sun's sine, in eighths (a November noon takes about
+// five eighths, a golden hour two).
+export const SUN_LIFT_FULL_DEG = 45;
+// The cloud cover under which the sky is clear for the lift, and at which it
+// is gone (the overcast weather rows start there).
+const SUN_LIFT_CLEAR = Object.freeze([0.15, 0.85]);
 
 let _castGrade = null;
 let _castLighting = null;
 let _castSolar = null;
+let _castCloud = 0;
 let _castLooks = -1;
 let _castTier = true;
 let _cast = null;
@@ -78,7 +92,11 @@ let _frameShadeRenderer = null;
 // SD-2 — the frame's receiver steps while the resident path reads the field
 // (null: the look off, Canvas, MINIMAL, or the texels not built yet).
 let _frameReceivers = null;
-const _sunShadeFeed = { texture: null, cast: 1, sweepX: 0, sweepY: 0 };
+// SD-3 — the Canvas lift's lit cells (one canvas per shade layer revision)
+// and the coast bake's water fields the frame handed in.
+let _frameWater = null;
+let _litLayer = null;
+const _sunShadeFeed = { texture: null, cast: 1, lift: 0, sweepX: 0, sweepY: 0 };
 // The field whose texels the scene pass holds (a newer one waits a frame).
 let _sunShadeHeld = null;
 let _villagerCastSource = null;
@@ -128,8 +146,10 @@ export function castLightingFor(atmosphere) {
     const grade = atmosphere?.lightGrade || null;
     const lighting = atmosphere?.lighting || null;
     const solar = atmosphere?.solar || null;
+    // SD-3 — the sky's cloud cover scales the sun's lift.
+    const cloudCover = finite(atmosphere?.sky?.cloudCover ?? atmosphere?.weather?.cloudCover, 0);
     const looks = lookStrengthsVersion();
-    if (_cast && grade === _castGrade && lighting === _castLighting && solar === _castSolar && looks === _castLooks && _shadeTier === _castTier) return _cast;
+    if (_cast && grade === _castGrade && lighting === _castLighting && solar === _castSolar && cloudCover === _castCloud && looks === _castLooks && _shadeTier === _castTier) return _cast;
     const rake = rakeForGrade(grade);
     const night = finite(grade?.night, 0) >= 0.5;
     const rawAngle = Number.isFinite(lighting?.shadowAngleRad) ? lighting.shadowAngleRad : 0.28;
@@ -142,7 +162,7 @@ export function castLightingFor(atmosphere) {
     const sun = finite(grade?.sunBand, 1) >= 0.5;
     const contactAlpha = finite(lighting?.shadowAlpha, 0.22);
     const strength = _shadeTier ? lookStrength('sd1') : 0;
-    const shade = strength > 0 ? shadeLightingFor(strength, grade, solar, rawAngle, color) : null;
+    const shade = strength > 0 ? shadeLightingFor(strength, grade, solar, rawAngle, color, cloudCover) : null;
     const restLength = night ? lengthBucket : Math.round(0.72 * 8) / 8;
     const contact = strength > 0 && (rake > 0 || sun)
         ? Object.freeze({
@@ -160,6 +180,7 @@ export function castLightingFor(atmosphere) {
     _castGrade = grade;
     _castLighting = lighting;
     _castSolar = solar;
+    _castCloud = cloudCover;
     _castLooks = looks;
     _castTier = _shadeTier;
     _cast = Object.freeze({
@@ -180,7 +201,7 @@ export function castLightingFor(atmosphere) {
 }
 
 // SD-1 — the shade the sun throws under this grade, or null with no sun.
-function shadeLightingFor(strength, grade, solar, rawAngle, color) {
+function shadeLightingFor(strength, grade, solar, rawAngle, color, cloudCover = 0) {
     const elevation = finite(solar?.elevationDeg, 45);
     // The sun's share, in eighths: the grade's sun band times the real sun's
     // height, so a sun at or under the horizon throws no shade of any kind.
@@ -200,6 +221,8 @@ function shadeLightingFor(strength, grade, solar, rawAngle, color) {
     // SD-2 — the step a receiver in cast shade drops under this sun (a
     // multiplier, in 1/64).
     const receive = clamp(lookStrength('sd2')) * share;
+    // SD-3 — the lift a sunlit texel takes under this sun (0 = off).
+    const lift = sunLiftFor(lookStrength('sd3'), share, elevation, cloudCover);
     return Object.freeze({
         strength,
         angle,
@@ -209,8 +232,24 @@ function shadeLightingFor(strength, grade, solar, rawAngle, color) {
         alpha,
         color,
         key: `${angleBucket}|${lengthBucket}`,
-        receivers: receive > 0 ? Object.freeze({ cast: 1 - Math.round(receive * SHADE_RECEIVER_CAST * 64) / 64 }) : null,
+        receivers: receive > 0 || lift > 0 ? Object.freeze({ cast: 1 - Math.round(receive * SHADE_RECEIVER_CAST * 64) / 64, lift }) : null,
     });
+}
+
+/**
+ * SD-3 — the sunlit texel's lift (a gain over 1, in 1/64) at a `sd3`
+ * strength, the shade's sun share (in eighths), the real sun's elevation and
+ * the cloud cover: SUN_LIFT x strength x share x the sun's height (its sine
+ * against SUN_LIFT_FULL_DEG's, in eighths) x the clear sky (in eighths). 0
+ * at strength 0, at night, under overcast and with the sun at the horizon.
+ */
+export function sunLiftFor(strength, share, elevationDeg, cloudCover = 0) {
+    if (!(strength > 0) || !(share > 0)) return 0;
+    const sine = Math.sin(Math.max(0, finite(elevationDeg, 45)) * Math.PI / 180);
+    const height = Math.round(clamp(sine / Math.sin(SUN_LIFT_FULL_DEG * Math.PI / 180)) * 8) / 8;
+    const [fair, covered] = SUN_LIFT_CLEAR;
+    const clear = Math.round(clamp((covered - finite(cloudCover, 0)) / (covered - fair)) * 8) / 8;
+    return Math.round(SUN_LIFT * clamp(strength) * share * height * clear * 64) / 64;
 }
 
 /**
@@ -218,6 +257,7 @@ function shadeLightingFor(strength, grade, solar, rawAngle, color) {
  * twin while the shade field owns the sun's shade (SD-1).
  */
 export function stampCastFor(cast) {
+    cast = _frameShadeRenderer?._replayCast?.cast ?? cast;
     return cast?.contact || cast;
 }
 
@@ -241,11 +281,23 @@ export function setFrameCastLighting(cast, renderer = null, canvas = false, wate
             _shadeTier = tier;
             cast = castLightingFor(renderer._lastAtmosphere);
         }
+        if (renderer.replay) {
+            const now = renderer.replay.replayClock.playhead;
+            const last = renderer._replayCast;
+            // Share one sun bucket across the Canvas stamps and resident uploads.
+            // Finish a sliced field before requesting the next daylight direction.
+            if (!last || last.tier !== tier || now < last.at
+                || (now - last.at >= 1000 && !(cast?.shade && renderer._shadeFieldState?.job))) {
+                renderer._replayCast = { at: now, tier, cast };
+            }
+            cast = renderer._replayCast.cast;
+        }
         receiverTier = !canvas && effectBudgetMode('sundial-receivers', level) === 'on';
     }
     _frameCast = cast || null;
     _frameShadeRenderer = renderer;
     _frameReceivers = null;
+    _frameWater = canvas ? water : null;
     const shade = cast?.shade || null;
     // No shade to resolve and no field to let go of: nothing to do.
     if (!renderer || (!shade && !renderer._shadeFieldState)) {
@@ -271,6 +323,8 @@ export function releaseFrameShade(renderer) {
     _frameReceivers = null;
     _sunShadeHeld = null;
     _sunShadeFeed.texture = null;
+    _frameWater = null;
+    releaseLitMasks();
 }
 
 /**
@@ -311,6 +365,7 @@ export function frameSunShade() {
     }
     _sunShadeFeed.texture = field.texture || (field.texture = shadeFieldTexture(field));
     _sunShadeFeed.cast = _frameReceivers.cast;
+    _sunShadeFeed.lift = _frameReceivers.lift || 0;
     _sunShadeFeed.sweepX = field.sweep.sx;
     _sunShadeFeed.sweepY = field.sweep.sy;
     return _sunShadeFeed;
@@ -328,6 +383,137 @@ export function frameCastLighting() {
  */
 export function frameShadeLayer() {
     return _frameCast?.shade ? _frameShade : null;
+}
+
+/**
+ * SD-3 — the Canvas tier of the sun's lift: whole steps only (the lift
+ * rounded to SUN_LIFT or 0), so the cached masks are either drawn or not.
+ */
+export function canvasSunLiftSteps(lift) {
+    return Math.round(finite(lift, 0) / SUN_LIFT);
+}
+
+// SD-3 on Canvas, by luminosity (the 2D canvas's non-separable Lum: 0.3,
+// 0.59, 0.11): a grey copy of the frame takes the step (a colour-dodge of
+// grey LIT_DODGE multiplies by 1 / (1 - g / 255)), is held under the
+// ceiling (darken LIT_CEILING) unless it already stood above it (lighten the
+// grey copy), is cut to the lit land cells (destination-in their mask), and
+// goes back as the frame's luminosity: each texel keeps its hue and
+// saturation and rises one step, never past the ceiling, and a texel at or
+// above the ceiling (snow) is left as it is (`canvasSunLiftRgb`).
+const LIT_DODGE = Math.round(255 * (1 - 1 / (1 + SUN_LIFT)));
+// The canvas Lum weighs green below Rec. 709 (0.59 against 0.7152), so a
+// green texel held at the resident ceiling would read brighter: Canvas holds
+// a tenth lower (after the brightest grade still under the candle's 192).
+const LIT_CEILING = Math.round(255 * SUN_LIFT_CEILING * 0.9);
+let _liftGrey = null;
+let _liftWork = null;
+
+const lum = c => 0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2];
+// The compositing spec's SetLum and ClipColor (0-255 channels).
+function setLum(c, l) {
+    const d = l - lum(c);
+    const out = c.map(v => v + d);
+    const L = lum(out);
+    const n = Math.min(...out);
+    const x = Math.max(...out);
+    return out.map(v => {
+        let w = v;
+        if (n < 0) w = L + (w - L) * L / (L - n);
+        if (x > 255) w = L + (w - L) * (255 - L) / (x - L);
+        return w;
+    });
+}
+
+/** SD-3 — one RGB texel (0-255) as the Canvas lift leaves it. */
+export function canvasSunLiftRgb(rgb) {
+    const l = lum(rgb);
+    const gain = 1 / (1 - LIT_DODGE / 255);
+    const target = Math.max(l, Math.min(Math.min(255, l * gain), LIT_CEILING));
+    return target === l ? rgb.slice() : setLum(rgb, target);
+}
+
+// The lit land cells' mask for this field: keyed by the ready layer's field
+// itself (every build, and every field re-created after a release, is a new
+// object whatever the revision counter says) and the coast bake's revision.
+function litMaskFor(layer) {
+    const waterRevision = _frameWater?.revision ?? null;
+    if (_litLayer?.field === layer.field && _litLayer.waterRevision === waterRevision) return _litLayer.canvas;
+    releaseLitMasks();
+    const { field } = layer;
+    const canvas = document.createElement('canvas');
+    canvas.width = field.cols;
+    canvas.height = field.rows;
+    const ctx = canvas.getContext('2d');
+    const image = ctx.createImageData(field.cols, field.rows);
+    paintLitCells(field, image.data, [255, 255, 255], _frameWater
+        ? { fields: _frameWater, waterBit: COAST_FIELD_FLAGS.water, coveredBit: COAST_FIELD_FLAGS.covered }
+        : null);
+    ctx.putImageData(image, 0, 0);
+    _litLayer = { field, waterRevision, canvas };
+    return canvas;
+}
+
+function releaseLitMasks() {
+    for (const canvas of [_litLayer?.canvas, _liftGrey, _liftWork]) if (canvas) releaseCanvasBackingStore(canvas);
+    _litLayer = null;
+    _liftGrey = null;
+    _liftWork = null;
+}
+
+function liftCanvas(canvas, target) {
+    const out = canvas || document.createElement('canvas');
+    if (out.width !== target.width || out.height !== target.height) {
+        out.width = target.width;
+        out.height = target.height;
+    }
+    return out;
+}
+
+/**
+ * SD-3 — Canvas: the sun's lift on the lit land, right after the terrain and
+ * before puddles, cues, casts and the shade layer (the caller holds the
+ * camera transform). The masks go with the shade layer.
+ */
+export function drawSunLift(ctx) {
+    const layer = frameShadeLayer();
+    if (!layer) {
+        releaseLitMasks();
+        return;
+    }
+    if (!ctx?.canvas || canvasSunLiftSteps(_frameCast.shade.receivers?.lift) <= 0) return;
+    const target = ctx.canvas;
+    const mask = litMaskFor(layer);
+    _liftGrey = liftCanvas(_liftGrey, target);
+    _liftWork = liftCanvas(_liftWork, target);
+    const grey = _liftGrey.getContext('2d');
+    grey.globalCompositeOperation = 'copy';
+    grey.fillStyle = '#808080';
+    grey.fillRect(0, 0, target.width, target.height);
+    grey.globalCompositeOperation = 'luminosity';
+    grey.drawImage(target, 0, 0);
+    const work = _liftWork.getContext('2d');
+    work.setTransform(1, 0, 0, 1, 0, 0);
+    work.globalCompositeOperation = 'copy';
+    work.drawImage(_liftGrey, 0, 0);
+    work.globalCompositeOperation = 'color-dodge';
+    work.fillStyle = `rgb(${LIT_DODGE}, ${LIT_DODGE}, ${LIT_DODGE})`;
+    work.fillRect(0, 0, target.width, target.height);
+    work.globalCompositeOperation = 'darken';
+    work.fillStyle = `rgb(${LIT_CEILING}, ${LIT_CEILING}, ${LIT_CEILING})`;
+    work.fillRect(0, 0, target.width, target.height);
+    work.globalCompositeOperation = 'lighten';
+    work.drawImage(_liftGrey, 0, 0);
+    const { field } = layer;
+    work.setTransform(ctx.getTransform());
+    work.imageSmoothingEnabled = false;
+    work.globalCompositeOperation = 'destination-in';
+    work.drawImage(mask, field.originX, field.originY, field.cols * field.cellW, field.rows * field.cellH);
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalCompositeOperation = 'luminosity';
+    ctx.drawImage(_liftWork, 0, 0);
+    ctx.restore();
 }
 
 /** Canvas: the shade layer on the ground, in world space (the caller holds the camera transform). */
@@ -360,7 +546,8 @@ export function villagerCastLighting(x, y, cast = _frameCast) {
     if (!cast?.contact) return cast;
     const shade = cast.shade;
     if (!shade) return cast.contact;
-    const clip = cast === _frameCast && _frameReceivers !== null;
+    // SD-3 alone also asks for the texels: the clip is SD-2's (its step on).
+    const clip = cast === _frameCast && _frameReceivers !== null && lookStrength('sd2') > 0;
     if (!clip && shadeCoverageAt(_frameShade?.field, x, y) >= 0.5) return cast.contact;
     if (_villagerCastSource !== cast || _villagerCastClip !== clip) {
         _villagerCastSource = cast;

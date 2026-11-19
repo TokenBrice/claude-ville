@@ -189,8 +189,8 @@ export const FRAME_UNIFORM_LAYOUT = uniformLayout('FrameUniforms', [
     // (GpuFrameState.resolveMistBurn); appended likewise.
     ['mistBurn', 'vec2f'],
     // SD-2 — the sun's shade field (gpu/SunShade.js resolveSunShade): its
-    // rect (origin xy, cell wh; cell h 0 = none) and (cast step, unused,
-    // sweep xy); appended likewise.
+    // rect (origin xy, cell wh; cell h 0 = none) and (cast step, SD-3 lift
+    // (a gain over 1, 0 = off), sweep xy); appended likewise.
     ['shadeRect', 'vec4f'],
     ['shade', 'vec4f'],
     // EN-7 — the 3.7 mirror stops' rect (bound at every ladder level) and

@@ -25,6 +25,8 @@
 //   --renderers=webgpu,webgl,canvas  --scenes=clear-1200,storm-1915
 //   --url=<ClaudeVille URL> (default: an isolated server)  --json=<report path>
 //   --frames=<dir>  also write each settled frame as PNG there, for review
+//   --settle=frames  also wait for no pending terrain restage and two
+//                    byte-identical captures in a row (smoke:sun-lift)
 //   --look=<id:value,...>  LookStrengths overrides (report a look; not with --update)
 // Exit: 0 pass; 1 a failure; 2 nothing failed but a backend was unavailable.
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
@@ -72,6 +74,7 @@ function parseArgs(argv) {
     else if (flag === '--url') options.url = value || null;
     else if (flag === '--json') options.json = value || null;
     else if (flag === '--frames') options.frames = value || null;
+    else if (flag === '--settle') options.settleFrames = value === 'frames';
     else if (flag === '--look') {
       for (const pair of value.split(',')) {
         const [id, strength] = pair.split(':');
@@ -196,6 +199,12 @@ async function captureFrame(page, renderer) {
   return decode(await page.locator('#worldStack').screenshot());
 }
 
+// `--settle=frames` (smoke:sun-lift's byte-for-byte check): a capture also
+// waits for no pending terrain restage and two byte-identical captures in a
+// row, so a progressive bake (the Canvas sea's chunks) never lands mid-frame.
+let SETTLE_FRAMES = false;
+const sameBytes = (a, b) => Boolean(a && b && a.data.length === b.data.length && Buffer.compare(Buffer.from(a.data), Buffer.from(b.data)) === 0);
+
 async function measureScene(page, renderer, scene, framesDir, hour) {
   await page.evaluate(({ hour, weather }) => {
     const a = window.__claudeVilleApp.renderer.atmosphereState;
@@ -203,11 +212,16 @@ async function measureScene(page, renderer, scene, framesDir, hour) {
     a.setHour(hour);
   }, { hour, weather: scene.weather });
   let previous = null;
-  for (let attempt = 0; attempt < MAX_CAPTURES; attempt++) {
+  let previousFrame = null;
+  const attempts = SETTLE_FRAMES ? MAX_CAPTURES * 3 : MAX_CAPTURES;
+  for (let attempt = 0; attempt < attempts; attempt++) {
     await page.waitForTimeout(SETTLE_MS);
+    const restaging = SETTLE_FRAMES && await page.evaluate(() => Boolean(window.__claudeVilleApp.renderer._terrainRestage));
     const frame = await captureFrame(page, renderer);
     const metrics = frameMetrics(frame, ISLAND_REGION);
-    if (metricsSettled(previous, metrics)) {
+    const frameSettled = !SETTLE_FRAMES || (!restaging && sameBytes(previousFrame, frame));
+    previousFrame = frame;
+    if (metricsSettled(previous, metrics) && frameSettled) {
       if (framesDir) writeFrame(path.join(framesDir, `${renderer}-${scene.id}.png`), frame);
       return { ...metrics, captures: attempt + 1 };
     }
@@ -235,6 +249,7 @@ function printTable(run) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
+  SETTLE_FRAMES = options.settleFrames === true;
   if (options.help) {
     console.log(readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(1, 26).map(l => l.replace(/^\/\/ ?/, '')).join('\n'));
     return 0;
