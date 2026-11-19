@@ -262,3 +262,37 @@ test('XP-8: the Hall keeps the name a lineage last wore, and a returned Day book
     await hall;
     assert.deepEqual(rendered, ['day'], 'the slower Hall read is dropped after the switch back');
 });
+
+test('XP-8: opening the Hall drops a pending date render but never an export of the same day, and a superseded Hall error stays silent', async () => {
+    const failures = [];
+    let releaseDay;
+    let releaseHall;
+    const modal = { contentEl: {}, isRequestCurrent: request => request === 1 };
+    const log = {
+        readDayPage: () => new Promise(resolve => { releaseDay = resolve; }),
+        readDay: async () => [],
+        readBiographies: () => new Promise((resolve, reject) => { releaseHall = reject; }),
+    };
+    const panel = new ChroniclePanel({ modal, chronicleLog: log, toast: { show: message => failures.push(message) } });
+    panel._request = 1;
+    panel._selectedDateKey = DAY;
+    const rendered = [];
+    panel._renderPage = (page, dateKey) => rendered.push(dateKey);
+    panel._renderHall = () => [];
+    panel._tabs = () => 'tabs';
+
+    const readSeq = panel._dateReadSeq;
+    const dateRead = panel._showDate(chronicleDateKey(localTimestamp(-1)), 1);
+    const hall = panel._showHall(1);
+    assert.equal(panel._dateReadSeq, readSeq + 1, 'the Hall leaves the export sequence alone');
+    releaseDay({ events: [], summary: summarizeDay([]), totalCount: 0 });
+    await dateRead;
+    assert.deepEqual(rendered, [], 'the pending date render does not replace the Hall');
+
+    panel._selectedPage = { events: [] };
+    panel._showDayBook(1);
+    releaseHall(new Error('closed'));
+    await hall;
+    assert.deepEqual(failures, [], 'a superseded Hall read reports nothing');
+});
+

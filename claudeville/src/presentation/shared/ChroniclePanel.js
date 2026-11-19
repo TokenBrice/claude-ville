@@ -560,7 +560,7 @@ export class ChroniclePanel {
     async _showDate(dateKey, request) {
         if (!dateKey || request !== this._request) return;
         const readSeq = ++this._dateReadSeq;
-        this._viewSeq++;
+        const viewSeq = ++this._viewSeq;
         if (dateKey === this._selectedDateKey) return;
         let page;
         try {
@@ -570,6 +570,7 @@ export class ChroniclePanel {
                 !this._destroyed
                 && this._request === request
                 && readSeq === this._dateReadSeq
+                && viewSeq === this._viewSeq
                 && this.modal.isRequestCurrent(request)
             ) {
                 this._reportFailure(
@@ -584,6 +585,7 @@ export class ChroniclePanel {
             this._destroyed
             || this._request !== request
             || readSeq !== this._dateReadSeq
+            || viewSeq !== this._viewSeq
             || !this.modal.isRequestCurrent(request)
         ) return;
         // Commit only after the read has succeeded and is still the current
@@ -710,14 +712,15 @@ export class ChroniclePanel {
 
     async _showHall(request) {
         if (this._destroyed || request !== this._request) return;
+        // The view sequence also drops a pending date render; the date read
+        // sequence (which guards exports) moves only with the date.
         const viewSeq = ++this._viewSeq;
-        // Nor may a pending date read reopen the Day book.
-        this._dateReadSeq++;
         let records;
         try {
             records = typeof this.log.readBiographies === 'function' ? await this.log.readBiographies() : [];
         } catch (error) {
-            if (!this._destroyed && request === this._request && this.modal.isRequestCurrent(request)) {
+            if (!this._destroyed && request === this._request && viewSeq === this._viewSeq
+                && this.modal.isRequestCurrent(request)) {
                 this._reportFailure(CHRONICLE_READ_FAILURE_EVENT, 'Could not load the Hall of Lives.', { error });
             }
             return;

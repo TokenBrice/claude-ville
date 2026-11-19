@@ -269,7 +269,7 @@ export class AgentBiographyService {
         observedPushes.sort((a, b) => a.at - b.at);
 
         const now = Date.now();
-        const displayName = String(agent.agentName || agent.name || '').trim().slice(0, 80);
+        const displayName = String(agent.name || agent.agentName || '').trim().slice(0, 80);
         this._mutate(identityKey, (biography) => {
             biography.noteSeen(now);
             if (displayName) biography.displayName = displayName;
