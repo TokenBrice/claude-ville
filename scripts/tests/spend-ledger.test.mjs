@@ -26,7 +26,7 @@ function countingStore() {
     const records = [];
     return {
         records,
-        async get() { return null; },
+        async get(_name, key) { return records.findLast(record => record.key === key) || null; },
         async put(_name, record) {
             records.push(structuredClone(record));
             return record;
@@ -240,6 +240,7 @@ test('World events across midnight persist the old day before banking the new da
         cost: { usd: 10.75, source: 'provider' },
     });
     assert.deepEqual(ledger.today, { tokens: 10, cacheRead: 50, cost: 0.25 });
+    const yesterday = ledger.readDay('2025-01-02');
     await settleEvents();
     assert.deepEqual(store.records, [{
         key: 'usageLedger:2025-01-02',
@@ -268,6 +269,30 @@ test('World events across midnight persist the old day before banking the new da
             }],
         },
     }]);
+    assert.deepEqual(await yesterday, {
+        tokens: 30, cacheRead: 200, cost: 0.5,
+        coverageSince: new Date(2025, 0, 2, 23, 59, 59, 998).getTime(),
+        largest: { kind: 'project', key: '/work/shared' },
+    });
+    assert.equal((await ledger.readDay('2025-01-03')).tokens, 10);
+});
+
+test('SG-4: reads use the exact local date key and distinguish an older zero from a missing day', async () => {
+    const store = countingStore();
+    await store.put('meta', { key: 'usageLedger:2026-03-29', value: { tokens: 0, cost: 0 } });
+    await store.put('meta', { key: 'usageLedger:2026-03-28', value: {
+        tokens: 40, cacheRead: 10, cost: 0.2,
+        projects: [
+            { key: '/repo/one/shared', tokens: 10, cost: 0.15 },
+            { key: '/repo/two/shared', tokens: 30, cost: 0.05 },
+        ],
+    } });
+    const ledger = new SpendLedger(null, { store });
+    assert.deepEqual(await ledger.readDay('2026-03-29'), {
+        tokens: 0, cacheRead: 0, cost: 0, coverageSince: null, largest: null,
+    });
+    assert.equal(await ledger.readDay('2026-03-30'), null);
+    assert.deepEqual((await ledger.readDay('2026-03-28')).largest, { kind: 'project', key: '/repo/two/shared' });
 });
 
 test('World events baseline identities and recounts while splitting tokens, cache reads and cost', async (t) => {

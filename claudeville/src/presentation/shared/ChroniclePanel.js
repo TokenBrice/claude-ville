@@ -285,13 +285,26 @@ function projectSubtotalNodes(summary, events) {
     ];
 }
 
-function spendRows(spend) {
-    if (!spend) return [];
-    return [
-        ['New tokens', spend.tokens],
-        ['Cache reads', spend.cacheRead],
-        [spend.costLabel || 'Est. cost', spend.cost],
+function spendRows(spend, dateKey) {
+    if (spend?.readFailed) return [['Spend ledger', 'Could not read the spend ledger for this day.']];
+    if (!spend) return dateKey === chronicleDateKey() ? [] : [
+        ['Spend ledger', 'No spend record was saved for this day.'],
     ];
+    const rows = [
+        ['New tokens', spend.tokens, formatNumber(spend.tokens)],
+        ['Cache reads', spend.cacheRead, formatNumber(spend.cacheRead)],
+        [spend.costLabel || 'Est. cost', spend.cost, formatCost(spend.cost)],
+    ];
+    if (spend.largest) rows.push([`Largest ${spend.largest.kind} by new tokens`, spend.largest.key]);
+    if (spend.coverageSince) rows.push(['Coverage began', spend.coverageSince, clockTime(spend.coverageSince)]);
+    rows.push(['Coverage', 'Activity ClaudeVille observed while open in this browser.']);
+    if (spend.historical) {
+        rows.push(['Cost basis', 'Recorded cost can include provider-reported costs and API estimates.']);
+        rows.push(['Model detail', 'Per-model totals are unavailable for past days.']);
+    } else if (spend.subscription) {
+        rows.push(['Cost basis', `Your ${spend.subscription} plan bills on quota. API equivalent shows what the observed tokens would cost at API rates.`]);
+    }
+    return rows;
 }
 
 /** Build paste-ready prose and tables for one retained Chronicle day. */
@@ -316,7 +329,7 @@ export function buildChronicleMarkdown({
         ...summaryRows(daySummary).map(([label, value]) => `| ${markdownCell(label)} | ${markdownCell(value)} |`),
     ];
 
-    const spending = dateKey === chronicleDateKey() ? spendRows(spend) : [];
+    const spending = spendRows(spend, dateKey);
     if (spending.length) {
         lines.push(
             '',
@@ -324,9 +337,7 @@ export function buildChronicleMarkdown({
             '',
             '| Metric | Value |',
             '| --- | ---: |',
-            ...spending.map(([label, value]) => `| ${markdownCell(label)} | ${markdownCell(
-                label === 'New tokens' || label === 'Cache reads' ? formatNumber(value) : formatCost(value),
-            )} |`),
+            ...spending.map(([label, value, display = value]) => `| ${markdownCell(label)} | ${markdownCell(display)} |`),
         );
     }
 
@@ -374,7 +385,7 @@ export function buildChronicleCsv({
     for (const [metric, value] of summaryRows(daySummary)) {
         rows.push(['summary', dateKey, '', '', '', '', '', '', '', '', '', '', metric, value]);
     }
-    for (const [metric, value] of (dateKey === chronicleDateKey() ? spendRows(spend) : [])) {
+    for (const [metric, value] of spendRows(spend, dateKey)) {
         rows.push(['spend', dateKey, '', '', '', '', '', '', '', '', '', '', metric, value]);
     }
     for (const event of dayEvents) {
@@ -426,6 +437,7 @@ export class ChroniclePanel {
         this._request = null;
         this._dateReadSeq = 0;
         this._selectedDateKey = null;
+        this._selectedSpend = null;
         this._destroyed = false;
     }
 
@@ -457,12 +469,21 @@ export class ChroniclePanel {
             || this._request !== request
             || !this.modal.isRequestCurrent(request)
         ) return;
-        this._selectedDateKey = dateKey;
         if (!this.modal.open('Village Chronicle', '', { wide: true, request })) return;
+        this._selectedDateKey = dateKey;
+        this._selectedSpend = page.spend;
         this._renderPage(page, dateKey, request);
     }
 
     async _readPage(dateKey) {
+        const [page, spend] = await Promise.all([
+            this._readTimelinePage(dateKey),
+            this._readSpend(dateKey),
+        ]);
+        return { ...page, spend };
+    }
+
+    async _readTimelinePage(dateKey) {
         if (typeof this.log.readDayPage === 'function') {
             return this.log.readDayPage(dateKey, { limit: CHRONICLE_TIMELINE_PAGE_SIZE });
         }
@@ -475,8 +496,9 @@ export class ChroniclePanel {
     }
 
     async _showDate(dateKey, request) {
-        if (!dateKey || dateKey === this._selectedDateKey) return;
+        if (!dateKey || request !== this._request) return;
         const readSeq = ++this._dateReadSeq;
+        if (dateKey === this._selectedDateKey) return;
         let page;
         try {
             page = await this._readPage(dateKey);
@@ -504,6 +526,7 @@ export class ChroniclePanel {
         // Commit only after the read has succeeded and is still the current
         // request. The rendered controls then receive the same committed key.
         this._selectedDateKey = dateKey;
+        this._selectedSpend = page.spend;
         this._renderPage(page, dateKey, request);
     }
 
@@ -515,46 +538,52 @@ export class ChroniclePanel {
         eventBus.emit(eventName, { message, ...details });
     }
 
-    _spendForExport(dateKey) {
-        if (dateKey !== chronicleDateKey()) return null;
-        const today = this.spendLedger?.today;
-        if (!today || typeof today !== 'object') return null;
-        if (this.spendLedger.date && this.spendLedger.date !== dateKey) return null;
-        const subscription = this.usageGetter?.()?.account?.subscriptionType;
+    async _readSpend(dateKey) {
+        const historical = dateKey !== chronicleDateKey();
+        let record;
+        try {
+            record = await this.spendLedger?.readDay(dateKey);
+        } catch {
+            return { readFailed: true };
+        }
+        if (!record) return null;
+        const subscription = historical ? null : this.usageGetter?.()?.account?.subscriptionType;
         const onPlan = typeof subscription === 'string'
             && ['max', 'pro', 'team', 'enterprise'].includes(subscription.toLowerCase());
         return {
-            tokens: Number(today.tokens) || 0,
-            cacheRead: Number(today.cacheRead) || 0,
-            cost: Number(today.cost) || 0,
-            costLabel: onPlan ? 'API equivalent' : 'Est. cost',
+            ...record,
+            historical,
+            subscription: onPlan ? subscription : null,
+            costLabel: historical ? 'Recorded cost' : onPlan ? 'API equivalent' : 'Est. cost',
         };
     }
 
     async _readExportData(dateKey) {
         const selectedDateKey = dateKey || chronicleDateKey();
-        let events;
-        if (typeof this.log?.readDay === 'function') {
-            events = await this.log.readDay(selectedDateKey);
-        } else {
-            events = (await this._readPage(selectedDateKey)).events;
-        }
+        const [events, spend] = await Promise.all([
+            typeof this.log.readDay === 'function' ? this.log.readDay(selectedDateKey)
+                : this._readTimelinePage(selectedDateKey).then(page => page.events),
+            selectedDateKey === this._selectedDateKey ? this._selectedSpend : this._readSpend(selectedDateKey),
+        ]);
         const dayEvents = Array.isArray(events) ? events : [];
         return {
             dateKey: selectedDateKey,
             events: dayEvents,
             summary: summarizeDay(dayEvents),
-            spend: this._spendForExport(selectedDateKey),
+            spend,
         };
     }
 
     async _export(format) {
         if (this._destroyed) return;
         const dateKey = this._selectedDateKey || chronicleDateKey();
+        const request = this._request;
+        const readSeq = this._dateReadSeq;
         try {
             const data = await this._readExportData(dateKey);
             // A date change during the read must never download the wrong day.
-            if (this._destroyed || dateKey !== this._selectedDateKey) return;
+            if (this._destroyed || request !== this._request || readSeq !== this._dateReadSeq
+                || dateKey !== this._selectedDateKey || !this.modal.isRequestCurrent(request)) return;
             const isCsv = format === 'csv';
             const text = isCsv ? buildChronicleCsv(data) : buildChronicleMarkdown(data);
             const extension = isCsv ? 'csv' : 'md';
@@ -569,13 +598,14 @@ export class ChroniclePanel {
         }
     }
 
-    _renderPage({ events, summary, totalCount }, dateKey, request) {
+    _renderPage({ events, summary, totalCount, spend }, dateKey, request) {
         const content = this.modal.contentEl;
         if (content) {
             replaceChildren(content, this._render(events, summary, {
                 newestFirst: true,
                 totalCount,
                 dateKey,
+                spend,
                 onDateChange: nextDate => this._showDate(nextDate, request),
             }));
         }
@@ -587,6 +617,7 @@ export class ChroniclePanel {
         this._dateReadSeq++;
         this.modal?.invalidateRequest?.(this._request);
         this._request = null;
+        this._selectedSpend = null;
         this.modal = null;
         this.log = null;
         this.spendLedger = null;
@@ -594,25 +625,15 @@ export class ChroniclePanel {
         this.toast = null;
     }
 
-    // The day's accounting lives here rather than in the topbar: a dollar
-    // figure you are not billed for has not earned permanent space in the
-    // corner of someone's eye, but it belongs in the record of the day.
-    _spendNodes(isToday = true) {
-        if (!isToday) return [];
-        const today = this.spendLedger?.today;
-        if (!today) return [];
-        const subscription = this.usageGetter?.()?.account?.subscriptionType;
-        const onPlan = typeof subscription === 'string'
-            && ['max', 'pro', 'team', 'enterprise'].includes(subscription.toLowerCase());
-
-        const nodes = [el('div', { className: 'chronicle__ledger' }, [
-            ledgerRow('NEW TOKENS', formatNumber(today.tokens), today.tokens),
-            ledgerRow('CACHE READS', formatNumber(today.cacheRead), today.cacheRead),
-            ledgerRow(onPlan ? 'API EQUIVALENT' : 'EST. COST', formatCost(today.cost), today.cost),
-        ])];
-        nodes.push(el('p', { className: 'chronicle__note' }, onPlan
-            ? `Counted while ClaudeVille was open. Your ${subscription} plan bills on quota, not on this figure — it is what today's tokens would have cost at API rates.`
-            : 'Counted while ClaudeVille was open, from the growth in each session\'s token totals.'));
+    _spendNodes(spend, dateKey) {
+        const rows = spendRows(spend, dateKey);
+        const stats = spend && !spend.readFailed ? rows.splice(0, 3) : [];
+        const nodes = stats.length ? [el('div', { className: 'chronicle__ledger' }, stats.map(
+            ([label, value, display]) => ledgerRow(label.toUpperCase(), display, value),
+        ))] : [];
+        for (const [label, value, display = value] of rows) {
+            nodes.push(el('p', { className: 'chronicle__note' }, `${label} · ${display}`));
+        }
         return nodes;
     }
 
@@ -691,6 +712,7 @@ export class ChroniclePanel {
         totalCount = events.length,
         dateKey = chronicleDateKey(),
         onDateChange = null,
+        spend = null,
     } = {}) {
         const isToday = dateKey === chronicleDateKey();
         const nodes = [
@@ -708,7 +730,7 @@ export class ChroniclePanel {
         ]));
         nodes.push(...projectSubtotalNodes(summary, events));
 
-        nodes.push(...this._spendNodes(isToday));
+        nodes.push(...this._spendNodes(spend, dateKey));
 
         if (summary.longestWaitMs > 0) {
             nodes.push(el('p', { className: 'chronicle__note' },

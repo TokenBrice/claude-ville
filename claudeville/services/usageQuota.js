@@ -394,7 +394,7 @@ function tryFetchQuota(now = Date.now()) {
 // ─── Codex quota (SV-6 / PV-7) ─────────────────────────────────
 
 /**
- * `/api/usage.codex` from the newest observation (see `extractCodexRateLimits`
+ * `/api/usage.codex` from the newest observation (see `noteCodexRateLimits`
  * in `adapters/codex.js`), or null when no rollout carried `rate_limits`.
  *
  * The reported window is the binding one: the highest `used_percent` among
@@ -413,6 +413,10 @@ function codexQuotaFromObservation(observation, now = Date.now()) {
   const shape = binding || highest(windows);
   const allReset = windows.length > 0 && current.length === 0;
   const credits = observation.credits || {};
+  const change = observation.creditChange;
+  const ageMs = now - observation.observedAt;
+  const comparable = Number.isFinite(change?.delta) && Number.isFinite(change.intervalMs)
+    && change.intervalMs > 0 && ageMs >= 0 && ageMs + change.intervalMs <= QUOTA_MAX_STALE_MS;
   return {
     usedPercent: binding ? binding.usedPercent : null,
     windowMinutes: shape ? shape.windowMinutes : null,
@@ -424,6 +428,8 @@ function codexQuotaFromObservation(observation, now = Date.now()) {
     },
     limitReached: !allReset && ((binding?.usedPercent ?? 0) >= 100 || observation.reached === true),
     observedAt: observation.observedAt,
+    // Minute-grain age keeps transcript-only updates from rewriting usage on every scan.
+    ...(comparable ? { creditChange: { delta: change.delta, intervalMs: change.intervalMs, ageMs: Math.floor(ageMs / 60_000) * 60_000 } } : {}),
   };
 }
 
