@@ -12,6 +12,7 @@ import { BgmDirector } from '../../claudeville/src/presentation/shared/audio/Bgm
 import { TopBar } from '../../claudeville/src/presentation/shared/TopBar.js';
 import { DashboardRenderer } from '../../claudeville/src/presentation/dashboard-mode/DashboardRenderer.js';
 import { eventBus } from '../../claudeville/src/domain/events/DomainEvent.js';
+import { AtmosphereState } from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
 
 class FakeClassList {
     constructor(owner) {
@@ -286,6 +287,56 @@ test('the SOUND popover opens on the checked preset, closes the Spend Map, and r
         if (previousWindow === undefined) delete globalThis.window;
         else globalThis.window = previousWindow;
     }
+});
+
+test('the existing header timer keeps village time in visible Dashboard mode', (t) => {
+    const now = new Date(2026, 10, 19, 12);
+    t.mock.timers.enable({ apis: ['Date', 'setInterval'], now });
+    const documentRef = { hidden: false };
+    globalThis.document = documentRef;
+    t.after(() => { delete globalThis.document; });
+    const atmosphere = new AtmosphereState();
+    const fields = new Map(['time', 'phase', 'override'].map(name => [`.topbar__clock-${name}`, {}]));
+    fields.set('path', { setAttribute() {} });
+    const topBar = Object.assign(Object.create(TopBar.prototype), {
+        world: { get activeTime() { return Math.floor((Date.now() - now.getTime()) / 1000); } },
+        els: { time: {}, clock: { dataset: {}, querySelector: selector => fields.get(selector) } },
+        _villageState: {},
+    });
+    let dashboard = false;
+    let snapshots = 0;
+    topBar.readDashboardAtmosphere = () => {
+        if (!dashboard) return null;
+        snapshots++;
+        return atmosphere.snapshot();
+    };
+    const clock = fields.get('.topbar__clock-time');
+    topBar._renderWitnessClock(atmosphere.snapshot());
+    topBar._startTimer();
+    t.mock.timers.tick(60_000);
+    assert.equal(clock.textContent, '12:00');
+    assert.equal(snapshots, 0);
+
+    dashboard = true;
+    t.mock.timers.tick(5_000);
+    assert.equal(clock.textContent, '12:01');
+    assert.equal(snapshots, 1);
+    assert.equal(topBar.els.time.textContent, '00:01:05');
+
+    documentRef.hidden = true;
+    t.mock.timers.tick(60_000);
+    assert.equal(clock.textContent, '12:01');
+    assert.equal(snapshots, 1);
+    documentRef.hidden = false;
+    t.mock.timers.tick(1_000);
+    assert.equal(clock.textContent, '12:02');
+
+    atmosphere.setHour(14.5);
+    t.mock.timers.tick(60_000);
+    assert.equal(clock.textContent, '14:30');
+    t.mock.timers.tick(60_000);
+    assert.equal(clock.textContent, '14:30');
+    assert.equal(fields.get('.topbar__clock-override').textContent, 'FIXED');
 });
 
 test('Dashboard Escape only deselects from a focused card with no open surface', () => {

@@ -19,7 +19,7 @@ Desktop-first constraint: validate at browser widths of 1280px or wider. Do not 
 - `ModeManager` emits `mode:changed`.
 - `DashboardRenderer` sets `active = true` only for `dashboard`.
 - Detail polling starts when Dashboard mode becomes active and stops when leaving Dashboard mode.
-- `agent:added`, `agent:updated`, and `agent:removed` trigger re-render only while Dashboard mode is active. `ObservedCallTape` records calls and exception spans in every mode; row tapes (and the selected row's session strip) repaint on a 15 s bucket boundary, a tape change or a transcript fetch, only while Dashboard mode is active.
+- `agent:added`, `agent:updated`, and `agent:removed` trigger re-render only while Dashboard mode is active. Changes to an exception rank or the presence of working-set data join the existing batched layout pass, so overlaps reorder rows and the project shows its work column as soon as it has data. Checkout labels and search context update on the existing rows. `ObservedCallTape` records calls and exception spans in every mode. Row tapes and the selected row's session strip repaint on a 15 s bucket boundary, a tape change, or a transcript fetch while Dashboard mode is active.
 
 ## Rendering Contract
 
