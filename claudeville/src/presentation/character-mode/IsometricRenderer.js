@@ -83,6 +83,7 @@ import VisitTileAllocator, { standsOnFixture } from './VisitTileAllocator.js';
 import { scenicScoreBias } from './DayRoutine.js';
 import { getPulsePriority } from './PulsePolicy.js';
 import { annotationModeForPressure, calculateScenePressure, getActiveMarkGovernor, MarkGovernor, setActiveMarkGovernor } from './MarkGovernor.js';
+import { strikePostcard } from './Postcard.js';
 import { fireBreath, fireBreathDepth, fixturePoolReach, groundCourseHeight, HEARTH_FIXTURES, HEARTH_TONE, hearthLightSources, lightSourceCacheKey, normalizeLightSource } from './LightSourceRegistry.js';
 import { lampRoundFor } from './LamplighterRound.js';
 import { applyTeamPlazaPreferences, getCouncilRingDiagnostics, releaseCouncilRingState } from './CouncilRing.js';
@@ -3398,6 +3399,11 @@ export class IsometricRenderer {
         return measured ? { ...measured, horizonY, cell: this._revealCell() } : null;
     }
 
+    // XP-5 — one postcard frame of this view, composited and saved as a PNG.
+    strikePostcard(options) {
+        return strikePostcard(this, options);
+    }
+
     // 0.3 (b) — draw one frame synchronously, outside the loop. The resize
     // closure calls it after reallocating the canvases (which clears them), so
     // a cleared backing store never presents. Nothing draws before the loop's
@@ -3817,6 +3823,12 @@ export class IsometricRenderer {
         }
         if (event.code === 'KeyR') {
             this.villageDirector?.toggleReplay?.();
+            event.preventDefault();
+            return;
+        }
+        // XP-5 — P strikes a postcard of the current view (Postcard.js).
+        if (event.code === 'KeyP' && !event.shiftKey && !event.repeat) {
+            this.strikePostcard();
             event.preventDefault();
             return;
         }

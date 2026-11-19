@@ -23,6 +23,7 @@ import {
     steppedDecay,
 } from './EffectStamps.js';
 import { noteMoment } from './MomentTally.js';
+import { postcardFrame } from './Postcard.js';
 
 // 6.2 — arrival materialize beat (Medium): anticipation column + rune ring,
 // one cream silhouette frame, the true body with a 3-step column collapse and
@@ -140,7 +141,7 @@ function drawChildMiniature(ctx, x, y, { miniature = null, signature = null, acc
         ctx.drawImage(canvas, ox - (canvas.width >> 1), oy - canvas.height, canvas.width, canvas.height);
     }
     if (mark) drawAgentSignature(ctx, mark, { x: ox, y: canvas ? oy + 4 : oy, pixel: 1, accent: tone });
-    if (count > 1) {
+    if (count > 1 && !postcardFrame()) {
         // Exact child count, never a percentage: C5 label type (PS2P 8 px,
         // screen-fixed, never bold) on a dark backing so the number survives
         // foliage and the night grade.

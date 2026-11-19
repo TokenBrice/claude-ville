@@ -28,6 +28,7 @@ import { WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
 import { LABEL_INK, measureLabelText, snapScreenOrigin } from './WorldLabelKit.js';
 import { materialClassId } from './MaterialRegistry.js';
 import { noteMoment } from './MomentTally.js';
+import { postcardFrame } from './Postcard.js';
 
 const MONTH_MS = 30 * 24 * 60 * 60 * 1000;
 const KIND_COLORS = {
@@ -743,6 +744,8 @@ export class ChronicleMonuments {
     }
 
     _drawBanner(ctx, payload, zoom, now) {
+        // XP-5 — the banner is a label: a postcard frame flies none.
+        if (postcardFrame()) return;
         const reduced = reducedMotionPreferred();
         const elapsed = Math.max(0, now - Number(payload.startedAt || now));
         const duration = Math.max(1, Number(payload.expiresAt || now) - Number(payload.startedAt || now));

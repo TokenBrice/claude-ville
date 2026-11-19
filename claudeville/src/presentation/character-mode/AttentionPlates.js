@@ -708,8 +708,10 @@ export function attentionScreenRects(layout) {
  * frame): clear every graphic's footprint instead of filling it, then print
  * the text — the overlay above the GPU marks carries only the ink. The W5.6
  * off-frame tally tabs are overlay-only walnut and draw whole either way.
+ * `beaconsOnly` (XP-5 postcards): the beacons alone — no leader, plate or
+ * tally tab, so no word and no name.
  */
-export function drawAttentionPlates(ctx, layout, { inkOnly = false } = {}) {
+export function drawAttentionPlates(ctx, layout, { inkOnly = false, beaconsOnly = false } = {}) {
     if (!ctx || !(layout?.count || layout?.tallies?.length)) return;
     ctx.save();
     ctx.globalAlpha = 1;
@@ -723,7 +725,7 @@ export function drawAttentionPlates(ctx, layout, { inkOnly = false } = {}) {
             ctx.fillStyle = ink;
             ctx.fillRect(left, top, width, height);
         };
-    for (const plate of layout.plates) leaderFills(plate, fill);
+    if (!beaconsOnly) for (const plate of layout.plates) leaderFills(plate, fill);
     // A beacon stamp's opaque pixels erase exactly what they would cover.
     if (inkOnly) ctx.globalCompositeOperation = 'destination-out';
     for (const beacon of layout.beacons) {
@@ -738,6 +740,10 @@ export function drawAttentionPlates(ctx, layout, { inkOnly = false } = {}) {
         });
     }
     if (inkOnly) ctx.globalCompositeOperation = 'source-over';
+    if (beaconsOnly) {
+        ctx.restore();
+        return;
+    }
     for (const plate of layout.plates) {
         plateFills(plate, fill);
         drawPlateText(ctx, plate);
@@ -820,8 +826,9 @@ function markRecord(index, source, textureKey, pool = MARK_RECORD_POOL) {
  * flag `screenSpace` (+ `actionMark` for role 2). Returns `out` (emptied
  * first), or null when the layout cannot be expressed exactly (no DOM, an
  * ink or motif without a texel), in which case the overlay draws the plates.
+ * `beaconsOnly` (XP-5 postcards): the beacons' records alone.
  */
-export function attentionMarkRecords(layout, { scale = 1, out = [] } = {}) {
+export function attentionMarkRecords(layout, { scale = 1, out = [], beaconsOnly = false } = {}) {
     out.length = 0;
     if (!layout?.count) return out;
     const inks = markInks();
@@ -846,7 +853,7 @@ export function attentionMarkRecords(layout, { scale = 1, out = [] } = {}) {
         record.flags = GPU_RECORD_FLAGS.screenSpace | (role === ROLE_MARK ? GPU_RECORD_FLAGS.actionMark : 0);
         out.push(record);
     };
-    for (const plate of layout.plates) leaderFills(plate, fill);
+    if (!beaconsOnly) for (const plate of layout.plates) leaderFills(plate, fill);
     for (const beacon of layout.beacons) {
         if (beacon.ring) beaconRingFills(beacon, fill);
         const step = beacon.step || BEACON_STEP;
@@ -876,7 +883,7 @@ export function attentionMarkRecords(layout, { scale = 1, out = [] } = {}) {
             out.push(record);
         }
     }
-    for (const plate of layout.plates) plateFills(plate, fill);
+    if (!beaconsOnly) for (const plate of layout.plates) plateFills(plate, fill);
     return complete ? out : null;
 }
 
