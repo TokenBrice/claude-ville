@@ -95,6 +95,10 @@ const LIFT_CEILING = SUN_LIFT_CEILING.toFixed(4);
 // held here, and one already this bright unlifted keeps its unlifted value.
 export const SUN_LIFT_GRADED_CEILING = 0.68;
 const GRADED_CEILING = SUN_LIFT_GRADED_CEILING.toFixed(4);
+// SD-3 — the waiting candle's floor (192 of 255, CarriedLantern): no lifted
+// texel of the finished frame passes it.
+export const SUN_LIFT_CANDLE = 191 / 255;
+const CANDLE_LUMA = SUN_LIFT_CANDLE.toFixed(4);
 
 // u_shadeField (unit 2): the field's RGBA8 texels. u_shadeRect = (origin x,
 // origin y, cell w, cell h) in world px; cell h 0 = no field (the look off,
@@ -108,6 +112,8 @@ uniform vec4 u_shade;
 // SD-3 — sunShadeStep's verdict on this texel: -1 not a receiver, else 0 or
 // 1 lit, 2 in cast shade, 3 turned (sunLift reads it).
 float sunVerdict = -1.0;
+// SD-3 — what the lift added after the grade (sunLiftGraded; sunLiftFinal).
+vec3 sunLiftDelta = vec3(0.0);
 
 vec4 shadeFieldAt(vec2 world, out vec2 cell) {
     cell = floor((world - u_shadeRect.xy) / u_shadeRect.zw);
@@ -261,7 +267,19 @@ vec3 sunLift(vec3 color, bool ground, float lift, float lit) {
 vec3 sunLiftGraded(vec3 lifted, vec3 base) {
     if (dot(base, GRADE_LUMA) >= ${GRADED_CEILING}) return base;
     float luma = dot(lifted, GRADE_LUMA);
-    return luma > ${GRADED_CEILING} ? lifted * (${GRADED_CEILING} / luma) : lifted;
+    vec3 held = luma > ${GRADED_CEILING} ? lifted * (${GRADED_CEILING} / luma) : lifted;
+    sunLiftDelta = held - base;
+    return held;
+}
+
+// SD-3 — the finished texel: lamp light, fog and courses ride the lifted
+// value, so the frame is held under the waiting candle here, and a texel
+// the unlifted frame already puts above it gives the whole lift back.
+vec3 sunLiftFinal(vec3 color) {
+    float luma = dot(color, GRADE_LUMA);
+    float rise = dot(sunLiftDelta, GRADE_LUMA);
+    if (luma <= ${CANDLE_LUMA} || rise <= 0.0) return color;
+    return color - sunLiftDelta * min(1.0, (luma - ${CANDLE_LUMA}) / rise);
 }
 `;
 
@@ -271,6 +289,8 @@ export const SUN_SHADE_WGSL = `
 // SD-3 — sunShadeStep's verdict on this texel: -1 not a receiver, else 0 or
 // 1 lit, 2 in cast shade, 3 turned (sunLift reads it).
 var<private> sunVerdict: f32 = -1.0;
+// SD-3 — what the lift added after the grade (sunLiftGraded; sunLiftFinal).
+var<private> sunLiftDelta: vec3f = vec3f(0.0);
 
 fn shadeFieldAt(world: vec2f, cell: ptr<function, vec2f>) -> vec4f {
   *cell = floor((world - frame.shadeRect.xy) / frame.shadeRect.zw);
@@ -424,7 +444,19 @@ fn sunLift(color: vec3f, ground: bool, lift: f32, lit: f32) -> vec3f {
 fn sunLiftGraded(lifted: vec3f, base: vec3f) -> vec3f {
   if (dot(base, GRADE_LUMA) >= ${GRADED_CEILING}) { return base; }
   let luma = dot(lifted, GRADE_LUMA);
-  return select(lifted, lifted * (${GRADED_CEILING} / luma), luma > ${GRADED_CEILING});
+  let held = select(lifted, lifted * (${GRADED_CEILING} / luma), luma > ${GRADED_CEILING});
+  sunLiftDelta = held - base;
+  return held;
+}
+
+// SD-3 — the finished texel: lamp light, fog and courses ride the lifted
+// value, so the frame is held under the waiting candle here, and a texel
+// the unlifted frame already puts above it gives the whole lift back.
+fn sunLiftFinal(color: vec3f) -> vec3f {
+  let luma = dot(color, GRADE_LUMA);
+  let rise = dot(sunLiftDelta, GRADE_LUMA);
+  if (luma <= ${CANDLE_LUMA} || rise <= 0.0) { return color; }
+  return color - sunLiftDelta * min(1.0, (luma - ${CANDLE_LUMA}) / rise);
 }
 `;
 

@@ -201,7 +201,7 @@ test('a sliced receivers\' build is the build run at once', () => {
 
 test('the GLSL and WGSL twins carry the same functions, constants and tests', () => {
     const functions = (source, re) => [...source.matchAll(re)].map(match => match[1]);
-    const names = ['shadeFieldAt', 'shadeGroundAt', 'sunTrailHidden', 'shadeCeilingOver', 'shadeSurfaceAt', 'sunShadeStep', 'sunLift', 'sunLiftGraded'];
+    const names = ['shadeFieldAt', 'shadeGroundAt', 'sunTrailHidden', 'shadeCeilingOver', 'shadeSurfaceAt', 'sunShadeStep', 'sunLift', 'sunLiftGraded', 'sunLiftFinal'];
     assert.deepEqual(functions(SUN_SHADE_GLSL, /^(?:bool|vec3|vec4|float)\s+(\w+)\(/gm), names);
     assert.deepEqual(functions(SUN_SHADE_WGSL, /^fn\s+(\w+)\(/gm), names);
     const numbers = source => (source.match(/(?<![\w.])\d+\.\d+/g) || []).join(' ');

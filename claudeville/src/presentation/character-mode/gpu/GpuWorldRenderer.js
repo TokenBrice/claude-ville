@@ -2414,7 +2414,8 @@ void main() {
     }
     // 1.2 — the pools light the ungraded surface, so warm light shows the real
     // cobble, grass and wall texture instead of a desaturated night albedo.
-    vec3 poolAlbedo = color;
+    // SD-3 — the pools light the unlifted surface (the sun's lift is not lamp light).
+    vec3 poolAlbedo = sunBase;
     // 1.1 — C2 time-of-day and weather grade, before any local light or
     // authored emission.
     // SD-3 — a lifted texel is held under the candle after the grade too.
@@ -3188,6 +3189,8 @@ void main() {
         : applySeaCourses(color, artCell, poolOrder,
             artTopLeftPx.y + (waterMaterial ? seaContourRows(artCell) * u_camera.z : 0.0), u_additive);
     if (bakedRim && !u_additive) alpha = mix(alpha, max(alpha, v_alpha), nightCarry);
+    // SD-3 — the finished lifted texel stays under the waiting candle.
+    color = sunLiftFinal(color);
     outColor = vec4(max(color, vec3(0.0)) * alpha, alpha);
     outEmission = vec4(emission * alpha, alpha > 0.0 ? 1.0 : 0.0);
 }`;

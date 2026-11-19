@@ -643,7 +643,8 @@ fn sceneSurface() -> SurfaceSample {
     if (frame.shade.y > 0.0 && !waterMaterial) { color = sunLift(color, batch.terrainBatch != 0u && v_receiver.x < -0.5, frame.shade.y, select(0.0, clamp(emissive, 0.0, 1.0), batch.hasEmissiveMap != 0u)); }
   }
   // 1.2 — the pools light the ungraded surface.
-  let poolAlbedo = color;
+  // SD-3 — the pools light the unlifted surface (the sun's lift is not lamp light).
+  let poolAlbedo = sunBase;
   // 1.1 — C2 time-of-day and weather grade.
   // SD-3 — a lifted texel is held under the candle after the grade too.
   let sunLifted = any(color != sunBase);
@@ -1288,7 +1289,8 @@ struct SceneOut {
   v_texelRect = in.texelRect;
   v_layer = in.layer;
   var surf = sceneSurface();
-  let color = sceneLight(&surf);
+  // SD-3 — the finished lifted texel stays under the waiting candle.
+  let color = sunLiftFinal(sceneLight(&surf));
   var out: SceneOut;
   out.color = vec4f(max(color, vec3f(0.0)) * surf.alpha, surf.alpha);
   out.emission = sceneEmission(surf);
