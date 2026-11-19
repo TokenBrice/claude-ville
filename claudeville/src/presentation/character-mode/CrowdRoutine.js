@@ -21,7 +21,7 @@
 //              delayed: the departure sigil lands wherever the body stands.
 
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
-import { isWaitingOnCrew } from '../../domain/services/StatusResolver.js';
+import { isBlockingMcpDelegationTool, isWaitingOnCrew, TurnState } from '../../domain/services/StatusResolver.js';
 
 export const STROLL_CAP = 6;
 export const MIN_SIT_MS = 45_000;
@@ -114,22 +114,17 @@ export function advanceSubagentWait(prev, agent, now, { hasLiveSubagents = false
         return hasLiveSubagents ? { since: prev?.since ?? now, seenAt: now, pint: true } : null;
     }
     if (agent.status !== AgentStatus.WORKING) return null;
-    if (agent.turnState === 'tool_pending' && isSubagentWaitTool(agent, agent.pendingTool)) {
-        const pendingSince = Number(agent.pendingSince);
-        const since = Math.min(prev?.since ?? now, pendingSince > 0 ? pendingSince : now);
-        return { since, seenAt: now, pint: now - since >= SUBAGENT_WAIT_PINT_MS };
-    }
-    // PV-2 (Q2) — waiting on its own crew since its turn closed, exactly
-    // like a pending Agent call.
-    if (isWaitingOnCrew(agent)) {
-        const closedAt = Number(agent.awaitingSince);
-        const since = Math.min(prev?.since ?? now, closedAt > 0 ? closedAt : now);
+    const pending = agent.turnState === TurnState.TOOL_PENDING;
+    if (isWaitingOnCrew(agent) || (pending && isSubagentWaitTool(agent, agent.pendingTool))) {
+        const observedSince = Number(pending ? agent.pendingSince : agent.awaitingSince);
+        const since = Math.min(prev?.since ?? now, observedSince > 0 ? observedSince : now);
         return { since, seenAt: now, pint: now - since >= SUBAGENT_WAIT_PINT_MS };
     }
     // Between two slices of one wait the record (and its seat) holds: a
     // wait tool's next slice, or a crew notice the lead reads and closes.
-    if (prev && agent.turnState === 'working'
-        && (isSubagentWaitTool(agent, agent.lastTool) || Number(agent.backgroundPending?.count) > 0)
+    if (prev && agent.turnState === TurnState.WORKING
+        && (isSubagentWaitTool(agent, agent.lastTool) || isBlockingMcpDelegationTool(agent.lastTool)
+            || Number(agent.backgroundPending?.count) > 0)
         && now - prev.seenAt < SUBAGENT_WAIT_SLICE_GAP_MS) return prev;
     return null;
 }

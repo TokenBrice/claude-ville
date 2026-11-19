@@ -40,6 +40,8 @@ Set `CLAUDEVILLE_TEST_TMPDIR` to a writable directory when the normal temporary 
 | `o2-prompt-plan-mapping.test.mjs` | Prompt, TodoWrite, and branch payload bounds plus signature-driven live Agent updates. |
 | `agent-manager-digest.test.mjs` | The AgentManager change digest sees a git event or tool result edited at any index (one bounded key per row), and a freshness re-stamp alone never re-upserts a villager. |
 | `tool-identity-lowercase.test.mjs` | Lower-case OMP tool buildings, reasons, verbs and glyph categories; code-inspection and documentation exceptions; unchanged capitalized tool buildings. |
+| `tool-identity-vocabulary.test.mjs` | Tool placement and labels, script projection through session snapshots and deltas, Poll watches and action pose categories. |
+| `tavern.test.mjs`, `living-crowd.test.mjs` | Tavern seating and crowd routines, including crew wait labels, seating after 60 seconds and retry glyph exemptions. |
 | `c10-taskboard-board.test.mjs` | Selected/pinned Task Board precedence, honest row shaping, overflow, and completed-only strikes. |
 | `session-activity-time.test.mjs` | VB-14: talk-arc ranking, the incident scene id and start, and the Task Board tie-break read the session's own `lastSessionActivity`, never `lastActive` (the last WebSocket touch). |
 | `hidden-resume.test.mjs` | VB-4: after a loop gap of over 10 s the first frame settles the world: departures over 30 s old leave with no walk or fade, unseen arrivals and walk-ins nobody watched stand at their destination, departures in their first 30 s still walk, and only those keep a gate transit. |

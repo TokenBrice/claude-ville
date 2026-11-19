@@ -387,8 +387,8 @@ function paperLabel(ritual, fallback) {
 // 4.1 — the aperture's tool label: the shared humanised verb (`message`,
 // `spawn agent`), never the raw tool id; the exact invocation stays in the
 // panel.
-function compactToolLabel(tool) {
-    return wordFitLabel(toolVerbLabel(tool), 13);
+function compactToolLabel(agent) {
+    return wordFitLabel(toolVerbLabel(agent.currentTool, undefined, agent), 13);
 }
 
 function hashText(value) {
@@ -5581,7 +5581,7 @@ export class BuildingSprite {
             sessions.push({
                 agentId: agent.id,
                 name: agent.displayName || agent.name || agent.id,
-                tool: compactToolLabel(agent.currentTool),
+                tool: compactToolLabel(agent),
                 status: agent.status,
                 observation,
                 visiting,

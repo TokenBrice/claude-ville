@@ -1,7 +1,7 @@
 import { i18n } from '../../config/i18n.js';
 import { BUILDING_ACCENTS, BUILDING_ACCENTS_RGB, PROVIDER_HUES, STATUS_VISUALS } from '../../config/theme.js';
-import { buildingForTool, toolCategory, toolIcon, shortToolName } from '../../domain/services/ToolIdentity.js';
-import { isWaitingOnCrew } from '../../domain/services/StatusResolver.js';
+import { buildingForTool, placedBuildingForTool, toolActionLabel, toolCategory, toolIcon, shortToolName } from '../../domain/services/ToolIdentity.js';
+import { isWaitingOnCrew, isWatchingOnPoll, TurnState } from '../../domain/services/StatusResolver.js';
 import { formatModelLabel, getModelVisualIdentity } from './ModelVisualIdentity.js';
 import { repoProfile } from './RepoColor.js';
 import { el } from './DomSafe.js';
@@ -213,22 +213,37 @@ export function modelPresentation(agent) {
 
 export function currentToolPresentation(agent, translator = i18n) {
     const statusInfo = statusPresentation(agent?.status);
+    if (statusInfo.status === 'working' && isWaitingOnCrew(agent)) {
+        const count = Number(agent.backgroundPending?.count);
+        return {
+            isIdle: agent.turnState === TurnState.AWAITING_INPUT,
+            icon: '\u23F3',
+            name: 'Waiting on crew',
+            detail: count > 0 ? `${count} background ${count === 1 ? 'task' : 'tasks'}` : '',
+        };
+    }
+    if (isWatchingOnPoll(agent)) {
+        return {
+            isIdle: false,
+            icon: toolIcon('Monitor'),
+            name: toolActionLabel('Monitor'),
+            detail: agent.script?.description || '',
+        };
+    }
+    if (agent?.script) {
+        return {
+            isIdle: false,
+            icon: toolIcon(agent.script.tool),
+            name: toolActionLabel(agent.script.tool, { translator }),
+            detail: agent.script.description || '',
+        };
+    }
     if (agent?.currentTool) {
         return {
             isIdle: false,
             icon: toolIcon(agent.currentTool),
             name: agent.currentTool,
             detail: agent.currentToolInput || '',
-        };
-    }
-    // PV-2 (Q2) — a closed turn whose own background crew still works.
-    if (isWaitingOnCrew(agent)) {
-        const count = Number(agent.backgroundPending.count);
-        return {
-            isIdle: true,
-            icon: '\u23F3',
-            name: 'Waiting on crew',
-            detail: `${count} background ${count === 1 ? 'task' : 'tasks'}`,
         };
     }
     // Tool-less fallback: terminal statuses read as their word (idle and
@@ -265,8 +280,12 @@ const BUILDING_EMBLEMS = Object.freeze({
 export function buildingClassForAgent(agent) {
     if (!agent) return null;
     if (agent.currentTool) {
-        const fromCurrent = buildingForTool(agent.currentTool, agent.currentToolInput);
+        const fromCurrent = buildingForTool(agent.currentTool, agent.currentToolInput, agent);
         if (fromCurrent && BUILDING_EMBLEMS[fromCurrent]) return fromCurrent;
+    }
+    if (agent.script) {
+        const fromLast = placedBuildingForTool(agent.lastTool, agent.lastToolInput);
+        if (fromLast && BUILDING_EMBLEMS[fromLast]) return fromLast;
     }
     const history = agent.toolHistory;
     if (Array.isArray(history)) {

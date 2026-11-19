@@ -83,6 +83,7 @@ export class Agent {
         backgroundPending,
         pendingTool,
         pendingSince,
+        script,
         waitReason,
         awaitingSince,
         turnStartedAt,
@@ -153,6 +154,7 @@ export class Agent {
         this.backgroundPending = backgroundPending || null;
         this.pendingTool = pendingTool || null;
         this.pendingSince = optionalNumber(pendingSince);
+        this.script = script || null;
         this.waitReason = waitReason || null;
         this.awaitingSince = optionalNumber(awaitingSince);
         this.turnStartedAt = optionalNumber(turnStartedAt);
@@ -351,7 +353,7 @@ export class Agent {
     get targetBuildingType() {
         const toolName = this.currentTool;
         if (!toolName) return null;
-        return placedBuildingForTool(toolName, this.currentToolInput || this.lastToolInput);
+        return placedBuildingForTool(toolName, this.currentToolInput || this.lastToolInput, this);
     }
 
     get lastKnownBuildingType() {

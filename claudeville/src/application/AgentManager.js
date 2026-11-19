@@ -1,6 +1,7 @@
 import { Agent, normalizeTodoList } from '../domain/entities/Agent.js';
 import { AgentStatus } from '../domain/value-objects/AgentStatus.js';
-import { resolveAgentStatus } from '../domain/services/StatusResolver.js';
+import { isWaitingOnCrew, isWatchingOnPoll, resolveAgentStatus, TurnState } from '../domain/services/StatusResolver.js';
+import { isScriptWrapperTool } from '../domain/services/ToolIdentity.js';
 import { eventBus } from '../domain/events/DomainEvent.js';
 import { AgentBiography } from '../domain/value-objects/AgentBiography.js';
 import { dialogueIsHeldable } from '../config/dialogue.js';
@@ -93,6 +94,7 @@ const AGENT_SIGNATURE_FIELDS = Object.freeze([
     'backgroundPending',
     'pendingTool',
     'pendingSince',
+    'script',
     'waitReason',
     'awaitingSince',
     'turnStartedAt',
@@ -564,6 +566,7 @@ export class AgentManager {
                     currentTool: null,
                     currentToolInput: null,
                     pendingTool: null,
+                    script: null,
                     waitReason: null,
                     awaitingSince: null,
                     resident: false,
@@ -951,9 +954,18 @@ export class AgentManager {
         const teamInfo = teamMembers ? teamMembers.get(session.agentId) : null;
         const agentName = teamInfo?.name || session.name || session.agentName || session.nickname || null;
         const { status, lastSessionActivity, activityAgeMs } = this._sessionTiming(session);
-        // A closed turn waiting on its crew (PV-2) runs no tool of its own.
-        const hasFreshTool = status === AgentStatus.WORKING && !!session.lastTool
-            && session.turnState !== 'awaiting_input';
+        const wireScript = session.script;
+        const script = isScriptWrapperTool(wireScript?.tool) && Number.isFinite(wireScript.since)
+            ? {
+                tool: wireScript.tool,
+                description: typeof wireScript.description === 'string' ? wireScript.description : null,
+                since: wireScript.since,
+            }
+            : null;
+        const watch = status === AgentStatus.WORKING && isWatchingOnPoll(session);
+        // The last real tool remains placement evidence during a script or crew wait.
+        const hasFreshTool = status === AgentStatus.WORKING && !!session.lastTool && !script && !watch
+            && session.turnState !== TurnState.AWAITING_INPUT && !isWaitingOnCrew(session);
 
         // Team name is an explicit provider field. Do not infer it from project
         // paths; Codex/Gemini intentionally degrade to null.
@@ -997,7 +1009,7 @@ export class AgentManager {
                 })
                 : [],
             todos: normalizeTodoList(session.todos),
-            currentTool: hasFreshTool ? session.lastTool : null,
+            currentTool: watch ? session.pendingTool : hasFreshTool ? session.lastTool : null,
             currentToolInput: hasFreshTool ? session.lastToolInput || null : null,
             lastTool: session.lastTool || null,
             lastToolInput: session.lastToolInput || null,
@@ -1018,6 +1030,7 @@ export class AgentManager {
             turnState: session.turnState ?? 'unknown',
             backgroundPending: normalizeBackgroundPending(session.backgroundPending),
             pendingTool: session.pendingTool ?? null,
+            script,
             pendingSince: session.pendingSince !== null
                 && session.pendingSince !== undefined
                 && Number.isFinite(Number(session.pendingSince))

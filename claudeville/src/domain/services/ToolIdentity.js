@@ -1,3 +1,8 @@
+import { i18n } from '../../config/i18n.js';
+import { isWaitingOnCrew, isWatchingOnPoll } from './StatusResolver.js';
+
+const SCRIPT_WRAPPER = Object.freeze({ category: 'exec', verb: 'run a script' });
+
 const TOOL_METADATA = Object.freeze({
     Read: {
         classification: { building: 'archive', reason: 'read-local', confidence: 0.72 },
@@ -85,6 +90,8 @@ const TOOL_METADATA = Object.freeze({
     },
 
     Bash: { icon: '⚡', category: 'exec', actionLabel: 'Running' },
+    REPL: SCRIPT_WRAPPER,
+    Poll: SCRIPT_WRAPPER,
 
     Task: {
         classification: { building: 'command', reason: 'delegate-task', confidence: 0.82 },
@@ -293,6 +300,10 @@ function toolMetadata(tool) {
     return TOOL_METADATA[canonicalToolName(tool)] || null;
 }
 
+export function isScriptWrapperTool(tool) {
+    return toolMetadata(tool) === SCRIPT_WRAPPER;
+}
+
 function toolNamesWhere(predicate) {
     return new Set(Object.entries(TOOL_METADATA)
         .filter(([, metadata]) => predicate(metadata))
@@ -404,12 +415,12 @@ const COMMAND_TOOL_NAME_PATTERN = /spawn_agent|send_input|resume_agent|close_age
 // the Lighthouse commit deliberately keeps MCP delegation out of Command.
 const MCP_TOOL_NAME_PREFIX = 'mcp__';
 const MCP_TOOL_VERB_CLASSIFICATIONS = Object.freeze({
-    read: { building: 'archive', reason: 'read-local', label: 'read' },
+    read: { building: 'archive', reason: 'read-local', label: 'read', category: 'read' },
     list: { building: 'archive', reason: 'list-local', label: 'list' },
-    search: { building: 'archive', reason: 'search-local', label: 'search' },
-    find: { building: 'archive', reason: 'find-local', label: 'find' },
-    grep: { building: 'archive', reason: 'search-local', label: 'search' },
-    glob: { building: 'archive', reason: 'find-local', label: 'find' },
+    search: { building: 'archive', reason: 'search-local', label: 'search', category: 'search' },
+    find: { building: 'archive', reason: 'find-local', label: 'find', category: 'search' },
+    grep: { building: 'archive', reason: 'search-local', label: 'search', category: 'search' },
+    glob: { building: 'archive', reason: 'find-local', label: 'find', category: 'search' },
     edit: { building: 'forge', reason: 'modify-files', label: 'edit' },
     write: { building: 'forge', reason: 'modify-files', label: 'write' },
     patch: { building: 'forge', reason: 'patch-file', label: 'patch' },
@@ -646,16 +657,24 @@ export function classifyShellInput(input) {
         : { building: 'command', reason: 'run-shell', confidence: 0.55, label: compactToolLabel(text, 'run') };
 }
 
-export function classifyTool(toolName, input) {
+export function classifyTool(toolName, input, session = null) {
     const tool = canonicalToolName(toolName);
     if (!tool) return null;
     const metadata = toolMetadata(tool);
+    if (metadata === SCRIPT_WRAPPER) {
+        return tool === 'Poll' && isWatchingOnPoll(session) ? classifyTool('Monitor') : null;
+    }
 
     if (MULTI_TOOL_NAMES.has(tool)) {
         const calls = extractToolCalls(input);
         const weights = new Map();
         const examples = new Map();
+        let containsScript = false;
         for (const call of calls) {
+            if (isScriptWrapperTool(call.tool)) {
+                containsScript = true;
+                continue;
+            }
             const classified = classifyTool(call.tool, call.input) || classifyShellInput(call.input);
             if (!classified?.building) continue;
             weights.set(classified.building, (weights.get(classified.building) || 0) + classified.confidence);
@@ -678,7 +697,7 @@ export function classifyTool(toolName, input) {
                 count: calls.length,
             };
         }
-        return classifyShellInput(input);
+        return containsScript ? null : classifyShellInput(input);
     }
 
     if (isPlaywrightMcpTool(tool)) {
@@ -777,8 +796,8 @@ export function classifyTool(toolName, input) {
     return classifyShellInput(input);
 }
 
-export function buildingForTool(toolName, input) {
-    return classifyTool(toolName, input)?.building || null;
+export function buildingForTool(toolName, input, session) {
+    return classifyTool(toolName, input, session)?.building || null;
 }
 
 /**
@@ -794,8 +813,8 @@ export function placedBuilding(classified) {
     return classified.building;
 }
 
-export function placedBuildingForTool(toolName, input) {
-    return placedBuilding(classifyTool(toolName, input));
+export function placedBuildingForTool(toolName, input, session) {
+    return placedBuilding(classifyTool(toolName, input, session));
 }
 
 export function toolIcon(tool) {
@@ -889,6 +908,25 @@ export function toolCategory(tool) {
     return TOOL_CATEGORY_ALIASES[name.toLowerCase().replace(/^functions\./, '')] || 'other';
 }
 
+// Poses distinguish planning and messaging from the coarser call-tape and glyph categories.
+const TOOL_ACTION_CATEGORIES = Object.freeze({
+    rg: 'search', sed: 'read',
+    notebookread: 'read', todoread: 'read',
+    toolsearch: 'search', searchtools: 'search', grep_search: 'search', codebase_search: 'search', file_search: 'search',
+    ask: 'think', askuserquestion: 'think',
+    plan: 'think', think: 'think', reason: 'think', reasoning: 'think',
+    enterplanmode: 'think', exitplanmode: 'think', update_plan: 'think',
+    'mcp__sequential-thinking__sequentialthinking': 'think',
+    message: 'message', sendmessage: 'message', send_message: 'message',
+});
+
+export function toolActionCategory(tool) {
+    const name = String(tool || '').trim();
+    return TOOL_ACTION_CATEGORIES[name.toLowerCase().replace(/^functions\./, '')]
+        || MCP_TOOL_VERB_CLASSIFICATIONS[mcpToolVerb(name)]?.category
+        || toolCategory(name);
+}
+
 export function shortToolName(name) {
     if (!name) return '';
     return String(name).replace('mcp__playwright__', 'pw:').replace('mcp__', '');
@@ -900,7 +938,9 @@ export function toolActionLabel(tool, options) {
         const count = Number(options?.count);
         return count >= 2 ? `Coordinating ×${count}` : 'Coordinating';
     }
-    return toolMetadata(name)?.actionLabel || name || '';
+    const metadata = toolMetadata(name);
+    if (metadata === SCRIPT_WRAPPER) return options?.translator?.t?.('toolRunningScript') || i18n.t('toolRunningScript');
+    return metadata?.actionLabel || name || '';
 }
 
 // One humanised verb per canonical classifier reason, for world chits and
@@ -956,11 +996,16 @@ const TOOL_VERBS = Object.freeze({
     'github-flow': 'github',
 });
 
-export function toolVerbLabel(tool, input = '') {
+// Live sessions distinguish a crew wait or a watch from a plain Poll.
+// Historical callers without session evidence get the wrapper's script verb.
+export function toolVerbLabel(tool, input = '', session = null) {
     const name = String(tool || '').trim();
     if (!name) return '';
-    const reason = classifyTool(name, input)?.reason;
+    if (name === session?.pendingTool && isWaitingOnCrew(session)) return 'wait on crew';
+    const reason = classifyTool(name, input, session)?.reason;
     if (reason && TOOL_VERBS[reason]) return TOOL_VERBS[reason];
+    const verb = toolMetadata(name)?.verb;
+    if (verb) return verb;
     const segment = name.split(/[.:/]/).filter(Boolean).at(-1) || name;
     return segment
         .replace(/^mcp__\w+?__/, '')

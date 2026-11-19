@@ -1,5 +1,7 @@
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
+import { isWaitingOnCrew } from '../../domain/services/StatusResolver.js';
+import { toolActionCategory } from '../../domain/services/ToolIdentity.js';
 import {
     VERIFIED_OUTCOME_EVENT,
     VERIFIED_OUTCOME_KINDS,
@@ -98,7 +100,8 @@ export function resolveAgentAction(agent, {
     verifiedOutcome = undefined,
     now = Date.now(),
 } = {}) {
-    if (chatting || /sendmessage|send_message|message/i.test(String(agent?.currentTool || ''))) return AgentAction.TALK;
+    const category = toolActionCategory(agent?.currentTool);
+    if (chatting || category === 'message') return AgentAction.TALK;
     const agentKey = String(agent?.id || agent?.agentId || '');
     if (isDeparted(agent)) {
         recentVerifiedOutcomes.delete(agentKey);
@@ -111,10 +114,10 @@ export function resolveAgentAction(agent, {
     if (outcome && Number(now) - Number(outcome.at) >= VERIFIED_CELEBRATION_MS) {
         recentVerifiedOutcomes.delete(agentKey);
     }
-    if (agent?.status === AgentStatus.COMPLETED) return null;
-    const tool = String(agent?.currentTool || '').toLowerCase();
-    if (/read|search|grep|glob|find|rg|sed/.test(tool)) return AgentAction.READ;
-    if (/plan|think|reason|ask/.test(tool) || isPlanMode(agent) || agent?.status === AgentStatus.WAITING) return AgentAction.THINK;
-    if (agent?.status === AgentStatus.WORKING || tool) return AgentAction.WORK;
+    if (agent?.status === AgentStatus.COMPLETED
+        || (agent?.status === AgentStatus.WORKING && isWaitingOnCrew(agent))) return null;
+    if (category === 'read' || category === 'search') return AgentAction.READ;
+    if (category === 'think' || isPlanMode(agent) || agent?.status === AgentStatus.WAITING) return AgentAction.THINK;
+    if (agent?.status === AgentStatus.WORKING || agent?.currentTool) return AgentAction.WORK;
     return null;
 }

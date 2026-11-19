@@ -981,7 +981,7 @@ export class LandmarkActivity {
             createdAt: now,
             expiresAt: now + SNAPSHOT_TTL_MS,
             slot,
-            label: toolVerbLabel(agent.currentTool, agent.currentToolInput),
+            label: toolVerbLabel(agent.currentTool, agent.currentToolInput, agent),
             detail: fileBaseName(agent.currentToolInput),
             sortOffset: 6,
         });
@@ -1003,7 +1003,7 @@ export class LandmarkActivity {
             createdAt: now,
             expiresAt: now + SNAPSHOT_TTL_MS,
             slot,
-            label: isTaskCommand(agent) ? 'verify' : toolVerbLabel(agent.currentTool, agent.currentToolInput),
+            label: isTaskCommand(agent) ? 'verify' : toolVerbLabel(agent.currentTool, agent.currentToolInput, agent),
             isCheck: isTaskCommand(agent),
             sortOffset: 5,
         });
@@ -1037,7 +1037,7 @@ export class LandmarkActivity {
             createdAt: now,
             expiresAt: now + COMMAND_ITEM_TTL_MS,
             slot,
-            label: toolVerbLabel(agent.currentTool, agent.currentToolInput),
+            label: toolVerbLabel(agent.currentTool, agent.currentToolInput, agent),
             sortOffset: -2,
         });
         this._recencyByType.set('command', now);
