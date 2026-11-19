@@ -4,8 +4,11 @@ import assert from 'node:assert/strict';
 import {
     buildChronicleCsv,
     buildChronicleMarkdown,
+    buildHallOfLives,
     ChroniclePanel,
     csvEscapeCell,
+    HALL_OF_LIVES_CHAPTER_LIMIT,
+    retoldVillageHref,
 } from '../../claudeville/src/presentation/shared/ChroniclePanel.js';
 import { ChronicleEventKind, chronicleDateKey, summarizeDay } from '../../claudeville/src/application/ChronicleLog.js';
 import { SpendLedger } from '../../claudeville/src/application/SpendLedger.js';
@@ -180,5 +183,57 @@ test('R1-1: a spend read failure leaves the selected timeline and its exports av
         assert.match(output, /Could not read the spend ledger for this day/);
         assert.match(output, /Ada committed Ship the chronicle/);
         assert.doesNotMatch(output, /No spend record was saved|New tokens/);
+    }
+});
+
+test('XP-2: only a day with trail samples offers WATCH THIS DAY, opening ?retold=<date>', async () => {
+    const withSamples = chronicleDateKey(localTimestamp(-1));
+    const log = {
+        async readDay() { return []; },
+        async hasTrailSamples(dateKey) { return dateKey === withSamples; },
+    };
+    const panel = new ChroniclePanel({ modal: { isRequestCurrent: request => request === 1 }, chronicleLog: log });
+    assert.equal((await panel._readPage(withSamples)).replayable, true);
+    assert.equal((await panel._readPage(DAY)).replayable, false);
+    const failing = new ChroniclePanel({
+        modal: {},
+        chronicleLog: { async readDay() { return []; }, async hasTrailSamples() { throw new Error('closed'); } },
+    });
+    assert.equal((await failing._readPage(DAY)).replayable, false, 'an unreadable store offers nothing');
+    const legacy = new ChroniclePanel({ modal: {}, chronicleLog: { async readDay() { return []; } } });
+    assert.equal((await legacy._readPage(DAY)).replayable, false);
+    assert.equal(retoldVillageHref('/', '2026-11-18'), '/?retold=2026-11-18');
+    assert.equal(retoldVillageHref('/m/', '2026-11-18'), '/m/?retold=2026-11-18');
+});
+
+test('XP-8: the Hall of Lives lists remembered lineages by last seen, with no stats or ranks', () => {
+    const now = Date.UTC(2026, 10, 19, 12);
+    const day = 86_400_000;
+    const episodes = Array.from({ length: 6 }, (_, index) => ({
+        id: `e${index}`, kind: index % 2 ? 'commit' : 'completed', at: now - day + index * 1000, project: 'claude-ville',
+    }));
+    const lives = buildHallOfLives([
+        { identityKey: 'project:claude:claude-ville', firstSeenAt: now - 40 * day, lastSeenAt: now - 2 * day,
+            sessionsCompleted: 900, commitsPushed: 400, milestones: [], extensions: { lifeEpisodes: episodes } },
+        { identityKey: 'named:codex:ada-lovelace', firstSeenAt: now - 9 * day, lastSeenAt: now - day,
+            sessionsCompleted: 1, milestones: [{ id: 'nickname-commitsPushed-25', kind: 'nickname', nickname: 'the Shipwright', at: now - day }] },
+        { identityKey: 'anonymous:claude:session-1', firstSeenAt: now, lastSeenAt: now },
+        { identityKey: '', lastSeenAt: now },
+        null,
+    ], { now });
+    assert.deepEqual(lives.map(life => life.identityKey), ['named:codex:ada-lovelace', 'project:claude:claude-ville'],
+        'session-scoped rows are not lineages; order is last seen, not stats');
+    const [ada, lead] = lives;
+    assert.equal(ada.name, 'Ada Lovelace');
+    assert.equal(ada.nickname, 'the Shipwright');
+    assert.match(ada.role, /villager$/);
+    assert.equal(lead.name, 'claude-ville');
+    assert.match(lead.role, /project lead$/);
+    assert.equal(lead.chapters.length, HALL_OF_LIVES_CHAPTER_LIMIT);
+    assert.equal(lead.chapters[0].at, episodes.at(-1).at, 'newest chapter first');
+    for (const life of lives) {
+        for (const key of ['sessionsCompleted', 'commitsPushed', 'lifetimeTokens', 'errorsRecovered', 'rank', 'total']) {
+            assert.equal(Object.hasOwn(life, key), false, key);
+        }
     }
 });

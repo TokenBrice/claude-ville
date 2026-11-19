@@ -470,6 +470,12 @@ export class ChronicleLog {
         return rows.length > 0;
     }
 
+    /** XP-8 — remembered biographies (180-day retention), most recently seen first. */
+    async readBiographies() {
+        if (!this.store) return [];
+        return this.store.queryRange('biographies', { index: 'lastSeenAt', direction: 'prev' });
+    }
+
     /** Events for a local day, oldest first. */
     async readDay(date = new Date()) {
         if (!this.store) return [];
