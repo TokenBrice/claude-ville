@@ -41,7 +41,8 @@ import { dayPartBeatsAt } from './AmbientEvents.js';
 import { paintWreath } from './VillageCalendar.js';
 import { bakeEmitterCycle, emitterCyclePhase } from './EmitterCycle.js';
 import { ART_RAMPS } from '../../config/artPalette.js';
-import { castLightingFor, castOverWater, stampCastFor, structureCast } from './RakingLight.js';
+import { castLightingFor, castOverWater, frameShadeLayer, stampCastFor, structureCast } from './RakingLight.js';
+import { SHADE_SURFACE, shadeSurfaceAt } from './ShadeField.js';
 import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
 import { buildingCenterToWorld, tileToWorld, worldToTile } from './Projection.js';
 import { frontEdgeFoot, landmarkFootprint } from './FootprintField.js';
@@ -334,6 +335,11 @@ function compareBuildingDrawableDepth(a, b) {
     return (a.sortY - b.sortY)
         || (BUILDING_DRAWABLE_SORT_BAND[a.kind] - BUILDING_DRAWABLE_SORT_BAND[b.kind]);
 }
+
+// EN-6 — texel A codes where the low sun does not reach a roof texel.
+const ROOF_GLINT_SHADED = new Set([
+    SHADE_SURFACE.wallCast, SHADE_SURFACE.wallTurned, SHADE_SURFACE.topCast, SHADE_SURFACE.topTurned, SHADE_SURFACE.flatTurned,
+]);
 
 function lerp(a, b, t) {
     return a + (b - a) * t;
@@ -5404,7 +5410,26 @@ export class BuildingSprite {
     // building pass; null in clear, dry weather with no low sun.
     roofPatchFor(building) {
         const type = building?.type;
-        return type ? this.roofWeather.patch(type) : null;
+        return type ? this.roofWeather.patch(type, this.roofWeather.glint ? this._roofGlintShade(building) : null) : null;
+    }
+
+    // EN-6 — the shade field's verdict for the low-sun glint in `building`'s
+    // sprite texels: false where the massing turns the plane from the sun or
+    // another mass casts on it (texel A, the SD-2 receivers' own read), so
+    // the run lies only where the sun reaches. Null while the frame's field
+    // carries no receiver texels (then the run keeps the lit pitch alone).
+    _roofGlintShade(building) {
+        const field = frameShadeLayer()?.field;
+        if (!field?.texels) return null;
+        const anchor = this.assets.getAnchor?.(`building.${building.type}`);
+        if (!anchor) return null;
+        const center = this._buildingScreenCenter(building);
+        const ox = Math.round(center.x - anchor[0]);
+        const oy = Math.round(center.y - anchor[1]);
+        return {
+            key: `${field.key}|${ox},${oy}`,
+            lit: (x, y) => !ROOF_GLINT_SHADED.has(shadeSurfaceAt(field, ox + x + 0.5, oy + y + 0.5)),
+        };
     }
 
     // The eave-drip strip of `building` at the current drip frame, while it

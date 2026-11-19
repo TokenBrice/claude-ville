@@ -154,8 +154,8 @@ const GLINT_FLOOR = 0.025;
 const GLINT_GOLD = 0.2 / 1.4;
 // Cloud cover past this is overcast (AtmosphereState buildReactions): no sun.
 const GLINT_OVERCAST = 0.62;
-const GLINT_RAMPS = [ART_RAMPS.roofSlate, ART_RAMPS.domeSlate].map((ramp) => ramp.map(hexRgb));
 const GLINT_TOP = hexRgb(ART_RAMPS.wetSlate[3]);
+const GLINT_RAMPS = [ART_RAMPS.roofSlate, ART_RAMPS.domeSlate].map((ramp) => ramp.map(hexRgb)).concat([WET]);
 
 const DRIP_FALL = Object.freeze([
     // [dy, stop, tail] per frame; null = nothing drawn. dy is below the eave
@@ -690,12 +690,18 @@ export function roofGlintSide(atmosphere, snowBucket = 0) {
 
 /**
  * Pure (EN-6): the glint run of `map` for `side` ('sx,sy'), cached on the
- * map — texel indices (p = y * width + x), empty for an unqualified roof.
+ * map per `side` and `litKey` — texel indices (p = y * width + x), empty
+ * for an unqualified roof. `lit(x, y)`, when given, is the shade field's
+ * verdict at a sprite texel (false where the massing turns that plane from
+ * the sun or another mass shades it), so the run only lies where the sun
+ * reaches. The run stays on one side of `map.horizonY` (a split
+ * landmark's halves), the side of its most sunward texel.
  */
-export function roofGlintRun(map, side) {
+export function roofGlintRun(map, side, lit = null, litKey = '') {
     if (!map || !side) return [];
     map.glintRuns ||= new Map();
-    const cached = map.glintRuns.get(side);
+    const cacheKey = `${side}|${litKey}`;
+    const cached = map.glintRuns.get(cacheKey);
     if (cached) return cached;
     const [sx, sy] = side.split(',').map(Number);
     const { width, height, cls, rank, plane, planeTop, trimmed } = map;
@@ -708,7 +714,7 @@ export function roofGlintRun(map, side) {
                 const ny = y + dy;
                 return nx < 0 || ny < 0 || nx >= width || ny >= height || cls[ny * width + nx] === NONE;
             }));
-        const lit = (p) => cls[p] === SLATE && rank[p] >= WET_MIN_RANK && plane[p] >= planeTop - PLANE_STEP;
+        const eligible = (p) => cls[p] === SLATE && rank[p] >= WET_MIN_RANK && plane[p] >= planeTop - PLANE_STEP;
         const sunward = new Uint8Array(width * height);
         let count = 0;
         let seed = -1;
@@ -716,7 +722,8 @@ export function roofGlintRun(map, side) {
         for (let y = map.top; y < map.top + map.h; y++) {
             for (let x = map.left; x < map.left + map.w; x++) {
                 const p = y * width + x;
-                if (!lit(p) || !((sx && off(x + sx, y)) || (sy && off(x, y + sy)))) continue;
+                if (!eligible(p) || !((sx && off(x + sx, y)) || (sy && off(x, y + sy)))) continue;
+                if (lit && !lit(x, y)) continue;
                 sunward[p] = 1;
                 count++;
                 const reach = x * sx + y * sy;
@@ -728,12 +735,14 @@ export function roofGlintRun(map, side) {
         }
         if (count >= ROOF_GLINT_MIN) {
             // Grow from the most sunward texel over 8-connected edge texels
-            // while the run stays inside the box.
+            // while the run stays inside the box and on the seed's half.
             const [bw, bh] = ROOF_GLINT_BOX;
             let x0 = seed % width;
             let x1 = x0;
             let y0 = (seed - x0) / width;
             let y1 = y0;
+            const split = Number.isFinite(map.horizonY) ? map.horizonY : null;
+            const back = split != null && y0 < split;
             const queue = [seed];
             sunward[seed] = 2;
             while (queue.length && run.length < ROOF_GLINT_TEXELS) {
@@ -745,6 +754,7 @@ export function roofGlintRun(map, side) {
                 const ny0 = Math.min(y0, y);
                 const ny1 = Math.max(y1, y);
                 if (nx1 - nx0 >= bw || ny1 - ny0 >= bh) continue;
+                if (split != null && (y < split) !== back) continue;
                 [x0, x1, y0, y1] = [nx0, nx1, ny0, ny1];
                 run.push(p);
                 for (let dy = -1; dy <= 1; dy++) {
@@ -761,27 +771,48 @@ export function roofGlintRun(map, side) {
             }
         }
     }
-    map.glintRuns.set(side, run);
+    map.glintRuns.set(cacheKey, run);
     return run;
 }
 
-// One palette step up the texel's own roof ramp (the nearest stop of
-// roofSlate or domeSlate); the top stop steps to the wet-slate sheen.
-function glintStep(albedo, p) {
-    const i = p * 4;
+/** Pure (EN-6): the run's bounding box `{ left, top, w, h }` in sprite texels, or null. */
+export function roofGlintBox(map, run) {
+    if (!run?.length) return null;
+    let x0 = Infinity;
+    let x1 = -Infinity;
+    let y0 = Infinity;
+    let y1 = -Infinity;
+    for (const p of run) {
+        const x = p % map.width;
+        const y = (p - x) / map.width;
+        x0 = Math.min(x0, x);
+        x1 = Math.max(x1, x);
+        y0 = Math.min(y0, y);
+        y1 = Math.max(y1, y);
+    }
+    return { left: x0, top: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
+}
+
+const rampLum = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+
+// One palette step up from the colour the texel shows (its slate, or the wet
+// course over it): the nearest stop of roofSlate, domeSlate or wetSlate and
+// the next stop up that ramp. roofSlate's and domeSlate's top step to the
+// wet-slate sheen; wetSlate's top stays itself. Never darker than `rgb`.
+function glintStep(rgb) {
     let best = Infinity;
-    let pick = GLINT_TOP;
+    let pick = rgb;
     for (const ramp of GLINT_RAMPS) {
         for (let k = 0; k < ramp.length; k++) {
             const c = ramp[k];
-            const d = (albedo[i] - c[0]) ** 2 + (albedo[i + 1] - c[1]) ** 2 + (albedo[i + 2] - c[2]) ** 2;
+            const d = (rgb[0] - c[0]) ** 2 + (rgb[1] - c[1]) ** 2 + (rgb[2] - c[2]) ** 2;
             if (d < best) {
                 best = d;
-                pick = k + 1 < ramp.length ? ramp[k + 1] : GLINT_TOP;
+                pick = k + 1 < ramp.length ? ramp[k + 1] : (ramp === WET ? c : GLINT_TOP);
             }
         }
     }
-    return pick;
+    return rampLum(pick) >= rampLum(rgb) ? pick : rgb;
 }
 
 /** Wetness → wet-course quantum 0 (dry) … ROOF_WET_QUANTA. */
@@ -804,7 +835,7 @@ function planeStop(plane, top, x, y) {
  * RGBA byte array of the map's bounding box (map.w × map.h), transparent
  * where nothing lies. Returns the texels written.
  */
-export function paintRoofWeather(map, albedo, out, { bucket = 0, wetQ = 0, glint = '' } = {}) {
+export function paintRoofWeather(map, albedo, out, { bucket = 0, wetQ = 0, glint = '', lit = null, litKey = '', box = null } = {}) {
     const depth = COURSE_DEPTH[Math.max(0, Math.min(4, bucket | 0))];
     const capDepth = CAP_DEPTH[Math.max(0, Math.min(4, bucket | 0))];
     const q = Math.max(0, Math.min(ROOF_WET_QUANTA, wetQ | 0));
@@ -887,10 +918,24 @@ export function paintRoofWeather(map, albedo, out, { bucket = 0, wetQ = 0, glint
     }
     // EN-6: the low-sun run, over the wet course (never under snow: the
     // side is '' while snow lies).
+    // `box` (a glint-only patch) addresses `out` as that box instead of
+    // the map's, so a dry roof's patch is the run's few texels only.
     if (glint && !(bucket > 0)) {
-        for (const p of roofGlintRun(map, glint)) {
+        const ox = box ? box.left : map.left;
+        const oy = box ? box.top : map.top;
+        const ow = box ? box.w : map.w;
+        for (const p of roofGlintRun(map, glint, lit, litKey)) {
             const x = p % width;
-            put(x, (p - x) / width, glintStep(albedo, p));
+            const y = (p - x) / width;
+            const o = ((y - oy) * ow + (x - ox)) * 4;
+            // Step from what the texel shows: the wet course where it lies.
+            const shown = out[o + 3] ? [out[o], out[o + 1], out[o + 2]] : [albedo[p * 4], albedo[p * 4 + 1], albedo[p * 4 + 2]];
+            const c = glintStep(shown);
+            out[o] = c[0];
+            out[o + 1] = c[1];
+            out[o + 2] = c[2];
+            if (!out[o + 3]) written++;
+            out[o + 3] = 255;
         }
     }
     return written;
@@ -1022,6 +1067,19 @@ function loadImage(url) {
     });
 }
 
+// The (dx, dy, w, h) crop of a roof map's channel canvases (material,
+// occluder), for a glint-only patch.
+function cropChannels(channels, dx, dy, w, h) {
+    if (!channels) return null;
+    const crop = (canvas) => {
+        if (!canvas) return null;
+        const out = canvasOf(w, h);
+        out.getContext('2d').drawImage(canvas, dx, dy, w, h, 0, 0, w, h);
+        return out;
+    };
+    return { material: crop(channels.material), occluder: crop(channels.occluder) };
+}
+
 function canvasOf(w, h) {
     const canvas = document.createElement('canvas');
     canvas.width = w;
@@ -1114,6 +1172,8 @@ export class RoofWeather {
                 : null;
             if (map) {
                 map.albedo = pixels;
+                // A split landmark's horizon: the glint run keeps to one half.
+                map.horizonY = entry?.splitForOcclusion && Number.isFinite(Number(entry.horizonY)) ? Number(entry.horizonY) : null;
                 const crop = (image) => {
                     if (!sized(image)) return null;
                     const canvas = canvasOf(map.w, map.h);
@@ -1132,20 +1192,45 @@ export class RoofWeather {
      * top, w, h, key, revision, channels }` in sprite texels, or null in
      * clear, dry weather with no low sun.
      */
-    patch(type) {
+    patch(type, shade = null) {
         if (!this.bucket && !this.wetQ && !this.glint) return null;
         const map = this.map(type);
         if (!map?.albedo) return null;
-        const key = this.key;
+        // `shade`: `{ lit(x, y), key }`, the frame's shade-field verdict in
+        // sprite texels (BuildingSprite.roofPatchFor), or null without a field.
+        const lit = this.glint && shade?.lit ? shade.lit : null;
+        const litKey = lit ? String(shade.key ?? '') : '';
+        const key = `${this.key}|${litKey}`;
         let entry = this._patches.get(type);
         if (entry?.key === key) return entry.empty ? null : entry;
-        if (!entry) {
-            entry = { canvas: canvasOf(map.w, map.h), left: map.left, top: map.top, w: map.w, h: map.h, key: '', revision: 0, channels: map.channels, empty: false };
+        // EN-6: a dry, snowless roof patches only the glint run's box (at
+        // most ROOF_GLINT_BOX), with its own channel crops; weather keeps the
+        // whole roof box.
+        const glintOnly = !this.bucket && !this.wetQ;
+        const box = glintOnly ? roofGlintBox(map, roofGlintRun(map, this.glint, lit, litKey)) : null;
+        if (glintOnly && !box) {
+            if (entry) {
+                entry.key = key;
+                entry.empty = true;
+            }
+            return null;
+        }
+        const area = box || { left: map.left, top: map.top, w: map.w, h: map.h };
+        if (!entry || entry.left !== area.left || entry.top !== area.top || entry.w !== area.w || entry.h !== area.h) {
+            if (entry) releaseCanvasBackingStore(entry.canvas);
+            entry = {
+                canvas: canvasOf(area.w, area.h),
+                ...area,
+                key: '',
+                revision: entry ? entry.revision : 0,
+                channels: box ? cropChannels(map.channels, area.left - map.left, area.top - map.top, area.w, area.h) : map.channels,
+                empty: false,
+            };
             this._patches.set(type, entry);
         }
         const ctx = entry.canvas.getContext('2d', { willReadFrequently: true });
-        const image = ctx.createImageData(map.w, map.h);
-        const written = paintRoofWeather(map, map.albedo, image.data, { bucket: this.bucket, wetQ: this.wetQ, glint: this.glint });
+        const image = ctx.createImageData(area.w, area.h);
+        const written = paintRoofWeather(map, map.albedo, image.data, { bucket: this.bucket, wetQ: this.wetQ, glint: this.glint, lit, litKey, box });
         ctx.putImageData(image, 0, 0);
         entry.key = key;
         entry.empty = written === 0;

@@ -5,6 +5,7 @@ import { PNG } from 'pngjs';
 
 import {
     ROOF_GLINT_BOX,
+    roofGlintBox,
     ROOF_GLINT_TEXELS,
     paintRoofWeather,
     roofGlintRun,
@@ -16,6 +17,18 @@ import {
 import { createAtmosphereSnapshot } from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
 import { BuildingSprite } from '../../claudeville/src/presentation/character-mode/BuildingSprite.js';
 import { ART_RAMPS } from '../../claudeville/src/config/artPalette.js';
+import { castLightingFor } from '../../claudeville/src/presentation/character-mode/RakingLight.js';
+import {
+    SHADE_SURFACE,
+    buildShadeField,
+    createShadeViewBuild,
+    massingFacets,
+    shadeFieldRect,
+    shadeSurfaceAt,
+} from '../../claudeville/src/presentation/character-mode/ShadeField.js';
+import { BUILDING_DEFS } from '../../claudeville/src/config/buildings.js';
+import { LANDMARK_MASSING } from '../../claudeville/src/config/landmarkMassing.js';
+import { buildingCenterToWorld } from '../../claudeville/src/presentation/character-mode/Projection.js';
 import { WINTER_PROPS } from '../../claudeville/src/presentation/character-mode/PropWinter.js';
 
 // A baked scenery prop and its roof polygons (PropWinter's spec, without caps).
@@ -309,10 +322,14 @@ test('the Lighthouse finial stays brass under any cover', () => {
 
 // EN-6 — the low sun on an actual roof edge.
 const LANDMARKS = ['archive', 'command', 'forge', 'harbor', 'mine', 'portal', 'taskboard', 'tavern', 'watchtower'];
+// Pinned to Belgrade in September (CEST, UTC+2), so the sun is the same
+// under any host timezone (CI runs UTC).
+const BELGRADE = Object.freeze({ zone: 'Europe/Belgrade', lat: 44.8, lon: 20.5, offsetMinutes: () => 120 });
 const equinox = (hour, minute, type = 'clear') => createAtmosphereSnapshot({
     now: new Date(2026, 8, 22, hour, minute),
     weatherOverride: { type },
     motionScale: 0,
+    solarSite: BELGRADE,
 });
 
 test('the low-sun glint side opens only for a low, unclouded sun and no snow', () => {
@@ -379,4 +396,87 @@ test('the seeded Canvas roof stroke is gone: the building reaction paints no gli
         frame: 0,
     }, ctx, { type: 'tavern', position: { tileX: 21, tileY: 14 } }, { id: 'building.tavern' }, 300, 300);
     assert.equal(fills.length, 0);
+});
+
+// The village's massing, its view planes and the frame's receiver texels at
+// a September dusk pose, as the resident path builds them (texel A).
+const MASSING_FACETS = BUILDING_DEFS.flatMap((def) => (LANDMARK_MASSING[def.type]?.solids?.length
+    ? massingFacets(LANDMARK_MASSING[def.type], def, buildingCenterToWorld(def)) : []));
+let massingView = null;
+function receiverField(atmosphere) {
+    const rect = shadeFieldRect();
+    if (!massingView) {
+        const build = createShadeViewBuild({ rect, facets: MASSING_FACETS });
+        while (!build.step(Infinity));
+        massingView = build.view;
+    }
+    const sweep = castLightingFor(atmosphere).shade;
+    assert.ok(sweep, 'the dusk pose casts');
+    return buildShadeField({ rect, sweep, facets: MASSING_FACETS, texels: new Uint8Array(rect.cols * rect.rows * 4), view: massingView });
+}
+const SHADED = new Set([SHADE_SURFACE.wallCast, SHADE_SURFACE.wallTurned, SHADE_SURFACE.topCast, SHADE_SURFACE.topTurned, SHADE_SURFACE.flatTurned]);
+const ATLAS = JSON.parse(readFileSync(new URL('../../claudeville/assets/sprites/atlases/world-pilot.json', import.meta.url)));
+
+test('the glint lies only where the shade field lets the sun reach (the Forge roof is turned at dusk)', () => {
+    for (const [hour, minute] of [[17, 30], [18, 30]]) {
+        const atmosphere = equinox(hour, minute);
+        const field = receiverField(atmosphere);
+        const side = roofGlintSide(atmosphere);
+        for (const def of BUILDING_DEFS) {
+            const sprite = landmark(def.type);
+            if (!sprite.map) continue;
+            const anchor = ATLAS.frames[`building.${def.type}`].anchor;
+            const centre = buildingCenterToWorld(def);
+            const ox = Math.round(centre.x - anchor[0]);
+            const oy = Math.round(centre.y - anchor[1]);
+            const code = (x, y) => shadeSurfaceAt(field, ox + x + 0.5, oy + y + 0.5);
+            const unfiltered = roofGlintRun(sprite.map, side);
+            const run = roofGlintRun(sprite.map, side, (x, y) => !SHADED.has(code(x, y)), `test-${hour}`);
+            for (const p of run) {
+                const x = p % sprite.albedo.width;
+                assert.ok(!SHADED.has(code(x, Math.floor(p / sprite.albedo.width))), `${def.type} ${hour}:${minute}: a glint texel the sun does not reach`);
+            }
+            if (def.type === 'forge') {
+                assert.ok(unfiltered.every((p) => code(p % sprite.albedo.width, Math.floor(p / sprite.albedo.width)) === SHADE_SURFACE.topTurned),
+                    'without the field the Forge run lies on its turned pitch');
+            }
+        }
+    }
+});
+
+test('after rain the glint steps up from the wet course, never below it, and the top stop holds', () => {
+    const { map, albedo } = landmark('tavern');
+    const lum = (d, o) => 0.2126 * d[o] + 0.7152 * d[o + 1] + 0.0722 * d[o + 2];
+    const run = roofGlintRun(map, '-1,-1');
+    for (let q = 1; q <= 4; q++) {
+        const wet = new Uint8ClampedArray(map.w * map.h * 4);
+        const lit = new Uint8ClampedArray(map.w * map.h * 4);
+        paintRoofWeather(map, albedo.data, wet, { wetQ: q });
+        paintRoofWeather(map, albedo.data, lit, { wetQ: q, glint: '-1,-1' });
+        for (const p of run) {
+            const x = p % albedo.width;
+            const o = ((Math.floor(p / albedo.width) - map.top) * map.w + x - map.left) * 4;
+            const under = wet[o + 3] ? lum(wet, o) : lum(albedo.data, p * 4);
+            assert.ok(lum(lit, o) >= under, `wet quantum ${q}: the glint never darkens the course`);
+            if (q === 4 && wet[o + 3]) assert.deepEqual([...lit.slice(o, o + 3)], [...wet.slice(o, o + 3)], 'the top wet stop holds');
+        }
+    }
+});
+
+test('a glint-only patch is its run box, at most 16x4, inside one split half', () => {
+    for (const type of LANDMARKS) {
+        const sprite = landmark(type);
+        if (!sprite.map) continue;
+        const entry = ATLAS.frames[`building.${type}`];
+        sprite.map.horizonY = Number.isFinite(entry.horizonY) ? entry.horizonY : null;
+        const run = roofGlintRun(sprite.map, '-1,-1', null, 'split');
+        const box = roofGlintBox(sprite.map, run);
+        if (!box) continue;
+        assert.ok(box.w <= ROOF_GLINT_BOX[0] && box.h <= ROOF_GLINT_BOX[1], `${type} box ${box.w}x${box.h}`);
+        if (sprite.map.horizonY != null) {
+            assert.ok(box.top + box.h <= sprite.map.horizonY || box.top >= sprite.map.horizonY, `${type}: one split half`);
+        }
+        const out = new Uint8ClampedArray(box.w * box.h * 4);
+        assert.equal(paintRoofWeather(sprite.map, sprite.albedo.data, out, { glint: '-1,-1', box }), run.length);
+    }
 });

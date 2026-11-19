@@ -978,6 +978,17 @@ export function shadePointAt(field, x, y, h = 0, bias = SHADE_POINT_BIAS) {
     return shadeCeilingAt(field, x, y) > h + bias;
 }
 
+/**
+ * Texel A at a drawn position: the SHADE_SURFACE code (lit, cast or turned
+ * wall or top; 0 = no massing surface there), or null for a field built
+ * without receivers (no `texels`).
+ */
+export function shadeSurfaceAt(field, x, y) {
+    if (!field?.texels) return null;
+    const index = cellIndex(field, x, y);
+    return index < 0 ? SHADE_SURFACE.none : Math.floor(field.texels[index * 4 + 3] / SHADE_SURFACE_STEP);
+}
+
 /** The sunlit share (0-1) of the air column from the ground to `top` px here. */
 export function shadeLitShareAt(field, x, y, top) {
     if (!(top > 0)) return 1;
