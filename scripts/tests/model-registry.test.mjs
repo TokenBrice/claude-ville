@@ -29,6 +29,36 @@ try {
     manifestImportError = error;
 }
 
+test('Claude 5.5 rates and context resolve for bare and qualified IDs', () => {
+    const models = [
+        ['opus', 4, 20, 0.20, 5],
+        ['sonnet', 2, 10, 0.10, 2.50],
+        ['haiku', 0.10, 0.50, 0.01, 0.125],
+    ];
+    for (const [family, input, output, cacheRead, cacheCreate] of models) {
+        const match = `${family}-5-5`;
+        for (const raw of [`claude-${match}`, `anthropic/claude-${match}`]) {
+            for (const registry of [browserRegistry, serverRegistry]) {
+                assert.equal(registry.findModelRow(raw, 'claude').row.id, `claude.${match}`);
+                assert.equal(registry.contextWindowForModel(raw, 'claude'), 1_000_000);
+                assert.deepEqual(registry.ratesForModel(raw, 'claude'), {
+                    rate: { match, input, output, cacheRead, cacheCreate }, match, isDefault: false,
+                });
+            }
+        }
+    }
+});
+
+test('Claude Opus 4.5 rates and Sonnet 4.6 context match the audited pricing table', () => {
+    for (const registry of [browserRegistry, serverRegistry]) {
+        assert.deepEqual(registry.ratesForModel('claude-opus-4-5-20251101', 'claude').rate,
+            { match: 'opus-4-5', input: 5, output: 25, cacheRead: 0.50, cacheCreate: 6.25 });
+        assert.deepEqual(registry.ratesForModel('claude-opus-4-1-20250805', 'claude').rate,
+            { match: 'opus', input: 15, output: 75, cacheRead: 1.50, cacheCreate: 18.75 });
+        assert.equal(registry.contextWindowForModel('claude-sonnet-4-6', 'claude'), 1_000_000);
+    }
+});
+
 test('Astra identity resolves canonical and provider-qualified IDs without claiming other models', () => {
     for (const raw of ['gpt-6-astra', 'GPT-6-Astra', 'gpt_6_astra', 'openai/gpt-6-astra']) {
         for (const registry of [browserRegistry, serverRegistry]) {

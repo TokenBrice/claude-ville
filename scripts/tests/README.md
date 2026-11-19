@@ -32,7 +32,8 @@ Set `CLAUDEVILLE_TEST_TMPDIR` to a writable directory when the normal temporary 
 
 | File | Contract |
 | --- | --- |
-| `model-registry.test.mjs` | Generated ESM/CJS resolver parity, presentation identity parity, and bidirectional registry/manifest completeness. |
+| `model-registry.test.mjs` | Generated ESM/CJS resolver parity, Claude 5.5 aliases and rates, presentation identity parity, and bidirectional registry/manifest completeness. |
+| `usage-quota.test.mjs` | The Claude usage fixture (`fixtures/claude-usage-limits.json`) covers the highest active account limit and the five-hour fallback. The tests also cover legacy windows, staleness, failures, and Codex quota. |
 | `simulation-isolation.test.mjs` | Simulator storage, cross-tab channels and writer leases remain separate from live history; simulated freshness is explicit. |
 | `agent-hooks.test.mjs` | Destructive-command guards, fail-open input, syntax reports, session output, opt-in ingestion, and latency. |
 | `release-changelog.test.mjs` | Release header parsing, exact extraction, version rejection, and read-only/write preparation behavior. |

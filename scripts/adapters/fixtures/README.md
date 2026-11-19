@@ -6,6 +6,7 @@ These synthetic JSONL transcripts test parser contracts without reading real pro
 | --- | --- | --- |
 | Claude | `claude/all-records.jsonl` | Broad projection: tools/results, tokens/cost, branch/effort, todos, changes, duration, hooks, and bounded text. |
 | Claude | `claude/minimal.jsonl` | Completed turn proving defaults and estimated cost without richer records. |
+| Claude | `claude/models-5-5.jsonl` | Three completed turns preserve the raw Opus, Sonnet, and Haiku 5.5 IDs. The final Haiku turn has observed usage for the price estimate. |
 | Claude | `claude/git-outcomes.jsonl` | Git calls with outcomes: an `is_error` hook rejection, a chained commit with `[branch sha]` output, a rejected push behind `|| true`, and a push from a subdirectory `cwd`. |
 | Claude | `claude/shell-prefix.jsonl` | Bash calls behind `cd <dir> &&`, `cd <dir>;` and `git -C <dir>`; the summary must keep the command. |
 | Claude | `claude/tool-results.jsonl` | Flagged results (`Exit code 1`, a codeless error, an `Edit` miss, an explicit success), plus an unflagged read, a background command, an async agent launch, an interrupted and a rejected call, and one pending call: only the four flagged outcomes publish. |
@@ -42,7 +43,7 @@ Author fixtures synthetic-first. If derived from provider output, replace every 
 `rg -l 'adapters/fixtures' scripts` identifies the direct consumers:
 
 - `scripts/tests/claude-identity.test.mjs` uses Claude launch, child, teammate-with-meta, and minimal records.
-- `scripts/tests/claude-projection.test.mjs` uses broad, minimal and `api-request-blob` Claude records (it resolves the fixture root without spelling the full search string).
+- `scripts/tests/claude-projection.test.mjs` uses broad, minimal, `models-5-5`, and `api-request-blob` Claude records (it resolves the fixture root without spelling the full search string).
 - `scripts/tests/turn-state.test.mjs` copies the Codex fixture directory into a synthetic provider home.
 - `scripts/tests/usage-quota.test.mjs` materializes the Codex rate-limit fixture, live and six hours old, and reads `/api/usage.codex` through the adapter.
 - `scripts/tests/integration/session-payload-contract.test.mjs` replays the broad Claude fixture through an isolated server.

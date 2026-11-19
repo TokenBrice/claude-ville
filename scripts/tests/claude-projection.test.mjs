@@ -31,10 +31,12 @@ test('Claude projects provider records, turn timing, and a canonical working set
     writeJsonLines(path.join(root, '.claude', 'history.jsonl'), [
       { sessionId: 'projection-all', project, timestamp: now, model: 'claude-fable-5-1', display: 'Projection fixture' },
       { sessionId: 'projection-minimal', project, timestamp: now - 1, model: 'claude-sonnet-4-5', display: 'Minimal fixture' },
+      { sessionId: 'projection-models', project, timestamp: now - 2, display: 'Model switch fixture' },
     ]);
     fs.mkdirSync(projectDir, { recursive: true });
     fs.copyFileSync(path.join(FIXTURE_ROOT, 'all-records.jsonl'), path.join(projectDir, 'projection-all.jsonl'));
     fs.copyFileSync(path.join(FIXTURE_ROOT, 'minimal.jsonl'), path.join(projectDir, 'projection-minimal.jsonl'));
+    fs.copyFileSync(path.join(FIXTURE_ROOT, 'models-5-5.jsonl'), path.join(projectDir, 'projection-models.jsonl'));
 
     const childScript = `
       const { ClaudeAdapter } = require('./claudeville/adapters/claude');
@@ -43,14 +45,17 @@ test('Claude projects provider records, turn timing, and a canonical working set
       const sessions = adapter.getActiveSessions(60 * 60 * 1000);
       const all = sessions.find(session => session.sessionId === 'projection-all');
       const minimal = sessions.find(session => session.sessionId === 'projection-minimal');
-      process.stdout.write(JSON.stringify({ all, minimal: decorateSessionPresentation(minimal) }));
+      const models = sessions.find(session => session.sessionId === 'projection-models');
+      process.stdout.write(JSON.stringify({
+        all, minimal: decorateSessionPresentation(minimal), models: decorateSessionPresentation(models),
+      }));
     `;
     const output = execFileSync(process.execPath, ['-e', childScript], {
       cwd: REPO_ROOT,
       env: { ...process.env, HOME: root, USERPROFILE: root },
       encoding: 'utf8',
     });
-    const { all, minimal } = JSON.parse(output);
+    const { all, minimal, models } = JSON.parse(output);
 
     assert.deepEqual(all.cost, {
       usd: 12.34,
@@ -87,6 +92,12 @@ test('Claude projects provider records, turn timing, and a canonical working set
     assert.ok(minimal.estimatedCost > 0);
     assert.equal(minimal.lastPrompt, null);
     assert.deepEqual(minimal.todos, []);
+    assert.deepEqual(models.modelHistory.map(item => item.model), [
+      'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5',
+    ]);
+    assert.equal(models.model, 'claude-haiku-5-5');
+    assert.equal(models.contextWindowMax, 1_000_000);
+    assert.equal(models.cost.rateMatch, 'haiku-5-5');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
