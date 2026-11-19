@@ -86,8 +86,9 @@ const SKIP_FLAGS = GPU_RECORD_FLAGS.screenSpace | GPU_RECORD_FLAGS.reflect | GPU
 const LEFT_WALL_OUT = 'vec2(-0.70710678, 0.35355339)';
 // SD-3 — a lifted texel's luma stops here unless it already stood above it
 // (lifted snow keeps its value): under the waiting candle's 192 and the NEEDS
-// YOU bell's 207 after the brightest noon grade.
-export const SUN_LIFT_CEILING = 0.68;
+// YOU bell's 207 after the brightest noon grade, the aerial haze and the
+// composite (smoke:sun-lift reads it back on every backend).
+export const SUN_LIFT_CEILING = 0.64;
 const LIFT_CEILING = SUN_LIFT_CEILING.toFixed(4);
 
 // u_shadeField (unit 2): the field's RGBA8 texels. u_shadeRect = (origin x,
@@ -238,13 +239,14 @@ float sunShadeStep(vec4 geometry, bool surfaceCoded, float lit) {
 
 // SD-3 — the sun's lift on a texel the field calls lit (\`ground\`: a
 // ground-self terrain texel, by the ground rule; else sunShadeStep's
-// verdict, never a body): \`lift\` less the texel's emission share \`lit\`,
-// held under the ceiling luma unless the texel already stood above it.
+// verdict, never a body): \`lift\`, held under the ceiling luma unless the
+// texel already stood above it. An emitting texel (\`lit\` > 0) takes none:
+// its light is mixed back ungraded after the grade, past the ceiling.
 vec3 sunLift(vec3 color, bool ground, float lift, float lit) {
     bool sunlit = ground ? !shadeGroundAt(v_world) : sunVerdict > -0.5 && sunVerdict < 1.5 && v_identity.x == 0u;
-    if (!sunlit) return color;
+    if (!sunlit || lit > 0.0) return color;
     float luma = dot(color, GRADE_LUMA);
-    float gain = 1.0 + lift * (1.0 - lit);
+    float gain = 1.0 + lift;
     return color * min(gain, max(1.0, ${LIFT_CEILING} / max(luma, 0.0001)));
 }
 `;
@@ -391,13 +393,14 @@ fn sunShadeStep(geometry: vec4f, surfaceCoded: bool, lit: f32) -> f32 {
 
 // SD-3 — the sun's lift on a texel the field calls lit (\`ground\`: a
 // ground-self terrain texel, by the ground rule; else sunShadeStep's
-// verdict, never a body): \`lift\` less the texel's emission share \`lit\`,
-// held under the ceiling luma unless the texel already stood above it.
+// verdict, never a body): \`lift\`, held under the ceiling luma unless the
+// texel already stood above it. An emitting texel (\`lit\` > 0) takes none:
+// its light is mixed back ungraded after the grade, past the ceiling.
 fn sunLift(color: vec3f, ground: bool, lift: f32, lit: f32) -> vec3f {
   let sunlit = select(sunVerdict > -0.5 && sunVerdict < 1.5 && v_identity.x == 0u, !shadeGroundAt(v_world), ground);
-  if (!sunlit) { return color; }
+  if (!sunlit || lit > 0.0) { return color; }
   let luma = dot(color, GRADE_LUMA);
-  let gain = 1.0 + lift * (1.0 - lit);
+  let gain = 1.0 + lift;
   return color * min(gain, max(1.0, ${LIFT_CEILING} / max(luma, 0.0001)));
 }
 `;

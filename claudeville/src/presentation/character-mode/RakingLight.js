@@ -28,6 +28,7 @@ import { COAST_FIELD_FLAGS } from './CoastBake.js';
 import { lookStrength, lookStrengthsVersion } from './LookStrengths.js';
 import { paintLitCells, shadeCoverageAt, shadeFieldFor, shadeFieldTexture } from './ShadeField.js';
 import { effectBudgetMode } from './gpu/GpuWorldPolicy.js';
+import { SUN_LIFT_CEILING } from './gpu/SunShade.js';
 import { LANTERN_ID_PREFIX } from './CarriedLantern.js';
 
 const COLD = [15, 22, 30];      // #0f161e — the midday contact shadow
@@ -311,8 +312,7 @@ export function releaseFrameShade(renderer) {
     _sunShadeHeld = null;
     _sunShadeFeed.texture = null;
     _frameWater = null;
-    if (_litLayer) releaseCanvasBackingStore(_litLayer.canvas);
-    _litLayer = null;
+    releaseLitMasks();
 }
 
 /**
@@ -375,50 +375,142 @@ export function frameShadeLayer() {
 
 /**
  * SD-3 — the Canvas tier of the sun's lift: whole steps only (the lift
- * rounded to SUN_LIFT or 0), so a cached layer is either drawn or not; none
- * while snow lies (a whole step would clip it, which the resident ceiling
- * prevents texel by texel).
+ * rounded to SUN_LIFT or 0), so the cached masks are either drawn or not.
  */
-export function canvasSunLiftSteps(lift, snowCover = 0) {
-    return finite(snowCover, 0) > 0 ? 0 : Math.round(finite(lift, 0) / SUN_LIFT);
+export function canvasSunLiftSteps(lift) {
+    return Math.round(finite(lift, 0) / SUN_LIFT);
 }
 
-// The lit cells' canvas for this layer: a colour-dodge of grey g multiplies
-// what lies under it by 1 / (1 - g / 255), so g is the one step's gain.
+// SD-3 on Canvas, by luminosity (the 2D canvas's non-separable Lum: 0.3,
+// 0.59, 0.11): a grey copy of the frame takes the step (a colour-dodge of
+// grey LIT_DODGE multiplies by 1 / (1 - g / 255)), is held under the
+// ceiling (darken LIT_CEILING) unless it already stood above it (lighten the
+// grey copy), is cut to the lit land cells (destination-in their mask), and
+// goes back as the frame's luminosity: each texel keeps its hue and
+// saturation and rises one step, never past the ceiling, and a texel at or
+// above the ceiling (snow) is left as it is (`canvasSunLiftRgb`).
 const LIT_DODGE = Math.round(255 * (1 - 1 / (1 + SUN_LIFT)));
-function litLayerFor(layer) {
+// The canvas Lum weighs green below Rec. 709 (0.59 against 0.7152), so a
+// green texel held at the resident ceiling would read brighter: Canvas holds
+// a tenth lower (after the brightest grade still under the candle's 192).
+const LIT_CEILING = Math.round(255 * SUN_LIFT_CEILING * 0.9);
+let _liftGrey = null;
+let _liftWork = null;
+
+const lum = c => 0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2];
+// The compositing spec's SetLum and ClipColor (0-255 channels).
+function setLum(c, l) {
+    const d = l - lum(c);
+    const out = c.map(v => v + d);
+    const L = lum(out);
+    const n = Math.min(...out);
+    const x = Math.max(...out);
+    return out.map(v => {
+        let w = v;
+        if (n < 0) w = L + (w - L) * L / (L - n);
+        if (x > 255) w = L + (w - L) * (255 - L) / (x - L);
+        return w;
+    });
+}
+
+/** SD-3 — one RGB texel (0-255) as the Canvas lift leaves it. */
+export function canvasSunLiftRgb(rgb) {
+    const l = lum(rgb);
+    const gain = 1 / (1 - LIT_DODGE / 255);
+    const target = Math.max(l, Math.min(Math.min(255, l * gain), LIT_CEILING));
+    return target === l ? rgb.slice() : setLum(rgb, target);
+}
+
+// The lit land cells' mask for this field: keyed by the ready layer's field
+// itself (every build, and every field re-created after a release, is a new
+// object whatever the revision counter says) and the coast bake's revision.
+function litMaskFor(layer) {
     const waterRevision = _frameWater?.revision ?? null;
-    if (_litLayer?.revision === layer.revision && _litLayer.waterRevision === waterRevision) return _litLayer.canvas;
+    if (_litLayer?.field === layer.field && _litLayer.waterRevision === waterRevision) return _litLayer.canvas;
+    releaseLitMasks();
     const { field } = layer;
-    const canvas = _litLayer?.canvas || document.createElement('canvas');
+    const canvas = document.createElement('canvas');
     canvas.width = field.cols;
     canvas.height = field.rows;
     const ctx = canvas.getContext('2d');
     const image = ctx.createImageData(field.cols, field.rows);
-    paintLitCells(field, image.data, [LIT_DODGE, LIT_DODGE, LIT_DODGE], _frameWater
+    paintLitCells(field, image.data, [255, 255, 255], _frameWater
         ? { fields: _frameWater, waterBit: COAST_FIELD_FLAGS.water, coveredBit: COAST_FIELD_FLAGS.covered }
         : null);
     ctx.putImageData(image, 0, 0);
-    _litLayer = { revision: layer.revision, waterRevision, canvas };
+    _litLayer = { field, waterRevision, canvas };
     return canvas;
 }
 
+function releaseLitMasks() {
+    for (const canvas of [_litLayer?.canvas, _liftGrey, _liftWork]) if (canvas) releaseCanvasBackingStore(canvas);
+    _litLayer = null;
+    _liftGrey = null;
+    _liftWork = null;
+}
+
+function liftCanvas(canvas, target) {
+    const out = canvas || document.createElement('canvas');
+    if (out.width !== target.width || out.height !== target.height) {
+        out.width = target.width;
+        out.height = target.height;
+    }
+    return out;
+}
+
 /**
- * Canvas: the shade layer on the ground, in world space (the caller holds the
- * camera transform). SD-3 — with `snowCover` (the ground state's), the sun's
- * lift in whole steps on the lit cells first.
+ * SD-3 — Canvas: the sun's lift on the lit land, right after the terrain and
+ * before puddles, cues, casts and the shade layer (the caller holds the
+ * camera transform). The masks go with the shade layer.
  */
-export function drawShadeLayer(ctx, snowCover = 0) {
+export function drawSunLift(ctx) {
+    const layer = frameShadeLayer();
+    if (!layer) {
+        releaseLitMasks();
+        return;
+    }
+    if (!ctx?.canvas || canvasSunLiftSteps(_frameCast.shade.receivers?.lift) <= 0) return;
+    const target = ctx.canvas;
+    const mask = litMaskFor(layer);
+    _liftGrey = liftCanvas(_liftGrey, target);
+    _liftWork = liftCanvas(_liftWork, target);
+    const grey = _liftGrey.getContext('2d');
+    grey.globalCompositeOperation = 'copy';
+    grey.fillStyle = '#808080';
+    grey.fillRect(0, 0, target.width, target.height);
+    grey.globalCompositeOperation = 'luminosity';
+    grey.drawImage(target, 0, 0);
+    const work = _liftWork.getContext('2d');
+    work.setTransform(1, 0, 0, 1, 0, 0);
+    work.globalCompositeOperation = 'copy';
+    work.drawImage(_liftGrey, 0, 0);
+    work.globalCompositeOperation = 'color-dodge';
+    work.fillStyle = `rgb(${LIT_DODGE}, ${LIT_DODGE}, ${LIT_DODGE})`;
+    work.fillRect(0, 0, target.width, target.height);
+    work.globalCompositeOperation = 'darken';
+    work.fillStyle = `rgb(${LIT_CEILING}, ${LIT_CEILING}, ${LIT_CEILING})`;
+    work.fillRect(0, 0, target.width, target.height);
+    work.globalCompositeOperation = 'lighten';
+    work.drawImage(_liftGrey, 0, 0);
+    const { field } = layer;
+    work.setTransform(ctx.getTransform());
+    work.imageSmoothingEnabled = false;
+    work.globalCompositeOperation = 'destination-in';
+    work.drawImage(mask, field.originX, field.originY, field.cols * field.cellW, field.rows * field.cellH);
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalCompositeOperation = 'luminosity';
+    ctx.drawImage(_liftWork, 0, 0);
+    ctx.restore();
+}
+
+/** Canvas: the shade layer on the ground, in world space (the caller holds the camera transform). */
+export function drawShadeLayer(ctx) {
     const layer = frameShadeLayer();
     if (!ctx || !layer) return;
     const { field, canvas } = layer;
     ctx.save();
     ctx.imageSmoothingEnabled = false;
-    if (canvasSunLiftSteps(_frameCast.shade.receivers?.lift, snowCover) > 0) {
-        ctx.globalCompositeOperation = 'color-dodge';
-        ctx.drawImage(litLayerFor(layer), field.originX, field.originY, field.cols * field.cellW, field.rows * field.cellH);
-        ctx.globalCompositeOperation = 'source-over';
-    }
     ctx.globalAlpha = _frameCast.shade.alpha;
     ctx.drawImage(canvas, field.originX, field.originY, field.cols * field.cellW, field.rows * field.cellH);
     ctx.restore();
@@ -442,7 +534,8 @@ export function villagerCastLighting(x, y, cast = _frameCast) {
     if (!cast?.contact) return cast;
     const shade = cast.shade;
     if (!shade) return cast.contact;
-    const clip = cast === _frameCast && _frameReceivers !== null;
+    // SD-3 alone also asks for the texels: the clip is SD-2's (its step on).
+    const clip = cast === _frameCast && _frameReceivers !== null && lookStrength('sd2') > 0;
     if (!clip && shadeCoverageAt(_frameShade?.field, x, y) >= 0.5) return cast.contact;
     if (_villagerCastSource !== cast || _villagerCastClip !== clip) {
         _villagerCastSource = cast;

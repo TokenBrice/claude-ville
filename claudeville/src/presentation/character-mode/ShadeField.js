@@ -1046,9 +1046,11 @@ export function paintShadeCells(field, out, rgb, row0 = 0, row1 = field.rows, wa
 
 /**
  * SD-3 — the sun's lift as RGBA cells for the Canvas backend: `rgb` at alpha
- * 255 where the ground rule calls the cell lit, clear where it is shaded and
- * over painted open water (`water`, as `paintShadeCells`: SEA-1 lifts the
- * sea). The whole field into `out` (`field.cols` wide).
+ * 255 on confirmed land the ground rule calls lit, clear elsewhere: shaded
+ * cells, painted open water (SEA-1 lifts the sea), and every cell the coast
+ * lattice (`water`: `{ fields, waterBit, coveredBit }`, the coast bake's
+ * resident fields and flag bits) does not classify. Without a lattice
+ * nothing is lit. The whole field into `out` (`field.cols` wide).
  */
 export function paintLitCells(field, out, rgb, water = null) {
     const { cols, rows, data } = field;
@@ -1058,12 +1060,12 @@ export function paintLitCells(field, out, rgb, water = null) {
         const waterRow = lattice ? Math.floor((wy - lattice.y) / 2) : -1;
         let o = row * cols * 4;
         for (let col = 0; col < cols; col++, o += 4) {
-            let lit = !(data[(row * cols + col) * 2 + 1] > shadeBayer(col, row) * 255);
-            if (lit && waterRow >= 0 && waterRow < lattice.rows) {
+            let lit = false;
+            if (waterRow >= 0 && waterRow < lattice.rows && !(data[(row * cols + col) * 2 + 1] > shadeBayer(col, row) * 255)) {
                 const waterCol = Math.floor((field.originX + col * field.cellW - lattice.x) / 2);
                 if (waterCol >= 0 && waterCol < lattice.cols) {
                     const flags = lattice.coastField[(waterRow * lattice.cols + waterCol) * 2 + 1];
-                    if ((flags & water.waterBit) && !(flags & water.coveredBit)) lit = false;
+                    lit = !((flags & water.waterBit) && !(flags & water.coveredBit));
                 }
             }
             out[o] = rgb[0];

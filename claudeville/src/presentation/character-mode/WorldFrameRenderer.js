@@ -28,7 +28,7 @@ import { ornamentPlan } from './MarkGovernor.js';
 import { GroundCueRecorder, insertGroundCueRecords } from './GroundCueRecords.js';
 import { insertBodyReflectionRecords } from './WaterReflections.js';
 import { drawCanvasAerialHaze, drawResidentBackdropGrade } from './BackdropGrade.js';
-import { castLightingFor, drawShadeLayer, drawTreeCasts, frameSunShade, setFrameCastLighting, setFramePointCastLights } from './RakingLight.js';
+import { castLightingFor, drawShadeLayer, drawSunLift, drawTreeCasts, frameSunShade, setFrameCastLighting, setFramePointCastLights } from './RakingLight.js';
 import { drawFlashExposure, mistBurnFor, stormStrikeAt, weatherPressureLevel } from './WeatherRenderer.js';
 import { insertMistHaloRecords, mistHaloRecords } from './MistHalos.js';
 import { seaSunLift, slewSeaLift } from './gpu/GpuFrameState.js';
@@ -700,6 +700,8 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
             ctx,
             frameTimer ? label => markFrameTiming(frameTimer, label) : null,
         );
+        // SD-3 — the sun's lift on the lit land, on the bare terrain.
+        drawSunLift(ctx);
         drawFarSeaLayers(ctx, renderer._farSeaLayers);
         // W8.5a — the offshore backdrop on the sea, in its painter order,
         // under puddles, cloud shadows, haze, fog and every island drawable.
@@ -736,7 +738,7 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
         // 2.9 — casts over painted water stay faint and ripple-broken.
         const waterFields = renderer._coastBake?.waterFields || null;
         // SD-1 — the sun's shade layer, under the contact stamps.
-        drawShadeLayer(ctx, renderer._groundState?.snowCover);
+        drawShadeLayer(ctx);
         renderer.buildingRenderer?.drawShadows(ctx, waterFields);
         // 1.5 — tree casts on the ground layer (the resident path emits them
         // as ground records with each tree).

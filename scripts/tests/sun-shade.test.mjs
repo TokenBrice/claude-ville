@@ -33,6 +33,7 @@ import { SCENE_SAMPLER_UNITS } from '../../claudeville/src/presentation/characte
 import {
     SHADE_RECEIVER_CAST,
     SUN_LIFT,
+    canvasSunLiftRgb,
     canvasSunLiftSteps,
     castLightingFor,
     frameSunShade,
@@ -474,17 +475,53 @@ test('a lifted texel never outshines the waiting candle or the NEEDS YOU bell, a
     assert.ok(luma(lift([0.6, 0.62, 0.6], SUN_LIFT)) <= SUN_LIFT_CEILING + 1e-9);
 });
 
-test('Canvas takes the lift in whole steps on the lit land only, and none while snow lies', () => {
+test('Canvas takes the lift in whole steps on confirmed lit land, held under the ceiling per channel', () => {
     assert.equal(canvasSunLiftSteps(0), 0);
     assert.equal(canvasSunLiftSteps(SUN_LIFT * 0.4), 0, 'under half a step: none');
     assert.equal(canvasSunLiftSteps(SUN_LIFT * 0.5), 1);
     assert.equal(canvasSunLiftSteps(SUN_LIFT), 1);
-    assert.equal(canvasSunLiftSteps(SUN_LIFT, 0.3), 0, 'snow lying: a whole step would clip it');
-    // Two cells shaded, one over open water, one lit: only the lit land paints.
-    const field = { cols: 4, rows: 1, originX: 0, originY: 0, cellW: 2, cellH: 1, data: new Uint8Array([0, 255, 0, 255, 0, 0, 0, 0]) };
+    // Shaded, shaded, lit land, open water, and a lit cell the lattice does not reach.
+    const field = { cols: 5, rows: 1, originX: 0, originY: 0, cellW: 2, cellH: 1, data: new Uint8Array([0, 255, 0, 255, 0, 0, 0, 0, 0, 0]) };
     const water = { fields: { x: 0, y: 0, cols: 4, rows: 1, coastField: new Uint8Array([0, 0, 0, 0, 0, 0, 0, 1]) }, waterBit: 1, coveredBit: 2 };
-    const out = new Uint8Array(16);
+    const out = new Uint8Array(20);
     paintLitCells(field, out, [35, 35, 35], water);
-    assert.deepEqual([3, 7, 11, 15].map(i => out[i]), [0, 0, 255, 0], 'shade, shade, lit land, open water');
+    assert.deepEqual([3, 7, 11, 15, 19].map(i => out[i]), [0, 0, 255, 0, 0], 'shade, shade, lit land, open water, unclassified');
     assert.equal(out[8], 35);
+    paintLitCells(field, out, [35, 35, 35], null);
+    assert.ok([3, 7, 11, 15, 19].every(i => out[i] === 0), 'no coast lattice: nothing is lit');
+    // The composite chain (dodge, darken to the ceiling, lighten the unlifted
+    // frame): each channel rises at most one step, never past the ceiling
+    // unless it already stood there, so snow keeps its value.
+    for (const snow of [[230, 237, 245], [176, 180, 190]]) assert.deepEqual(canvasSunLiftRgb(snow), snow);
+    const lum30 = rgb => 0.3 * rgb[0] + 0.59 * rgb[1] + 0.11 * rgb[2];
+    const lifted = canvasSunLiftRgb([90, 120, 60]);
+    assert.ok(lifted.every((v, i) => v > [90, 120, 60][i]), 'every channel rises');
+    assert.ok(Math.abs(lum30(lifted) / lum30([90, 120, 60]) - (1 + SUN_LIFT)) < 0.01, 'one step of luminosity');
+    assert.ok(Math.abs(lum30(canvasSunLiftRgb([130, 140, 120])) - Math.round(255 * SUN_LIFT_CEILING * 0.9)) < 0.01, 'held at the ceiling');
+    const luma = rgb => 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+    let worst = 0;
+    for (let minute = 6 * 60; minute <= 19 * 60; minute += 30) {
+        const grade = evaluateGrade({ minuteOfDay: minute });
+        for (let r = 0; r <= 255; r += 15) for (let g = 0; g <= 255; g += 15) for (let b = 0; b <= 255; b += 30) {
+            const before = luma(applyGradeToRgb([r / 255, g / 255, b / 255], grade)) * 255;
+            const after = luma(applyGradeToRgb(canvasSunLiftRgb([r, g, b]).map(v => v / 255), grade)) * 255;
+            if (after > before + 1e-9) worst = Math.max(worst, after);
+        }
+    }
+    assert.ok(worst < 192, `brightest lifted Canvas pixel ${worst.toFixed(1)} under the candle's 192`);
+});
+
+test('the sun\'s lift alone never clips a villager\'s sun trail (that is SD-2\'s)', () => {
+    try {
+        setLookStrength('sd1', 1);
+        setLookStrength('sd2', 0);
+        setLookStrength('sd3', 1);
+        const cast = castLightingFor(atmosphere({ elevation: 50 }));
+        assert.ok(cast.shade.receivers.lift > 0, 'the lift asks for the texels');
+        setFrameCastLighting(cast, { _lastAtmosphere: atmosphere({ elevation: 50 }) });
+        assert.equal(villagerCastLighting(10, 20)?.clip, undefined);
+    } finally {
+        setFrameCastLighting(null);
+        resetLookStrengths();
+    }
 });
