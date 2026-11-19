@@ -114,6 +114,9 @@ const WET_STEP_MINUTES = 5;
 const WET_HISTORY_MINUTES = 6 * 60;
 const SNOW_STEP_MINUTES = 10;
 const FROST_START = 22 * 60;
+// EY-5 — the night's rime rises a quarter per FROST_RISE_MINUTES from
+// FROST_START (1 at 22:00, 2 at 23:00, 3 at midnight, whole at 01:00).
+const FROST_RISE_MINUTES = 60;
 // BI-5 — the sun's elevations (degrees) at which the rime steps down a
 // quarter after sunrise: whole until the first; the sunlit lawn clears over
 // the next two while the dawn casts still lie long across it; shade and its
@@ -237,20 +240,43 @@ function fallbackElevation(minute, sunriseMinute, solarNoonMinute) {
 }
 
 /**
- * BI-5 — the melt clock at local `minute` under `sun` (`frostSunFor`): 4
- * from FROST_START through the night and until the sun clears the first of
- * FROST_MELT_ELEVATIONS, one quarter less per step it has climbed past, 0
- * from the last step, from solar noon and through the afternoon.
+ * EY-5 — whether local `minute` lies in the night's rising rime (22:00 to
+ * 01:00), when the frost quarter grows instead of melting.
+ */
+export function frostRisingAt(minute) {
+    return frostRiseQuarter(minute) < 4;
+}
+
+function frostRiseQuarter(minute) {
+    const since = (minute - FROST_START + DAY_MINUTES) % DAY_MINUTES;
+    return since < 3 * FROST_RISE_MINUTES ? 1 + Math.floor(since / FROST_RISE_MINUTES) : 4;
+}
+
+/**
+ * BI-5 — the frost clock at local `minute` under `sun` (`frostSunFor`):
+ * rising 1 → 4 from FROST_START (EY-5, one quarter an hour), 4 through the
+ * night and until the sun clears the first of FROST_MELT_ELEVATIONS, one
+ * quarter less per step it has climbed past, 0 from the last step, from
+ * solar noon and through the afternoon.
  */
 export function frostMeltQuarter(sun, minute) {
     const sunrise = finiteOr(sun?.sunriseMinute, FROST_FALLBACK_SUN.sunriseMinute);
     const noon = finiteOr(sun?.solarNoonMinute, FROST_FALLBACK_SUN.solarNoonMinute);
-    if (minute >= FROST_START || minute < sunrise) return 4;
+    if (minute >= FROST_START || minute < sunrise) return Math.min(4, frostRiseQuarter(minute));
     if (minute >= noon) return 0;
     const elevation = finiteOr(sun?.elevationDeg, fallbackElevation(minute, sunrise, noon));
     let quarter = 4;
     for (const step of FROST_MELT_ELEVATIONS) if (elevation >= step) quarter--;
     return quarter;
+}
+
+/**
+ * EY-5 — whether a ground state's frost is the night's rising rime (its
+ * quarter growing on the GW-3 patch field) rather than the dawn melt.
+ */
+export function frostRisingOf(ground) {
+    const frost = frostQuarterOf(ground);
+    return frost > 0 && frost < 4 && ground?.frostRising === true;
 }
 
 /** The terrain's frost quarter (0–4) of a ground state. */
@@ -340,7 +366,8 @@ export function groundStateAt(date, options = {}) {
     const sun = options.sun || { ...FROST_FALLBACK_SUN, elevationDeg: fallbackElevation(minute, FROST_FALLBACK_SUN.sunriseMinute, FROST_FALLBACK_SUN.solarNoonMinute) };
     const sunrise = Math.round(finiteOr(sun.sunriseMinute, FROST_FALLBACK_SUN.sunriseMinute));
     const melt = frostMeltQuarter(sun, minute);
-    const key = `${historyKey(date, bucket, options)}|r${sunrise}|f${melt}`;
+    const rising = frostRisingAt(minute);
+    const key = `${historyKey(date, bucket, options)}|r${sunrise}|f${melt}${rising ? 'r' : ''}`;
     const cached = _groundMemo.get(key);
     if (cached) return cached;
 
@@ -375,6 +402,8 @@ export function groundStateAt(date, options = {}) {
         puddles: smoothstep(PUDDLE_ON, PUDDLE_FULL, wetness),
         snowCover: snow,
         frost,
+        // EY-5 — the rime is still rising (22:00–01:00), not melting.
+        frostRising: rising && frost > 0 && frost < 4,
         bucketMinute: bucket,
     }));
 }
