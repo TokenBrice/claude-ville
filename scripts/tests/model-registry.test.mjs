@@ -180,7 +180,24 @@ test('body variants: base body without an agent id, one stable body per agent, e
     assert.equal(agentBodySpriteId('agent.x', ['agent.x'], 'a'), 'agent.x');
     assert.equal(agentBodySpriteId('agent.x', null, 'a'), 'agent.x');
     // Rows without variants keep their single body for every agent.
-    assert.equal(getModelVisualIdentity('gpt-6-astra', 'high', 'codex', 'agent-1').spriteId, 'agent.codex.gpt6astra');
+    assert.equal(getModelVisualIdentity('claude-mythos-5-2', 'high', 'claude', 'agent-1').spriteId, 'agent.claude.mythos');
+});
+
+test('Fable and Astra bodies: two per model, stable per agent, base body without an id (FK-6)', () => {
+    for (const [model, provider, base] of [
+        ['claude-fable-5-2', 'claude', 'agent.claude.fable'], ['claude-fable-5', 'claude', 'agent.claude.fable'],
+        ['gpt-6.2-astra', 'codex', 'agent.codex.gpt6astra'], ['gpt-6-astra', 'codex', 'agent.codex.gpt6astra'],
+    ]) {
+        assert.equal(getModelVisualIdentity(model, 'high', provider).spriteId, base);
+        const bodies = new Set();
+        for (let i = 0; i < 64; i++) {
+            const id = `agent-${i}`;
+            const body = getModelVisualIdentity(model, 'high', provider, id).spriteId;
+            assert.equal(getModelVisualIdentity(model, 'max', provider, id).spriteId, body, 'effort never changes the body');
+            bodies.add(body);
+        }
+        assert.deepEqual([...bodies].sort(), [base, `${base}.b`], model);
+    }
 });
 
 test('GLM bodies: the grandmaster and the abbot, for omp-hosted and unknown z.AI models alike', () => {
