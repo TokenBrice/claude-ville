@@ -18,6 +18,10 @@ The server is hardcoded to port `4000` and the IPv4 loopback interface. Requests
 
 Claude sessions on `/api/sessions` expose `script` while `pendingTool` is a REPL or Poll wrapper. It contains `tool`, a sanitized `description` of up to 120 characters (or null), and `since` in epoch ms. Poll uses the latest REPL description from the same turn. Otherwise `script` is null. `lastTool` and `lastToolInput` retain the newest inner call. In `lastResults`, failures take priority within a tied burst.
 
+A Linux Claude main can report `signalSource: 'registry'` and `signalCertainty: 'observed'`. A registry-confirmed busy or waiting main stays listed with `resident: false` even after its transcript falls outside the activity window. A recognized wait supplies `approval`, `plan_review`, or `question` in `waitReason`. A pending hook for the same call can supply `pendingTool` and redacted `promptDetail`. An observed process exit sets `sessionEndedAt`, which survives removal of the PID file for the active window. A resumed process or newer transcript turn supersedes that exit.
+
+Codex, GLM and DeepSeek fleet threads carry `subagentKind: 'mcp'`, their recorded job label in `agentName`, and `parentSessionId` when launch evidence identifies a lead. For GLM and DeepSeek, both detail endpoints return `jobs`, newest first, capped at three. Each row has `kind` (ask or continue), `model`, `effort`, `startedAt`, `endedAt`, `status` and `durationMs`. Times are epoch milliseconds and missing fields are null. Duration covers only the recorded job.
+
 Claude's `turnStartedAt`, `model`, `reasoningEffort`, and `tokenUsage.contextWindow` survive virtual tool bursts. `cost.source` is `estimate` before a provider total, `provider` at that total, and `mixed` when `cost.usd` includes both the provider total and estimated usage after resume. One-hour cache writes cost twice the model's input rate.
 
 Git identity on `/api/sessions` (all fields optional; a client keys a repository on `repoRoot || project`, so older servers still work):

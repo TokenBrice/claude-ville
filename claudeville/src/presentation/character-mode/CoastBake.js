@@ -32,6 +32,7 @@ import { emissiveSidecarFor } from './EmitterCuts.js';
 import { cloudCourseDrift } from './Wind.js';
 import { moonRoadFor, sunRoadFor } from './gpu/GpuFrameState.js';
 import { lookStrength } from './LookStrengths.js';
+import { liquidPrecipitation } from './GroundState.js';
 
 const HALF_W = TILE_WIDTH / 2;
 const HALF_H = TILE_HEIGHT / 2;
@@ -1549,7 +1550,8 @@ function paintCoast(ctx, coast, field, renderer) {
 // into `coast.mirrorAccents` as the lit window it is (albedo plus its
 // emission, MIRROR_ACCENT_VALUE over the stop); `mirrorAccentLayers` cuts
 // them per 6.3 glass group, and both backends show a group's accents
-// ungraded only while its room is lit (EmitterCuts). The bake keeps the
+// ungraded only while its room is lit (EmitterCuts), and only where its
+// mirror survives the rain (EN-7, `mirrorAccentRainCut`). The bake keeps the
 // unlit pane, so a dark room's mirrored window stays dark. A hot texel on a
 // source without a sidecar (fire, a lamp) mirrors MIRROR_LIT_RATIO brighter.
 
@@ -1627,15 +1629,21 @@ const MIRROR_FADE_ROWS = 16;
  * 3.7 — heavy rain breaks the still mirrors: from `from` precipitation (rain
  * or storm) a share of every mirror texel gives way to its water stop on the
  * Bayer order, all of them at from + span, in `steps` buckets. The resident
- * shader (`mirrorStormColour`) and the Canvas mood layer read the same rule.
+ * shader (`mirrorStormColour`, on `u_weather.x`) and the Canvas mood layer
+ * read the same rule. EN-4 — only liquid rain breaks them: winter
+ * precipitation falls as snow (`atmosphere`'s date). EN-7 — one value per
+ * frame, unscaled by the quality ladder: the GPU shaders' `u_mirrorBreak`,
+ * the Canvas mood layer and both accent paths read `mirrorStormDrop`.
  */
 export const MIRROR_STORM = Object.freeze({ from: 0.3, span: 0.4, steps: 8 });
-export function mirrorStormDrop(weather) {
+export function mirrorRainDrop(precipitation) {
+    const share = Math.max(0, Math.min(1, ((Number(precipitation) || 0) - MIRROR_STORM.from) / MIRROR_STORM.span));
+    return Math.floor(share * MIRROR_STORM.steps + 0.5) / MIRROR_STORM.steps;
+}
+export function mirrorStormDrop(weather, atmosphere = null) {
     const type = weather?.type;
     if (type !== 'rain' && type !== 'storm') return 0;
-    const precipitation = Number(weather.precipitation ?? weather.intensity) || 0;
-    const share = Math.max(0, Math.min(1, (precipitation - MIRROR_STORM.from) / MIRROR_STORM.span));
-    return Math.floor(share * MIRROR_STORM.steps + 0.5) / MIRROR_STORM.steps;
+    return mirrorRainDrop(liquidPrecipitation(atmosphere, weather));
 }
 
 function mirrorCourse(r, reach) {
@@ -2321,11 +2329,10 @@ export function mirrorAccentLayers(renderer) {
  * `roomGate`, a dark room lights nothing), off-glass the landmark's night
  * shift at night (as 2.4's aperture lights), the Lighthouse lamp exactly
  * while its water column burns (`lighthouseColumnSource`, the clock's lamp
- * course: a safety light, never work), 0 while the rain breaks the mirrors
- * (`mirrorStormDrop`).
+ * course: a safety light, never work). The rain's break is spatial, not a
+ * gate: `mirrorAccentRainCut`.
  */
 export function mirrorAccentGate(renderer, layer, atmosphere) {
-    if (mirrorStormDrop(atmosphere?.weather) > 0) return 0;
     const buildings = renderer?.buildingRenderer;
     if (!buildings) return 0;
     const gate = layer.group === MIRROR_LAMP_GROUP
@@ -2334,6 +2341,78 @@ export function mirrorAccentGate(renderer, layer, atmosphere) {
             ? buildings.roomGate?.(layer.type, layer.group - 1)
             : (buildings._nightShiftLit?.(layer.type) || 0) * (buildings._nightWindowGate?.() || 0);
     return Math.max(0, Math.min(1, Number(gate) || 0));
+}
+
+// The Bayer ranks (0..15) a mirror accent layer holds texels at, once per layer.
+function mirrorAccentRanks(layer) {
+    if (layer.ranks) return layer.ranks;
+    const { width, height } = layer.canvas;
+    const data = layer.canvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, width, height).data;
+    const ranks = new Array(16).fill(false);
+    for (let j = 0; j < height; j++) {
+        for (let i = 0; i < width; i++) {
+            if (data[(j * width + i) * 4 + 3] > 0) ranks[bayer(layer.x + i, layer.y + j) * 16] = true;
+        }
+    }
+    layer.ranks = ranks;
+    return ranks;
+}
+
+/**
+ * EN-7 — the texels of a mirror accent layer drawn now: an accent texel
+ * lies on its mirror's texel and goes with it in the rain, on the same
+ * world-locked Bayer rank (`bayer(x, y) < drop`: the shaders'
+ * `waterBayer4`, the mood layer's orders), so a lamp keeps its reflection
+ * where its mirror survives. `share` (Canvas: the room gate x core; the GPU
+ * dims the whole cut instead, 1) keeps that share of the surviving ranks,
+ * lowest first, so a fading room thins what the rain left and goes dark
+ * only at its gate's 0 (any gate above 0 keeps at least the lowest occupied
+ * surviving rank). `drop` is the frame's one mirror break
+ * (`mirrorStormDrop`). `layer` itself while dry and whole, null when no
+ * texel is kept; each (drop, share) step is cut once per layer (`key` names
+ * the step).
+ */
+export function mirrorAccentRainCut(layer, drop, share = 1) {
+    const lo = Math.max(0, Math.min(16, Math.round((Number(drop) || 0) * 16)));
+    const gate = Math.max(0, Math.min(1, Number(share) || 0));
+    let hi = lo + Math.round(gate * (16 - lo));
+    if (gate > 0) {
+        const occupied = mirrorAccentRanks(layer);
+        let any = false;
+        for (let rank = lo; rank < hi; rank++) any ||= occupied[rank];
+        while (!any && hi < 16) any = occupied[hi++];
+    }
+    if (hi <= lo) return null;
+    if (lo === 0 && hi === 16) return layer;
+    const cuts = layer.rainCuts ||= new Map();
+    const id = `${lo}:${hi}`;
+    if (cuts.has(id)) return cuts.get(id);
+    let kept = 0;
+    const cutCanvas = source => {
+        const canvas = document.createElement('canvas');
+        canvas.width = source.width;
+        canvas.height = source.height;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(source, 0, 0);
+        const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        kept = 0;
+        for (let j = 0; j < canvas.height; j++) {
+            for (let i = 0; i < canvas.width; i++) {
+                const o = (j * canvas.width + i) * 4 + 3;
+                if (image.data[o] === 0) continue;
+                const rank = bayer(layer.x + i, layer.y + j) * 16;
+                if (rank < lo || rank >= hi) image.data[o] = 0;
+                else kept++;
+            }
+        }
+        ctx.putImageData(image, 0, 0);
+        return canvas;
+    };
+    const emissive = cutCanvas(layer.emissive);
+    const canvas = cutCanvas(layer.canvas);
+    const result = kept > 0 ? { ...layer, canvas, emissive, rainCuts: null, ranks: null, key: `${layer.key}:cut${id}` } : null;
+    cuts.set(id, result);
+    return result;
 }
 
 /**
@@ -2897,7 +2976,7 @@ function drawCanvasMoodLayer(ctx, renderer, atmosphere) {
             h,
         };
     }
-    const drop = mirrorStormDrop(atmosphere?.weather);
+    const drop = mirrorStormDrop(atmosphere?.weather, atmosphere);
     const moodKey = `${waterMoodKey(mood)}:${sunBand}:${drop}`;
     const now = performance.now();
     const due = layer.moodKey !== moodKey || !(now - layer.bakedAt < OCEAN_REBAKE_MIN_MS);

@@ -751,10 +751,10 @@
     }
   },
   "channelSha256": {
-    "albedo": "0835062dbd77ee2fad9aa684f9afb325320cda5cb76d79b27caf6f144dbc047c",
-    "emissive": "8b3b033c06bfc3083d95db1698c0b8b50c4ce381dadf04a3bc6fcaa02d70796e",
-    "material": "7ae98870dca939bc9eadbad89f40e2463284e86fa9e2b9e6df19706dce4aeab8",
-    "occluder": "28967f250aca8427fcbc85c62acf99e26a2ee68a481d0c329d81bb6cb5ac5353"
+    "albedo": "96f6f8415bb6854448d05f09ceffd8bb7a405a23a79cf4b4435e717c2da80cea",
+    "emissive": "6e577e0bdba53a99a8c751ff1b142ab3e425e2be0f2a125e1a0357a408c36148",
+    "material": "eb51a554e9afdf2bdbc1dfbe266043f487d206c25d7453c76f56b0f0bba17b8b",
+    "occluder": "5195402566b90d815619e4fc632e87d023c98b2e84e25d6bfd4412fe58980981"
   },
   "channels": {
     "albedo": "assets/sprites/atlases/world-pilot.albedo.png",
@@ -13304,7 +13304,7 @@
     }
   },
   "generator": "scripts/sprites/atlas-bake.mjs",
-  "height": 2048,
+  "height": 1801,
   "id": "world-pilot",
   "ids": [
     "agent.claude.opus",
@@ -13565,5 +13565,5 @@
   "padding": 2,
   "sampling": "nearest",
   "schemaVersion": 1,
-  "width": 2048
+  "width": 2026
 }

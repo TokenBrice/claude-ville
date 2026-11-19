@@ -236,12 +236,14 @@ try {
   }
 
   writeJsonLine(largeTranscript, {
+    type: 'assistant',
     message: { role: 'assistant', usage: { input_tokens: 13, output_tokens: 17 }, content: [] },
   });
   const sparseOffset = 256 * 1024 * 1024;
   fs.truncateSync(largeTranscript, sparseOffset);
   const largeFd = fs.openSync(largeTranscript, 'r+');
   const largeTail = Buffer.from(`\n${JSON.stringify({
+    type: 'assistant',
     message: { role: 'assistant', usage: { input_tokens: 19, output_tokens: 23 }, content: [] },
   })}\n`);
   fs.writeSync(largeFd, largeTail, 0, largeTail.length, sparseOffset);

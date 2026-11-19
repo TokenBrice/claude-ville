@@ -36,7 +36,7 @@ import { ART_RAMPS } from '../../../config/artPalette.js';
 import { POST_FX_LEVELS } from '../postfx/PostFxLadder.js';
 import { localDateKey, sourceEnergyFor } from '../AtmosphereState.js';
 import { lookStrength } from '../LookStrengths.js';
-import { GROUND_BUCKET_MINUTES, groundOptionsFor, groundStateAt } from '../GroundState.js';
+import { GROUND_BUCKET_MINUTES, groundOptionsFor, groundStateAt, liquidPrecipitation } from '../GroundState.js';
 import { LANTERN_ID_PREFIX } from '../CarriedLantern.js';
 import { baseWindX, cloudCourseDrift, gustinessFor, WIND_SPEED_BY_TYPE, windAt } from '../Wind.js';
 
@@ -115,7 +115,8 @@ export function resolveFrameGrade(feed = {}) {
 }
 
 /**
- * `u_weather`: (rain, fog, storm, intensity), sheared by the ladder's
+ * `u_weather`: (rain, fog, storm, intensity), rain the liquid share (EN-4:
+ * winter precipitation falls as snow, so 0), sheared by the ladder's
  * `weather-amplitude` (REDUCED x0.72 rain and intensity, MINIMAL no rain,
  * storm or intensity). A fresh array per call.
  */
@@ -124,7 +125,7 @@ export function resolveWeatherUniform(feed = {}, level = POST_FX_LEVELS.FULL) {
     const type = String(weather.type || 'clear');
     const rainy = type === 'rain' || type === 'storm' || type === 'overcast';
     const uniform = [
-        rainy ? clamp(finite(weather.precipitation, weather.intensity), 0, 1) : 0,
+        rainy ? liquidPrecipitation(feed.atmosphere, weather) : 0,
         clamp(finite(weather.fog, type === 'storm' ? 0.35 : 0), 0, 1),
         type === 'storm' ? 1 : 0,
         clamp(finite(weather.intensity), 0, 1),
@@ -566,8 +567,9 @@ export function resolveWaterFx(feed, camera, level, grade, moonFill, width, out 
     const weather = feed.weather || feed.atmosphere?.weather || {};
     const type = String(weather.type || 'clear');
     const raining = type === 'rain' || type === 'storm';
+    // EN-4 — rings only where rain falls as rain (snow leaves none).
     fx[1] = raining && effectBudgetMode('rainRings', level) !== 'off'
-        ? clamp(finite(weather.precipitation, weather.intensity), 0, 1)
+        ? liquidPrecipitation(feed.atmosphere, weather)
         : 0;
     const cloudCover = clamp(finite(weather.cloudCover, 0), 0, 1);
     out.starlight = resolveStarlight(feed.atmosphere, weather, grade, moonFill, level);

@@ -30,7 +30,7 @@ import { AMBIENT_GROUND_PROPS, DISTRICT_PROPS, SCENIC_POINT_PROPS } from '../../
 import { atlasSourceRect } from './AssetManager.js';
 import { sourceEnergyFor } from './AtmosphereState.js';
 import { buildEmitterCut } from './CanvasGrade.js';
-import { mirrorAccentGate, mirrorAccentLayers } from './CoastBake.js';
+import { mirrorAccentGate, mirrorAccentLayers, mirrorAccentRainCut, mirrorStormDrop } from './CoastBake.js';
 import { materialClassId } from './gpu/GpuWorldPolicy.js';
 import { hullGeometry } from './HarborHulls.js';
 import { tileToWorld } from './Projection.js';
@@ -130,12 +130,18 @@ export function cacheEmitterRecords(renderer, channelRevision) {
 const MIRROR_ACCENT_MATERIAL = materialClassId('water');
 
 function mirrorAccentRecords(renderer, records) {
-    for (const layer of mirrorAccentLayers(renderer)) {
-        const gate = mirrorAccentGate(renderer, layer, renderer._lastAtmosphere);
+    const atmosphere = renderer._lastAtmosphere;
+    // EN-7 — the rain breaks an accent where it breaks its mirror (the
+    // shaders' `u_mirrorBreak`, the same value at every ladder level).
+    const drop = mirrorStormDrop(atmosphere?.weather, atmosphere);
+    for (const whole of mirrorAccentLayers(renderer)) {
+        const gate = mirrorAccentGate(renderer, whole, atmosphere);
         if (!(gate > 0.02)) continue;
+        const layer = mirrorAccentRainCut(whole, drop);
+        if (!layer) continue;
         records.push({
-            id: layer.key,
-            stableKey: layer.key,
+            id: whole.key,
+            stableKey: whole.key,
             textureKey: layer.key,
             sidecarKey: `${layer.key}:channels`,
             source: layer.canvas,
@@ -686,52 +692,21 @@ function bloomTarget(overlay, transform, scale) {
 
 // 3.7 — the Canvas twin of the lit mirror accent records: each lit glass
 // group's accents at its gate, under every building cut. The gate is an
-// ordered 4x4 Bayer share of the accent texels (world-locked), never a
+// ordered 4x4 Bayer share of the accent texels the rain left (world-locked,
+// `mirrorAccentRainCut`: EN-7, a fading room thins the survivors), never a
 // partial alpha: a half-alpha amber over the graded teal water mixes to
 // lime, so every drawn accent texel stays its own palette colour.
 function drawMirrorAccentCuts(ctx, renderer, atmosphere, core, topLeft, bottomRight) {
-    for (const layer of mirrorAccentLayers(renderer)) {
-        const share = Math.min(1, mirrorAccentGate(renderer, layer, atmosphere) * core);
+    // EN-7 — the frame's one mirror break (the mood layer's too).
+    const drop = mirrorStormDrop(atmosphere?.weather, atmosphere);
+    for (const whole of mirrorAccentLayers(renderer)) {
+        const share = Math.min(1, mirrorAccentGate(renderer, whole, atmosphere) * core);
         if (share < 0.02) continue;
-        const { x, y, w, h } = layer;
+        const { x, y, w, h } = whole;
         if (topLeft && (x > bottomRight.x || y > bottomRight.y || x + w < topLeft.x || y + h < topLeft.y)) continue;
-        const gated = bayerGated(layer, share);
-        if (gated) drawCarvedTerrainLayer(ctx, renderer, { canvas: gated, x, y, w, h });
+        const gated = mirrorAccentRainCut(whole, drop, share);
+        if (gated) drawCarvedTerrainLayer(ctx, renderer, { canvas: gated.canvas, x, y, w, h });
     }
-}
-
-const BAYER4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
-const bayerCopies = new WeakMap();
-
-// `layer.canvas` keeping the texels whose world-locked 4x4 Bayer rank is
-// under `share` (16 steps, cached per layer and step; null when none is).
-function bayerGated(layer, share) {
-    const step = Math.min(16, Math.round(share * 16));
-    if (step <= 0) return null;
-    if (step >= 16) return layer.canvas;
-    let copies = bayerCopies.get(layer.canvas);
-    if (!copies) bayerCopies.set(layer.canvas, copies = new Map());
-    let copy = copies.get(step);
-    if (copy) return copy;
-    const { width, height } = layer.canvas;
-    copy = document.createElement('canvas');
-    copy.width = width;
-    copy.height = height;
-    const copyCtx = copy.getContext('2d');
-    copyCtx.drawImage(layer.canvas, 0, 0);
-    const image = copyCtx.getImageData(0, 0, width, height);
-    const data = image.data;
-    const ox = Math.round(layer.x);
-    const oy = Math.round(layer.y);
-    for (let j = 0; j < height; j++) {
-        const row = ((oy + j) & 3) * 4;
-        for (let i = 0; i < width; i++) {
-            if (BAYER4[row + ((ox + i) & 3)] >= step) data[(j * width + i) * 4 + 3] = 0;
-        }
-    }
-    copyCtx.putImageData(image, 0, 0);
-    copies.set(step, copy);
-    return copy;
 }
 
 // Every harbour hull the Canvas depth pass drew this frame, as its drawn
