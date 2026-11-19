@@ -30,7 +30,7 @@ import { AgentBiographyService } from '../application/AgentBiographyService.js';
 import { MoodService } from '../application/MoodService.js';
 import { RelationshipAffinityService } from '../application/RelationshipAffinityService.js';
 
-import { TopBar } from './shared/TopBar.js';
+import { TopBar, villageDoorHref } from './shared/TopBar.js';
 import { Sidebar } from './shared/Sidebar.js';
 import { Toast } from './shared/Toast.js';
 import { Modal } from './shared/Modal.js';
@@ -102,8 +102,8 @@ const EMPTY_SURFACE_COPY = Object.freeze({
     }),
     [VillagePhase.NO_RECORDED_SAMPLES]: Object.freeze({
         title: 'NO RECORDED TRAIL SAMPLES',
-        copy: 'No village trail samples remain for this day.',
-        next: 'The village keeps its trails for 24 hours.',
+        copy: 'The village kept no trails for this day, so there is nothing to retell.',
+        next: 'Trails are kept for 24 hours, and only while ClaudeVille is open.',
     }),
     [VillagePhase.DEGRADED]: Object.freeze({
         title: 'A WATCHTOWER IS UNREADABLE',
@@ -115,6 +115,13 @@ const EMPTY_SURFACE_COPY = Object.freeze({
         copy: 'The village shell is still here. A step failed while opening.',
         next: 'Try again to re-run the failed step.',
     }),
+});
+
+// XP-6 — the door each empty card offers: a newcomer with no provider can
+// visit the simulated village; a recorded day with no trails goes back home.
+const EMPTY_SURFACE_DOORS = Object.freeze({
+    [VillagePhase.READY_NO_PROVIDERS]: Object.freeze({ text: 'VISIT A SIMULATED VILLAGE', simulated: true }),
+    [VillagePhase.NO_RECORDED_SAMPLES]: Object.freeze({ text: 'RETURN TO YOUR VILLAGE', simulated: false }),
 });
 
 const BOOT_FAILURE_COPY = Object.freeze({
@@ -1056,6 +1063,22 @@ export class App {
         if (visibleClass) root.classList.toggle(visibleClass, show);
         const hints = root.querySelector('.dashboard__empty-hints');
         if (hints) hints.hidden = copy !== EMPTY_SURFACE_COPY[VillagePhase.READY_EMPTY];
+        const doorSpec = EMPTY_SURFACE_DOORS[this.villageState?.phase] || null;
+        let door = root.querySelector('.empty-door');
+        if (!door && doorSpec) {
+            door = el('a', { className: 'empty-door' });
+            root.appendChild(door);
+        }
+        if (door) {
+            if (doorSpec) {
+                this._setTextIfChanged(door, doorSpec.text);
+                const href = villageDoorHref(location.pathname, { simulated: doorSpec.simulated });
+                if (door.getAttribute('href') !== href) door.setAttribute('href', href);
+                // After TRY AGAIN, which the card adopts once it shows.
+                if (root.lastElementChild !== door) root.appendChild(door);
+            }
+            door.hidden = !doorSpec;
+        }
     }
 
     _setTextIfChanged(node, text) {

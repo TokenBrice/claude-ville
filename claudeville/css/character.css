@@ -629,6 +629,25 @@ body:has(#worldGrammar:popover-open) .first-run-hint {
     letter-spacing: 1px;
 }
 
+/* XP-6 — the empty card's door: a ghost of TRY AGAIN, so the retry stays the
+   one lit action. */
+.empty-door {
+    color: var(--gold);
+    border: 0;
+    box-shadow: inset 0 0 0 1px var(--brass);
+    padding: 4px 12px;
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
+    letter-spacing: 1px;
+    text-decoration: none;
+    pointer-events: auto;
+    -webkit-font-smoothing: none;
+}
+
+.empty-door:hover,
+.empty-door:focus-visible { color: var(--gold-hi); }
+
+.empty-door[hidden] { display: none; }
+
 .world-empty__next,
 .dashboard__empty-next {
     max-width: 340px;

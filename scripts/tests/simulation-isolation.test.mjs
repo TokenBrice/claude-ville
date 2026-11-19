@@ -64,3 +64,18 @@ test('a simulated snapshot stays explicitly simulated without claiming stale net
     const polled = reduceVillageState(state, { type: 'snapshot', source: 'polling', at: 200 });
     assert.equal(isStale(polled, 1_000_000), true);
 });
+
+test('XP-2: a retold window reads RETOLD from its first frame, never LIVE or SYNCING', async () => {
+    const { connectionChip, villageDoorHref, SIMULATED_VILLAGE_SEARCH } = await import('../../claudeville/src/presentation/shared/TopBar.js');
+    const starting = reduceVillageState(initialVillageState(), { type: 'sync-start', retold: true });
+    assert.equal(connectionChip(starting, 1_000).label, 'RETOLD');
+    const empty = reduceVillageState(starting, { type: 'no-recorded-samples' });
+    assert.equal(connectionChip(empty, 1_000).label, 'RETOLD');
+    const playing = reduceVillageState(starting, { type: 'snapshot', source: 'simulator', agentCount: 2, at: 100 });
+    assert.equal(linkStatusText(playing, 1_000), 'RETOLD');
+    assert.equal(connectionChip(playing, 1_000).label, 'RETOLD');
+    // XP-6 — the doors keep the profile path and open the showcase day.
+    assert.equal(SIMULATED_VILLAGE_SEARCH, '?sim=1&scenario=readme-showcase&timelapse=1');
+    assert.equal(villageDoorHref('/', { simulated: true }), '/?sim=1&scenario=readme-showcase&timelapse=1');
+    assert.equal(villageDoorHref('/m/'), '/m/');
+});
