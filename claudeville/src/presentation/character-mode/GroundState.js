@@ -75,6 +75,36 @@ export const SNOWFALL_ON = 0.18;
 // The weather layer's own threshold: above it WeatherRenderer draws rain (or
 // snow in winter).
 export const PRECIPITATING = 0.02;
+
+// EN-4 / EY-4 — what a snapshot's sky lets fall, from its date and weather
+// only (V3). Winter (Dec–Feb) precipitation falls as snow: WeatherRenderer
+// draws flakes and the ground and roofs stay dry, so its liquid share is 0
+// and the water takes no rain rings, wet sheen or rain mirror break; storm
+// wind, sea state, fog and the grade still follow the weather. `snowfallOn`
+// is the snowfall that settles (above SNOWFALL_ON), the grade's snow row.
+function snapshotMonth(atmosphere) {
+    const date = atmosphere?.effectiveDate;
+    return date instanceof Date && !Number.isNaN(date.getTime()) ? date.getMonth() : -1;
+}
+
+// One answer per atmosphere snapshot, shared by every consumer.
+const _liquidMemo = new WeakMap();
+
+/** The liquid precipitation (0..1) of `weather` under snapshot `atmosphere`'s date. */
+export function liquidPrecipitation(atmosphere, weather = atmosphere?.weather) {
+    const own = atmosphere && typeof atmosphere === 'object' && weather === atmosphere.weather;
+    if (own && _liquidMemo.has(atmosphere)) return _liquidMemo.get(atmosphere);
+    const liquid = !weather || isWinterMonth(snapshotMonth(atmosphere))
+        ? 0
+        : clamp01(Number(weather.precipitation ?? weather.intensity) || 0);
+    if (own) _liquidMemo.set(atmosphere, liquid);
+    return liquid;
+}
+
+/** Whether settling snow falls in month `monthIndex` (0..11) under `weather`. */
+export function snowfallOn(monthIndex, weather) {
+    return isWinterMonth(monthIndex) && (Number(weather?.precipitation) || 0) > SNOWFALL_ON;
+}
 // Minimum precipitation that counts as rain for the rainbow.
 const RAIN_ON = SNOWFALL_ON;
 export const RAINBOW_WINDOW_MINUTES = 20;

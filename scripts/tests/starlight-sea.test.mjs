@@ -75,7 +75,7 @@ test('the appended WebGPU scalar stages without shifting the existing frame fiel
     // BI-8's surf glow, MS-1's mist and SEA-1's lift are appended after it,
     // so starlight keeps its slot.
     const names = FRAME_UNIFORM_LAYOUT.fields.map(f => f.name);
-    assert.deepEqual(names.slice(names.indexOf('starlight')), ['starlight', 'waterSky', 'swellDrift', 'stillWater', 'surfGlow', 'mist', 'seaLift', 'firelight', 'seaState', 'groundWeather', 'mistBurn', 'shadeRect', 'shade']);
+    assert.deepEqual(names.slice(names.indexOf('starlight')), ['starlight', 'waterSky', 'swellDrift', 'stillWater', 'surfGlow', 'mist', 'seaLift', 'firelight', 'seaState', 'groundWeather', 'mistBurn', 'shadeRect', 'shade', 'mirrorRect', 'mirrorBreak']);
     const sky = FRAME_UNIFORM_LAYOUT.fields.find(f => f.name === 'waterSky');
     const drift = FRAME_UNIFORM_LAYOUT.fields.find(f => f.name === 'swellDrift');
     const still = FRAME_UNIFORM_LAYOUT.fields.find(f => f.name === 'stillWater');
