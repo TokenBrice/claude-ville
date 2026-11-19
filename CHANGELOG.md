@@ -2,6 +2,69 @@
 
 ---
 
+## v0.64.0 — *The Grand Council* · Nov 19, 2026
+
+The village now reads Claude Code's new REPL harness correctly and shows a fleet as a fleet. It also gains three features: a recorded day you can watch again, opt-in real local weather, and a postcard with no names on it. The work came from a council of eight agents (four Claude Fable 5.2 and four GPT-6.2 Astra) and twenty-three lanes, each reviewed by the other model family.
+
+- **The REPL harness, read as it is written.**
+  - Claude Code 2.1.328 runs its tools inside `REPL` scripts and waits in `Poll`. Its transcripts carry virtual records with zero usage. Those records no longer reset the context window or the model history, so a session keeps its real model and a non-zero context.
+  - `REPL` and `Poll` are wrappers. A pending wrapper publishes `script { tool, description, since }`, and `lastTool` stays on the newest real inner tool. The villager reads "Running a script" with the model's own description, and a wrapper never chooses a building.
+  - A stale meta record after an `end_turn` no longer reopens the turn.
+  - Claude sessions publish `reasoningEffort`, so effort marks show on Claude villagers.
+  - After a resume, the provider's total is an anchor and later usage is added as an estimate (`cost.source = mixed`). The Mine marks a mixed cost with a half-filled stamp. One-hour cache writes are priced at twice the input rate.
+- **Claude Code's session registry.**
+  - The Claude adapter reads the status fields of `~/.claude/sessions/<pid>.json`, checked against the process id and start time. A waiting session gets its wait reason without hooks, a busy one stays listed through a long script, and a dead process ends the session. `signalSource = registry` marks these.
+  - Codex, GLM and DeepSeek jobs started through their MCP servers are children of the session that launched them (`subagentKind = mcp`, `parentSessionId`). Codex jobs take their label as their name.
+- **A fleet reads as a fleet.**
+  - A lead waiting on its crew takes a Tavern seat after 60 seconds and reads "Waiting on crew". It stays in the working family and never raises attention.
+  - In the sidebar a crew nests under its lead on an indented rail. A crew past 8 rows folds behind an "N crew" toggle; members waiting on you or errored stay outside the fold.
+  - In the World every squad member carries its leader's ground notch, and cords are admitted per squad, so a squad past seven still reads.
+  - Teammates wear their Claude Code harness colour on the sidebar rail and, where a body has a trim channel, on its sash.
+  - Fable and Astra each have a second body, picked per agent by id, so a same-model fleet stops reading as clones. The Mythos effort crest now centres on the hood.
+  - A new simulator scenario, `council-fleet`, shows a lead with a crew of 20.
+- **The Day Retold.**
+  - The Chronicle's day book offers WATCH THIS DAY for a day with recorded trail samples. It opens `?retold=YYYY-MM-DD` in a separate window, which plays that local day from midnight to midnight in 90 seconds. The window's chip reads RETOLD, so it cannot pass for live.
+  - Adding `&timelapse=1` to a simulator URL sweeps the demo day from dawn to night in 60 seconds.
+  - A second Chronicle tab, the Hall of Lives, lists every remembered lineage by last seen, with no stats or ranks.
+  - With no providers found, both empty cards offer VISIT A SIMULATED VILLAGE, and the SIMULATED and RETOLD chips offer RETURN TO YOUR VILLAGE.
+- **Real sky (opt-in).**
+  - Settings → Village weather → Real sky adapts the hourly Open-Meteo forecast for your timezone's city. Modeled weather stays the default.
+  - While a live tab has it on, the server asks at most once an hour and sends only the city's coarse coordinates. The clock tooltip names the source and its age. A forecast older than three hours gives way to modeled weather.
+  - Under Real sky the forecast decides snow or rain in any month. Modeled weather keeps the December to February rule.
+  - The keyless Open-Meteo endpoint is for non-commercial use (CC BY 4.0, credited in the clock tooltip and the docs).
+- **Postcards.**
+  - `P` in the World saves `claudeville-YYYY-MM-DD-HHMM.png`: the current view above a caption band with the village date, clock, phase and villager count.
+  - No name, speech, plaque, harbor or repo label, model word or chrome reaches a postcard. Two locks hold that: the postcard frame skips every label tier and text site, and a text guard drops every text call while it draws. Text-free attention beacons stay.
+  - A unit test lists every text site in the World and fails on a new one that is not classified.
+- **The village's own hover plate.** World hover text leaves the OS tooltip for a walnut plate in the canvas stack: two lines at most, no transition. A villager shows name, building, tool and age, never its speech.
+- **Thought bubbles.** An overlong thought is cut at a word boundary, and its plate fits the words it shows instead of keeping the empty cells of the split word.
+- **Light and weather.**
+  - The sun lifts the land it reaches (look `sd3`, 0.5): a texel the sundial calls lit takes one stepped gain before the grade. Bodies, cast shade, water and attention marks are never lifted, and the lift is held under a ceiling so snow keeps its value.
+  - Falling snow wears its own pearl grade instead of rain's dark multiply (look `ey4`). A winter storm stays a storm.
+  - In winter the water no longer takes rain rings and wet sheen under snow, and reflected lamp and window accents break with their mirror instead of going dark at once.
+  - Snow lies under the open Task board, the night's frost rises by quarters from 22:00, and contact shadows start at the painted plinth of Command, the Tavern and the Forge.
+  - Oak and iron read as materials on Command and the Tavern, on every renderer. Slate catches the low sun as a short static glint, decided by one sun verdict on Canvas and both GPU paths.
+  - Wet sand shades as land beside moving foam.
+  - Lit panes hold their light through a camera glide.
+  - Weather joins across midnight (56 of 365 midnights used to change precipitation by more than 0.5 in a millisecond). Falling rain survives a renderer switch.
+- **Models and money.**
+  - Claude Opus 5.5 ($4 in / $20 out per MTok), Sonnet 5.5 ($2 / $10) and Haiku 5.5 ($0.10 / $0.50) have their own registry rows with a 1M context. Opus 4.5 pricing and the Sonnet 4.6 context window are corrected. Source: Anthropic's pricing page, checked Nov 19, 2026.
+  - The Belfry and the Dashboard show the highest active Claude limit, and the last change in the Codex credit balance.
+  - A past day in the Chronicle shows that date's recorded tokens, cost and largest project, in the Markdown and CSV exports too.
+- **Dashboard.** The header clock keeps time on its own, a new write collision reorders rows at once, and branch and worktree labels refresh in place.
+- **Performance.**
+  - Villager and world atlases pack tighter (about 48 MiB less across CPU and GPU backings), and a roster change patches only the changed cells.
+  - The sundial shade field is released two seconds after World rendering stops (24.75 MiB on the GPU paths).
+  - WebGL2 skips repeated batch-flag uniform writes (621 to 136 on a frozen frame, identical pixels).
+  - The far-sea hash runs at full integer precision, so the GPU matches its CPU twin.
+- **Gates.**
+  - `smoke:v3-truth` no longer takes a frame with a shade or terrain bake in flight as its settled baseline.
+  - The `world:golden-hours` curve and the `sprites:visual-diff` building baselines are recalibrated; both had drifted before this release.
+
+Validation: `gate:release`, `verify:render`, `smoke:postcard`, `smoke:sun-lift`, `world:golden-hours` and `sprites:visual-diff` pass, with `validate:full` also run on Node 22 and 24. `smoke:v3-truth` passes its truth and reduced-motion arms on WebGPU, WebGL2 and Canvas. `smoke:webgpu-parity` passes 52 of 56 cases; the four failing sea cases also fail on v0.63.2. Not verified: the WebGPU full-motion arm of `smoke:v3-truth` (headless Chrome captures that canvas blank, as on v0.63.2), and `scripts/smoke/emission-flight.mjs` does not yet run on hardware GL.
+
+---
+
 ## v0.63.2 — *The Twin Heralds* · Nov 17, 2026
 
 OpenAI released GPT-6.2 Astra and GPT-6.2 Sol on Nov 17. Neither ID matched a registry row, so every 6.2 agent walked in as the generic Codex battle-engineer, labelled `Codex` and priced at the default OpenAI rate. Both now arrive under their own names and in their own armor.
