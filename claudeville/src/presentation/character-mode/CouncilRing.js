@@ -201,13 +201,17 @@ function scaleHex(hex, k) {
 export const SQUAD_ALL_CORDS_MAX = 4;
 const SQUAD_CLUSTER_TILES = 4;
 
-// A settled member clusters by the building it occupies; a walker by where it
-// is now, never by where it is headed (walkers in two districts bound for one
-// door are two clusters).
+// A member clusters by its building only on evidence it got there: it stands
+// still within about a tile of its visit slot. A walker, or a member whose
+// route failed short of the door, clusters by where it stands now, never by
+// where it was headed (two districts bound for one door are two clusters).
+const SQUAD_ARRIVED_TILES = 1.5;
 function squadClusterKey(sprite) {
-    const building = sprite?.moving ? null : sprite?._lastBuildingType || null;
-    if (building) return `b:${building}`;
     const tile = worldToTile(sprite.x, sprite.y);
+    const slot = sprite?._lastTargetTile;
+    const arrived = !sprite?.moving && sprite?._lastBuildingType && slot
+        && Math.hypot(tile.tileX - slot.tileX, tile.tileY - slot.tileY) <= SQUAD_ARRIVED_TILES;
+    if (arrived) return `b:${sprite._lastBuildingType}`;
     return `t:${Math.floor(tile.tileX / SQUAD_CLUSTER_TILES)},${Math.floor(tile.tileY / SQUAD_CLUSTER_TILES)}`;
 }
 

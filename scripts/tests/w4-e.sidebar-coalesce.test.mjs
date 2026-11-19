@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { Sidebar, crewFoldPlan, crewLeadsById, nestCrewRows } from '../../claudeville/src/presentation/shared/Sidebar.js';
+import { Sidebar, crewFoldPlan, crewLeadsById, nestCrewRows, sidebarListRowKey } from '../../claudeville/src/presentation/shared/Sidebar.js';
 import { isImplicitSessionTeam } from '../../claudeville/src/presentation/shared/TeamColor.js';
 import { projectKeyForAgent } from '../../claudeville/src/presentation/shared/AgentPresentation.js';
 import { getWorldScenario } from '../../claudeville/src/presentation/character-mode/__simfixture__/WorldScenarios.js';
@@ -274,4 +274,23 @@ test('a departed parent leads no one; a live recorded root keeps its grandchild'
     sidebar._patchAgentRow = (_row, _agent, _profile, _extras, parent) => { seenParent = parent; };
     sidebar._getAgentRow({ id: 'kid', name: 'Kid', parentSessionId: 'gone' }, { accent: '#123456' }, {});
     assert.equal(seenParent, null);
+});
+
+test('an actionable workflow member stays pinned while its workflow is folded, even with the crew open', () => {
+    const agents = councilAgents();
+    const lead = agents.find(agent => !agent.parentSessionId);
+    const crew = agents.filter(agent => agent.parentSessionId === lead.id)
+        .map(agent => (agent.id === 'sim-council-wf-03' ? { ...agent, status: 'errored' } : agent));
+    const collapsedWorkflows = new Set(['wf-council-sweep']);
+    assert.deepEqual([...crewFoldPlan(crew, { collapsedWorkflows }).pinnedIds], ['sim-council-wf-03']);
+    assert.deepEqual([...crewFoldPlan(crew, { expanded: true, collapsedWorkflows }).pinnedIds], ['sim-council-wf-03'], 'the open crew still folds the workflow');
+    assert.equal(crewFoldPlan(crew, { expanded: true }).pinnedIds.size, 0, 'both folds open: it sits in its workflow');
+    assert.equal(crewFoldPlan(crew, { expanded: true, collapsedWorkflows, filter: 'sweep' }).pinnedIds.size, 0, 'a search opens both');
+});
+
+test('a child learning its root changes the list signature', () => {
+    const child = { id: 'c', name: 'C', parentSessionId: 'mid', rootSessionId: null };
+    const before = sidebarListRowKey(child, { ageText: '1s', parentLabel: 'Mid' });
+    const after = sidebarListRowKey({ ...child, rootSessionId: 'lead' }, { ageText: '1s', parentLabel: 'Mid' });
+    assert.notEqual(before, after);
 });

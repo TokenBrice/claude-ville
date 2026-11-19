@@ -67,6 +67,34 @@ const SIDEBAR_COLLAPSED_STORAGE_KEY = 'claudeville.sidebarCollapsed';
 const DASHBOARD_FILTER_EVENT = 'dashboard:filter-changed';
 const DASHBOARD_FILTER_REQUEST_EVENT = 'dashboard:filter-requested';
 
+// One agent's part of the list render signature: every field that moves a
+// row between groups, crews or folds, or changes its text. `rootSessionId`
+// is here because a child that learns its root changes crew.
+export function sidebarListRowKey(agent, extras = {}) {
+    return [
+        agent.id,
+        agent.name,
+        agent.status,
+        agent.waitReason,
+        agent.pendingTool,
+        agent.model,
+        agent.effort,
+        agent.provider,
+        agent.projectPath,
+        agent.repoRoot,
+        worktreeLabel(agent),
+        agent.teamName,
+        agent.workflowName,
+        agent.agentType,
+        agent.workflowId,
+        agent.parentSessionId,
+        agent.rootSessionId,
+        agent.departedAt,
+        extras.ageText,
+        extras.parentLabel,
+    ].join('|');
+}
+
 function hasDeparted(agent) {
     return Boolean(agent?.isDeparted) || Number.isFinite(agent?.departedAt);
 }
@@ -107,7 +135,7 @@ function needsAttention(agent) {
 // child one row, each workflow one row), folded past CREW_FOLD_ROWS unless a
 // search runs or the operator unfolded it. A folded crew keeps its members
 // that need attention outside the fold. The toggle names the whole crew.
-export function crewFoldPlan(crew, { filter = '', expanded = false } = {}) {
+export function crewFoldPlan(crew, { filter = '', expanded = false, collapsedWorkflows = new Set() } = {}) {
     const workflowIds = new Set();
     let directRows = 0;
     for (const member of crew) {
@@ -121,7 +149,11 @@ export function crewFoldPlan(crew, { filter = '', expanded = false } = {}) {
         rows,
         foldable,
         collapsed,
-        pinnedIds: new Set(collapsed ? crew.filter(needsAttention).map(member => member.id) : []),
+        // Pinned whenever either fold would hide it: the crew's, or its
+        // own workflow's (a search opens both).
+        pinnedIds: new Set(crew.filter(member => needsAttention(member) && (collapsed
+            || (!filter && member.agentType === 'workflow-subagent' && member.workflowId
+                && collapsedWorkflows.has(member.workflowId)))).map(member => member.id)),
         label: `${crew.length} crew`,
     };
 }
@@ -770,27 +802,7 @@ export class Sidebar {
             [...this._collapsedWorkflows].sort().join(','),
             [...this._expandedCrews].sort().join(','),
             agents
-                .map(agent => [
-                    agent.id,
-                    agent.name,
-                    agent.status,
-                    agent.waitReason,
-                    agent.pendingTool,
-                    agent.model,
-                    agent.effort,
-                    agent.provider,
-                    agent.projectPath,
-                    agent.repoRoot,
-                    worktreeLabel(agent),
-                    agent.teamName,
-                    agent.workflowName,
-                    agent.agentType,
-                    agent.workflowId,
-                    agent.parentSessionId,
-                    agent.departedAt,
-                    rowExtras.get(agent.id).ageText,
-                    rowExtras.get(agent.id).parentLabel,
-                ].join('|'))
+                .map(agent => sidebarListRowKey(agent, rowExtras.get(agent.id)))
                 .join('\n'),
         ].join('');
         if (signature === this._renderSignature) {
@@ -882,7 +894,11 @@ export class Sidebar {
                 const crew = crews.get(agent.id);
                 if (!crew) continue;
                 visibleCrewLeads.add(agent.id);
-                const plan = crewFoldPlan(crew, { filter: this._filter, expanded: this._expandedCrews.has(agent.id) });
+                const plan = crewFoldPlan(crew, {
+                    filter: this._filter,
+                    expanded: this._expandedCrews.has(agent.id),
+                    collapsedWorkflows: this._collapsedWorkflows,
+                });
                 const pinned = [];
                 const rows = [];
                 const crewWorkflows = new Map();

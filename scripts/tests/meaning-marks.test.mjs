@@ -11,7 +11,7 @@ import { groundMarkDepth, groundRingPlan } from '../../claudeville/src/presentat
 import { drawFamilyTethers, resolveSquads, squadCordChildIds, squadPennonSide, SQUAD_MIN_CHILDREN, SQUAD_TETHER_PATTERNS } from '../../claudeville/src/presentation/character-mode/CouncilRing.js';
 import { MarkGovernor, MarkTier, PRESSURE_LEVELS, setActiveMarkGovernor } from '../../claudeville/src/presentation/character-mode/MarkGovernor.js';
 import { drawSquadPennon } from '../../claudeville/src/presentation/character-mode/PixelPennant.js';
-import { tileToWorld } from '../../claudeville/src/presentation/character-mode/Projection.js';
+import { tileToWorld, worldToTile } from '../../claudeville/src/presentation/character-mode/Projection.js';
 import { AMBIENT_KNOT_LIMIT, RelationshipState, ambientFileKnots } from '../../claudeville/src/presentation/character-mode/RelationshipState.js';
 
 const NOW = 1_000_000;
@@ -254,6 +254,7 @@ function fleet(n, { buildings = 1, selected = false } = {}) {
         const angle = (i / n) * Math.PI * 2;
         const child = squadSprite(`c${String(i).padStart(2, '0')}`, Math.round(Math.cos(angle) * 400), Math.round(Math.sin(angle) * 200));
         child._lastBuildingType = `building-${i % buildings}`;
+        child._lastTargetTile = worldToTile(child.x, child.y); // arrived at its slot
         sprites.set(child.agent.id, child);
         kids.add(child.agent.id);
     }
@@ -327,19 +328,23 @@ test('FK-3: the focused squad keeps its cords at the secondary cap in a saturate
     assert.equal(ctx.fills.filter(fill => fill.alpha < 1).length, 0);
 });
 
-test('FK-3: walkers cluster where they are, settled members by the building they occupy', () => {
+test('FK-3: walkers and stranded members cluster where they are, arrivals by their building', () => {
     const lead = squadSprite('lead', 0, 0);
     const sprites = new Map([['lead', lead]]);
     const ids = [];
+    const slotOf = (x, y) => worldToTile(x, y);
     const add = (id, x, y, extra) => { sprites.set(id, Object.assign(squadSprite(id, x, y), extra)); ids.push(id); };
     // Two walkers in different districts, both bound for the forge.
-    add('w1', 400, 200, { moving: true, _lastBuildingType: 'forge', agent: { id: 'w1', targetBuildingType: 'forge' } });
-    add('w2', -400, 200, { moving: true, _lastBuildingType: 'forge', agent: { id: 'w2', targetBuildingType: 'forge' } });
-    // Three settled at the archive, apart from one another.
-    add('s1', 300, -150, { _lastBuildingType: 'archive' });
-    add('s2', 340, -130, { _lastBuildingType: 'archive' });
-    add('s3', 380, -110, { _lastBuildingType: 'archive' });
-    assert.deepEqual([...squadCordChildIds(lead, ids, sprites)].sort(), ['s1', 'w1', 'w2']);
+    add('w1', 400, 200, { moving: true, _lastBuildingType: 'forge', _lastTargetTile: { tileX: 0, tileY: 30 } });
+    add('w2', -400, 200, { moving: true, _lastBuildingType: 'forge', _lastTargetTile: { tileX: 0, tileY: 30 } });
+    // Two whose route failed: standing still far from the forge slot, in different districts.
+    add('f1', 600, -100, { moving: false, _lastBuildingType: 'forge', _lastTargetTile: { tileX: 0, tileY: 30 } });
+    add('f2', -600, -100, { moving: false, _lastBuildingType: 'forge', _lastTargetTile: { tileX: 0, tileY: 30 } });
+    // Three arrived at their archive slots, apart from one another.
+    for (const [id, x, y] of [['s1', 300, -150], ['s2', 340, -130], ['s3', 380, -110]]) {
+        add(id, x, y, { moving: false, _lastBuildingType: 'archive', _lastTargetTile: slotOf(x, y) });
+    }
+    assert.deepEqual([...squadCordChildIds(lead, ids, sprites)].sort(), ['f1', 'f2', 's1', 'w1', 'w2']);
 });
 
 test('FK-3: a small squad cords every far member; reduced motion keeps region admission', () => {
