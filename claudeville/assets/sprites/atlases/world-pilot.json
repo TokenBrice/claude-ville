@@ -359,7 +359,7 @@
       "id": "building.command",
       "materialClass": "stone",
       "sourcePath": "buildings/building.command/base.png",
-      "sourceSha256": "894f223c34898ff793b3673cff56935d1000777b8e0e3d8186f3087d2299597f",
+      "sourceSha256": "52a24e03e5924bdf7c430fe2888dfd58b285a475d6bf4f3d423a40e01d77b042",
       "sourceSize": {
         "h": 240,
         "w": 360
@@ -545,7 +545,7 @@
       "id": "building.tavern",
       "materialClass": "stone",
       "sourcePath": "buildings/building.tavern/base.png",
-      "sourceSha256": "7cfcefc6b3c868191d2ae6aaa992e701463192518a33342a55e5984f9dbca648",
+      "sourceSha256": "09be255f37ad40c3e161d2d310e339a275f6fb00d53f65c948d60ad7ca4c471f",
       "sourceSize": {
         "h": 288,
         "w": 296
@@ -751,9 +751,9 @@
     }
   },
   "channelSha256": {
-    "albedo": "96f6f8415bb6854448d05f09ceffd8bb7a405a23a79cf4b4435e717c2da80cea",
+    "albedo": "ff56eab7a4457248061506c51c6f0c3e056579d2ebbb46d9d1ff743cfab2d14a",
     "emissive": "6e577e0bdba53a99a8c751ff1b142ab3e425e2be0f2a125e1a0357a408c36148",
-    "material": "eb51a554e9afdf2bdbc1dfbe266043f487d206c25d7453c76f56b0f0bba17b8b",
+    "material": "f9ffb27319bafa80205837d4f6021e450e1cc978d6d542023e0ae73181c875f6",
     "occluder": "5195402566b90d815619e4fc632e87d023c98b2e84e25d6bfd4412fe58980981"
   },
   "channels": {
@@ -10089,7 +10089,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "894f223c34898ff793b3673cff56935d1000777b8e0e3d8186f3087d2299597f",
+      "sourceSha256": "52a24e03e5924bdf7c430fe2888dfd58b285a475d6bf4f3d423a40e01d77b042",
       "sourceSize": {
         "h": 240,
         "w": 360
@@ -10404,7 +10404,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "516f59a7220c050343f38786f0ba062b73d19705f09d54734ecb15df1c452cff",
+      "sourceSha256": "5cc3a0f3d3e5bf634e894de56329f430928fe7348fe6442177342771924f0c3e",
       "sourceSize": {
         "h": 80,
         "w": 120
@@ -11380,7 +11380,7 @@
       },
       "sidecars": {
         "emissive": "buildings/building.tavern/base.emissive.png",
-        "material": null,
+        "material": "buildings/building.tavern/base.material.png",
         "occluder": "buildings/building.tavern/base.occluder.png"
       },
       "sourcePath": "buildings/building.tavern/base.png",
@@ -11390,7 +11390,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "7cfcefc6b3c868191d2ae6aaa992e701463192518a33342a55e5984f9dbca648",
+      "sourceSha256": "09be255f37ad40c3e161d2d310e339a275f6fb00d53f65c948d60ad7ca4c471f",
       "sourceSize": {
         "h": 288,
         "w": 296

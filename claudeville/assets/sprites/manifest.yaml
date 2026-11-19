@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-11-19-second-bodies-r1"
+  assetVersion: "2026-11-19-facade-materials-r2"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -2270,6 +2270,9 @@ buildings:
     height: 288
     anchor: [158, 218]
     materialClass: stone
+    # EN-2 — base.material.png: the oak arcade, bar, kegs and half-timbering
+    # are timber (scripts/sprites/paint-facade-materials.mjs).
+    materialSidecar: true
     emissiveSidecar: true
     occluderSidecar: true
     surfaceCode: true
