@@ -1874,6 +1874,9 @@ export class Camera {
     // world renders (WorldFrameRenderer).
     latchGpuFrame() {
         const latch = this._gpuLatch || (this._gpuLatch = { x: NaN, y: NaN, zoom: NaN, subPixel: false });
+        // XP-5 — a postcard's two same-task frames (Postcard.js) redraw the
+        // presented pose: they reuse its latch instead of re-latching it.
+        if (this.gpuLatchHeld) return latch.subPixel;
         const k = this.zoom * this._dpr();
         const moved = Math.abs(this.x - latch.x) * k > GPU_FLIGHT_EPSILON_PX
             || Math.abs(this.y - latch.y) * k > GPU_FLIGHT_EPSILON_PX

@@ -184,31 +184,48 @@ export async function strikePostcard(renderer, { save = true, trace = false, doc
     let layers = null;
     let textCalls = 0;
     let textSites = null;
-    if (width && height && typeof renderer.renderNow === 'function') {
-        ({ result: layers, textCalls, textSites } = withPostcardFrame(() => {
-            if (!renderer.renderNow()) return null;
-            // In the frame's task: the WebGL2 drawing buffer is still
-            // readable through drawImage; the WebGPU canvas texture is
-            // copied out to a buffer here (a 2D drawImage of a WebGPU
-            // canvas can read blank, headless always does) and mapped later.
-            const gpu = renderer.gpuWorld;
-            let fx = null;
-            if (renderer.fxCanvas && renderer.fxCanvas.style?.display !== 'none') {
-                fx = gpu?.isActive?.() && typeof gpu.debugCaptureTargets === 'function'
-                    ? gpu.debugCaptureTargets()
-                    : snapshotSurface(renderer.fxCanvas, width, height, documentRef);
-            }
-            return {
-                world: snapshotSurface(world, width, height, documentRef),
-                fx,
-                overlay: renderer.overlayCanvas ? snapshotSurface(renderer.overlayCanvas, width, height, documentRef) : null,
-                colorSpace: gpu?.canvasColorSpace || 'srgb',
-            };
-        }, { trace }));
+    // Both same-task frames redraw the presented pose: a moving GPU view
+    // keeps its latched offset instead of snapping to the rounded one.
+    const camera = renderer?.camera || null;
+    if (camera) camera.gpuLatchHeld = true;
+    try {
+        if (width && height && typeof renderer.renderNow === 'function') {
+            ({ result: layers, textCalls, textSites } = withPostcardFrame(() => {
+                if (!renderer.renderNow()) return null;
+                // The caption reads the frame just drawn, before any await: a
+                // replay tick or a session update may land before the readback.
+                const atmosphere = renderer._lastAtmosphere || null;
+                const caption = postcardCaption({
+                    date: atmosphere?.effectiveDate || new Date(renderer._atmosphereClockMs ?? Date.now()),
+                    phase: atmosphere?.phase || null,
+                    villagers: renderer.agentSprites?.size || 0,
+                });
+                // In the frame's task: the WebGL2 drawing buffer is still
+                // readable through drawImage; the WebGPU canvas texture is
+                // copied out to a buffer here (a 2D drawImage of a WebGPU
+                // canvas can read blank, headless always does) and mapped later.
+                const gpu = renderer.gpuWorld;
+                let fx = null;
+                if (renderer.fxCanvas && renderer.fxCanvas.style?.display !== 'none') {
+                    fx = gpu?.isActive?.() && typeof gpu.debugCaptureTargets === 'function'
+                        ? gpu.debugCaptureTargets()
+                        : snapshotSurface(renderer.fxCanvas, width, height, documentRef);
+                }
+                return {
+                    world: snapshotSurface(world, width, height, documentRef),
+                    fx,
+                    overlay: renderer.overlayCanvas ? snapshotSurface(renderer.overlayCanvas, width, height, documentRef) : null,
+                    colorSpace: gpu?.canvasColorSpace || 'srgb',
+                    caption,
+                };
+            }, { trace }));
+        }
+        // The live frame, in the same task: labels and chrome are back before the
+        // screen presents anything.
+        if (width && height) renderer.renderNow?.();
+    } finally {
+        if (camera) camera.gpuLatchHeld = false;
     }
-    // The live frame, in the same task: labels and chrome are back before the
-    // screen presents anything.
-    if (width && height) renderer.renderNow?.();
     let fx = layers?.fx || null;
     if (fx && typeof fx.then === 'function') {
         const targets = await fx.catch(() => null);
@@ -221,12 +238,7 @@ export async function strikePostcard(renderer, { save = true, trace = false, doc
         eventBus.emit('postcard:status', { ok: false, message: 'Postcard unavailable · the World is not drawing' });
         return { ok: false, reason: 'not-drawn', textCalls, textSites };
     }
-    const atmosphere = renderer._lastAtmosphere || null;
-    const caption = postcardCaption({
-        date: atmosphere?.effectiveDate || new Date(renderer._atmosphereClockMs ?? Date.now()),
-        phase: atmosphere?.phase || null,
-        villagers: renderer.agentSprites?.size || 0,
-    });
+    const caption = layers.caption;
     const unit = world._claudeVilleDpr || globalThis.devicePixelRatio || 1;
     const canvas = composePostcard({ surfaces: [layers.world, fx, layers.overlay], width, height, caption, unit, documentRef });
     if (textCalls > 0) console.warn(`[Postcard] ${textCalls} text call(s) reached the postcard frame and were dropped`);

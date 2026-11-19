@@ -60,18 +60,124 @@ async function strike(page, { trace, sample = false }) {
       if (postcardFrame() && !/\|postcard$|^empty-rack$/.test(String(signature))) cachedText.push(`slate:${String(signature).split('|')[0]}`);
       return slate.call(this, ctx, localPoint, signature, ...rest);
     };
+    // An independent readback of the postcard frame, taken the moment it is
+    // drawn (same task), by other means than Postcard.js: WebGL2 readPixels
+    // of the GPU drawing buffer, WebGPU its own copy of the presented
+    // texture, Canvas the world canvas's pixels; plus the overlay's alpha
+    // and where the T1 beacons and plates stand.
+    const renderNow = renderer.renderNow;
+    let independent = null;
+    renderer.renderNow = function (...a) {
+      const drawn = renderNow.apply(this, a);
+      if (drawn && independent && !postcardFrame() && !independent.liveOverlay) {
+        independent.liveOverlay = renderer.overlayCanvas.getContext('2d').getImageData(0, 0, independent.w, independent.h).data;
+        independent.liveMarks = renderer._gpuRenderContext?.marks?.length ?? null;
+      }
+      if (drawn && postcardFrame() && !independent) {
+        const w = renderer.canvas.width;
+        const h = renderer.canvas.height;
+        // The presented GPU layer: the resident world, or Canvas's PostFx pass.
+        const fxShown = renderer.fxCanvas?.style?.display !== 'none';
+        const gpu = renderer.gpuWorld?.isActive?.() ? renderer.gpuWorld : fxShown ? renderer.postFx : null;
+        const overlay = renderer.overlayCanvas.getContext('2d').getImageData(0, 0, w, h).data;
+        let layer = null;
+        if (gpu?.gl) {
+          const gl = gpu.gl;
+          const px = new Uint8Array(w * h * 4);
+          const bound = gl.getParameter(gl.FRAMEBUFFER_BINDING);
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+          gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+          gl.bindFramebuffer(gl.FRAMEBUFFER, bound);
+          layer = { kind: 'webgl-readPixels', rows: 'bottom-up', px };
+        } else if (gpu?.debugCaptureTargets && gpu === renderer.gpuWorld) {
+          layer = { kind: 'webgpu-copy', rows: 'top-down', pending: gpu.debugCaptureTargets() };
+        } else {
+          layer = { kind: 'canvas-getImageData', rows: 'top-down', px: renderer.canvas.getContext('2d').getImageData(0, 0, w, h).data };
+        }
+        const layout = renderer._attentionLayout || {};
+        independent = {
+          w, h, overlay, layer,
+          beacons: (layout.beacons || []).map(b => ({ left: b.left, top: b.top, right: b.right ?? b.left + 8, bottom: b.bottom })),
+          plates: (layout.plates || []).map(p => ({ ...p.rect })),
+          marks: renderer._gpuRenderContext?.marks?.length ?? null,
+        };
+      }
+      return drawn;
+    };
     let result;
     try {
       result = await renderer.strikePostcard({ save: false, trace });
     } finally {
+      renderer.renderNow = renderNow;
       AgentSprite.prototype._drawOverlayStamp = stamp;
       BuildingSprite.prototype._drawOnTaskboardSlate = slate;
     }
     if (!result.ok) return { ok: false, reason: result.reason, textCalls: result.textCalls };
     const canvas = result.canvas;
     const world = renderer.canvas;
-    const ctx = canvas.getContext('2d');
+    // The exported PNG, decoded.
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+    const bitmap = await createImageBitmap(blob);
+    const decoded = document.createElement('canvas');
+    decoded.width = bitmap.width;
+    decoded.height = bitmap.height;
+    const ctx = decoded.getContext('2d');
+    ctx.drawImage(bitmap, 0, 0);
     const data = ctx.getImageData(0, 0, world.width, world.height).data;
+    // Island pixels: opaque in the independent layer readback and clear of
+    // the overlay. Each must match the PNG (a blank GPU layer would leave
+    // the backdrop there instead).
+    let island = 0;
+    let islandMatch = 0;
+    let layerKind = null;
+    let beaconInk = null;
+    let plateInk = null;
+    if (independent) {
+      const { w, h, overlay, layer } = independent;
+      layerKind = layer.kind;
+      let px = layer.px;
+      if (layer.pending) {
+        const targets = await layer.pending;
+        px = targets?.composite instanceof Uint8Array ? targets.composite : null;
+      }
+      if (px) {
+        for (let y = 0; y < h; y += 5) {
+          for (let x = 0; x < w; x += 5) {
+            const o = (y * w + x) * 4;
+            if (overlay[o + 3] !== 0) continue;
+            const ly = layer.rows === 'bottom-up' ? h - 1 - y : y;
+            const l = (ly * w + x) * 4;
+            if (px[l + 3] !== 255) continue;
+            island += 1;
+            if (Math.abs(px[l] - data[o]) <= 3 && Math.abs(px[l + 1] - data[o + 1]) <= 3 && Math.abs(px[l + 2] - data[o + 2]) <= 3) islandMatch += 1;
+          }
+        }
+      }
+      // T1: beacons stay (overlay pixels on Canvas and WebGL2's overlay
+      // path, GPU mark records on the resident path); plates leave no ink.
+      const inkIn = (rect, skip = null, overlay = independent.overlay) => {
+        let ink = 0;
+        for (let y = Math.max(0, Math.floor(rect.top)); y < Math.min(h, Math.ceil(rect.bottom)); y++) {
+          for (let x = Math.max(0, Math.floor(rect.left)); x < Math.min(w, Math.ceil(rect.right)); x++) {
+            if (skip?.some(b => x >= b.left - 2 && x < b.right + 2 && y >= b.top - 2 && y < b.bottom + 2)) continue;
+            if (overlay[(y * w + x) * 4 + 3]) ink += 1;
+          }
+        }
+        return ink;
+      };
+      beaconInk = independent.beacons.length ? independent.beacons.reduce((sum, rect) => sum + inkIn(rect), 0) + (independent.marks || 0) : null;
+      // Plates. On the resident GPU path they are mark records: the postcard
+      // frame carries fewer than the live one (its beacons only). On the
+      // overlay the postcard leaves at most a fifth of the live frame's ink
+      // in the plate rects (other marks may lie under a plate's footprint).
+      if (independent.plates.length && independent.liveMarks > 0) {
+        plateInk = { postcardMarks: independent.marks || 0, liveMarks: independent.liveMarks };
+      } else if (independent.plates.length && independent.liveOverlay) {
+        const postcardInk = independent.plates.reduce((sum, rect) => sum + inkIn(rect, independent.beacons), 0);
+        const liveInk = independent.plates.reduce((sum, rect) => sum + inkIn(rect, independent.beacons, independent.liveOverlay), 0);
+        plateInk = { postcardInk, liveInk };
+      }
+    }
     const colours = new Set();
     let transparent = 0;
     const step = 7;
@@ -109,6 +215,12 @@ async function strike(page, { trace, sample = false }) {
       cachedText: [...new Set(cachedText)],
       textSites: result.textSites ? [...new Set(result.textSites)].slice(0, 40) : null,
       distinct: colours.size,
+      layerKind,
+      island,
+      islandShare: island ? islandMatch / island : 0,
+      beacons: independent?.beacons.length || 0,
+      beaconInk,
+      plateInk,
       transparentShare: transparent / samples,
       liveTextCalls,
       png: sample ? canvas.toDataURL('image/png') : null,
@@ -160,12 +272,17 @@ try {
           if (got.size[0] !== got.backing[0] || got.size[1] <= got.backing[1]) problems.push(`size ${got.size} for backing ${got.backing}`);
           if (got.distinct < MIN_DISTINCT) problems.push(`blank readback: ${got.distinct} distinct colours`);
           if (got.transparentShare > 0.01) problems.push(`transparent readback: ${(got.transparentShare * 100).toFixed(1)}%`);
+          if (got.island < 2000) problems.push(`independent readback (${got.layerKind}) found only ${got.island} island samples`);
+          else if (got.islandShare < 0.99) problems.push(`PNG matches the independent ${got.layerKind} readback on ${(got.islandShare * 100).toFixed(1)}% of island samples`);
+          if (got.beacons && !(got.beaconInk > 0)) problems.push('T1 beacons left no mark');
+          if (got.plateInk?.liveMarks && !(got.plateInk.postcardMarks < got.plateInk.liveMarks)) problems.push(`T1 mark records: ${got.plateInk.postcardMarks} on the postcard, ${got.plateInk.liveMarks} live`);
+          if (got.plateInk?.liveInk !== undefined && !(got.plateInk.postcardInk <= got.plateInk.liveInk * 0.2)) problems.push(`T1 plate rects keep ${got.plateInk.postcardInk} of the live frame's ${got.plateInk.liveInk} overlay pixels`);
           if (!(got.liveTextCalls > 0)) problems.push('live frame drew no text after the strike');
         }
         if (errors.length) problems.push(`page errors: ${errors.slice(0, 3).join(' | ')}`);
         const status = problems.length ? 'FAIL' : 'ok';
         if (problems.length) failures.push({ backend, scenario, problems });
-        console.log(`${status} ${backend} ${scenario} distinct=${got.distinct} text=${got.textCalls} ${problems.join('; ')}`);
+        console.log(`${status} ${backend} ${scenario} distinct=${got.distinct} text=${got.textCalls} island=${got.island}@${((got.islandShare || 0) * 100).toFixed(1)}% beacons=${got.beacons} ${problems.join('; ')}`);
       } finally {
         await context.close();
       }
@@ -177,11 +294,21 @@ try {
       { name: 'day', hour: 13, weather: 'clear' },
       { name: 'dusk-rain', hour: 16.4, weather: 'rain' },
       { name: 'night', hour: 23, weather: 'clear' },
+      { name: 'beacon', hour: 15, weather: 'clear', scenario: 'waiting-on-user', zoom: 2, attention: true },
     ];
     for (const sample of samples) {
-      const { context, page } = await openWorld(browser, { baseUrl: server.baseUrl, scenario: 'readme-showcase', width, height, dpr, query: QUERY.webgl });
+      const { context, page } = await openWorld(browser, { baseUrl: server.baseUrl, scenario: sample.scenario || 'readme-showcase', width, height, dpr, query: QUERY.webgl });
       try {
-        await poseWorld(page, { hour: sample.hour, weather: sample.weather, zoom: 1, tile: [20, 22] });
+        await poseWorld(page, { hour: sample.hour, weather: sample.weather, zoom: sample.zoom || 1, tile: [20, 22] });
+        if (sample.attention) {
+          // Centre the camera on the first villager whose T1 beacon is up.
+          await page.evaluate(async () => {
+            const { isAttentionStatus } = await import('/src/presentation/character-mode/AttentionPlates.js');
+            const renderer = window.__claudeVilleApp.renderer;
+            const sprite = [...renderer.agentSprites.values()].find(s => isAttentionStatus(s.agent?.status));
+            if (sprite) renderer.setCameraPose({ x: sprite.x, y: sprite.y - 30, zoom: renderer.camera.zoom });
+          });
+        }
         await page.waitForTimeout(3000);
         const got = await strike(page, { trace: false, sample: true });
         if (got.png) fs.writeFileSync(path.join(OUT, `postcard-${sample.name}.png`), Buffer.from(got.png.split(',')[1], 'base64'));

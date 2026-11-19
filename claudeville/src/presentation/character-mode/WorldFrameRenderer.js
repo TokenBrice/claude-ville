@@ -949,13 +949,15 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
         // device scale and the same backing size (a fractional DPR edge is the
         // overlay's antialiased fill, which the plates keep drawing).
         const markScale = renderer._screenDpr();
-        gpuRenderContext.marks = !postcard && renderer._attentionLayout?.count
+        gpuRenderContext.marks = renderer._attentionLayout?.count
             && Number.isInteger(markScale)
             && overlayCtx.canvas?.width === renderer.gpuWorld.width
             && overlayCtx.canvas?.height === renderer.gpuWorld.height
             ? attentionMarkRecords(renderer._attentionLayout, {
                 scale: markScale,
                 out: renderer._attentionMarkRecords || (renderer._attentionMarkRecords = []),
+                // XP-5 — a postcard keeps the beacons and drops the plates.
+                beaconsOnly: postcard,
             })
             : null;
         gpuRenderContext.forceFreshOutput = renderer._requiresFreshGpuOutput?.() === true;
@@ -1151,8 +1153,10 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
 
     renderer._resetScreenTransform(overlayCtx);
     // XP-5 — the screen tier (summaries, edge cues, letterbox, T1 plates, the
-    // caption, debug) is chrome: a postcard frame ends here.
+    // caption, debug) is chrome: a postcard frame keeps only the T1 beacons
+    // (marks, no word or name) and ends here.
     if (postcard) {
+        drawAttentionPlates(overlayCtx, renderer._attentionLayout, { inkOnly: gpuMarksDrawn, beaconsOnly: true });
         finishFrameTiming(renderer, frameTimer);
         return true;
     }

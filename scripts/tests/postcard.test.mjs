@@ -9,6 +9,8 @@ import {
     postcardFrame,
     withPostcardFrame,
 } from '../../claudeville/src/presentation/character-mode/Postcard.js';
+import { AgentSprite } from '../../claudeville/src/presentation/character-mode/AgentSprite.js';
+import { BuildingSprite } from '../../claudeville/src/presentation/character-mode/BuildingSprite.js';
 
 // XP-5 — Postcards are safe to share by construction. This file holds the
 // static half of the proof: every 2D text call in the World's code is
@@ -25,6 +27,8 @@ const read = file => fs.readFileSync(path.join(WORLD, file), 'utf8');
 // `postcardFrame()`. `tier`: WorldFrameRenderer skips the pass that reaches
 // the site on a postcard frame (the gated call, verbatim). `screen`: the
 // pass is in the screen tier, after the postcard frame's early return.
+// `beacons`: T1 attention text, dropped by the postcard frame's
+// beacons-only attention pass (the beacons stay, plates and tallies go).
 // `helper`: a pass-through painter whose callers are classified. `debug`:
 // developer overlays only. `caption`: the postcard's own caption band.
 const SITES = {
@@ -36,8 +40,8 @@ const SITES = {
     'AgentSprite.js _drawTurnSand': { flag: true, why: 'turn duration' },
     'AgentSprite.js drawFamiliarMotes': { flag: true, why: 'hidden familiar count' },
     'ArrivalDeparture.js drawChildMiniature': { flag: true, why: 'child count pill' },
-    'AttentionPlates.js drawPlateText': { screen: 'drawAttentionPlates(overlayCtx', why: 'T1 plate: name, waiting reason' },
-    'AttentionPlates.js drawTallyTab': { screen: 'drawAttentionPlates(overlayCtx', why: 'T1 tally' },
+    'AttentionPlates.js drawPlateText': { beacons: true, why: 'T1 plate: name, waiting reason' },
+    'AttentionPlates.js drawTallyTab': { beacons: true, why: 'T1 tally' },
     'BuildingSprite.js _paintPlaque': { tier: 'if (!postcard) renderer.buildingRenderer?.drawLabels(', why: 'building plaques: patron names, counts, squads' },
     'BuildingSprite.js _drawInstrumentPlate': { flag: true, why: 'instrument plates: workloads, ritual labels, belfry and mine rows' },
     'BuildingSprite.js _drawAttentionBannerBoard': { flag: true, why: 'attention banner board' },
@@ -127,8 +131,14 @@ test('each flag-locked site stands down on postcardFrame()', () => {
 
 test('each tier-locked pass is skipped by the postcard frame, and the screen tier ends it', () => {
     const frame = body('WorldFrameRenderer.js', 'renderWorldFrame');
-    const end = frame.indexOf('    if (postcard) {\n        finishFrameTiming(renderer, frameTimer);\n        return true;\n    }');
+    const end = frame.indexOf('    if (postcard) {\n');
     assert.ok(end > 0, 'the postcard frame returns before the screen tier');
+    const block = frame.slice(end, frame.indexOf('\n    }\n', end));
+    assert.match(block, /return true;$/, 'the postcard block ends the frame');
+    assert.deepEqual(block.match(/^        [a-zA-Z_.]+\(/gm), [
+        '        drawAttentionPlates(',
+        '        finishFrameTiming(',
+    ], 'the postcard block draws only the beacons');
     for (const [key, lock] of Object.entries(SITES)) {
         if (lock.tier) assert.ok(frame.includes(lock.tier), `${key}: ${lock.tier}`);
         if (lock.screen) {
@@ -136,9 +146,17 @@ test('each tier-locked pass is skipped by the postcard frame, and the screen tie
             assert.ok(at > end, `${key}: ${lock.screen} draws after the postcard return`);
         }
     }
-    // The GPU's T1 mark graphics and the peak marks stand down too.
-    assert.match(frame, /gpuRenderContext\.marks = !postcard && /);
+    // T1: beacons only, on the overlay and in the GPU's mark records; the
+    // peak marks stand down.
+    assert.ok(frame.includes('drawAttentionPlates(overlayCtx, renderer._attentionLayout, { inkOnly: gpuMarksDrawn, beaconsOnly: true });'));
+    assert.match(frame, /attentionMarkRecords\(renderer\._attentionLayout, \{[^}]*beaconsOnly: postcard,/s);
     assert.match(frame, /const peakMarksArmed = !postcard && /);
+    const plates = body('AttentionPlates.js', 'drawAttentionPlates');
+    assert.ok(plates.indexOf('if (beaconsOnly) {') > 0 && plates.indexOf('if (beaconsOnly) {') < plates.indexOf('drawPlateText('), 'beacons-only returns before plates and tallies');
+    assert.match(plates, /if \(!beaconsOnly\) for \(const plate of layout\.plates\) leaderFills/);
+    const records = body('AttentionPlates.js', 'attentionMarkRecords');
+    assert.match(records, /if \(!beaconsOnly\) for \(const plate of layout\.plates\) leaderFills/);
+    assert.match(records, /if \(!beaconsOnly\) for \(const plate of layout\.plates\) plateFills/);
 });
 
 test('helper painters are reached only from locked callers', () => {
@@ -202,4 +220,58 @@ test('the caption and file name read the village clock, not a person', () => {
     assert.equal(postcardCaption({ date, phase: null, villagers: 1 }), 'ClaudeVille · 19 Nov · 15:25 · 1 villager');
     assert.equal(postcardCaption({ villagers: 0 }), 'ClaudeVille · 0 villagers');
     assert.equal(postcardFileName(date), 'claudeville-2026-11-19-1525.png');
+});
+
+// Cached text reaches a frame through drawImage, past the text guard: each
+// sensitive raster is warmed on a live frame, then a postcard frame must not
+// blit it.
+function fakeContext() {
+    return {
+        font: '', textAlign: 'left', textBaseline: 'alphabetic', shadowColor: '', fillStyle: '',
+        save() {}, restore() {}, translate() {}, scale() {}, setTransform() {}, fillRect() {}, fillText() {},
+        getTransform: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }),
+        measureText: text => ({ width: String(text).length * 6, actualBoundingBoxAscent: 8, actualBoundingBoxDescent: 2 }),
+    };
+}
+
+test('a postcard frame never blits a warmed name stamp (T2 plate or T4 name)', () => {
+    const blits = [];
+    const sprite = Object.assign(Object.create(AgentSprite.prototype), {
+        agent: { name: 'secret-project-agent', status: 'working' },
+        _zoom: 2, _placeX: 10, _placeY: 20, overlaySlot: 0, labelAlpha: 1,
+        isArrivalPending: () => false,
+        identityLabelTopPx: () => 4,
+        _drawOverlayStamp: (ctx, identity) => blits.push(String(identity).split('|')[0]),
+    });
+    const ctx = fakeContext();
+    for (const selected of [true, false]) {
+        sprite.selected = selected;
+        blits.length = 0;
+        sprite._drawNameTag(ctx);
+        assert.deepEqual(blits, [selected ? 'plate' : 'name'], 'the live frame warms the stamp');
+        blits.length = 0;
+        withPostcardFrame(() => sprite._drawNameTag(ctx));
+        assert.deepEqual(blits, [], 'the postcard frame blits no name stamp');
+    }
+});
+
+test('a postcard frame never blits the warmed taskboard chalk', () => {
+    const slates = [];
+    let chalk = 0;
+    const board = Object.assign(Object.create(BuildingSprite.prototype), {
+        _zoom: 1,
+        _taskboardBoard: () => ({ agent: { id: 'a' } }),
+        _taskboardViewFor: () => ({ title: 'secret-repo · fix login', rows: [] }),
+        _paintTaskboardChalk: () => { chalk += 1; },
+        _drawOnTaskboardSlate(ctx, localPoint, signature, paint) {
+            slates.push(signature);
+            paint(fakeContext(), { x: 0, y: 0 });
+        },
+    });
+    board._drawTaskboardBoard(fakeContext(), () => ({ x: 0, y: 0 }));
+    assert.equal(chalk, 1);
+    assert.match(slates[0], /secret-repo/, 'the live frame warms the chalk raster under its view key');
+    withPostcardFrame(() => board._drawTaskboardBoard(fakeContext(), () => ({ x: 0, y: 0 })));
+    assert.equal(chalk, 1, 'no chalk is painted');
+    assert.equal(slates[1], 'board|1|postcard', 'the wiped slate has its own key, never the chalk raster');
 });

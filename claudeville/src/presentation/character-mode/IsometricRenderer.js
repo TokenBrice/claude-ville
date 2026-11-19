@@ -3827,7 +3827,7 @@ export class IsometricRenderer {
             return;
         }
         // XP-5 — P strikes a postcard of the current view (Postcard.js).
-        if (event.code === 'KeyP' && !event.repeat) {
+        if (event.code === 'KeyP' && !event.shiftKey && !event.repeat) {
             this.strikePostcard();
             event.preventDefault();
             return;

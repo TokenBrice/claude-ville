@@ -386,7 +386,7 @@ export class Toast {
         });
         // XP-5: the P key's one static confirmation ("Postcard saved · …").
         on('postcard:status', (payload) => {
-            this.showStatus(payload?.message);
+            this.showStatus(payload?.message, { still: true });
         });
         // SND-2: the sound state the armed offer reads; a sound that starts
         // by any route retires an offer still showing.
@@ -648,12 +648,15 @@ export class Toast {
 
     // UX-9: a brief sound status (the M key). Polite, not an alert, not a cue
     // caption; a newer status replaces the one still up.
-    showStatus(message) {
+    // `still` (XP-5 postcards): no entry or exit animation.
+    showStatus(message, { still = false } = {}) {
         if (this._destroyed || !this.container) return;
         const text = cleanLabel(message);
         if (!text) return;
         for (const entry of this.toasts.filter(entry => entry.status)) this._remove(entry);
-        return this._show(text, 'info', { dismissMs: SOUND_STATUS_DISMISS_MS, status: true });
+        const entry = this._show(text, 'info', { dismissMs: SOUND_STATUS_DISMISS_MS, status: true });
+        if (still) entry?.el.classList.add('toast--still');
+        return entry;
     }
 
     showDigest(payload) {
