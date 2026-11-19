@@ -9,7 +9,9 @@ import {
     resolveWeatherAt,
     weatherTypeFromRoll,
 } from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
-import { groundOptionsFor, groundStateAt } from '../../claudeville/src/presentation/character-mode/GroundState.js';
+import { groundOptionsFor, groundStateAt, liquidPrecipitation } from '../../claudeville/src/presentation/character-mode/GroundState.js';
+import { resolveWaterFx, resolveWeatherUniform } from '../../claudeville/src/presentation/character-mode/gpu/GpuFrameState.js';
+import { mirrorStormDrop } from '../../claudeville/src/presentation/character-mode/CoastBake.js';
 import { resetLookStrengths, setLookStrength } from '../../claudeville/src/presentation/character-mode/LookStrengths.js';
 import { SeasonalAmbience } from '../../claudeville/src/presentation/character-mode/SeasonalAmbience.js';
 import { WIND_SPEED_BY_TYPE, baseWindX, windAt } from '../../claudeville/src/presentation/character-mode/Wind.js';
@@ -207,4 +209,35 @@ test('lightning strikes only in a storm, in C4 quanta, and never under reduced m
     assert.equal(reduced, 0);
     for (const scalar of scalars) assert.ok([0.30, 0.18, 0.12, 0.07, 0.035, 0.16].includes(scalar), String(scalar));
     assert.ok(scalars.has(0.30) && scalars.has(0.16));
+});
+
+test('EN-4: a winter knot falls as snow, so the water takes no rain rings, wet sheen or rain mirror break', () => {
+    const knot = { type: 'rain', precipitation: 0.7, intensity: 0.7, cloudCover: 0.85, fog: 0.18, windX: 0.12, minute: 0 };
+    const camera = { zoom: 1, _dpr: () => 1, screenToWorld: (x, y) => ({ x, y }) };
+    const at = (date, reducedMotion) => {
+        const state = new AtmosphereState({ nowProvider: () => date });
+        state.setTimelineKnots([knot]);
+        const snap = state.update();
+        const feed = { atmosphere: snap, weather: snap.weather, motionScale: reducedMotion ? 0 : 1, reducedMotion };
+        return {
+            liquid: liquidPrecipitation(snap),
+            rings: resolveWaterFx(feed, camera, 0, snap.lightGrade, snap.lighting.moonFill, 2268).fx[1],
+            weather: resolveWeatherUniform(feed),
+            mirror: mirrorStormDrop(snap.weather, snap),
+            precipitation: snap.weather.precipitation,
+        };
+    };
+    for (const reducedMotion of [false, true]) {
+        const winter = at(new Date(2027, 0, 12, 15), reducedMotion);
+        const spring = at(new Date(2027, 4, 12, 15), reducedMotion);
+        assert.deepEqual([winter.liquid, winter.rings, winter.weather[0], winter.mirror], [0, 0, 0, 0]);
+        assert.ok(spring.precipitation > 0.6 && winter.precipitation === spring.precipitation);
+        for (const value of [spring.liquid, spring.rings, spring.weather[0]]) assert.ok(Math.abs(value - spring.precipitation) < 1e-6);
+        assert.ok(spring.mirror > 0.5);
+        // Fog, storm and intensity still follow the weather.
+        assert.deepEqual(winter.weather.slice(1), spring.weather.slice(1));
+    }
+    // The season boundary: February snows, March rains.
+    assert.equal(at(new Date(2027, 1, 28, 15)).liquid, 0);
+    assert.ok(at(new Date(2027, 2, 1, 15)).liquid > 0.6);
 });

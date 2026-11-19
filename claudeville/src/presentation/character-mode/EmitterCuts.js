@@ -30,7 +30,8 @@ import { AMBIENT_GROUND_PROPS, DISTRICT_PROPS, SCENIC_POINT_PROPS } from '../../
 import { atlasSourceRect } from './AssetManager.js';
 import { sourceEnergyFor } from './AtmosphereState.js';
 import { buildEmitterCut } from './CanvasGrade.js';
-import { mirrorAccentGate, mirrorAccentLayers } from './CoastBake.js';
+import { mirrorAccentGate, mirrorAccentLayers, mirrorAccentRainCut, mirrorRainDrop, mirrorStormDrop } from './CoastBake.js';
+import { resolveWeatherUniform } from './gpu/GpuFrameState.js';
 import { materialClassId } from './gpu/GpuWorldPolicy.js';
 import { hullGeometry } from './HarborHulls.js';
 import { tileToWorld } from './Projection.js';
@@ -130,12 +131,19 @@ export function cacheEmitterRecords(renderer, channelRevision) {
 const MIRROR_ACCENT_MATERIAL = materialClassId('water');
 
 function mirrorAccentRecords(renderer, records) {
-    for (const layer of mirrorAccentLayers(renderer)) {
-        const gate = mirrorAccentGate(renderer, layer, renderer._lastAtmosphere);
+    const atmosphere = renderer._lastAtmosphere;
+    // EN-7 — the rain breaks an accent where it breaks its mirror: the
+    // resident mirror reads `u_weather.x` at this ladder level.
+    const level = renderer.gpuWorld?._compositeQualityLevel ?? 0;
+    const drop = mirrorRainDrop(resolveWeatherUniform({ atmosphere }, level)[0]);
+    for (const whole of mirrorAccentLayers(renderer)) {
+        const gate = mirrorAccentGate(renderer, whole, atmosphere);
         if (!(gate > 0.02)) continue;
+        const layer = mirrorAccentRainCut(whole, drop);
+        if (!layer) continue;
         records.push({
-            id: layer.key,
-            stableKey: layer.key,
+            id: whole.key,
+            stableKey: whole.key,
             textureKey: layer.key,
             sidecarKey: `${layer.key}:channels`,
             source: layer.canvas,
@@ -690,9 +698,13 @@ function bloomTarget(overlay, transform, scale) {
 // partial alpha: a half-alpha amber over the graded teal water mixes to
 // lime, so every drawn accent texel stays its own palette colour.
 function drawMirrorAccentCuts(ctx, renderer, atmosphere, core, topLeft, bottomRight) {
-    for (const layer of mirrorAccentLayers(renderer)) {
-        const share = Math.min(1, mirrorAccentGate(renderer, layer, atmosphere) * core);
+    // EN-7 — the Canvas mood layer's own rain break.
+    const drop = mirrorStormDrop(atmosphere?.weather, atmosphere);
+    for (const whole of mirrorAccentLayers(renderer)) {
+        const share = Math.min(1, mirrorAccentGate(renderer, whole, atmosphere) * core);
         if (share < 0.02) continue;
+        const layer = mirrorAccentRainCut(whole, drop);
+        if (!layer) continue;
         const { x, y, w, h } = layer;
         if (topLeft && (x > bottomRight.x || y > bottomRight.y || x + w < topLeft.x || y + h < topLeft.y)) continue;
         const gated = bayerGated(layer, share);

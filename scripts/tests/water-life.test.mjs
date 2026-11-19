@@ -7,7 +7,14 @@ import {
     buildAmbientSchedule,
     createAmbientScheduler,
 } from '../../claudeville/src/presentation/character-mode/AmbientEvents.js';
-import { OCEAN_HORIZON_WORLD_Y, distantShowerFront, squallApproach } from '../../claudeville/src/presentation/character-mode/CoastBake.js';
+import {
+    OCEAN_HORIZON_WORLD_Y,
+    distantShowerFront,
+    mirrorAccentGate,
+    mirrorAccentRainCut,
+    mirrorRainDrop,
+    squallApproach,
+} from '../../claudeville/src/presentation/character-mode/CoastBake.js';
 import {
     FAR_SEA_STATIONS,
     HORIZON_BAND_ROWS,
@@ -396,4 +403,63 @@ test('far-sea life surfaces in the open sea east of the island, the shower in th
     calls.length = 0;
     drawHorizonLife(ctx, { ...renderer, motionScale: 0 });
     assert.equal(calls.length, 0, 'reduced motion draws nothing');
+});
+
+// A pixel canvas just large enough for the accent cut (alpha only matters).
+function pixelCanvas(width, height, alpha = null) {
+    const canvas = { width, height, data: new Uint8ClampedArray(width * height * 4) };
+    if (alpha) for (let k = 0; k < width * height; k++) canvas.data[k * 4 + 3] = alpha(k % width, Math.floor(k / width));
+    canvas.getContext = () => ({
+        drawImage: source => { canvas.data = new Uint8ClampedArray(source.data); },
+        getImageData: () => ({ data: new Uint8ClampedArray(canvas.data) }),
+        putImageData: image => { canvas.data = new Uint8ClampedArray(image.data); },
+    });
+    return canvas;
+}
+
+test('EN-7: reflected window light breaks with its mirror, texel by texel on the mirror\'s Bayer rank', () => {
+    const original = globalThis.document;
+    globalThis.document = { createElement: () => pixelCanvas(0, 0) };
+    try {
+        const BAYER4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+        // A Pharos-like lamp patch at an odd world origin, a few holes in it.
+        const x = 1301;
+        const y = 418;
+        const lit = (i, j) => ((i * 7 + j * 3) % 11 === 0 ? 0 : 255);
+        const layer = { key: 'mirror-accent:pharos:-2', x, y, w: 13, h: 9, group: -2, type: 'pharos',
+            canvas: pixelCanvas(13, 9, lit), emissive: pixelCanvas(13, 9, (i, j) => (lit(i, j) ? 128 : 0)) };
+        // The room / beacon gate no longer goes dark in rain: the cut does.
+        const buildingRenderer = { lighthouseColumnSource: () => true };
+        assert.equal(mirrorAccentGate({ buildingRenderer }, layer, { weather: { type: 'rain', precipitation: 0.33 } }), 1);
+        assert.equal(mirrorAccentRainCut(layer, 0), layer);
+        let previous = Infinity;
+        for (let p = 0.30; p <= 0.701; p += 0.01) {
+            const drop = mirrorRainDrop(p);
+            const cut = mirrorAccentRainCut(layer, drop);
+            if (drop >= 1) {
+                assert.equal(cut, null, p.toFixed(2));
+                continue;
+            }
+            const source = cut ? cut.canvas.data : null;
+            let kept = 0;
+            for (let j = 0; j < layer.h; j++) {
+                for (let i = 0; i < layer.w; i++) {
+                    const rank = BAYER4[(((y + j) & 3) << 2) | ((x + i) & 3)] / 16;
+                    const want = lit(i, j) > 0 && rank >= drop;
+                    const got = source ? source[(j * layer.w + i) * 4 + 3] > 0 : false;
+                    assert.equal(got, want, `${p.toFixed(2)} ${i},${j}`);
+                    if (cut) assert.equal(cut.emissive.data[(j * layer.w + i) * 4 + 3] > 0, want);
+                    kept += want;
+                }
+            }
+            // At 0.33 the mirror has lost one course of eight: most of the
+            // lamp still shines; the survivors only shrink as the rain grows.
+            if (Math.abs(p - 0.33) < 1e-6) assert.ok(kept > 0.8 * 13 * 9 * 0.85, String(kept));
+            assert.ok(kept <= previous);
+            previous = kept;
+            if (cut && drop > 0) assert.equal(mirrorAccentRainCut(layer, drop), cut, 'one cut per step');
+        }
+    } finally {
+        globalThis.document = original;
+    }
 });
