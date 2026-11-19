@@ -1,6 +1,6 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { i18n } from '../../config/i18n.js';
-import { getTeamColor, isImplicitSessionTeam, shortTeamName } from './TeamColor.js';
+import { getTeamColor, harnessAccent, isImplicitSessionTeam, shortTeamName } from './TeamColor.js';
 import { HARBOR_FOCUS_FLEET_EVENT, harborLedger, ledgerFailureText, ledgerLaneLabel, middleTruncate } from './HarborLedger.js';
 import { AgentSearchIndex } from './SearchIndex.js';
 import { sessionDetailsService } from './SessionDetailsService.js';
@@ -1290,6 +1290,7 @@ export class Sidebar {
             agent.effort,
             agent.provider,
             agent.teamName,
+            agent.agentColor,
             agent.workflowName,
             agent.parentSessionId,
             agent.departedAt,
@@ -1372,6 +1373,9 @@ export class Sidebar {
         // A nested crew row sits under its lead, so it needs no parent link.
         if (agent.parentSessionId && !extras.nested) agentClasses.push('sidebar__agent--child');
         if (extras.nested) agentClasses.push('sidebar__agent--nested');
+        // FK-7 — a teammate's crew rail segment wears its harness colour.
+        const harness = extras.nested ? harnessAccent(agent.agentColor) : null;
+        if (harness) agentClasses.push('sidebar__agent--harness');
         if (agent.isDeparted) agentClasses.push('sidebar__agent--departed');
         const refs = row._sidebarRefs;
         const className = agentClasses.join(' ');
@@ -1379,6 +1383,10 @@ export class Sidebar {
         if (profile.accent && row._sidebarRepoColor !== profile.accent) {
             row.style.setProperty('--cv-repo-color', profile.accent);
             row._sidebarRepoColor = profile.accent;
+        }
+        if (harness && row._sidebarHarnessColor !== harness) {
+            row.style.setProperty('--cv-harness-color', harness);
+            row._sidebarHarnessColor = harness;
         }
         this._setNodeText(refs.nameText, agent.name || '');
 
