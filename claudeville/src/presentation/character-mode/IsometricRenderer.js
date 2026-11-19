@@ -61,7 +61,7 @@ import { TERRAIN_HAZE_COURSES, groundWeatherWanted, installGroundBake } from './
 import { releaseFrameShade } from './RakingLight.js';
 import { releaseShadeField, shadeFieldBufferBytes } from './ShadeField.js';
 import { OCEAN_HORIZON_WORLD_Y, coastDistanceProbe, drawCanvasWaterMood, drawOuterOcean, registerCoastBake, riverCurrentAt } from './CoastBake.js';
-import { frostQuarterOf, snowBucketOf } from './GroundState.js';
+import { frostQuarterOf, frostRisingOf, snowBucketOf } from './GroundState.js';
 import {
     TerrainArtifactStore, terrainArtifactConfiguration, terrainArtifactInputsSettled, terrainArtifactKey, terrainContentHash,
     captureTerrainArtifactFields, captureTerrainArtifact, restoreTerrainArtifact,
@@ -8470,6 +8470,7 @@ export class IsometricRenderer {
         const ground = this._groundState ?? groundStateForAtmosphere(atmosphere);
         return { assetVersion: this.assets?.assetVersion, bounds, dpr, season,
             sceneryRevision: this._terrainSceneryRevision || 0, snowBucket: snowBucketOf(ground?.snowCover), frost: frostQuarterOf(ground),
+            frostRising: frostRisingOf(ground),
             phenology: phenologyForAtmosphere(atmosphere).id,
             // GW — 'weather' in the key exactly when this backend's bake holds the field.
             groundWeather: groundWeatherWanted(this, frostQuarterOf(ground)) };

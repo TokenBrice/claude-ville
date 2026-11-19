@@ -13,7 +13,7 @@ import {
     packGroundWeather,
     validGroundWeather,
 } from '../../claudeville/src/presentation/character-mode/GroundWeatherField.js';
-import { bakeGround, validGroundArtifact } from '../../claudeville/src/presentation/character-mode/GroundBake.js';
+import { bakeGround, bakeWinterGround, validGroundArtifact } from '../../claudeville/src/presentation/character-mode/GroundBake.js';
 
 // Item 5 — the ground weather field: RGBA8 on the ground bake's grid.
 
@@ -175,3 +175,69 @@ test('GW: the field is baked, keyed and saved only while a look reads it', async
     }
 });
 
+// The bake texel (index into aoBuf / surfaces) under tile point (tx, ty).
+function texelAt(base, tx, ty) {
+    const sx = (tx - ty) * (TILE_WIDTH / 2);
+    const sy = (tx + ty) * (TILE_HEIGHT / 2);
+    return Math.floor(sy - base.y0) * base.cols + Math.floor((sx - base.x0) / 2);
+}
+
+test('EN-3: the Command contact AO starts at the painted plinth, the Archive keeps its logical footprint', t => {
+    const renderer = groundBakeFixture(t);
+    renderer.world.buildings.set('command', { type: 'command', position: { tileX: 17, tileY: 17 }, width: 2, height: 2 });
+    const base = bakeGround(renderer);
+    // Inside the drawn base by its front corner, outside the logical footprint.
+    assert.equal(base.aoBuf[texelAt(base, 17 + 2 - 0.25, 17 + 2 - 0.25)], 255, 'command: full contact at the plinth');
+    assert.ok(base.aoBuf[texelAt(base, 21 + 2 - 0.25, 20 + 2 - 0.25)] < 255, 'archive: the logical footprint');
+});
+
+test('EY-3: snow lies under the open Task board, not under a solid building', t => {
+    const renderer = groundBakeFixture(t);
+    renderer.world.buildings.set('taskboard', { type: 'taskboard', position: { tileX: 18, tileY: 17 }, width: 2, height: 2 });
+    const base = bakeGround(renderer);
+    const green = [80, 140, 60];
+    const data = new Uint8ClampedArray(base.cols * 2 * base.rows * 4);
+    for (let i = 0; i < data.length; i += 4) data.set([...green, 255], i);
+    const image = { data };
+    const snowyShare = (tiles) => {
+        let snowy = 0;
+        let total = 0;
+        for (const [tx, ty] of tiles) {
+            const i = texelAt(base, tx, ty);
+            if (base.surfaces[i] > 1) continue; // grass (0) and sand (1) only
+            total++;
+            const o = i * 2 * 4;
+            if (data[o] !== green[0] || data[o + 1] !== green[1] || data[o + 2] !== green[2]) snowy++;
+        }
+        return total ? snowy / total : NaN;
+    };
+    const plot = (x0, y0) => {
+        const points = [];
+        for (let y = 0; y < 2; y += 0.125) for (let x = 0; x < 2; x += 0.125) points.push([x0 - 0.5 + x, y0 - 0.5 + y]);
+        return points;
+    };
+    bakeWinterGround(renderer, { ...base, canvas: { getContext: () => ({ getImageData: () => image }) } }, 4, 0);
+    const board = snowyShare(plot(18, 17));
+    const archive = snowyShare(plot(21, 20));
+    assert.ok(board > 0.5, `snow under the Task board: ${board}`);
+    assert.ok(archive < 0.2, `thinned under a solid building: ${archive}`);
+});
+
+test('EY-5: the rising rime grows on the GW-3 patch field, each quarter holding the last', t => {
+    const renderer = groundBakeFixture(t);
+    const base = bakeGround(renderer, true);
+    const rimed = (frost, rising) => {
+        const data = new Uint8ClampedArray(base.cols * 2 * base.rows * 4);
+        for (let i = 0; i < data.length; i += 4) data.set([80, 140, 60, 255], i);
+        bakeWinterGround(renderer, { ...base, canvas: { getContext: () => ({ getImageData: () => ({ data }) }) } }, 0, frost, 1, rising);
+        const set = new Set();
+        for (let i = 0; i < base.cols * base.rows; i++) if (data[i * 8] !== 80) set.add(i);
+        return set;
+    };
+    const quarters = [rimed(1, true), rimed(2, true), rimed(3, true), rimed(4, false)];
+    for (let q = 1; q < 4; q++) {
+        assert.ok(quarters[q - 1].size < quarters[q].size, `quarter ${q} under ${q + 1}`);
+        for (const i of quarters[q - 1]) assert.ok(quarters[q].has(i), `quarter ${q} inside ${q + 1}`);
+    }
+    assert.ok(quarters[0].size > 0);
+});

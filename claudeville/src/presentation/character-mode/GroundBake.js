@@ -68,9 +68,10 @@ import { ART_RAMPS } from '../../config/artPalette.js';
 import { MAP_SIZE, TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 import { FOREST_FLOOR_REGIONS } from '../../config/scenery.js';
 import { YARD_MATERIALS } from '../../config/townPlan.js';
+import { BUILDING_GROUNDING_PROFILES } from '../../config/buildingGrounding.js';
 import { readTerrainCellLuma } from './TerrainTileset.js';
 import { getCoastField } from './CoastBake.js';
-import { frostQuarterOf, snowBucketOf } from './GroundState.js';
+import { frostQuarterOf, frostRisingOf, snowBucketOf } from './GroundState.js';
 import { frostHolds, frostShadeField, frostShadeKey } from './FrostMelt.js';
 import { treeSpriteKey } from './FoliageRenderer.js';
 import { releaseCanvasBackingStore } from './CanvasBudget.js';
@@ -456,20 +457,27 @@ function buildOccluders(r) {
         }
     };
     for (const b of r.world?.buildings?.values?.() || []) {
-        const minX = b.position.tileX - 0.5;
-        const minY = b.position.tileY - 0.5;
-        add({ kind: 0, minX, minY, maxX: minX + b.width, maxY: minY + b.height, reach: 0.95, strength: 1 }, 1.4);
+        const profile = BUILDING_GROUNDING_PROFILES[b.type];
+        // EN-3 — `contactSeat: 'plinth'`: the AO starts at the painted plinth
+        // (the drawn base, half a tile down-screen of the logical footprint).
+        const seat = profile?.contactSeat === 'plinth' ? 0.5 : 0;
+        const minX = b.position.tileX - 0.5 + seat;
+        const minY = b.position.tileY - 0.5 + seat;
+        // EY-3 — `shelter`: the share of the snow its contact AO keeps off
+        // (buildingGrounding.js; an open frame like the Task board spares little).
+        const shelter = profile?.shelter ?? 1;
+        add({ kind: 0, minX, minY, maxX: minX + b.width, maxY: minY + b.height, reach: 0.95, strength: 1, shelter }, 1.4);
     }
     for (const t of r.scenery?.getTreeProps?.() || []) {
         const cx = t.tileX + 0.1;
         const cy = t.tileY + 0.1;
-        add({ kind: 1, cx, cy, minX: cx, maxX: cx, minY: cy, maxY: cy, reach: 0.55, strength: 0.75 }, 0.6);
+        add({ kind: 1, cx, cy, minX: cx, maxX: cx, minY: cy, maxY: cy, reach: 0.55, strength: 0.75, shelter: 1 }, 0.6);
     }
     for (const p of r._staticPropSprites || []) {
         if (p.id === 'fantasy.tree') continue;
         const cx = p.tileX;
         const cy = p.tileY;
-        add({ kind: 1, cx, cy, minX: cx, maxX: cx, minY: cy, maxY: cy, reach: 0.34, strength: 0.55 }, 0.4);
+        add({ kind: 1, cx, cy, minX: cx, maxX: cx, minY: cy, maxY: cy, reach: 0.34, strength: 0.55, shelter: 1 }, 0.4);
     }
     return buckets;
 }
@@ -520,7 +528,9 @@ function sunShadeAt(bucket, tx, ty, out) {
     out[1] = shade > 0 ? shade ** 0.7 : 0;
 }
 
-function occlusionAt(bucket, tx, ty) {
+// `sheltered`: each occluder weighted by its shelter share (EY-3: the snow
+// the eaves keep off), instead of the contact AO itself.
+function occlusionAt(bucket, tx, ty, sheltered = false) {
     let ao = 0;
     for (let i = 0; i < bucket.length; i++) {
         const o = bucket[i];
@@ -530,13 +540,17 @@ function occlusionAt(bucket, tx, ty) {
             // take the longer contact shadow; the lit up-left side the least.
             const ex = tx < o.minX ? (o.minX - tx) / 0.65 : tx > o.maxX ? (tx - o.maxX) / 1.35 : 0;
             const ey = ty < o.minY ? (o.minY - ty) / 0.8 : ty > o.maxY ? (ty - o.maxY) / 1.0 : 0;
-            if (ex === 0 && ey === 0) return 1;
+            if (ex === 0 && ey === 0) {
+                if (!sheltered) return 1;
+                if (o.shelter > ao) ao = o.shelter;
+                continue;
+            }
             d = Math.sqrt(ex * ex + ey * ey);
         } else {
             d = Math.hypot(tx - o.cx, (ty - o.cy) * 1.15);
         }
         if (d >= o.reach) continue;
-        const a = (1 - d / o.reach) ** 1.5 * o.strength;
+        const a = (1 - d / o.reach) ** 1.5 * o.strength * (sheltered ? o.shelter : 1);
         if (a > ao) ao = a;
     }
     return ao;
@@ -1514,18 +1528,33 @@ const FROST_PATCH_ON = 0.5;
 const FROST_PATCH_GRAIN = 0.05;
 const FROST_PATCH_SHELTER = 0.5;
 const FROST_PATCH_RIM = 0.035;
+// EY-5 — the rising rime's patch threshold per quarter (1–3; 4 is
+// FROST_PATCH_ON): each quarter's patches hold the last's, growing out from
+// the coldest open ground.
+const FROST_RISE_ON = Object.freeze([0, 0.32, 0.39, 0.45]);
 
-// Whether a grass texel rimes at patch strength `s` (> 0); 2 = the rim
-// course, 1 = inside, 0 = none.
-function frostPatchAt(col, row, rank, s, weather) {
+// Whether a grass texel rimes at patch strength `s` (> 0) under threshold
+// `on`; 2 = the rim course, 1 = inside, 0 = none.
+function frostPatchAt(col, row, rank, s, weather, on = FROST_PATCH_ON) {
     const o = (row * weather.cols + col) * 4;
     const shelter = weather.data[o + 1] / 255;
     const field = fbm(col / FROST_PATCH_SCALE, row / (FROST_PATCH_SCALE / 2), 1409)
         + (hash2(col, row, 1409) - 0.5) * (FROST_PATCH_GRAIN + (1 - s) * 0.5)
         + FROST_PATCH_SHELTER * shelter;
-    if (field >= FROST_PATCH_ON) return 0;
+    if (field >= on) return 0;
     if (rank < 2 && hash2(col, row, 1411) >= s) return 0;
-    return FROST_PATCH_ON - field < FROST_PATCH_RIM ? 2 : 1;
+    return on - field < FROST_PATCH_RIM ? 2 : 1;
+}
+
+// EY-3 — the eave cover over the texel centred at world (sx, sy): the
+// contact AO's occluders, each weighted by its shelter share.
+function shelterAt(occluders, sx, sy) {
+    const tx = sx / TILE_WIDTH + sy / TILE_HEIGHT;
+    const ty = sy / TILE_HEIGHT - sx / TILE_WIDTH;
+    const N = MAP_SIZE;
+    const clampI = (v) => (v < 0 ? 0 : v >= N ? N - 1 : v);
+    const bucket = occluders[clampI(Math.round(ty)) * N + clampI(Math.round(tx))];
+    return bucket ? occlusionAt(bucket, tx, ty, true) : 0;
 }
 
 function rankOf(luma, lumas) {
@@ -1538,7 +1567,9 @@ function rankOf(luma, lumas) {
     return best;
 }
 
-export function bakeWinterGround(r, base, snowBucket, frost, frostPatches = 0) {
+// `rising` (EY-5): a frost quarter of the night's rising rime (1–3), which
+// grows on the patch field in the calm night tone instead of melting.
+export function bakeWinterGround(r, base, snowBucket, frost, frostPatches = 0, rising = false) {
     const { cols, rows, x0, y0, surfaces, aoBuf, weather } = base;
     const patches = weather ? frostPatches : 0;
     const w = cols * TEXEL_W;
@@ -1546,8 +1577,13 @@ export function bakeWinterGround(r, base, snowBucket, frost, frostPatches = 0) {
     const D = image.data;
     const cover = Math.max(0, Math.min(4, snowBucket)) / 4;
     const crowns = cover > 0 ? buildCrownField(r, { cols, rows, x0, y0 }) : null;
+    // EY-3 — the eaves thin the snow by each occluder's shelter share, read
+    // only where the contact AO is non-zero.
+    const occluders = cover > 0 ? buildOccluders(r) : null;
     const rime = frostQuarterOf({ frost });
-    const shade = rime > 0 && rime < 4 ? frostShadeField(r, { cols, rows, x0, y0, texelW: TEXEL_W, aoBuf }) : null;
+    const rise = rising && rime > 0 && rime < 4;
+    const night = rime >= 4 || rise;
+    const shade = rime > 0 && rime < 4 && !rise ? frostShadeField(r, { cols, rows, x0, y0, texelW: TEXEL_W, aoBuf }) : null;
     const write = (o, c) => {
         D[o] = c[0]; D[o + 1] = c[1]; D[o + 2] = c[2];
         D[o + 4] = c[0]; D[o + 5] = c[1]; D[o + 6] = c[2];
@@ -1565,7 +1601,8 @@ export function bakeWinterGround(r, base, snowBucket, frost, frostPatches = 0) {
             if (cover > 0) {
                 const cd = crowns.dist[i];
                 const crownThin = cd < 1 ? 0.3 + 0.7 * cd : 1;
-                const eaveThin = 1 - Math.min(1, (aoBuf[i] / 255) * 1.8) * 0.9;
+                const eave = aoBuf[i] ? shelterAt(occluders, x0 + sx + 1, y0 + row + 0.5) : 0;
+                const eaveThin = 1 - Math.min(1, eave * 1.8) * 0.9;
                 let local = cover * crownThin * eaveThin;
                 if (s === S_SAND) local *= 0.6;
                 const threshold = 0.1 + local * 0.88;
@@ -1602,9 +1639,9 @@ export function bakeWinterGround(r, base, snowBucket, frost, frostPatches = 0) {
             if (snowy || !rime || s !== S_GRASS) continue;
             if (patches > 0) {
                 // GW-3 — frost in patches (see FROST_PATCH_ON).
-                const patch = frostPatchAt(col, row, rank, patches, weather);
-                if (!patch || !(rime >= 4 || frostHolds(rime, shade, col, row, fbm(sx / 26, row / 13, 1413)))) continue;
-                if (rime >= 4) {
+                const patch = frostPatchAt(col, row, rank, patches, weather, rise ? FROST_RISE_ON[rime] : FROST_PATCH_ON);
+                if (!patch || !(night || frostHolds(rime, shade, col, row, fbm(sx / 26, row / 13, 1413)))) continue;
+                if (night) {
                     if (patch === 2 && BAYER[(row & 1) * 2 + (col & 1)] > 0) continue;
                     write(o, SNOW[rank >= 4 ? 1 : 0]);
                 } else {
@@ -1612,8 +1649,8 @@ export function bakeWinterGround(r, base, snowBucket, frost, frostPatches = 0) {
                 }
                 continue;
             }
-            if (rank >= 2 && hash2(col, row, 1409) < FROST_DENSITY
-                && (rime >= 4 || frostHolds(rime, shade, col, row, fbm(sx / 26, row / 13, 1413)))) {
+            if (rank >= 2 && hash2(col, row, 1409) < FROST_DENSITY * (rise ? rime / 4 : 1)
+                && (night || frostHolds(rime, shade, col, row, fbm(sx / 26, row / 13, 1413)))) {
                 write(o, SNOW[rank >= 3 ? 1 : 0]);
             }
         }
@@ -1631,8 +1668,9 @@ export function bakeWinterGround(r, base, snowBucket, frost, frostPatches = 0) {
 // as part of the terrain-cache key) tracks the land sheets loading (settling
 // to a constant once they have) and the winter ground: the C-W2 snow bucket
 // and frost quarter from `renderer._groundState`, so the terrain rebakes only
-// when a quarter of snow cover or of the rime changes (at most five frost
-// bakes a frosty day: the night's rime, then quarters 3, 2, 1 and none).
+// when a quarter of snow cover or of the rime changes (at most eight frost
+// bakes a frosty day: the rising quarters 1, 2, 3 and the whole rime, EY-5,
+// then quarters 3, 2, 1 and none).
 // Season, scenery and the coast field already key the terrain cache through
 // their own entries. The cached
 // image is re-keyed on all of them at bake time only. Weather and time of day
@@ -1646,9 +1684,11 @@ function winterKeyOf(renderer) {
     // GW-3: the patch strength keys only a frosty bake, and only when on, so
     // the look at 0 keeps today's key.
     const patches = frost ? frostPatchStrength() : 0;
+    // EY-5: the night's rising rime ('r') bakes apart from the dawn melt.
+    const rising = frostRisingOf(ground);
     // SD-1: a melting frost lies in the sundial's shade while that look is on
     // (FrostMelt `frostShadeKey`, '' with it off).
-    return bucket || frost ? `w${bucket}f${frost}${patches ? `p${patches}` : ''}${frostShadeKey(frost)}` : '';
+    return bucket || frost ? `w${bucket}f${frost}${rising ? 'r' : ''}${patches ? `p${patches}` : ''}${rising ? '' : frostShadeKey(frost)}` : '';
 }
 
 export function frostPatchStrength() {
@@ -1723,7 +1763,7 @@ export function installGroundBake(renderer) {
                 winter = {
                     key: `${key}|${winterKey}`,
                     canvas: bakeWinterGround(renderer, cached, snowBucketOf(ground?.snowCover), frostQuarterOf(ground),
-                        frostQuarterOf(ground) ? frostPatchStrength() : 0),
+                        frostQuarterOf(ground) ? frostPatchStrength() : 0, frostRisingOf(ground)),
                 };
                 renderer.groundWinterBakeMs = Math.round(performance.now() - started);
             }

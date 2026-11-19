@@ -15,7 +15,10 @@ import { captureCoastArtifact, restoreCoastArtifact, validCoastArtifact, coastAr
 // cv0.62-terrain-8: the ground weather field's shelter and sun shade sit on
 // the drawn building bases (GroundBake `buildSunOccluders`), its drying order
 // leaning on the sun shade over the noise.
-export const TERRAIN_BAKE_ALGORITHM_VERSION = 'cv0.62-terrain-8';
+// cv0.64-terrain-9: snow under the open Task board (EY-3, the eaves' shelter
+// share), the night's rising rime (EY-5) and the contact AO of Command,
+// Tavern and Forge seated at the painted plinth (EN-3).
+export const TERRAIN_BAKE_ALGORITHM_VERSION = 'cv0.64-terrain-9';
 export const TERRAIN_ARTIFACT_DB = 'claudeville-terrain-artifacts';
 export const TERRAIN_ARTIFACT_MAX_BYTES = 96 * 1024 * 1024;
 // Artifact schema. 2: the ground field may carry the RGBA8 weather field
@@ -72,7 +75,7 @@ export async function terrainContentHash(value, allowFunctions = false) {
 
 export function terrainArtifactKey({ assetVersion, configHash, season, sceneryRevision, snowBucket, frost, bounds, dpr,
     algorithmVersion = TERRAIN_BAKE_ALGORITHM_VERSION, phenology, frostPatches = lookStrength('gw3'),
-    groundWeather = groundWeatherLooksOn(frost) }) {
+    groundWeather = groundWeatherLooksOn(frost), frostRising = false }) {
     // BI-2 — `phenology`: the woods' weekly stage id (SeasonalAmbience
     // PHENOLOGY_STAGES; the litter and the water reflections follow it).
     // GW-3 — `frostPatches`: the frost-patch look's strength, keyed only
@@ -85,9 +88,12 @@ export function terrainArtifactKey({ assetVersion, configHash, season, sceneryRe
         || !bounds || !['x', 'y', 'w', 'h'].every(k => Number.isFinite(bounds[k])) || bounds.w <= 0 || bounds.h <= 0) return null;
     const key = [SCHEMA, algorithmVersion, String(assetVersion), configHash, season, sceneryRevision, snowBucket, frost,
         bounds.x, bounds.y, bounds.w, bounds.h, dpr, phenology, frost > 0 ? frostPatches : 0];
+    // EY-5 — the night's rising rime (quarters 1–3) bakes apart from the melt.
+    const rising = frostRising === true && frost > 0 && frost < 4;
+    if (rising) key.push('rising');
     // SD-1 — a melting frost baked in the sundial's shade (FrostMelt
     // `frostShadeKey`); nothing is added with the look off, so today's keys hold.
-    const shade = frostShadeKey(frost);
+    const shade = rising ? '' : frostShadeKey(frost);
     if (shade) key.push(shade);
     // GW-1 / GW-2 / GW-3 — a bake that carries the ground weather field
     // (any of its looks on); nothing is added at looks 0.

@@ -6,6 +6,8 @@ import {
     FROST_MELT_ELEVATIONS,
     frostMeltQuarter,
     frostQuarterOf,
+    frostRisingAt,
+    frostRisingOf,
     frostSunFor,
     groundOptionsFor,
     groundStateAt,
@@ -41,7 +43,8 @@ function frostAt(date, minute, knots = CLEAR, noon = 700) {
 
 test('the melt clock steps down with the sun, never with fixed hours', () => {
     const sun = (elevationDeg) => ({ sunriseMinute: 420, solarNoonMinute: 700, elevationDeg });
-    assert.equal(frostMeltQuarter(sun(0), 22 * 60 + 5), 4, 'the night rimes from 22:00');
+    assert.equal(frostMeltQuarter(sun(0), 22 * 60 + 5), 1, 'the night rimes from 22:00, a quarter at a time');
+    assert.equal(frostMeltQuarter(sun(0), 1 * 60), 4, 'whole from 01:00');
     assert.equal(frostMeltQuarter(sun(0), 3 * 60), 4);
     assert.equal(frostMeltQuarter(sun(-2), 419), 4, 'whole until sunrise');
     const steps = [0, ...FROST_MELT_ELEVATIONS];
@@ -78,7 +81,7 @@ test('a frosty morning steps 4 → 0 once, slower under the low December sun', (
     const melt = (date) => {
         let last = 4;
         const steps = [];
-        for (let minute = 0; minute < 13 * 60; minute += 5) {
+        for (let minute = 60; minute < 13 * 60; minute += 5) {
             const q = frostAt(date, minute);
             assert.ok(q <= last, `${date.toDateString()} ${minute}: ${last} → ${q}`);
             if (q !== last) steps.push([minute, q]);
@@ -137,4 +140,28 @@ test('shade keeps the rime at every quarter and the open lawn melts in nested pa
     const order = 0.5;
     assert.equal(frostHolds(2, field, 60, 60, order), false);
     assert.equal(frostHolds(2, field, 15, 24, order), true);
+});
+
+test('EY-5: the rime of a clear night rises 1 → 4 from 22:00 to 01:00, at most three extra bakes', () => {
+    assert.deepEqual([21 * 60 + 55, 22 * 60, 22 * 60 + 55, 23 * 60, 23 * 60 + 59, 0, 59, 60, 3 * 60].map(frostRisingAt),
+        [false, true, true, true, true, true, true, false, false]);
+    const evening = new Date(2026, 10, 20);
+    const morning = new Date(2026, 10, 21);
+    const stages = [];
+    const stageAt = (date, minute) => {
+        const at = new Date(date.getFullYear(), date.getMonth(), date.getDate(), Math.floor(minute / 60), minute % 60);
+        const sun = frostSunFor({ solar: solarAt(at, minute) });
+        const ground = groundStateAt(at, { timelineKnots: CLEAR, sun });
+        return `${frostQuarterOf(ground)}${frostRisingOf(ground) ? 'r' : ''}`;
+    };
+    for (let minute = 21 * 60; minute < 24 * 60; minute += 5) stages.push(stageAt(evening, minute));
+    for (let minute = 0; minute < 13 * 60; minute += 5) stages.push(stageAt(morning, minute));
+    const changes = stages.filter((stage, i) => i === 0 || stage !== stages[i - 1]);
+    // Each stage is one terrain bake: three rising quarters ahead of the
+    // whole rime, then the melt.
+    assert.deepEqual(changes, ['0', '1r', '2r', '3r', '4', '3', '2', '1', '0']);
+    // The rising and melting quarters key apart.
+    const inputs = { assetVersion: 'a', configHash: 'c', season: 'winter', sceneryRevision: 0, snowBucket: 0, bounds: { x: 0, y: 0, w: 1, h: 1 }, dpr: 1, phenology: 'winter' };
+    for (const frost of [1, 2, 3]) assert.notEqual(terrainArtifactKey({ ...inputs, frost }), terrainArtifactKey({ ...inputs, frost, frostRising: true }));
+    assert.equal(terrainArtifactKey({ ...inputs, frost: 4 }), terrainArtifactKey({ ...inputs, frost: 4, frostRising: true }));
 });
