@@ -254,7 +254,7 @@ function fleet(n, { buildings = 1, selected = false } = {}) {
         const angle = (i / n) * Math.PI * 2;
         const child = squadSprite(`c${String(i).padStart(2, '0')}`, Math.round(Math.cos(angle) * 400), Math.round(Math.sin(angle) * 200));
         child._lastBuildingType = `building-${i % buildings}`;
-        child._lastTargetTile = worldToTile(child.x, child.y); // arrived at its slot
+        child.behavior = { building: child._lastBuildingType, arrivedAt: 1 }; // arrived at its slot
         sprites.set(child.agent.id, child);
         kids.add(child.agent.id);
     }
@@ -328,23 +328,45 @@ test('FK-3: the focused squad keeps its cords at the secondary cap in a saturate
     assert.equal(ctx.fills.filter(fill => fill.alpha < 1).length, 0);
 });
 
-test('FK-3: walkers and stranded members cluster where they are, arrivals by their building', () => {
+test('FK-3: walkers and stranded members cluster where they are, recorded arrivals by their building', () => {
     const lead = squadSprite('lead', 0, 0);
     const sprites = new Map([['lead', lead]]);
     const ids = [];
-    const slotOf = (x, y) => worldToTile(x, y);
     const add = (id, x, y, extra) => { sprites.set(id, Object.assign(squadSprite(id, x, y), extra)); ids.push(id); };
+    const enRoute = { building: 'forge', arrivedAt: null };
     // Two walkers in different districts, both bound for the forge.
-    add('w1', 400, 200, { moving: true, _lastBuildingType: 'forge', _lastTargetTile: { tileX: 0, tileY: 30 } });
-    add('w2', -400, 200, { moving: true, _lastBuildingType: 'forge', _lastTargetTile: { tileX: 0, tileY: 30 } });
-    // Two whose route failed: standing still far from the forge slot, in different districts.
-    add('f1', 600, -100, { moving: false, _lastBuildingType: 'forge', _lastTargetTile: { tileX: 0, tileY: 30 } });
-    add('f2', -600, -100, { moving: false, _lastBuildingType: 'forge', _lastTargetTile: { tileX: 0, tileY: 30 } });
-    // Three arrived at their archive slots, apart from one another.
+    add('w1', 400, 200, { moving: true, _lastBuildingType: 'forge', behavior: enRoute });
+    add('w2', -400, 200, { moving: true, _lastBuildingType: 'forge', behavior: enRoute });
+    // Two whose route failed far apart: standing still, no arrival recorded.
+    add('f1', 600, -100, { moving: false, _lastBuildingType: 'forge', behavior: enRoute });
+    add('f2', -600, -100, { moving: false, _lastBuildingType: 'forge', behavior: enRoute });
+    // Three arrived at the archive, apart from one another.
     for (const [id, x, y] of [['s1', 300, -150], ['s2', 340, -130], ['s3', 380, -110]]) {
-        add(id, x, y, { moving: false, _lastBuildingType: 'archive', _lastTargetTile: slotOf(x, y) });
+        add(id, x, y, { moving: false, _lastBuildingType: 'archive', behavior: { building: 'archive', arrivedAt: 5 } });
     }
-    assert.deepEqual([...squadCordChildIds(lead, ids, sprites)].sort(), ['f1', 'f2', 's1', 'w1', 'w2']);
+    // An arrival recorded for an earlier building does not count for this one.
+    add('old', -300, -300, { moving: false, _lastBuildingType: 'forge', behavior: { building: 'archive', arrivedAt: 5 } });
+    assert.deepEqual([...squadCordChildIds(lead, ids, sprites)].sort(), ['f1', 'f2', 'old', 's1', 'w1', 'w2']);
+});
+
+test('FK-3: two routes failing diagonally just short of their Forge slots keep two cords', () => {
+    // The reviewer's case: both within 1.5 tiles of their slots, in separate
+    // tile clusters, neither recorded an arrival.
+    const lead = squadSprite('lead', 0, 0);
+    const sprites = new Map([['lead', lead]]);
+    const ids = [];
+    for (const [id, slot] of [['d1', { tileX: 10, tileY: 2 }], ['d2', { tileX: 2, tileY: 10 }], ['p1', { tileX: -6, tileY: -6 }], ['p2', { tileX: -9, tileY: 3 }], ['p3', { tileX: 3, tileY: -9 }]]) {
+        const at = tileToWorld({ tileX: slot.tileX + 1, tileY: slot.tileY + 1 }); // one diagonal step short
+        sprites.set(id, Object.assign(squadSprite(id, at.x, at.y), {
+            moving: false,
+            _lastBuildingType: 'forge',
+            _lastTargetTile: slot,
+            behavior: { building: 'forge', arrivedAt: null },
+        }));
+        ids.push(id);
+    }
+    const corded = squadCordChildIds(lead, ids, sprites);
+    assert.ok(corded.has('d1') && corded.has('d2'), 'separate tile clusters, separate cords');
 });
 
 test('FK-3: a small squad cords every far member; reduced motion keeps region admission', () => {

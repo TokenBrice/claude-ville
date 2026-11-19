@@ -201,17 +201,18 @@ function scaleHex(hex, k) {
 export const SQUAD_ALL_CORDS_MAX = 4;
 const SQUAD_CLUSTER_TILES = 4;
 
-// A member clusters by its building only on evidence it got there: it stands
-// still within about a tile of its visit slot. A walker, or a member whose
-// route failed short of the door, clusters by where it stands now, never by
-// where it was headed (two districts bound for one door are two clusters).
-const SQUAD_ARRIVED_TILES = 1.5;
+// A member clusters by its building only on recorded arrival: its behavior
+// state logged an arrival (`AgentBehaviorState.arrive`, called when the body
+// reaches its route's end) for that same building, and it stands still. A
+// walker, or a member whose route failed short of the door (no arrival is
+// recorded for a failed route), clusters by the tile it stands on, never by
+// where it was headed.
 function squadClusterKey(sprite) {
-    const tile = worldToTile(sprite.x, sprite.y);
-    const slot = sprite?._lastTargetTile;
-    const arrived = !sprite?.moving && sprite?._lastBuildingType && slot
-        && Math.hypot(tile.tileX - slot.tileX, tile.tileY - slot.tileY) <= SQUAD_ARRIVED_TILES;
+    const behavior = sprite?.behavior;
+    const arrived = !sprite?.moving && sprite?._lastBuildingType
+        && behavior?.arrivedAt != null && behavior.building === sprite._lastBuildingType;
     if (arrived) return `b:${sprite._lastBuildingType}`;
+    const tile = worldToTile(sprite.x, sprite.y);
     return `t:${Math.floor(tile.tileX / SQUAD_CLUSTER_TILES)},${Math.floor(tile.tileY / SQUAD_CLUSTER_TILES)}`;
 }
 
