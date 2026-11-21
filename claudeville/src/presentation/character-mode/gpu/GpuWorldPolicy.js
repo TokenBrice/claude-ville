@@ -885,13 +885,18 @@ vec3 receiverKnee(vec3 lit, float floorLuma) {
 // brighter than every lit world pixel. \`land\` scales the hue landing (1 on
 // the ground and walls; a body passes less, so a figure in a warm pool reads
 // as warm light on its own costume colour, which names the agent, instead of
-// an amber silhouette). Returns the lit colour.
-vec3 stepPool(vec3 graded, vec3 ambient, float ambientSteps, vec3 attention, float attentionSteps, vec3 albedo, vec3 reflection, float land) {
+// an amber silhouette). \`inkGuard\` (1 on villager bodies, 0 on ground/walls)
+// suppresses the 0.035 albedo-free ambient pool lift on dark sprite ink so
+// visors, eyes and outlines keep contrast without dimming ground/wall pools.
+// Returns the lit colour.
+vec3 stepPool(vec3 graded, vec3 ambient, float ambientSteps, vec3 attention, float attentionSteps, vec3 albedo, vec3 reflection, float land, float inkGuard) {
     bool lit = ambientSteps > 0.5 && dot(ambient, GRADE_LUMA) > 0.01;
     bool marked = attentionSteps > 0.5 && dot(attention, GRADE_LUMA) > 0.01;
     if (!lit && !marked && reflection == vec3(0.0)) return graded;
     float gradedLuma = dot(graded, GRADE_LUMA);
-    vec3 base = mix(vec3(dot(albedo, GRADE_LUMA)), albedo, 0.55);
+    float albedoLuma = dot(albedo, GRADE_LUMA);
+    vec3 base = mix(vec3(albedoLuma), albedo, 0.55);
+    float inkKeep = mix(1.0, smoothstep(0.05, 0.14, albedoLuma), inkGuard);
     float carry = clamp((u_poolGain - 0.15) / 1.05, 0.0, 1.0);
     float strength;
     float warm;
@@ -903,7 +908,7 @@ vec3 stepPool(vec3 graded, vec3 ambient, float ambientSteps, vec3 attention, flo
         vec3 pool = tint * strength;
         float adapt = min(1.0, strength * 1.5) * warm * (0.85 * 0.6) * carry * land;
         result = mix(graded, gradedLuma * tint, adapt);
-        add += base * pool * u_poolGain + pool * 0.035 * u_poolGain;
+        add += base * pool * u_poolGain + pool * (0.035 * inkKeep) * u_poolGain;
         landWarm = warm;
     }
     result = lumaKnee(result + add, gradedLuma);

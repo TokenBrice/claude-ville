@@ -145,6 +145,23 @@ test("the Tavern's windows light for seated patrons, not for passers-by", () => 
     renderer._updateVisitorCounts();
     assert.equal(renderer._roomSlotsByType.get('tavern').assignment.size, 0);
     assert.equal(renderer._workTierFor(tavern), 'dormant');
+
+    // Arrived standing-room (`REST_STANDS`) patrons light the Tavern and tally on
+    // the plaque identically, while walkers still en route (`moving: true`) do neither.
+    const barStander = { agent: { id: 'stander-1', status: 'idle' }, visitRole: 'rest', _restBuilding: 'tavern', moving: false, _holdsRestPlace: () => true, _seatedSeat: () => null };
+    const walkerEnRoute = { agent: { id: 'walker-1', status: 'idle' }, visitRole: 'rest', _restBuilding: 'tavern', moving: true, _holdsRestPlace: () => false, _seatedSeat: () => null };
+    renderer.agentSprites = [walkerEnRoute];
+    renderer._updateVisitorCounts();
+    renderer._plaqueCountsByType();
+    assert.equal(renderer._roomSlotsByType.get('tavern').assignment.size, 0, 'en-route walker lights no Tavern room');
+    assert.equal(renderer.plaquePatrons.get('tavern') ?? null, null, 'en-route walker claims no Tavern plaque patron');
+
+    renderer.agentSprites = [barStander, walkerEnRoute];
+    renderer._updateVisitorCounts();
+    renderer._plaqueCountsByType();
+    assert.equal(renderer._roomSlotsByType.get('tavern').assignment.size, 1, 'arrived bar stander lights Tavern');
+    assert.equal(renderer._restMaskShowing(tavern), false, 'arrived bar stander unbanks Tavern hearth');
+    assert.equal(renderer.plaquePatrons.get('tavern')?.count, 1, 'plaque patron count matches arrived patrons');
 });
 
 test('the bar floor is walkable, paints inside the Tavern, and its arcade redraws over it', async () => {
@@ -422,9 +439,10 @@ test('the banked hearth is a part at the base origin only while banked (B3-03\')
     assert.equal(renderer.partDrawsFor(entry, tavern, 1000, 2000).length, 0);
 });
 
-// VQ-8 — the banked Forge keeps a low ember floor: the mask's own ember
-// course emits through its own part gate, open only while the lamps burn.
-test('the banked Forge mask carries its ember floor and lamp gate; the Tavern mask none (VQ-8)', () => {
+// VQ-8 — the banked Forge and Tavern hearths both keep a low ember floor:
+// each mask's own ember course (`#d67634`, `#803e22`) emits through its own
+// part gate, open only while the village lamps burn.
+test('the banked Forge and Tavern masks carry their ember floor and lamp gate (VQ-8)', () => {
     const entry = { id: 'building.forge', layers: { banked: { width: 256, height: 232, anchor: [128, 169] } } };
     const renderer = Object.assign(Object.create(BuildingSprite.prototype), {
         assets: {
@@ -450,7 +468,7 @@ test('the banked Forge mask carries its ember floor and lamp gate; the Tavern ma
     // Never while the hearth works: no mask, no ember.
     renderer._forgeWorkload = { banked: false };
     assert.equal(at(22), undefined);
-    // The Tavern's banked mask declares no ember: the building gate rules it.
+    // An empty banked Tavern carries a static VQ-8 ember at night, dark by day.
     const tavernEntry = { id: 'building.tavern', layers: { banked: { width: 296, height: 288, anchor: [158, 218] } } };
     const tavern = Object.assign(Object.create(BuildingSprite.prototype), {
         assets: {
@@ -463,6 +481,8 @@ test('the banked Forge mask carries its ember floor and lamp gate; the Tavern ma
         _patronIdsByType: new Map(),
     });
     const [hearth] = tavern.partDrawsFor(tavernEntry, { type: 'tavern' }, 0, 0);
-    assert.equal(hearth.ember, null);
-    assert.equal(hearth.emissiveGate, null);
+    assert.deepEqual(hearth.ember, { colors: ['#d67634', '#803e22'], strength: 0.4 });
+    assert.equal(hearth.emissiveGate, 1);
+    tavern.atmosphereState = { clock: { minuteOfDay: 12 * 60 } };
+    assert.equal(tavern.partDrawsFor(tavernEntry, { type: 'tavern' }, 0, 0)[0].emissiveGate, 0);
 });

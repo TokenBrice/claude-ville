@@ -322,7 +322,7 @@
       "id": "building.archive",
       "materialClass": "stone",
       "sourcePath": "buildings/building.archive/base.png",
-      "sourceSha256": "5b7c5795bdbea41c37433e5b8be213421d36fe73aa05d8cb2c3ae1dc1517bbbf",
+      "sourceSha256": "3cf520d31b256357a99c52ce12c1bf32f8788bb3396905c1a615b0abf6e6b35a",
       "sourceSize": {
         "h": 240,
         "w": 336
@@ -751,8 +751,8 @@
     }
   },
   "channelSha256": {
-    "albedo": "5137a51b566180608e17b9c8d13b3801d8fc0a9807847968f4b136b9c4fd22b2",
-    "emissive": "6e577e0bdba53a99a8c751ff1b142ab3e425e2be0f2a125e1a0357a408c36148",
+    "albedo": "a18902c9a812564f16dca955ff5455af8534699ce0baf4e00c4785dbbb129cda",
+    "emissive": "764d2b16d94d30416e34a2abb24ade846a36f91b2f3d9505e382299dfa9c83ca",
     "material": "b52804ec0e6c33270d380b91f1e5aadf50e9a2bf14af8701ac920bfb50818e48",
     "occluder": "5d2ecff716e31a46b0b62818c3ee12483e52718030a56bc1f38248819b08bc70"
   },
@@ -9938,7 +9938,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "5b7c5795bdbea41c37433e5b8be213421d36fe73aa05d8cb2c3ae1dc1517bbbf",
+      "sourceSha256": "3cf520d31b256357a99c52ce12c1bf32f8788bb3396905c1a615b0abf6e6b35a",
       "sourceSize": {
         "h": 240,
         "w": 336

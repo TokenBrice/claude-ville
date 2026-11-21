@@ -235,7 +235,7 @@ vec3 applyPools(vec3 graded, vec3 albedo) {
             depth = max(depth, steps);
         }
     }
-    return stepPool(graded, acc * receiver, depth, attention * receiver, attentionDepth, albedo, vec3(0.0), 1.0);
+    return stepPool(graded, acc * receiver, depth, attention * receiver, attentionDepth, albedo, vec3(0.0), 1.0, 0.0);
 }
 
 vec3 applyGodRays(vec3 color, vec2 uv) {

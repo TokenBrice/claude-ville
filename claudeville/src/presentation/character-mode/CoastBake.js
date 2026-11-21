@@ -2071,9 +2071,10 @@ const ALWAYS_GROUNDED = () => true;
 
 // A landmark's lamp: its static `fixture` manifest layers (the Pharos lamp,
 // bottom-centre anchored in base-local px, as `partDrawsFor` draws it) laid
-// over a copy of its sheet, and `lamp`, a mask of their opaque texels (null
-// when it has none). The mirror shows the lamp by day and lights it as an
-// accent (MIRROR_LAMP_GROUP) while the Lighthouse lamp burns.
+// over a copy of its sheet when always-on by day, and `lamp`, a mask of their
+// opaque texels (null when it has none). Lamp-gated (`gate: 'lamps'`) fixtures
+// stay unlit in daytime `pixels` so the noon bay reflects dark lantern glass,
+// while `lamp` still marks their accent (`MIRROR_LAMP_GROUP`) at night.
 function withLampLayers(sheet, entry, id, assets, cache) {
     let pixels = sheet;
     let lamp = null;
@@ -2081,9 +2082,12 @@ function withLampLayers(sheet, entry, id, assets, cache) {
         if (layer?.fixture !== true || layer.cycle || layer.frames !== undefined || !Array.isArray(layer.anchor)) continue;
         const art = imagePixels(assets?.get?.(`${id}.${name}`), cache);
         if (!art) continue;
+        const daytimeVisible = layer.gate !== 'lamps';
         if (!lamp) {
-            pixels = { data: sheet.data.slice(), w: sheet.w, h: sheet.h };
+            if (daytimeVisible) pixels = { data: sheet.data.slice(), w: sheet.w, h: sheet.h };
             lamp = new Uint8Array(sheet.w * sheet.h);
+        } else if (daytimeVisible && pixels === sheet) {
+            pixels = { data: sheet.data.slice(), w: sheet.w, h: sheet.h };
         }
         const left = Math.round(layer.anchor[0] - art.w / 2);
         const top = Math.round(layer.anchor[1] - art.h);
@@ -2094,10 +2098,12 @@ function withLampLayers(sheet, entry, id, assets, cache) {
                 const a = (ay * art.w + ax) * 4;
                 if (sx < 0 || sy < 0 || sx >= sheet.w || sy >= sheet.h || art.data[a + 3] < 128) continue;
                 const o = (sy * sheet.w + sx) * 4;
-                pixels.data[o] = art.data[a];
-                pixels.data[o + 1] = art.data[a + 1];
-                pixels.data[o + 2] = art.data[a + 2];
-                pixels.data[o + 3] = 255;
+                if (daytimeVisible) {
+                    pixels.data[o] = art.data[a];
+                    pixels.data[o + 1] = art.data[a + 1];
+                    pixels.data[o + 2] = art.data[a + 2];
+                    pixels.data[o + 3] = 255;
+                }
                 lamp[sy * sheet.w + sx] = 1;
             }
         }

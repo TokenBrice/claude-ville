@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-11-21-c04-villager-lod"
+  assetVersion: "2026-11-21-c01-night-firelight"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -2482,6 +2482,7 @@ buildings:
         height: 25
         anchor: [164, 109]
         fixture: true
+        gate: lamps
         materialClass: fire
         emissive:
           strength: 1

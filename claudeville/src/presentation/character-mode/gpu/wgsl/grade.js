@@ -153,12 +153,14 @@ fn receiverKnee(lit: vec3f, floorLuma: f32) -> vec3f {
     return okCeiling(lumaKnee(lit, floorLuma), vec3f(floorLuma), RECEIVER_OKL_CEILING);
 }
 
-fn stepPool(graded: vec3f, ambient: vec3f, ambientSteps: f32, attention: vec3f, attentionSteps: f32, albedo: vec3f, reflection: vec3f, land: f32) -> vec3f {
+fn stepPool(graded: vec3f, ambient: vec3f, ambientSteps: f32, attention: vec3f, attentionSteps: f32, albedo: vec3f, reflection: vec3f, land: f32, inkGuard: f32) -> vec3f {
     let lit = ambientSteps > 0.5 && dot(ambient, GRADE_LUMA) > 0.01;
     let marked = attentionSteps > 0.5 && dot(attention, GRADE_LUMA) > 0.01;
     if (!lit && !marked && all(reflection == vec3f(0.0))) { return graded; }
     let gradedLuma = dot(graded, GRADE_LUMA);
-    let base = mix(vec3f(dot(albedo, GRADE_LUMA)), albedo, 0.55);
+    let albedoLuma = dot(albedo, GRADE_LUMA);
+    let base = mix(vec3f(albedoLuma), albedo, 0.55);
+    let inkKeep = mix(1.0, smoothstep(0.05, 0.14, albedoLuma), inkGuard);
     let carry = clamp((frame.poolGain - 0.15) / 1.05, 0.0, 1.0);
     var strength: f32;
     var warm: f32;
@@ -170,7 +172,7 @@ fn stepPool(graded: vec3f, ambient: vec3f, ambientSteps: f32, attention: vec3f, 
         let pool = tint * strength;
         let adapt = min(1.0, strength * 1.5) * warm * (0.85 * 0.6) * carry * land;
         result = mix(graded, gradedLuma * tint, adapt);
-        add += base * pool * frame.poolGain + pool * 0.035 * frame.poolGain;
+        add += base * pool * frame.poolGain + pool * (0.035 * inkKeep) * frame.poolGain;
         landWarm = warm;
     }
     result = lumaKnee(result + add, gradedLuma);

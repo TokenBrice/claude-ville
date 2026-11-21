@@ -2767,6 +2767,8 @@ void main() {
     vec3 attentionTapLight[4] = vec3[4](vec3(0.0), vec3(0.0), vec3(0.0), vec3(0.0));
     vec4 attentionTapLuma = vec4(0.0);
     vec4 attentionTapDepth = vec4(0.0);
+    vec3 bodyMaxLight = vec3(0.0);
+    float bodyMaxLuma = 0.0;
     for (int n = 0; n < ${MAX_LIGHT_RECORDS}; n++) {
         if (n >= receiverLights) break;
         int i = clusteredLights
@@ -2890,12 +2892,13 @@ void main() {
         // behind it: a Forge door, the Command steps) the camera side keeps
         // its own value
         // and the strongest lamp standing behind it and beside it (its foot
-        // past most of the figure's half-width) lights a two-texel stepped
-        // rim on its side of the silhouette, only up to a little above the
-        // lamp's own height: a robe's lamp-side edge, never the hat's top or
-        // brim. A lamp hidden straight behind the figure draws no rim (which
-        // side would be a coin toss); the figure stands as a silhouette on
-        // its pool. Always on the record's own texel grid.
+        // past most of the figure's half-width) lights a one-texel stepped
+        // rim on true opaque contour texels of its side of the silhouette,
+        // only up to a little above the lamp's own height: a robe's lamp-side
+        // edge, never the hat's top or brim. A lamp hidden straight behind the
+        // figure draws no rim (which side would be a coin toss); the figure
+        // stands as a silhouette on its pool. Always on the record's own texel
+        // grid.
         float response = 1.0;
         if (recvClass == 0) {
             response = lightH + 12.0 >= recvH ? 1.0 : 0.0;
@@ -2909,42 +2912,36 @@ void main() {
                     response = 0.0;
                     // NL-2 — with firelight on people (u_firelight.x > 0) a
                     // lamp straight behind the figure lights it too, and the
-                    // rim also takes the top edges (an empty texel straight
-                    // above, two deep as the side bevel), reaching up to
-                    // 36 px x the strength higher: lamp side and top only,
-                    // never the far side, so it never reads as an outline.
+                    // rim takes only the 1-px outer contour on true opaque
+                    // texels (albedo.a >= 0.75), never the half-alpha bakedRim
+                    // halo outside hats and staves, reaching up to 36 px x the
+                    // strength higher: lamp side and top only, never the far
+                    // side, so it never reads as an outline.
                     bool lateral = abs(axisTo.x) >= 0.8 * recvHalfWidth;
-                    if (falloff > 0.12 && (lateral || u_firelight.x > 0.0)) {
+                    if (albedo.a >= 0.75 && falloff > 0.12 && (lateral || u_firelight.x > 0.0)) {
                         backReach = max(backReach, falloff);
                         bool outer = false;
-                        bool inner = false;
                         if (lateral) {
                             vec2 rimStep = vec2((axisTo.x < 0.0 ? 1.0 : -1.0) * uvStepX, 0.0);
                             vec2 rimUv = uv + rimStep;
-                            vec2 innerUv = uv + 2.0 * rimStep;
                             outer = any(lessThan(rimUv, v_uvClamp.xy)) || any(greaterThan(rimUv, v_uvClamp.zw))
-                                || albedoTexture(rimUv).a < 0.01;
-                            inner = !outer && (any(lessThan(innerUv, v_uvClamp.xy)) || any(greaterThan(innerUv, v_uvClamp.zw))
-                                || albedoTexture(innerUv).a < 0.01);
+                                || albedoTexture(rimUv).a < 0.75;
                         }
                         // A top texel is one on a level run of the contour
                         // (both side neighbours opaque): a slope's stair
                         // steps would trace the far side as an outline.
                         if (u_firelight.x > 0.0 && !outer
-                            && albedoTexture(uv + vec2(uvStepX, 0.0)).a >= 0.01
-                            && albedoTexture(uv - vec2(uvStepX, 0.0)).a >= 0.01) {
+                            && albedoTexture(uv + vec2(uvStepX, 0.0)).a >= 0.75
+                            && albedoTexture(uv - vec2(uvStepX, 0.0)).a >= 0.75) {
                             vec2 upStep = vec2(0.0, -1.0 / float(albedoSize().y));
                             vec2 topUv = uv + upStep;
-                            vec2 topInnerUv = uv + 2.0 * upStep;
                             outer = any(lessThan(topUv, v_uvClamp.xy)) || any(greaterThan(topUv, v_uvClamp.zw))
-                                || albedoTexture(topUv).a < 0.01;
-                            inner = !outer && (inner || any(lessThan(topInnerUv, v_uvClamp.xy))
-                                || any(greaterThan(topInnerUv, v_uvClamp.zw)) || albedoTexture(topInnerUv).a < 0.01);
+                                || albedoTexture(topUv).a < 0.75;
                         }
-                        if ((outer || inner) && recvH <= lightH + 28.0 + 36.0 * u_firelight.x && falloff >= rimReach) {
+                        if (outer && recvH <= lightH + 28.0 + 36.0 * u_firelight.x && falloff >= rimReach) {
                             response = 0.95;
                             backlitRim = true;
-                            rimInner = inner;
+                            rimInner = false;
                         }
                     }
                 } else {
@@ -3046,7 +3043,15 @@ void main() {
                 rampOwn = rampOwnLight;
             }
         } else {
-            poolLight += lightColor.rgb * ambientPoolWeight(steps) * light.w * lightColor.a;
+            vec3 contrib = lightColor.rgb * ambientPoolWeight(steps) * light.w * lightColor.a;
+            poolLight += contrib;
+            if (recvClass == 2) {
+                float contribLuma = dot(contrib, GRADE_LUMA);
+                if (contribLuma > bodyMaxLuma) {
+                    bodyMaxLuma = contribLuma;
+                    bodyMaxLight = contrib;
+                }
+            }
             poolDepth = max(poolDepth, steps);
             if (poolTaps) {
                 for (int t = 0; t < 4; t++) {
@@ -3190,28 +3195,27 @@ void main() {
     }
     // 1.2 / V5 — the pools land once, stepped, multiplying the ungraded
     // albedo: ambient pools and reflections under the receiver knee, the
-    // strongest action-needed course added outside it. A body lands under
-    // half the warm hue shift, so its costume colour survives the pool, and
-    // takes a small additive share of the pool's own hue on top of the
-    // multiply (at most 0.045 luma): a multiply leaves its dark outline and
-    // shadow texels black, so a lit figure's outline turns a dark warm tone
-    // of the light (selective outline), never a bright line round it.
-    // NL-2 — firelight on people lands the lit side firmer: the additive
-    // share and its cap grow with u_firelight.x (0.15 -> 0.30 of the pool,
-    // 0.045 -> 0.10 luma) and the landing share 0.4 -> 0.7. NL-2 / NL-1 — a
-    // dark receiver (dark cloth with nl2, dark earth or stone with the tuned
-    // ramp) takes a further albedo-free share of the pool, so the strongest
-    // fire shows at least its first course on it; all under the knee.
-    float darkness = 1.0 - smoothstep(0.04, 0.18, dot(poolAlbedo, GRADE_LUMA));
+    // strongest action-needed course added outside it.
+    // LM-02 — diminishing-returns multi-light accumulation on bodies + ink-gated
+    // lift (bodies only, so ground/wall pools keep full lift) and tempered warm
+    // stop replacement (0.24 + 0.16 * u_firelight.x) so visors, eyes and blades
+    // keep their contrast under overlapping pools.
+    if (recvClass == 2 && bodyMaxLuma > 0.0) {
+        poolLight = bodyMaxLight + 0.22 * (poolLight - bodyMaxLight);
+    }
+    float albedoLuma = dot(poolAlbedo, GRADE_LUMA);
+    float inkKeep = smoothstep(0.05, 0.14, albedoLuma);
+    float darkness = (1.0 - smoothstep(0.04, 0.18, albedoLuma)) * (recvClass == 2 ? inkKeep : 1.0);
     float darkShare = recvClass == 2 ? ${FIRELIGHT_DARK_SHARE.toFixed(3)} * u_firelight.x
         : (recvClass == 0 && u_firelight.y > 0.5 && ownLandmark != ${FIRELIGHT_PILOT_LANDMARK}u ? ${FIRELIGHT_DARK_SHARE.toFixed(3)} : 0.0);
     vec3 bodyLift = (recvClass == 2
         ? poolLight * min((0.15 + 0.15 * u_firelight.x) * u_poolGain,
-            (0.045 + 0.055 * u_firelight.x) / max(dot(poolLight, GRADE_LUMA), 0.01))
+            (0.045 + 0.055 * u_firelight.x) / max(dot(poolLight, GRADE_LUMA), 0.01)) * inkKeep
         : vec3(0.0)) + poolLight * (darkShare * darkness);
     // 2.10 — a pixel lit only by the bounce keeps more of its own colour
     // (RADIANCE_LAND of the warm landing): a warm cast, never a painted band.
-    float poolLand = recvClass == 2 ? 0.4 + 0.3 * u_firelight.x : (bounceOnly ? RADIANCE_LAND : 1.0);
+    float poolLand = recvClass == 2 ? 0.24 + 0.16 * u_firelight.x : (bounceOnly ? RADIANCE_LAND : 1.0);
+    float poolInkGuard = recvClass == 2 ? 1.0 : 0.0;
     if (poolTaps) {
         // 4.6 — each covered cell's pools land on this pixel's colour and
         // blend by coverage; a cell whose lights equal the previous cell's
@@ -3225,7 +3229,7 @@ void main() {
             if (prev < 0 || poolTapLight[t] != poolTapLight[prev] || poolTapDepth[t] != poolTapDepth[prev]
                 || attentionTapLight[t] != attentionTapLight[prev] || attentionTapDepth[t] != attentionTapDepth[prev]) {
                 tapOut = stepPool(color, poolTapLight[t], poolTapDepth[t], attentionTapLight[t], attentionTapDepth[t],
-                    poolAlbedo, reflectionLight + bodyLift, poolLand);
+                    poolAlbedo, reflectionLight + bodyLift, poolLand, poolInkGuard);
                 prev = t;
             }
             poolLanded += tapOut * w;
@@ -3233,17 +3237,17 @@ void main() {
         color = poolLanded;
     } else {
         color = stepPool(color, poolLight, poolDepth, attentionLight, attentionDepth, poolAlbedo, reflectionLight + bodyLift,
-            poolLand);
+            poolLand, poolInkGuard);
     }
     // GW-2 — a lamp mirror lands over the lit ground as its own course.
     if (groundMirror != vec3(0.0)) color = applyGroundMirror(color, groundMirror);
-    // 2.1 — a lit rim texel is the silhouette's outline on the lamp's side:
+    // 2.1 — a lit rim texel is the silhouette's 1-px outer contour on the
+    // lamp's side (true opaque texels only, never the half-alpha bakedRim halo):
     // a multiply would leave the dark outline dark, so the rim takes the
     // lamp's own hue at a stepped value (one step per course), the pixel art
     // rim light, held under the receiver ceiling. Only the strongest lamp
     // behind the figure draws it (a lamp in front or beside it lights the
-    // figure's lamp side through the Lambert term instead), the outer edge
-    // texel on that lamp's course and the second texel one course down.
+    // figure's lamp side through the Lambert term instead).
     if (rimReach > 0.0 && rimReach >= backReach - 0.001 && rimSteps > 0.5) {
         float rimCourse = rimInner ? rimSteps - 1.0 : rimSteps;
         // NL-2 — the rim lands up to one course brighter with the strength.

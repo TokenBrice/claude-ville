@@ -25,7 +25,10 @@ import { captureCoastArtifact, restoreCoastArtifact, validCoastArtifact, coastAr
 // warm-limestone plaza ramps, varied paving (drift 0.32 / AO cap 0.68) with
 // recessed plaza kerbs and Archive/Portal plinth AO, World Ash/woodland tree
 // root contact AO, and 4-stop winter snow relief.
-export const TERRAIN_BAKE_ALGORITHM_VERSION = 'cv0.65-terrain-11';
+// cv0.65-terrain-12: C-01 CoastBake.withLampLayers skips `gate: 'lamps'`
+// overlays (Pharos beacon) in daytime static reflection sheets while keeping
+// night MIRROR_LAMP_GROUP accents.
+export const TERRAIN_BAKE_ALGORITHM_VERSION = 'cv0.65-terrain-12';
 export const TERRAIN_ARTIFACT_DB = 'claudeville-terrain-artifacts';
 export const TERRAIN_ARTIFACT_MAX_BYTES = 96 * 1024 * 1024;
 // Artifact schema. 2: the ground field may carry the RGBA8 weather field

@@ -877,6 +877,8 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
   var attentionTapLight = array<vec3f, 4>(vec3f(0.0), vec3f(0.0), vec3f(0.0), vec3f(0.0));
   var attentionTapLuma = vec4f(0.0);
   var attentionTapDepth = vec4f(0.0);
+  var bodyMaxLight = vec3f(0.0);
+  var bodyMaxLuma = 0.0;
   for (var n = 0; n < ${MAX_LIGHT_RECORDS}; n++) {
     if (n >= receiverLights) { break; }
     var i = n;
@@ -953,7 +955,7 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
       if (!ownJamb && recvClass == 1 && (ahead < ${APERTURE_WALL_AHEAD.toFixed(1)} || recvH > lightH)) { falloff = 0.0; }
     }
     // Receiver response: up-facing, wall facing, body/hull Lambert + fill,
-    // or the backlit two-texel rim.
+    // or the backlit 1-texel crisp rim on true opaque sprite edges.
     var response = 1.0;
     if (recvClass == 0) {
       response = select(0.0, 1.0, lightH + 12.0 >= recvH);
@@ -966,37 +968,31 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
         if (!(attention || planar < 2.0)) { front = -axisTo.y / planar; }
         if (front < -0.3) {
           response = 0.0;
-          // NL-2 — a straight-behind lamp lights it too; the rim also takes
-          // level top edges, lamp side and top only.
+          // NL-2 — a straight-behind lamp lights it too; the rim takes only the
+          // 1-px outer contour on true opaque texels (albedoRgba.a >= 0.75),
+          // never the half-alpha bakedRim halo outside hats and staves.
           let lateral = abs(axisTo.x) >= 0.8 * recvHalfWidth;
-          if (falloff > 0.12 && (lateral || frame.firelight.x > 0.0)) {
+          if (albedoRgba.a >= 0.75 && falloff > 0.12 && (lateral || frame.firelight.x > 0.0)) {
             backReach = max(backReach, falloff);
             var outer = false;
-            var inner = false;
             if (lateral) {
               let rimStep = vec2f(select(-1.0, 1.0, axisTo.x < 0.0) * uvStepX, 0.0);
               let rimUv = uv + rimStep;
-              let innerUv = uv + 2.0 * rimStep;
               outer = any(rimUv < v_uvClamp.xy) || any(rimUv > v_uvClamp.zw)
-                || albedoTexture(rimUv).a < 0.01;
-              inner = !outer && (any(innerUv < v_uvClamp.xy) || any(innerUv > v_uvClamp.zw)
-                || albedoTexture(innerUv).a < 0.01);
+                || albedoTexture(rimUv).a < 0.75;
             }
             if (frame.firelight.x > 0.0 && !outer
-              && albedoTexture(uv + vec2f(uvStepX, 0.0)).a >= 0.01
-              && albedoTexture(uv - vec2f(uvStepX, 0.0)).a >= 0.01) {
+              && albedoTexture(uv + vec2f(uvStepX, 0.0)).a >= 0.75
+              && albedoTexture(uv - vec2f(uvStepX, 0.0)).a >= 0.75) {
               let upStep = vec2f(0.0, -1.0 / f32(albedoSize().y));
               let topUv = uv + upStep;
-              let topInnerUv = uv + 2.0 * upStep;
               outer = any(topUv < v_uvClamp.xy) || any(topUv > v_uvClamp.zw)
-                || albedoTexture(topUv).a < 0.01;
-              inner = !outer && (inner || any(topInnerUv < v_uvClamp.xy)
-                || any(topInnerUv > v_uvClamp.zw) || albedoTexture(topInnerUv).a < 0.01);
+                || albedoTexture(topUv).a < 0.75;
             }
-            if ((outer || inner) && recvH <= lightH + 28.0 + 36.0 * frame.firelight.x && falloff >= rimReach) {
+            if (outer && recvH <= lightH + 28.0 + 36.0 * frame.firelight.x && falloff >= rimReach) {
               response = 0.95;
               backlitRim = true;
-              rimInner = inner;
+              rimInner = false;
             }
           }
         } else {
@@ -1085,7 +1081,15 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
         rampOwn = rampOwnLight;
       }
     } else {
-      poolLight += lightColor.rgb * ambientPoolWeight(steps) * light.w * lightColor.a;
+      let contrib = lightColor.rgb * ambientPoolWeight(steps) * light.w * lightColor.a;
+      poolLight += contrib;
+      if (recvClass == 2) {
+        let contribLuma = dot(contrib, GRADE_LUMA);
+        if (contribLuma > bodyMaxLuma) {
+          bodyMaxLuma = contribLuma;
+          bodyMaxLight = contrib;
+        }
+      }
       poolDepth = max(poolDepth, steps);
       if (poolTaps) {
         for (var t = 0; t < 4; t++) {
@@ -1195,19 +1199,26 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
     reflectionLight = vec3f(0.0);
   }
   // 1.2 / V5 — the pools land once, stepped (stepPool, grade.js).
-  // NL-2 — a firmer lit side; NL-2 / NL-1 — dark receivers take a further
-  // albedo-free share of the pool (all under the knee).
-  let darkness = 1.0 - smoothstep(0.04, 0.18, dot(poolAlbedo, GRADE_LUMA));
+  // LM-02 — diminishing-returns multi-light accumulation on bodies + ink-gated
+  // lift (bodies only, so ground/wall pools keep full lift) and tempered warm
+  // stop replacement so visors, eyes and blades stay crisp.
+  if (recvClass == 2 && bodyMaxLuma > 0.0) {
+    poolLight = bodyMaxLight + 0.22 * (poolLight - bodyMaxLight);
+  }
+  let albedoLuma = dot(poolAlbedo, GRADE_LUMA);
+  let inkKeep = smoothstep(0.05, 0.14, albedoLuma);
+  let darkness = (1.0 - smoothstep(0.04, 0.18, albedoLuma)) * select(1.0, inkKeep, recvClass == 2);
   let darkShare = select(select(0.0, ${FIRELIGHT_DARK_SHARE.toFixed(3)}, recvClass == 0 && frame.firelight.y > 0.5 && ownLandmark != ${FIRELIGHT_PILOT_LANDMARK}u),
     ${FIRELIGHT_DARK_SHARE.toFixed(3)} * frame.firelight.x, recvClass == 2);
   var bodyLift = vec3f(0.0);
   if (recvClass == 2) {
     bodyLift = poolLight * min((0.15 + 0.15 * frame.firelight.x) * frame.poolGain,
-      (0.045 + 0.055 * frame.firelight.x) / max(dot(poolLight, GRADE_LUMA), 0.01));
+      (0.045 + 0.055 * frame.firelight.x) / max(dot(poolLight, GRADE_LUMA), 0.01)) * inkKeep;
   }
   bodyLift += poolLight * (darkShare * darkness);
   // 2.10 — a pixel lit only by the bounce keeps more of its own colour.
-  let poolLand = select(select(1.0, RADIANCE_LAND, bounceOnly), 0.4 + 0.3 * frame.firelight.x, recvClass == 2);
+  let poolLand = select(select(1.0, RADIANCE_LAND, bounceOnly), 0.24 + 0.16 * frame.firelight.x, recvClass == 2);
+  let poolInkGuard = select(0.0, 1.0, recvClass == 2);
   if (poolTaps) {
     // 4.6 — each covered cell's pools land and blend by coverage; a cell
     // whose lights equal the previous cell's reuses that landing.
@@ -1220,7 +1231,7 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
       if (prev < 0 || any(poolTapLight[t] != poolTapLight[prev]) || poolTapDepth[t] != poolTapDepth[prev]
         || any(attentionTapLight[t] != attentionTapLight[prev]) || attentionTapDepth[t] != attentionTapDepth[prev]) {
         tapOut = stepPool(color, poolTapLight[t], poolTapDepth[t], attentionTapLight[t], attentionTapDepth[t],
-          poolAlbedo, reflectionLight + bodyLift, poolLand);
+          poolAlbedo, reflectionLight + bodyLift, poolLand, poolInkGuard);
         prev = t;
       }
       poolLanded += tapOut * w;
@@ -1228,11 +1239,11 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
     color = poolLanded;
   } else {
     color = stepPool(color, poolLight, poolDepth, attentionLight, attentionDepth, poolAlbedo, reflectionLight + bodyLift,
-      poolLand);
+      poolLand, poolInkGuard);
   }
   // GW-2 — a lamp mirror lands over the lit ground as its own course.
   if (any(groundMirror != vec3f(0.0))) { color = applyGroundMirror(color, groundMirror); }
-  // 2.1 — a lit rim texel takes the lamp's own hue at a stepped value.
+  // 2.1 — a lit 1-px outer contour rim texel (opaque texels only) takes the lamp's own hue at a stepped value.
   if (rimReach > 0.0 && rimReach >= backReach - 0.001 && rimSteps > 0.5) {
     let rimCourse = select(rimSteps, rimSteps - 1.0, rimInner);
     // NL-2 — the rim lands up to one course brighter with the strength.

@@ -794,6 +794,7 @@ export class BuildingSprite {
             motion: (this.motionScale || 0) > 0,
             attention: this.attentionBanner,
             clockBeats: this._clockBeatSet(),
+            lampsLit: lampsLitAt(this.atmosphereState),
         });
         this._updateInspection();
         this._updateNightLightGates(dt);
@@ -1338,7 +1339,7 @@ export class BuildingSprite {
             // body resting at a building's seats or standing room is that
             // building's patron, tallied apart (the Tavern's cell).
             if (sprite.visitRole === 'rest') {
-                const at = sprite._restBuilding || null;
+                const at = this._arrivedPatronBuilding(sprite);
                 if (!at) continue;
                 let tally = patrons.get(at);
                 if (!tally) patrons.set(at, tally = { count: 0, oldestSince: 0 });
@@ -2932,6 +2933,7 @@ export class BuildingSprite {
                 // origin.
                 const rest = getBuildingRestLayer(type) === name;
                 if (rest ? !this._restMaskShowing(building) : (isBuildingApertureLayer(type, name) || !Array.isArray(layer.anchor))) continue;
+                if (layer.gate === 'lamps' && !(lampsLitAt(this.atmosphereState) && (this.motionScale <= 0 || lampCycleCaught(this.atmosphereState, type)))) continue;
                 image = this.assets.get(id);
                 if (!image) continue;
                 frame = 0;
@@ -5243,7 +5245,7 @@ export class BuildingSprite {
         for (const tally of repoTally.values()) tally.clear();
 
         for (const sprite of this.agentSprites) {
-            const patronOf = sprite.visitRole === 'rest' ? sprite._seatedSeat?.()?.building : null;
+            const patronOf = this._arrivedPatronBuilding(sprite);
             if (patronOf && sprite.agent?.id) {
                 let ids = patronIds.get(patronOf);
                 if (!ids) patronIds.set(patronOf, ids = new Set());
@@ -5328,6 +5330,20 @@ export class BuildingSprite {
             }
         }
         this._updateRoomSlots();
+    }
+
+    // Arrived patron building: either seated on one of its REST_SEATS or
+    // arrived & holding a standing-room spot (`REST_STANDS`, e.g. Tavern bar).
+    // Walkers still en route return null so neither the plaque nor the rooms
+    // claim patrons before someone actually steps inside.
+    _arrivedPatronBuilding(sprite) {
+        if (sprite?.visitRole !== 'rest') return null;
+        const seated = sprite._seatedSeat?.()?.building;
+        if (seated) return seated;
+        const at = sprite._restBuilding || null;
+        if (!at || sprite.moving) return null;
+        if (typeof sprite._holdsRestPlace === 'function' && !sprite._holdsRestPlace()) return null;
+        return at;
     }
 
     // 6.3 — stable room slots for every building: each working visitor

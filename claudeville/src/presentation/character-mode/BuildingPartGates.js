@@ -26,6 +26,9 @@
 //                  shows frame 1 + SignalLedger.waitAgeTier of the oldest
 //                  actionable wait (a hard swap when the tier steps); closed,
 //                  its staticFrame. Reduced motion changes nothing.
+//   lamps        — FIXTURE gate for static lamp overlays (the Pharos beacon):
+//                  drawn only while the village lamps burn (dark slate glass
+//                  by day, never reads occupancy).
 //   clock.<beat> — W6.8: a FIXTURE gate, never work-coupled: true while the
 //                  day-part beat <beat> (AmbientEvents.DAY_PART_BEATS, the
 //                  atmosphere clock only) is live. A clock part plays its
@@ -52,6 +55,7 @@ const EMPTY = new Set();
 
 export function parsePartGate(gate) {
     const text = String(gate || '').trim();
+    if (text === 'lamps') return { kind: 'lamps' };
     const dot = text.indexOf('.');
     if (dot <= 0) return null;
     const kind = text.slice(0, dot);
@@ -110,6 +114,7 @@ export class BuildingPartGates {
         this._motion = true;
         this._attention = null; // W5.3 — { bucket, tier, count } or null
         this._clockBeats = EMPTY; // W6.8 — live day-part beat ids
+        this._lampsLit = false; // FIXTURE lamps gate (Pharos beacon)
         this._sequences = new Map(); // `${type}:${name}` -> { startAt }
     }
 
@@ -118,12 +123,14 @@ export class BuildingPartGates {
     // `timeMs`: the one motion clock (frozen under reduced motion).
     // `attention`: attentionBannerState() for the `status.<bucket>` gates.
     // `clockBeats`: the live day-part beat ids for the `clock.<beat>` gates.
-    update({ workingIdsByType = null, roomSlotsByType = null, timeMs = 0, motion = true, attention = null, clockBeats = null } = {}) {
+    // `lampsLit`: village lamp-clock truth for the `lamps` fixture gate.
+    update({ workingIdsByType = null, roomSlotsByType = null, timeMs = 0, motion = true, attention = null, clockBeats = null, lampsLit = false } = {}) {
         this._timeMs = Number(timeMs) || 0;
         this._motion = motion !== false;
         this._roomSlots = roomSlotsByType;
         this._attention = attention || null;
         this._clockBeats = clockBeats || EMPTY;
+        this._lampsLit = Boolean(lampsLit);
         const next = this._working;
         for (const mine of next.values()) mine.stale = true;
         if (workingIdsByType) {
@@ -153,6 +160,7 @@ export class BuildingPartGates {
         if (!parsed) return false;
         if (parsed.kind === 'status') return this._attention?.bucket === parsed.bucket;
         if (parsed.kind === 'clock') return this._clockBeats.has(parsed.beat);
+        if (parsed.kind === 'lamps') return Boolean(this._lampsLit);
         if (parsed.kind === 'room') {
             const assignment = this._roomSlots?.get(parsed.type)?.assignment;
             if (!assignment) return false;

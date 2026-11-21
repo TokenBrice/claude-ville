@@ -30,10 +30,10 @@ const DAY_MINUTES = 24 * 60;
 export const GRADE_EXPOSURE_FLOOR = 0.40;
 // The weather rows also spend value through `gain`, which the exposure floor
 // cannot see. The effective ambient (exposure x luma(gain), what an unlit
-// mid-grey becomes) never falls below this: a storm night sits one course
-// under a clear deep night (0.65), never at black. L1-2 — it binds only on a
-// storm pre-dawn.
-export const GRADE_AMBIENT_FLOOR = 0.56;
+// mid-grey becomes) never falls below this: a storm night stays readable under
+// clear deep night (effective ambient 0.61, or 0.58 at MOONLIT_NIGHT_STRENGTH 0),
+// never at black. L1-2 / C-01 — binds on both storm deep-night and storm pre-dawn.
+export const GRADE_AMBIENT_FLOOR = 0.52;
 
 // Rec.709 luma weights, shared with the shaders.
 const LUMA = [0.2126, 0.7152, 0.0722];
@@ -151,24 +151,23 @@ function moonlit3(base, full) {
 export const GRADE_KEYFRAMES = Object.freeze([
     Object.freeze({
         name: 'deep-night', minute: 2 * 60, side: 'night',
-        exposure: moonlit(0.70, 0.75), saturation: moonlit(0.52, 0.57),
-        gain: [0.82, 0.94, 1.06], lift: moonlit3([0.024, 0.027, 0.034], [0.034, 0.040, 0.056]), gamma: 1.03,
-        shadowTint: [0.82, 0.92, 1.12], highlightTint: [0.96, 1.04, 1.02],
+        exposure: moonlit(0.64, 0.67), saturation: moonlit(0.52, 0.57),
+        gain: [0.80, 0.92, 1.08], lift: moonlit3([0.015, 0.019, 0.030], [0.024, 0.029, 0.045]), gamma: 1.01,
+        shadowTint: [0.78, 0.90, 1.15], highlightTint: [0.96, 1.04, 1.02],
         purkinje: 0.7, sunBand: 0, daylight: 0, night: 1, rake: 0,
-        vignetteEdge: [0.74, 0.76, 0.83], vignetteAlpha: 0.36,
-        skyTop: '#070b16', skyHorizon: '#141d2e', voidColor: '#0b1218', horizonHaze: '#1a2436',
+        vignetteEdge: [0.72, 0.74, 0.82], vignetteAlpha: 0.38,
+        skyTop: '#060a14', skyHorizon: '#11192a', voidColor: '#090f15', horizonHaze: '#162032',
     }),
     // L1-2 — pre-dawn is the tail of the night, not its darkest key: a
-    // little under deep night (exposure 0.68 against 0.70) with a rosier gain,
-    // never the 04:00 blackout the old 0.50 key made.
+    // little under deep night with a rosier gain, never the 04:00 blackout.
     Object.freeze({
         name: 'pre-dawn', minute: 4 * 60 + 30, side: 'dawn',
-        exposure: 0.68, saturation: 0.48,
-        gain: [0.86, 0.86, 1.00], lift: [0.032, 0.034, 0.048], gamma: 1.04,
-        shadowTint: [0.92, 0.90, 1.00], highlightTint: [1.06, 0.98, 0.98],
+        exposure: 0.66, saturation: 0.48,
+        gain: [0.86, 0.86, 1.00], lift: [0.023, 0.027, 0.041], gamma: 1.02,
+        shadowTint: [0.88, 0.89, 1.03], highlightTint: [1.06, 0.98, 0.98],
         purkinje: 0.8, sunBand: 0, daylight: 0, night: 0.85, rake: 0.25,
-        vignetteEdge: [0.74, 0.74, 0.84], vignetteAlpha: 0.42,
-        skyTop: '#0f1732', skyHorizon: '#46405e', voidColor: '#0e151f', horizonHaze: '#2e3452',
+        vignetteEdge: [0.72, 0.72, 0.83], vignetteAlpha: 0.42,
+        skyTop: '#0d152c', skyHorizon: '#3d3854', voidColor: '#0c121b', horizonHaze: '#282e4a',
     }),
     // Sunrise is rose and mist (M17), not a second golden hour: a faint rose
     // key over cool, lifted shadows, less saturated and with less value spread
@@ -227,34 +226,30 @@ export const GRADE_KEYFRAMES = Object.freeze([
         skyTop: '#3f6ea0', skyHorizon: '#f0b27a', voidColor: '#1a1f28', horizonHaze: '#c09878',
     }),
     // Blue hour is a cobalt dusk: bluer than golden hour, never darker than
-    // night (the arc stays monotone), keeping more of the albedo's colour than
-    // the night key does. VQ-3 — exposure +0.08 (0.85 -> 0.93 under the full moonlit
-    // night): the lamplit night outshone the dusk on the GPU paths (19:15 at
-    // 76.3 island luma against 80.0 at 23:00); golden-hours now gates
-    // dusk >= night.
+    // night (the arc stays strictly monotone), keeping more of the albedo's
+    // colour than the night key does; golden-hours gates dusk > night.
     Object.freeze({
         name: 'blue-hour', minute: 19 * 60 + 45, side: 'dusk',
-        exposure: moonlit(0.90, 0.93), saturation: moonlit(0.62, 0.64),
-        gain: [0.80, 0.90, 1.10], lift: moonlit3([0.018, 0.020, 0.034], [0.024, 0.028, 0.044]), gamma: 1.02,
-        shadowTint: [0.86, 0.90, 1.14], highlightTint: [1.04, 0.98, 1.02],
+        exposure: moonlit(0.86, 0.89), saturation: moonlit(0.62, 0.64),
+        gain: [0.80, 0.90, 1.10], lift: moonlit3([0.016, 0.020, 0.034], [0.022, 0.026, 0.044]), gamma: 1.01,
+        shadowTint: [0.83, 0.89, 1.15], highlightTint: [1.04, 0.98, 1.02],
         purkinje: 0.3, sunBand: 0.2, daylight: 0.1, night: 0.5, rake: 0.375,
         vignetteEdge: [0.74, 0.74, 0.84], vignetteAlpha: 0.40,
-        skyTop: '#1c2c52', skyHorizon: '#6a6488', voidColor: '#10171f', horizonHaze: '#3a4262',
+        skyTop: '#18274a', skyHorizon: '#5e597c', voidColor: '#0e151d', horizonHaze: '#343c5a',
     }),
-    // Night is moonlit, not grey: the albedo keeps ~40 % of its own colour
-    // (grass stays green, water blue) and the moonlight lives in the split
-    // tone — an indigo shadow tint and a faint blue-green highlight — so stone
-    // reads cool slate-blue and lit grass blue-green. Local light and authored
-    // emission (exempt, added after the grade) carry the amber. Night/noon
-    // saturation sits between 0.5x and 0.85x, and night is bluer than noon.
+    // Night is moonlit indigo, not washed-out slate: the albedo keeps ~40 % of
+    // its own colour (grass stays green, water blue) and the moonlight lives in
+    // the split tone — an indigo shadow tint and a faint blue-green highlight —
+    // tuned to the lighter velvet target (~70 island meanLuma on clear-2300,
+    // storm-0200 p10 >= 30) while preserving the +0.08 full-moon phase step.
     Object.freeze({
         name: 'night', minute: 22 * 60, side: 'dusk',
-        exposure: moonlit(0.76, 0.78), saturation: moonlit(0.58, 0.62),
-        gain: [0.82, 0.94, 1.06], lift: moonlit3([0.024, 0.027, 0.034], [0.034, 0.040, 0.056]), gamma: 1.02,
-        shadowTint: [0.82, 0.92, 1.12], highlightTint: [0.96, 1.04, 1.02],
+        exposure: moonlit(0.68, 0.70), saturation: moonlit(0.58, 0.62),
+        gain: [0.80, 0.92, 1.08], lift: moonlit3([0.016, 0.019, 0.029], [0.024, 0.029, 0.045]), gamma: 1.01,
+        shadowTint: [0.78, 0.90, 1.15], highlightTint: [0.96, 1.04, 1.02],
         purkinje: 0.6, sunBand: 0, daylight: 0, night: 1, rake: 0,
-        vignetteEdge: [0.76, 0.78, 0.85], vignetteAlpha: 0.34,
-        skyTop: '#0a1122', skyHorizon: '#1a2438', voidColor: '#0b1218', horizonHaze: '#1e2a3e',
+        vignetteEdge: [0.74, 0.76, 0.84], vignetteAlpha: 0.36,
+        skyTop: '#080e1d', skyHorizon: '#162033', voidColor: '#091016', horizonHaze: '#1a2538',
     }),
 ]);
 

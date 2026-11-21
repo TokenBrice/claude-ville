@@ -373,7 +373,7 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         // base.png, so an empty Tavern (no patron, no worker) lays the
         // authored `banked.png` mask over exactly those pixels: charcoal over
         // one ember course. A part only while banked, like the Forge's.
-        rest: { layer: 'banked' },
+        rest: { layer: 'banked', ember: { colors: ['#d67634', '#803e22'], strength: 0.4 } },
     },
     portal: {
         material: BUILDING_MATERIAL_REGISTRY.portal,
