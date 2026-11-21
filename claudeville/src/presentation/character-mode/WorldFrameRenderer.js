@@ -919,7 +919,12 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
         gpuFeed.seaLift = liftState.lift;
         // SD-2 — the shade field the scene fragments read, or null.
         gpuFeed.sunShade = frameSunShade();
+        // SEA-3 (PERF-02) — let GpuFrameState.resolveSeaState advance its own
+        // single counter on this frame, then latch the resolved shift onto the
+        // feed so a frozen-frame replay (parity / handover) draws identically.
+        gpuFeed.seaStreakShift = null;
         renderer.gpuWorld.prepareFrame(gpuFeed);
+        gpuFeed.seaStreakShift = renderer.gpuWorld._seaState?.state >= 0 ? renderer.gpuWorld._seaState.shift : null;
         // MS-1 — while the resident mist runs (look `ms1` > 0, FULL and
         // REDUCED: `gpuWorld.mist`, GpuFrameState.resolveMist) it replaces
         // the fog-bank records and the ground haze field on the GPU paths.

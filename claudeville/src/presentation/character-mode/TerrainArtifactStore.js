@@ -19,7 +19,9 @@ import { captureCoastArtifact, restoreCoastArtifact, validCoastArtifact, coastAr
 // share), the night's rising rime (EY-5), the contact AO of Command,
 // Tavern and Forge on the authored plinth edges (EN-3) and rain under the
 // open Task board.
-export const TERRAIN_BAKE_ALGORITHM_VERSION = 'cv0.64-terrain-9';
+// cv0.65-terrain-10: C-03 clustered water-tinted reflections, Harbor submerged
+// pier pilings + foam meniscus collars, scalloped NW/NE back-shores and shingle.
+export const TERRAIN_BAKE_ALGORITHM_VERSION = 'cv0.65-terrain-10';
 export const TERRAIN_ARTIFACT_DB = 'claudeville-terrain-artifacts';
 export const TERRAIN_ARTIFACT_MAX_BYTES = 96 * 1024 * 1024;
 // Artifact schema. 2: the ground field may carry the RGBA8 weather field

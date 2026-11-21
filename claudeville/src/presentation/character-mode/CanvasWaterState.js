@@ -118,12 +118,16 @@ import {
     SWELL_CREST_RISE,
     SWELL_CREST_ROWS,
     SWELL_CREST_RUN,
+    SWELL_FAR_CALM_TILES,
     SWELL_GAP_GAIN,
     SWELL_LIT_FLOOR,
     SWELL_LIT_ROWS,
     SWELL_LIT_STEPS,
     SWELL_LONE_CAPS,
     SWELL_NEAR_FADE,
+    SWELL_PACKET_FLOOR,
+    SWELL_PACKET_RUN,
+    SWELL_PACKET_SPAN,
     SWELL_SET_GAIN,
     SWELL_SET_LEAD,
     SWELL_SET_NORMAL,
@@ -132,10 +136,13 @@ import {
     SWELL_SET_SHARE_OPEN,
     SWELL_SET_WARP,
     SWELL_SET_WARP_FINE,
+    SWELL_SET_WARP_MID,
     SWELL_SHORE_SD,
     SWELL_TROUGH_ROWS,
+    SWELL_TURN_ROWS,
     SWELL_WARP_CELL,
     SWELL_WARP_FINE_CELL,
+    SWELL_WARP_MID_CELL,
     WATER_COLUMN_GLINT,
     WATER_COLUMN_ROW_FAR,
     WATER_COLUMN_ROW_HOLD,
@@ -375,9 +382,14 @@ function latticeNoise() {
 // SEA_SWELL_GLSL swellForm: +1 in the trough, -1 on the lit slope, else 0.
 function swellForm(rowsIn, period, crestRows, lit, trough, order) {
     const tin = rowsIn - crestRows;
-    if (tin >= 0 && tin < trough && (tin < trough * 0.5 || order >= (tin - trough * 0.5) / (trough * 0.5))) return 1;
+    const turnT = Math.max(Math.min(SWELL_TURN_ROWS, trough * 0.45), 1e-4);
+    if (tin >= 0 && tin < trough && (tin >= turnT || order < tin / turnT)
+        && (tin < trough * 0.55 || order >= (tin - trough * 0.55) / Math.max(trough * 0.45, 1e-4))) return 1;
     const lin = period - rowsIn;
-    return lin < lit && (lin < lit * 0.5 || order >= (lin - lit * 0.5) / (lit * 0.5)) ? -1 : 0;
+    const linBody = lin - Math.min(1, lit * 0.25);
+    const turnL = Math.max(Math.min(SWELL_TURN_ROWS, lit * 0.45), 1e-4);
+    return linBody > 0 && lin < lit && (linBody >= turnL || order < linBody / turnL)
+        && (lin < lit * 0.55 || order >= (lin - lit * 0.55) / Math.max(lit * 0.45, 1e-4)) ? -1 : 0;
 }
 
 // 3.3 (a) — the resident sea body terms (SEA_SWELL_GLSL swellPhase,
@@ -387,18 +399,25 @@ function swellForm(rowsIn, period, crestRows, lit, trough, order) {
 function seaField(drift = 0) {
     const warp = latticeNoise();
     const warpFine = latticeNoise();
+    const warpMid = latticeNoise();
     const height = latticeNoise();
+    const packet = latticeNoise();
     const crestHeight = latticeNoise();
+    const crestPacket = latticeNoise();
     const key = latticeNoise();
     const chopWarp = latticeNoise();
     const chopHeight = latticeNoise();
     const normal = SWELL_SET_NORMAL[0];
-    const swellHeight = (noise, along, set) => clamp01((noise(along / SWELL_AMP_RUN + 17, set * 7.3) - SWELL_AMP_FLOOR) / SWELL_AMP_SPAN);
+    const swellHeight = (noise, pktNoise, along, set) => (
+        clamp01((noise(along / SWELL_AMP_RUN + 17, set * 7.3) - SWELL_AMP_FLOOR) / SWELL_AMP_SPAN)
+        * clamp01((pktNoise(along / SWELL_PACKET_RUN + set * 3.7 + 53, set * 2.9 + 11) - SWELL_PACKET_FLOOR) / SWELL_PACKET_SPAN)
+    );
     const field = {
         phase(x, y) {
             return (x * normal + y + drift) / SWELL_SET_PERIOD
                 + SWELL_SET_WARP * warp(x / SWELL_WARP_CELL[0] + 3, y / SWELL_WARP_CELL[1] + 11)
-                + SWELL_SET_WARP_FINE * warpFine(x / SWELL_WARP_FINE_CELL[0] + 29, y / SWELL_WARP_FINE_CELL[1] + 5);
+                + SWELL_SET_WARP_FINE * warpFine(x / SWELL_WARP_FINE_CELL[0] + 29, y / SWELL_WARP_FINE_CELL[1] + 5)
+                + SWELL_SET_WARP_MID * warpMid(x / SWELL_WARP_MID_CELL[0] + 61, y / SWELL_WARP_MID_CELL[1] + 19);
         },
         // 0 none, 1 the underline, 2 the lead row.
         crest(x, y, s) {
@@ -412,7 +431,7 @@ function seaField(drift = 0) {
             const centre = (k - jit + 0.5) * SWELL_CREST_RUN;
             const halfLen = SWELL_CREST_RUN * 0.5 * (0.55 + 0.45 * hash12(k + 5, set + 1));
             const dx = Math.abs(along - centre);
-            if (dx >= halfLen || swellHeight(crestHeight, centre, set) <= SWELL_CREST_HEIGHT) return 0;
+            if (dx >= halfLen || swellHeight(crestHeight, crestPacket, centre, set) <= SWELL_CREST_HEIGHT) return 0;
             const r = rowsIn - Math.floor(Math.max(0, dx - halfLen + 4) * 0.5);
             return r < 0 ? 0 : (r < 1 ? SWELL_CREST_RISE[0] : (r < SWELL_CREST_ROWS ? SWELL_CREST_RISE[1] : 0));
         },
@@ -425,20 +444,25 @@ function seaField(drift = 0) {
             if (clamp01((y - OCEAN_HORIZON_WORLD_Y - SEA_BODY_ROWS[0]) / (SEA_BODY_ROWS[1] - SEA_BODY_ROWS[0])) <= order) return stop;
             const key = clamp01(0.5 - field.keyReach(x, y) / SEA_KEY_SPAN);
             const calm = clamp01((excess - SWELL_CALM_TILES[0]) / (SWELL_CALM_TILES[1] - SWELL_CALM_TILES[0]));
+            const farCalm = clamp01((excess - SWELL_FAR_CALM_TILES[0]) / (SWELL_FAR_CALM_TILES[1] - SWELL_FAR_CALM_TILES[0]));
+            const troughCalm = calm * (1 - 0.35 * farCalm);
             const along = x - normal * y;
-            const h = swellHeight(height, along, Math.floor(s));
+            const h = swellHeight(height, packet, along, Math.floor(s));
             let form = swellForm(fract(s) * SWELL_SET_PERIOD, SWELL_SET_PERIOD, SWELL_CREST_ROWS,
                 (SWELL_LIT_ROWS[0] + (SWELL_LIT_ROWS[1] - SWELL_LIT_ROWS[0]) * key) * h,
-                (SWELL_TROUGH_ROWS[0] + (SWELL_TROUGH_ROWS[1] - SWELL_TROUGH_ROWS[0]) * key) * h * calm, order);
+                (SWELL_TROUGH_ROWS[0] + (SWELL_TROUGH_ROWS[1] - SWELL_TROUGH_ROWS[0]) * key) * h * troughCalm, order);
             if (form === 0) {
                 const c = (x * normal + y) / SWELL_CHOP_PERIOD
                     + SWELL_CHOP_WARP * chopWarp(x / SWELL_CHOP_WARP_CELL[0] + 41, y / SWELL_CHOP_WARP_CELL[1] + 23);
-                const ch = clamp01((chopHeight(along / SWELL_CHOP_RUN + 7, Math.floor(c) * 5.1) - SWELL_CHOP_FLOOR) / SWELL_AMP_SPAN);
+                const ch = clamp01((chopHeight(along / SWELL_CHOP_RUN + 7, Math.floor(c) * 5.1) - SWELL_CHOP_FLOOR) / SWELL_AMP_SPAN) * (1 - 0.30 * farCalm);
                 form = swellForm(fract(c) * SWELL_CHOP_PERIOD, SWELL_CHOP_PERIOD, 0,
                     (SWELL_CHOP_LIT_ROWS[0] + (SWELL_CHOP_LIT_ROWS[1] - SWELL_CHOP_LIT_ROWS[0]) * key) * ch,
-                    (SWELL_CHOP_TROUGH_ROWS[0] + (SWELL_CHOP_TROUGH_ROWS[1] - SWELL_CHOP_TROUGH_ROWS[0]) * key) * ch * calm, order);
+                    (SWELL_CHOP_TROUGH_ROWS[0] + (SWELL_CHOP_TROUGH_ROWS[1] - SWELL_CHOP_TROUGH_ROWS[0]) * key) * ch * troughCalm, order);
             }
-            if (form < 0) return Math.max(stop - SWELL_LIT_STEPS, Math.min(stop, SWELL_LIT_FLOOR));
+            if (form < 0) {
+                const litSteps = order >= farCalm ? SWELL_LIT_STEPS : 1;
+                return Math.max(stop - litSteps, Math.min(stop, SWELL_LIT_FLOOR));
+            }
             return Math.max(0, Math.min(6, stop + form));
         },
     };

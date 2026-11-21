@@ -26,7 +26,16 @@
 
 import { MAP_SIZE, TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
 import { ART_RAMPS } from '../../config/artPalette.js';
-import { WATER_POLYLINES, WORLD_TREE, inWorldTreeIslet } from '../../config/scenery.js';
+import {
+    AMBIENT_GROUND_PROPS,
+    BOULDERS,
+    DISTRICT_PROPS,
+    SCENERY_CLEARINGS,
+    SCENIC_POINT_PROPS,
+    WATER_POLYLINES,
+    WORLD_TREE,
+    inWorldTreeIslet,
+} from '../../config/scenery.js';
 import * as CanvasGrade from './CanvasGrade.js';
 import { emissiveSidecarFor } from './EmitterCuts.js';
 import { cloudCourseDrift } from './Wind.js';
@@ -66,11 +75,14 @@ const RIPPLE_SEED_DENSITY = 0.011;
 // its deepening (see `outerShelfSd`) reaches the deepest stop before this.
 // The open sea (GpuWorldRenderer) bends its stop seams only past it.
 export const OUTER_SHELF_TILES = 4;
-// Far-edge land (NW/NE, whose cliff faces away from the camera) is treated as
-// shore this far inland (tiles of signed distance), with a value-noise wobble,
-// so it ends in wet sand and foam lace on the outer ocean.
+// Far-edge land (NW/NE, whose cliff faces away from the camera) scallops
+// organically on a two-octave cove/spit contour (`BACK_SHORE_COVE` inward,
+// `BACK_SHORE_SPIT` seaward), clamped away from buildings, clearings & props.
 const BACK_SHORE_SD = 0.3;
-const BACK_SHORE_WOBBLE = 0.1;
+const BACK_SHORE_BASE = -0.36;
+const BACK_SHORE_COVE = 0.56;
+const BACK_SHORE_SPIT = 0.44;
+const BACK_SHORE_CAPE_RADIUS = 0.90;
 // Value-noise wobble (tiles of signed distance) on the outer shelf contours.
 const SHELF_WOBBLE = 0.4;
 // 3.5 — under the SW/SE cliffs the shelf starts at the cliff's foot on stop
@@ -168,7 +180,27 @@ const DEEP = ART_RAMPS.deepWater.map(hexRgb);
 const SAND = ART_RAMPS.sand.map(hexRgb);
 const DIRT = ART_RAMPS.dirt.map(hexRgb);
 const TIMBER = ART_RAMPS.timber.map(hexRgb);
+const STONE = ART_RAMPS.stone.map(hexRgb);
 const BEACON_MIRROR_RGB = hexRgb(ART_RAMPS.beaconFire[2]);
+
+// Exact six-course atmospheric perspective multipliers matching GroundBake's
+// TERRAIN_HAZE_COURSES so outer-spit dry sand crosses u=-0.5/v=-0.5 seamlessly.
+const COAST_HAZE_PROFILE = [[0, [196, 214, 232]], [0.5, [232, 240, 248]], [1, [255, 255, 255]]];
+const COAST_HAZE_COURSES = Object.freeze(Array.from({ length: 6 }, (_, course) => {
+    const t = (course + 0.5) / 6;
+    const k = t < 0.5 ? 0 : 1;
+    const [t0, c0] = COAST_HAZE_PROFILE[k];
+    const [t1, c1] = COAST_HAZE_PROFILE[k + 1];
+    const f = (t - t0) / (t1 - t0);
+    return Object.freeze(c0.map((c, i) => Math.round(255 - (255 - (c + (c1[i] - c) * f)) * 0.5)));
+}));
+function coastHazeRgb(rgb, worldY) {
+    const topY = -HALF_H;
+    const totalRows = Math.ceil((MAP_SIZE * TILE_HEIGHT) / 2);
+    const row = Math.max(0, Math.min(totalRows - 1, Math.floor((worldY - topY) / 2)));
+    const h = COAST_HAZE_COURSES[Math.max(0, Math.min(5, Math.floor(((row + 0.5) / totalRows) * 6)))];
+    return [Math.round((rgb[0] * h[0]) / 255), Math.round((rgb[1] * h[1]) / 255), Math.round((rgb[2] * h[2]) / 255)];
+}
 
 // The depth stops, shallow -> deep, all on the C1 water ramps (S <= 0.40).
 // Rivers stop at 2, lagoons at 3; the sea runs to 5, the open sea's body.
@@ -359,11 +391,101 @@ function coastFieldKey(renderer) {
     ].join(':');
 }
 
+function backShoreGuard(renderer, footprints) {
+    const blocked = [];
+    const seen = new Set();
+    const addSet = (set) => {
+        for (const key of set || []) {
+            if (seen.has(key)) continue;
+            const comma = key.indexOf(',');
+            if (comma < 0) continue;
+            const tx = Number(key.slice(0, comma));
+            const ty = Number(key.slice(comma + 1));
+            if (!Number.isFinite(tx) || !Number.isFinite(ty) || (tx > 4 && ty > 4)) continue;
+            seen.add(key);
+            blocked.push([tx, ty]);
+        }
+    };
+    addSet(footprints);
+    addSet(renderer.pathTiles);
+    addSet(renderer.townSquareTiles);
+    addSet(renderer.mainAvenueTiles);
+    addSet(renderer.commandCenterRoadTiles);
+    addSet(renderer.dirtPathTiles);
+    addSet(renderer.bridgeTiles);
+    addSet(renderer.harborWaterApronTiles);
+    const props = [];
+    for (const list of [DISTRICT_PROPS, AMBIENT_GROUND_PROPS, SCENIC_POINT_PROPS, BOULDERS]) {
+        for (const p of list || []) {
+            if (Number.isFinite(p?.tileX) && Number.isFinite(p?.tileY) && (p.tileX <= 4 || p.tileY <= 4)) {
+                props.push([p.tileX, p.tileY]);
+            }
+        }
+    }
+    const clearings = (SCENERY_CLEARINGS || []).filter(c => c.centerX - c.radius < 2.5 || c.centerY - c.radius < 2.5);
+    return { blocked, props, clearings };
+}
+
+function backShoreCoveAllow(tx, ty, guard) {
+    let allow = 1;
+    for (let i = 0; i < guard.blocked.length; i++) {
+        const [bx, by] = guard.blocked[i];
+        const d = Math.hypot(tx - bx, ty - by);
+        if (d < 2.2) allow = Math.min(allow, Math.max(0, (d - 1.25) / 0.95));
+        if (allow <= 0) return 0;
+    }
+    for (let i = 0; i < guard.props.length; i++) {
+        const [px, py] = guard.props[i];
+        const d = Math.hypot(tx - px, ty - py);
+        if (d < 1.35) allow = Math.min(allow, Math.max(0, (d - 0.85) / 0.50));
+        if (allow <= 0) return 0;
+    }
+    for (let i = 0; i < guard.clearings.length; i++) {
+        const c = guard.clearings[i];
+        const d = Math.hypot(tx - c.centerX, ty - c.centerY);
+        const core = c.radius * 0.32;
+        if (d < core + 0.45) allow = Math.min(allow, Math.max(0, (d - core) / 0.45));
+        if (allow <= 0) return 0;
+    }
+    return allow;
+}
+
+function backShoreWave(along, saltA, saltB) {
+    const n1 = valueNoise(along * 0.34 + saltA, saltB);
+    const n2 = valueNoise(along * 0.86 + saltA * 2.1, saltB + 6.7);
+    return Math.max(-1, Math.min(1, (0.68 * (n1 - 0.5) + 0.32 * (n2 - 0.5)) * 3.1));
+}
+
+function backShoreEndTaper(along) {
+    // Smoothly tuck seaward spits and coves back inside the map edge across the
+    // last ~4 tiles before the SW curtain-wall bastion (v -> MAP_SIZE) and SE
+    // Lighthouse cliff (u -> MAP_SIZE) so zero outer land crosses the lower handover.
+    const t = Math.max(0, Math.min(1, (MAP_SIZE - 1.4 - along) / 3.8));
+    return t * t * (3 - 2 * t);
+}
+
+function backShoreIsSea(u, v, guard) {
+    const endNW = backShoreEndTaper(v);
+    const endNE = backShoreEndTaper(u);
+    const wNW = backShoreWave(v, 7.3, 3.1);
+    const wNE = backShoreWave(u, 41.9, 14.7);
+    const offNW = wNW > 0 ? wNW * BACK_SHORE_COVE * backShoreCoveAllow(0, v, guard) : wNW * BACK_SHORE_SPIT;
+    const offNE = wNE > 0 ? wNE * BACK_SHORE_COVE * backShoreCoveAllow(u, 0, guard) : wNE * BACK_SHORE_SPIT;
+    const shoreU = -0.10 + (BACK_SHORE_BASE + 0.10 + offNW) * endNW;
+    const shoreV = -0.10 + (BACK_SHORE_BASE + 0.10 + offNE) * endNE;
+    const R = BACK_SHORE_CAPE_RADIUS;
+    const du = u - (shoreU + R);
+    const dv = v - (shoreV + R);
+    if (du < 0 && dv < 0) return Math.hypot(du, dv) > R;
+    return u < shoreU || v < shoreV;
+}
+
 function buildCoastField(renderer) {
     const started = performance.now();
     const n = GRID;
     const seed = new Float32Array(n * n);
     const footprints = buildingFootprintKeys(renderer);
+    const backGuard = backShoreGuard(renderer, footprints);
     // Per tile (padded grid): 1 water, 0 land; `growMask` marks land that may
     // take water, `tileCap` the deepest stop allowed near that tile.
     const tiles = MAP_SIZE + PAD * 2;
@@ -385,24 +507,43 @@ function buildCoastField(renderer) {
     // The world ash's islet (scenery.js WORLD_TREE.islet) is seeded per
     // sub-sample from its oval, not from whole tiles, so its shore rounds and
     // wanders like a basin coast; those samples skip the land clamp below.
+    // Likewise, the NW/NE back-shores seed from `backShoreIsSea` so their
+    // beaches curve into scalloped coves and shingle spits.
     const islet = WORLD_TREE.islet;
     const isletReach = Math.max(islet.radiusX, islet.radiusY) * 1.3;
     const isletSample = new Uint8Array(n * n);
+    const backSeaSample = new Uint8Array(n * n);
     for (let gy = 0; gy < n; gy++) {
         const ty = Math.floor(gy / SUB);
         const y = (gy + 0.5) / SUB - PAD;
+        const v = y - 0.5;
         for (let gx = 0; gx < n; gx++) {
             const index = gy * n + gx;
-            seed[index] = tileWater[ty * tiles + Math.floor(gx / SUB)];
+            const tIdx = ty * tiles + Math.floor(gx / SUB);
+            seed[index] = tileWater[tIdx];
             const x = (gx + 0.5) / SUB - PAD;
+            const u = x - 0.5;
             const wx = (x - y) * TILE_WIDTH / 2;
             const wy = (x + y) * TILE_HEIGHT / 2;
-            if (Math.abs(wx - islet.centerX) > isletReach || Math.abs(wy - islet.centerY) > isletReach) continue;
-            // Only open water and the islet's own tiles take the oval; other
-            // land in reach (the peninsula) keeps its tiles.
-            if (!seed[index] && !renderer.scenery?.isWorldTreeIslet?.(`${Math.floor(x)},${Math.floor(y)}`)) continue;
-            isletSample[index] = 1;
-            seed[index] = inWorldTreeIslet(wx, wy) ? 0 : 1;
+            if (Math.abs(wx - islet.centerX) <= isletReach && Math.abs(wy - islet.centerY) <= isletReach
+                && (seed[index] || renderer.scenery?.isWorldTreeIslet?.(`${Math.floor(x)},${Math.floor(y)}`))) {
+                isletSample[index] = 1;
+                seed[index] = inWorldTreeIslet(wx, wy) ? 0 : 1;
+                continue;
+            }
+            // Seed NW/NE outer-ocean samples across the full padded band (including
+            // v >= MAP_SIZE and u >= MAP_SIZE) so the signed-distance field never
+            // sees a fake land edge extending past the SW bastion or SE cliff.
+            if (!tileWater[tIdx] && (u < 0.85 || v < 0.85)) {
+                if (backShoreIsSea(u, v, backGuard)) {
+                    backSeaSample[index] = 1;
+                    seed[index] = 1;
+                } else if (u < MAP_SIZE + 0.5 && v < MAP_SIZE + 0.5
+                    && ((u < 0.72 && backShoreEndTaper(v) > 0.05 && backShoreCoveAllow(0, v, backGuard) > 0.05)
+                        || (v < 0.72 && backShoreEndTaper(u) > 0.05 && backShoreCoveAllow(u, 0, backGuard) > 0.05))) {
+                    backSeaSample[index] = 1;
+                }
+            }
         }
     }
     const blurred = new Float32Array(n * n);
@@ -418,7 +559,7 @@ function buildCoastField(renderer) {
             const index = gy * n + gx;
             let f = value[index] + (valueNoise(u, v) - 0.5) * 2 * NOISE_AMPLITUDE;
             const tIndex = ty * tiles + Math.floor(gx / SUB);
-            if (!tileWater[tIndex] && !tileGrow[tIndex] && !isletSample[index]) f = Math.min(f, 0.48);
+            if (!tileWater[tIndex] && !tileGrow[tIndex] && !isletSample[index] && !backSeaSample[index]) f = Math.min(f, 0.48);
             value[index] = f;
         }
     }
@@ -713,7 +854,7 @@ function coastTileList(renderer) {
     const out = [];
     for (let ty = 0; ty < MAP_SIZE; ty++) {
         for (let tx = 0; tx < MAP_SIZE; tx++) {
-            let near = false;
+            let near = (tx <= 1 && ty < MAP_SIZE - 1) || (ty <= 1 && tx < MAP_SIZE - 1);
             for (let dy = -1; dy <= 1 && !near; dy++) {
                 for (let dx = -1; dx <= 1; dx++) {
                     const x = tx + dx;
@@ -851,27 +992,35 @@ function classifyCoast(renderer, field) {
 // 3.3 — the outer shelf's signed distance (tiles) past the map edge.
 function outerShelfSd(field, u, v, uc, vc, excess, lower) {
     const edgeSd = field.signedDistance(uc, vc);
+    const seaEdge = field.signedDistance(Math.max(uc, 0.25), Math.max(vc, 0.25)) > 0.35;
+    if (edgeSd > 0 && (lower || seaEdge)) {
+        const base = Math.min(edgeSd, SHELF_SEA_EDGE_SD);
+        const shore = Math.max(0, Math.min(excess, (FOAM_SPARSE_BAND - base) / SHELF_NEAR_RATE));
+        const reach = shore + (excess - shore) * shelfWidthScale(uc, vc, excess);
+        const deepen = Math.min(reach, SHELF_NEAR_TILES) * SHELF_NEAR_RATE
+            + Math.max(0, reach - SHELF_NEAR_TILES) * SHELF_FAR_RATE;
+        return base + deepen + (valueNoise(u + 17, v - 11) - 0.5) * 2 * SHELF_WOBBLE * Math.min(1, reach)
+            + (valueNoise(u * 0.35 + 41, v * 0.35 - 23) - 0.5) * 2 * SHELF_FAR_WOBBLE
+                * Math.min(1, Math.max(0, (reach - 0.5) / 1.5));
+    }
+    if (!lower) {
+        const rawSd = field.signedDistance(u, v);
+        if (rawSd <= FOAM_SPARSE_BAND) return rawSd;
+        const waterReach = (rawSd - FOAM_SPARSE_BAND) * shelfWidthScale(uc, vc, excess);
+        const deepen = Math.min(waterReach, SHELF_NEAR_TILES) * SHELF_NEAR_RATE
+            + Math.max(0, waterReach - SHELF_NEAR_TILES) * SHELF_FAR_RATE;
+        return FOAM_SPARSE_BAND + deepen
+            + (valueNoise(u + 17, v - 11) - 0.5) * 2 * SHELF_WOBBLE * Math.min(1, waterReach)
+            + (valueNoise(u * 0.35 + 41, v * 0.35 - 23) - 0.5) * 2 * SHELF_FAR_WOBBLE
+                * Math.min(1, Math.max(0, (waterReach - 0.5) / 1.5));
+    }
     const landShare = Math.min(1, Math.max(0, -edgeSd / BACK_SHORE_SD));
-    let base;
-    let reach = excess;
-    if (edgeSd > 0) base = Math.min(edgeSd, SHELF_SEA_EDGE_SD);
-    else if (lower) {
-        // 3.5 — under the SW/SE cliffs the shelf starts at the cliff's foot,
-        // not the map edge: the face covers its first CLIFF_FACE px, and the
-        // boulders stand in a shallow apron that steps down from there.
-        base = SHELF_CLIFF_SD * landShare;
-        reach = Math.max(0, excess - (CLIFF_FACE / TILE_HEIGHT) * landShare);
-    } else base = Math.max(edgeSd, -BACK_SHORE_SD) + (valueNoise(uc, vc) - 0.5) * 2 * BACK_SHORE_WOBBLE * landShare;
-    // Only the water past the surf widens or narrows: a far-edge beach and
-    // its foam keep their own width, so the halo never grows a sand or foam
-    // flat.
-    const shore = Math.max(0, Math.min(reach, (FOAM_SPARSE_BAND - base) / SHELF_NEAR_RATE));
-    reach = shore + (reach - shore) * shelfWidthScale(uc, vc, excess);
+    const base = SHELF_CLIFF_SD * landShare;
+    const cliffReach = Math.max(0, excess - (CLIFF_FACE / TILE_HEIGHT) * landShare);
+    const shore = Math.max(0, Math.min(cliffReach, (FOAM_SPARSE_BAND - base) / SHELF_NEAR_RATE));
+    const reach = shore + (cliffReach - shore) * shelfWidthScale(uc, vc, excess);
     const deepen = Math.min(reach, SHELF_NEAR_TILES) * SHELF_NEAR_RATE
         + Math.max(0, reach - SHELF_NEAR_TILES) * SHELF_FAR_RATE;
-    // Past the edge the depth contours wobble on value noise (growing with
-    // distance, zero at the edge), so the shelf's contours never run parallel
-    // to the map edge as straight 2:1 lines.
     return base + deepen + (valueNoise(u + 17, v - 11) - 0.5) * 2 * SHELF_WOBBLE * Math.min(1, reach)
         + (valueNoise(u * 0.35 + 41, v * 0.35 - 23) - 0.5) * 2 * SHELF_FAR_WOBBLE
             * Math.min(1, Math.max(0, (reach - 0.5) / 1.5));
@@ -931,6 +1080,19 @@ const TEXEL_OPEN = 249;
 const TEXEL_LAND = 250;
 const TEXEL_MIRROR = 251;
 
+function outerSpitSandRgb(x, y) {
+    const col = x >> 1;
+    const pocket = valueNoise(x / 84, y / 42 + 13.7);
+    if (pocket > 0.44 && hash2(col, y, 813) < (pocket - 0.44) * 0.32) {
+        const g = hash2(col, y, 817);
+        const stoneRgb = g > 0.66 ? STONE[4] : g > 0.26 ? STONE[3] : STONE[2];
+        return coastHazeRgb(stoneRgb, y);
+    }
+    const n = valueNoise(x / 18, y / 9 + 4.3);
+    const stop = n > 0.62 ? 3 : n < 0.28 ? 1 : 2;
+    return coastHazeRgb(SAND[stop], y);
+}
+
 // 3.3 (c) — every coast colour decision per world texel: the class of each
 // texel from its own signed distance and its own Bayer threshold, sparse 3x1
 // ripple dashes one stop lighter in the middle stops. `buf.role` keeps each
@@ -970,7 +1132,18 @@ function paintCoastTexels(buf, coast) {
                         // (no deep in-map wedge against a lighter ocean).
                         cls = Math.min(cls, CLASS_WATER + openSeaStopAt(openSeaDepthAt(x, y), bayer(x, y)));
                     }
-                    if (cls === CLASS_NONE) continue;
+                    if (cls === CLASS_NONE) {
+                        if (outer[cell] && sd <= 0) {
+                            const u = y / TILE_HEIGHT + x / TILE_WIDTH;
+                            const v = y / TILE_HEIGHT - x / TILE_WIDTH;
+                            if (u <= MAP_SIZE - 0.44 && v <= MAP_SIZE - 0.44) {
+                                role[at] = TEXEL_LAND;
+                                putRgb(data, at * 4, outerSpitSandRgb(x, y));
+                                markCell(coast, x, y, { land: true });
+                            }
+                        }
+                        continue;
+                    }
                     if (cls >= CLASS_WATER + 2 && cls <= CLASS_WATER + 3
                         && (isRippleSeed(x, y) || isRippleSeed(x - 1, y) || isRippleSeed(x - 2, y))) {
                         cls -= 1;
@@ -1037,24 +1210,6 @@ function readRgb(data, o) {
     return [data[o], data[o + 1], data[o + 2]];
 }
 
-// The mean of the opaque texels in column `sx` from row `sy` up `rows` rows
-// (the source rows one squashed mirror row stands for).
-function massRgb(pixels, sx, sy, rows) {
-    let r = 0;
-    let g = 0;
-    let b = 0;
-    let n = 0;
-    for (let k = 0; k < rows && sy - k >= 0; k++) {
-        const o = ((sy - k) * pixels.w + sx) * 4;
-        if (pixels.data[o + 3] < 128) continue;
-        r += pixels.data[o];
-        g += pixels.data[o + 1];
-        b += pixels.data[o + 2];
-        n += 1;
-    }
-    return [r / n, g / n, b / n];
-}
-
 // 3.5 — a reflected cliff texel: `mix(stopColour, src x MIRROR_DIM, a)`.
 const MIRROR_DIM = 0.84;
 function mirrorRgb(base, src, alpha) {
@@ -1098,7 +1253,6 @@ const PALISADE_ROWS = 14;
 const PALISADE_SETBACK_MAX = 16;
 const PALISADE_SPAN = 4;
 const PALISADE_REACH = 72;
-const STONE = ART_RAMPS.stone.map(hexRgb);
 
 function edgeSides() {
     const last = MAP_SIZE - 1;
@@ -1566,7 +1720,7 @@ const REFLECTION_TALL_SHARE = 0.34;
 // The value rule: the source darkened to MIRROR_VALUE over the water stop at
 // the course's alpha; courses end at these shares of the source's reach.
 const MIRROR_VALUE = 0.72;
-const STATIC_REFLECTION_ALPHAS = Object.freeze([0.8, 0.6, 0.36]);
+const STATIC_REFLECTION_ALPHAS = Object.freeze([0.68, 0.48, 0.28]);
 const STATIC_REFLECTION_COURSE_SHARES = Object.freeze([0.3, 0.62]);
 // The value floor, in water stops below the texel's own (near the water's
 // start and after); past the deepest stop each further stop keeps
@@ -1696,8 +1850,7 @@ function rippleShift(row, amp) {
 // reads as horizontal streaks, never as noise. Returns the texel's offset
 // into its run.
 function streakOffset(wx, row, course) {
-    if (course <= 0) return 0;
-    const width = course + 1;
+    const width = course <= 0 ? 2 : course === 1 ? 3 : 4;
     return (((wx + Math.floor(hash2(row, 0, 23) * width)) % width) + width) % width;
 }
 
@@ -1716,9 +1869,115 @@ function stopLuma(k) {
     return k <= last ? STOP_LUMA[k] : STOP_LUMA[last] * MIRROR_DEEP_STEP ** (k - last);
 }
 
-function staticMirrorRgb(base, src, alpha, lit) {
+export function staticMirrorRgb(base, src, alpha, lit) {
     const value = lit ? Math.min(1, MIRROR_VALUE * MIRROR_LIT_RATIO) : MIRROR_VALUE;
-    return mixRgb(base, [src[0] * value, src[1] * value, src[2] * value], lit ? Math.max(alpha, MIRROR_LIT_ALPHA) : alpha);
+    if (lit) {
+        return mixRgb(base, [src[0] * value, src[1] * value, src[2] * value], Math.max(alpha, MIRROR_LIT_ALPHA));
+    }
+    // C-03 — Quantize reflected value into 4 calm architectural bands (clamping
+    // dark ink outlines above 0.28) and retain ~78% local C1 COAST_WATER_STOPS
+    // chromaticity so shallow cyan water never turns into a brown oil slick.
+    const qL = Math.max(0.28, Math.round((rgbLuma(src) / 255) * 4) / 4);
+    const targetLuma = qL * value * 255;
+    const baseLuma = Math.max(16, rgbLuma(base));
+    const scale = targetLuma / baseLuma;
+    const waterTinted = [
+        Math.min(255, base[0] * scale),
+        Math.min(255, base[1] * scale),
+        Math.min(255, base[2] * scale),
+    ];
+    const srcQuant = [
+        Math.round((src[0] * value) / 20) * 20,
+        Math.round((src[1] * value) / 20) * 20,
+        Math.round((src[2] * value) / 20) * 20,
+    ];
+    const tinted = mixRgb(srcQuant, waterTinted, 0.78);
+    return mixRgb(base, tinted, alpha);
+}
+
+// Pre-filter reflection source texels over `span x rows`, absorbing isolated
+// 1px `#050302` ink outlines into adjacent wall/roof clusters across ALL
+// reflected buildings, bridges and props.
+function clusterMirrorRgb(pixels, sx, sy, rows, span) {
+    const { w, data } = pixels;
+    const vRows = Math.max(2, rows);
+    const halfLeft = Math.floor((span - 1) / 2);
+    const halfRight = span - 1 - halfLeft;
+    let r = 0, g = 0, b = 0, n = 0;
+    for (let k = 0; k < vRows && sy - k >= 0; k++) {
+        const yRow = (sy - k) * w;
+        for (let dx = -halfLeft; dx <= halfRight; dx++) {
+            const cx = sx + dx;
+            if (cx < 0 || cx >= w) continue;
+            const o = (yRow + cx) * 4;
+            if (data[o + 3] < 128) continue;
+            const cr = data[o];
+            const cg = data[o + 1];
+            const cb = data[o + 2];
+            const luma = 0.2126 * cr + 0.7152 * cg + 0.0722 * cb;
+            if (luma >= 22) {
+                r += cr; g += cg; b += cb; n += 1;
+            }
+        }
+    }
+    if (n > 0) {
+        return [Math.round((r / n) / 16) * 16, Math.round((g / n) / 16) * 16, Math.round((b / n) / 16) * 16];
+    }
+    return [56, 62, 72];
+}
+
+// Detect narrow vertical pier piling tips (`run <= 8` px) that terminate
+// cleanly into transparent water rows below, even when a nearer isometric pier
+// deck crosses lower down in the same sprite column.
+export function detectPilingTips(pixels) {
+    const { w, h, data } = pixels;
+    const opaque = (x, y) => x >= 0 && x < w && y >= 0 && y < h && data[(y * w + x) * 4 + 3] >= 128;
+    const raw = [];
+    for (let sy = 8; sy < h; sy++) {
+        let sx = 0;
+        while (sx < w) {
+            if (!(opaque(sx, sy) && !opaque(sx, sy + 1))) { sx += 1; continue; }
+            let end = sx;
+            while (end + 1 < w) {
+                let match = false;
+                for (let dy = -1; dy <= 1; dy++) {
+                    const ny = sy + dy;
+                    if (ny >= 8 && ny < h && opaque(end + 1, ny) && !opaque(end + 1, ny + 1)) { match = true; break; }
+                }
+                if (!match) break;
+                end += 1;
+            }
+            const run = end - sx + 1;
+            if (run >= 2 && run <= 8) {
+                const mid = (sx + end) >> 1;
+                let by = sy;
+                while (by + 1 < h && opaque(mid, by + 1)) by += 1;
+                let clearBelow = 0;
+                for (let k = 1; k <= 8; k++) { if (!opaque(mid, by + k)) clearBelow += 1; else break; }
+                let shaftAbove = 0;
+                for (let k = 0; k < 10; k++) { if (opaque(mid, by - k)) shaftAbove += 1; else break; }
+                let l4 = mid, r4 = mid;
+                while (l4 > 0 && opaque(l4 - 1, by - 4)) l4 -= 1;
+                while (r4 + 1 < w && opaque(r4 + 1, by - 4)) r4 += 1;
+                if (clearBelow >= 5 && shaftAbove >= 6 && (r4 - l4 + 1) <= 9) {
+                    const colY = new Int32Array(run);
+                    for (let k = 0; k < run; k++) {
+                        let cy = sy;
+                        if (!opaque(sx + k, cy) && cy > 0 && opaque(sx + k, cy - 1)) cy -= 1;
+                        while (cy + 1 < h && opaque(sx + k, cy + 1)) cy += 1;
+                        colY[k] = cy + 1;
+                    }
+                    raw.push({ sx, end, run, y: by + 1, colY });
+                }
+            }
+            sx = end + 1;
+        }
+    }
+    const dedup = [];
+    for (const t of raw) {
+        if (!dedup.some(u => Math.abs(u.sx - t.sx) <= 2 && Math.abs(u.y - t.y) <= 2)) dedup.push(t);
+    }
+    return dedup;
 }
 
 // The value floor: where the course's darkest mirror (black at `alpha`)
@@ -2071,20 +2330,44 @@ function staticReflections(ctx, renderer) {
             const wet = d - waterline;
             const course = mirrorCourse(d, reach);
             const shift = (wet >= MIRROR_CRISP_ROWS ? rippleShift(y, course > 0 ? amp : 1) : 0) - streakOffset(wx, y, course);
-            const hit = sample(d, y, shift);
+            const hit = sample(d, y, shift, course);
             if (!hit) continue;
             const fade = d - (reach - MIRROR_FADE_ROWS);
             const broken = brokenRow(wx, y, wet, every, MIRROR_BREAK_SHARE);
-            const faded = fade > 0 && bayer(wx, y) < fade / MIRROR_FADE_ROWS;
+            const bandY = y >> 1;
+            const segX = (wx + (bandY & 1) * 4) >> 3;
+            const fadeShare = fade / MIRROR_FADE_ROWS;
+            const faded = fade > 0 && (hash2(bandY, 0, 61) < fadeShare * 0.55 || hash2(segX, bandY, 67) < fadeShare);
             stage(wx, y, at, hit, course, d, wet, !broken && !faded, broken && !faded);
         }
     };
     // Other terrain-painted structures over water (docks, causeways,
     // foundations): each column's covered run mirrors about its foot into
-    // the water under it.
+    // the water under it, pre-clustered so 1px plank/stone ink never smears.
     const dockShape = { reach: MIRROR_REACH_MIN, squash: 1, tall: 0 };
+    const clusterDockRgb = (ci, cj, topRow) => {
+        let r = 0, g = 0, b = 0, n = 0;
+        for (let ky = 0; ky < 2 && cj - ky >= topRow; ky++) {
+            const rowOff = (cj - ky) * w;
+            for (let dx = -1; dx <= 1; dx++) {
+                const xi = ci + dx;
+                if (xi < 0 || xi >= w) continue;
+                const sat = rowOff + xi;
+                if (!covered(sat)) continue;
+                const o = sat * 4;
+                const cr = data[o], cg = data[o + 1], cb = data[o + 2];
+                if (0.2126 * cr + 0.7152 * cg + 0.0722 * cb >= 22) {
+                    r += cr; g += cg; b += cb; n += 1;
+                }
+            }
+        }
+        if (n > 0) {
+            return [Math.round((r / n) / 16) * 16, Math.round((g / n) / 16) * 16, Math.round((b / n) / 16) * 16];
+        }
+        return [56, 62, 72];
+    };
     const writeNow = (x, y, at, hit, course, d, wet, keep) => {
-        if (keep) write(x, y, at, hit[0], hit[1], course, 1, wet < MIRROR_REACH_MIN * MIRROR_NEAR_SHARE ? MIRROR_STOP_DROP.near : MIRROR_STOP_DROP.far);
+        if (keep) write(x, y, at, hit[0], hit[1], course, 0.85, wet < MIRROR_REACH_MIN * MIRROR_NEAR_SHARE ? MIRROR_STOP_DROP.near : MIRROR_STOP_DROP.far);
     };
     for (let i = 0; i < w; i++) {
         let run = 0;
@@ -2107,7 +2390,7 @@ function staticReflections(ctx, renderer) {
                     if (sj < top) return null;
                     const sat = sj * w + si;
                     if (!covered(sat)) return null;
-                    const src = readRgb(data, sat * 4);
+                    const src = clusterDockRgb(si, sj, top);
                     return [src, hotTexel(src), null];
                 }, writeNow);
             }
@@ -2123,23 +2406,24 @@ function staticReflections(ctx, renderer) {
         const every = rippleEvery(shape);
         const staged = [];
         const rows = new Map();
-        // A tower mirrors its mass: each mirror row averages the source rows
-        // it squashes (massRgb), so brick courses never alias into streaks.
+        // Pre-cluster reflected texels across squashed vertical rows and 2-3
+        // horizontal columns (clusterMirrorRgb) so 1px outlines and brick
+        // courses read as calm horizontal ribbons instead of speckled noise.
         const tower = shape.tall >= MIRROR_CORE_TALL;
         const massRows = Math.max(1, Math.round(shape.squash));
         for (let sx = 0; sx < pixels.w; sx++) {
             const base = source.axisAt(sx);
             if (base == null || base <= source.y) continue;
             const grounded = source.groundedAt(sx);
-            walk(source.x + sx, base, gap, shape, (d, y, shift) => {
+            walk(source.x + sx, base, gap, shape, (d, y, shift, course) => {
                 const sy = base - 1 - Math.round(d * shape.squash) - source.y;
                 if (sy < 0 || sy >= pixels.h) return null;
                 const tx = Math.max(0, Math.min(pixels.w - 1, sx + shift));
                 const o = (sy * pixels.w + tx) * 4;
                 if (pixels.data[o + 3] < 128) return null;
-                // The Pharos lamp (a fixture layer): a lit accent at the lamp's gate.
-                if (lamp?.[sy * pixels.w + tx]) return [readRgb(pixels.data, o), true, { lamp: true }];
-                const src = tower ? massRgb(pixels, tx, sy, massRows) : readRgb(pixels.data, o);
+                const src = clusterMirrorRgb(pixels, tx, sy, massRows, course === 0 ? 2 : 3);
+                // The Pharos lamp (a fixture layer): clustered base by day, lit accent at the lamp's gate.
+                if (lamp?.[sy * pixels.w + tx]) return [src, true, { lamp: true }];
                 const emission = glow ? glow.data[o + 3] : 0;
                 const lit = glow ? emission >= MIRROR_EMISSIVE_ALPHA : hotTexel(src);
                 return [src, lit, lit && glow ? { sx: tx, sy, o, emission } : null];
@@ -2150,12 +2434,12 @@ function staticReflections(ctx, renderer) {
                 staged.push({ x, y, at, hit, course, d, wet, keep, broken, core: false, seed: grounded && wet < MIRROR_CRISP_ROWS });
             });
         }
-        // The edge dither on every row run of this mirror (its columns come
-        // in order): a run wider than MIRROR_EDGE_MIN_RUN dithers out its
-        // last columns on the Bayer order, the run's end wandering a texel
-        // per two-row band, and a tall mirror's taper eats further into its
-        // edges with distance. Narrow runs (posts, piles) stay crisp. A tall
-        // mirror's texels inside the edges are its core (see above).
+        // Horizontal wave-finger edge trim on every row run of this mirror
+        // (its columns come in order): runs wider than MIRROR_EDGE_MIN_RUN
+        // step back their left and right ends on 2-row hashed fingers
+        // (`leftFinger`/`rightFinger`), and a tall mirror's taper eats further
+        // into its edges with distance (`leftCut`/`rightCut`). Narrow runs
+        // (posts, piles) stay crisp; interior texels of tall mirrors form its core.
         for (const list of rows.values()) {
             let start = 0;
             while (start < list.length) {
@@ -2163,18 +2447,27 @@ function staticReflections(ctx, renderer) {
                 while (end + 1 < list.length && staged[list[end + 1]].x === staged[list[end]].x + 1) end += 1;
                 const run = end - start + 1;
                 const cols = Math.max(0, Math.min(MIRROR_EDGE_COLS, Math.floor((run - MIRROR_EDGE_MIN_RUN) / 4)));
+                const rowY = staged[list[start]].y;
+                const band = rowY >> 1;
+                const leftFinger = Math.round(hash2(band, start >> 3, 53) * cols);
+                const rightFinger = Math.round(hash2(band, end >> 3, 59) * cols);
                 for (let n = start; n <= end; n++) {
                     const texel = staged[list[n]];
                     // A tower's narrow runs (its lantern posts, the finial) stay crisp.
                     const taper = tower && run < MIRROR_EDGE_MIN_RUN ? 0
                         : Math.min(Math.floor(texel.d * shape.tall * MIRROR_TAPER), Math.floor(run * MIRROR_TAPER_SHARE));
                     const span = Math.max(cols, taper > 0 ? MIRROR_EDGE_COLS : 0);
-                    const inset = Math.min(n - start, end - n) - taper + Math.floor(hash2(texel.y >> 1, 0, 53) * 3) - 1;
-                    if (!span || inset >= span) {
+                    if (!span) {
                         texel.core = tower;
                         continue;
                     }
-                    if (inset < 0 || bayer(texel.x, texel.y) >= (inset + 1) / (span + 1)) texel.keep = false;
+                    const leftCut = taper + leftFinger;
+                    const rightCut = taper + rightFinger;
+                    if (n - start >= span + taper && end - n >= span + taper) {
+                        texel.core = tower;
+                        continue;
+                    }
+                    if (n - start < leftCut || end - n < rightCut) texel.keep = false;
                 }
                 start = end + 1;
             }
@@ -2224,6 +2517,58 @@ function staticReflections(ctx, renderer) {
                 : [0, 1, 2].map(c => Math.min(255, (hit[0][c] + ((0.84 * emitter.emission) / 255) * glow.data[emitter.o + c]) * MIRROR_ACCENT_VALUE));
             accentAt[at] = accents.length;
             accents.push({ building: source.building, at, x, y, sx: emitter.sx, sy: emitter.sy, lamp: emitter.lamp === true, rgb: mixRgb(base, lit, MIRROR_LIT_ALPHA) });
+        }
+        // C-03 — Submerged Harbor pier piling feet + 1-row FOAM meniscus collar:
+        // scoped strictly to `building.harbor` (its 14 water-standing pier
+        // pilings; zero stray hits on inland buildings or bridges).
+        if (source.building?.type === 'harbor') {
+            const tips = detectPilingTips(pixels);
+            for (const tip of tips) {
+                let onWater = 0;
+                for (let k = 0; k < tip.run; k++) {
+                    const wx = source.x + tip.sx + k;
+                    const wy = source.y + tip.colY[k];
+                    const at0 = bufferIndex(buf, wx, wy);
+                    if (at0 >= 0 && waterKind(at0) && !covered(at0)) onWater += 1;
+                }
+                if (onWater < Math.ceil(tip.run * 0.5)) continue;
+                for (let k = 0; k < tip.run; k++) {
+                    const wx = source.x + tip.sx + k;
+                    const wy = source.y + tip.colY[k];
+                    for (let r = 0; r < 2; r++) {
+                        const ty = wy + r;
+                        const at = bufferIndex(buf, wx, ty);
+                        if (at < 0 || !waterKind(at) || covered(at)) continue;
+                        const open = role0[at] === TEXEL_OPEN;
+                        const stop = open ? openSeaStopAt(openSeaDepthAt(wx, ty), bayer(wx, ty)) : Math.max(0, role0[at] - CLASS_WATER);
+                        const waterStop = open ? COAST_WATER_STOPS[stop] : readRgb(bakedData, at * 4);
+                        const submerged = mixRgb(waterStop, TIMBER[0], r === 0 ? 0.52 : 0.34);
+                        putRgb(data, at * 4, submerged);
+                        role[at] = TEXEL_MIRROR;
+                        accentAt[at] = -1;
+                        markCell(coast, wx, ty, { water: true, reflect: 1 });
+                        markMirrorBase(coast, w, at, stop);
+                    }
+                }
+                // Hashed 1-row FOAM meniscus collar wrapping the piling waterline (2-4 texels).
+                const leftY = source.y + tip.colY[0];
+                const rightY = source.y + tip.colY[tip.run - 1];
+                const collarPts = [
+                    [source.x + tip.sx - 1, leftY, 0.78],
+                    [source.x + tip.sx, leftY, 0.65],
+                    [source.x + tip.end, rightY, 0.45],
+                    [source.x + tip.end + 1, rightY, 0.68],
+                ];
+                for (const [cx, cy, prob] of collarPts) {
+                    if (hash2(cx, cy, 191) >= prob) continue;
+                    const at = bufferIndex(buf, cx, cy);
+                    if (at < 0 || !waterKind(at) || covered(at)) continue;
+                    putRgb(data, at * 4, FOAM);
+                    role[at] = CLASS_FOAM;
+                    accentAt[at] = -1;
+                    markCell(coast, cx, cy, { water: true });
+                }
+            }
         }
     }
     // The accents still standing, per landmark.

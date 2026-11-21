@@ -13,7 +13,7 @@ import {
     OPEN_SEA_BAND_TAIL,
     OPEN_SEA_BAND_WEIGHTS,
 } from '../../CoastBake.js';
-import { DEEP_DASH_DENSITY } from '../GpuFrameState.js';
+import { DEEP_DASH_DENSITY, MIST } from '../GpuFrameState.js';
 import { SEA_STATE } from '../GpuWorldPolicy.js';
 
 export const OPEN_SEA_WGSL = /* wgsl */ `
@@ -29,10 +29,11 @@ fn shadeOpenSea(cell: vec2f) -> vec3f {
     let contour = seaContourRows(cell);
     var stop = openSeaStop(openSeaDepth(cell), order);
     let reach = clamp((excess - 1.5) / 4.5, 0.0, 1.0);
+    let needCloudM = (frame.cloud.z > 0.0 && (frame.cloud.w <= 0.0 || frame.seaLift > 0.0)) || frame.seaSunlit > 0.0;
     var n = 1.0;
-    if (frame.cloud.z > 0.0 || frame.squall.w > 0.0 || frame.seaSunlit > 0.0) { n = cloudNoiseAt(cell); }
+    if (needCloudM || frame.squall.w > 0.0) { n = cloudNoiseAt(cell); }
     var m = n;
-    if (frame.cloud.z > 0.0 || frame.seaSunlit > 0.0) { m = cloudSeamField(cell, n, order, frame.seaSunlit); }
+    if (needCloudM) { m = cloudSeamField(cell, n, order, frame.seaSunlit); }
     let near = seaNear(excess);
     var marked = false;
     var c: vec3f;
@@ -55,7 +56,8 @@ fn shadeOpenSea(cell: vec2f) -> vec3f {
         if (frame.cloud.w > 0.0) { stop = seaLiftedStop(stop, frame.seaLift, m, order); }
         // SEA-3 — calm: no caps or deep dashes; fresh: more caps and streaks.
         let calm = seaCalm();
-        var paw = seaPawCaps(cell, order);
+        var paw = 0.0;
+        if (!calm) { paw = seaPawCaps(cell, order); }
         if (seaFresh()) { paw += ${SEA_STATE.freshCaps.toFixed(2)}; }
         var cap = 0.0;
         if (!calm) { cap = swellCap(cell, s, near, paw); }
@@ -113,8 +115,16 @@ fn shadeOpenSea(cell: vec2f) -> vec3f {
     }
     c = applyGradeVignette(c, texelPx, frame.resolution);
     if (frame.mist.w > 0.0) {
-        // MS-1 — the low mist at height 0 on open water.
-        if (frame.mist.x > 0.0) { c = applyMist(c, mistCourse(cell + 0.5, 0.0, 1.0, false, waterBayer4(floor(cell * 0.5))), frame.fogColor, false); }
+        // MS-1 — the low mist on open water: fair/frosty-dawn radiation mist
+        // hugs the island coves and tapers offshore, while fog weather holds;
+        // marked swell crests rise one course.
+        if (frame.mist.x > 0.0) {
+            let fogHold = clamp(frame.weather.y / 0.55, 0.0, 1.0);
+            let seaMistNear = mix(mix(0.18, 0.82, fogHold), 1.0, clamp(1.0 - max(0.0, excess - 1.5) / 7.5, 0.0, 1.0))
+                * mix(clamp((t - hazeRows) / 140.0, 0.28, 1.0), 1.0, fogHold);
+            let crestH = select(0.0, clamp((excess - 0.5) / 2.0, 0.0, 1.0) * ${MIST.coursePx.toFixed(1)}, marked);
+            c = applyMist(c, mistCourse(cell + 0.5, crestH, seaMistNear, false, waterBayer4(floor(cell * 0.5))), frame.fogColor, false);
+        }
     } else {
         let groundFog = clamp(frame.weather.y, 0.0, 1.0) * smoothstep(0.18, 0.98, 1.0 - texelPx.y / max(1.0, frame.resolution.y));
         var fogged = mix(c, frame.fogColor, groundFog * 0.48);

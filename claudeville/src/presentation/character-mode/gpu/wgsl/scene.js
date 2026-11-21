@@ -368,11 +368,16 @@ fn applyGrassGust(color: vec3f, world: vec2f) -> vec3f {
   }
   if (k < 0) { return color; }
   let texel = vec2f(floor(world.x * 0.5), floor(world.y));
-  let gust = seaGustAt(vec2f(texel.x * 2.0, texel.y));
+  let gust = seaGustIntAt(vec2f(texel.x * 2.0, texel.y));
   if (gust <= 0.0) { return color; }
-  let ruffle = textureSampleLevel(cloudTile, cloudSampler, fract((texel + vec2f(311.0, 173.0)) / vec2f(384.0, 256.0)), 0.0).r;
-  let order = ruffle * 0.5 + waterBayer4(texel) * 0.5;
-  if (order >= min(${GRASS_GUST_ORDER_CAP.toFixed(2)}, ${GRASS_GUST_ORDER_BASE.toFixed(2)} + ${GRASS_GUST_ORDER_GAIN.toFixed(2)} * gust)) { return color; }
+  let it = vec2i(floor(texel));
+  let ru16 = vec2i(i32(((u32(it.x + 192311) % 384u) * 65536u) / 384u), ((it.y + 173) & 255) * 256);
+  let rInt = cloudTileBilinear16(ru16);
+  let bInt = i32(floor(waterBayer4(texel) * 16.0 + 0.5)) * 1044480;
+  let orderInt = (rInt + bInt) / 2;
+  let gustInt = i32(floor(gust * 16711680.0 + 0.5));
+  let threshInt = min(${Math.round(GRASS_GUST_ORDER_CAP * 16711680)}, ${Math.round(GRASS_GUST_ORDER_BASE * 16711680)} + (gustInt / 1000) * ${Math.round(GRASS_GUST_ORDER_GAIN * 1000)} + ((gustInt % 1000) * ${Math.round(GRASS_GUST_ORDER_GAIN * 1000)}) / 1000);
+  if (orderInt >= threshInt) { return color; }
   return GRASS_GUST_TO[k];
 }
 

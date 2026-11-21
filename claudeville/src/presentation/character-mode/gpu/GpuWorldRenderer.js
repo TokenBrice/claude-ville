@@ -19,6 +19,7 @@ import {
     CLOUD_TILE_WORLD_SCALE,
     CLOUD_PLANE,
     CLOUD_SECOND_OCTAVE,
+    CLOUD_INT_CONSTANTS,
     SEA_STATE,
     SEA_SUN_LIFT_FLOOR,
     EFFECT_BUDGET,
@@ -232,20 +233,28 @@ export const SWELL_LONE_CAPS = Object.freeze([0.03, 0.08]);
 export const SWELL_SET_NORMAL = Object.freeze([0.08, 1]);
 export const SWELL_SET_WARP = 1.2;
 export const SWELL_SET_WARP_FINE = 0.35;
+export const SWELL_SET_WARP_MID = 0.24;
 export const SWELL_WARP_CELL = Object.freeze([1100, 500]);
 export const SWELL_WARP_FINE_CELL = Object.freeze([341, 185]);
+export const SWELL_WARP_MID_CELL = Object.freeze([196, 88]);
 // A set's form (`seaBodyStop`): its swell height along the set is value noise
-// over SWELL_AMP_RUN world px, calm below SWELL_AMP_FLOOR and full
+// over SWELL_AMP_RUN world px modulated by a staggered wave-packet envelope
+// (`SWELL_PACKET_RUN`), calm below SWELL_AMP_FLOOR and full
 // SWELL_AMP_SPAN above it. A set's crest rides on its lit slope (rows above
 // it, one stop lighter, facing the upper-left key) over its trough (rows
 // below it, one stop darker), each [far, near] the sun-key ring (SEA_KEY_*)
 // and scaled by the height; the trough stills toward the island over
-// SWELL_CALM_TILES (tiles past the map edge: none, full). Each holds solid
-// for its first half and Bayer-fades over the rest.
-export const SWELL_AMP_RUN = 420;
-export const SWELL_AMP_FLOOR = 0.2;
+// SWELL_CALM_TILES (tiles past the map edge: none, full). Each feathers across
+// SWELL_TURN_ROWS at the crest turnaround and Bayer-fades over its tail.
+export const SWELL_AMP_RUN = 340;
+export const SWELL_AMP_FLOOR = 0.28;
 export const SWELL_AMP_SPAN = 0.4;
+export const SWELL_PACKET_RUN = 680;
+export const SWELL_PACKET_FLOOR = 0.28;
+export const SWELL_PACKET_SPAN = 0.38;
+export const SWELL_TURN_ROWS = 3.5;
 export const SWELL_CALM_TILES = Object.freeze([1, 4]);
+export const SWELL_FAR_CALM_TILES = Object.freeze([4.5, 8.5]);
 export const SWELL_LIT_ROWS = Object.freeze([16, 56]);
 // E2-02 — a lit slope (the set's or the chop's) steps SWELL_LIT_STEPS stops
 // lighter than the body, a full deep-ramp step (DEEP[1] -> DEEP[2]) where the
@@ -598,6 +607,21 @@ vec3 applyMist(vec3 color, float course, vec3 fogColor, bool additive) {
 }`;
 const ATMOSPHERE_COURSES_GLSL = `
 uniform sampler2D u_cloudTile;
+int cloudTileByte(int x, int y) {
+    return int(texelFetch(u_cloudTile, ivec2(x & 255, y & 255), 0).r * 255.0 + 0.5);
+}
+int cloudTileBilinear16(ivec2 u16) {
+    ivec2 s = (u16 - ivec2(128)) & ivec2(65535);
+    ivec2 t0 = s >> 8;
+    ivec2 f = s & ivec2(255);
+    int a = cloudTileByte(t0.x, t0.y);
+    int b = cloudTileByte(t0.x + 1, t0.y);
+    int c = cloudTileByte(t0.x, t0.y + 1);
+    int d = cloudTileByte(t0.x + 1, t0.y + 1);
+    int top = a * 256 + (b - a) * f.x;
+    int bot = c * 256 + (d - c) * f.x;
+    return top * 256 + (bot - top) * f.y;
+}
 // xy: world-space drift offset (world px, wrapped to CLOUD_FIELD_PERIOD),
 // z: darkening per course (0 = off).
 uniform vec4 u_cloud;
@@ -612,29 +636,48 @@ uniform vec3 u_cloudThresholds;
 uniform vec4 u_haze;
 // SEA-1 — u_cloud.w is the sea1 look strength: above 0 the field lies on the
 // ground plane (GpuWorldPolicy CLOUD_PLANE; u_cloud.xy then in plane units).
+// PERF-01 — branchless unsigned integer bilinear constants derived from
+// CLOUD_INT_CONSTANTS so GLSL, WGSL and JS cloudFieldAt match identically.
+int cloudNoiseIntAt(ivec2 ic) {
+    bool on = u_cloud.w > 0.0;
+    uvec2 per = on ? uvec2(${CLOUD_INT_CONSTANTS.planePeriod[0]}u, ${CLOUD_INT_CONSTANTS.planePeriod[1]}u) : uvec2(${CLOUD_INT_CONSTANTS.periodPx}u);
+    uvec2 sc = on ? uvec2(${CLOUD_INT_CONSTANTS.planeScale100[0]}u, ${CLOUD_INT_CONSTANTS.planeScale100[1]}u) : uvec2(${CLOUD_INT_CONSTANTS.u16PerPx * 100}u);
+    uvec2 hf = on ? uvec2(${CLOUD_INT_CONSTANTS.planeHalf100[0] + 50}u, ${CLOUD_INT_CONSTANTS.planeHalf100[1] + 50}u) : uvec2(${CLOUD_INT_CONSTANTS.u16Half * 100 + 50}u);
+    uvec2 iw = uvec2(ic + ivec2(${CLOUD_INT_CONSTANTS.shiftLcm})) % per;
+    uvec2 base = (iw * sc + hf) / 100u;
+    uvec2 icloud = uvec2(ivec2(floor(u_cloud.xy * ${CLOUD_INT_CONSTANTS.u16PerPx.toFixed(1)} + 0.5)) + ivec2(${CLOUD_INT_CONSTANTS.periodU16}));
+    uvec2 ip = (base + icloud) % ${CLOUD_INT_CONSTANTS.periodU16}u;
+    int n1 = cloudTileBilinear16(ivec2(ip & 65535u));
+    uvec2 u2 = ((ip * ${CLOUD_INT_CONSTANTS.oct2Num}u + ${CLOUD_INT_CONSTANTS.oct2Half}u) / ${CLOUD_INT_CONSTANTS.oct2Den}u
+        + uvec2(${CLOUD_INT_CONSTANTS.oct2OffsetU16[0]}u, ${CLOUD_INT_CONSTANTS.oct2OffsetU16[1]}u)) & 65535u;
+    uint b2 = uint(cloudTileBilinear16(ivec2(u2)));
+    int n2 = int((b2 * ${CLOUD_INT_CONSTANTS.oct2WeightNum}u + ${Math.floor(CLOUD_INT_CONSTANTS.oct2WeightDen / 2)}u) / ${CLOUD_INT_CONSTANTS.oct2WeightDen}u);
+    return max(n1, n2);
+}
 float cloudNoiseAt(vec2 cell) {
-    vec2 p = cell + 0.5 + u_cloud.xy;
-    if (u_cloud.w > 0.0) p = (cell + 0.5) * vec2(${CLOUD_PLANE.map(v => v.toFixed(2)).join(', ')}) + u_cloud.xy;
-    float n1 = textureLod(u_cloudTile, fract(p / ${(CLOUD_TILE_WORLD_SCALE * CLOUD_TILE_SIZE).toFixed(1)}), 0.0).r;
-    float n2 = textureLod(u_cloudTile, fract((p / ${CLOUD_SECOND_OCTAVE.scale.toFixed(4)} + vec2(${CLOUD_SECOND_OCTAVE.offset.map(v => v.toFixed(1)).join(', ')}))
-        / ${(CLOUD_TILE_WORLD_SCALE * CLOUD_TILE_SIZE).toFixed(1)}), 0.0).r;
-    float n = max(n1, n2 * ${CLOUD_SECOND_OCTAVE.weight.toFixed(3)});
+    ivec2 ic = ivec2(floor(cell));
+    float n = float(cloudNoiseIntAt(ic)) / 16711680.0;
     if (u_cloudLone.z > 0.0) {
+        vec2 p = cell + 0.5 + u_cloud.xy;
+        if (u_cloud.w > 0.0) p = (cell + 0.5) * vec2(${CLOUD_PLANE.map(v => v.toFixed(2)).join(', ')}) + u_cloud.xy;
         vec2 d = p - u_cloudLone.xy;
         d -= 7168.0 * floor(d / 7168.0 + 0.5);
         n = mix(n, 1.0 - length(d) / u_cloudLone.z, 0.7);
     }
     return n;
 }
-// Solid courses, dithered only in a 1-2 texel seam at each edge: the field is
-// smooth, so a fixed dither band in field units spread a Bayer checker over
-// every gentle slope. Near a threshold (seamAt: any extra ceiling such as
-// the sea's sunlit course) the field's slope over one texel, from two
-// neighbour samples taken only there, sets the seam's half-width.
+// Solid courses, dithered only in a 1-2 texel seam at each edge.
 float cloudSeamField(vec2 cell, float n, float order, float seamAt) {
     float near = min(min(abs(n - u_cloudThresholds.x), abs(n - u_cloudThresholds.y)),
         min(abs(n - u_cloudThresholds.z), abs(n - seamAt)));
     if (near > 0.03) return n;
+    if (u_cloudLone.z <= 0.0) {
+        ivec2 ic = ivec2(floor(cell));
+        int n0 = int(floor(n * 16711680.0 + 0.5));
+        int slope = max(abs(cloudNoiseIntAt(ic + ivec2(1, 0)) - n0), abs(cloudNoiseIntAt(ic + ivec2(0, 1)) - n0));
+        int ord16 = int(floor(order * 16.0 + 0.5)) - 8;
+        return float(n0 + (ord16 * slope) / 4) / 16711680.0;
+    }
     float slope = max(abs(cloudNoiseAt(cell + vec2(1.0, 0.0)) - n), abs(cloudNoiseAt(cell + vec2(0.0, 1.0)) - n));
     return n + (order - 0.5) * 2.0 * slope;
 }
@@ -887,12 +930,16 @@ float seaNear(float excess) {
 float swellPhase(vec2 p) {
     return (dot(p, vec2(${SWELL_SET_NORMAL[0].toFixed(2)}, 1.0)) + u_swellDrift) / ${SWELL_SET_PERIOD.toFixed(1)}
         + ${SWELL_SET_WARP.toFixed(2)} * seaNoise(p / vec2(${SWELL_WARP_CELL[0].toFixed(1)}, ${SWELL_WARP_CELL[1].toFixed(1)}) + vec2(3.0, 11.0))
-        + ${SWELL_SET_WARP_FINE.toFixed(2)} * seaNoise(p / vec2(${SWELL_WARP_FINE_CELL[0].toFixed(1)}, ${SWELL_WARP_FINE_CELL[1].toFixed(1)}) + vec2(29.0, 5.0));
+        + ${SWELL_SET_WARP_FINE.toFixed(2)} * seaNoise(p / vec2(${SWELL_WARP_FINE_CELL[0].toFixed(1)}, ${SWELL_WARP_FINE_CELL[1].toFixed(1)}) + vec2(29.0, 5.0))
+        + ${SWELL_SET_WARP_MID.toFixed(2)} * seaNoise(p / vec2(${SWELL_WARP_MID_CELL[0].toFixed(1)}, ${SWELL_WARP_MID_CELL[1].toFixed(1)}) + vec2(61.0, 19.0));
 }
 // A set's height (0 calm .. 1) at \`along\` (world px along the set) on set
-// \`set\`: value noise over SWELL_AMP_RUN, calm below SWELL_AMP_FLOOR.
+// \`set\`: value noise over SWELL_AMP_RUN modulated by SWELL_PACKET_RUN.
 float swellHeight(float along, float set) {
-    return clamp((seaNoise(vec2(along / ${SWELL_AMP_RUN.toFixed(1)} + 17.0, set * 7.3)) - ${SWELL_AMP_FLOOR.toFixed(2)}) / ${SWELL_AMP_SPAN.toFixed(2)}, 0.0, 1.0);
+    float base = clamp((seaNoise(vec2(along / ${SWELL_AMP_RUN.toFixed(1)} + 17.0, set * 7.3)) - ${SWELL_AMP_FLOOR.toFixed(2)}) / ${SWELL_AMP_SPAN.toFixed(2)}, 0.0, 1.0);
+    if (base <= 0.0) return 0.0;
+    float packet = clamp((seaNoise(vec2(along / ${SWELL_PACKET_RUN.toFixed(1)} + set * 3.7 + 53.0, set * 2.9 + 11.0)) - ${SWELL_PACKET_FLOOR.toFixed(2)}) / ${SWELL_PACKET_SPAN.toFixed(2)}, 0.0, 1.0);
+    return base * packet;
 }
 // A set's crest at world texel p (\`s\` its swellPhase): SWELL_CREST_ROWS rows
 // on the crest, broken along the set into one stroke per SWELL_CREST_RUN
@@ -976,9 +1023,14 @@ float seaKeyReach(vec2 p) {
 // each solid for its first half and Bayer-faded over the rest; else 0.
 float swellForm(float rowsIn, float period, float crestRows, float lit, float trough, float order) {
     float tin = rowsIn - crestRows;
-    if (tin >= 0.0 && tin < trough && (tin < trough * 0.5 || order >= (tin - trough * 0.5) / (trough * 0.5))) return 1.0;
+    float turnT = max(min(${SWELL_TURN_ROWS.toFixed(1)}, trough * 0.45), 1e-4);
+    if (tin >= 0.0 && tin < trough && (tin >= turnT || order < tin / turnT)
+        && (tin < trough * 0.55 || order >= (tin - trough * 0.55) / max(trough * 0.45, 1e-4))) return 1.0;
     float lin = period - rowsIn;
-    return lin < lit && (lin < lit * 0.5 || order >= (lin - lit * 0.5) / (lit * 0.5)) ? -1.0 : 0.0;
+    float linBody = lin - min(1.0, lit * 0.25);
+    float turnL = max(min(${SWELL_TURN_ROWS.toFixed(1)}, lit * 0.45), 1e-4);
+    return linBody > 0.0 && lin < lit && (linBody >= turnL || order < linBody / turnL)
+        && (lin < lit * 0.55 || order >= (lin - lit * 0.55) / max(lit * 0.45, 1e-4)) ? -1.0 : 0.0;
 }
 // 3.3 (a) — the sea body's stop at an open-water texel p (in-map water as
 // deep as the open sea, or the open sea) over its horizon stop \`stop\`, \`s\`
@@ -992,20 +1044,27 @@ float seaBodyStop(vec2 p, float s, float stop, float excess, float order) {
     if (clamp((p.y - OPEN_SEA_HORIZON_Y - ${SEA_BODY_ROWS[0].toFixed(1)}) / ${(SEA_BODY_ROWS[1] - SEA_BODY_ROWS[0]).toFixed(1)}, 0.0, 1.0) <= order) return stop;
     float key = clamp(0.5 - seaKeyReach(p) / ${SEA_KEY_SPAN.toFixed(1)}, 0.0, 1.0);
     float calm = clamp((excess - ${SWELL_CALM_TILES[0].toFixed(1)}) / ${(SWELL_CALM_TILES[1] - SWELL_CALM_TILES[0]).toFixed(1)}, 0.0, 1.0);
+    float farCalm = clamp((excess - ${SWELL_FAR_CALM_TILES[0].toFixed(1)}) / ${(SWELL_FAR_CALM_TILES[1] - SWELL_FAR_CALM_TILES[0]).toFixed(1)}, 0.0, 1.0);
+    float troughCalm = calm * (1.0 - 0.35 * farCalm);
     float along = dot(p, vec2(1.0, -${SWELL_SET_NORMAL[0].toFixed(2)}));
     float h = swellHeight(along, floor(s));
-    float form = swellForm(fract(s) * ${SWELL_SET_PERIOD.toFixed(1)}, ${SWELL_SET_PERIOD.toFixed(1)}, ${SWELL_CREST_ROWS.toFixed(1)},
+    float form = h > 0.0 ? swellForm(fract(s) * ${SWELL_SET_PERIOD.toFixed(1)}, ${SWELL_SET_PERIOD.toFixed(1)}, ${SWELL_CREST_ROWS.toFixed(1)},
         mix(${SWELL_LIT_ROWS[0].toFixed(1)}, ${SWELL_LIT_ROWS[1].toFixed(1)}, key) * h,
-        mix(${SWELL_TROUGH_ROWS[0].toFixed(1)}, ${SWELL_TROUGH_ROWS[1].toFixed(1)}, key) * h * calm, order);
+        mix(${SWELL_TROUGH_ROWS[0].toFixed(1)}, ${SWELL_TROUGH_ROWS[1].toFixed(1)}, key) * h * troughCalm, order) : 0.0;
     if (form == 0.0) {
         float c = dot(p, vec2(${SWELL_SET_NORMAL[0].toFixed(2)}, 1.0)) / ${SWELL_CHOP_PERIOD.toFixed(1)}
             + ${SWELL_CHOP_WARP.toFixed(2)} * seaNoise(p / vec2(${SWELL_CHOP_WARP_CELL[0].toFixed(1)}, ${SWELL_CHOP_WARP_CELL[1].toFixed(1)}) + vec2(41.0, 23.0));
-        float ch = clamp((seaNoise(vec2(along / ${SWELL_CHOP_RUN.toFixed(1)} + 7.0, floor(c) * 5.1)) - ${SWELL_CHOP_FLOOR.toFixed(2)}) / ${SWELL_AMP_SPAN.toFixed(2)}, 0.0, 1.0);
-        form = swellForm(fract(c) * ${SWELL_CHOP_PERIOD.toFixed(1)}, ${SWELL_CHOP_PERIOD.toFixed(1)}, 0.0,
-            mix(${SWELL_CHOP_LIT_ROWS[0].toFixed(1)}, ${SWELL_CHOP_LIT_ROWS[1].toFixed(1)}, key) * ch,
-            mix(${SWELL_CHOP_TROUGH_ROWS[0].toFixed(1)}, ${SWELL_CHOP_TROUGH_ROWS[1].toFixed(1)}, key) * ch * calm, order);
+        float ch = clamp((seaNoise(vec2(along / ${SWELL_CHOP_RUN.toFixed(1)} + 7.0, floor(c) * 5.1)) - ${SWELL_CHOP_FLOOR.toFixed(2)}) / ${SWELL_AMP_SPAN.toFixed(2)}, 0.0, 1.0) * (1.0 - 0.30 * farCalm);
+        if (ch > 0.0) {
+            form = swellForm(fract(c) * ${SWELL_CHOP_PERIOD.toFixed(1)}, ${SWELL_CHOP_PERIOD.toFixed(1)}, 0.0,
+                mix(${SWELL_CHOP_LIT_ROWS[0].toFixed(1)}, ${SWELL_CHOP_LIT_ROWS[1].toFixed(1)}, key) * ch,
+                mix(${SWELL_CHOP_TROUGH_ROWS[0].toFixed(1)}, ${SWELL_CHOP_TROUGH_ROWS[1].toFixed(1)}, key) * ch * troughCalm, order);
+        }
     }
-    if (form < 0.0) return max(stop - ${SWELL_LIT_STEPS.toFixed(1)}, min(stop, ${SWELL_LIT_FLOOR.toFixed(1)}));
+    if (form < 0.0) {
+        float litSteps = order >= farCalm ? ${SWELL_LIT_STEPS.toFixed(1)} : 1.0;
+        return max(stop - litSteps, min(stop, ${SWELL_LIT_FLOOR.toFixed(1)}));
+    }
     return clamp(stop + form, 0.0, 6.0);
 }
 const float OPEN_SEA_REACH = ${OPEN_SEA_LIGHT_REACH.toFixed(1)};
@@ -1098,6 +1157,24 @@ float seaGustAt(vec2 cell) {
     vec2 g = (cell + 0.5 - u_seaGustRect.xy) / (u_seaGustRect.zw * 128.0);
     if (any(lessThan(g, vec2(0.0))) || any(greaterThanEqual(g, vec2(1.0)))) return 0.0;
     return textureLod(u_seaGust, g, 0.0).r;
+}
+// PERF-01 — exact integer bilinear gust lookup for sharp grass-gust thresholds.
+float seaGustIntAt(vec2 cell) {
+    if (u_seaGustRect.z <= 0.0) return 0.0;
+    ivec2 num = ivec2(floor(cell)) * 2 + ivec2(1) - ivec2(floor(u_seaGustRect.xy)) * 2;
+    ivec2 den = ivec2(floor(u_seaGustRect.zw)) * 2;
+    if (num.x < 0 || num.y < 0 || num.x >= den.x * 128 || num.y >= den.y * 128) return 0.0;
+    ivec2 s = clamp(ivec2((uvec2(num) * 256u) / uvec2(den)) - ivec2(128), ivec2(0), ivec2(32512));
+    ivec2 p0 = clamp(s >> 8, ivec2(0), ivec2(127));
+    ivec2 p1 = clamp(p0 + ivec2(1), ivec2(0), ivec2(127));
+    ivec2 f = s & ivec2(255);
+    int a = int(texelFetch(u_seaGust, ivec2(p0.x, p0.y), 0).r * 255.0 + 0.5);
+    int b = int(texelFetch(u_seaGust, ivec2(p1.x, p0.y), 0).r * 255.0 + 0.5);
+    int c = int(texelFetch(u_seaGust, ivec2(p0.x, p1.y), 0).r * 255.0 + 0.5);
+    int d = int(texelFetch(u_seaGust, ivec2(p1.x, p1.y), 0).r * 255.0 + 0.5);
+    int top = a * 256 + (b - a) * f.x;
+    int bot = c * 256 + (d - c) * f.x;
+    return float(top * 256 + (bot - top) * f.y) / 16711680.0;
 }
 // The gust field is coarse (a texel spans tens of world px): a static detail
 // octave of the cloud tile, stretched along the wind, breaks its bilinear
@@ -1262,11 +1339,16 @@ vec3 applyGrassGust(vec3 color, vec2 world) {
     }
     if (k < 0) return color;
     vec2 texel = vec2(floor(world.x * 0.5), floor(world.y));
-    float gust = seaGustAt(vec2(texel.x * 2.0, texel.y));
+    float gust = seaGustIntAt(vec2(texel.x * 2.0, texel.y));
     if (gust <= 0.0) return color;
-    float ruffle = textureLod(u_cloudTile, fract((texel + vec2(311.0, 173.0)) / vec2(384.0, 256.0)), 0.0).r;
-    float order = ruffle * 0.5 + waterBayer4(texel) * 0.5;
-    if (order >= min(${GRASS_GUST_ORDER_CAP.toFixed(2)}, ${GRASS_GUST_ORDER_BASE.toFixed(2)} + ${GRASS_GUST_ORDER_GAIN.toFixed(2)} * gust)) return color;
+    ivec2 it = ivec2(floor(texel));
+    ivec2 ru16 = ivec2(int(((uint(it.x + 192311) % 384u) * 65536u) / 384u), ((it.y + 173) & 255) * 256);
+    int rInt = cloudTileBilinear16(ru16);
+    int bInt = int(floor(waterBayer4(texel) * 16.0 + 0.5)) * 1044480;
+    int orderInt = (rInt + bInt) / 2;
+    int gustInt = int(floor(gust * 16711680.0 + 0.5));
+    int threshInt = min(${Math.round(GRASS_GUST_ORDER_CAP * 16711680)}, ${Math.round(GRASS_GUST_ORDER_BASE * 16711680)} + (gustInt / 1000) * ${Math.round(GRASS_GUST_ORDER_GAIN * 1000)} + ((gustInt % 1000) * ${Math.round(GRASS_GUST_ORDER_GAIN * 1000)}) / 1000);
+    if (orderInt >= threshInt) return color;
     return GRASS_GUST_TO[k];
 }`;
 
@@ -3309,8 +3391,9 @@ vec3 shadeOpenSea(vec2 cell) {
     // and no line parallel to the map edge appears: 0 within 1.5 tiles, 1
     // past 6.
     float reach = clamp((excess - 1.5) / 4.5, 0.0, 1.0);
-    float n = (u_cloud.z > 0.0 || u_squall.w > 0.0 || u_seaSunlit > 0.0) ? cloudNoiseAt(cell) : 1.0;
-    float m = u_cloud.z > 0.0 || u_seaSunlit > 0.0 ? cloudSeamField(cell, n, order, u_seaSunlit) : n;
+    bool needCloudM = (u_cloud.z > 0.0 && (u_cloud.w <= 0.0 || u_seaLift > 0.0)) || u_seaSunlit > 0.0;
+    float n = (needCloudM || u_squall.w > 0.0) ? cloudNoiseAt(cell) : 1.0;
+    float m = needCloudM ? cloudSeamField(cell, n, order, u_seaSunlit) : n;
     float near = seaNear(excess);
     bool marked = false;
     vec3 c;
@@ -3342,7 +3425,7 @@ vec3 shadeOpenSea(vec2 cell) {
         // SEA-3 — a calm sea lays no caps and no deep dashes; a fresh one
         // gathers more cap clusters and runs whitecap streak rows downwind.
         bool calm = seaCalm();
-        float paw = seaPawCaps(cell, order);
+        float paw = calm ? 0.0 : seaPawCaps(cell, order);
         if (seaFresh()) paw += ${SEA_STATE.freshCaps.toFixed(2)};
         float cap = calm ? 0.0 : swellCap(cell, s, near, paw);
         float lighter = cap;
@@ -3407,9 +3490,16 @@ vec3 shadeOpenSea(vec2 cell) {
     }
     c = applyGradeVignette(c, texelPx, u_resolution);
     if (u_mist.w > 0.0) {
-        // MS-1 — the low mist at height 0 on open water (near 1: the scene's
-        // in-map water reads the same top, so the map edge shows no seam).
-        if (u_mist.x > 0.0) c = applyMist(c, mistCourse(cell + 0.5, 0.0, 1.0, false, waterBayer4(floor(cell * 0.5))), u_fogColor, false);
+        // MS-1 — the low mist on open water: fair/frosty-dawn radiation mist
+        // hugs the island coves and tapers offshore, while fog weather holds;
+        // marked swell crests rise one course.
+        if (u_mist.x > 0.0) {
+            float fogHold = clamp(u_weather.y / 0.55, 0.0, 1.0);
+            float seaMistNear = mix(mix(0.18, 0.82, fogHold), 1.0, clamp(1.0 - max(0.0, excess - 1.5) / 7.5, 0.0, 1.0))
+                * mix(clamp((t - hazeRows) / 140.0, 0.28, 1.0), 1.0, fogHold);
+            float crestH = marked ? clamp((excess - 0.5) / 2.0, 0.0, 1.0) * ${MIST.coursePx.toFixed(1)} : 0.0;
+            c = applyMist(c, mistCourse(cell + 0.5, crestH, seaMistNear, false, waterBayer4(floor(cell * 0.5))), u_fogColor, false);
+        }
     } else {
         // The scene pass's ground fog at elevation 0 (luma rise held at 0.06).
         float groundFog = clamp(u_weather.y, 0.0, 1.0) * smoothstep(0.18, 0.98, 1.0 - texelPx.y / max(1.0, u_resolution.y));

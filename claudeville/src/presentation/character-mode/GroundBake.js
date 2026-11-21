@@ -124,6 +124,7 @@ const DIRT = ramp('dirt');
 const ROAD = ramp('road');
 const PLAZA = ramp('plaza');
 const SAND = ramp('sand');
+const STONE = ramp('stone');
 const FOLIAGE = ramp('foliage');
 const TIMBER = ramp('timber');
 const OCHRE = ramp('clothOchre');
@@ -1487,6 +1488,40 @@ function drawDecals(r, ctx) {
             const sy = y0 + row;
             if (vnoise(sx / 180, sy / 90, 78) < 0.55) continue;
             list.push({ i, row, draw: pebble, pick: h * 16, group: 0 });
+        }
+    }
+
+    // Back-shore shingle/pebble pockets along NW/NE beaches: C1 stone[1..4]
+    // clusters gathered in low-frequency coastal pockets, never an even pepper.
+    for (let row = 4; row < rows - 1; row += 2) {
+        for (let col = 1; col < cols - 1; col++) {
+            const i = row * cols + col;
+            if (surfaces[i] !== S_SAND || aoBuf[i] > 50) continue;
+            const sx = x0 + col * TEXEL_W;
+            const sy = y0 + row;
+            const tx = sx / TILE_WIDTH + sy / TILE_HEIGHT;
+            const ty = sy / TILE_HEIGHT - sx / TILE_WIDTH;
+            if (tx > 2.2 && ty > 2.2) continue;
+            const sd = sdBuf[i];
+            if (!(sd > -0.48 && sd < -0.04)) continue;
+            const pocket = vnoise(sx / 84, sy / 42, 811);
+            if (pocket < 0.44) continue;
+            const h = hash2(col, row, 813);
+            if (h > (pocket - 0.44) * 0.34) continue;
+            list.push({
+                i,
+                row,
+                pick: h * 16,
+                group: hash2(col, row, 817),
+                draw: (d) => {
+                    if (surfaces[d.i] !== S_SAND) return;
+                    const c = d.i % cols;
+                    const topTone = d.group > 0.66 ? STONE[4] : d.group > 0.26 ? STONE[3] : STONE[2];
+                    put(c, d.row - 1, topTone);
+                    if (d.pick > 0.30) put(c + 1, d.row - 1, STONE[2]);
+                    if (d.pick > 0.62) put(c + 1, d.row, STONE[1]);
+                },
+            });
         }
     }
 

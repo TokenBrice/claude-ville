@@ -995,6 +995,37 @@ export const LONE_CLOUD_THRESHOLDS = Object.freeze([0.55, 0.68]);
 // (its shade is one stop of the lift).
 export const CLOUD_PLANE = Object.freeze([0.32, 0.8]);
 export const CLOUD_PLANE_CORE = 0.85;
+// PERF-01 — exact 32-bit integer bilinear constants derived from CLOUD_TILE_*,
+// CLOUD_FIELD_PERIOD, CLOUD_PLANE and CLOUD_SECOND_OCTAVE so GLSL, WGSL and the
+// JS twin evaluate the same cloud field without hardware linear-filter drift.
+const CLOUD_FIELD_SPAN_PX = CLOUD_TILE_WORLD_SCALE * CLOUD_TILE_SIZE;
+const CLOUD_U16_PER_PX = Math.round(65536 / CLOUD_FIELD_SPAN_PX);
+const CLOUD_OCT2_NUM = 4;
+const CLOUD_OCT2_DEN = Math.round(CLOUD_SECOND_OCTAVE.scale * CLOUD_OCT2_NUM);
+const intGcd = (a, b) => (b === 0 ? a : intGcd(b, a % b));
+const intLcm = (a, b) => (a / intGcd(a, b)) * b;
+const CLOUD_PLANE_PERIOD = CLOUD_PLANE.map(s => Math.round(CLOUD_FIELD_PERIOD / s));
+const CLOUD_SHIFT_LCM = intLcm(CLOUD_FIELD_PERIOD, intLcm(CLOUD_PLANE_PERIOD[0], CLOUD_PLANE_PERIOD[1]));
+const CLOUD_OCT2_WEIGHT_MILLI = Math.round(CLOUD_SECOND_OCTAVE.weight * 1000);
+const CLOUD_OCT2_WEIGHT_GCD = intGcd(CLOUD_OCT2_WEIGHT_MILLI, 1000);
+export const CLOUD_INT_CONSTANTS = Object.freeze({
+    spanPx: CLOUD_FIELD_SPAN_PX,
+    u16PerPx: CLOUD_U16_PER_PX,
+    u16Half: Math.round(CLOUD_U16_PER_PX / 2),
+    periodPx: CLOUD_FIELD_PERIOD,
+    periodU16: Math.round(CLOUD_FIELD_PERIOD * CLOUD_U16_PER_PX),
+    shiftLcm: CLOUD_SHIFT_LCM,
+    planePeriod: Object.freeze(CLOUD_PLANE_PERIOD),
+    planeScale100: Object.freeze(CLOUD_PLANE.map(s => Math.round(s * CLOUD_U16_PER_PX * 100))),
+    planeHalf100: Object.freeze(CLOUD_PLANE.map(s => Math.round(0.5 * s * CLOUD_U16_PER_PX * 100))),
+    oct2Num: CLOUD_OCT2_NUM,
+    oct2Den: CLOUD_OCT2_DEN,
+    oct2Half: Math.floor(CLOUD_OCT2_DEN / 2),
+    oct2OffsetU16: Object.freeze(CLOUD_SECOND_OCTAVE.offset.map(o => Math.round(o * CLOUD_U16_PER_PX))),
+    oct2WeightMilli: CLOUD_OCT2_WEIGHT_MILLI,
+    oct2WeightNum: CLOUD_OCT2_WEIGHT_MILLI / CLOUD_OCT2_WEIGHT_GCD,
+    oct2WeightDen: 1000 / CLOUD_OCT2_WEIGHT_GCD,
+});
 // SEA-1 — sunlit water lifts by up to this many palette stops (by day, under
 // a visible sun, outside the cloud shade), never lighter than stop
 // SEA_SUN_LIFT_FLOOR (a stop already lighter keeps its own), so a lifted
@@ -1113,6 +1144,61 @@ export function cloudFieldAt(data, x, y, size = CLOUD_TILE_SIZE) {
     const { scale, offset, weight } = CLOUD_SECOND_OCTAVE;
     const n2 = sampleCloudTile(data, size, (x / scale + offset[0]) / span, (y / scale + offset[1]) / span);
     return Math.max(n1, n2 * weight);
+}
+
+/**
+ * PERF-01 — exact JS twin of the GLSL/WGSL positive 32-bit integer bilinear
+ * cloud-tile sampler (returns 0..16711680 = 255 * 65536).
+ */
+export function cloudTileBilinear16(data, u16x, u16y, size = CLOUD_TILE_SIZE) {
+    const sx = (u16x - 128) & 65535;
+    const sy = (u16y - 128) & 65535;
+    const t0x = sx >> 8;
+    const t0y = sy >> 8;
+    const fx = sx & 255;
+    const fy = sy & 255;
+    const mask = size - 1;
+    const byteAt = (ix, iy) => data[(((iy & mask) * size) + (ix & mask)) * 4];
+    const a = byteAt(t0x, t0y);
+    const b = byteAt(t0x + 1, t0y);
+    const c = byteAt(t0x, t0y + 1);
+    const d = byteAt(t0x + 1, t0y + 1);
+    const top = a * 256 + (b - a) * fx;
+    const bot = c * 256 + (d - c) * fx;
+    return top * 256 + (bot - top) * fy;
+}
+
+/**
+ * PERF-01 — exact JS twin of GLSL/WGSL `cloudNoiseIntAt(ic)` (0..16711680),
+ * deriving all scales and weights from `CLOUD_INT_CONSTANTS`.
+ */
+export function cloudNoiseIntAt(data, icx, icy, driftX = 0, driftY = 0, planeOn = false, size = CLOUD_TILE_SIZE) {
+    const C = CLOUD_INT_CONSTANTS;
+    const ix = Math.floor(icx);
+    const iy = Math.floor(icy);
+    let baseX;
+    let baseY;
+    if (planeOn) {
+        const wx = ((ix % C.planePeriod[0]) + C.planePeriod[0]) % C.planePeriod[0];
+        const wy = ((iy % C.planePeriod[1]) + C.planePeriod[1]) % C.planePeriod[1];
+        baseX = Math.trunc((wx * C.planeScale100[0] + C.planeHalf100[0] + 50) / 100);
+        baseY = Math.trunc((wy * C.planeScale100[1] + C.planeHalf100[1] + 50) / 100);
+    } else {
+        const wx = ((ix % C.periodPx) + C.periodPx) % C.periodPx;
+        const wy = ((iy % C.periodPx) + C.periodPx) % C.periodPx;
+        baseX = wx * C.u16PerPx + C.u16Half;
+        baseY = wy * C.u16PerPx + C.u16Half;
+    }
+    const dx = Math.floor(driftX * C.u16PerPx + 0.5);
+    const dy = Math.floor(driftY * C.u16PerPx + 0.5);
+    const ipx = (((baseX + dx) % C.periodU16) + C.periodU16) % C.periodU16;
+    const ipy = (((baseY + dy) % C.periodU16) + C.periodU16) % C.periodU16;
+    const n1 = cloudTileBilinear16(data, ipx & 65535, ipy & 65535, size);
+    const u2x = (Math.trunc((ipx * C.oct2Num + C.oct2Half) / C.oct2Den) + C.oct2OffsetU16[0]) & 65535;
+    const u2y = (Math.trunc((ipy * C.oct2Num + C.oct2Half) / C.oct2Den) + C.oct2OffsetU16[1]) & 65535;
+    const b2 = cloudTileBilinear16(data, u2x, u2y, size);
+    const n2 = Math.trunc((b2 * C.oct2WeightNum + Math.floor(C.oct2WeightDen / 2)) / C.oct2WeightDen);
+    return Math.max(n1, n2);
 }
 
 /**

@@ -60,12 +60,16 @@ import {
     SWELL_CREST_RISE,
     SWELL_CREST_ROWS,
     SWELL_CREST_RUN,
+    SWELL_FAR_CALM_TILES,
     SWELL_GAP_GAIN,
     SWELL_LIT_FLOOR,
     SWELL_LIT_ROWS,
     SWELL_LIT_STEPS,
     SWELL_LONE_CAPS,
     SWELL_NEAR_FADE,
+    SWELL_PACKET_FLOOR,
+    SWELL_PACKET_RUN,
+    SWELL_PACKET_SPAN,
     SWELL_SET_GAIN,
     SWELL_SET_LEAD,
     SWELL_SET_NORMAL,
@@ -74,10 +78,13 @@ import {
     SWELL_SET_SHARE_OPEN,
     SWELL_SET_WARP,
     SWELL_SET_WARP_FINE,
+    SWELL_SET_WARP_MID,
     SWELL_SHORE_SD,
     SWELL_TROUGH_ROWS,
+    SWELL_TURN_ROWS,
     SWELL_WARP_CELL,
     SWELL_WARP_FINE_CELL,
+    SWELL_WARP_MID_CELL,
 } from '../GpuWorldRenderer.js';
 import { MAP_SIZE, TILE_HEIGHT, TILE_WIDTH } from '../../../../config/constants.js';
 import { DEEP_DASH_DENSITY } from '../GpuFrameState.js';
@@ -177,10 +184,14 @@ fn seaNear(excess: f32) -> f32 {
 fn swellPhase(p: vec2f) -> f32 {
     return (dot(p, vec2f(${SWELL_SET_NORMAL[0].toFixed(2)}, 1.0)) + frame.swellDrift) / ${SWELL_SET_PERIOD.toFixed(1)}
         + ${SWELL_SET_WARP.toFixed(2)} * seaNoise(p / vec2f(${SWELL_WARP_CELL[0].toFixed(1)}, ${SWELL_WARP_CELL[1].toFixed(1)}) + vec2f(3.0, 11.0))
-        + ${SWELL_SET_WARP_FINE.toFixed(2)} * seaNoise(p / vec2f(${SWELL_WARP_FINE_CELL[0].toFixed(1)}, ${SWELL_WARP_FINE_CELL[1].toFixed(1)}) + vec2f(29.0, 5.0));
+        + ${SWELL_SET_WARP_FINE.toFixed(2)} * seaNoise(p / vec2f(${SWELL_WARP_FINE_CELL[0].toFixed(1)}, ${SWELL_WARP_FINE_CELL[1].toFixed(1)}) + vec2f(29.0, 5.0))
+        + ${SWELL_SET_WARP_MID.toFixed(2)} * seaNoise(p / vec2f(${SWELL_WARP_MID_CELL[0].toFixed(1)}, ${SWELL_WARP_MID_CELL[1].toFixed(1)}) + vec2f(61.0, 19.0));
 }
 fn swellHeight(along: f32, setId: f32) -> f32 {
-    return clamp((seaNoise(vec2f(along / ${SWELL_AMP_RUN.toFixed(1)} + 17.0, setId * 7.3)) - ${SWELL_AMP_FLOOR.toFixed(2)}) / ${SWELL_AMP_SPAN.toFixed(2)}, 0.0, 1.0);
+    let base = clamp((seaNoise(vec2f(along / ${SWELL_AMP_RUN.toFixed(1)} + 17.0, setId * 7.3)) - ${SWELL_AMP_FLOOR.toFixed(2)}) / ${SWELL_AMP_SPAN.toFixed(2)}, 0.0, 1.0);
+    if (base <= 0.0) { return 0.0; }
+    let packet = clamp((seaNoise(vec2f(along / ${SWELL_PACKET_RUN.toFixed(1)} + setId * 3.7 + 53.0, setId * 2.9 + 11.0)) - ${SWELL_PACKET_FLOOR.toFixed(2)}) / ${SWELL_PACKET_SPAN.toFixed(2)}, 0.0, 1.0);
+    return base * packet;
 }
 fn swellCrest(p: vec2f, s: f32) -> f32 {
     let rowsIn = fract(s) * ${SWELL_SET_PERIOD.toFixed(1)};
@@ -235,28 +246,43 @@ fn seaKeyReach(p: vec2f) -> f32 {
 }
 fn swellForm(rowsIn: f32, period: f32, crestRows: f32, lit: f32, trough: f32, order: f32) -> f32 {
     let tin = rowsIn - crestRows;
-    if (tin >= 0.0 && tin < trough && (tin < trough * 0.5 || order >= (tin - trough * 0.5) / (trough * 0.5))) { return 1.0; }
+    let turnT = max(min(${SWELL_TURN_ROWS.toFixed(1)}, trough * 0.45), 1e-4);
+    if (tin >= 0.0 && tin < trough && (tin >= turnT || order < tin / turnT)
+        && (tin < trough * 0.55 || order >= (tin - trough * 0.55) / max(trough * 0.45, 1e-4))) { return 1.0; }
     let lin = period - rowsIn;
-    return select(0.0, -1.0, lin < lit && (lin < lit * 0.5 || order >= (lin - lit * 0.5) / (lit * 0.5)));
+    let linBody = lin - min(1.0, lit * 0.25);
+    let turnL = max(min(${SWELL_TURN_ROWS.toFixed(1)}, lit * 0.45), 1e-4);
+    return select(0.0, -1.0, linBody > 0.0 && lin < lit && (linBody >= turnL || order < linBody / turnL)
+        && (lin < lit * 0.55 || order >= (lin - lit * 0.55) / max(lit * 0.45, 1e-4)));
 }
 fn seaBodyStop(p: vec2f, s: f32, stop: f32, excess: f32, order: f32) -> f32 {
     if (clamp((p.y - OPEN_SEA_HORIZON_Y - ${SEA_BODY_ROWS[0].toFixed(1)}) / ${(SEA_BODY_ROWS[1] - SEA_BODY_ROWS[0]).toFixed(1)}, 0.0, 1.0) <= order) { return stop; }
     let key = clamp(0.5 - seaKeyReach(p) / ${SEA_KEY_SPAN.toFixed(1)}, 0.0, 1.0);
     let calm = clamp((excess - ${SWELL_CALM_TILES[0].toFixed(1)}) / ${(SWELL_CALM_TILES[1] - SWELL_CALM_TILES[0]).toFixed(1)}, 0.0, 1.0);
+    let farCalm = clamp((excess - ${SWELL_FAR_CALM_TILES[0].toFixed(1)}) / ${(SWELL_FAR_CALM_TILES[1] - SWELL_FAR_CALM_TILES[0]).toFixed(1)}, 0.0, 1.0);
+    let troughCalm = calm * (1.0 - 0.35 * farCalm);
     let along = dot(p, vec2f(1.0, -${SWELL_SET_NORMAL[0].toFixed(2)}));
     let h = swellHeight(along, floor(s));
-    var form = swellForm(fract(s) * ${SWELL_SET_PERIOD.toFixed(1)}, ${SWELL_SET_PERIOD.toFixed(1)}, ${SWELL_CREST_ROWS.toFixed(1)},
-        mix(${SWELL_LIT_ROWS[0].toFixed(1)}, ${SWELL_LIT_ROWS[1].toFixed(1)}, key) * h,
-        mix(${SWELL_TROUGH_ROWS[0].toFixed(1)}, ${SWELL_TROUGH_ROWS[1].toFixed(1)}, key) * h * calm, order);
+    var form = 0.0;
+    if (h > 0.0) {
+        form = swellForm(fract(s) * ${SWELL_SET_PERIOD.toFixed(1)}, ${SWELL_SET_PERIOD.toFixed(1)}, ${SWELL_CREST_ROWS.toFixed(1)},
+            mix(${SWELL_LIT_ROWS[0].toFixed(1)}, ${SWELL_LIT_ROWS[1].toFixed(1)}, key) * h,
+            mix(${SWELL_TROUGH_ROWS[0].toFixed(1)}, ${SWELL_TROUGH_ROWS[1].toFixed(1)}, key) * h * troughCalm, order);
+    }
     if (form == 0.0) {
         let c = dot(p, vec2f(${SWELL_SET_NORMAL[0].toFixed(2)}, 1.0)) / ${SWELL_CHOP_PERIOD.toFixed(1)}
             + ${SWELL_CHOP_WARP.toFixed(2)} * seaNoise(p / vec2f(${SWELL_CHOP_WARP_CELL[0].toFixed(1)}, ${SWELL_CHOP_WARP_CELL[1].toFixed(1)}) + vec2f(41.0, 23.0));
-        let ch = clamp((seaNoise(vec2f(along / ${SWELL_CHOP_RUN.toFixed(1)} + 7.0, floor(c) * 5.1)) - ${SWELL_CHOP_FLOOR.toFixed(2)}) / ${SWELL_AMP_SPAN.toFixed(2)}, 0.0, 1.0);
-        form = swellForm(fract(c) * ${SWELL_CHOP_PERIOD.toFixed(1)}, ${SWELL_CHOP_PERIOD.toFixed(1)}, 0.0,
-            mix(${SWELL_CHOP_LIT_ROWS[0].toFixed(1)}, ${SWELL_CHOP_LIT_ROWS[1].toFixed(1)}, key) * ch,
-            mix(${SWELL_CHOP_TROUGH_ROWS[0].toFixed(1)}, ${SWELL_CHOP_TROUGH_ROWS[1].toFixed(1)}, key) * ch * calm, order);
+        let ch = clamp((seaNoise(vec2f(along / ${SWELL_CHOP_RUN.toFixed(1)} + 7.0, floor(c) * 5.1)) - ${SWELL_CHOP_FLOOR.toFixed(2)}) / ${SWELL_AMP_SPAN.toFixed(2)}, 0.0, 1.0) * (1.0 - 0.30 * farCalm);
+        if (ch > 0.0) {
+            form = swellForm(fract(c) * ${SWELL_CHOP_PERIOD.toFixed(1)}, ${SWELL_CHOP_PERIOD.toFixed(1)}, 0.0,
+                mix(${SWELL_CHOP_LIT_ROWS[0].toFixed(1)}, ${SWELL_CHOP_LIT_ROWS[1].toFixed(1)}, key) * ch,
+                mix(${SWELL_CHOP_TROUGH_ROWS[0].toFixed(1)}, ${SWELL_CHOP_TROUGH_ROWS[1].toFixed(1)}, key) * ch * troughCalm, order);
+        }
     }
-    if (form < 0.0) { return max(stop - ${SWELL_LIT_STEPS.toFixed(1)}, min(stop, ${SWELL_LIT_FLOOR.toFixed(1)})); }
+    if (form < 0.0) {
+        let litSteps = select(1.0, ${SWELL_LIT_STEPS.toFixed(1)}, order >= farCalm);
+        return max(stop - litSteps, min(stop, ${SWELL_LIT_FLOOR.toFixed(1)}));
+    }
     return clamp(stop + form, 0.0, 6.0);
 }
 const OPEN_SEA_REACH: f32 = ${OPEN_SEA_LIGHT_REACH.toFixed(1)};
@@ -314,6 +340,23 @@ fn seaGustAt(cell: vec2f) -> f32 {
     let g = (cell + 0.5 - frame.seaGustRect.xy) / (frame.seaGustRect.zw * 128.0);
     if (any(g < vec2f(0.0)) || any(g >= vec2f(1.0))) { return 0.0; }
     return textureSampleLevel(seaGust, seaGustSampler, g, 0.0).r;
+}
+fn seaGustIntAt(cell: vec2f) -> f32 {
+    if (frame.seaGustRect.z <= 0.0) { return 0.0; }
+    let num = vec2i(floor(cell)) * 2 + vec2i(1) - vec2i(floor(frame.seaGustRect.xy)) * 2;
+    let den = vec2i(floor(frame.seaGustRect.zw)) * 2;
+    if (num.x < 0 || num.y < 0 || num.x >= den.x * 128 || num.y >= den.y * 128) { return 0.0; }
+    let s = clamp(vec2i((vec2u(num) * 256u) / vec2u(den)) - vec2i(128), vec2i(0), vec2i(32512));
+    let p0 = clamp(s >> vec2u(8u), vec2i(0), vec2i(127));
+    let p1 = clamp(p0 + vec2i(1), vec2i(0), vec2i(127));
+    let f = s & vec2i(255);
+    let a = i32(textureLoad(seaGust, vec2i(p0.x, p0.y), 0).r * 255.0 + 0.5);
+    let b = i32(textureLoad(seaGust, vec2i(p1.x, p0.y), 0).r * 255.0 + 0.5);
+    let c = i32(textureLoad(seaGust, vec2i(p0.x, p1.y), 0).r * 255.0 + 0.5);
+    let d = i32(textureLoad(seaGust, vec2i(p1.x, p1.y), 0).r * 255.0 + 0.5);
+    let top = a * 256 + (b - a) * f.x;
+    let bot = c * 256 + (d - c) * f.x;
+    return f32(top * 256 + (bot - top) * f.y) / 16711680.0;
 }
 fn seaPawAt(cell: vec2f, gust: f32, order: f32) -> bool {
     if (gust <= 0.0) { return false; }

@@ -28,8 +28,8 @@ test('the GLSL and WGSL low mist are twins', () => {
     const sea = read('gpu/wgsl/openSea.js');
     assert.ok(glsl.includes('mistCourse(recvGround, mistH, mistNear, mistH > 0.5, bayer4(floor(artCell * 0.5)))'));
     assert.ok(scene.includes('mistCourse(recvGround, mistH, mistNear, mistH > 0.5, bayer4(floor(artCell * 0.5)))'));
-    assert.ok(glsl.includes('mistCourse(cell + 0.5, 0.0, 1.0, false, waterBayer4(floor(cell * 0.5)))'));
-    assert.ok(sea.includes('mistCourse(cell + 0.5, 0.0, 1.0, false, waterBayer4(floor(cell * 0.5)))'));
+    assert.ok(glsl.includes('mistCourse(cell + 0.5, crestH, seaMistNear, false, waterBayer4(floor(cell * 0.5)))'));
+    assert.ok(sea.includes('mistCourse(cell + 0.5, crestH, seaMistNear, false, waterBayer4(floor(cell * 0.5)))'));
     // A body takes at most the first course, on both backends.
     assert.ok(glsl.includes('if (recvClass == 2) mist = min(mist, 1.0);'));
     assert.ok(scene.includes('if (recvClass == 2) { mist = min(mist, 1.0); }'));

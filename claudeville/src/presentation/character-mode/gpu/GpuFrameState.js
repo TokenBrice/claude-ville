@@ -168,12 +168,13 @@ export function resolveOccluderChannel(feed = {}) {
 // takes at most course 1. The density (fog weather or the daily dawn mist)
 // comes from WeatherRenderer.mistDensity.
 export const MIST = Object.freeze({
-    // The two reads lie 8:1 and ~5:1 along the wind's axis, so the mist's
-    // gaps over open water are long low wisps, never round holes.
-    scaleA: Object.freeze([2048, 256]),
-    scaleB: Object.freeze([1024, 192]),
+    // Incommensurate horizontal/vertical periods (lcm 10752 x 960 world px)
+    // keep the ~11:1 / 8:1 along-wind wisp elongation while preventing visible
+    // 2048 px tile repeats across 5120x1440 ultrawide views (4880 px wide).
+    scaleA: Object.freeze([3584, 320]),
+    scaleB: Object.freeze([1536, 192]),
     offsetB: Object.freeze([0.31, 0.17]),
-    wrap: Object.freeze([2048, 768]),
+    wrap: Object.freeze([10752, 960]),
     topBase: 14,
     topSwell: 34,
     inland: 0.3,
@@ -471,7 +472,11 @@ export function resolveSeaState(feed = {}, level = POST_FX_LEVELS.FULL, night = 
         out.state = seaStateFor(weather, sea, out.state);
         out.stateTick = tick;
     }
-    if (moving) {
+    if (Number.isFinite(feed.seaStreakShift)) {
+        const wrap = SEA_STATE.streakWrap;
+        out.shift = ((Math.round(feed.seaStreakShift) % wrap) + wrap) % wrap;
+        out.tick = tick;
+    } else if (moving) {
         if (out.tick !== null && tick > out.tick) {
             const steps = Math.min(8, Math.floor(tick / 2) - Math.floor(out.tick / 2));
             const wrap = SEA_STATE.streakWrap;
