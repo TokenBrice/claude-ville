@@ -11,6 +11,7 @@ const HOOK_WAIT_RETENTION_MS = 30 * 60_000;
 const PROMPT_DETAIL_MAX_LENGTH = 200;
 
 const KNOWN_PROVIDERS = new Set([
+  'antigravity',
   'claude',
   'codex',
   'gemini',
@@ -48,9 +49,16 @@ function normalizedKind(value) {
 
 function normalizedProviderKind(value, provider) {
   const kind = normalizedKind(value);
-  if (provider !== 'gemini') return kind;
-  if (kind === 'beforetool') return 'pretooluse';
-  if (kind === 'aftertool') return 'posttooluse';
+  if (provider === 'gemini') {
+    if (kind === 'beforetool') return 'pretooluse';
+    if (kind === 'aftertool') return 'posttooluse';
+    return kind;
+  }
+  if (provider === 'antigravity') {
+    if (kind === 'preinvocation') return 'userpromptsubmit';
+    if (kind === 'postinvocation') return 'posttooluse';
+    return kind;
+  }
   return kind;
 }
 
@@ -90,7 +98,7 @@ function promptCandidate(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return '';
   // Commands and paths answer the operator's question without retaining file
   // contents, arbitrary permission payloads, or model prose.
-  for (const key of ['command', 'file_path', 'path', 'query', 'pattern', 'description']) {
+  for (const key of ['command', 'CommandLine', 'file_path', 'Path', 'path', 'query', 'pattern', 'description']) {
     if (typeof input[key] === 'string' && input[key].trim()) return input[key];
   }
   return '';

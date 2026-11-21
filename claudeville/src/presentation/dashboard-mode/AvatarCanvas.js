@@ -905,6 +905,57 @@ export class AvatarCanvas {
             ctx.arc(1.6, 4, 3, Math.PI * 1.75, Math.PI * 0.25, true);
             ctx.closePath();
             ctx.fill();
+            return;
+        }
+
+        if (identity.modelClass === 'carbon') {
+            // faceted diamond prism — Carbon grand alchemist
+            ctx.fillStyle = accent;
+            ctx.beginPath();
+            ctx.moveTo(0, -1);
+            ctx.lineTo(5, 4);
+            ctx.lineTo(0, 9);
+            ctx.lineTo(-5, 4);
+            ctx.closePath();
+            ctx.fill();
+            ctx.strokeStyle = trim;
+            ctx.lineWidth = 0.8;
+            ctx.stroke();
+            return;
+        }
+
+        if (identity.modelClass === 'argon') {
+            // twin noble-gas phials — Argon savant
+            ctx.fillStyle = accent;
+            ctx.fillRect(-4, 1, 3, 7);
+            ctx.fillRect(1, 1, 3, 7);
+            ctx.fillStyle = trim;
+            ctx.fillRect(-4, 0, 3, 1.5);
+            ctx.fillRect(1, 0, 3, 1.5);
+            return;
+        }
+
+        if (identity.modelClass === 'neon') {
+            // diagonal discharge vial — Neon prismatic alchemist
+            ctx.strokeStyle = accent;
+            ctx.lineWidth = 1.6;
+            ctx.beginPath();
+            ctx.moveTo(-4, 8);
+            ctx.lineTo(4, 0);
+            ctx.stroke();
+            ctx.fillStyle = trim;
+            ctx.fillRect(2, -1, 3, 3);
+            return;
+        }
+
+        if (identity.modelClass === 'hydrogen' || identity.modelClass === 'gemini-flash') {
+            // round spark alembic flask — Hydrogen / Gemini Flash
+            ctx.fillStyle = accent;
+            ctx.beginPath();
+            ctx.arc(0, 5, 3.2, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = trim;
+            ctx.fillRect(-1.5, 0, 3, 2.2);
         }
     }
 

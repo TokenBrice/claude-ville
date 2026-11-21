@@ -212,6 +212,44 @@ test('GLM bodies: the grandmaster and the abbot, for omp-hosted and unknown z.AI
     assert.equal(getModelVisualIdentity('deepseek-flash', 'max', 'omp', 'agent-1').spriteId, 'agent.deepseek.flash.xhigh');
 });
 
+test('Gemini 4 periodic-element models resolve for Gemini and Antigravity, with two Carbon bodies', () => {
+    const expected = [
+        ['gemini-pro-orchestrator-carbon', 'gemini.orchestrator-carbon', 'agent.gemini.carbon', 4, 20, 0.2],
+        ['gemini-pro-orchestrator-argon', 'gemini.orchestrator-argon', 'agent.gemini.argon', 4, 20, 0.2],
+        ['gemini-pro-orchestrator-neon', 'gemini.orchestrator-neon', 'agent.gemini.neon', 3, 15, 0.15],
+        ['orchestrator-neon', 'gemini.orchestrator-neon', 'agent.gemini.neon', 3, 15, 0.15],
+        ['gemini-flash-worker-agy', 'gemini.flash-worker', 'agent.gemini.flash', 1.5, 7.5, 0.15],
+        ['gemini-4-carbon', 'gemini.4-carbon', 'agent.gemini.carbon', 4, 20, 0.2],
+        ['gemini-4-carbon-high', 'gemini.4-carbon', 'agent.gemini.carbon', 4, 20, 0.2],
+        ['gemini-4-argon', 'gemini.4-argon', 'agent.gemini.argon', 4, 20, 0.2],
+        ['gemini-4-neon', 'gemini.4-neon', 'agent.gemini.neon', 3, 15, 0.15],
+        ['gemini-4-hydrogen', 'gemini.4-hydrogen', 'agent.gemini.hydrogen', 1.5, 7.5, 0.075],
+        ['gemini-3.8-flash', 'gemini.3-8-flash', 'agent.gemini.flash', 1.5, 7.5, 0.15],
+        ['gemini-3.6-flash', 'gemini.3-8-flash', 'agent.gemini.flash', 1.5, 7.5, 0.15],
+    ];
+    for (const [raw, rowId, spriteId, input, output, cacheRead] of expected) {
+        assert.equal(browserRegistry.findModelRow(raw, 'gemini').row.id, rowId);
+        assert.equal(serverRegistry.findModelRow(raw, 'gemini').row.id, rowId);
+        for (const provider of ['gemini', 'antigravity']) {
+            assert.equal(browserRegistry.contextWindowForModel(raw, provider), 1_000_000);
+            assert.equal(serverRegistry.contextWindowForModel(raw, provider), 1_000_000);
+            const rate = browserRegistry.ratesForModel(raw, provider);
+            assert.equal(rate.isDefault, false);
+            assert.equal(rate.rate.input, input);
+            assert.equal(rate.rate.output, output);
+            assert.equal(rate.rate.cacheRead, cacheRead);
+            assert.equal(getModelVisualIdentity(raw, 'high', provider).spriteId, spriteId);
+            assert.equal(modelIdentity(raw, 'high', provider).spriteId, spriteId);
+        }
+    }
+
+    const carbonBodies = new Set();
+    for (let i = 0; i < 64; i++) {
+        carbonBodies.add(getModelVisualIdentity('gemini-4-carbon', 'high', 'antigravity', `agent-${i}`).spriteId);
+    }
+    assert.deepEqual([...carbonBodies].sort(), ['agent.gemini.carbon', 'agent.gemini.carbon.b']);
+});
+
 test('registry and defaults cover every manifest agent sprite in both directions', (t) => {
     if (!manifestTools) {
         if (manifestImportError?.code === 'ERR_MODULE_NOT_FOUND' && String(manifestImportError.message).includes('js-yaml')) {

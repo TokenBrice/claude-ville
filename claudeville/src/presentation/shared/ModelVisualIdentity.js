@@ -132,6 +132,7 @@ export function providerPaletteKey(agent) {
     if (provider.includes('claude') || model.includes('claude')) return 'claude';
     if (provider.includes('kimi') || model.includes('kimi')) return 'kimi';
     if (provider.includes('grok') || model.includes('grok')) return 'grok';
+    if (provider.includes('antigravity') || provider === 'agy') return 'gemini';
     return 'default';
 }
 
@@ -147,7 +148,7 @@ function inferredRegistryProvider(model, provider = '') {
     const normalizedProvider = String(provider || '').toLowerCase();
     if (normalizedProvider.includes('deepseek')) return 'deepseek';
     if (normalizedProvider.includes('zai') || normalizedProvider.includes('zhipu')) return 'zai';
-    if (normalizedProvider.includes('gemini')) return 'gemini';
+    if (normalizedProvider.includes('gemini') || normalizedProvider.includes('antigravity') || normalizedProvider === 'agy') return 'gemini';
     if (normalizedProvider.includes('codex') || normalizedProvider.includes('openai')) return 'codex';
     if (normalizedProvider.includes('claude')) return 'claude';
     if (normalizedProvider.includes('kimi')) return 'kimi';

@@ -11,6 +11,7 @@ const { OpenCodeAdapter } = require('./opencode');
 const { OmpAdapter } = require('./omp');
 const { DeepSeekAdapter } = require('./deepseek');
 const { GlmAdapter } = require('./glm');
+const { AntigravityAdapter } = require('./antigravity');
 const { execFileSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
@@ -40,6 +41,7 @@ const adapters = [
   new OmpAdapter(),
   new DeepSeekAdapter(),
   new GlmAdapter(),
+  new AntigravityAdapter(),
 ];
 
 const ADAPTER_BY_PROVIDER = Object.fromEntries(adapters.map((adapter) => [adapter.provider, adapter]));

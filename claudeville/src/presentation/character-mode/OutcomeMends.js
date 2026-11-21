@@ -28,6 +28,8 @@ export const MEND_DETAIL_MAX = 79;
 // Shell tools whose result is the command's own exit (not a stdin write).
 const SHELL_TOOLS = new Set([
     'Bash',
+    'run_command',
+    'run_shell_command',
     'shell',
     'exec',
     'exec_command',

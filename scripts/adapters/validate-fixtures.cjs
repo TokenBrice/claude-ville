@@ -81,6 +81,7 @@ assert.deepEqual(normalizedDetail.messages, []);
 assert.deepEqual(normalizedDetail.tokenUsage, { input: 1, output: 2 });
 
 assert.equal(isKnownSessionDetailProvider('claude'), true);
+assert.equal(isKnownSessionDetailProvider('antigravity'), true);
 assert.equal(isKnownSessionDetailProvider('git'), true);
 assert.equal(isKnownSessionDetailProvider('opencode'), true);
 assert.equal(isKnownSessionDetailProvider('unknown-provider'), false);

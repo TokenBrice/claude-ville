@@ -532,6 +532,7 @@ const AMBIENT_BUILDING_SEQUENCE = [
     'watchtower',
 ];
 const PROVIDER_HOME_BUILDINGS = {
+    antigravity: 'portal',
     claude: 'command',
     codex: 'forge',
     gemini: 'portal',
@@ -8554,6 +8555,7 @@ function providerMoteColor(agent) {
 // chip, oracle orb, lunar crescent, ranger arrow, cosmic star, monk hex) so a
 // parent's orbiting children read as little familiars, not identical dots.
 const FAMILIAR_MOTE_SHAPES = Object.freeze({
+    antigravity: 'orb',
     claude: 'rune',
     codex: 'chip',
     gemini: 'orb',

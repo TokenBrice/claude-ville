@@ -181,6 +181,7 @@ export const INCIDENT_COLORS_RGB = Object.freeze({
 // needs-you yellow; zai keeps its vermilion identity as a darker terracotta,
 // clear of error coral; omp is lichen instead of chatting gold.
 export const PROVIDER_HUES = Object.freeze({
+    antigravity: { trim: '#6c96c2', badge: '#6c96c2', badgeBg: 'rgba(108,150,194,0.15)' },
     claude: { trim: '#977bb5', badge: '#977bb5', badgeBg: 'rgba(151,123,181,0.15)' },
     codex: { trim: '#5ba49c', badge: '#5ba49c', badgeBg: 'rgba(91,164,156,0.15)' },
     gemini: { trim: '#868ec3', badge: '#868ec3', badgeBg: 'rgba(134,142,195,0.15)' },

@@ -75,6 +75,7 @@ export const RAMP_LANDMARKS = new Set(['forge', 'tavern', 'taskboard', 'watchtow
 
 export const DEFAULT_PROVIDER_MATERIAL_CLASS = 'unlit';
 export const PROVIDER_MATERIAL_PROFILES = Object.freeze({
+    antigravity: Object.freeze({ defaultMaterialClass: 'glass-rune' }),
     claude: Object.freeze({ defaultMaterialClass: 'fabric' }),
     codex: Object.freeze({ defaultMaterialClass: 'metal' }),
     gemini: Object.freeze({ defaultMaterialClass: 'glass-rune' }),

@@ -84,6 +84,7 @@ Choose **Signals** for attention bells or **Town band** for music with the same 
 | --- | --- |
 | **Claude Code** | `~/.claude/` |
 | **OpenAI Codex CLI** | `~/.codex/sessions/` |
+| **Google Antigravity (`agy`)** | `~/.gemini/antigravity-cli/` (plus best-effort discovery of `~/.gemini/antigravity/` and `~/.gemini/antigravity-ide/`) |
 | **Google Gemini CLI** | `~/.gemini/tmp/` |
 | **xAI Grok CLI** | `~/.grok/sessions/` |
 | **Kimi / Kimi Code** | `~/.kimi/sessions/` and `~/.kimi-code/sessions/` |
@@ -92,7 +93,7 @@ Choose **Signals** for attention bells or **Town band** for music with the same 
 | **DeepSeek agents (deepseek-cc-mcp MCP server)** | `~/.local/state/deepseek-cc-mcp/` (or `DEEPSEEK_CC_STATE_DIR`) |
 | **GLM agents (glm-cc-mcp MCP server)** | `~/.local/state/glm-cc-mcp/` (or `GLM_CC_STATE_DIR`) |
 
-Providers are detected independently; you only need one, and the simulator needs none. OpenCode requires Node's `node:sqlite` or the `sqlite3` CLI for read-only database access. Model families served through another provider retain their identity, including DeepSeek and z.AI GLM through OMP.
+Providers are detected independently; you only need one, and the simulator needs none. OpenCode requires Node's `node:sqlite` or the `sqlite3` CLI for read-only database access. Model families served through another provider retain their identity, including Google Gemini (Carbon, Argon, Neon, Hydrogen, Flash) through Antigravity and DeepSeek and z.AI GLM through OMP.
 
 See the [adapter reference](./claudeville/adapters/README.md) for provider-specific capabilities and the [model registry](./claudeville/src/config/models.json) for labels, pricing, context windows, and sprites.
 

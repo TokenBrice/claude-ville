@@ -52,7 +52,7 @@ export const SUBAGENT_WAIT_PINT_MS = 60_000;
 export const SUBAGENT_WAIT_SLICE_GAP_MS = 15_000;
 // Tools that block on subagents. A bare `wait` is omp's job wait; Codex's
 // polls a code cell.
-const SUBAGENT_WAIT_TOOLS = new Set(['wait_agent', 'functions.wait_agent', 'Agent', 'Task']);
+const SUBAGENT_WAIT_TOOLS = new Set(['wait_agent', 'functions.wait_agent', 'Agent', 'Task', 'swarm_wait']);
 
 // Occupancy roles of the routine. None is ever a working visit.
 export const ROUTINE_ROLES = Object.freeze(['stroll', 'errand', 'winddown']);

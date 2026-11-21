@@ -6,7 +6,7 @@ The dashboard observes local AI CLI session files. It writes nothing back to tho
 
 ## "No providers detected" / `/api/providers` has an empty provider list
 
-At least one provider source must exist and be readable: `~/.claude/`, `~/.codex/`, `~/.gemini/`, `~/.grok/`, `~/.kimi/`, `~/.kimi-code/`, `~/.local/share/opencode/opencode.db`, or `~/.omp/agent/sessions/`. Most adapters register by home-directory presence, not by whether session subdirectories already contain data. OMP requires its session directory. OpenCode requires its database and either Node's `node:sqlite` support or the `sqlite3` CLI for read-only access. A fresh machine with none of these sources correctly returns `providers: []` and `count: 0` in the API response.
+At least one provider source must exist and be readable: `~/.claude/`, `~/.codex/`, `~/.gemini/`, `~/.gemini/antigravity-cli/`, `~/.grok/`, `~/.kimi/`, `~/.kimi-code/`, `~/.local/share/opencode/opencode.db`, or `~/.omp/agent/sessions/`. Most adapters register by home-directory presence, not by whether session subdirectories already contain data. OMP requires its session directory. OpenCode requires its database and either Node's `node:sqlite` support or the `sqlite3` CLI for read-only access. A fresh machine with none of these sources correctly returns `providers: []` and `count: 0` in the API response.
 
 Server log on startup will say:
 
@@ -32,6 +32,7 @@ Provider scan windows also matter:
 - Claude uses recent `history.jsonl` entries to find active sessions, then checks recent project/session files.
 - Codex scans recent date folders under `~/.codex/sessions/YYYY/MM/DD/` and filters by file activity.
 - Gemini reads recent chat JSON files under `~/.gemini/tmp/<project_hash>/chats/`.
+- Antigravity reads conversation step transcripts under `~/.gemini/antigravity-cli/brain/<conversation-id>/.system_generated/logs/transcript.jsonl` (plus best-effort discovery of `~/.gemini/antigravity/` and `~/.gemini/antigravity-ide/`), paired with `history.jsonl`, explicit `/rename` titles in `annotations/<conversation-id>.pbtxt`, and `cache/last_conversations.json`.
 - Grok reads session summaries and chat history under `~/.grok/sessions/<url-encoded-cwd>/<session-id>/`.
 - Kimi reads recent legacy `~/.kimi/sessions/<project_hash>/<session_uuid>/wire.jsonl` data and resolves project hashes from Kimi config and common local work directories. Kimi Code sessions are read from `~/.kimi-code/sessions/<workspace>/<session_uuid>/agents/<agent>/wire.jsonl` and mapped back to projects through `~/.kimi-code/session_index.jsonl`.
 - OpenCode reads recent rows from `~/.local/share/opencode/opencode.db` in read-only mode.
@@ -157,6 +158,8 @@ Add both events to your own Gemini CLI `settings.json`. Gemini hook timeouts are
 ```
 
 `BeforeTool` maps to a transient `tool_pending` overlay with the sanitized command/path detail. `AfterTool` clears that pending state back to working.
+
+Google Antigravity configures command hooks in `hooks.json` inside a customization root (`.agents/hooks.json` in a project or `~/.gemini/config/hooks.json` globally) using the six events `SessionStart`, `PreToolUse`, `PostToolUse`, `PreInvocation`, `PostInvocation`, and `Stop`, with camelCase stdin payloads (`conversationId`, `hookEventName`, `toolCall.name`, `toolCall.args.CommandLine`, `cwd`). Every handler must print valid JSON on stdout, and **`PreToolUse` must never print `{"decision":"allow"}` from a forwarding hook**, because returning `"allow"` silently auto-approves every tool execution. Use `node scripts/agent-hooks/antigravity-hook.cjs` (which prints `{}` so `PreToolUse` stays neutral, or configure `SessionStart`/`PreInvocation`/`PostToolUse`/`PostInvocation`/`Stop`) to forward hook telemetry to `POST /api/ingest/hook`.
 
 If the overlay does not appear, POST one normalized fixture with `curl`, confirm a `202` response, and fetch `/api/sessions` immediately. A `401` means the token header does not match; `403`/`421` means the Origin/Host is not local; `400` means the provider, event, session id, or JSON is invalid. Match the returned public session, not just the HTTP acceptance: Codex hook thread IDs and Gemini payload session IDs can differ from dashboard filename IDs, and matching is provider-qualified. Ordinary overlays stop merging after 10 seconds and expire after 30 seconds. Exact unanswered approvals instead become last-observed waits after 10 seconds; a resolving hook/newer recorded turn clears them, and a 30-minute bound prevents indefinite retention.
 

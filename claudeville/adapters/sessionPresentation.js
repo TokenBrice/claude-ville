@@ -180,6 +180,7 @@ function inferredRegistryProvider(model, provider = '') {
   if (normalizedProvider.includes('claude')) return 'claude';
   if (normalizedProvider.includes('kimi')) return 'kimi';
   if (normalizedProvider.includes('grok')) return 'grok';
+  if (normalizedProvider.includes('antigravity') || normalizedProvider === 'agy') return 'gemini';
   return normalizedProvider;
 }
 

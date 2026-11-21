@@ -1657,7 +1657,7 @@ export class TopBar {
 
     _providerLabel(provider) {
         const labels = {
-            claude: 'Claude', codex: 'Codex', gemini: 'Gemini', grok: 'Grok',
+            antigravity: 'Antigravity', claude: 'Claude', codex: 'Codex', gemini: 'Gemini', grok: 'Grok',
             kimi: 'Kimi', opencode: 'OpenCode', omp: 'OMP', deepseek: 'DeepSeek', zai: 'z.AI', unknown: 'Unknown',
         };
         return labels[provider] || String(provider || 'Unknown');

@@ -2795,7 +2795,7 @@ export class DashboardRenderer {
         const hints = document.createElement('div');
         hints.className = 'dashboard__empty-hints';
         const lines = [
-            '▸ Run a CLI agent (claude, codex, gemini, opencode, kimi) in any terminal',
+            '▸ Run a CLI agent (claude, codex, antigravity, gemini, opencode, kimi) in any terminal',
             '▸ Or press WORLD in the top bar to watch the village view',
         ];
         for (const text of lines) {

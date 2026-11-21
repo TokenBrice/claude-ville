@@ -90,6 +90,7 @@ export async function startIsolatedServer({ home, env } = {}) {
       CLAUDEVILLE_CODEX_STATE_DIR: path.join(isolatedHome, '.local', 'state', 'codex-cc-mcp'),
       CLAUDEVILLE_DEEPSEEK_STATE_DIR: path.join(isolatedHome, '.local', 'state', 'deepseek-cc-mcp'),
       CLAUDEVILLE_GLM_STATE_DIR: path.join(isolatedHome, '.local', 'state', 'glm-cc-mcp'),
+      CLAUDEVILLE_ANTIGRAVITY_DIR: path.join(isolatedHome, '.gemini', 'antigravity-cli'),
       ...env,
     },
     stdio: ['pipe', 'pipe', 'pipe'],

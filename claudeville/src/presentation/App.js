@@ -87,7 +87,7 @@ const EMPTY_SURFACE_COPY = Object.freeze({
     [VillagePhase.READY_NO_PROVIDERS]: Object.freeze({
         title: 'NO PROVIDERS FOUND',
         copy: 'No supported coding CLI is installed on this machine.',
-        next: 'Install Claude, Codex, Gemini, OpenCode, or Kimi, then try again.',
+        next: 'Install Claude, Codex, Antigravity, Gemini, OpenCode, or Kimi, then try again.',
     }),
     [VillagePhase.READY_EMPTY]: Object.freeze({
         title: 'PROVIDERS FOUND / NOTHING ACTIVE',

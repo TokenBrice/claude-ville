@@ -46,6 +46,9 @@ const COMMAND_LIFECYCLE_TOOLS = new Map([
     ['resume_agent', 'resume'],
     ['functions.close_agent', 'close'],
     ['close_agent', 'close'],
+    ['invoke_subagent', 'spawn'],
+    ['send_message', 'send_input'],
+    ['swarm_wait', 'wait'],
 ]);
 
 const TARGET_REF_KEYS = [
@@ -58,6 +61,7 @@ const TARGET_REF_KEYS = [
     'threadId',
     'thread_id',
     'target',
+    'Recipient',
     'recipient',
     'id',
 ];
@@ -140,7 +144,7 @@ function resolveVisibleAgent(world, targetRef, provider) {
         const agent = world.agents.get(ref);
         return { targetAgentId: ref, targetProviderId: agent?.agentId || null, targetName: agentDisplayName(agent), confidence: 1, source: 'input' };
     }
-    for (const prefix of ['codex-', 'subagent-', 'kimi-', 'opencode-', 'omp-']) {
+    for (const prefix of ['codex-', 'subagent-', 'kimi-', 'opencode-', 'omp-', 'antigravity-']) {
         const id = `${prefix}${ref}`;
         if (world.agents.has(id)) {
             const agent = world.agents.get(id);

@@ -79,6 +79,17 @@ touch(
   + `${JSON.stringify({ type: 'message', timestamp: new Date(now).toISOString(), message: { role: 'assistant', content: [{ type: 'text', text: 'fixture' }] } })}\n`,
 );
 
+writeJson(path.join(tmpRoot, '.gemini', 'antigravity-cli', 'history.jsonl'), {
+  conversationId: '00000000-0000-4000-8000-000000000001',
+  workspace: project,
+  timestamp: now,
+  display: 'antigravity fixture',
+});
+touch(
+  path.join(tmpRoot, '.gemini', 'antigravity-cli', 'brain', '00000000-0000-4000-8000-000000000001', '.system_generated', 'logs', 'transcript.jsonl'),
+  `${JSON.stringify({ step_index: 0, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', created_at: new Date(now).toISOString(), model: 'gemini-4-carbon-high', content: 'fixture' })}\n`,
+);
+
 const require = createRequire(import.meta.url);
 const { adapters, getAllWatchPaths } = require('../../claudeville/adapters');
 const { shutdownRuntime, _watcherTest } = require('../../claudeville/server');

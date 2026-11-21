@@ -37,6 +37,17 @@ const ADAPTER_FIXTURE_MODELS = [
   { adapter: 'OMP', provider: 'omp', model: 'openai-codex/gpt-5.6-luna' },
   { adapter: 'OMP', provider: 'omp', model: 'zai/glm-5.3-flash' },
   { adapter: 'OMP', provider: 'omp', model: 'glm-5.3' },
+  { adapter: 'Antigravity', provider: 'antigravity', model: 'gemini-pro-orchestrator-carbon' },
+  { adapter: 'Antigravity', provider: 'antigravity', model: 'gemini-pro-orchestrator-argon' },
+  { adapter: 'Antigravity', provider: 'antigravity', model: 'gemini-pro-orchestrator-neon' },
+  { adapter: 'Antigravity', provider: 'antigravity', model: 'orchestrator-neon' },
+  { adapter: 'Antigravity', provider: 'antigravity', model: 'gemini-flash-worker-agy' },
+  { adapter: 'Antigravity', provider: 'antigravity', model: 'gemini-4-carbon' },
+  { adapter: 'Antigravity', provider: 'antigravity', model: 'gemini-4-carbon-high' },
+  { adapter: 'Antigravity', provider: 'antigravity', model: 'gemini-4-argon' },
+  { adapter: 'Antigravity', provider: 'antigravity', model: 'gemini-4-neon' },
+  { adapter: 'Antigravity', provider: 'antigravity', model: 'gemini-4-hydrogen' },
+  { adapter: 'Antigravity', provider: 'antigravity', model: 'gemini-3.8-flash' },
 ];
 
 const LIVE_MODELS = [

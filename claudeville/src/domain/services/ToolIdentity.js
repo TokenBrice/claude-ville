@@ -196,6 +196,65 @@ const TOOL_METADATA = Object.freeze({
         category: 'task',
         actionLabel: 'Coordinating',
     },
+    invoke_subagent: {
+        classification: { building: 'command', reason: 'spawn-agent', confidence: 0.98 },
+        icon: '📋',
+        category: 'task',
+        actionLabel: 'Delegating',
+        agentCommand: true,
+    },
+    define_subagent: {
+        classification: { building: 'command', reason: 'define-agent', confidence: 0.9 },
+        icon: '📋',
+        category: 'task',
+        actionLabel: 'Configuring agent',
+    },
+    manage_subagents: {
+        classification: { building: 'command', reason: 'list-agents', confidence: 0.9 },
+        icon: '👥',
+        category: 'task',
+        actionLabel: 'Coordinating',
+        agentCommand: true,
+    },
+    swarm: {
+        classification: { building: 'command', reason: 'form-team', confidence: 0.96 },
+        icon: '👥',
+        category: 'task',
+        actionLabel: 'Coordinating',
+        agentCommand: true,
+    },
+    post_message: {
+        classification: { building: 'command', reason: 'message-agent', confidence: 0.98 },
+        icon: '💬',
+        category: 'task',
+        actionLabel: 'Messaging',
+    },
+    read_board: {
+        classification: { building: 'command', reason: 'read-board', confidence: 0.88 },
+        icon: '📋',
+        category: 'read',
+        actionLabel: 'Checking board',
+    },
+    swarm_wait: {
+        classification: { building: 'watchtower', reason: 'watch-condition', confidence: 0.9 },
+        icon: '🔭',
+        category: 'task',
+        actionLabel: 'Watching',
+        agentCommand: true,
+    },
+    run_workflow: {
+        classification: { building: 'command', reason: 'delegate-task', confidence: 0.94 },
+        icon: '📋',
+        category: 'task',
+        actionLabel: 'Orchestrating',
+        agentCommand: true,
+    },
+    manage_task: {
+        classification: { building: 'watchtower', reason: 'watch-condition', confidence: 0.84 },
+        icon: '🔭',
+        category: 'task',
+        actionLabel: 'Checking tasks',
+    },
 
     TaskCreate: {
         classification: { building: 'taskboard', reason: 'plan-task', confidence: 0.92 },
@@ -275,20 +334,27 @@ const TOOL_METADATA = Object.freeze({
 // classifier branches rather than maintaining a second provider-specific table.
 const TOOL_NAME_ALIASES = Object.freeze({
     read: 'Read',
+    read_file: 'Read',
     grep: 'Grep',
     glob: 'Glob',
     find: 'Glob',
     search: 'Grep',
     edit: 'Edit',
+    edit_file: 'Edit',
     write: 'Write',
+    write_file: 'Write',
     ast_edit: 'Edit',
     lsp: 'Read',
     ast_grep: 'Grep',
     bash: 'Bash',
+    run_command: 'Bash',
     eval: 'Bash',
     task: 'Task',
     todo: 'TodoWrite',
     web_search: 'WebSearch',
+    search_web: 'WebSearch',
+    ask_question: 'AskUserQuestion',
+    schedule: 'ScheduleWakeup',
 });
 
 function canonicalToolName(tool) {
@@ -322,6 +388,8 @@ const MULTI_TOOL_NAMES = new Set([
 
 const SHELL_TOOL_NAMES = new Set([
     'Bash',
+    'run_command',
+    'run_shell_command',
     'shell',
     'exec',
     'exec_command',
@@ -335,18 +403,27 @@ const MULTI_TOOL_PRIORITY = ['harbor', 'taskboard', 'command', 'forge', 'archive
 const NORMALIZED_INPUT_FIELDS = Object.freeze([
     'cmd',
     'command',
+    'CommandLine',
     'script',
     'code',
     'args',
     'arguments',
     'url',
     'path',
+    'Path',
+    'ScriptPath',
     'file_path',
     'cwd',
+    'Cwd',
     'pattern',
     'query',
     'prompt',
+    'Prompt',
     'description',
+    'Description',
+    'brief',
+    'Role',
+    'Recipient',
     'recipient_name',
 ]);
 
@@ -501,7 +578,7 @@ export function compactShellInputPreview(input, maxLength = 18) {
 
 function isShellLikeTool(input) {
     if (input && typeof input === 'object') {
-        if (typeof input.cmd === 'string' || typeof input.command === 'string' || typeof input.script === 'string') return true;
+        if (typeof input.cmd === 'string' || typeof input.command === 'string' || typeof input.CommandLine === 'string' || typeof input.script === 'string') return true;
     }
     if (typeof input !== 'string') return false;
     return SHELL_LIKE_INPUT_PATTERN.test(input.trim());
@@ -864,6 +941,7 @@ const TOOL_CATEGORY_ALIASES = Object.freeze({
     delete_file: 'write',
 
     exec_command: 'exec',
+    run_command: 'exec',
     write_stdin: 'exec',
     shell: 'exec',
     local_shell: 'exec',
@@ -913,11 +991,11 @@ const TOOL_ACTION_CATEGORIES = Object.freeze({
     rg: 'search', sed: 'read',
     notebookread: 'read', todoread: 'read',
     toolsearch: 'search', searchtools: 'search', grep_search: 'search', codebase_search: 'search', file_search: 'search',
-    ask: 'think', askuserquestion: 'think',
+    ask: 'think', askuserquestion: 'think', ask_question: 'think',
     plan: 'think', think: 'think', reason: 'think', reasoning: 'think',
     enterplanmode: 'think', exitplanmode: 'think', update_plan: 'think',
     'mcp__sequential-thinking__sequentialthinking': 'think',
-    message: 'message', sendmessage: 'message', send_message: 'message',
+    message: 'message', sendmessage: 'message', send_message: 'message', post_message: 'message',
 });
 
 export function toolActionCategory(tool) {
@@ -950,6 +1028,8 @@ const TOOL_VERBS = Object.freeze({
     'message-agent': 'message',
     'send-agent-input': 'reply',
     'spawn-agent': 'spawn agent',
+    'define-agent': 'define agent',
+    'read-board': 'read board',
     'wait-agent': 'wait on agent',
     'close-agent': 'close agent',
     'resume-agent': 'resume agent',

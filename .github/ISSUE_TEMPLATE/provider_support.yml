@@ -14,6 +14,7 @@ body:
       options:
         - Claude Code
         - Codex CLI
+        - Google Antigravity (agy)
         - Gemini CLI
         - Grok CLI
         - Kimi (incl. Kimi Code)

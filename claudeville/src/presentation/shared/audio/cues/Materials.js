@@ -196,7 +196,7 @@ export function alloyForProvider(provider) {
     const k = String(provider || '').toLowerCase();
     if (k.includes('claude') || k.includes('anthropic')) return 'clay';
     if (/codex|openai|gpt|opencode|zai|glm|zhipu|deepseek/.test(k)) return 'brass';
-    if (/gemini|kimi/.test(k)) return 'glass';
+    if (/gemini|antigravity|agy|kimi/.test(k)) return 'glass';
     return 'bellmetal';
 }
 

@@ -8,7 +8,7 @@ function normalizeModel(model) {
 function pricingModelCandidates(model) {
     const normalized = normalizeModel(model);
     const dottedCodex = normalized.replace(/\bgpt-5-(\d)\b/g, 'gpt-5.$1');
-    return [...new Set([normalized, dottedCodex])];
+    return [...new Set([normalized, dottedCodex].filter(Boolean))];
 }
 
 function registryProvider(provider) {
@@ -45,6 +45,8 @@ function pricingProvider(model, provider) {
     if (normalizedProvider === 'grok' || candidates.some(candidate => candidate.includes('grok'))) return 'grok';
     if (normalizedProvider === 'gemini' || candidates.some(candidate => candidate.includes('gemini'))) return 'gemini';
     if (normalizedProvider === 'codex' || candidates.some(candidate => candidate.includes('gpt'))) return 'codex';
+    if (candidates.some(candidate => candidate.includes('claude'))) return 'claude';
+    if (normalizedProvider === 'antigravity' || normalizedProvider === 'agy') return 'gemini';
     return 'claude';
 }
 

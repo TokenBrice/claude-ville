@@ -1,6 +1,6 @@
 // GENERATED FROM models.json + scripts/models/resolver.template.js — DO NOT EDIT
 
-const MODEL_REVISION = "2026-11-19";
+const MODEL_REVISION = "2026-11-20";
 const MODEL_REGISTRY = [
     {
         "accent": [
@@ -1668,17 +1668,333 @@ const MODEL_REGISTRY = [
         ]
     },
     {
-        "accent": null,
-        "color": "#9ad7ff",
-        "contextWindow": null,
+        "accent": [
+            "#d8fbff",
+            "#72e8ff",
+            "#f6d27a"
+        ],
+        "color": "#72e8ff",
+        "contextWindow": 1000000,
+        "id": "gemini.orchestrator-carbon",
+        "label": "Carbon Orchestrator",
+        "match": [
+            "orchestrator-carbon"
+        ],
+        "modelClass": "carbon",
+        "modelTier": "mythic",
+        "mood": "deliberate",
+        "paletteKey": "gemini",
+        "pricing": {
+            "cacheCreate": 0.5,
+            "cacheRead": 0.2,
+            "input": 4,
+            "output": 20
+        },
+        "provider": "gemini",
+        "sample": "gemini-pro-orchestrator-carbon",
+        "shortLabel": "Orch·Carbon",
+        "spriteId": "agent.gemini.carbon",
+        "spriteVariants": [
+            "agent.gemini.carbon",
+            "agent.gemini.carbon.b"
+        ],
+        "trim": [
+            "#72e8ff",
+            "#d4b068",
+            "#a8f5ff"
+        ]
+    },
+    {
+        "accent": [
+            "#efe8ff",
+            "#b69cff",
+            "#e2e8f5"
+        ],
+        "color": "#b69cff",
+        "contextWindow": 1000000,
+        "id": "gemini.orchestrator-argon",
+        "label": "Argon Orchestrator",
+        "match": [
+            "orchestrator-argon"
+        ],
+        "modelClass": "argon",
+        "modelTier": "apex",
+        "mood": "balanced",
+        "paletteKey": "gemini",
+        "pricing": {
+            "cacheCreate": 0.5,
+            "cacheRead": 0.2,
+            "input": 4,
+            "output": 20
+        },
+        "provider": "gemini",
+        "sample": "gemini-pro-orchestrator-argon",
+        "shortLabel": "Orch·Argon",
+        "spriteId": "agent.gemini.argon",
+        "trim": [
+            "#b69cff",
+            "#c8d0e6",
+            "#d8c7ff"
+        ]
+    },
+    {
+        "accent": [
+            "#ccf6ff",
+            "#4fd8ff",
+            "#ff8fd8"
+        ],
+        "color": "#4fd8ff",
+        "contextWindow": 1000000,
+        "id": "gemini.orchestrator-neon",
+        "label": "Neon Orchestrator",
+        "match": [
+            "orchestrator-neon"
+        ],
+        "modelClass": "neon",
+        "modelTier": "balanced",
+        "mood": "balanced",
+        "paletteKey": "gemini",
+        "pricing": {
+            "cacheCreate": 0.5,
+            "cacheRead": 0.15,
+            "input": 3,
+            "output": 15
+        },
+        "provider": "gemini",
+        "sample": "gemini-pro-orchestrator-neon",
+        "shortLabel": "Orch·Neon",
+        "spriteId": "agent.gemini.neon",
+        "trim": [
+            "#4fd8ff",
+            "#ff6ec7",
+            "#7cb8ff"
+        ]
+    },
+    {
+        "accent": [
+            "#fff2cc",
+            "#f5c45e",
+            "#9ad7ff"
+        ],
+        "color": "#f5c45e",
+        "contextWindow": 1000000,
+        "id": "gemini.flash-worker",
+        "label": "Gemini Flash Worker",
+        "match": [
+            "gemini-flash-worker",
+            "flash-worker"
+        ],
+        "modelClass": "gemini-flash",
+        "modelTier": "swift",
+        "mood": "quick",
+        "paletteKey": "gemini",
+        "pricing": {
+            "cacheCreate": 0.5,
+            "cacheRead": 0.15,
+            "input": 1.5,
+            "output": 7.5
+        },
+        "provider": "gemini",
+        "sample": "gemini-flash-worker-agy",
+        "shortLabel": "Flash Worker",
+        "spriteId": "agent.gemini.flash",
+        "trim": [
+            "#f5c45e",
+            "#7ec8ff",
+            "#ffe19c"
+        ]
+    },
+    {
+        "accent": [
+            "#d8fbff",
+            "#72e8ff",
+            "#f6d27a"
+        ],
+        "color": "#72e8ff",
+        "contextWindow": 1000000,
+        "id": "gemini.4-carbon",
+        "label": "Gemini 4 Carbon",
+        "match": [
+            "gemini-4-carbon",
+            "4-carbon"
+        ],
+        "modelClass": "carbon",
+        "modelTier": "mythic",
+        "mood": "deliberate",
+        "paletteKey": "gemini",
+        "pricing": {
+            "cacheCreate": 0.5,
+            "cacheRead": 0.2,
+            "input": 4,
+            "output": 20
+        },
+        "provider": "gemini",
+        "sample": "gemini-4-carbon",
+        "shortLabel": "Carbon",
+        "spriteId": "agent.gemini.carbon",
+        "spriteVariants": [
+            "agent.gemini.carbon",
+            "agent.gemini.carbon.b"
+        ],
+        "trim": [
+            "#72e8ff",
+            "#d4b068",
+            "#a8f5ff"
+        ]
+    },
+    {
+        "accent": [
+            "#efe8ff",
+            "#b69cff",
+            "#e2e8f5"
+        ],
+        "color": "#b69cff",
+        "contextWindow": 1000000,
+        "id": "gemini.4-argon",
+        "label": "Gemini 4 Argon",
+        "match": [
+            "gemini-4-argon",
+            "4-argon"
+        ],
+        "modelClass": "argon",
+        "modelTier": "apex",
+        "mood": "balanced",
+        "paletteKey": "gemini",
+        "pricing": {
+            "cacheCreate": 0.5,
+            "cacheRead": 0.2,
+            "input": 4,
+            "output": 20
+        },
+        "provider": "gemini",
+        "sample": "gemini-4-argon",
+        "shortLabel": "Argon",
+        "spriteId": "agent.gemini.argon",
+        "trim": [
+            "#b69cff",
+            "#c8d0e6",
+            "#d8c7ff"
+        ]
+    },
+    {
+        "accent": [
+            "#ccf6ff",
+            "#4fd8ff",
+            "#ff8fd8"
+        ],
+        "color": "#4fd8ff",
+        "contextWindow": 1000000,
+        "id": "gemini.4-neon",
+        "label": "Gemini 4 Neon",
+        "match": [
+            "gemini-4-neon",
+            "4-neon"
+        ],
+        "modelClass": "neon",
+        "modelTier": "balanced",
+        "mood": "balanced",
+        "paletteKey": "gemini",
+        "pricing": {
+            "cacheCreate": 0.5,
+            "cacheRead": 0.15,
+            "input": 3,
+            "output": 15
+        },
+        "provider": "gemini",
+        "sample": "gemini-4-neon",
+        "shortLabel": "Neon",
+        "spriteId": "agent.gemini.neon",
+        "trim": [
+            "#4fd8ff",
+            "#ff6ec7",
+            "#7cb8ff"
+        ]
+    },
+    {
+        "accent": [
+            "#ebf7ff",
+            "#8cd4ff",
+            "#a9ddff"
+        ],
+        "color": "#8cd4ff",
+        "contextWindow": 1000000,
+        "id": "gemini.4-hydrogen",
+        "label": "Gemini 4 Hydrogen",
+        "match": [
+            "gemini-4-hydrogen",
+            "4-hydrogen"
+        ],
+        "modelClass": "hydrogen",
+        "modelTier": "swift",
+        "mood": "quick",
+        "paletteKey": "gemini",
+        "pricing": {
+            "cacheCreate": 0.5,
+            "cacheRead": 0.075,
+            "input": 1.5,
+            "output": 7.5
+        },
+        "provider": "gemini",
+        "sample": "gemini-4-hydrogen",
+        "shortLabel": "Hydrogen",
+        "spriteId": "agent.gemini.hydrogen",
+        "trim": [
+            "#8cd4ff",
+            "#cfeaff",
+            "#5eb8f0"
+        ]
+    },
+    {
+        "accent": [
+            "#fff2cc",
+            "#f5c45e",
+            "#9ad7ff"
+        ],
+        "color": "#f5c45e",
+        "contextWindow": 1000000,
+        "id": "gemini.3-8-flash",
+        "label": "Gemini 3.8 Flash",
+        "match": [
+            "gemini-3-8-flash",
+            "gemini-3-7-flash",
+            "gemini-3-6-flash"
+        ],
+        "modelClass": "gemini-flash",
+        "modelTier": "light",
+        "mood": "quick",
+        "paletteKey": "gemini",
+        "pricing": {
+            "cacheCreate": 0.5,
+            "cacheRead": 0.15,
+            "input": 1.5,
+            "output": 7.5
+        },
+        "provider": "gemini",
+        "sample": "gemini-3.8-flash",
+        "shortLabel": "3.8 Flash",
+        "spriteId": "agent.gemini.flash",
+        "trim": [
+            "#f5c45e",
+            "#7ec8ff",
+            "#ffe19c"
+        ]
+    },
+    {
+        "accent": [
+            "#fff2cc",
+            "#f5c45e",
+            "#9ad7ff"
+        ],
+        "color": "#f5c45e",
+        "contextWindow": 1000000,
         "id": "gemini.3-5-flash",
-        "label": "Gemini",
+        "label": "Gemini 3.5 Flash",
         "match": [
             "gemini-3-5-flash"
         ],
-        "modelClass": "standard",
-        "modelTier": null,
-        "mood": "balanced",
+        "modelClass": "gemini-flash",
+        "modelTier": "swift",
+        "mood": "quick",
         "paletteKey": "gemini",
         "pricing": {
             "cacheCreate": 0.5,
@@ -1688,21 +2004,29 @@ const MODEL_REGISTRY = [
         },
         "provider": "gemini",
         "sample": "gemini-3.5-flash",
-        "shortLabel": "Gemini",
-        "spriteId": "agent.gemini.base",
-        "trim": null
+        "shortLabel": "3.5 Flash",
+        "spriteId": "agent.gemini.flash",
+        "trim": [
+            "#f5c45e",
+            "#7ec8ff",
+            "#ffe19c"
+        ]
     },
     {
-        "accent": null,
+        "accent": [
+            "#e3f3ff",
+            "#9ad7ff",
+            "#c8bdff"
+        ],
         "color": "#9ad7ff",
-        "contextWindow": null,
+        "contextWindow": 1000000,
         "id": "gemini.3-1-pro",
-        "label": "Gemini",
+        "label": "Gemini 3.1 Pro",
         "match": [
             "gemini-3-1-pro"
         ],
         "modelClass": "standard",
-        "modelTier": null,
+        "modelTier": "balanced",
         "mood": "balanced",
         "paletteKey": "gemini",
         "pricing": {
@@ -1713,21 +2037,29 @@ const MODEL_REGISTRY = [
         },
         "provider": "gemini",
         "sample": "gemini-3.1-pro",
-        "shortLabel": "Gemini",
+        "shortLabel": "3.1 Pro",
         "spriteId": "agent.gemini.base",
-        "trim": null
+        "trim": [
+            "#9ad7ff",
+            "#b8a8ff",
+            "#d4edff"
+        ]
     },
     {
-        "accent": null,
-        "color": "#9ad7ff",
-        "contextWindow": null,
+        "accent": [
+            "#fff2cc",
+            "#f5c45e",
+            "#9ad7ff"
+        ],
+        "color": "#f5c45e",
+        "contextWindow": 1000000,
         "id": "gemini.3-1-flash-lite",
-        "label": "Gemini",
+        "label": "Gemini 3.1 Flash Lite",
         "match": [
             "gemini-3-1-flash-lite"
         ],
-        "modelClass": "standard",
-        "modelTier": null,
+        "modelClass": "gemini-flash",
+        "modelTier": "light",
         "mood": "quick",
         "paletteKey": "gemini",
         "pricing": {
@@ -1738,21 +2070,29 @@ const MODEL_REGISTRY = [
         },
         "provider": "gemini",
         "sample": "gemini-3.1-flash-lite",
-        "shortLabel": "Gemini",
-        "spriteId": "agent.gemini.base",
-        "trim": null
+        "shortLabel": "3.1 Lite",
+        "spriteId": "agent.gemini.flash",
+        "trim": [
+            "#f5c45e",
+            "#7ec8ff",
+            "#ffe19c"
+        ]
     },
     {
-        "accent": null,
+        "accent": [
+            "#e3f3ff",
+            "#9ad7ff",
+            "#c8bdff"
+        ],
         "color": "#9ad7ff",
-        "contextWindow": null,
+        "contextWindow": 1000000,
         "id": "gemini.3-pro",
-        "label": "Gemini",
+        "label": "Gemini 3 Pro",
         "match": [
             "gemini-3-pro"
         ],
         "modelClass": "standard",
-        "modelTier": null,
+        "modelTier": "balanced",
         "mood": "balanced",
         "paletteKey": "gemini",
         "pricing": {
@@ -1763,22 +2103,30 @@ const MODEL_REGISTRY = [
         },
         "provider": "gemini",
         "sample": "gemini-3-pro",
-        "shortLabel": "Gemini",
+        "shortLabel": "3 Pro",
         "spriteId": "agent.gemini.base",
-        "trim": null
+        "trim": [
+            "#9ad7ff",
+            "#b8a8ff",
+            "#d4edff"
+        ]
     },
     {
-        "accent": null,
-        "color": "#9ad7ff",
-        "contextWindow": null,
+        "accent": [
+            "#fff2cc",
+            "#f5c45e",
+            "#9ad7ff"
+        ],
+        "color": "#f5c45e",
+        "contextWindow": 1000000,
         "id": "gemini.3-flash",
-        "label": "Gemini",
+        "label": "Gemini 3 Flash",
         "match": [
             "gemini-3-flash"
         ],
-        "modelClass": "standard",
-        "modelTier": null,
-        "mood": "balanced",
+        "modelClass": "gemini-flash",
+        "modelTier": "swift",
+        "mood": "quick",
         "paletteKey": "gemini",
         "pricing": {
             "cacheCreate": 0.5,
@@ -1788,16 +2136,24 @@ const MODEL_REGISTRY = [
         },
         "provider": "gemini",
         "sample": "gemini-3-flash",
-        "shortLabel": "Gemini",
-        "spriteId": "agent.gemini.base",
-        "trim": null
+        "shortLabel": "3 Flash",
+        "spriteId": "agent.gemini.flash",
+        "trim": [
+            "#f5c45e",
+            "#7ec8ff",
+            "#ffe19c"
+        ]
     },
     {
-        "accent": null,
+        "accent": [
+            "#e3f3ff",
+            "#9ad7ff",
+            "#c8bdff"
+        ],
         "color": "#9ad7ff",
-        "contextWindow": null,
+        "contextWindow": 1000000,
         "id": "gemini.2-5-pro",
-        "label": "Gemini",
+        "label": "Gemini 2.5 Pro",
         "match": [
             "gemini-2-5-pro"
         ],
@@ -1813,22 +2169,30 @@ const MODEL_REGISTRY = [
         },
         "provider": "gemini",
         "sample": "gemini-2.5-pro",
-        "shortLabel": "Gemini",
+        "shortLabel": "2.5 Pro",
         "spriteId": "agent.gemini.base",
-        "trim": null
+        "trim": [
+            "#9ad7ff",
+            "#b8a8ff",
+            "#d4edff"
+        ]
     },
     {
-        "accent": null,
-        "color": "#9ad7ff",
-        "contextWindow": null,
+        "accent": [
+            "#fff2cc",
+            "#f5c45e",
+            "#9ad7ff"
+        ],
+        "color": "#f5c45e",
+        "contextWindow": 1000000,
         "id": "gemini.2-5-flash",
-        "label": "Gemini",
+        "label": "Gemini 2.5 Flash",
         "match": [
             "gemini-2-5-flash"
         ],
-        "modelClass": "standard",
-        "modelTier": null,
-        "mood": "balanced",
+        "modelClass": "gemini-flash",
+        "modelTier": "swift",
+        "mood": "quick",
         "paletteKey": "gemini",
         "pricing": {
             "cacheCreate": 0,
@@ -1838,9 +2202,13 @@ const MODEL_REGISTRY = [
         },
         "provider": "gemini",
         "sample": "gemini-2.5-flash",
-        "shortLabel": "Gemini",
-        "spriteId": "agent.gemini.base",
-        "trim": null
+        "shortLabel": "2.5 Flash",
+        "spriteId": "agent.gemini.flash",
+        "trim": [
+            "#f5c45e",
+            "#7ec8ff",
+            "#ffe19c"
+        ]
     }
 ];
 const MODEL_DEFAULTS = {
@@ -1929,9 +2297,13 @@ const MODEL_DEFAULTS = {
         ]
     },
     "gemini": {
-        "accent": null,
+        "accent": [
+            "#e3f3ff",
+            "#9ad7ff",
+            "#c8bdff"
+        ],
         "color": "#9ad7ff",
-        "contextWindow": null,
+        "contextWindow": 1000000,
         "label": "Gemini",
         "modelClass": "standard",
         "modelTier": null,
@@ -1946,7 +2318,11 @@ const MODEL_DEFAULTS = {
         "pricingKey": "gemini",
         "shortLabel": "Gemini",
         "spriteId": "agent.gemini.base",
-        "trim": null
+        "trim": [
+            "#9ad7ff",
+            "#b8a8ff",
+            "#d4edff"
+        ]
     },
     "grok": {
         "accent": [
@@ -2048,7 +2424,7 @@ function normalizeModel(model) {
 function pricingModelCandidates(model) {
     const normalized = normalizeModel(model);
     const dottedCodex = normalized.replace(/\bgpt-5-(\d)\b/g, 'gpt-5.$1');
-    return [...new Set([normalized, dottedCodex])];
+    return [...new Set([normalized, dottedCodex].filter(Boolean))];
 }
 
 function registryProvider(provider) {
@@ -2085,6 +2461,8 @@ function pricingProvider(model, provider) {
     if (normalizedProvider === 'grok' || candidates.some(candidate => candidate.includes('grok'))) return 'grok';
     if (normalizedProvider === 'gemini' || candidates.some(candidate => candidate.includes('gemini'))) return 'gemini';
     if (normalizedProvider === 'codex' || candidates.some(candidate => candidate.includes('gpt'))) return 'codex';
+    if (candidates.some(candidate => candidate.includes('claude'))) return 'claude';
+    if (normalizedProvider === 'antigravity' || normalizedProvider === 'agy') return 'gemini';
     return 'claude';
 }
 

@@ -31,6 +31,7 @@ const WaitReason = Object.freeze({
 // waiting, with no dwell time needed.
 const ASK_TOOLS = new Set([
   'AskUserQuestion',
+  'ask_question',
   'request_user_input',
   'functions.request_user_input',
 ]);

@@ -75,6 +75,7 @@ const COLUMN_LIGHT = Object.freeze({ radius: 42, alpha: 0.18, intensity: 0.2 });
 const SIGIL_GLOW = Object.freeze({ radius: 36, alpha: 0.16, intensity: 0.14 });
 
 const PROVIDER_COLORS = {
+    antigravity: '#6c96c2',
     claude: '#a78bfa',
     codex: '#4ade80',
     gemini: '#60a5fa',

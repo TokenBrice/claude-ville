@@ -1415,6 +1415,13 @@ export const MODEL_LINEUP_SCENARIO = {
         lineup('fable-b', 'Fable Scribe', 'claude', 'claude-fable-5-1', 26),
         lineup('astra-2', 'Astra', 'codex', 'gpt-6.2-astra', 27),
         lineup('astra-plume', 'Astra Plume', 'codex', 'gpt-6.2-astra', 28),
+        // Google Gemini Periodic-Element Alchemists & Flash (Antigravity + Gemini)
+        lineup('carbon-master', 'Carbon', 'antigravity', 'gemini-4-carbon', 29, { effort: 'high' }),
+        lineup('carbon-crucible', 'Carbon Crucible', 'antigravity', 'gemini-4-carbon', 30, { effort: 'high' }),
+        lineup('argon', 'Argon', 'antigravity', 'gemini-4-argon', 31),
+        lineup('neon', 'Neon', 'antigravity', 'gemini-4-neon', 32, { effort: 'medium' }),
+        lineup('hydrogen', 'Hydrogen', 'antigravity', 'gemini-4-hydrogen', 33),
+        lineup('gemini-flash', 'Gemini Flash', 'antigravity', 'gemini-3.8-flash', 34),
     ],
     timeline: [],
     metadata: {
