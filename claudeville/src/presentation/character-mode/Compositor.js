@@ -185,9 +185,14 @@ const ROBE_VARIANTS = Object.freeze(Array.from({ length: ROBE_VARIANT_COUNT }, (
         ROBE_HUE_BANDS[Math.floor(index / ROBE_VALUE_STEPS.length)])),
 })));
 // Plan 2.7 — LOD downsample: pixels at or above this alpha vote; the baked
-// rim (OUTLINE_ALPHA) never does, and is re-baked at half resolution.
+// rim (OUTLINE_ALPHA) never does, and is re-baked at half resolution with
+// LOD_OUTLINE_ALPHA (116/255 ≈ 0.455: softer by day than 128 while sitting
+// safely inside the shader `bakedRim` window (0.4, 0.6) so night pools never
+// bleed through a crowd body's rim).
 const LOD_VOTE_ALPHA = 160;
 const LOD_DARK_LUMA = 70;
+const LOD_INK_FLOOR_LUMA = 26;
+export const LOD_OUTLINE_ALPHA = 116;
 const LOD_CACHE = new WeakMap();
 export class Compositor {
     // 1.7 — the world's compositor registers itself here so DOM-side consumers
@@ -745,12 +750,13 @@ export class Compositor {
         return { front, back, colBottom, opaque: overlayOpaqueBounds(fdata, dims.w, dims.h) };
     }
 
-    // Plan 2.7 — the 0.5x crowd LOD copy of a composed sheet, baked once per
-    // source canvas. Each 2x2 block votes: the most common opaque colour wins
-    // (so the result is snapped to the sheet's own palette); ties at a
-    // silhouette edge keep the darker pixel so the outline survives; interior
-    // ties take the pixel nearest the block mean. The rim is then re-baked at
-    // half resolution instead of being averaged away. Drawn at world scale 1,
+    // Plan 2.7 / C-04 — the 0.5x crowd LOD copy of a composed sheet, baked once
+    // per source canvas. Each 2x2 block votes among opaque interior non-ink
+    // pixels (luma >= LOD_INK_FLOOR_LUMA) whenever present so outline ink never
+    // crushes interior garments; all ties take the pixel nearest the block mean,
+    // and attached 1-px bright tips survive within their cell while detached
+    // specks drop. The rim is then re-baked at half resolution with
+    // LOD_OUTLINE_ALPHA instead of being averaged away. Drawn at world scale 1,
     // the LOD body sits on the same texel grid as everything else.
     halfScaleSheet(source, cellSize = DEFAULT_CELL) {
         if (!source?.width || !source?.height || typeof document === 'undefined') return null;
@@ -770,9 +776,9 @@ export class Compositor {
             ?.getImageData(0, 0, width * 2, height * 2);
         if (!src) return null;
         const out = ctx.createImageData(width, height);
-        downsampleMajority(src.data, width * 2, out.data, width, height);
+        downsampleMajority(src.data, width * 2, out.data, width, height, cell);
         ctx.putImageData(out, 0, 0);
-        bakeSpriteOutline(ctx, width, height, cell / 2);
+        bakeSpriteOutline(ctx, width, height, cell / 2, LOD_OUTLINE_ALPHA);
         if (!bySize) {
             bySize = new Map();
             LOD_CACHE.set(source, bySize);
@@ -950,10 +956,11 @@ function inGamut(linear) {
 
 // Plan 2.4 — bakes the shared 1-texel warm rim into every cell of a sheet in
 // place: each transparent texel with an opaque 4-neighbour in the same cell
-// becomes OUTLINE_RGB at OUTLINE_ALPHA. Cell edges are respected so a rim can
-// never become a neighbouring frame's false feet.
-export function bakeSpriteOutline(ctx, width, height, cellSize = DEFAULT_CELL) {
+// becomes OUTLINE_RGB at outlineAlpha (default OUTLINE_ALPHA). Cell edges are
+// respected so a rim can never become a neighbouring frame's false feet.
+export function bakeSpriteOutline(ctx, width, height, cellSize = DEFAULT_CELL, outlineAlpha = OUTLINE_ALPHA) {
     const cell = Math.max(1, Math.round(Number(cellSize) || DEFAULT_CELL));
+    const rimAlpha = Math.max(0, Math.min(255, Math.round(Number(outlineAlpha) || OUTLINE_ALPHA)));
     const image = ctx.getImageData(0, 0, width, height);
     const data = image.data;
     const solid = new Uint8Array(width * height);
@@ -973,7 +980,7 @@ export function bakeSpriteOutline(ctx, width, height, cellSize = DEFAULT_CELL) {
             data[offset] = OUTLINE_RGB[0];
             data[offset + 1] = OUTLINE_RGB[1];
             data[offset + 2] = OUTLINE_RGB[2];
-            data[offset + 3] = OUTLINE_ALPHA;
+            data[offset + 3] = rimAlpha;
         }
     }
     ctx.putImageData(image, 0, 0);
@@ -1026,11 +1033,20 @@ function lodLuma(data, offset) {
     return data[offset] * 0.299 + data[offset + 1] * 0.587 + data[offset + 2] * 0.114;
 }
 
-function downsampleMajority(src, srcWidth, dst, width, height) {
+export function downsampleMajority(src, srcWidth, dst, width, height, srcCellSize = DEFAULT_CELL) {
+    const srcHeight = height * 2;
+    const cell = Math.max(2, Math.round(Number(srcCellSize) || DEFAULT_CELL));
     const picks = [0, 0, 0, 0];
+    const nonInk = [0, 0, 0, 0];
     for (let y = 0; y < height; y++) {
+        const sy = y * 2;
+        const cellTop = sy - (sy % cell);
+        const cellBottom = Math.min(srcHeight, cellTop + cell);
         for (let x = 0; x < width; x++) {
-            const base = ((y * 2) * srcWidth + x * 2) * 4;
+            const sx = x * 2;
+            const cellLeft = sx - (sx % cell);
+            const cellRight = Math.min(srcWidth, cellLeft + cell);
+            const base = (sy * srcWidth + sx) * 4;
             const block = [base, base + 4, base + srcWidth * 4, base + srcWidth * 4 + 4];
             let count = 0;
             for (let k = 0; k < 4; k++) {
@@ -1038,50 +1054,68 @@ function downsampleMajority(src, srcWidth, dst, width, height) {
             }
             const out = (y * width + x) * 4;
             if (count === 0) continue;
-            if (count === 1 && lodLuma(src, picks[0]) >= LOD_DARK_LUMA) continue;
-            let best = picks[0];
+            if (count === 1 && lodLuma(src, picks[0]) >= LOD_DARK_LUMA) {
+                let attached = false;
+                const nx0 = Math.max(cellLeft, sx - 1);
+                const nx1 = Math.min(cellRight - 1, sx + 2);
+                const ny0 = Math.max(cellTop, sy - 1);
+                const ny1 = Math.min(cellBottom - 1, sy + 2);
+                for (let ny = ny0; ny <= ny1 && !attached; ny++) {
+                    for (let nx = nx0; nx <= nx1; nx++) {
+                        if (nx >= sx && nx <= sx + 1 && ny >= sy && ny <= sy + 1) continue;
+                        if (src[(ny * srcWidth + nx) * 4 + 3] >= LOD_VOTE_ALPHA) {
+                            attached = true;
+                            break;
+                        }
+                    }
+                }
+                if (!attached) continue;
+            }
+            let nonInkCount = 0;
+            if (count >= 2) {
+                for (let k = 0; k < count; k++) {
+                    if (lodLuma(src, picks[k]) >= LOD_INK_FLOOR_LUMA) nonInk[nonInkCount++] = picks[k];
+                }
+            }
+            const pool = nonInkCount > 0 ? nonInk : picks;
+            const poolCount = nonInkCount > 0 ? nonInkCount : count;
+            let best = pool[0];
             let bestVotes = 0;
             let tied = false;
-            for (let a = 0; a < count; a++) {
+            for (let a = 0; a < poolCount; a++) {
                 let votes = 0;
-                for (let b = 0; b < count; b++) {
-                    if (src[picks[a]] === src[picks[b]] && src[picks[a] + 1] === src[picks[b] + 1]
-                        && src[picks[a] + 2] === src[picks[b] + 2]) votes++;
+                for (let b = 0; b < poolCount; b++) {
+                    if (src[pool[a]] === src[pool[b]] && src[pool[a] + 1] === src[pool[b] + 1]
+                        && src[pool[a] + 2] === src[pool[b] + 2]) votes++;
                 }
                 if (votes > bestVotes) {
                     bestVotes = votes;
-                    best = picks[a];
+                    best = pool[a];
                     tied = false;
-                } else if (votes === bestVotes && !(src[picks[a]] === src[best]
-                    && src[picks[a] + 1] === src[best + 1] && src[picks[a] + 2] === src[best + 2])) {
+                } else if (votes === bestVotes && !(src[pool[a]] === src[best]
+                    && src[pool[a] + 1] === src[best + 1] && src[pool[a] + 2] === src[best + 2])) {
                     tied = true;
                 }
             }
             if (tied) {
-                if (count < 4) {
-                    for (let a = 0; a < count; a++) {
-                        if (lodLuma(src, picks[a]) < lodLuma(src, best)) best = picks[a];
-                    }
-                } else {
-                    let mr = 0, mg = 0, mb = 0;
-                    for (let a = 0; a < count; a++) {
-                        mr += src[picks[a]];
-                        mg += src[picks[a] + 1];
-                        mb += src[picks[a] + 2];
-                    }
-                    mr /= count;
-                    mg /= count;
-                    mb /= count;
-                    let bestDistance = Infinity;
-                    for (let a = 0; a < count; a++) {
-                        const dr = src[picks[a]] - mr;
-                        const dg = src[picks[a] + 1] - mg;
-                        const db = src[picks[a] + 2] - mb;
-                        const distance = dr * dr + dg * dg + db * db;
-                        if (distance < bestDistance) {
-                            bestDistance = distance;
-                            best = picks[a];
-                        }
+                let mr = 0, mg = 0, mb = 0;
+                for (let a = 0; a < poolCount; a++) {
+                    mr += src[pool[a]];
+                    mg += src[pool[a] + 1];
+                    mb += src[pool[a] + 2];
+                }
+                mr /= poolCount;
+                mg /= poolCount;
+                mb /= poolCount;
+                let bestDistance = Infinity;
+                for (let a = 0; a < poolCount; a++) {
+                    const dr = src[pool[a]] - mr;
+                    const dg = src[pool[a] + 1] - mg;
+                    const db = src[pool[a] + 2] - mb;
+                    const distance = dr * dr + dg * dg + db * db;
+                    if (distance < bestDistance) {
+                        bestDistance = distance;
+                        best = pool[a];
                     }
                 }
             }
@@ -1091,6 +1125,7 @@ function downsampleMajority(src, srcWidth, dst, width, height) {
             dst[out + 3] = 255;
         }
     }
+    return dst;
 }
 
 function hexToRgb(hex) {

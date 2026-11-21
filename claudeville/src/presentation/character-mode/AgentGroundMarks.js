@@ -23,7 +23,7 @@ import { frameCastLighting, pointCastFor, rasterizeCourses, villagerCastLighting
 const SHADOW_RGB = [26, 20, 16];
 const KEYLINE_RGB = [16, 11, 8];
 const SHADOW_OUTER_ALPHA = 66;   // ~0.26 — the soft outer course
-const SHADOW_CORE_ALPHA = 118;   // ~0.46 — the dense core under the feet
+const SHADOW_CORE_ALPHA = 148;   // ~0.58 — firmer boot contact grounding (C-04)
 const KEYLINE_ALPHA = 150;       // dark course beneath a ring, lifts it off pale ground
 
 const SHADOW_MIN_WIDTH = 14;

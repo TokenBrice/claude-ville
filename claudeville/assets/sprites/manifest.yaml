@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-11-21-c05-landmark-craft"
+  assetVersion: "2026-11-21-c04-villager-lod"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -260,6 +260,9 @@ characters:
     headCovered: true
     anchor: [46, 80]
     materialClass: fabric
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
     atlasFrame: { atlas: world-pilot, keyPrefix: agent.claude.opus }
     elevation: { base: 0, top: 80, unit: sprite-px }
     emissive:
@@ -306,6 +309,9 @@ characters:
     headCovered: true
     anchor: [46, 80]
     materialClass: fabric
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
     elevation: { base: 0, top: 80, unit: sprite-px }
     emissive: { strength: 0, sources: [] }
     occluder: { mode: alpha-silhouette, strength: 1 }
@@ -626,10 +632,9 @@ characters:
         animationStrips: { groups: { celebrate: { se: "e6a1f193-b982-4444-b9a8-3303c903aa11", e: "eaf0b7fd-68fa-4d6a-bc10-a6d7c4545ad9", w: "e35d630d-3d42-4f9e-99ad-9ce65ecf0537", sw: "0b1db905-d81b-48c5-9f27-5de3d71bd03f" }, think: { se: "dccb2f25-927b-4f68-aa8d-98cffb41c5ec", e: "478a0808-ca0c-4558-a54b-cf887624f237", w: "0608de7c-1255-4408-83f9-38e633622a01", sw: "7391cd54-6e72-4d0d-8e62-45575354fd85" } } }
     portraitCrop: { x: 23, y: 12, w: 46, h: 42 }
     portraitFace: { x: 44, y: 30 }
-    # Sampled from sheet.png: the aged-gold armour borders as trim (2.8 % of
-    # opaque sheet pixels within the swap's +-12 per channel); plate and cape
-    # stay authored, as on the first Astra body.
-    paletteSource: { trim: ['#b58d60', '#c8aa84', '#98724d', '#d8b381'] }
+    # Sampled from sheet.png: imperial violet cape/plume for crowd variants and
+    # cool steel rim highlight for trim (zero overlap with open-visor skin).
+    paletteSource: { robe: ['#502868', '#391c4e'], trim: '#6d7e9a' }
     provenance:
       characterId: 920eb6ae-2a05-4fcd-8154-548fbbab190e
       # The template walk dropped the cape facing north-west; that column is a
@@ -755,6 +760,9 @@ characters:
     headCovered: true
     anchor: [46, 80]
     materialClass: metal
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
     elevation: { base: 0, top: 80, unit: sprite-px }
     emissive: { strength: 0, sources: [] }
     occluder: { mode: alpha-silhouette, strength: 1 }
@@ -888,6 +896,9 @@ characters:
     headCovered: true
     anchor: [46, 80]
     materialClass: metal
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
     elevation: { base: 0, top: 80, unit: sprite-px }
     emissive: { strength: 0, sources: [] }
     occluder: { mode: alpha-silhouette, strength: 1 }
