@@ -373,7 +373,7 @@
         },
         {
             "id": "gemini.orchestrator-neon", "provider": "gemini", "match": ["orchestrator-neon"], "sample": "gemini-pro-orchestrator-neon",
-            "label": "Neon Orchestrator", "shortLabel": "Orch·Neon", "modelClass": "neon", "modelTier": "balanced", "mood": "balanced",
+            "label": "Neon Orchestrator", "shortLabel": "Orch·Neon", "modelClass": "neon", "modelTier": "apex", "mood": "balanced",
             "spriteId": "agent.gemini.neon", "paletteKey": "gemini", "color": "#4fd8ff",
             "trim": ["#4fd8ff", "#ff6ec7", "#7cb8ff"], "accent": ["#ccf6ff", "#4fd8ff", "#ff8fd8"],
             "contextWindow": 1000000, "pricing": { "input": 3, "output": 15, "cacheRead": 0.15, "cacheCreate": 0.5 }
@@ -402,7 +402,7 @@
         },
         {
             "id": "gemini.4-neon", "provider": "gemini", "match": ["gemini-4-neon", "4-neon"], "sample": "gemini-4-neon",
-            "label": "Gemini 4 Neon", "shortLabel": "Neon", "modelClass": "neon", "modelTier": "balanced", "mood": "balanced",
+            "label": "Gemini 4 Neon", "shortLabel": "Neon", "modelClass": "neon", "modelTier": "apex", "mood": "balanced",
             "spriteId": "agent.gemini.neon", "paletteKey": "gemini", "color": "#4fd8ff",
             "trim": ["#4fd8ff", "#ff6ec7", "#7cb8ff"], "accent": ["#ccf6ff", "#4fd8ff", "#ff8fd8"],
             "contextWindow": 1000000, "pricing": { "input": 3, "output": 15, "cacheRead": 0.15, "cacheCreate": 0.5 }

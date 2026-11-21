@@ -2,6 +2,12 @@
 
 ---
 
+## v0.65.0.1 · Nov 21, 2026 — Hotfix
+
+- **Gemini 4 Neon ranks with the flagships.** v0.65.0 registered Neon, and the Neon Orchestrator, a tier below Argon. Google released Neon on Nov 18 to replace Argon, and the Artificial Analysis Intelligence Index scores it level with Carbon (Neon xhigh 61, Carbon high 60, Argon high 50). Neon now sits at the `apex` tier beside Argon, under Carbon (`mythic`), Google's strongest model. Prices, sprites and labels are unchanged.
+
+---
+
 ## v0.65.0 — *The Alchemists' Guild* · Nov 21, 2026
 
 Google's Antigravity CLI (`agy`) joins the village as a new provider, and Gemini's periodic-element models arrive as a guild of alchemists with their own bodies, prices and Tavern poses. Every Antigravity behaviour below was checked against real `agy` transcripts.

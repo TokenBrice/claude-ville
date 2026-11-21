@@ -283,3 +283,12 @@ test('registry and defaults cover every manifest agent sprite in both directions
     const orphans = [...characterIds].filter((id) => !referencedIds.has(id)).sort();
     assert.deepEqual(orphans, [], `manifest agent sprites without a registry row, provider default, or rendering-policy reference: ${orphans.join(', ')}`);
 });
+
+test('Gemini 4 tiers follow Google\'s lineup: Carbon on top, Neon with the flagship it replaced', () => {
+    const tier = (raw) => browserRegistry.findModelRow(raw, 'gemini').row.modelTier;
+    assert.equal(tier('gemini-4-carbon'), 'mythic');
+    assert.equal(tier('gemini-4-neon'), 'apex');
+    assert.equal(tier('gemini-pro-orchestrator-neon'), 'apex');
+    assert.equal(tier('gemini-4-argon'), 'apex');
+    assert.equal(tier('gemini-4-hydrogen'), 'swift');
+});

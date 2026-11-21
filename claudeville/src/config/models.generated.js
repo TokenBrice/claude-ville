@@ -1751,7 +1751,7 @@ const MODEL_REGISTRY = [
             "orchestrator-neon"
         ],
         "modelClass": "neon",
-        "modelTier": "balanced",
+        "modelTier": "apex",
         "mood": "balanced",
         "paletteKey": "gemini",
         "pricing": {
@@ -1891,7 +1891,7 @@ const MODEL_REGISTRY = [
             "4-neon"
         ],
         "modelClass": "neon",
-        "modelTier": "balanced",
+        "modelTier": "apex",
         "mood": "balanced",
         "paletteKey": "gemini",
         "pricing": {
