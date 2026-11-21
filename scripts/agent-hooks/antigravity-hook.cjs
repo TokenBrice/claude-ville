@@ -2,8 +2,10 @@
 
 // Optional read-only observability forwarder for Google Antigravity (`hooks.json`).
 // Maps Antigravity camelCase stdin payloads into ClaudeVille's POST /api/ingest/hook
-// schema and ALWAYS prints a neutral JSON object `{}` on stdout (never `{ "decision": "allow" }`)
-// so PreToolUse defers to Antigravity's normal permission flow.
+// schema and prints `{}` on stdout. `{}` is a valid answer only for SessionStart,
+// PostToolUse, PreInvocation and PostInvocation. Never register this helper on
+// PreToolUse or Stop: both require a `decision`, and every PreToolUse decision
+// changes permissions.
 
 const fs = require('node:fs');
 const http = require('node:http');
@@ -118,7 +120,7 @@ function runIngest({
   }
   const event = mapAntigravityHookEvent(read(), now());
   if (event) postIngestEvent(event, { request, token: env.CLAUDEVILLE_INGEST_TOKEN });
-  // Antigravity hooks must print valid JSON on stdout; empty object keeps PreToolUse neutral.
+  // Antigravity hooks must print JSON on stdout; `{}` suits only the events named above.
   write('{}\n');
   return 0;
 }

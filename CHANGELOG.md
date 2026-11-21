@@ -2,6 +2,12 @@
 
 ---
 
+## v0.65.0.2 · Nov 21, 2026 — Hotfix
+
+- **Antigravity hook guidance corrected.** v0.65.0 said the optional forwarder `scripts/agent-hooks/antigravity-hook.cjs` keeps `PreToolUse` neutral by printing `{}`. agy's hook reference makes a `decision` required on `PreToolUse` and `Stop`, and every `PreToolUse` decision (`allow`, `deny`, `ask`, `force_ask`) changes permissions, so an answer without one is undocumented. The troubleshooting guide and the helper now say to register it only on `SessionStart`, `PostToolUse`, `PreInvocation`, and `PostInvocation`. They also say the Antigravity adapter needs no hooks: agy has no approval event, its transcript already records each step, and it runs hooks synchronously, so each one delays the agent.
+
+---
+
 ## v0.65.0.1 · Nov 21, 2026 — Hotfix
 
 - **Gemini 4 Neon ranks with the flagships.** v0.65.0 registered Neon, and the Neon Orchestrator, a tier below Argon. Google released Neon on Nov 18 to replace Argon, and the Artificial Analysis Intelligence Index scores it level with Carbon (Neon xhigh 61, Carbon high 60, Argon high 50). Neon now sits at the `apex` tier beside Argon, under Carbon (`mythic`), Google's strongest model. Prices, sprites and labels are unchanged.
