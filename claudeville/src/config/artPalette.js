@@ -42,10 +42,11 @@
 //   dirt          Worn earth paths and road shoulders: about +1.5 grass steps
 //                 brighter (mid okL 0.57 vs 0.48), so paths read by value, not
 //                 hue alone. S 0.39-0.47.
-//   road          Avenue cobble: warm neutral grey at the dirt value, no blue
-//                 cast (S <= 0.11).
-//   plaza         Dressed plaza stone: the lightest paved land, the focal floor
-//                 around Command (mid okL 0.67).
+//   road          Avenue cobble: warm neutral grey-taupe held strictly above
+//                 grass[2] in daylight and night grades, no blue cast (S <= 0.11).
+//   plaza         Dressed plaza stone: warm taupe-limestone focal floor around
+//                 Command (mid okL ~0.615), ~1 step above road and clearly below
+//                 sunlit ashlar so landmark masonry separates cleanly.
 //   sand          Beach and dry shore; lighter than plaza, low chroma.
 //   foliage       Tree/bush sprites (sage family): wider value range than
 //                 grass so canopies model form; S <= 0.47.
@@ -98,8 +99,8 @@ export const ART_RAMPS = Object.freeze({
     shallowWater: ['#4a6c70', '#669190', '#91b2a8'],
     grass: ['#26572d', '#346e30', '#4f823b', '#689146', '#7f9e51'],
     dirt: ['#6a5038', '#7c6043', '#8e7050', '#9f805d', '#ae8f6a'],
-    road: ['#545353', '#666461', '#78746e', '#8a857c', '#9b958a'],
-    plaza: ['#7a7164', '#8c8274', '#9e9484', '#afa594', '#bdb2a0'],
+    road: ['#525150', '#64625f', '#77736d', '#89847b', '#9a948a'],
+    plaza: ['#6a6155', '#7c7264', '#8d8374', '#9f9484', '#afa594'],
     sand: ['#a8936c', '#b7a279', '#c5b086', '#d2bd93', '#dcc9a1'],
     foliage: ['#1c2b24', '#2a3e2c', '#3e5634', '#5a723d', '#86944f'],
     stone: ['#25262d', '#373944', '#4d4f5a', '#686a72', '#8c8b8a'],

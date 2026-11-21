@@ -16,20 +16,25 @@
 //                    top vertex) and switched between mirrored/offset
 //                    variants along noise contours, so no tile period shows.
 //   3. C1 ramps      every texel is a stop of ART_RAMPS (GROUND_RAMP_KEYS):
-//                    index = 2 + texture z + macro drift + Bayer 2×2. Grass is
-//                    the lowest land value, paths about +1.5 steps, the
-//                    Command plaza the lightest paved floor, one step over
-//                    the one street stone (v0.61.2: gravel at the street's
-//                    tone, flagstone at its value).
+//                    index = 2 + texture z + macro drift + Bayer 2×2 (meadow
+//                    grass clusters its grain and dithers ramp/warmth seams
+//                    only). Grass is the lowest land value, roads stay strictly
+//                    lighter than grass by day and night, and the Command plaza
+//                    sits ~1 step above road in warm limestone below sunlit
+//                    landmark ashlar (gravel at road's tone, flagstone at its
+//                    value).
 //   4. macro fields  6–7-tile value drift plus district-anchored warmth:
 //                    drier/warmer grass by the workshops, lusher/cooler under
 //                    the northern canopy and by the scholars' buildings; the
 //                    forest floor a further half ramp step darker (5.4).
-//                    Paving is laid stone: it takes PAVING_DRIFT_SHARE of the
-//                    drift, so one street keeps one tone (v0.61.2).
-//   5. contact AO    ramp-step darkening outside building footprints (longer
-//                    on the down-light sides), under tree canopies and props;
-//                    on paving at most PAVING_AO_CAP (about one step).
+//                    Paving takes PAVING_DRIFT_SHARE (0.32) of the macro drift
+//                    so laid stone shows weathered tonal variation within one
+//                    stone family (2026-11-21 C-02 decision).
+//   5. contact AO    ramp-step darkening outside building footprints (including
+//                    authored plinth front edges for Command, Tavern, Forge,
+//                    Archive and Portal), under tree crowns/World Ash root
+//                    buttresses and props; on paving up to PAVING_AO_CAP (0.68,
+//                    ~2.15 ramp steps close to masonry).
 //   6. thresholds    authored worn-earth corridors from each door along its
 //                    frontage spur, lighter along the trodden centre line.
 //   7. yards (4.7)   each district's frontage apron in its own material
@@ -66,15 +71,15 @@
 
 import { ART_RAMPS } from '../../config/artPalette.js';
 import { MAP_SIZE, TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
-import { FOREST_FLOOR_REGIONS } from '../../config/scenery.js';
+import { FOREST_FLOOR_REGIONS, WORLD_TREE } from '../../config/scenery.js';
 import { YARD_MATERIALS } from '../../config/townPlan.js';
 import { BUILDING_GROUNDING_PROFILES } from '../../config/buildingGrounding.js';
 import { readTerrainCellLuma } from './TerrainTileset.js';
-import { buildingCenterToWorld } from './Projection.js';
+import { buildingCenterToWorld, tileToWorld } from './Projection.js';
 import { getCoastField } from './CoastBake.js';
 import { frostQuarterOf, frostRisingOf, snowBucketOf } from './GroundState.js';
 import { frostHolds, frostShadeField, frostShadeKey } from './FrostMelt.js';
-import { treeSpriteKey } from './FoliageRenderer.js';
+import { TREE_SPRITES, treeSpriteKey } from './FoliageRenderer.js';
 import { releaseCanvasBackingStore } from './CanvasBudget.js';
 import { lookStrength } from './LookStrengths.js';
 import { BARE_CROWN_COVER, EAVE_REACH, packGroundWeather, validGroundWeather } from './GroundWeatherField.js';
@@ -161,22 +166,23 @@ export const GRASS_GUST_STOPS = Object.freeze([GRASS, GRASS_DRY, GRASS_LUSH].fla
 // Per surface: ramp, texture set, ramp offset (steps), texture contrast,
 // published class.
 const SURFACES = [
-    /* grass  */ { ramp: GRASS, tex: 'grass', offset: 0, contrast: 1.1, cls: GROUND_CLASS.GRASS },
+    /* grass  */ { ramp: GRASS, tex: 'grass', offset: 0.02, contrast: 0.44, cls: GROUND_CLASS.GRASS },
     /* sand   */ { ramp: SAND, tex: 'sand', offset: -0.2, contrast: 0.8, cls: GROUND_CLASS.SAND },
     /* dirt   */ { ramp: DIRT, tex: 'dirt', offset: 0, contrast: 1.0, cls: GROUND_CLASS.DIRT },
-    /* road   */ { ramp: ROAD, tex: 'cobble', offset: 0.1, contrast: 0.95, cls: GROUND_CLASS.ROAD },
-    /* plaza  */ { ramp: PLAZA, tex: 'square', offset: -0.35, contrast: 0.8, cls: GROUND_CLASS.PLAZA },
-    /* flag   */ { ramp: PLAZA, tex: 'flag', offset: -1.05, contrast: 0.95, cls: GROUND_CLASS.PLAZA },
-    /* gravel */ { ramp: ROAD, tex: 'gravel', offset: 0.1, contrast: 0.75, cls: GROUND_CLASS.ROAD },
+    /* road   */ { ramp: ROAD, tex: 'cobble', offset: 0.05, contrast: 0.92, cls: GROUND_CLASS.ROAD },
+    /* plaza  */ { ramp: PLAZA, tex: 'square', offset: -0.12, contrast: 0.85, cls: GROUND_CLASS.PLAZA },
+    /* flag   */ { ramp: PLAZA, tex: 'flag', offset: -0.95, contrast: 0.9, cls: GROUND_CLASS.PLAZA },
+    /* gravel */ { ramp: ROAD, tex: 'gravel', offset: 0.05, contrast: 0.75, cls: GROUND_CLASS.ROAD },
     /* cinder */ { ramp: DIRT, tex: 'cinder', offset: -1.5, contrast: 1.0, cls: GROUND_CLASS.DIRT },
     /* earth  */ { ramp: DIRT, tex: 'earth', offset: 0.3, contrast: 0.95, cls: GROUND_CLASS.DIRT },
 ];
 
-// v0.61.2 — laid stone keeps one tone: paving takes this share of the macro
-// value drift (the grass's dry/lush field and the forest floor) and a
-// contact-shadow weight of at most PAVING_AO_CAP (× 3.2 ≈ one ramp step).
-const PAVING_DRIFT_SHARE = 0.15;
-const PAVING_AO_CAP = 0.32;
+// C-02 (2026-11-21) — varied paving: civic stone takes moderate macro value
+// drift so laid paving holds natural weathering within one stone family, and a
+// tighter plinth contact-AO collar up to PAVING_AO_CAP (× 3.2 ≈ 2.15 ramp
+// steps within 6–10 world px of masonry).
+const PAVING_DRIFT_SHARE = 0.32;
+const PAVING_AO_CAP = 0.68;
 const isPavingSurface = (s) => s === S_ROAD || s === S_PLAZA || s === S_FLAG || s === S_GRAVEL;
 
 const SURFACE_EDGE = new Array(SURFACES.length).fill(null);
@@ -195,9 +201,10 @@ SURFACE_EDGE[S_PLAZA] = 'kerb';
 // fields are transforms, applied in order: 'mirror' flips the drawing,
 // 'destripe' strips the full-length row and column lines the tileset model
 // rolls into organic ground (a cell repeats every tile, so such a line
-// draws the tile grid across a whole district).
+// draws the tile grid across a whole district), and 'cluster' groups 1-texel
+// grass grain into painterly 3×3 leaf-tuft masses.
 const TEXTURE_SOURCES = Object.freeze({
-    grass: [['terrain.grass-dirt', 0], ['terrain.grass-cobble', 0], ['terrain.grass-shore', 0], ['terrain.grass-cobble', 0, 'mirror']],
+    grass: [['terrain.grass-dirt', 0, 'cluster'], ['terrain.grass-cobble', 0, 'cluster'], ['terrain.grass-shore', 0, 'cluster'], ['terrain.grass-cobble', 0, 'mirror', 'cluster']],
     duff: [['terrain.forest-duff', 15, 'destripe']],
     dirt: [['terrain.grass-dirt', 15]],
     earth: [['terrain.grass-dirt', 15, 'mirror']],
@@ -341,8 +348,8 @@ function buildDriftGrid(r) {
     }
     for (let y = 0; y < N; y++) {
         for (let x = 0; x < N; x++) {
-            let v = (vnoise(x / 6.5, y / 6.5, 3) - 0.5) * 1.3;
-            let w = (vnoise(x / 7.5 + 40, y / 7.5, 9) - 0.5) * 1.2;
+            let v = (vnoise(x / 6.5, y / 6.5, 3) - 0.5) * 1.58 + (vnoise(x / 2.4 + 19, y / 2.4 + 7, 5) - 0.5) * 0.78;
+            let w = (vnoise(x / 7.5 + 40, y / 7.5, 9) - 0.5) * 1.28;
             for (const a of anchors) {
                 const d2 = ((x - a.x) ** 2 + (y - a.y) ** 2) / 36;
                 if (d2 > 4) continue;
@@ -431,7 +438,37 @@ function mirrorTexture(t) {
     return out;
 }
 
-const TEXTURE_TRANSFORMS = Object.freeze({ mirror: mirrorTexture, destripe: destripeTexture });
+// Multi-pass wrap-around 3x3 binomial cluster filter on a 32x32 luminance
+// cell, re-normalised to unit deviation so 1-2 texel Wang stipple groups into
+// broad 6-10 world-px painterly turf masses instead of salt-and-pepper static.
+function clusterTexture(t) {
+    let src = t;
+    let dst = new Float32Array(t.length);
+    for (let pass = 0; pass < 4; pass++) {
+        for (let v = 0; v < 32; v++) {
+            for (let u = 0; u < 32; u++) {
+                let acc = 0;
+                for (let dv = -1; dv <= 1; dv++) {
+                    const rv = ((v + dv) & 31) * 32;
+                    const wv = dv === 0 ? 2 : 1;
+                    for (let du = -1; du <= 1; du++) {
+                        acc += src[rv + ((u + du) & 31)] * wv * (du === 0 ? 2 : 1);
+                    }
+                }
+                dst[v * 32 + u] = acc / 16;
+            }
+        }
+        src = dst;
+        if (pass < 3) dst = new Float32Array(t.length);
+    }
+    let variance = 0;
+    for (let i = 0; i < src.length; i++) variance += src[i] * src[i];
+    const sd = Math.sqrt(Math.max(1e-6, variance / src.length));
+    for (let i = 0; i < src.length; i++) src[i] /= sd;
+    return src;
+}
+
+const TEXTURE_TRANSFORMS = Object.freeze({ mirror: mirrorTexture, destripe: destripeTexture, cluster: clusterTexture });
 
 // No-assets fallback: a z-scored value-noise texture that tiles at 32.
 function proceduralTexture(seed) {
@@ -443,6 +480,81 @@ function proceduralTexture(seed) {
         }
     }
     return t;
+}
+
+// Authored painted-base plinth fallbacks (matching bake-surface-channel.mjs)
+// for hero stone landmarks whose logical footprint sits behind their SW walls.
+const LANDMARK_PLINTH_FALLBACKS = Object.freeze({
+    archive: Object.freeze({ left: Object.freeze([40, 172]), bottom: Object.freeze([212, 230]), right: Object.freeze([300, 190]) }),
+    portal: Object.freeze({ left: Object.freeze([36, 193]), bottom: Object.freeze([175, 258]), right: Object.freeze([275, 207]) }),
+});
+
+const _worldAshRootCache = new WeakMap();
+const ASH_ROOT_ROWS = 72;
+
+// Exact lower-72-row root-buttress distance & crevice field for `veg.tree.ash.world`
+// (240x271, anchor [120, 270]). Returns null when assets or DOM canvas are absent.
+function getWorldAshRootField(r, tree) {
+    const sprite = TREE_SPRITES['ash.world'];
+    const source = r.assets?.get?.(sprite.id, { request: false });
+    if (!source || !source.width || typeof document === 'undefined') return null;
+    let cached = _worldAshRootCache.get(source);
+    if (!cached) {
+        const w = sprite.width;
+        const yStart = sprite.height - ASH_ROOT_ROWS;
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = ASH_ROOT_ROWS;
+        const ctx = canvas.getContext?.('2d', { willReadFrequently: true });
+        if (!ctx?.drawImage || !ctx?.getImageData) return null;
+        ctx.drawImage(source, 0, yStart, w, ASH_ROOT_ROWS, 0, 0, w, ASH_ROOT_ROWS);
+        const rgba = ctx.getImageData(0, 0, w, ASH_ROOT_ROWS).data;
+        if (!rgba) return null;
+        let opaqueCount = 0;
+        const opaque = new Uint8Array(w * ASH_ROOT_ROWS);
+        for (let i = 0; i < opaque.length; i++) {
+            if (rgba[i * 4 + 3] > 128) { opaque[i] = 1; opaqueCount++; }
+        }
+        if (opaqueCount === 0) return null;
+        // Exact min-distance in world px (clamped to 12) + concave root-bay score.
+        const dist = new Float32Array(w * ASH_ROOT_ROWS).fill(12);
+        const bay = new Uint8Array(w * ASH_ROOT_ROWS);
+        const maxR = 10;
+        for (let y = 0; y < ASH_ROOT_ROWS; y++) {
+            for (let x = 0; x < w; x++) {
+                const idx = y * w + x;
+                if (opaque[idx]) { dist[idx] = 0; continue; }
+                let best2 = 144;
+                for (let dy = -maxR; dy <= maxR; dy++) {
+                    const yy = y + dy;
+                    if (yy < 0 || yy >= ASH_ROOT_ROWS) continue;
+                    for (let dx = -maxR; dx <= maxR; dx++) {
+                        const xx = x + dx;
+                        if (xx < 0 || xx >= w || !opaque[yy * w + xx]) continue;
+                        const d2 = dx * dx + dy * dy;
+                        if (d2 < best2) best2 = d2;
+                    }
+                }
+                dist[idx] = Math.sqrt(best2);
+                // Check if nestled in a root crotch (opaque root within 16 px left & right, or above).
+                let hitL = 0, hitR = 0, hitUp = 0;
+                for (let k = 1; k <= 16; k++) {
+                    if (x - k >= 0 && opaque[y * w + (x - k)]) hitL = 1;
+                    if (x + k < w && opaque[y * w + (x + k)]) hitR = 1;
+                    if (k <= 8 && y - k >= 0 && opaque[(y - k) * w + x]) hitUp = 1;
+                }
+                if ((hitL && hitR) || (hitUp && (hitL || hitR))) bay[idx] = 1;
+            }
+        }
+        cached = { w, h: ASH_ROOT_ROWS, anchorX: w / 2, anchorY: ASH_ROOT_ROWS - 1, opaque, dist, bay };
+        _worldAshRootCache.set(source, cached);
+    }
+    const world = tileToWorld(tree.tileX, tree.tileY);
+    return {
+        ...cached,
+        leftX: Math.round(world.x) - cached.anchorX,
+        topY: Math.round(world.y) - cached.anchorY,
+    };
 }
 
 // Contact occluders bucketed by tile so each texel tests only its neighbours.
@@ -470,10 +582,46 @@ function buildOccluders(r) {
         if (plinth) add({ ...plinth, reach: 0.95, strength: 1, shelter }, 1.4);
         else add({ kind: 0, minX, minY, maxX: minX + b.width, maxY: minY + b.height, reach: 0.95, strength: 1, shelter }, 1.4);
     }
-    for (const t of r.scenery?.getTreeProps?.() || []) {
-        const cx = t.tileX + 0.1;
-        const cy = t.tileY + 0.1;
-        add({ kind: 1, cx, cy, minX: cx, maxX: cx, minY: cy, maxY: cy, reach: 0.55, strength: 0.75, shelter: 1 }, 0.6);
+    const treeProps = r.scenery?.getTreeProps?.() || [];
+    let hasWorldAsh = false;
+    const addTreeOccluder = (t) => {
+        if (t.species === 'ash' || t.size === 'world') {
+            hasWorldAsh = true;
+            const world = tileToWorld(t.tileX, t.tileY);
+            const wx = world.x - 3;
+            const wy = world.y - 28;
+            const cx = (wx / HALF_W + wy / HALF_H) * 0.5;
+            const cy = (wy / HALF_H - wx / HALF_W) * 0.5;
+            const ashField = getWorldAshRootField(r, t);
+            add({
+                kind: 3, wx, wy, rx: 78, ry: 44, cx, cy,
+                minX: cx - 1.7, maxX: cx + 1.7, minY: cy - 1.7, maxY: cy + 1.7,
+                reach: 1.0, strength: ashField ? 0.62 : 0.92, shelter: 1, ashField,
+            }, 1.3);
+            return;
+        }
+        if (t.size === 'tall') {
+            const world = tileToWorld(t.tileX, t.tileY);
+            const wx = world.x;
+            const wy = world.y - 6;
+            const cx = (wx / HALF_W + wy / HALF_H) * 0.5;
+            const cy = (wy / HALF_H - wx / HALF_W) * 0.5;
+            add({
+                kind: 3, wx, wy, rx: 28, ry: 15, cx, cy,
+                minX: cx - 0.5, maxX: cx + 0.5, minY: cy - 0.5, maxY: cy + 0.5,
+                reach: 1.0, strength: 0.90, shelter: 1,
+            }, 0.7);
+            return;
+        }
+        const small = t.size === 'small';
+        const cx = t.tileX - 0.04;
+        const cy = t.tileY - 0.04;
+        const reach = small ? 0.36 : 0.48;
+        add({ kind: 1, cx, cy, minX: cx, maxX: cx, minY: cy, maxY: cy, reach, strength: small ? 0.78 : 0.86, shelter: 1 }, reach + 0.1);
+    };
+    for (const t of treeProps) addTreeOccluder(t);
+    if (!hasWorldAsh && r.scenery?.isWorldTreeIsletTile) {
+        addTreeOccluder({ tileX: WORLD_TREE.tileX, tileY: WORLD_TREE.tileY, species: 'ash', size: 'world', variant: 0 });
     }
     for (const p of r._staticPropSprites || []) {
         if (p.id === 'fantasy.tree') continue;
@@ -541,9 +689,9 @@ function sunShadeAt(bucket, tx, ty, out) {
 // the back sides stay the logical footprint's, under the sprite. Null
 // without a plinth or the sprite anchor.
 function plinthOccluder(r, b, profile, minX, minY) {
-    const base = profile?.plinth;
+    const base = profile?.plinth || LANDMARK_PLINTH_FALLBACKS[b.type];
     const anchor = base && r.assets?.getAnchor?.(`building.${b.type}`);
-    if (!anchor) return null;
+    if (!anchor || (!profile?.plinth && !anchor[0] && !anchor[1])) return null;
     const centre = buildingCenterToWorld(b);
     const tile = ([px, py]) => {
         const sx = centre.x + px - anchor[0];
@@ -600,6 +748,30 @@ function occlusionAt(bucket, tx, ty, sheltered = false) {
                 continue;
             }
             d = Math.sqrt(ex * ex + ey * ey);
+        } else if (o.kind === 3) {
+            const sx = (tx - ty) * HALF_W;
+            const sy = (tx + ty) * HALF_H;
+            let baseAo = 0;
+            const dEll = Math.hypot((sx - o.wx) / o.rx, (sy - o.wy) / o.ry);
+            if (dEll < o.reach) {
+                baseAo = (1 - dEll / o.reach) ** 1.5 * o.strength;
+            }
+            if (o.ashField) {
+                const fx = Math.floor(sx - o.ashField.leftX);
+                const fy = Math.floor(sy - o.ashField.topY);
+                if (fx >= 0 && fy >= 0 && fx < o.ashField.w && fy < o.ashField.h) {
+                    const idx = fy * o.ashField.w + fx;
+                    const dp = o.ashField.dist[idx];
+                    const reachPx = o.ashField.bay[idx] ? 9.5 : 6.5;
+                    if (dp < reachPx) {
+                        const rootAo = dp === 0 ? 1 : (1 - dp / reachPx) ** 1.35 * (o.ashField.bay[idx] ? 0.98 : 0.88);
+                        if (rootAo > baseAo) baseAo = rootAo;
+                    }
+                }
+            }
+            const a = baseAo * (sheltered ? o.shelter : 1);
+            if (a > ao) ao = a;
+            continue;
         } else {
             d = Math.hypot(tx - o.cx, (ty - o.cy) * 1.15);
         }
@@ -889,14 +1061,19 @@ function* groundBands(r, withWeather = false) {
             const dither = BAYER[(row & 1) * 2 + (col & 1)];
 
             const paving = isPavingSurface(surface);
-            let k = 2 + S.offset + contextStep + z * S.contrast + (paving ? macro * PAVING_DRIFT_SHARE : macro)
-                + dither * 0.75 + lip * 0.8 - tuck * 1.0 - (paving ? Math.min(ao, PAVING_AO_CAP) : ao) * 3.2 + wearStep;
-            if (surface === S_GRASS) k -= FOREST_FLOOR_STEP * forestW;
+            const kRaw = 2 + S.offset + contextStep + z * S.contrast + (paving ? macro * PAVING_DRIFT_SHARE : macro)
+                + lip * 0.8 - tuck * 1.0 - (paving ? Math.min(ao, PAVING_AO_CAP) : ao) * 3.2 + wearStep
+                - (surface === S_GRASS ? FOREST_FLOOR_STEP * forestW : 0);
+            const kDither = surface === S_GRASS
+                ? (Math.abs(kRaw - Math.round(kRaw)) > 0.43 ? dither * 0.19 : 0)
+                : dither * 0.75;
+            let k = kRaw + kDither;
             k = k < 0 ? 0 : k > 4 ? 4 : Math.round(k);
 
             let rampColors = S.ramp;
             if (surface === S_GRASS) {
-                const warmth = lerp4(drift.warm) + dither * 0.5;
+                const wRaw = lerp4(drift.warm);
+                const warmth = wRaw + (Math.abs(Math.abs(wRaw) - 0.42) < 0.05 ? dither * 0.14 : 0);
                 rampColors = warmth > 0.42 ? GRASS_DRY : warmth < -0.42 ? GRASS_LUSH : GRASS;
             }
             const c = rampColors[k];
@@ -919,7 +1096,7 @@ function* groundBands(r, withWeather = false) {
     pause(); yield; resume();
     const season = r._terrainSeason || 'summer';
     const crowns = buildCrownField(r, { cols, rows, x0, y0 });
-    drawYardEdges({ cols, rows, surfaces, put });
+    drawYardEdges({ cols, rows, surfaces, stepBuf, put });
     pause(); yield; resume();
     drawLivingGround(r, { cols, rows, x0, y0, surfaces, aoBuf, stepBuf, put, season, crowns });
     pause(); yield; resume();
@@ -987,16 +1164,20 @@ function bakeGroundWeather({ cols, rows, surfaces, stepBuf, eaveBuf, sunShadeBuf
     return packGroundWeather({ cols, rows, surfaces, stops: stepBuf, shelter, order, puddleMask });
 }
 
-// Kerbs and wattle where a paved or fenced yard meets grass/sand (4.7).
-function drawYardEdges({ cols, rows, surfaces, put }) {
+// Kerbs and wattle where a paved or fenced yard meets grass/sand, plus a
+// 1-stop darker recessed stone border course where S_PLAZA meets S_ROAD /
+// yard paving or grass (4.7 + C-02).
+function drawYardEdges({ cols, rows, surfaces, stepBuf, put }) {
     const edgeOf = (s) => (s === 255 ? null : s >= S_FLAG ? edgeForYardSurface(s) : SURFACE_EDGE[s]);
     // A kerb dresses every paved edge onto unpaved ground; wattle only fences
     // yard from open grass, never across the earth paths agents walk.
     const unpaved = (s) => s === S_GRASS || s === S_SAND || s === S_DIRT || s === S_EARTH || s === S_CINDER;
     const grassy = (s) => s === S_GRASS || s === S_SAND;
+    const otherPaving = (s, self) => s !== self && isPavingSurface(s);
     for (let row = 1; row < rows - 1; row++) {
         for (let col = 1; col < cols - 1; col++) {
-            const s = surfaces[row * cols + col];
+            const idx = row * cols + col;
+            const s = surfaces[idx];
             const edge = edgeOf(s);
             if (!edge) continue;
             const soft = edge === 'kerb' ? unpaved : grassy;
@@ -1006,11 +1187,26 @@ function drawYardEdges({ cols, rows, surfaces, put }) {
             const right = surfaces[row * cols + col + 1];
             const outBelow = soft(below) && below !== s;
             const out = outBelow || (soft(above) && above !== s) || (soft(left) && left !== s) || (soft(right) && right !== s);
-            if (!out) continue;
+            if (!out) {
+                if (s === S_PLAZA) {
+                    const roadBelow = otherPaving(below, s);
+                    const roadJoin = roadBelow || otherPaving(above, s) || otherPaving(left, s) || otherPaving(right, s);
+                    if (roadJoin) {
+                        const baseStop = stepBuf ? stepBuf[idx] : 2;
+                        put(col, row, roadBelow ? ROAD[0] : PLAZA[Math.max(0, baseStop - 1)]);
+                    }
+                }
+                continue;
+            }
             if (edge === 'kerb') {
-                // Dressed kerb: dark riser facing the viewer, light top edge
-                // elsewhere.
-                put(col, row, outBelow ? ROAD[1] : PLAZA[4]);
+                // Dressed recessed kerb: dark riser facing the viewer, 1-stop
+                // darker recessed border stone where plaza/flagstone meets turf.
+                const baseStop = stepBuf ? stepBuf[idx] : 2;
+                put(col, row, outBelow ? ROAD[0] : PLAZA[Math.max(0, baseStop - 1)]);
+                if (outBelow && surfaces[(row - 1) * cols + col] === s) {
+                    const innerStop = stepBuf ? stepBuf[(row - 1) * cols + col] : 2;
+                    put(col, row - 1, PLAZA[Math.max(0, innerStop - 1)]);
+                }
             } else {
                 // Wattle: a low woven rail with posts every 6 texels.
                 put(col, row, TIMBER[1]);
@@ -1618,9 +1814,9 @@ const lumaOf = (c) => c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722;
 const SNOW_RANK_LUMAS = SURFACES.map(s => s.ramp.map(lumaOf));
 const SNOW_GRASS = new Set([S_GRASS, S_SAND]);
 const SNOW_SLUSH = new Set([S_DIRT, S_CINDER, S_EARTH]);
-// Five ground ranks fold onto three snow stops, so a snowfield keeps the
-// ground's texture as a quiet read instead of five-stop noise.
-const SNOW_TONE_BY_RANK = Object.freeze([2, 2, 3, 3, 4]);
+// Five ground ranks map onto four snow stops ([1, 2, 3, 3, 4]) so hollows and
+// contact AO read in cool snow shade while live SD-1 ShadeField owns cast shade.
+const SNOW_TONE_BY_RANK = Object.freeze([1, 2, 3, 3, 4]);
 // BI-5 — the share of the lit grass texels a frost rimes.
 const FROST_DENSITY = 0.8;
 // GW-3 (look `gw3`) — frost in patches: a texel rimes where a low-frequency
@@ -1748,7 +1944,7 @@ function* winterGroundBands(r, base, snowBucket, frost, frostPatches = 0, rising
                     // Paving: a drift lies whole over the stones where the
                     // snow is deepest, one stop under a grass snowfield.
                     snowy = true;
-                    write(o, SNOW[SNOW_TONE_BY_RANK[rank] - 1]);
+                    write(o, SNOW[Math.max(0, SNOW_TONE_BY_RANK[rank] - 1)]);
                 } else if (rank === 0 && noise < threshold * 0.8) {
                     // The swept rest keeps snow only in its deepest joints,
                     // in the darkest snow stop, so the joints read as a cool
