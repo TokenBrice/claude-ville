@@ -77,6 +77,18 @@ const TOOL_SUMMARY_FIELDS = Object.freeze([
 
 const EFFORT_SUFFIX_RE = /-(ultra|max|xhigh|extra-high|extra|high|medium|med|low|minimal|none)$/i;
 
+// agy holds a lock on `presence/<conversation-id>.lock` while the conversation
+// is open in a live process; the file itself outlives the process. Linux lists
+// held locks in /proc/locks; elsewhere no conversation reads as held.
+function readProcLocks() {
+  if (process.platform !== 'linux') return '';
+  try {
+    return fs.readFileSync('/proc/locks', 'utf8');
+  } catch {
+    return '';
+  }
+}
+
 function sessionIdFor(convId) {
   return convId ? `${SESSION_PREFIX}${convId}` : '';
 }
@@ -387,8 +399,11 @@ function reduceAntigravityTranscript(steps, {
   };
 
   let pendingQueue = [];
+  // The newest step is a swarm_wait result: a crew member that reported and now idles.
+  let parked = false;
 
   for (const step of steps) {
+    parked = false;
     const stepTs = parseTimestamp(step.created_at);
     if (stepTs > latestActivity) latestActivity = stepTs;
     if (stepTs > latestTranscriptStepTs) latestTranscriptStepTs = stepTs;
@@ -620,6 +635,12 @@ function reduceAntigravityTranscript(steps, {
             agentName: memberName || null,
           });
         }
+      } else if (call.name === 'swarm' && call.args?.action === 'kill' && /"status"\s*:\s*"killed"/.test(content)) {
+        const memberName = content.match(/"name"\s*:\s*"([^"\\]{1,80})"/)?.[1] || call.args?.name;
+        const link = childLinks.findLast(item => item.subagentKind === 'swarm' && item.agentName === memberName);
+        if (link) link.killed = true;
+      } else if (call.name === 'swarm_wait') {
+        parked = true;
       }
 
       if (step.status === 'DONE' || step.status === 'ERROR') {
@@ -793,6 +814,7 @@ function reduceAntigravityTranscript(steps, {
     childLinks,
     dialogueCandidates,
     turnDescriptor,
+    parked,
     session: {
       sessionId,
       sourceSessionId: String(convId),
@@ -895,6 +917,7 @@ class AntigravityAdapter {
     );
     this._geminiRoot = path.dirname(this.homeDir);
     this.now = options.now || (() => Date.now());
+    this.readLocks = options.readLocks || readProcLocks;
     this._parsedCache = new Map();
     this._convFileIndex = new Map();
     this._metadataCache = new Map();
@@ -1079,6 +1102,37 @@ class AntigravityAdapter {
     return data;
   }
 
+  _heldConversations() {
+    // Holders only (a `->` waiter line has no pid in that column), matched by
+    // inode alone: a btrfs subvolume stats to another device than /proc/locks prints.
+    const lockedInodes = new Set(
+      [...this.readLocks().matchAll(/^\d+:\s+\S+\s+\S+\s+\S+\s+-?\d+\s+[0-9a-f]+:[0-9a-f]+:(\d+)\s/gm)].map(m => m[1]),
+    );
+    const held = new Set();
+    if (lockedInodes.size === 0) return held;
+    for (const rootDir of this._surfaceDirs()) {
+      const presenceDir = path.join(rootDir, 'presence');
+      let names;
+      try {
+        names = fs.readdirSync(presenceDir);
+      } catch (error) {
+        noteReadFailure(error);
+        continue;
+      }
+      for (const name of names) {
+        if (!name.endsWith('.lock')) continue;
+        try {
+          if (lockedInodes.has(String(fs.statSync(path.join(presenceDir, name)).ino))) {
+            held.add(name.slice(0, -'.lock'.length).toLowerCase());
+          }
+        } catch (error) {
+          noteReadFailure(error);
+        }
+      }
+    }
+    return held;
+  }
+
   _resolveTranscriptPath(brainDir, convId) {
     const logsDir = path.join(brainDir, convId, '.system_generated', 'logs');
     const compact = path.join(logsDir, 'transcript.jsonl');
@@ -1156,6 +1210,7 @@ class AntigravityAdapter {
     const parentGraceMs = activeThresholdMs != null
       ? Math.max(Number(activeThresholdMs) * 4, 60 * 60 * 1000)
       : null;
+    const held = activeThresholdMs != null ? this._heldConversations() : new Set();
     const candidates = [];
 
     for (const rootDir of this._surfaceDirs()) {
@@ -1193,7 +1248,7 @@ class AntigravityAdapter {
         }
 
         const effectiveMtime = Math.max(stat.mtimeMs, convMeta?.metaModifiedMs || 0);
-        if (parentGraceMs != null && now - effectiveMtime > parentGraceMs) continue;
+        if (parentGraceMs != null && now - effectiveMtime > parentGraceMs && !held.has(lowerId)) continue;
         candidates.push({
           rootDir,
           surfaceMeta,
@@ -1264,7 +1319,16 @@ class AntigravityAdapter {
     for (const [id, reduced] of reducedByConvId) {
       if (activeThresholdMs == null || now - reduced.session.lastActivity <= Number(activeThresholdMs)) {
         activeIds.add(id);
+        continue;
       }
+      // A long think, a long command or a swarm_wait writes no step. A
+      // conversation its live agy process holds stays while its turn is open, and
+      // so does a crew member of one that is neither killed nor parked; the
+      // discovery grace above still bounds a member.
+      const lineage = lineageByChild.get(id);
+      const live = held.has(id) || (held.has(lineage?.rootConvId) && !lineage.killed && !reduced.parked);
+      const { turnState } = live ? deriveTurnState(reduced.turnDescriptor) : {};
+      if (turnState === 'working' || turnState === 'tool_pending') activeIds.add(id);
     }
     // Keep parent/ancestor conversations visible while any descendant is active.
     for (const id of [...activeIds]) {

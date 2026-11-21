@@ -454,3 +454,93 @@ test('Antigravity Orchestrator keeps its planner identity, and swarm workers mar
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test('Antigravity keeps a quiet conversation its live process holds, and its working crew, while the turn is open', () => {
+  const tmp = makeTempDir('cv-antigravity-presence-');
+  try {
+    const rootDir = path.join(tmp, '.gemini', 'antigravity-cli');
+    const leadId = '56565656-5656-4565-8565-565656565656';
+    const finishedId = '78787878-7878-4787-8787-787878787878';
+    const exitedId = '9a9a9a9a-9a9a-49a9-89a9-9a9a9a9a9a9a';
+    const workerIds = {
+      thinking: 'abababab-abab-4bab-8bab-abababababab',
+      parked: 'cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd',
+      killed: 'efefefef-efef-4fef-8fef-efefefefefef',
+    };
+    const now = Date.parse('2026-11-21T11:00:00Z');
+    const quietMs = 90 * 60_000; // past the 60-minute discovery grace as well
+    const crewQuietMs = 10 * 60_000;
+    const at = (msAgo) => new Date(now - msAgo).toISOString();
+    const lines = (steps) => `${steps.map(s => JSON.stringify(s)).join('\n')}\n`;
+    const transcript = (id) => path.join(rootDir, 'brain', id, '.system_generated', 'logs', 'transcript.jsonl');
+    const commandTurn = (msAgo) => [
+      { step_index: 0, type: 'USER_INPUT', created_at: at(msAgo + 10_000), content: 'Own your lane' },
+      { step_index: 1, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: at(msAgo + 5_000), model: 'gemini-4-carbon-high', tool_calls: [{ name: 'run_command', args: { CommandLine: '"npm test"' } }] },
+      { step_index: 2, type: 'GENERIC', status: 'DONE', created_at: at(msAgo), content: 'Command exited with code 0.' },
+    ];
+
+    writeFile(transcript(leadId), lines([
+      { step_index: 0, type: 'USER_INPUT', created_at: at(quietMs + 60_000), content: 'Run the swarm' },
+      {
+        step_index: 1,
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        created_at: at(quietMs + 50_000),
+        model: 'gemini-4-carbon-high',
+        tool_calls: Object.keys(workerIds).map(name => ({ name: 'swarm', args: { action: '"add"', name: `"${name}"` } })),
+      },
+      ...Object.entries(workerIds).map(([name, id], idx) => ({
+        step_index: 2 + idx,
+        type: 'GENERIC',
+        status: 'DONE',
+        created_at: at(quietMs + 40_000),
+        content: `{"status":"added","name":"${name}","conversation_id":"${id}"}`,
+      })),
+      { step_index: 5, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: at(quietMs + 20_000), model: 'gemini-4-carbon-high', tool_calls: [{ name: 'swarm', args: { action: '"kill"', name: '"killed"' } }] },
+      { step_index: 6, type: 'GENERIC', status: 'DONE', created_at: at(quietMs + 15_000), content: '{"status":"killed","name":"killed"}' },
+      { step_index: 7, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: at(quietMs + 5_000), model: 'gemini-4-carbon-high', tool_calls: [{ name: 'swarm_wait', args: { since: '"3"' } }] },
+      { step_index: 8, type: 'GENERIC', status: 'DONE', created_at: at(quietMs), content: 'Waiting for a message that calls on you by name.' },
+    ]), now - quietMs);
+    writeFile(transcript(finishedId), lines([
+      { step_index: 0, type: 'USER_INPUT', created_at: at(quietMs + 10_000), content: 'Review the plan' },
+      { step_index: 1, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: at(quietMs), model: 'gemini-4-carbon-high', content: 'Reviewed.' },
+    ]), now - quietMs);
+    writeFile(transcript(exitedId), lines(commandTurn(quietMs)), now - quietMs);
+    writeFile(transcript(workerIds.thinking), lines(commandTurn(crewQuietMs)), now - crewQuietMs);
+    writeFile(transcript(workerIds.killed), lines(commandTurn(crewQuietMs)), now - crewQuietMs);
+    writeFile(transcript(workerIds.parked), lines([
+      ...commandTurn(crewQuietMs + 20_000),
+      { step_index: 3, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: at(crewQuietMs + 5_000), model: 'gemini-4-carbon-high', tool_calls: [{ name: 'post_message', args: { text: '"@coordinator [done]"' } }, { name: 'swarm_wait', args: { since: '"4"' } }] },
+      { step_index: 4, type: 'GENERIC', status: 'DONE', created_at: at(crewQuietMs), content: '{"status":"posted","seq":5}' },
+      { step_index: 5, type: 'GENERIC', status: 'DONE', created_at: at(crewQuietMs), content: 'Waiting for a message that calls on you by name.' },
+    ]), now - crewQuietMs);
+
+    const inode = (id) => {
+      const lockPath = path.join(rootDir, 'presence', `${id}.lock`);
+      writeFile(lockPath, '', now - quietMs);
+      return fs.statSync(lockPath).ino;
+    };
+    // The exited conversation's lock file remains, but only a waiter asks for it.
+    const procLocks = [
+      `1: FLOCK  ADVISORY  WRITE 4242 103:06:${inode(leadId)} 0 EOF`,
+      `2: FLOCK  ADVISORY  WRITE 4343 103:06:${inode(finishedId)} 0 EOF`,
+      `3: -> FLOCK  ADVISORY  WRITE 4444 103:06:${inode(exitedId)} 0 EOF`,
+      '',
+    ].join('\n');
+
+    const sessions = new AntigravityAdapter({ rootDir, now: () => now, readLocks: () => procLocks }).getActiveSessions(2 * 60_000);
+    assert.deepEqual(sessions.map(s => s.sessionId), [`antigravity-${workerIds.thinking}`, `antigravity-${leadId}`],
+      'a closed turn, a released lock, a parked member and a killed member all leave');
+    const [worker, lead] = sessions;
+    assert.equal(lead.turnState, 'working');
+    assert.equal(lead.lastActivity, now - quietMs, 'liveness never rewrites the last observed activity');
+    assert.equal(worker.parentSessionId, `antigravity-${leadId}`);
+    assert.equal(worker.turnState, 'working');
+    assert.equal(lead.backgroundPending?.count, 1, 'the lead waits on its one working member');
+
+    assert.deepEqual(new AntigravityAdapter({ rootDir, now: () => now, readLocks: () => '' }).getActiveSessions(2 * 60_000), [],
+      'without lock evidence the activity window alone decides');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
