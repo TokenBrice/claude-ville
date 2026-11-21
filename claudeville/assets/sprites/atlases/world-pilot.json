@@ -391,7 +391,7 @@
       "id": "building.forge",
       "materialClass": "stone",
       "sourcePath": "buildings/building.forge/base.png",
-      "sourceSha256": "80e32eb487264843971c8f806f30cb2732ed92b469114261d80fe608965c3ddc",
+      "sourceSha256": "abf99a840dd57013288cf467a4dadfe993b66d31e93dda9853c433be7f4ec5ad",
       "sourceSize": {
         "h": 232,
         "w": 256
@@ -424,7 +424,7 @@
       "id": "building.harbor",
       "materialClass": "stone",
       "sourcePath": "buildings/building.harbor/base.png",
-      "sourceSha256": "7e2c1f45fb749d713e04ccea01acc0f30f5e47f3e2df5ba0b48ad48e2ca624c6",
+      "sourceSha256": "ab035a87e0a5592920ed4c1c862ab0692ab3479a1e8cdb8429880c2181e92390",
       "sourceSize": {
         "h": 284,
         "w": 384
@@ -454,7 +454,7 @@
       "id": "building.mine",
       "materialClass": "stone",
       "sourcePath": "buildings/building.mine/base.png",
-      "sourceSha256": "8cc87711b99261e0e19501e64cc24ae6b2824ef77d2fad233395457d4e6607b1",
+      "sourceSha256": "9b849736956d360503d638234eff531f530dedf61bb931faeb6550bf5318efa2",
       "sourceSize": {
         "h": 232,
         "w": 256
@@ -576,7 +576,7 @@
       "id": "building.watchtower",
       "materialClass": "stone",
       "sourcePath": "buildings/building.watchtower/base.png",
-      "sourceSha256": "565aabbfe1f5483ccb55f800913486195fbc3d7be49bd5f22d93406569c0d657",
+      "sourceSha256": "4e910bd64aea2334345f926cf45af0c079b4625d44f8d05a32e2613f621b9b37",
       "sourceSize": {
         "h": 384,
         "w": 288
@@ -751,10 +751,10 @@
     }
   },
   "channelSha256": {
-    "albedo": "ff56eab7a4457248061506c51c6f0c3e056579d2ebbb46d9d1ff743cfab2d14a",
+    "albedo": "5137a51b566180608e17b9c8d13b3801d8fc0a9807847968f4b136b9c4fd22b2",
     "emissive": "6e577e0bdba53a99a8c751ff1b142ab3e425e2be0f2a125e1a0357a408c36148",
-    "material": "f9ffb27319bafa80205837d4f6021e450e1cc978d6d542023e0ae73181c875f6",
-    "occluder": "5195402566b90d815619e4fc632e87d023c98b2e84e25d6bfd4412fe58980981"
+    "material": "17ae71a8cb52e2a5da112cc44252eb15a55a75aba427bddebc4e31498cbcb591",
+    "occluder": "5d2ecff716e31a46b0b62818c3ee12483e52718030a56bc1f38248819b08bc70"
   },
   "channels": {
     "albedo": "assets/sprites/atlases/world-pilot.albedo.png",
@@ -10503,7 +10503,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "80e32eb487264843971c8f806f30cb2732ed92b469114261d80fe608965c3ddc",
+      "sourceSha256": "abf99a840dd57013288cf467a4dadfe993b66d31e93dda9853c433be7f4ec5ad",
       "sourceSize": {
         "h": 232,
         "w": 256
@@ -10736,7 +10736,7 @@
       },
       "sidecars": {
         "emissive": "buildings/building.harbor/base.emissive.png",
-        "material": null,
+        "material": "buildings/building.harbor/base.material.png",
         "occluder": "buildings/building.harbor/base.occluder.png"
       },
       "sourcePath": "buildings/building.harbor/base.png",
@@ -10746,7 +10746,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "7e2c1f45fb749d713e04ccea01acc0f30f5e47f3e2df5ba0b48ad48e2ca624c6",
+      "sourceSha256": "ab035a87e0a5592920ed4c1c862ab0692ab3479a1e8cdb8429880c2181e92390",
       "sourceSize": {
         "h": 284,
         "w": 384
@@ -10836,7 +10836,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "f901018405b7df9e6331459681720533e006b3602fc0106a26b6aa2846e2bfbb",
+      "sourceSha256": "5bec5c975a2a4799a4cc75ce2f9e7e4ed2da6d793c2afc01910a2359bffb1a9b",
       "sourceSize": {
         "h": 56,
         "w": 132
@@ -10881,7 +10881,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "a7877ab19893cd27da4e8e6575d53cc0ffbe928c3e85c2760a28baa085fe5362",
+      "sourceSha256": "a6bbc23543752f0c025efd5e4aba64ac9bf4a4a49410973bc9c4ce2611991b47",
       "sourceSize": {
         "h": 24,
         "w": 36
@@ -10941,7 +10941,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "8cc87711b99261e0e19501e64cc24ae6b2824ef77d2fad233395457d4e6607b1",
+      "sourceSha256": "9b849736956d360503d638234eff531f530dedf61bb931faeb6550bf5318efa2",
       "sourceSize": {
         "h": 232,
         "w": 256
@@ -10985,7 +10985,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "ebe4feb30c43e4ebe8c1e714b1d2f6a64295308719c0140a9bdf60eb14070208",
+      "sourceSha256": "6a56d09b226eda58adc144746c6210012430287a5d868f0027e6ecab6ab26b60",
       "sourceSize": {
         "h": 32,
         "w": 88
@@ -11486,7 +11486,7 @@
       },
       "sidecars": {
         "emissive": "buildings/building.watchtower/base.emissive.png",
-        "material": null,
+        "material": "buildings/building.watchtower/base.material.png",
         "occluder": "buildings/building.watchtower/base.occluder.png"
       },
       "sourcePath": "buildings/building.watchtower/base.png",
@@ -11496,7 +11496,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "565aabbfe1f5483ccb55f800913486195fbc3d7be49bd5f22d93406569c0d657",
+      "sourceSha256": "4e910bd64aea2334345f926cf45af0c079b4625d44f8d05a32e2613f621b9b37",
       "sourceSize": {
         "h": 384,
         "w": 288

@@ -99,6 +99,7 @@ class WindmillSprite extends StaticPropSprite {
         this._sailStepAt = -Infinity;
         this._wind = { x: 0, gust: 0 };
         this._frames = new Array(SAIL_FRAMES).fill(null);
+        this._snowKey = '';
     }
 
     /** The sail frame now: gust-stepped, calm-held, frame 0 under reduced motion. */
@@ -129,6 +130,12 @@ class WindmillSprite extends StaticPropSprite {
     }
 
     _getCachedCanvas(zoom) {
+        const snowKey = this.host.propWinter?.key || '0';
+        if (snowKey !== this._snowKey) {
+            this._snowKey = snowKey;
+            this._frames = new Array(SAIL_FRAMES).fill(null);
+            this._gpuCacheRevision++;
+        }
         const f = this.sailFrame();
         if (this._frames[f]) return this._frames[f];
         if (!this.host.assets?.get?.('prop.windmillSails')) return null;
@@ -145,7 +152,8 @@ class WindmillSprite extends StaticPropSprite {
     _paint(ctx, x, y, frame) {
         const host = this.host;
         host._drawPropContactShadow?.(ctx, x, y, this.id, this.tileX, this.tileY);
-        host.sprites?.drawSprite(ctx, this.id, x, y);
+        const winter = host.propWinter?.image?.(this.id) || null;
+        host.sprites?.drawSprite(ctx, this.id, x, y, winter ? { image: winter } : undefined);
         const sails = host.assets?.get?.('prop.windmillSails');
         if (!sails) return;
         const [ax, ay] = host.assets.getAnchor(this.id);
@@ -189,6 +197,7 @@ class BelfrySprite extends StaticPropSprite {
         this._moments = { claude: null, codex: null };
         this._shown = { claude: 'unknown', codex: 'unknown' };
         this._shownPhase = { claude: null, codex: null };
+        this._shownSnow = '';
         this._drain = null;
         this.setGlasses(glasses);
     }
@@ -260,6 +269,11 @@ class BelfrySprite extends StaticPropSprite {
     _getCachedCanvas(zoom) {
         if (!this.host.assets?.get?.(BELFRY_GLASS_ID)) return null;
         let changed = false;
+        const snowKey = this.host.propWinter?.key || '0';
+        if (snowKey !== this._shownSnow) {
+            this._shownSnow = snowKey;
+            changed = true;
+        }
         for (const account of BELFRY_ACCOUNTS) {
             const key = this.glassKey(account);
             const phase = this.streamPhase(account);
@@ -275,7 +289,8 @@ class BelfrySprite extends StaticPropSprite {
     _paint(ctx, x, y) {
         const host = this.host;
         host._drawPropContactShadow?.(ctx, x, y, this.id, this.tileX, this.tileY);
-        host.sprites?.drawSprite(ctx, this.id, x, y);
+        const winter = host.propWinter?.image?.(this.id) || null;
+        host.sprites?.drawSprite(ctx, this.id, x, y, winter ? { image: winter } : undefined);
         const glass = host.assets?.get?.(BELFRY_GLASS_ID);
         if (!glass) return;
         const [ax, ay] = host.assets.getAnchor(this.id);
@@ -301,7 +316,8 @@ function plainSprite(host, prop) {
         materialClass: 'stone',
         drawFn: (ctx, x, y) => {
             host._drawPropContactShadow?.(ctx, x, y, prop.id, prop.tileX, prop.tileY);
-            host.sprites?.drawSprite(ctx, prop.id, x, y);
+            const winter = host.propWinter?.image?.(prop.id) || null;
+            host.sprites?.drawSprite(ctx, prop.id, x, y, winter ? { image: winter } : undefined);
         },
     });
 }

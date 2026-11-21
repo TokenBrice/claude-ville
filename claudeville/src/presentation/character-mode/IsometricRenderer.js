@@ -10085,7 +10085,7 @@ export class IsometricRenderer {
                 // bridge.${orientation} asset (the pond plank's bridge.ew),
                 // mirroring the dock tile path.
                 const orientation = (bInfo.orientation || 'EW').toLowerCase();
-                if (this.sprites) this.sprites.drawSprite(ctx, `bridge.${orientation}`, screenX, screenY);
+                if (this.sprites) this.sprites.drawSprite(ctx, `bridge.${orientation}`, screenX, screenY, this._winterPropOpts(`bridge.${orientation}`));
             }
         }
     }

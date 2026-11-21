@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-11-20-gemini-action-strips"
+  assetVersion: "2026-11-21-c05-landmark-craft"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -2443,6 +2443,7 @@ buildings:
     height: 384
     anchor: [144, 320]
     materialClass: stone
+    materialSidecar: true
     emissiveSidecar: true
     occluderSidecar: true
     surfaceCode: true
@@ -2519,6 +2520,7 @@ buildings:
     height: 284
     anchor: [131, 154]
     materialClass: stone
+    materialSidecar: true
     emissiveSidecar: true
     occluderSidecar: true
     surfaceCode: true
@@ -3209,8 +3211,9 @@ props:
   # calm holds the frame it stopped on, reduced motion holds frame 0.
   - id: prop.windmillSails
     tool: procedural
-    width: 112
+    width: 896
     height: 112
+    frameW: 112
     frames: 8
     anchor: [56, 56]
     materialClass: timber

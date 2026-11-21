@@ -1,14 +1,18 @@
 #!/usr/bin/env node
 
-// EN-2 — facade materials for Command and Tavern. The two landmarks shipped
-// one material class (stone) on every texel although their art paints oak
-// doors, iron straps and braziers (Command) and an oak arcade, bar, kegs and
-// half-timbering (Tavern). This writes their material sidecars from reviewed
-// regions plus a colour rule inside them: warm brown texels are timber, the
-// non-brown fittings inside a door leaf or a named iron region are metal.
-// Everything else keeps the stone the building declares; lit glass (emissive
-// sidecar) and flame keep their class. The rule reads hue and saturation, not
-// luminance, and only inside the regions below.
+// EN-2 + C-05 — facade materials & C1 warm-oak harmonization across
+// Command, Tavern, Harbor, Watchtower, Forge, and Mine.
+//
+// Authors `base.material.png` from reviewed architectural regions and colour
+// rules for Command, Tavern, Harbor (stone quay/ashlar + timber upper frame,
+// crane, doors & 3 piers + metal lantern/hook/rings/clock bezel + fabric
+// awning), and Watchtower (stone tower + timber cottage eaves/half-timbering/
+// door + metal gallery rail/cupola/finial + fabric curtain), and upgrades
+// plum-shaded timber beams onto `timber (2)` on Forge and Mine while keeping
+// their authored `fire`, `glass-rune`, and `metal` masks intact. Retones cold
+// AI plum-mauve wood pixels (`OAK_FROM`) onto C1 `ART_RAMPS.timber` across the
+// base sprites and their strip layers (`command/gate`, `harbor/{crane,door}`,
+// `forge/{bellows,billetRack}`, `mine/sheave`), guarded by `RoofWeather`.
 //
 //   node scripts/sprites/paint-facade-materials.mjs          # write
 //   node scripts/sprites/paint-facade-materials.mjs --check  # fail if stale
@@ -26,21 +30,28 @@ const TIMBER = materialClassId('timber');
 const METAL = materialClassId('metal');
 const FABRIC = materialClassId('fabric');
 
-// Restrained albedo ramp edits (EN-2), so the oak and iron read without the
-// material channel (Canvas, MINIMAL): reviewed source colour -> an existing
-// palette stop, applied only to texels this script classes timber (OAK) or
-// metal (IRON). The plum-shaded oak (hue 330-360 / a red 3) goes onto the
-// `timber` ramp; the warm oak is already oak and keeps its colour. The
-// gate's iron straps, rings and the braziers, painted in the ashlar mauve
-// and warm greys, go onto the `slate` ramp (wall and gate ironwork) by
-// value; the gilt and the ink keep theirs.
 const T = ART_RAMPS.timber;
 const S = ART_RAMPS.slate;
+// Reviewed plum-mauve wood shadow hexes across Command, Tavern, Harbor,
+// Watchtower, Forge, and Mine -> C1 `ART_RAMPS.timber` by value step.
 export const OAK_FROM = Object.freeze({
-    '#20171a': T[0], '#311e26': T[0], '#432527': T[1], '#3f1c1a': T[1], '#532d36': T[1], '#5d3239': T[2],
+    '#1d1117': T[0],
+    '#20171a': T[0],
+    '#2a181a': T[0],
+    '#2f1a1d': T[0],
+    '#311e26': T[0],
+    '#322024': T[0],
+    '#3e2c2e': T[1],
+    '#3f1c1a': T[1],
+    '#432527': T[1],
+    '#4a2a30': T[1],
+    '#532d36': T[1],
+    '#573335': T[1],
+    '#5d3239': T[2],
+    '#5d3f40': T[2],
+    '#663a3f': T[2],
 });
-// The pale strap and ring highlights keep a highlight: the slate family's
-// lit wet stop (wetSlate[2]), the colour slate already takes when it shines.
+
 const LIT = ART_RAMPS.wetSlate[2];
 export const IRON_FROM = Object.freeze({
     '#231821': S[0], '#4c3a4c': S[1], '#5a4454': S[1], '#645663': S[2], '#685c67': S[2], '#746c68': S[2],
@@ -49,28 +60,93 @@ export const IRON_FROM = Object.freeze({
 });
 
 // Reviewed regions, sprite px [x, y, w, h].
-//   timber: brown texels become timber.
-//   leaf:   an arched door leaf [x, y, w, h] (semicircular head); per row,
-//           the non-brown texels between its first and last brown texel are
-//           its iron straps, ring pulls and nails.
-//   metal:  gilt (a saturated gold) and dark iron (grey, V < 0.45) texels.
-//   ashlar: a right-facing ashlar wall [x0, y0], every texel right of x0 and
-//           below the 2:1 line rising right from (x0, y0) stays stone (its
-//           plum mortar joints share the shaded oak's hue).
+//   mode:   'author' (builds material sidecar from regions) or 'upgrade'
+//           (preserves existing authored fire/glass-rune/metal/timber sidecar
+//           and upgrades plum-shaded wood inside `timber` to TIMBER + modal
+//           ink sync).
 export const FACADE_REGIONS = Object.freeze({
     command: {
+        mode: 'author',
         timber: [],
         leaf: [[119, 113, 32, 84]],
-        // The gilt crest over the gate and the two iron braziers.
         metal: [[127, 106, 11, 13], [88, 175, 15, 23], [136, 199, 18, 24]],
-        // The four crimson wall banners: their cloth and gilt emblem.
         fabric: [[93, 131, 7, 25], [190, 179, 7, 25], [203, 120, 7, 25], [224, 111, 6, 25]],
+        strips: [
+            { file: 'gate.png', frames: 3, w: 40, h: 80, left: 111, top: 118, restIsBase: true, leafOnly: true, iron: true },
+        ],
     },
     tavern: {
+        mode: 'author',
         timber: [[0, 0, 296, 288]],
         leaf: [],
         metal: [],
         ashlar: [202, 198],
+        strips: [],
+    },
+    harbor: {
+        mode: 'author',
+        timber: [
+            [24, 0, 206, 146],
+            [68, 144, 22, 34],
+            [128, 134, 18, 28],
+            [42, 142, 54, 66],
+            [232, 64, 152, 220],
+            [92, 140, 142, 144],
+        ],
+        stoneKeep: [
+            [131, 14, 18, 28],
+        ],
+        quayStonePoly: [
+            [0, 166], [42, 154], [42, 206], [94, 206], [96, 226], [3, 187],
+        ],
+        leaf: [[130, 136, 14, 25]],
+        metal: [
+            [6, 138, 22, 38],
+            [80, 176, 12, 12],
+            [48, 194, 12, 14],
+            [124, 178, 12, 14],
+            [180, 146, 12, 14],
+            [202, 136, 12, 14],
+            [172, 2, 26, 60],
+        ],
+        fabric: [[48, 52, 18, 24]],
+        retoneIron: false,
+        strips: [
+            { file: 'crane.png', frames: 6, w: 22, h: 56, left: 74, top: 150, restIsBase: true },
+            { file: 'door.png', frames: 3, w: 12, h: 24, left: 131, top: 137, restIsBase: true },
+        ],
+    },
+    watchtower: {
+        mode: 'author',
+        timber: [[68, 236, 98, 110]],
+        stoneKeep: [[98, 236, 18, 22]],
+        leaf: [[85, 297, 16, 31]],
+        metal: [
+            [126, 80, 74, 44],
+            [156, 38, 18, 20],
+        ],
+        fabric: [[102, 268, 20, 22]],
+        retoneIron: false,
+        strips: [],
+    },
+    forge: {
+        mode: 'upgrade',
+        timber: [[16, 12, 198, 220]],
+        stoneKeep: [[158, 6, 58, 122]],
+        retoneIron: false,
+        strips: [
+            { file: 'bellows.png', frames: 4, w: 28, h: 22, left: 43, top: 175, restIsBase: false },
+            { file: 'billetRack.png', frames: 3, w: 18, h: 26, left: 202, top: 165, restIsBase: false },
+        ],
+    },
+    mine: {
+        mode: 'upgrade',
+        timber: [[36, 16, 128, 212]],
+        stoneKeep: [],
+        retoneIron: false,
+        strips: [
+            { file: 'sheave.png', frames: 4, w: 22, h: 32, left: 76, top: 34, restIsBase: true },
+        ],
     },
 });
 
@@ -89,19 +165,18 @@ function hsv(r, g, b) {
     return { h, s: max ? d / max : 0, v: max / 255 };
 }
 
-// Oak: a warm hue, clearly saturated, never the cream plaster or a flame.
-// The shaded oak leans plum (hue 330-360); the mauve stone shade is greyer
-// (S < 0.25) and the flower-box crimson more saturated (S > 0.55).
 export function isBrown(r, g, b) {
+    if (OAK_FROM[hexOf(r, g, b)]) return true;
     const { h, s, v } = hsv(r, g, b);
     if (h >= 330) return s >= 0.26 && s <= 0.55 && v <= 0.6;
     return h <= 42 && s >= 0.26 && v <= 0.88 && !isFlame(r, g, b);
 }
 
-// Banner cloth: the crimson and its gilt emblem.
 function isCloth(r, g, b) {
     const { h, s, v } = hsv(r, g, b);
-    return ((h >= 335 || h <= 12) && s >= 0.45 && v >= 0.25) || (h >= 25 && h <= 60 && s >= 0.4 && v > 0.45);
+    return ((h >= 335 || h <= 16) && s >= 0.42 && v >= 0.25)
+        || (h >= 25 && h <= 60 && s >= 0.4 && v > 0.45)
+        || (s <= 0.14 && v >= 0.82);
 }
 
 function isFlame(r, g, b) {
@@ -111,10 +186,23 @@ function isFlame(r, g, b) {
 
 const isInk = (r, g, b) => Math.max(r, g, b) < 24;
 
-const inside = (rects, x, y) => rects.some(([rx, ry, rw, rh]) => x >= rx && y >= ry && x < rx + rw && y < ry + rh);
+const inside = (rects = [], x, y) => rects.some(([rx, ry, rw, rh]) => x >= rx && y >= ry && x < rx + rw && y < ry + rh);
+
+function inPoly(poly, x, y) {
+    if (!poly) return false;
+    let hit = false;
+    const px = x + 0.5;
+    const py = y + 0.5;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        const [xi, yi] = poly[i];
+        const [xj, yj] = poly[j];
+        if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) hit = !hit;
+    }
+    return hit;
+}
 
 // Inside an arched leaf: its rectangle, cut by a semicircular head.
-function inLeaf(leaves, x, y) {
+function inLeaf(leaves = [], x, y) {
     return leaves.some(([rx, ry, rw, rh]) => {
         if (x < rx || y < ry || x >= rx + rw || y >= ry + rh) return false;
         const r = rw / 2;
@@ -137,43 +225,9 @@ function isFitting(r, g, b) {
     return (gilt || iron) && !isFlame(r, g, b);
 }
 
-export function facadeMaterial(type, albedo, emissive) {
-    const regions = FACADE_REGIONS[type];
-    const { width, height, data } = albedo;
-    const cls = new Uint8Array(width * height).fill(STONE);
-    const at = (x, y) => (y * width + x) * 4;
-    const lit = (x, y) => emissive && emissive.data[at(x, y) + 3] > 0;
-    for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-            const i = at(x, y);
-            if (!data[i + 3] || lit(x, y)) continue;
-            if (regions.ashlar && x >= regions.ashlar[0] && y >= regions.ashlar[1] - (x - regions.ashlar[0]) / 2) continue;
-            const [r, g, b] = [data[i], data[i + 1], data[i + 2]];
-            if (regions.fabric && inside(regions.fabric, x, y) && isCloth(r, g, b)) cls[y * width + x] = FABRIC;
-            else if (inside(regions.metal, x, y) && isFitting(r, g, b) && !isInk(r, g, b)) cls[y * width + x] = METAL;
-            else if ((inside(regions.timber, x, y) || inLeaf(regions.leaf, x, y)) && isBrown(r, g, b)) cls[y * width + x] = TIMBER;
-        }
-    }
-    for (const [rx, ry, rw, rh] of regions.leaf) {
-        for (let y = ry; y < ry + rh; y++) {
-            let first = -1;
-            let last = -1;
-            for (let x = rx; x < rx + rw; x++) {
-                if (cls[y * width + x] === TIMBER) {
-                    if (first < 0) first = x;
-                    last = x;
-                }
-            }
-            for (let x = first + 1; first >= 0 && x < last; x++) {
-                const i = at(x, y);
-                if (!inLeaf(regions.leaf, x, y)) continue;
-                if (cls[y * width + x] === STONE && !isInk(data[i], data[i + 1], data[i + 2])) cls[y * width + x] = METAL;
-            }
-        }
-    }
-    // An outline belongs to the surface it draws: ink takes the modal class
-    // of its non-ink 3x3 neighbours.
+function assignOutlineModalClass(cls, data, width, height, keepFallback = false) {
     const out = cls.slice();
+    const at = (x, y) => (y * width + x) * 4;
     for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
             const i = at(x, y);
@@ -190,12 +244,88 @@ export function facadeMaterial(type, albedo, emissive) {
                     votes.set(c, (votes.get(c) || 0) + 1);
                 }
             }
-            let best = STONE;
+            let best = keepFallback ? (cls[y * width + x] || STONE) : STONE;
             let most = 0;
             for (const [c, n] of votes) if (n > most || (n === most && c === STONE)) { best = c; most = n; }
             out[y * width + x] = best;
         }
     }
+    return out;
+}
+
+export function facadeMaterial(type, albedo, emissive, existingMaterial = null) {
+    const regions = FACADE_REGIONS[type];
+    const { width, height, data } = albedo;
+    const at = (x, y) => (y * width + x) * 4;
+    const lit = (x, y) => emissive && emissive.data[at(x, y) + 3] > 0;
+
+    if (regions.mode === 'upgrade') {
+        const cls = new Uint8Array(width * height).fill(STONE);
+        if (existingMaterial) {
+            for (let p = 0; p < width * height; p++) {
+                if (existingMaterial.data[p * 4 + 3]) cls[p] = existingMaterial.data[p * 4];
+            }
+        }
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+                const p = y * width + x;
+                const i = p * 4;
+                if (!data[i + 3] || lit(x, y)) continue;
+                if (cls[p] !== STONE) continue;
+                if (inside(regions.stoneKeep, x, y)) continue;
+                const [r, g, b] = [data[i], data[i + 1], data[i + 2]];
+                if (inside(regions.timber, x, y) && isBrown(r, g, b) && !isInk(r, g, b)) {
+                    cls[p] = TIMBER;
+                }
+            }
+        }
+        const out = assignOutlineModalClass(cls, data, width, height, true);
+        const png = new PNG({ width, height, colorType: 6 });
+        for (let p = 0; p < width * height; p++) {
+            const a = data[p * 4 + 3];
+            png.data[p * 4] = a ? out[p] : 0;
+            png.data[p * 4 + 3] = a;
+        }
+        return png;
+    }
+
+    const cls = new Uint8Array(width * height).fill(STONE);
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const i = at(x, y);
+            if (!data[i + 3] || lit(x, y)) continue;
+            if (regions.ashlar && x >= regions.ashlar[0] && y >= regions.ashlar[1] - (x - regions.ashlar[0]) / 2) continue;
+            if (inside(regions.stoneKeep, x, y)) continue;
+            const [r, g, b] = [data[i], data[i + 1], data[i + 2]];
+            if (regions.fabric && inside(regions.fabric, x, y) && isCloth(r, g, b)) {
+                cls[y * width + x] = FABRIC;
+            } else if (inside(regions.metal, x, y) && isFitting(r, g, b) && !isInk(r, g, b)) {
+                cls[y * width + x] = METAL;
+            } else if (!inPoly(regions.quayStonePoly, x, y)
+                && (inside(regions.timber, x, y) || inLeaf(regions.leaf, x, y))
+                && isBrown(r, g, b)) {
+                cls[y * width + x] = TIMBER;
+            }
+        }
+    }
+    for (const [rx, ry, rw, rh] of (regions.leaf || [])) {
+        for (let y = ry; y < ry + rh; y++) {
+            let first = -1;
+            let last = -1;
+            for (let x = rx; x < rx + rw; x++) {
+                if (cls[y * width + x] === TIMBER) {
+                    if (first < 0) first = x;
+                    last = x;
+                }
+            }
+            for (let x = first + 1; first >= 0 && x < last; x++) {
+                const i = at(x, y);
+                if (!inLeaf(regions.leaf, x, y)) continue;
+                if (cls[y * width + x] === STONE && !isInk(data[i], data[i + 1], data[i + 2])) cls[y * width + x] = METAL;
+            }
+        }
+    }
+    const out = assignOutlineModalClass(cls, data, width, height);
     const png = new PNG({ width, height, colorType: 6 });
     for (let p = 0; p < width * height; p++) {
         const a = data[p * 4 + 3];
@@ -207,20 +337,16 @@ export function facadeMaterial(type, albedo, emissive) {
 
 const read = (rel) => PNG.sync.read(readFileSync(join(spritesRoot, rel)));
 
-// The ramp edits on `albedo` (a copy) for the classes in `material` (R).
-// `roof` ({ occluder, emissive }, the landmark's companions) guards roof
-// weather: an edit that would change the roof class, trim or snow-cap mask
-// of the roof map (RoofWeather.roofWeatherMap reads colour: a plum fascia is
-// vivid and takes no cap, the darker oak stop would) is undone, until the
-// edited map's masks equal the input's exactly.
-export function facadeAlbedo(albedo, material, roof = null) {
+export function facadeAlbedo(albedo, material, roof = null, { retoneIron = true } = {}) {
     const out = new PNG({ width: albedo.width, height: albedo.height, colorType: 6 });
     albedo.data.copy(out.data);
     const edited = [];
     for (let p = 0; p < albedo.width * albedo.height; p++) {
         const i = p * 4;
         if (!albedo.data[i + 3]) continue;
-        const table = material.data[i] === TIMBER ? OAK_FROM : material.data[i] === METAL ? IRON_FROM : null;
+        const table = material.data[i] === TIMBER
+            ? OAK_FROM
+            : (retoneIron && material.data[i] === METAL ? IRON_FROM : null);
         const to = table?.[hexOf(albedo.data[i], albedo.data[i + 1], albedo.data[i + 2])];
         if (!to) continue;
         out.data[i] = parseInt(to.slice(1, 3), 16);
@@ -249,7 +375,6 @@ export function facadeAlbedo(albedo, material, roof = null) {
     return { png: out, changed: kept };
 }
 
-// Texels whose roof class, trim or cap differs between two roof maps.
 function roofMaskDiff(a, b) {
     if (!a || !b) return a === b ? [] : [-1];
     const out = [];
@@ -259,30 +384,26 @@ function roofMaskDiff(a, b) {
     return out;
 }
 
-// Command's gate strip (manifest layers.gate: 3 frames of 40x80, bottom-centre
-// at base [131, 198], so frame-local (x, y) is base (x + 111, y + 118)).
-// Frame 0 restates the base crop (restIsBase); the ajar and open frames take
-// the same ramp edits on the leaf's own texels: inside the door's arch, the
-// table colours only.
-const GATE = Object.freeze({ frames: 3, w: 40, h: 80, left: 111, top: 118 });
-export function facadeGate(gate, base) {
-    const out = new PNG({ width: gate.width, height: gate.height, colorType: 6 });
-    gate.data.copy(out.data);
-    const leaf = FACADE_REGIONS.command.leaf;
-    for (let f = 0; f < GATE.frames; f++) {
-        for (let y = 0; y < GATE.h; y++) {
-            for (let x = 0; x < GATE.w; x++) {
-                const o = (y * gate.width + f * GATE.w + x) * 4;
-                const bx = x + GATE.left;
-                const by = y + GATE.top;
-                if (f === 0) {
+export function facadeStrip(strip, base, spec, leafRects = []) {
+    const out = new PNG({ width: strip.width, height: strip.height, colorType: 6 });
+    strip.data.copy(out.data);
+    for (let f = 0; f < spec.frames; f++) {
+        for (let y = 0; y < spec.h; y++) {
+            for (let x = 0; x < spec.w; x++) {
+                const o = (y * strip.width + f * spec.w + x) * 4;
+                const bx = x + spec.left;
+                const by = y + spec.top;
+                if (f === 0 && spec.restIsBase && bx >= 0 && by >= 0 && bx < base.width && by < base.height) {
                     const b = (by * base.width + bx) * 4;
-                    if (out.data[o + 3] && base.data[b + 3]) for (let k = 0; k < 3; k++) out.data[o + k] = base.data[b + k];
+                    if (out.data[o + 3] && base.data[b + 3]) {
+                        for (let k = 0; k < 3; k++) out.data[o + k] = base.data[b + k];
+                    }
                     continue;
                 }
-                if (!out.data[o + 3] || !inLeaf(leaf, bx, by)) continue;
+                if (!out.data[o + 3]) continue;
+                if (spec.leafOnly && !inLeaf(leafRects, bx, by)) continue;
                 const key = hexOf(out.data[o], out.data[o + 1], out.data[o + 2]);
-                const to = OAK_FROM[key] || IRON_FROM[key];
+                const to = OAK_FROM[key] || (spec.iron ? IRON_FROM[key] : null);
                 if (!to) continue;
                 for (let k = 0; k < 3; k++) out.data[o + k] = parseInt(to.slice(1 + 2 * k, 3 + 2 * k), 16);
             }
@@ -291,34 +412,50 @@ export function facadeGate(gate, base) {
     return out;
 }
 
+export function facadeGate(gate, base) {
+    return facadeStrip(gate, base, FACADE_REGIONS.command.strips[0], FACADE_REGIONS.command.leaf);
+}
+
 const same = (a, b) => a.width === b.width && a.height === b.height && Buffer.compare(a.data, b.data) === 0;
 
 function main() {
     const check = process.argv.includes('--check');
     let stale = 0;
-    for (const type of Object.keys(FACADE_REGIONS)) {
+    for (const [type, cfg] of Object.entries(FACADE_REGIONS)) {
         const dir = `buildings/building.${type}`;
         const albedo = read(`${dir}/base.png`);
         const emissive = existsSync(join(spritesRoot, dir, 'base.emissive.png')) ? read(`${dir}/base.emissive.png`) : null;
-        const first = facadeMaterial(type, albedo, emissive);
-        const occluder = existsSync(join(spritesRoot, dir, 'base.occluder.png')) ? read(`${dir}/base.occluder.png`) : null;
-        const { png: edited, changed } = facadeAlbedo(albedo, first, { occluder, emissive });
-        const png = facadeMaterial(type, edited, emissive);
         const target = join(spritesRoot, dir, 'base.material.png');
+        const existingMat = existsSync(target) ? read(`${dir}/base.material.png`) : null;
+        const first = facadeMaterial(type, albedo, emissive, existingMat);
+        const occluder = existsSync(join(spritesRoot, dir, 'base.occluder.png')) ? read(`${dir}/base.occluder.png`) : null;
+        const retoneIron = cfg.retoneIron !== false;
+        const { png: edited, changed } = facadeAlbedo(albedo, first, { occluder, emissive }, { retoneIron });
+        const png = facadeMaterial(type, edited, emissive, cfg.mode === 'upgrade' ? first : null);
         const counts = {};
         for (let p = 0; p < png.width * png.height; p++) if (png.data[p * 4 + 3]) counts[png.data[p * 4]] = (counts[png.data[p * 4]] || 0) + 1;
         const drift = Buffer.compare(first.data, png.data) !== 0;
-        const gatePath = type === 'command' ? `${dir}/gate.png` : null;
-        const gate = gatePath ? read(gatePath) : null;
-        const gateOut = gate ? facadeGate(gate, edited) : null;
+
+        const stripUpdates = [];
+        for (const s of (cfg.strips || [])) {
+            const rel = `${dir}/${s.file}`;
+            if (!existsSync(join(spritesRoot, rel))) continue;
+            const src = read(rel);
+            const next = facadeStrip(src, edited, s, cfg.leaf || []);
+            stripUpdates.push({ rel, same: same(src, next), next });
+        }
+        const stripsOk = stripUpdates.every((u) => u.same);
+
         if (check) {
-            const ok = !changed && !drift && existsSync(target) && same(read(`${dir}/base.material.png`), png) && (!gate || same(gate, gateOut));
+            const ok = !changed && !drift && existsSync(target) && same(read(`${dir}/base.material.png`), png) && stripsOk;
             if (!ok) stale++;
             console.log(`[facade-materials] ${type} ${ok ? 'ok' : `STALE (${changed} albedo texels to edit)`} ${JSON.stringify(counts)}`);
         } else {
             if (drift) throw new Error(`${type}: the ramp edits moved the classification; review the tables`);
             if (changed) writeFileSync(join(spritesRoot, dir, 'base.png'), PNG.sync.write(edited));
-            if (gate && !same(gate, gateOut)) writeFileSync(join(spritesRoot, gatePath), PNG.sync.write(gateOut));
+            for (const u of stripUpdates) {
+                if (!u.same) writeFileSync(join(spritesRoot, u.rel), PNG.sync.write(u.next));
+            }
             writeFileSync(target, PNG.sync.write(png));
             console.log(`[facade-materials] ${type} -> ${dir}/base.material.png ${JSON.stringify(counts)}; ${changed} albedo texels ramp-edited`);
         }

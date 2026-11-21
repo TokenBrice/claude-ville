@@ -204,3 +204,10 @@ export const EFFECT_COLORS = Object.freeze({
     returnStone: '#b9ad96',
     peak: '#fff3bf',
 });
+
+// Contract C1: falling snow flake body and cool-slate underside rim
+// (WeatherRenderer._drawSnow; keeps falling flakes readable over snowy roofs).
+export const WEATHER_SNOW_COLORS = Object.freeze({
+    body: '#eef6ff',
+    shadow: '#6e8296',
+});

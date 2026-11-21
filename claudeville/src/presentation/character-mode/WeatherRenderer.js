@@ -10,6 +10,7 @@
 
 import { WEATHER_PRESETS, WEATHER_TYPES } from './AtmosphereState.js';
 import { MAP_SIZE, TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
+import { WEATHER_SNOW_COLORS } from '../../config/artPalette.js';
 import { ornamentPlan, sampleFramePressure } from './MarkGovernor.js';
 import { baseWindX, cloudCourseDrift, windAt } from './Wind.js';
 import { applyGradeToRgb } from './GradeEvaluator.js';
@@ -719,48 +720,131 @@ export class WeatherRenderer {
         ctx.globalAlpha = 1;
     }
 
-    // Winter precipitation: deterministic drifting flakes with a per-flake
-    // sinusoidal x-sway and slow fall. No splash stamps, no rain curtains.
-    // Reduced motion (particleEnabled false) snaps to a frozen flake field
-    // (fall/sway zeroed) mirroring the static rain path.
+    // Winter precipitation (C-05 / V4): world-anchored drifting flakes on a
+    // fixed 512×512 world-space tile lattice (zoom-invariant, 30 fps vertical
+    // fall + 8 Hz horizontal sway) distributed across all visible tiles in
+    // golden-ratio round-robin order so wide viewports (5120×1440) keep even
+    // full-height coverage within the documented 24–420 flake cap, with a 2×1
+    // C1 cool-slate underside rim (`WEATHER_SNOW_COLORS.shadow`) under 2×2
+    // flakes. Reduced motion snaps to a frozen half-count world field.
     _drawSnow(ctx, canvas, weather, phaseMs, seed, particleEnabled) {
         const intensity = clamp(weather.intensity, 0, 1);
         const area = canvas.width * canvas.height;
         const density = weather.type === 'storm' ? 1.18 : 1;
         const animatedScale = particleEnabled ? 1 : 0.5;
-        const count = Math.min(
-            SNOW_MAX_FLAKES,
+        const maxFlakes = Math.max(1, Math.round(SNOW_MAX_FLAKES * animatedScale));
+        const minFlakes = Math.max(1, Math.round(SNOW_MIN_FLAKES * animatedScale));
+        const targetCount = Math.min(
+            maxFlakes,
             Math.max(
-                SNOW_MIN_FLAKES,
+                minFlakes,
                 Math.floor((area / (SNOW_AREA_DENSITY * 1.4)) * (0.35 + intensity * 0.85) * density * animatedScale),
             ),
         );
-
-        const windX = baseWindX(weather);
-        const pad = 24;
-        const travel = canvas.height + pad * 2;
         const alpha = Math.min(0.7, (particleEnabled ? 0.42 : 0.3) + intensity * 0.28);
-        const xSpan = canvas.width + pad * 2;
+        const { camera, zoom, cell, ox, oy } = this._artGrid();
+        const worldLocked = Boolean(camera?.worldToScreen && camera?.screenToWorld);
+        const view = worldLocked
+            ? this._visibleWorldRect(camera)
+            : { left: 0, top: 0, right: canvas.width, bottom: canvas.height };
+        const padW = worldLocked ? Math.ceil(24 / Math.max(0.25, zoom)) : 24;
+        const windX = baseWindX(weather);
+        const TILE = 512;
+        const fallMs = particleEnabled ? Math.floor(phaseMs / 33) * 33 : 0;
+        const swayMs = particleEnabled ? Math.floor(phaseMs / 125) * 125 : 0;
+        const perTile = Math.min(
+            96,
+            Math.max(
+                10,
+                Math.floor(((TILE * TILE) / (SNOW_AREA_DENSITY * 1.4)) * (0.35 + intensity * 0.85) * density * animatedScale),
+            ),
+        );
+
+        const cap = SNOW_MAX_FLAKES;
+        if (!this._snowFlakeX || this._snowFlakeX.length < cap) {
+            this._snowFlakeX = new Int32Array(cap);
+            this._snowFlakeY = new Int32Array(cap);
+            this._snowFlakeS = new Uint8Array(cap);
+        }
+        const flakeX = this._snowFlakeX;
+        const flakeY = this._snowFlakeY;
+        const flakeS = this._snowFlakeS;
+        let drawn = 0;
+
+        if (worldLocked) {
+            const tx0 = Math.floor((view.left - padW) / TILE);
+            const tx1 = Math.floor((view.right + padW) / TILE);
+            const ty0 = Math.floor((view.top - padW) / TILE);
+            const ty1 = Math.floor((view.bottom + padW) / TILE);
+            const tilesX = Math.max(1, tx1 - tx0 + 1);
+            const tilesY = Math.max(1, ty1 - ty0 + 1);
+            const tileCount = tilesX * tilesY;
+            const gcd = (a, b) => (b === 0 ? a : gcd(b, a % b));
+            let stride = Math.max(1, Math.round(tileCount * 0.6180339887));
+            while (tileCount > 1 && gcd(stride, tileCount) !== 1) stride = (stride % (tileCount - 1)) + 1;
+            const tileLimit = Math.min(96, Math.max(perTile, Math.ceil(minFlakes / tileCount) + 4));
+
+            for (let i = 0; i < tileLimit && drawn < targetCount; i++) {
+                for (let t = 0; t < tileCount && drawn < targetCount; t++) {
+                    const slot = (t * stride) % tileCount;
+                    const tx = tx0 + (slot % tilesX);
+                    const ty = ty0 + Math.floor(slot / tilesX);
+                    const tileSalt = (((tx * 73856093) ^ (ty * 19349663)) >>> 0) % 9973;
+                    const k = tileSalt * 131 + i;
+                    const xRand = random01(seed, k + 101);
+                    const yRand = random01(seed, k + 211);
+                    const fallSpeed = 0.045 + random01(seed, k + 331) * 0.045;
+                    const size = random01(seed, k + 419) < 0.3 ? 1 : 2;
+                    const fall = particleEnabled ? fallMs * fallSpeed : 0;
+                    const swayPhase = random01(seed, k + 521) * Math.PI * 2;
+                    const swayAmp = 3 + random01(seed, k + 617) * 4.5;
+                    const sway = particleEnabled ? Math.sin(swayMs * 0.0016 + swayPhase) * swayAmp : 0;
+                    const drift = fall * windX * 0.06;
+                    const wx = tx * TILE + mod(xRand * TILE + sway + drift, TILE);
+                    const wy = ty * TILE + mod(yRand * TILE + fall, TILE);
+                    const screen = camera.worldToScreen(wx, wy);
+                    if (screen.x < -16 || screen.x > canvas.width + 16 || screen.y < -16 || screen.y > canvas.height + 16) continue;
+                    flakeX[drawn] = ox + Math.round((screen.x - ox) / cell) * cell;
+                    flakeY[drawn] = oy + Math.round((screen.y - oy) / cell) * cell;
+                    flakeS[drawn] = size;
+                    drawn++;
+                }
+            }
+        } else {
+            const spanW = canvas.width + 48;
+            const spanH = canvas.height + 48;
+            for (let i = 0; i < targetCount && drawn < cap; i++) {
+                const fallSpeed = 0.06 + random01(seed, i + 331) * 0.06;
+                const fall = particleEnabled ? fallMs * fallSpeed : 0;
+                const sway = particleEnabled ? Math.sin(swayMs * 0.0016 + random01(seed, i + 521) * Math.PI * 2) * 5 : 0;
+                const sx = -24 + mod(random01(seed, i + 101) * spanW + sway + fall * windX * 0.06 + 24, spanW);
+                const sy = -24 + mod(random01(seed, i + 211) * spanH + fall + 24, spanH);
+                flakeX[drawn] = ox + Math.round((sx - ox) / cell) * cell;
+                flakeY[drawn] = oy + Math.round((sy - oy) / cell) * cell;
+                flakeS[drawn] = random01(seed, i + 419) < 0.3 ? 1 : 2;
+                drawn++;
+            }
+        }
 
         ctx.save();
-        ctx.fillStyle = `rgba(238, 246, 255, ${alpha})`;
-        // 6.7 — flakes are one or two whole art-pixel cells.
-        const { cell, ox, oy } = this._artGrid();
-        for (let i = 0; i < count; i++) {
-            const xRand = random01(seed, i + 101);
-            const yRand = random01(seed, i + 211);
-            const fallSpeed = 0.08 + random01(seed, i + 331) * 0.08; // 0.08–0.16 px/ms
-            const size = random01(seed, i + 419) < 0.3 ? 1 : 2;
-            const fall = particleEnabled ? phaseMs * fallSpeed : 0;
-            const y = ((yRand * travel + fall) % travel) - pad;
-            const swayPhase = random01(seed, i + 521) * Math.PI * 2;
-            const swayAmp = 4 + random01(seed, i + 617) * 6;
-            const sway = particleEnabled ? Math.sin(phaseMs * 0.0016 + swayPhase) * swayAmp : 0;
-            const drift = fall * windX * 0.06;
-            const rawX = xRand * xSpan - pad + sway + drift;
-            const x = wrap(rawX, -pad, canvas.width + pad);
-            ctx.fillRect(ox + Math.round((x - ox) / cell) * cell, oy + Math.round((y - oy) / cell) * cell, size * cell, size * cell);
+        // 1) Cool-slate 2x1 underside shadow row under 2x2 flakes (C1 palette).
+        ctx.fillStyle = WEATHER_SNOW_COLORS.shadow;
+        ctx.globalAlpha = clamp(alpha * 0.42, 0, 1);
+        ctx.beginPath();
+        for (let i = 0; i < drawn; i++) {
+            if (flakeS[i] === 2) ctx.rect(flakeX[i], flakeY[i] + 2 * cell, 2 * cell, cell);
         }
+        ctx.fill();
+
+        // 2) Crisp flake bodies.
+        ctx.fillStyle = WEATHER_SNOW_COLORS.body;
+        ctx.globalAlpha = clamp(alpha, 0, 1);
+        ctx.beginPath();
+        for (let i = 0; i < drawn; i++) {
+            const s = flakeS[i] * cell;
+            ctx.rect(flakeX[i], flakeY[i], s, s);
+        }
+        ctx.fill();
         ctx.restore();
     }
 

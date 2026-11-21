@@ -900,22 +900,4 @@ npm run sprites:sidecar-mask-fix -- \
 Remove `--dry-run` only after reviewing the target and then add the matching
 `<channel>Sidecar: true` manifest opt-in.
 
-Command's and the Tavern's material sidecars (EN-2) come from
-`node scripts/sprites/paint-facade-materials.mjs` (`--check` runs inside
-`npm run sprites:audit-refresh`): reviewed regions plus a hue rule inside
-them, never luminance. Command's arched gate leaves are timber and their
-straps, ring pulls and nails metal, as are the gilt crest over the gate and
-the two iron braziers, and its four crimson wall banners (cloth and gilt
-emblem) are fabric; the Tavern's oak arcade, bar, kegs, half-timbering and
-eave boards are timber, while its ashlar wall, plaster, slate and glass stay
-stone. No roof (surface face 3) texel takes fabric and no other class from
-the roof-snow exclusion set is painted, so roof weather is unchanged, and
-the firelight exclusions (`RAMP_LANDMARKS`) are untouched. The same script
-makes the restrained albedo ramp edits that let the materials read without
-the channel (Canvas, MINIMAL): reviewed source colours on those classes only,
-onto existing stops (`OAK_FROM`: the plum-shaded oak onto `timber`, the
-warm oak kept; `IRON_FROM`: the straps, rings and braziers off the ashlar
-mauve onto `slate`, their highlights onto `wetSlate[2]`), and the same
-edits on the gate strip (frame 0 restated from the base crop, the ajar and
-open frames inside the door's arch), so `restIsBase` holds. An edit that would change the roof map (roof class, trim or snow-cap mask; `RoofWeather.roofWeatherMap` reads colour) is undone, so roof weather is exactly the pre-edit art's: 110 Tavern fascia texels keep their plum oak. Re-bake, validate, and inspect the
-channel contact sheet before committing a sidecar.
+Command's, Tavern's, Harbor's, and Watchtower's material sidecars (`mode: 'author'`), plus timber-channel upgrades on Forge and Mine (`mode: 'upgrade'`, preserving their existing `fire`, `glass-rune`, and `metal` channels), come from `node scripts/sprites/paint-facade-materials.mjs` (`--check` runs inside `npm run sprites:audit-refresh`): reviewed `FACADE_REGIONS` plus a hue rule inside them, never luminance. Command's arched gate leaves are timber and their straps, ring pulls and nails metal, as are the gilt crest over the gate and the two iron braziers, and its four crimson wall banners (cloth and gilt emblem) are fabric; the Tavern's oak arcade, bar, kegs, half-timbering and eave boards, the Harbor's crane timber, pier pilings, door, and half-timbering, the Watchtower keeper's cottage timber, and Forge/Mine timber trim take timber, while ashlar wall, plaster, slate and glass stay stone. No roof (surface face 3) texel takes fabric and no other class from the roof-snow exclusion set is painted, so roof weather is unchanged, and the firelight exclusions (`RAMP_LANDMARKS`) are untouched. The same script makes the restrained albedo ramp edits that let the materials read without the channel (Canvas, MINIMAL): reviewed source colours on those classes only, onto existing stops (`OAK_FROM`: the plum-shaded oak onto `ART_RAMPS.timber`, the warm oak kept across all six landmarks plus strips `command/gate.png`, `harbor/{crane,door}.png`, `forge/{bellows,billetRack}.png`, and `mine/sheave.png`; `IRON_FROM` with `retoneIron: true` on Command only — `retoneIron: false` outside Command — moving the gate straps, rings and braziers off ashlar mauve onto `slate` and their highlights onto `wetSlate[2]`, plus `command/gate.png` frame 0 restated from the base crop and the ajar/open frames inside the door's arch so `restIsBase` holds). An edit that would change the roof map (roof class, trim or snow-cap mask; `RoofWeather.roofWeatherMap` reads colour) is undone, so roof weather is exactly the pre-edit art's: 110 Tavern fascia texels keep their plum oak. Re-bake, validate, and inspect the channel contact sheet before committing a sidecar.

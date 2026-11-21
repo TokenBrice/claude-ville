@@ -64,6 +64,9 @@ export const SURFACE_SPECS = Object.freeze({
             // same centre (the next region), so roof weather never lies on them.
             { face: 'roof', poly: [[124, 90], [126, 62], [140, 40], [160, 26], [168, 4], [176, -1], [184, 4], [192, 26], [212, 40], [225, 62], [226, 90], [175, 98]], match: [SLATE, GOLD], base: { corner: [175, 214] } },
             { face: 'auto', poly: [[124, 90], [126, 62], [140, 40], [160, 26], [168, 4], [176, -1], [184, 4], [192, 26], [212, 40], [225, 62], [226, 90], [175, 98]], base: { corner: [175, 214] } },
+            // EN-2 iron crest pixels inside the drum y-band sit on the slate
+            // ramp: hold roof=[] on the drum's own centre without clipping roof.
+            { face: 'auto', roof: [], poly: [[133, 105], [138, 105], [138, 108], [133, 108]], base: { corner: [175, 214] } },
             // Dome drum (windowed ring) on the same centre.
             { face: 'auto', poly: [[126, 88], [226, 88], [226, 112], [126, 112]], base: { corner: [175, 214] } },
             // Slate-glass panes the emissive sidecar leaves unlit (on the
@@ -79,6 +82,11 @@ export const SURFACE_SPECS = Object.freeze({
             // The keep turns at the gate pillar: its bannered upper wall right
             // of the pillar faces SE, above the east wing's gable.
             { face: 'auto', poly: [[163, 88], [232, 88], [232, 140], [180, 160], [163, 160]], base: { corner: [165, 213] } },
+            // EN-2 iron gate straps/rings and the two iron braziers sit on the
+            // slate ramp (hue ~215, S >= 0.20): hold roof=[] so they stay wall.
+            { face: 'auto', roof: [], poly: [[88, 175], [103, 175], [103, 198], [88, 198]] },
+            { face: 'auto', roof: [], poly: [[135, 199], [154, 199], [154, 223], [135, 223]] },
+            { face: 'auto', roof: [], poly: [[118, 113], [152, 113], [152, 199], [118, 199]] },
         ],
     },
     archive: {
