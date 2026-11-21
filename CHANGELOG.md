@@ -2,6 +2,26 @@
 
 ---
 
+## v0.65.0 — *The Alchemists' Guild* · Nov 21, 2026
+
+Google's Antigravity CLI (`agy`) joins the village as a new provider, and Gemini's periodic-element models arrive as a guild of alchemists with their own bodies, prices and Tavern poses. Every Antigravity behaviour below was checked against real `agy` transcripts.
+
+- **Google Antigravity (`agy`).**
+  - The new adapter reads conversation transcripts under `~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript.jsonl`, with best-effort discovery of `~/.gemini/antigravity/` and `~/.gemini/antigravity-ide/` (or `CLAUDEVILLE_ANTIGRAVITY_DIR`).
+  - Model and effort come from each step's model slug (`gemini-4-carbon-high` is Carbon at high effort). Token counts add uncached input, cache reads and output (thinking included) without counting a token twice.
+  - Sessions carry their project, the files they touch, command results with exit codes and empty output, git commits and pushes, `ask_question` waits, and a trailing `ERROR_MESSAGE` as an API error.
+  - Subagents (`invoke_subagent`), workflows (`run_workflow`) and swarm workers (`swarm` `add`) join their lead's crew under their role or member name, and a swarm's title becomes the crew's team. agy marks every spawned conversation internal; those stay visible. A lead with live subagents reads "Waiting on crew" and takes its Tavern seat.
+  - Orchestrator mode keeps its planner's identity (`gemini-pro-orchestrator-neon`) while executor steps report `gemini-flash-worker-agy`, so the villager no longer swaps body and price every few steps.
+  - An explicit `/rename` names the villager (from `annotations/<id>.pbtxt`); auto-generated titles are ignored. `/exit` ends the session at once. `/clear`, `/model` and other slash commands never count as activity.
+  - Native tools map to buildings (`run_command`, `read_file`, `search_web`, `invoke_subagent`, `swarm`, `post_message` and more). Antigravity's home is the Portal, with a glass material, an orb familiar and a glass bell tone.
+  - Opt-in hooks: `scripts/agent-hooks/antigravity-hook.cjs` forwards `hooks.json` events (`SessionStart`, `PreToolUse`, `PostToolUse`, `PreInvocation`, `PostInvocation`, `Stop`) to `/api/ingest/hook`. It always prints `{}`, so it never approves a tool for you. Setup is in the troubleshooting guide.
+- **The Gemini alchemists.**
+  - New registry rows, all with a 1M context: Gemini 4 Carbon (two bodies), Argon, Neon and Hydrogen; Gemini 3.8 Flash (3.7 and 3.6 Flash ids resolve to it); the Carbon, Argon and Neon Orchestrators; and the Flash executor.
+  - Prices take Google's standard rate rather than an introductory one, as DeepSeek's do: Carbon and Argon $4 in / $20 out per MTok (intro $2 / $10 until Nov 30), Neon $3 / $15, Hydrogen $1.50 / $7.50, 3.8 Flash $1.50 / $7.50 (intro $0.75 / $3.75 until Dec 31). An Orchestrator is priced at its planner's rate, as an upper bound. Source: Google's Gemini API pricing page, checked Nov 20, 2026.
+  - Six new alchemist sprites carry the full action-strip set (read, wait, sit, drink, strike, tinker, gaze, celebrate, think), and the Gemini base sprite gains read, drink, gaze, celebrate and think. Gemini villagers now sip at the Tavern.
+  - Dashboard avatars carry element insignia: a Carbon prism, Argon phials, a Neon discharge vial and a Hydrogen or Flash flask.
+- **Gemini CLI sessions change look.** Existing Gemini rows now name their version ("Gemini 3.1 Pro", "Gemini 2.5 Flash") instead of a bare "Gemini" and carry a 1M context. Flash and Flash Lite rows wear the new Flash courier body. Their prices are unchanged.
+
 ## v0.64.0 — *The Grand Council* · Nov 19, 2026
 
 The village now reads Claude Code's new REPL harness correctly and shows a fleet as a fleet. It also gains three features: a recorded day you can watch again, opt-in real local weather, and a postcard with no names on it. The work came from a council of eight agents (four Claude Fable 5.2 and four GPT-6.2 Astra) and twenty-three lanes, each reviewed by the other model family.
