@@ -2,6 +2,16 @@
 
 ---
 
+## v0.65.1 — *The Night Watch* · Nov 21, 2026
+
+An Antigravity villager no longer walks out while its agent works in silence. agy writes a transcript step only when the step finishes. A long think, a long command or a `swarm_wait` therefore left the village after two minutes, even though the agent was still working.
+
+- **Presence from agy's own lock.** agy holds a lock on `presence/<conversation-id>.lock` while a conversation is open. On Linux the adapter reads the held locks from `/proc/locks`. A conversation its live process holds stays in the village while its turn is open, even past the 60-minute discovery window. A finished turn or a closed agy departs as before. On other systems the two-minute activity window still decides.
+- **Swarm workers stay with a live lead.** A worker runs inside its lead's process and has no lock of its own. It stays while its lead's lock is held and its own turn is open, for up to 60 minutes after its last step. A worker that has reported and now waits in `swarm_wait`, or one its lead killed, departs as before.
+- Liveness decides only who is present: the last activity time is still the last step's. agy records no interrupt, so a turn stopped with Esc reads as open until the next prompt or until agy exits.
+
+---
+
 ## v0.65.0.2 · Nov 21, 2026 — Hotfix
 
 - **Antigravity hook guidance corrected.** v0.65.0 said the optional forwarder `scripts/agent-hooks/antigravity-hook.cjs` keeps `PreToolUse` neutral by printing `{}`. agy's hook reference makes a `decision` required on `PreToolUse` and `Stop`, and every `PreToolUse` decision (`allow`, `deny`, `ask`, `force_ask`) changes permissions, so an answer without one is undocumented. The troubleshooting guide and the helper now say to register it only on `SessionStart`, `PostToolUse`, `PreInvocation`, and `PostInvocation`. They also say the Antigravity adapter needs no hooks: agy has no approval event, its transcript already records each step, and it runs hooks synchronously, so each one delays the agent.
