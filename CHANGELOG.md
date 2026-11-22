@@ -2,6 +2,15 @@
 
 ---
 
+## v0.65.3 — *The Long Vigil* · Nov 22, 2026
+
+An Antigravity villager waiting on its own background job no longer walks out. When an agy agent ended its turn after starting a background `run_command` (for example a `gh run watch` on CI before a merge), the village read the closed turn as finished work. The villager left about three and a half minutes later, while agy was still running the watch and would wake the agent when it ended.
+
+- **Background tasks keep a live agent present.** agy announces a background task in a `RUNNING` step and later reports its end in a system message (`Task id "…" finished` or `was canceled`). The adapter now tracks the tasks still running. While a live agy process holds the conversation's presence lock, a closed turn with a running task stays in the village and reads "Waiting on crew" (`backgroundPending` with `kinds: ['bash']`) instead of Completed, as a Claude Code session with a background shell does.
+- **Bounded.** A task counts for at most 60 minutes, so a dev server or a task whose end notice never arrived cannot hold a villager forever. A conversation whose agy process has exited, or whose task has reported its end, departs as before. An agent idle at the prompt with no background work still departs on the usual schedule.
+
+---
+
 ## v0.65.2 — *The Winter Tide* · Nov 22, 2026
 
 A polish pass on how the World looks: deeper nights, snow on the landmarks in winter, calmer water and ground, and WebGPU and WebGL2 drawing the same frame at every size. Every change refines a layer the village already had, and most of them show at night, in rain or in winter.
