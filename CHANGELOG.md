@@ -2,6 +2,17 @@
 
 ---
 
+## v0.65.5 — *The Prism Arc* · Nov 22, 2026
+
+Gemini 4 Neon steps out of its journeyman jacket and into the apex tier it earned in v0.65.0.1, arriving as a pair of obsidian-and-silver arch-alchemists with glowing electric-cyan discharge arcs, full Tavern and work poses, and an urgent run gait.
+
+- **Two authored bodies for Neon (`spriteVariants`).** Both `gemini-4-neon` and `gemini-pro-orchestrator-neon` now hash deterministically across two `80×80` Pro bodies — the open-faced **Prism-Arc Sovereign** (`agent.gemini.neon`) with twin luminous cyan arcs behind a silver-lined half-cape, and the hooded, silver-masked **Lumen-Inquisitor** (`agent.gemini.neon.b`) — so swarms and multi-session teams no longer spawn a clone chorus.
+- **Full ten-group action strips and urgent `run` gait.** Both bodies ship V7 feet-audited `read`, `wait`, `sit`, `strike`, `tinker`, `gaze`, `celebrate`, `drink`, and `think` poses plus an 8-direction `run` sprint cycle for urgent trips across the village.
+- **Painterly palette and real night-time glow.** Neon drops its flat cobalt-and-magenta look for charcoal-obsidian cloth, polished silver filigree, and pure electric-cyan / starlight-white prisms. Reviewed material, emissive, and occluder sidecars lift idle night glow from 0.2 to 38.7 emissive pixels per cell on the Sovereign (19.6 on the Inquisitor), while `paletteSource` scopes crowd tinting to the dark coat so the silver trim and cyan arcs stay sharp.
+- **Dashboard & lineup polish.** Neon's `models.json` trim/accent tokens drop magenta for silver-ice and electric cyan, its Dashboard avatar carries a new twin-arc prism emblem, and `model-lineup` now showcases both Neon bodies beside Carbon, Opus, Fable, and Sol.
+
+---
+
 ## v0.65.4 — *The Kept Hearth* · Nov 22, 2026
 
 An agent whose CLI is still open now stays in the village, even when you have not talked to it in a while. Until now an agent idle at the prompt walked out about three and a half minutes after its last step, although its terminal was still open and ready for your next prompt.
