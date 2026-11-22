@@ -51,6 +51,11 @@ const MAX_BRAIN_CONVERSATIONS = 2048;
 const PARSED_CACHE_MAX = 256;
 const REPO_ROOT_CACHE_MAX = 512;
 const ANNOTATION_MAX_BYTES = 4 * 1024;
+// Backstop for a background task whose end notice never arrived (a resumed
+// conversation, a missed tail): count it no longer than the discovery grace.
+const BACKGROUND_TASK_MAX_MS = 60 * 60 * 1000;
+const BACKGROUND_TASK_START_RE = /Tool is running as a background task with task id: (\S+)/;
+const BACKGROUND_TASK_END_RE = /Task id "([^"]+)" (?:finished|was canceled) with result/g;
 
 const TOOL_SUMMARY_FIELDS = Object.freeze([
   'CommandLine',
@@ -401,6 +406,8 @@ function reduceAntigravityTranscript(steps, {
   let pendingQueue = [];
   // The newest step is a swarm_wait result: a crew member that reported and now idles.
   let parked = false;
+  // Background run_command tasks (task id → start), open until a system message reports their end.
+  const openTasks = new Map();
 
   for (const step of steps) {
     parked = false;
@@ -587,7 +594,14 @@ function reduceAntigravityTranscript(steps, {
       continue;
     }
 
+    if (step.type === 'SYSTEM_MESSAGE') {
+      for (const match of String(step.content || '').matchAll(BACKGROUND_TASK_END_RE)) openTasks.delete(match[1]);
+      continue;
+    }
+
     if (step.type === 'GENERIC') {
+      const taskId = step.status === 'RUNNING' ? String(step.content || '').match(BACKGROUND_TASK_START_RE)?.[1] : null;
+      if (taskId) openTasks.set(taskId, stepTs || latestActivity);
       const call = pendingQueue.shift() || null;
       if (!call) continue;
       const content = typeof step.content === 'string' ? step.content : '';
@@ -815,6 +829,7 @@ function reduceAntigravityTranscript(steps, {
     dialogueCandidates,
     turnDescriptor,
     parked,
+    backgroundTasks: [...openTasks.values()],
     session: {
       sessionId,
       sourceSessionId: String(convId),
@@ -1316,19 +1331,23 @@ class AntigravityAdapter {
     }
 
     const activeIds = new Set();
+    const taskStartsById = new Map();
     for (const [id, reduced] of reducedByConvId) {
+      // A long think, a long command or a swarm_wait writes no step. A
+      // conversation its live agy process holds stays while its turn is open, and
+      // so does a crew member of one that is neither killed nor parked; the
+      // discovery grace above still bounds a member. A closed turn also stays
+      // while a background task it started still runs in that live process.
+      const lineage = lineageByChild.get(id);
+      const live = held.has(id) || (held.has(lineage?.rootConvId) && !lineage.killed && !reduced.parked);
+      const taskStarts = live ? reduced.backgroundTasks.filter(at => now - at < BACKGROUND_TASK_MAX_MS) : [];
+      if (taskStarts.length > 0) taskStartsById.set(id, taskStarts);
       if (activeThresholdMs == null || now - reduced.session.lastActivity <= Number(activeThresholdMs)) {
         activeIds.add(id);
         continue;
       }
-      // A long think, a long command or a swarm_wait writes no step. A
-      // conversation its live agy process holds stays while its turn is open, and
-      // so does a crew member of one that is neither killed nor parked; the
-      // discovery grace above still bounds a member.
-      const lineage = lineageByChild.get(id);
-      const live = held.has(id) || (held.has(lineage?.rootConvId) && !lineage.killed && !reduced.parked);
       const { turnState } = live ? deriveTurnState(reduced.turnDescriptor) : {};
-      if (turnState === 'working' || turnState === 'tool_pending') activeIds.add(id);
+      if (turnState === 'working' || turnState === 'tool_pending' || taskStarts.length > 0) activeIds.add(id);
     }
     // Keep parent/ancestor conversations visible while any descendant is active.
     for (const id of [...activeIds]) {
@@ -1357,11 +1376,13 @@ class AntigravityAdapter {
       const reduced = reducedByConvId.get(id);
       if (!reduced) continue;
       const liveChildren = activeChildrenByParent.get(id) || [];
-      const backgroundPending = liveChildren.length > 0
+      const taskStarts = taskStartsById.get(id) || [];
+      const starts = [...liveChildren.map(c => c.session.turnStartedAt || c.session.lastActivity), ...taskStarts];
+      const backgroundPending = starts.length > 0
         ? {
-          count: liveChildren.length,
-          kinds: ['agent'],
-          since: Math.min(...liveChildren.map(c => c.session.turnStartedAt || c.session.lastActivity)),
+          count: starts.length,
+          kinds: [...(liveChildren.length > 0 ? ['agent'] : []), ...(taskStarts.length > 0 ? ['bash'] : [])],
+          since: Math.min(...starts),
         }
         : null;
       const presented = presentReducedEntry(reduced, {

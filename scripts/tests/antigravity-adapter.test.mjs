@@ -544,3 +544,69 @@ test('Antigravity keeps a quiet conversation its live process holds, and its wor
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test('Antigravity keeps a held conversation whose closed turn waits on its own background task', () => {
+  const tmp = makeTempDir('cv-antigravity-tasks-');
+  try {
+    const rootDir = path.join(tmp, '.gemini', 'antigravity-cli');
+    const ids = {
+      waiting: '13131313-1313-4313-8313-131313131313',
+      reported: '24242424-2424-4424-8424-242424242424',
+      stale: '35353535-3535-4535-8535-353535353535',
+      released: '46464646-4646-4646-8646-464646464646',
+    };
+    const now = Date.parse('2026-11-22T11:00:00Z');
+    const at = (msAgo) => new Date(now - msAgo).toISOString();
+    const transcript = (id) => path.join(rootDir, 'brain', id, '.system_generated', 'logs', 'transcript.jsonl');
+    const started = (id, index, msAgo) => ({
+      step_index: index,
+      type: 'GENERIC',
+      status: 'RUNNING',
+      created_at: at(msAgo),
+      content: `Tool is running as a background task with task id: ${id}/task-${index}\nTask Description: gh run watch 42`,
+    });
+    const ended = (id, task, index, msAgo, verb) => ({
+      step_index: index,
+      type: 'SYSTEM_MESSAGE',
+      status: 'DONE',
+      created_at: at(msAgo),
+      content: `<SYSTEM_MESSAGE>\n[Message] sender=${id}/task-${task} content=Task id "${id}/task-${task}" ${verb} with result:\nCommand exited with code 0.\n</SYSTEM_MESSAGE>`,
+    });
+    const write = (id, quietMs, steps) => writeFile(transcript(id), `${[
+      { step_index: 0, type: 'USER_INPUT', created_at: at(quietMs + 30_000), content: 'Merge once CI is green' },
+      { step_index: 1, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: at(quietMs + 20_000), model: 'gemini-4-neon-xhigh', tool_calls: [{ name: 'run_command', args: { CommandLine: '"gh run watch 42"' } }] },
+      ...steps,
+      { step_index: 9, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: at(quietMs), model: 'gemini-4-neon-xhigh', content: 'Watching CI; I will merge once it is green.' },
+    ].map(s => JSON.stringify(s)).join('\n')}\n`, now - quietMs);
+
+    write(ids.waiting, 20 * 60_000, [started(ids.waiting, 2, 20 * 60_000 + 10_000)]);
+    write(ids.reported, 20 * 60_000, [
+      started(ids.reported, 2, 20 * 60_000 + 15_000),
+      started(ids.reported, 3, 20 * 60_000 + 10_000),
+      ended(ids.reported, 2, 4, 20 * 60_000 + 5_000, 'finished'),
+      ended(ids.reported, 3, 5, 20 * 60_000 + 5_000, 'was canceled'),
+    ]);
+    write(ids.stale, 90 * 60_000, [started(ids.stale, 2, 90 * 60_000 + 10_000)]);
+    write(ids.released, 20 * 60_000, [started(ids.released, 2, 20 * 60_000 + 10_000)]);
+
+    const inode = (id) => {
+      const lockPath = path.join(rootDir, 'presence', `${id}.lock`);
+      writeFile(lockPath, '', now - 90 * 60_000);
+      return fs.statSync(lockPath).ino;
+    };
+    const procLocks = [ids.waiting, ids.reported, ids.stale]
+      .map((id, idx) => `${idx + 1}: FLOCK  ADVISORY  WRITE 4242 103:06:${inode(id)} 0 EOF`)
+      .concat(`4: -> FLOCK  ADVISORY  WRITE 4343 103:06:${inode(ids.released)} 0 EOF`, '')
+      .join('\n');
+
+    const sessions = new AntigravityAdapter({ rootDir, now: () => now, readLocks: () => procLocks }).getActiveSessions(2 * 60_000);
+    assert.deepEqual(sessions.map(s => s.sessionId), [`antigravity-${ids.waiting}`],
+      'a reported or canceled task, a task past the backstop and a released lock all leave');
+    const [waiting] = sessions;
+    assert.equal(waiting.turnState, 'awaiting_input');
+    assert.deepEqual(waiting.backgroundPending, { count: 1, kinds: ['bash'], since: now - 20 * 60_000 - 10_000 });
+    assert.equal(waiting.lastActivity, now - 20 * 60_000, 'liveness never rewrites the last observed activity');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
