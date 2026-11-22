@@ -2,6 +2,17 @@
 
 ---
 
+## v0.65.4 — *The Kept Hearth* · Nov 22, 2026
+
+An agent whose CLI is still open now stays in the village, even when you have not talked to it in a while. Until now an agent idle at the prompt walked out about three and a half minutes after its last step, although its terminal was still open and ready for your next prompt.
+
+- **A live process keeps its agent.** On Linux, ClaudeVille checks that the agent's own process is still running. An Antigravity conversation a live agy process holds (`presence/<conversation-id>.lock`) stays whatever its turn state. A Claude Code session with a live `~/.claude/sessions/<pid>.json` entry stays whether it is busy, waiting or idle; before, only busy and waiting sessions stayed.
+- **Idle agents rest in the village.** An idle agent reads Completed and winds down at the harbour quay or the Tavern until its next prompt. It leaves when its process exits or, in agy, when the process moves on to another conversation.
+- **Crews stay lean.** An Antigravity swarm or subagent member holds no lock of its own, so it still stays only while its turn is open or a background task it started still runs. A finished member departs, and the village does not fill with completed workers.
+- Providers with no process evidence (Codex, Gemini, Grok, Kimi, OpenCode, OMP, DeepSeek, GLM) keep the ordinary two-minute activity window and the departure grace.
+
+---
+
 ## v0.65.3 — *The Long Vigil* · Nov 22, 2026
 
 An Antigravity villager waiting on its own background job no longer walks out. When an agy agent ended its turn after starting a background `run_command` (for example a `gh run watch` on CI before a merge), the village read the closed turn as finished work. The villager left about three and a half minutes later, while agy was still running the watch and would wake the agent when it ended.
