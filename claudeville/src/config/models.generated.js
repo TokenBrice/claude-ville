@@ -1739,9 +1739,9 @@ const MODEL_REGISTRY = [
     },
     {
         "accent": [
-            "#ccf6ff",
+            "#eefbff",
             "#4fd8ff",
-            "#ff8fd8"
+            "#b8dcff"
         ],
         "color": "#4fd8ff",
         "contextWindow": 1000000,
@@ -1764,10 +1764,14 @@ const MODEL_REGISTRY = [
         "sample": "gemini-pro-orchestrator-neon",
         "shortLabel": "Orch·Neon",
         "spriteId": "agent.gemini.neon",
+        "spriteVariants": [
+            "agent.gemini.neon",
+            "agent.gemini.neon.b"
+        ],
         "trim": [
             "#4fd8ff",
-            "#ff6ec7",
-            "#7cb8ff"
+            "#d8e6f5",
+            "#7ce8ff"
         ]
     },
     {
@@ -1878,9 +1882,9 @@ const MODEL_REGISTRY = [
     },
     {
         "accent": [
-            "#ccf6ff",
+            "#eefbff",
             "#4fd8ff",
-            "#ff8fd8"
+            "#b8dcff"
         ],
         "color": "#4fd8ff",
         "contextWindow": 1000000,
@@ -1904,10 +1908,14 @@ const MODEL_REGISTRY = [
         "sample": "gemini-4-neon",
         "shortLabel": "Neon",
         "spriteId": "agent.gemini.neon",
+        "spriteVariants": [
+            "agent.gemini.neon",
+            "agent.gemini.neon.b"
+        ],
         "trim": [
             "#4fd8ff",
-            "#ff6ec7",
-            "#7cb8ff"
+            "#d8e6f5",
+            "#7ce8ff"
         ]
     },
     {

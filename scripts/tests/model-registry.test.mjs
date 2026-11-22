@@ -244,10 +244,13 @@ test('Gemini 4 periodic-element models resolve for Gemini and Antigravity, with 
     }
 
     const carbonBodies = new Set();
+    const neonBodies = new Set();
     for (let i = 0; i < 64; i++) {
         carbonBodies.add(getModelVisualIdentity('gemini-4-carbon', 'high', 'antigravity', `agent-${i}`).spriteId);
+        neonBodies.add(getModelVisualIdentity('gemini-4-neon', 'xhigh', 'antigravity', `agent-${i}`).spriteId);
     }
     assert.deepEqual([...carbonBodies].sort(), ['agent.gemini.carbon', 'agent.gemini.carbon.b']);
+    assert.deepEqual([...neonBodies].sort(), ['agent.gemini.neon', 'agent.gemini.neon.b']);
 });
 
 test('registry and defaults cover every manifest agent sprite in both directions', (t) => {

@@ -196,7 +196,11 @@ const MANIFEST = yaml.load(readFileSync(new URL('../../claudeville/assets/sprite
 const RUN_PROFILES = (MANIFEST.characters || []).filter(entry => entry.actionStrip?.groups?.run);
 const RUN_MODELS = { 'agent.codex.gpt56sol': 'gpt-5.6-sol', 'agent.codex.gpt56luna': 'gpt-5.6-luna' };
 // Run profiles with no runtime weapon (empty-handed bodies): nothing to grip.
-const UNARMED_RUN_MODELS = { 'agent.zai.flash': ['glm-5.3-flash', 'zai'] };
+const UNARMED_RUN_MODELS = {
+    'agent.zai.flash': ['glm-5.3-flash', 'zai'],
+    'agent.gemini.neon': ['gemini-4-neon', 'antigravity'],
+    'agent.gemini.neon.b': ['gemini-4-neon', 'antigravity'],
+};
 
 function runPose(entry, direction, frame) {
     const meta = entry.actionStrip;

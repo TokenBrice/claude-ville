@@ -71,7 +71,12 @@ const PROFILES = Object.freeze({
     'agent.gemini.carbon': character('glass-rune', 0.16, ['#e7fcfc', '#cbfbfb', '#a7f9f9', '#7bf1f0']),
     'agent.gemini.carbon.b': character('glass-rune', 0.16, ['#a9f5f7', '#76d2da', '#b9e3e8', '#cef2f2']),
     'agent.gemini.argon': character('glass-rune', 0.14, ['#f6dffe', '#f0d1fe', '#ddadf8', '#b77cf2', '#b26ffc']),
-    'agent.gemini.neon': character('glass-rune', 0.14, ['#b4f4e4', '#cd43f6', '#f34cf2', '#df68ef', '#ee79e8']),
+    'agent.gemini.neon': character('glass-rune', 0.16, [
+        '#c5f3f6', '#9ef1f5', '#65eff3', '#75e5ec', '#47d7dc', '#3ebfe1', '#7eced6', '#2aaecf', '#44b9c3',
+    ]),
+    'agent.gemini.neon.b': character('glass-rune', 0.16, [
+        '#d3ffff', '#9cf7f8', '#53e3e3', '#50ced1', '#40a9b3',
+    ]),
     'agent.gemini.hydrogen': character('glass-rune', 0.12, ['#c2feff', '#81f5f9', '#85d4f3', '#94e1f2']),
     'agent.gemini.flash': character('glass-rune', 0.12, ['#fbf0ad', '#fae981', '#fdea5a', '#f9de64', '#fad849']),
     'agent.kimi.base': character('fabric'),

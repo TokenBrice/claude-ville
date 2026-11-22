@@ -20,7 +20,7 @@ test('model-lineup is registered and shows every reviewed body', () => {
         'agent.deepseek.flash', 'agent.deepseek.flash.high', 'agent.deepseek.flash.xhigh',
         'agent.codex.gpt56luna', 'agent.codex.gpt6astra', 'agent.codex.gpt6astra.b',
         'agent.gemini.carbon', 'agent.gemini.carbon.b', 'agent.gemini.argon',
-        'agent.gemini.neon', 'agent.gemini.hydrogen', 'agent.gemini.flash',
+        'agent.gemini.neon', 'agent.gemini.neon.b', 'agent.gemini.hydrogen', 'agent.gemini.flash',
     ]) {
         assert.ok(bodies.has(spriteId), `lineup shows ${spriteId}`);
     }

@@ -936,15 +936,23 @@ export class AvatarCanvas {
         }
 
         if (identity.modelClass === 'neon') {
-            // diagonal discharge vial — Neon prismatic alchemist
-            ctx.strokeStyle = accent;
-            ctx.lineWidth = 1.6;
-            ctx.beginPath();
-            ctx.moveTo(-4, 8);
-            ctx.lineTo(4, 0);
-            ctx.stroke();
+            // prism-arc emblem — central faceted prism flanked by twin curved discharge arcs
             ctx.fillStyle = trim;
-            ctx.fillRect(2, -1, 3, 3);
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.lineTo(2.5, 4);
+            ctx.lineTo(0, 8);
+            ctx.lineTo(-2.5, 4);
+            ctx.closePath();
+            ctx.fill();
+            ctx.strokeStyle = accent;
+            ctx.lineWidth = 1.1;
+            ctx.beginPath();
+            ctx.arc(-1.8, 4, 4.4, Math.PI * 0.68, Math.PI * 1.32);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.arc(1.8, 4, 4.4, -Math.PI * 0.32, Math.PI * 0.32);
+            ctx.stroke();
             return;
         }
 

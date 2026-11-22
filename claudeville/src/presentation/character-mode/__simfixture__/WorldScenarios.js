@@ -1419,9 +1419,10 @@ export const MODEL_LINEUP_SCENARIO = {
         lineup('carbon-master', 'Carbon', 'antigravity', 'gemini-4-carbon', 29, { effort: 'high' }),
         lineup('carbon-crucible', 'Carbon Crucible', 'antigravity', 'gemini-4-carbon', 30, { effort: 'high' }),
         lineup('argon', 'Argon', 'antigravity', 'gemini-4-argon', 31),
-        lineup('neon', 'Neon', 'antigravity', 'gemini-4-neon', 32, { effort: 'medium' }),
-        lineup('hydrogen', 'Hydrogen', 'antigravity', 'gemini-4-hydrogen', 33),
-        lineup('gemini-flash', 'Gemini Flash', 'antigravity', 'gemini-3.8-flash', 34),
+        lineup('neon', 'Neon', 'antigravity', 'gemini-4-neon', 32, { effort: 'xhigh' }),
+        lineup('neon-b', 'Neon Inquisitor', 'antigravity', 'gemini-4-neon', 33, { effort: 'high' }),
+        lineup('hydrogen', 'Hydrogen', 'antigravity', 'gemini-4-hydrogen', 34),
+        lineup('gemini-flash', 'Gemini Flash', 'antigravity', 'gemini-3.8-flash', 35),
     ],
     timeline: [],
     metadata: {

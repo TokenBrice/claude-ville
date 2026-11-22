@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-11-22-v0652-review-fixes"
+  assetVersion: "2026-11-22-neon-prism-revamp"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -1299,33 +1299,37 @@ characters:
       groups:
         read: { rows: [0, 3], hold: 3 }
         wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
-        sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 67, south-west: 66 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "07284472-9018-49b1-93d1-191a744e6151", sw: "5461c0c9-fd3e-49c9-9cdd-f96bab8bd457" } }, directions: [se, sw] }
-        strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [58, 47], w: [30, 45], se: [51, 53], sw: [27, 49] } }
-        tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [56, 49], w: [36, 49], se: [49, 54], sw: [44, 52] } }
-        gaze: { rows: [21, 24], hold: 22, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [49, 32], w: [39, 29], se: [43, 33], sw: [35, 28] } }
-        celebrate: { rows: [25, 27], hold: 26, directions: [se, e, w, sw] }
-        drink: { rows: [28, 32], hold: 28, seatLine: { south-east: 67, south-west: 66 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose + tankard, scripts/sprites/generate-pose-strip.mjs --groups=drink)", jobs: { se: "6913af2a-0fbe-49f4-b20d-9e34e9f874b7", sw: "dd64ee66-7192-4413-aee2-a52ebfa1bb54" } }, directions: [se, sw] }
-        think: { rows: [33, 35], hold: 35, directions: [se, e, w, sw] }
+        sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 66, south-west: 65 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "2d46a2b7-df3c-47af-9ae5-e9ce0fd09613", sw: "8994ee34-ddd0-42b1-9b06-c712c65e573b" } }, directions: [se, sw] }
+        strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [59, 47], w: [30, 43], se: [52, 51], sw: [28, 46] } }
+        tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [58, 44], w: [38, 45], se: [50, 53], sw: [44, 50] } }
+        gaze: { rows: [21, 24], hold: 22, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [50, 30], w: [39, 27], se: [44, 31], sw: [35, 26] } }
+        run: { rows: [25, 30], hold: 25 }
+        celebrate: { rows: [31, 33], hold: 32, directions: [se, e, w, sw] }
+        drink: { rows: [34, 38], hold: 34, seatLine: { south-east: 66, south-west: 65 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose + tankard, scripts/sprites/generate-pose-strip.mjs --groups=drink)", jobs: { se: "b47b0de4-d887-45ba-944e-863cfc460ceb", sw: "6eb94de8-6189-4f90-9a5a-f3f8f64adb82" } }, directions: [se, sw] }
+        think: { rows: [39, 41], hold: 41, directions: [se, e, w, sw] }
       grip: { hand: both, sheathe: true }
       provenance:
-        characterId: "1eca312a-ac0a-4566-8e3d-ff261b7ffaf2"
-        animationGroupId: "b9cbb888-4328-4896-ae30-feac856e9194"
-        generationSize: 70
-        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "b9db42c7-4f0a-49d3-888f-8656c3c0a529", w: "74e04a42-1ffb-4694-92d9-8eef1fdf2747", se: "e943c8d4-8e45-4a7c-8de3-b4bf2d3d577b", sw: "1503a494-1c29-4217-b08b-c954322f9f01" }, "gaze+celebrate+think": { e: "87f9e7b6-c642-4110-9063-33c5161871e5", w: "d12cf356-cc85-4554-9887-aaf8976df9df", se: "9eb2f40f-f02a-4a49-9f5f-d3817f2abaf8", sw: "06fc8d6b-768c-4ad6-8a71-d5f0677fc50f" }, drink: { se: "6913af2a-0fbe-49f4-b20d-9e34e9f874b7", sw: "dd64ee66-7192-4413-aee2-a52ebfa1bb54" } } }
+        characterId: "9b030c93-4c8b-4efa-8173-217494191764"
+        animationGroupId: "e9fd3085-7233-4a8e-a036-6f8ffbe9bc82"
+        generationSize: 80
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "16f3e567-4cac-4e42-97ed-677a022a31c3", w: "1b434c40-f0b2-4b52-b305-1882edf11063", se: "eafe3f3f-de96-4606-8329-4c5b2f460882", sw: "a587613a-3758-4f91-a56d-7851839004c7" }, "gaze+celebrate+think": { e: "a8c9a97e-aa4d-47e2-a95d-66cabe656b9e", w: "28633f5c-a07d-4bcc-afc7-53cbfb835260", se: "07c708ee-7a78-4c9a-8c9d-5dfed96c795b", sw: "f5e9e25b-a5fd-46f8-9e97-453d6a54b33c" }, drink: { se: "b47b0de4-d887-45ba-944e-863cfc460ceb", sw: "6eb94de8-6189-4f90-9a5a-f3f8f64adb82" } } }
+        templateStrips: { generationMode: skeleton-v3, groups: { run: { s: "9e6a97ec-cf9c-456e-b07d-b2437a4afc17", se: "86e9fd30-ceb1-4f36-a231-e7adb4790ef4", e: "412a17bd-e0bb-4aa7-81eb-090e10d62306", ne: "8143bba1-4162-4156-92d7-c4a4918a1d9e", n: "1e4f53b0-46d3-4cf1-886c-532867455918", nw: "6fa89fdf-ef36-42d2-bf17-330715ad6ea6", w: "ea52e5b5-7a40-4dd2-97fd-539bd67f8117", sw: "7097fe87-6d12-4ad0-9f6c-5720d19956a0" } } }
     provenance:
-      characterId: 1eca312a-ac0a-4566-8e3d-ff261b7ffaf2
-      generationSize: 70
+      characterId: 9b030c93-4c8b-4efa-8173-217494191764
+      generationSize: 80
       generationMode: pro
     tool: create_character
-    prompt: "Gemini Neon young journeyman prismatic alchemist, nimble lean athletic younger brother build noticeably lighter than a grandmaster, cropped electric cobalt-blue leather alchemist jacket with rolled-up sleeves and bright magenta-pink trim piping, big round brass alchemist goggles with cyan lenses resting on spiky dark-cobalt hair, diagonal brown leather bandolier across the chest packed with glowing neon-cyan and bright magenta glass potion vials, fingerless dark leather alchemist gloves, slim dark navy trousers and agile strapped boots, confident energetic ready stance with empty hands, youthful expressive face, identical outfit and colors from every viewing angle, isolated character on transparent background, no handheld weapon, no sword, no staff, no cape, no hood, no floating objects, 8-direction character sprite"
+    prompt: "Gemini Neon apex prismatic arch-alchemist sovereign, tall sleek regal heroic build, flowing knee-length charcoal-obsidian alchemist grandcoat with ornate polished silver filigree embroidery and a sweeping asymmetrical dark charcoal-slate half-cape lined in pale silver, high sculpted upturned collar, twin curved silver-framed luminous electric-cyan and starlight-white glass discharge arcs mounted upright behind the shoulders, radiant faceted electric-cyan and starlight-white crystal prism core clasped on the chest in a silver harness, neat swept silver-white hair crowned with a sleek silver diadem set with a bright electric-cyan gem, dark fitted gauntlets with glowing cyan glass-rune cuffs, silver-buckled belt with small glowing cyan glass vials, tall charcoal and silver boots, commanding poised empty-handed stance, identical outfit and colors from every viewing angle, isolated character on transparent background, no pink, no magenta, no handheld weapon, no sword, no staff, no shield, no wings, no horns, no floating objects, 8-direction character sprite"
     n_directions: 8
     size: 92
-    generationSize: 70
+    generationSize: 80
     generationMode: pro
     animations: [walk, breathing-idle]
-    portraitCrop: { x: 29, y: 16, w: 34, h: 32 }
+    portraitCrop: { x: 29, y: 15, w: 34, h: 32 }
     palette_layer: gemini
-    paletteSource: { robe: ['#1a3799', '#2345b1'], pants: '#232f4a' }
+    # Sampled from sheet.png: charcoal-obsidian coat & cape take the crowd hue;
+    # polished silver filigree and luminous cyan prism arcs stay authored.
+    paletteSource: { robe: ['#3e4652', '#262b38'], pants: '#1a1d2a' }
     headCovered: true
     anchor: [46, 80]
     materialClass: glass-rune
@@ -1336,7 +1340,73 @@ characters:
     emissive:
       strength: 0
       sources:
-        - { id: emissive.agent.gemini.neon.prismatic-vials, kind: rune, geometry: sidecar, strength: 0.14 }
+        - { id: emissive.agent.gemini.neon.prism-arcs, kind: rune, geometry: sidecar, strength: 0.16 }
+    occluder: { mode: alpha-silhouette, strength: 1 }
+
+  # Body variant of agent.gemini.neon (models.json `spriteVariants`): the hooded
+  # silver-masked Lumen-Inquisitor counterpart to the open-faced Prism-Arc Sovereign.
+  - id: agent.gemini.neon.b
+    animationGroups:
+      walk:
+        rows:
+          - 0
+          - 5
+      breathingIdle:
+        rows:
+          - 6
+          - 9
+    actionStrip:
+      path: characters/agent.gemini.neon.b/actions.png
+      cell: 92
+      groups:
+        read: { rows: [0, 3], hold: 3, directions: [s, se, e, nw, w, sw] }
+        wait: { rows: [4, 6], hold: 6, directions: [se, e, w, sw] }
+        sit: { rows: [7, 8], hold: 8, seatLine: { south-east: 63, south-west: 64 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "a94d69e9-b621-4019-8c24-f406e32718af", sw: "062a2235-3fdc-4970-a376-17d577bdb6a9" } }, directions: [se, sw] }
+        strike: { rows: [9, 14], hold: 14, contactFrame: 3, directions: [se, e, w, sw], contact: { e: [57, 48], w: [33, 45], se: [50, 51], sw: [30, 50] } }
+        tinker: { rows: [15, 20], hold: 15, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [59, 46], w: [35, 47], se: [49, 52], sw: [44, 51] } }
+        gaze: { rows: [21, 24], hold: 22, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [48, 33], w: [41, 31], se: [43, 34], sw: [37, 31] } }
+        run: { rows: [25, 30], hold: 25 }
+        celebrate: { rows: [31, 33], hold: 32, directions: [se, e, w, sw] }
+        drink: { rows: [34, 38], hold: 34, seatLine: { south-east: 63, south-west: 64 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose + tankard, scripts/sprites/generate-pose-strip.mjs --groups=drink)", jobs: { se: "a7ef21dd-e3e6-409e-b056-e6f31a6b5f59", sw: "f3ac2b4f-d491-4ec3-8373-8784cbabc2e6" } }, directions: [se, sw] }
+        think: { rows: [39, 41], hold: 41, directions: [se, e, w, sw] }
+      grip: { hand: both, sheathe: true }
+      provenance:
+        characterId: "5e8db763-400a-40af-85e6-7c2de8ed7eb5"
+        generationSize: 128
+        poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "944b2a0e-2c45-4848-a0b4-5ed1e0c6e3df", w: "444305df-4ae8-4096-a862-6d31db01b295", se: "e85f531a-0858-4406-a0c3-b73c7d184a4c", sw: "e861dba8-8478-4b06-b974-3f89165cf5b5" }, "gaze+celebrate+think": { e: "07c81e37-bf42-4ac0-aa44-e21d860da370", w: "a5236c13-ca0e-4c9d-937a-e1fa37f116a6", se: "fcb1471e-03e3-476a-9bd7-58d44b5c7563", sw: "6516ce97-ef69-43bb-ac7b-16132ef0670e" }, drink: { se: "a7ef21dd-e3e6-409e-b056-e6f31a6b5f59", sw: "f3ac2b4f-d491-4ec3-8373-8784cbabc2e6" } } }
+        templateStrips: { generationMode: skeleton-v3, groups: { run: { s: "1f9b1581-b54f-4209-94b0-6159c08c6c78", se: "b728f088-c806-40d5-ab30-48e45d444626", e: "44ecc838-e05d-4ea9-a401-ddd2312a996e", ne: "6b23d3ff-d35b-4f0e-9e7e-afd61e53a573", n: "d974ad85-a82e-425c-853c-e9f4356fdedb", nw: "18a2b977-c012-4973-a4db-d4bb40d7f1d3", w: "154903c0-7a76-4b41-9d7a-558cc8568694", sw: "28dc2014-53b5-4698-8653-eede1e5c2369" } } }
+        animationStrips: { groups: { read: { s: "bd92be6f-47d0-405a-bb46-85109ec5ebc1", se: "bd92be6f-47d0-405a-bb46-85109ec5ebc1", e: "bd92be6f-47d0-405a-bb46-85109ec5ebc1", nw: "bd92be6f-47d0-405a-bb46-85109ec5ebc1", w: "bd92be6f-47d0-405a-bb46-85109ec5ebc1", sw: "bd92be6f-47d0-405a-bb46-85109ec5ebc1" } } }
+    # NW/W walk repaired with skeleton-v3 (the template walk dropped the cloak).
+    provenance:
+      characterId: 5e8db763-400a-40af-85e6-7c2de8ed7eb5
+      animationGroupId: 039084c4-f635-4272-9421-fae3b57c595e
+      repairedDirections: [north-west, west]
+      animationSourceSize: 80
+      generationSize: 80
+      generationMode: pro
+    tool: create_character
+    prompt: "Gemini Neon apex hooded prismatic arch-alchemist inquisitor, tall commanding sleek heroic build, deep pointed charcoal-obsidian alchemist hood trimmed with ornate polished silver filigree shadowing the face with a sleek silver half-mask and intensely glowing electric-cyan starlight eyes, long flowing split-tail charcoal-obsidian coat and sweeping dark hooded cloak edged in crisp silver arcane embroidery, sculpted obsidian and silver shoulder mantle fitted with smooth glowing electric-cyan and starlight-white alchemical glass discharge conduits curving along the shoulders, blazing starlight-white and electric-cyan crystal lantern core mounted on the chest in silver filigree, dark fitted gauntlets with glowing cyan light-veins, leather belt hung with glowing cyan reagent phials, tall silver-trimmed dark boots, calm imposing empty-handed stance, identical outfit and colors from every viewing angle, isolated character on transparent background, no pink, no magenta, no handheld weapon, no sword, no staff, no shield, no wings, no horns, no floating objects, 8-direction character sprite"
+    n_directions: 8
+    size: 92
+    generationSize: 80
+    generationMode: pro
+    animations: [walk, breathing-idle]
+    portraitCrop: { x: 29, y: 15, w: 34, h: 32 }
+    palette_layer: gemini
+    # Sampled from sheet.png: charcoal-obsidian hood & cloak take the crowd hue;
+    # polished silver mask/filigree and luminous cyan conduits stay authored.
+    paletteSource: { robe: ['#323540', '#1e1e29'], pants: '#14151d' }
+    headCovered: true
+    anchor: [46, 80]
+    materialClass: glass-rune
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
+    elevation: { base: 0, top: 80, unit: sprite-px }
+    emissive:
+      strength: 0
+      sources:
+        - { id: emissive.agent.gemini.neon.b.lumen-core, kind: rune, geometry: sidecar, strength: 0.16 }
     occluder: { mode: alpha-silhouette, strength: 1 }
 
   - id: agent.gemini.hydrogen

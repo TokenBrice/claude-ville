@@ -152,10 +152,10 @@ test('C-04: AgentGroundMarks contact shadow core alpha strengthens boot groundin
     }
 });
 
-test('C-04: all 39 roster characters declare M/E/O sidecars, Opus emissive stays untouched, and gpt6astra.b trim avoids face skin', () => {
+test('C-04: all 40 roster characters declare M/E/O sidecars, Opus emissive stays untouched, and gpt6astra.b trim avoids face skin', () => {
     const manifest = loadSpriteManifest();
     const chars = collectSpriteEntries(manifest).filter((e) => e.id?.startsWith('agent.'));
-    assert.equal(chars.length, 39, '39 roster characters');
+    assert.equal(chars.length, 40, '40 roster characters');
     for (const entry of chars) {
         assert.equal(entry.materialSidecar, true, `${entry.id} declares materialSidecar: true`);
         assert.equal(entry.emissiveSidecar, true, `${entry.id} declares emissiveSidecar: true`);
