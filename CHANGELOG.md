@@ -2,6 +2,30 @@
 
 ---
 
+## v0.65.2 — *The Winter Tide* · Nov 22, 2026
+
+A polish pass on how the World looks: deeper nights, snow on the landmarks in winter, calmer water and ground, and WebGPU and WebGL2 drawing the same frame at every size. Every change refines a layer the village already had, and most of them show at night, in rain or in winter.
+
+- **Water and coast.**
+  - Reflections under buildings, bridges and piers are calm water-tinted ribbons instead of a muddy smear. The Harbor's 14 pier pilings stand in the water on submerged footings with a foam collar.
+  - The north back shores curve into sand-and-shingle coves round a rounded cape, and in winter snow they take snow like the island's beaches.
+  - Open-sea swells form curved sets that calm offshore, so ultrawide screens no longer show long straight bands. Dawn mist hugs the coves and thins out to sea.
+- **Night.**
+  - The village sits about 12 % darker at night (island brightness at 23:00 goes from 80 to 70), so lamp pools, braziers and windows stand out. A full moon still reads brighter than a new one.
+  - A villager beside a fire keeps its dark outline and costume colours instead of washing out orange, and a backlit figure takes a 1 px rim.
+  - The Archive's stained glass glows brighter and the Archive gains a dark outline. An empty Tavern keeps a banked ember at night. Patrons standing at the Tavern now light it and count on its plaque as seated ones do; a villager still walking there does neither.
+  - The Pharos lantern is dark by day, with no fire reflected in the bay at noon.
+- **Ground.** Meadows read as calm clusters instead of checkerboard static. Plazas are warm limestone a step above the road, with recessed kerbs, contact shade at the landmark plinths and more varied paving: a street no longer keeps one tone. The World Ash and tall trees sit in root shade, and lying snow has four tones.
+- **Landmarks.**
+  - In winter the Windmill cone (still one sail fan), the Hourglass Belfry and the Rustic Trestle bridge wear snow, and Command's gate straps, crest and braziers stay bare.
+  - The Forge and the two landmark bridges carry a 1 px dark outline, and Harbor, Watchtower, Forge and Mine timber reads as warm oak.
+  - Falling snow is anchored to the world, fills an ultrawide screen to its bottom edge and keeps its density at every zoom.
+- **Villagers.** Zoomed-out crowds keep their robe colours and crowns instead of collapsing into black outlines, and boots cast a firmer contact shadow. Every character now has its material, emissive and occluder channels, and GPT-6 Astra's second body takes its team trim on the armour rim rather than the face.
+- **Rain and smoke.** Wet streets lose the sliding diagonal cyan stripes, which broke the motion budget; wet paving keeps its sky sheen, dry aprons and lamp reflections. Chimney smoke puffs are larger, step on the motion clock and are already rising after a Day Retold scrub.
+- **Renderer parity.** Cloud shadows and grass gusts are sampled with exact integer maths and the whitecap streaks hold still on a replayed frame, so `smoke:webgpu-parity` passes 56/56 at 1920×1080, 5120×1440 and 1512×982@2, where `main` failed 4 cases. Frame time is unchanged.
+
+---
+
 ## v0.65.1 — *The Night Watch* · Nov 21, 2026
 
 An Antigravity villager no longer walks out while its agent works in silence. agy writes a transcript step only when the step finishes. A long think, a long command or a `swarm_wait` therefore left the village after two minutes, even though the agent was still working.
