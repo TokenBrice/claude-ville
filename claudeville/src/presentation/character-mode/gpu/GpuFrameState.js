@@ -168,9 +168,10 @@ export function resolveOccluderChannel(feed = {}) {
 // takes at most course 1. The density (fog weather or the daily dawn mist)
 // comes from WeatherRenderer.mistDensity.
 export const MIST = Object.freeze({
-    // Incommensurate horizontal/vertical periods (lcm 10752 x 960 world px)
-    // keep the ~11:1 / 8:1 along-wind wisp elongation while preventing visible
-    // 2048 px tile repeats across 5120x1440 ultrawide views (4880 px wide).
+    // C-03 — periods of 3584 x 320 and 1536 x 192 world px (the two layers
+    // repeat together every 10752 x 960) stretch the wisps about 11:1 and 8:1
+    // along the wind, on land and sea alike, and keep a 5120x1440 view (4880
+    // px wide) clear of a visible horizontal repeat.
     scaleA: Object.freeze([3584, 320]),
     scaleB: Object.freeze([1536, 192]),
     offsetB: Object.freeze([0.31, 0.17]),

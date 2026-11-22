@@ -28,7 +28,7 @@ import { captureCoastArtifact, restoreCoastArtifact, validCoastArtifact, coastAr
 // cv0.65-terrain-12: C-01 CoastBake.withLampLayers skips `gate: 'lamps'`
 // overlays (Pharos beacon) in daytime static reflection sheets while keeping
 // night MIRROR_LAMP_GROUP accents.
-export const TERRAIN_BAKE_ALGORITHM_VERSION = 'cv0.65-terrain-12';
+export const TERRAIN_BAKE_ALGORITHM_VERSION = 'cv0.65-terrain-13';
 export const TERRAIN_ARTIFACT_DB = 'claudeville-terrain-artifacts';
 export const TERRAIN_ARTIFACT_MAX_BYTES = 96 * 1024 * 1024;
 // Artifact schema. 2: the ground field may carry the RGBA8 weather field

@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-11-21-c01-night-firelight"
+  assetVersion: "2026-11-22-v0652-review-fixes"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -2474,7 +2474,9 @@ buildings:
       # to its flame and bowl (cols 23-40, rows 5-29; the pedestal dropped),
       # seated on the lantern floor in the central pane, under the cone. Static art (the old
       # smooth-sine alpha pulse is gone, V4); a fixture, so on the GPU it
-      # emits through no occupancy gate (M22).
+      # emits through no occupancy gate (M22). `gate: lamps` (C-01): drawn only
+      # while the Lamplighter's Round has lit the Pharos, so by day the
+      # lantern glass is dark and the bay holds no fire reflection.
       beacon:
         tool: map_object
         prompt: "isolated warm lantern flame for a lighthouse crown, orange amber pixel fire with a bright golden core and soft warm halo, thin tile, transparent background only, no ground tile, no square base, no platform, no cube block, no modern beam, empty transparent corners"
@@ -2493,7 +2495,7 @@ buildings:
       # (R = height up the flame). The flame's own colours in 5 luma courses
       # step up it at 4 Hz, only while the village lamps are lit
       # (lampsLitAt); an ambient fixture that never reads agent state (M22).
-      # By day and under reduced motion the lamp is the authored art.
+      # Under reduced motion the lit lamp is the authored art; by day it is dark.
       lens:
         tool: hand-authored
         prompt: "cycle mask: the flame texels of beacon.png ordered by height; authored, not generated"

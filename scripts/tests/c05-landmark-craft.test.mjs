@@ -112,13 +112,19 @@ test('C-05 snow: world-anchored flakes hold their world coordinates across zoom 
     wr._drawSnow(ctx2, { width: 1680, height: 1032 }, weather, 2500, 4242, true);
     const worldPts2 = (ctx2.rectsByStyle.get(bodyKey) || []).map(r => cam2.screenToWorld(r.x, r.y));
 
-    assert.ok(worldPts2.length > 20, `expected >20 flakes at z2, got ${worldPts2.length}`);
-    let matched = 0;
-    for (const p2 of worldPts2) {
-        if (worldPts1.some(p1 => Math.abs(p1.x - p2.x) <= 2 && Math.abs(p1.y - p2.y) <= 2)) matched++;
+    // A zoom-in keeps the screen density (it adds flakes, never moves one):
+    // every z1 flake still inside the z2 view is drawn at the same world spot.
+    assert.ok(worldPts2.length >= worldPts1.length * 0.8,
+        `screen density must hold across zoom: z1 ${worldPts1.length}, z2 ${worldPts2.length}`);
+    const z2View = { left: cam2.screenToWorld(16, 16), right: cam2.screenToWorld(1680 - 16, 1032 - 16) };
+    const inside = worldPts1.filter(p => p.x >= z2View.left.x && p.x <= z2View.right.x && p.y >= z2View.left.y && p.y <= z2View.right.y);
+    assert.ok(inside.length > 10, `expected z1 flakes inside the z2 view, got ${inside.length}`);
+    let kept = 0;
+    for (const p1 of inside) {
+        if (worldPts2.some(p2 => Math.abs(p1.x - p2.x) <= 2 && Math.abs(p1.y - p2.y) <= 2)) kept++;
     }
-    assert.ok(matched >= Math.floor(worldPts2.length * 0.7),
-        `expected >=70% of z2 flakes to match exact z1 world positions, got ${matched}/${worldPts2.length}`);
+    assert.ok(kept >= Math.floor(inside.length * 0.9),
+        `z1 flakes inside the z2 view must hold their world spot, got ${kept}/${inside.length}`);
 });
 
 test('C-05 landmarks: Belfry snow invalidates in-place without GPU texture-key churn; Windmill & Rustic Bridge in WINTER_PROPS', t => {

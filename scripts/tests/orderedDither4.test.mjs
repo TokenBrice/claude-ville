@@ -35,7 +35,7 @@ test('orderedDither4 produces every bucket in its four-cell pattern', () => {
     );
 });
 
-test('orderedDither4 matches the GPU wetness shader formula', () => {
+test('orderedDither4 matches its reference formula (the retired GPU wet-glint dither)', () => {
     const coordinates = [
         [0, 0],
         [1, 0],

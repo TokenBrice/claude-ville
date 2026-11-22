@@ -156,9 +156,10 @@ test('C-06 smoke: real MotionClock cold boot (t=0, Frame 1 null atmo), single Ma
     }
 });
 
-test('C-06 wet stripes & gw1: continuous cyan glint stripes retired in runtime GLSL & WGSL shaders; gw1=1 and sheen=0.22', () => {
+test('C-06 wet stripes & gw1: continuous cyan glint stripes retired in runtime GLSL & WGSL shaders; gw1=1 keeps main\'s applied sheen', () => {
     assert.equal(DEFAULT_LOOK_STRENGTHS.gw1, 1, 'gw1 ships at 1');
-    assert.equal(GROUND_WET.sheen, 0.22, 'GROUND_WET.sheen softened to 0.22');
+    // The applied sheen is GROUND_WET.sheen x gw1: main drew 0.35 x 0.5.
+    assert.equal(GROUND_WET.sheen * DEFAULT_LOOK_STRENGTHS.gw1, 0.175, 'gw1 = 1 keeps main\'s applied wet sheen (0.175)');
 
     const wgslScene = assembleScene();
     for (const [label, src] of [['GLSL', SCENE_FRAGMENT], ['WGSL', wgslScene]]) {

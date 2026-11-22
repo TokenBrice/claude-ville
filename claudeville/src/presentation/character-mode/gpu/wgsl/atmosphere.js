@@ -113,7 +113,7 @@ fn cloudSeamField(cell: vec2f, n: f32, order: f32, seamAt: f32) -> f32 {
         let n0 = i32(floor(n * 16711680.0 + 0.5));
         let slope = max(abs(cloudNoiseIntAt(ic + vec2i(1, 0)) - n0), abs(cloudNoiseIntAt(ic + vec2i(0, 1)) - n0));
         let ord16 = i32(floor(order * 16.0 + 0.5)) - 8;
-        return f32(n0 + (ord16 * slope) / 4) / 16711680.0;
+        return f32(n0 + (ord16 * slope) / 8) / 16711680.0;
     }
     let slope = max(abs(cloudNoiseAt(cell + vec2f(1.0, 0.0)) - n), abs(cloudNoiseAt(cell + vec2f(0.0, 1.0)) - n));
     return n + (order - 0.5) * 2.0 * slope;

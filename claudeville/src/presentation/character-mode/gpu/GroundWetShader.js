@@ -39,7 +39,7 @@ import { GROUND_WET_STEPS } from '../GroundWeatherField.js';
 export const GROUND_WET = Object.freeze({
     seam: 0.06,
     shelter: 0.5,
-    sheen: 0.22,
+    sheen: 0.175,
     // The sky a wet top takes is capped at this × the wet top's own graded
     // luma, so a sheen never lifts wet paving back to its dry value.
     sheenCap: 1.15,

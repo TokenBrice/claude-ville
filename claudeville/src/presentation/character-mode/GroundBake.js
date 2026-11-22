@@ -2042,8 +2042,12 @@ export function installGroundBake(renderer) {
         const assets = renderer.assets;
         let loaded = 0;
         for (const id of SHEET_IDS) if (assets?.get?.(id, { request: false })) loaded++;
-        sheetsReady = loaded === SHEET_IDS.length;
-        return sheetsReady ? 'sheets' : `sheets:${loaded}`;
+        // The World Ash's root AO reads its sprite (getWorldAshRootField), so
+        // the bake waits on it like a sheet: a bake made before it loads keys
+        // apart and rebakes once it arrives, never keeping the fallback blob.
+        const ashLoaded = Boolean(assets?.get?.(TREE_SPRITES['ash.world'].id, { request: false }));
+        sheetsReady = loaded === SHEET_IDS.length && ashLoaded;
+        return sheetsReady ? 'sheets' : `sheets:${loaded}${ashLoaded ? '+ash' : ''}`;
     };
     // The base bake's key: what `bakeGround` reads.
     const baseKeyOf = (withWeather) => `${getCoastField(renderer).key}|${sheetsKey()}|${renderer._terrainSeason || 'summer'}|${renderer._terrainPhenology?.ground ?? ''}|${renderer._terrainSceneryRevision || 0}${withWeather ? '|weather' : ''}`;

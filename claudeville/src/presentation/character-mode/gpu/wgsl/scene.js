@@ -290,10 +290,6 @@ fn footprintBlocked(fromPoint: vec2f, toPoint: vec2f, fromH: f32, toH: f32, ownL
   return 0.0;
 }
 
-fn orderedDither4(px: vec2f) -> f32 {
-  return glslMod(floor(px.x) + 2.0 * floor(px.y), 4.0) / 3.0;
-}
-
 // GW-1 / GW-2 — the ground weather field (GroundWetShader.js).
 ${GROUND_WET_WGSL}
 
@@ -837,7 +833,6 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
   var rimReach = 0.0;
   var rimLight = vec3f(0.0);
   var rimSteps = 0.0;
-  var rimInner = false;
   // 2.3 — a roof takes no local light; 2.4 — the clustered or flat walk.
   let clusteredLights = frame.lightTileGrid.z != 0;
   var lightTile = vec2i(0);
@@ -986,7 +981,6 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
             if (outer && recvH <= lightH + 28.0 + 36.0 * frame.firelight.x && falloff >= rimReach) {
               response = 0.95;
               backlitRim = true;
-              rimInner = false;
             }
           }
         } else {
@@ -1239,7 +1233,7 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
   if (any(groundMirror != vec3f(0.0))) { color = applyGroundMirror(color, groundMirror); }
   // 2.1 — a lit 1-px outer contour rim texel (opaque texels only) takes the lamp's own hue at a stepped value.
   if (rimReach > 0.0 && rimReach >= backReach - 0.001 && rimSteps > 0.5) {
-    let rimCourse = select(rimSteps, rimSteps - 1.0, rimInner);
+    let rimCourse = rimSteps;
     // NL-2 — the rim lands up to one course brighter with the strength.
     let rimY = 0.26 + 0.10 * frame.firelight.x + (0.1 + 0.02 * frame.firelight.x) * rimCourse;
     let rimHue = rimLight / max(dot(rimLight, GRADE_LUMA), 0.01);

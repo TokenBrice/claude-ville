@@ -750,15 +750,10 @@ export class WeatherRenderer {
         const padW = worldLocked ? Math.ceil(24 / Math.max(0.25, zoom)) : 24;
         const windX = baseWindX(weather);
         const TILE = 512;
-        const fallMs = particleEnabled ? Math.floor(phaseMs / 33) * 33 : 0;
+        // The fall is continuous (main's rule; flakes snap to the art grid),
+        // the sway steps at 8 Hz.
+        const fallMs = particleEnabled ? phaseMs : 0;
         const swayMs = particleEnabled ? Math.floor(phaseMs / 125) * 125 : 0;
-        const perTile = Math.min(
-            96,
-            Math.max(
-                10,
-                Math.floor(((TILE * TILE) / (SNOW_AREA_DENSITY * 1.4)) * (0.35 + intensity * 0.85) * density * animatedScale),
-            ),
-        );
 
         const cap = SNOW_MAX_FLAKES;
         if (!this._snowFlakeX || this._snowFlakeX.length < cap) {
@@ -782,7 +777,10 @@ export class WeatherRenderer {
             const gcd = (a, b) => (b === 0 ? a : gcd(b, a % b));
             let stride = Math.max(1, Math.round(tileCount * 0.6180339887));
             while (tileCount > 1 && gcd(stride, tileCount) !== 1) stride = (stride % (tileCount - 1)) + 1;
-            const tileLimit = Math.min(96, Math.max(perTile, Math.ceil(minFlakes / tileCount) + 4));
+            // The screen-area target spread over the visible tiles, with room
+            // for the flakes each tile places off screen, so the density on
+            // screen holds at every zoom (a zoom-in adds flakes, never moves one).
+            const tileLimit = Math.ceil(targetCount / tileCount) * 4 + 4;
 
             for (let i = 0; i < tileLimit && drawn < targetCount; i++) {
                 for (let t = 0; t < tileCount && drawn < targetCount; t++) {

@@ -122,7 +122,9 @@ test('LM-04: pre-seed populates 3 staggered puffs on real MotionClock cold boot 
     assert.equal(forgePuffs.length, 4, '1 mouth + 3 staggered puffs on real 60 Hz cold busy Forge');
     assert.equal(towerPuffs.length, 4, '1 mouth + 3 staggered puffs on real 60 Hz cold night Pharos');
     const forgeHeights = forgePuffs.map(p => 200 - p.y).sort((a, b) => a - b);
-    assert.ok(forgeHeights[0] === 0 && forgeHeights[3] >= 25, `staggered column heights: ${forgeHeights.join(', ')}`);
+    // The top pre-seed sits at 0.48 of a dry puff's life: at least 0.48 x 104
+    // frames x 0.46 px ≈ 23 px up whatever the random life and speed.
+    assert.ok(forgeHeights[0] === 0 && forgeHeights[3] >= 22, `staggered column heights: ${forgeHeights.join(', ')}`);
 
     // 2. Booting empty at noon spawns 0 smoke; mid-session activation emits ONLY 1 mouth puff (no 4-puff pop).
     const liveClock = createMotionClock();

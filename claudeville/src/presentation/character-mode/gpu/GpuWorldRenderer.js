@@ -676,7 +676,7 @@ float cloudSeamField(vec2 cell, float n, float order, float seamAt) {
         int n0 = int(floor(n * 16711680.0 + 0.5));
         int slope = max(abs(cloudNoiseIntAt(ic + ivec2(1, 0)) - n0), abs(cloudNoiseIntAt(ic + ivec2(0, 1)) - n0));
         int ord16 = int(floor(order * 16.0 + 0.5)) - 8;
-        return float(n0 + (ord16 * slope) / 4) / 16711680.0;
+        return float(n0 + (ord16 * slope) / 8) / 16711680.0;
     }
     float slope = max(abs(cloudNoiseAt(cell + vec2(1.0, 0.0)) - n), abs(cloudNoiseAt(cell + vec2(0.0, 1.0)) - n));
     return n + (order - 0.5) * 2.0 * slope;
@@ -1020,7 +1020,8 @@ float seaKeyReach(vec2 p) {
 // A swell's form at \`rowsIn\` rows below its crest (\`crestRows\` of crest,
 // \`period\` rows to the next): +1 inside its trough (the \`trough\` rows under
 // the crest), -1 on its lit slope (the \`lit\` rows above the next crest),
-// each solid for its first half and Bayer-faded over the rest; else 0.
+// each eased in over a Bayer turnaround feather (SWELL_TURN_ROWS rows, at
+// most 45 % of the band), solid to 55 % and Bayer-faded over the rest; else 0.
 float swellForm(float rowsIn, float period, float crestRows, float lit, float trough, float order) {
     float tin = rowsIn - crestRows;
     float turnT = max(min(${SWELL_TURN_ROWS.toFixed(1)}, trough * 0.45), 1e-4);
@@ -1590,7 +1591,6 @@ uniform bool u_terrainBatch;
 // 3.2 — accumulated surface wetness from real precipitation history, and how
 // many admitted sources may carry a wet reflection at this ladder level.
 uniform float u_wetness;
-uniform int u_wetReflectionCount;
 // 3.5 — authored palette ramp for the Command pilot. 11 px wide (material
 // class id) x 3 px tall (course: barely lit / mid / light). RGB is a tint
 // multiplier encoded as texel * 2 (0.5 = x1.0), A an authored additive lift
@@ -1600,7 +1600,7 @@ uniform bool u_hasPaletteLut;
 // NL-2 / NL-1 (Firelight.resolveFirelight): x the firelight-on-people
 // strength (look nl2), y 1 while the tuned ramp landing is on (look nl1 > 0).
 uniform vec2 u_firelight;
-// 3.2 — the first u_wetReflectionCount non-attention lights in admission
+// 3.2 — the first wetReflectionCount non-attention lights in admission
 // order carry LIGHT_RECORD_FLAGS.wetReflection (light record row 3 z).
 // 5.2 — puddles on the terrain record only (u_puddleGround): GroundBake's R8
 // site mask (unit 11, one byte per 2x1-world-px texel over u_puddleRect =
@@ -1664,10 +1664,6 @@ float footprintBlocked(vec2 from, vec2 to, float fromH, float toH, uint ownLandm
 ${glslMaterialWeatherFunctions()}
 ${GRADE_GLSL}
 ${ATMOSPHERE_COURSES_GLSL}
-
-float orderedDither4(vec2 px) {
-    return mod(floor(px.x) + 2.0 * floor(px.y), 4.0) / 3.0;
-}
 
 float bayer2(vec2 a) {
     a = floor(a);
@@ -2704,14 +2700,13 @@ void main() {
         && max(albedo.r, max(albedo.g, albedo.b)) < 0.16;
     float nightCarry = clamp((u_poolGain - 0.15) / 1.05, 0.0, 1.0);
     // 2.1 — a backlit figure wears one rim: the strongest lamp behind it
-    // (backReach) lights the silhouette edge on its side, two texels deep in
-    // two steps (rimInner: the second texel, one course down). Several lamps
+    // (backReach) lights the silhouette edge on its side: one opaque contour
+    // texel (C-01; the half-alpha baked rim never takes it). Several lamps
     // behind a figure never outline both of its edges.
     float backReach = 0.0;
     float rimReach = 0.0;
     vec3 rimLight = vec3(0.0);
     float rimSteps = 0.0;
-    bool rimInner = false;
     // 2.3 — a roof (face 3) takes no local light at all: every lamp in the
     // village stands below or beside the roofs, so any course there would
     // be the old disc on the slates. A 3.11 reflection twin keeps its own
@@ -2933,7 +2928,6 @@ void main() {
                         if (outer && recvH <= lightH + 28.0 + 36.0 * u_firelight.x && falloff >= rimReach) {
                             response = 0.95;
                             backlitRim = true;
-                            rimInner = false;
                         }
                     }
                 } else {
@@ -3241,7 +3235,7 @@ void main() {
     // behind the figure draws it (a lamp in front or beside it lights the
     // figure's lamp side through the Lambert term instead).
     if (rimReach > 0.0 && rimReach >= backReach - 0.001 && rimSteps > 0.5) {
-        float rimCourse = rimInner ? rimSteps - 1.0 : rimSteps;
+        float rimCourse = rimSteps;
         // NL-2 — the rim lands up to one course brighter with the strength.
         float rimY = 0.26 + 0.10 * u_firelight.x + (0.1 + 0.02 * u_firelight.x) * rimCourse;
         vec3 rimHue = rimLight / max(dot(rimLight, GRADE_LUMA), 0.01);
@@ -3491,8 +3485,11 @@ vec3 shadeOpenSea(vec2 cell) {
         // marked swell crests rise one course.
         if (u_mist.x > 0.0) {
             float fogHold = clamp(u_weather.y / 0.55, 0.0, 1.0);
-            float seaMistNear = mix(mix(0.18, 0.82, fogHold), 1.0, clamp(1.0 - max(0.0, excess - 1.5) / 7.5, 0.0, 1.0))
-                * mix(clamp((t - hazeRows) / 140.0, 0.28, 1.0), 1.0, fogHold);
+            // Near the island (excess <= 1.5) both factors are 1, the coast
+            // water's mistNear, so the handover at the map edge shows no seam.
+            float nearIsland = clamp(1.0 - max(0.0, excess - 1.5) / 7.5, 0.0, 1.0);
+            float seaMistNear = mix(mix(0.18, 0.82, fogHold), 1.0, nearIsland)
+                * mix(clamp((t - hazeRows) / 140.0, 0.28, 1.0), 1.0, max(fogHold, nearIsland));
             float crestH = marked ? clamp((excess - 0.5) / 2.0, 0.0, 1.0) * ${MIST.coursePx.toFixed(1)} : 0.0;
             c = applyMist(c, mistCourse(cell + 0.5, crestH, seaMistNear, false, waterBayer4(floor(cell * 0.5))), u_fogColor, false);
         }
@@ -4308,7 +4305,7 @@ export class GpuWorldRenderer {
             'u_cycleOffset', 'u_coastField', 'u_coastRect', 'u_mirrorRect', 'u_mirrorBreak', 'u_waterFx', 'u_glint', 'u_glintStops[0]',
             'u_starlight',
             'u_terrainBatch', 'u_cueRuns',
-            'u_wetness', 'u_wetReflectionCount', 'u_beamGround', 'u_beamShape', 'u_beamCourseEnds', 'u_beamCourseShares',
+            'u_wetness', 'u_beamGround', 'u_beamShape', 'u_beamCourseEnds', 'u_beamCourseShares',
             'u_puddleMask', 'u_puddleRect', 'u_puddles', 'u_puddleSky', 'u_puddleGround', 'u_groundWeather',
             'u_paletteLut', 'u_hasPaletteLut', 'u_firelight',
             ...ATMOSPHERE_COURSE_UNIFORM_NAMES,
@@ -5395,7 +5392,6 @@ export class GpuWorldRenderer {
         const wetness = clamp(finite(feed.wetness, 0), 0, 1);
         gl.uniform1f(uniforms.u_wetness, wetness);
         this.wetReflectionCount = lightFrame.wetReflectionCount;
-        gl.uniform1i(uniforms.u_wetReflectionCount, this.wetReflectionCount);
         this._uploadPuddles(uniforms, feed, qualityLevel);
         // 3.5 — the authored ramp table. An absent, wrong-sized, or shed table
         // leaves the pilot with today's additive response.

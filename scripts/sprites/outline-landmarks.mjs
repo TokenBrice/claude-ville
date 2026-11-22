@@ -32,7 +32,6 @@ const TARGETS = Object.freeze([
     'building.forge',
     'bridge.landmark.rustic.ns',
     'bridge.landmark.civic.ns',
-    'bridge.ew',
 ]);
 
 const CHECK_EXTRA = Object.freeze([
@@ -124,22 +123,6 @@ function outlinePng(png, id = '') {
     for (const i of ring) {
         png.data.set(OUTLINE_INK, i * 4);
         png.data[i * 4 + 3] = 255;
-    }
-    // For sprites touching the canvas border (such as 64x64 bridge.ew), ensure
-    // shaded lower/side border-touching texels carry warm outline ink in place.
-    if (id === 'bridge.ew') {
-        const { width: w, height: h } = png;
-        let borderInked = 0;
-        for (let i = 0; i < w * h; i++) {
-            if (!opaqueAt(png, i)) continue;
-            const x = i % w;
-            const y = (i - x) / w;
-            if (!(x === 0 || x === w - 1 || y === h - 1)) continue;
-            if (luma(png.data, i * 4) < OUTLINE_LUMA) continue;
-            png.data.set(OUTLINE_INK, i * 4);
-            borderInked++;
-        }
-        return ring.length + borderInked;
     }
     return ring.length;
 }

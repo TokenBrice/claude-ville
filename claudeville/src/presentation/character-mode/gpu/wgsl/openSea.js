@@ -120,8 +120,11 @@ fn shadeOpenSea(cell: vec2f) -> vec3f {
         // marked swell crests rise one course.
         if (frame.mist.x > 0.0) {
             let fogHold = clamp(frame.weather.y / 0.55, 0.0, 1.0);
-            let seaMistNear = mix(mix(0.18, 0.82, fogHold), 1.0, clamp(1.0 - max(0.0, excess - 1.5) / 7.5, 0.0, 1.0))
-                * mix(clamp((t - hazeRows) / 140.0, 0.28, 1.0), 1.0, fogHold);
+            // Near the island (excess <= 1.5) both factors are 1, the coast
+            // water's mistNear, so the handover at the map edge shows no seam.
+            let nearIsland = clamp(1.0 - max(0.0, excess - 1.5) / 7.5, 0.0, 1.0);
+            let seaMistNear = mix(mix(0.18, 0.82, fogHold), 1.0, nearIsland)
+                * mix(clamp((t - hazeRows) / 140.0, 0.28, 1.0), 1.0, max(fogHold, nearIsland));
             let crestH = select(0.0, clamp((excess - 0.5) / 2.0, 0.0, 1.0) * ${MIST.coursePx.toFixed(1)}, marked);
             c = applyMist(c, mistCourse(cell + 0.5, crestH, seaMistNear, false, waterBayer4(floor(cell * 0.5))), frame.fogColor, false);
         }

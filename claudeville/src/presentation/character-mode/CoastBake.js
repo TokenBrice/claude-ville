@@ -41,7 +41,7 @@ import { emissiveSidecarFor } from './EmitterCuts.js';
 import { cloudCourseDrift } from './Wind.js';
 import { moonRoadFor, sunRoadFor } from './gpu/GpuFrameState.js';
 import { lookStrength } from './LookStrengths.js';
-import { liquidPrecipitation } from './GroundState.js';
+import { liquidPrecipitation, snowBucketOf } from './GroundState.js';
 
 const HALF_W = TILE_WIDTH / 2;
 const HALF_H = TILE_HEIGHT / 2;
@@ -178,6 +178,9 @@ function mixRgb(a, b, t) {
 const SHALLOW = ART_RAMPS.shallowWater.map(hexRgb);
 const DEEP = ART_RAMPS.deepWater.map(hexRgb);
 const SAND = ART_RAMPS.sand.map(hexRgb);
+const SNOW = ART_RAMPS.snow.map(hexRgb);
+// GroundBake's SNOW_TONE_BY_RANK (kept here: GroundBake imports this module).
+const SPIT_SNOW_TONE_BY_RANK = Object.freeze([1, 2, 3, 3, 4]);
 const DIRT = ART_RAMPS.dirt.map(hexRgb);
 const TIMBER = ART_RAMPS.timber.map(hexRgb);
 const STONE = ART_RAMPS.stone.map(hexRgb);
@@ -1080,24 +1083,37 @@ const TEXEL_OPEN = 249;
 const TEXEL_LAND = 250;
 const TEXEL_MIRROR = 251;
 
-function outerSpitSandRgb(x, y) {
+// `snowCover` (0..1, the ground bake's snow bucket / 4): the outer spits take
+// snow by the in-map sand's rule (GroundBake: sand lies at 0.6 of the cover,
+// a texel snowy under 0.1 + 0.88 x that, each by the snow stop of its rank),
+// on their own world-locked noise, so a winter beach has no bare seam at the
+// map edge.
+function outerSpitSandRgb(x, y, snowCover = 0) {
     const col = x >> 1;
     const pocket = valueNoise(x / 84, y / 42 + 13.7);
+    let rgb;
+    let rank;
     if (pocket > 0.44 && hash2(col, y, 813) < (pocket - 0.44) * 0.32) {
         const g = hash2(col, y, 817);
-        const stoneRgb = g > 0.66 ? STONE[4] : g > 0.26 ? STONE[3] : STONE[2];
-        return coastHazeRgb(stoneRgb, y);
+        rank = g > 0.66 ? 4 : g > 0.26 ? 3 : 2;
+        rgb = STONE[rank];
+    } else {
+        const n = valueNoise(x / 18, y / 9 + 4.3);
+        rank = n > 0.62 ? 3 : n < 0.28 ? 1 : 2;
+        rgb = SAND[rank];
     }
-    const n = valueNoise(x / 18, y / 9 + 4.3);
-    const stop = n > 0.62 ? 3 : n < 0.28 ? 1 : 2;
-    return coastHazeRgb(SAND[stop], y);
+    if (snowCover > 0) {
+        const noise = valueNoise(x / 30, y / 15 + 9.1) + bayer(col, y) * 0.1;
+        if (noise < 0.1 + snowCover * 0.6 * 0.88) rgb = SNOW[SPIT_SNOW_TONE_BY_RANK[rank]];
+    }
+    return coastHazeRgb(rgb, y);
 }
 
 // 3.3 (c) — every coast colour decision per world texel: the class of each
 // texel from its own signed distance and its own Bayer threshold, sparse 3x1
 // ripple dashes one stop lighter in the middle stops. `buf.role` keeps each
 // texel's class for the cliff and the reflections.
-function paintCoastTexels(buf, coast) {
+function paintCoastTexels(buf, coast, snowCover = 0) {
     const { data, w, role } = buf;
     const { cols, rows, caps, outer } = coast;
     for (let r = 0; r < rows; r++) {
@@ -1138,7 +1154,7 @@ function paintCoastTexels(buf, coast) {
                             const v = y / TILE_HEIGHT - x / TILE_WIDTH;
                             if (u <= MAP_SIZE - 0.44 && v <= MAP_SIZE - 0.44) {
                                 role[at] = TEXEL_LAND;
-                                putRgb(data, at * 4, outerSpitSandRgb(x, y));
+                                putRgb(data, at * 4, outerSpitSandRgb(x, y, snowCover));
                                 markCell(coast, x, y, { land: true });
                             }
                         }
@@ -1626,7 +1642,7 @@ function paintCoast(ctx, coast, field, renderer) {
         image = new ImageData(w, h);
     }
     const buf = { data: image.data, w, h, x: coast.x, y: coast.y, role: new Uint8Array(w * h) };
-    paintCoastTexels(buf, coast);
+    paintCoastTexels(buf, coast, snowBucketOf(renderer?._groundState?.snowCover) / 4);
     paintStratifiedCliff(buf, coast, field, renderer);
     if (pure) {
         ctx.putImageData(image, px, py);
@@ -1923,7 +1939,7 @@ function clusterMirrorRgb(pixels, sx, sy, rows, span) {
     if (n > 0) {
         return [Math.round((r / n) / 16) * 16, Math.round((g / n) / 16) * 16, Math.round((b / n) / 16) * 16];
     }
-    return [56, 62, 72];
+    return [...DEEP[2]];
 }
 
 // Detect narrow vertical pier piling tips (`run <= 8` px) that terminate
@@ -2370,7 +2386,7 @@ function staticReflections(ctx, renderer) {
         if (n > 0) {
             return [Math.round((r / n) / 16) * 16, Math.round((g / n) / 16) * 16, Math.round((b / n) / 16) * 16];
         }
-        return [56, 62, 72];
+        return [...DEEP[2]];
     };
     const writeNow = (x, y, at, hit, course, d, wet, keep) => {
         if (keep) write(x, y, at, hit[0], hit[1], course, 0.85, wet < MIRROR_REACH_MIN * MIRROR_NEAR_SHARE ? MIRROR_STOP_DROP.near : MIRROR_STOP_DROP.far);
@@ -2776,7 +2792,8 @@ export function registerCoastBake(renderer) {
     const offCoast = renderer.registerTerrainBakePass({
         id: 'coast-field',
         stage: 'coast',
-        revision: r => coastFieldKey(r),
+        // The snow bucket keys the outer spits' winter sand (outerSpitSandRgb).
+        revision: r => `${coastFieldKey(r)}|s${snowBucketOf(r._groundState?.snowCover)}`,
         draw(ctx, r) {
             const started = performance.now();
             const field = getCoastField(r);
