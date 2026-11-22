@@ -1888,12 +1888,17 @@ export class WildlifeRenderer {
 
     // Watchtower beacon gull. Single bird looping the Pharos Lighthouse at
     // WATCHTOWER_GULL_ORBIT; the one gull that flies at night, in the lantern's
-    // light. Motion-only: reduced motion shows the roosts instead.
+    // light. Motion-only: reduced motion shows the roosts instead. Uses the
+    // host's MotionClock in 12 fps steps (83.3 ms) so frozen frames hold pose
+    // without moving other fauna timers off wall-clock scheduling.
     _watchtowerGullPosition() {
         if (!this.host.motionScale) return null;
-        const now = (typeof performance !== 'undefined' && performance.now)
-            ? performance.now()
-            : Date.now();
+        const motionNow = Number(this.host?.motionTimeMs);
+        const now = Number.isFinite(motionNow)
+            ? Math.floor(motionNow / 83.333333) * 83.333333
+            : (typeof performance !== 'undefined' && performance.now)
+                ? performance.now()
+                : Date.now();
         const t = (now % WATCHTOWER_GULL_ORBIT.periodMs) / WATCHTOWER_GULL_ORBIT.periodMs;
         const angle = t * Math.PI * 2;
         const tileX = WATCHTOWER_GULL_ORBIT.centerTileX + Math.cos(angle) * WATCHTOWER_GULL_ORBIT.radiusTileX;

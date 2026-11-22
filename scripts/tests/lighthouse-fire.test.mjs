@@ -81,6 +81,78 @@ test('watchtower crown smokes by lamps clock, not working occupancy; workshops u
     smoke.update({ now: 3000, atmosphere: atmosphere(12), particleSystem: particles, presence: new Map([['forge', { tier: 'occupied' }], ['watchtower', { tier: 'busy' }]]) });
     assert.equal(spawned.length, 2);
     assert.equal(spawned[1][4].tag, 'chimney:forge:0');
+    // LM-04: held MotionClock freezes workshop smoke even when wall-clock `now` advances.
+    smoke.update({ now: 25000, timeMs: 3000, atmosphere: atmosphere(12), particleSystem: particles, presence: new Map([['forge', { tier: 'occupied' }]]) });
+    assert.equal(spawned.length, 2, 'held motion clock spawns no new workshop puff despite wall-clock advance');
+    // LM-04: rewinding MotionClock (Day Retold scrub or pose reset) resets _lastPuff so smoke resumes immediately.
+    smoke.update({ now: 26000, timeMs: 1400, atmosphere: atmosphere(23), particleSystem: particles, presence: new Map([['forge', { tier: 'occupied' }]]) });
+    assert.equal(spawned.length, 4, 'rewound motion clock spawns fresh puffs for both active chimneys');
+});
+
+test('LM-04: pre-seed populates 3 staggered puffs on real MotionClock cold boot and scrubs, never on mid-session activation', async () => {
+    const { ParticleSystem, SMOKE_PUFF_RADII, SMOKE_COLUMN_PX } = await import('../../claudeville/src/presentation/character-mode/ParticleSystem.js');
+    const { createMotionClock, advanceMotionClock } = await import('../../claudeville/src/presentation/character-mode/MotionClock.js');
+    assert.deepEqual([...SMOKE_PUFF_RADII], [3, 4, 5, 7]);
+    assert.equal(SMOKE_COLUMN_PX, 78);
+
+    const sources = [
+        { key: 'forge:0', type: 'forge', x: 100, y: 200, hearth: true, building: {}, localY: 15 },
+        { key: 'watchtower:0', type: 'watchtower', x: 500, y: 120, hearth: true, building: {}, localY: 50 },
+    ];
+
+    // 1. Real 60 Hz cold boot from t = 0 (Frame 1 null atmosphere, Frame 2 t = 33.3 ms) pre-seeds 1 mouth + 3 staggered puffs.
+    const coldClock = createMotionClock();
+    const coldSmoke = new ChimneySmoke();
+    coldSmoke.sources = () => sources;
+    const coldPs = new ParticleSystem();
+    coldPs.motionEnabled = true;
+    advanceMotionClock(coldClock, 1000 / 60, 1);
+    coldSmoke.update({ now: coldClock.elapsedMs, timeMs: coldClock.elapsedMs, atmosphere: null, particleSystem: coldPs, presence: new Map([['forge', { tier: 'busy' }]]) });
+    assert.equal(coldPs.particles.length, 0, 'Frame 1 before first _render waits for atmosphere');
+    advanceMotionClock(coldClock, 1000 / 60, 1);
+    coldSmoke.update({
+        now: coldClock.elapsedMs,
+        timeMs: coldClock.elapsedMs,
+        atmosphere: { ...atmosphere(23), weather: { type: 'clear', windX: -0.65 } },
+        particleSystem: coldPs,
+        presence: new Map([['forge', { tier: 'busy' }]]),
+    });
+    const forgePuffs = coldPs.particles.filter(p => p.tag === 'chimney:forge:0');
+    const towerPuffs = coldPs.particles.filter(p => p.tag === 'chimney:watchtower:0');
+    assert.equal(forgePuffs.length, 4, '1 mouth + 3 staggered puffs on real 60 Hz cold busy Forge');
+    assert.equal(towerPuffs.length, 4, '1 mouth + 3 staggered puffs on real 60 Hz cold night Pharos');
+    const forgeHeights = forgePuffs.map(p => 200 - p.y).sort((a, b) => a - b);
+    assert.ok(forgeHeights[0] === 0 && forgeHeights[3] >= 25, `staggered column heights: ${forgeHeights.join(', ')}`);
+
+    // 2. Booting empty at noon spawns 0 smoke; mid-session activation emits ONLY 1 mouth puff (no 4-puff pop).
+    const liveClock = createMotionClock();
+    const liveSmoke = new ChimneySmoke();
+    liveSmoke.sources = () => sources;
+    const livePs = new ParticleSystem();
+    livePs.motionEnabled = true;
+    advanceMotionClock(liveClock, 1000 / 60, 1);
+    liveSmoke.update({ now: liveClock.elapsedMs, timeMs: liveClock.elapsedMs, atmosphere: atmosphere(12), particleSystem: livePs, presence: new Map() });
+    assert.equal(livePs.particles.length, 0, 'no-agents noon has 0 smoke');
+    advanceMotionClock(liveClock, 1000 / 60, 1);
+    liveSmoke.update({
+        now: liveClock.elapsedMs,
+        timeMs: liveClock.elapsedMs,
+        atmosphere: { ...atmosphere(12), weather: { type: 'clear', windX: -0.65 } },
+        particleSystem: livePs,
+        presence: new Map([['forge', { tier: 'busy' }]]),
+    });
+    assert.equal(livePs.particles.filter(p => p.tag === 'chimney:forge:0').length, 1, 'mid-session Forge activation emits 1 puff only');
+    // 3. Large minuteOfDay scrub (noon -> 23:00) pre-seeds Watchtower without duplicating Forge.
+    advanceMotionClock(liveClock, 1000 / 60, 1);
+    liveSmoke.update({
+        now: liveClock.elapsedMs,
+        timeMs: liveClock.elapsedMs,
+        atmosphere: { ...atmosphere(23), weather: { type: 'clear', windX: -0.65 } },
+        particleSystem: livePs,
+        presence: new Map([['forge', { tier: 'busy' }]]),
+    });
+    assert.equal(livePs.particles.filter(p => p.tag === 'chimney:watchtower:0').length, 4, 'minuteOfDay scrub pre-seeds night Pharos');
+    assert.equal(livePs.particles.filter(p => p.tag === 'chimney:forge:0').length, 1, 'active Forge keeps its 1 puff');
 });
 
 test('fire overlay and embers are clock-only, rear shaft suppressed, reduced motion rests', () => {

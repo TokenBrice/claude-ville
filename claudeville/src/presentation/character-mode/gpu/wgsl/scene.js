@@ -301,10 +301,7 @@ fn applyMaterialWeather(color0: vec3f, material: f32, px: vec2f) -> vec3f {
   var color = color0;
   let rain = frame.weather.x;
   let wetness = materialWetness(material);
-  let reflection = materialReflection(material);
   let foliage = materialNear(material, 4.0);
-  let phase = select(frame.timeMs * 0.001 * frame.motionScale, 0.37, frame.motionScale <= 0.0);
-  let ordered = orderedDither4(px);
   // 3.2 — darkening follows the accumulated surface wetness.
   var wet = max(rain, frame.wetness) * wetness;
   // GW-1 — on the terrain the field steps wet texels one ramp stop down and
@@ -314,9 +311,6 @@ fn applyMaterialWeather(color0: vec3f, material: f32, px: vec2f) -> vec3f {
   wet *= groundWet.a;
   color *= mix(1.0, 0.80, wet);
   color = mix(color, color * vec3f(0.82, 0.94, 1.08), wet * 0.24);
-  let glintShare = select(1.0, 0.30, frame.wetReflectionCount > 0);
-  let glint = step(0.86, fract((px.x + px.y * 0.5) * 0.031 + phase * 0.07 + ordered * 0.08));
-  color += vec3f(0.22, 0.30, 0.34) * glint * wet * reflection * 0.16 * glintShare;
   color = mix(color, color * vec3f(0.86, 0.94, 0.82), rain * foliage * 0.12);
   return color;
 }

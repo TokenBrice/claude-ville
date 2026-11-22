@@ -28,7 +28,7 @@ export const DEFAULT_LOOK_STRENGTHS = Object.freeze({
     sea1: 0.5, // SEA-1: cloud light and shade on the plane, sunlit water lifts (> 0 shape on; a ceiling on the lift: 0.5 one stop, 1 two)
     sea2: 1, // SEA-2: lit swell and caps take the sky's hue (scales the share)
     sea3: 1, // SEA-3: the wind sets the sea state, calm to fresh (scales the ladder's reach and streaks)
-    gw1: 0.5, // GW-1: wet ground read from the weather field: dry aprons, streets dry sun side first (scales the sheen; retires that share of the uniform darkening)
+    gw1: 1, // GW-1: wet ground read from the weather field: dry aprons, streets dry sun side first (scales the sheen; retires that share of the uniform darkening)
     gw2: 1, // GW-2: puddles and wet paving tops mirror the lamps (scales the mirror columns)
     gw3: 1, // GW-3: frost lies in solid low-frequency patches (> 0 on; scales grain and crease fill)
     wx1: 1, // WX-1: night takes its extra fog from overcast, so rain can start at night (a switch: >= 0.5 is on)

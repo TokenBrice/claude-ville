@@ -7092,7 +7092,7 @@ export class IsometricRenderer {
     _updateChimneySmoke() {
         if (!this.motionScale || !this.chimneySmoke) return;
         this.chimneySmoke.update({
-            now: performance.now(),
+            now: this.motionTimeMs,
             timeMs: this.motionTimeMs,
             buildings: this.world?.buildings,
             assets: this.assets,

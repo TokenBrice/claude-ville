@@ -44,7 +44,7 @@ test('NL-1 landmark ramp, NL-2 firelight on people, NL-3 silhouettes and NL-4 ca
 });
 
 test('GW-1 wet ground, GW-2 lamp mirrors and GW-3 frost patches ship at their reviewed strengths; WX-1 night rain ships on (operator-approved)', () => {
-    assertShipsAt({ gw1: 0.5, gw2: 1, gw3: 1, wx1: 1 });
+    assertShipsAt({ gw1: 1, gw2: 1, gw3: 1, wx1: 1 });
 });
 
 test('MS-1 low mist ships at its reviewed strength', () => {

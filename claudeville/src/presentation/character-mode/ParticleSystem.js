@@ -328,7 +328,7 @@ class Particle {
             return;
         }
         // 6.4 — chimney smoke: a round puff in three tones (lit rim upper
-        // left, body, shade rim lower right) growing 2 -> 5 art px in radius
+        // left, body, shade rim lower right) growing 3 -> 7 art px in radius
         // over its life, thinning in four alpha quanta by height.
         if (this.shape === 'smoke') {
             const radius = smokePuffRadius(age, this.maxLife);
@@ -373,14 +373,14 @@ class Particle {
 const PUFF_STEP_SIZES = Object.freeze([2, 3, 4, 3]);
 const PUFF_STEP_ALPHA = Object.freeze([0.9, 0.75, 0.5, 0.25]);
 
-// 6.4 — chimney smoke puffs. Radius steps 2 -> 5 art px over life; alpha
+// 6.4 — chimney smoke puffs. Radius steps 3 -> 7 art px over life; alpha
 // steps in four quanta by height above the mouth; the column ends at
 // SMOKE_COLUMN_PX. Tones: body `#a9aeb8`, lit `#d3d6dc`, shade `#787c86`,
 // the rims derived from any body by the same per-channel gains the resident
 // particle shader applies (GpuWorldPolicy), so both backends agree.
-export const SMOKE_PUFF_RADII = Object.freeze([2, 3, 4, 5]);
+export const SMOKE_PUFF_RADII = Object.freeze([3, 4, 5, 7]);
 export const SMOKE_PUFF_ALPHA = Object.freeze([1, 0.84, 0.66, 0.44]);
-export const SMOKE_COLUMN_PX = 60;
+export const SMOKE_COLUMN_PX = 78;
 const SMOKE_ALPHA_BAND_PX = SMOKE_COLUMN_PX / SMOKE_PUFF_ALPHA.length;
 
 export function smokePuffRadius(age, maxLife) {
@@ -559,9 +559,10 @@ const PARTICLE_PRESETS = {
         direction: 'up',
     },
     // #33 / 6.4 — chimney smoke: round three-tone puffs (shape 'smoke', radius
-    // 2 -> 5 art px) on the soot body tone. Callers pass `windX` (a signed
+    // 3 -> 7 art px) on the soot body tone. Callers pass `windX` (a signed
     // drift velocity) so the column leans downwind, may flatten it in rain,
-    // and may warm the body when a forge runs hot. A puff rises about 60 px.
+    // and may warm the body when a forge runs hot. A puff rises up to
+    // SMOKE_COLUMN_PX (78 px).
     smoke: {
         colors: ['#a9aeb8'],
         size: [4, 4],

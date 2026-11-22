@@ -1383,7 +1383,7 @@ float fatTapWeight(FatTaps t, int i) {
 }
 `;
 
-const SCENE_FRAGMENT = `#version 300 es
+export const SCENE_FRAGMENT = `#version 300 es
 precision highp float;
 precision highp int;
 in vec2 v_uv;
@@ -1686,10 +1686,7 @@ ${GROUND_WET_MIRROR_GLSL}
 vec3 applyMaterialWeather(vec3 color, float material, vec2 px) {
     float rain = u_weather.x;
     float wetness = materialWetness(material);
-    float reflection = materialReflection(material);
     float foliage = materialNear(material, 4.0);
-    float phase = u_motionScale <= 0.0 ? 0.37 : u_time * 0.001 * u_motionScale;
-    float ordered = orderedDither4(px);
     // 3.2 — darkening follows the accumulated surface wetness, not just live
     // precipitation, so a street stays wet as the rain stops and MINIMAL (with
     // weather amplitude shed) still shows the static wet course.
@@ -1701,11 +1698,6 @@ vec3 applyMaterialWeather(vec3 color, float material, vec2 px) {
     wet *= groundWet.a;
     color *= mix(1.0, 0.80, wet);
     color = mix(color, color * vec3(0.82, 0.94, 1.08), wet * 0.24);
-    // Where an admitted source reflection carries the read, the anonymous
-    // glint noise steps aside instead of competing with it.
-    float glintShare = u_wetReflectionCount > 0 ? 0.30 : 1.0;
-    float glint = step(0.86, fract((px.x + px.y * 0.5) * 0.031 + phase * 0.07 + ordered * 0.08));
-    color += vec3(0.22, 0.30, 0.34) * glint * wet * reflection * 0.16 * glintShare;
     color = mix(color, color * vec3(0.86, 0.94, 0.82), rain * foliage * 0.12);
     return color;
 }

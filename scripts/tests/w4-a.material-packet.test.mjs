@@ -465,7 +465,7 @@ test('no getImageData call remains reachable from a GPU draw path', () => {
 
     const shader = sourceFile('gpu/GpuWorldRenderer.js');
     assert.match(shader, /materialWetness/);
-    assert.match(shader, /materialReflection/);
+    assert.match(shader, /glslMaterialWeatherFunctions/);
     assert.match(shader, /u_hasEmissiveMap/);
     assert.match(shader, /authored emission from the albedo texture/);
 });
