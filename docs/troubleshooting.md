@@ -23,7 +23,7 @@ New session discovery uses `ACTIVE_THRESHOLD_MS` in `claudeville/server.js`, cur
 
 This is not a universal two-minute expiry. Once observed, unresolved `tool_pending` sessions can remain as stale residents for up to 45 minutes after their last live observation, with a cap of 24 retained sessions. Hook-derived waits expire after 30 minutes from their signal. Completed turns are not retained by the server; the browser gives them a shorter departure grace. These rules live in [`sessionResidency.js`](../claudeville/services/sessionResidency.js), and stale residency does not prove the CLI is still running or waiting for approval.
 
-On Linux, a live Claude registry entry marked `busy` or `waiting` can keep a quiet main in the roster. An idle entry ages out on the ordinary schedule.
+On Linux, a live process keeps its session in the roster however long it has been quiet, idle at the prompt included: a Claude main with a live `~/.claude/sessions/<pid>.json` entry, or an Antigravity conversation a live agy process holds (`presence/<conversation-id>.lock`). The villager leaves when the process exits. Providers with no process evidence still age out on the ordinary schedule.
 
 Confirm by running a CLI command in a real session, then refresh `/api/sessions` within two minutes.
 

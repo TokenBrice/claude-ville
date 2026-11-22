@@ -455,7 +455,7 @@ test('Antigravity Orchestrator keeps its planner identity, and swarm workers mar
   }
 });
 
-test('Antigravity keeps a quiet conversation its live process holds, and its working crew, while the turn is open', () => {
+test('Antigravity keeps a quiet conversation its live process holds, idle or not, and its working crew while its turn is open', () => {
   const tmp = makeTempDir('cv-antigravity-presence-');
   try {
     const rootDir = path.join(tmp, '.gemini', 'antigravity-cli');
@@ -529,9 +529,11 @@ test('Antigravity keeps a quiet conversation its live process holds, and its wor
     ].join('\n');
 
     const sessions = new AntigravityAdapter({ rootDir, now: () => now, readLocks: () => procLocks }).getActiveSessions(2 * 60_000);
-    assert.deepEqual(sessions.map(s => s.sessionId), [`antigravity-${workerIds.thinking}`, `antigravity-${leadId}`],
-      'a closed turn, a released lock, a parked member and a killed member all leave');
-    const [worker, lead] = sessions;
+    assert.deepEqual(sessions.map(s => s.sessionId).sort(), [workerIds.thinking, leadId, finishedId].map(id => `antigravity-${id}`).sort(),
+      'a released lock, a parked member and a killed member leave; a held closed turn stays');
+    const byId = id => sessions.find(s => s.sessionId === `antigravity-${id}`);
+    const [worker, lead] = [byId(workerIds.thinking), byId(leadId)];
+    assert.equal(byId(finishedId).turnState, 'awaiting_input', 'idle at the prompt');
     assert.equal(lead.turnState, 'working');
     assert.equal(lead.lastActivity, now - quietMs, 'liveness never rewrites the last observed activity');
     assert.equal(worker.parentSessionId, `antigravity-${leadId}`);
@@ -545,7 +547,7 @@ test('Antigravity keeps a quiet conversation its live process holds, and its wor
   }
 });
 
-test('Antigravity keeps a held conversation whose closed turn waits on its own background task', () => {
+test('Antigravity reads a closed turn that waits on its own background task as waiting on crew, and keeps such a crew member', () => {
   const tmp = makeTempDir('cv-antigravity-tasks-');
   try {
     const rootDir = path.join(tmp, '.gemini', 'antigravity-cli');
@@ -554,8 +556,12 @@ test('Antigravity keeps a held conversation whose closed turn waits on its own b
       reported: '24242424-2424-4424-8424-242424242424',
       stale: '35353535-3535-4535-8535-353535353535',
       released: '46464646-4646-4646-8646-464646464646',
+      lead: '57575757-5757-4757-8757-575757575757',
+      member: '68686868-6868-4868-8868-686868686868',
+      doneMember: '79797979-7979-4979-8979-797979797979',
     };
     const now = Date.parse('2026-11-22T11:00:00Z');
+    const quietMs = 20 * 60_000;
     const at = (msAgo) => new Date(now - msAgo).toISOString();
     const transcript = (id) => path.join(rootDir, 'brain', id, '.system_generated', 'logs', 'transcript.jsonl');
     const started = (id, index, msAgo) => ({
@@ -572,40 +578,57 @@ test('Antigravity keeps a held conversation whose closed turn waits on its own b
       created_at: at(msAgo),
       content: `<SYSTEM_MESSAGE>\n[Message] sender=${id}/task-${task} content=Task id "${id}/task-${task}" ${verb} with result:\nCommand exited with code 0.\n</SYSTEM_MESSAGE>`,
     });
-    const write = (id, quietMs, steps) => writeFile(transcript(id), `${[
-      { step_index: 0, type: 'USER_INPUT', created_at: at(quietMs + 30_000), content: 'Merge once CI is green' },
-      { step_index: 1, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: at(quietMs + 20_000), model: 'gemini-4-neon-xhigh', tool_calls: [{ name: 'run_command', args: { CommandLine: '"gh run watch 42"' } }] },
+    const write = (id, quiet, steps) => writeFile(transcript(id), `${[
+      { step_index: 0, type: 'USER_INPUT', created_at: at(quiet + 30_000), content: 'Merge once CI is green' },
+      { step_index: 1, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: at(quiet + 20_000), model: 'gemini-4-neon-xhigh', tool_calls: [{ name: 'run_command', args: { CommandLine: '"gh run watch 42"' } }] },
       ...steps,
-      { step_index: 9, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: at(quietMs), model: 'gemini-4-neon-xhigh', content: 'Watching CI; I will merge once it is green.' },
-    ].map(s => JSON.stringify(s)).join('\n')}\n`, now - quietMs);
+      { step_index: 9, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: at(quiet), model: 'gemini-4-neon-xhigh', content: 'Watching CI; I will merge once it is green.' },
+    ].map(s => JSON.stringify(s)).join('\n')}\n`, now - quiet);
 
-    write(ids.waiting, 20 * 60_000, [started(ids.waiting, 2, 20 * 60_000 + 10_000)]);
-    write(ids.reported, 20 * 60_000, [
-      started(ids.reported, 2, 20 * 60_000 + 15_000),
-      started(ids.reported, 3, 20 * 60_000 + 10_000),
-      ended(ids.reported, 2, 4, 20 * 60_000 + 5_000, 'finished'),
-      ended(ids.reported, 3, 5, 20 * 60_000 + 5_000, 'was canceled'),
+    write(ids.waiting, quietMs, [started(ids.waiting, 2, quietMs + 10_000)]);
+    write(ids.reported, quietMs, [
+      started(ids.reported, 2, quietMs + 15_000),
+      started(ids.reported, 3, quietMs + 10_000),
+      ended(ids.reported, 2, 4, quietMs + 5_000, 'finished'),
+      ended(ids.reported, 3, 5, quietMs + 5_000, 'was canceled'),
     ]);
     write(ids.stale, 90 * 60_000, [started(ids.stale, 2, 90 * 60_000 + 10_000)]);
-    write(ids.released, 20 * 60_000, [started(ids.released, 2, 20 * 60_000 + 10_000)]);
+    write(ids.released, quietMs, [started(ids.released, 2, quietMs + 10_000)]);
+    // A swarm member runs in its lead's process and holds no lock of its own.
+    writeFile(transcript(ids.lead), `${[
+      { step_index: 0, type: 'USER_INPUT', created_at: at(quietMs + 60_000), content: 'Run the swarm' },
+      { step_index: 1, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: at(quietMs + 50_000), model: 'gemini-4-neon-xhigh', tool_calls: [{ name: 'swarm', args: { action: '"add"', name: '"member"' } }, { name: 'swarm', args: { action: '"add"', name: '"done-member"' } }] },
+      { step_index: 2, type: 'GENERIC', status: 'DONE', created_at: at(quietMs + 40_000), content: `{"status":"added","name":"member","conversation_id":"${ids.member}"}` },
+      { step_index: 3, type: 'GENERIC', status: 'DONE', created_at: at(quietMs + 40_000), content: `{"status":"added","name":"done-member","conversation_id":"${ids.doneMember}"}` },
+      { step_index: 4, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: at(quietMs), model: 'gemini-4-neon-xhigh', content: 'The crew is at work.' },
+    ].map(s => JSON.stringify(s)).join('\n')}\n`, now - quietMs);
+    write(ids.member, quietMs, [started(ids.member, 2, quietMs + 10_000)]);
+    write(ids.doneMember, quietMs, []);
 
     const inode = (id) => {
       const lockPath = path.join(rootDir, 'presence', `${id}.lock`);
       writeFile(lockPath, '', now - 90 * 60_000);
       return fs.statSync(lockPath).ino;
     };
-    const procLocks = [ids.waiting, ids.reported, ids.stale]
+    const procLocks = [ids.waiting, ids.reported, ids.stale, ids.lead]
       .map((id, idx) => `${idx + 1}: FLOCK  ADVISORY  WRITE 4242 103:06:${inode(id)} 0 EOF`)
-      .concat(`4: -> FLOCK  ADVISORY  WRITE 4343 103:06:${inode(ids.released)} 0 EOF`, '')
+      .concat(`5: -> FLOCK  ADVISORY  WRITE 4343 103:06:${inode(ids.released)} 0 EOF`, '')
       .join('\n');
 
     const sessions = new AntigravityAdapter({ rootDir, now: () => now, readLocks: () => procLocks }).getActiveSessions(2 * 60_000);
-    assert.deepEqual(sessions.map(s => s.sessionId), [`antigravity-${ids.waiting}`],
-      'a reported or canceled task, a task past the backstop and a released lock all leave');
-    const [waiting] = sessions;
+    const byId = id => sessions.find(s => s.sessionId === `antigravity-${id}`);
+    assert.deepEqual(sessions.map(s => s.sessionId).sort(),
+      [ids.waiting, ids.reported, ids.stale, ids.lead, ids.member].map(id => `antigravity-${id}`).sort(),
+      'held conversations stay; a released lock and a closed member with no running task leave');
+    const waiting = byId(ids.waiting);
     assert.equal(waiting.turnState, 'awaiting_input');
-    assert.deepEqual(waiting.backgroundPending, { count: 1, kinds: ['bash'], since: now - 20 * 60_000 - 10_000 });
-    assert.equal(waiting.lastActivity, now - 20 * 60_000, 'liveness never rewrites the last observed activity');
+    assert.deepEqual(waiting.backgroundPending, { count: 1, kinds: ['bash'], since: now - quietMs - 10_000 });
+    assert.equal(waiting.lastActivity, now - quietMs, 'liveness never rewrites the last observed activity');
+    assert.equal(byId(ids.reported).backgroundPending, null, 'a finished and a canceled task no longer count');
+    assert.equal(byId(ids.stale).backgroundPending, null, 'a task past the backstop no longer counts');
+    const member = byId(ids.member);
+    assert.equal(member.parentSessionId, `antigravity-${ids.lead}`);
+    assert.deepEqual(member.backgroundPending, { count: 1, kinds: ['bash'], since: now - quietMs - 10_000 });
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

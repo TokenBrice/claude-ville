@@ -46,7 +46,7 @@ for (const pid of [4101, 4102, 4103]) {
 }
 test.after(() => fs.rmSync(home, { recursive: true, force: true }));
 
-test('cold discovery, wait privacy, process exit and idle cutoffs use the registry', () => {
+test('cold discovery, wait privacy, process exit and idle presence use the registry', () => {
   // Waiting has a history entry. The busy lead is discovered from its transcript alone.
   write(path.join(home, '.claude', 'history.jsonl'), [{ sessionId: 'waiting', project, timestamp: old }]);
   let all = scan();
@@ -80,7 +80,12 @@ test('cold discovery, wait privacy, process exit and idle cutoffs use the regist
   assert.ok(find(all, 'waiting').sessionEndedAt >= now);
   assert.equal(find(scan(), 'waiting').sessionEndedAt, find(all, 'waiting').sessionEndedAt);
   assert.equal(find(all, 'waiting').waitReason, null);
-  assert.equal(find(all, 'idle'), undefined);
+  const quietIdle = find(all, 'idle');
+  assert.equal(quietIdle?.turnState, 'awaiting_input', 'a live idle process keeps its quiet session present');
+  assert.equal(quietIdle.sessionEndedAt, null);
+  assert.equal(resolveAgentStatus(quietIdle), 'completed');
+  proc.set(4103, { dead: true });
+  assert.ok(find(scan(), 'idle').sessionEndedAt >= now, 'its process exit ends it');
   assert.deepEqual(residency.merge([]), []);
 });
 

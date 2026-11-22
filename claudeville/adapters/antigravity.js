@@ -1334,10 +1334,10 @@ class AntigravityAdapter {
     const taskStartsById = new Map();
     for (const [id, reduced] of reducedByConvId) {
       // A long think, a long command or a swarm_wait writes no step. A
-      // conversation its live agy process holds stays while its turn is open, and
-      // so does a crew member of one that is neither killed nor parked; the
-      // discovery grace above still bounds a member. A closed turn also stays
-      // while a background task it started still runs in that live process.
+      // conversation its live agy process holds stays, idle at the prompt too. A
+      // crew member of one that is neither killed nor parked stays while its turn
+      // is open or a background task it started still runs; the discovery grace
+      // above still bounds a member.
       const lineage = lineageByChild.get(id);
       const live = held.has(id) || (held.has(lineage?.rootConvId) && !lineage.killed && !reduced.parked);
       const taskStarts = live ? reduced.backgroundTasks.filter(at => now - at < BACKGROUND_TASK_MAX_MS) : [];
@@ -1347,7 +1347,7 @@ class AntigravityAdapter {
         continue;
       }
       const { turnState } = live ? deriveTurnState(reduced.turnDescriptor) : {};
-      if (turnState === 'working' || turnState === 'tool_pending' || taskStarts.length > 0) activeIds.add(id);
+      if (held.has(id) || turnState === 'working' || turnState === 'tool_pending' || taskStarts.length > 0) activeIds.add(id);
     }
     // Keep parent/ancestor conversations visible while any descendant is active.
     for (const id of [...activeIds]) {

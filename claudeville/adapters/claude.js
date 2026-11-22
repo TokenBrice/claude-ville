@@ -834,8 +834,9 @@ function readSessionRegistry(previousFiles, previousSessions, readProcess, now, 
   return { files, byId };
 }
 
+// A live process keeps its session present, idle at the prompt too.
 function registryKeepsSession(record, cutoff) {
-  if (record?.status === 'busy' || record?.status === 'waiting') return true;
+  if (record?.status) return true;
   return record?.endedAt != null && record.endEvidenceAt >= cutoff;
 }
 
@@ -3262,7 +3263,7 @@ class ClaudeAdapter {
       const state = session.agentType === 'main'
         ? this.mainTurn(sessionFilePath, permissionMode, now, session.sessionId, record)
         : getClaudeTurnState(sessionFilePath, permissionMode, now);
-      if (quiet && state.signalSource !== 'registry') continue;
+      if (quiet && state.signalSource !== 'registry' && !record?.status) continue;
       mainSessions.push({
         ...session,
         ...state,
@@ -3494,7 +3495,7 @@ class ClaudeAdapter {
           const state = agentType === 'main' || (!teamName && !identity)
             ? this.mainTurn(filePath, permissionMode, now, sessionId, agentType === 'main' ? record : null)
             : getClaudeTurnState(filePath, permissionMode, now);
-          if (quiet && state.signalSource !== 'registry') continue;
+          if (quiet && state.signalSource !== 'registry' && !record?.status) continue;
           results.push({
             ...state,
             ...getTranscriptProjection(filePath, project, model),
