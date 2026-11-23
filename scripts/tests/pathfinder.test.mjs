@@ -68,3 +68,46 @@ for (const weighted of [false, true]) {
         ) <= 1);
     });
 }
+
+test('bridge landing tiles are preserved by _simplify and _lookahead', () => {
+    const tiles = [];
+    for (let y = 18; y <= 28; y++) tiles.push([18, y]);
+    const pathfinder = new Pathfinder(gridWith(tiles));
+    const bridges = new Map([
+        ['18,23', { kind: 'landmark', orientation: 'NS' }],
+        ['18,24', { kind: 'landmark', orientation: 'NS' }],
+        ['18,25', { kind: 'landmark', orientation: 'NS' }],
+    ]);
+    for (const options of [null, { preferRoads: true, roadTiles: new Set(tiles.map(([x, y]) => `${x},${y}`)) }]) {
+        const path = pathfinder.findPath({ tileX: 18, tileY: 18 }, { tileX: 18, tileY: 28 }, bridges, options);
+        assert.ok(path.some((t) => t.tileX === 18 && t.tileY === 22), 'north landing (18,22) kept');
+        assert.ok(path.some((t) => t.tileX === 18 && t.tileY === 26), 'south landing (18,26) kept');
+    }
+});
+
+test('soft standing occupancy cost routes around non-goal standing tiles without blocking the goal', () => {
+    const open = [];
+    for (let y = 4; y <= 8; y++) for (let x = 4; x <= 10; x++) open.push([x, y]);
+    const pathfinder = new Pathfinder(gridWith(open));
+    const roadTiles = new Set(['5,6', '6,6', '7,6', '8,6', '9,6']);
+
+    // Standing villager at (7,6) along the road: route steps 1 tile around it.
+    const around = pathfinder.findPath(
+        { tileX: 5, tileY: 6 },
+        { tileX: 9, tileY: 6 },
+        new Set(),
+        { preferRoads: true, roadTiles, standingTiles: new Set(['7,6']) },
+    );
+    assert.ok(around.length > 1, 'detours around standing villager');
+    assert.equal(around.some((t) => t.tileX === 7 && t.tileY === 6), false, 'does not walk through (7,6)');
+    assert.deepEqual(around.at(-1), { tileX: 9, tileY: 6 });
+
+    // Standing villager on the goal tile itself is NOT penalized away from the goal.
+    const toGoal = pathfinder.findPath(
+        { tileX: 5, tileY: 6 },
+        { tileX: 7, tileY: 6 },
+        new Set(),
+        { preferRoads: true, roadTiles, standingTiles: new Set(['7,6']) },
+    );
+    assert.deepEqual(toGoal.at(-1), { tileX: 7, tileY: 6 }, 'still reaches occupied goal tile');
+});

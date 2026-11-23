@@ -182,19 +182,122 @@ test('BR-3: a route over the central deck keeps both files on their lanes and ne
             return { key, lane: ((point.x - base.x) * southLane.x + (point.y - base.y) * southLane.y) / 10 };
         });
     };
-    // The central hint's laneOffsetPx (8 px since BR-2d; 10 without one).
+    // The central hint's laneOffsetPx (6 px, relaxed 2026-11-23; 10 without one).
     const offset = bridgeTiles.get('18,24')?.laneOffsetPx ?? 10;
-    assert.equal(offset, 8, 'the central bridge keeps its files 8 px off its centre line');
+    assert.equal(offset, 6, 'the central bridge keeps its files 6 px off its centre line');
     const northbound = route({ tileX: 18, tileY: 28 }, { tileX: 18, tileY: 20 });
     const southbound = route({ tileX: 18, tileY: 20 }, { tileX: 18, tileY: 28 });
     for (const [label, points, side] of [['northbound', northbound, -1], ['southbound', southbound, 1]]) {
         const deck = points.filter((point) => ['18,23', '18,24', '18,25'].includes(point.key));
         assert.equal(deck.length, 3, `${label} keeps every deck tile as a waypoint`);
         for (const point of deck) assert.ok(Math.abs(point.lane - side * offset) < 1e-6, `${label} ${point.key} on lane ${point.lane}`);
+        const landings = points.filter((point) => ['18,22', '18,26'].includes(point.key));
+        assert.equal(landings.length, 2, `${label} keeps both bridge landing tiles as waypoints`);
+        for (const point of landings) assert.ok(Math.abs(point.lane) < 1e-6, `${label} landing ${point.key} tapers to centre (${point.lane})`);
         assert.ok(Math.abs(points.at(-1).lane) < 1e-9, `${label} ends on its target`);
     }
     // A route that ends on the deck stops on its centre.
     const onDeck = route({ tileX: 18, tileY: 28 }, { tileX: 18, tileY: 24 });
     assert.equal(onDeck.at(-1).key, '18,24');
     assert.ok(Math.abs(onDeck.at(-1).lane) < 1e-9);
+});
+
+test('BR-3: lane discipline tapers to 0 on landmark bridge landing tiles', () => {
+    const map = bridgeMap();
+    const renderer = Object.assign(Object.create(IsometricRenderer.prototype), {
+        pathTiles: new Set([...map.keys(), '18,22', '18,26', '18,21']),
+        bridgeTiles: map,
+        pathfinder: { isWalkable: (x, y) => map.get(`${x},${y}`)?.walkable !== false },
+        mainAvenueTiles: new Set(['18,22', '18,26', '18,21']),
+        dirtPathTiles: new Set(),
+        commandCenterRoadTiles: new Set(),
+        townSquareTiles: new Set(),
+    });
+    const lanes = renderer._buildLaneTileIndex();
+    assert.equal(lanes.get('18,22').laneOffset, 0, 'north bridge landing tapers to 0');
+    assert.equal(lanes.get('18,26').laneOffset, 0, 'south bridge landing tapers to 0');
+    assert.equal(lanes.get('18,22').bridgeLanding, true);
+    assert.ok(lanes.get('18,21').laneOffset > 0, 'ordinary avenue tile keeps its lane offset');
+});
+
+test('stitched scenic routes keep every bridge corner and skip unwalkable road tiles', () => {
+    const scenery = new SceneryEngine({ world: null, terrainSeed: 1, tileNoise: () => 0.5 });
+    scenery.generateBridges();
+    const bridgeTiles = scenery.getBridgeTiles();
+    const pathfinder = new Pathfinder(scenery.getWalkabilityGrid());
+    const start = tileToWorld(21, 29);
+    const roadTiles = new Set(['19,23', '20,22', '18,22', '18,26', '20,28']);
+    const sprite = Object.assign(Object.create(AgentSprite.prototype), {
+        agent: { id: 'stroller' },
+        pathfinder,
+        bridgeTiles,
+        getRoadTiles: () => roadTiles,
+        x: start.x,
+        y: start.y,
+        waypoints: [],
+    });
+    // (19,23) is an unwalkable bridge side-deck water tile — must be skipped.
+    const nearest = sprite._findNearestRoadTile({ tileX: 19, tileY: 23 }, { tileX: 20, tileY: 22 });
+    assert.ok(nearest && pathfinder.isWalkable(nearest.tileX, nearest.tileY), 'nearest road tile is walkable');
+    assert.notDeepEqual(nearest, { tileX: 19, tileY: 23 });
+
+    // Stitched route across central bridge via (18,26) and (20,22) keeps north landing (18,22)
+    // and never crosses unwalkable river tile (19,23).
+    const path = sprite._findStitchedPath(
+        { tileX: 21, tileY: 29 },
+        { tileX: 20, tileY: 22 },
+        [{ tileX: 18, tileY: 26 }, { tileX: 18, tileY: 24 }],
+    );
+    assert.ok(path.some((t) => t.tileX === 18 && t.tileY === 22), 'north bridge landing (18,22) is preserved');
+    let prev = { tileX: 21, tileY: 29 };
+    for (const cur of path) {
+        const steps = Math.max(8, Math.ceil(Math.hypot(cur.tileX - prev.tileX, cur.tileY - prev.tileY) * 8));
+        for (let s = 1; s < steps; s++) {
+            const rx = Math.round(prev.tileX + (cur.tileX - prev.tileX) * s / steps);
+            const ry = Math.round(prev.tileY + (cur.tileY - prev.tileY) * s / steps);
+            assert.equal(pathfinder.isWalkable(rx, ry), true, `stitched segment (${prev.tileX},${prev.tileY})->(${cur.tileX},${cur.tileY}) crosses blocked ${rx},${ry}`);
+        }
+        prev = cur;
+    }
+});
+
+test('lateral drift toward pond water (17,21) triggers a short reroute onto dry ground', () => {
+    const scenery = new SceneryEngine({ world: null, terrainSeed: 1, tileNoise: () => 0.5 });
+    scenery.generateBridges();
+    const bridgeTiles = scenery.getBridgeTiles();
+    const pathfinder = new Pathfinder(scenery.getWalkabilityGrid());
+    assert.equal(pathfinder.isWalkable(17, 21), false, 'Command lily pond (17,21) is water');
+    const sprite = new AgentSprite({ id: 'pond-guard', status: 'working', provider: 'claude' }, {
+        pathfinder,
+        bridgeTiles,
+        deferInitialTarget: true,
+    });
+    sprite.motionScale = 1;
+    sprite.behavior = { arrive() {}, transition() {}, finishVisit() {}, cooldownUntil: 0 };
+    sprite._pickTarget = () => {};
+    sprite._renewVisitReservation = () => {};
+    sprite._advanceIdleStopAndLook = () => false;
+    sprite._holdGait = () => false;
+    // Simulate a walker nudged to the edge of (17,20) whose waypoint sits at (18,22):
+    // walking straight would step across (17,21).
+    const drifted = tileToWorld(17.15, 20.42);
+    const landing = tileToWorld(18, 22);
+    const dest = tileToWorld(18, 26);
+    sprite.x = drifted.x;
+    sprite.y = drifted.y;
+    sprite.waypoints = [{ x: landing.x, y: landing.y }, { x: dest.x, y: dest.y }];
+    sprite.targetX = landing.x;
+    sprite.targetY = landing.y;
+    sprite.moving = true;
+    sprite.waitTimer = 0;
+
+    for (let f = 0; f < 160 && sprite.moving; f++) {
+        sprite.update(null, 1000 / 60);
+        const tile = worldToTile(sprite.x, sprite.y);
+        assert.equal(
+            pathfinder.isWalkable(Math.round(tile.tileX), Math.round(tile.tileY)),
+            true,
+            `frame ${f}: stepped onto unwalkable ${tile.tileX.toFixed(2)},${tile.tileY.toFixed(2)}`,
+        );
+    }
 });

@@ -8,6 +8,7 @@ import { AgentSprite } from '../../claudeville/src/presentation/character-mode/A
 import { VisitTileAllocator } from '../../claudeville/src/presentation/character-mode/VisitTileAllocator.js';
 import { VisitIntentManager, isWorkingVisitor } from '../../claudeville/src/presentation/character-mode/VisitIntentManager.js';
 import { Pathfinder, routePersonalityFor, ROUTE_PERSONALITIES } from '../../claudeville/src/presentation/character-mode/Pathfinder.js';
+import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
 import { bridgeLaneShift } from '../../claudeville/src/presentation/character-mode/MovementSteering.js';
 import { tileToWorld, worldToTile } from '../../claudeville/src/presentation/character-mode/Projection.js';
 
@@ -245,4 +246,148 @@ test('pickTarget consumes dwell advancement through all real itinerary stops', (
     assert.deepEqual(visited, ['forge', 'taskboard']);
     assert.equal(behavior.currentItinerary.currentIndex, 2);
     assert.equal(behavior.currentItinerary.nextStop, null);
+});
+
+test('congestion snapshot publishes standingTiles for non-moving visible agents only', () => {
+    const allocator = new VisitTileAllocator();
+    const mk = (id, tileX, tileY, { moving = false, pending = false } = {}) => ({
+        agent: { id },
+        ...tileToWorld(tileX, tileY),
+        moving,
+        _screenToTile: worldToTile,
+        isArrivalPending: () => pending,
+    });
+    allocator.updateContext({
+        agentSprites: [
+            mk('standing', 10, 10, { moving: false }),
+            mk('walking', 12, 12, { moving: true }),
+            mk('hidden', 14, 14, { moving: false, pending: true }),
+        ],
+    });
+    const snap = allocator.getCongestionSnapshot(8000);
+    assert.equal(snap.standingTiles.has('10,10'), true);
+    assert.equal(snap.standingTiles.has('12,12'), false);
+    assert.equal(snap.standingTiles.has('14,14'), false);
+    assert.equal(snap.standingVersion, '10,10');
+});
+
+test('Portal subagent arrivals release through two spaced lanes and settle cold bursts > 4', () => {
+    const renderer = Object.create(IsometricRenderer.prototype);
+    renderer.agentSprites = new Map();
+    renderer.gateTransits = new Map();
+    renderer.motionScale = 1;
+    renderer._coldPortalSettled = true;
+    renderer._markSpritesDirty = () => {};
+    renderer._isGateTransit = () => false;
+    renderer._fanStacks = () => {};
+    renderer.visitTileAllocator = { updateContext() {} };
+
+    const makeSub = (id) => {
+        let pending = false;
+        const s = {
+            agent: { id, parentSessionId: 'lead' },
+            x: 0, y: 0, targetX: 0, targetY: 0, moving: false, settled: 0,
+            setArrivalState(state) { pending = state === 'pending'; },
+            isArrivalPending() { return pending; },
+            setTilePosition(tx, ty) { const w = tileToWorld(tx, ty); this.x = w.x; this.y = w.y; },
+            walkStraightToTile(tx, ty) { pending = false; const w = tileToWorld(tx, ty); this.targetX = w.x; this.targetY = w.y; this.moving = true; },
+            settleAtDestination() { pending = false; this.settled++; },
+        };
+        renderer.agentSprites.set(id, s);
+        return s;
+    };
+
+    // Mid-session burst of 4 subagents: 2 release immediately on distinct lanes (>= 24 px apart), 2 wait queued.
+    const subs = [makeSub('s1'), makeSub('s2'), makeSub('s3'), makeSub('s4')];
+    for (const s of subs) renderer._beginAgentGateArrival(s.agent, s);
+    assert.equal(subs[0].isArrivalPending(), false);
+    assert.equal(subs[1].isArrivalPending(), false);
+    assert.ok(Math.hypot(subs[0].x - subs[1].x, subs[0].y - subs[1].y) >= 24, 'two Portal lanes stay >= 24 px apart');
+    assert.equal(subs[2].isArrivalPending(), true, 'third subagent waits for lane clearance');
+    assert.equal(subs[3].isArrivalPending(), true);
+    assert.equal(renderer._portalEntryQueue.length, 2);
+
+    // Cold-load burst > 4 settles all queued subagents directly at their destinations.
+    renderer._portalEntryQueue = [];
+    renderer.agentSprites.clear();
+    renderer._coldPortalSettled = false;
+    renderer._deferPortalRelease = true;
+    renderer._updateVisitSystems = () => {};
+    const burst = Array.from({ length: 6 }, (_, i) => makeSub(`cold-${i}`));
+    for (const s of burst) renderer._beginAgentGateArrival(s.agent, s);
+    renderer._deferPortalRelease = false;
+    renderer._releasePortalEntries();
+    assert.equal(renderer._portalEntryQueue.length, 0);
+    assert.ok(burst.every((s) => s.settled === 1), 'every subagent in a cold > 4 burst settles at its destination');
+});
+
+test('local avoidance separates stacked walkers (< 6 px) instead of freezing them in follow-yield', () => {
+    const renderer = Object.create(IsometricRenderer.prototype);
+    renderer.agentSprites = new Map();
+    renderer._pairBuckets = new Map();
+    renderer._pairColumnPool = [];
+    renderer._pairBucketPool = [];
+    renderer._pairIds = new Map();
+    renderer._pairIdentityRanks = new Map();
+    renderer._pairDuplicatePairs = new Set();
+    renderer._localAvoidanceMetrics = { separationPushes: 0, progressClamps: 0, zeroDistancePairs: 0 };
+    renderer._markSpritesDirty = () => {};
+    renderer._emitCrowdBumpFeedback = () => {};
+    renderer._isSpritePositionWalkable = () => true;
+    renderer._isPlanted = () => false;
+    renderer._fanArrivals = () => {};
+    renderer._steerAroundStanding = () => 0;
+
+    const makeWalker = (id, x, y) => {
+        const s = {
+            agent: { id },
+            x, y,
+            _stepStartX: x - 1.5, _stepStartY: y, _stepLength: 1.5,
+            targetX: x + 120, targetY: y,
+            waypoints: [{ x: x + 120, y }],
+            moving: true, _gaitSpeed: 1.5,
+            _followYield: false,
+            steeredPosition: AgentSprite.prototype.steeredPosition,
+        };
+        renderer.agentSprites.set(id, s);
+        return s;
+    };
+
+    const a = makeWalker('w-a', 100, 200);
+    const b = makeWalker('w-b', 99.5, 200);
+    renderer._applyLocalAvoidance([a, b], 16);
+    assert.equal(a._followYield, false, 'stacked walker A does not freeze in give-way');
+    assert.equal(b._followYield, false, 'stacked walker B does not freeze in give-way');
+    assert.ok(Math.hypot(a.x - b.x, a.y - b.y) > 0.5, 'stacked walkers actively separate');
+});
+
+test('_steerAroundStanding bypasses target clamp when an intermediate waypoint sits inside a standing body while keeping V7 stride lock', () => {
+    const renderer = Object.create(IsometricRenderer.prototype);
+    renderer._localAvoidanceMetrics = { progressClamps: 0 };
+    renderer._isSpritePositionWalkable = () => true;
+    renderer._isGateTransit = () => false;
+    renderer._isPlanted = (s) => !s.moving;
+
+    const blocker = { agent: { id: 'stander' }, x: 100, y: 200, moving: false };
+    const walker = {
+        agent: { id: 'walker' },
+        x: 84, y: 200,
+        _stepStartX: 82.5, _stepStartY: 200, _stepLength: 1.5,
+        targetX: 100, targetY: 200,
+        waypoints: [{ x: 100, y: 200 }, { x: 200, y: 200 }],
+        moving: true,
+        steeredPosition: AgentSprite.prototype.steeredPosition,
+        _crossingTiles: () => new Map(),
+        _isScreenSegmentWalkable: () => true,
+    };
+    renderer.agentSprites = new Map([['stander', blocker], ['walker', walker]]);
+    const headings = new Map([[walker, { x: 1, y: 0 }]]);
+    const steered = renderer._steerAroundStanding([walker], headings, 2.0);
+    assert.equal(steered, 1);
+    assert.ok(Math.abs(walker.y - 200) > 0.4, 'walker sidesteps laterally instead of getting clamped straight into the standing body');
+    assert.ok(
+        Math.abs(Math.hypot(walker.x - walker._stepStartX, walker.y - walker._stepStartY) - walker._stepLength) < 1e-6,
+        'V7 stride length stays locked',
+    );
+    assert.equal(walker.targetX, 200, 'advances cleanly past the obstructed intermediate waypoint');
 });
