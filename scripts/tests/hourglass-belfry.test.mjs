@@ -129,9 +129,9 @@ test('hovering the belfry reads out both accounts', () => {
     assert.deepEqual(tip.map((line) => line.split(':')[0]), ['Hourglass Belfry · sand left = quota left', 'Claude', 'Codex']);
 });
 
-// MB-7 — 8 frames of 11.25° on 125 ms steps: one turn per 4 s, as the old
-// 4 frames of 22.5° on 250 ms, and still only while a gust crosses the mill.
-test('the windmill sails turn one 11.25° frame per 125 ms, only in a gust (MB-7)', () => {
+// MB-7 (relaxed 2026-11-23) — 8 frames of 11.25°: steady breeze turns at
+// ~3.3 fps (300 ms, 2–4 fps), gusts accelerate to 8 fps (125 ms), calm air holds.
+test('the windmill sails turn steadily in a breeze (2–4 fps) and speed up to 8 fps in a gust', () => {
     const strip = PNG.sync.read(readFileSync(new URL('../../claudeville/assets/sprites/props/prop.windmillSails.png', import.meta.url)));
     assert.deepEqual([strip.width, strip.height], [8 * 112, 112]);
     const { host, landmarks } = world();
@@ -149,12 +149,29 @@ test('the windmill sails turn one 11.25° frame per 125 ms, only in a gust (MB-7
         frame = next;
         steppedAt = t;
     }
-    assert.ok(gaps.length > 8, `a gust turns the sails (${gaps.length} steps)`);
+    assert.ok(gaps.length > 8, `breeze + gusts turn the sails (${gaps.length} steps)`);
     assert.ok(gaps.every((gap) => gap >= 125), 'never faster than 8 fps');
     assert.ok(gaps.includes(125), 'a held gust turns them at exactly 8 fps');
+    assert.ok(gaps.includes(300), 'a steady breeze turns them at ~3.3 fps (2–4 fps)');
+
+    // Clear daylight breeze (windX 0.35, no gusts) still turns steadily at 2–4 fps.
+    host._lastAtmosphere = { weather: { type: 'clear', windX: 0.35, seed: 7 } };
+    const breezeStart = mill.sailFrame();
+    let breezeSteps = 0;
+    let prev = breezeStart;
+    for (let t = 120_000; t <= 123_000; t += 25) {
+        host.motionTimeMs = t;
+        const next = mill.sailFrame();
+        if (next !== prev) {
+            breezeSteps++;
+            prev = next;
+        }
+    }
+    assert.ok(breezeSteps >= 6 && breezeSteps <= 15, `steady clear breeze steps at 2–4 fps (${breezeSteps} steps in 3 s)`);
+    frame = prev;
 
     host._lastAtmosphere = { weather: { windX: 0.05 } };
-    for (let t = 120_000; t <= 130_000; t += 25) {
+    for (let t = 123_000; t <= 133_000; t += 25) {
         host.motionTimeMs = t;
         assert.equal(mill.sailFrame(), frame, 'calm air holds the frame they stopped on');
     }
