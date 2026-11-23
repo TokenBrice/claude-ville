@@ -1270,11 +1270,12 @@ export function buildCloudShadowTile(size = CLOUD_TILE_SIZE, seed = 0x5eed) {
     return data;
 }
 
-// 1.6 — screen-Y aerial perspective strength by zoom (survey 0.18, tier 1
-// 0.14, tier 2 0.08, tier 3 0.04), raised by fog.
+// 1.6 — screen-Y aerial perspective strength by zoom (clear z1 halved from
+// 0.14 to 0.06 so clear days stay crisp; fog scales up strongly so foggy
+// scenes keep their atmospheric veil).
 export function aerialPerspectiveStrength(zoom = 1, fog = 0) {
     const z = Math.max(0.25, Number(zoom) || 1);
-    const stops = [[0.5, 0.18], [1, 0.14], [2, 0.08], [3, 0.04]];
+    const stops = [[0.5, 0.08], [1, 0.06], [2, 0.03], [3, 0.01]];
     let strength = stops[stops.length - 1][1];
     if (z <= stops[0][0]) strength = stops[0][1];
     else {
@@ -1287,7 +1288,43 @@ export function aerialPerspectiveStrength(zoom = 1, fog = 0) {
             }
         }
     }
-    return strength * (1 + Math.max(0, Math.min(1, Number(fog) || 0)));
+    const f = Math.max(0, Math.min(1, Number(fog) || 0));
+    return strength * (1 + f * 3.5);
+}
+
+// 1.6 — vertical reach of the screen-Y aerial haze: 0.30 of viewport height in
+// clear air, expanding back to 0.55 in fog so foggy frames stay deeply veiled.
+export function aerialHazeStart(fog = 0) {
+    const f = Math.max(0, Math.min(1, Number(fog) || 0));
+    const t = Math.max(0, Math.min(1, (f - 0.10) / 0.35));
+    return 0.30 + 0.25 * t;
+}
+
+// Daytime bloom: only active high-energy emitters (awake Forge fire, awake
+// Portal, active Command braziers, plaza rune braziers) receive the raised
+// daylight core/bloom energy; passive/dormant emitters scale back to the old
+// 0.14 daylight core and never trigger daytime bloom on their own.
+export const DAYLIGHT_PASSIVE_CORE_SCALE = 0.14 / 0.36;
+export const DAYTIME_HIGH_ENERGY_PROPS = Object.freeze(new Set(['prop.runeBrazier']));
+
+export function isDaytimeHighEnergyBuilding(buildingType, active, emissiveGate) {
+    if (!(emissiveGate > 0.01)) return false;
+    if (buildingType === 'forge' || buildingType === 'portal') return true;
+    return buildingType === 'command' && Boolean(active);
+}
+
+export function hasActiveBloomEmitters(batches) {
+    if (!Array.isArray(batches)) return false;
+    for (let b = 0; b < batches.length; b++) {
+        const batch = batches[b];
+        if (!batch?.emissiveTexture && !batch?.emissiveSource) continue;
+        const records = batch.records;
+        for (let r = 0; r < records.length; r++) {
+            const rec = records[r];
+            if (rec?.daytimeEmitter && rec.emissiveGate > 0.01) return true;
+        }
+    }
+    return false;
 }
 
 // Ambient sources currently use the registry default (0). Keeping attention
@@ -1665,6 +1702,7 @@ export function normalizeGpuRecord(record = {}, sequence = 0, target = null) {
     normalized.elevation = elevation;
     normalized.emissive = emissive;
     normalized.emissiveGate = Math.max(0, Math.min(1, finite(record.emissiveGate, 1)));
+    normalized.daytimeEmitter = record.daytimeEmitter === true;
     normalized.occluder = occluder;
     normalized.material = materialClassId(record.material ?? record.materialId);
     normalized.blend = blend;

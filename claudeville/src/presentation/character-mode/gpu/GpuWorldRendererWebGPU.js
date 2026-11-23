@@ -17,6 +17,7 @@ import {
     GPU_PARTICLE_INSTANCE_BYTES,
     GPU_RECORD_FLAGS,
     gpuRecordPageable,
+    hasActiveBloomEmitters,
     LIGHT_TILE_STRIDE,
     selectGpuTimingMetrics,
     shedEffectsForLevel,
@@ -1185,7 +1186,7 @@ export class GpuWorldRendererWebGPU {
     // `_uploadOpenSeaUniforms` and `_present` of the WebGL2 world, one block.
     // Fields WebGL2 leaves stale when a feature is off (beam shape, puddle
     // rect/sky) are left stale here the same way.
-    _resolveFrame(feed, camera, qualityLevel) {
+    _resolveFrame(feed, camera, qualityLevel, batches = null) {
         const s = this._frameState;
         for (const key of Object.keys(s)) delete s[key];
         const grade = resolveFrameGrade(feed);
@@ -1231,6 +1232,7 @@ export class GpuWorldRendererWebGPU {
         // SEA-2 / SEA-3 — the sky on lit water and the sea state (prepareFrame).
         s.seaState = this._seaState.uniform;
         s.haze = courses.haze;
+        s.hazeStart = courses.hazeStart;
         // Sea weather: the sunlit ceiling and the C-W3 gust field.
         const sea = resolveSeaWeather(qualityLevel, camera, feed, {
             courses: this._atmosphereCourses, width: this.width, height: this.height,
@@ -1370,7 +1372,8 @@ export class GpuWorldRendererWebGPU {
         const bloomMode = effectBudgetMode('bloom', qualityLevel);
         const bloomStrength = bloomMode === 'off' ? 0 : bloomMode === 'reduced' ? 0.42 : 0.72;
         const bloomEnergy = clamp(finite(energy.bloom, 1), 0, 2);
-        s.bloomStrength = this.lightCount > 0 ? bloomStrength * bloomEnergy : 0;
+        const bloomSources = this.lightCount > 0 || hasActiveBloomEmitters(batches);
+        s.bloomStrength = bloomSources ? bloomStrength * bloomEnergy : 0;
         // 10.2 / 10.3 — the display path's uniforms (read only by the roles
         // composite and mark fragment). Under HDR the emitter courses gain
         // only while the lamps are lit (the `settling` lamp course), up to the
@@ -1385,6 +1388,7 @@ export class GpuWorldRendererWebGPU {
         s.hdrEmitterGain = display?.hdr && hdrLampsLit(atmosphere) ? gains.emitter : [1, 1, 1];
         s.hdrEmitterCap = gains.emitterCap;
         if (display?.hdr) s.bloomStrength = 0;
+        this._frameBloomStrength = s.bloomStrength;
         const flash = feed.flash;
         s.flash = [finite(flash?.[0], 0), finite(flash?.[1], 0), finite(flash?.[2], 0)];
         s.fatPixels = this.fatPixelsFrame;
@@ -1715,7 +1719,7 @@ export class GpuWorldRendererWebGPU {
             } else if (load && (load.levels === 'all' || qualityLevel === POST_FX_LEVELS.FULL)) {
                 this._frameLoadPasses = load.passes;
             }
-            this._resolveFrame(feed, camera, qualityLevel);
+            this._resolveFrame(feed, camera, qualityLevel, batches);
             const bloomOn = this._frameState.bloomStrength > 0;
             const display = this._display;
             const roles = display ? display.emissionFormat : null;

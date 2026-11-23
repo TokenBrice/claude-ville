@@ -1,4 +1,10 @@
-import { materialClassId } from './GpuWorldPolicy.js';
+import {
+    DAYLIGHT_PASSIVE_CORE_SCALE,
+    effectBudgetMode,
+    isDaytimeHighEnergyBuilding,
+    materialClassId,
+} from './GpuWorldPolicy.js';
+import { sourceEnergyFor } from '../AtmosphereState.js';
 import { tileToWorld, TILE_HALF_HEIGHT, TILE_HALF_WIDTH } from '../Projection.js';
 import { offshoreSceneryRecords } from '../OffshoreScenery.js';
 import { landmarkFootprint } from '../FootprintField.js';
@@ -6,7 +12,6 @@ import { ownerSlotFor } from '../LightSourceRegistry.js';
 import { lookStrength } from '../LookStrengths.js';
 import { lampSilhouetteFor, setLampSilhouetteMode } from '../RakingLight.js';
 import { lampSilhouetteRecords, releaseLampSilhouettes } from '../LampSilhouette.js';
-import { effectBudgetMode } from './GpuWorldPolicy.js';
 import {
     atlasSourceRect,
     shouldUseAtlasForCategory,
@@ -641,7 +646,15 @@ function recordForBuilding(renderer, drawable, sequence) {
     // observed-tool recency), never idle, seated or passing bodies.
     const workTier = renderer?.buildingRenderer?._workTierFor?.(drawable.building);
     const active = Boolean(workTier) && workTier !== 'dormant';
-    const emissiveGate = renderer?.buildingRenderer?._emissiveGateFor?.(drawable.building) ?? 1;
+    const rawEmissiveGate = renderer?.buildingRenderer?._emissiveGateFor?.(drawable.building) ?? 1;
+    const isDaylight = sourceEnergyFor(renderer?._lastAtmosphere?.lighting).bucket === 'daylight';
+    const daytimeEmitter = isDaytimeHighEnergyBuilding(buildingType, active, rawEmissiveGate);
+    // In daylight, only active high-energy emitters (awake Forge fire, awake
+    // Portal, active Command braziers) take the raised 0.36 core; all other
+    // buildings scale back to the old 0.14 daylight core.
+    const emissiveGate = isDaylight && !daytimeEmitter
+        ? rawEmissiveGate * DAYLIGHT_PASSIVE_CORE_SCALE
+        : rawEmissiveGate;
     // Material/emissive are sampled with the albedo's UVs (see the GL fragment
     // shaders), so a channel source must share the albedo's geometry. When the
     // albedo comes from an atlas page the channels must be that page's channel
@@ -685,6 +698,7 @@ function recordForBuilding(renderer, drawable, sequence) {
             ? (active ? finite(materialMeta.activeEmissive, 0.12) : finite(materialMeta.emissive, 0.03))
             : 0,
         emissiveGate,
+        daytimeEmitter,
         // 3.5 pilot opt-in: Command's authored material pixels quantize
         // admitted local light to the palette ramp. Look `nl1` (a switch: a
         // ramp is on or off per building) extends it to RAMP_LANDMARKS. A
@@ -742,11 +756,17 @@ function buildingPartRecords(renderer, drawable, base, sequence) {
     const draws = buildings.partDrawsFor(drawable.entry, drawable.building, drawable.wx, drawable.wy,
         split, drawable.horizonY ?? null, scratch);
     if (!draws.length) return NO_PART_RECORDS;
+    const isDaylight = sourceEnergyFor(renderer?._lastAtmosphere?.lighting).bucket === 'daylight';
     const out = [];
     for (let index = 0; index < draws.length; index++) {
         const d = draws[index];
         const channels = buildings.partChannelsFor?.(drawable.entry, d) || null;
         const id = `${base.id}:part:${d.name}`;
+        const rawPartGate = d.emissiveGate ?? (d.fixture ? 1 : base.emissiveGate);
+        const partDaytimeEmitter = Boolean(base.daytimeEmitter && !d.ember && rawPartGate > 0.01);
+        const partGate = isDaylight && d.fixture && !partDaytimeEmitter
+            ? rawPartGate * DAYLIGHT_PASSIVE_CORE_SCALE
+            : rawPartGate;
         out.push({
             id,
             stableKey: id,
@@ -770,7 +790,8 @@ function buildingPartRecords(renderer, drawable, base, sequence) {
             elevation: base.elevation,
             emissive: channels?.material ? base.emissive : 0,
             // VQ-8 — a part with its own gate (the banked ember floor) keeps it.
-            emissiveGate: d.emissiveGate ?? (d.fixture ? 1 : base.emissiveGate),
+            emissiveGate: partGate,
+            daytimeEmitter: partDaytimeEmitter,
             paletteRamp: base.paletteRamp,
             occluder: base.occluder,
             landmarkId: base.landmarkId,
