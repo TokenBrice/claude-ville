@@ -1,4 +1,5 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
+import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { MAP_SIZE, TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 import { WORLD_BODY_FONT_11, WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
 import { attentionMarkRecords, drawAttentionPlates, inkMarkRecords } from './AttentionPlates.js';
@@ -780,7 +781,6 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     const renderModes = renderer._agentRenderMode?.(viewport, sortedSprites);
     const agentRenderMode = renderModes?.body || 'full';
     const annotationMode = renderModes?.annotation || 'full';
-    renderer._assignAgentOverlaySlots(sortedSprites, zoom, { agentRenderMode: annotationMode });
     markFrameTiming(frameTimer, 'collect');
 
     const drawables = renderer._drawables;
@@ -792,10 +792,16 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     drawableAssembly.sceneCategoryFrame = sceneCategoryFrame;
     drawableAssembly.chronicleMonumentDrawables = chronicleMonumentDrawables;
     drawableAssembly.familiarDrawables = familiarDrawables;
+    drawableAssembly.sprites = renderer.sprites || null;
+    drawableAssembly.assets = renderer.assets || null;
+    drawableAssembly.zoom = zoom;
     // 0.6 — Canvas paints world particles as small depth drawables at their
     // painter sortY; the resident path draws them in its own depth pass.
     drawableAssembly.particles = gpuWorldActive ? null : renderer.particleSystem?.particles || null;
     appendDepthSortedDrawables(drawables, drawableAssembly);
+    // Assign overlay slots after depth sorting & world occlusion so hidden
+    // villagers suppress names and glyphs on the same frame with zero lag.
+    renderer._assignAgentOverlaySlots(sortedSprites, zoom, { agentRenderMode: annotationMode });
     const cullingStats = cullDepthSortedDrawables(
         drawables,
         renderer.camera,
@@ -1075,6 +1081,7 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
         // resident overlay.
         renderer.wildlifeRenderer?.drawFireflies?.(overlayCtx, perfNow);
     }
+    drawSelectedAgentXray(renderer, overlayCtx, buildingDrawables);
     // 0.7 — re-strike the selected agent's chevron AFTER the Canvas
     // atmosphere multiply so it survives the night grade.
     drawPrimaryMarksPostAtmosphere(renderer, overlayCtx, atmosphere, {
@@ -1088,7 +1095,6 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
             }
         }
     }
-    drawSelectedAgentXray(renderer, overlayCtx, buildingDrawables);
     if (!gpuWorldRendered) {
         for (const sprite of sortedSprites) sprite.drawDeferredNameTag?.(overlayCtx);
     }
@@ -2147,29 +2153,22 @@ function drawThoughtLayer(ctx, sprites, zoom) {
 }
 
 function drawSelectedAgentXray(renderer, ctx, buildingDrawables) {
-    if (!renderer.buildingRenderer || !renderer.assets) return;
-    for (const drawable of buildingDrawables) {
-        if (drawable.kind !== 'building-front' && drawable.kind !== 'building') continue;
-        const dims = renderer.assets.getDims(drawable.entry.id);
-        if (!dims) continue;
-        const [ax, ay] = renderer.assets.getAnchor(drawable.entry.id);
-        const left = drawable.wx - ax;
-        const top = drawable.wy - ay;
-        const right = left + dims.w;
-        const bottom = top + dims.h;
-        const frontY = drawable.sortY;
-        for (const sprite of renderer.agentSprites.values()) {
-            if (!sprite.selected) continue;
-            const withinSpriteBounds = sprite.x >= left - 12
-                && sprite.x <= right + 12
-                && sprite.y >= top
-                && sprite.y <= bottom + 12;
-            // A body on the building's open floor is in plain view: no x-ray.
-            if (withinSpriteBounds && sprite.y < frontY && !sprite._onOpenFloor) {
-                sprite.drawXraySilhouette(ctx);
-                return;
-            }
+    if (!renderer.agentSprites) return;
+    let selected = null;
+    for (const sprite of renderer.agentSprites.values()) {
+        if (!sprite || sprite._onOpenFloor) continue;
+        const occluders = sprite._worldOccluders;
+        if (!occluders?.length) continue;
+        if (sprite.selected) {
+            selected = sprite;
+            continue;
         }
+        if (sprite._occludedByWorld && sprite.agent?.status === AgentStatus.WORKING) {
+            sprite.drawXraySilhouette(ctx, 'working', occluders);
+        }
+    }
+    if (selected) {
+        selected.drawXraySilhouette(ctx, 'selected', selected._worldOccluders);
     }
 }
 

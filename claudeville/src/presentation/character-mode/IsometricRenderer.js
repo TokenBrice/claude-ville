@@ -118,6 +118,7 @@ import {
 import { StaticPropSprite, buildStaticPropDrawables, lineOcclusionColumns } from './StaticPropDrawables.js';
 import { buildRestSeatPropSprites } from './RestSeats.js';
 import { buildTavernArcadeSprites } from './TavernArcade.js';
+import { buildCentralBridgeParapetSprite } from './BridgeParapet.js';
 import { createDepthDrawable, propPartSortY } from './DrawablePass.js';
 import {
     renderWorldFrame,
@@ -989,7 +990,7 @@ export class IsometricRenderer {
                 tileY: b.tileY,
                 id,
                 bounds: this._assetPropBounds(id, 0.62),
-                splitForOcclusion: size === 'large',
+                splitForOcclusion: false,
                 drawFn: (ctx, x, y) => { if (this.sprites) this.sprites.drawSprite(ctx, id, x, y, this._winterPropOpts(id)); },
             });
         });
@@ -3034,13 +3035,12 @@ export class IsometricRenderer {
     _enumerateFastPropDrawables() {
         const out = this._staticPropFastFrameDrawables;
         out.length = 0;
-        const agents = this._snapshotSortedSprites();
         const viewport = this._screenViewport();
         for (const record of this._staticPropFastDrawables || []) {
             if (!this._propVisibleOnScreen(record.sprite, viewport)) continue;
             if (record.columns) {
                 for (const column of record.columns) out.push(column);
-            } else if (record.sprite?.splitForOcclusion && this._propIntersectsAgentBand(record.sprite, agents)) {
+            } else if (record.sprite?.splitForOcclusion) {
                 if (record.back) out.push(record.back);
                 if (record.front) out.push(record.front);
             } else if (record.whole) {
@@ -7975,9 +7975,9 @@ export class IsometricRenderer {
                 sprite.labelAlpha = 0;
                 continue;
             }
-            // W-F16 — a body the depth pass hid behind a building carries no
-            // routine name or action marks on the building's face.
-            if (sprite._behindBuilding) {
+            // W-F16 — a body hidden behind a building, gate or wall carries no
+            // routine name or action marks on the occluder's face.
+            if (sprite._occludedByWorld || sprite._behindBuilding) {
                 sprite.labelAlpha = 0;
                 continue;
             }
@@ -8217,7 +8217,7 @@ export class IsometricRenderer {
         }
         this._layoutThoughtColumns(sprite);
         sprite._thoughtAnchorX = sprite.x;
-        sprite.bubbleOccluded = Boolean(sprite._behindBuilding && !sprite.selected);
+        sprite.bubbleOccluded = Boolean((sprite._occludedByWorld || sprite._behindBuilding) && !sprite.selected);
         if (sprite.bubbleOccluded && this._thoughtOccluderBase(sprite, s)) return true;
         sprite.bubbleBaseY = typeof sprite._headTopY === 'function'
             ? (typeof sprite._labelTopY === 'function' ? sprite._labelTopY(sprite._headTopY()) : sprite._headTopY())
@@ -9688,7 +9688,7 @@ export class IsometricRenderer {
                     tileY: prop.tileY,
                     id: prop.id,
                     bounds: this._assetPropBounds(prop.id),
-                    splitForOcclusion: Boolean(dims && dims.h >= 56),
+                    splitForOcclusion: false,
                     materialClass: entry?.materialClass || null,
                     channels,
                     drawFn: (ctx, x, y) => {
@@ -9731,6 +9731,17 @@ export class IsometricRenderer {
             const rail = span.nearRail;
             if (!rail) continue;
             const walk = this._bridgeWalk(span);
+            if (span.id === 'central-river-bridge') {
+                const parapet = buildCentralBridgeParapetSprite({
+                    span,
+                    assets: this.assets,
+                    propWinter: this.propWinter,
+                    bridgeWalk: walk,
+                    bridgeLightsLit: (s) => this.bridgeLightsLit?.(s) === true,
+                });
+                if (parapet) sprites.push(parapet);
+                continue;
+            }
             const segmentCount = Math.max(1, span.lengthTiles * 2);
             for (let i = 0; i < segmentCount; i++) {
                 const t0 = i / segmentCount;

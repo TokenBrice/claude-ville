@@ -137,9 +137,12 @@ export class Building {
     }
 
     isOpenFloor(tileX, tileY) {
-        const x = Math.round(tileX);
-        const y = Math.round(tileY);
-        return this.openFloor.some((rect) => x >= rect.x0 && x <= rect.x1 && y >= rect.y0 && y <= rect.y1);
+        const x = Number(tileX);
+        const y = Number(tileY);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+        const tx = Math.floor(x);
+        const ty = Math.floor(y);
+        return this.openFloor.some((rect) => tx >= rect.x0 && tx <= rect.x1 && ty >= rect.y0 && ty <= rect.y1);
     }
 
     blocksWalkTile(tileX, tileY) {

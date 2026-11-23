@@ -167,6 +167,7 @@ export class SpriteRenderer {
             const dims = this.assets.getDims(entry.id);
             if (!dims) return null;
             let sourceRect = null;
+            let offsetX = 0;
             let offsetY = 0;
             if (drawable.kind === 'building-back') {
                 sourceRect = { x: 0, y: 0, w: dims.w, h: payload.horizonY };
@@ -178,9 +179,18 @@ export class SpriteRenderer {
                     h: dims.h - payload.horizonY,
                 };
                 offsetY = payload.horizonY;
+            } else if (drawable.kind === 'building-column' && payload.column) {
+                sourceRect = {
+                    x: payload.column.sx,
+                    y: 0,
+                    w: payload.column.sw,
+                    h: dims.h,
+                };
+                offsetX = payload.column.sx;
             }
             return this.buildGpuRecord(entry.id, payload.wx, payload.wy, {
                 sourceRect,
+                offsetX,
                 offsetY,
                 material: drawable,
                 frameKey: context.frameKey,

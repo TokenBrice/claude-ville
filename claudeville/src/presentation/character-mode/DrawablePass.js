@@ -1,4 +1,5 @@
-import { TILE_HALF_WIDTH, worldToTile } from './Projection.js';
+import { TILE_HALF_HEIGHT, TILE_HALF_WIDTH, worldToTile } from './Projection.js';
+import { frontEdgeFoot, landmarkFootprint } from './FootprintField.js';
 import { normalizeMaterialMetadata } from './MaterialRegistry.js';
 
 function finiteSortY(value) {
@@ -18,6 +19,7 @@ const KIND_ORDER = Object.freeze({
     'chronicle-monument': 70,
     'familiar-motes': 80,
     'building-front': 90,
+    'building-column': 90,
     building: 95,
     // 0.6 — a particle paints after every other kind at an equal sortY, as
     // the resident LEQUAL test shows it over the records sharing its depth.
@@ -171,16 +173,17 @@ function pooledDepthDrawable(target, kind, sortY, payload, drawFallback, semanti
     }
     let drawable = null;
     const entity = payload?.building || payload?.agent || payload?.sprite || null;
+    const poolKey = payload?.column != null ? `${kind}:${payload.column.index}` : kind;
     if (entity && (typeof entity === 'object' || typeof entity === 'function')) {
         let byKind = pool.byEntity.get(entity);
         if (!byKind) {
             byKind = new Map();
             pool.byEntity.set(entity, byKind);
         }
-        drawable = byKind.get(kind);
+        drawable = byKind.get(poolKey);
         if (!drawable) {
             drawable = {};
-            byKind.set(kind, drawable);
+            byKind.set(poolKey, drawable);
         }
     } else {
         const stableKey = payloadStableKey(payload);
@@ -190,10 +193,10 @@ function pooledDepthDrawable(target, kind, sortY, payload, drawFallback, semanti
                 byKind = new Map();
                 pool.stableCurrent.set(stableKey, byKind);
             }
-            drawable = byKind.get(kind);
+            drawable = byKind.get(poolKey);
             if (!drawable) {
-                drawable = pool.stablePrevious.get(stableKey)?.get(kind) || {};
-                byKind.set(kind, drawable);
+                drawable = pool.stablePrevious.get(stableKey)?.get(poolKey) || {};
+                byKind.set(poolKey, drawable);
             }
         } else {
             const index = pool.fallbackCursor++;
@@ -228,6 +231,9 @@ export function appendDepthSortedDrawables(target, {
     chronicleMonumentDrawables = [],
     familiarDrawables = [],
     particles = null,
+    sprites = null,
+    assets = null,
+    zoom = 1,
 } = {}) {
     const pool = _framePools.get(target);
     if (pool) {
@@ -241,7 +247,10 @@ export function appendDepthSortedDrawables(target, {
     for (const drawable of buildingDrawables) {
         pushDepthDrawable(target, pooledDepthDrawable(target, drawable.kind, drawable.sortY, drawable, drawBuilding));
     }
-    const splitBuildings = collectSplitBuildings(buildingDrawables);
+    const resolvedAssets = assets || sprites?.assets || null;
+    const splitBuildings = collectSplitBuildings(buildingDrawables, resolvedAssets);
+    const allBuildings = collectAllBuildings(buildingDrawables);
+    const columnBuildings = collectColumnBuildings(buildingDrawables, resolvedAssets);
     const bridgeRails = _bridgeRailScratch;
     bridgeRails.length = 0;
     for (const drawable of propDrawables) {
@@ -251,7 +260,7 @@ export function appendDepthSortedDrawables(target, {
         // back < body < front.
         const sprite = drawable.payload?.sprite;
         if (sprite?.bracketsSitter) {
-            const behind = behindSplitSortY(sprite.x, sprite.y, splitBuildings);
+            const behind = behindSplitSortY(sprite.x, sprite.y, splitBuildings, sprites);
             const own = propPartSortY(sprite, drawable.payload.part, drawable.payload.column);
             drawable.sortY = behind == null ? own : behind + (own - sprite.y) / 8;
         }
@@ -259,23 +268,36 @@ export function appendDepthSortedDrawables(target, {
         pushDepthDrawable(target, drawable);
     }
     for (const sprite of agentSprites) {
-        pushDepthDrawable(target, pooledDepthDrawable(target, 'agent', agentSortY(sprite, splitBuildings, bridgeRails), sprite, drawAgent));
+        pushDepthDrawable(target, pooledDepthDrawable(target, 'agent', agentSortY(sprite, splitBuildings, allBuildings, bridgeRails, sprites), sprite, drawAgent));
+    }
+    if (agentSprites.length) {
+        updateAgentWorldOcclusion({
+            agentSprites,
+            buildingDrawables,
+            propDrawables,
+            sprites,
+            assets: resolvedAssets,
+            zoom,
+        });
     }
     bridgeRails.length = 0;
     for (const entry of sceneCategoryFrame?.entries || []) {
         const category = entry.category;
         for (const item of entry.items) {
-            // 3.8 — a hull on the water behind a split building (the Harbor on
-            // its piers) sorts before the back half, like a body behind it.
+            // 3.8 — a hull on the water behind a building (the Harbor on its
+            // piers) records `behindBuilding` for its marks pass; legacy split
+            // buildings also sort it before the back half, while column-sorted
+            // buildings naturally depth-sort it by column.
             let sortY = item?.sortY;
             if (category.behindSplitBuildings === true && item) {
-                const split = behindSplit(item.x, item.y, splitBuildings);
+                const split = behindSplit(item.x, item.y, splitBuildings, sprites);
+                const columnOcc = split ? null : behindColumnBuilding(item.x, item.y, columnBuildings, sortY);
                 // Read by the category's own marks pass (flags, plates): the
                 // depth verdict plus the building that sorts over the item,
                 // so the marks pass can test whether its silhouette actually
                 // covers the hull on screen before hiding them.
-                item.behindBuilding = split != null;
-                item.behindBuildingDrawable = split?.drawable ?? null;
+                item.behindBuilding = split != null || columnOcc != null;
+                item.behindBuildingDrawable = split?.drawable ?? columnOcc?.drawable ?? null;
                 if (split != null) sortY = split.backSortY - 0.5;
             }
             const drawable = pooledDepthDrawable(
@@ -306,17 +328,13 @@ export function appendDepthSortedDrawables(target, {
     target.sort(compareDepthDrawables);
 }
 
-// W-F16 — a split building paints its back half (upper sprite rows: roofs,
-// spires, the tall corner towers) at the back footprint depth and its front
-// half at the front. A body whose feet fall between those depths while it
-// stands behind the footprint (not south or east of it) would paint over the
-// back half — a villager on the roof. Such a body sorts just before the back
-// half instead, so the whole building occludes it (the selected-agent x-ray
-// keeps a hidden selection visible). `sprite._behindBuilding` records the
-// verdict so the ungraded overlay and the label pass do not float a hidden
-// body's name and marks on the building's face.
+// W-F16 — a legacy split building paints its back half at the back footprint
+// depth and its front half at the front. `behindSplit` is strictly bounded to
+// the building's FootprintField front-edge geometry (and confirmed via opaque
+// `sprites.hitTest` when available) so a neighbouring building can never steal
+// a villager standing in another building's yard.
 const _splitBuildingScratch = [];
-function collectSplitBuildings(buildingDrawables) {
+function collectSplitBuildings(buildingDrawables, assets = null) {
     const out = _splitBuildingScratch;
     out.length = 0;
     for (const drawable of buildingDrawables) {
@@ -326,51 +344,140 @@ function collectSplitBuildings(buildingDrawables) {
         if (!front) continue;
         const x0 = Number(building.x ?? building.position?.tileX);
         const y0 = Number(building.y ?? building.position?.tileY);
-        const x1 = x0 + (Number(building.width) || 1);
-        const y1 = y0 + (Number(building.height) || 1);
+        const width = Number(building.width) || 1;
+        const height = Number(building.height) || 1;
+        const x1 = x0 + width;
+        const y1 = y0 + height;
         if (!Number.isFinite(x0) || !Number.isFinite(y0)) continue;
+        const fp = landmarkFootprint(building);
+        const id = drawable.entry?.id || null;
+        const dims = id ? assets?.getDims?.(id) : null;
+        const anchor = id ? assets?.getAnchor?.(id) : null;
+        const spriteLeft = dims && Array.isArray(anchor) ? Math.round(drawable.wx - anchor[0]) : null;
+        const spriteTop = dims && Array.isArray(anchor) ? Math.round(drawable.wy - anchor[1]) : null;
         out.push({
             drawable,
             building,
+            fp,
+            id,
             backSortY: drawable.sortY,
             frontSortY: front.sortY,
+            x0,
+            y0,
             x1,
             y1,
-            // Screen-x span of the footprint (W corner to E corner), padded by
-            // one tile for eaves and towers that overhang it.
-            left: (x0 - y1 - 1) * TILE_HALF_WIDTH,
-            right: (x1 - y0 + 1) * TILE_HALF_WIDTH,
+            left: fp.left.x,
+            right: fp.right.x,
+            spriteLeft,
+            spriteTop,
+            spriteRight: spriteLeft != null ? spriteLeft + dims.w : null,
+            spriteBottom: spriteTop != null ? spriteTop + dims.h : null,
         });
     }
     return out;
 }
 
-// The split building a point at (x, y) stands behind (between its back and
-// front depths, inside its footprint), else null.
-function behindSplit(x, y, splitBuildings) {
-    if (!splitBuildings.length || !Number.isFinite(x) || !Number.isFinite(y)) return null;
-    for (const split of splitBuildings) {
-        if (!(y > split.backSortY && y <= split.frontSortY)) continue;
-        if (x < split.left || x > split.right) continue;
-        const tile = worldToTile(x, y);
-        // A body on a landmark's open floor (the Tavern's veranda) stands in
-        // the building, not behind it: it paints between the halves.
-        if (split.building?.isOpenFloor?.(tile.tileX, tile.tileY)) continue;
-        if (tile.tileX < split.x1 && tile.tileY < split.y1) return split;
+const _allBuildingScratch = [];
+function collectAllBuildings(buildingDrawables) {
+    const out = _allBuildingScratch;
+    out.length = 0;
+    for (const drawable of buildingDrawables) {
+        const building = drawable?.building;
+        if (!building || out.includes(building)) continue;
+        out.push(building);
+    }
+    return out;
+}
+
+const _columnBuildingScratch = [];
+function collectColumnBuildings(buildingDrawables, assets = null) {
+    const out = _columnBuildingScratch;
+    out.length = 0;
+    const byBuilding = new Map();
+    for (const drawable of buildingDrawables) {
+        if (drawable?.kind !== 'building-column' || !drawable.building || !drawable.column) continue;
+        let entry = byBuilding.get(drawable.building);
+        if (!entry) {
+            const id = drawable.entry?.id || null;
+            const dims = id ? assets?.getDims?.(id) : null;
+            const anchor = id ? assets?.getAnchor?.(id) : null;
+            const left = dims && Array.isArray(anchor) ? Math.round(drawable.wx - anchor[0]) : drawable.column.worldLeft;
+            const top = dims && Array.isArray(anchor) ? Math.round(drawable.wy - anchor[1]) : -Infinity;
+            entry = {
+                building: drawable.building,
+                drawable,
+                left,
+                right: dims ? left + dims.w : drawable.column.worldRight,
+                top,
+                bottom: dims ? top + dims.h : Infinity,
+                columns: [],
+            };
+            byBuilding.set(drawable.building, entry);
+            out.push(entry);
+        }
+        entry.columns.push(drawable);
+        if (drawable.column.worldLeft < entry.left) entry.left = drawable.column.worldLeft;
+        if (drawable.column.worldRight > entry.right) entry.right = drawable.column.worldRight;
+    }
+    return out;
+}
+
+function behindColumnBuilding(x, y, columnBuildings, itemSortY = null) {
+    if (!columnBuildings.length || !Number.isFinite(x) || !Number.isFinite(y)) return null;
+    const depth = Number.isFinite(itemSortY) ? itemSortY : y;
+    for (const entry of columnBuildings) {
+        if (x < entry.left || x > entry.right || y < entry.top || y > entry.bottom + 12) continue;
+        for (const colDrawable of entry.columns) {
+            const col = colDrawable.column;
+            if (x >= col.worldLeft && x < col.worldRight && colDrawable.sortY > depth) {
+                return entry;
+            }
+        }
     }
     return null;
 }
 
-// True when (x, y) stands on a split building's open floor (Building.openFloor).
-function onOpenFloor(x, y, splitBuildings) {
-    if (!splitBuildings.length || !Number.isFinite(x) || !Number.isFinite(y)) return false;
+// The legacy split building a point at (x, y) stands behind (bounded to its
+// FootprintField front-edge geometry and confirmed by opaque sprite overlap
+// when `sprites.hitTest` is available), else null.
+function behindSplit(x, y, splitBuildings, sprites = null) {
+    if (!splitBuildings.length || !Number.isFinite(x) || !Number.isFinite(y)) return null;
+    for (const split of splitBuildings) {
+        if (!(y > split.backSortY && y <= split.frontSortY)) continue;
+        if (x < split.left || x > split.right) continue;
+        const frontY = frontEdgeFoot(split.fp, x).y - TILE_HALF_HEIGHT;
+        if (y > frontY) continue;
+        const tile = worldToTile(x, y);
+        // A body on a landmark's open floor (the Tavern's veranda) stands in
+        // the building, not behind it: it paints between the halves.
+        if (split.building?.isOpenFloor?.(tile.tileX, tile.tileY)) continue;
+        // Lower-bound tile check keeps neighbouring yards out of this building.
+        if (tile.tileX < split.x0 - 2 || tile.tileY < split.y0 - 2) continue;
+        if (tile.tileX >= split.x1 || tile.tileY >= split.y1) continue;
+        if (split.spriteLeft != null) {
+            if (x < split.spriteLeft - 12 || x > split.spriteRight + 12 || y < split.spriteTop || y > split.spriteBottom + 12) continue;
+        }
+        if (typeof sprites?.hitTest === 'function' && split.id && split.spriteLeft != null) {
+            const hit = sprites.hitTest(split.id, x, y - 6, split.spriteLeft, split.spriteTop)
+                || sprites.hitTest(split.id, x, y - 20, split.spriteLeft, split.spriteTop)
+                || sprites.hitTest(split.id, x, y - 34, split.spriteLeft, split.spriteTop);
+            if (!hit) continue;
+        }
+        return split;
+    }
+    return null;
+}
+
+// True when (x, y) stands on any building's open floor (Building.openFloor).
+function onOpenFloor(x, y, buildings) {
+    if (!buildings.length || !Number.isFinite(x) || !Number.isFinite(y)) return false;
     const tile = worldToTile(x, y);
-    return splitBuildings.some((split) => split.building?.isOpenFloor?.(tile.tileX, tile.tileY) === true);
+    return buildings.some((building) => building?.isOpenFloor?.(tile.tileX, tile.tileY) === true);
 }
 
 // The back-half depth such a point takes, else null.
-function behindSplitSortY(x, y, splitBuildings) {
-    const split = behindSplit(x, y, splitBuildings);
+function behindSplitSortY(x, y, splitBuildings, sprites = null) {
+    const split = behindSplit(x, y, splitBuildings, sprites);
     return split ? split.backSortY - 0.5 : null;
 }
 
@@ -416,15 +523,263 @@ function bridgeDeckSortY(sprite, railDrawables) {
 // The painter sortY the sprite was sorted at this frame is kept on the
 // sprite (`_depthSortY`), so the particles it emits (footfalls, sweat, motes)
 // sort with the body that owns them, behind a building with it.
-function agentSortY(sprite, splitBuildings, bridgeRails) {
-    sprite._onOpenFloor = onOpenFloor(sprite.x, sprite.y, splitBuildings);
-    const split = behindSplit(sprite.x, sprite.y, splitBuildings);
+function agentSortY(sprite, splitBuildings, allBuildings, bridgeRails, sprites = null) {
+    sprite._onOpenFloor = onOpenFloor(sprite.x, sprite.y, allBuildings);
+    const split = behindSplit(sprite.x, sprite.y, splitBuildings, sprites);
+    sprite._splitBehindBuilding = split != null;
+    sprite._splitBehindDrawable = split ? split.drawable : null;
     sprite._behindBuilding = split != null;
     // W3.4 — the occluding building, so the overlay can lift this body's
     // thought above its crown while the body itself stays hidden.
     sprite._behindBuildingDrawable = split ? split.drawable : null;
     sprite._depthSortY = split ? split.backSortY - 0.5 : (bridgeDeckSortY(sprite, bridgeRails) ?? sprite.y);
     return sprite._depthSortY;
+}
+
+const DEFAULT_AGENT_OCCLUSION_BOX = Object.freeze({ left: -10, right: 10, top: -44, bottom: -2 });
+const OCCLUSION_GRID_X = Object.freeze([0.25, 0.5, 0.75]);
+const OCCLUSION_GRID_Y = Object.freeze([0.2, 0.5, 0.8]);
+
+export function isWorldOccluderPropId(id) {
+    if (typeof id !== 'string' || !id) return false;
+    return id === 'prop.villageGate'
+        || id === 'prop.villageWallSeaTower'
+        || id.startsWith('village.wall.');
+}
+
+function collectWorldOccluders(buildingDrawables, propDrawables, assets, zoom) {
+    const occluders = [];
+    const byBuilding = new Map();
+    for (const drawable of buildingDrawables || []) {
+        const building = drawable?.building;
+        const id = drawable?.entry?.id;
+        if (!building || !id) continue;
+        if (drawable.kind === 'building-back') continue;
+        let occ = byBuilding.get(building);
+        if (!occ) {
+            const dims = assets?.getDims?.(id);
+            const anchor = assets?.getAnchor?.(id);
+            const mask = assets?.getMask?.(id) || null;
+            if (!dims || !Array.isArray(anchor) || !mask) continue;
+            const dx = Math.round(drawable.wx - anchor[0]);
+            const dy = Math.round(drawable.wy - anchor[1]);
+            occ = {
+                kind: 'building',
+                id,
+                drawable,
+                image: assets?.get?.(id) || null,
+                mask,
+                dx,
+                dy,
+                w: dims.w,
+                h: dims.h,
+                left: dx,
+                right: dx + dims.w,
+                top: dy,
+                bottom: dy + dims.h,
+                columns: null,
+                sortY: drawable.sortY,
+                rowStart: drawable.kind === 'building-front' ? (drawable.horizonY || 0) : 0,
+            };
+            byBuilding.set(building, occ);
+            occluders.push(occ);
+        }
+        if (drawable.kind === 'building-column' && drawable.column) {
+            if (!occ.columns) occ.columns = [];
+            occ.columns.push({
+                worldLeft: drawable.column.worldLeft,
+                worldRight: drawable.column.worldRight,
+                sortY: drawable.sortY,
+            });
+            if (drawable.sortY > occ.sortY) occ.sortY = drawable.sortY;
+        } else if (drawable.sortY > occ.sortY) {
+            occ.sortY = drawable.sortY;
+        }
+    }
+    const byProp = new Map();
+    for (const drawable of propDrawables || []) {
+        const sprite = drawable?.payload?.sprite;
+        if (!sprite || !isWorldOccluderPropId(sprite.id)) continue;
+        const part = drawable.payload?.part || 'whole';
+        if (part === 'back') continue;
+        let occ = byProp.get(sprite);
+        if (!occ) {
+            const alphaMask = typeof sprite.getAlphaMask === 'function' ? sprite.getAlphaMask(zoom) : null;
+            if (!alphaMask?.mask) continue;
+            occ = {
+                kind: 'prop',
+                id: sprite.id,
+                drawable,
+                image: alphaMask.canvas || null,
+                mask: alphaMask.mask,
+                dx: alphaMask.x,
+                dy: alphaMask.y,
+                w: alphaMask.w,
+                h: alphaMask.h,
+                left: alphaMask.x,
+                right: alphaMask.x + alphaMask.w,
+                top: alphaMask.y,
+                bottom: alphaMask.y + alphaMask.h,
+                columns: null,
+                sortY: drawable.sortY,
+                rowStart: 0,
+            };
+            byProp.set(sprite, occ);
+            occluders.push(occ);
+        }
+        if (part === 'column' && drawable.payload?.column) {
+            const col = drawable.payload.column;
+            if (!occ.columns) occ.columns = [];
+            const worldLeft = Number.isFinite(col.left) ? Math.round(sprite.x + col.left) : occ.left;
+            const worldRight = Number.isFinite(col.right) ? Math.round(sprite.x + col.right) : occ.right;
+            occ.columns.push({ worldLeft, worldRight, sortY: col.sortY });
+            if (col.sortY > occ.sortY) occ.sortY = col.sortY;
+        } else if (drawable.sortY > occ.sortY) {
+            occ.sortY = drawable.sortY;
+        }
+    }
+    return occluders;
+}
+
+function occluderPointOpaque(occ, px, py, agentDepth, sprites) {
+    if (px < occ.left || px >= occ.right || py < occ.top || py >= occ.bottom) return false;
+    if (occ.columns) {
+        let colSortY = null;
+        for (let i = 0; i < occ.columns.length; i++) {
+            const col = occ.columns[i];
+            if (px >= col.worldLeft && px < col.worldRight) {
+                colSortY = col.sortY;
+                break;
+            }
+        }
+        if (!(colSortY > agentDepth)) return false;
+    } else if (!(occ.sortY > agentDepth)) {
+        return false;
+    }
+    const lx = Math.floor(px - occ.dx);
+    const ly = Math.floor(py - occ.dy);
+    if (ly < occ.rowStart || lx < 0 || lx >= occ.w || ly < 0 || ly >= occ.h) return false;
+    if (occ.kind === 'building' && typeof sprites?.hitTest === 'function') {
+        return sprites.hitTest(occ.id, px, py, occ.dx, occ.dy);
+    }
+    return occ.mask[ly * occ.w + lx] === 1;
+}
+
+function occluderClipRanges(occ, agentDepth, boxLeft, boxRight) {
+    if (!occ.columns) return null;
+    const raw = [];
+    for (let i = 0; i < occ.columns.length; i++) {
+        const col = occ.columns[i];
+        if (!(col.sortY > agentDepth)) continue;
+        if (col.worldRight <= boxLeft || col.worldLeft >= boxRight) continue;
+        raw.push([col.worldLeft, col.worldRight]);
+    }
+    if (raw.length <= 1) return raw;
+    raw.sort((a, b) => a[0] - b[0]);
+    const ranges = [raw[0]];
+    for (let i = 1; i < raw.length; i++) {
+        const next = raw[i];
+        const last = ranges[ranges.length - 1];
+        if (next[0] <= last[1] + 1) {
+            if (next[1] > last[1]) last[1] = next[1];
+        } else {
+            ranges.push(next);
+        }
+    }
+    return ranges;
+}
+
+/**
+ * Sets `sprite._occludedByWorld`, `sprite._worldOccluders`, and syncs
+ * `sprite._behindBuilding` / `sprite._behindBuildingDrawable` from opaque-pixel
+ * occlusion against buildings, the village gate, and wall props that sort after
+ * the villager.
+ */
+export function updateAgentWorldOcclusion({
+    agentSprites = [],
+    buildingDrawables = [],
+    propDrawables = [],
+    sprites = null,
+    assets = null,
+    zoom = 1,
+} = {}) {
+    const resolvedAssets = assets || sprites?.assets || null;
+    const occluders = collectWorldOccluders(buildingDrawables, propDrawables, resolvedAssets, zoom);
+    for (const sprite of agentSprites || []) {
+        if (!sprite) continue;
+        const hits = sprite._worldOccluders || (sprite._worldOccluders = []);
+        hits.length = 0;
+        if (sprite._onOpenFloor || !Number.isFinite(sprite.x) || !Number.isFinite(sprite.y)) {
+            sprite._occludedByWorld = false;
+            sprite._behindBuilding = false;
+            sprite._behindBuildingDrawable = null;
+            continue;
+        }
+        const box = sprite._bodyBox || DEFAULT_AGENT_OCCLUSION_BOX;
+        const cx = Number.isFinite(sprite._placeX) ? sprite._placeX : sprite.x;
+        const lift = typeof sprite._currentBridgeLift === 'function' ? (sprite._currentBridgeLift() || 0) : 0;
+        const cy = Number.isFinite(sprite._placeY) ? sprite._placeY : (sprite.y - lift);
+        const boxLeft = cx + box.left;
+        const boxRight = cx + box.right;
+        const boxTop = cy + box.top;
+        const boxBottom = cy + box.bottom;
+        const boxW = Math.max(1, boxRight - boxLeft);
+        const boxH = Math.max(1, boxBottom - boxTop);
+        const agentDepth = Number.isFinite(sprite._depthSortY) ? sprite._depthSortY : sprite.y;
+
+        let pointHitMask = 0;
+        let firstBuildingDrawable = null;
+        for (let oi = 0; oi < occluders.length; oi++) {
+            const occ = occluders[oi];
+            if (!(occ.sortY > agentDepth)) continue;
+            if (boxRight <= occ.left || boxLeft >= occ.right || boxBottom <= occ.top || boxTop >= occ.bottom) continue;
+            let occHit = false;
+            for (let yi = 0; yi < 3; yi++) {
+                const py = boxTop + boxH * OCCLUSION_GRID_Y[yi];
+                for (let xi = 0; xi < 3; xi++) {
+                    const px = boxLeft + boxW * OCCLUSION_GRID_X[xi];
+                    if (occluderPointOpaque(occ, px, py, agentDepth, sprites)) {
+                        pointHitMask |= 1 << (yi * 3 + xi);
+                        occHit = true;
+                    }
+                }
+            }
+            if (!occHit && sprite.selected) {
+                // Selected villager: check top/bottom corners too so partial
+                // overlap behind a roof gable still receives the masked x-ray.
+                occHit = occluderPointOpaque(occ, boxLeft + boxW * 0.5, boxTop + boxH * 0.08, agentDepth, sprites)
+                    || occluderPointOpaque(occ, boxLeft + boxW * 0.5, boxTop + boxH * 0.92, agentDepth, sprites)
+                    || occluderPointOpaque(occ, boxLeft + boxW * 0.12, boxTop + boxH * 0.5, agentDepth, sprites)
+                    || occluderPointOpaque(occ, boxLeft + boxW * 0.88, boxTop + boxH * 0.5, agentDepth, sprites);
+            }
+            if (!occHit) continue;
+            const clipRanges = occluderClipRanges(occ, agentDepth, boxLeft - 24, boxRight + 24);
+            if (clipRanges && !clipRanges.length) continue;
+            hits.push({
+                kind: occ.kind,
+                image: occ.image,
+                dx: occ.dx,
+                dy: occ.dy,
+                w: occ.w,
+                h: occ.h,
+                rowStart: occ.rowStart || 0,
+                clipRanges,
+                drawable: occ.drawable,
+            });
+            if (!firstBuildingDrawable && occ.kind === 'building') {
+                firstBuildingDrawable = occ.drawable;
+            }
+        }
+        let coveredCount = 0;
+        for (let bit = 0; bit < 9; bit++) {
+            if (pointHitMask & (1 << bit)) coveredCount++;
+        }
+        const headAndChest = Boolean((pointHitMask & (1 << 1)) && (pointHitMask & (1 << 4)));
+        const occluded = coveredCount >= 4 || headAndChest;
+        sprite._occludedByWorld = occluded;
+        sprite._behindBuilding = occluded || Boolean(sprite._splitBehindBuilding);
+        sprite._behindBuildingDrawable = firstBuildingDrawable || sprite._splitBehindDrawable || null;
+    }
 }
 
 // 0.6 — on Canvas each live world particle joins the depth stream as a small
