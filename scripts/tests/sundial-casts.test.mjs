@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
     SHADE_ALPHA,
     SHADE_LENGTH_CAP,
+    SHADE_LENGTH_MIN,
     SHADE_SUN_RISEN_DEG,
     castLightingFor,
     frameShadeLayer,
@@ -40,7 +41,7 @@ function castBefore({ lightGrade: grade, lighting }) {
         length,
         sun,
         alpha: Math.min(0.74, lighting.shadowAlpha + 0.44 * rake),
-        color: [15, 22, 30].map((channel, index) => Math.round(channel + ([42, 35, 70][index] - channel) * rake)),
+        color: [24, 38, 66].map((channel, index) => Math.round(channel + ([42, 35, 70][index] - channel) * rake)),
         key: `${rake}|${angle}|${length}|${sun ? 's' : 'o'}`,
     };
 }
@@ -222,7 +223,8 @@ test('length is the real sun\'s, eased into the sd1len cap; direction keeps the 
             previous = length;
         }
         assert.ok(lengthAt(1) > cap * 0.97, 'a sun on the horizon throws the cap');
-        assert.ok(Math.abs(lengthAt(64) - real(64)) < 0.06, 'a summer noon is true');
+        const minBucket = Math.round(Math.min(cap, SHADE_LENGTH_MIN) * 32) / 32;
+        assert.equal(lengthAt(64), minBucket, 'summer noon respects minimum readable shadow length');
     }
     setLookStrength('sd1len', 1);
     assert.ok(Math.abs(lengthAt(45) - real(45)) < 0.04);

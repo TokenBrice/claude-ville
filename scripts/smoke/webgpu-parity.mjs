@@ -445,8 +445,9 @@ function installParityHelpers() {
     }
     const { effectBudgetMode } = await import(`${GPU}GpuWorldPolicy.js`);
     const level = Math.min(renderer.qualityLadder.getLevel(), 2);
+    const hasDaytimeEmitter = (T.frame?.records || []).some(r => r?.daytimeEmitter && r.emissiveSource && (r.emissiveGate ?? 1) > 0.01);
     const needsBloom = effectBudgetMode('bloom', level) !== 'off'
-      && renderer.lightCount > 0 && (renderer.sourceEnergy?.bloom ?? 1) > 0 && !renderer._display?.hdr;
+      && (renderer.lightCount > 0 || hasDaytimeEmitter) && (renderer.sourceEnergy?.bloom ?? 1) > 0 && !renderer._display?.hdr;
     const emissionRequired = needsBloom || Boolean(renderer._display || renderer._rolesWritten);
     const emissionWritten = renderer._targetNeedsEmission === true;
     const emissionAllocated = backend === 'webgl'

@@ -1,14 +1,12 @@
 // SD-3 — smoke:sun-lift's per-pixel verdict, on one integer luma for both
 // frames (Rec. 709 on the 8-bit channels, rounded once), so a comparison
 // never turns on floating-point noise.
-export const CANDLE = 192;
+// Open sunlit land/structures cap at SUN_LIFT_GRADED_CEILING (0.82 -> 210);
+// waiting candles and bodies retain their 191/255 cap inside SunShade.js.
+export const CANDLE = 210;
 // Known residual: a pixel from GLOW_BAND up (with the lift off) may rise by
-// at most BRIGHT_RISE instead of being held at the candle. These are
-// bridge-plank highlights inside the bridge candles' additive glow, right at
-// the candle threshold (one at exactly 192 rises to 196): as understood the
-// glow is composited after the scene pass over the lifted surface, out of
-// the shader's hold. Cause unverified; to be checked on hardware.
-export const GLOW_BAND = 188;
+// at most BRIGHT_RISE instead of being held at the open-sun ceiling.
+export const GLOW_BAND = 205;
 export const BRIGHT_RISE = 5;
 
 /** The integer luma of the RGBA pixel at byte offset `i`. */
