@@ -1712,16 +1712,23 @@ export function harborHullBodyPx(ship = {}) {
     return Math.round(10 + (Number(harborShipTier(ship).screenWidth) || 40) * 0.15);
 }
 
-// World px a pier deck (and the quay) stands above the water, and how far its
-// pilings extend below the deck edge on screen; the North pier flagpole rises
-// higher over its head.
-export const HARBOR_PIER_DECK_LIFT_PX = 16;
-export const HARBOR_PIER_PILING_DROP_PX = 10;
+// World px a pier deck (and the quay) stands above the water, and how far each
+// pier's south-side pilings extend below its deck edge on screen (measured from
+// building.harbor: North 4 px, Middle 0 px, South 5 px). The North pier
+// flagpole rises over its outer deck; plates always avoid it, while hulls north
+// of the pier sit behind it in depth order.
+export const HARBOR_PIER_DECK_LIFT_PX = 12;
+export const HARBOR_PIER_PILING_DROP_PX = 4;
+const HARBOR_PIER_PILING_DROP = Object.freeze({
+    North: 4,
+    Middle: 0,
+    South: 5,
+});
 const HARBOR_PIER_FLAGPOLE = Object.freeze({
     name: 'North Flagpole',
-    rect: Object.freeze({ x0: 34.6, x1: 35.5, y0: 16.0, y1: 16.85 }),
+    rect: Object.freeze({ x0: 34.85, x1: 35.5, y0: 16.15, y1: 16.75 }),
     lift: 88,
-    drop: 6,
+    drop: 0,
 });
 // The waterside buildings' lower walls (world px above their footprint) a
 // hull body standing in front of them must not cover.
@@ -1791,13 +1798,20 @@ export function harborObstaclePolygons() {
     if (_harborObstaclePolygons) return _harborObstaclePolygons;
     const out = HARBOR_PIER_DECKS.map((deck) => {
         const isPier = deck.name !== 'Quay';
+        // Pad x1 only so pier-head end-posts stay clear without closing the
+        // between-pier channels. Pilings drop below the south edge (y1) only
+        // and are tested only for hulls moored south of that pier.
         const padded = isPier
-            ? { x0: deck.x0, x1: deck.x1 + 0.3, y0: deck.y0, y1: deck.y1 + 0.18 }
+            ? { x0: deck.x0, x1: deck.x1 + 0.3, y0: deck.y0, y1: deck.y1 }
             : deck;
+        const pilingDrop = isPier ? (HARBOR_PIER_PILING_DROP[deck.name] ?? HARBOR_PIER_PILING_DROP_PX) : 0;
+        const deckPoly = prismPolygon(padded, HARBOR_PIER_DECK_LIFT_PX, 0);
         return {
             name: deck.name,
             rect: padded,
-            poly: prismPolygon(padded, HARBOR_PIER_DECK_LIFT_PX, isPier ? HARBOR_PIER_PILING_DROP_PX : 0),
+            pier: isPier,
+            deckPoly,
+            poly: pilingDrop > 0 ? prismPolygon(padded, HARBOR_PIER_DECK_LIFT_PX, pilingDrop) : deckPoly,
         };
     });
     out.push({
@@ -1826,15 +1840,17 @@ export function boxHitsHarborPierPolygons(box) {
 
 // True when a hull moored at world (x, y) keeps its body clear of every
 // pier, the quay and the waterside walls on screen, whether they stand in
-// front of it or behind it. A hull wholly behind a building (north or west
-// of its footprint) is the depth sort's to hide, so walls only count for
-// hulls in front of them.
+// front of it or behind it. A hull wholly behind a building or pier flagpole
+// (north or west of its footprint) is the depth sort's to hide, and pier
+// pilings are tested only for hulls moored south of that pier.
 export function hullClearsPiers(world, entry = {}) {
     const box = hullScreenBox(world, entry);
     const tile = toTile(world.x, world.y);
     for (const obstacle of harborObstaclePolygons()) {
         if (obstacle.building && (tile.tileY < obstacle.rect.y0 || tile.tileX < obstacle.rect.x0)) continue;
-        if (boxHitsPolygon(box, obstacle.poly)) return false;
+        if (obstacle.flagpole && tile.tileY < obstacle.rect.y0) continue;
+        const poly = obstacle.pier && tile.tileY <= obstacle.rect.y1 ? obstacle.deckPoly : obstacle.poly;
+        if (boxHitsPolygon(box, poly)) return false;
     }
     return true;
 }

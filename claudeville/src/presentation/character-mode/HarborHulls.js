@@ -39,6 +39,9 @@ const REFLECTION_STOP = hexRgb(ART_RAMPS.shallowWater[1]);
 const REFLECTION_TOWARD_STOP = 0.38;
 const WAKE_FOAM = '#c8e4de';
 // Crisp seafoam crest for sailing wakes and moored hull waterline collars.
+// Existing baked hull strips keep their 1-px `#91b2a8` keel lip (pre-relaxation
+// `shallowWater[2]`), which sits cleanly under dark hulls and directly above
+// this moored collar without visible mismatch; future bakes read the live stop.
 const WAKE_CREST = '#eaf4f0';
 const COLLAR_FOAM_RGB = hexRgb(WAKE_FOAM);
 const COLLAR_CREST_RGB = hexRgb(WAKE_CREST);
@@ -559,7 +562,7 @@ const _collars = new Map();
 // 1-texel foam waterline collar hugging a moored hull's exact waterline row,
 // cached per strip + roll frame so dark hulls separate cleanly from blue water.
 function collarCanvas(strip, frame) {
-    const key = `${strip.key || strip.spriteId}|c${frame}`;
+    const key = `${strip.liveryKey || strip.key || strip.spriteId}|c${frame}`;
     const hit = _collars.get(key);
     if (hit && hit.source === strip.image) return touch(_collars, key, hit, LIVERY_CACHE_LIMIT).canvas;
     const w = strip.frameWidth;
@@ -609,7 +612,7 @@ function collarRecord(pose, g) {
     return {
         id: `ground:collar:${pose.id}`,
         stableKey: pose.id,
-        textureKey: `harbor-collar:${strip.key || strip.spriteId}|c${pose.frame}`,
+        textureKey: `harbor-collar:${strip.liveryKey || strip.key || strip.spriteId}|c${pose.frame}`,
         source: canvas,
         sourceWidth: canvas.width,
         sourceHeight: 1,
@@ -813,7 +816,7 @@ export function drawHullFallback(ctx, pose, { ungradedOverlay = false, lightGrad
     if (!pose.wake && !(pose.sink > 0)) {
         const collar = collarCanvas(strip, pose.frame);
         if (collar) {
-            ctx.drawImage(tinted(`${strip.key || strip.spriteId}|c${pose.frame}`, collar), g.x, g.y + g.height);
+            ctx.drawImage(tinted(`${strip.liveryKey || strip.key || strip.spriteId}|c${pose.frame}`, collar), g.x, g.y + g.height);
         }
     }
     const image = tinted(strip.liveryKey || strip.key || strip.spriteId, strip.image);
