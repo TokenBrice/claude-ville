@@ -12,6 +12,8 @@ import {
     frameShowsVillage,
     shareInInnerFrame,
 } from '../../claudeville/src/presentation/character-mode/CameraDirector.js';
+import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
+import { AgentStatus } from '../../claudeville/src/domain/value-objects/AgentStatus.js';
 
 // The World canvas in CSS px (a 2540 × 1400 window less the 240 px sidebar and
 // the 48 px top bar) at backing DPR 1.
@@ -160,4 +162,230 @@ test('a 10 minute Auto soak at the whole-island rung barely moves and keeps the 
         previous = centre;
     }
     assert.ok(moving / intervals < 0.15, `${moving} of ${intervals} intervals moving`);
+    director.dispose();
+});
+
+test('mid-glide abort settles fractional zoom via _settleToRestingZoom, and mouse press keeps 8 px drag slop', () => {
+    const startGlideAtFractional = (camera) => {
+        camera.fatFlight = true;
+        camera.zoom = 1;
+        camera.x = 840;
+        camera.y = -100;
+        camera.glideToWorld({ minX: -100, maxX: 100, minY: 500, maxY: 700 }, { maxZoom: 2, minZoom: 1, owner: 'system' });
+        for (let i = 0; i < 40; i++) {
+            camera.update(25);
+            if (camera._directorGlide && Math.abs(camera.zoom - Math.round(camera.zoom)) > 0.15) break;
+        }
+        assert.ok(Math.abs(camera.zoom - Math.round(camera.zoom)) > 0.15, `expected fractional zoom, got ${camera.zoom}`);
+    };
+
+    // 1) Plain click (<= 8 px) leaves glide and follow untouched.
+    const camClick = new Camera(canvasOf(1680, 1032));
+    startGlideAtFractional(camClick);
+    camClick._onMouseDown({ button: 0, clientX: 500, clientY: 500 });
+    camClick._onMouseMove({ clientX: 505, clientY: 504 });
+    camClick._onMouseUp();
+    assert.equal(camClick.isDirectorGliding(), true, 'click within 8 px slop does not abort glide');
+    assert.equal(camClick.dragging, false);
+
+    const followTarget = { x: 0, y: 500, moving: false };
+    camClick.followTarget = followTarget;
+    camClick._onMouseDown({ button: 0, clientX: 500, clientY: 500 });
+    camClick._onMouseMove({ clientX: 504, clientY: 503 });
+    camClick._onMouseUp();
+    assert.equal(camClick.followTarget, followTarget, 'click within 8 px slop keeps follow');
+
+    // 2) Drag (> 8 px) aborts glide, stops follow, and settles zoom to an integer rung within 150 ms.
+    const camDrag = new Camera(canvasOf(1680, 1032));
+    startGlideAtFractional(camDrag);
+    camDrag._onMouseDown({ button: 0, clientX: 500, clientY: 500 });
+    camDrag._onMouseMove({ clientX: 520, clientY: 510 });
+    assert.equal(camDrag.dragging, true);
+    assert.equal(camDrag.isDirectorGliding(), false);
+    assert.ok(camDrag._zoomAnimation?.aboutCenter, 'drag abort starts resting-zoom settle ease');
+    camDrag._onMouseMove({ clientX: 550, clientY: 520 });
+    camDrag._onMouseUp();
+    camDrag.update(200);
+    assert.ok(camDrag.zoomSteps.includes(camDrag.zoom), `dragged camera settled on rung: ${camDrag.zoom}`);
+    assert.equal(camDrag._zoomAnimation, null);
+
+    // 3) claimOwner, _beginTouchMotion, and setReducedMotion all settle fractional zoom.
+    const camClaim = new Camera(canvasOf(1680, 1032));
+    startGlideAtFractional(camClaim);
+    camClaim.claimOwner('ambient');
+    camClaim.update(200);
+    assert.ok(camClaim.zoomSteps.includes(camClaim.zoom), `claimOwner settled on rung: ${camClaim.zoom}`);
+
+    const camTouch = new Camera(canvasOf(1680, 1032));
+    startGlideAtFractional(camTouch);
+    camTouch._touchGesture = { kind: 'pan', consumed: false };
+    camTouch._beginTouchMotion();
+    camTouch.update(200);
+    assert.ok(camTouch.zoomSteps.includes(camTouch.zoom), `_beginTouchMotion settled on rung: ${camTouch.zoom}`);
+
+    const camReduced = new Camera(canvasOf(1680, 1032));
+    startGlideAtFractional(camReduced);
+    camReduced.setReducedMotion(true);
+    assert.ok(camReduced.zoomSteps.includes(camReduced.zoom), `setReducedMotion snapped immediately: ${camReduced.zoom}`);
+    assert.equal(camReduced._zoomAnimation, null);
+});
+
+test('AUTO holds zoom 2 for 60 s at 1920×1080 and 1440×900, and never zooms in uninvited from z1 or past medium', () => {
+    for (const [label, w, h] of [['1080p', 1680, 1032], ['1440x900', 1200, 852]]) {
+        const camera = new Camera(canvasOf(w, h, 1));
+        camera.fatFlight = true;
+        const director = new CameraDirector(camera);
+        const sprites = [
+            ...Array.from({ length: 8 }, (_, i) => ({
+                agent: { id: `forge-${i}`, status: 'working', currentTool: 'Edit' },
+                x: 20 + (i % 4) * 38, y: 780 + Math.floor(i / 4) * 32,
+                moving: false, isArrivalPending: () => false,
+            })),
+            ...Array.from({ length: 8 }, (_, i) => ({
+                agent: { id: `cmd-${i}`, status: 'working', currentTool: 'Read' },
+                x: -140 + (i % 4) * 42, y: 500 + Math.floor(i / 4) * 34,
+                moving: false, isArrivalPending: () => false,
+            })),
+            ...Array.from({ length: 8 }, (_, i) => ({
+                agent: { id: `far-${i}`, status: 'working', currentTool: 'Bash' },
+                x: 420 + (i % 4) * 36, y: 740 + Math.floor(i / 4) * 30,
+                moving: false, isArrivalPending: () => false,
+            })),
+        ];
+        const start = performance.now() + 120000;
+        camera._lastUserInputAt = start - 120000;
+        camera._lastInputAt = start - 120000;
+        camera._setCenter(0, 624, 2);
+        camera._cameraOwner = 'system';
+        camera._userAdjusted = false;
+        for (let t = 0; t <= 65000; t += 100) {
+            director.update({ now: start + t, dt: 100, agentSprites: sprites });
+            camera.update(100, start + t);
+            if (!camera.isDirectorGliding()) {
+                assert.equal(camera.zoom, 2, `${label} held zoom 2 at ${t} ms (got ${camera.zoom})`);
+            }
+        }
+        // At z1, AUTO never zooms in uninvited.
+        camera._setCenter(450, 740, 1);
+        camera._cameraOwner = 'system';
+        camera._userAdjusted = false;
+        director._lastMoveAt = -Infinity;
+        director._lastScoreAt = -Infinity;
+        for (let t = 0; t <= 10000; t += 100) {
+            director.update({ now: start + 80000 + t, dt: 100, agentSprites: sprites });
+            camera.update(100, start + 80000 + t);
+        }
+        assert.equal(camera.zoom, 1, `${label} AUTO never zooms in uninvited from z1`);
+        director.dispose();
+    }
+});
+
+test('follow settles on shotZoom(medium), keeps user zoom when switching at >= wide, and keyboard +/- eases while keeping follow', () => {
+    const camera = new Camera(canvasOf(1680, 1032, 1));
+    camera.setPresented(true);
+    camera.zoom = 1;
+    const alice = { x: 0, y: 550, moving: false };
+    const bob = { x: 240, y: 620, moving: false };
+
+    camera.followAgent(alice);
+    assert.equal(camera._snapZoom?.toZoom, 2, 'follow targets medium (z2), not tier 3');
+    camera.update(500);
+    assert.equal(camera.zoom, 2);
+
+    // Keyboard '-' eases over 150 ms to z1 and keeps follow active.
+    assert.equal(camera.zoomByStep(-1), true);
+    assert.equal(camera.followTarget, alice, 'keyboard zoom preserves follow');
+    assert.ok(camera._zoomAnimation?.aboutCenter, 'keyboard zoom uses 150 ms ease');
+    camera.update(75);
+    assert.ok(camera.zoom > 1 && camera.zoom < 2, `mid-ease zoom ${camera.zoom}`);
+    camera.update(100);
+    assert.equal(camera.zoom, 1);
+    assert.equal(camera.followTarget, alice);
+
+    // Switching to another villager while following at wide (z1) preserves z1.
+    camera.followAgent(bob);
+    assert.equal(camera._snapZoom, null, 'switching followed villager at >= wide keeps user zoom');
+    assert.equal(camera.zoom, 1);
+    assert.equal(camera.followTarget, bob);
+
+    // Keyboard '+' eases back up to z2 and keeps follow active.
+    assert.equal(camera.zoomByStep(1), true);
+    camera.update(200);
+    assert.equal(camera.zoom, 2);
+    assert.equal(camera.followTarget, bob);
+});
+
+test('_contentFrameBox excludes gate-entering walkers and _openingContentFrameBox frames the densest cluster at medium', () => {
+    const renderer = Object.create(IsometricRenderer.prototype);
+    const camera = new Camera(canvasOf(1680, 1032, 1));
+    renderer.camera = camera;
+    renderer.world = {
+        buildings: new Map([
+            ['forge', { type: 'forge', x: 24, y: 26, width: 4, height: 4 }],
+            ['command', { type: 'command', x: 13, y: 14, width: 4, height: 4 }],
+            ['portal', { type: 'portal', x: 2, y: 29, width: 4, height: 4 }],
+        ]),
+    };
+    renderer.gateTransits = new Map([['gate-walker', { type: 'arrival', since: Date.now() }]]);
+    renderer.villageDirector = { getSnapshot: () => ({ workCohorts: [], buildingSignals: [] }) };
+    renderer.agentSprites = new Map([
+        ['gate-walker', {
+            x: -929, y: 952, moving: true,
+            isArrivalPending: () => false,
+            agent: { id: 'gate-walker', status: AgentStatus.WORKING, targetBuildingType: 'forge' },
+        }],
+        ['pending-walker', {
+            x: 0, y: 1220, moving: false,
+            isArrivalPending: () => true,
+            agent: { id: 'pending-walker', status: AgentStatus.WORKING, targetBuildingType: 'forge' },
+        }],
+        ['settled-forge', {
+            x: 32, y: 840, moving: false,
+            isArrivalPending: () => false,
+            agent: { id: 'settled-forge', status: AgentStatus.WORKING, targetBuildingType: 'forge' },
+        }],
+        ['settled-portal', {
+            x: -820, y: 520, moving: false,
+            isArrivalPending: () => false,
+            agent: { id: 'settled-portal', status: AgentStatus.WORKING, targetBuildingType: 'portal' },
+        }],
+    ]);
+
+    const contentBox = renderer._contentFrameBox();
+    assert.ok(contentBox.minX > -900, `gate walker SW point excluded (minX=${contentBox.minX})`);
+    assert.ok(contentBox.maxY < 1000, `pending gate point excluded (maxY=${contentBox.maxY})`);
+
+    const openingBox = renderer._openingContentFrameBox();
+    const pose = camera._poseForWorldBox(openingBox, { maxZoom: camera.shotTier('medium'), minZoom: camera.shotTier('wide'), owner: 'system' });
+    assert.equal(pose.zoom, 2, `densest active cluster settles at medium z2 (got ${pose.zoom})`);
+});
+
+test('A attention frame includes pending/walking destinations, uses 32 px padding, caps transit at medium, and never recoils', () => {
+    const camera = new Camera(canvasOf(1680, 1032, 1));
+    camera.zoom = 1;
+    const director = new CameraDirector(camera);
+    const waitingAtGate = {
+        x: 20, y: 1180,
+        targetX: 20, targetY: 1180,
+        moving: false,
+        waypoints: [],
+        isArrivalPending: () => true,
+        agent: { id: 'moss', status: AgentStatus.WAITING_ON_USER, awaitingSince: 1000 },
+    };
+    const frame = director.frameAttention([waitingAtGate]);
+    assert.ok(frame, 'attention frame created');
+    assert.ok(frame.zoom <= 2, `transit attention shot capped at medium (got ${frame.zoom})`);
+    // Simulate landing and agent now actively walking from gate toward Command queue.
+    camera._directorGlide = null;
+    camera.zoom = camera.tierZoom(frame.zoom);
+    camera._cameraOwner = 'user';
+    camera._userAdjusted = true;
+    waitingAtGate.isArrivalPending = () => false;
+    waitingAtGate.moving = true;
+    waitingAtGate.waypoints = [{ x: -128, y: 544 }];
+    const landedZoom = camera.zoom;
+    director._followAttentionSet([waitingAtGate], 16);
+    assert.equal(camera._snapZoom, null, 'no zoom recoil after landing when walking starts');
+    assert.equal(camera.zoom, landedZoom);
+    director.dispose();
 });
