@@ -60,7 +60,8 @@ test('SD-3 the sun\'s lift ships at the strength picked from its board', () => {
 });
 
 test('SEA-1 sea light and shade ships at its reviewed strength', () => {
-    assertShipsAt({ sea1: 0.5 });
+    // Relaxed 2026-11-23 (operator decision "clearly blue"): full 2-stop daytime sea lift.
+    assertShipsAt({ sea1: 1 });
 });
 
 test('RN-1 rain in the world ships at its reviewed strength', () => {

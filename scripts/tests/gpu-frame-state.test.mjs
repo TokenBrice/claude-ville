@@ -165,10 +165,10 @@ const GOLDEN = {
     fat: { z1: false, z2: false, z3dpr2: false, flight: true },
     water: {
         'golden/z1/0': { fx: [1, 0, 0, 1], glint: [336, 0.8050000071525574, 1, 0.11999999731779099], stops: [0.9254902005195618, 0.6901960968971252, 0.40784314274787903, 0.7686274647712708, 0.501960813999176, 0.3294117748737335] },
-        'noon/z2/0': { fx: [1, 0, 1, 1], glint: [1041.5999755859375, 0.47999998927116394, 2, 0.15000000596046448], stops: [0.7529411911964417, 0.7450980544090271, 0.6431372761726379, 0.5882353186607361, 0.615686297416687, 0.5607843399047852] },
+        'noon/z2/0': { fx: [1, 0, 1, 1], glint: [1041.5999755859375, 0.47999998927116394, 2, 0.15000000596046448], stops: [0.8627451062202454, 0.9254902005195618, 0.9098039269447327, 0.658823549747467, 0.7960784435272217, 0.8156862854957581] },
         'moonStorm/z1/1': { fx: [1, 1, 0, 1], glint: [0, 0, 0, 0], stops: [0, 0, 0, 0, 0, 0] },
         'clearMoon/z3dpr2/0': { fx: [0, 0, 0, 0], glint: [504, 0.800000011920929, 3, 0.03999999910593033], stops: [0.7686274647712708, 0.8392156958580017, 0.886274516582489, 0.5176470875740051, 0.6039215922355652, 0.6901960968971252] },
-        'noon/flight/2': { fx: [0, 0, 0, 0], glint: [1041.5999755859375, 0.47999998927116394, 2, 0.1265822798013687], stops: [0.7529411911964417, 0.7450980544090271, 0.6431372761726379, 0.5882353186607361, 0.615686297416687, 0.5607843399047852] },
+        'noon/flight/2': { fx: [0, 0, 0, 0], glint: [1041.5999755859375, 0.47999998927116394, 2, 0.1265822798013687], stops: [0.8627451062202454, 0.9254902005195618, 0.9098039269447327, 0.658823549747467, 0.7960784435272217, 0.8156862854957581] },
         'clearMoon/z1/2': { fx: [0, 0, 0, 0], glint: [504, 0.800000011920929, 3, 0.11999999731779099], stops: [0.7686274647712708, 0.8392156958580017, 0.886274516582489, 0.5176470875740051, 0.6039215922355652, 0.6901960968971252] },
     },
     atmosphere: {
@@ -275,6 +275,11 @@ test('resolveWaterFx keeps the water clock, rings, caustics, swash and the sun/m
         const water = resolveWaterFx(feed, camera, level, grade, feed.lighting?.moonFill ?? 0, W);
         assert.deepEqual({ fx: Array.from(water.fx), glint: Array.from(water.glint), stops: Array.from(water.stops) }, GOLDEN.water[key], key);
     });
+    // Shallow caustics gate lowered from zoom 2 to zoom 1.2 (relaxed 2026-11-23).
+    const noon = feeds().noon;
+    const noonGrade = resolveFrameGrade(noon);
+    assert.equal(resolveWaterFx(noon, camera({ zoom: 1.0 }), 0, noonGrade, 0, W).fx[2], 0, 'caustics stay off at zoom 1.0');
+    assert.equal(resolveWaterFx(noon, camera({ zoom: 1.2 }), 0, noonGrade, 0, W).fx[2], 1, 'caustics open at zoom 1.2');
 });
 
 test('resolveAtmosphereCourses at sea1 0 keeps the cloud courses, thresholds, aerial haze and the sea sunlit ceiling', () => {

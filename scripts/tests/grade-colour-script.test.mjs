@@ -4,9 +4,13 @@ import assert from 'node:assert/strict';
 import { ART_RAMPS } from '../../claudeville/src/config/artPalette.js';
 import {
   GRADE_KEYFRAMES,
+  WATER_DAY_MAX_SATURATION,
+  WATER_MAX_SATURATION,
   applyGradeToRgb,
+  capSaturation,
   evaluateGrade,
   gradeKeysAt,
+  waterMaxSaturation,
 } from '../../claudeville/src/presentation/character-mode/GradeEvaluator.js';
 import { AtmosphereState } from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
 import { resetLookStrengths, setLookStrength } from '../../claudeville/src/presentation/character-mode/LookStrengths.js';
@@ -113,6 +117,20 @@ test('the sea stays cool at every hour', () => {
   for (let hour = 0; hour < 24; hour += 0.5) {
     const { RB } = scriptAt(hour, sea);
     assert.ok(RB < 0, `sea R−B ${RB.toFixed(1)} at ${hour}h`);
+  }
+  // V6 daytime water saturation relaxation (2026-11-23, operator decision):
+  // ~0.48 by day, blending back to 0.37 under night and storm.
+  assert.ok(WATER_DAY_MAX_SATURATION >= 0.46 && WATER_DAY_MAX_SATURATION <= 0.50);
+  assert.equal(waterMaxSaturation({ night: 0, storm: 0 }), WATER_DAY_MAX_SATURATION);
+  assert.equal(waterMaxSaturation({ night: 1, storm: 0 }), WATER_MAX_SATURATION);
+  assert.equal(waterMaxSaturation({ night: 0, storm: 1 }), WATER_MAX_SATURATION);
+  const stormGrade = evaluateGrade({ minuteOfDay: 14 * 60, weather: { type: 'storm', intensity: 0.9, cloudCover: 0.97 }, moonFill: 0 });
+  const nightGrade = evaluateGrade({ minuteOfDay: 23 * 60, weather: CLEAR, moonFill: 0.5 });
+  for (const sample of sea) {
+    const stormSat = saturation(capSaturation(applyGradeToRgb(sample.rgb, stormGrade), waterMaxSaturation({ night: 0, storm: 1 })));
+    const nightSat = saturation(capSaturation(applyGradeToRgb(sample.rgb, nightGrade), waterMaxSaturation({ night: 1, storm: 0 })));
+    assert.ok(stormSat <= WATER_MAX_SATURATION + 1e-6, `storm water S ${stormSat.toFixed(3)} stays quiet`);
+    assert.ok(nightSat <= WATER_MAX_SATURATION + 1e-6, `night water S ${nightSat.toFixed(3)} stays quiet`);
   }
 });
 

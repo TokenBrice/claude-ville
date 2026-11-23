@@ -31,9 +31,9 @@ test('SEA-2 / SEA-3: the GLSL and WGSL twins take the sky and set the sea state 
     assert.ok(openSea.includes('if (!whitecap && (litSlope || cap > 0.0)) { take = frame.seaState.x; }'));
     assert.ok(glsl.includes('vec3 sky = inSunRoad(texelPx, u_glint, u_camera.z) ? u_seaSky : u_waterSky.rgb;'));
     assert.ok(openSea.includes('if (inSunRoad(texelPx, frame.glint, frame.cameraScale)) { sky = frame.seaSky; }'));
-    // In-map open water: the cool sky only, laid after the grade.
-    assert.ok(glsl.includes('color = capSaturation(seaSkyHue(color, u_waterSky.rgb, seaSkyTake), WATER_MAX_SATURATION);'));
-    assert.ok(scene.includes('color = capSaturation(seaSkyHue(color, frame.waterSky.rgb, seaSkyTake), WATER_MAX_SATURATION);'));
+    // In-map open water: the cool sky only, laid after the grade under the dynamic V6 cap.
+    assert.ok(glsl.includes('color = capSaturation(seaSkyHue(color, u_waterSky.rgb, seaSkyTake), waterMaxSat());'));
+    assert.ok(scene.includes('color = capSaturation(seaSkyHue(color, frame.waterSky.rgb, seaSkyTake), waterMaxSat());'));
     // Calm: no caps, no deep dashes on open water, in both passes and dialects.
     assert.ok(glsl.includes('float cap = calm ? 0.0 : swellCap(cell, s, near, paw);'));
     assert.ok(openSea.includes('if (!calm) { cap = swellCap(cell, s, near, paw); }'));

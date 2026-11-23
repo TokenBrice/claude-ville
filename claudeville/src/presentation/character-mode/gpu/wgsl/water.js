@@ -12,6 +12,7 @@
 import {
     COAST_FIELD_FLAGS,
     COAST_PALETTE,
+    DEPTH_BOUNDS,
     OPEN_SEA_DEEPEST,
     OPEN_SEA_LIGHT_REACH,
     OPEN_SEA_STOP_SEAM,
@@ -24,6 +25,7 @@ import {
     GLINT_NOON_BASE,
     MOON_DASH_HOLD,
     NEAR_SHORE_DASH_DENSITY,
+    NOON_DASH_HOLD,
     NOON_GLINT_FULL_TEXEL,
     SEA_BODY_ROWS,
     SEA_KEY_REACH,
@@ -41,6 +43,7 @@ import {
     SURF_GLOW_RGB,
     SWASH_PEEL_ROWS,
     SWASH_STEP_RATE,
+    SWASH_STEP_TILES,
     SWELL_AMP_FLOOR,
     SWELL_AMP_RUN,
     SWELL_AMP_SPAN,
@@ -118,6 +121,9 @@ fn applyWaterMood(color0: vec3f) -> vec3f {
         color *= 1.0 - frame.waterMood.x * 0.1;
     }
     return clamp(color, vec3f(0.0), vec3f(1.0));
+}
+fn waterMaxSat() -> f32 {
+    return mix(WATER_DAY_MAX_SATURATION, WATER_MAX_SATURATION, clamp(max(frame.waterMood.x, frame.waterMood.y), 0.0, 1.0));
 }`;
 
 const SEA_SWELL_WGSL = /* wgsl */ `
@@ -158,8 +164,13 @@ fn glintDash(p: vec2f, fragPx: vec2f, glint: vec4f, texelPx: f32, tick: f32) -> 
     }
     let cell = floor(floor(p) / vec2f(3.0, 1.0));
     let density = ${GLINT_DASH_DENSITY.toFixed(2)} * select(1.0, min(1.0, ${NOON_GLINT_FULL_TEXEL.toFixed(1)} / max(texelPx, 1e-3)), pale);
-    if (waterHash12(cell + vec2f(tick * 7.0, tick * 3.0)) >= density * glint.y * weight) { return 0.0; }
-    return select(1.0, 2.0, waterHash12(cell + vec2f(5.0, tick * 11.0)) < weight);
+    let glintTick = select(
+        tick,
+        floor((tick + floor(waterHash12(cell + vec2f(37.0, 5.0)) * ${NOON_DASH_HOLD.toFixed(1)})) / ${NOON_DASH_HOLD.toFixed(1)}),
+        pale,
+    );
+    if (waterHash12(cell + vec2f(glintTick * 7.0, glintTick * 3.0)) >= density * glint.y * weight) { return 0.0; }
+    return select(1.0, 2.0, waterHash12(cell + vec2f(5.0, glintTick * 11.0)) < weight);
 }
 // SEA-2 — inside the sun's road (GLSL inSunRoad).
 fn inSunRoad(fragPx: vec2f, glint: vec4f, texelPx: f32) -> bool {
@@ -417,7 +428,7 @@ fn waterStopIndex(c: vec3f) -> i32 {
     return -1;
 }
 fn waterStopForSd(sd: f32) -> i32 {
-    return i32(step(0.30, sd) + step(0.78, sd) + step(1.38, sd) + step(2.15, sd));
+    return i32(step(${DEPTH_BOUNDS[0].toFixed(2)}, sd) + step(${DEPTH_BOUNDS[1].toFixed(2)}, sd) + step(${DEPTH_BOUNDS[2].toFixed(2)}, sd) + step(${DEPTH_BOUNDS[3].toFixed(2)}, sd));
 }
 fn coastFieldAt(world: vec2f, sd: ptr<function, f32>, flags: ptr<function, u32>) -> bool {
     *sd = 0.0;
@@ -470,8 +481,8 @@ fn applyCoastSwash(color: vec3f, px: vec2f) -> vec3f {
         if ((flags & ${COAST_FIELD_FLAGS.cliffSurf}u) == 0u && waterStopIndex(color) < 0 && !sameColour(color, WATER_FOAM) && !sameColour(color, WATER_FOAM_CREST)) {
             return color;
         }
-        let front = 0.05 + reach * 0.035;
-        if (sd < front - 0.035) { return WATER_FOAM; }
+        let front = 0.05 + reach * ${SWASH_STEP_TILES.toFixed(3)};
+        if (sd < front - ${SWASH_STEP_TILES.toFixed(3)}) { return WATER_FOAM; }
         if (sd < front) {
             surfGlowTexel = frame.surfGlow > 0.0 && cyc < 3.5 && !lagoon;
             return WATER_FOAM_CREST;
@@ -480,7 +491,7 @@ fn applyCoastSwash(color: vec3f, px: vec2f) -> vec3f {
         return color;
     }
     let darker = select(select(0.0, 1.0, cyc < 6.5), 2.0, cyc < 4.5);
-    if (darker < 0.5 || sd <= -0.02 - extent * 0.035) { return color; }
+    if (darker < 0.5 || sd <= -0.02 - extent * ${SWASH_STEP_TILES.toFixed(3)}) { return color; }
     if (sameColour(color, WET_SAND_DARK)) { return color; }
     if (sameColour(color, WET_SAND)) { return WET_SAND_DARK; }
     let beach = color.r > color.b + 0.12 && color.r >= color.g && dot(color, vec3f(0.2126, 0.7152, 0.0722)) > 0.45;
@@ -573,6 +584,37 @@ fn mirrorStormColour(color: vec3f, px: vec2f, gone: ptr<function, bool>) -> vec3
 var<private> seaOpenWater: bool = false;
 // SEA-2 / SEA-3 — the sky's share main() lays on this texel (GLSL seaSkyTake).
 var<private> seaSkyTake: f32 = 0.0;
+// 3.7 / SEA-1 — proportional luma lift on baked mirror texels over sunlit open water.
+fn liftMirrorColour(color: vec3f, px: vec2f) -> vec3f {
+    if (batch.terrainBatch == 0u || frame.seaLift <= 0.0) { return color; }
+    let mStop = mirrorBaseStop(px);
+    if (mStop < 2) { return color; }
+    let p = floor(px);
+    let order = waterBayer4(p);
+    let isOpen = f32(mStop) >= openSeaStop(openSeaDepth(p), order);
+    var mSd: f32;
+    var mFlags: u32;
+    let isShelf = !isOpen && coastFieldAt(px, &mSd, &mFlags) && (mFlags & ${COAST_FIELD_FLAGS.sea}u) != 0u && mSd > ${SWELL_SHORE_SD.toFixed(2)};
+    let lift = select(select(0.0, frame.seaLift - 1.0, isShelf && frame.seaLift > 1.0), frame.seaLift, isOpen);
+    if (lift <= 0.0) { return color; }
+    var m = 1.0;
+    if (frame.cloud.z > 0.0) { m = cloudSeamField(p, cloudNoiseAt(p), order, frame.seaSunlit); }
+    let lifted = seaLiftedStop(f32(mStop), lift, m, order);
+    if (lifted >= f32(mStop) - 0.5) { return color; }
+    let baseL = max(0.05, dot(WATER_STOPS[mStop], GRADE_LUMA));
+    let liftL = dot(seaStopRgb(lifted), GRADE_LUMA);
+    return clamp(color * (liftL / baseL), vec3f(0.0), vec3f(1.0));
+}
+// 3.10 — caustics on stops 0..1 and sunlit river/lagoon stop 2 outside cast shade.
+fn causticSurface(p: vec2f, stop: i32) -> bool {
+    if (stop <= 1) { return true; }
+    if (stop != 2) { return false; }
+    var cSd: f32;
+    var cFlags: u32;
+    if (!coastFieldAt(p, &cSd, &cFlags)) { return false; }
+    if ((cFlags & ${COAST_FIELD_FLAGS.water}u) == 0u || (cFlags & ${COAST_FIELD_FLAGS.sea}u) != 0u) { return false; }
+    return !(frame.shadeRect.w > 0.0 && shadeGroundAt(p));
+}
 fn applyWaterState(color0: vec3f, px: vec2f, seaPath: ptr<function, bool>) -> vec3f {
     *seaPath = false;
     seaSkyTake = 0.0;
@@ -581,7 +623,7 @@ fn applyWaterState(color0: vec3f, px: vec2f, seaPath: ptr<function, bool>) -> ve
         var sd: f32;
         var flags: u32;
         if (batch.terrainBatch != 0u && coastFieldAt(px, &sd, &flags) && (flags & 1u) != 0u) {
-            return applyWaterMood(color) * WATER_CAST;
+            return applyWaterMood(liftMirrorColour(color, px)) * WATER_CAST;
         }
         return color;
     }
@@ -589,8 +631,9 @@ fn applyWaterState(color0: vec3f, px: vec2f, seaPath: ptr<function, bool>) -> ve
     let clock = frame.waterFx.x;
     let p = floor(px);
     if (stop < 0) {
-        if (clock <= 0.0) { return staticWaterDashes(color, px); }
-        return applyWaterMood(color) * WATER_CAST;
+        let lifted = liftMirrorColour(color, px);
+        if (clock <= 0.0) { return staticWaterDashes(lifted, px); }
+        return applyWaterMood(lifted) * WATER_CAST;
     }
     // SEA-1 — with the look on, open water is flagged under any sky (GLSL).
     seaOpenWater = batch.terrainBatch != 0u && (frame.squall.w > 0.0 || frame.cloud.w > 0.0) && stop >= 2
@@ -627,11 +670,15 @@ fn applyWaterState(color0: vec3f, px: vec2f, seaPath: ptr<function, bool>) -> ve
             // SEA-2 — a set's lit slope.
             let litSlope = base < stop;
             if (open && frame.seaSunlit > 0.0 && cloudSeamField(p, cloudNoiseAt(p), order, frame.seaSunlit) < frame.seaSunlit) { base = max(base - 1, 0); }
-            // SEA-1 — the open sea's lift (shadeOpenSea).
+            // SEA-1 — the open sea's lift (shadeOpenSea); above 1 stop, shelf lifts by (seaLift - 1).
             if (open && frame.seaLift > 0.0) {
                 var m = 1.0;
                 if (frame.cloud.z > 0.0) { m = cloudSeamField(p, cloudNoiseAt(p), order, frame.seaSunlit); }
                 base = i32(seaLiftedStop(f32(base), frame.seaLift, m, order));
+            } else if (shelf && frame.seaLift > 1.0) {
+                var m = 1.0;
+                if (frame.cloud.z > 0.0) { m = cloudSeamField(p, cloudNoiseAt(p), order, frame.seaSunlit); }
+                base = i32(seaLiftedStop(f32(base), frame.seaLift - 1.0, m, order));
             }
             var paw = 0.0;
             if (open) { paw = seaPawCaps(p, order); }
@@ -664,7 +711,7 @@ fn applyWaterState(color0: vec3f, px: vec2f, seaPath: ptr<function, bool>) -> ve
     }
     if (cap > 0.5 && clock <= 0.0) { return applyWaterMood(WATER_STOPS[max(base - i32(cap), 0)]) * WATER_CAST; }
     if (clock <= 0.0) {
-        if (shallows && frame.waterFx.z > 0.0 && causticAt(p, 0.0)) { return applyWaterMood(CAUSTICS[stop]) * WATER_CAST; }
+        if (frame.waterFx.z > 0.0 && causticSurface(p, stop) && causticAt(p, 0.0)) { return applyWaterMood(CAUSTICS[stop]) * WATER_CAST; }
         return staticWaterDashes(color, px);
     }
     let cell = floor(p / vec2f(3.0, 1.0));
@@ -714,7 +761,7 @@ fn applyWaterState(color0: vec3f, px: vec2f, seaPath: ptr<function, bool>) -> ve
     if (course > 0.5) { crestRise = select(1, 2, offset > 31.5 && near > 0.8); }
     let rise = max(max(i32(cap), i32(streak)), crestRise);
     if (rise > 0) { return applyWaterMood(WATER_STOPS[max(base - rise, 0)]) * WATER_CAST; }
-    if (shallows && frame.waterFx.z > 0.0 && causticAt(p, clock)) { return applyWaterMood(CAUSTICS[stop]) * WATER_CAST; }
+    if (frame.waterFx.z > 0.0 && causticSurface(p, stop) && causticAt(p, clock)) { return applyWaterMood(CAUSTICS[stop]) * WATER_CAST; }
     return applyWaterMood(color) * WATER_CAST;
 }
 `;

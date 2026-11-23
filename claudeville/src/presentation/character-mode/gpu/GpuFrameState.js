@@ -361,11 +361,11 @@ export function resolveSurfGlow(atmosphere, weather, grade, moonFill, swashOn) {
  * `swellPhase` adds as drift / SWELL_SET_PERIOD. A pure function of the
  * motion clock, so reduced motion (a frozen clock) holds the sea still and a
  * re-rendered frame lands on the same rows; it wraps after
- * SWELL_DRIFT_WRAP_ROWS rows (200 set periods, about 21 hours of motion
- * clock: one jump a day) to keep the shaders' float
- * phase exact.
+ * SWELL_DRIFT_WRAP_ROWS rows (200 set periods, about 4.2 hours of motion
+ * clock) to keep the shaders' float phase exact.
  */
-export const SWELL_DRIFT_STEP_MS = 2500;
+// Relaxed 2026-11-23 (operator decision): ~2 px/s shoreward roll (~2 Hz).
+export const SWELL_DRIFT_STEP_MS = 500;
 export const SWELL_DRIFT_WRAP_ROWS = 30000;
 export function swellDriftRows(motionTimeMs) {
     const t = Number(motionTimeMs);
@@ -592,7 +592,7 @@ export function resolveWaterFx(feed, camera, level, grade, moonFill, width, out 
         && finite(grade.sunBand, 0) > 0.3
         && cloudCover < 0.5
         && finite(grade.night, 0) < 0.5
-        && zoom >= 2
+        && zoom >= 1.2
         ? 1 : 0;
     fx[3] = effectBudgetMode('coastSwash', level) === 'on' && motion > 0 ? 1 : 0;
     // BI-8 — the summer surf glow rides the swash's crest front.

@@ -675,9 +675,9 @@ fn sceneSurface() -> SurfaceSample {
     if (seaPath) {
       color = seaPathCap(color);
     } else {
-      color = capSaturation(applyWaterSky(capSaturation(color, WATER_MAX_SATURATION)), WATER_MAX_SATURATION);
+      color = capSaturation(applyWaterSky(color), waterMaxSat());
       // SEA-2 / SEA-3 — open water's share of the cool sky (applyWaterState).
-      if (seaSkyTake > 0.0) { color = capSaturation(seaSkyHue(color, frame.waterSky.rgb, seaSkyTake), WATER_MAX_SATURATION); }
+      if (seaSkyTake > 0.0) { color = capSaturation(seaSkyHue(color, frame.waterSky.rgb, seaSkyTake), waterMaxSat()); }
     }
   }
   // Fire glints preserve their beaconFire receiver stop.

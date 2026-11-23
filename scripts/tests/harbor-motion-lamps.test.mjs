@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { hullLampStrip, hullRecords, hullStrip, keepTopLampPerFrame } from '../../claudeville/src/presentation/character-mode/HarborHulls.js';
+import { drawHullFallback, hullLampStrip, hullRecords, hullStrip, keepTopLampPerFrame } from '../../claudeville/src/presentation/character-mode/HarborHulls.js';
 import { HarborTraffic } from '../../claudeville/src/presentation/character-mode/HarborTraffic.js';
 import { hullSprites } from './support/harbor-sim.mjs';
 
@@ -134,4 +134,108 @@ test('M05-5 riding lights: a moored hull shows its anchor light, a hull under wa
     harbor._shipUnderWay = () => true;
     harbor.advance(16);
     for (const item of harbor.enumerateHullDrawables(T + 16)) assert.notEqual(item.pose.lamps.anchor, true);
+});
+
+test('moored hull waterline collars cache per livery without per-frame allocations or texture re-uploads', () => {
+    const origDoc = globalThis.document;
+    let canvasesCreated = 0;
+    let getImageDataCalls = 0;
+    function makeCanvas(w = 0, h = 0) {
+        canvasesCreated++;
+        const canvas = { width: w, height: h, _pixels: new Uint8ClampedArray(w * h * 4) };
+        const ensure = () => {
+            const need = canvas.width * canvas.height * 4;
+            if (!canvas._pixels || canvas._pixels.length !== need) canvas._pixels = new Uint8ClampedArray(need);
+        };
+        const ctx = {
+            save() {},
+            restore() {},
+            drawImage(src, sx = 0, sy = 0, sw = src.width, sh = src.height) {
+                ensure();
+                if (!src?._pixels) return;
+                for (let y = 0; y < Math.min(sh, canvas.height); y++) {
+                    for (let x = 0; x < Math.min(sw, canvas.width); x++) {
+                        const si = ((sy + y) * src.width + (sx + x)) * 4;
+                        const di = (y * canvas.width + x) * 4;
+                        canvas._pixels[di] = src._pixels[si];
+                        canvas._pixels[di + 1] = src._pixels[si + 1];
+                        canvas._pixels[di + 2] = src._pixels[si + 2];
+                        canvas._pixels[di + 3] = src._pixels[si + 3];
+                    }
+                }
+            },
+            getImageData(sx = 0, sy = 0, sw = canvas.width, sh = canvas.height) {
+                getImageDataCalls++;
+                ensure();
+                return { width: sw, height: sh, data: new Uint8ClampedArray(canvas._pixels) };
+            },
+            createImageData(iw, ih) {
+                return { width: iw, height: ih, data: new Uint8ClampedArray(iw * ih * 4) };
+            },
+            putImageData(img) {
+                ensure();
+                canvas._pixels = new Uint8ClampedArray(img.data);
+            },
+        };
+        canvas.getContext = () => ctx;
+        return canvas;
+    }
+    globalThis.document = { createElement: () => makeCanvas(0, 0) };
+    try {
+        // Six liveried skiffs sharing strip.key with distinct strip.liveryKey & image canvases.
+        const strips = Array.from({ length: 6 }, (_, i) => {
+            const img = makeCanvas(16 * 5, 16);
+            // Paint opaque waterline pixels across x = 4..11 on anchorY = 14 for frame 2.
+            for (let x = 4; x <= 11; x++) {
+                const idx = (14 * img.width + (2 * 16 + x)) * 4;
+                img._pixels[idx] = 80 + i * 10;
+                img._pixels[idx + 1] = 50;
+                img._pixels[idx + 2] = 30;
+                img._pixels[idx + 3] = 255;
+            }
+            return {
+                spriteId: 'prop.harborShip.skiff',
+                key: 'prop.harborShip.skiff@nw',
+                liveryKey: `prop.harborShip.skiff@nw#livery-${i}`,
+                image: img,
+                frameWidth: 16,
+                frameHeight: 16,
+                frameOffset: 0,
+                anchorX: 8,
+                anchorY: 14,
+            };
+        });
+        const firstPass = strips.map((strip, i) => {
+            const recs = hullRecords({ id: `s-${i}`, strip, frame: 2, x: 100 + i * 20, y: 200, bob: 0, sink: 0, alpha: 1, wake: null });
+            return recs.find(r => r.id === `ground:collar:s-${i}`);
+        });
+        for (let i = 0; i < strips.length; i++) {
+            assert.ok(firstPass[i], `collar built for livery ${i}`);
+            assert.equal(firstPass[i].textureKey, `harbor-collar:${strips[i].liveryKey}|c2`);
+        }
+        assert.equal(new Set(firstPass.map(r => r.textureKey)).size, 6, 'each livery gets a distinct collar textureKey');
+
+        const allocsAfterWarm = canvasesCreated;
+        const readsAfterWarm = getImageDataCalls;
+        // Second and third frames across all six liveries must reuse cached collars with zero allocations.
+        for (let frame = 0; frame < 2; frame++) {
+            for (let i = 0; i < strips.length; i++) {
+                const recs = hullRecords({ id: `s-${i}`, strip: strips[i], frame: 2, x: 100 + i * 20, y: 200, bob: 0, sink: 0, alpha: 1, wake: null });
+                const collar = recs.find(r => r.id === `ground:collar:s-${i}`);
+                assert.equal(collar.source, firstPass[i].source, `livery ${i} reuses cached collar canvas`);
+            }
+        }
+        assert.equal(canvasesCreated, allocsAfterWarm, 'zero per-frame collar canvas allocations');
+        assert.equal(getImageDataCalls, readsAfterWarm, 'zero per-frame getImageData calls');
+
+        // Canvas fallback path also reuses cached collars across liveries.
+        const drawCtx = { save() {}, restore() {}, drawImage() {}, globalAlpha: 1 };
+        const allocsBeforeFallback = canvasesCreated;
+        for (let i = 0; i < strips.length; i++) {
+            drawHullFallback(drawCtx, { id: `s-${i}`, strip: strips[i], frame: 2, x: 100 + i * 20, y: 200, bob: 0, sink: 0, alpha: 1, wake: null, reflect: false });
+        }
+        assert.equal(canvasesCreated, allocsBeforeFallback, 'drawHullFallback reuses cached collars per livery');
+    } finally {
+        globalThis.document = origDoc;
+    }
 });

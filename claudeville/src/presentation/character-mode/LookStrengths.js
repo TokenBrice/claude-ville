@@ -25,7 +25,7 @@ export const DEFAULT_LOOK_STRENGTHS = Object.freeze({
     nl4: 1, // NL-4: a lantern carried by villagers abroad after lamp-lighting (scales the pool)
     ms1: 1, // MS-1: low mist the town rises out of (> 0 replaces the GPU fog banks; scales the mist's top)
     ms2: 1, // MS-2: lamps glow in the mist, the mist burns off land-first (needs ms1 > 0; scales halos and burn)
-    sea1: 0.5, // SEA-1: cloud light and shade on the plane, sunlit water lifts (> 0 shape on; a ceiling on the lift: 0.5 one stop, 1 two)
+    sea1: 1, // SEA-1: cloud light and shade on the plane, sunlit water lifts (> 0 shape on; a ceiling on the lift: 0.5 one stop, 1 two)
     sea2: 1, // SEA-2: lit swell and caps take the sky's hue (scales the share)
     sea3: 1, // SEA-3: the wind sets the sea state, calm to fresh (scales the ladder's reach and streaks)
     gw1: 1, // GW-1: wet ground read from the weather field: dry aprons, streets dry sun side first (scales the sheen; retires that share of the uniform darkening)

@@ -505,14 +505,20 @@ export function applyGradeToRgb(rgb, grade) {
     return [out[0] / peak, out[1] / peak, out[2] / peak];
 }
 
-// V6 — outside the sun and moon path the sea stays cool and quiet at every
-// hour: graded water (the outer ocean in CoastBake and the island's water
-// material in the resident scene pass) is held at this HSV saturation, so a
-// golden or blue-hour frame that is mostly sea never reads as a saturated
-// navy slab. Sun glitter, the moon path and lamp reflections are drawn after
-// this cap and keep their own colour. 0.37 leaves the composite (haze, cloud
-// courses, foam) under V6's 0.40.
+// V6 — outside the sun and moon path the sea stays cool and quiet in dark
+// states: graded water is held at WATER_DAY_MAX_SATURATION (0.48) by day
+// (relaxed 2026-11-23, operator decision: clearly blue daytime water) and
+// blends smoothly back to WATER_MAX_SATURATION (0.37) with night and storm,
+// so night and storm water stay quiet while clear daylight reads coastal blue.
+// Sun glitter, the moon path and lamp reflections keep their own colour.
 export const WATER_MAX_SATURATION = 0.37;
+export const WATER_DAY_MAX_SATURATION = 0.48;
+
+/** Effective V6 HSV saturation cap for a water mood (`{ night, storm }`). */
+export function waterMaxSaturation(mood) {
+    const dark = Math.max(0, Math.min(1, Math.max(Number(mood?.night) || 0, Number(mood?.storm) || 0)));
+    return WATER_DAY_MAX_SATURATION + (WATER_MAX_SATURATION - WATER_DAY_MAX_SATURATION) * dark;
+}
 
 /**
  * Pull `rgb` (0..1) toward its own Rec.709 luma just far enough that its HSV

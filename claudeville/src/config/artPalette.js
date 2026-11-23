@@ -37,8 +37,11 @@
 // Ramp roles:
 //   void          Beyond the sea at the frame edge. Darkest plane, cool slate;
 //                 never lighter than deepWater[1] (okL 0.17-0.23, S <= 0.35).
-//   deepWater     Open sea body, 3 depth stops, teal-slate (S <= 0.40).
-//   shallowWater  Lagoon/shore band -> foam. Foam is the only Tier-B water.
+//   deepWater     Open sea body, 3 depth stops, coastal blue-teal (relaxed
+//                 2026-11-23, operator decision: brighter daytime coastal blue
+//                 with dark deepWater[0..1] preserved for night and storm).
+//   shallowWater  Lagoon/shore turquoise-aqua band -> clean seafoam. Foam is
+//                 the only Tier-B bright water.
 //   grass         Ground base. The LOWEST land value so the floor recedes, but
 //                 kept green and alive (D5 moderate mute: S 0.46-0.51, okL
 //                 0.36-0.60). Shadow step leans teal, highlight leans olive.
@@ -98,8 +101,8 @@ import { THEME } from './theme.js';
 
 export const ART_RAMPS = Object.freeze({
     void: ['#0c0f12', '#101418', '#171d21'],
-    deepWater: ['#222d33', '#31424a', '#3f585e'],
-    shallowWater: ['#4a6c70', '#669190', '#91b2a8'],
+    deepWater: ['#1c2d3a', '#244157', '#396f96'],
+    shallowWater: ['#368796', '#449ca3', '#96c7be'],
     grass: ['#26572d', '#346e30', '#4f823b', '#689146', '#7f9e51'],
     dirt: ['#6a5038', '#7c6043', '#8e7050', '#9f805d', '#ae8f6a'],
     road: ['#4a4c51', '#5b5e64', '#71747a', '#83868c', '#95989e'],
@@ -119,7 +122,7 @@ export const ART_RAMPS = Object.freeze({
     clothCrimson: ['#732a31', '#a4463f'],
     clothOchre: ['#987638', '#c9a04a'],
     emissive: ['#ff9d4a', '#ffcf7a', '#ffe9b8'],
-    seaPath: ['#c48054', '#ecb068', '#969d8f', '#c0bea4', '#849ab0', '#c4d6e2'],
+    seaPath: ['#c48054', '#ecb068', '#a8cbd0', '#dcece8', '#849ab0', '#c4d6e2'],
     beaconFire: ['#928575', '#b3a58f', '#d0c1a7', '#c8743a', '#f0a850', '#ffd88a', '#fff4d6'],
     surfGlow: ['#2f7466'],
     // Seasonal and per-tree ramps (plan items 5.1 and 5.3 of
@@ -177,7 +180,8 @@ export const RESERVED_STATUS = Object.freeze({
 // Maintainer decision D5: moderate mute. Ground median saturation target band.
 export const GROUND_SATURATION = Object.freeze({ min: 0.45, max: 0.50 });
 export const GROUND_LOCAL_CONTRAST_MAX_RATIO = 0.6;
-export const WATER_VOID_SATURATION_MAX = 0.40;
+// Relaxed 2026-11-23 (operator decision: clearly blue daytime water, night/storm <= 0.37).
+export const WATER_VOID_SATURATION_MAX = 0.50;
 // V5 receiver ceiling (see the brightest-thing rule above). Attention
 // courses are exempt: they are always the brightest pool.
 export const RECEIVER_LUMA_CEILING = 0.74;
