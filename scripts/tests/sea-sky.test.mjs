@@ -13,7 +13,14 @@ import {
     waterSunBandFor,
     waterSurfaceRgb,
 } from '../../claudeville/src/presentation/character-mode/CoastBake.js';
-import { applyGradeToRgb, capSaturation, evaluateGrade, WATER_MAX_SATURATION } from '../../claudeville/src/presentation/character-mode/GradeEvaluator.js';
+import {
+    applyGradeToRgb,
+    capSaturation,
+    evaluateGrade,
+    WATER_DAY_MAX_SATURATION,
+    WATER_MAX_SATURATION,
+    waterMaxSaturation,
+} from '../../claudeville/src/presentation/character-mode/GradeEvaluator.js';
 import { resetLookStrengths, setLookStrength } from '../../claudeville/src/presentation/character-mode/LookStrengths.js';
 
 // E2-01 — the sky on the sea: graded water takes some of the grade's own
@@ -34,8 +41,9 @@ function graded(rgb, minute, weather, sky = true) {
     const grade = evaluateGrade({ minuteOfDay: minute, weather, moonFill: 0.5 });
     const atmosphere = { lightGrade: grade, weather };
     const mood = waterMoodFor(atmosphere);
-    const capped = capSaturation(applyGradeToRgb(waterSurfaceRgb(rgb, mood, waterSunBandFor(atmosphere)), grade));
-    return sky ? capSaturation(applyWaterSky(capped, mood)) : capped;
+    const maxS = waterMaxSaturation(mood);
+    const base = applyGradeToRgb(waterSurfaceRgb(rgb, mood, waterSunBandFor(atmosphere)), grade);
+    return capSaturation(sky ? applyWaterSky(base, mood) : base, maxS);
 }
 
 test('the sky never darkens the sea and keeps it cool at every hour and weather (V6)', () => {
@@ -59,24 +67,29 @@ test('at looks la3 and la5 0, golden hour warms the sea and an overcast lifts it
         setLookStrength('la3', 0);
         setLookStrength('la5', 0);
         const body = rgb01(ART_RAMPS.deepWater[1]);
+        const litBody = rgb01(ART_RAMPS.deepWater[2]);
+        const shallow = rgb01(ART_RAMPS.shallowWater[0]);
         const rb = c => c[0] - c[2];
-        const goldenOff = graded(body, 18 * 60, WEATHERS.clear, false);
-        const goldenOn = graded(body, 18 * 60, WEATHERS.clear, true);
-        // J29 — the weight is 0.16 (was 0.22), so the warm shift scales with it
-        // (about 10.6 -> 7.7 levels); it stays a visible course.
-        assert.ok(rb(goldenOn) - rb(goldenOff) > 6 / 255, `golden R-B ${(rb(goldenOff) * 255).toFixed(1)} -> ${(rb(goldenOn) * 255).toFixed(1)}`);
+        // With single post-sky dynamic saturation capping (relaxed 2026-11-23),
+        // the lit daytime sea stops warm visibly under the golden sky at la3=0.
+        const goldenOff = graded(litBody, 18 * 60, WEATHERS.clear, false);
+        const goldenOn = graded(litBody, 18 * 60, WEATHERS.clear, true);
+        assert.ok(rb(goldenOn) > rb(goldenOff), `golden lit sea R-B ${(rb(goldenOff) * 255).toFixed(1)} -> ${(rb(goldenOn) * 255).toFixed(1)}`);
+        const shallowOff = graded(shallow, 18 * 60, WEATHERS.clear, false);
+        const shallowOn = graded(shallow, 18 * 60, WEATHERS.clear, true);
+        assert.ok(rb(shallowOn) - rb(shallowOff) > 6 / 255, `golden shallow R-B ${(rb(shallowOff) * 255).toFixed(1)} -> ${(rb(shallowOn) * 255).toFixed(1)}`);
         const greyOff = graded(body, 12.5 * 60, WEATHERS.overcast, false);
         const greyOn = graded(body, 12.5 * 60, WEATHERS.overcast, true);
         assert.ok(luma(greyOn) > luma(greyOff) * 1.05, 'the overcast sea is lighter');
         const chroma = c => Math.max(...c) - Math.min(...c);
         assert.ok(chroma(greyOn) < chroma(greyOff), 'and greyer');
-        // Exactly the old sky term (E2-01), at every hour and weather.
+        // Daytime sky weight raised to 0.24 (relaxed 2026-11-23, operator decision).
         const q = v => Math.round(Math.max(0, Math.min(1, v)) * 32) / 32;
         for (const weather of Object.values(WEATHERS)) {
             for (let minute = 0; minute < 24 * 60; minute += 60) {
                 const grade = evaluateGrade({ minuteOfDay: minute, weather, moonFill: 0.5 });
                 const mood = waterMoodFor({ lightGrade: grade, weather });
-                const weight = q((0.16 + 0.12 * weather.cloudCover + 0.08 * weather.fog) * (1 - 0.5 * mood.night));
+                const weight = q((0.24 + 0.12 * weather.cloudCover + 0.08 * weather.fog) * (1 - 0.5 * mood.night));
                 assert.equal(mood.skyWeight, weight, `${weather.type} ${minute / 60}h weight`);
                 assert.deepEqual(mood.sky, rgb01(grade.skyHorizon).map(q), `${weather.type} ${minute / 60}h sky`);
             }
@@ -101,7 +114,8 @@ test('LA-3: the golden sea takes the land\'s shadow violet — lighter, cooler, 
                 if (index < WATER.length - 1) assert.ok(luma(after) > luma(before), `${label}: the golden sea is lifted`);
                 assert.ok(after[0] - after[2] < before[0] - before[2], `${label}: and cooler, never amber`);
                 assert.ok(after[2] >= after[0] && after[2] >= after[1], `${label}: blue leads`);
-                assert.ok(hsv(after) <= WATER_MAX_SATURATION + 1e-6, `${label}: inside V6`);
+                const goldenMood = waterMoodFor({ lightGrade: evaluateGrade({ minuteOfDay: minute, weather: WEATHERS.clear, moonFill: 0.5 }), weather: WEATHERS.clear });
+                assert.ok(hsv(after) <= waterMaxSaturation(goldenMood) + 1e-6, `${label}: inside dynamic V6 cap`);
             }
         }
         // No golden hour, no golden sea: sunrise, noon, the blue hour, overcast.
@@ -163,11 +177,15 @@ test('GLSL, WGSL and Canvas share the one sky-on-sea rule', () => {
     assert.match(glsl, /uniform vec4 u_waterSky;/);
     assert.match(glsl, /u_waterSky\.rgb \* \(min\(max\(ls, l\), l \* \$\{WATER_SKY_LIFT\.toFixed\(2\)\}\) \/ ls\), u_waterSky\.w\)/);
     assert.match(wgsl, /frame\.waterSky\.rgb \* \(min\(max\(ls, l\), l \* \$\{WATER_SKY_LIFT\.toFixed\(2\)\}\) \/ ls\), frame\.waterSky\.w\)/);
-    // After V6's cap, capped again: the in-map scene water and the open sea.
-    const twice = /capSaturation\(applyWaterSky\(capSaturation\(/g;
-    assert.equal((glsl.match(twice) || []).length, 2);
-    assert.equal((read('gpu/wgsl/scene.js').match(twice) || []).length, 1);
-    assert.equal((read('gpu/wgsl/openSea.js').match(twice) || []).length, 1);
+    // Dynamic V6 water saturation cap applied after applyWaterSky: ~0.48 by day,
+    // blending back to 0.37 with night and storm (relaxed 2026-11-23).
+    assert.equal(waterMaxSaturation({ night: 0, storm: 0 }), WATER_DAY_MAX_SATURATION);
+    assert.equal(waterMaxSaturation({ night: 1, storm: 0 }), WATER_MAX_SATURATION);
+    assert.equal(waterMaxSaturation({ night: 0, storm: 1 }), WATER_MAX_SATURATION);
+    const postSkyCap = /capSaturation\(applyWaterSky\(.+?\),\s*waterMaxSat\(\)\)/g;
+    assert.equal((glsl.match(postSkyCap) || []).length, 2);
+    assert.equal((read('gpu/wgsl/scene.js').match(postSkyCap) || []).length, 1);
+    assert.equal((read('gpu/wgsl/openSea.js').match(postSkyCap) || []).length, 1);
     for (const path of ['CoastBake.js', 'CanvasWaterState.js']) {
         const source = read(path);
         const calls = source.match(/canvasWaterPreimage\([^\n]*/g) || [];

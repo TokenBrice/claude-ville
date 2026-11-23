@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { MAP_SIZE, TILE_WIDTH } from '../../claudeville/src/config/constants.js';
-import { openSeaSquall, RAIN_START_PRECIPITATION, SHOWER_STRENGTH, SQUALL_HALF_WIDTH } from '../../claudeville/src/presentation/character-mode/CoastBake.js';
+import { DEPTH_BOUNDS, openSeaSquall, RAIN_START_PRECIPITATION, SHOWER_STRENGTH, SQUALL_HALF_WIDTH } from '../../claudeville/src/presentation/character-mode/CoastBake.js';
 import {
     SURF_GLOW_MONTHS,
     SWELL_DRIFT_STEP_MS,
@@ -13,7 +13,7 @@ import {
     surfGlowBloomNight,
     swellDriftRows,
 } from '../../claudeville/src/presentation/character-mode/gpu/GpuFrameState.js';
-import { SWASH_PEEL_ROWS, SWASH_STEP_RATE } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldRenderer.js';
+import { NOON_DASH_HOLD, SWASH_PEEL_ROWS, SWASH_STEP_RATE, SWASH_STEP_TILES } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldRenderer.js';
 import { createAtmosphereSnapshot } from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
 import { resetLookStrengths, setLookStrength } from '../../claudeville/src/presentation/character-mode/LookStrengths.js';
 
@@ -114,7 +114,11 @@ test('the cliff-foot swash flag reaches the GLSL, WGSL and Canvas swash', () => 
 // motion clock (a pure function of it, so a frozen clock holds the sea), the
 // same drift added to every copy of swellPhase.
 test('the swell drift steps one row per step of the motion clock, in every swellPhase', () => {
-    assert.ok(SWELL_DRIFT_STEP_MS >= 2000 && SWELL_DRIFT_STEP_MS <= 3000, 'about one row every 2-3 s');
+    // Relaxed 2026-11-23 (operator decision): ~500 ms per world row for visibly rolling swells.
+    assert.ok(SWELL_DRIFT_STEP_MS >= 400 && SWELL_DRIFT_STEP_MS <= 600, 'about one row every 500 ms');
+    assert.equal(SWASH_STEP_TILES, 0.05, 'coast swash step reach widened to 0.05 tiles');
+    assert.equal(NOON_DASH_HOLD, 3, 'noon glints hold for 3 water ticks');
+    assert.deepEqual([...DEPTH_BOUNDS], [0.55, 1.15, 1.95, 2.9, 3.9], 'spread shallow DEPTH_BOUNDS');
     assert.equal(swellDriftRows(0), 0);
     assert.equal(swellDriftRows(undefined), 0);
     assert.equal(swellDriftRows(SWELL_DRIFT_STEP_MS - 1), 0);

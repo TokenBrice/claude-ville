@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { HarborTraffic } from '../../claudeville/src/presentation/character-mode/HarborTraffic.js';
+import { INBOUND_DURATION_MS } from '../../claudeville/src/presentation/character-mode/HarborState.js';
 import {
     HARBOR_MOORING_CLEARANCE,
     HARBOR_ROADSTEAD_PROP_CLEARANCE,
@@ -149,4 +150,10 @@ test('review: overflow moorings past the beacon rock keep hull-dimension clearan
         }
     }
     harbor.dispose();
+});
+
+test('harbor beacon buoys sit in the roadstead obstacle list and inbound sail takes 20 s', () => {
+    const buoys = HARBOR_ROADSTEAD_PROP_OBSTACLES.filter(prop => prop.id === 'prop.harborBeaconBuoy');
+    assert.ok(buoys.length >= 2, `expected harbor beacon buoys in HARBOR_ROADSTEAD_PROP_OBSTACLES, got ${buoys.length}`);
+    assert.equal(INBOUND_DURATION_MS, 20000);
 });
