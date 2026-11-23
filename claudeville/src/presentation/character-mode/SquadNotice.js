@@ -49,6 +49,21 @@ export function squadWatchers(celebrant, sprites, {
 }
 
 /**
+ * Turn up to `SQUAD_NOTICE_CAP` nearby same-repo watchers toward `celebrant`
+ * until `until`. Shared by immediate wins and wins latched until arrival.
+ */
+export function notifySquadWatchers(celebrant, sprites, until, { onNotice = null } = {}) {
+    if (!celebrant || !Number.isFinite(until) || until <= Date.now()) return 0;
+    const watchers = squadWatchers(celebrant, sprites);
+    for (const sprite of watchers) sprite.noticeSquadmate?.({ x: celebrant.x, y: celebrant.y }, until);
+    if (watchers.length) {
+        noteMoment('heads-turn');
+        onNotice?.(watchers.length);
+    }
+    return watchers.length;
+}
+
+/**
  * Listen for verified outcomes and turn the watchers. `getSprites()` returns
  * the live `agentSprites` Map. Returns the unsubscribe.
  */
@@ -58,13 +73,9 @@ export function bindSquadNotice(getSprites, { eventTarget = eventBus, onNotice =
         const sprites = getSprites?.();
         const celebrant = sprites?.get?.(String(outcome.agentId));
         if (!celebrant) return;
+        // Mid-walk wins latch on the celebrant sprite and notify watchers on arrival.
+        if (celebrant.moving || celebrant.isArrivalPending?.()) return;
         const until = Number(outcome.at) + VERIFIED_CELEBRATION_MS;
-        if (!Number.isFinite(until) || until <= Date.now()) return;
-        const watchers = squadWatchers(celebrant, sprites.values());
-        for (const sprite of watchers) sprite.noticeSquadmate?.({ x: celebrant.x, y: celebrant.y }, until);
-        if (watchers.length) {
-            noteMoment('heads-turn');
-            onNotice?.(watchers.length);
-        }
+        notifySquadWatchers(celebrant, sprites.values(), until, { onNotice });
     });
 }
