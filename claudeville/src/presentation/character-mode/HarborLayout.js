@@ -1404,7 +1404,7 @@ export const HARBOR_SEA_EXITS = Object.freeze(['horizon.north-east', 'horizon.no
 // arriving fetch, pull and PR cutters enter view promptly instead of spending
 // half their voyage off-screen past the north-east horizon.
 export const HARBOR_INBOUND_ENTRIES = Object.freeze([
-    Object.freeze({ tileX: 37.5, tileY: 4.5 }),
+    Object.freeze({ tileX: 39.5, tileY: 6.5 }),
     Object.freeze({ tileX: 40.5, tileY: 8.5 }),
     Object.freeze({ tileX: 41.5, tileY: 13.5 }),
 ]);
