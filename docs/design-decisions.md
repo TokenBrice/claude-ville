@@ -440,6 +440,12 @@ The Lighthouse (`watchtower`) is where an agent waits on something outside itsel
 
 If you change this, update: `claudeville/src/domain/services/ToolIdentity.js` (`CI_WATCH_COMMAND_PATTERN`, `WATCH_COMMAND_PATTERN`), `VisitIntentManager.js` (`phaseFromToolClassification`), `VisitIntentSemantics.js` (`WORKING_PHASES`), `scripts/tests/tool-identity-vocabulary.test.mjs`, and this entry.
 
+## The Archive takes all reading and searching; the Forge takes editing and writing
+
+Local reading and searching — including `Read`, `Grep`, `Glob`, `LS`, lowercase aliases (`read`, `grep`, `glob`, `find`, `search`, `lsp`, `ast_grep`), and read-only shell commands (`cat`, `rg`, `sed`, …) on source files (`inspect-code`) — route to the Archive (relaxed 2026-11-23, operator decision). The Forge is reserved for editing, writing, patching, generating assets, and mutating code files. Before, `inspect-code` routed code reads to the Forge, which mixed readers into the Forge and blurred the Archive=read / Forge=edit distinction.
+
+If you change this, update: `claudeville/src/domain/services/ToolIdentity.js`, `scripts/tests/tool-identity-lowercase.test.mjs`, `scripts/tests/tool-identity-vocabulary.test.mjs`, `scripts/tests/work-display.test.mjs`, and this entry.
+
 ## A chat needs a free partner, and a one-sided chat ends
 
 The renderer's chat pass pairs a villager messaging a teammate (`SendMessage` and its provider kin) with the villager it names. A chat starts only when the named target is free: no partner, not already chatting, and not under another sender's live approach, which claims its recipient until that approach ends — so a fan-out of senders naming the same lead sends one walker, not a crowd; a busy target is skipped and its sender retries on a later matching pass (AP-2). An approach that arrives to find its partner already in, or promised to, another chat ends at once. A chat that stays one-sided — the partner never pointed back — for `ONE_SIDED_CHAT_GRACE_MS` (8 s) ends too: the body stops facing a partner that never answered and resumes its route (`IsometricRenderer` chat pass; BR-5 keeps both bodies off bridge decks and landings as before).
