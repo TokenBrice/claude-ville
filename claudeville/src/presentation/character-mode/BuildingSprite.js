@@ -2640,6 +2640,7 @@ export class BuildingSprite {
                     }
                     buildingCols.push({
                         kind: 'building-column',
+                        poolKey: `building-column:${i}`,
                         building: b,
                         entry,
                         wx,
@@ -2736,8 +2737,12 @@ export class BuildingSprite {
             this._drawManifestLayers(ctx, entry, wx, wy, splitPass, horizonY, building, column);
         }
         if (building) {
-            this._drawFunctionalOverlay(ctx, building, entry, wx, wy, splitPass, horizonY, column);
-            this._drawAtmosphereBuildingReactions(ctx, building, entry, wx, wy, splitPass, horizonY, column);
+            if (splitPass !== 'column' || !column || column.primary) {
+                const overlayPass = splitPass === 'column' ? 'whole' : splitPass;
+                const overlayHorizon = splitPass === 'column' ? null : horizonY;
+                this._drawFunctionalOverlay(ctx, building, entry, wx, wy, overlayPass, overlayHorizon, null);
+                this._drawAtmosphereBuildingReactions(ctx, building, entry, wx, wy, overlayPass, overlayHorizon, null);
+            }
             this._drawOccupancyPennant(ctx, building, entry, wx, wy, splitPass, horizonY, column);
             this._drawAttentionBannerBoard(ctx, building, entry, wx, wy, splitPass, horizonY, column);
         }
@@ -3626,11 +3631,9 @@ export class BuildingSprite {
 
     _drawFunctionalOverlay(ctx, building, entry, wx, wy, splitPass = 'whole', horizonY = null, column = null) {
         const primaryColumn = !column || column.primary === true;
-        if (splitPass === 'column' && column) {
-            const hasRoomCount = Boolean(this._selectedBuildingType === building.type && this._roomInstrumentFor(building));
-            if (building.type === 'tavern' && !hasRoomCount) return;
-            if (building.type === 'watchtower' && !hasRoomCount && !this._ungradedOverlay) return;
-        }
+        const hasRoomCount = Boolean(this._selectedBuildingType === building.type && this._roomInstrumentFor(building));
+        if (building.type === 'tavern' && !hasRoomCount) return;
+        if (building.type === 'watchtower' && !hasRoomCount && !this._ungradedOverlay) return;
         const baseAnchor = this.assets.getAnchor(entry.id);
         const localPoint = (lx, ly) => ({ x: Math.round(wx - baseAnchor[0] + lx), y: Math.round(wy - baseAnchor[1] + ly) });
         const shouldDrawLocalY = (localY) => (
@@ -5730,7 +5733,7 @@ export class BuildingSprite {
     // an ember or puff never hides behind its own roof yet stays behind anything
     // nearer. Null when the building has no drawable.
     particleSortY(building, localY, localX = null) {
-        const lx = Number(localX);
+        const lx = localX == null ? NaN : Number(localX);
         const hasX = Number.isFinite(lx);
         let fallbackColumnSortY = null;
         for (const drawable of this.enumerateDrawables()) {
