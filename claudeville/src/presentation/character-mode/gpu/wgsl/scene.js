@@ -824,7 +824,9 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
       recvGround += cellShift;
     }
   }
-  // 2.5 / 2.1 — the baked 2.4 rim turns opaque as the lamps take the night.
+  // 2.5 / 2.1 — the baked 2.4 rim stays tagged at half alpha so light passes
+  // skip it, and renders at an opaque daytime floor (0.96 -> 1.0 with
+  // nightCarry; relaxed 2026-11-23, operator decision).
   let bakedRim = recvClass != 0 && !reflectRecord && albedoRgba.a > 0.4 && albedoRgba.a < 0.6
     && max(albedoRgba.r, max(albedoRgba.g, albedoRgba.b)) < 0.16;
   let nightCarry = clamp((frame.poolGain - 0.15) / 1.05, 0.0, 1.0);
@@ -1278,7 +1280,7 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
     color = applySeaCourses(color, artCell, poolOrder, artTopLeftPx.y + contourPx, batch.additive != 0u);
   }
   if (bakedRim && batch.additive == 0u) {
-    (*surf).alpha = mix((*surf).alpha, max((*surf).alpha, v_alpha), nightCarry);
+    (*surf).alpha = max((*surf).alpha, v_alpha * mix(0.96, 1.0, nightCarry));
   }
   return color;
 }

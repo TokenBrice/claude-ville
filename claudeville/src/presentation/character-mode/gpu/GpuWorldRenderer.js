@@ -2689,13 +2689,11 @@ void main() {
         }
     }
     // 2.5 / 2.1 — a translucent edge texel over a lit pool would show that
-    // pool through itself. The baked 2.4 rim (a dark 1-texel outline at half
-    // alpha round bodies and props) turns opaque as the lamps take the night
-    // (the pools' carry, a grade uniform), in every frame alike: a pool
-    // behind a figure never reads as a warm outline on both of its edges, and
-    // an attention pool behind a neighbour never changes that neighbour,
-    // whether the light is on or off. By day the rim keeps its authored half
-    // alpha; a reflection twin keeps its own courses.
+    // pool through itself. The baked 2.4 rim (a dark 1-texel outline tagged at
+    // half alpha round bodies and props so light passes skip it) renders at an
+    // opaque daytime floor (0.96, rising to 1.0 with nightCarry; relaxed
+    // 2026-11-23, operator decision), keeping crisp ground separation by day
+    // and blocking pools at night; a reflection twin keeps its own courses.
     bool bakedRim = recvClass != 0 && !reflectRecord && albedo.a > 0.4 && albedo.a < 0.6
         && max(albedo.r, max(albedo.g, albedo.b)) < 0.16;
     float nightCarry = clamp((u_poolGain - 0.15) / 1.05, 0.0, 1.0);
@@ -3284,7 +3282,7 @@ void main() {
         ? fatAtmosphereCourses(color, cellTaps, waterMaterial)
         : applySeaCourses(color, artCell, poolOrder,
             artTopLeftPx.y + (waterMaterial ? seaContourRows(artCell) * u_camera.z : 0.0), u_additive);
-    if (bakedRim && !u_additive) alpha = mix(alpha, max(alpha, v_alpha), nightCarry);
+    if (bakedRim && !u_additive) alpha = max(alpha, v_alpha * mix(0.96, 1.0, nightCarry));
     // SD-3 — the finished lifted texel stays under the waiting candle.
     color = sunLiftFinal(color);
     outColor = vec4(max(color, vec3(0.0)) * alpha, alpha);
