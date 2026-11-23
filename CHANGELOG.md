@@ -2,6 +2,16 @@
 
 ---
 
+## v0.65.7 — *The Heralded Name* · Nov 23, 2026
+
+A Claude Code session you named with `/rename` now keeps its name under its villager at every zoom. Until now a name showed only on hover, on selection, or at zoom 1.6 and above for the few most recent agents in each area, so a session you had named on purpose lost its name as soon as you zoomed out.
+
+- **Your names stay on.** A renamed session's name stays under its villager at overview zoom, while another agent is selected or framed, and inside a busy crowd. When it would overlap another label it moves down a line instead of disappearing. It is placed before other villagers' names and does not count toward the three names each area allows.
+- **Only names you chose.** Claude Code gives every session an automatic name such as `pharos-watch-f2`. ClaudeVille reads `nameSource: "user"` from `~/.claude/sessions/<pid>.json` and passes it on as `userNamed`, so only `/rename` names change; automatic names keep the zoom and crowd rule.
+- **Unchanged.** An agent that needs you is still named by its NEEDS YOU plate, a body hidden behind a building or still walking in shows no name, and holding `B` (READ) still shows the work verb.
+
+---
+
 ## v0.65.6 — *The Furled Scroll* · Nov 23, 2026
 
 The Activity Panel's work score is gone. Its SCORE button pinned the selected agent's last 24 waterfall rows as glyphs at building forecourts, took the camera, and stamped a REPLAY · WORK SCORE badge over the village whose counts (nodes, placed, intervals, recorded and semantic positions) described the diagram rather than the work. The glyphs could not show order, so the slider only repeated what the Causal Waterfall already lists.
