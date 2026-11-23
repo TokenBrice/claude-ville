@@ -48,11 +48,10 @@ const GUST_THRESHOLD = 0.5;
 const GUST_RAMP = 0.26;
 const GUST_STEPS = 3;
 
-// Cloud-shadow courses drift at `3 + 7·|windX|` world px/s along the wind and
-// a third of that down-screen (plan 0.7 (1)); a storm moves them ~2.2× faster
-// than a clear day.
-export const CLOUD_DRIFT_BASE = 3;
-export const CLOUD_DRIFT_PER_WIND = 7;
+// Cloud-shadow courses drift at `8 + 12·|windX|` world px/s along the wind and
+// a third of that down-screen (relaxed 2026-11-23, operator decision).
+export const CLOUD_DRIFT_BASE = 8;
+export const CLOUD_DRIFT_PER_WIND = 12;
 // A single long frame (tab return) never teleports the clouds.
 const CLOUD_DRIFT_MAX_STEP_S = 1;
 

@@ -245,7 +245,7 @@ export const WEATHER_PRESETS = {
     overcast: {
         intensity: 0.68,
         cloudCover: 0.86,
-        precipitation: 0.04,
+        precipitation: 0,
         fog: 0.08,
         starOcclusion: 0.94,
         sunOcclusion: 0.58,

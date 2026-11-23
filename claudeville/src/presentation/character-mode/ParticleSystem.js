@@ -239,8 +239,8 @@ class Particle {
             const upright = motionEnabled && !this.floating && Math.floor(age * this.animRate + this.phase) % 2 === 1;
             left = cx;
             top = cy;
-            width = upright ? 1 : 2;
-            height = upright ? 2 : 1;
+            width = upright ? 2 : 3;
+            height = upright ? 3 : 2;
         } else {
             let size = Math.max(1, Math.round(this.size));
             if (this.shape === 'puff') {
@@ -317,13 +317,13 @@ class Particle {
             return;
         }
 
-        // 6.7 — a leaf or petal tumbles: a 2×1 / 1×2 art-pixel pair that
+        // 6.7 — a leaf or petal tumbles: a 3×2 / 2×3 art-pixel pair that
         // alternates every few frames (held flat when motion is off).
         if (this.shape === 'tumble') {
             const upright = motionEnabled && !this.floating && Math.floor(age * this.animRate + this.phase) % 2 === 1;
             ctx.globalAlpha = baseAlpha;
             ctx.fillStyle = color;
-            ctx.fillRect(cx, cy, upright ? 1 : 2, upright ? 2 : 1);
+            ctx.fillRect(cx, cy, upright ? 2 : 3, upright ? 3 : 2);
             ctx.globalAlpha = 1;
             return;
         }
@@ -606,14 +606,14 @@ const PARTICLE_PRESETS = {
         direction: 'down',
     },
     // 6.7 — autumn leaves and spring petals tumble down from canopies as a
-    // 2×1 / 1×2 art-pixel pair (shape 'tumble').
+    // 3×2 / 2×3 art-pixel pair (shape 'tumble').
     leaf: {
         // 0.6 — falls from a canopy anchor 30 world px above its tree's base:
         // sort just in front of that tree.
         groundOffset: 40,
         colors: ['#c0703a', '#d9a441', '#8a5a2b'],
         size: [1, 1],
-        life: [110, 180],
+        life: [180, 300],
         speed: [0.14, 0.3],
         gravity: false,
         direction: 'down',
@@ -623,7 +623,7 @@ const PARTICLE_PRESETS = {
         groundOffset: 40,
         colors: ['#f2b8c6', '#e89aae'],
         size: [1, 1],
-        life: [110, 180],
+        life: [180, 300],
         speed: [0.12, 0.26],
         gravity: false,
         direction: 'down',
@@ -834,7 +834,7 @@ function randFrom(rng, min, max) {
 // fading in and out over DRAGONFLY_FADE frames. Wings are drawn open, never
 // flickered. With motion off a dragonfly holds its pose: no hop, no fade, no
 // ageing.
-export const DRAGONFLY_POOL_MAX = 4;
+export const DRAGONFLY_POOL_MAX = 8;
 const DRAGONFLY_LIFE = Object.freeze([1800, 3600]);
 const DRAGONFLY_HOVER = Object.freeze([110, 260]);
 const DRAGONFLY_FADE = 45;

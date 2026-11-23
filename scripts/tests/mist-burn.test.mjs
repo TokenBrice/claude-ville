@@ -58,13 +58,24 @@ test('MS-2: the land clears first, the water and the low shore last, stepped in 
     assert.ok(dawn.density * dawn.land > 0.25);
 });
 
-test('MS-2: fog weather keeps its density and the water, thinning only over the land; night unchanged', () => {
+test('MS-2: fog weather keeps its density and the water, holding fogLandKeep and fogInland over land; dawn and night unchanged', async () => {
+    const { evaluateGrade } = await import('../../claudeville/src/presentation/character-mode/GradeEvaluator.js');
     const fog = mistBurnFor(morning(12, { weather: FOG }), 1);
     assert.equal(fog.sea, 1);
     assert.equal(fog.land, Math.round(MIST_BURN.fogLandKeep * MIST_BURN.steps) / MIST_BURN.steps);
+    assert.ok(MIST_BURN.fogLandKeep >= 0.8, 'real fog holds land shroud at noon');
     assert.equal(fog.density, mistBurnFor(morning(12, { weather: FOG }), 0).density);
     const night = mistBurnFor({ weather: FOG, phase: 'night', solar: { elevationDeg: -30 } }, 1);
     assert.deepEqual([night.land, night.sea], [1, 1]);
+    // Real fog lifts inland share via resolveMistBurn; dawn radiation mist keeps MIST.inland.
+    const mist = Float32Array.from([fog.density, 0, 0, 1]);
+    const fogBurn = resolveMistBurn({ atmosphere: { weather: FOG }, mistBurn: [fog.land, fog.sea] }, mist);
+    const dawnBurn = resolveMistBurn({ atmosphere: { weather: CLEAR }, mistBurn: [1, 1] }, mist);
+    assert.ok(fogBurn[0] > 2, 'real fog lifts inland mist share');
+    assert.equal(dawnBurn[0], 1, 'dawn radiation mist keeps MIST.inland');
+    assert.ok(mistTopAt({ x: 100, y: 300 }, 0, mist, fogBurn) > 12, 'daytime fog exceeds one mist course inland');
+    // Fog suppresses sunny cloud shadows in GradeEvaluator.
+    assert.equal(evaluateGrade({ minuteOfDay: 12 * 60, weather: FOG }).cloudShadow, 0);
 });
 
 test('MS-2: the mist top\'s burn shares are twins and the CPU top follows them', () => {

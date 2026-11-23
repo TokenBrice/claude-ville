@@ -3508,8 +3508,9 @@ vec3 shadeOpenSea(vec2 cell) {
     // SEA-1 — no cloud multiply on open water: its shade is the lift's one
     // stop (seaLiftedStop); the squall keeps its courses.
     if (u_cloud.w > 0.0) shade = 0.0;
+    float cloudDark = shade * u_cloud.z;
     shade = max(shade, squallShade(cell, n, order));
-    if (shade > 0.0) c *= vec3(1.0) - shade * 0.085 * vec3(1.0, 0.96, 0.84);
+    if (shade > 0.0) c *= vec3(1.0) - max(cloudDark, shade * 0.085) * vec3(1.0, 0.96, 0.84);
     // N3 — the aerial haze's courses on water follow the swell contours (the
     // in-map water takes the same rows, SCENE_FRAGMENT), never a ruled line.
     return applyAerialHaze(c, order, (cell.y + 0.5 + seaContourRows(cell) + u_camera.y) * u_camera.z, false);
@@ -3896,7 +3897,7 @@ void main() {
         color = vec4(${rainLayerChoice(RT.rgb.map(rgb => `vec3(${rgb})`))}, ${rainLayerChoice(RT.alpha)} * u_rainPhase.w);
         shape = ivec4(0, int(left), ${rainLayerChoice(RT.dashed)}, 0);
         leanOut = lean;
-    } else if (quad == 1 && (flags & ${RAIN_UNIFORM_FLAGS.mask}u) != 0u && (still || streak)
+    } else if (quad == 1 && (flags & ${RAIN_UNIFORM_FLAGS.mask}u) != 0u
         && rainU01(rainHash(h + 5u)) < u_rainSplash.x) {
         float speedMul = ${rainLayerChoice(RT.speedMul)};
         int frame = still ? 2 : int(floor(fall / max(u_rainSplash.y * speedMul, 0.000001)));

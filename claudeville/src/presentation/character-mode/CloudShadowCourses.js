@@ -298,9 +298,9 @@ export function drawCloudShadowCourses(ctx, { atmosphere = null, region = null, 
     if (strength <= 0.02 || !region || region.length < 3 || typeof document === 'undefined') return false;
     const cover = Math.max(0, Math.min(1, Number(atmosphere?.weather?.cloudCover) || 0));
     const covered = cloudCoveredShare(cover);
-    if (covered <= 0) return reducedMotion ? false : drawLoneCloud(ctx, region, lone, 0.085 * strength);
+    if (covered <= 0) return reducedMotion ? false : drawLoneCloud(ctx, region, lone, 0.125 * strength);
     const plane = cloudPlane();
-    const tile = courseCanvas(covered, 0.085 * strength, plane);
+    const tile = courseCanvas(covered, 0.125 * strength, plane);
     const pattern = ctx.createPattern(tile, 'repeat');
     if (!pattern) return false;
     const { x: driftX, y: driftY } = planeDriftOffset(reducedMotion ? null : (Number(timeMs) || 0), atmosphere?.weather, plane);

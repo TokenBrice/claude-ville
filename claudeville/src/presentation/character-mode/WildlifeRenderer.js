@@ -45,6 +45,10 @@ const GULL_ACTIVE_TWILIGHT = Object.freeze([6, 8]);
 const GULL_RAIN_SCALE = 0.3;
 // The lanes: one pool gull per lane per crossing, so never more aloft.
 const GULL_LANE_COUNT = Math.max(...GULL_ACTIVE_DAY, ...GULL_ACTIVE_TWILIGHT);
+// Two of the ten daytime gull lanes wheel over the island roofs with ground
+// shadows (relaxed 2026-11-23, operator decision); both sit inside
+// GULL_ACTIVE_DAY[0] so clear days reliably carry over-island passes.
+const OVER_ISLAND_GULL_LANES = Object.freeze(new Set([2, 3]));
 // W6.4 — the flying band walks toward its target one bird per
 // GULL_BAND_STEP_MS (never a burst), and a lane only joins or leaves between
 // crossings or while its bird is out of view, so no gull pops in or out on
@@ -69,18 +73,18 @@ const FISHING_ORBIT = 1.5;
 const FISHING_DIVE = Object.freeze([0.44, 0.6]);
 const FISHING_SEARCH_TILES = 8;
 // AW-P8a — dragonflies over the lily-pad clusters on summer days (Jun–Aug),
-// by day, out of rain: 2 at the wide shot, 3 from z2, 4 from z3, on the
-// particle system's own dragonfly pool (never the shared 240 cap). One joins
-// every DRAGONFLY_SPAWN_GAP_MS; shed with the fauna cadence under frame
-// pressure; held still under reduced motion.
-export const DRAGONFLY_ZOOM_CAPS = Object.freeze([[3, 4], [2, 3], [0, 2]]);
+// by day, out of rain: 5 at the wide shot, 8 from z2 (relaxed 2026-11-23,
+// operator decision), on the particle system's own dragonfly pool (never the
+// shared 240 cap). One joins every DRAGONFLY_SPAWN_GAP_MS; shed with the fauna
+// cadence under frame pressure; held still under reduced motion.
+export const DRAGONFLY_ZOOM_CAPS = Object.freeze([[2, 8], [0, 5]]);
 const DRAGONFLY_SPAWN_GAP_MS = 1800;
 const LILY_CLUSTER_TILES = 1.6;
-// Songbirds: one at the wide shot (W6.1: the user's resting zoom), 2 at z2,
-// 3 from z3; none in rain, storm or at night, and they settle into the
-// trees once the forecast squall is on the sea (W6.4); one perched bird
-// under reduced motion.
-export const SONGBIRD_ZOOM_CAPS = Object.freeze([[3, 3], [2, 2], [0.9, 1]]);
+// Songbirds: 3 from z0.9 (wide shot), 5 from z2 (relaxed 2026-11-23, operator
+// decision); none in rain, storm or at night, and they settle into the trees
+// once the forecast squall is on the sea (W6.4); one perched bird under
+// reduced motion.
+export const SONGBIRD_ZOOM_CAPS = Object.freeze([[2, 5], [0.9, 3]]);
 // Fireflies: Apr–Oct, dusk and night, clear air, on fixed grass homes near
 // water. Twelve at the wide shot and z2, sixteen from z3. Their 2 s blink
 // holds a dim course around a longer core + halo course; all light is drawn
@@ -252,14 +256,14 @@ const SONGBIRD_SHADOW = 'rgba(0, 0, 0, 0.16)';
 // `deer-at-dawn` stag. Each is a small 4-direction sheet (FAUNA_SHEET_ROWS
 // × stand + 4 walk columns, `frameW`/`frameH` cells; the hen is one
 // side-view row, mirrored) read by `faunaSheetFrame`, never the 8 × 10
-// character contract. Caps by zoom like
-// the songbirds: 7 from z2, 5 from z1.4, 3 from z0.9, the paddock pair at
-// the whole-island view. They answer to the clock and the village's
+// character contract. Caps by zoom (relaxed 2026-11-23, operator decision):
+// all 6 from z0.9 (Forge dog, Archive cat and hen show at default zoom 1),
+// 3 below z0.9. They answer to the clock and the village's
 // weather only (V3): walking stops at night (the cat still prowls), in
 // rain and storm, under frame pressure (the fauna cadence) and under
 // reduced motion, holding the standing frame where they are; the hens and
 // the dog go in at night and in the wet, fading over LIVESTOCK_AWAY_MS.
-export const LIVESTOCK_ZOOM_CAPS = Object.freeze([[2, 7], [1.4, 5], [0.9, 3], [0, 2]]);
+export const LIVESTOCK_ZOOM_CAPS = Object.freeze([[0.9, 6], [0, 3]]);
 export const FAUNA_SHEET_ROWS = Object.freeze(['south', 'east', 'north', 'west']);
 const LIVESTOCK_AWAY_MS = 8000;
 const LIVESTOCK_SHADOW = 'rgba(0, 0, 0, 0.16)';
@@ -1278,7 +1282,7 @@ export class WildlifeRenderer {
                 state.cycle = cycleIndex;
                 state.fly = want;
             } else if (state.fly !== want) {
-                const point = this._gullJourneyPoint(gull, cycleIndex, journeyT);
+                const point = this._gullJourneyPoint(gull, cycleIndex, journeyT, OVER_ISLAND_GULL_LANES.has(lane));
                 this._applyGullInland(point, gull, time, inland);
                 if (!bounds || !this._isGullInVisibleBounds(point, bounds)) state.fly = want;
             }
@@ -1369,7 +1373,7 @@ export class WildlifeRenderer {
         let best = null;
         let bestRank = Infinity;
         for (const flight of flights) {
-            if (flight.lane >= this._gullBand[0]) continue;
+            if (flight.lane >= this._gullBand[0] || OVER_ISLAND_GULL_LANES.has(flight.lane)) continue;
             const point = this._gullJourneyPoint(flight.gull, flight.cycleIndex, flight.journeyT);
             const rank = dist2({
                 x: (point.tileX - point.tileY) * TILE_WIDTH / 2,
@@ -1520,7 +1524,29 @@ export class WildlifeRenderer {
         };
     }
 
-    _gullJourneyPoint(gull, cycleIndex, t) {
+    _gullJourneyPoint(gull, cycleIndex, t, overIsland = false) {
+        if (overIsland) {
+            const half = Math.max(1, Math.floor(GULL_OFFMAP_GATEWAYS.length / 2));
+            const entryIdx = gull.entryIndex + cycleIndex * 2;
+            const entryRaw = this._loopingPick(GULL_OFFMAP_GATEWAYS, entryIdx);
+            const exitRaw = this._loopingPick(GULL_OFFMAP_GATEWAYS, entryIdx + half);
+            const entry = {
+                tileX: clamp(entryRaw.tileX, 0.5, MAP_SIZE - 1.5),
+                tileY: clamp(entryRaw.tileY, 0.5, MAP_SIZE - 1.5),
+            };
+            const exit = {
+                tileX: clamp(exitRaw.tileX, 0.5, MAP_SIZE - 1.5),
+                tileY: clamp(exitRaw.tileY, 0.5, MAP_SIZE - 1.5),
+            };
+            const heart = this._islandHeart();
+            const ox = (this._gullUnitNoise(gull.memberPhase + cycleIndex * 3.13) - 0.5) * 9;
+            const oy = (this._gullUnitNoise(gull.memberPhase * 1.7 + cycleIndex * 5.41) - 0.5) * 9;
+            const control = {
+                tileX: clamp(heart.tileX + ox, 8, MAP_SIZE - 9),
+                tileY: clamp(heart.tileY + oy, 8, MAP_SIZE - 9),
+            };
+            return this._quadraticPoint(entry, control, exit, t);
+        }
         const entry = this._gullGateway(gull, cycleIndex, 'entry');
         const exit = this._gullGateway(gull, cycleIndex, 'exit');
         const inbound = this._gullStagingPoint(gull, cycleIndex, 'entry');
@@ -1562,8 +1588,9 @@ export class WildlifeRenderer {
         const run = this._gullFishingRun(flights);
         return flights.map((flight) => {
             const { gull, cycleIndex, journeyT } = flight;
-            const routePoint = this._gullJourneyPoint(gull, cycleIndex, journeyT);
-            const turnProbe = this._gullJourneyPoint(gull, cycleIndex, Math.min(1, journeyT + 0.006));
+            const overIsland = OVER_ISLAND_GULL_LANES.has(flight.lane);
+            const routePoint = this._gullJourneyPoint(gull, cycleIndex, journeyT, overIsland);
+            const turnProbe = this._gullJourneyPoint(gull, cycleIndex, Math.min(1, journeyT + 0.006), overIsland);
             const dx = turnProbe.tileX - routePoint.tileX;
             const dy = turnProbe.tileY - routePoint.tileY;
             const tangentLength = Math.max(0.001, Math.hypot(dx, dy));
@@ -1584,11 +1611,11 @@ export class WildlifeRenderer {
             // and plunges toward the surface, then climbs back to cruise. A
             // half-sine well over [0.40, 0.62] of the journey reduces altitude
             // by up to ~80% (a near-surface skim) and recovers. Lighthouse
-            // visitors keep their orbit altitude.
+            // visitors and over-island passes keep their cruise altitude.
             let diveDrop = 0;
             let diving = false;
-            const visitsLighthouse = this._gullVisitsLighthouse(gull, cycleIndex);
-            if (!visitsLighthouse) {
+            const visitsLighthouse = !overIsland && this._gullVisitsLighthouse(gull, cycleIndex);
+            if (!overIsland && !visitsLighthouse) {
                 const DIVE_START = 0.40;
                 const DIVE_END = 0.62;
                 if (journeyT >= DIVE_START && journeyT <= DIVE_END) {
@@ -1598,6 +1625,7 @@ export class WildlifeRenderer {
                     diving = well > 0.45;
                 }
             }
+            const cruiseAltitude = overIsland ? Math.max(gull.altitude, 44) : gull.altitude;
             const screenVx = (dx - dy) * TILE_WIDTH / 2;
             const orbiting = visitsLighthouse && journeyT >= 0.44 && journeyT <= 0.60;
             const turn = orbiting
@@ -1612,12 +1640,13 @@ export class WildlifeRenderer {
                 tileX,
                 tileY,
                 x: (tileX - tileY) * TILE_WIDTH / 2,
-                y: waterY - (gull.altitude - diveDrop) + bob,
+                y: waterY - (cruiseAltitude - diveDrop) + bob,
                 waterY,
-                altitude: gull.altitude - diveDrop,
+                altitude: cruiseAltitude - diveDrop,
                 frameId: diving ? 'prop.gullFlight.down' : (banking ? GULL_BANK_FRAME : GULL_FLIGHT_FRAMES[flapFrame]),
                 fallbackFrameId: 'prop.gullFlight',
                 facing: screenVx < 0 ? -1 : 1,
+                overIsland,
             };
             return run && flight.lane === run.lane ? this._gullFishingPose(run, pose, gull, time) : pose;
         }).filter(Boolean);
@@ -1807,7 +1836,7 @@ export class WildlifeRenderer {
                 if (!this._isGullInVisibleBounds(gull, bounds)) continue;
                 const tileX = Math.floor(gull.tileX);
                 const tileY = Math.floor(gull.tileY);
-                if (!gull.fishing && !(overLand ? this._isGullSkyTile(tileX, tileY) : this._isGullFlightTile(tileX, tileY))) continue;
+                if (!gull.fishing && !((overLand || gull.overIsland) ? this._isGullSkyTile(tileX, tileY) : this._isGullFlightTile(tileX, tileY))) continue;
                 candidates.push(gull);
             }
         }

@@ -55,10 +55,13 @@ test('rn1 at 0 draws nothing on the GPU and the overlay keeps the whole field', 
     }
 });
 
-test('the field rains only when the overlay would, never in winter, never at MINIMAL', () => {
+test('the field rains only when the overlay would, never on overcast, never in winter, never at MINIMAL', async () => {
+    const { WEATHER_PRESETS } = await import('../../claudeville/src/presentation/character-mode/AtmosphereState.js');
     setLookStrength('rn1', 1);
     try {
         const camera = cameraOf();
+        assert.equal(WEATHER_PRESETS.overcast.precipitation, 0, 'overcast preset stays dry');
+        assert.equal(gpuRainField(atmosphereOf({ type: 'overcast', ...WEATHER_PRESETS.overcast }), camera).instances, 0, 'overcast draws zero rain streaks');
         assert.equal(gpuRainField(atmosphereOf({ ...RAIN, type: 'clear', precipitation: 0 }), camera).instances, 0);
         assert.equal(gpuRainField(atmosphereOf(RAIN, { clock: { localDate: '2026-12-13' } }), camera).instances, 0, 'winter snow stays on the overlay');
         assert.equal(gpuRainField(atmosphereOf(), camera, { on: false }).instances, 0);
@@ -205,6 +208,8 @@ test('the GLSL and WGSL rain programs are twins', () => {
         [/float bottomX = floor\(ground\.x - height \* u_rainFall\.z \* windMul \* 0\.34000\);/, /let bottomX = floor\(ground\.x - height \* rain\.fall\.z \* windMul \* 0\.34000\);/],
         [/float tail = floor\(float\(cells - 1\) \* lean \+ 0\.5\);/, /let tail = floor\(f32\(cells - 1\) \* lean \+ 0\.5\);/],
         [/origin = vec2\(bottomX - tail \+ left, bottomY - float\(cells - 1\)\);/, /origin = vec2f\(bottomX - tail \+ left, bottomY - f32\(cells - 1\)\);/],
+        [/else if \(quad == 1 && \(flags & 2u\) != 0u\s+&& rainU01\(rainHash\(h \+ 5u\)\) < u_rainSplash\.x\)/,
+            /else if \(quad == 1 && \(flags & 2u\) != 0u\s+&& rainU01\(rainHash\(h \+ 5u\)\) < rain\.splash\.x\)/],
         [/int frame = still \? 2 : int\(floor\(fall \/ max\(u_rainSplash\.y \* speedMul, 0\.000001\)\)\);/,
             /let frame = select\(i32\(floor\(fall \/ max\(rain\.splash\.y \* speedMul, 0\.000001\)\)\), 2, still\);/],
         [/origin = ground - vec2\(3\.0, 3\.0\);/, /origin = ground - vec2f\(3\.0, 3\.0\);/],

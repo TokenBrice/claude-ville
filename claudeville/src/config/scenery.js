@@ -973,11 +973,17 @@ export const MARINE_FISH_SCHOOLS = [
 // Birdsong & Bloom (v0.16): land + water fauna.
 // Songbirds flit on small looping flight paths between the trees of the
 // inhabited belt. `points` are tile waypoints; the loop closes automatically.
+// First three routes cover Command/Tavern, World Ash, and Archive/west at z1
+// (relaxed 2026-11-23, operator decision); all five fly from z2.
 export const LAND_BIRD_ROUTES = [
-    { speed: 0.020, altitude: 28, phase: 0.00, wingRate: 6, points: [
-        { tileX: 14, tileY: 19 }, { tileX: 17, tileY: 17.5 }, { tileX: 19.5, tileY: 19.5 }, { tileX: 16, tileY: 22 } ] },
+    { speed: 0.019, altitude: 28, phase: 0.22, wingRate: 6, points: [
+        { tileX: 16.5, tileY: 16.5 }, { tileX: 20.5, tileY: 15.5 }, { tileX: 23, tileY: 19 }, { tileX: 18.5, tileY: 20.5 } ] },
+    { speed: 0.017, altitude: 32, phase: 0.58, wingRate: 5, points: [
+        { tileX: 19.5, tileY: 6.5 }, { tileX: 23, tileY: 6.5 }, { tileX: 23, tileY: 9.5 }, { tileX: 19.5, tileY: 9.2 } ] },
     { speed: 0.016, altitude: 24, phase: 0.40, wingRate: 5, points: [
         { tileX: 8, tileY: 20 }, { tileX: 10.5, tileY: 22 }, { tileX: 7, tileY: 24 }, { tileX: 5.5, tileY: 21 } ] },
+    { speed: 0.020, altitude: 28, phase: 0.00, wingRate: 6, points: [
+        { tileX: 14, tileY: 19 }, { tileX: 17, tileY: 17.5 }, { tileX: 19.5, tileY: 19.5 }, { tileX: 16, tileY: 22 } ] },
     // VQ-8 — two tiles south-east of the Forge yard (was 25,30 / 28.5,28.5 /
     // 27,32 / 24,31): the old loop crossed the hearth arch, a red V that read
     // as flame in an idle Forge. It now passes below the mouth.
@@ -1044,17 +1050,17 @@ export const SHORE_FAUNA = [
 // actor may hold tail to the rain (QW-3; both when omitted). Listed in draw
 // priority: the zoom cap keeps the first N (livestockBudget).
 export const LIVESTOCK_ROUTES = [
-    { id: 'cow', sprite: 'prop.fauna.cow', speed: 0.16, holdS: [34, 70], phase: 0.12, kind: 'grazer',
+    { id: 'cow', sprite: 'prop.fauna.cow', speed: 0.16, holdS: [10, 22], phase: 0.12, kind: 'grazer',
         points: [{ tileX: 7.95, tileY: 3.15 }, { tileX: 8.05, tileY: 3.4 }] },
-    { id: 'sheep', sprite: 'prop.fauna.sheep', speed: 0.18, holdS: [26, 58], phase: 0.57, kind: 'grazer',
+    { id: 'sheep', sprite: 'prop.fauna.sheep', speed: 0.18, holdS: [9, 20], phase: 0.57, kind: 'grazer',
         points: [{ tileX: 7.42, tileY: 3.61, face: 'east' }, { tileX: 7.45, tileY: 3.83, face: 'south' }] },
-    { id: 'goat', sprite: 'prop.fauna.goat', speed: 0.22, holdS: [20, 44], phase: 0.31, kind: 'grazer',
+    { id: 'goat', sprite: 'prop.fauna.goat', speed: 0.22, holdS: [8, 18], phase: 0.31, kind: 'grazer',
         points: [{ tileX: 6.75, tileY: 3.5, face: 'east' }, { tileX: 6.8, tileY: 3.68, face: 'south' }] },
-    { id: 'dog', sprite: 'prop.fauna.dog', speed: 0.55, holdS: [24, 60], phase: 0.44, kind: 'roamer', night: 'away', wet: 'away',
+    { id: 'dog', sprite: 'prop.fauna.dog', speed: 0.55, holdS: [8, 20], phase: 0.44, kind: 'roamer', night: 'away', wet: 'away',
         points: [{ tileX: 26.4, tileY: 29.45, face: 'south' }, { tileX: 29.3, tileY: 29.45, face: 'west' }] },
-    { id: 'cat', sprite: 'prop.fauna.cat', speed: 0.4, holdS: [40, 90], phase: 0.73, kind: 'roamer', night: 'roam', wet: 'away',
+    { id: 'cat', sprite: 'prop.fauna.cat', speed: 0.4, holdS: [10, 22], phase: 0.73, kind: 'roamer', night: 'roam', wet: 'away',
         points: [{ tileX: 6.7, tileY: 20.5, face: 'south' }, { tileX: 8.8, tileY: 20.6, face: 'south' }] },
-    { id: 'hen-b', sprite: 'prop.fauna.chicken', speed: 0.3, holdS: [10, 24], phase: 0.66, kind: 'hen', night: 'away', wet: 'away',
+    { id: 'hen-b', sprite: 'prop.fauna.chicken', speed: 0.3, holdS: [8, 16], phase: 0.66, kind: 'hen', night: 'away', wet: 'away',
         points: [{ tileX: 4.4, tileY: 3.5 }, { tileX: 4.15, tileY: 3.3 }, { tileX: 4.6, tileY: 3.85 }] },
 ];
 
