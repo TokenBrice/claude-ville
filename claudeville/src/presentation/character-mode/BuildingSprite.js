@@ -24,7 +24,8 @@ import { fillPixelEllipse } from './PixelShapes.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { ACTIONABLE_BUCKETS, bucketForStatus, isActionableBucket } from '../../domain/services/SignalLedger.js';
 import { BUILDING_EVENTS, eventBus } from '../../domain/events/DomainEvent.js';
-import { classifyTool, toolVerbLabel } from '../../domain/services/ToolIdentity.js';
+import { classifyTool, isScriptWrapperTool, placedBuilding as placedToolBuilding, toolVerbLabel } from '../../domain/services/ToolIdentity.js';
+import { isWaitingOnCrew } from '../../domain/services/StatusResolver.js';
 import { repoProfile } from '../shared/RepoColor.js';
 import { formatWaitAge } from '../shared/Formatters.js';
 import { ledgerPlaqueRows } from '../shared/HarborLedger.js';
@@ -99,16 +100,28 @@ import { GOLD, GOLD_RAMP, dottedCurve, fillConvex, gradeTone, ringDots, snap } f
 import { postcardFrame } from './Postcard.js';
 
 // READ translates canonical classifier reasons, never tool names or input text.
-const READ_VERBS = Object.freeze({
+export const READ_VERBS = Object.freeze({
     'edit-file': 'WRITING', 'write-file': 'WRITING', 'patch-file': 'WRITING',
     'edit-notebook': 'WRITING', 'generate-asset': 'WRITING', 'edit-docs': 'WRITING',
     'modify-files': 'WRITING',
     'read-local': 'READING', 'search-local': 'READING', 'find-local': 'READING',
     'list-local': 'READING', 'read-docs': 'READING', 'inspect-code': 'READING',
-    'inspect-validation': 'READING', 'web-search': 'READING', 'web-fetch': 'READING',
-    'web-tool': 'READING', 'external-research': 'READING',
+    'inspect-validation': 'READING', 'read-board': 'READING',
+    'web-search': 'BROWSING', 'web-fetch': 'BROWSING', 'web-tool': 'BROWSING',
+    'external-research': 'BROWSING', 'browser-preview': 'BROWSING',
+    'portal-active': 'BROWSING', 'portal-preview': 'BROWSING',
     'plan-task': 'PLANNING', 'update-task': 'PLANNING', 'review-tasks': 'PLANNING',
     'plan-work': 'PLANNING', 'plan-mode-enter': 'PLANNING', 'plan-mode-exit': 'PLANNING',
+    'report-work': 'PLANNING',
+    verify: 'TESTING',
+    'run-shell': 'RUNNING', 'debug-session': 'RUNNING', 'multi-tool': 'RUNNING',
+    'git-flow': 'GIT', 'github-flow': 'GIT',
+    'delegate-task': 'DELEGATING', 'spawn-agent': 'DELEGATING', 'define-agent': 'DELEGATING',
+    'wait-agent': 'DELEGATING', 'close-agent': 'DELEGATING', 'resume-agent': 'DELEGATING',
+    'list-agents': 'DELEGATING', 'form-team': 'DELEGATING', 'coordinate-team': 'DELEGATING',
+    'agent-orchestration': 'DELEGATING',
+    'message-agent': 'MESSAGING', 'send-agent-input': 'MESSAGING', 'ask-decision': 'ASKING',
+    'watch-condition': 'WATCHING', 'watch-ci': 'WATCHING',
 });
 const LANDMARK_LABEL_TYPES = new Set(
     BUILDING_DEFS
@@ -606,19 +619,39 @@ export class BuildingSprite {
             if (!agent) continue;
             const tool = agent.currentTool;
             const input = agent.currentToolInput;
+            const arrivalPending = Boolean(sprite.isArrivalPending?.());
+            const fallbackBuilding = sprite._foldBuildingType
+                || sprite._lastBuildingType
+                || sprite.behavior?.building
+                || String(agent.targetBuildingType || '').trim()
+                || String(agent.lastKnownBuildingType || '').trim()
+                || null;
             const prior = cache.get(agent.id);
             if (prior && prior.tool === tool && prior.input === input
-                && prior.status === agent.status && prior.departed === agent.isDeparted) {
+                && prior.status === agent.status && prior.departed === agent.isDeparted
+                && prior.arrivalPending === arrivalPending
+                && prior.fallbackBuilding === fallbackBuilding) {
                 sprite.readToolVerb = prior.verb;
                 prior.generation = generation;
                 continue;
             }
-            const classified = classifyTool(tool, input);
+            const classified = classifyTool(tool, input, agent);
+            let verb = READ_VERBS[classified?.reason] || null;
+            if (!verb && isWaitingOnCrew(agent)) verb = 'DELEGATING';
+            if (!verb && isScriptWrapperTool(tool)) verb = 'RUNNING';
+            if (!verb) {
+                if (agent.status === AgentStatus.IDLE) verb = 'IDLE';
+                else if (agent.status === AgentStatus.COMPLETED) verb = 'DONE';
+                else if (agent.status === AgentStatus.WAITING) verb = 'WAITING';
+                else verb = 'OTHER';
+            }
             const entry = {
                 generation,
                 tool, input, status: agent.status, departed: agent.isDeparted,
-                building: classified?.building || 'command',
-                verb: READ_VERBS[classified?.reason] || 'OTHER',
+                arrivalPending,
+                fallbackBuilding,
+                building: placedToolBuilding(classified) || fallbackBuilding || 'command',
+                verb,
             };
             sprite.readToolVerb = entry.verb;
             cache.set(agent.id, entry);
@@ -634,13 +667,16 @@ export class BuildingSprite {
             const counts = this._readCounts || (this._readCounts = new Map());
             counts.clear();
             for (const entry of cache.values()) {
-                if (entry.status !== AgentStatus.WORKING || entry.departed) continue;
+                if (entry.status !== AgentStatus.WORKING || entry.departed || entry.arrivalPending) continue;
                 let verbs = counts.get(entry.building);
                 if (!verbs) counts.set(entry.building, verbs = new Map());
                 verbs.set(entry.verb, (verbs.get(entry.verb) || 0) + 1);
             }
             this._readPlaques = new Map(Array.from(counts, ([type, verbs]) => [
-                type, Array.from(verbs, ([verb, count]) => `${verb} · ${count}`),
+                type,
+                Array.from(verbs)
+                    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+                    .map(([verb, count]) => `${verb} · ${count}`),
             ]));
         }
     }
@@ -1630,10 +1666,12 @@ export class BuildingSprite {
     }
 
     _labelRenderAttempts(building, { isHovered, isLandmark, zoom, localLabelDensity = 0, harborLedgerRows = [], musterRows = [], readRows = null }) {
+        const compactText = this._labelTextFor(building, LABEL_VISIBLE_ZOOM, false);
         if (readRows?.length) {
             return [{
-                text: readRows[0],
-                rows: readRows.slice(1).map(label => ({ label })),
+                text: compactText,
+                rows: readRows.map(label => ({ label })),
+                hideCount: true,
                 motif: true,
                 maxTextWidth: 180,
                 rowMaxWidth: 180,
@@ -1644,7 +1682,6 @@ export class BuildingSprite {
         const major = isHovered || isLandmark;
         const overlapScale = localLabelDensity >= 2 ? 1.2 : 1;
         const baseText = this._labelTextFor(building, zoom, isHovered);
-        const compactText = this._labelTextFor(building, LABEL_VISIBLE_ZOOM, false);
         const isHarborLedger = building.type === 'harbor' && harborLedgerRows.length > 0;
         // W7.5 — the Command plaque's muster rows ride the compact name like
         // the harbor ledger; the fallbacks below drop them, as they do there.
