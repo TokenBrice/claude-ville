@@ -148,13 +148,14 @@ test('Tavern–Forge walkers route over the central bridge (no east footbridge) 
     assert.equal(TOWN_ROAD_ROUTES.some((route) => route.id === 'forge-footbridge-road'), false, 'east footbridge road removed');
     assert.equal(BRIDGE_HINTS.some((hint) => hint.id === 'north-farm-bridge'), false, 'north farm bridge is no longer a rustic trestle');
     const northPlank = PLANK_BRIDGES.find((hint) => hint.id === 'north-farm-bridge');
-    assert.deepEqual(northPlank, { id: 'north-farm-bridge', tileX: 3, tileY: 7, orientation: 'NS' });
+    assert.deepEqual(northPlank, { id: 'north-farm-bridge', tileX: 3, tileY: 7, orientation: 'NS', landings: true });
 
     const scenery = new SceneryEngine({ world: null, terrainSeed: 1, tileNoise: () => 0.5 });
     scenery.generateBridges();
     const bridges = scenery.getBridgeTiles();
     assert.equal(bridges.has('22,24'), false, 'no bridge at the old east river crossing');
-    for (const y of [6, 7, 8, 9]) {
+    // 3,5 and 3,10 are the shore landings the planks carry over.
+    for (const y of [5, 6, 7, 8, 9, 10]) {
         const info = bridges.get(`3,${y}`);
         assert.equal(info?.bridgeId, 'north-farm-bridge');
         assert.equal(info?.kind, 'plank');

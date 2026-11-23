@@ -187,37 +187,31 @@ test('2268×1350 at DPR 1: the Ambient wide is the opening\'s island scale and k
 // MB-1 / D8 — ordinary Auto keeps today's policy (cap, pan, no zoom-in) but no
 // longer parks the Belfry under the top edge; a villager it shows whole wins.
 test('ordinary Auto keeps landmark crowns whole, never at a whole villager\'s expense (MB-1)', () => {
-    // At 1920×1080 DPR 1 (1680×1032 canvas) z1, a south crowd sits low enough
-    // that the plain rest crops the Belfry's crown (at 10,13); keepLandmarks
-    // shifts the pose up to clear it without losing any villager.
-    const hd = new Camera(canvasOf(1680, 1032));
-    hd.setSpriteMetrics(spriteMetrics);
-    hd.zoom = hd.tierZoom(1);
-    const hdDirector = new CameraDirector(hd);
-    const hdBelfry = hd._landmarkSilhouettes().find((mark) => mark.type === 'prop.hourglassBelfry');
-    const bodies = [{ x: -411, y: 900 }, { x: 189, y: 900 }, { x: -111, y: 760 }];
-    const box = { minX: -461, maxX: 239, minY: 670, maxY: 940 };
-    const options = hdDirector._ordinaryGlideOptions(bodies);
+    const camera = new Camera(canvasOf(2268, 1350));
+    camera.setSpriteMetrics(spriteMetrics);
+    camera.zoom = camera.tierZoom(1);
+    const director = new CameraDirector(camera);
+    const belfry = camera._landmarkSilhouettes().find((mark) => mark.type === 'prop.hourglassBelfry');
+    // A crowd in the south: the land-weighted rest sat low enough to cut the
+    // Belfry's glasses off under the top bar (lane 03's live frame).
+    const bodies = [{ x: -411, y: 960 }, { x: 189, y: 960 }, { x: -111, y: 800 }];
+    const box = { minX: -461, maxX: 239, minY: 710, maxY: 1010 };
+    const options = director._ordinaryGlideOptions(bodies);
     assert.equal(options.keepLandmarks, true);
     assert.equal(options.allowZoomIn, false, 'the Auto policy is unchanged');
-    const plain = hd._poseForWorldBox(box, { ...options, keepLandmarks: false });
-    assert.ok(crownY(viewOf(hd, plain), hdBelfry, plain.zoom) < 0, 'the plain rest crops the Belfry');
-    const kept = hd._poseForWorldBox(box, options);
+    const plain = camera._poseForWorldBox(box, { ...options, keepLandmarks: false });
+    assert.ok(crownY(viewOf(camera, plain), belfry, plain.zoom) < 0, 'the plain rest crops the Belfry');
+    const kept = camera._poseForWorldBox(box, options);
     assert.equal(kept.zoom, plain.zoom);
-    const view = viewOf(hd, kept);
-    assert.ok(crownY(view, hdBelfry, kept.zoom) >= LANDMARK_EDGE_AIR_PX, `Belfry crown at ${crownY(view, hdBelfry, kept.zoom)} px`);
+    const view = viewOf(camera, kept);
+    assert.ok(crownY(view, belfry, kept.zoom) >= LANDMARK_EDGE_AIR_PX, `Belfry crown at ${crownY(view, belfry, kept.zoom)} px`);
     for (const body of bodies) assert.ok(bodyWhole(view, body), `body at ${body.x},${body.y}`);
-    hdDirector.dispose();
 
     // At z2 a villager standing low in the frame holds the pose: the crown
     // may stay cut rather than push that body out.
-    const camera = new Camera(canvasOf(2268, 1350));
-    camera.setSpriteMetrics(spriteMetrics);
     camera.zoom = camera.tierZoom(2);
-    const director = new CameraDirector(camera);
-    const belfry = camera._landmarkSilhouettes().find((mark) => mark.type === 'prop.hourglassBelfry');
-    const low = { x: -40, y: 845 };
-    const near = { minX: -140, maxX: 60, minY: 625, maxY: 855 };
+    const low = { x: -40, y: 640 };
+    const near = { minX: -140, maxX: 60, minY: 430, maxY: 650 };
     const z2 = camera._poseForWorldBox(near, { ...director._ordinaryGlideOptions([low]), keepLandmarks: false });
     const nudged = camera._landmarkClearPose(z2, near, [low]);
     const lowView = viewOf(camera, nudged);

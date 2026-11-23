@@ -714,14 +714,32 @@ export class SceneryEngine {
         for (const hint of PLANK_BRIDGES) {
             const key = `${hint.tileX},${hint.tileY}`;
             if (!this.waterTiles.has(key)) continue;
-            this._addBridgeSpan(hint.tileX, hint.tileY, hint.orientation, {
-                ...hint,
-                kind: 'plank',
-                widthRadius: 0,
-                walkableRadius: 0,
-            });
+            const meta = { ...hint, kind: 'plank', widthRadius: 0, walkableRadius: 0 };
+            this._addBridgeSpan(hint.tileX, hint.tileY, hint.orientation, meta);
+            // A plank lands on dry ground: carry its deck over the wet shore
+            // tile at each end, which the coast bake paints as shallow water,
+            // so the planks meet the bank instead of stopping short of it.
+            if (hint.landings) this._addPlankLandings(hint, meta);
         }
         this._addHarborDocks();
+    }
+
+    _addPlankLandings(hint, meta) {
+        const axis = (hint.orientation || this._inferOrientation(hint.tileX, hint.tileY)) === 'EW' ? [1, 0] : [0, 1];
+        for (const direction of [-1, 1]) {
+            let x = hint.tileX;
+            let y = hint.tileY;
+            while (this.bridgeTiles.get(`${x + axis[0] * direction},${y + axis[1] * direction}`)?.bridgeId === hint.id) {
+                x += axis[0] * direction;
+                y += axis[1] * direction;
+            }
+            const lx = x + axis[0] * direction;
+            const ly = y + axis[1] * direction;
+            const key = `${lx},${ly}`;
+            if (lx < 0 || lx >= MAP_SIZE || ly < 0 || ly >= MAP_SIZE) continue;
+            if (!this.shoreTiles.has(key) || this.waterTiles.has(key) || this._buildingFootprints.has(key)) continue;
+            this._addBridgeTile(lx, ly, hint.orientation, meta);
+        }
     }
 
     _addBridgeSpan(tileX, tileY, forcedOrientation, meta = {}) {

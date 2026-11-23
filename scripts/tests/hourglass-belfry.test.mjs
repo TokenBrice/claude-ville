@@ -41,13 +41,13 @@ function world({ motionScale = 1 } = {}) {
     return { host, landmarks, belfry, keys };
 }
 
-test('the belfry stands on the Archive\'s north-east lagoon lawn, clear of the north bridge, with the farm on the north shore', () => {
+test('the belfry stands on the west tip by the Archive, clear of the north farm plank, the farm on its old north-shore ground', () => {
     const landmarks = DISTRICT_PROPS.filter((prop) => prop.landmark).map((prop) => prop.id);
     assert.deepEqual(landmarks, ['prop.windmill', BELFRY]);
     const belfry = DISTRICT_PROPS.find((prop) => prop.id === BELFRY);
-    assert.deepEqual([belfry.tileX, belfry.tileY, belfry.walkBlock, belfry.layer, belfry.district], [10.0, 13.0, true, 'sorted', 'knowledge']);
-    // Clear of the north farm plank bridge (3, 6..9) and its landings.
-    assert.ok(Math.hypot(belfry.tileX - 3, belfry.tileY - 9) >= 5, 'belfry stands well clear of the north farm bridge');
+    assert.deepEqual([belfry.tileX, belfry.tileY, belfry.walkBlock, belfry.layer, belfry.district], [0.6, 9.6, true, 'sorted', 'knowledge']);
+    // Clear of the north farm plank bridge (3, 5..10, landings included).
+    assert.ok(Math.abs(belfry.tileX - 3) >= 2.2, 'belfry stands clear of the north farm plank');
     // The farm (with the laundry line) clears the Archive's lagoon lawn.
     const farm = DISTRICT_PROPS.filter((prop) => prop.district === 'farm');
     assert.ok(farm.some((prop) => prop.id === 'prop.laundryLine'));

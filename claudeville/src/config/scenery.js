@@ -298,6 +298,8 @@ export const PLANK_BRIDGES = [
         tileX: 3,
         tileY: 7,
         orientation: 'NS',
+        // The planks carry over the wet shore tile at each end (3,5 and 3,10).
+        landings: true,
     },
 ];
 
@@ -680,12 +682,11 @@ export const DISTRICT_PROPS = [
     // account quota), sorted with the trees, and `walkBlock` keeps every
     // body off them. Each stands on open grass no lane, visit slot, queue,
     // seat or scenic point reaches: the windmill on the north shore's open
-    // crest beside the farm, and the belfry on the Archive's north-east lagoon
-    // lawn (clear of the north farm plank bridge and the north road, visible
-    // in default camera frames). The headland between the Tavern and the
+    // crest beside the farm, and the belfry on the west tip by the Archive
+    // (clear of the north farm plank bridge and its landings). The headland between the Tavern and the
     // Lighthouse stays bare: it is both buildings' tall-scenery sightline zone.
     { tileX: 9.6, tileY: 0.9, id: 'prop.windmill', layer: 'sorted', district: 'north', walkBlock: true, landmark: true },
-    { tileX: 10.0, tileY: 13.0, id: 'prop.hourglassBelfry', layer: 'sorted', district: 'knowledge', walkBlock: true, landmark: true },
+    { tileX: 0.6, tileY: 9.6, id: 'prop.hourglassBelfry', layer: 'sorted', district: 'knowledge', walkBlock: true, landmark: true },
     // Living Isle W8.3c (AD-P5 group D): civic/garden and wetland/forest
     // dressing, all baked into the terrain (`cache`). Garden furniture stands
     // on lawns no lane, visit slot, queue place or scenic point reaches;
