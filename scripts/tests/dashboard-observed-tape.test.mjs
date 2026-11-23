@@ -119,3 +119,20 @@ test('transcript ticks share the tape axis and mark only the fetched span as cov
     assert.equal(transcriptTicks(entries.slice(1), now).coveredFrom, 10 * perBucket);
     assert.equal(transcriptTicks([], now).coveredFrom, null, 'no transcript, no claim of an empty span');
 });
+
+test('hasObservedActivity hides the row tape on a fresh tab until multi-bucket or elapsed activity exists', () => {
+    const { store } = storeAt(at(0, 2_000));
+    store.observe({ id: 'a', status: 'working', currentTool: 'Edit', currentToolInput: 'x.js' }, at(0, 2_000));
+    store.observe({ id: 'b', status: 'idle' }, at(0, 2_000));
+
+    assert.equal(store.hasObservedActivity(['a', 'b'], at(0, 4_000)), false, 'fresh tab initial snapshot stays compact');
+    assert.equal(store.hasObservedActivity(['b'], at(2, 5_000)), false, 'idle-only agents with no calls stay hidden');
+    assert.equal(store.hasObservedActivity(['a', 'b'], at(1, 2_000)), true, 'shows once a full 15 s bucket has elapsed with recorded activity');
+
+    // Recording across two distinct buckets reveals the tape immediately even before 15 s elapsed.
+    const { store: fast } = storeAt(at(0, 14_000));
+    fast.observe({ id: 'a', status: 'working', currentTool: 'Read', currentToolInput: 'a.js' }, at(0, 14_000));
+    assert.equal(fast.hasObservedActivity(['a'], at(0, 14_500)), false);
+    fast.observe({ id: 'a', status: 'working', currentTool: 'Edit', currentToolInput: 'b.js' }, at(1, 1_000));
+    assert.equal(fast.hasObservedActivity(['a'], at(1, 1_000)), true);
+});
