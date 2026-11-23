@@ -719,7 +719,7 @@ export const DISTRICT_PROPS = [
     // clear grass pockets nearest the reserved spots (10,13), (14,28), (21,31)
     // and east-quarter (22,29) — clear of visitTiles, APPROACH_FILES, sightlines
     // and roads; sorted with occluder sidecars and walkBlock so bodies route round.
-    { tileX: 9.5, tileY: 14.5, id: 'prop.cottage.weaver', layer: 'sorted', district: 'civic', walkBlock: true },
+    { tileX: 10.5, tileY: 12.5, id: 'prop.cottage.weaver', layer: 'sorted', district: 'civic', walkBlock: true },
     { tileX: 15.8, tileY: 31.2, id: 'prop.cottage.baker', layer: 'sorted', district: 'civic', walkBlock: true },
     { tileX: 17.8, tileY: 30.0, id: 'prop.cottage.chandler', layer: 'sorted', district: 'gate', walkBlock: true },
     { tileX: 22.0, tileY: 29.0, id: 'prop.cottage.cooper', layer: 'sorted', district: 'workshop', walkBlock: true },
