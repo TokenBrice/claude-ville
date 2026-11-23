@@ -93,3 +93,16 @@ test('the second Astra body carries the halberd on its own measured wrists', () 
         'the .b body must not borrow the first body\'s wrists',
     );
 });
+
+test('both Astra bodies keep Worldsplitter in hand across all 8 directions of their run strip', () => {
+    for (const spriteId of ['agent.codex.gpt6astra', 'agent.codex.gpt6astra.b']) {
+        for (const direction of DIRECTIONS) {
+            for (let frame = 0; frame < 6; frame++) {
+                const pose = codexWeaponPose(spriteId, { cell: null, dx: 0, dy: 0, poseGroup: 'run', poseFrame: frame }, direction, 'worldsplitter');
+                assert.ok(pose, `${spriteId} run ${direction}#${frame} needs a grip`);
+                assert.equal(pose.angle, -0.35, 'running halberd leans forward like walk');
+                assert.ok(pose.x > 8 && pose.x < 84 && pose.y > 30 && pose.y < 80);
+            }
+        }
+    }
+});

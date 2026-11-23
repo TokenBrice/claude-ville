@@ -194,13 +194,33 @@ test('reduced motion never runs: the body holds its idle frame and no run row', 
 
 const MANIFEST = yaml.load(readFileSync(new URL('../../claudeville/assets/sprites/manifest.yaml', import.meta.url), 'utf8'));
 const RUN_PROFILES = (MANIFEST.characters || []).filter(entry => entry.actionStrip?.groups?.run);
-const RUN_MODELS = { 'agent.codex.gpt56sol': 'gpt-5.6-sol', 'agent.codex.gpt56luna': 'gpt-5.6-luna' };
-// Run profiles with no runtime weapon (empty-handed bodies): nothing to grip.
+const RUN_MODELS = {
+    'agent.codex.gpt56sol': 'gpt-5.6-sol',
+    'agent.codex.gpt56sol.b': 'gpt-5.6-sol',
+    'agent.codex.gpt56luna': 'gpt-5.6-luna',
+    'agent.codex.gpt56luna.b': 'gpt-5.6-luna',
+    'agent.codex.gpt6astra': 'gpt-6-astra',
+    'agent.codex.gpt6astra.b': 'gpt-6-astra',
+};
+// Run profiles with no runtime weapon (empty-handed or baked-prop bodies): nothing to grip.
 const UNARMED_RUN_MODELS = {
     'agent.zai.flash': ['glm-5.3-flash', 'zai'],
+    'agent.zai.glm': ['glm-5.3', 'zai'],
+    'agent.zai.glm.b': ['glm-5.3', 'zai'],
+    'agent.deepseek.flash.high': ['deepseek-flash', 'deepseek'],
     'agent.gemini.neon': ['gemini-4-neon', 'antigravity'],
     'agent.gemini.neon.b': ['gemini-4-neon', 'antigravity'],
 };
+
+function identityForSprite(model, effort, provider, spriteId) {
+    const base = getModelVisualIdentity(model, effort, provider);
+    if (base.spriteId === spriteId) return base;
+    for (let i = 0; i < 64; i++) {
+        const candidate = getModelVisualIdentity(model, effort, provider, `variant-probe-${i}`);
+        if (candidate.spriteId === spriteId) return candidate;
+    }
+    return base;
+}
 
 function runPose(entry, direction, frame) {
     const meta = entry.actionStrip;
@@ -221,7 +241,7 @@ test('a run strip whose other poses sheathe the weapon authors the weapon hand f
         // frame and it pops back on the first idle frame.
         assert.ok(codexPoseGripped(entry.id, 'run'), `${entry.id} run rows need poseWrists.run`);
         const [first, last] = entry.actionStrip.groups.run.rows;
-        const identity = getModelVisualIdentity(RUN_MODELS[entry.id], 'high', 'codex');
+        const identity = identityForSprite(RUN_MODELS[entry.id], 'high', 'codex', entry.id);
         assert.equal(identity.spriteId, entry.id);
         for (let direction = 0; direction < DIRECTIONS.length; direction++) {
             for (let frame = 0; frame <= last - first; frame++) {

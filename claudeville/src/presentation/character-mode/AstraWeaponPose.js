@@ -24,23 +24,52 @@ const ASTRA_B_WRISTS = {
     w:  [[46,59], [51,58], [51,59], [44,58], [37,58], [41,59], [49,58], [50,59], [48,59], [49,59]],
     sw: [[59,58], [62,56], [61,57], [57,58], [54,57], [58,57], [59,57], [59,57], [58,56], [59,57]],
 };
+// Run-strip wrists measured with scripts/sprites/measure-wrists.mjs --strip-group=run
+// (E#0–1 and NE#3–4 adjusted off trailing cape onto the far-hand track).
+const ASTRA_RUN_WRISTS = {
+    s:  [[67,48], [64,39], [63,51], [66,57], [62,54], [67,54]],
+    se: [[58,46], [55,52], [64,51], [76,50], [75,44], [67,48]],
+    e:  [[49,49], [48,50], [50,53], [68,43], [69,40], [54,52]],
+    ne: [[25,42], [23,44], [28,45], [33,47], [34,46], [31,41]],
+    n:  [[24,48], [27,48], [27,53], [28,48], [23,40], [26,51]],
+    nw: [[34,57], [38,56], [29,55], [16,44], [19,41], [23,56]],
+    w:  [[51,57], [59,53], [44,57], [22,54], [21,53], [39,59]],
+    sw: [[65,51], [68,45], [58,53], [46,56], [40,57], [56,60]],
+};
+const ASTRA_B_RUN_WRISTS = {
+    s:  [[66,46], [61,33], [63,49], [62,54], [60,51], [66,52]],
+    se: [[55,50], [54,53], [59,47], [73,48], [73,42], [67,47]],
+    e:  [[48,50], [47,50], [49,56], [67,43], [69,40], [54,50]],
+    ne: [[26,42], [23,44], [31,45], [33,45], [34,44], [33,45]],
+    n:  [[25,50], [28,51], [28,55], [27,45], [25,41], [28,54]],
+    nw: [[34,63], [41,55], [29,57], [17,48], [18,45], [23,58]],
+    w:  [[52,58], [58,55], [45,59], [23,55], [22,52], [36,64]],
+    sw: [[65,51], [67,46], [57,55], [43,54], [41,55], [57,59]],
+};
 export const ASTRA_WRIST_TABLES = Object.freeze({
     'agent.codex.gpt6astra': ASTRA_WRISTS,
     'agent.codex.gpt6astra.b': ASTRA_B_WRISTS,
 });
+export const ASTRA_POSE_WRIST_TABLES = Object.freeze({
+    'agent.codex.gpt6astra': { run: ASTRA_RUN_WRISTS },
+    'agent.codex.gpt6astra.b': { run: ASTRA_B_RUN_WRISTS },
+});
 
-export function astraWeaponPose({ cell, dx, dy, drawScale = 1 }, direction, equipment, spriteId = 'agent.codex.gpt6astra') {
-    const wrist = ASTRA_WRIST_TABLES[spriteId]?.[direction]?.[cell?.sy / 92];
+export function astraWeaponPose({ cell, dx, dy, drawScale = 1, poseGroup = null, poseFrame = null }, direction, equipment, spriteId = 'agent.codex.gpt6astra') {
+    const wrist = poseGroup
+        ? ASTRA_POSE_WRIST_TABLES[spriteId]?.[poseGroup]?.[direction]?.[poseFrame]
+        : ASTRA_WRIST_TABLES[spriteId]?.[direction]?.[cell?.sy / 92];
     if (!wrist) return null;
+    const moving = poseGroup === 'run' || cell?.sy < 6 * 92;
     return {
         x: dx + wrist[0] * drawScale,
         y: dy + wrist[1] * drawScale,
         flipX: ['ne', 'n', 'nw', 'w'].includes(direction),
         behindBody: direction === 'e' || direction === 'ne',
         // Worldsplitter's source shaft leans right. Stand it upright at rest
-        // and let it lean outward during walking, with no independent sway.
+        // and let it lean outward during walking/running, with no independent sway.
         angle: equipment === 'worldsplitter'
-            ? cell.sy < 6 * 92 ? -0.35 : -0.55
+            ? moving ? -0.35 : -0.55
             : equipment === 'polearm'
             ? ['e', 'w'].includes(direction) ? 0.05 : -0.25
             : ['e', 'w'].includes(direction) ? -0.10 : -0.35,
