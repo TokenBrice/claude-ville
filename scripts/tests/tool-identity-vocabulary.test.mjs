@@ -97,7 +97,7 @@ const CASES = [
     // `claude` in a path is a repository or scratch directory, not a document.
     ['Edit', '/work/claude-ville/claudeville/src/a.js', 'forge', 'edit-file', 'edit'],
     ['Write', '/home/u/.claude/worktrees/x/claudeville/src/b.js', 'forge', 'write-file', 'write'],
-    ['Bash', 'cat /work/claude-ville/claudeville/src/a.js', 'forge', 'inspect-code', 'inspect'],
+    ['Bash', 'cat /work/claude-ville/claudeville/src/a.js', 'archive', 'inspect-code', 'inspect'],
     // Real docs still go to the Archive.
     ['Edit', '/work/claude-ville/CLAUDE.md', 'archive', 'edit-docs', 'edit docs'],
     ['Edit', 'docs/README.md', 'archive', 'edit-docs', 'edit docs'],

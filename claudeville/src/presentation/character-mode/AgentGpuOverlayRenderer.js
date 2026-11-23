@@ -95,13 +95,16 @@ export class AgentGpuOverlayRenderer {
         // Thoughts are not drawn here: the thought layer (WorldFrameRenderer,
         // AgentSprite.drawThought) paints every leader, then every column,
         // above all per-agent marks on both backends.
-        if (!departedTableau(host) && (primary || host.selected || annotationMode === 'full' || host.gpuActionOverlay)) {
+        if (!departedTableau(host)) {
             // Head-anchored labels clear the chevron: nothing crosses the body.
             const labelTopY = host._labelTopY(contentTopY);
-            if (host.chatting) host._drawChatEffect(ctx, labelTopY);
-            if (!overview) host._drawStatusEmote(ctx, labelTopY);
-            host._drawPlanModeGlyph(ctx, labelTopY);
-            host._drawRetryGlyph(ctx, labelTopY);
+            const toolGlyphDrawn = !overview && Boolean(host._drawToolGlyphBadge?.(ctx, labelTopY));
+            if (primary || host.selected || annotationMode === 'full' || host.gpuActionOverlay) {
+                if (host.chatting) host._drawChatEffect(ctx, labelTopY);
+                if (!overview && !toolGlyphDrawn) host._drawStatusEmote(ctx, labelTopY);
+                if (!toolGlyphDrawn) host._drawPlanModeGlyph(ctx, labelTopY);
+                host._drawRetryGlyph(ctx, labelTopY);
+            }
         }
 
         // C5 identity: _drawNameTag gates the T2 plate / T4 name itself.
