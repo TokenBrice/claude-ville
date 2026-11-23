@@ -4548,6 +4548,9 @@ export class AgentSprite {
                 lod: true,
             });
             this._drawBudgetImpostor(ctx);
+            if (!this.gpuWorldEnabled && !departedTableau(this)) {
+                this._drawToolGlyphBadge(ctx, this._labelTopY(contentTopY));
+            }
             if (!this._onOpenFloor) this._drawNameTag(ctx);
             if (archivePushed) ctx.restore();
             return;
@@ -4844,15 +4847,17 @@ export class AgentSprite {
         // paint them in the thought layer (drawThought) above the world.
         if (!this.gpuWorldEnabled) {
             const labelTopY = this._labelTopY(contentTopY);
+            const toolGlyphDrawn = !departedTableau(this) && Boolean(this._drawToolGlyphBadge(ctx, labelTopY));
             if (this.chatting && !departedTableau(this)) {
                 this._drawChatEffect(ctx, labelTopY);
             }
-            if (!departedTableau(this)) this._drawStatusEmote(ctx, labelTopY);
-            // Plan-mode and retry glyphs sit above the silhouette. The status
-            // emote (kind != null) wins the slot; otherwise plan-mode glyph
-            // renders slightly higher. Retry glyph renders to the right.
+            if (!departedTableau(this) && !toolGlyphDrawn) this._drawStatusEmote(ctx, labelTopY);
+            // Plan-mode and retry glyphs sit above the silhouette. The tool
+            // glyph or status emote (kind != null) wins the slot; otherwise
+            // plan-mode glyph renders slightly higher. Retry glyph renders to
+            // the right.
             if (!departedTableau(this)) {
-                this._drawPlanModeGlyph(ctx, labelTopY);
+                if (!toolGlyphDrawn) this._drawPlanModeGlyph(ctx, labelTopY);
                 this._drawRetryGlyph(ctx, labelTopY);
             }
             if (!this._onOpenFloor) this._drawNameTag(ctx);
@@ -7453,28 +7458,71 @@ export class AgentSprite {
         ctx.restore();
     }
 
-    // 5.6 — the overview trade glyph: the authored 8×8 EventShapes motif of
-    // the current tool, in the status colour with a one-pixel dark outline,
-    // just under the feet. Quiet agents (no tool) carry nothing. Static.
+    // 5.6 — the trade glyph: the authored 8×8 EventShapes motif of the current
+    // tool, in the status colour with a one-pixel dark outline. At zoom 1–2
+    // (relaxed 2026-11-23, operator decision), WORKING villagers with a known
+    // currentTool wear it static above the head (including while walking) under
+    // MarkTier.WORKING, yielding to thoughts, chat, attention/T1 plates and
+    // postcards. Below zoom 1 it stays under the feet for the overview impostor.
     // W7.10b — a body in plan mode carries the plan glyph instead.
-    _drawToolGlyphBadge(ctx) {
+    _drawToolGlyphBadge(ctx, contentTopY = null) {
+        if (postcardFrame()) return false;
+        if (this.isArrivalPending?.() || departedTableau(this)) return false;
+        const status = this.agent?.status;
+        if (isAttentionStatus(status)) return false;
         const tool = String(this.agent?.currentTool || '').trim();
         const planMode = this._inPlanMode();
-        if (!tool && !planMode) return;
+        const zoom = this._zoom || 1;
+        if (Number.isFinite(contentTopY)) {
+            if (zoom < 1 || zoom > 2) return false;
+            if (status !== AgentStatus.WORKING || !tool) return false;
+            if (this._thoughtOwnsHead() || this.chatting) return false;
+            const step = zoom >= 1.5 ? 2 : 1;
+            const motifSize = 8 * step;
+            const glyphX = -motifSize / 2;
+            const glyphY = -(motifSize + 10);
+            const boxWorld = (motifSize + 2) / zoom;
+            const gate = getActiveMarkGovernor()?.admit(MarkTier.WORKING, this._placeX, contentTopY, {
+                rect: {
+                    x: this._placeX + (glyphX - 1) / zoom,
+                    y: contentTopY + (glyphY - 1) / zoom,
+                    w: boxWorld,
+                    h: boxWorld,
+                },
+                stableKey: `tool-glyph:${this.agent?.id || ''}`,
+            });
+            if (gate && !gate.draw) return false;
+            const building = planMode ? null : memoizedToolClassification(tool, this.agent?.currentToolInput)?.building || null;
+            ctx.save();
+            ctx.translate(this._placeX, contentTopY);
+            ctx.scale(1 / zoom, 1 / zoom);
+            snapScreenOrigin(ctx);
+            drawToolGlyphBadge(ctx, {
+                glyph: planMode ? PLAN_MODE_GLYPH : toolGlyphKey(tool, building),
+                color: planMode ? PLAN_MODE_GLYPH_COLOR : (this._statusVisual()?.color || LABEL_INK.text),
+                x: glyphX,
+                y: glyphY,
+                step,
+            });
+            ctx.restore();
+            return true;
+        }
+        if (!tool && !planMode) return false;
         // Reuse the live tool classification so the glyph picks the same building
         // the agent is routing toward (web -> globe, mine -> pick, etc.).
         const building = planMode ? null : memoizedToolClassification(tool, this.agent?.currentToolInput)?.building || null;
-        const zoom = this._zoom || 1;
         ctx.save();
         ctx.translate(this._placeX, this._placeY);
         ctx.scale(1 / zoom, 1 / zoom);
+        snapScreenOrigin(ctx);
         drawToolGlyphBadge(ctx, {
             glyph: planMode ? PLAN_MODE_GLYPH : toolGlyphKey(tool, building),
-            color: this._statusVisual()?.color || LABEL_INK.text,
+            color: planMode ? PLAN_MODE_GLYPH_COLOR : (this._statusVisual()?.color || LABEL_INK.text),
             x: -4,
             y: this.identityLabelTopPx(zoom),
         });
         ctx.restore();
+        return true;
     }
 
     // W7.4 (D2: repo = colour) — the repo accent for the ground-ring course:
