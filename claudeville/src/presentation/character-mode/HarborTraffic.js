@@ -50,6 +50,8 @@ import { normalizeLightSource } from './LightSourceRegistry.js';
 import {
     BERTHS,
     HARBOR_PIER_DECKS,
+    boxHitsHarborPierPolygons,
+    composeInboundRouteTiles,
     COAST_ANCHORAGE_SLOTS,
     HARBOR_GROUND_PX_PER_TILE,
     MAX_HARBOR_SHIP_PACK_SIZE,
@@ -206,20 +208,19 @@ const RELEASE_SAIL_ARRIVE_STEP_MS = 150;
 const RELEASE_SAIL_LIMIT = 2;
 const RELEASE_SAIL_BAYER4 = Object.freeze([0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5]);
 
-// The release slip: open water just outside the Harbor's South pier, and
-// the one leg out of it along the pier (bow-first, about 27° below
-// screen-right, the SE view) where the sloop joins the channel route every
-// departure takes.
-const RELEASE_SAIL_SLIP = Object.freeze({ tileX: 32.3, tileY: 21.95 });
-const RELEASE_SAIL_OUT = Object.freeze({ tileX: 34.9, tileY: 21.95 });
+// The release slip: open water clear of the Harbor's South pier and both
+// channel buoys (33.2, 22.2 and 37.1, 22.0), and the one leg out of it
+// (bow-first, SE) where the sloop joins the channel route every departure takes.
+const RELEASE_SAIL_SLIP = Object.freeze({ tileX: 36.2, tileY: 24.8 });
+const RELEASE_SAIL_OUT = Object.freeze({ tileX: 38.6, tileY: 24.8 });
 
 // The chevrons: 7-step V arms two texels thick (they must read over the sea
 // glitter), the first 3 texels astern of the stern, the
-// second a further 8 back; foam and crest are the hull wake's tones.
+// second a further 8 back; foam and crest match the bright hull wake tones.
 const RELEASE_SAIL_CHEVRON_LENGTH = 7;
 const RELEASE_SAIL_CHEVRON_GAP = 8;
-const RELEASE_SAIL_FOAM = ART_RAMPS.shallowWater[2];
-const RELEASE_SAIL_CREST = '#b5cabf';
+const RELEASE_SAIL_FOAM = '#c8e4de';
+const RELEASE_SAIL_CREST = '#eaf4f0';
 
 // The rejected caution beat: one 2 Hz step of four is the lit tone (V4).
 const CAUTION_BEAT_STEP_MS = 500;
@@ -3601,7 +3602,7 @@ export class HarborTraffic {
             if (ship.arrivingKind === 'pr-merge' && ship.prFromTile) {
                 path = sailPath(composeWaterPath(ship.prFromTile, dockTile));
             } else {
-                path = sailPath(reversedTiles(composeWaterRouteTiles(dockTile, { ...ship, departFromTile: dockTile }, this.waterRouteData)));
+                path = sailPath(composeInboundRouteTiles(dockTile, { ...ship, departFromTile: dockTile }, this.waterRouteData));
             }
             const startedAt = ship.arrivingStartedAt || now;
             const duration = Math.max(1, Number(ship.arrivingDuration) || INBOUND_DURATION_MS);
@@ -4780,9 +4781,10 @@ export class HarborTraffic {
         return this._plateBoxes.some(other => box.x0 < other.x1 && box.x1 > other.x0 && box.y0 < other.y1 && box.y1 > other.y0);
     }
 
-    // Whether a plate box (world px) lies over a pier deck or the Harbor
-    // house's drawn pixels: sampled on a 5 × 3 grid.
+    // Whether a plate box (world px) lies over a padded pier deck, the North
+    // pier flagpole or the Harbor house's drawn pixels.
     _plateOverScenery(box) {
+        if (boxHitsHarborPierPolygons(box)) return true;
         const house = this._harborHouseHit();
         for (let j = 0; j <= 2; j++) {
             const y = box.y0 + (box.y1 - box.y0) * j / 2;

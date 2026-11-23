@@ -79,7 +79,7 @@ export const BOOMERANG_IN_MS = 12000;
 
 // 5.11 — cancelled pushes return to berth half-speed with no collision flare.
 export const CANCEL_RETURN_MS = 12000;
-export const INBOUND_DURATION_MS = 36000;
+export const INBOUND_DURATION_MS = 20000;
 export const SCUTTLE_MS = 1500;
 
 // W7.9 (SW-P9) — the pull-request cutter: `gh pr create` moors one at the
@@ -1572,8 +1572,8 @@ function firstFreeRoadsteadTile(state) {
     for (let slot = 0; ; slot++) {
         const tile = tileAt(slot);
         if (taken.has(`${tile.tileX},${tile.tileY}`)) continue;
-        if (slot >= designed && (field.clearance(tile.tileX, tile.tileY) < HARBOR_MOORING_CLEARANCE
-            || hitsOffshoreProp(tile))) continue;
+        if (hitsOffshoreProp(tile)) continue;
+        if (slot >= designed && field.clearance(tile.tileX, tile.tileY) < HARBOR_MOORING_CLEARANCE) continue;
         return tile;
     }
 }

@@ -37,9 +37,11 @@ const FOAM_MATERIAL = materialClassId('unlit');
 const REFLECTION_ALPHAS = Object.freeze([0.42, 0.28, 0.16]);
 const REFLECTION_STOP = hexRgb(ART_RAMPS.shallowWater[1]);
 const REFLECTION_TOWARD_STOP = 0.38;
-const WAKE_FOAM = ART_RAMPS.shallowWater[2];
-// CoastBake FOAM_CREST (foam lifted 45 % toward the crest white).
-const WAKE_CREST = '#b5cabf';
+const WAKE_FOAM = '#c8e4de';
+// Crisp seafoam crest for sailing wakes and moored hull waterline collars.
+const WAKE_CREST = '#eaf4f0';
+const COLLAR_FOAM_RGB = hexRgb(WAKE_FOAM);
+const COLLAR_CREST_RGB = hexRgb(WAKE_CREST);
 const GRADE_PROBES = Object.freeze([[0.92, 0.94, 0.95], [0.5, 0.5, 0.5], [0.45, 0.62, 0.8]]);
 const LIVERY_CACHE_LIMIT = 48;
 const WAKE_CACHE_LIMIT = 96;
@@ -457,6 +459,8 @@ export function hullRecords(pose, out = []) {
             footY: -1,
         });
     }
+    const collar = !pose.wake && !(pose.sink > 0) ? collarRecord(pose, g) : null;
+    if (collar) out.push(collar);
     // The hull is a receiver with a vertical axis (V5): its waterline centre
     // (the roll pivot) and foot row, so a lamp beside it lights the lamp
     // side of the planking, with no owner slot (never an attention target).
@@ -548,6 +552,83 @@ export function drawHullLamps(ctx, pose, alpha = 1) {
     const g = hullGeometry(pose);
     ctx.globalAlpha = Math.min(1, alpha);
     ctx.drawImage(pose.lamps.image, g.sx, 0, g.width, g.height, g.x, g.y, g.width, g.height);
+}
+
+const _collars = new Map();
+
+// 1-texel foam waterline collar hugging a moored hull's exact waterline row,
+// cached per strip + roll frame so dark hulls separate cleanly from blue water.
+function collarCanvas(strip, frame) {
+    const key = `${strip.key || strip.spriteId}|c${frame}`;
+    const hit = _collars.get(key);
+    if (hit && hit.source === strip.image) return touch(_collars, key, hit, LIVERY_CACHE_LIMIT).canvas;
+    const w = strip.frameWidth;
+    const h = strip.anchorY + 1;
+    const probe = canvasOf(w, h);
+    const pctx = probe?.getContext('2d', { willReadFrequently: true });
+    if (!pctx) return null;
+    pctx.drawImage(strip.image, ((strip.frameOffset || 0) + frame) * w, 0, w, h, 0, 0, w, h);
+    const src = pctx.getImageData(0, 0, w, h).data;
+    const y0 = Math.max(0, h - 2);
+    let left = w;
+    let right = -1;
+    for (let y = y0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+            if (src[(y * w + x) * 4 + 3] < 128) continue;
+            if (x < left) left = x;
+            if (x > right) right = x;
+        }
+    }
+    if (right < left) return null;
+    const canvas = canvasOf(w, 1);
+    const ctx = canvas?.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return null;
+    const out = ctx.createImageData(w, 1);
+    const xStart = Math.max(0, left - 1);
+    const xEnd = Math.min(w - 1, right + 1);
+    for (let x = xStart; x <= xEnd; x++) {
+        // Subtle 1-texel foam break near stern/ends, solid bright crest along mid/bow.
+        const edge = x === xStart || x === xEnd;
+        const crest = !edge && ((x + frame) % 3 !== 0);
+        const rgb = crest ? COLLAR_CREST_RGB : COLLAR_FOAM_RGB;
+        const di = x * 4;
+        out.data[di] = rgb[0];
+        out.data[di + 1] = rgb[1];
+        out.data[di + 2] = rgb[2];
+        out.data[di + 3] = 255;
+    }
+    ctx.putImageData(out, 0, 0);
+    touch(_collars, key, { source: strip.image, canvas }, LIVERY_CACHE_LIMIT);
+    return canvas;
+}
+
+function collarRecord(pose, g) {
+    const { strip } = pose;
+    const canvas = collarCanvas(strip, pose.frame);
+    if (!canvas) return null;
+    return {
+        id: `ground:collar:${pose.id}`,
+        stableKey: pose.id,
+        textureKey: `harbor-collar:${strip.key || strip.spriteId}|c${pose.frame}`,
+        source: canvas,
+        sourceWidth: canvas.width,
+        sourceHeight: 1,
+        sx: 0,
+        sy: 0,
+        sw: canvas.width,
+        sh: 1,
+        x: g.x,
+        y: g.y + g.height,
+        width: canvas.width,
+        height: 1,
+        alpha: pose.alpha,
+        material: FOAM_MATERIAL,
+        elevation: 0,
+        emissive: 0,
+        occluder: 0,
+        footY: -1,
+        textureRevision: 0,
+    };
 }
 
 // ─── V wake stamps ───────────────────────────────────────────────────────────
@@ -727,6 +808,12 @@ export function drawHullFallback(ctx, pose, { ungradedOverlay = false, lightGrad
         const reflection = reflectionCanvas(strip, pose.frame);
         if (reflection) {
             ctx.drawImage(tinted(`${strip.liveryKey || strip.key || strip.spriteId}|r${pose.frame}`, reflection), g.x, g.reflectY + g.reflectHeight);
+        }
+    }
+    if (!pose.wake && !(pose.sink > 0)) {
+        const collar = collarCanvas(strip, pose.frame);
+        if (collar) {
+            ctx.drawImage(tinted(`${strip.key || strip.spriteId}|c${pose.frame}`, collar), g.x, g.y + g.height);
         }
     }
     const image = tinted(strip.liveryKey || strip.key || strip.spriteId, strip.image);
