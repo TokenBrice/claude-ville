@@ -6,7 +6,6 @@ import { inVillageMasonry, PORTAL_SPAWN_TILE, TOWN_ROAD_ROUTES, VILLAGE_GATE, VI
 import {
     AMBIENT_GROUND_PROPS,
     AMBIENT_SCENIC_POINTS,
-    ANCIENT_RUINS,
     DISTRICT_PROPS,
     SCENIC_POINT_PROPS,
     WATCHTOWER_BEACON_BUOY_TILES,
@@ -552,10 +551,6 @@ const THOUGHT_NO_THREAD = Object.freeze([]);
 // them reach `fixturePoolReach` (L1-5) past it.
 const STREET_LAMP_POOL_RADIUS = 66;
 const BRAZIER_POOL_RADIUS = 70;
-// Command's watchfires are drawn burning, so at night they light the plaza
-// like any other clock-gated hearth (LightSourceRegistry).
-const WATCHFIRE_POOL_RADIUS = 52;
-const WATCHFIRE_FLAME_HEIGHT = 12;
 // BR-6 / C2 — a bridge sprite's painted flames (manifest `lights`) light as
 // candle-scale fixtures: a pool well inside the street lamps' and under
 // SOURCE_HALO_RADIUS_CAP, the emissive ramp's gold, held steady (no breath).
@@ -1030,7 +1025,6 @@ export class IsometricRenderer {
             pathfinder: this.pathfinder,
         });
 
-        this.commandCenterGroundProps = [];
         this._generateCommandCenterAmbience();
         this._laneTiles = this._buildLaneTileIndex();
         this.ambientEmitters = [];
@@ -1360,10 +1354,10 @@ export class IsometricRenderer {
     }
 
     _generateTownSquare(centerX, centerY) {
-        for (let x = centerX - 4; x <= centerX + 5; x++) {
-            for (let y = centerY - 3; y <= centerY + 3; y++) {
-                const dx = (x - centerX) / 4.4;
-                const dy = (y - centerY) / 2.8;
+        for (let x = centerX - 3; x <= centerX + 4; x++) {
+            for (let y = centerY - 2; y <= centerY + 2; y++) {
+                const dx = (x - centerX) / 3.2;
+                const dy = (y - centerY) / 2.2;
                 if ((dx * dx + dy * dy) <= 1.0 && this._inMapBounds(x, y)) {
                     const key = `${x},${y}`;
                     this.townSquareTiles.add(key);
@@ -1472,22 +1466,6 @@ export class IsometricRenderer {
         this.commandCenterRoadTiles.add(`${cx + w + 2},${northY + 1}`);
         this.commandCenterRoadTiles.add(`${cx - 2},${southY + 1}`);
         this.commandCenterRoadTiles.add(`${cx - 2},${southY - 1}`);
-
-        // Guard-posts mark the plaza's west approach and the northern gate. The
-        // ceremonial entrance itself is the Command sprite's gate steps and
-        // braziers (row southY), so nothing is placed on them.
-        this.commandCenterGroundProps.push(
-            { tileX: cx - 2.2, tileY: southY + 0.6, type: 'guardpost', phase: 2.8 },
-            { tileX: cx + w + 2.2, tileY: northY + 0.4, type: 'guardpost', phase: 3.9 },
-        );
-
-        // Watchfires around ceremonial paths for subtle pulse signals.
-        if (this._inMapBounds(cx - 3.5, southY + 0.4)) {
-            this.commandCenterGroundProps.push({ tileX: cx - 3.5, tileY: southY + 0.4, type: 'watchfire', phase: 1.35 });
-        }
-        if (this._inMapBounds(cx + w + 2.4, cy + 0.9)) {
-            this.commandCenterGroundProps.push({ tileX: cx + w + 2.4, tileY: cy + 0.9, type: 'watchfire', phase: 4.7 });
-        }
     }
 
     _inMapBounds(tileX, tileY) {
@@ -1561,17 +1539,6 @@ export class IsometricRenderer {
             { tileX: 23.4, tileY: 17.8, particleType: 'sparkle', chance: 0.012 },
             { tileX: 32.5, tileY: 16.4, particleType: 'beaconMote', chance: 0.014 },
         ];
-
-        for (const prop of this.commandCenterGroundProps) {
-            if (prop.type === 'watchfire') {
-                emitters.push({
-                    tileX: prop.tileX,
-                    tileY: prop.tileY,
-                    particleType: 'torch',
-                    chance: 0.022,
-                });
-            }
-        }
 
         this.ambientEmitters = emitters.map(emitter => ({
             ...emitter,
@@ -11095,28 +11062,14 @@ export class IsometricRenderer {
     }
 
     // W6.9 / W6.10 — the hearths (gatehouse guard rooms, lake shrine), the
-    // calendar's lit bonfire, Command's watchfires and the bridges' painted
-    // flames (BR-6): fixtures on the village lamp clock
-    // (LightSourceRegistry.hearthLightSources) that never read occupancy, so
-    // no work building lights without a working visitor.
+    // calendar's lit bonfire and the bridges' painted flames (BR-6): fixtures
+    // on the village lamp clock (LightSourceRegistry.hearthLightSources) that
+    // never read occupancy, so no work building lights without a working visitor.
     _hearthLightSources(lighting = null) {
         const lampsLit = lampsLitAt(this._lastAtmosphere);
         if (!lampsLit) return [];
         const extra = [...(this.villageCalendar?.lightFixtures?.() || [])];
-        for (const [index, prop] of (this.commandCenterGroundProps || []).entries()) {
-            if (prop.type !== 'watchfire') continue;
-            extra.push({
-                id: `hearth.watchfire.${index}`,
-                tileX: prop.tileX,
-                tileY: prop.tileY,
-                height: WATCHFIRE_FLAME_HEIGHT,
-                radius: WATCHFIRE_POOL_RADIUS,
-                intensity: 0.72,
-                color: '#ffa94a',
-                fire: true,
-            });
-        }
-        // D4 — each hearth and watchfire catches on the round with the lamps.
+        // D4 — each hearth catches on the round with the lamps.
         const lit = this.lampRoundLit();
         const caught = row => lit(row.tileX, row.tileY);
         return hearthLightSources({
@@ -12235,34 +12188,8 @@ export class IsometricRenderer {
         return rgb;
     }
 
-    _drawAncientRuins(ctx) {
-        const pulse = this.motionScale ? (Math.sin(this.waterFrame * 1.7) + 1) / 2 : 0.45;
-        for (const ruin of ANCIENT_RUINS) {
-            if (this.waterTiles.has(`${Math.floor(ruin.tileX)},${Math.floor(ruin.tileY)}`)) continue;
-            const x = (ruin.tileX - ruin.tileY) * TILE_WIDTH / 2;
-            const y = (ruin.tileX + ruin.tileY) * TILE_HEIGHT / 2;
-            ctx.save();
-            ctx.translate(x, y);
-            ctx.scale(ruin.scale, ruin.scale);
-            ctx.fillStyle = 'rgba(59, 53, 42, 0.62)';
-            ctx.fillRect(-18, -28, 8, 31);
-            ctx.fillRect(10, -24, 8, 27);
-            ctx.fillRect(-18, -30, 36, 7);
-            ctx.fillStyle = 'rgba(163, 147, 104, 0.35)';
-            ctx.fillRect(-15, -25, 3, 24);
-            ctx.fillRect(13, -21, 3, 22);
-            ctx.strokeStyle = `rgba(201, 242, 107, ${0.08 + pulse * 0.14})`;
-            ctx.lineWidth = 1.2;
-            ctx.beginPath();
-            ctx.arc(0, -11, 14, Math.PI * 1.08, Math.PI * 1.92);
-            ctx.stroke();
-            ctx.restore();
-        }
-    }
-
     _drawAmbientGroundProps(ctx) {
         ctx.save();
-        this._drawAncientRuins(ctx);
         if (this.sprites) {
             for (const prop of AMBIENT_GROUND_PROPS) {
                 const x = (prop.tileX - prop.tileY) * TILE_WIDTH / 2;
@@ -12288,13 +12215,6 @@ export class IsometricRenderer {
                 this.sprites.drawSprite(ctx, prop.id, x, y, this._winterPropOpts(prop.id));
             }
         }
-
-        for (const prop of this.commandCenterGroundProps) {
-            const x = (prop.tileX - prop.tileY) * TILE_WIDTH / 2;
-            const y = (prop.tileX + prop.tileY) * TILE_HEIGHT / 2;
-            if (prop.type === 'watchfire') this._drawCommandWatchfire(ctx, x, y, prop.phase || 0);
-            else if (prop.type === 'guardpost') this._drawCommandGuardpost(ctx, x, y);
-        }
         ctx.restore();
     }
 
@@ -12311,34 +12231,6 @@ export class IsometricRenderer {
         ctx.ellipse(Math.round(x), Math.round(y + 1), halfW, halfW * 0.42, 0, 0, Math.PI * 2);
         ctx.fill();
         ctx.restore();
-    }
-
-    _drawCommandWatchfire(ctx, x, y, phase = 0) {
-        const flicker = this.motionScale ? Math.max(0, Math.sin(this.waterFrame * 7 + phase)) : 0.5;
-        ctx.fillStyle = 'rgba(44, 30, 17, 0.6)';
-        ctx.fillRect(x - 2, y - 12, 4, 10);
-
-        // Ember bed reads as a pixel pool; the flame uses the shared taper.
-        fillPixelEllipse(ctx, x, y - 12, 8 + flicker * 2, 4,
-            `rgba(255, 132, 37, ${(0.12 + flicker * 0.08).toFixed(3)})`);
-        drawPixelFlame(ctx, x, y - 11, 8 + flicker * 4, 3, {
-            outer: `rgba(255, 132, 37, ${(0.62 + flicker * 0.24).toFixed(3)})`,
-            inner: `rgba(255, 216, 122, ${(0.72 + flicker * 0.20).toFixed(3)})`,
-            tip: `rgba(255, 245, 210, ${(0.60 + flicker * 0.24).toFixed(3)})`,
-            lean: this.motionScale ? Math.sin(this.waterFrame * 2.1 + phase) * 1.2 : 0,
-        });
-    }
-
-    _drawCommandGuardpost(ctx, x, y) {
-        ctx.fillStyle = 'rgba(64, 45, 27, 0.85)';
-        ctx.fillRect(x - 1.2, y - 11, 2.4, 11);
-        ctx.fillStyle = 'rgba(154, 116, 59, 0.72)';
-        ctx.fillRect(x - 7, y - 4, 14, 2.8);
-        ctx.fillRect(x - 2, y - 8, 4, 1.5);
-        ctx.fillStyle = 'rgba(230, 206, 146, 0.26)';
-        ctx.beginPath();
-        ctx.arc(x, y - 11, 1.4, 0, Math.PI * 2);
-        ctx.fill();
     }
 
 }

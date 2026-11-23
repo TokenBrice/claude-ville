@@ -28,12 +28,14 @@ export const OFFSHORE_RECORD_PREFIX = 'ground:offshore:';
 
 const PLACEMENTS = OFFSHORE_SCENERY.map((entry, order) => {
     const world = tileToWorld(entry.tileX, entry.tileY);
+    const key = entry.key || entry.id;
     return Object.freeze({
         id: entry.id,
+        key,
         order,
         worldX: Math.round(world.x),
         worldY: Math.round(world.y),
-        recordId: `${OFFSHORE_RECORD_PREFIX}${entry.id}`,
+        recordId: `${OFFSHORE_RECORD_PREFIX}${key}`,
     });
 });
 
@@ -115,7 +117,7 @@ export function offshoreSceneryRecords(renderer, out = []) {
     for (const placement of PLACEMENTS) {
         const sprite = placedSprite(assets, placement);
         if (!sprite) continue;
-        let record = pool.get(placement.id);
+        let record = pool.get(placement.key);
         if (!record) {
             const materialName = assets.getEntry?.(placement.id)?.materialClass || 'stone';
             record = {
@@ -134,7 +136,7 @@ export function offshoreSceneryRecords(renderer, out = []) {
                 sequence: -0.95 + placement.order / 1000,
                 sourceKind: 'individual',
             };
-            pool.set(placement.id, record);
+            pool.set(placement.key, record);
         }
         record.source = sprite.image;
         record.textureRevision = imageRevision(sprite.image);

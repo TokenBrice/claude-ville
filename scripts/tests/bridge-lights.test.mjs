@@ -135,8 +135,10 @@ test('the declared flames light at their drawn world positions, only while the l
     // The street-lamp pool list carries them (the Canvas pools and the GPU
     // feed both read it).
     renderer._lanternGlowSources = () => [];
+    const rusticSpans = renderer.bridgeSpans.filter((span) => span.style === 'rustic').length;
+    const civicSpans = renderer.bridgeSpans.filter((span) => span.style === 'civic').length;
     const pools = renderer._lanternGroundLightSources({}).filter((light) => light.id.startsWith('bridge-light:'));
-    assert.equal(pools.length, central.lights.length + trestle.lights.length);
+    assert.equal(pools.length, civicSpans * central.lights.length + rusticSpans * trestle.lights.length);
 });
 
 test('the bridge catches on the Lamplighter\'s Round in one step, flames and pools together', () => {

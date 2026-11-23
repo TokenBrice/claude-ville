@@ -203,7 +203,7 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
         id: 'north-bank-promenade',
         material: 'avenue',
         width: 1,
-        points: [[7, 23], [10, 20]],
+        points: [[7, 22], [8, 21], [10, 20]],
     },
     {
         id: 'civic-west-arm',
@@ -215,31 +215,43 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
         id: 'civic-east-arm',
         material: 'avenue',
         width: 2,
-        points: [[16, 18], [23, 18]],
+        points: [[18, 18], [22, 18]],
     },
     {
         id: 'tavern-promenade',
         material: 'avenue',
         width: 1,
-        points: [[23, 18], [28, 16], [29, 13]],
+        points: [[23, 18], [25, 18], [26, 16], [27, 14], [28, 14]],
+    },
+    {
+        id: 'tavern-harbor-spur',
+        material: 'avenue',
+        width: 1,
+        points: [[23, 18], [25, 19], [28, 19], [28, 20]],
+    },
+    {
+        id: 'west-bridge-approach',
+        material: 'lane',
+        width: 1,
+        points: [[7, 27], [7, 31], [7, 33], [6, 34]],
     },
     {
         id: 'production-row',
         material: 'lane',
         width: 1,
-        points: [[6, 34], [13, 34], [18, 38], [22, 37], [28, 37], [28, 31], [25, 29]],
+        points: [[6, 34], [8, 35], [13, 35], [18, 38], [22, 37], [28, 37], [28, 31], [25, 30]],
     },
     {
         id: 'west-production-road',
         material: 'avenue',
         width: 1,
-        points: [[6, 34], [14, 31], [18, 27]],
+        points: [[6, 34], [8, 35], [13, 35], [16, 34], [16, 30], [18, 27]],
     },
     {
         id: 'civic-south-arm',
         material: 'avenue',
-        width: 2,
-        points: [[16, 20], [18, 21]],
+        width: 1,
+        points: [[16, 19], [18, 20], [18, 21]],
     },
     {
         id: 'central-river-bridge',
@@ -248,10 +260,16 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
         points: [[18, 21], [18, 26], [22, 31], [22, 37]],
     },
     {
+        id: 'forge-footbridge-road',
+        material: 'lane',
+        width: 1,
+        points: [[21, 21], [22, 22], [22, 27], [24, 29], [25, 30]],
+    },
+    {
         id: 'archive-walk',
         material: 'avenue',
         width: 1,
-        points: [[7, 23], [8, 20], [8, 17]],
+        points: [[7, 22], [8, 20], [8, 17]],
     },
     {
         id: 'clock-walk',
@@ -261,9 +279,9 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
     },
     {
         id: 'lighthouse-quay',
-        material: 'dock',
+        material: 'avenue',
         width: 1,
-        points: [[29, 19], [29, 16], [29, 13]],
+        points: [[28, 20], [28, 17], [27, 15], [27, 14], [28, 14]],
     },
     {
         id: 'harbor-berths',
@@ -277,6 +295,12 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
         width: 1,
         points: [[18, 26], [18, 32], [19, 36], [19, 39]],
     },
+    {
+        id: 'north-farm-path',
+        material: 'lane',
+        width: 1,
+        points: [[8, 14], [6, 12], [3, 11], [3, 10], [3, 5], [3, 4], [8, 4], [8, 3], [9, 2], [11, 2], [15, 2], [16, 4], [15, 6]],
+    },
 ]);
 
 // District identity through yard materials (plan item 4.7). Each building's
@@ -287,15 +311,15 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
 // footfall/lane material reads it as stone (avenue) or earth (dirt).
 //   flag    dressed flagstone (plaza ramp, at the street's value)
 //   gravel  crushed stone (road ramp, the street's tone, fine texture)
-//   cinder  packed dark earth with slag flecks (dirt ramp, low)
+//   cinder  packed charcoal-slate hearth yard (stone ramp, low)
 //   earth   trodden yard earth (dirt ramp)
 export const YARD_MATERIALS = Object.freeze({
     archive: Object.freeze({ surface: 'flag', edge: 'kerb', paved: true }),
     tavern: Object.freeze({ surface: 'flag', edge: 'kerb', paved: true }),
     portal: Object.freeze({ surface: 'flag', edge: 'kerb', paved: true }),
-    forge: Object.freeze({ surface: 'cinder', edge: 'wattle', paved: false }),
+    forge: Object.freeze({ surface: 'cinder', edge: null, paved: false }),
     mine: Object.freeze({ surface: 'gravel', edge: null, paved: false }),
-    taskboard: Object.freeze({ surface: 'earth', edge: 'wattle', paved: false }),
+    taskboard: Object.freeze({ surface: 'earth', edge: null, paved: false }),
     watchtower: Object.freeze({ surface: 'gravel', edge: null, paved: false }),
     harbor: Object.freeze({ surface: 'gravel', edge: null, paved: false }),
 });

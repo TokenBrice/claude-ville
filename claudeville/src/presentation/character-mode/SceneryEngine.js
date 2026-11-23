@@ -865,7 +865,7 @@ export class SceneryEngine {
             isExcluded: nearBusyWalk ? (x, y) => Boolean(isExcluded?.(x, y)) || nearBusyWalk(x, y) : isExcluded,
         };
         for (const anchor of TREE_CLUMPS) {
-            const placed = this._growTreeClump(anchor.tileX, anchor.tileY, anchor.trees, anchor.species, anchor.mix ?? null, ctx);
+            const placed = this._growTreeClump(anchor.tileX, anchor.tileY, anchor.trees, anchor.species, anchor.mix ?? null, ctx, null, anchor.tall ?? 0);
             if (placed) clumpCentres.push({ x: anchor.tileX, y: anchor.tileY, spacing: 2.2 });
         }
         for (const [clusterIndex, cluster] of TREE_CLUSTERS.entries()) {
@@ -942,9 +942,11 @@ export class SceneryEngine {
         const spaced = (tree) => !talls.some((t) => Math.hypot(t.tileX - tree.tileX, t.tileY - tree.tileY) < reach(t) + reach(tree));
         const stands = new Set(TREE_CLUSTERS.filter((cluster) => cluster.stand).map((cluster) => cluster.name));
         for (const tree of this.treeProps) {
-            if (!tree.woodland || tree.size !== 'large' || stands.has(tree.woodland)) continue;
+            if (tree.size !== 'large' || stands.has(tree.woodland)) continue;
+            const share = tree.woodland ? (shares.get(tree.woodland) ?? 0) : (tree.tallShare ?? 0);
+            if (share <= 0) continue;
             const pick = this.tileNoise(Math.floor(tree.tileX * 4) + 311, Math.floor(tree.tileY * 4) + 173);
-            if (pick >= (shares.get(tree.woodland) ?? 0)) continue;
+            if (pick >= share) continue;
             if (!spaced(tree)) continue;
             if (!this._clearForTallTree(tree, pathTiles, bridgeTiles)) continue;
             tree.size = 'tall';
@@ -1158,7 +1160,7 @@ export class SceneryEngine {
     // when at least three trees stood; smaller remnants are removed so no lone
     // tree or pair is left standing on open ground. Trees a TREE_CLUSTERS
     // region grows carry its name (`woodland`) for the tall promotion.
-    _growTreeClump(cx, cy, count, dominant, mix, { pathTiles, bridgeTiles, isExcluded }, woodland = null) {
+    _growTreeClump(cx, cy, count, dominant, mix, { pathTiles, bridgeTiles, isExcluded }, woodland = null, tallShare = 0) {
         const start = this.treeProps.length;
         const turn = this.tileNoise(Math.floor(cx) + 7, Math.floor(cy) + 211) * Math.PI * 2;
         for (let k = 0; k < TREE_CLUMP_PROBES && this.treeProps.length - start < count; k++) {
@@ -1178,7 +1180,12 @@ export class SceneryEngine {
             if (species === 'willow' && !nearWater) species = 'oak';
             if (species !== 'willow' && !this._inlandOfCoast(x, y, TREE_COAST_INLAND)) continue;
             const size = k >= 2 && species !== 'pine' && this.tileNoise(tx + 17, ty + 71 + k) < 0.4 ? 'small' : 'large';
-            this.treeProps.push(woodland ? { tileX: x, tileY: y, species, size, woodland } : { tileX: x, tileY: y, species, size });
+            const entry = woodland
+                ? { tileX: x, tileY: y, species, size, woodland }
+                : tallShare > 0
+                    ? { tileX: x, tileY: y, species, size, tallShare }
+                    : { tileX: x, tileY: y, species, size };
+            this.treeProps.push(entry);
         }
         // A clump needs three trees to read as one, unless it was authored
         // smaller (a waterside pair).

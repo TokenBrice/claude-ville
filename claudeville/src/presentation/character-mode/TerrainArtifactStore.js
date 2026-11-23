@@ -135,7 +135,7 @@ export function terrainArtifactConfiguration(renderer) {
     for (const key of ['terrainSeed', 'waterTiles', 'shoreTiles', 'wetShoreTiles', 'deepWaterTiles', 'lagoonWaterTiles', 'waterMeta',
         'harborWaterApronTiles', 'bridgeTiles', 'pathTiles', 'townSquareTiles', 'mainAvenueTiles', 'dirtPathTiles',
         'commandCenterRoadTiles', 'yardTiles', 'yardClearTiles', 'frontageSpurs', 'featureTiles', 'bushTiles', 'grassTuftTiles', 'flowerTiles',
-        'bridgeSpans', 'commandCenterGroundProps']) {
+        'bridgeSpans']) {
         scene[key] = renderer[key];
     }
     scene.buildings = [...renderer.world?.buildings || []].map(([id, building]) => [id, {
