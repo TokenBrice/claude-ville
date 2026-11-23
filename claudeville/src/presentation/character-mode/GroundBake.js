@@ -166,14 +166,14 @@ export const GRASS_GUST_STOPS = Object.freeze([GRASS, GRASS_DRY, GRASS_LUSH].fla
 // Per surface: ramp, texture set, ramp offset (steps), texture contrast,
 // published class.
 const SURFACES = [
-    /* grass  */ { ramp: GRASS, tex: 'grass', offset: 0.02, contrast: 0.44, cls: GROUND_CLASS.GRASS },
+    /* grass  */ { ramp: GRASS, tex: 'grass', offset: 0.02, contrast: 0.65, cls: GROUND_CLASS.GRASS },
     /* sand   */ { ramp: SAND, tex: 'sand', offset: -0.2, contrast: 0.8, cls: GROUND_CLASS.SAND },
     /* dirt   */ { ramp: DIRT, tex: 'dirt', offset: 0, contrast: 1.0, cls: GROUND_CLASS.DIRT },
-    /* road   */ { ramp: ROAD, tex: 'cobble', offset: 0.05, contrast: 0.92, cls: GROUND_CLASS.ROAD },
-    /* plaza  */ { ramp: PLAZA, tex: 'square', offset: -0.12, contrast: 0.85, cls: GROUND_CLASS.PLAZA },
-    /* flag   */ { ramp: PLAZA, tex: 'flag', offset: -0.95, contrast: 0.9, cls: GROUND_CLASS.PLAZA },
-    /* gravel */ { ramp: ROAD, tex: 'gravel', offset: 0.05, contrast: 0.75, cls: GROUND_CLASS.ROAD },
-    /* cinder */ { ramp: DIRT, tex: 'cinder', offset: -1.5, contrast: 1.0, cls: GROUND_CLASS.DIRT },
+    /* road   */ { ramp: ROAD, tex: 'cobble', offset: -0.45, contrast: 0.92, cls: GROUND_CLASS.ROAD },
+    /* plaza  */ { ramp: PLAZA, tex: 'square', offset: 0.18, contrast: 0.85, cls: GROUND_CLASS.PLAZA },
+    /* flag   */ { ramp: PLAZA, tex: 'flag', offset: -0.55, contrast: 0.9, cls: GROUND_CLASS.PLAZA },
+    /* gravel */ { ramp: ROAD, tex: 'gravel', offset: -0.15, contrast: 0.75, cls: GROUND_CLASS.ROAD },
+    /* cinder */ { ramp: STONE, tex: 'cinder', offset: -0.6, contrast: 1.0, cls: GROUND_CLASS.DIRT },
     /* earth  */ { ramp: DIRT, tex: 'earth', offset: 0.3, contrast: 0.95, cls: GROUND_CLASS.DIRT },
 ];
 
@@ -186,6 +186,7 @@ const PAVING_AO_CAP = 0.68;
 const isPavingSurface = (s) => s === S_ROAD || s === S_PLAZA || s === S_FLAG || s === S_GRAVEL;
 
 const SURFACE_EDGE = new Array(SURFACES.length).fill(null);
+SURFACE_EDGE[S_ROAD] = 'road-kerb';
 SURFACE_EDGE[S_PLAZA] = 'kerb';
 
 // Texture sources: full-class cells of the land Wang sheets (cell 0 = all
@@ -258,8 +259,8 @@ const TILE_MASK = [
 // directly, where their edging is drawn; paved yards also count as road, so
 // stone meets stone without an earth seam. The plaza edge stays crisp.
 const LAYERS = [
-    { bit: M_DIRT, thr: 0.47, amp: 0.34, surface: S_DIRT },
-    { bit: M_ROAD, thr: 0.5, amp: 0.18, surface: S_ROAD },
+    { bit: M_DIRT, thr: 0.47, amp: 0.18, surface: S_DIRT },
+    { bit: M_ROAD, thr: 0.48, amp: 0.12, surface: S_ROAD },
     { bit: M_YARD, thr: 0.5, amp: 0.16, surface: -1 },
     { bit: M_PLAZA, thr: 0.5, amp: 0.07, surface: S_PLAZA },
 ];
@@ -444,7 +445,7 @@ function mirrorTexture(t) {
 function clusterTexture(t) {
     let src = t;
     let dst = new Float32Array(t.length);
-    for (let pass = 0; pass < 4; pass++) {
+    for (let pass = 0; pass < 2; pass++) {
         for (let v = 0; v < 32; v++) {
             for (let u = 0; u < 32; u++) {
                 let acc = 0;
@@ -459,7 +460,7 @@ function clusterTexture(t) {
             }
         }
         src = dst;
-        if (pass < 3) dst = new Float32Array(t.length);
+        if (pass < 1) dst = new Float32Array(t.length);
     }
     let variance = 0;
     for (let i = 0; i < src.length; i++) variance += src[i] * src[i];
@@ -1164,15 +1165,13 @@ function bakeGroundWeather({ cols, rows, surfaces, stepBuf, eaveBuf, sunShadeBuf
     return packGroundWeather({ cols, rows, surfaces, stops: stepBuf, shelter, order, puddleMask });
 }
 
-// Kerbs and wattle where a paved or fenced yard meets grass/sand, plus a
+// Stone kerbs where paved roads, plazas or yards meet unpaved ground, plus a
 // 1-stop darker recessed stone border course where S_PLAZA meets S_ROAD /
-// yard paving or grass (4.7 + C-02).
+// yard paving or grass (4.7 + C-02). Baked wattle edging was retired in favour
+// of authored timber fences (2026-11-23).
 function drawYardEdges({ cols, rows, surfaces, stepBuf, put }) {
     const edgeOf = (s) => (s === 255 ? null : s >= S_FLAG ? edgeForYardSurface(s) : SURFACE_EDGE[s]);
-    // A kerb dresses every paved edge onto unpaved ground; wattle only fences
-    // yard from open grass, never across the earth paths agents walk.
     const unpaved = (s) => s === S_GRASS || s === S_SAND || s === S_DIRT || s === S_EARTH || s === S_CINDER;
-    const grassy = (s) => s === S_GRASS || s === S_SAND;
     const otherPaving = (s, self) => s !== self && isPavingSurface(s);
     for (let row = 1; row < rows - 1; row++) {
         for (let col = 1; col < cols - 1; col++) {
@@ -1180,13 +1179,12 @@ function drawYardEdges({ cols, rows, surfaces, stepBuf, put }) {
             const s = surfaces[idx];
             const edge = edgeOf(s);
             if (!edge) continue;
-            const soft = edge === 'kerb' ? unpaved : grassy;
             const below = surfaces[(row + 1) * cols + col];
             const above = surfaces[(row - 1) * cols + col];
             const left = surfaces[row * cols + col - 1];
             const right = surfaces[row * cols + col + 1];
-            const outBelow = soft(below) && below !== s;
-            const out = outBelow || (soft(above) && above !== s) || (soft(left) && left !== s) || (soft(right) && right !== s);
+            const outBelow = unpaved(below) && below !== s;
+            const out = outBelow || (unpaved(above) && above !== s) || (unpaved(left) && left !== s) || (unpaved(right) && right !== s);
             if (!out) {
                 if (s === S_PLAZA) {
                     const roadBelow = otherPaving(below, s);
@@ -1198,7 +1196,10 @@ function drawYardEdges({ cols, rows, surfaces, stepBuf, put }) {
                 }
                 continue;
             }
-            if (edge === 'kerb') {
+            if (edge === 'road-kerb') {
+                // 1-texel stone kerb framing cobble streets against unpaved turf/dirt.
+                put(col, row, ROAD[0]);
+            } else if (edge === 'kerb') {
                 // Dressed recessed kerb: dark riser facing the viewer, 1-stop
                 // darker recessed border stone where plaza/flagstone meets turf.
                 const baseStop = stepBuf ? stepBuf[idx] : 2;
@@ -1206,16 +1207,6 @@ function drawYardEdges({ cols, rows, surfaces, stepBuf, put }) {
                 if (outBelow && surfaces[(row - 1) * cols + col] === s) {
                     const innerStop = stepBuf ? stepBuf[(row - 1) * cols + col] : 2;
                     put(col, row - 1, PLAZA[Math.max(0, innerStop - 1)]);
-                }
-            } else {
-                // Wattle: a low woven rail with posts every 6 texels.
-                put(col, row, TIMBER[1]);
-                if (col % 6 === 0) {
-                    put(col, row - 1, TIMBER[2]);
-                    put(col, row - 2, TIMBER[2]);
-                    put(col, row - 3, TIMBER[3]);
-                } else if (outBelow) {
-                    put(col, row - 1, TIMBER[2]);
                 }
             }
         }
@@ -1589,7 +1580,7 @@ function drawDecals(r, ctx) {
     };
 
     // Meadow pockets: flower tiles and the flower feature bed become one
-    // cluster of a single bloom colour each; thinned to about half.
+    // cluster of a single bloom colour each (redundant 50% cull dropped).
     const blooms = BLOOMS[season] || BLOOMS.summer;
     if (blooms.length) {
         const flower = (d) => {
@@ -1598,13 +1589,16 @@ function drawDecals(r, ctx) {
             const color = blooms[Math.floor(d.group * blooms.length)];
             put(col, d.row, GRASS[0]);
             put(col, d.row - 1, color);
+            if (d.pick > 0.35) {
+                put(col + 1, d.row, GRASS[0]);
+                put(col + 1, d.row - 1, color);
+            }
+            if (d.pick > 0.65) put(col, d.row - 2, color);
         };
         const flowerKeys = new Set([...(r.flowerTiles?.keys?.() || [])]);
         for (const [key, feature] of r.featureTiles || []) if (feature === 'flowers') flowerKeys.add(key);
         for (const key of flowerKeys) {
-            const [x, y] = key.split(',').map(Number);
-            if (hash2(x, y, 7) > (season === 'spring' ? 0.7 : 0.5)) continue;
-            cluster(key, 100, 7, 0.34, flower);
+            cluster(key, 100, 8, 0.36, flower);
         }
     }
 
@@ -1617,26 +1611,22 @@ function drawDecals(r, ctx) {
         if (d.pick > 0.5) put(col, d.row - 2, GRASS[4]);
     };
     for (const key of r.grassTuftTiles?.keys?.() || []) {
-        const [x, y] = key.split(',').map(Number);
-        if (hash2(x, y, 8) > 0.55) continue;
         cluster(key, 200, 5, 0.32, tuft);
     }
 
-    // Low shrubs replace the cube-based bush sprites: a small sage mound
+    // Low shrubs replace the cube-based bush sprites: a leafy sage mound
     // with a shadow row, drawn on grass only.
     const shrub = (d) => {
         if (!onGrass(d.i)) return;
         const col = d.i % cols;
         const row = d.row;
-        for (let c = -2; c <= 2; c++) put(col + c, row + 1, GRASS[0]);
-        for (let c = -2; c <= 2; c++) put(col + c, row, FOLIAGE[1]);
-        for (let c = -2; c <= 1; c++) put(col + c, row - 1, c < 0 ? FOLIAGE[3] : FOLIAGE[2]);
-        for (let c = -1; c <= 0; c++) put(col + c, row - 2, FOLIAGE[3]);
-        put(col - 1, row - 3, FOLIAGE[4]);
+        for (let c = -3; c <= 3; c++) put(col + c, row + 1, GRASS[0]);
+        for (let c = -3; c <= 3; c++) put(col + c, row, FOLIAGE[1]);
+        for (let c = -3; c <= 2; c++) put(col + c, row - 1, c < 0 ? FOLIAGE[3] : FOLIAGE[2]);
+        for (let c = -2; c <= 1; c++) put(col + c, row - 2, c < 0 ? FOLIAGE[4] : FOLIAGE[3]);
+        for (let c = -1; c <= 0; c++) put(col + c, row - 3, FOLIAGE[4]);
     };
     for (const key of r.bushTiles?.keys?.() || []) {
-        const [x, y] = key.split(',').map(Number);
-        if (hash2(x, y, 9) > 0.5) continue;
         cluster(key, 300, 1, 0.12, shrub);
     }
 
