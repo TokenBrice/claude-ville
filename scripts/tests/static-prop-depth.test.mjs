@@ -294,6 +294,24 @@ test('bridge-deck: on the deck both files sort behind the masked parapet, which 
     assert.equal(rails.length, 1, 'the central bridge uses one column-sliced masked parapet sprite');
     const parapet = rails[0];
     assert.equal(parapet.id, 'bridge.rail.central-river-bridge');
+    assert.ok(Number.isInteger(parapet.x) && Number.isInteger(parapet.y),
+        `parapet origin is snapped to whole world px, got (${parapet.x}, ${parapet.y})`);
+    const span = renderer.bridgeSpans.find((entry) => entry.id === 'central-river-bridge');
+    const midX = (span.start.x + span.end.x) / 2;
+    const midY = (span.start.y + span.end.y) / 2;
+    const bakedX = Math.round(midX - 132);
+    const bakedY = Math.round(midY - 124);
+    assert.deepEqual(parapet.parapetOrigin, { x: bakedX, y: bakedY },
+        'parapet origin matches baked bridge placement exactly');
+    const cachePad = 8;
+    const cacheOriginX = -(parapet.x + parapet.bounds.left - cachePad);
+    const cacheOriginY = -(parapet.y + parapet.bounds.top - cachePad);
+    assert.equal(Math.floor(parapet.x + parapet.bounds.left - cachePad), -cacheOriginX,
+        'cached canvas X uses an exact integer origin with zero fractional shift');
+    assert.equal(Math.floor(parapet.y + parapet.bounds.top - cachePad), -cacheOriginY,
+        'cached canvas Y uses an exact integer origin with zero fractional shift');
+    const row42WorldY = Math.floor(parapet.y + parapet.bounds.top - cachePad) + (parapet.parapetOrigin.y + 42 + cacheOriginY);
+    assert.equal(row42WorldY, bakedY + 42, 'parapet texel row 42 lands on the exact same world row as the baked bridge');
     assert.ok(parapet.occlusionColumns?.length >= 16, 'parapet is sliced into vertical occlusion columns');
     let nearCrossed = 0;
     for (const { tileY, lanePx } of samplesAlong(22, 26, [-LANE_PX, 0, LANE_PX])) {
