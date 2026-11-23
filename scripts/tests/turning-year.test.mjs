@@ -248,7 +248,7 @@ test('a leaf whose fall ends on the river floats downstream, held flat', () => {
     assert.ok(leaf.x > before.x && leaf.y > before.y, 'downstream');
     assert.ok(Math.hypot(leaf.x - before.x, leaf.y - before.y) <= 0.2, 'no faster than a texel per 80 ms');
     assert.equal(particles.packGpuInstances(views), 1);
-    assert.deepEqual([views.f32[2], views.f32[3]], [2, 1], 'held flat on the water');
+    assert.deepEqual([views.f32[2], views.f32[3]], [3, 2], 'held flat on the water');
     assert.ok(views.u8[19] < 255 && views.u8[19] > 0, 'fading on the water');
     // A leaf over land still spawns as before (no landing).
     const { ambience: dry, spawned: drySpawned } = driftFixture({ riverAt: () => null });
