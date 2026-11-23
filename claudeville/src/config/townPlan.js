@@ -26,42 +26,85 @@ export const VILLAGE_GATE = Object.freeze({
 // Steering asks it per walker per frame, so the stone's segments and the sea
 // tower's centre are laid out once (`villageMasonryShape`).
 export function inVillageMasonry(tileX, tileY, reach = 0.3) {
+    if (!masonrySegments) initVillageMasonry();
+    if (tileY < masonryMinY - reach || tileY > masonryMaxY + reach) return false;
+    return inVillageMasonryNear(tileX, tileY, reach);
+}
+
+function inVillageMasonryNear(tileX, tileY, reach) {
     const G = VILLAGE_GATE_GEOMETRY;
     const X = tileX - VILLAGE_GATE.tileX;
     const Y = tileY - VILLAGE_GATE.tileY;
-    if (Math.abs(X) < Math.max(0, G.archHalfWidth - reach) && Math.abs(Y) <= G.blockHalfDepth + reach) return false;
-    for (const cx of G.towerX) if (Math.hypot(X - cx, Y) < G.towerR + reach) return true;
-    const { segments, seaX, seaY } = villageMasonryShape();
-    if (Math.hypot(tileX - seaX, tileY - seaY) < SEA_TOWER_GEOMETRY.towerR + reach) return true;
-    for (let i = 0; i < segments.length; i += 4) {
-        const ax = segments[i];
-        const ay = segments[i + 1];
-        const dx = segments[i + 2] - ax;
-        const dy = segments[i + 3] - ay;
-        const t = Math.max(0, Math.min(1, ((tileX - ax) * dx + (tileY - ay) * dy) / Math.max(1e-6, dx * dx + dy * dy)));
-        if (Math.hypot(tileX - (ax + t * dx), tileY - (ay + t * dy)) < reach) return true;
+    const archGap = G.archHalfWidth - reach;
+    if (archGap > 0 && Math.abs(X) < archGap && Math.abs(Y) <= G.blockHalfDepth + reach) return false;
+    const towerLim = G.towerR + reach;
+    if (towerLim > 0) {
+        const towerLimSq = towerLim * towerLim;
+        const ySq = Y * Y;
+        const towerX = G.towerX;
+        for (let i = 0; i < towerX.length; i++) {
+            const dx = X - towerX[i];
+            if (dx * dx + ySq < towerLimSq) return true;
+        }
+    }
+    const seaLim = SEA_TOWER_GEOMETRY.towerR + reach;
+    if (seaLim > 0) {
+        const sdx = tileX - masonrySeaX;
+        const sdy = tileY - masonrySeaY;
+        if (sdx * sdx + sdy * sdy < seaLim * seaLim) return true;
+    }
+    if (reach > 0) {
+        const reachSq = reach * reach;
+        const segments = masonrySegments;
+        for (let i = 0; i < segments.length; i += 4) {
+            const ax = segments[i];
+            const ay = segments[i + 1];
+            const dx = segments[i + 2] - ax;
+            const dy = segments[i + 3] - ay;
+            const lenSq = dx * dx + dy * dy;
+            let t = ((tileX - ax) * dx + (tileY - ay) * dy) / (lenSq > 1e-6 ? lenSq : 1e-6);
+            if (t < 0) t = 0;
+            else if (t > 1) t = 1;
+            const px = tileX - (ax + t * dx);
+            const py = tileY - (ay + t * dy);
+            if (px * px + py * py < reachSq) return true;
+        }
     }
     return false;
 }
 
-let villageMasonry = null;
-function villageMasonryShape() {
-    if (villageMasonry) return villageMasonry;
+let masonrySegments = null;
+let masonrySeaX = NaN;
+let masonrySeaY = NaN;
+let masonryMinY = Infinity;
+let masonryMaxY = -Infinity;
+function initVillageMasonry() {
     const half = VILLAGE_GATE.widthTiles / 2;
     const segments = [VILLAGE_GATE.tileX - half, VILLAGE_GATE.tileY, VILLAGE_GATE.tileX + half, VILLAGE_GATE.tileY];
     let seaX = NaN;
     let seaY = NaN;
+    let minY = VILLAGE_GATE.tileY - Math.max(VILLAGE_GATE_GEOMETRY.towerR, VILLAGE_GATE_GEOMETRY.blockHalfDepth);
+    let maxY = VILLAGE_GATE.tileY + Math.max(VILLAGE_GATE_GEOMETRY.towerR, VILLAGE_GATE_GEOMETRY.blockHalfDepth);
     for (const { id, points } of VILLAGE_WALL_ROUTES) {
-        for (let i = 1; i < points.length; i++) segments.push(points[i - 1].tileX, points[i - 1].tileY, points[i].tileX, points[i].tileY);
+        for (let i = 0; i < points.length; i++) {
+            if (points[i].tileY < minY) minY = points[i].tileY;
+            if (points[i].tileY > maxY) maxY = points[i].tileY;
+            if (i > 0) segments.push(points[i - 1].tileX, points[i - 1].tileY, points[i].tileX, points[i].tileY);
+        }
         if (id !== 'east') continue;
         const [a, b] = points.slice(-2);
         const len = Math.max(1e-6, Math.hypot(b.tileX - a.tileX, b.tileY - a.tileY));
         const k = SEA_TOWER_GEOMETRY.endInset / len;
         seaX = b.tileX - (b.tileX - a.tileX) * k;
         seaY = b.tileY - (b.tileY - a.tileY) * k;
+        if (seaY - SEA_TOWER_GEOMETRY.towerR < minY) minY = seaY - SEA_TOWER_GEOMETRY.towerR;
+        if (seaY + SEA_TOWER_GEOMETRY.towerR > maxY) maxY = seaY + SEA_TOWER_GEOMETRY.towerR;
     }
-    villageMasonry = { segments: Float64Array.from(segments), seaX, seaY };
-    return villageMasonry;
+    masonrySegments = Float64Array.from(segments);
+    masonrySeaX = seaX;
+    masonrySeaY = seaY;
+    masonryMinY = minY;
+    masonryMaxY = maxY;
 }
 
 export const VILLAGE_GATE_BOUNDS = Object.freeze({

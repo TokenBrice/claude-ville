@@ -923,6 +923,12 @@ export class IsometricRenderer {
         this.bridgeLanterns = new BridgeLanterns({ renderer: this });
         this.bridgeSpans = this._buildBridgeSpans();
         this._waterTileDescriptors = this._buildWaterTileDescriptors();
+        for (const [key] of Array.from(this.yardTiles.entries())) {
+            if (this.waterTiles.has(key) && !this.bridgeTiles.has(key)) {
+                this.yardTiles.delete(key);
+                if (!this.roadMaterialTiles.has(key)) this.pathTiles.delete(key);
+            }
+        }
         for (const key of this.bridgeTiles.keys()) {
             this.pathTiles.add(key);
         }
@@ -1124,7 +1130,12 @@ export class IsometricRenderer {
         const dx = entrance.tileX < x0 ? -1 : entrance.tileX > x1 ? 1 : 0;
         const dy = entrance.tileY < y0 ? -1 : entrance.tileY > y1 ? 1 : 0;
         const keys = [];
-        const push = (x, y) => { if (this._inMapBounds(x, y)) keys.push(`${x},${y}`); };
+        const push = (x, y) => {
+            if (!this._inMapBounds(x, y)) return;
+            const key = `${x},${y}`;
+            if (this.waterTiles?.has(key) && !this.bridgeTiles?.has(key)) return;
+            keys.push(key);
+        };
         if (dy) for (let x = x0; x <= x1; x++) push(x, dy > 0 ? y1 + 1 : y0 - 1);
         if (dx) for (let y = y0; y <= y1; y++) push(dx > 0 ? x1 + 1 : x0 - 1, y);
         if (dx && dy) push(dx > 0 ? x1 + 1 : x0 - 1, dy > 0 ? y1 + 1 : y0 - 1);
@@ -4339,15 +4350,24 @@ export class IsometricRenderer {
             if (tile && Number.isFinite(tile.tileX) && Number.isFinite(tile.tileY)) bodies.push(tile);
         }
         const reservations = this.visitTileAllocator?.reservations;
+        const clearance = this._ensureWalkClearance?.();
         const isFree = (tileX, tileY) => {
-            if (this.pathfinder && !this.pathfinder.isWalkable(Math.round(tileX), Math.round(tileY))) return false;
+            if (clearance) {
+                if (!clearance.isTileClear(tileX, tileY)) return false;
+            } else if (this.pathfinder && (!this.pathfinder.isWalkable(Math.round(tileX), Math.round(tileY)) || inVillageMasonry(tileX, tileY))) {
+                return false;
+            }
             for (const body of bodies) {
-                if (Math.hypot(body.tileX - tileX, body.tileY - tileY) < 0.9) return false;
+                const dx = body.tileX - tileX;
+                const dy = body.tileY - tileY;
+                if (dx * dx + dy * dy < 0.81) return false;
             }
             if (reservations) {
                 for (const reservation of reservations.values()) {
                     if (reservation.agentId === agent?.id) continue;
-                    if (Math.hypot(reservation.tileX - tileX, reservation.tileY - tileY) < 0.6) return false;
+                    const dx = reservation.tileX - tileX;
+                    const dy = reservation.tileY - tileY;
+                    if (dx * dx + dy * dy < 0.36) return false;
                 }
             }
             return true;
@@ -4529,18 +4549,27 @@ export class IsometricRenderer {
             queue.shift();
             sprite.setTilePosition?.(lane.tileX, lane.outsideY);
             sprite.walkStraightToTile?.(lane.tileX, lane.insideY);
-            this.gateTransits.set(agent.id, { type: 'arrival', gate: true, since: Date.now() });
+            this.gateTransits.set(agent.id, { type: 'arrival', gate: true, lane, since: Date.now() });
             this._markSpritesDirty();
         }
     }
 
-    // True when no visible body stands within GATE_ENTRY_GAP_PX of the gate
-    // lane's entry point.
-    _gateLaneClear(lane) {
+    // True when no visible body stands within `gapPx` of the lane's entry
+    // point. Parallel arrival lanes ignore bodies already walking in on a
+    // different lane of the same gate so two files enter abreast even when
+    // lane entries sit closer than GATE_ENTRY_GAP_PX (21.5 px at the arch).
+    _gateLaneClear(lane, { gapPx = GATE_ENTRY_GAP_PX, portal = false } = {}) {
         const entry = tileToWorld(lane.tileX, lane.outsideY);
+        const gapSq = gapPx * gapPx;
         for (const other of this.agentSprites.values()) {
-            if (other.isArrivalPending?.()) continue;
-            if (Math.hypot(other.x - entry.x, other.y - entry.y) < GATE_ENTRY_GAP_PX) return false;
+            if (other.isArrivalPending?.() || other._archiveAnim) continue;
+            const transit = this.gateTransits?.get?.(other.agent?.id);
+            if (transit?.type === 'arrival' && transit.lane && transit.lane !== lane && Boolean(transit.portal) === Boolean(portal)) {
+                continue;
+            }
+            const dx = other.x - entry.x;
+            const dy = other.y - entry.y;
+            if (dx * dx + dy * dy < gapSq) return false;
         }
         return true;
     }

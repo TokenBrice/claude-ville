@@ -114,12 +114,11 @@ const NO_SHIFT = Object.freeze({ x: 0, y: 0 });
 // Where the entrance tile itself is hidden from the camera, the door ground
 // steps back toward the face (tiles, from the entrance tile's centre): the
 // Task board's door-front sits under the south curtain wall's crenellations,
-// the lighthouse's under the Harbor Master's roofs, and the mine's beside the
-// wall tower's cap. Each lands on the visible apron between the face and that
-// door. Every other landmark's door ground is its entrance tile's centre.
+// and the mine's beside the wall tower's cap. Every other landmark's door
+// ground (including the lighthouse, whose moved entrance at 26,13 stands on
+// the open north-west lawn) is its entrance tile's centre.
 const DOOR_GROUND_STEP_BACK = Object.freeze({
     taskboard: 1.5,
-    watchtower: 1.1,
     mine: 1.3,
 });
 const OUTCOME_SEEN_LIMIT = 400;
