@@ -745,9 +745,9 @@ export const AMBIENT_SCENIC_POINTS = Object.freeze([
     { id: 'mine-cart', tileX: 15, tileY: 37, district: 'resource', reason: 'cart-path', tags: ['mine'] },
     { id: 'forest-edge', tileX: 25, tileY: 11, district: 'knowledge', reason: 'forest-edge', tags: ['quiet'] },
     { id: 'archive-alcove', tileX: 10, tileY: 18, district: 'knowledge', reason: 'reading-alcove', tags: ['archive'] },
-    // AP-3 — the shore point left the water for the walkable lawn at the
-    // water's edge east of the Lighthouse.
-    { id: 'lighthouse-shore', tileX: 28, tileY: 16, district: 'harbor', reason: 'shore-watch', tags: ['watchtower'] },
+    // AP-3 / L01 F5 — stands on the open lawn north-west of the Harbor gable
+    // so the clock tower never hides the shore-watcher.
+    { id: 'lighthouse-shore', tileX: 26, tileY: 14, district: 'harbor', reason: 'shore-watch', tags: ['watchtower'] },
     { id: 'plaza-corner', tileX: 20, tileY: 22, district: 'civic', reason: 'plaza-pause', tags: ['command'] },
     { id: 'forge-handoff', tileX: 27, tileY: 31, district: 'workshop', reason: 'handoff-path', tags: ['forge', 'taskboard'] },
 ]);

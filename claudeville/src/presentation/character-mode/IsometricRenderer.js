@@ -45,6 +45,7 @@ import { BehaviorTelemetry } from './BehaviorTelemetry.js';
 
 import { SceneryEngine } from './SceneryEngine.js';
 import { Pathfinder } from './Pathfinder.js';
+import { createWalkClearance } from './WalkClearance.js';
 import { constrainSteeringInto, constrainSteeringToTarget, laneAxisForBridgeOrientation } from './MovementSteering.js';
 import { SpriteRenderer } from './SpriteRenderer.js';
 import { SkyRenderer } from './SkyRenderer.js';
@@ -419,13 +420,14 @@ const FAN_EXEMPT_ROLES = new Set(['rest', 'queue']);
 // parallel files: each waits hidden until a lane's entry point has no body
 // within GATE_ENTRY_GAP_PX, so a restart that lands dozens of sessions in one
 // frame walks in spaced, never as a stacked knot. Both lanes run straight
-// through the arch along -tileY, from `outsideY` to `insideY`, 0.45 tile
-// either side of the arch's axis (tile column 19.1): 26 world px between
-// the files, both inside the arch.
+// through the arch along -tileY, from `outsideY` to `insideY`, symmetric on
+// the arch's axis (tile column 19.0): both round to walkable column 19, stay
+// clear of the masonry jambs (`archHalfWidth - reach = 0.42`) and clear the
+// gate lantern fixture at (18, 37) on exit.
 const GATE_ENTRY_GAP_PX = FOLLOW_GAP.releasePx;
-const GATE_ENTRY_LANES = Object.freeze([
-    Object.freeze({ tileX: 18.65, outsideY: 39.35, insideY: 37.6 }),
-    Object.freeze({ tileX: 19.55, outsideY: 39.35, insideY: 37.6 }),
+export const GATE_ENTRY_LANES = Object.freeze([
+    Object.freeze({ tileX: 18.70, outsideY: 39.35, insideY: 36.6 }),
+    Object.freeze({ tileX: 19.30, outsideY: 39.35, insideY: 36.6 }),
 ]);
 
 // C2 — the Canvas fallback grades with the same evaluated grade as the
@@ -1006,6 +1008,12 @@ export class IsometricRenderer {
         this.walkabilityGrid = this.scenery.getWalkabilityGrid();
         this.pathfinder = new Pathfinder(this.walkabilityGrid.slice());
         this.pathfinder.keepReachableFrom(VILLAGE_GATE.inside);
+        this._walkClearance = createWalkClearance({
+            buildings: this.world?.buildings,
+            bridgeTiles: this.bridgeTiles,
+            pathfinder: this.pathfinder,
+            getCoastField: () => this._coastField || this.coastField || null,
+        });
         this.visitTileAllocator.updateContext({
             buildings: this.world?.buildings,
             agentSprites: this.agentSprites,
@@ -4151,6 +4159,7 @@ export class IsometricRenderer {
                 getSnowBucket: () => this.propWinter?.bucket || 0,
                 onArrive: (arrived) => this._enqueueArrivalRitual(arrived),
                 onCelebrationArrived: (celebrant, _pending, until) => notifySquadWatchers(celebrant, this.agentSprites.values(), until),
+                isPointWalkable: (x, y) => this._isWorldPointWalkable(x, y),
                 // VB-15 — _beginAgentGateArrival places it below.
                 deferInitialTarget: true,
             });
@@ -4656,6 +4665,11 @@ export class IsometricRenderer {
     _isGateTransit(sprite, type = null) {
         const transit = this.gateTransits.get(sprite?.agent?.id);
         return Boolean(transit && (!type || transit.type === type));
+    }
+
+    _isGateChannelTransit(sprite) {
+        const transit = this.gateTransits.get(sprite?.agent?.id);
+        return Boolean(transit && (transit.type === 'departure' || transit.gate));
     }
 
     _updateGateDoorState(now = performance.now()) {
@@ -5933,7 +5947,7 @@ export class IsometricRenderer {
         const movingSprites = this._movingSprites;
         movingSprites.length = 0;
         for (const sprite of this.agentSprites.values()) {
-            if (sprite.moving && !sprite.chatting && !this._isGateTransit(sprite, 'departure')) {
+            if (sprite.moving && !sprite.chatting && !this._isGateChannelTransit(sprite)) {
                 movingSprites.push(sprite);
             }
         }
@@ -6076,17 +6090,35 @@ export class IsometricRenderer {
     }
 
     // Walk-blocked ground for a steering step (lane discipline, pair pushes,
-    // the bend round standing bodies): the walk grid's nearest node
-    // (buildings, water, `walkBlock` props such as the well and its cart,
-    // the masonry's closed nodes), and the village's stone itself at a
-    // body's half-width of reach (townPlan `inVillageMasonry`), which is
-    // finer than the one-tile grid round the gate towers' drums. A step that
-    // fails keeps the walker where it is; its own path step still moves it.
+    // the bend round standing bodies, fan places): continuous clearance against
+    // the walk grid, building footprints (+0.25 tile pad, open floors exempt),
+    // walk exclusions, village masonry, and the coast signed-distance curve
+    // (off walkable bridges). Precomputed flat boxes keep it allocation-free.
+    _ensureWalkClearance() {
+        if (this._walkClearance) return this._walkClearance;
+        if (!this.world?.buildings && !this.bridgeTiles && !this._coastField && !this.coastField) return null;
+        this._walkClearance = createWalkClearance({
+            buildings: this.world?.buildings,
+            bridgeTiles: this.bridgeTiles,
+            pathfinder: this.pathfinder,
+            getCoastField: () => this._coastField || this.coastField || null,
+        });
+        return this._walkClearance;
+    }
+
+    _isWorldPointWalkable(x, y) {
+        const clearance = this._ensureWalkClearance();
+        if (clearance) return clearance.isWorldClear(x, y);
+        if (!this.pathfinder) return true;
+        const tx = (x / (TILE_WIDTH / 2) + y / (TILE_HEIGHT / 2)) * 0.5;
+        const ty = (y / (TILE_HEIGHT / 2) - x / (TILE_WIDTH / 2)) * 0.5;
+        return this.pathfinder.isWalkable(Math.round(tx), Math.round(ty))
+            && !inVillageMasonry(tx, ty);
+    }
+
     _isSpritePositionWalkable(sprite, x, y) {
         if (!this.pathfinder || typeof sprite?._screenToTile !== 'function') return true;
-        const tile = sprite._screenToTile(x, y);
-        return this.pathfinder.isWalkable(Math.round(tile.tileX), Math.round(tile.tileY))
-            && !inVillageMasonry(tile.tileX, tile.tileY);
+        return this._isWorldPointWalkable(x, y);
     }
 
     // A place `sprite` may stand on: walkable, and covering no fixture
@@ -6687,13 +6719,13 @@ export class IsometricRenderer {
     // first villager keeps the anchor, the next ones stand beside it (east and
     // west first, the stable hash picking the side), then in front, behind and
     // on the corners. Whole texels, so a standing body stays on the grid.
-    _fanRingPlace(anchor, index, hashKey) {
+    _fanRingPlace(anchor, index, hashKey, scale = 1) {
         if (index <= 0) return { x: Math.round(anchor.x), y: Math.round(anchor.y) };
         const side = this._stableHash(hashKey) % 2 ? 1 : -1;
         const [ux, uy] = FAN_RING_PLACES[(index - 1) % FAN_RING_PLACES.length];
         return {
-            x: Math.round(anchor.x + ux * side * PERFORMING_FAN.radiusXPx),
-            y: Math.round(anchor.y + uy * PERFORMING_FAN.radiusYPx),
+            x: Math.round(anchor.x + ux * side * PERFORMING_FAN.radiusXPx * scale),
+            y: Math.round(anchor.y + uy * PERFORMING_FAN.radiusYPx * scale),
         };
     }
 
@@ -6704,24 +6736,30 @@ export class IsometricRenderer {
     // fixtures such as the well) to a ring by some old stop.
     _fanAnchorOf(occupant) {
         const anchor = occupant._fanAnchor;
-        if (anchor && Math.abs(occupant.x - anchor.x) <= PERFORMING_FAN.radiusXPx + 1
-            && Math.abs(occupant.y - anchor.y) <= PERFORMING_FAN.radiusYPx + 1) return anchor;
+        if (anchor && Math.abs(occupant.x - anchor.x) <= PERFORMING_FAN.radiusXPx * 2 + 1
+            && Math.abs(occupant.y - anchor.y) <= PERFORMING_FAN.radiusYPx * 2 + 1) return anchor;
         return occupant;
     }
 
     // The first walkable ring place around `anchor` for `sprite` whose body
-    // box is clear of every other standing body and claimed place; failing
-    // that, the first one at least stackPx from all of them.
+    // box is clear of every other standing body and claimed place; offsets
+    // that land inside a building footprint, wall, or water are rejected by
+    // `_isSpriteStandable` and fall back to outer clear neighbours before
+    // relaxing to `stackClear`.
     _freeFanPlace(sprite, anchor, startIndex, taken, hashKey) {
         const boxClear = (place) => !taken.some(other => other !== sprite
             && Math.abs(other.x - place.x) < PERFORMING_FAN.overlapXPx
             && Math.abs(other.y - place.y) < PERFORMING_FAN.overlapYPx);
         const stackClear = (place) => !taken.some(other => other !== sprite
             && Math.hypot(other.x - place.x, other.y - place.y) < PERFORMING_FAN.stackPx);
+        const standable = (place, scale) => this._isSpriteStandable(sprite, place.x, place.y)
+            && (scale <= 1 || this._isSpritePositionWalkable(sprite, (anchor.x + place.x) * 0.5, (anchor.y + place.y) * 0.5));
         for (const clear of [boxClear, stackClear]) {
-            for (let index = startIndex; index <= FAN_RING_PLACES.length; index++) {
-                const place = this._fanRingPlace(anchor, index, hashKey);
-                if (clear(place) && this._isSpriteStandable(sprite, place.x, place.y)) return place;
+            for (const scale of [1, 2]) {
+                for (let index = startIndex; index <= FAN_RING_PLACES.length; index++) {
+                    const place = this._fanRingPlace(anchor, index, hashKey, scale);
+                    if (clear(place) && standable(place, scale)) return place;
+                }
             }
         }
         return null;
@@ -6741,7 +6779,7 @@ export class IsometricRenderer {
         const arrivals = this._fanArrivalOrder ||= [];
         arrivals.length = 0;
         for (const sprite of movingSprites) {
-            if (this._isGateTransit(sprite, 'departure')) continue;
+            if (this._isGateChannelTransit(sprite)) continue;
             // A seat (7.1) or petitioner place (7.2) is an exact point: never re-aimed.
             if (FAN_EXEMPT_ROLES.has(sprite.visitRole)) continue;
             const stop = this._fanStopOf(sprite);
@@ -6765,8 +6803,8 @@ export class IsometricRenderer {
                 && Math.abs(other.y - stop.y) < PERFORMING_FAN.overlapYPx)
                 || landing.find(other => Math.abs(other.x - stop.x) < PERFORMING_FAN.overlapXPx
                     && Math.abs(other.y - stop.y) < PERFORMING_FAN.overlapYPx);
-            // A stop on a fixture fans around that stop like one on a body.
-            if (!occupant && !standsOnFixture(stop.x, stop.y, sprite._restSeat?.id || null)) {
+            // A stop on a fixture or failing continuous clearance fans onto a clear neighbour.
+            if (!occupant && this._isSpriteStandable(sprite, stop.x, stop.y)) {
                 landing.push({ x: stop.x, y: stop.y, building });
                 continue;
             }
@@ -7076,12 +7114,15 @@ export class IsometricRenderer {
             if (sprite.moving || sprite.selected || FAN_EXEMPT_ROLES.has(sprite.visitRole)) continue;
             if (!this.agentSprites.has(sprite.agent?.id) || this._isGateTransit(sprite, 'departure')) continue;
             const occupant = standing.find(other => other !== sprite && boxHit(other, sprite.x, sprite.y));
-            // A body that stopped on a fixture steps off it the same way.
-            if (!occupant && !standsOnFixture(sprite.x, sprite.y, sprite._restSeat?.id || null)) continue;
+            // A body that stopped on a fixture or inside continuous clearance steps off it the same way.
+            const unstandable = !this._isSpriteStandable(sprite, sprite.x, sprite.y);
+            if (!occupant && !unstandable) continue;
             const anchor = occupant ? this._fanAnchorOf(occupant) : { x: sprite.x, y: sprite.y };
             const hashKey = `${occupant?._lastBuildingType || sprite._lastBuildingType}|${anchor.x | 0},${anchor.y | 0}`;
             let best = null;
-            let bestHop = PERFORMING_FAN.settleHopPx;
+            let bestHop = unstandable
+                ? Math.max(PERFORMING_FAN.settleHopPx, Math.hypot(PERFORMING_FAN.radiusXPx, PERFORMING_FAN.radiusYPx) + 1)
+                : PERFORMING_FAN.settleHopPx;
             for (let index = 1; index <= FAN_RING_PLACES.length; index++) {
                 const place = this._fanRingPlace(anchor, index, hashKey);
                 const hop = Math.hypot(place.x - sprite.x, place.y - sprite.y);

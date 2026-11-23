@@ -84,6 +84,7 @@ import { materialClassId } from './MaterialRegistry.js';
 import { LANTERN_SET_DOWN, carriedLanternStamp } from './CarriedLantern.js';
 import { waitAgeTier, waitAnchor } from '../../domain/services/SignalLedger.js';
 import { AMBIENT_SCENIC_POINTS } from '../../config/scenery.js';
+import { inVillageMasonry } from '../../config/townPlan.js';
 import {
     ERRAND_GAP_MS,
     ERRAND_LEG_TIMEOUT_MS,
@@ -1246,6 +1247,7 @@ export class AgentSprite {
         getSnowBucket = null,
         onArrive = null,
         onCelebrationArrived = null,
+        isPointWalkable = null,
         // VB-15 — the renderer places a new body itself (the gate or Portal
         // arrival), which drops any route picked here; it picks from there.
         deferInitialTarget = false,
@@ -1424,6 +1426,9 @@ export class AgentSprite {
         this._petitionerGlanceCooldownMs = null;
         this._petitionerGlanceActiveMs = 0;
         this._petitionerBaseFacing = null;
+        // Continuous clearance check shared with IsometricRenderer (footprint pad,
+        // walk exclusions, village masonry and coast signed-distance curve).
+        this.isPointWalkable = typeof isPointWalkable === 'function' ? isPointWalkable : null;
         this._stillSince = null;
         this._risenFacing = false;
         this._subagentWait = null;
@@ -3031,9 +3036,11 @@ export class AgentSprite {
     }
 
     _isScreenPointWalkable(x, y) {
+        if (this.isPointWalkable) return this.isPointWalkable(x, y);
         if (!this.pathfinder) return true;
         const tile = this._screenToTile(x, y);
-        return this.pathfinder.isWalkable(Math.round(tile.tileX), Math.round(tile.tileY));
+        return this.pathfinder.isWalkable(Math.round(tile.tileX), Math.round(tile.tileY))
+            && !inVillageMasonry(tile.tileX, tile.tileY);
     }
 
     _screenToTile(x, y) {

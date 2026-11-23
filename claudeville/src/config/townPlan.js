@@ -29,7 +29,7 @@ export function inVillageMasonry(tileX, tileY, reach = 0.3) {
     const G = VILLAGE_GATE_GEOMETRY;
     const X = tileX - VILLAGE_GATE.tileX;
     const Y = tileY - VILLAGE_GATE.tileY;
-    if (Math.abs(X) < G.archHalfWidth && Math.abs(Y) <= G.blockHalfDepth + reach) return false;
+    if (Math.abs(X) < Math.max(0, G.archHalfWidth - reach) && Math.abs(Y) <= G.blockHalfDepth + reach) return false;
     for (const cx of G.towerX) if (Math.hypot(X - cx, Y) < G.towerR + reach) return true;
     const { segments, seaX, seaY } = villageMasonryShape();
     if (Math.hypot(tileX - seaX, tileY - seaY) < SEA_TOWER_GEOMETRY.towerR + reach) return true;
@@ -313,8 +313,8 @@ export const YARD_MATERIALS = Object.freeze({
 // (V8). None sits on the Command approach (7.2) or behind a wall the camera
 // cannot see past.
 export const REST_SEATS = Object.freeze([
-    { id: 'command-east-step-n', tileX: 18, tileY: 16, facing: 'south-east', occluder: 'step' },
-    { id: 'command-east-step-s', tileX: 18, tileY: 17, facing: 'south-east', occluder: 'step' },
+    { id: 'command-east-step-n', tileX: 19, tileY: 17, facing: 'south-east', occluder: 'step' },
+    { id: 'command-east-step-s', tileX: 20, tileY: 18, facing: 'south-east', occluder: 'step' },
     { id: 'command-west-step', tileX: 12, tileY: 17, facing: 'south-west', occluder: 'step' },
     { id: 'harbor-pier', tileX: 26, tileY: 21, facing: 'south-west', occluder: 'pier' },
     // The Tavern's bar: three stools on its floor behind the front beam, the
@@ -432,20 +432,20 @@ const approachFile = (...points) => Object.freeze(points.map(([tileX, tileY]) =>
 export const APPROACH_FILES = Object.freeze({
     // Along the Archive's front steps, west from its south-east corner.
     archive: approachFile([7, 19], [6, 19], [5, 19], [4, 19]),
-    // Up the lane between Command's east wing and the Tavern porch.
-    command: approachFile([20, 16], [19, 16], [19, 15], [19, 14]),
-    // Up the Forge's cinder yard, parallel to its west wall.
-    forge: approachFile([23, 30], [23, 29], [23, 28], [23, 27]),
+    // Across Command's open forecourt, clear of the Tavern's west roof.
+    command: approachFile([19, 20], [18, 20], [17, 20], [16, 20]),
+    // Up the Forge's open cinder yard, clear of the Task Board's slate roof.
+    forge: approachFile([24, 30], [24, 29], [23, 29], [23, 28]),
     // West along the Task Board's front, then up beside the gate avenue.
     taskboard: approachFile([21, 36], [20, 36], [20, 35], [20, 34], [20, 33]),
     // West from the Mine's mouth along its yard, beside the production row.
     mine: approachFile([10, 35], [9, 35], [8, 35], [7, 35]),
-    // Up the Portal's east flank, then across its lawn.
-    portal: approachFile([7, 33], [7, 32], [7, 31], [8, 30], [9, 29]),
-    // Up the lawn along the Tavern's east wall, from its front corner.
-    tavern: approachFile([25, 17], [25, 16], [25, 15], [25, 14]),
+    // Up the Portal's east yard, clear of the east dais and the Mine's rock.
+    portal: approachFile([7, 34], [7, 33], [7, 32], [7, 31], [8, 30]),
+    // West from the Tavern's beer garden across the open lawn, off the SE wall.
+    tavern: approachFile([22, 20], [21, 20], [20, 20], [20, 19]),
     // North-west from the Lighthouse, between the tower and the dome.
     watchtower: approachFile([26, 12], [25, 12], [24, 12], [24, 11]),
-    // Up the Harbor's quay front, along its west wall.
-    harbor: approachFile([27, 19], [27, 18], [27, 17], [27, 16]),
+    // Across the Harbor's open quay and west lawn, clear of the gable roof.
+    harbor: approachFile([27, 19], [27, 18], [26, 18], [26, 17]),
 });
