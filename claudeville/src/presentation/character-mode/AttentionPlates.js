@@ -110,14 +110,18 @@ const LEADER_MAX = 24;
 // edge length are one off-view cluster and share one plate.
 const EDGE_CLUSTER_FRACTION = 0.25;
 // Edge plates: the arrow cell in front of the status word (a 7×7 arrow plus
-// a 4 px gap), and the band held clear above the bottom-left lower-third
-// caption (its tallest reach, 24 px inset + 34 px replay reserve + 36 px
-// strip + a gap) so the caption never covers a plate.
+// a 4 px gap). Bottom docking sits at EDGE_MARGIN and lifts above any active
+// `caption-band` reserved rect via clearReserved().
 const EDGE_ARROW_CELL = 11;
 const EDGE_ARROW_DOWN = Object.freeze(['..###..', '..###..', '..###..', '#######', '.#####.', '..###..', '...#...']);
 const EDGE_SIDE_ORDER = Object.freeze(['top', 'bottom', 'left', 'right']);
 const EDGE_MERGE_PAD = 32;
-const CAPTION_CLEAR = 100;
+// Hysteresis and dwell on offscreen docking and T1 grouping so small walker
+// jitter on a stationary camera never flickers plates or merges/splits pairs.
+const HYSTERESIS_PX = 14;
+const DWELL_MS = 500;
+const JUMP_COMMIT_PX = 64;
+const STATE_PRUNE_MS = 5000;
 // W5.6 off-frame tally tab: a walnut board as tall as a plate holding a 7×7
 // arrow and the counts, sliding along its edge in TALLY_SLIDE steps to clear
 // the T1 plates.
@@ -186,6 +190,109 @@ function plateWidths(ctx, word, text, tier = null) {
     return { wordCell, textCell, width: 1 + wordCell + textCell + 1 };
 }
 
+function ensureState(state) {
+    if (!state) return null;
+    if (!state.sides) state.sides = new Map();
+    if (!state.tallySides) state.tallySides = new Map();
+    if (!state.pairNear) state.pairNear = new Map();
+    if (!state.componentGrouped) state.componentGrouped = new Map();
+    if (!state.edgePair) state.edgePair = new Map();
+    if (!state.plateSlots) state.plateSlots = new Map();
+    return state;
+}
+
+function pruneState(state, clock) {
+    if (!state) return;
+    if (clock - (state._lastPrune || 0) < STATE_PRUNE_MS) return;
+    state._lastPrune = clock;
+    const cutoff = clock - STATE_PRUNE_MS;
+    for (const map of [state.sides, state.tallySides, state.pairNear, state.componentGrouped, state.edgePair, state.plateSlots]) {
+        for (const [key, entry] of map) {
+            if ((entry.seenAt ?? -Infinity) < cutoff) map.delete(key);
+        }
+    }
+}
+
+function stabilizeBool(map, key, raw, clock) {
+    if (!map || !key) return raw;
+    const entry = map.get(key);
+    if (!entry) {
+        map.set(key, { value: raw, pending: null, pendingSince: 0, seenAt: clock });
+        return raw;
+    }
+    entry.seenAt = clock;
+    if (raw === entry.value) {
+        entry.pending = null;
+        entry.pendingSince = 0;
+        return entry.value;
+    }
+    if (entry.pending !== raw) {
+        entry.pending = raw;
+        entry.pendingSince = clock;
+        return entry.value;
+    }
+    if (clock - entry.pendingSince >= DWELL_MS) {
+        entry.value = raw;
+        entry.pending = null;
+        entry.pendingSince = 0;
+    }
+    return entry.value;
+}
+
+function stabilizeSide(map, id, over, inReserved, inReservedExpanded, rawSide, clock) {
+    if (!map || !id) return rawSide;
+    const entry = map.get(id);
+    if (!entry) {
+        map.set(id, { side: rawSide, pending: undefined, pendingSince: 0, seenAt: clock });
+        return rawSide;
+    }
+    entry.seenAt = clock;
+    let desired = rawSide;
+    if (entry.side !== null) {
+        if (rawSide === null) {
+            const maxOver = Math.max(over.top, over.bottom, over.left, over.right);
+            if (maxOver > -HYSTERESIS_PX || inReservedExpanded) desired = entry.side;
+        } else if (rawSide !== entry.side) {
+            const prevOver = over[entry.side] ?? 0;
+            if ((over[rawSide] ?? 0) <= prevOver + HYSTERESIS_PX) desired = entry.side;
+        }
+    }
+    if (desired === entry.side) {
+        entry.pending = undefined;
+        entry.pendingSince = 0;
+        return entry.side;
+    }
+    // Large camera jumps commit at once instead of lagging by DWELL_MS.
+    const maxOver = Math.max(over.top, over.bottom, over.left, over.right);
+    const bigJump = (desired !== null && (over[desired] ?? 0) > JUMP_COMMIT_PX)
+        || (entry.side !== null && desired === null && maxOver < -JUMP_COMMIT_PX && !inReserved);
+    if (bigJump) {
+        entry.side = desired;
+        entry.pending = undefined;
+        entry.pendingSince = 0;
+        return entry.side;
+    }
+    if (entry.pending !== desired) {
+        entry.pending = desired;
+        entry.pendingSince = clock;
+        return entry.side;
+    }
+    if (clock - entry.pendingSince >= DWELL_MS) {
+        entry.side = desired;
+        entry.pending = undefined;
+        entry.pendingSince = 0;
+    }
+    return entry.side;
+}
+
+function pairKeyFor(aId, bId) {
+    return aId < bId ? `${aId}\0${bId}` : `${bId}\0${aId}`;
+}
+
+function componentKeyFor(members) {
+    return members.map(item => item.id).sort().join('\0');
+}
+
 /**
  * Screen-space layout of every action-needed agent. An agent whose beacon
  * would not be fully in view is not clamped onto the frame: it gets an edge
@@ -198,10 +305,22 @@ function plateWidths(ctx, word, text, tier = null) {
  * least one live silent agent wholly beyond the frame.
  * @returns {{ plates: object[], beacons: object[], tallies: object[], count: number, offscreen: number }}
  */
-export function layoutAttentionPlates(ctx, { sprites, camera, viewport, reserved = null, now = elapsedTickNow() } = {}) {
+export function layoutAttentionPlates(ctx, {
+    sprites,
+    camera,
+    viewport,
+    reserved = null,
+    avoid = null,
+    state = null,
+    dwellNow = null,
+    now = elapsedTickNow(),
+} = {}) {
     const layout = { plates: [], beacons: [], tallies: [], count: 0, offscreen: 0 };
     if (!ctx || !camera?.worldToScreen || !viewport?.width) return layout;
     if (reserved?.length) viewport = { ...viewport, reserved };
+    const mem = ensureState(state);
+    const clock = Number.isFinite(dwellNow) ? dwellNow : now;
+    const tallyAvoid = avoid?.length ? avoid : [];
     const items = [];
     const edgeItems = [];
     const silent = [];
@@ -215,7 +334,7 @@ export function layoutAttentionPlates(ctx, { sprites, camera, viewport, reserved
             : sprite.y - 64;
         const head = camera.worldToScreen(sprite.x, headY);
         if (!kind) {
-            const tally = offFrameTallyItem(sprite, head, camera, viewport);
+            const tally = offFrameTallyItem(sprite, head, camera, viewport, mem?.tallySides, clock);
             if (tally) silent.push(tally);
             continue;
         }
@@ -247,7 +366,7 @@ export function layoutAttentionPlates(ctx, { sprites, camera, viewport, reserved
             // 13th onward, the plaza overflow).
             queued: sprite.visitRole === 'queue',
         };
-        const side = offscreenSide(beacon, head.y, viewport);
+        const side = offscreenSide(beacon, head.y, viewport, mem?.sides, item.id, clock);
         if (side) {
             item.side = side;
             edgeItems.push(item);
@@ -258,7 +377,8 @@ export function layoutAttentionPlates(ctx, { sprites, camera, viewport, reserved
     layout.count = items.length + edgeItems.length;
     layout.offscreen = edgeItems.length;
     if (!layout.count) {
-        layout.tallies = layoutTallies(ctx, silent, viewport, layout.plates);
+        layout.tallies = layoutTallies(ctx, silent, viewport, tallyAvoid);
+        pruneState(mem, clock);
         return layout;
     }
 
@@ -276,7 +396,7 @@ export function layoutAttentionPlates(ctx, { sprites, camera, viewport, reserved
     // Edge plates are placed first: their slots are fixed by the frame, and
     // the in-view plates then avoid them.
     const placed = [];
-    for (const plate of layoutEdgePlates(ctx, edgeItems, viewport, now, byAge)) {
+    for (const plate of layoutEdgePlates(ctx, edgeItems, viewport, now, byAge, mem?.edgePair, clock)) {
         placed.push(plate);
         layout.plates.push(plate);
     }
@@ -301,9 +421,17 @@ export function layoutAttentionPlates(ctx, { sprites, camera, viewport, reserved
     for (let i = 0; i < items.length; i++) {
         for (let j = i + 1; j < items.length; j++) {
             if (items[i].kind !== items[j].kind) continue;
-            if ((items[i].queued && items[j].queued)
-                || rectsOverlap(items[i].natural, items[j].natural, 2)
-                || beaconsNear(items[i], items[j])) {
+            if (items[i].queued && items[j].queued) {
+                parent[find(j)] = find(i);
+                continue;
+            }
+            const pKey = mem ? pairKeyFor(items[i].id, items[j].id) : null;
+            const wasNear = Boolean(pKey && mem.pairNear.get(pKey)?.value);
+            const pad = wasNear ? 2 + HYSTERESIS_PX : 2;
+            const radius = wasNear ? GROUP_RADIUS + HYSTERESIS_PX : GROUP_RADIUS;
+            const rawNear = rectsOverlap(items[i].natural, items[j].natural, pad)
+                || beaconsNear(items[i], items[j], radius);
+            if (stabilizeBool(mem?.pairNear, pKey, rawNear, clock)) {
                 parent[find(j)] = find(i);
             }
         }
@@ -315,30 +443,62 @@ export function layoutAttentionPlates(ctx, { sprites, camera, viewport, reserved
         byRoot.get(root).members.push(item);
     });
     const components = [...byRoot.values()];
-    for (const component of components) component.grouped = component.members.length >= GROUP_MIN;
+    for (const component of components) {
+        component.grouped = component.members.length >= GROUP_MIN;
+        component.key = componentKeyFor(component.members);
+    }
 
     // Place, then group any plate whose leader would run longer than
     // LEADER_MAX: a pair becomes an exact group of two; a lone plate or a
     // group joins its nearest same-kind neighbour. Each pass removes a
     // component or flips one to grouped, so this ends in ≤ 2n passes.
+    // With hysteresis/dwell state, a pair that previously collapsed via
+    // LEADER_MAX holds grouped until ungrouped placement stays well inside
+    // LEADER_MAX - HYSTERESIS_PX for DWELL_MS, and an ungrouped pair resists
+    // brief 1-frame LEADER_MAX crossings for DWELL_MS.
+    if (mem) {
+        const probeComponents = components.map(entry => ({
+            members: [...entry.members],
+            grouped: entry.grouped,
+            key: entry.key,
+        }));
+        const probePlates = placeComponents(ctx, probeComponents, placed, layout.beacons, viewport, now, null, clock);
+        for (const component of components) {
+            if (component.members.length <= 1 || component.grouped) continue;
+            const prev = mem.componentGrouped.get(component.key);
+            const limit = prev?.value ? Math.max(0, LEADER_MAX - HYSTERESIS_PX) : LEADER_MAX;
+            const wantsGroup = probePlates.some(plate =>
+                component.members.some(item => item.id === plate.ids[0]) && leaderLength(plate) > limit);
+            component.grouped = stabilizeBool(mem.componentGrouped, component.key, wantsGroup, clock);
+        }
+    }
     let placedPlates = [];
     for (let pass = 0; pass <= items.length * 2; pass++) {
-        placedPlates = placeComponents(ctx, components, placed, layout.beacons, viewport, now);
+        placedPlates = placeComponents(ctx, components, placed, layout.beacons, viewport, now, mem?.plateSlots, clock);
         let changed = false;
         for (const plate of placedPlates) {
             if (leaderLength(plate) <= LEADER_MAX) continue;
             const component = components.find(entry => entry.members.some(item => item.id === plate.ids[0]));
             if (!component) continue;
             if (!component.grouped && component.members.length > 1) {
+                if (mem && mem.componentGrouped.get(component.key)?.value === false) continue;
                 component.grouped = true;
                 changed = true;
                 break;
             }
             const neighbour = nearestComponent(component, components);
             if (!neighbour) continue;
+            if (mem) {
+                for (const a of component.members) {
+                    for (const b of neighbour.members) {
+                        mem.pairNear.set(pairKeyFor(a.id, b.id), { value: true, pending: null, pendingSince: 0, seenAt: clock });
+                    }
+                }
+            }
             neighbour.members.push(...component.members);
             neighbour.members.sort(byAge);
             neighbour.grouped = true;
+            neighbour.key = componentKeyFor(neighbour.members);
             components.splice(components.indexOf(component), 1);
             changed = true;
             break;
@@ -346,14 +506,15 @@ export function layoutAttentionPlates(ctx, { sprites, camera, viewport, reserved
         if (!changed) break;
     }
     for (const plate of placedPlates) layout.plates.push(plate);
-    layout.tallies = layoutTallies(ctx, silent, viewport, [...layout.plates, ...layout.beacons]);
+    layout.tallies = layoutTallies(ctx, silent, viewport, [...layout.plates, ...layout.beacons, ...tallyAvoid]);
+    pruneState(mem, clock);
     return layout;
 }
 
 // W5.6 — a silent agent wholly beyond the frame: the side it lies beyond
 // (largest overshoot of its head-to-feet column, like `offscreenSide`) and its
 // live status. Null while any part of the body is in view.
-function offFrameTallyItem(sprite, head, camera, viewport) {
+function offFrameTallyItem(sprite, head, camera, viewport, sideState = null, clock = 0) {
     const feet = camera.worldToScreen(sprite.x, sprite.y);
     const top = Math.min(head.y, feet.y);
     const bottom = Math.max(head.y, feet.y);
@@ -363,14 +524,16 @@ function offFrameTallyItem(sprite, head, camera, viewport) {
         left: -(feet.x + 8),
         right: feet.x - 8 - viewport.width,
     };
-    let side = null;
+    let rawSide = null;
     let best = 0;
     for (const key of EDGE_SIDE_ORDER) {
         if (over[key] > best) {
             best = over[key];
-            side = key;
+            rawSide = key;
         }
     }
+    const id = String(sprite.agent?.id || '');
+    const side = stabilizeSide(sideState, id, over, false, false, rawSide, clock);
     if (!side) return null;
     return { side, status: normalizeAgentStatus(sprite.agent.status), x: feet.x, y: (top + bottom) / 2 };
 }
@@ -429,10 +592,10 @@ function layoutTallies(ctx, silent, viewport, taken) {
     return tabs;
 }
 
-function beaconsNear(a, b) {
+function beaconsNear(a, b, radius = GROUP_RADIUS) {
     const dx = a.x - b.x;
     const dy = a.y - b.y;
-    return dx * dx + dy * dy <= GROUP_RADIUS * GROUP_RADIUS;
+    return dx * dx + dy * dy <= radius * radius;
 }
 
 function nearestComponent(component, components) {
@@ -453,18 +616,21 @@ function nearestComponent(component, components) {
     return best;
 }
 
-function placeComponents(ctx, components, edgePlates, beacons, viewport, now) {
+function placeComponents(ctx, components, edgePlates, beacons, viewport, now, slotState = null, clock = 0) {
     const requests = [];
     for (const { members, grouped } of components) {
         if (grouped) requests.push(groupPlate(ctx, members, now));
         else for (const item of members) requests.push(singlePlate(item));
     }
-    // Groups first (they speak for the most agents), then oldest singles.
-    requests.sort((a, b) => (b.members - a.members) || ((a.since ?? Infinity) - (b.since ?? Infinity)));
+    // Groups first (they speak for the most agents), then oldest singles,
+    // with stable id tie-breaking so order cannot swap frame to frame.
+    requests.sort((a, b) => (b.members - a.members)
+        || ((a.since ?? Infinity) - (b.since ?? Infinity))
+        || String(a.ids[0] || '').localeCompare(String(b.ids[0] || '')));
     const placed = [...edgePlates];
     const out = [];
     for (const request of requests) {
-        const plate = placePlate(request, placed, beacons, viewport);
+        const plate = placePlate(request, placed, beacons, viewport, slotState, clock);
         placed.push(plate);
         out.push(plate);
     }
@@ -480,23 +646,26 @@ function leaderLength(plate) {
 // The side of the frame an agent lies beyond, or null when its whole beacon
 // is in view. The largest overshoot wins at corners. A beacon under reserved
 // chrome is not in view either: it docks on the top edge, below the chrome.
-function offscreenSide(beacon, headY, viewport) {
+function offscreenSide(beacon, headY, viewport, sideState = null, id = '', clock = 0) {
     const over = {
         top: -beacon.top,
         bottom: headY - viewport.height,
         left: -beacon.left,
         right: beacon.right - viewport.width,
     };
-    let side = null;
+    let rawSide = null;
     let best = 0;
     for (const key of EDGE_SIDE_ORDER) {
         if (over[key] > best) {
             best = over[key];
-            side = key;
+            rawSide = key;
         }
     }
-    if (!side && viewport.reserved?.some(rect => rectsOverlap(beacon, rect, 0))) side = 'top';
-    return side;
+    const inReserved = Boolean(viewport.reserved?.some(rect => rectsOverlap(beacon, rect, 0)));
+    if (!rawSide && inReserved) rawSide = 'top';
+    const inReservedExpanded = inReserved
+        || Boolean(sideState && viewport.reserved?.some(rect => rectsOverlap(beacon, rect, HYSTERESIS_PX)));
+    return stabilizeSide(sideState, id, over, inReserved, inReservedExpanded, rawSide, clock);
 }
 
 function clampNumber(value, min, max) {
@@ -518,18 +687,18 @@ function clearReserved(rect, viewport) {
 }
 
 // Plate rect docked on `side`, centred on the agent's projection along that
-// edge. Side plates keep clear of the top/bottom bands, the caption band and
-// reserved chrome.
+// edge. Side plates keep clear of the top/bottom bands and reserved chrome
+// (including the active `caption-band` rect).
 function edgeRect(side, x, y, width, viewport) {
     const W = viewport.width;
     const H = viewport.height;
     if (side === 'top' || side === 'bottom') {
         const left = clampNumber(Math.round(x - width / 2), EDGE_MARGIN, W - EDGE_MARGIN - width);
-        const top = side === 'top' ? EDGE_MARGIN : H - CAPTION_CLEAR - PLATE_H;
+        const top = side === 'top' ? EDGE_MARGIN : H - EDGE_MARGIN - PLATE_H;
         return clearReserved({ left, top, right: left + width, bottom: top + PLATE_H }, viewport);
     }
     const bandTop = EDGE_MARGIN + PLATE_H + 4;
-    const bandBottom = H - CAPTION_CLEAR - PLATE_H - 4;
+    const bandBottom = H - EDGE_MARGIN - PLATE_H - 4;
     const top = clampNumber(Math.round(y) - Math.floor(PLATE_H / 2), bandTop, bandBottom - PLATE_H);
     const left = side === 'left' ? EDGE_MARGIN : W - EDGE_MARGIN - width;
     return clearReserved({ left, top, right: left + width, bottom: top + PLATE_H }, viewport);
@@ -559,7 +728,7 @@ function edgePlate(ctx, members, side, viewport, now, byAge) {
 // exact member count — off-view agents have no beacons to tell apart, so a
 // ladder of near-identical edge plates would only be noise. Kinds never mix;
 // plates of different kinds on one side step apart along the edge.
-function layoutEdgePlates(ctx, edgeItems, viewport, now, byAge) {
+function layoutEdgePlates(ctx, edgeItems, viewport, now, byAge, edgePairState = null, clock = 0) {
     const plates = [];
     for (const side of EDGE_SIDE_ORDER) {
         const horizontal = side === 'top' || side === 'bottom';
@@ -573,16 +742,29 @@ function layoutEdgePlates(ctx, edgeItems, viewport, now, byAge) {
             const clusters = [];
             for (const item of list) {
                 const last = clusters[clusters.length - 1];
-                if (last && along(item) - last.start <= reach) {
+                let joinLast = false;
+                if (last) {
+                    const pKey = edgePairState ? `${side}:${pairKeyFor(last.members[0].id, item.id)}` : null;
+                    const wasMerged = Boolean(pKey && edgePairState.get(pKey)?.value);
+                    const effReach = wasMerged ? reach + HYSTERESIS_PX : reach;
+                    const rawJoin = along(item) - last.start <= effReach;
+                    joinLast = stabilizeBool(edgePairState, pKey, rawJoin, clock);
+                }
+                if (last && joinLast) {
                     last.members.push(item);
                     last.plate = edgePlate(ctx, last.members, side, viewport, now, byAge);
                 } else {
                     clusters.push({ start: along(item), members: [item], plate: edgePlate(ctx, [item], side, viewport, now, byAge) });
                 }
-                while (clusters.length > 1
-                    && rectsOverlap(clusters[clusters.length - 2].plate.rect, clusters[clusters.length - 1].plate.rect, EDGE_MERGE_PAD)) {
-                    const tail = clusters.pop();
-                    const prev = clusters[clusters.length - 1];
+                while (clusters.length > 1) {
+                    const prev = clusters[clusters.length - 2];
+                    const tail = clusters[clusters.length - 1];
+                    const pKey = edgePairState ? `${side}:pad:${pairKeyFor(prev.members[0].id, tail.members[0].id)}` : null;
+                    const wasMerged = Boolean(pKey && edgePairState.get(pKey)?.value);
+                    const effPad = wasMerged ? EDGE_MERGE_PAD + HYSTERESIS_PX : EDGE_MERGE_PAD;
+                    const rawOverlap = rectsOverlap(prev.plate.rect, tail.plate.rect, effPad);
+                    if (!stabilizeBool(edgePairState, pKey, rawOverlap, clock)) break;
+                    clusters.pop();
                     prev.members.push(...tail.members);
                     prev.plate = edgePlate(ctx, prev.members, side, viewport, now, byAge);
                 }
@@ -659,7 +841,7 @@ function groupPlate(ctx, members, now) {
     };
 }
 
-function placePlate(request, placed, beacons, viewport) {
+function placePlate(request, placed, beacons, viewport, slotState = null, clock = 0) {
     const width = request.widths.width;
     const half = Math.round(width / 2) + 4;
     const candidates = [
@@ -668,20 +850,56 @@ function placePlate(request, placed, beacons, viewport) {
         [0, -STACK_STEP * 3], [-half * 2, 0], [half * 2, 0],
         [-half, -STACK_STEP * 2], [half, -STACK_STEP * 2], [0, -STACK_STEP * 4],
     ];
-    let best = null;
-    let bestHits = Infinity;
-    for (const [dx, dy] of candidates) {
+    const score = (idx) => {
+        const [dx, dy] = candidates[idx];
         const rect = clampRect(naturalRect(request.anchorX + dx, request.tip + dy, width), viewport);
         let hits = 0;
         for (const other of placed) if (rectsOverlap(rect, other.rect, 2)) hits += 2;
         for (const beacon of beacons) if (rectsOverlap(rect, beacon, 1)) hits += 1;
-        if (hits < bestHits) {
-            best = rect;
-            bestHits = hits;
-            if (hits === 0) break;
+        return { idx, rect, hits };
+    };
+    let best = null;
+    for (let idx = 0; idx < candidates.length; idx++) {
+        const evaluated = score(idx);
+        if (!best || evaluated.hits < best.hits) {
+            best = evaluated;
+            if (evaluated.hits === 0) break;
         }
     }
-    return { ...request, rect: best };
+    if (slotState && request.ids?.length) {
+        const key = [...request.ids].sort().join('\0');
+        const entry = slotState.get(key);
+        if (!entry) {
+            slotState.set(key, { idx: best.idx, pendingIdx: -1, pendingSince: 0, seenAt: clock });
+        } else {
+            entry.seenAt = clock;
+            if (best.idx === entry.idx) {
+                entry.pendingIdx = -1;
+                entry.pendingSince = 0;
+            } else {
+                const prev = score(entry.idx);
+                // Hold the committed slot while it remains collision-free (as
+                // good as `best`) for DWELL_MS so a returning lower slot never
+                // oscillates frame to frame.
+                if (prev.hits <= best.hits) {
+                    if (entry.pendingIdx !== best.idx) {
+                        entry.pendingIdx = best.idx;
+                        entry.pendingSince = clock;
+                    } else if (clock - entry.pendingSince >= DWELL_MS) {
+                        entry.idx = best.idx;
+                        entry.pendingIdx = -1;
+                        entry.pendingSince = 0;
+                    }
+                    if (entry.idx !== best.idx) best = prev;
+                } else {
+                    entry.idx = best.idx;
+                    entry.pendingIdx = -1;
+                    entry.pendingSince = 0;
+                }
+            }
+        }
+    }
+    return { ...request, rect: best.rect };
 }
 
 function clampRect(rect, viewport) {
@@ -692,13 +910,16 @@ function clampRect(rect, viewport) {
     return clearReserved({ left, top, right: left + width, bottom: top + height }, viewport);
 }
 
-// Screen rects of every plate, beacon and off-frame tally tab, for
-// plaque/name reservations.
-export function attentionScreenRects(layout) {
+// Screen rects of every T1 plate and beacon, for plaque/name reservations.
+// Off-frame tally tabs are excluded by default so a sliding tally never blanks
+// a visible building plaque (tallies yield to plaques instead).
+export function attentionScreenRects(layout, { includeTallies = false } = {}) {
     const out = [];
     for (const plate of layout?.plates || []) out.push(plate.rect);
     for (const beacon of layout?.beacons || []) out.push(beacon);
-    for (const tab of layout?.tallies || []) out.push(tab.rect);
+    if (includeTallies) {
+        for (const tab of layout?.tallies || []) out.push(tab.rect);
+    }
     return out;
 }
 
