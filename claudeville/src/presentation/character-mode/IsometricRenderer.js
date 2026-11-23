@@ -3213,21 +3213,31 @@ export class IsometricRenderer {
 
     _contentFrameBox() {
         const activePoints = [];
-        const allAgentPoints = [];
+        const settledAgentPoints = [];
+        const snapshot = this.villageDirector?.getSnapshot?.() || null;
+        for (const cohort of snapshot?.workCohorts || []) {
+            if (Number.isFinite(cohort?.center?.x) && Number.isFinite(cohort?.center?.y)) {
+                activePoints.push({ x: cohort.center.x, y: cohort.center.y });
+            }
+        }
         for (const sprite of this.agentSprites.values()) {
-            if (Number.isFinite(sprite?.x) && Number.isFinite(sprite?.y)) {
-                const point = { x: sprite.x, y: sprite.y };
-                allAgentPoints.push(point);
-                if (this._cameraAgentFrameWeight(sprite) > 0) {
-                    activePoints.push(point);
-                    const buildingPoint = this._agentBuildingFramePoint(sprite.agent);
-                    if (buildingPoint) activePoints.push(buildingPoint);
-                }
+            if (!sprite || sprite._archiveAnim || sprite.agent?.isDeparted || this._isGateTransit(sprite, 'departure')) {
+                continue;
+            }
+            const enteringAtGate = Boolean(sprite.isArrivalPending?.() || this._isGateTransit(sprite, 'arrival'));
+            const hasPoint = Number.isFinite(sprite.x) && Number.isFinite(sprite.y);
+            if (hasPoint && !enteringAtGate) {
+                settledAgentPoints.push({ x: sprite.x, y: sprite.y });
+            }
+            if (this._cameraAgentFrameWeight(sprite) > 0) {
+                const buildingPoint = this._agentBuildingFramePoint(sprite.agent);
+                if (buildingPoint) activePoints.push(buildingPoint);
+                if (hasPoint && !enteringAtGate) activePoints.push({ x: sprite.x, y: sprite.y });
             }
         }
 
         const hotBuildingPoints = [];
-        const buildingSignals = this.villageDirector?.getSnapshot?.()?.buildingSignals || [];
+        const buildingSignals = snapshot?.buildingSignals || [];
         for (const signal of buildingSignals.slice(0, 3)) {
             if ((Number(signal?.heat) || 0) < 0.18) continue;
             if (Number.isFinite(signal?.center?.x) && Number.isFinite(signal?.center?.y)) {
@@ -3239,7 +3249,7 @@ export class IsometricRenderer {
             return this._worldBoxForCameraPoints([...activePoints, ...hotBuildingPoints.slice(0, 2)]);
         }
         if (hotBuildingPoints.length) return this._worldBoxForCameraPoints(hotBuildingPoints);
-        if (allAgentPoints.length) return this._worldBoxForCameraPoints(allAgentPoints);
+        if (settledAgentPoints.length) return this._worldBoxForCameraPoints(settledAgentPoints);
 
         const buildingPoints = [];
         if (this.world?.buildings) {
@@ -3251,6 +3261,96 @@ export class IsometricRenderer {
             }
         }
         return this._worldBoxForCameraPoints(buildingPoints);
+    }
+
+    // Densest active district cluster sized to fit the medium shot scale (z2 at
+    // 1920 × 1080 and 1440 × 900) for the opening establishing shot. Excludes
+    // walkers entering at the gate or Portal so live boots never drift SW.
+    _openingContentFrameBox() {
+        const snapshot = this.villageDirector?.getSnapshot?.() || null;
+        const clusters = new Map();
+        const addCluster = (key, center, weight, extraPoint = null) => {
+            if (!Number.isFinite(center?.x) || !Number.isFinite(center?.y)) return;
+            const entry = clusters.get(key) || { key, center: { x: center.x, y: center.y }, weight: 0, points: [] };
+            entry.weight += weight;
+            if (extraPoint && Number.isFinite(extraPoint.x) && Number.isFinite(extraPoint.y)) {
+                entry.points.push(extraPoint);
+            }
+            clusters.set(key, entry);
+        };
+
+        for (const cohort of snapshot?.workCohorts || []) {
+            if (!cohort?.type || !cohort?.center) continue;
+            const weight = (Number(cohort.working) || 0) * 3 + (Number(cohort.waiting) || 0) * 2 + (Number(cohort.total) || 0);
+            addCluster(`b:${cohort.type}`, cohort.center, Math.max(1, weight));
+        }
+        for (const sprite of this.agentSprites.values()) {
+            if (!sprite || sprite._archiveAnim || sprite.agent?.isDeparted || this._isGateTransit(sprite, 'departure')) {
+                continue;
+            }
+            const weight = this._cameraAgentFrameWeight(sprite);
+            if (!(weight > 0)) continue;
+            const enteringAtGate = Boolean(sprite.isArrivalPending?.() || this._isGateTransit(sprite, 'arrival'));
+            const point = !enteringAtGate && Number.isFinite(sprite.x) && Number.isFinite(sprite.y)
+                ? { x: sprite.x, y: sprite.y }
+                : null;
+            const bType = normalizeBuildingType(
+                sprite.agent?.targetBuildingType
+                || sprite.agent?.lastKnownBuildingType
+                || sprite.agent?.buildingType
+                || sprite.agent?.building,
+            );
+            const buildingPoint = this._agentBuildingFramePoint(sprite.agent);
+            if (bType && buildingPoint) {
+                addCluster(`b:${bType}`, buildingPoint, weight, point);
+            } else if (point) {
+                addCluster(`a:${sprite.agent?.id || clusters.size}`, point, weight, point);
+            }
+        }
+        for (const signal of (snapshot?.buildingSignals || []).slice(0, 3)) {
+            if ((Number(signal?.heat) || 0) < 0.18 || !signal?.type || !signal?.center) continue;
+            addCluster(`b:${signal.type}`, signal.center, Number(signal.heat) || 0.2);
+        }
+
+        const ranked = [...clusters.values()].sort((a, b) => b.weight - a.weight || a.key.localeCompare(b.key));
+        if (!ranked.length) return this._contentFrameBox();
+
+        const camera = this.camera;
+        const w = camera?._viewportWidth?.() || 0;
+        const h = camera?._viewportHeight?.() || 0;
+        const mediumZoom = camera?.shotZoom?.('medium') || camera?.tierZoom?.(2) || 2;
+        const padPx = 96;
+        const maxW = w > 0 ? Math.max(160, (w - padPx * 2) / mediumZoom) : Infinity;
+        const maxH = h > 0 ? Math.max(160, (h - padPx * 2) / mediumZoom) : Infinity;
+
+        const lead = ranked[0];
+        const box = {
+            minX: lead.center.x - 40,
+            maxX: lead.center.x + 40,
+            minY: lead.center.y - 60,
+            maxY: lead.center.y + 40,
+        };
+        const tryMerge = (pt, rx = 40, ryUp = 60, ryDown = 40) => {
+            const minX = Math.min(box.minX, pt.x - rx);
+            const maxX = Math.max(box.maxX, pt.x + rx);
+            const minY = Math.min(box.minY, pt.y - ryUp);
+            const maxY = Math.max(box.maxY, pt.y + ryDown);
+            if ((maxX - minX) <= maxW && (maxY - minY) <= maxH) {
+                box.minX = minX;
+                box.maxX = maxX;
+                box.minY = minY;
+                box.maxY = maxY;
+                return true;
+            }
+            return false;
+        };
+        for (const pt of lead.points) tryMerge(pt, 20, 76, 6);
+        for (const cluster of ranked.slice(1)) {
+            if (tryMerge(cluster.center)) {
+                for (const pt of cluster.points) tryMerge(pt, 20, 76, 6);
+            }
+        }
+        return box;
     }
 
     // Frame the camera on live work first (fallback: hot buildings, all agents,
@@ -3268,7 +3368,7 @@ export class IsometricRenderer {
         // #45/8.3 — the first World paint opens on the whole island. The flag
         // is set only when the shot actually starts (5.7), so a failed attempt
         // (e.g. missing viewport) retries on the next re-frame.
-        if (!this._didEstablishingShot && this.playOpeningShot({ targetBox })) return;
+        if (!this._didEstablishingShot && this.playOpeningShot({ targetBox: this._openingContentFrameBox() })) return;
 
         // 5.7/8.1/4.1 — later re-frames (relayout, the F key) glide in the
         // director vocabulary and settle on the default frame tier (3, or the
@@ -3836,11 +3936,11 @@ export class IsometricRenderer {
         }
 
         if (event.code === 'Equal' || event.code === 'NumpadAdd') {
-            if (this._zoomByKeyboard(1)) { this.camera.abortDirectorGlide?.(); this.camera.noteUserInput?.(); event.preventDefault(); }
+            if (this._zoomByKeyboard(1)) event.preventDefault();
             return;
         }
         if (event.code === 'Minus' || event.code === 'NumpadSubtract') {
-            if (this._zoomByKeyboard(-1)) { this.camera.abortDirectorGlide?.(); this.camera.noteUserInput?.(); event.preventDefault(); }
+            if (this._zoomByKeyboard(-1)) event.preventDefault();
             return;
         }
         if (event.code === 'KeyF') {
@@ -3916,17 +4016,20 @@ export class IsometricRenderer {
 
     _zoomByKeyboard(direction = 1) {
         const camera = this.camera;
-        const steps = Array.isArray(camera?.zoomSteps) && camera.zoomSteps.length
+        if (!camera) return false;
+        if (typeof camera.zoomByStep === 'function') return camera.zoomByStep(direction);
+        const steps = Array.isArray(camera.zoomSteps) && camera.zoomSteps.length
             ? camera.zoomSteps
-            : [camera?.minZoom || 1, camera?.maxZoom || 3];
-        const zoom = camera?.zoom || 1;
+            : [camera.minZoom || 1, camera.maxZoom || 3];
+        const zoom = camera.zoom || 1;
         const currentIndex = steps.reduce((bestIndex, step, index) => (
             Math.abs(step - zoom) < Math.abs(steps[bestIndex] - zoom) ? index : bestIndex
         ), 0);
         const nextIndex = Math.max(0, Math.min(steps.length - 1, currentIndex + direction));
         const targetZoom = steps[nextIndex];
-        if (!camera || targetZoom === zoom) return false;
-        camera.stopFollow();
+        if (targetZoom === zoom) return false;
+        camera.abortDirectorGlide?.();
+        camera.noteUserInput?.();
         camera._setZoomAboutCenter?.(targetZoom);
         return true;
     }

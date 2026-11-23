@@ -56,6 +56,16 @@ const markInColumns = (view, mark) => mark.minX >= view.left && mark.maxX <= vie
 const bodyWhole = (view, body) => body.x - 20 >= view.left && body.x + 20 <= view.left + view.w
     && body.y - 76 >= view.top && body.y + 6 <= view.top + view.h;
 
+test('1440×900 at DPR 1 rests Auto at z2 although its medium scale is z1 (relaxed 2026-11-23, operator decision)', () => {
+    assert.deepEqual(scalesFor(1200, 852, 1), { survey: null, wide: 1, medium: 1, close: 2 });
+    const camera = new Camera(canvasOf(1200, 852));
+    assert.equal(camera.autoRestTier(), 2);
+    const hd = new Camera(canvasOf(1680, 1032));
+    assert.equal(hd.autoRestTier(), 2);
+    const qhd = new Camera(canvasOf(2320, 1392));
+    assert.equal(qhd.autoRestTier(), 2, '2560×1440 keeps z2, not the z3 close scale');
+});
+
 test('1920×1080 at DPR 1 has no survey: wide 1, medium 2, close 3', () => {
     assert.deepEqual(scalesFor(1680, 1032, 1), { survey: null, wide: 1, medium: 2, close: 3 });
 });
@@ -78,18 +88,41 @@ test('1800×1169 at DPR 2 surveys at 0.5: wide 1, medium 2, close 3', () => {
     assert.deepEqual(scalesFor(1560, 1121, 2), { survey: 0.5, wide: 1, medium: 2, close: 3 });
 });
 
+test('150% scaling (dpr 1.5) exposes k = 1 and k = 3 integer rungs and distinct shot scales', () => {
+    const ladder = zoomTierLadder(1.5);
+    assert.deepEqual([...ladder.steps], [2 / 3, 4 / 3, 2, 8 / 3, 4]);
+    for (const step of ladder.steps) {
+        const k = step * 1.5;
+        assert.ok(Math.abs(k - Math.round(k)) < 1e-9, `zoom ${step} at dpr 1.5 gives k=${k}`);
+    }
+    // 1080p @ 150% (1280×720 viewport → 1040×672 canvas): wide k=1, medium k=2, close k=3
+    assert.deepEqual(scalesFor(1040, 672, 1.5), { survey: null, wide: 2 / 3, medium: 4 / 3, close: 2 });
+    // 1440p @ 150% (1707×960 viewport → 1467×912 canvas): survey k=1, wide and medium k=2, close k=4
+    assert.deepEqual(scalesFor(1467, 912, 1.5), { survey: 2 / 3, wide: 4 / 3, medium: 4 / 3, close: 8 / 3 });
+    // The Auto rest floors at zoom 2 (k = 3) where that still shows enough
+    // world; the small 1080p @ 150% canvas keeps its medium scale.
+    const qhd150 = new Camera(canvasOf(1467, 912, 1.5));
+    assert.equal(qhd150.tierZoom(qhd150.autoRestTier()), 2);
+    const hd150 = new Camera(canvasOf(1040, 672, 1.5));
+    assert.equal(hd150.tierZoom(hd150.autoRestTier()), 4 / 3);
+    // A phone-size canvas never falls to the 1/dpr survey rung as its wide.
+    assert.equal(scalesFor(390, 700, 3).wide, 1);
+});
+
 test('backing DPR 2 exposes every whole backing-pixel scale; DPR 1 keeps three tiers', () => {
     assert.deepEqual([...zoomTierLadder(2).steps], [0.5, 1, 1.5, 2, 2.5, 3]);
     assert.deepEqual([...zoomTierLadder(1).steps], [1, 2, 3]);
 });
 
-test('ordinary Auto rests no closer than the wide scale and never zooms past a wider rest', () => {
-    const autoCap = (wide, tier) => CameraDirector.prototype._currentMaxZoom.call({
-        camera: { shotTier: () => wide, currentZoomTier: () => tier },
+test('ordinary Auto caps at the medium scale and never zooms past a wider rest (relaxed 2026-11-23)', () => {
+    const autoCap = (medium, tier) => CameraDirector.prototype._currentMaxZoom.call({
+        camera: { shotTier: (name) => (name === 'medium' ? medium : 1), currentZoomTier: () => tier },
     });
     assert.equal(autoCap(2, 3), 2);
+    assert.equal(autoCap(2, 2), 2);
     assert.equal(autoCap(2, 1), 1);
-    assert.equal(autoCap(1, 2.5), 1);
+    assert.equal(autoCap(3, 2), 2);
+    assert.equal(autoCap(2, 2.5), 2);
 });
 
 test('an Ambient cohort shot frames only the members standing at its building', () => {
@@ -186,4 +219,20 @@ test('ordinary Auto keeps landmark crowns whole, never at a whole villager\'s ex
     assert.ok(bodyWhole(lowView, low), 'and stays whole');
     assert.ok(crownY(lowView, belfry, nudged.zoom) < LANDMARK_EDGE_AIR_PX, 'the Belfry crown gives way');
     director.dispose();
+});
+
+test('1920×1080 DPR 1 opening first frame clears Belfry and Windmill crowns when sky room is null', () => {
+    const camera = new Camera(canvasOf(1680, 1032, 1));
+    camera.setSpriteMetrics(spriteMetrics);
+    const islandBox = { minX: -1248, maxX: 1248, minY: 0, maxY: 1248 };
+    const clusterBox = { minX: -160, maxX: 160, minY: 480, maxY: 760 };
+    assert.equal(camera.establishingShot(islandBox, { targetBox: clusterBox }), true);
+    const view = viewOf(camera, { x: camera.x, y: camera.y, zoom: camera.zoom });
+    assert.equal(camera.zoom, 1, 'first frame opens on wide z1');
+    for (const type of ['prop.hourglassBelfry', 'prop.windmill']) {
+        const mark = camera._landmarkSilhouettes().find((m) => m.type === type);
+        assert.ok(mark, `${type} silhouette loaded`);
+        assert.ok(crownY(view, mark, camera.zoom) >= LANDMARK_EDGE_AIR_PX, `${type} crown at ${crownY(view, mark, camera.zoom)} px`);
+    }
+    assert.equal(camera._directorGlide?.toZoom, 2, 'opening dollies in to medium z2 on active cluster');
 });
