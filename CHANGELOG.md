@@ -2,6 +2,12 @@
 
 ---
 
+## v0.65.7.2 · Nov 23, 2026 — Hotfix
+
+- **T3 Code delegates group under the agent that started them.** Since v0.65.7.1 the Antigravity agents T3 Code starts with `delegate_task`, such as Gemini 4 Neon, appeared in the village as unnamed villagers of their own. They now sit under the thread that delegated them, the way DeepSeek and other subagents sit under their Claude session, and carry the task title T3 Code shows, such as "L1 fix-cause: supply". T3 Code records that link only in its state database, so the Antigravity adapter reads `~/.t3/userdata/statev2.sqlite` read-only through `node:sqlite`. It follows each conversation to its T3 thread, that thread to the one that started it, and that thread to its latest Claude or Antigravity session. A delegate of a Codex thread still stands on its own.
+
+---
+
 ## v0.65.7.1 · Nov 23, 2026 — Hotfix
 
 - **Antigravity agents started by T3 Code join the village.** T3 Code runs each Antigravity thread, including a delegate such as Gemini 4 Neon, as `agy acp` with its own data directory, `~/.t3/userdata/providers/antigravity/<instance>/antigravity-acp/`. ClaudeVille looked only under `~/.gemini/`, so those agents never appeared, while the Claude orchestrator and its DeepSeek subagents did. That directory keeps the agy CLI's layout, so the Antigravity adapter now scans each T3 Code instance alongside `~/.gemini/antigravity-cli/`. These agents show as their own villagers, not under the session that delegated them, because T3 Code records that link only in its own database.
