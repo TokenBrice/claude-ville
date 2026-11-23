@@ -15,8 +15,15 @@
     gap: 12px;
     --dash-row-pad: 13px;   /* 5px spine + 8px air */
     --dash-col-gap: 12px;
-    --dash-cols: 44px minmax(150px, 200px) minmax(180px, 1fr) 160px 56px 64px 76px;
+    --dash-col-niche: 44px;
+    --dash-cols-lead: var(--dash-col-niche) minmax(150px, 200px) minmax(180px, 1fr);
+    --dash-cols-nums: 56px 64px 76px;
 }
+/* Shared optional tracks at #dashboardGrid level so FOR/TOKENS/COST align
+   across every project section (relaxed 2026-11-23, operator decision). */
+.dashboard__grid--has-tape { --dash-cols-tape: 160px; }
+.dashboard__grid--has-work { --dash-cols-work: minmax(120px, 200px); }
+.dashboard__grid--has-kids { --dash-cols-kids: 160px; }
 
 /* 0.9 — on an ultrawide window the project panels flow into ~1100 px
    columns in reading order (the exception-first project sort stays
@@ -49,7 +56,7 @@
     /* 9.9 — the roomy tier (DashboardRenderer._syncRoomy) while the columns
        leave room to spare: a 64 px face window at 2x in a 66 px row. */
     #dashboardGrid.dashboard__grid--roomy {
-        --dash-cols: 64px minmax(150px, 200px) minmax(180px, 1fr) 160px 56px 64px 76px;
+        --dash-col-niche: 64px;
     }
     .dashboard__grid--roomy .dash-card__row { grid-template-rows: 66px; }
     .dashboard__grid--roomy .dash-card__niche { width: 64px; height: 64px; }
@@ -102,7 +109,7 @@
     display: flex;
     align-items: center;
     gap: 16px;
-    height: 40px;
+    min-height: 40px;
     margin: -16px -16px 12px;
     padding: 0 16px;
     border-bottom: 1px solid var(--line-1);
@@ -117,15 +124,27 @@
     white-space: nowrap;
 }
 .dashboard-attention__heading--quiet { color: var(--ink-2); }
-/* At 1280 the counts keep a scrollable 160 px; the legend gives way first. */
+/* Legend sheds first on overflow; when status + provider chips still exceed
+   the bar width, provider chips wrap cleanly below status instead of clipping. */
 .dashboard-attention__list {
     display: flex;
     flex: 1 1 160px;
     align-items: center;
     gap: 2px;
     min-width: 0;
-    overflow-x: auto;
-    scrollbar-width: none;
+    padding: 6px 0;
+}
+.dashboard-attention__list--wrapped {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+}
+.dashboard-attention__group {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
 }
 .dashboard-attention__item {
     display: inline-flex;
@@ -215,7 +234,7 @@
 
 .dashboard__section-header {
     position: sticky;
-    top: 24px; /* under the 40px tally, less the container padding */
+    top: calc(var(--dash-attention-height, 40px) - 16px); /* under the tally bar, less container padding */
     z-index: 20;
     display: flex;
     align-items: center;
@@ -360,12 +379,10 @@
     animation: dashboard-section-errored-flash 600ms steps(4, end);
 }
 
-/* 7.7 — optional columns exist only while some row has data for them. */
-.dashboard__section--has-work { --dash-cols-work: minmax(120px, 200px); }
-.dashboard__section--has-kids { --dash-cols-kids: 160px; }
+/* Shared column template across all sections so numeric columns align. */
 .dashboard__section .dashboard__cols,
 .dashboard__section .dash-card__row {
-    grid-template-columns: var(--dash-cols) var(--dash-cols-work, ) var(--dash-cols-kids, );
+    grid-template-columns: var(--dash-cols-lead) var(--dash-cols-tape, ) var(--dash-cols-nums) var(--dash-cols-work, ) var(--dash-cols-kids, );
 }
 
 /* 7.7 — one column-header row per section instead of a label in every cell. */
@@ -383,10 +400,12 @@
 }
 .dashboard__cols > span { min-width: 0; overflow: hidden; }
 .dashboard__col--num { text-align: right; }
+.dashboard__col--tape,
 .dashboard__col--work,
 .dashboard__col--kids { display: none; }
-.dashboard__section--has-work .dashboard__col--work,
-.dashboard__section--has-kids .dashboard__col--kids { display: block; }
+.dashboard__grid--has-tape .dashboard__col--tape,
+.dashboard__grid--has-work .dashboard__col--work,
+.dashboard__grid--has-kids .dashboard__col--kids { display: block; }
 
 .dashboard__section-grid { display: block; }
 
@@ -587,10 +606,11 @@
 .dash-card__silent[data-tier="3"] { color: var(--ink-1); border-color: var(--ink-3); }
 
 .dash-card__tape {
-    display: flex;
+    display: none;
     align-items: center;
     height: 40px;
 }
+.dashboard__grid--has-tape .dash-card__tape { display: flex; }
 .dash-card__tape-canvas { width: 160px; height: 16px; }
 
 .dash-card__for,
@@ -618,8 +638,8 @@
 
 .dash-card__work-cell,
 .dash-card__children-cell { display: none; overflow: hidden; white-space: nowrap; }
-.dashboard__section--has-work .dash-card__work-cell,
-.dashboard__section--has-kids .dash-card__children-cell { display: block; }
+.dashboard__grid--has-work .dash-card__work-cell,
+.dashboard__grid--has-kids .dash-card__children-cell { display: block; }
 .dash-card__work-summary { color: var(--ink-2); }
 .dash-card__work-cell--collision .dash-card__work-summary { color: var(--cv-status-errored); }
 .dash-card__children { color: var(--ink-2); }
@@ -686,10 +706,12 @@
 .dash-card__kid-name { color: var(--ink-1); font: var(--fs-label)/var(--lh-label) var(--font-display); }
 .dash-card__kid-detail { overflow: hidden; color: var(--ink-3); text-overflow: ellipsis; white-space: nowrap; }
 .dash-card__kid-status { color: var(--ink-3); }
-/* UI-16 — the per-lead toggle under the strip: ghost text, gold on hover. */
+/* UI-16 — the per-lead toggle under the strip: ghost text indented to the
+   kid-strip text (niche + 10px gap + 26px face + 10px gap - 7px border/pad). */
 .dash-card__kid-toggle {
-    justify-self: start;
-    padding: 0 6px;
+    display: block;
+    margin: 2px 0 4px calc(var(--dash-row-pad) + var(--dash-col-niche) + 39px);
+    padding: 2px 6px;
     border: 1px solid transparent;
     background: none;
     color: var(--ink-3);
