@@ -19,7 +19,7 @@
 
 import { buildAerialHazeStrip, ungradeRgb } from './CanvasGrade.js';
 import { releaseCanvasBackingStore } from './CanvasBudget.js';
-import { aerialPerspectiveStrength, effectBudgetMode } from './gpu/GpuWorldPolicy.js';
+import { aerialHazeStart, aerialPerspectiveStrength, effectBudgetMode } from './gpu/GpuWorldPolicy.js';
 
 // The vignette layer is baked at quarter resolution and blitted 4x nearest:
 // its two course edges step on a 4 px grid (0.5 MB at 1080p).
@@ -75,11 +75,11 @@ function vignetteLayer(width, height, grade) {
     return canvas;
 }
 
-function hazeStrip(height, cell, strength, rgb) {
-    const key = `${height}|${cell}|${Math.round(strength * 256)}|${bucket(rgb)}`;
+function hazeStrip(height, cell, strength, rgb, start = 0.30) {
+    const key = `${height}|${cell}|${Math.round(strength * 256)}|${Math.round(start * 64)}|${bucket(rgb)}`;
     if (_haze && _hazeKey === key) return _haze;
     releaseCanvasBackingStore(_haze);
-    const small = buildAerialHazeStrip({ height, cell, strength, rgb });
+    const small = buildAerialHazeStrip({ height, cell, strength, rgb, start });
     let strip = small;
     if (cell > 1) {
         strip = document.createElement('canvas');
@@ -127,7 +127,8 @@ export function drawResidentBackdropGrade(ctx, { viewport, atmosphere, zoom = 1,
         ctx.restore();
     }
     if (hazeStrength > 0) {
-        fillHaze(ctx, viewport, hazeStrip(viewport.height, artCell(zoom), hazeStrength, grade.fogColor || [0.6, 0.7, 0.78]));
+        const start = aerialHazeStart(atmosphere?.weather?.fog);
+        fillHaze(ctx, viewport, hazeStrip(viewport.height, artCell(zoom), hazeStrength, grade.fogColor || [0.6, 0.7, 0.78], start));
     }
 }
 
@@ -143,6 +144,7 @@ export function drawCanvasAerialHaze(ctx, { viewport, atmosphere, zoom = 1, qual
     const fog = Math.max(0, Math.min(1, Number(atmosphere?.weather?.fog) || 0));
     const strength = aerialPerspectiveStrength(zoom, fog);
     if (strength <= 0) return;
+    const start = aerialHazeStart(fog);
     const rgb = ungradeRgb(grade.fogColor || [0.6, 0.7, 0.78], grade);
-    fillHaze(ctx, viewport, hazeStrip(viewport.height, artCell(zoom), strength, rgb));
+    fillHaze(ctx, viewport, hazeStrip(viewport.height, artCell(zoom), strength, rgb, start));
 }

@@ -184,20 +184,20 @@ export const GRADE_KEYFRAMES = Object.freeze([
     }),
     Object.freeze({
         name: 'morning', minute: 8 * 60 + 30, side: 'dawn',
-        exposure: 0.98, saturation: 0.97,
-        gain: [1.00, 1.00, 0.99], lift: [0, 0, 0.006], gamma: 1.0,
-        shadowTint: [0.94, 0.96, 1.05], highlightTint: [1.04, 1.02, 0.96],
+        exposure: 1.06, saturation: 1.02,
+        gain: [1.01, 1.00, 0.99], lift: [0, 0, 0.004], gamma: 0.98,
+        shadowTint: [0.90, 0.95, 1.09], highlightTint: [1.08, 1.04, 0.95],
         purkinje: 0, sunBand: 1, daylight: 1, night: 0, rake: 0.19,
-        vignetteEdge: [0.86, 0.89, 0.93], vignetteAlpha: 0.26,
+        vignetteEdge: [0.86, 0.89, 0.93], vignetteAlpha: 0.12,
         skyTop: '#4f86b8', skyHorizon: '#b9d3e2', voidColor: '#16222b', horizonHaze: '#9cb6c6',
     }),
     Object.freeze({
         name: 'noon', minute: 12 * 60 + 30, side: 'noon',
-        exposure: 1.0, saturation: 1.0,
-        gain: [1.02, 1.00, 0.97], lift: [0, 0, 0], gamma: 1.0,
-        shadowTint: [0.97, 0.98, 1.03], highlightTint: [1.03, 1.02, 0.98],
+        exposure: 1.14, saturation: 1.06,
+        gain: [1.03, 1.00, 0.96], lift: [0, 0, 0], gamma: 0.96,
+        shadowTint: [0.90, 0.95, 1.08], highlightTint: [1.10, 1.06, 0.94],
         purkinje: 0, sunBand: 1, daylight: 1, night: 0, rake: 0,
-        vignetteEdge: [0.86, 0.89, 0.92], vignetteAlpha: 0.24,
+        vignetteEdge: [0.86, 0.89, 0.92], vignetteAlpha: 0.10,
         skyTop: '#4a86c0', skyHorizon: '#b8d6e6', voidColor: '#16222b', horizonHaze: '#a2becf',
     }),
     // Golden hour is a low sun: an amber key over violet shadows, more
@@ -407,10 +407,11 @@ export function evaluateGrade({
         const weatherTint = lumaNormalized(tint).map(channel => channel * value);
         gain = mul3(gain, lerp3(NEUTRAL, weatherTint, weight));
         exposure *= lerp(1, row.nightCourse, weight * night);
-        // A covered sky flattens the split tone and the sun band; at night
-        // half of the moonlit split tone survives, so silhouettes keep
-        // their cool rim under cloud.
+        // A covered sky flattens the split tone, clear-sun exposure boost and
+        // sun band; at night half of the moonlit split tone survives, so
+        // silhouettes keep their cool rim under cloud.
         const flatten = row.flatten * weight * lerp(1, 0.5, night);
+        if (exposure > 1) exposure = lerp(exposure, 1, flatten);
         shadowTint = towardOne3(shadowTint, flatten);
         highlightTint = towardOne3(highlightTint, flatten);
         gamma = lerp(gamma, 1, flatten);
@@ -429,6 +430,7 @@ export function evaluateGrade({
     const cloudShadow = daylight * clamp((0.85 - w.cloudCover) / 0.15);
     daylight *= 1 - flat * 0.7;
     if (w.flat > 0) {
+        if (exposure > 1) exposure = lerp(exposure, 1, w.flat);
         shadowTint = towardOne3(shadowTint, w.flat * 0.5);
         highlightTint = towardOne3(highlightTint, w.flat * 0.5);
         rake *= 1 - w.flat * 0.5;

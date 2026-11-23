@@ -49,14 +49,45 @@ export function drawCanvasGradeSaturation(ctx, width, height, grade) {
     ctx.restore();
 }
 
+function canvasGradeFull(grade) {
+    return [0, 1, 2].map(channel => grade.exposure * grade.gain[channel]
+        * Math.sqrt(grade.shadowTint[channel] * grade.highlightTint[channel]));
+}
+
 /**
- * Step 2's centre colour: exposure x gain x the split tone's mid, the
- * multiply overlay's inner course (the vignette courses darken it toward
- * `vignetteEdge`).
+ * Step 2's centre colour: exposure x gain x the split tone's mid, clamped to
+ * [0, 1] for the multiply overlay's inner course (the vignette courses darken
+ * it toward `vignetteEdge`). Any channel excess above 1 is carried by
+ * `canvasGradeGain` / `drawCanvasGradeGain`.
  */
 export function canvasGradeMultiply(grade) {
-    return [0, 1, 2].map(channel => Math.min(1, grade.exposure * grade.gain[channel]
-        * Math.sqrt(grade.shadowTint[channel] * grade.highlightTint[channel])));
+    return canvasGradeFull(grade).map(value => Math.min(1, value));
+}
+
+/**
+ * Step 2b's gain factor (> 1 when clear daytime exposure pushes channels above
+ * 1, so `multiply` alone would clip them). `multiply[c] * gain[c] == full[c]`.
+ */
+export function canvasGradeGain(grade) {
+    return canvasGradeFull(grade).map(value => Math.max(1, value));
+}
+
+function canvasGradeGainCss(grade) {
+    const gain = canvasGradeGain(grade);
+    if (Math.max(gain[0], gain[1], gain[2]) <= 1.004) return null;
+    // W3C color-dodge: Cb / (1 - Cs) = Cb * gain -> Cs = 1 - 1 / gain.
+    return gain.map(value => clamp(1 - 1 / Math.max(1, value), 0, 0.94));
+}
+
+/** Step 2b: a `color-dodge` gain pass when clear-day exposure exceeds 1. */
+export function drawCanvasGradeGain(ctx, width, height, grade) {
+    const cs = canvasGradeGainCss(grade);
+    if (!cs) return;
+    ctx.save();
+    ctx.globalCompositeOperation = 'color-dodge';
+    ctx.fillStyle = rgbCss(cs);
+    ctx.fillRect(0, 0, width, height);
+    ctx.restore();
 }
 
 // The Canvas multiply carries one mid split tone, sqrt(shadowTint x
@@ -93,9 +124,14 @@ const BLEND_LUM = [0.3, 0.59, 0.11];
 
 function canvasGradeTerms(grade) {
     const lift = canvasGradeLift(grade);
+    const cs = canvasGradeGainCss(grade);
+    const gain = cs
+        ? cs.map(value => 1 / Math.max(1e-6, 1 - Math.round(clamp(value) * 255) / 255))
+        : [1, 1, 1];
     return {
         alpha: canvasSaturationAlpha(grade),
         multiply: canvasGradeMultiply(grade),
+        gain,
         lift: lift && Math.max(lift[0], lift[1], lift[2]) >= 0.004 ? lift : [0, 0, 0],
     };
 }
@@ -108,20 +144,21 @@ function canvasGradeTerms(grade) {
  * path has to be predicted with this model, not with the resident one.
  */
 export function canvasGradeRgb(rgb, grade, terms = canvasGradeTerms(grade)) {
-    const { alpha, multiply, lift } = terms;
+    const { alpha, multiply, gain, lift } = terms;
     const grey = rgb[0] * BLEND_LUM[0] + rgb[1] * BLEND_LUM[1] + rgb[2] * BLEND_LUM[2];
     return [0, 1, 2].map((channel) => {
         const desat = rgb[channel] + (grey - rgb[channel]) * alpha;
-        return 1 - (1 - desat * multiply[channel]) * (1 - lift[channel]);
+        const scaled = clamp(desat * multiply[channel] * gain[channel]);
+        return 1 - (1 - scaled) * (1 - lift[channel]);
     });
 }
 
-// The exact inverse of `canvasGradeRgb` (steps 3, 2, then 1: the mix toward
+// The exact inverse of `canvasGradeRgb` (steps 3, 2b, 2, then 1: the mix toward
 // grey keeps `Lum`, so it undoes in closed form). Out-of-gamut targets clamp.
 function canvasUngradeRgb(target, terms) {
-    const { alpha, multiply, lift } = terms;
+    const { alpha, multiply, gain, lift } = terms;
     const d = [0, 1, 2].map(channel => (1 - (1 - target[channel]) / Math.max(1e-6, 1 - lift[channel]))
-        / Math.max(1e-6, multiply[channel]));
+        / Math.max(1e-6, multiply[channel] * gain[channel]));
     const grey = d[0] * BLEND_LUM[0] + d[1] * BLEND_LUM[1] + d[2] * BLEND_LUM[2];
     return d.map(channel => clamp((channel - alpha * grey) / Math.max(1e-6, 1 - alpha)));
 }
@@ -613,9 +650,10 @@ export function ungradeRgb(target, grade) {
  * viewport height, the art-pixel cell, the strength or the colour bucket
  * changes. The resident path's 0.8x desaturation is folded into the colour.
  */
-export function buildAerialHazeStrip({ height = 720, cell = 1, strength = 0.14, rgb = [0.6, 0.7, 0.78] } = {}) {
+export function buildAerialHazeStrip({ height = 720, cell = 1, strength = 0.06, rgb = [0.6, 0.7, 0.78], start = 0.30 } = {}) {
     const cellPx = Math.max(1, Math.round(cell));
-    const reach = Math.max(1, Math.ceil((height * 0.55) / cellPx));
+    const hazeStart = Math.max(0.05, Number(start) || 0.30);
+    const reach = Math.max(1, Math.ceil((height * hazeStart) / cellPx));
     const canvas = document.createElement('canvas');
     canvas.width = 4;
     canvas.height = reach;
@@ -626,7 +664,7 @@ export function buildAerialHazeStrip({ height = 720, cell = 1, strength = 0.14, 
     const b = Math.round(clamp(rgb[2]) * 255);
     for (let y = 0; y < reach; y++) {
         const yTop = ((y + 0.5) * cellPx) / Math.max(1, height);
-        const base = Math.pow(clamp((0.55 - yTop) / 0.55), 1.4) * strength;
+        const base = Math.pow(clamp((hazeStart - yTop) / hazeStart), 1.4) * strength;
         for (let x = 0; x < 4; x++) {
             const order = BAYER4[(y % 4) * 4 + x] / 16;
             const haze = Math.floor(base * 48 + order) / 48;

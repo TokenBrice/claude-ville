@@ -146,6 +146,8 @@ import { NEUTRAL_GRADE } from './GradeEvaluator.js';
 import { poolReceiverMask } from './CanvasPoolMask.js';
 import {
     buildPoolDodgeStamp,
+    canvasGradeMultiply,
+    drawCanvasGradeGain,
     drawCanvasGradeLift,
     drawCanvasGradeSaturation,
     gradedPoolReceiver,
@@ -433,8 +435,7 @@ const GATE_ENTRY_LANES = Object.freeze([
 // the vignette; `_drawAtmosphere` adds the desaturation and lift fills.
 function canvasGradeFor(atmosphere = null) {
     const grade = atmosphere?.lightGrade || NEUTRAL_GRADE;
-    const base = [0, 1, 2].map(channel => Math.min(1, grade.exposure * grade.gain[channel]
-        * Math.sqrt(grade.shadowTint[channel] * grade.highlightTint[channel])));
+    const base = canvasGradeMultiply(grade);
     return { grade, base, edge: grade.vignetteEdge, edgeAlpha: grade.vignetteAlpha };
 }
 
@@ -11019,6 +11020,7 @@ export class IsometricRenderer {
         ctx.globalCompositeOperation = 'multiply';
         ctx.drawImage(this._getAtmosphereVignette(canvas, atmosphere), 0, 0, canvas.width, canvas.height);
         ctx.restore();
+        drawCanvasGradeGain(ctx, canvas.width, canvas.height, grade);
         drawCanvasGradeLift(ctx, canvas.width, canvas.height, grade);
         profileMark?.('atmosphere-grade');
 
@@ -11304,6 +11306,7 @@ export class IsometricRenderer {
         ctx.imageSmoothingEnabled = false;
         ctx.drawImage(this._getFastVignetteStamp(canvas, atmosphere), 0, 0, canvas.width, canvas.height);
         ctx.restore();
+        drawCanvasGradeGain(ctx, canvas.width, canvas.height, grade);
         drawCanvasGradeLift(ctx, canvas.width, canvas.height, grade);
         profileMark?.('atmosphere-grade');
 
