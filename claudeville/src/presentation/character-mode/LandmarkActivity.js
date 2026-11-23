@@ -426,6 +426,7 @@ export class LandmarkActivity {
         }
 
         this._observeCommandRelationships(agentList, now);
+        this._refreshArrivedItemTtls(now);
         this._expireItems(now);
         this._refreshBuildingCounts();
         this._maybeEmitPresence(now);
@@ -560,15 +561,15 @@ export class LandmarkActivity {
             const color = item.type === 'chat-line' ? item.color || '#f2d36b' : '#f6c85f';
             return this._drawConnection(ctx, item, color);
         }
-        // W7.2 — the outcome stamp is static ground evidence and always
-        // draws; only its text plate waits for the chit gate.
-        if (item.type === 'outcome') return this._drawOutcomeItem(ctx, item, this._chipVisible(item));
-        if (item.type === 'plan') return this._drawPlanClosedItem(ctx, item);
-        if (!this._chipVisible(item)) return;
-        if (item.type === 'forge') return this._drawForgeItem(ctx, item);
+        // Ground stamps (outcomes, billets, notes, letters, handoffs, closed
+        // plans) draw at zoom 1–2 too; only their text plates wait for the chit gate.
+        const labelled = this._chipVisible(item);
+        if (item.type === 'outcome') return this._drawOutcomeItem(ctx, item, labelled);
+        if (item.type === 'plan') return this._drawPlanClosedItem(ctx, item, labelled);
+        if (item.type === 'forge') return this._drawForgeItem(ctx, item, labelled);
         if (item.type === 'handoff') return this._drawHandoffItem(ctx, item);
-        if (item.type === 'task') return this._drawTaskItem(ctx, item);
-        if (item.type === 'command') return this._drawCommandItem(ctx, item);
+        if (item.type === 'task') return this._drawTaskItem(ctx, item, labelled);
+        if (item.type === 'command') return this._drawCommandItem(ctx, item, labelled);
     }
 
     _tone(hex) {
@@ -1157,6 +1158,68 @@ export class LandmarkActivity {
         noteMoment('plan-closed');
     }
 
+    // Refresh ground-stamp TTLs once when an agent physically arrives at the
+    // building (so billets, notes, letters and handoffs do not expire mid-walk).
+    _refreshArrivedItemTtls(now) {
+        const buildings = this.world?.buildings;
+        if (!buildings || typeof buildings.get !== 'function' || !this.agentSprites.length) return;
+        const positioned = this._positionedAgent ||= { position: null };
+        const arrivedByAgent = new Map();
+        for (const sprite of this.agentSprites) {
+            const agent = sprite?.agent;
+            if (!agent?.id || sprite.moving) continue;
+            if (!Number.isFinite(sprite.x) || !Number.isFinite(sprite.y)) continue;
+            const tile = worldToTile(sprite.x, sprite.y);
+            positioned.position = tile;
+            for (const type of ['forge', 'taskboard', 'command']) {
+                const building = buildings.get(type);
+                if (!building) continue;
+                const visiting = typeof building.isAgentVisiting === 'function'
+                    ? building.isAgentVisiting(positioned)
+                    : building.containsPoint?.(tile.tileX, tile.tileY);
+                if (visiting) {
+                    arrivedByAgent.set(agent.id, { building: type, agent });
+                    break;
+                }
+            }
+        }
+        if (!arrivedByAgent.size) return;
+        for (const item of this.items.values()) {
+            if (item.arrivedRefreshed || !item.agentId) continue;
+            if (item.type !== 'forge' && item.type !== 'task' && item.type !== 'command' && item.type !== 'handoff') continue;
+            const hit = arrivedByAgent.get(item.agentId);
+            if (!hit) continue;
+            const matches = item.type === 'handoff'
+                ? (hit.building === 'forge' || hit.building === 'taskboard')
+                : item.building === hit.building;
+            if (!matches) continue;
+            const ttl = item.type === 'command'
+                ? COMMAND_ITEM_TTL_MS
+                : item.type === 'handoff'
+                    ? 14000
+                    : SNAPSHOT_TTL_MS;
+            item.arrivedRefreshed = true;
+            item.expiresAt = Math.max(item.expiresAt, now + ttl);
+        }
+        // If an active tool's ground stamp already expired during a long commute,
+        // re-stamp it once upon arrival so the workshop shows the billet/note/letter.
+        for (const { building, agent } of arrivedByAgent.values()) {
+            if (!agent.currentTool) continue;
+            const kind = building === 'forge' ? 'forge' : building === 'taskboard' ? 'task' : 'command';
+            if (kind === 'command' && (agent.currentTool === 'Task' || agent.currentTool === 'Agent')) continue;
+            const id = activityKey(agent, kind);
+            const arrivedKey = `${id}|arrived`;
+            if (this.items.has(id) || this.seenSnapshots.has(arrivedKey)) continue;
+            this.seenSnapshots.add(arrivedKey);
+            this.seenSnapshots.delete(id);
+            if (kind === 'forge') this._addForgeItem(agent, now);
+            else if (kind === 'task') this._addTaskItem(agent, now);
+            else this._addCommandItem(agent, now);
+            const refreshed = this.items.get(id);
+            if (refreshed) refreshed.arrivedRefreshed = true;
+        }
+    }
+
     _expireItems(now) {
         for (const [id, item] of this.items) {
             if (item.expiresAt <= now) this.items.delete(id);
@@ -1326,7 +1389,7 @@ export class LandmarkActivity {
     }
 
     // Forge: a billet on the apron, dark rim and a lit top edge.
-    _drawForgeItem(ctx, item) {
+    _drawForgeItem(ctx, item, labelled = true) {
         const x = snap(item.x);
         const y = snap(item.y);
         ctx.save();
@@ -1337,7 +1400,7 @@ export class LandmarkActivity {
         ctx.fillRect(x - 4, y - 2, 8, 3);
         ctx.fillStyle = this._tone('#f08a4b');
         ctx.fillRect(x - 4, y - 2, 8, 1);
-        this._drawTinyLabel(ctx, item, x, y - 12, '#ffd88a');
+        if (labelled) this._drawTinyLabel(ctx, item, x, y - 12, '#ffd88a');
         ctx.restore();
     }
 
@@ -1366,7 +1429,7 @@ export class LandmarkActivity {
     }
 
     // Task board: a pinned note, with a pixel tick when the call is a check.
-    _drawTaskItem(ctx, item) {
+    _drawTaskItem(ctx, item, labelled = true) {
         const x = snap(item.x);
         const y = snap(item.y);
         ctx.save();
@@ -1386,22 +1449,21 @@ export class LandmarkActivity {
             ctx.fillRect(x + 1, y - 3, 1, 1);
             ctx.fillRect(x + 2, y - 4, 1, 1);
         }
-        this._drawTinyLabel(ctx, item, x, y - 15, '#ffe7a3');
+        if (labelled) this._drawTinyLabel(ctx, item, x, y - 15, '#ffe7a3');
         ctx.restore();
     }
 
-    _drawPlanClosedItem(ctx, item) {
+    _drawPlanClosedItem(ctx, item, labelled = this._chipVisible(item)) {
         const beat = this.motionScale === 0
             ? null
             : momentPhase(item.age ?? Infinity, PLAN_CLOSED_MOMENT);
         const live = beat && beat.phase !== 'done';
-        if (!live && !this._chipVisible(item)) return;
         const x = snap(item.x);
         const y = snap(item.y);
         // The anticipation holds the note one texel high, then it seats.
         const lift = beat?.phase === 'anticipation' ? 1 : 0;
         if (live) {
-            this._drawTaskItem(ctx, { ...item, y: item.y - lift, alpha: 1, label: '' });
+            this._drawTaskItem(ctx, { ...item, y: item.y - lift, alpha: 1, label: '' }, false);
             if (beat.phase === 'peak' || beat.phase === 'follow') {
                 ctx.save();
                 ctx.globalAlpha = beat.phase === 'peak' ? 1 : ALPHA_QUANTA[beat.step];
@@ -1412,10 +1474,10 @@ export class LandmarkActivity {
                 ctx.fillRect(x + 5, y - 8, 1, 9);
                 ctx.restore();
             }
-            if (this._chipVisible(item)) this._drawTinyLabel(ctx, item, x, y - 15, '#ffe7a3');
+            if (labelled) this._drawTinyLabel(ctx, item, x, y - 15, '#ffe7a3');
             return;
         }
-        this._drawTaskItem(ctx, item);
+        this._drawTaskItem(ctx, item, labelled);
     }
 
     // W7.2 — an outcome on the apron. A failure is the failed-push bracket
@@ -1520,7 +1582,7 @@ export class LandmarkActivity {
     }
 
     // Command: a sealed letter with a wax dot.
-    _drawCommandItem(ctx, item) {
+    _drawCommandItem(ctx, item, labelled = true) {
         const x = snap(item.x);
         const y = snap(item.y);
         ctx.save();
@@ -1536,7 +1598,7 @@ export class LandmarkActivity {
         ctx.fillRect(x + 3, y - 4, 1, 1);
         ctx.fillStyle = this._tone('#b3372c');
         ctx.fillRect(x, y - 3, 2, 2);
-        this._drawTinyLabel(ctx, item, x, y - 13, '#ffe7a3');
+        if (labelled) this._drawTinyLabel(ctx, item, x, y - 13, '#ffe7a3');
         ctx.restore();
     }
 

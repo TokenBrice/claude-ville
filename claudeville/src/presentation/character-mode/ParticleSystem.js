@@ -649,8 +649,8 @@ const PARTICLE_PRESETS = {
     forgeSpark: {
         shape: 'edit-strike',
         colors: ['#fff3a3', '#ffd43b', '#ff7a2f'],
-        size: [1, 2.2],
-        life: [10, 22],
+        size: [1.6, 2.6],
+        life: [16, 30],
         speed: [0.6, 1.8],
         gravity: true,
         direction: 'random',

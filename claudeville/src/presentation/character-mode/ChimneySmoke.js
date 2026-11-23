@@ -19,17 +19,19 @@
 // Reduced motion: one static three-puff wisp per smoking chimney, the same
 // puffs at the same scale, leaning with the knot wind.
 import { getBuildingEffectAnchor } from './BuildingVisualRegistry.js';
+import { workerTier } from './BuildingPartGates.js';
 import { drawSmokePuff, SMOKE_COLUMN_PX, smokePuffAlpha, SMOKE_COOL_COLORS, SMOKE_WARM_COLORS } from './ParticleSystem.js';
 import { buildingCenterToWorld } from './Projection.js';
 import { applyGradeToRgb, lampCourseAt } from './GradeEvaluator.js';
 import { dayShiftFor, smokeWindDrift } from './AtmosphereState.js';
 import { baseWindX } from './Wind.js';
 
-// Spawn cadence per occupancy tier. With puffs living 1.7–2.2 s this keeps
-// about 4–5 (occupied) to 7–8 (busy) puffs per chimney; a hard cap holds the
-// ≤10 budget whatever the frame rate.
+// Spawn cadence per occupancy tier and worker-count tier (1, 2–4, 5+).
+// A hard cap holds the puff budget whatever the frame rate.
 const PUFF_INTERVAL_MS = Object.freeze({ occupied: 420, busy: 260 });
+const WORKER_TIER_INTERVAL_MS = Object.freeze([0, 420, 280, 140]);
 const MAX_PUFFS_PER_CHIMNEY = 10;
+const MAX_PUFFS_TIER3 = 12;
 const COLD_PRESEED_FRACS = Object.freeze([0.16, 0.32, 0.48]);
 const SCRUB_JUMP_MS = 1000;
 const SCRUB_MINUTE_JUMP = 30;
@@ -67,10 +69,23 @@ function chimneyAnchors(type) {
 }
 
 function smokeInterval(source, presence, atmosphere) {
-    if (source.type !== 'watchtower') return PUFF_INTERVAL_MS[presence?.get?.(source.type)?.tier] || 0;
-    const minute = Number(atmosphere?.clock?.minuteOfDay);
-    return Number.isFinite(minute)
-        && lampCourseAt(minute, dayShiftFor(atmosphere)) >= 2 ? 700 : 0;
+    if (source.type === 'watchtower' && source.kind !== 'cottage') {
+        const minute = Number(atmosphere?.clock?.minuteOfDay);
+        return Number.isFinite(minute)
+            && lampCourseAt(minute, dayShiftFor(atmosphere)) >= 2 ? 700 : 0;
+    }
+    const entry = presence?.get?.(source.type);
+    if (!entry) return 0;
+    if (Number.isFinite(entry.count) && entry.count > 0) {
+        return WORKER_TIER_INTERVAL_MS[workerTier(entry.count)] || 0;
+    }
+    return PUFF_INTERVAL_MS[entry.tier] || 0;
+}
+
+function maxPuffsFor(source, presence) {
+    if (source.type === 'watchtower' && source.kind !== 'cottage') return MAX_PUFFS_PER_CHIMNEY;
+    const count = presence?.get?.(source.type)?.count;
+    return Number.isFinite(count) && workerTier(count) >= 3 ? MAX_PUFFS_TIER3 : MAX_PUFFS_PER_CHIMNEY;
 }
 
 function minuteJump(a, b) {
@@ -95,7 +110,8 @@ export class ChimneySmoke {
         const out = [];
         for (const building of buildings.values ? buildings.values() : buildings) {
             const anchors = chimneyAnchors(building.type);
-            if (!anchors.length) continue;
+            const cottage = getBuildingEffectAnchor(building.type, 'cottageSmokeTop', null);
+            if (!anchors.length && !Array.isArray(cottage)) continue;
             const id = `building.${building.type}`;
             if (!assets.has(id)) return [];
             const anchor = assets.getAnchor(id);
@@ -104,6 +120,7 @@ export class ChimneySmoke {
                 out.push(Object.freeze({
                     key: `${building.type}:${index}`,
                     type: building.type,
+                    kind: building.type === 'watchtower' ? 'crown' : 'workshop',
                     building,
                     localY: at[1],
                     x: Math.round(center.x - anchor[0] + at[0]),
@@ -111,6 +128,18 @@ export class ChimneySmoke {
                     hearth: HEARTH_TYPES.has(building.type),
                 }));
             });
+            if (Array.isArray(cottage)) {
+                out.push(Object.freeze({
+                    key: `${building.type}:cottage`,
+                    type: building.type,
+                    kind: 'cottage',
+                    building,
+                    localY: cottage[1],
+                    x: Math.round(center.x - anchor[0] + cottage[0]),
+                    y: Math.round(center.y - anchor[1] + cottage[1]),
+                    hearth: false,
+                }));
+            }
         }
         this._sources = out;
         return out;
@@ -156,11 +185,12 @@ export class ChimneySmoke {
                 this._lastPuff.delete(source.key);
                 last = undefined;
             }
+            const maxPuffs = maxPuffsFor(source, presence);
             if (last !== undefined && stamp - last < interval) continue;
-            if (liveCount >= MAX_PUFFS_PER_CHIMNEY) continue;
+            if (liveCount >= maxPuffs) continue;
             const preseed = Boolean(coldOrScrub && livePool && liveCount === 0);
             const wantCount = preseed
-                ? Math.min(1 + COLD_PRESEED_FRACS.length, MAX_PUFFS_PER_CHIMNEY - liveCount)
+                ? Math.min(1 + COLD_PRESEED_FRACS.length, maxPuffs - liveCount)
                 : 1;
             const options = {
                 tag,

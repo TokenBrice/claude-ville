@@ -153,11 +153,11 @@ test('a work beat cannot cross its body cell into the next cycle while the overl
     // 460 ms boundary. Its cream contact core must wait for the next body.
     t.mock.method(Date, 'now', () => 460);
     sprite._drawToolRitualOverlay(ctx, geometry);
-    assert.equal(pixels.some(([, , w, h]) => w === 2 && h === 2), false, 'no contact core on the wind-up body');
+    assert.equal(pixels.some(([, , w, h]) => w === 4 && h === 4), false, 'no contact core on the wind-up body');
     pixels.length = 0;
     sprite._poseCell.now = 460;
     sprite._drawToolRitualOverlay(ctx, geometry);
-    assert.deepEqual(pixels[0], [39, 49, 2, 2]);
+    assert.deepEqual(pixels[0], [38, 48, 4, 4]);
 });
 
 const FULL_META = {

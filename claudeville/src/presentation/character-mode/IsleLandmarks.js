@@ -63,7 +63,8 @@ const BELFRY_STEP_MS = 150;
 const BELFRY_STREAM_STEP_MS = 500; // 2 fps
 const SAIL_FRAMES = 8;
 const SAIL_FRAME_PX = 112;
-const SAIL_STEP_MS = 125;
+const SAIL_STEP_MS = 125; // 8 fps in gusts
+const SAIL_BREEZE_STEP_MS = 300; // ~3.3 fps in steady breeze (2–4 fps, relaxed 2026-11-23)
 const SAIL_CALM = 0.15; // knot wind below this is still air (pennants rest too)
 
 const LANDMARK_PROPS = Object.freeze(DISTRICT_PROPS.filter((prop) => prop.landmark));
@@ -102,7 +103,7 @@ class WindmillSprite extends StaticPropSprite {
         this._snowKey = '';
     }
 
-    /** The sail frame now: gust-stepped, calm-held, frame 0 under reduced motion. */
+    /** The sail frame now: steady-breeze + gust-accelerated, calm-held, frame 0 under reduced motion. */
     sailFrame() {
         const host = this.host;
         if (!((host.motionScale ?? 1) > 0)) return 0;
@@ -110,7 +111,9 @@ class WindmillSprite extends StaticPropSprite {
         if (Math.abs(baseWindX(weather)) < SAIL_CALM) return this._sailFrame;
         const t = host.motionTimeMs || 0;
         if (t < this._sailStepAt) this._sailStepAt = -Infinity; // clock reset
-        if (t - this._sailStepAt >= SAIL_STEP_MS && windAt(this.x, this.y, t, weather, this._wind).gust > 0) {
+        const gust = windAt(this.x, this.y, t, weather, this._wind).gust;
+        const stepMs = gust > 0 ? SAIL_STEP_MS : SAIL_BREEZE_STEP_MS;
+        if (t - this._sailStepAt >= stepMs) {
             this._sailFrame = (this._sailFrame + 1) % SAIL_FRAMES;
             this._sailStepAt = t;
         }

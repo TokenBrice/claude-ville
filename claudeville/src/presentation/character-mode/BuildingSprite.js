@@ -37,7 +37,7 @@ import { lampCourseAt } from './GradeEvaluator.js';
 import { lampRoundFor } from './LamplighterRound.js';
 import { canvasGradeKey, statusClothPreimage } from './CanvasGrade.js';
 import { isWorkingVisitor, NON_WORKING_VISIT_ROLES } from './VisitIntentManager.js';
-import { attentionBannerState, BuildingPartGates } from './BuildingPartGates.js';
+import { attentionBannerState, BuildingPartGates, workerTier } from './BuildingPartGates.js';
 import { dayPartBeatsAt } from './AmbientEvents.js';
 import { paintWreath } from './VillageCalendar.js';
 import { bakeEmitterCycle, emitterCyclePhase } from './EmitterCycle.js';
@@ -176,6 +176,19 @@ const FORGE_GLOW_DECAY_PER_SECOND = 0.32;
 // own ember course glows, low and static, while the lamps burn (VQ-8,
 // `rest.ember` in BuildingVisualRegistry).
 const FORGE_BANKED_GLOW = 0.07;
+// Short cooldown after `work.forge` closes before banking the hearth, so quick
+// back-to-back tool calls do not flicker the fire on and off.
+export const FORGE_BANK_COOLDOWN_MS = 6000;
+// Daytime occupied-room glass share (relaxed M15, 2026-11-23 operator decision):
+// occupied rooms show warm interior amber by day (0.75 -> 1/4 unlit patch) while
+// empty rooms stay dark slate. ApertureLights, water columns and bloom stay on
+// night-only `roomGate`.
+export const DAYTIME_ROOM_GLASS_SHARE = 0.75;
+// Worker-count scaling tiers (0 dormant, 1 solo, 2 crew 2–4, 3 crowded 5+)
+// applied to work-coupled workshop emitters in `_spawnEmittersFor`.
+const WORKER_EMITTER_CHANCE = Object.freeze([1, 1.2, 1.9, 2.8]);
+const WORKER_EMITTER_EXTRA_COUNT = Object.freeze([0, 0, 1, 2]);
+const WORKER_SCALED_EMITTERS = new Set(['forgeSpark', 'forgeEmber', 'archiveMote', 'mineDust', 'portalRune']);
 // 4.6 — architecture that stays lit through a sleeping town: the Pharos and
 // the harbour lantern are safety lights, not work signals.
 const REST_SAFETY_LIGHT_TYPES = new Set(['watchtower', 'harbor']);
@@ -433,6 +446,7 @@ export class BuildingSprite {
         this._taskboardLayoutCache = new Map();
         this._seenTaskboardRituals = new Set();
         this._forgeGlow = FORGE_GLOW_BASELINE;
+        this._forgeWarmRemainingMs = 0;
         // 6.1 / 6.2 — frame-strip parts, doors and emitter cycles: gated by
         // the isWorkingVisitor sets, stepped on the one motion clock
         // (`motionClock`, handed over by IsometricRenderer).
@@ -2528,7 +2542,10 @@ export class BuildingSprite {
         const id = d.entry.id;
         if (d.kind === 'building') {
             const placed = this.sprites.drawSprite(ctx, id, d.wx, d.wy);
-            if (placed) this._drawRoofWeather(ctx, d, placed.dx, placed.dy);
+            if (placed) {
+                this._drawDaytimeRoomGlass(ctx, d, placed.dx, placed.dy);
+                this._drawRoofWeather(ctx, d, placed.dx, placed.dy);
+            }
             this._drawAnimatedOverlays(ctx, d.entry, d.wx, d.wy, d.building, 'whole');
         } else {
             const dims = this.assets.getDims(id);
@@ -2539,11 +2556,13 @@ export class BuildingSprite {
             if (!img) return;
             if (d.kind === 'building-back') {
                 ctx.drawImage(img, 0, 0, dims.w, d.horizonY, dx, dy, dims.w, d.horizonY);
+                this._drawDaytimeRoomGlass(ctx, d, dx, dy);
                 this._drawRoofWeather(ctx, d, dx, dy);
                 this._drawAnimatedOverlays(ctx, d.entry, d.wx, d.wy, d.building, 'back', d.horizonY);
             } else {
                 ctx.drawImage(img, 0, d.horizonY, dims.w, dims.h - d.horizonY,
                                    dx, dy + d.horizonY, dims.w, dims.h - d.horizonY);
+                this._drawDaytimeRoomGlass(ctx, d, dx, dy);
                 this._drawRoofWeather(ctx, d, dx, dy);
                 this._drawAnimatedOverlays(ctx, d.entry, d.wx, d.wy, d.building, 'front', d.horizonY);
             }
@@ -2600,12 +2619,12 @@ export class BuildingSprite {
         ctx.restore();
     }
 
-    // #53 / 6.5 — occupancy pennant: hero buildings fly a small roofline
-    // standard tinted by the dominant occupant repo (guild-territory read).
-    // Idle buildings fly nothing; busy/full fly a second cloth under the
-    // first; alert tints the cloth to the alert red. AMBIENT under the mark
-    // governor. The cloth is the shared pixel pennant strip (PixelPennant),
-    // stepped at 4 fps downwind; calm air and reduced motion hold frame 1.
+    // #53 / 6.5 — occupancy pennant: every landmark flies a crisp, opaque
+    // roofline standard tinted by the dominant occupant repo (drawn outside
+    // MarkGovernor like the Harbor mast flags, relaxed 2026-11-23). Idle
+    // buildings fly nothing; busy/full fly a second cloth under the first;
+    // alert tints the cloth to alert red. Stepped at 4 fps downwind; calm air
+    // and reduced motion hold frame 1.
     _drawOccupancyPennant(ctx, building, entry, wx, wy, splitPass = 'whole', horizonY = null) {
         const pennant = getBuildingPennantAnchor(building.type);
         if (!pennant) return;
@@ -2617,15 +2636,14 @@ export class BuildingSprite {
         ) return;
         const occupancy = this._buildingOccupancyInfo(building);
         const dominant = this._visitorRepoByType.get(building.type);
-        // Idle by count AND no semantic occupants routed here: fly nothing.
-        if (occupancy.state === 'idle' && !dominant) return;
+        const working = Boolean(this.partGates?.isOpen?.(`work.${building.type}`));
+        const patronCount = this._patronIdsByType?.get(building.type)?.size || 0;
+        // Idle by count, no working gate, no patrons, and no semantic occupants routed here: fly nothing.
+        if (occupancy.state === 'idle' && !dominant && !working && patronCount <= 0) return;
 
         const baseAnchor = this.assets.getAnchor(entry.id);
         const px = Math.round(wx - baseAnchor[0] + lx);
         const py = Math.round(wy - baseAnchor[1] + ly);
-        const gate = getActiveMarkGovernor()?.admit(MarkTier.AMBIENT, px, py);
-        if (gate && !gate.draw) return;
-        const gateAlpha = gate?.alpha ?? 1;
 
         const profile = dominant?.profile || null;
         const alert = occupancy.state === 'alert';
@@ -2637,14 +2655,18 @@ export class BuildingSprite {
             : profile
                 ? `hsl(${Math.round(profile.hue)}, ${Math.round(profile.saturation)}%, ${Math.max(22, Math.round(profile.lightness) - 24)}%)`
                 : null;
-        const busy = occupancy.state === 'busy' || occupancy.state === 'full' || alert;
+        const patronSeats = PATRON_SEATS_BY_TYPE.get(building.type) || 0;
+        const busy = occupancy.state === 'busy'
+            || occupancy.state === 'full'
+            || alert
+            || (patronSeats > 0 && patronCount >= patronSeats);
         const seed = hashText(`${building.type}|pennant`);
         const windX = pennantWind(this.atmosphereState?.weather);
         const tMs = this.frame * 16;
         const lightGrade = alert ? null : this._overlayLightGrade();
         const grade = lightGrade ? (tone) => gradeTone(tone, lightGrade) : null;
         ctx.save();
-        ctx.globalAlpha = gateAlpha;
+        ctx.globalAlpha = 1;
         const frame = pennantFrame(tMs, windX, { motion: this.motionScale > 0, phase: seed % 4 });
         drawPennant(ctx, px, py, { accent, shade, grade, frame, windX });
         if (busy) {
@@ -3223,8 +3245,7 @@ export class BuildingSprite {
         if (!this.partGates.isOpen(gate)) return false;
         if (type === 'forge') {
             return this._forgeGlow > FORGE_BANKED_GLOW
-                && !this._villageAtRest()
-                && !this._forgeWorkload?.banked;
+                && !this._restMaskShowing({ type: 'forge' });
         }
         return true;
     }
@@ -3492,7 +3513,7 @@ export class BuildingSprite {
                 // working visitor (V8) turns the inner ring violet; the plaque
                 // carries the exact count.
                 const tick = this.motionScale ? Math.floor(this.frame * 0.05) : 0;
-                const grow = portalRitual ? 2 : 0;
+                const grow = (portalRitual || this.partGates?.isOpen?.('work.portal')) ? 2 : 0;
                 for (let i = 0; i < 3; i++) {
                     const count = 10 + i * 2;
                     ringDots(ctx, heart.x, heart.y, 14 + i * 7 + grow, {
@@ -3548,10 +3569,14 @@ export class BuildingSprite {
                 // room by room as authored glass (RoomGlass), so no pane is
                 // stamped here.
                 openAperture = this._openApertureFor(building);
-                this._drawCommandRitual(ctx, localPoint, building);
             }
         }
         ctx.restore();
+        // Command's gold war-standard rises above the dome finial (y=4, above
+        // horizonY 112), so draw it outside `_clipToSplitPass` on the back/whole pass.
+        if (building.type === 'command' && splitPass !== 'front') {
+            this._drawCommandRitual(ctx, localPoint, building);
+        }
         if (openAperture) this._drawInspectionAperture(ctx, building, entry, wx, wy, openAperture);
         if (lanternBeacon) this._drawWatchtowerFire(ctx, lanternBeacon);
     }
@@ -3583,12 +3608,19 @@ export class BuildingSprite {
 
     _updateForgeGlow(dt = 16) {
         const rituals = this._ritualsFor('forge');
-        // 4.6 — a confirmed-empty village banks the hearth below its ordinary
-        // idle baseline. Every downstream reader (light sources, emitter
-        // density, smoke warmth) sees the banked value, so the whole forge
-        // cools together instead of one cue going quiet.
-        const floor = this._villageAtRest() ? FORGE_BANKED_GLOW : FORGE_GLOW_BASELINE;
-        let target = floor;
+        const forgeOpen = Boolean(this.partGates?.isOpen?.('work.forge'));
+        if (forgeOpen) {
+            this._forgeWarmRemainingMs = FORGE_BANK_COOLDOWN_MS;
+        } else if (this._villageAtRest() || !(this.motionScale > 0)) {
+            this._forgeWarmRemainingMs = 0;
+        } else if (this._forgeWarmRemainingMs > 0) {
+            this._forgeWarmRemainingMs = Math.max(0, this._forgeWarmRemainingMs - Math.max(0, Number(dt) || 0));
+        }
+        // 4.6 — a banked hearth cools to its ember floor. Every downstream
+        // reader (light sources, emitter density, smoke warmth) sees the banked
+        // value, so the whole forge cools together instead of one cue going quiet.
+        const floor = this._restMaskShowing({ type: 'forge' }) ? FORGE_BANKED_GLOW : FORGE_GLOW_BASELINE;
+        let target = forgeOpen ? Math.max(floor, 0.62) : floor;
         for (const ritual of rituals) {
             const fade = this._ritualFade(ritual);
             if (fade <= 0.03) continue;
@@ -3820,9 +3852,9 @@ export class BuildingSprite {
         this._drawHarborActivityMarkers(ctx, pier, building, lightGrade);
     }
 
-    // Quay cargo, one crate per activity quarter. The failure itself is the
-    // HarborTraffic broken bracket on the jetty (C4); a failed push only turns
-    // the crate tags to the reserved failure red here.
+    // Quay cargo, one static crate per activity quarter (`static` motion band;
+    // no bob). The failure itself is the HarborTraffic broken bracket on the
+    // jetty (C4); a failed push only turns the crate tags to failure red here.
     _drawHarborActivityMarkers(ctx, pier, building, lightGrade = null) {
         const activity = building ? this._buildingActivityInfo(building) : { intensity: 0, occupancy: { ratio: 0 }, alert: false };
         const activeWorking = this._watchtowerActiveCount();
@@ -3835,22 +3867,27 @@ export class BuildingSprite {
         // ordinary gold tag is cloth and takes the grade.
         const tagColor = failed ? '#ff755d' : gradeTone('#ffd37a', lightGrade);
         const rim = gradeTone('#1f140c', lightGrade);
-        const bob = this.motionScale ? Math.round(Math.sin(this.frame * 0.11) * 0.6) : 0;
+        const litTop = gradeTone('#a87a46', lightGrade);
+        const strap = gradeTone('#3d2a1b', lightGrade);
 
         ctx.save();
         ctx.globalCompositeOperation = 'source-over';
         ctx.globalAlpha = 1;
         for (let i = 0; i < cargoCount; i++) {
-            // One crate per 16 px along the coping's 2:1 run.
-            const x = pier.x - 28 + i * 16;
-            const y = pier.y - 15 - i * 8 + bob;
-            // Crate: a 1-texel dark rim around the lid-lit body.
+            // One static crate per 16 px along the coping's 2:1 run.
+            const x = Math.round(pier.x - 28 + i * 16);
+            const y = Math.round(pier.y - 15 - i * 8);
+            // Crate: 1-texel dark rim, lit top plank, timber body, iron strap.
             ctx.fillStyle = rim;
-            ctx.fillRect(x - 5, y - 5, 10, 8);
+            ctx.fillRect(x - 5, y - 6, 10, 9);
             ctx.fillStyle = gradeTone(i < activeWorking ? '#8a5a32' : '#5e4228', lightGrade);
             ctx.fillRect(x - 4, y - 4, 8, 6);
+            ctx.fillStyle = litTop;
+            ctx.fillRect(x - 4, y - 5, 8, 1);
+            ctx.fillStyle = strap;
+            ctx.fillRect(x - 1, y - 5, 2, 7);
             ctx.fillStyle = tagColor;
-            ctx.fillRect(x - 3, y - 7, 6, 2);
+            ctx.fillRect(x - 3, y - 8, 6, 2);
         }
         ctx.restore();
     }
@@ -3890,31 +3927,67 @@ export class BuildingSprite {
     // chimney or anvil discs and no molten smear across the wall: only the
     // anvil sparks that say work is being struck.
     _drawForgeEnhancement(ctx, localPoint, building = null) {
-        const anvil = localPoint(...getBuildingEffectAnchor('forge', 'anvil', [195, 150]));
+        const anvil = localPoint(...getBuildingEffectAnchor('forge', 'anvil', [104, 200]));
+        const hearth = localPoint(...getBuildingEffectAnchor('forge', 'hearth', [73, 162]));
         const activity = building ? this._buildingActivityInfo(building) : { intensity: 0, occupancy: { ratio: 0 } };
-        this._drawForgeActivityMarks(ctx, anvil, activity);
+        this._drawForgeActivityMarks(ctx, anvil, activity, building, hearth);
     }
 
-    // Up to four sparks off the anvil, one per activity quarter: each a 3-texel
-    // staircase with a hot head. Sparks are emission, so they stay ungraded.
-    // The head hops one texel on the slow band; reduced motion holds it.
-    _drawForgeActivityMarks(ctx, anvil, activity) {
+    // Crisp pixel-stamp anvil & hearth sparks while Forge is actively working,
+    // scaled by worker tier (1 / 2–4 / 5+ workers) and silent when banked.
+    // Stepped at 4 fps (reduced motion holds frame 0), with a 1-texel hot-rust
+    // rim so sparks remain legible in bright noon daylight at zoom 1–2.
+    _drawForgeActivityMarks(ctx, anvil, activity, building = null, hearth = null) {
+        if (building && this._restMaskShowing(building)) return;
+        const workers = this.partGates?.workingCount?.('forge')
+            ?? (building ? this._workingVisitorCountFor(building) : 0);
+        const wTier = workerTier(workers);
         const signal = Math.max(activity?.intensity || 0, activity?.occupancy?.ratio || 0);
-        if (signal <= 0.14) return;
-        const count = Math.max(1, Math.min(4, Math.ceil(signal * 4)));
-        const hop = this.motionScale ? (Math.sin(this.frame * 0.18) > 0 ? 1 : 0) : 0;
+        if (wTier === 0 && signal <= 0.14) return;
+        const count = wTier > 0
+            ? (wTier === 1 ? 4 : wTier === 2 ? 6 : 8)
+            : Math.max(2, Math.min(4, Math.ceil(signal * 4)));
+        const step = this.motionScale > 0 ? (Math.floor(this.frame / 15) % 4) : 0;
+        const rim = activity?.alert ? '#992b1d' : '#b84214';
         const body = activity?.alert ? '#ff755d' : '#ffb347';
+        const core = '#fff4c2';
+        // Offsets relative to anvil (and upper hearth arch for crowded tiers).
+        const offsets = [
+            [-6, -8], [4, -12], [12, -6], [-12, -4],
+            [16, -13], [-2, -16], [8, -19], [-10, -14],
+        ];
+        const stepDrift = [
+            [0, 0], [1, -2], [-1, -4], [2, -1],
+        ];
         ctx.save();
         ctx.globalCompositeOperation = 'source-over';
         ctx.globalAlpha = 1;
         for (let i = 0; i < count; i++) {
-            const x = anvil.x - 18 + i * 10;
-            const y = anvil.y + 14 - i * 2 - hop;
+            const [ox, oy] = offsets[i % offsets.length];
+            const [dx, dy] = stepDrift[(step + i) % stepDrift.length];
+            const x = Math.round(anvil.x + ox + dx);
+            const y = Math.round(anvil.y + oy + dy);
+            ctx.fillStyle = rim;
+            ctx.fillRect(x - 1, y - 1, 4, 4);
             ctx.fillStyle = body;
-            ctx.fillRect(x - 2, y + 1, 1, 1);
-            ctx.fillRect(x - 1, y, 1, 1);
-            ctx.fillStyle = '#fff3c4';
-            ctx.fillRect(x, y - 1, 1, 1);
+            ctx.fillRect(x - 1, y, 2, 2);
+            ctx.fillRect(x + 1, y - 1, 1, 2);
+            ctx.fillStyle = core;
+            ctx.fillRect(x, y - 1, 2, 2);
+        }
+        if (hearth && wTier > 0) {
+            const embers = wTier >= 2 ? 3 : 2;
+            for (let i = 0; i < embers; i++) {
+                const phase = (step + i) % 4;
+                const ex = Math.round(hearth.x - 4 + i * 5 + (phase & 1 ? 1 : -1));
+                const ey = Math.round(hearth.y - 4 - phase * 3 - i * 2);
+                ctx.fillStyle = rim;
+                ctx.fillRect(ex - 1, ey - 1, 3, 3);
+                ctx.fillStyle = body;
+                ctx.fillRect(ex, ey, 2, 2);
+                ctx.fillStyle = core;
+                ctx.fillRect(ex, ey, 1, 1);
+            }
         }
         ctx.restore();
     }
@@ -4082,12 +4155,22 @@ export class BuildingSprite {
     }
 
     _drawArchiveRitual(ctx, doorway, ritual) {
-        if (!ritual) return;
-        const progress = this._ritualProgress(ritual);
-        const fade = this._ritualFade(ritual);
-        const flip = ritual.motionEnabled === false
-            ? 0.5
-            : Math.abs(Math.sin(Math.min(1, progress / 0.42) * Math.PI));
+        const archiveWorking = Boolean(this.partGates?.isOpen?.('work.archive'));
+        if (!ritual && !archiveWorking) return;
+        const fade = ritual ? this._ritualFade(ritual) : 1;
+        let flip;
+        if (ritual) {
+            const progress = this._ritualProgress(ritual);
+            flip = ritual.motionEnabled === false
+                ? 0.5
+                : Math.abs(Math.sin(Math.min(1, progress / 0.42) * Math.PI));
+        } else if (this.motionScale > 0) {
+            // Persistent turning folio while `work.archive` is open: 4 stepped phases on the 600 ms medium band.
+            const steps = [0.05, 0.45, 0.82, 0.35];
+            flip = steps[Math.floor(this._partClockMs() / 600) % steps.length];
+        } else {
+            flip = 0.5;
+        }
         const pageWidth = 18 * (1 - flip * 0.72);
         const left = Math.round(doorway.x - 19);
         const top = Math.round(doorway.y - 22);
@@ -4108,7 +4191,7 @@ export class BuildingSprite {
             ctx.fillRect(left + 7, row, 9, 1);
             if (page > 7) ctx.fillRect(left + 24, row, page - 7, 1);
         }
-        if (ritual.label) this._drawRitualLabel(ctx, doorway.x, doorway.y - 38, ritual.label, '#b3d68c', fade, ritual.building || 'forge');
+        if (ritual?.label) this._drawRitualLabel(ctx, doorway.x, doorway.y - 38, ritual.label, '#b3d68c', fade, ritual.building || 'archive');
         ctx.restore();
     }
 
@@ -4174,7 +4257,40 @@ export class BuildingSprite {
     }
 
     _drawMineRitual(ctx, mouth, rail, ritual) {
-        if (!ritual) return;
+        if (!ritual) {
+            if (!this.partGates?.isOpen?.('work.mine')) return;
+            // Occupied Mine daytime cue: park a loaded ore cart on the outer rail
+            // while `work.mine` is open (no sine bob; static while working).
+            const cartX = Math.round(rail.railA.x + rail.ux * rail.railLen * 0.78);
+            const cartY = Math.round(rail.railA.y + rail.uy * rail.railLen * 0.78);
+            const lightGrade = this._overlayLightGrade();
+            const tone = (hex) => gradeTone(hex, lightGrade);
+            ctx.save();
+            ctx.globalAlpha = 1;
+            if (this.assets?.get?.('prop.oreCart')) {
+                this.sprites.drawSprite(ctx, 'prop.oreCart', cartX, cartY);
+            } else {
+                ctx.fillStyle = tone('#2f2119');
+                ctx.fillRect(cartX - 15, cartY - 10, 30, 14);
+                ctx.fillStyle = tone('#5a3927');
+                ctx.fillRect(cartX - 14, cartY - 9, 28, 12);
+            }
+            // Stepped pixel ore and crystal chunks heaped in the cart bed.
+            const chunks = [
+                [-7, -13, 6, 4, MINE_CARGO_ORE_COLORS[0]],
+                [-1, -15, 6, 5, MINE_CARGO_CRYSTAL_COLORS[1]],
+                [5, -13, 5, 4, MINE_CARGO_ORE_COLORS[2]],
+                [-3, -18, 5, 3, MINE_CARGO_CRYSTAL_COLORS[0]],
+            ];
+            for (const [dx, dy, w, h, color] of chunks) {
+                ctx.fillStyle = tone('#221c18');
+                ctx.fillRect(cartX + dx - 1, cartY + dy - 1, w + 2, h + 2);
+                ctx.fillStyle = tone(color);
+                ctx.fillRect(cartX + dx, cartY + dy, w, h);
+            }
+            ctx.restore();
+            return;
+        }
         const progress = this._ritualProgress(ritual);
         const fade = this._ritualFade(ritual);
         const swing = ritual.motionEnabled === false
@@ -4429,14 +4545,17 @@ export class BuildingSprite {
     }
 
     _drawPortalRitual(ctx, gate, ritual) {
-        if (!ritual) return;
-        const fade = this._ritualFade(ritual);
-        const action = ritual.action || 'portal';
-        const progress = ritual.motionEnabled === false ? 1 : this._ritualProgress(ritual);
+        const portalWorking = Boolean(this.partGates?.isOpen?.('work.portal'));
+        if (!ritual && !portalWorking) return;
+        const fade = ritual ? this._ritualFade(ritual) : 1;
+        const action = ritual?.action || 'portal';
+        const progress = ritual
+            ? (ritual.motionEnabled === false ? 1 : this._ritualProgress(ritual))
+            : (this.motionScale > 0 ? ((this._partClockMs() % 1280) / 1280) : 0.5);
         // Distinguish browser-preview vs Playwright-active by re-classifying
         // the ritual's source tool. `action === 'summon'` (and other lifecycle
         // actions) keep the full-stack rings unchanged.
-        const reason = action === 'portal' ? this._portalReasonFor(ritual) : null;
+        const reason = ritual && action === 'portal' ? this._portalReasonFor(ritual) : null;
         const color = action === 'dismiss'
             ? '#f08a8a'
             : action === 'familiar-wait'
@@ -4451,8 +4570,9 @@ export class BuildingSprite {
         ctx.globalCompositeOperation = 'source-over';
         ctx.globalAlpha = fade;
         // Ceremony rings as snapped dots that step outward (inward on dismiss)
-        // across the ritual in four frames; reduced motion holds mid-ring.
-        const ringPhase = ritual.motionEnabled === false ? 0.5 : Math.min(1, Math.floor(progress * 4) / 3);
+        // in four frames; reduced motion holds mid-ring.
+        const reduced = ritual ? ritual.motionEnabled === false : !(this.motionScale > 0);
+        const ringPhase = reduced ? 0.5 : Math.min(1, Math.floor(progress * 4) / 3);
         // portal-preview = single inner ring (cool blue); other states keep the
         // 3-ring stack so summon/dismiss/familiar/active read as full ceremony.
         const ringCount = reason === 'portal-preview' ? 1 : 3;
@@ -4464,6 +4584,11 @@ export class BuildingSprite {
                 color,
                 phase: i * 0.7,
             });
+        }
+
+        if (!ritual) {
+            ctx.restore();
+            return;
         }
 
         const targetSprite = this._targetSpriteForRitual(ritual);
@@ -4914,17 +5039,22 @@ export class BuildingSprite {
 
     _drawCommandRitual(ctx, localPoint) {
         const rituals = this._ritualsFor('command');
-        if (!rituals.length) return;
+        const commandWorking = Boolean(this.partGates?.isOpen?.('work.command'));
+        if (!rituals.length && !commandWorking) return;
         const keep = localPoint(...getBuildingEffectAnchor('command', 'keep', [174, 24]));
         const standard = localPoint(...getBuildingEffectAnchor('command', 'standard', [174, 4]));
+        let standardAlpha = commandWorking ? 1 : 0;
         for (const ritual of rituals) {
             const fade = this._ritualFade(ritual);
             if (ritual.action === 'message') {
                 this._drawCarrierBird(ctx, keep, ritual, fade);
                 continue;
             }
+            standardAlpha = Math.max(standardAlpha, fade);
+        }
+        if (standardAlpha > 0) {
             ctx.save();
-            ctx.globalAlpha = fade;
+            ctx.globalAlpha = standardAlpha;
             const sx = Math.round(standard.x);
             const sy = Math.round(standard.y);
             ctx.fillStyle = '#201814';
@@ -5195,22 +5325,25 @@ export class BuildingSprite {
         // forge chimney column, mine dust, and harbor steam all lean downwind
         // by the same amount.
         const windDrift = smokeWindDrift(this.atmosphereState);
-        // 4.6 — at canonical rest the activity-only emitters (hearth embers,
-        // forge and harbor smoke, mine dust, quest pings, archive motes) stop;
-        // the architectural fires keep burning — the castle torches and gate
-        // lantern in `entry.emitters` above, and the Pharos beacon, which is a
-        // safety light and not a work signal.
-        const restQuiet = this._villageAtRest() && b.type !== 'watchtower';
+        // 4.6 — at rest (empty village, banked Forge, slumbering Portal) the
+        // work emitters stop; architectural fires in `entry.emitters` above and
+        // the Pharos beacon keep burning.
+        const restQuiet = (this._villageAtRest() && b.type !== 'watchtower') || this._restMaskShowing(b);
+        const workers = this.partGates?.workingCount?.(b.type) ?? this._workingVisitorCountFor(b);
+        const wTier = workerTier(workers);
         for (const emitter of restQuiet ? [] : BUILDING_EMITTER_FALLBACKS[b.type] || []) {
             let chanceBoost = b.type === 'forge'
                 ? 0.7 + this._forgeGlowIntensity() * 1.1
-                : this._workingVisitorCountFor(b) > 0 ? 1.6 : 1;
+                : workers > 0 ? 1.6 : 1;
             if (archiveReadIntensity > 0.6 && Array.isArray(emitter.at) && emitter.at[1] >= 120) {
                 chanceBoost *= 1 + (archiveReadIntensity - 0.6) * 5;
             }
-            const chance = emitter.chance * chanceBoost * presenceMult * beaconMult;
+            const scaled = WORKER_SCALED_EMITTERS.has(emitter.type);
+            const tierMult = scaled ? WORKER_EMITTER_CHANCE[wTier] : 1;
+            const count = (emitter.count || 1) + (scaled ? WORKER_EMITTER_EXTRA_COUNT[wTier] : 0);
+            const chance = emitter.chance * chanceBoost * presenceMult * beaconMult * tierMult;
             const options = this._smokeEmitterOptions(b, emitter.type, windDrift);
-            this._spawnBuildingParticle(b, emitter.type, center, baseAnchor, emitter.at, chance, emitter.count || 1, dt, options);
+            this._spawnBuildingParticle(b, emitter.type, center, baseAnchor, emitter.at, chance, count, dt, options);
         }
     }
 
@@ -5409,16 +5542,28 @@ export class BuildingSprite {
         }
     }
 
-    // 6.3 — the per-room gate other light surfaces read (2.4 aperture lights,
-    // 2.9 water columns): 0..1, night × this room's stepped occupancy. A room
-    // index is 0-based (mask R = index + 1); unknown rooms are dark. B3-01 —
-    // a room pane inside the open 4.1 aperture's cut stays dark: the cut
-    // presents that wall's occupants itself.
+    // 6.3 — the per-room light gate (2.4 aperture lights, 2.9 water columns,
+    // bloom): 0..1, night × this room's stepped occupancy. A room index is
+    // 0-based (mask R = index + 1); unknown rooms are dark. B3-01 — a room pane
+    // inside the open 4.1 aperture's cut stays dark: the cut presents that
+    // wall's occupants itself.
     roomGate(type, roomIndex) {
         const lit = this._roomLitByType.get(type);
         const value = lit ? lit[roomIndex] || 0 : 0;
         if (!(value > 0) || this._roomUnderOpenAperture(type, roomIndex)) return 0;
         return value * this._nightWindowGate();
+    }
+
+    // Per-room window glass gate (RoomGlass only; relaxed M15, 2026-11-23
+    // operator decision): occupied rooms glow warm interior amber by day at
+    // DAYTIME_ROOM_GLASS_SHARE (0.75) and rise to full 1.0 at night; empty
+    // rooms stay dark slate. Light pools, water columns and bloom keep reading
+    // night-only `roomGate`.
+    roomGlassGate(type, roomIndex) {
+        const lit = this._roomLitByType.get(type);
+        const value = lit ? lit[roomIndex] || 0 : 0;
+        if (!(value > 0) || this._roomUnderOpenAperture(type, roomIndex)) return 0;
+        return value * Math.max(DAYTIME_ROOM_GLASS_SHARE, this._nightWindowGate());
     }
 
     _roomUnderOpenAperture(type, roomIndex) {
@@ -5439,19 +5584,46 @@ export class BuildingSprite {
 
     // 6.3 — lit share of a glass group: k ≥ 1 is room k - 1. Group 0 (glass
     // under a window/glass rect that no room mask claims; since B3-01 no
-    // Command or Archive pane is one) is never lit: only a
-    // room a worker holds glows, so N workers light exactly min(N, rooms)
-    // glass shapes. By day every pane is unlit glass (M15).
+    // Command or Archive pane is one) is never lit: only a room a worker holds
+    // glows, so N workers light exactly min(N, rooms) glass shapes.
     _glassGroupGate(type, group) {
+        return group > 0 ? this.roomGlassGate(type, group - 1) : 0;
+    }
+
+    _nightGlassGroupGate(type, group) {
         return group > 0 ? this.roomGate(type, group - 1) : 0;
     }
 
-    // 6.3 — the unlit-glass patch for `building` (RoomGlass.patch), shared by
-    // the resident patch record and the Canvas emitter-cut carve.
+    // 6.3 — the glass patch for `building` (RoomGlass.patch), shared by the
+    // resident GPU patch record and the Canvas renderer: unlit slate on empty
+    // rooms, warm interior amber on daytime occupied rooms (zero bloom/pools),
+    // and transparent pass-through on night-lit rooms.
     glassPatchFor(building) {
         const type = building?.type;
         if (!type) return null;
-        return this.roomGlass.patch(type, (group) => this._glassGroupGate(type, group));
+        return this.roomGlass.patch(
+            type,
+            (group) => this._glassGroupGate(type, group),
+            (group) => this._nightGlassGroupGate(type, group),
+        );
+    }
+
+    // Canvas twin of the GPU glassPatchRecord for daytime lit occupied rooms.
+    // Skipped at night (when `hasDaytimeLit` is false and EmitterCuts paints
+    // the full night emission instead).
+    _drawDaytimeRoomGlass(ctx, d, dx, dy) {
+        const patch = this.glassPatchFor(d.building);
+        if (!patch?.hasDaytimeLit) return;
+        let top = patch.top;
+        let bottom = patch.top + patch.h;
+        if (d.kind === 'building-back') bottom = Math.min(bottom, d.horizonY);
+        else if (d.kind === 'building-front') top = Math.max(top, d.horizonY);
+        if (bottom <= top) return;
+        ctx.drawImage(
+            patch.canvas,
+            0, top - patch.top, patch.w, bottom - top,
+            dx + patch.left, dy + top, patch.w, bottom - top,
+        );
     }
 
     // 5.2 roofs / 6.6 — steps the roof weather once a frame from the C-W2
@@ -5589,7 +5761,9 @@ export class BuildingSprite {
                 entry = { count: 0, tier: 'dormant' };
                 out.set(building.type, entry);
             }
-            entry.count = this._workingVisitorCountFor(building);
+            const workers = this.partGates?.workingCount?.(building.type) ?? this._workingVisitorCountFor(building);
+            const patrons = this._patronIdsByType?.get(building.type)?.size || 0;
+            entry.count = workers + patrons;
             entry.tier = this._workTierFor(building);
         }
         return out;
@@ -5808,8 +5982,8 @@ export class BuildingSprite {
         const legend = profile.legend;
         if (!legend?.at || postcardFrame()) return;
         const rooms = this._roomSlotsByType.get(model.buildingType);
-        const working = rooms ? rooms.working : 0;
-        const waiting = rooms ? rooms.waiting : 0;
+        const working = Number.isFinite(model.workingCount) ? model.workingCount : (rooms ? rooms.working : 0);
+        const waiting = Number.isFinite(model.waitingCount) ? model.waitingCount : (rooms ? rooms.waiting : 0);
         const rows = [`${working} working · ${waiting} waiting`];
         for (const slot of model.slots) {
             rows.push(slot.tool ? `${slot.name} · ${slot.tool}` : slot.name);
@@ -5869,15 +6043,20 @@ export class BuildingSprite {
     }
 
     // 4.6 / B3-03' — whether a building's authored rest mask lies over its
-    // painted fire now. The Forge: the canonical empty village, or a hearth
-    // watched fall quiet for ten minutes (4.4). The Tavern: no patron and no
-    // worker, at any hour (its hearth burns for its patrons). MB-4 — the
-    // Portal: no working visitor (`work.portal`, the gate its runes run on),
-    // at any hour. Never read from mood or director state.
+    // painted fire now. The Forge: empty village, workload-banked, or `work.forge`
+    // closed past the short cooldown (`FORGE_BANK_COOLDOWN_MS`, matching Tavern
+    // and Portal). The Tavern: no patron and no worker, at any hour. MB-4 — the
+    // Portal: no working visitor (`work.portal`), at any hour.
     _restMaskShowing(building) {
         const type = building?.type;
         if (!type || !getBuildingRestLayer(type)) return false;
-        if (type === 'forge') return this._villageAtRest() || Boolean(this._forgeWorkload?.banked);
+        if (type === 'forge') {
+            if (this._villageAtRest() || Boolean(this._forgeWorkload?.banked)) return true;
+            if (this.partGates) {
+                return !this.partGates.isOpen('work.forge') && !(this._forgeWarmRemainingMs > 0);
+            }
+            return false;
+        }
         if (type === 'tavern') {
             const working = this._visitorStatusByType?.get(type)?.working || 0;
             return working + (this._patronIdsByType?.get(type)?.size || 0) === 0;

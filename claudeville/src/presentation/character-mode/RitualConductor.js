@@ -58,7 +58,7 @@ const RITUAL_GESTURE_PERIOD_MS = {
 // a pure function of the wall clock the gesture animation already uses, so
 // the stamp and the drawn strike can never drift apart.
 export const DOWNBEAT_MOMENT = defineMoment('minor', { anticipation: 120, peak: 70, follow: 210 });
-const DOWNBEAT_STRIDE = 3;
+const DOWNBEAT_STRIDE = 2;
 
 // Deterministic per-agent phase offset in [0, period) so villagers never tick
 // in global lockstep. Returns 0 when agentId is absent (preserving synthetic
