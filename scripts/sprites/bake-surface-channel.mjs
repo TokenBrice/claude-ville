@@ -118,28 +118,26 @@ export const SURFACE_SPECS = Object.freeze({
         regions: [],
     },
     harbor: {
-        // L12-F6 — the water line under the quay's coursed face; the quay deck
+        // 5.A — the water line under the quay's coursed face; the quay deck
         // stands 16 px above it, the pier decks 12 px.
-        base: { left: [3, 187], bottom: [95, 223], right: [230, 154] },
+        base: { left: [3, 187], bottom: [95, 226], right: [230, 154] },
         roof: [SLATE],
         regions: [
             // Quay lantern on its post, at the deck's west corner.
-            { face: 'auto', roof: [], poly: [[14, 142], [35, 142], [35, 182], [14, 182]], base: { corner: [21, 181] }, lift: 16 },
-            // Bolder jib crane on the deck's front: post, boom, rope and chunky crate.
-            { face: 'auto', roof: [], poly: [[54, 128], [116, 128], [116, 214], [54, 214]], base: { corner: [63, 206] }, lift: 16 },
+            { face: 'auto', poly: [[6, 138], [26, 138], [26, 176], [6, 176]], base: { corner: [12, 176] }, lift: 16 },
+            // Jib crane on the deck's front: post and jib, then rope and crate.
+            { face: 'auto', poly: [[44, 144], [92, 144], [92, 158], [63, 158], [63, 206], [46, 206], [46, 158], [44, 158]], base: { corner: [55, 203] }, lift: 16 },
+            { face: 'auto', poly: [[83, 158], [90, 158], [90, 184], [94, 184], [94, 206], [75, 206], [75, 184], [83, 184]], base: { corner: [55, 203] }, lift: 16 },
             // The two bunting masts on the north pier.
-            { face: 'auto', roof: [], poly: [[260, 66], [270, 66], [270, 140], [260, 140]], base: { corner: [265, 139] }, lift: 12 },
-            { face: 'auto', roof: [], poly: [[337, 105], [346, 105], [346, 178], [337, 178]], base: { corner: [341, 177] }, lift: 12 },
-            // Static sagging hemp dock rope between the two north pier masts.
-            { face: 'auto', roof: [], poly: [[266, 68], [341, 68], [341, 114], [266, 114]], base: { corner: [302, 158] }, lift: 12 },
-            // Clock turret sea-glass dial and surrounding wall: wall, never roof.
-            { face: 'auto', roof: [], poly: [[208, 36], [232, 36], [232, 64], [208, 64]], base: { corner: [128, 187] }, lift: 16 },
-            // Quay deck between the house's foot and the coping.
+            { face: 'auto', poly: [[260, 66], [270, 66], [270, 140], [260, 140]], base: { corner: [265, 139] }, lift: 12 },
+            { face: 'auto', poly: [[337, 105], [346, 105], [346, 178], [337, 178]], base: { corner: [341, 177] }, lift: 12 },
+            // Quay deck between the house's foot and the coping: the stone tops,
+            // the house's shadow on them and the pier roots on the coping.
             {
                 face: 'up',
                 height: 16,
-                poly: [[10, 176], [56, 150], [128, 188], [234, 136], [244, 142], [95, 214], [10, 176]],
-                match: [{ rgb: [[169, 159, 154], [158, 153, 161], [163, 157, 165], [148, 142, 150], [178, 172, 178], [198, 192, 194], [136, 130, 138], [120, 114, 124]] }],
+                poly: [[0, 168], [30, 158], [34, 163], [112, 172], [210, 124], [240, 128], [232, 140], [96, 214], [0, 172]],
+                match: [{ rgb: [[169, 159, 154], [120, 98, 117], [140, 121, 130], [220, 209, 199], [108, 87, 106], [129, 108, 126], [241, 231, 215], [149, 129, 137], [90, 68, 84], [76, 58, 76], [62, 47, 66], [157, 122, 94], [155, 140, 130]] }],
                 close: true,
             },
             // Pier decks east of the quay's SE face: the plank tops.
@@ -150,11 +148,8 @@ export const SURFACE_SPECS = Object.freeze({
                 match: [{ rgb: [[157, 122, 94], [155, 140, 130], [162, 131, 107], [157, 110, 85]] }],
                 close: true,
             },
-            // Ground-floor windows and arched oak door below the eaves: never roof.
-            { face: 'auto', roof: [], poly: [[64, 62], [116, 62], [116, 112], [64, 112]], base: { corner: [128, 187] }, lift: 16 },
-            { face: 'auto', roof: [], poly: [[138, 112], [220, 112], [220, 180], [138, 180]], base: { corner: [128, 187] }, lift: 16 },
-            // The Tavern-scaled Harbor Master house and clock turret on the quay.
-            { face: 'auto', poly: [[36, 0], [236, 0], [236, 138], [128, 188], [36, 142]], base: { corner: [128, 187] }, lift: 16 },
+            // The house, lean-to and clock turret on the quay: their own front corner.
+            { face: 'auto', poly: [[20, 0], [270, 0], [270, 128], [210, 124], [112, 172], [34, 163], [20, 160]], base: { corner: [113, 170] }, lift: 16 },
         ],
     },
     watchtower: {

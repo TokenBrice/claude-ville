@@ -425,7 +425,7 @@
       "id": "building.harbor",
       "materialClass": "stone",
       "sourcePath": "buildings/building.harbor/base.png",
-      "sourceSha256": "160f2031e4f480dd5a2f6595e9b908e7b6c3be45be057aa9431e06bcac16b4ba",
+      "sourceSha256": "ab035a87e0a5592920ed4c1c862ab0692ab3479a1e8cdb8429880c2181e92390",
       "sourceSize": {
         "h": 284,
         "w": 384
@@ -752,10 +752,10 @@
     }
   },
   "channelSha256": {
-    "albedo": "9edb9d38f13fb60e2ea2c91dede290235b7fc16dd34f779b08752df44c028d0a",
-    "emissive": "a0ec6206a575819019d1571b51c0a55f8ac6c72c65ef7b3e9f4fa28670e4382b",
-    "material": "29a86f9471a902e96f98f26dbe695ef7205919a47df926a63742f5f6d4def3e1",
-    "occluder": "da072c5bc77555b88ed75fbdc866efd15c47401782d49ff8e23aa424e58976d2"
+    "albedo": "c039ca266aefa1a85357a60291c0745f26196ea5d1872714ad3ccde7d97d00b2",
+    "emissive": "e4d7b2e23cb61368c7b8a5fc10b0e8ad2bd87115235420aea4876e3c659d5181",
+    "material": "a28422d49ba90e0c3509077e9b2090fd0c775f49cc954b90c13dbed1ae2a2e03",
+    "occluder": "7da8c8e0c3a7dad1a70a5111e46aa4490aa6cedfe1e1b1ca827ae4e517e08d8b"
   },
   "channels": {
     "albedo": "assets/sprites/atlases/world-pilot.albedo.png",
@@ -763,7 +763,7 @@
     "material": "assets/sprites/atlases/world-pilot.material.png",
     "occluder": "assets/sprites/atlases/world-pilot.occluder.png"
   },
-  "contentHeight": 1772,
+  "contentHeight": 1766,
   "frames": {
     "agent.claude.opus/idle/e/0": {
       "anchor": [
@@ -9749,13 +9749,13 @@
       "paddedRect": {
         "h": 68,
         "w": 68,
-        "x": 1850,
+        "x": 1642,
         "y": 1572
       },
       "rect": {
         "h": 64,
         "w": 64,
-        "x": 1852,
+        "x": 1644,
         "y": 1574
       },
       "sidecars": {
@@ -9803,13 +9803,13 @@
       "paddedRect": {
         "h": 68,
         "w": 68,
-        "x": 1918,
+        "x": 1710,
         "y": 1572
       },
       "rect": {
         "h": 64,
         "w": 64,
-        "x": 1920,
+        "x": 1712,
         "y": 1574
       },
       "sidecars": {
@@ -9857,14 +9857,14 @@
       "paddedRect": {
         "h": 68,
         "w": 68,
-        "x": 0,
-        "y": 1668
+        "x": 1778,
+        "y": 1572
       },
       "rect": {
         "h": 64,
         "w": 64,
-        "x": 2,
-        "y": 1670
+        "x": 1780,
+        "y": 1574
       },
       "sidecars": {
         "emissive": null,
@@ -10008,14 +10008,14 @@
       "paddedRect": {
         "h": 22,
         "w": 28,
-        "x": 458,
-        "y": 1736
+        "x": 462,
+        "y": 1730
       },
       "rect": {
         "h": 18,
         "w": 24,
-        "x": 460,
-        "y": 1738
+        "x": 464,
+        "y": 1732
       },
       "sidecars": {
         "emissive": null,
@@ -10304,13 +10304,13 @@
       "paddedRect": {
         "h": 44,
         "w": 70,
-        "x": 656,
+        "x": 612,
         "y": 1668
       },
       "rect": {
         "h": 40,
         "w": 66,
-        "x": 658,
+        "x": 614,
         "y": 1670
       },
       "sidecars": {
@@ -10349,13 +10349,13 @@
       "paddedRect": {
         "h": 44,
         "w": 70,
-        "x": 726,
+        "x": 682,
         "y": 1668
       },
       "rect": {
         "h": 40,
         "w": 66,
-        "x": 728,
+        "x": 684,
         "y": 1670
       },
       "sidecars": {
@@ -10626,14 +10626,14 @@
       "paddedRect": {
         "h": 26,
         "w": 116,
-        "x": 342,
-        "y": 1736
+        "x": 346,
+        "y": 1730
       },
       "rect": {
         "h": 22,
         "w": 112,
-        "x": 344,
-        "y": 1738
+        "x": 348,
+        "y": 1732
       },
       "sidecars": {
         "emissive": null,
@@ -10670,14 +10670,14 @@
       "paddedRect": {
         "h": 30,
         "w": 58,
-        "x": 240,
-        "y": 1736
+        "x": 204,
+        "y": 1730
       },
       "rect": {
         "h": 26,
         "w": 54,
-        "x": 242,
-        "y": 1738
+        "x": 206,
+        "y": 1732
       },
       "sidecars": {
         "emissive": null,
@@ -10802,7 +10802,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "160f2031e4f480dd5a2f6595e9b908e7b6c3be45be057aa9431e06bcac16b4ba",
+      "sourceSha256": "ab035a87e0a5592920ed4c1c862ab0692ab3479a1e8cdb8429880c2181e92390",
       "sourceSize": {
         "h": 284,
         "w": 384
@@ -10826,13 +10826,13 @@
       "paddedRect": {
         "h": 62,
         "w": 424,
-        "x": 180,
+        "x": 0,
         "y": 1668
       },
       "rect": {
         "h": 58,
         "w": 420,
-        "x": 182,
+        "x": 2,
         "y": 1670
       },
       "sidecars": {
@@ -10858,8 +10858,8 @@
     },
     "building.harbor.crane": {
       "anchor": [
-        102,
-        215
+        85,
+        206
       ],
       "emissive": null,
       "materialClass": "timber",
@@ -10869,16 +10869,16 @@
         "strength": 1
       },
       "paddedRect": {
-        "h": 71,
-        "w": 208,
-        "x": 1642,
-        "y": 1572
+        "h": 60,
+        "w": 136,
+        "x": 424,
+        "y": 1668
       },
       "rect": {
-        "h": 67,
-        "w": 204,
-        "x": 1644,
-        "y": 1574
+        "h": 56,
+        "w": 132,
+        "x": 426,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -10887,15 +10887,15 @@
       },
       "sourcePath": "buildings/building.harbor/crane.png",
       "sourceRect": {
-        "h": 67,
-        "w": 204,
+        "h": 56,
+        "w": 132,
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "4214a1e811610fe029d6f04f74c033efe25639c65bab01210beab2f2184c9fc9",
+      "sourceSha256": "5bec5c975a2a4799a4cc75ce2f9e7e4ed2da6d793c2afc01910a2359bffb1a9b",
       "sourceSize": {
-        "h": 67,
-        "w": 204
+        "h": 56,
+        "w": 132
       },
       "tags": {
         "layer": "crane"
@@ -10903,8 +10903,8 @@
     },
     "building.harbor.door": {
       "anchor": [
-        159,
-        178
+        137,
+        161
       ],
       "emissive": null,
       "materialClass": "timber",
@@ -10914,16 +10914,16 @@
         "strength": 1
       },
       "paddedRect": {
-        "h": 64,
-        "w": 112,
-        "x": 68,
-        "y": 1668
+        "h": 28,
+        "w": 40,
+        "x": 306,
+        "y": 1730
       },
       "rect": {
-        "h": 60,
-        "w": 108,
-        "x": 70,
-        "y": 1670
+        "h": 24,
+        "w": 36,
+        "x": 308,
+        "y": 1732
       },
       "sidecars": {
         "emissive": null,
@@ -10932,15 +10932,15 @@
       },
       "sourcePath": "buildings/building.harbor/door.png",
       "sourceRect": {
-        "h": 60,
-        "w": 108,
+        "h": 24,
+        "w": 36,
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "db8f8428cbbb3bae0d10e48a78eacc20a950ca5e5f572d1151ea7fe48f61a527",
+      "sourceSha256": "a6bbc23543752f0c025efd5e4aba64ac9bf4a4a49410973bc9c4ce2611991b47",
       "sourceSize": {
-        "h": 60,
-        "w": 108
+        "h": 24,
+        "w": 36
       },
       "tags": {
         "layer": "door"
@@ -11020,13 +11020,13 @@
       "paddedRect": {
         "h": 36,
         "w": 92,
-        "x": 796,
+        "x": 752,
         "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 88,
-        "x": 798,
+        "x": 754,
         "y": 1670
       },
       "sidecars": {
@@ -11325,14 +11325,14 @@
       "paddedRect": {
         "h": 34,
         "w": 84,
-        "x": 72,
-        "y": 1736
+        "x": 36,
+        "y": 1730
       },
       "rect": {
         "h": 30,
         "w": 80,
-        "x": 74,
-        "y": 1738
+        "x": 38,
+        "y": 1732
       },
       "sidecars": {
         "emissive": null,
@@ -11370,14 +11370,14 @@
       "paddedRect": {
         "h": 34,
         "w": 84,
-        "x": 156,
-        "y": 1736
+        "x": 120,
+        "y": 1730
       },
       "rect": {
         "h": 30,
         "w": 80,
-        "x": 158,
-        "y": 1738
+        "x": 122,
+        "y": 1732
       },
       "sidecars": {
         "emissive": null,
@@ -11585,14 +11585,14 @@
       "paddedRect": {
         "h": 29,
         "w": 22,
-        "x": 298,
-        "y": 1736
+        "x": 262,
+        "y": 1730
       },
       "rect": {
         "h": 25,
         "w": 18,
-        "x": 300,
-        "y": 1738
+        "x": 264,
+        "y": 1732
       },
       "sidecars": {
         "emissive": null,
@@ -11630,14 +11630,14 @@
       "paddedRect": {
         "h": 29,
         "w": 22,
-        "x": 320,
-        "y": 1736
+        "x": 284,
+        "y": 1730
       },
       "rect": {
         "h": 25,
         "w": 18,
-        "x": 322,
-        "y": 1738
+        "x": 286,
+        "y": 1732
       },
       "sidecars": {
         "emissive": null,
@@ -11684,13 +11684,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 888,
+        "x": 844,
         "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 890,
+        "x": 846,
         "y": 1670
       },
       "sidecars": {
@@ -11738,13 +11738,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 924,
+        "x": 880,
         "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 926,
+        "x": 882,
         "y": 1670
       },
       "sidecars": {
@@ -11792,13 +11792,13 @@
       "paddedRect": {
         "h": 52,
         "w": 52,
-        "x": 604,
+        "x": 560,
         "y": 1668
       },
       "rect": {
         "h": 48,
         "w": 48,
-        "x": 606,
+        "x": 562,
         "y": 1670
       },
       "sidecars": {
@@ -11839,13 +11839,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 960,
+        "x": 916,
         "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 962,
+        "x": 918,
         "y": 1670
       },
       "sidecars": {
@@ -11887,13 +11887,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 996,
+        "x": 952,
         "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 998,
+        "x": 954,
         "y": 1670
       },
       "sidecars": {
@@ -11935,13 +11935,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1032,
+        "x": 988,
         "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1034,
+        "x": 990,
         "y": 1670
       },
       "sidecars": {
@@ -11983,13 +11983,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1068,
+        "x": 1024,
         "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1070,
+        "x": 1026,
         "y": 1670
       },
       "sidecars": {
@@ -12031,13 +12031,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1104,
+        "x": 1060,
         "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1106,
+        "x": 1062,
         "y": 1670
       },
       "sidecars": {
@@ -12079,13 +12079,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1140,
+        "x": 1096,
         "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1142,
+        "x": 1098,
         "y": 1670
       },
       "sidecars": {
@@ -12127,13 +12127,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1176,
+        "x": 1132,
         "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1178,
+        "x": 1134,
         "y": 1670
       },
       "sidecars": {
@@ -12175,13 +12175,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1212,
+        "x": 1168,
         "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1214,
+        "x": 1170,
         "y": 1670
       },
       "sidecars": {
@@ -12223,13 +12223,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1248,
+        "x": 1204,
         "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1250,
+        "x": 1206,
         "y": 1670
       },
       "sidecars": {
@@ -12271,13 +12271,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1284,
+        "x": 1240,
         "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1286,
+        "x": 1242,
         "y": 1670
       },
       "sidecars": {
@@ -12319,13 +12319,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1320,
+        "x": 1276,
         "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1322,
+        "x": 1278,
         "y": 1670
       },
       "sidecars": {
@@ -12367,13 +12367,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1356,
+        "x": 1312,
         "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1358,
+        "x": 1314,
         "y": 1670
       },
       "sidecars": {
@@ -12415,13 +12415,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1392,
+        "x": 1348,
         "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1394,
+        "x": 1350,
         "y": 1670
       },
       "sidecars": {
@@ -12463,13 +12463,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1428,
+        "x": 1384,
         "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1430,
+        "x": 1386,
         "y": 1670
       },
       "sidecars": {
@@ -12511,13 +12511,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1464,
+        "x": 1420,
         "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1466,
+        "x": 1422,
         "y": 1670
       },
       "sidecars": {
@@ -12559,13 +12559,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1500,
+        "x": 1456,
         "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1502,
+        "x": 1458,
         "y": 1670
       },
       "sidecars": {
@@ -12607,13 +12607,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1536,
+        "x": 1492,
         "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1538,
+        "x": 1494,
         "y": 1670
       },
       "sidecars": {
@@ -12655,13 +12655,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1572,
+        "x": 1528,
         "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1574,
+        "x": 1530,
         "y": 1670
       },
       "sidecars": {
@@ -12703,13 +12703,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1608,
+        "x": 1564,
         "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1610,
+        "x": 1566,
         "y": 1670
       },
       "sidecars": {
@@ -12751,13 +12751,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1644,
+        "x": 1600,
         "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1646,
+        "x": 1602,
         "y": 1670
       },
       "sidecars": {
@@ -12799,13 +12799,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1680,
+        "x": 1636,
         "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1682,
+        "x": 1638,
         "y": 1670
       },
       "sidecars": {
@@ -12847,13 +12847,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1716,
+        "x": 1672,
         "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1718,
+        "x": 1674,
         "y": 1670
       },
       "sidecars": {
@@ -12895,13 +12895,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1752,
+        "x": 1708,
         "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1754,
+        "x": 1710,
         "y": 1670
       },
       "sidecars": {
@@ -12943,13 +12943,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1788,
+        "x": 1744,
         "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1790,
+        "x": 1746,
         "y": 1670
       },
       "sidecars": {
@@ -12991,13 +12991,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1824,
+        "x": 1780,
         "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1826,
+        "x": 1782,
         "y": 1670
       },
       "sidecars": {
@@ -13039,13 +13039,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1860,
+        "x": 1816,
         "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1862,
+        "x": 1818,
         "y": 1670
       },
       "sidecars": {
@@ -13087,13 +13087,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1896,
+        "x": 1852,
         "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1898,
+        "x": 1854,
         "y": 1670
       },
       "sidecars": {
@@ -13135,13 +13135,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1932,
+        "x": 1888,
         "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1934,
+        "x": 1890,
         "y": 1670
       },
       "sidecars": {
@@ -13183,13 +13183,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1968,
+        "x": 1924,
         "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1970,
+        "x": 1926,
         "y": 1670
       },
       "sidecars": {
@@ -13231,13 +13231,13 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 2004,
+        "x": 1960,
         "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 2006,
+        "x": 1962,
         "y": 1670
       },
       "sidecars": {
@@ -13279,14 +13279,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 0,
-        "y": 1736
+        "x": 1996,
+        "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 2,
-        "y": 1738
+        "x": 1998,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -13327,14 +13327,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 36,
-        "y": 1736
+        "x": 0,
+        "y": 1730
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 38,
-        "y": 1738
+        "x": 2,
+        "y": 1732
       },
       "sidecars": {
         "emissive": null,
@@ -13360,7 +13360,7 @@
     }
   },
   "generator": "scripts/sprites/atlas-bake.mjs",
-  "height": 1772,
+  "height": 1766,
   "id": "world-pilot",
   "ids": [
     "agent.claude.opus",
@@ -13567,12 +13567,11 @@
     "building.command.bannerError",
     "building.command.bannerLimit",
     "building.command.gate",
-    "building.harbor.crane",
     "atmosphere.light.fire-glow",
     "atmosphere.light.lantern-glow",
     "atmosphere.light.lighthouse-beam",
-    "building.harbor.door",
     "building.harbor.bunting",
+    "building.harbor.crane",
     "prop.runeBrazier",
     "building.command.brazierFlames",
     "building.command.braziers",
@@ -13616,11 +13615,12 @@
     "building.forge.billetRack",
     "building.watchtower.beacon",
     "building.watchtower.lens",
+    "building.harbor.door",
     "building.forge.bellows",
     "building.archive.lectern"
   ],
   "padding": 2,
   "sampling": "nearest",
   "schemaVersion": 1,
-  "width": 2040
+  "width": 2032
 }
