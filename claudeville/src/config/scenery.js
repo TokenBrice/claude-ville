@@ -633,13 +633,13 @@ export const DISTRICT_PROPS = [
     // shore north of the Tavern (a fish rack), an
     // anchor washed up on the Pharos point's beach, north-west of the keeper's
     // cottage (clear of its roof: a cache prop draws under the landmark), the
-    // bollard pair on the beach west of the quay, beside its shore step, and
-    // the salt store at the causeway's far end, past its dispatch places: the
-    // pier pocket's land side stays open, and no pier standing place or seat
-    // falls inside the crates' fixture box (VB-5).
+    // bollard pair on the riverbank west of the pier (freeing 27,20 for the
+    // Harbor quay approach), and the salt store at the causeway's far end,
+    // past its dispatch places: the pier pocket's land side stays open, and no
+    // pier standing place or seat falls inside the crates' fixture box (VB-5).
     { tileX: 21, tileY: 12, id: 'prop.fishRack', layer: 'cache', district: 'harbor', walkBlock: true },
     { tileX: 25, tileY: 9, id: 'prop.anchorChain', layer: 'cache', district: 'harbor', walkBlock: true },
-    { tileX: 27, tileY: 20, id: 'prop.bollardPair', layer: 'cache', district: 'harbor', walkBlock: true },
+    { tileX: 23, tileY: 22, id: 'prop.bollardPair', layer: 'cache', district: 'harbor', walkBlock: true },
     { tileX: 31, tileY: 20, id: 'prop.saltCrates', layer: 'cache', district: 'harbor', walkBlock: true },
     // Forge smithy yard: the roofed log store on the dry shore east of the
     // hearth (moved off the 25,26 river channel for the east footbridge), the
@@ -809,7 +809,7 @@ export const AMBIENT_GROUND_PROPS = [
     // Tavern's garden lamp on the yard's east edge, between the tables and
     // the harbour quay.
     { tileX: 11.2, tileY: 17.3, type: 'lantern' },
-    { tileX: 26.4, tileY: 19.5, type: 'lantern' },
+    { tileX: 24.75, tileY: 19.5, type: 'lantern' },
 ];
 
 export const AMBIENT_SCENIC_POINTS = Object.freeze([

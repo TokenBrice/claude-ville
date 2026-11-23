@@ -101,7 +101,7 @@ export const VISIT_OVERFLOW_TILES = Object.freeze({
     harbor: [
         { tileX: 28, tileY: 19, overflow: true, reason: 'quay' },
         { tileX: 26, tileY: 19, overflow: true, reason: 'quay' },
-        { tileX: 26, tileY: 16, overflow: true, reason: 'quay' },
+        { tileX: 26, tileY: 17, overflow: true, reason: 'quay' },
     ],
 });
 
