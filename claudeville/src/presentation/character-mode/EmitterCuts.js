@@ -31,7 +31,11 @@ import { atlasSourceRect } from './AssetManager.js';
 import { sourceEnergyFor } from './AtmosphereState.js';
 import { buildEmitterCut } from './CanvasGrade.js';
 import { mirrorAccentGate, mirrorAccentLayers, mirrorAccentRainCut, mirrorStormDrop } from './CoastBake.js';
-import { materialClassId } from './gpu/GpuWorldPolicy.js';
+import {
+    DAYTIME_WORK_BLOOM_CORE,
+    isDaytimeHighEnergyBuilding,
+    materialClassId,
+} from './gpu/GpuWorldPolicy.js';
 import { hullGeometry } from './HarborHulls.js';
 import { tileToWorld } from './Projection.js';
 
@@ -445,7 +449,7 @@ let partScratch = null;
 // Draws the lit emitter texels of the frame each part shows now, carved by
 // whatever the depth pass drew in front of the building, after the
 // building's own cut (a part covers the base texels under it).
-function drawPartCuts(ctx, renderer, emitter, core, scale, bloomCtx) {
+function drawPartCuts(ctx, renderer, emitter, core, scale, bloomCtx, isDaylight = false, baseCore = core) {
     const buildings = renderer.buildingRenderer;
     if (!buildings?.partDrawsFor || !emitter.entry?.layers) return;
     partScratch ||= [];
@@ -454,7 +458,8 @@ function drawPartCuts(ctx, renderer, emitter, core, scale, bloomCtx) {
         const d = draws[index];
         // VQ-8 — a part with its own gate (the banked ember floor) keeps it.
         const gate = d.emissiveGate ?? (d.fixture ? 1 : Math.max(0, emitter.gate));
-        const alpha = Math.min(1, gate * core);
+        const partCore = isDaylight && d.ember ? baseCore : core;
+        const alpha = Math.min(1, gate * partCore);
         if (alpha < 0.02) continue;
         const cut = partCutFor(renderer.assets, buildings, emitter.entry, d);
         if (!cut) continue;
@@ -495,20 +500,52 @@ function partFrameCanvas(source, sx, sy, w, h) {
     return partFrame;
 }
 
+function buildingColumnSortY(drawables, building, worldX, fallbackSortY) {
+    let best = null;
+    let nearestDist = Infinity;
+    for (const d of drawables || []) {
+        if (d.building !== building) continue;
+        if (d.kind === 'building-column' && d.column) {
+            if (worldX >= d.column.worldLeft && worldX <= d.column.worldRight) return d.sortY;
+            const center = (d.column.worldLeft + d.column.worldRight) / 2;
+            const dist = Math.abs(worldX - center);
+            if (dist < nearestDist) {
+                nearestDist = dist;
+                best = d.sortY;
+            }
+        } else if (d.kind !== 'building-back') {
+            best = d.sortY;
+        }
+    }
+    return best ?? fallbackSortY;
+}
+
 function* emitterPlacements(renderer) {
     const assets = renderer.assets;
     const buildings = renderer.buildingRenderer;
+    const buildingDrawables = buildings?.enumerateDrawables?.() || [];
     const seen = new Set();
-    for (const drawable of buildings?.enumerateDrawables?.() || []) {
+    for (const drawable of buildingDrawables) {
         const building = drawable.building;
         if (!building || seen.has(building) || !hasEmissiveSidecar(assets, drawable.entry?.id)) continue;
         seen.add(building);
+        const sortYAtX = (worldX) => buildingColumnSortY(buildingDrawables, building, worldX, drawable.sortY);
+        let frontSortY = drawable.sortY;
+        for (const d of buildingDrawables) {
+            if (d.building === building && d.sortY > frontSortY) frontSortY = d.sortY;
+        }
+        const workTier = buildings._workTierFor?.(building);
+        const active = buildings.partGates?.isOpen?.(`work.${building.type}`) ?? (Boolean(workTier) && workTier !== 'dormant');
+        const gate = buildings._emissiveGateFor?.(building) ?? 1;
+        const daytimeEmitter = isDaytimeHighEnergyBuilding(building.type, active, gate);
         yield {
             id: drawable.entry.id,
             x: drawable.wx,
             y: drawable.wy,
-            sortY: drawable.sortY,
-            gate: buildings._emissiveGateFor?.(building) ?? 1,
+            sortY: sortYAtX,
+            staticSortY: frontSortY,
+            gate,
+            daytimeEmitter,
             // 6.3 — dark rooms (and every pane by day) carved back to glass.
             glass: buildings.glassPatchFor?.(building) || null,
             entry: drawable.entry,
@@ -533,13 +570,14 @@ function* emitterPlacements(renderer) {
         yield { id: prop.id, x: prop.x, y: prop.y, sortY: -Infinity, staticSortY: -Infinity, gate };
     }
     // BR-6 — a terrain-baked bridge's flames, anchored at the span middle
-    // as `_bridgeSpritePlacement` draws the sprite.
+    // as `_bridgeSpritePlacement` draws the sprite. Skip its own near-parapet
+    // occluder prop so the parapet never self-carves the bridge's near flames.
     for (const span of renderer.bridgeSpans || []) {
         const id = renderer._bridgeSpriteId?.(span);
         if (!id || !hasEmissiveSidecar(assets, id) || renderer.bridgeLightsLit?.(span) !== true) continue;
         const x = (span.start.x + span.end.x) / 2;
         const y = (span.start.y + span.end.y) / 2;
-        yield { id, x, y, sortY: -Infinity, staticSortY: -Infinity, gate: 1 };
+        yield { id, x, y, sortY: -Infinity, staticSortY: -Infinity, gate: 1, skipPropPrefix: 'bridge.rail.' + span.id };
     }
 }
 
@@ -569,21 +607,25 @@ export function villagerOccluder(sprite) {
     return { x: sprite.x + box.left, y: sprite.y + box.top, w: box.right - box.left, h: box.bottom - box.top };
 }
 
-function occludersFor(renderer, sortY, staticSortY, x, y, w, h) {
+function occludersFor(renderer, sortY, staticSortY, x, y, w, h, skipPropId = null) {
     const out = [];
+    const resolveDepth = typeof sortY === 'function' ? sortY : null;
     const agents = renderer.agentSprites instanceof Map ? renderer.agentSprites.values() : renderer.agentSprites || [];
     for (const sprite of agents) {
         // The painter key the depth pass sorted the body at this frame
         // (DrawablePass `agentSortY`: a body tucked behind a split building
         // sorts before its back half).
         const depth = Number.isFinite(sprite?._depthSortY) ? sprite._depthSortY : sprite?.y;
-        if (!sprite?._bodyBox || !Number.isFinite(sprite.x) || !Number.isFinite(depth) || depth <= sortY) continue;
+        const threshold = resolveDepth ? resolveDepth(sprite.x) : sortY;
+        if (!sprite?._bodyBox || !Number.isFinite(sprite.x) || !Number.isFinite(depth) || depth <= threshold) continue;
         const rect = villagerOccluder(sprite);
         if (overlaps(rect, x, y, w, h)) out.push(rect);
     }
+    const staticThreshold = typeof staticSortY === 'function' ? staticSortY(x + w / 2) : staticSortY;
     for (const sprite of renderer._staticPropSprites || []) {
         const bounds = sprite?.bounds;
-        if (!bounds || !(sprite.sortY > staticSortY)) continue;
+        if (!bounds || !(sprite.sortY > staticThreshold)) continue;
+        if (skipPropId && (sprite.id === skipPropId || sprite.id?.startsWith?.(skipPropId + '.'))) continue;
         const cached = sprite._cacheCanvas;
         const rect = cached?.canvas
             ? { x: cached.x, y: cached.y, w: cached.canvas.width, h: cached.canvas.height, image: cached.canvas }
@@ -640,7 +682,9 @@ export function drawCanvasEmitterCuts(ctx, renderer, atmosphere, bloomScale = 0)
     const assets = renderer?.assets;
     const camera = renderer?.camera;
     if (!ctx || !assets || !camera) return null;
-    const core = sourceEnergyFor(atmosphere?.lighting).core;
+    const energy = sourceEnergyFor(atmosphere?.lighting);
+    const core = energy.core;
+    const isDaylight = energy.bucket === 'daylight';
     if (!(core > 0.02)) return null;
     const viewport = renderer._screenViewport?.() || null;
     const topLeft = viewport ? camera.screenToWorld(0, 0) : null;
@@ -655,8 +699,9 @@ export function drawCanvasEmitterCuts(ctx, renderer, atmosphere, bloomScale = 0)
     ctx.globalAlpha = 1;
     drawMirrorAccentCuts(ctx, renderer, atmosphere, core, topLeft, bottomRight);
     for (const emitter of emitterPlacements(renderer)) {
-        drawSpriteCut(ctx, renderer, emitter, core, scale, topLeft, bottomRight, bloomCtx);
-        if (emitter.building) drawPartCuts(ctx, renderer, emitter, core, scale, bloomCtx);
+        const emitterCore = isDaylight && emitter.daytimeEmitter ? DAYTIME_WORK_BLOOM_CORE : core;
+        drawSpriteCut(ctx, renderer, emitter, emitterCore, scale, topLeft, bottomRight, bloomCtx);
+        if (emitter.building) drawPartCuts(ctx, renderer, emitter, emitterCore, scale, bloomCtx, isDaylight, core);
     }
     // 5.3 — lit ship lamps (masthead and stern lanterns), cut like panes.
     renderer.harborTraffic?.drawLampCuts?.(ctx, core, bloomCtx);
@@ -811,14 +856,16 @@ export function drawMineCrystalGlow(ctx, renderer) {
         cut = buildings._mineCrystalCut = { image, mask, version, canvas, halo };
     }
     const [ax, ay] = assets.getAnchor(id);
+    const buildingDrawables = buildings?.enumerateDrawables?.() || [];
+    const mineDepth = (worldX) => buildingColumnSortY(buildingDrawables, drawable.building, worldX, drawable.sortY);
     ctx.save();
     ctx.globalAlpha = 0.65;
     drawCarvedBuildingLayer(ctx, renderer, {
         canvas: cut.halo, x: Math.round(drawable.wx - ax), y: Math.round(drawable.wy - ay),
-    }, drawable.building, drawable.sortY);
+    }, drawable.building, mineDepth);
     drawCarvedBuildingLayer(ctx, renderer, {
         canvas: cut.canvas, x: Math.round(drawable.wx - ax), y: Math.round(drawable.wy - ay),
-    }, drawable.building, drawable.sortY);
+    }, drawable.building, mineDepth);
     ctx.restore();
 }
 
@@ -836,14 +883,29 @@ export function drawCarvedBuildingLayer(ctx, renderer, layer, owner, sortY) {
     const occluders = occludersFor(renderer, sortY, sortY, x, y, w, h);
     const assets = renderer.assets;
     for (const drawable of renderer.buildingRenderer?.enumerateDrawables?.() || []) {
-        if (!drawable.building || drawable.building === owner || !(drawable.sortY > sortY)) continue;
+        if (!drawable.building || drawable.building === owner) continue;
+        const threshold = typeof sortY === 'function'
+            ? sortY(drawable.column ? (drawable.column.worldLeft + drawable.column.worldRight) / 2 : drawable.wx)
+            : sortY;
+        if (!(drawable.sortY > threshold)) continue;
         const image = assets.get?.(drawable.entry?.id);
         const anchor = assets.getAnchor?.(drawable.entry?.id);
         if (!image || !anchor) continue;
-        const rect = {
-            x: Math.round(drawable.wx - anchor[0]), y: Math.round(drawable.wy - anchor[1]),
-            w: image.naturalWidth || image.width, h: image.naturalHeight || image.height, image,
-        };
+        const imgW = image.naturalWidth || image.width;
+        const imgH = image.naturalHeight || image.height;
+        const originX = Math.round(drawable.wx - anchor[0]);
+        const originY = Math.round(drawable.wy - anchor[1]);
+        const rect = drawable.kind === 'building-column' && drawable.column
+            ? {
+                x: originX + drawable.column.sx,
+                y: originY,
+                w: drawable.column.sw,
+                h: imgH,
+                image,
+                sx: drawable.column.sx,
+                sy: 0,
+            }
+            : { x: originX, y: originY, w: imgW, h: imgH, image };
         if (overlaps(rect, x, y, w, h)) occluders.push(rect);
     }
     drawCarved(ctx, canvas, x, y, occluders, scale);
@@ -879,7 +941,7 @@ function drawSpriteCut(ctx, renderer, emitter, core, scale, topLeft, bottomRight
     const y = Math.round(emitter.y - ay) + cut.y;
     const { width, height } = cut.canvas;
     if (topLeft && (x > bottomRight.x || y > bottomRight.y || x + width < topLeft.x || y + height < topLeft.y)) return;
-    const occluders = occludersFor(renderer, emitter.sortY, emitter.staticSortY ?? emitter.sortY, x, y, width, height);
+    const occluders = occludersFor(renderer, emitter.sortY, emitter.staticSortY ?? emitter.sortY, x, y, width, height, emitter.skipPropPrefix || null);
     if (emitter.glass) {
         const glass = emitter.glass;
         occluders.push({ x: x - cut.x + glass.left, y: y - cut.y + glass.top, w: glass.w, h: glass.h, image: glass.canvas });

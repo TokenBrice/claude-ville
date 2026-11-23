@@ -51,6 +51,16 @@ import {
 
 export const DOOR_FRAME_MS = 110;
 
+// Worker-count scaling tiers for daytime workshop activity (sparks, page
+// motes, ore dust, chimney plumes): 0 dormant, 1 solo, 2 crew (2-4), 3 crowded (5+).
+export function workerTier(count) {
+    const n = Math.max(0, Math.floor(Number(count) || 0));
+    if (n <= 0) return 0;
+    if (n === 1) return 1;
+    if (n <= 4) return 2;
+    return 3;
+}
+
 const EMPTY = new Set();
 
 export function parsePartGate(gate) {

@@ -51,7 +51,6 @@ import {
     buildingPresentation,
     currentToolPresentation,
     DEPARTED_WORD,
-    groupAgentsByProject,
     isAgedQuietRow,
     silentSignal,
     projectKeyForAgent,
@@ -146,8 +145,17 @@ function rowPhase(agent) {
         || statusWord(status);
 }
 
-function cleanMessage(text, max = 140) {
-    const clean = String(text || '').replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
+export function cleanMessage(text, max = 140) {
+    const clean = String(text || '')
+        .replace(/(?:^|[\r\n]+)\s*#{1,6}\s+/g, ' ')
+        .replace(/!?\[([^\]]+)\]\((?:[^()\s]+|\([^()\s]*\))*\)/g, '$1')
+        .replace(/`+/g, '')
+        .replace(/\*\*/g, '')
+        .replace(/(^|[\s([{"'])\*([^*\s](?:[^*]*[^*\s])?)\*(?=$|[\s.,;:!?)\]}"'])/g, '$1$2')
+        .replace(/~~([^~]+)~~/g, '$1')
+        .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
     return clean.length > max ? `${clean.slice(0, max - 1).trimEnd()}…` : clean;
 }
 
@@ -752,7 +760,10 @@ export class DashboardRenderer {
         // The view's own box (window resize, sidebar collapse), never the
         // grid's, so toggling the roomy tier cannot re-trigger it.
         this._viewObserver = typeof ResizeObserver === 'function' && this.gridEl?.parentElement
-            ? new ResizeObserver(() => this._syncUltrawide())
+            ? new ResizeObserver(() => {
+                this._syncAttentionLayout();
+                this._syncUltrawide();
+            })
             : null;
         this._viewObserver?.observe(this.gridEl.parentElement);
         window.addEventListener('keydown', this._onDashboardKeyDown);
@@ -787,12 +798,16 @@ export class DashboardRenderer {
         const laneIds = new Set(laneAgents.map(agent => agent.id));
         const laneByProject = new Map();
         for (const agent of laneAgents) {
-            const project = projectKeyForAgent(agent);
+            const project = this._projectKeyFor(agent);
             if (!laneByProject.has(project)) laneByProject.set(project, []);
             laneByProject.get(project).push(agent);
         }
 
-        const groups = [...groupAgentsByProject(visibleAgents.filter(agent => !laneIds.has(agent.id) && this._showsFullRow(agent)))];
+        // Group every non-bell-lane visible agent (leads + folded subagents) by
+        // project first so section headers count the full cohort; filter by
+        // `_showsFullRow` only when building the card rows.
+        const groups = [...this._groupAgentsByProject(visibleAgents.filter(agent => !laneIds.has(agent.id)))]
+            .filter(([, groupAgents]) => groupAgents.some(agent => this._showsFullRow(agent)));
         this._sortProjectGroups(groups);
         // 9.7a — measured before any card or section moves.
         const flip = this._beginLaneFlip(laneIds);
@@ -827,6 +842,7 @@ export class DashboardRenderer {
             for (const sectionEl of orderedSections) this.gridEl.appendChild(sectionEl);
         }
 
+        const allRowAgents = [];
         for (const [index, [projectPath, groupAgents]] of groups.entries()) {
             existingSections.add(projectPath);
             this._sortAgentsExceptionFirst(groupAgents);
@@ -835,8 +851,10 @@ export class DashboardRenderer {
 
             const gridInner = sectionEl._sectionRefs?.grid || sectionEl.querySelector('.dashboard__section-grid');
 
+            const rowAgents = groupAgents.filter(agent => this._showsFullRow(agent));
             const orderedCards = [];
-            for (const agent of groupAgents) {
+            for (const agent of rowAgents) {
+                allRowAgents.push(agent);
                 existingIds.add(agent.id);
                 const cardEl = this._cardFor(agent);
 
@@ -868,11 +886,44 @@ export class DashboardRenderer {
                 this._sectionEls.delete(path);
             }
         }
+        this._syncGridColumns(allRowAgents);
         this._syncUltrawide();
         this._finishLaneFlip(flip);
         this._syncAnswerFirst();
         sessionDetailsService.sweep(agents);
         this._syncCardTabStops();
+    }
+
+    // Group folded subagents with their live lead's project so Dashboard header
+    // counts match Sidebar even when a child works in another directory.
+    _projectKeyFor(agent) {
+        const leadId = leadIdFor(agent);
+        const lead = leadId ? this.world?.agents?.get?.(leadId) : null;
+        return projectKeyForAgent(lead && !lead.isDeparted ? lead : agent);
+    }
+
+    _groupAgentsByProject(agents) {
+        const groups = new Map();
+        for (const agent of agents || []) {
+            const key = this._projectKeyFor(agent);
+            if (!groups.has(key)) groups.set(key, []);
+            groups.get(key).push(agent);
+        }
+        return groups;
+    }
+
+    // Shared optional tracks at #dashboardGrid level so FOR/TOKENS/COST align
+    // across all project sections and blank LAST 10 MIN tapes stay hidden until
+    // observed buckets have recorded activity.
+    _syncGridColumns(rowAgents, now = Date.now()) {
+        if (!this.gridEl) return;
+        const list = Array.isArray(rowAgents) ? rowAgents : [];
+        const hasWork = list.some(rowHasWork);
+        const hasKids = list.some(agent => this._hasChildProgress(agent));
+        const hasTape = Boolean(this._tapes?.hasObservedActivity(list.map(agent => agent.id), now));
+        this.gridEl.classList.toggle('dashboard__grid--has-work', hasWork);
+        this.gridEl.classList.toggle('dashboard__grid--has-kids', hasKids);
+        this.gridEl.classList.toggle('dashboard__grid--has-tape', hasTape);
     }
 
     _cardFor(agent) {
@@ -900,8 +951,18 @@ export class DashboardRenderer {
     _startTapeClock() {
         this._stopTapeClock();
         const tick = () => {
-            this._tapeTimer = setTimeout(tick, TAPE_BUCKET_MS - (Date.now() % TAPE_BUCKET_MS) + 20);
-            for (const card of this.cards.values()) this._paintCardTape(card);
+            const now = Date.now();
+            this._tapeTimer = setTimeout(tick, TAPE_BUCKET_MS - (now % TAPE_BUCKET_MS) + 20);
+            const rowIds = [];
+            for (const card of this.cards.values()) {
+                this._paintCardTape(card, now);
+                if (card.parentElement !== this._bellEl && card.dataset?.agentId) {
+                    rowIds.push(card.dataset.agentId);
+                }
+            }
+            if (this.gridEl && this._tapes) {
+                this.gridEl.classList.toggle('dashboard__grid--has-tape', this._tapes.hasObservedActivity(rowIds, now));
+            }
         };
         this._tapeTimer = setTimeout(tick, TAPE_BUCKET_MS - (Date.now() % TAPE_BUCKET_MS) + 20);
     }
@@ -922,6 +983,12 @@ export class DashboardRenderer {
             canvas._tapeSignature = signature;
             paintTape(canvas, this._tapes.cells(id, now));
         }
+        if (this.gridEl
+            && !this.gridEl.classList.contains('dashboard__grid--has-tape')
+            && cardEl.parentElement !== this._bellEl
+            && this._tapes.hasObservedActivity([id], now)) {
+            this.gridEl.classList.add('dashboard__grid--has-tape');
+        }
         if (this.selection?.isSelected(id)) this._paintStrip(cardEl, id, now);
     }
 
@@ -939,16 +1006,18 @@ export class DashboardRenderer {
             canvas.setAttribute('aria-hidden', 'true');
             refs.strip.insertBefore(canvas, refs.stripAxis);
             refs.stripCanvas = canvas;
-            refs.strip.hidden = false;
         }
         const history = this.toolHistories.get(id) || null;
+        const hasObserved = this._tapes.hasObservedActivity([id], now);
         const signature = [
             this._tapes.signature(id, now),
+            hasObserved ? '1' : '0',
             history ? toolHistorySignature(history, { limit: history.length, detailLength: 0 }) : 'pending',
         ].join('|');
         if (refs.stripCanvas._stripSignature === signature) return;
         refs.stripCanvas._stripSignature = signature;
         const { drawn, coveredFrom } = paintSessionStrip(refs.stripCanvas, this._tapes.cells(id, now), history || [], now);
+        refs.strip.hidden = coveredFrom === null && !hasObserved;
         // The fetch returns a contiguous tail of the transcript: the count is
         // exact only when that tail reaches back past the 10-minute window.
         let count = 'loading';
@@ -1183,7 +1252,7 @@ export class DashboardRenderer {
 
     _renderAgentUpdate(agent) {
         const cardEl = this.cards.get(agent.id);
-        const projectPath = projectKeyForAgent(agent);
+        const projectPath = this._projectKeyFor(agent);
         const status = normalizeStatus(agent.status);
         if (!cardEl || cardEl._projectPath !== projectPath || cardEl._status !== status
             || cardEl._exceptionRank !== rowExceptionRank(agent) || cardEl._hasWork !== rowHasWork(agent)) {
@@ -1295,10 +1364,10 @@ export class DashboardRenderer {
                 <span></span>
                 <span>AGENT</span>
                 <span>NOW</span>
-                <span title="Tool calls this tab observed, one column per 15 s: a block per call (bright = write/run/task), a band while it needed you, errored or hit quota, dots before the tab was watching">LAST 10 MIN</span>
+                <span class="dashboard__col--tape" title="Tool calls this tab observed, one column per 15 s: a block per call (bright = write/run/task), a band while it needed you, errored or hit quota, dots before the tab was watching">LAST 10 MIN</span>
                 <span class="dashboard__col--num">FOR</span>
                 <span class="dashboard__col--num" title="New tokens (input, output, cache writes), as the top bar counts them; cache reads below">TOKENS</span>
-                <span class="dashboard__col--num">COST</span>
+                <span class="dashboard__col--num" title="≈ cost includes estimated usage (token counts x published rates); — no usage reported">COST</span>
                 <span class="dashboard__col--work">WORKING SET</span>
                 <span class="dashboard__col--kids">CHILDREN</span>
             </div>
@@ -1358,12 +1427,6 @@ export class DashboardRenderer {
         refs.lift.hidden = lifted === 0;
         this._setText(refs.lift, lifted ? `+${lifted} in Need Action ↑` : '');
         refs.lift.title = lifted ? laneAgents.map(agent => agent.name || agent.id).join(', ') : '';
-
-        // 7.7 — optional columns exist only while some row has data for them.
-        const hasWork = agents.some(rowHasWork);
-        const hasKids = agents.some(agent => this._hasChildProgress(agent));
-        sectionEl.classList.toggle('dashboard__section--has-work', hasWork);
-        sectionEl.classList.toggle('dashboard__section--has-kids', hasKids);
 
         this._updateSectionHealth(sectionEl, refs, [...agents, ...laneAgents]);
         sectionEl._harborAgents = [...agents, ...laneAgents];
@@ -1809,7 +1872,10 @@ export class DashboardRenderer {
             quota: quotaCardsSignature(this._latestUsage),
         });
         this.attentionEl.hidden = false;
-        if (signature === this._controlsSignature) return;
+        if (signature === this._controlsSignature) {
+            this._syncAttentionLayout();
+            return;
+        }
         this._controlsSignature = signature;
 
         const focusedKey = this.attentionEl.contains(document.activeElement)
@@ -1822,6 +1888,8 @@ export class DashboardRenderer {
         heading.textContent = counts.actionable ? `${counts.actionable} NEED ACTION` : 'ALL QUIET';
         const list = document.createElement('div');
         list.className = 'dashboard-attention__list';
+        const statusGroup = document.createElement('div');
+        statusGroup.className = 'dashboard-attention__group dashboard-attention__group--status';
         for (const { key, label, shape } of ROW_STATUS_FILTERS) {
             const count = counts[key] || 0;
             const button = this._filterButton({
@@ -1844,46 +1912,59 @@ export class DashboardRenderer {
             const number = document.createElement('b');
             number.textContent = String(count);
             button.append(pip, number, document.createTextNode(` ${label}`));
-            list.appendChild(button);
+            statusGroup.appendChild(button);
         }
-        const providerLabel = document.createElement('span');
-        providerLabel.className = 'dashboard-attention__provider-label';
-        providerLabel.textContent = 'Provider';
-        providerLabel.setAttribute('role', 'separator');
-        if (providers.length) list.appendChild(providerLabel);
-        for (const provider of providers) {
-            list.appendChild(this._filterButton({
-                key: `provider:${provider}`,
-                label: `${providerPresentation(provider).badge.label} ${providerCounts[provider]}`,
-                pressed: this._providerFilters.has(provider),
-                onClick: () => {
-                    if (this._providerFilters.has(provider)) this._providerFilters.delete(provider);
-                    else this._providerFilters.add(provider);
-                    this._controlsSignature = '';
-                    this.render();
-                },
-            }));
-        }
-        if (this._statusFilters.size || this._providerFilters.size) {
-            list.appendChild(this._filterButton({
-                key: 'clear',
-                label: 'Clear filters',
-                pressed: false,
-                onClick: () => {
-                    this._statusFilters.clear();
-                    this._providerFilters.clear();
-                    this._controlsSignature = '';
-                    this.render();
-                },
-            }));
-        }
-        if (this._searchQuery) {
-            const search = document.createElement('span');
-            search.className = 'dashboard-attention__search';
-            search.textContent = `Search "${truncateText(this._searchQuery, 32)}" · ${this._searchMatches?.size || 0} matches`;
-            list.appendChild(search);
+        list.appendChild(statusGroup);
+
+        let providerLabel = null;
+        let providerGroup = null;
+        const hasFilters = Boolean(this._statusFilters.size || this._providerFilters.size);
+        if (providers.length || hasFilters || this._searchQuery) {
+            if (providers.length) {
+                providerLabel = document.createElement('span');
+                providerLabel.className = 'dashboard-attention__provider-label';
+                providerLabel.textContent = 'Provider';
+                providerLabel.setAttribute('role', 'separator');
+                list.appendChild(providerLabel);
+            }
+            providerGroup = document.createElement('div');
+            providerGroup.className = 'dashboard-attention__group dashboard-attention__group--providers';
+            for (const provider of providers) {
+                providerGroup.appendChild(this._filterButton({
+                    key: `provider:${provider}`,
+                    label: `${providerPresentation(provider).badge.label} ${providerCounts[provider]}`,
+                    pressed: this._providerFilters.has(provider),
+                    onClick: () => {
+                        if (this._providerFilters.has(provider)) this._providerFilters.delete(provider);
+                        else this._providerFilters.add(provider);
+                        this._controlsSignature = '';
+                        this.render();
+                    },
+                }));
+            }
+            if (hasFilters) {
+                providerGroup.appendChild(this._filterButton({
+                    key: 'clear',
+                    label: 'Clear filters',
+                    pressed: false,
+                    onClick: () => {
+                        this._statusFilters.clear();
+                        this._providerFilters.clear();
+                        this._controlsSignature = '';
+                        this.render();
+                    },
+                }));
+            }
+            if (this._searchQuery) {
+                const search = document.createElement('span');
+                search.className = 'dashboard-attention__search';
+                search.textContent = `Search "${truncateText(this._searchQuery, 32)}" · ${this._searchMatches?.size || 0} matches`;
+                providerGroup.appendChild(search);
+            }
+            list.appendChild(providerGroup);
         }
         // 7.11 — one legend replaces the per-row ESTIMATE / UNAVAILABLE pills.
+        // Sheds first on overflow (note also lives on the COST header tooltip).
         const legend = document.createElement('span');
         legend.className = 'dashboard-attention__legend';
         legend.append(
@@ -1891,12 +1972,68 @@ export class DashboardRenderer {
             Object.assign(document.createElement('span'), { textContent: '— unavailable' }),
         );
         legend.title = '≈ cost includes estimated usage (token counts x published rates); — no usage reported';
-        replaceChildren(this.attentionEl, [heading, list, this._claudeLimitCard(), this._codexQuotaCard(), legend].filter(Boolean));
+        const quotaCards = [this._claudeLimitCard(), this._codexQuotaCard()].filter(Boolean);
+        replaceChildren(this.attentionEl, [heading, list, ...quotaCards, legend]);
+        this._attentionRefs = { heading, list, statusGroup, providerLabel, providerGroup, legend, quotaCards };
+        this._syncAttentionLayout();
         if (focusedKey) {
             [...this.attentionEl.querySelectorAll('[data-filter-key]')]
                 .find(button => button.dataset.filterKey === focusedKey)
                 ?.focus({ preventScroll: true });
         }
+    }
+
+    // Shed the legend first when the tally bar runs tight, then stack the
+    // provider chips cleanly below the status row instead of clipping them,
+    // and publish the bar's height so sticky section headers stay aligned.
+    _syncAttentionLayout() {
+        const bar = this.attentionEl;
+        const refs = this._attentionRefs;
+        if (!bar || bar.hidden || !refs) return;
+        const barWidth = Number(bar.clientWidth) || 0;
+        if (barWidth <= 0) return;
+
+        const { heading, list, statusGroup, providerLabel, providerGroup, legend, quotaCards } = refs;
+        const childWidth = (el) => {
+            if (!el) return 0;
+            return Math.ceil(el.getBoundingClientRect?.().width || el.offsetWidth || 0);
+        };
+        const groupWidth = (group) => {
+            if (!group) return 0;
+            const items = [...(group.children || [])];
+            if (!items.length) return 0;
+            let total = 0;
+            for (const item of items) {
+                total += childWidth(item);
+                if (item.classList?.contains('dashboard-attention__search')) total += 12;
+            }
+            return total + Math.max(0, items.length - 1) * 2;
+        };
+
+        if (legend._naturalWidth == null) {
+            legend.hidden = false;
+            legend._naturalWidth = childWidth(legend);
+        }
+        const barInner = barWidth - 32; // 16px horizontal padding each side
+        const fixedItems = [heading, ...quotaCards];
+        const fixedWidth = fixedItems.reduce((sum, el) => sum + childWidth(el), 0);
+        const statusWidth = groupWidth(statusGroup);
+        const providerWidth = groupWidth(providerGroup);
+        const dividerWidth = providerLabel ? 17 : 0; // 1px rule + 8px margin each side
+        const listSingleRow = statusWidth + (providerGroup ? dividerWidth + providerWidth : 0);
+
+        const gapsWithLegend = (fixedItems.length + 1) * 16;
+        const fitsWithLegend = (fixedWidth + listSingleRow + legend._naturalWidth + gapsWithLegend) <= barInner;
+        legend.hidden = !fitsWithLegend;
+
+        const gapsNow = (fixedItems.length + (fitsWithLegend ? 1 : 0)) * 16;
+        const listAvailable = barInner - fixedWidth - (fitsWithLegend ? legend._naturalWidth : 0) - gapsNow;
+        const wrapped = Boolean(providerGroup) && listSingleRow > listAvailable;
+        if (providerLabel) providerLabel.hidden = wrapped;
+        list.classList.toggle('dashboard-attention__list--wrapped', wrapped);
+
+        const barHeight = Math.round(bar.getBoundingClientRect?.().height || bar.offsetHeight || 40);
+        this._setCustomProperty(this.gridEl?.parentElement, '--dash-attention-height', `${barHeight}px`);
     }
 
     // The Codex account card in the tally bar: `CODEX WEEKLY ▮▮▮ 100% LIMIT` over
@@ -2007,7 +2144,7 @@ export class DashboardRenderer {
             i18n.lang || '',
         ].join('|');
 
-        cardEl._projectPath = projectKeyForAgent(agent);
+        cardEl._projectPath = this._projectKeyFor(agent);
         cardEl._status = status;
         cardEl._exceptionRank = rowExceptionRank(agent);
         cardEl._hasWork = rowHasWork(agent);
@@ -2290,16 +2427,22 @@ export class DashboardRenderer {
         ]).concat([[agent.projectPath || '', this._crewSize(String(agent.id)), this._expandedLeads.has(String(agent.id))]]));
         if (strip._kidSignature === signature) return;
         strip._kidSignature = signature;
+        const leadId = String(agent.id);
+        const expanded = this._expandedLeads.has(leadId);
+        // When the crew's full rows are unfolded below the lead, omit the
+        // compact kid rows so subagents are never shown twice.
+        const compactChildren = expanded ? [] : children;
         const chips = cardEl._kidChips || (cardEl._kidChips = new Map());
-        const liveIds = new Set(children.map(child => String(child.id)));
+        const liveIds = new Set(compactChildren.map(child => String(child.id)));
         for (const [id, chip] of chips) {
             if (!liveIds.has(id)) {
                 chip.destroy?.();
                 chips.delete(id);
             }
         }
-        strip.hidden = children.length === 0;
-        const rows = children.map(child => {
+        const crew = this._crewSize(leadId);
+        strip.hidden = children.length === 0 && crew === 0;
+        const rows = compactChildren.map(child => {
             const id = String(child.id);
             let chip = chips.get(id);
             if (!chip) {
@@ -2345,10 +2488,7 @@ export class DashboardRenderer {
         });
         // UI-16 — the per-lead toggle: the crew's full rows fold into this
         // strip unless the operator unfolds them.
-        const leadId = String(agent.id);
-        const crew = this._crewSize(leadId);
         if (crew > 0) {
-            const expanded = this._expandedLeads.has(leadId);
             const toggle = Object.assign(document.createElement('button'), {
                 type: 'button',
                 className: 'dash-card__kid-toggle',

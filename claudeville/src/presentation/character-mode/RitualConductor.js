@@ -58,7 +58,28 @@ const RITUAL_GESTURE_PERIOD_MS = {
 // a pure function of the wall clock the gesture animation already uses, so
 // the stamp and the drawn strike can never drift apart.
 export const DOWNBEAT_MOMENT = defineMoment('minor', { anticipation: 120, peak: 70, follow: 210 });
-const DOWNBEAT_STRIDE = 3;
+const DOWNBEAT_STRIDE = 2;
+
+// Deterministic per-agent phase offset in [0, period) so villagers never tick
+// in global lockstep. Returns 0 when agentId is absent (preserving synthetic
+// tests and wall-clock callers without an agent identity).
+export function ritualPhaseOffset(agentId, period) {
+    if (!agentId || !(period > 0)) return 0;
+    let hash = 2166136261;
+    const key = String(agentId);
+    for (let i = 0; i < key.length; i++) {
+        hash ^= key.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+    }
+    // Murmur3 fmix32 avalanche so agents with shared prefixes/suffixes
+    // (e.g. `readme-hazel:read` vs `readme-pip:read`) spread uniformly.
+    hash ^= hash >>> 16;
+    hash = Math.imul(hash, 0x85ebca6b);
+    hash ^= hash >>> 13;
+    hash = Math.imul(hash, 0xc2b2ae35);
+    hash ^= hash >>> 16;
+    return (hash >>> 0) % Math.trunc(period);
+}
 
 // The beat on screen for `ritual` at `now` (Date.now clock), or null. Only a
 // playing ritual (a real tool:invoked event the agent is visibly performing)
@@ -70,10 +91,11 @@ export function ritualDownbeat(ritual, now = Date.now()) {
     const origin = ritual.beatOrigin;
     if (!period || !Number.isFinite(origin)) return null;
     const lead = DOWNBEAT_MOMENT.anticipation;
-    const beat = Math.floor((now + lead) / period);
+    const clock = now + ritualPhaseOffset(ritual.agentId, period);
+    const beat = Math.floor((clock + lead) / period);
     const index = beat - origin;
     if (index < 0 || index % DOWNBEAT_STRIDE !== 0) return null;
-    const age = now - (beat * period - lead);
+    const age = clock - (beat * period - lead);
     if (ritual.phase === 'fading' && age < lead) return null;
     const phase = momentPhase(age, DOWNBEAT_MOMENT);
     return phase.phase === 'done' ? null : { index, age, ...phase };
@@ -510,7 +532,10 @@ export class RitualConductor {
                 // 6.6 — the first strike whose wind-up starts after the ritual
                 // is on screen is beat 0; a coalesced repeat keeps its origin.
                 const period = RITUAL_GESTURE_PERIOD_MS[ritual.pose];
-                if (period) ritual.beatOrigin = Math.floor((Date.now() + DOWNBEAT_MOMENT.anticipation) / period) + 1;
+                if (period) {
+                    const clock = Date.now() + ritualPhaseOffset(ritual.agentId, period);
+                    ritual.beatOrigin = Math.floor((clock + DOWNBEAT_MOMENT.anticipation) / period) + 1;
+                }
             }
             if (ritual.remainingMs <= 280 && ritual.phase !== 'done') ritual.phase = 'fading';
             if (ritual.remainingMs <= 0) ritual.phase = 'done';

@@ -33,6 +33,7 @@ export class StaticPropSprite {
         this.channels = channels;
         if (materialClass) this.materialClass = materialClass;
         this._cacheCanvas = null;
+        this._alphaMask = null;
         this._gpuCacheRevision = 0;
     }
     draw(ctx, zoom) {
@@ -153,10 +154,26 @@ export class StaticPropSprite {
         }
         return this._cacheCanvas;
     }
+    getAlphaMask(zoom = 1) {
+        const cached = this._getCachedCanvas(zoom);
+        if (!cached?.canvas) return null;
+        if (this._alphaMask && this._alphaMask.canvas === cached.canvas) return this._alphaMask;
+        const { width, height } = cached.canvas;
+        const ctx = cached.canvas.getContext?.('2d', { willReadFrequently: true });
+        if (!ctx?.getImageData || !(width > 0) || !(height > 0)) return null;
+        const data = ctx.getImageData(0, 0, width, height).data;
+        const mask = new Uint8Array(width * height);
+        for (let i = 0, p = 3; i < mask.length; i++, p += 4) {
+            if (data[p] > 0) mask[i] = 1;
+        }
+        this._alphaMask = { canvas: cached.canvas, x: cached.x, y: cached.y, w: width, h: height, mask };
+        return this._alphaMask;
+    }
     releaseCache() {
         releaseCanvasBackingStore(this._cacheCanvas?.canvas);
         for (const name of Object.keys(this.channels || {})) releaseCanvasBackingStore(this._cacheCanvas?.[name]);
         this._cacheCanvas = null;
+        this._alphaMask = null;
     }
     // The drawn state changed (e.g. the gate doors): repaint the cache on the
     // next draw and make the GPU backend re-upload its texture.

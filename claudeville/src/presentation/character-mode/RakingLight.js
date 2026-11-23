@@ -31,8 +31,9 @@ import { effectBudgetMode } from './gpu/GpuWorldPolicy.js';
 import { SUN_LIFT_CEILING } from './gpu/SunShade.js';
 import { LANTERN_ID_PREFIX } from './CarriedLantern.js';
 
-const COLD = [15, 22, 30];      // #0f161e — the midday contact shadow
-const VIOLET = [42, 35, 70];    // #2a2346 — the golden-hour shadow
+const COLD = [15, 22, 30];        // #0f161e — the pre-SD-1 midday contact shadow
+export const SHADE_COLD = Object.freeze([24, 38, 66]); // #182642 — cool sky-indigo midday sun shade (SD-1)
+const VIOLET = [42, 35, 70];      // #2a2346 — the golden-hour shadow
 const ROW = 2;                  // stepped ellipse rows, in texels
 
 // SD-1. One px of sprite height in ground px (world x; world y is half of
@@ -42,14 +43,17 @@ const HEIGHT_GROUND_PX = 2 / Math.sqrt(3);
 // 0 and 1. The real length eases into it (real / (1 + (real / cap)^4)^(1/4)):
 // a shadow under about half the cap is true, a low sun's stops growing.
 export const SHADE_LENGTH_CAP = Object.freeze([1, 3.5]);
+// Minimum daytime shadow length (ground px per px of caster height) so high
+// summer noon still throws readable architectural and tree cast shadows.
+export const SHADE_LENGTH_MIN = 0.90;
 const SHADE_CAP_KNEE = 4;
 // Buckets a field is built for: direction per radian, length per unit.
 const SHADE_ANGLE_STEPS = 64;
 const SHADE_LENGTH_STEPS = 32;
-// The shade's density: a shadow that reads at tier 1 on lit grass and stone.
-// It keeps that weight all day: a low sun is a weaker light, so its longer
-// shade is no denser.
-export const SHADE_ALPHA = 0.38;
+// The shade's density: a cool indigo shadow that reads clearly at midday on
+// sunlit grass and stone. It keeps that weight all day: a low sun is a weaker
+// light, so its longer shade is no denser.
+export const SHADE_ALPHA = 0.44;
 // The grade's sun band at which the shade is whole, and gone.
 const SHADE_SUN_FULL = 0.8;
 const SHADE_SUN_NONE = 0.2;
@@ -58,20 +62,21 @@ const SHADE_SUN_NONE = 0.2;
 // band outlasts the sun at both ends of the day, and its shade must not.
 export const SHADE_SUN_RISEN_DEG = 4;
 // SD-2 (look `sd2`) — what a receiver in cast shade gives up of its sun-band
-// value at strength 1 (a wall, a roof or a body under another mass's shadow):
-// about what the ground's own shade takes, so a shadow keeps its weight as it
+// value at strength 1 (a wall or roof under another mass's shadow; bodies take
+// a softer step in SunShade.js): matches the ground's shade weight as a shadow
 // climbs a wall. A face turned from the sun gives up nothing: the art already
 // paints that side darker.
-export const SHADE_RECEIVER_CAST = 0.3;
+export const SHADE_RECEIVER_CAST = 0.34;
 // SD-3 (look `sd3`) — the sun lifts what it reaches: the gain a sunlit
-// texel (the ground, a lit wall, roof or prop) takes before the grade at
-// strength 1 under a high, clear sun, in 1/64. One palette step: about the
-// inverse of the sun band's own 0.86 course. Shade keeps its value, so it reads by contrast.
-export const SUN_LIFT = 10 / 64;
+// texel (the ground, a lit wall, roof or prop; half weight on bodies) takes
+// before the grade at strength 1 under a high, clear sun, in 1/64. Shade keeps
+// its value, so it reads by contrast.
+export const SUN_LIFT = 14 / 64;
 // The real sun's elevation (degrees) from which the lift is whole; under it
-// the lift follows the sun's sine, in eighths (a November noon takes about
-// five eighths, a golden hour two).
+// the lift follows the sun's sine, floored at SUN_LIFT_ELEVATION_FLOOR once
+// clear of the horizon (>= 15 deg) so winter noon still lifts clearly.
 export const SUN_LIFT_FULL_DEG = 45;
+export const SUN_LIFT_ELEVATION_FLOOR = 0.75;
 // The cloud cover under which the sky is clear for the lift, and at which it
 // is gone (the overcast weather rows start there).
 const SUN_LIFT_CLEAR = Object.freeze([0.15, 0.85]);
@@ -157,12 +162,13 @@ export function castLightingFor(atmosphere) {
     const length = night ? clamp(finite(lighting?.shadowLength, 1), 0.45, 2.4) : 0.72 + 1.6 * rake;
     const lengthBucket = Math.round(length * 8) / 8;
     const color = COLD.map((channel, index) => Math.round(channel + (VIOLET[index] - channel) * rake));
+    const shadeColor = SHADE_COLD.map((channel, index) => Math.round(channel + (VIOLET[index] - channel) * rake));
     // A thrown canopy shadow needs a visible sun: the grade's sun band is 0
     // at night and under rain/storm/overcast, which leave contact only.
     const sun = finite(grade?.sunBand, 1) >= 0.5;
     const contactAlpha = finite(lighting?.shadowAlpha, 0.22);
     const strength = _shadeTier ? lookStrength('sd1') : 0;
-    const shade = strength > 0 ? shadeLightingFor(strength, grade, solar, rawAngle, color, cloudCover) : null;
+    const shade = strength > 0 ? shadeLightingFor(strength, grade, solar, rawAngle, shadeColor, cloudCover) : null;
     const restLength = night ? lengthBucket : Math.round(0.72 * 8) / 8;
     const contact = strength > 0 && (rake > 0 || sun)
         ? Object.freeze({
@@ -208,7 +214,8 @@ function shadeSweepBuckets(elevation, rawAngle) {
     const cap = short + (long - short) * clamp(lookStrength('sd1len'));
     const real = HEIGHT_GROUND_PX / Math.tan(Math.max(1, elevation) * Math.PI / 180);
     const eased = real / Math.pow(1 + Math.pow(real / cap, SHADE_CAP_KNEE), 1 / SHADE_CAP_KNEE);
-    const lengthBucket = Math.max(1, Math.round(eased * SHADE_LENGTH_STEPS));
+    const floored = Math.min(cap, Math.max(SHADE_LENGTH_MIN, eased));
+    const lengthBucket = Math.max(1, Math.round(floored * SHADE_LENGTH_STEPS));
     const angleBucket = Math.round(rawAngle * SHADE_ANGLE_STEPS);
     return { lengthBucket, angleBucket, length: lengthBucket / SHADE_LENGTH_STEPS, angle: angleBucket / SHADE_ANGLE_STEPS };
 }
@@ -263,8 +270,11 @@ function shadeLightingFor(strength, grade, solar, rawAngle, color, cloudCover = 
  */
 export function sunLiftFor(strength, share, elevationDeg, cloudCover = 0) {
     if (!(strength > 0) || !(share > 0)) return 0;
-    const sine = Math.sin(Math.max(0, finite(elevationDeg, 45)) * Math.PI / 180);
-    const height = Math.round(clamp(sine / Math.sin(SUN_LIFT_FULL_DEG * Math.PI / 180)) * 8) / 8;
+    const elev = Math.max(0, finite(elevationDeg, 45));
+    const sine = Math.sin(elev * Math.PI / 180);
+    const rawHeight = clamp(sine / Math.sin(SUN_LIFT_FULL_DEG * Math.PI / 180));
+    const floor = SUN_LIFT_ELEVATION_FLOOR * clamp(elev / 15);
+    const height = Math.round(Math.max(rawHeight, floor) * 8) / 8;
     const [fair, covered] = SUN_LIFT_CLEAR;
     const clear = Math.round(clamp((covered - finite(cloudCover, 0)) / (covered - fair)) * 8) / 8;
     return Math.round(SUN_LIFT * clamp(strength) * share * height * clear * 64) / 64;
@@ -355,8 +365,9 @@ export function sundialShadeFor(atmosphere) {
     const strength = lookStrength('sd1');
     if (cast.shade || !(strength > 0)) return cast.shade;
     const angle = atmosphere?.lighting?.shadowAngleRad;
+    const shadeColor = SHADE_COLD.map((channel, index) => Math.round(channel + (VIOLET[index] - channel) * cast.rake));
     return shadeLightingFor(strength, atmosphere?.lightGrade || null, atmosphere?.solar || null,
-        Number.isFinite(angle) ? angle : 0.28, cast.color);
+        Number.isFinite(angle) ? angle : 0.28, shadeColor);
 }
 
 /**
@@ -421,9 +432,10 @@ export function canvasSunLiftSteps(lift) {
 // above the ceiling (snow) is left as it is (`canvasSunLiftRgb`).
 const LIT_DODGE = Math.round(255 * (1 - 1 / (1 + SUN_LIFT)));
 // The canvas Lum weighs green below Rec. 709 (0.59 against 0.7152), so a
-// green texel held at the resident ceiling would read brighter: Canvas holds
-// a tenth lower (after the brightest grade still under the candle's 192).
-const LIT_CEILING = Math.round(255 * SUN_LIFT_CEILING * 0.9);
+// green texel held at the resident ceiling would read brighter after the
+// 1.14 noon exposure gain: Canvas holds at 0.78 of SUN_LIFT_CEILING (135/255)
+// so every lifted pixel stays under the waiting candle's 192.
+const LIT_CEILING = Math.round(255 * SUN_LIFT_CEILING * 0.78);
 let _liftGrey = null;
 let _liftWork = null;
 
@@ -574,6 +586,7 @@ export function villagerCastLighting(x, y, cast = _frameCast) {
         // lamp casts (`pointCastFor`).
         _villagerCast = Object.freeze({
             ...cast.contact,
+            color: shade.color,
             rake: cast.rake,
             trail: shade,
             key: `v${cast.contact.key}|${shade.key}|${Math.round(shade.alpha * 32)}`,

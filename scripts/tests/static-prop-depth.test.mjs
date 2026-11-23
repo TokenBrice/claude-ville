@@ -151,10 +151,15 @@ function centralBridge(bridgeId = 'central-river-bridge') {
     renderer.assets = {};
     renderer.bridgeSpans = renderer._buildBridgeSpans();
     const span = renderer.bridgeSpans.find((entry) => entry.id === bridgeId);
-    const rails = renderer._buildBridgeNearRailSprites().filter((sprite) => sprite.id.startsWith(`bridge.rail.${bridgeId}.`));
-    // Each slice's painted region: the clip quad its drawFn cuts.
+    const rails = renderer._buildBridgeNearRailSprites().filter((sprite) => (
+        sprite.id === `bridge.rail.${bridgeId}` || sprite.id.startsWith(`bridge.rail.${bridgeId}.`)
+    ));
+    // Quad-sliced spans expose their clip quads; masked parapet spans carry
+    // `occlusionColumns` and `parapetRuns` instead.
     const count = rails.length;
-    rails.forEach((rail, index) => { rail.quad = renderer._bridgeNearRailQuad(span, index / count, (index + 1) / count); });
+    if (count > 0 && !rails[0].occlusionColumns) {
+        rails.forEach((rail, index) => { rail.quad = renderer._bridgeNearRailQuad(span, index / count, (index + 1) / count); });
+    }
     return { renderer, rails };
 }
 
@@ -265,37 +270,80 @@ test('bridge-deck: the central deck lifts the feet onto the planks, ramps over b
     }
 });
 
-test('bridge-deck: on the deck both files sort behind the rail, which crosses the near file\'s legs and never a far-file body', () => {
+// For a masked parapet sprite (central-river-bridge), test every parapet run
+// pixel inside the body box and return the highest reach above the feet over
+// the body's central 16 px.
+function parapetReachOver(parapet, sprite) {
+    const footY = sprite.y - sprite.lift;
+    const ox = parapet.parapetOrigin.x;
+    const oy = parapet.parapetOrigin.y;
+    let reach = -Infinity;
+    for (const [ry, rx, len] of parapet.parapetRuns || []) {
+        const wy = oy + ry;
+        if (wy < footY - 58 || wy > footY + 3) continue;
+        const wx0 = ox + rx;
+        const wx1 = wx0 + len - 1;
+        if (wx1 < sprite.x - 8 || wx0 > sprite.x + 8) continue;
+        reach = Math.max(reach, footY - wy);
+    }
+    return reach;
+}
+
+test('bridge-deck: on the deck both files sort behind the masked parapet, which covers near-file boots and balusters cleanly', () => {
     const { renderer, rails } = centralBridge();
-    assert.equal(rails.length, 6, 'the 3-tile span keeps six near-rail slices');
+    assert.equal(rails.length, 1, 'the central bridge uses one column-sliced masked parapet sprite');
+    const parapet = rails[0];
+    assert.equal(parapet.id, 'bridge.rail.central-river-bridge');
+    assert.ok(Number.isInteger(parapet.x) && Number.isInteger(parapet.y),
+        `parapet origin is snapped to whole world px, got (${parapet.x}, ${parapet.y})`);
+    const span = renderer.bridgeSpans.find((entry) => entry.id === 'central-river-bridge');
+    const midX = (span.start.x + span.end.x) / 2;
+    const midY = (span.start.y + span.end.y) / 2;
+    const bakedX = Math.round(midX - 132);
+    const bakedY = Math.round(midY - 124);
+    assert.deepEqual(parapet.parapetOrigin, { x: bakedX, y: bakedY },
+        'parapet origin matches baked bridge placement exactly');
+    const cachePad = 8;
+    const cacheOriginX = -(parapet.x + parapet.bounds.left - cachePad);
+    const cacheOriginY = -(parapet.y + parapet.bounds.top - cachePad);
+    assert.equal(Math.floor(parapet.x + parapet.bounds.left - cachePad), -cacheOriginX,
+        'cached canvas X uses an exact integer origin with zero fractional shift');
+    assert.equal(Math.floor(parapet.y + parapet.bounds.top - cachePad), -cacheOriginY,
+        'cached canvas Y uses an exact integer origin with zero fractional shift');
+    const row42WorldY = Math.floor(parapet.y + parapet.bounds.top - cachePad) + (parapet.parapetOrigin.y + 42 + cacheOriginY);
+    assert.equal(row42WorldY, bakedY + 42, 'parapet texel row 42 lands on the exact same world row as the baked bridge');
+    assert.ok(parapet.occlusionColumns?.length >= 16, 'parapet is sliced into vertical occlusion columns');
     let nearCrossed = 0;
     for (const { tileY, lanePx } of samplesAlong(22, 26, [-LANE_PX, 0, LANE_PX])) {
         const sprite = body(renderer, 18, tileY, lanePx);
         // The deck: past the north stair top (the lane moves a body along
         // the axis) and short of the over-rail depth at the south one.
-        if (sprite.tile.tileY < DECK_FROM || sprite.y >= rails[0].bridgeWalk.minY) continue;
+        if (sprite.tile.tileY < DECK_FROM || sprite.y >= parapet.bridgeWalk.minY) continue;
         const sortY = bodySortY(rails, sprite);
         assert.equal(sortY, sprite.y, `body at 18,${tileY.toFixed(2)} lane ${lanePx} keeps its ground Y on the deck`);
-        for (const { rail, reach } of railsOver(rails, sprite)) {
-            assert.ok(sortY < rail.sortY, `body at 18,${tileY.toFixed(2)} lane ${lanePx}: sorts at ${sortY.toFixed(2)}, after ${rail.id} (${rail.sortY.toFixed(2)})`);
-            assert.ok(reach <= LEGS_PX, `body at 18,${tileY.toFixed(2)} lane ${lanePx}: ${rail.id} reaches ${reach.toFixed(0)} px up its box, above the legs`);
-            if (lanePx > 0) assert.ok(reach <= 1, `far-file body at 18,${tileY.toFixed(2)}: ${rail.id} reaches ${reach.toFixed(0)} px above its feet`);
-            if (lanePx < 0 && reach > 0) nearCrossed++;
+        for (const col of parapet.occlusionColumns) {
+            const colLeft = Number.isFinite(col.left) ? parapet.x + col.left : -Infinity;
+            const colRight = Number.isFinite(col.right) ? parapet.x + col.right : Infinity;
+            if (colRight <= sprite.x - 17 || colLeft >= sprite.x + 17) continue;
+            assert.ok(sortY < col.sortY, `body at 18,${tileY.toFixed(2)} lane ${lanePx}: sorts at ${sortY.toFixed(2)}, after parapet col ${col.index} (${col.sortY.toFixed(2)})`);
         }
+        const reach = parapetReachOver(parapet, sprite);
+        if (lanePx < 0 && reach > 0) nearCrossed++;
     }
-    assert.ok(nearCrossed > 20, `the rail crosses the near file's legs along the deck (${nearCrossed} samples)`);
+    assert.ok(nearCrossed > 20, `the masked parapet covers the near file's legs/boots along the deck (${nearCrossed} samples)`);
 });
 
-test('bridge-deck: on the south stairs and landing a body keeps the over-rail rule and the rail never cuts it', () => {
+test('bridge-deck: on the south stairs and landing a body keeps the over-rail rule and the parapet never cuts it', () => {
     const { renderer, rails } = centralBridge();
-    const last = Math.max(...rails.map((rail) => rail.sortY));
+    const last = Math.max(...rails.flatMap((rail) => (
+        rail.occlusionColumns ? rail.occlusionColumns.map((col) => col.sortY) : [rail.sortY]
+    )));
     let ruled = 0;
     for (const { tileY, lanePx } of samplesAlong(25.9, 26.6, [-LANE_PX, -4.4, 0, 4.4])) {
         const sprite = body(renderer, 18, tileY, lanePx);
         if (sprite.y < rails[0].bridgeWalk.minY) continue;
         const sortY = bodySortY(rails, sprite);
-        assert.ok(sortY > last, `body at 18,${tileY.toFixed(2)} lane ${lanePx}: sorts at ${sortY.toFixed(2)}, before the last slice (${last.toFixed(2)})`);
-        for (const { rail } of railsOver(rails, sprite)) assert.ok(sortY > rail.sortY, `${rail.id} paints over the body at 18,${tileY.toFixed(2)}`);
+        assert.ok(sortY > last, `body at 18,${tileY.toFixed(2)} lane ${lanePx}: sorts at ${sortY.toFixed(2)}, before the last parapet column (${last.toFixed(2)})`);
         ruled++;
     }
     assert.ok(ruled > 20, 'the stairs and the landing are sampled');

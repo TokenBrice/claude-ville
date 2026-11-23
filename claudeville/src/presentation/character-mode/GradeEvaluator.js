@@ -184,20 +184,20 @@ export const GRADE_KEYFRAMES = Object.freeze([
     }),
     Object.freeze({
         name: 'morning', minute: 8 * 60 + 30, side: 'dawn',
-        exposure: 0.98, saturation: 0.97,
-        gain: [1.00, 1.00, 0.99], lift: [0, 0, 0.006], gamma: 1.0,
-        shadowTint: [0.94, 0.96, 1.05], highlightTint: [1.04, 1.02, 0.96],
+        exposure: 1.07, saturation: 1.02,
+        gain: [1.01, 1.00, 0.99], lift: [0, 0, 0.004], gamma: 1.0,
+        shadowTint: [0.90, 0.95, 1.09], highlightTint: [1.08, 1.04, 0.95],
         purkinje: 0, sunBand: 1, daylight: 1, night: 0, rake: 0.19,
-        vignetteEdge: [0.86, 0.89, 0.93], vignetteAlpha: 0.26,
+        vignetteEdge: [0.86, 0.89, 0.93], vignetteAlpha: 0.12,
         skyTop: '#4f86b8', skyHorizon: '#b9d3e2', voidColor: '#16222b', horizonHaze: '#9cb6c6',
     }),
     Object.freeze({
         name: 'noon', minute: 12 * 60 + 30, side: 'noon',
-        exposure: 1.0, saturation: 1.0,
-        gain: [1.02, 1.00, 0.97], lift: [0, 0, 0], gamma: 1.0,
-        shadowTint: [0.97, 0.98, 1.03], highlightTint: [1.03, 1.02, 0.98],
+        exposure: 1.16, saturation: 1.06,
+        gain: [1.03, 1.00, 0.96], lift: [0, 0, 0], gamma: 1.0,
+        shadowTint: [0.90, 0.95, 1.08], highlightTint: [1.10, 1.06, 0.94],
         purkinje: 0, sunBand: 1, daylight: 1, night: 0, rake: 0,
-        vignetteEdge: [0.86, 0.89, 0.92], vignetteAlpha: 0.24,
+        vignetteEdge: [0.86, 0.89, 0.92], vignetteAlpha: 0.10,
         skyTop: '#4a86c0', skyHorizon: '#b8d6e6', voidColor: '#16222b', horizonHaze: '#a2becf',
     }),
     // Golden hour is a low sun: an amber key over violet shadows, more
@@ -241,7 +241,10 @@ export const GRADE_KEYFRAMES = Object.freeze([
     // its own colour (grass stays green, water blue) and the moonlight lives in
     // the split tone — an indigo shadow tint and a faint blue-green highlight —
     // tuned to the lighter velvet target (~70 island meanLuma on clear-2300,
-    // storm-0200 p10 >= 30) while preserving the +0.08 full-moon phase step.
+    // storm-0200 p10 >= 30 before the 2026-11-23 overhaul; its denser trees,
+    // props, kerbs and darker roads put more of the frame in deep shadow, so
+    // the measured p10 is now ~25 with the island mean unchanged) while
+    // preserving the +0.08 full-moon phase step.
     Object.freeze({
         name: 'night', minute: 22 * 60, side: 'dusk',
         exposure: moonlit(0.68, 0.70), saturation: moonlit(0.58, 0.62),
@@ -407,10 +410,11 @@ export function evaluateGrade({
         const weatherTint = lumaNormalized(tint).map(channel => channel * value);
         gain = mul3(gain, lerp3(NEUTRAL, weatherTint, weight));
         exposure *= lerp(1, row.nightCourse, weight * night);
-        // A covered sky flattens the split tone and the sun band; at night
-        // half of the moonlit split tone survives, so silhouettes keep
-        // their cool rim under cloud.
+        // A covered sky flattens the split tone, clear-sun exposure boost and
+        // sun band; at night half of the moonlit split tone survives, so
+        // silhouettes keep their cool rim under cloud.
         const flatten = row.flatten * weight * lerp(1, 0.5, night);
+        if (exposure > 1) exposure = lerp(exposure, 1, flatten);
         shadowTint = towardOne3(shadowTint, flatten);
         highlightTint = towardOne3(highlightTint, flatten);
         gamma = lerp(gamma, 1, flatten);
@@ -423,12 +427,13 @@ export function evaluateGrade({
         horizonHaze = lerp3(horizonHaze, mul3(hexToRgb01(grey.haze), [exposure, exposure, exposure]), skyWeight);
         voidColor = lerp3(voidColor, hexToRgb01(grey.void), weight * 0.6);
     }
-    // Overcast: a covered sun leaves no raking band and no cloud shadows.
+    // Overcast and fog: a covered or fogged sky leaves no sunny cloud shadows.
     const flat = Math.max(w.flat, w.rain + w.snow, w.storm);
     sunBand *= 1 - flat;
-    const cloudShadow = daylight * clamp((0.85 - w.cloudCover) / 0.15);
+    const cloudShadow = daylight * clamp((0.85 - w.cloudCover) / 0.15) * (1 - clamp(w.fog * 1.5));
     daylight *= 1 - flat * 0.7;
     if (w.flat > 0) {
+        if (exposure > 1) exposure = lerp(exposure, 1, w.flat);
         shadowTint = towardOne3(shadowTint, w.flat * 0.5);
         highlightTint = towardOne3(highlightTint, w.flat * 0.5);
         rake *= 1 - w.flat * 0.5;
@@ -505,14 +510,20 @@ export function applyGradeToRgb(rgb, grade) {
     return [out[0] / peak, out[1] / peak, out[2] / peak];
 }
 
-// V6 — outside the sun and moon path the sea stays cool and quiet at every
-// hour: graded water (the outer ocean in CoastBake and the island's water
-// material in the resident scene pass) is held at this HSV saturation, so a
-// golden or blue-hour frame that is mostly sea never reads as a saturated
-// navy slab. Sun glitter, the moon path and lamp reflections are drawn after
-// this cap and keep their own colour. 0.37 leaves the composite (haze, cloud
-// courses, foam) under V6's 0.40.
+// V6 — outside the sun and moon path the sea stays cool and quiet in dark
+// states: graded water is held at WATER_DAY_MAX_SATURATION (0.48) by day
+// (relaxed 2026-11-23, operator decision: clearly blue daytime water) and
+// blends smoothly back to WATER_MAX_SATURATION (0.37) with night and storm,
+// so night and storm water stay quiet while clear daylight reads coastal blue.
+// Sun glitter, the moon path and lamp reflections keep their own colour.
 export const WATER_MAX_SATURATION = 0.37;
+export const WATER_DAY_MAX_SATURATION = 0.48;
+
+/** Effective V6 HSV saturation cap for a water mood (`{ night, storm }`). */
+export function waterMaxSaturation(mood) {
+    const dark = Math.max(0, Math.min(1, Math.max(Number(mood?.night) || 0, Number(mood?.storm) || 0)));
+    return WATER_DAY_MAX_SATURATION + (WATER_MAX_SATURATION - WATER_DAY_MAX_SATURATION) * dark;
+}
 
 /**
  * Pull `rgb` (0..1) toward its own Rec.709 luma just far enough that its HSV

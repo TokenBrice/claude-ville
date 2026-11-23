@@ -78,7 +78,7 @@ fn shadeOpenSea(cell: vec2f) -> vec3f {
         if (starlightAt(cell, cap, frame.starlight, tick)) { albedo = WATER_FOAM_CREST; }
         // SEA-1 — the sun band's dim fades out with the look.
         c = applyWaterMood(albedo) * WATER_CAST * mix(1.0, 0.86, frame.seaSunBand * (1.0 - frame.cloud.w));
-        c = capSaturation(applyWaterSky(capSaturation(applyTimeGrade(c, true), WATER_MAX_SATURATION)), WATER_MAX_SATURATION);
+        c = capSaturation(applyWaterSky(applyTimeGrade(c, true)), waterMaxSat());
         // SEA-2 / SEA-3 — lit slopes, static caps and calm lanes take the
         // sky's hue: the warm horizon inside the sun's road, cool outside.
         var take = 0.0;
@@ -87,7 +87,7 @@ fn shadeOpenSea(cell: vec2f) -> vec3f {
         if (take > 0.0) {
             var sky = frame.waterSky.rgb;
             if (inSunRoad(texelPx, frame.glint, frame.cameraScale)) { sky = frame.seaSky; }
-            c = capSaturation(seaSkyHue(c, sky, take), WATER_MAX_SATURATION);
+            c = capSaturation(seaSkyHue(c, sky, take), waterMaxSat());
         }
     }
     let hazeRows = frame.seaHaze.a;
@@ -141,8 +141,9 @@ fn shadeOpenSea(cell: vec2f) -> vec3f {
     }
     // SEA-1 — no cloud multiply on open water: its shade is the lift's one stop.
     if (frame.cloud.w > 0.0) { shade = 0.0; }
+    let cloudDark = shade * frame.cloud.z;
     shade = max(shade, squallShade(cell, n, order));
-    if (shade > 0.0) { c *= vec3f(1.0) - shade * 0.085 * vec3f(1.0, 0.96, 0.84); }
+    if (shade > 0.0) { c *= vec3f(1.0) - max(cloudDark, shade * 0.085) * vec3f(1.0, 0.96, 0.84); }
     return applyAerialHaze(c, order, (cell.y + 0.5 + seaContourRows(cell) + frame.cameraXy.y) * frame.cameraScale, false);
 }
 `;

@@ -4,12 +4,13 @@ import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { modelBehaviorProfile, moodBehaviorMultiplier } from '../../domain/value-objects/AgentMood.js';
 import { BUILDING_DEFS, normalizeBuildingType } from '../../config/buildings.js';
 import { THEME, STATUS_VISUALS, PROVIDER_HUES, WORLD_BODY_FONT_11, WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
+import { ART_RAMPS } from '../../config/artPalette.js';
 import { packGeometryPixels } from './gpu/GpuSceneBuilder.js';
 import { agentSignature, drawAgentSignature, clearAgentSignatureCache, getModelVisualIdentity, providerPaletteKey } from '../shared/ModelVisualIdentity.js';
 import { agentTrimAccent } from '../shared/TeamColor.js';
 import { SpriteSheet, dirFromVelocity, resolveActionFrame, WALK_FRAMES, IDLE_FRAMES, DIRECTIONS, DEFAULT_CELL } from './SpriteSheet.js';
 import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
-import { RITUAL_GESTURE_PERIOD_MS, SCENIC_POINT_POSTURE } from './RitualConductor.js';
+import { RITUAL_GESTURE_PERIOD_MS, SCENIC_POINT_POSTURE, ritualPhaseOffset, workStripGroup } from './RitualConductor.js';
 import { drawWorkDownbeat } from './WorkDownbeats.js';
 import { pulseAlpha, pulseBand01Frame } from './PulsePolicy.js';
 import { drawToolGlyphBadge, PLAN_MODE_GLYPH, PLAN_MODE_GLYPH_COLOR, toolGlyphKey } from './ToolGlyphBadge.js';
@@ -46,9 +47,10 @@ import {
     paintThoughtPlate,
     snapScreenOrigin,
 } from './WorldLabelKit.js';
-import { Compositor, agentPaletteVariant, bakeSpriteOutline, resolveHeadAccessory, snowCapTexels } from './Compositor.js';
+import { Compositor, agentPaletteVariant, bakeSpriteOutline, opaqueRimSheet, resolveHeadAccessory, snowCapTexels } from './Compositor.js';
 import { fillPixelEllipse } from './PixelShapes.js';
 import {
+    actionNeededRingColor,
     drawGroundMarks,
     drawSelectionChevron,
     groundMarkDepth,
@@ -70,7 +72,8 @@ import {
     shouldEvictAtHighWater,
     unpinnedCacheKeys,
 } from './CanvasBudget.js';
-import { AgentAction, TravelGait, isPlanMode, resolveAgentAction, resolveTravelGait } from './ActionVocabulary.js';
+import { AgentAction, TravelGait, VERIFIED_CELEBRATION_MS, isPlanMode, resolveAgentAction, resolveTravelGait } from './ActionVocabulary.js';
+import { isWaitingOnCrew } from '../../domain/services/StatusResolver.js';
 import { AgentGpuOverlayRenderer, departedTableau } from './AgentGpuOverlayRenderer.js';
 import { codexPoseGripped, codexWeaponPose, drawCodexGauntlet } from './CodexWeaponPose.js';
 import { bakeWeaponFrame, rasterWeaponSource } from './WeaponFrames.js';
@@ -82,6 +85,7 @@ import { materialClassId } from './MaterialRegistry.js';
 import { LANTERN_SET_DOWN, carriedLanternStamp } from './CarriedLantern.js';
 import { waitAgeTier, waitAnchor } from '../../domain/services/SignalLedger.js';
 import { AMBIENT_SCENIC_POINTS } from '../../config/scenery.js';
+import { VILLAGE_GATE, inVillageMasonry } from '../../config/townPlan.js';
 import {
     ERRAND_GAP_MS,
     ERRAND_LEG_TIMEOUT_MS,
@@ -126,6 +130,47 @@ const IMPOSTOR_HALF_WIDTHS = Object.freeze([1, 2, 3, 3, 4, 5, 5, 6, 6, 7, 7, 6, 
 const IMPOSTOR_OUTLINE = '#070a0c';
 // Stamp box (feet-relative) covering shadow, outline and the apex status cell.
 const IMPOSTOR_BOX = Object.freeze({ left: -9, top: -22, width: 18, height: 28 });
+const BUDGET_IMPOSTOR_BODY_BOX = Object.freeze({
+    left: IMPOSTOR_BOX.left + 1,
+    right: IMPOSTOR_BOX.left + IMPOSTOR_BOX.width - 1,
+    top: IMPOSTOR_BOX.top + 1,
+    bottom: 3,
+});
+const XRAY_SILHOUETTE_CACHE_MAX = 16;
+
+function parseHexRgb(value) {
+    const raw = String(value || '#ffffff').replace('#', '');
+    return Object.freeze([
+        parseInt(raw.slice(0, 2), 16) || 0,
+        parseInt(raw.slice(2, 4), 16) || 0,
+        parseInt(raw.slice(4, 6), 16) || 0,
+    ]);
+}
+
+const XRAY_PALETTES = Object.freeze({
+    working: Object.freeze({
+        rim: parseHexRgb(ART_RAMPS.snow[0]),
+        rimAlpha: 148,
+        fill: parseHexRgb(ART_RAMPS.slate[1]),
+        fillAlpha: 88,
+        dither: true,
+    }),
+    selected: Object.freeze({
+        rim: parseHexRgb(ART_RAMPS.trimGold[3]),
+        rimAlpha: 245,
+        fill: parseHexRgb(ART_RAMPS.trimGold[1]),
+        fillAlpha: 108,
+        dither: false,
+    }),
+});
+
+function releaseXraySilhouetteCache(cache) {
+    if (!cache || typeof cache.values !== 'function') return;
+    for (const entry of cache.values()) {
+        releaseCanvasBackingStore(entry?.canvas || entry);
+    }
+    cache.clear();
+}
 const WALK_PIXELS_PER_FRAME = 4.5;
 // W8.7 — the authored run cycle (actionStrip group `run`, six frames, two
 // strides) covers twice the walk's ground per frame, so at the top rung a
@@ -177,6 +222,9 @@ const CHAT_FAN_REACH_PX = CHAT_START_PX + 24;
 // AP-2 — how long a chat may stay one-sided (the partner never pointed back)
 // before the cleanup pass ends it and the body resumes its route.
 export const ONE_SIDED_CHAT_GRACE_MS = 8000;
+// Cap on mutual chats driven by an unchanged static messaging tool call so a
+// lingering SendMessage snapshot cannot pin two villagers indefinitely.
+export const MUTUAL_CHAT_MAX_MS = 12000;
 // Camera-facing rank per direction (S, SE, E, NE, N, NW, W, SW): S/SE/SW show
 // the face, E/W the profile, NE/N/NW the back. An exact reversal turns through
 // the side with the higher rank, so the operator sees a face, never a back.
@@ -329,16 +377,48 @@ const FOOTFALL_FRAMES = new Set([0, Math.floor(WALK_FRAMES / 2)]);
 // return lands. Bounded to the lifecycle cue window; no pulse is allocated, so
 // reduced motion shows the identical held mark.
 const RECEIVE_BEAT_MS = 1400;
-// 2.2 — the authored read group's optional two-frame beat. `medium` band
-// (~600 ms): it replaces the working pulse on the same body, never stacks with
-// it, and reduced motion holds the group's declared static frame instead.
+// 2.2 — full ping-pong action strip cadence (`medium` band, per-agent seeded
+// phase) and fallback beat step. Reduced motion holds the group's static row.
 const ACTION_BEAT_MS = 600;
-// 7.3 — authored work strips. A strip group plays only while RitualConductor
-// has admitted a ritual for this villager (≤ 6 at once), picked by the
-// ritual's real tool class (`ritual.stripGroup`), and cycles once per gesture
-// period with its contact frame on the period boundary, where WorkDownbeats
-// strikes. Held wait and work poses carry no idle bob.
+const ACTION_STRIP_STEP_MS = Object.freeze({
+    read: 420,
+    think: 440,
+    celebrate: 320,
+});
+// 7.3 — authored work strips (relaxed 2026-11-23, operator decision):
+// arrived WORKING villagers hold/cycle their tool-class work strip for the
+// whole tool call on a seeded burst/pause cycle (2-3 s work, 1.5-2.5 s
+// breather), while RitualConductor keeps its 6-ritual cap for sparks and
+// overlays. During an admitted ritual the strip stays locked to the ritual's
+// gesture period so the contact frame lands on the WorkDownbeat strike.
 const WORK_STRIP_GROUPS = new Set(['strike', 'tinker', 'gaze']);
+const WORK_STRIP_PERIOD_MS = Object.freeze({
+    strike: 540,
+    tinker: 780,
+    gaze: 960,
+});
+const WORK_BURST_MIN_MS = 2000;
+const WORK_BURST_RANGE_MS = 1001;
+const WORK_BREATHER_MIN_MS = 1500;
+const WORK_BREATHER_RANGE_MS = 1001;
+// 7.1 / 7.2 — gentle seated and waiting idle strip cadences (relaxed
+// 2026-11-23, operator decision; reduced motion and stale state hold static).
+const SIT_CADENCE_MIN_MS = 1400;
+const SIT_CADENCE_RANGE_MS = 801;
+const WAIT_HOLD_MIN_MS = 3000;
+const WAIT_HOLD_RANGE_MS = 2001;
+const WAIT_BECKON_FRAME_MS = 220;
+// 1-column head-glance pairs strictly within STRIP_FACINGS (SE<->E, W<->SW).
+const PETITIONER_GLANCE_NEIGHBOR = Object.freeze({ 1: 2, 2: 1, 6: 7, 7: 6 });
+// Explicit per-frame idle breathing bob (replaces sine rounding that evaluated
+// to 0 on every IDLE frame and scenic posture).
+const IDLE_BOB_BY_FRAME = Object.freeze([0, 0, -1, 0]);
+// Brief head-drop recoil on a rejected push (3 s; mid-walk pushes latch until
+// arrival like verified wins).
+const PUSH_RECOIL_MS = 3000;
+const PUSH_RECOIL_DROP_PX = 3;
+const PUSH_RECOIL_LIVE_MS = 30_000;
+const MID_WALK_LATCH_MAX_MS = 60_000;
 // Agent actions a profile may author as a body pose. A profile without the
 // group resolves no cell, so the procedural chip stays in charge.
 const ACTION_STRIP_GROUPS = Object.freeze({
@@ -346,9 +426,6 @@ const ACTION_STRIP_GROUPS = Object.freeze({
     [AgentAction.THINK]: 'think',
     [AgentAction.CELEBRATE]: 'celebrate',
 });
-// Families that draw the action prop chip (read, work, think, talk,
-// celebrate) beside the hand. Gemini, Kimi and Grok keep a bare body.
-const ACTION_PROP_PROVIDERS = new Set(['claude', 'codex', 'deepseek', 'zai']);
 // 2.3 — how long the resolved command slip shows its wax seal. Static mark,
 // bounded to the lifecycle event that earned it.
 const SEALED_SLIP_MS = 1800;
@@ -1213,6 +1290,9 @@ export class AgentSprite {
         motionClock = null,
         getSpeakerTag = null,
         getSnowBucket = null,
+        onArrive = null,
+        onCelebrationArrived = null,
+        isPointWalkable = null,
         // VB-15 — the renderer places a new body itself (the gate or Portal
         // arrival), which drops any route picked here; it picks from there.
         deferInitialTarget = false,
@@ -1290,6 +1370,7 @@ export class AgentSprite {
         // bubbleBaseY with its leader landing bubbleAnchorDy screen px below.
         this.bubbleSlot = null;
         this.bubbleLateral = 0;
+        this.bubbleClampX = 0;
         this.bubbleOccluded = false;
         this.bubbleBaseY = 0;
         this.bubbleAnchorDy = 0;
@@ -1380,6 +1461,19 @@ export class AgentSprite {
         this.getSpeakerTag = typeof getSpeakerTag === 'function' ? getSpeakerTag : null;
         // EF-6 — the village's C-W2 snow bucket (0 bare, 1–4 lying snow).
         this.getSnowBucket = typeof getSnowBucket === 'function' ? getSnowBucket : null;
+        this.onArrive = typeof onArrive === 'function' ? onArrive : null;
+        this.onCelebrationArrived = typeof onCelebrationArrived === 'function' ? onCelebrationArrived : null;
+        this._pendingCelebration = null;
+        this._celebrationUntil = 0;
+        this._seenRejectedPushIds = new Set();
+        this._pendingPushRecoil = null;
+        this._pushRecoilUntil = 0;
+        this._petitionerGlanceCooldownMs = null;
+        this._petitionerGlanceActiveMs = 0;
+        this._petitionerBaseFacing = null;
+        // Continuous clearance check shared with IsometricRenderer (footprint pad,
+        // walk exclusions, village masonry and coast signed-distance curve).
+        this.isPointWalkable = typeof isPointWalkable === 'function' ? isPointWalkable : null;
         this._stillSince = null;
         this._risenFacing = false;
         this._subagentWait = null;
@@ -1492,6 +1586,7 @@ export class AgentSprite {
         // drop our references without zeroing their backing stores. Cell effects
         // are private to this AgentSprite and can be released immediately.
         releaseCanvasMap(this._frozenTintCellCache);
+        releaseXraySilhouetteCache(this._xraySilhouetteCache);
         this._cellBoundsCache.clear();
         this.spriteCanvas = null;
         this.spriteSheet = null;
@@ -1567,8 +1662,15 @@ export class AgentSprite {
 
     _updatePrivateDerivedEstimate() {
         let pixels = 0;
-        for (const canvas of this._frozenTintCellCache.values()) {
-            pixels += (canvas?.width || 0) * (canvas?.height || 0);
+        if (this._frozenTintCellCache) {
+            for (const canvas of this._frozenTintCellCache.values()) {
+                pixels += (canvas?.width || 0) * (canvas?.height || 0);
+            }
+        }
+        if (this._xraySilhouetteCache) {
+            for (const entry of this._xraySilhouetteCache.values()) {
+                pixels += (entry?.canvas?.width || 0) * (entry?.canvas?.height || 0);
+            }
         }
         if (pixels > 0) PRIVATE_DERIVED_CACHE_ESTIMATES.set(this._resourceOwnerKey, pixels * 4);
         else PRIVATE_DERIVED_CACHE_ESTIMATES.delete(this._resourceOwnerKey);
@@ -1886,7 +1988,7 @@ export class AgentSprite {
     // Called every dwell frame while a place is held: the timer never runs
     // out, the seat faces its authored way, and a petitioner walks to its new
     // slot when the waiting set (and so its rank) changed.
-    _holdRestPlace(now) {
+    _holdRestPlace(now, dt = 0) {
         // Crowd spacing may shift an arrival's stop by a few px; a sitter
         // lands exactly on its seat point, between the seat's two slices.
         const held = this._restSeat;
@@ -1919,6 +2021,9 @@ export class AgentSprite {
             return;
         }
         if (glance != null && !child) this._setFacingGoal(glance);
+        if (this.visitRole === 'queue' && !glance && !child && dt > 0) {
+            this._advancePetitionerGlance(dt);
+        }
         if (this.visitRole === 'rest' && !this._restSeat && this._restBuilding && now >= (this._standRefreshAt || 0)) {
             // AG-2 — a patron standing at the Tavern takes a seat once one frees.
             this._standRefreshAt = now + STAND_REFRESH_MS;
@@ -1937,6 +2042,102 @@ export class AgentSprite {
         if (current && current.tileX === target.tileX && current.tileY === target.tileY) return;
         this._lastPathTileKey = null;
         this._routeToVisitTarget(QUEUE_PLACE, null, target);
+    }
+
+    // 7.2 (relaxed 2026-11-23) — subtle 1-column head glances for queued
+    // petitioners, staying strictly within STRIP_FACINGS (SE<->E, W<->SW).
+    // Holds still under reduced motion or stale observation.
+    _advancePetitionerGlance(dt) {
+        if (this.motionScale <= 0 || this.observation?.state === 'stale' || this.chatting || this.chatPartner || this._distressPose?.()) {
+            this._petitionerGlanceActiveMs = 0;
+            return;
+        }
+        if (this._petitionerGlanceActiveMs > 0) {
+            this._petitionerGlanceActiveMs -= dt;
+            if (this._petitionerGlanceActiveMs <= 0) {
+                this._petitionerGlanceActiveMs = 0;
+                if (this._petitionerBaseFacing != null) {
+                    this._setFacingGoal(this._petitionerBaseFacing);
+                    this._petitionerBaseFacing = null;
+                }
+            }
+            return;
+        }
+        if (this._petitionerGlanceCooldownMs == null) {
+            this._petitionerGlanceCooldownMs = 1500 + this._fidgetRandom() * 2500;
+        }
+        this._petitionerGlanceCooldownMs -= dt;
+        if (this._petitionerGlanceCooldownMs <= 0) {
+            const base = this._facingGoal ?? this.direction;
+            const neighbor = PETITIONER_GLANCE_NEIGHBOR[base];
+            const allowed = this._authoredStripFacings();
+            if (neighbor != null && (!allowed || allowed.includes(neighbor))) {
+                this._petitionerBaseFacing = base;
+                this._setFacingGoal(neighbor);
+                this._petitionerGlanceActiveMs = 700 + this._fidgetRandom() * 450;
+            }
+            this._petitionerGlanceCooldownMs = 2600 + this._fidgetRandom() * 3200;
+        }
+    }
+
+    // Latch verified wins that arrive mid-walk until the villager arrives at
+    // its destination so the 5 s celebration never expires during transit.
+    observeVerifiedOutcome(outcome, now = Date.now()) {
+        if (!outcome || departedTableau(this)) return null;
+        if (this.moving || this.isArrivalPending()) {
+            this._pendingCelebration = {
+                kind: outcome.kind,
+                at: Number(outcome.at) || now,
+                expiresAt: now + MID_WALK_LATCH_MAX_MS,
+            };
+            return { latched: true };
+        }
+        const base = Number.isFinite(Number(outcome.at)) ? Math.max(now, Number(outcome.at)) : now;
+        const until = base + VERIFIED_CELEBRATION_MS;
+        this._celebrationUntil = Math.max(this._celebrationUntil || 0, until);
+        return { latched: false, until };
+    }
+
+    // Trigger the 3 s head-drop recoil on a rejected push (latched mid-walk).
+    triggerPushRecoil(now = Date.now()) {
+        if (departedTableau(this)) return;
+        if (this.moving || this.isArrivalPending()) {
+            this._pendingPushRecoil = { expiresAt: now + MID_WALK_LATCH_MAX_MS };
+            return;
+        }
+        this._pushRecoilUntil = Math.max(this._pushRecoilUntil || 0, now + PUSH_RECOIL_MS);
+    }
+
+    _observeRejectedPushes(now = Date.now()) {
+        const events = this.agent?.gitEvents;
+        if (!Array.isArray(events) || !events.length) return;
+        for (const ev of events) {
+            if (!ev || typeof ev !== 'object') continue;
+            const type = String(ev.type || ev.kind || '').toLowerCase();
+            if (type !== 'push') continue;
+            const status = String(ev.status || '').toLowerCase();
+            const stderr = String(ev.stderr || ev.error || ev.reason || '');
+            const rejected = status === 'rejected' || status === 'failed'
+                || ev.success === false
+                || (ev.exitCode != null && Number.isFinite(Number(ev.exitCode)) && Number(ev.exitCode) !== 0)
+                || /\brejected\b|non-fast-forward|failed to push/i.test(stderr);
+            if (!rejected) continue;
+            const ts = Number(ev.timestamp ?? ev.completedAt ?? ev.ts ?? 0);
+            const key = String(ev.id || ev.commandHash || `${type}:${ts}`);
+            if (this._seenRejectedPushIds.has(key)) continue;
+            this._seenRejectedPushIds.add(key);
+            if (Number.isFinite(ts) && ts > 0 && now - ts > PUSH_RECOIL_LIVE_MS) continue;
+            this.triggerPushRecoil(now);
+        }
+    }
+
+    _pushRecoilDrop(now = Date.now()) {
+        if (!(this._pushRecoilUntil > now) || departedTableau(this)) return 0;
+        if (this.motionScale <= 0) return PUSH_RECOIL_DROP_PX;
+        const remaining = this._pushRecoilUntil - now;
+        if (remaining > 600) return PUSH_RECOIL_DROP_PX;
+        if (remaining > 300) return Math.max(1, PUSH_RECOIL_DROP_PX - 1);
+        return 1;
     }
 
     // D7 — a nearby squadmate's verified win (`SquadNotice`): a body holding
@@ -2724,13 +2925,11 @@ export class AgentSprite {
         this.targetY = head.y;
     }
 
-    // BR-3 — a route's waypoints on a landmark deck, and on a landing the
-    // route enters or leaves that deck by, move onto the walker's lane (the
-    // side IsometricRenderer._laneSideForSprite steers it to), so two-way
-    // traffic passes apart: lane steering lets go within
-    // LANE_STEERING.arrivalDistancePx of a waypoint, and centre-line deck
-    // waypoints pulled both files onto one line. The route's end never moves,
-    // nor does a waypoint whose lane point would leave the walk grid.
+    // BR-3 — a route's waypoints on a landmark deck move onto the walker's lane
+    // (the side IsometricRenderer._laneSideForSprite steers it to), while
+    // landing tiles taper back to 0 so bodies pass centred between the narrow
+    // stone lantern pillars. The route's end never moves, nor does a waypoint
+    // whose lane point or adjacent segment would cross unwalkable tiles.
     _keepBridgeLanes(tilePath, fromTile) {
         const crossings = this._crossingTiles();
         if (!crossings.size) return;
@@ -2739,18 +2938,27 @@ export class AgentSprite {
             const tile = index < 0 ? fromTile : tilePath[index];
             return tile ? crossings.get(`${Math.round(tile.tileX)},${Math.round(tile.tileY)}`) : undefined;
         };
-        const isDeck = (crossing) => !!crossing && !crossing.landing && crossing.info.kind === 'landmark';
         for (let index = 0; index < points.length - 1; index++) {
             const crossing = crossingAt(index);
             if (crossing?.info.kind !== 'landmark') continue;
-            if (crossing.landing && !isDeck(crossingAt(index - 1)) && !isDeck(crossingAt(index + 1))) continue;
+            // Taper landing-tile lane offset to 0 so walkers enter and leave
+            // bridge stairs centred inside the parapet and pillars.
+            if (crossing.landing) continue;
             const prev = index > 0 ? tileToWorld(tilePath[index - 1]) : { x: this.x, y: this.y };
             const next = tileToWorld(tilePath[index + 1]);
             const shift = bridgeLaneShift(crossing.info, next.x - prev.x, next.y - prev.y);
             if (!shift) continue;
             const x = points[index].x + shift.x;
             const y = points[index].y + shift.y;
-            if (this._isScreenPointWalkable(x, y)) points[index] = { x, y };
+            const prevPoint = index > 0 ? points[index - 1] : { x: this.x, y: this.y };
+            const nextPoint = points[index + 1];
+            if (
+                this._isScreenPointWalkable(x, y)
+                && this._isScreenSegmentWalkable(prevPoint.x, prevPoint.y, x, y)
+                && this._isScreenSegmentWalkable(x, y, nextPoint.x, nextPoint.y)
+            ) {
+                points[index] = { x, y };
+            }
         }
     }
 
@@ -2771,6 +2979,14 @@ export class AgentSprite {
         if (!crossings.size) return false;
         const tile = worldToTile(this.x, this.y);
         return crossings.has(`${Math.round(tile.tileX)},${Math.round(tile.tileY)}`);
+    }
+
+    // Gate apron behind the village gatehouse wall: excluded from chat matching
+    // and chat start so arrivals walk clear into open plaza before pairing.
+    standsOnGateApron() {
+        if (!Number.isFinite(this.x) || !Number.isFinite(this.y)) return false;
+        const tile = worldToTile(this.x, this.y);
+        return tile.tileY >= 36.5 && Math.abs(tile.tileX - VILLAGE_GATE.tileX) <= 2.5;
     }
 
     // The fan place (7.4) this body's route ends on, when the renderer re-aimed
@@ -2797,9 +3013,15 @@ export class AgentSprite {
             if (segment.length === 0) {
                 return this.pathfinder.findPath(fromTile, toTile, this.bridgeTiles, this._pathOptions(fromTile, toTile));
             }
-            if (stitched.length > 0) segment.shift();
+            // Pathfinder.findPath already omits `leg` and returns simplified corners,
+            // so deduplicate only an exact repeated point rather than dropping the
+            // next leg's first corner.
+            const last = stitched[stitched.length - 1];
+            if (last && segment[0] && last.tileX === segment[0].tileX && last.tileY === segment[0].tileY) {
+                segment.shift();
+            }
             stitched.push(...segment);
-            leg = next;
+            leg = stitched[stitched.length - 1] || next;
         }
         if (stitched.length === 0) {
             return this.pathfinder.findPath(fromTile, toTile, this.bridgeTiles, this._pathOptions(fromTile, toTile));
@@ -2812,12 +3034,16 @@ export class AgentSprite {
             Number(toTile?.tileX) - Number(fromTile?.tileX),
             Number(toTile?.tileY) - Number(fromTile?.tileY),
         );
-        if (Number.isFinite(distance) && distance <= LOCAL_DIRECT_PATH_TILE_DISTANCE) return null;
+        const routing = this.getRoutingContext?.();
+        const standingTiles = routing?.standingTiles;
+        const standingVersion = routing?.standingVersion || '';
+        if (Number.isFinite(distance) && distance <= LOCAL_DIRECT_PATH_TILE_DISTANCE) {
+            return standingTiles?.size ? { standingTiles, standingVersion } : null;
+        }
         const roadTiles = this.getRoadTiles?.();
         const bridgeTiles = this.bridgeTiles;
-        const routing = this.getRoutingContext?.();
         const laneTiles = routing?.laneTiles;
-        if (!roadTiles?.size && !bridgeTiles?.size && !laneTiles?.size) return null;
+        if (!roadTiles?.size && !bridgeTiles?.size && !laneTiles?.size && !standingTiles?.size) return null;
         if (this._routeLaneMap !== laneTiles) {
             this._routeLaneMap = laneTiles;
             this._routePlazaTiles = new Set();
@@ -2848,6 +3074,8 @@ export class AgentSprite {
             bridgeTiles,
             congestionTiles: routing?.congestionTiles,
             congestionVersion: routing?.congestionVersion || '',
+            standingTiles,
+            standingVersion,
             personalityBucket,
             preferredBridgeId,
             weights,
@@ -2874,6 +3102,7 @@ export class AgentSprite {
             const rx = Number(key.slice(0, comma));
             const ry = Number(key.slice(comma + 1));
             if (!Number.isFinite(rx) || !Number.isFinite(ry)) continue;
+            if (this.pathfinder && !this.pathfinder.isWalkable(rx, ry)) continue;
             const dx = rx - fx;
             const dy = ry - fy;
             const dist = Math.hypot(dx, dy);
@@ -2888,9 +3117,23 @@ export class AgentSprite {
     }
 
     _isScreenPointWalkable(x, y) {
+        if (this.isPointWalkable) return this.isPointWalkable(x, y);
         if (!this.pathfinder) return true;
         const tile = this._screenToTile(x, y);
-        return this.pathfinder.isWalkable(Math.round(tile.tileX), Math.round(tile.tileY));
+        return this.pathfinder.isWalkable(Math.round(tile.tileX), Math.round(tile.tileY))
+            && !inVillageMasonry(tile.tileX, tile.tileY);
+    }
+
+    _isScreenSegmentWalkable(x0, y0, x1, y1) {
+        if (!this.pathfinder) return true;
+        const dist = Math.hypot(x1 - x0, y1 - y0);
+        if (dist <= 4) return this._isScreenPointWalkable(x1, y1);
+        const steps = Math.min(48, Math.max(4, Math.ceil(dist / 6)));
+        for (let step = 1; step <= steps; step++) {
+            const t = step / steps;
+            if (!this._isScreenPointWalkable(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t)) return false;
+        }
+        return true;
     }
 
     _screenToTile(x, y) {
@@ -3269,6 +3512,7 @@ export class AgentSprite {
         this.chatPartner = null;
         this.chatting = false;
         this.chatSinceMs = null;
+        this._chatStartMsgKey = null;
         this.chatBubbleAnim = 0;
         this.setArrivalState('visible');
         this._lastPathTileKey = null;
@@ -3393,6 +3637,7 @@ export class AgentSprite {
                 this.chatting = false;
                 this.chatPartner = null;
                 this.chatSinceMs = null;
+                this._chatStartMsgKey = null;
                 this.waypoints = [];
                 this.targetX = this.x;
                 this.targetY = this.y;
@@ -3411,6 +3656,7 @@ export class AgentSprite {
         this._advanceContextStrainSweat(particleSystem);
         this._advanceDistressRecovery(particleSystem);
         this._advanceTokenFlowMotes(particleSystem, frameScale);
+        this._observeRejectedPushes(Date.now());
         // 7.3 — a body whose strip is due turns to an authored strip facing.
         this._holdStripFacing();
         // AG-6 — a planted errored or rate-limited body turns to its pose.
@@ -3441,7 +3687,8 @@ export class AgentSprite {
             // landing: a pair heading across meets on the first tile past it.
             const fanPlace = this._chatApproachRoute ? this._routeEndFanPlace() : null;
             if ((fanPlace ? !this.moving && cpDist < CHAT_FAN_REACH_PX : cpDist < CHAT_START_PX)
-                && !this.standsOnCrossing() && !partner.standsOnCrossing?.()) {
+                && !this.standsOnCrossing() && !partner.standsOnCrossing?.()
+                && !this.standsOnGateApron() && !partner.standsOnGateApron?.()) {
                 // AP-2 — the partner is already in (or promised to) another
                 // chat: this approach would stand one-sided, so it ends and
                 // the body resumes its route instead of stacking on the pair.
@@ -3510,10 +3757,10 @@ export class AgentSprite {
         this._syncRestPlace(Date.now());
 
         if (this.waitTimer > 0) {
-            // 7.1 / 7.2 — a held seat or queue slot: still, no fidget, no
-            // timeout; only a status change (above) moves the body on.
+            // 7.1 / 7.2 — a held seat or queue slot: no timeout; petitioners
+            // may still glance 1 column aside inside STRIP_FACINGS.
             if (!this.moving && this.visitRole) {
-                this._holdRestPlace(Date.now());
+                this._holdRestPlace(Date.now(), dt);
                 this._advanceIdleAnimation(dt);
                 return;
             }
@@ -3605,6 +3852,7 @@ export class AgentSprite {
         let travelled = 0;
         let headingX = this.targetX - this.x;
         let headingY = this.targetY - this.y;
+        let reroutedThisUpdate = false;
         while (remaining > 0) {
             const dx = this.targetX - this.x;
             const dy = this.targetY - this.y;
@@ -3615,8 +3863,19 @@ export class AgentSprite {
             const sliverToStop = dist > remaining && dist - remaining < STEP_SLIVER_PX
                 && this._stopsAtTarget(dx, dy);
             if (dist > remaining && !sliverToStop) {
-                this.x += (dx / dist) * remaining;
-                this.y += (dy / dist) * remaining;
+                const nextX = this.x + (dx / dist) * remaining;
+                const nextY = this.y + (dy / dist) * remaining;
+                // Guard against lateral drift (lane steering / avoidance) pulling
+                // a walker off its corridor across water or blocked tiles.
+                if (!this._straightWalk && !reroutedThisUpdate && this.pathfinder
+                    && !this._isScreenPointWalkable(nextX, nextY)
+                    && this._isScreenPointWalkable(this.x, this.y)
+                    && this._rerouteAroundBlockedStep()) {
+                    reroutedThisUpdate = true;
+                    continue;
+                }
+                this.x = nextX;
+                this.y = nextY;
                 travelled += remaining;
                 headingX = dx;
                 headingY = dy;
@@ -3651,6 +3910,29 @@ export class AgentSprite {
         this._advanceWalkAnimation(travelled, headingX, headingY, dt, particleSystem);
     }
 
+    // Short reroute when lateral steering drift puts the next step onto
+    // unwalkable ground or water (e.g. pond tile 17,21 north of central bridge).
+    _rerouteAroundBlockedStep() {
+        if (!this.pathfinder || typeof this.pathfinder.findPath !== 'function') return false;
+        const now = Date.now();
+        if (this._lastDriftRerouteAt && now - this._lastDriftRerouteAt < 180) return false;
+        const dest = this.waypoints?.length ? this.waypoints[this.waypoints.length - 1] : { x: this.targetX, y: this.targetY };
+        if (!dest || !Number.isFinite(dest.x) || !Number.isFinite(dest.y)) return false;
+        const fromTile = this._screenToTile(this.x, this.y);
+        const destTile = this._screenToTile(dest.x, dest.y);
+        const tilePath = this.pathfinder.findPath(fromTile, destTile, this.bridgeTiles, this._pathOptions(fromTile, destTile));
+        if (!tilePath?.length) return false;
+        this._lastDriftRerouteAt = now;
+        this.waypoints = tilePath.map((t) => ({ ...tileToWorld(t) }));
+        if (this._isScreenPointWalkable(dest.x, dest.y)) {
+            this.waypoints[this.waypoints.length - 1] = { x: dest.x, y: dest.y };
+        }
+        this._keepBridgeLanes(tilePath, fromTile);
+        this.targetX = this.waypoints[0].x;
+        this.targetY = this.waypoints[0].y;
+        return true;
+    }
+
     // Reduced motion — the route collapses to its last point: the body stands
     // there facing along its course, then arrives like a walker would.
     _cutToRouteEnd(dt, particleSystem) {
@@ -3675,6 +3957,7 @@ export class AgentSprite {
         this._advanceWalkAnimation(travelled, headingX, headingY, dt, particleSystem);
         this._stepStartX = NaN;
         this.moving = false;
+        const wasStraightWalk = this._straightWalk;
         this._straightWalk = false;
         this.behavior.arrive({
             state: this._lastIntentId ? 'performing' : 'lingering',
@@ -3682,9 +3965,29 @@ export class AgentSprite {
             phase: this._lastIntentSnapshot?.phase || this._phaseForAgentState(),
             interruptible: this._lastIntentSnapshot?.interruptible,
         });
+        const arrivedAt = Date.now();
+        if (!wasStraightWalk && this._pendingCelebration) {
+            const pending = this._pendingCelebration;
+            this._pendingCelebration = null;
+            if (arrivedAt <= pending.expiresAt && !departedTableau(this)) {
+                const until = arrivedAt + VERIFIED_CELEBRATION_MS;
+                this._celebrationUntil = Math.max(this._celebrationUntil || 0, until);
+                this.onCelebrationArrived?.(this, pending, until);
+            }
+        }
+        if (!wasStraightWalk && this._pendingPushRecoil) {
+            const pendingRecoil = this._pendingPushRecoil;
+            this._pendingPushRecoil = null;
+            if (arrivedAt <= pendingRecoil.expiresAt && !departedTableau(this)) {
+                this._pushRecoilUntil = Math.max(this._pushRecoilUntil || 0, arrivedAt + PUSH_RECOIL_MS);
+            }
+        }
         if (!this.chatPartner) this._faceBuilding(this._buildingForType(this._lastBuildingType), this._lastVisitFacingPoint);
         this.waitTimer = this.chatPartner ? 10 : this._waitDurationForState();
         this._beginStopBeat();
+        if (!wasStraightWalk && !this.chatPartner && !this.visitRole && this.agent?.status === AgentStatus.WORKING && this.agent?.currentTool) {
+            this.onArrive?.(this);
+        }
     }
 
     // True when the body plants at its current target: the route's last
@@ -3999,50 +4302,79 @@ export class AgentSprite {
         return this._wantsStripFacing() ? this._stripFacing(dir, doorDx) : dir;
     }
 
-    // 7.3 — true while this body shows (or, for a ritual still pending, is
-    // about to show) a strip authored only for STRIP_FACINGS: the held wait
-    // row of a petitioner, or the admitted ritual's strike/tinker/gaze.
+    // 7.3 — authored direction indices for the strip currently due (or pending
+    // ritual), or null when the body has no restricted strip facing. Honors
+    // each strip group's manifest `directions` (e.g. celebrate on claude.opus
+    // omits 'e', claude.sonnet omits 'se') and falls back to STRIP_FACINGS when
+    // the strip asset is not yet loaded.
+    _authoredStripFacings() {
+        let group = null;
+        const active = this.actionStripGroup();
+        if (active === 'sit' || active === 'drink') return null;
+        if (active) {
+            group = active;
+        } else {
+            const ritual = this._toolRitual;
+            const pendingWork = ritual
+                && WORK_STRIP_GROUPS.has(ritual.stripGroup)
+                && (!ritual.agentId || ritual.agentId === this.agent?.id)
+                && ritual.phase === 'pending';
+            if (pendingWork) group = ritual.stripGroup;
+        }
+        if (!group) return null;
+        const spriteId = this._spriteIdentity?.spriteId;
+        const strip = spriteId ? this.assets?.getActionStrip?.(spriteId) : null;
+        const groupMeta = strip?.meta?.groups?.[group];
+        if (groupMeta) {
+            if (!Array.isArray(groupMeta.directions) || groupMeta.directions.length === 0) return null;
+            const indices = groupMeta.directions
+                .map((key) => DIRECTIONS.indexOf(key))
+                .filter((idx) => idx >= 0);
+            return indices.length ? indices : null;
+        }
+        if (group === 'wait' || WORK_STRIP_GROUPS.has(group) || group === 'celebrate' || group === 'think') {
+            return STRIP_FACINGS;
+        }
+        return null;
+    }
+
     _wantsStripFacing() {
-        if (this.agent?.status === AgentStatus.WAITING_ON_USER) return true;
-        const ritual = this._toolRitual;
-        if (!ritual || !WORK_STRIP_GROUPS.has(ritual.stripGroup)) return false;
-        if (ritual.agentId && ritual.agentId !== this.agent?.id) return false;
-        return ritual.phase === 'pending' || ritual.phase === 'playing' || ritual.phase === 'fading';
+        return Boolean(this._authoredStripFacings());
     }
 
     // The strip facing nearest the true bearing to the building (or queue
-    // slot ahead): NE → E, NW → W, N → E or W by the door's side, S → SE or
-    // SW by side. A north bearing lands at most 90° off (E or W), still inside
-    // the half-plane facing its building; every other bearing within 67.5°.
-    _stripFacing(dir, doorDx = 0) {
-        if (STRIP_FACINGS.includes(dir)) return dir;
+    // slot ahead), chosen from the active group's authored directions.
+    _stripFacing(dir, doorDx = 0, allowed = this._authoredStripFacings() || STRIP_FACINGS) {
+        if (allowed.includes(dir)) return dir;
         const bearing = this._workBearing ?? (2 - dir) * (Math.PI / 4);
         const side = doorDx > 0 ? 1 : doorDx < 0 ? -1 : (this._idlePhaseFrames & 1 ? 1 : -1);
         let best = null;
         let bestOff = Infinity;
-        for (const candidate of STRIP_FACINGS) {
+        for (const candidate of allowed) {
             // Ties (a dead-north or dead-south bearing) go to the door's side:
             // E and SE are the +x side, W and SW the -x side.
-            const east = candidate === DIR_E || candidate === 1;
+            const east = candidate === DIR_E || candidate === DIR_SE || candidate === DIR_NE;
             const off = angleOffDirection(candidate, bearing) + ((east ? 1 : -1) === side ? 0 : 1e-6);
             if (off < bestOff) {
                 bestOff = off;
                 best = candidate;
             }
         }
-        return best;
+        return best ?? dir;
     }
 
     // Per update: a standing body whose strip is due turns to its strip
-    // facing (a ritual admitted, or a petitioner arrived, while it faced a
-    // column the strip does not author). Seated, walking and chatting bodies
-    // keep their own facing writers.
+    // facing (a ritual admitted, celebration started, or petitioner arrived
+    // while facing a column the strip does not author). Seated, walking and
+    // chatting bodies keep their own facing writers.
     _holdStripFacing() {
-        if (this.moving || this.chatting || this.chatPartner || this._seatedSeat() || !this._wantsStripFacing()) return;
+        if (this.moving || this.chatting || this.chatPartner || this._seatedSeat()) return;
+        const allowed = this._authoredStripFacings();
+        if (!allowed) return;
         const heading = this._facingGoal ?? this.direction;
-        if (STRIP_FACINGS.includes(heading)) return;
+        if (allowed.includes(heading)) return;
         const bearing = this._workBearing;
-        this._setFacingGoal(this._stripFacing(heading, bearing == null ? 0 : Math.cos(bearing)));
+        this._setFacingGoal(this._stripFacing(heading, bearing == null ? 0 : Math.cos(bearing), allowed));
     }
 
     // 0.5 — a villager at rest never settles with its back to the operator.
@@ -4073,7 +4405,8 @@ export class AgentSprite {
 
     _glanceAllowed(dir) {
         if (FACING_FRONT_RANK[dir] === 0) return false;
-        if (!STRIP_FACINGS.includes(dir) && this._wantsStripFacing()) return false;
+        const allowed = this._authoredStripFacings();
+        if (allowed && !allowed.includes(dir)) return false;
         const bearing = this._workBearing;
         return bearing == null || angleOffDirection(dir, bearing) <= Math.PI / 2 + 1e-9;
     }
@@ -4272,6 +4605,7 @@ export class AgentSprite {
         this.chatPartner = null;
         this.chatting = false;
         this.chatSinceMs = null;
+        this._chatStartMsgKey = null;
         this.chatBubbleAnim = 0;
         this.behavior.finishVisit();
         this.behavior.transition('cooldown', 'chat-ended');
@@ -4400,13 +4734,24 @@ export class AgentSprite {
 
         const budgetMode = renderMode !== 'full' && !this.selected && !this.hovered
             && ![AgentStatus.WAITING_ON_USER, AgentStatus.ERRORED, AgentStatus.RATE_LIMITED].includes(this.agent?.status);
+        this._lowZoomImpostor = false;
         if (budgetMode && !this.gpuWorldEnabled) {
+            this._setBodyBox(
+                this._placeX,
+                this._placeY,
+                this._placeX + BUDGET_IMPOSTOR_BODY_BOX.left,
+                this._placeY + BUDGET_IMPOSTOR_BODY_BOX.top,
+                this._placeX + BUDGET_IMPOSTOR_BODY_BOX.right,
+                this._placeY + BUDGET_IMPOSTOR_BODY_BOX.bottom,
+            );
+            this._budgetImpostorXray = true;
             this._drawBudgetImpostor(ctx);
             if (departedTableau(this)) this.gpuOverlayRenderer.drawDepartedTreatment(ctx);
-            if (!this._onOpenFloor) this._drawNameTag(ctx);
+            if (!this._onOpenFloor && !this.selected && !this._occludedByWorld && !this._behindBuilding) this._drawNameTag(ctx);
             if (archivePushed) ctx.restore();
             return;
         }
+        this._budgetImpostorXray = false;
 
         if (!this.compositor) {
             if (archivePushed) ctx.restore();
@@ -4463,6 +4808,7 @@ export class AgentSprite {
                 this._spriteProfileKey = profileKey;
                 this._spriteIdentity = identity;
                 releaseCanvasMap(this._frozenTintCellCache);
+                releaseXraySilhouetteCache(this._xraySilhouetteCache);
                 this._updatePrivateDerivedEstimate();
                 this._cellBoundsCache.clear();
             }
@@ -4525,6 +4871,20 @@ export class AgentSprite {
                 dx + Math.ceil((bounds.maxX + 1) * CROWD_LOD_SCALE),
                 drawY + 3,
             );
+            this._poseCell = {
+                sx: cell.sx,
+                sy: cell.sy,
+                sw: cell.sw,
+                sh: cell.sh,
+                source: 'sheet',
+                group: null,
+                meta: null,
+                now: null,
+                canvas: this.spriteCanvas,
+                dx,
+                dy,
+                drawScale: CROWD_LOD_SCALE,
+            };
             this._layoutGroundMarks(this._stableContentWidth() * CROWD_LOD_SCALE);
             const frameGeometry = {
                 cell,
@@ -4548,12 +4908,18 @@ export class AgentSprite {
                 lod: true,
             });
             this._drawBudgetImpostor(ctx);
-            if (!this._onOpenFloor) this._drawNameTag(ctx);
+            if (!this.gpuWorldEnabled && !departedTableau(this) && !this._occludedByWorld && !this._behindBuilding) {
+                this._drawToolGlyphBadge(ctx, this._labelTopY(contentTopY));
+            }
+            if (!this.gpuWorldEnabled && !this._onOpenFloor && !this.selected && !this._occludedByWorld && !this._behindBuilding) {
+                this._drawNameTag(ctx);
+            }
             if (archivePushed) ctx.restore();
             return;
         }
 
         if (!this.selected && zoom < 1) {
+            this._lowZoomImpostor = true;
             // Plan 2.3 — the overview keeps the same single contact shadow.
             this._layoutGroundMarks(this._stableContentWidth());
             if (!this.gpuWorldEnabled) drawGroundMarks(ctx, this._groundMarks);
@@ -4565,7 +4931,7 @@ export class AgentSprite {
             // T1 — waiting, errored and rate-limited agents are marked by the
             // overlay's attention beacon and plate (AttentionPlates.js), which
             // hold at every zoom, including this overview.
-            this._drawToolGlyphBadge(ctx);
+            if (!this._occludedByWorld && !this._behindBuilding) this._drawToolGlyphBadge(ctx);
             if (archivePushed) ctx.restore();
             return;
         }
@@ -4620,19 +4986,24 @@ export class AgentSprite {
             // Where this cell was laid out (world texels); the x-ray re-blits it.
             dx: 0,
             dy: 0,
+            drawScale: 1,
         };
         const cellSize = this.spriteSheet?.cellSize || 92;
         const bounds = this._getCellContentBounds(cell);
-        // Subtle ±0.6px sinusoidal bob while idle so the eye can find still agents.
-        // IDLE-status agents bob slower and shallower to read as "resting".
-        const isIdleStatus = this.agent?.status === AgentStatus.IDLE;
+        // Explicit 0 / 0 / -1 / 0 breathing step keyed by `this.frame` (seeded
+        // per agent via `_idlePhaseFrames`), replacing the sine rounding that
+        // collapsed to 0 on every IDLE frame and scenic posture.
         // #40 — distressed villagers carry a head-down drop while storming the
         // Pharos, layered on the idle bob (animated) or the static posture
         // offset (reduced motion). Walking keeps the drop so the gait reads
         // hunched all the way to the watchtower.
         const distressDrop = this._distressPostureDrop();
+        const recoilDrop = this._pushRecoilDrop(Date.now());
         // 7.3 — an authored wait or work pose holds its own frame: no idle bob.
         const heldStrip = Boolean(seat) || (pose && (pose.group === 'wait' || WORK_STRIP_GROUPS.has(pose.group)));
+        const idleBob = posture.bobScale > 0 && recoilDrop === 0
+            ? (IDLE_BOB_BY_FRAME[((this.frame % IDLE_FRAMES) + IDLE_FRAMES) % IDLE_FRAMES] || 0)
+            : 0;
         // AG-6 — a held distress pose stands on its feet, still: the pose
         // replaces the hunch's whole-body drop while planted.
         const bobY = departedTableau(this)
@@ -4641,15 +5012,9 @@ export class AgentSprite {
             ? 0
             : this.animState === 'idle' && !heldStrip
             ? this.motionScale > 0
-                ? Math.round(
-                    (
-                        isIdleStatus
-                            ? Math.sin(this.frame * 0.25) * 0.4
-                            : Math.sin(this.frame * 0.4) * 0.6
-                    ) * posture.bobScale,
-                ) + distressDrop
-                : posture.staticDy + distressDrop
-            : distressDrop;
+                ? idleBob + distressDrop + recoilDrop
+                : posture.staticDy + distressDrop + recoilDrop
+            : distressDrop + recoilDrop;
         // #28 — handoff acknowledgement: a single 180ms upward dip-and-settle so
         // the baton landing reads as the child nodding back. Half-sine envelope;
         // never fires under reduced motion (setHandoffAck guards motionScale 0).
@@ -4757,10 +5122,11 @@ export class AgentSprite {
             // 7.1 — a stone seat's top face under the sitter, before the body.
             if (seatStones) ctx.drawImage(seatStones.back.canvas, this._placeX + seatStones.back.x, this._placeY + seatStones.back.y);
             if (!sheathed) this._drawCodexEquipment(ctx, identity, frameGeometry, 'back');
-            // Plan 2.4 — the rim is baked into the sheet, identical to the
-            // resident atlas; no per-frame halo pass.
+            // Plan 2.4 — the rim is baked into the sheet; Canvas lifts the
+            // tagged half-alpha rim to match the GPU daytime opaque floor.
+            const canvasSource = opaqueRimSheet(bodySource) || bodySource;
             ctx.drawImage(
-                bodySource,
+                canvasSource,
                 bodyCell.sx, bodyCell.sy, bodyCell.sw, bodyCell.sh,
                 dx, dy, bodyCell.sw, bodyCell.sh
             );
@@ -4843,19 +5209,24 @@ export class AgentSprite {
         // drew each twice per frame. Thoughts belong to neither: both backends
         // paint them in the thought layer (drawThought) above the world.
         if (!this.gpuWorldEnabled) {
-            const labelTopY = this._labelTopY(contentTopY);
-            if (this.chatting && !departedTableau(this)) {
-                this._drawChatEffect(ctx, labelTopY);
+            const occluded = Boolean(this._occludedByWorld || this._behindBuilding);
+            if (!occluded || this.selected) {
+                const labelTopY = this._labelTopY(contentTopY);
+                const toolGlyphDrawn = !departedTableau(this) && Boolean(this._drawToolGlyphBadge(ctx, labelTopY));
+                if (this.chatting && !departedTableau(this)) {
+                    this._drawChatEffect(ctx, labelTopY);
+                }
+                if (!departedTableau(this) && !toolGlyphDrawn) this._drawStatusEmote(ctx, labelTopY);
+                // Plan-mode and retry glyphs sit above the silhouette. The tool
+                // glyph or status emote (kind != null) wins the slot; otherwise
+                // plan-mode glyph renders slightly higher. Retry glyph renders to
+                // the right.
+                if (!departedTableau(this)) {
+                    if (!toolGlyphDrawn) this._drawPlanModeGlyph(ctx, labelTopY);
+                    this._drawRetryGlyph(ctx, labelTopY);
+                }
             }
-            if (!departedTableau(this)) this._drawStatusEmote(ctx, labelTopY);
-            // Plan-mode and retry glyphs sit above the silhouette. The status
-            // emote (kind != null) wins the slot; otherwise plan-mode glyph
-            // renders slightly higher. Retry glyph renders to the right.
-            if (!departedTableau(this)) {
-                this._drawPlanModeGlyph(ctx, labelTopY);
-                this._drawRetryGlyph(ctx, labelTopY);
-            }
-            if (!this._onOpenFloor) this._drawNameTag(ctx);
+            if (!this._onOpenFloor && !this.selected && !occluded) this._drawNameTag(ctx);
         }
 
         // Sparkle flash during the first 200 ms of the archive fade.
@@ -5119,26 +5490,41 @@ export class AgentSprite {
         return bounds.maxX - bounds.minX + 1;
     }
 
-    // Plan 2.3 — the ground mark set both backends paint: one contact shadow,
-    // a status ring only for waiting-on-you / errored / rate-limited, and the
-    // selection or hover ring; W7.4 adds the quiet repo course under those.
-    // V7 — laid out at the body's own placement, so they never part from it.
+    // Plan 2.3 — the ground mark set all backends paint: one contact shadow,
+    // Tier-A rings for action-needed states, static WORKING/WAITING arcs under
+    // MarkGovernor WORKING tier (none under IDLE), and the gold selection or
+    // cream hover ring. V7 — laid out at the body's own placement.
     _layoutGroundMarks(contentWidth) {
-        this._repoRingColor = this._repoRingAccent();
+        const status = departedTableau(this) ? null : this.agent?.status;
+        const routineGate = this._routineStatusGate(status);
+        this._routineStatusAdmitted = Boolean(routineGate);
+        this._repoRingColor = (routineGate || status === AgentStatus.IDLE || actionNeededRingColor(status))
+            ? null
+            : this._repoRingAccent();
         this._groundMarks = resolveGroundMarks({
             x: this._placeX,
             y: this._placeY,
             contentWidth,
-            status: departedTableau(this) ? null : this.agent?.status,
+            status,
             selected: this.selected,
             hovered: this.hovered,
             accent: this._providerAccentColor(),
             trim: this._providerTrimColor(),
             repo: this._repoRingColor,
+            routineStatus: this._routineStatusAdmitted,
+            routineAlpha: routineGate?.alpha ?? null,
             // 2.8 — the body keeps its lamp choice between frames.
             owner: this,
         });
         return this._groundMarks;
+    }
+
+    _routineStatusGate(status) {
+        if (status !== AgentStatus.WORKING && status !== AgentStatus.WAITING) return null;
+        const governor = getActiveMarkGovernor();
+        if (!governor) return { draw: true, alpha: 0.78 };
+        const gate = governor.admit(MarkTier.WORKING, this.x, this.y);
+        return gate?.draw ? gate : null;
     }
 
     // 7.2 — a petitioner standing in its queue slot, or at an overflow place
@@ -5339,21 +5725,190 @@ export class AgentSprite {
     // visible behind a building's front-half. Avoids the full-sprite-sheet
     // blit that drawing via SpriteRenderer.drawSilhouette would produce
     // against multi-direction agent sheets.
-    drawXraySilhouette(ctx) {
-        return this.withBridgeLift(() => this._drawXraySilhouetteAtScreenPosition(ctx));
+    drawXraySilhouette(ctx, mode = 'selected', occluders = null) {
+        return this.withBridgeLift(() => this._drawXraySilhouetteAtScreenPosition(ctx, mode, occluders));
     }
 
-    _drawXraySilhouetteAtScreenPosition(ctx) {
-        const body = this._poseCell;
-        if (!this.spriteCanvas || !body?.canvas) return;
+    _xrayPalette(mode) {
+        return mode === 'working' ? XRAY_PALETTES.working : XRAY_PALETTES.selected;
+    }
+
+    _getXraySilhouetteCanvas(body, dstW, dstH, mode) {
+        if (typeof document === 'undefined') return null;
+        const key = `${mode}|${body.sx},${body.sy},${body.sw}x${body.sh}|${dstW}x${dstH}`;
+        const cache = this._xraySilhouetteCache || (this._xraySilhouetteCache = new Map());
+        const existing = cache.get(key);
+        if (existing) {
+            if (existing.source === body.canvas) {
+                cache.delete(key);
+                cache.set(key, existing);
+                return existing.canvas;
+            }
+            cache.delete(key);
+            releaseCanvasBackingStore(existing.canvas);
+        }
+        while (cache.size >= XRAY_SILHOUETTE_CACHE_MAX) {
+            const oldestKey = cache.keys().next().value;
+            const oldest = cache.get(oldestKey);
+            cache.delete(oldestKey);
+            releaseCanvasBackingStore(oldest?.canvas);
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = dstW;
+        canvas.height = dstH;
+        const sctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (!sctx) return null;
+        sctx.imageSmoothingEnabled = false;
+        sctx.clearRect(0, 0, dstW, dstH);
+        sctx.drawImage(body.canvas, body.sx, body.sy, body.sw, body.sh, 0, 0, dstW, dstH);
+        const imgData = sctx.getImageData(0, 0, dstW, dstH);
+        const data = imgData.data;
+        const opaque = new Uint8Array(dstW * dstH);
+        for (let i = 0, p = 3; i < opaque.length; i++, p += 4) {
+            if (data[p] > 24) opaque[i] = 1;
+        }
+        const { rim, rimAlpha, fill, fillAlpha, dither } = this._xrayPalette(mode);
+        for (let y = 0; y < dstH; y++) {
+            const row = y * dstW;
+            for (let x = 0; x < dstW; x++) {
+                const idx = row + x;
+                const p = idx * 4;
+                if (!opaque[idx]) {
+                    data[p + 3] = 0;
+                    continue;
+                }
+                const isRim = x === 0 || y === 0 || x === dstW - 1 || y === dstH - 1
+                    || !opaque[idx - 1] || !opaque[idx + 1]
+                    || !opaque[idx - dstW] || !opaque[idx + dstW];
+                if (isRim) {
+                    data[p] = rim[0];
+                    data[p + 1] = rim[1];
+                    data[p + 2] = rim[2];
+                    data[p + 3] = rimAlpha;
+                } else if (!dither || (((x + y) & 1) === 0)) {
+                    data[p] = fill[0];
+                    data[p + 1] = fill[1];
+                    data[p + 2] = fill[2];
+                    data[p + 3] = fillAlpha;
+                } else {
+                    data[p + 3] = 0;
+                }
+            }
+        }
+        sctx.putImageData(imgData, 0, 0);
+        cache.set(key, { source: body.canvas, canvas });
+        this._updatePrivateDerivedEstimate();
+        return canvas;
+    }
+
+    _getBudgetImpostorPoseCell() {
+        if (typeof document === 'undefined') return null;
+        let canvas = AgentSprite._budgetImpostorMaskCanvas;
+        if (!canvas) {
+            canvas = document.createElement('canvas');
+            canvas.width = IMPOSTOR_BOX.width;
+            canvas.height = IMPOSTOR_BOX.height;
+            const ictx = canvas.getContext('2d');
+            if (!ictx) return null;
+            ictx.imageSmoothingEnabled = false;
+            ictx.translate(-IMPOSTOR_BOX.left, -IMPOSTOR_BOX.top);
+            ictx.fillStyle = IMPOSTOR_OUTLINE;
+            ictx.fillRect(-1, IMPOSTOR_TOP - 1, 2, 1);
+            IMPOSTOR_HALF_WIDTHS.forEach((half, index) => {
+                ictx.fillRect(-half - 1, IMPOSTOR_TOP + index, (half + 1) * 2, 1);
+            });
+            ictx.fillRect(-1, IMPOSTOR_TOP + IMPOSTOR_HALF_WIDTHS.length, 2, 1);
+            ictx.fillRect(-3, IMPOSTOR_TOP - 5, 6, 6);
+            AgentSprite._budgetImpostorMaskCanvas = canvas;
+        }
+        return {
+            canvas,
+            sx: 0,
+            sy: 0,
+            sw: IMPOSTOR_BOX.width,
+            sh: IMPOSTOR_BOX.height,
+            dx: this._placeX + IMPOSTOR_BOX.left,
+            dy: this._placeY + IMPOSTOR_BOX.top,
+            drawScale: 1,
+        };
+    }
+
+    _drawXraySilhouetteAtScreenPosition(ctx, mode = 'selected', occluders = null) {
+        if (this._lowZoomImpostor || (!this.selected && this._zoom < 1)) return;
+        const body = this._budgetImpostorXray ? this._getBudgetImpostorPoseCell() : this._poseCell;
+        if ((!this._budgetImpostorXray && !this.spriteCanvas) || !body?.canvas || !(body.sw > 0) || !(body.sh > 0)) return;
+        const drawScale = body.drawScale || 1;
+        const dstW = Math.max(1, Math.round(body.sw * drawScale));
+        const dstH = Math.max(1, Math.round(body.sh * drawScale));
+        const dstX = Math.round(body.dx);
+        const dstY = Math.round(body.dy);
+        const silhouette = this._getXraySilhouetteCanvas(body, dstW, dstH, mode);
+        if (!silhouette) return;
+
+        let hasValidOccluders = false;
+        if (Array.isArray(occluders)) {
+            for (let i = 0; i < occluders.length; i++) {
+                if (occluders[i]?.image) {
+                    hasValidOccluders = true;
+                    break;
+                }
+            }
+        }
+        if (hasValidOccluders && typeof document !== 'undefined') {
+            const scratch = AgentSprite._xrayMaskScratch || (AgentSprite._xrayMaskScratch = document.createElement('canvas'));
+            if (scratch.width < dstW) scratch.width = dstW;
+            if (scratch.height < dstH) scratch.height = dstH;
+            const mctx = scratch.getContext('2d');
+            if (mctx) {
+                mctx.setTransform(1, 0, 0, 1, 0, 0);
+                mctx.imageSmoothingEnabled = false;
+                mctx.globalAlpha = 1;
+                mctx.globalCompositeOperation = 'source-over';
+                mctx.clearRect(0, 0, dstW, dstH);
+                for (let i = 0; i < occluders.length; i++) {
+                    const occ = occluders[i];
+                    if (!occ?.image) continue;
+                    const localTop = occ.rowStart > 0 ? Math.max(0, Math.floor(occ.dy + occ.rowStart - dstY)) : 0;
+                    if (localTop >= dstH) continue;
+                    if (Array.isArray(occ.clipRanges)) {
+                        for (let r = 0; r < occ.clipRanges.length; r++) {
+                            const [x0, x1] = occ.clipRanges[r];
+                            const localLeft = Math.max(0, Math.floor(x0 - dstX));
+                            const localRight = Math.min(dstW, Math.ceil(x1 - dstX));
+                            if (localRight <= localLeft) continue;
+                            mctx.save();
+                            mctx.beginPath();
+                            mctx.rect(localLeft, localTop, localRight - localLeft, dstH - localTop);
+                            mctx.clip();
+                            mctx.drawImage(occ.image, Math.round(occ.dx - dstX), Math.round(occ.dy - dstY));
+                            mctx.restore();
+                        }
+                    } else if (localTop > 0) {
+                        mctx.save();
+                        mctx.beginPath();
+                        mctx.rect(0, localTop, dstW, dstH - localTop);
+                        mctx.clip();
+                        mctx.drawImage(occ.image, Math.round(occ.dx - dstX), Math.round(occ.dy - dstY));
+                        mctx.restore();
+                    } else {
+                        mctx.drawImage(occ.image, Math.round(occ.dx - dstX), Math.round(occ.dy - dstY));
+                    }
+                }
+                mctx.globalCompositeOperation = 'source-in';
+                mctx.drawImage(silhouette, 0, 0);
+                mctx.globalCompositeOperation = 'source-over';
+                ctx.save();
+                ctx.imageSmoothingEnabled = false;
+                ctx.globalAlpha = 1;
+                ctx.drawImage(scratch, 0, 0, dstW, dstH, dstX, dstY, dstW, dstH);
+                ctx.restore();
+                return;
+            }
+        }
         ctx.save();
         ctx.imageSmoothingEnabled = false;
-        ctx.globalAlpha = 0.65;
-        ctx.drawImage(
-            body.canvas,
-            body.sx, body.sy, body.sw, body.sh,
-            body.dx, body.dy, body.sw, body.sh
-        );
+        ctx.globalAlpha = 1;
+        ctx.drawImage(silhouette, dstX, dstY);
         ctx.restore();
     }
 
@@ -6666,6 +7221,9 @@ export class AgentSprite {
         // holds the plain sit row and the drawn tankard rests beside it.
         if (group === 'sit' && this._seatedSeat()?.building === 'tavern' && this._stripAuthors(strip.meta, 'drink')
             && !(this._patronWaitTier() >= PATRON_SET_DOWN_TIER)) group = 'drink';
+        // Profiles without an authored `gaze` group (8/40 older sheets) fall
+        // back to `read` for lookups instead of dropping to plain idle.
+        if (group === 'gaze' && !strip.meta.groups?.gaze && strip.meta.groups?.read) group = 'read';
         const now = Date.now();
         const cell = resolveActionFrame(strip.meta, group, this.direction, this._actionStripFrame(strip.meta, group, now));
         if (!cell) return null;
@@ -6782,23 +7340,41 @@ export class AgentSprite {
         }) === TravelGait.RUN;
     }
 
-    // Which authored group the current truth asks for. The held wait row wins
-    // over the generic work/think vocabulary (2.3); an admitted tool ritual
-    // asks for its tool class's work strip (7.3); reading, thinking and a
-    // verified celebration keep their groups.
-    // Never derived from elapsed time.
+    // Current action vocabulary including any mid-walk verified win latched
+    // until arrival.
+    _resolveAction(now = Date.now()) {
+        if (this._celebrationUntil > now && !departedTableau(this) && !this.chatting) {
+            return AgentAction.CELEBRATE;
+        }
+        return resolveAgentAction(this.agent, { chatting: this.chatting, now });
+    }
+
+    // Which authored group the current truth asks for. The wait row wins for
+    // action-needed villagers (2.3); a verified celebration preempts active
+    // work strips (including Harbor's 30 s tinker); arrived WORKING villagers
+    // resolve their tool-class work strip for the whole tool call (preferring
+    // `gaze` at Portal and `read` at Archive); reading and thinking keep their
+    // groups.
     actionStripGroup() {
-        // 7.1 — a villager on its seat sits (static held row); AG-5 — a
-        // lead risen for its blocked child stands on the plain body.
+        // 7.1 — a villager on its seat sits; AG-5 — a lead risen for its
+        // blocked child stands on the plain body.
         if (this._seatedSeat()) return this._risenForChild() ? null : 'sit';
         // AG-6 — the rate-limited body sits on the ground (held sit row);
         // the errored one stands on the plain body, its back turned.
         const distress = this._distressPose();
         if (distress) return distress === DISTRESS_LIMITED ? 'sit' : null;
         if (this.agent?.status === AgentStatus.WAITING_ON_USER) return 'wait';
-        const work = this._admittedWorkStripGroup();
-        if (work) return work;
-        return ACTION_STRIP_GROUPS[resolveAgentAction(this.agent, { chatting: this.chatting })] || null;
+        const action = this._resolveAction();
+        if (action === AgentAction.CELEBRATE) return 'celebrate';
+        const building = this._lastBuildingType
+            || this.agent?.targetBuildingType
+            || this.agent?.lastKnownBuildingType
+            || null;
+        const admitted = this._admittedWorkStripGroup();
+        if (admitted) return building === 'archive' && admitted === 'gaze' ? 'read' : admitted;
+        const sustained = this._sustainedWorkStripGroup(building);
+        if (sustained) return sustained;
+        return ACTION_STRIP_GROUPS[action] || null;
     }
 
     _admittedWorkStripGroup() {
@@ -6806,6 +7382,23 @@ export class AgentSprite {
         if (!ritual || !WORK_STRIP_GROUPS.has(ritual.stripGroup)) return null;
         if (ritual.agentId && ritual.agentId !== this.agent?.id) return null;
         return ritual.phase === 'playing' || ritual.phase === 'fading' ? ritual.stripGroup : null;
+    }
+
+    // 7.3 (relaxed 2026-11-23) — whole-call work strip for an arrived WORKING
+    // villager, decoupled from RitualConductor's 6-ritual spark cap. Prefers
+    // `gaze` at the Portal and `read` at the Archive.
+    _sustainedWorkStripGroup(building = this._lastBuildingType || this.agent?.targetBuildingType || this.agent?.lastKnownBuildingType || null) {
+        if (this.moving && this.motionScale > 0) return null;
+        if (this.agent?.status !== AgentStatus.WORKING) return null;
+        if (this.visitRole || isWaitingOnCrew(this.agent)) return null;
+        const tool = this.agent?.currentTool;
+        if (!tool) return null;
+        const group = workStripGroup(tool, building);
+        if (building === 'archive' && group === 'gaze') return 'read';
+        if (building === 'portal' && !group) return 'gaze';
+        if (group) return group;
+        if (building === 'taskboard' || building === 'harbor') return 'tinker';
+        return null;
     }
 
     // True when the strip's `group` has a cell for this facing.
@@ -6825,31 +7418,80 @@ export class AgentSprite {
             const step = tankardSipStep(this.agent?.id, now, this.motionScale > 0);
             return step < 0 ? 'hold' : DRINK_FRAME_BY_STEP[step];
         }
-        // Static band for the held wait row, for a stale observation (C1), and
-        // for reduced motion. Otherwise one two-frame medium-band beat, which
-        // replaces the working pulse instead of stacking on it.
-        if (group === 'wait' || group === 'sit' || this.motionScale <= 0 || this.observation?.state === 'stale') return 'hold';
+        // Static band for reduced motion or a stale observation (C1).
+        if (this.motionScale <= 0 || this.observation?.state === 'stale') return 'hold';
         const rows = meta?.groups?.[group]?.rows;
         const first = Number(rows?.[0]);
         const span = Number(rows?.[1]) - first + 1;
         if (!Number.isInteger(first) || !(span > 1)) return 'hold';
-        if (WORK_STRIP_GROUPS.has(group)) return this._workStripFrame(meta.groups[group], span, now);
-        const hold = Number(meta.groups[group].hold);
-        const holdIndex = Number.isInteger(hold) ? Math.max(0, hold - first) : span - 1;
-        return (Math.floor(now / ACTION_BEAT_MS) % 2)
-            ? (holdIndex - 1 + span) % span
-            : holdIndex;
+        // 7.1 (relaxed 2026-11-23) — seated patrons breathe/shift across the
+        // 2-row `sit` strip on a seeded 1.4-2.2 s cadence; AG-6 rate-limited
+        // ground sitters stay static.
+        if (group === 'sit') {
+            if (this._distressPose?.()) return 'hold';
+            const seed = Math.abs(this._hash(`${this.agent?.id ?? ''}:sit`));
+            const stepMs = SIT_CADENCE_MIN_MS + (seed % SIT_CADENCE_RANGE_MS);
+            const cycleMs = stepMs * span;
+            const offset = (seed >>> 3) % cycleMs;
+            return Math.floor((((now + offset) % cycleMs) + cycleMs) % cycleMs / stepMs);
+        }
+        // 7.2 (relaxed 2026-11-23) — petitioners hold for a seeded 3-5 s then
+        // play their 3-frame beckon (~220 ms/frame).
+        if (group === 'wait') {
+            const seed = Math.abs(this._hash(`${this.agent?.id ?? ''}:wait`));
+            const holdMs = WAIT_HOLD_MIN_MS + (seed % WAIT_HOLD_RANGE_MS);
+            const beckonMs = span * WAIT_BECKON_FRAME_MS;
+            const cycleMs = holdMs + beckonMs;
+            const offset = (seed >>> 3) % cycleMs;
+            const phase = (((now + offset) % cycleMs) + cycleMs) % cycleMs;
+            if (phase < holdMs) return 'hold';
+            return Math.min(span - 1, Math.floor((phase - holdMs) / WAIT_BECKON_FRAME_MS));
+        }
+        if (WORK_STRIP_GROUPS.has(group)) return this._workStripFrame(meta.groups[group], span, now, group);
+        // Full ping-pong across all authored rows (e.g. 0->1->2->3->2->1 for
+        // 4-frame `read`, 0->1->2->1 for 3-frame `think`/`celebrate`) on a
+        // per-agent seeded phase offset and slight cadence spread so crowds
+        // never tick in lockstep.
+        const cycleLen = span > 2 ? (span - 1) * 2 : span;
+        const baseStepMs = ACTION_STRIP_STEP_MS[group] || ACTION_BEAT_MS;
+        const spread = ritualPhaseOffset(`${this.agent?.id ?? ''}:${group}:cadence`, 91) - 45;
+        const stepMs = Math.max(260, baseStepMs + spread);
+        const periodMs = cycleLen * stepMs;
+        const offset = ritualPhaseOffset(`${this.agent?.id ?? ''}:${group}`, periodMs);
+        const pos = Math.floor((((now + offset) % periodMs) + periodMs) % periodMs / stepMs);
+        return pos < span ? pos : cycleLen - pos;
     }
 
-    // One strip cycle per gesture period of the admitted ritual, on the clock
-    // ritualDownbeat reads, so the contact frame is on screen exactly when the
-    // WorkDownbeat strikes. A stale or reduced-motion ritual holds.
-    _workStripFrame(groupMeta, span, now = Date.now()) {
+    // During an admitted ritual, runs one strip cycle per gesture period locked
+    // to `ritualDownbeat` (shared per-agent phase offset). Outside a ritual,
+    // plays a seeded burst/pause cycle (2-3 s work, 1.5-2.5 s hold breather)
+    // for the full duration of the tool call.
+    _workStripFrame(groupMeta, span, now = Date.now(), group = null) {
         const ritual = this._toolRitual;
-        const period = RITUAL_GESTURE_PERIOD_MS[ritual?.pose];
-        if (!period || ritual.motionEnabled === false) return 'hold';
+        const admitted = ritual
+            && (!ritual.agentId || ritual.agentId === this.agent?.id)
+            && (ritual.phase === 'playing' || ritual.phase === 'fading')
+            && WORK_STRIP_GROUPS.has(ritual.stripGroup);
         const contact = Number.isInteger(groupMeta?.contactFrame) ? groupMeta.contactFrame : 0;
-        const step = Math.floor(((now % period) / period) * span);
+        if (admitted) {
+            const period = RITUAL_GESTURE_PERIOD_MS[ritual.pose];
+            if (!period || ritual.motionEnabled === false) return 'hold';
+            const offset = ritualPhaseOffset(ritual.agentId, period);
+            const clock = (((now + offset) % period) + period) % period;
+            const step = Math.floor((clock / period) * span);
+            return (contact + step) % span;
+        }
+        // Sustained whole-call work strip: seeded burst/breather cycle.
+        const seed = Math.abs(this._hash(`${this.agent?.id ?? ''}:work-burst`));
+        const burstMs = WORK_BURST_MIN_MS + (seed % WORK_BURST_RANGE_MS);
+        const pauseMs = WORK_BREATHER_MIN_MS + ((seed >>> 4) % WORK_BREATHER_RANGE_MS);
+        const cycleMs = burstMs + pauseMs;
+        const cyclePhase = (((now + ((seed >>> 8) % cycleMs)) % cycleMs) + cycleMs) % cycleMs;
+        if (cyclePhase >= burstMs) return 'hold';
+        const period = WORK_STRIP_PERIOD_MS[group] || 720;
+        const offset = ritualPhaseOffset(this.agent?.id, period);
+        const clock = (((now + offset) % period) + period) % period;
+        const step = Math.floor((clock / period) * span);
         return (contact + step) % span;
     }
 
@@ -7048,9 +7690,10 @@ export class AgentSprite {
         // the Activity Panel carries its words.
         if (isAttentionStatus(this.agent?.status)) return;
         const lateral = this.bubbleLateral || 0;
+        const clampX = this.bubbleClampX || 0;
         const slot = this.bubbleSlot || 0;
         const occluded = this.bubbleOccluded === true;
-        const leader = lateral !== 0 || slot !== 0 || occluded;
+        const leader = lateral !== 0 || clampX !== 0 || slot !== 0 || occluded;
         if (phase === THOUGHT_PAINT.LEADER && !leader) return;
         // The reservation pass built this frame's thread; the column phase
         // consumes it.
@@ -7065,13 +7708,13 @@ export class AgentSprite {
         // attribution), whose representative draws it once with a ×N count.
         if (this.bubbleMergedInto && !this.selected) return;
         const repoAccent = useClock ? null : this.thoughtRepoAccent();
-        const tag = !useClock && (lateral !== 0 || occluded) ? this.thoughtSpeakerTag() : '';
+        const tag = !useClock && (lateral !== 0 || clampX !== 0 || occluded) ? this.thoughtSpeakerTag() : '';
         const column = layoutThoughtColumn(
             this._paintColumn || (this._paintColumn = createThoughtColumn()),
             thread, useClock, Boolean(repoAccent), tag.length, this.bubbleMergedCount || 1,
             this._thoughtHistoryLimit ?? THOUGHT_HISTORY_LIMIT,
         );
-        const shiftX = thoughtLateralShift(column, lateral);
+        const shiftX = thoughtLateralShift(column, lateral) + clampX;
         const slotShift = -slot * THOUGHT_STACK_STEP;
         const head = thread[0] || null;
         const accent = head?.accent || this._statusVisual().color;
@@ -7357,7 +8000,10 @@ export class AgentSprite {
     // redrawn over it: the frame names it after the world instead, as the
     // resident overlay names every body (WorldFrameRenderer).
     drawDeferredNameTag(ctx) {
-        if (this._onOpenFloor && !this.gpuWorldEnabled) this._drawNameTag(ctx);
+        if ((this._onOpenFloor || this.selected) && !this.gpuWorldEnabled) {
+            if (typeof this.withBridgeLift === 'function') this.withBridgeLift(() => this._drawNameTag(ctx));
+            else this._drawNameTag(ctx);
+        }
     }
 
     _drawNameTag(ctx) {
@@ -7387,6 +8033,7 @@ export class AgentSprite {
             selected: this.selected,
             hovered: this.hovered,
             repo: this._repoRingColor || null,
+            routineStatus: this._routineStatusAdmitted !== false,
         }));
     }
 
@@ -7453,28 +8100,71 @@ export class AgentSprite {
         ctx.restore();
     }
 
-    // 5.6 — the overview trade glyph: the authored 8×8 EventShapes motif of
-    // the current tool, in the status colour with a one-pixel dark outline,
-    // just under the feet. Quiet agents (no tool) carry nothing. Static.
+    // 5.6 — the trade glyph: the authored 8×8 EventShapes motif of the current
+    // tool, in the status colour with a one-pixel dark outline. At zoom 1–2
+    // (relaxed 2026-11-23, operator decision), WORKING villagers with a known
+    // currentTool wear it static above the head (including while walking) under
+    // MarkTier.WORKING, yielding to thoughts, chat, attention/T1 plates and
+    // postcards. Below zoom 1 it stays under the feet for the overview impostor.
     // W7.10b — a body in plan mode carries the plan glyph instead.
-    _drawToolGlyphBadge(ctx) {
+    _drawToolGlyphBadge(ctx, contentTopY = null) {
+        if (postcardFrame()) return false;
+        if (this.isArrivalPending?.() || departedTableau(this)) return false;
+        const status = this.agent?.status;
+        if (isAttentionStatus(status)) return false;
         const tool = String(this.agent?.currentTool || '').trim();
         const planMode = this._inPlanMode();
-        if (!tool && !planMode) return;
+        const zoom = this._zoom || 1;
+        if (Number.isFinite(contentTopY)) {
+            if (zoom < 1 || zoom > 2) return false;
+            if (status !== AgentStatus.WORKING || !tool) return false;
+            if (this._thoughtOwnsHead() || this.chatting) return false;
+            const step = zoom >= 1.5 ? 2 : 1;
+            const motifSize = 8 * step;
+            const glyphX = -motifSize / 2;
+            const glyphY = -(motifSize + 10);
+            const boxWorld = (motifSize + 2) / zoom;
+            const gate = getActiveMarkGovernor()?.admit(MarkTier.WORKING, this._placeX, contentTopY, {
+                rect: {
+                    x: this._placeX + (glyphX - 1) / zoom,
+                    y: contentTopY + (glyphY - 1) / zoom,
+                    w: boxWorld,
+                    h: boxWorld,
+                },
+                stableKey: `tool-glyph:${this.agent?.id || ''}`,
+            });
+            if (gate && !gate.draw) return false;
+            const building = planMode ? null : memoizedToolClassification(tool, this.agent?.currentToolInput)?.building || null;
+            ctx.save();
+            ctx.translate(this._placeX, contentTopY);
+            ctx.scale(1 / zoom, 1 / zoom);
+            snapScreenOrigin(ctx);
+            drawToolGlyphBadge(ctx, {
+                glyph: planMode ? PLAN_MODE_GLYPH : toolGlyphKey(tool, building),
+                color: planMode ? PLAN_MODE_GLYPH_COLOR : (this._statusVisual()?.color || LABEL_INK.text),
+                x: glyphX,
+                y: glyphY,
+                step,
+            });
+            ctx.restore();
+            return true;
+        }
+        if (!tool && !planMode) return false;
         // Reuse the live tool classification so the glyph picks the same building
         // the agent is routing toward (web -> globe, mine -> pick, etc.).
         const building = planMode ? null : memoizedToolClassification(tool, this.agent?.currentToolInput)?.building || null;
-        const zoom = this._zoom || 1;
         ctx.save();
         ctx.translate(this._placeX, this._placeY);
         ctx.scale(1 / zoom, 1 / zoom);
+        snapScreenOrigin(ctx);
         drawToolGlyphBadge(ctx, {
             glyph: planMode ? PLAN_MODE_GLYPH : toolGlyphKey(tool, building),
-            color: this._statusVisual()?.color || LABEL_INK.text,
+            color: planMode ? PLAN_MODE_GLYPH_COLOR : (this._statusVisual()?.color || LABEL_INK.text),
             x: -4,
             y: this.identityLabelTopPx(zoom),
         });
         ctx.restore();
+        return true;
     }
 
     // W7.4 (D2: repo = colour) — the repo accent for the ground-ring course:
@@ -7857,12 +8547,11 @@ export class AgentSprite {
         ctx.restore();
     }
 
-    // Three 2 px pixel dots on the snapped screen grid (no arcs).
+    // Three 2 px pixel dots outlined in #140e0a on the snapped screen grid (no arcs).
     _drawThinkingDotsGlyph(ctx, color) {
         const animated = this.motionScale > 0;
         const moodScale = moodBehaviorMultiplier(this.agent?.mood, 'thinkDuration');
         const duration = this._modelBehavior.thinkDuration * moodScale;
-        ctx.fillStyle = color;
         for (let i = 0; i < 3; i++) {
             // Pulse band: `intrinsic` (slow). Heavy models hold each thought
             // beat longer; reduced motion keeps the complete three-dot glyph.
@@ -7875,7 +8564,11 @@ export class AgentSprite {
                     1,
                 )
                 : 1;
-            ctx.fillRect(-5 + i * 4, -1, 2, 2);
+            const dx = -6 + i * 5;
+            ctx.fillStyle = '#140e0a';
+            ctx.fillRect(dx - 1, -2, 4, 4);
+            ctx.fillStyle = color;
+            ctx.fillRect(dx, -1, 2, 2);
         }
         ctx.globalAlpha = 1;
     }
@@ -8076,8 +8769,10 @@ export class AgentSprite {
         const animated = this.motionScale > 0 && ritual.motionEnabled !== false;
         const period = RITUAL_GESTURE_PERIOD_MS[ritual.pose] || 700;
         // Triangle 0..1..0 over the gesture cycle drives the swing/lift amount;
-        // static variant pins the gesture at its rest (0).
-        const phase = animated ? (Date.now() % period) / period : 0;
+        // static variant pins the gesture at its rest (0). Seeded per agent to
+        // stay locked to `ritualDownbeat` without global lockstep.
+        const offset = ritualPhaseOffset(ritual.agentId ?? this.agent?.id, period);
+        const phase = animated ? ((((Date.now() + offset) % period) + period) % period) / period : 0;
         const swing = animated ? (phase < 0.5 ? phase * 2 : (1 - phase) * 2) : 0;
         // 3.3 — the gesture marks are procedural 2-6px props; scale the whole
         // gesture group by the body's drawScale so the mark keeps its
@@ -8210,10 +8905,9 @@ export class AgentSprite {
         ctx.restore();
     }
 
-    // Shared medium-distance action vocabulary for the Claude, Codex, DeepSeek
-    // and z.AI families (ACTION_PROP_PROVIDERS). Static geometry carries the
-    // meaning; the optional two-frame lift uses the medium pulse band and
-    // freezes under reduced motion.
+    // Shared medium-distance action vocabulary for every provider family.
+    // Static geometry carries the meaning; the optional two-frame lift uses a
+    // seeded per-agent medium pulse band and freezes under reduced motion.
     _drawActionPoseOverlay(ctx, frameGeometry) {
         this._drawObservationSeal(ctx);
         this._drawTurnSand(ctx);
@@ -8224,10 +8918,11 @@ export class AgentSprite {
             this._drawWaitReasonProp(ctx, frameGeometry);
             return;
         }
-        const provider = this._providerKey();
         // AG-6 — a held distress pose is the body's one claim: no tool chip.
-        if (!ACTION_PROP_PROVIDERS.has(provider) || this.moving || this._distressPose?.()) return;
-        const action = resolveAgentAction(this.agent, { chatting: this.chatting });
+        if (this.moving || this._distressPose?.()) return;
+        const action = typeof this._resolveAction === 'function'
+            ? this._resolveAction()
+            : resolveAgentAction(this.agent, { chatting: this.chatting });
         if (!action) return;
         // VQ-1a — a lead resting at the Tavern on its subagents makes no work
         // claim of its own: the rest tableau and the plaque carry the crew's.
@@ -8244,10 +8939,12 @@ export class AgentSprite {
             if (partner?.chatting && !partner.decisionFocusMuted) return;
             if (partner?.chatting && String(partner.agent?.id) < String(this.agent?.id)) return;
         }
-        // 2.2 — the authored body already holds the book: one instrument per
-        // fact, so the procedural read prop is removed for strip characters.
+        // 2.2 / 7.3 — one instrument per fact: suppress the procedural chip
+        // whenever an authored action/work/celebrate strip already carries it.
         if (poseGroup === 'read' && action === AgentAction.READ) return;
         if (poseGroup === 'think' && action === AgentAction.THINK) return;
+        if (poseGroup === 'celebrate' && action === AgentAction.CELEBRATE) return;
+        if (WORK_STRIP_GROUPS.has(poseGroup) && (action === AgentAction.WORK || action === AgentAction.READ)) return;
         const { dx, dy, bounds, drawScale } = frameGeometry || {};
         if (!bounds || !Number.isFinite(dx) || !Number.isFinite(dy)) return;
         const width = Math.max(1, bounds.maxX - bounds.minX);
@@ -8258,7 +8955,8 @@ export class AgentSprite {
         const y = dy + (bounds.minY + height * .62) * drawScale;
         const scale = Math.max(1, Number(drawScale) || 1);
         const animated = this.motionScale > 0 && this.observation?.state !== 'stale';
-        const beat = animated ? Math.floor(Date.now() / 320) % 2 : 0;
+        const offset = ritualPhaseOffset(this.agent?.id, 640);
+        const beat = animated ? Math.floor((Date.now() + offset) / 320) % 2 : 0;
         const trim = this._providerTrimColor();
         ctx.save();
         ctx.translate(Math.round(x), Math.round(y - beat));

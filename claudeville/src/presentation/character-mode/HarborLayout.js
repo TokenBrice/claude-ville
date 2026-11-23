@@ -5,7 +5,7 @@
 // draws what this module places.
 import { MAP_SIZE } from '../../config/constants.js';
 import { BUILDING_DEFS } from '../../config/buildings.js';
-import { OFFSHORE_SCENERY, WORLD_TREE } from '../../config/scenery.js';
+import { DISTRICT_PROPS, OFFSHORE_SCENERY, WORLD_TREE } from '../../config/scenery.js';
 import { projectNameFromPath } from '../shared/GitEventIdentity.js';
 import { tileToWorld, worldToTile } from './Projection.js';
 
@@ -185,16 +185,13 @@ export const HARBOR_SEA_STACK_OBSTACLES = Object.freeze(
         })),
 );
 
-// The solid offshore prop an outward roadstead row can reach at saturation:
-// the beacon rock east of the fairway (the sea stacks already sit in the
-// water field's obstacles; the far shore and the wreck lie off every row's
-// bearing). Rects in the HN-2 sea-stack pattern, a tile past the prop's
-// centre. The water field does not see them, so berths and routes keep their
-// based geometry; the mooring allocator keeps a hull's footprint off the
-// rects instead.
-const ROADSTEAD_PROP_OBSTACLE_IDS = new Set(['prop.beaconRock']);
+// The solid offshore props a roadstead mooring must keep clear of: the beacon
+// rock east of the fairway and the Harbor/lagoon beacon buoys (the sea stacks
+// already sit in the water field's obstacles). Rects in the HN-2 pattern, a
+// tile past each prop's centre; the roadstead allocator checks every slot.
+const ROADSTEAD_PROP_OBSTACLE_IDS = new Set(['prop.beaconRock', 'prop.harborBeaconBuoy']);
 export const HARBOR_ROADSTEAD_PROP_OBSTACLES = Object.freeze(
-    OFFSHORE_SCENERY
+    [...OFFSHORE_SCENERY, ...DISTRICT_PROPS]
         .filter(prop => ROADSTEAD_PROP_OBSTACLE_IDS.has(prop.id))
         .map(prop => Object.freeze({
             id: prop.id,
@@ -1135,10 +1132,10 @@ export const HARBOR_WATER_MASK = Object.freeze([
     '..........~~~~~..~~~~~~~~~~~~~~~~~~~~~~~',
     '.........~~~~~~~.~...~~~~~~~~~~~~~~~~~~~',
     '....~~~~~~~~~~~~.~....~~~~~~~~~~~~~~~~~~',
-    '.~~~~~~~~~~~~~~..~.....~~~~~~~~~~~~~~~~~',
-    '.~~~~~~~~~~~~~..~~.....~~~~~~~~~~~~~~~~~',
-    '..~~~~~~~~~~~~~~~~~...~~~~~...~~~~~~~~~~',
-    '...~~~~~~~~~~~~~~~~~~~~~~~~...~~~~~~~~~~',
+    '.~~.~~~~~~~~~~~..~.....~~~~~~~~~~~~~~~~~',
+    '.~~.~~~~~~~~~~..~~.....~~~~~~~~~~~~~~~~~',
+    '..~.~~~~~~~~~~~~~~~...~~~~~...~~~~~~~~~~',
+    '....~~~~~~~~~~~~~~~~~~~~~~~...~~~~~~~~~~',
     '....~~~~~~~~~~~~~~~~~~........~~~~~~~~~~',
     '......~~~....~~~~~~~~~........~~~~~~~~~~',
     '..............~~~~~~~.........~~~~~~~~~~',
@@ -1152,10 +1149,10 @@ export const HARBOR_WATER_MASK = Object.freeze([
     '................................~~~~~~~~',
     '................~~..........~~~~~~~~~~~~',
     '~~~.....................~.~~~~~~~~~~~~~~',
-    '~~~~~~~.~~~~~~~~~...~~~~~~~~~~~~~~~~~~~~',
-    '~~~~~~~.~~~~~~~~~...~~~~~~~~~~~~~~~~~~~~',
-    '~~~~~~~.~~~~~~~~~...~~~~~~~~~~~~~~~~~~~~',
-    '~~~~~~~.~~~~~~~......~~~~~....~~~~~~~~~~',
+    '~~~~~~~.~~~~~~~~~...~~.~~~~~~~~~~~~~~~~~',
+    '~~~~~~~.~~~~~~~~~...~~.~~~~~~~~~~~~~~~~~',
+    '~~~~~~~.~~~~~~~~~...~~.~~~~~~~~~~~~~~~~~',
+    '~~~~~~~.~~~~~~~......~.~~~....~~~~~~~~~~',
     '~~~...........................~~~~~~~~~~',
     '..............................~~~~~~~~~~',
     '...............................~~~~~~~~~',
@@ -1403,6 +1400,14 @@ export const HARBOR_LANE_NODES = Object.freeze([
 ]);
 
 export const HARBOR_SEA_EXITS = Object.freeze(['horizon.north-east', 'horizon.north', 'horizon.east']);
+// Closer inbound entry points along the visible eastern fairway edge, so
+// arriving fetch, pull and PR cutters enter view promptly instead of spending
+// half their voyage off-screen past the north-east horizon.
+export const HARBOR_INBOUND_ENTRIES = Object.freeze([
+    Object.freeze({ tileX: 39.5, tileY: 6.5 }),
+    Object.freeze({ tileX: 40.5, tileY: 8.5 }),
+    Object.freeze({ tileX: 41.5, tileY: 13.5 }),
+]);
 const LANE_MAX_LEG = 11;
 
 function buildLaneGraph(field) {
@@ -1580,6 +1585,22 @@ export function harborSeaExit(index = 0) {
     return { tileX: node.tileX, tileY: node.tileY };
 }
 
+export function harborInboundEntry(index = 0) {
+    const entry = HARBOR_INBOUND_ENTRIES[Math.abs(Math.floor(Number(index) || 0)) % HARBOR_INBOUND_ENTRIES.length];
+    return { tileX: entry.tileX, tileY: entry.tileY };
+}
+
+// An arrival: from the visible fairway entry through the lane graph to the
+// ship's mooring (departures still use composeWaterRouteTiles to the horizon).
+export function composeInboundRouteTiles(dockTile, ship, routeData = null) {
+    const bands = routeBandsFromData(routeData, ship);
+    const routeIndex = Number.isFinite(Number(ship?.departRouteIndex))
+        ? Number(ship.departRouteIndex)
+        : Number(ship?.laneIndex || 0);
+    const band = bands[Math.abs(routeIndex) % bands.length] || bands[0];
+    return composeWaterPath(harborInboundEntry(band.exitIndex ?? routeIndex), dockTile);
+}
+
 // A departure: from the ship's mooring through the lane graph to its route
 // family's horizon exit.
 export function composeWaterRouteTiles(startTile, ship, routeData = null) {
@@ -1691,9 +1712,24 @@ export function harborHullBodyPx(ship = {}) {
     return Math.round(10 + (Number(harborShipTier(ship).screenWidth) || 40) * 0.15);
 }
 
-// World px a pier deck (and the quay) stands above the water; its pilings
-// fill the face below the deck edge.
+// World px a pier deck (and the quay) stands above the water, and how far each
+// pier's south-side pilings extend below its deck edge on screen (measured from
+// building.harbor: North 4 px, Middle 0 px, South 5 px). The North pier
+// flagpole rises over its outer deck; plates always avoid it, while hulls north
+// of the pier sit behind it in depth order.
 export const HARBOR_PIER_DECK_LIFT_PX = 12;
+export const HARBOR_PIER_PILING_DROP_PX = 4;
+const HARBOR_PIER_PILING_DROP = Object.freeze({
+    North: 4,
+    Middle: 0,
+    South: 5,
+});
+const HARBOR_PIER_FLAGPOLE = Object.freeze({
+    name: 'North Flagpole',
+    rect: Object.freeze({ x0: 34.85, x1: 35.5, y0: 16.15, y1: 16.75 }),
+    lift: 88,
+    drop: 0,
+});
 // The waterside buildings' lower walls (world px above their footprint) a
 // hull body standing in front of them must not cover.
 const HARBOR_WALL_LIFT_PX = 48;
@@ -1712,14 +1748,14 @@ function boxesOverlap(a, b) {
     return a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
 }
 
-// The screen silhouette of a tile rectangle raised `lift` px: the convex
-// hull of its water-level and lifted corners.
-function prismPolygon(rect, lift) {
+// The screen silhouette of a tile rectangle raised `lift` px and dropped
+// `drop` px below water level (pier pilings): the convex hull of its corners.
+function prismPolygon(rect, lift, drop = 0) {
     const corners = [[rect.x0, rect.y0], [rect.x1, rect.y0], [rect.x1, rect.y1], [rect.x0, rect.y1]];
     const points = [];
     for (const [tx, ty] of corners) {
         const w = toWorld(tx, ty);
-        points.push([w.x, w.y], [w.x, w.y - lift]);
+        points.push([w.x, w.y + drop], [w.x, w.y - lift]);
     }
     points.sort((a, b) => (a[0] - b[0]) || (a[1] - b[1]));
     const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
@@ -1755,12 +1791,35 @@ function boxHitsPolygon(box, poly) {
 }
 
 let _harborObstaclePolygons = null;
-// Screen silhouettes a moored hull body must keep clear of: every pier deck
-// and the quay (from the water to the deck), and the lower walls of the
-// waterside buildings (the Harbor, the Lighthouse).
+// Screen silhouettes a moored hull body (and harbor plates) must keep clear
+// of: every pier deck padded for its end-posts and pilings, the North pier
+// flagpole, the quay, and the lower walls of the waterside buildings.
 export function harborObstaclePolygons() {
     if (_harborObstaclePolygons) return _harborObstaclePolygons;
-    const out = HARBOR_PIER_DECKS.map(deck => ({ name: deck.name, rect: deck, poly: prismPolygon(deck, HARBOR_PIER_DECK_LIFT_PX) }));
+    const out = HARBOR_PIER_DECKS.map((deck) => {
+        const isPier = deck.name !== 'Quay';
+        // Pad x1 only so pier-head end-posts stay clear without closing the
+        // between-pier channels. Pilings drop below the south edge (y1) only
+        // and are tested only for hulls moored south of that pier.
+        const padded = isPier
+            ? { x0: deck.x0, x1: deck.x1 + 0.3, y0: deck.y0, y1: deck.y1 }
+            : deck;
+        const pilingDrop = isPier ? (HARBOR_PIER_PILING_DROP[deck.name] ?? HARBOR_PIER_PILING_DROP_PX) : 0;
+        const deckPoly = prismPolygon(padded, HARBOR_PIER_DECK_LIFT_PX, 0);
+        return {
+            name: deck.name,
+            rect: padded,
+            pier: isPier,
+            deckPoly,
+            poly: pilingDrop > 0 ? prismPolygon(padded, HARBOR_PIER_DECK_LIFT_PX, pilingDrop) : deckPoly,
+        };
+    });
+    out.push({
+        name: HARBOR_PIER_FLAGPOLE.name,
+        rect: HARBOR_PIER_FLAGPOLE.rect,
+        poly: prismPolygon(HARBOR_PIER_FLAGPOLE.rect, HARBOR_PIER_FLAGPOLE.lift, HARBOR_PIER_FLAGPOLE.drop),
+        flagpole: true,
+    });
     for (const building of BUILDING_DEFS) {
         if (!WATERSIDE_BUILDINGS.has(building.type)) continue;
         const rect = { x0: building.x, x1: building.x + building.width, y0: building.y, y1: building.y + building.height };
@@ -1770,17 +1829,28 @@ export function harborObstaclePolygons() {
     return out;
 }
 
+/** True when a world-px box intersects a padded Harbor pier deck or flagpole polygon. */
+export function boxHitsHarborPierPolygons(box) {
+    for (const obstacle of harborObstaclePolygons()) {
+        if (obstacle.building) continue;
+        if (boxHitsPolygon(box, obstacle.poly)) return true;
+    }
+    return false;
+}
+
 // True when a hull moored at world (x, y) keeps its body clear of every
 // pier, the quay and the waterside walls on screen, whether they stand in
-// front of it or behind it. A hull wholly behind a building (north or west
-// of its footprint) is the depth sort's to hide, so walls only count for
-// hulls in front of them.
+// front of it or behind it. A hull wholly behind a building or pier flagpole
+// (north or west of its footprint) is the depth sort's to hide, and pier
+// pilings are tested only for hulls moored south of that pier.
 export function hullClearsPiers(world, entry = {}) {
     const box = hullScreenBox(world, entry);
     const tile = toTile(world.x, world.y);
     for (const obstacle of harborObstaclePolygons()) {
         if (obstacle.building && (tile.tileY < obstacle.rect.y0 || tile.tileX < obstacle.rect.x0)) continue;
-        if (boxHitsPolygon(box, obstacle.poly)) return false;
+        if (obstacle.flagpole && tile.tileY < obstacle.rect.y0) continue;
+        const poly = obstacle.pier && tile.tileY <= obstacle.rect.y1 ? obstacle.deckPoly : obstacle.poly;
+        if (boxHitsPolygon(box, poly)) return false;
     }
     return true;
 }

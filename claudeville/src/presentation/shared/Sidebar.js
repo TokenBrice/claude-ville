@@ -22,8 +22,10 @@ import {
     emitAgentSelected,
     toggleAgentSelection,
 } from './AgentSelection.js';
+import { shortToolName } from '../../domain/services/ToolIdentity.js';
 import {
     bucketWord,
+    currentToolPresentation,
     DEPARTED_WORD,
     projectKeyForAgent,
     worktreeLabel,
@@ -79,6 +81,7 @@ export function sidebarListRowKey(agent, extras = {}) {
         agent.status,
         agent.waitReason,
         agent.pendingTool,
+        agent.currentTool,
         agent.model,
         agent.effort,
         agent.provider,
@@ -1402,10 +1405,15 @@ export class Sidebar {
 
         // Sub-line: `state · Model` (`· wt <name>` for an agent in a linked
         // worktree, D1: it sits in its repo's group). The adapter's wait
-        // reason, when known, is the state ("waiting for approval — Bash").
+        // reason, when known, is the state ("waiting for approval — Bash");
+        // working rows show the active tool name when `currentTool` is set.
         const reason = waitReasonLabel(agent);
+        const activeTool = !agent.isDeparted && !reason && status === 'working' && agent.currentTool
+            ? shortToolName(currentToolPresentation(agent).name)
+            : '';
         const stateText = agent.isDeparted ? DEPARTED_WORD.toLowerCase()
-            : reason ? lowerFirst(reason) : statusWord(agent.status, 'lower');
+            : reason ? lowerFirst(reason)
+            : activeTool || statusWord(agent.status, 'lower');
         const worktree = worktreeLabel(agent);
         const jobLabel = mcpJobLabel(agent);
         this._setNodeText(refs.modelText, [jobLabel, model.label, worktree].filter(Boolean).map(label => ` · ${label}`).join(''));

@@ -58,6 +58,7 @@ import {
     canvasSeaMarkRgb,
     COAST_FIELD_FLAGS,
     COAST_PALETTE,
+    DEPTH_BOUNDS,
     mirrorStormDrop,
     OCEAN_HORIZON_WORLD_Y,
     OPEN_SEA_DEEPEST,
@@ -79,6 +80,7 @@ import {
     GLINT_NOON_BASE,
     MOON_DASH_HOLD,
     NEAR_SHORE_DASH_DENSITY,
+    NOON_DASH_HOLD,
     NOON_GLINT_FULL_TEXEL,
     GRASS_GUST_ORDER_BASE,
     GRASS_GUST_ORDER_CAP,
@@ -94,6 +96,7 @@ import {
     SURF_GLOW_RGB,
     SWASH_PEEL_ROWS,
     SWASH_STEP_RATE,
+    SWASH_STEP_TILES,
     SEA_BODY_ROWS,
     SEA_KEY_REACH,
     SEA_KEY_SHIFT,
@@ -162,6 +165,7 @@ import {
 import { baseWindX, gustinessFor, windAt } from './Wind.js';
 import { GRASS_GUST_STOPS } from './GroundBake.js';
 import { liquidPrecipitation } from './GroundState.js';
+import { shadeGroundAt } from './ShadeField.js';
 
 // Texel classes of the terrain bake (one byte per world texel).
 const CLS_FOAM = 6;
@@ -604,7 +608,8 @@ function buildBase(renderer) {
     for (let b = 1; b <= 16; b++) near.start[b] = Math.max(near.start[b], near.start[b - 1]);
     base.near = near;
 
-    // 3.10 specks (static) and the caustic net's eight states on stops 0-1.
+    // 3.10 specks (static, stops 0-1) and the caustic net's eight states on
+    // stops 0-1 plus sunlit river and lagoon stop 2 (shade checked per frame).
     const specks = [];
     const caustic = Array.from({ length: 8 }, () => []);
     for (let ty = 0; ty < th; ty++) {
@@ -613,8 +618,16 @@ function buildBase(renderer) {
             const i = ty * tw + tx;
             const k = cls[i];
             const x = bx + tx;
-            if (k > 1) continue;
-            if (hash12(Math.floor(x / 2) + 3, y + 71) < 0.04) specks.push(i);
+            if (k > 2) continue;
+            if (k === 2) {
+                const c = Math.floor((x - fx) / 2);
+                const r = Math.floor((y - fy) / 2);
+                if (c < 0 || r < 0 || c >= cols || r >= rows) continue;
+                const flags = coastField[(r * cols + c) * 2 + 1];
+                if (!(flags & COAST_FIELD_FLAGS.water) || (flags & COAST_FIELD_FLAGS.sea)) continue;
+            } else if (hash12(Math.floor(x / 2) + 3, y + 71) < 0.04) {
+                specks.push(i);
+            }
             const a = (x * 0.5 + y) / 9 + 0.45 * Math.sin((x * 0.5 - y) * 0.13);
             const b = (y - x * 0.5) / 13 + 0.45 * Math.sin((x * 0.5 + y) * 0.09);
             for (let s = 0; s < 8; s++) {
@@ -722,9 +735,9 @@ function swashCode(k, sd, cyc, x, y, cliff = false, lagoon = false, big = false)
     }
     if (sd > 0) {
         if (k === CLS_EMPTY || (!cliff && k > 5 && k !== CLS_FOAM && k !== CLS_CREST)) return 0;
-        const front = 0.05 + reach * 0.035;
+        const front = 0.05 + reach * SWASH_STEP_TILES;
         let out = 0;
-        if (sd < front - 0.035) out = CLS_FOAM;
+        if (sd < front - SWASH_STEP_TILES) out = CLS_FOAM;
         else if (sd < front) {
             if (cyc < 4 && !lagoon) return CLS_CREST | SWASH_GLOW;
             out = CLS_CREST;
@@ -732,7 +745,7 @@ function swashCode(k, sd, cyc, x, y, cliff = false, lagoon = false, big = false)
         return out === k ? 0 : out;
     }
     const darker = cyc < 4.5 ? 2 : (cyc < 6.5 ? 1 : 0);
-    if (darker < 0.5 || sd <= -0.02 - extent * 0.035) return 0;
+    if (darker < 0.5 || sd <= -0.02 - extent * SWASH_STEP_TILES) return 0;
     if (k === CLS_WET_DARK) return 0;
     if (k === CLS_WET) return CLS_WET_DARK;
     if (k === CLS_BEACH) return darker > 1.5 ? CLS_WET_DARK : CLS_WET;
@@ -1176,7 +1189,7 @@ function resolveFx(renderer, atmosphere) {
             && (Number(grade.sunBand) || 0) > 0.3
             && clamp01(weather.cloudCover) < 0.5
             && (Number(grade.night) || 0) < 0.5
-            && zoom >= 2,
+            && zoom >= 1.2,
         swash: effectBudgetMode('coastSwash', level) === 'on' && motion > 0,
         // 3.4 — the sunlit course and the cat's paws shed at MINIMAL.
         seaWeather: effectBudgetMode('sea-weather', level) === 'on',
@@ -1257,9 +1270,10 @@ function rebuildOverlay(state, base, fx, palette, rect, renderer, sea) {
     // the sea lifts one stop less (`shadeLift`, 0 without the look).
     const sunT = sun?.texel || 1;
     const sunAt = (v, x, y) => {
-        if (!sun || !(v & SEA_OPEN)) return 0;
+        if (!sun || (v & 7) === SEA_NONE) return 0;
         const lit = sun.mask[posMod(Math.floor((y + sun.oy) / sunT), sun.height) * sun.width + posMod(Math.floor((x + sun.ox) / sunT), sun.width)];
-        return lit ? sun.lift : (sun.shadeLift || 0);
+        const raw = lit ? sun.lift : (sun.shadeLift || 0);
+        return (v & SEA_OPEN) ? raw : Math.max(0, raw - 1);
     };
     // The stop an in-map texel of class `k` shows: an open texel's body stop
     // (3.3 (a)), less the sunlit course (SEA-1: the lift, floored).
@@ -1389,8 +1403,13 @@ function rebuildOverlay(state, base, fx, palette, rect, renderer, sea) {
         }
     }
     if (fx.caustics) {
+        const shade = renderer._shadeFieldState?.ready?.field || null;
         const list = base.caustic[clock > 0 ? Math.floor(fx.t * 0.004 * clock) % 8 : 0];
-        eachTexel(list, 1, (i, x, y) => { out[at(x, y)] = palette.caustics[cls[i]]; });
+        eachTexel(list, 1, (i, x, y) => {
+            const k = cls[i];
+            if (k === 2 && shade && shadeGroundAt(shade, x, y)) return;
+            out[at(x, y)] = palette.caustics[k];
+        });
     }
     if (clock > 0) {
         // 3.1 — near shore and river current: entries 14 (the lead, the next
@@ -1760,12 +1779,17 @@ function chunkSeaCanvas(state, chunk, cx, cy, palette, key, renderer, lift) {
     };
     if (lift) {
         // SEA-1 — `lift` is the sun ({ lift, floor }): its stops, floored.
+        // Above a 1-stop lift, sea-shelf texels lift by (steps - 1) to stay monotone with sunlit open sea.
         const steps = lift.lift ?? 1;
         const floor = lift.floor ?? null;
         for (let idx = 0; idx < info.length; idx++) {
-            if (!(info[idx] & SEA_OPEN)) continue;
-            const s = info[idx] & 7;
-            paint(idx, floor != null ? Math.max(s - steps, Math.min(s, floor)) : Math.max(s - 1, 0));
+            const v = info[idx];
+            const s = v & 7;
+            if (s === SEA_NONE) continue;
+            const isOpen = (v & SEA_OPEN) !== 0;
+            const eff = isOpen ? steps : (floor != null ? Math.max(0, steps - 1) : 0);
+            if (eff <= 0) continue;
+            paint(idx, floor != null ? Math.max(s - eff, Math.min(s, floor)) : Math.max(s - 1, 0));
         }
     } else {
         for (const idx of chunk.body) paint(idx, info[idx] & 7);
@@ -1868,13 +1892,20 @@ function rebuildPath(state, base, fx, palette, view, glint) {
         const half = (baseWidth + (y + 0.5 - view.y0) * grow) * (moon ? 0.7 : 1);
         const c0 = Math.floor((gx - half) / width);
         const c1 = Math.floor((gx + half) / width);
+        const pale = glint.kind === 2;
         for (let cx = c0; cx <= c1; cx++) {
             let life = 0;
             let rollSun = 0;
+            let tone = 0;
             if (moon) life = Math.floor((tick + Math.floor(hash12(cx + 37, y + 5) * MOON_DASH_HOLD)) / MOON_DASH_HOLD);
-            else rollSun = hash12(cx + tick * 7, y + tick * 3);
+            else {
+                const glintTick = pale
+                    ? Math.floor((tick + Math.floor(hash12(cx + 37, y + 5) * NOON_DASH_HOLD)) / NOON_DASH_HOLD)
+                    : tick;
+                rollSun = hash12(cx + glintTick * 7, y + glintTick * 3);
+                tone = hash12(cx + 5, y + glintTick * 11);
+            }
             const rollMoon = moon ? hash12(cx + life * 5, y + life * 2) : 0;
-            const tone = moon ? 0 : hash12(cx + 5, y + tick * 11);
             for (let x = cx * width; x < cx * width + width; x++) {
                 const weight = 1 - Math.abs(x + 0.5 - gx) / half;
                 if (weight <= 0) continue;
@@ -2145,7 +2176,7 @@ function columnRampLuma(stop, lift) {
 // SCENE_FRAGMENT `waterStopForSd`: the stop a signed distance (tiles) bakes
 // to, ignoring the river/lagoon caps and the boundary dither.
 function waterStopForSd(sd) {
-    return (sd >= 0.30) + (sd >= 0.78) + (sd >= 1.38) + (sd >= 2.15);
+    return (sd >= DEPTH_BOUNDS[0]) + (sd >= DEPTH_BOUNDS[1]) + (sd >= DEPTH_BOUNDS[2]) + (sd >= DEPTH_BOUNDS[3]);
 }
 
 // Each light lays its broken column (columnLift) from its start toward the
@@ -2462,6 +2493,7 @@ export function drawCanvasWaterState(ctx, renderer, atmosphere) {
         fx.deepTick, fx.nearTick, fx.ringTick, posMod(fx.swashStep, SWASH_SET), fx.rippleTick,
         fx.stillPaws ? 1 : 0, Math.round(fx.stillShare * 256), fx.surfGlow > 0 ? 1 : 0,
         fx.caustics ? Math.floor(fx.t * 0.004 * fx.clock) % 8 : -1,
+        fx.caustics ? (renderer._shadeFieldState?.ready?.revision ?? 0) : 0,
         Math.round(fx.rain * 64), fx.swash ? 1 : 0, fx.grassGust ? 1 : 0, fx.horizonTop, pending,
         sun?.key ?? '', gust?.key ?? '', seaKey, state.capsDrift,
     ].join('|');

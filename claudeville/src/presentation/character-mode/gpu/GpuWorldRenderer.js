@@ -30,6 +30,9 @@ import {
     SMOKE_PUFF_LIT_GAIN,
     SMOKE_PUFF_SHADE_GAIN,
     GPU_RECORD_FLAGS,
+    DAYTIME_WORK_BLOOM_CORE,
+    DAYTIME_WORK_BLOOM_STRENGTH,
+    hasActiveBloomEmitters,
     isSoftwareRasterizer,
     gpuRecordPageable,
 } from './GpuWorldPolicy.js';
@@ -82,6 +85,7 @@ import { NEUTRAL_GRADE } from '../GradeEvaluator.js';
 import {
     COAST_FIELD_FLAGS,
     COAST_PALETTE,
+    DEPTH_BOUNDS,
     coastFieldTexels,
     mirrorStormDrop,
     OCEAN_HORIZON_WORLD_Y,
@@ -181,8 +185,11 @@ export const SWELL_SET_SHARE = 0.5;
 export const DEEP_CREST_RUN = 24;
 // 3.2 — peak presence of path dashes at the path's centre, full strength.
 export const GLINT_DASH_DENSITY = 0.3;
-// 3.2 — water ticks (6 Hz) a moon-path dash holds before it re-rolls.
+// 3.2 — water ticks (6 Hz) a moon-path or noon-path dash holds before re-rolling.
 export const MOON_DASH_HOLD = 6;
+export const NOON_DASH_HOLD = 3;
+// 3.6 — swash step width in signed-distance tiles (relaxed 2026-11-23).
+export const SWASH_STEP_TILES = 0.05;
 // Starlight samples existing swell caps, never a separate glitter field.
 // Two-texel silver tips hold four water ticks (~667 ms), out of phase.
 export const STARLIGHT_DENSITY = 0.12;
@@ -634,6 +641,8 @@ uniform vec4 u_cloudLone;
 uniform vec3 u_cloudThresholds;
 // rgb: C2 horizon haze, a: strength at the top of the frame (0 = off).
 uniform vec4 u_haze;
+// Vertical reach of screen-Y aerial haze (0.30 clear -> 0.55 fog).
+uniform float u_hazeStart;
 // SEA-1 — u_cloud.w is the sea1 look strength: above 0 the field lies on the
 // ground plane (GpuWorldPolicy CLOUD_PLANE; u_cloud.xy then in plane units).
 // PERF-01 — branchless unsigned integer bilinear constants derived from
@@ -694,9 +703,10 @@ vec3 applyCloudCourse(vec3 color, float course) {
 vec3 applyAerialHaze(vec3 color, float order, float cellCentreY, bool additive) {
     if (u_haze.a > 0.0) {
         float yTop = cellCentreY / max(1.0, u_resolution.y);
-        float t = clamp((0.55 - yTop) / 0.55, 0.0, 1.0);
+        float hazeStart = max(0.05, u_hazeStart);
+        float t = clamp((hazeStart - yTop) / hazeStart, 0.0, 1.0);
         float level = pow(t, 1.4) * u_haze.a * 48.0;
-        float perTexel = 48.0 * u_haze.a * 1.4 * pow(max(t, 1e-4), 0.4) / (0.55 * max(1.0, u_resolution.y)) * max(1.0, u_camera.z);
+        float perTexel = 48.0 * u_haze.a * 1.4 * pow(max(t, 1e-4), 0.4) / (hazeStart * max(1.0, u_resolution.y)) * max(1.0, u_camera.z);
         float seam = clamp(2.0 * perTexel, 1e-3, 1.0);
         float k = floor(level);
         float f = level - k;
@@ -704,7 +714,8 @@ vec3 applyAerialHaze(vec3 color, float order, float cellCentreY, bool additive) 
         float haze = k / 48.0;
         if (haze > 0.0) {
             float l = dot(color, vec3(0.2126, 0.7152, 0.0722));
-            color = mix(color, mix(vec3(l), color, 0.8), min(1.0, haze * 8.0));
+            float clearDay = clamp((0.55 - hazeStart) / 0.25, 0.0, 1.0);
+            color = mix(color, mix(vec3(l), color, 0.8), min(1.0, haze * mix(8.0, 3.0, clearDay)));
             color = additive ? color * (1.0 - haze) : mix(color, u_haze.rgb, haze);
         }
     }
@@ -715,7 +726,7 @@ vec3 applyAtmosphereCourses(vec3 color, vec2 cell, float order, float cellCentre
     return applyAerialHaze(color, order, cellCentreY, additive);
 }
 ${MIST_GLSL}`;
-const ATMOSPHERE_COURSE_UNIFORM_NAMES = ['u_cloudTile', 'u_cloud', 'u_cloudThresholds', 'u_haze', 'u_cloudLone', 'u_mist', 'u_mistBurn'];
+const ATMOSPHERE_COURSE_UNIFORM_NAMES = ['u_cloudTile', 'u_cloud', 'u_cloudThresholds', 'u_haze', 'u_hazeStart', 'u_cloudLone', 'u_mist', 'u_mistBurn'];
 
 // 3.4 — water mood (x: night, y: storm), CoastBake.waterMoodFor: night sits
 // shallow water below lit ground in value, storm reads grey-green. The
@@ -746,6 +757,11 @@ vec3 applyWaterMood(vec3 color) {
         color *= 1.0 - u_waterMood.x * 0.1;
     }
     return clamp(color, 0.0, 1.0);
+}
+// V6 — daytime water saturation ceiling, blending back to WATER_MAX_SATURATION
+// with night and storm (CPU twin: GradeEvaluator.waterMaxSaturation).
+float waterMaxSat() {
+    return mix(WATER_DAY_MAX_SATURATION, WATER_MAX_SATURATION, clamp(max(u_waterMood.x, u_waterMood.y), 0.0, 1.0));
 }`;
 
 // 3.1 / 3.2 — the sea's shared crest and path grammar, uniform-free so the
@@ -846,8 +862,11 @@ float glintDash(vec2 p, vec2 fragPx, vec4 glint, float texelPx, float tick) {
     }
     vec2 cell = floor(floor(p) / vec2(3.0, 1.0));
     float density = ${GLINT_DASH_DENSITY.toFixed(2)} * (pale ? min(1.0, ${NOON_GLINT_FULL_TEXEL.toFixed(1)} / max(texelPx, 1e-3)) : 1.0);
-    if (waterHash12(cell + vec2(tick * 7.0, tick * 3.0)) >= density * glint.y * weight) return 0.0;
-    return waterHash12(cell + vec2(5.0, tick * 11.0)) < weight ? 2.0 : 1.0;
+    float glintTick = pale
+        ? floor((tick + floor(waterHash12(cell + vec2(37.0, 5.0)) * ${NOON_DASH_HOLD.toFixed(1)})) / ${NOON_DASH_HOLD.toFixed(1)})
+        : tick;
+    if (waterHash12(cell + vec2(glintTick * 7.0, glintTick * 3.0)) >= density * glint.y * weight) return 0.0;
+    return waterHash12(cell + vec2(5.0, glintTick * 11.0)) < weight ? 2.0 : 1.0;
 }
 // SEA-2 — whether a texel lies inside the sun's road (glintDash's lane, a
 // sun path only, never the moon's): the warm sky stays inside it.
@@ -1765,7 +1784,7 @@ int waterStopIndex(vec3 c) {
 // The stop a signed distance (tiles) bakes to, ignoring river/lagoon caps
 // and the boundary dither (CoastBake DEPTH_BOUNDS). Index into WATER_STOPS.
 int waterStopForSd(float sd) {
-    return int(step(0.30, sd) + step(0.78, sd) + step(1.38, sd) + step(2.15, sd));
+    return int(step(${DEPTH_BOUNDS[0].toFixed(2)}, sd) + step(${DEPTH_BOUNDS[1].toFixed(2)}, sd) + step(${DEPTH_BOUNDS[2].toFixed(2)}, sd) + step(${DEPTH_BOUNDS[3].toFixed(2)}, sd));
 }
 
 // 3.6 — the coast field at a world point; false outside the lattice or when
@@ -1843,8 +1862,8 @@ vec3 applyCoastSwash(vec3 color, vec2 px) {
         if ((flags & 32u) == 0u && waterStopIndex(color) < 0 && !sameColour(color, WATER_FOAM) && !sameColour(color, WATER_FOAM_CREST)) {
             return color;
         }
-        float front = 0.05 + reach * 0.035;
-        if (sd < front - 0.035) return WATER_FOAM;
+        float front = 0.05 + reach * ${SWASH_STEP_TILES.toFixed(3)};
+        if (sd < front - ${SWASH_STEP_TILES.toFixed(3)}) return WATER_FOAM;
         if (sd < front) {
             surfGlowTexel = u_surfGlow > 0.0 && cyc < 3.5 && !lagoon;
             return WATER_FOAM_CREST;
@@ -1853,7 +1872,7 @@ vec3 applyCoastSwash(vec3 color, vec2 px) {
         return color;
     }
     float darker = cyc < 4.5 ? 2.0 : (cyc < 6.5 ? 1.0 : 0.0);
-    if (darker < 0.5 || sd <= -0.02 - extent * 0.035) return color;
+    if (darker < 0.5 || sd <= -0.02 - extent * ${SWASH_STEP_TILES.toFixed(3)}) return color;
     if (sameColour(color, WET_SAND_DARK)) return color;
     if (sameColour(color, WET_SAND)) return WET_SAND_DARK;
     // The ground bake's beach (the sand ramp under its drift, AO and far-row
@@ -1992,6 +2011,28 @@ bool seaOpenWater = false;
 // SEA-2 / SEA-3 — the sky's share main() lays on this open-water texel
 // after the grade (seaSkyHue with the cool water sky; 0 = none).
 float seaSkyTake = 0.0;
+// 3.7 / SEA-1 — proportional luma lift on baked mirror texels over sunlit open
+// water, using mirrorBaseStop so reflections lift with the water beside them.
+vec3 liftMirrorColour(vec3 color, vec2 px) {
+    if (!u_terrainBatch || u_seaLift <= 0.0) return color;
+    int mStop = mirrorBaseStop(px);
+    if (mStop < 2) return color;
+    vec2 p = floor(px);
+    float order = waterBayer4(p);
+    bool isOpen = float(mStop) >= openSeaStop(openSeaDepth(p), order);
+    float mSd;
+    uint mFlags;
+    bool isShelf = !isOpen && coastFieldAt(px, mSd, mFlags) && (mFlags & ${COAST_FIELD_FLAGS.sea}u) != 0u && mSd > ${SWELL_SHORE_SD.toFixed(2)};
+    float lift = isOpen ? u_seaLift : (isShelf && u_seaLift > 1.0 ? u_seaLift - 1.0 : 0.0);
+    if (lift <= 0.0) return color;
+    float m = u_cloud.z > 0.0 ? cloudSeamField(p, cloudNoiseAt(p), order, u_seaSunlit) : 1.0;
+    float lifted = seaLiftedStop(float(mStop), lift, m, order);
+    if (lifted >= float(mStop) - 0.5) return color;
+    float baseL = max(0.05, dot(WATER_STOPS[mStop], GRADE_LUMA));
+    float liftL = dot(seaStopRgb(lifted), GRADE_LUMA);
+    return clamp(color * (liftL / baseL), 0.0, 1.0);
+}
+bool causticSurface(vec2 p, int stop);
 vec3 applyWaterState(vec3 color, vec2 px, out bool seaPath) {
     seaPath = false;
     seaSkyTake = 0.0;
@@ -2002,14 +2043,17 @@ vec3 applyWaterState(vec3 color, vec2 px, out bool seaPath) {
         float sd;
         uint flags;
         if (u_terrainBatch && coastFieldAt(px, sd, flags) && (flags & 1u) != 0u) {
-            return applyWaterMood(color) * WATER_CAST;
+            return applyWaterMood(liftMirrorColour(color, px)) * WATER_CAST;
         }
         return color;
     }
     int stop = waterStopIndex(color);
     float clock = u_waterFx.x;
     vec2 p = floor(px);
-    if (stop < 0) return clock <= 0.0 ? staticWaterDashes(color, px) : applyWaterMood(color) * WATER_CAST;
+    if (stop < 0) {
+        vec3 lifted = liftMirrorColour(color, px);
+        return clock <= 0.0 ? staticWaterDashes(lifted, px) : applyWaterMood(lifted) * WATER_CAST;
+    }
     // SEA-1 — with the look on, open water is flagged under any sky, so
     // applySeaCourses gives it the open sea's cloud rule (the map edge).
     seaOpenWater = u_terrainBatch && (u_squall.w > 0.0 || u_cloud.w > 0.0) && stop >= 2
@@ -2057,9 +2101,14 @@ vec3 applyWaterState(vec3 color, vec2 px, out bool seaPath) {
             bool litSlope = base < stop;
             if (open && u_seaSunlit > 0.0 && cloudSeamField(p, cloudNoiseAt(p), order, u_seaSunlit) < u_seaSunlit) base = max(base - 1, 0);
             // SEA-1 — the open sea's lift (shadeOpenSea), so it crosses the map edge unbroken.
+            // Above a 1-stop lift, the sea shelf lifts by (u_seaLift - 1) so stop 4 never
+            // forms a dark moat between turquoise shallows and sunlit open sea.
             if (open && u_seaLift > 0.0) {
                 float m = u_cloud.z > 0.0 ? cloudSeamField(p, cloudNoiseAt(p), order, u_seaSunlit) : 1.0;
                 base = int(seaLiftedStop(float(base), u_seaLift, m, order));
+            } else if (shelf && u_seaLift > 1.0) {
+                float m = u_cloud.z > 0.0 ? cloudSeamField(p, cloudNoiseAt(p), order, u_seaSunlit) : 1.0;
+                base = int(seaLiftedStop(float(base), u_seaLift - 1.0, m, order));
             }
             // SEA-3 — the open sea's sea state (shadeOpenSea): calm, no caps;
             // fresh, more cap clusters.
@@ -2091,7 +2140,7 @@ vec3 applyWaterState(vec3 color, vec2 px, out bool seaPath) {
     }
     if (cap > 0.5 && clock <= 0.0) return applyWaterMood(WATER_STOPS[max(base - int(cap), 0)]) * WATER_CAST;
     if (clock <= 0.0) {
-        if (shallows && u_waterFx.z > 0.0 && causticAt(p, 0.0)) return applyWaterMood(CAUSTICS[stop]) * WATER_CAST;
+        if (u_waterFx.z > 0.0 && causticSurface(p, stop) && causticAt(p, 0.0)) return applyWaterMood(CAUSTICS[stop]) * WATER_CAST;
         return staticWaterDashes(color, px);
     }
     // 3.1 — crests on 3x1 dash cells, the whole dash read at its origin.
@@ -2146,7 +2195,7 @@ vec3 applyWaterState(vec3 color, vec2 px, out bool seaPath) {
     // shoals near the island), whichever is lighter.
     int rise = max(max(int(cap), int(streak)), course > 0.5 ? (offset > 31.5 && near > 0.8 ? 2 : 1) : 0);
     if (rise > 0) return applyWaterMood(WATER_STOPS[max(base - rise, 0)]) * WATER_CAST;
-    if (shallows && u_waterFx.z > 0.0 && causticAt(p, clock)) return applyWaterMood(CAUSTICS[stop]) * WATER_CAST;
+    if (u_waterFx.z > 0.0 && causticSurface(p, stop) && causticAt(p, clock)) return applyWaterMood(CAUSTICS[stop]) * WATER_CAST;
     return applyWaterMood(color) * WATER_CAST;
 }
 
@@ -2245,11 +2294,29 @@ vec3 applyAuthoredSunBand(vec3 color, float material) {
     response = mix(response, 0.24, materialNear(material, 8.0));
     float keyFacing = clamp(0.5 + (-u_sun.x - u_sun.y) * 0.25, 0.0, 1.0);
     float rawBand = 0.84 + response * (0.12 + keyFacing * 0.12);
-    // Two restrained material-wide bands preserve the baked upper-left key.
-    float quantized = rawBand < 0.93 ? 0.86 : 1.0;
+    // Clear daylight retires the 0.86 penalty on land/fabric/unlit (base 1.0)
+    // and gives high-response stone/metal a crisp sunlit step (1.08); pre-dawn,
+    // blue-hour and night (sunBand <= 0.35) keep the base curve untouched.
+    // Water (material 8) keeps its authored 0.86 until SEA-1 fades it.
+    float isWater = materialNear(material, 8.0);
+    float baseQuant = rawBand < 0.93 ? 0.86 : 1.0;
+    float sunnyQuant = isWater > 0.5 ? 0.86 : (response >= 0.60 && rawBand >= 0.95 ? 1.08 : 1.0);
+    float sunBandW = clamp(u_sun.w, 0.0, 1.0);
+    float quantized = mix(baseQuant, sunnyQuant, smoothstep(0.35, 0.85, sunBandW));
     // SEA-1 — water's dim fades out with the look (sunlit water lifts instead).
     if (u_cloud.w > 0.0) quantized = mix(quantized, 1.0, materialNear(material, 8.0) * u_cloud.w);
-    return color * mix(1.0, quantized, clamp(u_sun.w, 0.0, 1.0));
+    return color * mix(1.0, quantized, sunBandW);
+}
+// 3.10 — caustics appear on stops 0..1 and on sunlit river/lagoon stop 2
+// outside cast ground shade (defined after SUN_SHADE_GLSL so shadeGroundAt is in scope).
+bool causticSurface(vec2 p, int stop) {
+    if (stop <= 1) return true;
+    if (stop != 2) return false;
+    float cSd;
+    uint cFlags;
+    if (!coastFieldAt(p, cSd, cFlags)) return false;
+    if ((cFlags & ${COAST_FIELD_FLAGS.water}u) == 0u || (cFlags & ${COAST_FIELD_FLAGS.sea}u) != 0u) return false;
+    return !(u_shadeRect.w > 0.0 && shadeGroundAt(p));
 }
 
 // RG-5 — the atmosphere courses of one cell, with the squall on open water
@@ -2520,9 +2587,9 @@ void main() {
     // takes the same cap, so the two still meet without a seam). The 3.2
     // path is the one exception (M7): its seaPath stop keeps its colour and
     // is held at HSL L <= 0.70 instead.
-    if (waterHue) color = seaPath ? seaPathCap(color) : capSaturation(applyWaterSky(capSaturation(color, WATER_MAX_SATURATION)), WATER_MAX_SATURATION);
+    if (waterHue) color = seaPath ? seaPathCap(color) : capSaturation(applyWaterSky(color), waterMaxSat());
     // SEA-2 / SEA-3 — open water's share of the cool sky (applyWaterState).
-    if (waterHue && !seaPath && seaSkyTake > 0.0) color = capSaturation(seaSkyHue(color, u_waterSky.rgb, seaSkyTake), WATER_MAX_SATURATION);
+    if (waterHue && !seaPath && seaSkyTake > 0.0) color = capSaturation(seaSkyHue(color, u_waterSky.rgb, seaSkyTake), waterMaxSat());
     // 2.7 — a Lighthouse-lit dash is the lamp's own light (like 1.3's
     // emitters below): it keeps its beaconFire stop (okL <= 0.83) instead of
     // the night Purkinje grey.
@@ -2689,13 +2756,11 @@ void main() {
         }
     }
     // 2.5 / 2.1 — a translucent edge texel over a lit pool would show that
-    // pool through itself. The baked 2.4 rim (a dark 1-texel outline at half
-    // alpha round bodies and props) turns opaque as the lamps take the night
-    // (the pools' carry, a grade uniform), in every frame alike: a pool
-    // behind a figure never reads as a warm outline on both of its edges, and
-    // an attention pool behind a neighbour never changes that neighbour,
-    // whether the light is on or off. By day the rim keeps its authored half
-    // alpha; a reflection twin keeps its own courses.
+    // pool through itself. The baked 2.4 rim (a dark 1-texel outline tagged at
+    // half alpha round bodies and props so light passes skip it) renders at an
+    // opaque daytime floor (0.96, rising to 1.0 with nightCarry; relaxed
+    // 2026-11-23, operator decision), keeping crisp ground separation by day
+    // and blocking pools at night; a reflection twin keeps its own courses.
     bool bakedRim = recvClass != 0 && !reflectRecord && albedo.a > 0.4 && albedo.a < 0.6
         && max(albedo.r, max(albedo.g, albedo.b)) < 0.16;
     float nightCarry = clamp((u_poolGain - 0.15) / 1.05, 0.0, 1.0);
@@ -3243,6 +3308,26 @@ void main() {
         vec3 rim = receiverKnee(onStop(mix(rimHue, rimStop, 0.6), rimY), receiverLuma);
         if (dot(rim, GRADE_LUMA) > dot(color, GRADE_LUMA)) color = rim;
     }
+    // Daytime 1-texel upper-left sun rim on sunlit villager body contours
+    // (opaque contour only; never the half-alpha bakedRim halo, capped well
+    // below NEEDS YOU and waiting candles).
+    if (recvClass == 2 && !reflectRecord && albedo.a >= 0.75 && sunVerdict > -0.5 && sunVerdict < 1.5
+        && u_shade.y > 0.0 && u_sun.w > 0.3 && recvH > 10.0) {
+        vec2 leftUv = uv - vec2(uvStepX, 0.0);
+        vec2 topUv = uv + vec2(0.0, -1.0 / float(albedoSize().y));
+        bool leftOuter = any(lessThan(leftUv, v_uvClamp.xy)) || any(greaterThan(leftUv, v_uvClamp.zw))
+            || albedoTexture(leftUv).a < 0.75;
+        bool topOuter = any(lessThan(topUv, v_uvClamp.xy)) || any(greaterThan(topUv, v_uvClamp.zw))
+            || albedoTexture(topUv).a < 0.75;
+        if (leftOuter || topOuter) {
+            float rimStrength = clamp(u_shade.y / 0.21875, 0.0, 1.0) * clamp(u_sun.w, 0.0, 1.0)
+                * smoothstep(0.04, 0.14, dot(color, GRADE_LUMA));
+            vec3 sunRimColor = mix(color, vec3(1.0, 0.94, 0.78), 0.30 * rimStrength);
+            float rimY = dot(sunRimColor, GRADE_LUMA);
+            if (rimY > 0.72) sunRimColor *= 0.72 / rimY;
+            if (dot(sunRimColor, GRADE_LUMA) > dot(color, GRADE_LUMA)) color = sunRimColor;
+        }
+    }
 
     if (u_mist.w > 0.0) {
         // MS-1 — the low mist (MIST_GLSL) replaces the screen-Y veil: the
@@ -3284,8 +3369,8 @@ void main() {
         ? fatAtmosphereCourses(color, cellTaps, waterMaterial)
         : applySeaCourses(color, artCell, poolOrder,
             artTopLeftPx.y + (waterMaterial ? seaContourRows(artCell) * u_camera.z : 0.0), u_additive);
-    if (bakedRim && !u_additive) alpha = mix(alpha, max(alpha, v_alpha), nightCarry);
-    // SD-3 — the finished lifted texel stays under the waiting candle.
+    if (bakedRim && !u_additive) alpha = max(alpha, v_alpha * mix(0.96, 1.0, nightCarry));
+    // SD-3 — every lifted texel stays under the waiting candle (SUN_LIFT_CANDLE).
     color = sunLiftFinal(color);
     outColor = vec4(max(color, vec3(0.0)) * alpha, alpha);
     outEmission = vec4(emission * alpha, alpha > 0.0 ? 1.0 : 0.0);
@@ -3435,7 +3520,7 @@ vec3 shadeOpenSea(vec2 cell) {
         if (starlightAt(cell, cap, u_starlight, tick)) albedo = WATER_FOAM_CREST;
         // SEA-1 — the sun band's dim fades out with the look (the lift replaces it).
         c = applyWaterMood(albedo) * WATER_CAST * mix(1.0, 0.86, u_seaSunBand * (1.0 - u_cloud.w));
-        c = capSaturation(applyWaterSky(capSaturation(applyTimeGrade(c, true), WATER_MAX_SATURATION)), WATER_MAX_SATURATION);
+        c = capSaturation(applyWaterSky(applyTimeGrade(c, true)), waterMaxSat());
         // SEA-2 / SEA-3 — lit slopes and static caps (never the body, a
         // trough, a moving dash or foam) and a calm sea's glassy lanes take
         // the sky's hue at their own value: the warm horizon inside the
@@ -3444,7 +3529,7 @@ vec3 shadeOpenSea(vec2 cell) {
         if (calm && seaCalmLane(cell)) take = max(take, ${SEA_STATE.laneWeight.toFixed(2)});
         if (take > 0.0) {
             vec3 sky = inSunRoad(texelPx, u_glint, u_camera.z) ? u_seaSky : u_waterSky.rgb;
-            c = capSaturation(seaSkyHue(c, sky, take), WATER_MAX_SATURATION);
+            c = capSaturation(seaSkyHue(c, sky, take), waterMaxSat());
         }
     }
     float hazeRows = u_seaHaze.a;
@@ -3510,8 +3595,9 @@ vec3 shadeOpenSea(vec2 cell) {
     // SEA-1 — no cloud multiply on open water: its shade is the lift's one
     // stop (seaLiftedStop); the squall keeps its courses.
     if (u_cloud.w > 0.0) shade = 0.0;
+    float cloudDark = shade * u_cloud.z;
     shade = max(shade, squallShade(cell, n, order));
-    if (shade > 0.0) c *= vec3(1.0) - shade * 0.085 * vec3(1.0, 0.96, 0.84);
+    if (shade > 0.0) c *= vec3(1.0) - max(cloudDark, shade * 0.085) * vec3(1.0, 0.96, 0.84);
     // N3 — the aerial haze's courses on water follow the swell contours (the
     // in-map water takes the same rows, SCENE_FRAGMENT), never a ruled line.
     return applyAerialHaze(c, order, (cell.y + 0.5 + seaContourRows(cell) + u_camera.y) * u_camera.z, false);
@@ -3898,7 +3984,7 @@ void main() {
         color = vec4(${rainLayerChoice(RT.rgb.map(rgb => `vec3(${rgb})`))}, ${rainLayerChoice(RT.alpha)} * u_rainPhase.w);
         shape = ivec4(0, int(left), ${rainLayerChoice(RT.dashed)}, 0);
         leanOut = lean;
-    } else if (quad == 1 && (flags & ${RAIN_UNIFORM_FLAGS.mask}u) != 0u && (still || streak)
+    } else if (quad == 1 && (flags & ${RAIN_UNIFORM_FLAGS.mask}u) != 0u
         && rainU01(rainHash(h + 5u)) < u_rainSplash.x) {
         float speedMul = ${rainLayerChoice(RT.speedMul)};
         int frame = still ? 2 : int(floor(fall / max(u_rainSplash.y * speedMul, 0.000001)));
@@ -5324,7 +5410,7 @@ export class GpuWorldRenderer {
         this.waterFieldsActive = present;
     }
 
-    _setSceneUniforms(feed, camera, qualityLevel = POST_FX_LEVELS.FULL) {
+    _setSceneUniforms(feed, camera, qualityLevel = POST_FX_LEVELS.FULL, batches = null) {
         const gl = this._uniformGl || this.gl;
         const uniforms = this.sceneUniforms;
         const grade = resolveFrameGrade(feed);
@@ -5361,7 +5447,13 @@ export class GpuWorldRenderer {
         // admitted light below, and the bloom share in `_present`.
         const energy = sourceEnergyFor(feed.lighting);
         this.sourceEnergy = energy;
-        gl.uniform1f(uniforms.u_coreEnergy, clamp(finite(energy.core, 1), 0, 2));
+        const daytimeWorkBloom = energy.bucket === 'daylight' && hasActiveBloomEmitters(batches);
+        this._daytimeWorkBloom = daytimeWorkBloom;
+        const coreEnergy = daytimeWorkBloom
+            ? DAYTIME_WORK_BLOOM_CORE
+            : clamp(finite(energy.core, 1), 0, 2);
+        this._frameCoreEnergy = coreEnergy;
+        gl.uniform1f(uniforms.u_coreEnergy, coreEnergy);
         // 3.1 / 3.2 / 3.6 / 3.9 / 3.10 — the water clock, rings, caustics,
         // swash and the sun/moon path, then the coast lattice fields.
         const moonFill = clamp(finite(feed.lighting?.moonFill, 0), 0, 1);
@@ -5614,7 +5706,7 @@ export class GpuWorldRenderer {
         this._setCameraUniforms(uniforms, camera, 1);
         gl.uniform2f(uniforms.u_resolution, this.width, this.height);
         uploadGradeUniforms(gl, uniforms, this._frameGradeForComposite || NEUTRAL_GRADE);
-        gl.uniform1f(uniforms.u_coreEnergy, clamp(finite(this.sourceEnergy?.core, 1), 0, 2));
+        gl.uniform1f(uniforms.u_coreEnergy, this._frameCoreEnergy ?? clamp(finite(this.sourceEnergy?.core, 1), 0, 2));
         gl.activeTexture(gl.TEXTURE0 + PARTICLE_SAMPLER_UNITS.motifs);
         gl.bindTexture(gl.TEXTURE_2D, this._particleMotifTexture);
         gl.uniform1i(uniforms.u_motifs, PARTICLE_SAMPLER_UNITS.motifs);
@@ -6054,6 +6146,7 @@ export class GpuWorldRenderer {
         gl.uniform3fv(uniforms.u_cloudThresholds, courses.thresholds);
         gl.uniform4fv(uniforms.u_cloudLone, courses.lone);
         gl.uniform4fv(uniforms.u_haze, courses.haze);
+        gl.uniform1f(uniforms.u_hazeStart, courses.hazeStart);
         // MS-1 — the low mist (prepareFrame's resolveMist; zero = today's veil).
         gl.uniform4fv(uniforms.u_mist, this.mist);
         gl.uniform2fv(uniforms.u_mistBurn, this.mistBurn);
@@ -6265,7 +6358,7 @@ export class GpuWorldRenderer {
             this._uniformGl = stagingGl;
             if (this._radiance) this._radiance.gl = stagingGl;
             stagingGl.useProgram(this.sceneProgram);
-            this._setSceneUniforms(feed, camera, qualityLevel);
+            this._setSceneUniforms(feed, camera, qualityLevel, batches);
             // B.1b — the albedo page (or its stand-in) stays on unit 14;
             // unit 0 starts empty in case a paged batch draws first.
             stagingGl.activeTexture(gl.TEXTURE0 + SCENE_SAMPLER_UNITS.albedoPage);
@@ -6292,8 +6385,11 @@ export class GpuWorldRenderer {
             }
             const bloomMode = effectBudgetMode('bloom', qualityLevel);
             const strength = bloomMode === 'off' ? 0 : bloomMode === 'reduced' ? 0.42 : 0.72;
-            this._frameBloomStrength = this.lightCount > 0
-                ? strength * clamp(finite(this.sourceEnergy?.bloom, 1), 0, 2) : 0;
+            const bloomSources = this.lightCount > 0 || this._daytimeWorkBloom;
+            const bloomEnergy = this._daytimeWorkBloom
+                ? DAYTIME_WORK_BLOOM_STRENGTH
+                : clamp(finite(this.sourceEnergy?.bloom, 1), 0, 2);
+            this._frameBloomStrength = bloomSources ? strength * bloomEnergy : 0;
             const bloomEnabled = this._frameBloomStrength > 0;
             const roles = this._p3 && this._ensureP3Programs() ? this._roleBlend : null;
             this._rolesWritten = roles !== null;
@@ -6502,9 +6598,9 @@ export class GpuWorldRenderer {
             gl.disable(gl.BLEND);
             gl.disable(gl.DEPTH_TEST);
             this._beginPass('bloom');
-            if (bloomEnabled && this.lightCount > 0) this._renderBloom();
-            this._endPass('bloom', bloomEnabled && this.lightCount > 0 ? 2 : 0,
-                bloomEnabled && this.lightCount > 0 ? this.bloomA.width * this.bloomA.height * 8 : 0);
+            if (bloomEnabled) this._renderBloom();
+            this._endPass('bloom', bloomEnabled ? 2 : 0,
+                bloomEnabled ? this.bloomA.width * this.bloomA.height * 8 : 0);
             gl.enable(gl.BLEND);
             this._beginPass('present');
             this._present(qualityLevel, camera, feed);

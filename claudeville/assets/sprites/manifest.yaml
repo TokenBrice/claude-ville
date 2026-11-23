@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-11-22-neon-prism-revamp"
+  assetVersion: "2026-11-23-visual-overhaul"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -553,6 +553,7 @@ characters:
         celebrate: { rows: [25, 27], hold: 27, directions: [se, e, w, sw] }
         think: { rows: [28, 30], hold: 30, directions: [se, e, w, sw] }
         drink: { rows: [31, 35], hold: 31, seatLine: { south-east: 66, south-west: 69 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose + tankard, scripts/sprites/generate-pose-strip.mjs --groups=drink)", jobs: { se: "28738a4d-31d1-4b97-b729-d6160923ccf1", sw: "86827c42-7cab-4e7d-a554-e95fa6e224bd" } }, directions: [se, sw] }
+        run: { rows: [36, 41], hold: 36 }
       grip: { hand: both, sheathe: true }
       provenance:
         characterId: "a1da82e8-9dc7-410c-9c5e-81698604ab2c"
@@ -560,6 +561,8 @@ characters:
         generationSize: 76
         poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "3d53d06c-72bd-45a6-a605-9c200781e09d", w: "4f975fba-7952-4d5c-8582-ae9235232c32", se: "2be28b82-41d7-49d5-bbf0-a09c43f13000", sw: "16286937-0fff-434b-b47f-39340f391c19" }, gaze: { e: "ed3f5608-4c56-43e3-b1ed-fcb492afdd2f", w: "1e8e477a-51e3-42d7-ad16-faf11c47607c", se: "39780efa-6aab-43c9-b8cc-bb0898cdb06d", sw: "929dea74-4787-420d-87cb-6f55b498430c" }, drink: { se: "28738a4d-31d1-4b97-b729-d6160923ccf1", sw: "86827c42-7cab-4e7d-a554-e95fa6e224bd" } } }
         animationStrips: { groups: { think: { se: "4991d160-7831-4f86-8501-e3764686fd14", e: "5ae3a73d-5270-4627-a996-5d16c9085b05", w: "0abb16ed-755c-47ac-bb9e-27f96598a843", sw: "c80c64da-1c00-4dc1-8c9a-bb459d697b6c" }, celebrate: { se: "0e72b87a-8f47-41c6-9ccc-fdfb975cd9bf", e: "093e4ce9-2eb2-4fc6-9632-a64aff568fbe", w: "e3b0ca89-5128-42c7-a47e-5557d805b937", sw: "3c675eb6-2811-4d6e-9432-7fe86edc6ae2" } } }
+        # Deterministic 2px horizontal seat on e#0, e#1 (+2px) and sw#4 (-2px).
+        templateStrips: { generationMode: skeleton-v3, groups: { run: { s: "f519a62c-6f56-474c-96b0-f9b10bd3b5b0", se: "4b416f7d-92a2-4fc3-a690-a97f2d0baa27", e: "b4cf7a33-a362-4198-be11-80cb2eb6aa72", ne: "9cf7b878-3590-4f73-ad33-454dd6b3b72c", n: "7eae922f-2fab-4cd8-a246-4e3ac597f132", nw: "79f2d2d3-dbc5-4832-96d3-9b25be4382e1", w: "534c811e-8ad4-42ee-9df7-6ab1d10a8e1b", sw: "eff6bded-cabe-4fa1-81f4-699390e93295" } } }
     provenance:
       characterId: a1da82e8-9dc7-410c-9c5e-81698604ab2c
       animationGroupId: astra-caped-walk-repair
@@ -623,6 +626,7 @@ characters:
         celebrate: { rows: [25, 27], hold: 27, directions: [se, e, w, sw] }
         drink: { rows: [28, 32], hold: 28, seatLine: { south-east: 68, south-west: 68 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose + tankard, scripts/sprites/generate-pose-strip.mjs --groups=drink)", jobs: { se: "d238f894-2d1c-4fdc-93c2-3bc969681aad", sw: "9be9422d-90ce-4cff-8928-25fac66dc0ef" } }, directions: [se, sw] }
         think: { rows: [33, 35], hold: 35, directions: [se, e, w, sw] }
+        run: { rows: [36, 41], hold: 36 }
       grip: { hand: both, sheathe: true }
       provenance:
         characterId: "920eb6ae-2a05-4fcd-8154-548fbbab190e"
@@ -630,6 +634,8 @@ characters:
         generationSize: 76
         poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "282c129d-0ca8-4b13-af8b-bc24c6a61e14", w: "0c98cf37-488f-4e30-880b-2917964f3a35", se: "f241b5ac-9ba2-426f-80de-6cec79ae2726", sw: "9a433021-ced7-48a0-8537-b0855a3c766b" }, gaze: { e: "e90a85c5-5ba0-48c1-9cca-192d010d0378", w: "a9e61a6b-e8bb-4dba-b7f8-716aaf6fd265", se: "22bb4345-eaea-486f-ac6f-55dcf6fb44c9", sw: "1cdef8d9-f9b5-4bfa-9717-91e36b8c3dee" }, drink: { se: "d238f894-2d1c-4fdc-93c2-3bc969681aad", sw: "9be9422d-90ce-4cff-8928-25fac66dc0ef" } } }
         animationStrips: { groups: { celebrate: { se: "e6a1f193-b982-4444-b9a8-3303c903aa11", e: "eaf0b7fd-68fa-4d6a-bc10-a6d7c4545ad9", w: "e35d630d-3d42-4f9e-99ad-9ce65ecf0537", sw: "0b1db905-d81b-48c5-9f27-5de3d71bd03f" }, think: { se: "dccb2f25-927b-4f68-aa8d-98cffb41c5ec", e: "478a0808-ca0c-4558-a54b-cf887624f237", w: "0608de7c-1255-4408-83f9-38e633622a01", sw: "7391cd54-6e72-4d0d-8e62-45575354fd85" } } }
+        # Deterministic 2px horizontal seat on sw#2 (+2px).
+        templateStrips: { generationMode: skeleton-v3, groups: { run: { s: "8e56f3b7-d11a-4958-b171-cd50e036b00a", se: "247470b1-214a-44b2-a29f-e4a58befc1ce", e: "b1e60aa7-864e-47e7-b3f4-2765436e1716", ne: "055ec842-7f1a-4d79-a22d-b0c46c67a060", n: "3ec7889d-c395-44b2-b48b-aaa46d1f1ba3", nw: "7a4d2292-3c1c-45f5-9a5c-5332c217de89", w: "17d079aa-a805-4078-a5ff-31b6e1e780a8", sw: "b273d715-89b4-4a82-ba7b-d7835cbe3e82" } } }
     portraitCrop: { x: 23, y: 12, w: 46, h: 42 }
     portraitFace: { x: 44, y: 30 }
     # Sampled from sheet.png: imperial violet cape/plume for crowd variants and
@@ -746,12 +752,14 @@ characters:
         drink: { rows: [25, 29], hold: 25, seatLine: { south-east: 62, south-west: 62 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose + tankard, scripts/sprites/generate-pose-strip.mjs --groups=drink)", jobs: { se: "11f9a6df-7f58-4e37-8505-610508600a37", sw: "56fc1c66-6c73-4f45-ac56-4ef9f12c7a2a" } }, directions: [se, sw] }
         sit: { rows: [30, 31], hold: 31, seatLine: { south-east: 62, south-west: 62 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "894ce416-2c89-40ee-a6f9-81c09de15122", sw: "577190d2-7694-4c8e-9233-ad712cc27cb0" } }, directions: [se, sw] }
         gaze: { rows: [32, 35], hold: 33, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [48, 34], w: [39, 32], se: [43, 34], sw: [33, 29] } }
+        run: { rows: [36, 41], hold: 36 }
       grip: { hand: both, sheathe: true }
       provenance:
         characterId: "bafdea82-e961-40f3-9c4e-a321ccab3005"
         generationSize: 128
         poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "52b237d6-e6fe-46ac-a80e-de1533541f49", w: "30f29082-b0f5-43bf-aee5-b17deda276d2", se: "e3202311-cbbc-468a-8945-0acf55cd6e8c", sw: "c2a6bcd6-fe85-49d2-8431-9824c4d3b057" }, drink: { se: "11f9a6df-7f58-4e37-8505-610508600a37", sw: "56fc1c66-6c73-4f45-ac56-4ef9f12c7a2a" }, gaze: { e: "49dca72b-ea34-4dbb-b923-fa8214322cba", w: "20aa70e2-f581-4fc0-b814-3b7f70ae63bb", se: "df1f8023-6f5d-474f-be5e-fd560e39c558", sw: "a642b5ed-9205-4912-b0d9-d087d9927736" } } }
         animationStrips: { groups: { read: { s: "0667f1ad-519e-4302-8270-5788d72cf713", se: "26e0629c-5a95-4229-be55-1cae6f340a94", e: "a74a2215-72d8-4e55-b34e-519724302704", ne: "25482aad-7bff-4c47-b8f3-e666a4dcd1d0", n: "4c173cef-796a-4304-9cfe-ae4f12ed830e", nw: "8986477f-fd3e-4d60-9d0c-8e79a1b1079f", w: "9f8c7f5b-3ef5-469a-8652-09e42d2e5de3", sw: "f2ce0272-1972-475d-b91a-9bfe1b31cc4e" }, think: { se: "d439881a-713e-4bd6-9e1b-8cf7e171aad1", e: "1ea17a4d-92e7-44f5-8354-9ab25dfaaefd", w: "5d583c5a-e96c-40ab-a848-20135ca6e3c1", sw: "8bf0ddc3-ed7e-4a4f-9a8e-b3e0dcfd58c4" }, celebrate: { se: "83610acb-da5b-4654-a652-1bbc7ea12cf5", e: "31957868-870e-4708-86bb-06101e1b03a3", w: "1070fe22-5a3f-42c6-9582-40e5c891617c", sw: "acf507cb-8919-4b76-a0c0-0dce6e6012d4" } } }
+        templateStrips: { generationMode: skeleton-v3, groups: { run: { s: "0f8df773-1d51-4219-85eb-47a02ba2668c", se: "3882711a-687d-4fdf-a602-f60e7a7abcd2", e: "2d1cc331-7843-40af-a391-bab31fca285c", ne: "62a7ab0f-a8a3-48cd-942e-1128bf08e8ba", n: "20efbd09-4314-453a-a614-d7d25dc6de0f", nw: "65e2d8e3-4c6f-41e9-a19e-a68f700050de", w: "e7fe9c6f-1747-4477-98a9-5d337ab339d5", sw: "2736dcc0-0592-4a4d-9bf7-32377daedff1" } } }
     portraitCrop: { x: 28, y: 11, w: 36, h: 34 }
     provenance: { characterId: bafdea82-e961-40f3-9c4e-a321ccab3005, generationSize: 76, generationMode: pro }
     palette_layer: codex
@@ -881,12 +889,14 @@ characters:
         drink: { rows: [25, 29], hold: 25, seatLine: { south-east: 66, south-west: 60 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose + tankard, scripts/sprites/generate-pose-strip.mjs --groups=drink)", jobs: { se: "c845cf78-161b-4f81-9509-3d664773ba1a", sw: "c7588b59-3b7b-4627-a353-42fedb9bab3b" } }, directions: [se, sw] }
         sit: { rows: [30, 31], hold: 31, seatLine: { south-east: 64, south-west: 62 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "0d33f6f4-2e79-4c48-9217-084d19a09066", sw: "dae69af5-166c-44d2-ab1e-e0e97902a9a5" } }, directions: [se, sw] }
         gaze: { rows: [32, 35], hold: 33, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [48, 33], w: [39, 31], se: [45, 35], sw: [37, 32] } }
+        run: { rows: [36, 41], hold: 36 }
       grip: { hand: both, sheathe: true }
       provenance:
         characterId: "8881d235-be6f-4bd3-b3b9-99e3098f2a91"
         generationSize: 128
         poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "7924484f-7fa1-48dd-93f3-0156595a5094", w: "2fe2d655-90b4-444c-b4fb-a4eb54d66953", se: "eb44542e-4754-468d-9e1a-a3b7187d6123", sw: "47da7172-9295-420f-b76b-c501262666b9" }, drink: { se: "c845cf78-161b-4f81-9509-3d664773ba1a", sw: "c7588b59-3b7b-4627-a353-42fedb9bab3b" }, gaze: { e: "5d16902b-d3fe-47c2-9a8f-cbdae9732108", w: "f1153521-5c75-4827-b994-979ddf274cc9", se: "92b4c75a-ad55-4b83-a9c6-eb74c7b7f287", sw: "fe56000e-7afb-4e96-9254-78614269e9da" } } }
         animationStrips: { groups: { read: { s: "9aae15b3-7285-4b8c-b1af-a81f920f16e8", se: "3ebe15b4-4841-42fe-8c83-cf595a2b2499", e: "36a58aa3-2a79-4fb9-8aae-6236f119542c", ne: "f9c11cb2-136c-481d-a248-b08714da713c", n: "7681ac46-b1f8-49c2-b996-f5ae33574a25", nw: "4a4cdfab-649e-470d-b186-4ec9ef974380", w: "1214b6cf-bb77-4154-9f9c-5939aed0580c", sw: "e2d291cb-53fb-478d-ad4b-1ffe37c5f14c" }, think: { se: "4c2816c8-07c3-42d0-a938-6a48cb2c0809", e: "b6c37b6d-760b-4639-9835-f61c4cee6466", w: "0250c799-cdab-4fcf-8c3f-d96ef3c4292c", sw: "99ba4db5-18fc-4857-9c56-49ac3689f6ae" }, celebrate: { se: "1d60ff1c-ccae-4332-b78f-7a9bbd86343d", e: "0ace0743-3433-498e-862b-d2aebfc601c1", w: "ad5ccfc6-400b-4a1d-a57f-34c3c76466e9", sw: "2f227b33-e1a5-44ff-9c87-f7d823c1d22a" } } }
+        templateStrips: { generationMode: skeleton-v3, groups: { run: { s: "8010bba5-af7e-4029-abb3-5b85d956ae87", se: "4e1c1b1c-024f-4103-bb25-e5d6cf8cfb5b", e: "b5aef48a-6f66-469f-9671-9da36fb69ad2", ne: "dc9fe3f5-5fac-4c40-9505-9860acd13d66", n: "ba20f772-9298-4c9b-8234-38a5ddb0ad61", nw: "587bb963-bc3c-4505-9d87-1c16698e2285", w: "f132cc90-9b75-4943-bcac-f69df605047e", sw: "51c3b095-c170-4105-bc51-385030803d29" } } }
     # N/NW walk repaired with skeleton-v3 (the template walk dropped the cape).
     portraitCrop: { x: 29, y: 14, w: 34, h: 34 }
     provenance: { characterId: 8881d235-be6f-4bd3-b3b9-99e3098f2a91, animationGroupId: walk-skel-repair, repairedDirections: [north, north-west], animationSourceSize: 96, generationSize: 76, generationMode: pro }
@@ -1715,6 +1725,7 @@ characters:
         celebrate: { rows: [24, 26], hold: 26, directions: [se, e, w, sw] }
         drink: { rows: [27, 31], hold: 27, seatLine: { south-east: 66, south-west: 67 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose + tankard, scripts/sprites/generate-pose-strip.mjs --groups=drink)", jobs: { se: "19196d52-266a-48a4-bc3d-2527432e9c38", sw: "c16487da-4dfc-49e1-92ca-a782b71cd873" } }, directions: [se, sw] }
         gaze: { rows: [32, 35], hold: 33, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [45, 23], w: [48, 23], se: [40, 24], sw: [50, 21] } }
+        run: { rows: [36, 41], hold: 36 }
       grip: { hand: both, sheathe: true }
       provenance:
         characterId: "b2bad297-e8c2-4a73-9a20-266ce33fb26c"
@@ -1722,6 +1733,8 @@ characters:
         generationSize: 76
         poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "67d10a80-0b79-461e-ac7d-7648313df50e", w: "dac8070f-9208-40fc-87aa-fab683869dec", se: "1df91bc2-8061-4855-aa00-f338924fc031", sw: "10c40b15-ad0e-4703-90d6-c57c168b3c51" }, drink: { se: "19196d52-266a-48a4-bc3d-2527432e9c38", sw: "c16487da-4dfc-49e1-92ca-a782b71cd873" }, gaze: { e: "a985f675-639c-4f05-8f8c-dfd440b6f512", w: "0e427c3a-aa98-4004-86b4-b8d292a42017", se: "0aff161b-9cf0-4492-b44c-5d110eac1b0f", sw: "d61ce1ac-e1c1-488f-be1b-23e38e651320" } } }
         animationStrips: { groups: { read: { s: "9e1f5c27-8446-46c4-826a-2292fba28221", se: "9e1f5c27-8446-46c4-826a-2292fba28221", e: "9e1f5c27-8446-46c4-826a-2292fba28221", w: "9e1f5c27-8446-46c4-826a-2292fba28221", sw: "9e1f5c27-8446-46c4-826a-2292fba28221" }, wait: { se: "a9f8578c-39dc-4541-aaf5-9f2fe36419cf", e: "a9f8578c-39dc-4541-aaf5-9f2fe36419cf", w: "a9f8578c-39dc-4541-aaf5-9f2fe36419cf", sw: "a9f8578c-39dc-4541-aaf5-9f2fe36419cf" }, think: { se: "8025f06a-acf0-4d34-9c2e-c3e0d2eae070", e: "8025f06a-acf0-4d34-9c2e-c3e0d2eae070", w: "8025f06a-acf0-4d34-9c2e-c3e0d2eae070", sw: "8025f06a-acf0-4d34-9c2e-c3e0d2eae070" }, celebrate: { se: "37520bc4-275e-4428-bd18-b2f35e165352", e: "37520bc4-275e-4428-bd18-b2f35e165352", w: "37520bc4-275e-4428-bd18-b2f35e165352", sw: "37520bc4-275e-4428-bd18-b2f35e165352" } } }
+        # Value-lifted k=1.6 before sheet snap (matches sheet.png); 1px bow-limb bridge on se#5.
+        templateStrips: { generationMode: skeleton-v3, groups: { run: { s: "a038f22f-b9c4-4aa2-b5de-cf053b319a27", se: "7322ee9c-10e8-4cf9-9a3e-e5131408e654", e: "ab1e0566-e19b-4438-95e5-78b2ae70f82e", ne: "8d624a0f-5e63-4249-9aec-332a043bb3ec", n: "374e40e3-f27a-4f79-a91e-505244627009", nw: "266f8e73-fed3-4748-997d-c624110d4814", w: "c46078ed-7c7f-41a7-9c45-a16c3b62dd9d", sw: "ee2ef093-af81-46d1-9db2-bbfc577a4c31" } } }
     provenance: { characterId: b2bad297-e8c2-4a73-9a20-266ce33fb26c, generationSize: 76, generationMode: pro }
     tool: create_character
     prompt: "DeepSeek Flash hooded forest scout archer, deep forest-green fitted leather armor with bronze trim, short hooded cloak with glowing teal rune edging, compact recurve shortbow held in one hand, small arrow quiver at hip, curved dagger sheathed at belt, leather bracers, dark green leggings and light boots, lean agile ready stance, glowing teal accents, heroic high-fantasy RPG silhouette, no mage robe, no wizard hat, no staff, no plate armor, 8-direction pixel art"
@@ -1915,12 +1928,14 @@ characters:
         celebrate: { rows: [25, 27], hold: 27, directions: [se, e, w, sw] }
         drink: { rows: [28, 32], hold: 28, seatLine: { south-east: 67, south-west: 67 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose + tankard, scripts/sprites/generate-pose-strip.mjs --groups=drink)", jobs: { se: "a7a309e9-d380-46b6-bbe4-375a0934c47c", sw: "62bf1d8d-41a8-4b20-bea1-4de32023efbb" } }, directions: [se, sw] }
         think: { rows: [33, 35], hold: 35, directions: [se, e, w, sw] }
+        run: { rows: [36, 41], hold: 36 }
       grip: { hand: both, sheathe: true }
       provenance:
         characterId: "6714016d-77c0-4aea-92e7-316c69f5bd3e"
         generationSize: 128
         poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "bdbe5558-f5b3-4356-8f2f-1e05c159378a", w: "f7f5258a-a58c-4d47-851b-7a6d2d734f06", se: "e425b8d2-4189-4c3d-9d48-9fcda5a8d5be", sw: "73d9d057-23c9-4e0e-bdcf-90b782537ccc" }, gaze: { e: "7fa64355-cff8-4448-a923-d5c1fc663441", w: "1967ffab-5c78-42ad-9603-7f8e8c417a3c", se: "55717dc8-e28c-4ed8-9b5f-c5643f6d9013", sw: "02221b3d-9471-48c5-889b-ec003ffbdf06" }, drink: { se: "a7a309e9-d380-46b6-bbe4-375a0934c47c", sw: "62bf1d8d-41a8-4b20-bea1-4de32023efbb" } } }
         animationStrips: { groups: { read: { s: "76e4d402-f7fa-4152-aae1-4cdd87785a92", se: "76e4d402-f7fa-4152-aae1-4cdd87785a92", e: "76e4d402-f7fa-4152-aae1-4cdd87785a92", ne: "76e4d402-f7fa-4152-aae1-4cdd87785a92", nw: "76e4d402-f7fa-4152-aae1-4cdd87785a92", w: "76e4d402-f7fa-4152-aae1-4cdd87785a92", sw: "76e4d402-f7fa-4152-aae1-4cdd87785a92" }, celebrate: { se: "4e57e930-efda-45d8-b7f7-a22104f1506d", e: "4e57e930-efda-45d8-b7f7-a22104f1506d", w: "4e57e930-efda-45d8-b7f7-a22104f1506d", sw: "4e57e930-efda-45d8-b7f7-a22104f1506d" }, think: { se: "cf63c80c-8ced-4dd5-be08-567defa99da9", e: "cf63c80c-8ced-4dd5-be08-567defa99da9", w: "cf63c80c-8ced-4dd5-be08-567defa99da9", sw: "cf63c80c-8ced-4dd5-be08-567defa99da9" } } }
+        templateStrips: { generationMode: skeleton-v3, groups: { run: { s: "dd962b01-ba98-4c43-8425-dfad1ee14ff4", se: "3ceef2f8-8a2b-4c5f-9c88-7f6509431fdf", e: "ccd42e36-ceff-47cd-afc1-71d70a65185c", ne: "ad826b68-b83f-475d-bb41-9e17351a6359", n: "5b5cf464-49a7-4443-8cad-efe6950746f6", nw: "271fd144-885a-450c-80a5-a61e0cc913bc", w: "ad16fe46-e492-4781-971a-d03664ecda96", sw: "2e944a59-c143-4720-a160-3c6ff08db6bc" } } }
     portraitCrop: { x: 29, y: 17, w: 34, h: 32 }
     provenance: { characterId: 6714016d-77c0-4aea-92e7-316c69f5bd3e, generationSize: 76, generationMode: pro }
     palette_layer: zai
@@ -1967,6 +1982,7 @@ characters:
         think: { rows: [27, 29], hold: 29, directions: [se, e, w, sw] }
         gaze: { rows: [30, 33], hold: 31, contactFrame: 2, directions: [se, e, w, sw], contact: { e: [50, 34], w: [38, 30], se: [44, 36], sw: [36, 32] } }
         sit: { rows: [34, 35], hold: 35, seatLine: { south-east: 62, south-west: 63 }, provenance: { route: "animate-with-skeleton-v3 (sit-front pose, scripts/sprites/generate-pose-strip.mjs --groups=sit-front)", jobs: { se: "14ab8ccc-ebe9-4bb7-bdd6-260fd7d20567", sw: "7b101fb3-48cf-480c-a593-b14ba09a47e1" } }, directions: [se, sw] }
+        run: { rows: [36, 41], hold: 36 }
       grip: { hand: both, sheathe: true }
       # Strike SE/E rows come from a lower-wind-up re-roll (the stock arm
       # stretched through the hat brim): jobs a4b46926-d46e-4dca-bf8d-3bf49d8ae41e (se),
@@ -1976,6 +1992,8 @@ characters:
         generationSize: 128
         poseStrips: { generationMode: skeleton-v3, jobs: { "strike+tinker+wait": { e: "321d69dd-870d-428b-aa0f-917d85be1cd5", w: "af43f6e3-badf-41a7-a328-b4e637011c44", se: "74623ae0-241c-498f-bfd3-93dd4fc751fb", sw: "38d48d64-7003-40f7-be4c-3c19bfb2070a" }, drink: { se: "1589f900-391b-421f-a0a2-65fcbfd746af", sw: "f27b8762-4df5-427f-b22d-b6dd9a8a193a" }, gaze: { e: "3c43d413-2730-48a7-813f-e3a8ab0c56a3", w: "7bb19015-de62-41eb-ac0e-122afdf555dd", se: "285cd602-ac4f-4d2e-804d-a5bb5817e905", sw: "3dd56e9f-09bc-41da-b826-3a209d62030f" } } }
         animationStrips: { groups: { read: { s: "a8a42e7d-c5e3-435c-83c9-b17dbac7f383", se: "a8a42e7d-c5e3-435c-83c9-b17dbac7f383", e: "a8a42e7d-c5e3-435c-83c9-b17dbac7f383", ne: "a8a42e7d-c5e3-435c-83c9-b17dbac7f383", n: "a8a42e7d-c5e3-435c-83c9-b17dbac7f383", nw: "a8a42e7d-c5e3-435c-83c9-b17dbac7f383", w: "a8a42e7d-c5e3-435c-83c9-b17dbac7f383", sw: "a8a42e7d-c5e3-435c-83c9-b17dbac7f383" }, celebrate: { se: "e8531ad4-878a-4b49-b669-29f3ab01d576", e: "e8531ad4-878a-4b49-b669-29f3ab01d576", w: "e8531ad4-878a-4b49-b669-29f3ab01d576", sw: "e8531ad4-878a-4b49-b669-29f3ab01d576" }, think: { se: "6028c96c-2386-49c9-857f-385541f3db43", e: "6028c96c-2386-49c9-857f-385541f3db43", w: "6028c96c-2386-49c9-857f-385541f3db43", sw: "6028c96c-2386-49c9-857f-385541f3db43" } } }
+        # Deterministic 1-2px outline cord bridges on s#1,2,3,5 and e#1 keep hat tassels attached.
+        templateStrips: { generationMode: skeleton-v3, groups: { run: { s: "4e5872fe-e2b2-4231-9190-bb31d5966357", se: "f2dd1e36-862a-47ec-a79b-9795a8689849", e: "5c06ce2b-a0ca-47dd-bd5d-fcd1b0028945", ne: "7a41464a-23d9-41bf-b568-aefd6b0b02a9", n: "e7db05ad-ee64-4fa5-be2e-827ba9c1037f", nw: "c85c60c4-70ef-4044-a2f9-388340cb04d9", w: "ffa24797-223e-4c08-adc2-75d57e53bc45", sw: "74227f55-f176-47ed-8b37-3f77a6225834" } } }
     portraitCrop: { x: 26, y: 15, w: 40, h: 36 }
     provenance: { characterId: b7f7dc6d-691b-45da-b5bc-9499071d5aef, generationSize: 76, generationMode: pro }
     palette_layer: zai
@@ -2475,20 +2493,33 @@ buildings:
         gate: status.quota
         restIsBase: true
         materialClass: fabric
-      # 6.1 / V4 — the two gate braziers' painted tongues climb (EmitterCycle
-      # `mode: tongues`, 2-column lanes over a 1-texel bed) while the village
-      # lamps are lit (`lamps`, like the Pharos lens): fixtures of the lamp
-      # course that never read agent state, so by day an empty Command is its
-      # authored base. Mask only: never drawn as art. The first cut's rank wave
-      # swapped whole 4-row bands of these 7-row flames onto the tan edge shade
-      # #d4984e.
+      # 6.1 / V4 — the two gate braziers' flames live on a lamps-gated fixture
+      # overlay (`brazierFlames`), so at noon the bowls stand as unlit iron and
+      # charcoal in `base.png`; at night `brazierFlames` lights them and
+      # `braziers` cycles their painted tongues (EmitterCycle `mode: tongues`,
+      # 2-column lanes over a 1-texel bed). Fixtures of the lamp course never
+      # read agent state.
+      brazierFlames:
+        tool: hand-authored
+        prompt: "Command gate brazier flames: the two warm fire plumes above the iron bowls, drawn only while lamps are lit; authored, not generated"
+        width: 66
+        height: 40
+        anchor: [123, 211]
+        fixture: true
+        gate: lamps
+        materialClass: fire
+        emissive:
+          strength: 1
+          sources:
+            - { id: emissive.command.brazierFlames, kind: fire, geometry: authored-albedo, strength: 1 }
       braziers:
         tool: hand-authored
-        prompt: "cycle mask: the baked flame texels of the two gate braziers; authored, not generated"
-        width: 360
-        height: 240
-        anchor: [199, 164]
-        cycle: { gate: lamps, mode: tongues, lanePx: 2, keepPx: 1, hz: 6 }
+        prompt: "cycle mask: the flame texels of brazierFlames.png for the two gate braziers; authored, not generated"
+        width: 66
+        height: 40
+        anchor: [123, 211]
+        fixture: true
+        cycle: { gate: lamps, art: brazierFlames, mode: tongues, lanePx: 2, keepPx: 1, hz: 6 }
     # The two gate braziers (architectural fires) and the gold finial/crest.
     emitters:
       torch: [94, 180]
@@ -2597,15 +2628,16 @@ buildings:
   # and bunting strips are re-cropped from this base; the bunting rope runs
   # between the two masts baked on the north pier.
   - id: building.harbor
-    tool: create_image_pro
-    prompt: "isometric pixel art building sprite, true 2:1 dimetric isometric view from the south-east, a medieval Harbour Master's house on a stone quay with three long timber piers. The house: a large two-storey half-timbered hall of dark oak beams over cream plaster on a grey limestone ashlar ground floor, steep slate-blue tiled roofs with gables and a dormer, a stone chimney, a counting-house bay window, a tall arched oak door facing the lower-left, small leaded windows with unlit dark slate glass, a slate-roofed lean-to store at the left end. Whimsical signature: a slim square clock turret with a slate spire holding a large round glowing tide clock, a brass ring around a pale blue-green moon-and-wave dial. The quay: a broad raised grey limestone quay laid in visible ashlar courses with a darker base course at the waterline and a pale dressed coping-stone edge along its top rim, iron mooring rings. A plain timber jib crane with a rope hoist and a hanging cargo crate at the quay's front corner, an iron lantern on a post. Three long plank timber piers on oak pilings reach from the quay toward the lower-right into open water, parallel and evenly spaced with wide empty water channels between them as ship berths, bollards along each pier. Two tall slim timber masts on the far right pier for bunting. Warm light from the upper left, chunky stepped cel shading, 1px warm near-black selective outline. The structure fills the canvas with a small transparent margin. Structure only on a transparent background: no water, no ground tile, no lawn, no cast shadow, no ships, no people, no text. No steam pipes, no smokestacks, no gauges."
-    provenance: { item: '5.A', endpoint: create_image_pro, jobId: 0bf2b62f-89a8-45d5-9dd1-7e6d659a6163, seed: 4245, styleImage: building.command, referenceImage: 'B-clock-3 draft (create_image_pro job 0aabf50d-9f1b-4f72-9c21-b68a576bdb13, painted over with longer piers) + building.tavern', generationSize: 416x304, crop: [30, 8, 384, 284], generations: 25, pilotGenerations: 45, recolor: 'pure-black outline -> #060402 (hand, not generated)', generatedAt: '2026-10-15' }
+    tool: generate-image-v2
+    prompt: "isometric pixel art building sprite, true 2:1 dimetric isometric view from the south-east, a grand medieval Harbour Master's house standing on a raised grey limestone ashlar quay with three long preserved timber piers. Full Tavern-scale two-storey architecture: tall grey limestone ashlar ground storey with a large full-height arched heavy oak double door (~36x60 px) and leaded counting-house bay window, sturdy dark-oak half-timbered upper storey over cream plaster with big unlit dark slate-blue leaded windows, steep roofSlate gable roof with stone chimney, stout square clock turret with pointed slate spire and large round sea-glass tide clock. Bolder stout dark-oak jib crane with rope hoist and chunky hanging cargo crate on the front-left quay, unlit iron quay lantern post, static sagging hemp dock rope between the north pier masts."
+    provenance: { item: 'L12-F6', endpoint: generate-image-v2, jobId: 1daaeab5-c049-4a03-8a29-6c49363163df, seed: 4248, styleImage: building.tavern, referenceImage: '256x228 Tavern-scaled quay/house blockout + building.tavern', generationSize: 256x228, generations: 10, post: 'composited onto preserved 384x284 quay waterline, 3 piers (15 piling tips) & north pier masts + static dock rope; roofSlate snap + 1px #060402 ink', generatedAt: '2026-11-23' }
     width: 384
     height: 284
     anchor: [131, 154]
     materialClass: stone
     materialSidecar: true
     emissiveSidecar: true
+    emissiveFamily: cool
     occluderSidecar: true
     surfaceCode: true
     roomsSidecar: true
@@ -2623,42 +2655,41 @@ buildings:
     splitForOcclusion: true
     horizonY: 200
     emitters:
-      torch: [18, 149]
-      signal: [187, 51]
-    lightSource: [18, 150]
+      torch: [27, 157]
+      signal: [217, 49]
+    lightSource: [27, 157]
     lightColor: '#ffd37a'
     lightRadius: 96
     lightOverlay: 'atmosphere.light.lantern-glow'
     layers:
-      # 6.1 — the jib crane hoists: the hook and crate ride up 6 px on the
-      # rope, 4 fps, only while the Harbor has a working visitor (V8). Frame 0
-      # is the base crop; the quay texels a lifted crate uncovers are borrowed
-      # one coping course up-left.
+      # 6.1 — the jib crane hoists: the hook and chunky cargo crate ride up
+      # 12 px on the rope, 4 fps, only while the Harbor has a working visitor
+      # (V8). Frame 0 is the exact base crop (`restIsBase`).
       crane:
         tool: hand-authored
-        prompt: "Harbor crane hoist strip: the hook and cargo crate under the jib raised 0/2/4/6/4/2 px; authored, not generated"
-        width: 132
-        height: 56
+        prompt: "Harbor crane hoist strip: the hook and chunky cargo crate under the jib raised 0/4/8/12/8/4 px; authored, not generated"
+        width: 204
+        height: 67
         frames: 6
-        frameW: 22
-        frameH: 56
-        anchor: [85, 206]
+        frameW: 34
+        frameH: 67
+        anchor: [102, 215]
         fps: 4
         staticFrame: 0
         gate: work.harbor
         restIsBase: true
         materialClass: timber
-      # 6.2 — the arched oak door under the bay window: closed / ajar / open
-      # onto the dark hall and a warm floor while it works.
+      # 6.2 — the full-height arched oak double door (~36x60 px): closed / ajar
+      # / open onto the dark hall and a warm stepped floor while it works.
       door:
         tool: hand-authored
-        prompt: "Harbor office door closed / ajar / open, hinged left, dark hall #1a1310 over a stepped warm floor; B3-08: two Bayer-dithered #ff9d4a courses (1/2, 1/4) rise from it in the open frames; authored, not generated"
-        width: 36
-        height: 24
+        prompt: "Harbor office full-height arched oak double door closed / ajar / open onto dark hall #1a1310 over a stepped warm floor with two Bayer-dithered #ff9d4a courses (1/2, 1/4); authored, not generated"
+        width: 108
+        height: 60
         frames: 3
-        frameW: 12
-        frameH: 24
-        anchor: [137, 161]
+        frameW: 36
+        frameH: 60
+        anchor: [159, 178]
         fps: 8
         staticFrame: 0
         gate: door.harbor
@@ -4450,6 +4481,58 @@ props:
     height: 32
     anchor: [24, 24]
     provenance: { item: 'W8.3b', generations: 1 }
+
+  # L08 F6 — non-interactive village cottages & shopfronts stitching the landmarks
+  # into continuous streets: 120x120 Pro objects in the Tavern/Command palette,
+  # slate-blue or timber roofs, unlit dark slate glass, no plaques, baked
+  # surface-coded occluder sidecars and PropWinter roof snow coverage.
+  - id: prop.cottage.weaver
+    tool: create_1_direction_object
+    prompt: "small medieval slate-roofed half-timbered weaver cottage, grey stone base, cream plaster upper wall with dark oak beams, steep slate-blue tiled gable roof, short stone chimney, dark oak door and unlit dark slate windows, isometric 2:1, no ground slab, no text"
+    width: 120
+    height: 120
+    anchor: [62, 102]
+    materialClass: stone
+    occluderSidecar: true
+    surfaceCode: true
+    occluder: { mode: alpha-silhouette, strength: 1 }
+    provenance: { item: 'L08-F6', endpoint: create-1-direction-object, objectId: 86148af1-9919-4681-8ead-bf01f0ec5af9, frame: 0, styleImages: 'building.tavern + building.command (120x120)', generations: 10, batchCount: 4, post: 'roofSlate snap + 1px #060402 ink + surface occluder sidecar', generatedAt: '2026-11-23' }
+
+  - id: prop.cottage.cooper
+    tool: create_1_direction_object
+    prompt: "small medieval timber-roofed cooper shopfront cottage, weathered warm dark timber shingle gable roof, oak half-timbered walls over stone footing, arched oak doorway with two small stacked barrels beside the wall, unlit dark slate windows, isometric 2:1, no ground slab, no text"
+    width: 120
+    height: 120
+    anchor: [60, 102]
+    materialClass: timber
+    occluderSidecar: true
+    surfaceCode: true
+    occluder: { mode: alpha-silhouette, strength: 1 }
+    provenance: { item: 'L08-F6', endpoint: create-1-direction-object, objectId: 86148af1-9919-4681-8ead-bf01f0ec5af9, frame: 1, styleImages: 'building.tavern + building.command (120x120)', generations: 10, batchCount: 4, post: '1px #060402 ink + surface occluder sidecar', generatedAt: '2026-11-23' }
+
+  - id: prop.cottage.baker
+    tool: create_1_direction_object
+    prompt: "small medieval slate-roofed stone baker cottage, cool grey limestone ashlar walls with timber eaves, steep slate-blue hipped roof with brick-topped stone chimney, stout oak door and small unlit dark slate windows with shutters, isometric 2:1, no ground slab, no text"
+    width: 120
+    height: 120
+    anchor: [61, 102]
+    materialClass: stone
+    occluderSidecar: true
+    surfaceCode: true
+    occluder: { mode: alpha-silhouette, strength: 1 }
+    provenance: { item: 'L08-F6', endpoint: create-1-direction-object, objectId: 86148af1-9919-4681-8ead-bf01f0ec5af9, frame: 2, styleImages: 'building.tavern + building.command (120x120)', generations: 10, batchCount: 4, post: 'roofSlate snap + 1px #060402 ink + surface occluder sidecar', generatedAt: '2026-11-23' }
+
+  - id: prop.cottage.chandler
+    tool: create_1_direction_object
+    prompt: "small medieval village chandler shopfront cottage, dark oak half-timbered walls, steep slate-blue gable roof with small dormer, muted crimson-and-cream cloth shop awning over a timber counter window, unlit dark slate panes, isometric 2:1, no ground slab, no text"
+    width: 120
+    height: 120
+    anchor: [58, 104]
+    materialClass: timber
+    occluderSidecar: true
+    surfaceCode: true
+    occluder: { mode: alpha-silhouette, strength: 1 }
+    provenance: { item: 'L08-F6', endpoint: create-1-direction-object, objectId: 86148af1-9919-4681-8ead-bf01f0ec5af9, frame: 3, styleImages: 'building.tavern + building.command (120x120)', generations: 10, batchCount: 4, post: 'roofSlate snap + 1px #060402 ink + surface occluder sidecar', generatedAt: '2026-11-23' }
 
 # ─── VEGETATION ──────────────────────────────────────────────────────────────
 vegetation:

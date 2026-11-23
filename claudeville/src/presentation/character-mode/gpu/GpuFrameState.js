@@ -5,10 +5,12 @@
 // scratch (`out` / `state`) instead of allocating; the scratch factories
 // below build one per backend.
 import {
+    aerialHazeStart,
     aerialPerspectiveStrength,
     binGpuLights,
     buildCloudShadowTile,
     clampGpuLights,
+    clearDayHazeWeight,
     CLOUD_FIELD_PERIOD,
     CLOUD_PLANE_CORE,
     cloudPlaneScale,
@@ -179,6 +181,9 @@ export const MIST = Object.freeze({
     topBase: 14,
     topSwell: 34,
     inland: 0.3,
+    // Real fog weather lifts the inland share to 0.75 while dawn radiation mist
+    // keeps `inland` (0.3) (relaxed 2026-11-23, operator decision).
+    fogInland: 0.75,
     coursePx: 12,
     seamMin: 0.04,
     courseMix: Object.freeze([0.14, 0.26, 0.38]),
@@ -217,7 +222,11 @@ export function resolveMist(feed = {}, level = POST_FX_LEVELS.FULL, out = new Fl
  */
 export function resolveMistBurn(feed = {}, mist = null, out = Float32Array.from([1, 1])) {
     const on = mist && mist[3] > 0;
-    out[0] = on ? clamp(finite(feed.mistBurn?.[0], 1), 0, 1) : 1;
+    const weather = feed.atmosphere?.weather;
+    const rawFog = clamp(finite(weather?.fog, 0), 0, 1);
+    const fogLift = weather?.type === 'fog' ? 1 : clamp((rawFog - 0.25) / 0.35, 0, 1);
+    const inlandScale = 1 + ((MIST.fogInland / MIST.inland) - 1) * fogLift;
+    out[0] = on ? clamp(finite(feed.mistBurn?.[0], 1), 0, 1) * inlandScale : 1;
     out[1] = on ? clamp(finite(feed.mistBurn?.[1], 1), 0, 1) : 1;
     return out;
 }
@@ -354,11 +363,11 @@ export function resolveSurfGlow(atmosphere, weather, grade, moonFill, swashOn) {
  * `swellPhase` adds as drift / SWELL_SET_PERIOD. A pure function of the
  * motion clock, so reduced motion (a frozen clock) holds the sea still and a
  * re-rendered frame lands on the same rows; it wraps after
- * SWELL_DRIFT_WRAP_ROWS rows (200 set periods, about 21 hours of motion
- * clock: one jump a day) to keep the shaders' float
- * phase exact.
+ * SWELL_DRIFT_WRAP_ROWS rows (200 set periods, about 4.2 hours of motion
+ * clock) to keep the shaders' float phase exact.
  */
-export const SWELL_DRIFT_STEP_MS = 2500;
+// Relaxed 2026-11-23 (operator decision): ~2 px/s shoreward roll (~2 Hz).
+export const SWELL_DRIFT_STEP_MS = 500;
 export const SWELL_DRIFT_WRAP_ROWS = 30000;
 export function swellDriftRows(motionTimeMs) {
     const t = Number(motionTimeMs);
@@ -585,7 +594,7 @@ export function resolveWaterFx(feed, camera, level, grade, moonFill, width, out 
         && finite(grade.sunBand, 0) > 0.3
         && cloudCover < 0.5
         && finite(grade.night, 0) < 0.5
-        && zoom >= 2
+        && zoom >= 1.2
         ? 1 : 0;
     fx[3] = effectBudgetMode('coastSwash', level) === 'on' && motion > 0 ? 1 : 0;
     // BI-8 — the summer surf glow rides the swash's crest front.
@@ -629,6 +638,7 @@ export function createAtmosphereCourses() {
         // Diagnostics: courses drawn (0 or 3) and the aerial haze strength.
         courses: 0,
         aerialHaze: 0,
+        hazeStart: 0.55,
     };
 }
 
@@ -667,7 +677,7 @@ export function resolveAtmosphereCourses(level, camera, feed, grade, out = creat
         const period = CLOUD_FIELD_PERIOD;
         out.cloud[0] = ((-drift.x * planeX % period) + period) % period;
         out.cloud[1] = ((-drift.y * planeY % period) + period) % period;
-        out.cloud[2] = 0.085 * cloudStrength;
+        out.cloud[2] = 0.125 * cloudStrength;
         out.thresholds[0] = cloudThreshold(covered);
         out.thresholds[1] = cloudThreshold(covered * (plane > 0 ? CLOUD_PLANE_CORE : 0.55));
         out.thresholds[2] = plane > 0 ? 2 : cloudThreshold(covered * 0.22);
@@ -694,7 +704,7 @@ export function resolveAtmosphereCourses(level, camera, feed, grade, out = creat
         out.courses = 2;
         out.cloud[0] = (((lone.fieldX - lone.x * planeX) % period) + period) % period;
         out.cloud[1] = (((lone.fieldY - lone.y * planeY) % period) + period) % period;
-        out.cloud[2] = 0.085 * cloudStrength;
+        out.cloud[2] = 0.125 * cloudStrength;
         out.thresholds[0] = LONE_CLOUD_THRESHOLDS[0];
         out.thresholds[1] = LONE_CLOUD_THRESHOLDS[1];
         out.thresholds[2] = 2;
@@ -712,8 +722,11 @@ export function resolveAtmosphereCourses(level, camera, feed, grade, out = creat
 
     const hazeMode = effectBudgetMode('aerial-perspective', level);
     const fog = clamp(finite(feed.atmosphere?.weather?.fog, 0), 0, 1);
-    const haze = hazeMode === 'off' ? 0 : aerialPerspectiveStrength(finite(camera?.zoom, 1), fog);
+    const daylight = Number.isFinite(grade?.daylight) ? grade.daylight : Math.max(0, 1 - finite(grade?.night, 0));
+    const clearDay = clearDayHazeWeight(fog, daylight, cover);
+    const haze = hazeMode === 'off' ? 0 : aerialPerspectiveStrength(finite(camera?.zoom, 1), fog, clearDay);
     out.aerialHaze = haze;
+    out.hazeStart = aerialHazeStart(fog, clearDay);
     const hazeColor = grade.fogColor || [0.6, 0.7, 0.78];
     out.haze[0] = hazeColor[0];
     out.haze[1] = hazeColor[1];

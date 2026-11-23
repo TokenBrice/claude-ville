@@ -5,6 +5,7 @@ import test from 'node:test';
 import {
     DashboardRenderer,
     SECTION_HEALTH_ORDER,
+    cleanMessage,
     nonZeroSectionHealthBuckets,
     sectionHealthCounts,
     shouldFlashForStatus,
@@ -39,6 +40,17 @@ function dashboardRows(t, agents) {
         createTextNode: textContent => ({ textContent }),
     });
     const dash = new DashboardRenderer({ agents: new Map(agents.map(agent => [agent.id, agent])) });
+    const grid = Object.assign(node(), {
+        classes: new Map(),
+        removeEventListener() {},
+        classList: {
+            contains: name => Boolean(grid.classes.get(name)),
+            toggle: (name, visible) => grid.classes.set(name, Boolean(visible)),
+            add: name => grid.classes.set(name, true),
+            remove: name => grid.classes.set(name, false),
+        },
+    });
+    dash.gridEl = grid;
     t.after(() => {
         dash.cards.clear();
         dash.destroy();
@@ -58,6 +70,7 @@ function dashboardRows(t, agents) {
         const ordered = dash._sortAgentsExceptionFirst(dash._filteredAgents(agents));
         dash._updateSectionHeader(section, '/fixture', ordered);
         for (const agent of ordered) dash._updateCard(dash.cards.get(agent.id), agent);
+        dash._syncGridColumns(ordered);
         section.order = ordered.map(agent => agent.id);
     });
     const fields = ['select', 'name', 'model', 'branch', 'workflowBadge', 'role', 'teamBadge',
@@ -70,7 +83,7 @@ function dashboardRows(t, agents) {
     dash.active = true;
     dash.render();
     render.mock.resetCalls();
-    return { dash, section, render };
+    return { dash, grid, section, render };
 }
 
 for (const startsWithWork of [false, true]) {
@@ -83,8 +96,8 @@ for (const startsWithWork of [false, true]) {
                 workingSet: startsWithWork ? [{ path: `${id}.js`, op: 'read', at: now }] : [],
             };
         });
-        const { dash, section, render } = dashboardRows(t, agents);
-        const hasWork = () => section.classes.get('dashboard__section--has-work');
+        const { dash, grid, section, render } = dashboardRows(t, agents);
+        const hasWork = () => grid.classes.get('dashboard__grid--has-work');
         assert.equal(hasWork(), startsWithWork);
         assert.deepEqual(section.order.slice(0, 3), ['00', '01', '02']);
         for (const agent of agents.slice(1, 3)) {
@@ -328,4 +341,111 @@ test('seven-provider fixture retains hosted identity, stale certainty and unavai
     } finally {
         simulator.stop();
     }
+});
+
+test('cleanMessage strips inline markdown without corrupting identifiers or math', () => {
+    assert.equal(
+        cleanMessage('**Verdict: PASS** — updated [REVIEW.md](file:///repo/REVIEW.md#L10) and `DashboardRenderer.js`'),
+        'Verdict: PASS — updated REVIEW.md and DashboardRenderer.js',
+    );
+    assert.equal(
+        cleanMessage('## Summary\nCheck [docs](https://example.com/a_(b)) for *details* and ~~old~~'),
+        'Summary Check docs for details and old',
+    );
+    assert.equal(
+        cleanMessage('Keep 2 * 3 = 6, *.js and __claudeVilleApp intact'),
+        'Keep 2 * 3 = 6, *.js and __claudeVilleApp intact',
+    );
+    assert.equal(cleanMessage('**Truncated bold without close'), 'Truncated bold without close');
+});
+
+test('folded subagents group with their lead project and expanding hides duplicate kid-strip rows', (t) => {
+    const lead = { id: 'lead', name: 'Prime', status: 'working', projectPath: '/repos/parent' };
+    const kidA = { id: 'kid-a', name: 'Review', status: 'working', parentSessionId: 'lead', projectPath: '/repos/other' };
+    const kidB = { id: 'kid-b', name: 'Scout', status: 'working', parentSessionId: 'lead', projectPath: '/repos/other' };
+    const { dash } = dashboardRows(t, [lead, kidA, kidB]);
+
+    const groups = [...dash._groupAgentsByProject([lead, kidA, kidB])];
+    assert.equal(groups.length, 1, 'subagents group with their live lead project');
+    assert.equal(groups[0][0], '/repos/parent');
+    assert.deepEqual(groups[0][1].map(a => a.id), ['lead', 'kid-a', 'kid-b']);
+    assert.deepEqual(groups[0][1].filter(a => dash._showsFullRow(a)).map(a => a.id), ['lead']);
+
+    const strip = {
+        children: [],
+        hidden: false,
+        replaceChildren(...nodes) { this.children = [...nodes]; },
+        append(...nodes) { this.children.push(...nodes); },
+    };
+    const card = { _elements: { kids: strip } };
+    // Stub AvatarCanvas creation via kid chips pre-populated so Node needs no <canvas>.
+    card._kidChips = new Map([
+        ['kid-a', { canvas: { tag: 'canvas' }, draw() {}, destroy() {} }],
+        ['kid-b', { canvas: { tag: 'canvas' }, draw() {}, destroy() {} }],
+    ]);
+    // Also stub addEventListener on created buttons.
+    const origCreate = globalThis.document.createElement;
+    globalThis.document.createElement = () => Object.assign(origCreate(), { addEventListener() {}, append(...items) { this.children.push(...items); } });
+
+    dash._renderKidStrip(card, lead, [kidA, kidB]);
+    assert.equal(strip.hidden, false);
+    assert.equal(strip.children.filter(el => el.className?.includes('dash-card__kid ')).length, 2, 'folded state renders compact kid rows');
+    assert.equal(strip.children.at(-1).className, 'dash-card__kid-toggle');
+
+    dash._expandedLeads.add('lead');
+    dash._renderKidStrip(card, lead, [kidA, kidB]);
+    assert.equal(strip.hidden, false);
+    assert.equal(strip.children.length, 1, 'expanded state omits duplicate compact kid rows');
+    assert.equal(strip.children[0].className, 'dash-card__kid-toggle');
+    assert.equal(strip.children[0].textContent, 'hide subagent rows');
+});
+
+test('tally bar sheds the legend first and wraps providers while updating sticky height', (t) => {
+    const { dash, grid } = dashboardRows(t, []);
+    const props = new Map();
+    grid.parentElement = {
+        style: {
+            getPropertyValue: key => props.get(key) || '',
+            setProperty: (key, value) => props.set(key, value),
+        },
+    };
+    const box = (width, extra = {}) => ({
+        offsetWidth: width,
+        hidden: false,
+        children: [],
+        classList: { contains: () => false, toggle(name, on) { this._classes.set(name, Boolean(on)); }, _classes: new Map() },
+        getBoundingClientRect: () => ({ width, height: 24 }),
+        ...extra,
+    });
+    const heading = box(110);
+    const statusGroup = box(0, { children: [box(90), box(70), box(70), box(90), box(80), box(60)] }); // 460 + 10 = 470
+    const providerLabel = box(1);
+    const providerGroup = box(0, { children: [box(80), box(80), box(90), box(80), box(80), box(80), box(70), box(80), box(60)] }); // 700 + 16 = 716
+    const legend = box(145);
+    const list = box(0);
+    const bar = {
+        hidden: false,
+        clientWidth: 1680,
+        getBoundingClientRect: () => ({ width: bar.clientWidth, height: list.classList._classes.get('dashboard-attention__list--wrapped') ? 64 : 40 }),
+    };
+    dash.attentionEl = bar;
+    dash._attentionRefs = { heading, list, statusGroup, providerLabel, providerGroup, legend, quotaCards: [] };
+
+    dash._syncAttentionLayout();
+    assert.equal(legend.hidden, false, 'wide bar keeps legend visible');
+    assert.equal(list.classList._classes.get('dashboard-attention__list--wrapped'), false);
+    assert.equal(props.get('--dash-attention-height'), '40px');
+
+    bar.clientWidth = 1400;
+    dash._syncAttentionLayout();
+    assert.equal(legend.hidden, true, 'legend sheds before chips wrap');
+    assert.equal(list.classList._classes.get('dashboard-attention__list--wrapped'), false, 'chips still fit on one line once legend sheds');
+    assert.equal(props.get('--dash-attention-height'), '40px');
+
+    bar.clientWidth = 1200; // 1440px viewport minus 240px sidebar
+    dash._syncAttentionLayout();
+    assert.equal(legend.hidden, true);
+    assert.equal(providerLabel.hidden, true, 'separator hides when wrapped');
+    assert.equal(list.classList._classes.get('dashboard-attention__list--wrapped'), true, 'providers wrap cleanly at 1440');
+    assert.equal(props.get('--dash-attention-height'), '64px', 'sticky section header tracks taller bar');
 });

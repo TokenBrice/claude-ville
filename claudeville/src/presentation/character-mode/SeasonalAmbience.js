@@ -35,13 +35,13 @@
 import { windAt } from './Wind.js';
 import { PRECIPITATING, precipitationIsFrozen } from './GroundState.js';
 
-const SPAWNS_PER_SECOND = 2;
+const SPAWNS_PER_SECOND = 6;
 const SEASONAL_TAG = 'seasonal-drift';
-export const SEASONAL_DRIFT_CAP = 6;
-export const SEASONAL_DRIFT_WIDE_CAP = 3;
+export const SEASONAL_DRIFT_CAP = 28;
+export const SEASONAL_DRIFT_WIDE_CAP = 18;
 export const SEASONAL_DRIFT_MIN_ZOOM = 0.9;
 
-/** W6.1 — the live drift cap at a camera zoom: 6 from z2, 3 at the wide shot, 0 below 0.9. */
+/** W6.1 — the live drift cap at a camera zoom: 28 from z2, 18 at the wide shot, 0 below 0.9 (relaxed 2026-11-23, operator decision). */
 export function seasonalDriftCap(zoom) {
     const z = Number(zoom) || 0;
     if (z >= 2) return SEASONAL_DRIFT_CAP;

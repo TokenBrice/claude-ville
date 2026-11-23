@@ -1,35 +1,41 @@
 // Pixel ground vocabulary for villagers (plan 2.3 / 2.5, contract C3).
 //
-// Every body stands on exactly one baked contact shadow. The ground carries a
-// ring only when it means something: the selected agent, the hovered agent,
-// and the three action-needed states (waiting on you, errored, rate-limited).
-// W7.4 (D2: repo = colour) — under those, a quiet 1-texel course in the
-// body's repo accent hugs the contact shadow, so bodies on one project read
-// as one work party; any action-needed ring replaces it, and the caller's
-// mark governor sheds it first under pressure.
+// Every body stands on exactly one baked contact shadow. Action-needed states
+// (waiting on you, errored, rate-limited) carry Tier-A solid status rings;
+// routine WORKING (emerald split arc) and WAITING (outlined amber dashed arc)
+// carry static Tier-B ground marks admitted under MarkGovernor WORKING tier,
+// while IDLE stands on shadow-only feet (relaxed 2026-11-23, operator
+// decision). Selected villagers carry a 2-texel Tier-A palette-gold ring with
+// a #140e0a keyline (brighter than the 1-texel cream hover ring). Under
+// non-idle states without a status ring, W7.4 keeps the quiet 1-texel repo
+// course hugging the contact shadow.
 //
 // All marks are cached stamps rasterised on the world texel grid (hard 1-texel
 // edges, no anti-aliasing, no gradients). The Canvas fallback blits them with
-// drawImage; the resident WebGL renderer receives the same canvases as ground
-// records, so both backends paint identical pixels. Static band: nothing here
-// animates, and reduced motion sees the same frame.
+// drawImage; the resident GPU renderers receive the same canvases as ground
+// records, so all three backends paint identical pixels. Static band: nothing
+// here animates, and reduced motion sees the same frame.
 
-import { RESERVED_STATUS } from '../../config/artPalette.js';
+import { ART_RAMPS, EFFECT_COLORS, RESERVED_STATUS } from '../../config/artPalette.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { releaseCanvasBackingStore } from './CanvasBudget.js';
 import { frameCastLighting, pointCastFor, rasterizeCourses, villagerCastLighting, villagerCastStamps } from './RakingLight.js';
+import { LABEL_INK } from './WorldLabelKit.js';
 
 // Warm near-black shared with the body rim (plan 2.4).
 const SHADOW_RGB = [26, 20, 16];
-const KEYLINE_RGB = [16, 11, 8];
-const SHADOW_OUTER_ALPHA = 66;   // ~0.26 — the soft outer course
-const SHADOW_CORE_ALPHA = 148;   // ~0.58 — firmer boot contact grounding (C-04)
-const KEYLINE_ALPHA = 150;       // dark course beneath a ring, lifts it off pale ground
+const KEYLINE_RGB = [20, 14, 10]; // #140e0a dark ink keyline
+const SHADOW_OUTER_ALPHA = 96;    // ~0.38 — firmer outer grounding course (relaxed 2026-11-23, operator decision)
+const SHADOW_CORE_ALPHA = 188;    // ~0.74 — firmer boot contact grounding (relaxed 2026-11-23, operator decision)
+const KEYLINE_ALPHA = 150;        // dark course beneath a ring, lifts it off pale ground
+const SELECTED_KEYLINE_ALPHA = 240;
+const ROUTINE_KEYLINE_ALPHA = 225;
 
 const SHADOW_MIN_WIDTH = 14;
 const SHADOW_MAX_WIDTH = 40;
-// Contact shadow is ~0.72x the body's content width; rings sit just outside it.
-const SHADOW_WIDTH_RATIO = 0.72;
+// Contact shadow is ~0.84x the body's content width; rings sit just outside it
+// (relaxed 2026-11-23, operator decision).
+const SHADOW_WIDTH_RATIO = 0.84;
 const SHADOW_ASPECT = 0.38;
 const RING_ASPECT = 0.44;
 const SELECTED_RING_PAD = 12;
@@ -40,6 +46,13 @@ const HOVER_RING_PAD = 8;
 const REPO_RING_PAD = 2;
 const REPO_RING_ALPHA = 200;
 const REPO_KEYLINE_ALPHA = 96;
+const HOVER_RING_ALPHA = 225;
+
+// Tier-A palette gold for selection (outer gleam L=0.74, inner body S=0.68)
+// and quieter parchment cream for 1-texel hover.
+export const SELECTED_RING_GOLD = ART_RAMPS.trimGold[3];
+export const SELECTED_RING_GOLD_INNER = EFFECT_COLORS.success;
+export const HOVER_RING_COLOR = LABEL_INK.text;
 
 // Feet sit at the anchor; the shadow centre rides one texel below it.
 export const GROUND_MARK_FOOT_Y = 1;
@@ -48,6 +61,11 @@ const ACTION_NEEDED_RING = Object.freeze({
     [AgentStatus.WAITING_ON_USER]: RESERVED_STATUS.needsYou,
     [AgentStatus.ERRORED]: RESERVED_STATUS.error,
     [AgentStatus.RATE_LIMITED]: RESERVED_STATUS.rateLimited,
+});
+
+const ROUTINE_STATUS_RING = Object.freeze({
+    [AgentStatus.WORKING]: Object.freeze({ kind: 'working', color: RESERVED_STATUS.working }),
+    [AgentStatus.WAITING]: Object.freeze({ kind: 'waiting', color: RESERVED_STATUS.waiting }),
 });
 
 const STAMP_CACHE = new Map();
@@ -270,15 +288,169 @@ export function actionNeededRingColor(status) {
     return ACTION_NEEDED_RING[status] || null;
 }
 
-// W7.4 — which rings a body's ground carries, in paint order (pure, so the
-// priority is testable without a canvas). An action-needed ring always wins
-// over the repo course: the course never stacks under NEEDS YOU, ERROR or
-// LIMIT. Selection and hover sit outside both.
-export function groundRingPlan({ status = null, selected = false, hovered = false, repo = null } = {}) {
+export function routineStatusRing(status) {
+    return ROUTINE_STATUS_RING[status] || null;
+}
+
+function quantizeRoutineAlpha(alpha) {
+    if (!Number.isFinite(alpha)) return 235;
+    if (alpha >= 0.65) return 235;
+    if (alpha >= 0.35) return 185;
+    return 140;
+}
+
+// 2-texel Tier-A gold selection ring with a full 1-texel #140e0a outer keyline
+// (relaxed 2026-11-23, operator decision). Brighter and bolder than hover.
+export function selectedRingStamp(width, outerColor = SELECTED_RING_GOLD, innerColor = SELECTED_RING_GOLD_INNER) {
+    const w = Math.max(8, Math.round((Number(width) || 0) / 2) * 2);
+    const key = `selected2|${w}|${outerColor}|${innerColor}`;
+    const cached = STAMP_CACHE.get(key);
+    if (cached) return cached;
+    const h = Math.max(7, Math.round(w * RING_ASPECT) | 1);
+    const cw = w + 2;
+    const ch = h + 2;
+    const canvas = makeCanvas(cw, ch);
+    if (!canvas) return null;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const image = ctx.createImageData(cw, ch);
+    const inside = ellipseMask(w, h);
+    const outerLit = new Uint8Array(w * h);
+    const innerLit = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+            const index = y * w + x;
+            if (!inside[index]) continue;
+            const edge = x === 0 || x === w - 1 || y === 0 || y === h - 1
+                || !inside[index - 1] || !inside[index + 1]
+                || !inside[index - w] || !inside[index + w];
+            if (edge) outerLit[index] = 1;
+        }
+    }
+    for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+            const index = y * w + x;
+            if (!inside[index] || outerLit[index]) continue;
+            const touchesOuter = (x > 0 && outerLit[index - 1])
+                || (x + 1 < w && outerLit[index + 1])
+                || (y > 0 && outerLit[index - w])
+                || (y + 1 < h && outerLit[index + w]);
+            if (touchesOuter) innerLit[index] = 1;
+        }
+    }
+    const outerRgb = hexRgb(outerColor);
+    const innerRgb = hexRgb(innerColor);
+    const hasOuter = (ex, ey) => ex >= 0 && ex < w && ey >= 0 && ey < h && outerLit[ey * w + ex] === 1;
+    const isInside = (ex, ey) => ex >= 0 && ex < w && ey >= 0 && ey < h && inside[ey * w + ex] === 1;
+    for (let cy = 0; cy < ch; cy++) {
+        const ey = cy - 1;
+        for (let cx = 0; cx < cw; cx++) {
+            const ex = cx - 1;
+            const outIdx = cy * cw + cx;
+            if (hasOuter(ex, ey)) {
+                setPixel(image.data, outIdx, outerRgb, 255);
+            } else if (ex >= 0 && ex < w && ey >= 0 && ey < h && innerLit[ey * w + ex]) {
+                setPixel(image.data, outIdx, innerRgb, 255);
+            } else if (!isInside(ex, ey) && (hasOuter(ex - 1, ey) || hasOuter(ex + 1, ey) || hasOuter(ex, ey - 1) || hasOuter(ex, ey + 1))) {
+                setPixel(image.data, outIdx, KEYLINE_RGB, SELECTED_KEYLINE_ALPHA);
+            }
+        }
+    }
+    ctx.putImageData(image, 0, 0);
+    canvas.__cvGroundKey = key;
+    canvas.__anchorX = Math.floor(cw / 2);
+    canvas.__anchorY = Math.floor(ch / 2);
+    STAMP_CACHE.set(key, canvas);
+    return canvas;
+}
+
+// Static ground arcs for routine states (relaxed 2026-11-23, operator
+// decision): a sage/emerald split arc under WORKING and an outlined amber
+// dashed arc under WAITING, both framed by a 1-texel #140e0a outline.
+export function statusArcStamp(kind, width, color, alpha = 235) {
+    const w = Math.max(8, Math.round((Number(width) || 0) / 2) * 2);
+    const a = Math.max(1, Math.min(255, Math.round(Number(alpha) || 235)));
+    const key = `arc|${kind}|${w}|${color}|${a}`;
+    const cached = STAMP_CACHE.get(key);
+    if (cached) return cached;
+    const h = Math.max(7, Math.round(w * RING_ASPECT) | 1);
+    const cw = w + 2;
+    const ch = h + 2;
+    const canvas = makeCanvas(cw, ch);
+    if (!canvas) return null;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const image = ctx.createImageData(cw, ch);
+    const inside = ellipseMask(w, h);
+    const lit = new Uint8Array(cw * ch);
+    const rx = w / 2;
+    const ry = h / 2;
+    for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+            const index = y * w + x;
+            if (!inside[index]) continue;
+            const edge = x === 0 || x === w - 1 || y === 0 || y === h - 1
+                || !inside[index - 1] || !inside[index + 1]
+                || !inside[index - w] || !inside[index + w];
+            if (!edge) continue;
+            const theta = Math.atan2((y + 0.5 - ry) / ry, (x + 0.5 - rx) / rx);
+            let keep = false;
+            if (kind === 'working') {
+                // Two balanced left/right arcs cradling the boots, open at top/bottom.
+                keep = Math.abs(Math.cos(theta)) >= 0.36;
+            } else if (kind === 'waiting') {
+                // Eight symmetric crisp dashes around the ellipse.
+                const sector = Math.floor((((theta + Math.PI) / (2 * Math.PI)) * 16) + 0.5) % 16;
+                keep = sector % 2 === 0;
+            }
+            if (keep) lit[(y + 1) * cw + (x + 1)] = 1;
+        }
+    }
+    const rgb = hexRgb(color);
+    const outlineAlpha = Math.min(ROUTINE_KEYLINE_ALPHA, a);
+    for (let y = 0; y < ch; y++) {
+        for (let x = 0; x < cw; x++) {
+            const index = y * cw + x;
+            if (lit[index]) {
+                setPixel(image.data, index, rgb, a);
+            } else {
+                const touches = (x > 0 && lit[index - 1])
+                    || (x + 1 < cw && lit[index + 1])
+                    || (y > 0 && lit[index - cw])
+                    || (y + 1 < ch && lit[index + cw]);
+                if (touches) setPixel(image.data, index, KEYLINE_RGB, outlineAlpha);
+            }
+        }
+    }
+    ctx.putImageData(image, 0, 0);
+    canvas.__cvGroundKey = key;
+    canvas.__anchorX = Math.floor(cw / 2);
+    canvas.__anchorY = Math.floor(ch / 2);
+    STAMP_CACHE.set(key, canvas);
+    return canvas;
+}
+
+// Which rings a body's ground carries, in paint order (pure, so the priority
+// is testable without a canvas). Action-needed rings always win; static
+// WORKING split arcs and WAITING dashed arcs sit below them (when admitted by
+// MarkGovernor WORKING tier), IDLE carries nothing, and the W7.4 repo course
+// stays available for non-idle states without a status mark. Selection and
+// hover sit outside all of them.
+export function groundRingPlan({
+    status = null,
+    selected = false,
+    hovered = false,
+    repo = null,
+    routineStatus = true,
+} = {}) {
     const plan = [];
     const statusColor = actionNeededRingColor(status);
-    if (statusColor) plan.push({ kind: 'status', pad: STATUS_RING_PAD, color: statusColor });
-    else if (repo) plan.push({ kind: 'repo', pad: REPO_RING_PAD, color: repo });
+    const routine = routineStatus ? routineStatusRing(status) : null;
+    if (statusColor) {
+        plan.push({ kind: 'status', pad: STATUS_RING_PAD, color: statusColor });
+    } else if (routine) {
+        plan.push({ kind: routine.kind, pad: STATUS_RING_PAD, color: routine.color });
+    } else if (repo && status !== AgentStatus.IDLE) {
+        plan.push({ kind: 'repo', pad: REPO_RING_PAD, color: repo });
+    }
     if (selected) plan.push({ kind: 'selected', pad: SELECTED_RING_PAD });
     else if (hovered) plan.push({ kind: 'hover', pad: HOVER_RING_PAD });
     return plan;
@@ -290,7 +462,20 @@ export function groundRingPlan({ status = null, selected = false, hovered = fals
 // `owner` (the body) keeps its 2.8 lamp choice between frames. `repo` is the
 // admitted repo accent or null. Returns stamps plus top-left positions in
 // world texels; callers paint them in order.
-export function resolveGroundMarks({ x, y, contentWidth, status, selected = false, hovered = false, accent, trim, repo = null, owner = null }) {
+export function resolveGroundMarks({
+    x,
+    y,
+    contentWidth,
+    status,
+    selected = false,
+    hovered = false,
+    accent,
+    trim,
+    repo = null,
+    routineStatus = true,
+    routineAlpha = null,
+    owner = null,
+}) {
     const cx = x;
     const cy = y + GROUND_MARK_FOOT_Y;
     const shadowW = contactShadowWidth(contentWidth);
@@ -312,12 +497,20 @@ export function resolveGroundMarks({ x, y, contentWidth, status, selected = fals
     const clipTrail = cast?.clip === true && !pointCast;
     push(contactShadowStamp(shadowW, clipTrail ? cast.base : cast, pointCast), 'shadow');
     if (clipTrail) push(sunTrailStamp(shadowW, cast), 'cast', true);
-    for (const ring of groundRingPlan({ status, selected, hovered, repo })) {
+    const arcAlpha = quantizeRoutineAlpha(routineAlpha);
+    for (const ring of groundRingPlan({ status, selected, hovered, repo, routineStatus })) {
         const width = shadowW + ring.pad;
-        if (ring.kind === 'repo') push(ringStamp('repo', width, ring.color, REPO_RING_ALPHA, REPO_KEYLINE_ALPHA), 'repo');
-        else if (ring.kind === 'status') push(ringStamp('status', width, ring.color), 'status');
-        else if (ring.kind === 'selected') push(ringStamp('selected', width, accent), 'selected');
-        else push(ringStamp('hover', width, trim), 'hover');
+        if (ring.kind === 'repo') {
+            push(ringStamp('repo', width, ring.color, REPO_RING_ALPHA, REPO_KEYLINE_ALPHA), 'repo');
+        } else if (ring.kind === 'status') {
+            push(ringStamp('status', width, ring.color), 'status');
+        } else if (ring.kind === 'working' || ring.kind === 'waiting') {
+            push(statusArcStamp(ring.kind, width, ring.color, arcAlpha), ring.kind);
+        } else if (ring.kind === 'selected') {
+            push(selectedRingStamp(width), 'selected');
+        } else {
+            push(ringStamp('hover', width, HOVER_RING_COLOR, HOVER_RING_ALPHA), 'hover');
+        }
     }
     return marks;
 }
@@ -325,14 +518,22 @@ export function resolveGroundMarks({ x, y, contentWidth, status, selected = fals
 // Texels from the feet anchor down to the lowest row of the ground marks
 // resolveGroundMarks would lay out (contact core or ring; the raking-light
 // trail is a cast, not a mark), so labels under the feet can clear them.
-export function groundMarkDepth({ contentWidth, status = null, selected = false, hovered = false, repo = null } = {}) {
+export function groundMarkDepth({
+    contentWidth,
+    status = null,
+    selected = false,
+    hovered = false,
+    repo = null,
+    routineStatus = true,
+} = {}) {
     const shadowW = contactShadowWidth(contentWidth);
     const shadowH = Math.max(5, Math.round(evenWidth(shadowW) * SHADOW_ASPECT) | 1);
     let depth = Math.ceil(shadowH / 2);
-    for (const ring of groundRingPlan({ status, selected, hovered, repo })) {
+    for (const ring of groundRingPlan({ status, selected, hovered, repo, routineStatus })) {
         const w = Math.max(8, Math.round((shadowW + ring.pad) / 2) * 2);
         const h = Math.max(7, Math.round(w * RING_ASPECT) | 1);
-        depth = Math.max(depth, Math.ceil((h + 1) / 2));
+        const extra = (ring.kind === 'selected' || ring.kind === 'working' || ring.kind === 'waiting') ? 2 : 1;
+        depth = Math.max(depth, Math.ceil((h + extra) / 2));
     }
     return GROUND_MARK_FOOT_Y + depth;
 }
@@ -342,16 +543,17 @@ export function drawGroundMarks(ctx, marks) {
     for (const mark of marks) ctx.drawImage(mark.stamp, mark.x, mark.y);
 }
 
-// Selected-agent chevron: a small downward marker floating above the head on
-// the art-pixel grid. Two texels per pixel below zoom 1.75 so it survives the
-// overview; one texel at detail zoom. Returns the world height it occupies so
-// labels above the head can clear it.
-const CHEVRON_ROWS = Object.freeze([
-    'ooooooo',
-    'ohhhhho',
-    '.ogggo.',
-    '..ogo..',
-    '...o...',
+// Selected-agent chevron: a 9x6 downward marker floating above the head on
+// the art-pixel grid. Two texels per pixel with a 1-texel dark halo below zoom
+// 1.75 so it survives the overview; one texel at detail zoom (widened
+// 2026-11-23, operator decision).
+export const CHEVRON_ROWS = Object.freeze([
+    'ooooooooo',
+    'ohhhhhhho',
+    '.ogggggo.',
+    '..ogggo..',
+    '...ogo...',
+    '....o....',
 ]);
 const CHEVRON_GAP = 2;
 
@@ -360,18 +562,31 @@ export function selectionChevronUnit(zoom) {
 }
 
 export function selectionChevronClearance(zoom) {
-    return (CHEVRON_ROWS.length + CHEVRON_GAP) * selectionChevronUnit(zoom);
+    const unit = selectionChevronUnit(zoom);
+    return (CHEVRON_ROWS.length + CHEVRON_GAP) * unit + (unit > 1 ? 1 : 0);
 }
 
 export function drawSelectionChevron(ctx, x, headTopY, zoom, lift = 0, colors = {}) {
     if (!ctx || !Number.isFinite(headTopY)) return;
     const unit = selectionChevronUnit(zoom);
-    const gold = colors.gold || '#f2c75c';
-    const goldHi = colors.goldHi || '#ffe08a';
+    const gold = colors.gold || SELECTED_RING_GOLD_INNER;
+    const goldHi = colors.goldHi || SELECTED_RING_GOLD;
     const ink = colors.ink || '#140e0a';
-    const left = Math.round(x) - 3 * unit;
+    const halfCols = Math.floor(CHEVRON_ROWS[0].length / 2);
+    const left = Math.round(x) - halfCols * unit;
     const top = Math.round(headTopY) - (CHEVRON_ROWS.length + CHEVRON_GAP) * unit - Math.round(lift) * unit;
     ctx.save();
+    if (unit > 1) {
+        // 1-world-texel dark halo below zoom 1.75 so the chevron pops at overview zoom.
+        ctx.fillStyle = ink;
+        for (let row = 0; row < CHEVRON_ROWS.length; row++) {
+            const line = CHEVRON_ROWS[row];
+            for (let col = 0; col < line.length; col++) {
+                if (line[col] === '.') continue;
+                ctx.fillRect(left + col * unit - 1, top + row * unit - 1, unit + 2, unit + 2);
+            }
+        }
+    }
     for (let row = 0; row < CHEVRON_ROWS.length; row++) {
         const line = CHEVRON_ROWS[row];
         for (let col = 0; col < line.length; col++) {

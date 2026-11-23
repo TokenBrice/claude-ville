@@ -1370,6 +1370,8 @@ export class App {
 
         this._onFirstRunHintDismiss = () => {
             hint.hidden = true;
+            this._unpublishFirstRunHint?.();
+            this._unpublishFirstRunHint = null;
             dismiss.removeEventListener('click', this._onFirstRunHintDismiss);
             this._onFirstRunHintDismiss = null;
             this._markFirstRunHintSeen();
@@ -1397,6 +1399,10 @@ export class App {
         hint.hidden = false;
         this._firstRunHintRevealed = true;
         this._markFirstRunHintSeen();
+        this._unpublishFirstRunHint?.();
+        this._unpublishFirstRunHint = publishReservedRect('first-run-hint', hint, {
+            frame: document.getElementById('characterMode'),
+        });
     }
 
     _hasFirstRunHintBeenSeen() {
@@ -2346,6 +2352,8 @@ export class App {
         this._callLifecycle('Sidebar.destroy', () => this.sidebar?.destroy?.());
         const topBarStop = this._callLifecycle('TopBar.destroy', () => this.topBar?.destroy?.());
         this._callLifecycle('Modal.destroy', () => this.modal?.destroy?.());
+        this._unpublishFirstRunHint?.();
+        this._unpublishFirstRunHint = null;
         this._callLifecycle('Toast.destroy', () => this.toast?.destroy?.());
         this._callLifecycle('MoodService.stop', () => this.moodService?.stop?.());
 

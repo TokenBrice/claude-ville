@@ -49,14 +49,14 @@ export function bridgeCrossingTiles(bridgeTiles) {
 }
 
 /**
- * BR-3 — the world-px shift that puts a route waypoint on a landmark deck or
- * landing tile onto its walker's lane: `info.laneOffsetPx` (10 without one)
- * across the deck axis, on the side IsometricRenderer._laneSideForSprite
- * steers to. The lane tangent runs from a tile toward tile + axis; travel
- * along it is side +1, and the shift is side × offset along the lane's
- * perpendicular (-tangentY, tangentX). `travelX/Y` is the route's course
- * through the waypoint in world px. Null when the course has no component
- * along the deck, or the tile has no lane axis.
+ * BR-3 — the world-px shift that puts a route waypoint on a landmark deck tile
+ * onto its walker's lane: `info.laneOffsetPx` (10 without one) across the deck
+ * axis, on the side IsometricRenderer._laneSideForSprite steers to. The lane
+ * tangent runs from a tile toward tile + axis; travel along it is side +1, and
+ * the shift is side × offset along the lane's perpendicular (-tangentY,
+ * tangentX). `travelX/Y` is the route's course through the waypoint in world
+ * px. Null when the course has no component along the deck, or the tile has no
+ * lane axis. Landing tiles taper to 0 in AgentSprite._keepBridgeLanes.
  */
 export function bridgeLaneShift(info, travelX, travelY) {
     const axis = laneAxisForBridgeOrientation(info?.orientation);

@@ -3,7 +3,7 @@ import {
     materialClassId as registryMaterialClassId,
 } from '../MaterialRegistry.js';
 import { RECEIVER_LUMA_CEILING } from '../../../config/artPalette.js';
-import { WATER_MAX_SATURATION } from '../GradeEvaluator.js';
+import { WATER_DAY_MAX_SATURATION, WATER_MAX_SATURATION } from '../GradeEvaluator.js';
 import { footprintFieldRect } from '../FootprintField.js';
 
 const FOOTPRINT_FIELD_RECT = footprintFieldRect();
@@ -633,6 +633,7 @@ export const GRADE_UNIFORM_NAMES = Object.freeze([
 // mirrors the pool/land stops on the CPU).
 export const GRADE_CONSTANTS = Object.freeze({
     WATER_MAX_SATURATION: Object.freeze({ value: WATER_MAX_SATURATION, digits: 3 }),
+    WATER_DAY_MAX_SATURATION: Object.freeze({ value: WATER_DAY_MAX_SATURATION, digits: 3 }),
     POOL_RIM: Object.freeze({ value: Object.freeze([1.484, 0.914, 0.430]), digits: 3 }),
     POOL_MID: Object.freeze({ value: Object.freeze([1.208, 0.981, 0.577]), digits: 3 }),
     POOL_CORE: Object.freeze({ value: Object.freeze([1.089, 0.995, 0.786]), digits: 3 }),
@@ -694,10 +695,11 @@ vec3 applyTimeGrade(vec3 albedo, bool lift) {
     return c / max(1.0, max(c.r, max(c.g, c.b)));
 }
 
-// V6 — graded water held at WATER_MAX_SATURATION (HSV), pulled toward its
-// own luma so hue, luma and the cool R−B sign are kept. The CPU twin is
-// GradeEvaluator \`capSaturation\` (CoastBake's outer ocean).
+// V6 — graded water held at WATER_DAY_MAX_SATURATION by day, blending back to
+// WATER_MAX_SATURATION with night and storm (HSV), pulled toward its own luma
+// so hue, luma and the cool R−B sign are kept. CPU twin: GradeEvaluator.
 const float WATER_MAX_SATURATION = ${k('WATER_MAX_SATURATION')};
+const float WATER_DAY_MAX_SATURATION = ${k('WATER_DAY_MAX_SATURATION')};
 vec3 capSaturation(vec3 c, float maxS) {
     float hi = max(c.r, max(c.g, c.b));
     float spread = hi - min(c.r, min(c.g, c.b));
@@ -987,18 +989,13 @@ export const CLOUD_FIELD_PERIOD = 7168;
 export const LONE_CLOUD_MIX = 0.7;
 export const LONE_CLOUD_THRESHOLDS = Object.freeze([0.55, 0.68]);
 // SEA-1 (look `sea1` > 0) — the cloud field lies on the ground plane: a world
-// point (x, y) reads the field at (x * 0.32, y * 0.8), so a cloud's shade is
-// foreshortened like every other ground shape and stretched along the wind's
-// axis (2.5:1 on screen) and read at half the old frequency (s6b: a few
-// broad masses, five to eight across a 5120 z1 frame, instead of a field of
-// blotches; land and sea read the same field, so their shade meets at the
-// coast). The drift is carried in those field units (wrapped to
-// CLOUD_FIELD_PERIOD). 1024 / 0.32 = 3200 and 1024 / 0.8 = 1280 world px,
-// so the Canvas course tile keeps whole 2-px texels. On land one firm course
+// point (x, y) reads the field at (x * 0.64, y * 1.0) (relaxed 2026-11-23,
+// operator decision: village-scaled 1600 × 1024 world-px tile with whole 2-px
+// Canvas texels and exact 32-bit integer parity). On land one firm course
 // replaces the three nested rings: the rim (the covered share) one course,
 // its core (CLOUD_PLANE_CORE of the share) two; open water takes no multiply
 // (its shade is one stop of the lift).
-export const CLOUD_PLANE = Object.freeze([0.32, 0.8]);
+export const CLOUD_PLANE = Object.freeze([0.64, 1.0]);
 export const CLOUD_PLANE_CORE = 0.85;
 // PERF-01 — exact 32-bit integer bilinear constants derived from CLOUD_TILE_*,
 // CLOUD_FIELD_PERIOD, CLOUD_PLANE and CLOUD_SECOND_OCTAVE so GLSL, WGSL and the
@@ -1115,13 +1112,13 @@ export function seaSunLiftStops(strength, sunBand, elevationDeg) {
 /**
  * 1.4 / 3.4 — the share of the ground and sea under a cloud course at a
  * weather's cloud cover, one rule for both backends (GpuFrameState
- * `resolveAtmosphereCourses`, CloudShadowCourses). A fair-weather sky (cover
- * below 0.15) casts none, so a clear day reads clear on the 5120 sea; the
- * share then rises on one slope (partly cloudy 0.45 -> 0.38) to 0.45.
+ * `resolveAtmosphereCourses`, CloudShadowCourses). Floor lowered from 0.15 to
+ * 0.04 (relaxed 2026-11-23, operator decision) so clear days cast sparse
+ * shadows (~12 %) and partly cloudy reaches ~45 %.
  */
 export function cloudCoveredShare(cover) {
     const value = Number(cover);
-    return Math.max(0, Math.min(0.45, ((Number.isFinite(value) ? value : 0) - 0.15) * 1.27));
+    return Math.max(0, Math.min(0.45, ((Number.isFinite(value) ? value : 0) - 0.04) * 2.0));
 }
 
 function sampleCloudTile(data, size, u, v) {
@@ -1270,24 +1267,82 @@ export function buildCloudShadowTile(size = CLOUD_TILE_SIZE, seed = 0x5eed) {
     return data;
 }
 
-// 1.6 — screen-Y aerial perspective strength by zoom (survey 0.18, tier 1
-// 0.14, tier 2 0.08, tier 3 0.04), raised by fog.
-export function aerialPerspectiveStrength(zoom = 1, fog = 0) {
+// 1.6 — clear-daylight blend weight (0 at night, dusk, overcast, storm or fog;
+// 1 on clear sunlit days) so lighter clear-air haze never changes night, storm
+// or foggy scenes.
+export function clearDayHazeWeight(fog = 0, daylight = 0, cloudCover = 0) {
+    const f = Math.max(0, Math.min(1, Number(fog) || 0));
+    const d = Math.max(0, Math.min(1, Number(daylight) || 0));
+    const c = Math.max(0, Math.min(1, Number(cloudCover) || 0));
+    const dayShare = Math.max(0, Math.min(1, (d - 0.30) / 0.60));
+    const airShare = Math.max(0, Math.min(1, (0.20 - f) / 0.15));
+    const skyShare = Math.max(0, Math.min(1, (0.85 - c) / 0.30));
+    return dayShare * airShare * skyShare;
+}
+
+// 1.6 — screen-Y aerial perspective strength by zoom (base survey 0.18, tier 1
+// 0.14, tier 2 0.08, tier 3 0.04), raised by fog. Clear daylight blends toward
+// crisp clear-air stops (0.08 / 0.06 / 0.03 / 0.01); night, storm and fog stay
+// on the exact base curve.
+export function aerialPerspectiveStrength(zoom = 1, fog = 0, clearDay = 0) {
     const z = Math.max(0.25, Number(zoom) || 1);
-    const stops = [[0.5, 0.18], [1, 0.14], [2, 0.08], [3, 0.04]];
-    let strength = stops[stops.length - 1][1];
-    if (z <= stops[0][0]) strength = stops[0][1];
-    else {
+    const f = Math.max(0, Math.min(1, Number(fog) || 0));
+    const air = Math.max(0, Math.min(1, (0.20 - f) / 0.15));
+    const clear = Math.max(0, Math.min(1, Number(clearDay) || 0)) * air;
+    const baseStops = [[0.5, 0.18], [1, 0.14], [2, 0.08], [3, 0.04]];
+    const clearStops = [[0.5, 0.08], [1, 0.06], [2, 0.03], [3, 0.01]];
+    const sample = (stops) => {
+        let strength = stops[stops.length - 1][1];
+        if (z <= stops[0][0]) return stops[0][1];
         for (let index = 1; index < stops.length; index++) {
             const [z1, s1] = stops[index];
             const [z0, s0] = stops[index - 1];
-            if (z <= z1) {
-                strength = s0 + (s1 - s0) * ((z - z0) / (z1 - z0));
-                break;
-            }
+            if (z <= z1) return s0 + (s1 - s0) * ((z - z0) / (z1 - z0));
+        }
+        return strength;
+    };
+    const base = sample(baseStops);
+    const strength = clear > 0 ? base + (sample(clearStops) - base) * clear : base;
+    return strength * (1 + f);
+}
+
+// 1.6 — vertical reach of the screen-Y aerial haze: 0.55 by default (night,
+// storm, overcast, fog), pulling up to 0.30 in clear daylight so upper-half
+// sunlight stays crisp.
+export function aerialHazeStart(fog = 0, clearDay = 0) {
+    const f = Math.max(0, Math.min(1, Number(fog) || 0));
+    const air = Math.max(0, Math.min(1, (0.20 - f) / 0.15));
+    const clear = Math.max(0, Math.min(1, Number(clearDay) || 0)) * air;
+    if (clear <= 0) return 0.55;
+    if (clear >= 1) return 0.30;
+    return 0.55 - 0.25 * clear;
+}
+
+// Daytime bloom: only buildings with an open work gate (working Forge fire,
+// awake Portal, working Command braziers) activate the daytime bloom path;
+// static props (such as prop.runeBrazier) never trigger daytime bloom on their
+// own, and passive emitters stay at the 0.14 daylight core.
+export const DAYTIME_WORK_BLOOM_CORE = 0.36;
+export const DAYTIME_WORK_BLOOM_STRENGTH = 0.22;
+export const DAYLIGHT_PASSIVE_CORE_SCALE = 0.14 / DAYTIME_WORK_BLOOM_CORE;
+
+export function isDaytimeHighEnergyBuilding(buildingType, active, emissiveGate) {
+    if (!active || !(emissiveGate > 0.01)) return false;
+    return buildingType === 'forge' || buildingType === 'portal' || buildingType === 'command';
+}
+
+export function hasActiveBloomEmitters(batches) {
+    if (!Array.isArray(batches)) return false;
+    for (let b = 0; b < batches.length; b++) {
+        const batch = batches[b];
+        if (!batch?.emissiveTexture && !batch?.emissiveSource) continue;
+        const records = batch.records;
+        for (let r = 0; r < records.length; r++) {
+            const rec = records[r];
+            if (rec?.daytimeEmitter && rec.emissiveGate > 0.01) return true;
         }
     }
-    return strength * (1 + Math.max(0, Math.min(1, Number(fog) || 0)));
+    return false;
 }
 
 // Ambient sources currently use the registry default (0). Keeping attention
@@ -1665,6 +1720,7 @@ export function normalizeGpuRecord(record = {}, sequence = 0, target = null) {
     normalized.elevation = elevation;
     normalized.emissive = emissive;
     normalized.emissiveGate = Math.max(0, Math.min(1, finite(record.emissiveGate, 1)));
+    normalized.daytimeEmitter = record.daytimeEmitter === true;
     normalized.occluder = occluder;
     normalized.material = materialClassId(record.material ?? record.materialId);
     normalized.blend = blend;

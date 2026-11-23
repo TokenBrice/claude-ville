@@ -26,42 +26,85 @@ export const VILLAGE_GATE = Object.freeze({
 // Steering asks it per walker per frame, so the stone's segments and the sea
 // tower's centre are laid out once (`villageMasonryShape`).
 export function inVillageMasonry(tileX, tileY, reach = 0.3) {
+    if (!masonrySegments) initVillageMasonry();
+    if (tileY < masonryMinY - reach || tileY > masonryMaxY + reach) return false;
+    return inVillageMasonryNear(tileX, tileY, reach);
+}
+
+function inVillageMasonryNear(tileX, tileY, reach) {
     const G = VILLAGE_GATE_GEOMETRY;
     const X = tileX - VILLAGE_GATE.tileX;
     const Y = tileY - VILLAGE_GATE.tileY;
-    if (Math.abs(X) < G.archHalfWidth && Math.abs(Y) <= G.blockHalfDepth + reach) return false;
-    for (const cx of G.towerX) if (Math.hypot(X - cx, Y) < G.towerR + reach) return true;
-    const { segments, seaX, seaY } = villageMasonryShape();
-    if (Math.hypot(tileX - seaX, tileY - seaY) < SEA_TOWER_GEOMETRY.towerR + reach) return true;
-    for (let i = 0; i < segments.length; i += 4) {
-        const ax = segments[i];
-        const ay = segments[i + 1];
-        const dx = segments[i + 2] - ax;
-        const dy = segments[i + 3] - ay;
-        const t = Math.max(0, Math.min(1, ((tileX - ax) * dx + (tileY - ay) * dy) / Math.max(1e-6, dx * dx + dy * dy)));
-        if (Math.hypot(tileX - (ax + t * dx), tileY - (ay + t * dy)) < reach) return true;
+    const archGap = G.archHalfWidth - reach;
+    if (archGap > 0 && Math.abs(X) < archGap && Math.abs(Y) <= G.blockHalfDepth + reach) return false;
+    const towerLim = G.towerR + reach;
+    if (towerLim > 0) {
+        const towerLimSq = towerLim * towerLim;
+        const ySq = Y * Y;
+        const towerX = G.towerX;
+        for (let i = 0; i < towerX.length; i++) {
+            const dx = X - towerX[i];
+            if (dx * dx + ySq < towerLimSq) return true;
+        }
+    }
+    const seaLim = SEA_TOWER_GEOMETRY.towerR + reach;
+    if (seaLim > 0) {
+        const sdx = tileX - masonrySeaX;
+        const sdy = tileY - masonrySeaY;
+        if (sdx * sdx + sdy * sdy < seaLim * seaLim) return true;
+    }
+    if (reach > 0) {
+        const reachSq = reach * reach;
+        const segments = masonrySegments;
+        for (let i = 0; i < segments.length; i += 4) {
+            const ax = segments[i];
+            const ay = segments[i + 1];
+            const dx = segments[i + 2] - ax;
+            const dy = segments[i + 3] - ay;
+            const lenSq = dx * dx + dy * dy;
+            let t = ((tileX - ax) * dx + (tileY - ay) * dy) / (lenSq > 1e-6 ? lenSq : 1e-6);
+            if (t < 0) t = 0;
+            else if (t > 1) t = 1;
+            const px = tileX - (ax + t * dx);
+            const py = tileY - (ay + t * dy);
+            if (px * px + py * py < reachSq) return true;
+        }
     }
     return false;
 }
 
-let villageMasonry = null;
-function villageMasonryShape() {
-    if (villageMasonry) return villageMasonry;
+let masonrySegments = null;
+let masonrySeaX = NaN;
+let masonrySeaY = NaN;
+let masonryMinY = Infinity;
+let masonryMaxY = -Infinity;
+function initVillageMasonry() {
     const half = VILLAGE_GATE.widthTiles / 2;
     const segments = [VILLAGE_GATE.tileX - half, VILLAGE_GATE.tileY, VILLAGE_GATE.tileX + half, VILLAGE_GATE.tileY];
     let seaX = NaN;
     let seaY = NaN;
+    let minY = VILLAGE_GATE.tileY - Math.max(VILLAGE_GATE_GEOMETRY.towerR, VILLAGE_GATE_GEOMETRY.blockHalfDepth);
+    let maxY = VILLAGE_GATE.tileY + Math.max(VILLAGE_GATE_GEOMETRY.towerR, VILLAGE_GATE_GEOMETRY.blockHalfDepth);
     for (const { id, points } of VILLAGE_WALL_ROUTES) {
-        for (let i = 1; i < points.length; i++) segments.push(points[i - 1].tileX, points[i - 1].tileY, points[i].tileX, points[i].tileY);
+        for (let i = 0; i < points.length; i++) {
+            if (points[i].tileY < minY) minY = points[i].tileY;
+            if (points[i].tileY > maxY) maxY = points[i].tileY;
+            if (i > 0) segments.push(points[i - 1].tileX, points[i - 1].tileY, points[i].tileX, points[i].tileY);
+        }
         if (id !== 'east') continue;
         const [a, b] = points.slice(-2);
         const len = Math.max(1e-6, Math.hypot(b.tileX - a.tileX, b.tileY - a.tileY));
         const k = SEA_TOWER_GEOMETRY.endInset / len;
         seaX = b.tileX - (b.tileX - a.tileX) * k;
         seaY = b.tileY - (b.tileY - a.tileY) * k;
+        if (seaY - SEA_TOWER_GEOMETRY.towerR < minY) minY = seaY - SEA_TOWER_GEOMETRY.towerR;
+        if (seaY + SEA_TOWER_GEOMETRY.towerR > maxY) maxY = seaY + SEA_TOWER_GEOMETRY.towerR;
     }
-    villageMasonry = { segments: Float64Array.from(segments), seaX, seaY };
-    return villageMasonry;
+    masonrySegments = Float64Array.from(segments);
+    masonrySeaX = seaX;
+    masonrySeaY = seaY;
+    masonryMinY = minY;
+    masonryMaxY = maxY;
 }
 
 export const VILLAGE_GATE_BOUNDS = Object.freeze({
@@ -203,7 +246,7 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
         id: 'north-bank-promenade',
         material: 'avenue',
         width: 1,
-        points: [[7, 23], [10, 20]],
+        points: [[7, 22], [8, 21], [10, 20]],
     },
     {
         id: 'civic-west-arm',
@@ -215,31 +258,43 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
         id: 'civic-east-arm',
         material: 'avenue',
         width: 2,
-        points: [[16, 18], [23, 18]],
+        points: [[18, 18], [22, 18]],
     },
     {
         id: 'tavern-promenade',
         material: 'avenue',
         width: 1,
-        points: [[23, 18], [28, 16], [29, 13]],
+        points: [[23, 18], [25, 18], [26, 16], [27, 14], [28, 14]],
+    },
+    {
+        id: 'tavern-harbor-spur',
+        material: 'avenue',
+        width: 1,
+        points: [[23, 18], [25, 19], [28, 19], [28, 20]],
+    },
+    {
+        id: 'west-bridge-approach',
+        material: 'lane',
+        width: 1,
+        points: [[7, 27], [7, 31], [7, 33], [6, 34]],
     },
     {
         id: 'production-row',
         material: 'lane',
         width: 1,
-        points: [[6, 34], [13, 34], [18, 38], [22, 37], [28, 37], [28, 31], [25, 29]],
+        points: [[6, 34], [8, 35], [13, 35], [18, 38], [22, 37], [28, 37], [28, 31], [25, 30]],
     },
     {
         id: 'west-production-road',
         material: 'avenue',
         width: 1,
-        points: [[6, 34], [14, 31], [18, 27]],
+        points: [[6, 34], [8, 35], [13, 35], [16, 34], [16, 30], [18, 27]],
     },
     {
         id: 'civic-south-arm',
         material: 'avenue',
-        width: 2,
-        points: [[16, 20], [18, 21]],
+        width: 1,
+        points: [[16, 19], [18, 20], [18, 21]],
     },
     {
         id: 'central-river-bridge',
@@ -248,10 +303,16 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
         points: [[18, 21], [18, 26], [22, 31], [22, 37]],
     },
     {
+        id: 'forge-footbridge-road',
+        material: 'lane',
+        width: 1,
+        points: [[21, 21], [22, 22], [22, 27], [24, 29], [25, 30]],
+    },
+    {
         id: 'archive-walk',
         material: 'avenue',
         width: 1,
-        points: [[7, 23], [8, 20], [8, 17]],
+        points: [[7, 22], [8, 20], [8, 17]],
     },
     {
         id: 'clock-walk',
@@ -261,9 +322,9 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
     },
     {
         id: 'lighthouse-quay',
-        material: 'dock',
+        material: 'avenue',
         width: 1,
-        points: [[29, 19], [29, 16], [29, 13]],
+        points: [[28, 20], [28, 17], [27, 15], [27, 14], [28, 14]],
     },
     {
         id: 'harbor-berths',
@@ -277,6 +338,12 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
         width: 1,
         points: [[18, 26], [18, 32], [19, 36], [19, 39]],
     },
+    {
+        id: 'north-farm-path',
+        material: 'lane',
+        width: 1,
+        points: [[8, 14], [6, 12], [3, 11], [3, 10], [3, 5], [3, 4], [8, 4], [8, 3], [9, 2], [11, 2], [15, 2], [16, 4], [15, 6]],
+    },
 ]);
 
 // District identity through yard materials (plan item 4.7). Each building's
@@ -287,15 +354,15 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
 // footfall/lane material reads it as stone (avenue) or earth (dirt).
 //   flag    dressed flagstone (plaza ramp, at the street's value)
 //   gravel  crushed stone (road ramp, the street's tone, fine texture)
-//   cinder  packed dark earth with slag flecks (dirt ramp, low)
+//   cinder  packed charcoal-slate hearth yard (stone ramp, low)
 //   earth   trodden yard earth (dirt ramp)
 export const YARD_MATERIALS = Object.freeze({
     archive: Object.freeze({ surface: 'flag', edge: 'kerb', paved: true }),
     tavern: Object.freeze({ surface: 'flag', edge: 'kerb', paved: true }),
     portal: Object.freeze({ surface: 'flag', edge: 'kerb', paved: true }),
-    forge: Object.freeze({ surface: 'cinder', edge: 'wattle', paved: false }),
+    forge: Object.freeze({ surface: 'cinder', edge: null, paved: false }),
     mine: Object.freeze({ surface: 'gravel', edge: null, paved: false }),
-    taskboard: Object.freeze({ surface: 'earth', edge: 'wattle', paved: false }),
+    taskboard: Object.freeze({ surface: 'earth', edge: null, paved: false }),
     watchtower: Object.freeze({ surface: 'gravel', edge: null, paved: false }),
     harbor: Object.freeze({ surface: 'gravel', edge: null, paved: false }),
 });
@@ -313,8 +380,8 @@ export const YARD_MATERIALS = Object.freeze({
 // (V8). None sits on the Command approach (7.2) or behind a wall the camera
 // cannot see past.
 export const REST_SEATS = Object.freeze([
-    { id: 'command-east-step-n', tileX: 18, tileY: 16, facing: 'south-east', occluder: 'step' },
-    { id: 'command-east-step-s', tileX: 18, tileY: 17, facing: 'south-east', occluder: 'step' },
+    { id: 'command-east-step-n', tileX: 19, tileY: 17, facing: 'south-east', occluder: 'step' },
+    { id: 'command-east-step-s', tileX: 20, tileY: 18, facing: 'south-east', occluder: 'step' },
     { id: 'command-west-step', tileX: 12, tileY: 17, facing: 'south-west', occluder: 'step' },
     { id: 'harbor-pier', tileX: 26, tileY: 21, facing: 'south-west', occluder: 'pier' },
     // The Tavern's bar: three stools on its floor behind the front beam, the
@@ -357,40 +424,39 @@ export const REST_STANDS = Object.freeze({
 // the line stays on Command's forecourt, off the plank and the central
 // bridge (the island's main north-south crossing). CM-1 — it is laid on the
 // forecourt's west half, away from the bridge's north landing (16-18, 22):
-// from the foot of the steps it runs west along the civic west arm to the
-// arm's mouth, folds back one row out and folds once more along the bank
-// (36 world px between slots). The steps' row west of the door is the rune
-// brazier's and the Archive alcove's crates' (their fixture boxes). The 13th
-// petitioner onward stands at the arm's mouth and on the bank beside the
-// line (`overflow`), the last two a stride clear of the plank. No slot
-// stands on a bridge, a fixture's footprint (VisitTileAllocator
-// `standsOnFixture`), another standing place or behind a roof. `door` is the
-// point the head of the line faces; each later slot faces the slot ahead.
+// continuously from the foot of the steps (row y = 19) west along the civic
+// west arm (row y = 20), then folding two full tiles south to row y = 22 along
+// the north bank so every 60 px silhouette and floor candle stays clear of the
+// row behind it. The 13th petitioner onward stands at the arm's mouth and on the
+// bank beside the line (`overflow`). No slot stands on a bridge, a fixture's
+// footprint (VisitTileAllocator `standsOnFixture`), another standing place or
+// behind a roof. `door` is the point the head of the line faces; each later
+// slot faces the slot ahead.
 export const COMMAND_QUEUE = Object.freeze({
     door: Object.freeze({ tileX: 14.5, tileY: 17.5 }),
     slots: Object.freeze([
         { tileX: 15, tileY: 19 },
+        { tileX: 14, tileY: 19 },
         { tileX: 13, tileY: 20 },
         { tileX: 12, tileY: 20 },
         { tileX: 11, tileY: 20 },
         { tileX: 10, tileY: 20 },
-        { tileX: 10, tileY: 21 },
-        { tileX: 11, tileY: 21 },
-        { tileX: 12, tileY: 21 },
-        { tileX: 13, tileY: 21 },
-        { tileX: 13, tileY: 22 },
-        { tileX: 12, tileY: 22 },
+        { tileX: 9, tileY: 22 },
+        { tileX: 10, tileY: 22 },
         { tileX: 11, tileY: 22 },
+        { tileX: 12, tileY: 22 },
+        { tileX: 13, tileY: 22 },
+        { tileX: 14, tileY: 22 },
     ].map(Object.freeze)),
     overflow: Object.freeze([
-        { tileX: 10, tileY: 22 },
-        { tileX: 9, tileY: 22 },
-        { tileX: 9, tileY: 21 },
-        { tileX: 8, tileY: 21 },
         { tileX: 8, tileY: 22 },
+        { tileX: 8, tileY: 21 },
+        { tileX: 9, tileY: 21 },
+        { tileX: 7, tileY: 21 },
+        { tileX: 7, tileY: 20 },
+        { tileX: 6, tileY: 20 },
         { tileX: 10, tileY: 19 },
         { tileX: 14, tileY: 21 },
-        { tileX: 14, tileY: 22 },
     ].map(Object.freeze)),
 });
 
@@ -424,28 +490,27 @@ export const REPO_STONE_ANCHORS = Object.freeze([
 // (36 world px) or across the screen at one depth (64 px), never toward the
 // camera, so a line trails away from the camera-near side and its heads keep
 // open sky for their thoughts. No place stands on a fixture, a road, a
-// footprint, a walk exclusion or another standing place, except that a file
-// may take over its own building's queue or scenic slot (the Harbor quay),
-// which the allocator then leaves to the line. Command's petitioners keep
-// their own queue (`COMMAND_QUEUE`); this file is for Command's visitors.
+// footprint, a walk exclusion, a visit slot, or another standing place.
+// Command's petitioners keep their own queue (`COMMAND_QUEUE`); this file is
+// for Command's visitors.
 const approachFile = (...points) => Object.freeze(points.map(([tileX, tileY]) => Object.freeze({ tileX, tileY })));
 export const APPROACH_FILES = Object.freeze({
     // Along the Archive's front steps, west from its south-east corner.
     archive: approachFile([7, 19], [6, 19], [5, 19], [4, 19]),
-    // Up the lane between Command's east wing and the Tavern porch.
-    command: approachFile([20, 16], [19, 16], [19, 15], [19, 14]),
-    // Up the Forge's cinder yard, parallel to its west wall.
-    forge: approachFile([23, 30], [23, 29], [23, 28], [23, 27]),
+    // Across Command's west forecourt, routed around the plaza fountain.
+    command: approachFile([13, 21], [12, 21], [11, 21], [10, 21]),
+    // Up the Forge's open cinder yard, clear of the Task Board's slate roof.
+    forge: approachFile([24, 30], [24, 29], [23, 29], [23, 28]),
     // West along the Task Board's front, then up beside the gate avenue.
     taskboard: approachFile([21, 36], [20, 36], [20, 35], [20, 34], [20, 33]),
     // West from the Mine's mouth along its yard, beside the production row.
     mine: approachFile([10, 35], [9, 35], [8, 35], [7, 35]),
-    // Up the Portal's east flank, then across its lawn.
-    portal: approachFile([7, 33], [7, 32], [7, 31], [8, 30], [9, 29]),
-    // Up the lawn along the Tavern's east wall, from its front corner.
-    tavern: approachFile([25, 17], [25, 16], [25, 15], [25, 14]),
+    // Up the Portal's east yard, clear of the east dais and the Mine's rock.
+    portal: approachFile([7, 34], [7, 33], [7, 32], [7, 31], [8, 30]),
+    // Up the Tavern's open south-west lawn, off its ambient visit tiles.
+    tavern: approachFile([21, 22], [21, 21], [21, 20], [20, 21]),
     // North-west from the Lighthouse, between the tower and the dome.
     watchtower: approachFile([26, 12], [25, 12], [24, 12], [24, 11]),
-    // Up the Harbor's quay front, along its west wall.
-    harbor: approachFile([27, 19], [27, 18], [27, 17], [27, 16]),
+    // Across the Harbor's quay step and open west lawn, clear of the taller gable roof.
+    harbor: approachFile([27, 20], [27, 19], [27, 18], [26, 18]),
 });

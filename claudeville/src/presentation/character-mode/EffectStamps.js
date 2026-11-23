@@ -409,6 +409,8 @@ function buildingOccluders(buildings) {
             top: Math.round(d.wy - ay),
             w: dims.w,
             h: dims.h,
+            colStart: d.kind === 'building-column' && d.column ? d.column.sx : 0,
+            colEnd: d.kind === 'building-column' && d.column ? d.column.sx + d.column.sw : dims.w,
             rowStart: d.kind === 'building-front' ? d.horizonY : 0,
             rowEnd: d.kind === 'building-back' ? d.horizonY : dims.h,
             firstRow: first >= 0 ? Math.floor(first / dims.w) : 0,
@@ -433,7 +435,7 @@ function buildingColumn(building) {
         if (!column) {
             column = { type, left: occ.left, right: occ.left + occ.w, top: occ.top + occ.firstRow, ground: occ.ground, sortY: occ.sortY };
         }
-        if (occ.front) column.sortY = occ.sortY;
+        if (occ.front) column.sortY = Math.max(column.sortY, occ.sortY);
     }
     return column;
 }
@@ -486,8 +488,8 @@ export function momentRectClear(rect, { depthY = rect?.bottom ?? 0 } = {}) {
 // occluder has an opaque pixel inside columns [x0, x1]; with no array, return
 // on the first such row.
 function occupiedRows(occ, x0, x1, y0, y1, rows, base) {
-    const lx0 = Math.max(0, x0 - occ.left);
-    const lx1 = Math.min(occ.w - 1, x1 - occ.left);
+    const lx0 = Math.max(occ.colStart ?? 0, x0 - occ.left);
+    const lx1 = Math.min((occ.colEnd ?? occ.w) - 1, x1 - occ.left);
     if (lx0 > lx1) return false;
     const ly0 = Math.max(occ.rowStart, y0 - occ.top);
     const ly1 = Math.min(occ.rowEnd - 1, y1 - occ.top);

@@ -502,6 +502,7 @@ export class MonumentRules {
             plantedAt: eventTs(event, now),
             ts: eventTs(event, now),
             sourceEventId: textOf(event.id || event.sourceId || event.commandHash),
+            ...(event.agentId ? { agentId: String(event.agentId) } : null),
             tileX: placement.tileX,
             tileY: placement.tileY,
         };

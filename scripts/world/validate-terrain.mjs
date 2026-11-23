@@ -1,3 +1,7 @@
+import { Building } from '../../claudeville/src/domain/entities/Building.js';
+import { TOWN_ROAD_ROUTES } from '../../claudeville/src/config/townPlan.js';
+import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
+import { SceneryEngine } from '../../claudeville/src/presentation/character-mode/SceneryEngine.js';
 import { loadConfigExports } from './config-loader.mjs';
 import {
     buildingRect,
@@ -327,6 +331,57 @@ function validateTerrainCacheScalability(reporter, mapSize, tileWidth, tileHeigh
     };
 }
 
+function validateRoadDryLand(reporter, routes, buildings, mapSize) {
+    const noise = Object.create(IsometricRenderer.prototype);
+    const terrainSeed = [];
+    for (let y = 0; y < mapSize; y++) {
+        for (let x = 0; x < mapSize; x++) terrainSeed.push(noise._tileNoise(x, y));
+    }
+    const worldBuildings = new Map(buildings.map((def) => [def.type, new Building(def)]));
+    const scenery = new SceneryEngine({
+        world: { buildings: worldBuildings },
+        terrainSeed,
+        tileNoise: (x, y) => noise._tileNoise(x, y),
+        smoothNoise: (x, y, scale) => noise._smoothNoise(x, y, scale),
+    });
+    scenery.generateBridges();
+    const waterTiles = scenery.getWaterTiles();
+    const bridgeTiles = scenery.getBridgeTiles();
+
+    for (const route of routes) {
+        if (route.material === 'dock') continue;
+        const width = route.width || 1;
+        const lo = -Math.floor((Math.max(1, width) - 1) / 2);
+        const hi = Math.floor(Math.max(1, width) / 2);
+        const wetHits = new Set();
+        const points = route.points || [];
+        for (let i = 0; i < points.length - 1; i++) {
+            const [fromX, fromY] = points[i];
+            const [toX, toY] = points[i + 1];
+            const steps = Math.max(Math.abs(toX - fromX), Math.abs(toY - fromY), 1) * 2;
+            for (let step = 0; step <= steps; step++) {
+                const t = step / steps;
+                const x = Math.round(fromX + (toX - fromX) * t);
+                const y = Math.round(fromY + (toY - fromY) * t);
+                for (let ox = lo; ox <= hi; ox++) {
+                    for (let oy = lo; oy <= hi; oy++) {
+                        const tx = x + ox;
+                        const ty = y + oy;
+                        if (!inTileBounds(tx, ty, mapSize)) continue;
+                        const key = tileKey(tx, ty);
+                        if (waterTiles.has(key) && !bridgeTiles.has(key)) {
+                            wetHits.add(key);
+                        }
+                    }
+                }
+            }
+        }
+        if (wetHits.size > 0) {
+            reporter.error(`TOWN_ROAD_ROUTES.${route.id}`, `non-dock road lands on non-bridge water tiles: ${[...wetHits].join(', ')}`);
+        }
+    }
+}
+
 const reporter = createReporter('world terrain validation');
 const { MAP_SIZE, TILE_WIDTH, TILE_HEIGHT } = await loadConfigExports('claudeville/src/config/constants.js', ['MAP_SIZE', 'TILE_WIDTH', 'TILE_HEIGHT']);
 const { BUILDING_DEFS } = await loadConfigExports('claudeville/src/config/buildings.js', ['BUILDING_DEFS']);
@@ -373,6 +428,7 @@ validateWaterBasins(reporter, WATER_BASINS, MAP_SIZE);
 validateBridgeHints(reporter, BRIDGE_HINTS, WATER_POLYLINES, WATER_BASINS, MAP_SIZE);
 validateBridgeHints(reporter, PLANK_BRIDGES, WATER_POLYLINES, WATER_BASINS, MAP_SIZE, 'PLANK_BRIDGES');
 validateDockTiles(reporter, HARBOR_DOCK_TILES, BUILDING_DEFS, WATER_POLYLINES, WATER_BASINS, MAP_SIZE);
+validateRoadDryLand(reporter, TOWN_ROAD_ROUTES, BUILDING_DEFS, MAP_SIZE);
 validateRegions(reporter, 'FOREST_FLOOR_REGIONS', FOREST_FLOOR_REGIONS, MAP_SIZE);
 validateRegions(reporter, 'TREE_CLUSTERS', TREE_CLUSTERS, MAP_SIZE);
 validateRegions(reporter, 'VEGETATION_DISTRICTS', VEGETATION_DISTRICTS, MAP_SIZE);

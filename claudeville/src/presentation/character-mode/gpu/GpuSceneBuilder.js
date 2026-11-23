@@ -1,4 +1,10 @@
-import { materialClassId } from './GpuWorldPolicy.js';
+import {
+    DAYLIGHT_PASSIVE_CORE_SCALE,
+    effectBudgetMode,
+    isDaytimeHighEnergyBuilding,
+    materialClassId,
+} from './GpuWorldPolicy.js';
+import { sourceEnergyFor } from '../AtmosphereState.js';
 import { tileToWorld, TILE_HALF_HEIGHT, TILE_HALF_WIDTH } from '../Projection.js';
 import { offshoreSceneryRecords } from '../OffshoreScenery.js';
 import { landmarkFootprint } from '../FootprintField.js';
@@ -6,7 +12,6 @@ import { ownerSlotFor } from '../LightSourceRegistry.js';
 import { lookStrength } from '../LookStrengths.js';
 import { lampSilhouetteFor, setLampSilhouetteMode } from '../RakingLight.js';
 import { lampSilhouetteRecords, releaseLampSilhouettes } from '../LampSilhouette.js';
-import { effectBudgetMode } from './GpuWorldPolicy.js';
 import {
     atlasSourceRect,
     shouldUseAtlasForCategory,
@@ -469,6 +474,7 @@ function farSeaRecords(renderer, records) {
 // so the texture uploads only when the sun moves a bucket.
 function buildingShadowRecords(renderer, drawable, sequence) {
     if (drawable?.kind === 'building-front') return [];
+    if (drawable?.kind === 'building-column' && (drawable.column?.index || 0) > 0) return [];
     const building = drawable?.building;
     const grounding = getBuildingVisual(building?.type)?.grounding;
     const contact = grounding?.contact;
@@ -596,6 +602,7 @@ function recordForBuilding(renderer, drawable, sequence) {
     const dims = assets?.getDims?.(id) || (individual ? { w: individual.width, h: individual.height } : null);
     if (!dims) return null;
     const [ax, ay] = assets.getAnchor(id) || [dims.w / 2, dims.h];
+    const col = drawable.kind === 'building-column' ? drawable.column : null;
     const split = drawable.kind === 'building-back' || drawable.kind === 'building-front';
     const horizon = split
         ? Math.max(1, Math.min(finite(drawable.horizonY, dims.h / 2), dims.h - 1))
@@ -617,9 +624,9 @@ function recordForBuilding(renderer, drawable, sequence) {
         sourceWidth = atlasAlbedo.width;
         sourceHeight = atlasAlbedo.height;
         const rect = atlasSourceRect(atlasFrame.rect, { split, front, horizonY: horizon });
-        sx = rect.sx;
+        sx = col ? rect.sx + col.sx : rect.sx;
         sy = rect.sy;
-        sw = rect.sw;
+        sw = col ? Math.min(col.sw, Math.max(0, rect.sw - col.sx)) : rect.sw;
         sh = rect.sh;
         textureKey = atlasFrame.atlas;
     } else {
@@ -627,12 +634,13 @@ function recordForBuilding(renderer, drawable, sequence) {
         if (!source) return null;
         sourceWidth = dims.w;
         sourceHeight = dims.h;
-        sx = 0;
+        sx = col ? col.sx : 0;
         sy = split && front ? horizon : 0;
-        sw = dims.w;
+        sw = col ? col.sw : dims.w;
         sh = split ? (front ? dims.h - horizon : horizon) : dims.h;
         textureKey = id;
     }
+    if (sw <= 0 || sh <= 0) return null;
     const buildingType = drawable.building?.type || id.replace(/^building\./, '');
     const materialMeta = drawable.entry?.material || drawable.entry?.gpuMaterial || {};
     const materialName = materialMeta.class || drawable.entry?.materialClass || MATERIAL_BY_BUILDING[buildingType] || 'stone';
@@ -641,7 +649,10 @@ function recordForBuilding(renderer, drawable, sequence) {
     // observed-tool recency), never idle, seated or passing bodies.
     const workTier = renderer?.buildingRenderer?._workTierFor?.(drawable.building);
     const active = Boolean(workTier) && workTier !== 'dormant';
-    const emissiveGate = renderer?.buildingRenderer?._emissiveGateFor?.(drawable.building) ?? 1;
+    const workOpen = renderer?.buildingRenderer?.partGates?.isOpen?.(`work.${buildingType}`) ?? active;
+    const rawEmissiveGate = renderer?.buildingRenderer?._emissiveGateFor?.(drawable.building) ?? 1;
+    const daytimeEmitter = isDaytimeHighEnergyBuilding(buildingType, workOpen, rawEmissiveGate);
+    const emissiveGate = rawEmissiveGate;
     // Material/emissive are sampled with the albedo's UVs (see the GL fragment
     // shaders), so a channel source must share the albedo's geometry. When the
     // albedo comes from an atlas page the channels must be that page's channel
@@ -657,9 +668,11 @@ function recordForBuilding(renderer, drawable, sequence) {
     const sidecarKey = useAtlas
         ? `${atlasFrame.atlas}:channels`
         : `${id}:material`;
+    const spriteLeft = Math.round(drawable.wx - ax);
+    const recordId = col ? `${id}:column:${col.index}` : `${id}:${drawable.kind}`;
     const record = {
-        id: `${id}:${drawable.kind}`,
-        stableKey: `${id}:${drawable.kind}`,
+        id: recordId,
+        stableKey: recordId,
         textureKey,
         sidecarKey,
         source,
@@ -672,9 +685,9 @@ function recordForBuilding(renderer, drawable, sequence) {
         sy,
         sw,
         sh,
-        x: Math.round(drawable.wx - ax),
+        x: spriteLeft + (col ? col.sx : 0),
         y: Math.round(drawable.wy - ay + (split && front ? horizon : 0)),
-        width: useAtlas ? sw : dims.w,
+        width: col ? sw : (useAtlas ? sw : dims.w),
         height: sh,
         material: materialClassId(materialName),
         elevation: finite(materialMeta.elevation, 0.82),
@@ -685,6 +698,7 @@ function recordForBuilding(renderer, drawable, sequence) {
             ? (active ? finite(materialMeta.activeEmissive, 0.12) : finite(materialMeta.emissive, 0.03))
             : 0,
         emissiveGate,
+        daytimeEmitter,
         // 3.5 pilot opt-in: Command's authored material pixels quantize
         // admitted local light to the palette ramp. Look `nl1` (a switch: a
         // ramp is on or off per building) extends it to RAMP_LANDMARKS. A
@@ -710,13 +724,15 @@ function recordForBuilding(renderer, drawable, sequence) {
         sourceKind: useAtlas ? 'atlas' : 'individual',
     };
     const shadows = buildingShadowRecords(renderer, drawable, sequence);
-    const glass = glassPatchRecord(renderer, drawable, record, split ? horizon : null, front);
-    const roof = roofWeatherRecords(renderer, drawable, record, split ? horizon : null, front, sequence);
+    const glass = glassPatchRecord(renderer, drawable, record, spriteLeft, col, split ? horizon : null, front);
+    const roof = roofWeatherRecords(renderer, drawable, record, spriteLeft, col, split ? horizon : null, front, sequence);
     const parts = buildingPartRecords(renderer, drawable, record, sequence);
-    if (!shadows.length && !glass && !roof.length && !parts.length) return record;
+    const forgeOverlay = forgeWorkloadRecord(renderer, drawable, record, spriteLeft, col, split ? horizon : null, front, sequence);
+    if (!shadows.length && !glass && !roof.length && !parts.length && !forgeOverlay) return record;
     const out = glass ? [...shadows, record, glass] : [...shadows, record];
     for (let index = 0; index < roof.length; index++) out.push(roof[index]);
     for (let index = 0; index < parts.length; index++) out.push(parts[index]);
+    if (forgeOverlay) out.push(forgeOverlay);
     return out;
 }
 
@@ -735,18 +751,24 @@ const NO_PART_RECORDS = Object.freeze([]);
 function buildingPartRecords(renderer, drawable, base, sequence) {
     const buildings = renderer?.buildingRenderer;
     if (!buildings?.partDrawsFor || !drawable?.entry?.layers) return NO_PART_RECORDS;
-    const split = drawable.kind === 'building-back'
-        ? 'back'
-        : drawable.kind === 'building-front' ? 'front' : 'whole';
+    const col = drawable.kind === 'building-column' ? drawable.column : null;
+    const split = col
+        ? 'column'
+        : drawable.kind === 'building-back'
+            ? 'back'
+            : drawable.kind === 'building-front' ? 'front' : 'whole';
     const scratch = renderer._gpuPartDrawScratch || (renderer._gpuPartDrawScratch = []);
     const draws = buildings.partDrawsFor(drawable.entry, drawable.building, drawable.wx, drawable.wy,
-        split, drawable.horizonY ?? null, scratch);
+        split, drawable.horizonY ?? null, scratch, col);
     if (!draws.length) return NO_PART_RECORDS;
     const out = [];
     for (let index = 0; index < draws.length; index++) {
         const d = draws[index];
         const channels = buildings.partChannelsFor?.(drawable.entry, d) || null;
         const id = `${base.id}:part:${d.name}`;
+        const rawPartGate = d.emissiveGate ?? (d.fixture ? 1 : base.emissiveGate);
+        const partDaytimeEmitter = Boolean(base.daytimeEmitter && !d.ember && rawPartGate > 0.01);
+        const partGate = rawPartGate;
         out.push({
             id,
             stableKey: id,
@@ -770,7 +792,8 @@ function buildingPartRecords(renderer, drawable, base, sequence) {
             elevation: base.elevation,
             emissive: channels?.material ? base.emissive : 0,
             // VQ-8 — a part with its own gate (the banked ember floor) keeps it.
-            emissiveGate: d.emissiveGate ?? (d.fixture ? 1 : base.emissiveGate),
+            emissiveGate: partGate,
+            daytimeEmitter: partDaytimeEmitter,
             paletteRamp: base.paletteRamp,
             occluder: base.occluder,
             landmarkId: base.landmarkId,
@@ -783,13 +806,75 @@ function buildingPartRecords(renderer, drawable, base, sequence) {
     return out;
 }
 
+// Forge anvil billets and result shelf tiles as a depth-sorted GPU record so
+// foreground villagers always paint over them on WebGL2 and WebGPU.
+function forgeWorkloadRecord(renderer, drawable, record, spriteLeft, col, horizon, front, sequence) {
+    if (drawable.kind === 'building-back') return null;
+    const layer = renderer?.buildingRenderer?.forgeWorkloadSpriteFor?.(drawable.building);
+    if (!layer) return null;
+    let cx0 = 0;
+    let cw = layer.w;
+    if (col) {
+        const start = Math.max(0, col.sx - layer.left);
+        const end = Math.min(layer.w, col.sx + col.sw - layer.left);
+        if (end <= start) return null;
+        cx0 = start;
+        cw = end - start;
+    }
+    let sy = 0;
+    let sh = layer.h;
+    if (horizon != null) {
+        const cut = Math.max(0, Math.min(layer.h, horizon - layer.top));
+        if (front) sy = cut;
+        sh = front ? layer.h - cut : cut;
+        if (sh <= 0) return null;
+    }
+    const spriteTop = record.y - (horizon != null && front ? horizon : 0);
+    return {
+        ...record,
+        id: `${record.id}:forge-workload`,
+        stableKey: `${record.stableKey}:forge-workload`,
+        textureKey: 'building.forge:workload',
+        sidecarKey: '',
+        source: layer.canvas,
+        materialSource: null,
+        emissiveSource: null,
+        occluderSource: null,
+        surfaceCode: false,
+        sourceWidth: layer.w,
+        sourceHeight: layer.h,
+        sx: cx0,
+        sy,
+        sw: cw,
+        sh,
+        x: spriteLeft + layer.left + cx0,
+        y: spriteTop + layer.top + sy,
+        width: cw,
+        height: sh,
+        emissive: 0,
+        textureRevision: layer.key,
+        sidecarRevision: null,
+        sequence: sequence + 0.05,
+        sourceKind: 'individual',
+    };
+}
+
 // 6.3 — the landmark's unlit panes (BuildingSprite.glassPatchFor, RoomGlass):
 // each dark room's own unlit albedo drawn on the same texels right after the
 // landmark, with no emissive channel, so an unoccupied room — and every pane
 // by day (M15) — shows unlit slate glass instead of the lit sidecar.
-function glassPatchRecord(renderer, drawable, record, horizon, front) {
+function glassPatchRecord(renderer, drawable, record, spriteLeft, col, horizon, front) {
     const patch = renderer?.buildingRenderer?.glassPatchFor?.(drawable.building);
     if (!patch) return null;
+    let cx0 = 0;
+    let cw = patch.w;
+    if (col) {
+        const start = Math.max(0, col.sx - patch.left);
+        const end = Math.min(patch.w, col.sx + col.sw - patch.left);
+        if (end <= start) return null;
+        cx0 = start;
+        cw = end - start;
+    }
     let sy = 0;
     let sh = patch.h;
     if (horizon != null) {
@@ -813,13 +898,13 @@ function glassPatchRecord(renderer, drawable, record, horizon, front) {
         occluderSource: patch.channels?.occluder || null,
         sourceWidth: patch.w,
         sourceHeight: patch.h,
-        sx: 0,
+        sx: cx0,
         sy,
-        sw: patch.w,
+        sw: cw,
         sh,
-        x: record.x + patch.left,
+        x: spriteLeft + patch.left + cx0,
         y: spriteTop + patch.top + sy,
-        width: patch.w,
+        width: cw,
         height: sh,
         emissive: 0,
         textureRevision: `${version}:${patch.revision}`,
@@ -837,7 +922,7 @@ function glassPatchRecord(renderer, drawable, record, horizon, front) {
 // dry weather emits nothing but the EN-6 low-sun glint run.
 const NO_ROOF_RECORDS = Object.freeze([]);
 
-function roofWeatherRecords(renderer, drawable, record, horizon, front, sequence) {
+function roofWeatherRecords(renderer, drawable, record, spriteLeft, col, horizon, front, sequence) {
     const buildings = renderer?.buildingRenderer;
     if (!buildings?.roofPatchFor) return NO_ROOF_RECORDS;
     const patch = buildings.roofPatchFor(drawable.building);
@@ -848,6 +933,15 @@ function roofWeatherRecords(renderer, drawable, record, horizon, front, sequence
     const id = drawable.entry.id;
     const version = renderer.assets?.assetVersion || '';
     const layer = (source, suffix, channels, revision, order) => {
+        let cx0 = 0;
+        let cw = source.w;
+        if (col) {
+            const start = Math.max(0, col.sx - source.left);
+            const end = Math.min(source.w, col.sx + col.sw - source.left);
+            if (end <= start) return;
+            cx0 = start;
+            cw = end - start;
+        }
         let sy = 0;
         let sh = source.h;
         if (horizon != null) {
@@ -868,13 +962,13 @@ function roofWeatherRecords(renderer, drawable, record, horizon, front, sequence
             occluderSource: channels?.occluder || null,
             sourceWidth: source.canvas.width,
             sourceHeight: source.canvas.height,
-            sx: source.sx || 0,
+            sx: (source.sx || 0) + cx0,
             sy,
-            sw: source.w,
+            sw: cw,
             sh,
-            x: record.x + source.left,
+            x: spriteLeft + source.left + cx0,
             y: spriteTop + source.top + sy,
-            width: source.w,
+            width: cw,
             height: sh,
             emissive: 0,
             textureRevision: `${version}:${revision}`,
@@ -1031,6 +1125,7 @@ function recordForProp(renderer, drawable, sequence) {
         material: materialClassId(materialName),
         elevation: materialName === 'foliage' ? 0.64 : elevated > 70 ? 0.58 : 0.34,
         emissive: emissiveSource || ownEmissive ? 0 : (materialName === 'fire' ? 0.35 : 0),
+        emissiveGate: typeof sprite.emitterGate === 'function' ? sprite.emitterGate() : 1,
         occluder: elevated > 36 ? 0.58 : 0.2,
         textureRevision: useAtlas ? (assets.assetVersion || 0) : (sprite._gpuCacheRevision || 0),
         sidecarRevision: useAtlas && atlasFrame?.atlas
@@ -1831,6 +1926,32 @@ export function buildGpuWorldRecords(renderer, { drawables = [] } = {}) {
     for (let index = 0; index < records.length; index++) {
         const record = records[index];
         if (record.id !== 'terrain:static' && !String(record.id || '').startsWith('ground:')) ordered.push(record);
+    }
+    // When a daylight frame has an active work-gated emitter (awake Forge fire,
+    // awake Portal, active Command braziers), the GPU renderer raises frame
+    // coreEnergy to DAYTIME_WORK_BLOOM_CORE (0.36); scale all other emissive
+    // records in that frame back by DAYLIGHT_PASSIVE_CORE_SCALE so passive
+    // emitters keep the base 0.14 daylight core.
+    if (sourceEnergyFor(renderer?._lastAtmosphere?.lighting).bucket === 'daylight') {
+        let hasActiveWorkEmitter = false;
+        for (let index = 0; index < ordered.length; index++) {
+            const record = ordered[index];
+            if (record.daytimeEmitter && record.emissiveSource && (record.emissiveGate ?? 1) > 0.01) {
+                hasActiveWorkEmitter = true;
+                break;
+            }
+        }
+        if (hasActiveWorkEmitter) {
+            for (let index = 0; index < ordered.length; index++) {
+                const record = ordered[index];
+                if (!record.daytimeEmitter && (record.emissiveSource || record.emissive > 0) && (record.emissiveGate ?? 1) > 0) {
+                    ordered[index] = {
+                        ...record,
+                        emissiveGate: (record.emissiveGate ?? 1) * DAYLIGHT_PASSIVE_CORE_SCALE,
+                    };
+                }
+            }
+        }
     }
     if (renderer) {
         renderer._gpuWorldRecordScratch = records;

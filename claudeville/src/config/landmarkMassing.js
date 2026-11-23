@@ -136,17 +136,21 @@ export const LANDMARK_MASSING = Object.freeze({
             { kind: 'box', name: 'east jamb', at: [3.1, 1.55, 3.57, 1.95], top: 130.5 },
         ]),
     }),
+    // Rebuilt Tavern-scale Harbor Master house, clock turret, stone chimney,
+    // limestone quay and three timber piers. The thin 2-px static dock rope
+    // strung 60 px above the north pier between its two bunting masts (plus
+    // the crane jib and lantern post) is left out on purpose so it never casts
+    // a solid wall shadow; outside the rope's columns skyline holds 3.3 / 7.
     harbor: Object.freeze({
         fitted: true,
+        limits: { skylineMean: 16, skylineP90: 55 },
         solids: Object.freeze([
-            { kind: 'gable', name: 'house', at: [0.39, 0.35, 2.25, 2.78], eave: 79.5, ridge: 128, axis: 'x' },
-            { kind: 'pyramid', name: 'clock turret', at: [1.41, -0.03, 2.07, 0.63], eave: 104.5, apex: 134 },
-            { kind: 'gable', name: 'east wing', at: [1.4, -0.355, 2.31, 0.19], eave: 64, ridge: 73, axis: 'x' },
-            { kind: 'gable', name: 'lean-to', at: [0.22, 2.4, 1.32, 3.57], eave: 35, ridge: 54, axis: 'y' },
-            { kind: 'box', name: 'chimney', at: [1.745, 1.435, 1.985, 1.675], top: 144 },
+            { kind: 'gable', name: 'house', at: [0.76, 0.74, 2.981, 3.55], eave: 129.975, ridge: 141, axis: 'y' },
+            { kind: 'pyramid', name: 'clock turret', at: [2.3, -0.26, 2.822, 0.7], eave: 118.525, apex: 153.5 },
+            { kind: 'box', name: 'chimney', at: [1.467, 0.635, 1.583, 0.75], top: 133.5 },
             // The quay deck and the three pier decks: low aprons (posts, crane,
-            // lantern and the two bunting masts are skipped).
-            { kind: 'box', name: 'quay', at: [0.53, -0.982, 2.928, 4.605], top: 16 },
+            // lantern, masts and dock rope are skipped).
+            { kind: 'box', name: 'quay', at: [0.778, -0.38, 2.93, 4.4], top: 16 },
             { kind: 'box', name: 'north pier', at: [2.8, -1.075, 6.757, -0.52], top: 12 },
             { kind: 'box', name: 'middle pier', at: [2.9, 1.188, 6.675, 1.783], top: 12 },
             { kind: 'box', name: 'south pier', at: [2.875, 3.463, 6.26, 4.04], top: 12 },

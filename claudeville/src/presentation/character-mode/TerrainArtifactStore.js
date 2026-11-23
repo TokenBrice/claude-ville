@@ -28,7 +28,12 @@ import { captureCoastArtifact, restoreCoastArtifact, validCoastArtifact, coastAr
 // cv0.65-terrain-12: C-01 CoastBake.withLampLayers skips `gate: 'lamps'`
 // overlays (Pharos beacon) in daytime static reflection sheets while keeping
 // night MIRROR_LAMP_GROUP accents.
-export const TERRAIN_BAKE_ALGORITHM_VERSION = 'cv0.65-terrain-13';
+// cv0.66-terrain-14: the visual overhaul — clearly blue daytime water ramps,
+// wider depth bounds and the SE cliff corner return (CoastBake), meadow
+// cluster passes and grass contrast, cooler roads and warmer plazas with
+// kerbs, retired wattle and the baked Command watchfire/guardpost/ruins
+// (GroundBake, IsometricRenderer), new roads, bridges and props.
+export const TERRAIN_BAKE_ALGORITHM_VERSION = 'cv0.66-terrain-14';
 export const TERRAIN_ARTIFACT_DB = 'claudeville-terrain-artifacts';
 export const TERRAIN_ARTIFACT_MAX_BYTES = 96 * 1024 * 1024;
 // Artifact schema. 2: the ground field may carry the RGBA8 weather field
@@ -135,7 +140,7 @@ export function terrainArtifactConfiguration(renderer) {
     for (const key of ['terrainSeed', 'waterTiles', 'shoreTiles', 'wetShoreTiles', 'deepWaterTiles', 'lagoonWaterTiles', 'waterMeta',
         'harborWaterApronTiles', 'bridgeTiles', 'pathTiles', 'townSquareTiles', 'mainAvenueTiles', 'dirtPathTiles',
         'commandCenterRoadTiles', 'yardTiles', 'yardClearTiles', 'frontageSpurs', 'featureTiles', 'bushTiles', 'grassTuftTiles', 'flowerTiles',
-        'bridgeSpans', 'commandCenterGroundProps']) {
+        'bridgeSpans']) {
         scene[key] = renderer[key];
     }
     scene.buildings = [...renderer.world?.buildings || []].map(([id, building]) => [id, {

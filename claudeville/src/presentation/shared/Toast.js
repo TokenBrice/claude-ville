@@ -1,4 +1,5 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
+import { publishReservedRect } from './ReservedRects.js';
 import { CAPTION_SETTINGS, readCaptionSetting, readStoredSoundEnabled } from './SoundSettings.js';
 import { INVITE_MAX_SHOW_MS, SOUND_INVITE_COPY, SOUND_START_COPY, SoundInvite } from './SoundInvite.js';
 
@@ -857,8 +858,19 @@ export class Toast {
             removalTimer: null,
         };
         this.toasts.push(entry);
+        this._syncReservedRect();
         this._restartDismissTimer(entry, dismissMs);
         return entry;
+    }
+
+    _syncReservedRect() {
+        if (!this.container || !this.toasts.length) {
+            this._unpublishReservedRect?.();
+            this._unpublishReservedRect = null;
+            return;
+        }
+        const frame = this.documentRef?.getElementById?.('characterMode') || null;
+        this._unpublishReservedRect = publishReservedRect('toast-container', this.container, { frame });
     }
 
     _makeRoom(incomingIsPrimary) {
@@ -929,6 +941,7 @@ export class Toast {
         }
         const idx = this.toasts.indexOf(entry);
         if (idx !== -1) this.toasts.splice(idx, 1);
+        this._syncReservedRect();
     }
 
     destroy() {
@@ -940,6 +953,8 @@ export class Toast {
         this._agentLabels.clear();
         this._recentCueContext.clear();
         for (const entry of [...this.toasts]) this._remove(entry);
+        this._unpublishReservedRect?.();
+        this._unpublishReservedRect = null;
         this.container = null;
         this.documentRef = null;
     }

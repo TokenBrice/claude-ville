@@ -24,7 +24,8 @@ import { fillPixelEllipse } from './PixelShapes.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { ACTIONABLE_BUCKETS, bucketForStatus, isActionableBucket } from '../../domain/services/SignalLedger.js';
 import { BUILDING_EVENTS, eventBus } from '../../domain/events/DomainEvent.js';
-import { classifyTool, toolVerbLabel } from '../../domain/services/ToolIdentity.js';
+import { classifyTool, isScriptWrapperTool, placedBuilding as placedToolBuilding, toolVerbLabel } from '../../domain/services/ToolIdentity.js';
+import { isWaitingOnCrew } from '../../domain/services/StatusResolver.js';
 import { repoProfile } from '../shared/RepoColor.js';
 import { formatWaitAge } from '../shared/Formatters.js';
 import { ledgerPlaqueRows } from '../shared/HarborLedger.js';
@@ -36,7 +37,7 @@ import { lampCourseAt } from './GradeEvaluator.js';
 import { lampRoundFor } from './LamplighterRound.js';
 import { canvasGradeKey, statusClothPreimage } from './CanvasGrade.js';
 import { isWorkingVisitor, NON_WORKING_VISIT_ROLES } from './VisitIntentManager.js';
-import { attentionBannerState, BuildingPartGates } from './BuildingPartGates.js';
+import { attentionBannerState, BuildingPartGates, workerTier } from './BuildingPartGates.js';
 import { dayPartBeatsAt } from './AmbientEvents.js';
 import { paintWreath } from './VillageCalendar.js';
 import { bakeEmitterCycle, emitterCyclePhase } from './EmitterCycle.js';
@@ -45,9 +46,11 @@ import { castLightingFor, castOverWater, stampCastFor, structureCast, sunSweepFo
 import { massingFacets } from './ShadeField.js';
 import { LANDMARK_MASSING } from '../../config/landmarkMassing.js';
 import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
-import { buildingCenterToWorld, tileToWorld, worldToTile } from './Projection.js';
+import { buildingCenterToWorld, TILE_HALF_HEIGHT, TILE_HALF_WIDTH, tileToWorld, worldToTile } from './Projection.js';
 import { frontEdgeFoot, landmarkFootprint } from './FootprintField.js';
+import { lineOcclusionColumns } from './StaticPropDrawables.js';
 import { GPU_LANDMARK_IDS } from './gpu/GpuSceneBuilder.js';
+import { DAYTIME_WORK_BLOOM_CORE, isDaytimeHighEnergyBuilding } from './gpu/GpuWorldPolicy.js';
 import { BEAM_NEAR_HALF_WIDTH } from './gpu/GpuFrameState.js';
 import {
     TaskboardBoardModel,
@@ -99,16 +102,28 @@ import { GOLD, GOLD_RAMP, dottedCurve, fillConvex, gradeTone, ringDots, snap } f
 import { postcardFrame } from './Postcard.js';
 
 // READ translates canonical classifier reasons, never tool names or input text.
-const READ_VERBS = Object.freeze({
+export const READ_VERBS = Object.freeze({
     'edit-file': 'WRITING', 'write-file': 'WRITING', 'patch-file': 'WRITING',
     'edit-notebook': 'WRITING', 'generate-asset': 'WRITING', 'edit-docs': 'WRITING',
     'modify-files': 'WRITING',
     'read-local': 'READING', 'search-local': 'READING', 'find-local': 'READING',
     'list-local': 'READING', 'read-docs': 'READING', 'inspect-code': 'READING',
-    'inspect-validation': 'READING', 'web-search': 'READING', 'web-fetch': 'READING',
-    'web-tool': 'READING', 'external-research': 'READING',
+    'inspect-validation': 'READING', 'read-board': 'READING',
+    'web-search': 'BROWSING', 'web-fetch': 'BROWSING', 'web-tool': 'BROWSING',
+    'external-research': 'BROWSING', 'browser-preview': 'BROWSING',
+    'portal-active': 'BROWSING', 'portal-preview': 'BROWSING',
     'plan-task': 'PLANNING', 'update-task': 'PLANNING', 'review-tasks': 'PLANNING',
     'plan-work': 'PLANNING', 'plan-mode-enter': 'PLANNING', 'plan-mode-exit': 'PLANNING',
+    'report-work': 'PLANNING',
+    verify: 'TESTING',
+    'run-shell': 'RUNNING', 'debug-session': 'RUNNING', 'multi-tool': 'RUNNING',
+    'git-flow': 'GIT', 'github-flow': 'GIT',
+    'delegate-task': 'DELEGATING', 'spawn-agent': 'DELEGATING', 'define-agent': 'DELEGATING',
+    'wait-agent': 'DELEGATING', 'close-agent': 'DELEGATING', 'resume-agent': 'DELEGATING',
+    'list-agents': 'DELEGATING', 'form-team': 'DELEGATING', 'coordinate-team': 'DELEGATING',
+    'agent-orchestration': 'DELEGATING',
+    'message-agent': 'MESSAGING', 'send-agent-input': 'MESSAGING', 'ask-decision': 'ASKING',
+    'watch-condition': 'WATCHING', 'watch-ci': 'WATCHING',
 });
 const LANDMARK_LABEL_TYPES = new Set(
     BUILDING_DEFS
@@ -163,6 +178,19 @@ const FORGE_GLOW_DECAY_PER_SECOND = 0.32;
 // own ember course glows, low and static, while the lamps burn (VQ-8,
 // `rest.ember` in BuildingVisualRegistry).
 const FORGE_BANKED_GLOW = 0.07;
+// Short cooldown after `work.forge` closes before banking the hearth, so quick
+// back-to-back tool calls do not flicker the fire on and off.
+export const FORGE_BANK_COOLDOWN_MS = 6000;
+// Daytime occupied-room glass share (relaxed M15, 2026-11-23 operator decision):
+// occupied rooms show warm interior amber by day (0.75 -> 1/4 unlit patch) while
+// empty rooms stay dark slate. ApertureLights, water columns and bloom stay on
+// night-only `roomGate`.
+export const DAYTIME_ROOM_GLASS_SHARE = 0.75;
+// Worker-count scaling tiers (0 dormant, 1 solo, 2 crew 2–4, 3 crowded 5+)
+// applied to work-coupled workshop emitters in `_spawnEmittersFor`.
+const WORKER_EMITTER_CHANCE = Object.freeze([1, 1.2, 1.9, 2.8]);
+const WORKER_EMITTER_EXTRA_COUNT = Object.freeze([0, 0, 1, 2]);
+const WORKER_SCALED_EMITTERS = new Set(['forgeSpark', 'forgeEmber', 'archiveMote', 'mineDust', 'portalRune']);
 // 4.6 — architecture that stays lit through a sleeping town: the Pharos and
 // the harbour lantern are safety lights, not work signals.
 const REST_SAFETY_LIGHT_TYPES = new Set(['watchtower', 'harbor']);
@@ -283,9 +311,11 @@ const BUILDING_ACTIVITY_STATE_WEIGHT = Object.freeze({
     full: 0.9,
     alert: 1,
 });
+const BUILDING_COLUMN_PX = 16;
 const BUILDING_DRAWABLE_SORT_BAND = Object.freeze({
     'building-back': 10,
     'building-front': 90,
+    'building-column': 90,
     building: 95,
 });
 const FOUNDATION_MATERIALS = Object.freeze({
@@ -333,9 +363,42 @@ function clamp01(value) {
     return Math.max(0, Math.min(1, Number(value) || 0));
 }
 
+function columnHasOpaquePixels(mask, width, height, sx, sw) {
+    const xEnd = Math.min(width, sx + sw);
+    for (let y = 0; y < height; y++) {
+        const row = y * width;
+        for (let x = sx; x < xEnd; x++) {
+            if (mask[row + x]) return true;
+        }
+    }
+    return false;
+}
+
 function compareBuildingDrawableDepth(a, b) {
     return (a.sortY - b.sortY)
-        || (BUILDING_DRAWABLE_SORT_BAND[a.kind] - BUILDING_DRAWABLE_SORT_BAND[b.kind]);
+        || ((BUILDING_DRAWABLE_SORT_BAND[a.kind] ?? 50) - (BUILDING_DRAWABLE_SORT_BAND[b.kind] ?? 50))
+        || ((a.column?.index ?? 0) - (b.column?.index ?? 0));
+}
+
+// Column depth from FootprintField's front-edge geometry shifted back half a
+// tile to the boundary between solid building tiles and walkable ground,
+// clamped at the side corners. Open-floor verandas (Tavern) recess columns
+// over their open X span back to the solid wall behind the veranda so patrons
+// paint in front of the bar and behind TavernArcade.
+function buildingColumnSortY(building, fp, colCenterX) {
+    const clampedX = Math.max(fp.left.x, Math.min(fp.right.x, colCenterX));
+    let sortY = frontEdgeFoot(fp, clampedX).y - TILE_HALF_HEIGHT - 0.5;
+    const openRects = typeof building?.openFloorRects === 'function' ? building.openFloorRects() : [];
+    for (const rect of openRects) {
+        const westCorner = tileToWorld(rect.x0 - 0.5, rect.y0 - 0.5);
+        const eastEdge = tileToWorld(rect.x1 + 0.5, rect.y0);
+        if (colCenterX <= eastEdge.x) {
+            const recessX = Math.max(westCorner.x, colCenterX);
+            const recessY = westCorner.y + (recessX - westCorner.x) * (TILE_HALF_HEIGHT / TILE_HALF_WIDTH) - 0.5;
+            sortY = Math.min(sortY, recessY);
+        }
+    }
+    return sortY;
 }
 
 function lerp(a, b, t) {
@@ -420,6 +483,7 @@ export class BuildingSprite {
         this._taskboardLayoutCache = new Map();
         this._seenTaskboardRituals = new Set();
         this._forgeGlow = FORGE_GLOW_BASELINE;
+        this._forgeWarmRemainingMs = 0;
         // 6.1 / 6.2 — frame-strip parts, doors and emitter cycles: gated by
         // the isWorkingVisitor sets, stepped on the one motion clock
         // (`motionClock`, handed over by IsometricRenderer).
@@ -590,6 +654,7 @@ export class BuildingSprite {
         // Accepts a Map (preferred — matches world.buildings) or an Array.
         this.buildings = map instanceof Map ? Array.from(map.values()) : Array.from(map);
         this._drawablesCache = null;
+        this._drawablesMaskPending = false;
         this._glintFacets = null;
         this._lightSourcesCache = null;
         this._labelMetricsCache.clear();
@@ -606,19 +671,39 @@ export class BuildingSprite {
             if (!agent) continue;
             const tool = agent.currentTool;
             const input = agent.currentToolInput;
+            const arrivalPending = Boolean(sprite.isArrivalPending?.());
+            const fallbackBuilding = sprite._foldBuildingType
+                || sprite._lastBuildingType
+                || sprite.behavior?.building
+                || String(agent.targetBuildingType || '').trim()
+                || String(agent.lastKnownBuildingType || '').trim()
+                || null;
             const prior = cache.get(agent.id);
             if (prior && prior.tool === tool && prior.input === input
-                && prior.status === agent.status && prior.departed === agent.isDeparted) {
+                && prior.status === agent.status && prior.departed === agent.isDeparted
+                && prior.arrivalPending === arrivalPending
+                && prior.fallbackBuilding === fallbackBuilding) {
                 sprite.readToolVerb = prior.verb;
                 prior.generation = generation;
                 continue;
             }
-            const classified = classifyTool(tool, input);
+            const classified = classifyTool(tool, input, agent);
+            let verb = READ_VERBS[classified?.reason] || null;
+            if (!verb && isWaitingOnCrew(agent)) verb = 'DELEGATING';
+            if (!verb && isScriptWrapperTool(tool)) verb = 'RUNNING';
+            if (!verb) {
+                if (agent.status === AgentStatus.IDLE) verb = 'IDLE';
+                else if (agent.status === AgentStatus.COMPLETED) verb = 'DONE';
+                else if (agent.status === AgentStatus.WAITING) verb = 'WAITING';
+                else verb = 'OTHER';
+            }
             const entry = {
                 generation,
                 tool, input, status: agent.status, departed: agent.isDeparted,
-                building: classified?.building || 'command',
-                verb: READ_VERBS[classified?.reason] || 'OTHER',
+                arrivalPending,
+                fallbackBuilding,
+                building: placedToolBuilding(classified) || fallbackBuilding || 'command',
+                verb,
             };
             sprite.readToolVerb = entry.verb;
             cache.set(agent.id, entry);
@@ -634,13 +719,16 @@ export class BuildingSprite {
             const counts = this._readCounts || (this._readCounts = new Map());
             counts.clear();
             for (const entry of cache.values()) {
-                if (entry.status !== AgentStatus.WORKING || entry.departed) continue;
+                if (entry.status !== AgentStatus.WORKING || entry.departed || entry.arrivalPending) continue;
                 let verbs = counts.get(entry.building);
                 if (!verbs) counts.set(entry.building, verbs = new Map());
                 verbs.set(entry.verb, (verbs.get(entry.verb) || 0) + 1);
             }
             this._readPlaques = new Map(Array.from(counts, ([type, verbs]) => [
-                type, Array.from(verbs, ([verb, count]) => `${verb} · ${count}`),
+                type,
+                Array.from(verbs)
+                    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+                    .map(([verb, count]) => `${verb} · ${count}`),
             ]));
         }
     }
@@ -733,8 +821,13 @@ export class BuildingSprite {
         // This pass lands on the ungraded overlay: albedo marks take C2 here
         // (`_overlayLightGrade`); the Canvas depth pass is graded afterwards.
         this._ungradedOverlay = true;
+        const drawnColumns = new Set();
         for (let index = 0; index < drawables.length; index++) {
             const drawable = drawables[index];
+            if (drawable.kind === 'building-column') {
+                if (drawnColumns.has(drawable.building)) continue;
+                drawnColumns.add(drawable.building);
+            }
             const splitPass = drawable.kind === 'building-back'
                 ? 'back'
                 : drawable.kind === 'building-front'
@@ -1630,10 +1723,12 @@ export class BuildingSprite {
     }
 
     _labelRenderAttempts(building, { isHovered, isLandmark, zoom, localLabelDensity = 0, harborLedgerRows = [], musterRows = [], readRows = null }) {
+        const compactText = this._labelTextFor(building, LABEL_VISIBLE_ZOOM, false);
         if (readRows?.length) {
             return [{
-                text: readRows[0],
-                rows: readRows.slice(1).map(label => ({ label })),
+                text: compactText,
+                rows: readRows.map(label => ({ label })),
+                hideCount: true,
                 motif: true,
                 maxTextWidth: 180,
                 rowMaxWidth: 180,
@@ -1644,7 +1739,6 @@ export class BuildingSprite {
         const major = isHovered || isLandmark;
         const overlapScale = localLabelDensity >= 2 ? 1.2 : 1;
         const baseText = this._labelTextFor(building, zoom, isHovered);
-        const compactText = this._labelTextFor(building, LABEL_VISIBLE_ZOOM, false);
         const isHarborLedger = building.type === 'harbor' && harborLedgerRows.length > 0;
         // W7.5 — the Command plaque's muster rows ride the compact name like
         // the harbor ledger; the fallbacks below drop them, as they do there.
@@ -1869,9 +1963,17 @@ export class BuildingSprite {
             const emissiveGate = standIn > 0
                 ? 1 - nightGate + this.roomGate(source.buildingType, standIn - 1)
                 : source.buildingType ? this._emissiveGateFor(source.building) : 1;
-            const intensity = (activity + warmthBoost) * typeResponse * energy.core * emissiveGate;
+            const workOpen = source.buildingType
+                ? (this.partGates?.isOpen?.(`work.${source.buildingType}`) ?? (working > 0))
+                : false;
+            const sourceCore = energy.bucket === 'daylight'
+                && standIn === 0
+                && isDaytimeHighEnergyBuilding(source.buildingType, workOpen, emissiveGate)
+                ? DAYTIME_WORK_BLOOM_CORE
+                : energy.core;
+            const intensity = (activity + warmthBoost) * typeResponse * sourceCore * emissiveGate;
             if (intensity < 0.02) continue;
-            if (alpha != null) alpha *= energy.core * emissiveGate;
+            if (alpha != null) alpha *= sourceCore * emissiveGate;
             out.push(normalizeLightSource({
                 ...source,
                 intensity,
@@ -2331,12 +2433,15 @@ export class BuildingSprite {
         return out;
     }
 
-    // Per-pixel hit test across all buildings (front halves only).
+    // Per-pixel hit test across all buildings (front halves and occlusion columns).
     hitTest(worldX, worldY) {
         const drawables = this.enumerateDrawables();
         for (let i = drawables.length - 1; i >= 0; i--) {
             const d = drawables[i];
             if (d.kind === 'building-back') continue;
+            if (d.kind === 'building-column' && d.column) {
+                if (worldX < d.column.worldLeft || worldX >= d.column.worldRight) continue;
+            }
             const id = d.entry.id;
             const [ax, ay] = this.assets.getAnchor(id);
             if (this.sprites.hitTest(id, worldX, worldY, d.wx - ax, d.wy - ay)) {
@@ -2361,6 +2466,7 @@ export class BuildingSprite {
             box = box
                 ? { left: Math.min(box.left, left), top: Math.min(box.top, top), right: Math.max(box.right, left + dims.w), bottom: Math.max(box.bottom, top + dims.h) }
                 : { left, top, right: left + dims.w, bottom: top + dims.h };
+            if (d.kind === 'building-column') break;
         }
         return box;
     }
@@ -2457,20 +2563,103 @@ export class BuildingSprite {
         return false;
     }
 
-    // Returns drawable payloads (one per building, or two if splitForOcclusion).
-    // Cached until the building list changes; hover and animation state are read
-    // live by drawDrawable().
+    // Returns drawable payloads: vertical occlusion columns driven by each
+    // building's footprint front-edge geometry and sprite alpha mask (or legacy
+    // split/whole fallback for footprint-less test stubs). Cached until the
+    // building list changes or sprite alpha masks finish loading; hover and
+    // animation state are read live by drawDrawable().
     enumerateDrawables() {
-        if (this._drawablesCache) return this._drawablesCache;
+        if (this._drawablesCache) {
+            if (!this._drawablesMaskPending) return this._drawablesCache;
+            let newlyReady = false;
+            for (const id of this._drawablesMissingMasks || []) {
+                if (this.assets.getMask?.(id)) {
+                    newlyReady = true;
+                    break;
+                }
+            }
+            if (!newlyReady) return this._drawablesCache;
+            this._drawablesCache = null;
+        }
         const out = [];
+        const missingMasks = [];
         for (const b of this.buildings) {
             const entry = this.assets.getEntry(`building.${b.type}`);
             if (!entry) continue;
             const center = this._buildingScreenCenter(b);
             const wx = center.x;
             const wy = center.y;
-            if (entry.splitForOcclusion) {
-                const dims = this.assets.getDims(entry.id);
+            const pos = b?.position || b;
+            const hasFootprint = Number.isFinite(Number(pos?.tileX ?? pos?.x))
+                && Number.isFinite(Number(pos?.tileY ?? pos?.y))
+                && Number.isFinite(Number(b?.width))
+                && Number.isFinite(Number(b?.height));
+            const dims = this.assets.getDims?.(entry.id);
+            const anchor = this.assets.getAnchor?.(entry.id);
+            if (hasFootprint && dims?.w > 0 && dims?.h > 0 && Array.isArray(anchor)) {
+                const originX = Math.round(wx - anchor[0]);
+                const fp = landmarkFootprint(b);
+                const mask = this.assets.getMask?.(entry.id) || null;
+                if (!mask) missingMasks.push(entry.id);
+                const slices = lineOcclusionColumns({
+                    left: 0,
+                    right: dims.w,
+                    width: BUILDING_COLUMN_PX,
+                    originY: 0,
+                    slope: 0,
+                });
+                const active = [];
+                for (let i = 0; i < slices.length; i++) {
+                    const sx = i * BUILDING_COLUMN_PX;
+                    const sw = Math.min(BUILDING_COLUMN_PX, dims.w - sx);
+                    if (sw <= 0) continue;
+                    if (mask && mask.length >= dims.w * dims.h && !columnHasOpaquePixels(mask, dims.w, dims.h, sx, sw)) {
+                        continue;
+                    }
+                    active.push({ sx, sw });
+                }
+                // Guard against an all-transparent mask stub: fall back to full slices.
+                if (!active.length) {
+                    for (let i = 0; i < slices.length; i++) {
+                        const sx = i * BUILDING_COLUMN_PX;
+                        const sw = Math.min(BUILDING_COLUMN_PX, dims.w - sx);
+                        if (sw > 0) active.push({ sx, sw });
+                    }
+                }
+                const lastIndex = active.length - 1;
+                const buildingCols = [];
+                let primaryIdx = 0;
+                let maxSortY = -Infinity;
+                for (let i = 0; i < active.length; i++) {
+                    const { sx, sw } = active[i];
+                    const colCenterX = originX + sx + sw / 2;
+                    const sortY = buildingColumnSortY(b, fp, colCenterX);
+                    if (sortY >= maxSortY) {
+                        maxSortY = sortY;
+                        primaryIdx = i;
+                    }
+                    buildingCols.push({
+                        kind: 'building-column',
+                        poolKey: `building-column:${i}`,
+                        building: b,
+                        entry,
+                        wx,
+                        wy,
+                        column: {
+                            index: i,
+                            last: i === lastIndex,
+                            primary: false,
+                            sx,
+                            sw,
+                            worldLeft: originX + sx,
+                            worldRight: originX + sx + sw,
+                        },
+                        sortY,
+                    });
+                }
+                if (buildingCols.length) buildingCols[primaryIdx].column.primary = true;
+                for (const colDrawable of buildingCols) out.push(colDrawable);
+            } else if (entry.splitForOcclusion) {
                 // Clamp manifest horizonY to a valid sub-rect inside the sprite so
                 // the front half (`drawImage(... , h - horizonY, ...)`) never receives
                 // a negative or zero source-rect height when manifest values drift.
@@ -2483,6 +2672,8 @@ export class BuildingSprite {
             }
         }
         out.sort(compareBuildingDrawableDepth);
+        this._drawablesMissingMasks = missingMasks;
+        this._drawablesMaskPending = missingMasks.length > 0 && typeof this.assets?.getMask === 'function';
         this._drawablesCache = out;
         return out;
     }
@@ -2491,8 +2682,33 @@ export class BuildingSprite {
         const id = d.entry.id;
         if (d.kind === 'building') {
             const placed = this.sprites.drawSprite(ctx, id, d.wx, d.wy);
-            if (placed) this._drawRoofWeather(ctx, d, placed.dx, placed.dy);
+            if (placed) {
+                this._drawDaytimeRoomGlass(ctx, d, placed.dx, placed.dy);
+                this._drawRoofWeather(ctx, d, placed.dx, placed.dy);
+            }
             this._drawAnimatedOverlays(ctx, d.entry, d.wx, d.wy, d.building, 'whole');
+        } else if (d.kind === 'building-column' && d.column) {
+            const dims = this.assets.getDims(id);
+            const [ax, ay] = this.assets.getAnchor(id);
+            const dx = Math.round(d.wx - ax);
+            const dy = Math.round(d.wy - ay);
+            const img = this.assets.get(id);
+            if (!img || !dims) return;
+            const col = d.column;
+            ctx.drawImage(img, col.sx, 0, col.sw, dims.h, dx + col.sx, dy, col.sw, dims.h);
+            this._drawRoofWeather(ctx, d, dx, dy);
+            this._drawAnimatedOverlays(ctx, d.entry, d.wx, d.wy, d.building, 'column', null, col);
+            if (this.hovered === d.building) {
+                const clipLeft = col.index === 0 ? dx + col.sx - 4 : dx + col.sx;
+                const clipRight = col.last ? dx + col.sx + col.sw + 4 : dx + col.sx + col.sw;
+                ctx.save();
+                ctx.beginPath();
+                ctx.rect(clipLeft, dy - 4, clipRight - clipLeft, dims.h + 8);
+                ctx.clip();
+                this.sprites.drawOutline(ctx, id, d.wx, d.wy);
+                ctx.restore();
+            }
+            return;
         } else {
             const dims = this.assets.getDims(id);
             const [ax, ay] = this.assets.getAnchor(id);
@@ -2502,11 +2718,13 @@ export class BuildingSprite {
             if (!img) return;
             if (d.kind === 'building-back') {
                 ctx.drawImage(img, 0, 0, dims.w, d.horizonY, dx, dy, dims.w, d.horizonY);
+                this._drawDaytimeRoomGlass(ctx, d, dx, dy);
                 this._drawRoofWeather(ctx, d, dx, dy);
                 this._drawAnimatedOverlays(ctx, d.entry, d.wx, d.wy, d.building, 'back', d.horizonY);
             } else {
                 ctx.drawImage(img, 0, d.horizonY, dims.w, dims.h - d.horizonY,
                                    dx, dy + d.horizonY, dims.w, dims.h - d.horizonY);
+                this._drawDaytimeRoomGlass(ctx, d, dx, dy);
                 this._drawRoofWeather(ctx, d, dx, dy);
                 this._drawAnimatedOverlays(ctx, d.entry, d.wx, d.wy, d.building, 'front', d.horizonY);
             }
@@ -2514,15 +2732,19 @@ export class BuildingSprite {
         if (this.hovered === d.building) this.sprites.drawOutline(ctx, id, d.wx, d.wy);
     }
 
-    _drawAnimatedOverlays(ctx, entry, wx, wy, building = null, splitPass = 'whole', horizonY = null) {
+    _drawAnimatedOverlays(ctx, entry, wx, wy, building = null, splitPass = 'whole', horizonY = null, column = null) {
         if (entry.layers) {
-            this._drawManifestLayers(ctx, entry, wx, wy, splitPass, horizonY, building);
+            this._drawManifestLayers(ctx, entry, wx, wy, splitPass, horizonY, building, column);
         }
         if (building) {
-            this._drawFunctionalOverlay(ctx, building, entry, wx, wy, splitPass, horizonY);
-            this._drawAtmosphereBuildingReactions(ctx, building, entry, wx, wy, splitPass, horizonY);
-            this._drawOccupancyPennant(ctx, building, entry, wx, wy, splitPass, horizonY);
-            this._drawAttentionBannerBoard(ctx, building, entry, wx, wy, splitPass, horizonY);
+            if (splitPass !== 'column' || !column || column.primary) {
+                const overlayPass = splitPass === 'column' ? 'whole' : splitPass;
+                const overlayHorizon = splitPass === 'column' ? null : horizonY;
+                this._drawFunctionalOverlay(ctx, building, entry, wx, wy, overlayPass, overlayHorizon, null);
+                this._drawAtmosphereBuildingReactions(ctx, building, entry, wx, wy, overlayPass, overlayHorizon, null);
+            }
+            this._drawOccupancyPennant(ctx, building, entry, wx, wy, splitPass, horizonY, column);
+            this._drawAttentionBannerBoard(ctx, building, entry, wx, wy, splitPass, horizonY, column);
         }
     }
 
@@ -2530,7 +2752,7 @@ export class BuildingSprite {
     // count, screen-fixed (zoom cancelled, whole pixels) under the tip of the
     // cloth the status part (`status.<bucket>`) hangs. Static: it moves only
     // when the drop steps, and is absent when no one needs action.
-    _drawAttentionBannerBoard(ctx, building, entry, wx, wy, splitPass = 'whole', horizonY = null) {
+    _drawAttentionBannerBoard(ctx, building, entry, wx, wy, splitPass = 'whole', horizonY = null, column = null) {
         const state = this.attentionBanner;
         if (!state?.count || postcardFrame()) return;
         const banner = getBuildingAttentionBanner(building.type);
@@ -2538,7 +2760,9 @@ export class BuildingSprite {
         const drop = banner.drops[Math.max(0, Math.min(banner.drops.length - 1, state.tier | 0))];
         const [lx, clothTop] = banner.at;
         const ly = clothTop + drop + (banner.boardGap ?? 2);
-        if (
+        if (splitPass === 'column' && column) {
+            if (lx < column.sx || lx >= column.sx + column.sw) return;
+        } else if (
             splitPass !== 'whole'
             && Number.isFinite(horizonY)
             && (splitPass === 'back' ? ly >= horizonY : ly < horizonY)
@@ -2563,32 +2787,33 @@ export class BuildingSprite {
         ctx.restore();
     }
 
-    // #53 / 6.5 — occupancy pennant: hero buildings fly a small roofline
-    // standard tinted by the dominant occupant repo (guild-territory read).
-    // Idle buildings fly nothing; busy/full fly a second cloth under the
-    // first; alert tints the cloth to the alert red. AMBIENT under the mark
-    // governor. The cloth is the shared pixel pennant strip (PixelPennant),
-    // stepped at 4 fps downwind; calm air and reduced motion hold frame 1.
-    _drawOccupancyPennant(ctx, building, entry, wx, wy, splitPass = 'whole', horizonY = null) {
+    // #53 / 6.5 — occupancy pennant: every landmark flies a crisp, opaque
+    // roofline standard tinted by the dominant occupant repo (drawn outside
+    // MarkGovernor like the Harbor mast flags, relaxed 2026-11-23). Idle
+    // buildings fly nothing; busy/full fly a second cloth under the first;
+    // alert tints the cloth to alert red. Stepped at 4 fps downwind; calm air
+    // and reduced motion hold frame 1.
+    _drawOccupancyPennant(ctx, building, entry, wx, wy, splitPass = 'whole', horizonY = null, column = null) {
         const pennant = getBuildingPennantAnchor(building.type);
         if (!pennant) return;
         const [lx, ly] = pennant.at;
-        if (
+        if (splitPass === 'column' && column) {
+            if (lx < column.sx || lx >= column.sx + column.sw) return;
+        } else if (
             splitPass !== 'whole'
             && Number.isFinite(horizonY)
             && (splitPass === 'back' ? ly >= horizonY : ly < horizonY)
         ) return;
         const occupancy = this._buildingOccupancyInfo(building);
         const dominant = this._visitorRepoByType.get(building.type);
-        // Idle by count AND no semantic occupants routed here: fly nothing.
-        if (occupancy.state === 'idle' && !dominant) return;
+        const working = Boolean(this.partGates?.isOpen?.(`work.${building.type}`));
+        const patronCount = this._patronIdsByType?.get(building.type)?.size || 0;
+        // Idle by count, no working gate, no patrons, and no semantic occupants routed here: fly nothing.
+        if (occupancy.state === 'idle' && !dominant && !working && patronCount <= 0) return;
 
         const baseAnchor = this.assets.getAnchor(entry.id);
         const px = Math.round(wx - baseAnchor[0] + lx);
         const py = Math.round(wy - baseAnchor[1] + ly);
-        const gate = getActiveMarkGovernor()?.admit(MarkTier.AMBIENT, px, py);
-        if (gate && !gate.draw) return;
-        const gateAlpha = gate?.alpha ?? 1;
 
         const profile = dominant?.profile || null;
         const alert = occupancy.state === 'alert';
@@ -2600,14 +2825,18 @@ export class BuildingSprite {
             : profile
                 ? `hsl(${Math.round(profile.hue)}, ${Math.round(profile.saturation)}%, ${Math.max(22, Math.round(profile.lightness) - 24)}%)`
                 : null;
-        const busy = occupancy.state === 'busy' || occupancy.state === 'full' || alert;
+        const patronSeats = PATRON_SEATS_BY_TYPE.get(building.type) || 0;
+        const busy = occupancy.state === 'busy'
+            || occupancy.state === 'full'
+            || alert
+            || (patronSeats > 0 && patronCount >= patronSeats);
         const seed = hashText(`${building.type}|pennant`);
         const windX = pennantWind(this.atmosphereState?.weather);
         const tMs = this.frame * 16;
         const lightGrade = alert ? null : this._overlayLightGrade();
         const grade = lightGrade ? (tone) => gradeTone(tone, lightGrade) : null;
         ctx.save();
-        ctx.globalAlpha = gateAlpha;
+        ctx.globalAlpha = 1;
         const frame = pennantFrame(tMs, windX, { motion: this.motionScale > 0, phase: seed % 4 });
         drawPennant(ctx, px, py, { accent, shade, grade, frame, windX });
         if (busy) {
@@ -2623,7 +2852,7 @@ export class BuildingSprite {
         ctx.restore();
     }
 
-    _drawAtmosphereBuildingReactions(ctx, building, entry, wx, wy, splitPass = 'whole', horizonY = null) {
+    _drawAtmosphereBuildingReactions(ctx, building, entry, wx, wy, splitPass = 'whole', horizonY = null, column = null) {
         const reactions = this.atmosphereState?.reactions || {};
         const windowWarmth = reactions.windowWarmth || 0;
         // EN-6 — the low sun on a roof is RoofWeather's glint run (the shared
@@ -2635,6 +2864,7 @@ export class BuildingSprite {
         const localPoint = (lx, ly) => ({ x: Math.round(wx - baseAnchor[0] + lx), y: Math.round(wy - baseAnchor[1] + ly) });
         const shouldDrawLocalY = (localY) => (
             splitPass === 'whole'
+            || splitPass === 'column'
             || !Number.isFinite(horizonY)
             || (splitPass === 'back' ? localY < horizonY : localY >= horizonY)
         );
@@ -2642,7 +2872,7 @@ export class BuildingSprite {
         const pulse = this.motionScale ? (Math.sin(this.frame * 0.045 + seed * 0.011) + 1) / 2 : 0.56;
 
         ctx.save();
-        this._clipToSplitPass(ctx, entry, wx, wy, splitPass, horizonY, dims, baseAnchor);
+        this._clipToSplitPass(ctx, entry, wx, wy, splitPass, horizonY, dims, baseAnchor, column);
         ctx.globalCompositeOperation = 'screen';
         if (windowWarmth > 0.035) {
             // Dusk crossfades the work-tier warmth into the live night-shift
@@ -2805,7 +3035,20 @@ export class BuildingSprite {
         }
     }
 
-    _clipToSplitPass(ctx, entry, wx, wy, splitPass = 'whole', horizonY = null, dims = null, baseAnchor = null) {
+    _clipToSplitPass(ctx, entry, wx, wy, splitPass = 'whole', horizonY = null, dims = null, baseAnchor = null, column = null) {
+        if (splitPass === 'column' && column) {
+            const resolvedDims = dims || this.assets.getDims(entry.id);
+            if (!resolvedDims) return;
+            const anchor = baseAnchor || this.assets.getAnchor(entry.id);
+            const dx = Math.round(wx - anchor[0]);
+            const dy = Math.round(wy - anchor[1]);
+            const left = column.index === 0 ? dx + column.sx - 64 : dx + column.sx;
+            const right = column.last ? dx + column.sx + column.sw + 64 : dx + column.sx + column.sw;
+            ctx.beginPath();
+            ctx.rect(left, dy - 64, right - left, resolvedDims.h + 128);
+            ctx.clip();
+            return;
+        }
         if (splitPass === 'whole' || !Number.isFinite(horizonY)) return;
         const resolvedDims = dims || this.assets.getDims(entry.id);
         if (!resolvedDims) return;
@@ -2825,8 +3068,8 @@ export class BuildingSprite {
     // the Portal's vortex, frame-strip parts, doors, emitter cycles)
     // comes from `partDrawsFor`, the descriptor list the GPU part records
     // read too, so both backends draw the same layers at the same depth.
-    _drawManifestLayers(ctx, entry, wx, wy, splitPass = 'whole', horizonY = null, building = null) {
-        const draws = this.partDrawsFor(entry, building, wx, wy, splitPass, horizonY, this._partDrawScratch);
+    _drawManifestLayers(ctx, entry, wx, wy, splitPass = 'whole', horizonY = null, building = null, column = null) {
+        const draws = this.partDrawsFor(entry, building, wx, wy, splitPass, horizonY, this._partDrawScratch, column);
         for (let index = 0; index < draws.length; index++) {
             const d = draws[index];
             ctx.drawImage(d.image, d.sx, d.sy, d.sw, d.sh, d.x, d.y, d.sw, d.sh);
@@ -2858,9 +3101,37 @@ export class BuildingSprite {
     // `cycle.art` the named overlay layer's; banked, gated off or reduced
     // motion, nothing is drawn and the authored art shows.
     // Split halves take the rows on their side of the horizon, like the base.
-    partDrawsFor(entry, building, wx, wy, splitPass = 'whole', horizonY = null, out = []) {
+    partDrawsFor(entry, building, wx, wy, splitPass = 'whole', horizonY = null, out = [], column = null) {
         out.length = 0;
         if (!entry?.layers) return out;
+        // Slice once-per-frame whole descriptors horizontally for building columns
+        // so part gates, emitter cycles and fixture parts run once per building
+        // instead of once per column on both Canvas and GPU paths.
+        if (splitPass === 'column' && column && building) {
+            const cache = this._frameColumnPartCache || (this._frameColumnPartCache = new Map());
+            let cached = cache.get(building);
+            const clockMs = this._partClockMs();
+            if (!cached || cached.frame !== this.frame || cached.clockMs !== clockMs || cached.wx !== wx || cached.wy !== wy || cached.entry !== entry) {
+                const whole = cached?.draws || [];
+                this.partDrawsFor(entry, building, wx, wy, 'whole', null, whole, null);
+                cached = { frame: this.frame, clockMs, wx, wy, entry, draws: whole };
+                cache.set(building, cached);
+            }
+            const whole = cached.draws;
+            for (let i = 0; i < whole.length; i++) {
+                const d = whole[i];
+                const start = Math.max(0, column.sx - d.localLeft);
+                const end = Math.min(d.frameW, column.sx + column.sw - d.localLeft);
+                if (end <= start) continue;
+                out.push({
+                    ...d,
+                    sx: d.frame * d.frameW + start,
+                    sw: end - start,
+                    x: d.x + start,
+                });
+            }
+            return out;
+        }
         const type = building?.type || '';
         const baseAnchor = this.assets.getAnchor(entry.id);
         if (!baseAnchor) return out;
@@ -2947,9 +3218,18 @@ export class BuildingSprite {
                 ember = rest ? getBuildingRestEmber(type) : null;
                 if (ember) emissiveGate = lampsLitAt(this.atmosphereState) ? 1 : 0;
             }
+            let cx0 = 0;
+            let cw = frameW;
+            if (splitPass === 'column' && column) {
+                const start = Math.max(0, column.sx - left);
+                const end = Math.min(frameW, column.sx + column.sw - left);
+                if (end <= start) continue;
+                cx0 = start;
+                cw = end - start;
+            }
             let sy = 0;
             let sh = frameH;
-            if (splitPass !== 'whole' && Number.isFinite(horizonY)) {
+            if (splitPass !== 'whole' && splitPass !== 'column' && Number.isFinite(horizonY)) {
                 const cut = Math.max(0, Math.min(frameH, horizonY - top));
                 if (splitPass === 'back') sh = cut;
                 else {
@@ -2966,11 +3246,11 @@ export class BuildingSprite {
                 textureKey,
                 textureRevision: textureRevision || textureKey,
                 frame,
-                sx: frame * frameW,
+                sx: frame * frameW + cx0,
                 sy,
-                sw: frameW,
+                sw: cw,
                 sh,
-                x: originX + left,
+                x: originX + left + cx0,
                 y: originY + top + sy,
                 localLeft: left,
                 localTop: top,
@@ -2988,7 +3268,7 @@ export class BuildingSprite {
                 ember,
             });
         }
-        this._fixturePartDraws(entry, type, originX, originY, splitPass, horizonY, out);
+        this._fixturePartDraws(entry, type, originX, originY, splitPass, horizonY, out, column);
         return out;
     }
 
@@ -3045,7 +3325,7 @@ export class BuildingSprite {
     // the bell hangs still at frame 0, also under reduced motion), and the
     // calendar's door wreaths (static). Neither is a work part: no gate here
     // reads occupancy, and neither emits light.
-    _fixturePartDraws(entry, type, originX, originY, splitPass, horizonY, out) {
+    _fixturePartDraws(entry, type, originX, originY, splitPass, horizonY, out, column = null) {
         if (typeof document === 'undefined') return;
         const parts = [];
         if (type === 'archive') parts.push(this._bellLouvrePart());
@@ -3053,9 +3333,18 @@ export class BuildingSprite {
         for (const part of parts) {
             if (!part) continue;
             const frame = part.layer.gate ? this.partGates.frameFor(type, part.name, part.layer) : 0;
+            let cx0 = 0;
+            let cw = part.frameW;
+            if (splitPass === 'column' && column) {
+                const start = Math.max(0, column.sx - part.left);
+                const end = Math.min(part.frameW, column.sx + column.sw - part.left);
+                if (end <= start) continue;
+                cx0 = start;
+                cw = end - start;
+            }
             let sy = 0;
             let sh = part.frameH;
-            if (splitPass !== 'whole' && Number.isFinite(horizonY)) {
+            if (splitPass !== 'whole' && splitPass !== 'column' && Number.isFinite(horizonY)) {
                 const cut = Math.max(0, Math.min(part.frameH, horizonY - part.top));
                 if (splitPass === 'back') sh = cut;
                 else {
@@ -3071,11 +3360,11 @@ export class BuildingSprite {
                 image: part.image,
                 textureKey: part.textureKey,
                 frame,
-                sx: frame * part.frameW,
+                sx: frame * part.frameW + cx0,
                 sy,
-                sw: part.frameW,
+                sw: cw,
                 sh,
-                x: originX + part.left,
+                x: originX + part.left + cx0,
                 y: originY + part.top + sy,
                 localLeft: part.left,
                 localTop: part.top,
@@ -3186,8 +3475,7 @@ export class BuildingSprite {
         if (!this.partGates.isOpen(gate)) return false;
         if (type === 'forge') {
             return this._forgeGlow > FORGE_BANKED_GLOW
-                && !this._villageAtRest()
-                && !this._forgeWorkload?.banked;
+                && !this._restMaskShowing({ type: 'forge' });
         }
         return true;
     }
@@ -3341,11 +3629,16 @@ export class BuildingSprite {
         return strength * (Number.isFinite(scale) ? scale : 1);
     }
 
-    _drawFunctionalOverlay(ctx, building, entry, wx, wy, splitPass = 'whole', horizonY = null) {
+    _drawFunctionalOverlay(ctx, building, entry, wx, wy, splitPass = 'whole', horizonY = null, column = null) {
+        const primaryColumn = !column || column.primary === true;
+        const hasRoomCount = Boolean(this._selectedBuildingType === building.type && this._roomInstrumentFor(building));
+        if (building.type === 'tavern' && !hasRoomCount) return;
+        if (building.type === 'watchtower' && !hasRoomCount && !this._ungradedOverlay) return;
         const baseAnchor = this.assets.getAnchor(entry.id);
         const localPoint = (lx, ly) => ({ x: Math.round(wx - baseAnchor[0] + lx), y: Math.round(wy - baseAnchor[1] + ly) });
         const shouldDrawLocalY = (localY) => (
             splitPass === 'whole'
+            || splitPass === 'column'
             || !Number.isFinite(horizonY)
             || (splitPass === 'back' ? localY < horizonY : localY >= horizonY)
         );
@@ -3358,7 +3651,7 @@ export class BuildingSprite {
         let lanternBeacon = null;
 
         ctx.save();
-        this._clipToSplitPass(ctx, entry, wx, wy, splitPass, horizonY, null, baseAnchor);
+        this._clipToSplitPass(ctx, entry, wx, wy, splitPass, horizonY, null, baseAnchor, column);
         // 4.2 / 6.3 — the selected building's exact room counts at night. The
         // rooms themselves light as art-shaped glass on every building
         // (RoomGlass), selected or not.
@@ -3380,7 +3673,7 @@ export class BuildingSprite {
             // the yard: they stay after the heat fades and through rest.
             if (splitPass !== 'back') {
                 this._drawForgeWorkload(ctx, localPoint, forgeSelected);
-                this._drawForgeResultShelf(ctx, localPoint, forgeSelected);
+                this._drawForgeResultShelf(ctx, localPoint, forgeSelected, primaryColumn);
             }
         } else if (building.type === 'mine') {
             // 4.5 — art-coupled points come from the registry; the fallbacks
@@ -3455,7 +3748,7 @@ export class BuildingSprite {
                 // working visitor (V8) turns the inner ring violet; the plaque
                 // carries the exact count.
                 const tick = this.motionScale ? Math.floor(this.frame * 0.05) : 0;
-                const grow = portalRitual ? 2 : 0;
+                const grow = (portalRitual || this.partGates?.isOpen?.('work.portal')) ? 2 : 0;
                 for (let i = 0; i < 3; i++) {
                     const count = 10 + i * 2;
                     ringDots(ctx, heart.x, heart.y, 14 + i * 7 + grow, {
@@ -3490,7 +3783,7 @@ export class BuildingSprite {
             // #33 — reduced-motion fallback: a single static chimney wisp in
             // place of the live steam/smoke column.
             if (!this.motionScale) {
-                this._drawStaticSmokeWisp(ctx, localPoint(127, 29), { heat: 0.2 });
+                this._drawStaticSmokeWisp(ctx, localPoint(162, 6), { heat: 0.2 });
             }
         } else if (building.type === 'archive') {
             if (splitPass !== 'back') this._drawArchiveEnhancement(ctx, localPoint);
@@ -3502,7 +3795,7 @@ export class BuildingSprite {
                 }
                 // 4.7 — the frame tabs name every other concurrent plan owner,
                 // so a hidden plan is one click away instead of invisible.
-                if (!this._villageAtRest()) this._drawTaskboardPlanTabs(ctx, localPoint);
+                if (!this._villageAtRest()) this._drawTaskboardPlanTabs(ctx, localPoint, primaryColumn);
             }
         } else if (building.type === 'command') {
             if (splitPass !== 'back') {
@@ -3511,12 +3804,16 @@ export class BuildingSprite {
                 // room by room as authored glass (RoomGlass), so no pane is
                 // stamped here.
                 openAperture = this._openApertureFor(building);
-                this._drawCommandRitual(ctx, localPoint, building);
             }
         }
         ctx.restore();
-        if (openAperture) this._drawInspectionAperture(ctx, building, entry, wx, wy, openAperture);
-        if (lanternBeacon) this._drawWatchtowerFire(ctx, lanternBeacon);
+        // Command's gold war-standard rises above the dome finial (y=4, above
+        // horizonY 112), so draw it outside `_clipToSplitPass` on the back/whole pass.
+        if (building.type === 'command' && splitPass !== 'front' && primaryColumn) {
+            this._drawCommandRitual(ctx, localPoint, building);
+        }
+        if (openAperture && primaryColumn) this._drawInspectionAperture(ctx, building, entry, wx, wy, openAperture);
+        if (lanternBeacon && primaryColumn) this._drawWatchtowerFire(ctx, lanternBeacon);
     }
 
     _ritualsFor(type) {
@@ -3546,12 +3843,19 @@ export class BuildingSprite {
 
     _updateForgeGlow(dt = 16) {
         const rituals = this._ritualsFor('forge');
-        // 4.6 — a confirmed-empty village banks the hearth below its ordinary
-        // idle baseline. Every downstream reader (light sources, emitter
-        // density, smoke warmth) sees the banked value, so the whole forge
-        // cools together instead of one cue going quiet.
-        const floor = this._villageAtRest() ? FORGE_BANKED_GLOW : FORGE_GLOW_BASELINE;
-        let target = floor;
+        const forgeOpen = Boolean(this.partGates?.isOpen?.('work.forge'));
+        if (forgeOpen) {
+            this._forgeWarmRemainingMs = FORGE_BANK_COOLDOWN_MS;
+        } else if (this._villageAtRest() || !(this.motionScale > 0)) {
+            this._forgeWarmRemainingMs = 0;
+        } else if (this._forgeWarmRemainingMs > 0) {
+            this._forgeWarmRemainingMs = Math.max(0, this._forgeWarmRemainingMs - Math.max(0, Number(dt) || 0));
+        }
+        // 4.6 — a banked hearth cools to its ember floor. Every downstream
+        // reader (light sources, emitter density, smoke warmth) sees the banked
+        // value, so the whole forge cools together instead of one cue going quiet.
+        const floor = this._restMaskShowing({ type: 'forge' }) ? FORGE_BANKED_GLOW : FORGE_GLOW_BASELINE;
+        let target = forgeOpen ? Math.max(floor, 0.62) : floor;
         for (const ritual of rituals) {
             const fade = this._ritualFade(ritual);
             if (fade <= 0.03) continue;
@@ -3755,7 +4059,7 @@ export class BuildingSprite {
         // 5.A — the signals hoist on the outer bunting mast of the north pier;
         // the cargo stands on the quay deck between the door and the coping.
         const signal = localPoint(341, 116);
-        const pier = localPoint(140, 205);
+        const pier = localPoint(152, 213);
         const lightGrade = this._overlayLightGrade();
         const grade = lightGrade ? (tone) => gradeTone(tone, lightGrade) : null;
         const windX = pennantWind(this.atmosphereState?.weather);
@@ -3783,9 +4087,9 @@ export class BuildingSprite {
         this._drawHarborActivityMarkers(ctx, pier, building, lightGrade);
     }
 
-    // Quay cargo, one crate per activity quarter. The failure itself is the
-    // HarborTraffic broken bracket on the jetty (C4); a failed push only turns
-    // the crate tags to the reserved failure red here.
+    // Quay cargo, one static crate per activity quarter (`static` motion band;
+    // no bob). The failure itself is the HarborTraffic broken bracket on the
+    // jetty (C4); a failed push only turns the crate tags to failure red here.
     _drawHarborActivityMarkers(ctx, pier, building, lightGrade = null) {
         const activity = building ? this._buildingActivityInfo(building) : { intensity: 0, occupancy: { ratio: 0 }, alert: false };
         const activeWorking = this._watchtowerActiveCount();
@@ -3798,22 +4102,27 @@ export class BuildingSprite {
         // ordinary gold tag is cloth and takes the grade.
         const tagColor = failed ? '#ff755d' : gradeTone('#ffd37a', lightGrade);
         const rim = gradeTone('#1f140c', lightGrade);
-        const bob = this.motionScale ? Math.round(Math.sin(this.frame * 0.11) * 0.6) : 0;
+        const litTop = gradeTone('#a87a46', lightGrade);
+        const strap = gradeTone('#3d2a1b', lightGrade);
 
         ctx.save();
         ctx.globalCompositeOperation = 'source-over';
         ctx.globalAlpha = 1;
         for (let i = 0; i < cargoCount; i++) {
-            // One crate per 16 px along the coping's 2:1 run.
-            const x = pier.x - 28 + i * 16;
-            const y = pier.y - 15 - i * 8 + bob;
-            // Crate: a 1-texel dark rim around the lid-lit body.
+            // One static crate per 16 px along the coping's 2:1 run.
+            const x = Math.round(pier.x - 28 + i * 16);
+            const y = Math.round(pier.y - 15 - i * 8);
+            // Crate: 1-texel dark rim, lit top plank, timber body, iron strap.
             ctx.fillStyle = rim;
-            ctx.fillRect(x - 5, y - 5, 10, 8);
+            ctx.fillRect(x - 5, y - 6, 10, 9);
             ctx.fillStyle = gradeTone(i < activeWorking ? '#8a5a32' : '#5e4228', lightGrade);
             ctx.fillRect(x - 4, y - 4, 8, 6);
+            ctx.fillStyle = litTop;
+            ctx.fillRect(x - 4, y - 5, 8, 1);
+            ctx.fillStyle = strap;
+            ctx.fillRect(x - 1, y - 5, 2, 7);
             ctx.fillStyle = tagColor;
-            ctx.fillRect(x - 3, y - 7, 6, 2);
+            ctx.fillRect(x - 3, y - 8, 6, 2);
         }
         ctx.restore();
     }
@@ -3853,31 +4162,67 @@ export class BuildingSprite {
     // chimney or anvil discs and no molten smear across the wall: only the
     // anvil sparks that say work is being struck.
     _drawForgeEnhancement(ctx, localPoint, building = null) {
-        const anvil = localPoint(...getBuildingEffectAnchor('forge', 'anvil', [195, 150]));
+        const anvil = localPoint(...getBuildingEffectAnchor('forge', 'anvil', [104, 200]));
+        const hearth = localPoint(...getBuildingEffectAnchor('forge', 'hearth', [73, 162]));
         const activity = building ? this._buildingActivityInfo(building) : { intensity: 0, occupancy: { ratio: 0 } };
-        this._drawForgeActivityMarks(ctx, anvil, activity);
+        this._drawForgeActivityMarks(ctx, anvil, activity, building, hearth);
     }
 
-    // Up to four sparks off the anvil, one per activity quarter: each a 3-texel
-    // staircase with a hot head. Sparks are emission, so they stay ungraded.
-    // The head hops one texel on the slow band; reduced motion holds it.
-    _drawForgeActivityMarks(ctx, anvil, activity) {
+    // Crisp pixel-stamp anvil & hearth sparks while Forge is actively working,
+    // scaled by worker tier (1 / 2–4 / 5+ workers) and silent when banked.
+    // Stepped at 4 fps (reduced motion holds frame 0), with a 1-texel hot-rust
+    // rim so sparks remain legible in bright noon daylight at zoom 1–2.
+    _drawForgeActivityMarks(ctx, anvil, activity, building = null, hearth = null) {
+        if (building && this._restMaskShowing(building)) return;
+        const workers = this.partGates?.workingCount?.('forge')
+            ?? (building ? this._workingVisitorCountFor(building) : 0);
+        const wTier = workerTier(workers);
         const signal = Math.max(activity?.intensity || 0, activity?.occupancy?.ratio || 0);
-        if (signal <= 0.14) return;
-        const count = Math.max(1, Math.min(4, Math.ceil(signal * 4)));
-        const hop = this.motionScale ? (Math.sin(this.frame * 0.18) > 0 ? 1 : 0) : 0;
+        if (wTier === 0 && signal <= 0.14) return;
+        const count = wTier > 0
+            ? (wTier === 1 ? 4 : wTier === 2 ? 6 : 8)
+            : Math.max(2, Math.min(4, Math.ceil(signal * 4)));
+        const step = this.motionScale > 0 ? (Math.floor(this.frame / 15) % 4) : 0;
+        const rim = activity?.alert ? '#992b1d' : '#b84214';
         const body = activity?.alert ? '#ff755d' : '#ffb347';
+        const core = '#fff4c2';
+        // Offsets relative to anvil (and upper hearth arch for crowded tiers).
+        const offsets = [
+            [-6, -8], [4, -12], [12, -6], [-12, -4],
+            [16, -13], [-2, -16], [8, -19], [-10, -14],
+        ];
+        const stepDrift = [
+            [0, 0], [1, -2], [-1, -4], [2, -1],
+        ];
         ctx.save();
         ctx.globalCompositeOperation = 'source-over';
         ctx.globalAlpha = 1;
         for (let i = 0; i < count; i++) {
-            const x = anvil.x - 18 + i * 10;
-            const y = anvil.y + 14 - i * 2 - hop;
+            const [ox, oy] = offsets[i % offsets.length];
+            const [dx, dy] = stepDrift[(step + i) % stepDrift.length];
+            const x = Math.round(anvil.x + ox + dx);
+            const y = Math.round(anvil.y + oy + dy);
+            ctx.fillStyle = rim;
+            ctx.fillRect(x - 1, y - 1, 4, 4);
             ctx.fillStyle = body;
-            ctx.fillRect(x - 2, y + 1, 1, 1);
-            ctx.fillRect(x - 1, y, 1, 1);
-            ctx.fillStyle = '#fff3c4';
-            ctx.fillRect(x, y - 1, 1, 1);
+            ctx.fillRect(x - 1, y, 2, 2);
+            ctx.fillRect(x + 1, y - 1, 1, 2);
+            ctx.fillStyle = core;
+            ctx.fillRect(x, y - 1, 2, 2);
+        }
+        if (hearth && wTier > 0) {
+            const embers = wTier >= 2 ? 3 : 2;
+            for (let i = 0; i < embers; i++) {
+                const phase = (step + i) % 4;
+                const ex = Math.round(hearth.x - 4 + i * 5 + (phase & 1 ? 1 : -1));
+                const ey = Math.round(hearth.y - 4 - phase * 3 - i * 2);
+                ctx.fillStyle = rim;
+                ctx.fillRect(ex - 1, ey - 1, 3, 3);
+                ctx.fillStyle = body;
+                ctx.fillRect(ex, ey, 2, 2);
+                ctx.fillStyle = core;
+                ctx.fillRect(ex, ey, 1, 1);
+            }
         }
         ctx.restore();
     }
@@ -3890,7 +4235,9 @@ export class BuildingSprite {
         const workload = this._forgeWorkload;
         if (!profile || !workload) return;
         const tier = Math.max(0, Math.min(3, Number(workload.tier) || 0));
-        if (tier > 0) {
+        // On the GPU path, the anvil billets are emitted as a depth-sorted GPU
+        // record (forgeWorkloadSpriteFor) so foreground villagers paint over them.
+        if (tier > 0 && !this._ungradedOverlay) {
             const [ax, ay] = profile.billets.at;
             const [stepX, stepY] = profile.billets.step || [10, -5];
             const w = Math.max(4, Math.round(profile.billets.w || 8));
@@ -3915,6 +4262,115 @@ export class BuildingSprite {
             const at = localPoint(profile.countAt[0], profile.countAt[1]);
             this._drawInstrumentPlate(ctx, at.x, at.y, workload.label, { color: '#ffd36a', type: 'forge' });
         }
+    }
+
+    // Depth-sorted sprite layer for Forge's physical yard objects (anvil
+    // billets + result shelf tiles) consumed by GpuSceneBuilder so they sort
+    // behind foreground villagers on WebGL2 and WebGPU.
+    forgeWorkloadSpriteFor(building) {
+        if (building?.type !== 'forge' || typeof document === 'undefined') return null;
+        const profile = getBuildingWorkloadProfile('forge');
+        if (!profile) return null;
+        const tier = Math.max(0, Math.min(3, Number(this._forgeWorkload?.tier) || 0));
+        const shelf = profile.shelf;
+        const maxTiles = shelf ? Math.max(1, Math.round(shelf.max || 4)) : 0;
+        const shown = shelf && this._resultShelf.length ? this._resultShelf.slice(0, maxTiles) : [];
+        if (tier <= 0 && !shown.length) return null;
+
+        const now = Date.now();
+        let minX = Infinity;
+        let minY = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
+        let billetSpec = null;
+        if (tier > 0 && profile.billets?.at) {
+            const [ax, ay] = profile.billets.at;
+            const [stepX, stepY] = profile.billets.step || [10, -5];
+            const w = Math.max(4, Math.round(profile.billets.w || 8));
+            const h = Math.max(3, Math.round(profile.billets.h || 4));
+            billetSpec = { ax, ay, stepX, stepY, w, h };
+            for (let i = 0; i < tier; i++) {
+                const bx = ax + i * stepX;
+                const by = ay + i * stepY;
+                minX = Math.min(minX, bx - 1);
+                minY = Math.min(minY, by - 1);
+                maxX = Math.max(maxX, bx + w + 1);
+                maxY = Math.max(maxY, by + h + 1);
+            }
+        }
+        let shelfSpec = null;
+        const tileParts = [];
+        if (shown.length && shelf?.at) {
+            const w = Math.max(5, Math.round(shelf.w || 9));
+            const h = Math.max(4, Math.round(shelf.h || 8));
+            const step = Math.max(w + 1, Math.round(shelf.step || 11));
+            const [sx, sy] = shelf.at;
+            shelfSpec = { sx, sy, w, h, step };
+            minX = Math.min(minX, sx - 2);
+            minY = Math.min(minY, sy - 1);
+            maxX = Math.max(maxX, sx + step * shown.length + 2);
+            maxY = Math.max(maxY, sy + h + 2);
+            for (const entry of shown) {
+                const settle = this.motionScale
+                    ? Math.min(1, Math.max(0, (now - entry.placedAt) / RESULT_TILE_SETTLE_MS))
+                    : 1;
+                const q = Math.round(settle * 4);
+                tileParts.push(`${entry.id}:${entry.exitCode}:${q}`);
+            }
+        }
+        if (!Number.isFinite(minX) || maxX <= minX || maxY <= minY) return null;
+        const left = Math.floor(minX);
+        const top = Math.floor(minY);
+        const w = Math.ceil(maxX) - left;
+        const h = Math.ceil(maxY) - top;
+        const key = `${tier}|${tileParts.join(',')}|${left},${top},${w}x${h}`;
+        const cached = this._forgeWorkloadCache;
+        if (cached && cached.key === key) return cached;
+
+        const canvas = cached?.canvas && cached.w === w && cached.h === h
+            ? cached.canvas
+            : createRasterCanvas(w, h);
+        if (!canvas) return null;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return null;
+        ctx.clearRect(0, 0, w, h);
+        ctx.imageSmoothingEnabled = false;
+        if (billetSpec) {
+            const { ax, ay, stepX, stepY, w: bw, h: bh } = billetSpec;
+            for (let index = 0; index < tier; index++) {
+                const bx = Math.round(ax + index * stepX) - left;
+                const by = Math.round(ay + index * stepY) - top;
+                ctx.globalCompositeOperation = 'source-over';
+                ctx.globalAlpha = 1;
+                ctx.fillStyle = '#2b1d13';
+                ctx.fillRect(bx - 1, by - 1, bw + 2, bh + 2);
+                ctx.fillStyle = index === 2 ? '#ffd36a' : index === 1 ? '#f08a4b' : '#c2601f';
+                ctx.fillRect(bx, by, bw, bh);
+                ctx.globalCompositeOperation = 'screen';
+                ctx.globalAlpha = 0.5;
+                ctx.fillStyle = '#ffb347';
+                ctx.fillRect(bx, by, bw, 1);
+            }
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.globalAlpha = 1;
+        }
+        if (shelfSpec) {
+            const { sx, sy, w: tw, h: th, step } = shelfSpec;
+            const ox = Math.round(sx) - left;
+            const oy = Math.round(sy) - top;
+            ctx.fillStyle = 'rgba(38, 32, 30, 0.9)';
+            ctx.fillRect(ox - 2, oy + th, step * shown.length + 2, 2);
+            shown.forEach((entry, index) => {
+                const settle = this.motionScale
+                    ? Math.min(1, Math.max(0, (now - entry.placedAt) / RESULT_TILE_SETTLE_MS))
+                    : 1;
+                ctx.globalAlpha = 0.25 + (Math.round(settle * 4) / 4) * 0.75;
+                this._drawResultTile(ctx, ox + index * step, oy, tw, th, entry.exitCode);
+            });
+            ctx.globalAlpha = 1;
+        }
+        this._forgeWorkloadCache = { key, canvas, left, top, w, h };
+        return this._forgeWorkloadCache;
     }
 
     // 4.4 — a record that says how a call ended. Deduplicated on the adapters'
@@ -3949,7 +4405,7 @@ export class BuildingSprite {
     // stamped tile — intact for `exit 0`, cracked for a non-zero exit, blank
     // while the exit is unknown — and everything older is coalesced into an
     // exact `xN`. Selecting a tile opens that session's detail record.
-    _drawForgeResultShelf(ctx, localPoint, selected) {
+    _drawForgeResultShelf(ctx, localPoint, selected, registerHits = true) {
         const profile = getBuildingWorkloadProfile('forge');
         if (!profile?.shelf || !this._resultShelf.length) return;
         const shelf = profile.shelf;
@@ -3962,26 +4418,34 @@ export class BuildingSprite {
         const origin = localPoint(shelf.at[0], shelf.at[1]);
         ctx.save();
         ctx.globalCompositeOperation = 'source-over';
-        // The shelf plank: one course of stone under the tiles.
-        ctx.globalAlpha = 1;
-        ctx.fillStyle = 'rgba(38, 32, 30, 0.9)';
-        ctx.fillRect(origin.x - 2, origin.y + h, step * shown.length + 2, 2);
+        // On the GPU path, the plank and result tiles are emitted as a depth-sorted
+        // GPU record (forgeWorkloadSpriteFor); keep hit registration and inspection
+        // count plates here.
+        if (!this._ungradedOverlay) {
+            ctx.globalAlpha = 1;
+            ctx.fillStyle = 'rgba(38, 32, 30, 0.9)';
+            ctx.fillRect(origin.x - 2, origin.y + h, step * shown.length + 2, 2);
+        }
         shown.forEach((entry, index) => {
             const x = origin.x + index * step;
             const y = origin.y;
-            const settle = this.motionScale
-                ? Math.min(1, Math.max(0, (now - entry.placedAt) / RESULT_TILE_SETTLE_MS))
-                : 1;
-            ctx.globalAlpha = 0.25 + settle * 0.75;
-            this._drawResultTile(ctx, x, y, w, h, entry.exitCode);
-            this._registerInstrumentHit({
-                kind: 'result-tile',
-                agentId: entry.agentId,
-                left: x - 1,
-                top: y - 1,
-                right: x + w + 1,
-                bottom: y + h + 1,
-            });
+            if (!this._ungradedOverlay) {
+                const settle = this.motionScale
+                    ? Math.min(1, Math.max(0, (now - entry.placedAt) / RESULT_TILE_SETTLE_MS))
+                    : 1;
+                ctx.globalAlpha = 0.25 + settle * 0.75;
+                this._drawResultTile(ctx, x, y, w, h, entry.exitCode);
+            }
+            if (registerHits) {
+                this._registerInstrumentHit({
+                    kind: 'result-tile',
+                    agentId: entry.agentId,
+                    left: x - 1,
+                    top: y - 1,
+                    right: x + w + 1,
+                    bottom: y + h + 1,
+                });
+            }
         });
         ctx.globalAlpha = 1;
         const coalesced = this._resultShelf.length - shown.length;
@@ -4045,12 +4509,22 @@ export class BuildingSprite {
     }
 
     _drawArchiveRitual(ctx, doorway, ritual) {
-        if (!ritual) return;
-        const progress = this._ritualProgress(ritual);
-        const fade = this._ritualFade(ritual);
-        const flip = ritual.motionEnabled === false
-            ? 0.5
-            : Math.abs(Math.sin(Math.min(1, progress / 0.42) * Math.PI));
+        const archiveWorking = Boolean(this.partGates?.isOpen?.('work.archive'));
+        if (!ritual && !archiveWorking) return;
+        const fade = ritual ? this._ritualFade(ritual) : 1;
+        let flip;
+        if (ritual) {
+            const progress = this._ritualProgress(ritual);
+            flip = ritual.motionEnabled === false
+                ? 0.5
+                : Math.abs(Math.sin(Math.min(1, progress / 0.42) * Math.PI));
+        } else if (this.motionScale > 0) {
+            // Persistent turning folio while `work.archive` is open: 4 stepped phases on the 600 ms medium band.
+            const steps = [0.05, 0.45, 0.82, 0.35];
+            flip = steps[Math.floor(this._partClockMs() / 600) % steps.length];
+        } else {
+            flip = 0.5;
+        }
         const pageWidth = 18 * (1 - flip * 0.72);
         const left = Math.round(doorway.x - 19);
         const top = Math.round(doorway.y - 22);
@@ -4071,7 +4545,7 @@ export class BuildingSprite {
             ctx.fillRect(left + 7, row, 9, 1);
             if (page > 7) ctx.fillRect(left + 24, row, page - 7, 1);
         }
-        if (ritual.label) this._drawRitualLabel(ctx, doorway.x, doorway.y - 38, ritual.label, '#b3d68c', fade, ritual.building || 'forge');
+        if (ritual?.label) this._drawRitualLabel(ctx, doorway.x, doorway.y - 38, ritual.label, '#b3d68c', fade, ritual.building || 'archive');
         ctx.restore();
     }
 
@@ -4137,7 +4611,40 @@ export class BuildingSprite {
     }
 
     _drawMineRitual(ctx, mouth, rail, ritual) {
-        if (!ritual) return;
+        if (!ritual) {
+            if (!this.partGates?.isOpen?.('work.mine')) return;
+            // Occupied Mine daytime cue: park a loaded ore cart on the outer rail
+            // while `work.mine` is open (no sine bob; static while working).
+            const cartX = Math.round(rail.railA.x + rail.ux * rail.railLen * 0.78);
+            const cartY = Math.round(rail.railA.y + rail.uy * rail.railLen * 0.78);
+            const lightGrade = this._overlayLightGrade();
+            const tone = (hex) => gradeTone(hex, lightGrade);
+            ctx.save();
+            ctx.globalAlpha = 1;
+            if (this.assets?.get?.('prop.oreCart')) {
+                this.sprites.drawSprite(ctx, 'prop.oreCart', cartX, cartY);
+            } else {
+                ctx.fillStyle = tone('#2f2119');
+                ctx.fillRect(cartX - 15, cartY - 10, 30, 14);
+                ctx.fillStyle = tone('#5a3927');
+                ctx.fillRect(cartX - 14, cartY - 9, 28, 12);
+            }
+            // Stepped pixel ore and crystal chunks heaped in the cart bed.
+            const chunks = [
+                [-7, -13, 6, 4, MINE_CARGO_ORE_COLORS[0]],
+                [-1, -15, 6, 5, MINE_CARGO_CRYSTAL_COLORS[1]],
+                [5, -13, 5, 4, MINE_CARGO_ORE_COLORS[2]],
+                [-3, -18, 5, 3, MINE_CARGO_CRYSTAL_COLORS[0]],
+            ];
+            for (const [dx, dy, w, h, color] of chunks) {
+                ctx.fillStyle = tone('#221c18');
+                ctx.fillRect(cartX + dx - 1, cartY + dy - 1, w + 2, h + 2);
+                ctx.fillStyle = tone(color);
+                ctx.fillRect(cartX + dx, cartY + dy, w, h);
+            }
+            ctx.restore();
+            return;
+        }
         const progress = this._ritualProgress(ritual);
         const fade = this._ritualFade(ritual);
         const swing = ritual.motionEnabled === false
@@ -4392,14 +4899,17 @@ export class BuildingSprite {
     }
 
     _drawPortalRitual(ctx, gate, ritual) {
-        if (!ritual) return;
-        const fade = this._ritualFade(ritual);
-        const action = ritual.action || 'portal';
-        const progress = ritual.motionEnabled === false ? 1 : this._ritualProgress(ritual);
+        const portalWorking = Boolean(this.partGates?.isOpen?.('work.portal'));
+        if (!ritual && !portalWorking) return;
+        const fade = ritual ? this._ritualFade(ritual) : 1;
+        const action = ritual?.action || 'portal';
+        const progress = ritual
+            ? (ritual.motionEnabled === false ? 1 : this._ritualProgress(ritual))
+            : (this.motionScale > 0 ? ((this._partClockMs() % 1280) / 1280) : 0.5);
         // Distinguish browser-preview vs Playwright-active by re-classifying
         // the ritual's source tool. `action === 'summon'` (and other lifecycle
         // actions) keep the full-stack rings unchanged.
-        const reason = action === 'portal' ? this._portalReasonFor(ritual) : null;
+        const reason = ritual && action === 'portal' ? this._portalReasonFor(ritual) : null;
         const color = action === 'dismiss'
             ? '#f08a8a'
             : action === 'familiar-wait'
@@ -4414,8 +4924,9 @@ export class BuildingSprite {
         ctx.globalCompositeOperation = 'source-over';
         ctx.globalAlpha = fade;
         // Ceremony rings as snapped dots that step outward (inward on dismiss)
-        // across the ritual in four frames; reduced motion holds mid-ring.
-        const ringPhase = ritual.motionEnabled === false ? 0.5 : Math.min(1, Math.floor(progress * 4) / 3);
+        // in four frames; reduced motion holds mid-ring.
+        const reduced = ritual ? ritual.motionEnabled === false : !(this.motionScale > 0);
+        const ringPhase = reduced ? 0.5 : Math.min(1, Math.floor(progress * 4) / 3);
         // portal-preview = single inner ring (cool blue); other states keep the
         // 3-ring stack so summon/dismiss/familiar/active read as full ceremony.
         const ringCount = reason === 'portal-preview' ? 1 : 3;
@@ -4427,6 +4938,11 @@ export class BuildingSprite {
                 color,
                 phase: i * 0.7,
             });
+        }
+
+        if (!ritual) {
+            ctx.restore();
+            return;
         }
 
         const targetSprite = this._targetSpriteForRitual(ritual);
@@ -4744,7 +5260,7 @@ export class BuildingSprite {
     // screen-fixed type (5.4) hung off the slate's left edge: each tab's
     // right edge is flush to the slate, so it reads as part of the board and
     // never overhangs the chalk at any zoom.
-    _drawTaskboardPlanTabs(ctx, localPoint) {
+    _drawTaskboardPlanTabs(ctx, localPoint, registerHits = true) {
         const profile = getBuildingPlanTabProfile('taskboard');
         if (!profile || postcardFrame() || !this._chitsVisible('taskboard')) return;
         const summaries = this._taskboardBoardModel.summaries({
@@ -4786,14 +5302,16 @@ export class BuildingSprite {
             ctx.fillRect(left + 4, top + tabH / 2 - 2, 4, 4);
             ctx.fillStyle = active ? '#f2f6ee' : '#c8cfc4';
             ctx.fillText(text, left + 11, top + 9);
-            this._registerInstrumentHit({
-                kind: 'plan-tab',
-                agentId: summary.agentId,
-                left: edge.x + (left - 1) * s,
-                top: edge.y + (top - 1) * s,
-                right: edge.x,
-                bottom: edge.y + (top + tabH + 1) * s,
-            });
+            if (registerHits) {
+                this._registerInstrumentHit({
+                    kind: 'plan-tab',
+                    agentId: summary.agentId,
+                    left: edge.x + (left - 1) * s,
+                    top: edge.y + (top - 1) * s,
+                    right: edge.x,
+                    bottom: edge.y + (top + tabH + 1) * s,
+                });
+            }
         });
         if (overflowText) {
             const width = Math.ceil(measureLabelText(ctx, overflowText)) + 8;
@@ -4877,17 +5395,22 @@ export class BuildingSprite {
 
     _drawCommandRitual(ctx, localPoint) {
         const rituals = this._ritualsFor('command');
-        if (!rituals.length) return;
+        const commandWorking = Boolean(this.partGates?.isOpen?.('work.command'));
+        if (!rituals.length && !commandWorking) return;
         const keep = localPoint(...getBuildingEffectAnchor('command', 'keep', [174, 24]));
         const standard = localPoint(...getBuildingEffectAnchor('command', 'standard', [174, 4]));
+        let standardAlpha = commandWorking ? 1 : 0;
         for (const ritual of rituals) {
             const fade = this._ritualFade(ritual);
             if (ritual.action === 'message') {
                 this._drawCarrierBird(ctx, keep, ritual, fade);
                 continue;
             }
+            standardAlpha = Math.max(standardAlpha, fade);
+        }
+        if (standardAlpha > 0) {
             ctx.save();
-            ctx.globalAlpha = fade;
+            ctx.globalAlpha = standardAlpha;
             const sx = Math.round(standard.x);
             const sy = Math.round(standard.y);
             ctx.fillStyle = '#201814';
@@ -5158,22 +5681,25 @@ export class BuildingSprite {
         // forge chimney column, mine dust, and harbor steam all lean downwind
         // by the same amount.
         const windDrift = smokeWindDrift(this.atmosphereState);
-        // 4.6 — at canonical rest the activity-only emitters (hearth embers,
-        // forge and harbor smoke, mine dust, quest pings, archive motes) stop;
-        // the architectural fires keep burning — the castle torches and gate
-        // lantern in `entry.emitters` above, and the Pharos beacon, which is a
-        // safety light and not a work signal.
-        const restQuiet = this._villageAtRest() && b.type !== 'watchtower';
+        // 4.6 — at rest (empty village, banked Forge, slumbering Portal) the
+        // work emitters stop; architectural fires in `entry.emitters` above and
+        // the Pharos beacon keep burning.
+        const restQuiet = (this._villageAtRest() && b.type !== 'watchtower') || this._restMaskShowing(b);
+        const workers = this.partGates?.workingCount?.(b.type) ?? this._workingVisitorCountFor(b);
+        const wTier = workerTier(workers);
         for (const emitter of restQuiet ? [] : BUILDING_EMITTER_FALLBACKS[b.type] || []) {
             let chanceBoost = b.type === 'forge'
                 ? 0.7 + this._forgeGlowIntensity() * 1.1
-                : this._workingVisitorCountFor(b) > 0 ? 1.6 : 1;
+                : workers > 0 ? 1.6 : 1;
             if (archiveReadIntensity > 0.6 && Array.isArray(emitter.at) && emitter.at[1] >= 120) {
                 chanceBoost *= 1 + (archiveReadIntensity - 0.6) * 5;
             }
-            const chance = emitter.chance * chanceBoost * presenceMult * beaconMult;
+            const scaled = WORKER_SCALED_EMITTERS.has(emitter.type);
+            const tierMult = scaled ? WORKER_EMITTER_CHANCE[wTier] : 1;
+            const count = (emitter.count || 1) + (scaled ? WORKER_EMITTER_EXTRA_COUNT[wTier] : 0);
+            const chance = emitter.chance * chanceBoost * presenceMult * beaconMult * tierMult;
             const options = this._smokeEmitterOptions(b, emitter.type, windDrift);
-            this._spawnBuildingParticle(b, emitter.type, center, baseAnchor, emitter.at, chance, emitter.count || 1, dt, options);
+            this._spawnBuildingParticle(b, emitter.type, center, baseAnchor, emitter.at, chance, count, dt, options);
         }
     }
 
@@ -5198,24 +5724,35 @@ export class BuildingSprite {
         const wx = center.x - baseAnchor[0] + lx;
         const wy = center.y - baseAnchor[1] + ly;
         // 0.6 — every building emitter (torches, embers, motes, pings, mine
-        // dust) sorts just in front of the half of its own sprite it sits on.
-        this.particles.spawn(type, wx, wy, count, { ...(options || {}), sortY: this.particleSortY(building, ly) });
+        // dust) sorts just in front of the column or half of its own sprite it sits on.
+        this.particles.spawn(type, wx, wy, count, { ...(options || {}), sortY: this.particleSortY(building, ly, lx) });
     }
 
-    // 0.6 — the painter sortY for a particle emitted at sprite row `localY` of
-    // `building`: the owning drawable (the back half above the horizon, the
-    // front half below it, the whole sprite when unsplit) + 1, so an ember or
-    // a puff never hides behind its own roof yet stays behind anything nearer.
-    // Null when the building has no drawable (the spawn's ground line stands).
-    particleSortY(building, localY) {
+    // 0.6 — the painter sortY for a particle emitted at sprite (localX, localY)
+    // of `building`: the owning column (or back/front/whole drawable) + 1, so
+    // an ember or puff never hides behind its own roof yet stays behind anything
+    // nearer. Null when the building has no drawable.
+    particleSortY(building, localY, localX = null) {
+        const lx = localX == null ? NaN : Number(localX);
+        const hasX = Number.isFinite(lx);
+        let fallbackColumnSortY = null;
         for (const drawable of this.enumerateDrawables()) {
             if (drawable.building !== building) continue;
+            if (drawable.kind === 'building-column' && drawable.column) {
+                if (hasX && lx >= drawable.column.sx && lx < drawable.column.sx + drawable.column.sw) {
+                    return drawable.sortY + 1;
+                }
+                if (fallbackColumnSortY == null || drawable.sortY > fallbackColumnSortY) {
+                    fallbackColumnSortY = drawable.sortY;
+                }
+                continue;
+            }
             if (drawable.kind === 'building'
                 || (drawable.kind === 'building-front') === (Number(localY) >= drawable.horizonY)) {
                 return drawable.sortY + 1;
             }
         }
-        return null;
+        return fallbackColumnSortY != null ? fallbackColumnSortY + 1 : null;
     }
 
     _updateVisitorCounts() {
@@ -5372,16 +5909,28 @@ export class BuildingSprite {
         }
     }
 
-    // 6.3 — the per-room gate other light surfaces read (2.4 aperture lights,
-    // 2.9 water columns): 0..1, night × this room's stepped occupancy. A room
-    // index is 0-based (mask R = index + 1); unknown rooms are dark. B3-01 —
-    // a room pane inside the open 4.1 aperture's cut stays dark: the cut
-    // presents that wall's occupants itself.
+    // 6.3 — the per-room light gate (2.4 aperture lights, 2.9 water columns,
+    // bloom): 0..1, night × this room's stepped occupancy. A room index is
+    // 0-based (mask R = index + 1); unknown rooms are dark. B3-01 — a room pane
+    // inside the open 4.1 aperture's cut stays dark: the cut presents that
+    // wall's occupants itself.
     roomGate(type, roomIndex) {
         const lit = this._roomLitByType.get(type);
         const value = lit ? lit[roomIndex] || 0 : 0;
         if (!(value > 0) || this._roomUnderOpenAperture(type, roomIndex)) return 0;
         return value * this._nightWindowGate();
+    }
+
+    // Per-room window glass gate (RoomGlass only; relaxed M15, 2026-11-23
+    // operator decision): occupied rooms glow warm interior amber by day at
+    // DAYTIME_ROOM_GLASS_SHARE (0.75) and rise to full 1.0 at night; empty
+    // rooms stay dark slate. Light pools, water columns and bloom keep reading
+    // night-only `roomGate`.
+    roomGlassGate(type, roomIndex) {
+        const lit = this._roomLitByType.get(type);
+        const value = lit ? lit[roomIndex] || 0 : 0;
+        if (!(value > 0) || this._roomUnderOpenAperture(type, roomIndex)) return 0;
+        return value * Math.max(DAYTIME_ROOM_GLASS_SHARE, this._nightWindowGate());
     }
 
     _roomUnderOpenAperture(type, roomIndex) {
@@ -5402,19 +5951,46 @@ export class BuildingSprite {
 
     // 6.3 — lit share of a glass group: k ≥ 1 is room k - 1. Group 0 (glass
     // under a window/glass rect that no room mask claims; since B3-01 no
-    // Command or Archive pane is one) is never lit: only a
-    // room a worker holds glows, so N workers light exactly min(N, rooms)
-    // glass shapes. By day every pane is unlit glass (M15).
+    // Command or Archive pane is one) is never lit: only a room a worker holds
+    // glows, so N workers light exactly min(N, rooms) glass shapes.
     _glassGroupGate(type, group) {
+        return group > 0 ? this.roomGlassGate(type, group - 1) : 0;
+    }
+
+    _nightGlassGroupGate(type, group) {
         return group > 0 ? this.roomGate(type, group - 1) : 0;
     }
 
-    // 6.3 — the unlit-glass patch for `building` (RoomGlass.patch), shared by
-    // the resident patch record and the Canvas emitter-cut carve.
+    // 6.3 — the glass patch for `building` (RoomGlass.patch), shared by the
+    // resident GPU patch record and the Canvas renderer: unlit slate on empty
+    // rooms, warm interior amber on daytime occupied rooms (zero bloom/pools),
+    // and transparent pass-through on night-lit rooms.
     glassPatchFor(building) {
         const type = building?.type;
         if (!type) return null;
-        return this.roomGlass.patch(type, (group) => this._glassGroupGate(type, group));
+        return this.roomGlass.patch(
+            type,
+            (group) => this._glassGroupGate(type, group),
+            (group) => this._nightGlassGroupGate(type, group),
+        );
+    }
+
+    // Canvas twin of the GPU glassPatchRecord for daytime lit occupied rooms.
+    // Skipped at night (when `hasDaytimeLit` is false and EmitterCuts paints
+    // the full night emission instead).
+    _drawDaytimeRoomGlass(ctx, d, dx, dy) {
+        const patch = this.glassPatchFor(d.building);
+        if (!patch?.hasDaytimeLit) return;
+        let top = patch.top;
+        let bottom = patch.top + patch.h;
+        if (d.kind === 'building-back') bottom = Math.min(bottom, d.horizonY);
+        else if (d.kind === 'building-front') top = Math.max(top, d.horizonY);
+        if (bottom <= top) return;
+        ctx.drawImage(
+            patch.canvas,
+            0, top - patch.top, patch.w, bottom - top,
+            dx + patch.left, dy + top, patch.w, bottom - top,
+        );
     }
 
     // 5.2 roofs / 6.6 — steps the roof weather once a frame from the C-W2
@@ -5456,18 +6032,28 @@ export class BuildingSprite {
     }
 
     // Canvas twin of the resident roof records: the patch and the drip frame
-    // on the landmark's own texels, cut at the split horizon like the base.
+    // on the landmark's own texels, cut to the column or split horizon like the base.
     _drawRoofWeather(ctx, d, dx, dy) {
         const layers = [this.roofPatchFor(d.building), this.roofDripFor(d.building)];
         for (const layer of layers) {
             if (!layer) continue;
+            let left = layer.left;
+            let right = layer.left + layer.w;
             let top = layer.top;
             let bottom = layer.top + layer.h;
-            if (d.kind === 'building-back') bottom = Math.min(bottom, d.horizonY);
-            else if (d.kind === 'building-front') top = Math.max(top, d.horizonY);
-            if (bottom <= top) continue;
-            ctx.drawImage(layer.canvas, layer.sx || 0, top - layer.top, layer.w, bottom - top,
-                dx + layer.left, dy + top, layer.w, bottom - top);
+            if (d.kind === 'building-column' && d.column) {
+                left = Math.max(left, d.column.sx);
+                right = Math.min(right, d.column.sx + d.column.sw);
+            } else if (d.kind === 'building-back') {
+                bottom = Math.min(bottom, d.horizonY);
+            } else if (d.kind === 'building-front') {
+                top = Math.max(top, d.horizonY);
+            }
+            if (right <= left || bottom <= top) continue;
+            const sx = (layer.sx || 0) + (left - layer.left);
+            const sw = right - left;
+            ctx.drawImage(layer.canvas, sx, top - layer.top, sw, bottom - top,
+                dx + left, dy + top, sw, bottom - top);
         }
     }
 
@@ -5552,7 +6138,9 @@ export class BuildingSprite {
                 entry = { count: 0, tier: 'dormant' };
                 out.set(building.type, entry);
             }
-            entry.count = this._workingVisitorCountFor(building);
+            const workers = this.partGates?.workingCount?.(building.type) ?? this._workingVisitorCountFor(building);
+            const patrons = this._patronIdsByType?.get(building.type)?.size || 0;
+            entry.count = workers + patrons;
             entry.tier = this._workTierFor(building);
         }
         return out;
@@ -5771,8 +6359,8 @@ export class BuildingSprite {
         const legend = profile.legend;
         if (!legend?.at || postcardFrame()) return;
         const rooms = this._roomSlotsByType.get(model.buildingType);
-        const working = rooms ? rooms.working : 0;
-        const waiting = rooms ? rooms.waiting : 0;
+        const working = Number.isFinite(model.workingCount) ? model.workingCount : (rooms ? rooms.working : 0);
+        const waiting = Number.isFinite(model.waitingCount) ? model.waitingCount : (rooms ? rooms.waiting : 0);
         const rows = [`${working} working · ${waiting} waiting`];
         for (const slot of model.slots) {
             rows.push(slot.tool ? `${slot.name} · ${slot.tool}` : slot.name);
@@ -5832,15 +6420,20 @@ export class BuildingSprite {
     }
 
     // 4.6 / B3-03' — whether a building's authored rest mask lies over its
-    // painted fire now. The Forge: the canonical empty village, or a hearth
-    // watched fall quiet for ten minutes (4.4). The Tavern: no patron and no
-    // worker, at any hour (its hearth burns for its patrons). MB-4 — the
-    // Portal: no working visitor (`work.portal`, the gate its runes run on),
-    // at any hour. Never read from mood or director state.
+    // painted fire now. The Forge: empty village, workload-banked, or `work.forge`
+    // closed past the short cooldown (`FORGE_BANK_COOLDOWN_MS`, matching Tavern
+    // and Portal). The Tavern: no patron and no worker, at any hour. MB-4 — the
+    // Portal: no working visitor (`work.portal`), at any hour.
     _restMaskShowing(building) {
         const type = building?.type;
         if (!type || !getBuildingRestLayer(type)) return false;
-        if (type === 'forge') return this._villageAtRest() || Boolean(this._forgeWorkload?.banked);
+        if (type === 'forge') {
+            if (this._villageAtRest() || Boolean(this._forgeWorkload?.banked)) return true;
+            if (this.partGates) {
+                return !this.partGates.isOpen('work.forge') && !(this._forgeWarmRemainingMs > 0);
+            }
+            return false;
+        }
         if (type === 'tavern') {
             const working = this._visitorStatusByType?.get(type)?.working || 0;
             return working + (this._patronIdsByType?.get(type)?.size || 0) === 0;
@@ -6042,12 +6635,21 @@ export class BuildingSprite {
         return Number.isFinite(anchorY) ? anchorY - 0.5 : fallbackY;
     }
 
-    // Depth anchor for building drawables. The minimum visit-tile screen-y
-    // ensures every declared visit tile draws in front; clamping by the
-    // southeast footprint corner restores standard isometric occlusion when
-    // visit tiles sit south of the corner (mine, taskboard, portal, etc.) so
-    // characters at the SE edge are no longer covered by the building.
+    // Depth anchor for building drawables: the southeast footprint corner when
+    // the building declares a footprint (preventing back-side visit tiles such
+    // as forge:ambient or mine:ambient from pulling the anchor behind the
+    // structure), falling back to visit tiles or entrance only for stubs.
     _anchorSortY(building) {
+        const pos = building?.position;
+        if (pos
+            && Number.isFinite(pos.tileX)
+            && Number.isFinite(pos.tileY)
+            && Number.isFinite(building.width)
+            && Number.isFinite(building.height)) {
+            const seX = pos.tileX + building.width - 1;
+            const seY = pos.tileY + building.height - 1;
+            return this._tileToScreen(seX, seY).y;
+        }
         const tiles = Array.isArray(building?.visitTiles) ? building.visitTiles : [];
         let minY = Infinity;
         for (const tile of tiles) {
@@ -6061,18 +6663,7 @@ export class BuildingSprite {
                 minY = this._tileToScreen(tileX, tileY).y;
             }
         }
-        if (!Number.isFinite(minY)) return null;
-        const pos = building?.position;
-        if (pos
-            && Number.isFinite(pos.tileX)
-            && Number.isFinite(pos.tileY)
-            && Number.isFinite(building.width)
-            && Number.isFinite(building.height)) {
-            const seX = pos.tileX + building.width - 1;
-            const seY = pos.tileY + building.height - 1;
-            return Math.min(minY, this._tileToScreen(seX, seY).y);
-        }
-        return minY;
+        return Number.isFinite(minY) ? minY : null;
     }
 
     _tileToScreen(tileX, tileY) {

@@ -724,7 +724,7 @@ export function classifyShellInput(input) {
             return { building: 'taskboard', reason: 'inspect-validation', confidence: 0.84, label: compactToolLabel(text, 'check') };
         }
         if (isCodeToolInput(input)) {
-            return { building: 'forge', reason: 'inspect-code', confidence: 0.78, label: compactToolLabel(text, 'code') };
+            return { building: 'archive', reason: 'inspect-code', confidence: 0.78, label: compactToolLabel(text, 'code') };
         }
         return { building: 'archive', reason: isDocumentationToolInput(input) ? 'read-docs' : 'search-local', confidence: 0.74, label: compactToolLabel(text, 'read') };
     }
@@ -810,10 +810,8 @@ export function classifyTool(toolName, input, session = null) {
     if (metadata?.classification) {
         const base = metadata.classification;
         if (LOCAL_INSPECTION_TOOLS.has(tool)) {
-            const split = classifyShellInput(input);
-            if (split && split.reason !== 'run-shell' && ['forge', 'taskboard', 'harbor'].includes(split.building)) return split;
             if (isCodeToolInput(input)) {
-                return { building: 'forge', reason: 'inspect-code', confidence: 0.78, label: compactToolLabel(input || tool, 'code') };
+                return { building: 'archive', reason: 'inspect-code', confidence: 0.78, label: compactToolLabel(input || tool, 'code') };
             }
         }
         if (HOST_LABEL_TOOLS.has(tool)) {
@@ -865,9 +863,7 @@ export function classifyTool(toolName, input, session = null) {
         if (mcp) return { ...mcp, label: compactToolLabel(shortToolName(tool), mcp.label) };
     }
     if (READ_TOOL_NAME_PATTERN.test(lowerTool)) {
-        const split = classifyShellInput(input);
-        if (split) return split;
-        return { building: isCodeToolInput(input) ? 'forge' : 'archive', reason: isCodeToolInput(input) ? 'inspect-code' : 'search-local', confidence: 0.68, label: compactToolLabel(input || tool, 'read') };
+        return { building: 'archive', reason: isCodeToolInput(input) ? 'inspect-code' : 'search-local', confidence: 0.68, label: compactToolLabel(input || tool, 'read') };
     }
 
     return classifyShellInput(input);

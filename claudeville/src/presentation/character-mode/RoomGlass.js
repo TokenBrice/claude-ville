@@ -6,11 +6,12 @@
 // names each glass texel's room in R (1..N); glass with R = 0 is the hall's
 // ordinary panes. Every glass texel carries its own gate:
 //
-//   room k      night × (a working visitor holds room k)   (BuildingSprite)
+//   room k      max(DAYTIME_ROOM_GLASS_SHARE, night) × (a working visitor holds room k)   (BuildingSprite.roomGlassGate)
 //   hall panes  never lit: unlit slate glass at every hour
 //
-// By day every pane is unlit slate glass (M15): the sidecar still keeps the
-// forge mouth, braziers and lanterns identifiable, but no window glows.
+// Occupied rooms glow warm interior amber by day (relaxed M15, 2026-11-23
+// operator decision), while empty rooms stay unlit slate glass. ApertureLights,
+// water columns and bloom keep reading night-only `roomGate`.
 //
 // Both backends switch a pane off the same way — with the pane's own unlit
 // albedo: the resident scene pass draws one "glass patch" record per landmark
@@ -110,10 +111,15 @@ export function buildGlassMap({ width, height, emissive, rooms = null, rects = [
     return { left: x0, top: y0, w, h, group, rooms: roomCount };
 }
 
+/** Lit share of a group, stepped in quarters: 0 dark … 1 lit. */
+export function litStep(gate) {
+    const lit = Math.max(0, Math.min(1, Number(gate) || 0));
+    return Math.round(lit * ROOM_GLASS_STEPS) / ROOM_GLASS_STEPS;
+}
+
 /** Unlit share of a group, stepped in quarters: 0 lit … 1 dark. */
 export function unlitStep(gate) {
-    const lit = Math.max(0, Math.min(1, Number(gate) || 0));
-    return Math.round((1 - lit) * ROOM_GLASS_STEPS) / ROOM_GLASS_STEPS;
+    return 1 - litStep(gate);
 }
 
 export class RoomGlass {
@@ -150,10 +156,11 @@ export class RoomGlass {
             }
             const width = dims.w;
             const height = dims.h;
+            const emissivePixels = readPixels(emissiveImage, width, height);
             const map = buildGlassMap({
                 width,
                 height,
-                emissive: readPixels(emissiveImage, width, height),
+                emissive: emissivePixels,
                 rooms: roomsImage?.width === width && roomsImage?.height === height
                     ? readPixels(roomsImage, width, height)
                     : null,
@@ -161,6 +168,7 @@ export class RoomGlass {
             });
             if (map) {
                 map.albedo = readPixels(albedo, width, height);
+                map.emissive = emissivePixels;
                 map.spriteWidth = width;
                 map.channels = {
                     material: this._crop(this.assets.getCompanion?.(id, 'material'), map),
@@ -193,21 +201,38 @@ export class RoomGlass {
     }
 
     /**
-     * The unlit-glass patch of `type`: `{ canvas, left, top, w, h, key,
-     * channels }` with every pane's own unlit albedo at its group's unlit step,
-     * or null when every pane is fully lit. `gateFor(group)` returns the
-     * group's lit share (0 hall, 1..N rooms).
+     * The glass patch of `type`: `{ canvas, left, top, w, h, key, revision,
+     * hasDaytimeLit, channels }`, or null when every pane is fully night-lit.
+     * `gateFor(group)` returns the group's glass lit share (0 hall, 1..N rooms).
+     * When `nightGateFor(group)` is supplied and a group is lit by day
+     * (`lit > 0`, `night < 0.5`), its emissive texels paint warm interior amber
+     * blended from `base.emissive.png` at `lit` share with zero emission/bloom
+     * (relaxed M15, 2026-11-23 operator decision). At dusk/night (`night >= 0.5`)
+     * or for dark panes, it paints unlit slate `albedo` at `1 - lit`.
      */
-    patch(type, gateFor) {
+    patch(type, gateFor, nightGateFor = null) {
         const map = this.map(type);
         if (!map?.albedo) return null;
-        const steps = new Array(map.rooms + 1);
+        const unlitSteps = new Array(map.rooms + 1);
+        const dayShares = new Array(map.rooms + 1);
         let key = '';
         let any = false;
+        let hasDaytimeLit = false;
         for (let group = 0; group <= map.rooms; group++) {
-            steps[group] = unlitStep(gateFor(group));
-            if (steps[group] > 0) any = true;
-            key += steps[group] * ROOM_GLASS_STEPS;
+            const lit = litStep(gateFor(group));
+            const night = nightGateFor ? litStep(nightGateFor(group)) : lit;
+            if (lit > 0 && night < 0.5 && map.emissive) {
+                dayShares[group] = lit;
+                unlitSteps[group] = 0;
+                hasDaytimeLit = true;
+                any = true;
+                key += `D${Math.round(lit * ROOM_GLASS_STEPS)}`;
+            } else {
+                dayShares[group] = 0;
+                unlitSteps[group] = 1 - lit;
+                if (unlitSteps[group] > 0) any = true;
+                key += `U${Math.round(unlitSteps[group] * ROOM_GLASS_STEPS)}`;
+            }
         }
         if (!any) return null;
         let entry = this._patches.get(type);
@@ -216,21 +241,42 @@ export class RoomGlass {
             const canvas = document.createElement('canvas');
             canvas.width = map.w;
             canvas.height = map.h;
-            entry = { canvas, left: map.left, top: map.top, w: map.w, h: map.h, key: '', revision: 0, channels: map.channels };
+            entry = {
+                canvas,
+                left: map.left,
+                top: map.top,
+                w: map.w,
+                h: map.h,
+                key: '',
+                revision: 0,
+                hasDaytimeLit: false,
+                channels: map.channels,
+            };
             this._patches.set(type, entry);
         }
         const ctx = entry.canvas.getContext('2d', { willReadFrequently: true });
         const image = ctx.createImageData(map.w, map.h);
         const out = image.data;
         const src = map.albedo;
+        const em = map.emissive;
         for (let y = 0; y < map.h; y++) {
             for (let x = 0; x < map.w; x++) {
                 const group = map.group[y * map.w + x];
                 if (group === NONE) continue;
-                const step = steps[group] ?? 1;
-                if (!(step > 0)) continue;
                 const i = ((y + map.top) * map.spriteWidth + x + map.left) * 4;
                 const o = (y * map.w + x) * 4;
+                const dayShare = dayShares[group] || 0;
+                if (dayShare > 0 && em) {
+                    if (em[i + 3] > 0) {
+                        out[o] = Math.round(src[i] + (em[i] - src[i]) * dayShare);
+                        out[o + 1] = Math.round(src[i + 1] + (em[i + 1] - src[i + 1]) * dayShare);
+                        out[o + 2] = Math.round(src[i + 2] + (em[i + 2] - src[i + 2]) * dayShare);
+                        out[o + 3] = src[i + 3];
+                    }
+                    continue;
+                }
+                const step = unlitSteps[group] ?? 1;
+                if (!(step > 0)) continue;
                 out[o] = src[i];
                 out[o + 1] = src[i + 1];
                 out[o + 2] = src[i + 2];
@@ -239,6 +285,7 @@ export class RoomGlass {
         }
         ctx.putImageData(image, 0, 0);
         entry.key = key;
+        entry.hasDaytimeLit = hasDaytimeLit;
         entry.revision++;
         return entry;
     }

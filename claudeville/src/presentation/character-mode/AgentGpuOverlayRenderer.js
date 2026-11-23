@@ -48,7 +48,7 @@ export class AgentGpuOverlayRenderer {
         // and name hidden with it; the selected one is x-rayed, so keeps both.
         // Its thought is not hidden: the thought layer lifts it above the
         // building's crown (AgentSprite.drawThought, W3.4).
-        if (host._behindBuilding && !host.selected) return;
+        if ((host._occludedByWorld || host._behindBuilding) && !host.selected) return;
         // Action-needed agents are marked by the overlay's T1 beacon and
         // attention plate (AttentionPlates.js) at every zoom, not here.
         const primary = host.selected || isAttentionStatus(host.agent?.status);
@@ -95,13 +95,16 @@ export class AgentGpuOverlayRenderer {
         // Thoughts are not drawn here: the thought layer (WorldFrameRenderer,
         // AgentSprite.drawThought) paints every leader, then every column,
         // above all per-agent marks on both backends.
-        if (!departedTableau(host) && (primary || host.selected || annotationMode === 'full' || host.gpuActionOverlay)) {
+        if (!departedTableau(host)) {
             // Head-anchored labels clear the chevron: nothing crosses the body.
             const labelTopY = host._labelTopY(contentTopY);
-            if (host.chatting) host._drawChatEffect(ctx, labelTopY);
-            if (!overview) host._drawStatusEmote(ctx, labelTopY);
-            host._drawPlanModeGlyph(ctx, labelTopY);
-            host._drawRetryGlyph(ctx, labelTopY);
+            const toolGlyphDrawn = !overview && Boolean(host._drawToolGlyphBadge?.(ctx, labelTopY));
+            if (primary || host.selected || annotationMode === 'full' || host.gpuActionOverlay) {
+                if (host.chatting) host._drawChatEffect(ctx, labelTopY);
+                if (!overview && !toolGlyphDrawn) host._drawStatusEmote(ctx, labelTopY);
+                if (!toolGlyphDrawn) host._drawPlanModeGlyph(ctx, labelTopY);
+                host._drawRetryGlyph(ctx, labelTopY);
+            }
         }
 
         // C5 identity: _drawNameTag gates the T2 plate / T4 name itself.

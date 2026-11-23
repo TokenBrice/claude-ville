@@ -25,7 +25,7 @@ export const DEFAULT_LOOK_STRENGTHS = Object.freeze({
     nl4: 1, // NL-4: a lantern carried by villagers abroad after lamp-lighting (scales the pool)
     ms1: 1, // MS-1: low mist the town rises out of (> 0 replaces the GPU fog banks; scales the mist's top)
     ms2: 1, // MS-2: lamps glow in the mist, the mist burns off land-first (needs ms1 > 0; scales halos and burn)
-    sea1: 0.5, // SEA-1: cloud light and shade on the plane, sunlit water lifts (> 0 shape on; a ceiling on the lift: 0.5 one stop, 1 two)
+    sea1: 1, // SEA-1: cloud light and shade on the plane, sunlit water lifts (> 0 shape on; a ceiling on the lift: 0.5 one stop, 1 two)
     sea2: 1, // SEA-2: lit swell and caps take the sky's hue (scales the share)
     sea3: 1, // SEA-3: the wind sets the sea state, calm to fresh (scales the ladder's reach and streaks)
     gw1: 1, // GW-1: wet ground read from the weather field: dry aprons, streets dry sun side first (scales the sheen; retires that share of the uniform darkening)
@@ -35,7 +35,7 @@ export const DEFAULT_LOOK_STRENGTHS = Object.freeze({
     sd1: 1, // SD-1: shape-true sun shade on the ground from the shade field (> 0 retires the sun trails; scales the shade's density)
     sd1len: 0.5, // SD-1: how long a low sun's shade may grow (0 = 1.0, 1 = 3.5 times a caster's height)
     sd2: 1, // SD-2: walls, roofs, props and villagers take the sun's shade (needs sd1 > 0; scales the step they drop)
-    sd3: 0.5, // SD-3: the sun lifts the land and the surfaces it reaches, one stepped course before the grade (needs sd1 > 0; scales the lift)
+    sd3: 1, // SD-3: the sun lifts the land and the surfaces it reaches, one stepped course before the grade (needs sd1 > 0; scales the lift)
     ey4: 1, // EY-4: falling snow wears a pearl grade, lighter and softer than rain's (the share of the rain row that blends toward the snow row)
     rn1: 1, // RN-1: rain falls in the world, depth-sorted on the GPU paths (the share of streaks and splashes moved off the overlay)
 });

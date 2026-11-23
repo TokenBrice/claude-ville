@@ -11,9 +11,9 @@ import { IsometricRenderer } from '../../claudeville/src/presentation/character-
 import { SceneryEngine } from '../../claudeville/src/presentation/character-mode/SceneryEngine.js';
 
 // The prop cleanup (v0.52.0) cut the island's standing props by a third.
-// These budgets keep the density from creeping back: raising one is a
-// deliberate decision, not a side effect of adding dressing.
-const STANDING_PROP_BUDGET = 90;
+// Budget raised 90 -> 125 (relaxed 2026-11-23, operator decision) to place the
+// authored props on disk, shore boulders, south-bank fences and plaza fountain.
+const STANDING_PROP_BUDGET = 125;
 const CROWD_RADIUS = 1.5;
 const CROWD_LIMIT = 3;
 const WATER_DRESSING = /lilypad|harborBeaconBuoy/;

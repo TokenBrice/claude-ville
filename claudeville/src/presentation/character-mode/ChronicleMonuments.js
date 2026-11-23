@@ -29,6 +29,7 @@ import { LABEL_INK, measureLabelText, snapScreenOrigin } from './WorldLabelKit.j
 import { materialClassId } from './MaterialRegistry.js';
 import { noteMoment } from './MomentTally.js';
 import { postcardFrame } from './Postcard.js';
+import { getReservedRects } from '../shared/ReservedRects.js';
 
 const MONTH_MS = 30 * 24 * 60 * 60 * 1000;
 const KIND_COLORS = {
@@ -288,17 +289,8 @@ export class ChronicleMonuments {
 
     enumerateDrawables(_now = Date.now(), camera = null) {
         const drawables = [];
-        // Append overlays (milestone banners) — drawn at a sortY above their
-        // anchor so they paint on top of nearby stones. The release crown
-        // is not a depth drawable: it draws on the upper overlay (drawMoments).
-        for (const banner of this._activeBanners) {
-            const world = toWorld(banner.tileX, banner.tileY);
-            drawables.push({
-                kind: 'chronicle-banner',
-                sortY: world.y + 1e6,
-                payload: { ...banner, worldX: world.x, worldY: world.y },
-            });
-        }
+        // Milestone banners and the release crown are not depth drawables: they
+        // draw on the ungraded upper overlay in drawMoments across all backends.
         if (this.repoStones) {
             for (const drawable of this.repoStones.drawables(camera)) {
                 drawable.buildGpuRecord = this._buildGpuRecord;
@@ -327,7 +319,7 @@ export class ChronicleMonuments {
     // The resident twin of `draw` for the repo stones: one V9 record over the
     // very image the Canvas draw blits, at the same world rect, graded and lit
     // as stone, depth-keyed by GpuSceneBuilder from the drawable's sortY.
-    // Milestone banners animate, carry no builder and stay on the Canvas path.
+    // Milestone banners draw on the ungraded upper overlay in drawMoments.
     _gpuRecordFor(drawable, context = {}) {
         const record = drawable?.payload;
         if (record?.kind !== 'repo-stone' || !this.repoStones) return null;
@@ -450,8 +442,9 @@ export class ChronicleMonuments {
     // single Major slot and for its sloop to reveal at the slip; a crown that
     // cannot start within 30 s is dropped (the monument and the parade plate
     // still record the release, and the sloop sails bare-masted).
-    drawMoments(ctx, _zoom = 1, now = Date.now()) {
+    drawMoments(ctx, zoom = 1, now = Date.now()) {
         if (!ctx) return;
+        this._drawBanners(ctx, zoom, now);
         const phase = this._crownClock(now);
         const state = this._crown;
         if (!phase || !state) return;
@@ -743,7 +736,91 @@ export class ChronicleMonuments {
         }
     }
 
-    _drawBanner(ctx, payload, zoom, now) {
+    // Draws active milestone banners on the ungraded upper overlay (WebGPU,
+    // WebGL2, and Canvas), stacked vertically so concurrent banners never
+    // overlap and clamped inside the visible viewport clear of reserved chrome.
+    _drawBanners(ctx, zoom, now) {
+        if (!this._activeBanners.length || postcardFrame()) return;
+        const z = zoom > 0 ? zoom : 1;
+        const reduced = reducedMotionPreferred();
+        const matrix = typeof ctx.getTransform === 'function' ? ctx.getTransform() : null;
+        const cssW = ctx.canvas?._claudeVilleCssWidth || ctx.canvas?.clientWidth || 0;
+        const cssH = ctx.canvas?._claudeVilleCssHeight || ctx.canvas?.clientHeight || 0;
+        const dpr = cssW > 0 && ctx.canvas?.width ? ctx.canvas.width / cssW : (ctx.canvas?._claudeVilleDpr || 1);
+        const vpW = cssW || (ctx.canvas?.width ? ctx.canvas.width / dpr : 0);
+        const vpH = cssH || (ctx.canvas?.height ? ctx.canvas.height / dpr : 0);
+        const hasViewport = Boolean(matrix && vpW > 0 && vpH > 0);
+        const edgeMargin = 8;
+        const stackGap = 4;
+        const bgH = 18;
+        const reserved = hasViewport ? getReservedRects() : [];
+        const placed = [];
+        const hits = (a, b, pad = 0) => a.left < b.right + pad && a.right + pad > b.left
+            && a.top < b.bottom + pad && a.bottom + pad > b.top;
+
+        ctx.save();
+        ctx.font = WORLD_DISPLAY_FONT_8;
+        for (const banner of this._activeBanners) {
+            if (Number(banner.expiresAt || 0) <= now) continue;
+            const world = toWorld(banner.tileX, banner.tileY);
+            const text = banner.text || '';
+            const tier = banner.tier || 'maiden';
+            const bgW = measureLabelText(ctx, text) + 16;
+            const pennantExtra = !reduced && tier === 'ribbon' ? 12 : 0;
+            const totalW = bgW + pennantExtra;
+            const lift = tier === 'flagship' ? -84 : tier === 'ribbon' ? -56 : -48;
+            let box = null;
+            let anchorScreenX = 0;
+            let anchorScreenY = 0;
+            if (hasViewport) {
+                anchorScreenX = (matrix.a * world.x + matrix.c * world.y + matrix.e) / dpr;
+                anchorScreenY = (matrix.b * world.x + matrix.d * world.y + matrix.f) / dpr;
+                const maxLeft = Math.max(edgeMargin, vpW - edgeMargin - totalW);
+                const maxTop = Math.max(edgeMargin, vpH - edgeMargin - bgH);
+                const left = Math.max(edgeMargin, Math.min(maxLeft, Math.round(anchorScreenX - bgW / 2)));
+                let top = Math.max(edgeMargin, Math.min(maxTop, Math.round(anchorScreenY + lift - bgH)));
+                const collides = (cand) => placed.some(other => hits(cand, other, stackGap))
+                    || reserved.some(chrome => hits(cand, chrome, 2));
+                const step = bgH + stackGap;
+                let cand = { left, top, right: left + totalW, bottom: top + bgH };
+                for (let tries = 0; tries < 16 && collides(cand); tries++) {
+                    const nextTop = cand.top - step;
+                    if (nextTop < edgeMargin) break;
+                    cand = { left, top: nextTop, right: left + totalW, bottom: nextTop + bgH };
+                }
+                if (collides(cand)) {
+                    let downTop = top;
+                    for (let tries = 0; tries < 16 && collides(cand); tries++) {
+                        downTop += step;
+                        if (downTop > maxTop) break;
+                        cand = { left, top: downTop, right: left + totalW, bottom: downTop + bgH };
+                    }
+                }
+                box = cand;
+            } else {
+                const left = Math.round(world.x * z - bgW / 2);
+                let top = Math.round(world.y * z + lift - bgH);
+                const step = bgH + stackGap;
+                let cand = { left, top, right: left + totalW, bottom: top + bgH };
+                for (let tries = 0; tries < 16 && placed.some(other => hits(cand, other, stackGap)); tries++) {
+                    top -= step;
+                    cand = { left, top, right: left + totalW, bottom: top + bgH };
+                }
+                box = cand;
+            }
+            placed.push(box);
+            this._drawBanner(ctx, { ...banner, worldX: world.x, worldY: world.y }, z, now, {
+                hasViewport,
+                dpr,
+                screenLeft: box.left,
+                screenTop: box.top,
+                offsetY: hasViewport ? 0 : box.top - Math.round(world.y * z + lift - bgH),
+            });
+        }
+        ctx.restore();
+    }
+
+    _drawBanner(ctx, payload, zoom, now, placement = null) {
         // XP-5 — the banner is a label: a postcard frame flies none.
         if (postcardFrame()) return;
         const reduced = reducedMotionPreferred();
@@ -775,8 +852,14 @@ export class ChronicleMonuments {
         const lift = tier === 'flagship' ? -84 : tier === 'ribbon' ? -56 : -48;
         const bgW = measureLabelText(ctx, text) + 16;
         const bgH = 18;
-        const x = -Math.round(bgW / 2);
-        const y = lift - bgH;
+        let x = -Math.round(bgW / 2);
+        let y = lift - bgH + (placement?.offsetY || 0);
+        if (placement?.hasViewport && typeof ctx.getTransform === 'function') {
+            const localM = ctx.getTransform();
+            const dpr = placement.dpr || 1;
+            x = Math.round(placement.screenLeft - localM.e / dpr);
+            y = Math.round(placement.screenTop - localM.f / dpr);
+        }
         ctx.fillStyle = LABEL_INK.plateOutline;
         ctx.fillRect(x - 1, y - 1, bgW + 2, bgH + 2);
         ctx.fillStyle = accent;

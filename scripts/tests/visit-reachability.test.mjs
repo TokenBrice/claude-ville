@@ -15,7 +15,7 @@ import {
 import { Agent } from '../../claudeville/src/domain/entities/Agent.js';
 import { Building } from '../../claudeville/src/domain/entities/Building.js';
 import { AgentSprite, QUAY_PLACES } from '../../claudeville/src/presentation/character-mode/AgentSprite.js';
-import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
+import { GATE_ENTRY_LANES, IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
 import { Pathfinder } from '../../claudeville/src/presentation/character-mode/Pathfinder.js';
 import { SceneryEngine } from '../../claudeville/src/presentation/character-mode/SceneryEngine.js';
 import VisitTileAllocator, { standsOnFixture } from '../../claudeville/src/presentation/character-mode/VisitTileAllocator.js';
@@ -180,11 +180,10 @@ test('a body the renderer places runs no route search in its constructor (VB-15)
     assert.ok(searches > 0, 'a standalone sprite still picks a target at once');
 });
 
-// Boot residents in the gate mouth: the east gate lane's entry rounds to tile
-// 20,39, off the walk grid. A lane walk starts on its entry anyway (the path
-// snap had lifted every east-lane walker onto 20,38, where they stacked and
-// the entry queue saw that lane clear), and it finishes the lane before any
-// reroute, so its gate transit ends at the arch, not at its work.
+// Boot residents in the gate mouth: both gate entry lanes are centred on the
+// arch axis (tileX 19.0), round onto walkable column 19, stay clear of the
+// jamb masonry and the (18, 37) lantern fixture on exit, and finish the lane
+// before any reroute so gate transit ends clear of the gatehouse.
 test('a gate lane walk starts on its entry and finishes before the body reroutes', () => {
     const allocator = new VisitTileAllocator();
     const options = {
@@ -203,17 +202,21 @@ test('a gate lane walk starts on its entry and finishes before the body reroutes
         x: (tileX - tileY) * TILE_WIDTH / 2,
         y: (tileX + tileY) * TILE_HEIGHT / 2,
     });
-    assert.equal(pathfinder.isWalkable(20, 39), false, 'the east lane entry tile is off the grid');
-    for (const laneX of [18.65, 19.55]) {
+    assert.equal(pathfinder.isWalkable(20, 39), false, 'east masonry column 20,39 stays off the grid');
+    assert.equal(GATE_ENTRY_LANES.length, 2);
+    for (const lane of GATE_ENTRY_LANES) {
+        const laneX = lane.tileX;
+        assert.equal(pathfinder.isWalkable(Math.round(laneX), Math.round(lane.outsideY)), true, `${laneX}: entry rounds onto walkable ground`);
+        const inside = toWorld(laneX, lane.insideY);
+        assert.equal(standsOnFixture(inside.x, inside.y), false, `${laneX}: inside point clears gate lantern fixture`);
         const id = `lane-${laneX}`;
         const sprite = new AgentSprite(new Agent({
             id, name: id, provider: 'claude', model: 'claude-sonnet-4-5', status: 'working',
             currentTool: 'Edit', currentToolInput: { file_path: 'src/lane.js' },
         }), options);
-        sprite.setTilePosition(laneX, 39.35);
-        sprite.walkStraightToTile(laneX, 37.6);
-        const entry = toWorld(laneX, 39.35);
-        const inside = toWorld(laneX, 37.6);
+        sprite.setTilePosition(laneX, lane.outsideY);
+        sprite.walkStraightToTile(laneX, lane.insideY);
+        const entry = toWorld(laneX, lane.outsideY);
         assert.ok(Math.hypot(sprite.x - entry.x, sprite.y - entry.y) < 0.01, `${laneX}: the walk starts on its entry`);
         let frames = 0;
         while (sprite.moving && frames++ < 600) {

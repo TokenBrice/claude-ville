@@ -1,5 +1,11 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { PNG } from 'pngjs';
+import { APPROACH_FILES } from '../../claudeville/src/config/townPlan.js';
 import { BUILDING_VISUAL_REGISTRY } from '../../claudeville/src/presentation/character-mode/BuildingVisualRegistry.js';
-import { collectSpriteEntries, loadSpriteManifest, spritesRoot } from '../sprites/manifest-utils.mjs';
+import { buildingCenterToWorld, tileToWorld } from '../../claudeville/src/presentation/character-mode/Projection.js';
+import { createWalkClearance, FOOTPRINT_CLEARANCE_PAD } from '../../claudeville/src/presentation/character-mode/WalkClearance.js';
+import { collectSpriteEntries, loadSpriteManifest, pathForEntry, spritesRoot } from '../sprites/manifest-utils.mjs';
 import { validateFrameStripParts, validateRoomMasks, validateWindowGeometry } from './building-art-geometry.mjs';
 import { loadConfigExports, loadManifestIds } from './config-loader.mjs';
 import {
@@ -140,7 +146,7 @@ function validateScalarFields(reporter, building, mapSize) {
     }
 }
 
-function validateCapacity(reporter, building) {
+function validateCapacity(reporter, building, approachFiles) {
     const capacity = building.capacity;
     if (!capacity || typeof capacity !== 'object' || Array.isArray(capacity)) {
         reporter.error(pathFor(building, 'capacity'), 'must be an object');
@@ -151,12 +157,17 @@ function validateCapacity(reporter, building) {
             reporter.error(pathFor(building, `capacity.${field}`), 'must be a non-negative integer');
         }
     }
-    const visitCount = Array.isArray(building.visitTiles) ? building.visitTiles.length : 0;
-    if (Number(capacity.work) > visitCount) {
-        reporter.error(pathFor(building, 'capacity.work'), `work capacity ${capacity.work} exceeds ${visitCount} visit tile(s)`);
+    const visitTiles = Array.isArray(building.visitTiles) ? building.visitTiles : [];
+    const approachKeys = new Set((approachFiles?.[building.type] || []).map((tile) => tileKey(tile.tileX, tile.tileY)));
+    const scorableCount = visitTiles.filter((tile) => !approachKeys.has(tileKey(tile.tileX, tile.tileY))).length;
+    if (Number(capacity.work) > scorableCount) {
+        reporter.error(pathFor(building, 'capacity.work'), `work capacity ${capacity.work} exceeds ${scorableCount} scorable visit tile(s)`);
     }
-    if (building.visitCapacity != null && Number(building.visitCapacity) > visitCount) {
-        reporter.error(pathFor(building, 'visitCapacity'), `visitCapacity ${building.visitCapacity} exceeds ${visitCount} visit tile(s)`);
+    if (Number(capacity.ambient) > scorableCount) {
+        reporter.error(pathFor(building, 'capacity.ambient'), `ambient capacity ${capacity.ambient} exceeds ${scorableCount} scorable visit tile(s)`);
+    }
+    if (building.visitCapacity != null && Number(building.visitCapacity) > scorableCount) {
+        reporter.error(pathFor(building, 'visitCapacity'), `visitCapacity ${building.visitCapacity} exceeds ${scorableCount} scorable visit tile(s)`);
     }
 }
 
@@ -269,13 +280,19 @@ function tileInsideRect(tile, rect) {
         && Number(tile.tileY) <= rect.y1;
 }
 
-function validateCombinedVisitTiles(reporter, buildings, overflowTiles, mapSize) {
+function validateCombinedVisitTiles(reporter, buildings, overflowTiles, approachFiles, mapSize) {
     const buildingTypes = new Set(buildings.map((building) => building.type));
     const claimedTiles = new Map();
+    const clearance = createWalkClearance({ buildings, pad: FOOTPRINT_CLEARANCE_PAD });
 
     for (const type of Object.keys(overflowTiles || {})) {
         if (!buildingTypes.has(type)) {
             reporter.error(`VISIT_OVERFLOW_TILES.${type}`, 'has no matching BUILDING_DEFS type');
+        }
+    }
+    for (const type of Object.keys(approachFiles || {})) {
+        if (!buildingTypes.has(type)) {
+            reporter.error(`APPROACH_FILES.${type}`, 'has no matching BUILDING_DEFS type');
         }
     }
 
@@ -283,6 +300,7 @@ function validateCombinedVisitTiles(reporter, buildings, overflowTiles, mapSize)
         const groups = [
             ['visitTiles', building.visitTiles || []],
             ['overflow', overflowTiles?.[building.type] || []],
+            ['approach', approachFiles?.[building.type] || []],
         ];
         for (const [group, tiles] of groups) {
             if (!Array.isArray(tiles)) {
@@ -292,7 +310,9 @@ function validateCombinedVisitTiles(reporter, buildings, overflowTiles, mapSize)
             tiles.forEach((tile, index) => {
                 const path = group === 'visitTiles'
                     ? pathFor(building, `visitTiles[${index}]`)
-                    : `VISIT_OVERFLOW_TILES.${building.type}[${index}]`;
+                    : group === 'overflow'
+                        ? `VISIT_OVERFLOW_TILES.${building.type}[${index}]`
+                        : `APPROACH_FILES.${building.type}[${index}]`;
                 if (!tile || typeof tile !== 'object') {
                     reporter.error(path, 'must be an object');
                     return;
@@ -308,14 +328,121 @@ function validateCombinedVisitTiles(reporter, buildings, overflowTiles, mapSize)
                 } else {
                     claimedTiles.set(key, path);
                 }
+                let reportedDiscrete = false;
                 for (const obstacle of buildings) {
                     if (tileInsideRect(tile, buildingRect(obstacle))) {
                         reporter.error(path, `sits inside ${obstacle.type} building footprint`);
+                        reportedDiscrete = true;
                     }
                     for (const exclusion of obstacle.walkExclusion || []) {
                         if (tileInsideRect(tile, walkExclusionRect(obstacle, exclusion))) {
                             reporter.error(path, `sits inside ${obstacle.type} walk exclusion`);
+                            reportedDiscrete = true;
                         }
+                    }
+                }
+                if (!reportedDiscrete && !clearance.isTileClearOfBuildings(Number(tile.tileX), Number(tile.tileY))) {
+                    reporter.error(path, `tile ${tile.tileX},${tile.tileY} violates ${FOOTPRINT_CLEARANCE_PAD}-tile building footprint/exclusion clearance`);
+                }
+            });
+        }
+    }
+}
+
+const SLOT_OCCLUSION_ALPHA_THRESHOLD = 128;
+const SLOT_OCCLUSION_SAMPLE_OFFSETS_Y = Object.freeze([0, -24]);
+
+function loadBuildingSpritesForOcclusion(buildings, manifest) {
+    const entries = new Map(collectSpriteEntries(manifest, ['buildings']).map((entry) => [entry.id, entry]));
+    const sprites = [];
+    for (const building of buildings) {
+        const id = `building.${building.type}`;
+        const entry = entries.get(id);
+        const relPath = entry ? pathForEntry(entry) : `buildings/${id}/base.png`;
+        const fullPath = join(spritesRoot, relPath);
+        if (!existsSync(fullPath)) continue;
+        const png = PNG.sync.read(readFileSync(fullPath));
+        const anchor = Array.isArray(entry?.anchor) ? entry.anchor : [png.width / 2, png.height];
+        const center = buildingCenterToWorld(building);
+        const left = Math.round(center.x - anchor[0]);
+        const top = Math.round(center.y - anchor[1]);
+        const x0 = Number(building.x);
+        const y0 = Number(building.y);
+        const x1 = x0 + Number(building.width);
+        const y1 = y0 + Number(building.height);
+        const seY = tileToWorld(x1 - 1, y1 - 1).y;
+        let minVisitY = Infinity;
+        for (const vt of building.visitTiles || []) {
+            minVisitY = Math.min(minVisitY, tileToWorld(vt.tileX, vt.tileY).y);
+        }
+        const anchorSortY = Math.min(minVisitY, seY);
+        const backSortY = tileToWorld(x0, y0).y;
+        const frontSortY = Math.max(tileToWorld(x1, y1).y, anchorSortY - 0.5);
+        const wholeSortY = anchorSortY - 0.5;
+        const openFloors = (building.openFloor || []).map((rect) => walkExclusionRect(building, rect));
+        sprites.push({
+            type: building.type,
+            x0,
+            y0,
+            x1,
+            y1,
+            left,
+            top,
+            png,
+            splitForOcclusion: entry?.splitForOcclusion === true,
+            backSortY,
+            frontSortY,
+            wholeSortY,
+            openFloors,
+        });
+    }
+    return sprites;
+}
+
+function spriteAlphaAt(sprite, wx, wy) {
+    const lx = Math.round(wx - sprite.left);
+    const ly = Math.round(wy - sprite.top);
+    if (lx < 0 || ly < 0 || lx >= sprite.png.width || ly >= sprite.png.height) return 0;
+    return sprite.png.data[(ly * sprite.png.width + lx) * 4 + 3];
+}
+
+function isBehindBuildingSprite(sprite, tileX, tileY, wy) {
+    if (wy <= sprite.backSortY) return true;
+    if (sprite.splitForOcclusion) {
+        return wy <= sprite.frontSortY && tileX < sprite.x1 && tileY < sprite.y1;
+    }
+    return wy <= sprite.wholeSortY;
+}
+
+function validateSlotSpriteOcclusion(reporter, buildings, overflowTiles, approachFiles, manifest) {
+    const sprites = loadBuildingSpritesForOcclusion(buildings, manifest);
+    for (const building of buildings) {
+        const groups = [
+            ['visitTiles', building.visitTiles || []],
+            ['overflow', overflowTiles?.[building.type] || []],
+            ['approach', approachFiles?.[building.type] || []],
+        ];
+        for (const [group, tiles] of groups) {
+            if (!Array.isArray(tiles)) continue;
+            tiles.forEach((tile, index) => {
+                if (!tile || !isFiniteNumber(tile.tileX) || !isFiniteNumber(tile.tileY)) return;
+                const tx = Number(tile.tileX);
+                const ty = Number(tile.tileY);
+                const path = group === 'visitTiles'
+                    ? pathFor(building, `visitTiles[${index}]`)
+                    : group === 'overflow'
+                        ? `VISIT_OVERFLOW_TILES.${building.type}[${index}]`
+                        : `APPROACH_FILES.${building.type}[${index}]`;
+                const world = tileToWorld(tx, ty);
+                for (const sprite of sprites) {
+                    if (sprite.openFloors.some((rect) => tileInsideRect(tile, rect))) continue;
+                    if (!isBehindBuildingSprite(sprite, tx, ty, world.y)) continue;
+                    const occluded = SLOT_OCCLUSION_SAMPLE_OFFSETS_Y.some(
+                        (dy) => spriteAlphaAt(sprite, world.x, world.y + dy) >= SLOT_OCCLUSION_ALPHA_THRESHOLD,
+                    );
+                    if (occluded) {
+                        const relation = sprite.type === building.type ? 'its own' : `building.${sprite.type}`;
+                        reporter.error(path, `tile ${tx},${ty} is hidden behind ${relation} sprite alpha`);
                     }
                 }
             });
@@ -348,6 +475,7 @@ const {
 const {
     MAP_SIZE,
 } = await loadConfigExports('claudeville/src/config/constants.js', ['MAP_SIZE']);
+const manifest = loadSpriteManifest();
 const manifestIds = await loadManifestIds();
 const groundingConfig = await loadConfigExports(
     'claudeville/src/config/buildingGrounding.js',
@@ -372,12 +500,13 @@ if (!Array.isArray(BUILDING_DEFS) || BUILDING_DEFS.length === 0) {
         }
         seenTypes.add(building.type);
         validateScalarFields(reporter, building, MAP_SIZE);
-        validateCapacity(reporter, building);
+        validateCapacity(reporter, building, APPROACH_FILES);
         validateEntrance(reporter, building, MAP_SIZE);
         validateVisitTiles(reporter, building, MAP_SIZE, globalVisitTiles);
         validateWalkExclusions(reporter, building, MAP_SIZE);
     }
-    validateCombinedVisitTiles(reporter, BUILDING_DEFS, VISIT_OVERFLOW_TILES, MAP_SIZE);
+    validateCombinedVisitTiles(reporter, BUILDING_DEFS, VISIT_OVERFLOW_TILES, APPROACH_FILES, MAP_SIZE);
+    validateSlotSpriteOcclusion(reporter, BUILDING_DEFS, VISIT_OVERFLOW_TILES, APPROACH_FILES, manifest);
     validateSpriteManifest(reporter, BUILDING_DEFS, manifestIds);
     validateGroundingProfiles(reporter, BUILDING_DEFS, groundingConfig);
 }
@@ -386,7 +515,7 @@ if (!Array.isArray(BUILDING_DEFS) || BUILDING_DEFS.length === 0) {
 validateWindowGeometry(reporter, { registry: BUILDING_VISUAL_REGISTRY, spritesRoot });
 validateRoomMasks(reporter, { registry: BUILDING_VISUAL_REGISTRY, spritesRoot });
 validateFrameStripParts(reporter, {
-    entries: collectSpriteEntries(loadSpriteManifest(), ['buildings']),
+    entries: collectSpriteEntries(manifest, ['buildings']),
     spritesRoot,
 });
 

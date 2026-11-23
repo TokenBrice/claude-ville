@@ -13,6 +13,7 @@ import {
     HARBOR_SEA_EXITS,
     HARBOR_SLOT_FILL_ORDER,
     HARBOR_WATER_MASK,
+    boxHitsHarborPierPolygons,
     buildDockLayoutFresh,
     composeWaterPath,
     composeWaterRouteTiles,
@@ -22,6 +23,7 @@ import {
     hullScreenBox,
     routeSeaTile,
 } from '../../claudeville/src/presentation/character-mode/HarborLayout.js';
+import { tileToWorld } from '../../claudeville/src/presentation/character-mode/Projection.js';
 import { reduceHarborTrafficState } from '../../claudeville/src/presentation/character-mode/HarborState.js';
 
 // Phase 3.2 / 3.3 lint: the water field, the lane graph and every route and
@@ -173,6 +175,8 @@ test('the pier berths fill first, and their fleets moor in the pier channels', (
     const events = [0, 1, 2, 3].flatMap(r => [0, 1, 2].map(c => ({ id: `c-${r}-${c}`, type: 'commit', project: `/w/pier-${r}`, branch: 'main', targetRef: 'main', sha: `${r}${c}`.padStart(40, '0'), label: `c ${r}${c}`, timestamp: T + (r * 10 + c) * 1000, success: true, status: 'success' })));
     const state = reduceHarborTrafficState(null, events, { now: T + 60_000, motionScale: 0 });
     const layout = buildDockLayoutFresh(state);
+    let inChannel = 0;
+    const inChannelByBerth = new Map();
     for (const meta of layout.byShipId.values()) {
         assert.match(meta.anchorageName, /Pier Berth$/);
         assert.equal(meta.moorHeading, 'nw');
@@ -183,11 +187,24 @@ test('the pier berths fill first, and their fleets moor in the pier channels', (
         assert.ok(meta.tileX > 32.5, `${meta.id} at x ${meta.tileX.toFixed(2)}`);
         assert.ok(Math.abs(meta.tileY - slot.tileY) < 0.3, `${meta.id} off its channel line at y ${meta.tileY.toFixed(2)}`);
         assert.ok(hullClearsPiers(meta, meta), `${meta.id} overlaps a pier on screen`);
+        if (meta.tileX < 36.0) {
+            inChannel++;
+            inChannelByBerth.set(meta.anchorageName, (inChannelByBerth.get(meta.anchorageName) || 0) + 1);
+        }
         for (const deck of HARBOR_PIER_DECKS) {
             const inside = meta.tileX >= deck.x0 && meta.tileX <= deck.x1 && meta.tileY >= deck.y0 - 0.3 && meta.tileY <= deck.y1 + 0.3;
             assert.ok(!inside, `${meta.id} moors on the ${deck.name} pier`);
         }
     }
+    assert.ok(inChannel >= 6, `expected at least 6 of 12 hulls moored inside pier channels (<36.0), got ${inChannel}`);
+    assert.ok((inChannelByBerth.get('North Pier Berth') || 0) >= 1, 'North Pier Berth must hold an in-channel hull');
+    assert.ok((inChannelByBerth.get('Middle Pier Berth') || 0) >= 1, 'Middle Pier Berth must hold an in-channel hull');
+    // Plates still stay clear of the North pier flagpole above the deck.
+    const flagpoleTip = tileToWorld({ tileX: 35.1, tileY: 16.45 });
+    assert.equal(boxHitsHarborPierPolygons({
+        x0: flagpoleTip.x - 4, x1: flagpoleTip.x + 4,
+        y0: flagpoleTip.y - 60, y1: flagpoleTip.y - 48,
+    }), true, 'North pier flagpole polygon blocks overlapping plates');
 });
 
 test('every anchorage buoy floats in open water', () => {

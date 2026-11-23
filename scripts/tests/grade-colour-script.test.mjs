@@ -4,11 +4,17 @@ import assert from 'node:assert/strict';
 import { ART_RAMPS } from '../../claudeville/src/config/artPalette.js';
 import {
   GRADE_KEYFRAMES,
+  WATER_DAY_MAX_SATURATION,
+  WATER_MAX_SATURATION,
   applyGradeToRgb,
+  capSaturation,
   evaluateGrade,
   gradeKeysAt,
+  waterMaxSaturation,
 } from '../../claudeville/src/presentation/character-mode/GradeEvaluator.js';
-import { AtmosphereState } from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
+import { AtmosphereState, sourceEnergyEnvelope } from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
+import { canvasGradeGain, canvasGradeMultiply, canvasGradeRgb } from '../../claudeville/src/presentation/character-mode/CanvasGrade.js';
+import { aerialHazeStart, aerialPerspectiveStrength, clearDayHazeWeight, hasActiveBloomEmitters, isDaytimeHighEnergyBuilding } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldPolicy.js';
 import { resetLookStrengths, setLookStrength } from '../../claudeville/src/presentation/character-mode/LookStrengths.js';
 
 // V6 — the colour script, asserted on the C1 ramps in rough island
@@ -114,6 +120,20 @@ test('the sea stays cool at every hour', () => {
     const { RB } = scriptAt(hour, sea);
     assert.ok(RB < 0, `sea R−B ${RB.toFixed(1)} at ${hour}h`);
   }
+  // V6 daytime water saturation relaxation (2026-11-23, operator decision):
+  // ~0.48 by day, blending back to 0.37 under night and storm.
+  assert.ok(WATER_DAY_MAX_SATURATION >= 0.46 && WATER_DAY_MAX_SATURATION <= 0.50);
+  assert.equal(waterMaxSaturation({ night: 0, storm: 0 }), WATER_DAY_MAX_SATURATION);
+  assert.equal(waterMaxSaturation({ night: 1, storm: 0 }), WATER_MAX_SATURATION);
+  assert.equal(waterMaxSaturation({ night: 0, storm: 1 }), WATER_MAX_SATURATION);
+  const stormGrade = evaluateGrade({ minuteOfDay: 14 * 60, weather: { type: 'storm', intensity: 0.9, cloudCover: 0.97 }, moonFill: 0 });
+  const nightGrade = evaluateGrade({ minuteOfDay: 23 * 60, weather: CLEAR, moonFill: 0.5 });
+  for (const sample of sea) {
+    const stormSat = saturation(capSaturation(applyGradeToRgb(sample.rgb, stormGrade), waterMaxSaturation({ night: 0, storm: 1 })));
+    const nightSat = saturation(capSaturation(applyGradeToRgb(sample.rgb, nightGrade), waterMaxSaturation({ night: 1, storm: 0 })));
+    assert.ok(stormSat <= WATER_MAX_SATURATION + 1e-6, `storm water S ${stormSat.toFixed(3)} stays quiet`);
+    assert.ok(nightSat <= WATER_MAX_SATURATION + 1e-6, `night water S ${nightSat.toFixed(3)} stays quiet`);
+  }
 });
 
 test('gold arrives late: the afternoon holds noon until the approach', () => {
@@ -161,4 +181,46 @@ test('EY-4: falling snow wears a pearl grade, lighter and softer than rain; 0 re
   } finally {
     resetLookStrengths();
   }
+});
+
+test('clearly sunny daylight: bright warm-key noon, distinct crisp morning, wide clear-vs-overcast gap, and Canvas gain pass', () => {
+  const morning = evaluateGrade({ minuteOfDay: 8.5 * 60, weather: CLEAR, moonFill: 0 });
+  const noon = evaluateGrade({ minuteOfDay: 12.5 * 60, weather: CLEAR, moonFill: 0 });
+  const overcast = evaluateGrade({ minuteOfDay: 12.5 * 60, weather: { type: 'overcast', intensity: 0.68, cloudCover: 0.86 }, moonFill: 0 });
+  const night = evaluateGrade({ minuteOfDay: 23 * 60, weather: CLEAR, moonFill: 0 });
+  assert.ok(noon.exposure >= 1.12 && noon.exposure <= 1.16, `noon exposure ${noon.exposure}`);
+  assert.ok(morning.exposure >= 1.04 && morning.exposure < noon.exposure, `morning ${morning.exposure} < noon ${noon.exposure}`);
+  assert.ok(noon.vignetteAlpha <= 0.12 && morning.vignetteAlpha <= 0.14, 'lightened daytime vignette');
+  assert.ok(noon.highlightTint[0] > noon.highlightTint[2] && noon.shadowTint[2] > noon.shadowTint[0], 'warm key over cool fill');
+  assert.ok(overcast.exposure <= 1.02, `overcast flattens clear exposure boost (${overcast.exposure})`);
+  const noonY = SAMPLES.reduce((s, p) => s + luma(applyGradeToRgb(p.rgb, noon)) * 255 * p.weight, 0) / SAMPLES.reduce((s, p) => s + p.weight, 0);
+  const overcastY = SAMPLES.reduce((s, p) => s + luma(applyGradeToRgb(p.rgb, overcast)) * 255 * p.weight, 0) / SAMPLES.reduce((s, p) => s + p.weight, 0);
+  assert.ok(noonY - overcastY >= 18, `clear noon (${noonY.toFixed(1)}) - overcast noon (${overcastY.toFixed(1)}) >= 18`);
+  // CanvasGrade gain pass lifts exposure > 1 at noon and is a no-op at night/overcast/neutral.
+  assert.ok(canvasGradeGain(noon).some(g => g > 1.08), 'Canvas noon gain > 1');
+  assert.deepEqual(canvasGradeGain(night), [1, 1, 1], 'Canvas night gain is a no-op');
+  assert.deepEqual(canvasGradeGain({ ...noon, exposure: 1 }), [1, 1, 1], 'Canvas neutral exposure skips color-dodge');
+  assert.ok(luma(canvasGradeRgb([0.5, 0.5, 0.5], noon)) > 0.54, 'Canvas gain pass lifts mid-grey past 0.5');
+  assert.deepEqual(canvasGradeMultiply(noon), [1, 1, 1], 'noon multiply caps at 1 while gain carries excess');
+  // Clear-daylight haze lightens only in clear daytime air; night, storm and fog equal base exactly.
+  assert.equal(clearDayHazeWeight(0, 1, 0.08), 1);
+  assert.equal(clearDayHazeWeight(0, 0, 0.08), 0, 'night weight is 0');
+  assert.equal(clearDayHazeWeight(0.34, 1, 1), 0, 'storm weight is 0');
+  assert.equal(aerialHazeStart(0, 1), 0.30);
+  assert.equal(aerialHazeStart(0, 0), 0.55);
+  assert.equal(aerialHazeStart(0.9, 1), 0.55);
+  assert.equal(aerialPerspectiveStrength(1, 0, 0), 0.14, 'night/default equals base');
+  assert.equal(aerialPerspectiveStrength(1, 0.34, 0), 0.14 * 1.34, 'storm equals base');
+  assert.equal(aerialPerspectiveStrength(1, 0, 1), 0.06, 'clear day drops haze');
+  assert.ok(aerialPerspectiveStrength(1, 0.9, 1) >= 0.26, 'fog raises haze monotonically');
+  // Daylight sourceEnergy keeps base core/bloom; daytime bloom gates on working buildings only.
+  const dayEnergy = sourceEnergyEnvelope(12 * 60);
+  assert.equal(dayEnergy.core, 0.14);
+  assert.equal(dayEnergy.bloom, 0.12);
+  assert.equal(isDaytimeHighEnergyBuilding('forge', true, 1), true);
+  assert.equal(isDaytimeHighEnergyBuilding('forge', false, 1), false);
+  assert.equal(isDaytimeHighEnergyBuilding('portal', true, 1), true);
+  assert.equal(isDaytimeHighEnergyBuilding('archive', true, 1), false);
+  assert.equal(hasActiveBloomEmitters([{ emissiveSource: {}, records: [{ daytimeEmitter: true, emissiveGate: 1 }] }]), true);
+  assert.equal(hasActiveBloomEmitters([{ emissiveSource: {}, records: [{ daytimeEmitter: false, emissiveGate: 1 }] }]), false);
 });

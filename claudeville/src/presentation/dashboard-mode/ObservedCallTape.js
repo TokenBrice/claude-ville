@@ -181,6 +181,40 @@ export class ObservedCallTapeStore {
         return `${bucketIndex(at)}:${this._agents.get(String(agentId))?.revision || 0}`;
     }
 
+    /**
+     * Whether any agent in `agentIds` has observed tape data worth showing in
+     * the 10-minute row column: at least one recorded call or exception span in
+     * the current window once observation has crossed at least one 15 s bucket
+     * (or spanned 2+ distinct buckets). A fresh tab stays compact until then.
+     */
+    hasObservedActivity(agentIds, at = this._now()) {
+        const newest = bucketIndex(at);
+        const oldest = newest - (TAPE_BUCKETS - 1);
+        const elapsed = (at - this.openedAt) >= TAPE_BUCKET_MS;
+        for (const rawId of agentIds || []) {
+            const record = this._agents.get(String(rawId));
+            if (!record) continue;
+            let activeBuckets = 0;
+            for (const [bucket, counts] of record.buckets) {
+                if (bucket < oldest || bucket > newest) continue;
+                if ((bucket + 1) * TAPE_BUCKET_MS <= this.openedAt) continue;
+                if ((counts?.act || 0) > 0 || (counts?.look || 0) > 0) {
+                    if (elapsed) return true;
+                    activeBuckets++;
+                    if (activeBuckets >= 2) return true;
+                }
+            }
+            for (const span of record.spans) {
+                const from = Math.max(oldest, bucketIndex(span.from));
+                const to = Math.min(newest, bucketIndex(span.to ?? at));
+                if (from > to) continue;
+                if (elapsed || to > from) return true;
+                if (activeBuckets >= 1 && !record.buckets.has(from)) return true;
+            }
+        }
+        return false;
+    }
+
     title() {
         const since = new Date(this.openedAt);
         const hh = String(since.getHours()).padStart(2, '0');

@@ -6,7 +6,6 @@ import { inVillageMasonry, PORTAL_SPAWN_TILE, TOWN_ROAD_ROUTES, VILLAGE_GATE, VI
 import {
     AMBIENT_GROUND_PROPS,
     AMBIENT_SCENIC_POINTS,
-    ANCIENT_RUINS,
     DISTRICT_PROPS,
     SCENIC_POINT_PROPS,
     WATCHTOWER_BEACON_BUOY_TILES,
@@ -36,7 +35,7 @@ import { HDR_HIGHLIGHTS_EVENT, overlayContextAttributes, publishDisplayStatus, r
 import { installP3OverlayInks, readDisplayMedia, setOverlayInksP3, watchDisplayMedia } from './DisplayColor.js';
 import { CameraDirector } from './CameraDirector.js';
 import { ParticleSystem } from './ParticleSystem.js';
-import { AgentSprite, drawFamiliarMotes, familiarMoteLightSources, ONE_SIDED_CHAT_GRACE_MS } from './AgentSprite.js';
+import { AgentSprite, drawFamiliarMotes, familiarMoteLightSources, MUTUAL_CHAT_MAX_MS, ONE_SIDED_CHAT_GRACE_MS } from './AgentSprite.js';
 import { BuildingSprite, SOURCE_HALO_RADIUS_CAP, lampsLitAt } from './BuildingSprite.js';
 import { VillageCalendar } from './VillageCalendar.js';
 import { IsleLandmarks } from './IsleLandmarks.js';
@@ -45,7 +44,8 @@ import { BehaviorTelemetry } from './BehaviorTelemetry.js';
 
 import { SceneryEngine } from './SceneryEngine.js';
 import { Pathfinder } from './Pathfinder.js';
-import { constrainSteeringInto, constrainSteeringToTarget, laneAxisForBridgeOrientation } from './MovementSteering.js';
+import { createWalkClearance } from './WalkClearance.js';
+import { bridgeCrossingTiles, constrainSteeringInto, constrainSteeringToTarget, laneAxisForBridgeOrientation } from './MovementSteering.js';
 import { SpriteRenderer } from './SpriteRenderer.js';
 import { SkyRenderer } from './SkyRenderer.js';
 import { AtmosphereState, sourceEnergyFor } from './AtmosphereState.js';
@@ -75,7 +75,8 @@ import { HarborTraffic } from './HarborTraffic.js';
 import { BridgeLanterns } from './BridgeLanterns.js';
 import { LandmarkActivity } from './LandmarkActivity.js';
 import { AgentEventStream } from './AgentEventStream.js';
-import { bindSquadNotice } from './SquadNotice.js';
+import { bindSquadNotice, notifySquadWatchers } from './SquadNotice.js';
+import { VERIFIED_OUTCOME_EVENT } from '../../domain/services/VerifiedOutcome.js';
 import { RelationshipState } from './RelationshipState.js';
 import { RitualConductor } from './RitualConductor.js';
 import { VisitIntentManager } from './VisitIntentManager.js';
@@ -117,6 +118,7 @@ import {
 import { StaticPropSprite, buildStaticPropDrawables, lineOcclusionColumns } from './StaticPropDrawables.js';
 import { buildRestSeatPropSprites } from './RestSeats.js';
 import { buildTavernArcadeSprites } from './TavernArcade.js';
+import { buildCentralBridgeParapetSprite } from './BridgeParapet.js';
 import { createDepthDrawable, propPartSortY } from './DrawablePass.js';
 import {
     renderWorldFrame,
@@ -146,6 +148,8 @@ import { NEUTRAL_GRADE } from './GradeEvaluator.js';
 import { poolReceiverMask } from './CanvasPoolMask.js';
 import {
     buildPoolDodgeStamp,
+    canvasGradeMultiply,
+    drawCanvasGradeGain,
     drawCanvasGradeLift,
     drawCanvasGradeSaturation,
     gradedPoolReceiver,
@@ -301,7 +305,6 @@ const clampUnit = value => Math.max(0, Math.min(1, Number(value) || 0));
 const FAST_ATMOSPHERE_CSS_PIXELS = 800_000;
 const FAST_PROP_CSS_PIXELS = 800_000;
 const FAST_PROP_MIN_ZOOM = 1.5;
-const FAST_PROP_AGENT_MARGIN = 36;
 const FAST_PROP_SCREEN_MARGIN = 96;
 // Covers the tallest selected bubble stack plus the sprite body. Agents beyond
 // this screen-space apron cannot contribute pixels to the viewport.
@@ -346,7 +349,7 @@ const LANE_STEERING = Object.freeze({
     plazaOffsetPx: 2.2,
     // A landmark deck (not planks or docks) is walkable on its centre column
     // only; its hint's `laneOffsetPx` (scenery.js BRIDGE_HINTS) sets the two
-    // files from the measured clear deck (the central bridge: 8 px, both
+    // files from the measured clear deck (the central bridge: 6 px, both
     // files on the planks between the rails). This is the fallback for a
     // hint without one.
     bridgeOffsetPx: 10,
@@ -371,6 +374,7 @@ const FOLLOW_GAP = Object.freeze({
     engagePx: 22,
     releasePx: 24,
     yieldPx: 20.5,
+    minYieldPx: 6,
     closingFrames: 2,
     lookAheadPx: 20,
     headingDot: 0.7,
@@ -418,13 +422,28 @@ const FAN_EXEMPT_ROLES = new Set(['rest', 'queue']);
 // parallel files: each waits hidden until a lane's entry point has no body
 // within GATE_ENTRY_GAP_PX, so a restart that lands dozens of sessions in one
 // frame walks in spaced, never as a stacked knot. Both lanes run straight
-// through the arch along -tileY, from `outsideY` to `insideY`, 0.45 tile
-// either side of the arch's axis (tile column 19.1): 26 world px between
-// the files, both inside the arch.
+// through the arch along -tileY, from `outsideY` to `insideY`, symmetric on
+// the arch's axis (tile column 19.0): both round to walkable column 19, stay
+// clear of the masonry jambs (`archHalfWidth - reach = 0.42`) and clear the
+// gate lantern fixture at (18, 37) on exit.
 const GATE_ENTRY_GAP_PX = FOLLOW_GAP.releasePx;
-const GATE_ENTRY_LANES = Object.freeze([
-    Object.freeze({ tileX: 18.65, outsideY: 39.35, insideY: 37.6 }),
-    Object.freeze({ tileX: 19.55, outsideY: 39.35, insideY: 37.6 }),
+export const GATE_ENTRY_LANES = Object.freeze([
+    Object.freeze({ tileX: 18.70, outsideY: 39.35, insideY: 36.6 }),
+    Object.freeze({ tileX: 19.30, outsideY: 39.35, insideY: 36.6 }),
+]);
+// 7.4 — subagents emerging from the Portal Gate step out in two spaced files
+// (mirroring GATE_ENTRY_LANES, 32 px apart, both walkable and fixture-free);
+// Portal uses a tighter 16 px clearance so workers on its adjacent slots
+// (4,34) and (6,34) (19.7 px from the lane entries) never starve the queue.
+// A cold-load burst larger than PORTAL_COLD_SETTLE_LIMIT settles at its
+// destinations instead of piling up at the Portal, and any queued entry that
+// waits past PORTAL_QUEUE_MAX_WAIT_MS falls back to settleAtDestination.
+const PORTAL_COLD_SETTLE_LIMIT = 4;
+const PORTAL_ENTRY_GAP_PX = 16;
+const PORTAL_QUEUE_MAX_WAIT_MS = 4000;
+const PORTAL_ENTRY_LANES = Object.freeze([
+    Object.freeze({ tileX: 4.55, outsideY: 34.0, insideY: 35.0 }),
+    Object.freeze({ tileX: 5.45, outsideY: 34.0, insideY: 35.0 }),
 ]);
 
 // C2 — the Canvas fallback grades with the same evaluated grade as the
@@ -433,8 +452,7 @@ const GATE_ENTRY_LANES = Object.freeze([
 // the vignette; `_drawAtmosphere` adds the desaturation and lift fills.
 function canvasGradeFor(atmosphere = null) {
     const grade = atmosphere?.lightGrade || NEUTRAL_GRADE;
-    const base = [0, 1, 2].map(channel => Math.min(1, grade.exposure * grade.gain[channel]
-        * Math.sqrt(grade.shadowTint[channel] * grade.highlightTint[channel])));
+    const base = canvasGradeMultiply(grade);
     return { grade, base, edge: grade.vignetteEdge, edgeAlpha: grade.vignetteAlpha };
 }
 
@@ -515,6 +533,7 @@ const NAME_SLOT_PROP_CELL = 96;
 // candidate must stay free THOUGHT_RETURN_MS before the column moves back.
 const THOUGHT_RESEARCH_MS = 300;
 const THOUGHT_RETURN_MS = 2000;
+const THOUGHT_EDGE_MARGIN = 8;
 // Thought budget: a swarm must not turn the World into a wall of text. At most
 // THOUGHT_BUDGET columns are placed per frame, freshest line first; a placed
 // column keeps its seat THOUGHT_MIN_SEAT_MS so it can be read before a newer
@@ -538,10 +557,6 @@ const THOUGHT_NO_THREAD = Object.freeze([]);
 // them reach `fixturePoolReach` (L1-5) past it.
 const STREET_LAMP_POOL_RADIUS = 66;
 const BRAZIER_POOL_RADIUS = 70;
-// Command's watchfires are drawn burning, so at night they light the plaza
-// like any other clock-gated hearth (LightSourceRegistry).
-const WATCHFIRE_POOL_RADIUS = 52;
-const WATCHFIRE_FLAME_HEIGHT = 12;
 // BR-6 / C2 — a bridge sprite's painted flames (manifest `lights`) light as
 // candle-scale fixtures: a pool well inside the street lamps' and under
 // SOURCE_HALO_RADIUS_CAP, the emissive ramp's gold, held steady (no breath).
@@ -914,6 +929,12 @@ export class IsometricRenderer {
         this.bridgeLanterns = new BridgeLanterns({ renderer: this });
         this.bridgeSpans = this._buildBridgeSpans();
         this._waterTileDescriptors = this._buildWaterTileDescriptors();
+        for (const [key] of Array.from(this.yardTiles.entries())) {
+            if (this.waterTiles.has(key) && !this.bridgeTiles.has(key)) {
+                this.yardTiles.delete(key);
+                if (!this.roadMaterialTiles.has(key)) this.pathTiles.delete(key);
+            }
+        }
         for (const key of this.bridgeTiles.keys()) {
             this.pathTiles.add(key);
         }
@@ -969,7 +990,7 @@ export class IsometricRenderer {
                 tileY: b.tileY,
                 id,
                 bounds: this._assetPropBounds(id, 0.62),
-                splitForOcclusion: size === 'large',
+                splitForOcclusion: false,
                 drawFn: (ctx, x, y) => { if (this.sprites) this.sprites.drawSprite(ctx, id, x, y, this._winterPropOpts(id)); },
             });
         });
@@ -1004,13 +1025,18 @@ export class IsometricRenderer {
         this.walkabilityGrid = this.scenery.getWalkabilityGrid();
         this.pathfinder = new Pathfinder(this.walkabilityGrid.slice());
         this.pathfinder.keepReachableFrom(VILLAGE_GATE.inside);
+        this._walkClearance = createWalkClearance({
+            buildings: this.world?.buildings,
+            bridgeTiles: this.bridgeTiles,
+            pathfinder: this.pathfinder,
+            getCoastField: () => this._coastField || this.coastField || null,
+        });
         this.visitTileAllocator.updateContext({
             buildings: this.world?.buildings,
             agentSprites: this.agentSprites,
             pathfinder: this.pathfinder,
         });
 
-        this.commandCenterGroundProps = [];
         this._generateCommandCenterAmbience();
         this._laneTiles = this._buildLaneTileIndex();
         this.ambientEmitters = [];
@@ -1110,7 +1136,12 @@ export class IsometricRenderer {
         const dx = entrance.tileX < x0 ? -1 : entrance.tileX > x1 ? 1 : 0;
         const dy = entrance.tileY < y0 ? -1 : entrance.tileY > y1 ? 1 : 0;
         const keys = [];
-        const push = (x, y) => { if (this._inMapBounds(x, y)) keys.push(`${x},${y}`); };
+        const push = (x, y) => {
+            if (!this._inMapBounds(x, y)) return;
+            const key = `${x},${y}`;
+            if (this.waterTiles?.has(key) && !this.bridgeTiles?.has(key)) return;
+            keys.push(key);
+        };
         if (dy) for (let x = x0; x <= x1; x++) push(x, dy > 0 ? y1 + 1 : y0 - 1);
         if (dx) for (let y = y0; y <= y1; y++) push(dx > 0 ? x1 + 1 : x0 - 1, y);
         if (dx && dy) push(dx > 0 ? x1 + 1 : x0 - 1, dy > 0 ? y1 + 1 : y0 - 1);
@@ -1340,10 +1371,10 @@ export class IsometricRenderer {
     }
 
     _generateTownSquare(centerX, centerY) {
-        for (let x = centerX - 4; x <= centerX + 5; x++) {
-            for (let y = centerY - 3; y <= centerY + 3; y++) {
-                const dx = (x - centerX) / 4.4;
-                const dy = (y - centerY) / 2.8;
+        for (let x = centerX - 3; x <= centerX + 4; x++) {
+            for (let y = centerY - 2; y <= centerY + 2; y++) {
+                const dx = (x - centerX) / 3.2;
+                const dy = (y - centerY) / 2.2;
                 if ((dx * dx + dy * dy) <= 1.0 && this._inMapBounds(x, y)) {
                     const key = `${x},${y}`;
                     this.townSquareTiles.add(key);
@@ -1452,22 +1483,6 @@ export class IsometricRenderer {
         this.commandCenterRoadTiles.add(`${cx + w + 2},${northY + 1}`);
         this.commandCenterRoadTiles.add(`${cx - 2},${southY + 1}`);
         this.commandCenterRoadTiles.add(`${cx - 2},${southY - 1}`);
-
-        // Guard-posts mark the plaza's west approach and the northern gate. The
-        // ceremonial entrance itself is the Command sprite's gate steps and
-        // braziers (row southY), so nothing is placed on them.
-        this.commandCenterGroundProps.push(
-            { tileX: cx - 2.2, tileY: southY + 0.6, type: 'guardpost', phase: 2.8 },
-            { tileX: cx + w + 2.2, tileY: northY + 0.4, type: 'guardpost', phase: 3.9 },
-        );
-
-        // Watchfires around ceremonial paths for subtle pulse signals.
-        if (this._inMapBounds(cx - 3.5, southY + 0.4)) {
-            this.commandCenterGroundProps.push({ tileX: cx - 3.5, tileY: southY + 0.4, type: 'watchfire', phase: 1.35 });
-        }
-        if (this._inMapBounds(cx + w + 2.4, cy + 0.9)) {
-            this.commandCenterGroundProps.push({ tileX: cx + w + 2.4, tileY: cy + 0.9, type: 'watchfire', phase: 4.7 });
-        }
     }
 
     _inMapBounds(tileX, tileY) {
@@ -1541,17 +1556,6 @@ export class IsometricRenderer {
             { tileX: 23.4, tileY: 17.8, particleType: 'sparkle', chance: 0.012 },
             { tileX: 32.5, tileY: 16.4, particleType: 'beaconMote', chance: 0.014 },
         ];
-
-        for (const prop of this.commandCenterGroundProps) {
-            if (prop.type === 'watchfire') {
-                emitters.push({
-                    tileX: prop.tileX,
-                    tileY: prop.tileY,
-                    particleType: 'torch',
-                    chance: 0.022,
-                });
-            }
-        }
 
         this.ambientEmitters = emitters.map(emitter => ({
             ...emitter,
@@ -2093,9 +2097,16 @@ export class IsometricRenderer {
         this.buildingRenderer?.setRitualConductor?.(this.ritualConductor);
 
         // Create sprites for existing agents
+        const initialSubagents = [];
+        this._deferPortalRelease = true;
         for (const agent of this.world.agents.values()) {
             this._addAgentSprite(agent);
+            if (agent?.parentSessionId || agent?.parentId || agent?.parentAgentId) {
+                const sprite = this.agentSprites.get(agent.id);
+                if (sprite) initialSubagents.push(sprite);
+            }
         }
+        this._deferPortalRelease = false;
         this._syncRitualContext();
 
         this.agentEventStream?.dispose?.();
@@ -2107,9 +2118,21 @@ export class IsometricRenderer {
         // D7 — seated and waiting squadmates face a celebrating villager.
         this._unbindSquadNotice?.();
         this._unbindSquadNotice = bindSquadNotice(() => this.agentSprites);
+        this._unbindVerifiedOutcomes?.();
+        this._unbindVerifiedOutcomes = eventBus.on(VERIFIED_OUTCOME_EVENT, (outcome) => {
+            if (!outcome?.agentId) return;
+            const sprite = this.agentSprites.get(String(outcome.agentId));
+            sprite?.observeVerifiedOutcome?.(outcome);
+        });
         this.relationshipState = new RelationshipState(this.world);
         this._replayActiveToolRituals({ force: true });
         this._updateVisitSystems(Date.now());
+        this._coldPortalSettled = this.world.agents.size > 0;
+        if (initialSubagents.length > PORTAL_COLD_SETTLE_LIMIT && !this.replay?.recorded) {
+            this._settlePortalColdBurst(initialSubagents);
+        } else {
+            this._releasePortalEntries();
+        }
         this._installDebugGlobal('__relationshipState', () => this.relationshipState?.getSnapshot?.());
         this._installDebugGlobal('__visitIntents', () => this.visitIntentManager?.debugSnapshot?.() || null);
         this._installDebugGlobal('__visitReservations', () => this.visitTileAllocator?.debug?.() || null);
@@ -2456,6 +2479,8 @@ export class IsometricRenderer {
         this.agentEventStream?.dispose?.();
         this._unbindSquadNotice?.();
         this._unbindSquadNotice = null;
+        this._unbindVerifiedOutcomes?.();
+        this._unbindVerifiedOutcomes = null;
         releaseCouncilRingState(this.relationshipState);
         this.relationshipState?.dispose?.();
         if (this._harborSemanticsTimer) clearInterval(this._harborSemanticsTimer);
@@ -2819,15 +2844,22 @@ export class IsometricRenderer {
         for (const agentId of Array.from(this.agentSprites.keys())) {
             if (!liveIds.has(agentId)) this._removeAgentSprite(agentId);
         }
-        for (const agent of this.world?.agents?.values?.() || []) {
-            if (agent.isDeparted) {
-                // Departed while world mode was inactive: walk out now, and
-                // never spawn a sprite for one that already left.
-                if (this.agentSprites.has(agent.id)) this._beginAgentDeparture(agent);
-                continue;
+        const prevDefer = this._deferPortalRelease;
+        this._deferPortalRelease = true;
+        try {
+            for (const agent of this.world?.agents?.values?.() || []) {
+                if (agent.isDeparted) {
+                    // Departed while world mode was inactive: walk out now, and
+                    // never spawn a sprite for one that already left.
+                    if (this.agentSprites.has(agent.id)) this._beginAgentDeparture(agent);
+                    continue;
+                }
+                this._addAgentSprite(agent);
             }
-            this._addAgentSprite(agent);
+        } finally {
+            this._deferPortalRelease = prevDefer;
         }
+        if (!this._deferPortalRelease) this._releasePortalEntries();
         this._worldSpritesDirty = false;
     }
 
@@ -2855,6 +2887,7 @@ export class IsometricRenderer {
             if (Number(sprite.addedAt) >= lastFrameAt || sprite.isArrivalPending?.() || transit?.type === 'arrival') {
                 this.gateTransits.delete(agentId);
                 if (this._gateEntryQueue?.length) this._gateEntryQueue = this._gateEntryQueue.filter(entry => entry.sprite !== sprite);
+                if (this._portalEntryQueue?.length) this._portalEntryQueue = this._portalEntryQueue.filter(entry => entry.sprite !== sprite);
                 this.arrivalDeparture?.arrivals?.delete(agentId);
                 this.arrivalDeparture?.dispatches?.delete(agentId);
                 sprite.settleAtDestination?.();
@@ -2901,7 +2934,13 @@ export class IsometricRenderer {
         let next = 0;
         for (let i = 0; i < visible.length; i++) {
             const sprite = visible[i];
-            if (!candidates.has(sprite)) continue;
+            if (!candidates.has(sprite)) {
+                sprite._occludedByWorld = false;
+                sprite._behindBuilding = false;
+                sprite._behindBuildingDrawable = null;
+                if (sprite._worldOccluders) sprite._worldOccluders.length = 0;
+                continue;
+            }
             visible[next++] = sprite;
             candidates.delete(sprite);
         }
@@ -3002,13 +3041,12 @@ export class IsometricRenderer {
     _enumerateFastPropDrawables() {
         const out = this._staticPropFastFrameDrawables;
         out.length = 0;
-        const agents = this._snapshotSortedSprites();
         const viewport = this._screenViewport();
         for (const record of this._staticPropFastDrawables || []) {
             if (!this._propVisibleOnScreen(record.sprite, viewport)) continue;
             if (record.columns) {
                 for (const column of record.columns) out.push(column);
-            } else if (record.sprite?.splitForOcclusion && this._propIntersectsAgentBand(record.sprite, agents)) {
+            } else if (record.sprite?.splitForOcclusion) {
                 if (record.back) out.push(record.back);
                 if (record.front) out.push(record.front);
             } else if (record.whole) {
@@ -3031,21 +3069,6 @@ export class IsometricRenderer {
             && left <= viewport.width + FAST_PROP_SCREEN_MARGIN
             && bottom >= -FAST_PROP_SCREEN_MARGIN
             && top <= viewport.height + FAST_PROP_SCREEN_MARGIN;
-    }
-
-    _propIntersectsAgentBand(prop, agents) {
-        const bounds = prop?.bounds;
-        if (!bounds || !agents?.length) return false;
-        const left = prop.x + bounds.left - FAST_PROP_AGENT_MARGIN;
-        const right = prop.x + bounds.right + FAST_PROP_AGENT_MARGIN;
-        const top = prop.y + bounds.top - FAST_PROP_AGENT_MARGIN;
-        const bottom = prop.y + bounds.bottom + FAST_PROP_AGENT_MARGIN;
-        for (const sprite of agents) {
-            if (!sprite || this._isGateTransit(sprite, 'departure')) continue;
-            if (sprite.x < left || sprite.x > right || sprite.y < top || sprite.y > bottom) continue;
-            return true;
-        }
-        return false;
     }
 
     _bindMotionPreference() {
@@ -3204,21 +3227,31 @@ export class IsometricRenderer {
 
     _contentFrameBox() {
         const activePoints = [];
-        const allAgentPoints = [];
+        const settledAgentPoints = [];
+        const snapshot = this.villageDirector?.getSnapshot?.() || null;
+        for (const cohort of snapshot?.workCohorts || []) {
+            if (Number.isFinite(cohort?.center?.x) && Number.isFinite(cohort?.center?.y)) {
+                activePoints.push({ x: cohort.center.x, y: cohort.center.y });
+            }
+        }
         for (const sprite of this.agentSprites.values()) {
-            if (Number.isFinite(sprite?.x) && Number.isFinite(sprite?.y)) {
-                const point = { x: sprite.x, y: sprite.y };
-                allAgentPoints.push(point);
-                if (this._cameraAgentFrameWeight(sprite) > 0) {
-                    activePoints.push(point);
-                    const buildingPoint = this._agentBuildingFramePoint(sprite.agent);
-                    if (buildingPoint) activePoints.push(buildingPoint);
-                }
+            if (!sprite || sprite._archiveAnim || sprite.agent?.isDeparted || this._isGateTransit(sprite, 'departure')) {
+                continue;
+            }
+            const enteringAtGate = Boolean(sprite.isArrivalPending?.() || this._isGateTransit(sprite, 'arrival'));
+            const hasPoint = Number.isFinite(sprite.x) && Number.isFinite(sprite.y);
+            if (hasPoint && !enteringAtGate) {
+                settledAgentPoints.push({ x: sprite.x, y: sprite.y });
+            }
+            if (this._cameraAgentFrameWeight(sprite) > 0) {
+                const buildingPoint = this._agentBuildingFramePoint(sprite.agent);
+                if (buildingPoint) activePoints.push(buildingPoint);
+                if (hasPoint && !enteringAtGate) activePoints.push({ x: sprite.x, y: sprite.y });
             }
         }
 
         const hotBuildingPoints = [];
-        const buildingSignals = this.villageDirector?.getSnapshot?.()?.buildingSignals || [];
+        const buildingSignals = snapshot?.buildingSignals || [];
         for (const signal of buildingSignals.slice(0, 3)) {
             if ((Number(signal?.heat) || 0) < 0.18) continue;
             if (Number.isFinite(signal?.center?.x) && Number.isFinite(signal?.center?.y)) {
@@ -3230,7 +3263,7 @@ export class IsometricRenderer {
             return this._worldBoxForCameraPoints([...activePoints, ...hotBuildingPoints.slice(0, 2)]);
         }
         if (hotBuildingPoints.length) return this._worldBoxForCameraPoints(hotBuildingPoints);
-        if (allAgentPoints.length) return this._worldBoxForCameraPoints(allAgentPoints);
+        if (settledAgentPoints.length) return this._worldBoxForCameraPoints(settledAgentPoints);
 
         const buildingPoints = [];
         if (this.world?.buildings) {
@@ -3242,6 +3275,96 @@ export class IsometricRenderer {
             }
         }
         return this._worldBoxForCameraPoints(buildingPoints);
+    }
+
+    // Densest active district cluster sized to fit the medium shot scale (z2 at
+    // 1920 × 1080 and 1440 × 900) for the opening establishing shot. Excludes
+    // walkers entering at the gate or Portal so live boots never drift SW.
+    _openingContentFrameBox() {
+        const snapshot = this.villageDirector?.getSnapshot?.() || null;
+        const clusters = new Map();
+        const addCluster = (key, center, weight, extraPoint = null) => {
+            if (!Number.isFinite(center?.x) || !Number.isFinite(center?.y)) return;
+            const entry = clusters.get(key) || { key, center: { x: center.x, y: center.y }, weight: 0, points: [] };
+            entry.weight += weight;
+            if (extraPoint && Number.isFinite(extraPoint.x) && Number.isFinite(extraPoint.y)) {
+                entry.points.push(extraPoint);
+            }
+            clusters.set(key, entry);
+        };
+
+        for (const cohort of snapshot?.workCohorts || []) {
+            if (!cohort?.type || !cohort?.center) continue;
+            const weight = (Number(cohort.working) || 0) * 3 + (Number(cohort.waiting) || 0) * 2 + (Number(cohort.total) || 0);
+            addCluster(`b:${cohort.type}`, cohort.center, Math.max(1, weight));
+        }
+        for (const sprite of this.agentSprites.values()) {
+            if (!sprite || sprite._archiveAnim || sprite.agent?.isDeparted || this._isGateTransit(sprite, 'departure')) {
+                continue;
+            }
+            const weight = this._cameraAgentFrameWeight(sprite);
+            if (!(weight > 0)) continue;
+            const enteringAtGate = Boolean(sprite.isArrivalPending?.() || this._isGateTransit(sprite, 'arrival'));
+            const point = !enteringAtGate && Number.isFinite(sprite.x) && Number.isFinite(sprite.y)
+                ? { x: sprite.x, y: sprite.y }
+                : null;
+            const bType = normalizeBuildingType(
+                sprite.agent?.targetBuildingType
+                || sprite.agent?.lastKnownBuildingType
+                || sprite.agent?.buildingType
+                || sprite.agent?.building,
+            );
+            const buildingPoint = this._agentBuildingFramePoint(sprite.agent);
+            if (bType && buildingPoint) {
+                addCluster(`b:${bType}`, buildingPoint, weight, point);
+            } else if (point) {
+                addCluster(`a:${sprite.agent?.id || clusters.size}`, point, weight, point);
+            }
+        }
+        for (const signal of (snapshot?.buildingSignals || []).slice(0, 3)) {
+            if ((Number(signal?.heat) || 0) < 0.18 || !signal?.type || !signal?.center) continue;
+            addCluster(`b:${signal.type}`, signal.center, Number(signal.heat) || 0.2);
+        }
+
+        const ranked = [...clusters.values()].sort((a, b) => b.weight - a.weight || a.key.localeCompare(b.key));
+        if (!ranked.length) return this._contentFrameBox();
+
+        const camera = this.camera;
+        const w = camera?._viewportWidth?.() || 0;
+        const h = camera?._viewportHeight?.() || 0;
+        const mediumZoom = camera?.shotZoom?.('medium') || camera?.tierZoom?.(2) || 2;
+        const padPx = 96;
+        const maxW = w > 0 ? Math.max(160, (w - padPx * 2) / mediumZoom) : Infinity;
+        const maxH = h > 0 ? Math.max(160, (h - padPx * 2) / mediumZoom) : Infinity;
+
+        const lead = ranked[0];
+        const box = {
+            minX: lead.center.x - 40,
+            maxX: lead.center.x + 40,
+            minY: lead.center.y - 60,
+            maxY: lead.center.y + 40,
+        };
+        const tryMerge = (pt, rx = 40, ryUp = 60, ryDown = 40) => {
+            const minX = Math.min(box.minX, pt.x - rx);
+            const maxX = Math.max(box.maxX, pt.x + rx);
+            const minY = Math.min(box.minY, pt.y - ryUp);
+            const maxY = Math.max(box.maxY, pt.y + ryDown);
+            if ((maxX - minX) <= maxW && (maxY - minY) <= maxH) {
+                box.minX = minX;
+                box.maxX = maxX;
+                box.minY = minY;
+                box.maxY = maxY;
+                return true;
+            }
+            return false;
+        };
+        for (const pt of lead.points) tryMerge(pt, 20, 76, 6);
+        for (const cluster of ranked.slice(1)) {
+            if (tryMerge(cluster.center)) {
+                for (const pt of cluster.points) tryMerge(pt, 20, 76, 6);
+            }
+        }
+        return box;
     }
 
     // Frame the camera on live work first (fallback: hot buildings, all agents,
@@ -3259,7 +3382,7 @@ export class IsometricRenderer {
         // #45/8.3 — the first World paint opens on the whole island. The flag
         // is set only when the shot actually starts (5.7), so a failed attempt
         // (e.g. missing viewport) retries on the next re-frame.
-        if (!this._didEstablishingShot && this.playOpeningShot({ targetBox })) return;
+        if (!this._didEstablishingShot && this.playOpeningShot({ targetBox: this._openingContentFrameBox() })) return;
 
         // 5.7/8.1/4.1 — later re-frames (relayout, the F key) glide in the
         // director vocabulary and settle on the default frame tier (3, or the
@@ -3720,6 +3843,28 @@ export class IsometricRenderer {
         }
     }
 
+    // Re-trigger ritual admission when a WORKING villager arrives at its
+    // building (events emitted mid-walk are rejected by RitualConductor.canAccept).
+    _enqueueArrivalRitual(sprite) {
+        if (!this._worldModeActive || !this.ritualConductor || !sprite?.agent) return;
+        const agent = sprite.agent;
+        if (agent.status !== AgentStatus.WORKING || !agent.currentTool) return;
+        const building = sprite._lastBuildingType
+            || agent.targetBuildingType
+            || agent.lastKnownBuildingType
+            || null;
+        if (!building) return;
+        this._syncRitualContext();
+        this.ritualConductor.enqueue({
+            agentId: agent.id,
+            provider: agent.provider || null,
+            tool: agent.currentTool,
+            input: agent.currentToolInput || null,
+            ts: Date.now(),
+            building,
+        });
+    }
+
     _enqueueSubagentSummonRitual(payload) {
         if (!this._worldModeActive || !this.ritualConductor) return;
         const parentId = payload?.parentId;
@@ -3805,11 +3950,11 @@ export class IsometricRenderer {
         }
 
         if (event.code === 'Equal' || event.code === 'NumpadAdd') {
-            if (this._zoomByKeyboard(1)) { this.camera.abortDirectorGlide?.(); this.camera.noteUserInput?.(); event.preventDefault(); }
+            if (this._zoomByKeyboard(1)) event.preventDefault();
             return;
         }
         if (event.code === 'Minus' || event.code === 'NumpadSubtract') {
-            if (this._zoomByKeyboard(-1)) { this.camera.abortDirectorGlide?.(); this.camera.noteUserInput?.(); event.preventDefault(); }
+            if (this._zoomByKeyboard(-1)) event.preventDefault();
             return;
         }
         if (event.code === 'KeyF') {
@@ -3885,17 +4030,20 @@ export class IsometricRenderer {
 
     _zoomByKeyboard(direction = 1) {
         const camera = this.camera;
-        const steps = Array.isArray(camera?.zoomSteps) && camera.zoomSteps.length
+        if (!camera) return false;
+        if (typeof camera.zoomByStep === 'function') return camera.zoomByStep(direction);
+        const steps = Array.isArray(camera.zoomSteps) && camera.zoomSteps.length
             ? camera.zoomSteps
-            : [camera?.minZoom || 1, camera?.maxZoom || 3];
-        const zoom = camera?.zoom || 1;
+            : [camera.minZoom || 1, camera.maxZoom || 3];
+        const zoom = camera.zoom || 1;
         const currentIndex = steps.reduce((bestIndex, step, index) => (
             Math.abs(step - zoom) < Math.abs(steps[bestIndex] - zoom) ? index : bestIndex
         ), 0);
         const nextIndex = Math.max(0, Math.min(steps.length - 1, currentIndex + direction));
         const targetZoom = steps[nextIndex];
-        if (!camera || targetZoom === zoom) return false;
-        camera.stopFollow();
+        if (targetZoom === zoom) return false;
+        camera.abortDirectorGlide?.();
+        camera.noteUserInput?.();
         camera._setZoomAboutCenter?.(targetZoom);
         return true;
     }
@@ -4014,6 +4162,9 @@ export class IsometricRenderer {
                 motionClock: this._motionClock,
                 getSpeakerTag: (name) => this._speakerTagFor(name),
                 getSnowBucket: () => this.propWinter?.bucket || 0,
+                onArrive: (arrived) => this._enqueueArrivalRitual(arrived),
+                onCelebrationArrived: (celebrant, _pending, until) => notifySquadWatchers(celebrant, this.agentSprites.values(), until),
+                isPointWalkable: (x, y) => this._isWorldPointWalkable(x, y),
                 // VB-15 — _beginAgentGateArrival places it below.
                 deferInitialTarget: true,
             });
@@ -4159,6 +4310,9 @@ export class IsometricRenderer {
             }
             if (started || this.motionScale <= 0) {
                 this.gateTransits.delete(agent.id);
+                if (this._portalEntryQueue?.length) {
+                    this._portalEntryQueue = this._portalEntryQueue.filter(entry => entry.sprite !== sprite);
+                }
                 if (!started) this._resolveLandingOverlap(sprite);
                 this._markSpritesDirty();
                 return true;
@@ -4199,15 +4353,24 @@ export class IsometricRenderer {
             if (tile && Number.isFinite(tile.tileX) && Number.isFinite(tile.tileY)) bodies.push(tile);
         }
         const reservations = this.visitTileAllocator?.reservations;
+        const clearance = this._ensureWalkClearance?.();
         const isFree = (tileX, tileY) => {
-            if (this.pathfinder && !this.pathfinder.isWalkable(Math.round(tileX), Math.round(tileY))) return false;
+            if (clearance) {
+                if (!clearance.isTileClear(tileX, tileY)) return false;
+            } else if (this.pathfinder && (!this.pathfinder.isWalkable(Math.round(tileX), Math.round(tileY)) || inVillageMasonry(tileX, tileY))) {
+                return false;
+            }
             for (const body of bodies) {
-                if (Math.hypot(body.tileX - tileX, body.tileY - tileY) < 0.9) return false;
+                const dx = body.tileX - tileX;
+                const dy = body.tileY - tileY;
+                if (dx * dx + dy * dy < 0.81) return false;
             }
             if (reservations) {
                 for (const reservation of reservations.values()) {
                     if (reservation.agentId === agent?.id) continue;
-                    if (Math.hypot(reservation.tileX - tileX, reservation.tileY - tileY) < 0.6) return false;
+                    const dx = reservation.tileX - tileX;
+                    const dy = reservation.tileY - tileY;
+                    if (dx * dx + dy * dy < 0.36) return false;
                 }
             }
             return true;
@@ -4329,30 +4492,21 @@ export class IsometricRenderer {
             return;
         }
 
-        // Subagents step out of the Portal Gate toward their parent; with
-        // motion, the dispatch comet (6.3) relocates them beside the parent.
+        // Subagents emerge from the Portal Gate through a two-lane release
+        // queue (matching the village gate queue) so simultaneous arrivals
+        // never stack on PORTAL_SPAWN_TILE; with motion, mid-session dispatch
+        // comets (6.3) relocate them beside the parent instead.
         const parentRef = agent?.parentSessionId || agent?.parentId || agent?.parentAgentId;
         if (parentRef) {
-            const parentSprite = this.agentSprites.get(parentRef);
-            const parentTile = parentSprite && typeof parentSprite._screenToTile === 'function'
-                ? parentSprite._screenToTile(parentSprite.x, parentSprite.y)
-                : null;
-            const intent = this.visitIntentManager?.getIntentForAgent?.(parentRef) || null;
-            const intentBuilding = intent?.building ? this._getBuildingByType(intent.building) : null;
-            const intentVisitTile = intentBuilding && typeof intentBuilding.primaryVisitTile === 'function'
-                ? intentBuilding.primaryVisitTile()
-                : null;
-            const destination = parentTile || intentVisitTile || null;
-
-            sprite.setTilePosition?.(
-                PORTAL_SPAWN_TILE.tileX + this._gateJitter(agent, 'portal-x', 0.32),
-                PORTAL_SPAWN_TILE.tileY + this._gateJitter(agent, 'portal-y', 0.22),
-            );
-            if (this.motionScale <= 0 || !destination) {
+            if (this.motionScale <= 0) {
+                sprite.setTilePosition?.(
+                    PORTAL_SPAWN_TILE.tileX + this._gateJitter(agent, 'portal-x', 0.32),
+                    PORTAL_SPAWN_TILE.tileY + this._gateJitter(agent, 'portal-y', 0.22),
+                );
                 return;
             }
-            sprite.walkToTile?.(destination.tileX, destination.tileY);
-            this.gateTransits.set(agent.id, { type: 'arrival', since: Date.now() });
+            sprite.setTilePosition?.(PORTAL_SPAWN_TILE.tileX, PORTAL_SPAWN_TILE.tileY);
+            this._walkInThroughPortal(agent, sprite);
             return;
         }
 
@@ -4389,8 +4543,9 @@ export class IsometricRenderer {
         while (queue?.length) {
             const { agent, sprite } = queue[0];
             const live = this.agentSprites.get(agent.id);
-            if (live !== sprite || sprite.leaving || !sprite.isArrivalPending?.() || this._isGateTransit(sprite, 'departure')) {
+            if (live !== sprite || sprite.leaving || sprite._archiveAnim || !sprite.isArrivalPending?.() || this._isGateTransit(sprite, 'departure')) {
                 queue.shift();
+                if (sprite._archiveAnim || live !== sprite) this.gateTransits.delete(agent.id);
                 continue;
             }
             const lane = GATE_ENTRY_LANES.find(entry => this._gateLaneClear(entry));
@@ -4398,20 +4553,133 @@ export class IsometricRenderer {
             queue.shift();
             sprite.setTilePosition?.(lane.tileX, lane.outsideY);
             sprite.walkStraightToTile?.(lane.tileX, lane.insideY);
-            this.gateTransits.set(agent.id, { type: 'arrival', gate: true, since: Date.now() });
+            this.gateTransits.set(agent.id, { type: 'arrival', gate: true, lane, since: Date.now() });
             this._markSpritesDirty();
         }
     }
 
-    // True when no visible body stands within GATE_ENTRY_GAP_PX of the gate
-    // lane's entry point.
-    _gateLaneClear(lane) {
+    // True when no visible body stands within `gapPx` of the lane's entry
+    // point. Parallel arrival lanes ignore bodies already walking in on a
+    // different lane of the same gate so two files enter abreast even when
+    // lane entries sit closer than GATE_ENTRY_GAP_PX (21.5 px at the arch).
+    _gateLaneClear(lane, { gapPx = GATE_ENTRY_GAP_PX, portal = false } = {}) {
         const entry = tileToWorld(lane.tileX, lane.outsideY);
+        const gapSq = gapPx * gapPx;
         for (const other of this.agentSprites.values()) {
-            if (other.isArrivalPending?.()) continue;
-            if (Math.hypot(other.x - entry.x, other.y - entry.y) < GATE_ENTRY_GAP_PX) return false;
+            if (other.isArrivalPending?.() || other._archiveAnim) continue;
+            const transit = this.gateTransits?.get?.(other.agent?.id);
+            if (transit?.type === 'arrival' && transit.lane && transit.lane !== lane && Boolean(transit.portal) === Boolean(portal)) {
+                continue;
+            }
+            const dx = other.x - entry.x;
+            const dy = other.y - entry.y;
+            if (dx * dx + dy * dy < gapSq) return false;
         }
         return true;
+    }
+
+    // 7.4 — subagent Portal arrivals join a two-lane release queue so fleets
+    // emerge spaced by at least PORTAL_ENTRY_GAP_PX instead of piling on one
+    // tile.
+    _walkInThroughPortal(agent, sprite) {
+        const queue = this._portalEntryQueue ||= [];
+        if (!queue.some(entry => entry.sprite === sprite)) {
+            queue.push({ agent, sprite, queuedAt: Date.now() });
+        }
+        sprite.setArrivalState?.('pending');
+        if (!this._deferPortalRelease) this._releasePortalEntries();
+    }
+
+    _releasePortalEntries(now = Date.now()) {
+        const queue = this._portalEntryQueue;
+        if (!queue?.length) return;
+        // Cold-load burst arriving on the first populated snapshot: count both
+        // still-queued subagents and any already-released Portal arrivals from
+        // the same cold burst so the > PORTAL_COLD_SETTLE_LIMIT threshold
+        // settles consistently from 5 on both init and snapshot paths.
+        if (!this._coldPortalSettled && !this.replay?.recorded) {
+            const liveBurst = [];
+            const seenBurst = new Set();
+            for (const [agentId, transit] of this.gateTransits.entries()) {
+                if (transit?.type !== 'arrival' || !transit.portal) continue;
+                const sprite = this.agentSprites.get(agentId);
+                if (!sprite || sprite.leaving || sprite._archiveAnim) {
+                    this.gateTransits.delete(agentId);
+                    continue;
+                }
+                if (!seenBurst.has(sprite)) {
+                    seenBurst.add(sprite);
+                    liveBurst.push(sprite);
+                }
+            }
+            for (const entry of queue) {
+                const live = this.agentSprites.get(entry.agent?.id);
+                if (live === entry.sprite && !entry.sprite.leaving && !entry.sprite._archiveAnim
+                    && entry.sprite.isArrivalPending?.() && !this._isGateTransit(entry.sprite, 'departure')
+                    && !seenBurst.has(entry.sprite)) {
+                    seenBurst.add(entry.sprite);
+                    liveBurst.push(entry.sprite);
+                }
+            }
+            if (liveBurst.length > PORTAL_COLD_SETTLE_LIMIT) {
+                this._coldPortalSettled = true;
+                this._updateVisitSystems(now);
+                this._settlePortalColdBurst(liveBurst);
+                return;
+            }
+        }
+        while (queue.length) {
+            const entry = queue[0];
+            const { agent, sprite } = entry;
+            const live = this.agentSprites.get(agent.id);
+            if (live !== sprite || sprite.leaving || sprite._archiveAnim || !sprite.isArrivalPending?.() || this._isGateTransit(sprite, 'departure')) {
+                queue.shift();
+                if (sprite._archiveAnim || live !== sprite) this.gateTransits.delete(agent.id);
+                continue;
+            }
+            if (!Number.isFinite(entry.queuedAt)) entry.queuedAt = now;
+            if (now - entry.queuedAt >= PORTAL_QUEUE_MAX_WAIT_MS) {
+                queue.shift();
+                this.gateTransits.delete(agent.id);
+                this.arrivalDeparture?.dispatches?.delete?.(agent.id);
+                sprite.settleAtDestination?.();
+                this._markSpritesDirty();
+                continue;
+            }
+            const lane = PORTAL_ENTRY_LANES.find(l => this._gateLaneClear(l, { gapPx: PORTAL_ENTRY_GAP_PX, portal: true }));
+            if (!lane) return;
+            queue.shift();
+            sprite.setTilePosition?.(lane.tileX, lane.outsideY);
+            sprite.walkStraightToTile?.(lane.tileX, lane.insideY);
+            this.gateTransits.set(agent.id, { type: 'arrival', gate: true, portal: true, lane, since: now });
+            this._markSpritesDirty();
+        }
+    }
+
+    // Settle a cold-load burst of > 4 subagents directly at their allocated
+    // destinations so the initial fleet never forms a Portal pile-up.
+    _settlePortalColdBurst(sprites) {
+        if (!sprites?.length) return;
+        const settledSet = new Set(sprites);
+        if (this._portalEntryQueue?.length) {
+            this._portalEntryQueue = this._portalEntryQueue.filter(entry => !settledSet.has(entry.sprite));
+        }
+        for (const sprite of sprites) {
+            if (!sprite || sprite.leaving) continue;
+            const agentId = sprite.agent?.id;
+            if (agentId) {
+                this.gateTransits.delete(agentId);
+                this.arrivalDeparture?.dispatches?.delete?.(agentId);
+            }
+            sprite.settleAtDestination?.();
+        }
+        this.visitTileAllocator?.updateContext?.({
+            buildings: this.world?.buildings,
+            agentSprites: this.agentSprites,
+            pathfinder: this.pathfinder,
+        });
+        this._fanStacks();
+        this._markSpritesDirty();
     }
 
     _beginAgentGateDeparture(agent) {
@@ -4476,6 +4744,12 @@ export class IsometricRenderer {
             this.camera?.stopFollow?.();
         }
         this.gateTransits.delete(agentId);
+        if (this._gateEntryQueue?.length) {
+            this._gateEntryQueue = this._gateEntryQueue.filter(entry => entry.sprite !== sprite);
+        }
+        if (this._portalEntryQueue?.length) {
+            this._portalEntryQueue = this._portalEntryQueue.filter(entry => entry.sprite !== sprite);
+        }
         this.visitTileAllocator?.release?.(agentId);
         // Archive fade: defer the actual sprite disposal by
         // ARCHIVE_FADE_DURATION_MS so AgentSprite.draw() fade alpha + sparkle
@@ -4508,6 +4782,7 @@ export class IsometricRenderer {
             const anim = sprite._archiveAnim;
             if (!anim) continue;
             if (nowMs - anim.startedAt >= anim.total) {
+                this.gateTransits.delete(agentId);
                 sprite.releaseRenderResources?.();
                 this.agentSprites.delete(agentId);
                 removed = true;
@@ -4521,7 +4796,16 @@ export class IsometricRenderer {
         return Boolean(transit && (!type || transit.type === type));
     }
 
+    _isGateChannelTransit(sprite) {
+        const transit = this.gateTransits.get(sprite?.agent?.id);
+        return Boolean(transit && (transit.type === 'departure' || transit.gate));
+    }
+
     _updateGateDoorState(now = performance.now()) {
+        for (const [agentId] of this.gateTransits) {
+            const sprite = this.agentSprites.get(agentId);
+            if (!sprite || sprite._archiveAnim) this.gateTransits.delete(agentId);
+        }
         const wasOpen = this.gateDoorsOpen;
         const wantOpen = this.gateTransits.size > 0 || this._hasAgentNearGate();
         if (wantOpen) this._gateDoorsOpenUntilMs = now + 1500; // 1.5s grace timer
@@ -5560,6 +5844,7 @@ export class IsometricRenderer {
 
     _updateChatMatching() {
         const senders = new Set();
+        const senderMsgKeys = new Map();
         const spriteByRecipient = new Map();
 
         for (const sprite of this.agentSprites.values()) {
@@ -5597,7 +5882,16 @@ export class IsometricRenderer {
             if (!agent) continue;
             if (agent.status === AgentStatus.WORKING && agent.currentToolInput
                 && isAgentMessageTool(agent.currentTool, agent.currentToolInput)) {
+                const rawInput = typeof agent.currentToolInput === 'string'
+                    ? agent.currentToolInput
+                    : JSON.stringify(agent.currentToolInput);
+                const msgKey = `${agent.currentTool || ''}|${rawInput}`;
+                if (sprite._exhaustedChatMsgKey && sprite._exhaustedChatMsgKey !== msgKey) {
+                    sprite._exhaustedChatMsgKey = null;
+                }
+                if (sprite._exhaustedChatMsgKey === msgKey) continue;
                 senders.add(sprite);
+                senderMsgKeys.set(sprite, msgKey);
 
                 if (sprite.chatPartner) continue;
 
@@ -5609,14 +5903,19 @@ export class IsometricRenderer {
                 // is not chatting (nor under another sender's live approach):
                 // a busy recipient is skipped and the sender retries on a later
                 // matching pass instead of stacking on it. BR-5 — an approach
-                // starts once neither body stands on a bridge deck or landing:
-                // a walker finishes its crossing first.
+                // starts once neither body stands on a bridge deck, landing or
+                // the gatehouse apron.
                 if (target && target !== sprite && !target.chatPartner && !target.chatting
                     && (!claimant || claimant === sprite)
-                    && !sprite.standsOnCrossing?.() && !target.standsOnCrossing?.()) {
+                    && !sprite.standsOnCrossing?.() && !target.standsOnCrossing?.()
+                    && !sprite.standsOnGateApron?.() && !target.standsOnGateApron?.()) {
                     claims.set(target, sprite);
+                    sprite._chatStartMsgKey = msgKey;
+                    target._chatStartMsgKey = senderMsgKeys.get(target) ?? null;
                     sprite.startChat(target);
                 }
+            } else if (sprite._exhaustedChatMsgKey) {
+                sprite._exhaustedChatMsgKey = null;
             }
         }
 
@@ -5631,6 +5930,47 @@ export class IsometricRenderer {
                 && now - (sprite.chatSinceMs || 0) > ONE_SIDED_CHAT_GRACE_MS) {
                 sprite.endChat();
                 continue;
+            }
+            // Cap mutual chats on unchanged static messaging tool calls at
+            // MUTUAL_CHAT_MAX_MS so a static SendMessage never traps a pair.
+            // Exhaust only when a participant's tool call still matches the
+            // key recorded at chat start; a fresh message during an older chat
+            // either re-anchors the cap window (same partner) or ends the old
+            // chat without exhausting the fresh key.
+            if (sprite.chatting && sprite.chatPartner?.chatPartner === sprite
+                && sprite.chatSinceMs
+                && now - sprite.chatSinceMs > MUTUAL_CHAT_MAX_MS) {
+                const partner = sprite.chatPartner;
+                const spriteKey = senderMsgKeys.get(sprite) ?? null;
+                const partnerKey = senderMsgKeys.get(partner) ?? null;
+                const spriteMatches = Boolean(spriteKey && sprite._chatStartMsgKey === spriteKey);
+                const partnerMatches = Boolean(partnerKey && partner._chatStartMsgKey === partnerKey);
+                if (spriteMatches || partnerMatches) {
+                    if (spriteMatches) sprite._exhaustedChatMsgKey = spriteKey;
+                    if (partnerMatches) partner._exhaustedChatMsgKey = partnerKey;
+                    sprite.endChat();
+                    if (partner.chatPartner === sprite) partner.endChat();
+                    continue;
+                }
+                const spriteTarget = spriteKey ? spriteByRecipient.get(extractRecipientName(sprite.agent?.currentToolInput)) : null;
+                const partnerTarget = partnerKey ? spriteByRecipient.get(extractRecipientName(partner.agent?.currentToolInput)) : null;
+                const freshForOther = (spriteKey && sprite._chatStartMsgKey !== spriteKey && spriteTarget && spriteTarget !== partner)
+                    || (partnerKey && partner._chatStartMsgKey !== partnerKey && partnerTarget && partnerTarget !== sprite);
+                if (freshForOther) {
+                    sprite.endChat();
+                    if (partner.chatPartner === sprite) partner.endChat();
+                    continue;
+                }
+                if (spriteKey && sprite._chatStartMsgKey !== spriteKey) {
+                    sprite._chatStartMsgKey = spriteKey;
+                    sprite.chatSinceMs = now;
+                    partner.chatSinceMs = now;
+                }
+                if (partnerKey && partner._chatStartMsgKey !== partnerKey) {
+                    partner._chatStartMsgKey = partnerKey;
+                    sprite.chatSinceMs = now;
+                    partner.chatSinceMs = now;
+                }
             }
             if (sprite.chatPartner && !senders.has(sprite)) {
                 // Keep it if the other side is still using SendMessage
@@ -5734,6 +6074,8 @@ export class IsometricRenderer {
         }
         this._pruneCrowdBumpCooldowns(now);
         this._releaseGateEntries();
+        this._releasePortalEntries();
+        if (!this._coldPortalSettled && this.agentSprites.size > 0) this._coldPortalSettled = true;
         // 2.4 — affinity proximity re-evaluates on a slow cadence; warmth
         // changes are gradual, so per-frame work would be wasted.
         this._affinityProximityAccumulator += dt;
@@ -5796,7 +6138,7 @@ export class IsometricRenderer {
         const movingSprites = this._movingSprites;
         movingSprites.length = 0;
         for (const sprite of this.agentSprites.values()) {
-            if (sprite.moving && !sprite.chatting && !this._isGateTransit(sprite, 'departure')) {
+            if (sprite.moving && !sprite.chatting && !this._isGateChannelTransit(sprite)) {
                 movingSprites.push(sprite);
             }
         }
@@ -5939,17 +6281,35 @@ export class IsometricRenderer {
     }
 
     // Walk-blocked ground for a steering step (lane discipline, pair pushes,
-    // the bend round standing bodies): the walk grid's nearest node
-    // (buildings, water, `walkBlock` props such as the well and its cart,
-    // the masonry's closed nodes), and the village's stone itself at a
-    // body's half-width of reach (townPlan `inVillageMasonry`), which is
-    // finer than the one-tile grid round the gate towers' drums. A step that
-    // fails keeps the walker where it is; its own path step still moves it.
+    // the bend round standing bodies, fan places): continuous clearance against
+    // the walk grid, building footprints (+0.25 tile pad, open floors exempt),
+    // walk exclusions, village masonry, and the coast signed-distance curve
+    // (off walkable bridges). Precomputed flat boxes keep it allocation-free.
+    _ensureWalkClearance() {
+        if (this._walkClearance) return this._walkClearance;
+        if (!this.world?.buildings && !this.bridgeTiles && !this._coastField && !this.coastField) return null;
+        this._walkClearance = createWalkClearance({
+            buildings: this.world?.buildings,
+            bridgeTiles: this.bridgeTiles,
+            pathfinder: this.pathfinder,
+            getCoastField: () => this._coastField || this.coastField || null,
+        });
+        return this._walkClearance;
+    }
+
+    _isWorldPointWalkable(x, y) {
+        const clearance = this._ensureWalkClearance();
+        if (clearance) return clearance.isWorldClear(x, y);
+        if (!this.pathfinder) return true;
+        const tx = (x / (TILE_WIDTH / 2) + y / (TILE_HEIGHT / 2)) * 0.5;
+        const ty = (y / (TILE_HEIGHT / 2) - x / (TILE_WIDTH / 2)) * 0.5;
+        return this.pathfinder.isWalkable(Math.round(tx), Math.round(ty))
+            && !inVillageMasonry(tx, ty);
+    }
+
     _isSpritePositionWalkable(sprite, x, y) {
         if (!this.pathfinder || typeof sprite?._screenToTile !== 'function') return true;
-        const tile = sprite._screenToTile(x, y);
-        return this.pathfinder.isWalkable(Math.round(tile.tileX), Math.round(tile.tileY))
-            && !inVillageMasonry(tile.tileX, tile.tileY);
+        return this._isWorldPointWalkable(x, y);
     }
 
     // A place `sprite` may stand on: walkable, and covering no fixture
@@ -5961,13 +6321,16 @@ export class IsometricRenderer {
     _buildLaneTileIndex() {
         const lanes = new Map();
         if (!this.pathTiles?.size) return lanes;
+        const crossings = bridgeCrossingTiles(this.bridgeTiles);
         for (const key of this.pathTiles) {
             if (!this._isRoadLikeTileKey(key)) continue;
             const tile = this._parseTileKey(key);
             if (!tile) continue;
             if (this.pathfinder && !this.pathfinder.isWalkable(tile.tileX, tile.tileY)) continue;
             const bridge = this.bridgeTiles?.get?.(key);
-            const bridgeAxis = laneAxisForBridgeOrientation(bridge?.orientation);
+            const crossing = crossings.get(key);
+            const bridgeLanding = Boolean(crossing?.landing);
+            const bridgeAxis = laneAxisForBridgeOrientation(bridge?.orientation || (bridgeLanding ? crossing.info?.orientation : null));
             const axis = bridgeAxis || this._bestRoadAxis(tile.tileX, tile.tileY);
             if (!axis) continue;
             const center = tileToWorld(tile.tileX, tile.tileY);
@@ -5987,13 +6350,16 @@ export class IsometricRenderer {
                 tangentY: vy / length,
                 perpX: -vy / length,
                 perpY: vx / length,
-                laneOffset: bridge?.kind === 'landmark'
+                laneOffset: bridgeLanding
+                    ? 0
+                    : bridge?.kind === 'landmark'
                     ? bridge.laneOffsetPx ?? LANE_STEERING.bridgeOffsetPx
                     : plazaLike
                     ? LANE_STEERING.plazaOffsetPx
                     : material === 'avenue'
                         ? LANE_STEERING.avenueOffsetPx
                         : LANE_STEERING.dirtOffsetPx,
+                bridgeLanding,
                 material,
                 degree,
                 plazaLike,
@@ -6291,11 +6657,13 @@ export class IsometricRenderer {
                 const trigger = trailing._followYield
                     ? FOLLOW_GAP.releasePx
                     : FOLLOW_GAP.yieldPx + closing * FOLLOW_GAP.closingFrames;
-                // A walker never plants to give way on a fixture: it walks on
-                // (one rung down, in file) until it is off it.
-                const givesWay = leaderWalks && ahead >= FOLLOW_GAP.aheadDot * dist && dist < trigger
+                // A walker never plants to give way on a fixture, nor when two
+                // bodies are closer than minYieldPx (6 px): stacked bodies
+                // separate instead of freezing into a follow-yield knot.
+                const stackedClose = dist < FOLLOW_GAP.minYieldPx;
+                const givesWay = !stackedClose && leaderWalks && ahead >= FOLLOW_GAP.aheadDot * dist && dist < trigger
                     && !standsOnFixture(trailing.x, trailing.y);
-                if (sameCourse && dist < FOLLOW_GAP.engagePx && ahead < FOLLOW_GAP.aheadDot * dist) {
+                if (sameCourse && dist < FOLLOW_GAP.engagePx && (stackedClose || ahead < FOLLOW_GAP.aheadDot * dist)) {
                     abreast.add(a);
                     abreast.add(b);
                 }
@@ -6331,8 +6699,9 @@ export class IsometricRenderer {
             // Steering never pushes a walker back along its own course. Of a
             // file (one course) only the push's lateral and forward parts
             // reach the proposal; the gap belongs to the follow rung. Walkers
-            // on crossing or opposed courses sidestep by the backward part.
-            const sidestep = !sameCourse;
+            // on crossing or opposed courses — or stacked within minYieldPx —
+            // sidestep by the backward part so they peel apart immediately.
+            const sidestep = !sameCourse || dist < FOLLOW_GAP.minYieldPx;
             this._forwardOnlyPush(nx * overlap * strength, ny * overlap * strength, headingA, sidestep, pushA);
             this._forwardOnlyPush(-nx * overlap * strength, -ny * overlap * strength, headingB, sidestep, pushB);
             constrainSteeringInto(nextA, a.x, a.y, a.x + pushA.x, a.y + pushA.y, a.targetX, a.targetY);
@@ -6396,6 +6765,8 @@ export class IsometricRenderer {
             if (stop.reach <= lastLegPx) continue;
             let px = 0;
             let py = 0;
+            let targetInsideStanding = false;
+            const hasMoreWaypoints = Array.isArray(walker.waypoints) && walker.waypoints.length > 1;
             for (const body of standing) {
                 const ex = (walker.x - body.x) / xPx;
                 const ey = (walker.y - body.y) / yPx;
@@ -6408,6 +6779,11 @@ export class IsometricRenderer {
                 // it was re-aimed onto a fan place (it then walks on to it).
                 const standsBeside = !walker.chatPartner || walker._routeEndFanPlace?.();
                 if (standsBeside && e >= Math.hypot((stop.x - body.x) / xPx, (stop.y - body.y) / yPx)) continue;
+                if (hasMoreWaypoints) {
+                    const tx = (walker.targetX - body.x) / xPx;
+                    const ty = (walker.targetY - body.y) / yPx;
+                    if (tx * tx + ty * ty < 1) targetInsideStanding = true;
+                }
                 // Out along the ellipse normal; a walker standing exactly on
                 // the body takes the stable hash angle.
                 let gx = ex / xPx;
@@ -6425,14 +6801,20 @@ export class IsometricRenderer {
             }
             if (!px && !py) continue;
             const push = this._forwardOnlyPush(px, py, headings.get(walker), true, this._standingPush ||= { x: 0, y: 0 });
-            const next = constrainSteeringToTarget({
-                x: walker.x,
-                y: walker.y,
-                nextX: walker.x + push.x,
-                nextY: walker.y + push.y,
-                targetX: walker.targetX,
-                targetY: walker.targetY,
-            });
+            // When an intermediate waypoint lies inside a standing body's
+            // clearance ellipse, projecting back toward that waypoint cancels
+            // the sidestep; bypass constrainSteeringToTarget while keeping the
+            // V7 stride lock (_strideKeptSteer).
+            const next = targetInsideStanding
+                ? { x: walker.x + push.x, y: walker.y + push.y, constrained: false }
+                : constrainSteeringToTarget({
+                    x: walker.x,
+                    y: walker.y,
+                    nextX: walker.x + push.x,
+                    nextY: walker.y + push.y,
+                    targetX: walker.targetX,
+                    targetY: walker.targetY,
+                });
             const kept = this._strideKeptSteer(walker, next);
             if (
                 !kept
@@ -6442,6 +6824,20 @@ export class IsometricRenderer {
             walker.x = kept.x;
             walker.y = kept.y;
             if (next.constrained) this._localAvoidanceMetrics.progressClamps++;
+            // Advance past an obstructed non-crossing intermediate waypoint as
+            // soon as the line to the next waypoint is clear so the walker
+            // never backtracks into the standing body.
+            if (targetInsideStanding && hasMoreWaypoints) {
+                const wpTile = worldToTile(walker.targetX, walker.targetY);
+                const wpKey = `${Math.round(wpTile.tileX)},${Math.round(wpTile.tileY)}`;
+                const nextWp = walker.waypoints[1];
+                const onCrossing = walker._crossingTiles?.().has(wpKey);
+                if (!onCrossing && nextWp && walker._isScreenSegmentWalkable?.(kept.x, kept.y, nextWp.x, nextWp.y)) {
+                    walker.waypoints.shift();
+                    walker.targetX = nextWp.x;
+                    walker.targetY = nextWp.y;
+                }
+            }
             steered++;
         }
         return steered;
@@ -6550,13 +6946,13 @@ export class IsometricRenderer {
     // first villager keeps the anchor, the next ones stand beside it (east and
     // west first, the stable hash picking the side), then in front, behind and
     // on the corners. Whole texels, so a standing body stays on the grid.
-    _fanRingPlace(anchor, index, hashKey) {
+    _fanRingPlace(anchor, index, hashKey, scale = 1) {
         if (index <= 0) return { x: Math.round(anchor.x), y: Math.round(anchor.y) };
         const side = this._stableHash(hashKey) % 2 ? 1 : -1;
         const [ux, uy] = FAN_RING_PLACES[(index - 1) % FAN_RING_PLACES.length];
         return {
-            x: Math.round(anchor.x + ux * side * PERFORMING_FAN.radiusXPx),
-            y: Math.round(anchor.y + uy * PERFORMING_FAN.radiusYPx),
+            x: Math.round(anchor.x + ux * side * PERFORMING_FAN.radiusXPx * scale),
+            y: Math.round(anchor.y + uy * PERFORMING_FAN.radiusYPx * scale),
         };
     }
 
@@ -6567,24 +6963,30 @@ export class IsometricRenderer {
     // fixtures such as the well) to a ring by some old stop.
     _fanAnchorOf(occupant) {
         const anchor = occupant._fanAnchor;
-        if (anchor && Math.abs(occupant.x - anchor.x) <= PERFORMING_FAN.radiusXPx + 1
-            && Math.abs(occupant.y - anchor.y) <= PERFORMING_FAN.radiusYPx + 1) return anchor;
+        if (anchor && Math.abs(occupant.x - anchor.x) <= PERFORMING_FAN.radiusXPx * 2 + 1
+            && Math.abs(occupant.y - anchor.y) <= PERFORMING_FAN.radiusYPx * 2 + 1) return anchor;
         return occupant;
     }
 
     // The first walkable ring place around `anchor` for `sprite` whose body
-    // box is clear of every other standing body and claimed place; failing
-    // that, the first one at least stackPx from all of them.
+    // box is clear of every other standing body and claimed place; offsets
+    // that land inside a building footprint, wall, or water are rejected by
+    // `_isSpriteStandable` and fall back to outer clear neighbours before
+    // relaxing to `stackClear`.
     _freeFanPlace(sprite, anchor, startIndex, taken, hashKey) {
         const boxClear = (place) => !taken.some(other => other !== sprite
             && Math.abs(other.x - place.x) < PERFORMING_FAN.overlapXPx
             && Math.abs(other.y - place.y) < PERFORMING_FAN.overlapYPx);
         const stackClear = (place) => !taken.some(other => other !== sprite
             && Math.hypot(other.x - place.x, other.y - place.y) < PERFORMING_FAN.stackPx);
+        const standable = (place, scale) => this._isSpriteStandable(sprite, place.x, place.y)
+            && (scale <= 1 || this._isSpritePositionWalkable(sprite, (anchor.x + place.x) * 0.5, (anchor.y + place.y) * 0.5));
         for (const clear of [boxClear, stackClear]) {
-            for (let index = startIndex; index <= FAN_RING_PLACES.length; index++) {
-                const place = this._fanRingPlace(anchor, index, hashKey);
-                if (clear(place) && this._isSpriteStandable(sprite, place.x, place.y)) return place;
+            for (const scale of [1, 2]) {
+                for (let index = startIndex; index <= FAN_RING_PLACES.length; index++) {
+                    const place = this._fanRingPlace(anchor, index, hashKey, scale);
+                    if (clear(place) && standable(place, scale)) return place;
+                }
             }
         }
         return null;
@@ -6604,7 +7006,7 @@ export class IsometricRenderer {
         const arrivals = this._fanArrivalOrder ||= [];
         arrivals.length = 0;
         for (const sprite of movingSprites) {
-            if (this._isGateTransit(sprite, 'departure')) continue;
+            if (this._isGateChannelTransit(sprite)) continue;
             // A seat (7.1) or petitioner place (7.2) is an exact point: never re-aimed.
             if (FAN_EXEMPT_ROLES.has(sprite.visitRole)) continue;
             const stop = this._fanStopOf(sprite);
@@ -6628,8 +7030,8 @@ export class IsometricRenderer {
                 && Math.abs(other.y - stop.y) < PERFORMING_FAN.overlapYPx)
                 || landing.find(other => Math.abs(other.x - stop.x) < PERFORMING_FAN.overlapXPx
                     && Math.abs(other.y - stop.y) < PERFORMING_FAN.overlapYPx);
-            // A stop on a fixture fans around that stop like one on a body.
-            if (!occupant && !standsOnFixture(stop.x, stop.y, sprite._restSeat?.id || null)) {
+            // A stop on a fixture or failing continuous clearance fans onto a clear neighbour.
+            if (!occupant && this._isSpriteStandable(sprite, stop.x, stop.y)) {
                 landing.push({ x: stop.x, y: stop.y, building });
                 continue;
             }
@@ -6939,12 +7341,15 @@ export class IsometricRenderer {
             if (sprite.moving || sprite.selected || FAN_EXEMPT_ROLES.has(sprite.visitRole)) continue;
             if (!this.agentSprites.has(sprite.agent?.id) || this._isGateTransit(sprite, 'departure')) continue;
             const occupant = standing.find(other => other !== sprite && boxHit(other, sprite.x, sprite.y));
-            // A body that stopped on a fixture steps off it the same way.
-            if (!occupant && !standsOnFixture(sprite.x, sprite.y, sprite._restSeat?.id || null)) continue;
+            // A body that stopped on a fixture or inside continuous clearance steps off it the same way.
+            const unstandable = !this._isSpriteStandable(sprite, sprite.x, sprite.y);
+            if (!occupant && !unstandable) continue;
             const anchor = occupant ? this._fanAnchorOf(occupant) : { x: sprite.x, y: sprite.y };
             const hashKey = `${occupant?._lastBuildingType || sprite._lastBuildingType}|${anchor.x | 0},${anchor.y | 0}`;
             let best = null;
-            let bestHop = PERFORMING_FAN.settleHopPx;
+            let bestHop = unstandable
+                ? Math.max(PERFORMING_FAN.settleHopPx, Math.hypot(PERFORMING_FAN.radiusXPx, PERFORMING_FAN.radiusYPx) + 1)
+                : PERFORMING_FAN.settleHopPx;
             for (let index = 1; index <= FAN_RING_PLACES.length; index++) {
                 const place = this._fanRingPlace(anchor, index, hashKey);
                 const hop = Math.hypot(place.x - sprite.x, place.y - sprite.y);
@@ -7100,7 +7505,7 @@ export class IsometricRenderer {
             particleSystem: this.particleSystem,
             atmosphere: this._lastAtmosphere,
             heatFor: type => (type === 'forge' ? this.buildingRenderer?._forgeGlowIntensity?.() ?? 0 : 0),
-            sortYFor: (building, localY) => this.buildingRenderer?.particleSortY?.(building, localY) ?? null,
+            sortYFor: (building, localY, localX) => this.buildingRenderer?.particleSortY?.(building, localY, localX) ?? null,
         });
     }
 
@@ -7466,6 +7871,23 @@ export class IsometricRenderer {
         // T1 — attention plates are laid out first, from live status, and
         // every other label yields to them. Their rects are PRIMARY in the
         // mark governor, so ambient marks in the region dim around them.
+        // Visible building plaques from the previous frame are passed as
+        // tally-avoidance obstacles so sliding off-frame tallies yield to
+        // plaques without blanking them.
+        const plaqueAvoid = this._plaqueAvoidScreenRects || (this._plaqueAvoidScreenRects = []);
+        plaqueAvoid.length = 0;
+        if (this.camera?.worldToScreen && this.buildingRenderer?.plaqueWorldRects?.length) {
+            for (const worldRect of this.buildingRenderer.plaqueWorldRects) {
+                const topLeft = this.camera.worldToScreen(worldRect.left, worldRect.top);
+                const bottomRight = this.camera.worldToScreen(worldRect.right, worldRect.bottom);
+                plaqueAvoid.push({
+                    left: topLeft.x,
+                    top: topLeft.y,
+                    right: bottomRight.x,
+                    bottom: bottomRight.y,
+                });
+            }
+        }
         this._attentionLayout = layoutAttentionPlates(this.overlayCtx, {
             // Every agent, not the visible snapshot: off-view action-needed
             // agents get an edge plate instead of vanishing (T1 truth).
@@ -7474,6 +7896,9 @@ export class IsometricRenderer {
             viewport,
             // V8 — chrome over the world (the World dock) is occluded screen.
             reserved: getReservedRects(),
+            avoid: plaqueAvoid,
+            state: this._attentionState || (this._attentionState = {}),
+            dwellNow: now,
             // Ages default to the shared 1 Hz tick (`elapsedTickNow`), so a
             // plate and the card beside it always print the same second.
         });
@@ -7541,9 +7966,9 @@ export class IsometricRenderer {
                 sprite.labelAlpha = 0;
                 continue;
             }
-            // W-F16 — a body the depth pass hid behind a building carries no
-            // routine name or action marks on the building's face.
-            if (sprite._behindBuilding) {
+            // W-F16 — a body hidden behind a building, gate or wall carries no
+            // routine name or action marks on the occluder's face.
+            if (sprite._occludedByWorld || sprite._behindBuilding) {
                 sprite.labelAlpha = 0;
                 continue;
             }
@@ -7644,12 +8069,39 @@ export class IsometricRenderer {
             for (const rect of reservedLabels) occupied.push(rect);
         }
         const s = 1 / (zoom || 1);
+        const viewport = typeof this._screenViewport === 'function' ? this._screenViewport() : null;
+        const hasView = Boolean(viewport?.width > 0 && viewport?.height > 0
+            && this.camera?.worldToScreen && this.camera?.screenToWorld);
+        let viewWorld = null;
+        let reservedWorld = null;
+        if (hasView) {
+            const topLeft = this.camera.screenToWorld(THOUGHT_EDGE_MARGIN, THOUGHT_EDGE_MARGIN);
+            const bottomRight = this.camera.screenToWorld(viewport.width - THOUGHT_EDGE_MARGIN, viewport.height - THOUGHT_EDGE_MARGIN);
+            viewWorld = {
+                left: topLeft.x,
+                top: topLeft.y,
+                right: bottomRight.x,
+                bottom: bottomRight.y,
+            };
+            const reserved = getReservedRects();
+            if (reserved?.length) {
+                reservedWorld = [];
+                for (const rect of reserved) {
+                    const worldRect = this._screenRectToWorld(rect);
+                    if (worldRect && worldRect.w > 0 && worldRect.h > 0) reservedWorld.push(worldRect);
+                }
+            }
+        }
         const order = this._overlayBubbleOrder;
         order.length = 0;
         const frame = this._thoughtFrame = (this._thoughtFrame || 0) + 1;
         for (const sprite of sprites || []) {
             if (!sprite?.agent) continue;
             sprite._thoughtFrame = frame;
+            if (hasView && !this._thoughtSpeakerOnScreen(sprite, viewport, zoom)) {
+                this._clearThoughtPlacement(sprite);
+                continue;
+            }
             if (this._spriteWantsBubble(sprite)) order.push(sprite);
             else this._clearThoughtPlacement(sprite);
         }
@@ -7697,13 +8149,15 @@ export class IsometricRenderer {
             if (sprite.bubbleMergedInto) {
                 sprite.bubbleSlot = null;
                 sprite.bubbleLateral = 0;
+                sprite.bubbleClampX = 0;
+                sprite._bubbleClamped = false;
                 sprite._bubbleCandidate = null;
                 continue;
             }
             const focused = sprite._thoughtRank >= 2;
             if (sprite.bubbleMergedCount > 1) this._layoutThoughtColumns(sprite);
             if ((focused || placed < THOUGHT_BUDGET)
-                && this._placeThought(sprite, s, now, grid, occupied, useSpatialGrid, focused)) {
+                && this._placeThought(sprite, s, now, grid, occupied, useSpatialGrid, focused, viewWorld, reservedWorld)) {
                 placed++;
                 if (!sprite._thoughtSeatedAt) sprite._thoughtSeatedAt = now;
                 continue;
@@ -7754,7 +8208,7 @@ export class IsometricRenderer {
         }
         this._layoutThoughtColumns(sprite);
         sprite._thoughtAnchorX = sprite.x;
-        sprite.bubbleOccluded = Boolean(sprite._behindBuilding && !sprite.selected);
+        sprite.bubbleOccluded = Boolean((sprite._occludedByWorld || sprite._behindBuilding) && !sprite.selected);
         if (sprite.bubbleOccluded && this._thoughtOccluderBase(sprite, s)) return true;
         sprite.bubbleBaseY = typeof sprite._headTopY === 'function'
             ? (typeof sprite._labelTopY === 'function' ? sprite._labelTopY(sprite._headTopY()) : sprite._headTopY())
@@ -7797,6 +8251,8 @@ export class IsometricRenderer {
     _clearThoughtPlacement(sprite) {
         sprite.bubbleSlot = null;
         sprite.bubbleLateral = 0;
+        sprite.bubbleClampX = 0;
+        sprite._bubbleClamped = false;
         sprite.bubbleOccluded = false;
         sprite.bubbleMergedCount = 1;
         sprite.bubbleMergedInto = null;
@@ -7805,6 +8261,18 @@ export class IsometricRenderer {
         sprite._bubbleBetterSince = 0;
         sprite._thoughtSeatedAt = 0;
         sprite._thoughtFiltered = false;
+    }
+
+    // Speakers wholly outside the visible canvas skip thought slots so they
+    // never burn THOUGHT_BUDGET or draw off-screen clipped bubbles.
+    _thoughtSpeakerOnScreen(sprite, viewport, zoom) {
+        const point = this.camera.worldToScreen(sprite.x, sprite.y);
+        const box = sprite._bodyBox;
+        const bodyLeft = point.x + (box ? box.left : -12) * zoom;
+        const bodyRight = point.x + (box ? box.right : 12) * zoom;
+        const bodyTop = point.y + (box ? box.top : -48) * zoom;
+        const bodyBottom = point.y + (box ? box.bottom : 0) * zoom;
+        return bodyRight > 0 && bodyLeft < viewport.width && bodyBottom > 0 && bodyTop < viewport.height;
     }
 
     // W3.4 — the base and leader landing for a speaker the depth pass hid
@@ -7844,12 +8312,12 @@ export class IsometricRenderer {
 
     // World rects of candidate `index`: the column body, plus the leader's
     // vertical and horizontal runs (each three px wide with their outline).
-    _thoughtCandidateRects(sprite, index, s) {
+    _thoughtCandidateRects(sprite, index, s, clampX = 0) {
         const lateral = THOUGHT_CANDIDATE_LATERAL[index] * (sprite._thoughtSide || 1);
         const slot = THOUGHT_CANDIDATE_SLOT[index];
         const occluded = sprite.bubbleOccluded === true;
-        const column = lateral !== 0 || occluded ? sprite._thoughtColumnTagged : sprite._thoughtColumn;
-        const shiftX = thoughtLateralShift(column, lateral);
+        const column = lateral !== 0 || clampX !== 0 || occluded ? sprite._thoughtColumnTagged : sprite._thoughtColumn;
+        const shiftX = thoughtLateralShift(column, lateral) + clampX;
         const slotShift = -slot * THOUGHT_STACK_STEP;
         const anchorX = sprite._thoughtAnchorX;
         const baseY = sprite.bubbleBaseY;
@@ -7859,7 +8327,7 @@ export class IsometricRenderer {
         body.y = baseY + (slotShift + column.top) * s;
         body.w = column.width * s;
         body.h = column.height * s;
-        rects.leader = lateral !== 0 || slot !== 0 || occluded;
+        rects.leader = lateral !== 0 || clampX !== 0 || slot !== 0 || occluded;
         rects.horizontal = false;
         if (!rects.leader) return rects;
         const geo = thoughtLeader(this._thoughtLeaderScratch || (this._thoughtLeaderScratch = {}), column, shiftX, slotShift, sprite.bubbleAnchorDy);
@@ -7877,6 +8345,46 @@ export class IsometricRenderer {
             h.h = 3 * s;
         }
         return rects;
+    }
+
+    // Horizontal screen-px shift required to keep candidate `index` inside
+    // `[viewWorld.left, viewWorld.right]`, or 0 when it already fits.
+    _thoughtClampX(sprite, index, s, viewWorld) {
+        if (!viewWorld) return 0;
+        const unclamped = this._thoughtCandidateRects(sprite, index, s, 0).body;
+        if (unclamped.x >= viewWorld.left && unclamped.x + unclamped.w <= viewWorld.right) return 0;
+        const lateral = THOUGHT_CANDIDATE_LATERAL[index] * (sprite._thoughtSide || 1);
+        const column = sprite._thoughtColumnTagged;
+        const baseLeft = sprite._thoughtAnchorX + (thoughtLateralShift(column, lateral) + column.left) * s;
+        const width = column.width * s;
+        if (baseLeft < viewWorld.left) return Math.ceil((viewWorld.left - baseLeft) / s);
+        if (baseLeft + width > viewWorld.right) {
+            const targetLeft = Math.max(viewWorld.left, viewWorld.right - width);
+            return Math.floor((targetLeft - baseLeft) / s);
+        }
+        return 0;
+    }
+
+    // World area of `body` that falls outside `viewWorld` or overlaps any
+    // reserved chrome rect (`getReservedRects()`). Zero means fully in bounds
+    // and clear of chrome.
+    _thoughtBoundsViolationArea(body, viewWorld, reservedWorld) {
+        let penalty = 0;
+        if (viewWorld) {
+            const viewRect = {
+                x: viewWorld.left,
+                y: viewWorld.top,
+                w: Math.max(0, viewWorld.right - viewWorld.left),
+                h: Math.max(0, viewWorld.bottom - viewWorld.top),
+            };
+            const inside = rectIntersectionArea(body, viewRect);
+            const total = Math.max(0, body.w * body.h);
+            if (inside < total) penalty += total - inside;
+        }
+        if (reservedWorld?.length) {
+            for (const chrome of reservedWorld) penalty += rectIntersectionArea(body, chrome);
+        }
+        return penalty;
     }
 
     _thoughtRectHits(rect, grid, occupied, useSpatialGrid) {
@@ -7923,64 +8431,125 @@ export class IsometricRenderer {
 
     // False when no candidate is free and the speaker may not overlap: only a
     // focused speaker falls back to the least-overlapping candidate.
-    _placeThought(sprite, s, now, grid, occupied, useSpatialGrid, mayOverlap = true) {
+    _placeThought(
+        sprite,
+        s,
+        now,
+        grid,
+        occupied,
+        useSpatialGrid,
+        mayOverlap = true,
+        viewWorld = null,
+        reservedWorld = null,
+    ) {
         const stickyKey = (sprite.selected ? 1 : 0) | (sprite.bubbleOccluded ? 2 : 0);
         if (sprite._bubbleStickyKey !== stickyKey) {
             sprite._bubbleStickyKey = stickyKey;
             sprite._bubbleCandidate = null;
+            sprite._bubbleClamped = false;
         }
         const committed = sprite._bubbleCandidate ?? null;
+        const wasClamped = Boolean(sprite._bubbleClamped);
         let chosen = -1;
+        let chosenClampX = 0;
+        const candidateFree = (rects) => !this._thoughtRectsCollide(rects, grid, occupied, useSpatialGrid)
+            && this._thoughtBoundsViolationArea(rects.body, viewWorld, reservedWorld) === 0;
         if (committed !== null) {
-            const blocked = this._thoughtRectsCollide(this._thoughtCandidateRects(sprite, committed, s), grid, occupied, useSpatialGrid);
-            if (!blocked) {
-                chosen = committed;
-                sprite._bubbleBlockedSince = 0;
-            } else {
-                if (!sprite._bubbleBlockedSince) sprite._bubbleBlockedSince = now;
-                // A brief crossing holds the column still.
-                if (now - sprite._bubbleBlockedSince < THOUGHT_RESEARCH_MS) chosen = committed;
+            const committedClampX = wasClamped && viewWorld ? this._thoughtClampX(sprite, committed, s, viewWorld) : 0;
+            const committedRects = this._thoughtCandidateRects(sprite, committed, s, committedClampX);
+            const outOfBounds = this._thoughtBoundsViolationArea(committedRects.body, viewWorld, reservedWorld) > 0;
+            if (!outOfBounds) {
+                const blocked = this._thoughtRectsCollide(committedRects, grid, occupied, useSpatialGrid);
+                if (!blocked) {
+                    chosen = committed;
+                    chosenClampX = committedClampX;
+                    sprite._bubbleBlockedSince = 0;
+                } else {
+                    if (!sprite._bubbleBlockedSince) sprite._bubbleBlockedSince = now;
+                    // A brief crossing holds the column still.
+                    if (now - sprite._bubbleBlockedSince < THOUGHT_RESEARCH_MS) {
+                        chosen = committed;
+                        chosenClampX = committedClampX;
+                    }
+                }
             }
-            // A cheaper candidate that has stayed free long enough wins back.
-            if (chosen === committed && committed > 0 && !sprite._bubbleBlockedSince) {
+            // A cheaper unclamped candidate that has stayed free long enough wins back.
+            const returnLimit = wasClamped ? THOUGHT_CANDIDATE_COUNT : committed;
+            if (chosen === committed && returnLimit > 0 && !sprite._bubbleBlockedSince) {
                 let better = -1;
-                for (let index = 0; index < committed; index++) {
-                    if (this._thoughtRectsCollide(this._thoughtCandidateRects(sprite, index, s), grid, occupied, useSpatialGrid)) continue;
+                for (let index = 0; index < returnLimit; index++) {
+                    if (!candidateFree(this._thoughtCandidateRects(sprite, index, s, 0))) continue;
                     better = index;
                     break;
                 }
                 if (better < 0) sprite._bubbleBetterSince = 0;
                 else if (!sprite._bubbleBetterSince) sprite._bubbleBetterSince = now;
-                else if (now - sprite._bubbleBetterSince >= THOUGHT_RETURN_MS) chosen = better;
+                else if (now - sprite._bubbleBetterSince >= THOUGHT_RETURN_MS) {
+                    chosen = better;
+                    chosenClampX = 0;
+                }
             }
         }
         if (chosen < 0) {
-            let leastArea = Infinity;
+            let leastScore = Infinity;
             let least = 0;
+            let leastClampX = 0;
+            // Pass 1: unclamped candidates (home first, then inward lateral
+            // slots because outward slots fail viewport bounds).
             for (let index = 0; index < THOUGHT_CANDIDATE_COUNT; index++) {
-                const rects = this._thoughtCandidateRects(sprite, index, s);
-                if (!this._thoughtRectsCollide(rects, grid, occupied, useSpatialGrid)) {
+                const rects = this._thoughtCandidateRects(sprite, index, s, 0);
+                if (candidateFree(rects)) {
                     chosen = index;
+                    chosenClampX = 0;
                     break;
                 }
                 if (!mayOverlap) continue;
-                const area = this._thoughtOverlapArea(rects, grid, occupied, useSpatialGrid);
-                if (area < leastArea) {
-                    leastArea = area;
+                const overlap = this._thoughtOverlapArea(rects, grid, occupied, useSpatialGrid);
+                const bounds = this._thoughtBoundsViolationArea(rects.body, viewWorld, reservedWorld);
+                const score = overlap + bounds * 1000;
+                if (score < leastScore) {
+                    leastScore = score;
                     least = index;
+                    leastClampX = 0;
+                }
+            }
+            // Pass 2: if no unclamped slot stays inside the viewport, clamp
+            // horizontally while keeping the leader anchored to the speaker.
+            if (chosen < 0 && viewWorld) {
+                for (let index = 0; index < THOUGHT_CANDIDATE_COUNT; index++) {
+                    const clampX = this._thoughtClampX(sprite, index, s, viewWorld);
+                    if (clampX === 0) continue;
+                    const rects = this._thoughtCandidateRects(sprite, index, s, clampX);
+                    if (candidateFree(rects)) {
+                        chosen = index;
+                        chosenClampX = clampX;
+                        break;
+                    }
+                    if (!mayOverlap) continue;
+                    const overlap = this._thoughtOverlapArea(rects, grid, occupied, useSpatialGrid);
+                    const bounds = this._thoughtBoundsViolationArea(rects.body, viewWorld, reservedWorld);
+                    const score = overlap + bounds * 1000;
+                    if (score < leastScore) {
+                        leastScore = score;
+                        least = index;
+                        leastClampX = clampX;
+                    }
                 }
             }
             if (chosen < 0) {
                 if (!mayOverlap) return false;
                 chosen = least;
+                chosenClampX = leastClampX;
             }
         }
-        if (chosen !== committed) {
+        if (chosen !== committed || (chosenClampX !== 0) !== wasClamped) {
             sprite._bubbleBlockedSince = 0;
             sprite._bubbleBetterSince = 0;
         }
         sprite._bubbleCandidate = chosen;
-        const rects = this._thoughtCandidateRects(sprite, chosen, s);
+        sprite._bubbleClamped = chosenClampX !== 0;
+        sprite.bubbleClampX = chosenClampX;
+        const rects = this._thoughtCandidateRects(sprite, chosen, s, chosenClampX);
         if (useSpatialGrid) {
             this._insertRectGridItem(grid, rects.body);
             if (rects.leader) this._insertRectGridItem(grid, rects.v);
@@ -8189,6 +8758,9 @@ export class IsometricRenderer {
         for (const sprite of sprites) {
             if (!sprite.agent) continue;
             if (sprite.overlaySlot != null) out.push(this._agentIdentityRect(sprite, sprite.overlaySlot || 0));
+            if (sprite.bubbleSlot != null && !sprite.bubbleMergedInto && sprite._thoughtRects?.body?.w > 0) {
+                out.push(sprite._thoughtRects.body);
+            }
             // VQ-14 — a T1 body is as hard an obstacle as its plate: a plaque
             // steps aside (or stands down) rather than cover the pose the
             // plate points at (the HARBOR plaque over the Pharos lookout).
@@ -9092,18 +9664,24 @@ export class IsometricRenderer {
         sprites.push(...this._buildWatchtowerBeaconBuoySprites());
         sprites.push(...DISTRICT_PROPS
             .filter((prop) => prop.layer === 'sorted' && !prop.landmark)
-            .filter((prop) => !this.scenery.isBlockedForTallScenery(prop.tileX, prop.tileY, this.sceneryClearTiles, this.bridgeTiles))
+            .filter((prop) => prop.walkBlock === true || !this.scenery.isBlockedForTallScenery(prop.tileX, prop.tileY, this.sceneryClearTiles, this.bridgeTiles))
             .map((prop) => {
                 const dims = this.assets?.getDims?.(prop.id);
+                const entry = this.assets?.getEntry?.(prop.id);
                 // 2.9 — precomputed so the per-frame drawFn does no lookup work:
                 // land props get a contact shadow, water-surface props none.
                 const contactShadow = !this.waterTiles.has(`${Math.floor(prop.tileX)},${Math.floor(prop.tileY)}`);
+                const channels = entry?.occluderSidecar === true
+                    ? { occluder: (ctx, x, y) => this.sprites?.drawCompanion?.(ctx, prop.id, 'occluder', x, y) }
+                    : null;
                 return new StaticPropSprite({
                     tileX: prop.tileX,
                     tileY: prop.tileY,
                     id: prop.id,
                     bounds: this._assetPropBounds(prop.id),
-                    splitForOcclusion: Boolean(dims && dims.h >= 56),
+                    splitForOcclusion: false,
+                    materialClass: entry?.materialClass || null,
+                    channels,
                     drawFn: (ctx, x, y) => {
                         if (contactShadow) this._drawPropContactShadow(ctx, x, y, prop.id, prop.tileX, prop.tileY);
                         this.sprites.drawSprite(ctx, prop.id, x, y, this._winterPropOpts(prop.id));
@@ -9144,6 +9722,17 @@ export class IsometricRenderer {
             const rail = span.nearRail;
             if (!rail) continue;
             const walk = this._bridgeWalk(span);
+            if (span.id === 'central-river-bridge') {
+                const parapet = buildCentralBridgeParapetSprite({
+                    span,
+                    assets: this.assets,
+                    propWinter: this.propWinter,
+                    bridgeWalk: walk,
+                    bridgeLightsLit: (s) => this.bridgeLightsLit?.(s) === true,
+                });
+                if (parapet) sprites.push(parapet);
+                continue;
+            }
             const segmentCount = Math.max(1, span.lengthTiles * 2);
             for (let i = 0; i < segmentCount; i++) {
                 const t0 = i / segmentCount;
@@ -10595,28 +11184,14 @@ export class IsometricRenderer {
     }
 
     // W6.9 / W6.10 — the hearths (gatehouse guard rooms, lake shrine), the
-    // calendar's lit bonfire, Command's watchfires and the bridges' painted
-    // flames (BR-6): fixtures on the village lamp clock
-    // (LightSourceRegistry.hearthLightSources) that never read occupancy, so
-    // no work building lights without a working visitor.
+    // calendar's lit bonfire and the bridges' painted flames (BR-6): fixtures
+    // on the village lamp clock (LightSourceRegistry.hearthLightSources) that
+    // never read occupancy, so no work building lights without a working visitor.
     _hearthLightSources(lighting = null) {
         const lampsLit = lampsLitAt(this._lastAtmosphere);
         if (!lampsLit) return [];
         const extra = [...(this.villageCalendar?.lightFixtures?.() || [])];
-        for (const [index, prop] of (this.commandCenterGroundProps || []).entries()) {
-            if (prop.type !== 'watchfire') continue;
-            extra.push({
-                id: `hearth.watchfire.${index}`,
-                tileX: prop.tileX,
-                tileY: prop.tileY,
-                height: WATCHFIRE_FLAME_HEIGHT,
-                radius: WATCHFIRE_POOL_RADIUS,
-                intensity: 0.72,
-                color: '#ffa94a',
-                fire: true,
-            });
-        }
-        // D4 — each hearth and watchfire catches on the round with the lamps.
+        // D4 — each hearth catches on the round with the lamps.
         const lit = this.lampRoundLit();
         const caught = row => lit(row.tileX, row.tileY);
         return hearthLightSources({
@@ -11019,6 +11594,7 @@ export class IsometricRenderer {
         ctx.globalCompositeOperation = 'multiply';
         ctx.drawImage(this._getAtmosphereVignette(canvas, atmosphere), 0, 0, canvas.width, canvas.height);
         ctx.restore();
+        drawCanvasGradeGain(ctx, canvas.width, canvas.height, grade);
         drawCanvasGradeLift(ctx, canvas.width, canvas.height, grade);
         profileMark?.('atmosphere-grade');
 
@@ -11304,6 +11880,7 @@ export class IsometricRenderer {
         ctx.imageSmoothingEnabled = false;
         ctx.drawImage(this._getFastVignetteStamp(canvas, atmosphere), 0, 0, canvas.width, canvas.height);
         ctx.restore();
+        drawCanvasGradeGain(ctx, canvas.width, canvas.height, grade);
         drawCanvasGradeLift(ctx, canvas.width, canvas.height, grade);
         profileMark?.('atmosphere-grade');
 
@@ -11735,34 +12312,8 @@ export class IsometricRenderer {
         return rgb;
     }
 
-    _drawAncientRuins(ctx) {
-        const pulse = this.motionScale ? (Math.sin(this.waterFrame * 1.7) + 1) / 2 : 0.45;
-        for (const ruin of ANCIENT_RUINS) {
-            if (this.waterTiles.has(`${Math.floor(ruin.tileX)},${Math.floor(ruin.tileY)}`)) continue;
-            const x = (ruin.tileX - ruin.tileY) * TILE_WIDTH / 2;
-            const y = (ruin.tileX + ruin.tileY) * TILE_HEIGHT / 2;
-            ctx.save();
-            ctx.translate(x, y);
-            ctx.scale(ruin.scale, ruin.scale);
-            ctx.fillStyle = 'rgba(59, 53, 42, 0.62)';
-            ctx.fillRect(-18, -28, 8, 31);
-            ctx.fillRect(10, -24, 8, 27);
-            ctx.fillRect(-18, -30, 36, 7);
-            ctx.fillStyle = 'rgba(163, 147, 104, 0.35)';
-            ctx.fillRect(-15, -25, 3, 24);
-            ctx.fillRect(13, -21, 3, 22);
-            ctx.strokeStyle = `rgba(201, 242, 107, ${0.08 + pulse * 0.14})`;
-            ctx.lineWidth = 1.2;
-            ctx.beginPath();
-            ctx.arc(0, -11, 14, Math.PI * 1.08, Math.PI * 1.92);
-            ctx.stroke();
-            ctx.restore();
-        }
-    }
-
     _drawAmbientGroundProps(ctx) {
         ctx.save();
-        this._drawAncientRuins(ctx);
         if (this.sprites) {
             for (const prop of AMBIENT_GROUND_PROPS) {
                 const x = (prop.tileX - prop.tileY) * TILE_WIDTH / 2;
@@ -11788,13 +12339,6 @@ export class IsometricRenderer {
                 this.sprites.drawSprite(ctx, prop.id, x, y, this._winterPropOpts(prop.id));
             }
         }
-
-        for (const prop of this.commandCenterGroundProps) {
-            const x = (prop.tileX - prop.tileY) * TILE_WIDTH / 2;
-            const y = (prop.tileX + prop.tileY) * TILE_HEIGHT / 2;
-            if (prop.type === 'watchfire') this._drawCommandWatchfire(ctx, x, y, prop.phase || 0);
-            else if (prop.type === 'guardpost') this._drawCommandGuardpost(ctx, x, y);
-        }
         ctx.restore();
     }
 
@@ -11811,34 +12355,6 @@ export class IsometricRenderer {
         ctx.ellipse(Math.round(x), Math.round(y + 1), halfW, halfW * 0.42, 0, 0, Math.PI * 2);
         ctx.fill();
         ctx.restore();
-    }
-
-    _drawCommandWatchfire(ctx, x, y, phase = 0) {
-        const flicker = this.motionScale ? Math.max(0, Math.sin(this.waterFrame * 7 + phase)) : 0.5;
-        ctx.fillStyle = 'rgba(44, 30, 17, 0.6)';
-        ctx.fillRect(x - 2, y - 12, 4, 10);
-
-        // Ember bed reads as a pixel pool; the flame uses the shared taper.
-        fillPixelEllipse(ctx, x, y - 12, 8 + flicker * 2, 4,
-            `rgba(255, 132, 37, ${(0.12 + flicker * 0.08).toFixed(3)})`);
-        drawPixelFlame(ctx, x, y - 11, 8 + flicker * 4, 3, {
-            outer: `rgba(255, 132, 37, ${(0.62 + flicker * 0.24).toFixed(3)})`,
-            inner: `rgba(255, 216, 122, ${(0.72 + flicker * 0.20).toFixed(3)})`,
-            tip: `rgba(255, 245, 210, ${(0.60 + flicker * 0.24).toFixed(3)})`,
-            lean: this.motionScale ? Math.sin(this.waterFrame * 2.1 + phase) * 1.2 : 0,
-        });
-    }
-
-    _drawCommandGuardpost(ctx, x, y) {
-        ctx.fillStyle = 'rgba(64, 45, 27, 0.85)';
-        ctx.fillRect(x - 1.2, y - 11, 2.4, 11);
-        ctx.fillStyle = 'rgba(154, 116, 59, 0.72)';
-        ctx.fillRect(x - 7, y - 4, 14, 2.8);
-        ctx.fillRect(x - 2, y - 8, 4, 1.5);
-        ctx.fillStyle = 'rgba(230, 206, 146, 0.26)';
-        ctx.beginPath();
-        ctx.arc(x, y - 11, 1.4, 0, Math.PI * 2);
-        ctx.fill();
     }
 
 }

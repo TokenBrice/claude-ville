@@ -16,7 +16,17 @@ import { createSeaState, resolveSeaState } from '../../claudeville/src/presentat
 import { POST_FX_LEVELS } from '../../claudeville/src/presentation/character-mode/postfx/PostFxLadder.js';
 import { resetLookStrengths, setLookStrength } from '../../claudeville/src/presentation/character-mode/LookStrengths.js';
 import { MAP_SIZE } from '../../claudeville/src/config/constants.js';
-import { COAST_WATER_STOPS, detectPilingTips, getCoastField, staticMirrorRgb } from '../../claudeville/src/presentation/character-mode/CoastBake.js';
+import {
+    COAST_FIELD_FLAGS,
+    COAST_PALETTE,
+    COAST_WATER_STOPS,
+    detectPilingTips,
+    drawCanvasWaterMood,
+    getCoastField,
+    staticMirrorRgb,
+} from '../../claudeville/src/presentation/character-mode/CoastBake.js';
+import { drawCanvasWaterState } from '../../claudeville/src/presentation/character-mode/CanvasWaterState.js';
+import { evaluateGrade } from '../../claudeville/src/presentation/character-mode/GradeEvaluator.js';
 
 const ASSET_ROOT = new URL('../../claudeville/assets/sprites/', import.meta.url);
 
@@ -133,5 +143,207 @@ test('C-03: coast field stays deep open water past SW bastion and SE corners', (
     for (const u of [MAP_SIZE - 2, MAP_SIZE - 1, MAP_SIZE - 0.5, MAP_SIZE, MAP_SIZE + 1]) {
         const sd = field.signedDistance(u, -2.5);
         assert.ok(sd > 1.8, `expected open water off SE corner at (${u}, -2.5), got sd=${sd}`);
+    }
+});
+
+function createFakeCanvas(width = 0, height = 0) {
+    const canvas = {
+        width,
+        height,
+        data: new Uint8ClampedArray(width * height * 4),
+    };
+    const ensure = () => {
+        const need = canvas.width * canvas.height * 4;
+        if (canvas.data.length !== need) canvas.data = new Uint8ClampedArray(need);
+    };
+    const ctx = {
+        canvas,
+        imageSmoothingEnabled: false,
+        save() {},
+        restore() {},
+        drawImage() {},
+        getTransform() { return { a: 2, d: 2, e: 0, f: 0 }; },
+        createImageData(iw, ih) { return { width: iw, height: ih, data: new Uint8ClampedArray(iw * ih * 4) }; },
+        getImageData(sx = 0, sy = 0, sw = canvas.width, sh = canvas.height) {
+            ensure();
+            const out = new Uint8ClampedArray(sw * sh * 4);
+            for (let y = 0; y < sh; y++) {
+                const row = (sy + y) * canvas.width;
+                for (let x = 0; x < sw; x++) {
+                    const si = (row + sx + x) * 4;
+                    const di = (y * sw + x) * 4;
+                    out[di] = canvas.data[si];
+                    out[di + 1] = canvas.data[si + 1];
+                    out[di + 2] = canvas.data[si + 2];
+                    out[di + 3] = canvas.data[si + 3];
+                }
+            }
+            return { width: sw, height: sh, data: out };
+        },
+        putImageData(img) {
+            ensure();
+            canvas.data = new Uint8ClampedArray(img.data);
+        },
+    };
+    canvas.getContext = () => ctx;
+    return canvas;
+}
+
+test('Canvas caustics read _shadeFieldState.ready.field without throwing and mask shaded stop-2 river texels', () => {
+    const origDoc = globalThis.document;
+    const origImageData = globalThis.ImageData;
+    globalThis.document = { createElement: () => createFakeCanvas(0, 0) };
+    globalThis.ImageData = class FakeImageData {
+        constructor(w, h) { this.width = w; this.height = h; this.data = new Uint8ClampedArray(w * h * 4); }
+    };
+    try {
+        const tw = 32;
+        const th = 32;
+        const terrain = createFakeCanvas(tw, th);
+        const stop2 = COAST_PALETTE.stops[2];
+        for (let i = 0; i < tw * th; i++) {
+            terrain.data[i * 4] = stop2[0];
+            terrain.data[i * 4 + 1] = stop2[1];
+            terrain.data[i * 4 + 2] = stop2[2];
+            terrain.data[i * 4 + 3] = 255;
+        }
+        const cols = tw / 2;
+        const rows = th / 2;
+        const coastField = new Uint8Array(cols * rows * 2);
+        for (let cell = 0; cell < cols * rows; cell++) {
+            coastField[cell * 2] = 128 + 32;
+            // Non-sea water (river/lagoon) so stop-2 texels enter the caustic list.
+            coastField[cell * 2 + 1] = COAST_FIELD_FLAGS.water;
+        }
+        // Shade the left half (x < 16) and leave the right half (x >= 16) sunlit.
+        const shadeCols = tw / 2;
+        const shadeRows = th;
+        const shadeData = new Uint8Array(shadeCols * shadeRows * 2);
+        for (let r = 0; r < shadeRows; r++) {
+            for (let c = 0; c < shadeCols / 2; c++) {
+                shadeData[(r * shadeCols + c) * 2 + 1] = 255;
+            }
+        }
+        const renderer = {
+            terrainCache: terrain,
+            terrainCacheBounds: { x: 0, y: 0 },
+            terrainCacheKey: 'canvas-caustic-test',
+            _coastBake: {
+                waterFields: {
+                    revision: 1,
+                    x: 0,
+                    y: 0,
+                    cols,
+                    rows,
+                    cycleOffset: new Uint8Array(cols * rows).fill(255),
+                    coastField,
+                },
+            },
+            _shadeFieldState: {
+                ready: {
+                    key: 's1',
+                    fieldKey: 'f1',
+                    revision: 1,
+                    canvas: {},
+                    field: { originX: 0, originY: 0, cellW: 2, cellH: 1, cols: shadeCols, rows: shadeRows, data: shadeData },
+                },
+            },
+            camera: { zoom: 2 },
+            motionScale: 1,
+            motionTimeMs: 0,
+            postFx: { isActive: () => false },
+        };
+        const clear = { type: 'clear', cloudCover: 0.08, fog: 0, intensity: 0.18 };
+        const grade = evaluateGrade({ minuteOfDay: 12 * 60, weather: clear, moonFill: 0.5 });
+        const atmosphere = { weather: clear, lightGrade: grade };
+        const target = createFakeCanvas(tw * 2, th * 2);
+
+        assert.doesNotThrow(() => drawCanvasWaterState(target.getContext('2d'), renderer, atmosphere));
+
+        const state = renderer._canvasWater;
+        const overlay = state.overlay;
+        const list = state.base.caustic[0];
+        assert.ok(list.length > 0, 'stop-2 river caustic texels exist');
+        let shadedHidden = 0;
+        let sunlitPainted = 0;
+        const caustic2 = state.palette.caustics[2];
+        for (const i of list) {
+            const x = i % tw;
+            const y = (i / tw) | 0;
+            const p = (y - overlay.y) * overlay.canvas.width + (x - overlay.x);
+            const px = overlay.u32[p];
+            if (x < 16) {
+                assert.notEqual(px, caustic2, `shaded stop-2 texel (${x},${y}) should not draw caustic`);
+                shadedHidden++;
+            } else {
+                assert.equal(px, caustic2, `sunlit stop-2 texel (${x},${y}) should draw caustic`);
+                sunlitPainted++;
+            }
+        }
+        assert.ok(shadedHidden > 0 && sunlitPainted > 0, `expected both shaded (${shadedHidden}) and sunlit (${sunlitPainted}) caustic texels`);
+    } finally {
+        globalThis.document = origDoc;
+        globalThis.ImageData = origImageData;
+    }
+});
+
+test('Canvas water mood reads _coastBake.waterFields so sea-shelf mirrors lift with seaLift', () => {
+    const origDoc = globalThis.document;
+    const origImageData = globalThis.ImageData;
+    globalThis.document = { createElement: () => createFakeCanvas(0, 0) };
+    globalThis.ImageData = class FakeImageData {
+        constructor(w, h) { this.width = w; this.height = h; this.data = new Uint8ClampedArray(w * h * 4); }
+    };
+    try {
+        const makeRenderer = () => {
+            const terrain = createFakeCanvas(2, 2);
+            // Warm timber mirror colour (not watery) over a sea-shelf water cell (sd = 1.5 > 0.8).
+            for (let i = 0; i < 4; i++) {
+                terrain.data[i * 4] = 96;
+                terrain.data[i * 4 + 1] = 84;
+                terrain.data[i * 4 + 2] = 74;
+                terrain.data[i * 4 + 3] = 255;
+            }
+            const coastField = new Uint8Array(2);
+            coastField[0] = Math.round(1.5 * 64) + 128;
+            coastField[1] = COAST_FIELD_FLAGS.water | COAST_FIELD_FLAGS.sea;
+            return {
+                terrainCache: terrain,
+                terrainCacheBounds: { x: 0, y: 0 },
+                terrainCacheKey: 'mirror-shelf-test',
+                // Deliberately omit renderer.waterFields; only _coastBake.waterFields exists at runtime.
+                _coastBake: {
+                    coast: {
+                        x: 0,
+                        y: 0,
+                        cols: 1,
+                        rows: 1,
+                        classes: new Uint8Array([4]),
+                        reflect: new Uint8Array([1]),
+                        covered: new Uint8Array([0]),
+                        // mirrorBase stores stop + 1; stop 4 (deepWater[1]) is below open-sea stop 5
+                        // at (0,0) so lifting relies on the sea-shelf path (mirrorSea === 1).
+                        mirrorBase: new Uint8Array([5, 5, 5, 5]),
+                    },
+                    waterFields: { revision: 1, x: 0, y: 0, cols: 1, rows: 1, coastField },
+                },
+                postFx: { isActive: () => false },
+            };
+        };
+        const clear = { type: 'clear', cloudCover: 0.08, fog: 0, intensity: 0.18 };
+        const grade = evaluateGrade({ minuteOfDay: 12 * 60, weather: clear, moonFill: 0.5 });
+        const target = createFakeCanvas(4, 4);
+
+        const rLit = makeRenderer();
+        drawCanvasWaterMood(target.getContext('2d'), rLit, { weather: clear, lightGrade: grade, sky: { sun: { elevationDeg: 60 } } });
+        assert.equal(rLit._coastMoodLayer.mirrorSea[0], 1, 'shelf mirror cell flagged from _coastBake.waterFields');
+
+        const rNoLift = makeRenderer();
+        drawCanvasWaterMood(target.getContext('2d'), rNoLift, { weather: clear, lightGrade: grade, sky: { sun: { elevationDeg: 0 } } });
+        assert.ok(rLit._coastMoodLayer.canvas.data[0] > rNoLift._coastMoodLayer.canvas.data[0],
+            `expected sea-shelf mirror R to lift under noon seaLift (${rNoLift._coastMoodLayer.canvas.data[0]} -> ${rLit._coastMoodLayer.canvas.data[0]})`);
+    } finally {
+        globalThis.document = origDoc;
+        globalThis.ImageData = origImageData;
     }
 });

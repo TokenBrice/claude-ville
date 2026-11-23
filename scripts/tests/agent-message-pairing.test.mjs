@@ -13,7 +13,7 @@ import { BUILDING_DEFS } from '../../claudeville/src/config/buildings.js';
 import { VILLAGE_GATE } from '../../claudeville/src/config/townPlan.js';
 import { Agent } from '../../claudeville/src/domain/entities/Agent.js';
 import { Building } from '../../claudeville/src/domain/entities/Building.js';
-import { AgentSprite, ONE_SIDED_CHAT_GRACE_MS } from '../../claudeville/src/presentation/character-mode/AgentSprite.js';
+import { AgentSprite, MUTUAL_CHAT_MAX_MS, ONE_SIDED_CHAT_GRACE_MS } from '../../claudeville/src/presentation/character-mode/AgentSprite.js';
 import { Pathfinder } from '../../claudeville/src/presentation/character-mode/Pathfinder.js';
 import { SceneryEngine } from '../../claudeville/src/presentation/character-mode/SceneryEngine.js';
 import VisitTileAllocator from '../../claudeville/src/presentation/character-mode/VisitTileAllocator.js';
@@ -114,9 +114,9 @@ test('a chat one-sided past the grace period ends in the cleanup pass', () => {
     assert.deepEqual(ended, ['a']);
     assert.equal(chatter.chatting, false);
 
-    // A young one-sided chat keeps its grace, and a reciprocal pair never times out.
+    // A young one-sided chat keeps its grace, and a reciprocal pair stays alive past the one-sided grace.
     const young = { ...chatter, chatSinceMs: Date.now() - 1000, chatPartner: other, chatting: true, endChat() { throw new Error('too early'); } };
-    const pair = { ...chatter, chatSinceMs, chatPartner: other, endChat() { throw new Error('reciprocal chats do not time out'); } };
+    const pair = { ...chatter, chatSinceMs, chatPartner: other, endChat() { throw new Error('reciprocal chats stay alive under MUTUAL_CHAT_MAX_MS'); } };
     const mutual = { ...other, chatPartner: pair };
     pair.chatPartner = mutual;
     const rendererTwo = {
@@ -126,6 +126,82 @@ test('a chat one-sided past the grace period ends in the cleanup pass', () => {
     young.agent = { id: 'young', name: 'y', status: AgentStatus.WORKING, currentTool: 'SendMessage', currentToolInput: '{"to":"b"}' };
     pair.agent = { id: 'pair', name: 'p', status: AgentStatus.WORKING, currentTool: 'SendMessage', currentToolInput: '{"to":"b"}' };
     IsometricRenderer.prototype._updateChatMatching.call(rendererTwo);
+});
+
+test('gate apron excludes chat matching/start and static-tool mutual chats cap at MUTUAL_CHAT_MAX_MS', () => {
+    const sender = new AgentSprite({
+        id: 'beacon', name: 'Beacon', status: AgentStatus.WORKING, provider: 'claude',
+        currentTool: 'SendMessage', currentToolInput: 'recipient_name=Anchor, message=Ready',
+        position: { tileX: 19, tileY: 34 },
+    }, { deferInitialTarget: true });
+    const target = new AgentSprite({
+        id: 'anchor', name: 'Anchor', status: AgentStatus.WORKING, provider: 'claude',
+        currentTool: 'TeamCreate', currentToolInput: 'team_name=Gather Blue',
+        position: { tileX: 18.65, tileY: 37.6 },
+    }, { deferInitialTarget: true });
+    sender.setTilePosition(19, 34);
+    target.setTilePosition(18.65, 37.6);
+    assert.equal(target.standsOnGateApron(), true, 'behind the gatehouse wall is on the gate apron');
+    assert.equal(sender.standsOnGateApron(), false, 'open avenue past 36.5 is off the apron');
+
+    const started = [];
+    sender.startChat = (t) => { started.push(t.agent.id); sender.chatPartner = t; };
+    const renderer = {
+        agentSprites: new Map([[sender.agent.id, sender], [target.agent.id, target]]),
+        _isGateTransit: () => false,
+    };
+    IsometricRenderer.prototype._updateChatMatching.call(renderer);
+    assert.deepEqual(started, [], 'no chat starts while target is on the gate apron');
+
+    // Once target walks clear of the apron, matching starts normally.
+    target.setTilePosition(18.65, 36.2);
+    assert.equal(target.standsOnGateApron(), false);
+    IsometricRenderer.prototype._updateChatMatching.call(renderer);
+    assert.deepEqual(started, ['anchor']);
+
+    // Mutual chat exceeding MUTUAL_CHAT_MAX_MS ends and does not immediately re-pair on the same static input.
+    sender.chatting = true;
+    sender.chatPartner = target;
+    sender.chatSinceMs = Date.now() - MUTUAL_CHAT_MAX_MS - 500;
+    target.chatting = true;
+    target.chatPartner = sender;
+    target.chatSinceMs = sender.chatSinceMs;
+    let ended = 0;
+    sender.endChat = () => { ended++; sender.chatting = false; sender.chatPartner = null; sender.chatSinceMs = null; };
+    target.endChat = () => { ended++; target.chatting = false; target.chatPartner = null; target.chatSinceMs = null; };
+    IsometricRenderer.prototype._updateChatMatching.call(renderer);
+    assert.equal(ended, 2, 'both partners end the capped mutual chat');
+    assert.equal(sender.chatPartner, null);
+    assert.equal(target.chatPartner, null);
+
+    // Same static tool input must not re-start immediately on the next pass.
+    IsometricRenderer.prototype._updateChatMatching.call(renderer);
+    assert.deepEqual(started, ['anchor'], 'unchanged static SendMessage stays exhausted');
+
+    // A fresh message call re-arms pairing.
+    sender.agent.currentToolInput = 'recipient_name=Anchor, message=Follow up';
+    IsometricRenderer.prototype._updateChatMatching.call(renderer);
+    assert.deepEqual(started, ['anchor', 'anchor'], 'a new SendMessage input pairs again');
+
+    // A fresh SendMessage sent during an older mutual chat must not be exhausted unseen at the 12 s cap.
+    sender.chatting = true;
+    sender.chatPartner = target;
+    sender.chatSinceMs = Date.now() - MUTUAL_CHAT_MAX_MS - 500;
+    target.chatting = true;
+    target.chatPartner = sender;
+    target.chatSinceMs = sender.chatSinceMs;
+    sender.agent.currentToolInput = 'recipient_name=Anchor, message=Fresh mid-chat';
+    IsometricRenderer.prototype._updateChatMatching.call(renderer);
+    assert.equal(sender._exhaustedChatMsgKey, null, 'fresh SendMessage is not exhausted when older chat hits 12 s');
+    assert.equal(sender.chatting, true, 'chat continues and re-anchors on the fresh SendMessage');
+    assert.equal(sender._chatStartMsgKey, 'SendMessage|recipient_name=Anchor, message=Fresh mid-chat');
+
+    // Once that fresh message itself stays unchanged past MUTUAL_CHAT_MAX_MS, it expires on match.
+    sender.chatSinceMs = Date.now() - MUTUAL_CHAT_MAX_MS - 500;
+    target.chatSinceMs = sender.chatSinceMs;
+    IsometricRenderer.prototype._updateChatMatching.call(renderer);
+    assert.equal(sender._exhaustedChatMsgKey, 'SendMessage|recipient_name=Anchor, message=Fresh mid-chat');
+    assert.equal(sender.chatPartner, null);
 });
 
 // The real walk grid and routing options the full-handshake test below runs on.
