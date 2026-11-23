@@ -669,3 +669,76 @@ test('Antigravity discovers T3 Code agy acp conversations under ~/.t3 when no ro
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+let nodeSqlite = null;
+try {
+  nodeSqlite = require('node:sqlite');
+} catch {
+  // node:sqlite is unflagged from Node 22.13; without it T3 lineage is skipped.
+}
+
+test('Antigravity groups a T3 Code delegate under the thread that started it', { skip: !nodeSqlite?.DatabaseSync && 'node:sqlite unavailable' }, () => {
+  const tmp = makeTempDir('cv-antigravity-t3-lineage-');
+  const savedHome = process.env.HOME;
+  const savedRoot = process.env.CLAUDEVILLE_ANTIGRAVITY_DIR;
+  try {
+    process.env.HOME = tmp;
+    delete process.env.CLAUDEVILLE_ANTIGRAVITY_DIR;
+    const delegateId = 'eeeeeeee-6666-4666-8666-666666666666';
+    const ownId = 'ffffffff-7777-4777-8777-777777777777';
+    const claudeId = '00dd9673-f202-4300-a82a-0ef61373229e';
+    const now = Date.parse('2026-11-23T12:47:00Z');
+    const acpDir = path.join(tmp, '.t3', 'userdata', 'providers', 'antigravity', 'ac0a3dfd', 'antigravity-acp');
+    for (const id of [delegateId, ownId]) {
+      writeFile(path.join(acpDir, 'brain', id, '.system_generated', 'logs', 'transcript.jsonl'), `${JSON.stringify({
+        step_index: 0,
+        source: 'MODEL',
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        created_at: new Date(now - 5_000).toISOString(),
+        model: 'gemini-4-neon-high',
+        content: 'Done.',
+      })}\n`, now - 5_000);
+    }
+
+    const db = new nodeSqlite.DatabaseSync(path.join(tmp, '.t3', 'userdata', 'statev2.sqlite'));
+    db.exec(`
+      CREATE TABLE orchestration_v2_projection_threads (thread_id TEXT PRIMARY KEY, title TEXT NOT NULL, payload_json TEXT NOT NULL);
+      CREATE TABLE orchestration_v2_projection_runs (run_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, ordinal INTEGER NOT NULL);
+      CREATE TABLE orchestration_v2_projection_run_attempts (attempt_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, run_id TEXT NOT NULL,
+        attempt_ordinal INTEGER NOT NULL, provider TEXT NOT NULL, payload_json TEXT NOT NULL);
+    `);
+    const thread = db.prepare('INSERT INTO orchestration_v2_projection_threads VALUES (?, ?, ?)');
+    const run = db.prepare('INSERT INTO orchestration_v2_projection_runs VALUES (?, ?, ?)');
+    const attempt = db.prepare('INSERT INTO orchestration_v2_projection_run_attempts VALUES (?, ?, ?, 1, ?, ?)');
+    const addRun = (threadId, ordinal, provider, nativeThreadId) => {
+      const runId = `run:${threadId}:${ordinal}`;
+      run.run(runId, threadId, ordinal);
+      attempt.run(`${runId}:1`, threadId, runId, provider, JSON.stringify({ nativeThreadId }));
+    };
+    thread.run('orchestrator', 'Orchestrator', JSON.stringify({}));
+    addRun('orchestrator', 1, 'claudeAgent', 'a-session-the-orchestrator-left');
+    addRun('orchestrator', 2, 'claudeAgent', claudeId);
+    thread.run('delegate', 'L1 fix-cause: supply', JSON.stringify({ lineage: { parentThreadId: 'orchestrator', relationshipToParent: 'subagent' } }));
+    addRun('delegate', 1, 'antigravity', delegateId);
+    thread.run('own', 'Started in T3 Code', JSON.stringify({}));
+    addRun('own', 1, 'antigravity', ownId);
+    db.close();
+
+    const sessions = new AntigravityAdapter({ now: () => now }).getActiveSessions(2 * 60_000);
+    const delegate = sessions.find(s => s.sessionId === `antigravity-${delegateId}`);
+    assert.equal(delegate.parentSessionId, claudeId, 'the parent thread\'s latest session is the parent');
+    assert.equal(delegate.rootSessionId, claudeId);
+    assert.equal(delegate.agentType, 'sub-agent');
+    assert.equal(delegate.subagentKind, 'delegate');
+    assert.equal(delegate.agentName, 'L1 fix-cause: supply');
+    const own = sessions.find(s => s.sessionId === `antigravity-${ownId}`);
+    assert.equal(own.parentSessionId, null, 'a thread T3 Code started itself has no parent');
+    assert.equal(own.agentType, 'main');
+  } finally {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    if (savedRoot !== undefined) process.env.CLAUDEVILLE_ANTIGRAVITY_DIR = savedRoot;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

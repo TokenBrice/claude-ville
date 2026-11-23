@@ -886,7 +886,7 @@ function presentReducedEntry(reduced, { now = Date.now(), lineage = null, backgr
   const tokenUsage = reduced.session.tokenUsage ? { ...reduced.session.tokenUsage } : null;
   const dialogue = pickDialogue(reduced.dialogueCandidates, { now });
   const parentConvId = lineage?.parentConvId || null;
-  const parentSessionId = parentConvId ? sessionIdFor(parentConvId) : null;
+  const parentSessionId = lineage?.parentSessionId || (parentConvId ? sessionIdFor(parentConvId) : null);
   const rootSessionId = lineage?.rootConvId ? sessionIdFor(lineage.rootConvId) : parentSessionId;
   const agentName = reduced.session.agentName || lineage?.agentName || null;
   const project = reduced.session.project || lineage?.parentProject || '';
@@ -924,10 +924,18 @@ function presentReducedEntry(reduced, { now = Date.now(), lineage = null, backgr
   };
 }
 
+function t3UserDataDir() {
+  return path.join(os.homedir(), '.t3', 'userdata');
+}
+
+function t3InstancesDir() {
+  return path.join(t3UserDataDir(), 'providers', 'antigravity');
+}
+
 // T3 Code starts agy as `agy acp --gemini-dir ~/.t3/userdata/providers/antigravity/<instance>
 // --app-data-dir antigravity-acp`, one directory per provider instance.
 function t3AcpDirs() {
-  const instancesDir = path.join(os.homedir(), '.t3', 'userdata', 'providers', 'antigravity');
+  const instancesDir = t3InstancesDir();
   let entries;
   try {
     entries = fs.readdirSync(instancesDir, { withFileTypes: true });
@@ -938,6 +946,64 @@ function t3AcpDirs() {
   return entries
     .filter(entry => entry.isDirectory())
     .map(entry => path.join(instancesDir, entry.name, 'antigravity-acp'));
+}
+
+let _nodeSqlite;
+function loadNodeSqlite() {
+  if (_nodeSqlite === undefined) {
+    try {
+      _nodeSqlite = require('node:sqlite');
+    } catch {
+      _nodeSqlite = null;
+    }
+  }
+  return _nodeSqlite;
+}
+
+// T3 Code's state database names the thread that started each delegate. A run
+// attempt records the agent's own conversation id (`nativeThreadId`), the
+// delegate thread's lineage names its parent thread, and that thread's latest
+// attempt names the parent's own session. Claude and Antigravity parents map
+// to a villager id; a delegate of any other parent stays on its own.
+const T3_PARENT_PREFIX = { claudeAgent: '', antigravity: SESSION_PREFIX };
+const T3_LINEAGE_SQL = `
+WITH attempt AS (
+  SELECT a.thread_id, a.provider, json_extract(a.payload_json, '$.nativeThreadId') AS native,
+    ROW_NUMBER() OVER (PARTITION BY a.thread_id ORDER BY r.ordinal DESC, a.attempt_ordinal DESC) AS rank
+  FROM orchestration_v2_projection_run_attempts a
+  JOIN orchestration_v2_projection_runs r ON r.run_id = a.run_id
+  WHERE json_extract(a.payload_json, '$.nativeThreadId') IS NOT NULL
+)
+SELECT lower(child.native) AS conv, t.title AS title, parent.provider AS parentProvider, parent.native AS parentNative
+FROM attempt child
+JOIN orchestration_v2_projection_threads t ON t.thread_id = child.thread_id
+JOIN attempt parent ON parent.thread_id = json_extract(t.payload_json, '$.lineage.parentThreadId') AND parent.rank = 1
+WHERE child.provider = 'antigravity'
+  AND lower(child.native) IN (SELECT value FROM json_each(?))
+`;
+
+function readT3Lineage(convIds) {
+  const links = new Map();
+  const dbPath = path.join(t3UserDataDir(), 'statev2.sqlite');
+  const sqlite = loadNodeSqlite();
+  if (convIds.length === 0 || !sqlite?.DatabaseSync || !fs.existsSync(dbPath)) return links;
+  let db;
+  try {
+    db = new sqlite.DatabaseSync(dbPath, { readOnly: true });
+    for (const row of db.prepare(T3_LINEAGE_SQL).all(JSON.stringify(convIds))) {
+      const prefix = T3_PARENT_PREFIX[row.parentProvider];
+      if (prefix === undefined || typeof row.parentNative !== 'string' || !row.parentNative) continue;
+      links.set(row.conv, {
+        parentSessionId: `${prefix}${row.parentNative}`,
+        title: typeof row.title === 'string' ? row.title.trim().slice(0, 128) || null : null,
+      });
+    }
+  } catch (error) {
+    noteReadFailure(error);
+  } finally {
+    try { db?.close(); } catch (error) { noteReadFailure(error); }
+  }
+  return links;
 }
 
 class AntigravityAdapter {
@@ -956,6 +1022,7 @@ class AntigravityAdapter {
     this._parsedCache = new Map();
     this._convFileIndex = new Map();
     this._metadataCache = new Map();
+    this._t3Links = new Map();
     this._perf = {
       scans: 0,
       cacheHits: 0,
@@ -1349,6 +1416,27 @@ class AntigravityAdapter {
       if (!info.parentProject && rootEntry?.session?.project) {
         info.parentProject = rootEntry.session.project;
       }
+    }
+
+    // A T3 Code delegate's parent is the T3 thread that started it, often on
+    // another provider. A delegate's parent never changes, so a found link is kept.
+    const t3Instances = `${t3InstancesDir()}${path.sep}`;
+    const t3ConvIds = candidates
+      .filter(c => c.rootDir.startsWith(t3Instances) && reducedByConvId.has(c.lowerId) && !lineageByChild.has(c.lowerId))
+      .map(c => c.lowerId);
+    for (const [id, link] of readT3Lineage(t3ConvIds.filter(id => !this._t3Links.has(id)))) {
+      this._t3Links.set(id, link);
+    }
+    trimCache(this._t3Links, 4096);
+    for (const id of t3ConvIds) {
+      const link = this._t3Links.get(id);
+      if (!link) continue;
+      lineageByChild.set(id, {
+        parentSessionId: link.parentSessionId,
+        agentName: link.title,
+        agentType: 'sub-agent',
+        subagentKind: 'delegate',
+      });
     }
 
     const activeIds = new Set();
