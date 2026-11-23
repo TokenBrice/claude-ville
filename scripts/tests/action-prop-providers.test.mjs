@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 
 import { AgentSprite } from '../../claudeville/src/presentation/character-mode/AgentSprite.js';
 
-// The action prop chip (read, work, think, talk, celebrate) is drawn for the
-// Claude, Codex, DeepSeek and z.AI families only; Gemini, Kimi and Grok keep
-// a bare body (model sprites pass 2).
+// The action prop chip (read, work, think, talk, celebrate) is open to every
+// provider family when no authored strip covers the action (relaxed 2026-11-23,
+// operator decision).
 function drawsActionProp(agent, state = {}) {
     let marks = 0;
     const ctx = {
@@ -45,10 +45,10 @@ test('Claude and Codex keep the action prop', () => {
     assert.equal(drawsActionProp(working('codex', 'gpt-6-luna')), true);
 });
 
-test('Gemini, Kimi and Grok stay without the action prop', () => {
-    assert.equal(drawsActionProp(working('gemini', 'gemini-3.1-pro')), false);
-    assert.equal(drawsActionProp(working('kimi', 'kimi-for-coding')), false);
-    assert.equal(drawsActionProp(working('grok', 'grok-4.5')), false);
+test('Gemini, Kimi and Grok also draw the action prop (relaxed 2026-11-23)', () => {
+    assert.equal(drawsActionProp(working('gemini', 'gemini-3.1-pro')), true);
+    assert.equal(drawsActionProp(working('kimi', 'kimi-for-coding')), true);
+    assert.equal(drawsActionProp(working('grok', 'grok-4.5')), true);
 });
 
 // VQ-1a: a lead resting at the Tavern on its subagents makes no work claim of

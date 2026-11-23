@@ -9,7 +9,7 @@ import { agentSignature, drawAgentSignature, clearAgentSignatureCache, getModelV
 import { agentTrimAccent } from '../shared/TeamColor.js';
 import { SpriteSheet, dirFromVelocity, resolveActionFrame, WALK_FRAMES, IDLE_FRAMES, DIRECTIONS, DEFAULT_CELL } from './SpriteSheet.js';
 import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
-import { RITUAL_GESTURE_PERIOD_MS, SCENIC_POINT_POSTURE } from './RitualConductor.js';
+import { RITUAL_GESTURE_PERIOD_MS, SCENIC_POINT_POSTURE, ritualPhaseOffset, workStripGroup } from './RitualConductor.js';
 import { drawWorkDownbeat } from './WorkDownbeats.js';
 import { pulseAlpha, pulseBand01Frame } from './PulsePolicy.js';
 import { drawToolGlyphBadge, PLAN_MODE_GLYPH, PLAN_MODE_GLYPH_COLOR, toolGlyphKey } from './ToolGlyphBadge.js';
@@ -71,7 +71,8 @@ import {
     shouldEvictAtHighWater,
     unpinnedCacheKeys,
 } from './CanvasBudget.js';
-import { AgentAction, TravelGait, isPlanMode, resolveAgentAction, resolveTravelGait } from './ActionVocabulary.js';
+import { AgentAction, TravelGait, VERIFIED_CELEBRATION_MS, isPlanMode, resolveAgentAction, resolveTravelGait } from './ActionVocabulary.js';
+import { isWaitingOnCrew } from '../../domain/services/StatusResolver.js';
 import { AgentGpuOverlayRenderer, departedTableau } from './AgentGpuOverlayRenderer.js';
 import { codexPoseGripped, codexWeaponPose, drawCodexGauntlet } from './CodexWeaponPose.js';
 import { bakeWeaponFrame, rasterWeaponSource } from './WeaponFrames.js';
@@ -330,16 +331,48 @@ const FOOTFALL_FRAMES = new Set([0, Math.floor(WALK_FRAMES / 2)]);
 // return lands. Bounded to the lifecycle cue window; no pulse is allocated, so
 // reduced motion shows the identical held mark.
 const RECEIVE_BEAT_MS = 1400;
-// 2.2 — the authored read group's optional two-frame beat. `medium` band
-// (~600 ms): it replaces the working pulse on the same body, never stacks with
-// it, and reduced motion holds the group's declared static frame instead.
+// 2.2 — full ping-pong action strip cadence (`medium` band, per-agent seeded
+// phase) and fallback beat step. Reduced motion holds the group's static row.
 const ACTION_BEAT_MS = 600;
-// 7.3 — authored work strips. A strip group plays only while RitualConductor
-// has admitted a ritual for this villager (≤ 6 at once), picked by the
-// ritual's real tool class (`ritual.stripGroup`), and cycles once per gesture
-// period with its contact frame on the period boundary, where WorkDownbeats
-// strikes. Held wait and work poses carry no idle bob.
+const ACTION_STRIP_STEP_MS = Object.freeze({
+    read: 420,
+    think: 440,
+    celebrate: 320,
+});
+// 7.3 — authored work strips (relaxed 2026-11-23, operator decision):
+// arrived WORKING villagers hold/cycle their tool-class work strip for the
+// whole tool call on a seeded burst/pause cycle (2-3 s work, 1.5-2.5 s
+// breather), while RitualConductor keeps its 6-ritual cap for sparks and
+// overlays. During an admitted ritual the strip stays locked to the ritual's
+// gesture period so the contact frame lands on the WorkDownbeat strike.
 const WORK_STRIP_GROUPS = new Set(['strike', 'tinker', 'gaze']);
+const WORK_STRIP_PERIOD_MS = Object.freeze({
+    strike: 540,
+    tinker: 780,
+    gaze: 960,
+});
+const WORK_BURST_MIN_MS = 2000;
+const WORK_BURST_RANGE_MS = 1001;
+const WORK_BREATHER_MIN_MS = 1500;
+const WORK_BREATHER_RANGE_MS = 1001;
+// 7.1 / 7.2 — gentle seated and waiting idle strip cadences (relaxed
+// 2026-11-23, operator decision; reduced motion and stale state hold static).
+const SIT_CADENCE_MIN_MS = 1400;
+const SIT_CADENCE_RANGE_MS = 801;
+const WAIT_HOLD_MIN_MS = 3000;
+const WAIT_HOLD_RANGE_MS = 2001;
+const WAIT_BECKON_FRAME_MS = 220;
+// 1-column head-glance pairs strictly within STRIP_FACINGS (SE<->E, W<->SW).
+const PETITIONER_GLANCE_NEIGHBOR = Object.freeze({ 1: 2, 2: 1, 6: 7, 7: 6 });
+// Explicit per-frame idle breathing bob (replaces sine rounding that evaluated
+// to 0 on every IDLE frame and scenic posture).
+const IDLE_BOB_BY_FRAME = Object.freeze([0, 0, -1, 0]);
+// Brief head-drop recoil on a rejected push (3 s; mid-walk pushes latch until
+// arrival like verified wins).
+const PUSH_RECOIL_MS = 3000;
+const PUSH_RECOIL_DROP_PX = 3;
+const PUSH_RECOIL_LIVE_MS = 30_000;
+const MID_WALK_LATCH_MAX_MS = 60_000;
 // Agent actions a profile may author as a body pose. A profile without the
 // group resolves no cell, so the procedural chip stays in charge.
 const ACTION_STRIP_GROUPS = Object.freeze({
@@ -347,9 +380,6 @@ const ACTION_STRIP_GROUPS = Object.freeze({
     [AgentAction.THINK]: 'think',
     [AgentAction.CELEBRATE]: 'celebrate',
 });
-// Families that draw the action prop chip (read, work, think, talk,
-// celebrate) beside the hand. Gemini, Kimi and Grok keep a bare body.
-const ACTION_PROP_PROVIDERS = new Set(['claude', 'codex', 'deepseek', 'zai']);
 // 2.3 — how long the resolved command slip shows its wax seal. Static mark,
 // bounded to the lifecycle event that earned it.
 const SEALED_SLIP_MS = 1800;
@@ -1214,6 +1244,8 @@ export class AgentSprite {
         motionClock = null,
         getSpeakerTag = null,
         getSnowBucket = null,
+        onArrive = null,
+        onCelebrationArrived = null,
         // VB-15 — the renderer places a new body itself (the gate or Portal
         // arrival), which drops any route picked here; it picks from there.
         deferInitialTarget = false,
@@ -1381,6 +1413,16 @@ export class AgentSprite {
         this.getSpeakerTag = typeof getSpeakerTag === 'function' ? getSpeakerTag : null;
         // EF-6 — the village's C-W2 snow bucket (0 bare, 1–4 lying snow).
         this.getSnowBucket = typeof getSnowBucket === 'function' ? getSnowBucket : null;
+        this.onArrive = typeof onArrive === 'function' ? onArrive : null;
+        this.onCelebrationArrived = typeof onCelebrationArrived === 'function' ? onCelebrationArrived : null;
+        this._pendingCelebration = null;
+        this._celebrationUntil = 0;
+        this._seenRejectedPushIds = new Set();
+        this._pendingPushRecoil = null;
+        this._pushRecoilUntil = 0;
+        this._petitionerGlanceCooldownMs = null;
+        this._petitionerGlanceActiveMs = 0;
+        this._petitionerBaseFacing = null;
         this._stillSince = null;
         this._risenFacing = false;
         this._subagentWait = null;
@@ -1887,7 +1929,7 @@ export class AgentSprite {
     // Called every dwell frame while a place is held: the timer never runs
     // out, the seat faces its authored way, and a petitioner walks to its new
     // slot when the waiting set (and so its rank) changed.
-    _holdRestPlace(now) {
+    _holdRestPlace(now, dt = 0) {
         // Crowd spacing may shift an arrival's stop by a few px; a sitter
         // lands exactly on its seat point, between the seat's two slices.
         const held = this._restSeat;
@@ -1920,6 +1962,9 @@ export class AgentSprite {
             return;
         }
         if (glance != null && !child) this._setFacingGoal(glance);
+        if (this.visitRole === 'queue' && !glance && !child && dt > 0) {
+            this._advancePetitionerGlance(dt);
+        }
         if (this.visitRole === 'rest' && !this._restSeat && this._restBuilding && now >= (this._standRefreshAt || 0)) {
             // AG-2 — a patron standing at the Tavern takes a seat once one frees.
             this._standRefreshAt = now + STAND_REFRESH_MS;
@@ -1938,6 +1983,102 @@ export class AgentSprite {
         if (current && current.tileX === target.tileX && current.tileY === target.tileY) return;
         this._lastPathTileKey = null;
         this._routeToVisitTarget(QUEUE_PLACE, null, target);
+    }
+
+    // 7.2 (relaxed 2026-11-23) — subtle 1-column head glances for queued
+    // petitioners, staying strictly within STRIP_FACINGS (SE<->E, W<->SW).
+    // Holds still under reduced motion or stale observation.
+    _advancePetitionerGlance(dt) {
+        if (this.motionScale <= 0 || this.observation?.state === 'stale' || this.chatting || this.chatPartner || this._distressPose?.()) {
+            this._petitionerGlanceActiveMs = 0;
+            return;
+        }
+        if (this._petitionerGlanceActiveMs > 0) {
+            this._petitionerGlanceActiveMs -= dt;
+            if (this._petitionerGlanceActiveMs <= 0) {
+                this._petitionerGlanceActiveMs = 0;
+                if (this._petitionerBaseFacing != null) {
+                    this._setFacingGoal(this._petitionerBaseFacing);
+                    this._petitionerBaseFacing = null;
+                }
+            }
+            return;
+        }
+        if (this._petitionerGlanceCooldownMs == null) {
+            this._petitionerGlanceCooldownMs = 1500 + this._fidgetRandom() * 2500;
+        }
+        this._petitionerGlanceCooldownMs -= dt;
+        if (this._petitionerGlanceCooldownMs <= 0) {
+            const base = this._facingGoal ?? this.direction;
+            const neighbor = PETITIONER_GLANCE_NEIGHBOR[base];
+            const allowed = this._authoredStripFacings();
+            if (neighbor != null && (!allowed || allowed.includes(neighbor))) {
+                this._petitionerBaseFacing = base;
+                this._setFacingGoal(neighbor);
+                this._petitionerGlanceActiveMs = 700 + this._fidgetRandom() * 450;
+            }
+            this._petitionerGlanceCooldownMs = 2600 + this._fidgetRandom() * 3200;
+        }
+    }
+
+    // Latch verified wins that arrive mid-walk until the villager arrives at
+    // its destination so the 5 s celebration never expires during transit.
+    observeVerifiedOutcome(outcome, now = Date.now()) {
+        if (!outcome || departedTableau(this)) return null;
+        if (this.moving || this.isArrivalPending()) {
+            this._pendingCelebration = {
+                kind: outcome.kind,
+                at: Number(outcome.at) || now,
+                expiresAt: now + MID_WALK_LATCH_MAX_MS,
+            };
+            return { latched: true };
+        }
+        const base = Number.isFinite(Number(outcome.at)) ? Math.max(now, Number(outcome.at)) : now;
+        const until = base + VERIFIED_CELEBRATION_MS;
+        this._celebrationUntil = Math.max(this._celebrationUntil || 0, until);
+        return { latched: false, until };
+    }
+
+    // Trigger the 3 s head-drop recoil on a rejected push (latched mid-walk).
+    triggerPushRecoil(now = Date.now()) {
+        if (departedTableau(this)) return;
+        if (this.moving || this.isArrivalPending()) {
+            this._pendingPushRecoil = { expiresAt: now + MID_WALK_LATCH_MAX_MS };
+            return;
+        }
+        this._pushRecoilUntil = Math.max(this._pushRecoilUntil || 0, now + PUSH_RECOIL_MS);
+    }
+
+    _observeRejectedPushes(now = Date.now()) {
+        const events = this.agent?.gitEvents;
+        if (!Array.isArray(events) || !events.length) return;
+        for (const ev of events) {
+            if (!ev || typeof ev !== 'object') continue;
+            const type = String(ev.type || ev.kind || '').toLowerCase();
+            if (type !== 'push') continue;
+            const status = String(ev.status || '').toLowerCase();
+            const stderr = String(ev.stderr || ev.error || ev.reason || '');
+            const rejected = status === 'rejected' || status === 'failed'
+                || ev.success === false
+                || (ev.exitCode != null && Number.isFinite(Number(ev.exitCode)) && Number(ev.exitCode) !== 0)
+                || /\brejected\b|non-fast-forward|failed to push/i.test(stderr);
+            if (!rejected) continue;
+            const ts = Number(ev.timestamp ?? ev.completedAt ?? ev.ts ?? 0);
+            const key = String(ev.id || ev.commandHash || `${type}:${ts}`);
+            if (this._seenRejectedPushIds.has(key)) continue;
+            this._seenRejectedPushIds.add(key);
+            if (Number.isFinite(ts) && ts > 0 && now - ts > PUSH_RECOIL_LIVE_MS) continue;
+            this.triggerPushRecoil(now);
+        }
+    }
+
+    _pushRecoilDrop(now = Date.now()) {
+        if (!(this._pushRecoilUntil > now) || departedTableau(this)) return 0;
+        if (this.motionScale <= 0) return PUSH_RECOIL_DROP_PX;
+        const remaining = this._pushRecoilUntil - now;
+        if (remaining > 600) return PUSH_RECOIL_DROP_PX;
+        if (remaining > 300) return Math.max(1, PUSH_RECOIL_DROP_PX - 1);
+        return 1;
     }
 
     // D7 — a nearby squadmate's verified win (`SquadNotice`): a body holding
@@ -3412,6 +3553,7 @@ export class AgentSprite {
         this._advanceContextStrainSweat(particleSystem);
         this._advanceDistressRecovery(particleSystem);
         this._advanceTokenFlowMotes(particleSystem, frameScale);
+        this._observeRejectedPushes(Date.now());
         // 7.3 — a body whose strip is due turns to an authored strip facing.
         this._holdStripFacing();
         // AG-6 — a planted errored or rate-limited body turns to its pose.
@@ -3511,10 +3653,10 @@ export class AgentSprite {
         this._syncRestPlace(Date.now());
 
         if (this.waitTimer > 0) {
-            // 7.1 / 7.2 — a held seat or queue slot: still, no fidget, no
-            // timeout; only a status change (above) moves the body on.
+            // 7.1 / 7.2 — a held seat or queue slot: no timeout; petitioners
+            // may still glance 1 column aside inside STRIP_FACINGS.
             if (!this.moving && this.visitRole) {
-                this._holdRestPlace(Date.now());
+                this._holdRestPlace(Date.now(), dt);
                 this._advanceIdleAnimation(dt);
                 return;
             }
@@ -3676,6 +3818,7 @@ export class AgentSprite {
         this._advanceWalkAnimation(travelled, headingX, headingY, dt, particleSystem);
         this._stepStartX = NaN;
         this.moving = false;
+        const wasStraightWalk = this._straightWalk;
         this._straightWalk = false;
         this.behavior.arrive({
             state: this._lastIntentId ? 'performing' : 'lingering',
@@ -3683,9 +3826,29 @@ export class AgentSprite {
             phase: this._lastIntentSnapshot?.phase || this._phaseForAgentState(),
             interruptible: this._lastIntentSnapshot?.interruptible,
         });
+        const arrivedAt = Date.now();
+        if (!wasStraightWalk && this._pendingCelebration) {
+            const pending = this._pendingCelebration;
+            this._pendingCelebration = null;
+            if (arrivedAt <= pending.expiresAt && !departedTableau(this)) {
+                const until = arrivedAt + VERIFIED_CELEBRATION_MS;
+                this._celebrationUntil = Math.max(this._celebrationUntil || 0, until);
+                this.onCelebrationArrived?.(this, pending, until);
+            }
+        }
+        if (!wasStraightWalk && this._pendingPushRecoil) {
+            const pendingRecoil = this._pendingPushRecoil;
+            this._pendingPushRecoil = null;
+            if (arrivedAt <= pendingRecoil.expiresAt && !departedTableau(this)) {
+                this._pushRecoilUntil = Math.max(this._pushRecoilUntil || 0, arrivedAt + PUSH_RECOIL_MS);
+            }
+        }
         if (!this.chatPartner) this._faceBuilding(this._buildingForType(this._lastBuildingType), this._lastVisitFacingPoint);
         this.waitTimer = this.chatPartner ? 10 : this._waitDurationForState();
         this._beginStopBeat();
+        if (!wasStraightWalk && !this.chatPartner && !this.visitRole && this.agent?.status === AgentStatus.WORKING && this.agent?.currentTool) {
+            this.onArrive?.(this);
+        }
     }
 
     // True when the body plants at its current target: the route's last
@@ -4000,50 +4163,79 @@ export class AgentSprite {
         return this._wantsStripFacing() ? this._stripFacing(dir, doorDx) : dir;
     }
 
-    // 7.3 — true while this body shows (or, for a ritual still pending, is
-    // about to show) a strip authored only for STRIP_FACINGS: the held wait
-    // row of a petitioner, or the admitted ritual's strike/tinker/gaze.
+    // 7.3 — authored direction indices for the strip currently due (or pending
+    // ritual), or null when the body has no restricted strip facing. Honors
+    // each strip group's manifest `directions` (e.g. celebrate on claude.opus
+    // omits 'e', claude.sonnet omits 'se') and falls back to STRIP_FACINGS when
+    // the strip asset is not yet loaded.
+    _authoredStripFacings() {
+        let group = null;
+        const active = this.actionStripGroup();
+        if (active === 'sit' || active === 'drink') return null;
+        if (active) {
+            group = active;
+        } else {
+            const ritual = this._toolRitual;
+            const pendingWork = ritual
+                && WORK_STRIP_GROUPS.has(ritual.stripGroup)
+                && (!ritual.agentId || ritual.agentId === this.agent?.id)
+                && ritual.phase === 'pending';
+            if (pendingWork) group = ritual.stripGroup;
+        }
+        if (!group) return null;
+        const spriteId = this._spriteIdentity?.spriteId;
+        const strip = spriteId ? this.assets?.getActionStrip?.(spriteId) : null;
+        const groupMeta = strip?.meta?.groups?.[group];
+        if (groupMeta) {
+            if (!Array.isArray(groupMeta.directions) || groupMeta.directions.length === 0) return null;
+            const indices = groupMeta.directions
+                .map((key) => DIRECTIONS.indexOf(key))
+                .filter((idx) => idx >= 0);
+            return indices.length ? indices : null;
+        }
+        if (group === 'wait' || WORK_STRIP_GROUPS.has(group) || group === 'celebrate' || group === 'think') {
+            return STRIP_FACINGS;
+        }
+        return null;
+    }
+
     _wantsStripFacing() {
-        if (this.agent?.status === AgentStatus.WAITING_ON_USER) return true;
-        const ritual = this._toolRitual;
-        if (!ritual || !WORK_STRIP_GROUPS.has(ritual.stripGroup)) return false;
-        if (ritual.agentId && ritual.agentId !== this.agent?.id) return false;
-        return ritual.phase === 'pending' || ritual.phase === 'playing' || ritual.phase === 'fading';
+        return Boolean(this._authoredStripFacings());
     }
 
     // The strip facing nearest the true bearing to the building (or queue
-    // slot ahead): NE → E, NW → W, N → E or W by the door's side, S → SE or
-    // SW by side. A north bearing lands at most 90° off (E or W), still inside
-    // the half-plane facing its building; every other bearing within 67.5°.
-    _stripFacing(dir, doorDx = 0) {
-        if (STRIP_FACINGS.includes(dir)) return dir;
+    // slot ahead), chosen from the active group's authored directions.
+    _stripFacing(dir, doorDx = 0, allowed = this._authoredStripFacings() || STRIP_FACINGS) {
+        if (allowed.includes(dir)) return dir;
         const bearing = this._workBearing ?? (2 - dir) * (Math.PI / 4);
         const side = doorDx > 0 ? 1 : doorDx < 0 ? -1 : (this._idlePhaseFrames & 1 ? 1 : -1);
         let best = null;
         let bestOff = Infinity;
-        for (const candidate of STRIP_FACINGS) {
+        for (const candidate of allowed) {
             // Ties (a dead-north or dead-south bearing) go to the door's side:
             // E and SE are the +x side, W and SW the -x side.
-            const east = candidate === DIR_E || candidate === 1;
+            const east = candidate === DIR_E || candidate === DIR_SE || candidate === DIR_NE;
             const off = angleOffDirection(candidate, bearing) + ((east ? 1 : -1) === side ? 0 : 1e-6);
             if (off < bestOff) {
                 bestOff = off;
                 best = candidate;
             }
         }
-        return best;
+        return best ?? dir;
     }
 
     // Per update: a standing body whose strip is due turns to its strip
-    // facing (a ritual admitted, or a petitioner arrived, while it faced a
-    // column the strip does not author). Seated, walking and chatting bodies
-    // keep their own facing writers.
+    // facing (a ritual admitted, celebration started, or petitioner arrived
+    // while facing a column the strip does not author). Seated, walking and
+    // chatting bodies keep their own facing writers.
     _holdStripFacing() {
-        if (this.moving || this.chatting || this.chatPartner || this._seatedSeat() || !this._wantsStripFacing()) return;
+        if (this.moving || this.chatting || this.chatPartner || this._seatedSeat()) return;
+        const allowed = this._authoredStripFacings();
+        if (!allowed) return;
         const heading = this._facingGoal ?? this.direction;
-        if (STRIP_FACINGS.includes(heading)) return;
+        if (allowed.includes(heading)) return;
         const bearing = this._workBearing;
-        this._setFacingGoal(this._stripFacing(heading, bearing == null ? 0 : Math.cos(bearing)));
+        this._setFacingGoal(this._stripFacing(heading, bearing == null ? 0 : Math.cos(bearing), allowed));
     }
 
     // 0.5 — a villager at rest never settles with its back to the operator.
@@ -4074,7 +4266,8 @@ export class AgentSprite {
 
     _glanceAllowed(dir) {
         if (FACING_FRONT_RANK[dir] === 0) return false;
-        if (!STRIP_FACINGS.includes(dir) && this._wantsStripFacing()) return false;
+        const allowed = this._authoredStripFacings();
+        if (allowed && !allowed.includes(dir)) return false;
         const bearing = this._workBearing;
         return bearing == null || angleOffDirection(dir, bearing) <= Math.PI / 2 + 1e-9;
     }
@@ -4627,16 +4820,20 @@ export class AgentSprite {
         };
         const cellSize = this.spriteSheet?.cellSize || 92;
         const bounds = this._getCellContentBounds(cell);
-        // Subtle ±0.6px sinusoidal bob while idle so the eye can find still agents.
-        // IDLE-status agents bob slower and shallower to read as "resting".
-        const isIdleStatus = this.agent?.status === AgentStatus.IDLE;
+        // Explicit 0 / 0 / -1 / 0 breathing step keyed by `this.frame` (seeded
+        // per agent via `_idlePhaseFrames`), replacing the sine rounding that
+        // collapsed to 0 on every IDLE frame and scenic posture.
         // #40 — distressed villagers carry a head-down drop while storming the
         // Pharos, layered on the idle bob (animated) or the static posture
         // offset (reduced motion). Walking keeps the drop so the gait reads
         // hunched all the way to the watchtower.
         const distressDrop = this._distressPostureDrop();
+        const recoilDrop = this._pushRecoilDrop(Date.now());
         // 7.3 — an authored wait or work pose holds its own frame: no idle bob.
         const heldStrip = Boolean(seat) || (pose && (pose.group === 'wait' || WORK_STRIP_GROUPS.has(pose.group)));
+        const idleBob = posture.bobScale > 0 && recoilDrop === 0
+            ? (IDLE_BOB_BY_FRAME[((this.frame % IDLE_FRAMES) + IDLE_FRAMES) % IDLE_FRAMES] || 0)
+            : 0;
         // AG-6 — a held distress pose stands on its feet, still: the pose
         // replaces the hunch's whole-body drop while planted.
         const bobY = departedTableau(this)
@@ -4645,15 +4842,9 @@ export class AgentSprite {
             ? 0
             : this.animState === 'idle' && !heldStrip
             ? this.motionScale > 0
-                ? Math.round(
-                    (
-                        isIdleStatus
-                            ? Math.sin(this.frame * 0.25) * 0.4
-                            : Math.sin(this.frame * 0.4) * 0.6
-                    ) * posture.bobScale,
-                ) + distressDrop
-                : posture.staticDy + distressDrop
-            : distressDrop;
+                ? idleBob + distressDrop + recoilDrop
+                : posture.staticDy + distressDrop + recoilDrop
+            : distressDrop + recoilDrop;
         // #28 — handoff acknowledgement: a single 180ms upward dip-and-settle so
         // the baton landing reads as the child nodding back. Half-sine envelope;
         // never fires under reduced motion (setHandoffAck guards motionScale 0).
@@ -6688,6 +6879,9 @@ export class AgentSprite {
         // holds the plain sit row and the drawn tankard rests beside it.
         if (group === 'sit' && this._seatedSeat()?.building === 'tavern' && this._stripAuthors(strip.meta, 'drink')
             && !(this._patronWaitTier() >= PATRON_SET_DOWN_TIER)) group = 'drink';
+        // Profiles without an authored `gaze` group (8/40 older sheets) fall
+        // back to `read` for lookups instead of dropping to plain idle.
+        if (group === 'gaze' && !strip.meta.groups?.gaze && strip.meta.groups?.read) group = 'read';
         const now = Date.now();
         const cell = resolveActionFrame(strip.meta, group, this.direction, this._actionStripFrame(strip.meta, group, now));
         if (!cell) return null;
@@ -6804,23 +6998,41 @@ export class AgentSprite {
         }) === TravelGait.RUN;
     }
 
-    // Which authored group the current truth asks for. The held wait row wins
-    // over the generic work/think vocabulary (2.3); an admitted tool ritual
-    // asks for its tool class's work strip (7.3); reading, thinking and a
-    // verified celebration keep their groups.
-    // Never derived from elapsed time.
+    // Current action vocabulary including any mid-walk verified win latched
+    // until arrival.
+    _resolveAction(now = Date.now()) {
+        if (this._celebrationUntil > now && !departedTableau(this) && !this.chatting) {
+            return AgentAction.CELEBRATE;
+        }
+        return resolveAgentAction(this.agent, { chatting: this.chatting, now });
+    }
+
+    // Which authored group the current truth asks for. The wait row wins for
+    // action-needed villagers (2.3); a verified celebration preempts active
+    // work strips (including Harbor's 30 s tinker); arrived WORKING villagers
+    // resolve their tool-class work strip for the whole tool call (preferring
+    // `gaze` at Portal and `read` at Archive); reading and thinking keep their
+    // groups.
     actionStripGroup() {
-        // 7.1 — a villager on its seat sits (static held row); AG-5 — a
-        // lead risen for its blocked child stands on the plain body.
+        // 7.1 — a villager on its seat sits; AG-5 — a lead risen for its
+        // blocked child stands on the plain body.
         if (this._seatedSeat()) return this._risenForChild() ? null : 'sit';
         // AG-6 — the rate-limited body sits on the ground (held sit row);
         // the errored one stands on the plain body, its back turned.
         const distress = this._distressPose();
         if (distress) return distress === DISTRESS_LIMITED ? 'sit' : null;
         if (this.agent?.status === AgentStatus.WAITING_ON_USER) return 'wait';
-        const work = this._admittedWorkStripGroup();
-        if (work) return work;
-        return ACTION_STRIP_GROUPS[resolveAgentAction(this.agent, { chatting: this.chatting })] || null;
+        const action = this._resolveAction();
+        if (action === AgentAction.CELEBRATE) return 'celebrate';
+        const building = this._lastBuildingType
+            || this.agent?.targetBuildingType
+            || this.agent?.lastKnownBuildingType
+            || null;
+        const admitted = this._admittedWorkStripGroup();
+        if (admitted) return building === 'archive' && admitted === 'gaze' ? 'read' : admitted;
+        const sustained = this._sustainedWorkStripGroup(building);
+        if (sustained) return sustained;
+        return ACTION_STRIP_GROUPS[action] || null;
     }
 
     _admittedWorkStripGroup() {
@@ -6828,6 +7040,23 @@ export class AgentSprite {
         if (!ritual || !WORK_STRIP_GROUPS.has(ritual.stripGroup)) return null;
         if (ritual.agentId && ritual.agentId !== this.agent?.id) return null;
         return ritual.phase === 'playing' || ritual.phase === 'fading' ? ritual.stripGroup : null;
+    }
+
+    // 7.3 (relaxed 2026-11-23) — whole-call work strip for an arrived WORKING
+    // villager, decoupled from RitualConductor's 6-ritual spark cap. Prefers
+    // `gaze` at the Portal and `read` at the Archive.
+    _sustainedWorkStripGroup(building = this._lastBuildingType || this.agent?.targetBuildingType || this.agent?.lastKnownBuildingType || null) {
+        if (this.moving && this.motionScale > 0) return null;
+        if (this.agent?.status !== AgentStatus.WORKING) return null;
+        if (this.visitRole || isWaitingOnCrew(this.agent)) return null;
+        const tool = this.agent?.currentTool;
+        if (!tool) return null;
+        const group = workStripGroup(tool, building);
+        if (building === 'archive' && group === 'gaze') return 'read';
+        if (building === 'portal' && !group) return 'gaze';
+        if (group) return group;
+        if (building === 'taskboard' || building === 'harbor') return 'tinker';
+        return null;
     }
 
     // True when the strip's `group` has a cell for this facing.
@@ -6847,31 +7076,80 @@ export class AgentSprite {
             const step = tankardSipStep(this.agent?.id, now, this.motionScale > 0);
             return step < 0 ? 'hold' : DRINK_FRAME_BY_STEP[step];
         }
-        // Static band for the held wait row, for a stale observation (C1), and
-        // for reduced motion. Otherwise one two-frame medium-band beat, which
-        // replaces the working pulse instead of stacking on it.
-        if (group === 'wait' || group === 'sit' || this.motionScale <= 0 || this.observation?.state === 'stale') return 'hold';
+        // Static band for reduced motion or a stale observation (C1).
+        if (this.motionScale <= 0 || this.observation?.state === 'stale') return 'hold';
         const rows = meta?.groups?.[group]?.rows;
         const first = Number(rows?.[0]);
         const span = Number(rows?.[1]) - first + 1;
         if (!Number.isInteger(first) || !(span > 1)) return 'hold';
-        if (WORK_STRIP_GROUPS.has(group)) return this._workStripFrame(meta.groups[group], span, now);
-        const hold = Number(meta.groups[group].hold);
-        const holdIndex = Number.isInteger(hold) ? Math.max(0, hold - first) : span - 1;
-        return (Math.floor(now / ACTION_BEAT_MS) % 2)
-            ? (holdIndex - 1 + span) % span
-            : holdIndex;
+        // 7.1 (relaxed 2026-11-23) — seated patrons breathe/shift across the
+        // 2-row `sit` strip on a seeded 1.4-2.2 s cadence; AG-6 rate-limited
+        // ground sitters stay static.
+        if (group === 'sit') {
+            if (this._distressPose?.()) return 'hold';
+            const seed = Math.abs(this._hash(`${this.agent?.id ?? ''}:sit`));
+            const stepMs = SIT_CADENCE_MIN_MS + (seed % SIT_CADENCE_RANGE_MS);
+            const cycleMs = stepMs * span;
+            const offset = (seed >>> 3) % cycleMs;
+            return Math.floor((((now + offset) % cycleMs) + cycleMs) % cycleMs / stepMs);
+        }
+        // 7.2 (relaxed 2026-11-23) — petitioners hold for a seeded 3-5 s then
+        // play their 3-frame beckon (~220 ms/frame).
+        if (group === 'wait') {
+            const seed = Math.abs(this._hash(`${this.agent?.id ?? ''}:wait`));
+            const holdMs = WAIT_HOLD_MIN_MS + (seed % WAIT_HOLD_RANGE_MS);
+            const beckonMs = span * WAIT_BECKON_FRAME_MS;
+            const cycleMs = holdMs + beckonMs;
+            const offset = (seed >>> 3) % cycleMs;
+            const phase = (((now + offset) % cycleMs) + cycleMs) % cycleMs;
+            if (phase < holdMs) return 'hold';
+            return Math.min(span - 1, Math.floor((phase - holdMs) / WAIT_BECKON_FRAME_MS));
+        }
+        if (WORK_STRIP_GROUPS.has(group)) return this._workStripFrame(meta.groups[group], span, now, group);
+        // Full ping-pong across all authored rows (e.g. 0->1->2->3->2->1 for
+        // 4-frame `read`, 0->1->2->1 for 3-frame `think`/`celebrate`) on a
+        // per-agent seeded phase offset and slight cadence spread so crowds
+        // never tick in lockstep.
+        const cycleLen = span > 2 ? (span - 1) * 2 : span;
+        const baseStepMs = ACTION_STRIP_STEP_MS[group] || ACTION_BEAT_MS;
+        const spread = ritualPhaseOffset(`${this.agent?.id ?? ''}:${group}:cadence`, 91) - 45;
+        const stepMs = Math.max(260, baseStepMs + spread);
+        const periodMs = cycleLen * stepMs;
+        const offset = ritualPhaseOffset(`${this.agent?.id ?? ''}:${group}`, periodMs);
+        const pos = Math.floor((((now + offset) % periodMs) + periodMs) % periodMs / stepMs);
+        return pos < span ? pos : cycleLen - pos;
     }
 
-    // One strip cycle per gesture period of the admitted ritual, on the clock
-    // ritualDownbeat reads, so the contact frame is on screen exactly when the
-    // WorkDownbeat strikes. A stale or reduced-motion ritual holds.
-    _workStripFrame(groupMeta, span, now = Date.now()) {
+    // During an admitted ritual, runs one strip cycle per gesture period locked
+    // to `ritualDownbeat` (shared per-agent phase offset). Outside a ritual,
+    // plays a seeded burst/pause cycle (2-3 s work, 1.5-2.5 s hold breather)
+    // for the full duration of the tool call.
+    _workStripFrame(groupMeta, span, now = Date.now(), group = null) {
         const ritual = this._toolRitual;
-        const period = RITUAL_GESTURE_PERIOD_MS[ritual?.pose];
-        if (!period || ritual.motionEnabled === false) return 'hold';
+        const admitted = ritual
+            && (!ritual.agentId || ritual.agentId === this.agent?.id)
+            && (ritual.phase === 'playing' || ritual.phase === 'fading')
+            && WORK_STRIP_GROUPS.has(ritual.stripGroup);
         const contact = Number.isInteger(groupMeta?.contactFrame) ? groupMeta.contactFrame : 0;
-        const step = Math.floor(((now % period) / period) * span);
+        if (admitted) {
+            const period = RITUAL_GESTURE_PERIOD_MS[ritual.pose];
+            if (!period || ritual.motionEnabled === false) return 'hold';
+            const offset = ritualPhaseOffset(ritual.agentId, period);
+            const clock = (((now + offset) % period) + period) % period;
+            const step = Math.floor((clock / period) * span);
+            return (contact + step) % span;
+        }
+        // Sustained whole-call work strip: seeded burst/breather cycle.
+        const seed = Math.abs(this._hash(`${this.agent?.id ?? ''}:work-burst`));
+        const burstMs = WORK_BURST_MIN_MS + (seed % WORK_BURST_RANGE_MS);
+        const pauseMs = WORK_BREATHER_MIN_MS + ((seed >>> 4) % WORK_BREATHER_RANGE_MS);
+        const cycleMs = burstMs + pauseMs;
+        const cyclePhase = (((now + ((seed >>> 8) % cycleMs)) % cycleMs) + cycleMs) % cycleMs;
+        if (cyclePhase >= burstMs) return 'hold';
+        const period = WORK_STRIP_PERIOD_MS[group] || 720;
+        const offset = ritualPhaseOffset(this.agent?.id, period);
+        const clock = (((now + offset) % period) + period) % period;
+        const step = Math.floor((clock / period) * span);
         return (contact + step) % span;
     }
 
@@ -8145,8 +8423,10 @@ export class AgentSprite {
         const animated = this.motionScale > 0 && ritual.motionEnabled !== false;
         const period = RITUAL_GESTURE_PERIOD_MS[ritual.pose] || 700;
         // Triangle 0..1..0 over the gesture cycle drives the swing/lift amount;
-        // static variant pins the gesture at its rest (0).
-        const phase = animated ? (Date.now() % period) / period : 0;
+        // static variant pins the gesture at its rest (0). Seeded per agent to
+        // stay locked to `ritualDownbeat` without global lockstep.
+        const offset = ritualPhaseOffset(ritual.agentId ?? this.agent?.id, period);
+        const phase = animated ? ((((Date.now() + offset) % period) + period) % period) / period : 0;
         const swing = animated ? (phase < 0.5 ? phase * 2 : (1 - phase) * 2) : 0;
         // 3.3 — the gesture marks are procedural 2-6px props; scale the whole
         // gesture group by the body's drawScale so the mark keeps its
@@ -8279,10 +8559,9 @@ export class AgentSprite {
         ctx.restore();
     }
 
-    // Shared medium-distance action vocabulary for the Claude, Codex, DeepSeek
-    // and z.AI families (ACTION_PROP_PROVIDERS). Static geometry carries the
-    // meaning; the optional two-frame lift uses the medium pulse band and
-    // freezes under reduced motion.
+    // Shared medium-distance action vocabulary for every provider family.
+    // Static geometry carries the meaning; the optional two-frame lift uses a
+    // seeded per-agent medium pulse band and freezes under reduced motion.
     _drawActionPoseOverlay(ctx, frameGeometry) {
         this._drawObservationSeal(ctx);
         this._drawTurnSand(ctx);
@@ -8293,10 +8572,11 @@ export class AgentSprite {
             this._drawWaitReasonProp(ctx, frameGeometry);
             return;
         }
-        const provider = this._providerKey();
         // AG-6 — a held distress pose is the body's one claim: no tool chip.
-        if (!ACTION_PROP_PROVIDERS.has(provider) || this.moving || this._distressPose?.()) return;
-        const action = resolveAgentAction(this.agent, { chatting: this.chatting });
+        if (this.moving || this._distressPose?.()) return;
+        const action = typeof this._resolveAction === 'function'
+            ? this._resolveAction()
+            : resolveAgentAction(this.agent, { chatting: this.chatting });
         if (!action) return;
         // VQ-1a — a lead resting at the Tavern on its subagents makes no work
         // claim of its own: the rest tableau and the plaque carry the crew's.
@@ -8313,10 +8593,12 @@ export class AgentSprite {
             if (partner?.chatting && !partner.decisionFocusMuted) return;
             if (partner?.chatting && String(partner.agent?.id) < String(this.agent?.id)) return;
         }
-        // 2.2 — the authored body already holds the book: one instrument per
-        // fact, so the procedural read prop is removed for strip characters.
+        // 2.2 / 7.3 — one instrument per fact: suppress the procedural chip
+        // whenever an authored action/work/celebrate strip already carries it.
         if (poseGroup === 'read' && action === AgentAction.READ) return;
         if (poseGroup === 'think' && action === AgentAction.THINK) return;
+        if (poseGroup === 'celebrate' && action === AgentAction.CELEBRATE) return;
+        if (WORK_STRIP_GROUPS.has(poseGroup) && (action === AgentAction.WORK || action === AgentAction.READ)) return;
         const { dx, dy, bounds, drawScale } = frameGeometry || {};
         if (!bounds || !Number.isFinite(dx) || !Number.isFinite(dy)) return;
         const width = Math.max(1, bounds.maxX - bounds.minX);
@@ -8327,7 +8609,8 @@ export class AgentSprite {
         const y = dy + (bounds.minY + height * .62) * drawScale;
         const scale = Math.max(1, Number(drawScale) || 1);
         const animated = this.motionScale > 0 && this.observation?.state !== 'stale';
-        const beat = animated ? Math.floor(Date.now() / 320) % 2 : 0;
+        const offset = ritualPhaseOffset(this.agent?.id, 640);
+        const beat = animated ? Math.floor((Date.now() + offset) / 320) % 2 : 0;
         const trim = this._providerTrimColor();
         ctx.save();
         ctx.translate(Math.round(x), Math.round(y - beat));

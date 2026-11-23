@@ -75,7 +75,8 @@ import { HarborTraffic } from './HarborTraffic.js';
 import { BridgeLanterns } from './BridgeLanterns.js';
 import { LandmarkActivity } from './LandmarkActivity.js';
 import { AgentEventStream } from './AgentEventStream.js';
-import { bindSquadNotice } from './SquadNotice.js';
+import { bindSquadNotice, notifySquadWatchers } from './SquadNotice.js';
+import { VERIFIED_OUTCOME_EVENT } from '../../domain/services/VerifiedOutcome.js';
 import { RelationshipState } from './RelationshipState.js';
 import { RitualConductor } from './RitualConductor.js';
 import { VisitIntentManager } from './VisitIntentManager.js';
@@ -2107,6 +2108,12 @@ export class IsometricRenderer {
         // D7 — seated and waiting squadmates face a celebrating villager.
         this._unbindSquadNotice?.();
         this._unbindSquadNotice = bindSquadNotice(() => this.agentSprites);
+        this._unbindVerifiedOutcomes?.();
+        this._unbindVerifiedOutcomes = eventBus.on(VERIFIED_OUTCOME_EVENT, (outcome) => {
+            if (!outcome?.agentId) return;
+            const sprite = this.agentSprites.get(String(outcome.agentId));
+            sprite?.observeVerifiedOutcome?.(outcome);
+        });
         this.relationshipState = new RelationshipState(this.world);
         this._replayActiveToolRituals({ force: true });
         this._updateVisitSystems(Date.now());
@@ -2456,6 +2463,8 @@ export class IsometricRenderer {
         this.agentEventStream?.dispose?.();
         this._unbindSquadNotice?.();
         this._unbindSquadNotice = null;
+        this._unbindVerifiedOutcomes?.();
+        this._unbindVerifiedOutcomes = null;
         releaseCouncilRingState(this.relationshipState);
         this.relationshipState?.dispose?.();
         if (this._harborSemanticsTimer) clearInterval(this._harborSemanticsTimer);
@@ -3720,6 +3729,28 @@ export class IsometricRenderer {
         }
     }
 
+    // Re-trigger ritual admission when a WORKING villager arrives at its
+    // building (events emitted mid-walk are rejected by RitualConductor.canAccept).
+    _enqueueArrivalRitual(sprite) {
+        if (!this._worldModeActive || !this.ritualConductor || !sprite?.agent) return;
+        const agent = sprite.agent;
+        if (agent.status !== AgentStatus.WORKING || !agent.currentTool) return;
+        const building = sprite._lastBuildingType
+            || agent.targetBuildingType
+            || agent.lastKnownBuildingType
+            || null;
+        if (!building) return;
+        this._syncRitualContext();
+        this.ritualConductor.enqueue({
+            agentId: agent.id,
+            provider: agent.provider || null,
+            tool: agent.currentTool,
+            input: agent.currentToolInput || null,
+            ts: Date.now(),
+            building,
+        });
+    }
+
     _enqueueSubagentSummonRitual(payload) {
         if (!this._worldModeActive || !this.ritualConductor) return;
         const parentId = payload?.parentId;
@@ -4014,6 +4045,8 @@ export class IsometricRenderer {
                 motionClock: this._motionClock,
                 getSpeakerTag: (name) => this._speakerTagFor(name),
                 getSnowBucket: () => this.propWinter?.bucket || 0,
+                onArrive: (arrived) => this._enqueueArrivalRitual(arrived),
+                onCelebrationArrived: (celebrant, _pending, until) => notifySquadWatchers(celebrant, this.agentSprites.values(), until),
                 // VB-15 — _beginAgentGateArrival places it below.
                 deferInitialTarget: true,
             });
