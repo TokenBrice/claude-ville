@@ -2,6 +2,67 @@
 
 ---
 
+## v0.66.0 — *The Sunlit Isle* · Nov 23, 2026
+
+A visual overhaul you can see in an ordinary daytime frame. Sixteen exploration lanes found what kept the village looking flat, and sixteen build lanes changed it. Nearly every change lifts a limit on art the village already had.
+
+- **No more clipping.**
+  - **Walls, steps and water.** Villagers no longer stand in or walk through building walls, steps, roofs or water. Walkability is a continuous clearance test, not a rounded tile. South-east walls are excluded. Wall-hugging and roof-hidden slots moved into the open, and the village gate lanes are centred on the arch.
+  - **Draw order.** Every landmark, the Forge and Mine included, occludes along its sloped front edges in 16 px columns, so a villager is drawn in front of or behind a building where it stands.
+  - **Bridges, trees and labels.** The central bridge has a full parapet occluder, and trees sort whole. Hidden villagers' names stay hidden. A hidden selected villager shows a crisp pixel x-ray; occluded workers show a faint one.
+  - **Routes.** Scenic routes keep their bridge landings, and walkers no longer cross the lily pond.
+- **Crowds.**
+  - Subagents leave the Portal in two spaced files instead of a frozen pile.
+  - Walkers step round standing coworkers.
+  - The Command queue stands in spaced rows.
+- **Bigger, clearer villagers.**
+  - AUTO and villager follow rest at zoom 2 on 1080p and 1440p screens, so villagers are twice the size.
+  - Any click, drag or key during a glide settles on a crisp zoom.
+  - 150 % displays gain whole-island and zoom-2 rungs.
+  - Daytime outlines are solid, and sunlight reaches villagers.
+  - The selection ring is gold, and working and waiting villagers carry ground arcs.
+- **You can see the work.**
+  - A tool icon rides over every working villager at zoom 1–2, and the sidebar names the active tool.
+  - Workers play their strike, tinker or gaze animation for the whole tool call.
+  - Reading and searching any file goes to the Archive.
+  - READ mode shows real verbs, with no `OTHER` and no doubled counts.
+- **Sunlit days, blue water.**
+  - Clear noon reads as sunshine: a warm key light, cool visible shadows, and no daytime sun-band penalty.
+  - Daytime water is coastal blue with turquoise shallows, shimmer at the default zoom and rolling swells.
+  - Night and storm keep their mood.
+- **A living village.**
+  - Seated and queued villagers move gently, and readers no longer flip pages in lockstep. Celebrations play.
+  - The Forge dog, the Archive cat and the hen roam at zoom 1, alongside more birds.
+  - Clear days carry cloud shadows, the air carries seasonal petals and leaves, and dolphins and a whale pass in the visible sea.
+  - Busy buildings fly solid pennants, light their occupied windows by day and throw bigger work sparks. An empty Forge banks its fire.
+- **A fuller island.**
+  - Reconnected roads and a plank footbridge to the north farm, so villagers stroll to the farm and windmill.
+  - A plaza fountain, and fifteen once-unused props.
+  - Tall trees, richer meadows and offshore scenery in view.
+  - The Hourglass Belfry stands on its own on the west tip, and the village keeps only two unnamed buildings: the Belfry and the windmill.
+  - Cleaner art: no rail scar across the Mine, no stray blob on the Archive, and lamps painted dark by day, lit only by their glow at night.
+  - Seven more bodies have a run gait: Sol-b, Luna-b, Astra ×2, GLM ×2 and DeepSeek Flash high.
+- **Fixes.**
+  - Thought bubbles and Harbor plates stay on screen.
+  - The onboarding card and toasts no longer cover plaques.
+  - Chronicle banners render on the GPU paths.
+  - Overcast no longer rains.
+  - Fog covers land.
+  - The south-east cliff seam is gone.
+  - Dashboard headers count folded subagents, filter chips stay visible at 1440 px, and the columns align.
+
+Rules relaxed by operator decision (2026-11-23), each documented where it lives:
+
+- **Look strengths:** `sd3` and `sea1` set to 1.
+- **Building windows:** M15 day windows for occupied rooms.
+- **Water:** V6 daytime water saturation 0.48.
+- **Motion budget:** static sit and wait poses, the ritual cap on body strips, and the wildlife, drift and cloud caps.
+- **Camera:** the Auto zoom cap.
+- **Overlays:** the MarkGovernor tier for pennants.
+- **Plaza:** the no-fixture plaza rule.
+
+---
+
 ## v0.65.7.2 · Nov 23, 2026 — Hotfix
 
 - **T3 Code delegates group under the agent that started them.** Since v0.65.7.1 the Antigravity agents T3 Code starts with `delegate_task`, such as Gemini 4 Neon, appeared in the village as unnamed villagers of their own. They now sit under the thread that delegated them, the way DeepSeek and other subagents sit under their Claude session, and carry the task title T3 Code shows, such as "L1 fix-cause: supply". T3 Code records that link only in its state database, so the Antigravity adapter reads `~/.t3/userdata/statev2.sqlite` read-only through `node:sqlite`. It follows each conversation to its T3 thread, that thread to the one that started it, and that thread to its latest Claude or Antigravity session. A delegate of a Codex thread still stands on its own.
