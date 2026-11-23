@@ -511,6 +511,6 @@ export const APPROACH_FILES = Object.freeze({
     tavern: approachFile([21, 22], [21, 21], [21, 20], [20, 21]),
     // North-west from the Lighthouse, between the tower and the dome.
     watchtower: approachFile([26, 12], [25, 12], [24, 12], [24, 11]),
-    // Across the Harbor's open quay and west lawn, clear of the gable roof.
-    harbor: approachFile([27, 19], [27, 18], [26, 18], [26, 17]),
+    // Across the Harbor's quay step and open west lawn, clear of the taller gable roof.
+    harbor: approachFile([27, 20], [27, 19], [27, 18], [26, 18]),
 });
