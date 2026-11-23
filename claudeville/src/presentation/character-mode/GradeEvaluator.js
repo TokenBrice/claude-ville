@@ -423,10 +423,10 @@ export function evaluateGrade({
         horizonHaze = lerp3(horizonHaze, mul3(hexToRgb01(grey.haze), [exposure, exposure, exposure]), skyWeight);
         voidColor = lerp3(voidColor, hexToRgb01(grey.void), weight * 0.6);
     }
-    // Overcast: a covered sun leaves no raking band and no cloud shadows.
+    // Overcast and fog: a covered or fogged sky leaves no sunny cloud shadows.
     const flat = Math.max(w.flat, w.rain + w.snow, w.storm);
     sunBand *= 1 - flat;
-    const cloudShadow = daylight * clamp((0.85 - w.cloudCover) / 0.15);
+    const cloudShadow = daylight * clamp((0.85 - w.cloudCover) / 0.15) * (1 - clamp(w.fog * 1.5));
     daylight *= 1 - flat * 0.7;
     if (w.flat > 0) {
         shadowTint = towardOne3(shadowTint, w.flat * 0.5);

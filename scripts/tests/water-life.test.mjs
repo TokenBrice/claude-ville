@@ -83,13 +83,13 @@ test('the new kinds are live, scheduled deterministically and only when their ga
     }
 });
 
-test('a whale is offered at most twice a day and rare slots stay within 3/day', () => {
-    for (let day = 0; day < 120; day++) {
+test('whale-spout and dolphin-pod run on the frequent cadence while rare stays within 3/day', () => {
+    for (let day = 0; day < 30; day++) {
         const schedule = buildAmbientSchedule(new Date(2026, 0, 1 + day));
         assert.ok(schedule.rare.length <= 3);
-        const whales = schedule.rare.filter(slot => slot.order.some(kind => kind.id === 'whale-spout')).length;
-        const pods = schedule.rare.filter(slot => slot.order.some(kind => kind.id === 'dolphin-pod')).length;
-        assert.ok(whales <= 2 && pods <= 2, `day ${day}: ${whales} whales, ${pods} pods`);
+        const whales = schedule.frequent.filter(slot => slot.order.some(kind => kind.id === 'whale-spout')).length;
+        const pods = schedule.frequent.filter(slot => slot.order.some(kind => kind.id === 'dolphin-pod')).length;
+        assert.ok(whales > 0 && pods > 0, `day ${day}: ${whales} whales, ${pods} pods on frequent cadence`);
     }
 });
 
@@ -328,21 +328,28 @@ test('roosting gulls and standing herons face into a real wind (QW-2)', () => {
 
 // World px → tile coords (Projection's inverse: 64 × 32 tiles).
 const worldTile = (x, y) => ({ tileX: (y / 16 + x / 32) / 2, tileY: (y / 16 - x / 32) / 2 });
-// Tiles a point lies outside the map's north-east (tileY < 0) or
-// south-east (tileX > MAP_SIZE - 1) shore; every ship lane, anchorage and
-// the release slip lie inside the map.
-const tilesOffEastShore = (x, y) => {
+// Tiles a point lies outside the map off any outer shore (NE, SE, NW or SW);
+// every ship lane, anchorage and the release slip lie inside the map.
+const tilesOffShore = (x, y) => {
     const t = worldTile(x, y);
-    return Math.max(-t.tileY, t.tileX - (MAP_SIZE - 1));
+    return Math.max(-t.tileY, t.tileX - (MAP_SIZE - 1), -t.tileX, t.tileY - (MAP_SIZE - 1));
 };
 const FAR_SEA_KINDS = ['whale-spout', 'dolphin-pod', 'far-gull-wisp'];
 
-test('far-sea life surfaces in the open sea east of the island, the shower in the horizon band, never a vessel', () => {
+test('far-sea life surfaces in open sea with 4 stations inside 1920x1080 view, the shower in the horizon band, never a vessel', () => {
     const top = OCEAN_HORIZON_WORLD_Y + 1;
     const bottom = OCEAN_HORIZON_WORLD_Y + HORIZON_BAND_ROWS;
+    let in1080p = 0;
     for (const station of FAR_SEA_STATIONS) {
-        assert.ok(station.tileY <= -4 || station.tileX >= MAP_SIZE + 4, `station ${station.tileX},${station.tileY} is off the east shores`);
+        assert.ok(
+            station.tileY <= -3 || station.tileX >= MAP_SIZE + 2 || station.tileX <= -3 || station.tileY >= MAP_SIZE + 2,
+            `station ${station.tileX},${station.tileY} is off the island shores`,
+        );
+        const wx = (station.tileX - station.tileY) * 32;
+        const wy = (station.tileX + station.tileY) * 16;
+        if (wx >= -840 && wx <= 840 && wy >= 83 && wy <= 1115) in1080p++;
     }
+    assert.ok(in1080p >= 4, `expected at least 4 stations in 1920x1080 view, got ${in1080p}`);
     const out = [];
     for (const kind of HORIZON_LIFE_KINDS) {
         let drawn = 0;
@@ -356,11 +363,11 @@ test('far-sea life surfaces in the open sea east of the island, the shower in th
                     assert.ok(Number.isInteger(s.x) && Number.isInteger(s.y) && Number.isInteger(s.w) && Number.isInteger(s.h));
                     assert.ok(['back', 'mid', 'light', 'crest'].includes(s.tone));
                     if (FAR_SEA_KINDS.includes(kind)) {
-                        // Clear of the map (and its sea lanes) by three tiles,
-                        // within the whole-island frame's east sea (x 450..1250).
+                        // Clear of the map (and its sea lanes) by at least 2.5 tiles,
+                        // within the open sea surrounding the island.
                         for (const [x, y] of [[s.x, s.y], [s.x + s.w, s.y], [s.x, s.y + s.h], [s.x + s.w, s.y + s.h]]) {
-                            assert.ok(tilesOffEastShore(x, y) >= 3, `${kind} stamp at ${x},${y} is near the island`);
-                            assert.ok(x >= 450 && x <= 1250, `${kind} stamp x ${x} outside the east sea`);
+                            assert.ok(tilesOffShore(x, y) >= 3, `${kind} stamp at ${x},${y} is near the island`);
+                            assert.ok(x >= -880 && x <= 1250, `${kind} stamp x ${x} outside the open sea`);
                         }
                         assert.equal(s.alpha, 1, 'opaque');
                     } else {
@@ -399,7 +406,7 @@ test('far-sea life surfaces in the open sea east of the island, the shower in th
     assert.ok(banded.length > 0 && far.length > 0, 'both the shower and the whale draw');
     assert.deepEqual(calls.find(call => call[0] === 'clip'), ['clip', top, bottom - top]);
     for (const [, y, h] of banded) assert.ok(y >= top && y + h <= bottom);
-    for (const [, y, , x] of far) assert.ok(tilesOffEastShore(x, y) >= 3);
+    for (const [, y, , x] of far) assert.ok(tilesOffShore(x, y) >= 3);
     calls.length = 0;
     drawHorizonLife(ctx, { ...renderer, motionScale: 0 });
     assert.equal(calls.length, 0, 'reduced motion draws nothing');

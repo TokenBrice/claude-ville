@@ -74,17 +74,17 @@ const WEATHER_TYPE_SET = new Set(WEATHER_TYPES);
 
 const LOOP_MS = 60000;
 const MAX_FRAME_DT = 80;
-// 6.7 — rain streak budget at a 1920×1080 view (scaled by area): the grade
-// carries the weather's mood, so a legible field of pixel streaks is enough.
+// 6.7 — rain streak budget at a 1920×1080 view (scaled by area and smoothly by
+// zoom; relaxed 2026-11-23, operator decision).
 const RAIN_REFERENCE_AREA = 1920 * 1080;
-const RAIN_STREAKS = 100;
-const STORM_STREAKS = 150;
-// E2-06 — at the wide shot (zoom <= RAIN_WIDE_ZOOM) a streak's cells are one
-// screen px, a quarter of the ink a zoom-2 streak lays, so the field takes
-// RAIN_WIDE_GAIN x the streaks (the zoom-2 field's ink) to read as rain
-// rather than only as a darker grade.
-const RAIN_WIDE_GAIN = 4;
-const RAIN_WIDE_ZOOM = 1.5;
+const RAIN_STREAKS = 240;
+const STORM_STREAKS = 420;
+// Smooth zoom gain compensating for thinner 1-px streaks at wide zoom without
+// an abrupt step above zoom 1.5, while staying within one candidate per
+// RAIN_GROUND_CELL at zoom 3 in a full storm.
+function rainZoomGain(zoom) {
+    return clamp(2.0 / Math.pow(Math.max(0.5, Number(zoom) || 1), 1.3), 0.52, 2.2);
+}
 const SNOW_AREA_DENSITY = 3200;
 const SNOW_MAX_FLAKES = 420;
 const SNOW_MIN_FLAKES = 24;
@@ -121,9 +121,9 @@ const DEFAULT_INTENSITY = {
 // ones long, light and solid. saltOffset keeps each layer's streak positions
 // disjoint.
 export const RAIN_LAYERS = [
-    { frac: 0.45, speedMul: 0.72, cells: [5, 7], color: RAIN_DIM, alpha: 0.5, dashed: true, windMul: 0.82, saltOffset: 0 },
-    { frac: 0.35, speedMul: 1.0, cells: [6, 8], color: '#aebfcc', alpha: 0.62, dashed: false, windMul: 1.0, saltOffset: 1300 },
-    { frac: 0.2, speedMul: 1.4, cells: [8, 11], color: RAIN_LIGHT, alpha: 0.78, dashed: false, windMul: 1.18, saltOffset: 2600 },
+    { frac: 0.45, speedMul: 0.72, cells: [7, 11], color: RAIN_DIM, alpha: 0.62, dashed: true, windMul: 0.82, saltOffset: 0 },
+    { frac: 0.35, speedMul: 1.0, cells: [9, 13], color: '#b4c6d4', alpha: 0.76, dashed: false, windMul: 1.0, saltOffset: 1300 },
+    { frac: 0.2, speedMul: 1.4, cells: [12, 18], color: RAIN_LIGHT, alpha: 0.92, dashed: false, windMul: 1.18, saltOffset: 2600 },
 ];
 
 // 4x4 Bayer in [0, 16).
@@ -224,7 +224,7 @@ export function mistDensity(atmosphere) {
 // `fogLandKeep` of it. No sun (night, b = 0): no change.
 // r6: steps 32 (was 8): the mist's top and density move in 32nds, so a
 // burn or rise step moves a thin share of the water, never a whole course.
-export const MIST_BURN = Object.freeze({ startDeg: 0, fullDeg: 12, steps: 32, fogLandKeep: 0.3 });
+export const MIST_BURN = Object.freeze({ startDeg: 0, fullDeg: 12, steps: 32, fogLandKeep: 0.85 });
 
 /**
  * MS-1 / MS-2 — the low mist's density and its burn-off shares: `land`
@@ -610,8 +610,7 @@ export class WeatherRenderer {
         const storm = weather.type === 'storm';
         const grid = this._artGrid();
         const areaScale = (canvas.width * canvas.height) / RAIN_REFERENCE_AREA;
-        let count = Math.round((storm ? STORM_STREAKS : RAIN_STREAKS) * areaScale * (0.45 + intensity * 0.55));
-        if (grid.zoom <= RAIN_WIDE_ZOOM) count = Math.round(count * RAIN_WIDE_GAIN);
+        let count = Math.round((storm ? STORM_STREAKS : RAIN_STREAKS) * areaScale * (0.45 + intensity * 0.55) * rainZoomGain(grid.zoom));
         if (!particleEnabled) count = Math.round(count * 0.5);
         if (!this._allowEmbellishment) count = Math.round(count * 0.62);
         // RN-1 — the GPU world draws `gpuShare` of the field in the world.
@@ -1184,8 +1183,7 @@ export function gpuRainField(atmosphere, camera, { timeMs = 0, on = true, splash
     const storm = weather.type === 'storm';
     const intensity = clamp(Math.max(precipitation, weather.intensity * (storm ? 0.86 : 0.72)) * weatherLegibilityGate(weather, atmosphere).rain, 0, 1);
     // The overlay's streaks per CSS px², as candidates per ground cell.
-    let perArea = (storm ? STORM_STREAKS : RAIN_STREAKS) * (0.45 + intensity * 0.55) / RAIN_REFERENCE_AREA;
-    if (zoom <= RAIN_WIDE_ZOOM) perArea *= RAIN_WIDE_GAIN;
+    let perArea = (storm ? STORM_STREAKS : RAIN_STREAKS) * (0.45 + intensity * 0.55) * rainZoomGain(zoom) / RAIN_REFERENCE_AREA;
     if (!particleEnabled) perArea *= 0.5;
     if (!embellish) perArea *= 0.62;
     const density = clamp(perArea * zoom * zoom * RAIN_GROUND_CELL * RAIN_GROUND_CELL, 0, 1) * share;
@@ -1219,13 +1217,14 @@ export function gpuRainField(atmosphere, camera, { timeMs = 0, on = true, splash
             // A ground cell spans two tiles: the overlay's static share of tiles.
             splashShare = clamp(SPLASH_STATIC_SHARE * 2 * share, 0, 1);
         } else {
-            // The overlay's splashes per ms over the landings per ms in view.
+            // Splashes are decoupled from streak admission in the GPU shaders,
+            // so every ground cell in view is a splash candidate.
             const stamps = (SPLASH_STAMP_MIN_COUNT + (SPLASH_STAMP_MAX_COUNT - SPLASH_STAMP_MIN_COUNT) * driveT) / SPLASH_STAMP_INTERVAL_MS;
             let speedShare = 0;
             for (const layer of RAIN_LAYERS) speedShare += layer.frac * layer.speedMul;
-            const streaks = density / (RAIN_GROUND_CELL * RAIN_GROUND_CELL) * (width * height) / (zoom * zoom);
-            const landings = streaks * speed * speedShare / RAIN_FALL_HEIGHT;
-            splashShare = landings > 0 ? clamp(stamps * share / landings, 0, 1) : 0;
+            const cells = (width * height) / (zoom * zoom) / (RAIN_GROUND_CELL * RAIN_GROUND_CELL);
+            const landings = cells * speed * speedShare / RAIN_FALL_HEIGHT;
+            splashShare = landings > 0 ? clamp(stamps * 1.8 * share / landings, 0, 1) : 0;
         }
     }
     if (!(density > 0) && !(splashShare > 0)) return out;

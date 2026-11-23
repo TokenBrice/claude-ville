@@ -87,7 +87,7 @@ fn rainU01(h: u32) -> f32 {
     color = vec4f(${choice(RT.rgb.map(rgb => `vec3f(${rgb})`))}, ${choice(RT.alpha)} * rain.phase.w);
     shape = vec4i(0, i32(left), ${choice(RT.dashed)}, 0);
     leanOut = lean;
-  } else if (quad == 1 && (flags & ${RAIN_UNIFORM_FLAGS.mask}u) != 0u && (still || streak)
+  } else if (quad == 1 && (flags & ${RAIN_UNIFORM_FLAGS.mask}u) != 0u
     && rainU01(rainHash(h + 5u)) < rain.splash.x) {
     let speedMul = ${choice(RT.speedMul)};
     let frame = select(i32(floor(fall / max(rain.splash.y * speedMul, 0.000001))), 2, still);

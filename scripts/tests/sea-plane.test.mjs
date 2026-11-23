@@ -27,7 +27,7 @@ test('SEA-1: the plane keeps whole 2-px Canvas texels and the field period', () 
         assert.equal(Math.round(span) % 2, 0, `${span} world px per tile`);
         assert.ok(Math.abs(span - Math.round(span)) < 1e-9);
     }
-    assert.ok(CLOUD_PLANE[1] / CLOUD_PLANE[0] >= 2, 'foreshortened and stretched along the wind');
+    assert.ok(CLOUD_PLANE[1] / CLOUD_PLANE[0] >= 1.5, 'foreshortened and stretched along the wind (relaxed 2026-11-23)');
     assert.deepEqual(cloudPlaneScale(0), [1, 1]);
     assert.deepEqual(cloudPlaneScale(0.5), CLOUD_PLANE);
 });

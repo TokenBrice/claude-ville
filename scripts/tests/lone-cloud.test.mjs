@@ -5,7 +5,9 @@ import { createAmbientScheduler, ambientDebugSnapshot } from '../../claudeville/
 import { resolveAtmosphereCourses } from '../../claudeville/src/presentation/character-mode/gpu/GpuFrameState.js';
 import { POST_FX_LEVELS } from '../../claudeville/src/presentation/character-mode/postfx/PostFxLadder.js';
 
-const FAIR = Object.freeze({ type: 'clear', nextType: 'clear', cloudCover: 0.1, windX: 0.35, transitionProgress: 0.4 });
+// Nearly cloudless sky in the lone-cloud band [0.02, 0.04] now that normal
+// clear skies (cover >= 0.04) cast sparse cloud-shadow courses (relaxed 2026-11-23).
+const FAIR = Object.freeze({ type: 'clear', nextType: 'clear', cloudCover: 0.03, windX: 0.35, transitionProgress: 0.4 });
 const DAY = Object.freeze({ weather: FAIR, phase: 'day', season: 'autumn', motionScale: 1, level: 0, calm: false });
 const scheduler = createAmbientScheduler();
 const start = new Date(2026, 9, 9, 12).getTime();
@@ -56,7 +58,11 @@ test('clear daytime lone-cloud event reaches the two-course GPU branch determini
     assert.ok(courses.lone[2] > 0);
     assert.equal(courses.thresholds[2], 2);
     assert.deepEqual(frame(), courses);
-    assert.equal(frame({ ...DAY, weather: { ...FAIR, cloudCover: 0.08 } }).courses, 2);
+    assert.equal(frame({ ...DAY, weather: { ...FAIR, cloudCover: 0.02 } }).courses, 2);
+    // Clear sky above the 0.04 floor now casts the normal cloud-shadow courses.
+    const clearSky = frame({ ...DAY, weather: { ...FAIR, cloudCover: 0.1 } });
+    assert.equal(clearSky.courses, 3);
+    assert.equal(clearSky.lone[2], 0);
 });
 
 test('night, overcast, rain, squall and cloudless skies hold the lone branch', () => {
@@ -65,7 +71,7 @@ test('night, overcast, rain, squall and cloudless skies hold the lone branch', (
         { ...DAY, weather: { ...FAIR, type: 'overcast', cloudCover: 0.9 } },
         { ...DAY, weather: { ...FAIR, type: 'rain', cloudCover: 0.95 } },
         { ...DAY, weather: { ...FAIR, nextType: 'storm', transitionProgress: 0.4 } },
-        { ...DAY, weather: { ...FAIR, cloudCover: 0.079 } },
+        { ...DAY, weather: { ...FAIR, cloudCover: 0.019 } },
     ]) {
         const courses = frame(ctx);
         assert.equal(courses.lone[2], 0, JSON.stringify(ctx));

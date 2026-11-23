@@ -38,18 +38,19 @@ export const HORIZON_BAND_ROWS = 22;
 /**
  * Where the whale, the pod and the gulls surface (tile coords, outside the
  * map) and the coast each one runs along: `ne` travels on tile x (parallel to
- * the north-east shore), `se` on tile y (parallel to the south-east shore).
- * All lie in world x 500..1200, so the whole-island frame (the east vertex
- * at its right edge) shows every one: three north-east of the Lighthouse
- * and the world ash, three south-east of the Harbor and its outer fairway.
+ * the north-east shore), `se` and `nw` on tile y (parallel to the south-east
+ * and north-west shores). The first four stations sit inside the 1920×1080
+ * AUTO frame's open sea (relaxed 2026-11-23, operator decision), clear of all
+ * Harbor ship lanes, anchorages, exits and the release slip; two outer-east
+ * stations keep ultrawide views populated as well.
  */
 export const FAR_SEA_STATIONS = Object.freeze([
-    Object.freeze({ tileX: 20, tileY: -8, coast: 'ne' }),
-    Object.freeze({ tileX: 25, tileY: -6, coast: 'ne' }),
-    Object.freeze({ tileX: 29, tileY: -4, coast: 'ne' }),
-    Object.freeze({ tileX: 45, tileY: 11, coast: 'se' }),
-    Object.freeze({ tileX: 47, tileY: 17, coast: 'se' }),
-    Object.freeze({ tileX: 47, tileY: 25, coast: 'se' }),
+    Object.freeze({ tileX: 19, tileY: -4, coast: 'ne' }),
+    Object.freeze({ tileX: -4, tileY: 18, coast: 'nw' }),
+    Object.freeze({ tileX: 43, tileY: 21, coast: 'se' }),
+    Object.freeze({ tileX: 43, tileY: 23, coast: 'se' }),
+    Object.freeze({ tileX: 23, tileY: -6, coast: 'ne' }),
+    Object.freeze({ tileX: 46, tileY: 15, coast: 'se' }),
 ]);
 /** The farthest a far-sea event moves from its station along its coast (world px). */
 export const FAR_SEA_TRAVEL_PX = 130;
@@ -58,6 +59,7 @@ const KIND_SET = new Set(HORIZON_LIFE_KINDS);
 // World px per px of travel along each coast (the iso tile axes, 2:1).
 const COAST_AXIS = Object.freeze({
     ne: Object.freeze([2 / Math.sqrt(5), 1 / Math.sqrt(5)]),
+    nw: Object.freeze([-2 / Math.sqrt(5), 1 / Math.sqrt(5)]),
     se: Object.freeze([-2 / Math.sqrt(5), 1 / Math.sqrt(5)]),
 });
 const STATION_WORLD = FAR_SEA_STATIONS.map(s => ({ ...tileToWorld(s.tileX, s.tileY), axis: COAST_AXIS[s.coast] }));
@@ -126,51 +128,59 @@ function whaleStamps(event, t, span, out) {
         const blowAt = span * (0.15 + 0.7 * (i / Math.max(1, blows - 1)));
         const local = t - blowAt;
         if (local < -1200 || local >= 2600) continue;
-        // The back: a long low hump rising toward the head, a foam texel
-        // where it meets the water at either end.
-        span1(-6, 5, wy, 'back');
-        span1(-3, 3, wy - 1, 'back');
-        push(out, at(-7), wy, 1, 1, 'light');
-        push(out, at(6), wy, 1, 1, 'light');
+        // The back (~1.5× scale): a broad dark hump rising toward the head,
+        // with crisp foam highlights where it breaks the surface.
+        span1(-9, 8, wy, 'back');
+        span1(-6, 5, wy - 1, 'back');
+        span1(-3, 2, wy - 2, 'back');
+        span1(-2, 1, wy - 2, 'mid');
+        span1(-11, -10, wy, 'light');
+        push(out, at(-9), wy + 1, 2, 1, 'crest');
+        span1(9, 10, wy, 'light');
+        push(out, at(8), wy + 1, 1, 1, 'crest');
         if (local < 0) continue;
         const frame = local < 250 ? 0 : local < 700 ? 1 : local < 1500 ? 2 : 3;
-        const hole = at(2);
+        const hole = at(3);
         if (frame === 0) {
             // The first jet.
-            push(out, hole, wy - 4, 1, 3, 'light');
+            push(out, hole, wy - 7, 2, 5, 'light');
+            push(out, hole, wy - 7, 1, 2, 'crest');
         } else if (frame === 1) {
             // Tall and narrow, its tip already white.
-            push(out, hole, wy - 7, 1, 6, 'light');
-            push(out, hole, wy - 8, 1, 1, 'crest');
+            push(out, hole, wy - 11, 2, 9, 'light');
+            push(out, hole, wy - 12, 2, 2, 'crest');
+            push(out, hole - 1, wy - 10, 1, 2, 'light');
         } else if (frame === 2) {
-            // The bloom: a soft spray, white at its core, on a thinning stem.
-            push(out, hole, wy - 6, 1, 5, 'light');
-            push(out, hole - 1, wy - 7, 1, 1, 'light');
-            push(out, hole, wy - 7, 1, 1, 'crest');
-            push(out, hole + 1, wy - 7, 1, 1, 'light');
-            push(out, hole - 2, wy - 8, 1, 1, 'light');
-            push(out, hole - 1, wy - 8, 3, 1, 'crest');
-            push(out, hole + 2, wy - 8, 1, 1, 'light');
-            push(out, hole - 1, wy - 9, 1, 1, 'light');
-            push(out, hole + 1, wy - 9, 1, 1, 'light');
+            // The bloom: a generous spray, white at its core, on a thinning stem.
+            push(out, hole, wy - 9, 2, 7, 'light');
+            push(out, hole - 2, wy - 10, 1, 1, 'light');
+            push(out, hole - 1, wy - 10, 3, 1, 'crest');
+            push(out, hole + 2, wy - 10, 1, 1, 'light');
+            push(out, hole - 3, wy - 12, 2, 2, 'light');
+            push(out, hole - 1, wy - 12, 4, 2, 'crest');
+            push(out, hole + 3, wy - 12, 2, 2, 'light');
+            push(out, hole - 2, wy - 14, 2, 1, 'light');
+            push(out, hole, wy - 14, 2, 1, 'crest');
+            push(out, hole + 2, wy - 14, 2, 1, 'light');
+            push(out, hole, wy - 15, 2, 1, 'light');
         } else {
             // The mist hangs and breaks into a dithered cloud, the stem gone.
-            push(out, hole - 1, wy - 7, 1, 1, 'light');
-            push(out, hole + 1, wy - 7, 1, 1, 'light');
-            push(out, hole - 2, wy - 8, 1, 1, 'light');
-            push(out, hole, wy - 8, 1, 1, 'crest');
-            push(out, hole + 2, wy - 8, 1, 1, 'light');
-            push(out, hole - 1, wy - 9, 1, 1, 'light');
-            push(out, hole + 1, wy - 9, 1, 1, 'light');
-            push(out, hole, wy - 10, 1, 1, 'light');
+            push(out, hole - 2, wy - 10, 1, 1, 'light');
+            push(out, hole + 2, wy - 10, 1, 1, 'light');
+            push(out, hole - 3, wy - 12, 2, 1, 'light');
+            push(out, hole, wy - 12, 2, 1, 'crest');
+            push(out, hole + 3, wy - 12, 2, 1, 'light');
+            push(out, hole - 2, wy - 14, 2, 1, 'light');
+            push(out, hole + 2, wy - 14, 2, 1, 'light');
+            push(out, hole, wy - 15, 2, 1, 'light');
         }
     }
 }
 
-// The pod: three dolphins leap in turn on a 2.4 s cycle as the pod travels
-// ~3 px/s along its coast. Each leap: rise, arch, dive, a splash crown.
+// The pod (~1.5× scale): three dolphins leap in turn on a 2.4 s cycle as the
+// pod travels ~3 px/s along its coast. Each leap: rise, arch, dive, splash crown.
 const DOLPHIN_PERIOD_MS = 2400;
-const DOLPHINS = Object.freeze([[0, 0], [-10, 0.22], [10, 0.45]]);
+const DOLPHINS = Object.freeze([[0, 0], [-16, 0.22], [16, 0.45]]);
 function dolphinStamps(event, t, out) {
     const along = unit(event.seed, 5) < 0.5 ? -1 : 1;
     const pod = farSeaPoint(event.seed, 6, along, Math.floor(t / 333));
@@ -182,23 +192,35 @@ function dolphinStamps(event, t, out) {
         // Mirror the stamp to the direction of travel.
         const at = (lx) => x + lx * dir;
         const span1 = (a, b, y, tone) => push(out, Math.min(at(a), at(b)), y, Math.abs(b - a) + 1, 1, tone);
-        if (phase < 0.12) {
-            span1(0, 1, wy, 'back');
-            push(out, at(1), wy - 1, 1, 1, 'back');
-            push(out, at(-1), wy, 1, 1, 'light');
-        } else if (phase < 0.3) {
-            span1(0, 1, wy - 3, 'back');
-            span1(-1, 2, wy - 2, 'back');
-            push(out, at(1), wy - 3, 1, 1, 'mid');
-            push(out, at(-2), wy - 1, 1, 1, 'back');
-            push(out, at(3), wy - 1, 1, 1, 'back');
-        } else if (phase < 0.42) {
-            push(out, at(3), wy - 1, 1, 1, 'back');
-            span1(2, 3, wy, 'back');
-        } else if (phase < 0.52) {
-            push(out, at(3), wy - 1, 1, 1, 'crest');
-            push(out, at(2), wy, 1, 1, 'light');
-            push(out, at(4), wy, 1, 1, 'light');
+        if (phase < 0.14) {
+            span1(-1, 2, wy, 'back');
+            span1(0, 2, wy - 1, 'back');
+            push(out, at(2), wy - 2, 1, 1, 'back');
+            push(out, at(1), wy - 1, 1, 1, 'mid');
+            span1(-3, -2, wy, 'light');
+            push(out, at(-1), wy + 1, 1, 1, 'crest');
+        } else if (phase < 0.34) {
+            span1(-1, 2, wy - 5, 'back');
+            span1(-2, 3, wy - 4, 'back');
+            span1(0, 2, wy - 5, 'mid');
+            span1(-3, -2, wy - 3, 'back');
+            span1(3, 4, wy - 3, 'back');
+            push(out, at(-4), wy - 2, 1, 2, 'back');
+            push(out, at(5), wy - 2, 1, 2, 'back');
+            span1(-4, -3, wy, 'light');
+            push(out, at(5), wy, 1, 1, 'crest');
+        } else if (phase < 0.46) {
+            span1(3, 5, wy - 2, 'back');
+            span1(4, 6, wy - 1, 'back');
+            span1(3, 5, wy, 'back');
+            push(out, at(4), wy - 2, 1, 1, 'mid');
+            push(out, at(6), wy, 1, 1, 'crest');
+        } else if (phase < 0.60) {
+            span1(4, 5, wy - 2, 'crest');
+            span1(3, 6, wy - 1, 'light');
+            push(out, at(2), wy, 2, 1, 'light');
+            push(out, at(6), wy, 2, 1, 'light');
+            push(out, at(4), wy, 2, 1, 'crest');
         }
     }
 }
@@ -273,7 +295,7 @@ const LIVE = [];
 export function liveHorizonEvents(renderer) {
     const events = renderer?.ambientEvents;
     LIVE.length = 0;
-    for (const tier of ['rare', 'frequent']) {
+    for (const tier of ['rare', 'occasional', 'frequent']) {
         const event = events?.[tier];
         if (event && KIND_SET.has(event.kind)) LIVE.push(event);
     }

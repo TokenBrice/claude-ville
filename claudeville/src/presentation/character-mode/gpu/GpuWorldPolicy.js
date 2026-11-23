@@ -987,18 +987,13 @@ export const CLOUD_FIELD_PERIOD = 7168;
 export const LONE_CLOUD_MIX = 0.7;
 export const LONE_CLOUD_THRESHOLDS = Object.freeze([0.55, 0.68]);
 // SEA-1 (look `sea1` > 0) — the cloud field lies on the ground plane: a world
-// point (x, y) reads the field at (x * 0.32, y * 0.8), so a cloud's shade is
-// foreshortened like every other ground shape and stretched along the wind's
-// axis (2.5:1 on screen) and read at half the old frequency (s6b: a few
-// broad masses, five to eight across a 5120 z1 frame, instead of a field of
-// blotches; land and sea read the same field, so their shade meets at the
-// coast). The drift is carried in those field units (wrapped to
-// CLOUD_FIELD_PERIOD). 1024 / 0.32 = 3200 and 1024 / 0.8 = 1280 world px,
-// so the Canvas course tile keeps whole 2-px texels. On land one firm course
+// point (x, y) reads the field at (x * 0.64, y * 1.0) (relaxed 2026-11-23,
+// operator decision: village-scaled 1600 × 1024 world-px tile with whole 2-px
+// Canvas texels and exact 32-bit integer parity). On land one firm course
 // replaces the three nested rings: the rim (the covered share) one course,
 // its core (CLOUD_PLANE_CORE of the share) two; open water takes no multiply
 // (its shade is one stop of the lift).
-export const CLOUD_PLANE = Object.freeze([0.32, 0.8]);
+export const CLOUD_PLANE = Object.freeze([0.64, 1.0]);
 export const CLOUD_PLANE_CORE = 0.85;
 // PERF-01 — exact 32-bit integer bilinear constants derived from CLOUD_TILE_*,
 // CLOUD_FIELD_PERIOD, CLOUD_PLANE and CLOUD_SECOND_OCTAVE so GLSL, WGSL and the
@@ -1115,13 +1110,13 @@ export function seaSunLiftStops(strength, sunBand, elevationDeg) {
 /**
  * 1.4 / 3.4 — the share of the ground and sea under a cloud course at a
  * weather's cloud cover, one rule for both backends (GpuFrameState
- * `resolveAtmosphereCourses`, CloudShadowCourses). A fair-weather sky (cover
- * below 0.15) casts none, so a clear day reads clear on the 5120 sea; the
- * share then rises on one slope (partly cloudy 0.45 -> 0.38) to 0.45.
+ * `resolveAtmosphereCourses`, CloudShadowCourses). Floor lowered from 0.15 to
+ * 0.04 (relaxed 2026-11-23, operator decision) so clear days cast sparse
+ * shadows (~12 %) and partly cloudy reaches ~45 %.
  */
 export function cloudCoveredShare(cover) {
     const value = Number(cover);
-    return Math.max(0, Math.min(0.45, ((Number.isFinite(value) ? value : 0) - 0.15) * 1.27));
+    return Math.max(0, Math.min(0.45, ((Number.isFinite(value) ? value : 0) - 0.04) * 2.0));
 }
 
 function sampleCloudTile(data, size, u, v) {

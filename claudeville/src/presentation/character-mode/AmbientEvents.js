@@ -47,8 +47,9 @@ const TIER_GAPS_S = Object.freeze({
 const RARE_PER_DAY_MAX = 3;
 const SLOT_TAIL_S = 15;
 // The lowest cloud cover that can honestly cast a lone shadow: below it the
-// sky is cloudless and the island stays in full sun.
-export const LONE_CLOUD_MIN_COVER = 0.08;
+// sky is cloudless and the island stays in full sun (adjusted with the 0.04
+// cloudCoveredShare floor, relaxed 2026-11-23, operator decision).
+export const LONE_CLOUD_MIN_COVER = 0.02;
 
 // `eligible(gates)` reads only the gates this module resolves from the
 // clock, the calendar and the timeline weather. `shed` names the
@@ -122,12 +123,12 @@ export const AMBIENT_EVENT_KINDS = Object.freeze([
         live: true,
         eligible: gates => gates.showerFront,
     }),
+    // Promoted to frequent (every few minutes; relaxed 2026-11-23, operator decision).
     Object.freeze({
         id: 'whale-spout',
-        tier: 'rare',
+        tier: 'frequent',
         weight: 2,
-        perDayMax: 2,
-        durationS: Object.freeze([40, 90]),
+        durationS: Object.freeze([50, 90]),
         shed: 'faunaCadence',
         consumer: 'HorizonLife',
         live: true,
@@ -135,10 +136,9 @@ export const AMBIENT_EVENT_KINDS = Object.freeze([
     }),
     Object.freeze({
         id: 'dolphin-pod',
-        tier: 'rare',
-        weight: 1,
-        perDayMax: 2,
-        durationS: Object.freeze([30, 60]),
+        tier: 'frequent',
+        weight: 3,
+        durationS: Object.freeze([45, 75]),
         shed: 'faunaCadence',
         consumer: 'HorizonLife',
         live: true,
