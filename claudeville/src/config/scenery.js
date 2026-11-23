@@ -833,7 +833,6 @@ export const OFFSHORE_SCENERY = Object.freeze([
     Object.freeze({ id: 'prop.farShore.a', tileX: 21.5, tileY: -9.5 }),
     Object.freeze({ id: 'prop.farHamlet', tileX: 19.5, tileY: -6.0 }),
     Object.freeze({ key: 'west.seaStack.a', id: 'prop.seaStack.a', tileX: -3.5, tileY: 20.5 }),
-    Object.freeze({ key: 'west.seaStack.b', id: 'prop.seaStack.b', tileX: -1.5, tileY: 27.5 }),
     Object.freeze({ id: 'prop.seaStack.a', tileX: 35.0, tileY: 0.5 }),
     Object.freeze({ id: 'prop.seaStack.c', tileX: 37.5, tileY: 1.0 }),
     Object.freeze({ id: 'prop.seaStack.b', tileX: 37.5, tileY: 4.5 }),
