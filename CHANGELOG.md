@@ -2,6 +2,16 @@
 
 ---
 
+## v0.65.6 — *The Furled Scroll* · Nov 23, 2026
+
+The Activity Panel's work score is gone. Its SCORE button pinned the selected agent's last 24 waterfall rows as glyphs at building forecourts, took the camera, and stamped a REPLAY · WORK SCORE badge over the village whose counts (nodes, placed, intervals, recorded and semantic positions) described the diagram rather than the work. The glyphs could not show order, so the slider only repeated what the Causal Waterfall already lists.
+
+- **A quieter Journey.** The Journey section keeps its headline and More detail rows. The LIVE · SCORE · PLAY strip, its scrubber and its earlier-rows list are gone, and the panel no longer draws over the village or moves the camera.
+- **What stays.** The Causal Waterfall and its model (`WorkWaterfallModel.js`), the `R` 60-second trail replay and the director's position samples work as before.
+- **Cleanup.** `SpatialWorkScore.js`, the `work-score:*` events, the director's `workScore` snapshot field, the score's ground layer and overlay badge, its panel styles and the Camera's score-only `replay` claim are removed, so Ambient is the only exclusive camera owner. The READMEs, motion budget and QA checklist drop their score entries.
+
+---
+
 ## v0.65.5 — *The Prism Arc* · Nov 22, 2026
 
 Gemini 4 Neon steps out of its journeyman jacket and into the apex tier it earned in v0.65.0.1, arriving as a pair of obsidian-and-silver arch-alchemists with glowing electric-cyan discharge arcs, full Tavern and work poses, and an urgent run gait.
