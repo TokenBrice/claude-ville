@@ -46,9 +46,10 @@ import {
     paintThoughtPlate,
     snapScreenOrigin,
 } from './WorldLabelKit.js';
-import { Compositor, agentPaletteVariant, bakeSpriteOutline, resolveHeadAccessory, snowCapTexels } from './Compositor.js';
+import { Compositor, agentPaletteVariant, bakeSpriteOutline, opaqueRimSheet, resolveHeadAccessory, snowCapTexels } from './Compositor.js';
 import { fillPixelEllipse } from './PixelShapes.js';
 import {
+    actionNeededRingColor,
     drawGroundMarks,
     drawSelectionChevron,
     groundMarkDepth,
@@ -4757,10 +4758,11 @@ export class AgentSprite {
             // 7.1 — a stone seat's top face under the sitter, before the body.
             if (seatStones) ctx.drawImage(seatStones.back.canvas, this._placeX + seatStones.back.x, this._placeY + seatStones.back.y);
             if (!sheathed) this._drawCodexEquipment(ctx, identity, frameGeometry, 'back');
-            // Plan 2.4 — the rim is baked into the sheet, identical to the
-            // resident atlas; no per-frame halo pass.
+            // Plan 2.4 — the rim is baked into the sheet; Canvas lifts the
+            // tagged half-alpha rim to match the GPU daytime opaque floor.
+            const canvasSource = opaqueRimSheet(bodySource) || bodySource;
             ctx.drawImage(
-                bodySource,
+                canvasSource,
                 bodyCell.sx, bodyCell.sy, bodyCell.sw, bodyCell.sh,
                 dx, dy, bodyCell.sw, bodyCell.sh
             );
@@ -5119,26 +5121,41 @@ export class AgentSprite {
         return bounds.maxX - bounds.minX + 1;
     }
 
-    // Plan 2.3 — the ground mark set both backends paint: one contact shadow,
-    // a status ring only for waiting-on-you / errored / rate-limited, and the
-    // selection or hover ring; W7.4 adds the quiet repo course under those.
-    // V7 — laid out at the body's own placement, so they never part from it.
+    // Plan 2.3 — the ground mark set all backends paint: one contact shadow,
+    // Tier-A rings for action-needed states, static WORKING/WAITING arcs under
+    // MarkGovernor WORKING tier (none under IDLE), and the gold selection or
+    // cream hover ring. V7 — laid out at the body's own placement.
     _layoutGroundMarks(contentWidth) {
-        this._repoRingColor = this._repoRingAccent();
+        const status = departedTableau(this) ? null : this.agent?.status;
+        const routineGate = this._routineStatusGate(status);
+        this._routineStatusAdmitted = Boolean(routineGate);
+        this._repoRingColor = (routineGate || status === AgentStatus.IDLE || actionNeededRingColor(status))
+            ? null
+            : this._repoRingAccent();
         this._groundMarks = resolveGroundMarks({
             x: this._placeX,
             y: this._placeY,
             contentWidth,
-            status: departedTableau(this) ? null : this.agent?.status,
+            status,
             selected: this.selected,
             hovered: this.hovered,
             accent: this._providerAccentColor(),
             trim: this._providerTrimColor(),
             repo: this._repoRingColor,
+            routineStatus: this._routineStatusAdmitted,
+            routineAlpha: routineGate?.alpha ?? null,
             // 2.8 — the body keeps its lamp choice between frames.
             owner: this,
         });
         return this._groundMarks;
+    }
+
+    _routineStatusGate(status) {
+        if (status !== AgentStatus.WORKING && status !== AgentStatus.WAITING) return null;
+        const governor = getActiveMarkGovernor();
+        if (!governor) return { draw: true, alpha: 0.78 };
+        const gate = governor.admit(MarkTier.WORKING, this.x, this.y);
+        return gate?.draw ? gate : null;
     }
 
     // 7.2 — a petitioner standing in its queue slot, or at an overflow place
@@ -7387,6 +7404,7 @@ export class AgentSprite {
             selected: this.selected,
             hovered: this.hovered,
             repo: this._repoRingColor || null,
+            routineStatus: this._routineStatusAdmitted !== false,
         }));
     }
 
@@ -7857,12 +7875,11 @@ export class AgentSprite {
         ctx.restore();
     }
 
-    // Three 2 px pixel dots on the snapped screen grid (no arcs).
+    // Three 2 px pixel dots outlined in #140e0a on the snapped screen grid (no arcs).
     _drawThinkingDotsGlyph(ctx, color) {
         const animated = this.motionScale > 0;
         const moodScale = moodBehaviorMultiplier(this.agent?.mood, 'thinkDuration');
         const duration = this._modelBehavior.thinkDuration * moodScale;
-        ctx.fillStyle = color;
         for (let i = 0; i < 3; i++) {
             // Pulse band: `intrinsic` (slow). Heavy models hold each thought
             // beat longer; reduced motion keeps the complete three-dot glyph.
@@ -7875,7 +7892,11 @@ export class AgentSprite {
                     1,
                 )
                 : 1;
-            ctx.fillRect(-5 + i * 4, -1, 2, 2);
+            const dx = -6 + i * 5;
+            ctx.fillStyle = '#140e0a';
+            ctx.fillRect(dx - 1, -2, 4, 4);
+            ctx.fillStyle = color;
+            ctx.fillRect(dx, -1, 2, 2);
         }
         ctx.globalAlpha = 1;
     }
