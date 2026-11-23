@@ -3,7 +3,7 @@ import {
     materialClassId as registryMaterialClassId,
 } from '../MaterialRegistry.js';
 import { RECEIVER_LUMA_CEILING } from '../../../config/artPalette.js';
-import { WATER_MAX_SATURATION } from '../GradeEvaluator.js';
+import { WATER_DAY_MAX_SATURATION, WATER_MAX_SATURATION } from '../GradeEvaluator.js';
 import { footprintFieldRect } from '../FootprintField.js';
 
 const FOOTPRINT_FIELD_RECT = footprintFieldRect();
@@ -633,6 +633,7 @@ export const GRADE_UNIFORM_NAMES = Object.freeze([
 // mirrors the pool/land stops on the CPU).
 export const GRADE_CONSTANTS = Object.freeze({
     WATER_MAX_SATURATION: Object.freeze({ value: WATER_MAX_SATURATION, digits: 3 }),
+    WATER_DAY_MAX_SATURATION: Object.freeze({ value: WATER_DAY_MAX_SATURATION, digits: 3 }),
     POOL_RIM: Object.freeze({ value: Object.freeze([1.484, 0.914, 0.430]), digits: 3 }),
     POOL_MID: Object.freeze({ value: Object.freeze([1.208, 0.981, 0.577]), digits: 3 }),
     POOL_CORE: Object.freeze({ value: Object.freeze([1.089, 0.995, 0.786]), digits: 3 }),
@@ -694,10 +695,11 @@ vec3 applyTimeGrade(vec3 albedo, bool lift) {
     return c / max(1.0, max(c.r, max(c.g, c.b)));
 }
 
-// V6 — graded water held at WATER_MAX_SATURATION (HSV), pulled toward its
-// own luma so hue, luma and the cool R−B sign are kept. The CPU twin is
-// GradeEvaluator \`capSaturation\` (CoastBake's outer ocean).
+// V6 — graded water held at WATER_DAY_MAX_SATURATION by day, blending back to
+// WATER_MAX_SATURATION with night and storm (HSV), pulled toward its own luma
+// so hue, luma and the cool R−B sign are kept. CPU twin: GradeEvaluator.
 const float WATER_MAX_SATURATION = ${k('WATER_MAX_SATURATION')};
+const float WATER_DAY_MAX_SATURATION = ${k('WATER_DAY_MAX_SATURATION')};
 vec3 capSaturation(vec3 c, float maxS) {
     float hi = max(c.r, max(c.g, c.b));
     float spread = hi - min(c.r, min(c.g, c.b));

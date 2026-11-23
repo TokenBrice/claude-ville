@@ -358,7 +358,8 @@ export function resolveSurfGlow(atmosphere, weather, grade, moonFill, swashOn) {
  * clock: one jump a day) to keep the shaders' float
  * phase exact.
  */
-export const SWELL_DRIFT_STEP_MS = 2500;
+// Relaxed 2026-11-23 (operator decision): ~2 px/s shoreward roll (~2 Hz).
+export const SWELL_DRIFT_STEP_MS = 500;
 export const SWELL_DRIFT_WRAP_ROWS = 30000;
 export function swellDriftRows(motionTimeMs) {
     const t = Number(motionTimeMs);
@@ -585,7 +586,7 @@ export function resolveWaterFx(feed, camera, level, grade, moonFill, width, out 
         && finite(grade.sunBand, 0) > 0.3
         && cloudCover < 0.5
         && finite(grade.night, 0) < 0.5
-        && zoom >= 2
+        && zoom >= 1.2
         ? 1 : 0;
     fx[3] = effectBudgetMode('coastSwash', level) === 'on' && motion > 0 ? 1 : 0;
     // BI-8 — the summer surf glow rides the swash's crest front.

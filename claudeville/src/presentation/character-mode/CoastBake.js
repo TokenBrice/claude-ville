@@ -39,7 +39,8 @@ import {
 import * as CanvasGrade from './CanvasGrade.js';
 import { emissiveSidecarFor } from './EmitterCuts.js';
 import { cloudCourseDrift } from './Wind.js';
-import { moonRoadFor, sunRoadFor } from './gpu/GpuFrameState.js';
+import { moonRoadFor, seaSunLift, sunRoadFor } from './gpu/GpuFrameState.js';
+import { SEA_SUN_LIFT_FLOOR } from './gpu/GpuWorldPolicy.js';
 import { lookStrength } from './LookStrengths.js';
 import { liquidPrecipitation, snowBucketOf } from './GroundState.js';
 
@@ -60,11 +61,10 @@ const WET_SAND_BAND = -0.18;
 const WET_SAND_DITHER = -0.27;
 const FOAM_BAND = 0.09;
 const FOAM_SPARSE_BAND = 0.16;
-// Stop k + 1 starts at DEPTH_BOUNDS[k]. The sea's deepest stop (5) is the
-// open sea's body: in-map sea reaches it three tiles from land, the outer
-// shelf deepens into it past the map edge (3.3), so the map diamond never
-// shows as a lighter plate in the sea.
-const DEPTH_BOUNDS = Object.freeze([0.30, 0.78, 1.38, 2.15, 2.9]);
+// Stop k + 1 starts at DEPTH_BOUNDS[k]. Spread across 0.55..3.90 tiles so
+// shallow turquoise bands wrap beaches, coves, rivers and the World Ash islet
+// cleanly before stepping into coastal blue open sea.
+export const DEPTH_BOUNDS = Object.freeze([0.55, 1.15, 1.95, 2.90, 3.90]);
 // Half-width (tiles of signed distance) of the ordered seam where one depth
 // stop hands to the next: ~one world texel either side, so every stop is a
 // solid band and only its edge dithers (a wider band read as a full-field
@@ -92,7 +92,7 @@ const SHELF_CLIFF_SD = 1.0;
 // tiles (the shallow stops keep their width), steeper beyond.
 const SHELF_NEAR_TILES = 1.5;
 const SHELF_NEAR_RATE = 0.8;
-const SHELF_FAR_RATE = 1.6;
+const SHELF_FAR_RATE = 2.0;
 // A second, low-frequency wobble (period ~8.6 tiles) past the first tile and
 // a half, so the stop 3-4-5 contours meander instead of running as straight
 // 2:1 lines parallel to the map edge.
@@ -131,10 +131,9 @@ const WATER_NIGHT_FLOOR = 0.15;
 // GLSL / WGSL twins mix it in after V6's cap). The sky lends its hue at the
 // water's own value, lifting it by at most WATER_SKY_LIFT (an overcast's pale
 // sky) and never darkening it, so the night lane's value grade stands.
-// Weather and clock only, never agents. J29 — 0.16 (was 0.22), so an
-// overcast or golden-hour lagoon keeps more of its own water and reads less
-// pewter; the one weight reaches every path through `waterMoodFor`.
-const WATER_SKY_WEIGHT = 0.16;
+// Weather and clock only, never agents. Relaxed 2026-11-23 (operator decision:
+// brighter daytime sky reflection on clear blue water; still halved at night).
+const WATER_SKY_WEIGHT = 0.24;
 const WATER_SKY_COVER = 0.12;
 const WATER_SKY_FOG = 0.08;
 // LA-3 (look `la3`) — the golden sea. At golden hour the land's split tone is
@@ -235,6 +234,7 @@ const SEABED_SPECKS = Object.freeze([
 const CAUSTICS = Object.freeze([
     Object.freeze(mixRgb(COAST_WATER_STOPS[0], FOAM, 0.5)),
     Object.freeze(mixRgb(COAST_WATER_STOPS[1], COAST_WATER_STOPS[0], 0.5)),
+    Object.freeze(mixRgb(COAST_WATER_STOPS[2], COAST_WATER_STOPS[1], 0.5)),
 ]);
 
 /**
@@ -1438,6 +1438,14 @@ function boulderRgb(b, x, y) {
  * row dropped. Only where the edge tile is land: where the sea reaches the
  * map edge it meets the outer shelf.
  */
+// Land-to-sea cliff end taper (world px): where a cliff edge meets open sea
+// (notably the SW cliff under the SE sea tower at x = -1 meeting SE sea at
+// x = 0), taper the cliff face, boulders, surf lace and reflection into a
+// shaded corner return instead of shearing vertically on a 1 px line.
+const CLIFF_END_TAPER_PX = 12;
+const CLIFF_END_RETURN_PX = 6;
+const CLIFF_END_BOULDER_CLEAR_PX = 8;
+
 function paintStratifiedCliff(buf, coast, field, renderer) {
     const edgeLimit = MAP_SIZE - 0.5 - 0.06;
     const plainTiles = cliffPlainTiles(renderer);
@@ -1451,11 +1459,11 @@ function paintStratifiedCliff(buf, coast, field, renderer) {
         putRgb(data, at * 4, rgb);
         role[at] = kind;
     };
-    for (const side of edgeSides()) {
-        const strata = CLIFF_STRATA[side.face];
+    const sides = edgeSides().map((side) => {
         const x0 = Math.ceil(Math.min(side.a.x, side.b.x));
         const x1 = Math.floor(Math.max(side.a.x, side.b.x));
-        const columnInfo = (x) => {
+        const info = new Map();
+        for (let x = x0; x < x1; x++) {
             const edgeY = edgeYAt(side, x);
             const wy = edgeY - 1;
             const u = wy / TILE_HEIGHT + (x + 0.5) / TILE_WIDTH;
@@ -1464,18 +1472,39 @@ function paintStratifiedCliff(buf, coast, field, renderer) {
             const sv = side.edgeU ? v : Math.min(v, edgeLimit);
             const tx = side.edgeU ? MAP_SIZE - 1 : Math.min(MAP_SIZE - 1, Math.max(0, Math.floor(su + 0.5)));
             const ty = side.edgeU ? Math.min(MAP_SIZE - 1, Math.max(0, Math.floor(sv + 0.5))) : MAP_SIZE - 1;
-            return {
+            info.set(x, {
                 edgeY,
                 land: field.signedDistance(su, sv) <= 0,
                 plain: plainTiles.has(`${tx},${ty}`),
                 along: Math.floor(side.edgeU ? v : u),
-            };
-        };
-        const info = new Map();
-        for (let x = x0; x < x1; x++) info.set(x, columnInfo(x));
+            });
+        }
+        return { side, x0, x1, info };
+    });
+    const seInfo = sides.find(item => item.side.face === 'se')?.info;
+    const swInfo = sides.find(item => item.side.face === 'sw')?.info;
+    const landAcross = (x) => (x < 0 ? swInfo?.get(x)?.land : seInfo?.get(x)?.land) === true;
+    for (const { side, x0, x1, info } of sides) {
+        const strata = CLIFF_STRATA[side.face];
+        // Distance (px) from each land column to a sea-facing cliff end (left
+        // or right, including across the south vertex x = -1 / x = 0).
+        const endDist = new Map();
+        for (let x = x0; x < x1; x++) {
+            if (!info.get(x)?.land) continue;
+            let seaLeft = CLIFF_END_TAPER_PX + 1;
+            let seaRight = CLIFF_END_TAPER_PX + 1;
+            for (let d = 1; d <= CLIFF_END_TAPER_PX; d++) {
+                if (seaLeft > CLIFF_END_TAPER_PX && !landAcross(x - d)) seaLeft = d;
+                if (seaRight > CLIFF_END_TAPER_PX && !landAcross(x + d)) seaRight = d;
+            }
+            const dist = Math.min(seaLeft, seaRight);
+            if (dist <= CLIFF_END_TAPER_PX) endDist.set(x, { dist, seaRight });
+        }
         const boulders = sideBoulders(side, x0, x1, (x) => {
-            const at = info.get(Math.round(x));
-            return !at || !at.land || at.plain;
+            const rx = Math.round(x);
+            const at = info.get(rx);
+            const end = endDist.get(rx);
+            return !at || !at.land || at.plain || (end != null && end.dist <= CLIFF_END_BOULDER_CLEAR_PX);
         });
         const palisade = palisadeColumns(walls, side, x0, x1);
         // Face strata, one texel column at a time: the stepped courses, block
@@ -1488,38 +1517,49 @@ function paintStratifiedCliff(buf, coast, field, renderer) {
         for (let x = x0; x < x1; x++) {
             const col = info.get(x);
             if (!col.land) continue;
-            const faceH = cliffFaceAt(side, x, col.plain);
+            const end = endDist.get(x);
+            const endT = end ? (end.dist - 0.5) / CLIFF_END_TAPER_PX : 1;
+            const endSmooth = end ? endT * endT * (3 - 2 * endT) : 1;
+            const colStrata = side.face === 'sw' && end && end.seaRight <= CLIFF_END_RETURN_PX ? CLIFF_STRATA.se : strata;
+            const rawFaceH = cliffFaceAt(side, x, col.plain);
+            const faceH = end ? Math.max(4, Math.round(rawFaceH * (0.22 + 0.78 * endSmooth))) : rawFaceH;
             const extra = faceH - CLIFF_FACE;
             const wobble = Math.floor(hash2(col.along, side.salt, 71) * 3) - 1;
             const lip = Math.floor(hash2(x >> 3, side.salt + 2, 17) * 2);
+            const maxY = col.edgeY + faceH;
             let y = col.edgeY;
             const run = (height, pick) => {
-                for (let k = 0; k < height; k++, y++) {
+                const clamped = Math.max(0, Math.min(height, maxY - y));
+                for (let k = 0; k < clamped; k++, y++) {
                     set(x, y, pick(k), TEXEL_LAND);
                     markCell(coast, x, y, { land: true });
                 }
             };
-            run(2 + lip, () => strata.root);
-            run(1, () => (hash2(x >> 2, col.along, 29) > 0.2 ? strata.highlight : strata.upper));
+            run(end ? Math.min(2, Math.max(1, Math.floor(faceH * 0.18))) : 2 + lip, () => colStrata.root);
+            run(1, () => (hash2(x >> 2, col.along, 29) > 0.2 ? colStrata.highlight : colStrata.upper));
             const upperTop = y;
-            const upperRows = Math.max(4, 12 + wobble + Math.ceil(extra / 2));
+            const upperRows = end
+                ? Math.max(1, Math.round(Math.max(0, maxY - y - 2) * 0.5))
+                : Math.max(4, 12 + wobble + Math.ceil(extra / 2));
             const up = fractureAt(x, FRACTURE_CELL_UPPER, upSalt, upperRows);
             // One darker bedding course per rock block, at a hashed height.
             const bed = 4 + Math.floor(hash2(Math.floor(x / FRACTURE_CELL_UPPER), upSalt, 427) * Math.max(1, upperRows - 7));
-            run(upperRows, k => (up && !up.lit && k >= up.from && k < up.to ? strata.joint
-                : up?.lit && k >= up.from && k < up.from + 2 ? strata.lit
-                    : k === bed ? strata.bed : strata.upper));
+            run(upperRows, k => (up && !up.lit && k >= up.from && k < up.to ? colStrata.joint
+                : up?.lit && k >= up.from && k < up.from + 2 ? colStrata.lit
+                    : k === bed ? colStrata.bed : colStrata.upper));
             // Sparse 2x1 grit in the sandstone so the course is not a flat band.
-            if (!up && hash2(x >> 1, col.along, 43) < 0.16) set(x, upperTop + 2 + Math.floor(hash2(x >> 1, 5, 61) * 8), strata.speck, TEXEL_LAND);
-            run(1, () => strata.seam);
-            const lowerRows = Math.max(3, 11 - wobble - lip + Math.floor(extra / 2));
+            if (!end && !up && hash2(x >> 1, col.along, 43) < 0.16) set(x, upperTop + 2 + Math.floor(hash2(x >> 1, 5, 61) * 8), colStrata.speck, TEXEL_LAND);
+            run(1, () => colStrata.seam);
+            const lowerRows = end
+                ? Math.max(1, Math.round(Math.max(0, maxY - y - 1) * 0.55))
+                : Math.max(3, 11 - wobble - lip + Math.floor(extra / 2));
             const lo = fractureAt(x, FRACTURE_CELL_LOWER, loSalt, lowerRows);
-            const stain = hash2(x >> 1, side.salt, 431) < 0.09 ? 3 + Math.floor(hash2(x >> 1, side.salt, 433) * 6) : 0;
-            run(lowerRows, k => (k < stain ? strata.stain
-                : lo && !lo.lit && k >= lo.from && k < lo.to ? strata.lowJoint
-                    : lo?.lit && k >= lo.from && k < lo.from + 2 ? strata.lowLit : strata.lower));
-            run(4, () => strata.foot);
-            run(Math.max(1, col.edgeY + faceH - y), () => strata.wet);
+            const stain = !end && hash2(x >> 1, side.salt, 431) < 0.09 ? 3 + Math.floor(hash2(x >> 1, side.salt, 433) * 6) : 0;
+            run(lowerRows, k => (k < stain ? colStrata.stain
+                : lo && !lo.lit && k >= lo.from && k < lo.to ? colStrata.lowJoint
+                    : lo?.lit && k >= lo.from && k < lo.from + 2 ? colStrata.lowLit : colStrata.lower));
+            run(end ? Math.min(2, Math.max(0, maxY - y - 1)) : 4, () => colStrata.foot);
+            run(Math.max(1, maxY - y), () => colStrata.wet);
             foot.set(x, y);
         }
         // The revetment over the wet foot and into the water.
@@ -1528,7 +1568,8 @@ function paintStratifiedCliff(buf, coast, field, renderer) {
                 for (let x = Math.floor(b.cx - b.rx); x <= Math.ceil(b.cx + b.rx); x++) {
                     if (((x + 0.5 - b.cx) / b.rx) ** 2 + ((y + 0.5 - b.cy) / b.ry) ** 2 > 1) continue;
                     const col = info.get(x);
-                    if (!col?.land || col.plain) continue;
+                    const end = endDist.get(x);
+                    if (!col?.land || col.plain || (end != null && end.dist <= CLIFF_END_BOULDER_CLEAR_PX)) continue;
                     set(x, y, boulderRgb(b, x, y), TEXEL_LAND);
                     foot.set(x, Math.max(foot.get(x) ?? 0, y + 1));
                 }
@@ -1540,12 +1581,16 @@ function paintStratifiedCliff(buf, coast, field, renderer) {
             if (!col.land) continue;
             const waterline = foot.get(x);
             if (waterline == null) continue;
-            coast.cliffFoot.set(x, waterline);
+            const end = endDist.get(x);
+            const endT = end ? (end.dist - 0.5) / CLIFF_END_TAPER_PX : 1;
+            const endSmooth = end ? endT * endT * (3 - 2 * endT) : 1;
+            if (!end || end.dist > 4) coast.cliffFoot.set(x, waterline);
             let y = waterline;
             // Surf lace hugging the boulder bases: clustered runs (a coarse
             // and a fine hash), two foam buckets, a sparse second texel.
             const lace = hash2(x >> 3, side.salt + 4, 37) * 0.6 + hash2(x >> 1, 1, 41) * 0.4;
-            const laceRows = lace < 0.6 ? (hash2(x >> 1, waterline, 83) < 0.4 ? 2 : 1) : 0;
+            let laceRows = lace < 0.6 ? (hash2(x >> 1, waterline, 83) < 0.4 ? 2 : 1) : 0;
+            if (end) laceRows = end.dist <= 3 ? 0 : end.dist <= 7 ? Math.min(laceRows, 1) : laceRows;
             for (let k = 0; k < laceRows; k++, y++) {
                 const at = bufferIndex(buf, x, y);
                 if (at < 0 || texelStop(buf, at, x, y) < 0) break;
@@ -1553,22 +1598,25 @@ function paintStratifiedCliff(buf, coast, field, renderer) {
                 markCell(coast, x, y, { water: true });
             }
             // One shallow stop at the foot, dithered out over 4 texels.
-            for (let k = 0; k < 4; k++) {
+            const shallowRows = end ? Math.max(0, Math.round(4 * endSmooth)) : 4;
+            for (let k = 0; k < shallowRows; k++) {
                 const at = bufferIndex(buf, x, y + k);
                 if (at < 0) break;
                 const stop = texelStop(buf, at, x, y + k);
                 if (stop < 0) break;
-                if (bayer(x, y + k) >= 1 - k / 4) continue;
+                if (bayer(x, y + k) >= 1 - k / Math.max(1, shallowRows)) continue;
                 set(x, y + k, COAST_WATER_STOPS[Math.max(0, stop - 1)], CLASS_WATER + Math.max(0, stop - 1));
                 markCell(coast, x, y + k, { water: true });
             }
             // The mirror: the face (with its boulders) above the waterline,
             // then the palisade standing behind the edge (`palisadeColumns`),
             // three alpha courses by distance, every 3rd row dropped,
-            // jittered a texel on a hash.
+            // jittered a texel on a hash. Attenuated over land-to-sea ends so
+            // reflection and sun glints feather cleanly around the headland.
             const faceRows = waterline - col.edgeY;
             const wall = palisade.get(x);
-            const length = faceRows + (wall ? wall.rows : 0);
+            const rawLength = faceRows + (wall ? wall.rows : 0);
+            const length = end ? Math.round(rawLength * endSmooth) : rawLength;
             for (let k = 0; k < length; k++) {
                 const ty = y + k;
                 const at = bufferIndex(buf, x, ty);
@@ -1576,19 +1624,21 @@ function paintStratifiedCliff(buf, coast, field, renderer) {
                 const stop = texelStop(buf, at, x, ty);
                 if (stop < 0) break;
                 if (k % 3 === 2) continue;
+                if (end && bayer(x, ty) >= endSmooth) continue;
                 const sy = waterline - 1 - k;
                 const jitter = hash2(x >> 1, ty, 97) < 0.18 ? 1 : 0;
                 let src = null;
                 if (sy >= col.edgeY) {
                     const from = bufferIndex(buf, x + jitter, sy);
                     if (from >= 0 && buf.role[from] === TEXEL_LAND) src = readRgb(data, from * 4);
-                } else {
+                } else if (wall) {
                     src = wallTexel(walls, x + jitter, sy - wall.lift);
                 }
                 if (!src) continue;
-                const course = Math.min(REFLECTION_ALPHAS.length - 1, Math.floor((k * REFLECTION_ALPHAS.length) / length));
+                const course = Math.min(REFLECTION_ALPHAS.length - 1, Math.floor((k * REFLECTION_ALPHAS.length) / Math.max(1, length)));
+                const alpha = REFLECTION_ALPHAS[course] * (end ? 0.45 + 0.55 * endSmooth : 1);
                 const base = buf.role[at] === TEXEL_OPEN ? COAST_WATER_STOPS[stop] : readRgb(data, at * 4);
-                set(x, ty, mirrorRgb(base, src, REFLECTION_ALPHAS[course]), TEXEL_MIRROR);
+                set(x, ty, mirrorRgb(base, src, alpha), TEXEL_MIRROR);
                 markCell(coast, x, ty, { water: true, reflect: course + 1 });
                 markMirrorBase(coast, buf.w, at, stop);
             }
@@ -1792,6 +1842,11 @@ const MIRROR_ENVELOPE_PX = 40;
 // The surf the mirror leaves alone: the foam lace and its sparse dither.
 const MIRROR_SURF_SD = FOAM_SPARSE_BAND + 0.08;
 const MIRROR_RIPPLE_EVERY = 4;
+// Pier-span columns of `building.harbor` (seaward of the house/quay footprint)
+// cast short, crisp local reflections under their decks rather than inheriting
+// the tall warehouse's 112+ px mirror reach.
+export const HARBOR_PIER_MIRROR_REACH = 18;
+const HARBOR_PIER_MIRROR_SHAPE = Object.freeze({ reach: HARBOR_PIER_MIRROR_REACH, squash: 1, tall: 0 });
 // The last rows of a mirror's reach dither out on the Bayer order.
 const MIRROR_FADE_ROWS = 16;
 
@@ -2165,6 +2220,19 @@ function reflectionSources(renderer, field) {
         const x = Math.round(center.x - anchor[0]);
         const y = Math.round(center.y - anchor[1]);
         const { axis, grounded } = waterlineProfile(pixels, y);
+        const shape = mirrorShape(pixels.h);
+        // Data-driven pier-span cap for the Harbor: columns whose waterline
+        // projects seaward past the building footprint (x0 + w) sit on pier
+        // spans, so they mirror at HARBOR_PIER_MIRROR_REACH instead of the
+        // tall house's reach. Independent of Harbor art details.
+        const shapeAt = building.type === 'harbor'
+            ? (sx) => {
+                const base = axis[sx];
+                if (base == null) return shape;
+                const u = base / TILE_HEIGHT + (x + sx) / TILE_WIDTH;
+                return u > x0 + w + 0.05 ? HARBOR_PIER_MIRROR_SHAPE : shape;
+            }
+            : null;
         out.push({
             pixels,
             glow: glow && glow.w === pixels.w && glow.h === pixels.h ? glow : null,
@@ -2173,7 +2241,8 @@ function reflectionSources(renderer, field) {
             x,
             y,
             gap,
-            shape: mirrorShape(pixels.h),
+            shape,
+            shapeAt,
             sortY: frontY,
             axisAt: sx => axis[sx],
             groundedAt: sx => grounded[sx] === 1,
@@ -2354,11 +2423,12 @@ function staticReflections(ctx, renderer) {
             const shift = (wet >= MIRROR_CRISP_ROWS ? rippleShift(y, course > 0 ? amp : 1) : 0) - streakOffset(wx, y, course);
             const hit = sample(d, y, shift, course);
             if (!hit) continue;
-            const fade = d - (reach - MIRROR_FADE_ROWS);
+            const fadeRows = Math.min(MIRROR_FADE_ROWS, Math.max(4, Math.floor(reach * 0.4)));
+            const fade = d - (reach - fadeRows);
             const broken = brokenRow(wx, y, wet, every, MIRROR_BREAK_SHARE);
             const bandY = y >> 1;
             const segX = (wx + (bandY & 1) * 4) >> 3;
-            const fadeShare = fade / MIRROR_FADE_ROWS;
+            const fadeShare = fade / fadeRows;
             const faded = fade > 0 && (hash2(bandY, 0, 61) < fadeShare * 0.55 || hash2(segX, bandY, 67) < fadeShare);
             stage(wx, y, at, hit, course, d, wet, !broken && !faded, broken && !faded);
         }
@@ -2437,13 +2507,16 @@ function staticReflections(ctx, renderer) {
             const base = source.axisAt(sx);
             if (base == null || base <= source.y) continue;
             const grounded = source.groundedAt(sx);
-            walk(source.x + sx, base, gap, shape, (d, y, shift, course) => {
-                const sy = base - 1 - Math.round(d * shape.squash) - source.y;
+            const colShape = source.shapeAt ? source.shapeAt(sx) : shape;
+            const colGap = colShape === shape ? gap : Math.min(gap, REFLECTION_LAND_GAP);
+            const colMassRows = Math.max(1, Math.round(colShape.squash));
+            walk(source.x + sx, base, colGap, colShape, (d, y, shift, course) => {
+                const sy = base - 1 - Math.round(d * colShape.squash) - source.y;
                 if (sy < 0 || sy >= pixels.h) return null;
                 const tx = Math.max(0, Math.min(pixels.w - 1, sx + shift));
                 const o = (sy * pixels.w + tx) * 4;
                 if (pixels.data[o + 3] < 128) return null;
-                const src = clusterMirrorRgb(pixels, tx, sy, massRows, course === 0 ? 2 : 3);
+                const src = clusterMirrorRgb(pixels, tx, sy, colMassRows, course === 0 ? 2 : 3);
                 // The Pharos lamp (a fixture layer): clustered base by day, lit accent at the lamp's gate.
                 if (lamp?.[sy * pixels.w + tx]) return [src, true, { lamp: true }];
                 const emission = glow ? glow.data[o + 3] : 0;
@@ -2453,7 +2526,7 @@ function staticReflections(ctx, renderer) {
                 slot[at] = staged.length;
                 if (!rows.has(y)) rows.set(y, []);
                 rows.get(y).push(staged.length);
-                staged.push({ x, y, at, hit, course, d, wet, keep, broken, core: false, seed: grounded && wet < MIRROR_CRISP_ROWS });
+                staged.push({ x, y, at, hit, course, d, wet, keep, broken, core: false, seed: grounded && wet < MIRROR_CRISP_ROWS, reach: colShape.reach, tall: colShape.tall });
             });
         }
         // Horizontal wave-finger edge trim on every row run of this mirror
@@ -2476,17 +2549,18 @@ function staticReflections(ctx, renderer) {
                 for (let n = start; n <= end; n++) {
                     const texel = staged[list[n]];
                     // A tower's narrow runs (its lantern posts, the finial) stay crisp.
-                    const taper = tower && run < MIRROR_EDGE_MIN_RUN ? 0
-                        : Math.min(Math.floor(texel.d * shape.tall * MIRROR_TAPER), Math.floor(run * MIRROR_TAPER_SHARE));
+                    const colTower = texel.tall >= MIRROR_CORE_TALL;
+                    const taper = colTower && run < MIRROR_EDGE_MIN_RUN ? 0
+                        : Math.min(Math.floor(texel.d * texel.tall * MIRROR_TAPER), Math.floor(run * MIRROR_TAPER_SHARE));
                     const span = Math.max(cols, taper > 0 ? MIRROR_EDGE_COLS : 0);
                     if (!span) {
-                        texel.core = tower;
+                        texel.core = colTower;
                         continue;
                     }
                     const leftCut = taper + leftFinger;
                     const rightCut = taper + rightFinger;
                     if (n - start >= span + taper && end - n >= span + taper) {
-                        texel.core = tower;
+                        texel.core = colTower;
                         continue;
                     }
                     if (n - start < leftCut || end - n < rightCut) texel.keep = false;
@@ -2522,14 +2596,16 @@ function staticReflections(ctx, renderer) {
         const alphaScale = 1 - MIRROR_TALL_LIGHTEN * shape.tall;
         const coreScale = 1 - MIRROR_CORE_LIGHTEN * shape.tall;
         for (let k = 0; k < staged.length; k++) {
-            const { x, y, at, hit, course, wet, keep, core } = staged[k];
+            const { x, y, at, hit, course, wet, keep, core, reach, tall } = staged[k];
             slot[at] = -1;
             if (!keep || !joined[k]) continue;
             // The core keeps the middle course's alpha and the near value
             // range to the end of its reach (the shaft stays one mass).
-            const drop = core || wet < shape.reach * MIRROR_NEAR_SHARE ? MIRROR_STOP_DROP.near : MIRROR_STOP_DROP.far;
+            const colAlphaScale = 1 - MIRROR_TALL_LIGHTEN * tall;
+            const colCoreScale = 1 - MIRROR_CORE_LIGHTEN * tall;
+            const drop = core || wet < reach * MIRROR_NEAR_SHARE ? MIRROR_STOP_DROP.near : MIRROR_STOP_DROP.far;
             const base = write(x, y, at, hit[0], hit[1] && !glow && !lamp, core ? Math.min(course, MIRROR_CORE_COURSE) : course,
-                core ? coreScale : alphaScale, drop);
+                core ? colCoreScale : colAlphaScale, drop);
             const emitter = hit[2];
             if (!emitter || !source.building) continue;
             // The mirror lamp takes subdued warm cream; glass keeps its
@@ -2880,7 +2956,7 @@ const COAST_SD_SCALE = 64;
 const COAST_SD_BIAS = 128;
 // The swash may draw from this far up the beach to this far out to sea.
 const SWASH_LAND_SD = -0.35;
-const SWASH_WATER_SD = 0.3;
+const SWASH_WATER_SD = 0.36;
 // E2-05 — the swash at the cliff's foot (under the curtain wall and the sea
 // tower, SW and SE): the outer shelf's cells within CLIFF_SURF_ROWS world rows
 // below a column's boulder waterline take the swash, their coast-field sd
@@ -3299,6 +3375,8 @@ function drawCanvasMoodLayer(ctx, renderer, atmosphere) {
         // covers) and Bayer order, for the storm fade.
         const mirrorStops = [];
         const orders = [];
+        const mirrorSea = [];
+        const coastField = renderer.waterFields?.coastField || null;
         // Mirror texels carry MIRROR_UNCAPPED: moody, never capped.
         const reflect = coast.reflect || null;
         for (let r = 0; r < coast.rows; r++) {
@@ -3310,6 +3388,9 @@ function drawCanvasMoodLayer(ctx, renderer, atmosphere) {
                 const water = coast.classes[cell] >= CLASS_WATER;
                 const mirror = water && reflect?.[cell] > 0;
                 const stormable = mirror && !coast.covered?.[cell];
+                const isSeaShelf = coastField
+                    ? ((coastField[cell * 2 + 1] & COAST_FIELD_FLAGS.sea) !== 0 && (coastField[cell * 2] - 128) / 64 > 0.8)
+                    : false;
                 for (let oy = 0; oy < 2; oy++) {
                     for (let ox = 0; ox < 2; ox++) {
                         const at = (r * 2 + oy) * w + c * 2 + ox;
@@ -3322,6 +3403,7 @@ function drawCanvasMoodLayer(ctx, renderer, atmosphere) {
                         const base = stormable ? (coast.mirrorBase?.[at] || 0) : 0;
                         mirrorStops.push(base - 1);
                         orders.push(Math.round(bayer(coast.x + c * 2 + ox, coast.y + r * 2 + oy) * 16));
+                        mirrorSea.push(isSeaShelf ? 1 : 0);
                     }
                 }
             }
@@ -3337,6 +3419,7 @@ function drawCanvasMoodLayer(ctx, renderer, atmosphere) {
             colours: Int32Array.from(colours),
             mirrorStops: Int8Array.from(mirrorStops),
             orders: Uint8Array.from(orders),
+            mirrorSea: Uint8Array.from(mirrorSea),
             moodKey: '',
             x: coast.x,
             y: coast.y,
@@ -3345,16 +3428,43 @@ function drawCanvasMoodLayer(ctx, renderer, atmosphere) {
         };
     }
     const drop = mirrorStormDrop(atmosphere?.weather, atmosphere);
-    const moodKey = `${waterMoodKey(mood)}:${sunBand}:${drop}`;
+    const seaLift = seaSunLift(lookStrength('sea1'), grade, atmosphere?.weather, atmosphere?.sky?.sun?.elevationDeg);
+    const moodKey = `${waterMoodKey(mood)}:${sunBand}:${drop}:${seaLift}`;
     const now = performance.now();
     const due = layer.moodKey !== moodKey || !(now - layer.bakedAt < OCEAN_REBAKE_MIN_MS);
     if (due && (layer.moodKey !== moodKey || layer.gradeKey !== gradeKey)) {
         const memo = new Map();
         let changed = false;
-        // A texel the rain gives back to the water shows its stop.
-        const colourAt = k => (drop > 0 && layer.mirrorStops[k] >= 0 && layer.orders[k] < drop * 16
-            ? STOP_INTS[layer.mirrorStops[k]]
-            : layer.colours[k]);
+        // A texel the rain gives back to the water shows its stop; a surviving
+        // mirror texel on sunlit open water lifts proportionally with seaLift
+        // (matching GLSL/WGSL liftMirrorColour).
+        const colourAt = (k) => {
+            const mStop = layer.mirrorStops[k];
+            if (mStop >= 0) {
+                if (drop > 0 && layer.orders[k] < drop * 16) return STOP_INTS[mStop];
+                if (seaLift > 0 && mStop >= 2) {
+                    const at = layer.pixels[k] >> 2;
+                    const wx = layer.x + (at % layer.w);
+                    const wy = layer.y + Math.floor(at / layer.w);
+                    const order = layer.orders[k] / 16;
+                    const isOpen = mStop >= openSeaStopAt(openSeaDepthAt(wx, wy), order);
+                    const effLift = isOpen ? seaLift : (layer.mirrorSea[k] && seaLift > 1 ? seaLift - 1 : 0);
+                    if (effLift > 0) {
+                        const liftSteps = Math.floor(effLift + order);
+                        const lifted = Math.max(mStop - liftSteps, Math.min(mStop, SEA_SUN_LIFT_FLOOR));
+                        if (lifted < mStop) {
+                            const scale = STOP_LUMA[lifted] / Math.max(13, STOP_LUMA[mStop]);
+                            const raw = layer.colours[k];
+                            const r = Math.min(255, Math.round(((raw >> 16) & 255) * scale));
+                            const g = Math.min(255, Math.round(((raw >> 8) & 255) * scale));
+                            const b = Math.min(255, Math.round((raw & 255) * scale));
+                            return (raw & MIRROR_UNCAPPED) | (r << 16) | (g << 8) | b;
+                        }
+                    }
+                }
+            }
+            return layer.colours[k];
+        };
         for (let k = 0; k < layer.colours.length; k++) {
             const colour = colourAt(k);
             if (colour !== layer.colours[k]) changed = true;

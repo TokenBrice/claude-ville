@@ -17,7 +17,7 @@
 //
 // Everything here is cached by the caller; nothing runs a smooth gradient.
 
-import { applyGradeToRgb, capSaturation, WATER_MAX_SATURATION } from './GradeEvaluator.js';
+import { applyGradeToRgb, capSaturation, WATER_MAX_SATURATION, waterMaxSaturation } from './GradeEvaluator.js';
 import { GRADE_CONSTANTS, LAND_FULL_STRENGTH } from './gpu/GpuWorldPolicy.js';
 import { ART_RAMPS, RECEIVER_LUMA_CEILING } from '../../config/artPalette.js';
 
@@ -136,12 +136,10 @@ function canvasUngradeRgb(target, terms) {
  * Returns `rgb` itself when the cap does not bind. Used for the outer ocean
  * and the in-map water copy (CoastBake).
  */
-export function canvasWaterPreimage(rgb, grade, { postFx = false, maxS = WATER_MAX_SATURATION, sky = null } = {}) {
+export function canvasWaterPreimage(rgb, grade, { postFx = false, maxS = null, sky = null } = {}) {
     if (!grade) return rgb;
-    const finish = graded => {
-        const capped = capSaturation(graded, maxS);
-        return sky?.skyWeight > 0 ? capSaturation(applyWaterSky(capped, sky), maxS) : capped;
-    };
+    const cap = maxS ?? (sky ? waterMaxSaturation(sky) : WATER_MAX_SATURATION);
+    const finish = graded => capSaturation(sky?.skyWeight > 0 ? applyWaterSky(graded, sky) : graded, cap);
     if (postFx) {
         const graded = applyGradeToRgb(rgb, grade);
         const target = finish(graded);
