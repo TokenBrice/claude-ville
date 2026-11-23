@@ -184,8 +184,8 @@ export const GRADE_KEYFRAMES = Object.freeze([
     }),
     Object.freeze({
         name: 'morning', minute: 8 * 60 + 30, side: 'dawn',
-        exposure: 1.06, saturation: 1.02,
-        gain: [1.01, 1.00, 0.99], lift: [0, 0, 0.004], gamma: 0.98,
+        exposure: 1.07, saturation: 1.02,
+        gain: [1.01, 1.00, 0.99], lift: [0, 0, 0.004], gamma: 1.0,
         shadowTint: [0.90, 0.95, 1.09], highlightTint: [1.08, 1.04, 0.95],
         purkinje: 0, sunBand: 1, daylight: 1, night: 0, rake: 0.19,
         vignetteEdge: [0.86, 0.89, 0.93], vignetteAlpha: 0.12,
@@ -193,8 +193,8 @@ export const GRADE_KEYFRAMES = Object.freeze([
     }),
     Object.freeze({
         name: 'noon', minute: 12 * 60 + 30, side: 'noon',
-        exposure: 1.14, saturation: 1.06,
-        gain: [1.03, 1.00, 0.96], lift: [0, 0, 0], gamma: 0.96,
+        exposure: 1.16, saturation: 1.06,
+        gain: [1.03, 1.00, 0.96], lift: [0, 0, 0], gamma: 1.0,
         shadowTint: [0.90, 0.95, 1.08], highlightTint: [1.10, 1.06, 0.94],
         purkinje: 0, sunBand: 1, daylight: 1, night: 0, rake: 0,
         vignetteEdge: [0.86, 0.89, 0.92], vignetteAlpha: 0.10,

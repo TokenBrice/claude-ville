@@ -39,7 +39,6 @@
 // - Depth: GL writes z_ndc = key*2-1 over [-1, 1]; WebGPU's NDC z is the
 //   window depth itself, so the vertex writes 1 - key/65535 directly.
 import {
-    GPU_RECORD_FLAGS,
     LIGHT_RECORD_FLAGS,
     LIGHT_ROLE_CODES,
     LIGHT_TILE_PX,
@@ -462,14 +461,18 @@ fn applyAuthoredSunBand(color: vec3f, material: f32) -> vec3f {
   response = mix(response, 0.24, materialNear(material, 8.0));
   let keyFacing = clamp(0.5 + (-frame.sun.x - frame.sun.y) * 0.25, 0.0, 1.0);
   let rawBand = 0.84 + response * (0.12 + keyFacing * 0.12);
-  // Clear sun retires the 0.86 penalty on land/fabric/unlit (base 1.0);
-  // high-response stone and metal take a crisp sunlit step (1.08). Water
-  // (material 8) keeps its authored 0.86 until SEA-1 fades it (lane 5).
+  // Clear daylight retires the 0.86 penalty on land/fabric/unlit (base 1.0)
+  // and gives high-response stone/metal a crisp sunlit step (1.08); pre-dawn,
+  // blue-hour and night (sunBand <= 0.35) keep the base curve untouched.
+  // Water (material 8) keeps its authored 0.86 until SEA-1 fades it.
   let isWater = materialNear(material, 8.0);
-  var quantized = select(select(1.0, 1.08, response >= 0.60 && rawBand >= 0.95), 0.86, isWater > 0.5);
+  let baseQuant = select(1.0, 0.86, rawBand < 0.93);
+  let sunnyQuant = select(select(1.0, 1.08, response >= 0.60 && rawBand >= 0.95), 0.86, isWater > 0.5);
+  let sunBandW = clamp(frame.sun.w, 0.0, 1.0);
+  var quantized = mix(baseQuant, sunnyQuant, smoothstep(0.35, 0.85, sunBandW));
   // SEA-1 — water's dim fades out with the look (sunlit water lifts instead).
   if (frame.cloud.w > 0.0) { quantized = mix(quantized, 1.0, materialNear(material, 8.0) * frame.cloud.w); }
-  return color * mix(1.0, quantized, clamp(frame.sun.w, 0.0, 1.0));
+  return color * mix(1.0, quantized, sunBandW);
 }
 
 // 2.9 — one light's water column at the art cell: how many water stops the
@@ -1305,11 +1308,6 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
   if (bakedRim && batch.additive == 0u) {
     (*surf).alpha = mix((*surf).alpha, max((*surf).alpha, v_alpha), nightCarry);
   }
-  // SD-3 — candle-protected pixels stay under the waiting candle; open sunlit
-  // land/structures stay under GRADED_CEILING.
-  let candleProtected = v_identity.x != 0u || attentionDepth > 0.5 || poolDepth > 0.5
-    || (*surf).emitterWeight > 0.0 || (v_flags & ${GPU_RECORD_FLAGS.shadeExempt}u) != 0u;
-  color = sunLiftFinal(color, candleProtected);
   return color;
 }
 
@@ -1348,7 +1346,8 @@ struct SceneOut {
   v_texelRect = in.texelRect;
   v_layer = in.layer;
   var surf = sceneSurface();
-  let color = sceneLight(&surf);
+  // SD-3 — the finished lifted texel stays under the waiting candle.
+  let color = sunLiftFinal(sceneLight(&surf));
   var out: SceneOut;
   out.color = vec4f(max(color, vec3f(0.0)) * surf.alpha, surf.alpha);
   out.emission = sceneEmission(surf);

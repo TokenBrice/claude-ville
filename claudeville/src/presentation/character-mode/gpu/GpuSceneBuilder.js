@@ -646,15 +646,10 @@ function recordForBuilding(renderer, drawable, sequence) {
     // observed-tool recency), never idle, seated or passing bodies.
     const workTier = renderer?.buildingRenderer?._workTierFor?.(drawable.building);
     const active = Boolean(workTier) && workTier !== 'dormant';
+    const workOpen = renderer?.buildingRenderer?.partGates?.isOpen?.(`work.${buildingType}`) ?? active;
     const rawEmissiveGate = renderer?.buildingRenderer?._emissiveGateFor?.(drawable.building) ?? 1;
-    const isDaylight = sourceEnergyFor(renderer?._lastAtmosphere?.lighting).bucket === 'daylight';
-    const daytimeEmitter = isDaytimeHighEnergyBuilding(buildingType, active, rawEmissiveGate);
-    // In daylight, only active high-energy emitters (awake Forge fire, awake
-    // Portal, active Command braziers) take the raised 0.36 core; all other
-    // buildings scale back to the old 0.14 daylight core.
-    const emissiveGate = isDaylight && !daytimeEmitter
-        ? rawEmissiveGate * DAYLIGHT_PASSIVE_CORE_SCALE
-        : rawEmissiveGate;
+    const daytimeEmitter = isDaytimeHighEnergyBuilding(buildingType, workOpen, rawEmissiveGate);
+    const emissiveGate = rawEmissiveGate;
     // Material/emissive are sampled with the albedo's UVs (see the GL fragment
     // shaders), so a channel source must share the albedo's geometry. When the
     // albedo comes from an atlas page the channels must be that page's channel
@@ -756,7 +751,6 @@ function buildingPartRecords(renderer, drawable, base, sequence) {
     const draws = buildings.partDrawsFor(drawable.entry, drawable.building, drawable.wx, drawable.wy,
         split, drawable.horizonY ?? null, scratch);
     if (!draws.length) return NO_PART_RECORDS;
-    const isDaylight = sourceEnergyFor(renderer?._lastAtmosphere?.lighting).bucket === 'daylight';
     const out = [];
     for (let index = 0; index < draws.length; index++) {
         const d = draws[index];
@@ -764,9 +758,7 @@ function buildingPartRecords(renderer, drawable, base, sequence) {
         const id = `${base.id}:part:${d.name}`;
         const rawPartGate = d.emissiveGate ?? (d.fixture ? 1 : base.emissiveGate);
         const partDaytimeEmitter = Boolean(base.daytimeEmitter && !d.ember && rawPartGate > 0.01);
-        const partGate = isDaylight && d.fixture && !partDaytimeEmitter
-            ? rawPartGate * DAYLIGHT_PASSIVE_CORE_SCALE
-            : rawPartGate;
+        const partGate = rawPartGate;
         out.push({
             id,
             stableKey: id,
@@ -1852,6 +1844,32 @@ export function buildGpuWorldRecords(renderer, { drawables = [] } = {}) {
     for (let index = 0; index < records.length; index++) {
         const record = records[index];
         if (record.id !== 'terrain:static' && !String(record.id || '').startsWith('ground:')) ordered.push(record);
+    }
+    // When a daylight frame has an active work-gated emitter (awake Forge fire,
+    // awake Portal, active Command braziers), the GPU renderer raises frame
+    // coreEnergy to DAYTIME_WORK_BLOOM_CORE (0.36); scale all other emissive
+    // records in that frame back by DAYLIGHT_PASSIVE_CORE_SCALE so passive
+    // emitters keep the base 0.14 daylight core.
+    if (sourceEnergyFor(renderer?._lastAtmosphere?.lighting).bucket === 'daylight') {
+        let hasActiveWorkEmitter = false;
+        for (let index = 0; index < ordered.length; index++) {
+            const record = ordered[index];
+            if (record.daytimeEmitter && record.emissiveSource && (record.emissiveGate ?? 1) > 0.01) {
+                hasActiveWorkEmitter = true;
+                break;
+            }
+        }
+        if (hasActiveWorkEmitter) {
+            for (let index = 0; index < ordered.length; index++) {
+                const record = ordered[index];
+                if (!record.daytimeEmitter && (record.emissiveSource || record.emissive > 0) && (record.emissiveGate ?? 1) > 0) {
+                    ordered[index] = {
+                        ...record,
+                        emissiveGate: (record.emissiveGate ?? 1) * DAYLIGHT_PASSIVE_CORE_SCALE,
+                    };
+                }
+            }
+        }
     }
     if (renderer) {
         renderer._gpuWorldRecordScratch = records;

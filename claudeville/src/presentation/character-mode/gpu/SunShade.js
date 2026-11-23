@@ -56,8 +56,9 @@
 // SD-3 (look `sd3`): a texel the field calls lit takes the sun's lift
 // (`sunLift`) right after its step: the ground by the ground rule, a
 // receiver whose verdict is lit (a landmark's left wall, roof or deck, a
-// prop). Never a body, a right wall, a face turned from the sun, a texel in
-// cast shade, water (SEA-1 lifts the sea) or anything the step skips.
+// prop), and sunlit villager bodies at head-weighted strength (0.2x at foot
+// to 0.6x at head height). Never a right wall, a face turned from the sun, a
+// texel in cast shade, water (SEA-1 lifts the sea) or anything the step skips.
 //
 // One block of GLSL and its WGSL twin, expression for expression; the scene
 // shaders interpolate them and call `sunShadeStep` after the authored band.
@@ -85,17 +86,18 @@ const SKIP_FLAGS = GPU_RECORD_FLAGS.screenSpace | GPU_RECORD_FLAGS.reflect | GPU
 // A left wall's outward normal on the ground, in world px (y at half scale).
 const LEFT_WALL_OUT = 'vec2(-0.70710678, 0.35355339)';
 // SD-3 — a lifted texel's luma stops here unless it already stood above it
-// (lifted snow keeps its value). Raised for clearly sunny clear days while
-// candle-protected pixels (bodies, waiting candles, active pools/emitters)
-// keep the waiting-candle floor below (SUN_LIFT_CANDLE = 191/255).
-export const SUN_LIFT_CEILING = 0.78;
+// (lifted snow keeps its value): under the waiting candle's 192 and the NEEDS
+// YOU bell's 207 after the brightest noon grade, the aerial haze and the
+// composite (smoke:sun-lift reads it back on every backend).
+export const SUN_LIFT_CEILING = 0.68;
 const LIFT_CEILING = SUN_LIFT_CEILING.toFixed(4);
-// SD-3 — the same hold after the grade: open sunlit land/structures stop here;
-// bodies and candle-protected pixels still stop at CANDLE_LUMA.
-export const SUN_LIFT_GRADED_CEILING = 0.82;
+// SD-3 — the same hold after the grade: every lifted texel stops under the
+// waiting candle's 192 (0.74 * 255 = 188.7), leaving headroom for haze before
+// `sunLiftFinal` caps at SUN_LIFT_CANDLE (191/255 = 0.7490).
+export const SUN_LIFT_GRADED_CEILING = 0.74;
 const GRADED_CEILING = SUN_LIFT_GRADED_CEILING.toFixed(4);
-// SD-3 — the waiting candle's floor (192 of 255, CarriedLantern): bodies and
-// candle-protected pixels stay under it.
+// SD-3 — the waiting candle's floor (192 of 255, CarriedLantern): no lifted
+// texel of the finished frame passes it.
 export const SUN_LIFT_CANDLE = 191 / 255;
 const CANDLE_LUMA = SUN_LIFT_CANDLE.toFixed(4);
 
@@ -253,9 +255,9 @@ float sunShadeStep(vec4 geometry, bool surfaceCoded, float lit) {
 
 // SD-3 — the sun's warm lift on a texel the field calls lit (\`ground\`: a
 // ground-self terrain texel, by the ground rule; else sunShadeStep's verdict,
-// including sunlit bodies at 0.5x head-weighted strength): \`lift\`, held under
-// the ceiling luma (bodies under CANDLE_LUMA) unless the texel already stood
-// above it. An emitting texel (\`lit\` > 0) takes none.
+// including sunlit bodies at head-weighted 0.2x..0.6x strength): \`lift\`, held
+// under the ceiling luma unless the texel already stood above it. An emitting
+// texel (\`lit\` > 0) takes none.
 vec3 sunLift(vec3 color, bool ground, float lift, float lit) {
     bool body = !ground && v_identity.x != 0u;
     bool sunlit = false;
@@ -267,48 +269,43 @@ vec3 sunLift(vec3 color, bool ground, float lift, float lit) {
     if (!sunlit || lit > 0.0) return color;
     float luma = dot(color, GRADE_LUMA);
     float effLift = lift;
-    float ceilLuma = ${LIFT_CEILING};
     if (body) {
         float artY = floor(v_world.y - v_originFrac.y) + v_originFrac.y + 0.5;
         float h = max(0.0, v_receiver.x - artY);
         float headWeight = 0.4 + 0.8 * clamp(h / 48.0, 0.0, 1.0);
         effLift = lift * 0.5 * headWeight * smoothstep(0.05, 0.14, luma);
-        ceilLuma = ${CANDLE_LUMA};
     }
-    if (luma >= ceilLuma || effLift <= 0.0) return color;
+    if (luma >= ${LIFT_CEILING} || effLift <= 0.0) return color;
     vec3 delta = color * (effLift * vec3(1.12, 0.99, 0.76));
     float rise = dot(delta, GRADE_LUMA);
     if (rise <= 0.0) return color;
-    return color + delta * min(1.0, (ceilLuma - luma) / rise);
+    return color + delta * min(1.0, (${LIFT_CEILING} - luma) / rise);
 }
 
 // SD-3 — after the grade: \`lifted\` and \`base\` (the same texel graded
-// unlifted). A texel already at its graded ceiling keeps its unlifted value;
+// unlifted). A texel already at the graded ceiling keeps its unlifted value;
 // otherwise only non-negative channel lift is kept (so warm-key highlight
-// protection in applyTimeGrade never darkens a channel) and held under cap.
+// protection in applyTimeGrade never darkens a channel) and held under the
+// graded ceiling (under the waiting candle).
 vec3 sunLiftGraded(vec3 lifted, vec3 base) {
-    float cap = ${GRADED_CEILING};
-    if (v_identity.x != 0u) cap = ${CANDLE_LUMA};
     float baseLuma = dot(base, GRADE_LUMA);
-    if (baseLuma >= cap) return base;
+    if (baseLuma >= ${GRADED_CEILING}) return base;
     vec3 delta = max(lifted - base, vec3(0.0));
     float rise = dot(delta, GRADE_LUMA);
     if (rise <= 0.0) return base;
-    vec3 held = base + delta * min(1.0, (cap - baseLuma) / rise);
+    vec3 held = base + delta * min(1.0, (${GRADED_CEILING} - baseLuma) / rise);
     sunLiftDelta = held - base;
     return held;
 }
 
-// SD-3 — the finished texel: candle-protected pixels (bodies, waiting candles,
-// active pools/emitters) stay under CANDLE_LUMA; open sunlit land/structures
-// stay under GRADED_CEILING.
-vec3 sunLiftFinal(vec3 color, bool candleProtected) {
-    float cap = ${GRADED_CEILING};
-    if (candleProtected) cap = ${CANDLE_LUMA};
+// SD-3 — the finished texel: lamp light, fog and courses ride the lifted
+// value, so every lifted texel is held under the waiting candle here, and a
+// texel the unlifted frame already puts above it gives the whole lift back.
+vec3 sunLiftFinal(vec3 color) {
     float luma = dot(color, GRADE_LUMA);
     float rise = dot(sunLiftDelta, GRADE_LUMA);
-    if (luma <= cap || rise <= 0.0) return color;
-    return color - sunLiftDelta * min(1.0, (luma - cap) / rise);
+    if (luma <= ${CANDLE_LUMA} || rise <= 0.0) return color;
+    return color - sunLiftDelta * min(1.0, (luma - ${CANDLE_LUMA}) / rise);
 }
 `;
 
@@ -460,9 +457,9 @@ fn sunShadeStep(geometry: vec4f, surfaceCoded: bool, lit: f32) -> f32 {
 
 // SD-3 — the sun's warm lift on a texel the field calls lit (\`ground\`: a
 // ground-self terrain texel, by the ground rule; else sunShadeStep's verdict,
-// including sunlit bodies at 0.5x head-weighted strength): \`lift\`, held under
-// the ceiling luma (bodies under CANDLE_LUMA) unless the texel already stood
-// above it. An emitting texel (\`lit\` > 0) takes none.
+// including sunlit bodies at head-weighted 0.2x..0.6x strength): \`lift\`, held
+// under the ceiling luma unless the texel already stood above it. An emitting
+// texel (\`lit\` > 0) takes none.
 fn sunLift(color: vec3f, ground: bool, lift: f32, lit: f32) -> vec3f {
   let body = !ground && v_identity.x != 0u;
   var sunlit = false;
@@ -474,48 +471,43 @@ fn sunLift(color: vec3f, ground: bool, lift: f32, lit: f32) -> vec3f {
   if (!sunlit || lit > 0.0) { return color; }
   let luma = dot(color, GRADE_LUMA);
   var effLift = lift;
-  var ceilLuma = ${LIFT_CEILING};
   if (body) {
     let artY = floor(v_world.y - v_originFrac.y) + v_originFrac.y + 0.5;
     let h = max(0.0, v_receiver.x - artY);
     let headWeight = 0.4 + 0.8 * clamp(h / 48.0, 0.0, 1.0);
     effLift = lift * 0.5 * headWeight * smoothstep(0.05, 0.14, luma);
-    ceilLuma = ${CANDLE_LUMA};
   }
-  if (luma >= ceilLuma || effLift <= 0.0) { return color; }
+  if (luma >= ${LIFT_CEILING} || effLift <= 0.0) { return color; }
   let delta = color * (effLift * vec3f(1.12, 0.99, 0.76));
   let rise = dot(delta, GRADE_LUMA);
   if (rise <= 0.0) { return color; }
-  return color + delta * min(1.0, (ceilLuma - luma) / rise);
+  return color + delta * min(1.0, (${LIFT_CEILING} - luma) / rise);
 }
 
 // SD-3 — after the grade: \`lifted\` and \`base\` (the same texel graded
-// unlifted). A texel already at its graded ceiling keeps its unlifted value;
+// unlifted). A texel already at the graded ceiling keeps its unlifted value;
 // otherwise only non-negative channel lift is kept (so warm-key highlight
-// protection in applyTimeGrade never darkens a channel) and held under cap.
+// protection in applyTimeGrade never darkens a channel) and held under the
+// graded ceiling (under the waiting candle).
 fn sunLiftGraded(lifted: vec3f, base: vec3f) -> vec3f {
-  var cap = ${GRADED_CEILING};
-  if (v_identity.x != 0u) { cap = ${CANDLE_LUMA}; }
   let baseLuma = dot(base, GRADE_LUMA);
-  if (baseLuma >= cap) { return base; }
+  if (baseLuma >= ${GRADED_CEILING}) { return base; }
   let delta = max(lifted - base, vec3f(0.0));
   let rise = dot(delta, GRADE_LUMA);
   if (rise <= 0.0) { return base; }
-  let held = base + delta * min(1.0, (cap - baseLuma) / rise);
+  let held = base + delta * min(1.0, (${GRADED_CEILING} - baseLuma) / rise);
   sunLiftDelta = held - base;
   return held;
 }
 
-// SD-3 — the finished texel: candle-protected pixels (bodies, waiting candles,
-// active pools/emitters) stay under CANDLE_LUMA; open sunlit land/structures
-// stay under GRADED_CEILING.
-fn sunLiftFinal(color: vec3f, candleProtected: bool) -> vec3f {
-  var cap = ${GRADED_CEILING};
-  if (candleProtected) { cap = ${CANDLE_LUMA}; }
+// SD-3 — the finished texel: lamp light, fog and courses ride the lifted
+// value, so every lifted texel is held under the waiting candle here, and a
+// texel the unlifted frame already puts above it gives the whole lift back.
+fn sunLiftFinal(color: vec3f) -> vec3f {
   let luma = dot(color, GRADE_LUMA);
   let rise = dot(sunLiftDelta, GRADE_LUMA);
-  if (luma <= cap || rise <= 0.0) { return color; }
-  return color - sunLiftDelta * min(1.0, (luma - cap) / rise);
+  if (luma <= ${CANDLE_LUMA} || rise <= 0.0) { return color; }
+  return color - sunLiftDelta * min(1.0, (luma - ${CANDLE_LUMA}) / rise);
 }
 `;
 

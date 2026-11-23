@@ -12,6 +12,8 @@ import {
     buildStableGpuBatches,
     CLOUD_TILE_SIZE,
     createGpuTimingMetricsScratch,
+    DAYTIME_WORK_BLOOM_CORE,
+    DAYTIME_WORK_BLOOM_STRENGTH,
     effectBudgetMode,
     EFFECT_BUDGET,
     GPU_PARTICLE_INSTANCE_BYTES,
@@ -1255,7 +1257,11 @@ export class GpuWorldRendererWebGPU {
         s.seaGustRect = gust ? this._seaWeather.gustState.rect : ZERO4;
         const energy = sourceEnergyFor(feed.lighting);
         this.sourceEnergy = energy;
-        s.coreEnergy = clamp(finite(energy.core, 1), 0, 2);
+        const daytimeWorkBloom = energy.bucket === 'daylight' && hasActiveBloomEmitters(batches);
+        this._daytimeWorkBloom = daytimeWorkBloom;
+        s.coreEnergy = daytimeWorkBloom
+            ? DAYTIME_WORK_BLOOM_CORE
+            : clamp(finite(energy.core, 1), 0, 2);
         const moonFill = clamp(finite(feed.lighting?.moonFill, 0), 0, 1);
         const water = resolveWaterFx(feed, camera, qualityLevel, grade, moonFill, this.width, this._waterFx);
         s.waterFx = water.fx;
@@ -1371,8 +1377,10 @@ export class GpuWorldRendererWebGPU {
         this.openSeaDiagnostics = { squall: Boolean(squall), paws: Boolean(gust), sunlit: finite(sea.sunlit, 0) > 0 };
         const bloomMode = effectBudgetMode('bloom', qualityLevel);
         const bloomStrength = bloomMode === 'off' ? 0 : bloomMode === 'reduced' ? 0.42 : 0.72;
-        const bloomEnergy = clamp(finite(energy.bloom, 1), 0, 2);
-        const bloomSources = this.lightCount > 0 || hasActiveBloomEmitters(batches);
+        const bloomEnergy = daytimeWorkBloom
+            ? DAYTIME_WORK_BLOOM_STRENGTH
+            : clamp(finite(energy.bloom, 1), 0, 2);
+        const bloomSources = this.lightCount > 0 || daytimeWorkBloom;
         s.bloomStrength = bloomSources ? bloomStrength * bloomEnergy : 0;
         // 10.2 / 10.3 — the display path's uniforms (read only by the roles
         // composite and mark fragment). Under HDR the emitter courses gain

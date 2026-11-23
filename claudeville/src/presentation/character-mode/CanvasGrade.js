@@ -49,43 +49,67 @@ export function drawCanvasGradeSaturation(ctx, width, height, grade) {
     ctx.restore();
 }
 
-function canvasGradeFull(grade) {
-    return [0, 1, 2].map(channel => grade.exposure * grade.gain[channel]
-        * Math.sqrt(grade.shadowTint[channel] * grade.highlightTint[channel]));
+function canvasGradeFullChannel(grade, channel) {
+    return grade.exposure * grade.gain[channel]
+        * Math.sqrt(grade.shadowTint[channel] * grade.highlightTint[channel]);
 }
 
 /**
  * Step 2's centre colour: exposure x gain x the split tone's mid, clamped to
  * [0, 1] for the multiply overlay's inner course (the vignette courses darken
- * it toward `vignetteEdge`). Any channel excess above 1 is carried by
- * `canvasGradeGain` / `drawCanvasGradeGain`.
+ * it toward `vignetteEdge`). When clear-day exposure exceeds 1, any channel
+ * excess above 1 is carried by `canvasGradeGain` / `drawCanvasGradeGain`.
  */
 export function canvasGradeMultiply(grade) {
-    return canvasGradeFull(grade).map(value => Math.min(1, value));
+    return [
+        Math.min(1, canvasGradeFullChannel(grade, 0)),
+        Math.min(1, canvasGradeFullChannel(grade, 1)),
+        Math.min(1, canvasGradeFullChannel(grade, 2)),
+    ];
 }
 
 /**
- * Step 2b's gain factor (> 1 when clear daytime exposure pushes channels above
- * 1, so `multiply` alone would clip them). `multiply[c] * gain[c] == full[c]`.
+ * Step 2b's gain factor (> 1 only when clear-day exposure exceeds 1 so
+ * `multiply` alone would clip channels; `[1, 1, 1]` whenever exposure <= 1).
  */
 export function canvasGradeGain(grade) {
-    return canvasGradeFull(grade).map(value => Math.max(1, value));
+    if (!(grade?.exposure > 1.004)) return [1, 1, 1];
+    return [
+        Math.max(1, canvasGradeFullChannel(grade, 0)),
+        Math.max(1, canvasGradeFullChannel(grade, 1)),
+        Math.max(1, canvasGradeFullChannel(grade, 2)),
+    ];
 }
 
-function canvasGradeGainCss(grade) {
-    const gain = canvasGradeGain(grade);
-    if (Math.max(gain[0], gain[1], gain[2]) <= 1.004) return null;
+// Cached CSS string for `drawCanvasGradeGain` so clear-day frames allocate
+// nothing per frame; returns null immediately when exposure <= 1.004.
+let _gainCssKey = -1;
+let _gainCssValue = '';
+
+function canvasGradeGainBytes(grade) {
+    if (!(grade?.exposure > 1.004)) return null;
+    const g0 = Math.max(1, canvasGradeFullChannel(grade, 0));
+    const g1 = Math.max(1, canvasGradeFullChannel(grade, 1));
+    const g2 = Math.max(1, canvasGradeFullChannel(grade, 2));
+    if (g0 <= 1.004 && g1 <= 1.004 && g2 <= 1.004) return null;
     // W3C color-dodge: Cb / (1 - Cs) = Cb * gain -> Cs = 1 - 1 / gain.
-    return gain.map(value => clamp(1 - 1 / Math.max(1, value), 0, 0.94));
+    const r = Math.round(clamp(1 - 1 / g0, 0, 0.94) * 255);
+    const g = Math.round(clamp(1 - 1 / g1, 0, 0.94) * 255);
+    const b = Math.round(clamp(1 - 1 / g2, 0, 0.94) * 255);
+    return (r << 16) | (g << 8) | b;
 }
 
-/** Step 2b: a `color-dodge` gain pass when clear-day exposure exceeds 1. */
+/** Step 2b: a `color-dodge` gain pass only when clear-day exposure exceeds 1. */
 export function drawCanvasGradeGain(ctx, width, height, grade) {
-    const cs = canvasGradeGainCss(grade);
-    if (!cs) return;
+    const packed = canvasGradeGainBytes(grade);
+    if (packed === null) return;
+    if (packed !== _gainCssKey) {
+        _gainCssKey = packed;
+        _gainCssValue = `rgb(${(packed >> 16) & 255}, ${(packed >> 8) & 255}, ${packed & 255})`;
+    }
     ctx.save();
     ctx.globalCompositeOperation = 'color-dodge';
-    ctx.fillStyle = rgbCss(cs);
+    ctx.fillStyle = _gainCssValue;
     ctx.fillRect(0, 0, width, height);
     ctx.restore();
 }
@@ -124,9 +148,13 @@ const BLEND_LUM = [0.3, 0.59, 0.11];
 
 function canvasGradeTerms(grade) {
     const lift = canvasGradeLift(grade);
-    const cs = canvasGradeGainCss(grade);
-    const gain = cs
-        ? cs.map(value => 1 / Math.max(1e-6, 1 - Math.round(clamp(value) * 255) / 255))
+    const packed = canvasGradeGainBytes(grade);
+    const gain = packed !== null
+        ? [
+            1 / Math.max(1e-6, 1 - ((packed >> 16) & 255) / 255),
+            1 / Math.max(1e-6, 1 - ((packed >> 8) & 255) / 255),
+            1 / Math.max(1e-6, 1 - (packed & 255) / 255),
+        ]
         : [1, 1, 1];
     return {
         alpha: canvasSaturationAlpha(grade),
@@ -650,9 +678,9 @@ export function ungradeRgb(target, grade) {
  * viewport height, the art-pixel cell, the strength or the colour bucket
  * changes. The resident path's 0.8x desaturation is folded into the colour.
  */
-export function buildAerialHazeStrip({ height = 720, cell = 1, strength = 0.06, rgb = [0.6, 0.7, 0.78], start = 0.30 } = {}) {
+export function buildAerialHazeStrip({ height = 720, cell = 1, strength = 0.14, rgb = [0.6, 0.7, 0.78], start = 0.55 } = {}) {
     const cellPx = Math.max(1, Math.round(cell));
-    const hazeStart = Math.max(0.05, Number(start) || 0.30);
+    const hazeStart = Math.max(0.05, Number(start) || 0.55);
     const reach = Math.max(1, Math.ceil((height * hazeStart) / cellPx));
     const canvas = document.createElement('canvas');
     canvas.width = 4;

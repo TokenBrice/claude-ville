@@ -30,6 +30,8 @@ import {
     SMOKE_PUFF_LIT_GAIN,
     SMOKE_PUFF_SHADE_GAIN,
     GPU_RECORD_FLAGS,
+    DAYTIME_WORK_BLOOM_CORE,
+    DAYTIME_WORK_BLOOM_STRENGTH,
     hasActiveBloomEmitters,
     isSoftwareRasterizer,
     gpuRecordPageable,
@@ -708,7 +710,8 @@ vec3 applyAerialHaze(vec3 color, float order, float cellCentreY, bool additive) 
         float haze = k / 48.0;
         if (haze > 0.0) {
             float l = dot(color, vec3(0.2126, 0.7152, 0.0722));
-            color = mix(color, mix(vec3(l), color, 0.8), min(1.0, haze * 3.0));
+            float clearDay = clamp((0.55 - hazeStart) / 0.25, 0.0, 1.0);
+            color = mix(color, mix(vec3(l), color, 0.8), min(1.0, haze * mix(8.0, 3.0, clearDay)));
             color = additive ? color * (1.0 - haze) : mix(color, u_haze.rgb, haze);
         }
     }
@@ -2249,14 +2252,18 @@ vec3 applyAuthoredSunBand(vec3 color, float material) {
     response = mix(response, 0.24, materialNear(material, 8.0));
     float keyFacing = clamp(0.5 + (-u_sun.x - u_sun.y) * 0.25, 0.0, 1.0);
     float rawBand = 0.84 + response * (0.12 + keyFacing * 0.12);
-    // Clear sun retires the 0.86 penalty on land/fabric/unlit (base 1.0);
-    // high-response stone and metal take a crisp sunlit step (1.08). Water
-    // (material 8) keeps its authored 0.86 until SEA-1 fades it (lane 5).
+    // Clear daylight retires the 0.86 penalty on land/fabric/unlit (base 1.0)
+    // and gives high-response stone/metal a crisp sunlit step (1.08); pre-dawn,
+    // blue-hour and night (sunBand <= 0.35) keep the base curve untouched.
+    // Water (material 8) keeps its authored 0.86 until SEA-1 fades it.
     float isWater = materialNear(material, 8.0);
-    float quantized = isWater > 0.5 ? 0.86 : (response >= 0.60 && rawBand >= 0.95 ? 1.08 : 1.0);
+    float baseQuant = rawBand < 0.93 ? 0.86 : 1.0;
+    float sunnyQuant = isWater > 0.5 ? 0.86 : (response >= 0.60 && rawBand >= 0.95 ? 1.08 : 1.0);
+    float sunBandW = clamp(u_sun.w, 0.0, 1.0);
+    float quantized = mix(baseQuant, sunnyQuant, smoothstep(0.35, 0.85, sunBandW));
     // SEA-1 — water's dim fades out with the look (sunlit water lifts instead).
     if (u_cloud.w > 0.0) quantized = mix(quantized, 1.0, materialNear(material, 8.0) * u_cloud.w);
-    return color * mix(1.0, quantized, clamp(u_sun.w, 0.0, 1.0));
+    return color * mix(1.0, quantized, sunBandW);
 }
 
 // RG-5 — the atmosphere courses of one cell, with the squall on open water
@@ -3312,11 +3319,8 @@ void main() {
         : applySeaCourses(color, artCell, poolOrder,
             artTopLeftPx.y + (waterMaterial ? seaContourRows(artCell) * u_camera.z : 0.0), u_additive);
     if (bakedRim && !u_additive) alpha = mix(alpha, max(alpha, v_alpha), nightCarry);
-    // SD-3 — candle-protected pixels stay under the waiting candle; open
-    // sunlit land/structures stay under GRADED_CEILING.
-    bool candleProtected = v_identity.x != 0u || attentionDepth > 0.5 || poolDepth > 0.5
-        || emitterWeight > 0.0 || (v_flags & ${GPU_RECORD_FLAGS.shadeExempt}u) != 0u;
-    color = sunLiftFinal(color, candleProtected);
+    // SD-3 — every lifted texel stays under the waiting candle (SUN_LIFT_CANDLE).
+    color = sunLiftFinal(color);
     outColor = vec4(max(color, vec3(0.0)) * alpha, alpha);
     outEmission = vec4(emission * alpha, alpha > 0.0 ? 1.0 : 0.0);
 }`;
@@ -5354,7 +5358,7 @@ export class GpuWorldRenderer {
         this.waterFieldsActive = present;
     }
 
-    _setSceneUniforms(feed, camera, qualityLevel = POST_FX_LEVELS.FULL) {
+    _setSceneUniforms(feed, camera, qualityLevel = POST_FX_LEVELS.FULL, batches = null) {
         const gl = this._uniformGl || this.gl;
         const uniforms = this.sceneUniforms;
         const grade = resolveFrameGrade(feed);
@@ -5391,7 +5395,13 @@ export class GpuWorldRenderer {
         // admitted light below, and the bloom share in `_present`.
         const energy = sourceEnergyFor(feed.lighting);
         this.sourceEnergy = energy;
-        gl.uniform1f(uniforms.u_coreEnergy, clamp(finite(energy.core, 1), 0, 2));
+        const daytimeWorkBloom = energy.bucket === 'daylight' && hasActiveBloomEmitters(batches);
+        this._daytimeWorkBloom = daytimeWorkBloom;
+        const coreEnergy = daytimeWorkBloom
+            ? DAYTIME_WORK_BLOOM_CORE
+            : clamp(finite(energy.core, 1), 0, 2);
+        this._frameCoreEnergy = coreEnergy;
+        gl.uniform1f(uniforms.u_coreEnergy, coreEnergy);
         // 3.1 / 3.2 / 3.6 / 3.9 / 3.10 — the water clock, rings, caustics,
         // swash and the sun/moon path, then the coast lattice fields.
         const moonFill = clamp(finite(feed.lighting?.moonFill, 0), 0, 1);
@@ -5644,7 +5654,7 @@ export class GpuWorldRenderer {
         this._setCameraUniforms(uniforms, camera, 1);
         gl.uniform2f(uniforms.u_resolution, this.width, this.height);
         uploadGradeUniforms(gl, uniforms, this._frameGradeForComposite || NEUTRAL_GRADE);
-        gl.uniform1f(uniforms.u_coreEnergy, clamp(finite(this.sourceEnergy?.core, 1), 0, 2));
+        gl.uniform1f(uniforms.u_coreEnergy, this._frameCoreEnergy ?? clamp(finite(this.sourceEnergy?.core, 1), 0, 2));
         gl.activeTexture(gl.TEXTURE0 + PARTICLE_SAMPLER_UNITS.motifs);
         gl.bindTexture(gl.TEXTURE_2D, this._particleMotifTexture);
         gl.uniform1i(uniforms.u_motifs, PARTICLE_SAMPLER_UNITS.motifs);
@@ -6296,7 +6306,7 @@ export class GpuWorldRenderer {
             this._uniformGl = stagingGl;
             if (this._radiance) this._radiance.gl = stagingGl;
             stagingGl.useProgram(this.sceneProgram);
-            this._setSceneUniforms(feed, camera, qualityLevel);
+            this._setSceneUniforms(feed, camera, qualityLevel, batches);
             // B.1b — the albedo page (or its stand-in) stays on unit 14;
             // unit 0 starts empty in case a paged batch draws first.
             stagingGl.activeTexture(gl.TEXTURE0 + SCENE_SAMPLER_UNITS.albedoPage);
@@ -6323,9 +6333,11 @@ export class GpuWorldRenderer {
             }
             const bloomMode = effectBudgetMode('bloom', qualityLevel);
             const strength = bloomMode === 'off' ? 0 : bloomMode === 'reduced' ? 0.42 : 0.72;
-            const bloomSources = this.lightCount > 0 || hasActiveBloomEmitters(batches);
-            this._frameBloomStrength = bloomSources
-                ? strength * clamp(finite(this.sourceEnergy?.bloom, 1), 0, 2) : 0;
+            const bloomSources = this.lightCount > 0 || this._daytimeWorkBloom;
+            const bloomEnergy = this._daytimeWorkBloom
+                ? DAYTIME_WORK_BLOOM_STRENGTH
+                : clamp(finite(this.sourceEnergy?.bloom, 1), 0, 2);
+            this._frameBloomStrength = bloomSources ? strength * bloomEnergy : 0;
             const bloomEnabled = this._frameBloomStrength > 0;
             const roles = this._p3 && this._ensureP3Programs() ? this._roleBlend : null;
             this._rolesWritten = roles !== null;

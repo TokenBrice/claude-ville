@@ -139,7 +139,8 @@ fn applyAerialHaze(color0: vec3f, order: f32, cellCentreY: f32, additive: bool) 
         let haze = k / 48.0;
         if (haze > 0.0) {
             let l = dot(color, vec3f(0.2126, 0.7152, 0.0722));
-            color = mix(color, mix(vec3f(l), color, 0.8), min(1.0, haze * 3.0));
+            let clearDay = clamp((0.55 - hazeStart) / 0.25, 0.0, 1.0);
+            color = mix(color, mix(vec3f(l), color, 0.8), min(1.0, haze * mix(8.0, 3.0, clearDay)));
             if (additive) {
                 color = color * (1.0 - haze);
             } else {

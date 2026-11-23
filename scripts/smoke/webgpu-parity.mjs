@@ -443,11 +443,13 @@ function installParityHelpers() {
     } else {
       reason = 'renderer has no debugCaptureTargets()';
     }
-    const { effectBudgetMode } = await import(`${GPU}GpuWorldPolicy.js`);
+    const { DAYTIME_WORK_BLOOM_STRENGTH, effectBudgetMode } = await import(`${GPU}GpuWorldPolicy.js`);
     const level = Math.min(renderer.qualityLadder.getLevel(), 2);
-    const hasDaytimeEmitter = (T.frame?.records || []).some(r => r?.daytimeEmitter && r.emissiveSource && (r.emissiveGate ?? 1) > 0.01);
+    const hasDaytimeEmitter = renderer.sourceEnergy?.bucket === 'daylight'
+      && (T.frame?.records || []).some(r => r?.daytimeEmitter && r.emissiveSource && (r.emissiveGate ?? 1) > 0.01);
+    const bloomEnergy = hasDaytimeEmitter ? DAYTIME_WORK_BLOOM_STRENGTH : (renderer.sourceEnergy?.bloom ?? 1);
     const needsBloom = effectBudgetMode('bloom', level) !== 'off'
-      && (renderer.lightCount > 0 || hasDaytimeEmitter) && (renderer.sourceEnergy?.bloom ?? 1) > 0 && !renderer._display?.hdr;
+      && (renderer.lightCount > 0 || hasDaytimeEmitter) && bloomEnergy > 0 && !renderer._display?.hdr;
     const emissionRequired = needsBloom || Boolean(renderer._display || renderer._rolesWritten);
     const emissionWritten = renderer._targetNeedsEmission === true;
     const emissionAllocated = backend === 'webgl'

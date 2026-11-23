@@ -48,6 +48,7 @@ import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
 import { buildingCenterToWorld, tileToWorld, worldToTile } from './Projection.js';
 import { frontEdgeFoot, landmarkFootprint } from './FootprintField.js';
 import { GPU_LANDMARK_IDS } from './gpu/GpuSceneBuilder.js';
+import { DAYTIME_WORK_BLOOM_CORE, isDaytimeHighEnergyBuilding } from './gpu/GpuWorldPolicy.js';
 import { BEAM_NEAR_HALF_WIDTH } from './gpu/GpuFrameState.js';
 import {
     TaskboardBoardModel,
@@ -1869,9 +1870,17 @@ export class BuildingSprite {
             const emissiveGate = standIn > 0
                 ? 1 - nightGate + this.roomGate(source.buildingType, standIn - 1)
                 : source.buildingType ? this._emissiveGateFor(source.building) : 1;
-            const intensity = (activity + warmthBoost) * typeResponse * energy.core * emissiveGate;
+            const workOpen = source.buildingType
+                ? (this.partGates?.isOpen?.(`work.${source.buildingType}`) ?? (working > 0))
+                : false;
+            const sourceCore = energy.bucket === 'daylight'
+                && standIn === 0
+                && isDaytimeHighEnergyBuilding(source.buildingType, workOpen, emissiveGate)
+                ? DAYTIME_WORK_BLOOM_CORE
+                : energy.core;
+            const intensity = (activity + warmthBoost) * typeResponse * sourceCore * emissiveGate;
             if (intensity < 0.02) continue;
-            if (alpha != null) alpha *= energy.core * emissiveGate;
+            if (alpha != null) alpha *= sourceCore * emissiveGate;
             out.push(normalizeLightSource({
                 ...source,
                 intensity,

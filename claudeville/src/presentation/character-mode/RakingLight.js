@@ -31,8 +31,9 @@ import { effectBudgetMode } from './gpu/GpuWorldPolicy.js';
 import { SUN_LIFT_CEILING } from './gpu/SunShade.js';
 import { LANTERN_ID_PREFIX } from './CarriedLantern.js';
 
-const COLD = [24, 38, 66];      // #182642 — cool sky-indigo midday shadow
-const VIOLET = [42, 35, 70];    // #2a2346 — the golden-hour shadow
+const COLD = [15, 22, 30];        // #0f161e — the pre-SD-1 midday contact shadow
+export const SHADE_COLD = Object.freeze([24, 38, 66]); // #182642 — cool sky-indigo midday sun shade (SD-1)
+const VIOLET = [42, 35, 70];      // #2a2346 — the golden-hour shadow
 const ROW = 2;                  // stepped ellipse rows, in texels
 
 // SD-1. One px of sprite height in ground px (world x; world y is half of
@@ -161,12 +162,13 @@ export function castLightingFor(atmosphere) {
     const length = night ? clamp(finite(lighting?.shadowLength, 1), 0.45, 2.4) : 0.72 + 1.6 * rake;
     const lengthBucket = Math.round(length * 8) / 8;
     const color = COLD.map((channel, index) => Math.round(channel + (VIOLET[index] - channel) * rake));
+    const shadeColor = SHADE_COLD.map((channel, index) => Math.round(channel + (VIOLET[index] - channel) * rake));
     // A thrown canopy shadow needs a visible sun: the grade's sun band is 0
     // at night and under rain/storm/overcast, which leave contact only.
     const sun = finite(grade?.sunBand, 1) >= 0.5;
     const contactAlpha = finite(lighting?.shadowAlpha, 0.22);
     const strength = _shadeTier ? lookStrength('sd1') : 0;
-    const shade = strength > 0 ? shadeLightingFor(strength, grade, solar, rawAngle, color, cloudCover) : null;
+    const shade = strength > 0 ? shadeLightingFor(strength, grade, solar, rawAngle, shadeColor, cloudCover) : null;
     const restLength = night ? lengthBucket : Math.round(0.72 * 8) / 8;
     const contact = strength > 0 && (rake > 0 || sun)
         ? Object.freeze({
@@ -363,8 +365,9 @@ export function sundialShadeFor(atmosphere) {
     const strength = lookStrength('sd1');
     if (cast.shade || !(strength > 0)) return cast.shade;
     const angle = atmosphere?.lighting?.shadowAngleRad;
+    const shadeColor = SHADE_COLD.map((channel, index) => Math.round(channel + (VIOLET[index] - channel) * cast.rake));
     return shadeLightingFor(strength, atmosphere?.lightGrade || null, atmosphere?.solar || null,
-        Number.isFinite(angle) ? angle : 0.28, cast.color);
+        Number.isFinite(angle) ? angle : 0.28, shadeColor);
 }
 
 /**
@@ -430,8 +433,8 @@ export function canvasSunLiftSteps(lift) {
 const LIT_DODGE = Math.round(255 * (1 - 1 / (1 + SUN_LIFT)));
 // The canvas Lum weighs green below Rec. 709 (0.59 against 0.7152), so a
 // green texel held at the resident ceiling would read brighter after the
-// 1.14 noon exposure gain: Canvas holds at 0.78 of SUN_LIFT_CEILING so lifted
-// land stays under the open-sun 0.82 graded ceiling (210/255).
+// 1.14 noon exposure gain: Canvas holds at 0.78 of SUN_LIFT_CEILING (135/255)
+// so every lifted pixel stays under the waiting candle's 192.
 const LIT_CEILING = Math.round(255 * SUN_LIFT_CEILING * 0.78);
 let _liftGrey = null;
 let _liftWork = null;
@@ -583,6 +586,7 @@ export function villagerCastLighting(x, y, cast = _frameCast) {
         // lamp casts (`pointCastFor`).
         _villagerCast = Object.freeze({
             ...cast.contact,
+            color: shade.color,
             rake: cast.rake,
             trail: shade,
             key: `v${cast.contact.key}|${shade.key}|${Math.round(shade.alpha * 32)}`,

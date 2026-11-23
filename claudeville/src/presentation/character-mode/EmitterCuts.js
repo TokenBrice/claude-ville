@@ -32,8 +32,7 @@ import { sourceEnergyFor } from './AtmosphereState.js';
 import { buildEmitterCut } from './CanvasGrade.js';
 import { mirrorAccentGate, mirrorAccentLayers, mirrorAccentRainCut, mirrorStormDrop } from './CoastBake.js';
 import {
-    DAYLIGHT_PASSIVE_CORE_SCALE,
-    DAYTIME_HIGH_ENERGY_PROPS,
+    DAYTIME_WORK_BLOOM_CORE,
     isDaytimeHighEnergyBuilding,
     materialClassId,
 } from './gpu/GpuWorldPolicy.js';
@@ -84,7 +83,6 @@ export function cacheEmitterRecords(renderer, channelRevision) {
     mirrorAccentRecords(renderer, records);
     bridgeEmitterRecords(renderer, records);
     if (!renderer._gpuAtlasResident) return records;
-    const isDaylight = sourceEnergyFor(renderer?._lastAtmosphere?.lighting).bucket === 'daylight';
     for (const prop of cacheLayerProps()) {
         if (!hasEmissiveSidecar(assets, prop.id)) continue;
         const frame = assets.getAtlasFrame?.(prop.id);
@@ -95,9 +93,6 @@ export function cacheEmitterRecords(renderer, channelRevision) {
         const { sx, sy, sw, sh } = atlasSourceRect(frame.rect);
         const [ax, ay] = assets.getAnchor(prop.id);
         const key = `cache-emitter:${prop.id}:${prop.tileX},${prop.tileY}`;
-        const rawGate = prop.id === 'prop.lantern' ? lanternGate(renderer, prop) : 1;
-        const isHighEnergy = DAYTIME_HIGH_ENERGY_PROPS.has(prop.id);
-        const emissiveGate = isDaylight && !isHighEnergy ? rawGate * DAYLIGHT_PASSIVE_CORE_SCALE : rawGate;
         records.push({
             id: key,
             stableKey: key,
@@ -119,8 +114,7 @@ export function cacheEmitterRecords(renderer, channelRevision) {
             material: materialClassId(assets.getMaterialMetadata?.(prop.id)?.materialClass || 'default'),
             elevation: 0.34,
             emissive: 0,
-            emissiveGate,
-            daytimeEmitter: isHighEnergy && emissiveGate > 0.01,
+            emissiveGate: prop.id === 'prop.lantern' ? lanternGate(renderer, prop) : 1,
             occluder: 0,
             textureRevision: assets.assetVersion || 0,
             sidecarRevision: channelRevision(assets, atlasId),
@@ -455,7 +449,7 @@ let partScratch = null;
 // Draws the lit emitter texels of the frame each part shows now, carved by
 // whatever the depth pass drew in front of the building, after the
 // building's own cut (a part covers the base texels under it).
-function drawPartCuts(ctx, renderer, emitter, core, scale, bloomCtx, isDaylight = false) {
+function drawPartCuts(ctx, renderer, emitter, core, scale, bloomCtx, isDaylight = false, baseCore = core) {
     const buildings = renderer.buildingRenderer;
     if (!buildings?.partDrawsFor || !emitter.entry?.layers) return;
     partScratch ||= [];
@@ -463,11 +457,9 @@ function drawPartCuts(ctx, renderer, emitter, core, scale, bloomCtx, isDaylight 
     for (let index = 0; index < draws.length; index++) {
         const d = draws[index];
         // VQ-8 — a part with its own gate (the banked ember floor) keeps it.
-        const rawGate = d.emissiveGate ?? (d.fixture ? 1 : Math.max(0, emitter.gate));
-        const gate = isDaylight && d.fixture && !emitter.daytimeEmitter
-            ? rawGate * DAYLIGHT_PASSIVE_CORE_SCALE
-            : rawGate;
-        const alpha = Math.min(1, gate * core);
+        const gate = d.emissiveGate ?? (d.fixture ? 1 : Math.max(0, emitter.gate));
+        const partCore = isDaylight && d.ember ? baseCore : core;
+        const alpha = Math.min(1, gate * partCore);
         if (alpha < 0.02) continue;
         const cut = partCutFor(renderer.assets, buildings, emitter.entry, d);
         if (!cut) continue;
@@ -508,7 +500,7 @@ function partFrameCanvas(source, sx, sy, w, h) {
     return partFrame;
 }
 
-function* emitterPlacements(renderer, isDaylight = false) {
+function* emitterPlacements(renderer) {
     const assets = renderer.assets;
     const buildings = renderer.buildingRenderer;
     const seen = new Set();
@@ -517,10 +509,9 @@ function* emitterPlacements(renderer, isDaylight = false) {
         if (!building || seen.has(building) || !hasEmissiveSidecar(assets, drawable.entry?.id)) continue;
         seen.add(building);
         const workTier = buildings._workTierFor?.(building);
-        const active = Boolean(workTier) && workTier !== 'dormant';
-        const rawGate = buildings._emissiveGateFor?.(building) ?? 1;
-        const daytimeEmitter = isDaytimeHighEnergyBuilding(building.type, active, rawGate);
-        const gate = isDaylight && !daytimeEmitter ? rawGate * DAYLIGHT_PASSIVE_CORE_SCALE : rawGate;
+        const active = buildings.partGates?.isOpen?.(`work.${building.type}`) ?? (Boolean(workTier) && workTier !== 'dormant');
+        const gate = buildings._emissiveGateFor?.(building) ?? 1;
+        const daytimeEmitter = isDaytimeHighEnergyBuilding(building.type, active, gate);
         yield {
             id: drawable.entry.id,
             x: drawable.wx,
@@ -538,10 +529,8 @@ function* emitterPlacements(renderer, isDaylight = false) {
         if (!sprite?.id || !hasEmissiveSidecar(assets, sprite.id)) continue;
         // A fixture's glass (the gatehouse and sea tower lamps) says when it
         // is lit (`emitterGate`: the village's lamplight); others always are.
-        const rawGate = typeof sprite.emitterGate === 'function' ? sprite.emitterGate() : 1;
-        if (!(rawGate > 0)) continue;
-        const gate = isDaylight && !DAYTIME_HIGH_ENERGY_PROPS.has(sprite.id)
-            ? rawGate * DAYLIGHT_PASSIVE_CORE_SCALE : rawGate;
+        const gate = typeof sprite.emitterGate === 'function' ? sprite.emitterGate() : 1;
+        if (!(gate > 0)) continue;
         yield { id: sprite.id, x: sprite.x, y: sprite.y, sortY: sprite.sortY, gate };
     }
     for (const prop of cacheLayerProps()) {
@@ -549,10 +538,8 @@ function* emitterPlacements(renderer, isDaylight = false) {
         // Baked into the terrain, so every villager and every static sprite
         // draws over it: static sprites carve by their own drawn silhouette
         // whatever their depth.
-        const rawGate = prop.id === 'prop.lantern' ? lanternGate(renderer, prop) : 1;
-        if (!(rawGate > 0)) continue;
-        const gate = isDaylight && !DAYTIME_HIGH_ENERGY_PROPS.has(prop.id)
-            ? rawGate * DAYLIGHT_PASSIVE_CORE_SCALE : rawGate;
+        const gate = prop.id === 'prop.lantern' ? lanternGate(renderer, prop) : 1;
+        if (!(gate > 0)) continue;
         yield { id: prop.id, x: prop.x, y: prop.y, sortY: -Infinity, staticSortY: -Infinity, gate };
     }
     // BR-6 — a terrain-baked bridge's flames, anchored at the span middle
@@ -679,9 +666,10 @@ export function drawCanvasEmitterCuts(ctx, renderer, atmosphere, bloomScale = 0)
     const bloomCtx = bloomScale > 0 && ctx.canvas ? bloomTarget(ctx.canvas, transform, bloomScale) : null;
     ctx.globalAlpha = 1;
     drawMirrorAccentCuts(ctx, renderer, atmosphere, core, topLeft, bottomRight);
-    for (const emitter of emitterPlacements(renderer, isDaylight)) {
-        drawSpriteCut(ctx, renderer, emitter, core, scale, topLeft, bottomRight, bloomCtx);
-        if (emitter.building) drawPartCuts(ctx, renderer, emitter, core, scale, bloomCtx, isDaylight);
+    for (const emitter of emitterPlacements(renderer)) {
+        const emitterCore = isDaylight && emitter.daytimeEmitter ? DAYTIME_WORK_BLOOM_CORE : core;
+        drawSpriteCut(ctx, renderer, emitter, emitterCore, scale, topLeft, bottomRight, bloomCtx);
+        if (emitter.building) drawPartCuts(ctx, renderer, emitter, emitterCore, scale, bloomCtx, isDaylight, core);
     }
     // 5.3 — lit ship lamps (masthead and stern lanterns), cut like panes.
     renderer.harborTraffic?.drawLampCuts?.(ctx, core, bloomCtx);
