@@ -55,14 +55,6 @@ import { narrativeFeedEntries } from '../character-mode/VillageDirector.js';
 import { groupTodosByPhase } from '../character-mode/TaskboardBoardModel.js';
 import { buildBuildingInstrumentModel, BUILDING_INSTRUMENT_NAME_LIMIT } from './BuildingInstrumentModel.js';
 import { buildCausalWaterfall, causalTimestamp } from './WorkWaterfallModel.js';
-import {
-    buildSpatialWorkScore,
-    litScoreNode,
-    workScoreCaption,
-    SCORE_PLAYBACK_MS,
-    WORK_SCORE_REQUEST_EVENT,
-    WORK_SCORE_STATE_EVENT,
-} from '../character-mode/SpatialWorkScore.js';
 
 const PANEL_TOOL_LIMIT = 30;
 const PANEL_MESSAGE_LIMIT = 12;
@@ -595,15 +587,6 @@ export class ActivityPanel {
         this._journeyWhyEl = null;
         this._journeyDetailsEl = null;
         this._journeyDetailsBodyEl = null;
-        // 5.4 — the frozen work-score copy plus its cursor and playback timer.
-        // Presentation only: nothing here is written back to an agent.
-        this._workScore = null;
-        this._workScoreAgentId = null;
-        this._workScoreCursorAt = 0;
-        this._workScorePlaying = false;
-        this._workScoreTimer = null;
-        this._workScoreOwnerLost = false;
-        this._workScorePositions = null;
         this._harborLogSectionEl = null;
         this._harborLogBodyEl = null;
         this._chronicleSectionEl = null;
@@ -720,28 +703,11 @@ export class ActivityPanel {
         };
         this._onAgentSelected = (agent) => {
             if (!agent) return;
-            // A score belongs to one run: selecting somebody else leaves it,
-            // without re-selecting the frozen subject the operator just left.
-            if (this._workScore && String(agent.id || '') !== this._workScoreAgentId) {
-                this._closeWorkScore({ restoreSelection: false });
-            }
             if (this._viewMode === 'dashboard') {
                 this.currentAgent = agent;
                 return;
             }
             this.show(agent);
-        };
-        // 5.4 — the director answers with the resolved position provenance and
-        // tells us when genuine input took the camera back; playback stops
-        // there and never re-acquires the claim on a timer.
-        this._onWorkScoreState = (state = {}) => {
-            if (!this._workScore) return;
-            if (state.counts) this._workScorePositions = state.counts;
-            if (state.ownerLost) {
-                this._workScoreOwnerLost = true;
-                this._stopWorkScorePlayback();
-            }
-            this._renderWorkScoreCursor();
         };
         this._onAgentDeselected = () => {
             if (this._viewMode === 'dashboard') {
@@ -896,7 +862,6 @@ export class ActivityPanel {
         eventBus.on('affinity:changed', this._onAffinityChanged);
         eventBus.on('affinity:ready', this._onAffinityReady);
         eventBus.on('mode:changed', this._onModeChanged);
-        eventBus.on(WORK_SCORE_STATE_EVENT, this._onWorkScoreState);
         document.addEventListener('visibilitychange', this._onVisibilityChange);
     }
 
@@ -1500,9 +1465,6 @@ export class ActivityPanel {
         this._pinCompareDirty = true;
         this._focusRequestVersion++;
         this._stopPanelKeyboardHandling();
-        // Closing the panel leaves the score: the badge must never outlive the
-        // surface that owns its cursor.
-        this._closeWorkScore({ restoreSelection: false });
         // 9.6 — the leaving frames show the panel as it was: its visual
         // teardown waits for the stepped exit, and a mode switch cuts at once
         // so the Dashboard lays out a single time.
@@ -3413,7 +3375,6 @@ export class ActivityPanel {
         const body = el('div', { className: 'activity-panel__journey-body' }, [
             whyEl,
             details,
-            this._buildWorkScoreControl(),
         ]);
         const section = el('div', {
             className: 'activity-panel__section',
@@ -3431,305 +3392,12 @@ export class ActivityPanel {
         this._registerAgentSection(section);
     }
 
-    // ─── 5.4 Work as a spatial score ───────────────────
-    //
-    // The panel owns the frozen row copy, the scrub cursor and the optional
-    // playback timer; the village draws what this publishes. Scrubbing emits a
-    // presentation request and nothing else — no world, domain or provider
-    // write happens on this path, so an agent's status cannot move because the
-    // operator dragged the cursor.
-
-    _buildWorkScoreControl() {
-        const openBtn = el('button', {
-            className: ['activity-panel__score-btn', 'activity-panel__score-btn--open'],
-            text: 'SCORE',
-            title: 'Draw the last 20 minutes of this run over the village',
-        });
-        openBtn.type = 'button';
-        openBtn.addEventListener('click', () => this._openWorkScore());
-
-        const liveBtn = el('button', {
-            className: ['activity-panel__score-btn', 'activity-panel__score-btn--live'],
-            text: 'LIVE',
-            title: 'Leave the score: restore the live selection and the camera',
-        });
-        liveBtn.type = 'button';
-        liveBtn.addEventListener('click', () => this._closeWorkScore());
-
-        const playBtn = el('button', {
-            className: ['activity-panel__score-btn', 'activity-panel__score-btn--play'],
-            text: 'PLAY',
-            title: 'Walk the cursor through the score once',
-        });
-        playBtn.type = 'button';
-        playBtn.addEventListener('click', () => this._toggleWorkScorePlayback());
-
-        // 7.4 — one segmented well, LIVE | SCORE (+ PLAY while a score is
-        // open): the lit segment is the mode the village is actually in.
-        const controls = el('div', {
-            className: 'activity-panel__score-controls',
-            ariaLabel: 'Work score mode',
-        }, [liveBtn, openBtn, playBtn]);
-        controls.setAttribute('role', 'group');
-        const strip = el('div', { className: 'activity-panel__score-strip' });
-        const range = document.createElement('input');
-        range.type = 'range';
-        range.className = 'activity-panel__score-range';
-        range.setAttribute('aria-label', 'Work score time cursor');
-        range.addEventListener('input', () => {
-            this._stopWorkScorePlayback();
-            this._setWorkScoreCursor(Number(range.value));
-        });
-        const caption = el('div', { className: 'activity-panel__score-caption' });
-        const status = el('div', { className: 'activity-panel__score-status' });
-        const overflowBody = el('div', { className: 'activity-panel__score-overflow-body' });
-        const overflow = el('details', {
-            className: ['activity-panel__journey-details', 'activity-panel__score-overflow'],
-        }, [
-            el('summary', { className: 'activity-panel__journey-summary', text: 'Earlier rows' }),
-            overflowBody,
-        ]);
-        const scrub = el('div', {
-            className: 'activity-panel__score-scrub',
-            style: { display: 'none' },
-        }, [strip, range, caption, status, overflow]);
-
-        this._workScoreOpenBtn = openBtn;
-        this._workScoreLiveBtn = liveBtn;
-        this._workScorePlayBtn = playBtn;
-        this._workScoreStripEl = strip;
-        this._workScoreRangeEl = range;
-        this._workScoreCaptionEl = caption;
-        this._workScoreStatusEl = status;
-        this._workScoreOverflowEl = overflow;
-        this._workScoreOverflowBodyEl = overflowBody;
-        this._workScoreScrubEl = scrub;
-        const score = el('div', { className: 'activity-panel__score' }, [controls, scrub]);
-        this._renderWorkScoreControl();
-        return score;
-    }
-
-    // Reduced motion means manual scrub only: the playback control is not
-    // offered at all, so no timer is ever allocated.
-    _workScoreReducedMotion() {
-        if (typeof window === 'undefined') return true;
-        return window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true;
-    }
-
-    // Exactly the rows the panel's waterfall prints, so the score's
-    // exact/inferred labels are the waterfall's by construction.
-    _workScoreRows(agent, now = Date.now()) {
-        if (!agent) return [];
-        return buildCausalWaterfall(agent, {
-            now,
-            toolHistory: this._causalWaterfallToolHistory.length
-                ? this._causalWaterfallToolHistory
-                : undefined,
-            children: this._causalWaterfallChildren(agent),
-        });
-    }
-
-    _openWorkScore() {
-        const agent = this.currentAgent;
-        if (!agent) return;
-        const rows = this._workScoreRows(agent);
-        const score = buildSpatialWorkScore(rows, {
-            agentId: agent.id,
-            agentName: agent.agentName || agent.name || agent.id,
-        });
-        if (!score) {
-            this._workScore = null;
-            this._renderWorkScoreControl();
-            Toast.show('No recorded rows in the last 20 minutes');
-            return;
-        }
-        this._workScore = score;
-        this._workScoreAgentId = String(agent.id || '');
-        this._workScoreCursorAt = score.startAt;
-        this._workScoreOwnerLost = false;
-        this._workScorePositions = null;
-        this._publishWorkScore();
-        this._renderWorkScoreControl();
-    }
-
-    _closeWorkScore({ restoreSelection = true } = {}) {
-        const frozenId = this._workScoreAgentId;
-        const wasActive = Boolean(this._workScore);
-        this._stopWorkScorePlayback();
-        this._workScore = null;
-        this._workScoreOwnerLost = false;
-        this._workScorePositions = null;
-        if (wasActive) eventBus.emit(WORK_SCORE_REQUEST_EVENT, { active: false, ts: Date.now() });
-        if (wasActive && restoreSelection && frozenId) {
-            const agent = this._getWorld()?.agents?.get?.(frozenId);
-            if (agent && String(this.currentAgent?.id || '') !== frozenId) emitAgentSelected(agent);
-        }
-        this._workScoreAgentId = null;
-        this._renderWorkScoreControl();
-    }
-
-    _publishWorkScore() {
-        if (!this._workScore) return;
-        eventBus.emit(WORK_SCORE_REQUEST_EVENT, {
-            active: true,
-            score: this._workScore,
-            cursorAt: this._workScoreCursorAt,
-            playing: this._workScorePlaying,
-            ts: Date.now(),
-        });
-    }
-
-    _setWorkScoreCursor(at) {
-        const score = this._workScore;
-        if (!score) return;
-        const clamped = Math.max(score.startAt, Math.min(score.endAt, Number(at) || score.startAt));
-        this._workScoreCursorAt = clamped;
-        this._publishWorkScore();
-        this._renderWorkScoreCursor();
-    }
-
-    _toggleWorkScorePlayback() {
-        if (!this._workScore || this._workScoreReducedMotion()) return;
-        if (this._workScorePlaying) {
-            this._stopWorkScorePlayback();
-            return;
-        }
-        const score = this._workScore;
-        const stepMs = 120;
-        const advance = Math.max(1, (score.endAt - score.startAt) / (SCORE_PLAYBACK_MS / stepMs));
-        if (this._workScoreCursorAt >= score.endAt) this._workScoreCursorAt = score.startAt;
-        this._workScorePlaying = true;
-        this._workScoreTimer = setInterval(() => {
-            const next = this._workScoreCursorAt + advance;
-            if (next >= score.endAt) {
-                this._setWorkScoreCursor(score.endAt);
-                this._stopWorkScorePlayback();
-                return;
-            }
-            this._setWorkScoreCursor(next);
-        }, stepMs);
-        this._publishWorkScore();
-        this._renderWorkScoreControl();
-    }
-
-    _stopWorkScorePlayback() {
-        clearInterval(this._workScoreTimer);
-        this._workScoreTimer = null;
-        if (!this._workScorePlaying) return;
-        this._workScorePlaying = false;
-        this._publishWorkScore();
-        this._renderWorkScoreControl();
-    }
-
-    _renderWorkScoreControl() {
-        if (!this._workScoreOpenBtn) return;
-        const score = this._workScore;
-        const active = Boolean(score);
-        const reduced = this._workScoreReducedMotion();
-        this._workScoreOpenBtn.style.display = '';
-        this._workScoreLiveBtn.style.display = '';
-        this._workScoreOpenBtn.setAttribute('aria-pressed', String(active));
-        this._workScoreLiveBtn.setAttribute('aria-pressed', String(!active));
-        this._workScorePlayBtn.style.display = active && !reduced ? '' : 'none';
-        this._workScorePlayBtn.textContent = this._workScorePlaying ? 'PAUSE' : 'PLAY';
-        this._workScoreScrubEl.style.display = active ? '' : 'none';
-        if (!active) {
-            replaceChildren(this._workScoreStripEl, []);
-            replaceChildren(this._workScoreOverflowBodyEl, []);
-            this._workScoreCaptionEl.textContent = '';
-            this._workScoreStatusEl.textContent = '';
-            return;
-        }
-
-        const span = Math.max(1, score.endAt - score.startAt);
-        this._workScoreRangeEl.min = String(score.startAt);
-        this._workScoreRangeEl.max = String(score.endAt);
-        this._workScoreRangeEl.step = '250';
-        this._workScoreRangeEl.value = String(this._workScoreCursorAt);
-        replaceChildren(this._workScoreStripEl, score.nodes.map((node) => {
-            const left = ((node.at - score.startAt) / span) * 100;
-            const width = Math.max(0.8, (node.durationMs / span) * 100);
-            const tick = el('button', {
-                className: [
-                    'activity-panel__score-tick',
-                    `activity-panel__score-tick--${node.kind}`,
-                ],
-                style: { left: `${left}%`, width: `${Math.min(100 - left, width)}%` },
-                ariaLabel: `${node.label} at ${formatRelative(node.at)}, ${node.provenance}`,
-                title: `${node.label} · ${node.detail} · ${formatElapsed(node.durationMs)} · ${node.provenance}`,
-            });
-            tick.type = 'button';
-            tick.dataset.nodeId = node.id;
-            tick.addEventListener('click', () => {
-                this._stopWorkScorePlayback();
-                this._setWorkScoreCursor(node.at + Math.min(node.durationMs, 500));
-            });
-            return tick;
-        }));
-        replaceChildren(this._workScoreOverflowBodyEl, score.overflowRows.map(row => el('div', {
-            className: 'activity-panel__score-overflow-row',
-        }, [
-            el('span', { className: 'activity-panel__waterfall-label', text: row.label }),
-            el('span', { className: 'activity-panel__waterfall-detail', text: row.detail }),
-            el('span', {
-                className: [
-                    'activity-panel__execution-provenance',
-                    `activity-panel__execution-provenance--${row.provenance}`,
-                ],
-                text: row.provenance.toUpperCase(),
-            }),
-            el('span', { className: 'activity-panel__waterfall-duration', text: formatElapsed(row.durationMs) }),
-        ])));
-        this._workScoreOverflowEl.style.display = score.overflow ? '' : 'none';
-        this._workScoreOverflowEl.querySelector('summary').textContent =
-            `${score.overflow} earlier row${score.overflow === 1 ? '' : 's'}`;
-        this._renderWorkScoreCursor();
-    }
-
-    _renderWorkScoreCursor() {
-        const score = this._workScore;
-        if (!score || !this._workScoreCaptionEl) return;
-        this._workScoreRangeEl.value = String(this._workScoreCursorAt);
-        const lit = litScoreNode(score, this._workScoreCursorAt);
-        for (const tick of this._workScoreStripEl.children) {
-            tick.classList.toggle('is-lit', Boolean(lit) && tick.dataset.nodeId === lit.id);
-        }
-        this._workScoreCaptionEl.textContent = workScoreCaption(score, this._workScoreCursorAt);
-        const counts = score.counts || {};
-        const positions = this._workScorePositions;
-        const parts = [
-            `${counts.nodes} of ${counts.total} nodes`,
-            `${counts.placed} placed`,
-            `${counts.children} children`,
-            `${counts.intervals} intervals`,
-        ];
-        if (positions) {
-            parts.push(`${positions.recorded} recorded position${positions.recorded === 1 ? '' : 's'}`);
-            parts.push(`${positions.semantic} semantic`);
-            if (positions.unplaced) parts.push(`${positions.unplaced} unplaced`);
-        }
-        if (this._workScoreOwnerLost) parts.push('camera released — playback paused');
-        this._workScoreStatusEl.textContent = parts.join(' · ');
-    }
-
-    // The SCORE control offers itself only when the waterfall it reads has
-    // rows; an open score keeps the Journey section visible on its own.
-    _syncWorkScoreAvailability() {
-        if (!this._workScoreOpenBtn) return;
-        const available = this._causalWaterfallRows.length > 0;
-        this._workScoreOpenBtn.disabled = !available;
-        this._workScoreOpenBtn.title = available
-            ? 'Draw the last 20 minutes of this run over the village'
-            : 'No recorded rows in the last 20 minutes';
-    }
-
     _updateJourney(agent) {
         if (!this._journeySectionEl || !this._journeyBodyEl) return;
         if (this._mode !== 'agent' || !agent) {
             this._journeySectionEl.style.display = 'none';
             return;
         }
-        this._syncWorkScoreAvailability();
 
         const snapshot = this._getAgentBehaviorSnapshot(agent);
         const { why, rows } = this._agentJourneyRows(agent, snapshot);
@@ -3737,7 +3405,7 @@ export class ActivityPanel {
             row => row.label,
             row => row.value,
         ])}`;
-        if (!why && !rows.length && !this._workScore) {
+        if (!why && !rows.length) {
             this._journeySectionEl.style.display = 'none';
             this._renderSignatures.journey = '';
             return;
@@ -4731,7 +4399,6 @@ export class ActivityPanel {
         this._callAgeUnsubscribe?.();
         this._callAgeUnsubscribe = null;
         this._clearCausalWaterfallSubscriptions();
-        this._closeWorkScore({ restoreSelection: false });
         if (this.panelEl) {
             this.panelEl.setAttribute('data-cut', '');
             this.panelEl.style.display = 'none';
@@ -4764,7 +4431,6 @@ export class ActivityPanel {
         eventBus.off('affinity:changed', this._onAffinityChanged);
         eventBus.off('affinity:ready', this._onAffinityReady);
         eventBus.off('mode:changed', this._onModeChanged);
-        eventBus.off(WORK_SCORE_STATE_EVENT, this._onWorkScoreState);
         document.removeEventListener('visibilitychange', this._onVisibilityChange);
         this._villageSectionEl?.removeEventListener('toggle', this._onVillageToggle);
 

@@ -355,10 +355,6 @@
     height: 44px;
 }
 
-:root[data-cv-profile="mobile"] .activity-panel__score-btn {
-    height: 44px;
-}
-
 /* ── Portrait: the Activity Panel is a bottom sheet ──
    `.main__body` stacks the world over the sheet, so opening it shrinks the
    world's height (App's resize path holds the centre) instead of covering

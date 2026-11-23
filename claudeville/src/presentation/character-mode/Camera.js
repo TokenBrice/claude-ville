@@ -460,7 +460,7 @@ export class Camera {
 
         // C6 (5.1) — frame ownership. `_cameraOwner` above names which motion
         // family moved the camera last; this names WHO is allowed to compose
-        // the frame. An exclusive claim ('ambient', 'replay') is granted only
+        // the frame. An exclusive claim ('ambient') is granted only
         // by an explicit operator control, is revoked by any genuine input, and
         // is never re-acquired on a timer. `auto`/`user` stay derived from the
         // fields above, so today's Auto timers are untouched.
@@ -783,7 +783,7 @@ export class Camera {
 
     // C6 — the frame owner an operator can reason about: 'user' while their own
     // pose stands, 'auto' for today's timed director, or the exclusive claim
-    // held by Ambient (5.1/5.2) or the spatial replay (5.4).
+    // held by Ambient (5.1/5.2).
     get owner() {
         if (this._frameClaim) return this._frameClaim;
         return this._cameraOwner === 'user' || this._userAdjusted ? 'user' : 'auto';
@@ -798,7 +798,7 @@ export class Camera {
     // Grant an exclusive claim from an explicit control. Returns { owner, epoch }
     // or false for anything that is not a claimable owner.
     claimOwner(owner) {
-        const next = owner === 'ambient' || owner === 'replay' ? owner : null;
+        const next = owner === 'ambient' ? owner : null;
         if (!next) return false;
         const previous = this.owner;
         this._frameClaim = next;
@@ -1080,7 +1080,7 @@ export class Camera {
     // Used by the CameraDirector's idle-attract mode for engage/yield decisions.
     //
     // C6 — this is also the revocation point: a genuine input bumps the input
-    // epoch and drops any exclusive claim (Ambient, replay) on the spot. Nothing
+    // epoch and drops any exclusive claim (Ambient) on the spot. Nothing
     // re-acquires a claim on a timer; the operator has to ask again.
     noteUserInput() {
         const now = performance.now();
@@ -2204,7 +2204,7 @@ export class Camera {
         // Anything else owning the camera defers the drift and resets the clock.
         // The #54 empty-village tour counts as an owner: it IS the idle motion, and the
         // drift's base-restore would fight its glide sequencing.
-        // C6 — an exclusive claim (Ambient, replay) is the deliberate motion
+        // C6 — an exclusive claim (Ambient) is the deliberate motion
         // now; the breath would fight its holds and pollute its logged pose.
         if (this.dragging || this._momentum || this._directorGlide
             || this.followTarget || this._zoomAnimation || this._snapZoom

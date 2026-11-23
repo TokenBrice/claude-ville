@@ -518,8 +518,8 @@ export class CameraDirector {
     // extended to where it is headed) on the operator's own frame: owner
     // 'user', pans preferred, never zooming in. The hold ends once every
     // included body has stood still 1.5 s, after 12 s, or the moment anything
-    // else takes the frame (input clears the frame in update(); a follow, `F`,
-    // Ambient or the replay change the owner). A body the frame can no longer
+    // else takes the frame (input clears the frame in update(); a follow, `F`
+    // or Ambient change the owner). A body the frame can no longer
     // hold moves to `excluded`, never silently. Reduced motion never follows:
     // it re-cuts once, when the set settles.
     _updateAttentionHold(now, dt, agentSprites) {

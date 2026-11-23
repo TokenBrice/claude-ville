@@ -3814,7 +3814,7 @@ export class IsometricRenderer {
         }
         if (event.code === 'KeyF') {
             // C6 — an explicit frame command is a genuine operator action: it
-            // hands Ambient/replay back without touching the auto idle clock.
+            // hands Ambient back without touching the auto idle clock.
             this.camera.revokeClaim?.('navigation');
             this.camera.stopFollow();
             this.frameContent();

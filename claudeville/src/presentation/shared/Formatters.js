@@ -270,9 +270,9 @@ export function truncateText(value, max) {
     return `${text.slice(0, limit - 1)}…`;
 }
 
-// Secrets never reach the DOM. The causal waterfall, the work score and the
-// blocked banner share one redaction so a command echoed into tool history
-// cannot leak a token that the banner would have stripped.
+// Secrets never reach the DOM. The causal waterfall and the blocked banner
+// share one redaction so a command echoed into tool history cannot leak a
+// token that the banner would have stripped.
 export function redactSecrets(text) {
     return String(text)
         .replace(/\b((?:[A-Za-z0-9_-]*?(?:key|token)))\s*=\s*(?:"[^"]*"|'[^']*'|[^\s&;,]+)/gi, '$1=[REDACTED]')

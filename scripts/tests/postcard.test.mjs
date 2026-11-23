@@ -64,7 +64,6 @@ const SITES = {
     'IsometricRenderer.js _drawAtmosphereDebug': { screen: 'drawDebugOverlay(renderer, overlayCtx', why: 'atmosphere debug' },
     'Postcard.js composePostcard': { caption: true, why: 'the caption band, drawn after the guard' },
     'SharedFileKnot.js drawPlate': { tier: 'if (!postcard) drawSharedFileOverlapLabel(', why: 'shared-file plates: file names, counts' },
-    'SpatialWorkScore.js drawWorkScoreScreen': { screen: 'drawWorkScoreScreen(overlayCtx', why: 'work score badge' },
     'VillageDirectorOverlay.js drawVillageDirectorScreen': { screen: 'drawVillageDirectorScreen(overlayCtx', why: 'director caption' },
     'VillageDirectorOverlay.js drawOffscreenCueEdges': { screen: 'drawOffscreenCueEdges(overlayCtx', why: 'offscreen cue edges' },
     'WorldFrameRenderer.js drawAmbientCaption': { screen: 'drawAmbientCaption(overlayCtx', why: 'ambient caption' },

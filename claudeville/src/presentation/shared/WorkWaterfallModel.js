@@ -1,7 +1,6 @@
-// 5.4 — the causal-waterfall model, extracted from ActivityPanel so the
-// spatial work score and the DOM waterfall read one builder. Pure: no DOM, no
-// persistence, no provider access, no presentation imports beyond the shared
-// secret redaction the panel and the blocked banner already share.
+// 5.4 — the causal-waterfall model behind the panel's DOM waterfall. Pure: no
+// DOM, no persistence, no provider access, no presentation imports beyond the
+// shared secret redaction the panel and the blocked banner already share.
 //
 // Exact/inferred semantics are the panel's and must stay that way: a row is
 // `exact` only when the provider reported a duration or an end timestamp, and

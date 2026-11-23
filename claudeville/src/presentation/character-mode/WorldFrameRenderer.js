@@ -23,7 +23,6 @@ import { worldSceneCategoryRegistry } from './SceneCategoryRegistry.js';
 import { buildGpuWorldRecords } from './gpu/GpuSceneBuilder.js';
 import { localLightPhaseForLighting, materialClassId } from './gpu/GpuWorldPolicy.js';
 import { createBoundedRing, writeBoundedRing } from '../shared/ClientPerfMetrics.js';
-import { drawWorkScoreGround, drawWorkScoreScreen } from './SpatialWorkScore.js';
 import { ornamentPlan } from './MarkGovernor.js';
 import { GroundCueRecorder, insertGroundCueRecords } from './GroundCueRecords.js';
 import { insertBodyReflectionRecords } from './WaterReflections.js';
@@ -747,10 +746,10 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
         // as ground records with each tree).
         drawTreeCasts(ctx, renderer.treePropSprites, castLightingFor(atmosphere), renderer.camera, viewport, waterFields);
     } else {
-        // 0.2 — the resident path splits the ground cues: the text-bearing
-        // work score stays in the retained texture (re-uploaded only when it
-        // changes), and every cue that follows an agent becomes native ground
-        // records spliced in after terrain, so moving agents move records.
+        // 0.2 — the resident path splits the ground cues: tile-anchored and
+        // transient washes stay in the retained texture (re-uploaded only when
+        // they change), and every cue that follows an agent becomes native
+        // ground records spliced in after terrain, so moving agents move records.
         const ground = prepareSemanticGround(renderer, viewport, villageSnapshot, atmosphere);
         if (ground?.dirty) {
             drawGroundSemantics(renderer, ground.ctx, groundOptions, GROUND_CUES_RETAINED);
@@ -1167,9 +1166,6 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     }
     renderer.harborTraffic?.drawScreenSummary(overlayCtx, viewport, renderer.camera, renderNow);
     drawVillageDirectorScreen(overlayCtx, villageSnapshot, viewport);
-    // 5.4 — the work score's badge and every exact count, once, on the shared
-    // upper overlay so Canvas and resident WebGL say the same thing.
-    drawWorkScoreScreen(overlayCtx, viewport, villageSnapshot?.workScore || {});
     // 5.7 — offscreen-event edge indicators (incl. cues the CameraDirector
     // dropped): small screen-edge markers, click to glide there.
     drawOffscreenCueEdges(overlayCtx, renderer, viewport, renderNow);
@@ -1237,7 +1233,7 @@ function handPeakMarksToGpu(renderer, rects, t1Marks) {
 // 0.2 — which ground cues a pass paints. Canvas paints all of them into the
 // frame in one pass. The resident path splits them by how they change: tile-
 // anchored crowd auras and the transient or text-bearing washes (recoveries,
-// the parade, replay, the work score) go into the retained texture, which
+// the parade, replay) go into the retained texture, which
 // re-renders only when their quantized state changes (plus the 8 Hz ornament
 // tick while a transient animates); every cue that follows an agent or pulses
 // (building halos, team auras, incidents, council rings, tethers, trails, the
@@ -1285,17 +1281,6 @@ function drawGroundSemantics(renderer, groundCtx, { villageSnapshot, renderNow, 
     const live = layer !== GROUND_CUES_RETAINED;
     const retained = layer !== GROUND_CUES_LIVE;
     if (live) renderer.trailRenderer?.draw?.(groundCtx, renderer.camera, viewport, renderNow, true);
-
-    // 5.4 — the requested work score sits on the retained ground cue texture,
-    // so buildings and bodies occlude the diagram like every other ground cue.
-    if (retained && villageSnapshot?.workScore) {
-        drawWorkScoreGround(groundCtx, {
-            ...villageSnapshot.workScore,
-            zoom: renderer.camera.zoom,
-            perfNow,
-            motionScale: renderer.motionScale ?? 1,
-        });
-    }
 
     const directorSnapshot = layer === GROUND_CUES_ALL
         ? villageSnapshot
@@ -1412,14 +1397,11 @@ function retainedGroundState(renderer, snapshot) {
     const parade = snapshot?.releaseParade?.center
         ? [Math.round(snapshot.releaseParade.center.x), Math.round(snapshot.releaseParade.center.y), snapshot.releaseParade.label ?? '']
         : null;
-    const workScore = snapshot?.workScore?.score?.nodes?.length && snapshot.workScore.geometry?.placements?.length
-        ? [snapshot.workScore.signature || snapshot.workScore.geometry.signature || '', snapshot.workScore.cursorAt ?? null]
-        : null;
-    const active = clusters.length > 0 || recoveries.length > 0 || replay || parade || workScore;
-    // Fading recoveries, the parade, replay ageing and the score cursor animate
-    // with motion on; crowd auras only change when a cluster does.
-    const animated = (recoveries.length || replay || parade || workScore) && renderer.motionScale > 0;
-    return { active: Boolean(active), animated: Boolean(animated), signature: JSON.stringify([clusters, recoveries, replay, parade, workScore]) };
+    const active = clusters.length > 0 || recoveries.length > 0 || replay || parade;
+    // Fading recoveries, the parade and replay ageing animate with motion on;
+    // crowd auras only change when a cluster does.
+    const animated = (recoveries.length || replay || parade) && renderer.motionScale > 0;
+    return { active: Boolean(active), animated: Boolean(animated), signature: JSON.stringify([clusters, recoveries, replay, parade]) };
 }
 
 export function prepareSemanticGround(renderer, viewport, snapshot, atmosphere) {

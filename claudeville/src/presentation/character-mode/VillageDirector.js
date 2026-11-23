@@ -2,16 +2,9 @@ import { normalizeBuildingType } from '../../config/buildings.js';
 import { BUILDING_EVENTS, eventBus } from '../../domain/events/DomainEvent.js';
 import { AgentBiography } from '../../domain/value-objects/AgentBiography.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
-import { TILE_HALF_HEIGHT, buildingCenterToWorld } from './Projection.js';
+import { buildingCenterToWorld } from './Projection.js';
 import { shortProjectName } from '../shared/Formatters.js';
 import { noteMoment } from './MomentTally.js';
-import {
-    replaySampleLookup,
-    resolveWorkScoreGeometry,
-    workScoreWorldBox,
-    WORK_SCORE_REQUEST_EVENT,
-    WORK_SCORE_STATE_EVENT,
-} from './SpatialWorkScore.js';
 
 const SCENE_LIMIT = 8;
 const TOOL_EVENT_LIMIT = 40;
@@ -118,10 +111,6 @@ export class VillageDirector {
         this.harborState = null;
         this.replayActive = false;
         this.replaySamples = [];
-        // 5.4 — the panel's frozen score request and the camera handle taken
-        // while it is open. Both are presentation state with no world writes.
-        this.workScoreRequest = null;
-        this._workScoreClaim = null;
         this.toolEvents = [];
         this.scenes = [];
         // #40 — agents currently storming the watchtower (errored / rate-limited),
@@ -160,7 +149,6 @@ export class VillageDirector {
             eventBus.on(BUILDING_EVENTS.SELECTED, (building) => this.setSelectedBuilding(building)),
             eventBus.on(BUILDING_EVENTS.DESELECTED, () => this.setSelectedBuilding(null)),
             eventBus.on(BUILDING_EVENTS.ACTIVE_AGENTS, (payload) => this._onBuildingPresence(payload)),
-            eventBus.on(WORK_SCORE_REQUEST_EVENT, (request) => this.setWorkScoreRequest(request)),
         ];
     }
 
@@ -176,8 +164,6 @@ export class VillageDirector {
         this._recoveries.clear();
         this.buildingPresence.clear();
         this.hoveredBuilding = null;
-        this.workScoreRequest = null;
-        this._workScoreClaim = null;
         this._lastCueSignatures?.clear?.();
     }
 
@@ -233,103 +219,6 @@ export class VillageDirector {
 
     toggleReplay() {
         return this.setReplayActive(!this.replayActive);
-    }
-
-    // 5.4 — the spatial work score. The Activity Panel owns the frozen row
-    // copy, the scrub cursor and the playback timer; the director owns only
-    // presentation: it resolves world anchors for the frozen nodes, holds the
-    // explicit `replay` camera claim, and publishes the resolved diagram on
-    // the snapshot. Nothing here writes world, domain, or simulator state, so
-    // scrubbing cannot change an agent's status.
-    setWorkScoreRequest(request = {}) {
-        const score = request?.score?.nodes?.length ? request.score : null;
-        if (!request?.active || !score) {
-            this.workScoreRequest = null;
-            return null;
-        }
-        const cursorAt = Number(request.cursorAt);
-        this.workScoreRequest = {
-            score,
-            cursorAt: Number.isFinite(cursorAt) ? cursorAt : score.startAt,
-            playing: Boolean(request.playing),
-        };
-        return this.workScoreRequest;
-    }
-
-    // Recorded positions come only from the retained replay minute. Nodes
-    // older than that have no physical position and fall back to their
-    // semantic building anchor, which the badge counts separately.
-    replayPositionFor(agentId, at) {
-        return replaySampleLookup(this.replaySamples, agentId, at);
-    }
-
-    // The score's semantic anchor is the building's forecourt, not its centre:
-    // ground cues are occluded by the building sprite, so a glyph placed under
-    // the roof would be a diagram nobody can read.
-    _buildingAnchor(type) {
-        const building = this._buildingFor(type);
-        if (!building) return null;
-        const center = buildingCenterToWorld(building);
-        const footprint = ((building.width ?? 1) + (building.height ?? 1)) / 2;
-        return { x: center.x, y: center.y + footprint * TILE_HALF_HEIGHT + 16 };
-    }
-
-    _syncWorkScore(renderer, now) {
-        const camera = renderer?.camera || null;
-        const request = this.workScoreRequest;
-        if (!request) {
-            if (this._workScoreClaim) {
-                // Leaving the score restores the frame the operator left.
-                if (camera && this._workScoreClaim.pose) camera.restorePose?.(this._workScoreClaim.pose);
-                camera?.releaseOwner?.('replay');
-                this._workScoreClaim = null;
-                eventBus.emit(WORK_SCORE_STATE_EVENT, { active: false, ts: now });
-            }
-            return null;
-        }
-
-        const agentId = request.score.agentId;
-        const geometry = resolveWorkScoreGeometry(request.score, {
-            buildingAnchor: type => this._buildingAnchor(type),
-            replayPosition: node => (agentId ? this.replayPositionFor(agentId, node.at) : null),
-        });
-
-        if (!this._workScoreClaim) {
-            // One explicit framing move, because the operator asked for the
-            // score. Never re-taken on a timer afterwards.
-            const pose = camera?.capturePose?.() || null;
-            camera?.claimOwner?.('replay');
-            const box = workScoreWorldBox(geometry);
-            if (box) camera?.fitToWorldBox?.(box, { paddingPx: 120, maxZoom: 2 });
-            this._workScoreClaim = { pose, ownerLost: false };
-            eventBus.emit(WORK_SCORE_STATE_EVENT, {
-                active: true,
-                ts: now,
-                owner: camera?.owner ?? null,
-                counts: geometry?.counts || null,
-            });
-        } else if (!this._workScoreClaim.ownerLost && camera && (camera.owner ?? 'replay') !== 'replay') {
-            // Genuine input revoked the claim. The score stays open — it is an
-            // explicit mode — but playback stops and nothing re-acquires it.
-            this._workScoreClaim.ownerLost = true;
-            eventBus.emit(WORK_SCORE_STATE_EVENT, {
-                active: true,
-                ts: now,
-                owner: camera.owner ?? null,
-                ownerLost: true,
-                counts: geometry?.counts || null,
-            });
-        }
-
-        return {
-            score: request.score,
-            cursorAt: request.cursorAt,
-            playing: request.playing,
-            geometry,
-            ownerLost: this._workScoreClaim?.ownerLost === true,
-            cameraOwner: camera?.owner ?? null,
-            signature: `${request.score.agentId}:${request.score.startAt}:${Math.round(request.cursorAt)}:${geometry?.signature || ''}`,
-        };
     }
 
     triggerReleaseParade(payload = {}) {
@@ -438,9 +327,6 @@ export class VillageDirector {
         // concentrated right now, and whether an incident has earned a chapter.
         const workCohorts = this._workCohorts(agents);
         const incidentChapter = this._incidentChapter(agents, incidents, now);
-        // 5.4 — the requested score, resolved against real building anchors
-        // and the retained replay minute. Null whenever nobody asked.
-        const workScore = this._syncWorkScore(renderer, now);
 
         this.lastSnapshot = {
             now,
@@ -467,7 +353,6 @@ export class VillageDirector {
             // rollup per live parent (RelationshipState, slow-systems tick).
             squads: renderer?.relationshipState?.getSnapshot?.()?.squads || [],
             incidentChapter,
-            workScore,
         };
         this._lastStats = this._statsForSnapshot(this.lastSnapshot);
 
@@ -723,7 +608,6 @@ export class VillageDirector {
             activeSceneCount: 0,
             workCohorts: [],
             incidentChapter: null,
-            workScore: null,
         };
     }
 
