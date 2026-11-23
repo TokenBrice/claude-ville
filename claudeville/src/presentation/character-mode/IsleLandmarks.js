@@ -16,7 +16,7 @@
 //   the tower and its sails, shared by the Canvas and GPU paths
 //   (`textureKey` per frame, like a tree's lean frame).
 // - The Hourglass Belfry (2026-10-28, where the ruined tower stood; it now
-//   stands on the Archive's north lawn, the chapel's old place) holds one
+//   stands on the Archive's north-east lagoon lawn) holds one
 //   glass per account, Claude's in the lit west arch and Codex's in the
 //   shaded east arch: the sand left is the quota left (BelfryQuota.js, from
 //   `/api/usage` through `setUsage`), a shroud covers a glass with no reading,

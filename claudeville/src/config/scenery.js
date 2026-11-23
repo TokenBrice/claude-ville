@@ -276,54 +276,30 @@ export const BRIDGE_HINTS = [
         treeExclusion: false,
         underDeckShadow: false,
     },
-    // East Forge footbridge: connects the Tavern beer-garden bank (22,22)
-    // directly across the 4-tile river channel (22,23..26) to the Forge west
-    // yard (22,27), reusing bridge.landmark.rustic.ns in clear open view west
-    // of the Forge gable and Harbor basin.
-    {
-        id: 'east-river-footbridge',
-        tileX: 22,
-        tileY: 24,
-        orientation: 'NS',
-        style: 'rustic',
-        widthRadius: 0,
-        walkableRadius: 0,
-        deckProfile: [[-2.55, 0], [-2, 16], [2, 16], [2.55, 0]],
-        nearRail: { inner: 16.8, outer: 16.8, top: 2, bottom: 10, lift: [[-2.05, 31], [2.05, 31]] },
-        laneOffsetPx: 6,
-        treeExclusion: false,
-        underDeckShadow: false,
-    },
-    // North farm bridge: spans the west lagoon neck (3,6..9) to connect the
-    // Farm, Windmill and north ridge into the village walking loop while
-    // staying west of every Harbor lagoon channel and anchorage (x >= 6.8).
-    {
-        id: 'north-farm-bridge',
-        tileX: 3,
-        tileY: 7,
-        orientation: 'NS',
-        style: 'rustic',
-        widthRadius: 0,
-        walkableRadius: 0,
-        deckProfile: [[-2.55, 0], [-2, 16], [2, 16], [2.55, 0]],
-        nearRail: { inner: 16.8, outer: 16.8, top: 2, bottom: 10, lift: [[-2.05, 31], [2.05, 31]] },
-        laneOffsetPx: 6,
-        treeExclusion: false,
-        underDeckShadow: false,
-    },
 ];
 
 // Plank crossings: single-file walkable spans drawn per-tile from the
-// bridge.ew plank asset (kind 'plank' — no landmark span treatment). The
-// pond plank stays a plank: BridgeLanterns hangs the pending-branch lanterns
-// on its EW deck. Walkability only ever *adds* connectivity here, so routing
-// risk is limited to new scenery.
+// bridge.ew plank asset (kind 'plank' — no landmark span treatment; NS planks
+// mirror bridge.ew horizontally onto integer texels). The pond plank stays EW:
+// BridgeLanterns hangs the pending-branch lanterns on its EW deck. Walkability
+// only ever *adds* connectivity here, so routing risk is limited to new scenery.
 export const PLANK_BRIDGES = [
     {
         id: 'command-pond-plank',
         tileX: 17,
         tileY: 22,
         orientation: 'EW',
+    },
+    // North farm plank footbridge: spans the west lagoon neck (3,6..9) to
+    // connect the Farm, Windmill and north ridge into the village walking loop
+    // while staying west of every Harbor lagoon channel and anchorage (x >= 6.8).
+    {
+        id: 'north-farm-bridge',
+        tileX: 3,
+        tileY: 7,
+        orientation: 'NS',
+        // The planks carry over the wet shore tile at each end (3,5 and 3,10).
+        landings: true,
     },
 ];
 
@@ -642,9 +618,8 @@ export const DISTRICT_PROPS = [
     { tileX: 23, tileY: 22, id: 'prop.bollardPair', layer: 'cache', district: 'harbor', walkBlock: true },
     { tileX: 31, tileY: 20, id: 'prop.saltCrates', layer: 'cache', district: 'harbor', walkBlock: true },
     // Forge smithy yard: the roofed log store on the dry shore east of the
-    // hearth (moved off the 25,26 river channel for the east footbridge), the
-    // bellows bench on the shore past the hearth's east corner, slag heap and
-    // barrels at the Forge → Task Board handoff.
+    // hearth, the bellows bench on the shore past the hearth's east corner,
+    // slag heap and barrels at the Forge → Task Board handoff.
     { tileX: 31, tileY: 32, id: 'prop.bellowsBench', layer: 'cache', district: 'workshop', walkBlock: true },
     { tileX: 31, tileY: 33, id: 'prop.firewoodStack', layer: 'cache', district: 'workshop', walkBlock: true },
     { tileX: 27, tileY: 33, id: 'prop.barrelStack', layer: 'cache', district: 'workshop', walkBlock: true },
@@ -655,9 +630,8 @@ export const DISTRICT_PROPS = [
     { tileX: 8, tileY: 31, id: 'prop.toolRack', layer: 'cache', district: 'resource', walkBlock: true },
     { tileX: 15, tileY: 29, id: 'prop.oreSacks', layer: 'cache', district: 'resource', walkBlock: true },
     // South-bank green between the Token Mine's rock and the central bridge:
-    // the village well on the river bank, the flower cart parked west of the
-    // reserved cottage pocket (14,28 ±1), and authored timber fences framing
-    // the green (replacing retired baked wattle).
+    // the village well on the river bank, the flower cart parked on the green,
+    // and authored timber fences framing the green (replacing retired baked wattle).
     { tileX: 12.5, tileY: 27.5, id: 'prop.well', layer: 'cache', district: 'civic', walkBlock: true },
     { tileX: 11.8, tileY: 28.8, id: 'prop.flowerCart', layer: 'cache', district: 'civic', walkBlock: true },
     { tileX: 9, tileY: 27, id: 'prop.fence.nwSe', layer: 'cache', district: 'civic', walkBlock: true },
@@ -672,7 +646,7 @@ export const DISTRICT_PROPS = [
     { tileX: 1.9, tileY: 18.25, id: 'prop.runeBrazier', layer: 'cache', district: 'knowledge', walkBlock: true },
     // Previously unused authored props populating foreground dead zones
     // (Tavern–Lighthouse headland, Mine–Gate–Tasks lawn, Archive & Tavern
-    // greens), all clear of standing places and lane 14b cottage pockets.
+    // greens), all clear of standing places.
     { tileX: 17, tileY: 30, id: 'prop.marketStall', layer: 'cache', district: 'gate', walkBlock: true },
     { tileX: 16, tileY: 37, id: 'prop.marketStall.ochre', layer: 'cache', district: 'gate', walkBlock: true },
     { tileX: 21, tileY: 38, id: 'prop.marketStall.canvas', layer: 'cache', district: 'gate', walkBlock: true },
@@ -707,22 +681,12 @@ export const DISTRICT_PROPS = [
     // sails step on wind gusts, the Hourglass Belfry's glasses on the
     // account quota), sorted with the trees, and `walkBlock` keeps every
     // body off them. Each stands on open grass no lane, visit slot, queue,
-    // seat, scenic point or building sightline zone reaches: the windmill on
-    // the north shore's open crest, beside the farm, and the belfry on the
-    // Archive's north lawn, where the wayside chapel stood (the chapel was
-    // withdrawn, and the farm took the belfry's old place at the north
-    // wood's edge). The headland between the Tavern and the Lighthouse stays
-    // bare: it is both buildings' tall-scenery sightline zone.
+    // seat or scenic point reaches: the windmill on the north shore's open
+    // crest beside the farm, and the belfry on the west tip by the Archive
+    // (clear of the north farm plank bridge and its landings). The headland between the Tavern and the
+    // Lighthouse stays bare: it is both buildings' tall-scenery sightline zone.
     { tileX: 9.6, tileY: 0.9, id: 'prop.windmill', layer: 'sorted', district: 'north', walkBlock: true, landmark: true },
-    { tileX: 1.6, tileY: 9.0, id: 'prop.hourglassBelfry', layer: 'sorted', district: 'knowledge', walkBlock: true, landmark: true },
-    // L08 F6: four non-interactive village cottages & shopfronts tucked into
-    // clear grass pockets nearest the reserved spots (10,13), (14,28), (21,31)
-    // and east-quarter (22,29) — clear of visitTiles, APPROACH_FILES, sightlines
-    // and roads; sorted with occluder sidecars and walkBlock so bodies route round.
-    { tileX: 10.5, tileY: 12.5, id: 'prop.cottage.weaver', layer: 'sorted', district: 'civic', walkBlock: true },
-    { tileX: 15.8, tileY: 31.2, id: 'prop.cottage.baker', layer: 'sorted', district: 'civic', walkBlock: true },
-    { tileX: 17.8, tileY: 30.0, id: 'prop.cottage.chandler', layer: 'sorted', district: 'gate', walkBlock: true },
-    { tileX: 22.0, tileY: 29.0, id: 'prop.cottage.cooper', layer: 'sorted', district: 'workshop', walkBlock: true },
+    { tileX: 0.6, tileY: 9.6, id: 'prop.hourglassBelfry', layer: 'sorted', district: 'knowledge', walkBlock: true, landmark: true },
     // Living Isle W8.3c (AD-P5 group D): civic/garden and wetland/forest
     // dressing, all baked into the terrain (`cache`). Garden furniture stands
     // on lawns no lane, visit slot, queue place or scenic point reaches;

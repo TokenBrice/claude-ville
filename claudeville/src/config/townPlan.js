@@ -303,12 +303,6 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
         points: [[18, 21], [18, 26], [22, 31], [22, 37]],
     },
     {
-        id: 'forge-footbridge-road',
-        material: 'lane',
-        width: 1,
-        points: [[21, 21], [22, 22], [22, 27], [24, 29], [25, 30]],
-    },
-    {
         id: 'archive-walk',
         material: 'avenue',
         width: 1,
