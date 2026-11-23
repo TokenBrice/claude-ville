@@ -10682,11 +10682,34 @@ export class IsometricRenderer {
             } else if (bInfo?.kind === 'plank') {
                 // 2.8 — single-file plank crossings use the per-tile
                 // bridge.${orientation} asset (the pond plank's bridge.ew),
-                // mirroring the dock tile path.
+                // mirroring the dock tile path. An NS plank mirrors bridge.ew
+                // horizontally onto integer texels when no bridge.ns exists.
                 const orientation = (bInfo.orientation || 'EW').toLowerCase();
-                if (this.sprites) this.sprites.drawSprite(ctx, `bridge.${orientation}`, screenX, screenY);
+                if (this.sprites) {
+                    const spriteId = `bridge.${orientation}`;
+                    if (this.assets?.has?.(spriteId)) {
+                        this.sprites.drawSprite(ctx, spriteId, screenX, screenY);
+                    } else if (orientation === 'ns' && this.assets?.has?.('bridge.ew')) {
+                        this._drawMirroredPlankSprite(ctx, 'bridge.ew', screenX, screenY);
+                    }
+                }
             }
         }
+    }
+
+    _drawMirroredPlankSprite(ctx, id, wx, wy) {
+        const img = this.assets?.get?.(id);
+        if (!img) return;
+        const dims = this.assets.getDims(id) || { w: img.width, h: img.height };
+        const [ax, ay] = this.assets.getAnchor(id);
+        const tx = Math.round(wx);
+        const dy = Math.round(wy - ay);
+        ctx.save();
+        SpriteRenderer.disableSmoothing(ctx);
+        ctx.translate(tx, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(img, Math.round(ax - dims.w), dy);
+        ctx.restore();
     }
 
     _drawHarborCausewayTile(ctx, screenX, screenY, orientation = 'EW', seed = 0) {

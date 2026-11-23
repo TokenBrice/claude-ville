@@ -709,7 +709,8 @@ export class SceneryEngine {
             this._addBridgeSpan(hint.tileX, hint.tileY, hint.orientation, hint);
         }
         // Plank crossings: single-file, walkable, drawn per-tile from the
-        // bridge.ew plank asset (the pond plank) rather than as a landmark span.
+        // bridge.ew plank asset (mirrored horizontally for NS spans) rather
+        // than as a landmark span.
         for (const hint of PLANK_BRIDGES) {
             const key = `${hint.tileX},${hint.tileY}`;
             if (!this.waterTiles.has(key)) continue;

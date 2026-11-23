@@ -4482,58 +4482,6 @@ props:
     anchor: [24, 24]
     provenance: { item: 'W8.3b', generations: 1 }
 
-  # L08 F6 — non-interactive village cottages & shopfronts stitching the landmarks
-  # into continuous streets: 120x120 Pro objects in the Tavern/Command palette,
-  # slate-blue or timber roofs, unlit dark slate glass, no plaques, baked
-  # surface-coded occluder sidecars and PropWinter roof snow coverage.
-  - id: prop.cottage.weaver
-    tool: create_1_direction_object
-    prompt: "small medieval slate-roofed half-timbered weaver cottage, grey stone base, cream plaster upper wall with dark oak beams, steep slate-blue tiled gable roof, short stone chimney, dark oak door and unlit dark slate windows, isometric 2:1, no ground slab, no text"
-    width: 120
-    height: 120
-    anchor: [62, 102]
-    materialClass: stone
-    occluderSidecar: true
-    surfaceCode: true
-    occluder: { mode: alpha-silhouette, strength: 1 }
-    provenance: { item: 'L08-F6', endpoint: create-1-direction-object, objectId: 86148af1-9919-4681-8ead-bf01f0ec5af9, frame: 0, styleImages: 'building.tavern + building.command (120x120)', generations: 10, batchCount: 4, post: 'roofSlate snap + 1px #060402 ink + surface occluder sidecar', generatedAt: '2026-11-23' }
-
-  - id: prop.cottage.cooper
-    tool: create_1_direction_object
-    prompt: "small medieval timber-roofed cooper shopfront cottage, weathered warm dark timber shingle gable roof, oak half-timbered walls over stone footing, arched oak doorway with two small stacked barrels beside the wall, unlit dark slate windows, isometric 2:1, no ground slab, no text"
-    width: 120
-    height: 120
-    anchor: [60, 102]
-    materialClass: timber
-    occluderSidecar: true
-    surfaceCode: true
-    occluder: { mode: alpha-silhouette, strength: 1 }
-    provenance: { item: 'L08-F6', endpoint: create-1-direction-object, objectId: 86148af1-9919-4681-8ead-bf01f0ec5af9, frame: 1, styleImages: 'building.tavern + building.command (120x120)', generations: 10, batchCount: 4, post: '1px #060402 ink + surface occluder sidecar', generatedAt: '2026-11-23' }
-
-  - id: prop.cottage.baker
-    tool: create_1_direction_object
-    prompt: "small medieval slate-roofed stone baker cottage, cool grey limestone ashlar walls with timber eaves, steep slate-blue hipped roof with brick-topped stone chimney, stout oak door and small unlit dark slate windows with shutters, isometric 2:1, no ground slab, no text"
-    width: 120
-    height: 120
-    anchor: [61, 102]
-    materialClass: stone
-    occluderSidecar: true
-    surfaceCode: true
-    occluder: { mode: alpha-silhouette, strength: 1 }
-    provenance: { item: 'L08-F6', endpoint: create-1-direction-object, objectId: 86148af1-9919-4681-8ead-bf01f0ec5af9, frame: 2, styleImages: 'building.tavern + building.command (120x120)', generations: 10, batchCount: 4, post: 'roofSlate snap + 1px #060402 ink + surface occluder sidecar', generatedAt: '2026-11-23' }
-
-  - id: prop.cottage.chandler
-    tool: create_1_direction_object
-    prompt: "small medieval village chandler shopfront cottage, dark oak half-timbered walls, steep slate-blue gable roof with small dormer, muted crimson-and-cream cloth shop awning over a timber counter window, unlit dark slate panes, isometric 2:1, no ground slab, no text"
-    width: 120
-    height: 120
-    anchor: [58, 104]
-    materialClass: timber
-    occluderSidecar: true
-    surfaceCode: true
-    occluder: { mode: alpha-silhouette, strength: 1 }
-    provenance: { item: 'L08-F6', endpoint: create-1-direction-object, objectId: 86148af1-9919-4681-8ead-bf01f0ec5af9, frame: 3, styleImages: 'building.tavern + building.command (120x120)', generations: 10, batchCount: 4, post: 'roofSlate snap + 1px #060402 ink + surface occluder sidecar', generatedAt: '2026-11-23' }
-
 # ─── VEGETATION ──────────────────────────────────────────────────────────────
 vegetation:
   - id: veg.root.arch
@@ -5247,8 +5195,9 @@ bridges:
   # the Miner's trestle span above.
   - id: bridge.ew
     tool: isometric_tile
-    # Referenced by scenery.js PLANK_BRIDGES command-pond-plank and drawn
-    # through IsometricRenderer's dynamic `bridge.${orientation}` path.
+    # Referenced by scenery.js PLANK_BRIDGES (command-pond-plank EW, and
+    # mirrored horizontally for north-farm-bridge NS) through
+    # IsometricRenderer's plank bridge path.
     prompt: "weathered wooden bridge, plank deck, rope rails, east-west orientation, isometric"
     size: 64
     anchor: [32, 32]

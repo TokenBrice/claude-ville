@@ -33,7 +33,10 @@ import { captureCoastArtifact, restoreCoastArtifact, validCoastArtifact, coastAr
 // cluster passes and grass contrast, cooler roads and warmer plazas with
 // kerbs, retired wattle and the baked Command watchfire/guardpost/ruins
 // (GroundBake, IsometricRenderer), new roads, bridges and props.
-export const TERRAIN_BAKE_ALGORITHM_VERSION = 'cv0.66-terrain-14';
+// cv0.66-terrain-15: remove east Forge footbridge and its road, switch the
+// north farm bridge to a mirrored plank span, move the Hourglass Belfry off
+// the north bridge to the Archive's north-east lagoon lawn, remove cottages.
+export const TERRAIN_BAKE_ALGORITHM_VERSION = 'cv0.66-terrain-15';
 export const TERRAIN_ARTIFACT_DB = 'claudeville-terrain-artifacts';
 export const TERRAIN_ARTIFACT_MAX_BYTES = 96 * 1024 * 1024;
 // Artifact schema. 2: the ground field may carry the RGBA8 weather field
