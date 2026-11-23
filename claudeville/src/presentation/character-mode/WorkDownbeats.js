@@ -66,41 +66,41 @@ export function drawWorkDownbeat(ctx, ritual, x, y, { side = 1, scale = 1, now =
     ctx.save();
     ctx.globalAlpha *= beat.alpha * (gate?.alpha ?? 1);
     if (beat.phase === 'anticipation') {
-        // Wind-up: two ember specks gather toward the strike point.
-        const reach = 3 - beat.step;
+        // Wind-up: two 2×2 ember specks gather toward the strike point.
+        const reach = 4 - beat.step;
         ctx.fillStyle = WORK[1];
-        ctx.fillRect(px - reach - 1, py, 1, 1);
-        ctx.fillRect(px + reach, py, 1, 1);
+        ctx.fillRect(px - reach - 2, py - 1, 2, 2);
+        ctx.fillRect(px + reach, py - 1, 2, 2);
     } else if (beat.phase === 'peak') {
-        // The one cream action frame: a 2×2 core and three short rays.
+        // The one cream action frame: a 4×4 core and three 2-texel rays.
         ctx.fillStyle = PEAK;
-        ctx.fillRect(px - 1, py - 1, 2, 2);
-        drawSlashes(ctx, px, py, side, 2, 2, PEAK, PEAK);
+        ctx.fillRect(px - 2, py - 2, 4, 4);
+        drawSlashes(ctx, px, py, side, 3, 2, PEAK, WORK[2], 2);
     } else {
         // Stepped follow-through: the mark travels one texel per quantum
         // while ALPHA_QUANTA steps it down (alpha applied above).
-        const push = 2 + beat.step;
+        const push = 3 + beat.step;
         switch (strike.kind) {
             case 'chip':
-                chips(ctx, px, py, beat.t, { count: 4, seed: beat.index + 7, spread: 6, lift: 4, tones: WORK });
+                chips(ctx, px, py, beat.t, { count: 4, seed: beat.index + 7, spread: 7, lift: 5, tones: WORK });
                 break;
             case 'page': {
-                // A leaf flicked up off the book: 2×1 / 1×2 tumbling frames.
+                // A leaf flicked up off the book: 3×2 / 2×3 tumbling frames.
                 ctx.fillStyle = beat.step === 1 ? WORK[2] : PEAK;
                 const flat = beat.step % 2 === 0;
-                ctx.fillRect(px + side * beat.step, py - push, flat ? 2 : 1, flat ? 1 : 2);
+                ctx.fillRect(px + side * beat.step, py - push, flat ? 3 : 2, flat ? 2 : 3);
                 ctx.fillStyle = WORK[1];
-                ctx.fillRect(px - side * (push - 1), py - 1, 1, 1);
+                ctx.fillRect(px - side * (push - 1), py - 1, 2, 2);
                 break;
             }
             case 'glint':
                 ctx.fillStyle = WORK[2];
-                ctx.fillRect(px, py - push, 1, 1);
-                ctx.fillRect(px - push, py, 1, 1);
-                ctx.fillRect(px + push, py, 1, 1);
+                ctx.fillRect(px - 1, py - push, 2, 2);
+                ctx.fillRect(px - push - 1, py - 1, 2, 2);
+                ctx.fillRect(px + push, py - 1, 2, 2);
                 break;
             default:
-                drawSlashes(ctx, px, py, side, push, 2, WORK[1], WORK[2]);
+                drawSlashes(ctx, px, py, side, push, 2, WORK[1], WORK[2], 2);
                 break;
         }
     }
@@ -109,14 +109,15 @@ export function drawWorkDownbeat(ctx, ritual, x, y, { side = 1, scale = 1, now =
 }
 
 // Three staircase slashes starting `offset` texels out from (px, py), each
-// `length` texels long, body tone then a lighter tip.
-function drawSlashes(ctx, px, py, side, offset, length, body, tip) {
+// `length` steps of `size`×`size` texels, body tone then a lighter tip.
+function drawSlashes(ctx, px, py, side, offset, length, body, tip, size = 1) {
+    const step = Math.max(1, size);
     for (const slash of SLASHES) {
         const sx = slash.dx * side;
         for (let i = 0; i < length; i++) {
-            const d = offset + i;
+            const d = offset + i * step;
             ctx.fillStyle = i === length - 1 ? tip : body;
-            ctx.fillRect(px + sx * d, py + slash.dy * d, 1, 1);
+            ctx.fillRect(px + sx * d, py + slash.dy * d, step, step);
         }
     }
 }

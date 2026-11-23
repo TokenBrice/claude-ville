@@ -69,10 +69,24 @@ export function buildApertureModel({ buildingType, capacity, sessions = [] } = {
         status: session.status || null,
         observation: session.observation || null,
     }));
+    let workingCount = 0;
+    let waitingCount = 0;
+    for (const session of presented) {
+        const isWorking = typeof session.working === 'boolean'
+            ? session.working
+            : session.status === 'working';
+        const isWaiting = typeof session.waiting === 'boolean'
+            ? session.waiting
+            : session.status === 'waiting_on_user' || session.status === 'waiting';
+        if (isWorking) workingCount++;
+        if (isWaiting) waitingCount++;
+    }
     return {
         buildingType: type,
         slots,
         overflow: Math.max(0, presented.length - slots.length),
+        workingCount,
+        waitingCount,
         source: presented.length && presented.every((session) => session.visiting === true)
             ? 'visit'
             : 'signal',

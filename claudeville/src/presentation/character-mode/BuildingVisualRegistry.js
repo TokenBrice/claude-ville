@@ -201,6 +201,8 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
             { at: [159.5, 160.5], w: 5, h: 9 },
             { at: [159.5, 172], w: 5, h: 8 },
         ],
+        // SW gable apex timber ridge, clear of the east chimney plume.
+        pennant: { at: [74, 56] },
         // 4.6 — the hearth fire is painted into base.png, so rest needs an
         // authored mask: `banked.png` restates exactly those pixels as stepped
         // charcoal over one ember course. A part (`partDrawsFor`) only while
@@ -252,6 +254,8 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
             { at: [76, 162], w: 7, h: 34 },
             { at: [84, 160], w: 5, h: 24 },
         ],
+        // Top of the wooden headframe's west post above the sheave wheel.
+        pennant: { at: [75, 19] },
         // Lantern light pooling on the plank threshold and running out along
         // the track toward the lower-left.
         doorSpill: {
@@ -365,6 +369,8 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
             { at: [218, 214], w: 4, h: 13 },
             { at: [248, 201], w: 3, h: 8 },
         ],
+        // NW gable ridge peak, clear of the SE chimney plume.
+        pennant: { at: [103, 12] },
         // The chimney mouth: the hearth smokes while the Tavern has patrons.
         effectAnchors: {
             smokeTop: [217, 36],
@@ -440,6 +446,9 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         effectAnchors: {
             // Fire exhaust leaves the cone's crown, not its occupancy rooms.
             smokeTop: [164, 50],
+            // Keeper's cottage stone chimney: smokes while someone watches/works
+            // at the Lighthouse (daytime occupied cue, separate from crown).
+            cottageSmokeTop: [108, 237],
             lanternFire: {
                 flame: [164, 97],
                 light: [164, 97],
@@ -485,6 +494,11 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
             { at: [94.5, 74.5], w: 5, h: 11 },
             { at: [84, 69.5], w: 4, h: 9 },
         ],
+        // Clock turret spire above the counting house (kept near the top-centre
+        // of the 384x284 footprint, clear of the outer-pier signal mast; if the
+        // Harbor sprite is rebuilt on the same footprint, recalibrate to the new
+        // roofline/turret apex).
+        pennant: { at: [176, 8] },
         // 6.4 — the stone chimney behind the gable: where its column leaves
         // the cap (ChimneySmoke; smoke only with a working visitor).
         effectAnchors: {
@@ -497,16 +511,16 @@ const WATCHTOWER_LANTERN_FIRE = BUILDING_VISUAL_REGISTRY.watchtower.effectAnchor
 
 export const BUILDING_EMITTER_FALLBACKS = {
     forge: [
-        { type: 'forgeEmber', at: [73, 152], chance: 0.06, count: 1 },
-        { type: 'forgeSpark', at: [104, 196], chance: 0.032, count: 1 },
+        { type: 'forgeEmber', at: [73, 152], chance: 0.16, count: 1 },
+        { type: 'forgeSpark', at: [104, 196], chance: 0.22, count: 2 },
     ],
     mine: [
-        { type: 'mineDust', at: [76, 186], chance: 0.035, count: 1 },
-        { type: 'mining', at: [70, 194], chance: 0.026, count: 1 },
+        { type: 'mineDust', at: [76, 186], chance: 0.045, count: 1 },
+        { type: 'mining', at: [70, 194], chance: 0.032, count: 1 },
     ],
     portal: [
-        { type: 'portalRune', at: [156, 128], chance: 0.05, count: 1 },
-        { type: 'sparkle', at: [92, 158], chance: 0.025, count: 1 },
+        { type: 'portalRune', at: [156, 128], chance: 0.12, count: 1 },
+        { type: 'sparkle', at: [92, 158], chance: 0.06, count: 1 },
     ],
     watchtower: [
         { type: 'forgeEmber', at: WATCHTOWER_LANTERN_FIRE.particle, stepMs: 1120, count: 1 },
