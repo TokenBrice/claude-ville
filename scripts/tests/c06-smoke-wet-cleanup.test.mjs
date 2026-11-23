@@ -68,8 +68,12 @@ test('C-06 smoke: real MotionClock cold boot (t=0, Frame 1 null atmo), single Ma
         assert.equal(coldTower.length, 4, 'real 60 Hz cold boot night Pharos pre-seeds 1 mouth + 3 staggered puffs');
         assert.equal(gov._region(100, 200).region.working, 1, 'pre-seed consumes only 1 MarkGovernor slot at Forge');
         assert.equal(gov._region(500, 120).region.working, 1, 'pre-seed consumes only 1 MarkGovernor slot at Pharos');
+        // The top pre-seeded puff has aged 0.48 of a random life (104–131 frames)
+        // at a random rise speed (0.46–0.54 px a frame), so it stands at least
+        // 0.48 × 104 × 0.46 ≈ 22.96 px above the mouth and at most about 34 px.
+        // Assert that floor, not one draw from the range.
         const heights = coldForge.map(p => 200 - p.y).sort((a, b) => a - b);
-        assert.ok(heights[0] === 0 && heights[3] >= 25, `staggered column rises cleanly: ${heights.join(', ')}`);
+        assert.ok(heights[0] === 0 && heights[3] >= 22.9, `staggered column rises cleanly: ${heights.join(', ')}`);
 
         // 2. Booting empty at noon spawns 0 puffs; mid-session activation and live dusk
         //    transition each emit ONLY 1 mouth puff (never 4 at once — REVIEW.md:113).
