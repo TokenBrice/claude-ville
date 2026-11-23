@@ -73,10 +73,17 @@ const HALF_RUNG_BACKING_DPR = 2;
 const HALF_RUNGS = Object.freeze([1.5, 2.5]);
 
 // 4.1 — shot scales by visible world AREA (world px²), never by tier index:
-// each is the resting tier ≥ 1 whose visible area is log-nearest the target
-// (relaxed 2026-11-23, operator decision: medium lowered from 0.55e6 to 0.48e6
-// so 1440 × 900 keeps zoom 2 beside 1920 × 1080).
-const SHOT_SCALE_AREA = Object.freeze({ wide: 1.4e6, medium: 0.48e6, close: 0.2e6 });
+// each is the resting tier ≥ 1 whose visible area is log-nearest the target.
+// The Auto rest (`autoRestTier`, relaxed 2026-11-23, operator decision) floors
+// these at tier 2 on desktop, so 1440 × 900 rests at zoom 2 beside 1920 × 1080
+// without moving the medium scale MB-1's wide/medium match depends on.
+const SHOT_SCALE_AREA = Object.freeze({ wide: 1.4e6, medium: 0.55e6, close: 0.2e6 });
+// The Auto rest's tier-2 floor applies from this World canvas width (CSS px)
+// up, and never in the mobile profile.
+const AUTO_REST_MIN_DESKTOP_WIDTH = 960;
+// ...and only while that zoom-2 rung still shows this much world (px²): a
+// 150 % laptop's small canvas keeps its medium scale instead.
+const AUTO_REST_MIN_AREA = 0.24e6;
 const SHOT_SCALE_NAMES = Object.freeze(['survey', 'wide', 'medium', 'close']);
 // Before the viewport is laid out the shots fall back to the old labels.
 const FALLBACK_SHOT_TIER = Object.freeze({ survey: null, wide: 1, medium: 2, close: 3 });
@@ -334,7 +341,13 @@ export function shotScaleTiers(viewportW, viewportH, zoomSteps) {
     // When tier 1 is already tighter than the wide target (e.g. 1080p at 150%
     // scaling where tier 1 is k = 2 at zoom 4/3), allow the k = 1 survey rung
     // as `wide` so the full island fits.
-    const widePool = tierOneArea < SHOT_SCALE_AREA.wide ? shots : framing;
+    // Desktop-wide scaled ladders only (tier 1 above zoom 1): a phone canvas
+    // keeps its wide on tier 1 instead of falling to the 1/dpr survey rung.
+    const widePool = tierOneArea < SHOT_SCALE_AREA.wide
+        && tierOne && tierOne.zoom > 1 + 1e-6
+        && width >= AUTO_REST_MIN_DESKTOP_WIDTH
+        ? shots
+        : framing;
     const nearest = (target, pool = framing) => {
         let best = null;
         for (const { zoom } of pool) {
@@ -1044,7 +1057,7 @@ export class Camera {
     // for the wide is land-weighted, not widened back to the survey), or an
     // authored pose (scenario metadata). Reduced motion cuts straight to the
     // target frame.
-    establishingShot(wideBox, { targetBox = null, targetPose = null, maxZoom = this.shotTier('medium') } = {}) {
+    establishingShot(wideBox, { targetBox = null, targetPose = null, maxZoom = this.autoRestTier() } = {}) {
         const w = this._viewportWidth();
         const h = this._viewportHeight();
         if (!w || !h) return false;
@@ -1154,6 +1167,33 @@ export class Camera {
     // C6 — this is also the revocation point: a genuine input bumps the input
     // epoch and drops any exclusive claim (Ambient) on the spot. Nothing
     // re-acquires a claim on a timer; the operator has to ask again.
+    // The Auto rest (relaxed 2026-11-23, operator decision): the tier ordinary
+    // Auto, the opening and villager follow settle on. It is the medium shot
+    // scale, floored on a desktop World canvas at the first shot rung of zoom 2
+    // (two CSS px per texel: tier 2 at DPR 1 and 2, the k = 3 rung at 150 %),
+    // so villagers read at twice the island scale at 1920 × 1080 and
+    // 1440 × 900 alike. The mobile profile keeps the plain medium scale.
+    autoRestTier() {
+        const medium = this.shotTier('medium');
+        const base = Number.isFinite(medium) ? medium : 2;
+        const mobile = typeof document !== 'undefined'
+            && document.documentElement?.dataset?.cvProfile === 'mobile';
+        if (mobile || this._viewportWidth() < AUTO_REST_MIN_DESKTOP_WIDTH) return base;
+        const steps = this.zoomSteps || [];
+        const tiers = this.zoomTiers || [];
+        const rungs = this._glideRungs || steps;
+        const vw = this._viewportWidth();
+        const vh = this._viewportHeight();
+        let floor = null;
+        for (let index = 0; index < steps.length; index++) {
+            const zoom = steps[index];
+            if (zoom < 2 - 1e-6 || !rungs.includes(zoom)) continue;
+            if ((vw / zoom) * (vh / zoom) >= AUTO_REST_MIN_AREA) floor = tiers[index];
+            break;
+        }
+        return Number.isFinite(floor) ? Math.max(base, floor) : base;
+    }
+
     noteUserInput() {
         const now = performance.now();
         this._lastInputAt = now;
@@ -1254,7 +1294,7 @@ export class Camera {
         // (`shotZoom('medium')`, z2 at 1080p/1440×900) instead of tier 3, and
         // preserves the user's zoom when switching between followed villagers
         // at wide or closer.
-        const mediumZoom = this.shotZoom('medium') || this.tierZoom(2);
+        const mediumZoom = this.tierZoom(this.autoRestTier()) || this.shotZoom('medium') || this.tierZoom(2);
         const wideZoom = this.shotZoom('wide') || this.tierZoom(1);
         const keepZoom = wasFollowing && this.zoom >= wideZoom - 1e-6;
         const farZoomedOut = !keepZoom && this.zoom < mediumZoom - 1e-6;
@@ -1688,8 +1728,13 @@ export class Camera {
 
     _onMouseDown(e) {
         if (e.button !== 0) return;
-        // Wait for an 8 CSS px drag slop (matching touch pan) before aborting
-        // a glide or stopping follow, so a plain click never interrupts them.
+        // A press is operator input (it revokes Ambient, yields the tour, ends
+        // the idle drift and stops a fling), but waits for an 8 CSS px drag
+        // slop (matching touch pan) before aborting a glide or stopping
+        // follow, so a plain click never interrupts them.
+        this.noteUserInput();
+        this._endIdleDrift();
+        this._momentum = null;
         this._mousePress = { startX: e.clientX, startY: e.clientY };
     }
 

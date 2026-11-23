@@ -56,8 +56,14 @@ const markInColumns = (view, mark) => mark.minX >= view.left && mark.maxX <= vie
 const bodyWhole = (view, body) => body.x - 20 >= view.left && body.x + 20 <= view.left + view.w
     && body.y - 76 >= view.top && body.y + 6 <= view.top + view.h;
 
-test('1440×900 at DPR 1 keeps medium at z2 (relaxed 2026-11-23, operator decision)', () => {
-    assert.deepEqual(scalesFor(1200, 852, 1), { survey: null, wide: 1, medium: 2, close: 2 });
+test('1440×900 at DPR 1 rests Auto at z2 although its medium scale is z1 (relaxed 2026-11-23, operator decision)', () => {
+    assert.deepEqual(scalesFor(1200, 852, 1), { survey: null, wide: 1, medium: 1, close: 2 });
+    const camera = new Camera(canvasOf(1200, 852));
+    assert.equal(camera.autoRestTier(), 2);
+    const hd = new Camera(canvasOf(1680, 1032));
+    assert.equal(hd.autoRestTier(), 2);
+    const qhd = new Camera(canvasOf(2320, 1392));
+    assert.equal(qhd.autoRestTier(), 2, '2560×1440 keeps z2, not the z3 close scale');
 });
 
 test('1920×1080 at DPR 1 has no survey: wide 1, medium 2, close 3', () => {
@@ -68,8 +74,8 @@ test('5120×1440 at DPR 1 surveys 1:1 at z1 and rests the wide at z2, the medium
     assert.deepEqual(scalesFor(4880, 1392, 1), { survey: 1, wide: 2, medium: 3, close: 3 });
 });
 
-test('2560×1440 at DPR 1 surveys at z1 with wide 2 and medium 3', () => {
-    assert.deepEqual(scalesFor(2320, 1392, 1), { survey: 1, wide: 2, medium: 3, close: 3 });
+test('2560×1440 at DPR 1 surveys at z1 and meets wide and medium at z2', () => {
+    assert.deepEqual(scalesFor(2320, 1392, 1), { survey: 1, wide: 2, medium: 2, close: 3 });
 });
 
 test('1512×982 at DPR 2 keeps shots on logical tiers even where a half rung is nearer', () => {
@@ -91,8 +97,16 @@ test('150% scaling (dpr 1.5) exposes k = 1 and k = 3 integer rungs and distinct 
     }
     // 1080p @ 150% (1280×720 viewport → 1040×672 canvas): wide k=1, medium k=2, close k=3
     assert.deepEqual(scalesFor(1040, 672, 1.5), { survey: null, wide: 2 / 3, medium: 4 / 3, close: 2 });
-    // 1440p @ 150% (1707×960 viewport → 1467×912 canvas): survey k=1, wide k=2, medium k=3, close k=4
-    assert.deepEqual(scalesFor(1467, 912, 1.5), { survey: 2 / 3, wide: 4 / 3, medium: 2, close: 8 / 3 });
+    // 1440p @ 150% (1707×960 viewport → 1467×912 canvas): survey k=1, wide and medium k=2, close k=4
+    assert.deepEqual(scalesFor(1467, 912, 1.5), { survey: 2 / 3, wide: 4 / 3, medium: 4 / 3, close: 8 / 3 });
+    // The Auto rest floors at zoom 2 (k = 3) where that still shows enough
+    // world; the small 1080p @ 150% canvas keeps its medium scale.
+    const qhd150 = new Camera(canvasOf(1467, 912, 1.5));
+    assert.equal(qhd150.tierZoom(qhd150.autoRestTier()), 2);
+    const hd150 = new Camera(canvasOf(1040, 672, 1.5));
+    assert.equal(hd150.tierZoom(hd150.autoRestTier()), 4 / 3);
+    // A phone-size canvas never falls to the 1/dpr survey rung as its wide.
+    assert.equal(scalesFor(390, 700, 3).wide, 1);
 });
 
 test('backing DPR 2 exposes every whole backing-pixel scale; DPR 1 keeps three tiers', () => {
@@ -131,13 +145,13 @@ test('an Ambient cohort shot frames only the members standing at its building', 
     assert.ok(nobodyThere.box.minX <= center.x && nobodyThere.box.maxX >= center.x, 'the building alone');
 });
 
-// MB-1 — where wide and medium shot scales coincide (both z2 on a 2200 × 1290
-// world canvas at DPR 1), the broadcast's wide steps out to the survey (z1),
-// the scale the opening frames the island at, and keeps the isle landmarks'
-// crowns: the Belfry is the account instrument.
-test('where wide and medium meet at z2, the Ambient wide is the opening\'s island scale and keeps the Belfry crown (MB-1)', () => {
-    assert.deepEqual(scalesFor(2200, 1290, 1), { survey: 1, wide: 2, medium: 2, close: 3 });
-    const camera = new Camera(canvasOf(2200, 1290));
+// MB-1 — a 2508 × 1398 window at DPR 1 (the World canvas 2268 × 1350) meets
+// wide and medium at z2, so the broadcast's establishing shot was a z2 crop.
+// Its wide steps out to the survey, the scale the opening frames the island
+// at, and keeps the isle landmarks' crowns: the Belfry is the account instrument.
+test('2268×1350 at DPR 1: the Ambient wide is the opening\'s island scale and keeps the Belfry crown (MB-1)', () => {
+    assert.deepEqual(scalesFor(2268, 1350, 1), { survey: 1, wide: 2, medium: 2, close: 3 });
+    const camera = new Camera(canvasOf(2268, 1350));
     camera.setSpriteMetrics(spriteMetrics);
     const director = new CameraDirector(camera);
     const bodies = [{ x: -400, y: 980 }, { x: 260, y: 1010 }, { x: -60, y: 760 }];

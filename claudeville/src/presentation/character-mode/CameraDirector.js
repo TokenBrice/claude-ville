@@ -65,7 +65,8 @@ const COMMAND_QUEUE_HEAD = COMMAND_QUEUE?.slots?.[0]
 // distance-scaled duration ×2.2). 4.1/M8 — shots are sized by visible world
 // area: the wide rests at `scales.wide` (z2 at 5120 × 1440 DPR 1) and
 // cohorts and chapters at `scales.medium` at most (z3 there); ordinary Auto
-// rests up to `scales.medium` (relaxed 2026-11-23, operator decision).
+// rests up to the Auto rest, `Camera.autoRestTier()` (relaxed 2026-11-23,
+// operator decision).
 // 5.2 — the chapter's bars stay up this long after the move settles.
 const AMBIENT_CHAPTER_LETTERBOX_MS = 3000;
 
@@ -1184,7 +1185,7 @@ export class CameraDirector {
     // a settled or user-chosen medium view instead of pulling back to wide, and
     // never zooms in uninvited beyond medium.
     _currentMaxZoom() {
-        const medium = this.camera?.shotTier?.('medium') ?? 2;
+        const medium = this.camera?.autoRestTier?.() ?? this.camera?.shotTier?.('medium') ?? 2;
         const tier = this.camera?.currentZoomTier?.();
         return Number.isFinite(tier) ? Math.min(medium, tier) : medium;
     }
