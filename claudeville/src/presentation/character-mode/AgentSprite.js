@@ -1290,6 +1290,7 @@ export class AgentSprite {
         // bubbleBaseY with its leader landing bubbleAnchorDy screen px below.
         this.bubbleSlot = null;
         this.bubbleLateral = 0;
+        this.bubbleClampX = 0;
         this.bubbleOccluded = false;
         this.bubbleBaseY = 0;
         this.bubbleAnchorDy = 0;
@@ -7048,9 +7049,10 @@ export class AgentSprite {
         // the Activity Panel carries its words.
         if (isAttentionStatus(this.agent?.status)) return;
         const lateral = this.bubbleLateral || 0;
+        const clampX = this.bubbleClampX || 0;
         const slot = this.bubbleSlot || 0;
         const occluded = this.bubbleOccluded === true;
-        const leader = lateral !== 0 || slot !== 0 || occluded;
+        const leader = lateral !== 0 || clampX !== 0 || slot !== 0 || occluded;
         if (phase === THOUGHT_PAINT.LEADER && !leader) return;
         // The reservation pass built this frame's thread; the column phase
         // consumes it.
@@ -7065,13 +7067,13 @@ export class AgentSprite {
         // attribution), whose representative draws it once with a ×N count.
         if (this.bubbleMergedInto && !this.selected) return;
         const repoAccent = useClock ? null : this.thoughtRepoAccent();
-        const tag = !useClock && (lateral !== 0 || occluded) ? this.thoughtSpeakerTag() : '';
+        const tag = !useClock && (lateral !== 0 || clampX !== 0 || occluded) ? this.thoughtSpeakerTag() : '';
         const column = layoutThoughtColumn(
             this._paintColumn || (this._paintColumn = createThoughtColumn()),
             thread, useClock, Boolean(repoAccent), tag.length, this.bubbleMergedCount || 1,
             this._thoughtHistoryLimit ?? THOUGHT_HISTORY_LIMIT,
         );
-        const shiftX = thoughtLateralShift(column, lateral);
+        const shiftX = thoughtLateralShift(column, lateral) + clampX;
         const slotShift = -slot * THOUGHT_STACK_STEP;
         const head = thread[0] || null;
         const accent = head?.accent || this._statusVisual().color;
