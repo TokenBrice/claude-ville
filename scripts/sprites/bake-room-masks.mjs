@@ -45,7 +45,6 @@ export function roomRectsFor(visual) {
 export const ROOM_PANE_GROUPS = Object.freeze({
     taskboard: [[0, 1], [2, 3]],
     forge: [[0, 1], [2, 3]],
-    harbor: [[0, 1], [2, 3, 4], [5, 6], [7, 8, 9, 10]],
 });
 
 function groupLeader(type, slot) {
