@@ -84,7 +84,7 @@ Choose **Signals** for attention bells or **Town band** for music with the same 
 | --- | --- |
 | **Claude Code** | `~/.claude/` |
 | **OpenAI Codex CLI** | `~/.codex/sessions/` |
-| **Google Antigravity (`agy`)** | `~/.gemini/antigravity-cli/` (plus best-effort discovery of `~/.gemini/antigravity/` and `~/.gemini/antigravity-ide/`) |
+| **Google Antigravity (`agy`)** | `~/.gemini/antigravity-cli/` (plus best-effort discovery of `~/.gemini/antigravity/`, `~/.gemini/antigravity-ide/` and T3 Code's `~/.t3/userdata/providers/antigravity/*/antigravity-acp/`) |
 | **Google Gemini CLI** | `~/.gemini/tmp/` |
 | **xAI Grok CLI** | `~/.grok/sessions/` |
 | **Kimi / Kimi Code** | `~/.kimi/sessions/` and `~/.kimi-code/sessions/` |

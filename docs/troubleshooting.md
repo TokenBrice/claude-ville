@@ -32,7 +32,7 @@ Provider scan windows also matter:
 - Claude uses recent `history.jsonl` entries to find active sessions, then checks recent project/session files.
 - Codex scans recent date folders under `~/.codex/sessions/YYYY/MM/DD/` and filters by file activity.
 - Gemini reads recent chat JSON files under `~/.gemini/tmp/<project_hash>/chats/`.
-- Antigravity reads conversation step transcripts under `~/.gemini/antigravity-cli/brain/<conversation-id>/.system_generated/logs/transcript.jsonl` (plus best-effort discovery of `~/.gemini/antigravity/` and `~/.gemini/antigravity-ide/`), paired with `history.jsonl`, explicit `/rename` titles in `annotations/<conversation-id>.pbtxt`, and `cache/last_conversations.json`.
+- Antigravity reads conversation step transcripts under `~/.gemini/antigravity-cli/brain/<conversation-id>/.system_generated/logs/transcript.jsonl` (plus best-effort discovery of `~/.gemini/antigravity/`, `~/.gemini/antigravity-ide/` and T3 Code's `~/.t3/userdata/providers/antigravity/<instance>/antigravity-acp/`), paired with `history.jsonl`, explicit `/rename` titles in `annotations/<conversation-id>.pbtxt`, and `cache/last_conversations.json`.
 - Grok reads session summaries and chat history under `~/.grok/sessions/<url-encoded-cwd>/<session-id>/`.
 - Kimi reads recent legacy `~/.kimi/sessions/<project_hash>/<session_uuid>/wire.jsonl` data and resolves project hashes from Kimi config and common local work directories. Kimi Code sessions are read from `~/.kimi-code/sessions/<workspace>/<session_uuid>/agents/<agent>/wire.jsonl` and mapped back to projects through `~/.kimi-code/session_index.jsonl`.
 - OpenCode reads recent rows from `~/.local/share/opencode/opencode.db` in read-only mode.

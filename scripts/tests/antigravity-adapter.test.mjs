@@ -633,3 +633,39 @@ test('Antigravity reads a closed turn that waits on its own background task as w
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test('Antigravity discovers T3 Code agy acp conversations under ~/.t3 when no root is set', () => {
+  const tmp = makeTempDir('cv-antigravity-t3-');
+  const savedHome = process.env.HOME;
+  const savedRoot = process.env.CLAUDEVILLE_ANTIGRAVITY_DIR;
+  try {
+    process.env.HOME = tmp;
+    delete process.env.CLAUDEVILLE_ANTIGRAVITY_DIR;
+    const convId = 'dddddddd-5555-4555-8555-555555555555';
+    const now = Date.parse('2026-11-23T12:47:00Z');
+    const acpDir = path.join(tmp, '.t3', 'userdata', 'providers', 'antigravity', 'ac0a3dfd', 'antigravity-acp');
+    writeFile(path.join(acpDir, 'brain', convId, '.system_generated', 'logs', 'transcript.jsonl'), `${JSON.stringify({
+      step_index: 0,
+      source: 'MODEL',
+      type: 'PLANNER_RESPONSE',
+      status: 'DONE',
+      created_at: new Date(now - 5_000).toISOString(),
+      model: 'gemini-4-neon-high',
+      input_tokens: 100,
+      output_tokens: 20,
+      content: 'Done.',
+    })}\n`, now - 5_000);
+
+    const adapter = new AntigravityAdapter({ now: () => now });
+    assert.equal(adapter.isAvailable(), true);
+    const session = adapter.getActiveSessions(2 * 60_000).find(s => s.sessionId === `antigravity-${convId}`);
+    assert.ok(session, 'a T3 Code conversation is discovered');
+    assert.equal(session.model, 'gemini-4-neon');
+    assert.ok(adapter.getWatchPaths({ sessions: [] }).some(p => p.path === path.join(acpDir, 'brain')));
+  } finally {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    if (savedRoot !== undefined) process.env.CLAUDEVILLE_ANTIGRAVITY_DIR = savedRoot;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

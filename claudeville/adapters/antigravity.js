@@ -7,6 +7,10 @@
  * `cache/last_conversations.json`, conversation summaries/timestamps in
  * `cache/conversation_metadata.json`, and user defaults in `settings.json`.
  *
+ * T3 Code runs each Antigravity thread as `agy acp` with a private data
+ * directory, `~/.t3/userdata/providers/antigravity/<instance>/antigravity-acp/`,
+ * which keeps the same layout and is discovered as one more surface.
+ *
  * Subagents (`invoke_subagent`), workflows (`run_workflow`), and native swarms
  * (`swarm` / `send_message` / `post_message`) write their own conversation
  * transcripts under `brain/<child-id>/` and link back to their parent via the
@@ -920,6 +924,22 @@ function presentReducedEntry(reduced, { now = Date.now(), lineage = null, backgr
   };
 }
 
+// T3 Code starts agy as `agy acp --gemini-dir ~/.t3/userdata/providers/antigravity/<instance>
+// --app-data-dir antigravity-acp`, one directory per provider instance.
+function t3AcpDirs() {
+  const instancesDir = path.join(os.homedir(), '.t3', 'userdata', 'providers', 'antigravity');
+  let entries;
+  try {
+    entries = fs.readdirSync(instancesDir, { withFileTypes: true });
+  } catch (error) {
+    noteReadFailure(error);
+    return [];
+  }
+  return entries
+    .filter(entry => entry.isDirectory())
+    .map(entry => path.join(instancesDir, entry.name, 'antigravity-acp'));
+}
+
 class AntigravityAdapter {
   constructor(options = {}) {
     this.name = 'Antigravity';
@@ -951,6 +971,7 @@ class AntigravityAdapter {
       this.homeDir,
       path.join(geminiDir, 'antigravity'),
       path.join(geminiDir, 'antigravity-ide'),
+      ...t3AcpDirs(),
     ])];
   }
 
