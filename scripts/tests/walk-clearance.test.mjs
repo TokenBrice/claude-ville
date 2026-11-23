@@ -1,13 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { PerformanceObserver } from 'node:perf_hooks';
 
 import { BUILDING_DEFS } from '../../claudeville/src/config/buildings.js';
 import { MAP_SIZE } from '../../claudeville/src/config/constants.js';
 import { inVillageMasonry, VILLAGE_GATE, VILLAGE_GATE_GEOMETRY } from '../../claudeville/src/config/townPlan.js';
+import { Agent } from '../../claudeville/src/domain/entities/Agent.js';
 import { Building } from '../../claudeville/src/domain/entities/Building.js';
 import { AgentSprite } from '../../claudeville/src/presentation/character-mode/AgentSprite.js';
 import { getCoastField } from '../../claudeville/src/presentation/character-mode/CoastBake.js';
 import { GATE_ENTRY_LANES, IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
+import { LandmarkActivity } from '../../claudeville/src/presentation/character-mode/LandmarkActivity.js';
 import { Pathfinder } from '../../claudeville/src/presentation/character-mode/Pathfinder.js';
 import { tileToWorld } from '../../claudeville/src/presentation/character-mode/Projection.js';
 import { SceneryEngine } from '../../claudeville/src/presentation/character-mode/SceneryEngine.js';
@@ -164,4 +167,167 @@ test('PERFORMING_FAN skips wall/water offsets and falls back to clear neighbours
         assert.equal(renderer._isSpriteStandable(sprite, place.x, place.y), true, `fan place ${i} is continuously standable`);
         taken.push(place);
     }
+});
+
+test('inVillageMasonry and WalkClearance.isWorldClear run allocation-free on the hot path', async () => {
+    const { clearance } = buildWorldFixture();
+
+    // Behavioral parity inside the masonry band: wall, drums, sea tower, arch opening, and clear verge.
+    assert.equal(inVillageMasonry(19.0, 39.1, 0.3), false, 'arch centre is clear');
+    assert.equal(inVillageMasonry(19.0 + VILLAGE_GATE_GEOMETRY.towerX[0], 39.1, 0.3), true, 'west gate drum is masonry');
+    assert.equal(inVillageMasonry(19.0 + VILLAGE_GATE_GEOMETRY.towerX[1], 39.1, 0.3), true, 'east gate drum is masonry');
+    assert.equal(inVillageMasonry(34.35, 39.1, 0.3), true, 'sea tower drum is masonry');
+    assert.equal(inVillageMasonry(10.0, 39.1, 0.3), true, 'west curtain wall is masonry');
+    assert.equal(inVillageMasonry(10.0, 38.6, 0.3), false, 'clear point inside masonry Y-band passes full loop');
+
+    const mid = tileToWorld(15, 19);
+    const runMasonryFullLoop = (n) => {
+        let hits = 0;
+        for (let i = 0; i < n; i++) {
+            if (inVillageMasonry(10.0, 38.6, 0.3)) hits++;
+        }
+        return hits;
+    };
+    const runWorldClear = (n) => {
+        let ok = 0;
+        for (let i = 0; i < n; i++) {
+            if (clearance.isWorldClear(mid.x, mid.y)) ok++;
+        }
+        return ok;
+    };
+
+    // Warm JIT before observing GC.
+    assert.equal(runMasonryFullLoop(250000), 0);
+    assert.equal(runWorldClear(250000), 250000);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    let gcEvents = 0;
+    const obs = new PerformanceObserver((list) => { gcEvents += list.getEntries().length; });
+    obs.observe({ entryTypes: ['gc'] });
+    const heapBefore = process.memoryUsage().heapUsed;
+    try {
+        assert.equal(runMasonryFullLoop(1000000), 0);
+        assert.equal(runWorldClear(1000000), 1000000);
+    } finally {
+        const heapAfter = process.memoryUsage().heapUsed;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        obs.disconnect();
+        assert.ok(heapAfter - heapBefore < 2 * 1024 * 1024, `expected near-zero heap growth across 2M checks, got ${heapAfter - heapBefore} B`);
+    }
+    assert.equal(gcEvents, 0, `expected 0 GC events across 2M hot clearance checks, observed ${gcEvents}`);
+});
+
+test('gate entry lanes release two abreast and sustain base 30-arrival throughput', () => {
+    const { pathfinder, bridgeTiles } = buildWorldFixture();
+    const renderer = Object.create(IsometricRenderer.prototype);
+    renderer.agentSprites = new Map();
+    renderer.gateTransits = new Map();
+    renderer._gateEntryQueue = [];
+    renderer.motionScale = 1;
+    renderer._markSpritesDirty = () => {};
+
+    const sprites = [];
+    for (let i = 0; i < 30; i++) {
+        const agent = new Agent({
+            id: `gate-burst-${i}`,
+            name: `Burst ${i}`,
+            provider: 'claude',
+            model: 'claude-sonnet-4-5',
+            status: 'working',
+        });
+        const sprite = new AgentSprite(agent, { pathfinder, bridgeTiles, deferInitialTarget: true });
+        renderer.agentSprites.set(agent.id, sprite);
+        sprites.push(sprite);
+        renderer._walkInThroughGate(agent, sprite);
+    }
+
+    const activeFrame0 = sprites.filter((s) => !s.isArrivalPending());
+    assert.equal(activeFrame0.length, 2, 'both gate lanes release abreast on frame 0');
+    assert.notEqual(
+        renderer.gateTransits.get(activeFrame0[0].agent.id)?.lane,
+        renderer.gateTransits.get(activeFrame0[1].agent.id)?.lane,
+        'the two initial entrants occupy distinct gate lanes',
+    );
+
+    let queueEmptyFrame = -1;
+    let frames = 0;
+    while (frames < 800) {
+        if (queueEmptyFrame < 0 && renderer._gateEntryQueue.length === 0) queueEmptyFrame = frames;
+        if (renderer._gateEntryQueue.length === 0 && renderer.gateTransits.size === 0) break;
+        frames++;
+        for (const sprite of sprites) {
+            sprite.update(null, 1000 / 60);
+            const transit = renderer.gateTransits.get(sprite.agent.id);
+            if (transit && !sprite.moving && sprite.hasReachedTarget()) {
+                renderer.gateTransits.delete(sprite.agent.id);
+            }
+        }
+        renderer._releaseGateEntries();
+    }
+
+    assert.equal(renderer._gateEntryQueue.length, 0);
+    assert.equal(renderer.gateTransits.size, 0);
+    assert.ok(queueEmptyFrame > 0 && queueEmptyFrame <= 360, `30 arrivals should clear the queue near base 337 frames, got ${queueEmptyFrame}`);
+});
+
+test('_subagentLandingTile respects continuous WalkClearance pads and avoids building/shore edges', () => {
+    const { buildings, pathfinder, bridgeTiles, coastField, clearance } = buildWorldFixture();
+    const renderer = Object.create(IsometricRenderer.prototype);
+    renderer.world = { buildings };
+    renderer.pathfinder = pathfinder;
+    renderer.bridgeTiles = bridgeTiles;
+    renderer._coastField = coastField;
+    renderer.agentSprites = new Map();
+
+    // Occupy every visit tile so _subagentLandingTile must pick ring landings.
+    const reservations = new Map();
+    let idx = 0;
+    for (const b of buildings.values()) {
+        for (const t of b.visitTiles || []) {
+            reservations.set(`res-${idx}`, { agentId: `res-${idx}`, tileX: t.tileX, tileY: t.tileY });
+            idx++;
+        }
+    }
+    renderer.visitTileAllocator = { reservations };
+
+    let tested = 0;
+    for (const b of buildings.values()) {
+        for (const vt of b.visitTiles || []) {
+            const parentPos = tileToWorld(vt.tileX, vt.tileY);
+            const parentSprite = {
+                agent: { id: 'parent' },
+                x: parentPos.x,
+                y: parentPos.y,
+                _screenToTile: () => ({ tileX: vt.tileX, tileY: vt.tileY }),
+                getBehaviorDebugSnapshot: () => ({ building: b.type }),
+            };
+            const landing = renderer._subagentLandingTile({ id: `child-${tested}` }, parentSprite);
+            if (!landing) continue;
+            tested++;
+            assert.equal(
+                clearance.isTileClear(landing.tileX, landing.tileY),
+                true,
+                `ring landing (${landing.tileX.toFixed(2)},${landing.tileY.toFixed(2)}) near ${b.type} must pass continuous WalkClearance`,
+            );
+        }
+    }
+    assert.ok(tested >= 30, `verified ${tested} ring landings`);
+});
+
+test('Watchtower entrance grounds on its visible tile and frontage skips water columns', () => {
+    const { buildings, scenery, bridgeTiles } = buildWorldFixture();
+    const watchtower = buildings.get('watchtower');
+    const activity = new LandmarkActivity({ world: { buildings } });
+    const ground = activity._entranceGround('watchtower');
+    const expected = tileToWorld(watchtower.entrance.tileX + 0.5, watchtower.entrance.tileY + 0.5);
+    assert.deepEqual(ground, expected, 'Watchtower activity chips ground at the moved entrance tile centre');
+
+    const renderer = Object.create(IsometricRenderer.prototype);
+    renderer.world = { buildings };
+    renderer.waterTiles = scenery.getWaterTiles();
+    renderer.bridgeTiles = bridgeTiles;
+    const keys = renderer._buildingFrontageKeys(watchtower);
+    assert.equal(keys.includes('26,8'), false, 'water tile (26,8) excluded from Watchtower frontage');
+    assert.equal(keys.includes('26,9'), false, 'water tile (26,9) excluded from Watchtower frontage');
+    assert.equal(keys.includes('26,13'), true, 'dry entrance corner (26,13) stays in Watchtower frontage');
 });

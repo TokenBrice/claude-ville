@@ -89,7 +89,7 @@ export const VISIT_OVERFLOW_TILES = Object.freeze({
         { tileX: 8, tileY: 34, overflow: true, reason: 'portal-lawn' },
     ],
     tavern: [
-        { tileX: 20, tileY: 21, overflow: true, reason: 'tavern-lawn' },
+        { tileX: 20, tileY: 19, overflow: true, reason: 'tavern-lawn' },
         { tileX: 23, tileY: 12, overflow: true, reason: 'tavern-lawn' },
         { tileX: 22, tileY: 11, overflow: true, reason: 'tavern-lawn' },
     ],
@@ -341,7 +341,7 @@ export const BUILDING_DEFS = [
             queueSlot(3, 35, { x: 3.5, y: 31.0 }, { queueGroup: 'portal-court', reason: 'portal-court' }),
             queueSlot(5, 35, { x: 3.5, y: 31.0 }, { queueGroup: 'portal-court', reason: 'portal-court' }),
             scenicSlot(7, 30, { x: 3.5, y: 31.0 }, { queueGroup: 'portal-runes', stance: 'ward' }),
-            scenicSlot(7, 32, { x: 3.5, y: 31.0 }, { queueGroup: 'portal-runes', stance: 'ward' }),
+            scenicSlot(7, 29, { x: 3.5, y: 31.0 }, { queueGroup: 'portal-runes', stance: 'ward' }),
         ],
         walkExclusion: [
             { dx: 0, dy: 4, width: 5, height: 1 },
@@ -416,8 +416,6 @@ export const BUILDING_DEFS = [
             workSlot(30, 20, { x: 34.0, y: 19.0 }, { queueGroup: 'harbor-ledger', stance: 'dispatch' }),
             workSlot(29, 20, { x: 34.0, y: 19.0 }, { queueGroup: 'harbor-ledger', stance: 'dispatch' }),
             workSlot(28, 20, { x: 34.0, y: 19.0 }, { queueGroup: 'harbor-ledger', stance: 'dispatch' }),
-            queueSlot(27, 19, { x: 34.0, y: 19.0 }, { queueGroup: 'harbor-quay', reason: 'quay' }),
-            scenicSlot(26, 17, { x: 34.0, y: 19.0 }, { queueGroup: 'harbor-quay', stance: 'watch', reason: 'quay' }),
             queueSlot(27, 21, { x: 34.0, y: 19.0 }, { queueGroup: 'harbor-pier', reason: 'pier' }),
             scenicSlot(26, 21, { x: 34.0, y: 19.0 }, { queueGroup: 'harbor-pier', stance: 'watch', reason: 'pier' }),
         ],

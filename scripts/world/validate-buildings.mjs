@@ -146,7 +146,7 @@ function validateScalarFields(reporter, building, mapSize) {
     }
 }
 
-function validateCapacity(reporter, building) {
+function validateCapacity(reporter, building, approachFiles) {
     const capacity = building.capacity;
     if (!capacity || typeof capacity !== 'object' || Array.isArray(capacity)) {
         reporter.error(pathFor(building, 'capacity'), 'must be an object');
@@ -157,12 +157,17 @@ function validateCapacity(reporter, building) {
             reporter.error(pathFor(building, `capacity.${field}`), 'must be a non-negative integer');
         }
     }
-    const visitCount = Array.isArray(building.visitTiles) ? building.visitTiles.length : 0;
-    if (Number(capacity.work) > visitCount) {
-        reporter.error(pathFor(building, 'capacity.work'), `work capacity ${capacity.work} exceeds ${visitCount} visit tile(s)`);
+    const visitTiles = Array.isArray(building.visitTiles) ? building.visitTiles : [];
+    const approachKeys = new Set((approachFiles?.[building.type] || []).map((tile) => tileKey(tile.tileX, tile.tileY)));
+    const scorableCount = visitTiles.filter((tile) => !approachKeys.has(tileKey(tile.tileX, tile.tileY))).length;
+    if (Number(capacity.work) > scorableCount) {
+        reporter.error(pathFor(building, 'capacity.work'), `work capacity ${capacity.work} exceeds ${scorableCount} scorable visit tile(s)`);
     }
-    if (building.visitCapacity != null && Number(building.visitCapacity) > visitCount) {
-        reporter.error(pathFor(building, 'visitCapacity'), `visitCapacity ${building.visitCapacity} exceeds ${visitCount} visit tile(s)`);
+    if (Number(capacity.ambient) > scorableCount) {
+        reporter.error(pathFor(building, 'capacity.ambient'), `ambient capacity ${capacity.ambient} exceeds ${scorableCount} scorable visit tile(s)`);
+    }
+    if (building.visitCapacity != null && Number(building.visitCapacity) > scorableCount) {
+        reporter.error(pathFor(building, 'visitCapacity'), `visitCapacity ${building.visitCapacity} exceeds ${scorableCount} scorable visit tile(s)`);
     }
 }
 
@@ -278,7 +283,6 @@ function tileInsideRect(tile, rect) {
 function validateCombinedVisitTiles(reporter, buildings, overflowTiles, approachFiles, mapSize) {
     const buildingTypes = new Set(buildings.map((building) => building.type));
     const claimedTiles = new Map();
-    const visitOwners = new Map();
     const clearance = createWalkClearance({ buildings, pad: FOOTPRINT_CLEARANCE_PAD });
 
     for (const type of Object.keys(overflowTiles || {})) {
@@ -289,12 +293,6 @@ function validateCombinedVisitTiles(reporter, buildings, overflowTiles, approach
     for (const type of Object.keys(approachFiles || {})) {
         if (!buildingTypes.has(type)) {
             reporter.error(`APPROACH_FILES.${type}`, 'has no matching BUILDING_DEFS type');
-        }
-    }
-
-    for (const building of buildings) {
-        for (const tile of building.visitTiles || []) {
-            visitOwners.set(tileKey(tile.tileX, tile.tileY), { type: building.type, role: tile.role });
         }
     }
 
@@ -326,15 +324,7 @@ function validateCombinedVisitTiles(reporter, buildings, overflowTiles, approach
                 const key = tileKey(tile.tileX, tile.tileY);
                 const previous = claimedTiles.get(key);
                 if (previous) {
-                    const visit = visitOwners.get(key);
-                    const allowedApproachReuse = group === 'approach'
-                        && visit
-                        && visit.type === building.type
-                        && visit.role !== 'work'
-                        && previous.startsWith(`building.${building.type}.visitTiles[`);
-                    if (!allowedApproachReuse) {
-                        reporter.error(path, `duplicates ${previous} at ${key}`);
-                    }
+                    reporter.error(path, `duplicates ${previous} at ${key}`);
                 } else {
                     claimedTiles.set(key, path);
                 }
@@ -510,7 +500,7 @@ if (!Array.isArray(BUILDING_DEFS) || BUILDING_DEFS.length === 0) {
         }
         seenTypes.add(building.type);
         validateScalarFields(reporter, building, MAP_SIZE);
-        validateCapacity(reporter, building);
+        validateCapacity(reporter, building, APPROACH_FILES);
         validateEntrance(reporter, building, MAP_SIZE);
         validateVisitTiles(reporter, building, MAP_SIZE, globalVisitTiles);
         validateWalkExclusions(reporter, building, MAP_SIZE);

@@ -319,6 +319,101 @@ test('Portal subagent arrivals release through two spaced lanes and settle cold 
     renderer._releasePortalEntries();
     assert.equal(renderer._portalEntryQueue.length, 0);
     assert.ok(burst.every((s) => s.settled === 1), 'every subagent in a cold > 4 burst settles at its destination');
+
+    // Snapshot path (no _deferPortalRelease) uses the exact same > 4 threshold: 4 walk in, 5 settle all 5.
+    renderer._portalEntryQueue = [];
+    renderer.gateTransits.clear();
+    renderer.agentSprites.clear();
+    renderer._coldPortalSettled = false;
+    const snapFour = Array.from({ length: 4 }, (_, i) => makeSub(`snap4-${i}`));
+    for (const s of snapFour) renderer._beginAgentGateArrival(s.agent, s);
+    assert.equal(snapFour.every((s) => s.settled === 0), true, 'snapshot burst of 4 walks through Portal');
+    assert.equal(renderer._portalEntryQueue.length, 2);
+
+    const fifth = makeSub('snap4-4');
+    renderer._beginAgentGateArrival(fifth.agent, fifth);
+    assert.equal(renderer._portalEntryQueue.length, 0, '5th subagent trips the cold burst on the snapshot path');
+    assert.equal(renderer.gateTransits.size, 0, 'already-released Portal transits are cleared when cold burst settles');
+    assert.ok([...snapFour, fifth].every((s) => s.settled === 1), 'all 5 subagents settle on the snapshot path');
+});
+
+test('Portal queue clears work slots (4,34)/(6,34), drops archive-fading entries, times out cleanly, and closes gate doors', () => {
+    const renderer = Object.create(IsometricRenderer.prototype);
+    renderer.agentSprites = new Map();
+    renderer.gateTransits = new Map();
+    renderer.motionScale = 1;
+    renderer._coldPortalSettled = true;
+    renderer._markSpritesDirty = () => {};
+    renderer._isGateTransit = (s, type) => {
+        const t = renderer.gateTransits.get(s?.agent?.id);
+        return Boolean(t && (!type || t.type === type));
+    };
+    renderer._hasAgentNearGate = () => false;
+    renderer._rebuildGateCache = () => {};
+    renderer._invalidateIdleFrame = () => {};
+    renderer._gateDoorsOpenUntilMs = 0;
+    renderer.gateDoorsOpen = false;
+
+    const makeBody = (id, tx, ty, extra = {}) => {
+        let pending = false;
+        const pos = tileToWorld(tx, ty);
+        const s = {
+            agent: { id, ...extra },
+            x: pos.x, y: pos.y, targetX: pos.x, targetY: pos.y,
+            moving: false, settled: 0,
+            setArrivalState(state) { pending = state === 'pending'; },
+            isArrivalPending() { return pending; },
+            setTilePosition(nx, ny) { const w = tileToWorld(nx, ny); this.x = w.x; this.y = w.y; },
+            walkStraightToTile(nx, ny) { pending = false; const w = tileToWorld(nx, ny); this.targetX = w.x; this.targetY = w.y; this.moving = true; },
+            settleAtDestination() { pending = false; this.settled++; },
+        };
+        renderer.agentSprites.set(id, s);
+        return s;
+    };
+
+    // Portal work slots (4,34) and (6,34) are 19.7 px from the lane entries; Portal's <=16 px clearance lets entries through.
+    makeBody('worker-w', 4, 34);
+    makeBody('worker-e', 6, 34);
+    const subA = makeBody('sub-a', 5, 34, { parentSessionId: 'lead' });
+    const subB = makeBody('sub-b', 5, 34, { parentSessionId: 'lead' });
+    renderer._beginAgentGateArrival(subA.agent, subA);
+    renderer._beginAgentGateArrival(subB.agent, subB);
+    assert.equal(subA.isArrivalPending(), false, 'worker at (4,34) does not block Portal lane 0');
+    assert.equal(subB.isArrivalPending(), false, 'worker at (6,34) does not block Portal lane 1');
+
+    // Archive-fading queued entries drop without inserting a stale gateTransits entry, so gate doors close.
+    const fading = makeBody('sub-fade', 5, 34, { parentSessionId: 'lead' });
+    renderer._deferPortalRelease = true;
+    renderer._beginAgentGateArrival(fading.agent, fading);
+    renderer._deferPortalRelease = false;
+    fading._archiveAnim = { startedAt: Date.now(), total: 800, agent: fading.agent };
+    renderer._releasePortalEntries();
+    assert.equal(renderer.gateTransits.has('sub-fade'), false, 'archive-fading entry never enters gateTransits');
+    assert.equal(renderer._portalEntryQueue.length, 0, 'archive-fading entry is dropped from queue');
+
+    // Even if a stale gateTransits entry existed for a fading/removed sprite, _updateGateDoorState prunes it and closes doors.
+    renderer.gateTransits.clear();
+    renderer.gateTransits.set('sub-fade', { type: 'arrival', gate: true, portal: true, since: Date.now() });
+    renderer.gateTransits.set('gone-agent', { type: 'arrival', gate: true, portal: true, since: Date.now() });
+    renderer._updateGateDoorState(5000);
+    assert.equal(renderer.gateTransits.size, 0, 'stale gateTransits entries are pruned');
+    assert.equal(renderer.gateDoorsOpen, false, 'gate doors close once stale transits clear');
+
+    // When both Portal lane entries are directly occupied, a queued subagent falls back to settleAtDestination after max wait.
+    renderer.agentSprites.clear();
+    renderer.gateTransits.clear();
+    renderer._portalEntryQueue = [];
+    makeBody('blocker-0', 4.55, 34.0);
+    makeBody('blocker-1', 5.45, 34.0);
+    const starved = makeBody('sub-starved', 5, 34, { parentSessionId: 'lead' });
+    renderer._beginAgentGateArrival(starved.agent, starved);
+    assert.equal(starved.isArrivalPending(), true, 'directly blocked entry initially queues');
+    const queuedAt = renderer._portalEntryQueue[0].queuedAt;
+    renderer._releasePortalEntries(queuedAt + 5000);
+    assert.equal(renderer._portalEntryQueue.length, 0, 'timed-out entry leaves queue');
+    assert.equal(starved.settled, 1, 'timed-out entry falls back to settleAtDestination');
+    assert.equal(starved.isArrivalPending(), false, 'timed-out entry is no longer hidden');
+    assert.equal(renderer.gateTransits.has('sub-starved'), false, 'timed-out fallback leaves no stale gateTransits');
 });
 
 test('local avoidance separates stacked walkers (< 6 px) instead of freezing them in follow-yield', () => {

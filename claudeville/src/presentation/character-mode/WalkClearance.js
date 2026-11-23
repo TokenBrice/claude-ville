@@ -90,6 +90,29 @@ function toBuildingList(buildings) {
     return [];
 }
 
+function coastExceedsLimit(coast, tx, ty, limit) {
+    const signed = coast.signed;
+    if (signed && Number.isFinite(coast.grid)) {
+        const sub = coast.sub;
+        const pad = coast.pad;
+        const n = coast.grid;
+        const max = n - 1.001;
+        let gx = (tx + 0.5 + pad) * sub - 0.5;
+        let gy = (ty + 0.5 + pad) * sub - 0.5;
+        if (gx < 0) gx = 0; else if (gx > max) gx = max;
+        if (gy < 0) gy = 0; else if (gy > max) gy = max;
+        const x0 = gx | 0;
+        const y0 = gy | 0;
+        const fx = gx - x0;
+        const fy = gy - y0;
+        const i = y0 * n + x0;
+        const top = signed[i] + (signed[i + 1] - signed[i]) * fx;
+        const bottom = signed[i + n] + (signed[i + n + 1] - signed[i + n]) * fx;
+        return top + (bottom - top) * fy > limit;
+    }
+    return typeof coast.signedDistance === 'function' && coast.signedDistance(tx, ty) > limit;
+}
+
 /**
  * Precomputes flat typed-array clearance boxes and a walkable-bridge bitmask
  * so per-step continuous walkability checks allocate nothing at runtime.
@@ -174,7 +197,7 @@ export function createWalkClearance({
             && bridgeMask[ry * MAP_SIZE + rx] === 1;
         if (!onBridge && typeof getCoastField === 'function') {
             const coast = getCoastField();
-            if (coast?.signedDistance && coast.signedDistance(tx, ty) > coastSdLimit) {
+            if (coast && coastExceedsLimit(coast, tx, ty, coastSdLimit)) {
                 return false;
             }
         }

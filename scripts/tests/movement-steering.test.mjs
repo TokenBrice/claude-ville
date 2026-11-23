@@ -278,10 +278,11 @@ test('lateral drift toward pond water (17,21) triggers a short reroute onto dry 
     sprite._renewVisitReservation = () => {};
     sprite._advanceIdleStopAndLook = () => false;
     sprite._holdGait = () => false;
-    // Simulate a walker nudged to the edge of (17,20) whose waypoint sits at (18,22):
-    // walking straight would step across (17,21).
-    const drifted = tileToWorld(17.15, 20.42);
-    const landing = tileToWorld(18, 22);
+    // Simulate a walker nudged to the edge of (18,20) whose waypoint sits at
+    // (17,22) (the pond plank): walking straight would step across (17,21)
+    // (pond water); (17,20) now holds the plaza fountain.
+    const drifted = tileToWorld(17.65, 20.45);
+    const landing = tileToWorld(17, 22);
     const dest = tileToWorld(18, 26);
     sprite.x = drifted.x;
     sprite.y = drifted.y;
