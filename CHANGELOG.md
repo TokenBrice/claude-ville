@@ -2,6 +2,12 @@
 
 ---
 
+## v0.65.7.1 · Nov 23, 2026 — Hotfix
+
+- **Antigravity agents started by T3 Code join the village.** T3 Code runs each Antigravity thread, including a delegate such as Gemini 4 Neon, as `agy acp` with its own data directory, `~/.t3/userdata/providers/antigravity/<instance>/antigravity-acp/`. ClaudeVille looked only under `~/.gemini/`, so those agents never appeared, while the Claude orchestrator and its DeepSeek subagents did. That directory keeps the agy CLI's layout, so the Antigravity adapter now scans each T3 Code instance alongside `~/.gemini/antigravity-cli/`. These agents show as their own villagers, not under the session that delegated them, because T3 Code records that link only in its own database.
+
+---
+
 ## v0.65.7 — *The Heralded Name* · Nov 23, 2026
 
 A Claude Code session you named with `/rename` now keeps its name under its villager at every zoom. Until now a name showed only on hover, on selection, or at zoom 1.6 and above for the few most recent agents in each area, so a session you had named on purpose lost its name as soon as you zoomed out.
