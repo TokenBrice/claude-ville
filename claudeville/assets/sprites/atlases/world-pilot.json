@@ -322,7 +322,7 @@
       "id": "building.archive",
       "materialClass": "stone",
       "sourcePath": "buildings/building.archive/base.png",
-      "sourceSha256": "3cf520d31b256357a99c52ce12c1bf32f8788bb3396905c1a615b0abf6e6b35a",
+      "sourceSha256": "acf244c60f4e471af2937540b6d5ce37e873bc2a14595d102b4dc32f0c76f69a",
       "sourceSize": {
         "h": 240,
         "w": 336
@@ -344,13 +344,14 @@
         "emissive.command.windows",
         "emissive.command.braziers"
       ],
-      "frameCount": 9,
+      "frameCount": 10,
       "frames": [
         "building.command",
         "building.command.aperture",
         "building.command.banner",
         "building.command.bannerError",
         "building.command.bannerLimit",
+        "building.command.brazierFlames",
         "building.command.braziers",
         "building.command.foreground",
         "building.command.gate",
@@ -359,7 +360,7 @@
       "id": "building.command",
       "materialClass": "stone",
       "sourcePath": "buildings/building.command/base.png",
-      "sourceSha256": "52a24e03e5924bdf7c430fe2888dfd58b285a475d6bf4f3d423a40e01d77b042",
+      "sourceSha256": "a89aeae64101d7ab60957970cfac87f9e47991723949595e3d625e656c2b5b0d",
       "sourceSize": {
         "h": 240,
         "w": 360
@@ -424,7 +425,7 @@
       "id": "building.harbor",
       "materialClass": "stone",
       "sourcePath": "buildings/building.harbor/base.png",
-      "sourceSha256": "ab035a87e0a5592920ed4c1c862ab0692ab3479a1e8cdb8429880c2181e92390",
+      "sourceSha256": "160f2031e4f480dd5a2f6595e9b908e7b6c3be45be057aa9431e06bcac16b4ba",
       "sourceSize": {
         "h": 284,
         "w": 384
@@ -454,7 +455,7 @@
       "id": "building.mine",
       "materialClass": "stone",
       "sourcePath": "buildings/building.mine/base.png",
-      "sourceSha256": "9b849736956d360503d638234eff531f530dedf61bb931faeb6550bf5318efa2",
+      "sourceSha256": "91a09160459dfed002122680175a50a8fa2f6b16250f360e89d4f01548814caa",
       "sourceSize": {
         "h": 232,
         "w": 256
@@ -545,7 +546,7 @@
       "id": "building.tavern",
       "materialClass": "stone",
       "sourcePath": "buildings/building.tavern/base.png",
-      "sourceSha256": "09be255f37ad40c3e161d2d310e339a275f6fb00d53f65c948d60ad7ca4c471f",
+      "sourceSha256": "ad08af5f7167a3d3728069d57132ad3d18d867e5d807ed80e2a469f7e11ffe54",
       "sourceSize": {
         "h": 288,
         "w": 296
@@ -751,10 +752,10 @@
     }
   },
   "channelSha256": {
-    "albedo": "a18902c9a812564f16dca955ff5455af8534699ce0baf4e00c4785dbbb129cda",
-    "emissive": "764d2b16d94d30416e34a2abb24ade846a36f91b2f3d9505e382299dfa9c83ca",
-    "material": "b52804ec0e6c33270d380b91f1e5aadf50e9a2bf14af8701ac920bfb50818e48",
-    "occluder": "5d2ecff716e31a46b0b62818c3ee12483e52718030a56bc1f38248819b08bc70"
+    "albedo": "9edb9d38f13fb60e2ea2c91dede290235b7fc16dd34f779b08752df44c028d0a",
+    "emissive": "a0ec6206a575819019d1571b51c0a55f8ac6c72c65ef7b3e9f4fa28670e4382b",
+    "material": "29a86f9471a902e96f98f26dbe695ef7205919a47df926a63742f5f6d4def3e1",
+    "occluder": "da072c5bc77555b88ed75fbdc866efd15c47401782d49ff8e23aa424e58976d2"
   },
   "channels": {
     "albedo": "assets/sprites/atlases/world-pilot.albedo.png",
@@ -762,7 +763,7 @@
     "material": "assets/sprites/atlases/world-pilot.material.png",
     "occluder": "assets/sprites/atlases/world-pilot.occluder.png"
   },
-  "contentHeight": 1801,
+  "contentHeight": 1772,
   "frames": {
     "agent.claude.opus/idle/e/0": {
       "anchor": [
@@ -788,14 +789,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 169,
-        "y": 900
+        "x": 1809,
+        "y": 656
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 171,
-        "y": 902
+        "x": 1811,
+        "y": 658
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -844,14 +845,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 265,
-        "y": 900
+        "x": 1905,
+        "y": 656
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 267,
-        "y": 902
+        "x": 1907,
+        "y": 658
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -900,13 +901,13 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 361,
+        "x": 0,
         "y": 900
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 363,
+        "x": 2,
         "y": 902
       },
       "sidecars": {
@@ -956,13 +957,13 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 457,
+        "x": 96,
         "y": 900
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 459,
+        "x": 98,
         "y": 902
       },
       "sidecars": {
@@ -1012,13 +1013,13 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 553,
+        "x": 192,
         "y": 900
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 555,
+        "x": 194,
         "y": 902
       },
       "sidecars": {
@@ -1068,13 +1069,13 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 649,
+        "x": 288,
         "y": 900
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 651,
+        "x": 290,
         "y": 902
       },
       "sidecars": {
@@ -1124,13 +1125,13 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 745,
+        "x": 384,
         "y": 900
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 747,
+        "x": 386,
         "y": 902
       },
       "sidecars": {
@@ -1180,13 +1181,13 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 841,
+        "x": 480,
         "y": 900
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 843,
+        "x": 482,
         "y": 902
       },
       "sidecars": {
@@ -1236,13 +1237,13 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 937,
+        "x": 576,
         "y": 900
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 939,
+        "x": 578,
         "y": 902
       },
       "sidecars": {
@@ -1292,13 +1293,13 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1033,
+        "x": 672,
         "y": 900
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1035,
+        "x": 674,
         "y": 902
       },
       "sidecars": {
@@ -1348,13 +1349,13 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1129,
+        "x": 768,
         "y": 900
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1131,
+        "x": 770,
         "y": 902
       },
       "sidecars": {
@@ -1404,13 +1405,13 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1225,
+        "x": 864,
         "y": 900
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1227,
+        "x": 866,
         "y": 902
       },
       "sidecars": {
@@ -1460,13 +1461,13 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1321,
+        "x": 960,
         "y": 900
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1323,
+        "x": 962,
         "y": 902
       },
       "sidecars": {
@@ -1516,13 +1517,13 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1417,
+        "x": 1056,
         "y": 900
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1419,
+        "x": 1058,
         "y": 902
       },
       "sidecars": {
@@ -1572,13 +1573,13 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1513,
+        "x": 1152,
         "y": 900
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1515,
+        "x": 1154,
         "y": 902
       },
       "sidecars": {
@@ -1628,13 +1629,13 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1609,
+        "x": 1248,
         "y": 900
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1611,
+        "x": 1250,
         "y": 902
       },
       "sidecars": {
@@ -1684,13 +1685,13 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1705,
+        "x": 1344,
         "y": 900
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1707,
+        "x": 1346,
         "y": 902
       },
       "sidecars": {
@@ -1740,13 +1741,13 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1801,
+        "x": 1440,
         "y": 900
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1803,
+        "x": 1442,
         "y": 902
       },
       "sidecars": {
@@ -1796,13 +1797,13 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1897,
+        "x": 1536,
         "y": 900
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1899,
+        "x": 1538,
         "y": 902
       },
       "sidecars": {
@@ -1852,14 +1853,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 0,
-        "y": 1025
+        "x": 1632,
+        "y": 900
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 2,
-        "y": 1027
+        "x": 1634,
+        "y": 902
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -1908,14 +1909,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 96,
-        "y": 1025
+        "x": 1728,
+        "y": 900
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 98,
-        "y": 1027
+        "x": 1730,
+        "y": 902
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -1964,14 +1965,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 192,
-        "y": 1025
+        "x": 1824,
+        "y": 900
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 194,
-        "y": 1027
+        "x": 1826,
+        "y": 902
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -2020,14 +2021,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 288,
-        "y": 1025
+        "x": 1920,
+        "y": 900
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 290,
-        "y": 1027
+        "x": 1922,
+        "y": 902
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -2076,14 +2077,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 384,
-        "y": 1025
+        "x": 0,
+        "y": 996
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 386,
-        "y": 1027
+        "x": 2,
+        "y": 998
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -2132,14 +2133,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 480,
-        "y": 1025
+        "x": 96,
+        "y": 996
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 482,
-        "y": 1027
+        "x": 98,
+        "y": 998
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -2188,14 +2189,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 576,
-        "y": 1025
+        "x": 192,
+        "y": 996
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 578,
-        "y": 1027
+        "x": 194,
+        "y": 998
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -2244,14 +2245,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 672,
-        "y": 1025
+        "x": 288,
+        "y": 996
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 674,
-        "y": 1027
+        "x": 290,
+        "y": 998
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -2300,14 +2301,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 768,
-        "y": 1025
+        "x": 384,
+        "y": 996
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 770,
-        "y": 1027
+        "x": 386,
+        "y": 998
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -2356,14 +2357,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 864,
-        "y": 1025
+        "x": 480,
+        "y": 996
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 866,
-        "y": 1027
+        "x": 482,
+        "y": 998
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -2412,14 +2413,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 960,
-        "y": 1025
+        "x": 576,
+        "y": 996
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 962,
-        "y": 1027
+        "x": 578,
+        "y": 998
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -2468,14 +2469,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1056,
-        "y": 1025
+        "x": 672,
+        "y": 996
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1058,
-        "y": 1027
+        "x": 674,
+        "y": 998
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -2524,14 +2525,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1152,
-        "y": 1025
+        "x": 768,
+        "y": 996
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1154,
-        "y": 1027
+        "x": 770,
+        "y": 998
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -2580,14 +2581,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1248,
-        "y": 1025
+        "x": 864,
+        "y": 996
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1250,
-        "y": 1027
+        "x": 866,
+        "y": 998
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -2636,14 +2637,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1344,
-        "y": 1025
+        "x": 960,
+        "y": 996
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1346,
-        "y": 1027
+        "x": 962,
+        "y": 998
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -2692,14 +2693,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1440,
-        "y": 1025
+        "x": 1056,
+        "y": 996
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1442,
-        "y": 1027
+        "x": 1058,
+        "y": 998
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -2748,14 +2749,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1536,
-        "y": 1025
+        "x": 1152,
+        "y": 996
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1538,
-        "y": 1027
+        "x": 1154,
+        "y": 998
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -2804,14 +2805,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1632,
-        "y": 1025
+        "x": 1248,
+        "y": 996
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1634,
-        "y": 1027
+        "x": 1250,
+        "y": 998
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -2860,14 +2861,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1728,
-        "y": 1025
+        "x": 1344,
+        "y": 996
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1730,
-        "y": 1027
+        "x": 1346,
+        "y": 998
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -2916,14 +2917,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1824,
-        "y": 1025
+        "x": 1440,
+        "y": 996
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1826,
-        "y": 1027
+        "x": 1442,
+        "y": 998
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -2972,14 +2973,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1920,
-        "y": 1025
+        "x": 1536,
+        "y": 996
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1922,
-        "y": 1027
+        "x": 1538,
+        "y": 998
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -3028,14 +3029,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 0,
-        "y": 1121
+        "x": 1632,
+        "y": 996
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 2,
-        "y": 1123
+        "x": 1634,
+        "y": 998
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -3084,14 +3085,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 96,
-        "y": 1121
+        "x": 1728,
+        "y": 996
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 98,
-        "y": 1123
+        "x": 1730,
+        "y": 998
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -3140,14 +3141,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 192,
-        "y": 1121
+        "x": 1824,
+        "y": 996
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 194,
-        "y": 1123
+        "x": 1826,
+        "y": 998
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -3196,14 +3197,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 288,
-        "y": 1121
+        "x": 1920,
+        "y": 996
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 290,
-        "y": 1123
+        "x": 1922,
+        "y": 998
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -3252,14 +3253,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 384,
-        "y": 1121
+        "x": 0,
+        "y": 1092
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 386,
-        "y": 1123
+        "x": 2,
+        "y": 1094
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -3308,14 +3309,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 480,
-        "y": 1121
+        "x": 96,
+        "y": 1092
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 482,
-        "y": 1123
+        "x": 98,
+        "y": 1094
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -3364,14 +3365,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 576,
-        "y": 1121
+        "x": 192,
+        "y": 1092
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 578,
-        "y": 1123
+        "x": 194,
+        "y": 1094
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -3420,14 +3421,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 672,
-        "y": 1121
+        "x": 288,
+        "y": 1092
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 674,
-        "y": 1123
+        "x": 290,
+        "y": 1094
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -3476,14 +3477,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 768,
-        "y": 1121
+        "x": 384,
+        "y": 1092
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 770,
-        "y": 1123
+        "x": 386,
+        "y": 1094
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -3532,14 +3533,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 864,
-        "y": 1121
+        "x": 480,
+        "y": 1092
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 866,
-        "y": 1123
+        "x": 482,
+        "y": 1094
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -3588,14 +3589,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 960,
-        "y": 1121
+        "x": 576,
+        "y": 1092
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 962,
-        "y": 1123
+        "x": 578,
+        "y": 1094
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -3644,14 +3645,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1056,
-        "y": 1121
+        "x": 672,
+        "y": 1092
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1058,
-        "y": 1123
+        "x": 674,
+        "y": 1094
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -3700,14 +3701,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1152,
-        "y": 1121
+        "x": 768,
+        "y": 1092
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1154,
-        "y": 1123
+        "x": 770,
+        "y": 1094
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -3756,14 +3757,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1248,
-        "y": 1121
+        "x": 864,
+        "y": 1092
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1250,
-        "y": 1123
+        "x": 866,
+        "y": 1094
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -3812,14 +3813,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1344,
-        "y": 1121
+        "x": 960,
+        "y": 1092
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1346,
-        "y": 1123
+        "x": 962,
+        "y": 1094
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -3868,14 +3869,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1440,
-        "y": 1121
+        "x": 1056,
+        "y": 1092
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1442,
-        "y": 1123
+        "x": 1058,
+        "y": 1094
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -3924,14 +3925,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1536,
-        "y": 1121
+        "x": 1152,
+        "y": 1092
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1538,
-        "y": 1123
+        "x": 1154,
+        "y": 1094
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -3980,14 +3981,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1632,
-        "y": 1121
+        "x": 1248,
+        "y": 1092
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1634,
-        "y": 1123
+        "x": 1250,
+        "y": 1094
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -4036,14 +4037,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1728,
-        "y": 1121
+        "x": 1344,
+        "y": 1092
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1730,
-        "y": 1123
+        "x": 1346,
+        "y": 1094
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -4092,14 +4093,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1824,
-        "y": 1121
+        "x": 1440,
+        "y": 1092
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1826,
-        "y": 1123
+        "x": 1442,
+        "y": 1094
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -4148,14 +4149,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1920,
-        "y": 1121
+        "x": 1536,
+        "y": 1092
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1922,
-        "y": 1123
+        "x": 1538,
+        "y": 1094
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -4204,14 +4205,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 0,
-        "y": 1217
+        "x": 1632,
+        "y": 1092
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 2,
-        "y": 1219
+        "x": 1634,
+        "y": 1094
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -4260,14 +4261,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 96,
-        "y": 1217
+        "x": 1728,
+        "y": 1092
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 98,
-        "y": 1219
+        "x": 1730,
+        "y": 1094
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -4316,14 +4317,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 192,
-        "y": 1217
+        "x": 1824,
+        "y": 1092
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 194,
-        "y": 1219
+        "x": 1826,
+        "y": 1094
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -4372,14 +4373,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 288,
-        "y": 1217
+        "x": 1920,
+        "y": 1092
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 290,
-        "y": 1219
+        "x": 1922,
+        "y": 1094
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -4428,14 +4429,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 384,
-        "y": 1217
+        "x": 0,
+        "y": 1188
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 386,
-        "y": 1219
+        "x": 2,
+        "y": 1190
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -4484,14 +4485,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 480,
-        "y": 1217
+        "x": 96,
+        "y": 1188
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 482,
-        "y": 1219
+        "x": 98,
+        "y": 1190
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -4540,14 +4541,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 576,
-        "y": 1217
+        "x": 192,
+        "y": 1188
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 578,
-        "y": 1219
+        "x": 194,
+        "y": 1190
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -4596,14 +4597,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 672,
-        "y": 1217
+        "x": 288,
+        "y": 1188
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 674,
-        "y": 1219
+        "x": 290,
+        "y": 1190
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -4652,14 +4653,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 768,
-        "y": 1217
+        "x": 384,
+        "y": 1188
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 770,
-        "y": 1219
+        "x": 386,
+        "y": 1190
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -4708,14 +4709,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 864,
-        "y": 1217
+        "x": 480,
+        "y": 1188
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 866,
-        "y": 1219
+        "x": 482,
+        "y": 1190
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -4764,14 +4765,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 960,
-        "y": 1217
+        "x": 576,
+        "y": 1188
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 962,
-        "y": 1219
+        "x": 578,
+        "y": 1190
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -4820,14 +4821,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1056,
-        "y": 1217
+        "x": 672,
+        "y": 1188
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1058,
-        "y": 1219
+        "x": 674,
+        "y": 1190
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -4876,14 +4877,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1152,
-        "y": 1217
+        "x": 768,
+        "y": 1188
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1154,
-        "y": 1219
+        "x": 770,
+        "y": 1190
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -4932,14 +4933,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1248,
-        "y": 1217
+        "x": 864,
+        "y": 1188
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1250,
-        "y": 1219
+        "x": 866,
+        "y": 1190
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -4988,14 +4989,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1344,
-        "y": 1217
+        "x": 960,
+        "y": 1188
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1346,
-        "y": 1219
+        "x": 962,
+        "y": 1190
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -5044,14 +5045,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1440,
-        "y": 1217
+        "x": 1056,
+        "y": 1188
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1442,
-        "y": 1219
+        "x": 1058,
+        "y": 1190
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -5100,14 +5101,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1536,
-        "y": 1217
+        "x": 1152,
+        "y": 1188
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1538,
-        "y": 1219
+        "x": 1154,
+        "y": 1190
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -5156,14 +5157,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1632,
-        "y": 1217
+        "x": 1248,
+        "y": 1188
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1634,
-        "y": 1219
+        "x": 1250,
+        "y": 1190
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -5212,14 +5213,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1728,
-        "y": 1217
+        "x": 1344,
+        "y": 1188
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1730,
-        "y": 1219
+        "x": 1346,
+        "y": 1190
       },
       "sidecars": {
         "emissive": "characters/agent.claude.opus/sheet.emissive.png",
@@ -5268,14 +5269,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1824,
-        "y": 1217
+        "x": 1440,
+        "y": 1188
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1826,
-        "y": 1219
+        "x": 1442,
+        "y": 1190
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -5324,14 +5325,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1920,
-        "y": 1217
+        "x": 1536,
+        "y": 1188
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1922,
-        "y": 1219
+        "x": 1538,
+        "y": 1190
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -5380,14 +5381,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 0,
-        "y": 1313
+        "x": 1632,
+        "y": 1188
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 2,
-        "y": 1315
+        "x": 1634,
+        "y": 1190
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -5436,14 +5437,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 96,
-        "y": 1313
+        "x": 1728,
+        "y": 1188
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 98,
-        "y": 1315
+        "x": 1730,
+        "y": 1190
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -5492,14 +5493,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 192,
-        "y": 1313
+        "x": 1824,
+        "y": 1188
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 194,
-        "y": 1315
+        "x": 1826,
+        "y": 1190
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -5548,14 +5549,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 288,
-        "y": 1313
+        "x": 1920,
+        "y": 1188
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 290,
-        "y": 1315
+        "x": 1922,
+        "y": 1190
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -5604,14 +5605,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 384,
-        "y": 1313
+        "x": 0,
+        "y": 1284
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 386,
-        "y": 1315
+        "x": 2,
+        "y": 1286
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -5660,14 +5661,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 480,
-        "y": 1313
+        "x": 96,
+        "y": 1284
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 482,
-        "y": 1315
+        "x": 98,
+        "y": 1286
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -5716,14 +5717,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 576,
-        "y": 1313
+        "x": 192,
+        "y": 1284
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 578,
-        "y": 1315
+        "x": 194,
+        "y": 1286
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -5772,14 +5773,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 672,
-        "y": 1313
+        "x": 288,
+        "y": 1284
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 674,
-        "y": 1315
+        "x": 290,
+        "y": 1286
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -5828,14 +5829,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 768,
-        "y": 1313
+        "x": 384,
+        "y": 1284
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 770,
-        "y": 1315
+        "x": 386,
+        "y": 1286
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -5884,14 +5885,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 864,
-        "y": 1313
+        "x": 480,
+        "y": 1284
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 866,
-        "y": 1315
+        "x": 482,
+        "y": 1286
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -5940,14 +5941,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 960,
-        "y": 1313
+        "x": 576,
+        "y": 1284
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 962,
-        "y": 1315
+        "x": 578,
+        "y": 1286
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -5996,14 +5997,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1056,
-        "y": 1313
+        "x": 672,
+        "y": 1284
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1058,
-        "y": 1315
+        "x": 674,
+        "y": 1286
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -6052,14 +6053,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1152,
-        "y": 1313
+        "x": 768,
+        "y": 1284
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1154,
-        "y": 1315
+        "x": 770,
+        "y": 1286
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -6108,14 +6109,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1248,
-        "y": 1313
+        "x": 864,
+        "y": 1284
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1250,
-        "y": 1315
+        "x": 866,
+        "y": 1286
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -6164,14 +6165,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1344,
-        "y": 1313
+        "x": 960,
+        "y": 1284
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1346,
-        "y": 1315
+        "x": 962,
+        "y": 1286
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -6220,14 +6221,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1440,
-        "y": 1313
+        "x": 1056,
+        "y": 1284
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1442,
-        "y": 1315
+        "x": 1058,
+        "y": 1286
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -6276,14 +6277,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1536,
-        "y": 1313
+        "x": 1152,
+        "y": 1284
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1538,
-        "y": 1315
+        "x": 1154,
+        "y": 1286
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -6332,14 +6333,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1632,
-        "y": 1313
+        "x": 1248,
+        "y": 1284
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1634,
-        "y": 1315
+        "x": 1250,
+        "y": 1286
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -6388,14 +6389,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1728,
-        "y": 1313
+        "x": 1344,
+        "y": 1284
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1730,
-        "y": 1315
+        "x": 1346,
+        "y": 1286
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -6444,14 +6445,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1824,
-        "y": 1313
+        "x": 1440,
+        "y": 1284
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1826,
-        "y": 1315
+        "x": 1442,
+        "y": 1286
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -6500,14 +6501,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1920,
-        "y": 1313
+        "x": 1536,
+        "y": 1284
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1922,
-        "y": 1315
+        "x": 1538,
+        "y": 1286
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -6556,14 +6557,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 0,
-        "y": 1409
+        "x": 1632,
+        "y": 1284
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 2,
-        "y": 1411
+        "x": 1634,
+        "y": 1286
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -6612,14 +6613,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 96,
-        "y": 1409
+        "x": 1728,
+        "y": 1284
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 98,
-        "y": 1411
+        "x": 1730,
+        "y": 1286
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -6668,14 +6669,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 192,
-        "y": 1409
+        "x": 1824,
+        "y": 1284
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 194,
-        "y": 1411
+        "x": 1826,
+        "y": 1286
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -6724,14 +6725,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 288,
-        "y": 1409
+        "x": 1920,
+        "y": 1284
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 290,
-        "y": 1411
+        "x": 1922,
+        "y": 1286
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -6780,14 +6781,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 384,
-        "y": 1409
+        "x": 0,
+        "y": 1380
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 386,
-        "y": 1411
+        "x": 2,
+        "y": 1382
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -6836,14 +6837,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 480,
-        "y": 1409
+        "x": 96,
+        "y": 1380
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 482,
-        "y": 1411
+        "x": 98,
+        "y": 1382
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -6892,14 +6893,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 576,
-        "y": 1409
+        "x": 192,
+        "y": 1380
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 578,
-        "y": 1411
+        "x": 194,
+        "y": 1382
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -6948,14 +6949,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 672,
-        "y": 1409
+        "x": 288,
+        "y": 1380
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 674,
-        "y": 1411
+        "x": 290,
+        "y": 1382
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -7004,14 +7005,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 768,
-        "y": 1409
+        "x": 384,
+        "y": 1380
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 770,
-        "y": 1411
+        "x": 386,
+        "y": 1382
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -7060,14 +7061,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 864,
-        "y": 1409
+        "x": 480,
+        "y": 1380
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 866,
-        "y": 1411
+        "x": 482,
+        "y": 1382
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -7116,14 +7117,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 960,
-        "y": 1409
+        "x": 576,
+        "y": 1380
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 962,
-        "y": 1411
+        "x": 578,
+        "y": 1382
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -7172,14 +7173,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1056,
-        "y": 1409
+        "x": 672,
+        "y": 1380
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1058,
-        "y": 1411
+        "x": 674,
+        "y": 1382
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -7228,14 +7229,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1152,
-        "y": 1409
+        "x": 768,
+        "y": 1380
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1154,
-        "y": 1411
+        "x": 770,
+        "y": 1382
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -7284,14 +7285,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1248,
-        "y": 1409
+        "x": 864,
+        "y": 1380
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1250,
-        "y": 1411
+        "x": 866,
+        "y": 1382
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -7340,14 +7341,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1344,
-        "y": 1409
+        "x": 960,
+        "y": 1380
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1346,
-        "y": 1411
+        "x": 962,
+        "y": 1382
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -7396,14 +7397,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1440,
-        "y": 1409
+        "x": 1056,
+        "y": 1380
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1442,
-        "y": 1411
+        "x": 1058,
+        "y": 1382
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -7452,14 +7453,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1536,
-        "y": 1409
+        "x": 1152,
+        "y": 1380
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1538,
-        "y": 1411
+        "x": 1154,
+        "y": 1382
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -7508,14 +7509,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1632,
-        "y": 1409
+        "x": 1248,
+        "y": 1380
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1634,
-        "y": 1411
+        "x": 1250,
+        "y": 1382
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -7564,14 +7565,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1728,
-        "y": 1409
+        "x": 1344,
+        "y": 1380
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1730,
-        "y": 1411
+        "x": 1346,
+        "y": 1382
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -7620,14 +7621,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1824,
-        "y": 1409
+        "x": 1440,
+        "y": 1380
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1826,
-        "y": 1411
+        "x": 1442,
+        "y": 1382
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -7676,14 +7677,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1920,
-        "y": 1409
+        "x": 1536,
+        "y": 1380
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1922,
-        "y": 1411
+        "x": 1538,
+        "y": 1382
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -7732,14 +7733,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 0,
-        "y": 1505
+        "x": 1632,
+        "y": 1380
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 2,
-        "y": 1507
+        "x": 1634,
+        "y": 1382
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -7788,14 +7789,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 96,
-        "y": 1505
+        "x": 1728,
+        "y": 1380
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 98,
-        "y": 1507
+        "x": 1730,
+        "y": 1382
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -7844,14 +7845,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 192,
-        "y": 1505
+        "x": 1824,
+        "y": 1380
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 194,
-        "y": 1507
+        "x": 1826,
+        "y": 1382
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -7900,14 +7901,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 288,
-        "y": 1505
+        "x": 1920,
+        "y": 1380
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 290,
-        "y": 1507
+        "x": 1922,
+        "y": 1382
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -7956,14 +7957,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 384,
-        "y": 1505
+        "x": 0,
+        "y": 1476
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 386,
-        "y": 1507
+        "x": 2,
+        "y": 1478
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -8012,14 +8013,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 480,
-        "y": 1505
+        "x": 96,
+        "y": 1476
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 482,
-        "y": 1507
+        "x": 98,
+        "y": 1478
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -8068,14 +8069,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 576,
-        "y": 1505
+        "x": 192,
+        "y": 1476
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 578,
-        "y": 1507
+        "x": 194,
+        "y": 1478
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -8124,14 +8125,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 672,
-        "y": 1505
+        "x": 288,
+        "y": 1476
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 674,
-        "y": 1507
+        "x": 290,
+        "y": 1478
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -8180,14 +8181,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 768,
-        "y": 1505
+        "x": 384,
+        "y": 1476
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 770,
-        "y": 1507
+        "x": 386,
+        "y": 1478
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -8236,14 +8237,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 864,
-        "y": 1505
+        "x": 480,
+        "y": 1476
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 866,
-        "y": 1507
+        "x": 482,
+        "y": 1478
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -8292,14 +8293,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 960,
-        "y": 1505
+        "x": 576,
+        "y": 1476
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 962,
-        "y": 1507
+        "x": 578,
+        "y": 1478
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -8348,14 +8349,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1056,
-        "y": 1505
+        "x": 672,
+        "y": 1476
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1058,
-        "y": 1507
+        "x": 674,
+        "y": 1478
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -8404,14 +8405,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1152,
-        "y": 1505
+        "x": 768,
+        "y": 1476
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1154,
-        "y": 1507
+        "x": 770,
+        "y": 1478
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -8460,14 +8461,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1248,
-        "y": 1505
+        "x": 864,
+        "y": 1476
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1250,
-        "y": 1507
+        "x": 866,
+        "y": 1478
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -8516,14 +8517,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1344,
-        "y": 1505
+        "x": 960,
+        "y": 1476
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1346,
-        "y": 1507
+        "x": 962,
+        "y": 1478
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -8572,14 +8573,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1440,
-        "y": 1505
+        "x": 1056,
+        "y": 1476
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1442,
-        "y": 1507
+        "x": 1058,
+        "y": 1478
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -8628,14 +8629,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1536,
-        "y": 1505
+        "x": 1152,
+        "y": 1476
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1538,
-        "y": 1507
+        "x": 1154,
+        "y": 1478
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -8684,14 +8685,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1632,
-        "y": 1505
+        "x": 1248,
+        "y": 1476
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1634,
-        "y": 1507
+        "x": 1250,
+        "y": 1478
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -8740,14 +8741,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1728,
-        "y": 1505
+        "x": 1344,
+        "y": 1476
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1730,
-        "y": 1507
+        "x": 1346,
+        "y": 1478
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -8796,14 +8797,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1824,
-        "y": 1505
+        "x": 1440,
+        "y": 1476
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1826,
-        "y": 1507
+        "x": 1442,
+        "y": 1478
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -8852,14 +8853,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1920,
-        "y": 1505
+        "x": 1536,
+        "y": 1476
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1922,
-        "y": 1507
+        "x": 1538,
+        "y": 1478
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -8908,14 +8909,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 0,
-        "y": 1601
+        "x": 1632,
+        "y": 1476
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 2,
-        "y": 1603
+        "x": 1634,
+        "y": 1478
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -8964,14 +8965,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 96,
-        "y": 1601
+        "x": 1728,
+        "y": 1476
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 98,
-        "y": 1603
+        "x": 1730,
+        "y": 1478
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -9020,14 +9021,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 192,
-        "y": 1601
+        "x": 1824,
+        "y": 1476
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 194,
-        "y": 1603
+        "x": 1826,
+        "y": 1478
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -9076,14 +9077,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 288,
-        "y": 1601
+        "x": 1920,
+        "y": 1476
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 290,
-        "y": 1603
+        "x": 1922,
+        "y": 1478
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -9132,14 +9133,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 384,
-        "y": 1601
+        "x": 0,
+        "y": 1572
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 386,
-        "y": 1603
+        "x": 2,
+        "y": 1574
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -9188,14 +9189,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 480,
-        "y": 1601
+        "x": 96,
+        "y": 1572
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 482,
-        "y": 1603
+        "x": 98,
+        "y": 1574
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -9244,14 +9245,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 576,
-        "y": 1601
+        "x": 192,
+        "y": 1572
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 578,
-        "y": 1603
+        "x": 194,
+        "y": 1574
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -9300,14 +9301,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 672,
-        "y": 1601
+        "x": 288,
+        "y": 1572
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 674,
-        "y": 1603
+        "x": 290,
+        "y": 1574
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -9356,14 +9357,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 768,
-        "y": 1601
+        "x": 384,
+        "y": 1572
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 770,
-        "y": 1603
+        "x": 386,
+        "y": 1574
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -9412,14 +9413,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 864,
-        "y": 1601
+        "x": 480,
+        "y": 1572
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 866,
-        "y": 1603
+        "x": 482,
+        "y": 1574
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -9468,14 +9469,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 960,
-        "y": 1601
+        "x": 576,
+        "y": 1572
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 962,
-        "y": 1603
+        "x": 578,
+        "y": 1574
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -9524,14 +9525,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1056,
-        "y": 1601
+        "x": 672,
+        "y": 1572
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1058,
-        "y": 1603
+        "x": 674,
+        "y": 1574
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -9580,14 +9581,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1152,
-        "y": 1601
+        "x": 768,
+        "y": 1572
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1154,
-        "y": 1603
+        "x": 770,
+        "y": 1574
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -9636,14 +9637,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1248,
-        "y": 1601
+        "x": 864,
+        "y": 1572
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1250,
-        "y": 1603
+        "x": 866,
+        "y": 1574
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -9692,14 +9693,14 @@
       "paddedRect": {
         "h": 96,
         "w": 96,
-        "x": 1344,
-        "y": 1601
+        "x": 960,
+        "y": 1572
       },
       "rect": {
         "h": 92,
         "w": 92,
-        "x": 1346,
-        "y": 1603
+        "x": 962,
+        "y": 1574
       },
       "sidecars": {
         "emissive": "characters/agent.codex.gpt56sol/sheet.emissive.png",
@@ -9748,14 +9749,14 @@
       "paddedRect": {
         "h": 68,
         "w": 68,
-        "x": 0,
-        "y": 1697
+        "x": 1850,
+        "y": 1572
       },
       "rect": {
         "h": 64,
         "w": 64,
-        "x": 2,
-        "y": 1699
+        "x": 1852,
+        "y": 1574
       },
       "sidecars": {
         "emissive": null,
@@ -9802,14 +9803,14 @@
       "paddedRect": {
         "h": 68,
         "w": 68,
-        "x": 68,
-        "y": 1697
+        "x": 1918,
+        "y": 1572
       },
       "rect": {
         "h": 64,
         "w": 64,
-        "x": 70,
-        "y": 1699
+        "x": 1920,
+        "y": 1574
       },
       "sidecars": {
         "emissive": null,
@@ -9856,14 +9857,14 @@
       "paddedRect": {
         "h": 68,
         "w": 68,
-        "x": 136,
-        "y": 1697
+        "x": 0,
+        "y": 1668
       },
       "rect": {
         "h": 64,
         "w": 64,
-        "x": 138,
-        "y": 1699
+        "x": 2,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -9917,13 +9918,13 @@
       "paddedRect": {
         "h": 244,
         "w": 340,
-        "x": 364,
+        "x": 0,
         "y": 656
       },
       "rect": {
         "h": 240,
         "w": 336,
-        "x": 366,
+        "x": 2,
         "y": 658
       },
       "sidecars": {
@@ -9938,7 +9939,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "3cf520d31b256357a99c52ce12c1bf32f8788bb3396905c1a615b0abf6e6b35a",
+      "sourceSha256": "acf244c60f4e471af2937540b6d5ce37e873bc2a14595d102b4dc32f0c76f69a",
       "sourceSize": {
         "h": 240,
         "w": 336
@@ -9962,14 +9963,14 @@
       "paddedRect": {
         "h": 97,
         "w": 109,
-        "x": 60,
-        "y": 900
+        "x": 1700,
+        "y": 656
       },
       "rect": {
         "h": 93,
         "w": 105,
-        "x": 62,
-        "y": 902
+        "x": 1702,
+        "y": 658
       },
       "sidecars": {
         "emissive": null,
@@ -9983,7 +9984,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "e24ecec2b1d998fdd8b40f303c09079d07f79a4deeb0b1e75fb81d76cd63c9d9",
+      "sourceSha256": "67e92c0cb19fb5f95d2c7c7b0fc3972fae6342c175a60490ea0cfab689942ae4",
       "sourceSize": {
         "h": 93,
         "w": 105
@@ -10007,14 +10008,14 @@
       "paddedRect": {
         "h": 22,
         "w": 28,
-        "x": 534,
-        "y": 1765
+        "x": 458,
+        "y": 1736
       },
       "rect": {
         "h": 18,
         "w": 24,
-        "x": 536,
-        "y": 1767
+        "x": 460,
+        "y": 1738
       },
       "sidecars": {
         "emissive": null,
@@ -10089,7 +10090,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "52a24e03e5924bdf7c430fe2888dfd58b285a475d6bf4f3d423a40e01d77b042",
+      "sourceSha256": "a89aeae64101d7ab60957970cfac87f9e47991723949595e3d625e656c2b5b0d",
       "sourceSize": {
         "h": 240,
         "w": 360
@@ -10158,14 +10159,14 @@
       "paddedRect": {
         "h": 93,
         "w": 154,
-        "x": 1440,
-        "y": 1601
+        "x": 1056,
+        "y": 1572
       },
       "rect": {
         "h": 89,
         "w": 150,
-        "x": 1442,
-        "y": 1603
+        "x": 1058,
+        "y": 1574
       },
       "sidecars": {
         "emissive": null,
@@ -10203,14 +10204,14 @@
       "paddedRect": {
         "h": 93,
         "w": 154,
-        "x": 1594,
-        "y": 1601
+        "x": 1210,
+        "y": 1572
       },
       "rect": {
         "h": 89,
         "w": 150,
-        "x": 1596,
-        "y": 1603
+        "x": 1212,
+        "y": 1574
       },
       "sidecars": {
         "emissive": null,
@@ -10248,14 +10249,14 @@
       "paddedRect": {
         "h": 93,
         "w": 154,
-        "x": 1748,
-        "y": 1601
+        "x": 1364,
+        "y": 1572
       },
       "rect": {
         "h": 89,
         "w": 150,
-        "x": 1750,
-        "y": 1603
+        "x": 1366,
+        "y": 1574
       },
       "sidecars": {
         "emissive": null,
@@ -10278,7 +10279,107 @@
         "layer": "bannerLimit"
       }
     },
+    "building.command.brazierFlames": {
+      "anchor": [
+        123,
+        211
+      ],
+      "emissive": {
+        "sources": [
+          {
+            "geometry": "authored-albedo",
+            "id": "emissive.command.brazierFlames",
+            "kind": "fire",
+            "strength": 1
+          }
+        ],
+        "strength": 1
+      },
+      "materialClass": "fire",
+      "occluder": {
+        "horizonY": 112,
+        "mode": "alpha-silhouette",
+        "strength": 1
+      },
+      "paddedRect": {
+        "h": 44,
+        "w": 70,
+        "x": 656,
+        "y": 1668
+      },
+      "rect": {
+        "h": 40,
+        "w": 66,
+        "x": 658,
+        "y": 1670
+      },
+      "sidecars": {
+        "emissive": null,
+        "material": null,
+        "occluder": null
+      },
+      "sourcePath": "buildings/building.command/brazierFlames.png",
+      "sourceRect": {
+        "h": 40,
+        "w": 66,
+        "x": 0,
+        "y": 0
+      },
+      "sourceSha256": "ed1592f6e1797ae220c6ca98fbe051a526fc76d557fe3a45821d960487b7d925",
+      "sourceSize": {
+        "h": 40,
+        "w": 66
+      },
+      "tags": {
+        "layer": "brazierFlames"
+      }
+    },
     "building.command.braziers": {
+      "anchor": [
+        123,
+        211
+      ],
+      "emissive": null,
+      "materialClass": "stone",
+      "occluder": {
+        "horizonY": 112,
+        "mode": "alpha-silhouette",
+        "strength": 1
+      },
+      "paddedRect": {
+        "h": 44,
+        "w": 70,
+        "x": 726,
+        "y": 1668
+      },
+      "rect": {
+        "h": 40,
+        "w": 66,
+        "x": 728,
+        "y": 1670
+      },
+      "sidecars": {
+        "emissive": null,
+        "material": null,
+        "occluder": null
+      },
+      "sourcePath": "buildings/building.command/braziers.png",
+      "sourceRect": {
+        "h": 40,
+        "w": 66,
+        "x": 0,
+        "y": 0
+      },
+      "sourceSha256": "f7a9dd2b01667880dfe79b2b8c7e81f695e7f9c427ed95b722ff99bab27ec9ec",
+      "sourceSize": {
+        "h": 40,
+        "w": 66
+      },
+      "tags": {
+        "layer": "braziers"
+      }
+    },
+    "building.command.foreground": {
       "anchor": [
         199,
         164
@@ -10300,51 +10401,6 @@
         "h": 240,
         "w": 360,
         "x": 1046,
-        "y": 390
-      },
-      "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
-      },
-      "sourcePath": "buildings/building.command/braziers.png",
-      "sourceRect": {
-        "h": 240,
-        "w": 360,
-        "x": 0,
-        "y": 0
-      },
-      "sourceSha256": "569696842f2339682bde12641c72f7f66ab053d87af2b2b1289b7856f455b601",
-      "sourceSize": {
-        "h": 240,
-        "w": 360
-      },
-      "tags": {
-        "layer": "braziers"
-      }
-    },
-    "building.command.foreground": {
-      "anchor": [
-        199,
-        164
-      ],
-      "emissive": null,
-      "materialClass": "stone",
-      "occluder": {
-        "horizonY": 112,
-        "mode": "alpha-silhouette",
-        "strength": 1
-      },
-      "paddedRect": {
-        "h": 244,
-        "w": 364,
-        "x": 1408,
-        "y": 388
-      },
-      "rect": {
-        "h": 240,
-        "w": 360,
-        "x": 1410,
         "y": 390
       },
       "sidecars": {
@@ -10383,14 +10439,14 @@
       "paddedRect": {
         "h": 84,
         "w": 124,
-        "x": 1902,
-        "y": 1601
+        "x": 1518,
+        "y": 1572
       },
       "rect": {
         "h": 80,
         "w": 120,
-        "x": 1904,
-        "y": 1603
+        "x": 1520,
+        "y": 1574
       },
       "sidecars": {
         "emissive": null,
@@ -10404,7 +10460,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "5cc3a0f3d3e5bf634e894de56329f430928fe7348fe6442177342771924f0c3e",
+      "sourceSha256": "b3a5e1013c12210a257933ddf7f2e2716be2b98598f7a3e6ff12b9695bfdb93e",
       "sourceSize": {
         "h": 80,
         "w": 120
@@ -10428,14 +10484,14 @@
       "paddedRect": {
         "h": 244,
         "w": 364,
-        "x": 0,
-        "y": 656
+        "x": 1408,
+        "y": 388
       },
       "rect": {
         "h": 240,
         "w": 360,
-        "x": 2,
-        "y": 658
+        "x": 1410,
+        "y": 390
       },
       "sidecars": {
         "emissive": null,
@@ -10482,13 +10538,13 @@
       "paddedRect": {
         "h": 236,
         "w": 260,
-        "x": 704,
+        "x": 340,
         "y": 656
       },
       "rect": {
         "h": 232,
         "w": 256,
-        "x": 706,
+        "x": 342,
         "y": 658
       },
       "sidecars": {
@@ -10526,13 +10582,13 @@
       "paddedRect": {
         "h": 236,
         "w": 260,
-        "x": 964,
+        "x": 600,
         "y": 656
       },
       "rect": {
         "h": 232,
         "w": 256,
-        "x": 966,
+        "x": 602,
         "y": 658
       },
       "sidecars": {
@@ -10570,14 +10626,14 @@
       "paddedRect": {
         "h": 26,
         "w": 116,
-        "x": 418,
-        "y": 1765
+        "x": 342,
+        "y": 1736
       },
       "rect": {
         "h": 22,
         "w": 112,
-        "x": 420,
-        "y": 1767
+        "x": 344,
+        "y": 1738
       },
       "sidecars": {
         "emissive": null,
@@ -10614,14 +10670,14 @@
       "paddedRect": {
         "h": 30,
         "w": 58,
-        "x": 276,
-        "y": 1765
+        "x": 240,
+        "y": 1736
       },
       "rect": {
         "h": 26,
         "w": 54,
-        "x": 278,
-        "y": 1767
+        "x": 242,
+        "y": 1738
       },
       "sidecars": {
         "emissive": null,
@@ -10658,13 +10714,13 @@
       "paddedRect": {
         "h": 236,
         "w": 260,
-        "x": 1224,
+        "x": 860,
         "y": 656
       },
       "rect": {
         "h": 232,
         "w": 256,
-        "x": 1226,
+        "x": 862,
         "y": 658
       },
       "sidecars": {
@@ -10746,7 +10802,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "ab035a87e0a5592920ed4c1c862ab0692ab3479a1e8cdb8429880c2181e92390",
+      "sourceSha256": "160f2031e4f480dd5a2f6595e9b908e7b6c3be45be057aa9431e06bcac16b4ba",
       "sourceSize": {
         "h": 284,
         "w": 384
@@ -10770,14 +10826,14 @@
       "paddedRect": {
         "h": 62,
         "w": 424,
-        "x": 204,
-        "y": 1697
+        "x": 180,
+        "y": 1668
       },
       "rect": {
         "h": 58,
         "w": 420,
-        "x": 206,
-        "y": 1699
+        "x": 182,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -10802,8 +10858,8 @@
     },
     "building.harbor.crane": {
       "anchor": [
-        85,
-        206
+        102,
+        215
       ],
       "emissive": null,
       "materialClass": "timber",
@@ -10813,16 +10869,16 @@
         "strength": 1
       },
       "paddedRect": {
-        "h": 60,
-        "w": 136,
-        "x": 628,
-        "y": 1697
+        "h": 71,
+        "w": 208,
+        "x": 1642,
+        "y": 1572
       },
       "rect": {
-        "h": 56,
-        "w": 132,
-        "x": 630,
-        "y": 1699
+        "h": 67,
+        "w": 204,
+        "x": 1644,
+        "y": 1574
       },
       "sidecars": {
         "emissive": null,
@@ -10831,15 +10887,15 @@
       },
       "sourcePath": "buildings/building.harbor/crane.png",
       "sourceRect": {
-        "h": 56,
-        "w": 132,
+        "h": 67,
+        "w": 204,
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "5bec5c975a2a4799a4cc75ce2f9e7e4ed2da6d793c2afc01910a2359bffb1a9b",
+      "sourceSha256": "4214a1e811610fe029d6f04f74c033efe25639c65bab01210beab2f2184c9fc9",
       "sourceSize": {
-        "h": 56,
-        "w": 132
+        "h": 67,
+        "w": 204
       },
       "tags": {
         "layer": "crane"
@@ -10847,8 +10903,8 @@
     },
     "building.harbor.door": {
       "anchor": [
-        137,
-        161
+        159,
+        178
       ],
       "emissive": null,
       "materialClass": "timber",
@@ -10858,16 +10914,16 @@
         "strength": 1
       },
       "paddedRect": {
-        "h": 28,
-        "w": 40,
-        "x": 378,
-        "y": 1765
+        "h": 64,
+        "w": 112,
+        "x": 68,
+        "y": 1668
       },
       "rect": {
-        "h": 24,
-        "w": 36,
-        "x": 380,
-        "y": 1767
+        "h": 60,
+        "w": 108,
+        "x": 70,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -10876,15 +10932,15 @@
       },
       "sourcePath": "buildings/building.harbor/door.png",
       "sourceRect": {
-        "h": 24,
-        "w": 36,
+        "h": 60,
+        "w": 108,
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "a6bbc23543752f0c025efd5e4aba64ac9bf4a4a49410973bc9c4ce2611991b47",
+      "sourceSha256": "db8f8428cbbb3bae0d10e48a78eacc20a950ca5e5f572d1151ea7fe48f61a527",
       "sourceSize": {
-        "h": 24,
-        "w": 36
+        "h": 60,
+        "w": 108
       },
       "tags": {
         "layer": "door"
@@ -10920,13 +10976,13 @@
       "paddedRect": {
         "h": 236,
         "w": 260,
-        "x": 1484,
+        "x": 1120,
         "y": 656
       },
       "rect": {
         "h": 232,
         "w": 256,
-        "x": 1486,
+        "x": 1122,
         "y": 658
       },
       "sidecars": {
@@ -10941,7 +10997,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "9b849736956d360503d638234eff531f530dedf61bb931faeb6550bf5318efa2",
+      "sourceSha256": "91a09160459dfed002122680175a50a8fa2f6b16250f360e89d4f01548814caa",
       "sourceSize": {
         "h": 232,
         "w": 256
@@ -10964,14 +11020,14 @@
       "paddedRect": {
         "h": 36,
         "w": 92,
-        "x": 816,
-        "y": 1697
+        "x": 796,
+        "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 88,
-        "x": 818,
-        "y": 1699
+        "x": 798,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -11079,14 +11135,14 @@
       "paddedRect": {
         "h": 125,
         "w": 60,
-        "x": 0,
-        "y": 900
+        "x": 1640,
+        "y": 656
       },
       "rect": {
         "h": 121,
         "w": 56,
-        "x": 2,
-        "y": 902
+        "x": 1642,
+        "y": 658
       },
       "sidecars": {
         "emissive": null,
@@ -11224,13 +11280,13 @@
       "paddedRect": {
         "h": 236,
         "w": 260,
-        "x": 1744,
+        "x": 1380,
         "y": 656
       },
       "rect": {
         "h": 232,
         "w": 256,
-        "x": 1746,
+        "x": 1382,
         "y": 658
       },
       "sidecars": {
@@ -11269,14 +11325,14 @@
       "paddedRect": {
         "h": 34,
         "w": 84,
-        "x": 108,
-        "y": 1765
+        "x": 72,
+        "y": 1736
       },
       "rect": {
         "h": 30,
         "w": 80,
-        "x": 110,
-        "y": 1767
+        "x": 74,
+        "y": 1738
       },
       "sidecars": {
         "emissive": null,
@@ -11314,14 +11370,14 @@
       "paddedRect": {
         "h": 34,
         "w": 84,
-        "x": 192,
-        "y": 1765
+        "x": 156,
+        "y": 1736
       },
       "rect": {
         "h": 30,
         "w": 80,
-        "x": 194,
-        "y": 1767
+        "x": 158,
+        "y": 1738
       },
       "sidecars": {
         "emissive": null,
@@ -11390,7 +11446,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "09be255f37ad40c3e161d2d310e339a275f6fb00d53f65c948d60ad7ca4c471f",
+      "sourceSha256": "ad08af5f7167a3d3728069d57132ad3d18d867e5d807ed80e2a469f7e11ffe54",
       "sourceSize": {
         "h": 288,
         "w": 296
@@ -11529,14 +11585,14 @@
       "paddedRect": {
         "h": 29,
         "w": 22,
-        "x": 334,
-        "y": 1765
+        "x": 298,
+        "y": 1736
       },
       "rect": {
         "h": 25,
         "w": 18,
-        "x": 336,
-        "y": 1767
+        "x": 300,
+        "y": 1738
       },
       "sidecars": {
         "emissive": null,
@@ -11574,14 +11630,14 @@
       "paddedRect": {
         "h": 29,
         "w": 22,
-        "x": 356,
-        "y": 1765
+        "x": 320,
+        "y": 1736
       },
       "rect": {
         "h": 25,
         "w": 18,
-        "x": 358,
-        "y": 1767
+        "x": 322,
+        "y": 1738
       },
       "sidecars": {
         "emissive": null,
@@ -11628,14 +11684,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 908,
-        "y": 1697
+        "x": 888,
+        "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 910,
-        "y": 1699
+        "x": 890,
+        "y": 1670
       },
       "sidecars": {
         "emissive": "props/prop.bridgeLanternPost.emissive.png",
@@ -11682,14 +11738,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 944,
-        "y": 1697
+        "x": 924,
+        "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 946,
-        "y": 1699
+        "x": 926,
+        "y": 1670
       },
       "sidecars": {
         "emissive": "props/prop.lantern.emissive.png",
@@ -11736,14 +11792,14 @@
       "paddedRect": {
         "h": 52,
         "w": 52,
-        "x": 764,
-        "y": 1697
+        "x": 604,
+        "y": 1668
       },
       "rect": {
         "h": 48,
         "w": 48,
-        "x": 766,
-        "y": 1699
+        "x": 606,
+        "y": 1670
       },
       "sidecars": {
         "emissive": "props/prop.runeBrazier.emissive.png",
@@ -11783,14 +11839,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 980,
-        "y": 1697
+        "x": 960,
+        "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 982,
-        "y": 1699
+        "x": 962,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -11831,14 +11887,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1016,
-        "y": 1697
+        "x": 996,
+        "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1018,
-        "y": 1699
+        "x": 998,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -11879,14 +11935,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1052,
-        "y": 1697
+        "x": 1032,
+        "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1054,
-        "y": 1699
+        "x": 1034,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -11927,14 +11983,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1088,
-        "y": 1697
+        "x": 1068,
+        "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1090,
-        "y": 1699
+        "x": 1070,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -11975,14 +12031,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1124,
-        "y": 1697
+        "x": 1104,
+        "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1126,
-        "y": 1699
+        "x": 1106,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -12023,14 +12079,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1160,
-        "y": 1697
+        "x": 1140,
+        "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1162,
-        "y": 1699
+        "x": 1142,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -12071,14 +12127,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1196,
-        "y": 1697
+        "x": 1176,
+        "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1198,
-        "y": 1699
+        "x": 1178,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -12119,14 +12175,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1232,
-        "y": 1697
+        "x": 1212,
+        "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1234,
-        "y": 1699
+        "x": 1214,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -12167,14 +12223,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1268,
-        "y": 1697
+        "x": 1248,
+        "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1270,
-        "y": 1699
+        "x": 1250,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -12215,14 +12271,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1304,
-        "y": 1697
+        "x": 1284,
+        "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1306,
-        "y": 1699
+        "x": 1286,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -12263,14 +12319,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1340,
-        "y": 1697
+        "x": 1320,
+        "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1342,
-        "y": 1699
+        "x": 1322,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -12311,14 +12367,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1376,
-        "y": 1697
+        "x": 1356,
+        "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1378,
-        "y": 1699
+        "x": 1358,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -12359,14 +12415,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1412,
-        "y": 1697
+        "x": 1392,
+        "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1414,
-        "y": 1699
+        "x": 1394,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -12407,14 +12463,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1448,
-        "y": 1697
+        "x": 1428,
+        "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1450,
-        "y": 1699
+        "x": 1430,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -12455,14 +12511,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1484,
-        "y": 1697
+        "x": 1464,
+        "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1486,
-        "y": 1699
+        "x": 1466,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -12503,14 +12559,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1520,
-        "y": 1697
+        "x": 1500,
+        "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1522,
-        "y": 1699
+        "x": 1502,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -12551,14 +12607,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1556,
-        "y": 1697
+        "x": 1536,
+        "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1558,
-        "y": 1699
+        "x": 1538,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -12599,14 +12655,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1592,
-        "y": 1697
+        "x": 1572,
+        "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1594,
-        "y": 1699
+        "x": 1574,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -12647,14 +12703,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1628,
-        "y": 1697
+        "x": 1608,
+        "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1630,
-        "y": 1699
+        "x": 1610,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -12695,14 +12751,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1664,
-        "y": 1697
+        "x": 1644,
+        "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1666,
-        "y": 1699
+        "x": 1646,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -12743,14 +12799,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1700,
-        "y": 1697
+        "x": 1680,
+        "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1702,
-        "y": 1699
+        "x": 1682,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -12791,14 +12847,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1736,
-        "y": 1697
+        "x": 1716,
+        "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1738,
-        "y": 1699
+        "x": 1718,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -12839,14 +12895,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1772,
-        "y": 1697
+        "x": 1752,
+        "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1774,
-        "y": 1699
+        "x": 1754,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -12887,14 +12943,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1808,
-        "y": 1697
+        "x": 1788,
+        "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1810,
-        "y": 1699
+        "x": 1790,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -12935,14 +12991,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1844,
-        "y": 1697
+        "x": 1824,
+        "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1846,
-        "y": 1699
+        "x": 1826,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -12983,14 +13039,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1880,
-        "y": 1697
+        "x": 1860,
+        "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1882,
-        "y": 1699
+        "x": 1862,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -13031,14 +13087,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1916,
-        "y": 1697
+        "x": 1896,
+        "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1918,
-        "y": 1699
+        "x": 1898,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -13079,14 +13135,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1952,
-        "y": 1697
+        "x": 1932,
+        "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1954,
-        "y": 1699
+        "x": 1934,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -13127,14 +13183,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 1988,
-        "y": 1697
+        "x": 1968,
+        "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 1990,
-        "y": 1699
+        "x": 1970,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -13175,14 +13231,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 0,
-        "y": 1765
+        "x": 2004,
+        "y": 1668
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 2,
-        "y": 1767
+        "x": 2006,
+        "y": 1670
       },
       "sidecars": {
         "emissive": null,
@@ -13223,14 +13279,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 36,
-        "y": 1765
+        "x": 0,
+        "y": 1736
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 38,
-        "y": 1767
+        "x": 2,
+        "y": 1738
       },
       "sidecars": {
         "emissive": null,
@@ -13271,14 +13327,14 @@
       "paddedRect": {
         "h": 36,
         "w": 36,
-        "x": 72,
-        "y": 1765
+        "x": 36,
+        "y": 1736
       },
       "rect": {
         "h": 32,
         "w": 32,
-        "x": 74,
-        "y": 1767
+        "x": 38,
+        "y": 1738
       },
       "sidecars": {
         "emissive": null,
@@ -13304,7 +13360,7 @@
     }
   },
   "generator": "scripts/sprites/atlas-bake.mjs",
-  "height": 1801,
+  "height": 1772,
   "id": "world-pilot",
   "ids": [
     "agent.claude.opus",
@@ -13337,7 +13393,6 @@
     "building.portal.slumber",
     "building.command",
     "building.command.aperture",
-    "building.command.braziers",
     "building.command.foreground",
     "building.command.interior",
     "building.archive",
@@ -13512,12 +13567,15 @@
     "building.command.bannerError",
     "building.command.bannerLimit",
     "building.command.gate",
+    "building.harbor.crane",
     "atmosphere.light.fire-glow",
     "atmosphere.light.lantern-glow",
     "atmosphere.light.lighthouse-beam",
+    "building.harbor.door",
     "building.harbor.bunting",
-    "building.harbor.crane",
     "prop.runeBrazier",
+    "building.command.brazierFlames",
+    "building.command.braziers",
     "building.mine.sheave",
     "prop.bridgeLanternPost",
     "prop.lantern",
@@ -13558,12 +13616,11 @@
     "building.forge.billetRack",
     "building.watchtower.beacon",
     "building.watchtower.lens",
-    "building.harbor.door",
     "building.forge.bellows",
     "building.archive.lectern"
   ],
   "padding": 2,
   "sampling": "nearest",
   "schemaVersion": 1,
-  "width": 2026
+  "width": 2040
 }
