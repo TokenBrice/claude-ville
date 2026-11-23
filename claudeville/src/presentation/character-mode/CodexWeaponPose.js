@@ -1,4 +1,4 @@
-import { ASTRA_WRIST_TABLES, astraWeaponPose } from './AstraWeaponPose.js';
+import { ASTRA_POSE_WRIST_TABLES, ASTRA_WRIST_TABLES, astraWeaponPose } from './AstraWeaponPose.js';
 import { DEFAULT_CELL, DIRECTIONS } from './SpriteSheet.js';
 import { CODEX_CELESTIAL_GRIPS } from './CodexCelestialGrips.js';
 import { CODEX_PALADIN_GRIPS } from './CodexPaladinGrips.js';
@@ -15,7 +15,9 @@ const ASTRA_PALETTE = ['#151b2b', '#303c52', '#53627a', '#c49a52'];
 // action-strip group, so that strip carries the weapon instead of parking it
 // (`grip.sheathe` only covers groups whose hands are posed for a prop).
 export function codexPoseGripped(spriteId, group) {
-    const table = group ? CODEX_GRIP_PROFILES[spriteId]?.poseWrists?.[group] : null;
+    const table = group
+        ? (ASTRA_POSE_WRIST_TABLES[spriteId]?.[group] || CODEX_GRIP_PROFILES[spriteId]?.poseWrists?.[group])
+        : null;
     return Boolean(table) && DIRECTIONS.every(direction => Array.isArray(table[direction]) && table[direction].length > 0);
 }
 
