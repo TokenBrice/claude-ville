@@ -73,8 +73,10 @@ const HALF_RUNG_BACKING_DPR = 2;
 const HALF_RUNGS = Object.freeze([1.5, 2.5]);
 
 // 4.1 — shot scales by visible world AREA (world px²), never by tier index:
-// each is the resting tier ≥ 1 whose visible area is log-nearest the target.
-const SHOT_SCALE_AREA = Object.freeze({ wide: 1.4e6, medium: 0.55e6, close: 0.2e6 });
+// each is the resting tier ≥ 1 whose visible area is log-nearest the target
+// (relaxed 2026-11-23, operator decision: medium lowered from 0.55e6 to 0.48e6
+// so 1440 × 900 keeps zoom 2 beside 1920 × 1080).
+const SHOT_SCALE_AREA = Object.freeze({ wide: 1.4e6, medium: 0.48e6, close: 0.2e6 });
 const SHOT_SCALE_NAMES = Object.freeze(['survey', 'wide', 'medium', 'close']);
 // Before the viewport is laid out the shots fall back to the old labels.
 const FALLBACK_SHOT_TIER = Object.freeze({ survey: null, wide: 1, medium: 2, close: 3 });
@@ -208,9 +210,10 @@ export function displayPixelZoomSteps(dpr) {
 }
 
 // 8.3 — the full resting ladder: the survey tier (when the backing store
-// supports it) below the display-pixel tiers, plus 4.8's half rungs at
-// backing DPR 2. `tiers` are the logical labels callers ask for; `steps` the
-// camera zooms they resolve to.
+// supports it, including 150% scaling at dpr 1.5) below the display-pixel
+// tiers, plus 4.8's half rungs at backing DPR 2 and the k = 3 rung (3/backing)
+// at fractional DPRs around 1.5. `tiers` are the logical labels callers ask
+// for; `steps` the camera zooms they resolve to.
 export function zoomTierLadder(dpr) {
     const steps = [...displayPixelZoomSteps(dpr)];
     const tiers = [...NOMINAL_ZOOM_STEPS];
@@ -222,19 +225,35 @@ export function zoomTierLadder(dpr) {
             steps.splice(index, 0, rung);
             tiers.splice(index, 0, rung);
         }
+    } else if (Number.isFinite(backing) && Math.round(backing) === HALF_RUNG_BACKING_DPR && backing < HALF_RUNG_BACKING_DPR) {
+        // 150% scaling (dpr = 1.5): tier 1 is k = 2 (4/3) and tier 2 is k = 4
+        // (8/3); insert k = 3 (3 / backing = 2.0) as tier 1.5 on exact integer
+        // backing texels.
+        const index = tiers.findIndex((label) => label > 1.5);
+        steps.splice(index, 0, 3 / backing);
+        tiers.splice(index, 0, 1.5);
     }
-    if (Number.isFinite(backing) && backing >= SURVEY_MIN_BACKING_DPR) {
+    if (Number.isFinite(backing) && Math.round(backing) >= SURVEY_MIN_BACKING_DPR) {
         steps.unshift(1 / backing);
         tiers.unshift(SURVEY_TIER);
     }
     return { steps: Object.freeze(steps), tiers: Object.freeze(tiers) };
 }
 
-// A shot rests on a logical tier (survey, 1, 2, 3); 4.8's half rungs are
-// operator rests only.
-function isShotTier(label) {
+// A shot rests on a logical tier (survey, 1, 2, 3); 4.8's DPR-2 half rungs are
+// operator rests only, whereas fractional 150%-style ladders (where tier 1 is
+// already > 1, i.e. k = 2) promote k = 3 (tier 1.5) so wide/medium/close stay
+// distinct.
+function isShotTier(label, { includeOddRung = false } = {}) {
     return Math.abs(label - SURVEY_TIER) < 1e-6
-        || NOMINAL_ZOOM_STEPS.some((tier) => Math.abs(tier - label) < 1e-6);
+        || NOMINAL_ZOOM_STEPS.some((tier) => Math.abs(tier - label) < 1e-6)
+        || (includeOddRung && Math.abs(label - 1.5) < 1e-6);
+}
+
+function ladderHasScaledTierOne(steps, tiers) {
+    const tierOneIndex = tiers.findIndex((label) => Math.abs(Number(label) - 1) < 1e-6);
+    const tierOneZoom = tierOneIndex >= 0 ? Number(steps[tierOneIndex]) : 1;
+    return Number.isFinite(tierOneZoom) && tierOneZoom > 1 + 1e-6;
 }
 
 function polygonArea(points) {
@@ -289,11 +308,12 @@ export function shotScaleTiers(viewportW, viewportH, zoomSteps) {
     const ladder = Array.isArray(zoomSteps) ? { steps: zoomSteps, tiers: zoomSteps } : (zoomSteps || {});
     const steps = ladder.steps || [];
     const tiers = ladder.tiers || steps;
+    const includeOddRung = ladderHasScaledTierOne(steps, tiers);
     const shots = [];
     for (let index = 0; index < steps.length; index++) {
         const zoom = Number(steps[index]);
         const tier = Number(tiers[index]);
-        if (Number.isFinite(zoom) && zoom > 0 && isShotTier(tier)) shots.push({ zoom, tier });
+        if (Number.isFinite(zoom) && zoom > 0 && isShotTier(tier, { includeOddRung })) shots.push({ zoom, tier });
     }
     if (!(width > 0 && height > 0) || !shots.length) {
         return Object.freeze({ survey: null, wide: null, medium: null, close: null });
@@ -309,9 +329,15 @@ export function shotScaleTiers(viewportW, viewportH, zoomSteps) {
         if (share >= SURVEY_ISLAND_SHARE && (survey == null || zoom > survey)) survey = zoom;
     }
     const framing = shots.filter(({ tier }) => tier >= 1 - 1e-6);
-    const nearest = (target) => {
+    const tierOne = framing.find(({ tier }) => Math.abs(tier - 1) < 1e-6) || framing[0] || null;
+    const tierOneArea = tierOne ? (width / tierOne.zoom) * (height / tierOne.zoom) : Infinity;
+    // When tier 1 is already tighter than the wide target (e.g. 1080p at 150%
+    // scaling where tier 1 is k = 2 at zoom 4/3), allow the k = 1 survey rung
+    // as `wide` so the full island fits.
+    const widePool = tierOneArea < SHOT_SCALE_AREA.wide ? shots : framing;
+    const nearest = (target, pool = framing) => {
         let best = null;
-        for (const { zoom } of framing) {
+        for (const { zoom } of pool) {
             const distance = Math.abs(Math.log((width / zoom) * (height / zoom) / target));
             if (!best || distance < best.distance - 1e-12) best = { zoom, distance };
         }
@@ -319,7 +345,7 @@ export function shotScaleTiers(viewportW, viewportH, zoomSteps) {
     };
     return Object.freeze({
         survey,
-        wide: nearest(SHOT_SCALE_AREA.wide),
+        wide: nearest(SHOT_SCALE_AREA.wide, widePool),
         medium: nearest(SHOT_SCALE_AREA.medium),
         close: nearest(SHOT_SCALE_AREA.close),
     });
@@ -414,6 +440,7 @@ export class Camera {
             this._reducedMotion = false;
         }
         this.dragging = false;
+        this._mousePress = null;
         this.dragStartX = 0;
         this.dragStartY = 0;
         this.camStartX = 0;
@@ -508,7 +535,10 @@ export class Camera {
         this._onLostPointerCapture = this._onLostPointerCapture.bind(this);
         this._onWindowPointerDown = this._onWindowPointerDown.bind(this);
         this._onTouchClick = this._onTouchClick.bind(this);
-        this._onTouchBlur = () => this._cancelTouchGesture();
+        this._onTouchBlur = () => {
+            this._mousePress = null;
+            this._cancelTouchGesture();
+        };
 
         this.centerOnMap();
     }
@@ -599,9 +629,10 @@ export class Camera {
         this.zoomTiers = tiers;
         this.minZoom = steps[0];
         this.maxZoom = steps[steps.length - 1];
-        // A stepped (Canvas) glide rests on the logical tiers only: 4.8's half
-        // rungs are operator rests, so a DPR-2 glide takes no more steps.
-        this._glideRungs = Object.freeze(steps.filter((_, index) => isShotTier(tiers[index])));
+        // A stepped (Canvas) glide rests on the shot rungs only: 4.8's DPR-2
+        // half rungs are operator rests, so a DPR-2 glide takes no more steps.
+        const includeOddRung = ladderHasScaledTierOne(steps, tiers);
+        this._glideRungs = Object.freeze(steps.filter((_, index) => isShotTier(tiers[index], { includeOddRung })));
         this._refreshShotScales();
         this._displayPixelZoomScale = this.tierZoom(1);
     }
@@ -809,6 +840,7 @@ export class Camera {
         if (this._directorGlide && glideOwner !== next && !glideOwner.startsWith(`${next}:`)) {
             this._directorGlide = null;
             this._cameraOwner = next;
+            this._settleToRestingZoom();
         }
         if (previous !== next) this._emitOwner(previous, 'claim');
         return { owner: next, epoch: this._inputEpoch };
@@ -1030,6 +1062,7 @@ export class Camera {
             maxZoom: openTier,
             minZoom: openTier,
             composition: OPENING_COMPOSITION,
+            keepLandmarks: true,
         });
         if (wide) {
             this.stopFollow();
@@ -1037,6 +1070,17 @@ export class Camera {
             this.x = wide.x;
             this.y = wide.y;
             this._clampToBounds();
+        }
+        // Skip a redundant same-zoom opening pan when the balanced wide frame
+        // already lands near the target (e.g. an empty village at z1).
+        if (!targetPose && wide && Math.abs(target.zoom - wide.zoom) < 1e-6) {
+            const shiftPx = Math.hypot(target.x - wide.x, target.y - wide.y) * wide.zoom;
+            if (shiftPx < 120) {
+                this._directorGlide = null;
+                this._cameraOwner = 'system';
+                this._userAdjusted = false;
+                return true;
+            }
         }
         return this._startGlide(target, {
             owner: 'system',
@@ -1057,12 +1101,40 @@ export class Camera {
         return wide ? SURVEY_TIER : 1;
     }
 
+    // Settle a fractional zoom (after an interrupted glide, touch motion, or
+    // reduced-motion toggle) onto the nearest crisp resting rung so pixel art
+    // never stays in fat-pixel blending at rest.
+    _settleToRestingZoom() {
+        const targetZoom = this.resolveRestingZoom(this.zoom);
+        if (!Number.isFinite(targetZoom)) return false;
+        const delta = Math.abs(this.zoom - targetZoom);
+        if (delta <= 1e-4) {
+            if (delta > 0) this._setZoomAboutCenter(targetZoom);
+            return false;
+        }
+        this._snapZoom = null;
+        if (this._reducedMotion || !this._viewportWidth() || !this._viewportHeight()) {
+            this._zoomAnimation = null;
+            this._setZoomAboutCenter(targetZoom);
+            return true;
+        }
+        this._zoomAnimation = {
+            fromZoom: this.zoom,
+            toZoom: targetZoom,
+            elapsed: 0,
+            duration: WHEEL_STEP_MS,
+            aboutCenter: true,
+        };
+        return true;
+    }
+
     abortDirectorGlide() {
         if (!this._directorGlide) return;
         this._directorGlide = null;
         // The user is now in control; stop auto-framing from fighting them.
         this._cameraOwner = 'user';
         this._userAdjusted = true;
+        this._settleToRestingZoom();
     }
 
     isDirectorGliding() {
@@ -1158,6 +1230,7 @@ export class Camera {
         window.removeEventListener('pointerdown', this._onWindowPointerDown, true);
         window.removeEventListener('click', this._onTouchClick, true);
         window.removeEventListener('blur', this._onTouchBlur);
+        this._mousePress = null;
         this._cancelTouchGesture();
         this._touchClickUntil = 0;
         if (this._populationUnsub) {
@@ -1169,6 +1242,7 @@ export class Camera {
 
     followAgent(sprite) {
         if (this.followTarget === sprite) return;
+        const wasFollowing = Boolean(this.followTarget);
         this.noteSelectionInput();
         this._endVillageTour({ restore: false });
         this._directorGlide = null;
@@ -1176,15 +1250,22 @@ export class Camera {
         this.followTarget = sprite;
         this._momentum = null;
         this._followSpring = { vx: 0, vy: 0 };
-        const detailZoom = this.tierZoom(this.defaultFrameTier);
-        const farZoomedOut = this.zoom < detailZoom - 1e-6;
+        // Relaxed 2026-11-23, operator decision: follow settles at medium
+        // (`shotZoom('medium')`, z2 at 1080p/1440×900) instead of tier 3, and
+        // preserves the user's zoom when switching between followed villagers
+        // at wide or closer.
+        const mediumZoom = this.shotZoom('medium') || this.tierZoom(2);
+        const wideZoom = this.shotZoom('wide') || this.tierZoom(1);
+        const keepZoom = wasFollowing && this.zoom >= wideZoom - 1e-6;
+        const farZoomedOut = !keepZoom && this.zoom < mediumZoom - 1e-6;
         if (this._reducedMotion || !this._presented) {
             // 8.2 — nothing on screen yet (or reduced motion): cut to the
             // composed frame so the first visible frames never whip-pan.
             this._followEase = null;
             this._snapZoom = null;
             this._zoomAnimation = null;
-            if (farZoomedOut) this.zoom = detailZoom;
+            if (farZoomedOut) this.zoom = mediumZoom;
+            else this._settleToRestingZoom();
             const aim = this._followAimCenter(sprite);
             if (aim) this._setCenter(aim.x, aim.y);
             return;
@@ -1193,7 +1274,9 @@ export class Camera {
         this._followEase = { fromCx: from.x, fromCy: from.y, elapsed: 0, duration: FOLLOW_ENTRY_MS };
         if (farZoomedOut) {
             this._zoomAnimation = null;
-            this._snapZoom = { fromZoom: this.zoom, toZoom: detailZoom, elapsed: 0, duration: 380 };
+            this._snapZoom = { fromZoom: this.zoom, toZoom: mediumZoom, elapsed: 0, duration: 380 };
+        } else {
+            this._settleToRestingZoom();
         }
     }
 
@@ -1264,6 +1347,7 @@ export class Camera {
             this._followEase = null;
             this._directorGlide = null;
             this._idleDrift = null;
+            this._settleToRestingZoom();
             // #54 — a live tour holds where it stands: no circuit.
         }
     }
@@ -1377,16 +1461,22 @@ export class Camera {
         this._updateSnapZoom(dt);
         this._updateIdleDrift(dt, renderNow);
         if (!this._zoomAnimation) return;
-        // 8.1 — the wheel keeps its 150 ms easeOutCubic tier step, about the
-        // cursor, with the zoom moving in log space.
+        // 8.1 — the wheel and keyboard zoom keep a 150 ms easeOutCubic tier
+        // step in log space, about the cursor (wheel/pinch) or screen centre
+        // (keyboard and resting-zoom settle).
         const anim = this._zoomAnimation;
         anim.elapsed += dt;
         const t = Math.min(1, anim.elapsed / anim.duration);
-        this.zoom = t >= 1 ? anim.toZoom : logZoom(anim.fromZoom, anim.toZoom, easeOutCubic(t));
-        this.x = (anim.mouseX / this.zoom) - anim.worldBeforeX;
-        this.y = (anim.mouseY / this.zoom) - anim.worldBeforeY;
+        const nextZoom = t >= 1 ? anim.toZoom : logZoom(anim.fromZoom, anim.toZoom, easeOutCubic(t));
+        if (anim.aboutCenter) {
+            this._setZoomAboutCenter(nextZoom);
+        } else {
+            this.zoom = nextZoom;
+            this.x = (anim.mouseX / this.zoom) - anim.worldBeforeX;
+            this.y = (anim.mouseY / this.zoom) - anim.worldBeforeY;
+            this._clampToBounds();
+        }
         if (t >= 1) this._zoomAnimation = null;
-        this._clampToBounds();
     }
 
     _onWindowPointerDown() {
@@ -1454,6 +1544,7 @@ export class Camera {
         this._touchGesture.consumed = true;
         this._userAdjusted = true;
         this._clearTouchHold();
+        this._settleToRestingZoom();
     }
 
     _rebaseTouchGesture() {
@@ -1504,6 +1595,7 @@ export class Camera {
             gesture.lastY = point.y;
         } else {
             this.noteUserInput();
+            this._zoomAnimation = null;
             const points = this._touchPointers.values();
             const first = points.next().value;
             const second = points.next().value;
@@ -1596,33 +1688,42 @@ export class Camera {
 
     _onMouseDown(e) {
         if (e.button !== 0) return;
-        this.noteUserInput();
-        this.abortDirectorGlide();
-        this._endIdleDrift();
-        this.dragging = true;
-        this.dragStartX = e.clientX;
-        this.dragStartY = e.clientY;
-        this.camStartX = this.x;
-        this.camStartY = this.y;
-        this._momentum = null;
-        this._snapZoom = null;
-        this._dragVelX = 0;
-        this._dragVelY = 0;
-        this._lastDragX = e.clientX;
-        this._lastDragY = e.clientY;
-        this._lastDragTime = performance.now();
-        this.canvas.style.cursor = 'grabbing';
-        // Stop following when dragging starts
-        if (this.followTarget) this.stopFollow();
+        // Wait for an 8 CSS px drag slop (matching touch pan) before aborting
+        // a glide or stopping follow, so a plain click never interrupts them.
+        this._mousePress = { startX: e.clientX, startY: e.clientY };
     }
 
     _onMouseMove(e) {
-        if (!this.dragging) return;
+        if (!this.dragging) {
+            if (!this._mousePress) return;
+            if (Math.hypot(e.clientX - this._mousePress.startX, e.clientY - this._mousePress.startY) <= 8) return;
+            this.dragging = true;
+            this.noteUserInput();
+            this.abortDirectorGlide();
+            this._endIdleDrift();
+            this.dragStartX = e.clientX;
+            this.dragStartY = e.clientY;
+            this.camStartX = this.x;
+            this.camStartY = this.y;
+            this._momentum = null;
+            this._snapZoom = null;
+            this._dragVelX = 0;
+            this._dragVelY = 0;
+            this._lastDragX = e.clientX;
+            this._lastDragY = e.clientY;
+            this._lastDragTime = performance.now();
+            this.canvas.style.cursor = 'grabbing';
+            // Stop following when dragging starts
+            if (this.followTarget) this.stopFollow();
+            return;
+        }
         this.noteUserInput();
-        const dx = (e.clientX - this.dragStartX) / this.zoom;
-        const dy = (e.clientY - this.dragStartY) / this.zoom;
-        this.x = this.camStartX + dx;
-        this.y = this.camStartY + dy;
+        // Incremental screen delta composes cleanly with any 150 ms resting-zoom
+        // settle ease that began when this drag aborted a glide.
+        const dx = (e.clientX - this._lastDragX) / this.zoom;
+        const dy = (e.clientY - this._lastDragY) / this.zoom;
+        this.x += dx;
+        this.y += dy;
         const now = performance.now();
         const elapsed = now - this._lastDragTime;
         if (elapsed > 0) {
@@ -1631,14 +1732,15 @@ export class Camera {
             const vy = (e.clientY - this._lastDragY) / elapsed;
             this._dragVelX = this._dragVelX * 0.6 + vx * 0.4;
             this._dragVelY = this._dragVelY * 0.6 + vy * 0.4;
-            this._lastDragX = e.clientX;
-            this._lastDragY = e.clientY;
             this._lastDragTime = now;
         }
+        this._lastDragX = e.clientX;
+        this._lastDragY = e.clientY;
         this._clampToBounds();
     }
 
     _onMouseUp() {
+        this._mousePress = null;
         if (!this.dragging) return;
         this.dragging = false;
         this.canvas.style.cursor = 'grab';
@@ -1651,6 +1753,42 @@ export class Camera {
             vx: this._dragVelX / this.zoom,
             vy: this._dragVelY / this.zoom,
         };
+    }
+
+    // Keyboard +/- zoom: mirrors wheel zoom (150 ms log-space ease through
+    // resting rungs, preserving follow), anchored at the screen centre.
+    zoomByStep(direction = 1) {
+        const steps = Array.isArray(this.zoomSteps) && this.zoomSteps.length
+            ? this.zoomSteps
+            : [this.minZoom || 1, this.maxZoom || 3];
+        const baseZoom = this._zoomAnimation ? this._zoomAnimation.toZoom : this.zoom;
+        const currentIndex = steps.reduce((bestIndex, step, index) => (
+            Math.abs(step - baseZoom) < Math.abs(steps[bestIndex] - baseZoom) ? index : bestIndex
+        ), 0);
+        const nextIndex = Math.max(0, Math.min(steps.length - 1, currentIndex + (direction >= 0 ? 1 : -1)));
+        const targetZoom = steps[nextIndex];
+        if (Math.abs(targetZoom - this.zoom) < 1e-6 && !this._directorGlide && !this._zoomAnimation) {
+            return false;
+        }
+        this.noteUserInput();
+        this.abortDirectorGlide();
+        this._endIdleDrift();
+        this._momentum = null;
+        this._snapZoom = null;
+        this._userAdjusted = true;
+        if (this._reducedMotion || !this._viewportWidth() || !this._viewportHeight()) {
+            this._zoomAnimation = null;
+            this._setZoomAboutCenter(targetZoom);
+            return true;
+        }
+        this._zoomAnimation = {
+            fromZoom: this.zoom,
+            toZoom: targetZoom,
+            elapsed: 0,
+            duration: WHEEL_STEP_MS,
+            aboutCenter: true,
+        };
+        return true;
     }
 
     _onWheel(e) {
@@ -1958,7 +2096,11 @@ export class Camera {
         // plates. W5.1 — an automatic owner composes inside its own tight pad.
         const automatic = composesForLand(owner);
         const placed = automatic ? this._clampPose(pose, owner) : pose;
-        if (composition?.skyRoom) return this._skyRoomPose(placed, box) || placed;
+        if (composition?.skyRoom) {
+            const sky = this._skyRoomPose(placed, box);
+            if (sky) return sky;
+            return keepLandmarks ? this._landmarkClearPose(placed, box, bodies) : placed;
+        }
         if (!automatic) return placed;
         const landed = this._landWeightedPose(placed, box);
         return keepLandmarks ? this._landmarkClearPose(landed, box, bodies) : landed;
@@ -2354,7 +2496,10 @@ export class Camera {
     _endVillageTour({ restore = false } = {}) {
         if (!this._villageTour) return;
         this._villageTour = null;
-        if (this._directorGlide?.owner === 'village-tour') this._directorGlide = null;
+        if (this._directorGlide?.owner === 'village-tour') {
+            this._directorGlide = null;
+            this._settleToRestingZoom();
+        }
         if (restore) {
             this._cameraOwner = 'system';
             this._userAdjusted = false;
