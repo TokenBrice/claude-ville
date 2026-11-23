@@ -560,13 +560,14 @@ function* emitterPlacements(renderer) {
         yield { id: prop.id, x: prop.x, y: prop.y, sortY: -Infinity, staticSortY: -Infinity, gate };
     }
     // BR-6 — a terrain-baked bridge's flames, anchored at the span middle
-    // as `_bridgeSpritePlacement` draws the sprite.
+    // as `_bridgeSpritePlacement` draws the sprite. Skip its own near-parapet
+    // occluder prop so the parapet never self-carves the bridge's near flames.
     for (const span of renderer.bridgeSpans || []) {
         const id = renderer._bridgeSpriteId?.(span);
         if (!id || !hasEmissiveSidecar(assets, id) || renderer.bridgeLightsLit?.(span) !== true) continue;
         const x = (span.start.x + span.end.x) / 2;
         const y = (span.start.y + span.end.y) / 2;
-        yield { id, x, y, sortY: -Infinity, staticSortY: -Infinity, gate: 1 };
+        yield { id, x, y, sortY: -Infinity, staticSortY: -Infinity, gate: 1, skipPropPrefix: 'bridge.rail.' + span.id };
     }
 }
 
@@ -596,7 +597,7 @@ export function villagerOccluder(sprite) {
     return { x: sprite.x + box.left, y: sprite.y + box.top, w: box.right - box.left, h: box.bottom - box.top };
 }
 
-function occludersFor(renderer, sortY, staticSortY, x, y, w, h) {
+function occludersFor(renderer, sortY, staticSortY, x, y, w, h, skipPropId = null) {
     const out = [];
     const resolveDepth = typeof sortY === 'function' ? sortY : null;
     const agents = renderer.agentSprites instanceof Map ? renderer.agentSprites.values() : renderer.agentSprites || [];
@@ -614,6 +615,7 @@ function occludersFor(renderer, sortY, staticSortY, x, y, w, h) {
     for (const sprite of renderer._staticPropSprites || []) {
         const bounds = sprite?.bounds;
         if (!bounds || !(sprite.sortY > staticThreshold)) continue;
+        if (skipPropId && (sprite.id === skipPropId || sprite.id?.startsWith?.(skipPropId + '.'))) continue;
         const cached = sprite._cacheCanvas;
         const rect = cached?.canvas
             ? { x: cached.x, y: cached.y, w: cached.canvas.width, h: cached.canvas.height, image: cached.canvas }
@@ -926,7 +928,7 @@ function drawSpriteCut(ctx, renderer, emitter, core, scale, topLeft, bottomRight
     const y = Math.round(emitter.y - ay) + cut.y;
     const { width, height } = cut.canvas;
     if (topLeft && (x > bottomRight.x || y > bottomRight.y || x + width < topLeft.x || y + height < topLeft.y)) return;
-    const occluders = occludersFor(renderer, emitter.sortY, emitter.staticSortY ?? emitter.sortY, x, y, width, height);
+    const occluders = occludersFor(renderer, emitter.sortY, emitter.staticSortY ?? emitter.sortY, x, y, width, height, emitter.skipPropPrefix || null);
     if (emitter.glass) {
         const glass = emitter.glass;
         occluders.push({ x: x - cut.x + glass.left, y: y - cut.y + glass.top, w: glass.w, h: glass.h, image: glass.canvas });

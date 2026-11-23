@@ -4592,7 +4592,7 @@ export class AgentSprite {
             // T1 — waiting, errored and rate-limited agents are marked by the
             // overlay's attention beacon and plate (AttentionPlates.js), which
             // hold at every zoom, including this overview.
-            this._drawToolGlyphBadge(ctx);
+            if (!this._occludedByWorld && !this._behindBuilding) this._drawToolGlyphBadge(ctx);
             if (archivePushed) ctx.restore();
             return;
         }
@@ -5514,6 +5514,8 @@ export class AgentSprite {
                 mctx.clearRect(0, 0, dstW, dstH);
                 for (let i = 0; i < validOccluders.length; i++) {
                     const occ = validOccluders[i];
+                    const localTop = occ.rowStart > 0 ? Math.max(0, Math.floor(occ.dy + occ.rowStart - dstY)) : 0;
+                    if (localTop >= dstH) continue;
                     if (Array.isArray(occ.clipRanges)) {
                         for (let r = 0; r < occ.clipRanges.length; r++) {
                             const [x0, x1] = occ.clipRanges[r];
@@ -5522,11 +5524,18 @@ export class AgentSprite {
                             if (localRight <= localLeft) continue;
                             mctx.save();
                             mctx.beginPath();
-                            mctx.rect(localLeft, 0, localRight - localLeft, dstH);
+                            mctx.rect(localLeft, localTop, localRight - localLeft, dstH - localTop);
                             mctx.clip();
                             mctx.drawImage(occ.image, Math.round(occ.dx - dstX), Math.round(occ.dy - dstY));
                             mctx.restore();
                         }
+                    } else if (localTop > 0) {
+                        mctx.save();
+                        mctx.beginPath();
+                        mctx.rect(0, localTop, dstW, dstH - localTop);
+                        mctx.clip();
+                        mctx.drawImage(occ.image, Math.round(occ.dx - dstX), Math.round(occ.dy - dstY));
+                        mctx.restore();
                     } else {
                         mctx.drawImage(occ.image, Math.round(occ.dx - dstX), Math.round(occ.dy - dstY));
                     }

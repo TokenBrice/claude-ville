@@ -1081,6 +1081,7 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
         // resident overlay.
         renderer.wildlifeRenderer?.drawFireflies?.(overlayCtx, perfNow);
     }
+    drawSelectedAgentXray(renderer, overlayCtx, buildingDrawables);
     // 0.7 — re-strike the selected agent's chevron AFTER the Canvas
     // atmosphere multiply so it survives the night grade.
     drawPrimaryMarksPostAtmosphere(renderer, overlayCtx, atmosphere, {
@@ -1094,7 +1095,6 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
             }
         }
     }
-    drawSelectedAgentXray(renderer, overlayCtx, buildingDrawables);
     if (!gpuWorldRendered) {
         for (const sprite of sortedSprites) sprite.drawDeferredNameTag?.(overlayCtx);
     }
