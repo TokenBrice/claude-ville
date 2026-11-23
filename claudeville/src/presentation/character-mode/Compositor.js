@@ -151,11 +151,14 @@ function cosmeticHash(id) {
 }
 
 // Plan 2.4 — one baked rim for both backends: 4-neighbour, 1 texel, warm
-// near-black at half alpha, so the authored dark outline gains ground
-// separation without doubling into a heavy line.
+// near-black tagged at half alpha in the composed sheet so GPU light passes
+// and LOD voting skip it; GPU shaders and Canvas `opaqueRimSheet` lift it to
+// DAY_RIM_ALPHA (~0.96) by day (relaxed 2026-11-23, operator decision).
 const OUTLINE_RGB = [28, 20, 16];
 const OUTLINE_ALPHA = 128;
+export const DAY_RIM_ALPHA = 245;
 const OPAQUE_ALPHA = 16;
+const OPAQUE_RIM_CACHE = new WeakMap();
 // W2.3 — crowd individuation. Variant identity inside a family is the
 // authored robe taking a value step and a bounded hue rotation (OKLab, L kept)
 // on the sheet's declared `paletteSource.robe` pixels only; skin, hair, trim
@@ -984,6 +987,36 @@ export function bakeSpriteOutline(ctx, width, height, cellSize = DEFAULT_CELL, o
         }
     }
     ctx.putImageData(image, 0, 0);
+}
+
+// Canvas 2D twin of the GPU `bakedRim` daytime lift: keeps the source sheet's
+// half-alpha rim tag intact for GPU/LOD consumers while returning a cached
+// copy whose tagged dark rim texels (a in (0.4, 0.6), max RGB < 0.16) render
+// at DAY_RIM_ALPHA (245/255 ≈ 0.96; relaxed 2026-11-23, operator decision).
+export function opaqueRimSheet(source) {
+    if (!source?.width || !source?.height || typeof document === 'undefined') return null;
+    const cached = OPAQUE_RIM_CACHE.get(source);
+    if (cached && cached.width === source.width && cached.height === source.height) return cached;
+    const srcCtx = source.getContext?.('2d', { willReadFrequently: true });
+    if (!srcCtx) return null;
+    const width = source.width;
+    const height = source.height;
+    const image = srcCtx.getImageData(0, 0, width, height);
+    const data = image.data;
+    for (let i = 0; i < data.length; i += 4) {
+        const a = data[i + 3];
+        if (a > 102 && a < 153 && Math.max(data[i], data[i + 1], data[i + 2]) <= 40) {
+            data[i + 3] = DAY_RIM_ALPHA;
+        }
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.imageSmoothingEnabled = false;
+    ctx.putImageData(image, 0, 0);
+    OPAQUE_RIM_CACHE.set(source, canvas);
+    return canvas;
 }
 
 // EF-6 — snow on the still (AgentSprite._snowCapCell): the one course of snow

@@ -14,9 +14,12 @@
 //
 // Brightest-thing rule (value budget):
 //   Tier A  L > 0.70 or S > 0.65  unresolved status marks, the selected-agent
-//                                 ring, authored emissive light at dusk/night.
+//                                 ring (2-texel palette gold with #140e0a
+//                                 keyline), authored emissive light at
+//                                 dusk/night.
 //   Tier B  L 0.45-0.70           lit building faces, faces/hands, label text,
-//                                 foam.
+//                                 foam, static working/waiting ground arcs
+//                                 (relaxed 2026-11-23, operator decision).
 //   Tier C  L 0.15-0.45           shadow faces, roofs, props, foliage.
 //   Tier D  L < 0.15              ground body, water body, void.
 // No ramp below reaches Tier A except `emissive`; status hues live in theme.js.

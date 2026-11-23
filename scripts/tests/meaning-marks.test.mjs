@@ -7,7 +7,16 @@ import { eventBus } from '../../claudeville/src/domain/events/DomainEvent.js';
 import { AgentStatus } from '../../claudeville/src/domain/value-objects/AgentStatus.js';
 import { LandmarkActivity } from '../../claudeville/src/presentation/character-mode/LandmarkActivity.js';
 import { FAILURE } from '../../claudeville/src/presentation/character-mode/EffectStamps.js';
-import { groundMarkDepth, groundRingPlan } from '../../claudeville/src/presentation/character-mode/AgentGroundMarks.js';
+import {
+    CHEVRON_ROWS,
+    drawSelectionChevron,
+    groundMarkDepth,
+    groundRingPlan,
+    SELECTED_RING_GOLD,
+    selectedRingStamp,
+    selectionChevronClearance,
+    statusArcStamp,
+} from '../../claudeville/src/presentation/character-mode/AgentGroundMarks.js';
 import { drawFamilyTethers, resolveSquads, squadCordChildIds, squadPennonSide, SQUAD_MIN_CHILDREN, SQUAD_TETHER_PATTERNS } from '../../claudeville/src/presentation/character-mode/CouncilRing.js';
 import { MarkGovernor, MarkTier, PRESSURE_LEVELS, setActiveMarkGovernor } from '../../claudeville/src/presentation/character-mode/MarkGovernor.js';
 import { drawSquadPennon } from '../../claudeville/src/presentation/character-mode/PixelPennant.js';
@@ -426,21 +435,90 @@ test('W7.4: the standard stands beside the leader feet, mirrored away from a cov
     }
 });
 
-test('W7.4: the repo course sits under status rings; NEEDS YOU always wins', () => {
+test('W7.4 + villager-look: action-needed rings win, WORKING/WAITING carry static arcs, IDLE is ring-free', () => {
     const repo = '#5aa0d8';
-    assert.deepEqual(groundRingPlan({ status: AgentStatus.WORKING, repo }).map(ring => ring.kind), ['repo']);
+    assert.deepEqual(groundRingPlan({ status: AgentStatus.WORKING, repo }).map(ring => ring.kind), ['working']);
+    assert.deepEqual(groundRingPlan({ status: AgentStatus.WAITING, repo }).map(ring => ring.kind), ['waiting']);
+    assert.deepEqual(groundRingPlan({ status: AgentStatus.IDLE, repo }).map(ring => ring.kind), [], 'IDLE stands on shadow-only feet');
     assert.deepEqual(groundRingPlan({ status: AgentStatus.IDLE, repo: null }).map(ring => ring.kind), []);
+    assert.deepEqual(groundRingPlan({ status: AgentStatus.WORKING, repo, routineStatus: false }).map(ring => ring.kind), ['repo'], 'shed routine arc falls back to repo course');
     for (const status of [AgentStatus.WAITING_ON_USER, AgentStatus.ERRORED, AgentStatus.RATE_LIMITED]) {
         const kinds = groundRingPlan({ status, repo }).map(ring => ring.kind);
-        assert.deepEqual(kinds, ['status'], `${status}: no repo course under an action-needed ring`);
+        assert.deepEqual(kinds, ['status'], `${status}: no routine or repo course under an action-needed ring`);
     }
     const selected = groundRingPlan({ status: AgentStatus.WORKING, repo, selected: true });
-    assert.deepEqual(selected.map(ring => ring.kind), ['repo', 'selected']);
-    assert.ok(selected[0].pad < selected[1].pad, 'the course sits inside the selection ring');
+    assert.deepEqual(selected.map(ring => ring.kind), ['working', 'selected']);
+    assert.ok(selected[0].pad < selected[1].pad, 'the working arc sits inside the selection ring');
     const withStatus = groundRingPlan({ status: AgentStatus.WAITING_ON_USER, repo: null })[0];
-    assert.ok(groundRingPlan({ repo })[0].pad < withStatus.pad, 'the course sits inside the status ring');
-    // Labels under the feet clear the course.
+    assert.ok(groundRingPlan({ repo })[0].pad < withStatus.pad, 'the repo course sits inside the status ring');
+    // Labels under the feet clear the arcs and rings.
+    assert.ok(groundMarkDepth({ contentWidth: 28, status: AgentStatus.WORKING }) > groundMarkDepth({ contentWidth: 28, status: AgentStatus.IDLE }));
     assert.ok(groundMarkDepth({ contentWidth: 28, repo }) > groundMarkDepth({ contentWidth: 28 }));
+
+    // 9x6 selection chevron with dark halo below zoom 1.75.
+    assert.equal(CHEVRON_ROWS.length, 6, 'selection chevron is 6 rows tall');
+    assert.equal(CHEVRON_ROWS[0].length, 9, 'selection chevron is 9 cols wide');
+    assert.equal(selectionChevronClearance(1), (6 + 2) * 2 + 1, 'z1 clearance accounts for 2x unit + halo');
+    assert.equal(selectionChevronClearance(2), (6 + 2) * 1, 'z2 clearance uses 1x unit without halo');
+    const z1Ctx = recordingCtx();
+    drawSelectionChevron(z1Ctx, 40, 20, 1);
+    assert.ok(z1Ctx.fills.some(f => f.color === '#140e0a' && f.w === 4 && f.h === 4), 'z1 chevron paints dark halo');
+    assert.ok(z1Ctx.fills.some(f => f.color === SELECTED_RING_GOLD), 'chevron uses Tier-A palette gold');
+
+    // Raster stamps for 2-texel gold selection ring and working/waiting arcs.
+    const prevDoc = globalThis.document;
+    globalThis.document = {
+        createElement: () => {
+            let width = 1;
+            let height = 1;
+            let data = new Uint8ClampedArray(4);
+            const ctx2d = {
+                createImageData: (w, h) => ({ width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }),
+                putImageData: (img) => { data = new Uint8ClampedArray(img.data); },
+            };
+            return {
+                get width() { return width; },
+                set width(w) { width = w; data = new Uint8ClampedArray(width * height * 4); },
+                get height() { return height; },
+                set height(h) { height = h; data = new Uint8ClampedArray(width * height * 4); },
+                get data() { return data; },
+                getContext: () => ctx2d,
+            };
+        },
+    };
+    try {
+        const sel = selectedRingStamp(36);
+        assert.ok(sel && sel.width === 38, 'selectedRingStamp includes 1-texel keyline margin');
+        let goldPx = 0;
+        let keylinePx = 0;
+        for (let i = 0; i < sel.data.length; i += 4) {
+            if (sel.data[i + 3] === 0) continue;
+            if (sel.data[i] === 20 && sel.data[i + 1] === 14 && sel.data[i + 2] === 10) keylinePx++;
+            else if (sel.data[i] > 230 && sel.data[i + 1] > 180) goldPx++;
+        }
+        assert.ok(goldPx > 120 && keylinePx > 40, `selected ring draws 2-texel gold (${goldPx}) and #140e0a keyline (${keylinePx})`);
+
+        const work = statusArcStamp('working', 32, '#79d975', 235);
+        const wait = statusArcStamp('waiting', 32, '#df8c3f', 235);
+        // Working split arc must leave top-center open.
+        const midX = Math.floor(work.width / 2);
+        let topMidLit = false;
+        for (let y = 0; y < 3; y++) {
+            const o = (y * work.width + midX) * 4;
+            if (work.data[o + 3] > 0 && work.data[o + 1] > 180) topMidLit = true;
+        }
+        assert.equal(topMidLit, false, 'working split arc opens cleanly at top/bottom center');
+        let waitAmber = 0;
+        let waitInk = 0;
+        for (let i = 0; i < wait.data.length; i += 4) {
+            if (wait.data[i + 3] === 0) continue;
+            if (wait.data[i] === 20 && wait.data[i + 1] === 14 && wait.data[i + 2] === 10) waitInk++;
+            else if (wait.data[i] > 200) waitAmber++;
+        }
+        assert.ok(waitAmber > 20 && waitInk > waitAmber, `waiting dashed arc draws amber dashes (${waitAmber}) outlined in #140e0a (${waitInk})`);
+    } finally {
+        globalThis.document = prevDoc;
+    }
 });
 
 function collider(id, collisions, extra = {}) {

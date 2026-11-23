@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { PNG } from 'pngjs';
 import * as CompositorModule from '../../claudeville/src/presentation/character-mode/Compositor.js';
 import * as FirelightModule from '../../claudeville/src/presentation/character-mode/gpu/Firelight.js';
-import { contactShadowStamp } from '../../claudeville/src/presentation/character-mode/AgentGroundMarks.js';
+import { contactShadowStamp, contactShadowWidth } from '../../claudeville/src/presentation/character-mode/AgentGroundMarks.js';
 import { effectBudgetMode } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldPolicy.js';
 import { collectSpriteEntries, loadSpriteManifest, spritesRoot } from '../sprites/manifest-utils.mjs';
 
@@ -103,28 +103,14 @@ test('C-04: downsampleMajority keeps interior robe colours and attached crown ti
     assert.ok(goldCrownPx >= 260, `Sol.b 0.5x golden crown pixels ${goldCrownPx} >= 260`);
 });
 
-test('C-04: LOD_OUTLINE_ALPHA sits cleanly inside the shader bakedRim (0.4, 0.6) window with >= 10 LSB margin', () => {
-    const { LOD_OUTLINE_ALPHA, bakeSpriteOutline } = CompositorModule;
+test('C-04: LOD_OUTLINE_ALPHA stays inside the shader bakedRim (0.4, 0.6) window and opaqueRimSheet lifts Canvas rims', () => {
+    const { LOD_OUTLINE_ALPHA, DAY_RIM_ALPHA, bakeSpriteOutline, opaqueRimSheet } = CompositorModule;
     assert.ok(Number.isInteger(LOD_OUTLINE_ALPHA), 'LOD_OUTLINE_ALPHA is an exported integer');
     // Shader bakedRim checks albedo.a > 0.4 (102/255) && albedo.a < 0.6 (153/255).
     assert.ok(LOD_OUTLINE_ALPHA >= 112 && LOD_OUTLINE_ALPHA <= 128,
         `LOD_OUTLINE_ALPHA=${LOD_OUTLINE_ALPHA} (${(LOD_OUTLINE_ALPHA / 255).toFixed(3)}) sits cleanly inside (0.4, 0.6)`);
 
-    const canvas = makeMockCanvas(8, 8);
-    const ctx = canvas.getContext('2d');
-    const img = ctx.createImageData(8, 8);
-    const center = (4 * 8 + 4) * 4;
-    img.data.set([120, 140, 160, 255], center);
-    ctx.putImageData(img, 0, 0);
-    bakeSpriteOutline(ctx, 8, 8, 8, LOD_OUTLINE_ALPHA);
-    const leftRim = (4 * 8 + 3) * 4;
-    assert.equal(canvas.data[leftRim + 3], LOD_OUTLINE_ALPHA, 'bakeSpriteOutline applies custom LOD_OUTLINE_ALPHA');
-});
-
-test('C-04: AgentGroundMarks contact shadow core alpha strengthens boot grounding to 148 while outer stays 66', () => {
     const prevDocument = globalThis.document;
-    globalThis.document = { createElement: () => makeMockCanvas(1, 1) };
-    // Resize mock canvas on width/height assignment
     globalThis.document = {
         createElement: () => {
             let backing = makeMockCanvas(1, 1);
@@ -139,14 +125,50 @@ test('C-04: AgentGroundMarks contact shadow core alpha strengthens boot groundin
         },
     };
     try {
-        const stamp = contactShadowStamp(24, { key: 'none', steps: 0, dx: 0, dy: 0 });
+        const canvas = makeMockCanvas(8, 8);
+        const ctx = canvas.getContext('2d');
+        const img = ctx.createImageData(8, 8);
+        const center = (4 * 8 + 4) * 4;
+        img.data.set([120, 140, 160, 255], center);
+        ctx.putImageData(img, 0, 0);
+        bakeSpriteOutline(ctx, 8, 8, 8, LOD_OUTLINE_ALPHA);
+        const leftRim = (4 * 8 + 3) * 4;
+        assert.equal(canvas.data[leftRim + 3], LOD_OUTLINE_ALPHA, 'bakeSpriteOutline applies custom LOD_OUTLINE_ALPHA');
+        const lifted = opaqueRimSheet(canvas);
+        assert.ok(lifted, 'opaqueRimSheet returns a Canvas 2D copy');
+        assert.equal(lifted.data[leftRim + 3], DAY_RIM_ALPHA, 'opaqueRimSheet lifts tagged dark rim to DAY_RIM_ALPHA');
+        assert.equal(lifted.data[center + 3], 255, 'opaqueRimSheet preserves interior opaque pixels');
+        assert.equal(canvas.data[leftRim + 3], LOD_OUTLINE_ALPHA, 'source sheet keeps half-alpha rim tag for GPU/LOD');
+    } finally {
+        globalThis.document = prevDocument;
+    }
+});
+
+test('C-04: AgentGroundMarks contact shadow widens to 0.84x and strengthens core/outer to 188/96 (2026-11-23)', () => {
+    const prevDocument = globalThis.document;
+    globalThis.document = {
+        createElement: () => {
+            let backing = makeMockCanvas(1, 1);
+            return {
+                get width() { return backing.width; },
+                set width(w) { backing = makeMockCanvas(w, backing.height); },
+                get height() { return backing.height; },
+                set height(h) { backing = makeMockCanvas(backing.width, h); },
+                get data() { return backing.data; },
+                getContext: () => backing.getContext('2d'),
+            };
+        },
+    };
+    try {
+        assert.equal(contactShadowWidth(32), 26, 'contactShadowWidth scales contentWidth by ~0.84 (even)');
+        const stamp = contactShadowStamp(26, { key: 'none', steps: 0, dx: 0, dy: 0 });
         assert.ok(stamp, 'contactShadowStamp returns a canvas');
         const alphas = new Set();
         for (let i = 3; i < stamp.data.length; i += 4) {
             if (stamp.data[i] > 0) alphas.add(stamp.data[i]);
         }
-        assert.ok(alphas.has(148), `shadow core alpha includes 148 (got ${[...alphas].join(', ')})`);
-        assert.ok(alphas.has(66), `shadow outer alpha keeps 66 (got ${[...alphas].join(', ')})`);
+        assert.ok(alphas.has(188), `shadow core alpha includes 188 (got ${[...alphas].join(', ')})`);
+        assert.ok(alphas.has(96), `shadow outer alpha includes 96 (got ${[...alphas].join(', ')})`);
     } finally {
         globalThis.document = prevDocument;
     }
