@@ -241,7 +241,10 @@ export const GRADE_KEYFRAMES = Object.freeze([
     // its own colour (grass stays green, water blue) and the moonlight lives in
     // the split tone — an indigo shadow tint and a faint blue-green highlight —
     // tuned to the lighter velvet target (~70 island meanLuma on clear-2300,
-    // storm-0200 p10 >= 30) while preserving the +0.08 full-moon phase step.
+    // storm-0200 p10 >= 30 before the 2026-11-23 overhaul; its denser trees,
+    // props, kerbs and darker roads put more of the frame in deep shadow, so
+    // the measured p10 is now ~25 with the island mean unchanged) while
+    // preserving the +0.08 full-moon phase step.
     Object.freeze({
         name: 'night', minute: 22 * 60, side: 'dusk',
         exposure: moonlit(0.68, 0.70), saturation: moonlit(0.58, 0.62),
