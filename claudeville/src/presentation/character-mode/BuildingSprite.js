@@ -285,15 +285,6 @@ const BUILDING_ACTIVITY_STATE_WEIGHT = Object.freeze({
     alert: 1,
 });
 const BUILDING_COLUMN_PX = 16;
-const BUILDING_FUNCTIONAL_X_SPANS = Object.freeze({
-    forge: Object.freeze([[56, 232]]),
-    taskboard: Object.freeze([[36, 196]]),
-    mine: Object.freeze([[32, 208]]),
-    portal: Object.freeze([[96, 216]]),
-    archive: Object.freeze([[132, 204]]),
-    command: Object.freeze([[96, 256]]),
-    harbor: Object.freeze([[88, 188], [324, 384]]),
-});
 const BUILDING_DRAWABLE_SORT_BAND = Object.freeze({
     'building-back': 10,
     'building-front': 90,
@@ -343,6 +334,17 @@ function taskboardPhaseMarker(index) {
 
 function clamp01(value) {
     return Math.max(0, Math.min(1, Number(value) || 0));
+}
+
+function columnHasOpaquePixels(mask, width, height, sx, sw) {
+    const xEnd = Math.min(width, sx + sw);
+    for (let y = 0; y < height; y++) {
+        const row = y * width;
+        for (let x = sx; x < xEnd; x++) {
+            if (mask[row + x]) return true;
+        }
+    }
+    return false;
 }
 
 function compareBuildingDrawableDepth(a, b) {
@@ -624,6 +626,7 @@ export class BuildingSprite {
         // Accepts a Map (preferred — matches world.buildings) or an Array.
         this.buildings = map instanceof Map ? Array.from(map.values()) : Array.from(map);
         this._drawablesCache = null;
+        this._drawablesMaskPending = false;
         this._glintFacets = null;
         this._lightSourcesCache = null;
         this._labelMetricsCache.clear();
@@ -2501,12 +2504,25 @@ export class BuildingSprite {
     }
 
     // Returns drawable payloads: vertical occlusion columns driven by each
-    // building's footprint front-edge geometry (or legacy split/whole fallback
-    // for footprint-less test stubs). Cached until the building list changes;
-    // hover and animation state are read live by drawDrawable().
+    // building's footprint front-edge geometry and sprite alpha mask (or legacy
+    // split/whole fallback for footprint-less test stubs). Cached until the
+    // building list changes or sprite alpha masks finish loading; hover and
+    // animation state are read live by drawDrawable().
     enumerateDrawables() {
-        if (this._drawablesCache) return this._drawablesCache;
+        if (this._drawablesCache) {
+            if (!this._drawablesMaskPending) return this._drawablesCache;
+            let newlyReady = false;
+            for (const id of this._drawablesMissingMasks || []) {
+                if (this.assets.getMask?.(id)) {
+                    newlyReady = true;
+                    break;
+                }
+            }
+            if (!newlyReady) return this._drawablesCache;
+            this._drawablesCache = null;
+        }
         const out = [];
+        const missingMasks = [];
         for (const b of this.buildings) {
             const entry = this.assets.getEntry(`building.${b.type}`);
             if (!entry) continue;
@@ -2523,6 +2539,8 @@ export class BuildingSprite {
             if (hasFootprint && dims?.w > 0 && dims?.h > 0 && Array.isArray(anchor)) {
                 const originX = Math.round(wx - anchor[0]);
                 const fp = landmarkFootprint(b);
+                const mask = this.assets.getMask?.(entry.id) || null;
+                if (!mask) missingMasks.push(entry.id);
                 const slices = lineOcclusionColumns({
                     left: 0,
                     right: dims.w,
@@ -2530,14 +2548,37 @@ export class BuildingSprite {
                     originY: 0,
                     slope: 0,
                 });
-                const lastIndex = slices.length - 1;
+                const active = [];
                 for (let i = 0; i < slices.length; i++) {
                     const sx = i * BUILDING_COLUMN_PX;
                     const sw = Math.min(BUILDING_COLUMN_PX, dims.w - sx);
                     if (sw <= 0) continue;
+                    if (mask && mask.length >= dims.w * dims.h && !columnHasOpaquePixels(mask, dims.w, dims.h, sx, sw)) {
+                        continue;
+                    }
+                    active.push({ sx, sw });
+                }
+                // Guard against an all-transparent mask stub: fall back to full slices.
+                if (!active.length) {
+                    for (let i = 0; i < slices.length; i++) {
+                        const sx = i * BUILDING_COLUMN_PX;
+                        const sw = Math.min(BUILDING_COLUMN_PX, dims.w - sx);
+                        if (sw > 0) active.push({ sx, sw });
+                    }
+                }
+                const lastIndex = active.length - 1;
+                const buildingCols = [];
+                let primaryIdx = 0;
+                let maxSortY = -Infinity;
+                for (let i = 0; i < active.length; i++) {
+                    const { sx, sw } = active[i];
                     const colCenterX = originX + sx + sw / 2;
                     const sortY = buildingColumnSortY(b, fp, colCenterX);
-                    out.push({
+                    if (sortY >= maxSortY) {
+                        maxSortY = sortY;
+                        primaryIdx = i;
+                    }
+                    buildingCols.push({
                         kind: 'building-column',
                         building: b,
                         entry,
@@ -2546,6 +2587,7 @@ export class BuildingSprite {
                         column: {
                             index: i,
                             last: i === lastIndex,
+                            primary: false,
                             sx,
                             sw,
                             worldLeft: originX + sx,
@@ -2554,6 +2596,8 @@ export class BuildingSprite {
                         sortY,
                     });
                 }
+                if (buildingCols.length) buildingCols[primaryIdx].column.primary = true;
+                for (const colDrawable of buildingCols) out.push(colDrawable);
             } else if (entry.splitForOcclusion) {
                 // Clamp manifest horizonY to a valid sub-rect inside the sprite so
                 // the front half (`drawImage(... , h - horizonY, ...)`) never receives
@@ -2567,6 +2611,8 @@ export class BuildingSprite {
             }
         }
         out.sort(compareBuildingDrawableDepth);
+        this._drawablesMissingMasks = missingMasks;
+        this._drawablesMaskPending = missingMasks.length > 0 && typeof this.assets?.getMask === 'function';
         this._drawablesCache = out;
         return out;
     }
@@ -3512,15 +3558,11 @@ export class BuildingSprite {
     }
 
     _drawFunctionalOverlay(ctx, building, entry, wx, wy, splitPass = 'whole', horizonY = null, column = null) {
-        const primaryColumn = !column || column.last === true;
+        const primaryColumn = !column || column.primary === true;
         if (splitPass === 'column' && column) {
             const hasRoomCount = Boolean(this._selectedBuildingType === building.type && this._roomInstrumentFor(building));
-            const hasAperture = building.type === 'command' && primaryColumn && Boolean(this._openApertureFor(building));
-            const spans = BUILDING_FUNCTIONAL_X_SPANS[building.type];
-            const overlapsSpan = spans
-                ? spans.some(([x0, x1]) => column.sx < x1 && column.sx + column.sw > x0)
-                : false;
-            if (!overlapsSpan && !hasRoomCount && !hasAperture) return;
+            if (building.type === 'tavern' && !hasRoomCount) return;
+            if (building.type === 'watchtower' && !hasRoomCount && !this._ungradedOverlay) return;
         }
         const baseAnchor = this.assets.getAnchor(entry.id);
         const localPoint = (lx, ly) => ({ x: Math.round(wx - baseAnchor[0] + lx), y: Math.round(wy - baseAnchor[1] + ly) });
@@ -3683,7 +3725,7 @@ export class BuildingSprite {
                 }
                 // 4.7 — the frame tabs name every other concurrent plan owner,
                 // so a hidden plan is one click away instead of invisible.
-                if (!this._villageAtRest()) this._drawTaskboardPlanTabs(ctx, localPoint);
+                if (!this._villageAtRest()) this._drawTaskboardPlanTabs(ctx, localPoint, primaryColumn);
             }
         } else if (building.type === 'command') {
             if (splitPass !== 'back') {
@@ -5044,7 +5086,7 @@ export class BuildingSprite {
     // screen-fixed type (5.4) hung off the slate's left edge: each tab's
     // right edge is flush to the slate, so it reads as part of the board and
     // never overhangs the chalk at any zoom.
-    _drawTaskboardPlanTabs(ctx, localPoint) {
+    _drawTaskboardPlanTabs(ctx, localPoint, registerHits = true) {
         const profile = getBuildingPlanTabProfile('taskboard');
         if (!profile || postcardFrame() || !this._chitsVisible('taskboard')) return;
         const summaries = this._taskboardBoardModel.summaries({
@@ -5086,14 +5128,16 @@ export class BuildingSprite {
             ctx.fillRect(left + 4, top + tabH / 2 - 2, 4, 4);
             ctx.fillStyle = active ? '#f2f6ee' : '#c8cfc4';
             ctx.fillText(text, left + 11, top + 9);
-            this._registerInstrumentHit({
-                kind: 'plan-tab',
-                agentId: summary.agentId,
-                left: edge.x + (left - 1) * s,
-                top: edge.y + (top - 1) * s,
-                right: edge.x,
-                bottom: edge.y + (top + tabH + 1) * s,
-            });
+            if (registerHits) {
+                this._registerInstrumentHit({
+                    kind: 'plan-tab',
+                    agentId: summary.agentId,
+                    left: edge.x + (left - 1) * s,
+                    top: edge.y + (top - 1) * s,
+                    right: edge.x,
+                    bottom: edge.y + (top + tabH + 1) * s,
+                });
+            }
         });
         if (overflowText) {
             const width = Math.ceil(measureLabelText(ctx, overflowText)) + 8;

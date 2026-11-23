@@ -225,6 +225,30 @@ test('Item 5 & 6: _occludedByWorld tracks buildings/gate/walls, hides overlays, 
     assert.ok(hidden._worldOccluders.length === 1, 'occluder list records Forge');
     assert.equal(visible._occludedByWorld, false, 'villager in front of Forge is not occluded');
 
+    // Right-half building columns arrive in descending worldLeft order when sorted by sortY;
+    // clipRanges must merge all overlapping columns across the villager's full horizontal box.
+    const command = new Building(BUILDING_DEFS.find((d) => d.type === 'command'));
+    const cmdRenderer = makeBuildingRenderer([command]);
+    const cmdDrawables = cmdRenderer.enumerateDrawables();
+    const cmdDims = MOCK_BUILDING_METRICS.command;
+    const cmdAssets = {
+        ...cmdRenderer.assets,
+        get: () => ({ width: cmdDims.w, height: cmdDims.h }),
+        getMask: () => new Uint8Array(cmdDims.w * cmdDims.h).fill(1),
+    };
+    const behindRightHalf = { ...tileToWorld(15.2, 14.8), _depthSortY: tileToWorld(15.2, 14.8).y, selected: true };
+    updateAgentWorldOcclusion({
+        agentSprites: [behindRightHalf],
+        buildingDrawables: cmdDrawables,
+        propDrawables: [],
+        assets: cmdAssets,
+        sprites: { assets: cmdAssets, hitTest: () => true },
+    });
+    assert.equal(behindRightHalf._occludedByWorld, true, 'villager behind Command right half is occluded');
+    const [range] = behindRightHalf._worldOccluders[0].clipRanges;
+    assert.ok(range[0] <= behindRightHalf.x - 10 && range[1] >= behindRightHalf.x + 10,
+        `clipRanges covers full villager width across zig-zagged columns, got [${range}] around x=${behindRightHalf.x}`);
+
     // Village gate occlusion also sets _occludedByWorld.
     const gateWorld = tileToWorld(18, 38);
     const gateMask = new Uint8Array(120 * 120).fill(1);
@@ -281,4 +305,36 @@ test('Item 5 & 6: _occludedByWorld tracks buildings/gate/walls, hides overlays, 
     sprite.gpuWorldEnabled = true;
     sprite.drawDeferredNameTag({});
     assert.equal(hoisted, 1, 'GPU path skips Canvas deferred nameplate');
+});
+
+test('Item 2 alpha trimming: empty edge columns are skipped once sprite masks load', () => {
+    const watchtower = new Building(BUILDING_DEFS.find((d) => d.type === 'watchtower'));
+    const dims = MOCK_BUILDING_METRICS.watchtower;
+    let maskReady = false;
+    const mask = new Uint8Array(dims.w * dims.h);
+    // Mark only middle columns [64..192) as opaque.
+    for (let y = 20; y < dims.h - 10; y++) {
+        for (let x = 64; x < 192; x++) {
+            mask[y * dims.w + x] = 1;
+        }
+    }
+    const renderer = Object.create(BuildingSprite.prototype);
+    renderer.buildings = [watchtower];
+    renderer._drawablesCache = null;
+    renderer.assets = {
+        getEntry: (id) => ({ id }),
+        getDims: () => ({ w: dims.w, h: dims.h }),
+        getAnchor: () => dims.anchor,
+        getMask: () => (maskReady ? mask : null),
+    };
+    const beforeMask = renderer.enumerateDrawables();
+    assert.equal(beforeMask.length, Math.ceil(dims.w / 16), 'before masks load, emits full width columns');
+    maskReady = true;
+    const afterMask = renderer.enumerateDrawables();
+    assert.equal(afterMask.length, 8, 'after mask loads, rebuilds cache and trims transparent edge columns');
+    const byIndex = afterMask.slice().sort((a, b) => a.column.index - b.column.index);
+    assert.equal(byIndex[0].column.index, 0, 'first emitted column is re-indexed to 0');
+    assert.equal(byIndex[byIndex.length - 1].column.last, true, 'rightmost emitted column sets last=true');
+    assert.equal(afterMask[afterMask.length - 1].column.primary, true, 'frontmost painted column sets primary=true');
+    assert.ok(afterMask.every((d) => d.column.sx >= 64 && d.column.sx + d.column.sw <= 192), 'only opaque columns remain');
 });

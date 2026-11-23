@@ -291,7 +291,7 @@ export function appendDepthSortedDrawables(target, {
             let sortY = item?.sortY;
             if (category.behindSplitBuildings === true && item) {
                 const split = behindSplit(item.x, item.y, splitBuildings, sprites);
-                const columnOcc = split ? null : behindColumnBuilding(item.x, item.y, columnBuildings);
+                const columnOcc = split ? null : behindColumnBuilding(item.x, item.y, columnBuildings, sortY);
                 // Read by the category's own marks pass (flags, plates): the
                 // depth verdict plus the building that sorts over the item,
                 // so the marks pass can test whether its silhouette actually
@@ -422,13 +422,14 @@ function collectColumnBuildings(buildingDrawables, assets = null) {
     return out;
 }
 
-function behindColumnBuilding(x, y, columnBuildings) {
+function behindColumnBuilding(x, y, columnBuildings, itemSortY = null) {
     if (!columnBuildings.length || !Number.isFinite(x) || !Number.isFinite(y)) return null;
+    const depth = Number.isFinite(itemSortY) ? itemSortY : y;
     for (const entry of columnBuildings) {
         if (x < entry.left || x > entry.right || y < entry.top || y > entry.bottom + 12) continue;
         for (const colDrawable of entry.columns) {
             const col = colDrawable.column;
-            if (x >= col.worldLeft && x < col.worldRight && colDrawable.sortY > y) {
+            if (x >= col.worldLeft && x < col.worldRight && colDrawable.sortY > depth) {
                 return entry;
             }
         }
@@ -666,16 +667,23 @@ function occluderPointOpaque(occ, px, py, agentDepth, sprites) {
 
 function occluderClipRanges(occ, agentDepth, boxLeft, boxRight) {
     if (!occ.columns) return null;
-    const ranges = [];
+    const raw = [];
     for (let i = 0; i < occ.columns.length; i++) {
         const col = occ.columns[i];
         if (!(col.sortY > agentDepth)) continue;
         if (col.worldRight <= boxLeft || col.worldLeft >= boxRight) continue;
-        const last = ranges.length ? ranges[ranges.length - 1] : null;
-        if (last && col.worldLeft <= last[1] + 1) {
-            last[1] = Math.max(last[1], col.worldRight);
+        raw.push([col.worldLeft, col.worldRight]);
+    }
+    if (raw.length <= 1) return raw;
+    raw.sort((a, b) => a[0] - b[0]);
+    const ranges = [raw[0]];
+    for (let i = 1; i < raw.length; i++) {
+        const next = raw[i];
+        const last = ranges[ranges.length - 1];
+        if (next[0] <= last[1] + 1) {
+            if (next[1] > last[1]) last[1] = next[1];
         } else {
-            ranges.push([col.worldLeft, col.worldRight]);
+            ranges.push(next);
         }
     }
     return ranges;
@@ -754,6 +762,7 @@ export function updateAgentWorldOcclusion({
                 dy: occ.dy,
                 w: occ.w,
                 h: occ.h,
+                rowStart: occ.rowStart || 0,
                 clipRanges,
                 drawable: occ.drawable,
             });
