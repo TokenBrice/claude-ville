@@ -516,6 +516,7 @@ const NAME_SLOT_PROP_CELL = 96;
 // candidate must stay free THOUGHT_RETURN_MS before the column moves back.
 const THOUGHT_RESEARCH_MS = 300;
 const THOUGHT_RETURN_MS = 2000;
+const THOUGHT_EDGE_MARGIN = 8;
 // Thought budget: a swarm must not turn the World into a wall of text. At most
 // THOUGHT_BUDGET columns are placed per frame, freshest line first; a placed
 // column keeps its seat THOUGHT_MIN_SEAT_MS so it can be read before a newer
@@ -7602,6 +7603,23 @@ export class IsometricRenderer {
         // T1 — attention plates are laid out first, from live status, and
         // every other label yields to them. Their rects are PRIMARY in the
         // mark governor, so ambient marks in the region dim around them.
+        // Visible building plaques from the previous frame are passed as
+        // tally-avoidance obstacles so sliding off-frame tallies yield to
+        // plaques without blanking them.
+        const plaqueAvoid = this._plaqueAvoidScreenRects || (this._plaqueAvoidScreenRects = []);
+        plaqueAvoid.length = 0;
+        if (this.camera?.worldToScreen && this.buildingRenderer?.plaqueWorldRects?.length) {
+            for (const worldRect of this.buildingRenderer.plaqueWorldRects) {
+                const topLeft = this.camera.worldToScreen(worldRect.left, worldRect.top);
+                const bottomRight = this.camera.worldToScreen(worldRect.right, worldRect.bottom);
+                plaqueAvoid.push({
+                    left: topLeft.x,
+                    top: topLeft.y,
+                    right: bottomRight.x,
+                    bottom: bottomRight.y,
+                });
+            }
+        }
         this._attentionLayout = layoutAttentionPlates(this.overlayCtx, {
             // Every agent, not the visible snapshot: off-view action-needed
             // agents get an edge plate instead of vanishing (T1 truth).
@@ -7610,6 +7628,9 @@ export class IsometricRenderer {
             viewport,
             // V8 — chrome over the world (the World dock) is occluded screen.
             reserved: getReservedRects(),
+            avoid: plaqueAvoid,
+            state: this._attentionState || (this._attentionState = {}),
+            dwellNow: now,
             // Ages default to the shared 1 Hz tick (`elapsedTickNow`), so a
             // plate and the card beside it always print the same second.
         });
@@ -7780,12 +7801,39 @@ export class IsometricRenderer {
             for (const rect of reservedLabels) occupied.push(rect);
         }
         const s = 1 / (zoom || 1);
+        const viewport = typeof this._screenViewport === 'function' ? this._screenViewport() : null;
+        const hasView = Boolean(viewport?.width > 0 && viewport?.height > 0
+            && this.camera?.worldToScreen && this.camera?.screenToWorld);
+        let viewWorld = null;
+        let reservedWorld = null;
+        if (hasView) {
+            const topLeft = this.camera.screenToWorld(THOUGHT_EDGE_MARGIN, THOUGHT_EDGE_MARGIN);
+            const bottomRight = this.camera.screenToWorld(viewport.width - THOUGHT_EDGE_MARGIN, viewport.height - THOUGHT_EDGE_MARGIN);
+            viewWorld = {
+                left: topLeft.x,
+                top: topLeft.y,
+                right: bottomRight.x,
+                bottom: bottomRight.y,
+            };
+            const reserved = getReservedRects();
+            if (reserved?.length) {
+                reservedWorld = [];
+                for (const rect of reserved) {
+                    const worldRect = this._screenRectToWorld(rect);
+                    if (worldRect && worldRect.w > 0 && worldRect.h > 0) reservedWorld.push(worldRect);
+                }
+            }
+        }
         const order = this._overlayBubbleOrder;
         order.length = 0;
         const frame = this._thoughtFrame = (this._thoughtFrame || 0) + 1;
         for (const sprite of sprites || []) {
             if (!sprite?.agent) continue;
             sprite._thoughtFrame = frame;
+            if (hasView && !this._thoughtSpeakerOnScreen(sprite, viewport, zoom)) {
+                this._clearThoughtPlacement(sprite);
+                continue;
+            }
             if (this._spriteWantsBubble(sprite)) order.push(sprite);
             else this._clearThoughtPlacement(sprite);
         }
@@ -7833,13 +7881,15 @@ export class IsometricRenderer {
             if (sprite.bubbleMergedInto) {
                 sprite.bubbleSlot = null;
                 sprite.bubbleLateral = 0;
+                sprite.bubbleClampX = 0;
+                sprite._bubbleClamped = false;
                 sprite._bubbleCandidate = null;
                 continue;
             }
             const focused = sprite._thoughtRank >= 2;
             if (sprite.bubbleMergedCount > 1) this._layoutThoughtColumns(sprite);
             if ((focused || placed < THOUGHT_BUDGET)
-                && this._placeThought(sprite, s, now, grid, occupied, useSpatialGrid, focused)) {
+                && this._placeThought(sprite, s, now, grid, occupied, useSpatialGrid, focused, viewWorld, reservedWorld)) {
                 placed++;
                 if (!sprite._thoughtSeatedAt) sprite._thoughtSeatedAt = now;
                 continue;
@@ -7933,6 +7983,8 @@ export class IsometricRenderer {
     _clearThoughtPlacement(sprite) {
         sprite.bubbleSlot = null;
         sprite.bubbleLateral = 0;
+        sprite.bubbleClampX = 0;
+        sprite._bubbleClamped = false;
         sprite.bubbleOccluded = false;
         sprite.bubbleMergedCount = 1;
         sprite.bubbleMergedInto = null;
@@ -7941,6 +7993,18 @@ export class IsometricRenderer {
         sprite._bubbleBetterSince = 0;
         sprite._thoughtSeatedAt = 0;
         sprite._thoughtFiltered = false;
+    }
+
+    // Speakers wholly outside the visible canvas skip thought slots so they
+    // never burn THOUGHT_BUDGET or draw off-screen clipped bubbles.
+    _thoughtSpeakerOnScreen(sprite, viewport, zoom) {
+        const point = this.camera.worldToScreen(sprite.x, sprite.y);
+        const box = sprite._bodyBox;
+        const bodyLeft = point.x + (box ? box.left : -12) * zoom;
+        const bodyRight = point.x + (box ? box.right : 12) * zoom;
+        const bodyTop = point.y + (box ? box.top : -48) * zoom;
+        const bodyBottom = point.y + (box ? box.bottom : 0) * zoom;
+        return bodyRight > 0 && bodyLeft < viewport.width && bodyBottom > 0 && bodyTop < viewport.height;
     }
 
     // W3.4 — the base and leader landing for a speaker the depth pass hid
@@ -7980,12 +8044,12 @@ export class IsometricRenderer {
 
     // World rects of candidate `index`: the column body, plus the leader's
     // vertical and horizontal runs (each three px wide with their outline).
-    _thoughtCandidateRects(sprite, index, s) {
+    _thoughtCandidateRects(sprite, index, s, clampX = 0) {
         const lateral = THOUGHT_CANDIDATE_LATERAL[index] * (sprite._thoughtSide || 1);
         const slot = THOUGHT_CANDIDATE_SLOT[index];
         const occluded = sprite.bubbleOccluded === true;
-        const column = lateral !== 0 || occluded ? sprite._thoughtColumnTagged : sprite._thoughtColumn;
-        const shiftX = thoughtLateralShift(column, lateral);
+        const column = lateral !== 0 || clampX !== 0 || occluded ? sprite._thoughtColumnTagged : sprite._thoughtColumn;
+        const shiftX = thoughtLateralShift(column, lateral) + clampX;
         const slotShift = -slot * THOUGHT_STACK_STEP;
         const anchorX = sprite._thoughtAnchorX;
         const baseY = sprite.bubbleBaseY;
@@ -7995,7 +8059,7 @@ export class IsometricRenderer {
         body.y = baseY + (slotShift + column.top) * s;
         body.w = column.width * s;
         body.h = column.height * s;
-        rects.leader = lateral !== 0 || slot !== 0 || occluded;
+        rects.leader = lateral !== 0 || clampX !== 0 || slot !== 0 || occluded;
         rects.horizontal = false;
         if (!rects.leader) return rects;
         const geo = thoughtLeader(this._thoughtLeaderScratch || (this._thoughtLeaderScratch = {}), column, shiftX, slotShift, sprite.bubbleAnchorDy);
@@ -8013,6 +8077,46 @@ export class IsometricRenderer {
             h.h = 3 * s;
         }
         return rects;
+    }
+
+    // Horizontal screen-px shift required to keep candidate `index` inside
+    // `[viewWorld.left, viewWorld.right]`, or 0 when it already fits.
+    _thoughtClampX(sprite, index, s, viewWorld) {
+        if (!viewWorld) return 0;
+        const unclamped = this._thoughtCandidateRects(sprite, index, s, 0).body;
+        if (unclamped.x >= viewWorld.left && unclamped.x + unclamped.w <= viewWorld.right) return 0;
+        const lateral = THOUGHT_CANDIDATE_LATERAL[index] * (sprite._thoughtSide || 1);
+        const column = sprite._thoughtColumnTagged;
+        const baseLeft = sprite._thoughtAnchorX + (thoughtLateralShift(column, lateral) + column.left) * s;
+        const width = column.width * s;
+        if (baseLeft < viewWorld.left) return Math.ceil((viewWorld.left - baseLeft) / s);
+        if (baseLeft + width > viewWorld.right) {
+            const targetLeft = Math.max(viewWorld.left, viewWorld.right - width);
+            return Math.floor((targetLeft - baseLeft) / s);
+        }
+        return 0;
+    }
+
+    // World area of `body` that falls outside `viewWorld` or overlaps any
+    // reserved chrome rect (`getReservedRects()`). Zero means fully in bounds
+    // and clear of chrome.
+    _thoughtBoundsViolationArea(body, viewWorld, reservedWorld) {
+        let penalty = 0;
+        if (viewWorld) {
+            const viewRect = {
+                x: viewWorld.left,
+                y: viewWorld.top,
+                w: Math.max(0, viewWorld.right - viewWorld.left),
+                h: Math.max(0, viewWorld.bottom - viewWorld.top),
+            };
+            const inside = rectIntersectionArea(body, viewRect);
+            const total = Math.max(0, body.w * body.h);
+            if (inside < total) penalty += total - inside;
+        }
+        if (reservedWorld?.length) {
+            for (const chrome of reservedWorld) penalty += rectIntersectionArea(body, chrome);
+        }
+        return penalty;
     }
 
     _thoughtRectHits(rect, grid, occupied, useSpatialGrid) {
@@ -8059,64 +8163,125 @@ export class IsometricRenderer {
 
     // False when no candidate is free and the speaker may not overlap: only a
     // focused speaker falls back to the least-overlapping candidate.
-    _placeThought(sprite, s, now, grid, occupied, useSpatialGrid, mayOverlap = true) {
+    _placeThought(
+        sprite,
+        s,
+        now,
+        grid,
+        occupied,
+        useSpatialGrid,
+        mayOverlap = true,
+        viewWorld = null,
+        reservedWorld = null,
+    ) {
         const stickyKey = (sprite.selected ? 1 : 0) | (sprite.bubbleOccluded ? 2 : 0);
         if (sprite._bubbleStickyKey !== stickyKey) {
             sprite._bubbleStickyKey = stickyKey;
             sprite._bubbleCandidate = null;
+            sprite._bubbleClamped = false;
         }
         const committed = sprite._bubbleCandidate ?? null;
+        const wasClamped = Boolean(sprite._bubbleClamped);
         let chosen = -1;
+        let chosenClampX = 0;
+        const candidateFree = (rects) => !this._thoughtRectsCollide(rects, grid, occupied, useSpatialGrid)
+            && this._thoughtBoundsViolationArea(rects.body, viewWorld, reservedWorld) === 0;
         if (committed !== null) {
-            const blocked = this._thoughtRectsCollide(this._thoughtCandidateRects(sprite, committed, s), grid, occupied, useSpatialGrid);
-            if (!blocked) {
-                chosen = committed;
-                sprite._bubbleBlockedSince = 0;
-            } else {
-                if (!sprite._bubbleBlockedSince) sprite._bubbleBlockedSince = now;
-                // A brief crossing holds the column still.
-                if (now - sprite._bubbleBlockedSince < THOUGHT_RESEARCH_MS) chosen = committed;
+            const committedClampX = wasClamped && viewWorld ? this._thoughtClampX(sprite, committed, s, viewWorld) : 0;
+            const committedRects = this._thoughtCandidateRects(sprite, committed, s, committedClampX);
+            const outOfBounds = this._thoughtBoundsViolationArea(committedRects.body, viewWorld, reservedWorld) > 0;
+            if (!outOfBounds) {
+                const blocked = this._thoughtRectsCollide(committedRects, grid, occupied, useSpatialGrid);
+                if (!blocked) {
+                    chosen = committed;
+                    chosenClampX = committedClampX;
+                    sprite._bubbleBlockedSince = 0;
+                } else {
+                    if (!sprite._bubbleBlockedSince) sprite._bubbleBlockedSince = now;
+                    // A brief crossing holds the column still.
+                    if (now - sprite._bubbleBlockedSince < THOUGHT_RESEARCH_MS) {
+                        chosen = committed;
+                        chosenClampX = committedClampX;
+                    }
+                }
             }
-            // A cheaper candidate that has stayed free long enough wins back.
-            if (chosen === committed && committed > 0 && !sprite._bubbleBlockedSince) {
+            // A cheaper unclamped candidate that has stayed free long enough wins back.
+            const returnLimit = wasClamped ? THOUGHT_CANDIDATE_COUNT : committed;
+            if (chosen === committed && returnLimit > 0 && !sprite._bubbleBlockedSince) {
                 let better = -1;
-                for (let index = 0; index < committed; index++) {
-                    if (this._thoughtRectsCollide(this._thoughtCandidateRects(sprite, index, s), grid, occupied, useSpatialGrid)) continue;
+                for (let index = 0; index < returnLimit; index++) {
+                    if (!candidateFree(this._thoughtCandidateRects(sprite, index, s, 0))) continue;
                     better = index;
                     break;
                 }
                 if (better < 0) sprite._bubbleBetterSince = 0;
                 else if (!sprite._bubbleBetterSince) sprite._bubbleBetterSince = now;
-                else if (now - sprite._bubbleBetterSince >= THOUGHT_RETURN_MS) chosen = better;
+                else if (now - sprite._bubbleBetterSince >= THOUGHT_RETURN_MS) {
+                    chosen = better;
+                    chosenClampX = 0;
+                }
             }
         }
         if (chosen < 0) {
-            let leastArea = Infinity;
+            let leastScore = Infinity;
             let least = 0;
+            let leastClampX = 0;
+            // Pass 1: unclamped candidates (home first, then inward lateral
+            // slots because outward slots fail viewport bounds).
             for (let index = 0; index < THOUGHT_CANDIDATE_COUNT; index++) {
-                const rects = this._thoughtCandidateRects(sprite, index, s);
-                if (!this._thoughtRectsCollide(rects, grid, occupied, useSpatialGrid)) {
+                const rects = this._thoughtCandidateRects(sprite, index, s, 0);
+                if (candidateFree(rects)) {
                     chosen = index;
+                    chosenClampX = 0;
                     break;
                 }
                 if (!mayOverlap) continue;
-                const area = this._thoughtOverlapArea(rects, grid, occupied, useSpatialGrid);
-                if (area < leastArea) {
-                    leastArea = area;
+                const overlap = this._thoughtOverlapArea(rects, grid, occupied, useSpatialGrid);
+                const bounds = this._thoughtBoundsViolationArea(rects.body, viewWorld, reservedWorld);
+                const score = overlap + bounds * 1000;
+                if (score < leastScore) {
+                    leastScore = score;
                     least = index;
+                    leastClampX = 0;
+                }
+            }
+            // Pass 2: if no unclamped slot stays inside the viewport, clamp
+            // horizontally while keeping the leader anchored to the speaker.
+            if (chosen < 0 && viewWorld) {
+                for (let index = 0; index < THOUGHT_CANDIDATE_COUNT; index++) {
+                    const clampX = this._thoughtClampX(sprite, index, s, viewWorld);
+                    if (clampX === 0) continue;
+                    const rects = this._thoughtCandidateRects(sprite, index, s, clampX);
+                    if (candidateFree(rects)) {
+                        chosen = index;
+                        chosenClampX = clampX;
+                        break;
+                    }
+                    if (!mayOverlap) continue;
+                    const overlap = this._thoughtOverlapArea(rects, grid, occupied, useSpatialGrid);
+                    const bounds = this._thoughtBoundsViolationArea(rects.body, viewWorld, reservedWorld);
+                    const score = overlap + bounds * 1000;
+                    if (score < leastScore) {
+                        leastScore = score;
+                        least = index;
+                        leastClampX = clampX;
+                    }
                 }
             }
             if (chosen < 0) {
                 if (!mayOverlap) return false;
                 chosen = least;
+                chosenClampX = leastClampX;
             }
         }
-        if (chosen !== committed) {
+        if (chosen !== committed || (chosenClampX !== 0) !== wasClamped) {
             sprite._bubbleBlockedSince = 0;
             sprite._bubbleBetterSince = 0;
         }
         sprite._bubbleCandidate = chosen;
-        const rects = this._thoughtCandidateRects(sprite, chosen, s);
+        sprite._bubbleClamped = chosenClampX !== 0;
+        sprite.bubbleClampX = chosenClampX;
+        const rects = this._thoughtCandidateRects(sprite, chosen, s, chosenClampX);
         if (useSpatialGrid) {
             this._insertRectGridItem(grid, rects.body);
             if (rects.leader) this._insertRectGridItem(grid, rects.v);
@@ -8325,6 +8490,9 @@ export class IsometricRenderer {
         for (const sprite of sprites) {
             if (!sprite.agent) continue;
             if (sprite.overlaySlot != null) out.push(this._agentIdentityRect(sprite, sprite.overlaySlot || 0));
+            if (sprite.bubbleSlot != null && !sprite.bubbleMergedInto && sprite._thoughtRects?.body?.w > 0) {
+                out.push(sprite._thoughtRects.body);
+            }
             // VQ-14 — a T1 body is as hard an obstacle as its plate: a plaque
             // steps aside (or stands down) rather than cover the pose the
             // plate points at (the HARBOR plaque over the Pharos lookout).

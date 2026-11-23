@@ -320,7 +320,11 @@ export const HARBOR_TRAFFIC_SCENE_CATEGORY = Object.freeze({
         for (let index = 0; index < wildlifeItems.length; index++) items.push(wildlifeItems[index]);
         const harborItems = renderer?.harborTraffic?.enumerateDrawables?.() ?? [];
         for (let index = 0; index < harborItems.length; index++) items.push(harborItems[index]);
-        renderer?.harborTraffic?.beginPlateFrame?.(renderer?.camera?.zoom);
+        renderer?.harborTraffic?.beginPlateFrame?.(
+            renderer?.camera?.zoom,
+            renderer?.camera || null,
+            renderer?._screenViewport?.() || null,
+        );
         return items;
     },
     emitSceneCommands() {
@@ -4813,8 +4817,10 @@ export class HarborTraffic {
     // Once per frame (the scene category's enumerate): clear the plate boxes
     // and reserve the lane-lead plates first, fleet leads and failures
     // ahead, so a SHA plate never covers a fleet's name.
-    beginPlateFrame(zoom = 1) {
+    beginPlateFrame(zoom = 1, camera = null, viewport = null) {
         const z = Number(zoom) > 0 ? Number(zoom) : 1;
+        this._plateCamera = camera;
+        this._plateViewport = viewport;
         this._plateBoxes.length = 0;
         this._leadPlateLift.clear();
         const leads = [];
@@ -4828,6 +4834,8 @@ export class HarborTraffic {
             || (Number(b.spec.failed) - Number(a.spec.failed))
             || (b.ship.y - a.ship.y));
         const charWidth = this._plateCharWidth();
+        const hasViewport = Boolean(camera?.worldToScreen && viewport?.width > 0 && viewport?.height > 0);
+        const edgeMargin = 8;
         for (const { ship, spec } of leads) {
             const shipClass = harborShipClass(ship);
             const width = Math.min(168, spec.text.length * charWidth) + 12 + String(spec.count).length * charWidth + 8;
@@ -4835,7 +4843,33 @@ export class HarborTraffic {
             const base = this._plateBase(ship, shipClass, z) - (this._hasShipBadge(ship, shipClass, z) ? 18 : 0) - 15;
             // A repo fleet's lead always flies its name; another lane lead
             // with no free slot stays hidden this frame (null).
-            this._leadPlateLift.set(ship.id, this._claimPlate(ship, left, base, width, 15, z, { forced: ship.repoFleetLead }));
+            const place = this._claimPlate(ship, left, base, width, 15, z, { forced: ship.repoFleetLead });
+            if (place && hasViewport) {
+                const pt = camera.worldToScreen(ship.x, ship.y);
+                if (pt.x >= -width && pt.x <= viewport.width + width
+                    && pt.y >= -80 && pt.y <= viewport.height + 80) {
+                    const screenLeft = pt.x + left + place.dx;
+                    const maxLeft = Math.max(edgeMargin, viewport.width - edgeMargin - width);
+                    const clampedLeft = Math.max(edgeMargin, Math.min(maxLeft, screenLeft));
+                    const deltaX = Math.round(clampedLeft - screenLeft);
+                    const screenTop = pt.y + base - place.lift;
+                    const maxTop = Math.max(edgeMargin, viewport.height - edgeMargin - 15);
+                    const clampedTop = Math.max(edgeMargin, Math.min(maxTop, screenTop));
+                    const deltaY = Math.round(clampedTop - screenTop);
+                    if (deltaX !== 0 || deltaY !== 0) {
+                        place.dx += deltaX;
+                        place.lift -= deltaY;
+                        const box = this._plateBoxes[this._plateBoxes.length - 1];
+                        if (box) {
+                            box.x0 += deltaX / z;
+                            box.x1 += deltaX / z;
+                            box.y0 += deltaY / z;
+                            box.y1 += deltaY / z;
+                        }
+                    }
+                }
+            }
+            this._leadPlateLift.set(ship.id, place);
         }
     }
 
@@ -5050,8 +5084,22 @@ export class HarborTraffic {
             ctx.font = WORLD_BODY_FONT_11;
             const w = Math.max(30, measureLabelText(ctx, text) + 12);
             const h = 14;
-            const left = -Math.round(w / 2);
-            const top = -Math.round(h / 2);
+            let left = -Math.round(w / 2);
+            let top = -Math.round(h / 2);
+            const vp = this._plateViewport;
+            const cam = this._plateCamera;
+            if (cam?.worldToScreen && vp?.width > 0 && vp?.height > 0) {
+                const pt = cam.worldToScreen(x, y);
+                if (pt.x >= -w && pt.x <= vp.width + w && pt.y >= -h && pt.y <= vp.height + h) {
+                    const margin = 8;
+                    const sLeft = pt.x + left;
+                    const cLeft = Math.max(margin, Math.min(Math.max(margin, vp.width - margin - w), sLeft));
+                    left += Math.round(cLeft - sLeft);
+                    const sTop = pt.y + top;
+                    const cTop = Math.max(margin, Math.min(Math.max(margin, vp.height - margin - h), sTop));
+                    top += Math.round(cTop - sTop);
+                }
+            }
             ctx.globalAlpha = 0.78;
             ctx.fillStyle = 'rgba(159, 185, 181, 0.7)';
             ctx.fillRect(left - 1, top - 1, w + 2, h + 2);
@@ -5061,7 +5109,7 @@ export class HarborTraffic {
             ctx.fillStyle = '#cdd9d6';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'alphabetic';
-            this._fillReadableText(ctx, fitLabelText(ctx, text, w - 6), 0, top + 11);
+            this._fillReadableText(ctx, fitLabelText(ctx, text, w - 6), left + Math.round(w / 2), top + 11);
             ctx.restore();
             return;
         }
@@ -5141,10 +5189,32 @@ export class HarborTraffic {
             ctx.restore();
             return;
         }
+        const anchorX = at ? at.x : x;
+        const anchorY = at ? at.y : y - deckLift;
+        const vp = this._plateViewport;
+        const cam = this._plateCamera;
+        const clampOffset = (w, h, baseLeft, baseTop) => {
+            if (!cam?.worldToScreen || !(vp?.width > 0 && vp?.height > 0)) return { dx: 0, dy: 0 };
+            const pt = cam.worldToScreen(anchorX, anchorY);
+            if (pt.x < -w || pt.x > vp.width + w || pt.y < -80 || pt.y > vp.height + 80) return { dx: 0, dy: 0 };
+            const margin = 8;
+            const sLeft = pt.x + baseLeft;
+            const cLeft = Math.max(margin, Math.min(Math.max(margin, vp.width - margin - w), sLeft));
+            const sTop = pt.y + baseTop;
+            const cTop = Math.max(margin, Math.min(Math.max(margin, vp.height - margin - h), sTop));
+            return { dx: Math.round(cLeft - sLeft), dy: Math.round(cTop - sTop) };
+        };
         if (at) {
             const z = zoom || 1;
-            const halfW = (Math.max(40, label.length * this._plateCharWidth() + 12) / 2 + 1) / z;
-            const box = { x0: at.x - halfW, x1: at.x + halfW, y0: at.y + 9 / z, y1: at.y + 25 / z };
+            const estW = Math.max(40, label.length * this._plateCharWidth() + 12);
+            const { dx, dy } = clampOffset(estW, 14, -Math.round(estW / 2), 10);
+            const halfW = (estW / 2 + 1) / z;
+            const box = {
+                x0: at.x - halfW + dx / z,
+                x1: at.x + halfW + dx / z,
+                y0: at.y + (9 + dy) / z,
+                y1: at.y + (25 + dy) / z,
+            };
             if (this._plateBoxesHit(box) || this._plateOverScenery(box)) {
                 ctx.restore();
                 return;
@@ -5157,14 +5227,17 @@ export class HarborTraffic {
         }
         // C5 screen-fixed plate: zoom cancelled, whole screen px.
         ctx.save();
-        ctx.translate(at ? at.x : x, at ? at.y : y - deckLift);
+        ctx.translate(anchorX, anchorY);
         ctx.scale(1 / (zoom || 1), 1 / (zoom || 1));
         snapScreenOrigin(ctx);
         ctx.font = WORLD_BODY_FONT_11;
         const w = Math.max(40, measureLabelText(ctx, label) + 12);
         const h = 14;
-        const left = -Math.round(w / 2);
-        const top = at ? 10 : 9;
+        const baseLeft = -Math.round(w / 2);
+        const baseTop = at ? 10 : 9;
+        const { dx, dy } = clampOffset(w, h, baseLeft, baseTop);
+        const left = baseLeft + dx;
+        const top = baseTop + dy;
         ctx.globalAlpha = (lively ? 0.95 : 0.7) * fade;
         ctx.fillStyle = failed ? PUSH_STATUS_STYLE.failed.accent : (profile.panelBorder || profile.accent);
         ctx.fillRect(left - 1, top - 1, w + 2, h + 2);
@@ -5174,7 +5247,7 @@ export class HarborTraffic {
         ctx.fillStyle = lively ? (profile.labelText || profile.accent) : 'rgba(180, 196, 192, 0.78)';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'alphabetic';
-        this._fillReadableText(ctx, label, 0, top + 11);
+        this._fillReadableText(ctx, label, left + Math.round(w / 2), top + 11);
         ctx.restore();
         ctx.restore();
     }
