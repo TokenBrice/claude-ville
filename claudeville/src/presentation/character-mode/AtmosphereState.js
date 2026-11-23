@@ -1306,7 +1306,9 @@ function buildGrade(phase, phaseProgress, weather) {
 // Action-needed overlays are outside this budget: the renderer applies `spill`
 // per admitted light and skips attention sources.
 export const SOURCE_ENERGY_BUCKETS = Object.freeze({
-    // Authored emitters stay identifiable in daylight without floodlighting.
+    // Authored emitters stay identifiable in daylight without floodlighting;
+    // active daytime work emitters (Forge fire, awake Portal, working Command)
+    // take their own gated daytime bloom path without raising passive cores.
     daylight: Object.freeze({ bucket: 'daylight', core: 0.14, spill: 0.06, bloom: 0.12, halo: 0.72 }),
     // The sky is going but the working windows have not taken over yet.
     settling: Object.freeze({ bucket: 'settling', core: 0.46, spill: 0.42, bloom: 0.22, halo: 0.84 }),

@@ -128,9 +128,10 @@ fn applyAerialHaze(color0: vec3f, order: f32, cellCentreY: f32, additive: bool) 
     var color = color0;
     if (frame.haze.a > 0.0) {
         let yTop = cellCentreY / max(1.0, frame.resolution.y);
-        let t = clamp((0.55 - yTop) / 0.55, 0.0, 1.0);
+        let hazeStart = max(0.05, frame.hazeStart);
+        let t = clamp((hazeStart - yTop) / hazeStart, 0.0, 1.0);
         let level = pow(t, 1.4) * frame.haze.a * 48.0;
-        let perTexel = 48.0 * frame.haze.a * 1.4 * pow(max(t, 1e-4), 0.4) / (0.55 * max(1.0, frame.resolution.y)) * max(1.0, frame.cameraScale);
+        let perTexel = 48.0 * frame.haze.a * 1.4 * pow(max(t, 1e-4), 0.4) / (hazeStart * max(1.0, frame.resolution.y)) * max(1.0, frame.cameraScale);
         let seam = clamp(2.0 * perTexel, 1e-3, 1.0);
         var k = floor(level);
         let f = level - k;
@@ -138,7 +139,8 @@ fn applyAerialHaze(color0: vec3f, order: f32, cellCentreY: f32, additive: bool) 
         let haze = k / 48.0;
         if (haze > 0.0) {
             let l = dot(color, vec3f(0.2126, 0.7152, 0.0722));
-            color = mix(color, mix(vec3f(l), color, 0.8), min(1.0, haze * 8.0));
+            let clearDay = clamp((0.55 - hazeStart) / 0.25, 0.0, 1.0);
+            color = mix(color, mix(vec3f(l), color, 0.8), min(1.0, haze * mix(8.0, 3.0, clearDay)));
             if (additive) {
                 color = color * (1.0 - haze);
             } else {

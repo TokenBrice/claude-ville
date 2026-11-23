@@ -47,18 +47,18 @@
         "darkShare": 0.08984
       },
       "clear-1200": {
-        "mean": 94.01,
-        "p10": 45,
-        "p90": 149,
-        "warmShare": 0.07766,
-        "darkShare": 0.06733
+        "mean": 117.89,
+        "p10": 54,
+        "p90": 188,
+        "warmShare": 0.19586,
+        "darkShare": 0.05355
       },
       "clear-1915": {
-        "mean": 80.49,
+        "mean": 82.72,
         "p10": 35,
-        "p90": 125,
-        "warmShare": 0.07026,
-        "darkShare": 0.08991
+        "p90": 126,
+        "warmShare": 0.0816,
+        "darkShare": 0.09101
       },
       "storm-1915": {
         "mean": 64.52,
@@ -91,18 +91,18 @@
         "darkShare": 0.08984
       },
       "clear-1200": {
-        "mean": 94.02,
-        "p10": 45,
-        "p90": 149,
-        "warmShare": 0.07766,
-        "darkShare": 0.06733
+        "mean": 117.95,
+        "p10": 54,
+        "p90": 188,
+        "warmShare": 0.19586,
+        "darkShare": 0.05355
       },
       "clear-1915": {
-        "mean": 80.5,
+        "mean": 82.71,
         "p10": 35,
-        "p90": 125,
-        "warmShare": 0.07026,
-        "darkShare": 0.08991
+        "p90": 126,
+        "warmShare": 0.0816,
+        "darkShare": 0.09101
       },
       "storm-1915": {
         "mean": 64.52,
@@ -135,18 +135,18 @@
         "darkShare": 0.0904
       },
       "clear-1200": {
-        "mean": 94.93,
-        "p10": 47,
-        "p90": 144,
-        "warmShare": 0.08226,
-        "darkShare": 0.067
+        "mean": 113.78,
+        "p10": 53,
+        "p90": 168,
+        "warmShare": 0.13408,
+        "darkShare": 0.0564
       },
       "clear-1915": {
-        "mean": 88.3,
+        "mean": 87.77,
         "p10": 40,
         "p90": 131,
-        "warmShare": 0.08819,
-        "darkShare": 0.08078
+        "warmShare": 0.08654,
+        "darkShare": 0.08283
       },
       "storm-1915": {
         "mean": 75.1,

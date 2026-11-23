@@ -1,4 +1,10 @@
-import { materialClassId } from './GpuWorldPolicy.js';
+import {
+    DAYLIGHT_PASSIVE_CORE_SCALE,
+    effectBudgetMode,
+    isDaytimeHighEnergyBuilding,
+    materialClassId,
+} from './GpuWorldPolicy.js';
+import { sourceEnergyFor } from '../AtmosphereState.js';
 import { tileToWorld, TILE_HALF_HEIGHT, TILE_HALF_WIDTH } from '../Projection.js';
 import { offshoreSceneryRecords } from '../OffshoreScenery.js';
 import { landmarkFootprint } from '../FootprintField.js';
@@ -6,7 +12,6 @@ import { ownerSlotFor } from '../LightSourceRegistry.js';
 import { lookStrength } from '../LookStrengths.js';
 import { lampSilhouetteFor, setLampSilhouetteMode } from '../RakingLight.js';
 import { lampSilhouetteRecords, releaseLampSilhouettes } from '../LampSilhouette.js';
-import { effectBudgetMode } from './GpuWorldPolicy.js';
 import {
     atlasSourceRect,
     shouldUseAtlasForCategory,
@@ -644,7 +649,10 @@ function recordForBuilding(renderer, drawable, sequence) {
     // observed-tool recency), never idle, seated or passing bodies.
     const workTier = renderer?.buildingRenderer?._workTierFor?.(drawable.building);
     const active = Boolean(workTier) && workTier !== 'dormant';
-    const emissiveGate = renderer?.buildingRenderer?._emissiveGateFor?.(drawable.building) ?? 1;
+    const workOpen = renderer?.buildingRenderer?.partGates?.isOpen?.(`work.${buildingType}`) ?? active;
+    const rawEmissiveGate = renderer?.buildingRenderer?._emissiveGateFor?.(drawable.building) ?? 1;
+    const daytimeEmitter = isDaytimeHighEnergyBuilding(buildingType, workOpen, rawEmissiveGate);
+    const emissiveGate = rawEmissiveGate;
     // Material/emissive are sampled with the albedo's UVs (see the GL fragment
     // shaders), so a channel source must share the albedo's geometry. When the
     // albedo comes from an atlas page the channels must be that page's channel
@@ -690,6 +698,7 @@ function recordForBuilding(renderer, drawable, sequence) {
             ? (active ? finite(materialMeta.activeEmissive, 0.12) : finite(materialMeta.emissive, 0.03))
             : 0,
         emissiveGate,
+        daytimeEmitter,
         // 3.5 pilot opt-in: Command's authored material pixels quantize
         // admitted local light to the palette ramp. Look `nl1` (a switch: a
         // ramp is on or off per building) extends it to RAMP_LANDMARKS. A
@@ -757,6 +766,9 @@ function buildingPartRecords(renderer, drawable, base, sequence) {
         const d = draws[index];
         const channels = buildings.partChannelsFor?.(drawable.entry, d) || null;
         const id = `${base.id}:part:${d.name}`;
+        const rawPartGate = d.emissiveGate ?? (d.fixture ? 1 : base.emissiveGate);
+        const partDaytimeEmitter = Boolean(base.daytimeEmitter && !d.ember && rawPartGate > 0.01);
+        const partGate = rawPartGate;
         out.push({
             id,
             stableKey: id,
@@ -780,7 +792,8 @@ function buildingPartRecords(renderer, drawable, base, sequence) {
             elevation: base.elevation,
             emissive: channels?.material ? base.emissive : 0,
             // VQ-8 — a part with its own gate (the banked ember floor) keeps it.
-            emissiveGate: d.emissiveGate ?? (d.fixture ? 1 : base.emissiveGate),
+            emissiveGate: partGate,
+            daytimeEmitter: partDaytimeEmitter,
             paletteRamp: base.paletteRamp,
             occluder: base.occluder,
             landmarkId: base.landmarkId,
@@ -1913,6 +1926,32 @@ export function buildGpuWorldRecords(renderer, { drawables = [] } = {}) {
     for (let index = 0; index < records.length; index++) {
         const record = records[index];
         if (record.id !== 'terrain:static' && !String(record.id || '').startsWith('ground:')) ordered.push(record);
+    }
+    // When a daylight frame has an active work-gated emitter (awake Forge fire,
+    // awake Portal, active Command braziers), the GPU renderer raises frame
+    // coreEnergy to DAYTIME_WORK_BLOOM_CORE (0.36); scale all other emissive
+    // records in that frame back by DAYLIGHT_PASSIVE_CORE_SCALE so passive
+    // emitters keep the base 0.14 daylight core.
+    if (sourceEnergyFor(renderer?._lastAtmosphere?.lighting).bucket === 'daylight') {
+        let hasActiveWorkEmitter = false;
+        for (let index = 0; index < ordered.length; index++) {
+            const record = ordered[index];
+            if (record.daytimeEmitter && record.emissiveSource && (record.emissiveGate ?? 1) > 0.01) {
+                hasActiveWorkEmitter = true;
+                break;
+            }
+        }
+        if (hasActiveWorkEmitter) {
+            for (let index = 0; index < ordered.length; index++) {
+                const record = ordered[index];
+                if (!record.daytimeEmitter && (record.emissiveSource || record.emissive > 0) && (record.emissiveGate ?? 1) > 0) {
+                    ordered[index] = {
+                        ...record,
+                        emissiveGate: (record.emissiveGate ?? 1) * DAYLIGHT_PASSIVE_CORE_SCALE,
+                    };
+                }
+            }
+        }
     }
     if (renderer) {
         renderer._gpuWorldRecordScratch = records;

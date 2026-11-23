@@ -31,7 +31,11 @@ import { atlasSourceRect } from './AssetManager.js';
 import { sourceEnergyFor } from './AtmosphereState.js';
 import { buildEmitterCut } from './CanvasGrade.js';
 import { mirrorAccentGate, mirrorAccentLayers, mirrorAccentRainCut, mirrorStormDrop } from './CoastBake.js';
-import { materialClassId } from './gpu/GpuWorldPolicy.js';
+import {
+    DAYTIME_WORK_BLOOM_CORE,
+    isDaytimeHighEnergyBuilding,
+    materialClassId,
+} from './gpu/GpuWorldPolicy.js';
 import { hullGeometry } from './HarborHulls.js';
 import { tileToWorld } from './Projection.js';
 
@@ -445,7 +449,7 @@ let partScratch = null;
 // Draws the lit emitter texels of the frame each part shows now, carved by
 // whatever the depth pass drew in front of the building, after the
 // building's own cut (a part covers the base texels under it).
-function drawPartCuts(ctx, renderer, emitter, core, scale, bloomCtx) {
+function drawPartCuts(ctx, renderer, emitter, core, scale, bloomCtx, isDaylight = false, baseCore = core) {
     const buildings = renderer.buildingRenderer;
     if (!buildings?.partDrawsFor || !emitter.entry?.layers) return;
     partScratch ||= [];
@@ -454,7 +458,8 @@ function drawPartCuts(ctx, renderer, emitter, core, scale, bloomCtx) {
         const d = draws[index];
         // VQ-8 — a part with its own gate (the banked ember floor) keeps it.
         const gate = d.emissiveGate ?? (d.fixture ? 1 : Math.max(0, emitter.gate));
-        const alpha = Math.min(1, gate * core);
+        const partCore = isDaylight && d.ember ? baseCore : core;
+        const alpha = Math.min(1, gate * partCore);
         if (alpha < 0.02) continue;
         const cut = partCutFor(renderer.assets, buildings, emitter.entry, d);
         if (!cut) continue;
@@ -529,13 +534,18 @@ function* emitterPlacements(renderer) {
         for (const d of buildingDrawables) {
             if (d.building === building && d.sortY > frontSortY) frontSortY = d.sortY;
         }
+        const workTier = buildings._workTierFor?.(building);
+        const active = buildings.partGates?.isOpen?.(`work.${building.type}`) ?? (Boolean(workTier) && workTier !== 'dormant');
+        const gate = buildings._emissiveGateFor?.(building) ?? 1;
+        const daytimeEmitter = isDaytimeHighEnergyBuilding(building.type, active, gate);
         yield {
             id: drawable.entry.id,
             x: drawable.wx,
             y: drawable.wy,
             sortY: sortYAtX,
             staticSortY: frontSortY,
-            gate: buildings._emissiveGateFor?.(building) ?? 1,
+            gate,
+            daytimeEmitter,
             // 6.3 — dark rooms (and every pane by day) carved back to glass.
             glass: buildings.glassPatchFor?.(building) || null,
             entry: drawable.entry,
@@ -672,7 +682,9 @@ export function drawCanvasEmitterCuts(ctx, renderer, atmosphere, bloomScale = 0)
     const assets = renderer?.assets;
     const camera = renderer?.camera;
     if (!ctx || !assets || !camera) return null;
-    const core = sourceEnergyFor(atmosphere?.lighting).core;
+    const energy = sourceEnergyFor(atmosphere?.lighting);
+    const core = energy.core;
+    const isDaylight = energy.bucket === 'daylight';
     if (!(core > 0.02)) return null;
     const viewport = renderer._screenViewport?.() || null;
     const topLeft = viewport ? camera.screenToWorld(0, 0) : null;
@@ -687,8 +699,9 @@ export function drawCanvasEmitterCuts(ctx, renderer, atmosphere, bloomScale = 0)
     ctx.globalAlpha = 1;
     drawMirrorAccentCuts(ctx, renderer, atmosphere, core, topLeft, bottomRight);
     for (const emitter of emitterPlacements(renderer)) {
-        drawSpriteCut(ctx, renderer, emitter, core, scale, topLeft, bottomRight, bloomCtx);
-        if (emitter.building) drawPartCuts(ctx, renderer, emitter, core, scale, bloomCtx);
+        const emitterCore = isDaylight && emitter.daytimeEmitter ? DAYTIME_WORK_BLOOM_CORE : core;
+        drawSpriteCut(ctx, renderer, emitter, emitterCore, scale, topLeft, bottomRight, bloomCtx);
+        if (emitter.building) drawPartCuts(ctx, renderer, emitter, emitterCore, scale, bloomCtx, isDaylight, core);
     }
     // 5.3 — lit ship lamps (masthead and stern lanterns), cut like panes.
     renderer.harborTraffic?.drawLampCuts?.(ctx, core, bloomCtx);

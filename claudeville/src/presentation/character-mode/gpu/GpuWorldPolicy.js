@@ -1267,24 +1267,82 @@ export function buildCloudShadowTile(size = CLOUD_TILE_SIZE, seed = 0x5eed) {
     return data;
 }
 
-// 1.6 — screen-Y aerial perspective strength by zoom (survey 0.18, tier 1
-// 0.14, tier 2 0.08, tier 3 0.04), raised by fog.
-export function aerialPerspectiveStrength(zoom = 1, fog = 0) {
+// 1.6 — clear-daylight blend weight (0 at night, dusk, overcast, storm or fog;
+// 1 on clear sunlit days) so lighter clear-air haze never changes night, storm
+// or foggy scenes.
+export function clearDayHazeWeight(fog = 0, daylight = 0, cloudCover = 0) {
+    const f = Math.max(0, Math.min(1, Number(fog) || 0));
+    const d = Math.max(0, Math.min(1, Number(daylight) || 0));
+    const c = Math.max(0, Math.min(1, Number(cloudCover) || 0));
+    const dayShare = Math.max(0, Math.min(1, (d - 0.30) / 0.60));
+    const airShare = Math.max(0, Math.min(1, (0.20 - f) / 0.15));
+    const skyShare = Math.max(0, Math.min(1, (0.85 - c) / 0.30));
+    return dayShare * airShare * skyShare;
+}
+
+// 1.6 — screen-Y aerial perspective strength by zoom (base survey 0.18, tier 1
+// 0.14, tier 2 0.08, tier 3 0.04), raised by fog. Clear daylight blends toward
+// crisp clear-air stops (0.08 / 0.06 / 0.03 / 0.01); night, storm and fog stay
+// on the exact base curve.
+export function aerialPerspectiveStrength(zoom = 1, fog = 0, clearDay = 0) {
     const z = Math.max(0.25, Number(zoom) || 1);
-    const stops = [[0.5, 0.18], [1, 0.14], [2, 0.08], [3, 0.04]];
-    let strength = stops[stops.length - 1][1];
-    if (z <= stops[0][0]) strength = stops[0][1];
-    else {
+    const f = Math.max(0, Math.min(1, Number(fog) || 0));
+    const air = Math.max(0, Math.min(1, (0.20 - f) / 0.15));
+    const clear = Math.max(0, Math.min(1, Number(clearDay) || 0)) * air;
+    const baseStops = [[0.5, 0.18], [1, 0.14], [2, 0.08], [3, 0.04]];
+    const clearStops = [[0.5, 0.08], [1, 0.06], [2, 0.03], [3, 0.01]];
+    const sample = (stops) => {
+        let strength = stops[stops.length - 1][1];
+        if (z <= stops[0][0]) return stops[0][1];
         for (let index = 1; index < stops.length; index++) {
             const [z1, s1] = stops[index];
             const [z0, s0] = stops[index - 1];
-            if (z <= z1) {
-                strength = s0 + (s1 - s0) * ((z - z0) / (z1 - z0));
-                break;
-            }
+            if (z <= z1) return s0 + (s1 - s0) * ((z - z0) / (z1 - z0));
+        }
+        return strength;
+    };
+    const base = sample(baseStops);
+    const strength = clear > 0 ? base + (sample(clearStops) - base) * clear : base;
+    return strength * (1 + f);
+}
+
+// 1.6 — vertical reach of the screen-Y aerial haze: 0.55 by default (night,
+// storm, overcast, fog), pulling up to 0.30 in clear daylight so upper-half
+// sunlight stays crisp.
+export function aerialHazeStart(fog = 0, clearDay = 0) {
+    const f = Math.max(0, Math.min(1, Number(fog) || 0));
+    const air = Math.max(0, Math.min(1, (0.20 - f) / 0.15));
+    const clear = Math.max(0, Math.min(1, Number(clearDay) || 0)) * air;
+    if (clear <= 0) return 0.55;
+    if (clear >= 1) return 0.30;
+    return 0.55 - 0.25 * clear;
+}
+
+// Daytime bloom: only buildings with an open work gate (working Forge fire,
+// awake Portal, working Command braziers) activate the daytime bloom path;
+// static props (such as prop.runeBrazier) never trigger daytime bloom on their
+// own, and passive emitters stay at the 0.14 daylight core.
+export const DAYTIME_WORK_BLOOM_CORE = 0.36;
+export const DAYTIME_WORK_BLOOM_STRENGTH = 0.22;
+export const DAYLIGHT_PASSIVE_CORE_SCALE = 0.14 / DAYTIME_WORK_BLOOM_CORE;
+
+export function isDaytimeHighEnergyBuilding(buildingType, active, emissiveGate) {
+    if (!active || !(emissiveGate > 0.01)) return false;
+    return buildingType === 'forge' || buildingType === 'portal' || buildingType === 'command';
+}
+
+export function hasActiveBloomEmitters(batches) {
+    if (!Array.isArray(batches)) return false;
+    for (let b = 0; b < batches.length; b++) {
+        const batch = batches[b];
+        if (!batch?.emissiveTexture && !batch?.emissiveSource) continue;
+        const records = batch.records;
+        for (let r = 0; r < records.length; r++) {
+            const rec = records[r];
+            if (rec?.daytimeEmitter && rec.emissiveGate > 0.01) return true;
         }
     }
-    return strength * (1 + Math.max(0, Math.min(1, Number(fog) || 0)));
+    return false;
 }
 
 // Ambient sources currently use the registry default (0). Keeping attention
@@ -1662,6 +1720,7 @@ export function normalizeGpuRecord(record = {}, sequence = 0, target = null) {
     normalized.elevation = elevation;
     normalized.emissive = emissive;
     normalized.emissiveGate = Math.max(0, Math.min(1, finite(record.emissiveGate, 1)));
+    normalized.daytimeEmitter = record.daytimeEmitter === true;
     normalized.occluder = occluder;
     normalized.material = materialClassId(record.material ?? record.materialId);
     normalized.blend = blend;

@@ -30,6 +30,9 @@ import {
     SMOKE_PUFF_LIT_GAIN,
     SMOKE_PUFF_SHADE_GAIN,
     GPU_RECORD_FLAGS,
+    DAYTIME_WORK_BLOOM_CORE,
+    DAYTIME_WORK_BLOOM_STRENGTH,
+    hasActiveBloomEmitters,
     isSoftwareRasterizer,
     gpuRecordPageable,
 } from './GpuWorldPolicy.js';
@@ -638,6 +641,8 @@ uniform vec4 u_cloudLone;
 uniform vec3 u_cloudThresholds;
 // rgb: C2 horizon haze, a: strength at the top of the frame (0 = off).
 uniform vec4 u_haze;
+// Vertical reach of screen-Y aerial haze (0.30 clear -> 0.55 fog).
+uniform float u_hazeStart;
 // SEA-1 — u_cloud.w is the sea1 look strength: above 0 the field lies on the
 // ground plane (GpuWorldPolicy CLOUD_PLANE; u_cloud.xy then in plane units).
 // PERF-01 — branchless unsigned integer bilinear constants derived from
@@ -698,9 +703,10 @@ vec3 applyCloudCourse(vec3 color, float course) {
 vec3 applyAerialHaze(vec3 color, float order, float cellCentreY, bool additive) {
     if (u_haze.a > 0.0) {
         float yTop = cellCentreY / max(1.0, u_resolution.y);
-        float t = clamp((0.55 - yTop) / 0.55, 0.0, 1.0);
+        float hazeStart = max(0.05, u_hazeStart);
+        float t = clamp((hazeStart - yTop) / hazeStart, 0.0, 1.0);
         float level = pow(t, 1.4) * u_haze.a * 48.0;
-        float perTexel = 48.0 * u_haze.a * 1.4 * pow(max(t, 1e-4), 0.4) / (0.55 * max(1.0, u_resolution.y)) * max(1.0, u_camera.z);
+        float perTexel = 48.0 * u_haze.a * 1.4 * pow(max(t, 1e-4), 0.4) / (hazeStart * max(1.0, u_resolution.y)) * max(1.0, u_camera.z);
         float seam = clamp(2.0 * perTexel, 1e-3, 1.0);
         float k = floor(level);
         float f = level - k;
@@ -708,7 +714,8 @@ vec3 applyAerialHaze(vec3 color, float order, float cellCentreY, bool additive) 
         float haze = k / 48.0;
         if (haze > 0.0) {
             float l = dot(color, vec3(0.2126, 0.7152, 0.0722));
-            color = mix(color, mix(vec3(l), color, 0.8), min(1.0, haze * 8.0));
+            float clearDay = clamp((0.55 - hazeStart) / 0.25, 0.0, 1.0);
+            color = mix(color, mix(vec3(l), color, 0.8), min(1.0, haze * mix(8.0, 3.0, clearDay)));
             color = additive ? color * (1.0 - haze) : mix(color, u_haze.rgb, haze);
         }
     }
@@ -719,7 +726,7 @@ vec3 applyAtmosphereCourses(vec3 color, vec2 cell, float order, float cellCentre
     return applyAerialHaze(color, order, cellCentreY, additive);
 }
 ${MIST_GLSL}`;
-const ATMOSPHERE_COURSE_UNIFORM_NAMES = ['u_cloudTile', 'u_cloud', 'u_cloudThresholds', 'u_haze', 'u_cloudLone', 'u_mist', 'u_mistBurn'];
+const ATMOSPHERE_COURSE_UNIFORM_NAMES = ['u_cloudTile', 'u_cloud', 'u_cloudThresholds', 'u_haze', 'u_hazeStart', 'u_cloudLone', 'u_mist', 'u_mistBurn'];
 
 // 3.4 — water mood (x: night, y: storm), CoastBake.waterMoodFor: night sits
 // shallow water below lit ground in value, storm reads grey-green. The
@@ -2287,11 +2294,18 @@ vec3 applyAuthoredSunBand(vec3 color, float material) {
     response = mix(response, 0.24, materialNear(material, 8.0));
     float keyFacing = clamp(0.5 + (-u_sun.x - u_sun.y) * 0.25, 0.0, 1.0);
     float rawBand = 0.84 + response * (0.12 + keyFacing * 0.12);
-    // Two restrained material-wide bands preserve the baked upper-left key.
-    float quantized = rawBand < 0.93 ? 0.86 : 1.0;
+    // Clear daylight retires the 0.86 penalty on land/fabric/unlit (base 1.0)
+    // and gives high-response stone/metal a crisp sunlit step (1.08); pre-dawn,
+    // blue-hour and night (sunBand <= 0.35) keep the base curve untouched.
+    // Water (material 8) keeps its authored 0.86 until SEA-1 fades it.
+    float isWater = materialNear(material, 8.0);
+    float baseQuant = rawBand < 0.93 ? 0.86 : 1.0;
+    float sunnyQuant = isWater > 0.5 ? 0.86 : (response >= 0.60 && rawBand >= 0.95 ? 1.08 : 1.0);
+    float sunBandW = clamp(u_sun.w, 0.0, 1.0);
+    float quantized = mix(baseQuant, sunnyQuant, smoothstep(0.35, 0.85, sunBandW));
     // SEA-1 — water's dim fades out with the look (sunlit water lifts instead).
     if (u_cloud.w > 0.0) quantized = mix(quantized, 1.0, materialNear(material, 8.0) * u_cloud.w);
-    return color * mix(1.0, quantized, clamp(u_sun.w, 0.0, 1.0));
+    return color * mix(1.0, quantized, sunBandW);
 }
 // 3.10 — caustics appear on stops 0..1 and on sunlit river/lagoon stop 2
 // outside cast ground shade (defined after SUN_SHADE_GLSL so shadeGroundAt is in scope).
@@ -3294,6 +3308,26 @@ void main() {
         vec3 rim = receiverKnee(onStop(mix(rimHue, rimStop, 0.6), rimY), receiverLuma);
         if (dot(rim, GRADE_LUMA) > dot(color, GRADE_LUMA)) color = rim;
     }
+    // Daytime 1-texel upper-left sun rim on sunlit villager body contours
+    // (opaque contour only; never the half-alpha bakedRim halo, capped well
+    // below NEEDS YOU and waiting candles).
+    if (recvClass == 2 && !reflectRecord && albedo.a >= 0.75 && sunVerdict > -0.5 && sunVerdict < 1.5
+        && u_shade.y > 0.0 && u_sun.w > 0.3 && recvH > 10.0) {
+        vec2 leftUv = uv - vec2(uvStepX, 0.0);
+        vec2 topUv = uv + vec2(0.0, -1.0 / float(albedoSize().y));
+        bool leftOuter = any(lessThan(leftUv, v_uvClamp.xy)) || any(greaterThan(leftUv, v_uvClamp.zw))
+            || albedoTexture(leftUv).a < 0.75;
+        bool topOuter = any(lessThan(topUv, v_uvClamp.xy)) || any(greaterThan(topUv, v_uvClamp.zw))
+            || albedoTexture(topUv).a < 0.75;
+        if (leftOuter || topOuter) {
+            float rimStrength = clamp(u_shade.y / 0.21875, 0.0, 1.0) * clamp(u_sun.w, 0.0, 1.0)
+                * smoothstep(0.04, 0.14, dot(color, GRADE_LUMA));
+            vec3 sunRimColor = mix(color, vec3(1.0, 0.94, 0.78), 0.30 * rimStrength);
+            float rimY = dot(sunRimColor, GRADE_LUMA);
+            if (rimY > 0.72) sunRimColor *= 0.72 / rimY;
+            if (dot(sunRimColor, GRADE_LUMA) > dot(color, GRADE_LUMA)) color = sunRimColor;
+        }
+    }
 
     if (u_mist.w > 0.0) {
         // MS-1 — the low mist (MIST_GLSL) replaces the screen-Y veil: the
@@ -3336,7 +3370,7 @@ void main() {
         : applySeaCourses(color, artCell, poolOrder,
             artTopLeftPx.y + (waterMaterial ? seaContourRows(artCell) * u_camera.z : 0.0), u_additive);
     if (bakedRim && !u_additive) alpha = max(alpha, v_alpha * mix(0.96, 1.0, nightCarry));
-    // SD-3 — the finished lifted texel stays under the waiting candle.
+    // SD-3 — every lifted texel stays under the waiting candle (SUN_LIFT_CANDLE).
     color = sunLiftFinal(color);
     outColor = vec4(max(color, vec3(0.0)) * alpha, alpha);
     outEmission = vec4(emission * alpha, alpha > 0.0 ? 1.0 : 0.0);
@@ -5376,7 +5410,7 @@ export class GpuWorldRenderer {
         this.waterFieldsActive = present;
     }
 
-    _setSceneUniforms(feed, camera, qualityLevel = POST_FX_LEVELS.FULL) {
+    _setSceneUniforms(feed, camera, qualityLevel = POST_FX_LEVELS.FULL, batches = null) {
         const gl = this._uniformGl || this.gl;
         const uniforms = this.sceneUniforms;
         const grade = resolveFrameGrade(feed);
@@ -5413,7 +5447,13 @@ export class GpuWorldRenderer {
         // admitted light below, and the bloom share in `_present`.
         const energy = sourceEnergyFor(feed.lighting);
         this.sourceEnergy = energy;
-        gl.uniform1f(uniforms.u_coreEnergy, clamp(finite(energy.core, 1), 0, 2));
+        const daytimeWorkBloom = energy.bucket === 'daylight' && hasActiveBloomEmitters(batches);
+        this._daytimeWorkBloom = daytimeWorkBloom;
+        const coreEnergy = daytimeWorkBloom
+            ? DAYTIME_WORK_BLOOM_CORE
+            : clamp(finite(energy.core, 1), 0, 2);
+        this._frameCoreEnergy = coreEnergy;
+        gl.uniform1f(uniforms.u_coreEnergy, coreEnergy);
         // 3.1 / 3.2 / 3.6 / 3.9 / 3.10 — the water clock, rings, caustics,
         // swash and the sun/moon path, then the coast lattice fields.
         const moonFill = clamp(finite(feed.lighting?.moonFill, 0), 0, 1);
@@ -5666,7 +5706,7 @@ export class GpuWorldRenderer {
         this._setCameraUniforms(uniforms, camera, 1);
         gl.uniform2f(uniforms.u_resolution, this.width, this.height);
         uploadGradeUniforms(gl, uniforms, this._frameGradeForComposite || NEUTRAL_GRADE);
-        gl.uniform1f(uniforms.u_coreEnergy, clamp(finite(this.sourceEnergy?.core, 1), 0, 2));
+        gl.uniform1f(uniforms.u_coreEnergy, this._frameCoreEnergy ?? clamp(finite(this.sourceEnergy?.core, 1), 0, 2));
         gl.activeTexture(gl.TEXTURE0 + PARTICLE_SAMPLER_UNITS.motifs);
         gl.bindTexture(gl.TEXTURE_2D, this._particleMotifTexture);
         gl.uniform1i(uniforms.u_motifs, PARTICLE_SAMPLER_UNITS.motifs);
@@ -6106,6 +6146,7 @@ export class GpuWorldRenderer {
         gl.uniform3fv(uniforms.u_cloudThresholds, courses.thresholds);
         gl.uniform4fv(uniforms.u_cloudLone, courses.lone);
         gl.uniform4fv(uniforms.u_haze, courses.haze);
+        gl.uniform1f(uniforms.u_hazeStart, courses.hazeStart);
         // MS-1 — the low mist (prepareFrame's resolveMist; zero = today's veil).
         gl.uniform4fv(uniforms.u_mist, this.mist);
         gl.uniform2fv(uniforms.u_mistBurn, this.mistBurn);
@@ -6317,7 +6358,7 @@ export class GpuWorldRenderer {
             this._uniformGl = stagingGl;
             if (this._radiance) this._radiance.gl = stagingGl;
             stagingGl.useProgram(this.sceneProgram);
-            this._setSceneUniforms(feed, camera, qualityLevel);
+            this._setSceneUniforms(feed, camera, qualityLevel, batches);
             // B.1b — the albedo page (or its stand-in) stays on unit 14;
             // unit 0 starts empty in case a paged batch draws first.
             stagingGl.activeTexture(gl.TEXTURE0 + SCENE_SAMPLER_UNITS.albedoPage);
@@ -6344,8 +6385,11 @@ export class GpuWorldRenderer {
             }
             const bloomMode = effectBudgetMode('bloom', qualityLevel);
             const strength = bloomMode === 'off' ? 0 : bloomMode === 'reduced' ? 0.42 : 0.72;
-            this._frameBloomStrength = this.lightCount > 0
-                ? strength * clamp(finite(this.sourceEnergy?.bloom, 1), 0, 2) : 0;
+            const bloomSources = this.lightCount > 0 || this._daytimeWorkBloom;
+            const bloomEnergy = this._daytimeWorkBloom
+                ? DAYTIME_WORK_BLOOM_STRENGTH
+                : clamp(finite(this.sourceEnergy?.bloom, 1), 0, 2);
+            this._frameBloomStrength = bloomSources ? strength * bloomEnergy : 0;
             const bloomEnabled = this._frameBloomStrength > 0;
             const roles = this._p3 && this._ensureP3Programs() ? this._roleBlend : null;
             this._rolesWritten = roles !== null;
@@ -6554,9 +6598,9 @@ export class GpuWorldRenderer {
             gl.disable(gl.BLEND);
             gl.disable(gl.DEPTH_TEST);
             this._beginPass('bloom');
-            if (bloomEnabled && this.lightCount > 0) this._renderBloom();
-            this._endPass('bloom', bloomEnabled && this.lightCount > 0 ? 2 : 0,
-                bloomEnabled && this.lightCount > 0 ? this.bloomA.width * this.bloomA.height * 8 : 0);
+            if (bloomEnabled) this._renderBloom();
+            this._endPass('bloom', bloomEnabled ? 2 : 0,
+                bloomEnabled ? this.bloomA.width * this.bloomA.height * 8 : 0);
             gl.enable(gl.BLEND);
             this._beginPass('present');
             this._present(qualityLevel, camera, feed);

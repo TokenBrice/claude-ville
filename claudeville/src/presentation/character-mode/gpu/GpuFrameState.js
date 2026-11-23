@@ -5,10 +5,12 @@
 // scratch (`out` / `state`) instead of allocating; the scratch factories
 // below build one per backend.
 import {
+    aerialHazeStart,
     aerialPerspectiveStrength,
     binGpuLights,
     buildCloudShadowTile,
     clampGpuLights,
+    clearDayHazeWeight,
     CLOUD_FIELD_PERIOD,
     CLOUD_PLANE_CORE,
     cloudPlaneScale,
@@ -636,6 +638,7 @@ export function createAtmosphereCourses() {
         // Diagnostics: courses drawn (0 or 3) and the aerial haze strength.
         courses: 0,
         aerialHaze: 0,
+        hazeStart: 0.55,
     };
 }
 
@@ -719,8 +722,11 @@ export function resolveAtmosphereCourses(level, camera, feed, grade, out = creat
 
     const hazeMode = effectBudgetMode('aerial-perspective', level);
     const fog = clamp(finite(feed.atmosphere?.weather?.fog, 0), 0, 1);
-    const haze = hazeMode === 'off' ? 0 : aerialPerspectiveStrength(finite(camera?.zoom, 1), fog);
+    const daylight = Number.isFinite(grade?.daylight) ? grade.daylight : Math.max(0, 1 - finite(grade?.night, 0));
+    const clearDay = clearDayHazeWeight(fog, daylight, cover);
+    const haze = hazeMode === 'off' ? 0 : aerialPerspectiveStrength(finite(camera?.zoom, 1), fog, clearDay);
     out.aerialHaze = haze;
+    out.hazeStart = aerialHazeStart(fog, clearDay);
     const hazeColor = grade.fogColor || [0.6, 0.7, 0.78];
     out.haze[0] = hazeColor[0];
     out.haze[1] = hazeColor[1];

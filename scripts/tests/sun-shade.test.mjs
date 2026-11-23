@@ -25,7 +25,7 @@ import {
     shadeSelfProp,
     solidFacets,
 } from '../../claudeville/src/presentation/character-mode/ShadeField.js';
-import { SUN_LIFT_CEILING, SUN_LIFT_GRADED_CEILING, SUN_SHADE_GLSL, SUN_SHADE_WGSL, resolveSunShade } from '../../claudeville/src/presentation/character-mode/gpu/SunShade.js';
+import { SUN_LIFT_CANDLE, SUN_LIFT_CEILING, SUN_LIFT_GRADED_CEILING, SUN_SHADE_GLSL, SUN_SHADE_WGSL, resolveSunShade } from '../../claudeville/src/presentation/character-mode/gpu/SunShade.js';
 import { EFFECT_BUDGET, GPU_RECORD_FLAGS, assignGpuRecordV9Fields, effectBudgetMode } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldPolicy.js';
 import { resolveOccluderChannel } from '../../claudeville/src/presentation/character-mode/gpu/GpuFrameState.js';
 import { FRAME_BINDING, FRAME_BINDINGS_WGSL, FRAME_UNIFORM_LAYOUT } from '../../claudeville/src/presentation/character-mode/gpu/wgsl/common.js';
@@ -216,10 +216,11 @@ test('the GLSL and WGSL twins carry the same functions, constants and tests', ()
         assert.ok(source.includes((255 * SHADE_CEILING_STEP).toFixed(1)), 'the ceiling byte in world px');
         assert.ok(source.includes((255 / SHADE_SURFACE_STEP).toFixed(5)), 'the surface code');
         assert.ok(source.includes(`${GPU_RECORD_FLAGS.sunSelf}u`));
-        // One step only, for cast shade: a turned verdict takes nothing, so
-        // no constant step rides every right wall and far pitch.
+        // One step only, for cast shade (bodies softened to ~0.82): a turned
+        // verdict takes nothing, so no constant step rides every right wall and far pitch.
         assert.equal(source.split('return mix(').length, 2, 'one stepped return');
-        assert.ok(/if \(verdict > 1\.5 && verdict < 2\.5\) \{? ?return mix\((?:u_shade|frame\.shade)\.x, 1\.0, lit\);/.test(source));
+        assert.ok(/if \(v_identity\.x != 0u\) \{? ?stepVal = mix\(1\.0, (?:u_shade|frame\.shade)\.x, 0\.52\);/.test(source), 'body cast shade softened');
+        assert.ok(source.includes('return mix(stepVal, 1.0, lit);'));
         assert.ok(!/shade\.y/.test(source) && !/verdict = 3\.0/.test(source), 'no attached step, no right wall forced to one');
     }
 });
@@ -440,8 +441,10 @@ test('both scene shaders lift after the step and before the grade, off at 0, nev
         assert.equal(source.split('sunLift(color').length, 2, 'one call site');
     }
     for (const source of [SUN_SHADE_GLSL, SUN_SHADE_WGSL]) {
-        // Never a body; the ground by the ground rule; a receiver by a lit verdict.
-        assert.ok(/sunVerdict > -0\.5 && sunVerdict < 1\.5 && v_identity\.x == 0u/.test(source));
+        // Ground by the ground rule; lit receivers including sunlit bodies (0.5x head-weighted).
+        assert.ok(/sunlit = sunVerdict > -0\.5 && sunVerdict < 1\.5;/.test(source));
+        assert.ok(source.includes('!ground && v_identity.x != 0u'), 'body lift branch');
+        assert.ok(source.includes('1.12, 0.99, 0.76'), 'warm sunlit lift tint');
         assert.ok(source.includes('!shadeGroundAt(v_world)'));
         assert.ok(source.includes(SUN_LIFT_CEILING.toFixed(4)), 'the ceiling');
         assert.equal(source.split('sunVerdict = 0.0;').length, 3, 'two receiver branches');
@@ -449,28 +452,56 @@ test('both scene shaders lift after the step and before the grade, off at 0, nev
 });
 
 test('a lifted texel never outshines the waiting candle or the NEEDS YOU bell, and snow keeps its value', () => {
-    // The scene shaders' sunLift on the CPU: the gain, held under the ceiling luma.
+    // The scene shaders' warm sunLift + sunLiftGraded on the CPU.
     const luma = rgb => 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
-    const lift = (rgb, gain) => {
+    const WARM = [1.12, 0.99, 0.76];
+    const lift = (rgb, gain, ceil = SUN_LIFT_CEILING) => {
         const l = luma(rgb);
-        const g = Math.min(1 + gain, Math.max(1, SUN_LIFT_CEILING / Math.max(l, 0.0001)));
-        return rgb.map(channel => channel * g);
+        if (l >= ceil || gain <= 0) return rgb.slice();
+        const delta = rgb.map((channel, i) => channel * gain * WARM[i]);
+        const rise = luma(delta);
+        if (rise <= 0) return rgb.slice();
+        const k = Math.min(1, (ceil - l) / rise);
+        return rgb.map((channel, i) => channel + delta[i] * k);
+    };
+    // Exact CPU mirror of SunShade.js `sunLiftGraded`: keep only non-negative
+    // channel lift and hold under the graded ceiling.
+    const holdGraded = (lifted, base, cap = SUN_LIFT_GRADED_CEILING) => {
+        const baseLuma = luma(base);
+        if (baseLuma >= cap) return base;
+        const delta = lifted.map((c, i) => Math.max(0, c - base[i]));
+        const rise = luma(delta);
+        if (rise <= 0) return base;
+        const k = Math.min(1, (cap - baseLuma) / rise);
+        return base.map((c, i) => c + delta[i] * k);
     };
     const CANDLE = 192; // CarriedLantern: a waiting candle lands 192-207, the bell 207
-    let worst = 0;
+    let worstOpen = 0;
+    let worstBody = 0;
     for (let minute = 6 * 60; minute <= 19 * 60; minute += 30) {
         const grade = evaluateGrade({ minuteOfDay: minute });
         for (let r = 0; r <= 20; r++) for (let g = 0; g <= 20; g++) for (let b = 0; b <= 20; b += 2) {
             const rgb = [r / 20, g / 20, b / 20];
-            if (luma(rgb) > SUN_LIFT_CEILING) continue;
-            const lifted = lift(rgb, SUN_LIFT);
-            if (Math.max(...lifted) > 1) continue;
-            worst = Math.max(worst, luma(applyGradeToRgb(lifted, grade)) * 255);
+            const base = applyGradeToRgb(rgb, grade);
+            if (luma(rgb) < SUN_LIFT_CEILING) {
+                const lifted = lift(rgb, SUN_LIFT, SUN_LIFT_CEILING);
+                if (Math.max(...lifted) <= 1) {
+                    const held = holdGraded(applyGradeToRgb(lifted, grade), base);
+                    if (luma(held) > luma(base) + 1e-9) worstOpen = Math.max(worstOpen, luma(held) * 255);
+                }
+                // Sunlit bodies reach 0.6x lift at head height (0.5 * (0.4 + 0.8)).
+                const liftedBody = lift(rgb, SUN_LIFT * 0.6, SUN_LIFT_CEILING);
+                if (Math.max(...liftedBody) <= 1) {
+                    const heldBody = holdGraded(applyGradeToRgb(liftedBody, grade), base);
+                    if (luma(heldBody) > luma(base) + 1e-9) worstBody = Math.max(worstBody, luma(heldBody) * 255);
+                }
+            }
         }
     }
-    assert.ok(worst < CANDLE, `brightest lifted texel ${worst.toFixed(1)} under the candle's ${CANDLE}`);
+    assert.ok(worstOpen < CANDLE, `brightest open lifted texel ${worstOpen.toFixed(1)} under the candle's ${CANDLE}`);
+    assert.ok(worstBody < CANDLE, `brightest lifted body texel (0.6x) ${worstBody.toFixed(1)} under the candle's ${CANDLE}`);
     // A texel already above the ceiling (snow, a lamp's glass) is not lifted at all.
-    for (const snow of [[0.9, 0.93, 0.96], [0.82, 0.84, 0.88]]) assert.deepEqual(lift(snow, SUN_LIFT), snow);
+    for (const snow of [[0.9, 0.93, 0.96], [0.7, 0.72, 0.7]]) assert.deepEqual(lift(snow, SUN_LIFT), snow);
     // And one under it never passes it.
     assert.ok(luma(lift([0.6, 0.62, 0.6], SUN_LIFT)) <= SUN_LIFT_CEILING + 1e-9);
 });
@@ -497,7 +528,7 @@ test('Canvas takes the lift in whole steps on confirmed lit land, held under the
     const lifted = canvasSunLiftRgb([90, 120, 60]);
     assert.ok(lifted.every((v, i) => v > [90, 120, 60][i]), 'every channel rises');
     assert.ok(Math.abs(lum30(lifted) / lum30([90, 120, 60]) - (1 + SUN_LIFT)) < 0.01, 'one step of luminosity');
-    assert.ok(Math.abs(lum30(canvasSunLiftRgb([130, 140, 120])) - Math.round(255 * SUN_LIFT_CEILING * 0.9)) < 0.01, 'held at the ceiling');
+    assert.ok(Math.abs(lum30(canvasSunLiftRgb([120, 130, 110])) - Math.round(255 * SUN_LIFT_CEILING * 0.78)) < 0.01, 'held at the ceiling');
     const luma = rgb => 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
     let worst = 0;
     for (let minute = 6 * 60; minute <= 19 * 60; minute += 30) {
@@ -553,7 +584,9 @@ test('both scene shaders hold a lifted texel after the grade, and a bright one k
         assert.ok(at > 0 && source.indexOf(hold) > at && source.indexOf(hold) - at < 200, 'right after the grade');
     }
     for (const source of [SUN_SHADE_GLSL, SUN_SHADE_WGSL]) {
-        assert.ok(source.includes(`>= ${SUN_LIFT_GRADED_CEILING.toFixed(4)}) `), 'already bright: the unlifted value');
+        assert.ok(source.includes(`if (baseLuma >= ${SUN_LIFT_GRADED_CEILING.toFixed(4)})`), 'graded ceiling wired and bright keeps unlifted value');
+        assert.ok(source.includes(`luma <= ${SUN_LIFT_CANDLE.toFixed(4)}`), 'final candle hold wired');
     }
-    assert.ok(SUN_LIFT_GRADED_CEILING * 255 < 192, 'the hold sits under the waiting candle');
+    assert.ok(SUN_LIFT_GRADED_CEILING <= SUN_LIFT_CANDLE && SUN_LIFT_GRADED_CEILING * 255 < 192,
+        'graded ceiling stays under the waiting candle (192) and NEEDS YOU bell (207)');
 });

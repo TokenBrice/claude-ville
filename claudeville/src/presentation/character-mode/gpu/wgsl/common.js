@@ -197,6 +197,9 @@ export const FRAME_UNIFORM_LAYOUT = uniformLayout('FrameUniforms', [
     // the frame's one rain break (CoastBake mirrorStormDrop); appended likewise.
     ['mirrorRect', 'vec4f'],
     ['mirrorBreak', 'f32'],
+    // 1.6 — screen-Y aerial haze vertical reach (0.30 clear -> 0.55 fog),
+    // fitting into mirrorBreak's existing 16-byte tail row.
+    ['hazeStart', 'f32'],
 ]);
 
 // §2.6 — the per-batch block, one 256-byte slot per batch in a frame ring

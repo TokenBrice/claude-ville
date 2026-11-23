@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 
 import {
     SHADE_ALPHA,
+    SHADE_COLD,
     SHADE_LENGTH_CAP,
+    SHADE_LENGTH_MIN,
     SHADE_SUN_RISEN_DEG,
     castLightingFor,
     frameShadeLayer,
@@ -105,7 +107,7 @@ test('sd1 scales the shade\'s density; the stamps fall back to contact', () => {
     const { shade, contact, ...fields } = noon;
     assert.deepEqual(fields, castBefore(SNAPSHOTS[0]), 'the cast\'s own fields never move');
     assert.equal(shade.alpha, alphaAt(), 'midday, in 1/32');
-    assert.deepEqual(shade.color, noon.color);
+    assert.deepEqual(shade.color, SHADE_COLD, 'SD-1 midday shade uses SHADE_COLD');
     assert.equal(Object.isFrozen(shade) && Object.isFrozen(contact), true);
     // The contact twin: the same angle and colour, no rake, no sun, the contact alpha alone.
     assert.deepEqual(
@@ -222,7 +224,8 @@ test('length is the real sun\'s, eased into the sd1len cap; direction keeps the 
             previous = length;
         }
         assert.ok(lengthAt(1) > cap * 0.97, 'a sun on the horizon throws the cap');
-        assert.ok(Math.abs(lengthAt(64) - real(64)) < 0.06, 'a summer noon is true');
+        const minBucket = Math.round(Math.min(cap, SHADE_LENGTH_MIN) * 32) / 32;
+        assert.equal(lengthAt(64), minBucket, 'summer noon respects minimum readable shadow length');
     }
     setLookStrength('sd1len', 1);
     assert.ok(Math.abs(lengthAt(45) - real(45)) < 0.04);
@@ -265,4 +268,22 @@ test('a villager in the sun throws a trail of the shade\'s own length and densit
     assert.ok(short.length >= 2);
     assert.ok(Math.abs(short[short.length - 1].x - height * noon.shade.sx) < 1e-9);
     resetLookStrengths();
+});
+
+test('SD-1 shade uses cool indigo SHADE_COLD at noon and blends toward violet with rake, leaving pre-SD-1 cast untouched', () => {
+    try {
+        setLookStrength('sd1', 1);
+        const noon = castLightingFor(SNAPSHOTS[0]);
+        assert.deepEqual(noon.color, [15, 22, 30], 'base cast keeps pre-SD-1 COLD');
+        assert.deepEqual(noon.contact.color, [15, 22, 30], 'contact twin keeps pre-SD-1 COLD');
+        assert.deepEqual(noon.shade.color, [24, 38, 66], 'SD-1 shade uses cool indigo SHADE_COLD');
+        assert.deepEqual(villagerCastLighting(40, 40, noon).color, SHADE_COLD, 'sun trail matches shade tint');
+        const golden = castLightingFor(SNAPSHOTS[2]);
+        assert.deepEqual(golden.shade.color, [42, 35, 70], 'full rake reaches golden-hour violet');
+        const mid = castLightingFor(atmosphere({ rake: 0.5, daylight: 1, elevation: 25 }));
+        const expectedMid = SHADE_COLD.map((c, i) => Math.round(c + ([42, 35, 70][i] - c) * mid.rake));
+        assert.deepEqual(mid.shade.color, expectedMid, 'intermediate rake blends SHADE_COLD to violet');
+    } finally {
+        resetLookStrengths();
+    }
 });

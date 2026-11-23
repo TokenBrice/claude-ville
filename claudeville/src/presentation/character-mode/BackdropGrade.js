@@ -19,7 +19,7 @@
 
 import { buildAerialHazeStrip, ungradeRgb } from './CanvasGrade.js';
 import { releaseCanvasBackingStore } from './CanvasBudget.js';
-import { aerialPerspectiveStrength, effectBudgetMode } from './gpu/GpuWorldPolicy.js';
+import { aerialHazeStart, aerialPerspectiveStrength, clearDayHazeWeight, effectBudgetMode } from './gpu/GpuWorldPolicy.js';
 
 // The vignette layer is baked at quarter resolution and blitted 4x nearest:
 // its two course edges step on a 4 px grid (0.5 MB at 1080p).
@@ -75,11 +75,11 @@ function vignetteLayer(width, height, grade) {
     return canvas;
 }
 
-function hazeStrip(height, cell, strength, rgb) {
-    const key = `${height}|${cell}|${Math.round(strength * 256)}|${bucket(rgb)}`;
+function hazeStrip(height, cell, strength, rgb, start = 0.55) {
+    const key = `${height}|${cell}|${Math.round(strength * 256)}|${Math.round(start * 64)}|${bucket(rgb)}`;
     if (_haze && _hazeKey === key) return _haze;
     releaseCanvasBackingStore(_haze);
-    const small = buildAerialHazeStrip({ height, cell, strength, rgb });
+    const small = buildAerialHazeStrip({ height, cell, strength, rgb, start });
     let strip = small;
     if (cell > 1) {
         strip = document.createElement('canvas');
@@ -110,6 +110,15 @@ function artCell(zoom) {
     return Math.max(1, Math.round(Number(zoom) || 1));
 }
 
+function clearDayFor(atmosphere, fog) {
+    const grade = atmosphere?.lightGrade;
+    const daylight = Number.isFinite(grade?.daylight)
+        ? grade.daylight
+        : Math.max(0, 1 - (Number(grade?.night) || 0));
+    const cover = Math.max(0, Math.min(1, Number(atmosphere?.weather?.cloudCover) || 0));
+    return clearDayHazeWeight(fog, daylight, cover);
+}
+
 /**
  * Resident path: vignette courses + aerial haze over the 2D backdrop, in
  * screen space (the caller has reset the transform). The haze strength is
@@ -127,7 +136,9 @@ export function drawResidentBackdropGrade(ctx, { viewport, atmosphere, zoom = 1,
         ctx.restore();
     }
     if (hazeStrength > 0) {
-        fillHaze(ctx, viewport, hazeStrip(viewport.height, artCell(zoom), hazeStrength, grade.fogColor || [0.6, 0.7, 0.78]));
+        const fog = Math.max(0, Math.min(1, Number(atmosphere?.weather?.fog) || 0));
+        const start = aerialHazeStart(fog, clearDayFor(atmosphere, fog));
+        fillHaze(ctx, viewport, hazeStrip(viewport.height, artCell(zoom), hazeStrength, grade.fogColor || [0.6, 0.7, 0.78], start));
     }
 }
 
@@ -141,8 +152,10 @@ export function drawCanvasAerialHaze(ctx, { viewport, atmosphere, zoom = 1, qual
     if (!grade || !viewport?.width || !viewport?.height || typeof document === 'undefined') return;
     if (effectBudgetMode('aerial-perspective', qualityLevel) === 'off') return;
     const fog = Math.max(0, Math.min(1, Number(atmosphere?.weather?.fog) || 0));
-    const strength = aerialPerspectiveStrength(zoom, fog);
+    const clearDay = clearDayFor(atmosphere, fog);
+    const strength = aerialPerspectiveStrength(zoom, fog, clearDay);
     if (strength <= 0) return;
+    const start = aerialHazeStart(fog, clearDay);
     const rgb = ungradeRgb(grade.fogColor || [0.6, 0.7, 0.78], grade);
-    fillHaze(ctx, viewport, hazeStrip(viewport.height, artCell(zoom), strength, rgb));
+    fillHaze(ctx, viewport, hazeStrip(viewport.height, artCell(zoom), strength, rgb, start));
 }
