@@ -61,12 +61,12 @@ test('urgent and fatigued moods remain readable across model tiers', () => {
     assert.ok(quick.walkPace * moodBehaviorMultiplier(tired, 'walkPace') < deliberate.walkPace);
 });
 
-test('reduced motion keeps the complete static thinking glyph and allocates no fidget cadence', () => {
-    const fillAlphas = [];
+test('reduced motion keeps the complete static outlined thinking glyph and allocates no fidget cadence', () => {
+    const fills = [];
     const ctx = {
         fillStyle: '',
         globalAlpha: 1,
-        fillRect() { fillAlphas.push(this.globalAlpha); },
+        fillRect(x, y, w, h) { fills.push({ x, y, w, h, fillStyle: this.fillStyle, alpha: this.globalAlpha }); },
     };
     const sprite = {
         motionScale: 0,
@@ -78,7 +78,11 @@ test('reduced motion keeps the complete static thinking glyph and allocates no f
     AgentSprite.prototype._drawThinkingDotsGlyph.call(sprite, ctx, '#fff');
     AgentSprite.prototype._advanceFidget.call(sprite, 16);
 
-    assert.deepEqual(fillAlphas, [1, 1, 1]);
+    const outlines = fills.filter(f => f.fillStyle === '#140e0a');
+    const dots = fills.filter(f => f.fillStyle === '#fff');
+    assert.equal(outlines.length, 3);
+    assert.equal(dots.length, 3);
+    assert.deepEqual(fills.map(f => f.alpha), [1, 1, 1, 1, 1, 1]);
     assert.equal(sprite._fidgetCooldownMs, undefined);
     assert.equal(sprite._fidgetActiveMs, undefined);
 });
