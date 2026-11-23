@@ -10,6 +10,7 @@ import { ALPHA_QUANTA, FAILURE, FAILURE_OUTLINE, PEAK, STONE_RAMP, bracket, defi
 import { fillPixelEllipse } from './PixelShapes.js';
 import { noteMoment } from './MomentTally.js';
 import { toolResultOutcome } from '../../application/OutcomeSignals.js';
+import { villagerOccluder } from './EmitterCuts.js';
 
 const MAX_ITEMS_PER_KIND = 10;
 const SNAPSHOT_TTL_MS = 18000;
@@ -323,7 +324,7 @@ export const LANDMARK_ACTIVITY_SCENE_CATEGORY = Object.freeze({
         // On the ungraded overlay the chips take the frame's C2 grade here;
         // the Canvas depth pass is graded after the draw.
         const lightGrade = context.ungradedOverlay ? buildingRenderer?.atmosphereState?.lightGrade || null : null;
-        landmarkActivity?.draw?.(ctx, drawable, zoom, buildingRenderer, lightGrade);
+        landmarkActivity?.draw?.(ctx, drawable, zoom, buildingRenderer, lightGrade, context);
     },
     unsupported: 'overlay-safe',
     overlayBand: 60,
@@ -549,7 +550,7 @@ export class LandmarkActivity {
     // of their endpoints is selected. `lightGrade` is the C2 grade to apply
     // when drawing to the ungraded overlay (null where the frame is graded
     // afterwards). The Mine's ore carts are yard objects and always draw.
-    draw(ctx, drawable, zoom = 1, buildingRenderer = null, lightGrade = null) {
+    draw(ctx, drawable, zoom = 1, buildingRenderer = null, lightGrade = null, context = null) {
         const item = drawable?.payload || drawable;
         if (!item) return;
         this._chitRenderer = buildingRenderer;
@@ -560,15 +561,97 @@ export class LandmarkActivity {
             const color = item.type === 'chat-line' ? item.color || '#f2d36b' : '#f6c85f';
             return this._drawConnection(ctx, item, color);
         }
+        const carveForge = context?.ungradedOverlay === true
+            && (item.type === 'forge' || (item.type === 'outcome' && item.building === 'forge'));
         // W7.2 — the outcome stamp is static ground evidence and always
         // draws; only its text plate waits for the chit gate.
-        if (item.type === 'outcome') return this._drawOutcomeItem(ctx, item, this._chipVisible(item));
+        if (item.type === 'outcome') {
+            const labelled = this._chipVisible(item);
+            if (carveForge) {
+                return this._drawDepthCarvedOverlay(ctx, drawable, item, (target) => this._drawOutcomeItem(target, item, labelled));
+            }
+            return this._drawOutcomeItem(ctx, item, labelled);
+        }
         if (item.type === 'plan') return this._drawPlanClosedItem(ctx, item);
         if (!this._chipVisible(item)) return;
-        if (item.type === 'forge') return this._drawForgeItem(ctx, item);
+        if (item.type === 'forge') {
+            if (carveForge) {
+                return this._drawDepthCarvedOverlay(ctx, drawable, item, (target) => this._drawForgeItem(target, item));
+            }
+            return this._drawForgeItem(ctx, item);
+        }
         if (item.type === 'handoff') return this._drawHandoffItem(ctx, item);
         if (item.type === 'task') return this._drawTaskItem(ctx, item);
         if (item.type === 'command') return this._drawCommandItem(ctx, item);
+    }
+
+    // On the GPU path, Forge billets and verb pills replay on the ungraded
+    // overlay above the scene pass. Depth-carve any villager that sorts in
+    // front of this item so foreground villagers always paint over them.
+    _drawDepthCarvedOverlay(ctx, drawable, item, drawFn) {
+        const sortY = Number.isFinite(drawable?.sortY) ? drawable.sortY : item.y;
+        const x0 = item.x - 100;
+        const y0 = item.y - 84;
+        const boxW = 200;
+        const boxH = 96;
+        const occluders = [];
+        for (const sprite of this.agentSprites || []) {
+            const depth = Number.isFinite(sprite?._depthSortY) ? sprite._depthSortY : sprite?.y;
+            if (!sprite?._bodyBox || !Number.isFinite(sprite.x) || !Number.isFinite(depth) || depth <= sortY) continue;
+            const rect = villagerOccluder(sprite);
+            if (rect.x < x0 + boxW && rect.x + rect.w > x0 && rect.y < y0 + boxH && rect.y + rect.h > y0) {
+                occluders.push(rect);
+            }
+        }
+        if (!occluders.length || typeof document === 'undefined' || typeof ctx?.getTransform !== 'function') {
+            drawFn(ctx);
+            return;
+        }
+        const transform = ctx.getTransform();
+        const scaleX = Math.hypot(transform.a, transform.b);
+        const scaleY = Math.hypot(transform.c, transform.d);
+        if (!(scaleX > 0) || !(scaleY > 0)) {
+            drawFn(ctx);
+            return;
+        }
+        const devX = Math.floor(transform.a * x0 + transform.c * y0 + transform.e);
+        const devY = Math.floor(transform.b * x0 + transform.d * y0 + transform.f);
+        const devW = Math.max(1, Math.ceil(boxW * scaleX) + 2);
+        const devH = Math.max(1, Math.ceil(boxH * scaleY) + 2);
+        const scratch = this._forgeCarveScratch || (this._forgeCarveScratch = document.createElement('canvas'));
+        if (scratch.width < devW) scratch.width = devW;
+        if (scratch.height < devH) scratch.height = devH;
+        const sctx = scratch.getContext('2d');
+        if (!sctx) {
+            drawFn(ctx);
+            return;
+        }
+        sctx.setTransform(1, 0, 0, 1, 0, 0);
+        sctx.imageSmoothingEnabled = false;
+        sctx.globalCompositeOperation = 'source-over';
+        sctx.globalAlpha = 1;
+        sctx.clearRect(0, 0, devW, devH);
+        sctx.setTransform(transform.a, transform.b, transform.c, transform.d, transform.e - devX, transform.f - devY);
+        drawFn(sctx);
+        sctx.globalCompositeOperation = 'destination-out';
+        sctx.globalAlpha = 1;
+        sctx.fillStyle = '#000';
+        for (const rect of occluders) {
+            if (rect.sx !== undefined && rect.image) {
+                sctx.drawImage(rect.image, rect.sx, rect.sy, rect.w, rect.h, rect.x, rect.y, rect.w, rect.h);
+            } else if (rect.image) {
+                sctx.drawImage(rect.image, rect.x, rect.y);
+            } else {
+                sctx.fillRect(Math.floor(rect.x), Math.floor(rect.y), Math.ceil(rect.w) + 1, Math.ceil(rect.h) + 1);
+            }
+        }
+        sctx.setTransform(1, 0, 0, 1, 0, 0);
+        sctx.globalCompositeOperation = 'source-over';
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(scratch, 0, 0, devW, devH, devX, devY, devW, devH);
+        ctx.restore();
     }
 
     _tone(hex) {

@@ -45,8 +45,9 @@ import { castLightingFor, castOverWater, stampCastFor, structureCast, sunSweepFo
 import { massingFacets } from './ShadeField.js';
 import { LANDMARK_MASSING } from '../../config/landmarkMassing.js';
 import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
-import { buildingCenterToWorld, tileToWorld, worldToTile } from './Projection.js';
+import { buildingCenterToWorld, TILE_HALF_HEIGHT, TILE_HALF_WIDTH, tileToWorld, worldToTile } from './Projection.js';
 import { frontEdgeFoot, landmarkFootprint } from './FootprintField.js';
+import { lineOcclusionColumns } from './StaticPropDrawables.js';
 import { GPU_LANDMARK_IDS } from './gpu/GpuSceneBuilder.js';
 import { BEAM_NEAR_HALF_WIDTH } from './gpu/GpuFrameState.js';
 import {
@@ -283,9 +284,20 @@ const BUILDING_ACTIVITY_STATE_WEIGHT = Object.freeze({
     full: 0.9,
     alert: 1,
 });
+const BUILDING_COLUMN_PX = 16;
+const BUILDING_FUNCTIONAL_X_SPANS = Object.freeze({
+    forge: Object.freeze([[56, 232]]),
+    taskboard: Object.freeze([[36, 196]]),
+    mine: Object.freeze([[32, 208]]),
+    portal: Object.freeze([[96, 216]]),
+    archive: Object.freeze([[132, 204]]),
+    command: Object.freeze([[96, 256]]),
+    harbor: Object.freeze([[88, 188], [324, 384]]),
+});
 const BUILDING_DRAWABLE_SORT_BAND = Object.freeze({
     'building-back': 10,
     'building-front': 90,
+    'building-column': 90,
     building: 95,
 });
 const FOUNDATION_MATERIALS = Object.freeze({
@@ -335,7 +347,29 @@ function clamp01(value) {
 
 function compareBuildingDrawableDepth(a, b) {
     return (a.sortY - b.sortY)
-        || (BUILDING_DRAWABLE_SORT_BAND[a.kind] - BUILDING_DRAWABLE_SORT_BAND[b.kind]);
+        || ((BUILDING_DRAWABLE_SORT_BAND[a.kind] ?? 50) - (BUILDING_DRAWABLE_SORT_BAND[b.kind] ?? 50))
+        || ((a.column?.index ?? 0) - (b.column?.index ?? 0));
+}
+
+// Column depth from FootprintField's front-edge geometry shifted back half a
+// tile to the boundary between solid building tiles and walkable ground,
+// clamped at the side corners. Open-floor verandas (Tavern) recess columns
+// over their open X span back to the solid wall behind the veranda so patrons
+// paint in front of the bar and behind TavernArcade.
+function buildingColumnSortY(building, fp, colCenterX) {
+    const clampedX = Math.max(fp.left.x, Math.min(fp.right.x, colCenterX));
+    let sortY = frontEdgeFoot(fp, clampedX).y - TILE_HALF_HEIGHT - 0.5;
+    const openRects = typeof building?.openFloorRects === 'function' ? building.openFloorRects() : [];
+    for (const rect of openRects) {
+        const westCorner = tileToWorld(rect.x0 - 0.5, rect.y0 - 0.5);
+        const eastEdge = tileToWorld(rect.x1 + 0.5, rect.y0);
+        if (colCenterX <= eastEdge.x) {
+            const recessX = Math.max(westCorner.x, colCenterX);
+            const recessY = westCorner.y + (recessX - westCorner.x) * (TILE_HALF_HEIGHT / TILE_HALF_WIDTH) - 0.5;
+            sortY = Math.min(sortY, recessY);
+        }
+    }
+    return sortY;
 }
 
 function lerp(a, b, t) {
@@ -733,8 +767,13 @@ export class BuildingSprite {
         // This pass lands on the ungraded overlay: albedo marks take C2 here
         // (`_overlayLightGrade`); the Canvas depth pass is graded afterwards.
         this._ungradedOverlay = true;
+        const drawnColumns = new Set();
         for (let index = 0; index < drawables.length; index++) {
             const drawable = drawables[index];
+            if (drawable.kind === 'building-column') {
+                if (drawnColumns.has(drawable.building)) continue;
+                drawnColumns.add(drawable.building);
+            }
             const splitPass = drawable.kind === 'building-back'
                 ? 'back'
                 : drawable.kind === 'building-front'
@@ -2331,12 +2370,15 @@ export class BuildingSprite {
         return out;
     }
 
-    // Per-pixel hit test across all buildings (front halves only).
+    // Per-pixel hit test across all buildings (front halves and occlusion columns).
     hitTest(worldX, worldY) {
         const drawables = this.enumerateDrawables();
         for (let i = drawables.length - 1; i >= 0; i--) {
             const d = drawables[i];
             if (d.kind === 'building-back') continue;
+            if (d.kind === 'building-column' && d.column) {
+                if (worldX < d.column.worldLeft || worldX >= d.column.worldRight) continue;
+            }
             const id = d.entry.id;
             const [ax, ay] = this.assets.getAnchor(id);
             if (this.sprites.hitTest(id, worldX, worldY, d.wx - ax, d.wy - ay)) {
@@ -2361,6 +2403,7 @@ export class BuildingSprite {
             box = box
                 ? { left: Math.min(box.left, left), top: Math.min(box.top, top), right: Math.max(box.right, left + dims.w), bottom: Math.max(box.bottom, top + dims.h) }
                 : { left, top, right: left + dims.w, bottom: top + dims.h };
+            if (d.kind === 'building-column') break;
         }
         return box;
     }
@@ -2457,9 +2500,10 @@ export class BuildingSprite {
         return false;
     }
 
-    // Returns drawable payloads (one per building, or two if splitForOcclusion).
-    // Cached until the building list changes; hover and animation state are read
-    // live by drawDrawable().
+    // Returns drawable payloads: vertical occlusion columns driven by each
+    // building's footprint front-edge geometry (or legacy split/whole fallback
+    // for footprint-less test stubs). Cached until the building list changes;
+    // hover and animation state are read live by drawDrawable().
     enumerateDrawables() {
         if (this._drawablesCache) return this._drawablesCache;
         const out = [];
@@ -2469,8 +2513,48 @@ export class BuildingSprite {
             const center = this._buildingScreenCenter(b);
             const wx = center.x;
             const wy = center.y;
-            if (entry.splitForOcclusion) {
-                const dims = this.assets.getDims(entry.id);
+            const pos = b?.position || b;
+            const hasFootprint = Number.isFinite(Number(pos?.tileX ?? pos?.x))
+                && Number.isFinite(Number(pos?.tileY ?? pos?.y))
+                && Number.isFinite(Number(b?.width))
+                && Number.isFinite(Number(b?.height));
+            const dims = this.assets.getDims?.(entry.id);
+            const anchor = this.assets.getAnchor?.(entry.id);
+            if (hasFootprint && dims?.w > 0 && dims?.h > 0 && Array.isArray(anchor)) {
+                const originX = Math.round(wx - anchor[0]);
+                const fp = landmarkFootprint(b);
+                const slices = lineOcclusionColumns({
+                    left: 0,
+                    right: dims.w,
+                    width: BUILDING_COLUMN_PX,
+                    originY: 0,
+                    slope: 0,
+                });
+                const lastIndex = slices.length - 1;
+                for (let i = 0; i < slices.length; i++) {
+                    const sx = i * BUILDING_COLUMN_PX;
+                    const sw = Math.min(BUILDING_COLUMN_PX, dims.w - sx);
+                    if (sw <= 0) continue;
+                    const colCenterX = originX + sx + sw / 2;
+                    const sortY = buildingColumnSortY(b, fp, colCenterX);
+                    out.push({
+                        kind: 'building-column',
+                        building: b,
+                        entry,
+                        wx,
+                        wy,
+                        column: {
+                            index: i,
+                            last: i === lastIndex,
+                            sx,
+                            sw,
+                            worldLeft: originX + sx,
+                            worldRight: originX + sx + sw,
+                        },
+                        sortY,
+                    });
+                }
+            } else if (entry.splitForOcclusion) {
                 // Clamp manifest horizonY to a valid sub-rect inside the sprite so
                 // the front half (`drawImage(... , h - horizonY, ...)`) never receives
                 // a negative or zero source-rect height when manifest values drift.
@@ -2493,6 +2577,28 @@ export class BuildingSprite {
             const placed = this.sprites.drawSprite(ctx, id, d.wx, d.wy);
             if (placed) this._drawRoofWeather(ctx, d, placed.dx, placed.dy);
             this._drawAnimatedOverlays(ctx, d.entry, d.wx, d.wy, d.building, 'whole');
+        } else if (d.kind === 'building-column' && d.column) {
+            const dims = this.assets.getDims(id);
+            const [ax, ay] = this.assets.getAnchor(id);
+            const dx = Math.round(d.wx - ax);
+            const dy = Math.round(d.wy - ay);
+            const img = this.assets.get(id);
+            if (!img || !dims) return;
+            const col = d.column;
+            ctx.drawImage(img, col.sx, 0, col.sw, dims.h, dx + col.sx, dy, col.sw, dims.h);
+            this._drawRoofWeather(ctx, d, dx, dy);
+            this._drawAnimatedOverlays(ctx, d.entry, d.wx, d.wy, d.building, 'column', null, col);
+            if (this.hovered === d.building) {
+                const clipLeft = col.index === 0 ? dx + col.sx - 4 : dx + col.sx;
+                const clipRight = col.last ? dx + col.sx + col.sw + 4 : dx + col.sx + col.sw;
+                ctx.save();
+                ctx.beginPath();
+                ctx.rect(clipLeft, dy - 4, clipRight - clipLeft, dims.h + 8);
+                ctx.clip();
+                this.sprites.drawOutline(ctx, id, d.wx, d.wy);
+                ctx.restore();
+            }
+            return;
         } else {
             const dims = this.assets.getDims(id);
             const [ax, ay] = this.assets.getAnchor(id);
@@ -2514,15 +2620,15 @@ export class BuildingSprite {
         if (this.hovered === d.building) this.sprites.drawOutline(ctx, id, d.wx, d.wy);
     }
 
-    _drawAnimatedOverlays(ctx, entry, wx, wy, building = null, splitPass = 'whole', horizonY = null) {
+    _drawAnimatedOverlays(ctx, entry, wx, wy, building = null, splitPass = 'whole', horizonY = null, column = null) {
         if (entry.layers) {
-            this._drawManifestLayers(ctx, entry, wx, wy, splitPass, horizonY, building);
+            this._drawManifestLayers(ctx, entry, wx, wy, splitPass, horizonY, building, column);
         }
         if (building) {
-            this._drawFunctionalOverlay(ctx, building, entry, wx, wy, splitPass, horizonY);
-            this._drawAtmosphereBuildingReactions(ctx, building, entry, wx, wy, splitPass, horizonY);
-            this._drawOccupancyPennant(ctx, building, entry, wx, wy, splitPass, horizonY);
-            this._drawAttentionBannerBoard(ctx, building, entry, wx, wy, splitPass, horizonY);
+            this._drawFunctionalOverlay(ctx, building, entry, wx, wy, splitPass, horizonY, column);
+            this._drawAtmosphereBuildingReactions(ctx, building, entry, wx, wy, splitPass, horizonY, column);
+            this._drawOccupancyPennant(ctx, building, entry, wx, wy, splitPass, horizonY, column);
+            this._drawAttentionBannerBoard(ctx, building, entry, wx, wy, splitPass, horizonY, column);
         }
     }
 
@@ -2530,7 +2636,7 @@ export class BuildingSprite {
     // count, screen-fixed (zoom cancelled, whole pixels) under the tip of the
     // cloth the status part (`status.<bucket>`) hangs. Static: it moves only
     // when the drop steps, and is absent when no one needs action.
-    _drawAttentionBannerBoard(ctx, building, entry, wx, wy, splitPass = 'whole', horizonY = null) {
+    _drawAttentionBannerBoard(ctx, building, entry, wx, wy, splitPass = 'whole', horizonY = null, column = null) {
         const state = this.attentionBanner;
         if (!state?.count || postcardFrame()) return;
         const banner = getBuildingAttentionBanner(building.type);
@@ -2538,7 +2644,9 @@ export class BuildingSprite {
         const drop = banner.drops[Math.max(0, Math.min(banner.drops.length - 1, state.tier | 0))];
         const [lx, clothTop] = banner.at;
         const ly = clothTop + drop + (banner.boardGap ?? 2);
-        if (
+        if (splitPass === 'column' && column) {
+            if (lx < column.sx || lx >= column.sx + column.sw) return;
+        } else if (
             splitPass !== 'whole'
             && Number.isFinite(horizonY)
             && (splitPass === 'back' ? ly >= horizonY : ly < horizonY)
@@ -2569,11 +2677,13 @@ export class BuildingSprite {
     // first; alert tints the cloth to the alert red. AMBIENT under the mark
     // governor. The cloth is the shared pixel pennant strip (PixelPennant),
     // stepped at 4 fps downwind; calm air and reduced motion hold frame 1.
-    _drawOccupancyPennant(ctx, building, entry, wx, wy, splitPass = 'whole', horizonY = null) {
+    _drawOccupancyPennant(ctx, building, entry, wx, wy, splitPass = 'whole', horizonY = null, column = null) {
         const pennant = getBuildingPennantAnchor(building.type);
         if (!pennant) return;
         const [lx, ly] = pennant.at;
-        if (
+        if (splitPass === 'column' && column) {
+            if (lx < column.sx || lx >= column.sx + column.sw) return;
+        } else if (
             splitPass !== 'whole'
             && Number.isFinite(horizonY)
             && (splitPass === 'back' ? ly >= horizonY : ly < horizonY)
@@ -2623,7 +2733,7 @@ export class BuildingSprite {
         ctx.restore();
     }
 
-    _drawAtmosphereBuildingReactions(ctx, building, entry, wx, wy, splitPass = 'whole', horizonY = null) {
+    _drawAtmosphereBuildingReactions(ctx, building, entry, wx, wy, splitPass = 'whole', horizonY = null, column = null) {
         const reactions = this.atmosphereState?.reactions || {};
         const windowWarmth = reactions.windowWarmth || 0;
         // EN-6 — the low sun on a roof is RoofWeather's glint run (the shared
@@ -2635,6 +2745,7 @@ export class BuildingSprite {
         const localPoint = (lx, ly) => ({ x: Math.round(wx - baseAnchor[0] + lx), y: Math.round(wy - baseAnchor[1] + ly) });
         const shouldDrawLocalY = (localY) => (
             splitPass === 'whole'
+            || splitPass === 'column'
             || !Number.isFinite(horizonY)
             || (splitPass === 'back' ? localY < horizonY : localY >= horizonY)
         );
@@ -2642,7 +2753,7 @@ export class BuildingSprite {
         const pulse = this.motionScale ? (Math.sin(this.frame * 0.045 + seed * 0.011) + 1) / 2 : 0.56;
 
         ctx.save();
-        this._clipToSplitPass(ctx, entry, wx, wy, splitPass, horizonY, dims, baseAnchor);
+        this._clipToSplitPass(ctx, entry, wx, wy, splitPass, horizonY, dims, baseAnchor, column);
         ctx.globalCompositeOperation = 'screen';
         if (windowWarmth > 0.035) {
             // Dusk crossfades the work-tier warmth into the live night-shift
@@ -2805,7 +2916,20 @@ export class BuildingSprite {
         }
     }
 
-    _clipToSplitPass(ctx, entry, wx, wy, splitPass = 'whole', horizonY = null, dims = null, baseAnchor = null) {
+    _clipToSplitPass(ctx, entry, wx, wy, splitPass = 'whole', horizonY = null, dims = null, baseAnchor = null, column = null) {
+        if (splitPass === 'column' && column) {
+            const resolvedDims = dims || this.assets.getDims(entry.id);
+            if (!resolvedDims) return;
+            const anchor = baseAnchor || this.assets.getAnchor(entry.id);
+            const dx = Math.round(wx - anchor[0]);
+            const dy = Math.round(wy - anchor[1]);
+            const left = column.index === 0 ? dx + column.sx - 64 : dx + column.sx;
+            const right = column.last ? dx + column.sx + column.sw + 64 : dx + column.sx + column.sw;
+            ctx.beginPath();
+            ctx.rect(left, dy - 64, right - left, resolvedDims.h + 128);
+            ctx.clip();
+            return;
+        }
         if (splitPass === 'whole' || !Number.isFinite(horizonY)) return;
         const resolvedDims = dims || this.assets.getDims(entry.id);
         if (!resolvedDims) return;
@@ -2825,8 +2949,8 @@ export class BuildingSprite {
     // the Portal's vortex, frame-strip parts, doors, emitter cycles)
     // comes from `partDrawsFor`, the descriptor list the GPU part records
     // read too, so both backends draw the same layers at the same depth.
-    _drawManifestLayers(ctx, entry, wx, wy, splitPass = 'whole', horizonY = null, building = null) {
-        const draws = this.partDrawsFor(entry, building, wx, wy, splitPass, horizonY, this._partDrawScratch);
+    _drawManifestLayers(ctx, entry, wx, wy, splitPass = 'whole', horizonY = null, building = null, column = null) {
+        const draws = this.partDrawsFor(entry, building, wx, wy, splitPass, horizonY, this._partDrawScratch, column);
         for (let index = 0; index < draws.length; index++) {
             const d = draws[index];
             ctx.drawImage(d.image, d.sx, d.sy, d.sw, d.sh, d.x, d.y, d.sw, d.sh);
@@ -2858,9 +2982,37 @@ export class BuildingSprite {
     // `cycle.art` the named overlay layer's; banked, gated off or reduced
     // motion, nothing is drawn and the authored art shows.
     // Split halves take the rows on their side of the horizon, like the base.
-    partDrawsFor(entry, building, wx, wy, splitPass = 'whole', horizonY = null, out = []) {
+    partDrawsFor(entry, building, wx, wy, splitPass = 'whole', horizonY = null, out = [], column = null) {
         out.length = 0;
         if (!entry?.layers) return out;
+        // Slice once-per-frame whole descriptors horizontally for building columns
+        // so part gates, emitter cycles and fixture parts run once per building
+        // instead of once per column on both Canvas and GPU paths.
+        if (splitPass === 'column' && column && building) {
+            const cache = this._frameColumnPartCache || (this._frameColumnPartCache = new Map());
+            let cached = cache.get(building);
+            const clockMs = this._partClockMs();
+            if (!cached || cached.frame !== this.frame || cached.clockMs !== clockMs || cached.wx !== wx || cached.wy !== wy || cached.entry !== entry) {
+                const whole = cached?.draws || [];
+                this.partDrawsFor(entry, building, wx, wy, 'whole', null, whole, null);
+                cached = { frame: this.frame, clockMs, wx, wy, entry, draws: whole };
+                cache.set(building, cached);
+            }
+            const whole = cached.draws;
+            for (let i = 0; i < whole.length; i++) {
+                const d = whole[i];
+                const start = Math.max(0, column.sx - d.localLeft);
+                const end = Math.min(d.frameW, column.sx + column.sw - d.localLeft);
+                if (end <= start) continue;
+                out.push({
+                    ...d,
+                    sx: d.frame * d.frameW + start,
+                    sw: end - start,
+                    x: d.x + start,
+                });
+            }
+            return out;
+        }
         const type = building?.type || '';
         const baseAnchor = this.assets.getAnchor(entry.id);
         if (!baseAnchor) return out;
@@ -2947,9 +3099,18 @@ export class BuildingSprite {
                 ember = rest ? getBuildingRestEmber(type) : null;
                 if (ember) emissiveGate = lampsLitAt(this.atmosphereState) ? 1 : 0;
             }
+            let cx0 = 0;
+            let cw = frameW;
+            if (splitPass === 'column' && column) {
+                const start = Math.max(0, column.sx - left);
+                const end = Math.min(frameW, column.sx + column.sw - left);
+                if (end <= start) continue;
+                cx0 = start;
+                cw = end - start;
+            }
             let sy = 0;
             let sh = frameH;
-            if (splitPass !== 'whole' && Number.isFinite(horizonY)) {
+            if (splitPass !== 'whole' && splitPass !== 'column' && Number.isFinite(horizonY)) {
                 const cut = Math.max(0, Math.min(frameH, horizonY - top));
                 if (splitPass === 'back') sh = cut;
                 else {
@@ -2966,11 +3127,11 @@ export class BuildingSprite {
                 textureKey,
                 textureRevision: textureRevision || textureKey,
                 frame,
-                sx: frame * frameW,
+                sx: frame * frameW + cx0,
                 sy,
-                sw: frameW,
+                sw: cw,
                 sh,
-                x: originX + left,
+                x: originX + left + cx0,
                 y: originY + top + sy,
                 localLeft: left,
                 localTop: top,
@@ -2988,7 +3149,7 @@ export class BuildingSprite {
                 ember,
             });
         }
-        this._fixturePartDraws(entry, type, originX, originY, splitPass, horizonY, out);
+        this._fixturePartDraws(entry, type, originX, originY, splitPass, horizonY, out, column);
         return out;
     }
 
@@ -3045,7 +3206,7 @@ export class BuildingSprite {
     // the bell hangs still at frame 0, also under reduced motion), and the
     // calendar's door wreaths (static). Neither is a work part: no gate here
     // reads occupancy, and neither emits light.
-    _fixturePartDraws(entry, type, originX, originY, splitPass, horizonY, out) {
+    _fixturePartDraws(entry, type, originX, originY, splitPass, horizonY, out, column = null) {
         if (typeof document === 'undefined') return;
         const parts = [];
         if (type === 'archive') parts.push(this._bellLouvrePart());
@@ -3053,9 +3214,18 @@ export class BuildingSprite {
         for (const part of parts) {
             if (!part) continue;
             const frame = part.layer.gate ? this.partGates.frameFor(type, part.name, part.layer) : 0;
+            let cx0 = 0;
+            let cw = part.frameW;
+            if (splitPass === 'column' && column) {
+                const start = Math.max(0, column.sx - part.left);
+                const end = Math.min(part.frameW, column.sx + column.sw - part.left);
+                if (end <= start) continue;
+                cx0 = start;
+                cw = end - start;
+            }
             let sy = 0;
             let sh = part.frameH;
-            if (splitPass !== 'whole' && Number.isFinite(horizonY)) {
+            if (splitPass !== 'whole' && splitPass !== 'column' && Number.isFinite(horizonY)) {
                 const cut = Math.max(0, Math.min(part.frameH, horizonY - part.top));
                 if (splitPass === 'back') sh = cut;
                 else {
@@ -3071,11 +3241,11 @@ export class BuildingSprite {
                 image: part.image,
                 textureKey: part.textureKey,
                 frame,
-                sx: frame * part.frameW,
+                sx: frame * part.frameW + cx0,
                 sy,
-                sw: part.frameW,
+                sw: cw,
                 sh,
-                x: originX + part.left,
+                x: originX + part.left + cx0,
                 y: originY + part.top + sy,
                 localLeft: part.left,
                 localTop: part.top,
@@ -3341,11 +3511,22 @@ export class BuildingSprite {
         return strength * (Number.isFinite(scale) ? scale : 1);
     }
 
-    _drawFunctionalOverlay(ctx, building, entry, wx, wy, splitPass = 'whole', horizonY = null) {
+    _drawFunctionalOverlay(ctx, building, entry, wx, wy, splitPass = 'whole', horizonY = null, column = null) {
+        const primaryColumn = !column || column.last === true;
+        if (splitPass === 'column' && column) {
+            const hasRoomCount = Boolean(this._selectedBuildingType === building.type && this._roomInstrumentFor(building));
+            const hasAperture = building.type === 'command' && primaryColumn && Boolean(this._openApertureFor(building));
+            const spans = BUILDING_FUNCTIONAL_X_SPANS[building.type];
+            const overlapsSpan = spans
+                ? spans.some(([x0, x1]) => column.sx < x1 && column.sx + column.sw > x0)
+                : false;
+            if (!overlapsSpan && !hasRoomCount && !hasAperture) return;
+        }
         const baseAnchor = this.assets.getAnchor(entry.id);
         const localPoint = (lx, ly) => ({ x: Math.round(wx - baseAnchor[0] + lx), y: Math.round(wy - baseAnchor[1] + ly) });
         const shouldDrawLocalY = (localY) => (
             splitPass === 'whole'
+            || splitPass === 'column'
             || !Number.isFinite(horizonY)
             || (splitPass === 'back' ? localY < horizonY : localY >= horizonY)
         );
@@ -3358,7 +3539,7 @@ export class BuildingSprite {
         let lanternBeacon = null;
 
         ctx.save();
-        this._clipToSplitPass(ctx, entry, wx, wy, splitPass, horizonY, null, baseAnchor);
+        this._clipToSplitPass(ctx, entry, wx, wy, splitPass, horizonY, null, baseAnchor, column);
         // 4.2 / 6.3 — the selected building's exact room counts at night. The
         // rooms themselves light as art-shaped glass on every building
         // (RoomGlass), selected or not.
@@ -3380,7 +3561,7 @@ export class BuildingSprite {
             // the yard: they stay after the heat fades and through rest.
             if (splitPass !== 'back') {
                 this._drawForgeWorkload(ctx, localPoint, forgeSelected);
-                this._drawForgeResultShelf(ctx, localPoint, forgeSelected);
+                this._drawForgeResultShelf(ctx, localPoint, forgeSelected, primaryColumn);
             }
         } else if (building.type === 'mine') {
             // 4.5 — art-coupled points come from the registry; the fallbacks
@@ -3515,8 +3696,8 @@ export class BuildingSprite {
             }
         }
         ctx.restore();
-        if (openAperture) this._drawInspectionAperture(ctx, building, entry, wx, wy, openAperture);
-        if (lanternBeacon) this._drawWatchtowerFire(ctx, lanternBeacon);
+        if (openAperture && primaryColumn) this._drawInspectionAperture(ctx, building, entry, wx, wy, openAperture);
+        if (lanternBeacon && primaryColumn) this._drawWatchtowerFire(ctx, lanternBeacon);
     }
 
     _ritualsFor(type) {
@@ -3890,7 +4071,9 @@ export class BuildingSprite {
         const workload = this._forgeWorkload;
         if (!profile || !workload) return;
         const tier = Math.max(0, Math.min(3, Number(workload.tier) || 0));
-        if (tier > 0) {
+        // On the GPU path, the anvil billets are emitted as a depth-sorted GPU
+        // record (forgeWorkloadSpriteFor) so foreground villagers paint over them.
+        if (tier > 0 && !this._ungradedOverlay) {
             const [ax, ay] = profile.billets.at;
             const [stepX, stepY] = profile.billets.step || [10, -5];
             const w = Math.max(4, Math.round(profile.billets.w || 8));
@@ -3915,6 +4098,115 @@ export class BuildingSprite {
             const at = localPoint(profile.countAt[0], profile.countAt[1]);
             this._drawInstrumentPlate(ctx, at.x, at.y, workload.label, { color: '#ffd36a', type: 'forge' });
         }
+    }
+
+    // Depth-sorted sprite layer for Forge's physical yard objects (anvil
+    // billets + result shelf tiles) consumed by GpuSceneBuilder so they sort
+    // behind foreground villagers on WebGL2 and WebGPU.
+    forgeWorkloadSpriteFor(building) {
+        if (building?.type !== 'forge' || typeof document === 'undefined') return null;
+        const profile = getBuildingWorkloadProfile('forge');
+        if (!profile) return null;
+        const tier = Math.max(0, Math.min(3, Number(this._forgeWorkload?.tier) || 0));
+        const shelf = profile.shelf;
+        const maxTiles = shelf ? Math.max(1, Math.round(shelf.max || 4)) : 0;
+        const shown = shelf && this._resultShelf.length ? this._resultShelf.slice(0, maxTiles) : [];
+        if (tier <= 0 && !shown.length) return null;
+
+        const now = Date.now();
+        let minX = Infinity;
+        let minY = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
+        let billetSpec = null;
+        if (tier > 0 && profile.billets?.at) {
+            const [ax, ay] = profile.billets.at;
+            const [stepX, stepY] = profile.billets.step || [10, -5];
+            const w = Math.max(4, Math.round(profile.billets.w || 8));
+            const h = Math.max(3, Math.round(profile.billets.h || 4));
+            billetSpec = { ax, ay, stepX, stepY, w, h };
+            for (let i = 0; i < tier; i++) {
+                const bx = ax + i * stepX;
+                const by = ay + i * stepY;
+                minX = Math.min(minX, bx - 1);
+                minY = Math.min(minY, by - 1);
+                maxX = Math.max(maxX, bx + w + 1);
+                maxY = Math.max(maxY, by + h + 1);
+            }
+        }
+        let shelfSpec = null;
+        const tileParts = [];
+        if (shown.length && shelf?.at) {
+            const w = Math.max(5, Math.round(shelf.w || 9));
+            const h = Math.max(4, Math.round(shelf.h || 8));
+            const step = Math.max(w + 1, Math.round(shelf.step || 11));
+            const [sx, sy] = shelf.at;
+            shelfSpec = { sx, sy, w, h, step };
+            minX = Math.min(minX, sx - 2);
+            minY = Math.min(minY, sy - 1);
+            maxX = Math.max(maxX, sx + step * shown.length + 2);
+            maxY = Math.max(maxY, sy + h + 2);
+            for (const entry of shown) {
+                const settle = this.motionScale
+                    ? Math.min(1, Math.max(0, (now - entry.placedAt) / RESULT_TILE_SETTLE_MS))
+                    : 1;
+                const q = Math.round(settle * 4);
+                tileParts.push(`${entry.id}:${entry.exitCode}:${q}`);
+            }
+        }
+        if (!Number.isFinite(minX) || maxX <= minX || maxY <= minY) return null;
+        const left = Math.floor(minX);
+        const top = Math.floor(minY);
+        const w = Math.ceil(maxX) - left;
+        const h = Math.ceil(maxY) - top;
+        const key = `${tier}|${tileParts.join(',')}|${left},${top},${w}x${h}`;
+        const cached = this._forgeWorkloadCache;
+        if (cached && cached.key === key) return cached;
+
+        const canvas = cached?.canvas && cached.w === w && cached.h === h
+            ? cached.canvas
+            : createRasterCanvas(w, h);
+        if (!canvas) return null;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return null;
+        ctx.clearRect(0, 0, w, h);
+        ctx.imageSmoothingEnabled = false;
+        if (billetSpec) {
+            const { ax, ay, stepX, stepY, w: bw, h: bh } = billetSpec;
+            for (let index = 0; index < tier; index++) {
+                const bx = Math.round(ax + index * stepX) - left;
+                const by = Math.round(ay + index * stepY) - top;
+                ctx.globalCompositeOperation = 'source-over';
+                ctx.globalAlpha = 1;
+                ctx.fillStyle = '#2b1d13';
+                ctx.fillRect(bx - 1, by - 1, bw + 2, bh + 2);
+                ctx.fillStyle = index === 2 ? '#ffd36a' : index === 1 ? '#f08a4b' : '#c2601f';
+                ctx.fillRect(bx, by, bw, bh);
+                ctx.globalCompositeOperation = 'screen';
+                ctx.globalAlpha = 0.5;
+                ctx.fillStyle = '#ffb347';
+                ctx.fillRect(bx, by, bw, 1);
+            }
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.globalAlpha = 1;
+        }
+        if (shelfSpec) {
+            const { sx, sy, w: tw, h: th, step } = shelfSpec;
+            const ox = Math.round(sx) - left;
+            const oy = Math.round(sy) - top;
+            ctx.fillStyle = 'rgba(38, 32, 30, 0.9)';
+            ctx.fillRect(ox - 2, oy + th, step * shown.length + 2, 2);
+            shown.forEach((entry, index) => {
+                const settle = this.motionScale
+                    ? Math.min(1, Math.max(0, (now - entry.placedAt) / RESULT_TILE_SETTLE_MS))
+                    : 1;
+                ctx.globalAlpha = 0.25 + (Math.round(settle * 4) / 4) * 0.75;
+                this._drawResultTile(ctx, ox + index * step, oy, tw, th, entry.exitCode);
+            });
+            ctx.globalAlpha = 1;
+        }
+        this._forgeWorkloadCache = { key, canvas, left, top, w, h };
+        return this._forgeWorkloadCache;
     }
 
     // 4.4 — a record that says how a call ended. Deduplicated on the adapters'
@@ -3949,7 +4241,7 @@ export class BuildingSprite {
     // stamped tile — intact for `exit 0`, cracked for a non-zero exit, blank
     // while the exit is unknown — and everything older is coalesced into an
     // exact `xN`. Selecting a tile opens that session's detail record.
-    _drawForgeResultShelf(ctx, localPoint, selected) {
+    _drawForgeResultShelf(ctx, localPoint, selected, registerHits = true) {
         const profile = getBuildingWorkloadProfile('forge');
         if (!profile?.shelf || !this._resultShelf.length) return;
         const shelf = profile.shelf;
@@ -3962,26 +4254,34 @@ export class BuildingSprite {
         const origin = localPoint(shelf.at[0], shelf.at[1]);
         ctx.save();
         ctx.globalCompositeOperation = 'source-over';
-        // The shelf plank: one course of stone under the tiles.
-        ctx.globalAlpha = 1;
-        ctx.fillStyle = 'rgba(38, 32, 30, 0.9)';
-        ctx.fillRect(origin.x - 2, origin.y + h, step * shown.length + 2, 2);
+        // On the GPU path, the plank and result tiles are emitted as a depth-sorted
+        // GPU record (forgeWorkloadSpriteFor); keep hit registration and inspection
+        // count plates here.
+        if (!this._ungradedOverlay) {
+            ctx.globalAlpha = 1;
+            ctx.fillStyle = 'rgba(38, 32, 30, 0.9)';
+            ctx.fillRect(origin.x - 2, origin.y + h, step * shown.length + 2, 2);
+        }
         shown.forEach((entry, index) => {
             const x = origin.x + index * step;
             const y = origin.y;
-            const settle = this.motionScale
-                ? Math.min(1, Math.max(0, (now - entry.placedAt) / RESULT_TILE_SETTLE_MS))
-                : 1;
-            ctx.globalAlpha = 0.25 + settle * 0.75;
-            this._drawResultTile(ctx, x, y, w, h, entry.exitCode);
-            this._registerInstrumentHit({
-                kind: 'result-tile',
-                agentId: entry.agentId,
-                left: x - 1,
-                top: y - 1,
-                right: x + w + 1,
-                bottom: y + h + 1,
-            });
+            if (!this._ungradedOverlay) {
+                const settle = this.motionScale
+                    ? Math.min(1, Math.max(0, (now - entry.placedAt) / RESULT_TILE_SETTLE_MS))
+                    : 1;
+                ctx.globalAlpha = 0.25 + settle * 0.75;
+                this._drawResultTile(ctx, x, y, w, h, entry.exitCode);
+            }
+            if (registerHits) {
+                this._registerInstrumentHit({
+                    kind: 'result-tile',
+                    agentId: entry.agentId,
+                    left: x - 1,
+                    top: y - 1,
+                    right: x + w + 1,
+                    bottom: y + h + 1,
+                });
+            }
         });
         ctx.globalAlpha = 1;
         const coalesced = this._resultShelf.length - shown.length;
@@ -5198,24 +5498,35 @@ export class BuildingSprite {
         const wx = center.x - baseAnchor[0] + lx;
         const wy = center.y - baseAnchor[1] + ly;
         // 0.6 — every building emitter (torches, embers, motes, pings, mine
-        // dust) sorts just in front of the half of its own sprite it sits on.
-        this.particles.spawn(type, wx, wy, count, { ...(options || {}), sortY: this.particleSortY(building, ly) });
+        // dust) sorts just in front of the column or half of its own sprite it sits on.
+        this.particles.spawn(type, wx, wy, count, { ...(options || {}), sortY: this.particleSortY(building, ly, lx) });
     }
 
-    // 0.6 — the painter sortY for a particle emitted at sprite row `localY` of
-    // `building`: the owning drawable (the back half above the horizon, the
-    // front half below it, the whole sprite when unsplit) + 1, so an ember or
-    // a puff never hides behind its own roof yet stays behind anything nearer.
-    // Null when the building has no drawable (the spawn's ground line stands).
-    particleSortY(building, localY) {
+    // 0.6 — the painter sortY for a particle emitted at sprite (localX, localY)
+    // of `building`: the owning column (or back/front/whole drawable) + 1, so
+    // an ember or puff never hides behind its own roof yet stays behind anything
+    // nearer. Null when the building has no drawable.
+    particleSortY(building, localY, localX = null) {
+        const lx = Number(localX);
+        const hasX = Number.isFinite(lx);
+        let fallbackColumnSortY = null;
         for (const drawable of this.enumerateDrawables()) {
             if (drawable.building !== building) continue;
+            if (drawable.kind === 'building-column' && drawable.column) {
+                if (hasX && lx >= drawable.column.sx && lx < drawable.column.sx + drawable.column.sw) {
+                    return drawable.sortY + 1;
+                }
+                if (fallbackColumnSortY == null || drawable.sortY > fallbackColumnSortY) {
+                    fallbackColumnSortY = drawable.sortY;
+                }
+                continue;
+            }
             if (drawable.kind === 'building'
                 || (drawable.kind === 'building-front') === (Number(localY) >= drawable.horizonY)) {
                 return drawable.sortY + 1;
             }
         }
-        return null;
+        return fallbackColumnSortY != null ? fallbackColumnSortY + 1 : null;
     }
 
     _updateVisitorCounts() {
@@ -5456,18 +5767,28 @@ export class BuildingSprite {
     }
 
     // Canvas twin of the resident roof records: the patch and the drip frame
-    // on the landmark's own texels, cut at the split horizon like the base.
+    // on the landmark's own texels, cut to the column or split horizon like the base.
     _drawRoofWeather(ctx, d, dx, dy) {
         const layers = [this.roofPatchFor(d.building), this.roofDripFor(d.building)];
         for (const layer of layers) {
             if (!layer) continue;
+            let left = layer.left;
+            let right = layer.left + layer.w;
             let top = layer.top;
             let bottom = layer.top + layer.h;
-            if (d.kind === 'building-back') bottom = Math.min(bottom, d.horizonY);
-            else if (d.kind === 'building-front') top = Math.max(top, d.horizonY);
-            if (bottom <= top) continue;
-            ctx.drawImage(layer.canvas, layer.sx || 0, top - layer.top, layer.w, bottom - top,
-                dx + layer.left, dy + top, layer.w, bottom - top);
+            if (d.kind === 'building-column' && d.column) {
+                left = Math.max(left, d.column.sx);
+                right = Math.min(right, d.column.sx + d.column.sw);
+            } else if (d.kind === 'building-back') {
+                bottom = Math.min(bottom, d.horizonY);
+            } else if (d.kind === 'building-front') {
+                top = Math.max(top, d.horizonY);
+            }
+            if (right <= left || bottom <= top) continue;
+            const sx = (layer.sx || 0) + (left - layer.left);
+            const sw = right - left;
+            ctx.drawImage(layer.canvas, sx, top - layer.top, sw, bottom - top,
+                dx + left, dy + top, sw, bottom - top);
         }
     }
 
@@ -6042,12 +6363,21 @@ export class BuildingSprite {
         return Number.isFinite(anchorY) ? anchorY - 0.5 : fallbackY;
     }
 
-    // Depth anchor for building drawables. The minimum visit-tile screen-y
-    // ensures every declared visit tile draws in front; clamping by the
-    // southeast footprint corner restores standard isometric occlusion when
-    // visit tiles sit south of the corner (mine, taskboard, portal, etc.) so
-    // characters at the SE edge are no longer covered by the building.
+    // Depth anchor for building drawables: the southeast footprint corner when
+    // the building declares a footprint (preventing back-side visit tiles such
+    // as forge:ambient or mine:ambient from pulling the anchor behind the
+    // structure), falling back to visit tiles or entrance only for stubs.
     _anchorSortY(building) {
+        const pos = building?.position;
+        if (pos
+            && Number.isFinite(pos.tileX)
+            && Number.isFinite(pos.tileY)
+            && Number.isFinite(building.width)
+            && Number.isFinite(building.height)) {
+            const seX = pos.tileX + building.width - 1;
+            const seY = pos.tileY + building.height - 1;
+            return this._tileToScreen(seX, seY).y;
+        }
         const tiles = Array.isArray(building?.visitTiles) ? building.visitTiles : [];
         let minY = Infinity;
         for (const tile of tiles) {
@@ -6061,18 +6391,7 @@ export class BuildingSprite {
                 minY = this._tileToScreen(tileX, tileY).y;
             }
         }
-        if (!Number.isFinite(minY)) return null;
-        const pos = building?.position;
-        if (pos
-            && Number.isFinite(pos.tileX)
-            && Number.isFinite(pos.tileY)
-            && Number.isFinite(building.width)
-            && Number.isFinite(building.height)) {
-            const seX = pos.tileX + building.width - 1;
-            const seY = pos.tileY + building.height - 1;
-            return Math.min(minY, this._tileToScreen(seX, seY).y);
-        }
-        return minY;
+        return Number.isFinite(minY) ? minY : null;
     }
 
     _tileToScreen(tileX, tileY) {

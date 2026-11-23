@@ -48,7 +48,7 @@ export class AgentGpuOverlayRenderer {
         // and name hidden with it; the selected one is x-rayed, so keeps both.
         // Its thought is not hidden: the thought layer lifts it above the
         // building's crown (AgentSprite.drawThought, W3.4).
-        if (host._behindBuilding && !host.selected) return;
+        if ((host._occludedByWorld || host._behindBuilding) && !host.selected) return;
         // Action-needed agents are marked by the overlay's T1 beacon and
         // attention plate (AttentionPlates.js) at every zoom, not here.
         const primary = host.selected || isAttentionStatus(host.agent?.status);

@@ -89,7 +89,7 @@ class WindmillSprite extends StaticPropSprite {
             tileY: prop.tileY,
             id: prop.id,
             bounds: boundsFor(host.assets, prop.id, 8),
-            splitForOcclusion: true,
+            splitForOcclusion: false,
             materialClass: 'stone',
             drawFn: (ctx, x, y) => this._paint(ctx, x, y, this._paintFrame),
         });
@@ -188,7 +188,7 @@ class BelfrySprite extends StaticPropSprite {
             tileY: prop.tileY,
             id: prop.id,
             bounds: boundsFor(host.assets, prop.id),
-            splitForOcclusion: true,
+            splitForOcclusion: false,
             materialClass: 'stone',
             drawFn: (ctx, x, y) => this._paint(ctx, x, y),
         });
@@ -312,7 +312,7 @@ function plainSprite(host, prop) {
         tileY: prop.tileY,
         id: prop.id,
         bounds: boundsFor(host.assets, prop.id),
-        splitForOcclusion: true,
+        splitForOcclusion: false,
         materialClass: 'stone',
         drawFn: (ctx, x, y) => {
             host._drawPropContactShadow?.(ctx, x, y, prop.id, prop.tileX, prop.tileY);

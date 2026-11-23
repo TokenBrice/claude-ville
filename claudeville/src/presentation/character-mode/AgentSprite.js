@@ -4,6 +4,7 @@ import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { modelBehaviorProfile, moodBehaviorMultiplier } from '../../domain/value-objects/AgentMood.js';
 import { BUILDING_DEFS, normalizeBuildingType } from '../../config/buildings.js';
 import { THEME, STATUS_VISUALS, PROVIDER_HUES, WORLD_BODY_FONT_11, WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
+import { ART_RAMPS } from '../../config/artPalette.js';
 import { packGeometryPixels } from './gpu/GpuSceneBuilder.js';
 import { agentSignature, drawAgentSignature, clearAgentSignatureCache, getModelVisualIdentity, providerPaletteKey } from '../shared/ModelVisualIdentity.js';
 import { agentTrimAccent } from '../shared/TeamColor.js';
@@ -126,6 +127,12 @@ const IMPOSTOR_HALF_WIDTHS = Object.freeze([1, 2, 3, 3, 4, 5, 5, 6, 6, 7, 7, 6, 
 const IMPOSTOR_OUTLINE = '#070a0c';
 // Stamp box (feet-relative) covering shadow, outline and the apex status cell.
 const IMPOSTOR_BOX = Object.freeze({ left: -9, top: -22, width: 18, height: 28 });
+const BUDGET_IMPOSTOR_BODY_BOX = Object.freeze({
+    left: IMPOSTOR_BOX.left + 1,
+    right: IMPOSTOR_BOX.left + IMPOSTOR_BOX.width - 1,
+    top: IMPOSTOR_BOX.top + 1,
+    bottom: 3,
+});
 const WALK_PIXELS_PER_FRAME = 4.5;
 // W8.7 — the authored run cycle (actionStrip group `run`, six frames, two
 // strides) covers twice the walk's ground per frame, so at the top rung a
@@ -4401,12 +4408,15 @@ export class AgentSprite {
         const budgetMode = renderMode !== 'full' && !this.selected && !this.hovered
             && ![AgentStatus.WAITING_ON_USER, AgentStatus.ERRORED, AgentStatus.RATE_LIMITED].includes(this.agent?.status);
         if (budgetMode && !this.gpuWorldEnabled) {
+            this._bodyBox = BUDGET_IMPOSTOR_BODY_BOX;
+            this._budgetImpostorXray = true;
             this._drawBudgetImpostor(ctx);
             if (departedTableau(this)) this.gpuOverlayRenderer.drawDepartedTreatment(ctx);
-            if (!this._onOpenFloor) this._drawNameTag(ctx);
+            if (!this._onOpenFloor && !this.selected && !this._occludedByWorld && !this._behindBuilding) this._drawNameTag(ctx);
             if (archivePushed) ctx.restore();
             return;
         }
+        this._budgetImpostorXray = false;
 
         if (!this.compositor) {
             if (archivePushed) ctx.restore();
@@ -4463,6 +4473,7 @@ export class AgentSprite {
                 this._spriteProfileKey = profileKey;
                 this._spriteIdentity = identity;
                 releaseCanvasMap(this._frozenTintCellCache);
+                releaseCanvasMap(this._xraySilhouetteCache);
                 this._updatePrivateDerivedEstimate();
                 this._cellBoundsCache.clear();
             }
@@ -4525,6 +4536,20 @@ export class AgentSprite {
                 dx + Math.ceil((bounds.maxX + 1) * CROWD_LOD_SCALE),
                 drawY + 3,
             );
+            this._poseCell = {
+                sx: cell.sx,
+                sy: cell.sy,
+                sw: cell.sw,
+                sh: cell.sh,
+                source: 'sheet',
+                group: null,
+                meta: null,
+                now: null,
+                canvas: this.spriteCanvas,
+                dx,
+                dy,
+                drawScale: CROWD_LOD_SCALE,
+            };
             this._layoutGroundMarks(this._stableContentWidth() * CROWD_LOD_SCALE);
             const frameGeometry = {
                 cell,
@@ -4548,7 +4573,9 @@ export class AgentSprite {
                 lod: true,
             });
             this._drawBudgetImpostor(ctx);
-            if (!this._onOpenFloor) this._drawNameTag(ctx);
+            if (!this.gpuWorldEnabled && !this._onOpenFloor && !this.selected && !this._occludedByWorld && !this._behindBuilding) {
+                this._drawNameTag(ctx);
+            }
             if (archivePushed) ctx.restore();
             return;
         }
@@ -4620,6 +4647,7 @@ export class AgentSprite {
             // Where this cell was laid out (world texels); the x-ray re-blits it.
             dx: 0,
             dy: 0,
+            drawScale: 1,
         };
         const cellSize = this.spriteSheet?.cellSize || 92;
         const bounds = this._getCellContentBounds(cell);
@@ -4843,19 +4871,22 @@ export class AgentSprite {
         // drew each twice per frame. Thoughts belong to neither: both backends
         // paint them in the thought layer (drawThought) above the world.
         if (!this.gpuWorldEnabled) {
-            const labelTopY = this._labelTopY(contentTopY);
-            if (this.chatting && !departedTableau(this)) {
-                this._drawChatEffect(ctx, labelTopY);
+            const occluded = Boolean(this._occludedByWorld || this._behindBuilding);
+            if (!occluded || this.selected) {
+                const labelTopY = this._labelTopY(contentTopY);
+                if (this.chatting && !departedTableau(this)) {
+                    this._drawChatEffect(ctx, labelTopY);
+                }
+                if (!departedTableau(this)) this._drawStatusEmote(ctx, labelTopY);
+                // Plan-mode and retry glyphs sit above the silhouette. The status
+                // emote (kind != null) wins the slot; otherwise plan-mode glyph
+                // renders slightly higher. Retry glyph renders to the right.
+                if (!departedTableau(this)) {
+                    this._drawPlanModeGlyph(ctx, labelTopY);
+                    this._drawRetryGlyph(ctx, labelTopY);
+                }
             }
-            if (!departedTableau(this)) this._drawStatusEmote(ctx, labelTopY);
-            // Plan-mode and retry glyphs sit above the silhouette. The status
-            // emote (kind != null) wins the slot; otherwise plan-mode glyph
-            // renders slightly higher. Retry glyph renders to the right.
-            if (!departedTableau(this)) {
-                this._drawPlanModeGlyph(ctx, labelTopY);
-                this._drawRetryGlyph(ctx, labelTopY);
-            }
-            if (!this._onOpenFloor) this._drawNameTag(ctx);
+            if (!this._onOpenFloor && !this.selected && !occluded) this._drawNameTag(ctx);
         }
 
         // Sparkle flash during the first 200 ms of the archive fade.
@@ -5339,21 +5370,182 @@ export class AgentSprite {
     // visible behind a building's front-half. Avoids the full-sprite-sheet
     // blit that drawing via SpriteRenderer.drawSilhouette would produce
     // against multi-direction agent sheets.
-    drawXraySilhouette(ctx) {
-        return this.withBridgeLift(() => this._drawXraySilhouetteAtScreenPosition(ctx));
+    drawXraySilhouette(ctx, mode = 'selected', occluders = null) {
+        return this.withBridgeLift(() => this._drawXraySilhouetteAtScreenPosition(ctx, mode, occluders));
     }
 
-    _drawXraySilhouetteAtScreenPosition(ctx) {
-        const body = this._poseCell;
-        if (!this.spriteCanvas || !body?.canvas) return;
+    _xrayPalette(mode) {
+        const hex = (value) => {
+            const raw = String(value || '#ffffff').replace('#', '');
+            return [
+                parseInt(raw.slice(0, 2), 16) || 0,
+                parseInt(raw.slice(2, 4), 16) || 0,
+                parseInt(raw.slice(4, 6), 16) || 0,
+            ];
+        };
+        if (mode === 'working') {
+            return {
+                rim: hex(ART_RAMPS.snow[0]),
+                rimAlpha: 148,
+                fill: hex(ART_RAMPS.slate[1]),
+                fillAlpha: 88,
+                dither: true,
+            };
+        }
+        return {
+            rim: hex(ART_RAMPS.trimGold[3]),
+            rimAlpha: 245,
+            fill: hex(ART_RAMPS.trimGold[1]),
+            fillAlpha: 108,
+            dither: false,
+        };
+    }
+
+    _getXraySilhouetteCanvas(body, dstW, dstH, mode) {
+        if (typeof document === 'undefined') return null;
+        const key = `${mode}|${body.sx},${body.sy},${body.sw}x${body.sh}|${dstW}x${dstH}`;
+        const cache = this._xraySilhouetteCache || (this._xraySilhouetteCache = new Map());
+        const existing = cache.get(key);
+        if (existing && existing.source === body.canvas) return existing.canvas;
+        if (cache.size >= 8) releaseCanvasMap(cache);
+        const canvas = document.createElement('canvas');
+        canvas.width = dstW;
+        canvas.height = dstH;
+        const sctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (!sctx) return null;
+        sctx.imageSmoothingEnabled = false;
+        sctx.clearRect(0, 0, dstW, dstH);
+        sctx.drawImage(body.canvas, body.sx, body.sy, body.sw, body.sh, 0, 0, dstW, dstH);
+        const imgData = sctx.getImageData(0, 0, dstW, dstH);
+        const data = imgData.data;
+        const opaque = new Uint8Array(dstW * dstH);
+        for (let i = 0, p = 3; i < opaque.length; i++, p += 4) {
+            if (data[p] > 24) opaque[i] = 1;
+        }
+        const { rim, rimAlpha, fill, fillAlpha, dither } = this._xrayPalette(mode);
+        for (let y = 0; y < dstH; y++) {
+            const row = y * dstW;
+            for (let x = 0; x < dstW; x++) {
+                const idx = row + x;
+                const p = idx * 4;
+                if (!opaque[idx]) {
+                    data[p + 3] = 0;
+                    continue;
+                }
+                const isRim = x === 0 || y === 0 || x === dstW - 1 || y === dstH - 1
+                    || !opaque[idx - 1] || !opaque[idx + 1]
+                    || !opaque[idx - dstW] || !opaque[idx + dstW];
+                if (isRim) {
+                    data[p] = rim[0];
+                    data[p + 1] = rim[1];
+                    data[p + 2] = rim[2];
+                    data[p + 3] = rimAlpha;
+                } else if (!dither || (((x + y) & 1) === 0)) {
+                    data[p] = fill[0];
+                    data[p + 1] = fill[1];
+                    data[p + 2] = fill[2];
+                    data[p + 3] = fillAlpha;
+                } else {
+                    data[p + 3] = 0;
+                }
+            }
+        }
+        sctx.putImageData(imgData, 0, 0);
+        cache.set(key, { source: body.canvas, canvas });
+        return canvas;
+    }
+
+    _getBudgetImpostorPoseCell() {
+        if (typeof document === 'undefined') return null;
+        let canvas = AgentSprite._budgetImpostorMaskCanvas;
+        if (!canvas) {
+            canvas = document.createElement('canvas');
+            canvas.width = IMPOSTOR_BOX.width;
+            canvas.height = IMPOSTOR_BOX.height;
+            const ictx = canvas.getContext('2d');
+            if (!ictx) return null;
+            ictx.imageSmoothingEnabled = false;
+            ictx.translate(-IMPOSTOR_BOX.left, -IMPOSTOR_BOX.top);
+            ictx.fillStyle = IMPOSTOR_OUTLINE;
+            ictx.fillRect(-1, IMPOSTOR_TOP - 1, 2, 1);
+            IMPOSTOR_HALF_WIDTHS.forEach((half, index) => {
+                ictx.fillRect(-half - 1, IMPOSTOR_TOP + index, (half + 1) * 2, 1);
+            });
+            ictx.fillRect(-1, IMPOSTOR_TOP + IMPOSTOR_HALF_WIDTHS.length, 2, 1);
+            ictx.fillRect(-3, IMPOSTOR_TOP - 5, 6, 6);
+            AgentSprite._budgetImpostorMaskCanvas = canvas;
+        }
+        return {
+            canvas,
+            sx: 0,
+            sy: 0,
+            sw: IMPOSTOR_BOX.width,
+            sh: IMPOSTOR_BOX.height,
+            dx: this._placeX + IMPOSTOR_BOX.left,
+            dy: this._placeY + IMPOSTOR_BOX.top,
+            drawScale: 1,
+        };
+    }
+
+    _drawXraySilhouetteAtScreenPosition(ctx, mode = 'selected', occluders = null) {
+        const body = this._budgetImpostorXray ? this._getBudgetImpostorPoseCell() : this._poseCell;
+        if ((!this._budgetImpostorXray && !this.spriteCanvas) || !body?.canvas || !(body.sw > 0) || !(body.sh > 0)) return;
+        const drawScale = body.drawScale || 1;
+        const dstW = Math.max(1, Math.round(body.sw * drawScale));
+        const dstH = Math.max(1, Math.round(body.sh * drawScale));
+        const dstX = Math.round(body.dx);
+        const dstY = Math.round(body.dy);
+        const silhouette = this._getXraySilhouetteCanvas(body, dstW, dstH, mode);
+        if (!silhouette) return;
+
+        const validOccluders = Array.isArray(occluders)
+            ? occluders.filter((occ) => occ?.image)
+            : [];
+        if (validOccluders.length > 0 && typeof document !== 'undefined') {
+            const scratch = AgentSprite._xrayMaskScratch || (AgentSprite._xrayMaskScratch = document.createElement('canvas'));
+            if (scratch.width < dstW) scratch.width = dstW;
+            if (scratch.height < dstH) scratch.height = dstH;
+            const mctx = scratch.getContext('2d');
+            if (mctx) {
+                mctx.setTransform(1, 0, 0, 1, 0, 0);
+                mctx.imageSmoothingEnabled = false;
+                mctx.globalAlpha = 1;
+                mctx.globalCompositeOperation = 'source-over';
+                mctx.clearRect(0, 0, dstW, dstH);
+                for (let i = 0; i < validOccluders.length; i++) {
+                    const occ = validOccluders[i];
+                    if (Array.isArray(occ.clipRanges)) {
+                        for (let r = 0; r < occ.clipRanges.length; r++) {
+                            const [x0, x1] = occ.clipRanges[r];
+                            const localLeft = Math.max(0, Math.floor(x0 - dstX));
+                            const localRight = Math.min(dstW, Math.ceil(x1 - dstX));
+                            if (localRight <= localLeft) continue;
+                            mctx.save();
+                            mctx.beginPath();
+                            mctx.rect(localLeft, 0, localRight - localLeft, dstH);
+                            mctx.clip();
+                            mctx.drawImage(occ.image, Math.round(occ.dx - dstX), Math.round(occ.dy - dstY));
+                            mctx.restore();
+                        }
+                    } else {
+                        mctx.drawImage(occ.image, Math.round(occ.dx - dstX), Math.round(occ.dy - dstY));
+                    }
+                }
+                mctx.globalCompositeOperation = 'source-in';
+                mctx.drawImage(silhouette, 0, 0);
+                mctx.globalCompositeOperation = 'source-over';
+                ctx.save();
+                ctx.imageSmoothingEnabled = false;
+                ctx.globalAlpha = 1;
+                ctx.drawImage(scratch, 0, 0, dstW, dstH, dstX, dstY, dstW, dstH);
+                ctx.restore();
+                return;
+            }
+        }
         ctx.save();
         ctx.imageSmoothingEnabled = false;
-        ctx.globalAlpha = 0.65;
-        ctx.drawImage(
-            body.canvas,
-            body.sx, body.sy, body.sw, body.sh,
-            body.dx, body.dy, body.sw, body.sh
-        );
+        ctx.globalAlpha = 1;
+        ctx.drawImage(silhouette, dstX, dstY);
         ctx.restore();
     }
 
@@ -7357,7 +7549,10 @@ export class AgentSprite {
     // redrawn over it: the frame names it after the world instead, as the
     // resident overlay names every body (WorldFrameRenderer).
     drawDeferredNameTag(ctx) {
-        if (this._onOpenFloor && !this.gpuWorldEnabled) this._drawNameTag(ctx);
+        if ((this._onOpenFloor || this.selected) && !this.gpuWorldEnabled) {
+            if (typeof this.withBridgeLift === 'function') this.withBridgeLift(() => this._drawNameTag(ctx));
+            else this._drawNameTag(ctx);
+        }
     }
 
     _drawNameTag(ctx) {

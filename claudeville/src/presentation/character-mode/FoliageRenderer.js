@@ -688,7 +688,7 @@ class TreePropSprite extends StaticPropSprite {
             tileY: tree.tileY,
             id: 'fantasy.tree',
             bounds: foliage.fantasyTreePropBounds(tree),
-            splitForOcclusion: true,
+            splitForOcclusion: false,
             drawFn: null,
         });
         this.foliage = foliage;
