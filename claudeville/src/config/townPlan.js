@@ -381,10 +381,10 @@ export const REST_STANDS = Object.freeze({
 // the line stays on Command's forecourt, off the plank and the central
 // bridge (the island's main north-south crossing). CM-1 — it is laid on the
 // forecourt's west half, away from the bridge's north landing (16-18, 22):
-// continuously from the foot of the steps west along the civic west arm (row
-// y = 20), then folding two full tiles south to row y = 22 along the north
-// bank so every 60 px silhouette and floor candle stays clear of the row
-// behind it. The 13th petitioner onward stands at the arm's mouth and on the
+// continuously from the foot of the steps (row y = 19) west along the civic
+// west arm (row y = 20), then folding two full tiles south to row y = 22 along
+// the north bank so every 60 px silhouette and floor candle stays clear of the
+// row behind it. The 13th petitioner onward stands at the arm's mouth and on the
 // bank beside the line (`overflow`). No slot stands on a bridge, a fixture's
 // footprint (VisitTileAllocator `standsOnFixture`), another standing place or
 // behind a roof. `door` is the point the head of the line faces; each later
@@ -447,16 +447,15 @@ export const REPO_STONE_ANCHORS = Object.freeze([
 // (36 world px) or across the screen at one depth (64 px), never toward the
 // camera, so a line trails away from the camera-near side and its heads keep
 // open sky for their thoughts. No place stands on a fixture, a road, a
-// footprint, a walk exclusion or another standing place, except that a file
-// may take over its own building's queue or scenic slot (the Harbor quay),
-// which the allocator then leaves to the line. Command's petitioners keep
-// their own queue (`COMMAND_QUEUE`); this file is for Command's visitors.
+// footprint, a walk exclusion, a visit slot, or another standing place.
+// Command's petitioners keep their own queue (`COMMAND_QUEUE`); this file is
+// for Command's visitors.
 const approachFile = (...points) => Object.freeze(points.map(([tileX, tileY]) => Object.freeze({ tileX, tileY })));
 export const APPROACH_FILES = Object.freeze({
     // Along the Archive's front steps, west from its south-east corner.
     archive: approachFile([7, 19], [6, 19], [5, 19], [4, 19]),
-    // Across Command's open forecourt, clear of the Tavern's west roof.
-    command: approachFile([19, 20], [18, 20], [17, 20], [16, 20]),
+    // Across Command's west forecourt, routed around the plaza fountain.
+    command: approachFile([13, 21], [12, 21], [11, 21], [10, 21]),
     // Up the Forge's open cinder yard, clear of the Task Board's slate roof.
     forge: approachFile([24, 30], [24, 29], [23, 29], [23, 28]),
     // West along the Task Board's front, then up beside the gate avenue.
@@ -465,8 +464,8 @@ export const APPROACH_FILES = Object.freeze({
     mine: approachFile([10, 35], [9, 35], [8, 35], [7, 35]),
     // Up the Portal's east yard, clear of the east dais and the Mine's rock.
     portal: approachFile([7, 34], [7, 33], [7, 32], [7, 31], [8, 30]),
-    // West from the Tavern's beer garden across the open lawn, off the SE wall.
-    tavern: approachFile([22, 20], [21, 20], [20, 20], [20, 19]),
+    // Up the Tavern's open south-west lawn, off its ambient visit tiles.
+    tavern: approachFile([21, 22], [21, 21], [21, 20], [20, 21]),
     // North-west from the Lighthouse, between the tower and the dome.
     watchtower: approachFile([26, 12], [25, 12], [24, 12], [24, 11]),
     // Across the Harbor's open quay and west lawn, clear of the gable roof.

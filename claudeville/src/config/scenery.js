@@ -645,8 +645,8 @@ export const DISTRICT_PROPS = [
     // hearth (moved off the 25,26 river channel for the east footbridge), the
     // bellows bench on the shore past the hearth's east corner, slag heap and
     // barrels at the Forge → Task Board handoff.
-    { tileX: 30, tileY: 33, id: 'prop.firewoodStack', layer: 'cache', district: 'workshop', walkBlock: true },
     { tileX: 31, tileY: 32, id: 'prop.bellowsBench', layer: 'cache', district: 'workshop', walkBlock: true },
+    { tileX: 31, tileY: 33, id: 'prop.firewoodStack', layer: 'cache', district: 'workshop', walkBlock: true },
     { tileX: 27, tileY: 33, id: 'prop.barrelStack', layer: 'cache', district: 'workshop', walkBlock: true },
     { tileX: 24, tileY: 31, id: 'prop.slagHeap', layer: 'cache', district: 'workshop', walkBlock: true },
     // Token Mine: a roofed tool rack west of the rock, beside the Portal's
@@ -679,9 +679,9 @@ export const DISTRICT_PROPS = [
     { tileX: 17, tileY: 38, id: 'prop.milestone', layer: 'cache', district: 'gate', walkBlock: true },
     { tileX: 17, tileY: 28, id: 'prop.noticePillar', layer: 'cache', district: 'civic', walkBlock: true },
     { tileX: 26, tileY: 10, id: 'prop.crabPots', layer: 'cache', district: 'harbor', walkBlock: true },
-    { tileX: 23, tileY: 12, id: 'prop.cairn', layer: 'cache', district: 'knowledge', walkBlock: true },
+    { tileX: 11, tileY: 14, id: 'prop.cairn', layer: 'cache', district: 'knowledge', walkBlock: true },
     { tileX: 12, tileY: 2, id: 'prop.cairn', layer: 'cache', district: 'north', walkBlock: true },
-    { tileX: 23.4, tileY: 13.0, id: 'veg.boulder.mossy.large', layer: 'cache', district: 'harbor', walkBlock: true },
+    { tileX: 22, tileY: 10, id: 'veg.boulder.mossy.large', layer: 'cache', district: 'harbor', walkBlock: true },
     { tileX: 22.2, tileY: 11.4, id: 'veg.boulder.granite.small', layer: 'cache', district: 'harbor' },
     { tileX: 10.2, tileY: 31.0, id: 'veg.boulder.granite.small', layer: 'cache', district: 'resource' },
     { tileX: 5, tileY: 20, id: 'veg.hedge', layer: 'cache', district: 'knowledge' },
@@ -753,7 +753,7 @@ export const DISTRICT_PROPS = [
     // anchors. Cache-baked like the south-bank well (`sorted` props on the
     // avenue strip are culled by the landmark sightline rule); `walkBlock`
     // keeps every body off the baked feet.
-    { tileX: 16.8, tileY: 32.9, id: 'prop.marketStall.bread', layer: 'cache', district: 'gate', walkBlock: true },
+    { tileX: 17, tileY: 33, id: 'prop.marketStall.bread', layer: 'cache', district: 'gate', walkBlock: true },
     // The avenue itself carries no stall, pillar or milestone: it is the
     // village's busiest walk, so its line stays open from bridge to gate.
     // W8.3b (AD-P5) — the farm, out of the town on the north shore: the
@@ -844,7 +844,7 @@ export const SCENIC_POINT_PROPS = [
     { scenicPoint: 'mine-cart', tileX: 15.4, tileY: 36.5, id: 'prop.wheelbarrow', layer: 'cache' },
     { scenicPoint: 'forest-edge', tileX: 25.5, tileY: 11.4, id: 'veg.standingStone.mossy', layer: 'cache' },
     { scenicPoint: 'archive-alcove', tileX: 10.4, tileY: 17.6, id: 'prop.scrollCrates', layer: 'cache' },
-    { scenicPoint: 'lighthouse-shore', tileX: 29.6, tileY: 15.4, id: 'prop.driftwood.log', layer: 'cache' },
+    { scenicPoint: 'lighthouse-shore', tileX: 26.5, tileY: 14.6, id: 'prop.driftwood.log', layer: 'cache' },
     // W8.2b: planter replaces the duplicate east flowerCart at plaza-corner.
     { scenicPoint: 'plaza-corner', tileX: 20.7, tileY: 21.3, id: 'veg.planter', layer: 'cache' },
     { scenicPoint: 'forge-handoff', tileX: 27.4, tileY: 32.4, id: 'prop.grindstone', layer: 'cache' },

@@ -103,12 +103,7 @@ test('no approach or ring place stands on a fixture, off the walk grid, in a foo
             seen.add(keyOf(place));
             assert.ok(!others.has(keyOf(place)), `${label} is ${others.get(keyOf(place))}'s place`);
             const visit = visitOwner.get(keyOf(place));
-            if (visit) {
-                // Only a file may take over its own building's queue or scenic slot.
-                assert.equal(kind, 'file', `${label} is ${visit.type}'s visit tile`);
-                assert.equal(visit.type, def.type, `${label} is ${visit.type}'s visit tile`);
-                assert.notEqual(visit.role, 'work', `${label} is a work slot`);
-            }
+            assert.equal(visit, undefined, `${label} duplicates ${visit?.type}'s visit tile`);
         }
     }
 });
