@@ -7345,6 +7345,8 @@ export class AgentSprite {
     //   T4 name  — text only, and only when the renderer admitted it
     //              (overlaySlot): the top-N most recent actors per screen
     //              region at zoom >= 1.6, or every verb while READ is held;
+    //              a session the operator named (`agent.userNamed`) is
+    //              always admitted, even under another agent's focus;
     //   nothing  — otherwise.
     // This replaces the old rule that identity never disappears at overview
     // LOD: below 1.6 a routine name hid the body it named. Identity stays one
@@ -7361,7 +7363,7 @@ export class AgentSprite {
     _drawNameTag(ctx) {
         // XP-5 — a postcard frame names no one (the T2 and T4 stamps are
         // cached text, out of the postcard text guard's reach).
-        if (postcardFrame() || this.decisionFocusRoutine || this.isArrivalPending()) return;
+        if (postcardFrame() || (this.decisionFocusRoutine && !this.agent?.userNamed) || this.isArrivalPending()) return;
         const plate = this.selected || this.labelPlate === true;
         if (plate) {
             // S13 — `plateOffFrame`: the body is outside the visible canvas,

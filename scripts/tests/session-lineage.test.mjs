@@ -389,3 +389,22 @@ test('the process chain must match both the owner and the lead start ticks', () 
   processes.delete(16);
   assert.equal(parent(), null);
 });
+
+test('only a name the operator gave the session marks it userNamed', () => {
+  // Main path (a history entry) and the transcript-only path read the same registry field.
+  const historyFile = path.join(home, '.claude', 'history.jsonl');
+  fs.appendFileSync(historyFile, JSON.stringify({ sessionId: 'renamed', project, timestamp: old }) + '\n');
+  for (const [id, pid] of [['renamed', 4140], ['renamed-orphan', 4141]]) {
+    const rec = { sessionId: id, pid, procStart: String(pid), status: 'busy', statusUpdatedAt: now };
+    write(transcript(id), [source[0]]);
+    proc.set(pid, { start: rec.procStart });
+    write(registry(pid), [{ ...rec, name: 'fixture-4f', nameSource: 'derived' }]);
+    const derived = find(scan(), id);
+    assert.equal(derived.name, 'fixture-4f');
+    assert.equal(derived.userNamed, false, id + ': a derived name is not the operator\'s');
+    write(registry(pid), [{ ...rec, name: 'CI-FOLLOW-UP', nameSource: 'user' }]);
+    const renamed = find(scan(), id);
+    assert.equal(renamed.name, 'CI-FOLLOW-UP');
+    assert.equal(renamed.userNamed, true, id + ': /rename marks the session');
+  }
+});

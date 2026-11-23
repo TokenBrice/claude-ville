@@ -295,6 +295,7 @@ function normalizeSession(rawSession, context = {}) {
     lastResults: normalizeToolResults(session?.lastResults),
     waitReason: session?.waitReason ?? null,
     resident: session?.resident === true,
+    userNamed: session?.userNamed === true,
     sendMessages: Array.isArray(session?.sendMessages) ? session.sendMessages : [],
     gitEvents: Array.isArray(session?.gitEvents) ? session.gitEvents : [],
   });

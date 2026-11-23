@@ -770,7 +770,8 @@ function readRegistryFile(file, stat, filename, now) {
   const sessionId = typeof meta?.sessionId === 'string' ? meta.sessionId.trim() : '';
   if (!sessionId || sessionId.length > 256) return null;
   const name = typeof meta.name === 'string' ? meta.name.trim() : '';
-  const record = { sessionId, name };
+  // `nameSource: 'user'` marks a `/rename`; other names are derived from the project.
+  const record = { sessionId, name, userNamed: Boolean(name) && meta.nameSource === 'user' };
   const { pid, procStart, status, statusUpdatedAt: at } = meta;
   const waitReason = registryWaitReason(meta.waitingFor);
   if (!Number.isSafeInteger(pid) || pid <= 0 || filename !== `${pid}.json`
@@ -3275,6 +3276,7 @@ class ClaudeAdapter {
         }),
         name: sessionName,
         agentName: sessionName,
+        userNamed: registry.get(session.sessionId)?.userNamed === true,
         teamName,
         model,
         lastTool: detail.lastTool,
@@ -3509,6 +3511,7 @@ class ClaudeAdapter {
             agentId: agentType === 'main' ? null : sessionId,
             name: sessionName,
             agentName: sessionName,
+            userNamed: record?.userNamed === true,
             teamName,
             agentType,
             model,

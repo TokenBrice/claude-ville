@@ -102,6 +102,7 @@ export class Agent {
         lastResults,
         collisions,
         resident,
+        userNamed,
         departedAt,
         dialogue,
         observedSources,
@@ -179,6 +180,9 @@ export class Agent {
         this.lastResults = Array.isArray(lastResults) ? lastResults.slice(0, 5) : [];
         this.collisions = Array.isArray(collisions) ? collisions : [];
         this.resident = resident === true;
+        // The operator named this session (Claude Code `/rename`): the World
+        // always shows its name.
+        this.userNamed = userNamed === true;
         // A departed agent is no longer present in the live server roster, but
         // remains in the world briefly so burst workloads stay perceptible.
         // This marker is intentionally separate from AgentStatus: departure is

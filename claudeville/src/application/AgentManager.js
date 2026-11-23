@@ -117,6 +117,7 @@ const AGENT_SIGNATURE_FIELDS = Object.freeze([
     'dialogue',
     'name',
     '_customName',
+    'userNamed',
     'projectPath',
     'provider',
 ]);
@@ -1086,6 +1087,7 @@ export class AgentManager {
             observedSources: session.observedSources ?? null,
             name: agentName || null,
             _customName: !!agentName,
+            userNamed: session.userNamed === true,
             projectPath: session.project || null,
             provider: session.provider || 'claude',
         };

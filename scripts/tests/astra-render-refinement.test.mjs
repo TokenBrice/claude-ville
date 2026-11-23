@@ -252,6 +252,63 @@ test('crowd labels follow D2: plates for emphasis, top-N routine names at z >= 1
     assert.equal(arriving.overlaySlot, null);
 });
 
+test('a session the operator named keeps its T4 name at every zoom, under focus, past the region cap and on overlap', () => {
+    // 0 named by the operator (`/rename`), 1..6 routine workers, one 200 px region.
+    const sprites = Array.from({ length: 7 }, (_, index) => ({
+        x: index * 10, y: 0,
+        agent: { id: String(index), name: `A${index}`, status: 'working', userNamed: index === 0 },
+        selected: false, hovered: false, gpuWorldEnabled: true,
+    }));
+    const camera = {
+        zoom: 1,
+        worldToScreen(x, y) { return { x: x * this.zoom + 10, y: y * this.zoom + 400 }; },
+        screenToWorld(x, y) { return { x: (x - 10) / this.zoom, y: (y - 400) / this.zoom }; },
+    };
+    const ctx = { font: '', measureText: text => ({ width: String(text).length * 7 }) };
+    const renderer = Object.assign(Object.create(IsometricRenderer.prototype), {
+        camera, overlayCtx: ctx,
+        agentSprites: new Map(sprites.map(sprite => [sprite.agent.id, sprite])),
+        _overlayNameRects: [], _overlayReservedRects: [], _overlayRegionCounts: new Map(),
+        _attentionWorldRects: [], _overlayPrioritizedSprites: [], _overlayBubbleSprites: [],
+        _overlayNameGrid: IsometricRenderer.prototype._createRectGrid(),
+        _overlayBubbleGrid: IsometricRenderer.prototype._createRectGrid(),
+        _screenViewport: () => ({ width: 1600, height: 900 }), _agentVisibleOnScreen: () => true,
+        _assignAgentBubbleSlots() {}, getReadMode: () => false,
+        markGovernor: { reserve() {} },
+    });
+    const named = () => sprites.filter(sprite => sprite.overlaySlot != null).map(sprite => sprite.agent.id);
+
+    // Overview: the operator's name is the only routine name.
+    renderer._assignAgentOverlaySlots(sprites, 1, { agentRenderMode: 'compact' });
+    assert.deepEqual(named(), ['0']);
+    assert.equal(sprites[0].labelPlate, false);
+
+    // Detail: it does not spend the region's three routine names.
+    camera.zoom = 2;
+    renderer._assignAgentOverlaySlots(sprites, 2, { agentRenderMode: 'full' });
+    assert.ok(named().includes('0'));
+    assert.equal(named().filter(id => id !== '0').length, 3);
+
+    // Another agent's focus mutes routine names but not this one, and the
+    // painter draws it while the body is muted.
+    camera.zoom = 1;
+    sprites[1].selected = true;
+    renderer.selectedAgent = sprites[1].agent;
+    renderer._assignAgentOverlaySlots(sprites, 1, { agentRenderMode: 'compact' });
+    assert.deepEqual(named(), ['0', '1']);
+    assert.equal(sprites[0].decisionFocusRoutine, true);
+    let drawn = 0;
+    AgentSprite.prototype._drawNameTag.call(Object.assign(Object.create(AgentSprite.prototype), sprites[0], {
+        isArrivalPending: () => false, _drawRoutineName() { drawn++; },
+    }), {});
+    assert.equal(drawn, 1);
+
+    // Standing on the selected body: offset a slot, never dropped.
+    sprites[0].x = sprites[1].x;
+    renderer._assignAgentOverlaySlots(sprites, 1, { agentRenderMode: 'compact' });
+    assert.ok(sprites[0].overlaySlot >= 1);
+});
+
 
 test('agent-following ground cues move as records; the retained cue texture re-renders only for its own state', () => {
     const previousDocument = globalThis.document;

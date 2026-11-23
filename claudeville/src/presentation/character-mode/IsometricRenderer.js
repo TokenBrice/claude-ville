@@ -7533,7 +7533,11 @@ export class IsometricRenderer {
             }
             // T1 owns the identity of every action-needed agent.
             if (attention) continue;
-            if (sprite.decisionFocusRoutine) {
+            // A name the operator gave the session (Claude Code `/rename`)
+            // always shows: past decision focus, the zoom gate, the region
+            // cap and the crowd fold, offset rather than dropped on overlap.
+            const userNamed = sprite.agent.userNamed === true;
+            if (sprite.decisionFocusRoutine && !userNamed) {
                 sprite.labelAlpha = 0;
                 continue;
             }
@@ -7553,13 +7557,13 @@ export class IsometricRenderer {
             // T4 — routine names: top-N per screen region at z >= 1.6 (every
             // name while READ is held), dropped rather than offset.
             let regionKey = null;
-            if (!readMode) {
+            if (!readMode && !userNamed) {
                 if (!routineZoom) continue;
                 const point = this.camera.worldToScreen(sprite.x, sprite.y);
                 regionKey = `${Math.floor(point.x / ROUTINE_NAME_REGION_PX)},${Math.floor(point.y / ROUTINE_NAME_REGION_PX)}`;
                 if ((regionCounts.get(regionKey) || 0) >= perRegion) continue;
             }
-            const slotCap = readMode ? READ_MODE_NAME_SLOTS : 1;
+            const slotCap = readMode || userNamed ? READ_MODE_NAME_SLOTS : 1;
             let slot = 0;
             let rect = this._agentIdentityRect(sprite, slot);
             // 3.4 — Canvas bodies paint names in depth order, so a label under
@@ -7573,7 +7577,11 @@ export class IsometricRenderer {
                 slot++;
                 if (slot < slotCap) rect = this._agentIdentityRect(sprite, slot);
             }
-            if (slot >= slotCap) continue;
+            if (slot >= slotCap) {
+                if (!userNamed) continue;
+                slot = 0;
+                rect = this._agentIdentityRect(sprite, slot);
+            }
             sprite.overlaySlot = slot;
             reserve(rect);
             if (regionKey) regionCounts.set(regionKey, (regionCounts.get(regionKey) || 0) + 1);
@@ -8098,7 +8106,7 @@ export class IsometricRenderer {
     }
 
     _isRoutineFoldCandidate(sprite) {
-        if (!sprite || sprite.selected || sprite.hovered) return false;
+        if (!sprite || sprite.selected || sprite.hovered || sprite.agent?.userNamed) return false;
         const status = sprite.agent?.status;
         if ([AgentStatus.WAITING_ON_USER, AgentStatus.ERRORED, AgentStatus.RATE_LIMITED].includes(status)) {
             return false;
@@ -8149,6 +8157,8 @@ export class IsometricRenderer {
     // earns the slot first, then ordinary work, then everyone else.
     _agentLabelPriority(sprite, now = performance.now()) {
         if (sprite.selected) return 1000;
+        // Operator-named sessions claim their name space before routine ones.
+        if (sprite.agent?.userNamed) return 900;
         const status = sprite.agent?.status;
         const age = now - (sprite.addedAt || 0);
         const recentSpawn = age >= 0 && age < 12000;
