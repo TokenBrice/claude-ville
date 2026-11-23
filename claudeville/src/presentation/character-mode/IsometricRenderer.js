@@ -347,7 +347,7 @@ const LANE_STEERING = Object.freeze({
     plazaOffsetPx: 2.2,
     // A landmark deck (not planks or docks) is walkable on its centre column
     // only; its hint's `laneOffsetPx` (scenery.js BRIDGE_HINTS) sets the two
-    // files from the measured clear deck (the central bridge: 8 px, both
+    // files from the measured clear deck (the central bridge: 6 px, both
     // files on the planks between the rails). This is the fallback for a
     // hint without one.
     bridgeOffsetPx: 10,
@@ -431,9 +431,14 @@ export const GATE_ENTRY_LANES = Object.freeze([
 ]);
 // 7.4 — subagents emerging from the Portal Gate step out in two spaced files
 // (mirroring GATE_ENTRY_LANES, 32 px apart, both walkable and fixture-free);
-// a cold-load burst larger than PORTAL_COLD_SETTLE_LIMIT settles at its
-// destinations instead of piling up at the Portal.
+// Portal uses a tighter 16 px clearance so workers on its adjacent slots
+// (4,34) and (6,34) (19.7 px from the lane entries) never starve the queue.
+// A cold-load burst larger than PORTAL_COLD_SETTLE_LIMIT settles at its
+// destinations instead of piling up at the Portal, and any queued entry that
+// waits past PORTAL_QUEUE_MAX_WAIT_MS falls back to settleAtDestination.
 const PORTAL_COLD_SETTLE_LIMIT = 4;
+const PORTAL_ENTRY_GAP_PX = 16;
+const PORTAL_QUEUE_MAX_WAIT_MS = 4000;
 const PORTAL_ENTRY_LANES = Object.freeze([
     Object.freeze({ tileX: 4.55, outsideY: 34.0, insideY: 35.0 }),
     Object.freeze({ tileX: 5.45, outsideY: 34.0, insideY: 35.0 }),
@@ -2838,15 +2843,22 @@ export class IsometricRenderer {
         for (const agentId of Array.from(this.agentSprites.keys())) {
             if (!liveIds.has(agentId)) this._removeAgentSprite(agentId);
         }
-        for (const agent of this.world?.agents?.values?.() || []) {
-            if (agent.isDeparted) {
-                // Departed while world mode was inactive: walk out now, and
-                // never spawn a sprite for one that already left.
-                if (this.agentSprites.has(agent.id)) this._beginAgentDeparture(agent);
-                continue;
+        const prevDefer = this._deferPortalRelease;
+        this._deferPortalRelease = true;
+        try {
+            for (const agent of this.world?.agents?.values?.() || []) {
+                if (agent.isDeparted) {
+                    // Departed while world mode was inactive: walk out now, and
+                    // never spawn a sprite for one that already left.
+                    if (this.agentSprites.has(agent.id)) this._beginAgentDeparture(agent);
+                    continue;
+                }
+                this._addAgentSprite(agent);
             }
-            this._addAgentSprite(agent);
+        } finally {
+            this._deferPortalRelease = prevDefer;
         }
+        if (!this._deferPortalRelease) this._releasePortalEntries();
         this._worldSpritesDirty = false;
     }
 
@@ -4540,8 +4552,9 @@ export class IsometricRenderer {
         while (queue?.length) {
             const { agent, sprite } = queue[0];
             const live = this.agentSprites.get(agent.id);
-            if (live !== sprite || sprite.leaving || !sprite.isArrivalPending?.() || this._isGateTransit(sprite, 'departure')) {
+            if (live !== sprite || sprite.leaving || sprite._archiveAnim || !sprite.isArrivalPending?.() || this._isGateTransit(sprite, 'departure')) {
                 queue.shift();
+                if (sprite._archiveAnim || live !== sprite) this.gateTransits.delete(agent.id);
                 continue;
             }
             const lane = GATE_ENTRY_LANES.find(entry => this._gateLaneClear(entry));
@@ -4575,49 +4588,79 @@ export class IsometricRenderer {
     }
 
     // 7.4 — subagent Portal arrivals join a two-lane release queue so fleets
-    // emerge spaced by at least GATE_ENTRY_GAP_PX instead of piling on one
+    // emerge spaced by at least PORTAL_ENTRY_GAP_PX instead of piling on one
     // tile.
     _walkInThroughPortal(agent, sprite) {
         const queue = this._portalEntryQueue ||= [];
-        if (!queue.some(entry => entry.sprite === sprite)) queue.push({ agent, sprite });
+        if (!queue.some(entry => entry.sprite === sprite)) {
+            queue.push({ agent, sprite, queuedAt: Date.now() });
+        }
         sprite.setArrivalState?.('pending');
         if (!this._deferPortalRelease) this._releasePortalEntries();
     }
 
-    _releasePortalEntries() {
+    _releasePortalEntries(now = Date.now()) {
         const queue = this._portalEntryQueue;
         if (!queue?.length) return;
-        // Cold-load burst arriving on the first populated snapshot: settle
-        // > PORTAL_COLD_SETTLE_LIMIT subagents directly at their destinations.
+        // Cold-load burst arriving on the first populated snapshot: count both
+        // still-queued subagents and any already-released Portal arrivals from
+        // the same cold burst so the > PORTAL_COLD_SETTLE_LIMIT threshold
+        // settles consistently from 5 on both init and snapshot paths.
         if (!this._coldPortalSettled && !this.replay?.recorded) {
-            const liveQueued = [];
-            for (const entry of queue) {
-                const live = this.agentSprites.get(entry.agent?.id);
-                if (live === entry.sprite && !entry.sprite.leaving
-                    && entry.sprite.isArrivalPending?.() && !this._isGateTransit(entry.sprite, 'departure')) {
-                    liveQueued.push(entry.sprite);
+            const liveBurst = [];
+            const seenBurst = new Set();
+            for (const [agentId, transit] of this.gateTransits.entries()) {
+                if (transit?.type !== 'arrival' || !transit.portal) continue;
+                const sprite = this.agentSprites.get(agentId);
+                if (!sprite || sprite.leaving || sprite._archiveAnim) {
+                    this.gateTransits.delete(agentId);
+                    continue;
+                }
+                if (!seenBurst.has(sprite)) {
+                    seenBurst.add(sprite);
+                    liveBurst.push(sprite);
                 }
             }
-            if (liveQueued.length > PORTAL_COLD_SETTLE_LIMIT) {
+            for (const entry of queue) {
+                const live = this.agentSprites.get(entry.agent?.id);
+                if (live === entry.sprite && !entry.sprite.leaving && !entry.sprite._archiveAnim
+                    && entry.sprite.isArrivalPending?.() && !this._isGateTransit(entry.sprite, 'departure')
+                    && !seenBurst.has(entry.sprite)) {
+                    seenBurst.add(entry.sprite);
+                    liveBurst.push(entry.sprite);
+                }
+            }
+            if (liveBurst.length > PORTAL_COLD_SETTLE_LIMIT) {
                 this._coldPortalSettled = true;
-                this._updateVisitSystems(Date.now());
-                this._settlePortalColdBurst(liveQueued);
+                this._updateVisitSystems(now);
+                this._settlePortalColdBurst(liveBurst);
                 return;
             }
         }
         while (queue.length) {
-            const { agent, sprite } = queue[0];
+            const entry = queue[0];
+            const { agent, sprite } = entry;
             const live = this.agentSprites.get(agent.id);
-            if (live !== sprite || sprite.leaving || !sprite.isArrivalPending?.() || this._isGateTransit(sprite, 'departure')) {
+            if (live !== sprite || sprite.leaving || sprite._archiveAnim || !sprite.isArrivalPending?.() || this._isGateTransit(sprite, 'departure')) {
                 queue.shift();
+                if (sprite._archiveAnim || live !== sprite) this.gateTransits.delete(agent.id);
                 continue;
             }
-            const lane = PORTAL_ENTRY_LANES.find(entry => this._gateLaneClear(entry));
+            if (!Number.isFinite(entry.queuedAt)) entry.queuedAt = now;
+            if (now - entry.queuedAt >= PORTAL_QUEUE_MAX_WAIT_MS) {
+                queue.shift();
+                this.gateTransits.delete(agent.id);
+                this.arrivalDeparture?.dispatches?.delete?.(agent.id);
+                sprite.settleAtDestination?.();
+                this._markSpritesDirty();
+                continue;
+            }
+            const lane = PORTAL_ENTRY_LANES.find(l => this._gateLaneClear(l, { gapPx: PORTAL_ENTRY_GAP_PX, portal: true }));
             if (!lane) return;
             queue.shift();
             sprite.setTilePosition?.(lane.tileX, lane.outsideY);
             sprite.walkStraightToTile?.(lane.tileX, lane.insideY);
-            this.gateTransits.set(agent.id, { type: 'arrival', gate: true, portal: true, since: Date.now() });
+            this.gateTransits.set(agent.id, { type: 'arrival', gate: true, portal: true, lane, since: now });
             this._markSpritesDirty();
         }
     }
@@ -4710,6 +4753,12 @@ export class IsometricRenderer {
             this.camera?.stopFollow?.();
         }
         this.gateTransits.delete(agentId);
+        if (this._gateEntryQueue?.length) {
+            this._gateEntryQueue = this._gateEntryQueue.filter(entry => entry.sprite !== sprite);
+        }
+        if (this._portalEntryQueue?.length) {
+            this._portalEntryQueue = this._portalEntryQueue.filter(entry => entry.sprite !== sprite);
+        }
         this.visitTileAllocator?.release?.(agentId);
         // Archive fade: defer the actual sprite disposal by
         // ARCHIVE_FADE_DURATION_MS so AgentSprite.draw() fade alpha + sparkle
@@ -4742,6 +4791,7 @@ export class IsometricRenderer {
             const anim = sprite._archiveAnim;
             if (!anim) continue;
             if (nowMs - anim.startedAt >= anim.total) {
+                this.gateTransits.delete(agentId);
                 sprite.releaseRenderResources?.();
                 this.agentSprites.delete(agentId);
                 removed = true;
@@ -4761,6 +4811,10 @@ export class IsometricRenderer {
     }
 
     _updateGateDoorState(now = performance.now()) {
+        for (const [agentId] of this.gateTransits) {
+            const sprite = this.agentSprites.get(agentId);
+            if (!sprite || sprite._archiveAnim) this.gateTransits.delete(agentId);
+        }
         const wasOpen = this.gateDoorsOpen;
         const wantOpen = this.gateTransits.size > 0 || this._hasAgentNearGate();
         if (wantOpen) this._gateDoorsOpenUntilMs = now + 1500; // 1.5s grace timer
@@ -5865,6 +5919,8 @@ export class IsometricRenderer {
                     && !sprite.standsOnCrossing?.() && !target.standsOnCrossing?.()
                     && !sprite.standsOnGateApron?.() && !target.standsOnGateApron?.()) {
                     claims.set(target, sprite);
+                    sprite._chatStartMsgKey = msgKey;
+                    target._chatStartMsgKey = senderMsgKeys.get(target) ?? null;
                     sprite.startChat(target);
                 }
             } else if (sprite._exhaustedChatMsgKey) {
@@ -5886,15 +5942,44 @@ export class IsometricRenderer {
             }
             // Cap mutual chats on unchanged static messaging tool calls at
             // MUTUAL_CHAT_MAX_MS so a static SendMessage never traps a pair.
+            // Exhaust only when a participant's tool call still matches the
+            // key recorded at chat start; a fresh message during an older chat
+            // either re-anchors the cap window (same partner) or ends the old
+            // chat without exhausting the fresh key.
             if (sprite.chatting && sprite.chatPartner?.chatPartner === sprite
                 && sprite.chatSinceMs
                 && now - sprite.chatSinceMs > MUTUAL_CHAT_MAX_MS) {
                 const partner = sprite.chatPartner;
-                if (senderMsgKeys.has(sprite)) sprite._exhaustedChatMsgKey = senderMsgKeys.get(sprite);
-                if (senderMsgKeys.has(partner)) partner._exhaustedChatMsgKey = senderMsgKeys.get(partner);
-                sprite.endChat();
-                if (partner.chatPartner === sprite) partner.endChat();
-                continue;
+                const spriteKey = senderMsgKeys.get(sprite) ?? null;
+                const partnerKey = senderMsgKeys.get(partner) ?? null;
+                const spriteMatches = Boolean(spriteKey && sprite._chatStartMsgKey === spriteKey);
+                const partnerMatches = Boolean(partnerKey && partner._chatStartMsgKey === partnerKey);
+                if (spriteMatches || partnerMatches) {
+                    if (spriteMatches) sprite._exhaustedChatMsgKey = spriteKey;
+                    if (partnerMatches) partner._exhaustedChatMsgKey = partnerKey;
+                    sprite.endChat();
+                    if (partner.chatPartner === sprite) partner.endChat();
+                    continue;
+                }
+                const spriteTarget = spriteKey ? spriteByRecipient.get(extractRecipientName(sprite.agent?.currentToolInput)) : null;
+                const partnerTarget = partnerKey ? spriteByRecipient.get(extractRecipientName(partner.agent?.currentToolInput)) : null;
+                const freshForOther = (spriteKey && sprite._chatStartMsgKey !== spriteKey && spriteTarget && spriteTarget !== partner)
+                    || (partnerKey && partner._chatStartMsgKey !== partnerKey && partnerTarget && partnerTarget !== sprite);
+                if (freshForOther) {
+                    sprite.endChat();
+                    if (partner.chatPartner === sprite) partner.endChat();
+                    continue;
+                }
+                if (spriteKey && sprite._chatStartMsgKey !== spriteKey) {
+                    sprite._chatStartMsgKey = spriteKey;
+                    sprite.chatSinceMs = now;
+                    partner.chatSinceMs = now;
+                }
+                if (partnerKey && partner._chatStartMsgKey !== partnerKey) {
+                    partner._chatStartMsgKey = partnerKey;
+                    sprite.chatSinceMs = now;
+                    partner.chatSinceMs = now;
+                }
             }
             if (sprite.chatPartner && !senders.has(sprite)) {
                 // Keep it if the other side is still using SendMessage

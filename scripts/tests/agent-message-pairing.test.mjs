@@ -182,6 +182,26 @@ test('gate apron excludes chat matching/start and static-tool mutual chats cap a
     sender.agent.currentToolInput = 'recipient_name=Anchor, message=Follow up';
     IsometricRenderer.prototype._updateChatMatching.call(renderer);
     assert.deepEqual(started, ['anchor', 'anchor'], 'a new SendMessage input pairs again');
+
+    // A fresh SendMessage sent during an older mutual chat must not be exhausted unseen at the 12 s cap.
+    sender.chatting = true;
+    sender.chatPartner = target;
+    sender.chatSinceMs = Date.now() - MUTUAL_CHAT_MAX_MS - 500;
+    target.chatting = true;
+    target.chatPartner = sender;
+    target.chatSinceMs = sender.chatSinceMs;
+    sender.agent.currentToolInput = 'recipient_name=Anchor, message=Fresh mid-chat';
+    IsometricRenderer.prototype._updateChatMatching.call(renderer);
+    assert.equal(sender._exhaustedChatMsgKey, null, 'fresh SendMessage is not exhausted when older chat hits 12 s');
+    assert.equal(sender.chatting, true, 'chat continues and re-anchors on the fresh SendMessage');
+    assert.equal(sender._chatStartMsgKey, 'SendMessage|recipient_name=Anchor, message=Fresh mid-chat');
+
+    // Once that fresh message itself stays unchanged past MUTUAL_CHAT_MAX_MS, it expires on match.
+    sender.chatSinceMs = Date.now() - MUTUAL_CHAT_MAX_MS - 500;
+    target.chatSinceMs = sender.chatSinceMs;
+    IsometricRenderer.prototype._updateChatMatching.call(renderer);
+    assert.equal(sender._exhaustedChatMsgKey, 'SendMessage|recipient_name=Anchor, message=Fresh mid-chat');
+    assert.equal(sender.chatPartner, null);
 });
 
 // The real walk grid and routing options the full-handshake test below runs on.

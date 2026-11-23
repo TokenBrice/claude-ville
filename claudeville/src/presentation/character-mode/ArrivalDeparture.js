@@ -91,8 +91,8 @@ const PROVIDER_COLORS = {
 // renderer cannot project a screen point for an orphan subagent's return.
 const PORTAL_SPAWN_TILE = { tileX: 5, tileY: 34 };
 // W4.8 — the wind-down hand-off. A finished session's last leg ends on one
-// of these stand points just inside the gate, off both entry lanes (x 18.65 /
-// 19.55), facing out through the arch; when the session is really removed,
+// of these stand points just inside the gate, off both entry lanes (x 18.70 /
+// 19.30), facing out through the arch; when the session is really removed,
 // the body walks out and the departure column (EF-2) lays its sigil in the
 // arch mouth (reduced motion: where the body stands). Nothing here delays
 // removal: a body still on the way leaves from wherever it is.

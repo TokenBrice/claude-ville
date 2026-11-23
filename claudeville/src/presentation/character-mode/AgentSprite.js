@@ -3462,6 +3462,7 @@ export class AgentSprite {
         this.chatPartner = null;
         this.chatting = false;
         this.chatSinceMs = null;
+        this._chatStartMsgKey = null;
         this.chatBubbleAnim = 0;
         this.setArrivalState('visible');
         this._lastPathTileKey = null;
@@ -3586,6 +3587,7 @@ export class AgentSprite {
                 this.chatting = false;
                 this.chatPartner = null;
                 this.chatSinceMs = null;
+                this._chatStartMsgKey = null;
                 this.waypoints = [];
                 this.targetX = this.x;
                 this.targetY = this.y;
@@ -4553,6 +4555,7 @@ export class AgentSprite {
         this.chatPartner = null;
         this.chatting = false;
         this.chatSinceMs = null;
+        this._chatStartMsgKey = null;
         this.chatBubbleAnim = 0;
         this.behavior.finishVisit();
         this.behavior.transition('cooldown', 'chat-ended');
