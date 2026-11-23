@@ -470,25 +470,28 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         occupancyThresholds: { occupiedMax: 0.5, busyMax: 0.84 },
         labelPriority: 'landmark',
         beaconBase: 0.9,
-        // 5.A — pane centres on the re-authored house, each fitted to its
-        // pane's lit texels: the counting-house bay first (room 1), then the
-        // upper band under its slate hood, the turret-side window and the
-        // dormer. The tide-clock dial and the quay lantern glow in the sidecar
-        // but are no room; nor is the one-texel slit beside the door.
+        // L12-F6 — 11 leaded panes grouped into 4 rooms (ROOM_PANE_GROUPS.harbor)
+        // on the Tavern-scaled Harbor Master house: counting-house bay window
+        // (room 1: 0–1), upper SE left (room 2: 2–4), upper SE right (room 3:
+        // 5–6) and upper SW gable window (room 4: 7–10). Tide clock and quay
+        // lantern glow in the sidecar as non-room emitters.
         windowRects: [
-            { at: [162, 135], w: 4, h: 12 },
-            { at: [154.5, 136.5], w: 3, h: 11 },
-            { at: [151.5, 104], w: 5, h: 14 },
-            { at: [144, 108.5], w: 4, h: 11 },
-            { at: [159, 101.5], w: 4, h: 11 },
-            { at: [184.5, 88.5], w: 5, h: 9 },
-            { at: [94.5, 74.5], w: 5, h: 11 },
-            { at: [84, 69.5], w: 4, h: 9 },
+            { at: [202, 120.5], w: 15, h: 20 },
+            { at: [190.5, 126.5], w: 4, h: 16 },
+            { at: [163, 86.5], w: 4, h: 15 },
+            { at: [155, 90.5], w: 4, h: 15 },
+            { at: [146.5, 94.5], w: 5, h: 15 },
+            { at: [194, 71.5], w: 4, h: 15 },
+            { at: [185.5, 75.5], w: 5, h: 15 },
+            { at: [75.5, 79], w: 3, h: 14 },
+            { at: [83.5, 83], w: 5, h: 14 },
+            { at: [92, 87.5], w: 4, h: 15 },
+            { at: [100.5, 92], w: 5, h: 14 },
         ],
         // 6.4 — the stone chimney behind the gable: where its column leaves
         // the cap (ChimneySmoke; smoke only with a working visitor).
         effectAnchors: {
-            smokeTop: [[140, 14]],
+            smokeTop: [[162, 6]],
         },
     },
 });
@@ -512,7 +515,7 @@ export const BUILDING_EMITTER_FALLBACKS = {
         { type: 'forgeEmber', at: WATCHTOWER_LANTERN_FIRE.particle, stepMs: 1120, count: 1 },
     ],
     harbor: [
-        { type: 'sparkle', at: [192, 45], chance: 0.014, count: 1 },
+        { type: 'sparkle', at: [217, 49], chance: 0.014, count: 1 },
     ],
     taskboard: [
         { type: 'questPing', at: [124, 100], chance: 0.024, count: 1 },
@@ -529,7 +532,7 @@ export const BUILDING_LIGHT_FALLBACKS = {
     mine: { at: [76, 186], color: '#ffb84d', radius: 80, overlay: 'atmosphere.light.lantern-glow' },
     taskboard: { at: [124, 108], color: '#8bd7ff', radius: 42, overlay: 'atmosphere.light.lantern-glow' },
     archive: { at: [245, 178], color: '#ffcf7a', radius: 96, overlay: 'atmosphere.light.lantern-glow' },
-    harbor: { at: [18, 150], color: '#ffd37a', radius: 58, overlay: 'atmosphere.light.lantern-glow' },
+    harbor: { at: [27, 157], color: '#ffd37a', radius: 58, overlay: 'atmosphere.light.lantern-glow' },
 };
 
 export const LIGHT_SOURCE_REGISTRY = {
