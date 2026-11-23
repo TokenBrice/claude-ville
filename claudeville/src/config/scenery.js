@@ -645,6 +645,14 @@ export const DISTRICT_PROPS = [
     // bare: it is both buildings' tall-scenery sightline zone.
     { tileX: 9.6, tileY: 0.9, id: 'prop.windmill', layer: 'sorted', district: 'north', walkBlock: true, landmark: true },
     { tileX: 1.6, tileY: 9.0, id: 'prop.hourglassBelfry', layer: 'sorted', district: 'knowledge', walkBlock: true, landmark: true },
+    // L08 F6: four non-interactive village cottages & shopfronts tucked into
+    // clear grass pockets nearest the reserved spots (10,13), (14,28), (21,31)
+    // and east-quarter (22,29) — clear of visitTiles, APPROACH_FILES, sightlines
+    // and roads; sorted with occluder sidecars and walkBlock so bodies route round.
+    { tileX: 9.5, tileY: 14.5, id: 'prop.cottage.weaver', layer: 'sorted', district: 'civic', walkBlock: true },
+    { tileX: 15.8, tileY: 31.2, id: 'prop.cottage.baker', layer: 'sorted', district: 'civic', walkBlock: true },
+    { tileX: 17.8, tileY: 30.0, id: 'prop.cottage.chandler', layer: 'sorted', district: 'gate', walkBlock: true },
+    { tileX: 22.0, tileY: 29.0, id: 'prop.cottage.cooper', layer: 'sorted', district: 'workshop', walkBlock: true },
     // Living Isle W8.3c (AD-P5 group D): civic/garden and wetland/forest
     // dressing, all baked into the terrain (`cache`). Garden furniture stands
     // on lawns no lane, visit slot, queue place or scenic point reaches;

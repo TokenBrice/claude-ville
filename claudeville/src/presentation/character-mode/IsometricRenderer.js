@@ -9092,18 +9092,24 @@ export class IsometricRenderer {
         sprites.push(...this._buildWatchtowerBeaconBuoySprites());
         sprites.push(...DISTRICT_PROPS
             .filter((prop) => prop.layer === 'sorted' && !prop.landmark)
-            .filter((prop) => !this.scenery.isBlockedForTallScenery(prop.tileX, prop.tileY, this.sceneryClearTiles, this.bridgeTiles))
+            .filter((prop) => prop.walkBlock === true || !this.scenery.isBlockedForTallScenery(prop.tileX, prop.tileY, this.sceneryClearTiles, this.bridgeTiles))
             .map((prop) => {
                 const dims = this.assets?.getDims?.(prop.id);
+                const entry = this.assets?.getEntry?.(prop.id);
                 // 2.9 — precomputed so the per-frame drawFn does no lookup work:
                 // land props get a contact shadow, water-surface props none.
                 const contactShadow = !this.waterTiles.has(`${Math.floor(prop.tileX)},${Math.floor(prop.tileY)}`);
+                const channels = entry?.occluderSidecar === true
+                    ? { occluder: (ctx, x, y) => this.sprites?.drawCompanion?.(ctx, prop.id, 'occluder', x, y) }
+                    : null;
                 return new StaticPropSprite({
                     tileX: prop.tileX,
                     tileY: prop.tileY,
                     id: prop.id,
                     bounds: this._assetPropBounds(prop.id),
                     splitForOcclusion: Boolean(dims && dims.h >= 56),
+                    materialClass: entry?.materialClass || null,
+                    channels,
                     drawFn: (ctx, x, y) => {
                         if (contactShadow) this._drawPropContactShadow(ctx, x, y, prop.id, prop.tileX, prop.tileY);
                         this.sprites.drawSprite(ctx, prop.id, x, y, this._winterPropOpts(prop.id));
