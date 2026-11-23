@@ -122,6 +122,7 @@ export class ChimneySmoke {
                     type: building.type,
                     kind: building.type === 'watchtower' ? 'crown' : 'workshop',
                     building,
+                    localX: at[0],
                     localY: at[1],
                     x: Math.round(center.x - anchor[0] + at[0]),
                     y: Math.round(center.y - anchor[1] + at[1]),
@@ -134,6 +135,7 @@ export class ChimneySmoke {
                     type: building.type,
                     kind: 'cottage',
                     building,
+                    localX: cottage[0],
                     localY: cottage[1],
                     x: Math.round(center.x - anchor[0] + cottage[0]),
                     y: Math.round(center.y - anchor[1] + cottage[1]),
@@ -148,7 +150,7 @@ export class ChimneySmoke {
     // `heatFor(type)` (0..1) warms a hearth's soot toward the ember ramp in
     // four steps: a hot forge pushes browner smoke than a banked one.
     // `timeMs` is the motion-clock time the wind's gusts run on.
-    // `sortYFor(building, localY)` is the owner half's painter sortY + 1.
+    // `sortYFor(building, localY, localX)` is the owner column/half's painter sortY + 1.
     update({ now, timeMs, buildings, assets, presence, particleSystem, atmosphere, heatFor = null, sortYFor = null } = {}) {
         if (!particleSystem?.motionEnabled) return;
         const sources = this.sources(buildings, assets);
@@ -196,7 +198,7 @@ export class ChimneySmoke {
                 tag,
                 spread: [0, 0],
                 windX: smokeWindDrift(atmosphere, source.x, source.y, clockMs) * (wet ? 1.8 : 1),
-                sortY: sortYFor ? sortYFor(source.building, source.localY) : null,
+                sortY: sortYFor ? sortYFor(source.building, source.localY, source.localX) : null,
             };
             if (wet) {
                 options.life = WET_LIFE;

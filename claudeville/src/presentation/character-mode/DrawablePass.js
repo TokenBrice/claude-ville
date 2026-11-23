@@ -173,7 +173,9 @@ function pooledDepthDrawable(target, kind, sortY, payload, drawFallback, semanti
     }
     let drawable = null;
     const entity = payload?.building || payload?.agent || payload?.sprite || null;
-    const poolKey = payload?.column != null ? `${kind}:${payload.column.index}` : kind;
+    const poolKey = payload?.column != null
+        ? (payload.kind === kind && payload.poolKey ? payload.poolKey : `${kind}:${payload.column.index}`)
+        : kind;
     if (entity && (typeof entity === 'object' || typeof entity === 'function')) {
         let byKind = pool.byEntity.get(entity);
         if (!byKind) {
@@ -390,10 +392,15 @@ function collectAllBuildings(buildingDrawables) {
 }
 
 const _columnBuildingScratch = [];
+const _columnBuildingPool = [];
+const _columnBuildingByBuilding = new Map();
+
 function collectColumnBuildings(buildingDrawables, assets = null) {
     const out = _columnBuildingScratch;
     out.length = 0;
-    const byBuilding = new Map();
+    const byBuilding = _columnBuildingByBuilding;
+    byBuilding.clear();
+    let cursor = 0;
     for (const drawable of buildingDrawables) {
         if (drawable?.kind !== 'building-column' || !drawable.building || !drawable.column) continue;
         let entry = byBuilding.get(drawable.building);
@@ -403,21 +410,40 @@ function collectColumnBuildings(buildingDrawables, assets = null) {
             const anchor = id ? assets?.getAnchor?.(id) : null;
             const left = dims && Array.isArray(anchor) ? Math.round(drawable.wx - anchor[0]) : drawable.column.worldLeft;
             const top = dims && Array.isArray(anchor) ? Math.round(drawable.wy - anchor[1]) : -Infinity;
-            entry = {
-                building: drawable.building,
-                drawable,
-                left,
-                right: dims ? left + dims.w : drawable.column.worldRight,
-                top,
-                bottom: dims ? top + dims.h : Infinity,
-                columns: [],
-            };
+            entry = _columnBuildingPool[cursor];
+            if (!entry) {
+                entry = {
+                    building: null,
+                    drawable: null,
+                    left: 0,
+                    right: 0,
+                    top: 0,
+                    bottom: 0,
+                    columns: [],
+                };
+                _columnBuildingPool[cursor] = entry;
+            }
+            cursor++;
+            entry.building = drawable.building;
+            entry.drawable = drawable;
+            entry.left = left;
+            entry.right = dims ? left + dims.w : drawable.column.worldRight;
+            entry.top = top;
+            entry.bottom = dims ? top + dims.h : Infinity;
+            entry.columns.length = 0;
             byBuilding.set(drawable.building, entry);
             out.push(entry);
         }
         entry.columns.push(drawable);
         if (drawable.column.worldLeft < entry.left) entry.left = drawable.column.worldLeft;
         if (drawable.column.worldRight > entry.right) entry.right = drawable.column.worldRight;
+    }
+    byBuilding.clear();
+    for (let i = cursor; i < _columnBuildingPool.length; i++) {
+        const stale = _columnBuildingPool[i];
+        stale.building = null;
+        stale.drawable = null;
+        stale.columns.length = 0;
     }
     return out;
 }
@@ -547,9 +573,66 @@ export function isWorldOccluderPropId(id) {
         || id.startsWith('village.wall.');
 }
 
+const _worldOccluderScratch = [];
+const _worldOccluderPool = [];
+const _worldOccluderColumnPool = [];
+const _occluderByBuilding = new Map();
+const _occluderByProp = new Map();
+const _clipRangeRaw = [];
+const _clipRangePairPool = [];
+
+function compareClipRange(a, b) {
+    return a[0] - b[0];
+}
+
+function acquireWorldOccluder(index) {
+    let occ = _worldOccluderPool[index];
+    if (!occ) {
+        occ = {
+            kind: '',
+            id: '',
+            drawable: null,
+            image: null,
+            mask: null,
+            dx: 0,
+            dy: 0,
+            w: 0,
+            h: 0,
+            left: 0,
+            right: 0,
+            top: 0,
+            bottom: 0,
+            columns: null,
+            _colList: [],
+            sortY: 0,
+            rowStart: 0,
+        };
+        _worldOccluderPool[index] = occ;
+    }
+    return occ;
+}
+
+function acquireOccluderColumn(index, worldLeft, worldRight, sortY) {
+    let col = _worldOccluderColumnPool[index];
+    if (!col) {
+        col = { worldLeft: 0, worldRight: 0, sortY: 0 };
+        _worldOccluderColumnPool[index] = col;
+    }
+    col.worldLeft = worldLeft;
+    col.worldRight = worldRight;
+    col.sortY = sortY;
+    return col;
+}
+
 function collectWorldOccluders(buildingDrawables, propDrawables, assets, zoom) {
-    const occluders = [];
-    const byBuilding = new Map();
+    const occluders = _worldOccluderScratch;
+    occluders.length = 0;
+    const byBuilding = _occluderByBuilding;
+    const byProp = _occluderByProp;
+    byBuilding.clear();
+    byProp.clear();
+    let occCursor = 0;
+    let colCursor = 0;
     for (const drawable of buildingDrawables || []) {
         const building = drawable?.building;
         const id = drawable?.entry?.id;
@@ -563,40 +646,40 @@ function collectWorldOccluders(buildingDrawables, propDrawables, assets, zoom) {
             if (!dims || !Array.isArray(anchor) || !mask) continue;
             const dx = Math.round(drawable.wx - anchor[0]);
             const dy = Math.round(drawable.wy - anchor[1]);
-            occ = {
-                kind: 'building',
-                id,
-                drawable,
-                image: assets?.get?.(id) || null,
-                mask,
-                dx,
-                dy,
-                w: dims.w,
-                h: dims.h,
-                left: dx,
-                right: dx + dims.w,
-                top: dy,
-                bottom: dy + dims.h,
-                columns: null,
-                sortY: drawable.sortY,
-                rowStart: drawable.kind === 'building-front' ? (drawable.horizonY || 0) : 0,
-            };
+            occ = acquireWorldOccluder(occCursor++);
+            occ.kind = 'building';
+            occ.id = id;
+            occ.drawable = drawable;
+            occ.image = assets?.get?.(id) || null;
+            occ.mask = mask;
+            occ.dx = dx;
+            occ.dy = dy;
+            occ.w = dims.w;
+            occ.h = dims.h;
+            occ.left = dx;
+            occ.right = dx + dims.w;
+            occ.top = dy;
+            occ.bottom = dy + dims.h;
+            occ._colList.length = 0;
+            occ.columns = null;
+            occ.sortY = drawable.sortY;
+            occ.rowStart = drawable.kind === 'building-front' ? (drawable.horizonY || 0) : 0;
             byBuilding.set(building, occ);
             occluders.push(occ);
         }
         if (drawable.kind === 'building-column' && drawable.column) {
-            if (!occ.columns) occ.columns = [];
-            occ.columns.push({
-                worldLeft: drawable.column.worldLeft,
-                worldRight: drawable.column.worldRight,
-                sortY: drawable.sortY,
-            });
+            if (!occ.columns) occ.columns = occ._colList;
+            occ.columns.push(acquireOccluderColumn(
+                colCursor++,
+                drawable.column.worldLeft,
+                drawable.column.worldRight,
+                drawable.sortY,
+            ));
             if (drawable.sortY > occ.sortY) occ.sortY = drawable.sortY;
         } else if (drawable.sortY > occ.sortY) {
             occ.sortY = drawable.sortY;
         }
     }
-    const byProp = new Map();
     for (const drawable of propDrawables || []) {
         const sprite = drawable?.payload?.sprite;
         if (!sprite || !isWorldOccluderPropId(sprite.id)) continue;
@@ -606,39 +689,53 @@ function collectWorldOccluders(buildingDrawables, propDrawables, assets, zoom) {
         if (!occ) {
             const alphaMask = typeof sprite.getAlphaMask === 'function' ? sprite.getAlphaMask(zoom) : null;
             if (!alphaMask?.mask) continue;
-            occ = {
-                kind: 'prop',
-                id: sprite.id,
-                drawable,
-                image: alphaMask.canvas || null,
-                mask: alphaMask.mask,
-                dx: alphaMask.x,
-                dy: alphaMask.y,
-                w: alphaMask.w,
-                h: alphaMask.h,
-                left: alphaMask.x,
-                right: alphaMask.x + alphaMask.w,
-                top: alphaMask.y,
-                bottom: alphaMask.y + alphaMask.h,
-                columns: null,
-                sortY: drawable.sortY,
-                rowStart: 0,
-            };
+            occ = acquireWorldOccluder(occCursor++);
+            occ.kind = 'prop';
+            occ.id = sprite.id;
+            occ.drawable = drawable;
+            occ.image = alphaMask.canvas || null;
+            occ.mask = alphaMask.mask;
+            occ.dx = alphaMask.x;
+            occ.dy = alphaMask.y;
+            occ.w = alphaMask.w;
+            occ.h = alphaMask.h;
+            occ.left = alphaMask.x;
+            occ.right = alphaMask.x + alphaMask.w;
+            occ.top = alphaMask.y;
+            occ.bottom = alphaMask.y + alphaMask.h;
+            occ._colList.length = 0;
+            occ.columns = null;
+            occ.sortY = drawable.sortY;
+            occ.rowStart = 0;
             byProp.set(sprite, occ);
             occluders.push(occ);
         }
         if (part === 'column' && drawable.payload?.column) {
             const col = drawable.payload.column;
-            if (!occ.columns) occ.columns = [];
+            if (!occ.columns) occ.columns = occ._colList;
             const worldLeft = Number.isFinite(col.left) ? Math.round(sprite.x + col.left) : occ.left;
             const worldRight = Number.isFinite(col.right) ? Math.round(sprite.x + col.right) : occ.right;
-            occ.columns.push({ worldLeft, worldRight, sortY: col.sortY });
+            occ.columns.push(acquireOccluderColumn(colCursor++, worldLeft, worldRight, col.sortY));
             if (col.sortY > occ.sortY) occ.sortY = col.sortY;
         } else if (drawable.sortY > occ.sortY) {
             occ.sortY = drawable.sortY;
         }
     }
+    byBuilding.clear();
+    byProp.clear();
     return occluders;
+}
+
+function clearWorldOccluderScratch() {
+    for (let i = 0; i < _worldOccluderScratch.length; i++) {
+        const occ = _worldOccluderScratch[i];
+        occ.drawable = null;
+        occ.image = null;
+        occ.mask = null;
+        occ._colList.length = 0;
+        occ.columns = null;
+    }
+    _worldOccluderScratch.length = 0;
 }
 
 function occluderPointOpaque(occ, px, py, agentDepth, sprites) {
@@ -665,28 +762,57 @@ function occluderPointOpaque(occ, px, py, agentDepth, sprites) {
     return occ.mask[ly * occ.w + lx] === 1;
 }
 
-function occluderClipRanges(occ, agentDepth, boxLeft, boxRight) {
+function occluderClipRanges(occ, agentDepth, boxLeft, boxRight, outRanges, rangePool) {
     if (!occ.columns) return null;
-    const raw = [];
+    const raw = _clipRangeRaw;
+    raw.length = 0;
+    let rawCount = 0;
     for (let i = 0; i < occ.columns.length; i++) {
         const col = occ.columns[i];
         if (!(col.sortY > agentDepth)) continue;
         if (col.worldRight <= boxLeft || col.worldLeft >= boxRight) continue;
-        raw.push([col.worldLeft, col.worldRight]);
+        let pair = _clipRangePairPool[rawCount];
+        if (!pair) {
+            pair = [0, 0];
+            _clipRangePairPool[rawCount] = pair;
+        }
+        pair[0] = col.worldLeft;
+        pair[1] = col.worldRight;
+        raw.push(pair);
+        rawCount++;
     }
-    if (raw.length <= 1) return raw;
-    raw.sort((a, b) => a[0] - b[0]);
-    const ranges = [raw[0]];
-    for (let i = 1; i < raw.length; i++) {
+    outRanges.length = 0;
+    if (rawCount === 0) return outRanges;
+    if (rawCount > 1) raw.sort(compareClipRange);
+    let outCount = 0;
+    let first = rangePool[outCount];
+    if (!first) {
+        first = [0, 0];
+        rangePool[outCount] = first;
+    }
+    first[0] = raw[0][0];
+    first[1] = raw[0][1];
+    outRanges.push(first);
+    outCount++;
+    for (let i = 1; i < rawCount; i++) {
         const next = raw[i];
-        const last = ranges[ranges.length - 1];
+        const last = outRanges[outCount - 1];
         if (next[0] <= last[1] + 1) {
             if (next[1] > last[1]) last[1] = next[1];
         } else {
-            ranges.push(next);
+            let slot = rangePool[outCount];
+            if (!slot) {
+                slot = [0, 0];
+                rangePool[outCount] = slot;
+            }
+            slot[0] = next[0];
+            slot[1] = next[1];
+            outRanges.push(slot);
+            outCount++;
         }
     }
-    return ranges;
+    raw.length = 0;
+    return outRanges;
 }
 
 /**
@@ -709,10 +835,21 @@ export function updateAgentWorldOcclusion({
         if (!sprite) continue;
         const hits = sprite._worldOccluders || (sprite._worldOccluders = []);
         hits.length = 0;
-        if (sprite._onOpenFloor || !Number.isFinite(sprite.x) || !Number.isFinite(sprite.y)) {
+        const hitPool = sprite._worldOccluderPool || (sprite._worldOccluderPool = []);
+        let hitCount = 0;
+        if (
+            sprite._onOpenFloor
+            || sprite.isArrivalPending?.()
+            || !Number.isFinite(sprite.x)
+            || !Number.isFinite(sprite.y)
+        ) {
             sprite._occludedByWorld = false;
             sprite._behindBuilding = false;
             sprite._behindBuildingDrawable = null;
+            for (let i = 0; i < hitPool.length; i++) {
+                hitPool[i].image = null;
+                hitPool[i].drawable = null;
+            }
             continue;
         }
         const box = sprite._bodyBox || DEFAULT_AGENT_OCCLUSION_BOX;
@@ -753,22 +890,50 @@ export function updateAgentWorldOcclusion({
                     || occluderPointOpaque(occ, boxLeft + boxW * 0.88, boxTop + boxH * 0.5, agentDepth, sprites);
             }
             if (!occHit) continue;
-            const clipRanges = occluderClipRanges(occ, agentDepth, boxLeft - 24, boxRight + 24);
+            let hitEntry = hitPool[hitCount];
+            if (!hitEntry) {
+                hitEntry = {
+                    kind: '',
+                    image: null,
+                    dx: 0,
+                    dy: 0,
+                    w: 0,
+                    h: 0,
+                    rowStart: 0,
+                    clipRanges: null,
+                    drawable: null,
+                    _ranges: [],
+                    _rangePool: [],
+                };
+                hitPool[hitCount] = hitEntry;
+            }
+            const clipRanges = occluderClipRanges(
+                occ,
+                agentDepth,
+                boxLeft - 24,
+                boxRight + 24,
+                hitEntry._ranges,
+                hitEntry._rangePool,
+            );
             if (clipRanges && !clipRanges.length) continue;
-            hits.push({
-                kind: occ.kind,
-                image: occ.image,
-                dx: occ.dx,
-                dy: occ.dy,
-                w: occ.w,
-                h: occ.h,
-                rowStart: occ.rowStart || 0,
-                clipRanges,
-                drawable: occ.drawable,
-            });
+            hitEntry.kind = occ.kind;
+            hitEntry.image = occ.image;
+            hitEntry.dx = occ.dx;
+            hitEntry.dy = occ.dy;
+            hitEntry.w = occ.w;
+            hitEntry.h = occ.h;
+            hitEntry.rowStart = occ.rowStart || 0;
+            hitEntry.clipRanges = clipRanges;
+            hitEntry.drawable = occ.drawable;
+            hits.push(hitEntry);
+            hitCount++;
             if (!firstBuildingDrawable && occ.kind === 'building') {
                 firstBuildingDrawable = occ.drawable;
             }
+        }
+        for (let i = hitCount; i < hitPool.length; i++) {
+            hitPool[i].image = null;
+            hitPool[i].drawable = null;
         }
         let coveredCount = 0;
         for (let bit = 0; bit < 9; bit++) {
@@ -780,6 +945,7 @@ export function updateAgentWorldOcclusion({
         sprite._behindBuilding = occluded || Boolean(sprite._splitBehindBuilding);
         sprite._behindBuildingDrawable = firstBuildingDrawable || sprite._splitBehindDrawable || null;
     }
+    clearWorldOccluderScratch();
 }
 
 // 0.6 — on Canvas each live world particle joins the depth stream as a small

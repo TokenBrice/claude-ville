@@ -9,7 +9,7 @@
 // while shins remain visible through the open rail bays.
 
 import { TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
-import { tileToWorld } from './Projection.js';
+import { tileToWorld, worldToTile } from './Projection.js';
 import { lineOcclusionColumns, StaticPropSprite } from './StaticPropDrawables.js';
 import { SpriteRenderer } from './SpriteRenderer.js';
 
@@ -100,12 +100,19 @@ export function buildCentralBridgeParapetSprite({
     const centerTileY = span.centerTile?.y ?? 24;
     const originTileX = centerTileX + PARAPET_OFFSET_X;
     const originTileY = centerTileY;
-    const origin = tileToWorld(originTileX, originTileY);
+    const rawOrigin = tileToWorld(originTileX, originTileY);
+    // Snap the prop origin to whole world pixels so StaticPropSprite's cache
+    // transform and floor(y + top - pad) stay exact integers with zero 1 px
+    // drift against the baked bridge placement.
+    const origin = { x: Math.round(rawOrigin.x), y: Math.round(rawOrigin.y) };
+    const snappedTile = worldToTile(origin.x, origin.y);
     const midX = (span.start.x + span.end.x) / 2;
     const midY = (span.start.y + span.end.y) / 2;
-    // bridge.landmark.civic.ns.png's top-left, relative to the prop origin.
-    const left = Math.round(midX - anchorX - origin.x);
-    const top = Math.round(midY - anchorY - origin.y);
+    // bridge.landmark.civic.ns.png's top-left, matching IsometricRenderer._bridgeSpritePlacement.
+    const placementX = Math.round(midX - anchorX);
+    const placementY = Math.round(midY - anchorY);
+    const left = placementX - origin.x;
+    const top = placementY - origin.y;
     let minX = Infinity;
     let maxX = -Infinity;
     let minY = Infinity;
@@ -132,14 +139,14 @@ export function buildCentralBridgeParapetSprite({
         left: bounds.left,
         right: bounds.right,
         width: COLUMN_PX,
-        originY: origin.y,
+        originY: rawOrigin.y,
         slope,
     });
     for (const column of occlusionColumns) {
         const start = Number.isFinite(column.left) ? column.left : bounds.left;
         const end = Number.isFinite(column.right) ? column.right : bounds.right;
         const centerLocalX = Math.max(minLocalX, Math.min(maxLocalX, (start + end) / 2));
-        column.sortY = origin.y + slope * centerLocalX;
+        column.sortY = rawOrigin.y + slope * (origin.x + centerLocalX - rawOrigin.x);
     }
     const layers = {};
     const paint = (channel) => (ctx, x, y) => {
@@ -156,8 +163,8 @@ export function buildCentralBridgeParapetSprite({
         }
     };
     const sprite = new StaticPropSprite({
-        tileX: originTileX,
-        tileY: originTileY,
+        tileX: snappedTile.tileX,
+        tileY: snappedTile.tileY,
         id: 'bridge.rail.' + span.id,
         bounds,
         occlusionColumns,
@@ -168,7 +175,7 @@ export function buildCentralBridgeParapetSprite({
         },
     });
     sprite.bridgeWalk = bridgeWalk;
-    sprite.parapetOrigin = { x: Math.round(origin.x) + left, y: Math.round(origin.y) + top };
+    sprite.parapetOrigin = { x: placementX, y: placementY };
     sprite.parapetRuns = runs;
     if (typeof bridgeLightsLit === 'function') {
         sprite.emitterGate = () => (bridgeLightsLit(span) ? 1 : 0);

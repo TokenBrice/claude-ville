@@ -1081,7 +1081,7 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
         // resident overlay.
         renderer.wildlifeRenderer?.drawFireflies?.(overlayCtx, perfNow);
     }
-    drawSelectedAgentXray(renderer, overlayCtx, buildingDrawables);
+    drawSelectedAgentXray(renderer, overlayCtx, sortedSprites, zoom);
     // 0.7 — re-strike the selected agent's chevron AFTER the Canvas
     // atmosphere multiply so it survives the night grade.
     drawPrimaryMarksPostAtmosphere(renderer, overlayCtx, atmosphere, {
@@ -2152,18 +2152,19 @@ function drawThoughtLayer(ctx, sprites, zoom) {
     for (const sprite of sprites) sprite.drawThought?.(ctx, zoom, THOUGHT_PAINT.COLUMN);
 }
 
-function drawSelectedAgentXray(renderer, ctx, buildingDrawables) {
-    if (!renderer.agentSprites) return;
+function drawSelectedAgentXray(renderer, ctx, sprites = null, zoom = 1) {
+    const list = sprites || renderer?.agentSprites?.values?.();
+    if (!list) return;
     let selected = null;
-    for (const sprite of renderer.agentSprites.values()) {
-        if (!sprite || sprite._onOpenFloor) continue;
+    for (const sprite of list) {
+        if (!sprite || sprite._onOpenFloor || sprite.isArrivalPending?.()) continue;
         const occluders = sprite._worldOccluders;
         if (!occluders?.length) continue;
         if (sprite.selected) {
             selected = sprite;
             continue;
         }
-        if (sprite._occludedByWorld && sprite.agent?.status === AgentStatus.WORKING) {
+        if (zoom >= 1 && sprite._occludedByWorld && sprite.agent?.status === AgentStatus.WORKING) {
             sprite.drawXraySilhouette(ctx, 'working', occluders);
         }
     }

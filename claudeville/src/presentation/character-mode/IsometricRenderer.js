@@ -305,7 +305,6 @@ const clampUnit = value => Math.max(0, Math.min(1, Number(value) || 0));
 const FAST_ATMOSPHERE_CSS_PIXELS = 800_000;
 const FAST_PROP_CSS_PIXELS = 800_000;
 const FAST_PROP_MIN_ZOOM = 1.5;
-const FAST_PROP_AGENT_MARGIN = 36;
 const FAST_PROP_SCREEN_MARGIN = 96;
 // Covers the tallest selected bubble stack plus the sprite body. Agents beyond
 // this screen-space apron cannot contribute pixels to the viewport.
@@ -2935,7 +2934,13 @@ export class IsometricRenderer {
         let next = 0;
         for (let i = 0; i < visible.length; i++) {
             const sprite = visible[i];
-            if (!candidates.has(sprite)) continue;
+            if (!candidates.has(sprite)) {
+                sprite._occludedByWorld = false;
+                sprite._behindBuilding = false;
+                sprite._behindBuildingDrawable = null;
+                if (sprite._worldOccluders) sprite._worldOccluders.length = 0;
+                continue;
+            }
             visible[next++] = sprite;
             candidates.delete(sprite);
         }
@@ -3064,21 +3069,6 @@ export class IsometricRenderer {
             && left <= viewport.width + FAST_PROP_SCREEN_MARGIN
             && bottom >= -FAST_PROP_SCREEN_MARGIN
             && top <= viewport.height + FAST_PROP_SCREEN_MARGIN;
-    }
-
-    _propIntersectsAgentBand(prop, agents) {
-        const bounds = prop?.bounds;
-        if (!bounds || !agents?.length) return false;
-        const left = prop.x + bounds.left - FAST_PROP_AGENT_MARGIN;
-        const right = prop.x + bounds.right + FAST_PROP_AGENT_MARGIN;
-        const top = prop.y + bounds.top - FAST_PROP_AGENT_MARGIN;
-        const bottom = prop.y + bounds.bottom + FAST_PROP_AGENT_MARGIN;
-        for (const sprite of agents) {
-            if (!sprite || this._isGateTransit(sprite, 'departure')) continue;
-            if (sprite.x < left || sprite.x > right || sprite.y < top || sprite.y > bottom) continue;
-            return true;
-        }
-        return false;
     }
 
     _bindMotionPreference() {
@@ -7515,7 +7505,7 @@ export class IsometricRenderer {
             particleSystem: this.particleSystem,
             atmosphere: this._lastAtmosphere,
             heatFor: type => (type === 'forge' ? this.buildingRenderer?._forgeGlowIntensity?.() ?? 0 : 0),
-            sortYFor: (building, localY) => this.buildingRenderer?.particleSortY?.(building, localY) ?? null,
+            sortYFor: (building, localY, localX) => this.buildingRenderer?.particleSortY?.(building, localY, localX) ?? null,
         });
     }
 

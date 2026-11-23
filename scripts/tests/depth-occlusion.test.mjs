@@ -9,6 +9,7 @@ import { AgentStatus } from '../../claudeville/src/domain/value-objects/AgentSta
 import { AgentGpuOverlayRenderer } from '../../claudeville/src/presentation/character-mode/AgentGpuOverlayRenderer.js';
 import { AgentSprite } from '../../claudeville/src/presentation/character-mode/AgentSprite.js';
 import { BuildingSprite } from '../../claudeville/src/presentation/character-mode/BuildingSprite.js';
+import { ChimneySmoke } from '../../claudeville/src/presentation/character-mode/ChimneySmoke.js';
 import {
     appendDepthSortedDrawables,
     isWorldOccluderPropId,
@@ -337,4 +338,337 @@ test('Item 2 alpha trimming: empty edge columns are skipped once sprite masks lo
     assert.equal(byIndex[byIndex.length - 1].column.last, true, 'rightmost emitted column sets last=true');
     assert.equal(afterMask[afterMask.length - 1].column.primary, true, 'frontmost painted column sets primary=true');
     assert.ok(afterMask.every((d) => d.column.sx >= 64 && d.column.sx + d.column.sw <= 192), 'only opaque columns remain');
+    assert.ok(afterMask.every((d) => d.poolKey === `building-column:${d.column.index}`),
+        'building-column drawables precompute poolKey once on bake');
+});
+
+function makeMockCanvas(width = 64, height = 64) {
+    const ops = [];
+    const data = new Uint8ClampedArray(width * height * 4);
+    for (let i = 3; i < data.length; i += 4) data[i] = 255;
+    const ctx = {
+        imageSmoothingEnabled: true,
+        globalAlpha: 1,
+        globalCompositeOperation: 'source-over',
+        fillStyle: '#000',
+        save() {},
+        restore() {},
+        translate() {},
+        scale() {},
+        setTransform() {},
+        beginPath() {},
+        rect() {},
+        clip() {},
+        clearRect() {},
+        fillRect() {},
+        drawImage(...args) { ops.push(['drawImage', ...args]); },
+        getImageData(x, y, w, h) {
+            return { width: w, height: h, data: new Uint8ClampedArray(w * h * 4).fill(255) };
+        },
+        putImageData() {},
+    };
+    return {
+        width,
+        height,
+        ops,
+        getContext() { return ctx; },
+    };
+}
+
+test('Depth fix 1: Canvas budget impostor keeps _bodyBox mutable across hover, select, status change, and return to full', () => {
+    const noopCtx = makeMockCanvas(128, 128).getContext();
+    const sprite = Object.assign(Object.create(AgentSprite.prototype), {
+        x: 120,
+        y: 240,
+        _placeX: 120,
+        _placeY: 240,
+        _placeDpr: 1,
+        _zoom: 1,
+        _bodyBox: null,
+        _lastStatus: null,
+        _lastWaitReason: null,
+        _onOpenFloor: false,
+        _occludedByWorld: false,
+        _behindBuilding: false,
+        selected: false,
+        hovered: false,
+        gpuWorldEnabled: false,
+        motionScale: 1,
+        compositor: null,
+        agent: { id: 'budget-1', status: AgentStatus.WORKING, provider: 'claude', model: 'sonnet' },
+        isArrivalPending: () => false,
+        _archiveFadeProgress: () => 0,
+        _drawBudgetImpostor: () => {},
+        _drawNameTag: () => {},
+        withBridgeLift: (fn) => fn(),
+        _currentBridgeLift: () => 0,
+    });
+
+    // Draw once in Canvas budget mode (compact, >= 80 villagers)
+    sprite.draw(noopCtx, 1, 'compact');
+    assert.ok(sprite._bodyBox && !Object.isFrozen(sprite._bodyBox),
+        'Canvas budget impostor must store a mutable _bodyBox, never the frozen constant');
+    assert.equal(sprite._bodyBox.left, -8);
+    assert.equal(sprite._bodyBox.bottom, 3);
+
+    // Subsequent _setBodyBox (triggered by hover, select, waiting-on-user, or returning to full) must not throw TypeError.
+    assert.doesNotThrow(() => {
+        sprite.hovered = true;
+        sprite._setBodyBox(120, 240, 102, 190, 138, 244);
+    }, 'hovering a budget impostor and updating _bodyBox must not throw');
+    assert.deepEqual(sprite._bodyBox, { left: -18, right: 18, top: -50, bottom: 4 });
+
+    // Dropping back into budget mode and then selecting/changing status also stays mutable.
+    sprite.hovered = false;
+    sprite.draw(noopCtx, 1, 'minimal');
+    assert.equal(Object.isFrozen(sprite._bodyBox), false);
+    assert.doesNotThrow(() => {
+        sprite.selected = true;
+        sprite._setBodyBox(120, 240, 104, 188, 136, 243);
+        sprite.selected = false;
+        sprite.agent.status = AgentStatus.WAITING_ON_USER;
+        sprite._setBodyBox(120, 240, 105, 189, 135, 242);
+    });
+});
+
+test('Depth fix 2: low-zoom impostor (< 1) skips x-ray instead of blitting a stale _poseCell', () => {
+    const outCanvas = makeMockCanvas(128, 128);
+    const outCtx = outCanvas.getContext();
+    const staleCanvas = makeMockCanvas(92, 92);
+    const prevDoc = globalThis.document;
+    globalThis.document = { createElement: () => makeMockCanvas(92, 92) };
+    try {
+        const sprite = Object.assign(Object.create(AgentSprite.prototype), {
+            x: 200,
+            y: 420,
+            _placeX: 200,
+            _placeY: 420,
+            _zoom: 1,
+            selected: false,
+            gpuWorldEnabled: false,
+            spriteCanvas: staleCanvas,
+            _budgetImpostorXray: false,
+            _lowZoomImpostor: false,
+            _poseCell: { canvas: staleCanvas, sx: 0, sy: 0, sw: 92, sh: 92, dx: -44, dy: 242, drawScale: 1 },
+            withBridgeLift: (fn) => fn(),
+            _currentBridgeLift: () => 0,
+        });
+
+        // At zoom < 1 (low-zoom impostor), x-ray must skip instead of blitting stale (-44, 242).
+        sprite._zoom = 0.5;
+        sprite._lowZoomImpostor = true;
+        sprite.drawXraySilhouette(outCtx, 'working', []);
+        assert.equal(outCanvas.ops.length, 0, 'low-zoom impostor must not blit a stale x-ray cell');
+
+        // At zoom >= 1 with fresh pose, x-ray draws normally.
+        sprite._zoom = 1;
+        sprite._lowZoomImpostor = false;
+        sprite.drawXraySilhouette(outCtx, 'working', []);
+        assert.equal(outCanvas.ops.length, 1, 'normal zoom >= 1 x-ray blits its silhouette');
+    } finally {
+        if (prevDoc === undefined) delete globalThis.document;
+        else globalThis.document = prevDoc;
+    }
+});
+
+test('Depth fix 3: off-screen sprites reset occlusion flags and arrival-pending sprites stay unoccluded', () => {
+    // 1) updateAgentWorldOcclusion resets and skips arrival-pending sprites.
+    const forge = new Building(BUILDING_DEFS.find((d) => d.type === 'forge'));
+    const buildingRenderer = makeBuildingRenderer([forge]);
+    const buildingDrawables = buildingRenderer.enumerateDrawables();
+    const dims = MOCK_BUILDING_METRICS.forge;
+    const assets = {
+        ...buildingRenderer.assets,
+        get: () => ({ width: dims.w, height: dims.h }),
+        getMask: () => new Uint8Array(dims.w * dims.h).fill(1),
+    };
+    const pending = {
+        ...tileToWorld(25, 28),
+        _depthSortY: tileToWorld(25, 28).y,
+        _occludedByWorld: true,
+        _behindBuilding: true,
+        _worldOccluders: [{ kind: 'building' }],
+        isArrivalPending: () => true,
+    };
+    updateAgentWorldOcclusion({
+        agentSprites: [pending],
+        buildingDrawables,
+        assets,
+        sprites: { assets, hitTest: () => true },
+    });
+    assert.equal(pending._occludedByWorld, false, 'arrival-pending sprite clears _occludedByWorld');
+    assert.equal(pending._behindBuilding, false, 'arrival-pending sprite clears _behindBuilding');
+    assert.equal(pending._worldOccluders.length, 0, 'arrival-pending sprite clears _worldOccluders');
+
+    // 2) _snapshotSortedSprites resets occlusion flags when a sprite leaves the viewport.
+    const onScreen = { x: 100, y: 100, _occludedByWorld: true, _behindBuilding: true, _behindBuildingDrawable: {}, _worldOccluders: [{}] };
+    const leftScreen = { x: 9999, y: 9999, _occludedByWorld: true, _behindBuilding: true, _behindBuildingDrawable: {}, _worldOccluders: [{}] };
+    const iso = Object.create(IsometricRenderer.prototype);
+    iso.agentSprites = new Map([['a', onScreen], ['b', leftScreen]]);
+    iso._visibleSpriteCandidates = new Set();
+    iso._visibleSortedSprites = [onScreen, leftScreen];
+    iso._screenViewport = () => ({ width: 1280, height: 720 });
+    iso._agentVisibleOnScreen = (s) => s === onScreen;
+    const sorted = iso._snapshotSortedSprites();
+    assert.deepEqual(sorted, [onScreen]);
+    assert.equal(leftScreen._occludedByWorld, false, 'off-screen sprite resets _occludedByWorld');
+    assert.equal(leftScreen._behindBuilding, false, 'off-screen sprite resets _behindBuilding');
+    assert.equal(leftScreen._behindBuildingDrawable, null, 'off-screen sprite clears _behindBuildingDrawable');
+    assert.equal(leftScreen._worldOccluders.length, 0, 'off-screen sprite clears _worldOccluders');
+});
+
+test('Depth fix 4: silhouette cache evicts single LRU entry with cap >= 12 and releases in releaseRenderResources', () => {
+    const created = [];
+    const prevDoc = globalThis.document;
+    globalThis.document = {
+        createElement: () => {
+            const c = makeMockCanvas(32, 32);
+            created.push(c);
+            return c;
+        },
+    };
+    try {
+        const sheet = makeMockCanvas(320, 32);
+        const sprite = Object.assign(Object.create(AgentSprite.prototype), {
+            _resourceOwnerKey: 'xray-cache-test',
+            _frozenTintCellCache: new Map(),
+            _cellBoundsCache: new Map(),
+            _xraySilhouetteCache: null,
+            _releaseProfileOwnership: () => {},
+        });
+        // 10 action-strip frames must all stay cached with zero evictions.
+        for (let f = 0; f < 10; f++) {
+            sprite._getXraySilhouetteCanvas({ canvas: sheet, sx: f * 32, sy: 0, sw: 32, sh: 32 }, 32, 32, 'working');
+        }
+        assert.equal(sprite._xraySilhouetteCache.size, 10, '10-frame action strip fits in cache without eviction');
+        const createdAfter10 = created.length;
+        // Replaying all 10 frames hits cache every time.
+        for (let f = 0; f < 10; f++) {
+            sprite._getXraySilhouetteCanvas({ canvas: sheet, sx: f * 32, sy: 0, sw: 32, sh: 32 }, 32, 32, 'working');
+        }
+        assert.equal(created.length, createdAfter10, '10-frame loop has 100% cache hit rate');
+
+        // Fill up to cap (16) and trigger 1 eviction: only the single oldest entry is evicted, not clear-all.
+        for (let f = 10; f < 17; f++) {
+            sprite._getXraySilhouetteCanvas({ canvas: sheet, sx: f * 32, sy: 0, sw: 32, sh: 32 }, 32, 32, 'working');
+        }
+        assert.equal(sprite._xraySilhouetteCache.size, 16, 'cache evicts one entry at cap 16 instead of clearing all');
+        assert.equal(created[0].width, 0, 'evicted silhouette canvas releases its backing store');
+        assert.ok(created[1].width > 0, 'non-evicted silhouette canvas remains intact');
+
+        // releaseRenderResources releases every cached silhouette canvas and clears the map.
+        sprite.releaseRenderResources();
+        assert.equal(sprite._xraySilhouetteCache.size, 0, 'releaseRenderResources clears silhouette cache');
+        assert.ok(created.every((c) => c.width === 0 && c.height === 0),
+            'releaseRenderResources zeroes every silhouette canvas backing store');
+    } finally {
+        if (prevDoc === undefined) delete globalThis.document;
+        else globalThis.document = prevDoc;
+    }
+});
+
+test('Depth fix 6: Canvas building-column pass draws functional and atmosphere overlays once per building on primary column', () => {
+    const forge = new Building(BUILDING_DEFS.find((d) => d.type === 'forge'));
+    const dims = MOCK_BUILDING_METRICS.forge;
+    const renderer = makeBuildingRenderer([forge]);
+    renderer.assets.get = () => ({ width: dims.w, height: dims.h });
+    renderer.hovered = null;
+    renderer._drawRoofWeather = () => {};
+    renderer._drawManifestLayers = () => {};
+    renderer._drawOccupancyPennant = () => {};
+    renderer._drawAttentionBannerBoard = () => {};
+    let functionalCalls = 0;
+    let atmosphereCalls = 0;
+    let functionalColumnArg = 'unset';
+    renderer._drawFunctionalOverlay = (_ctx, _b, _e, _wx, _wy, splitPass, _h, col) => {
+        functionalCalls++;
+        functionalColumnArg = { splitPass, col };
+    };
+    renderer._drawAtmosphereBuildingReactions = () => {
+        atmosphereCalls++;
+    };
+    const drawables = renderer.enumerateDrawables();
+    assert.ok(drawables.length > 10, 'Forge emits multiple building columns');
+    const ctx = makeMockCanvas(512, 512).getContext();
+    for (const d of drawables) renderer.drawDrawable(ctx, d);
+    assert.equal(functionalCalls, 1, 'Canvas runs _drawFunctionalOverlay once per building, not per column');
+    assert.equal(atmosphereCalls, 1, 'Canvas runs _drawAtmosphereBuildingReactions once per building, not per column');
+    assert.deepEqual(functionalColumnArg, { splitPass: 'whole', col: null },
+        'primary column draws building overlays unclipped to a single 16 px strip');
+});
+
+test('Depth fix 8a: ChimneySmoke forwards localX to sortYFor so puffs take their own column depth', () => {
+    const forge = new Building(BUILDING_DEFS.find((d) => d.type === 'forge'));
+    const dims = MOCK_BUILDING_METRICS.forge;
+    const buildingRenderer = makeBuildingRenderer([forge]);
+    const smoke = new ChimneySmoke();
+    const assets = {
+        has: (id) => id === 'building.forge',
+        getAnchor: () => dims.anchor,
+    };
+    const seen = [];
+    const particleSystem = {
+        motionEnabled: true,
+        particles: [],
+        countTagged: () => 0,
+        spawn: (_type, _x, _y, _count, options) => {
+            seen.push(options.sortY);
+            particleSystem.particles.push({ tag: options.tag });
+        },
+    };
+    const sortCalls = [];
+    smoke.update({
+        now: 1000,
+        timeMs: 1000,
+        buildings: [forge],
+        assets,
+        presence: new Map([['forge', { count: 2, tier: 'occupied' }]]),
+        particleSystem,
+        atmosphere: { phase: 'day', clock: { minuteOfDay: 720 }, weather: { type: 'clear' } },
+        sortYFor: (building, localY, localX) => {
+            sortCalls.push({ building, localY, localX });
+            return buildingRenderer.particleSortY(building, localY, localX);
+        },
+    });
+    assert.ok(sortCalls.length > 0, 'ChimneySmoke emits at least one chimney puff');
+    for (const call of sortCalls) {
+        assert.ok(Number.isFinite(call.localX), 'ChimneySmoke passes finite localX to sortYFor');
+        const withX = buildingRenderer.particleSortY(call.building, call.localY, call.localX);
+        const withoutX = buildingRenderer.particleSortY(call.building, call.localY);
+        assert.equal(seen[0], withX, 'puff sortY matches the chimney column depth');
+        assert.ok(withX <= withoutX, 'column depth is at or behind the frontmost fallback depth');
+    }
+});
+
+test('Depth fix 5: updateAgentWorldOcclusion reuses per-sprite hit pool and clipRanges across frames', () => {
+    const command = new Building(BUILDING_DEFS.find((d) => d.type === 'command'));
+    const cmdRenderer = makeBuildingRenderer([command]);
+    const cmdDrawables = cmdRenderer.enumerateDrawables();
+    const cmdDims = MOCK_BUILDING_METRICS.command;
+    const cmdAssets = {
+        ...cmdRenderer.assets,
+        get: () => ({ width: cmdDims.w, height: cmdDims.h }),
+        getMask: () => new Uint8Array(cmdDims.w * cmdDims.h).fill(1),
+    };
+    const sprite = { ...tileToWorld(15.2, 14.8), _depthSortY: tileToWorld(15.2, 14.8).y, selected: true };
+    updateAgentWorldOcclusion({
+        agentSprites: [sprite],
+        buildingDrawables: cmdDrawables,
+        propDrawables: [],
+        assets: cmdAssets,
+        sprites: { assets: cmdAssets, hitTest: () => true },
+    });
+    const firstHit = sprite._worldOccluders[0];
+    const firstRanges = firstHit.clipRanges;
+    const firstPair = firstRanges[0];
+    updateAgentWorldOcclusion({
+        agentSprites: [sprite],
+        buildingDrawables: cmdDrawables,
+        propDrawables: [],
+        assets: cmdAssets,
+        sprites: { assets: cmdAssets, hitTest: () => true },
+    });
+    assert.equal(sprite._worldOccluders[0], firstHit, 'hit entry is reused across frames');
+    assert.equal(sprite._worldOccluders[0].clipRanges, firstRanges, 'clipRanges array is reused across frames');
+    assert.equal(sprite._worldOccluders[0].clipRanges[0], firstPair, 'clip range pair is reused across frames');
 });

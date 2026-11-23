@@ -136,6 +136,41 @@ const BUDGET_IMPOSTOR_BODY_BOX = Object.freeze({
     top: IMPOSTOR_BOX.top + 1,
     bottom: 3,
 });
+const XRAY_SILHOUETTE_CACHE_MAX = 16;
+
+function parseHexRgb(value) {
+    const raw = String(value || '#ffffff').replace('#', '');
+    return Object.freeze([
+        parseInt(raw.slice(0, 2), 16) || 0,
+        parseInt(raw.slice(2, 4), 16) || 0,
+        parseInt(raw.slice(4, 6), 16) || 0,
+    ]);
+}
+
+const XRAY_PALETTES = Object.freeze({
+    working: Object.freeze({
+        rim: parseHexRgb(ART_RAMPS.snow[0]),
+        rimAlpha: 148,
+        fill: parseHexRgb(ART_RAMPS.slate[1]),
+        fillAlpha: 88,
+        dither: true,
+    }),
+    selected: Object.freeze({
+        rim: parseHexRgb(ART_RAMPS.trimGold[3]),
+        rimAlpha: 245,
+        fill: parseHexRgb(ART_RAMPS.trimGold[1]),
+        fillAlpha: 108,
+        dither: false,
+    }),
+});
+
+function releaseXraySilhouetteCache(cache) {
+    if (!cache || typeof cache.values !== 'function') return;
+    for (const entry of cache.values()) {
+        releaseCanvasBackingStore(entry?.canvas || entry);
+    }
+    cache.clear();
+}
 const WALK_PIXELS_PER_FRAME = 4.5;
 // W8.7 — the authored run cycle (actionStrip group `run`, six frames, two
 // strides) covers twice the walk's ground per frame, so at the top rung a
@@ -1551,6 +1586,7 @@ export class AgentSprite {
         // drop our references without zeroing their backing stores. Cell effects
         // are private to this AgentSprite and can be released immediately.
         releaseCanvasMap(this._frozenTintCellCache);
+        releaseXraySilhouetteCache(this._xraySilhouetteCache);
         this._cellBoundsCache.clear();
         this.spriteCanvas = null;
         this.spriteSheet = null;
@@ -1626,8 +1662,15 @@ export class AgentSprite {
 
     _updatePrivateDerivedEstimate() {
         let pixels = 0;
-        for (const canvas of this._frozenTintCellCache.values()) {
-            pixels += (canvas?.width || 0) * (canvas?.height || 0);
+        if (this._frozenTintCellCache) {
+            for (const canvas of this._frozenTintCellCache.values()) {
+                pixels += (canvas?.width || 0) * (canvas?.height || 0);
+            }
+        }
+        if (this._xraySilhouetteCache) {
+            for (const entry of this._xraySilhouetteCache.values()) {
+                pixels += (entry?.canvas?.width || 0) * (entry?.canvas?.height || 0);
+            }
         }
         if (pixels > 0) PRIVATE_DERIVED_CACHE_ESTIMATES.set(this._resourceOwnerKey, pixels * 4);
         else PRIVATE_DERIVED_CACHE_ESTIMATES.delete(this._resourceOwnerKey);
@@ -4691,8 +4734,16 @@ export class AgentSprite {
 
         const budgetMode = renderMode !== 'full' && !this.selected && !this.hovered
             && ![AgentStatus.WAITING_ON_USER, AgentStatus.ERRORED, AgentStatus.RATE_LIMITED].includes(this.agent?.status);
+        this._lowZoomImpostor = false;
         if (budgetMode && !this.gpuWorldEnabled) {
-            this._bodyBox = BUDGET_IMPOSTOR_BODY_BOX;
+            this._setBodyBox(
+                this._placeX,
+                this._placeY,
+                this._placeX + BUDGET_IMPOSTOR_BODY_BOX.left,
+                this._placeY + BUDGET_IMPOSTOR_BODY_BOX.top,
+                this._placeX + BUDGET_IMPOSTOR_BODY_BOX.right,
+                this._placeY + BUDGET_IMPOSTOR_BODY_BOX.bottom,
+            );
             this._budgetImpostorXray = true;
             this._drawBudgetImpostor(ctx);
             if (departedTableau(this)) this.gpuOverlayRenderer.drawDepartedTreatment(ctx);
@@ -4757,7 +4808,7 @@ export class AgentSprite {
                 this._spriteProfileKey = profileKey;
                 this._spriteIdentity = identity;
                 releaseCanvasMap(this._frozenTintCellCache);
-                releaseCanvasMap(this._xraySilhouetteCache);
+                releaseXraySilhouetteCache(this._xraySilhouetteCache);
                 this._updatePrivateDerivedEstimate();
                 this._cellBoundsCache.clear();
             }
@@ -4868,6 +4919,7 @@ export class AgentSprite {
         }
 
         if (!this.selected && zoom < 1) {
+            this._lowZoomImpostor = true;
             // Plan 2.3 — the overview keeps the same single contact shadow.
             this._layoutGroundMarks(this._stableContentWidth());
             if (!this.gpuWorldEnabled) drawGroundMarks(ctx, this._groundMarks);
@@ -5678,30 +5730,7 @@ export class AgentSprite {
     }
 
     _xrayPalette(mode) {
-        const hex = (value) => {
-            const raw = String(value || '#ffffff').replace('#', '');
-            return [
-                parseInt(raw.slice(0, 2), 16) || 0,
-                parseInt(raw.slice(2, 4), 16) || 0,
-                parseInt(raw.slice(4, 6), 16) || 0,
-            ];
-        };
-        if (mode === 'working') {
-            return {
-                rim: hex(ART_RAMPS.snow[0]),
-                rimAlpha: 148,
-                fill: hex(ART_RAMPS.slate[1]),
-                fillAlpha: 88,
-                dither: true,
-            };
-        }
-        return {
-            rim: hex(ART_RAMPS.trimGold[3]),
-            rimAlpha: 245,
-            fill: hex(ART_RAMPS.trimGold[1]),
-            fillAlpha: 108,
-            dither: false,
-        };
+        return mode === 'working' ? XRAY_PALETTES.working : XRAY_PALETTES.selected;
     }
 
     _getXraySilhouetteCanvas(body, dstW, dstH, mode) {
@@ -5709,8 +5738,21 @@ export class AgentSprite {
         const key = `${mode}|${body.sx},${body.sy},${body.sw}x${body.sh}|${dstW}x${dstH}`;
         const cache = this._xraySilhouetteCache || (this._xraySilhouetteCache = new Map());
         const existing = cache.get(key);
-        if (existing && existing.source === body.canvas) return existing.canvas;
-        if (cache.size >= 8) releaseCanvasMap(cache);
+        if (existing) {
+            if (existing.source === body.canvas) {
+                cache.delete(key);
+                cache.set(key, existing);
+                return existing.canvas;
+            }
+            cache.delete(key);
+            releaseCanvasBackingStore(existing.canvas);
+        }
+        while (cache.size >= XRAY_SILHOUETTE_CACHE_MAX) {
+            const oldestKey = cache.keys().next().value;
+            const oldest = cache.get(oldestKey);
+            cache.delete(oldestKey);
+            releaseCanvasBackingStore(oldest?.canvas);
+        }
         const canvas = document.createElement('canvas');
         canvas.width = dstW;
         canvas.height = dstH;
@@ -5755,6 +5797,7 @@ export class AgentSprite {
         }
         sctx.putImageData(imgData, 0, 0);
         cache.set(key, { source: body.canvas, canvas });
+        this._updatePrivateDerivedEstimate();
         return canvas;
     }
 
@@ -5791,6 +5834,7 @@ export class AgentSprite {
     }
 
     _drawXraySilhouetteAtScreenPosition(ctx, mode = 'selected', occluders = null) {
+        if (this._lowZoomImpostor || (!this.selected && this._zoom < 1)) return;
         const body = this._budgetImpostorXray ? this._getBudgetImpostorPoseCell() : this._poseCell;
         if ((!this._budgetImpostorXray && !this.spriteCanvas) || !body?.canvas || !(body.sw > 0) || !(body.sh > 0)) return;
         const drawScale = body.drawScale || 1;
@@ -5801,10 +5845,16 @@ export class AgentSprite {
         const silhouette = this._getXraySilhouetteCanvas(body, dstW, dstH, mode);
         if (!silhouette) return;
 
-        const validOccluders = Array.isArray(occluders)
-            ? occluders.filter((occ) => occ?.image)
-            : [];
-        if (validOccluders.length > 0 && typeof document !== 'undefined') {
+        let hasValidOccluders = false;
+        if (Array.isArray(occluders)) {
+            for (let i = 0; i < occluders.length; i++) {
+                if (occluders[i]?.image) {
+                    hasValidOccluders = true;
+                    break;
+                }
+            }
+        }
+        if (hasValidOccluders && typeof document !== 'undefined') {
             const scratch = AgentSprite._xrayMaskScratch || (AgentSprite._xrayMaskScratch = document.createElement('canvas'));
             if (scratch.width < dstW) scratch.width = dstW;
             if (scratch.height < dstH) scratch.height = dstH;
@@ -5815,8 +5865,9 @@ export class AgentSprite {
                 mctx.globalAlpha = 1;
                 mctx.globalCompositeOperation = 'source-over';
                 mctx.clearRect(0, 0, dstW, dstH);
-                for (let i = 0; i < validOccluders.length; i++) {
-                    const occ = validOccluders[i];
+                for (let i = 0; i < occluders.length; i++) {
+                    const occ = occluders[i];
+                    if (!occ?.image) continue;
                     const localTop = occ.rowStart > 0 ? Math.max(0, Math.floor(occ.dy + occ.rowStart - dstY)) : 0;
                     if (localTop >= dstH) continue;
                     if (Array.isArray(occ.clipRanges)) {
