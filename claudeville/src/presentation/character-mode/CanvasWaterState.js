@@ -1403,7 +1403,7 @@ function rebuildOverlay(state, base, fx, palette, rect, renderer, sea) {
         }
     }
     if (fx.caustics) {
-        const shade = renderer._shadeFieldState?.ready || null;
+        const shade = renderer._shadeFieldState?.ready?.field || null;
         const list = base.caustic[clock > 0 ? Math.floor(fx.t * 0.004 * clock) % 8 : 0];
         eachTexel(list, 1, (i, x, y) => {
             const k = cls[i];
@@ -2493,6 +2493,7 @@ export function drawCanvasWaterState(ctx, renderer, atmosphere) {
         fx.deepTick, fx.nearTick, fx.ringTick, posMod(fx.swashStep, SWASH_SET), fx.rippleTick,
         fx.stillPaws ? 1 : 0, Math.round(fx.stillShare * 256), fx.surfGlow > 0 ? 1 : 0,
         fx.caustics ? Math.floor(fx.t * 0.004 * fx.clock) % 8 : -1,
+        fx.caustics ? (renderer._shadeFieldState?.ready?.revision ?? 0) : 0,
         Math.round(fx.rain * 64), fx.swash ? 1 : 0, fx.grassGust ? 1 : 0, fx.horizonTop, pending,
         sun?.key ?? '', gust?.key ?? '', seaKey, state.capsDrift,
     ].join('|');

@@ -354,9 +354,8 @@ export function resolveSurfGlow(atmosphere, weather, grade, moonFill, swashOn) {
  * `swellPhase` adds as drift / SWELL_SET_PERIOD. A pure function of the
  * motion clock, so reduced motion (a frozen clock) holds the sea still and a
  * re-rendered frame lands on the same rows; it wraps after
- * SWELL_DRIFT_WRAP_ROWS rows (200 set periods, about 21 hours of motion
- * clock: one jump a day) to keep the shaders' float
- * phase exact.
+ * SWELL_DRIFT_WRAP_ROWS rows (200 set periods, about 4.2 hours of motion
+ * clock) to keep the shaders' float phase exact.
  */
 // Relaxed 2026-11-23 (operator decision): ~2 px/s shoreward roll (~2 Hz).
 export const SWELL_DRIFT_STEP_MS = 500;

@@ -2423,7 +2423,7 @@ function staticReflections(ctx, renderer) {
             const shift = (wet >= MIRROR_CRISP_ROWS ? rippleShift(y, course > 0 ? amp : 1) : 0) - streakOffset(wx, y, course);
             const hit = sample(d, y, shift, course);
             if (!hit) continue;
-            const fadeRows = Math.min(MIRROR_FADE_ROWS, Math.max(4, Math.floor(reach * 0.4)));
+            const fadeRows = reach >= MIRROR_REACH_MIN ? MIRROR_FADE_ROWS : Math.max(4, Math.floor(reach * 0.4));
             const fade = d - (reach - fadeRows);
             const broken = brokenRow(wx, y, wet, every, MIRROR_BREAK_SHARE);
             const bandY = y >> 1;
@@ -3376,7 +3376,7 @@ function drawCanvasMoodLayer(ctx, renderer, atmosphere) {
         const mirrorStops = [];
         const orders = [];
         const mirrorSea = [];
-        const coastField = renderer.waterFields?.coastField || null;
+        const coastField = renderer._coastBake?.waterFields?.coastField || null;
         // Mirror texels carry MIRROR_UNCAPPED: moody, never capped.
         const reflect = coast.reflect || null;
         for (let r = 0; r < coast.rows; r++) {
