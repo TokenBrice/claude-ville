@@ -69,8 +69,11 @@ Stable material classes, in numeric encoding order, are:
 
 Append new classes; never reorder these indices. The authored key convention is
 warm light from screen upper-left. The GPU sun-key material response
-(`applyAuthoredSunBand`) has two restrained material-wide bands, `0.86 / 1.00`,
-and by itself infers no roof or wall normal. With look `sd2` above 0 (SD-2,
+(`applyAuthoredSunBand`) retires the earlier `0.86` clear-sun dim on land,
+fabric and unlit surfaces (relaxed 2026-11-23, operator decision "clearly
+sunny"): base `1.00`, with a `1.08` sunlit step on high-response stone and
+metal (water keeps its `0.86` band until SEA-1 fades it), and by itself infers
+no roof or wall normal. With look `sd2` above 0 (SD-2,
 `gpu/SunShade.js` `sunShadeStep`, right after the band and before the grade) a
 sprite fragment then drops one stepped course where another mass's shadow falls
 on it (cast shade), read from the shade field (*Sun shade field*, below). A
