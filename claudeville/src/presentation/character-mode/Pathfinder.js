@@ -8,6 +8,7 @@ const TILE_WEIGHTS = Object.freeze({
     road: 0.65,
     lane: 0.58,
     avoid: 1.35,
+    standing: 2.5,
     congestionStep: 0.16,
     congestionMax: 1.2,
 });
@@ -306,7 +307,7 @@ export class Pathfinder {
                 if (!this.isWalkable(nx, ny)) continue;
                 const nextIdx = ny * N + nx;
                 if (visited[nextIdx]) continue;
-                const stepCost = this._weightedStepCost(cx, cy, nx, ny, dx, dy, bridgeTiles, pathOptions);
+                const stepCost = this._weightedStepCost(cx, cy, nx, ny, dx, dy, bridgeTiles, pathOptions, targetSet);
                 const nextCost = current.cost + stepCost;
                 if (nextCost >= cost[nextIdx]) continue;
                 cost[nextIdx] = nextCost;
@@ -327,12 +328,20 @@ export class Pathfinder {
         return this._simplify(tiles, bridgeTiles);
     }
 
-    _weightedStepCost(cx, cy, nx, ny, dx, dy, bridgeTiles, pathOptions) {
+    _weightedStepCost(cx, cy, nx, ny, dx, dy, bridgeTiles, pathOptions, targetSet = null) {
         const diagonal = dx !== 0 && dy !== 0;
         const base = diagonal ? 1.414 : 1;
         const fromWeight = this._tileTravelWeight(cx, cy, bridgeTiles, pathOptions);
         const toWeight = this._tileTravelWeight(nx, ny, bridgeTiles, pathOptions);
-        return base * Math.min(fromWeight, toWeight);
+        let step = base * Math.min(fromWeight, toWeight);
+        // Soft occupancy cost for tiles where villagers stand, except the goal tile.
+        if (pathOptions.standingTiles?.size) {
+            const nextIdx = ny * MAP_SIZE + nx;
+            if (!targetSet?.has(nextIdx) && pathOptions.standingTiles.has(`${nx},${ny}`)) {
+                step += TILE_WEIGHTS.standing;
+            }
+        }
+        return step;
     }
 
     _tileTravelWeight(tileX, tileY, bridgeTiles, pathOptions) {
@@ -366,6 +375,9 @@ export class Pathfinder {
         const dockTiles = this._normalizeTileSet(options?.dockTiles);
         const laneTiles = this._normalizeTileSet(options?.laneTiles);
         const avoidTiles = this._normalizeTileSet(options?.avoidTiles);
+        const standingTiles = this._normalizeTileSet(options?.standingTiles);
+        const standingVersion = options?.standingVersion
+            || (standingTiles?.size ? [...standingTiles].sort().join(';') : '');
         const congestionTiles = this._normalizeTileWeights(options?.congestionTiles);
         const optionBridgeTiles = this._normalizeTileSet(options?.bridgeTiles);
         const bridgeCount = optionBridgeTiles?.size || bridgeTiles?.size || 0;
@@ -376,6 +388,7 @@ export class Pathfinder {
             (dockTiles?.size || 0) +
             (laneTiles?.size || 0) +
             (avoidTiles?.size || 0) +
+            (standingTiles?.size || 0) +
             (congestionTiles?.size || 0) +
             bridgeCount
         ) > 0;
@@ -383,12 +396,14 @@ export class Pathfinder {
             weighted: !!options?.preferRoads || weighted,
             cacheKey: options?.cacheKey || '',
             congestionVersion: options?.congestionVersion || options?.crowdVersion || '',
+            standingVersion,
             roadTiles,
             preferredTiles,
             plazaTiles,
             dockTiles,
             laneTiles,
             avoidTiles,
+            standingTiles,
             congestionTiles,
             bridgeTiles: optionBridgeTiles,
             personalityBucket: Math.max(0, Math.min(3, Math.floor(Number(options?.personalityBucket) || 0))),
@@ -451,10 +466,11 @@ export class Pathfinder {
 
     _pathOptionsCacheKey(pathOptions) {
         if (!pathOptions.weighted) return '';
-        const policyKey = `:p${pathOptions.personalityBucket}:${pathOptions.preferredBridgeId}:c${pathOptions.congestionVersion}`;
+        const standingSuffix = pathOptions.standingVersion ? `:s${pathOptions.standingVersion}` : '';
+        const policyKey = `:p${pathOptions.personalityBucket}:${pathOptions.preferredBridgeId}:c${pathOptions.congestionVersion}${standingSuffix}`;
         const weightsKey = pathOptions.weights ? `:${pathOptions.weights.road}:${pathOptions.weights.plaza}:${pathOptions.weights.lane}` : '';
         if (pathOptions.cacheKey) return `|${pathOptions.cacheKey}${policyKey}${weightsKey}`;
-        return `|weighted:${pathOptions.roadTiles?.size || 0}:${pathOptions.preferredTiles?.size || 0}:${pathOptions.plazaTiles?.size || 0}:${pathOptions.dockTiles?.size || 0}:${pathOptions.laneTiles?.size || 0}:${pathOptions.avoidTiles?.size || 0}:${pathOptions.congestionTiles?.size || 0}:${pathOptions.bridgeTiles?.size || 0}${policyKey}${weightsKey}`;
+        return `|weighted:${pathOptions.roadTiles?.size || 0}:${pathOptions.preferredTiles?.size || 0}:${pathOptions.plazaTiles?.size || 0}:${pathOptions.dockTiles?.size || 0}:${pathOptions.laneTiles?.size || 0}:${pathOptions.avoidTiles?.size || 0}:${pathOptions.standingTiles?.size || 0}:${pathOptions.congestionTiles?.size || 0}:${pathOptions.bridgeTiles?.size || 0}${policyKey}${weightsKey}`;
     }
 
     describeRoute(tiles, options = null) {
@@ -546,20 +562,33 @@ export class Pathfinder {
         }
     }
 
+    _isBridgeCrossingTile(tile, bridgeTiles) {
+        if (!tile || !bridgeTiles?.size) return false;
+        const key = `${tile.tileX},${tile.tileY}`;
+        if (!bridgeTiles.has(key)) return false;
+        const info = bridgeTiles.get?.(key);
+        return !info || info.kind !== 'dock';
+    }
+
     _simplify(tiles, bridgeTiles) {
         if (tiles.length <= 1) return tiles;
         const out = [];
         let prevDir = null;
         for (let i = 0; i < tiles.length; i++) {
             const t = tiles[i];
+            const prev = tiles[i - 1];
             const next = tiles[i + 1];
             const onBridge = bridgeTiles?.has(`${t.tileX},${t.tileY}`);
+            const bridgeLanding = !onBridge && (
+                this._isBridgeCrossingTile(prev, bridgeTiles)
+                || this._isBridgeCrossingTile(next, bridgeTiles)
+            );
             if (!next) {
                 out.push(t); // always include final destination
                 break;
             }
             const dir = `${Math.sign(next.tileX - t.tileX)},${Math.sign(next.tileY - t.tileY)}`;
-            if (onBridge || dir !== prevDir) {
+            if (onBridge || bridgeLanding || dir !== prevDir) {
                 out.push(t);
             }
             prevDir = dir;
@@ -575,10 +604,13 @@ export class Pathfinder {
             // Find the furthest waypoint reachable via a clear straight line from tiles[i].
             let j = tiles.length - 1;
             while (j > i + 1) {
-                // Never skip over bridge tiles — they must remain explicit waypoints.
-                const hasBridge = tiles.slice(i + 1, j).some(
-                    t => bridgeTiles?.has(`${t.tileX},${t.tileY}`)
-                );
+                // Never skip over bridge deck or landing tiles — they must remain explicit waypoints.
+                const hasBridge = tiles.slice(i + 1, j).some((t, offset) => {
+                    const idx = i + 1 + offset;
+                    return bridgeTiles?.has(`${t.tileX},${t.tileY}`)
+                        || this._isBridgeCrossingTile(tiles[idx - 1], bridgeTiles)
+                        || this._isBridgeCrossingTile(tiles[idx + 1], bridgeTiles);
+                });
                 if (!hasBridge && this._lineWalkable(
                     tiles[i].tileX, tiles[i].tileY,
                     tiles[j].tileX, tiles[j].tileY,

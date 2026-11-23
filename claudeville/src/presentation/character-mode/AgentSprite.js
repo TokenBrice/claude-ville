@@ -84,7 +84,7 @@ import { materialClassId } from './MaterialRegistry.js';
 import { LANTERN_SET_DOWN, carriedLanternStamp } from './CarriedLantern.js';
 import { waitAgeTier, waitAnchor } from '../../domain/services/SignalLedger.js';
 import { AMBIENT_SCENIC_POINTS } from '../../config/scenery.js';
-import { inVillageMasonry } from '../../config/townPlan.js';
+import { VILLAGE_GATE, inVillageMasonry } from '../../config/townPlan.js';
 import {
     ERRAND_GAP_MS,
     ERRAND_LEG_TIMEOUT_MS,
@@ -180,6 +180,9 @@ const CHAT_FAN_REACH_PX = CHAT_START_PX + 24;
 // AP-2 — how long a chat may stay one-sided (the partner never pointed back)
 // before the cleanup pass ends it and the body resumes its route.
 export const ONE_SIDED_CHAT_GRACE_MS = 8000;
+// Cap on mutual chats driven by an unchanged static messaging tool call so a
+// lingering SendMessage snapshot cannot pin two villagers indefinitely.
+export const MUTUAL_CHAT_MAX_MS = 12000;
 // Camera-facing rank per direction (S, SE, E, NE, N, NW, W, SW): S/SE/SW show
 // the face, E/W the profile, NE/N/NW the back. An exact reversal turns through
 // the side with the higher rank, so the operator sees a face, never a back.
@@ -2872,13 +2875,11 @@ export class AgentSprite {
         this.targetY = head.y;
     }
 
-    // BR-3 — a route's waypoints on a landmark deck, and on a landing the
-    // route enters or leaves that deck by, move onto the walker's lane (the
-    // side IsometricRenderer._laneSideForSprite steers it to), so two-way
-    // traffic passes apart: lane steering lets go within
-    // LANE_STEERING.arrivalDistancePx of a waypoint, and centre-line deck
-    // waypoints pulled both files onto one line. The route's end never moves,
-    // nor does a waypoint whose lane point would leave the walk grid.
+    // BR-3 — a route's waypoints on a landmark deck move onto the walker's lane
+    // (the side IsometricRenderer._laneSideForSprite steers it to), while
+    // landing tiles taper back to 0 so bodies pass centred between the narrow
+    // stone lantern pillars. The route's end never moves, nor does a waypoint
+    // whose lane point or adjacent segment would cross unwalkable tiles.
     _keepBridgeLanes(tilePath, fromTile) {
         const crossings = this._crossingTiles();
         if (!crossings.size) return;
@@ -2887,18 +2888,27 @@ export class AgentSprite {
             const tile = index < 0 ? fromTile : tilePath[index];
             return tile ? crossings.get(`${Math.round(tile.tileX)},${Math.round(tile.tileY)}`) : undefined;
         };
-        const isDeck = (crossing) => !!crossing && !crossing.landing && crossing.info.kind === 'landmark';
         for (let index = 0; index < points.length - 1; index++) {
             const crossing = crossingAt(index);
             if (crossing?.info.kind !== 'landmark') continue;
-            if (crossing.landing && !isDeck(crossingAt(index - 1)) && !isDeck(crossingAt(index + 1))) continue;
+            // Taper landing-tile lane offset to 0 so walkers enter and leave
+            // bridge stairs centred inside the parapet and pillars.
+            if (crossing.landing) continue;
             const prev = index > 0 ? tileToWorld(tilePath[index - 1]) : { x: this.x, y: this.y };
             const next = tileToWorld(tilePath[index + 1]);
             const shift = bridgeLaneShift(crossing.info, next.x - prev.x, next.y - prev.y);
             if (!shift) continue;
             const x = points[index].x + shift.x;
             const y = points[index].y + shift.y;
-            if (this._isScreenPointWalkable(x, y)) points[index] = { x, y };
+            const prevPoint = index > 0 ? points[index - 1] : { x: this.x, y: this.y };
+            const nextPoint = points[index + 1];
+            if (
+                this._isScreenPointWalkable(x, y)
+                && this._isScreenSegmentWalkable(prevPoint.x, prevPoint.y, x, y)
+                && this._isScreenSegmentWalkable(x, y, nextPoint.x, nextPoint.y)
+            ) {
+                points[index] = { x, y };
+            }
         }
     }
 
@@ -2919,6 +2929,14 @@ export class AgentSprite {
         if (!crossings.size) return false;
         const tile = worldToTile(this.x, this.y);
         return crossings.has(`${Math.round(tile.tileX)},${Math.round(tile.tileY)}`);
+    }
+
+    // Gate apron behind the village gatehouse wall: excluded from chat matching
+    // and chat start so arrivals walk clear into open plaza before pairing.
+    standsOnGateApron() {
+        if (!Number.isFinite(this.x) || !Number.isFinite(this.y)) return false;
+        const tile = worldToTile(this.x, this.y);
+        return tile.tileY >= 36.5 && Math.abs(tile.tileX - VILLAGE_GATE.tileX) <= 2.5;
     }
 
     // The fan place (7.4) this body's route ends on, when the renderer re-aimed
@@ -2945,9 +2963,15 @@ export class AgentSprite {
             if (segment.length === 0) {
                 return this.pathfinder.findPath(fromTile, toTile, this.bridgeTiles, this._pathOptions(fromTile, toTile));
             }
-            if (stitched.length > 0) segment.shift();
+            // Pathfinder.findPath already omits `leg` and returns simplified corners,
+            // so deduplicate only an exact repeated point rather than dropping the
+            // next leg's first corner.
+            const last = stitched[stitched.length - 1];
+            if (last && segment[0] && last.tileX === segment[0].tileX && last.tileY === segment[0].tileY) {
+                segment.shift();
+            }
             stitched.push(...segment);
-            leg = next;
+            leg = stitched[stitched.length - 1] || next;
         }
         if (stitched.length === 0) {
             return this.pathfinder.findPath(fromTile, toTile, this.bridgeTiles, this._pathOptions(fromTile, toTile));
@@ -2960,12 +2984,16 @@ export class AgentSprite {
             Number(toTile?.tileX) - Number(fromTile?.tileX),
             Number(toTile?.tileY) - Number(fromTile?.tileY),
         );
-        if (Number.isFinite(distance) && distance <= LOCAL_DIRECT_PATH_TILE_DISTANCE) return null;
+        const routing = this.getRoutingContext?.();
+        const standingTiles = routing?.standingTiles;
+        const standingVersion = routing?.standingVersion || '';
+        if (Number.isFinite(distance) && distance <= LOCAL_DIRECT_PATH_TILE_DISTANCE) {
+            return standingTiles?.size ? { standingTiles, standingVersion } : null;
+        }
         const roadTiles = this.getRoadTiles?.();
         const bridgeTiles = this.bridgeTiles;
-        const routing = this.getRoutingContext?.();
         const laneTiles = routing?.laneTiles;
-        if (!roadTiles?.size && !bridgeTiles?.size && !laneTiles?.size) return null;
+        if (!roadTiles?.size && !bridgeTiles?.size && !laneTiles?.size && !standingTiles?.size) return null;
         if (this._routeLaneMap !== laneTiles) {
             this._routeLaneMap = laneTiles;
             this._routePlazaTiles = new Set();
@@ -2996,6 +3024,8 @@ export class AgentSprite {
             bridgeTiles,
             congestionTiles: routing?.congestionTiles,
             congestionVersion: routing?.congestionVersion || '',
+            standingTiles,
+            standingVersion,
             personalityBucket,
             preferredBridgeId,
             weights,
@@ -3022,6 +3052,7 @@ export class AgentSprite {
             const rx = Number(key.slice(0, comma));
             const ry = Number(key.slice(comma + 1));
             if (!Number.isFinite(rx) || !Number.isFinite(ry)) continue;
+            if (this.pathfinder && !this.pathfinder.isWalkable(rx, ry)) continue;
             const dx = rx - fx;
             const dy = ry - fy;
             const dist = Math.hypot(dx, dy);
@@ -3041,6 +3072,18 @@ export class AgentSprite {
         const tile = this._screenToTile(x, y);
         return this.pathfinder.isWalkable(Math.round(tile.tileX), Math.round(tile.tileY))
             && !inVillageMasonry(tile.tileX, tile.tileY);
+    }
+
+    _isScreenSegmentWalkable(x0, y0, x1, y1) {
+        if (!this.pathfinder) return true;
+        const dist = Math.hypot(x1 - x0, y1 - y0);
+        if (dist <= 4) return this._isScreenPointWalkable(x1, y1);
+        const steps = Math.min(48, Math.max(4, Math.ceil(dist / 6)));
+        for (let step = 1; step <= steps; step++) {
+            const t = step / steps;
+            if (!this._isScreenPointWalkable(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t)) return false;
+        }
+        return true;
     }
 
     _screenToTile(x, y) {
@@ -3592,7 +3635,8 @@ export class AgentSprite {
             // landing: a pair heading across meets on the first tile past it.
             const fanPlace = this._chatApproachRoute ? this._routeEndFanPlace() : null;
             if ((fanPlace ? !this.moving && cpDist < CHAT_FAN_REACH_PX : cpDist < CHAT_START_PX)
-                && !this.standsOnCrossing() && !partner.standsOnCrossing?.()) {
+                && !this.standsOnCrossing() && !partner.standsOnCrossing?.()
+                && !this.standsOnGateApron() && !partner.standsOnGateApron?.()) {
                 // AP-2 — the partner is already in (or promised to) another
                 // chat: this approach would stand one-sided, so it ends and
                 // the body resumes its route instead of stacking on the pair.
@@ -3756,6 +3800,7 @@ export class AgentSprite {
         let travelled = 0;
         let headingX = this.targetX - this.x;
         let headingY = this.targetY - this.y;
+        let reroutedThisUpdate = false;
         while (remaining > 0) {
             const dx = this.targetX - this.x;
             const dy = this.targetY - this.y;
@@ -3766,8 +3811,19 @@ export class AgentSprite {
             const sliverToStop = dist > remaining && dist - remaining < STEP_SLIVER_PX
                 && this._stopsAtTarget(dx, dy);
             if (dist > remaining && !sliverToStop) {
-                this.x += (dx / dist) * remaining;
-                this.y += (dy / dist) * remaining;
+                const nextX = this.x + (dx / dist) * remaining;
+                const nextY = this.y + (dy / dist) * remaining;
+                // Guard against lateral drift (lane steering / avoidance) pulling
+                // a walker off its corridor across water or blocked tiles.
+                if (!this._straightWalk && !reroutedThisUpdate && this.pathfinder
+                    && !this._isScreenPointWalkable(nextX, nextY)
+                    && this._isScreenPointWalkable(this.x, this.y)
+                    && this._rerouteAroundBlockedStep()) {
+                    reroutedThisUpdate = true;
+                    continue;
+                }
+                this.x = nextX;
+                this.y = nextY;
                 travelled += remaining;
                 headingX = dx;
                 headingY = dy;
@@ -3800,6 +3856,29 @@ export class AgentSprite {
             return;
         }
         this._advanceWalkAnimation(travelled, headingX, headingY, dt, particleSystem);
+    }
+
+    // Short reroute when lateral steering drift puts the next step onto
+    // unwalkable ground or water (e.g. pond tile 17,21 north of central bridge).
+    _rerouteAroundBlockedStep() {
+        if (!this.pathfinder || typeof this.pathfinder.findPath !== 'function') return false;
+        const now = Date.now();
+        if (this._lastDriftRerouteAt && now - this._lastDriftRerouteAt < 180) return false;
+        const dest = this.waypoints?.length ? this.waypoints[this.waypoints.length - 1] : { x: this.targetX, y: this.targetY };
+        if (!dest || !Number.isFinite(dest.x) || !Number.isFinite(dest.y)) return false;
+        const fromTile = this._screenToTile(this.x, this.y);
+        const destTile = this._screenToTile(dest.x, dest.y);
+        const tilePath = this.pathfinder.findPath(fromTile, destTile, this.bridgeTiles, this._pathOptions(fromTile, destTile));
+        if (!tilePath?.length) return false;
+        this._lastDriftRerouteAt = now;
+        this.waypoints = tilePath.map((t) => ({ ...tileToWorld(t) }));
+        if (this._isScreenPointWalkable(dest.x, dest.y)) {
+            this.waypoints[this.waypoints.length - 1] = { x: dest.x, y: dest.y };
+        }
+        this._keepBridgeLanes(tilePath, fromTile);
+        this.targetX = this.waypoints[0].x;
+        this.targetY = this.waypoints[0].y;
+        return true;
     }
 
     // Reduced motion — the route collapses to its last point: the body stands

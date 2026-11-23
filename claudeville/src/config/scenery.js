@@ -225,10 +225,11 @@ export const WATER_BASINS = [
 export const BRIDGE_HINTS = [
     // The deck is 3 tiles wide (17..19) x 3 long (23..25); only the center
     // column is walkable. Measured on bridge.landmark.civic.ns (BR-2): the
-    // planks stand ~25 px over the water (23 at the north end), steps down
-    // to (18,22) in the north and down to ~26.7 in the south; the near rail
-    // beam arches ~13 px from mid-span to its south end; the clear deck
-    // (36-40 px) holds two files 8 px either side of the walk line.
+    // planks stand ~25 px over the water (23 at the north end), ramp smoothly
+    // down onto (18,22) in the north and down to ~26.7 in the south; the near
+    // rail beam arches ~13 px from mid-span to its south end; the clear deck
+    // holds two files 6 px either side of the walk line, tapering to 0 on the
+    // landings between the narrow stone lantern pillars.
     {
         id: 'central-river-bridge',
         tileX: 18,
@@ -238,7 +239,7 @@ export const BRIDGE_HINTS = [
         widthRadius: 1,
         walkableRadius: 0,
         deckRise: 10,
-        deckProfile: [[-2, 0], [-1.75, 23], [-1, 25], [1.9, 25], [2.7, 0]],
+        deckProfile: [[-2.25, 0], [-1.4, 23], [-1, 25], [1.9, 25], [2.7, 0]],
         nearRail: {
             inner: 21.5,
             outer: 21.5,
@@ -246,7 +247,7 @@ export const BRIDGE_HINTS = [
             bottom: 6,
             lift: [[-1.5, 42.3], [-1, 44.5], [-0.5, 46.1], [-0.1, 46.4], [0.3, 44], [0.65, 40.5], [1, 37.4], [1.5, 32.7]],
         },
-        laneOffsetPx: 8,
+        laneOffsetPx: 6,
     },
     // The Miner's trestle (BR-7), the west crossing beside the Mine: deck
     // tiles (7, 23..26), one walkable column. It meets the north bank

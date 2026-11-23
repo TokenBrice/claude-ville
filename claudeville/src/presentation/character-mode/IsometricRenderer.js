@@ -36,7 +36,7 @@ import { HDR_HIGHLIGHTS_EVENT, overlayContextAttributes, publishDisplayStatus, r
 import { installP3OverlayInks, readDisplayMedia, setOverlayInksP3, watchDisplayMedia } from './DisplayColor.js';
 import { CameraDirector } from './CameraDirector.js';
 import { ParticleSystem } from './ParticleSystem.js';
-import { AgentSprite, drawFamiliarMotes, familiarMoteLightSources, ONE_SIDED_CHAT_GRACE_MS } from './AgentSprite.js';
+import { AgentSprite, drawFamiliarMotes, familiarMoteLightSources, MUTUAL_CHAT_MAX_MS, ONE_SIDED_CHAT_GRACE_MS } from './AgentSprite.js';
 import { BuildingSprite, SOURCE_HALO_RADIUS_CAP, lampsLitAt } from './BuildingSprite.js';
 import { VillageCalendar } from './VillageCalendar.js';
 import { IsleLandmarks } from './IsleLandmarks.js';
@@ -46,7 +46,7 @@ import { BehaviorTelemetry } from './BehaviorTelemetry.js';
 import { SceneryEngine } from './SceneryEngine.js';
 import { Pathfinder } from './Pathfinder.js';
 import { createWalkClearance } from './WalkClearance.js';
-import { constrainSteeringInto, constrainSteeringToTarget, laneAxisForBridgeOrientation } from './MovementSteering.js';
+import { bridgeCrossingTiles, constrainSteeringInto, constrainSteeringToTarget, laneAxisForBridgeOrientation } from './MovementSteering.js';
 import { SpriteRenderer } from './SpriteRenderer.js';
 import { SkyRenderer } from './SkyRenderer.js';
 import { AtmosphereState, sourceEnergyFor } from './AtmosphereState.js';
@@ -373,6 +373,7 @@ const FOLLOW_GAP = Object.freeze({
     engagePx: 22,
     releasePx: 24,
     yieldPx: 20.5,
+    minYieldPx: 6,
     closingFrames: 2,
     lookAheadPx: 20,
     headingDot: 0.7,
@@ -428,6 +429,15 @@ const GATE_ENTRY_GAP_PX = FOLLOW_GAP.releasePx;
 export const GATE_ENTRY_LANES = Object.freeze([
     Object.freeze({ tileX: 18.70, outsideY: 39.35, insideY: 36.6 }),
     Object.freeze({ tileX: 19.30, outsideY: 39.35, insideY: 36.6 }),
+]);
+// 7.4 — subagents emerging from the Portal Gate step out in two spaced files
+// (mirroring GATE_ENTRY_LANES, 32 px apart, both walkable and fixture-free);
+// a cold-load burst larger than PORTAL_COLD_SETTLE_LIMIT settles at its
+// destinations instead of piling up at the Portal.
+const PORTAL_COLD_SETTLE_LIMIT = 4;
+const PORTAL_ENTRY_LANES = Object.freeze([
+    Object.freeze({ tileX: 4.55, outsideY: 34.0, insideY: 35.0 }),
+    Object.freeze({ tileX: 5.45, outsideY: 34.0, insideY: 35.0 }),
 ]);
 
 // C2 — the Canvas fallback grades with the same evaluated grade as the
@@ -2103,9 +2113,16 @@ export class IsometricRenderer {
         this.buildingRenderer?.setRitualConductor?.(this.ritualConductor);
 
         // Create sprites for existing agents
+        const initialSubagents = [];
+        this._deferPortalRelease = true;
         for (const agent of this.world.agents.values()) {
             this._addAgentSprite(agent);
+            if (agent?.parentSessionId || agent?.parentId || agent?.parentAgentId) {
+                const sprite = this.agentSprites.get(agent.id);
+                if (sprite) initialSubagents.push(sprite);
+            }
         }
+        this._deferPortalRelease = false;
         this._syncRitualContext();
 
         this.agentEventStream?.dispose?.();
@@ -2126,6 +2143,12 @@ export class IsometricRenderer {
         this.relationshipState = new RelationshipState(this.world);
         this._replayActiveToolRituals({ force: true });
         this._updateVisitSystems(Date.now());
+        this._coldPortalSettled = this.world.agents.size > 0;
+        if (initialSubagents.length > PORTAL_COLD_SETTLE_LIMIT && !this.replay?.recorded) {
+            this._settlePortalColdBurst(initialSubagents);
+        } else {
+            this._releasePortalEntries();
+        }
         this._installDebugGlobal('__relationshipState', () => this.relationshipState?.getSnapshot?.());
         this._installDebugGlobal('__visitIntents', () => this.visitIntentManager?.debugSnapshot?.() || null);
         this._installDebugGlobal('__visitReservations', () => this.visitTileAllocator?.debug?.() || null);
@@ -2873,6 +2896,7 @@ export class IsometricRenderer {
             if (Number(sprite.addedAt) >= lastFrameAt || sprite.isArrivalPending?.() || transit?.type === 'arrival') {
                 this.gateTransits.delete(agentId);
                 if (this._gateEntryQueue?.length) this._gateEntryQueue = this._gateEntryQueue.filter(entry => entry.sprite !== sprite);
+                if (this._portalEntryQueue?.length) this._portalEntryQueue = this._portalEntryQueue.filter(entry => entry.sprite !== sprite);
                 this.arrivalDeparture?.arrivals?.delete(agentId);
                 this.arrivalDeparture?.dispatches?.delete(agentId);
                 sprite.settleAtDestination?.();
@@ -4305,6 +4329,9 @@ export class IsometricRenderer {
             }
             if (started || this.motionScale <= 0) {
                 this.gateTransits.delete(agent.id);
+                if (this._portalEntryQueue?.length) {
+                    this._portalEntryQueue = this._portalEntryQueue.filter(entry => entry.sprite !== sprite);
+                }
                 if (!started) this._resolveLandingOverlap(sprite);
                 this._markSpritesDirty();
                 return true;
@@ -4475,30 +4502,21 @@ export class IsometricRenderer {
             return;
         }
 
-        // Subagents step out of the Portal Gate toward their parent; with
-        // motion, the dispatch comet (6.3) relocates them beside the parent.
+        // Subagents emerge from the Portal Gate through a two-lane release
+        // queue (matching the village gate queue) so simultaneous arrivals
+        // never stack on PORTAL_SPAWN_TILE; with motion, mid-session dispatch
+        // comets (6.3) relocate them beside the parent instead.
         const parentRef = agent?.parentSessionId || agent?.parentId || agent?.parentAgentId;
         if (parentRef) {
-            const parentSprite = this.agentSprites.get(parentRef);
-            const parentTile = parentSprite && typeof parentSprite._screenToTile === 'function'
-                ? parentSprite._screenToTile(parentSprite.x, parentSprite.y)
-                : null;
-            const intent = this.visitIntentManager?.getIntentForAgent?.(parentRef) || null;
-            const intentBuilding = intent?.building ? this._getBuildingByType(intent.building) : null;
-            const intentVisitTile = intentBuilding && typeof intentBuilding.primaryVisitTile === 'function'
-                ? intentBuilding.primaryVisitTile()
-                : null;
-            const destination = parentTile || intentVisitTile || null;
-
-            sprite.setTilePosition?.(
-                PORTAL_SPAWN_TILE.tileX + this._gateJitter(agent, 'portal-x', 0.32),
-                PORTAL_SPAWN_TILE.tileY + this._gateJitter(agent, 'portal-y', 0.22),
-            );
-            if (this.motionScale <= 0 || !destination) {
+            if (this.motionScale <= 0) {
+                sprite.setTilePosition?.(
+                    PORTAL_SPAWN_TILE.tileX + this._gateJitter(agent, 'portal-x', 0.32),
+                    PORTAL_SPAWN_TILE.tileY + this._gateJitter(agent, 'portal-y', 0.22),
+                );
                 return;
             }
-            sprite.walkToTile?.(destination.tileX, destination.tileY);
-            this.gateTransits.set(agent.id, { type: 'arrival', since: Date.now() });
+            sprite.setTilePosition?.(PORTAL_SPAWN_TILE.tileX, PORTAL_SPAWN_TILE.tileY);
+            this._walkInThroughPortal(agent, sprite);
             return;
         }
 
@@ -4558,6 +4576,80 @@ export class IsometricRenderer {
             if (Math.hypot(other.x - entry.x, other.y - entry.y) < GATE_ENTRY_GAP_PX) return false;
         }
         return true;
+    }
+
+    // 7.4 — subagent Portal arrivals join a two-lane release queue so fleets
+    // emerge spaced by at least GATE_ENTRY_GAP_PX instead of piling on one
+    // tile.
+    _walkInThroughPortal(agent, sprite) {
+        const queue = this._portalEntryQueue ||= [];
+        if (!queue.some(entry => entry.sprite === sprite)) queue.push({ agent, sprite });
+        sprite.setArrivalState?.('pending');
+        if (!this._deferPortalRelease) this._releasePortalEntries();
+    }
+
+    _releasePortalEntries() {
+        const queue = this._portalEntryQueue;
+        if (!queue?.length) return;
+        // Cold-load burst arriving on the first populated snapshot: settle
+        // > PORTAL_COLD_SETTLE_LIMIT subagents directly at their destinations.
+        if (!this._coldPortalSettled && !this.replay?.recorded) {
+            const liveQueued = [];
+            for (const entry of queue) {
+                const live = this.agentSprites.get(entry.agent?.id);
+                if (live === entry.sprite && !entry.sprite.leaving
+                    && entry.sprite.isArrivalPending?.() && !this._isGateTransit(entry.sprite, 'departure')) {
+                    liveQueued.push(entry.sprite);
+                }
+            }
+            if (liveQueued.length > PORTAL_COLD_SETTLE_LIMIT) {
+                this._coldPortalSettled = true;
+                this._updateVisitSystems(Date.now());
+                this._settlePortalColdBurst(liveQueued);
+                return;
+            }
+        }
+        while (queue.length) {
+            const { agent, sprite } = queue[0];
+            const live = this.agentSprites.get(agent.id);
+            if (live !== sprite || sprite.leaving || !sprite.isArrivalPending?.() || this._isGateTransit(sprite, 'departure')) {
+                queue.shift();
+                continue;
+            }
+            const lane = PORTAL_ENTRY_LANES.find(entry => this._gateLaneClear(entry));
+            if (!lane) return;
+            queue.shift();
+            sprite.setTilePosition?.(lane.tileX, lane.outsideY);
+            sprite.walkStraightToTile?.(lane.tileX, lane.insideY);
+            this.gateTransits.set(agent.id, { type: 'arrival', gate: true, portal: true, since: Date.now() });
+            this._markSpritesDirty();
+        }
+    }
+
+    // Settle a cold-load burst of > 4 subagents directly at their allocated
+    // destinations so the initial fleet never forms a Portal pile-up.
+    _settlePortalColdBurst(sprites) {
+        if (!sprites?.length) return;
+        const settledSet = new Set(sprites);
+        if (this._portalEntryQueue?.length) {
+            this._portalEntryQueue = this._portalEntryQueue.filter(entry => !settledSet.has(entry.sprite));
+        }
+        for (const sprite of sprites) {
+            if (!sprite || sprite.leaving) continue;
+            const agentId = sprite.agent?.id;
+            if (agentId) {
+                this.gateTransits.delete(agentId);
+                this.arrivalDeparture?.dispatches?.delete?.(agentId);
+            }
+            sprite.settleAtDestination?.();
+        }
+        this.visitTileAllocator?.updateContext?.({
+            buildings: this.world?.buildings,
+            agentSprites: this.agentSprites,
+            pathfinder: this.pathfinder,
+        });
+        this._fanStacks();
+        this._markSpritesDirty();
     }
 
     _beginAgentGateDeparture(agent) {
@@ -5711,6 +5803,7 @@ export class IsometricRenderer {
 
     _updateChatMatching() {
         const senders = new Set();
+        const senderMsgKeys = new Map();
         const spriteByRecipient = new Map();
 
         for (const sprite of this.agentSprites.values()) {
@@ -5748,7 +5841,16 @@ export class IsometricRenderer {
             if (!agent) continue;
             if (agent.status === AgentStatus.WORKING && agent.currentToolInput
                 && isAgentMessageTool(agent.currentTool, agent.currentToolInput)) {
+                const rawInput = typeof agent.currentToolInput === 'string'
+                    ? agent.currentToolInput
+                    : JSON.stringify(agent.currentToolInput);
+                const msgKey = `${agent.currentTool || ''}|${rawInput}`;
+                if (sprite._exhaustedChatMsgKey && sprite._exhaustedChatMsgKey !== msgKey) {
+                    sprite._exhaustedChatMsgKey = null;
+                }
+                if (sprite._exhaustedChatMsgKey === msgKey) continue;
                 senders.add(sprite);
+                senderMsgKeys.set(sprite, msgKey);
 
                 if (sprite.chatPartner) continue;
 
@@ -5760,14 +5862,17 @@ export class IsometricRenderer {
                 // is not chatting (nor under another sender's live approach):
                 // a busy recipient is skipped and the sender retries on a later
                 // matching pass instead of stacking on it. BR-5 — an approach
-                // starts once neither body stands on a bridge deck or landing:
-                // a walker finishes its crossing first.
+                // starts once neither body stands on a bridge deck, landing or
+                // the gatehouse apron.
                 if (target && target !== sprite && !target.chatPartner && !target.chatting
                     && (!claimant || claimant === sprite)
-                    && !sprite.standsOnCrossing?.() && !target.standsOnCrossing?.()) {
+                    && !sprite.standsOnCrossing?.() && !target.standsOnCrossing?.()
+                    && !sprite.standsOnGateApron?.() && !target.standsOnGateApron?.()) {
                     claims.set(target, sprite);
                     sprite.startChat(target);
                 }
+            } else if (sprite._exhaustedChatMsgKey) {
+                sprite._exhaustedChatMsgKey = null;
             }
         }
 
@@ -5781,6 +5886,18 @@ export class IsometricRenderer {
             if (sprite.chatting && sprite.chatPartner?.chatPartner !== sprite
                 && now - (sprite.chatSinceMs || 0) > ONE_SIDED_CHAT_GRACE_MS) {
                 sprite.endChat();
+                continue;
+            }
+            // Cap mutual chats on unchanged static messaging tool calls at
+            // MUTUAL_CHAT_MAX_MS so a static SendMessage never traps a pair.
+            if (sprite.chatting && sprite.chatPartner?.chatPartner === sprite
+                && sprite.chatSinceMs
+                && now - sprite.chatSinceMs > MUTUAL_CHAT_MAX_MS) {
+                const partner = sprite.chatPartner;
+                if (senderMsgKeys.has(sprite)) sprite._exhaustedChatMsgKey = senderMsgKeys.get(sprite);
+                if (senderMsgKeys.has(partner)) partner._exhaustedChatMsgKey = senderMsgKeys.get(partner);
+                sprite.endChat();
+                if (partner.chatPartner === sprite) partner.endChat();
                 continue;
             }
             if (sprite.chatPartner && !senders.has(sprite)) {
@@ -5885,6 +6002,8 @@ export class IsometricRenderer {
         }
         this._pruneCrowdBumpCooldowns(now);
         this._releaseGateEntries();
+        this._releasePortalEntries();
+        if (!this._coldPortalSettled && this.agentSprites.size > 0) this._coldPortalSettled = true;
         // 2.4 — affinity proximity re-evaluates on a slow cadence; warmth
         // changes are gradual, so per-frame work would be wasted.
         this._affinityProximityAccumulator += dt;
@@ -6130,13 +6249,16 @@ export class IsometricRenderer {
     _buildLaneTileIndex() {
         const lanes = new Map();
         if (!this.pathTiles?.size) return lanes;
+        const crossings = bridgeCrossingTiles(this.bridgeTiles);
         for (const key of this.pathTiles) {
             if (!this._isRoadLikeTileKey(key)) continue;
             const tile = this._parseTileKey(key);
             if (!tile) continue;
             if (this.pathfinder && !this.pathfinder.isWalkable(tile.tileX, tile.tileY)) continue;
             const bridge = this.bridgeTiles?.get?.(key);
-            const bridgeAxis = laneAxisForBridgeOrientation(bridge?.orientation);
+            const crossing = crossings.get(key);
+            const bridgeLanding = Boolean(crossing?.landing);
+            const bridgeAxis = laneAxisForBridgeOrientation(bridge?.orientation || (bridgeLanding ? crossing.info?.orientation : null));
             const axis = bridgeAxis || this._bestRoadAxis(tile.tileX, tile.tileY);
             if (!axis) continue;
             const center = tileToWorld(tile.tileX, tile.tileY);
@@ -6156,13 +6278,16 @@ export class IsometricRenderer {
                 tangentY: vy / length,
                 perpX: -vy / length,
                 perpY: vx / length,
-                laneOffset: bridge?.kind === 'landmark'
+                laneOffset: bridgeLanding
+                    ? 0
+                    : bridge?.kind === 'landmark'
                     ? bridge.laneOffsetPx ?? LANE_STEERING.bridgeOffsetPx
                     : plazaLike
                     ? LANE_STEERING.plazaOffsetPx
                     : material === 'avenue'
                         ? LANE_STEERING.avenueOffsetPx
                         : LANE_STEERING.dirtOffsetPx,
+                bridgeLanding,
                 material,
                 degree,
                 plazaLike,
@@ -6460,11 +6585,13 @@ export class IsometricRenderer {
                 const trigger = trailing._followYield
                     ? FOLLOW_GAP.releasePx
                     : FOLLOW_GAP.yieldPx + closing * FOLLOW_GAP.closingFrames;
-                // A walker never plants to give way on a fixture: it walks on
-                // (one rung down, in file) until it is off it.
-                const givesWay = leaderWalks && ahead >= FOLLOW_GAP.aheadDot * dist && dist < trigger
+                // A walker never plants to give way on a fixture, nor when two
+                // bodies are closer than minYieldPx (6 px): stacked bodies
+                // separate instead of freezing into a follow-yield knot.
+                const stackedClose = dist < FOLLOW_GAP.minYieldPx;
+                const givesWay = !stackedClose && leaderWalks && ahead >= FOLLOW_GAP.aheadDot * dist && dist < trigger
                     && !standsOnFixture(trailing.x, trailing.y);
-                if (sameCourse && dist < FOLLOW_GAP.engagePx && ahead < FOLLOW_GAP.aheadDot * dist) {
+                if (sameCourse && dist < FOLLOW_GAP.engagePx && (stackedClose || ahead < FOLLOW_GAP.aheadDot * dist)) {
                     abreast.add(a);
                     abreast.add(b);
                 }
@@ -6500,8 +6627,9 @@ export class IsometricRenderer {
             // Steering never pushes a walker back along its own course. Of a
             // file (one course) only the push's lateral and forward parts
             // reach the proposal; the gap belongs to the follow rung. Walkers
-            // on crossing or opposed courses sidestep by the backward part.
-            const sidestep = !sameCourse;
+            // on crossing or opposed courses — or stacked within minYieldPx —
+            // sidestep by the backward part so they peel apart immediately.
+            const sidestep = !sameCourse || dist < FOLLOW_GAP.minYieldPx;
             this._forwardOnlyPush(nx * overlap * strength, ny * overlap * strength, headingA, sidestep, pushA);
             this._forwardOnlyPush(-nx * overlap * strength, -ny * overlap * strength, headingB, sidestep, pushB);
             constrainSteeringInto(nextA, a.x, a.y, a.x + pushA.x, a.y + pushA.y, a.targetX, a.targetY);
@@ -6565,6 +6693,8 @@ export class IsometricRenderer {
             if (stop.reach <= lastLegPx) continue;
             let px = 0;
             let py = 0;
+            let targetInsideStanding = false;
+            const hasMoreWaypoints = Array.isArray(walker.waypoints) && walker.waypoints.length > 1;
             for (const body of standing) {
                 const ex = (walker.x - body.x) / xPx;
                 const ey = (walker.y - body.y) / yPx;
@@ -6577,6 +6707,11 @@ export class IsometricRenderer {
                 // it was re-aimed onto a fan place (it then walks on to it).
                 const standsBeside = !walker.chatPartner || walker._routeEndFanPlace?.();
                 if (standsBeside && e >= Math.hypot((stop.x - body.x) / xPx, (stop.y - body.y) / yPx)) continue;
+                if (hasMoreWaypoints) {
+                    const tx = (walker.targetX - body.x) / xPx;
+                    const ty = (walker.targetY - body.y) / yPx;
+                    if (tx * tx + ty * ty < 1) targetInsideStanding = true;
+                }
                 // Out along the ellipse normal; a walker standing exactly on
                 // the body takes the stable hash angle.
                 let gx = ex / xPx;
@@ -6594,14 +6729,20 @@ export class IsometricRenderer {
             }
             if (!px && !py) continue;
             const push = this._forwardOnlyPush(px, py, headings.get(walker), true, this._standingPush ||= { x: 0, y: 0 });
-            const next = constrainSteeringToTarget({
-                x: walker.x,
-                y: walker.y,
-                nextX: walker.x + push.x,
-                nextY: walker.y + push.y,
-                targetX: walker.targetX,
-                targetY: walker.targetY,
-            });
+            // When an intermediate waypoint lies inside a standing body's
+            // clearance ellipse, projecting back toward that waypoint cancels
+            // the sidestep; bypass constrainSteeringToTarget while keeping the
+            // V7 stride lock (_strideKeptSteer).
+            const next = targetInsideStanding
+                ? { x: walker.x + push.x, y: walker.y + push.y, constrained: false }
+                : constrainSteeringToTarget({
+                    x: walker.x,
+                    y: walker.y,
+                    nextX: walker.x + push.x,
+                    nextY: walker.y + push.y,
+                    targetX: walker.targetX,
+                    targetY: walker.targetY,
+                });
             const kept = this._strideKeptSteer(walker, next);
             if (
                 !kept
@@ -6611,6 +6752,20 @@ export class IsometricRenderer {
             walker.x = kept.x;
             walker.y = kept.y;
             if (next.constrained) this._localAvoidanceMetrics.progressClamps++;
+            // Advance past an obstructed non-crossing intermediate waypoint as
+            // soon as the line to the next waypoint is clear so the walker
+            // never backtracks into the standing body.
+            if (targetInsideStanding && hasMoreWaypoints) {
+                const wpTile = worldToTile(walker.targetX, walker.targetY);
+                const wpKey = `${Math.round(wpTile.tileX)},${Math.round(wpTile.tileY)}`;
+                const nextWp = walker.waypoints[1];
+                const onCrossing = walker._crossingTiles?.().has(wpKey);
+                if (!onCrossing && nextWp && walker._isScreenSegmentWalkable?.(kept.x, kept.y, nextWp.x, nextWp.y)) {
+                    walker.waypoints.shift();
+                    walker.targetX = nextWp.x;
+                    walker.targetY = nextWp.y;
+                }
+            }
             steered++;
         }
         return steered;

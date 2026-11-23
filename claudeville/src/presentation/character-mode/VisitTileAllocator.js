@@ -237,6 +237,7 @@ export class VisitTileAllocator {
                 teamName: sprite?.agent?.teamName || null,
                 parentSessionId: sprite?.agent?.parentSessionId || null,
                 moving: !!sprite?.moving,
+                pending: !!sprite?.isArrivalPending?.(),
             };
             this._occupancyEntries.push(entry);
             const key = this._occupancyBucketKey(tile.tileX, tile.tileY);
@@ -952,12 +953,15 @@ export class VisitTileAllocator {
         const bucket = Math.floor(now / 2000);
         if (this._congestionSnapshot?.bucket === bucket) return this._congestionSnapshot;
         const congestionTiles = new Map();
+        const standingTiles = new Set();
         for (const [key, entries] of this._occupancyBuckets) {
             congestionTiles.set(key, Math.min(8, Math.round(entries.length / 2) * 2));
+            if (entries.some((entry) => !entry.moving && !entry.pending)) standingTiles.add(key);
         }
         const congestionVersion = [...congestionTiles].sort(([a], [b]) => a.localeCompare(b))
             .map(([key, count]) => `${key}:${count}`).join(';');
-        this._congestionSnapshot = { bucket, congestionTiles, congestionVersion };
+        const standingVersion = [...standingTiles].sort().join(';');
+        this._congestionSnapshot = { bucket, congestionTiles, congestionVersion, standingTiles, standingVersion };
         return this._congestionSnapshot;
     }
 
