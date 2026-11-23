@@ -3548,7 +3548,7 @@ export class BuildingSprite {
             // #33 — reduced-motion fallback: a single static chimney wisp in
             // place of the live steam/smoke column.
             if (!this.motionScale) {
-                this._drawStaticSmokeWisp(ctx, localPoint(127, 29), { heat: 0.2 });
+                this._drawStaticSmokeWisp(ctx, localPoint(162, 6), { heat: 0.2 });
             }
         } else if (building.type === 'archive') {
             if (splitPass !== 'back') this._drawArchiveEnhancement(ctx, localPoint);
@@ -3824,7 +3824,7 @@ export class BuildingSprite {
         // 5.A — the signals hoist on the outer bunting mast of the north pier;
         // the cargo stands on the quay deck between the door and the coping.
         const signal = localPoint(341, 116);
-        const pier = localPoint(140, 205);
+        const pier = localPoint(152, 213);
         const lightGrade = this._overlayLightGrade();
         const grade = lightGrade ? (tone) => gradeTone(tone, lightGrade) : null;
         const windX = pennantWind(this.atmosphereState?.weather);

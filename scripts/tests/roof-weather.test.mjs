@@ -512,9 +512,9 @@ test('a run that would straddle the split horizon keeps to its seed half', () =>
 
 // EN-2 — the facade recolour leaves roof weather exactly as it was: the
 // counts below are the snow-cap mask and the full-cover paint of the art
-// before the ramp edits (integration 4e601945).
+// (Command +23 cap/cover px from L12-F6 unlit iron gate brazier bowls).
 test('the facade ramp edits keep the roof class and snow-cap masks', () => {
-    for (const [type, caps, cover] of [['tavern', 174, 10985], ['command', 203, 8824]]) {
+    for (const [type, caps, cover] of [['tavern', 174, 10985], ['command', 226, 8847]]) {
         const { map, albedo } = landmark(type);
         let capped = 0;
         for (let p = 0; p < map.cap.length; p++) if (map.cap[p] >= 0) capped++;

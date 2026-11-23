@@ -82,6 +82,12 @@ export const WINTER_PROPS = Object.freeze({
     'prop.windmill': { dormancy: 'evergreen', surface: 'round', roof: { caps: true, poly: [[63, 24], [33, 60], [34, 69], [64, 78], [95, 69], [96, 60]] } },
     'prop.hourglassBelfry': { dormancy: 'evergreen', surface: 'round', roof: { caps: true, poly: [[64, 14], [25, 52], [64, 74], [102, 52]] } },
     'bridge.landmark.rustic.ns': { dormancy: 'evergreen', surface: 'round', roof: { caps: true } },
+    // L08 F6 — village cottages & shopfronts: slate roofs by the slate rule +
+    // silhouette caps (and cooper's timber shingle gable by explicit polygon).
+    'prop.cottage.weaver': { dormancy: 'evergreen', surface: 'round', roof: { caps: true } },
+    'prop.cottage.cooper': { dormancy: 'evergreen', surface: 'round', roof: { caps: true, poly: [[87, 3], [32, 31], [60, 81], [116, 53]] } },
+    'prop.cottage.baker': { dormancy: 'evergreen', surface: 'round', roof: { caps: true } },
+    'prop.cottage.chandler': { dormancy: 'evergreen', surface: 'round', roof: { caps: true } },
 });
 
 // The village wall's walk (VillageWall `paintWallRun`, the stone curtain's

@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-11-23-run-strips"
+  assetVersion: "2026-11-23-visual-overhaul"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -2493,20 +2493,33 @@ buildings:
         gate: status.quota
         restIsBase: true
         materialClass: fabric
-      # 6.1 / V4 — the two gate braziers' painted tongues climb (EmitterCycle
-      # `mode: tongues`, 2-column lanes over a 1-texel bed) while the village
-      # lamps are lit (`lamps`, like the Pharos lens): fixtures of the lamp
-      # course that never read agent state, so by day an empty Command is its
-      # authored base. Mask only: never drawn as art. The first cut's rank wave
-      # swapped whole 4-row bands of these 7-row flames onto the tan edge shade
-      # #d4984e.
+      # 6.1 / V4 — the two gate braziers' flames live on a lamps-gated fixture
+      # overlay (`brazierFlames`), so at noon the bowls stand as unlit iron and
+      # charcoal in `base.png`; at night `brazierFlames` lights them and
+      # `braziers` cycles their painted tongues (EmitterCycle `mode: tongues`,
+      # 2-column lanes over a 1-texel bed). Fixtures of the lamp course never
+      # read agent state.
+      brazierFlames:
+        tool: hand-authored
+        prompt: "Command gate brazier flames: the two warm fire plumes above the iron bowls, drawn only while lamps are lit; authored, not generated"
+        width: 66
+        height: 40
+        anchor: [123, 211]
+        fixture: true
+        gate: lamps
+        materialClass: fire
+        emissive:
+          strength: 1
+          sources:
+            - { id: emissive.command.brazierFlames, kind: fire, geometry: authored-albedo, strength: 1 }
       braziers:
         tool: hand-authored
-        prompt: "cycle mask: the baked flame texels of the two gate braziers; authored, not generated"
-        width: 360
-        height: 240
-        anchor: [199, 164]
-        cycle: { gate: lamps, mode: tongues, lanePx: 2, keepPx: 1, hz: 6 }
+        prompt: "cycle mask: the flame texels of brazierFlames.png for the two gate braziers; authored, not generated"
+        width: 66
+        height: 40
+        anchor: [123, 211]
+        fixture: true
+        cycle: { gate: lamps, art: brazierFlames, mode: tongues, lanePx: 2, keepPx: 1, hz: 6 }
     # The two gate braziers (architectural fires) and the gold finial/crest.
     emitters:
       torch: [94, 180]
@@ -2615,15 +2628,16 @@ buildings:
   # and bunting strips are re-cropped from this base; the bunting rope runs
   # between the two masts baked on the north pier.
   - id: building.harbor
-    tool: create_image_pro
-    prompt: "isometric pixel art building sprite, true 2:1 dimetric isometric view from the south-east, a medieval Harbour Master's house on a stone quay with three long timber piers. The house: a large two-storey half-timbered hall of dark oak beams over cream plaster on a grey limestone ashlar ground floor, steep slate-blue tiled roofs with gables and a dormer, a stone chimney, a counting-house bay window, a tall arched oak door facing the lower-left, small leaded windows with unlit dark slate glass, a slate-roofed lean-to store at the left end. Whimsical signature: a slim square clock turret with a slate spire holding a large round glowing tide clock, a brass ring around a pale blue-green moon-and-wave dial. The quay: a broad raised grey limestone quay laid in visible ashlar courses with a darker base course at the waterline and a pale dressed coping-stone edge along its top rim, iron mooring rings. A plain timber jib crane with a rope hoist and a hanging cargo crate at the quay's front corner, an iron lantern on a post. Three long plank timber piers on oak pilings reach from the quay toward the lower-right into open water, parallel and evenly spaced with wide empty water channels between them as ship berths, bollards along each pier. Two tall slim timber masts on the far right pier for bunting. Warm light from the upper left, chunky stepped cel shading, 1px warm near-black selective outline. The structure fills the canvas with a small transparent margin. Structure only on a transparent background: no water, no ground tile, no lawn, no cast shadow, no ships, no people, no text. No steam pipes, no smokestacks, no gauges."
-    provenance: { item: '5.A', endpoint: create_image_pro, jobId: 0bf2b62f-89a8-45d5-9dd1-7e6d659a6163, seed: 4245, styleImage: building.command, referenceImage: 'B-clock-3 draft (create_image_pro job 0aabf50d-9f1b-4f72-9c21-b68a576bdb13, painted over with longer piers) + building.tavern', generationSize: 416x304, crop: [30, 8, 384, 284], generations: 25, pilotGenerations: 45, recolor: 'pure-black outline -> #060402 (hand, not generated)', generatedAt: '2026-10-15' }
+    tool: generate-image-v2
+    prompt: "isometric pixel art building sprite, true 2:1 dimetric isometric view from the south-east, a grand medieval Harbour Master's house standing on a raised grey limestone ashlar quay with three long preserved timber piers. Full Tavern-scale two-storey architecture: tall grey limestone ashlar ground storey with a large full-height arched heavy oak double door (~36x60 px) and leaded counting-house bay window, sturdy dark-oak half-timbered upper storey over cream plaster with big unlit dark slate-blue leaded windows, steep roofSlate gable roof with stone chimney, stout square clock turret with pointed slate spire and large round sea-glass tide clock. Bolder stout dark-oak jib crane with rope hoist and chunky hanging cargo crate on the front-left quay, unlit iron quay lantern post, static sagging hemp dock rope between the north pier masts."
+    provenance: { item: 'L12-F6', endpoint: generate-image-v2, jobId: 1daaeab5-c049-4a03-8a29-6c49363163df, seed: 4248, styleImage: building.tavern, referenceImage: '256x228 Tavern-scaled quay/house blockout + building.tavern', generationSize: 256x228, generations: 10, post: 'composited onto preserved 384x284 quay waterline, 3 piers (15 piling tips) & north pier masts + static dock rope; roofSlate snap + 1px #060402 ink', generatedAt: '2026-11-23' }
     width: 384
     height: 284
     anchor: [131, 154]
     materialClass: stone
     materialSidecar: true
     emissiveSidecar: true
+    emissiveFamily: cool
     occluderSidecar: true
     surfaceCode: true
     roomsSidecar: true
@@ -2641,42 +2655,41 @@ buildings:
     splitForOcclusion: true
     horizonY: 200
     emitters:
-      torch: [18, 149]
-      signal: [187, 51]
-    lightSource: [18, 150]
+      torch: [27, 157]
+      signal: [217, 49]
+    lightSource: [27, 157]
     lightColor: '#ffd37a'
     lightRadius: 96
     lightOverlay: 'atmosphere.light.lantern-glow'
     layers:
-      # 6.1 — the jib crane hoists: the hook and crate ride up 6 px on the
-      # rope, 4 fps, only while the Harbor has a working visitor (V8). Frame 0
-      # is the base crop; the quay texels a lifted crate uncovers are borrowed
-      # one coping course up-left.
+      # 6.1 — the jib crane hoists: the hook and chunky cargo crate ride up
+      # 12 px on the rope, 4 fps, only while the Harbor has a working visitor
+      # (V8). Frame 0 is the exact base crop (`restIsBase`).
       crane:
         tool: hand-authored
-        prompt: "Harbor crane hoist strip: the hook and cargo crate under the jib raised 0/2/4/6/4/2 px; authored, not generated"
-        width: 132
-        height: 56
+        prompt: "Harbor crane hoist strip: the hook and chunky cargo crate under the jib raised 0/4/8/12/8/4 px; authored, not generated"
+        width: 204
+        height: 67
         frames: 6
-        frameW: 22
-        frameH: 56
-        anchor: [85, 206]
+        frameW: 34
+        frameH: 67
+        anchor: [102, 215]
         fps: 4
         staticFrame: 0
         gate: work.harbor
         restIsBase: true
         materialClass: timber
-      # 6.2 — the arched oak door under the bay window: closed / ajar / open
-      # onto the dark hall and a warm floor while it works.
+      # 6.2 — the full-height arched oak double door (~36x60 px): closed / ajar
+      # / open onto the dark hall and a warm stepped floor while it works.
       door:
         tool: hand-authored
-        prompt: "Harbor office door closed / ajar / open, hinged left, dark hall #1a1310 over a stepped warm floor; B3-08: two Bayer-dithered #ff9d4a courses (1/2, 1/4) rise from it in the open frames; authored, not generated"
-        width: 36
-        height: 24
+        prompt: "Harbor office full-height arched oak double door closed / ajar / open onto dark hall #1a1310 over a stepped warm floor with two Bayer-dithered #ff9d4a courses (1/2, 1/4); authored, not generated"
+        width: 108
+        height: 60
         frames: 3
-        frameW: 12
-        frameH: 24
-        anchor: [137, 161]
+        frameW: 36
+        frameH: 60
+        anchor: [159, 178]
         fps: 8
         staticFrame: 0
         gate: door.harbor
@@ -4468,6 +4481,58 @@ props:
     height: 32
     anchor: [24, 24]
     provenance: { item: 'W8.3b', generations: 1 }
+
+  # L08 F6 — non-interactive village cottages & shopfronts stitching the landmarks
+  # into continuous streets: 120x120 Pro objects in the Tavern/Command palette,
+  # slate-blue or timber roofs, unlit dark slate glass, no plaques, baked
+  # surface-coded occluder sidecars and PropWinter roof snow coverage.
+  - id: prop.cottage.weaver
+    tool: create_1_direction_object
+    prompt: "small medieval slate-roofed half-timbered weaver cottage, grey stone base, cream plaster upper wall with dark oak beams, steep slate-blue tiled gable roof, short stone chimney, dark oak door and unlit dark slate windows, isometric 2:1, no ground slab, no text"
+    width: 120
+    height: 120
+    anchor: [62, 102]
+    materialClass: stone
+    occluderSidecar: true
+    surfaceCode: true
+    occluder: { mode: alpha-silhouette, strength: 1 }
+    provenance: { item: 'L08-F6', endpoint: create-1-direction-object, objectId: 86148af1-9919-4681-8ead-bf01f0ec5af9, frame: 0, styleImages: 'building.tavern + building.command (120x120)', generations: 10, batchCount: 4, post: 'roofSlate snap + 1px #060402 ink + surface occluder sidecar', generatedAt: '2026-11-23' }
+
+  - id: prop.cottage.cooper
+    tool: create_1_direction_object
+    prompt: "small medieval timber-roofed cooper shopfront cottage, weathered warm dark timber shingle gable roof, oak half-timbered walls over stone footing, arched oak doorway with two small stacked barrels beside the wall, unlit dark slate windows, isometric 2:1, no ground slab, no text"
+    width: 120
+    height: 120
+    anchor: [60, 102]
+    materialClass: timber
+    occluderSidecar: true
+    surfaceCode: true
+    occluder: { mode: alpha-silhouette, strength: 1 }
+    provenance: { item: 'L08-F6', endpoint: create-1-direction-object, objectId: 86148af1-9919-4681-8ead-bf01f0ec5af9, frame: 1, styleImages: 'building.tavern + building.command (120x120)', generations: 10, batchCount: 4, post: '1px #060402 ink + surface occluder sidecar', generatedAt: '2026-11-23' }
+
+  - id: prop.cottage.baker
+    tool: create_1_direction_object
+    prompt: "small medieval slate-roofed stone baker cottage, cool grey limestone ashlar walls with timber eaves, steep slate-blue hipped roof with brick-topped stone chimney, stout oak door and small unlit dark slate windows with shutters, isometric 2:1, no ground slab, no text"
+    width: 120
+    height: 120
+    anchor: [61, 102]
+    materialClass: stone
+    occluderSidecar: true
+    surfaceCode: true
+    occluder: { mode: alpha-silhouette, strength: 1 }
+    provenance: { item: 'L08-F6', endpoint: create-1-direction-object, objectId: 86148af1-9919-4681-8ead-bf01f0ec5af9, frame: 2, styleImages: 'building.tavern + building.command (120x120)', generations: 10, batchCount: 4, post: 'roofSlate snap + 1px #060402 ink + surface occluder sidecar', generatedAt: '2026-11-23' }
+
+  - id: prop.cottage.chandler
+    tool: create_1_direction_object
+    prompt: "small medieval village chandler shopfront cottage, dark oak half-timbered walls, steep slate-blue gable roof with small dormer, muted crimson-and-cream cloth shop awning over a timber counter window, unlit dark slate panes, isometric 2:1, no ground slab, no text"
+    width: 120
+    height: 120
+    anchor: [58, 104]
+    materialClass: timber
+    occluderSidecar: true
+    surfaceCode: true
+    occluder: { mode: alpha-silhouette, strength: 1 }
+    provenance: { item: 'L08-F6', endpoint: create-1-direction-object, objectId: 86148af1-9919-4681-8ead-bf01f0ec5af9, frame: 3, styleImages: 'building.tavern + building.command (120x120)', generations: 10, batchCount: 4, post: 'roofSlate snap + 1px #060402 ink + surface occluder sidecar', generatedAt: '2026-11-23' }
 
 # ─── VEGETATION ──────────────────────────────────────────────────────────────
 vegetation:
