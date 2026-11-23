@@ -1,5 +1,6 @@
 import { BUILDING_DEFS } from '../../config/buildings.js';
-import { TILE_HALF_WIDTH } from './Projection.js';
+import { COMMAND_QUEUE } from '../../config/townPlan.js';
+import { TILE_HALF_WIDTH, buildingCenterToWorld, tileToWorld } from './Projection.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { attentionCandidateBounds, fitAttentionFrame } from './AttentionFraming.js';
@@ -56,11 +57,15 @@ const AMBIENT_SUBJECT_PADDING_PX = 32;
 // centre. A member chatting or walking at another building is not in the shot.
 const AMBIENT_COHORT_APRON_TILES = 3;
 const BUILDING_SPAN_TILES = new Map(BUILDING_DEFS.map(def => [def.type, Math.max(def.width || 1, def.height || 1)]));
+const BUILDING_CENTER_BY_TYPE = new Map(BUILDING_DEFS.map(def => [def.type, buildingCenterToWorld(def)]));
+const COMMAND_QUEUE_HEAD = COMMAND_QUEUE?.slots?.[0]
+    ? tileToWorld(COMMAND_QUEUE.slots[0].tileX, COMMAND_QUEUE.slots[0].tileY)
+    : (BUILDING_CENTER_BY_TYPE.get('command') || null);
 // Long lateral moves in the ambient motion family (8.1: easeInOutSine, the
 // distance-scaled duration ×2.2). 4.1/M8 — shots are sized by visible world
 // area: the wide rests at `scales.wide` (z2 at 5120 × 1440 DPR 1) and
 // cohorts and chapters at `scales.medium` at most (z3 there); ordinary Auto
-// never rests closer than `scales.wide`.
+// rests up to `scales.medium` (relaxed 2026-11-23, operator decision).
 // 5.2 — the chapter's bars stay up this long after the move settles.
 const AMBIENT_CHAPTER_LETTERBOX_MS = 3000;
 
@@ -74,13 +79,13 @@ const ATTENTION_HOLD_PADDING_PX = 32;
 const ATTENTION_HOLD_MAX_SPEED_PX_PER_MS = 0.6;
 const ATTENTION_HOLD_STIFFNESS_MS = 600;
 
-const ORDINARY_PADDING_PX = 220;
+const ORDINARY_PADDING_PX = 80;
 const EVENT_PADDING_PX = Object.freeze({
-    incident: 220,
-    release: 250,
-    arrival: 240,
-    push: 250,
-    default: 240,
+    incident: 140,
+    release: 140,
+    arrival: 120,
+    push: 140,
+    default: 140,
 });
 
 const EVENT_KIND_COOLDOWN_MS = Object.freeze({
@@ -171,8 +176,48 @@ function ambientSubjectBox(points) {
     };
 }
 
+// 4.3 — destination points for a walking, pending, or gate-entering attention
+// sprite so `A` frames where the agent is headed on the initial glide and never
+// recoils once the walk begins.
+function attentionSpriteDestinations(sprite) {
+    if (!sprite) return [];
+    const points = [];
+    const path = Array.isArray(sprite.waypoints) ? sprite.waypoints : [];
+    const end = path.length ? path[path.length - 1] : { x: sprite.targetX, y: sprite.targetY };
+    const endX = finiteNumber(end?.x);
+    const endY = finiteNumber(end?.y);
+    if (endX != null && endY != null) {
+        const distinctTarget = finiteNumber(sprite.x) != null && finiteNumber(sprite.y) != null
+            ? Math.hypot(endX - sprite.x, endY - sprite.y) > 2
+            : false;
+        if (sprite.moving || distinctTarget) points.push({ x: endX, y: endY });
+    }
+    if (sprite.isArrivalPending?.() || sprite._straightWalk) {
+        const status = sprite.agent?.status;
+        if (status === AgentStatus.WAITING_ON_USER && COMMAND_QUEUE_HEAD) {
+            points.push(COMMAND_QUEUE_HEAD);
+        } else {
+            const bType = sprite.agent?.targetBuildingType || sprite.agent?.lastKnownBuildingType || 'command';
+            const bCenter = BUILDING_CENTER_BY_TYPE.get(bType) || COMMAND_QUEUE_HEAD;
+            if (bCenter) points.push(bCenter);
+        }
+    }
+    return points;
+}
+
+function spriteInAttentionTransit(sprite) {
+    if (!sprite) return false;
+    if (sprite.moving || sprite.isArrivalPending?.() || sprite._straightWalk) return true;
+    const tx = finiteNumber(sprite.targetX);
+    const ty = finiteNumber(sprite.targetY);
+    if (tx != null && ty != null && finiteNumber(sprite.x) != null && finiteNumber(sprite.y) != null) {
+        if (Math.hypot(tx - sprite.x, ty - sprite.y) > 2) return true;
+    }
+    return Array.isArray(sprite.waypoints) && sprite.waypoints.length > 0;
+}
+
 // 4.3 — the world box the `A` hold keeps in view: every held body with its
-// plate, and for a walking body the same footprint where its path ends.
+// plate, and for a walking or pending body the same footprint at its destination.
 function attentionHoldBox(sprites) {
     const box = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
     const extend = (point) => {
@@ -184,10 +229,7 @@ function attentionHoldBox(sprites) {
     };
     for (const sprite of sprites) {
         extend({ x: sprite.x, y: sprite.y });
-        if (!sprite.moving) continue;
-        const path = Array.isArray(sprite.waypoints) ? sprite.waypoints : [];
-        const end = path.length ? path[path.length - 1] : { x: sprite.targetX, y: sprite.targetY };
-        if (finiteNumber(end?.x) != null && finiteNumber(end?.y) != null) extend({ x: end.x, y: end.y });
+        for (const dest of attentionSpriteDestinations(sprite)) extend(dest);
     }
     return box;
 }
@@ -478,15 +520,28 @@ export class CameraDirector {
             width: camera._viewportWidth() / pixelScale,
             height: camera._viewportHeight() / pixelScale,
         };
-        const tiers = this._attentionTiers();
-        // 4.3 — a walking body is framed with where its path ends, so the shot
-        // the glide lands on already holds the walk the hold then follows.
+        const rawTiers = this._attentionTiers();
+        // 4.3 — a walking or arrival-pending body is framed with where it is
+        // headed, using the hold's exact 32 CSS px padding and capping transit
+        // shots at medium so landing never recoils 1 → 3 → 1.
         const sprites = new Map(valuesOfAgentSprites(agentSprites).map(sprite => [String(sprite?.agent?.id || ''), sprite]));
+        let hasTransit = false;
         const framed = candidates.map((candidate) => {
             const sprite = sprites.get(candidate.id);
-            return sprite?.moving ? { ...candidate, bounds: attentionHoldBox([sprite]) } : candidate;
+            if (!sprite) return candidate;
+            if (spriteInAttentionTransit(sprite)) hasTransit = true;
+            const dests = attentionSpriteDestinations(sprite);
+            return dests.length ? { ...candidate, bounds: attentionHoldBox([sprite]) } : candidate;
         });
-        const frame = fitAttentionFrame(framed, viewport, { zooms: tiers });
+        const mediumTier = camera.shotTier?.('medium');
+        const capped = hasTransit && Number.isFinite(mediumTier)
+            ? rawTiers.filter(tier => tier <= mediumTier + 1e-6)
+            : rawTiers;
+        const tiers = capped.length ? capped : rawTiers;
+        const frame = fitAttentionFrame(framed, viewport, {
+            padding: ATTENTION_HOLD_PADDING_PX / pixelScale,
+            zooms: tiers,
+        });
         camera.noteUserInput();
         camera.glideToWorld({
             minX: frame.center.x, maxX: frame.center.x,
@@ -539,7 +594,7 @@ export class CameraDirector {
             hold.done = true;
             return;
         }
-        if (sprites.some(sprite => sprite.moving)) hold.stillSince = null;
+        if (sprites.some(sprite => sprite.moving || sprite.isArrivalPending?.())) hold.stillSince = null;
         else hold.stillSince ??= now;
         const settled = hold.stillSince != null && now - hold.stillSince >= ATTENTION_HOLD_SETTLE_MS;
         const expired = now - hold.startedAt >= ATTENTION_HOLD_MAX_MS;
@@ -654,7 +709,7 @@ export class CameraDirector {
         this._focus = nextFocus;
 
         const includeAll = agents.length <= SPARSE_AGENT_LIMIT;
-        const box = buildFocusBox(nextFocus.agentId, agents, { includeAll });
+        const box = this._ordinaryFocusBox(nextFocus.agentId, agents, { includeAll });
         if (!validBox(box) || this._isFrameComfortable(box, { ordinary: true })) return;
         if (now - this._lastMoveAt < ORDINARY_MOVE_COOLDOWN_MS) return;
 
@@ -812,7 +867,7 @@ export class CameraDirector {
         return {
             ...base,
             maxZoom: camera?.shotTier?.('medium') ?? 2,
-            minZoom: 1,
+            minZoom: Math.min(1, camera?.shotTier?.('wide') ?? 1),
             preferPan: true,
             allowZoomIn: fromWide,
             zoomHysteresis: fromWide ? 0 : 1.35,
@@ -1043,11 +1098,56 @@ export class CameraDirector {
         return true;
     }
 
+    // Build a medium-friendly subject box around the densest active focus so
+    // ordinary Auto holds zoom 2 at 1080p/1440×900 instead of pulling out to
+    // zoom 1 while off-frame districts remain covered by edge tallies.
+    _ordinaryFocusBox(focusAgentId, agents, { includeAll = false } = {}) {
+        const focus = (agents || []).find(agent => agent.id === focusAgentId) || null;
+        if (!focus && !includeAll) return null;
+        const camera = this.camera;
+        const w = camera?._viewportWidth?.() || camera?.canvas?.clientWidth || 0;
+        const h = camera?._viewportHeight?.() || camera?.canvas?.clientHeight || 0;
+        const capTier = this._currentMaxZoom();
+        const zoom = camera?.tierZoom?.(capTier) || camera?.zoom || 1;
+        const maxW = w > 0 ? Math.max(120, (w - ORDINARY_PADDING_PX * 2) / zoom) : Infinity;
+        const maxH = h > 0 ? Math.max(120, (h - ORDINARY_PADDING_PX * 2) / zoom) : Infinity;
+
+        if (includeAll && agents?.length) {
+            const allBox = ambientSubjectBox(agents);
+            if (allBox && (allBox.maxX - allBox.minX) <= maxW && (allBox.maxY - allBox.minY) <= maxH) {
+                return allBox;
+            }
+        }
+        const seed = focus || agents?.[0];
+        if (!seed) return null;
+        const box = ambientSubjectBox([seed]);
+        if (!box) return null;
+        const neighbors = (agents || [])
+            .filter(agent => agent.id !== seed.id && Math.hypot(agent.x - seed.x, agent.y - seed.y) <= FOCUS_NEIGHBOR_RADIUS)
+            .sort((a, b) => Math.hypot(a.x - seed.x, a.y - seed.y) - Math.hypot(b.x - seed.x, b.y - seed.y));
+        for (const neighbor of neighbors) {
+            const nb = ambientSubjectBox([neighbor]);
+            if (!nb) continue;
+            const minX = Math.min(box.minX, nb.minX);
+            const maxX = Math.max(box.maxX, nb.maxX);
+            const minY = Math.min(box.minY, nb.minY);
+            const maxY = Math.max(box.maxY, nb.maxY);
+            if ((maxX - minX) <= maxW && (maxY - minY) <= maxH) {
+                box.minX = minX;
+                box.maxX = maxX;
+                box.minY = minY;
+                box.maxY = maxY;
+            }
+        }
+        return box;
+    }
+
     // 8.1 — glide durations come from CameraCurves (screen distance and zoom
     // ratio), so the options carry only framing.
     _ordinaryGlideOptions(bodies = null) {
         return {
             maxZoom: this._currentMaxZoom(),
+            minZoom: Math.min(1, this.camera?.shotTier?.('wide') ?? 1),
             paddingPx: ORDINARY_PADDING_PX,
             owner: 'idle-auto',
             composition: { x: 0.5, y: 0.55 },
@@ -1067,6 +1167,7 @@ export class CameraDirector {
     _eventGlideOptions(kind, letterbox = false) {
         return {
             maxZoom: this._currentMaxZoom(),
+            minZoom: Math.min(1, this.camera?.shotTier?.('wide') ?? 1),
             paddingPx: EVENT_PADDING_PX[kind] || EVENT_PADDING_PX.default,
             letterbox,
             owner: `cue:${kind}`,
@@ -1077,13 +1178,15 @@ export class CameraDirector {
         };
     }
 
-    // 4.1/M8 — the automatic cap: the current resting tier, never closer than
-    // the wide shot scale (z1 at 1920, z2 at 5120 × 1440 DPR 1). It is a tier
-    // label, so a DPR-2 half rung the operator rests on caps like any tier.
+    // 4.1/M8 (relaxed 2026-11-23, operator decision) — the automatic cap: the
+    // current resting tier, never closer than the medium shot scale (z2 at
+    // 1920 × 1080 and 1440 × 900 DPR 1). With `allowZoomIn: false`, AUTO keeps
+    // a settled or user-chosen medium view instead of pulling back to wide, and
+    // never zooms in uninvited beyond medium.
     _currentMaxZoom() {
-        const wide = this.camera?.shotTier?.('wide') ?? 1;
+        const medium = this.camera?.shotTier?.('medium') ?? 2;
         const tier = this.camera?.currentZoomTier?.();
-        return Number.isFinite(tier) ? Math.min(wide, tier) : wide;
+        return Number.isFinite(tier) ? Math.min(medium, tier) : medium;
     }
 
     _distanceFromCurrentCenter(point) {
