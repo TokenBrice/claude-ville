@@ -7,8 +7,8 @@
 // the batch). Expression for expression the GLSL, every number interpolated
 // from the same JS constants with the same formatting; GLSL `out` parameters
 // are `ptr<function, T>`, GLSL uniforms are `frame.*` / `batch.*`
-// (wgsl/common.js). Needs WGSL_COMMON (glslMod), SEAM_WGSL, ATMOSPHERE_WGSL
-// (cloudNoiseAt, cloudSeamField) and BEAM_WGSL (lighthouseSheen).
+// (wgsl/common.js). Needs WGSL_COMMON (glslMod), SEAM_WGSL, and ATMOSPHERE_WGSL
+// (cloudNoiseAt, cloudSeamField).
 import {
     COAST_FIELD_FLAGS,
     COAST_PALETTE,
@@ -647,12 +647,6 @@ fn applyWaterState(color0: vec3f, px: vec2f, seaPath: ptr<function, bool>) -> ve
     if (glint > 0.5) {
         *seaPath = true;
         return frame.glintStops[select(1, 0, glint > 1.5)].xyz;
-    }
-    let beam = lighthouseSheen(p, deepTick, storm);
-    if (beam > 0.5) {
-        *seaPath = true;
-        lighthouseDash = true;
-        return beaconWaterStop(beam);
     }
     var base = stop;
     var cap = 0.0;

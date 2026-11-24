@@ -6,7 +6,6 @@ import {
     createLightFrameState,
     createSeaWeather,
     resolveAtmosphereCourses,
-    resolveBeam,
     resolveCamera,
     resolveFatPixels,
     resolveFrameGrade,
@@ -104,7 +103,6 @@ function feeds() {
             lights: lights(),
             wetness: 0.3,
             footprint: { data: footData, width: 8, height: 4, originX: -200, originY: 100, cell: 4, revision: 3 },
-            beam: { foot: { x: 1500, y: 700 }, angle: 1.2, length: 280, farWidth: 64, sheenStep: 2, courses: [[0, 0.3, 1], [0, 0.7, 0.5], [0, 1, 0.25]] },
             paletteLut: { width: 11, height: 3 },
         },
         moonStorm: {
@@ -127,7 +125,6 @@ function feeds() {
             puddleMask: { data: puddleData, cols: 8, rows: 8, x0: -64, y0: 32, revision: 4 },
             skyPalette: { upperBand: '#335577', horizon: '#8899aa' },
             footprint: { data: footData, width: 8, height: 4, originX: -200, originY: 100, cell: 4, revision: 3 },
-            beam: { foot: { x: 1500, y: 700 }, angle: 2.4, length: 320, farWidth: 58, sheenStep: 1 },
         },
         clearMoon: {
             timeMs: 3000,
@@ -232,10 +229,6 @@ const GOLDEN = {
             ],
             wetReflectionCount: 0, marchSteps: 0, tiles: '82bc929bb70d711e', localLightPhase: 0.8,
         },
-    },
-    beam: {
-        'golden/z1/0': { ground: [1500, 700, 1.2, 1], shape: [280, 32, 32, 2], courseEnds: [0.3, 0.7, 1], courseShares: [1, 0.5, 0.25] },
-        'moonStorm/z1/1': { ground: [1500, 700, 2.4, 1], shape: [320, 32, 29, 1], courseEnds: [0.34, 0.68, 1], courseShares: [1, 0.6, 0.3] },
     },
     puddles: {
         'moonStorm/z1/1': { puddles: 0.6, rect: [-64, 32, 8, 8], sky: [0.20000000298023224, 0.3333333432674408, 0.46666666865348816, 0.5333333611488342, 0.6000000238418579, 0.6666666865348816] },
@@ -380,17 +373,8 @@ test('resolveLights moves the record revision only when a light changes', () => 
     assert.deepEqual([state.recordsRevision, state.tilesRevision], [2, 1]);
 });
 
-test('resolveBeam, resolvePuddles, resolvePaletteLut and resolveWeatherUniform keep their gates and values', () => {
+test('resolvePuddles, resolvePaletteLut and resolveWeatherUniform keep their gates and values', () => {
     eachCase(({ key, feed, level }) => {
-        const beam = resolveBeam(feed);
-        const goldenBeam = GOLDEN.beam[key];
-        assert.equal(beam.active, Boolean(goldenBeam), key);
-        assert.deepEqual(Array.from(beam.ground), goldenBeam ? f32(goldenBeam.ground) : [0, 0, 0, 0], key);
-        if (goldenBeam) {
-            assert.deepEqual(Array.from(beam.shape), f32(goldenBeam.shape), key);
-            assert.deepEqual(Array.from(beam.courseEnds), f32(goldenBeam.courseEnds), key);
-            assert.deepEqual(Array.from(beam.courseShares), f32(goldenBeam.courseShares), key);
-        }
         const puddles = resolvePuddles(feed);
         const goldenPuddles = GOLDEN.puddles[key];
         assert.equal(puddles.ground, Boolean(goldenPuddles), key);

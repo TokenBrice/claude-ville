@@ -412,7 +412,7 @@ The other WebGL2 programs:
 | --- | --- |
 | Particle (`PARTICLE_FRAGMENT`, `PARTICLE_SAMPLER_UNITS`) | 0 `u_motifs`: event-shape motif masks (R8); 1 `u_cloudTile`: cloud-course noise tile |
 | Bloom (`BLOOM_FRAGMENT`, two passes) | 0 `u_input`: the scene's emission attachment (pass 1), then the bloomA target (pass 2) |
-| Composite (`COMPOSITE_FRAGMENT`, `COMPOSITE_SAMPLER_UNITS`) | 0 `u_scene`: scene colour; 1 `u_bloom`: bloomB; 2 `u_cloudTile`; 3 `u_seaGust` (the open sea's clouds, sunlit course and cat's paws on the world grid; the Lighthouse beam and the squall are uniforms only) |
+| Composite (`COMPOSITE_FRAGMENT`, `COMPOSITE_SAMPLER_UNITS`) | 0 `u_scene`: scene colour; 1 `u_bloom`: bloomB; 2 `u_cloudTile`; 3 `u_seaGust` (the open sea's clouds, sunlit course and cat's paws on the world grid; the squall is uniforms only) |
 | Composite, P3 twin (`COMPOSITE_P3_FRAGMENT`) | the composite's units, plus 4 `u_emission` (`P3_EMISSION_UNIT`): the emission attachment, for role 1 |
 | Mark (`MARK_FRAGMENT`; P3 twin `MARK_P3_FRAGMENT`) | 0 `u_albedo`: the mark batch's texture (`mark:inks` or a beacon stamp); 14 `u_albedoPage`: declared by the shared vertex stage, kept on unit 14 so two sampler types never share a unit |
 | Debug load (`DEBUG_LOAD_FRAGMENT`) | 0 `u_scene`: the scene colour target the composite left bound |
@@ -464,8 +464,7 @@ height, view, clusterOverride, state })` → the light records, `count`,
 `tiles` (null unless clustered), `tilesX`/`tilesY`, `clusters`, `admission`
 (`getDiagnostics().lightAdmission`), `wetReflectionCount`, `footprint`,
 `marchSteps`, `localLightPhase` and the record/tile revisions;
-`resolveBeam(feed, out)` → `{ active, ground, shape, courseEnds, courseShares
-}`; `resolvePuddles(feed, out, level)` → `{ mask, rect, puddles, sky, ground, format, textureKey, revision, groundWeather }` (GW-1 / GW-2: `mask` is the ground weather field, `format` `rgba8`, while `resolveGroundWeather` binds it);
+`resolvePuddles(feed, out, level)` → `{ mask, rect, puddles, sky, ground, format, textureKey, revision, groundWeather }` (GW-1 / GW-2: `mask` is the ground weather field, `format` `rgba8`, while `resolveGroundWeather` binds it);
 `resolvePaletteLut(level, feed)` → the 11x3 ramp source or null. The `create*`
 factories build the per-backend scratch the resolvers fill in place;
 `scripts/tests/gpu-frame-state.test.mjs` pins each resolver to the values the

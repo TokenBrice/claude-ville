@@ -453,18 +453,9 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
                 flame: [164, 97],
                 light: [164, 97],
                 particle: [164, 97],
-                // Tower foot under the lantern; the mirror shaft lands 35 %
-                // of its reach out from here (the lamp lights no ground).
+                // Tower foot under the lantern; anchors the water reflection
+                // column (the lantern lights no ground, apron or masonry).
                 foot: [166, 324],
-                // The tower's ground centre: the shaft's depth origin when
-                // it is tested against the landmark's surface heights.
-                axis: [166, 305],
-            },
-            // Full reach before its air/sea split, in ground texels.
-            searchlight: {
-                pivot: [164, 97],
-                length: 520,
-                width: 200,
             },
         },
     },

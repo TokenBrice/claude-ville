@@ -24,7 +24,6 @@ import { FAT_TAPS_WGSL } from './fatTaps.js';
 import { ATMOSPHERE_SCENE_WGSL, ATMOSPHERE_WGSL } from './atmosphere.js';
 import { SEAM_WGSL } from './seam.js';
 import { WATER_SCENE_WGSL, WATER_WGSL } from './water.js';
-import { BEAM_WGSL } from './beam.js';
 import { MATERIAL_WGSL } from './material.js';
 import { RADIANCE_WGSL } from './radiance.js';
 import { CUE_RUN_WGSL } from './cueRun.js';
@@ -93,7 +92,6 @@ export function assembleScene({ radiance = false, markRoles = false } = {}) {
         SEAM_WGSL,
         WATER_WGSL,
         WATER_SCENE_WGSL,
-        BEAM_WGSL,
         MATERIAL_WGSL,
         RADIANCE_WGSL,
         CUE_RUN_WGSL,
@@ -120,7 +118,6 @@ export function assembleComposite({ roles = false } = {}) {
         ATMOSPHERE_WGSL,
         SEAM_WGSL,
         WATER_WGSL,
-        BEAM_WGSL,
         OPEN_SEA_WGSL,
         roles ? COMPOSITE_ROLES_MAIN_WGSL : COMPOSITE_MAIN_WGSL,
     ].join('\n');

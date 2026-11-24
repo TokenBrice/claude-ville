@@ -27,13 +27,11 @@ import {
 import {
     cloudTile,
     createAtmosphereCourses,
-    createBeamUniforms,
     createLightFrameState,
     createPuddleUniforms,
     createSeaWeather,
     createWaterFx,
     resolveAtmosphereCourses,
-    resolveBeam,
     resolveCamera,
     resolveFatPixels,
     resolveFrameGrade,
@@ -292,7 +290,6 @@ export class GpuWorldRendererWebGPU {
         this._seaState = createSeaState();
         this._seaWeather = createSeaWeather();
         this._seaWeatherFrame = { sunlit: 0, gust: null };
-        this._beam = createBeamUniforms();
         this._puddles = createPuddleUniforms();
         this._puddleActive = false;
         this.cloudCourses = 0;
@@ -1327,13 +1324,6 @@ export class GpuWorldRendererWebGPU {
         const shaderTimeMs = ((finite(feed.timeMs, Date.now()) % 1000000) + 1000000) % 1000000;
         s.timeMs = shaderTimeMs;
         s.motionScale = feed.reducedMotion ? 0 : clamp(finite(feed.motionScale, 1), 0, 2);
-        const beam = resolveBeam(feed, this._beam);
-        s.beamGround = beam.ground;
-        if (beam.active) {
-            s.beamShape = beam.shape;
-            s.beamCourseEnds = beam.courseEnds;
-            s.beamCourseShares = beam.courseShares;
-        }
         this.localLightPhase = lightFrame.localLightPhase;
         this._uploadLightRecords(lightFrame.records, lightFrame.recordsRevision);
         const tiles = lightFrame.tiles

@@ -80,7 +80,6 @@ const poisons = {
     'grade uniform': f => { f.input.feed.lightGrade = { ...NEUTRAL_GRADE, exposure: 0.8 }; },
     'weather uniform': f => { f.input.feed.weather = { fog: 0.3 }; },
     'sun uniform': f => { f.input.feed.lighting = { sunDirIso: { x: 0.2, y: 0.3 } }; },
-    'beam uniform': f => { f.input.feed.beam = { foot: { x: 10, y: 20 }, angle: 0.5, length: 40, farWidth: 8, sheenStep: 1 }; },
     'batch terrain classification': f => { f.input.records[0].id = 'terrain:static'; },
     'mark stream': f => { f.input.marks = [{ ...f.input.records[0], flags: GPU_RECORD_FLAGS.screenSpace | GPU_RECORD_FLAGS.actionMark }]; },
     'particle stream': f => { f.input.particles = { packGpuInstances(views) { views.f32[0] = 1; return 1; } }; },

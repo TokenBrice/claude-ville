@@ -10,7 +10,7 @@
 // only where both arms are pure and in range (else an if/else, as GLSL
 // evaluates one arm). The water-state helpers (coastFieldAt, applyWaterState,
 // applyCoastSwash, mirrorStormColour, reflectionRippleUv, the water palette,
-// `lighthouseDash`), the fat-pixel taps, the atmosphere courses, the cue-run
+// `seaOpenWater`, `seaSkyTake`, `surfGlowTexel`), the fat-pixel taps, the atmosphere courses, the cue-run
 // vertex and the radiance reader are the other includes' (wgsl/water.js,
 // fatTaps.js, atmosphere.js, cueRun.js, radiance.js); the grade and pool
 // landings are grade.js; bindings, uniform blocks and the record struct are
@@ -400,7 +400,6 @@ fn fatTerrainSurface(centerBlock: vec4f, material: ptr<function, f32>, waterHue:
   var before = vec4f(0.0);
   var dominant = -1.0;
   var dominantPath = false;
-  var dominantDash = false;
   var dominantOpen = false;
   var dominantGlow = false;
   var dominantTake = 0.0;
@@ -427,7 +426,6 @@ fn fatTerrainSurface(centerBlock: vec4f, material: ptr<function, f32>, waterHue:
     if (weather && !tapWater) { c = applyMaterialWeather(c, tapMaterial, world); }
     before += vec4f(c, 1.0) * w;
     var tapPath = false;
-    lighthouseDash = false;
     seaOpenWater = false;
     seaSkyTake = 0.0;
     if (tapWater) { c = applyWaterState(c, world, &tapPath); }
@@ -435,7 +433,6 @@ fn fatTerrainSurface(centerBlock: vec4f, material: ptr<function, f32>, waterHue:
       dominant = w;
       *material = tapMaterial;
       dominantPath = tapPath;
-      dominantDash = lighthouseDash;
       dominantOpen = seaOpenWater;
       dominantGlow = surfGlowTexel;
       dominantTake = seaSkyTake;
@@ -444,7 +441,6 @@ fn fatTerrainSurface(centerBlock: vec4f, material: ptr<function, f32>, waterHue:
     if (tapMaterial != baseMaterial) { sandKeyed += applyAuthoredSunBand(c, tapMaterial) * w; }
     else { surface += c * w; }
   }
-  lighthouseDash = dominantDash;
   seaOpenWater = dominantOpen;
   surfGlowTexel = dominantGlow;
   seaSkyTake = dominantTake;
@@ -689,7 +685,7 @@ fn sceneSurface() -> SurfaceSample {
     if (seaPath) {
       // NE P3.3b — lift lit moon-path stops out of the night grade like emitters:
       // the ungraded stop is a named seaPath colour, kept silver under V6 and seaPathCap.
-      if (!lighthouseDash && frame.glint.z > 2.5 && frame.waterMood.x > 0.0) {
+      if (frame.glint.z > 2.5 && frame.waterMood.x > 0.0) {
         color = capSaturation(mix(color, poolAlbedo * MOON_PATH_SILVER_TINT, MOON_PATH_UNGRADE_MIX * frame.waterMood.x), waterMaxSat());
       }
       color = seaPathCap(color);
@@ -699,8 +695,6 @@ fn sceneSurface() -> SurfaceSample {
       if (seaSkyTake > 0.0) { color = capSaturation(seaSkyHue(color, frame.waterSky.rgb, seaSkyTake), waterMaxSat()); }
     }
   }
-  // Fire glints preserve their beaconFire receiver stop.
-  if (lighthouseDash) { color = poolAlbedo; }
   // BI-8 — the summer surf glow over the graded crest (albedo only).
   if (surfGlowTexel) { color = mix(color, SURF_GLOW, frame.surfGlow); }
   // GW-1 — wet paving tops take one course of the graded sky.

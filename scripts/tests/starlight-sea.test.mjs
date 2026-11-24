@@ -177,12 +177,12 @@ test('NE P3.3b: moon path lifts out of the night grade only at night and only fo
 
     assert.ok(SCENE_WGSL.includes(`const MOON_PATH_UNGRADE_MIX: f32 = ${mixLit};`));
     assert.ok(SCENE_WGSL.includes(`const MOON_PATH_SILVER_TINT: vec3f = vec3f(${tintLit});`));
-    assert.ok(SCENE_WGSL.includes('if (!lighthouseDash && frame.glint.z > 2.5 && frame.waterMood.x > 0.0)'));
+    assert.ok(SCENE_WGSL.includes('if (frame.glint.z > 2.5 && frame.waterMood.x > 0.0)'));
     assert.ok(SCENE_WGSL.includes('color = capSaturation(mix(color, poolAlbedo * MOON_PATH_SILVER_TINT, MOON_PATH_UNGRADE_MIX * frame.waterMood.x), waterMaxSat());'));
 
     assert.ok(SEA_SWELL_GLSL.includes(`const float MOON_PATH_UNGRADE_MIX = ${mixLit};`));
     assert.ok(SEA_SWELL_GLSL.includes(`const vec3 MOON_PATH_SILVER_TINT = vec3(${tintLit});`));
-    assert.ok(glsl.includes('if (!lighthouseDash && u_glint.z > 2.5 && u_waterMood.x > 0.0)'));
+    assert.ok(glsl.includes('if (u_glint.z > 2.5 && u_waterMood.x > 0.0)'));
     assert.ok(glsl.includes('color = capSaturation(mix(color, poolAlbedo * MOON_PATH_SILVER_TINT, MOON_PATH_UNGRADE_MIX * u_waterMood.x), waterMaxSat());'));
     assert.ok(glsl.includes('if (u_glint.z > 2.5 && u_waterMood.x > 0.0)'));
     assert.ok(glsl.includes('c = capSaturation(mix(c, stopColor * MOON_PATH_SILVER_TINT, MOON_PATH_UNGRADE_MIX * u_waterMood.x), waterMaxSat());'));
