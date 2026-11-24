@@ -383,8 +383,8 @@ function getSessionIdentity(sessionId) {
   return identity;
 }
 
-function contextWindowMaxForClaudeModel(model) {
-  return contextWindowForModel(model, 'claude') || 0;
+function contextWindowMaxForClaudeModel(model, provider = 'claude') {
+  return contextWindowForModel(model, provider) || 0;
 }
 
 function finiteNumber(value) {
@@ -2207,12 +2207,12 @@ function latestTranscriptModel(aggregate) {
   return projection?.modelHistory.at(-1)?.model || null;
 }
 
-function getTokenUsage(sessionFilePath, model = null) {
+function getTokenUsage(sessionFilePath, model = null, provider = 'claude') {
   try {
     const aggregate = getTranscriptAggregate(sessionFilePath);
     return aggregate ? {
       ...(aggregate.displayUsage || aggregate.usage),
-      contextWindowMax: contextWindowMaxForClaudeModel(model || latestTranscriptModel(aggregate)),
+      contextWindowMax: contextWindowMaxForClaudeModel(model || latestTranscriptModel(aggregate), provider),
     } : emptyTokenUsage();
   } catch { /* ignore */ }
   return emptyTokenUsage();
@@ -2266,18 +2266,18 @@ function aggregateSettledOn(filePath, identity) {
     && sameTranscriptTarget(record.aggregate, identity));
 }
 
-function getTranscriptProjection(sessionFilePath, projectPath, model) {
-  if (!sessionFilePath) return readTranscriptProjection(sessionFilePath, projectPath, model);
-  const projection = memoizedDerivation(sessionFilePath, `projection:${projectPath ?? ''}:${model ?? ''}`, identity => ({
-    value: readTranscriptProjection(sessionFilePath, projectPath, model),
+function getTranscriptProjection(sessionFilePath, projectPath, model, provider = 'claude') {
+  if (!sessionFilePath) return readTranscriptProjection(sessionFilePath, projectPath, model, provider);
+  const projection = memoizedDerivation(sessionFilePath, `projection:${projectPath ?? ''}:${model ?? ''}:${provider ?? 'claude'}`, identity => ({
+    value: readTranscriptProjection(sessionFilePath, projectPath, model, provider),
     cacheable: aggregateSettledOn(sessionFilePath, identity),
   }));
   return cloneTranscriptProjection(projection);
 }
 
-function readTranscriptProjection(sessionFilePath, projectPath, model) {
+function readTranscriptProjection(sessionFilePath, projectPath, model, provider = 'claude') {
   const empty = { ...createTranscriptProjection(), reasoningEffort: null };
-  const contextWindowMax = contextWindowMaxForClaudeModel(model);
+  const contextWindowMax = contextWindowMaxForClaudeModel(model, provider);
   if (!sessionFilePath) return { ...empty, contextWindowMax };
   try {
     const aggregate = getTranscriptAggregate(sessionFilePath);
@@ -2298,7 +2298,7 @@ function readTranscriptProjection(sessionFilePath, projectPath, model) {
     return {
       ...projection,
       reasoningEffort: ['low', 'medium', 'high', 'xhigh', 'max'].includes(effort) ? effort : null,
-      contextWindowMax: contextWindowMaxForClaudeModel(model || latestTranscriptModel(aggregate)),
+      contextWindowMax: contextWindowMaxForClaudeModel(model || latestTranscriptModel(aggregate), provider),
       ...(projection.cost ? { estimatedCost: projection.cost.usd } : {}),
     };
   } catch {

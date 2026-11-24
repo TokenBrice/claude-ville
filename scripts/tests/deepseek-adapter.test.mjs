@@ -111,6 +111,7 @@ test('a continued thread is one villager, running its unlogged call', () => {
     assert.equal(session.tokenUsage.reasoningTokens, 20 + 15);
     assert.equal(session.tokenUsage.reasoningInOutput, true);
     assert.equal(session.tokenUsage.contextWindow, 2000);
+    assert.equal(session.tokenUsage.contextWindowMax, 1_000_000);
     assert.equal(session.tokenUsage.turnCount, 3);
     assert.equal(session.cost.source, 'provider');
     assert.ok(Math.abs(session.cost.usd - 0.013) < 1e-9);

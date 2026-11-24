@@ -120,12 +120,15 @@ test('a continued thread is one villager, read from its Claude Code transcript',
 });
 
 test('a message split over several records counts its usage once', () => {
-    const usage = byName('lane-a').tokenUsage;
+    const session = byName('lane-a');
+    const usage = session.tokenUsage;
     assert.equal(usage.input, 100 + 50 + 80);
     assert.equal(usage.cacheRead, 0 + 100 + 150);
     assert.equal(usage.output, 20 + 10 + 15);
     assert.equal(usage.turnCount, 3);
     assert.equal(usage.contextWindow, 80 + 150);
+    assert.equal(usage.contextWindowMax, 1_000_000);
+    assert.equal(session.contextWindowMax, 1_000_000);
 });
 
 test('normalization gives the z.AI identity and a registry cost estimate', () => {
@@ -178,8 +181,72 @@ test('detail reads the thread transcript', () => {
     assert.deepEqual(detail.toolHistory.map(item => item.tool), ['Read', 'Bash']);
     assert.ok(detail.messages.some(item => item.role === 'assistant' && item.text === 'The README describes the fixture.'));
     assert.equal(detail.tokenUsage.input, 230);
+    assert.equal(detail.tokenUsage.contextWindowMax, 1_000_000);
     const missing = adapter.getSessionDetail('zai-glmth_mvt0zzzz_000000ff', PROJECT);
     assert.deepEqual(missing.toolHistory, []);
+});
+
+test('GLM 5.4 and future GLM models keep a 1M context ceiling on session and detail', () => {
+    const journalPath = path.join(STATE, 'journal.jsonl');
+    const originalJournal = fs.readFileSync(journalPath, 'utf8');
+    const created = [];
+    try {
+        for (const [index, model, threadId, jobId, sessionUuid] of [
+            [1, 'glm-5.4', 'glmth_mwt05400_00000054', 'glm_mwt05400_00000054', '54545454-5454-4545-8545-545454545454'],
+            [2, 'glm-5.5', 'glmth_mwt05500_00000055', 'glm_mwt05500_00000055', '55555555-5555-4555-8555-555555555555'],
+        ]) {
+            const threadMeta = path.join(STATE, 'threads', `${threadId}.json`);
+            const transcriptDir = path.join(STATE, 'threads', threadId, 'home', 'projects', slug(PROJECT));
+            const transcriptPath = path.join(transcriptDir, `${sessionUuid}.jsonl`);
+            fs.mkdirSync(transcriptDir, { recursive: true });
+            fs.writeFileSync(threadMeta, JSON.stringify({ claude_session: sessionUuid, cwd: PROJECT }));
+            fs.writeFileSync(transcriptPath, `${JSON.stringify({
+                type: 'assistant',
+                timestamp: new Date(NOW - 5_000).toISOString(),
+                message: {
+                    role: 'assistant',
+                    id: `msg_glm_${index}`,
+                    model,
+                    content: [{ type: 'text', text: 'Verified.' }],
+                    usage: { input_tokens: 1200, cache_read_input_tokens: 367_352, output_tokens: 450 },
+                },
+            })}\n`);
+            created.push(threadMeta, path.join(STATE, 'threads', threadId));
+            fs.appendFileSync(journalPath, `\n${JSON.stringify({
+                ts: NOW - 10_000,
+                event: 'started',
+                job_id: jobId,
+                session_id: threadId,
+                kind: 'ask',
+                owner_pid: process.pid,
+                owner_start: liveStartTime(),
+                model,
+                effort: 'max',
+                cwd: PROJECT,
+                worktree: null,
+                label: `lane-${model}`,
+            })}\n`);
+        }
+
+        const refreshed = adapter.getActiveSessions(THRESHOLD_MS);
+        for (const model of ['glm-5.4', 'glm-5.5']) {
+            const session = refreshed.find(item => item.agentName === `lane-${model}`);
+            assert.ok(session, `missing session for ${model}`);
+            assert.equal(session.contextWindowMax, 1_000_000, `${model} projection contextWindowMax`);
+            assert.equal(session.tokenUsage.contextWindowMax, 1_000_000, `${model} tokenUsage contextWindowMax`);
+            const detail = adapter.getSessionDetail(session.sessionId, PROJECT);
+            assert.equal(detail.tokenUsage.contextWindowMax, 1_000_000, `${model} detail contextWindowMax`);
+            if (model === 'glm-5.4') {
+                const normalized = normalizeSession(session);
+                assert.equal(normalized.displayModel, 'GLM 5.4 max');
+                assert.equal(normalized.cost.rateMatch, 'glm-5-4');
+                assert.equal(normalized.cost.unknownModel, false);
+            }
+        }
+    } finally {
+        fs.writeFileSync(journalPath, originalJournal);
+        for (const p of created) fs.rmSync(p, { recursive: true, force: true });
+    }
 });
 
 test('watch paths cover the journal and running transcripts only', () => {

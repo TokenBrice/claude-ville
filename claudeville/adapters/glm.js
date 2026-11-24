@@ -445,7 +445,7 @@ function buildSession(threadId, jobs, { now, activeThresholdMs }) {
   const project = job.workspace || null;
   const summary = readTranscript(target, f => claudeTranscript.summary(f, project));
   const model = summary.model || job.model || 'glm';
-  const projection = readTranscript(target, f => claudeTranscript.projection(f, project, model));
+  const projection = readTranscript(target, f => claudeTranscript.projection(f, project, model, 'zai'));
   // Claude Code prices a GLM model it does not know; the registry's z.AI rate
   // estimates the cost instead.
   delete projection.cost;
@@ -490,7 +490,7 @@ function buildSession(threadId, jobs, { now, activeThresholdMs }) {
       : (job.endedAt ? null : turn.apiError || null),
     dialogue: summary.dialogue,
     observedSources: summary.observedSources,
-    tokenUsage: target ? readTranscript(target, f => claudeTranscript.tokenUsage(f, model)) : null,
+    tokenUsage: target ? readTranscript(target, f => claudeTranscript.tokenUsage(f, model, 'zai')) : null,
     lastResults: readTranscript(target, f => claudeTranscript.toolResults(f, sessionId)),
     gitEvents: target ? readTranscript(target, f => claudeTranscript.gitEvents(f, { provider: 'zai', sessionId, project })) : [],
     subagentKind: 'mcp',
@@ -526,13 +526,14 @@ class GlmAdapter {
     const jobs = readThreads().get(threadId);
     if (!jobs) return createDetailResponse({ sessionId, project, jobs: [] });
     const target = transcriptFile(threadId);
+    const latestJob = jobs[jobs.length - 1];
     return createDetailResponse({
       sessionId,
       project,
       jobs: recentMcpJobs(jobs),
       toolHistory: readTranscript(target, claudeTranscript.toolHistory),
       messages: readTranscript(target, claudeTranscript.recentMessages),
-      tokenUsage: readTranscript(target, claudeTranscript.tokenUsage),
+      tokenUsage: readTranscript(target, f => claudeTranscript.tokenUsage(f, latestJob?.model || null, 'zai')),
     });
   }
 

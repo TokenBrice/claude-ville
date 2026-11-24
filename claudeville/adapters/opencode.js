@@ -12,7 +12,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { execFileSync } = require('child_process');
-const { MODEL_REVISION } = require('../src/config/models.generated.cjs');
+const { MODEL_REVISION, contextWindowForModel } = require('../src/config/models.generated.cjs');
 const { dedupeGitEvents, extractGitEventsFromCommandSource, stableHash } = require('./gitEvents');
 const {
   createDetailResponse,
@@ -264,12 +264,8 @@ function tokenUsageFromSession(row, parts = []) {
 }
 
 function contextLimitForModel(model) {
-  const normalized = String(model || '').toLowerCase();
-  if (normalized.includes('deepseek-flash')) return 1000000;
-  if (normalized.includes('deepseek-v4-pro')) return 1000000;
-  if (normalized.includes('deepseek-v4-flash')) return 256000;
-  if (normalized.includes('deepseek-reasoner')) return 128000;
-  return 0;
+  if (!model) return 0;
+  return contextWindowForModel(model, 'opencode') || 0;
 }
 
 function latestStepFinish(parts) {

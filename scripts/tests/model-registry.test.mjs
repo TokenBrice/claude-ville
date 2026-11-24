@@ -295,3 +295,87 @@ test('Gemini 4 tiers follow Google\'s lineup: Carbon on top, Neon with the flags
     assert.equal(tier('gemini-4-argon'), 'apex');
     assert.equal(tier('gemini-4-hydrogen'), 'swift');
 });
+
+test('audited context windows resolve accurately across every provider and cross-provider harness', () => {
+    const cases = [
+        // z.AI / GLM (including GLM-5.4, legacy 200K rows, and cross-provider harnesses)
+        ['glm-5.4', 'zai', 1_000_000],
+        ['zai/glm-5.4', 'zai', 1_000_000],
+        ['glm-5.4[1m]', 'zai', 1_000_000],
+        ['glm-5.4', 'claude', 1_000_000],
+        ['glm-5.5', 'zai', 1_000_000],
+        ['glm-5.5', 'claude', 1_000_000],
+        ['glm-5.5', 'omp', 1_000_000],
+        ['glm-5.5', 'opencode', 1_000_000],
+        ['glm-5.5', '', 1_000_000],
+        ['glm-5.3', 'zai', 1_000_000],
+        ['glm-5.3-flash', 'zai', 1_000_000],
+        ['glm-5.2', 'zai', 1_000_000],
+        ['glm-5.1', 'zai', 200_000],
+        ['glm-5-turbo', 'zai', 200_000],
+        ['glm-5v-turbo', 'zai', 200_000],
+        ['glm-4.7', 'zai', 200_000],
+        // Codex / OpenAI
+        ['gpt-6.2-astra', 'codex', 1_050_000],
+        ['gpt-6.2-sol', 'codex', 1_050_000],
+        ['gpt-6.1-sol', 'codex', 1_050_000],
+        ['gpt-6.1-terra', 'codex', 1_050_000],
+        ['gpt-6-astra', 'codex', 1_050_000],
+        ['gpt-6-sol', 'codex', 1_050_000],
+        ['gpt-6-luna', 'codex', 1_050_000],
+        ['gpt-5.6-sol', 'codex', 1_050_000],
+        ['gpt-5.6-terra', 'codex', 1_050_000],
+        ['gpt-5.6-luna', 'codex', 1_050_000],
+        ['gpt-5.6', 'codex', 1_050_000],
+        ['gpt-5.5', 'codex', 1_050_000],
+        ['gpt-5.4', 'codex', 1_050_000],
+        ['gpt-5.3-codex-spark', 'codex', 128_000],
+        ['gpt-5.3-codex', 'codex', 400_000],
+        ['gpt-5.3', 'codex', 400_000],
+        ['gpt-5.2', 'codex', 400_000],
+        ['gpt-reserve', 'codex', 258_400],
+        // DeepSeek
+        ['deepseek-flash', 'deepseek', 1_000_000],
+        ['deepseek-v4-pro', 'deepseek', 1_000_000],
+        ['deepseek-v4-flash', 'deepseek', 1_000_000],
+        ['deepseek/deepseek-v4-flash', 'opencode', 1_000_000],
+        ['deepseek-reasoner', 'deepseek', 128_000],
+        // Grok / xAI
+        ['grok-4.7', 'grok', 500_000],
+        ['grok-4.6', 'grok', 500_000],
+        ['grok-4.5', 'grok', 500_000],
+        ['grok-4.3', 'grok', 1_000_000],
+        ['grok-4.20-0309-reasoning', 'grok', 1_000_000],
+        ['grok-4.20-beta-latest-reasoning', 'grok', 2_000_000],
+        ['grok-4-fast', 'grok', 2_000_000],
+        ['grok-4-1-fast', 'grok', 2_000_000],
+        ['grok-code-fast-1-composer', 'grok', 256_000],
+        ['grok-4', 'grok', 256_000],
+        // Kimi / Moonshot
+        ['kimi-k3.1-pro', 'kimi', 1_000_000],
+        ['kimi-k3', 'kimi', 1_000_000],
+        ['kimi-code/kimi-for-coding', 'kimi', 262_144],
+        // Claude
+        ['claude-opus-5-5', 'claude', 1_000_000],
+        ['claude-sonnet-4-6', 'claude', 1_000_000],
+        ['claude-opus-4-5', 'claude', 200_000],
+        ['claude-haiku-4-5', 'claude', 200_000],
+        ['claude-sonnet-4-5', 'claude', 200_000],
+        [null, 'claude', 200_000],
+        // Gemini / Antigravity (including future model fallback)
+        ['gemini-4-carbon', 'gemini', 1_000_000],
+        ['gemini-4-helium', 'antigravity', 1_000_000],
+        // Unrecognized non-family models stay null for generic harnesses
+        ['mystery-model', 'opencode', null],
+        ['mystery-model', '', null],
+    ];
+    for (const [raw, provider, expected] of cases) {
+        for (const registry of [browserRegistry, serverRegistry]) {
+            assert.equal(
+                registry.contextWindowForModel(raw, provider),
+                expected,
+                `contextWindowForModel(${JSON.stringify(raw)}, ${JSON.stringify(provider)})`,
+            );
+        }
+    }
+});

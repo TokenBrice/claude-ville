@@ -286,3 +286,67 @@ test('adapter fixtures keep genuinely shared optional fields aligned', () => {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('Grok and Gemini adapters derive contextWindowMax from the canonical model registry', () => {
+  const root = makeTempDir('claudeville-r2-02-ctx-');
+  try {
+    const project = path.join(root, 'work', 'ctx-fixture');
+    const now = Date.now();
+    fs.mkdirSync(project, { recursive: true });
+
+    for (const [id, model] of [
+      ['grok-base-4', 'grok-4'],
+      ['grok-long-43', 'grok-4.3'],
+      ['grok-fast-4', 'grok-4-fast'],
+      ['grok-cur-47', 'grok-4.7'],
+    ]) {
+      const dir = path.join(root, '.grok', 'sessions', encodeURIComponent(project), id);
+      writeJson(path.join(dir, 'summary.json'), {
+        info: { id, cwd: project },
+        current_model_id: model,
+        agent_name: id,
+        updated_at: new Date(now).toISOString(),
+      });
+      writeJsonLines(path.join(dir, 'updates.jsonl'), [
+        { timestamp: now, params: { _meta: { totalTokens: 500 }, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'ok' } } } },
+      ]);
+    }
+
+    const projectHash = crypto.createHash('sha256').update(project).digest('hex');
+    writeJson(path.join(root, '.gemini', 'tmp', projectHash, 'chats', 'session-gemini-4.json'), {
+      sessionId: 'gemini-4-carbon-cli',
+      projectHash,
+      messages: [
+        { type: 'user', content: 'Check Gemini 4.' },
+        { type: 'gemini', model: 'gemini-4-carbon', content: 'Done.', tokens: { input: 500, output: 50 }, timestamp: new Date(now).toISOString() },
+      ],
+    });
+
+    const script = `
+      const { GrokAdapter } = require('./claudeville/adapters/grok');
+      const { GeminiAdapter } = require('./claudeville/adapters/gemini');
+      const grok = new GrokAdapter().getActiveSessions(10 * 60 * 1000);
+      const gemini = new GeminiAdapter().getActiveSessions(10 * 60 * 1000);
+      process.stdout.write(JSON.stringify({
+        grok: Object.fromEntries(grok.map(s => [s.model, s.tokenUsage?.contextWindowMax])),
+        gemini: Object.fromEntries(gemini.map(s => [s.model, s.tokenUsage?.contextWindowMax])),
+      }));
+    `;
+    const result = JSON.parse(execFileSync(process.execPath, ['-e', script], {
+      cwd: REPO_ROOT,
+      env: { ...process.env, HOME: root, USERPROFILE: root },
+      encoding: 'utf8',
+    }));
+    assert.deepEqual(result.grok, {
+      'grok-4': 256_000,
+      'grok-4.3': 1_000_000,
+      'grok-4-fast': 2_000_000,
+      'grok-4.7': 500_000,
+    });
+    assert.deepEqual(result.gemini, {
+      'gemini-4-carbon': 1_000_000,
+    });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -464,7 +464,7 @@ if (fixture) {
   assert.equal(child.parentSessionId, 'opencode-ses_parent');
   assert.equal(child.model, 'deepseek/deepseek-v4-flash');
   assert.equal(child.lastTool, 'TodoWrite');
-  assert.equal(child.tokenUsage.contextWindowMax, 256000);
+  assert.equal(child.tokenUsage.contextWindowMax, 1000000);
 
   const flash = sessions.find((session) => session.sessionId === 'opencode-ses_flash');
   assert.ok(flash);

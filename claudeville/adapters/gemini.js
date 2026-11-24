@@ -24,6 +24,7 @@ const os = require('os');
 const crypto = require('crypto');
 const { dedupeGitEvents, extractGitEventsFromCommandSource, stableHash } = require('./gitEvents');
 const { emptyObservedSources, makeDialogue, pickDialogue } = require('./dialogue');
+const { contextWindowForModel } = require('../src/config/models.generated.cjs');
 const {
   createDetailResponse,
   normalizeCacheTokens,
@@ -252,9 +253,8 @@ function readTokenNumber(obj, keys) {
 }
 
 function geminiContextWindowMax(model) {
-  const m = String(model || '').toLowerCase();
-  // Gemini 1.5/2.x/3.x pro & flash families all expose a ~1M-token window.
-  return /gemini-(?:1\.5|2|3)|flash|pro/.test(m) ? 1000000 : 0;
+  if (!model) return 0;
+  return contextWindowForModel(model, 'gemini') || 0;
 }
 
 /**

@@ -21,7 +21,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { MODEL_REVISION } = require('../src/config/models.generated.cjs');
+const { MODEL_REVISION, contextWindowForModel } = require('../src/config/models.generated.cjs');
 const { deriveTurnState } = require('./turnState');
 const { emptyObservedSources, makeDialogue, pickDialogue } = require('./dialogue');
 const {
@@ -347,7 +347,7 @@ function readMission(jobId) {
 
 // ─── Session assembly ───────────────────────────────────
 
-function threadUsage(jobs, latest, latestFold) {
+function threadUsage(jobs, latest, latestFold, model = latest?.model || 'deepseek') {
   const usage = {
     availability: 'observed',
     input: 0,
@@ -360,6 +360,7 @@ function threadUsage(jobs, latest, latestFold) {
     reasoningTokens: 0,
     reasoningInOutput: true,
     contextWindow: latestFold.contextTokens,
+    contextWindowMax: contextWindowForModel(model, 'deepseek') || 0,
     turnCount: 0,
   };
   let costUsd = 0;

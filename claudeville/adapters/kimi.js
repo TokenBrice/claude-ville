@@ -21,6 +21,7 @@ const os = require('os');
 const crypto = require('crypto');
 const { dedupeGitEvents, extractGitEventsFromCommandSource, stableHash } = require('./gitEvents');
 const { emptyObservedSources, makeDialogue, pickDialogue } = require('./dialogue');
+const { contextWindowForModel } = require('../src/config/models.generated.cjs');
 const { deriveTurnState } = require('./turnState');
 const { TOOL_RESULT_LIMIT, toolResultId } = require('./toolResults');
 const {
@@ -1383,9 +1384,10 @@ function getKimiCodeWireContext(wirePath, fallbackProject = null) {
   const stateMeta = statePath && fs.existsSync(statePath)
     ? readKimiCodeState(statePath)
     : { title: null, agents: {} };
+  const modelId = (modelEntry && modelEntry.model) || detail.model || modelInfo.model;
   return {
     project: indexEntry?.workDir || kimiCodeProjectFromState(stateMeta) || detail.project || fallbackProject || null,
-    contextWindowMax: (modelEntry && modelEntry.maxContext) || modelInfo.maxContext || 0,
+    contextWindowMax: (modelEntry && modelEntry.maxContext) || modelInfo.maxContext || contextWindowForModel(modelId, 'kimi') || 0,
   };
 }
 
@@ -1549,7 +1551,8 @@ function getActiveSessionsV2(activeThresholdMs, now) {
         || config.defaultModel;
       const modelEntry = modelKey ? config.models[modelKey] : null;
       const model = (modelEntry && modelEntry.displayName) || modelInfo.displayName || modelInfo.model || 'kimi';
-      const ctxMax = (modelEntry && modelEntry.maxContext) || modelInfo.maxContext || 0;
+      const modelId = (modelEntry && modelEntry.model) || modelKey || modelInfo.model || model;
+      const ctxMax = (modelEntry && modelEntry.maxContext) || modelInfo.maxContext || contextWindowForModel(modelId, 'kimi') || 0;
       const sessionId = `kimi-${sessionDirName}`;
       sessions.push({
         sessionId,
@@ -1591,7 +1594,8 @@ function getActiveSessionsV2(activeThresholdMs, now) {
       const modelKey = detail.model || config.defaultModel;
       const modelEntry = modelKey ? config.models[modelKey] : null;
       const model = (modelEntry && modelEntry.displayName) || modelInfo.displayName || modelInfo.model || 'kimi';
-      const ctxMax = (modelEntry && modelEntry.maxContext) || modelInfo.maxContext || 0;
+      const modelId = (modelEntry && modelEntry.model) || modelKey || modelInfo.model || model;
+      const ctxMax = (modelEntry && modelEntry.maxContext) || modelInfo.maxContext || contextWindowForModel(modelId, 'kimi') || 0;
       const agentLabel = isMain ? title : agentName;
       const turnState = deriveKimiCodeTurnState(wireEntries, now);
 

@@ -1,6 +1,6 @@
 // GENERATED FROM models.json + scripts/models/resolver.template.js — DO NOT EDIT
 
-const MODEL_REVISION = "2026-11-20";
+const MODEL_REVISION = "2026-11-24";
 const MODEL_REGISTRY = [
     {
         "accent": [
@@ -885,6 +885,39 @@ const MODEL_REGISTRY = [
     },
     {
         "accent": [
+            "#f0c896",
+            "#c8e8a0",
+            "#bff7ee"
+        ],
+        "color": "#d9a066",
+        "contextWindow": 1050000,
+        "id": "codex.gpt-6-1-terra",
+        "label": "GPT-6.1 Terra",
+        "match": [
+            "gpt-6-1-terra"
+        ],
+        "modelClass": "gpt56terra",
+        "modelTier": "apex",
+        "mood": "balanced",
+        "paletteKey": "codex",
+        "pricing": {
+            "cacheCreate": 1.25,
+            "cacheRead": 0.05,
+            "input": 1,
+            "output": 5
+        },
+        "provider": "codex",
+        "sample": "gpt-6.1-terra",
+        "shortLabel": "6.1 Terra",
+        "spriteId": "agent.codex.gpt56terra",
+        "trim": [
+            "#d9a066",
+            "#9fce6e",
+            "#7be3d7"
+        ]
+    },
+    {
+        "accent": [
             "#fff6d8",
             "#ffd76a",
             "#bff7ee"
@@ -964,7 +997,7 @@ const MODEL_REGISTRY = [
             "#bff7ee"
         ],
         "color": "#ffd76a",
-        "contextWindow": 372000,
+        "contextWindow": 1050000,
         "id": "codex.gpt-5-6-sol",
         "label": "GPT-5.6 Sol",
         "match": [
@@ -1001,7 +1034,7 @@ const MODEL_REGISTRY = [
             "#bff7ee"
         ],
         "color": "#d9a066",
-        "contextWindow": 372000,
+        "contextWindow": 1050000,
         "id": "codex.gpt-5-6-terra",
         "label": "GPT-5.6 Terra",
         "match": [
@@ -1034,7 +1067,7 @@ const MODEL_REGISTRY = [
             "#bff7ee"
         ],
         "color": "#cfe4ff",
-        "contextWindow": 372000,
+        "contextWindow": 1050000,
         "id": "codex.gpt-5-6-luna",
         "label": "GPT-5.6 Luna",
         "match": [
@@ -1071,7 +1104,7 @@ const MODEL_REGISTRY = [
             "#bff7ee"
         ],
         "color": "#d9a066",
-        "contextWindow": 372000,
+        "contextWindow": 1050000,
         "id": "codex.gpt-5-6",
         "label": "GPT-5.6 Terra",
         "match": [
@@ -1104,7 +1137,7 @@ const MODEL_REGISTRY = [
             "#ffd98a"
         ],
         "color": "#fff1b8",
-        "contextWindow": 258400,
+        "contextWindow": 1050000,
         "id": "codex.gpt-5-5",
         "label": "GPT-5.5",
         "match": [
@@ -1137,7 +1170,7 @@ const MODEL_REGISTRY = [
             "#d3dcff"
         ],
         "color": "#8bd6ff",
-        "contextWindow": 258400,
+        "contextWindow": 1050000,
         "id": "codex.gpt-5-4",
         "label": "GPT-5.4",
         "match": [
@@ -1170,7 +1203,7 @@ const MODEL_REGISTRY = [
             "#b8ff5c"
         ],
         "color": "#f8e36f",
-        "contextWindow": 258400,
+        "contextWindow": 128000,
         "id": "codex.gpt-5-3-spark",
         "label": "GPT-5.3 Codex Spark",
         "match": [
@@ -1203,7 +1236,7 @@ const MODEL_REGISTRY = [
             "#b8ff5c"
         ],
         "color": "#f8e36f",
-        "contextWindow": 258400,
+        "contextWindow": 400000,
         "id": "codex.gpt-5-3-codex",
         "label": "GPT-5.3 Codex",
         "match": [
@@ -1236,7 +1269,7 @@ const MODEL_REGISTRY = [
             "#5ad6ff"
         ],
         "color": "#7be3d7",
-        "contextWindow": 258400,
+        "contextWindow": 400000,
         "id": "codex.gpt-5-3",
         "label": "Codex",
         "match": [
@@ -1269,7 +1302,7 @@ const MODEL_REGISTRY = [
             "#5ad6ff"
         ],
         "color": "#7be3d7",
-        "contextWindow": 258400,
+        "contextWindow": 400000,
         "id": "codex.gpt-5",
         "label": "Codex",
         "match": [
@@ -1293,6 +1326,72 @@ const MODEL_REGISTRY = [
             "#7be3d7",
             "#55c7f0",
             "#8ee88e"
+        ]
+    },
+    {
+        "accent": [
+            "#ffeff3",
+            "#ff8da8",
+            "#f5c36a"
+        ],
+        "color": "#ff8da8",
+        "contextWindow": 1000000,
+        "id": "kimi.k3-1-pro",
+        "label": "Kimi K3.1 Pro",
+        "match": [
+            "kimi-k3-1-pro"
+        ],
+        "modelClass": "kimi",
+        "modelTier": "apex",
+        "mood": "deliberate",
+        "paletteKey": "kimi",
+        "pricing": {
+            "cacheCreate": 2,
+            "cacheRead": 0.2,
+            "input": 2,
+            "output": 10
+        },
+        "provider": "kimi",
+        "sample": "kimi-k3.1-pro",
+        "shortLabel": "Kimi K3.1",
+        "spriteId": "agent.kimi.base",
+        "trim": [
+            "#f5c36a",
+            "#ff8da8",
+            "#ffeff3"
+        ]
+    },
+    {
+        "accent": [
+            "#ffeff3",
+            "#ff8da8",
+            "#f5c36a"
+        ],
+        "color": "#ff8da8",
+        "contextWindow": 1000000,
+        "id": "kimi.k3",
+        "label": "Kimi K3",
+        "match": [
+            "kimi-k3"
+        ],
+        "modelClass": "kimi",
+        "modelTier": "apex",
+        "mood": "deliberate",
+        "paletteKey": "kimi",
+        "pricing": {
+            "cacheCreate": 3,
+            "cacheRead": 0.3,
+            "input": 3,
+            "output": 15
+        },
+        "provider": "kimi",
+        "sample": "kimi-k3",
+        "shortLabel": "Kimi K3",
+        "spriteId": "agent.kimi.base",
+        "trim": [
+            "#f5c36a",
+            "#ff8da8",
+            "#ffeff3"
         ]
     },
     {
@@ -1402,7 +1501,7 @@ const MODEL_REGISTRY = [
             "#6dd7ff"
         ],
         "color": "#7cf4c8",
-        "contextWindow": 256000,
+        "contextWindow": 1000000,
         "id": "deepseek.v4-flash",
         "label": "DeepSeek V4 Flash",
         "match": [
@@ -1461,6 +1560,72 @@ const MODEL_REGISTRY = [
             "#7cf4c8",
             "#45dca8",
             "#c8fff0"
+        ]
+    },
+    {
+        "accent": [
+            "#f0fdff",
+            "#7df9ff",
+            "#38bdf8"
+        ],
+        "color": "#7df9ff",
+        "contextWindow": 500000,
+        "id": "grok.4-7",
+        "label": "Grok 4.7",
+        "match": [
+            "grok-4-7"
+        ],
+        "modelClass": "base",
+        "modelTier": "apex",
+        "mood": "deliberate",
+        "paletteKey": "grok",
+        "pricing": {
+            "cacheCreate": 0,
+            "cacheRead": 0.5,
+            "input": 2,
+            "output": 6
+        },
+        "provider": "grok",
+        "sample": "grok-4.7",
+        "shortLabel": "Grok 4.7",
+        "spriteId": "agent.grok.base",
+        "trim": [
+            "#7df9ff",
+            "#e8f7ff",
+            "#22d3ee"
+        ]
+    },
+    {
+        "accent": [
+            "#f0fdff",
+            "#7df9ff",
+            "#38bdf8"
+        ],
+        "color": "#7df9ff",
+        "contextWindow": 500000,
+        "id": "grok.4-6",
+        "label": "Grok 4.6",
+        "match": [
+            "grok-4-6"
+        ],
+        "modelClass": "base",
+        "modelTier": "apex",
+        "mood": "deliberate",
+        "paletteKey": "grok",
+        "pricing": {
+            "cacheCreate": 0,
+            "cacheRead": 0.5,
+            "input": 2,
+            "output": 6
+        },
+        "provider": "grok",
+        "sample": "grok-4.6",
+        "shortLabel": "Grok 4.6",
+        "spriteId": "agent.grok.base",
+        "trim": [
+            "#7df9ff",
+            "#e8f7ff",
+            "#22d3ee"
         ]
     },
     {
@@ -1537,7 +1702,7 @@ const MODEL_REGISTRY = [
             "#38bdf8"
         ],
         "color": "#7df9ff",
-        "contextWindow": 500000,
+        "contextWindow": 1000000,
         "id": "grok.4-3",
         "label": "Grok",
         "match": [
@@ -1571,7 +1736,108 @@ const MODEL_REGISTRY = [
             "#38bdf8"
         ],
         "color": "#7df9ff",
-        "contextWindow": 500000,
+        "contextWindow": 2000000,
+        "id": "grok.4-20-beta",
+        "label": "Grok 4.20",
+        "match": [
+            "grok-4-20-beta",
+            "grok-4-20-multi-agent"
+        ],
+        "modelClass": "base",
+        "modelTier": "apex",
+        "mood": "deliberate",
+        "paletteKey": "grok",
+        "pricing": {
+            "cacheCreate": 0,
+            "cacheRead": 0.2,
+            "input": 1.25,
+            "output": 2.5
+        },
+        "provider": "grok",
+        "sample": "grok-4.20-beta-latest-reasoning",
+        "shortLabel": "Grok 4.20",
+        "spriteId": "agent.grok.base",
+        "trim": [
+            "#7df9ff",
+            "#e8f7ff",
+            "#22d3ee"
+        ]
+    },
+    {
+        "accent": [
+            "#f0fdff",
+            "#7df9ff",
+            "#38bdf8"
+        ],
+        "color": "#7df9ff",
+        "contextWindow": 1000000,
+        "id": "grok.4-20",
+        "label": "Grok 4.20",
+        "match": [
+            "grok-4-20"
+        ],
+        "modelClass": "base",
+        "modelTier": "apex",
+        "mood": "deliberate",
+        "paletteKey": "grok",
+        "pricing": {
+            "cacheCreate": 0,
+            "cacheRead": 0.2,
+            "input": 1.25,
+            "output": 2.5
+        },
+        "provider": "grok",
+        "sample": "grok-4.20-0309-reasoning",
+        "shortLabel": "Grok 4.20",
+        "spriteId": "agent.grok.base",
+        "trim": [
+            "#7df9ff",
+            "#e8f7ff",
+            "#22d3ee"
+        ]
+    },
+    {
+        "accent": [
+            "#f0fdff",
+            "#7df9ff",
+            "#38bdf8"
+        ],
+        "color": "#7df9ff",
+        "contextWindow": 2000000,
+        "id": "grok.4-fast",
+        "label": "Grok 4 Fast",
+        "match": [
+            "grok-4-1-fast",
+            "grok-4-fast"
+        ],
+        "modelClass": "base",
+        "modelTier": "swift",
+        "mood": "quick",
+        "paletteKey": "grok",
+        "pricing": {
+            "cacheCreate": 0,
+            "cacheRead": 0.05,
+            "input": 0.2,
+            "output": 0.5
+        },
+        "provider": "grok",
+        "sample": "grok-4-fast",
+        "shortLabel": "Grok Fast",
+        "spriteId": "agent.grok.base",
+        "trim": [
+            "#7df9ff",
+            "#e8f7ff",
+            "#22d3ee"
+        ]
+    },
+    {
+        "accent": [
+            "#f0fdff",
+            "#7df9ff",
+            "#38bdf8"
+        ],
+        "color": "#7df9ff",
+        "contextWindow": 256000,
         "id": "grok.4",
         "label": "Grok",
         "match": [
@@ -1595,6 +1861,43 @@ const MODEL_REGISTRY = [
             "#7df9ff",
             "#e8f7ff",
             "#22d3ee"
+        ]
+    },
+    {
+        "accent": [
+            "#fff1e8",
+            "#ff8c5f",
+            "#ffd6a5"
+        ],
+        "color": "#ff8c5f",
+        "contextWindow": 1000000,
+        "id": "zai.glm-5-4",
+        "label": "GLM 5.4",
+        "match": [
+            "glm-5-4"
+        ],
+        "modelClass": "glm",
+        "modelTier": "apex",
+        "mood": "deliberate",
+        "paletteKey": "zai",
+        "pricing": {
+            "cacheCreate": 0,
+            "cacheRead": 0.26,
+            "input": 1.4,
+            "output": 4.4
+        },
+        "provider": "zai",
+        "sample": "zai/glm-5.4",
+        "shortLabel": "GLM 5.4",
+        "spriteId": "agent.zai.glm",
+        "spriteVariants": [
+            "agent.zai.glm",
+            "agent.zai.glm.b"
+        ],
+        "trim": [
+            "#ff8c5f",
+            "#ffb28c",
+            "#ffe0cf"
         ]
     },
     {
@@ -1656,6 +1959,152 @@ const MODEL_REGISTRY = [
         "provider": "zai",
         "sample": "zai/glm-5.3",
         "shortLabel": "GLM",
+        "spriteId": "agent.zai.glm",
+        "spriteVariants": [
+            "agent.zai.glm",
+            "agent.zai.glm.b"
+        ],
+        "trim": [
+            "#ff8c5f",
+            "#ffb28c",
+            "#ffe0cf"
+        ]
+    },
+    {
+        "accent": [
+            "#fff1e8",
+            "#ff8c5f",
+            "#ffd6a5"
+        ],
+        "color": "#ff8c5f",
+        "contextWindow": 1000000,
+        "id": "zai.glm-5-2",
+        "label": "GLM 5.2",
+        "match": [
+            "glm-5-2"
+        ],
+        "modelClass": "glm",
+        "modelTier": "apex",
+        "mood": "deliberate",
+        "paletteKey": "zai",
+        "pricing": {
+            "cacheCreate": 0,
+            "cacheRead": 0.26,
+            "input": 1.4,
+            "output": 4.4
+        },
+        "provider": "zai",
+        "sample": "zai/glm-5.2",
+        "shortLabel": "GLM 5.2",
+        "spriteId": "agent.zai.glm",
+        "spriteVariants": [
+            "agent.zai.glm",
+            "agent.zai.glm.b"
+        ],
+        "trim": [
+            "#ff8c5f",
+            "#ffb28c",
+            "#ffe0cf"
+        ]
+    },
+    {
+        "accent": [
+            "#fff1e8",
+            "#ff8c5f",
+            "#ffd6a5"
+        ],
+        "color": "#ff8c5f",
+        "contextWindow": 200000,
+        "id": "zai.glm-5-1",
+        "label": "GLM 5.1",
+        "match": [
+            "glm-5-1"
+        ],
+        "modelClass": "glm",
+        "modelTier": "apex",
+        "mood": "deliberate",
+        "paletteKey": "zai",
+        "pricing": {
+            "cacheCreate": 0,
+            "cacheRead": 0.26,
+            "input": 1.4,
+            "output": 4.4
+        },
+        "provider": "zai",
+        "sample": "zai/glm-5.1",
+        "shortLabel": "GLM 5.1",
+        "spriteId": "agent.zai.glm",
+        "spriteVariants": [
+            "agent.zai.glm",
+            "agent.zai.glm.b"
+        ],
+        "trim": [
+            "#ff8c5f",
+            "#ffb28c",
+            "#ffe0cf"
+        ]
+    },
+    {
+        "accent": [
+            "#fff1e8",
+            "#ffb28c",
+            "#ff8c5f"
+        ],
+        "color": "#ffb28c",
+        "contextWindow": 200000,
+        "id": "zai.glm-5-turbo",
+        "label": "GLM 5 Turbo",
+        "match": [
+            "glm-5-turbo",
+            "glm-5v-turbo"
+        ],
+        "modelClass": "glm-flash",
+        "modelTier": "swift",
+        "mood": "quick",
+        "paletteKey": "zai",
+        "pricing": {
+            "cacheCreate": 0,
+            "cacheRead": 0.24,
+            "input": 1.2,
+            "output": 4
+        },
+        "provider": "zai",
+        "sample": "zai/glm-5-turbo",
+        "shortLabel": "GLM Turbo",
+        "spriteId": "agent.zai.flash",
+        "trim": [
+            "#ffb28c",
+            "#ff8c5f",
+            "#ffe0cf"
+        ]
+    },
+    {
+        "accent": [
+            "#fff1e8",
+            "#ff8c5f",
+            "#ffd6a5"
+        ],
+        "color": "#ff8c5f",
+        "contextWindow": 200000,
+        "id": "zai.glm-4-7",
+        "label": "GLM 4.7",
+        "match": [
+            "glm-4-7",
+            "glm-4-6"
+        ],
+        "modelClass": "glm",
+        "modelTier": "balanced",
+        "mood": "balanced",
+        "paletteKey": "zai",
+        "pricing": {
+            "cacheCreate": 0,
+            "cacheRead": 0.11,
+            "input": 0.6,
+            "output": 2.2
+        },
+        "provider": "zai",
+        "sample": "zai/glm-4.7",
+        "shortLabel": "GLM 4.7",
         "spriteId": "agent.zai.glm",
         "spriteVariants": [
             "agent.zai.glm",
@@ -2485,18 +2934,32 @@ function ratesForModel(model, provider = '') {
     };
 }
 
+function inferredContextProvider(model, provider = '') {
+    const candidates = pricingModelCandidates(model);
+    if (candidates.some(candidate => candidate.includes('kimi'))) return 'kimi';
+    if (candidates.some(candidate => candidate.includes('deepseek'))) return 'deepseek';
+    if (candidates.some(candidate => candidate.includes('glm'))) return 'zai';
+    if (candidates.some(candidate => candidate.includes('grok'))) return 'grok';
+    if (candidates.some(candidate => candidate.includes('gemini'))) return 'gemini';
+    if (candidates.some(candidate => candidate.includes('codex') || candidate.includes('gpt'))) return 'codex';
+    if (candidates.some(candidate => candidate.includes('claude'))) return 'claude';
+    const normalizedProvider = registryProvider(provider);
+    if (normalizedProvider === 'antigravity' || normalizedProvider === 'agy') return 'gemini';
+    if (normalizedProvider === 'zhipu') return 'zai';
+    return normalizedProvider && MODEL_DEFAULTS[normalizedProvider] ? normalizedProvider : null;
+}
+
 function contextWindowForModel(model, provider = '') {
     const direct = findModelRow(model, provider);
     if (!direct.isDefault) return direct.row?.contextWindow ?? null;
-    if (provider) {
-        const inferredProvider = pricingProvider(model, provider);
-        if (inferredProvider !== registryProvider(provider)) {
-            const inferred = findModelRow(model, inferredProvider);
-            if (!inferred.isDefault) return inferred.row?.contextWindow ?? null;
-        }
-        return direct.row?.contextWindow ?? null;
+    const modelMatch = findModelRow(model);
+    if (!modelMatch.isDefault) return modelMatch.row?.contextWindow ?? null;
+    const inferredProvider = inferredContextProvider(model, provider);
+    if (inferredProvider) {
+        const inferred = findModelRow(model, inferredProvider);
+        if (inferred.row) return inferred.row.contextWindow ?? null;
     }
-    return null;
+    return direct.row?.contextWindow ?? null;
 }
 
 export { MODEL_REVISION, MODEL_REGISTRY, MODEL_DEFAULTS, normalizeModel, pricingModelCandidates, findModelRow, contextWindowForModel, ratesForModel };

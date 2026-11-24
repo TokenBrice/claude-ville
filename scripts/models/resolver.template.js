@@ -61,16 +61,30 @@ function ratesForModel(model, provider = '') {
     };
 }
 
+function inferredContextProvider(model, provider = '') {
+    const candidates = pricingModelCandidates(model);
+    if (candidates.some(candidate => candidate.includes('kimi'))) return 'kimi';
+    if (candidates.some(candidate => candidate.includes('deepseek'))) return 'deepseek';
+    if (candidates.some(candidate => candidate.includes('glm'))) return 'zai';
+    if (candidates.some(candidate => candidate.includes('grok'))) return 'grok';
+    if (candidates.some(candidate => candidate.includes('gemini'))) return 'gemini';
+    if (candidates.some(candidate => candidate.includes('codex') || candidate.includes('gpt'))) return 'codex';
+    if (candidates.some(candidate => candidate.includes('claude'))) return 'claude';
+    const normalizedProvider = registryProvider(provider);
+    if (normalizedProvider === 'antigravity' || normalizedProvider === 'agy') return 'gemini';
+    if (normalizedProvider === 'zhipu') return 'zai';
+    return normalizedProvider && MODEL_DEFAULTS[normalizedProvider] ? normalizedProvider : null;
+}
+
 function contextWindowForModel(model, provider = '') {
     const direct = findModelRow(model, provider);
     if (!direct.isDefault) return direct.row?.contextWindow ?? null;
-    if (provider) {
-        const inferredProvider = pricingProvider(model, provider);
-        if (inferredProvider !== registryProvider(provider)) {
-            const inferred = findModelRow(model, inferredProvider);
-            if (!inferred.isDefault) return inferred.row?.contextWindow ?? null;
-        }
-        return direct.row?.contextWindow ?? null;
+    const modelMatch = findModelRow(model);
+    if (!modelMatch.isDefault) return modelMatch.row?.contextWindow ?? null;
+    const inferredProvider = inferredContextProvider(model, provider);
+    if (inferredProvider) {
+        const inferred = findModelRow(model, inferredProvider);
+        if (inferred.row) return inferred.row.contextWindow ?? null;
     }
-    return null;
+    return direct.row?.contextWindow ?? null;
 }

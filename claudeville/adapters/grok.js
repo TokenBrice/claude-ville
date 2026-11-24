@@ -30,6 +30,7 @@ const {
   statCacheKey,
 } = require('./shared');
 const { emptyObservedSources, makeDialogue, pickDialogue } = require('./dialogue');
+const { contextWindowForModel } = require('../src/config/models.generated.cjs');
 
 const MAX_DIALOGUE_CANDIDATES_PER_KIND = 8;
 
@@ -708,9 +709,7 @@ function buildTokenUsage(summary, liveDetail) {
   const contextWindow = Number(liveDetail?.contextTokens) || 0;
   const cacheTokens = normalizeCacheTokens(null, GROK_CACHE_FIELD_MAP);
   const model = String(summary?.current_model_id || '').toLowerCase();
-  let contextWindowMax = 500000;
-  if (model.includes('composer')) contextWindowMax = 256000;
-  else if (model.includes('4.3') || model.includes('4.20')) contextWindowMax = 1000000;
+  const contextWindowMax = contextWindowForModel(model, 'grok') || 500000;
 
   if (!contextWindow) {
     return {
