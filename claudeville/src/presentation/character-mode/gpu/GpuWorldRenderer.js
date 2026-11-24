@@ -81,7 +81,7 @@ import { ALBEDO_PAGE_GUTTER, ALBEDO_PAGE_SIZE, GpuAlbedoPage } from './GpuAlbedo
 import { FIRELIGHT_DARK_SHARE, FIRELIGHT_PILOT_LANDMARK, resolveFirelight } from './Firelight.js';
 import { buildRadianceEmitters, GroundRadiance, RADIANCE_MIN_SOLVE_MS, RADIANCE_SCENE_GLSL } from './GroundRadiance.js';
 import { SUN_SHADE_GLSL, resolveSunShade } from './SunShade.js';
-import { NEUTRAL_GRADE } from '../GradeEvaluator.js';
+import { capSaturation, NEUTRAL_GRADE } from '../GradeEvaluator.js';
 import {
     COAST_FIELD_FLAGS,
     COAST_PALETTE,
@@ -188,6 +188,21 @@ export const GLINT_DASH_DENSITY = 0.3;
 // 3.2 — water ticks (6 Hz) a moon-path or noon-path dash holds before re-rolling.
 export const MOON_DASH_HOLD = 6;
 export const NOON_DASH_HOLD = 3;
+// NE P3.3b — share of the ungraded silver-tinted seaPath stop mixed back over
+// the night-graded stop (under the V6 cap and seaPathCap), lifting lit moon
+// glints out of the night grade like emitters while keeping named palette stops.
+export const MOON_PATH_UNGRADE_MIX = 0.65;
+export const MOON_PATH_SILVER_TINT = Object.freeze([0.86, 0.92, 1.02]);
+export function liftMoonPathRgb(graded, ungraded, night, maxS) {
+    if (!(night > 0)) return graded;
+    const mixW = MOON_PATH_UNGRADE_MIX * Math.min(1, night);
+    const lifted = [
+        graded[0] + (ungraded[0] * MOON_PATH_SILVER_TINT[0] - graded[0]) * mixW,
+        graded[1] + (ungraded[1] * MOON_PATH_SILVER_TINT[1] - graded[1]) * mixW,
+        graded[2] + (ungraded[2] * MOON_PATH_SILVER_TINT[2] - graded[2]) * mixW,
+    ];
+    return maxS > 0 ? capSaturation(lifted, maxS) : lifted;
+}
 // 3.6 — swash step width in signed-distance tiles (relaxed 2026-11-23).
 export const SWASH_STEP_TILES = 0.05;
 // Starlight samples existing swell caps, never a separate glitter field.
@@ -882,6 +897,9 @@ vec3 seaPathCap(vec3 c) {
     float l = 0.5 * (max(c.r, max(c.g, c.b)) + min(c.r, min(c.g, c.b)));
     return l > 0.70 ? c * (0.70 / l) : c;
 }
+// NE P3.3b — named moon-path night lift constants (shared by in-map water and open sea).
+const float MOON_PATH_UNGRADE_MIX = ${MOON_PATH_UNGRADE_MIX.toFixed(2)};
+const vec3 MOON_PATH_SILVER_TINT = vec3(${MOON_PATH_SILVER_TINT.map(v => v.toFixed(2)).join(', ')});
 const float OPEN_SEA_HORIZON_Y = ${OCEAN_HORIZON_WORLD_Y.toFixed(1)};
 // 3.3 / N3 — long swell contours: smooth world-anchored fields in whole
 // world rows (every seam they bend is a stepped staircase), so the open
@@ -2590,7 +2608,18 @@ void main() {
     // takes the same cap, so the two still meet without a seam). The 3.2
     // path is the one exception (M7): its seaPath stop keeps its colour and
     // is held at HSL L <= 0.70 instead.
-    if (waterHue) color = seaPath ? seaPathCap(color) : capSaturation(applyWaterSky(color), waterMaxSat());
+    if (waterHue) {
+        if (seaPath) {
+            // NE P3.3b — lift lit moon-path stops out of the night grade like emitters:
+            // the ungraded stop is a named seaPath colour, kept silver under V6 and seaPathCap.
+            if (!lighthouseDash && u_glint.z > 2.5 && u_waterMood.x > 0.0) {
+                color = capSaturation(mix(color, poolAlbedo * MOON_PATH_SILVER_TINT, MOON_PATH_UNGRADE_MIX * u_waterMood.x), waterMaxSat());
+            }
+            color = seaPathCap(color);
+        } else {
+            color = capSaturation(applyWaterSky(color), waterMaxSat());
+        }
+    }
     // SEA-2 / SEA-3 — open water's share of the cool sky (applyWaterState).
     if (waterHue && !seaPath && seaSkyTake > 0.0) color = capSaturation(seaSkyHue(color, u_waterSky.rgb, seaSkyTake), waterMaxSat());
     // 2.7 — a Lighthouse-lit dash is the lamp's own light (like 1.3's
@@ -3498,8 +3527,14 @@ vec3 shadeOpenSea(vec2 cell) {
     // 2.7 — the Lighthouse fan's lit dashes, the same cells as the in-map water.
     float beam = lighthouseSheen(cell, tick, storm);
     if (glint > 0.5) {
-        c = u_glintStops[glint > 1.5 ? 0 : 1] * mix(1.0, 0.86, u_seaSunBand);
-        c = seaPathCap(applyTimeGrade(c, true));
+        vec3 stopColor = u_glintStops[glint > 1.5 ? 0 : 1] * mix(1.0, 0.86, u_seaSunBand);
+        c = applyTimeGrade(stopColor, true);
+        // NE P3.3b — lift lit moon-path stops out of the night grade like emitters:
+        // the ungraded stop is a named seaPath colour, kept silver under V6 and seaPathCap.
+        if (u_glint.z > 2.5 && u_waterMood.x > 0.0) {
+            c = capSaturation(mix(c, stopColor * MOON_PATH_SILVER_TINT, MOON_PATH_UNGRADE_MIX * u_waterMood.x), waterMaxSat());
+        }
+        c = seaPathCap(c);
         marked = true;
     } else if (beam > 0.5) {
         // Fire glints keep their subdued warm receiver stop through the grade.

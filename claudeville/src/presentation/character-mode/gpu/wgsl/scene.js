@@ -48,6 +48,8 @@ import {
 } from '../GpuWorldPolicy.js';
 import {
     APERTURE_WALL_AHEAD,
+    MOON_PATH_SILVER_TINT,
+    MOON_PATH_UNGRADE_MIX,
     WATER_COLUMN_GLINT,
     WATER_COLUMN_ROW_FAR,
     WATER_COLUMN_ROW_HOLD,
@@ -72,6 +74,9 @@ const wgslRgb = (rgb) => `vec3f(${rgb.map(channel => (channel / 255).toFixed(6))
 const grassGustRgb = (side) => `array<vec3f, ${GRASS_GUST_STOPS.length}>(${GRASS_GUST_STOPS.map(pair => wgslRgb(pair[side])).join(', ')})`;
 
 export const SCENE_WGSL = /* wgsl */ `
+// NE P3.3b — named moon-path night lift constants (shared with openSea.js and GLSL twins).
+const MOON_PATH_UNGRADE_MIX: f32 = ${MOON_PATH_UNGRADE_MIX.toFixed(2)};
+const MOON_PATH_SILVER_TINT: vec3f = vec3f(${MOON_PATH_SILVER_TINT.map(v => v.toFixed(2)).join(', ')});
 // ---- The record vertex stage (quadVertexSource) ----------------------------
 // The GLSL varyings, one location each except the four loc2 surface values
 // (one vec4) and gate/ramp (one vec2): 13 locations. Interpolated fields keep
@@ -682,6 +687,11 @@ fn sceneSurface() -> SurfaceSample {
   // V6 — graded water stays quiet; the 3.2 path is held at HSL L <= 0.70.
   if (waterHue) {
     if (seaPath) {
+      // NE P3.3b — lift lit moon-path stops out of the night grade like emitters:
+      // the ungraded stop is a named seaPath colour, kept silver under V6 and seaPathCap.
+      if (!lighthouseDash && frame.glint.z > 2.5 && frame.waterMood.x > 0.0) {
+        color = capSaturation(mix(color, poolAlbedo * MOON_PATH_SILVER_TINT, MOON_PATH_UNGRADE_MIX * frame.waterMood.x), waterMaxSat());
+      }
       color = seaPathCap(color);
     } else {
       color = capSaturation(applyWaterSky(color), waterMaxSat());

@@ -52,6 +52,7 @@ import * as CanvasGrade from './CanvasGrade.js';
 import { cloudCourseOffset, cloudPlane, cloudSunlitTile, cloudTileSample } from './CloudShadowCourses.js';
 import { drawCarvedTerrainLayer } from './EmitterCuts.js';
 import { footprintFieldFor } from './FootprintField.js';
+import { waterMaxSaturation } from './GradeEvaluator.js';
 import {
     canvasGlint,
     canvasSeaKey,
@@ -78,6 +79,7 @@ import {
     DEEP_CREST_RUN,
     GLINT_DASH_DENSITY,
     GLINT_NOON_BASE,
+    liftMoonPathRgb,
     MOON_DASH_HOLD,
     NEAR_SHORE_DASH_DENSITY,
     NOON_DASH_HOLD,
@@ -1119,10 +1121,20 @@ function buildPalette(atmosphere, postFx, storm) {
     classes[CLS_WET_DARK] = u32Of(to01(COAST_PALETTE.wetSandDark));
     // The path: graded, held at HSL L <= 0.70 (seaPathCap), painted as the
     // preimage of that; fire glints preserve their warm receiver stops.
-    const pathOut = (hex) => {
+    // NE P3.3b — at night, lit moon-path stops (indices 4..5, kind 3) escape
+    // the night grade like emitters: the ungraded stop is a named seaPath
+    // colour lifted toward cool silver under the V6 cap and seaPathCap, laid
+    // post-grade in drawCanvasWaterColumns because the night grade clips its
+    // preimage. Sun stops (indices 0..3) and daytime frames stay unchanged.
+    const pathOut = (hex, index) => {
         const raw = hexRgb01(hex).map(v => v * band);
         if (!grade) return u32Of(raw);
         const graded = CanvasGrade.canvasFrameGradeRgb(raw, grade, { postFx });
+        if (index >= 4 && mood.night > 0) {
+            const lifted = liftMoonPathRgb(graded, raw, mood.night, waterMaxSaturation(mood));
+            const l = 0.5 * (Math.max(...lifted) + Math.min(...lifted));
+            return u32Of(l > 0.70 ? lifted.map(v => v * 0.70 / l) : lifted);
+        }
         const l = 0.5 * (Math.max(...graded) + Math.min(...graded));
         return u32Of(l > 0.70 ? CanvasGrade.canvasFramePreimage(graded.map(v => v * 0.70 / l), grade, { postFx }) : raw);
     };
@@ -2283,7 +2295,8 @@ function rebuildColumns(state, base, fx, palette, rect, lights, grade, postFx, f
 export function drawCanvasWaterColumns(overlayCtx, renderer) {
     const state = renderer?._canvasWater;
     const glow = state?.glowDraw === true;
-    if (!state || (!state.columnsLive && !state.beamLive && !glow) || !renderer.camera) return;
+    const moonPath = state?.pathPostGrade === true;
+    if (!state || (!state.columnsLive && !state.beamLive && !glow && !moonPath) || !renderer.camera) return;
     overlayCtx.save();
     renderer.camera.applyTransform(overlayCtx);
     overlayCtx.imageSmoothingEnabled = false;
@@ -2296,6 +2309,12 @@ export function drawCanvasWaterColumns(overlayCtx, renderer) {
         drawCarvedTerrainLayer(overlayCtx, renderer, state.glow);
     }
     overlayCtx.globalAlpha = 1;
+    // NE P3.3b — night moon-path glints land post-grade under the lamp columns
+    // (beam skips path texels, keeping the GPU priority order).
+    if (moonPath) {
+        state.pathPostGrade = false;
+        drawCarvedTerrainLayer(overlayCtx, renderer, state.path);
+    }
     if (state.beamLive) {
         state.beamLive = false;
         drawCarvedTerrainLayer(overlayCtx, renderer, state.beam);
@@ -2525,6 +2544,7 @@ export function drawCanvasWaterState(ctx, renderer, atmosphere) {
     ctx.drawImage(state.overlay.canvas, state.overlay.x, state.overlay.y);
     // 3.2 — the path.
     const glint = canvasGlint(atmosphere);
+    const moonPostGrade = Boolean(glint && glint.kind === 3 && mood.night > 0 && atmosphere?.lightGrade);
     if (glint) {
         const pathKey = `${fx.deepTick}|${glint.kind}|${Math.round(glint.strength * 64)}|${Math.round((glint.growScale ?? 1) * 64)}|${Math.round((glint.body?.xFrac ?? 0.5) * 4096)}|${Math.round(view.x0)},${Math.round(view.y0)},${Math.round(view.x1)},${Math.round(view.y1)}|${view.texelPx}|${state.overlayKey}`;
         if (pathKey !== state.pathKey) {
@@ -2533,9 +2553,10 @@ export function drawCanvasWaterState(ctx, renderer, atmosphere) {
             state.pathKey = pathKey;
             state.stats.pathMs = performance.now() - started;
         }
-        if (state.pathOn) ctx.drawImage(state.path.canvas, state.path.x, state.path.y);
+        if (state.pathOn && !moonPostGrade) ctx.drawImage(state.path.canvas, state.path.x, state.path.y);
     }
     state.pathLive = Boolean(glint && state.pathOn);
+    state.pathPostGrade = Boolean(moonPostGrade && state.pathOn);
     // Beacon glints preserve warm receiver stops after the cool frame grade.
     // Build after the path so path texels keep precedence, as on the GPU.
     const beam = renderer.buildingRenderer?.lighthouseBeam?.(renderer.motionTimeMs) || null;
