@@ -329,6 +329,9 @@ export function statusClothPreimage(rgb, grade, { postFx = false } = {}) {
         return peak > 1e-4 ? (peak - Math.min(c[0], c[1], c[2])) / peak : 0;
     };
     const plainSaturation = saturation(graded);
+    // NE v0.67.1 B — cool night multiply can stretch HSV saturation past the
+    // authored swatch while shifting hue; cap the RG-3 floor at authored sat.
+    const minSaturation = Math.min(plainSaturation, saturation(rgb) - 0.02);
     const solve = (scale) => {
         const peak = Math.max(1, rgb[0] * scale, rgb[1] * scale, rgb[2] * scale);
         const target = [0, 1, 2].map(channel => graded[channel] + (rgb[channel] * scale / peak - graded[channel]) * hold);
@@ -340,7 +343,7 @@ export function statusClothPreimage(rgb, grade, { postFx = false } = {}) {
         const short = Math.max(...[0, 1, 2].map(channel => target[channel] - landed[channel]));
         return { preimage, reached: short < 0.012, saturation: saturation(landed) };
     };
-    const kept = (candidate) => (candidate.saturation >= plainSaturation ? candidate.preimage : rgb);
+    const kept = (candidate) => (candidate.saturation >= minSaturation ? candidate.preimage : rgb);
     const first = solve(full);
     if (first.reached) return kept(first);
     // The largest value in [0.6, 1] x the graded value that lands on target.

@@ -84,6 +84,8 @@ import {
     COAST_FIELD_FLAGS,
     COAST_PALETTE,
     DEPTH_BOUNDS,
+    DRY_SAND_NIGHT_SCALE,
+    WATER_FOAM_NIGHT_DIM,
     coastFieldTexels,
     mirrorStormDrop,
     OCEAN_HORIZON_WORLD_Y,
@@ -727,8 +729,9 @@ vec3 applyAerialHaze(vec3 color, float order, float cellCentreY, bool additive) 
         float haze = k / 48.0;
         if (haze > 0.0) {
             float l = dot(color, vec3(0.2126, 0.7152, 0.0722));
-            float clearDay = clamp((0.55 - hazeStart) / 0.25, 0.0, 1.0);
-            color = mix(color, mix(vec3(l), color, 0.8), min(1.0, haze * mix(8.0, 3.0, clearDay)));
+            // NE v0.67.1 C — clear day (0.30) -> haze * 3.0; clear night (0.35) -> haze * 4.0; overcast/fog (0.55) -> haze * 8.0.
+            float clearAir = clamp((0.55 - hazeStart) / 0.25, 0.0, 1.0);
+            color = mix(color, mix(vec3(l), color, 0.8), min(1.0, haze * mix(8.0, 3.0, clearAir)));
             color = additive ? color * (1.0 - haze) : mix(color, u_haze.rgb, haze);
         }
     }
@@ -772,10 +775,15 @@ vec3 applyWaterMood(vec3 color) {
     }
     return clamp(color, 0.0, 1.0);
 }
-// V6 — daytime water saturation ceiling, blending back to WATER_MAX_SATURATION
-// with night and storm (CPU twin: GradeEvaluator.waterMaxSaturation).
+// V6 / NE v0.67.1 S — day 0.44, clear night 0.52, storm 0.37
+// (CPU twin: GradeEvaluator.waterMaxSaturation).
 float waterMaxSat() {
-    return mix(WATER_DAY_MAX_SATURATION, WATER_MAX_SATURATION, clamp(max(u_waterMood.x, u_waterMood.y), 0.0, 1.0));
+    float clear = mix(WATER_DAY_MAX_SATURATION, WATER_NIGHT_MAX_SATURATION, clamp(u_waterMood.x, 0.0, 1.0));
+    return mix(clear, WATER_MAX_SATURATION, clamp(u_waterMood.y, 0.0, 1.0));
+}
+// NE v0.67.1 F — night dimming for shoreline foam and whitecaps (day stays 1.0; starlight and surf glow exempt).
+float foamNightScale() {
+    return 1.0 - ${WATER_FOAM_NIGHT_DIM.toFixed(2)} * u_waterMood.x;
 }`;
 
 // 3.1 / 3.2 — the sea's shared crest and path grammar, uniform-free so the
@@ -2012,6 +2020,9 @@ vec3 applyWaterState(vec3 color, vec2 px, out bool seaPath) {
     vec2 p = floor(px);
     if (stop < 0) {
         vec3 lifted = liftMirrorColour(color, px);
+        if (sameColour(color, WATER_FOAM) || sameColour(color, WATER_FOAM_CREST)) {
+            lifted *= foamNightScale();
+        }
         return clock <= 0.0 ? staticWaterDashes(lifted, px) : applyWaterMood(lifted) * WATER_CAST;
     }
     // SEA-1 — with the look on, open water is flagged under any sky, so
@@ -2083,9 +2094,9 @@ vec3 applyWaterState(vec3 color, vec2 px, out bool seaPath) {
     }
     if (base != stop) color = seaStopRgb(float(base));
     int lighter = max(base - 1, 0);
-    vec3 shallower = base <= 1 ? WATER_FOAM_CREST : WATER_STOPS[lighter];
+    vec3 shallower = base <= 1 ? WATER_FOAM_CREST * foamNightScale() : WATER_STOPS[lighter];
     if (u_waterFx.y > 0.0 && rainRingAt(p, u_waterFx.y, storm, clock)) {
-        return applyWaterMood(base == 0 ? WATER_FOAM : WATER_STOPS[lighter]) * WATER_CAST;
+        return applyWaterMood(base == 0 ? WATER_FOAM * foamNightScale() : WATER_STOPS[lighter]) * WATER_CAST;
     }
     bool shallows = stop <= 1;
     if (shallows && waterHash12(floor(p / vec2(2.0, 1.0)) + vec2(3.0, 71.0)) < 0.04) {
@@ -2116,7 +2127,7 @@ vec3 applyWaterState(vec3 color, vec2 px, out bool seaPath) {
             float ruffle = textureLod(u_cloudTile, fract((p + vec2(211.0, 91.0)) / vec2(144.0, 48.0)), 0.0).r;
             float order = 0.55 * ruffle + 0.45 * waterBayer4(p);
             if (waterHash12(p + vec2(131.0, 57.0)) < ${STILL_PAW_RIPPLE.toFixed(2)} && order > 0.5) {
-                return applyWaterMood(base == 0 ? WATER_FOAM_CREST : WATER_STOPS[lighter]) * WATER_CAST;
+                return applyWaterMood(base == 0 ? WATER_FOAM_CREST * foamNightScale() : WATER_STOPS[lighter]) * WATER_CAST;
             }
             if (order < min(${STILL_PAW_ORDER.cap.toFixed(2)}, ${STILL_PAW_ORDER.base.toFixed(2)} + ${STILL_PAW_ORDER.gain.toFixed(2)} * paw)) {
                 return applyWaterMood(WATER_STOPS[min(base + 1, 4)]) * WATER_CAST;
@@ -2141,7 +2152,7 @@ vec3 applyWaterState(vec3 color, vec2 px, out bool seaPath) {
     float streak = openWater ? seaStreakAt(p) : 0.0;
     if (course > 2.5 || streak > 1.5) {
         seaSkyTake = 0.0;
-        return applyWaterMood(WATER_FOAM) * WATER_CAST;
+        return applyWaterMood(WATER_FOAM * foamNightScale()) * WATER_CAST;
     }
     if (course > 1.5) return applyWaterMood(shallower) * WATER_CAST;
     // A swell cap, or a deep crest one stop lighter (two where the swell
@@ -2155,6 +2166,21 @@ vec3 applyWaterState(vec3 color, vec2 px, out bool seaPath) {
 // The terrain record's local texels are world pixels from the bake origin.
 // A wet cell may still contain a painted foam texel at the dithered edge.
 bool wetSandColour(vec3 color) { return sameColour(color, WET_SAND) || sameColour(color, WET_SAND_DARK); }
+// NE v0.67.1 F — dry beach sand on terrainBatch: warm sand-hued texels
+// (r >= g and r > b + 0.08, rejecting grass, foliage, cool stone and snow)
+// in the shore band (material 4 on authored terrain or coastField sd in
+// [-0.75, 0] for procedural terrain and outer spits). Wet sand stays exempt.
+bool isDrySand(vec3 color, float material, vec2 world) {
+    if (wetSandColour(color)) return false;
+    if (materialNear(material, 1.0) > 0.5 || materialNear(material, 2.0) > 0.5 || materialNear(material, 7.0) > 0.5) return false;
+    if (color.r < color.g || color.r <= color.b + 0.08) return false;
+    float sd;
+    uint flags;
+    bool hasCoast = coastFieldAt(world, sd, flags);
+    if (hasCoast && (sd > 0.0 || sd < -0.75)) return false;
+    if (materialNear(material, 4.0) > 0.5) return true;
+    return hasCoast && color.r > color.b + 0.12 && dot(color, GRADE_LUMA) > 0.45;
+}
 float wetSandMaterial(vec4 block, ivec2 texel) {
     int quadrant = ((texel.x >> 1) & 1) + (texel.y & 2);
     if ((int(block.g * 255.0 + 0.5) & (1 << quadrant)) != 0) return floor(block.b * 255.0 + 0.5);
@@ -2530,6 +2556,10 @@ void main() {
     // authored emission.
     // SD-3 — a lifted texel is held under the candle after the grade too.
     bool sunLifted = color != sunBase;
+    // NE v0.67.1 F — unlit dry sand dims at night while lit lamp pools retain full poolAlbedo.
+    if (u_terrainBatch && !waterMaterial && u_waterMood.x > 0.0 && isDrySand(color, material, v_world)) {
+        color *= mix(1.0, ${DRY_SAND_NIGHT_SCALE.toFixed(2)}, u_waterMood.x);
+    }
     color = applyTimeGrade(color, !u_additive);
     if (sunLifted) color = sunLiftGraded(color, applyTimeGrade(sunBase, true));
     // V6 — graded water stays quiet at every hour (CoastBake's outer ocean
@@ -3317,7 +3347,10 @@ void main() {
             float mistH = v_receiver.x > -0.5 ? recvH : elevation * 128.0;
             float mist = mistCourse(recvGround, mistH, mistNear, mistH > 0.5, bayer4(floor(artCell * 0.5)));
             if (recvClass == 2) mist = min(mist, 1.0);
-            color = applyMist(color, mist, u_fogColor, u_additive);
+            // NE v0.67.1 M — silver-indigo tint on clear-night water mist; fog keeps u_fogColor.
+            float nightWaterMist = smoothstep(0.5, 1.0, u_waterMood.x) * smoothstep(0.45, 0.65, mistNear) * (1.0 - clamp(u_weather.y / 0.30, 0.0, 1.0));
+            vec3 mistColor = mix(u_fogColor, vec3(0.20, 0.28, 0.42), nightWaterMist);
+            color = applyMist(color, mist, mistColor, u_additive);
         }
     } else {
         float fog = clamp(u_weather.y, 0.0, 1.0);
@@ -3491,7 +3524,8 @@ vec3 shadeOpenSea(vec2 cell) {
         marked = lighter > 0.0 || whitecap;
         // Sun on water: one stop lighter where the cloud field is lowest.
         if (u_seaSunlit > 0.0 && m < u_seaSunlit) lighter += 1.0;
-        vec3 albedo = whitecap ? WATER_FOAM : seaStopRgb(max(stop - lighter, 0.0));
+        // NE v0.67.1 F — night-dim whitecaps; starlight stays un-dimmed.
+        vec3 albedo = whitecap ? WATER_FOAM * foamNightScale() : seaStopRgb(max(stop - lighter, 0.0));
         if (starlightAt(cell, cap, u_starlight, tick)) albedo = WATER_FOAM_CREST;
         // SEA-1 — the sun band's dim fades out with the look (the lift replaces it).
         c = applyWaterMood(albedo) * WATER_CAST * mix(1.0, 0.86, u_seaSunBand * (1.0 - u_cloud.w));
@@ -3551,7 +3585,10 @@ vec3 shadeOpenSea(vec2 cell) {
             float seaMistNear = mix(mix(0.18, 0.82, fogHold), 1.0, nearIsland)
                 * mix(clamp((t - hazeRows) / 140.0, 0.28, 1.0), 1.0, max(fogHold, nearIsland));
             float crestH = marked ? clamp((excess - 0.5) / 2.0, 0.0, 1.0) * ${MIST.coursePx.toFixed(1)} : 0.0;
-            c = applyMist(c, mistCourse(cell + 0.5, crestH, seaMistNear, false, waterBayer4(floor(cell * 0.5))), u_fogColor, false);
+            // NE v0.67.1 M — silver-indigo tint on clear-night water mist; fog keeps u_fogColor.
+            float nightWaterMist = smoothstep(0.5, 1.0, u_waterMood.x) * smoothstep(0.45, 0.65, seaMistNear) * (1.0 - clamp(u_weather.y / 0.30, 0.0, 1.0));
+            vec3 mistColor = mix(u_fogColor, vec3(0.20, 0.28, 0.42), nightWaterMist);
+            c = applyMist(c, mistCourse(cell + 0.5, crestH, seaMistNear, false, waterBayer4(floor(cell * 0.5))), mistColor, false);
         }
     } else {
         // The scene pass's ground fog at elevation 0 (luma rise held at 0.06).

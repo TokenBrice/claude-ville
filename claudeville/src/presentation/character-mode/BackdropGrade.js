@@ -19,7 +19,7 @@
 
 import { buildAerialHazeStrip, ungradeRgb } from './CanvasGrade.js';
 import { releaseCanvasBackingStore } from './CanvasBudget.js';
-import { aerialHazeStart, aerialPerspectiveStrength, clearDayHazeWeight, effectBudgetMode } from './gpu/GpuWorldPolicy.js';
+import { aerialHazeStart, aerialPerspectiveStrength, clearDayHazeWeight, clearNightHazeWeight, effectBudgetMode } from './gpu/GpuWorldPolicy.js';
 
 // The vignette layer is baked at quarter resolution and blitted 4x nearest:
 // its two course edges step on a 4 px grid (0.5 MB at 1080p).
@@ -119,6 +119,13 @@ function clearDayFor(atmosphere, fog) {
     return clearDayHazeWeight(fog, daylight, cover);
 }
 
+// NE v0.67.1 C — clear-night haze weight mirrored from GpuFrameState.
+function clearNightFor(atmosphere, fog) {
+    const night = Math.max(0, Math.min(1, Number(atmosphere?.lightGrade?.night) || 0));
+    const cover = Math.max(0, Math.min(1, Number(atmosphere?.weather?.cloudCover) || 0));
+    return clearNightHazeWeight(fog, night, cover);
+}
+
 /**
  * Resident path: vignette courses + aerial haze over the 2D backdrop, in
  * screen space (the caller has reset the transform). The haze strength is
@@ -137,7 +144,7 @@ export function drawResidentBackdropGrade(ctx, { viewport, atmosphere, zoom = 1,
     }
     if (hazeStrength > 0) {
         const fog = Math.max(0, Math.min(1, Number(atmosphere?.weather?.fog) || 0));
-        const start = aerialHazeStart(fog, clearDayFor(atmosphere, fog));
+        const start = aerialHazeStart(fog, clearDayFor(atmosphere, fog), clearNightFor(atmosphere, fog));
         fillHaze(ctx, viewport, hazeStrip(viewport.height, artCell(zoom), hazeStrength, grade.fogColor || [0.6, 0.7, 0.78], start));
     }
 }
@@ -153,9 +160,10 @@ export function drawCanvasAerialHaze(ctx, { viewport, atmosphere, zoom = 1, qual
     if (effectBudgetMode('aerial-perspective', qualityLevel) === 'off') return;
     const fog = Math.max(0, Math.min(1, Number(atmosphere?.weather?.fog) || 0));
     const clearDay = clearDayFor(atmosphere, fog);
-    const strength = aerialPerspectiveStrength(zoom, fog, clearDay);
+    const clearNight = clearNightFor(atmosphere, fog);
+    const strength = aerialPerspectiveStrength(zoom, fog, clearDay, clearNight);
     if (strength <= 0) return;
-    const start = aerialHazeStart(fog, clearDay);
+    const start = aerialHazeStart(fog, clearDay, clearNight);
     const rgb = ungradeRgb(grade.fogColor || [0.6, 0.7, 0.78], grade);
     fillHaze(ctx, viewport, hazeStrip(viewport.height, artCell(zoom), strength, rgb, start));
 }

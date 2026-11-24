@@ -44,8 +44,15 @@ export const MIST_HALO = Object.freeze({
     // mist the town rises out of; the fog itself is the overlay's veil): a
     // flame above the layer still glows in a fog of `airFog` (the weather's
     // fog from `air[0]` to `air[1]`), at `airShare` of a deep flame's glow.
+    // NE v0.67.1 M — rain/storm wet air uses `rainAir` / `rainAirShare`;
+    // waterfront flames above clear-night water mist take `waterfrontShare`.
     air: Object.freeze([0.3, 0.7]),
     airShare: 0.6,
+    rainAir: Object.freeze([0.10, 0.45]),
+    rainAirShare: 0.45,
+    waterfrontNear: 0.45,
+    waterfrontTopMin: 4,
+    waterfrontShare: 0.45,
     // At most this many halos a frame (nearest the lamps' list order:
     // fixtures first, carried lanterns last, as the light feed ranks them).
     cap: 64,
@@ -72,24 +79,33 @@ export function mistHaloEligible(light) {
     return Number.isFinite(light.x) && Number.isFinite(light.y);
 }
 
-/** How foggy the air itself is (fog weather only): 0..1 from the weather. */
+/** How foggy/misty the air itself is (fog, rain or storm): 0..1 from the weather. */
 export function mistHaloAirFog(weather) {
-    if (weather?.type !== 'fog') return 0;
-    return clamp01(((Number(weather.fog) || 0) - MIST_HALO.air[0]) / (MIST_HALO.air[1] - MIST_HALO.air[0]));
+    const type = weather?.type;
+    if (type === 'fog') {
+        return clamp01(((Number(weather.fog) || 0) - MIST_HALO.air[0]) / (MIST_HALO.air[1] - MIST_HALO.air[0]));
+    }
+    if (type === 'rain' || type === 'storm') {
+        const wet = clamp01(((Number(weather.fog) || 0) - MIST_HALO.rainAir[0]) / (MIST_HALO.rainAir[1] - MIST_HALO.rainAir[0]));
+        return wet * (MIST_HALO.rainAirShare / MIST_HALO.airShare);
+    }
+    return 0;
 }
 
 /**
  * The halo a light takes, or null: `top` the mist's top over its ground
  * point, `look` ms2, `energy` the envelope ({ core, halo }), `airFog` the
- * fog weather's air (mistHaloAirFog). A flame inside the low mist glows by
- * how deep it stands; above it, only in fog weather. Pure.
+ * weather's air (mistHaloAirFog), `near` the water nearness (0 inland, 1
+ * water). A flame inside the low mist glows by how deep it stands; above it,
+ * in foggy/rainy air or at a misted waterfront (`near > 0.45`, `top > 4`). Pure.
  */
-export function mistHaloFor(light, top, look, energy, airFog = 0) {
+export function mistHaloFor(light, top, look, energy, airFog = 0, near = 0) {
     if (!(look > 0) || !mistHaloEligible(light)) return null;
     const core = clamp01(energy?.core);
     if (core < MIST_HALO.minCore) return null;
     const depth = top - (Number(light.height) || 0);
-    const deep = Math.max(depth > 0 ? clamp01(depth / MIST_HALO.depthFull) : 0, MIST_HALO.airShare * clamp01(airFog));
+    const waterfront = near > MIST_HALO.waterfrontNear && top > MIST_HALO.waterfrontTopMin ? MIST_HALO.waterfrontShare : 0;
+    const deep = Math.max(depth > 0 ? clamp01(depth / MIST_HALO.depthFull) : 0, MIST_HALO.airShare * clamp01(airFog), waterfront);
     if (!(deep > 0)) return null;
     const radius = Math.round(MIST_HALO.radius[0] + (MIST_HALO.radius[1] - MIST_HALO.radius[0]) * deep);
     const alpha = MIST_HALO.alpha * clamp01(look) * Math.min(1, Number(light.intensity) || 0) * core
@@ -175,8 +191,9 @@ export function mistHaloRecords(renderer, atmosphere, out = []) {
         if (out.length >= MIST_HALO.cap) break;
         if (!mistHaloEligible(light)) continue;
         const ground = light.ground || { x: light.x, y: light.y };
-        const top = mistTopAt(ground, nearAt(fields, ground.x, ground.y), mist, burn);
-        const halo = mistHaloFor(light, top, look, energy, airFog);
+        const near = nearAt(fields, ground.x, ground.y);
+        const top = mistTopAt(ground, near, mist, burn);
+        const halo = mistHaloFor(light, top, look, energy, airFog, near);
         if (!halo) continue;
         const color = light.color || '#ffcc66';
         const stamp = haloStamp(halo.radius, color);

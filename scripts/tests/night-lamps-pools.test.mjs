@@ -73,21 +73,26 @@ test('L1-5: deep night alone lets the lamp and brazier pools reach 15 % further'
 const stops = GRADE_CONSTANTS.AMBIENT_POOL_STOPS.value;
 const weights = GRADE_CONSTANTS.AMBIENT_POOL_WEIGHTS.value;
 const chroma = GRADE_CONSTANTS.AMBIENT_POOL_CHROMA.value;
+const share = GRADE_CONSTANTS.AMBIENT_POOL_SHARE.value;
 const weightAt = (q, thresholds, values) => {
     const course = thresholds.filter(stop => q >= stop).length;
     return course ? values[course - 1] : 0;
 };
 
-test('ambient pools have six rising held courses with a faint low-chroma rim', () => {
+test('NE v0.67.1 A: ambient pools keep six rising courses with warm amber outer rings and unchanged weights', () => {
     assert.equal(stops.length, 6);
     for (let i = 1; i < 6; i++) {
         assert.ok(stops[i] > stops[i - 1]);
         assert.ok(weights[i] > weights[i - 1]);
         assert.ok(chroma[i] > chroma[i - 1]);
+        assert.ok(share[i] > share[i - 1]);
     }
+    // Weights stay unchanged (faint outer luminance, capped top course).
     assert.ok(weights[0] < 0.05);
-    assert.ok(chroma[0] < 0.25);
     assert.equal(weights[5], 0.76);
+    // Warm outer rings: chroma lifted from 0.18 -> 0.40, share from 0.18 -> 0.30.
+    assert.deepEqual([...chroma], [0.40, 0.55, 0.68, 0.80, 0.90, 1.00]);
+    assert.deepEqual([...share], [0.30, 0.45, 0.58, 0.72, 0.84, 0.92]);
 });
 
 test('ordered-dither six-course pools spend less integrated energy than old discs', () => {

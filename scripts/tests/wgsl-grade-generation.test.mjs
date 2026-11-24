@@ -32,7 +32,10 @@ test('changing a grade constant in JS changes both dialects identically', () => 
     ['RECEIVER_OKL_CEILING', 0.901, '0.901'],
     ['WATER_MAX_SATURATION', 0.377, '0.377'],
     ['WATER_DAY_MAX_SATURATION', 0.487, '0.487'],
+    ['WATER_NIGHT_MAX_SATURATION', 0.533, '0.533'],
     ['POOL_RIM', [1.5, 0.925, 0.41], '0.925'],
+    ['AMBIENT_POOL_CHROMA', [0.41, 0.56, 0.69, 0.81, 0.91, 0.99], '0.41'],
+    ['AMBIENT_POOL_SHARE', [0.31, 0.46, 0.59, 0.73, 0.85, 0.93], '0.31'],
     ['LAND_SHARE', [0.81, 0.86, 0.93], '0.93'],
     ['RECEIVER_HEADROOM', 0.021, '0.021'],
   ];

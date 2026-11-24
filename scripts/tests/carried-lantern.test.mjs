@@ -4,13 +4,16 @@ import assert from 'node:assert/strict';
 import {
     LANTERN_CROWD_DISTANCE,
     LANTERN_CROWD_RADIUS,
+    LANTERN_EMISSION_ALPHA,
     LANTERN_ID_PREFIX,
+    LANTERN_INTENSITY,
     LANTERN_POOL_RADIUS,
     lanternCandidate,
     lanternIntensity,
     lanternPoolRadius,
     selectLanternCarriers,
 } from '../../claudeville/src/presentation/character-mode/CarriedLantern.js';
+import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
 import {
     LIGHT_ROLE_CODES,
     binGpuLights,
@@ -84,11 +87,15 @@ test('NL-4: rules of place: a Command queue slot and the indoor bar stools carry
     assert.deepEqual(got.sort(), ['garden', 'to-queue']);
 });
 
-test('NL-4: the pool stays smaller than a street lamp pool, dimmer than an attention light, and scales with the look', () => {
-    // A street lamp: radius 66 at 0.82; an attention light: 0.45-0.6.
+test('NE v0.67.1 L: the pool stays smaller and dimmer than a street lamp, lifts emission for z1 legibility, and scales with the look', () => {
+    // A street lamp: radius 66 at 0.82. NE v0.67.1 L: radius 54 (crowded 38), intensity 0.72, emission 0.55.
+    assert.equal(LANTERN_POOL_RADIUS, 54);
+    assert.equal(LANTERN_CROWD_RADIUS, 38);
+    assert.equal(LANTERN_INTENSITY, 0.72);
+    assert.equal(LANTERN_EMISSION_ALPHA, 0.55);
     assert.equal(lanternPoolRadius(1), LANTERN_POOL_RADIUS);
     assert.ok(LANTERN_POOL_RADIUS < 66);
-    assert.ok(lanternIntensity(1, 1) < 0.6);
+    assert.ok(lanternIntensity(1, 1) < 0.82);
     assert.ok(lanternPoolRadius(0.5) < lanternPoolRadius(1));
     assert.ok(lanternIntensity(0.5, 1) < lanternIntensity(1, 1));
     // A crowded carrier lays the smaller pool.
@@ -106,17 +113,20 @@ test('NL-4: carriers within the crowd distance of another carrier are crowded, a
     assert.ok(far.every(c => !c.crowded));
 });
 
-test('NL-4: the quality ladder keeps 12 / 6 / 0 pools', () => {
-    assert.deepEqual([0, 1, 2].map(level => effectBudgetMode('carried-lanterns', level)), [12, 6, 0]);
+test('NE v0.67.1 L: the quality ladder keeps 24 / 12 / 0 pools', () => {
+    assert.deepEqual([0, 1, 2].map(level => effectBudgetMode('carried-lanterns', level)), [24, 12, 0]);
 });
 
-test('NL-4: lanterns rank last and never take a lamp, window or attention slot', () => {
+test('NE v0.67.1 L: lanterns rank last (even moving priority 0), moving carriers outrank standing ones, and day is unchanged', () => {
     const slot = (id, x, role, priority = 0) => ({
         id, x, y: 300, footX: x, footY: 300, radiusWorld: 30, height: 14,
         role: LIGHT_ROLE_CODES[role], attention: role === 'attention', priority, intensity: 1,
     });
     const lights = [
-        ...Array.from({ length: 4 }, (_, n) => slot(`${LANTERN_ID_PREFIX}${n}`, 40 + n * 60, 'fixture', -1)),
+        slot(`${LANTERN_ID_PREFIX}stand-a`, 40, 'fixture', -1),
+        slot(`${LANTERN_ID_PREFIX}stand-b`, 100, 'fixture', -1),
+        slot(`${LANTERN_ID_PREFIX}walk-a`, 160, 'fixture', 0),
+        slot(`${LANTERN_ID_PREFIX}walk-b`, 220, 'fixture', 0),
         slot('lamp', 300, 'fixture'),
         slot('window', 400, 'aperture'),
         slot('mote', 500, 'point'),
@@ -124,11 +134,32 @@ test('NL-4: lanterns rank last and never take a lamp, window or attention slot',
     ];
     const ranked = clampGpuLights(lights, 64, 64);
     assert.deepEqual(ranked.slice(0, 4).map(l => l.id), ['attention:a', 'window', 'lamp', 'mote']);
+    assert.deepEqual(ranked.slice(4, 6).map(l => l.id), [`${LANTERN_ID_PREFIX}walk-a`, `${LANTERN_ID_PREFIX}walk-b`]);
     const view = { cameraX: 0, cameraY: 0, scale: 1, width: 1024, height: 640 };
-    // A count of four: every non-lantern light is admitted, no lantern.
+    // A count of four: every non-lantern light is admitted, no lantern (moving or standing).
     const tight = binGpuLights(ranked, { ...view, cap: 4 });
     assert.deepEqual(tight.admitted.map(l => l.id), ['attention:a', 'window', 'lamp', 'mote']);
-    // With room, lanterns take only the leftover slots.
+    // With two leftover slots, moving carriers (priority 0) win ahead of standing (-1).
     const roomy = binGpuLights(ranked, { ...view, cap: 6 });
-    assert.equal(roomy.admitted.filter(l => l.id.startsWith(LANTERN_ID_PREFIX)).length, 2);
+    assert.deepEqual(
+        roomy.admitted.filter(l => l.id.startsWith(LANTERN_ID_PREFIX)).map(l => l.id),
+        [`${LANTERN_ID_PREFIX}walk-a`, `${LANTERN_ID_PREFIX}walk-b`],
+    );
+
+    // IsometricRenderer._carriedLanternLightSources assigns priority 0 to moving, -1 to standing, and emits nothing by day.
+    const makeRenderer = (lampsLit) => Object.assign(Object.create(IsometricRenderer.prototype), {
+        agentSprites: new Map([
+            ['walker', sprite('working', { x: 100, y: 100, moving: true })],
+            ['stander', sprite('idle', { x: 400, y: 100, moving: false })],
+        ]),
+        camera: { x: 0, y: 0, zoom: 1, canvas: { clientWidth: 800, clientHeight: 600 } },
+        villageLampsLit: () => lampsLit,
+        lampRoundLit: () => () => true,
+        gpuWorld: { _compositeQualityLevel: 0 },
+    });
+    assert.deepEqual(makeRenderer(false)._carriedLanternLightSources({ sourceEnergy: { core: 0.95 } }), []);
+    const night = makeRenderer(true)._carriedLanternLightSources({ sourceEnergy: { core: 0.95 } });
+    const byId = Object.fromEntries(night.map(l => [l.id, l]));
+    assert.equal(byId[`${LANTERN_ID_PREFIX}walker`].priority, 0);
+    assert.equal(byId[`${LANTERN_ID_PREFIX}stander`].priority, -1);
 });

@@ -11314,10 +11314,12 @@ export class IsometricRenderer {
     // carriers (`sprite.lanternCarried`, read by the body's draw: every
     // eligible body, whatever the camera) and returns one small fixture light
     // per carrier that keeps a pool: EFFECT_BUDGET `carried-lanterns` (FULL
-    // 12, REDUCED 6, MINIMAL 0) nearest the view centre. The light's foot is
-    // the carrier's foot (no 2.8 cast on its own carrier), it never breathes
-    // (`fire` false), and status never enters: only presence, place, the lamp
-    // clock and the round at its tile.
+    // 24, REDUCED 12, MINIMAL 0; NE v0.67.1 L) nearest the view centre, with
+    // moving carriers prioritised ahead of standing ones (priority 0 vs -1)
+    // within lightRoleRank 4. The light's foot is the carrier's foot (no 2.8
+    // cast on its own carrier), it never breathes (`fire` false), and status
+    // never enters: only presence, place, the lamp clock and the round at its
+    // tile.
     _carriedLanternLightSources(lighting) {
         const sprites = this.agentSprites;
         if (!sprites?.size) return [];
@@ -11359,7 +11361,7 @@ export class IsometricRenderer {
                 color: LANTERN_COLOR,
                 radius: lanternPoolRadius(strength, carrier.crowded),
                 intensity: lanternIntensity(strength, core),
-                priority: -1,
+                priority: carrier.sprite?.moving === true ? 0 : -1, // NE v0.67.1 L
             }));
         });
         return out;

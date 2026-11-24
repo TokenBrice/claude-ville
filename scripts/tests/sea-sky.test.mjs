@@ -19,6 +19,7 @@ import {
     evaluateGrade,
     WATER_DAY_MAX_SATURATION,
     WATER_MAX_SATURATION,
+    WATER_NIGHT_MAX_SATURATION,
     waterMaxSaturation,
 } from '../../claudeville/src/presentation/character-mode/GradeEvaluator.js';
 import { resetLookStrengths, setLookStrength } from '../../claudeville/src/presentation/character-mode/LookStrengths.js';
@@ -183,12 +184,14 @@ test('GLSL, WGSL and Canvas share the one sky-on-sea rule', () => {
     assert.match(glsl, /uniform vec4 u_waterSky;/);
     assert.match(glsl, /u_waterSky\.rgb \* \(min\(max\(ls, l\), l \* \$\{WATER_SKY_LIFT\.toFixed\(2\)\}\) \/ ls\), u_waterSky\.w\)/);
     assert.match(wgsl, /frame\.waterSky\.rgb \* \(min\(max\(ls, l\), l \* \$\{WATER_SKY_LIFT\.toFixed\(2\)\}\) \/ ls\), frame\.waterSky\.w\)/);
-    // Dynamic V6 water saturation cap applied after applyWaterSky: ~0.44 by day,
-    // blending back to 0.37 with night and storm (relaxed 2026-11-23, toned
-    // back 2026-11-24).
+    // Dynamic V6 water saturation cap applied after applyWaterSky (NE v0.67.1 S):
+    // 0.44 by day, 0.52 on clear nights, blending back to 0.37 in storm.
     assert.equal(waterMaxSaturation({ night: 0, storm: 0 }), WATER_DAY_MAX_SATURATION);
-    assert.equal(waterMaxSaturation({ night: 1, storm: 0 }), WATER_MAX_SATURATION);
+    assert.equal(waterMaxSaturation({ night: 1, storm: 0 }), WATER_NIGHT_MAX_SATURATION);
     assert.equal(waterMaxSaturation({ night: 0, storm: 1 }), WATER_MAX_SATURATION);
+    assert.equal(waterMaxSaturation({ night: 1, storm: 1 }), WATER_MAX_SATURATION);
+    assert.match(glsl, /float clear = mix\(WATER_DAY_MAX_SATURATION, WATER_NIGHT_MAX_SATURATION, clamp\(u_waterMood\.x, 0\.0, 1\.0\)\);\s*return mix\(clear, WATER_MAX_SATURATION, clamp\(u_waterMood\.y, 0\.0, 1\.0\)\);/);
+    assert.match(wgsl, /let clear = mix\(WATER_DAY_MAX_SATURATION, WATER_NIGHT_MAX_SATURATION, clamp\(frame\.waterMood\.x, 0\.0, 1\.0\)\);\s*return mix\(clear, WATER_MAX_SATURATION, clamp\(frame\.waterMood\.y, 0\.0, 1\.0\)\);/);
     const postSkyCap = /capSaturation\(applyWaterSky\(.+?\),\s*waterMaxSat\(\)\)/g;
     assert.equal((glsl.match(postSkyCap) || []).length, 2);
     assert.equal((read('gpu/wgsl/scene.js').match(postSkyCap) || []).length, 1);

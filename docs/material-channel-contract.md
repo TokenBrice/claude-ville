@@ -515,7 +515,7 @@ three ways; the record's flags choose the reading:
   R = texel height above its base line, B = face 1 on its SW face and pier
   fronts, 2 on SE faces, 0 on the walk, merlon and ledge tops, so a lamp
   pool lands on the stone by its own base line. `channels.emissive` is bound
-  the same way (the wall lanterns' lit glass, A 144 like `prop.lantern`).
+  the same way (the wall lanterns' lit glass at A 144; street `prop.lantern` uses an authored 4×5 `ART_RAMPS.emissive` head at A 200 per NE v0.67.1 E).
 - **Sun shade field** (SD-2, look `sd2`; `ShadeField.js`, read by
   `gpu/SunShade.js` on unit 2 / binding 17). The face class has one more
   reader by day: `sunShadeStep` steps a sprite fragment by its face and the

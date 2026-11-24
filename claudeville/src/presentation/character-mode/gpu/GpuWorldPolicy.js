@@ -3,7 +3,7 @@ import {
     materialClassId as registryMaterialClassId,
 } from '../MaterialRegistry.js';
 import { RECEIVER_LUMA_CEILING } from '../../../config/artPalette.js';
-import { WATER_DAY_MAX_SATURATION, WATER_MAX_SATURATION } from '../GradeEvaluator.js';
+import { WATER_DAY_MAX_SATURATION, WATER_MAX_SATURATION, WATER_NIGHT_MAX_SATURATION } from '../GradeEvaluator.js';
 import { footprintFieldRect } from '../FootprintField.js';
 
 const FOOTPRINT_FIELD_RECT = footprintFieldRect();
@@ -515,7 +515,8 @@ export const EFFECT_BUDGET = Object.freeze({
     // frame, so they also wash the carrier's own lower robe.
     'carried-lanterns': Object.freeze({
         id: 'carried-lanterns',
-        levels: Object.freeze({ FULL: 12, REDUCED: 6, MINIMAL: 0 }),
+        // NE v0.67.1 L: lifted from 12/6/0 so moving/scattered carriers keep pools at z1.
+        levels: Object.freeze({ FULL: 24, REDUCED: 12, MINIMAL: 0 }),
         cost: Object.freeze({ gpuMsBand: [0, 0.05], cpuMsBand: [0, 0.02], bytes: 0, scope: 'shared-scene-envelope' }),
         staticFallback: 'static-stamp',
         canvas: 'frame-pool-courses',
@@ -638,6 +639,8 @@ export const GRADE_UNIFORM_NAMES = Object.freeze([
 export const GRADE_CONSTANTS = Object.freeze({
     WATER_MAX_SATURATION: Object.freeze({ value: WATER_MAX_SATURATION, digits: 3 }),
     WATER_DAY_MAX_SATURATION: Object.freeze({ value: WATER_DAY_MAX_SATURATION, digits: 3 }),
+    // NE v0.67.1 S
+    WATER_NIGHT_MAX_SATURATION: Object.freeze({ value: WATER_NIGHT_MAX_SATURATION, digits: 3 }),
     POOL_RIM: Object.freeze({ value: Object.freeze([1.484, 0.914, 0.430]), digits: 3 }),
     POOL_MID: Object.freeze({ value: Object.freeze([1.208, 0.981, 0.577]), digits: 3 }),
     POOL_CORE: Object.freeze({ value: Object.freeze([1.089, 0.995, 0.786]), digits: 3 }),
@@ -645,10 +648,11 @@ export const GRADE_CONSTANTS = Object.freeze({
     LAND_SHARE: Object.freeze({ value: Object.freeze([0.84, 0.88, 0.90]), digits: 2 }),
     // Ambient-only falloff: six held courses, lower energy than the old
     // three-course discs; attention and authored ramp receivers stay unchanged.
+    // NE v0.67.1 A: warm outer rings without lifting pool weights.
     AMBIENT_POOL_STOPS: Object.freeze({ value: Object.freeze([0.04, 0.12, 0.25, 0.40, 0.58, 0.75]), digits: 2 }),
     AMBIENT_POOL_WEIGHTS: Object.freeze({ value: Object.freeze([0.035, 0.10, 0.20, 0.32, 0.50, 0.76]), digits: 3 }),
-    AMBIENT_POOL_CHROMA: Object.freeze({ value: Object.freeze([0.18, 0.30, 0.46, 0.64, 0.82, 1.00]), digits: 2 }),
-    AMBIENT_POOL_SHARE: Object.freeze({ value: Object.freeze([0.18, 0.32, 0.50, 0.66, 0.80, 0.90]), digits: 2 }),
+    AMBIENT_POOL_CHROMA: Object.freeze({ value: Object.freeze([0.40, 0.55, 0.68, 0.80, 0.90, 1.00]), digits: 2 }),
+    AMBIENT_POOL_SHARE: Object.freeze({ value: Object.freeze([0.30, 0.45, 0.58, 0.72, 0.84, 0.92]), digits: 2 }),
     LAND_FULL_STRENGTH: Object.freeze({ value: LAND_FULL_STRENGTH, digits: 2 }),
     RECEIVER_LUMA_CEILING: Object.freeze({ value: RECEIVER_LUMA_CEILING, digits: 4 }),
     RECEIVER_HEADROOM: Object.freeze({ value: 0.018, digits: 3 }),
@@ -699,11 +703,13 @@ vec3 applyTimeGrade(vec3 albedo, bool lift) {
     return c / max(1.0, max(c.r, max(c.g, c.b)));
 }
 
-// V6 — graded water held at WATER_DAY_MAX_SATURATION by day, blending back to
-// WATER_MAX_SATURATION with night and storm (HSV), pulled toward its own luma
+// V6 / NE v0.67.1 S — graded water held at WATER_DAY_MAX_SATURATION (0.44) by
+// day, WATER_NIGHT_MAX_SATURATION (0.52) on clear nights, and blends back to
+// WATER_MAX_SATURATION (0.37) in storm (HSV), pulled toward its own luma
 // so hue, luma and the cool R−B sign are kept. CPU twin: GradeEvaluator.
 const float WATER_MAX_SATURATION = ${k('WATER_MAX_SATURATION')};
 const float WATER_DAY_MAX_SATURATION = ${k('WATER_DAY_MAX_SATURATION')};
+const float WATER_NIGHT_MAX_SATURATION = ${k('WATER_NIGHT_MAX_SATURATION')};
 vec3 capSaturation(vec3 c, float maxS) {
     float hi = max(c.r, max(c.g, c.b));
     float spread = hi - min(c.r, min(c.g, c.b));
@@ -1284,17 +1290,33 @@ export function clearDayHazeWeight(fog = 0, daylight = 0, cloudCover = 0) {
     return dayShare * airShare * skyShare;
 }
 
-// 1.6 — screen-Y aerial perspective strength by zoom (base survey 0.18, tier 1
-// 0.14, tier 2 0.08, tier 3 0.04), raised by fog. Clear daylight blends toward
-// crisp clear-air stops (0.08 / 0.06 / 0.03 / 0.01); night, storm and fog stay
-// on the exact base curve.
-export function aerialPerspectiveStrength(zoom = 1, fog = 0, clearDay = 0) {
+// NE v0.67.1 C — clear-night blend weight (night > 0.5, fog < 0.05,
+// cloudCover < 0.35): lets crisp clear nights shed the overcast/fog haze curve
+// without changing day, blue hour, overcast, rain, storm or fog.
+export function clearNightHazeWeight(fog = 0, night = 0, cloudCover = 0) {
+    const f = Math.max(0, Math.min(1, Number(fog) || 0));
+    const n = Math.max(0, Math.min(1, Number(night) || 0));
+    const c = Math.max(0, Math.min(1, Number(cloudCover) || 0));
+    if (!(n > 0.5 && f < 0.05 && c < 0.35)) return 0;
+    const nightShare = Math.max(0, Math.min(1, (n - 0.5) / 0.35));
+    const airShare = Math.max(0, Math.min(1, (0.05 - f) / 0.04));
+    const skyShare = Math.max(0, Math.min(1, (0.35 - c) / 0.20));
+    return nightShare * airShare * skyShare;
+}
+
+// 1.6 / NE v0.67.1 C — screen-Y aerial perspective strength by zoom (base
+// survey 0.18, tier 1 0.14, tier 2 0.08, tier 3 0.04), raised by fog. Clear
+// daylight and clear night blend toward crisp clear-air stops
+// (0.08 / 0.06 / 0.03 / 0.01); storm, overcast and fog stay on the base curve.
+export function aerialPerspectiveStrength(zoom = 1, fog = 0, clearDay = 0, clearNight = 0) {
     const z = Math.max(0.25, Number(zoom) || 1);
     const f = Math.max(0, Math.min(1, Number(fog) || 0));
     const air = Math.max(0, Math.min(1, (0.20 - f) / 0.15));
     const clear = Math.max(0, Math.min(1, Number(clearDay) || 0)) * air;
+    const night = Math.min(1 - clear, Math.max(0, Math.min(1, Number(clearNight) || 0)) * air);
     const baseStops = [[0.5, 0.18], [1, 0.14], [2, 0.08], [3, 0.04]];
     const clearStops = [[0.5, 0.08], [1, 0.06], [2, 0.03], [3, 0.01]];
+    const nightStops = [[0.5, 0.08], [1, 0.06], [2, 0.03], [3, 0.01]];
     const sample = (stops) => {
         let strength = stops[stops.length - 1][1];
         if (z <= stops[0][0]) return stops[0][1];
@@ -1306,20 +1328,23 @@ export function aerialPerspectiveStrength(zoom = 1, fog = 0, clearDay = 0) {
         return strength;
     };
     const base = sample(baseStops);
-    const strength = clear > 0 ? base + (sample(clearStops) - base) * clear : base;
+    let strength = clear > 0 ? base + (sample(clearStops) - base) * clear : base;
+    if (night > 0) strength += (sample(nightStops) - base) * night;
     return strength * (1 + f);
 }
 
-// 1.6 — vertical reach of the screen-Y aerial haze: 0.55 by default (night,
-// storm, overcast, fog), pulling up to 0.30 in clear daylight so upper-half
-// sunlight stays crisp.
-export function aerialHazeStart(fog = 0, clearDay = 0) {
+// 1.6 / NE v0.67.1 C — vertical reach of the screen-Y aerial haze: 0.55 by
+// default (storm, overcast, fog), pulling up to 0.30 in clear daylight and
+// 0.35 on clear nights.
+export function aerialHazeStart(fog = 0, clearDay = 0, clearNight = 0) {
     const f = Math.max(0, Math.min(1, Number(fog) || 0));
     const air = Math.max(0, Math.min(1, (0.20 - f) / 0.15));
     const clear = Math.max(0, Math.min(1, Number(clearDay) || 0)) * air;
-    if (clear <= 0) return 0.55;
+    const night = Math.max(0, Math.min(1, Number(clearNight) || 0)) * air;
+    if (clear <= 0 && night <= 0) return 0.55;
     if (clear >= 1) return 0.30;
-    return 0.55 - 0.25 * clear;
+    if (clear <= 0 && night >= 1) return 0.35;
+    return Math.max(0.30, 0.55 - 0.25 * clear - 0.20 * night);
 }
 
 // Daytime bloom: only buildings with an open work gate (working Forge fire,

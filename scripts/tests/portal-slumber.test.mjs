@@ -108,3 +108,42 @@ test('the slumber mask is the vortex two courses down its own violet ramp, chrom
     for (const p of vortex) if (ember.has(key(mask.data, p * 4))) glowing++;
     assert.ok(glowing > 0 && glowing < vortex.size / 2, `the ember is the slumbering eye (${glowing} texels)`);
 });
+
+test('NE v0.67.1 PT: awake Portal scales base and portalGlow emission down 30% at night while day and slumber stay unchanged', () => {
+    const awakeAt = (hour) => {
+        const r = renderer({ working: ['web-1'], hour });
+        r._litGateByType.set('portal', { value: 1 });
+        r._litGateByType.set('archive', { value: 1 });
+        return r;
+    };
+
+    // Noon (lampCourse 0 -> nightWindowGate 0): day is byte-identical.
+    const noon = awakeAt(12);
+    assert.equal(noon._emissiveGateFor(portal), 1, 'awake Portal base stays 1 at noon');
+    const [noonGlow] = noon.partDrawsFor(ENTRY, portal, 1000, 2000);
+    assert.equal(noonGlow.name, 'portalGlow');
+    assert.equal(noonGlow.emissiveGate, 1, 'awake portalGlow stays 1 at noon');
+
+    // Settling dusk (lampCourse 1 -> nightWindowGate 0.5): half the 30% trim (-15%).
+    const dusk = awakeAt(19);
+    assert.ok(Math.abs(dusk._emissiveGateFor(portal) - 0.85) < 1e-12, `dusk base gate ${dusk._emissiveGateFor(portal)} === 0.85`);
+    const [duskGlow] = dusk.partDrawsFor(ENTRY, portal, 1000, 2000);
+    assert.ok(Math.abs(duskGlow.emissiveGate - 0.85) < 1e-12, `dusk portalGlow gate ${duskGlow.emissiveGate} === 0.85`);
+
+    // Full night (lampCourse 3 -> nightWindowGate 1): -30% on base and portalGlow.
+    const night = awakeAt(22);
+    assert.ok(Math.abs(night._emissiveGateFor(portal) - 0.70) < 1e-12, `night base gate ${night._emissiveGateFor(portal)} === 0.70`);
+    const [nightGlow] = night.partDrawsFor(ENTRY, portal, 1000, 2000);
+    assert.equal(nightGlow.name, 'portalGlow');
+    assert.ok(Math.abs(nightGlow.emissiveGate - 0.70) < 1e-12, `night portalGlow gate ${nightGlow.emissiveGate} === 0.70`);
+
+    // Other landmarks are unaffected by PT.
+    assert.equal(night._emissiveGateFor({ type: 'archive' }), 1, 'non-portal building keeps full night gate');
+
+    // Slumbering Portal at night stays untouched (base 0, slumber ember 1).
+    const asleepNight = renderer({ working: [], hour: 22 });
+    assert.equal(asleepNight._emissiveGateFor(portal), 0);
+    const [slumber] = asleepNight.partDrawsFor(ENTRY, portal, 1000, 2000);
+    assert.equal(slumber.name, 'slumber');
+    assert.equal(slumber.emissiveGate, 1);
+});

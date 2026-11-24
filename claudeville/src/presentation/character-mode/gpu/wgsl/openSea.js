@@ -79,7 +79,8 @@ fn shadeOpenSea(cell: vec2f) -> vec3f {
         if (streak > 1.5) { whitecap = true; } else if (streak > 0.5) { lighter = max(lighter, 1.0); }
         marked = lighter > 0.0 || whitecap;
         if (frame.seaSunlit > 0.0 && m < frame.seaSunlit) { lighter += 1.0; }
-        var albedo = WATER_FOAM;
+        // NE v0.67.1 F — night-dim whitecaps; starlight stays un-dimmed.
+        var albedo = WATER_FOAM * foamNightScale();
         if (!whitecap) { albedo = seaStopRgb(max(stop - lighter, 0.0)); }
         if (starlightAt(cell, cap, frame.starlight, tick)) { albedo = WATER_FOAM_CREST; }
         // SEA-1 — the sun band's dim fades out with the look.
@@ -132,7 +133,10 @@ fn shadeOpenSea(cell: vec2f) -> vec3f {
             let seaMistNear = mix(mix(0.18, 0.82, fogHold), 1.0, nearIsland)
                 * mix(clamp((t - hazeRows) / 140.0, 0.28, 1.0), 1.0, max(fogHold, nearIsland));
             let crestH = select(0.0, clamp((excess - 0.5) / 2.0, 0.0, 1.0) * ${MIST.coursePx.toFixed(1)}, marked);
-            c = applyMist(c, mistCourse(cell + 0.5, crestH, seaMistNear, false, waterBayer4(floor(cell * 0.5))), frame.fogColor, false);
+            // NE v0.67.1 M — silver-indigo tint on clear-night water mist; fog keeps frame.fogColor.
+            let nightWaterMist = smoothstep(0.5, 1.0, frame.waterMood.x) * smoothstep(0.45, 0.65, seaMistNear) * (1.0 - clamp(frame.weather.y / 0.30, 0.0, 1.0));
+            let mistColor = mix(frame.fogColor, vec3f(0.20, 0.28, 0.42), nightWaterMist);
+            c = applyMist(c, mistCourse(cell + 0.5, crestH, seaMistNear, false, waterBayer4(floor(cell * 0.5))), mistColor, false);
         }
     } else {
         let groundFog = clamp(frame.weather.y, 0.0, 1.0) * smoothstep(0.18, 0.98, 1.0 - texelPx.y / max(1.0, frame.resolution.y));

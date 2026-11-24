@@ -61,7 +61,7 @@ import {
 } from '../GpuWorldRenderer.js';
 import { GRASS_GUST_STOPS } from '../../GroundBake.js';
 import { GROUND_WET_WGSL } from '../GroundWetShader.js';
-import { COAST_FIELD_FLAGS } from '../../CoastBake.js';
+import { COAST_FIELD_FLAGS, DRY_SAND_NIGHT_SCALE } from '../../CoastBake.js';
 import { MAP_SIZE, TILE_HEIGHT, TILE_WIDTH } from '../../../../config/constants.js';
 import { GROUND_CAST_WATER_SHARE } from '../../RakingLight.js';
 import { APERTURE_SPILL } from '../../LightSourceRegistry.js';
@@ -379,6 +379,18 @@ fn applyGrassGust(color: vec3f, world: vec2f) -> vec3f {
 // The terrain record's local texels are world pixels from the bake origin.
 // A wet cell may still contain a painted foam texel at the dithered edge.
 fn wetSandColour(color: vec3f) -> bool { return sameColour(color, WET_SAND) || sameColour(color, WET_SAND_DARK); }
+// NE v0.67.1 F — dry beach sand on terrainBatch (GLSL twin).
+fn isDrySand(color: vec3f, material: f32, world: vec2f) -> bool {
+  if (wetSandColour(color)) { return false; }
+  if (materialNear(material, 1.0) > 0.5 || materialNear(material, 2.0) > 0.5 || materialNear(material, 7.0) > 0.5) { return false; }
+  if (color.r < color.g || color.r <= color.b + 0.08) { return false; }
+  var sd: f32;
+  var flags: u32;
+  let hasCoast = coastFieldAt(world, &sd, &flags);
+  if (hasCoast && (sd > 0.0 || sd < -0.75)) { return false; }
+  if (materialNear(material, 4.0) > 0.5) { return true; }
+  return hasCoast && color.r > color.b + 0.12 && dot(color, GRADE_LUMA) > 0.45;
+}
 fn wetSandMaterial(block: vec4f, texel: vec2i) -> f32 {
   let quadrant = u32(((texel.x >> 1u) & 1) + (texel.y & 2));
   if ((u32(block.g * 255.0 + 0.5) & (1u << quadrant)) != 0u) { return floor(block.b * 255.0 + 0.5); }
@@ -678,6 +690,10 @@ fn sceneSurface() -> SurfaceSample {
   // 1.1 — C2 time-of-day and weather grade.
   // SD-3 — a lifted texel is held under the candle after the grade too.
   let sunLifted = any(color != sunBase);
+  // NE v0.67.1 F — unlit dry sand dims at night while lit lamp pools retain full poolAlbedo.
+  if (batch.terrainBatch != 0u && !waterMaterial && frame.waterMood.x > 0.0 && isDrySand(color, material, v_world)) {
+    color *= mix(1.0, ${DRY_SAND_NIGHT_SCALE.toFixed(2)}, frame.waterMood.x);
+  }
   color = applyTimeGrade(color, batch.additive == 0u);
   if (sunLifted) { color = sunLiftGraded(color, applyTimeGrade(sunBase, true)); }
   // V6 — graded water stays quiet; the 3.2 path is held at HSL L <= 0.70.
@@ -1308,7 +1324,10 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
       let mistH = select((*surf).elevation * 128.0, recvH, v_receiver.x > -0.5);
       var mist = mistCourse(recvGround, mistH, mistNear, mistH > 0.5, bayer4(floor(artCell * 0.5)));
       if (recvClass == 2) { mist = min(mist, 1.0); }
-      color = applyMist(color, mist, frame.fogColor, batch.additive != 0u);
+      // NE v0.67.1 M — silver-indigo tint on clear-night water mist; fog keeps frame.fogColor.
+      let nightWaterMist = smoothstep(0.5, 1.0, frame.waterMood.x) * smoothstep(0.45, 0.65, mistNear) * (1.0 - clamp(frame.weather.y / 0.30, 0.0, 1.0));
+      let mistColor = mix(frame.fogColor, vec3f(0.20, 0.28, 0.42), nightWaterMist);
+      color = applyMist(color, mist, mistColor, batch.additive != 0u);
     }
   } else {
     let fog = clamp(frame.weather.y, 0.0, 1.0);

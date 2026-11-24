@@ -23,12 +23,14 @@ import { ART_RAMPS } from '../../config/artPalette.js';
 // core and spill) sets how bright they land: an attention light is radius
 // 34-40 at 0.45-0.6 on the brighter three-course landing, a street lamp
 // radius 66 at 0.82.
-export const LANTERN_POOL_RADIUS = 44;
+// NE v0.67.1 L — raised pool radius/intensity/core emission so carriers read
+// at zoom 1 while staying below street lamps (radius 66 at 0.82) and NEEDS YOU.
+export const LANTERN_POOL_RADIUS = 54;
 // A carrier with another carrier within LANTERN_CROWD_DISTANCE (~3 tiles of
 // ground distance) lays the smaller pool, so a cluster stays separate lights.
-export const LANTERN_CROWD_RADIUS = 30;
+export const LANTERN_CROWD_RADIUS = 38;
 export const LANTERN_CROWD_DISTANCE = 136;
-export const LANTERN_INTENSITY = 0.45;
+export const LANTERN_INTENSITY = 0.72;
 // World px of the flame above the light's foot (the carrier's own foot, so
 // the 2.8 lamp casts skip its carrier: RakingLight.pointCastFor ignores a
 // body under 2 px from a light's foot).
@@ -40,18 +42,12 @@ export const LANTERN_SET_DOWN = Object.freeze({ x: 9, y: 2 });
 // The core is the bridge candles' authored flame amber
 // (bridge.landmark.*.emissive.png), a street-lamp core's luma; the glass
 // beside it the deeper work amber. Both emit (the scene reads A x 2, mixing
-// toward the ungraded albedo and into bloom); the iron frame does not. The
-// NEEDS YOU bell is #e8d44d, luma 207, and a waiting candle lands 192-207:
-// the core must stay at most 185 at every zoom in clear, fog and wet. At the
-// bridge candles' flame amber (#f2bc57) and authored alpha (0.565) it
-// measured 204-222. The stamp also takes the night's pools (as a small prop,
-// AgentSprite._lanternRecord), so the core is a deeper amber at a low
-// emission: ~142 in the dark, <= 167 in its own and nearby pools (z1-z3,
-// clear, fog and wet). Inside a street lamp's core course the pool landing
-// sets the luma whatever the albedo (193-204, as a robe there).
+// toward the ungraded albedo and into bloom); the iron frame does not.
+// NE v0.67.1 L: emission alpha lifted to 0.55 so carrier heads read at z1
+// while staying under the NEEDS YOU bell (#e8d44d).
 const GLASS_AMBER = '#e8762b';
 const CORE_AMBER = '#d99a45';
-export const LANTERN_EMISSION_ALPHA = 0.1;
+export const LANTERN_EMISSION_ALPHA = 0.55;
 const FLAME_EMISSION = `rgba(%c, ${LANTERN_EMISSION_ALPHA})`;
 
 const ROWS = Object.freeze([

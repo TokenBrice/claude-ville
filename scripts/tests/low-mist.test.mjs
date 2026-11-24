@@ -97,3 +97,16 @@ test('mist density comes from fog weather or the dawn mist, stepped', () => {
         assert.equal(d * 32, Math.round(d * 32), '32nds only');
     }
 });
+
+test('NE v0.67.1 M: GLSL and WGSL share the silver-indigo clear-night water mist tint', () => {
+    const glsl = read('gpu/GpuWorldRenderer.js');
+    const scene = read('gpu/wgsl/scene.js');
+    const sea = read('gpu/wgsl/openSea.js');
+    assert.ok(glsl.includes('float nightWaterMist = smoothstep(0.5, 1.0, u_waterMood.x) * smoothstep(0.45, 0.65, mistNear) * (1.0 - clamp(u_weather.y / 0.30, 0.0, 1.0));'));
+    assert.ok(glsl.includes('vec3 mistColor = mix(u_fogColor, vec3(0.20, 0.28, 0.42), nightWaterMist);'));
+    assert.ok(glsl.includes('float nightWaterMist = smoothstep(0.5, 1.0, u_waterMood.x) * smoothstep(0.45, 0.65, seaMistNear) * (1.0 - clamp(u_weather.y / 0.30, 0.0, 1.0));'));
+    assert.ok(scene.includes('let nightWaterMist = smoothstep(0.5, 1.0, frame.waterMood.x) * smoothstep(0.45, 0.65, mistNear) * (1.0 - clamp(frame.weather.y / 0.30, 0.0, 1.0));'));
+    assert.ok(scene.includes('let mistColor = mix(frame.fogColor, vec3f(0.20, 0.28, 0.42), nightWaterMist);'));
+    assert.ok(sea.includes('let nightWaterMist = smoothstep(0.5, 1.0, frame.waterMood.x) * smoothstep(0.45, 0.65, seaMistNear) * (1.0 - clamp(frame.weather.y / 0.30, 0.0, 1.0));'));
+    assert.ok(sea.includes('let mistColor = mix(frame.fogColor, vec3f(0.20, 0.28, 0.42), nightWaterMist);'));
+});

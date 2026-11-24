@@ -2,6 +2,31 @@
 
 ---
 
+## v0.67.1 — *The Indigo Mist* · Nov 24, 2026
+
+The night, fine-tuned by hand: thirteen picks from a side-by-side board of the remaining night taste calls, each chosen from identical frames rendered off, half and full.
+
+- **A deeper, cleaner night sky and sea.**
+  - Moonlight loses its green cast, so stone, plaster and leaves read silver-blue instead of olive (night `highlightTint` [0.96, 1.04, 1.02] → [0.92, 0.97, 1.04]).
+  - The small hours sit a step below the evening: 02:00 is about 2 L\* darker than 22:00 (deep-night exposure `moonlit(0.53, 0.55)` → `moonlit(0.49, 0.51)`).
+  - Clear nights lose the overcast haze that veiled the north of the island (clear-night haze 0.06 from 0.35, as on a clear day).
+  - Night water keeps a deep indigo instead of slate (clear-night water saturation cap 0.37 → 0.52; storms stay 0.37).
+  - Rain nights keep their colour instead of washing out twice (the weather desaturation eases to 45 % at night).
+- **Mist on the water.** A low radiation mist drifts over the sea, lagoon and river on clear nights, and waterfront lamps wear stepped halos in it. Land stays clear, so villagers keep crisp.
+- **A quieter shore.** Night foam and dry sand darken (by 22 % and 16 %), so the coast stops ringing the island in pale grey. Lit pools keep their full colour.
+- **Warmer light.**
+  - Lamp pools keep warm outer rings instead of fading to grey, at the same brightness.
+  - Street lamp heads, the Forge fire and the Mine lamps glow: their emissive layers are repainted and the world atlas re-baked (`assetVersion` `2026-11-24-night-emitters`).
+  - Worked rooms read from the default camera: a lit room lays a larger, firmer pool (radius 35 + 2.4√area, floor 0.61).
+  - Villagers' carried lanterns read at every zoom, and walking carriers keep their light first when the budget is tight.
+  - The Lighthouse keeper's cottage keeps a small hearth light at its door on the lamp clock.
+- **A calmer Portal.** The Portal's night glow drops by 30 %, so the lit village centre draws the first glance.
+- **Golden hours recalibrated** for the mist and clearer air; noon is unchanged on every backend.
+
+Not taken this round, kept on record: a softer bloom halo, ground light bounce, and light columns on the open sea.
+
+---
+
 ## v0.67.0 — *The Lamplit Watch* · Nov 24, 2026
 
 The village at night, re-lit: a darker sky and sea for the lamps to read against, wider warm pools, windows that glow like glass, and a Lighthouse that flashes instead of painting a beam. An eleven-reviewer night review across four model families found the night was a dimmed day; this release acts on its consensus.

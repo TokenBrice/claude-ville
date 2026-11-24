@@ -293,3 +293,89 @@ test('Command and Tavern fittings sit on the oak and iron ramps', async () => {
         assert.ok(unguarded.changed <= (type === 'tavern' ? 110 : 0), `${type}: only the guarded fascia keeps its colour (${unguarded.changed})`);
     }
 });
+
+// NE v0.67.1 E — brighter lamp heads and fires: boosted prop.lantern, Forge,
+// and Mine emissive sidecars match world-pilot.emissive.png and the
+// emissive-sidecars rule while daytime remains low/unlit.
+test('NE v0.67.1 E: boosted lantern, Forge, and Mine emissive sidecars match world-pilot atlas while daytime stays gated', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { createRequire } = await import('node:module');
+    const { PNG } = createRequire(import.meta.url)('pngjs');
+    const { ART_RAMPS } = await import('../../claudeville/src/config/artPalette.js');
+    const { SOURCE_ENERGY_BUCKETS } = await import('../../claudeville/src/presentation/character-mode/AtmosphereState.js');
+    const { lampsLitAt } = await import('../../claudeville/src/presentation/character-mode/BuildingSprite.js');
+    const { PROP_SIDECAR_RULES, hexToRgb } = await import('../sprites/emissive-sidecars.mjs');
+    const { loadSpriteManifest } = await import('../sprites/manifest-utils.mjs');
+
+    const root = new URL('../../claudeville/assets/sprites/', import.meta.url);
+    const readPng = (rel) => PNG.sync.read(readFileSync(new URL(rel, root)));
+    const manifest = loadSpriteManifest();
+    assert.notEqual(manifest.style.assetVersion, '2026-11-23-harbor-v1-restored', 'assetVersion bumped for E sidecar PNG changes');
+
+    // prop.lantern: 20 lit texels on ART_RAMPS.emissive inside [14,2,4,5] at alpha 200.
+    const lanternRule = PROP_SIDECAR_RULES['prop.lantern'];
+    assert.deepEqual(lanternRule.rect, [14, 2, 4, 5]);
+    assert.equal(lanternRule.alpha, 200);
+    const rampRgb = ART_RAMPS.emissive.map(hexToRgb);
+    const lanternAlbedo = readPng('props/prop.lantern.png');
+    const lanternEmissive = readPng('props/prop.lantern.emissive.png');
+    const [rx, ry, rw, rh] = lanternRule.rect;
+    let lanternLit = 0;
+    for (let y = 0; y < lanternEmissive.height; y++) {
+        for (let x = 0; x < lanternEmissive.width; x++) {
+            const i = (y * lanternEmissive.width + x) * 4;
+            const a = lanternEmissive.data[i + 3];
+            const inside = x >= rx && x < rx + rw && y >= ry && y < ry + rh;
+            if (!inside) {
+                assert.equal(a, 0, `prop.lantern emissive outside head rect at ${x},${y}`);
+                continue;
+            }
+            lanternLit++;
+            assert.ok(lanternAlbedo.data[i + 3] >= a, `prop.lantern alpha inside albedo at ${x},${y}`);
+            assert.equal(a, 200, `prop.lantern alpha 200 at ${x},${y}`);
+            const expectedRgb = rampRgb[lanternRule.stops[y - ry][x - rx]];
+            assert.deepEqual([lanternEmissive.data[i], lanternEmissive.data[i + 1], lanternEmissive.data[i + 2]], expectedRgb,
+                `prop.lantern ramp stop at ${x},${y}`);
+        }
+    }
+    assert.equal(lanternLit, 20);
+
+    // Forge (alphas 175 & 210) and Mine (alphas 145, 155, 200).
+    const alphaHistogram = (png) => {
+        const counts = {};
+        for (let i = 3; i < png.data.length; i += 4) {
+            const a = png.data[i];
+            if (a > 0) counts[a] = (counts[a] || 0) + 1;
+        }
+        return counts;
+    };
+    const forgeEmissive = readPng('buildings/building.forge/base.emissive.png');
+    const mineEmissive = readPng('buildings/building.mine/base.emissive.png');
+    assert.deepEqual(alphaHistogram(forgeEmissive), { 175: 127, 210: 1741 });
+    assert.deepEqual(alphaHistogram(mineEmissive), { 145: 724, 155: 705, 200: 100 });
+
+    // Re-baked world-pilot.emissive.png matches all three sidecars pixel-for-pixel.
+    const atlas = JSON.parse(readFileSync(new URL('atlases/world-pilot.json', root), 'utf8'));
+    const atlasEmissive = readPng('atlases/world-pilot.emissive.png');
+    for (const [key, sidecar] of [
+        ['prop.lantern', lanternEmissive],
+        ['building.forge', forgeEmissive],
+        ['building.mine', mineEmissive],
+    ]) {
+        const { rect } = atlas.frames[key];
+        assert.deepEqual([rect.w, rect.h], [sidecar.width, sidecar.height], `${key} atlas frame size`);
+        for (let y = 0; y < rect.h; y++) {
+            for (let x = 0; x < rect.w; x++) {
+                const si = (y * sidecar.width + x) * 4;
+                const ai = ((rect.y + y) * atlasEmissive.width + rect.x + x) * 4;
+                for (let ch = 0; ch < 4; ch++) {
+                    assert.equal(atlasEmissive.data[ai + ch], sidecar.data[si + ch], `${key} atlas emissive matches sidecar at ${x},${y} ch ${ch}`);
+                }
+            }
+        }
+    }
+
+    // Daytime stays gated: street lamps are off by day and daylight core energy stays 0.14.
+    assert.equal(lampsLitAt({ clock: { minuteOfDay: 12 * 60 } }), false, 'street lanterns stay off at noon');
+    assert.equal(SOURCE_ENERGY_BUCKETS.daylight.core, 0.14, 'daylight core energy stays unchanged at 0.14');
+});

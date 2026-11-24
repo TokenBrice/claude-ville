@@ -60,6 +60,7 @@ import {
     COAST_FIELD_FLAGS,
     COAST_PALETTE,
     DEPTH_BOUNDS,
+    foamNightScale,
     mirrorStormDrop,
     OCEAN_HORIZON_WORLD_Y,
     OPEN_SEA_DEEPEST,
@@ -1103,11 +1104,14 @@ function buildPalette(atmosphere, postFx, storm) {
         contrast *= Math.max(storm ? 0.35 : 0.15, Math.min(1, (luma - 0.27) / 0.15));
         return water(c.map(v => v * (1 + contrast)));
     });
+    // NE v0.67.1 F — dim shoreline foam at night; starlight stays un-dimmed.
+    const fScale = foamNightScale(mood);
     const classes = [];
-    classes[CLS_FOAM] = water(to01(COAST_PALETTE.foam));
-    classes[CLS_CREST] = water(to01(COAST_PALETTE.foamCrest));
+    classes[CLS_FOAM] = water(to01(COAST_PALETTE.foam).map(v => v * fScale));
+    classes[CLS_CREST] = water(to01(COAST_PALETTE.foamCrest).map(v => v * fScale));
     classes[CLS_WET] = u32Of(to01(COAST_PALETTE.wetSand));
     classes[CLS_WET_DARK] = u32Of(to01(COAST_PALETTE.wetSandDark));
+    const starlight = water(to01(COAST_PALETTE.foamCrest));
     // The path: graded, held at HSL L <= 0.70 (seaPathCap), painted as the
     // preimage of that; fire glints preserve their warm receiver stops.
     // NE P3.3b — at night, lit moon-path stops (indices 4..5, kind 3) escape
@@ -1144,6 +1148,7 @@ function buildPalette(atmosphere, postFx, storm) {
         stops,
         staticDash,
         classes,
+        starlight,
         specks: COAST_PALETTE.seabedSpecks.map(rgb => water(to01(rgb))),
         caustics: COAST_PALETTE.caustics.map(rgb => water(to01(rgb))),
         path,
@@ -1523,7 +1528,7 @@ function rebuildOverlay(state, base, fx, palette, rect, renderer, sea) {
                 for (let x = Math.max(x0, cx * 3); x < Math.min(x1, cx * 3 + 2); x++) {
                     const p = at(x, y);
                     if (riseMap[p] <= 0) continue;
-                    let colour = palette.classes[CLS_CREST];
+                    let colour = palette.starlight;
                     if (infoAt(x, y) & SEA_OPEN_SEA) {
                         const c = canvasSeaMarkRgb(renderer, 'crest', x, y, true);
                         if (c >= 0) colour = ((255 << 24) | ((c & 255) << 16) | (c & 0xff00) | (c >> 16)) >>> 0;
