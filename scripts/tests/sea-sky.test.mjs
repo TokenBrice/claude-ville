@@ -71,10 +71,12 @@ test('at looks la3 and la5 0, golden hour warms the sea and an overcast lifts it
         const shallow = rgb01(ART_RAMPS.shallowWater[0]);
         const rb = c => c[0] - c[2];
         // With single post-sky dynamic saturation capping (relaxed 2026-11-23),
-        // the lit daytime sea stops warm visibly under the golden sky at la3=0.
+        // the golden sky never visibly cools the lit sea at la3=0. At the
+        // one-stop sea1 0.5 (2026-11-24) its lit stop sits on the cap, so it
+        // holds within a level; the shallows below carry the visible warmth.
         const goldenOff = graded(litBody, 18 * 60, WEATHERS.clear, false);
         const goldenOn = graded(litBody, 18 * 60, WEATHERS.clear, true);
-        assert.ok(rb(goldenOn) > rb(goldenOff), `golden lit sea R-B ${(rb(goldenOff) * 255).toFixed(1)} -> ${(rb(goldenOn) * 255).toFixed(1)}`);
+        assert.ok(rb(goldenOn) >= rb(goldenOff) - 1 / 255, `golden lit sea R-B ${(rb(goldenOff) * 255).toFixed(1)} -> ${(rb(goldenOn) * 255).toFixed(1)}`);
         const shallowOff = graded(shallow, 18 * 60, WEATHERS.clear, false);
         const shallowOn = graded(shallow, 18 * 60, WEATHERS.clear, true);
         assert.ok(rb(shallowOn) - rb(shallowOff) > 6 / 255, `golden shallow R-B ${(rb(shallowOff) * 255).toFixed(1)} -> ${(rb(shallowOn) * 255).toFixed(1)}`);

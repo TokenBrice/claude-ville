@@ -61,10 +61,11 @@ const WET_SAND_BAND = -0.18;
 const WET_SAND_DITHER = -0.27;
 const FOAM_BAND = 0.09;
 const FOAM_SPARSE_BAND = 0.16;
-// Stop k + 1 starts at DEPTH_BOUNDS[k]. Spread across 0.55..3.90 tiles so
+// Stop k + 1 starts at DEPTH_BOUNDS[k]. Spread across 0.42..3.40 tiles so
 // shallow turquoise bands wrap beaches, coves, rivers and the World Ash islet
-// cleanly before stepping into coastal blue open sea.
-export const DEPTH_BOUNDS = Object.freeze([0.55, 1.15, 1.95, 2.90, 3.90]);
+// cleanly before stepping into coastal blue open sea (narrowed 2026-11-24 from
+// 0.55..3.90, operator decision: the wider ring read as a glowing halo).
+export const DEPTH_BOUNDS = Object.freeze([0.42, 0.95, 1.65, 2.50, 3.40]);
 // Half-width (tiles of signed distance) of the ordered seam where one depth
 // stop hands to the next: ~one world texel either side, so every stop is a
 // solid band and only its edge dithers (a wider band read as a full-field

@@ -36,7 +36,9 @@ import { captureCoastArtifact, restoreCoastArtifact, validCoastArtifact, coastAr
 // cv0.66-terrain-15: remove east Forge footbridge and its road, switch the
 // north farm bridge to a mirrored plank span, move the Hourglass Belfry off
 // the north bridge to the Archive's north-east lagoon lawn, remove cottages.
-export const TERRAIN_BAKE_ALGORITHM_VERSION = 'cv0.66-terrain-15';
+// cv0.66-terrain-16: calmer shallow water (shallowWater stops 0-1 at 25 %
+// less chroma) and narrower DEPTH_BOUNDS 0.42..3.40 (CoastBake).
+export const TERRAIN_BAKE_ALGORITHM_VERSION = 'cv0.66-terrain-16';
 export const TERRAIN_ARTIFACT_DB = 'claudeville-terrain-artifacts';
 export const TERRAIN_ARTIFACT_MAX_BYTES = 96 * 1024 * 1024;
 // Artifact schema. 2: the ground field may carry the RGBA8 weather field

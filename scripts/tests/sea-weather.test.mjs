@@ -118,7 +118,7 @@ test('the swell drift steps one row per step of the motion clock, in every swell
     assert.ok(SWELL_DRIFT_STEP_MS >= 400 && SWELL_DRIFT_STEP_MS <= 600, 'about one row every 500 ms');
     assert.equal(SWASH_STEP_TILES, 0.05, 'coast swash step reach widened to 0.05 tiles');
     assert.equal(NOON_DASH_HOLD, 3, 'noon glints hold for 3 water ticks');
-    assert.deepEqual([...DEPTH_BOUNDS], [0.55, 1.15, 1.95, 2.9, 3.9], 'spread shallow DEPTH_BOUNDS');
+    assert.deepEqual([...DEPTH_BOUNDS], [0.42, 0.95, 1.65, 2.5, 3.4], 'spread shallow DEPTH_BOUNDS (narrowed 2026-11-24)');
     assert.equal(swellDriftRows(0), 0);
     assert.equal(swellDriftRows(undefined), 0);
     assert.equal(swellDriftRows(SWELL_DRIFT_STEP_MS - 1), 0);

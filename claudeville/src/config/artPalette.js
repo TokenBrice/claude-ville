@@ -41,7 +41,9 @@
 //                 2026-11-23, operator decision: brighter daytime coastal blue
 //                 with dark deepWater[0..1] preserved for night and storm).
 //   shallowWater  Lagoon/shore turquoise-aqua band -> clean seafoam. Foam is
-//                 the only Tier-B bright water.
+//                 the only Tier-B bright water. Stops 0-1 toned back
+//                 2026-11-24 (operator decision: OKLCH chroma -25 %, same
+//                 lightness and hue) so the shore ring stops glowing.
 //   grass         Ground base. The LOWEST land value so the floor recedes, but
 //                 kept green and alive (D5 moderate mute: S 0.46-0.51, okL
 //                 0.36-0.60). Shadow step leans teal, highlight leans olive.
@@ -102,7 +104,7 @@ import { THEME } from './theme.js';
 export const ART_RAMPS = Object.freeze({
     void: ['#0c0f12', '#101418', '#171d21'],
     deepWater: ['#1c2d3a', '#244157', '#396f96'],
-    shallowWater: ['#368796', '#449ca3', '#96c7be'],
+    shallowWater: ['#4d848f', '#5c999d', '#96c7be'],
     grass: ['#26572d', '#346e30', '#4f823b', '#689146', '#7f9e51'],
     dirt: ['#6a5038', '#7c6043', '#8e7050', '#9f805d', '#ae8f6a'],
     road: ['#4a4c51', '#5b5e64', '#71747a', '#83868c', '#95989e'],
