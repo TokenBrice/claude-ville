@@ -3,7 +3,7 @@
 // world day/night, dashboard, activity panel, SOUND popover with the Town band
 // playing, and the 1280x640 social card. Needs the server on :4000.
 // Output: docs/assets/github/*.png with --write, else output/playwright/marketing-*.png.
-import { chromium } from 'playwright';
+import { gpuLaunchArgs, launchChromium } from '../smoke/support/chromium.mjs';
 import assert from 'node:assert/strict';
 import { mkdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -14,23 +14,30 @@ const write = process.argv.includes('--write');
 const outDir = write ? join(repoRoot, 'docs', 'assets', 'github') : join(repoRoot, 'output', 'playwright');
 const prefix = write ? '' : 'marketing-';
 const url = 'http://localhost:4000/?sim=1&scenario=readme-showcase&renderer=webgl';
-// Sim session ids: the scenario's `readme-` ids plus the two adapter-shaped
-// thread ids (`deepseek-dsth_…`, `zai-glmth_…`).
-const SIM_SESSION_ID_PREFIXES = ['readme-', 'deepseek-', 'zai-'];
+// Sim session ids: the scenario's `readme-` ids plus the adapter-shaped
+// thread ids (`deepseek-dsth_…`, `zai-glmth_…`, `antigravity-…`).
+const SIM_SESSION_ID_PREFIXES = ['readme-', 'deepseek-', 'zai-', 'antigravity-'];
 const isSimSessionId = (id) => SIM_SESSION_ID_PREFIXES.some((prefix) => id?.startsWith(prefix));
 mkdirSync(outDir, { recursive: true });
 
 // Projection.js: tileToWorld with 64x32 tiles. Zoom snaps to the 1/2/3 pixel grid.
 const TILE_HALF_WIDTH = 32;
 const TILE_HALF_HEIGHT = 16;
-const HERO = { tileX: 18, tileY: 22, zoom: 1 };
+const HERO = { tileX: 15, tileY: 19, zoom: 1 };
 const DAY_HOUR = 10.5;
 const NIGHT_HOUR = 22;
+// Pin a mid-summer date before boot so the island renders lush summer foliage
+// and sunlit shadow geometry regardless of the capture host's calendar date.
+// Starting just past local midnight keeps the topbar label at TOKENS SEEN TODAY.
+const CAPTURE_EPOCH_MS = new Date(2026, 6, 15, 0, 0, 10).getTime();
+const CAPTURE_STARTED_REAL_MS = Date.now();
+const SOLAR_SITE = { lat: 45, lon: 0, dayShift: { sunriseShift: 0, sunsetShift: 0 } };
+const EXPECTED_AGENT_COUNT = 37;
 
 // Sim agents have no transcript on the server; give the selected agent's
 // panel the tool history, messages and usage a real Codex session reports.
 function astraDetail() {
-    const now = Date.now();
+    const now = CAPTURE_EPOCH_MS + (Date.now() - CAPTURE_STARTED_REAL_MS);
     const at = (secondsAgo) => now - secondsAgo * 1000;
     return {
         toolHistory: [
@@ -48,31 +55,38 @@ function astraDetail() {
             input: 356000,
             output: 28400,
             cacheRead: 1410000,
-            contextWindow: 142000,
-            contextWindowMax: 258400,
+            contextWindow: 396000,
+            contextWindowMax: 1050000,
             turnCount: 37,
         },
     };
 }
 
-// Full Chromium uses the host GPU; the headless shell forces SwiftShader.
-const browser = await chromium.launch({
-    channel: 'chromium',
-    args: [
-        '--autoplay-policy=no-user-gesture-required',
-        '--ignore-gpu-blocklist',
-        '--enable-gpu-rasterization',
-        ...(process.platform === 'linux' ? ['--use-angle=gl-egl'] : []),
-        ...(process.platform === 'darwin' ? ['--use-angle=metal'] : []),
-    ],
+// Unified Chromium launcher (`CLAUDEVILLE_CHROME`, bundled Chromium, or system Chrome) with host GPU flags.
+const browser = await launchChromium({
+    headless: true,
+    args: ['--autoplay-policy=no-user-gesture-required', ...gpuLaunchArgs()],
 });
 try {
     const ctx = await browser.newContext({ viewport: { width: 1920, height: 1200 }, deviceScaleFactor: 1 });
-    // Auto-camera off so framing sticks; first-run hint already seen.
-    await ctx.addInitScript(() => {
+    // Auto-camera off so framing sticks; first-run hint already seen;
+    // offset Date to mid-summer while keeping elapsed clocks advancing normally.
+    await ctx.addInitScript((targetEpochMs) => {
+        const RealDate = Date;
+        const offset = targetEpochMs - RealDate.now();
+        class ShiftedDate extends RealDate {
+            constructor(...args) {
+                if (args.length === 0) super(RealDate.now() + offset);
+                else super(...args);
+            }
+            static now() { return RealDate.now() + offset; }
+        }
+        ShiftedDate.UTC = RealDate.UTC;
+        ShiftedDate.parse = RealDate.parse;
+        window.Date = ShiftedDate;
         localStorage.setItem('cv-auto-camera', '0');
         localStorage.setItem('claudeville.firstRunHint.worldControls.v1', '1');
-    });
+    }, CAPTURE_EPOCH_MS);
     // Keep all API traffic inside the fixture, including dashboard batch polling.
     const requests = [];
     await ctx.route('**/api/**', (route) => {
@@ -108,13 +122,15 @@ try {
         console.log(`${prefix}${name}.png`);
     }
     async function sky(hour) {
-        await page.evaluate((h) => {
+        await page.evaluate(([h, site]) => {
             const a = window.__claudeVilleAtmosphere;
+            a.setSolarSite(site);
             a.setTimelineMode('fixed');
             a.setHour(h);
             a.setWeather({ type: 'clear', intensity: 0, windX: 0.2, seed: 4242 });
             a.freeze();
-        }, hour);
+            window.__claudeVilleApp?.renderer?.gpuWorld?.qualityLadder?.setOverride?.(0);
+        }, [hour, SOLAR_SITE]);
     }
     async function frame({ tileX, tileY, zoom }, settle = 1200) {
         const x = (tileX - tileY) * TILE_HALF_WIDTH;
@@ -132,7 +148,7 @@ try {
         return { mode: app.renderer.worldRendererMode, active: app.renderer.gpuWorld?.isActive(), renderer: info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : null, agents: app.world.agents.size, simulated: app.simMode };
     });
     assert.equal(backend.simulated, true);
-    assert.equal(backend.agents, 33);
+    assert.equal(backend.agents, EXPECTED_AGENT_COUNT);
     assert.equal(backend.mode, 'webgl');
     assert.equal(backend.active, true);
     assert.ok(backend.renderer, 'GPU renderer identity must be available');
@@ -140,8 +156,8 @@ try {
     console.log('Capture renderer:', backend);
     // Automation timing is not a product performance claim; retain the SIMULATED label.
     await page.addStyleTag({ content: '#statFps { visibility: hidden !important; }' });
-    // Let the crowd walk to its buildings.
-    await page.waitForTimeout(12000);
+    // Let the crowd walk to its buildings and settle into its stations.
+    await page.waitForTimeout(20000);
 
     // Hero: the whole core (Archive, Command, bridge, Forge, Tavern) at 1x.
     await sky(DAY_HOUR);
@@ -150,7 +166,7 @@ try {
 
     // Social card source: the world canvas only, no chrome, same framing.
     await clearToasts();
-    const cardSource = (await page.screenshot({ clip: { x: 448, y: 256, width: 1280, height: 640 } })).toString('base64');
+    const cardSource = (await page.screenshot({ clip: { x: 452, y: 336, width: 1280, height: 640 } })).toString('base64');
 
     await page.click('#btnModeDashboard');
     await page.waitForTimeout(2500);
@@ -189,7 +205,7 @@ try {
       <div style="position:absolute;left:56px;bottom:48px;font-family:Georgia,'Times New Roman',serif">
         <div style="font-size:72px;font-weight:700;color:#f5c86e;letter-spacing:1px;line-height:1;text-shadow:0 2px 12px rgba(0,0,0,.6)">ClaudeVille</div>
         <div style="font-size:32px;color:#f2ead9;margin-top:14px;text-shadow:0 1px 6px rgba(0,0,0,.6)">Your coding agents, one living village</div>
-        <div style="font:18px Arial,sans-serif;color:#d2c5ab;margin-top:18px;letter-spacing:2px">LOCAL &nbsp;·&nbsp; READ-ONLY &nbsp;·&nbsp; 9 PROVIDERS</div>
+        <div style="font:18px Arial,sans-serif;color:#d2c5ab;margin-top:18px;letter-spacing:2px">LOCAL &nbsp;·&nbsp; READ-ONLY &nbsp;·&nbsp; 10 PROVIDERS</div>
       </div>
     </body></html>`);
     await card.waitForTimeout(400);

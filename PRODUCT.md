@@ -6,7 +6,7 @@ brand
 
 ## Users
 
-A solo developer who runs several AI coding CLIs at once (Claude Code, Codex, Gemini, Kimi, OpenCode) and wants to *watch* them work. ClaudeVille lives on a second monitor while they code on the first: glanced at, not stared at. The job to be done is mostly ambient awareness — "is anything stuck, waiting on me, or burning tokens?" — answered from the corner of the eye, plus the simple pleasure of seeing your agents alive in a place. It runs entirely locally (a zero-build Node server on port 4000) and reads provider session logs read-only. Desktop first, 1280px and wider; the one narrow surface is the `/m/` mobile profile, for watching agents that run on the phone itself.
+A solo developer who runs several AI coding CLIs at once (Claude Code, Codex, Google Antigravity, Gemini, Grok, Kimi, OpenCode, OMP, DeepSeek MCP, GLM MCP) and wants to *watch* them work. ClaudeVille lives on a second monitor while they code on the first: glanced at, not stared at. The job to be done is mostly ambient awareness — "is anything stuck, waiting on me, or burning tokens?" — answered from the corner of the eye, plus the simple pleasure of seeing your agents alive in a place. It runs entirely locally (a zero-build Node server on port 4000) and reads provider session logs read-only. Desktop first, 1280px and wider; the one narrow surface is the `/m/` mobile profile, for watching agents that run on the phone itself.
 
 ## Product Purpose
 
@@ -47,4 +47,4 @@ Explicitly NOT:
 
 ## Accessibility & Inclusion
 
-Minimal, by deliberate choice. This is a solo, local, desktop-only tool (1280px and wider), not a public product, so it does not chase a formal WCAG level. The working bar is basic readability of the DOM surfaces (sidebar, dashboard cards, panels, modals) and preserving the reduced-motion support that already exists as engineering policy (`docs/motion-budget.md`: declare a pulse band, ship a static reduced-motion fallback). No commitment to full keyboard navigation, screen-reader parity, or AA contrast beyond keeping text legible. Color is already not the sole status cue in much of the world layer; keep that where it is cheap, but it is not a hard requirement.
+Minimal, by deliberate choice. This is a solo, local, desktop-first tool (1280px and wider, with the `/m/` mobile profile as the one narrow surface), not a public product, so it does not chase a formal WCAG level. The working bar is basic readability of the DOM surfaces (sidebar, dashboard cards, panels, modals) and preserving the reduced-motion support that already exists as engineering policy (`docs/motion-budget.md`: declare a pulse band, ship a static reduced-motion fallback). No commitment to full keyboard navigation, screen-reader parity, or AA contrast beyond keeping text legible. Color is already not the sole status cue in much of the world layer; keep that where it is cheap, but it is not a hard requirement.

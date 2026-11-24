@@ -34,7 +34,7 @@ body:
     id: environment
     attributes:
       label: Version and environment
-      description: Include ClaudeVille's top-bar version (or commit), operating system, and browser version.
+      description: Click ClaudeVille's top-bar version chip for the full release (or run `git rev-parse --short HEAD`), and include operating system and browser version.
       placeholder: "ClaudeVille: ...; OS: ...; Browser: ..."
     validations:
       required: true

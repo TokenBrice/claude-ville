@@ -15,6 +15,8 @@ body:
         - World mode
         - Dashboard mode
         - Sidebar or activity panel
+        - Chronicle, spend ledger, or settings
+        - Mobile profile (/m/)
         - Sound
         - Server or API
         - Provider adapter
@@ -37,6 +39,7 @@ body:
     id: reproduce
     attributes:
       label: Steps to reproduce
+      description: Mention whether the issue also reproduces with the built-in simulator (`http://localhost:4000/?sim=1`).
       placeholder: "1. Run `npm run dev`\n2. Open `http://localhost:4000`\n3. ..."
     validations:
       required: true
@@ -44,7 +47,7 @@ body:
     id: version
     attributes:
       label: ClaudeVille version or commit
-      description: Use the version shown in the top bar, or run git rev-parse --short HEAD.
+      description: Click the top-bar version chip to read the full release in the changelog, or run `git rev-parse --short HEAD`.
     validations:
       required: true
   - type: input

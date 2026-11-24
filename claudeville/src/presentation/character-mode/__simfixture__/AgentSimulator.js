@@ -99,6 +99,7 @@ function buildAgent(spec, timeBase, rebase = value => value) {
         freshness: spec.freshness ? { ...spec.freshness, observedAt: timeBase - (Number(spec.freshness.ageMs) || 0) } : null,
         messages: Array.isArray(spec.messages) ? clonePlain(spec.messages) : [],
         gitEvents: Array.isArray(spec.gitEvents) ? clonePlain(spec.gitEvents) : [],
+        workingSet: Array.isArray(spec.workingSet) ? clonePlain(spec.workingSet) : [],
         lastPrompt: spec.lastPrompt ?? null,
         todos: Array.isArray(spec.todos) ? clonePlain(spec.todos) : [],
         gitBranch: spec.gitBranch ?? null,

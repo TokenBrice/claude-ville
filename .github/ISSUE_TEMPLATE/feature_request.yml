@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Broad ideas and new provider proposals usually work better in Discussions first.
+        Broad ideas and new provider proposals usually work better in [Discussions](https://github.com/TokenBrice/claude-ville/discussions) first.
   - type: textarea
     id: workflow
     attributes:
@@ -28,6 +28,8 @@ body:
       options:
         - World mode
         - Dashboard mode
+        - Sidebar or activity panel
+        - Chronicle or settings
         - Sound
         - Provider adapter
         - Server or API

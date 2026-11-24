@@ -3063,7 +3063,7 @@ function startServer() {
     const providers = getActiveProviders();
     if (providers.length === 0) {
       console.log('  [!] No active providers');
-      console.log('      One of ~/.claude/, ~/.codex/, ~/.gemini/, ~/.gemini/antigravity-cli/, ~/.grok/, ~/.kimi-code/, ~/.local/share/opencode/, or ~/.omp/ is required');
+      console.log('      One of ~/.claude/, ~/.codex/, ~/.gemini/, ~/.gemini/antigravity-cli/, ~/.grok/, ~/.kimi-code/, ~/.local/share/opencode/, ~/.omp/, ~/.local/state/deepseek-cc-mcp/, or ~/.local/state/glm-cc-mcp/ is required');
     } else {
       console.log('  Active providers:');
       for (const p of providers) {

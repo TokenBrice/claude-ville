@@ -14,7 +14,7 @@ body:
       options:
         - Claude Code
         - Codex CLI
-        - Google Antigravity (agy)
+        - Google Antigravity (agy / T3 Code)
         - Gemini CLI
         - Grok CLI
         - Kimi (incl. Kimi Code)
@@ -29,7 +29,7 @@ body:
     id: versions
     attributes:
       label: ClaudeVille and provider CLI versions
-      description: Include ClaudeVille's top-bar version (or commit) and the affected CLI's version.
+      description: Click ClaudeVille's top-bar version chip for the full release (or run `git rev-parse --short HEAD`), and include the affected CLI's version.
       placeholder: "ClaudeVille: ...; CLI: ..."
     validations:
       required: true
