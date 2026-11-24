@@ -120,9 +120,10 @@ test('the sea stays cool at every hour', () => {
     const { RB } = scriptAt(hour, sea);
     assert.ok(RB < 0, `sea R−B ${RB.toFixed(1)} at ${hour}h`);
   }
-  // V6 daytime water saturation relaxation (2026-11-23, operator decision):
-  // ~0.48 by day, blending back to 0.37 under night and storm.
-  assert.ok(WATER_DAY_MAX_SATURATION >= 0.46 && WATER_DAY_MAX_SATURATION <= 0.50);
+  // V6 daytime water saturation relaxation (2026-11-23, operator decision),
+  // toned back 2026-11-24: ~0.44 by day, blending back to 0.37 under night
+  // and storm.
+  assert.ok(WATER_DAY_MAX_SATURATION >= 0.42 && WATER_DAY_MAX_SATURATION <= 0.46);
   assert.equal(waterMaxSaturation({ night: 0, storm: 0 }), WATER_DAY_MAX_SATURATION);
   assert.equal(waterMaxSaturation({ night: 1, storm: 0 }), WATER_MAX_SATURATION);
   assert.equal(waterMaxSaturation({ night: 0, storm: 1 }), WATER_MAX_SATURATION);

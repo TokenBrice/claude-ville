@@ -511,13 +511,14 @@ export function applyGradeToRgb(rgb, grade) {
 }
 
 // V6 — outside the sun and moon path the sea stays cool and quiet in dark
-// states: graded water is held at WATER_DAY_MAX_SATURATION (0.48) by day
-// (relaxed 2026-11-23, operator decision: clearly blue daytime water) and
+// states: graded water is held at WATER_DAY_MAX_SATURATION (0.44) by day
+// (relaxed 2026-11-23 to 0.48, operator decision: clearly blue daytime water;
+// toned back to 0.44 on 2026-11-24, operator decision: too bright) and
 // blends smoothly back to WATER_MAX_SATURATION (0.37) with night and storm,
 // so night and storm water stay quiet while clear daylight reads coastal blue.
 // Sun glitter, the moon path and lamp reflections keep their own colour.
 export const WATER_MAX_SATURATION = 0.37;
-export const WATER_DAY_MAX_SATURATION = 0.48;
+export const WATER_DAY_MAX_SATURATION = 0.44;
 
 /** Effective V6 HSV saturation cap for a water mood (`{ night, storm }`). */
 export function waterMaxSaturation(mood) {
