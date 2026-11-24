@@ -1,12 +1,12 @@
 // Wave 10 (10.1 Stage A) — the WGSL twin of the `shadeOpenSea` half of
-// GpuWorldRenderer OPEN_SEA_GLSL (3.3 / 3.4 / 3.2 outer, 2.7 beam on the sea):
+// GpuWorldRenderer OPEN_SEA_GLSL (3.3 / 3.4 / 3.2 outer):
 // the open sea shaded on the world texel grid under whatever the scene drew,
 // with the in-map water's own pipeline. Expression for expression the GLSL,
 // its band constants interpolated from CoastBake. u_time / u_weather /
 // u_waterFx / u_glint / u_glintStops / u_seaSunBand / u_fogColor / u_seaHaze /
 // u_seaSky / u_squall / u_squallFall / u_camera / u_resolution -> frame.*.
 // Composite module only (wgsl/composite.js owns main and the fat-seam loop).
-// Needs GRADE_WGSL, ATMOSPHERE_WGSL, SEAM_WGSL, WATER_WGSL, BEAM_WGSL.
+// Needs GRADE_WGSL, ATMOSPHERE_WGSL, SEAM_WGSL, WATER_WGSL.
 import {
     OPEN_SEA_BAND_DEPTH,
     OPEN_SEA_BAND_MARK_LIFT,
@@ -15,9 +15,13 @@ import {
 } from '../../CoastBake.js';
 import { DEEP_DASH_DENSITY, MIST } from '../GpuFrameState.js';
 import { SEA_STATE } from '../GpuWorldPolicy.js';
+import { MOON_PATH_SILVER_TINT, MOON_PATH_UNGRADE_MIX } from '../GpuWorldRenderer.js';
 
 export const OPEN_SEA_WGSL = /* wgsl */ `
 const OPEN_SEA_BAND: f32 = ${OPEN_SEA_BAND_DEPTH.toFixed(1)};
+// NE P3.3b — named moon-path night lift constants (shared with scene.js and GLSL twins).
+const MOON_PATH_UNGRADE_MIX: f32 = ${MOON_PATH_UNGRADE_MIX.toFixed(2)};
+const MOON_PATH_SILVER_TINT: vec3f = vec3f(${MOON_PATH_SILVER_TINT.map(v => v.toFixed(2)).join(', ')});
 fn shadeOpenSea(cell: vec2f) -> vec3f {
     let order = waterBayer4(cell);
     let texelPx = (cell + 0.5 + frame.cameraXy) * frame.cameraScale;
@@ -38,13 +42,15 @@ fn shadeOpenSea(cell: vec2f) -> vec3f {
     var marked = false;
     var c: vec3f;
     let glint = glintDash(cell, texelPx, frame.glint, frame.cameraScale, tick);
-    let beam = lighthouseSheen(cell, tick, storm);
     if (glint > 0.5) {
-        c = frame.glintStops[select(1, 0, glint > 1.5)].xyz * mix(1.0, 0.86, frame.seaSunBand);
-        c = seaPathCap(applyTimeGrade(c, true));
-        marked = true;
-    } else if (beam > 0.5) {
-        c = beaconWaterStop(beam) * mix(1.0, 0.86, frame.seaSunBand);
+        let stopColor = frame.glintStops[select(1, 0, glint > 1.5)].xyz * mix(1.0, 0.86, frame.seaSunBand);
+        c = applyTimeGrade(stopColor, true);
+        // NE P3.3b — lift lit moon-path stops out of the night grade like emitters:
+        // the ungraded stop is a named seaPath colour, kept silver under V6 and seaPathCap.
+        if (frame.glint.z > 2.5 && frame.waterMood.x > 0.0) {
+            c = capSaturation(mix(c, stopColor * MOON_PATH_SILVER_TINT, MOON_PATH_UNGRADE_MIX * frame.waterMood.x), waterMaxSat());
+        }
+        c = seaPathCap(c);
         marked = true;
     } else {
         let s = swellPhase(cell);
@@ -92,7 +98,7 @@ fn shadeOpenSea(cell: vec2f) -> vec3f {
     }
     let hazeRows = frame.seaHaze.a;
     let band = max(0.0, t - hazeRows) + floor(contour * clamp((t - hazeRows) / 96.0, 0.0, 1.0) + 0.5);
-    if (glint < 0.5 && beam < 0.5 && band < OPEN_SEA_BAND) {
+    if (glint < 0.5 && band < OPEN_SEA_BAND) {
         let p = band / OPEN_SEA_BAND * 4.0;
         var k = floor(p);
         var seam = 8.0 / OPEN_SEA_BAND;

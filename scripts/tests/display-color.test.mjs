@@ -56,6 +56,14 @@ test('the emitter cap keeps every lifted emitter under the NEEDS YOU mark and ne
         if (mode === 'off') continue;
         const markLight = needsYou * gains.mark;
         assert.ok(gains.emitterCap < markLight, `${mode}: the cap sits under the NEEDS YOU mark (${gains.emitterCap} < ${markLight})`);
+        // NE P1.4: half-strength bloom adds into rgb before the [0, 1] clamp, so
+        // pre-gain linear luminance Y is at most 1; the compositeRolesFs gain cap
+        // min(gain, emitterCap / Y) still keeps every lifted emitter strictly
+        // below the NEEDS YOU mark.
+        for (const y of [0.25, 0.5, 0.85, 1.0]) {
+            const lifted = y * Math.min(gains.emitterPeak, gains.emitterCap / y);
+            assert.ok(lifted < markLight, `${mode} Y=${y}: lifted emitter ${lifted} stays under mark ${markLight}`);
+        }
     }
 });
 

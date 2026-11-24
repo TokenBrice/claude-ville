@@ -29,7 +29,7 @@
 import { AMBIENT_GROUND_PROPS, DISTRICT_PROPS, SCENIC_POINT_PROPS } from '../../config/scenery.js';
 import { atlasSourceRect } from './AssetManager.js';
 import { sourceEnergyFor } from './AtmosphereState.js';
-import { buildEmitterCut } from './CanvasGrade.js';
+import { buildEmitterCut, emitterNightCarry } from './CanvasGrade.js';
 import { mirrorAccentGate, mirrorAccentLayers, mirrorAccentRainCut, mirrorStormDrop } from './CoastBake.js';
 import {
     DAYTIME_WORK_BLOOM_CORE,
@@ -344,39 +344,53 @@ function cacheWaterRecords(renderer) {
 // ── Canvas / hybrid PostFx ────────────────────────────────────────────────
 
 const cuts = new Map();
+const cutImages = new Map();
 let occluderScratch = null;
+
+// NE P1.3 — quantise nightCarry to 1/16 steps so Canvas emitter cuts track
+// dusk/night transitions without rebuilding every frame or growing the cache.
+function nightCarryStepFor(grade) {
+    return Math.round(emitterNightCarry(grade) * 16);
+}
+
+function quantisedGradeForStep(step) {
+    return step > 0 ? { poolGain: 0.15 + 1.05 * (step / 16) } : null;
+}
 
 function emissiveImageFor(assets, id, albedo, key) {
     const companion = assets.getCompanion?.(id, 'emissive');
     if (companion) return companion;
+    const cached = cutImages.get(key);
+    if (cached !== undefined) return cached === 'loading' ? null : cached;
     // Canvas mode does not load material companions; fetch the sidecar beside
     // the versioned albedo once.
     const src = typeof albedo?.src === 'string' ? albedo.src : '';
     if (!src || typeof Image === 'undefined') {
-        cuts.set(key, null);
+        cutImages.set(key, null);
         return null;
     }
     const image = new Image();
-    cuts.set(key, 'loading');
+    cutImages.set(key, 'loading');
     image.onload = () => {
-        if (cuts.get(key) !== 'loading') return;
-        cuts.set(key, buildEmitterCut(albedo, image));
+        if (cutImages.get(key) !== 'loading') return;
+        cutImages.set(key, image);
     };
-    image.onerror = () => cuts.set(key, null);
+    image.onerror = () => cutImages.set(key, null);
     image.src = src.replace(/\.png(?=([?#]|$))/, '.emissive.png');
     return null;
 }
 
-function cutFor(assets, id) {
+function cutFor(assets, id, grade = null) {
     const key = `${assets.assetVersion || ''}|${id}`;
+    const carryStep = nightCarryStepFor(grade);
     const cached = cuts.get(key);
-    if (cached !== undefined) return cached === 'loading' ? null : cached;
+    if (cached && cached.carryStep === carryStep) return cached.cut;
     const albedo = assets.get?.(id);
     if (!albedo) return null;
     const emissive = emissiveImageFor(assets, id, albedo, key);
     if (!emissive) return null;
-    const cut = buildEmitterCut(albedo, emissive);
-    cuts.set(key, cut);
+    const cut = buildEmitterCut(albedo, emissive, quantisedGradeForStep(carryStep));
+    cuts.set(key, { carryStep, cut });
     return cut;
 }
 
@@ -432,15 +446,16 @@ function overBaseEmissiveStrip(assets, entry, draw) {
 // 6.1 — a manifest part's cut (the Pharos lamp and lens, portal runes, the
 // Task board lanterns, every cycled emitter), from the draw's own image and
 // the channel strip the GPU part record emits through, cached per strip.
-function partCutFor(assets, buildings, entry, draw) {
+function partCutFor(assets, buildings, entry, draw, grade = null) {
     const channels = buildings.partChannelsFor?.(entry, draw);
     const key = `part|${draw.textureKey}|${channels?.key || ''}`;
+    const carryStep = nightCarryStepFor(grade);
     const cached = cuts.get(key);
-    if (cached !== undefined) return cached;
+    if (cached && cached.carryStep === carryStep) return cached.cut;
     const emissive = channels?.emissive || overBaseEmissiveStrip(assets, entry, draw);
     if (!emissive) return null;
-    const cut = buildEmitterCut(draw.image, emissive);
-    cuts.set(key, cut);
+    const cut = buildEmitterCut(draw.image, emissive, quantisedGradeForStep(carryStep));
+    cuts.set(key, { carryStep, cut });
     return cut;
 }
 
@@ -449,7 +464,7 @@ let partScratch = null;
 // Draws the lit emitter texels of the frame each part shows now, carved by
 // whatever the depth pass drew in front of the building, after the
 // building's own cut (a part covers the base texels under it).
-function drawPartCuts(ctx, renderer, emitter, core, scale, bloomCtx, isDaylight = false, baseCore = core) {
+function drawPartCuts(ctx, renderer, emitter, core, scale, bloomCtx, isDaylight = false, baseCore = core, grade = null) {
     const buildings = renderer.buildingRenderer;
     if (!buildings?.partDrawsFor || !emitter.entry?.layers) return;
     partScratch ||= [];
@@ -461,7 +476,7 @@ function drawPartCuts(ctx, renderer, emitter, core, scale, bloomCtx, isDaylight 
         const partCore = isDaylight && d.ember ? baseCore : core;
         const alpha = Math.min(1, gate * partCore);
         if (alpha < 0.02) continue;
-        const cut = partCutFor(renderer.assets, buildings, emitter.entry, d);
+        const cut = partCutFor(renderer.assets, buildings, emitter.entry, d, grade);
         if (!cut) continue;
         // The frame's rect inside the strip, clipped to the cut.
         const left = Math.max(d.sx, cut.x);
@@ -697,11 +712,12 @@ export function drawCanvasEmitterCuts(ctx, renderer, atmosphere, bloomScale = 0)
     const scale = Math.max(1, Math.hypot(transform.a, transform.b));
     const bloomCtx = bloomScale > 0 && ctx.canvas ? bloomTarget(ctx.canvas, transform, bloomScale) : null;
     ctx.globalAlpha = 1;
+    const grade = atmosphere?.lightGrade || null;
     drawMirrorAccentCuts(ctx, renderer, atmosphere, core, topLeft, bottomRight);
     for (const emitter of emitterPlacements(renderer)) {
         const emitterCore = isDaylight && emitter.daytimeEmitter ? DAYTIME_WORK_BLOOM_CORE : core;
-        drawSpriteCut(ctx, renderer, emitter, emitterCore, scale, topLeft, bottomRight, bloomCtx);
-        if (emitter.building) drawPartCuts(ctx, renderer, emitter, emitterCore, scale, bloomCtx, isDaylight, core);
+        drawSpriteCut(ctx, renderer, emitter, emitterCore, scale, topLeft, bottomRight, bloomCtx, grade);
+        if (emitter.building) drawPartCuts(ctx, renderer, emitter, emitterCore, scale, bloomCtx, isDaylight, core, grade);
     }
     // 5.3 — lit ship lamps (masthead and stern lanterns), cut like panes.
     renderer.harborTraffic?.drawLampCuts?.(ctx, core, bloomCtx);
@@ -930,11 +946,11 @@ function landmarkOccluders(renderer) {
     return out;
 }
 
-function drawSpriteCut(ctx, renderer, emitter, core, scale, topLeft, bottomRight, bloomCtx) {
+function drawSpriteCut(ctx, renderer, emitter, core, scale, topLeft, bottomRight, bloomCtx, grade = null) {
     const assets = renderer.assets;
     const alpha = Math.min(1, Math.max(0, emitter.gate) * core);
     if (alpha < 0.02) return;
-    const cut = cutFor(assets, emitter.id);
+    const cut = cutFor(assets, emitter.id, grade);
     if (!cut) return;
     const [ax, ay] = assets.getAnchor(emitter.id);
     const x = Math.round(emitter.x - ax) + cut.x;

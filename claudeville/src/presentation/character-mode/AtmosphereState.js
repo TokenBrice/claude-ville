@@ -1301,26 +1301,29 @@ function buildGrade(phase, phaseProgress, weather) {
 //
 // The envelope is a small set of reviewed buckets, never a continuous product:
 // energy is allocated cores first, then spill/reflection, and bloom last
-// (`core >= bloom` in every bucket). `halo` caps halo *area* together with the
-// absolute cap in `BuildingSprite`; brightness never grows with a crowd count.
-// Action-needed overlays are outside this budget: the renderer applies `spill`
-// per admitted light and skips attention sources.
+// (`core > bloom` in every bucket). `halo` scales halo *area* under the
+// absolute cap (`SOURCE_HALO_RADIUS_CAP`) in `BuildingSprite`; brightness never
+// grows with a crowd count. NE P2.2 / P2.3 — `reach` and `gain` widen and lift
+// non-attention pools in lamplight and deep-night after authored caps, and
+// lamplight / deep-night bloom and halo reflect the 2026-11-24 night decision.
+// Action-needed overlays are outside this budget: the renderer applies `spill`,
+// `reach` and `gain` per admitted light and skips attention sources.
 export const SOURCE_ENERGY_BUCKETS = Object.freeze({
     // Authored emitters stay identifiable in daylight without floodlighting;
     // active daytime work emitters (Forge fire, awake Portal, working Command)
     // take their own gated daytime bloom path without raising passive cores.
-    daylight: Object.freeze({ bucket: 'daylight', core: 0.14, spill: 0.06, bloom: 0.12, halo: 0.72 }),
+    daylight: Object.freeze({ bucket: 'daylight', core: 0.14, spill: 0.06, bloom: 0.12, halo: 0.72, reach: 1, gain: 1 }),
     // The sky is going but the working windows have not taken over yet.
-    settling: Object.freeze({ bucket: 'settling', core: 0.46, spill: 0.42, bloom: 0.22, halo: 0.84 }),
-    // The night window gate is opening: cores read first, spill follows.
-    lamplight: Object.freeze({ bucket: 'lamplight', core: 0.90, spill: 0.92, bloom: 0.34, halo: 0.96 }),
-    // Full night: cores and near receivers at full energy, halo still small.
-    'deep-night': Object.freeze({ bucket: 'deep-night', core: 1, spill: 1.15, bloom: 0.42, halo: 1 }),
+    settling: Object.freeze({ bucket: 'settling', core: 0.46, spill: 0.42, bloom: 0.22, halo: 0.84, reach: 1, gain: 1 }),
+    // The night window gate is opening: cores read first, spill and reach follow.
+    lamplight: Object.freeze({ bucket: 'lamplight', core: 0.90, spill: 0.92, bloom: 0.55, halo: 1.15, reach: 1.25, gain: 1.1 }),
+    // Full night: cores, near receivers, bloom and pool reach at full night energy.
+    'deep-night': Object.freeze({ bucket: 'deep-night', core: 1, spill: 1.15, bloom: 0.80, halo: 1.3, reach: 1.5, gain: 1.2 }),
 });
 
 // Feeds and fixtures authored before the envelope keep today's response.
 export const NEUTRAL_SOURCE_ENERGY = Object.freeze({
-    bucket: 'unreviewed', core: 1, spill: 1, bloom: 1, halo: 1,
+    bucket: 'unreviewed', core: 1, spill: 1, bloom: 1, halo: 1, reach: 1, gain: 1,
 });
 
 const OVERCAST_WEATHER_TYPES = new Set(['rain', 'storm', 'overcast']);

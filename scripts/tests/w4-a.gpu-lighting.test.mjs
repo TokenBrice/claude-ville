@@ -41,6 +41,52 @@ test('GPU light slots preserve authored RGB, identity, and priority', () => {
     }
 });
 
+test('NE P1.1: the resident GPU feed carries no duplicate lantern:* record; hybrid PostFx keeps its flame-head halo', () => {
+    const renderer = {
+        canvas: { width: 320, height: 200, _claudeVilleDpr: 1 },
+        camera: {
+            zoom: 1,
+            worldToScreen(x, y) { return { x, y }; },
+        },
+        _frameLightSources: {
+            ambient: [
+                {
+                    id: 'village.lantern.10.20',
+                    kind: 'point',
+                    role: 'fixture',
+                    x: 80,
+                    y: 56,
+                    ground: { x: 80, y: 80 },
+                    height: 24,
+                    radius: 66,
+                    color: '#ffc95e',
+                    intensity: 0.82,
+                },
+            ],
+        },
+        _litLanternGlowSources: () => [
+            { x: 80, y: 70, tileX: 10, tileY: 20, fixture: 'lantern' },
+        ],
+    };
+    const feed = createPostFxFeed();
+    try {
+        for (const gpuWorldActive of [true, false]) {
+            const lights = feed.build({ renderer, nowMs: 10, gpuWorldActive }).lights;
+            assert.ok(lights.some(l => l.id === 'village.lantern.10.20'), `gpuWorldActive=${gpuWorldActive}: real pool present`);
+            // Resident GPU world: the duplicate outranked real pools in
+            // clampGpuLights. Hybrid Canvas + PostFx: the 14 px night-flagged
+            // halo is the lamp head's glow there and stays.
+            assert.equal(
+                lights.filter(l => l.id.startsWith('lantern:')).length,
+                gpuWorldActive ? 0 : 1,
+                `gpuWorldActive=${gpuWorldActive}: lantern:* halo records`,
+            );
+        }
+    } finally {
+        feed.dispose();
+    }
+});
+
 test('authored emissive RGB travels as its own batch channel', () => {
     const source = { width: 2, height: 1 };
     const materialSource = { width: 2, height: 1 };

@@ -10,7 +10,7 @@
 // only where both arms are pure and in range (else an if/else, as GLSL
 // evaluates one arm). The water-state helpers (coastFieldAt, applyWaterState,
 // applyCoastSwash, mirrorStormColour, reflectionRippleUv, the water palette,
-// `lighthouseDash`), the fat-pixel taps, the atmosphere courses, the cue-run
+// `seaOpenWater`, `seaSkyTake`, `surfGlowTexel`), the fat-pixel taps, the atmosphere courses, the cue-run
 // vertex and the radiance reader are the other includes' (wgsl/water.js,
 // fatTaps.js, atmosphere.js, cueRun.js, radiance.js); the grade and pool
 // landings are grade.js; bindings, uniform blocks and the record struct are
@@ -48,6 +48,8 @@ import {
 } from '../GpuWorldPolicy.js';
 import {
     APERTURE_WALL_AHEAD,
+    MOON_PATH_SILVER_TINT,
+    MOON_PATH_UNGRADE_MIX,
     WATER_COLUMN_GLINT,
     WATER_COLUMN_ROW_FAR,
     WATER_COLUMN_ROW_HOLD,
@@ -72,6 +74,9 @@ const wgslRgb = (rgb) => `vec3f(${rgb.map(channel => (channel / 255).toFixed(6))
 const grassGustRgb = (side) => `array<vec3f, ${GRASS_GUST_STOPS.length}>(${GRASS_GUST_STOPS.map(pair => wgslRgb(pair[side])).join(', ')})`;
 
 export const SCENE_WGSL = /* wgsl */ `
+// NE P3.3b — named moon-path night lift constants (shared with openSea.js and GLSL twins).
+const MOON_PATH_UNGRADE_MIX: f32 = ${MOON_PATH_UNGRADE_MIX.toFixed(2)};
+const MOON_PATH_SILVER_TINT: vec3f = vec3f(${MOON_PATH_SILVER_TINT.map(v => v.toFixed(2)).join(', ')});
 // ---- The record vertex stage (quadVertexSource) ----------------------------
 // The GLSL varyings, one location each except the four loc2 surface values
 // (one vec4) and gate/ramp (one vec2): 13 locations. Interpolated fields keep
@@ -395,7 +400,6 @@ fn fatTerrainSurface(centerBlock: vec4f, material: ptr<function, f32>, waterHue:
   var before = vec4f(0.0);
   var dominant = -1.0;
   var dominantPath = false;
-  var dominantDash = false;
   var dominantOpen = false;
   var dominantGlow = false;
   var dominantTake = 0.0;
@@ -422,7 +426,6 @@ fn fatTerrainSurface(centerBlock: vec4f, material: ptr<function, f32>, waterHue:
     if (weather && !tapWater) { c = applyMaterialWeather(c, tapMaterial, world); }
     before += vec4f(c, 1.0) * w;
     var tapPath = false;
-    lighthouseDash = false;
     seaOpenWater = false;
     seaSkyTake = 0.0;
     if (tapWater) { c = applyWaterState(c, world, &tapPath); }
@@ -430,7 +433,6 @@ fn fatTerrainSurface(centerBlock: vec4f, material: ptr<function, f32>, waterHue:
       dominant = w;
       *material = tapMaterial;
       dominantPath = tapPath;
-      dominantDash = lighthouseDash;
       dominantOpen = seaOpenWater;
       dominantGlow = surfGlowTexel;
       dominantTake = seaSkyTake;
@@ -439,7 +441,6 @@ fn fatTerrainSurface(centerBlock: vec4f, material: ptr<function, f32>, waterHue:
     if (tapMaterial != baseMaterial) { sandKeyed += applyAuthoredSunBand(c, tapMaterial) * w; }
     else { surface += c * w; }
   }
-  lighthouseDash = dominantDash;
   seaOpenWater = dominantOpen;
   surfGlowTexel = dominantGlow;
   seaSkyTake = dominantTake;
@@ -530,6 +531,7 @@ struct SurfaceSample {
   waterMaterial: bool,
   poolAlbedo: vec3f,
   emitterWeight: f32,
+  nightCarry: f32,
   receiverLuma: f32,
 }
 
@@ -681,6 +683,11 @@ fn sceneSurface() -> SurfaceSample {
   // V6 — graded water stays quiet; the 3.2 path is held at HSL L <= 0.70.
   if (waterHue) {
     if (seaPath) {
+      // NE P3.3b — lift lit moon-path stops out of the night grade like emitters:
+      // the ungraded stop is a named seaPath colour, kept silver under V6 and seaPathCap.
+      if (frame.glint.z > 2.5 && frame.waterMood.x > 0.0) {
+        color = capSaturation(mix(color, poolAlbedo * MOON_PATH_SILVER_TINT, MOON_PATH_UNGRADE_MIX * frame.waterMood.x), waterMaxSat());
+      }
       color = seaPathCap(color);
     } else {
       color = capSaturation(applyWaterSky(color), waterMaxSat());
@@ -688,8 +695,6 @@ fn sceneSurface() -> SurfaceSample {
       if (seaSkyTake > 0.0) { color = capSaturation(seaSkyHue(color, frame.waterSky.rgb, seaSkyTake), waterMaxSat()); }
     }
   }
-  // Fire glints preserve their beaconFire receiver stop.
-  if (lighthouseDash) { color = poolAlbedo; }
   // BI-8 — the summer surf glow over the graded crest (albedo only).
   if (surfGlowTexel) { color = mix(color, SURF_GLOW, frame.surfGlow); }
   // GW-1 — wet paving tops take one course of the graded sky.
@@ -697,9 +702,12 @@ fn sceneSurface() -> SurfaceSample {
   // 5.2 — puddles take the graded sky over the graded street.
   if (batch.puddleGround != 0u && frame.puddles > 0.0) { color = applyPuddle(color, v_world); }
   color = applyGradeVignette(color, px, frame.resolution);
-  // 1.3 — emitters keep their own light.
+  // 1.3 / NE P1.3 — emitters keep their own light, and at night lift off dark
+  // slate glass albedo toward their authored emissive colour (day stays identical).
   let emitterWeight = select(0.0, clamp(emissive, 0.0, 1.0), batch.hasEmissiveMap != 0u);
-  color = mix(color, poolAlbedo, emitterWeight);
+  let nightCarry = clamp((frame.poolGain - 0.15) / 1.05, 0.0, 1.0);
+  let emitterBase = max(poolAlbedo, emissionColor * (clamp(0.5 + 0.5 * emissive, 0.0, 1.0) * nightCarry));
+  color = mix(color, emitterBase, emitterWeight);
   var s: SurfaceSample;
   s.uv = uv;
   s.uvStepX = uvStepX;
@@ -716,6 +724,7 @@ fn sceneSurface() -> SurfaceSample {
   s.waterMaterial = waterMaterial;
   s.poolAlbedo = poolAlbedo;
   s.emitterWeight = emitterWeight;
+  s.nightCarry = nightCarry;
   // V5 — the receiver knee's floor: the graded value before any local light.
   s.receiverLuma = dot(color, GRADE_LUMA);
   return s;
@@ -837,7 +846,7 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
   // nightCarry; relaxed 2026-11-23, operator decision).
   let bakedRim = recvClass != 0 && !reflectRecord && albedoRgba.a > 0.4 && albedoRgba.a < 0.6
     && max(albedoRgba.r, max(albedoRgba.g, albedoRgba.b)) < 0.16;
-  let nightCarry = clamp((frame.poolGain - 0.15) / 1.05, 0.0, 1.0);
+  let nightCarry = (*surf).nightCarry;
   // 2.1 — a backlit figure wears one rim.
   var backReach = 0.0;
   var rimReach = 0.0;
@@ -1271,6 +1280,23 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
       if (dot(sunRimColor, GRADE_LUMA) > dot(color, GRADE_LUMA)) { color = sunRimColor; }
     }
   }
+  // NE P3.4 — night 1-texel upper-left moonlight rim on villager body contours
+  // (opaque contour only; capped at 0.50 luma so NEEDS YOU stays brightest;
+  // Canvas keeps its declared lower tier with no rim).
+  if (recvClass == 2 && !reflectRecord && albedoRgba.a >= 0.75 && nightCarry > 0.15 && recvH > 8.0) {
+    let leftUv = uv - vec2f(uvStepX, 0.0);
+    let topUv = uv + vec2f(0.0, -1.0 / f32(albedoSize().y));
+    let leftOuter = any(leftUv < v_uvClamp.xy) || any(leftUv > v_uvClamp.zw)
+      || albedoTexture(leftUv).a < 0.75;
+    let topOuter = any(topUv < v_uvClamp.xy) || any(topUv > v_uvClamp.zw)
+      || albedoTexture(topUv).a < 0.75;
+    if (leftOuter || topOuter) {
+      var moonRimColor = mix(color, vec3f(0.70, 0.82, 1.0), 0.34 * nightCarry);
+      let rimY = dot(moonRimColor, GRADE_LUMA);
+      if (rimY > 0.50) { moonRimColor *= 0.50 / rimY; }
+      if (dot(moonRimColor, GRADE_LUMA) > dot(color, GRADE_LUMA)) { color = moonRimColor; }
+    }
+  }
 
   if (frame.mist.w > 0.0) {
     // MS-1 — the low mist (MIST_WGSL) replaces the screen-Y veil.
@@ -1294,7 +1320,8 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
     color = fogged;
   }
   let emission = (*surf).emissionColor * (*surf).emissive;
-  color += emission * 0.42;
+  // NE P1.3 — night emitters lift from 0.42 to 0.62 with nightCarry (day stays 0.42).
+  color += emission * (0.42 + 0.20 * nightCarry);
   // 1.3 — hue-preserving protection after emission.
   color /= max(1.0, max(color.r, max(color.g, color.b)));
   // 1.4 + 1.6 — cloud courses and aerial haze on this record's own grid;

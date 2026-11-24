@@ -52,8 +52,6 @@ export const FOOTPRINT_MARCH_STEPS = Object.freeze({ on: 8, 'four-steps': 4, off
 // 3.2 — the pale day path (kind 2) grows NOON_GLINT_GROW_GAIN x faster down
 // the frame than the gold and silver paths.
 export const NOON_GLINT_GROW_GAIN = 2.5;
-// Half-width at the descending shaft's sea landing (ground texels).
-export const BEAM_NEAR_HALF_WIDTH = 32;
 // 3.5 — the authored ramp table: 11 material classes x 3 courses.
 export const PALETTE_LUT_WIDTH = 11;
 export const PALETTE_LUT_HEIGHT = 3;
@@ -560,7 +558,8 @@ export function resolveStarlight(atmosphere, weather, grade, moonFill, level) {
     const stars = clamp(finite(atmosphere?.sky?.starsAlpha, night), 0, 1);
     const clear = 1 - clamp(finite(weather?.cloudCover, 0), 0, 1);
     const darkMoon = 1 - clamp(finite(moonFill, 0), 0, 1);
-    return night * stars * clear * darkMoon * darkMoon;
+    // NE P3.3 — keep a 0.25 starlight floor on bright-moon nights.
+    return night * stars * clear * (0.25 + 0.75 * darkMoon * darkMoon);
 }
 
 /**
@@ -870,7 +869,7 @@ function sameTypedArray(a, b) {
  * aperture > fixture > point), `binGpuLights` admits in that order up to the
  * declared `light-admission` count (FULL 128, REDUCED 64, MINIMAL 24;
  * attention past it) while every 64x64 backing-px tile a light reaches has
- * one of its 16 slots free; daylight admits none. Fills `state`
+ * one of its `LIGHT_TILE_SLOTS` (24) slots free; daylight admits none. Fills `state`
  * (createLightFrameState) and returns it:
  *   records             RGBA32F, LIGHT_RECORD_ROWS rows x MAX_LIGHT_RECORDS:
  *                       row 0 (foot x, foot y, ground radius, intensity),
@@ -1025,45 +1024,6 @@ export function resolveLights(feed, camera, level, {
         ? FOOTPRINT_MARCH_STEPS[effectBudgetMode('footprint-occlusion', level)] ?? 0
         : 0;
     return state;
-}
-
-export function createBeamUniforms() {
-    return {
-        active: false,
-        ground: new Float32Array(4),
-        shape: new Float32Array(4),
-        courseEnds: new Float32Array(3),
-        courseShares: new Float32Array(3),
-    };
-}
-
-/**
- * 2.7 — the Lighthouse fan (LIGHTHOUSE_BEAM_GLSL) the in-map water and the
- * open sea share: `ground` = (foot x, foot y, angle, on), `shape` = (length,
- * near half-width, far half-width, sheen step), the three courses' ends and
- * shares. `active` false (day, dusk settling, dawn, or no Lighthouse)
- * zeroes `ground` and leaves the rest as they were.
- */
-export function resolveBeam(feed, out = createBeamUniforms()) {
-    const beam = feed.beam || null;
-    out.active = Boolean(beam);
-    out.ground[0] = finite(beam?.foot?.x, 0);
-    out.ground[1] = finite(beam?.foot?.y, 0);
-    out.ground[2] = finite(beam?.angle, 0);
-    out.ground[3] = beam ? 1 : 0;
-    if (!beam) return out;
-    out.shape[0] = finite(beam.length, 320);
-    out.shape[1] = BEAM_NEAR_HALF_WIDTH;
-    out.shape[2] = finite(beam.farWidth, 58) / 2;
-    out.shape[3] = finite(beam.sheenStep, 0);
-    const courses = beam.courses || [];
-    out.courseEnds[0] = finite(courses[0]?.[1], 0.34);
-    out.courseEnds[1] = finite(courses[1]?.[1], 0.68);
-    out.courseEnds[2] = finite(courses[2]?.[1], 1);
-    out.courseShares[0] = finite(courses[0]?.[2], 1);
-    out.courseShares[1] = finite(courses[1]?.[2], 0.6);
-    out.courseShares[2] = finite(courses[2]?.[2], 0.3);
-    return out;
 }
 
 // GW-1 — the wet level the field's drying order is read against: the C-W2

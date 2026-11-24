@@ -14,6 +14,7 @@ import {
     roundLampLit,
 } from '../../claudeville/src/presentation/character-mode/LamplighterRound.js';
 import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
+import { VILLAGE_NIGHT_LAMPS } from '../../claudeville/src/config/scenery.js';
 
 const W = lampSettlingWindows();
 
@@ -82,6 +83,15 @@ test('the renderer lights only the caught lamps, hearths included', () => {
     assert.ok(Math.min(...fractions) < 0.35 && Math.max(...fractions) > 0.75);
     stub.motionScale = 0;
     assert.equal(stub._litLanternGlowSources().length, all.length);
+    // NE P3.2 — every post in VILLAGE_NIGHT_LAMPS enters the round by distance from the Lighthouse.
+    for (const lamp of VILLAGE_NIGHT_LAMPS) {
+        assert.ok(all.some(s => s.tileX === lamp.tileX && s.tileY === lamp.tileY),
+            `lamp (${lamp.tileX},${lamp.tileY}) is in _lanternGlowSources`);
+        const frac = roundFraction(lamp.tileX, lamp.tileY);
+        assert.ok(frac > 0 && frac <= 1, `lamp (${lamp.tileX},${lamp.tileY}) fraction ${frac}`);
+        assert.equal(roundLampLit(22 * 60, frac), true, `lamp (${lamp.tileX},${lamp.tileY}) lit at deep night`);
+        assert.equal(roundLampLit(12 * 60, frac), false, `lamp (${lamp.tileX},${lamp.tileY}) dark at noon`);
+    }
 });
 
 test('the round reads no session state (V3)', () => {

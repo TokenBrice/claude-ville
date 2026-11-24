@@ -63,7 +63,7 @@ test('both scene shaders resolve wet sand after swash at rest and on each covere
         const swash = shader.indexOf('applyCoastSwash(color, v_world)');
         const land = shader.indexOf('wetSandMaterial(sidecar,');
         assert.ok(swash >= 0 && swash < land && land < shader.indexOf('applyMaterialWeather(color, material, v_world)'));
-        const taps = shader.slice(shader.indexOf('c = applyCoastSwash(c, world)'), shader.indexOf('lighthouseDash = dominantDash'));
+        const taps = shader.slice(shader.indexOf('c = applyCoastSwash(c, world)'), shader.indexOf('seaOpenWater = dominantOpen'));
         assert.ok(taps.includes('if (crossesBlock)') && taps.includes(crossBlockRead));
         assert.ok(taps.includes('tapMaterial = wetSandMaterial(block, texel)'));
         assert.ok(taps.includes('applyMaterialWeather(c, tapMaterial, world)') && taps.includes('applyAuthoredSunBand(c, tapMaterial)'));

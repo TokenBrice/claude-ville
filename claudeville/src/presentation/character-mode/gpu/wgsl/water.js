@@ -7,8 +7,8 @@
 // the batch). Expression for expression the GLSL, every number interpolated
 // from the same JS constants with the same formatting; GLSL `out` parameters
 // are `ptr<function, T>`, GLSL uniforms are `frame.*` / `batch.*`
-// (wgsl/common.js). Needs WGSL_COMMON (glslMod), SEAM_WGSL, ATMOSPHERE_WGSL
-// (cloudNoiseAt, cloudSeamField) and BEAM_WGSL (lighthouseSheen).
+// (wgsl/common.js). Needs WGSL_COMMON (glslMod), SEAM_WGSL, and ATMOSPHERE_WGSL
+// (cloudNoiseAt, cloudSeamField).
 import {
     COAST_FIELD_FLAGS,
     COAST_PALETTE,
@@ -118,7 +118,8 @@ fn applyWaterMood(color0: vec3f) -> vec3f {
     if (frame.waterMood.x > 0.0) {
         let l = dot(color, vec3f(0.2126, 0.7152, 0.0722));
         color = mix(color, l * vec3f(0.78, 0.94, 1.10), frame.waterMood.x * 0.55);
-        color *= 1.0 - frame.waterMood.x * 0.1;
+        // NE P2.4 — 18 % total drop at full night; blue hour (<= 0.5) stays byte-identical.
+        color *= 1.0 - frame.waterMood.x * 0.1 - 0.08 * smoothstep(0.5, 1.0, frame.waterMood.x);
     }
     return clamp(color, vec3f(0.0), vec3f(1.0));
 }
@@ -154,13 +155,15 @@ fn glintDash(p: vec2f, fragPx: vec2f, glint: vec4f, texelPx: f32, tick: f32) -> 
     let moon = glint.z > 2.5;
     let pale = glint.z > 1.5 && !moon;
     let base = select(5.0, ${GLINT_NOON_BASE.toFixed(1)}, pale);
-    let halfWidth = (base + fragPx.y * glint.w) * select(1.0, 0.7, moon);
+    let halfWidth = (base + fragPx.y * glint.w) * select(1.0, 0.95, moon);
     let weight = 1.0 - abs(fragPx.x - glint.x) / max(texelPx, 1e-3) / halfWidth;
     if (weight <= 0.0) { return 0.0; }
     if (moon) {
+        // NE P3.3 — wider moon road, denser dashes, and bright silver stop.
         let cell = floor(floor(p) / vec2f(6.0, 1.0));
         let life = floor((tick + floor(waterHash12(cell + vec2f(37.0, 5.0)) * ${MOON_DASH_HOLD.toFixed(1)})) / ${MOON_DASH_HOLD.toFixed(1)});
-        return select(0.0, 1.0, waterHash12(cell + vec2f(life * 5.0, life * 2.0)) < ${(GLINT_DASH_DENSITY * 0.5).toFixed(3)} * glint.y * weight * weight);
+        if (waterHash12(cell + vec2f(life * 5.0, life * 2.0)) >= 0.28 * glint.y * pow(weight, 1.25)) { return 0.0; }
+        return select(1.0, 2.0, waterHash12(cell + vec2f(5.0, life * 11.0)) < weight * 0.85);
     }
     let cell = floor(floor(p) / vec2f(3.0, 1.0));
     let density = ${GLINT_DASH_DENSITY.toFixed(2)} * select(1.0, min(1.0, ${NOON_GLINT_FULL_TEXEL.toFixed(1)} / max(texelPx, 1e-3)), pale);
@@ -644,12 +647,6 @@ fn applyWaterState(color0: vec3f, px: vec2f, seaPath: ptr<function, bool>) -> ve
     if (glint > 0.5) {
         *seaPath = true;
         return frame.glintStops[select(1, 0, glint > 1.5)].xyz;
-    }
-    let beam = lighthouseSheen(p, deepTick, storm);
-    if (beam > 0.5) {
-        *seaPath = true;
-        lighthouseDash = true;
-        return beaconWaterStop(beam);
     }
     var base = stop;
     var cap = 0.0;

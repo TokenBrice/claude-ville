@@ -551,6 +551,17 @@ export const VILLAGE_NIGHT_LAMPS = Object.freeze([
     { tileX: 6, tileY: 35, district: 'arcane' },
     { tileX: 9, tileY: 36, district: 'resource' },
     { tileX: 25, tileY: 21, district: 'harbor' },
+    // NE P3.2 — six posts extending the chain across the dark north, east
+    // and south districts (each on an integer, walk-clear dry tile nearest
+    // its target: north bridge 10,12; windmill path 15,5→15,7; Great Tree
+    // 25,10→23,13; east quay 30,24→27,17; Harbor pier 34,23→30,30; south
+    // road 21,36→21,35).
+    { tileX: 10, tileY: 12, district: 'knowledge' },
+    { tileX: 15, tileY: 7, district: 'north' },
+    { tileX: 23, tileY: 13, district: 'harbor' },
+    { tileX: 27, tileY: 17, district: 'harbor' },
+    { tileX: 30, tileY: 30, district: 'workshop' },
+    { tileX: 21, tileY: 35, district: 'gate' },
 ].map(row => Object.freeze({ ...row, id: 'prop.lantern', layer: 'cache', walkBlock: true })));
 
 export const DISTRICT_PROPS = [

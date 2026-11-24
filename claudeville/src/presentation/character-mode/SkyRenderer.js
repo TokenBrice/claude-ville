@@ -64,6 +64,12 @@ const MOON_PHASE_ASSETS = {
     half: 'atmosphere.moon.half.cool',
     gibbous: 'atmosphere.moon.gibbous.cool',
 };
+// NE P3.5 — four stepped dithered corona courses for the moon glow, held
+// above the sea horizon without smooth radial gradients.
+const MOON_GLOW_COURSES = Object.freeze([0.24, 0.13, 0.06, 0.025]);
+const MOON_GLOW_SEAM = 0.95;
+const MOON_GLOW_INNER_FRAC = 0.48;
+const AURORA_MOON_CLEARANCE = 0.14;
 // 5.8 — a meteor is rasterized on this cell: a bright head cell and a trail
 // of whole cells in three stepped courses, never an anti-aliased stroke.
 const METEOR_CELL_PX = 2;
@@ -491,16 +497,15 @@ export class SkyRenderer {
         ctx.rect(0, 0, canvas.width, height);
         ctx.clip();
         ctx.globalCompositeOperation = 'screen';
-        // Stars, the sun's glare, the moon and the god rays sit behind the
-        // sea: over terrain they keep to the sky above the horizon line.
+        // NE P3.5 — stars and the moon draw once in the backdrop pass (draw())
+        // behind the horizon cloud deck; drawCanopy() layers only solar glare,
+        // god rays and ambient meteors above the terrain/sky horizon.
         this._horizonY = this._horizonScreenY(camera, canvas);
         ctx.save();
         ctx.beginPath();
         ctx.rect(0, 0, canvas.width, Math.max(0, Math.min(height, this._horizonY)));
         ctx.clip();
-        this._drawStars(ctx, canvas, canopy);
         this._drawSun(ctx, camera, canvas, canopy, { ensureVisible: true, glowOnly: true });
-        this._drawMoon(ctx, canvas, canopy);
         this._drawGodrays(ctx, camera, canvas, canopy, { alphaMul: 0.4 });
         ctx.restore();
         // Ambient meteors ride this canopy pass (which runs after
@@ -723,14 +728,22 @@ export class SkyRenderer {
         return this._useFastSkyCache(canvas) ? Math.min(dpr, 1) : dpr;
     }
 
+    // NE P3.5 — keep every star and constellation strictly above the sea
+    // horizon (with an 8 px margin), never below it.
+    _starCeilingY(canvas) {
+        const cap = canvas.height * STAR_CEILING_FRAC;
+        return Number.isFinite(this._horizonY) ? Math.min(this._horizonY - 8, cap) : cap;
+    }
+
     // 1.3 — pixel-true stars: single CSS pixels on the integer grid, a few
     // hot ones as a four-armed plus; no strokes. Sparse, and only at real
     // night (AtmosphereState keys starsAlpha to the C2 night weight).
     _drawStars(ctx, canvas, atmosphere) {
         const alpha = atmosphere.sky?.starsAlpha ?? 0;
         if (alpha <= 0.01) return false;
+        const ceilingY = this._starCeilingY(canvas);
+        if (!(ceilingY > 4)) return false;
         const palette = atmosphere.sky?.palette || {};
-        const ceilingY = canvas.height * STAR_CEILING_FRAC;
         const timeOffset = (atmosphere.dayProgress || 0) * canvas.width;
         let seed = 12345;
         const next = () => {
@@ -744,33 +757,39 @@ export class SkyRenderer {
             const xBase = next() * canvas.width;
             const y = Math.round(next() * ceilingY);
             const hot = next() < 0.18;
+            const fade = starHorizonFade(y, ceilingY);
+            if (fade <= 0.01) continue;
             const drift = timeOffset * (0.12 + (i % 5) * 0.018);
             const x = Math.round(((xBase + drift) % canvas.width + canvas.width) % canvas.width);
-            ctx.globalAlpha = alpha * (hot ? 1 : 0.62);
+            ctx.globalAlpha = alpha * fade * (hot ? 1 : 0.62);
             ctx.fillStyle = hot ? (palette.starHot || '#f2f7ff') : (palette.starWarm || '#c9ddff');
             ctx.fillRect(x, y, 1, 1);
             if (hot && i % 7 === 0) {
-                ctx.globalAlpha = alpha * 0.42;
+                ctx.globalAlpha = alpha * fade * 0.42;
                 ctx.fillRect(x - 1, y, 1, 1);
                 ctx.fillRect(x + 1, y, 1, 1);
                 ctx.fillRect(x, y - 1, 1, 1);
                 ctx.fillRect(x, y + 1, 1, 1);
             }
         }
-        this._drawConstellations(ctx, canvas, atmosphere, alpha, palette);
+        this._drawConstellations(ctx, canvas, atmosphere, alpha, palette, ceilingY);
         ctx.restore();
         return true;
     }
 
-    _drawConstellations(ctx, canvas, atmosphere, alpha, palette) {
+    _drawConstellations(ctx, canvas, atmosphere, alpha, palette, ceilingY = this._starCeilingY(canvas)) {
+        if (!(ceilingY > 4)) return;
         const drift = ((atmosphere.dayProgress || 0) * 0.16) % 1;
+        const baseAlpha = Math.min(0.9, alpha);
         ctx.save();
-        ctx.globalAlpha = Math.min(0.9, alpha);
         ctx.fillStyle = palette.starHot || '#f2f7ff';
         for (const constellation of CONSTELLATIONS) {
             for (const [px, py] of constellation.points) {
                 const x = wrap((constellation.anchor[0] + px + drift) * canvas.width, -24, canvas.width + 24);
-                const y = Math.max(4, Math.min(canvas.height * STAR_CEILING_FRAC, (constellation.anchor[1] + py) * canvas.height));
+                const y = Math.max(4, Math.min(ceilingY, ((constellation.anchor[1] + py) / STAR_CEILING_FRAC) * ceilingY));
+                const fade = starHorizonFade(y, ceilingY);
+                if (fade <= 0.01) continue;
+                ctx.globalAlpha = baseAlpha * fade;
                 ctx.fillRect(Math.round(x), Math.round(y), 1, 1);
             }
         }
@@ -1045,14 +1064,71 @@ export class SkyRenderer {
         return true;
     }
 
-    // Drawn under the caller's moon alpha: a stepped halo, not a gradient.
+    // NE P3.5 — four dithered stepped corona courses for the moon glow on the
+    // same 2 px cell grid (no smooth radial gradient). Stored in `_glowStamps`
+    // so `releaseCache()` clears it alongside sun halos.
+    _getMoonGlowStamp(radius, rgb, courses = MOON_GLOW_COURSES) {
+        const cell = SUN_STAMP_CELL_PX;
+        const r = Math.max(cell * 4, Math.round(radius / cell) * cell);
+        const key = `m4|${r}|${rgb.join(',')}|${courses.join(',')}`;
+        const cache = (this._glowStamps ||= new Map());
+        const hit = cache.get(key);
+        if (hit) return hit;
+        if (cache.size >= 8) {
+            const [oldKey, oldCanvas] = cache.entries().next().value;
+            releaseCanvasBackingStore(oldCanvas);
+            cache.delete(oldKey);
+        }
+        const cells = Math.ceil((r * 2) / cell);
+        const small = document.createElement('canvas');
+        small.width = cells;
+        small.height = cells;
+        const sctx = small.getContext('2d');
+        const image = sctx.createImageData(cells, cells);
+        const centre = cells / 2;
+        const span = 1 - MOON_GLOW_INNER_FRAC;
+        for (let y = 0; y < cells; y++) {
+            for (let x = 0; x < cells; x++) {
+                const d = Math.hypot(x + 0.5 - centre, y + 0.5 - centre) / centre;
+                if (d >= 1) continue;
+                const t = clamp((d - MOON_GLOW_INNER_FRAC) / span, 0, 1);
+                const q = (1 - t) * 4 + (BAYER4[(y % 4) * 4 + (x % 4)] / 16 - 0.5) * MOON_GLOW_SEAM;
+                const alpha = q >= 3 ? courses[0] : q >= 2 ? courses[1] : q >= 1 ? courses[2] : q >= 0.1 ? courses[3] : 0;
+                if (alpha <= 0) continue;
+                const offset = (y * cells + x) * 4;
+                image.data[offset] = rgb[0];
+                image.data[offset + 1] = rgb[1];
+                image.data[offset + 2] = rgb[2];
+                image.data[offset + 3] = Math.round(clamp(alpha) * 255);
+            }
+        }
+        sctx.putImageData(image, 0, 0);
+        const stamp = document.createElement('canvas');
+        stamp.width = cells * cell;
+        stamp.height = cells * cell;
+        const tctx = stamp.getContext('2d');
+        tctx.imageSmoothingEnabled = false;
+        tctx.drawImage(small, 0, 0, stamp.width, stamp.height);
+        releaseCanvasBackingStore(small);
+        cache.set(key, stamp);
+        return stamp;
+    }
+
+    // Drawn under the caller's moon alpha: a stepped 4-course halo that clears
+    // the horizon (`_holdAboveHorizon`), never a smooth gradient (NE P3.5).
     _drawMoonGlow(ctx, canvas, moon, atmosphere = null) {
+        if (Number.isFinite(this._horizonY) && this._horizonY <= 0) return;
         const x = canvas.width * moon.xFrac;
         const y = canvas.height * moon.yFrac;
-        const radius = Math.max(42, Math.min(canvas.width, canvas.height) * 0.10);
-        const corona = clamp(atmosphere?.lighting?.beaconIntensity ?? 0.5, 0, 1);
-        const halo = this._getSteppedGlowStamp(radius, [176, 208, 255], 0.12 + corona * 0.06);
+        const horizonClear = Number.isFinite(this._horizonY) ? (this._horizonY - y) * 1.05 : 54;
+        const radius = Math.min(54, Math.max(36, horizonClear));
+        const halo = this._getMoonGlowStamp(radius, [176, 208, 255], MOON_GLOW_COURSES);
         ctx.save();
+        if (Number.isFinite(this._horizonY) && this._horizonY > 0) {
+            ctx.beginPath();
+            ctx.rect(0, 0, canvas.width, this._horizonY);
+            ctx.clip();
+        }
         ctx.globalCompositeOperation = 'screen';
         ctx.drawImage(halo, Math.round(x - halo.width / 2), Math.round(y - halo.height / 2));
         ctx.restore();
@@ -1251,21 +1327,28 @@ export class SkyRenderer {
         const cell = Math.min(AURORA_MAX_CELL, fit);
         const drawWidth = width * cell;
         const drawHeight = height * cell;
+        const moon = atmosphere.sky?.moon;
+        const moonXFrac = moon?.visible && Number.isFinite(moon.xFrac) ? moon.xFrac : null;
+        let drew = false;
         ctx.save();
         ctx.beginPath();
         ctx.rect(0, 0, canvas.width, horizonY);
         ctx.clip();
         ctx.imageSmoothingEnabled = false;
-        ctx.globalCompositeOperation = 'source-over';
+        // NE P3.5 — additive screen blend so aurora lifts the night sky and
+        // never paints an opaque curtain over the moon or stars.
+        ctx.globalCompositeOperation = 'screen';
         ctx.globalAlpha = AURORA_ALPHA;
         AURORA_RIBBONS.forEach((ribbon, index) => {
+            if (moonXFrac !== null && Math.abs(ribbon.xFrac - moonXFrac) < AURORA_MOON_CLEARANCE) return;
             const stamp = stamps[auroraPhaseIndex(index, timeMs, motionScale)];
             const x = Math.round((ribbon.xFrac * canvas.width - drawWidth / 2) / cell) * cell;
             const y = Math.round((horizonY - ribbon.lift * horizonY - drawHeight) / cell) * cell;
             ctx.drawImage(stamp, x, y, drawWidth, drawHeight);
+            drew = true;
         });
         ctx.restore();
-        return true;
+        return drew;
     }
 
     // LA-6 — this frame's far-sea stamps for the ground pass, in world px:
@@ -1446,8 +1529,9 @@ export class SkyRenderer {
         if (twinkle.count <= 0) return;
         const starsAlpha = atmosphere.sky?.starsAlpha ?? 0;
         if (starsAlpha <= 0.01) return;
+        const ceilingY = this._starCeilingY(canvas);
+        if (!(ceilingY > 4)) return;
         const palette = atmosphere.sky?.palette || {};
-        const ceilingY = canvas.height * STAR_CEILING_FRAC;
         const timeOffset = (atmosphere.dayProgress || 0) * canvas.width;
         const time = performance.now() * 0.001;
         let seed = 12345;
@@ -1465,12 +1549,14 @@ export class SkyRenderer {
             const y = Math.round(next() * ceilingY);
             const hot = next() < 0.18;
             if (!hot) continue;
+            const fade = starHorizonFade(y, ceilingY);
+            if (fade <= 0.01) continue;
             const drift = timeOffset * (0.12 + (i % 5) * 0.018);
             const x = Math.round(((xBase + drift) % canvas.width + canvas.width) % canvas.width);
             const rate = (1.6 + (i % 4) * 0.55) * twinkle.rateScale;
             const phase = i * 1.7;
             const pulse = 0.4 + 0.6 * Math.sin(time * rate + phase);
-            ctx.globalAlpha = clamp(starsAlpha * pulse, 0, 1);
+            ctx.globalAlpha = clamp(starsAlpha * fade * pulse, 0, 1);
             ctx.fillRect(x, y, 1, 1);
             drawn++;
         }
@@ -1642,6 +1728,13 @@ function starCountForCanvas(canvas) {
         STAR_MIN_COUNT,
         Math.min(STAR_MAX_COUNT, Math.round((STAR_BASE_COUNT * area) / STAR_BASE_AREA)),
     );
+}
+
+// NE P3.5 — fade stars smoothly over the bottom 20 % of the sky band above the horizon.
+function starHorizonFade(y, ceilingY) {
+    const fadeStart = ceilingY * 0.8;
+    if (y <= fadeStart) return 1;
+    return clamp((ceilingY - y) / Math.max(1, ceilingY - fadeStart), 0, 1);
 }
 
 // 5.6 — reduced-motion envelope for an ambient meteor: three static alpha

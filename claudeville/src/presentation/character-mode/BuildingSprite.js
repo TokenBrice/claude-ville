@@ -7,7 +7,7 @@
 // Roof-fade behaviour is intentionally dropped per spec §3.
 
 import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
-import { BUILDING_DEFS } from '../../config/buildings.js';
+import { BUILDING_DEFS, normalizeBuildingType } from '../../config/buildings.js';
 import { REST_SEATS } from '../../config/townPlan.js';
 import { STATUS_VISUALS, WORLD_BODY_FONT_11, WORLD_BODY_FONT_22, WORLD_DISPLAY_FONT_8, WORLD_DISPLAY_FONT_16 } from '../../config/theme.js';
 import { EVENT_SHAPES } from '../shared/EventShapes.js';
@@ -51,12 +51,14 @@ import { frontEdgeFoot, landmarkFootprint } from './FootprintField.js';
 import { lineOcclusionColumns } from './StaticPropDrawables.js';
 import { GPU_LANDMARK_IDS } from './gpu/GpuSceneBuilder.js';
 import { DAYTIME_WORK_BLOOM_CORE, isDaytimeHighEnergyBuilding } from './gpu/GpuWorldPolicy.js';
-import { BEAM_NEAR_HALF_WIDTH } from './gpu/GpuFrameState.js';
 import {
     TaskboardBoardModel,
     taskboardBoardLayout,
 } from './TaskboardBoardModel.js';
 import {
+    KEEPER_ROOM_GATE,
+    ROOM_APERTURE_GATE_MIN,
+    ROUTING_ROOM_GATE,
     advanceNightOccupancyGate,
     buildingEmissiveGate,
     nightWindowGate,
@@ -191,8 +193,9 @@ export const DAYTIME_ROOM_GLASS_SHARE = 0.75;
 const WORKER_EMITTER_CHANCE = Object.freeze([1, 1.2, 1.9, 2.8]);
 const WORKER_EMITTER_EXTRA_COUNT = Object.freeze([0, 0, 1, 2]);
 const WORKER_SCALED_EMITTERS = new Set(['forgeSpark', 'forgeEmber', 'archiveMote', 'mineDust', 'portalRune']);
-// 4.6 — architecture that stays lit through a sleeping town: the Pharos and
-// the harbour lantern are safety lights, not work signals.
+// 4.6 / NE P1.2 — architecture that stays lit through a sleeping town: the
+// Pharos and the Harbor quay lantern are safety lights, not work signals, on
+// GPU and Canvas alike.
 const REST_SAFETY_LIGHT_TYPES = new Set(['watchtower', 'harbor']);
 // 6.5 — the Harbor mast pennants: [y offset from the signal anchor, cloth,
 // shaded hem]. Albedo, so they take the C2 grade on the overlay. The top
@@ -206,12 +209,6 @@ const HARBOR_SIGNAL_PENNANTS = Object.freeze([
 // release's gold pennant (the sloop's and the 6.7 bunting's pennant family)
 // in place of the white: the same flag slot, no added flag.
 const HARBOR_RELEASE_PENNANT = Object.freeze([GOLD, GOLD_RAMP[0]]);
-// Warm glints admitted only on existing swell/crest texels, thinning outward.
-const SEARCHLIGHT_COURSES = Object.freeze([
-    [0, 0.3, 0.9],
-    [0.3, 0.65, 0.48],
-    [0.65, 1, 0.24],
-]);
 // 4.4 — the result shelf. Only records that say how a call *ended* land here
 // (`tool:result`, from the adapters' bounded last-result summary); invocation
 // puts nothing on the shelf and a tool disappearing removes nothing from it.
@@ -229,36 +226,54 @@ const WATCHTOWER_LANTERN_FIRE = Object.freeze(getBuildingEffectAnchor('watchtowe
     light: [200, 66],
     particle: [200, 66],
 }));
-// One warm mirror shaft descends from the glass to a sea landing; its
-// remaining cone lights swell texels only. Clock-only, never agent state.
-const WATCHTOWER_SEARCHLIGHT = Object.freeze(getBuildingEffectAnchor('watchtower', 'searchlight', {
-    pivot: [200, 68],
-    length: 520,
-    width: 96,
-}));
-const SEARCHLIGHT_LENGTH = WATCHTOWER_SEARCHLIGHT.length || 320;
-const SEARCHLIGHT_FAR_WIDTH = WATCHTOWER_SEARCHLIGHT.width || 58;
-const SEARCHLIGHT_SWEEP_RAD_PER_S = 0.2;
-const SEARCHLIGHT_REST_ANGLE = 0.18;
-const SEARCHLIGHT_SHEEN_STEP_MS = 200;
-const SEARCHLIGHT_LANDING_SHARE = 0.35;
-// Water reflection is the same subdued warm cream as the beam receivers.
-const LIGHTHOUSE_COLUMN_COLOR = ART_RAMPS.beaconFire[0];
+// NE W4-L — the Pharos keeps a light characteristic instead of a beam.
+// A horizontal beam at lantern height seen in 2:1 orthographic iso has no
+// readable heading (toward the camera it projects straight down, like a
+// shaft into the ground), so the turning lens shows itself the way a real
+// light does from shore: a flash in the glass as a panel passes the viewer.
+// Clock: Fl 6 s (one 840 ms pass per 6.02 s). While a working visitor keeps
+// the watch (the building's own work signal, V8): Fl(2) 6 s (second pass at
+// step 9, 420 ms dark between the pair). Reduced motion: steady lamp (0).
+export const PHAROS_FLASH_STEP_MS = 140;
+export const PHAROS_FLASH_PERIOD_STEPS = 43; // 6.02 s (Fl 6 s)
+const PHAROS_FLASH_PASS = Object.freeze([1, 2, 3, 3, 2, 1]);
+const PHAROS_FLASH_SECOND_PASS_AT = 9; // 420 ms dark between the pair
+const PHAROS_FLARE_HALF = Object.freeze([0, 8, 24, 44]);
+const PHAROS_SPIKE_HALF = Object.freeze([0, 0, 4, 7]);
+// Water reflection shares the lantern's warm fire ramp (`beaconFire[4]`) and
+// flashes in step with the lantern across WebGPU, WebGL2, and Canvas.
+export const LIGHTHOUSE_COLUMN_COLOR = ART_RAMPS.beaconFire[4];
 const LIGHTHOUSE_COLUMN_GAIN = 1.4;
 const LIGHTHOUSE_COLUMN_REACH = 1.2;
-// The lens angle (ground-plane radians, 0 = +x) at `ms` on the motion clock.
-function searchlightAngleAt(ms) {
-    const t = Math.floor(Math.max(0, Number(ms) || 0) / 140) * 0.14;
-    return (SEARCHLIGHT_REST_ANGLE + t * SEARCHLIGHT_SWEEP_RAD_PER_S) % (Math.PI * 2);
+export const LIGHTHOUSE_COLUMN_FLASH_GAINS = Object.freeze([1, 1.15, 1.3, 1.45]);
+const PHAROS_BAYER4 = Object.freeze([
+    0, 8, 2, 10,
+    12, 4, 14, 6,
+    3, 11, 1, 9,
+    15, 7, 13, 5,
+]);
+
+/**
+ * Stepped Pharos light characteristic course (0..3) at `ms` on the motion
+ * clock: Fl 6 s at rest, Fl(2) 6 s while watched. Reduced motion
+ * (`motionScale <= 0`) returns 0 (steady lamp, no flash and no flare).
+ */
+export function pharosFlashCourseAt(ms, watched = false, motionScale = 1) {
+    if (!(Number(motionScale) > 0)) return 0;
+    const step = Math.floor(Math.max(0, Number(ms) || 0) / PHAROS_FLASH_STEP_MS) % PHAROS_FLASH_PERIOD_STEPS;
+    if (step < PHAROS_FLASH_PASS.length) return PHAROS_FLASH_PASS[step];
+    const second = step - PHAROS_FLASH_SECOND_PASS_AT;
+    if (watched && second >= 0 && second < PHAROS_FLASH_PASS.length) return PHAROS_FLASH_PASS[second];
+    return 0;
 }
-// AD-6 — no beam by day. The Lighthouse beam draws only once the lamp course
+// AD-6 — no flash by day. The Lighthouse lamps draw only once the lamp course
 // reaches `settling` (GradeEvaluator.lampCourseAt), the same minutes at which
 // the grade keys hand the island to its lamps. Weather never promotes it (a
 // stormy noon is still day) and neither does distress: action-needed agents
 // live on T1 plates and the top bar (V3).
 const LAMP_COURSE_SETTLING = 1;
-// 2.7 — the beam waits for full lamplight (course 2): none through the dusk
-// settling course and none at dawn once the lamps start dropping.
+// 2.7 — the Pharos flash and column wait for full lamplight (course 2): none
+// through the dusk settling course and none at dawn once the lamps start dropping.
 const LAMP_COURSE_LAMPLIGHT = 2;
 
 function lampCourseFor(atmosphere) {
@@ -921,34 +936,8 @@ export class BuildingSprite {
         eventBus.emit('village:population', { count, empty: count === 0 });
     }
 
-    // One stepped, clock-only mirror beam. `foot` is the sea landing, not
-    // the tower base: the air shaft and water glints share that exact origin.
-    lighthouseBeam(motionTimeMs = 0) {
-        if (lampCourseFor(this.atmosphereState) < LAMP_COURSE_LAMPLIGHT) return null;
-        const building = this.buildings.find(b => b.type === 'watchtower');
-        if (!building) return null;
-        const entry = this.assets.getEntry(`building.${building.type}`);
-        const center = this._buildingScreenCenter(building);
-        const [anchorX, anchorY] = this.assets.getAnchor(entry?.id || `building.${building.type}`);
-        const [footX, footY] = WATCHTOWER_LANTERN_FIRE.foot || WATCHTOWER_SEARCHLIGHT.pivot;
-        const ms = Math.max(0, Number(motionTimeMs) || 0);
-        const beam = this._lighthouseBeamState || (this._lighthouseBeamState = {
-            foot: { x: 0, y: 0 },
-            angle: 0,
-            length: SEARCHLIGHT_LENGTH * (1 - SEARCHLIGHT_LANDING_SHARE),
-            farWidth: SEARCHLIGHT_FAR_WIDTH,
-            courses: SEARCHLIGHT_COURSES,
-            sheenStep: 0,
-        });
-        beam.angle = searchlightAngleAt(ms);
-        const landing = SEARCHLIGHT_LENGTH * SEARCHLIGHT_LANDING_SHARE;
-        beam.foot.x = Math.round(center.x - anchorX + footX + Math.cos(beam.angle) * landing);
-        beam.foot.y = Math.round(center.y - anchorY + footY + Math.sin(beam.angle) * landing * 0.5);
-        beam.sheenStep = Math.floor(ms / SEARCHLIGHT_SHEEN_STEP_MS) % 3;
-        return beam;
-    }
-
-    // Shared ungraded warm halo and descending shaft on Canvas/GPU overlay.
+    // Shared ungraded warm crown halo and Pharos light characteristic on the
+    // Canvas/GPU overlay.
     drawLanternLight(ctx) {
         for (const building of this.buildings) {
             if (building.type !== 'watchtower') continue;
@@ -956,20 +945,9 @@ export class BuildingSprite {
             const center = this._buildingScreenCenter(building);
             const [anchorX, anchorY] = this.assets.getAnchor(entry?.id || `building.${building.type}`);
             const [flameX, flameY] = WATCHTOWER_LANTERN_FIRE.flame;
-            const id = entry?.id || `building.${building.type}`;
             this._drawWatchtowerFire(ctx, {
                 x: Math.round(center.x - anchorX + flameX),
                 y: Math.round(center.y - anchorY + flameY),
-                // The landmark's silhouette and surface heights: the shaft
-                // hides only behind masonry nearer the camera than its own
-                // ground point (see _fillBeaconShaft).
-                tower: {
-                    mask: this.assets.getMask?.(id) || null,
-                    heights: this._surfaceHeights('watchtower'),
-                    dims: this.assets.getDims?.(id) || null,
-                    x: Math.round(center.x - anchorX),
-                    y: Math.round(center.y - anchorY),
-                },
             });
         }
     }
@@ -1866,8 +1844,19 @@ export class BuildingSprite {
         return this.agentSprites.filter(sprite => sprite?.agent?.status === 'WORKING').length;
     }
 
-    // Water-only reflection of the lantern fire, clock-gated independently
-    // of working occupants. The beam/column share subdued warm cream.
+    // True while a working visitor keeps the watch at the Lighthouse (V8).
+    // Reads only the watchtower's own work signal; never errored, attention,
+    // or other buildings' state.
+    _lighthouseWatched() {
+        const building = this.buildings?.find?.(b => b.type === 'watchtower');
+        if (!building) return false;
+        const count = this.partGates?.workingCount?.('watchtower')
+            ?? this._workingVisitorCountFor?.(building) ?? 0;
+        return count > 0;
+    }
+
+    // Water-only reflection of the lantern fire, clock-gated at full lamplight
+    // and flashing in step with the lantern on all three backends.
     lighthouseColumnSource(lightingState = this.lightingState) {
         if (lampCourseFor(this.atmosphereState) < LAMP_COURSE_LAMPLIGHT) return null;
         const energy = sourceEnergyFor(lightingState ?? this.atmosphereState?.lighting);
@@ -1875,11 +1864,13 @@ export class BuildingSprite {
         const source = this._staticLightSources().find(light => light.buildingType === 'watchtower');
         const drop = this._lighthouseMirrorDrop();
         if (!source || drop == null) return null;
+        const ms = typeof this._partClockMs === 'function' ? this._partClockMs() : 0;
+        const flash = pharosFlashCourseAt(ms, this._lighthouseWatched(), this.motionScale ?? 1);
         return normalizeLightSource({
             ...source,
             id: `${source.id}:column`,
             color: LIGHTHOUSE_COLUMN_COLOR,
-            intensity: energy.core * LIGHTHOUSE_COLUMN_GAIN,
+            intensity: energy.core * LIGHTHOUSE_COLUMN_GAIN * LIGHTHOUSE_COLUMN_FLASH_GAINS[flash],
             radius: Math.min(source.radius * energy.halo, SOURCE_HALO_RADIUS_CAP),
             height: drop,
             waterOnly: true,
@@ -1931,18 +1922,33 @@ export class BuildingSprite {
         const apertures = this._apertureSources();
         const standIns = this._apertureStandIns;
         const nightGate = this._nightWindowGate();
+        const lampsLit = lampsLitAt(this.atmosphereState);
+        const harborLightAt = this.assets?.getEntry?.('building.harbor')?.lightSource
+            || BUILDING_LIGHT_FALLBACKS.harbor?.at;
+        const harborLightId = Array.isArray(harborLightAt)
+            ? `building.harbor.point.${Math.round(harborLightAt[0])}.${Math.round(harborLightAt[1])}`
+            : null;
         const out = [];
         for (const source of staticSources) {
             // The Lighthouse fire lights no ground, apron, steps or masonry.
-            // Its own light is the warm halo and descending mirror shaft
-            // (_drawWatchtowerFire) and the beam on the sea (lighthouseBeam);
-            // 2.9 adds its column on the water through
-            // `lighthouseColumnSource`, fed to the resident loop only (no
-            // pool, cast or wet reflection reads it).
+            // Its own light is the stepped Bayer-dithered crown halo and Pharos
+            // light characteristic (_drawWatchtowerFire); 2.9 adds its flashing
+            // warm column on the water through `lighthouseColumnSource`, fed to
+            // the resident loop only (no pool, cast or wet reflection reads it).
             if (source.buildingType === 'watchtower') continue;
+            // NE P1.2 — Command's gate braziers (`emitters.torch`/`torch2`,
+            // `fire: true`) and the Harbor quay lantern (`lightSource`,
+            // REST_SAFETY_LIGHT_TYPES) are lamp-clock fixtures gated by the
+            // Lamplighter's Round, never occupancy, on GPU and Canvas alike.
+            const isCommandBrazier = source.buildingType === 'command' && source.fire === true;
+            const isHarborQuayLamp = REST_SAFETY_LIGHT_TYPES.has(source.buildingType)
+                && (!harborLightId
+                    || source.id === harborLightId
+                    || !String(source.id || '').startsWith('building.harbor.point.'));
+            const isLampFixture = isCommandBrazier || isHarborQuayLamp;
             // V8 — only real work (isWorkingVisitor) warms a building's light;
             // seated, queued or passing bodies leave it exactly as empty.
-            const working = source.building ? this._workingVisitorCountFor(source.building) : 0;
+            const working = !isLampFixture && source.building ? this._workingVisitorCountFor(source.building) : 0;
             let activity = working > 0 ? 1.12 : 1;
             let alpha = source.alpha;
             if (source.buildingType === 'forge') {
@@ -1952,22 +1958,25 @@ export class BuildingSprite {
             const typeResponse = source.kind === 'beam'
                 ? 1
                 : 0.62 + 0.38 * getBuildingBeaconBase(source.buildingType);
-            const presenceRadiusMult = source.building
+            const presenceRadiusMult = !isLampFixture && source.building
                 ? PRESENCE_TIER_TABLE[this._workTierFor(source.building)].radius
                 : 1;
             const radius = Math.min(source.radius * energy.halo, SOURCE_HALO_RADIUS_CAP) * presenceRadiusMult;
             // A registry point standing on a room's glass (`_apertureSources`)
             // is that room's light: it takes the room's gate, never the
             // building's, so a lit room lights and a dark room stays dark.
-            const standIn = standIns?.get(source) || 0;
-            const emissiveGate = standIn > 0
-                ? 1 - nightGate + this.roomGate(source.buildingType, standIn - 1)
-                : source.buildingType ? this._emissiveGateFor(source.building) : 1;
-            const workOpen = source.buildingType
+            const standIn = isLampFixture ? 0 : (standIns?.get(source) || 0);
+            const emissiveGate = isLampFixture
+                ? (lampsLit && (this.motionScale <= 0 || lampCycleCaught(this.atmosphereState, source.buildingType)) ? 1 : 0)
+                : standIn > 0
+                    ? 1 - nightGate + this._roomApertureGate(source.buildingType, standIn - 1)
+                    : source.buildingType ? this._emissiveGateFor(source.building) : 1;
+            const workOpen = !isLampFixture && source.buildingType
                 ? (this.partGates?.isOpen?.(`work.${source.buildingType}`) ?? (working > 0))
                 : false;
             const sourceCore = energy.bucket === 'daylight'
                 && standIn === 0
+                && !isLampFixture
                 && isDaytimeHighEnergyBuilding(source.buildingType, workOpen, emissiveGate)
                 ? DAYTIME_WORK_BLOOM_CORE
                 : energy.core;
@@ -1976,6 +1985,7 @@ export class BuildingSprite {
             if (alpha != null) alpha *= sourceCore * emissiveGate;
             out.push(normalizeLightSource({
                 ...source,
+                ...(isLampFixture ? { role: 'fixture', normal: null } : {}),
                 intensity,
                 radius,
                 alpha,
@@ -1988,15 +1998,17 @@ export class BuildingSprite {
         for (const source of this._ritualLightSources(energy.core)) out.push(this._withLightFoot(source, 'point'));
         for (const source of this._forgeSpillLightSources(energy.core)) out.push(this._withLightFoot(source, 'aperture'));
         for (const source of this._archiveSpillLightSources(energy.core)) out.push(this._withLightFoot(source, 'aperture'));
-        // 2.4 — the lit panes and openings of each landmark's emissive art:
-        // a room's glass by that room's gate (roomGate: a dark room lights
-        // nothing), a lantern or opening by the building's night shift (a
-        // real worker inside, V8), each on its own wall base facing its face.
+        // 2.4 / NE P3.1 — the lit panes and openings of each landmark's
+        // emissive art: a room's glass emits its aperture pool only when its
+        // roomGate exceeds ROOM_APERTURE_GATE_MIN (0.5), so a keeper pane at
+        // 0.40 lights glass only while routing (0.6) and arrived work (1.0)
+        // lay street pools; off-glass lanterns/openings follow the building's
+        // night shift (a real worker inside, V8), each on its own wall base.
         for (const aperture of apertures) {
             const type = aperture.building.type;
             const template = aperture.template;
             const gate = template.group > 0
-                ? this.roomGate(type, template.group - 1)
+                ? this._roomApertureGate(type, template.group - 1)
                 : this._nightShiftLit(type) * nightGate;
             if (!(gate > 0)) continue;
             const intensity = apertureIntensity(template.area, energy.core, gate);
@@ -3268,7 +3280,7 @@ export class BuildingSprite {
                 ember,
             });
         }
-        this._fixturePartDraws(entry, type, originX, originY, splitPass, horizonY, out, column);
+        this._fixturePartDraws(entry, type, originX, originY, splitPass, horizonY, out, column, building);
         return out;
     }
 
@@ -3325,11 +3337,13 @@ export class BuildingSprite {
     // the bell hangs still at frame 0, also under reduced motion), and the
     // calendar's door wreaths (static). Neither is a work part: no gate here
     // reads occupancy, and neither emits light.
-    _fixturePartDraws(entry, type, originX, originY, splitPass, horizonY, out, column = null) {
+    _fixturePartDraws(entry, type, originX, originY, splitPass, horizonY, out, column = null, building = null) {
         if (typeof document === 'undefined') return;
         const parts = [];
         if (type === 'archive') parts.push(this._bellLouvrePart());
         for (const row of this.villageCalendar?.partStampsFor?.(type) || []) parts.push(this._wreathPart(row));
+        const roomLit = this._roomGlassLitPart(building || { type });
+        if (roomLit) parts.push(roomLit);
         for (const part of parts) {
             if (!part) continue;
             const frame = part.layer.gate ? this.partGates.frameFor(type, part.name, part.layer) : 0;
@@ -3359,6 +3373,7 @@ export class BuildingSprite {
                 layer: part.layer,
                 image: part.image,
                 textureKey: part.textureKey,
+                textureRevision: part.textureRevision || part.textureKey,
                 frame,
                 sx: frame * part.frameW + cx0,
                 sy,
@@ -3372,6 +3387,8 @@ export class BuildingSprite {
                 frameH: part.frameH,
                 materialClass: part.layer.materialClass,
                 fixture: false,
+                emissiveGate: part.emissiveGate ?? null,
+                channels: part.channels || null,
             });
         }
     }
@@ -3521,6 +3538,7 @@ export class BuildingSprite {
     // declares `authored-albedo` emission (the Pharos lamp, the Portal's rune
     // brazier), or a cycle over one, emits its own colours at that strength.
     partChannelsFor(entry, draw) {
+        if (draw?.channels) return draw.channels;
         const key = `${draw.textureKey}`;
         const cached = this._partChannelCache.get(key);
         if (cached) return cached;
@@ -3761,20 +3779,10 @@ export class BuildingSprite {
             }
             if (shouldDrawLocalY(gateY)) this._drawPortalRitual(ctx, localPoint(gateX, gateY), portalRitual);
         } else if (building.type === 'watchtower') {
-            // Warm halo and one descending shaft, ungraded on the shared
-            // overlay; sea glints use lighthouseBeam in the water backends.
+            // Warm Bayer-dithered crown halo and Pharos light characteristic on
+            // the shared ungraded overlay.
             if (this._ungradedOverlay && shouldDrawLocalY(WATCHTOWER_LANTERN_FIRE.flame[1])) {
-                const origin = localPoint(0, 0);
-                lanternBeacon = {
-                    ...localPoint(...WATCHTOWER_LANTERN_FIRE.flame),
-                    tower: {
-                        mask: this.assets.getMask?.('building.watchtower') || null,
-                        heights: this._surfaceHeights('watchtower'),
-                        dims: this.assets.getDims?.('building.watchtower') || null,
-                        x: Math.round(origin.x),
-                        y: Math.round(origin.y),
-                    },
-                };
+                lanternBeacon = localPoint(...WATCHTOWER_LANTERN_FIRE.flame);
             }
         } else if (building.type === 'harbor') {
             // Harbor effects span the roofline and foreground quay. Draw in both
@@ -5500,143 +5508,98 @@ export class BuildingSprite {
         return mixHex(MINE_SEAM_COLORS[1], MINE_SEAM_COLORS[2], (ratio - 0.8) / 0.2);
     }
 
-    // Authored flame/lens art stays intact. Only the clock drives its warm
-    // halo and one descending mirror shaft; the rear arc is suppressed so
-    // the upper overlay can never paint through the tower's split.
+    // Authored flame/lens art stays intact. The clock breathes the warm halo;
+    // the turning lens adds its light characteristic (pharosFlashCourseAt):
+    // stepped and Bayer-dithered halo courses swell with each pass and, at
+    // courses 1-3, a strictly horizontal edge-on flare leaves the glass at lamp
+    // height (longer in fog). Reduced motion shows the steady lamp only.
     _drawWatchtowerFire(ctx, beacon) {
         if (lampCourseFor(this.atmosphereState) < LAMP_COURSE_LAMPLIGHT) return;
         const ms = this._partClockMs();
-        const angle = searchlightAngleAt(ms);
-        const breath = fireBreath(ms, 'fire:watchtower', this.motionScale);
+        const motionScale = this.motionScale ?? 1;
+        const breath = fireBreath(ms, 'fire:watchtower', motionScale);
+        const flash = pharosFlashCourseAt(ms, this._lighthouseWatched(), motionScale);
+        const ox = Math.round(beacon.x);
+        const oy = Math.round(beacon.y);
+        const [, , , rim, mid, hot, core] = ART_RAMPS.beaconFire;
+        const course = breath < 0.9 ? -1 : breath < 0.98 ? 0 : 1;
+
         ctx.save();
         ctx.globalCompositeOperation = 'source-over';
-        if (Math.sin(angle) >= -0.2) this._fillBeaconShaft(ctx, beacon, angle);
-        const [, , , rim, mid, hot, core] = ART_RAMPS.beaconFire;
-        const facing = Math.sin(angle) > 0.25 ? 1 : 0;
-        const course = (breath < 0.9 ? -1 : breath < 0.98 ? 0 : 1) + facing;
-        const halo = [[28 + course, 0.12, rim], [18 + course, 0.2, mid], [10 + course, 0.32, hot], [5, 0.5, core]];
-        for (const [radius, alpha, color] of halo) {
-            ctx.globalAlpha = alpha + facing * 0.04;
+        // Outer halo courses use 4x4 Bayer dithering so the slate roof and
+        // gallery railings stay crisp underneath; inner courses fill solid.
+        this._fillDitheredCircle(ctx, ox, oy, 28 + course, 8, 0.12 + 0.02 * flash, rim);
+        this._fillDitheredCircle(ctx, ox, oy, 18 + course + flash, 12, 0.2 + 0.03 * flash, mid);
+        for (const [radius, alpha, color] of [
+            [10 + course + flash, 0.32 + 0.06 * flash, hot],
+            [5 + (flash >= 2 ? 1 : 0), 0.5 + 0.15 * flash, core],
+        ]) {
+            ctx.globalAlpha = alpha;
             ctx.fillStyle = color;
-            this._fillPixelCircle(ctx, beacon.x, beacon.y, radius);
+            this._fillPixelCircle(ctx, ox, oy, radius);
         }
+        if (flash >= 1) this._drawPharosFlare(ctx, { x: ox, y: oy }, flash);
         ctx.restore();
     }
 
-    // Scan-convert the shaft between the glass and the exact sea landing,
-    // in world texels. Ordered coverage breaks both edges and the tail;
-    // alpha and colour hold in three courses, never a smooth gradient.
-    // PF-2 — the sweep angle quantizes to 140 ms motion-clock steps
-    // (`searchlightAngleAt`), so consecutive night frames ask for identical
-    // pixels: the run list is cached against everything the scan reads — the
-    // exact angle, the rounded beacon origin (it sets the ordered-coverage
-    // Bayer phase), and the tower mask/heights/dims generation including
-    // readiness — and a hit replays the recorded fillRects in recorded
-    // order. A held step costs one scan per 140 ms instead of one per frame;
-    // a tower-mask load or any other input change misses and re-scans. The
-    // tower wrapper is rebuilt by the callers each frame, so the cache
-    // compares the inner references, never the wrapper.
-    _fillBeaconShaft(ctx, beacon, angle) {
-        const distance = SEARCHLIGHT_LENGTH * SEARCHLIGHT_LANDING_SHARE;
-        const c = Math.cos(angle);
-        const s = Math.sin(angle);
-        const foot = WATCHTOWER_LANTERN_FIRE.foot || WATCHTOWER_SEARCHLIGHT.pivot;
-        const height = foot[1] - WATCHTOWER_LANTERN_FIRE.flame[1];
-        const dx = Math.round(foot[0] - WATCHTOWER_LANTERN_FIRE.flame[0] + c * distance);
-        const dy = Math.round(height + s * distance * 0.5);
-        const length = Math.hypot(dx, dy);
-        // Cross-sections use the sea cone's 2:1 ground-plane perpendicular,
-        // so its landing edges and the shaft's edges have the same geometry.
-        const nx = -s;
-        const ny = c * 0.5;
-        const determinant = dx * ny - dy * nx;
-        if (Math.abs(determinant) < 1) return;
+    // The beam edge-on at lamp height: one core row and two shorter rows,
+    // ordered-dithered out to the tips in four coverage courses, plus a short
+    // vertical spike. Strictly horizontal at lamp height (never descends over
+    // the masonry below the gallery); fog lengthens it.
+    _drawPharosFlare(ctx, beacon, flash) {
+        const fog = Math.max(0, Math.min(1, Number(this.atmosphereState?.weather?.fog) || 0));
+        const reach = Math.round(PHAROS_FLARE_HALF[flash] * (1 + 1.5 * fog));
         const ox = Math.round(beacon.x);
         const oy = Math.round(beacon.y);
-        // Depth against the landmark's 2.3 surface heights: a building texel
-        // hides the shaft only where its ground point (texel y + height) lies
-        // nearer the camera than the shaft's own ground point, measured from
-        // the tower's axis. So the shaft leaves the lantern behind the gallery
-        // parapet and crosses the tower face and the keeper's cottage only
-        // where it really runs in front of them. Without heights (still
-        // loading) every tower texel hides it, the V-R6 silhouette cut.
-        const tower = beacon.tower?.mask && beacon.tower?.dims ? beacon.tower : null;
-        const cache = this._beaconShaftCache;
-        if (cache
-            && cache.angle === angle && cache.ox === ox && cache.oy === oy
-            && cache.mask === (tower?.mask || null) && cache.heights === (tower?.heights || null)
-            && cache.dims === (tower?.dims || null)
-            && cache.tx === (tower?.x || 0) && cache.ty === (tower?.y || 0)) {
-            for (let i = 0; i < cache.runs.length; i += 4) {
-                const course = cache.runs[i + 3];
-                ctx.globalAlpha = course === 0 ? 0.4 : course === 1 ? 0.27 : 0.16;
-                ctx.fillStyle = ART_RAMPS.beaconFire[course === 0 ? 5 : 4];
-                ctx.fillRect(cache.runs[i], cache.runs[i + 1], cache.runs[i + 2], 1);
-            }
-            return;
-        }
-        const spreadX = Math.abs(nx) * BEAM_NEAR_HALF_WIDTH + 2;
-        const spreadY = Math.abs(ny) * BEAM_NEAR_HALF_WIDTH + 2;
-        const minX = Math.floor(Math.min(0, dx) - spreadX);
-        const maxX = Math.ceil(Math.max(0, dx) + spreadX);
-        const minY = Math.floor(Math.min(0, dy) - spreadY);
-        const maxY = Math.ceil(Math.max(0, dy) + spreadY);
-        const bayer = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
-        const axisY = (WATCHTOWER_LANTERN_FIRE.axis || foot)[1] - WATCHTOWER_LANTERN_FIRE.flame[1];
-        const hides = (wx, wy, t) => {
-            if (!tower) return false;
-            const lx = wx - tower.x;
-            const ly = wy - tower.y;
-            if (lx < 0 || ly < 0 || lx >= tower.dims.w || ly >= tower.dims.h) return false;
-            const i = ly * tower.dims.w + lx;
-            if (tower.mask[i] !== 1) return false;
-            if (!tower.heights) return true;
-            return wy - oy + tower.heights[i] > axisY + t * s * distance * 0.5 + 1;
-        };
-        // FP-7: each texel's course is decided as before, but a row's run of
-        // same-course texels is one fillRect with its alpha and colour set
-        // once, not one per texel: the same pixels for a fraction of the calls.
-        // PF-2 records each run as it closes, so the cache replays the exact
-        // same call sequence.
-        const runs = [];
-        for (let y = minY; y <= maxY; y++) {
-            let runStart = minX;
-            let runCourse = -1;
-            for (let x = minX; x <= maxX + 1; x++) {
-                let course = -1;
-                if (x <= maxX) {
-                    const px = x + 0.5;
-                    const py = y + 0.5;
-                    const t = (px * ny - py * nx) / determinant;
-                    if (t >= 6 / length && t < 1 && !hides(ox + x, oy + y, t)) {
-                        const width = 4 + (BEAM_NEAR_HALF_WIDTH - 4) * t;
-                        const across = Math.abs((dx * py - dy * px) / determinant);
-                        const coverage = Math.max(0, Math.min(1, (width - across) / 3))
-                            * (t < 0.78 ? 1 : t < 0.87 ? 0.75 : t < 0.94 ? 0.5 : 0.25);
-                        const order = (bayer[((oy + y) & 3) * 4 + ((ox + x) & 3)] + 0.5) / 16;
-                        if (coverage > order) course = t < 0.3 ? 0 : t < 0.65 ? 1 : 2;
-                    }
-                }
-                if (course === runCourse) continue;
-                if (runCourse >= 0) {
-                    runs.push(ox + runStart, oy + y, x - runStart, runCourse);
-                    ctx.globalAlpha = runCourse === 0 ? 0.4 : runCourse === 1 ? 0.27 : 0.16;
-                    ctx.fillStyle = ART_RAMPS.beaconFire[runCourse === 0 ? 5 : 4];
-                    ctx.fillRect(ox + runStart, oy + y, x - runStart, 1);
-                }
-                runStart = x;
-                runCourse = course;
+        const rows = [
+            [0, reach, ART_RAMPS.beaconFire[6], 0.95],
+            [-1, Math.round(reach * 0.45), ART_RAMPS.beaconFire[5], 0.55],
+            [1, Math.round(reach * 0.45), ART_RAMPS.beaconFire[5], 0.55],
+        ];
+        for (const [dy, half, color, alpha] of rows) {
+            if (half <= 0) continue;
+            ctx.globalAlpha = alpha;
+            ctx.fillStyle = color;
+            const y = oy + dy;
+            for (let dx = -half; dx <= half; dx++) {
+                const t = Math.abs(dx) / half;
+                const coverage = t < 0.4 ? 1 : t < 0.65 ? 0.75 : t < 0.85 ? 0.5 : 0.25;
+                const x = ox + dx;
+                if (coverage > (PHAROS_BAYER4[(y & 3) * 4 + (x & 3)] + 0.5) / 16) ctx.fillRect(x, y, 1, 1);
             }
         }
-        this._beaconShaftCache = {
-            angle, ox, oy,
-            mask: tower?.mask || null,
-            heights: tower?.heights || null,
-            dims: tower?.dims || null,
-            tx: tower?.x || 0,
-            ty: tower?.y || 0,
-            runs,
-        };
+        // A short vertical spike makes the core a four-point glint.
+        const spike = PHAROS_SPIKE_HALF[flash];
+        ctx.globalAlpha = 0.8;
+        ctx.fillStyle = ART_RAMPS.beaconFire[6];
+        for (let dy = -spike; dy <= spike; dy++) {
+            if (dy === 0 || (Math.abs(dy) > spike - 1 && ((ox + oy + dy) & 1))) continue;
+            ctx.fillRect(ox, oy + dy, 1, 1);
+        }
+    }
+
+    // Whole-texel Bayer-dithered circle anchored to the world texel grid so it
+    // never swims during camera pans and preserves crisp sprite detail beneath.
+    _fillDitheredCircle(ctx, ox, oy, radius, share, alpha, color) {
+        if (!(radius > 0) || !(share > 0) || !(alpha > 0)) return;
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = color;
+        const r2 = radius * radius;
+        for (let dy = -radius; dy <= radius; dy++) {
+            const half = Math.floor(Math.sqrt(Math.max(0, r2 - dy * dy)));
+            const wy = oy + dy;
+            const row = (wy & 3) * 4;
+            let runStart = -half;
+            let inRun = false;
+            for (let dx = -half; dx <= half + 1; dx++) {
+                const wx = ox + dx;
+                const lit = dx <= half && PHAROS_BAYER4[row + (wx & 3)] < share;
+                if (lit === inRun) continue;
+                if (inRun) ctx.fillRect(ox + runStart, wy, dx - runStart, 1);
+                runStart = dx;
+                inRun = lit;
+            }
+        }
     }
 
     _spawnEmittersFor(b, dt = 16) {
@@ -5768,6 +5731,11 @@ export class BuildingSprite {
         // for workers (`_updateRoomSlots`, `_updateNightLightGates`).
         const patronIds = this._patronIdsByType || (this._patronIdsByType = new Map());
         for (const ids of patronIds.values()) ids.clear();
+        // NE P3.1 — working sessions routed to a work building but not yet
+        // arrived on its visit tiles; they take room slots after physical
+        // workers at ROUTING_ROOM_GATE (0.6) at night.
+        const routingIds = this._routingIdsByType || (this._routingIdsByType = new Map());
+        for (const ids of routingIds.values()) ids.clear();
         if (!this.agentSprites?.length || !this.buildings.length) {
             if (this.agentSprites?.length) for (const sprite of this.agentSprites) sprite._foldBuildingType = null;
             this._updateRoomSlots();
@@ -5840,17 +5808,43 @@ export class BuildingSprite {
         // Semantic occupants: agents routed to a building by the visit system
         // count toward its pennant even while they still walk there — physical
         // standers alone would leave the standards furled almost always.
+        // NE P3.1 — working sessions assigned to a work building (by live visit
+        // intent, tool target or current route) but not yet on its visit tiles
+        // also fill `routingIds` so their room lights at ROUTING_ROOM_GATE (0.6)
+        // at night; waiting, needs-you and idle bodies fail `isWorkingVisitor`.
         for (const sprite of this.agentSprites) {
             const targetType = String(sprite?.agent?.targetBuildingType || '').trim();
-            if (!targetType) continue;
-            const project = this._repoProjectKey(sprite.agent);
-            if (!project) continue;
-            let repos = repoTally.get(targetType);
-            if (!repos) {
-                repos = new Map();
-                repoTally.set(targetType, repos);
+            if (targetType) {
+                const project = this._repoProjectKey(sprite.agent);
+                if (project) {
+                    let repos = repoTally.get(targetType);
+                    if (!repos) {
+                        repos = new Map();
+                        repoTally.set(targetType, repos);
+                    }
+                    repos.set(project, (repos.get(project) || 0) + 1);
+                }
             }
-            repos.set(project, (repos.get(project) || 0) + 1);
+            const agent = sprite?.agent;
+            if (!agent?.id || NON_WORKING_VISIT_ROLES.includes(sprite.visitRole)) continue;
+            const intent = sprite._lastIntentSnapshot || null;
+            const routeTarget = normalizeBuildingType(
+                intent?.building
+                || targetType
+                || (typeof sprite._lastBuildingType === 'string' && !sprite._lastBuildingType.startsWith('ambient:')
+                    ? sprite._lastBuildingType
+                    : ''),
+            );
+            if (!routeTarget || routeTarget === 'tavern') continue;
+            if (workingIds.get(routeTarget)?.has(agent.id)) continue;
+            if (!isWorkingVisitor(agent, {
+                building: routeTarget,
+                intent,
+                role: sprite.visitRole,
+            })) continue;
+            let ids = routingIds.get(routeTarget);
+            if (!ids) routingIds.set(routeTarget, ids = new Set());
+            ids.add(agent.id);
         }
 
         this._visitorRepoByType.clear();
@@ -5883,34 +5877,79 @@ export class BuildingSprite {
         return at;
     }
 
-    // 6.3 — stable room slots for every building: each working visitor
-    // (isWorkingVisitor) keeps its own room while it works here; waiting
-    // occupants are counted and never lit; whoever does not fit is an exact
-    // overflow count. Rooms come from the landmark's `base.rooms.png`.
+    // 6.3 / NE P3.1 — stable room slots for every building: each arrived
+    // working visitor (isWorkingVisitor) or Tavern patron holds its own room at
+    // 1.0; working sessions assigned to the building but still walking take
+    // remaining rooms after physical workers (`routingAssignment`, lit at
+    // ROUTING_ROOM_GATE = 0.6 at night, keeping the same room on arrival);
+    // waiting occupants are counted and never lit. Rooms come from `base.rooms.png`.
     _updateRoomSlots() {
         const workingIds = this._workingIdsByType;
+        const routingIds = this._routingIdsByType;
         for (const building of this.buildings) {
             const type = building.type;
             const rooms = this.roomGlass.roomCount(type);
             const ids = workingIds?.get(type);
             const patrons = this._patronIdsByType?.get(type);
-            const held = this._roomSlotsByType.get(type)?.assignment;
+            const prevSlots = this._roomSlotsByType.get(type);
+            const held = prevSlots?.allAssignment || prevSlots?.assignment;
             // Sorted so a newcomer's room never depends on sprite order.
             const working = ids?.size || patrons?.size ? [...new Set([...(ids || []), ...(patrons || [])])].sort() : [];
             const { assignment, overflow } = assignRoomSlots({ previous: held, workingIds: working, rooms });
+            const workingSet = new Set(working);
+            const routed = routingIds?.get(type);
+            const routing = routed?.size
+                ? [...routed].filter((id) => !workingSet.has(id)).sort()
+                : [];
+            const routingAssignment = new Map();
+            const taken = new Set(assignment.values());
+            for (const id of routing) {
+                const prior = held instanceof Map ? held.get(id) : undefined;
+                if (Number.isInteger(prior) && prior >= 0 && prior < rooms && !taken.has(prior)) {
+                    routingAssignment.set(id, prior);
+                    taken.add(prior);
+                }
+            }
+            let nextRoom = 0;
+            for (const id of routing) {
+                if (routingAssignment.has(id)) continue;
+                while (nextRoom < rooms && taken.has(nextRoom)) nextRoom++;
+                if (nextRoom >= rooms) break;
+                routingAssignment.set(id, nextRoom);
+                taken.add(nextRoom);
+            }
+            const allAssignment = new Map(assignment);
+            for (const [id, room] of routingAssignment) allAssignment.set(id, room);
             const tally = this._visitorStatusByType.get(type);
             this._roomSlotsByType.set(type, {
                 rooms,
                 assignment,
+                routingAssignment,
+                allAssignment,
                 overflow,
                 working: working.length,
+                routing: routing.length,
                 waiting: tally?.waiting || 0,
             });
         }
     }
 
-    // 6.3 — the per-room light gate (2.4 aperture lights, 2.9 water columns,
-    // bloom): 0..1, night × this room's stepped occupancy. A room index is
+    _keeperRoomActive(type) {
+        if (lampCourseFor(this.atmosphereState) < LAMP_COURSE_LAMPLIGHT) return false;
+        return this.motionScale <= 0 || lampCycleCaught(this.atmosphereState, type);
+    }
+
+    _roomHeldByWorker(slots, roomIndex) {
+        if (!slots?.assignment?.size) return false;
+        for (const room of slots.assignment.values()) {
+            if (room === roomIndex) return true;
+        }
+        return false;
+    }
+
+    // 6.3 / NE P3.1 — the per-room light gate (2.4 aperture lights, 2.9 water
+    // columns, bloom): 0..1, night × this room's stepped tier (1.0 worked,
+    // 0.6 routing, 0.40 keeper on room 0 at lampCourse >= 2). A room index is
     // 0-based (mask R = index + 1); unknown rooms are dark. B3-01 — a room pane
     // inside the open 4.1 aperture's cut stays dark: the cut presents that
     // wall's occupants itself.
@@ -5921,16 +5960,28 @@ export class BuildingSprite {
         return value * this._nightWindowGate();
     }
 
+    // NE P3.1 — room aperture pool gate: only rooms above ROOM_APERTURE_GATE_MIN
+    // (0.5) emit a street pool, so a keeper pane at 0.40 lights glass only
+    // while routing (0.6) and arrived work (1.0) cast their pools.
+    _roomApertureGate(type, roomIndex) {
+        const gate = this.roomGate(type, roomIndex);
+        return gate > ROOM_APERTURE_GATE_MIN ? gate : 0;
+    }
+
     // Per-room window glass gate (RoomGlass only; relaxed M15, 2026-11-23
-    // operator decision): occupied rooms glow warm interior amber by day at
-    // DAYTIME_ROOM_GLASS_SHARE (0.75) and rise to full 1.0 at night; empty
-    // rooms stay dark slate. Light pools, water columns and bloom keep reading
-    // night-only `roomGate`.
+    // operator decision; NE P3.1): arrived worked rooms glow warm interior
+    // amber by day at DAYTIME_ROOM_GLASS_SHARE (0.75) and rise to full 1.0 at
+    // night; keeper (0.40) and routing (0.6) tiers are night-only so daytime
+    // frames remain unchanged. Light pools keep reading `_roomApertureGate`.
     roomGlassGate(type, roomIndex) {
         const lit = this._roomLitByType.get(type);
         const value = lit ? lit[roomIndex] || 0 : 0;
         if (!(value > 0) || this._roomUnderOpenAperture(type, roomIndex)) return 0;
-        return value * Math.max(DAYTIME_ROOM_GLASS_SHARE, this._nightWindowGate());
+        const night = this._nightWindowGate();
+        const slots = this._roomSlotsByType?.get(type);
+        const worked = !slots || this._roomHeldByWorker(slots, roomIndex);
+        if (night <= 0) return worked ? value * DAYTIME_ROOM_GLASS_SHARE : 0;
+        return value * (worked ? Math.max(DAYTIME_ROOM_GLASS_SHARE, night) : night);
     }
 
     _roomUnderOpenAperture(type, roomIndex) {
@@ -5961,18 +6012,56 @@ export class BuildingSprite {
         return group > 0 ? this.roomGate(type, group - 1) : 0;
     }
 
-    // 6.3 — the glass patch for `building` (RoomGlass.patch), shared by the
-    // resident GPU patch record and the Canvas renderer: unlit slate on empty
-    // rooms, warm interior amber on daytime occupied rooms (zero bloom/pools),
-    // and transparent pass-through on night-lit rooms.
+    // 6.3 / NE P3.1 — the glass patch for `building` (RoomGlass.patch), shared
+    // by the resident GPU patch record and the Canvas renderer: unlit slate on
+    // empty rooms, warm interior amber on daytime occupied rooms (zero bloom/
+    // pools), and stepped pass-through on night-lit rooms. When the building's
+    // base emissive gate is down at night (0 arrived workers: keeper/routing or
+    // banked hearth), this masks base glass to unlit slate while
+    // `_roomGlassLitPart` paints the stepped lit panes on top.
     glassPatchFor(building) {
         const type = building?.type;
         if (!type) return null;
+        if (this._nightWindowGate() > 0 && this._emissiveGateFor(building) < 0.98) {
+            return this.roomGlass.patch(type, () => 0, () => 0);
+        }
         return this.roomGlass.patch(
             type,
             (group) => this._glassGroupGate(type, group),
             (group) => this._nightGlassGroupGate(type, group),
         );
+    }
+
+    // NE P3.1 — procedural part carrying night-lit keeper/routing room panes
+    // when the landmark's base emissive gate is below 1 (empty building or
+    // banked hearth), so lit panes render identically on WebGPU, WebGL2 and
+    // Canvas without waking off-glass emitters.
+    _roomGlassLitPart(building) {
+        const type = building?.type;
+        if (!type || !(this._nightWindowGate() > 0) || this._emissiveGateFor(building) >= 0.98) return null;
+        if (typeof this.roomGlass?.litPatch !== 'function') return null;
+        const lit = this.roomGlass.litPatch(type, (group) => this._nightGlassGroupGate(type, group));
+        if (!lit) return null;
+        const textureKey = `proc:building.${type}.roomGlassLit`;
+        const revKey = `${textureKey}:${lit.key}`;
+        return {
+            name: 'roomGlassLit',
+            image: lit.canvas,
+            textureKey,
+            textureRevision: revKey,
+            frameW: lit.w,
+            frameH: lit.h,
+            left: lit.left,
+            top: lit.top,
+            layer: Object.freeze({ frames: 1, materialClass: null }),
+            emissiveGate: 1,
+            channels: {
+                material: lit.channels?.material || null,
+                emissive: lit.emissiveCanvas,
+                occluder: lit.channels?.occluder || null,
+                key: revKey,
+            },
+        };
     }
 
     // Canvas twin of the GPU glassPatchRecord for daytime lit occupied rooms.
@@ -6080,7 +6169,12 @@ export class BuildingSprite {
             const value = advanceNightOccupancyGate(current, target, dt, this.motionScale);
             this._litGateByType.set(type, { value, target });
         }
-        // 6.3 — each room rises and falls on the same 400 / 1600 ms gate.
+        // 6.3 / NE P3.1 — each room rises (400 ms) and falls (1600 ms) toward
+        // its tier: 1.0 for an arrived worker/patron, ROUTING_ROOM_GATE (0.6)
+        // for an en-route working session at night, KEEPER_ROOM_GATE (0.40) on
+        // room 0 at lamplight/deep night (course >= 2, lamp-round gated) when
+        // empty, else 0. By day only arrived workers hold lit room slots.
+        const nightOpen = this._nightWindowGate() > 0;
         for (const [type, slots] of this._roomSlotsByType) {
             let lit = this._roomLitByType.get(type);
             if (!lit || lit.length !== slots.rooms) {
@@ -6088,9 +6182,17 @@ export class BuildingSprite {
                 if (lit) next.set(lit.subarray(0, Math.min(lit.length, next.length)));
                 this._roomLitByType.set(type, lit = next);
             }
-            const held = new Set(slots.assignment.values());
+            const workedRooms = new Set(slots.assignment.values());
+            const routingRooms = nightOpen && slots.routingAssignment?.size
+                ? new Set(slots.routingAssignment.values())
+                : null;
+            const keeper = nightOpen && this._keeperRoomActive(type);
             for (let room = 0; room < lit.length; room++) {
-                lit[room] = advanceNightOccupancyGate(lit[room], held.has(room) ? 1 : 0, dt, this.motionScale);
+                let target = 0;
+                if (workedRooms.has(room)) target = 1;
+                else if (routingRooms?.has(room)) target = ROUTING_ROOM_GATE;
+                else if (room === 0 && keeper) target = KEEPER_ROOM_GATE;
+                lit[room] = advanceNightOccupancyGate(lit[room], target, dt, this.motionScale);
             }
         }
     }

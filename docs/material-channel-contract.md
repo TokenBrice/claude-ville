@@ -399,7 +399,7 @@ guarantees 16 fragment units). Terrain, water and sprites share one program,
 | 7 | `u_cycleOffset` | 3.1 water cycle offset per coast cell | R8 | water crests and the near-shore cycle |
 | 8 | `u_coastField` | 3.6 coast field: R signed distance, G `COAST_FIELD_FLAGS`; BA 3.7 mirror stops | RGBA8 | swash, reflection ripple, the open-sea shelf, 2.9 water columns; `reflect` and `groundCast` records |
 | 9 | `u_lightData` | light records, 256 x 4 (`highp sampler2D`, `texelFetch`) | RGBA32F | 2.4 light loop: admitted light i is column i; row 0 (foot x, foot y, ground radius, intensity) world px, row 1 (emitter height, face normal nx, ng, role code 0 point / 1 aperture / 2 fixture / 3 attention), row 2 (shader rgb, envelope share), row 3 (owner slot, landmark id, `LIGHT_RECORD_FLAGS` 1 wet reflection / 2 water column / 4 water only, column reach). 16 KiB, uploaded only on change |
-| 10 | `u_lightTiles` | light tile index (`highp usampler2D`), tilesX*17 x tilesY | R16UI | 2.4 clustered walk (`light-clusters` on): per 64x64 backing-px tile (tx, ty), texel (tx*17, ty) = count (<= 16), the next `count` texels the admitted light indices in admission order; a 1x1 zero texture when the flat walk runs. 57,596 B at 4880x1392 |
+| 10 | `u_lightTiles` | light tile index (`highp usampler2D`), tilesX*25 x tilesY | R16UI | 2.4 clustered walk (`light-clusters` on): per 64x64 backing-px tile (tx, ty), texel (tx*25, ty) = count (<= 24, `LIGHT_TILE_SLOTS`, NE P2.6), the next `count` texels the admitted light indices in admission order; a 1x1 zero texture when the flat walk runs. 84,700 B at 4880x1392 |
 | 11 | `u_puddleMask` | 5.2 puddle site mask (GroundBake); with GW-1 / GW-2 on, the ground weather field (`GroundWeatherField.js`, its A the same puddle byte) | R8, or RGBA8 while `u_groundWeather.z` = 1 | puddle courses on the terrain batch, while C-W2 holds puddles; GW-1 wet step and sheen on the terrain, GW-2 lamp mirrors on flat ground |
 | 12 | `u_cloudTile` | cloud-course noise tile, 256² | RGBA8 (linear) | 1.4 cloud courses + 1.6 aerial haze, per record; 3.4 sunlit course on in-map open water |
 | 13 | `u_seaGust` | C-W3 sea gust field (the composite's own field, one upload per frame) | R8 (linear) | 3.4 cat's paws on in-map open water |
@@ -412,7 +412,7 @@ The other WebGL2 programs:
 | --- | --- |
 | Particle (`PARTICLE_FRAGMENT`, `PARTICLE_SAMPLER_UNITS`) | 0 `u_motifs`: event-shape motif masks (R8); 1 `u_cloudTile`: cloud-course noise tile |
 | Bloom (`BLOOM_FRAGMENT`, two passes) | 0 `u_input`: the scene's emission attachment (pass 1), then the bloomA target (pass 2) |
-| Composite (`COMPOSITE_FRAGMENT`, `COMPOSITE_SAMPLER_UNITS`) | 0 `u_scene`: scene colour; 1 `u_bloom`: bloomB; 2 `u_cloudTile`; 3 `u_seaGust` (the open sea's clouds, sunlit course and cat's paws on the world grid; the Lighthouse beam and the squall are uniforms only) |
+| Composite (`COMPOSITE_FRAGMENT`, `COMPOSITE_SAMPLER_UNITS`) | 0 `u_scene`: scene colour; 1 `u_bloom`: bloomB; 2 `u_cloudTile`; 3 `u_seaGust` (the open sea's clouds, sunlit course and cat's paws on the world grid; the squall is uniforms only) |
 | Composite, P3 twin (`COMPOSITE_P3_FRAGMENT`) | the composite's units, plus 4 `u_emission` (`P3_EMISSION_UNIT`): the emission attachment, for role 1 |
 | Mark (`MARK_FRAGMENT`; P3 twin `MARK_P3_FRAGMENT`) | 0 `u_albedo`: the mark batch's texture (`mark:inks` or a beacon stamp); 14 `u_albedoPage`: declared by the shared vertex stage, kept on unit 14 so two sampler types never share a unit |
 | Debug load (`DEBUG_LOAD_FRAGMENT`) | 0 `u_scene`: the scene colour target the composite left bound |
@@ -464,8 +464,7 @@ height, view, clusterOverride, state })` → the light records, `count`,
 `tiles` (null unless clustered), `tilesX`/`tilesY`, `clusters`, `admission`
 (`getDiagnostics().lightAdmission`), `wetReflectionCount`, `footprint`,
 `marchSteps`, `localLightPhase` and the record/tile revisions;
-`resolveBeam(feed, out)` → `{ active, ground, shape, courseEnds, courseShares
-}`; `resolvePuddles(feed, out, level)` → `{ mask, rect, puddles, sky, ground, format, textureKey, revision, groundWeather }` (GW-1 / GW-2: `mask` is the ground weather field, `format` `rgba8`, while `resolveGroundWeather` binds it);
+`resolvePuddles(feed, out, level)` → `{ mask, rect, puddles, sky, ground, format, textureKey, revision, groundWeather }` (GW-1 / GW-2: `mask` is the ground weather field, `format` `rgba8`, while `resolveGroundWeather` binds it);
 `resolvePaletteLut(level, feed)` → the 11x3 ramp source or null. The `create*`
 factories build the per-backend scratch the resolvers fill in place;
 `scripts/tests/gpu-frame-state.test.mjs` pins each resolver to the values the
@@ -748,9 +747,17 @@ multiply the graded albedo in three stepped courses (rim, mid, core on each
 light's own falloff; warm lights take the reserved emissive ramp), and authored
 emission is added after both. Emissive pixels and lit pools are therefore exempt
 from the night desaturation without a separate lit mask, and `fire` pixels keep
-their authored colour at every hour. The Canvas fallback reproduces the same
-order with composite fills (`CanvasGrade.js`). Emission sidecars are gated at
-runtime by `NightOccupancyGate`, so a lit window means real work inside.
+their authored colour at every hour. With `nightCarry = clamp((poolGain − 0.15)
+/ 1.05, 0, 1)` (zero at the daytime `poolGain` 0.15, one at night 1.2), lit
+authored emitters skip the grade toward `max(poolAlbedo, emissionColor ×
+clamp(0.5 + 0.5 × emissive, 0, 1) × nightCarry)` so dark slate window glass
+lands on its authored emissive hue at night instead of dulling to ochre, and the
+emitter landing adds `emission × (0.42 + 0.20 × nightCarry)` before
+hue-preserving channel normalisation (staying at `0.42` by day). The Canvas
+fallback reproduces the same order with composite fills and `buildEmitterCut`
+(`CanvasGrade.js`, using `contribution = 2a` without `max(1, contribution)` and
+the same `nightCarry` lift). Emission sidecars are gated at runtime by
+`NightOccupancyGate`, so a lit window means real work inside.
 Status parts (the Command attention banner) are not light and take no
 emission; from the blue hour on they paint the preimage
 (`CanvasGrade.statusClothPreimage`) whose frame grade keeps their authored

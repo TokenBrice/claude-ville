@@ -4,6 +4,7 @@ import { chromium } from 'playwright';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { prepareNightCapture } from '../smoke/support/night-capture.mjs';
 
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const outDir = join(repoRoot, 'output', 'playwright');
@@ -47,6 +48,9 @@ try {
   // Night: window warmth, aperture, beacon
   await fixSky(22);
   await page.waitForTimeout(900);
+  // NE P0.2 — pin FULL and settle working visitors into rooms before night captures.
+  const nightCapture = await prepareNightCapture(page, { force: true });
+  console.log('night capture:', { ladderLevel: nightCapture.ladderLevel, settled: nightCapture.settled, reason: nightCapture.reason, waitedMs: nightCapture.waitedMs });
   await shot('night-command');
   await page.evaluate(() => window.cameraSet({ x: 700, y: 120, zoom: 2 }));
   await page.waitForTimeout(700);

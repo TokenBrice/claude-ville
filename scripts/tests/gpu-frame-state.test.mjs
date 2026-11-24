@@ -6,7 +6,6 @@ import {
     createLightFrameState,
     createSeaWeather,
     resolveAtmosphereCourses,
-    resolveBeam,
     resolveCamera,
     resolveFatPixels,
     resolveFrameGrade,
@@ -104,7 +103,6 @@ function feeds() {
             lights: lights(),
             wetness: 0.3,
             footprint: { data: footData, width: 8, height: 4, originX: -200, originY: 100, cell: 4, revision: 3 },
-            beam: { foot: { x: 1500, y: 700 }, angle: 1.2, length: 280, farWidth: 64, sheenStep: 2, courses: [[0, 0.3, 1], [0, 0.7, 0.5], [0, 1, 0.25]] },
             paletteLut: { width: 11, height: 3 },
         },
         moonStorm: {
@@ -127,7 +125,6 @@ function feeds() {
             puddleMask: { data: puddleData, cols: 8, rows: 8, x0: -64, y0: 32, revision: 4 },
             skyPalette: { upperBand: '#335577', horizon: '#8899aa' },
             footprint: { data: footData, width: 8, height: 4, originX: -200, originY: 100, cell: 4, revision: 3 },
-            beam: { foot: { x: 1500, y: 700 }, angle: 2.4, length: 320, farWidth: 58, sheenStep: 1 },
         },
         clearMoon: {
             timeMs: 3000,
@@ -196,7 +193,8 @@ const GOLDEN = {
                 [1, 0.3137255012989044, 0.23529411852359772, 1, 1, 0.7450980544090271, 0.47058823704719543, 0.20000000298023224, 0.9411764740943909, 0.7843137383460999, 0.5490196347236633, 0.20000000298023224, 0.9803921580314636, 0.9411764740943909, 0.7843137383460999, 0.20000000298023224, 1, 1, 1, 1],
                 [5, 0, 0, 1, 0, 3, 3, 1.5, 0, 4, 3, 1, 0, 0, 7, 3, 0, 0, 1, 1],
             ],
-            wetReflectionCount: 8, marchSteps: 8, tiles: '05bbe9ade20df1c3', localLightPhase: 0.30000000000000004,
+            // NE P2.6: tile index stride 17 -> 25 (LIGHT_TILE_SLOTS 16 -> 24).
+            wetReflectionCount: 8, marchSteps: 8, tiles: 'fe25b03c62524104', localLightPhase: 0.30000000000000004,
         },
         'noon/z2/0': {
             admission: { cap: 0, admitted: 0, offered: 0, culled: 0, overCap: 0, tileFull: 0, maxPerTile: 0, clusters: false, tiles: 459, daylight: true },
@@ -210,7 +208,7 @@ const GOLDEN = {
                 [1, 0.3137255012989044, 0.23529411852359772, 1, 1, 0.7450980544090271, 0.47058823704719543, 0.6800000071525574, 0.9411764740943909, 0.7843137383460999, 0.5490196347236633, 0.6800000071525574, 0.9803921580314636, 0.9411764740943909, 0.7843137383460999, 0.6800000071525574, 1, 1, 1, 0.800000011920929],
                 [5, 0, 0, 1, 0, 3, 3, 1.5, 0, 4, 3, 1, 0, 0, 7, 3, 0, 0, 1, 1],
             ],
-            wetReflectionCount: 4, marchSteps: 4, tiles: '05bbe9ade20df1c3', localLightPhase: 0.85,
+            wetReflectionCount: 4, marchSteps: 4, tiles: 'fe25b03c62524104', localLightPhase: 0.85,
         },
         'clearMoon/z3dpr2/0': {
             admission: { cap: 128, admitted: 0, offered: 0, culled: 3, overCap: 0, tileFull: 0, maxPerTile: 0, clusters: false, tiles: 459, daylight: false },
@@ -229,12 +227,8 @@ const GOLDEN = {
                 [1, 0.3137255012989044, 0.23529411852359772, 1, 1, 0.7450980544090271, 0.47058823704719543, 0.6000000238418579, 0.9411764740943909, 0.7843137383460999, 0.5490196347236633, 0.6000000238418579],
                 [5, 0, 0, 1, 0, 3, 2, 1.5, 0, 4, 2, 1],
             ],
-            wetReflectionCount: 0, marchSteps: 0, tiles: '10e06d11d039c149', localLightPhase: 0.8,
+            wetReflectionCount: 0, marchSteps: 0, tiles: '82bc929bb70d711e', localLightPhase: 0.8,
         },
-    },
-    beam: {
-        'golden/z1/0': { ground: [1500, 700, 1.2, 1], shape: [280, 32, 32, 2], courseEnds: [0.3, 0.7, 1], courseShares: [1, 0.5, 0.25] },
-        'moonStorm/z1/1': { ground: [1500, 700, 2.4, 1], shape: [320, 32, 29, 1], courseEnds: [0.34, 0.68, 1], courseShares: [1, 0.6, 0.3] },
     },
     puddles: {
         'moonStorm/z1/1': { puddles: 0.6, rect: [-64, 32, 8, 8], sky: [0.20000000298023224, 0.3333333432674408, 0.46666666865348816, 0.5333333611488342, 0.6000000238418579, 0.6666666865348816] },
@@ -379,17 +373,8 @@ test('resolveLights moves the record revision only when a light changes', () => 
     assert.deepEqual([state.recordsRevision, state.tilesRevision], [2, 1]);
 });
 
-test('resolveBeam, resolvePuddles, resolvePaletteLut and resolveWeatherUniform keep their gates and values', () => {
+test('resolvePuddles, resolvePaletteLut and resolveWeatherUniform keep their gates and values', () => {
     eachCase(({ key, feed, level }) => {
-        const beam = resolveBeam(feed);
-        const goldenBeam = GOLDEN.beam[key];
-        assert.equal(beam.active, Boolean(goldenBeam), key);
-        assert.deepEqual(Array.from(beam.ground), goldenBeam ? f32(goldenBeam.ground) : [0, 0, 0, 0], key);
-        if (goldenBeam) {
-            assert.deepEqual(Array.from(beam.shape), f32(goldenBeam.shape), key);
-            assert.deepEqual(Array.from(beam.courseEnds), f32(goldenBeam.courseEnds), key);
-            assert.deepEqual(Array.from(beam.courseShares), f32(goldenBeam.courseShares), key);
-        }
         const puddles = resolvePuddles(feed);
         const goldenPuddles = GOLDEN.puddles[key];
         assert.equal(puddles.ground, Boolean(goldenPuddles), key);

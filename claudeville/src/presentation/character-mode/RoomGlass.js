@@ -23,6 +23,9 @@
 import { getBuildingRoomProfile, getBuildingVisual, getBuildingWindowRects, windowRectBounds } from './BuildingVisualRegistry.js';
 
 export const ROOM_GLASS_STEPS = 4;
+// NE P3.1 — night glass steps in tenths so keeper (0.40), settling (0.50),
+// routing (0.60) and worked (1.0) each land on their exact stepped rung.
+export const NIGHT_ROOM_GLASS_STEPS = 10;
 const NONE = -1;
 const HALL = 0;
 
@@ -122,11 +125,18 @@ export function unlitStep(gate) {
     return 1 - litStep(gate);
 }
 
+/** Night lit share of a group, stepped in tenths so 0.40 / 0.60 / 1.0 stay distinct (NE P3.1). */
+export function nightLitStep(gate) {
+    const lit = Math.max(0, Math.min(1, Number(gate) || 0));
+    return Math.round(lit * NIGHT_ROOM_GLASS_STEPS) / NIGHT_ROOM_GLASS_STEPS;
+}
+
 export class RoomGlass {
     constructor(assets) {
         this.assets = assets;
         this._maps = new Map();
         this._patches = new Map();
+        this._litPatches = new Map();
     }
 
     // The glass map of `type`, loading it on first use (null until ready and
@@ -219,9 +229,11 @@ export class RoomGlass {
         let any = false;
         let hasDaytimeLit = false;
         for (let group = 0; group <= map.rooms; group++) {
-            const lit = litStep(gateFor(group));
-            const night = nightGateFor ? litStep(nightGateFor(group)) : lit;
-            if (lit > 0 && night < 0.5 && map.emissive) {
+            const rawGate = gateFor(group);
+            const rawNight = nightGateFor ? nightGateFor(group) : rawGate;
+            const night = nightLitStep(rawNight);
+            const lit = night > 0 ? nightLitStep(rawGate) : litStep(rawGate);
+            if (lit > 0 && night === 0 && map.emissive) {
                 dayShares[group] = lit;
                 unlitSteps[group] = 0;
                 hasDaytimeLit = true;
@@ -231,7 +243,7 @@ export class RoomGlass {
                 dayShares[group] = 0;
                 unlitSteps[group] = 1 - lit;
                 if (unlitSteps[group] > 0) any = true;
-                key += `U${Math.round(unlitSteps[group] * ROOM_GLASS_STEPS)}`;
+                key += `U${Math.round(unlitSteps[group] * NIGHT_ROOM_GLASS_STEPS)}`;
             }
         }
         if (!any) return null;
@@ -277,15 +289,102 @@ export class RoomGlass {
                 }
                 const step = unlitSteps[group] ?? 1;
                 if (!(step > 0)) continue;
-                out[o] = src[i];
+                const alphaByte = Math.round(src[i + 3] * step);
+                // Keep dark glass pixels out of scene.js's half-alpha `bakedRim`
+                // branch (`0.4 < a < 0.6 && max(rgb) < 0.16`), which clamps alpha to 1.
+                const rimGuard = alphaByte >= 102 && alphaByte <= 153
+                    && Math.max(src[i], src[i + 1], src[i + 2]) < 42;
+                out[o] = rimGuard ? 42 : src[i];
                 out[o + 1] = src[i + 1];
                 out[o + 2] = src[i + 2];
-                out[o + 3] = Math.round(src[i + 3] * step);
+                out[o + 3] = alphaByte;
             }
         }
         ctx.putImageData(image, 0, 0);
         entry.key = key;
         entry.hasDaytimeLit = hasDaytimeLit;
+        entry.revision++;
+        return entry;
+    }
+
+    /**
+     * NE P3.1 — night-lit room panes when a landmark's base emissive gate is
+     * down (0 arrived workers: keeper at 0.40 or routing at 0.60, or a banked
+     * hearth). Paints only rooms with stepped night gate > 0: albedo at alpha
+     * = srcA * step and full authored emissive, so GPU premultiplied blend and
+     * Canvas `buildEmitterCut` both land on `step * worked + (1 - step) * dark`
+     * without illuminating off-glass emitters. Returns null when no room is lit.
+     */
+    litPatch(type, nightGateFor) {
+        const map = this.map(type);
+        if (!map?.albedo || !map?.emissive || !(map.rooms > 0)) return null;
+        const steps = new Array(map.rooms + 1).fill(0);
+        let key = '';
+        let any = false;
+        for (let group = 1; group <= map.rooms; group++) {
+            const step = nightLitStep(nightGateFor(group));
+            steps[group] = step;
+            if (step > 0) any = true;
+            key += `${Math.round(step * NIGHT_ROOM_GLASS_STEPS)},`;
+        }
+        if (!any) return null;
+        let entry = this._litPatches.get(type);
+        if (entry?.key === key) return entry;
+        if (!entry) {
+            const canvas = document.createElement('canvas');
+            canvas.width = map.w;
+            canvas.height = map.h;
+            const emissiveCanvas = document.createElement('canvas');
+            emissiveCanvas.width = map.w;
+            emissiveCanvas.height = map.h;
+            entry = {
+                canvas,
+                emissiveCanvas,
+                left: map.left,
+                top: map.top,
+                w: map.w,
+                h: map.h,
+                key: '',
+                revision: 0,
+                channels: map.channels,
+            };
+            this._litPatches.set(type, entry);
+        }
+        const ctx = entry.canvas.getContext('2d', { willReadFrequently: true });
+        const ectx = entry.emissiveCanvas.getContext('2d', { willReadFrequently: true });
+        const aImg = ctx.createImageData(map.w, map.h);
+        const eImg = ectx.createImageData(map.w, map.h);
+        const aOut = aImg.data;
+        const eOut = eImg.data;
+        const src = map.albedo;
+        const em = map.emissive;
+        for (let y = 0; y < map.h; y++) {
+            for (let x = 0; x < map.w; x++) {
+                const group = map.group[y * map.w + x];
+                if (!(group > 0)) continue;
+                const step = steps[group];
+                if (!(step > 0)) continue;
+                const i = ((y + map.top) * map.spriteWidth + x + map.left) * 4;
+                if (!(em[i + 3] > 0) || !(src[i + 3] > 0)) continue;
+                const o = (y * map.w + x) * 4;
+                const alphaByte = Math.round(src[i + 3] * step);
+                // Keep dark glass pixels (e.g. Mine tunnel mouth) out of scene.js's
+                // half-alpha `bakedRim` branch (`0.4 < a < 0.6 && max(rgb) < 0.16`).
+                const rimGuard = alphaByte >= 102 && alphaByte <= 153
+                    && Math.max(src[i], src[i + 1], src[i + 2]) < 42;
+                aOut[o] = rimGuard ? 42 : src[i];
+                aOut[o + 1] = src[i + 1];
+                aOut[o + 2] = src[i + 2];
+                aOut[o + 3] = alphaByte;
+                eOut[o] = em[i];
+                eOut[o + 1] = em[i + 1];
+                eOut[o + 2] = em[i + 2];
+                eOut[o + 3] = em[i + 3];
+            }
+        }
+        ctx.putImageData(aImg, 0, 0);
+        ectx.putImageData(eImg, 0, 0);
+        entry.key = key;
         entry.revision++;
         return entry;
     }

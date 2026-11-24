@@ -1,5 +1,13 @@
 export const MIDNIGHT_OIL_RISE_MS = 400;
 export const MIDNIGHT_OIL_FALL_MS = 1600;
+// NE P3.1 (D-1, 2026-11-24) — dim night room tiers:
+// - KEEPER_ROOM_GATE (0.40): room 0 of each work building at lampCourse >= 2
+//   when empty (lights the glass only; aperture pools require gate > 0.5).
+// - ROUTING_ROOM_GATE (0.6): working sessions assigned to a building but not
+//   yet arrived take room slots after physical workers and lay aperture pools.
+export const KEEPER_ROOM_GATE = 0.40;
+export const ROUTING_ROOM_GATE = 0.6;
+export const ROOM_APERTURE_GATE_MIN = 0.5;
 
 function clamp01(value) {
     return Math.max(0, Math.min(1, Number(value) || 0));

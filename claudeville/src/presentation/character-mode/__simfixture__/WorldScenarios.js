@@ -1813,6 +1813,30 @@ export const COUNCIL_FLEET_SCENARIO = {
     },
 };
 
+export const LIGHTHOUSE_WATCH_SCENARIO = {
+    id: 'lighthouse-watch',
+    label: 'Lighthouse watch',
+    description: 'One agent keeps the watch at the Lighthouse (Monitor, then a CI watch) for the Pharos light characteristic.',
+    timeBase: SCENARIO_TIME_BASE,
+    agents: [
+        agentSpec({
+            id: 'sim-keeper',
+            name: 'Keeper',
+            status: AgentStatus.WORKING,
+            currentTool: 'Monitor',
+            currentToolInput: 'command=until curl -sf localhost:8080/health; do sleep 5; done',
+            position: { tileX: 27, tileY: 14 },
+            projectPath: '/sim/repos/keeper',
+            tokens: { input: 9000, output: 1200 },
+        }),
+    ],
+    timeline: [],
+    metadata: {
+        qaTags: ['lighthouse', 'watch', 'night'],
+        camera: { centerTile: { tileX: 28, tileY: 10 }, zoom: 2 },
+    },
+};
+
 export const WORLD_SCENARIOS = [
     NO_AGENTS_SCENARIO,
     ONE_WORKING_AGENT_SCENARIO,
@@ -1827,6 +1851,7 @@ export const WORLD_SCENARIOS = [
     MIXED_TOOLS_SCENARIO,
     MULTI_PROVIDER_SHOWCASE_SCENARIO,
     README_SHOWCASE_SCENARIO,
+    LIGHTHOUSE_WATCH_SCENARIO,
     MATERIAL_PILOT_SCENARIO,
     GIT_HARBOR_SCENARIO,
     FAILED_PUSH_SCENARIO,

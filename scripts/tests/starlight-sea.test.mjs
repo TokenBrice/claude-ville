@@ -4,7 +4,19 @@ import { readFileSync } from 'node:fs';
 import { createAtmosphereSnapshot } from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
 import { applyWaterMood, canvasSeaMarkRgb, COAST_PALETTE, OCEAN_HORIZON_WORLD_Y } from '../../claudeville/src/presentation/character-mode/CoastBake.js';
 import { createWaterFx, resolveStarlight, resolveWaterFx } from '../../claudeville/src/presentation/character-mode/gpu/GpuFrameState.js';
-import { SEA_SWELL_GLSL, STARLIGHT_DENSITY, STARLIGHT_HOLD } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldRenderer.js';
+import {
+    liftMoonPathRgb,
+    MOON_PATH_SILVER_TINT,
+    MOON_PATH_UNGRADE_MIX,
+    SEA_SWELL_GLSL,
+    STARLIGHT_DENSITY,
+    STARLIGHT_HOLD,
+} from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldRenderer.js';
+import { ART_RAMPS } from '../../claudeville/src/config/artPalette.js';
+import { applyGradeToRgb, evaluateGrade, waterMaxSaturation } from '../../claudeville/src/presentation/character-mode/GradeEvaluator.js';
+import { waterMoodFor } from '../../claudeville/src/presentation/character-mode/CoastBake.js';
+import { OPEN_SEA_WGSL } from '../../claudeville/src/presentation/character-mode/gpu/wgsl/openSea.js';
+import { SCENE_WGSL } from '../../claudeville/src/presentation/character-mode/gpu/wgsl/scene.js';
 import { WATER_WGSL } from '../../claudeville/src/presentation/character-mode/gpu/wgsl/water.js';
 import { FRAME_UNIFORM_LAYOUT, createUniformViews, writeFrameUniforms } from '../../claudeville/src/presentation/character-mode/gpu/wgsl/common.js';
 
@@ -19,8 +31,10 @@ test('night starlight multiplies only the clock, star visibility, weather and mo
     const weather = { type: 'clear', cloudCover: 0.2 };
     const grade = { night: 0.8 };
     const at = (moon, level = 0, w = weather, g = grade) => resolveStarlight(a, w, g, moon, level);
-    assert.equal(at(0.1), 0.8 * 0.7 * 0.8 * 0.9 * 0.9);
-    assert.equal(at(1), 0);
+    // NE P3.3 — moon attenuation keeps a 0.25 floor: 0.25 + 0.75 * darkMoon^2.
+    assert.equal(at(0.1), 0.8 * 0.7 * 0.8 * (0.25 + 0.75 * 0.9 * 0.9));
+    assert.equal(at(1), 0.8 * 0.7 * 0.8 * 0.25);
+    assert.equal(at(0), 0.8 * 0.7 * 0.8);
     assert.equal(at(0, 2), 0, 'MINIMAL drops sparkle rather than adding another static layer');
     assert.equal(at(0, 3), 0);
     assert.equal(at(0, 1), at(0), 'REDUCED keeps sparse sparkle');
@@ -30,11 +44,12 @@ test('night starlight multiplies only the clock, star visibility, weather and mo
     assert.equal(resolveStarlight({ sky: { starsAlpha: 0 } }, weather, grade, 0, 0), 0);
 });
 
-test('October new moon leaves glints, full moon hands over to the path, noon stays unchanged', () => {
+test('October new moon leaves glints, full moon keeps a 0.25 starlight floor, noon stays unchanged', () => {
     const newMoon = snapshot(9);
     const fullMoon = snapshot(26);
     assert.ok(density(newMoon) > 0.15, 'new-moon clear night admits sparkle');
-    assert.ok(density(fullMoon) < density(newMoon) * 0.1, 'full moon admits fewer than a tenth');
+    assert.ok(density(fullMoon) > 0 && density(fullMoon) < density(newMoon) * 0.4,
+        `full moon keeps a faint starlight floor (${density(fullMoon).toFixed(4)} vs ${density(newMoon).toFixed(4)})`);
     assert.equal(density(snapshot(9, 12)), 0);
     const feed = { atmosphere: newMoon, weather: newMoon.weather, motionScale: 1, reducedMotion: true };
     const out = createWaterFx();
@@ -108,12 +123,118 @@ test('Canvas named crest keeps its own water stop and takes the same horizon haz
     assert.equal(canvasSeaMarkRgb(null, 'crest', 0, far, true), -1);
 });
 
-test('L1-4: the night sea drops 10 % of its value in all three water-mood twins', () => {
+test('NE P2.4 (relaxes L1-4): the night sea drops 18 % at full night and keeps blue hour byte-identical in all three twins', () => {
     const rgb = [0.19, 0.26, 0.29];
     const l = rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
-    const expected = [0.78, 0.94, 1.10].map((tone, i) => (rgb[i] + (l * tone - rgb[i]) * 0.55) * 0.9);
-    applyWaterMood(rgb, { night: 1, storm: 0 }).forEach((channel, i) => assert.ok(Math.abs(channel - expected[i]) < 1e-9));
+    const expectedAt = (night, scale) => [0.78, 0.94, 1.10].map((tone, i) => (rgb[i] + (l * tone - rgb[i]) * (night * 0.55)) * scale);
+    // Full night (n = 1): 1 - 0.1 - 0.08 = 0.82 (18 % drop).
+    applyWaterMood(rgb, { night: 1, storm: 0 }).forEach((channel, i) => assert.ok(Math.abs(channel - expectedAt(1, 0.82)[i]) < 1e-9));
+    // Mid-transition (n = 0.75): smoothstep(0.5, 1, 0.75) = 0.5 -> 1 - 0.075 - 0.04 = 0.885.
+    applyWaterMood(rgb, { night: 0.75, storm: 0 }).forEach((channel, i) => assert.ok(Math.abs(channel - expectedAt(0.75, 0.885)[i]) < 1e-9));
+    // Blue hour (n = 0.375) and the smoothstep floor (n = 0.5): byte-identical to 1 - 0.1 * n.
+    assert.deepEqual(applyWaterMood(rgb, { night: 0.375, storm: 0 }), expectedAt(0.375, 1 - 0.375 * 0.1));
+    assert.deepEqual(applyWaterMood(rgb, { night: 0.5, storm: 0 }), expectedAt(0.5, 1 - 0.5 * 0.1));
     const glsl = readFileSync(new URL('../../claudeville/src/presentation/character-mode/gpu/GpuWorldRenderer.js', import.meta.url), 'utf8');
-    assert.ok(glsl.includes('color *= 1.0 - u_waterMood.x * 0.1;'));
-    assert.ok(WATER_WGSL.includes('color *= 1.0 - frame.waterMood.x * 0.1;'));
+    assert.ok(glsl.includes('color *= 1.0 - u_waterMood.x * 0.1 - 0.08 * smoothstep(0.5, 1.0, u_waterMood.x);'));
+    assert.ok(WATER_WGSL.includes('color *= 1.0 - frame.waterMood.x * 0.1 - 0.08 * smoothstep(0.5, 1.0, frame.waterMood.x);'));
+});
+
+test('NE P3.3: moon glintDash widens to 0.95, uses 0.28 * pow(w, 1.25) and bright stop 2.0 in all three twins', () => {
+    const glintBody = (src) => src.match(/(?:float glintDash|fn glintDash)[^{]+\{([\s\S]*?)\n\}/)[1];
+    const wgslMoon = glintBody(WATER_WGSL);
+    const glslMoon = glintBody(SEA_SWELL_GLSL);
+    const canvas = readFileSync(new URL('../../claudeville/src/presentation/character-mode/CanvasWaterState.js', import.meta.url), 'utf8');
+    assert.ok(wgslMoon.includes('select(1.0, 0.95, moon)'));
+    assert.ok(wgslMoon.includes('0.28 * glint.y * pow(weight, 1.25)'));
+    assert.ok(wgslMoon.includes('select(1.0, 2.0, waterHash12(cell + vec2f(5.0, life * 11.0)) < weight * 0.85)'));
+    assert.ok(glslMoon.includes('(moon ? 0.95 : 1.0)'));
+    assert.ok(glslMoon.includes('0.28 * glint.y * pow(weight, 1.25)'));
+    assert.ok(glslMoon.includes('waterHash12(cell + vec2(5.0, life * 11.0)) < weight * 0.85 ? 2.0 : 1.0'));
+    assert.match(canvas, /maxHalf = \(baseWidth \+ \(bottom - view\.y0\) \* grow\) \* \(moon \? 0\.95 : 1\)/);
+    assert.match(canvas, /half = \(baseWidth \+ \(y \+ 0\.5 - view\.y0\) \* grow\) \* \(moon \? 0\.95 : 1\)/);
+    assert.match(canvas, /density \* glint\.strength \* Math\.pow\(weight, 1\.25\)/);
+    assert.match(canvas, /colour = tone < weight \* 0\.85 \? hi : lo/);
+    // Guard: sun branch (glint.z < 2.5) stays untouched.
+    assert.ok(wgslMoon.includes('return select(1.0, 2.0, waterHash12(cell + vec2f(5.0, glintTick * 11.0)) < weight);'));
+    assert.ok(glslMoon.includes('return waterHash12(cell + vec2(5.0, glintTick * 11.0)) < weight ? 2.0 : 1.0;'));
+});
+
+test('NE P3.3b: moon path lifts out of the night grade only at night and only for moon glints across all twins', () => {
+    assert.ok(MOON_PATH_UNGRADE_MIX > 0 && MOON_PATH_UNGRADE_MIX < 1, 'named mix factor in (0, 1)');
+    assert.deepEqual([...MOON_PATH_SILVER_TINT], [0.86, 0.92, 1.02]);
+
+    const glsl = readFileSync(new URL('../../claudeville/src/presentation/character-mode/gpu/GpuWorldRenderer.js', import.meta.url), 'utf8');
+    const canvas = readFileSync(new URL('../../claudeville/src/presentation/character-mode/CanvasWaterState.js', import.meta.url), 'utf8');
+    const mixLit = MOON_PATH_UNGRADE_MIX.toFixed(2);
+    const tintLit = MOON_PATH_SILVER_TINT.map(v => v.toFixed(2)).join(', ');
+
+    // All four GPU sites (open sea + in-map water, WGSL + GLSL) gate on glint.z > 2.5 and waterMood.x > 0.0
+    // and apply the named constant mix under capSaturation(..., waterMaxSat()) and seaPathCap(...).
+    assert.ok(OPEN_SEA_WGSL.includes(`const MOON_PATH_UNGRADE_MIX: f32 = ${mixLit};`));
+    assert.ok(OPEN_SEA_WGSL.includes(`const MOON_PATH_SILVER_TINT: vec3f = vec3f(${tintLit});`));
+    assert.ok(OPEN_SEA_WGSL.includes('if (frame.glint.z > 2.5 && frame.waterMood.x > 0.0)'));
+    assert.ok(OPEN_SEA_WGSL.includes('c = capSaturation(mix(c, stopColor * MOON_PATH_SILVER_TINT, MOON_PATH_UNGRADE_MIX * frame.waterMood.x), waterMaxSat());'));
+
+    assert.ok(SCENE_WGSL.includes(`const MOON_PATH_UNGRADE_MIX: f32 = ${mixLit};`));
+    assert.ok(SCENE_WGSL.includes(`const MOON_PATH_SILVER_TINT: vec3f = vec3f(${tintLit});`));
+    assert.ok(SCENE_WGSL.includes('if (frame.glint.z > 2.5 && frame.waterMood.x > 0.0)'));
+    assert.ok(SCENE_WGSL.includes('color = capSaturation(mix(color, poolAlbedo * MOON_PATH_SILVER_TINT, MOON_PATH_UNGRADE_MIX * frame.waterMood.x), waterMaxSat());'));
+
+    assert.ok(SEA_SWELL_GLSL.includes(`const float MOON_PATH_UNGRADE_MIX = ${mixLit};`));
+    assert.ok(SEA_SWELL_GLSL.includes(`const vec3 MOON_PATH_SILVER_TINT = vec3(${tintLit});`));
+    assert.ok(glsl.includes('if (u_glint.z > 2.5 && u_waterMood.x > 0.0)'));
+    assert.ok(glsl.includes('color = capSaturation(mix(color, poolAlbedo * MOON_PATH_SILVER_TINT, MOON_PATH_UNGRADE_MIX * u_waterMood.x), waterMaxSat());'));
+    assert.ok(glsl.includes('if (u_glint.z > 2.5 && u_waterMood.x > 0.0)'));
+    assert.ok(glsl.includes('c = capSaturation(mix(c, stopColor * MOON_PATH_SILVER_TINT, MOON_PATH_UNGRADE_MIX * u_waterMood.x), waterMaxSat());'));
+
+    // Canvas twin: lifts moon stops (indices 4..5, kind 3) only when mood.night > 0, and lays post-grade carved.
+    assert.match(canvas, /if \(index >= 4 && mood\.night > 0\)/);
+    assert.match(canvas, /liftMoonPathRgb\(graded, raw, mood\.night, waterMaxSaturation\(mood\)\)/);
+    assert.match(canvas, /const moonPostGrade = Boolean\(glint && glint\.kind === 3 && mood\.night > 0 && atmosphere\?\.lightGrade\);/);
+    assert.match(canvas, /drawCarvedTerrainLayer\(overlayCtx, renderer, state\.path\)/);
+
+    // Numerical contract: night moon stops lift cleanly past L* 55, stay cool silver (B >= G >= R, S <= 0.40, V6 cap, HSL L <= 0.70);
+    // day frames (night = 0) and sun stops stay untouched.
+    const hex01 = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16) / 255);
+    const cieL = c => {
+        const lin = c.map(v => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+        const y = 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
+        return y > 0.008856 ? 116 * Math.cbrt(y) - 16 : 903.3 * y;
+    };
+    const hsvS = c => { const mx = Math.max(...c), mn = Math.min(...c); return mx > 0 ? (mx - mn) / mx : 0; };
+    const hslL = c => 0.5 * (Math.max(...c) + Math.min(...c));
+    const seaPathCap = c => { const l = hslL(c); return l > 0.70 ? c.map(v => v * 0.70 / l) : c; };
+    const clear = { type: 'clear', cloudCover: 0.08, fog: 0, intensity: 0 };
+
+    // Day / golden hour: mood.night is 0, liftMoonPathRgb is a strict no-op.
+    for (const hour of [12, 18]) {
+        const grade = evaluateGrade({ minuteOfDay: hour * 60, weather: clear, moonFill: 0.86 });
+        const mood = waterMoodFor({ lightGrade: grade, weather: clear });
+        assert.equal(mood.night, 0, `${hour}:00 has water night mood 0`);
+        for (const hex of ART_RAMPS.seaPath) {
+            const raw = hex01(hex);
+            const graded = applyGradeToRgb(raw, grade);
+            assert.deepEqual(liftMoonPathRgb(graded, raw, mood.night, waterMaxSaturation(mood)), graded);
+        }
+    }
+
+    // Night (22:00 and 02:00): bright moon stop (#c4d6e2) clears L* 55, both stops stay silver & capped.
+    for (const hour of [22, 2]) {
+        const grade = evaluateGrade({ minuteOfDay: hour * 60, weather: clear, moonFill: 0.86 });
+        const mood = waterMoodFor({ lightGrade: grade, weather: clear });
+        const maxS = waterMaxSaturation(mood);
+        assert.equal(mood.night, 1);
+        const [lo, hi] = [ART_RAMPS.seaPath[4], ART_RAMPS.seaPath[5]].map(hex => {
+            const raw = hex01(hex);
+            const graded = applyGradeToRgb(raw, grade);
+            return seaPathCap(liftMoonPathRgb(graded, raw, mood.night, maxS));
+        });
+        assert.ok(cieL(hi) >= 60, `${hour}:00 bright moon stop L* ${cieL(hi).toFixed(1)} >= 60 (well above strip target 55)`);
+        assert.ok(cieL(hi) > cieL(lo), `${hour}:00 bright stop exceeds dim stop`);
+        for (const [label, c] of [['lo', lo], ['hi', hi]]) {
+            assert.ok(c[2] >= c[1] && c[1] >= c[0], `${hour}:00 ${label} stays cool silver (${c.map(v => v.toFixed(3))})`);
+            assert.ok(hsvS(c) <= Math.min(0.40, maxS) + 1e-6, `${hour}:00 ${label} S ${hsvS(c).toFixed(3)} <= ${maxS}`);
+            assert.ok(hslL(c) <= 0.70 + 1e-6, `${hour}:00 ${label} HSL L ${hslL(c).toFixed(3)} <= 0.70`);
+        }
+    }
 });

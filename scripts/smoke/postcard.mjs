@@ -22,6 +22,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BENCH_WEATHER, launchBenchBrowser, openWorld, parseViewport, poseWorld, resolveServer } from './support/world-bench.mjs';
+import { prepareNightCapture } from './support/night-capture.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const OUT = path.join(ROOT, 'output', 'council-postcards');
@@ -211,6 +212,7 @@ async function strike(page, { trace, sample = false }) {
       backend: renderer.worldRendererMode ?? null,
       gpuActive: renderer.gpuWorld?.isActive?.() === true,
       gpuKind: renderer.gpuWorld?.constructor?.name || null,
+      ladderLevel: renderer.gpuWorld?.qualityLadder?.getLevel?.() ?? null,
       size: [canvas.width, canvas.height],
       backing: [world.width, world.height],
       caption: result.caption,
@@ -317,9 +319,11 @@ try {
           });
         }
         await page.waitForTimeout(3000);
+        // NE P0.2 — pin FULL and settle rooms for dusk/night postcard samples; day stays fast.
+        const nightCapture = await prepareNightCapture(page);
         const got = await strike(page, { trace: false, sample: true });
         if (got.png) fs.writeFileSync(path.join(OUT, `postcard-${sample.name}.png`), Buffer.from(got.png.split(',')[1], 'base64'));
-        console.log(`sample ${sample.name}: ${got.caption}`);
+        console.log(`sample ${sample.name}: ${got.caption} (ladderLevel=${got.ladderLevel}${nightCapture.pinned ? `, settle=${nightCapture.reason}@${nightCapture.waitedMs}ms` : ''})`);
       } finally {
         await context.close();
       }

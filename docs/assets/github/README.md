@@ -1,6 +1,6 @@
 # GitHub images
 
-These are captures of the running application, refreshed for v0.66.1. The
+These are captures of the running application, refreshed for v0.67.0. The
 `readme-showcase` simulator supplies 37 fictional agents across all ten
 providers and four projects, plus synthetic Harbor commits. Paths, messages,
 tool history, usage, and costs are sample data. The `SIMULATED` indicator

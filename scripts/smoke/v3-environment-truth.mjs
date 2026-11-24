@@ -248,7 +248,7 @@ async function openArm(browser, baseUrl, { renderer, reduced }) {
   await page.waitForTimeout(2000);
   const backend = await page.evaluate(() => {
     const r = window.__claudeVilleApp.renderer;
-    return { gpu: r.gpuWorld?.constructor?.name || null, postFx: Boolean(r.postFx), motionScale: r.motionScale, reason: r.worldBackendReason || null };
+    return { gpu: r.gpuWorld?.constructor?.name || null, ladderLevel: r.gpuWorld?.qualityLadder?.getLevel?.() ?? null, postFx: Boolean(r.postFx), motionScale: r.motionScale, reason: r.worldBackendReason || null };
   });
   return { context, page, errors, backend };
 }

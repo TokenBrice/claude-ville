@@ -27,13 +27,11 @@ import {
 import {
     cloudTile,
     createAtmosphereCourses,
-    createBeamUniforms,
     createLightFrameState,
     createPuddleUniforms,
     createSeaWeather,
     createWaterFx,
     resolveAtmosphereCourses,
-    resolveBeam,
     resolveCamera,
     resolveFatPixels,
     resolveFrameGrade,
@@ -292,7 +290,6 @@ export class GpuWorldRendererWebGPU {
         this._seaState = createSeaState();
         this._seaWeather = createSeaWeather();
         this._seaWeatherFrame = { sunlit: 0, gust: null };
-        this._beam = createBeamUniforms();
         this._puddles = createPuddleUniforms();
         this._puddleActive = false;
         this.cloudCourses = 0;
@@ -1327,13 +1324,6 @@ export class GpuWorldRendererWebGPU {
         const shaderTimeMs = ((finite(feed.timeMs, Date.now()) % 1000000) + 1000000) % 1000000;
         s.timeMs = shaderTimeMs;
         s.motionScale = feed.reducedMotion ? 0 : clamp(finite(feed.motionScale, 1), 0, 2);
-        const beam = resolveBeam(feed, this._beam);
-        s.beamGround = beam.ground;
-        if (beam.active) {
-            s.beamShape = beam.shape;
-            s.beamCourseEnds = beam.courseEnds;
-            s.beamCourseShares = beam.courseShares;
-        }
         this.localLightPhase = lightFrame.localLightPhase;
         this._uploadLightRecords(lightFrame.records, lightFrame.recordsRevision);
         const tiles = lightFrame.tiles
@@ -1386,7 +1376,7 @@ export class GpuWorldRendererWebGPU {
         // composite and mark fragment). Under HDR the emitter courses gain
         // only while the lamps are lit (the `settling` lamp course), up to the
         // mode's emitter cap (below the NEEDS YOU mark's light), marks
-        // always, and bloom is off: the role gain replaces its halo.
+        // always, and bloom runs at half strength alongside the role gain (NE P1.4).
         const display = this._display;
         const gains = this._displayWant.gains;
         s.hdrEnabled = display?.hdr ? 1 : 0;
@@ -1395,7 +1385,7 @@ export class GpuWorldRendererWebGPU {
         s.hdrMarkGain = display?.hdr ? gains.mark : 1;
         s.hdrEmitterGain = display?.hdr && hdrLampsLit(atmosphere) ? gains.emitter : [1, 1, 1];
         s.hdrEmitterCap = gains.emitterCap;
-        if (display?.hdr) s.bloomStrength = 0;
+        if (display?.hdr) s.bloomStrength *= 0.5;
         this._frameBloomStrength = s.bloomStrength;
         const flash = feed.flash;
         s.flash = [finite(flash?.[0], 0), finite(flash?.[1], 0), finite(flash?.[2], 0)];
@@ -1847,7 +1837,7 @@ export class GpuWorldRendererWebGPU {
             }
             scene.end();
             passCpu.scene = { cpuMs: performance.now() - mark, draws, bytes: this.width * this.height * 4 * (writeEmission ? 2 : 1) };
-            // [bloom] — none while HDR presents (its role gain replaces the halo).
+            // [bloom] — runs at half strength while HDR presents (NE P1.4).
             mark = performance.now();
             if (bloomOn) {
                 const writes = timer?.writes(slot, 'bloom');

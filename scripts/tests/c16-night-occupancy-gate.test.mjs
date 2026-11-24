@@ -3,12 +3,16 @@ import assert from 'node:assert/strict';
 
 import { BuildingSprite, lampsLitAt } from '../../claudeville/src/presentation/character-mode/BuildingSprite.js';
 import {
+    KEEPER_ROOM_GATE,
     MIDNIGHT_OIL_FALL_MS,
     MIDNIGHT_OIL_RISE_MS,
+    ROOM_APERTURE_GATE_MIN,
+    ROUTING_ROOM_GATE,
     advanceNightOccupancyGate,
     buildingEmissiveGate,
     nightWindowGate,
 } from '../../claudeville/src/presentation/character-mode/NightOccupancyGate.js';
+import { RoomGlass, nightLitStep } from '../../claudeville/src/presentation/character-mode/RoomGlass.js';
 import { isWorkingVisitor } from '../../claudeville/src/presentation/character-mode/VisitIntentManager.js';
 import { buildGpuWorldRecords } from '../../claudeville/src/presentation/character-mode/gpu/GpuSceneBuilder.js';
 import { normalizeGpuRecord } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldPolicy.js';
@@ -57,6 +61,69 @@ test('day is unchanged while night follows only live working occupancy', () => {
     assert.deepEqual(nightEmptyLights.map(light => light.id), []);
     const nightWorkingLights = lightFixture('night', 1).getLightSources();
     assert.deepEqual(nightWorkingLights.map(light => light.id), ['forge']);
+});
+
+test('NE P1.2: Command gate braziers and Harbor quay lantern follow the lamp clock and Lamplighter\'s Round as fixtures', () => {
+    const command = { type: 'command' };
+    const harbor = { type: 'harbor' };
+    const makeRenderer = (minuteOfDay, { motionScale = 1 } = {}) => Object.assign(Object.create(BuildingSprite.prototype), {
+        atmosphereState: {
+            phase: minuteOfDay >= 19 * 60 || minuteOfDay < 6 * 60 ? 'night' : 'day',
+            clock: { minuteOfDay },
+            reactions: { windowWarmth: 0.8 },
+        },
+        lightingState: { lightBoost: 1, beaconIntensity: 1 },
+        harborStatus: { failedPushActive: false, activeWorkingCount: 0 },
+        motionScale,
+        assets: { getEntry: () => null },
+        _litGateByType: new Map(),
+        _staticLightSources: () => [
+            { id: 'building.command.point.94.180', kind: 'point', role: 'aperture', normal: [-0.7, 0.7], fire: true, buildingType: 'command', building: command, radius: 42, intensity: 1, alpha: 0.4, color: '#ffbc62' },
+            { id: 'building.command.point.148.204', kind: 'point', role: 'fixture', fire: true, buildingType: 'command', building: command, radius: 42, intensity: 1, alpha: 0.4, color: '#ffbc62' },
+            { id: 'building.command.point.124.196', kind: 'point', role: 'aperture', fire: false, buildingType: 'command', building: command, radius: 80, intensity: 1, alpha: 0.4, color: '#ffcc66' },
+            { id: 'building.harbor.point.18.150', kind: 'point', role: 'aperture', normal: [0.7, 0.7], fire: false, buildingType: 'harbor', building: harbor, radius: 96, intensity: 1, alpha: 0.4, color: '#ffd37a' },
+            { id: 'building.harbor.point.187.51', kind: 'point', role: 'aperture', fire: false, buildingType: 'harbor', building: harbor, radius: 48, intensity: 1, alpha: 0.4, color: '#ffd37a' },
+        ],
+        _workingVisitorCountFor: () => 0,
+        _forgeGlowIntensity: () => 0,
+        _beaconScaleFor: () => 1,
+        _workTierFor: () => 'dormant',
+        _ritualLightSources: () => [],
+        _forgeSpillLightSources: () => [],
+        _archiveSpillLightSources: () => [],
+        _apertureSources: () => [],
+    });
+
+    // Night, empty village: Command's two braziers and Harbor's quay lantern
+    // emit as role: 'fixture' (omni, normal: null); non-fixture sources stay dark.
+    const nightLights = makeRenderer(22 * 60).getLightSources();
+    assert.deepEqual(
+        nightLights.map(l => l.id),
+        ['building.command.point.94.180', 'building.command.point.148.204', 'building.harbor.point.18.150'],
+    );
+    for (const light of nightLights) {
+        assert.equal(light.role, 'fixture', `${light.id} emits as a fixture`);
+        assert.equal(light.normal, null, `${light.id} is omni (no wall-face normal)`);
+    }
+
+    // Noon: lamp clock is off, so the three lamp-clock fixtures are dark while
+    // ordinary daytime sources stay unchanged.
+    const dayIds = makeRenderer(12 * 60).getLightSources().map(l => l.id);
+    assert.ok(!dayIds.includes('building.command.point.94.180'));
+    assert.ok(!dayIds.includes('building.command.point.148.204'));
+    assert.ok(!dayIds.includes('building.harbor.point.18.150'));
+    assert.ok(dayIds.includes('building.command.point.124.196'));
+
+    // Dusk settling (Lamplighter's Round): Harbor sits near the Lighthouse and
+    // catches (~1.9 min after duskStart 1132.5) before Command inland (~3.3 min);
+    // reduced motion lights both together on the shared lamp clock.
+    const midRoundMinute = 1135;
+    const midRoundIds = makeRenderer(midRoundMinute, { motionScale: 1 }).getLightSources().map(l => l.id);
+    assert.ok(midRoundIds.includes('building.harbor.point.18.150'), 'Harbor catches early in the round');
+    assert.ok(!midRoundIds.includes('building.command.point.94.180'), 'Command inland waits for the round');
+    const reducedIds = makeRenderer(midRoundMinute, { motionScale: 0 }).getLightSources().map(l => l.id);
+    assert.ok(reducedIds.includes('building.command.point.94.180'), 'reduced motion lights Command on the shared clock');
+    assert.ok(reducedIds.includes('building.harbor.point.18.150'), 'reduced motion lights Harbor on the shared clock');
 });
 
 test('only present mid-turn working agents light building windows (V8 isWorkingVisitor)', () => {
@@ -209,4 +276,238 @@ test('midnight-oil fixture pins two working buildings and non-working buildings 
         MIDNIGHT_OIL_SCENARIO.agents.filter(agent => !isWorkingVisitor(agent)).map(agent => agent.id),
         ['oil-idle', 'oil-waiting'],
     );
+});
+
+function makeRoomRenderer({ minuteOfDay = 22 * 60, buildings = null, roomsByType = null, agentSprites = [], motionScale = 1 } = {}) {
+    const list = buildings || [
+        { type: 'command', containsPoint: () => false },
+        { type: 'archive', containsPoint: () => false },
+        { type: 'forge', containsPoint: () => false },
+    ];
+    const counts = roomsByType || { command: 11, archive: 10, forge: 2, mine: 1, taskboard: 2, harbor: 8, watchtower: 3, tavern: 5, portal: 0 };
+    return Object.assign(Object.create(BuildingSprite.prototype), {
+        buildings: list,
+        agentSprites,
+        motionScale,
+        atmosphereState: {
+            phase: minuteOfDay >= 19 * 60 || minuteOfDay < 6 * 60 ? 'night' : 'day',
+            clock: { minuteOfDay },
+            reactions: { windowWarmth: 0.8 },
+        },
+        lightingState: { lightBoost: 1, beaconIntensity: 1 },
+        harborStatus: { failedPushActive: false, activeWorkingCount: 0 },
+        assets: { getEntry: () => null },
+        _visitorCountByType: new Map(),
+        _visitorStatusByType: new Map(),
+        _visitorRepoByType: new Map(),
+        _litGateByType: new Map(),
+        _roomSlotsByType: new Map(),
+        _roomLitByType: new Map(),
+        _apertureModel: null,
+        _apertureProfile: null,
+        roomGlass: { roomCount: (type) => counts[type] ?? 0 },
+        _spriteTilePosition: (sprite) => sprite._pos || { tileX: 15, tileY: 22 },
+        _workingVisitorCountFor(building) { return this._visitorStatusByType.get(building?.type)?.working || 0; },
+        _forgeGlowIntensity: () => 0,
+        _workTierFor: () => 'dormant',
+        _ritualLightSources: () => [],
+        _forgeSpillLightSources: () => [],
+        _archiveSpillLightSources: () => [],
+        _staticLightSources: () => [],
+        _apertureSources: () => [],
+    });
+}
+
+test('NE P3.1: keeper room 0 holds KEEPER_ROOM_GATE at lamp course >= 2 with 0 workers, and stays dark by day and at settling', () => {
+    assert.equal(KEEPER_ROOM_GATE, 0.40);
+    assert.equal(ROUTING_ROOM_GATE, 0.6);
+    assert.equal(ROOM_APERTURE_GATE_MIN, 0.5);
+
+    // Lamp course 2 (lamplight, ~19:45) and 3 (deep night, 22:00): room 0 holds 0.40, other rooms 0.
+    for (const minuteOfDay of [19 * 60 + 50, 22 * 60]) {
+        const renderer = makeRoomRenderer({ minuteOfDay });
+        renderer._updateVisitorCounts();
+        renderer._updateNightLightGates(MIDNIGHT_OIL_RISE_MS);
+        for (const type of ['command', 'archive', 'forge']) {
+            assert.ok(Math.abs(renderer.roomGate(type, 0) - KEEPER_ROOM_GATE) < 1e-6, `${type} at ${minuteOfDay}`);
+            assert.ok(Math.abs(renderer.roomGlassGate(type, 0) - KEEPER_ROOM_GATE) < 1e-6, `${type} glass at ${minuteOfDay}`);
+            assert.equal(renderer.roomGate(type, 1), 0, `${type} room 1 stays dark`);
+        }
+    }
+
+    // Settling dusk (lamp course 1, e.g. 19:00): no keeper yet.
+    const dusk = makeRoomRenderer({ minuteOfDay: 19 * 60 });
+    dusk._updateVisitorCounts();
+    dusk._updateNightLightGates(MIDNIGHT_OIL_RISE_MS);
+    assert.equal(dusk.roomGate('command', 0), 0);
+
+    // Noon (lamp course 0): no keeper, day unchanged.
+    const noon = makeRoomRenderer({ minuteOfDay: 12 * 60 });
+    noon._updateVisitorCounts();
+    noon._updateNightLightGates(MIDNIGHT_OIL_RISE_MS);
+    assert.equal(noon.roomGate('command', 0), 0);
+    assert.equal(noon.roomGlassGate('command', 0), 0);
+});
+
+test('NE P3.1: routing working session lights at 0.6 after physical workers and lifts to 1.0 on arrival in the same room', () => {
+    let arrived = false;
+    const archive = { type: 'archive', containsPoint: () => arrived };
+    const workerA = {
+        agent: { id: 'agent-a', status: 'working', targetBuildingType: 'archive' },
+        _lastIntentSnapshot: { building: 'archive', itinerary: { inferred: false } },
+    };
+    const renderer = makeRoomRenderer({
+        minuteOfDay: 22 * 60,
+        buildings: [archive],
+        agentSprites: [workerA],
+    });
+
+    // Walking toward Archive: takes room 0 at ROUTING_ROOM_GATE (0.6).
+    renderer._updateVisitorCounts();
+    renderer._updateNightLightGates(MIDNIGHT_OIL_RISE_MS);
+    assert.equal(renderer._roomSlotsByType.get('archive').routingAssignment.get('agent-a'), 0);
+    assert.equal(renderer._roomSlotsByType.get('archive').assignment.size, 0);
+    assert.ok(Math.abs(renderer.roomGate('archive', 0) - ROUTING_ROOM_GATE) < 1e-6);
+    assert.equal(renderer.roomGate('archive', 1), 0);
+
+    // Arrival: keeps room 0 and lifts to 1.0.
+    arrived = true;
+    renderer._updateVisitorCounts();
+    renderer._updateNightLightGates(MIDNIGHT_OIL_RISE_MS);
+    assert.equal(renderer._roomSlotsByType.get('archive').assignment.get('agent-a'), 0);
+    assert.equal(renderer._roomSlotsByType.get('archive').routingAssignment.size, 0);
+    assert.equal(renderer.roomGate('archive', 0), 1);
+
+    // Second session still walking takes room 1 at 0.6 while room 0 stays at 1.0.
+    const workerB = {
+        agent: { id: 'agent-b', status: 'working', targetBuildingType: 'archive' },
+        _lastIntentSnapshot: { building: 'archive', itinerary: { inferred: false } },
+    };
+    archive.containsPoint = (x) => x === 9;
+    workerA._pos = { tileX: 9, tileY: 17 };
+    workerB._pos = { tileX: 16, tileY: 22 };
+    renderer.agentSprites = [workerA, workerB];
+    renderer._updateVisitorCounts();
+    renderer._updateNightLightGates(MIDNIGHT_OIL_RISE_MS);
+    assert.equal(renderer.roomGate('archive', 0), 1);
+    assert.ok(Math.abs(renderer.roomGate('archive', 1) - ROUTING_ROOM_GATE) < 1e-6);
+
+    // By day, routing lights nothing (day unchanged).
+    const noon = makeRoomRenderer({
+        minuteOfDay: 12 * 60,
+        buildings: [{ type: 'archive', containsPoint: () => false }],
+        agentSprites: [workerB],
+    });
+    noon._updateVisitorCounts();
+    noon._updateNightLightGates(MIDNIGHT_OIL_RISE_MS);
+    assert.equal(noon.roomGate('archive', 0), 0);
+    assert.equal(noon.roomGlassGate('archive', 0), 0);
+});
+
+test('NE P3.1: keeper lays no aperture pool (<= 0.5), while routing (0.6) and arrived work (1.0) do', () => {
+    const command = { type: 'command', containsPoint: () => false };
+    const mine = { type: 'mine', containsPoint: () => false };
+    const standInSource = { id: 'mine:standin', kind: 'point', buildingType: 'mine', building: mine, radius: 80, intensity: 1, alpha: 0.4, color: '#ffb84d' };
+    const apertureRecord = {
+        building: command,
+        template: { group: 1, area: 40, key: '143.103', cx: 143, cy: 103, color: '#fcb447' },
+        source: { id: 'aperture:command:143.103', kind: 'point', role: 'aperture', x: 100, y: 100, color: '#fcb447', buildingType: 'command', building: command },
+    };
+    const renderer = makeRoomRenderer({
+        minuteOfDay: 22 * 60,
+        buildings: [command, mine],
+        agentSprites: [],
+    });
+    renderer._staticLightSources = () => [standInSource];
+    renderer._apertureStandIns = new Map([[standInSource, 1]]);
+    renderer._apertureSources = () => [apertureRecord];
+
+    // Empty village at 22:00: keeper holds 0.40 on both buildings, emits ZERO street pools.
+    renderer._updateVisitorCounts();
+    renderer._updateNightLightGates(MIDNIGHT_OIL_RISE_MS);
+    assert.ok(Math.abs(renderer.roomGate('command', 0) - KEEPER_ROOM_GATE) < 1e-6);
+    assert.ok(Math.abs(renderer.roomGate('mine', 0) - KEEPER_ROOM_GATE) < 1e-6);
+    assert.deepEqual(renderer.getLightSources().map(l => l.id), []);
+
+    // Routing session at 0.6 (> 0.5): lays its aperture pool (and stand-in pool on Mine).
+    renderer.agentSprites = [
+        { agent: { id: 'r1', status: 'working', targetBuildingType: 'command' } },
+        { agent: { id: 'r2', status: 'working', targetBuildingType: 'mine' } },
+    ];
+    renderer._updateVisitorCounts();
+    renderer._updateNightLightGates(MIDNIGHT_OIL_RISE_MS);
+    const routingLights = renderer.getLightSources();
+    assert.deepEqual(routingLights.map(l => l.id).sort(), ['aperture:command:143.103', 'mine:standin']);
+    const routingIntensity = routingLights.find(l => l.id === 'aperture:command:143.103').intensity;
+
+    // Arrival lifts Command to 1.0 with stronger full aperture spill.
+    command.containsPoint = () => true;
+    renderer._updateVisitorCounts();
+    renderer._updateNightLightGates(MIDNIGHT_OIL_RISE_MS);
+    const workedIntensity = renderer.getLightSources().find(l => l.id === 'aperture:command:143.103').intensity;
+    assert.ok(workedIntensity > routingIntensity, `worked (${workedIntensity}) > routing (${routingIntensity})`);
+});
+
+test('NE P3.1: waiting, needs-you, errored, rate-limited and idle villagers light nothing beyond the empty keeper', () => {
+    const command = { type: 'command', containsPoint: () => true };
+    const archive = { type: 'archive', containsPoint: () => false };
+    const renderer = makeRoomRenderer({
+        minuteOfDay: 22 * 60,
+        buildings: [command, archive],
+        agentSprites: [
+            { agent: { id: 'w1', status: 'waiting', targetBuildingType: 'command' } },
+            { agent: { id: 'n1', status: 'waiting_on_user', turnState: 'tool_pending', targetBuildingType: 'command' } },
+            { agent: { id: 'e1', status: 'errored', targetBuildingType: 'archive' } },
+            { agent: { id: 'q1', status: 'rate_limited', targetBuildingType: 'archive' } },
+            { agent: { id: 'i1', status: 'idle', targetBuildingType: 'archive' } },
+        ],
+    });
+    renderer._updateVisitorCounts();
+    renderer._updateNightLightGates(MIDNIGHT_OIL_RISE_MS);
+    for (const type of ['command', 'archive']) {
+        const slots = renderer._roomSlotsByType.get(type);
+        assert.equal(slots.assignment.size, 0, `${type} has no worked room`);
+        assert.equal(slots.routingAssignment.size, 0, `${type} has no routing room`);
+        assert.ok(Math.abs(renderer.roomGate(type, 0) - KEEPER_ROOM_GATE) < 1e-6, `${type} holds only dim keeper`);
+        assert.equal(renderer.roomGate(type, 1), 0, `${type} room 1 stays dark`);
+    }
+});
+
+test('NE P3.1: RoomGlass nightLitStep separates keeper (0.40), routing (0.60) and worked (1.0) and repaints litPatch', () => {
+    assert.equal(nightLitStep(KEEPER_ROOM_GATE), 0.4);
+    assert.equal(nightLitStep(ROUTING_ROOM_GATE), 0.6);
+    assert.equal(nightLitStep(1), 1);
+
+    const prevDoc = globalThis.document;
+    const writes = [];
+    globalThis.document = {
+        createElement: () => ({
+            width: 0,
+            height: 0,
+            getContext: () => ({
+                createImageData: (w, h) => ({ width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }),
+                putImageData: (img) => { writes.push(new Uint8ClampedArray(img.data)); },
+            }),
+        }),
+    };
+    try {
+        const rg = new RoomGlass(null);
+        rg._maps.set('command', {
+            left: 0, top: 0, w: 2, h: 1, spriteWidth: 2, rooms: 2,
+            group: new Int8Array([1, 2]),
+            albedo: new Uint8ClampedArray([47, 52, 69, 255, 47, 52, 69, 255]),
+            emissive: new Uint8ClampedArray([252, 180, 71, 124, 252, 180, 71, 124]),
+            channels: { material: null, occluder: null },
+        });
+        const keeper = rg.litPatch('command', (g) => (g === 1 ? KEEPER_ROOM_GATE : 0));
+        assert.ok(keeper);
+        assert.equal(writes[0][3], Math.round(255 * 0.4));
+        assert.equal(writes[0][7], 0);
+        const rev1 = keeper.revision;
+        const routing = rg.litPatch('command', (g) => (g === 1 ? ROUTING_ROOM_GATE : 0));
+        assert.ok(routing.revision > rev1, 'routing tier repaints litPatch');
+        assert.equal(writes[2][3], Math.round(255 * 0.6));
+    } finally {
+        globalThis.document = prevDoc;
+    }
 });

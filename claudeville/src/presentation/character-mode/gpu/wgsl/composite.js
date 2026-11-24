@@ -124,7 +124,8 @@ export const COMPOSITE_ROLES_BINDINGS_WGSL = /* wgsl */ `
 // other pixel holds the 8-bit step the SDR canvas would store, so nothing
 // but role pixels moves. P3 (frame.p3Enabled; the canvas is display-p3)
 // converts every pixel to P3 numbers and stretches role pixels' chroma.
-// Bloom strength is 0 under HDR.
+// Bloom runs at half strength under HDR (NE P1.4), clamped into [0, 1] before
+// the role gain and hdrEmitterCap so marks keep their headroom above emitters.
 export const COMPOSITE_ROLES_MAIN_WGSL = /* wgsl */ `
 @fragment fn compositeRolesFs(in: FullscreenOut) -> @location(0) vec4f {${COMPOSITE_SCENE_WGSL}
   let rgb = color + bloomRgb * frame.bloomStrength;

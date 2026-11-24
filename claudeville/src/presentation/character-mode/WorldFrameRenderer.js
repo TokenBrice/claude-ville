@@ -883,8 +883,6 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
         gpuFeed.loneCloud = renderer.ambientLoneCloud || null;
         // 0.10 — the lightning exposure scale the composite applies (0 = none).
         gpuFeed.flash = strike.exposure;
-        // 2.7 — the Lighthouse beam fan (null by day), swept on the motion clock.
-        gpuFeed.beam = renderer.buildingRenderer?.lighthouseBeam?.(renderer.motionTimeMs) || null;
         gpuFeed.lighting = atmosphere?.lighting || null;
         // 3.2 — the resident shader consumes the same accumulated wetness the
         // Canvas damp marks use; it never re-derives rain history in GLSL.

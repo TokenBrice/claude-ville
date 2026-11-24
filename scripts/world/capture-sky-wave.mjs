@@ -5,6 +5,7 @@ import { chromium } from 'playwright';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { prepareNightCapture } from '../smoke/support/night-capture.mjs';
 
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const outDir = join(repoRoot, 'output', 'playwright');
@@ -43,6 +44,8 @@ try {
   // 2. Night clear — denser starfield + canopy (5.2/5.6)
   await fixSky(22, { type: 'clear', intensity: 0, windX: 0, seed: 4242 });
   await page.waitForTimeout(900);
+  // NE P0.2 — pin FULL and settle working visitors before the night capture.
+  const nightCapture = await prepareNightCapture(page, { force: true });
   await shot('night-stars');
 
   // 3. Storm (timeline cause) — storm canopy still bakes (5.5 non-fleet path)
@@ -70,7 +73,7 @@ try {
       horizonY: sky?._horizonY ?? null,
     } : null;
   });
-  console.log('probe:', JSON.stringify(probe));
+  console.log('probe:', JSON.stringify({ ...probe, nightLadderLevel: nightCapture.ladderLevel }));
 
   console.log(errors.length ? `CONSOLE ERRORS:\n${errors.join('\n')}` : 'no console errors');
 } finally {

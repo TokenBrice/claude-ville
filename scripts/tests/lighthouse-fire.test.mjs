@@ -1,68 +1,108 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { BuildingSprite } from '../../claudeville/src/presentation/character-mode/BuildingSprite.js';
+import { existsSync, readFileSync } from 'node:fs';
+import {
+    BuildingSprite,
+    LIGHTHOUSE_COLUMN_COLOR,
+    LIGHTHOUSE_COLUMN_FLASH_GAINS,
+    PHAROS_FLASH_PERIOD_STEPS,
+    PHAROS_FLASH_STEP_MS,
+    pharosFlashCourseAt,
+} from '../../claudeville/src/presentation/character-mode/BuildingSprite.js';
 import { ChimneySmoke } from '../../claudeville/src/presentation/character-mode/ChimneySmoke.js';
 import { ART_RAMPS } from '../../claudeville/src/config/artPalette.js';
 import { fireBreath } from '../../claudeville/src/presentation/character-mode/LightSourceRegistry.js';
-import { resolveBeam, BEAM_NEAR_HALF_WIDTH } from '../../claudeville/src/presentation/character-mode/gpu/GpuFrameState.js';
-import { BEAM_WGSL } from '../../claudeville/src/presentation/character-mode/gpu/wgsl/beam.js';
 
 const root = new URL('../../', import.meta.url);
 const source = path => readFileSync(new URL(path, root), 'utf8');
-const atmosphere = hour => ({ clock: { minuteOfDay: hour * 60 }, season: 'autumn', phase: hour > 20 || hour < 5 ? 'night' : 'day', weather: { type: 'clear' } });
-function beacon(hour) {
+const atmosphere = (hour, weather = { type: 'clear', fog: 0 }) => ({
+    clock: { minuteOfDay: hour * 60 },
+    season: 'autumn',
+    phase: hour > 20 || hour < 5 ? 'night' : 'day',
+    weather,
+    lighting: hour > 20 || hour < 5 ? { sourceEnergy: { core: 0.95, halo: 1.3, spill: 1, bloom: 0.8 } } : { sourceEnergy: { core: 0, halo: 1, spill: 0, bloom: 0 } },
+});
+function beacon(hour, { weather = { type: 'clear', fog: 0 }, watching = 0 } = {}) {
     return Object.assign(Object.create(BuildingSprite.prototype), {
-        atmosphereState: atmosphere(hour), buildings: [{ type: 'watchtower' }],
+        atmosphereState: atmosphere(hour, weather),
+        buildings: [{ type: 'watchtower' }],
         assets: { getEntry: () => ({ id: 'building.watchtower' }), getAnchor: () => [144, 320] },
+        partGates: { workingCount: (type) => (type === 'watchtower' ? watching : 0) },
         _buildingScreenCenter: () => ({ x: 1000, y: 1000 }),
+        _staticLightSources: () => [{ id: 'wt', buildingType: 'watchtower', building: { type: 'watchtower' }, x: 596, y: 401, ground: { x: 598, y: 628 }, radius: 200, role: 'fixture' }],
+        _lighthouseMirrorDrop: () => 100,
     });
 }
 
-test('one stepped 0.2 rad/s shaft lands 35 percent out and only at full lamplight', () => {
-    for (const hour of [12, 19]) assert.equal(beacon(hour).lighthouseBeam(0), null);
-    for (const hour of [23, 2]) {
-        const sprite = beacon(hour);
-        const a = { ...sprite.lighthouseBeam(0), foot: { ...sprite.lighthouseBeam(0).foot } };
-        assert.equal(a.length, 520 * 0.65);
-        assert.equal(a.foot.x, Math.round(1022 + Math.cos(a.angle) * 182));
-        assert.equal(a.foot.y, Math.round(1004 + Math.sin(a.angle) * 91));
-        assert.equal(sprite.lighthouseBeam(100).angle, a.angle, 'angle holds within one 140 ms step');
-        const b = sprite.lighthouseBeam(1000);
-        assert.ok(Math.abs(b.angle - a.angle - 0.196) < 1e-10);
-        assert.equal(resolveBeam({ beam: b }).shape[1], BEAM_NEAR_HALF_WIDTH);
-        assert.equal(fireBreath(1000, 'fire:watchtower', 0), 1);
+test('pharosFlashCourseAt gives Fl 6 s at rest, Fl(2) 6 s while watched, and 0 under reduced motion', () => {
+    assert.equal(PHAROS_FLASH_STEP_MS, 140);
+    assert.equal(PHAROS_FLASH_PERIOD_STEPS, 43);
+    const steps = watched => Array.from({ length: 43 }, (_, i) => pharosFlashCourseAt(i * 140 + 70, watched));
+    assert.deepEqual(steps(false).slice(0, 7), [1, 2, 3, 3, 2, 1, 0]);
+    assert.equal(steps(false).filter(Boolean).length, 6, 'one 840 ms pass per 6.02 s');
+    assert.deepEqual(steps(true).slice(0, 16), [1, 2, 3, 3, 2, 1, 0, 0, 0, 1, 2, 3, 3, 2, 1, 0]);
+    assert.equal(steps(true).filter(Boolean).length, 12, 'a working watcher adds the second pass at step 9');
+    assert.equal(pharosFlashCourseAt(43 * 140 + 300, false), pharosFlashCourseAt(300, false), 'period 43 steps (6.02 s)');
+    assert.equal(pharosFlashCourseAt(141, false), pharosFlashCourseAt(279, false), 'held within a 140 ms step');
+    for (const step of [0, 1, 2, 3, 9, 11]) {
+        assert.equal(pharosFlashCourseAt(step * 140 + 10, true, 0), 0, 'reduced motion returns 0');
     }
+    assert.equal(fireBreath(1000, 'fire:watchtower', 0), 1);
 });
 
-test('warm receiver stops stay subordinate; obsolete twin, blades and palette are gone', () => {
+test('water column uses warm beaconFire[4] hue and moderate flash gains in step with the lantern; null by day', () => {
+    assert.equal(LIGHTHOUSE_COLUMN_COLOR, ART_RAMPS.beaconFire[4]);
+    assert.deepEqual([...LIGHTHOUSE_COLUMN_FLASH_GAINS], [1, 1.15, 1.3, 1.45]);
+    for (const hour of [12, 19]) assert.equal(beacon(hour).lighthouseColumnSource(), null);
+
+    const sprite = beacon(23, { watching: 1 });
+    sprite.motionScale = 1;
+    const sample = (step) => {
+        sprite._partClockMs = () => step * 140 + 10;
+        return sprite.lighthouseColumnSource();
+    };
+    const rest = sample(20);
+    const c1 = sample(0);
+    const c2 = sample(1);
+    const c3 = sample(2);
+    const pass2Peak = sample(11);
+    assert.equal(rest.color, ART_RAMPS.beaconFire[4]);
+    assert.equal(rest.columnReach, 1.2);
+    for (const [col, mult] of [[c1, 1.15], [c2, 1.3], [c3, 1.45]]) {
+        assert.ok(Math.abs(col.intensity - rest.intensity * mult) < 1e-9, `gain ×${mult}`);
+        assert.equal(col.columnReach, 1.2);
+    }
+    assert.equal(pass2Peak.intensity, c3.intensity, 'watched second pass flashes column in lockstep');
+
+    // Unwatched watchtower stays at rest during step 11.
+    const idle = beacon(23, { watching: 0 });
+    idle.motionScale = 1;
+    idle._partClockMs = () => 11 * 140 + 10;
+    assert.equal(idle.lighthouseColumnSource().intensity, rest.intensity);
+
+    // Reduced motion holds rest gain even during a flash step.
+    sprite.motionScale = 0;
+    assert.equal(sample(2).intensity, rest.intensity, 'reduced motion holds steady column');
+});
+
+test('obsolete beam pipeline and shaders are removed across all three backends', () => {
     assert.equal('lampBeam' in ART_RAMPS, false);
     assert.deepEqual(ART_RAMPS.beaconFire.slice(3), ['#c8743a', '#f0a850', '#ffd88a', '#fff4d6']);
-    for (const hex of ART_RAMPS.beaconFire.slice(0, 3)) {
-        const rgb = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255);
-        const hi = Math.max(...rgb), lo = Math.min(...rgb);
-        assert.ok((hi - lo) / (1 - Math.abs(hi + lo - 1)) < 0.4);
-        const linear = rgb.map(c => c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
-        const [r, g, b] = linear;
-        const L = 0.2104542553 * Math.cbrt(0.4122214708*r + 0.5363325363*g + 0.0514459929*b)
-            + 0.793617785 * Math.cbrt(0.2119034982*r + 0.6806995451*g + 0.1073969566*b)
-            - 0.0040720468 * Math.cbrt(0.0883024619*r + 0.2817188376*g + 0.6299787005*b);
-        assert.ok(L <= 0.83, `${hex} receiver okL ${L}`);
-    }
+    assert.equal(existsSync(new URL('claudeville/src/presentation/character-mode/gpu/wgsl/beam.js', root)), false);
     const building = source('claudeville/src/presentation/character-mode/BuildingSprite.js');
-    assert.doesNotMatch(building, /_fillPixelWedge|_fillLanternFan|LANTERN_FAN_STEPS|angle \+ Math\.PI/);
-    const glsl = source('claudeville/src/presentation/character-mode/gpu/GpuWorldRenderer.js');
-    for (const shader of [glsl, BEAM_WGSL]) {
-        assert.match(shader, /swellCrest\(cell, swellPhase\(cell\)\)/);
-        assert.match(shader, /deepSwellLit\(cell, tick/);
-        assert.doesNotMatch(shader, /lighthouseFan\(g, -dir/);
-        assert.match(shader, /BEACON_WATER_STOPS/);
+    assert.doesNotMatch(building, /_fillBeaconShaft|_fillPixelWedge|_fillLanternFan|lighthouseBeam|searchlightAngleAt|BEAM_NEAR_HALF_WIDTH|WATCHTOWER_SEARCHLIGHT/);
+    for (const rel of [
+        'claudeville/src/presentation/character-mode/gpu/GpuWorldRenderer.js',
+        'claudeville/src/presentation/character-mode/gpu/wgsl/index.js',
+        'claudeville/src/presentation/character-mode/gpu/wgsl/common.js',
+        'claudeville/src/presentation/character-mode/gpu/wgsl/water.js',
+        'claudeville/src/presentation/character-mode/gpu/wgsl/openSea.js',
+        'claudeville/src/presentation/character-mode/gpu/wgsl/scene.js',
+    ]) {
+        assert.doesNotMatch(source(rel), /lighthouseSheen|LIGHTHOUSE_BEAM|u_beam|BEAM_WGSL|lighthouseDash/, rel);
     }
     const canvas = source('claudeville/src/presentation/character-mode/CanvasWaterState.js');
-    assert.match(canvas, /const beaconOut = hex => u32Of\(hexRgb01\(hex\)/, 'warm receivers are not clipped by the night inverse grade');
-    assert.match(canvas, /drawCarvedTerrainLayer\(overlayCtx, renderer, state\.beam\)/, 'warm glints land after grade and stay terrain-carved');
-    assert.match(canvas, /state\.beamLive = Boolean\(beam\)/, 'no retained daytime beam');
-    assert.match(canvas, /path\.u32\[py \* path\.canvas\.width \+ px\] !== 0/, 'sun and moon path texels keep precedence');
+    assert.doesNotMatch(canvas, /rebuildBeam|beamBayer|beamLive/);
 });
 
 test('watchtower crown smokes by lamps clock, not working occupancy; workshops unchanged', () => {
@@ -81,10 +121,8 @@ test('watchtower crown smokes by lamps clock, not working occupancy; workshops u
     smoke.update({ now: 3000, atmosphere: atmosphere(12), particleSystem: particles, presence: new Map([['forge', { tier: 'occupied' }], ['watchtower', { tier: 'busy' }]]) });
     assert.equal(spawned.length, 2);
     assert.equal(spawned[1][4].tag, 'chimney:forge:0');
-    // LM-04: held MotionClock freezes workshop smoke even when wall-clock `now` advances.
     smoke.update({ now: 25000, timeMs: 3000, atmosphere: atmosphere(12), particleSystem: particles, presence: new Map([['forge', { tier: 'occupied' }]]) });
     assert.equal(spawned.length, 2, 'held motion clock spawns no new workshop puff despite wall-clock advance');
-    // LM-04: rewinding MotionClock (Day Retold scrub or pose reset) resets _lastPuff so smoke resumes immediately.
     smoke.update({ now: 26000, timeMs: 1400, atmosphere: atmosphere(23), particleSystem: particles, presence: new Map([['forge', { tier: 'occupied' }]]) });
     assert.equal(spawned.length, 4, 'rewound motion clock spawns fresh puffs for both active chimneys');
 });
@@ -100,7 +138,6 @@ test('LM-04: pre-seed populates 3 staggered puffs on real MotionClock cold boot 
         { key: 'watchtower:0', type: 'watchtower', x: 500, y: 120, hearth: true, building: {}, localY: 50 },
     ];
 
-    // 1. Real 60 Hz cold boot from t = 0 (Frame 1 null atmosphere, Frame 2 t = 33.3 ms) pre-seeds 1 mouth + 3 staggered puffs.
     const coldClock = createMotionClock();
     const coldSmoke = new ChimneySmoke();
     coldSmoke.sources = () => sources;
@@ -122,11 +159,8 @@ test('LM-04: pre-seed populates 3 staggered puffs on real MotionClock cold boot 
     assert.equal(forgePuffs.length, 4, '1 mouth + 3 staggered puffs on real 60 Hz cold busy Forge');
     assert.equal(towerPuffs.length, 4, '1 mouth + 3 staggered puffs on real 60 Hz cold night Pharos');
     const forgeHeights = forgePuffs.map(p => 200 - p.y).sort((a, b) => a - b);
-    // The top pre-seed sits at 0.48 of a dry puff's life: at least 0.48 x 104
-    // frames x 0.46 px ≈ 23 px up whatever the random life and speed.
     assert.ok(forgeHeights[0] === 0 && forgeHeights[3] >= 22, `staggered column heights: ${forgeHeights.join(', ')}`);
 
-    // 2. Booting empty at noon spawns 0 smoke; mid-session activation emits ONLY 1 mouth puff (no 4-puff pop).
     const liveClock = createMotionClock();
     const liveSmoke = new ChimneySmoke();
     liveSmoke.sources = () => sources;
@@ -144,7 +178,6 @@ test('LM-04: pre-seed populates 3 staggered puffs on real MotionClock cold boot 
         presence: new Map([['forge', { tier: 'busy' }]]),
     });
     assert.equal(livePs.particles.filter(p => p.tag === 'chimney:forge:0').length, 1, 'mid-session Forge activation emits 1 puff only');
-    // 3. Large minuteOfDay scrub (noon -> 23:00) pre-seeds Watchtower without duplicating Forge.
     advanceMotionClock(liveClock, 1000 / 60, 1);
     liveSmoke.update({
         now: liveClock.elapsedMs,
@@ -157,31 +190,74 @@ test('LM-04: pre-seed populates 3 staggered puffs on real MotionClock cold boot 
     assert.equal(livePs.particles.filter(p => p.tag === 'chimney:forge:0').length, 1, 'active Forge keeps its 1 puff');
 });
 
-test('fire overlay and embers are clock-only, rear shaft suppressed, reduced motion rests', () => {
+test('fire overlay flashes with edge-on horizontal flare lengthened in fog, Fl(2) only when watched, steady under reduced motion, off by day', () => {
     const sprite = beacon(23);
     sprite.motionScale = 1;
-    sprite._partClockMs = () => 0;
-    const shafts = [];
+    sprite.partGates = null;
+    sprite._visitorStatusByType = new Map();
     const halos = [];
-    sprite._fillBeaconShaft = (...args) => shafts.push(args);
-    sprite._fillPixelCircle = (...args) => halos.push({ radius: args[3], alpha: ctx.globalAlpha });
-    const ctx = { save() {}, restore() {} };
+    const flares = [];
+    sprite._fillDitheredCircle = (ctx, x, y, radius, share, alpha) => halos.push({ kind: 'dither', radius, share, alpha });
+    sprite._fillPixelCircle = (ctx, x, y, radius) => halos.push({ kind: 'solid', radius, alpha: ctx.globalAlpha });
+    const ctx = { save() {}, restore() {}, globalAlpha: 1, fillStyle: '', fillRect: (...args) => flares.push(args) };
+
+    // Rest between passes: 4 halo courses (2 Bayer-dithered outer, 2 solid inner), zero flare.
+    sprite._partClockMs = () => 20 * 140 + 10;
     sprite._drawWatchtowerFire(ctx, { x: 100, y: 100 });
-    assert.equal(shafts.length, 1, 'held heading points toward visible sea');
     assert.equal(halos.length, 4);
-    assert.ok(halos[0].radius >= 27 && halos[2].radius >= 9, 'halo reads at island zoom');
-    sprite._partClockMs = () => 1000;
+    assert.deepEqual(halos.map(h => h.kind), ['dither', 'dither', 'solid', 'solid']);
+    assert.equal(flares.length, 0, 'no flare between passes');
+    assert.ok(halos[0].radius >= 27 && halos[2].radius >= 9, 'halo keeps LO radii');
+
+    // Peak of first pass (course 3): brighter core, edge-on flare at lamp height, no diagonal ticks.
+    sprite._partClockMs = () => 3 * 140 + 10;
     sprite._drawWatchtowerFire(ctx, { x: 100, y: 100 });
-    assert.ok(halos[4].alpha > halos[0].alpha, 'camera-facing mirror brightens one held halo course');
-    sprite._partClockMs = () => 23000;
+    assert.ok(halos[7].alpha > halos[3].alpha, 'the pass brightens the core');
+    assert.ok(flares.length > 40, 'peak flare leaves the glass');
+    assert.ok(flares.every(([x, y]) => Math.abs(y - 100) <= 1 || x === 100), 'strictly horizontal rows ±1 plus vertical spike only (no diagonal ticks)');
+    assert.ok(flares.every(([, y]) => Math.abs(y - 100) <= 7), 'flare stays at lamp height (spike ±7 max)');
+    const clearRow = flares.filter(([, y]) => y === 100).map(([x]) => x);
+    const clearReach = Math.max(...clearRow) - 100;
+    assert.ok(clearReach >= 40 && 100 - Math.min(...clearRow) >= 40, 'clear peak flare reaches both sides (~44 texels)');
+
+    // Fog / storm lengthens the horizontal flare by (1 + 1.5 * fog).
+    flares.length = 0;
+    sprite.atmosphereState = atmosphere(23, { type: 'storm', fog: 0.34 });
     sprite._drawWatchtowerFire(ctx, { x: 100, y: 100 });
-    assert.equal(shafts.length, 2, 'rear arc never paints through the tower');
+    const fogRow = flares.filter(([, y]) => y === 100).map(([x]) => x);
+    const fogReach = Math.max(...fogRow) - 100;
+    assert.ok(fogReach > clearReach + 15, `fog lengthens flare (${clearReach} -> ${fogReach})`);
+    assert.ok(flares.every(([x, y]) => Math.abs(y - 100) <= 1 || x === 100), 'fog adds no descending shaft or separate plumes');
+    sprite.atmosphereState = atmosphere(23);
+
+    // Second pass (step 12): silent when unwatched, fires when watchtower has a working visitor.
+    flares.length = 0;
+    sprite._partClockMs = () => 12 * 140 + 10;
+    sprite._drawWatchtowerFire(ctx, { x: 100, y: 100 });
+    assert.equal(flares.length, 0, 'unwatched: one pass only');
+    sprite._visitorStatusByType = new Map([['watchtower', { working: 1 }]]);
+    sprite._drawWatchtowerFire(ctx, { x: 100, y: 100 });
+    assert.ok(flares.length > 40, 'a working watcher adds the second pass');
+
+    // Reduced motion: steady lamp only (no flash, no flare).
+    flares.length = 0;
+    sprite.motionScale = 0;
+    sprite._drawWatchtowerFire(ctx, { x: 100, y: 100 });
+    assert.equal(flares.length, 0, 'reduced motion: steady lamp with no flare');
+
+    // Daylight draws nothing.
+    sprite.motionScale = 1;
+    const beforeDay = halos.length;
     sprite.atmosphereState = atmosphere(12);
     sprite._drawWatchtowerFire(ctx, { x: 100, y: 100 });
-    assert.equal(halos.length, 12, 'no daylight halo');
+    assert.equal(halos.length, beforeDay, 'no daylight halo or flash');
+
+    // Embers remain clock-only and freeze under reduced motion.
     const sparks = [];
     sprite._spawnBuildingParticle = (...args) => sparks.push(args);
-    sprite._workingVisitorCountFor = () => { throw new Error('fire must not read work'); };
+    sprite._workingVisitorCountFor = () => { throw new Error('embers must not read work'); };
+    sprite._partClockMs = () => 1000;
+    sprite.atmosphereState = atmosphere(12);
     sprite._spawnEmittersFor(sprite.buildings[0], 16);
     assert.equal(sparks.length, 0);
     sprite.atmosphereState = atmosphere(2);

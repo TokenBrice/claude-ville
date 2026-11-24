@@ -379,16 +379,19 @@ export const EFFECT_BUDGET = Object.freeze({
     // 0.1 / 2.4 — light admission is a declared row: how many ranked local
     // lights the scene pass admits (`clampGpuLights` ranks attention >
     // aperture > fixture > point; `binGpuLights` then admits in that order
-    // while every 64x64 backing-px tile the light reaches has one of its 16
+    // while every 64x64 backing-px tile the light reaches has one of its 24
     // slots free; attention lights are admitted past the count). The night's
     // pools ship at every level (V2 tier contract: never below 12 at
     // MINIMAL). 2.4 moved the records into the RGBA32F light texture (unit
     // 9, MAX_LIGHT_RECORDS 256, 16 KiB baseline, like the uniform arrays it
     // replaced), so the count now covers every visible window, lamp and
-    // opening at 5120x1440. Band: the ceiling is the whole FULL - MINIMAL
-    // real-frame delta (WebPlatformGPU appburst, dense-24 22:00 z2
-    // 4880x1392, 4.02 - 1.55 ms, which also sheds bloom and occlusion) until
-    // per-level `gpu-burst.mjs` receipts land; 60 Hz assumed.
+    // opening at 5120x1440. NE P2.6 — LIGHT_TILE_SLOTS 16 -> 24 and
+    // FIXTURE_LIGHT_RESERVE 12 -> 24 to hold the wider night pools; a fresh
+    // K8 receipt at 1920x1080 and 5120x1440 is pending (`gpu-burst.mjs`).
+    // Band: the ceiling is the whole FULL - MINIMAL real-frame delta
+    // (WebPlatformGPU appburst, dense-24 22:00 z2 4880x1392, 4.02 - 1.55 ms,
+    // which also sheds bloom and occlusion) until the re-receipt lands;
+    // 60 Hz assumed.
     'light-admission': Object.freeze({
         id: 'light-admission',
         levels: Object.freeze({ FULL: 128, REDUCED: 64, MINIMAL: 24 }),
@@ -398,25 +401,26 @@ export const EFFECT_BUDGET = Object.freeze({
     }),
     // 2.4 (M6: clustering only if its receipt pays) — the switch between the
     // two walks of the SAME admitted list: `on`, each fragment walks only
-    // its 64x64 tile's <= 16 lights from the R16UI tile index (unit 10,
-    // tilesX*17 x tilesY: count, then light indices); `off`, every fragment
-    // walks every admitted light (the flat path). Admission is binned in
-    // both, so the admitted set and every lit pixel are identical:
-    // `gpuWorld.setLightClusterOverride(true | false | null)` forces a walk
-    // (null = this row). M6 receipt (Phase 5 quiet host, 2026-09-29): the
-    // gpu-burst method with on / off / on-again arms interleaved (3 fresh
-    // contexts x 8 reps x 60 frames), 22:00 clear, dense-24 and dense-100,
-    // 1680x1032 and 4880x1392, z1 and z2, WebGPU and WebGL2: the flat walk
-    // costs 1.42-16.96 ms more at FULL (A/A <= 0.32) and 1.28-11.46 ms more
-    // with MINIMAL's 24 lights (A/A <= 1.45), all 32 cases resolved. So the
-    // clustered walk ships at every level (MINIMAL included) and the row is
-    // a substitution that prices the time it removes; the flat walk is only
-    // the override's A/B arm. Bytes: the index at 4880x1392 (77 x 22 tiles
-    // x 17 x 2 B), resident at every level. 60 Hz assumed.
+    // its 64x64 tile's <= 24 lights from the R16UI tile index (unit 10,
+    // tilesX*25 x tilesY: count, then light indices; NE P2.6 raised slots
+    // 16 -> 24); `off`, every fragment walks every admitted light (the flat
+    // path). Admission is binned in both, so the admitted set and every lit
+    // pixel are identical: `gpuWorld.setLightClusterOverride(true | false | null)`
+    // forces a walk (null = this row). M6 receipt (Phase 5 quiet host,
+    // 2026-09-29): the gpu-burst method with on / off / on-again arms
+    // interleaved (3 fresh contexts x 8 reps x 60 frames), 22:00 clear,
+    // dense-24 and dense-100, 1680x1032 and 4880x1392, z1 and z2, WebGPU
+    // and WebGL2: the flat walk costs 1.42-16.96 ms more at FULL (A/A <=
+    // 0.32) and 1.28-11.46 ms more with MINIMAL's 24 lights (A/A <= 1.45),
+    // all 32 cases resolved. So the clustered walk ships at every level
+    // (MINIMAL included) and the row is a substitution that prices the time
+    // it removes; the flat walk is only the override's A/B arm. Bytes: the
+    // index at 4880x1392 (77 x 22 tiles x 25 x 2 B), resident at every
+    // level. 60 Hz assumed.
     'light-clusters': Object.freeze({
         id: 'light-clusters',
         levels: Object.freeze({ FULL: 'on', REDUCED: 'on', MINIMAL: 'on' }),
-        cost: Object.freeze({ gpuMsSavedBand: [1.28, 16.96], cpuMsBand: [0, 0.1], bytes: 57596, scope: 'shared-scene-envelope' }),
+        cost: Object.freeze({ gpuMsSavedBand: [1.28, 16.96], cpuMsBand: [0, 0.1], bytes: 84700, scope: 'shared-scene-envelope' }),
         staticFallback: 'flat-light-walk',
         canvas: 'none',
     }),
@@ -1938,7 +1942,8 @@ export function clampGpuLights(lights = [], limit = 16, hardLimit = limit, cache
 export const MAX_LIGHT_RECORDS = 256;
 export const LIGHT_RECORD_ROWS = 4;
 export const LIGHT_TILE_PX = 64;
-export const LIGHT_TILE_SLOTS = 16;
+// NE P2.6 — raised 16 -> 24 for the wider deep-night pools (reach 1.5x).
+export const LIGHT_TILE_SLOTS = 24;
 export const LIGHT_TILE_STRIDE = LIGHT_TILE_SLOTS + 1;
 export const LIGHT_RECORD_FLAGS = Object.freeze({
     // 3.2 — lays its hue on wet ground (the first `wetReflectionCount`
@@ -2025,11 +2030,11 @@ export function createLightBinScratch() {
     };
 }
 
-// T4 — the night's fixtures (street lamps, braziers, watchfires) keep up to
-// this many slots, at most half the count, ahead of apertures and attention
-// lights: at MINIMAL (24) the ranked order alone handed every slot to
-// windows and attention and the lamps lost their pools first.
-export const FIXTURE_LIGHT_RESERVE = 12;
+// T4 / NE P2.6 — the night's fixtures (street lamps, braziers, watchfires)
+// keep up to this many slots, at most half the count, ahead of apertures and
+// attention lights: at MINIMAL (24) half-cap still holds 12, while REDUCED
+// (64) and FULL (128) hold up to 24 for the wider lamp network.
+export const FIXTURE_LIGHT_RESERVE = 24;
 
 function isFixtureLight(light) {
     return !isAttentionLight(light) && !isCarriedLantern(light)
