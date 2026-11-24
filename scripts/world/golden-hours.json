@@ -40,11 +40,11 @@
   "backends": {
     "webgpu": {
       "clear-0500": {
-        "mean": 62.47,
+        "mean": 62.4,
         "p10": 30,
-        "p90": 93,
-        "warmShare": 0.03589,
-        "darkShare": 0.10837
+        "p90": 92,
+        "warmShare": 0.04162,
+        "darkShare": 0.10893
       },
       "clear-1200": {
         "mean": 113.64,
@@ -54,41 +54,41 @@
         "darkShare": 0.06554
       },
       "clear-1915": {
-        "mean": 84.72,
+        "mean": 84.73,
         "p10": 34,
         "p90": 128,
         "warmShare": 0.08168,
         "darkShare": 0.09652
       },
       "storm-1915": {
-        "mean": 66.3,
+        "mean": 66.32,
         "p10": 31,
         "p90": 97,
-        "warmShare": 0.00102,
-        "darkShare": 0.10281
+        "warmShare": 0.00104,
+        "darkShare": 0.10305
       },
       "clear-2300": {
-        "mean": 57.78,
+        "mean": 58.43,
         "p10": 24,
-        "p90": 100,
-        "warmShare": 0.0747,
-        "darkShare": 0.18263
+        "p90": 98,
+        "warmShare": 0.08601,
+        "darkShare": 0.14677
       },
       "storm-0200": {
-        "mean": 45.15,
+        "mean": 44.95,
         "p10": 20,
         "p90": 77,
-        "warmShare": 0.05276,
-        "darkShare": 0.27253
+        "warmShare": 0.05998,
+        "darkShare": 0.28234
       }
     },
     "webgl": {
       "clear-0500": {
-        "mean": 62.47,
+        "mean": 62.4,
         "p10": 30,
-        "p90": 93,
-        "warmShare": 0.0359,
-        "darkShare": 0.10839
+        "p90": 92,
+        "warmShare": 0.04163,
+        "darkShare": 0.10895
       },
       "clear-1200": {
         "mean": 113.64,
@@ -98,76 +98,76 @@
         "darkShare": 0.06555
       },
       "clear-1915": {
-        "mean": 84.71,
+        "mean": 84.72,
         "p10": 34,
         "p90": 128,
         "warmShare": 0.08171,
         "darkShare": 0.09652
       },
       "storm-1915": {
-        "mean": 66.31,
+        "mean": 66.32,
         "p10": 31,
         "p90": 97,
-        "warmShare": 0.00102,
-        "darkShare": 0.10281
+        "warmShare": 0.00104,
+        "darkShare": 0.10307
       },
       "clear-2300": {
-        "mean": 57.78,
+        "mean": 58.43,
         "p10": 24,
-        "p90": 100,
-        "warmShare": 0.07471,
-        "darkShare": 0.18263
+        "p90": 98,
+        "warmShare": 0.086,
+        "darkShare": 0.14678
       },
       "storm-0200": {
-        "mean": 45.15,
+        "mean": 44.95,
         "p10": 20,
         "p90": 77,
-        "warmShare": 0.05276,
-        "darkShare": 0.27253
+        "warmShare": 0.05998,
+        "darkShare": 0.28235
       }
     },
     "canvas": {
       "clear-0500": {
-        "mean": 62.82,
+        "mean": 62.57,
         "p10": 30,
-        "p90": 94,
-        "warmShare": 0.0351,
-        "darkShare": 0.10668
+        "p90": 93,
+        "warmShare": 0.04109,
+        "darkShare": 0.10714
       },
       "clear-1200": {
-        "mean": 109.54,
+        "mean": 109.45,
         "p10": 47,
         "p90": 157,
-        "warmShare": 0.11411,
-        "darkShare": 0.06905
+        "warmShare": 0.11407,
+        "darkShare": 0.06904
       },
       "clear-1915": {
-        "mean": 90.24,
+        "mean": 90.18,
         "p10": 38,
         "p90": 134,
-        "warmShare": 0.085,
-        "darkShare": 0.08555
+        "warmShare": 0.08492,
+        "darkShare": 0.08557
       },
       "storm-1915": {
         "mean": 77.23,
         "p10": 39,
         "p90": 109,
-        "warmShare": 0.00019,
-        "darkShare": 0.07689
+        "warmShare": 0.00026,
+        "darkShare": 0.0769
       },
       "clear-2300": {
-        "mean": 57.61,
+        "mean": 56.9,
         "p10": 23,
-        "p90": 101,
-        "warmShare": 0.07375,
-        "darkShare": 0.18543
+        "p90": 98,
+        "warmShare": 0.08761,
+        "darkShare": 0.18734
       },
       "storm-0200": {
-        "mean": 49.23,
+        "mean": 48.4,
         "p10": 20,
-        "p90": 87,
-        "warmShare": 0.06397,
-        "darkShare": 0.2442
+        "p90": 85,
+        "warmShare": 0.07379,
+        "darkShare": 0.25597
       }
     }
   }
