@@ -284,6 +284,7 @@ function installParityHelpers() {
       zoom: camera.zoom,
       dpr: window.devicePixelRatio,
       agents: r.agentSprites?.size ?? null,
+      ladderLevel: r.gpuWorld?.qualityLadder?.getLevel?.() ?? null,
     };
   };
 

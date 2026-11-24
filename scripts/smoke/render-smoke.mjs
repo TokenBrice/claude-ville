@@ -6,6 +6,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { launchChromium } from './support/chromium.mjs';
 import { startIsolatedServer } from './support/isolated-server.mjs';
+import { prepareNightCapture } from './support/night-capture.mjs';
 import { makeTempDir } from '../tests/support/tmp.mjs';
 
 const VIEWPORT = { width: 1440, height: 900 };
@@ -17,6 +18,8 @@ const diagnostics = {
   baseUrl: null,
   port: null,
   viewport: VIEWPORT,
+  ladderLevel: null,
+  captures: {},
   consoleErrors: [],
   consoleWarnings: [],
   pageErrors: [],
@@ -198,6 +201,25 @@ async function showThreeBuckets(page) {
   await page.waitForTimeout(600);
 }
 
+// NE P0.2 — pin FULL and settle rooms before dusk/night captures; day stays instant.
+async function recordCaptureState(name, page) {
+  const capture = await prepareNightCapture(page);
+  diagnostics.captures[name] = {
+    phase: capture.phase,
+    pinned: capture.pinned,
+    ladderLevel: capture.ladderLevel,
+    postFxLevel: capture.postFxLevel,
+    settled: capture.settled,
+    reason: capture.reason,
+    waitedMs: capture.waitedMs,
+    workingTotal: capture.workingTotal,
+  };
+  if (diagnostics.ladderLevel === null && capture.ladderLevel !== null) {
+    diagnostics.ladderLevel = capture.ladderLevel;
+  }
+  return capture;
+}
+
 async function soundStates(browser, baseUrl, width) {
   const rows = [];
   let offBase = null;
@@ -206,6 +228,7 @@ async function soundStates(browser, baseUrl, width) {
     const { context, page } = await soundPage(browser, baseUrl, width, { scenario: 'many-waiting' });
     try {
       await showThreeBuckets(page);
+      await recordCaptureState(`sound-${width}-many-waiting`, page);
       const base = await soundGeometry(page);
       offBase = base;
       assert.equal(base.state, 'off', `fresh profile: data-sound-state ${base.state}`);
@@ -248,6 +271,7 @@ async function soundStates(browser, baseUrl, width) {
     try {
       await showThreeBuckets(page);
       await waitSoundState(page, 'armed');
+      await recordCaptureState(`sound-${width}-armed`, page);
       const armed = await soundGeometry(page);
       record('armed', armed, assertSameBox(offBase, armed, `${width} armed`, width));
       await soundShot(page, `armed-${width}`);
@@ -263,6 +287,7 @@ async function soundStates(browser, baseUrl, width) {
       await settledClick(page, '#soundPresets [role="radio"][data-preset="townBand"]');
       await page.keyboard.press('Escape');
       await waitSoundState(page, 'playing');
+      await recordCaptureState(`sound-${width}-no-agents`, page);
       const empty = await soundGeometry(page);
       // Another fixture (no agents, so no buckets): the toggle's box only.
       const shift = Math.max(Math.abs(empty.toggle.x - offBase.toggle.x), Math.abs(empty.toggle.y - offBase.toggle.y), Math.abs(empty.toggle.width - offBase.toggle.width));
@@ -432,6 +457,7 @@ async function run() {
       diagnostics.fpsSample = await page.evaluate(() => window.__claudeVilleRenderSmokeFps);
       await assertFpsCounter();
       assert.equal(await page.evaluate(() => document.getElementById('statFps').textContent === `${window.__claudeVilleRenderSmokeFps} FPS`), true);
+      await recordCaptureState('world', page);
       await page.screenshot({ path: path.join(artifactDir, 'world.png') });
     });
 
@@ -468,6 +494,7 @@ async function run() {
         return !!panel && panel.style.display !== 'none' && panel.getBoundingClientRect().width > 0;
       });
       await assertFpsCounter();
+      await recordCaptureState('panel', page);
       await page.screenshot({ path: path.join(artifactDir, 'panel.png') });
     });
 

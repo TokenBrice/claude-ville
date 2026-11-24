@@ -4,6 +4,7 @@
 // playing, and the 1280x640 social card. Needs the server on :4000.
 // Output: docs/assets/github/*.png with --write, else output/playwright/marketing-*.png.
 import { gpuLaunchArgs, launchChromium } from '../smoke/support/chromium.mjs';
+import { prepareNightCapture } from '../smoke/support/night-capture.mjs';
 import assert from 'node:assert/strict';
 import { mkdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -13,7 +14,8 @@ const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const write = process.argv.includes('--write');
 const outDir = write ? join(repoRoot, 'docs', 'assets', 'github') : join(repoRoot, 'output', 'playwright');
 const prefix = write ? '' : 'marketing-';
-const url = 'http://localhost:4000/?sim=1&scenario=readme-showcase&renderer=webgl';
+const baseUrl = (process.env.CLAUDEVILLE_URL || 'http://localhost:4000').replace(/\/+$/, '');
+const url = `${baseUrl}/?sim=1&scenario=readme-showcase&renderer=webgl`;
 // Sim session ids: the scenario's `readme-` ids plus the adapter-shaped
 // thread ids (`deepseek-dsth_…`, `zai-glmth_…`, `antigravity-…`).
 const SIM_SESSION_ID_PREFIXES = ['readme-', 'deepseek-', 'zai-', 'antigravity-'];
@@ -196,6 +198,17 @@ try {
 
     await sky(NIGHT_HOUR);
     await frame(HERO, 1800);
+    // NE P0.2 — pin FULL and confirm working visitors have settled into rooms before the night hero shot.
+    const nightCapture = await prepareNightCapture(page, { force: true });
+    assert.equal(nightCapture.ladderLevel, 0, `world-night must capture at FULL quality ladder (got ${nightCapture.ladderLevel})`);
+    console.log('world-night capture:', {
+        phase: nightCapture.phase,
+        ladderLevel: nightCapture.ladderLevel,
+        settled: nightCapture.settled,
+        reason: nightCapture.reason,
+        waitedMs: nightCapture.waitedMs,
+        workingTotal: nightCapture.workingTotal,
+    });
     await shot('world-night');
 
     const card = await (await browser.newContext({ viewport: { width: 1280, height: 640 }, deviceScaleFactor: 1 })).newPage();

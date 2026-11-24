@@ -159,6 +159,7 @@ async function openBackend(browser, baseUrl, renderer) {
     const solar = r.atmosphereState.snapshot().solar;
     return {
       gpu: r.gpuWorld?.constructor?.name || null,
+      ladderLevel: r.gpuWorld?.qualityLadder?.getLevel?.() ?? null,
       postFx: Boolean(r.postFx),
       motionScale: r.motionScale,
       reason: r.worldBackendReason || null,

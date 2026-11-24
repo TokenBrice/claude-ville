@@ -5,6 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { prepareNightCapture } from '../smoke/support/night-capture.mjs';
 
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const defaultManifest = join(repoRoot, 'scripts', 'world', 'render-baseline-manifest.json');
@@ -326,6 +327,7 @@ async function profileCapture(page, durationMs) {
                 reducedMotion: renderer.motionScale === 0,
             } : null,
             agents: renderer?.agentSprites?.size ?? null,
+            gpuLadderLevel: renderer?.gpuWorld?.qualityLadder?.getLevel?.() ?? null,
         };
     }, durationMs);
 }
@@ -420,6 +422,13 @@ async function runCapture(browser, run, options) {
             });
             await page.waitForTimeout(250);
         }
+        // NE P0.2 — pin FULL and settle working visitors into rooms for dusk/night stills.
+        const nightCapture = await prepareNightCapture(page, {
+            skipSettle: Boolean(run.pinAgentPositions),
+        });
+        if (nightCapture.pinned && nightCapture.reason === 'pinned-only') {
+            await page.waitForTimeout(250);
+        }
         const captureOverlay = await collectOverlaySignature(page);
         if (errors.length) throw new Error(`browser errors:\n${errors.map(error => `- ${error}`).join('\n')}`);
         const baseName = `${run.id}--${run.mode}`;
@@ -462,8 +471,16 @@ async function runCapture(browser, run, options) {
                 agents: measured.agents,
                 camera: cloneJson(measured.camera),
                 atmosphere: cloneJson(measured.atmosphere),
+                adaptiveGpuLadderLevel: measured.gpuLadderLevel ?? null,
+                ladderLevel: nightCapture.ladderLevel,
                 adaptivePostFxLevel: measured.postFx?.level ?? null,
-                captureLevelOverride,
+                captureLevelOverride: captureLevelOverride ?? (nightCapture.pinned ? nightCapture.ladderLevel : null),
+                nightSettle: nightCapture.pinned ? {
+                    settled: nightCapture.settled,
+                    reason: nightCapture.reason,
+                    waitedMs: nightCapture.waitedMs,
+                    workingTotal: nightCapture.workingTotal,
+                } : null,
                 overlayCensus: run.overlayCensus ? cloneJson(measured.overlayCensus) : null,
             },
             artifacts: {
@@ -496,6 +513,7 @@ async function main() {
             console.log(JSON.stringify({
                 captured: `${run.id}--${run.mode}`,
                 frameP95Ms: result.performance.frames.p95Ms,
+                ladderLevel: result.actual.ladderLevel,
                 postFxLevel: result.actual.adaptivePostFxLevel,
                 textureBytes: result.diagnostics.canvasBudget?.gpu?.textureBytes ?? result.diagnostics.postFx?.textureBytes ?? 0,
                 trailRepaintMs: result.diagnostics.trails?.repaintTimeMs ?? 0,
