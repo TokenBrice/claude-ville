@@ -1386,7 +1386,7 @@ export class GpuWorldRendererWebGPU {
         // composite and mark fragment). Under HDR the emitter courses gain
         // only while the lamps are lit (the `settling` lamp course), up to the
         // mode's emitter cap (below the NEEDS YOU mark's light), marks
-        // always, and bloom is off: the role gain replaces its halo.
+        // always, and bloom runs at half strength alongside the role gain (NE P1.4).
         const display = this._display;
         const gains = this._displayWant.gains;
         s.hdrEnabled = display?.hdr ? 1 : 0;
@@ -1395,7 +1395,7 @@ export class GpuWorldRendererWebGPU {
         s.hdrMarkGain = display?.hdr ? gains.mark : 1;
         s.hdrEmitterGain = display?.hdr && hdrLampsLit(atmosphere) ? gains.emitter : [1, 1, 1];
         s.hdrEmitterCap = gains.emitterCap;
-        if (display?.hdr) s.bloomStrength = 0;
+        if (display?.hdr) s.bloomStrength *= 0.5;
         this._frameBloomStrength = s.bloomStrength;
         const flash = feed.flash;
         s.flash = [finite(flash?.[0], 0), finite(flash?.[1], 0), finite(flash?.[2], 0)];
@@ -1847,7 +1847,7 @@ export class GpuWorldRendererWebGPU {
             }
             scene.end();
             passCpu.scene = { cpuMs: performance.now() - mark, draws, bytes: this.width * this.height * 4 * (writeEmission ? 2 : 1) };
-            // [bloom] — none while HDR presents (its role gain replaces the halo).
+            // [bloom] — runs at half strength while HDR presents (NE P1.4).
             mark = performance.now();
             if (bloomOn) {
                 const writes = timer?.writes(slot, 'bloom');

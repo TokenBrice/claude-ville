@@ -853,13 +853,15 @@ float glintDash(vec2 p, vec2 fragPx, vec4 glint, float texelPx, float tick) {
     // single glints, not a field of dashes.
     bool pale = glint.z > 1.5 && !moon;
     float base = pale ? ${GLINT_NOON_BASE.toFixed(1)} : 5.0;
-    float halfWidth = (base + fragPx.y * glint.w) * (moon ? 0.7 : 1.0);
+    float halfWidth = (base + fragPx.y * glint.w) * (moon ? 0.95 : 1.0);
     float weight = 1.0 - abs(fragPx.x - glint.x) / max(texelPx, 1e-3) / halfWidth;
     if (weight <= 0.0) return 0.0;
     if (moon) {
+        // NE P3.3 — wider moon road, denser dashes, and bright silver stop.
         vec2 cell = floor(floor(p) / vec2(6.0, 1.0));
         float life = floor((tick + floor(waterHash12(cell + vec2(37.0, 5.0)) * ${MOON_DASH_HOLD.toFixed(1)})) / ${MOON_DASH_HOLD.toFixed(1)});
-        return waterHash12(cell + vec2(life * 5.0, life * 2.0)) < ${(GLINT_DASH_DENSITY * 0.5).toFixed(3)} * glint.y * weight * weight ? 1.0 : 0.0;
+        if (waterHash12(cell + vec2(life * 5.0, life * 2.0)) >= 0.28 * glint.y * pow(weight, 1.25)) return 0.0;
+        return waterHash12(cell + vec2(5.0, life * 11.0)) < weight * 0.85 ? 2.0 : 1.0;
     }
     vec2 cell = floor(floor(p) / vec2(3.0, 1.0));
     float density = ${GLINT_DASH_DENSITY.toFixed(2)} * (pale ? min(1.0, ${NOON_GLINT_FULL_TEXEL.toFixed(1)} / max(texelPx, 1e-3)) : 1.0);
@@ -2604,13 +2606,15 @@ void main() {
     // 5.2 — puddles take the graded sky over the graded street.
     if (u_puddleGround && u_puddles > 0.0) color = applyPuddle(color, v_world);
     color = applyGradeVignette(color, px, u_resolution);
-    // 1.3 — emitters keep their own light: a lit authored-emitter pixel skips
-    // the grade in proportion to its lit contribution (emissive already
-    // carries the occupancy gate and the core energy), so the night Purkinje
-    // target and highlight tint no longer turn yellow glass lime or dull the
-    // Forge fire, and an unlit or daytime window grades like any wall.
+    // 1.3 / NE P1.3 — emitters keep their own light: a lit authored-emitter
+    // pixel skips the grade in proportion to its lit contribution (emissive
+    // already carries the occupancy gate and the core energy), and at night
+    // lifts off dark slate glass albedo toward its authored emissive colour;
+    // at daytime poolGain 0.15 nightCarry is 0 so day frames stay identical.
     float emitterWeight = u_hasEmissiveMap ? clamp(emissive, 0.0, 1.0) : 0.0;
-    color = mix(color, poolAlbedo, emitterWeight);
+    float nightCarry = clamp((u_poolGain - 0.15) / 1.05, 0.0, 1.0);
+    vec3 emitterBase = max(poolAlbedo, emissionColor * (clamp(0.5 + 0.5 * emissive, 0.0, 1.0) * nightCarry));
+    color = mix(color, emitterBase, emitterWeight);
     // V5 — the receiver knee's floor: the graded value before any local light.
     float receiverLuma = dot(color, GRADE_LUMA);
 
@@ -2764,7 +2768,6 @@ void main() {
     // and blocking pools at night; a reflection twin keeps its own courses.
     bool bakedRim = recvClass != 0 && !reflectRecord && albedo.a > 0.4 && albedo.a < 0.6
         && max(albedo.r, max(albedo.g, albedo.b)) < 0.16;
-    float nightCarry = clamp((u_poolGain - 0.15) / 1.05, 0.0, 1.0);
     // 2.1 — a backlit figure wears one rim: the strongest lamp behind it
     // (backReach) lights the silhouette edge on its side: one opaque contour
     // texel (C-01; the half-alpha baked rim never takes it). Several lamps
@@ -3329,6 +3332,23 @@ void main() {
             if (dot(sunRimColor, GRADE_LUMA) > dot(color, GRADE_LUMA)) color = sunRimColor;
         }
     }
+    // NE P3.4 — night 1-texel upper-left moonlight rim on villager body contours
+    // (opaque contour only; capped at 0.50 luma so NEEDS YOU stays brightest;
+    // Canvas keeps its declared lower tier with no rim).
+    if (recvClass == 2 && !reflectRecord && albedo.a >= 0.75 && nightCarry > 0.15 && recvH > 8.0) {
+        vec2 leftUv = uv - vec2(uvStepX, 0.0);
+        vec2 topUv = uv + vec2(0.0, -1.0 / float(albedoSize().y));
+        bool leftOuter = any(lessThan(leftUv, v_uvClamp.xy)) || any(greaterThan(leftUv, v_uvClamp.zw))
+            || albedoTexture(leftUv).a < 0.75;
+        bool topOuter = any(lessThan(topUv, v_uvClamp.xy)) || any(greaterThan(topUv, v_uvClamp.zw))
+            || albedoTexture(topUv).a < 0.75;
+        if (leftOuter || topOuter) {
+            vec3 moonRimColor = mix(color, vec3(0.70, 0.82, 1.0), 0.34 * nightCarry);
+            float rimY = dot(moonRimColor, GRADE_LUMA);
+            if (rimY > 0.50) moonRimColor *= 0.50 / rimY;
+            if (dot(moonRimColor, GRADE_LUMA) > dot(color, GRADE_LUMA)) color = moonRimColor;
+        }
+    }
 
     if (u_mist.w > 0.0) {
         // MS-1 — the low mist (MIST_GLSL) replaces the screen-Y veil: the
@@ -3357,7 +3377,8 @@ void main() {
         color = fogged;
     }
     vec3 emission = emissionColor * emissive;
-    color += emission * 0.42;
+    // NE P1.3 — night emitters lift from 0.42 to 0.62 with nightCarry (day stays 0.42).
+    color += emission * (0.42 + 0.20 * nightCarry);
     // 1.3 — hue-preserving protection after emission: a lit emitter pushed
     // past 1 scales down on its brightest channel instead of clipping toward
     // cream or a flat hue.

@@ -748,9 +748,17 @@ multiply the graded albedo in three stepped courses (rim, mid, core on each
 light's own falloff; warm lights take the reserved emissive ramp), and authored
 emission is added after both. Emissive pixels and lit pools are therefore exempt
 from the night desaturation without a separate lit mask, and `fire` pixels keep
-their authored colour at every hour. The Canvas fallback reproduces the same
-order with composite fills (`CanvasGrade.js`). Emission sidecars are gated at
-runtime by `NightOccupancyGate`, so a lit window means real work inside.
+their authored colour at every hour. With `nightCarry = clamp((poolGain − 0.15)
+/ 1.05, 0, 1)` (zero at the daytime `poolGain` 0.15, one at night 1.2), lit
+authored emitters skip the grade toward `max(poolAlbedo, emissionColor ×
+clamp(0.5 + 0.5 × emissive, 0, 1) × nightCarry)` so dark slate window glass
+lands on its authored emissive hue at night instead of dulling to ochre, and the
+emitter landing adds `emission × (0.42 + 0.20 × nightCarry)` before
+hue-preserving channel normalisation (staying at `0.42` by day). The Canvas
+fallback reproduces the same order with composite fills and `buildEmitterCut`
+(`CanvasGrade.js`, using `contribution = 2a` without `max(1, contribution)` and
+the same `nightCarry` lift). Emission sidecars are gated at runtime by
+`NightOccupancyGate`, so a lit window means real work inside.
 Status parts (the Command attention banner) are not light and take no
 emission; from the blue hour on they paint the preimage
 (`CanvasGrade.statusClothPreimage`) whose frame grade keeps their authored

@@ -7,7 +7,7 @@
 // Roof-fade behaviour is intentionally dropped per spec §3.
 
 import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
-import { BUILDING_DEFS } from '../../config/buildings.js';
+import { BUILDING_DEFS, normalizeBuildingType } from '../../config/buildings.js';
 import { REST_SEATS } from '../../config/townPlan.js';
 import { STATUS_VISUALS, WORLD_BODY_FONT_11, WORLD_BODY_FONT_22, WORLD_DISPLAY_FONT_8, WORLD_DISPLAY_FONT_16 } from '../../config/theme.js';
 import { EVENT_SHAPES } from '../shared/EventShapes.js';
@@ -57,6 +57,9 @@ import {
     taskboardBoardLayout,
 } from './TaskboardBoardModel.js';
 import {
+    KEEPER_ROOM_GATE,
+    ROOM_APERTURE_GATE_MIN,
+    ROUTING_ROOM_GATE,
     advanceNightOccupancyGate,
     buildingEmissiveGate,
     nightWindowGate,
@@ -191,8 +194,9 @@ export const DAYTIME_ROOM_GLASS_SHARE = 0.75;
 const WORKER_EMITTER_CHANCE = Object.freeze([1, 1.2, 1.9, 2.8]);
 const WORKER_EMITTER_EXTRA_COUNT = Object.freeze([0, 0, 1, 2]);
 const WORKER_SCALED_EMITTERS = new Set(['forgeSpark', 'forgeEmber', 'archiveMote', 'mineDust', 'portalRune']);
-// 4.6 — architecture that stays lit through a sleeping town: the Pharos and
-// the harbour lantern are safety lights, not work signals.
+// 4.6 / NE P1.2 — architecture that stays lit through a sleeping town: the
+// Pharos and the Harbor quay lantern are safety lights, not work signals, on
+// GPU and Canvas alike.
 const REST_SAFETY_LIGHT_TYPES = new Set(['watchtower', 'harbor']);
 // 6.5 — the Harbor mast pennants: [y offset from the signal anchor, cloth,
 // shaded hem]. Albedo, so they take the C2 grade on the overlay. The top
@@ -1931,6 +1935,12 @@ export class BuildingSprite {
         const apertures = this._apertureSources();
         const standIns = this._apertureStandIns;
         const nightGate = this._nightWindowGate();
+        const lampsLit = lampsLitAt(this.atmosphereState);
+        const harborLightAt = this.assets?.getEntry?.('building.harbor')?.lightSource
+            || BUILDING_LIGHT_FALLBACKS.harbor?.at;
+        const harborLightId = Array.isArray(harborLightAt)
+            ? `building.harbor.point.${Math.round(harborLightAt[0])}.${Math.round(harborLightAt[1])}`
+            : null;
         const out = [];
         for (const source of staticSources) {
             // The Lighthouse fire lights no ground, apron, steps or masonry.
@@ -1940,9 +1950,19 @@ export class BuildingSprite {
             // `lighthouseColumnSource`, fed to the resident loop only (no
             // pool, cast or wet reflection reads it).
             if (source.buildingType === 'watchtower') continue;
+            // NE P1.2 — Command's gate braziers (`emitters.torch`/`torch2`,
+            // `fire: true`) and the Harbor quay lantern (`lightSource`,
+            // REST_SAFETY_LIGHT_TYPES) are lamp-clock fixtures gated by the
+            // Lamplighter's Round, never occupancy, on GPU and Canvas alike.
+            const isCommandBrazier = source.buildingType === 'command' && source.fire === true;
+            const isHarborQuayLamp = REST_SAFETY_LIGHT_TYPES.has(source.buildingType)
+                && (!harborLightId
+                    || source.id === harborLightId
+                    || !String(source.id || '').startsWith('building.harbor.point.'));
+            const isLampFixture = isCommandBrazier || isHarborQuayLamp;
             // V8 — only real work (isWorkingVisitor) warms a building's light;
             // seated, queued or passing bodies leave it exactly as empty.
-            const working = source.building ? this._workingVisitorCountFor(source.building) : 0;
+            const working = !isLampFixture && source.building ? this._workingVisitorCountFor(source.building) : 0;
             let activity = working > 0 ? 1.12 : 1;
             let alpha = source.alpha;
             if (source.buildingType === 'forge') {
@@ -1952,22 +1972,25 @@ export class BuildingSprite {
             const typeResponse = source.kind === 'beam'
                 ? 1
                 : 0.62 + 0.38 * getBuildingBeaconBase(source.buildingType);
-            const presenceRadiusMult = source.building
+            const presenceRadiusMult = !isLampFixture && source.building
                 ? PRESENCE_TIER_TABLE[this._workTierFor(source.building)].radius
                 : 1;
             const radius = Math.min(source.radius * energy.halo, SOURCE_HALO_RADIUS_CAP) * presenceRadiusMult;
             // A registry point standing on a room's glass (`_apertureSources`)
             // is that room's light: it takes the room's gate, never the
             // building's, so a lit room lights and a dark room stays dark.
-            const standIn = standIns?.get(source) || 0;
-            const emissiveGate = standIn > 0
-                ? 1 - nightGate + this.roomGate(source.buildingType, standIn - 1)
-                : source.buildingType ? this._emissiveGateFor(source.building) : 1;
-            const workOpen = source.buildingType
+            const standIn = isLampFixture ? 0 : (standIns?.get(source) || 0);
+            const emissiveGate = isLampFixture
+                ? (lampsLit && (this.motionScale <= 0 || lampCycleCaught(this.atmosphereState, source.buildingType)) ? 1 : 0)
+                : standIn > 0
+                    ? 1 - nightGate + this._roomApertureGate(source.buildingType, standIn - 1)
+                    : source.buildingType ? this._emissiveGateFor(source.building) : 1;
+            const workOpen = !isLampFixture && source.buildingType
                 ? (this.partGates?.isOpen?.(`work.${source.buildingType}`) ?? (working > 0))
                 : false;
             const sourceCore = energy.bucket === 'daylight'
                 && standIn === 0
+                && !isLampFixture
                 && isDaytimeHighEnergyBuilding(source.buildingType, workOpen, emissiveGate)
                 ? DAYTIME_WORK_BLOOM_CORE
                 : energy.core;
@@ -1976,6 +1999,7 @@ export class BuildingSprite {
             if (alpha != null) alpha *= sourceCore * emissiveGate;
             out.push(normalizeLightSource({
                 ...source,
+                ...(isLampFixture ? { role: 'fixture', normal: null } : {}),
                 intensity,
                 radius,
                 alpha,
@@ -1988,15 +2012,17 @@ export class BuildingSprite {
         for (const source of this._ritualLightSources(energy.core)) out.push(this._withLightFoot(source, 'point'));
         for (const source of this._forgeSpillLightSources(energy.core)) out.push(this._withLightFoot(source, 'aperture'));
         for (const source of this._archiveSpillLightSources(energy.core)) out.push(this._withLightFoot(source, 'aperture'));
-        // 2.4 — the lit panes and openings of each landmark's emissive art:
-        // a room's glass by that room's gate (roomGate: a dark room lights
-        // nothing), a lantern or opening by the building's night shift (a
-        // real worker inside, V8), each on its own wall base facing its face.
+        // 2.4 / NE P3.1 — the lit panes and openings of each landmark's
+        // emissive art: a room's glass emits its aperture pool only when its
+        // roomGate exceeds ROOM_APERTURE_GATE_MIN (0.5), so a keeper pane at
+        // 0.40 lights glass only while routing (0.6) and arrived work (1.0)
+        // lay street pools; off-glass lanterns/openings follow the building's
+        // night shift (a real worker inside, V8), each on its own wall base.
         for (const aperture of apertures) {
             const type = aperture.building.type;
             const template = aperture.template;
             const gate = template.group > 0
-                ? this.roomGate(type, template.group - 1)
+                ? this._roomApertureGate(type, template.group - 1)
                 : this._nightShiftLit(type) * nightGate;
             if (!(gate > 0)) continue;
             const intensity = apertureIntensity(template.area, energy.core, gate);
@@ -3268,7 +3294,7 @@ export class BuildingSprite {
                 ember,
             });
         }
-        this._fixturePartDraws(entry, type, originX, originY, splitPass, horizonY, out, column);
+        this._fixturePartDraws(entry, type, originX, originY, splitPass, horizonY, out, column, building);
         return out;
     }
 
@@ -3325,11 +3351,13 @@ export class BuildingSprite {
     // the bell hangs still at frame 0, also under reduced motion), and the
     // calendar's door wreaths (static). Neither is a work part: no gate here
     // reads occupancy, and neither emits light.
-    _fixturePartDraws(entry, type, originX, originY, splitPass, horizonY, out, column = null) {
+    _fixturePartDraws(entry, type, originX, originY, splitPass, horizonY, out, column = null, building = null) {
         if (typeof document === 'undefined') return;
         const parts = [];
         if (type === 'archive') parts.push(this._bellLouvrePart());
         for (const row of this.villageCalendar?.partStampsFor?.(type) || []) parts.push(this._wreathPart(row));
+        const roomLit = this._roomGlassLitPart(building || { type });
+        if (roomLit) parts.push(roomLit);
         for (const part of parts) {
             if (!part) continue;
             const frame = part.layer.gate ? this.partGates.frameFor(type, part.name, part.layer) : 0;
@@ -3359,6 +3387,7 @@ export class BuildingSprite {
                 layer: part.layer,
                 image: part.image,
                 textureKey: part.textureKey,
+                textureRevision: part.textureRevision || part.textureKey,
                 frame,
                 sx: frame * part.frameW + cx0,
                 sy,
@@ -3372,6 +3401,8 @@ export class BuildingSprite {
                 frameH: part.frameH,
                 materialClass: part.layer.materialClass,
                 fixture: false,
+                emissiveGate: part.emissiveGate ?? null,
+                channels: part.channels || null,
             });
         }
     }
@@ -3521,6 +3552,7 @@ export class BuildingSprite {
     // declares `authored-albedo` emission (the Pharos lamp, the Portal's rune
     // brazier), or a cycle over one, emits its own colours at that strength.
     partChannelsFor(entry, draw) {
+        if (draw?.channels) return draw.channels;
         const key = `${draw.textureKey}`;
         const cached = this._partChannelCache.get(key);
         if (cached) return cached;
@@ -5768,6 +5800,11 @@ export class BuildingSprite {
         // for workers (`_updateRoomSlots`, `_updateNightLightGates`).
         const patronIds = this._patronIdsByType || (this._patronIdsByType = new Map());
         for (const ids of patronIds.values()) ids.clear();
+        // NE P3.1 — working sessions routed to a work building but not yet
+        // arrived on its visit tiles; they take room slots after physical
+        // workers at ROUTING_ROOM_GATE (0.6) at night.
+        const routingIds = this._routingIdsByType || (this._routingIdsByType = new Map());
+        for (const ids of routingIds.values()) ids.clear();
         if (!this.agentSprites?.length || !this.buildings.length) {
             if (this.agentSprites?.length) for (const sprite of this.agentSprites) sprite._foldBuildingType = null;
             this._updateRoomSlots();
@@ -5840,17 +5877,43 @@ export class BuildingSprite {
         // Semantic occupants: agents routed to a building by the visit system
         // count toward its pennant even while they still walk there — physical
         // standers alone would leave the standards furled almost always.
+        // NE P3.1 — working sessions assigned to a work building (by live visit
+        // intent, tool target or current route) but not yet on its visit tiles
+        // also fill `routingIds` so their room lights at ROUTING_ROOM_GATE (0.6)
+        // at night; waiting, needs-you and idle bodies fail `isWorkingVisitor`.
         for (const sprite of this.agentSprites) {
             const targetType = String(sprite?.agent?.targetBuildingType || '').trim();
-            if (!targetType) continue;
-            const project = this._repoProjectKey(sprite.agent);
-            if (!project) continue;
-            let repos = repoTally.get(targetType);
-            if (!repos) {
-                repos = new Map();
-                repoTally.set(targetType, repos);
+            if (targetType) {
+                const project = this._repoProjectKey(sprite.agent);
+                if (project) {
+                    let repos = repoTally.get(targetType);
+                    if (!repos) {
+                        repos = new Map();
+                        repoTally.set(targetType, repos);
+                    }
+                    repos.set(project, (repos.get(project) || 0) + 1);
+                }
             }
-            repos.set(project, (repos.get(project) || 0) + 1);
+            const agent = sprite?.agent;
+            if (!agent?.id || NON_WORKING_VISIT_ROLES.includes(sprite.visitRole)) continue;
+            const intent = sprite._lastIntentSnapshot || null;
+            const routeTarget = normalizeBuildingType(
+                intent?.building
+                || targetType
+                || (typeof sprite._lastBuildingType === 'string' && !sprite._lastBuildingType.startsWith('ambient:')
+                    ? sprite._lastBuildingType
+                    : ''),
+            );
+            if (!routeTarget || routeTarget === 'tavern') continue;
+            if (workingIds.get(routeTarget)?.has(agent.id)) continue;
+            if (!isWorkingVisitor(agent, {
+                building: routeTarget,
+                intent,
+                role: sprite.visitRole,
+            })) continue;
+            let ids = routingIds.get(routeTarget);
+            if (!ids) routingIds.set(routeTarget, ids = new Set());
+            ids.add(agent.id);
         }
 
         this._visitorRepoByType.clear();
@@ -5883,34 +5946,79 @@ export class BuildingSprite {
         return at;
     }
 
-    // 6.3 — stable room slots for every building: each working visitor
-    // (isWorkingVisitor) keeps its own room while it works here; waiting
-    // occupants are counted and never lit; whoever does not fit is an exact
-    // overflow count. Rooms come from the landmark's `base.rooms.png`.
+    // 6.3 / NE P3.1 — stable room slots for every building: each arrived
+    // working visitor (isWorkingVisitor) or Tavern patron holds its own room at
+    // 1.0; working sessions assigned to the building but still walking take
+    // remaining rooms after physical workers (`routingAssignment`, lit at
+    // ROUTING_ROOM_GATE = 0.6 at night, keeping the same room on arrival);
+    // waiting occupants are counted and never lit. Rooms come from `base.rooms.png`.
     _updateRoomSlots() {
         const workingIds = this._workingIdsByType;
+        const routingIds = this._routingIdsByType;
         for (const building of this.buildings) {
             const type = building.type;
             const rooms = this.roomGlass.roomCount(type);
             const ids = workingIds?.get(type);
             const patrons = this._patronIdsByType?.get(type);
-            const held = this._roomSlotsByType.get(type)?.assignment;
+            const prevSlots = this._roomSlotsByType.get(type);
+            const held = prevSlots?.allAssignment || prevSlots?.assignment;
             // Sorted so a newcomer's room never depends on sprite order.
             const working = ids?.size || patrons?.size ? [...new Set([...(ids || []), ...(patrons || [])])].sort() : [];
             const { assignment, overflow } = assignRoomSlots({ previous: held, workingIds: working, rooms });
+            const workingSet = new Set(working);
+            const routed = routingIds?.get(type);
+            const routing = routed?.size
+                ? [...routed].filter((id) => !workingSet.has(id)).sort()
+                : [];
+            const routingAssignment = new Map();
+            const taken = new Set(assignment.values());
+            for (const id of routing) {
+                const prior = held instanceof Map ? held.get(id) : undefined;
+                if (Number.isInteger(prior) && prior >= 0 && prior < rooms && !taken.has(prior)) {
+                    routingAssignment.set(id, prior);
+                    taken.add(prior);
+                }
+            }
+            let nextRoom = 0;
+            for (const id of routing) {
+                if (routingAssignment.has(id)) continue;
+                while (nextRoom < rooms && taken.has(nextRoom)) nextRoom++;
+                if (nextRoom >= rooms) break;
+                routingAssignment.set(id, nextRoom);
+                taken.add(nextRoom);
+            }
+            const allAssignment = new Map(assignment);
+            for (const [id, room] of routingAssignment) allAssignment.set(id, room);
             const tally = this._visitorStatusByType.get(type);
             this._roomSlotsByType.set(type, {
                 rooms,
                 assignment,
+                routingAssignment,
+                allAssignment,
                 overflow,
                 working: working.length,
+                routing: routing.length,
                 waiting: tally?.waiting || 0,
             });
         }
     }
 
-    // 6.3 — the per-room light gate (2.4 aperture lights, 2.9 water columns,
-    // bloom): 0..1, night × this room's stepped occupancy. A room index is
+    _keeperRoomActive(type) {
+        if (lampCourseFor(this.atmosphereState) < LAMP_COURSE_LAMPLIGHT) return false;
+        return this.motionScale <= 0 || lampCycleCaught(this.atmosphereState, type);
+    }
+
+    _roomHeldByWorker(slots, roomIndex) {
+        if (!slots?.assignment?.size) return false;
+        for (const room of slots.assignment.values()) {
+            if (room === roomIndex) return true;
+        }
+        return false;
+    }
+
+    // 6.3 / NE P3.1 — the per-room light gate (2.4 aperture lights, 2.9 water
+    // columns, bloom): 0..1, night × this room's stepped tier (1.0 worked,
+    // 0.6 routing, 0.40 keeper on room 0 at lampCourse >= 2). A room index is
     // 0-based (mask R = index + 1); unknown rooms are dark. B3-01 — a room pane
     // inside the open 4.1 aperture's cut stays dark: the cut presents that
     // wall's occupants itself.
@@ -5921,16 +6029,28 @@ export class BuildingSprite {
         return value * this._nightWindowGate();
     }
 
+    // NE P3.1 — room aperture pool gate: only rooms above ROOM_APERTURE_GATE_MIN
+    // (0.5) emit a street pool, so a keeper pane at 0.40 lights glass only
+    // while routing (0.6) and arrived work (1.0) cast their pools.
+    _roomApertureGate(type, roomIndex) {
+        const gate = this.roomGate(type, roomIndex);
+        return gate > ROOM_APERTURE_GATE_MIN ? gate : 0;
+    }
+
     // Per-room window glass gate (RoomGlass only; relaxed M15, 2026-11-23
-    // operator decision): occupied rooms glow warm interior amber by day at
-    // DAYTIME_ROOM_GLASS_SHARE (0.75) and rise to full 1.0 at night; empty
-    // rooms stay dark slate. Light pools, water columns and bloom keep reading
-    // night-only `roomGate`.
+    // operator decision; NE P3.1): arrived worked rooms glow warm interior
+    // amber by day at DAYTIME_ROOM_GLASS_SHARE (0.75) and rise to full 1.0 at
+    // night; keeper (0.40) and routing (0.6) tiers are night-only so daytime
+    // frames remain unchanged. Light pools keep reading `_roomApertureGate`.
     roomGlassGate(type, roomIndex) {
         const lit = this._roomLitByType.get(type);
         const value = lit ? lit[roomIndex] || 0 : 0;
         if (!(value > 0) || this._roomUnderOpenAperture(type, roomIndex)) return 0;
-        return value * Math.max(DAYTIME_ROOM_GLASS_SHARE, this._nightWindowGate());
+        const night = this._nightWindowGate();
+        const slots = this._roomSlotsByType?.get(type);
+        const worked = !slots || this._roomHeldByWorker(slots, roomIndex);
+        if (night <= 0) return worked ? value * DAYTIME_ROOM_GLASS_SHARE : 0;
+        return value * (worked ? Math.max(DAYTIME_ROOM_GLASS_SHARE, night) : night);
     }
 
     _roomUnderOpenAperture(type, roomIndex) {
@@ -5961,18 +6081,56 @@ export class BuildingSprite {
         return group > 0 ? this.roomGate(type, group - 1) : 0;
     }
 
-    // 6.3 — the glass patch for `building` (RoomGlass.patch), shared by the
-    // resident GPU patch record and the Canvas renderer: unlit slate on empty
-    // rooms, warm interior amber on daytime occupied rooms (zero bloom/pools),
-    // and transparent pass-through on night-lit rooms.
+    // 6.3 / NE P3.1 — the glass patch for `building` (RoomGlass.patch), shared
+    // by the resident GPU patch record and the Canvas renderer: unlit slate on
+    // empty rooms, warm interior amber on daytime occupied rooms (zero bloom/
+    // pools), and stepped pass-through on night-lit rooms. When the building's
+    // base emissive gate is down at night (0 arrived workers: keeper/routing or
+    // banked hearth), this masks base glass to unlit slate while
+    // `_roomGlassLitPart` paints the stepped lit panes on top.
     glassPatchFor(building) {
         const type = building?.type;
         if (!type) return null;
+        if (this._nightWindowGate() > 0 && this._emissiveGateFor(building) < 0.98) {
+            return this.roomGlass.patch(type, () => 0, () => 0);
+        }
         return this.roomGlass.patch(
             type,
             (group) => this._glassGroupGate(type, group),
             (group) => this._nightGlassGroupGate(type, group),
         );
+    }
+
+    // NE P3.1 — procedural part carrying night-lit keeper/routing room panes
+    // when the landmark's base emissive gate is below 1 (empty building or
+    // banked hearth), so lit panes render identically on WebGPU, WebGL2 and
+    // Canvas without waking off-glass emitters.
+    _roomGlassLitPart(building) {
+        const type = building?.type;
+        if (!type || !(this._nightWindowGate() > 0) || this._emissiveGateFor(building) >= 0.98) return null;
+        if (typeof this.roomGlass?.litPatch !== 'function') return null;
+        const lit = this.roomGlass.litPatch(type, (group) => this._nightGlassGroupGate(type, group));
+        if (!lit) return null;
+        const textureKey = `proc:building.${type}.roomGlassLit`;
+        const revKey = `${textureKey}:${lit.key}`;
+        return {
+            name: 'roomGlassLit',
+            image: lit.canvas,
+            textureKey,
+            textureRevision: revKey,
+            frameW: lit.w,
+            frameH: lit.h,
+            left: lit.left,
+            top: lit.top,
+            layer: Object.freeze({ frames: 1, materialClass: null }),
+            emissiveGate: 1,
+            channels: {
+                material: lit.channels?.material || null,
+                emissive: lit.emissiveCanvas,
+                occluder: lit.channels?.occluder || null,
+                key: revKey,
+            },
+        };
     }
 
     // Canvas twin of the GPU glassPatchRecord for daytime lit occupied rooms.
@@ -6080,7 +6238,12 @@ export class BuildingSprite {
             const value = advanceNightOccupancyGate(current, target, dt, this.motionScale);
             this._litGateByType.set(type, { value, target });
         }
-        // 6.3 — each room rises and falls on the same 400 / 1600 ms gate.
+        // 6.3 / NE P3.1 — each room rises (400 ms) and falls (1600 ms) toward
+        // its tier: 1.0 for an arrived worker/patron, ROUTING_ROOM_GATE (0.6)
+        // for an en-route working session at night, KEEPER_ROOM_GATE (0.40) on
+        // room 0 at lamplight/deep night (course >= 2, lamp-round gated) when
+        // empty, else 0. By day only arrived workers hold lit room slots.
+        const nightOpen = this._nightWindowGate() > 0;
         for (const [type, slots] of this._roomSlotsByType) {
             let lit = this._roomLitByType.get(type);
             if (!lit || lit.length !== slots.rooms) {
@@ -6088,9 +6251,17 @@ export class BuildingSprite {
                 if (lit) next.set(lit.subarray(0, Math.min(lit.length, next.length)));
                 this._roomLitByType.set(type, lit = next);
             }
-            const held = new Set(slots.assignment.values());
+            const workedRooms = new Set(slots.assignment.values());
+            const routingRooms = nightOpen && slots.routingAssignment?.size
+                ? new Set(slots.routingAssignment.values())
+                : null;
+            const keeper = nightOpen && this._keeperRoomActive(type);
             for (let room = 0; room < lit.length; room++) {
-                lit[room] = advanceNightOccupancyGate(lit[room], held.has(room) ? 1 : 0, dt, this.motionScale);
+                let target = 0;
+                if (workedRooms.has(room)) target = 1;
+                else if (routingRooms?.has(room)) target = ROUTING_ROOM_GATE;
+                else if (room === 0 && keeper) target = KEEPER_ROOM_GATE;
+                lit[room] = advanceNightOccupancyGate(lit[room], target, dt, this.motionScale);
             }
         }
     }

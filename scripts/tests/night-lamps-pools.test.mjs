@@ -10,8 +10,9 @@ import { IsometricRenderer } from '../../claudeville/src/presentation/character-
 import { SOURCE_ENERGY_BUCKETS } from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
 import { DEEP_NIGHT_FIXTURE_REACH } from '../../claudeville/src/presentation/character-mode/LightSourceRegistry.js';
 
-test('nine low lamp feet keep every standing place and approach file clear', () => {
-    assert.equal(VILLAGE_NIGHT_LAMPS.length, 9);
+test('fifteen low lamp feet keep every standing place and approach file clear', () => {
+    // NE P3.2 — 9 original posts + 6 dark-district posts (north, east, south).
+    assert.equal(VILLAGE_NIGHT_LAMPS.length, 15);
     const places = [...REST_SEATS, ...Object.values(REST_STANDS).flatMap(room => room.tiles), ...COMMAND_QUEUE.slots, ...COMMAND_QUEUE.overflow,
         ...AMBIENT_SCENIC_POINTS, ...Object.values(APPROACH_FILES).flat(),
         ...Object.values(VISIT_OVERFLOW_TILES).flat(),

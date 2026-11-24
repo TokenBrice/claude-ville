@@ -274,7 +274,7 @@ export function createPostFxFeed() {
         };
     }
 
-    function fillLights(renderer, viewport, dpr) {
+    function fillLights(renderer, viewport, dpr, gpuWorldActive = false) {
         lightsOut.length = 0;
         hazeOut.length = 0;
         const camera = renderer?.camera;
@@ -377,12 +377,17 @@ export function createPostFxFeed() {
             if (lightCount >= MAX_LIGHTS && hazeCount >= MAX_HAZE) break;
         }
 
-        // Baked lantern/brazier prop halos: the 2D path draws these in a
-        // separate, night-gated pass (_drawLanternGlows) from sources that are
-        // NOT in the ambient list. Feed them as flagged lights so the GL pass
-        // can apply the same lantern night factor per light.
-        // D4 — only the lamps already caught on the Lamplighter's Round.
-        const lanternSources = (renderer?._litLanternGlowSources || renderer?._lanternGlowSources)?.call(renderer) || null;
+        // Baked lantern/brazier prop halos for the hybrid Canvas + PostFx pass:
+        // a 14 px flame-head glow flagged `night` so the GL pass applies the
+        // lantern night factor per light. D4 — only the lamps already caught on
+        // the Lamplighter's Round. NE P1.1 — never on the resident GPU world:
+        // there the same lamps already arrive in `_frameLightSources.ambient` as
+        // `village.lantern.*` / `village.brazier.*` fixture pools, and these
+        // duplicates outranked them in `clampGpuLights`, evicting real pools at
+        // REDUCED and MINIMAL.
+        const lanternSources = gpuWorldActive
+            ? null
+            : (renderer?._litLanternGlowSources || renderer?._lanternGlowSources)?.call(renderer) || null;
         if (lanternSources && camera && typeof camera.worldToScreen === 'function') {
             const lanternRadius = Math.max(9, Math.round(14 * zoom)) * dpr;
             for (let i = 0; i < lanternSources.length && lightCount < MAX_LIGHTS; i++) {
@@ -687,7 +692,7 @@ export function createPostFxFeed() {
             const dpr = viewport.dpr;
             const camera = renderer.camera || null;
 
-            fillLights(renderer, viewport, dpr);
+            fillLights(renderer, viewport, dpr, args.gpuWorldActive === true);
             if (args.gpuWorldActive === true) {
                 waterObj.mask = null;
                 waterObj.flowX = 0;

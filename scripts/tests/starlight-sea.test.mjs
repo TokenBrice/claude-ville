@@ -19,8 +19,10 @@ test('night starlight multiplies only the clock, star visibility, weather and mo
     const weather = { type: 'clear', cloudCover: 0.2 };
     const grade = { night: 0.8 };
     const at = (moon, level = 0, w = weather, g = grade) => resolveStarlight(a, w, g, moon, level);
-    assert.equal(at(0.1), 0.8 * 0.7 * 0.8 * 0.9 * 0.9);
-    assert.equal(at(1), 0);
+    // NE P3.3 — moon attenuation keeps a 0.25 floor: 0.25 + 0.75 * darkMoon^2.
+    assert.equal(at(0.1), 0.8 * 0.7 * 0.8 * (0.25 + 0.75 * 0.9 * 0.9));
+    assert.equal(at(1), 0.8 * 0.7 * 0.8 * 0.25);
+    assert.equal(at(0), 0.8 * 0.7 * 0.8);
     assert.equal(at(0, 2), 0, 'MINIMAL drops sparkle rather than adding another static layer');
     assert.equal(at(0, 3), 0);
     assert.equal(at(0, 1), at(0), 'REDUCED keeps sparse sparkle');
@@ -30,11 +32,12 @@ test('night starlight multiplies only the clock, star visibility, weather and mo
     assert.equal(resolveStarlight({ sky: { starsAlpha: 0 } }, weather, grade, 0, 0), 0);
 });
 
-test('October new moon leaves glints, full moon hands over to the path, noon stays unchanged', () => {
+test('October new moon leaves glints, full moon keeps a 0.25 starlight floor, noon stays unchanged', () => {
     const newMoon = snapshot(9);
     const fullMoon = snapshot(26);
     assert.ok(density(newMoon) > 0.15, 'new-moon clear night admits sparkle');
-    assert.ok(density(fullMoon) < density(newMoon) * 0.1, 'full moon admits fewer than a tenth');
+    assert.ok(density(fullMoon) > 0 && density(fullMoon) < density(newMoon) * 0.4,
+        `full moon keeps a faint starlight floor (${density(fullMoon).toFixed(4)} vs ${density(newMoon).toFixed(4)})`);
     assert.equal(density(snapshot(9, 12)), 0);
     const feed = { atmosphere: newMoon, weather: newMoon.weather, motionScale: 1, reducedMotion: true };
     const out = createWaterFx();
@@ -122,4 +125,24 @@ test('NE P2.4 (relaxes L1-4): the night sea drops 18 % at full night and keeps b
     const glsl = readFileSync(new URL('../../claudeville/src/presentation/character-mode/gpu/GpuWorldRenderer.js', import.meta.url), 'utf8');
     assert.ok(glsl.includes('color *= 1.0 - u_waterMood.x * 0.1 - 0.08 * smoothstep(0.5, 1.0, u_waterMood.x);'));
     assert.ok(WATER_WGSL.includes('color *= 1.0 - frame.waterMood.x * 0.1 - 0.08 * smoothstep(0.5, 1.0, frame.waterMood.x);'));
+});
+
+test('NE P3.3: moon glintDash widens to 0.95, uses 0.28 * pow(w, 1.25) and bright stop 2.0 in all three twins', () => {
+    const glintBody = (src) => src.match(/(?:float glintDash|fn glintDash)[^{]+\{([\s\S]*?)\n\}/)[1];
+    const wgslMoon = glintBody(WATER_WGSL);
+    const glslMoon = glintBody(SEA_SWELL_GLSL);
+    const canvas = readFileSync(new URL('../../claudeville/src/presentation/character-mode/CanvasWaterState.js', import.meta.url), 'utf8');
+    assert.ok(wgslMoon.includes('select(1.0, 0.95, moon)'));
+    assert.ok(wgslMoon.includes('0.28 * glint.y * pow(weight, 1.25)'));
+    assert.ok(wgslMoon.includes('select(1.0, 2.0, waterHash12(cell + vec2f(5.0, life * 11.0)) < weight * 0.85)'));
+    assert.ok(glslMoon.includes('(moon ? 0.95 : 1.0)'));
+    assert.ok(glslMoon.includes('0.28 * glint.y * pow(weight, 1.25)'));
+    assert.ok(glslMoon.includes('waterHash12(cell + vec2(5.0, life * 11.0)) < weight * 0.85 ? 2.0 : 1.0'));
+    assert.match(canvas, /maxHalf = \(baseWidth \+ \(bottom - view\.y0\) \* grow\) \* \(moon \? 0\.95 : 1\)/);
+    assert.match(canvas, /half = \(baseWidth \+ \(y \+ 0\.5 - view\.y0\) \* grow\) \* \(moon \? 0\.95 : 1\)/);
+    assert.match(canvas, /density \* glint\.strength \* Math\.pow\(weight, 1\.25\)/);
+    assert.match(canvas, /colour = tone < weight \* 0\.85 \? hi : lo/);
+    // Guard: sun branch (glint.z < 2.5) stays untouched.
+    assert.ok(wgslMoon.includes('return select(1.0, 2.0, waterHash12(cell + vec2f(5.0, glintTick * 11.0)) < weight);'));
+    assert.ok(glslMoon.includes('return waterHash12(cell + vec2(5.0, glintTick * 11.0)) < weight ? 2.0 : 1.0;'));
 });

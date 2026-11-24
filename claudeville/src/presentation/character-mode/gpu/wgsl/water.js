@@ -155,13 +155,15 @@ fn glintDash(p: vec2f, fragPx: vec2f, glint: vec4f, texelPx: f32, tick: f32) -> 
     let moon = glint.z > 2.5;
     let pale = glint.z > 1.5 && !moon;
     let base = select(5.0, ${GLINT_NOON_BASE.toFixed(1)}, pale);
-    let halfWidth = (base + fragPx.y * glint.w) * select(1.0, 0.7, moon);
+    let halfWidth = (base + fragPx.y * glint.w) * select(1.0, 0.95, moon);
     let weight = 1.0 - abs(fragPx.x - glint.x) / max(texelPx, 1e-3) / halfWidth;
     if (weight <= 0.0) { return 0.0; }
     if (moon) {
+        // NE P3.3 — wider moon road, denser dashes, and bright silver stop.
         let cell = floor(floor(p) / vec2f(6.0, 1.0));
         let life = floor((tick + floor(waterHash12(cell + vec2f(37.0, 5.0)) * ${MOON_DASH_HOLD.toFixed(1)})) / ${MOON_DASH_HOLD.toFixed(1)});
-        return select(0.0, 1.0, waterHash12(cell + vec2f(life * 5.0, life * 2.0)) < ${(GLINT_DASH_DENSITY * 0.5).toFixed(3)} * glint.y * weight * weight);
+        if (waterHash12(cell + vec2f(life * 5.0, life * 2.0)) >= 0.28 * glint.y * pow(weight, 1.25)) { return 0.0; }
+        return select(1.0, 2.0, waterHash12(cell + vec2f(5.0, life * 11.0)) < weight * 0.85);
     }
     let cell = floor(floor(p) / vec2f(3.0, 1.0));
     let density = ${GLINT_DASH_DENSITY.toFixed(2)} * select(1.0, min(1.0, ${NOON_GLINT_FULL_TEXEL.toFixed(1)} / max(texelPx, 1e-3)), pale);

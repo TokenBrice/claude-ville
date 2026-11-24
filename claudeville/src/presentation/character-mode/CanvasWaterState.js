@@ -1874,7 +1874,8 @@ function rebuildPath(state, base, fx, palette, view, glint) {
     const top = Math.max(Math.floor(view.y0), fx.horizonTop);
     const bottom = Math.ceil(view.y1);
     if (bottom <= top) return false;
-    const maxHalf = (baseWidth + (bottom - view.y0) * grow) * (moon ? 0.7 : 1);
+    // NE P3.3 — wider moon road, denser dashes, and bright silver stop.
+    const maxHalf = (baseWidth + (bottom - view.y0) * grow) * (moon ? 0.95 : 1);
     const px0 = Math.floor(gx - maxHalf) - 6;
     const pw = Math.ceil(maxHalf * 2) + 12;
     const layer = layerCanvas(state.path, pw, bottom - top);
@@ -1886,10 +1887,10 @@ function rebuildPath(state, base, fx, palette, view, glint) {
     // The pale day path thins past NOON_GLINT_FULL_TEXEL backing px a texel,
     // so a close zoom shows single glints, not a field of dashes.
     const density = moon
-        ? GLINT_DASH_DENSITY * 0.5
+        ? 0.28
         : GLINT_DASH_DENSITY * (glint.kind === 2 ? Math.min(1, NOON_GLINT_FULL_TEXEL / Math.max(view.texelPx, 1e-3)) : 1);
     for (let y = top; y < bottom; y++) {
-        const half = (baseWidth + (y + 0.5 - view.y0) * grow) * (moon ? 0.7 : 1);
+        const half = (baseWidth + (y + 0.5 - view.y0) * grow) * (moon ? 0.95 : 1);
         const c0 = Math.floor((gx - half) / width);
         const c1 = Math.floor((gx + half) / width);
         const pale = glint.kind === 2;
@@ -1897,8 +1898,10 @@ function rebuildPath(state, base, fx, palette, view, glint) {
             let life = 0;
             let rollSun = 0;
             let tone = 0;
-            if (moon) life = Math.floor((tick + Math.floor(hash12(cx + 37, y + 5) * MOON_DASH_HOLD)) / MOON_DASH_HOLD);
-            else {
+            if (moon) {
+                life = Math.floor((tick + Math.floor(hash12(cx + 37, y + 5) * MOON_DASH_HOLD)) / MOON_DASH_HOLD);
+                tone = hash12(cx + 5, y + life * 11);
+            } else {
                 const glintTick = pale
                     ? Math.floor((tick + Math.floor(hash12(cx + 37, y + 5) * NOON_DASH_HOLD)) / NOON_DASH_HOLD)
                     : tick;
@@ -1911,8 +1914,8 @@ function rebuildPath(state, base, fx, palette, view, glint) {
                 if (weight <= 0) continue;
                 let colour;
                 if (moon) {
-                    if (rollMoon >= density * glint.strength * weight * weight) continue;
-                    colour = lo;
+                    if (rollMoon >= density * glint.strength * Math.pow(weight, 1.25)) continue;
+                    colour = tone < weight * 0.85 ? hi : lo;
                 } else {
                     if (rollSun >= density * glint.strength * weight) continue;
                     colour = tone < weight ? hi : lo;

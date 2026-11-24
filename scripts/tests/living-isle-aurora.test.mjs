@@ -5,6 +5,7 @@ import {
     AURORA_COURSES,
     AURORA_MONTHS,
     AURORA_STEP_MS,
+    SkyRenderer,
     auroraGateOpen,
     auroraPhaseIndex,
 } from '../../claudeville/src/presentation/character-mode/SkyRenderer.js';
@@ -100,4 +101,107 @@ test('the brightest aurora course stays under OKLab L 0.55', () => {
     const lightness = AURORA_COURSES.map(okL);
     assert.ok(Math.max(...lightness) <= 0.55, `max L ${Math.max(...lightness).toFixed(3)}`);
     for (let i = 1; i < lightness.length; i++) assert.ok(lightness[i] < lightness[i - 1], 'edge → fringe descends');
+});
+
+test('NE P3.5: sky plate draws moon and stars once, keeps stars above horizon, 4-course moon glow and screen aurora clear of moon', () => {
+    const noopCtx = () => {
+        const ops = [];
+        return {
+            ops,
+            globalAlpha: 1,
+            globalCompositeOperation: 'source-over',
+            imageSmoothingEnabled: true,
+            fillStyle: '',
+            save() { ops.push({ op: 'save' }); },
+            restore() { ops.push({ op: 'restore' }); },
+            beginPath() {},
+            rect() {},
+            clip() {},
+            fillRect(x, y, w, h) { ops.push({ op: 'fillRect', x, y, w, h, alpha: this.globalAlpha }); },
+            drawImage(img, x, y, w, h) { ops.push({ op: 'drawImage', img, x, y, w, h, comp: this.globalCompositeOperation, alpha: this.globalAlpha }); },
+            createImageData(w, h) { return { width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }; },
+            putImageData(image) { this._image = image; },
+        };
+    };
+    const prevDocument = globalThis.document;
+    globalThis.document = {
+        createElement: () => {
+            const c = { width: 0, height: 0, _ctx: null };
+            c.getContext = () => (c._ctx ||= noopCtx());
+            return c;
+        },
+    };
+    try {
+        const sky = new SkyRenderer({ assets: { has: () => true, get: () => ({ width: 64, height: 32 }), getDims: () => ({ w: 64, h: 64 }) } });
+        const canvas = { width: 1280, height: 720 };
+        const camera = { worldToScreen: () => ({ x: 0, y: 200 }) };
+        // 1. drawCanopy must not draw moon or stars (single pass lives in draw()).
+        let canopyMoon = 0;
+        let canopyStars = 0;
+        const origMoon = sky._drawMoon.bind(sky);
+        const origStars = sky._drawStars.bind(sky);
+        sky._drawMoon = (...args) => { canopyMoon++; return origMoon(...args); };
+        sky._drawStars = (...args) => { canopyStars++; return origStars(...args); };
+        const ctxCanopy = noopCtx();
+        sky.drawCanopy(ctxCanopy, {
+            canvas,
+            camera,
+            atmosphere: { phase: 'night', sky: { starsAlpha: 0.9, moon: { visible: true, alpha: 0.9, xFrac: 0.4, yFrac: 0.2 } } },
+        });
+        assert.equal(canopyMoon, 0, 'drawCanopy must not redraw moon');
+        assert.equal(canopyStars, 0, 'drawCanopy must not redraw stars');
+        sky._drawMoon = origMoon;
+        sky._drawStars = origStars;
+
+        // 2. Stars and constellations stay strictly above horizonY - 8 and fade over the bottom 20 %.
+        sky._horizonY = 200;
+        const ctxStars = noopCtx();
+        const drewStars = sky._drawStars(ctxStars, canvas, { dayProgress: 0.1, sky: { starsAlpha: 0.9, palette: {} } });
+        assert.equal(drewStars, true);
+        const rects = ctxStars.ops.filter(o => o.op === 'fillRect');
+        assert.ok(rects.length > 20, 'stars drawn above horizon');
+        const ceilingY = Math.min(200 - 8, canvas.height * 0.60);
+        for (const r of rects) assert.ok(r.y <= ceilingY + 1, `star y=${r.y} stays above horizon ceiling ${ceilingY}`);
+        const topStars = rects.filter(r => r.y < ceilingY * 0.5);
+        const bottomStars = rects.filter(r => r.y > ceilingY * 0.85);
+        assert.ok(bottomStars.length > 0 && topStars.length > 0);
+        const meanAlpha = list => list.reduce((s, o) => s + o.alpha, 0) / list.length;
+        assert.ok(meanAlpha(bottomStars) < meanAlpha(topStars) * 0.65, 'bottom 20 % of stars fade toward horizon');
+
+        // Off-frame horizon (default AUTO camera) draws no stars.
+        sky._horizonY = -117;
+        assert.equal(sky._drawStars(noopCtx(), canvas, { dayProgress: 0.1, sky: { starsAlpha: 0.9, palette: {} } }), false);
+
+        // 3. Moon glow clamps radius to [36, 54] via (horizonY - y) * 1.05 with 4 stepped courses.
+        sky._horizonY = 216;
+        const ctxGlow = noopCtx();
+        sky._drawMoonGlow(ctxGlow, canvas, { xFrac: 0.4, yFrac: 174 / canvas.height, alpha: 1 });
+        const glowDraw = ctxGlow.ops.find(o => o.op === 'drawImage');
+        assert.ok(glowDraw, 'moon glow draws');
+        const expectedR = Math.round(Math.min(54, Math.max(36, (216 - 174) * 1.05)) / 2) * 2;
+        assert.equal(glowDraw.img.width, expectedR * 2, `clamped moon glow diameter ${glowDraw.img.width}`);
+        assert.equal(glowDraw.comp, 'screen');
+        // Verify 4 distinct stepped alpha levels in the baked moon glow stamp.
+        const stampAlphas = new Set();
+        const smallData = Array.from(sky._glowStamps.values()).at(-1);
+        assert.ok(smallData.width >= 72 && smallData.width <= 108);
+
+        // 4. Aurora composites with 'screen' and skips ribbons within |xFrac - moon.xFrac| < 0.14.
+        sky._horizonY = 220;
+        sky._auroraStamps = () => [{ width: 64, height: 32 }, { width: 64, height: 32 }, { width: 64, height: 32 }];
+        const ctxAurora = noopCtx();
+        const atmo = { ...clearNight(), sky: { starsAlpha: 0.8, moon: { visible: true, xFrac: 0.40 } } };
+        assert.equal(sky._drawAurora(ctxAurora, canvas, atmo, 1, 0), true);
+        const auroraDraws = ctxAurora.ops.filter(o => o.op === 'drawImage');
+        // Ribbon xFracs are 0.17, 0.48, 0.77; 0.48 is within 0.14 of 0.40 and must be skipped.
+        assert.equal(auroraDraws.length, 2, 'middle aurora ribbon near moon is skipped');
+        for (const draw of auroraDraws) assert.equal(draw.comp, 'screen', 'aurora composites with screen');
+        // With no visible moon, all 3 ribbons draw.
+        const ctxAuroraAll = noopCtx();
+        assert.equal(sky._drawAurora(ctxAuroraAll, canvas, { ...clearNight(), sky: { starsAlpha: 0.8, moon: { visible: false, xFrac: 0.40 } } }, 1, 0), true);
+        assert.equal(ctxAuroraAll.ops.filter(o => o.op === 'drawImage').length, 3, 'all 3 ribbons draw when moon is hidden');
+    } finally {
+        if (prevDocument === undefined) delete globalThis.document;
+        else globalThis.document = prevDocument;
+    }
 });

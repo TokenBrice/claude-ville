@@ -600,20 +600,35 @@ function receiverScale(receiver, towards, gains) {
 }
 
 /**
- * 1.3 Canvas parity — one emitter cut per sprite, built once from its albedo
- * and its emissive sidecar (same size). The resident scene pass shows a lit
- * emitter pixel as mix(graded, albedo, w) + 0.42 x emission x 2a, with a the
- * sidecar contribution and w = min(1, 2a) at full energy, then divides by the
- * brightest channel. Drawn `source-over` after the frame's grade at alpha w,
- * the cut reproduces that: colour albedo + 0.42 x emission x max(1, 2a),
+ * NE P1.3 — night emitter carry factor derived from `grade.poolGain`,
+ * matching the scene shaders' `clamp((poolGain - 0.15) / 1.05, 0, 1)`.
+ * Returns 0 at daytime `poolGain` (0.15) and 1 at night (1.2).
+ */
+export function emitterNightCarry(grade) {
+    const poolGain = typeof grade === 'number' ? grade : (grade?.poolGain ?? 0.15);
+    return clamp((poolGain - 0.15) / 1.05);
+}
+
+/**
+ * 1.3 / NE P1.3 / NE P1.5 Canvas parity — one emitter cut per sprite, built
+ * from its albedo, its emissive sidecar (same size), and the frame grade's
+ * `poolGain`. The resident scene pass shows a lit emitter pixel as
+ * `mix(graded, emitterBase, w) + (0.42 + 0.20 * nightCarry) * emission * 2a`,
+ * with `a` the sidecar contribution, `w = min(1, 2a)` at full energy, and
+ * `emitterBase = max(albedo, emission * clamp(0.5 + 0.5 * 2a, 0, 1) * nightCarry)`,
+ * then divides by the brightest channel. Drawn `source-over` after the frame's
+ * grade at alpha `w`, the cut reproduces that with `contribution = 2a` (NE P1.5:
+ * matching the GPU's `emissive` factor without `max(1, contribution)`),
  * hue-protected the same way. The caller scales it by gate x core energy
  * through `globalAlpha`. `bloom` is the same texels' own emission, the
  * resident bloom source (sidecar rgb x 2a): stored at half (rgb x a, opaque)
  * so 8 bits hold it; the hybrid bloom doubles it back. Returns
  * `{ canvas, bloom, x, y }` trimmed to the emitter pixels (x, y the offset
  * inside the sprite), or null when the sidecar is empty.
+ *
+ * NE P3.4 — Canvas keeps its declared lower tier with no villager moonlight rim.
  */
-export function buildEmitterCut(albedo, emissive) {
+export function buildEmitterCut(albedo, emissive, grade = null) {
     const width = albedo?.width | 0;
     const height = albedo?.height | 0;
     if (!width || !height || emissive?.width !== width || emissive?.height !== height) return null;
@@ -654,16 +669,22 @@ export function buildEmitterCut(albedo, emissive) {
     bloom.height = cutHeight;
     const bloomCtx = bloom.getContext('2d');
     const bloomImage = bloomCtx.createImageData(cutWidth, cutHeight);
+    const nightCarry = emitterNightCarry(grade);
+    const landingWeight = 0.42 + 0.20 * nightCarry;
     for (let y = 0; y < cutHeight; y++) {
         for (let x = 0; x < cutWidth; x++) {
             const i = ((y + y0) * width + x + x0) * 4;
             const o = (y * cutWidth + x) * 4;
             if (light[i + 3] === 0 || base[i + 3] === 0) continue;
             const contribution = 2 * light[i + 3] / 255;
-            const emission = 0.42 * Math.max(1, contribution);
-            const r = base[i] / 255 + emission * light[i] / 255;
-            const g = base[i + 1] / 255 + emission * light[i + 1] / 255;
-            const b = base[i + 2] / 255 + emission * light[i + 2] / 255;
+            const emission = landingWeight * contribution;
+            const liftScale = clamp(0.5 + 0.5 * contribution) * nightCarry;
+            const er = light[i] / 255;
+            const eg = light[i + 1] / 255;
+            const eb = light[i + 2] / 255;
+            const r = Math.max(base[i] / 255, er * liftScale) + emission * er;
+            const g = Math.max(base[i + 1] / 255, eg * liftScale) + emission * eg;
+            const b = Math.max(base[i + 2] / 255, eb * liftScale) + emission * eb;
             const peak = Math.max(1, r, g, b);
             image.data[o] = Math.round(r / peak * 255);
             image.data[o + 1] = Math.round(g / peak * 255);

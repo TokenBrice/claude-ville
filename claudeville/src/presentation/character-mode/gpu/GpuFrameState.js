@@ -560,7 +560,8 @@ export function resolveStarlight(atmosphere, weather, grade, moonFill, level) {
     const stars = clamp(finite(atmosphere?.sky?.starsAlpha, night), 0, 1);
     const clear = 1 - clamp(finite(weather?.cloudCover, 0), 0, 1);
     const darkMoon = 1 - clamp(finite(moonFill, 0), 0, 1);
-    return night * stars * clear * darkMoon * darkMoon;
+    // NE P3.3 — keep a 0.25 starlight floor on bright-moon nights.
+    return night * stars * clear * (0.25 + 0.75 * darkMoon * darkMoon);
 }
 
 /**
