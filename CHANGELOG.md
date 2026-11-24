@@ -2,6 +2,19 @@
 
 ---
 
+## v0.66.0.1 · Nov 24, 2026 — Hotfix
+
+- **GLM 5.4 and cross-provider context ceilings read truthfully.** GLM MCP threads running `glm-5.4` showed a `200.0K` context ceiling because `glm.js` delegated transcript projection and token usage through `claude.js` under the `'claude'` provider, and `contextWindowForModel` fell back to Claude's 200K default whenever a cross-provider model missed an explicit row. `glm.js` now passes `'zai'` on both the session and detail paths, and `contextWindowForModel` resolves a model's row and inferred vendor default before falling back to a hosting harness's provider default (leaving unknown generic models `null`).
+- **Audited model registry context windows (revision `2026-11-24`).** Verified every model row in `claudeville/src/config/models.json` against vendor documentation and the local `~/.omp/agent/models.db` and `~/.codex/models_cache.json` catalogs, reusing existing family sprites (no new sprites):
+  - **z.AI / GLM:** Added `zai.glm-5-4` (`glm-5-4`, `GLM 5.4`, `agent.zai.glm` + `.b`, 1M context; provisionally carries GLM 5.3's `$1.40 / $4.40 / $0.26` per-MTok rates while GLM 5.4 launches on GLM Coding Plans ahead of standalone Model API pricing), `zai.glm-5-2` (1M), and legacy 200K rows (`zai.glm-5-1`, `zai.glm-5-turbo`/`glm-5v-turbo`, `zai.glm-4-7`/`glm-4-6`). Unlisted future GLM models continue falling back to `defaults.zai` (1M).
+  - **Codex / OpenAI:** Aligned `gpt-5.6-*` (from 372K), `gpt-5.5` and `gpt-5.4` (from 258.4K), and newly added `codex.gpt-6-1-terra` (`gpt-6-1-terra`, `agent.codex.gpt56terra`, `$1 / $5 / $0.05 / $1.25`) to 1.05M; corrected `gpt-5.3-codex-spark` to 128K and `gpt-5` / `gpt-5.3` / `gpt-5.3-codex` to 400K. Live Codex CLI rollouts continue overriding with their observed `model_context_window`, and `defaults.codex` keeps 258.4K for unlisted CLI slugs.
+  - **DeepSeek:** Corrected `deepseek.v4-flash` from 256K to 1M (`deepseek.flash`, `deepseek.v4-pro` at 1M and legacy `deepseek.reasoner` at 128K unchanged).
+  - **Grok / xAI:** Corrected `grok.4-3` to 1M and base `grok.4` to 256K; added `grok.4-7` and `grok.4-6` (500K, `$2 / $6 / $0.50`), `grok.4-20` (1M, `$1.25 / $2.50 / $0.20`), `grok.4-20-beta` (2M, `$1.25 / $2.50 / $0.20`), and `grok.4-fast`/`grok-4-1-fast` (2M, `$0.20 / $0.50 / $0.05`), all reusing `agent.grok.base`.
+  - **Kimi / Moonshot:** Added `kimi.k3-1-pro` (1M, `$2 / $10 / $0.20 / $2`) and `kimi.k3` (1M, `$3 / $15 / $0.30 / $3`), reusing `agent.kimi.base`.
+- **Adapters unified on the canonical registry.** `grok.js`, `gemini.js` (fixing a regex that missed `gemini-4-*`), `opencode.js`, `deepseek.js`, and `kimi.js` (when config omits `max_context_size`) now consult `contextWindowForModel` instead of divergent hardcoded limits.
+
+---
+
 ## v0.66.0 — *The Sunlit Isle* · Nov 23, 2026
 
 A visual overhaul you can see in an ordinary daytime frame. Sixteen exploration lanes found what kept the village looking flat, and sixteen build lanes changed it. Nearly every change lifts a limit on art the village already had.
