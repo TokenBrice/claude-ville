@@ -218,7 +218,7 @@ test('C-04: all 40 roster characters declare M/E/O sidecars, Opus emissive stays
     }
     assert.equal(faceTrimHits, 0, 'gpt6astra.b trim never collides with open-visor face skin');
 
-    // Cut scope invariants: carried-lanterns stays 12/6/0, no moonRim helper in Firelight.js
-    assert.deepEqual([0, 1, 2].map((lvl) => effectBudgetMode('carried-lanterns', lvl)), [12, 6, 0]);
+    // NE v0.67.1 L: carried-lanterns raised 12/6/0 -> 24/12/0; no moonRim helper in Firelight.js
+    assert.deepEqual([0, 1, 2].map((lvl) => effectBudgetMode('carried-lanterns', lvl)), [24, 12, 0]);
     assert.equal(FirelightModule.computeMoonRimStrength, undefined, 'moonRim cut per review');
 });

@@ -31,7 +31,7 @@ export const GRADE_EXPOSURE_FLOOR = 0.40;
 // The weather rows also spend value through `gain`, which the exposure floor
 // cannot see. The effective ambient (exposure x luma(gain), what an unlit
 // mid-grey becomes) never falls below this: a storm night stays readable under
-// clear deep night (effective ambient ~0.50, or ~0.48 at MOONLIT_NIGHT_STRENGTH 0),
+// clear deep night (effective ambient ~0.46, or ~0.44 at MOONLIT_NIGHT_STRENGTH 0),
 // never at black. NE P2.1 — lowered from 0.52 with the Opus P night keys (2026-11-24).
 export const GRADE_AMBIENT_FLOOR = 0.42;
 
@@ -150,9 +150,10 @@ function moonlit3(base, full) {
 export const GRADE_KEYFRAMES = Object.freeze([
     Object.freeze({
         name: 'deep-night', minute: 2 * 60, side: 'night',
-        exposure: moonlit(0.53, 0.55), saturation: moonlit(0.52, 0.57),
+        // NE v0.67.1 D (exposure 0.49/0.51) & B (de-greened moonlight highlightTint).
+        exposure: moonlit(0.49, 0.51), saturation: moonlit(0.52, 0.57),
         gain: [0.80, 0.92, 1.08], lift: moonlit3([0.010, 0.012, 0.023], [0.014, 0.018, 0.034]), gamma: 1.10,
-        shadowTint: [0.78, 0.90, 1.15], highlightTint: [0.96, 1.04, 1.02],
+        shadowTint: [0.78, 0.90, 1.15], highlightTint: [0.92, 0.97, 1.04],
         purkinje: 0.7, sunBand: 0, daylight: 0, night: 1, rake: 0,
         vignetteEdge: [0.72, 0.74, 0.82], vignetteAlpha: 0.38,
         skyTop: '#060a14', skyHorizon: '#11192a', voidColor: '#090f15', horizonHaze: '#162032',
@@ -247,7 +248,8 @@ export const GRADE_KEYFRAMES = Object.freeze([
         name: 'night', minute: 22 * 60, side: 'dusk',
         exposure: moonlit(0.56, 0.58), saturation: moonlit(0.58, 0.62),
         gain: [0.80, 0.92, 1.08], lift: moonlit3([0.010, 0.012, 0.023], [0.014, 0.018, 0.034]), gamma: 1.10,
-        shadowTint: [0.78, 0.90, 1.15], highlightTint: [0.96, 1.04, 1.02],
+        // NE v0.67.1 B — silver-blue moonlight highlights without the green bias.
+        shadowTint: [0.78, 0.90, 1.15], highlightTint: [0.92, 0.97, 1.04],
         purkinje: 0.6, sunBand: 0, daylight: 0, night: 1, rake: 0,
         vignetteEdge: [0.74, 0.76, 0.84], vignetteAlpha: 0.36,
         skyTop: '#080e1d', skyHorizon: '#162033', voidColor: '#091016', horizonHaze: '#1a2538',
@@ -397,7 +399,8 @@ export function evaluateGrade({
         const weight = w[kind];
         if (weight <= 0) continue;
         const row = GRADE_WEATHER_ROWS[kind];
-        saturation *= lerp(1, row.saturation, weight);
+        // NE v0.67.1 R — ease weather desaturation to 45 % at night so rainy nights keep hue.
+        saturation *= lerp(1, row.saturation, weight * lerp(1, 0.45, night));
         const tint = hexToRgb01(row.tint);
         // L1-1 — the weather charges its darkness once. By day the cool
         // multiply spends 70 % of its value (a storm noon was darker than a
@@ -511,20 +514,21 @@ export function applyGradeToRgb(rgb, grade) {
     return [out[0] / peak, out[1] / peak, out[2] / peak];
 }
 
-// V6 — outside the sun and moon path the sea stays cool and quiet in dark
-// states: graded water is held at WATER_DAY_MAX_SATURATION (0.44) by day
-// (relaxed 2026-11-23 to 0.48, operator decision: clearly blue daytime water;
-// toned back to 0.44 on 2026-11-24, operator decision: too bright) and
-// blends smoothly back to WATER_MAX_SATURATION (0.37) with night and storm,
-// so night and storm water stay quiet while clear daylight reads coastal blue.
+// V6 / NE v0.67.1 S — outside the sun and moon path the sea stays cool and
+// quiet in dark states: graded water is held at WATER_DAY_MAX_SATURATION (0.44)
+// by day, WATER_NIGHT_MAX_SATURATION (0.52) on clear nights, and blends
+// smoothly back to WATER_MAX_SATURATION (0.37) in storm.
 // Sun glitter, the moon path and lamp reflections keep their own colour.
 export const WATER_MAX_SATURATION = 0.37;
 export const WATER_DAY_MAX_SATURATION = 0.44;
+export const WATER_NIGHT_MAX_SATURATION = 0.52;
 
 /** Effective V6 HSV saturation cap for a water mood (`{ night, storm }`). */
 export function waterMaxSaturation(mood) {
-    const dark = Math.max(0, Math.min(1, Math.max(Number(mood?.night) || 0, Number(mood?.storm) || 0)));
-    return WATER_DAY_MAX_SATURATION + (WATER_MAX_SATURATION - WATER_DAY_MAX_SATURATION) * dark;
+    const night = Math.max(0, Math.min(1, Number(mood?.night) || 0));
+    const storm = Math.max(0, Math.min(1, Number(mood?.storm) || 0));
+    const clear = WATER_DAY_MAX_SATURATION + (WATER_NIGHT_MAX_SATURATION - WATER_DAY_MAX_SATURATION) * night;
+    return clear + (WATER_MAX_SATURATION - clear) * storm;
 }
 
 /**

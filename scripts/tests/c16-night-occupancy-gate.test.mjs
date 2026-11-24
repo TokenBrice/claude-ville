@@ -126,6 +126,60 @@ test('NE P1.2: Command gate braziers and Harbor quay lantern follow the lamp clo
     assert.ok(reducedIds.includes('building.harbor.point.18.150'), 'reduced motion lights Harbor on the shared clock');
 });
 
+test('NE v0.67.1 K: Lighthouse keeper cottage hearth is a lamp-clock fixture at night and absent by day', () => {
+    const watchtower = { type: 'watchtower', position: { tileX: 28, tileY: 12 }, containsPoint: () => false };
+    const makeWatchtower = (minuteOfDay, { motionScale = 1 } = {}) => Object.assign(Object.create(BuildingSprite.prototype), {
+        buildings: [watchtower],
+        atmosphereState: {
+            phase: minuteOfDay >= 19 * 60 || minuteOfDay < 6 * 60 ? 'night' : 'day',
+            clock: { minuteOfDay },
+            reactions: { windowWarmth: 0 },
+        },
+        lightingState: { sourceEnergy: { core: 0.95, halo: 1.3, spill: 1, bloom: 0.8, reach: 1.5, gain: 1.2 } },
+        harborStatus: { failedPushActive: false, activeWorkingCount: 0 },
+        motionScale,
+        assets: {
+            getEntry: (id) => (id === 'building.watchtower' ? { id } : null),
+            getAnchor: () => [144, 320],
+        },
+        _buildingScreenCenter: () => ({ x: 1000, y: 1000 }),
+        _litGateByType: new Map(),
+        _staticLightSources: () => [
+            { id: 'building.watchtower.point.144.40', kind: 'point', buildingType: 'watchtower', building: watchtower, radius: 120, intensity: 1, alpha: 0.4, color: '#fff' },
+        ],
+        _workingVisitorCountFor: () => 0,
+        _forgeGlowIntensity: () => 0,
+        _beaconScaleFor: () => 1,
+        _workTierFor: () => 'dormant',
+        _ritualLightSources: () => [],
+        _forgeSpillLightSources: () => [],
+        _archiveSpillLightSources: () => [],
+        _apertureSources: () => [],
+    });
+
+    // Day (noon): lamp clock off -> no cottage hearth emitted (day unchanged).
+    assert.deepEqual(makeWatchtower(12 * 60).getLightSources(), []);
+
+    // Night (22:00), empty village: steady fixture at cottage door [96, 314], foot [90, 334].
+    const nightLights = makeWatchtower(22 * 60).getLightSources();
+    assert.deepEqual(nightLights.map(l => l.id), ['building.watchtower.cottage-hearth.28.12']);
+    const [hearth] = nightLights;
+    assert.equal(hearth.role, 'fixture');
+    assert.equal(hearth.normal, null);
+    assert.equal(hearth.fire, false);
+    assert.equal(hearth.color, '#ffc95e');
+    assert.equal(hearth.radius, 64);
+    assert.ok(Math.abs(hearth.intensity - 0.55 * 0.95) < 1e-9);
+    assert.deepEqual(hearth.origin, { x: 1000 - 144 + 96, y: 1000 - 320 + 314 });
+    assert.deepEqual(hearth.ground, { x: 1000 - 144 + 90, y: 1000 - 320 + 334 });
+    assert.equal(hearth.height, 20);
+    assert.equal(hearth.buildingType, 'watchtower');
+
+    // Reduced motion lights the hearth on the shared lamp clock at settling dusk.
+    const reduced = makeWatchtower(1135, { motionScale: 0 }).getLightSources();
+    assert.deepEqual(reduced.map(l => l.id), ['building.watchtower.cottage-hearth.28.12']);
+});
+
 test('only present mid-turn working agents light building windows (V8 isWorkingVisitor)', () => {
     assert.equal(isWorkingVisitor({ status: 'working' }), true);
     assert.equal(isWorkingVisitor({ status: 'waiting', turnState: 'tool_pending' }), true);

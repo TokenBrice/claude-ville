@@ -62,14 +62,14 @@ export function apertureOverRoof(type, template) {
     return rects.some(([x0, y0, x1, y1]) => template.cx >= x0 && template.cx <= x1 && template.cy >= y0 && template.cy <= y1);
 }
 
-/** min(1.2, 0.5 + area / 400) x core energy x the room (or building) gate. */
+/** NE v0.67.1 P12: min(1.2, 0.61 + area / 400) x core energy x the room (or building) gate. */
 export function apertureIntensity(area, core = 1, gate = 1) {
-    return Math.min(1.2, 0.5 + Math.max(0, Number(area) || 0) / 400) * Math.max(0, Number(core) || 0) * Math.max(0, Number(gate) || 0);
+    return Math.min(1.2, 0.61 + Math.max(0, Number(area) || 0) / 400) * Math.max(0, Number(core) || 0) * Math.max(0, Number(gate) || 0);
 }
 
-/** min(106, 30 + 2.2 sqrt(area)) world px. */
+/** NE v0.67.1 P12: min(106, 35 + 2.4 sqrt(area)) world px. */
 export function apertureRadius(area) {
-    return Math.min(APERTURE_RADIUS_CAP, 30 + 2.2 * Math.sqrt(Math.max(0, Number(area) || 0)));
+    return Math.min(APERTURE_RADIUS_CAP, 35 + 2.4 * Math.sqrt(Math.max(0, Number(area) || 0)));
 }
 
 function hexByte(value) {

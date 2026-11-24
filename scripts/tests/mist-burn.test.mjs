@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { MIST_BURN, mistBurnFor, mistDensity } from '../../claudeville/src/presentation/character-mode/WeatherRenderer.js';
+import { MIST_BURN, NIGHT_MIST_LAND_SHARE, NIGHT_MIST_SHARE, mistBurnFor, mistDensity } from '../../claudeville/src/presentation/character-mode/WeatherRenderer.js';
 import { MIST, mistTopAt, resolveMistBurn } from '../../claudeville/src/presentation/character-mode/gpu/GpuFrameState.js';
-import { MIST_HALO, mistHaloEligible, mistHaloFor } from '../../claudeville/src/presentation/character-mode/MistHalos.js';
+import { MIST_HALO, mistHaloAirFog, mistHaloEligible, mistHaloFor } from '../../claudeville/src/presentation/character-mode/MistHalos.js';
 import { FRAME_UNIFORM_LAYOUT } from '../../claudeville/src/presentation/character-mode/gpu/wgsl/common.js';
 import { resetLookStrengths, setLookStrength } from '../../claudeville/src/presentation/character-mode/LookStrengths.js';
 
@@ -187,4 +187,37 @@ test('MS-2: whole days walk the burn-off without a jump', async () => {
     } finally {
         A.setSolarSite(null);
     }
+});
+
+test('NE v0.67.1 M: clear nights spawn water-only radiation mist (land 0.08, sea 1.0) and waterfront/rain MistHalos; day and fog unchanged', () => {
+    assert.equal(NIGHT_MIST_SHARE, 0.32);
+    assert.equal(NIGHT_MIST_LAND_SHARE, 0.08);
+    const clearNightMid = mistBurnFor({ weather: CLEAR, phase: 'night', phaseProgress: 0.5, solar: { elevationDeg: -25 } }, 1);
+    const expectedDensity = Math.round(NIGHT_MIST_SHARE * MIST_BURN.steps) / MIST_BURN.steps;
+    assert.equal(clearNightMid.density, expectedDensity);
+    assert.equal(clearNightMid.sea, 1);
+    assert.equal(clearNightMid.land, Math.round(NIGHT_MIST_LAND_SHARE * MIST_BURN.steps) / MIST_BURN.steps);
+    assert.ok(clearNightMid.land <= 0.1, 'inland share stays near zero so villagers remain crisp');
+    // Smooth ease at night edges so dusk/dawn transitions never jump.
+    assert.equal(mistBurnFor({ weather: CLEAR, phase: 'night', phaseProgress: 0, solar: { elevationDeg: -6 } }, 1).density, 0);
+    assert.equal(mistBurnFor({ weather: CLEAR, phase: 'night', phaseProgress: 1, solar: { elevationDeg: -6 } }, 1).density, 0);
+    const partlyNight = mistBurnFor({ weather: { type: 'partly-cloudy', intensity: 0.2 }, phase: 'night', phaseProgress: 0.5, solar: { elevationDeg: -25 } }, 1);
+    assert.equal(partlyNight.density, expectedDensity);
+    assert.equal(partlyNight.sea, 1);
+    // Day stays clear (0 mist) and fog night keeps full [1, 1].
+    assert.equal(mistBurnFor({ weather: CLEAR, phase: 'day', phaseProgress: 0.5, solar: { elevationDeg: 40 } }, 1).density, 0);
+    const fogNight = mistBurnFor({ weather: FOG, phase: 'night', phaseProgress: 0.5, solar: { elevationDeg: -25 } }, 1);
+    assert.deepEqual([fogNight.land, fogNight.sea], [1, 1]);
+    // Waterfront MistHalos: flames above clear-night water mist glow only at waterfront (near > 0.45, top > 4), never inland or by day.
+    const nightEnergy = { core: 1, halo: 1 };
+    const lamp = { x: 0, y: 0, height: 18, intensity: 1, color: '#ffcc66', role: 'fixture' };
+    assert.equal(mistHaloFor(lamp, 10, 1, nightEnergy, 0, 0.2), null, 'inland lamp above mist top gets no halo');
+    assert.equal(mistHaloFor(lamp, 3, 1, nightEnergy, 0, 0.8), null, 'waterfront below topMin gets no halo');
+    assert.equal(mistHaloFor(lamp, 10, 1, { core: 0.14, halo: 0.72 }, 0, 0.8), null, 'daytime gets no halo');
+    const waterfrontHalo = mistHaloFor(lamp, 10, 1, nightEnergy, 0, 0.8);
+    assert.ok(waterfrontHalo && waterfrontHalo.alpha > 0 && waterfrontHalo.radius >= MIST_HALO.radius[0], 'waterfront lamp gets clear-night halo');
+    // Rain/storm wet air also produces MistHalos above the low layer.
+    assert.ok(mistHaloAirFog({ type: 'rain', fog: 0.25 }) > 0);
+    assert.ok(mistHaloAirFog({ type: 'storm', fog: 0.35 }) > mistHaloAirFog({ type: 'rain', fog: 0.25 }));
+    assert.ok(mistHaloFor(lamp, 0, 1, nightEnergy, mistHaloAirFog({ type: 'storm', fog: 0.35 }), 0), 'storm wet air lights lamp halo');
 });

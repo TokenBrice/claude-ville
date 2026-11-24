@@ -201,6 +201,10 @@ export function seaFretMistShare(weather) {
 // over the water stays thin enough for the swell and the sun's road to read
 // through it (the reviewer's ms1 0.5–0.7 captures); fog weather is unchanged.
 export const DAWN_MIST_SHARE = 0.35;
+// NE v0.67.1 M — water-only clear-night radiation mist: clings to sea, lagoon
+// and rivers while leaving inland streets and villagers crisp (land 0.08).
+export const NIGHT_MIST_SHARE = 0.32;
+export const NIGHT_MIST_LAND_SHARE = 0.08;
 
 /**
  * MS-1 — the resident low mist's density (look `ms1`, GpuFrameState
@@ -272,8 +276,14 @@ export function mistBurnFor(atmosphere, look = lookStrength('ms2')) {
     const bankLand = bankTop * (1 - s * (1 - MIST_BURN.fogLandKeep) * landBurn);
     const dawnLand = dawn * (1 - s * landBurn);
     const dawnSea = dawn * (1 - s * seaBurn);
-    const landTop = Math.max(bankLand, dawnLand);
-    const seaTop = Math.max(bankTop, dawnSea);
+    // NE v0.67.1 M — clear/partly-cloudy night radiation mist over water only
+    // (land 0.08, sea 1.0), easing in/out across the first/last 15 % of night.
+    const nightAir = phase === 'night' && (!weather || weather.type === 'clear' || weather.type === 'partly-cloudy');
+    const nightEase = nightAir ? Math.min(clamp(progress / 0.15, 0, 1), clamp((1 - progress) / 0.15, 0, 1)) : 0;
+    const nightSea = nightAir ? NIGHT_MIST_SHARE * nightEase * s : 0;
+    const nightLand = nightSea * NIGHT_MIST_LAND_SHARE;
+    const landTop = Math.max(bankLand, dawnLand, nightLand);
+    const seaTop = Math.max(bankTop, dawnSea, nightSea);
     // The dawn mist's rise and burn move in MIST_BURN.steps.
     const density = Math.round(clamp(Math.max(landTop, seaTop), 0, 1) * MIST_BURN.steps) / MIST_BURN.steps;
     if (!(density > 0)) return { density: 0, land: 1, sea: 1, burn };

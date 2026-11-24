@@ -29,6 +29,8 @@ fn applyTimeGrade(albedo: vec3f, lift: bool) -> vec3f {
 
 const WATER_MAX_SATURATION: f32 = ${k('WATER_MAX_SATURATION')};
 const WATER_DAY_MAX_SATURATION: f32 = ${k('WATER_DAY_MAX_SATURATION')};
+// NE v0.67.1 S
+const WATER_NIGHT_MAX_SATURATION: f32 = ${k('WATER_NIGHT_MAX_SATURATION')};
 fn capSaturation(c: vec3f, maxS: f32) -> vec3f {
     let hi = max(c.r, max(c.g, c.b));
     let spread = hi - min(c.r, min(c.g, c.b));

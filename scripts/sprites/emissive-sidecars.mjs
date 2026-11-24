@@ -61,12 +61,20 @@ export const PROP_SIDECAR_RULES = Object.freeze({
         accept: ({ h, s, v }) => (h >= 15 && h <= 62 && s >= 0.2 && v >= 0.45)
             || ((h >= 340 || h <= 8) && s >= 0.5 && v >= 0.7),
     },
-    // The lit glass of the lantern head (2026-10-13 post lantern); the iron
-    // cap, cage and post stay albedo.
+    // NE v0.67.1 E — authored 4x5 lantern head (20 texels on ART_RAMPS.emissive
+    // at alpha 200) so street lamp glass reads as a warm lantern head at night;
+    // the iron cap, bracket and post stay albedo.
     'prop.lantern': {
-        rect: [13, 1, 7, 6],
-        alpha: 144,
-        accept: ({ h, s, v }) => (h <= 45 || h >= 345) && s >= 0.25 && v >= 0.65,
+        rect: [14, 2, 4, 5],
+        alpha: 200,
+        accept: () => true,
+        stops: [
+            [0, 0, 0, 0],
+            [1, 0, 1, 1],
+            [2, 1, 2, 2],
+            [1, 0, 2, 1],
+            [0, 0, 1, 0],
+        ],
     },
     // The blue rune glass; the carved timber stays albedo.
     'prop.bridgeLanternPost': {
@@ -188,9 +196,10 @@ function derivePropSidecar(albedo, rule, entry) {
                 if (albedo.data[i + 3] === 0) continue;
                 const rgb = [albedo.data[i], albedo.data[i + 1], albedo.data[i + 2]];
                 if (!rule.accept(hsv(rgb))) continue;
-                out.data[i] = rgb[0];
-                out.data[i + 1] = rgb[1];
-                out.data[i + 2] = rgb[2];
+                const emitted = rule.stops ? RAMP_RGB[rule.stops[y - ry][x - rx]] : rgb;
+                out.data[i] = emitted[0];
+                out.data[i + 1] = emitted[1];
+                out.data[i + 2] = emitted[2];
                 out.data[i + 3] = rule.alpha;
             }
         }
@@ -198,7 +207,7 @@ function derivePropSidecar(albedo, rule, entry) {
     return out;
 }
 
-function rampSidecar(albedo, sidecar, { cool }) {
+function rampSidecar(albedo, sidecar, { cool, keepAlbedo = false }) {
     const nextAlbedo = new PNG({ width: albedo.width, height: albedo.height, colorType: 6 });
     albedo.data.copy(nextAlbedo.data);
     const nextSidecar = new PNG({ width: sidecar.width, height: sidecar.height, colorType: 6 });
@@ -209,7 +218,7 @@ function rampSidecar(albedo, sidecar, { cool }) {
         if (sidecar.data[i + 3] === 0) continue;
         const albedoRgb = [albedo.data[i], albedo.data[i + 1], albedo.data[i + 2]];
         const albedoColour = hsv(albedoRgb);
-        if (!cool && albedo.data[i + 3] > 0 && albedoColour.h >= 50 && albedoColour.h <= 160
+        if (!cool && !keepAlbedo && albedo.data[i + 3] > 0 && albedoColour.h >= 50 && albedoColour.h <= 160
             && albedoColour.s >= 0.4 && albedoColour.v >= 0.6) {
             const stop = nearestRampStop(albedoRgb).rgb;
             nextAlbedo.data[i] = stop[0];
@@ -255,11 +264,13 @@ function run() {
         const cool = entry.emissiveFamily === 'cool';
         let ramped;
         if (rule) {
-            // Re-derived from the albedo's own colours on every run. A lime
-            // albedo pixel snaps first, then the sidecar is derived again from
-            // the snapped albedo, so a second run finds nothing to change.
-            ramped = rampSidecar(albedo, derivePropSidecar(albedo, rule, entry), { cool });
-            if (!samePixels(albedo, ramped.albedo)) {
+            // Re-derived from the albedo's own colours on every run (or from
+            // authored ramp stops when `rule.stops` is set, keeping albedo
+            // untouched). A lime albedo pixel snaps first, then the sidecar is
+            // derived again from the snapped albedo, so a second run is a no-op.
+            const keepAlbedo = Boolean(rule.stops);
+            ramped = rampSidecar(albedo, derivePropSidecar(albedo, rule, entry), { cool, keepAlbedo });
+            if (!keepAlbedo && !samePixels(albedo, ramped.albedo)) {
                 ramped = rampSidecar(ramped.albedo, derivePropSidecar(ramped.albedo, rule, entry), { cool });
             }
         } else {

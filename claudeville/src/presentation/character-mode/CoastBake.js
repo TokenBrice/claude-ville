@@ -3327,11 +3327,27 @@ export function waterSurfaceRgb(rgb, mood, sunBand = 0) {
     return moody.map((channel, index) => Math.max(0, Math.min(1, channel * WATER_CAST[index] * band)));
 }
 
-// A mood-layer colour flag (above the 24 RGB bits): a 3.7 mirror texel.
+// NE v0.67.1 F — night dimming for pale shoreline foam and unlit dry sand
+// rings (day stays byte-identical because mood.night = 0 outside dusk/night).
+export const WATER_FOAM_NIGHT_DIM = 0.22;
+export const DRY_SAND_NIGHT_SCALE = 0.84;
+
+export function foamNightScale(mood) {
+    return 1 - WATER_FOAM_NIGHT_DIM * Math.max(0, Math.min(1, Number(mood?.night) || 0));
+}
+
+// A mood-layer colour flag (above the 24 RGB bits): a 3.7 mirror texel,
+// a shoreline foam texel, or a dry-sand beach texel.
 const MIRROR_UNCAPPED = 1 << 24;
-// The water stops as 0xRRGGBB, to recognise a stop texel by its colour.
+const FOAM_MARK = 1 << 25;
+const SAND_UNCAPPED = 1 << 26;
+// The water stops and shoreline foam as 0xRRGGBB.
 const STOP_INTS = COAST_WATER_STOPS.map(rgb => (rgb[0] << 16) | (rgb[1] << 8) | rgb[2]);
 const STOP_COLOURS = new Set(STOP_INTS);
+const FOAM_COLOURS = new Set([
+    (FOAM[0] << 16) | (FOAM[1] << 8) | FOAM[2],
+    (FOAM_CREST[0] << 16) | (FOAM_CREST[1] << 8) | FOAM_CREST[2],
+]);
 
 function wateryPixel(r, g, b) {
     // Water stops are all blue/teal-dominant; sand, foam, timber and stone
@@ -3382,13 +3398,16 @@ function drawCanvasMoodLayer(ctx, renderer, atmosphere) {
         const coastField = renderer._coastBake?.waterFields?.coastField || null;
         // Mirror texels carry MIRROR_UNCAPPED: moody, never capped.
         const reflect = coast.reflect || null;
+        const groundField = renderer.groundField || null;
         for (let r = 0; r < coast.rows; r++) {
             for (let c = 0; c < coast.cols; c++) {
                 const cell = r * coast.cols + c;
                 // A handover cell the open sea claims can still paint some of
                 // its texels with a stop (each texel decides on its own sd):
                 // those take the mood and the cap too, or the map edge shows.
-                const water = coast.classes[cell] >= CLASS_WATER;
+                const cls = coast.classes[cell];
+                const water = cls >= CLASS_WATER;
+                const foamCell = cls >= CLASS_FOAM;
                 const mirror = water && reflect?.[cell] > 0;
                 const stormable = mirror && !coast.covered?.[cell];
                 const isSeaShelf = coastField
@@ -3399,10 +3418,18 @@ function drawCanvasMoodLayer(ctx, renderer, atmosphere) {
                         const at = (r * 2 + oy) * w + c * 2 + ox;
                         const p = at * 4;
                         const colour = (src[p] << 16) | (src[p + 1] << 8) | src[p + 2];
-                        const watery = water ? wateryPixel(src[p], src[p + 1], src[p + 2]) : src[p + 3] > 0 && STOP_COLOURS.has(colour);
-                        if (!watery && !mirror) continue;
+                        const isFoam = foamCell && FOAM_COLOURS.has(colour);
+                        const watery = water ? wateryPixel(src[p], src[p + 1], src[p + 2]) : src[p + 3] > 0 && (STOP_COLOURS.has(colour) || isFoam);
+                        // NE v0.67.1 F — warm dry sand only (r >= g rejects grass/foliage).
+                        const isSand = !watery && !mirror && cls === CLASS_NONE && src[p + 3] > 0
+                            && src[p] >= src[p + 1] && src[p] > src[p + 2] + 20
+                            && (groundField?.classAt?.(coast.x + c * 2 + ox + 0.5, coast.y + r * 2 + oy + 0.5) === 5
+                                || (coast.outer?.[cell] && src[p] > src[p + 2] + 30
+                                    && (0.2126 * src[p] + 0.7152 * src[p + 1] + 0.0722 * src[p + 2]) > 115));
+                        if (!watery && !mirror && !isSand) continue;
                         pixels.push(p);
-                        colours.push(colour | (watery ? 0 : MIRROR_UNCAPPED));
+                        const flag = isSand ? SAND_UNCAPPED : isFoam ? FOAM_MARK : (watery ? 0 : MIRROR_UNCAPPED);
+                        colours.push(colour | flag);
                         const base = stormable ? (coast.mirrorBase?.[at] || 0) : 0;
                         mirrorStops.push(base - 1);
                         orders.push(Math.round(bayer(coast.x + c * 2 + ox, coast.y + r * 2 + oy) * 16));
@@ -3468,12 +3495,21 @@ function drawCanvasMoodLayer(ctx, renderer, atmosphere) {
             }
             return layer.colours[k];
         };
+        const fScale = foamNightScale(mood);
+        const sScale = 1 + (DRY_SAND_NIGHT_SCALE - 1) * (mood?.night || 0);
         for (let k = 0; k < layer.colours.length; k++) {
             const colour = colourAt(k);
             if (colour !== layer.colours[k]) changed = true;
             if (memo.has(colour)) continue;
-            let rgb = waterSurfaceRgb([((colour >> 16) & 255) / 255, ((colour >> 8) & 255) / 255, (colour & 255) / 255], mood, sunBand);
-            if (!(colour & MIRROR_UNCAPPED)) rgb = CanvasGrade.canvasWaterPreimage(rgb, grade, { postFx, sky: mood });
+            const rawRgb = [((colour >> 16) & 255) / 255, ((colour >> 8) & 255) / 255, (colour & 255) / 255];
+            let rgb;
+            if (colour & SAND_UNCAPPED) {
+                rgb = rawRgb.map(v => v * sScale);
+            } else {
+                const baseRgb = (colour & FOAM_MARK) ? rawRgb.map(v => v * fScale) : rawRgb;
+                rgb = waterSurfaceRgb(baseRgb, mood, sunBand);
+                if (!(colour & MIRROR_UNCAPPED)) rgb = CanvasGrade.canvasWaterPreimage(rgb, grade, { postFx, sky: mood });
+            }
             const out = (Math.round(rgb[0] * 255) << 16) | (Math.round(rgb[1] * 255) << 8) | Math.round(rgb[2] * 255);
             memo.set(colour, out);
             if (out !== (colour & 0xffffff)) changed = true;

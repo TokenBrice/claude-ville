@@ -11,6 +11,11 @@ import {
     getBuildingApertureProfile,
     getBuildingRoomProfile,
 } from '../../claudeville/src/presentation/character-mode/BuildingVisualRegistry.js';
+import {
+    APERTURE_RADIUS_CAP,
+    apertureIntensity,
+    apertureRadius,
+} from '../../claudeville/src/presentation/character-mode/ApertureLights.js';
 import { BuildingSprite } from '../../claudeville/src/presentation/character-mode/BuildingSprite.js';
 
 const session = (agentId, extra = {}) => ({
@@ -142,4 +147,43 @@ test('a Command room pane inside the open aperture cut stays dark (B3-01)', () =
     renderer._apertureProfile = getBuildingApertureProfile('command');
     assert.equal(renderer.roomGate('command', 4), 0);
     assert.equal(renderer.roomGate('command', 0), 1);
+});
+
+test('NE v0.67.1 P12: aperture radius (35 + 2.4 sqrt A) and intensity floor (0.61) boost worked rooms at night and leave day unchanged', () => {
+    assert.equal(apertureRadius(0), 35);
+    assert.ok(Math.abs(apertureRadius(100) - (35 + 2.4 * 10)) < 1e-9);
+    assert.equal(apertureRadius(10000), APERTURE_RADIUS_CAP);
+    assert.ok(Math.abs(apertureIntensity(0, 1, 1) - 0.61) < 1e-9);
+    assert.ok(Math.abs(apertureIntensity(80, 0.95, 1) - (0.61 + 80 / 400) * 0.95) < 1e-9);
+    assert.equal(apertureIntensity(1000, 1, 1), 1.2);
+    assert.equal(apertureIntensity(80, 1, 0), 0);
+
+    const archive = { type: 'archive' };
+    const aperture = {
+        building: archive,
+        template: { group: 1, area: 64, key: '80.110', cx: 80, cy: 110, color: '#fcb447' },
+        source: { id: 'aperture:archive:80.110', kind: 'point', role: 'aperture', x: 80, y: 110, color: '#fcb447', buildingType: 'archive', building: archive },
+    };
+    const makeRenderer = (minuteOfDay, roomLit) => Object.assign(Object.create(BuildingSprite.prototype), {
+        atmosphereState: { clock: { minuteOfDay }, reactions: { windowWarmth: 0 } },
+        lightingState: { sourceEnergy: { core: 0.95, halo: 1, spill: 1, bloom: 0.5, reach: 1, gain: 1 } },
+        motionScale: 1,
+        _roomLitByType: new Map([['archive', [roomLit]]]),
+        _apertureModel: null,
+        _apertureProfile: null,
+        _staticLightSources: () => [],
+        _ritualLightSources: () => [],
+        _forgeSpillLightSources: () => [],
+        _archiveSpillLightSources: () => [],
+        _apertureSources: () => [aperture],
+    });
+
+    // Night with worked room (1.0): emits boosted radius and intensity.
+    const [lit] = makeRenderer(22 * 60, 1).getLightSources();
+    assert.equal(lit.id, 'aperture:archive:80.110');
+    assert.ok(Math.abs(lit.radius - (35 + 2.4 * 8)) < 1e-9);
+    assert.ok(Math.abs(lit.intensity - (0.61 + 64 / 400) * 0.95) < 1e-9);
+
+    // Day (noon): room aperture gate is zero even if roomLit is set -> day unchanged.
+    assert.deepEqual(makeRenderer(12 * 60, 1).getLightSources(), []);
 });

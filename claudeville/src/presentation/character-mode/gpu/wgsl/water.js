@@ -17,6 +17,7 @@ import {
     OPEN_SEA_LIGHT_REACH,
     OPEN_SEA_STOP_SEAM,
     WATER_CAST,
+    WATER_FOAM_NIGHT_DIM,
     WATER_SKY_LIFT,
 } from '../../CoastBake.js';
 import {
@@ -123,8 +124,14 @@ fn applyWaterMood(color0: vec3f) -> vec3f {
     }
     return clamp(color, vec3f(0.0), vec3f(1.0));
 }
+// V6 / NE v0.67.1 S — day 0.44, clear night 0.52, storm 0.37 (CPU twin: GradeEvaluator.waterMaxSaturation).
 fn waterMaxSat() -> f32 {
-    return mix(WATER_DAY_MAX_SATURATION, WATER_MAX_SATURATION, clamp(max(frame.waterMood.x, frame.waterMood.y), 0.0, 1.0));
+    let clear = mix(WATER_DAY_MAX_SATURATION, WATER_NIGHT_MAX_SATURATION, clamp(frame.waterMood.x, 0.0, 1.0));
+    return mix(clear, WATER_MAX_SATURATION, clamp(frame.waterMood.y, 0.0, 1.0));
+}
+// NE v0.67.1 F — night dimming for shoreline foam and whitecaps (day stays 1.0; starlight and surf glow exempt).
+fn foamNightScale() -> f32 {
+    return 1.0 - ${WATER_FOAM_NIGHT_DIM.toFixed(2)} * frame.waterMood.x;
 }`;
 
 const SEA_SWELL_WGSL = /* wgsl */ `
@@ -634,7 +641,10 @@ fn applyWaterState(color0: vec3f, px: vec2f, seaPath: ptr<function, bool>) -> ve
     let clock = frame.waterFx.x;
     let p = floor(px);
     if (stop < 0) {
-        let lifted = liftMirrorColour(color, px);
+        var lifted = liftMirrorColour(color, px);
+        if (sameColour(color, WATER_FOAM) || sameColour(color, WATER_FOAM_CREST)) {
+            lifted *= foamNightScale();
+        }
         if (clock <= 0.0) { return staticWaterDashes(lifted, px); }
         return applyWaterMood(lifted) * WATER_CAST;
     }
@@ -696,10 +706,10 @@ fn applyWaterState(color0: vec3f, px: vec2f, seaPath: ptr<function, bool>) -> ve
     }
     if (base != stop) { color = seaStopRgb(f32(base)); }
     let lighter = max(base - 1, 0);
-    var shallower = WATER_FOAM_CREST;
+    var shallower = WATER_FOAM_CREST * foamNightScale();
     if (base > 1) { shallower = WATER_STOPS[lighter]; }
     if (frame.waterFx.y > 0.0 && rainRingAt(p, frame.waterFx.y, storm, clock)) {
-        if (base == 0) { return applyWaterMood(WATER_FOAM) * WATER_CAST; }
+        if (base == 0) { return applyWaterMood(WATER_FOAM * foamNightScale()) * WATER_CAST; }
         return applyWaterMood(WATER_STOPS[lighter]) * WATER_CAST;
     }
     let shallows = stop <= 1;
@@ -724,7 +734,7 @@ fn applyWaterState(color0: vec3f, px: vec2f, seaPath: ptr<function, bool>) -> ve
             let ruffle = textureSampleLevel(cloudTile, cloudSampler, fract((p + vec2f(211.0, 91.0)) / vec2f(144.0, 48.0)), 0.0).r;
             let order = 0.55 * ruffle + 0.45 * waterBayer4(p);
             if (waterHash12(p + vec2f(131.0, 57.0)) < ${STILL_PAW_RIPPLE.toFixed(2)} && order > 0.5) {
-                if (base == 0) { return applyWaterMood(WATER_FOAM_CREST) * WATER_CAST; }
+                if (base == 0) { return applyWaterMood(WATER_FOAM_CREST * foamNightScale()) * WATER_CAST; }
                 return applyWaterMood(WATER_STOPS[lighter]) * WATER_CAST;
             }
             if (order < min(${STILL_PAW_ORDER.cap.toFixed(2)}, ${STILL_PAW_ORDER.base.toFixed(2)} + ${STILL_PAW_ORDER.gain.toFixed(2)} * paw)) {
@@ -751,7 +761,7 @@ fn applyWaterState(color0: vec3f, px: vec2f, seaPath: ptr<function, bool>) -> ve
     if (openWater) { streak = seaStreakAt(p); }
     if (course > 2.5 || streak > 1.5) {
         seaSkyTake = 0.0;
-        return applyWaterMood(WATER_FOAM) * WATER_CAST;
+        return applyWaterMood(WATER_FOAM * foamNightScale()) * WATER_CAST;
     }
     if (course > 1.5) { return applyWaterMood(shallower) * WATER_CAST; }
     var crestRise = 0;

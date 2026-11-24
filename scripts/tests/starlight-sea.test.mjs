@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createAtmosphereSnapshot } from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
-import { applyWaterMood, canvasSeaMarkRgb, COAST_PALETTE, OCEAN_HORIZON_WORLD_Y } from '../../claudeville/src/presentation/character-mode/CoastBake.js';
+import { applyWaterMood, canvasSeaMarkRgb, COAST_PALETTE, DRY_SAND_NIGHT_SCALE, foamNightScale, OCEAN_HORIZON_WORLD_Y, WATER_FOAM_NIGHT_DIM } from '../../claudeville/src/presentation/character-mode/CoastBake.js';
 import { createWaterFx, resolveStarlight, resolveWaterFx } from '../../claudeville/src/presentation/character-mode/gpu/GpuFrameState.js';
 import {
     liftMoonPathRgb,
@@ -78,7 +78,8 @@ test('GLSL and WGSL starlight hash, cap gate, tips and held cadence are identica
     assert.match(canvas, /fx\.deepTick \+ Math\.floor\(seed \* STARLIGHT_HOLD\)/);
     assert.match(canvas, /hash12\(cx \+ 311 \+ life \* 7, y \+ 47 \+ life \* 3\) >= STARLIGHT_DENSITY \* fx\.starlight/);
     assert.match(canvas, /if \(riseMap\[p\] <= 0\) continue/);
-    assert.match(canvas, /let colour = palette\.classes\[CLS_CREST\]/);
+    // NE v0.67.1 F: starlight keeps the un-dimmed crest colour while shoreline foam dims at night.
+    assert.match(canvas, /let colour = palette\.starlight/);
     assert.match(canvas, /canvasSeaMarkRgb\(renderer, 'crest', x, y, true\)/);
 });
 
@@ -235,6 +236,54 @@ test('NE P3.3b: moon path lifts out of the night grade only at night and only fo
             assert.ok(c[2] >= c[1] && c[1] >= c[0], `${hour}:00 ${label} stays cool silver (${c.map(v => v.toFixed(3))})`);
             assert.ok(hsvS(c) <= Math.min(0.40, maxS) + 1e-6, `${hour}:00 ${label} S ${hsvS(c).toFixed(3)} <= ${maxS}`);
             assert.ok(hslL(c) <= 0.70 + 1e-6, `${hour}:00 ${label} HSL L ${hslL(c).toFixed(3)} <= 0.70`);
+        }
+    }
+});
+
+test('NE v0.67.1 F: night dims shoreline foam (k=0.22) and unlit dry sand (s=0.84) while day, starlight, surf glow, lit pools and grass/foliage stay unchanged', () => {
+    assert.equal(WATER_FOAM_NIGHT_DIM, 0.22);
+    assert.equal(DRY_SAND_NIGHT_SCALE, 0.84);
+    assert.equal(foamNightScale({ night: 0 }), 1, 'daytime foam scale is 1');
+    assert.equal(foamNightScale({ night: 1 }), 0.78, 'full night dims foam by 22 %');
+    assert.equal(foamNightScale({ night: 0.5 }), 0.89);
+    // WGSL/GLSL twin parity for foamNightScale, starlight exemption, and isDrySand.
+    const glsl = readFileSync(new URL('../../claudeville/src/presentation/character-mode/gpu/GpuWorldRenderer.js', import.meta.url), 'utf8');
+    assert.ok(glsl.includes('return 1.0 - ${WATER_FOAM_NIGHT_DIM.toFixed(2)} * u_waterMood.x;'));
+    assert.ok(WATER_WGSL.includes(`return 1.0 - ${WATER_FOAM_NIGHT_DIM.toFixed(2)} * frame.waterMood.x;`));
+    assert.ok(glsl.includes('vec3 albedo = whitecap ? WATER_FOAM * foamNightScale() : seaStopRgb(max(stop - lighter, 0.0));'));
+    assert.ok(OPEN_SEA_WGSL.includes('var albedo = WATER_FOAM * foamNightScale();'));
+    assert.ok(glsl.includes('if (starlightAt(cell, cap, u_starlight, tick)) albedo = WATER_FOAM_CREST;'), 'open-sea starlight stays un-dimmed');
+    assert.ok(OPEN_SEA_WGSL.includes('if (starlightAt(cell, cap, frame.starlight, tick)) { albedo = WATER_FOAM_CREST; }'), 'WGSL open-sea starlight stays un-dimmed');
+    assert.ok(glsl.includes('if (color.r < color.g || color.r <= color.b + 0.08) return false;'), 'GLSL isDrySand rejects grass/foliage/snow');
+    assert.ok(SCENE_WGSL.includes('if (color.r < color.g || color.r <= color.b + 0.08) { return false; }'), 'WGSL isDrySand rejects grass/foliage/snow');
+    assert.ok(glsl.includes('if (hasCoast && (sd > 0.0 || sd < -0.75)) return false;'), 'GLSL isDrySand stays in shore band');
+    assert.ok(SCENE_WGSL.includes('if (hasCoast && (sd > 0.0 || sd < -0.75)) { return false; }'), 'WGSL isDrySand stays in shore band');
+    // Dry sand dim runs AFTER poolAlbedo = sunBase and BEFORE applyTimeGrade, gated on terrainBatch and night > 0.
+    for (const [src, poolLine, dimLine, gradeLine] of [
+        [glsl, 'vec3 poolAlbedo = sunBase;', 'color *= mix(1.0, ${DRY_SAND_NIGHT_SCALE.toFixed(2)}, u_waterMood.x);', 'color = applyTimeGrade(color, !u_additive);'],
+        [SCENE_WGSL, 'let poolAlbedo = sunBase;', `color *= mix(1.0, ${DRY_SAND_NIGHT_SCALE.toFixed(2)}, frame.waterMood.x);`, 'color = applyTimeGrade(color, batch.additive == 0u);'],
+    ]) {
+        const iPool = src.indexOf(poolLine);
+        const iDim = src.indexOf(dimLine);
+        const iGrade = src.indexOf(gradeLine);
+        assert.ok(iPool > 0 && iPool < iDim && iDim < iGrade, 'lit pools retain full poolAlbedo while unlit dry sand dims pre-grade');
+    }
+    // Hue guard check across C1 ramps: all dry sand stops match (raw & hazed), zero grass/foliage/snow/road stops match even on material 4.
+    const hex01 = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16) / 255);
+    const farHaze = [226 / 255, 235 / 255, 244 / 255];
+    const sandHue = ([r, g, b]) => r >= g && r > b + 0.08;
+    for (const hex of ART_RAMPS.sand) {
+        const raw = hex01(hex);
+        const hazed = raw.map((v, i) => v * farHaze[i]);
+        assert.equal(sandHue(raw), true, `raw sand ${hex} passes dry-sand hue gate`);
+        assert.equal(sandHue(hazed), true, `far-hazed sand ${hex} passes dry-sand hue gate`);
+    }
+    for (const rampName of ['grass', 'foliage', 'snow', 'road']) {
+        for (const hex of ART_RAMPS[rampName]) {
+            const raw = hex01(hex);
+            const hazed = raw.map((v, i) => v * farHaze[i]);
+            assert.equal(sandHue(raw), false, `raw ${rampName} ${hex} never dims as dry sand`);
+            assert.equal(sandHue(hazed), false, `far-hazed ${rampName} ${hex} never dims as dry sand`);
         }
     }
 });

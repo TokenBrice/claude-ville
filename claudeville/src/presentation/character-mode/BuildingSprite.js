@@ -624,10 +624,14 @@ export class BuildingSprite {
         // fire, so no emitter cut or light may restate it. The mask's ember
         // floor carries its own part gate (VQ-8, `partDrawsFor`).
         if (this._restMaskShowing(building)) return 0;
-        return buildingEmissiveGate(
+        const gate = buildingEmissiveGate(
             lampCourseFor(this.atmosphereState),
             this._nightShiftLit(building?.type),
         );
+        // NE v0.67.1 PT — calm the awake Portal's night emission/bloom 30% so
+        // the central plaza holds first glance; daytime stays unchanged.
+        if (building?.type === 'portal') return gate * (1 - 0.30 * this._nightWindowGate());
+        return gate;
     }
 
     _buildingAlertFor(building) {
@@ -1995,6 +1999,42 @@ export class BuildingSprite {
                 building: source.building,
             }));
         }
+        // NE v0.67.1 K — Keeper's cottage hearth: steady lamp-clock fixture at the cottage door.
+        if (lampsLit && (this.motionScale <= 0 || lampCycleCaught(this.atmosphereState, 'watchtower'))) {
+            const intensity = 0.55 * energy.core;
+            if (intensity >= 0.02) {
+                for (const building of this.buildings || []) {
+                    if (building.type !== 'watchtower') continue;
+                    const entry = this.assets?.getEntry?.('building.watchtower');
+                    const center = this._buildingScreenCenter?.(building);
+                    const baseAnchor = this.assets?.getAnchor?.(entry?.id || 'building.watchtower');
+                    if (!center || !baseAnchor) continue;
+                    const origin = { x: center.x - baseAnchor[0] + 96, y: center.y - baseAnchor[1] + 314 };
+                    const ground = { x: center.x - baseAnchor[0] + 90, y: center.y - baseAnchor[1] + 334 };
+                    out.push(normalizeLightSource({
+                        id: `building.watchtower.cottage-hearth.${building.position?.tileX ?? 0}.${building.position?.tileY ?? 0}`,
+                        kind: 'point',
+                        role: 'fixture',
+                        x: origin.x,
+                        y: origin.y,
+                        origin,
+                        ground,
+                        height: Math.max(0, ground.y - origin.y),
+                        normal: null,
+                        landmarkId: GPU_LANDMARK_IDS.watchtower || 0,
+                        color: '#ffc95e',
+                        radius: 64,
+                        intensity,
+                        overlay: 'atmosphere.light.lantern-glow',
+                        buildingType: 'watchtower',
+                        building,
+                    }, {
+                        buildingType: 'watchtower',
+                        building,
+                    }));
+                }
+            }
+        }
         for (const source of this._ritualLightSources(energy.core)) out.push(this._withLightFoot(source, 'point'));
         for (const source of this._forgeSpillLightSources(energy.core)) out.push(this._withLightFoot(source, 'aperture'));
         for (const source of this._archiveSpillLightSources(energy.core)) out.push(this._withLightFoot(source, 'aperture'));
@@ -3229,6 +3269,11 @@ export class BuildingSprite {
                 // through no work gate, only while the village lamps burn.
                 ember = rest ? getBuildingRestEmber(type) : null;
                 if (ember) emissiveGate = lampsLitAt(this.atmosphereState) ? 1 : 0;
+                // NE v0.67.1 PT — calm the awake Portal's vortex overlay 30% at
+                // night to match its base emission; daytime stays unchanged.
+                else if (type === 'portal' && name === 'portalGlow') {
+                    emissiveGate = 1 - 0.30 * this._nightWindowGate();
+                }
             }
             let cx0 = 0;
             let cw = frameW;
