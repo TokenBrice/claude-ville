@@ -188,9 +188,10 @@ test('clearly sunny daylight: bright warm-key noon, distinct crisp morning, wide
   const noon = evaluateGrade({ minuteOfDay: 12.5 * 60, weather: CLEAR, moonFill: 0 });
   const overcast = evaluateGrade({ minuteOfDay: 12.5 * 60, weather: { type: 'overcast', intensity: 0.68, cloudCover: 0.86 }, moonFill: 0 });
   const night = evaluateGrade({ minuteOfDay: 23 * 60, weather: CLEAR, moonFill: 0 });
-  assert.ok(noon.exposure >= 1.12 && noon.exposure <= 1.16, `noon exposure ${noon.exposure}`);
+  // Toned back 2026-11-24 (operator decision: too bright) from 1.16 / 1.06 / 0.10.
+  assert.ok(noon.exposure >= 1.06 && noon.exposure <= 1.10, `noon exposure ${noon.exposure}`);
   assert.ok(morning.exposure >= 1.04 && morning.exposure < noon.exposure, `morning ${morning.exposure} < noon ${noon.exposure}`);
-  assert.ok(noon.vignetteAlpha <= 0.12 && morning.vignetteAlpha <= 0.14, 'lightened daytime vignette');
+  assert.ok(noon.vignetteAlpha <= 0.18 && morning.vignetteAlpha <= 0.14, 'lightened daytime vignette');
   assert.ok(noon.highlightTint[0] > noon.highlightTint[2] && noon.shadowTint[2] > noon.shadowTint[0], 'warm key over cool fill');
   assert.ok(overcast.exposure <= 1.02, `overcast flattens clear exposure boost (${overcast.exposure})`);
   const noonY = SAMPLES.reduce((s, p) => s + luma(applyGradeToRgb(p.rgb, noon)) * 255 * p.weight, 0) / SAMPLES.reduce((s, p) => s + p.weight, 0);

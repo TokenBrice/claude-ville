@@ -193,11 +193,11 @@ export const GRADE_KEYFRAMES = Object.freeze([
     }),
     Object.freeze({
         name: 'noon', minute: 12 * 60 + 30, side: 'noon',
-        exposure: 1.16, saturation: 1.06,
+        exposure: 1.08, saturation: 1.03,
         gain: [1.03, 1.00, 0.96], lift: [0, 0, 0], gamma: 1.0,
         shadowTint: [0.90, 0.95, 1.08], highlightTint: [1.10, 1.06, 0.94],
         purkinje: 0, sunBand: 1, daylight: 1, night: 0, rake: 0,
-        vignetteEdge: [0.86, 0.89, 0.92], vignetteAlpha: 0.10,
+        vignetteEdge: [0.86, 0.89, 0.92], vignetteAlpha: 0.16,
         skyTop: '#4a86c0', skyHorizon: '#b8d6e6', voidColor: '#16222b', horizonHaze: '#a2becf',
     }),
     // Golden hour is a low sun: an amber key over violet shadows, more
