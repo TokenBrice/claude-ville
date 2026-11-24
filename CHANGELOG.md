@@ -2,6 +2,39 @@
 
 ---
 
+## v0.67.0 — *The Lamplit Watch* · Nov 24, 2026
+
+The village at night, re-lit: a darker sky and sea for the lamps to read against, wider warm pools, windows that glow like glass, and a Lighthouse that flashes instead of painting a beam. An eleven-reviewer night review across four model families found the night was a dimmed day; this release acts on its consensus.
+
+- **A real night.** At 22:00 the island keeps about half its noon light instead of two thirds (exposure 0.756 → 0.61, gamma 1.01 → 1.10, `GRADE_AMBIENT_FLOOR` 0.52 → 0.42), and the night sea sits 18 % darker so the land stands above it. In the default frame mean lightness falls from L\* 28 to 21 while the warm-lit area nearly doubles (2.75 % → 5.3 %). Noon, golden hour and blue hour are unchanged.
+- **Lamps that light the street.**
+  - At deep night every lamp, brazier, window and lantern reaches 1.5× further at 1.2× the intensity (`SOURCE_ENERGY_BUCKETS` `reach`/`gain`, half a step at lamplight), and night bloom rises from 0.30 to 0.58.
+  - Six new lamp posts reach the dark north, east and south of the island.
+  - Command's gate braziers and the Harbor quay lantern light their steps and quay on the lamp clock, as documented, not only while someone works inside.
+- **Windows that glow.** A lit pane lands on its authored amber instead of its dark slate glass (a Command pane goes from L\* 54 to 88).
+- **An inhabited night.** Each empty work building keeps one dim keeper pane after lamp-lighting, and a session on its way lights its room at 60 % before its villager arrives. A fully lit window still means work inside.
+- **Moon and sky.**
+  - The moon road is a silver column on the sea (strip p95 L\* 34 → 68), and a full moon keeps a quarter of the starlight.
+  - The moon and stars draw once, stars stay above the horizon, the moon halo is a stepped ring, and the aurora no longer covers the moon.
+  - Villagers take a one-texel cool moonlight rim on the GPU backends.
+- **The Pharos shows a light, not a beam.** The descending beam and its sea cone are gone on every backend. The lantern flashes every 6 s (Fl 6 s) with an edge-on flare at lamp height, longer in fog, and its water column, now warm amber, flashes with it. While an agent keeps a watch there it flashes twice (Fl(2)). Reduced motion shows a steady lamp.
+- **Fixes.**
+  - Lit street lamps reached the GPU a second time as 14 px lights that outranked the real pools and evicted them at reduced quality.
+  - HDR displays keep half the night bloom instead of none.
+  - The Canvas world applies the grade's gamma and emits windows at the GPU's strength.
+  - Night evidence captures (`verify:render`, the marketing capture) pin full quality and wait for villagers to reach their rooms.
+- **Budgets and baselines.** The light tiles hold 24 lights with 24 reserved lamp slots (from 16 and 12). Golden hours are recalibrated for the darker night on all three backends, and the README screenshots are refreshed.
+
+Relaxations by operator decision (2026-11-24), each documented where it lives:
+
+- **Night grade:** the velvet night target and `GRADE_AMBIENT_FLOOR` 0.52 → 0.42.
+- **Midnight-oil rooms:** keeper (0.40) and routing (0.6) tiers beside worked rooms.
+- **Light envelope:** deep-night reach 1.5 and gain 1.2 apply after the halo caps.
+- **Night water:** the L1-4 night drop rises from 10 % to 18 %.
+- **Lighthouse:** the beam contract (0.8, 2.7) becomes the light characteristic.
+
+---
+
 ## v0.66.1 — *The Tempered Tide* · Nov 24, 2026
 
 The Sunlit Isle's sea and noon light, toned back so the island stands clear of the water again.
