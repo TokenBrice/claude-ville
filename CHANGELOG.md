@@ -2,6 +2,25 @@
 
 ---
 
+## v0.66.1 — *The Tempered Tide* · Nov 24, 2026
+
+The Sunlit Isle's sea and noon light, toned back so the island stands clear of the water again.
+
+- **A calmer sea.**
+  - Sunlit open water lifts one palette stop instead of two, so it sits a value step below the meadows instead of level with them (noon OKLCH lightness 0.59 → 0.47, grass 0.61).
+  - The turquoise shallows keep their lightness and hue at a quarter less chroma, and their ring narrows (`DEPTH_BOUNDS` 0.42–3.40 tiles, from 0.55–3.90): it covers 15 % of a noon frame instead of 23 %.
+  - Daytime water saturation is capped at 0.44, down from 0.48. Night and storm water are unchanged.
+- **A softer noon.** The clear noon grade eases to exposure 1.08, saturation 1.03 and a 0.16 vignette (from 1.16, 1.06 and 0.10). Days stay warm and sunny without reading overexposed.
+- **One terrain rebake.** The terrain bake version moves to `cv0.66-terrain-16`, so browsers rebuild their cached water on the next load.
+- **Golden hours recalibrated.** The committed brightness curve is re-recorded; it had already drifted after the v0.66.0 layout merges.
+
+Relaxations eased back by operator decision (2026-11-24), each documented where it lives:
+
+- **Look strengths:** `sea1` back to 0.5.
+- **Water:** V6 daytime water saturation 0.44.
+
+---
+
 ## v0.66.0.1 · Nov 24, 2026 — Hotfix
 
 - **GLM 5.4 and cross-provider context ceilings read truthfully.** GLM MCP threads running `glm-5.4` showed a `200.0K` context ceiling because `glm.js` delegated transcript projection and token usage through `claude.js` under the `'claude'` provider, and `contextWindowForModel` fell back to Claude's 200K default whenever a cross-provider model missed an explicit row. `glm.js` now passes `'zai'` on both the session and detail paths, and `contextWindowForModel` resolves a model's row and inferred vendor default before falling back to a hosting harness's provider default (leaving unknown generic models `null`).
