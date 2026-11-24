@@ -31,9 +31,9 @@ export const GRADE_EXPOSURE_FLOOR = 0.40;
 // The weather rows also spend value through `gain`, which the exposure floor
 // cannot see. The effective ambient (exposure x luma(gain), what an unlit
 // mid-grey becomes) never falls below this: a storm night stays readable under
-// clear deep night (effective ambient 0.61, or 0.58 at MOONLIT_NIGHT_STRENGTH 0),
-// never at black. L1-2 / C-01 — binds on both storm deep-night and storm pre-dawn.
-export const GRADE_AMBIENT_FLOOR = 0.52;
+// clear deep night (effective ambient ~0.50, or ~0.48 at MOONLIT_NIGHT_STRENGTH 0),
+// never at black. NE P2.1 — lowered from 0.52 with the Opus P night keys (2026-11-24).
+export const GRADE_AMBIENT_FLOOR = 0.42;
 
 // Rec.709 luma weights, shared with the shaders.
 const LUMA = [0.2126, 0.7152, 0.0722];
@@ -132,12 +132,11 @@ const PURKINJE_BLUE = Object.freeze(lumaNormalized([0.93, 1.0, 1.07]));
 // and asserted over the C1 ramps by scripts/tests/grade-colour-script.test.mjs.
 // The 8 key names are a contract: the audio arrangement couples to them.
 //
-// L1-3 — the moonlit night: a moon term you can see (a full moon over a new
-// moon is a visible course) and night shadows lifted from flat black to deep
-// indigo, so silhouettes part from the ground. `MOONLIT_NIGHT_STRENGTH` is
-// the one knob: 1 is the full step reviewed on screen, 0.5 half of it, 0 the
-// night before it. It scales the blue-hour, night and deep-night exposure,
-// saturation and lift, and the moon term, together.
+// L1-3 / NE P2.1 — the moonlit night: a moon term you can see (a full moon over
+// a new moon is a +0.05 exposure course) and night shadows lifted from flat
+// black to deep indigo, so silhouettes part from the ground.
+// `MOONLIT_NIGHT_STRENGTH` scales the blue-hour, night and deep-night exposure,
+// saturation and lift, and the moon saturation term, together.
 export const MOONLIT_NIGHT_STRENGTH = 1;
 
 function moonlit(base, full) {
@@ -151,18 +150,19 @@ function moonlit3(base, full) {
 export const GRADE_KEYFRAMES = Object.freeze([
     Object.freeze({
         name: 'deep-night', minute: 2 * 60, side: 'night',
-        exposure: moonlit(0.64, 0.67), saturation: moonlit(0.52, 0.57),
-        gain: [0.80, 0.92, 1.08], lift: moonlit3([0.015, 0.019, 0.030], [0.024, 0.029, 0.045]), gamma: 1.01,
+        exposure: moonlit(0.53, 0.55), saturation: moonlit(0.52, 0.57),
+        gain: [0.80, 0.92, 1.08], lift: moonlit3([0.010, 0.012, 0.023], [0.014, 0.018, 0.034]), gamma: 1.10,
         shadowTint: [0.78, 0.90, 1.15], highlightTint: [0.96, 1.04, 1.02],
         purkinje: 0.7, sunBand: 0, daylight: 0, night: 1, rake: 0,
         vignetteEdge: [0.72, 0.74, 0.82], vignetteAlpha: 0.38,
         skyTop: '#060a14', skyHorizon: '#11192a', voidColor: '#090f15', horizonHaze: '#162032',
     }),
-    // L1-2 — pre-dawn is the tail of the night, not its darkest key: a
-    // little under deep night with a rosier gain, never the 04:00 blackout.
+    // L1-2 / NE P2.1 — pre-dawn is the tail of the night, not its darkest key:
+    // keeps the arc monotone (>= 0.85x deep night) with a rosier gain, never
+    // the 04:00 blackout.
     Object.freeze({
         name: 'pre-dawn', minute: 4 * 60 + 30, side: 'dawn',
-        exposure: 0.66, saturation: 0.48,
+        exposure: 0.56, saturation: 0.48,
         gain: [0.86, 0.86, 1.00], lift: [0.023, 0.027, 0.041], gamma: 1.02,
         shadowTint: [0.88, 0.89, 1.03], highlightTint: [1.06, 0.98, 0.98],
         purkinje: 0.8, sunBand: 0, daylight: 0, night: 0.85, rake: 0.25,
@@ -237,18 +237,16 @@ export const GRADE_KEYFRAMES = Object.freeze([
         vignetteEdge: [0.74, 0.74, 0.84], vignetteAlpha: 0.40,
         skyTop: '#18274a', skyHorizon: '#5e597c', voidColor: '#0e151d', horizonHaze: '#343c5a',
     }),
-    // Night is moonlit indigo, not washed-out slate: the albedo keeps ~40 % of
-    // its own colour (grass stays green, water blue) and the moonlight lives in
-    // the split tone — an indigo shadow tint and a faint blue-green highlight —
-    // tuned to the lighter velvet target (~70 island meanLuma on clear-2300,
-    // storm-0200 p10 >= 30 before the 2026-11-23 overhaul; its denser trees,
-    // props, kerbs and darker roads put more of the frame in deep shadow, so
-    // the measured p10 is now ~25 with the island mean unchanged) while
-    // preserving the +0.08 full-moon phase step.
+    // NE P2.1 — Night is moonlit indigo, not dimmed day: the operator chose the
+    // darker Opus P night on 2026-11-24 (22:00 net exposure ~0.62 with the
+    // +0.05 moon term, gamma 1.10 mid-curve, lift [0.014, 0.018, 0.034]),
+    // replacing the lighter velvet ~70 island meanLuma target so warm lamp
+    // pools and lit panes read clearly against a dark indigo ground while
+    // grass, stone and water keep their hues.
     Object.freeze({
         name: 'night', minute: 22 * 60, side: 'dusk',
-        exposure: moonlit(0.68, 0.70), saturation: moonlit(0.58, 0.62),
-        gain: [0.80, 0.92, 1.08], lift: moonlit3([0.016, 0.019, 0.029], [0.024, 0.029, 0.045]), gamma: 1.01,
+        exposure: moonlit(0.56, 0.58), saturation: moonlit(0.58, 0.62),
+        gain: [0.80, 0.92, 1.08], lift: moonlit3([0.010, 0.012, 0.023], [0.014, 0.018, 0.034]), gamma: 1.10,
         shadowTint: [0.78, 0.90, 1.15], highlightTint: [0.96, 1.04, 1.02],
         purkinje: 0.6, sunBand: 0, daylight: 0, night: 1, rake: 0,
         vignetteEdge: [0.74, 0.76, 0.84], vignetteAlpha: 0.36,
@@ -390,7 +388,8 @@ export function evaluateGrade({
     const moon = moonFill == null
         ? illumination * clamp(1 - clamp(finite(weather?.cloudCover, 0)) * 0.85)
         : clamp(finite(moonFill, 0));
-    exposure += moonlit(0.05, 0.08) * moon * night;
+    // NE P2.1 — +0.05 full-moon exposure step (replacing moonlit(0.05, 0.08)).
+    exposure += 0.05 * moon * night;
     saturation += moonlit(0.03, 0.05) * moon * night;
 
     const w = weatherWeights(weather, snowfall);
@@ -417,7 +416,9 @@ export function evaluateGrade({
         if (exposure > 1) exposure = lerp(exposure, 1, flatten);
         shadowTint = towardOne3(shadowTint, flatten);
         highlightTint = towardOne3(highlightTint, flatten);
-        gamma = lerp(gamma, 1, flatten);
+        // NE P2.1 — halve gamma flattening at night so a storm never flattens
+        // above gamma 1.10 into brighter midtones than a clear night.
+        gamma = lerp(gamma, 1, flatten * lerp(1, 0.5, night));
         rake *= 1 - row.flatten * weight;
         vignetteAlpha = Math.min(0.52, vignetteAlpha + 0.06 * weight);
         const grey = WEATHER_GREY[kind];

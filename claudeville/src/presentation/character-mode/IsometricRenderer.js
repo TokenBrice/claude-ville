@@ -150,6 +150,7 @@ import {
     buildPoolDodgeStamp,
     canvasGradeMultiply,
     drawCanvasGradeGain,
+    drawCanvasGradeGamma,
     drawCanvasGradeLift,
     drawCanvasGradeSaturation,
     gradedPoolReceiver,
@@ -11366,6 +11367,9 @@ export class IsometricRenderer {
 
     _computeFrameLightSources(atmosphere = null, now = performance.now()) {
         const lighting = atmosphere?.lighting || null;
+        const energy = sourceEnergyFor(lighting);
+        const reach = Number.isFinite(Number(energy.reach)) ? Number(energy.reach) : 1;
+        const gain = Number.isFinite(Number(energy.gain)) ? Number(energy.gain) : 1;
         const building = this.buildingRenderer?.getLightSources?.(lighting) || [];
         // V3 — council rings and talk arcs are the relationship status
         // grammar (drawn as ground cues); they throw no light, so no pool,
@@ -11380,20 +11384,25 @@ export class IsometricRenderer {
             ...this._villageWallLanternLightSources(lighting),
             ...(this.bridgeLanterns?.getLightSources?.(lighting) || []),
             // 5.3 — moored and sailing ships' lamps (fixtures, budget-capped).
-            ...(this.harborTraffic?.lampLightSources?.(sourceEnergyFor(lighting).core) || []),
+            ...(this.harborTraffic?.lampLightSources?.(energy.core) || []),
             // NL-4 — last, so no feed or admission cap ever trades a street
             // lamp or an attention light for a lantern.
             ...this._carriedLanternLightSources(lighting),
         ];
         // 2.6 — fire sources (forge door and spill, torches, village and gate
         // braziers) breathe in stepped 140 ms quanta on the one motion clock;
-        // windows, lamps and attention lights never do. Each record is fresh
-        // this frame, so the multiply lands exactly once.
+        // windows, lamps and attention lights never do. NE P2.2 — non-attention
+        // sources also take the source-energy bucket's reach and gain after
+        // authored caps. Each record is fresh this frame (and `building` shares
+        // these objects), so each multiply lands exactly once.
         const motionTimeMs = this.motionTimeMs;
         for (const light of ambient) {
-            if (light.fire && !light.attention) {
+            if (light.attention) continue;
+            if (light.fire) {
                 light.intensity *= fireBreath(motionTimeMs, light.fireGroup || light.id, this.motionScale, fireBreathDepth(light.radius));
             }
+            if (reach !== 1 && Number.isFinite(light.radius)) light.radius *= reach;
+            if (gain !== 1 && Number.isFinite(light.intensity)) light.intensity *= gain;
         }
         // 3.2 — plan the wet source reflections here, before any ground pass
         // draws, so the neutral damp marks can stand aside for them in the
@@ -11619,6 +11628,7 @@ export class IsometricRenderer {
         ctx.restore();
         drawCanvasGradeGain(ctx, canvas.width, canvas.height, grade);
         drawCanvasGradeLift(ctx, canvas.width, canvas.height, grade);
+        drawCanvasGradeGamma(ctx, canvas.width, canvas.height, grade);
         profileMark?.('atmosphere-grade');
 
         // 3.2 — source-coloured wet reflections come before the halos: the
@@ -11905,6 +11915,7 @@ export class IsometricRenderer {
         ctx.restore();
         drawCanvasGradeGain(ctx, canvas.width, canvas.height, grade);
         drawCanvasGradeLift(ctx, canvas.width, canvas.height, grade);
+        drawCanvasGradeGamma(ctx, canvas.width, canvas.height, grade);
         profileMark?.('atmosphere-grade');
 
         // 3.2 — the fast path keeps the same capped, cached wet reflections.

@@ -196,7 +196,8 @@ const GOLDEN = {
                 [1, 0.3137255012989044, 0.23529411852359772, 1, 1, 0.7450980544090271, 0.47058823704719543, 0.20000000298023224, 0.9411764740943909, 0.7843137383460999, 0.5490196347236633, 0.20000000298023224, 0.9803921580314636, 0.9411764740943909, 0.7843137383460999, 0.20000000298023224, 1, 1, 1, 1],
                 [5, 0, 0, 1, 0, 3, 3, 1.5, 0, 4, 3, 1, 0, 0, 7, 3, 0, 0, 1, 1],
             ],
-            wetReflectionCount: 8, marchSteps: 8, tiles: '05bbe9ade20df1c3', localLightPhase: 0.30000000000000004,
+            // NE P2.6: tile index stride 17 -> 25 (LIGHT_TILE_SLOTS 16 -> 24).
+            wetReflectionCount: 8, marchSteps: 8, tiles: 'fe25b03c62524104', localLightPhase: 0.30000000000000004,
         },
         'noon/z2/0': {
             admission: { cap: 0, admitted: 0, offered: 0, culled: 0, overCap: 0, tileFull: 0, maxPerTile: 0, clusters: false, tiles: 459, daylight: true },
@@ -210,7 +211,7 @@ const GOLDEN = {
                 [1, 0.3137255012989044, 0.23529411852359772, 1, 1, 0.7450980544090271, 0.47058823704719543, 0.6800000071525574, 0.9411764740943909, 0.7843137383460999, 0.5490196347236633, 0.6800000071525574, 0.9803921580314636, 0.9411764740943909, 0.7843137383460999, 0.6800000071525574, 1, 1, 1, 0.800000011920929],
                 [5, 0, 0, 1, 0, 3, 3, 1.5, 0, 4, 3, 1, 0, 0, 7, 3, 0, 0, 1, 1],
             ],
-            wetReflectionCount: 4, marchSteps: 4, tiles: '05bbe9ade20df1c3', localLightPhase: 0.85,
+            wetReflectionCount: 4, marchSteps: 4, tiles: 'fe25b03c62524104', localLightPhase: 0.85,
         },
         'clearMoon/z3dpr2/0': {
             admission: { cap: 128, admitted: 0, offered: 0, culled: 3, overCap: 0, tileFull: 0, maxPerTile: 0, clusters: false, tiles: 459, daylight: false },
@@ -229,7 +230,7 @@ const GOLDEN = {
                 [1, 0.3137255012989044, 0.23529411852359772, 1, 1, 0.7450980544090271, 0.47058823704719543, 0.6000000238418579, 0.9411764740943909, 0.7843137383460999, 0.5490196347236633, 0.6000000238418579],
                 [5, 0, 0, 1, 0, 3, 2, 1.5, 0, 4, 2, 1],
             ],
-            wetReflectionCount: 0, marchSteps: 0, tiles: '10e06d11d039c149', localLightPhase: 0.8,
+            wetReflectionCount: 0, marchSteps: 0, tiles: '82bc929bb70d711e', localLightPhase: 0.8,
         },
     },
     beam: {

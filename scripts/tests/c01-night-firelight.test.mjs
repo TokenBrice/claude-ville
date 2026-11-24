@@ -25,15 +25,15 @@ const STORM = { type: 'storm', intensity: 0.9, cloudCover: 0.97 };
 const rgb01 = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
 const luma = ([r, g, b]) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
 
-test('C-01 grade: velvet moonlit night hits lighter target while preserving +0.08 moon-phase step and strict diurnal arc', () => {
-    // Operator decision #4: keep +0.08 full-moon exposure step unchanged.
+test('C-01 / NE P2.1 grade: Opus P moonlit night hits darker indigo target with +0.05 moon-phase step and strict diurnal arc', () => {
+    // NE P2.1 (operator decision, 2026-11-24): +0.05 full-moon exposure step.
     const newMoon = evaluateGrade({ minuteOfDay: 22 * 60, weather: CLEAR, moonFill: 0 });
     const fullMoon = evaluateGrade({ minuteOfDay: 22 * 60, weather: CLEAR, moonFill: 1 });
-    assert.ok(Math.abs((fullMoon.exposure - newMoon.exposure) - 0.08) < 1e-6,
-        `full-moon exposure step ${(fullMoon.exposure - newMoon.exposure).toFixed(4)} === 0.08`);
+    assert.ok(Math.abs((fullMoon.exposure - newMoon.exposure) - 0.05) < 1e-6,
+        `full-moon exposure step ${(fullMoon.exposure - newMoon.exposure).toFixed(4)} === 0.05`);
 
-    // Operator decision #1: lighter night target (clear-2300 road[2] / grass[2] well below old ~94 washed-out grey,
-    // without crushing dark grass or storm-0200).
+    // NE P2.1 (operator decision, 2026-11-24): darker Opus P night (exposure 0.58 + 0.05*moon,
+    // gamma 1.10, lift [0.014, 0.018, 0.034], floor 0.42), keeping a readable storm floor.
     const noon = evaluateGrade({ minuteOfDay: 12.5 * 60, weather: CLEAR, moonFill: 0 });
     const dusk = evaluateGrade({ minuteOfDay: 18 * 60, weather: CLEAR, moonFill: 0 });
     const blue = evaluateGrade({ minuteOfDay: 19.75 * 60, weather: CLEAR, moonFill: 0.35 });
@@ -50,13 +50,13 @@ test('C-01 grade: velvet moonlit night hits lighter target while preserving +0.0
     const roadStorm = yOf(ART_RAMPS.road[2], storm0200);
     assert.ok(roadNoon > roadDusk && roadDusk > roadBlue && roadBlue > roadNight && roadNight > roadDeep && roadDeep > roadStorm,
         `strict diurnal arc: ${[roadNoon, roadDusk, roadBlue, roadNight, roadDeep, roadStorm].map(v => v.toFixed(1)).join(' > ')}`);
-    assert.ok(roadNight >= 78 && roadNight <= 88,
-        `Oct-24 23:00 road[2] luma ${roadNight.toFixed(1)} in [78, 88] (calibrated for ~70 island mean, down from 94.4)`);
-    assert.ok(fullMoon.exposure < 0.82, `full-moon night exposure ${fullMoon.exposure.toFixed(3)} < 0.82`);
-    assert.ok(GRADE_AMBIENT_FLOOR <= 0.53 && GRADE_AMBIENT_FLOOR >= 0.48,
-        `GRADE_AMBIENT_FLOOR ${GRADE_AMBIENT_FLOOR} in [0.48, 0.53]`);
-    assert.ok(yOf(ART_RAMPS.grass[0], storm0200) >= 34,
-        `storm-0200 dark grass luma ${yOf(ART_RAMPS.grass[0], storm0200).toFixed(1)} >= 34`);
+    assert.ok(roadNight >= 55 && roadNight <= 65,
+        `Oct-24 23:00 road[2] luma ${roadNight.toFixed(1)} in [55, 65] (NE P2.1 Opus P night, down from velvet 78-88)`);
+    assert.ok(fullMoon.exposure < 0.67, `full-moon night exposure ${fullMoon.exposure.toFixed(3)} < 0.67`);
+    assert.ok(GRADE_AMBIENT_FLOOR <= 0.44 && GRADE_AMBIENT_FLOOR >= 0.40,
+        `GRADE_AMBIENT_FLOOR ${GRADE_AMBIENT_FLOOR} in [0.40, 0.44]`);
+    assert.ok(yOf(ART_RAMPS.grass[0], storm0200) >= 26,
+        `storm-0200 dark grass luma ${yOf(ART_RAMPS.grass[0], storm0200).toFixed(1)} >= 26`);
 });
 
 test('C-01 Pharos gate: watchtower beacon declares gate: lamps and stays off at noon, on at night', () => {

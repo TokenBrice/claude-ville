@@ -754,7 +754,8 @@ vec3 applyWaterMood(vec3 color) {
     if (u_waterMood.x > 0.0) {
         float l = dot(color, vec3(0.2126, 0.7152, 0.0722));
         color = mix(color, l * vec3(0.78, 0.94, 1.10), u_waterMood.x * 0.55);
-        color *= 1.0 - u_waterMood.x * 0.1;
+        // NE P2.4 — 18 % total drop at full night; blue hour (<= 0.5) stays byte-identical.
+        color *= 1.0 - u_waterMood.x * 0.1 - 0.08 * smoothstep(0.5, 1.0, u_waterMood.x);
     }
     return clamp(color, 0.0, 1.0);
 }

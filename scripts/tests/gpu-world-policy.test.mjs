@@ -168,6 +168,20 @@ test('L1-1: weather darkens the dusk and the night once, not twice', () => {
     const ratio = ambient(minute, storm) / ambient(minute, clear);
     assert.ok(ratio >= 0.8 && ratio < 1, `storm/clear ambient at ${minute} min: ${ratio.toFixed(3)}`);
   }
+  // NE P2.1 — with night gamma 1.10, storm gamma flattening is halved again at
+  // night so a storm night never renders brighter than a clear night.
+  const midtones = [[0.34, 0.46, 0.22], [0.58, 0.55, 0.50], [0.30, 0.36, 0.46]];
+  for (const minute of [22 * 60, 2 * 60]) {
+    const clearNight = evaluateGrade({ minuteOfDay: minute, moonFill: 0, weather: clear });
+    const stormNight = evaluateGrade({ minuteOfDay: minute, moonFill: 0, weather: storm });
+    assert.ok(stormNight.gamma[0] > 1.07, `storm night gamma ${stormNight.gamma[0].toFixed(4)} keeps mid-curve`);
+    for (const rgb of midtones) {
+      assert.ok(
+        luma(applyGradeToRgb(rgb, stormNight)) < luma(applyGradeToRgb(rgb, clearNight)),
+        `storm night never brighter than clear at ${minute} min`,
+      );
+    }
+  }
   // A storm noon is still darker than a clear noon, but no longer darker
   // than a clear midnight.
   assert.ok(ambient(12 * 60 + 30, storm) < ambient(12 * 60 + 30, clear));

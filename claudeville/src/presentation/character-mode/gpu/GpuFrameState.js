@@ -870,7 +870,7 @@ function sameTypedArray(a, b) {
  * aperture > fixture > point), `binGpuLights` admits in that order up to the
  * declared `light-admission` count (FULL 128, REDUCED 64, MINIMAL 24;
  * attention past it) while every 64x64 backing-px tile a light reaches has
- * one of its 16 slots free; daylight admits none. Fills `state`
+ * one of its `LIGHT_TILE_SLOTS` (24) slots free; daylight admits none. Fills `state`
  * (createLightFrameState) and returns it:
  *   records             RGBA32F, LIGHT_RECORD_ROWS rows x MAX_LIGHT_RECORDS:
  *                       row 0 (foot x, foot y, ground radius, intensity),

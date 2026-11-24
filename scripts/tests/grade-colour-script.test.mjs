@@ -97,7 +97,7 @@ test('sunrise is rose and mist, not a second golden hour', () => {
   assert.ok(sunrise.fill <= -5, `sunrise fill R−B ${sunrise.fill.toFixed(1)}`);
 });
 
-test('blue hour is bluer than night and never darker; the day arc is strictly monotone into velvet night', () => {
+test('blue hour is bluer than night and never darker; the day arc is strictly monotone into Opus P night', () => {
   const [noon, golden, blue, night, deep] = [12.5, 18, 19.75, 22, 2].map(hour => scriptAt(hour));
   const stormDeepGrade = evaluateGrade({ minuteOfDay: 2 * 60, weather: { type: 'storm', intensity: 0.9, cloudCover: 0.97 }, moonFill: 0 });
   const stormDeepY = SAMPLES.reduce((sum, s) => sum + luma(applyGradeToRgb(s.rgb, stormDeepGrade)) * 255 * s.weight, 0)
@@ -106,11 +106,11 @@ test('blue hour is bluer than night and never darker; the day arc is strictly mo
   assert.ok(noon.Y > golden.Y && golden.Y > blue.Y, 'noon > golden > blue');
   assert.ok(blue.Y > night.Y && night.Y > deep.Y && deep.Y > stormDeepY,
     `strict arc blue(${blue.Y.toFixed(1)}) > night(${night.Y.toFixed(1)}) > deep(${deep.Y.toFixed(1)}) > storm-0200(${stormDeepY.toFixed(1)})`);
-  // Velvet moonlit cobble (`road[2]`) sits in rich ~78-88 luma under full moonlight (~70 island mean), while darkest grass stays >= 34.
+  // NE P2.1 (operator-chosen Opus P night, 2026-11-24): moonlit cobble (`road[2]`) sits in ~55-65 luma under full moonlight (down from velvet 78-88), while darkest grass stays >= 34.
   const moonlitGrade = evaluateGrade({ minuteOfDay: 22.5 * 60, weather: CLEAR, moonFill: 0.83 });
   const cobbleY = luma(applyGradeToRgb(rgb01(ART_RAMPS.road[2]), moonlitGrade)) * 255;
   const darkGrassY = luma(applyGradeToRgb(rgb01(ART_RAMPS.grass[0]), moonlitGrade)) * 255;
-  assert.ok(cobbleY >= 78 && cobbleY <= 88, `moonlit cobble luma ${cobbleY.toFixed(1)} in [78, 88]`);
+  assert.ok(cobbleY >= 55 && cobbleY <= 65, `moonlit cobble luma ${cobbleY.toFixed(1)} in [55, 65]`);
   assert.ok(darkGrassY >= 34, `darkest grass luma ${darkGrassY.toFixed(1)} >= 34`);
 });
 

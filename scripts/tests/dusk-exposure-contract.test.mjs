@@ -32,7 +32,9 @@ test('every reviewed exposure bucket spends cores before broad bloom', () => {
       bucket.core > bucket.bloom,
       `${bucket.bucket}: core ${bucket.core} must outrank bloom ${bucket.bloom}`,
     );
-    assert.ok(bucket.halo <= 1, `${bucket.bucket}: halo area may not exceed authored geometry`);
+    // NE P2.3 (2026-11-24 operator decision): lamplight 1.15, deep-night 1.3;
+    // BuildingSprite's SOURCE_HALO_RADIUS_CAP remains the absolute ceiling.
+    assert.ok(bucket.halo <= 1.3, `${bucket.bucket}: halo ${bucket.halo} must stay within the reviewed 1.3 ceiling`);
   }
 });
 
@@ -47,6 +49,9 @@ test('dusk into night walks up the reviewed buckets, cores first and bloom last'
   for (let index = 1; index < seen.length; index++) {
     assert.ok(seen[index].core >= seen[index - 1].core, 'core energy never falls as the sky cools');
     assert.ok(seen[index].bloom >= seen[index - 1].bloom, 'bloom follows, never leads');
+    assert.ok(seen[index].halo >= seen[index - 1].halo, 'halo never shrinks into deeper night');
+    assert.ok(seen[index].reach >= seen[index - 1].reach, 'reach never shrinks into deeper night');
+    assert.ok(seen[index].gain >= seen[index - 1].gain, 'gain never falls into deeper night');
     // Bloom's share of the same envelope stays the smallest of the three.
     assert.ok(seen[index].bloom < seen[index].core);
     assert.ok(seen[index].bloom < seen[index].spill);
@@ -70,6 +75,9 @@ test('a feed authored without an envelope keeps today response', () => {
   assert.equal(neutral.core, 1);
   assert.equal(neutral.spill, 1);
   assert.equal(neutral.bloom, 1);
+  assert.equal(neutral.halo, 1);
+  assert.equal(neutral.reach, 1);
+  assert.equal(neutral.gain, 1);
   assert.equal(normalizeLightingState({}).sourceEnergy.core, 1);
   assert.equal(normalizeLightingState({ sourceEnergy: SOURCE_ENERGY_BUCKETS.lamplight }).sourceEnergy.core, 0.9);
 });

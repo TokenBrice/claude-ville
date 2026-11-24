@@ -118,7 +118,8 @@ fn applyWaterMood(color0: vec3f) -> vec3f {
     if (frame.waterMood.x > 0.0) {
         let l = dot(color, vec3f(0.2126, 0.7152, 0.0722));
         color = mix(color, l * vec3f(0.78, 0.94, 1.10), frame.waterMood.x * 0.55);
-        color *= 1.0 - frame.waterMood.x * 0.1;
+        // NE P2.4 — 18 % total drop at full night; blue hour (<= 0.5) stays byte-identical.
+        color *= 1.0 - frame.waterMood.x * 0.1 - 0.08 * smoothstep(0.5, 1.0, frame.waterMood.x);
     }
     return clamp(color, vec3f(0.0), vec3f(1.0));
 }

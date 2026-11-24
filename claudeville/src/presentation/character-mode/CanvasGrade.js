@@ -9,6 +9,7 @@
 //   2. `multiply` by the cached overlay (exposure x gain x split-tone mid,
 //      stepped vignette)                                    -> ambient
 //   3. `screen` fill of the lift colour                     -> black floor
+//   3b. `multiply` self-blit at `canvasGradeGammaAlpha`     -> mid gamma
 //   4. `color-dodge` stepped pool stamps                    -> lights multiply
 //      the graded surface (Cb / (1 - Cs) = Cb x (1 + m)), in three dithered
 //      courses on the art-pixel grid, so texture shows through the light.
@@ -142,6 +143,41 @@ export function drawCanvasGradeLift(ctx, width, height, grade) {
     ctx.restore();
 }
 
+// NE P2.5 — step 3b's alpha for the multiply self-blit that approximates
+// `pow(c, gamma)` via `c' = (1 - a) * c + a * c^2`, quantised to 1/32 (0
+// below 0.02 so noon 1.00 and blue hour 1.01 stay exact no-ops).
+export function canvasGradeGammaAlpha(grade) {
+    const raw = grade?.gamma;
+    const gamma = Array.isArray(raw)
+        ? ((Number.isFinite(raw[0]) ? raw[0] : 1)
+            + (Number.isFinite(raw[1]) ? raw[1] : 1)
+            + (Number.isFinite(raw[2]) ? raw[2] : 1)) / 3
+        : (Number.isFinite(raw) ? raw : 1);
+    const amount = clamp((gamma - 1) * 1.45, 0, 0.85);
+    return amount < 0.02 ? 0 : Math.round(amount * 32) / 32;
+}
+
+/**
+ * NE P2.5 — step 3b: one `multiply` self-blit at `canvasGradeGammaAlpha`,
+ * computing `c' = (1 - a) * c + a * c^2` over the finished graded world layer
+ * right after `drawCanvasGradeLift`. No-op at noon and blue hour.
+ */
+export function drawCanvasGradeGamma(ctx, width, height, grade) {
+    const alpha = canvasGradeGammaAlpha(grade);
+    if (!alpha || !ctx?.canvas || !(width > 0) || !(height > 0)) return;
+    ctx.save();
+    ctx.globalCompositeOperation = 'multiply';
+    ctx.globalAlpha = alpha;
+    if (typeof ctx.setTransform === 'function' && ctx.canvas.width > 0 && ctx.canvas.height > 0) {
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(ctx.canvas, 0, 0);
+    } else {
+        ctx.drawImage(ctx.canvas, 0, 0, width, height);
+    }
+    ctx.restore();
+}
+
 // W3C compositing `Lum`: the `saturation` blend with grey replaces the
 // backdrop by this grey, so step 1 is a mix toward it.
 const BLEND_LUM = [0.3, 0.59, 0.11];
@@ -161,32 +197,44 @@ function canvasGradeTerms(grade) {
         multiply: canvasGradeMultiply(grade),
         gain,
         lift: lift && Math.max(lift[0], lift[1], lift[2]) >= 0.004 ? lift : [0, 0, 0],
+        gammaAlpha: canvasGradeGammaAlpha(grade),
     };
 }
 
 /**
- * V6 on Canvas — what steps 1–3 make of one ungraded colour (0..1 channels)
+ * V6 on Canvas — what steps 1–3b make of one ungraded colour (0..1 channels)
  * in the overlay's inner course. The Canvas fills are not the resident
  * `applyGradeToRgb` (a desaturation toward grey, a mid-only split tone, a
- * screened lift), so a colour whose graded saturation must be held on this
- * path has to be predicted with this model, not with the resident one.
+ * screened lift, a multiply-self-blit gamma), so a colour whose graded
+ * saturation must be held on this path has to be predicted with this model,
+ * not with the resident one.
  */
 export function canvasGradeRgb(rgb, grade, terms = canvasGradeTerms(grade)) {
-    const { alpha, multiply, gain, lift } = terms;
+    const { alpha, multiply, gain, lift, gammaAlpha = 0 } = terms;
     const grey = rgb[0] * BLEND_LUM[0] + rgb[1] * BLEND_LUM[1] + rgb[2] * BLEND_LUM[2];
     return [0, 1, 2].map((channel) => {
         const desat = rgb[channel] + (grey - rgb[channel]) * alpha;
         const scaled = clamp(desat * multiply[channel] * gain[channel]);
-        return 1 - (1 - scaled) * (1 - lift[channel]);
+        const lifted = 1 - (1 - scaled) * (1 - lift[channel]);
+        return gammaAlpha > 0 ? lifted * (1 - gammaAlpha + gammaAlpha * lifted) : lifted;
     });
 }
 
-// The exact inverse of `canvasGradeRgb` (steps 3, 2b, 2, then 1: the mix toward
-// grey keeps `Lum`, so it undoes in closed form). Out-of-gamut targets clamp.
+// The exact inverse of `canvasGradeRgb` (steps 3b, 3, 2b, 2, then 1: the
+// gamma self-blit inverts via the positive quadratic root and the mix toward
+// grey keeps `Lum`, so every step undoes in closed form). Out-of-gamut
+// targets clamp.
 function canvasUngradeRgb(target, terms) {
-    const { alpha, multiply, gain, lift } = terms;
-    const d = [0, 1, 2].map(channel => (1 - (1 - target[channel]) / Math.max(1e-6, 1 - lift[channel]))
-        / Math.max(1e-6, multiply[channel] * gain[channel]));
+    const { alpha, multiply, gain, lift, gammaAlpha = 0 } = terms;
+    const oneMinusA = 1 - gammaAlpha;
+    const d = [0, 1, 2].map((channel) => {
+        const t = target[channel];
+        const unGamma = gammaAlpha > 0
+            ? (-oneMinusA + Math.sqrt(Math.max(0, oneMinusA * oneMinusA + 4 * gammaAlpha * t))) / (2 * gammaAlpha)
+            : t;
+        return (1 - (1 - unGamma) / Math.max(1e-6, 1 - lift[channel]))
+            / Math.max(1e-6, multiply[channel] * gain[channel]);
+    });
     const grey = d[0] * BLEND_LUM[0] + d[1] * BLEND_LUM[1] + d[2] * BLEND_LUM[2];
     return d.map(channel => clamp((channel - alpha * grey) / Math.max(1e-6, 1 - alpha)));
 }

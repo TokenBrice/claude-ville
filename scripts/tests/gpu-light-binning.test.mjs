@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+    FIXTURE_LIGHT_RESERVE,
     LIGHT_ROLE_CODES,
     LIGHT_TILE_PX,
     LIGHT_TILE_SLOTS,
@@ -93,6 +94,19 @@ test('T4: at MINIMAL the lamps and braziers keep their slots ahead of windows an
     // FULL has room for everything.
     const full = binGpuLights(ranked, { ...VIEW, cap: 128 });
     assert.equal(full.admitted.length, lights.length);
+    // NE P2.6 — FIXTURE_LIGHT_RESERVE 24 holds up to 24 fixtures at REDUCED (64)
+    // while keeping half-cap (12) at MINIMAL (24).
+    assert.equal(FIXTURE_LIGHT_RESERVE, 24);
+    assert.equal(LIGHT_TILE_SLOTS, 24);
+    const wideAt = (k) => [30 + (k % 16) * 62, 30 + Math.floor(k / 16) * 90];
+    let w = 0;
+    const denseFixtures = clampGpuLights([
+        ...Array.from({ length: 50 }, (_, n) => light(`win${n}`, ...wideAt(w++), { role: 'aperture', priority: 5, radius: 18 })),
+        ...Array.from({ length: 28 }, (_, n) => light(`fix${n}`, ...wideAt(w++), { role: 'fixture', radius: 18 })),
+    ], 256, 256);
+    const reduced = binGpuLights(denseFixtures, { ...VIEW, cap: 64 });
+    assert.equal(count(reduced, 'fix'), FIXTURE_LIGHT_RESERVE, 'REDUCED reserves all 24 fixture slots');
+    assert.equal(count(reduced, 'win'), 64 - FIXTURE_LIGHT_RESERVE);
 });
 
 test('a full tile rejects later lights there but not elsewhere on screen', () => {
@@ -103,7 +117,7 @@ test('a full tile rejects later lights there but not elsewhere on screen', () =>
     assert.equal(bins.tileFull, 4);
     assert.equal(bins.maxPerTile, LIGHT_TILE_SLOTS);
     assert.ok(bins.admitted.some(l => l.id === 'far'), 'a light in free tiles is still admitted');
-    // The first sixteen in rank order win the crowded tiles.
+    // The first LIGHT_TILE_SLOTS (24) in rank order win the crowded tiles.
     const admittedCrowd = bins.admitted.filter(l => l.id !== 'far').map(l => l.id);
     assert.deepEqual(admittedCrowd, crowd.slice(0, LIGHT_TILE_SLOTS).map(l => l.id));
 

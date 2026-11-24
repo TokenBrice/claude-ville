@@ -108,12 +108,18 @@ test('Canvas named crest keeps its own water stop and takes the same horizon haz
     assert.equal(canvasSeaMarkRgb(null, 'crest', 0, far, true), -1);
 });
 
-test('L1-4: the night sea drops 10 % of its value in all three water-mood twins', () => {
+test('NE P2.4 (relaxes L1-4): the night sea drops 18 % at full night and keeps blue hour byte-identical in all three twins', () => {
     const rgb = [0.19, 0.26, 0.29];
     const l = rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
-    const expected = [0.78, 0.94, 1.10].map((tone, i) => (rgb[i] + (l * tone - rgb[i]) * 0.55) * 0.9);
-    applyWaterMood(rgb, { night: 1, storm: 0 }).forEach((channel, i) => assert.ok(Math.abs(channel - expected[i]) < 1e-9));
+    const expectedAt = (night, scale) => [0.78, 0.94, 1.10].map((tone, i) => (rgb[i] + (l * tone - rgb[i]) * (night * 0.55)) * scale);
+    // Full night (n = 1): 1 - 0.1 - 0.08 = 0.82 (18 % drop).
+    applyWaterMood(rgb, { night: 1, storm: 0 }).forEach((channel, i) => assert.ok(Math.abs(channel - expectedAt(1, 0.82)[i]) < 1e-9));
+    // Mid-transition (n = 0.75): smoothstep(0.5, 1, 0.75) = 0.5 -> 1 - 0.075 - 0.04 = 0.885.
+    applyWaterMood(rgb, { night: 0.75, storm: 0 }).forEach((channel, i) => assert.ok(Math.abs(channel - expectedAt(0.75, 0.885)[i]) < 1e-9));
+    // Blue hour (n = 0.375) and the smoothstep floor (n = 0.5): byte-identical to 1 - 0.1 * n.
+    assert.deepEqual(applyWaterMood(rgb, { night: 0.375, storm: 0 }), expectedAt(0.375, 1 - 0.375 * 0.1));
+    assert.deepEqual(applyWaterMood(rgb, { night: 0.5, storm: 0 }), expectedAt(0.5, 1 - 0.5 * 0.1));
     const glsl = readFileSync(new URL('../../claudeville/src/presentation/character-mode/gpu/GpuWorldRenderer.js', import.meta.url), 'utf8');
-    assert.ok(glsl.includes('color *= 1.0 - u_waterMood.x * 0.1;'));
-    assert.ok(WATER_WGSL.includes('color *= 1.0 - frame.waterMood.x * 0.1;'));
+    assert.ok(glsl.includes('color *= 1.0 - u_waterMood.x * 0.1 - 0.08 * smoothstep(0.5, 1.0, u_waterMood.x);'));
+    assert.ok(WATER_WGSL.includes('color *= 1.0 - frame.waterMood.x * 0.1 - 0.08 * smoothstep(0.5, 1.0, frame.waterMood.x);'));
 });
