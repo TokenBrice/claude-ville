@@ -6,13 +6,13 @@ The dashboard observes local AI CLI session files. It writes nothing back to tho
 
 ## "No providers detected" / `/api/providers` has an empty provider list
 
-At least one provider source must exist and be readable: `~/.claude/`, `~/.codex/`, `~/.gemini/`, `~/.gemini/antigravity-cli/`, `~/.grok/`, `~/.kimi/`, `~/.kimi-code/`, `~/.local/share/opencode/opencode.db`, or `~/.omp/agent/sessions/`. Most adapters register by home-directory presence, not by whether session subdirectories already contain data. OMP requires its session directory. OpenCode requires its database and either Node's `node:sqlite` support or the `sqlite3` CLI for read-only access. A fresh machine with none of these sources correctly returns `providers: []` and `count: 0` in the API response.
+At least one provider source must exist and be readable: `~/.claude/`, `~/.codex/`, `~/.gemini/`, `~/.gemini/antigravity-cli/`, `~/.grok/`, `~/.kimi/`, `~/.kimi-code/`, `~/.local/share/opencode/opencode.db`, `~/.omp/agent/sessions/`, `~/.local/state/deepseek-cc-mcp/`, or `~/.local/state/glm-cc-mcp/`. Most adapters register by home-directory presence, not by whether session subdirectories already contain data. OMP requires its session directory. OpenCode requires its database and either Node's `node:sqlite` support or the `sqlite3` CLI for read-only access. A fresh machine with none of these sources correctly returns `providers: []` and `count: 0` in the API response.
 
 Server log on startup will say:
 
 ```
 [!] No active providers
-    One of ~/.claude/, ~/.codex/, ~/.gemini/, ~/.grok/, ~/.kimi-code/, ~/.local/share/opencode/, or ~/.omp/ is required
+    One of ~/.claude/, ~/.codex/, ~/.gemini/, ~/.gemini/antigravity-cli/, ~/.grok/, ~/.kimi-code/, ~/.local/share/opencode/, ~/.omp/, ~/.local/state/deepseek-cc-mcp/, or ~/.local/state/glm-cc-mcp/ is required
 ```
 
 Fix: install at least one supported CLI and run a session so the provider home and session files are created. Then restart the server. To explore without installing a CLI, use `http://localhost:4000/?sim=1`.
@@ -37,6 +37,8 @@ Provider scan windows also matter:
 - Kimi reads recent legacy `~/.kimi/sessions/<project_hash>/<session_uuid>/wire.jsonl` data and resolves project hashes from Kimi config and common local work directories. Kimi Code sessions are read from `~/.kimi-code/sessions/<workspace>/<session_uuid>/agents/<agent>/wire.jsonl` and mapped back to projects through `~/.kimi-code/session_index.jsonl`.
 - OpenCode reads recent rows from `~/.local/share/opencode/opencode.db` in read-only mode.
 - OMP reads JSONL sessions and nested agent transcripts under `~/.omp/agent/sessions/`.
+- DeepSeek MCP (`deepseek-cc-mcp`) reads thread state under `~/.local/state/deepseek-cc-mcp/` (or `DEEPSEEK_CC_STATE_DIR`).
+- GLM MCP (`glm-cc-mcp`) reads thread state under `~/.local/state/glm-cc-mcp/` (or `GLM_CC_STATE_DIR`).
 - Some detail lookups can search a wider window than the active-session list, so a detail URL may work for a session that no longer appears as active.
 
 Repository-only `git` sessions can also appear when git enrichment detects unpushed or pushed GitHub repository activity outside a live provider session. That scan defaults to `~/Documents/git`, can be narrowed with `CLAUDEVILLE_REPOSITORY_SCAN_ROOT`, capped with `CLAUDEVILLE_REPOSITORY_SCAN_MAX`, and disabled with `CLAUDEVILLE_DISABLE_GIT_ENRICHMENT=1`. Synthetic git session detail returns a reason string rather than a provider transcript.

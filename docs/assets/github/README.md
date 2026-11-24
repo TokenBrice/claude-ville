@@ -1,9 +1,10 @@
 # GitHub images
 
-These are captures of the running application, refreshed for v0.55.1.1. The
-`readme-showcase` simulator supplies 33 fictional agents across nine providers
-and four projects. Paths, messages, tool history, usage, and costs are sample
-data. The `SIMULATED` indicator remains visible in application screenshots.
+These are captures of the running application, refreshed for v0.66.1. The
+`readme-showcase` simulator supplies 37 fictional agents across all ten
+providers and four projects, plus synthetic Harbor commits. Paths, messages,
+tool history, usage, and costs are sample data. The `SIMULATED` indicator
+remains visible in application screenshots.
 
 From the repository root, with the maintained server running via `npm run dev`
 at `http://localhost:4000` and the existing Playwright development dependency:
@@ -13,20 +14,25 @@ node scripts/world/capture-marketing.mjs         # Preview in output/playwright/
 node scripts/world/capture-marketing.mjs --write # Replace these six PNGs
 ```
 
-The script uses full Chromium and the hardware WebGL renderer, checks the
-renderer and fixture, and fails on browser errors or unexpected API requests.
-It uses a fresh browser context, supplies synthetic session details, and never
-fetches live session, provider, account, or usage data. It closes its browser
-without stopping the maintained server. A software-only renderer fails the
-capture; use a machine with a working hardware GPU rather than removing that
-check. Install Chromium with `npx playwright install chromium` if needed.
+The script uses the unified Chromium launcher (`CLAUDEVILLE_CHROME`, Playwright's
+bundled Chromium, or system Chrome) with hardware GPU flags and the WebGL2
+renderer, checks the renderer and fixture, and fails on browser errors or
+unexpected API requests. It uses a fresh browser context, supplies synthetic
+session details, and never fetches live session, provider, account, or usage
+data. It closes its browser without stopping the maintained server. A
+software-only renderer fails the capture; use a machine with a working hardware
+GPU rather than removing that check. Install Chromium with
+`npx playwright install chromium` or point `CLAUDEVILLE_CHROME` at Chrome if
+needed.
 
-Application images are 1920 × 1200 at DPR 1. Daylight is fixed at 10:30 and night
-at 22:00 with clear weather. Camera framing is fixed; villagers, particles,
-elapsed times, and the current tune remain live, so captures are not pixel
-identical. The FPS indicator alone is hidden because an automated screenshot
-run is not a performance benchmark. Review every resulting image for framing,
-readable controls, accurate copy, and absence of personal data before publishing.
+Application images are 1920 × 1200 at DPR 1. The capture pins a mid-summer date
+(`2026-07-15`) and authored solar site before boot so foliage and shadow
+geometry stay consistent across seasons; daylight is fixed at 10:30 and night at
+22:00 with clear weather. Camera framing is fixed; villagers, particles, elapsed
+times, and the current tune remain live, so captures are not pixel identical.
+The FPS indicator alone is hidden because an automated screenshot run is not a
+performance benchmark. Review every resulting image for framing, readable
+controls, accurate copy, and absence of personal data before publishing.
 
 | File | Purpose |
 | --- | --- |

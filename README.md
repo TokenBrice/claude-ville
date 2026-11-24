@@ -17,7 +17,7 @@ Each session becomes a villager in a living pixel-art world. Leave it on a secon
 
 ## Quick start
 
-You need **Node.js 22.7+**, Git, and a desktop browser at least **1280px wide**.
+You need **Node.js 22.7+**, Git, macOS or Linux, and a desktop browser at least **1280px wide**.
 
 ```bash
 git clone https://github.com/TokenBrice/claude-ville.git
@@ -27,28 +27,29 @@ npm run dev
 
 Open **[localhost:4000](http://localhost:4000)** and keep using your coding CLIs as usual. ClaudeVille discovers supported session stores on the same machine. No package install, build step, or ClaudeVille account is needed to run it.
 
-**Try it before running agents:** open the [simulated village](http://localhost:4000/?sim=1&scenario=readme-showcase) after starting the server, or choose **VISIT A SIMULATED VILLAGE** when ClaudeVille finds no provider; the chip in the top bar reads SIMULATED and offers the way back. It uses fictional sessions across all nine providers, including agents waiting for approval. All screenshots in this README use this simulator, with synthetic detail data for the Activity Panel.
+**Try it before running agents:** open the [simulated village](http://localhost:4000/?sim=1&scenario=readme-showcase) after starting the server (add `&timelapse=1` for a 60-second dawn-to-night sweep), or choose **VISIT A SIMULATED VILLAGE** when ClaudeVille finds no provider; the chip in the top bar reads SIMULATED and offers the way back. It uses fictional sessions across all ten providers, including agents waiting for approval and pending Harbor commits. All screenshots in this README use this simulator, with synthetic detail data for the Activity Panel.
 
-No agents showing up? Start a CLI session and check [provider detection and session visibility](./docs/troubleshooting.md). The `/m/` profile has a touch layout for a server running on the phone itself; the desktop server binds to loopback and is not reachable from another device over your LAN.
+No agents showing up? Start a CLI session and check [provider detection and session visibility](./docs/troubleshooting.md#providers-detected-but-apisessions-is-empty). The `/m/` profile has a touch layout for a server running on the phone itself; the desktop server binds to loopback and is not reachable from another device over your LAN.
 
 ## What you can see
 
 | When you want to… | ClaudeVille shows you… |
 | --- | --- |
-| **Find the next agent that needs you** | Approval waits, errors, and rate limits in the top bar, sidebar, World attention plates, and Dashboard call cards. Press **A** in World mode to frame agents needing attention. |
-| **Keep track of parallel work** | Agents grouped by project, provider and model identities, parent/child relationships, current tools, and plans where the provider records them. |
-| **Investigate a session** | An Activity Panel with tool history, messages, prompt, working set, and a timeline. Dashboard rows expand inline for a closer look. |
-| **Watch usage and cost** | Observed token totals, available context usage, and a spend map by project and provider. Cost may be provider-reported or estimated; missing data is not a zero bill. |
-| **See work waiting to ship** | A Harbor ledger of unpushed commits by repository and branch, with ships in the World and departures for pushes. |
+| **Find the next agent that needs you** | Approval waits, errors, and rate limits in the top bar, sidebar, World attention plates, and Dashboard call cards. Press **A** to jump to agents needing attention in either mode. |
+| **Keep track of parallel work** | Agents grouped by project, provider and model identities, nested parent/child crews, active tools, `/rename` labels, and plans where the provider records them. |
+| **Investigate a session** | An Activity Panel with tool history, messages, prompt, working set, causal waterfall, and journey. Dashboard rows expand inline for a closer look. |
+| **Watch usage, cost, and quotas** | Observed token totals, available context usage, a spend map by project and provider, and Claude/Codex account limits (in the Dashboard and the Hourglass Belfry). Cost may be provider-reported or estimated; missing data is not a zero bill. |
+| **See work waiting to ship** | A Harbor ledger of unpushed commits by repository and branch, with moored ships in the World and departures for pushes. |
+| **Review a day or share a view** | A local Chronicle with **Day Retold** (`?retold=YYYY-MM-DD` full-day playback), the Hall of Lives, Markdown/CSV exports, and **Postcards** (**P**) that save a clean, name-free PNG of the village. |
 | **Look away without losing the thread** | Optional desktop notifications and sound signals for waits, errors, and limits. Sound starts off; the Town band adds a day/night soundtrack. |
 
 Approval and status signals depend on what each CLI records. ClaudeVille distinguishes observed, inferred, and stale information; [optional lifecycle hooks](./docs/troubleshooting.md#permission-prompts-are-inferred-or-arrive-late) can improve approval detection. You approve commands and direct agents in their own CLI.
 
 ### World mode: awareness at a glance
 
-Villagers head to the Forge to code, the Archive to read, and the Tavern to rest. Model families have their own sprites. The island follows the local clock and seasons, with modeled weather by default. For non-commercial use, **Settings → Village weather → Real sky** adapts the latest forecast for your system timezone’s city, including rain and snow in any month. Modeled weather treats December through February precipitation as snow. Working buildings light up after dark.
+Villagers head to the Forge to code, the Archive to read, the Portal for subagents and web lookups, and the Tavern to rest. Model families have their own sprites, working villagers carry tool icons overhead, and hovering shows a quick status plate. Busy buildings fly pennants, light occupied windows by day, and glow with lanterns and firelight after dark. The island follows the local clock, sun shadows, and seasons, with modeled weather by default. For non-commercial use, **Settings → Village weather → Real sky** adapts the latest forecast for your system timezone’s city, including rain and snow in any month. Modeled weather treats December through February precipitation as snow.
 
-Use the World dock to choose **FREE**, **AUTO**, or **AMBIENT** camera behavior. Press **F** to frame the village, hold **B** to read work labels, and use **/** or **Ctrl/Cmd+K** to find an agent. Click an agent to inspect its session.
+Use the World dock to choose **FREE**, **AUTO**, or **AMBIENT** camera behavior. Press **F** to frame the village, hold **B** to read work labels, press **R** for a 60-second trail replay, press **P** to save a name-free postcard, and use **/** or **Ctrl/Cmd+K** to find an agent. Click an agent to inspect its session.
 
 <details>
 <summary>See the village at night</summary>
@@ -105,13 +106,13 @@ See the [adapter reference](./claudeville/adapters/README.md) for provider-speci
 - **Claude quota reporting makes an outbound request.** When existing Claude OAuth credentials include a subscription and access token, the server uses that token to request usage limits from Anthropic's API. Session transcripts are not sent with this request.
 - **Real sky is opt-in.** While a live tab has it on, the server can request a forecast at most once an hour. The request sends the timezone city’s coarse coordinates and fixed forecast parameters. Open-Meteo may log the IP address and coordinates. The clock shows the forecast source and fetch age. Forecasts older than three hours give way to modeled weather. [Open-Meteo terms and privacy](https://open-meteo.com/en/terms) · [Forecast attribution and mapping](./docs/design-decisions.md#village-weather-uses-an-hourly-forecast-only-on-opt-in)
 
-Review screenshots before sharing: live sessions can show prompts, messages, commands, project names, and file paths. Use the simulator for public captures. Report vulnerabilities through [the security policy](./SECURITY.md).
+Review screenshots before sharing: live sessions can show prompts, messages, commands, project names, and file paths. Press **P** in World mode to save a name-free postcard, or use the simulator for public captures. Report vulnerabilities through [the security policy](./SECURITY.md).
 
 ## Requirements and rendering
 
 The runtime is a Node server plus static browser JavaScript, with no runtime dependencies. CI checks Node 22, 24 and 26.
 
-World mode uses WebGPU on supported Chromium hardware, with WebGL2 and Canvas 2D fallbacks. Display P3 and WebGPU HDR highlights are available on compatible displays. If graphics fail, try [`?renderer=canvas`](http://localhost:4000/?renderer=canvas) and the [graphics troubleshooting guide](./docs/troubleshooting.md). Dashboard mode presents the same sessions as DOM rows.
+World mode uses WebGPU on supported Chromium hardware, with WebGL2 and Canvas 2D fallbacks. Display P3 and WebGPU HDR highlights are available on compatible displays. If graphics fail, try [`?renderer=canvas`](http://localhost:4000/?renderer=canvas) and the [graphics troubleshooting guide](./docs/troubleshooting.md#world-looks-flatter-than-the-screenshots-runs-the-canvas-renderer-or-you-need-a-different-gpu-backend). Dashboard mode presents the same sessions as DOM rows.
 
 ## Contributing and support
 

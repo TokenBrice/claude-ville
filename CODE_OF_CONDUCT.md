@@ -18,4 +18,4 @@ ClaudeVille welcomes focused, respectful collaboration.
 
 ## Enforcement
 
-Maintainers may edit, hide, or remove comments; close issues; restrict participation; or block users when behavior harms the project or community. Security-sensitive reports should follow `SECURITY.md`.
+Maintainers may edit, hide, or remove comments; close issues; restrict participation; or block users when behavior harms the project or community. Security-sensitive reports should follow [SECURITY.md](SECURITY.md).
