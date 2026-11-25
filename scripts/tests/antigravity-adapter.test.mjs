@@ -742,3 +742,70 @@ test('Antigravity groups a T3 Code delegate under the thread that started it', {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test('a T3 Code thread the operator renamed names its Antigravity villager, like /rename', { skip: !nodeSqlite?.DatabaseSync && 'node:sqlite unavailable' }, () => {
+  const tmp = makeTempDir('cv-antigravity-t3-renamed-');
+  const savedHome = process.env.HOME;
+  const savedRoot = process.env.CLAUDEVILLE_ANTIGRAVITY_DIR;
+  try {
+    process.env.HOME = tmp;
+    delete process.env.CLAUDEVILLE_ANTIGRAVITY_DIR;
+    const ids = {
+      renamed: 'aaaaaaaa-8888-4888-8888-888888888888',
+      auto: 'bbbbbbbb-9999-4999-8999-999999999999',
+      delegate: 'cccccccc-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    };
+    const now = Date.parse('2026-11-25T19:00:00Z');
+    const acpDir = path.join(tmp, '.t3', 'userdata', 'providers', 'antigravity', 'ac0a3dfd', 'antigravity-acp');
+    for (const id of Object.values(ids)) {
+      writeFile(path.join(acpDir, 'brain', id, '.system_generated', 'logs', 'transcript.jsonl'), `${JSON.stringify({
+        step_index: 0,
+        source: 'MODEL',
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        created_at: new Date(now - 5_000).toISOString(),
+        model: 'gemini-4-neon-high',
+        content: 'Done.',
+      })}\n`, now - 5_000);
+    }
+
+    const db = new nodeSqlite.DatabaseSync(path.join(tmp, '.t3', 'userdata', 'statev2.sqlite'));
+    db.exec(`
+      CREATE TABLE orchestration_v2_projection_threads (thread_id TEXT PRIMARY KEY, title TEXT NOT NULL, payload_json TEXT NOT NULL);
+      CREATE TABLE orchestration_v2_projection_runs (run_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, ordinal INTEGER NOT NULL);
+      CREATE TABLE orchestration_v2_projection_run_attempts (attempt_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, run_id TEXT NOT NULL,
+        attempt_ordinal INTEGER NOT NULL, provider TEXT NOT NULL, payload_json TEXT NOT NULL);
+    `);
+    const thread = db.prepare('INSERT INTO orchestration_v2_projection_threads VALUES (?, ?, ?)');
+    const run = db.prepare('INSERT INTO orchestration_v2_projection_runs VALUES (?, ?, 1)');
+    const attempt = db.prepare('INSERT INTO orchestration_v2_projection_run_attempts VALUES (?, ?, ?, 1, ?, ?)');
+    const addThread = (threadId, title, payload, nativeThreadId) => {
+      thread.run(threadId, title, JSON.stringify(payload));
+      run.run(`run:${threadId}`, threadId);
+      attempt.run(`run:${threadId}:1`, threadId, `run:${threadId}`, 'antigravity', JSON.stringify({ nativeThreadId }));
+    };
+    addThread('renamed', 'PHAROSVILLE-SOTA', { titleRenamed: true }, ids.renamed);
+    addThread('auto', 'Menu UX Review: Learn Tab', { titleRenamed: false }, ids.auto);
+    addThread('delegate', 'Phase 1-A: SceneCapture', { titleRenamed: false, lineage: { parentThreadId: 'renamed' } }, ids.delegate);
+    db.close();
+
+    const sessions = new AntigravityAdapter({ now: () => now }).getActiveSessions(2 * 60_000);
+    const byId = id => sessions.find(s => s.sessionId === `antigravity-${id}`);
+    const renamed = byId(ids.renamed);
+    assert.equal(renamed.agentName, 'PHAROSVILLE-SOTA');
+    assert.equal(renamed.userNamed, true);
+    assert.equal(renamed.agentType, 'main');
+    const auto = byId(ids.auto);
+    assert.equal(auto.agentName, null, 'a title T3 Code generated does not name the villager');
+    assert.equal(auto.userNamed, false);
+    const delegate = byId(ids.delegate);
+    assert.equal(delegate.agentName, 'Phase 1-A: SceneCapture', 'a delegate keeps its task title');
+    assert.equal(delegate.userNamed, false);
+    assert.equal(delegate.parentSessionId, `antigravity-${ids.renamed}`);
+  } finally {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    if (savedRoot !== undefined) process.env.CLAUDEVILLE_ANTIGRAVITY_DIR = savedRoot;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

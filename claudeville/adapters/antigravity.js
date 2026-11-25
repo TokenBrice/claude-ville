@@ -33,6 +33,7 @@ const {
 const { emptyObservedSources, makeDialogue, pickDialogue } = require('./dialogue');
 const { deriveTurnState } = require('./turnState');
 const { normalizeToolResults, toolResultId, toolResultLocation } = require('./toolResults');
+const { queryT3State, readT3RenamedTitles, t3UserDataDir } = require('./t3code');
 const {
   dedupeGitEvents,
   extractGitEventsFromCommandSource,
@@ -882,13 +883,14 @@ function reduceAntigravityTranscript(steps, {
   };
 }
 
-function presentReducedEntry(reduced, { now = Date.now(), lineage = null, backgroundPending = null } = {}) {
+function presentReducedEntry(reduced, { now = Date.now(), lineage = null, backgroundPending = null, t3Title = null } = {}) {
   const tokenUsage = reduced.session.tokenUsage ? { ...reduced.session.tokenUsage } : null;
   const dialogue = pickDialogue(reduced.dialogueCandidates, { now });
   const parentConvId = lineage?.parentConvId || null;
   const parentSessionId = lineage?.parentSessionId || (parentConvId ? sessionIdFor(parentConvId) : null);
   const rootSessionId = lineage?.rootConvId ? sessionIdFor(lineage.rootConvId) : parentSessionId;
-  const agentName = reduced.session.agentName || lineage?.agentName || null;
+  // A T3 Code thread the operator renamed is named as T3 Code shows it.
+  const agentName = t3Title || reduced.session.agentName || lineage?.agentName || null;
   const project = reduced.session.project || lineage?.parentProject || '';
 
   return {
@@ -897,6 +899,7 @@ function presentReducedEntry(reduced, { now = Date.now(), lineage = null, backgr
       project,
       agentType: lineage?.agentType || reduced.session.agentType,
       agentName,
+      userNamed: Boolean(t3Title),
       subagentKind: lineage?.subagentKind || null,
       workflowName: lineage?.workflowName || undefined,
       teamName: reduced.session.teamName || lineage?.teamName || null,
@@ -924,10 +927,6 @@ function presentReducedEntry(reduced, { now = Date.now(), lineage = null, backgr
   };
 }
 
-function t3UserDataDir() {
-  return path.join(os.homedir(), '.t3', 'userdata');
-}
-
 function t3InstancesDir() {
   return path.join(t3UserDataDir(), 'providers', 'antigravity');
 }
@@ -946,18 +945,6 @@ function t3AcpDirs() {
   return entries
     .filter(entry => entry.isDirectory())
     .map(entry => path.join(instancesDir, entry.name, 'antigravity-acp'));
-}
-
-let _nodeSqlite;
-function loadNodeSqlite() {
-  if (_nodeSqlite === undefined) {
-    try {
-      _nodeSqlite = require('node:sqlite');
-    } catch {
-      _nodeSqlite = null;
-    }
-  }
-  return _nodeSqlite;
 }
 
 // T3 Code's state database names the thread that started each delegate. A run
@@ -984,24 +971,14 @@ WHERE child.provider = 'antigravity'
 
 function readT3Lineage(convIds) {
   const links = new Map();
-  const dbPath = path.join(t3UserDataDir(), 'statev2.sqlite');
-  const sqlite = loadNodeSqlite();
-  if (convIds.length === 0 || !sqlite?.DatabaseSync || !fs.existsSync(dbPath)) return links;
-  let db;
-  try {
-    db = new sqlite.DatabaseSync(dbPath, { readOnly: true });
-    for (const row of db.prepare(T3_LINEAGE_SQL).all(JSON.stringify(convIds))) {
-      const prefix = T3_PARENT_PREFIX[row.parentProvider];
-      if (prefix === undefined || typeof row.parentNative !== 'string' || !row.parentNative) continue;
-      links.set(row.conv, {
-        parentSessionId: `${prefix}${row.parentNative}`,
-        title: typeof row.title === 'string' ? row.title.trim().slice(0, 128) || null : null,
-      });
-    }
-  } catch (error) {
-    noteReadFailure(error);
-  } finally {
-    try { db?.close(); } catch (error) { noteReadFailure(error); }
+  if (convIds.length === 0) return links;
+  for (const row of queryT3State(T3_LINEAGE_SQL, JSON.stringify(convIds))) {
+    const prefix = T3_PARENT_PREFIX[row.parentProvider];
+    if (prefix === undefined || typeof row.parentNative !== 'string' || !row.parentNative) continue;
+    links.set(row.conv, {
+      parentSessionId: `${prefix}${row.parentNative}`,
+      title: typeof row.title === 'string' ? row.title.trim().slice(0, 128) || null : null,
+    });
   }
   return links;
 }
@@ -1421,9 +1398,10 @@ class AntigravityAdapter {
     // A T3 Code delegate's parent is the T3 thread that started it, often on
     // another provider. A delegate's parent never changes, so a found link is kept.
     const t3Instances = `${t3InstancesDir()}${path.sep}`;
-    const t3ConvIds = candidates
-      .filter(c => c.rootDir.startsWith(t3Instances) && reducedByConvId.has(c.lowerId) && !lineageByChild.has(c.lowerId))
+    const t3Ids = candidates
+      .filter(c => c.rootDir.startsWith(t3Instances) && reducedByConvId.has(c.lowerId))
       .map(c => c.lowerId);
+    const t3ConvIds = t3Ids.filter(id => !lineageByChild.has(id));
     for (const [id, link] of readT3Lineage(t3ConvIds.filter(id => !this._t3Links.has(id)))) {
       this._t3Links.set(id, link);
     }
@@ -1438,6 +1416,8 @@ class AntigravityAdapter {
         subagentKind: 'delegate',
       });
     }
+    // Renames can come at any time, so they are read on every scan.
+    const t3Titles = readT3RenamedTitles('antigravity', t3Ids);
 
     const activeIds = new Set();
     const taskStartsById = new Map();
@@ -1498,6 +1478,7 @@ class AntigravityAdapter {
         now,
         lineage: lineageByChild.get(id) || null,
         backgroundPending,
+        t3Title: t3Titles.get(id) || null,
       });
       sessions.push(presented.session);
     }

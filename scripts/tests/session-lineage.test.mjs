@@ -408,3 +408,52 @@ test('only a name the operator gave the session marks it userNamed', () => {
     assert.equal(renamed.userNamed, true, id + ': /rename marks the session');
   }
 });
+
+let nodeSqlite = null;
+try {
+  nodeSqlite = require('node:sqlite');
+} catch {
+  // node:sqlite is unflagged from Node 22.13; without it T3 Code titles are skipped.
+}
+
+test('a T3 Code thread the operator renamed names its Claude session like /rename', { skip: !nodeSqlite?.DatabaseSync && 'node:sqlite unavailable' }, () => {
+  const t3Dir = path.join(home, '.t3');
+  try {
+    fs.mkdirSync(path.join(t3Dir, 'userdata'), { recursive: true });
+    const db = new nodeSqlite.DatabaseSync(path.join(t3Dir, 'userdata', 'statev2.sqlite'));
+    db.exec(`
+      CREATE TABLE orchestration_v2_projection_threads (thread_id TEXT PRIMARY KEY, title TEXT NOT NULL, payload_json TEXT NOT NULL);
+      CREATE TABLE orchestration_v2_projection_run_attempts (attempt_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, provider TEXT NOT NULL, payload_json TEXT NOT NULL);
+    `);
+    const thread = db.prepare('INSERT INTO orchestration_v2_projection_threads VALUES (?, ?, ?)');
+    const attempt = db.prepare('INSERT INTO orchestration_v2_projection_run_attempts VALUES (?, ?, ?, ?)');
+    // T3 Code launches each session under the thread title it had then (`nameSource: 'auto'`).
+    const cases = [
+      { id: 't3-renamed', pid: 4150, history: true, launch: 'PNP-HERETIC', title: 'PNP-HERETIC-2', renamed: true, t3: true },
+      { id: 't3-renamed-orphan', pid: 4151, launch: 'CLAUDEVILLE-NIGHT', title: 'CLAUDEVILLE-NIGHT', renamed: true, t3: true },
+      { id: 't3-auto', pid: 4152, launch: 'Menu UX Review', title: 'Menu UX Review', renamed: false, t3: true },
+      { id: 'cli-match', pid: 4153, launch: 'fixture-4g', title: 'NOT-THIS-ONE', renamed: true, t3: false },
+    ];
+    const historyFile = path.join(home, '.claude', 'history.jsonl');
+    for (const c of cases) {
+      thread.run('thread-' + c.id, c.title, JSON.stringify({ titleRenamed: c.renamed }));
+      attempt.run('attempt-' + c.id, 'thread-' + c.id, 'claudeAgent', JSON.stringify({ nativeThreadId: c.id }));
+      if (c.history) fs.appendFileSync(historyFile, JSON.stringify({ sessionId: c.id, project, timestamp: old }) + '\n');
+      const rec = { sessionId: c.id, pid: c.pid, procStart: String(c.pid), status: 'busy', statusUpdatedAt: now,
+        name: c.launch, nameSource: c.t3 ? 'auto' : 'derived', ...(c.t3 ? { entrypoint: 't3-code' } : {}) };
+      write(transcript(c.id), [source[0]]);
+      proc.set(c.pid, { start: rec.procStart });
+      write(registry(c.pid), [rec]);
+    }
+    db.close();
+
+    const all = scan();
+    const named = id => ({ name: find(all, id)?.name, userNamed: find(all, id)?.userNamed });
+    assert.deepEqual(named('t3-renamed'), { name: 'PNP-HERETIC-2', userNamed: true }, 'the thread\'s current title, renamed after launch');
+    assert.deepEqual(named('t3-renamed-orphan'), { name: 'CLAUDEVILLE-NIGHT', userNamed: true });
+    assert.deepEqual(named('t3-auto'), { name: 'Menu UX Review', userNamed: false }, 'a title T3 Code generated keeps the zoom rule');
+    assert.deepEqual(named('cli-match'), { name: 'fixture-4g', userNamed: false }, 'only sessions T3 Code runs read its titles');
+  } finally {
+    fs.rmSync(t3Dir, { recursive: true, force: true });
+  }
+});

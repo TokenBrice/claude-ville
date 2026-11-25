@@ -22,6 +22,7 @@ const {
 const { deriveTurnState, toEpochMs } = require('./turnState');
 const { normalizeToolResults, toolResultId, toolResultLocation } = require('./toolResults');
 const { estimateCost } = require('./sessionPresentation');
+const { readT3RenamedTitles } = require('./t3code');
 const { emptyObservedSources, makeDialogue, pickDialogue, sanitizeDialogueText } = require('./dialogue');
 const { MODEL_REVISION, contextWindowForModel } = require('../src/config/models.generated.cjs');
 
@@ -770,8 +771,9 @@ function readRegistryFile(file, stat, filename, now) {
   const sessionId = typeof meta?.sessionId === 'string' ? meta.sessionId.trim() : '';
   if (!sessionId || sessionId.length > 256) return null;
   const name = typeof meta.name === 'string' ? meta.name.trim() : '';
-  // `nameSource: 'user'` marks a `/rename`; other names are derived from the project.
-  const record = { sessionId, name, userNamed: Boolean(name) && meta.nameSource === 'user' };
+  // `nameSource: 'user'` marks a `/rename`; other names are derived from the project,
+  // or, for a session T3 Code runs, its thread title at launch (`'auto'`).
+  const record = { sessionId, name, userNamed: Boolean(name) && meta.nameSource === 'user', t3: meta.entrypoint === 't3-code' };
   const { pid, procStart, status, statusUpdatedAt: at } = meta;
   const waitReason = registryWaitReason(meta.waitingFor);
   if (!Number.isSafeInteger(pid) || pid <= 0 || filename !== `${pid}.json`
@@ -779,6 +781,13 @@ function readRegistryFile(file, stat, filename, now) {
     || !Number.isSafeInteger(at) || at <= 0 || at > now
     || !['busy', 'waiting', 'idle'].includes(status) || (status === 'waiting' && !waitReason)) return record;
   return { ...record, pid, procStart, status, at, waitReason };
+}
+
+// A session T3 Code runs whose thread the operator renamed takes the thread's
+// current title and counts as named, like a `/rename`; a `/rename` still wins.
+function sessionNaming(record, t3Titles) {
+  const t3Title = record?.userNamed ? null : t3Titles.get(record?.sessionId.toLowerCase());
+  return { name: t3Title || record?.name || null, userNamed: record?.userNamed === true || Boolean(t3Title) };
 }
 
 function readSessionRegistry(previousFiles, previousSessions, readProcess, now, cutoff) {
@@ -3190,6 +3199,7 @@ class ClaudeAdapter {
     const { files, byId: registry } = readSessionRegistry(this.registryFiles, this.registry, this.readProcess, now, now - activeThresholdMs);
     this.registryFiles = files;
     this.registry = registry;
+    const t3Titles = readT3RenamedTitles('claudeAgent', [...registry.values()].filter(r => r.t3).map(r => r.sessionId));
     const teamMembership = readClaudeTeamMembership();
     this.processLeads = new Map(_teamMembershipCache.leads);
     for (const record of registry.values()) {
@@ -3259,6 +3269,7 @@ class ClaudeAdapter {
       const detail = getClaudeTranscriptSummary(sessionFilePath, 30, session.project);
       const sessionName = registry.get(session.sessionId)?.name || null;
       const teamName = sessionName ? teamMembership.get(sessionName) || null : null;
+      const naming = sessionNaming(registry.get(session.sessionId), t3Titles);
       const permissionMode = sessionFilePath ? getPermissionMode(sessionFilePath) : null;
       const model = detail.model || session.model;
       const state = session.agentType === 'main'
@@ -3274,9 +3285,9 @@ class ClaudeAdapter {
           activeThresholdMs,
           now,
         }),
-        name: sessionName,
-        agentName: sessionName,
-        userNamed: registry.get(session.sessionId)?.userNamed === true,
+        name: naming.name,
+        agentName: naming.name,
+        userNamed: naming.userNamed,
         teamName,
         model,
         lastTool: detail.lastTool,
@@ -3300,7 +3311,7 @@ class ClaudeAdapter {
     // Orphan sessions (active .jsonl files whose history entry is older than HISTORY_SCAN_MS).
     // Computed before subagents so their session IDs feed into the subagent scan — otherwise
     // long-running parents that haven't logged a recent prompt would have their subagents missed.
-    const orphans = this._getOrphanSessions(activeThresholdMs, projectPathMap, new Set(sessionsMap.keys()), registry, teamMembership);
+    const orphans = this._getOrphanSessions(activeThresholdMs, projectPathMap, new Set(sessionsMap.keys()), registry, teamMembership, t3Titles);
     for (const orphan of orphans) {
       if (!orphan.project || !orphan.sessionId) continue;
       const encoded = claudeProjectDirName(orphan.project);
@@ -3439,7 +3450,7 @@ class ClaudeAdapter {
     return results;
   }
 
-  _getOrphanSessions(activeThresholdMs, projectPathMap = new Map(), knownIds = new Set(), registry = new Map(), teamMembership = new Map()) {
+  _getOrphanSessions(activeThresholdMs, projectPathMap = new Map(), knownIds = new Set(), registry = new Map(), teamMembership = new Map(), t3Titles = new Map()) {
     const projectsDir = path.join(CLAUDE_DIR, 'projects');
     if (!fs.existsSync(projectsDir)) return [];
 
@@ -3486,6 +3497,7 @@ class ClaudeAdapter {
           const detail = getSubAgentDetail(filePath, decodedProject);
           const sessionName = record?.name || null;
           const teamName = sessionName ? teamMembership.get(sessionName) || null : null;
+          const naming = sessionNaming(record, t3Titles);
           const permissionMode = getPermissionMode(filePath);
           const identity = getSessionIdentity(sessionId);
           const project = identity?.project || decodedProject;
@@ -3509,9 +3521,9 @@ class ClaudeAdapter {
             sessionId,
             provider: 'claude',
             agentId: agentType === 'main' ? null : sessionId,
-            name: sessionName,
-            agentName: sessionName,
-            userNamed: record?.userNamed === true,
+            name: naming.name,
+            agentName: naming.name,
+            userNamed: naming.userNamed,
             teamName,
             agentType,
             model,
