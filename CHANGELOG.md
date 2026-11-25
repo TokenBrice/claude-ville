@@ -2,6 +2,16 @@
 
 ---
 
+## v0.67.2 — *The Herald's Echo* · Nov 25, 2026
+
+A thread you renamed in T3 Code now keeps its name under its villager at every zoom, as a Claude Code `/rename` has since v0.65.7. T3 Code hands its thread titles to the agents it runs as automatic names, so ClaudeVille could not tell your names from generated ones, and an Antigravity thread showed no name at all.
+
+- **Your T3 Code names stay on.** T3 Code marks a thread you renamed with `titleRenamed` in its state database, `~/.t3/userdata/statev2.sqlite`. ClaudeVille reads that flag read-only through `node:sqlite` and passes it on as `userNamed`, so the name stays at overview zoom, while another agent is selected or framed, and inside a busy crowd.
+- **Claude and Antigravity threads alike.** A Claude Code session T3 Code runs (registry `entrypoint: "t3-code"`) and an Antigravity thread both show the thread's current title, so a rename made after the session started shows too.
+- **Only names you chose.** Titles T3 Code generates, delegate task titles included, keep the zoom and crowd rule, and a Claude Code `/rename` still wins over the T3 title.
+
+---
+
 ## v0.67.1 — *The Indigo Mist* · Nov 24, 2026
 
 The night, fine-tuned by hand: thirteen picks from a side-by-side board of the remaining night taste calls, each chosen from identical frames rendered off, half and full.
