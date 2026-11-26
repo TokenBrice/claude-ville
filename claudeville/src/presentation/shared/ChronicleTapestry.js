@@ -29,6 +29,7 @@ import {
 } from '../../config/theme.js';
 import {
     LOOM_TAPESTRY_BAND,
+    decodeCoverageBits,
     drawLoomToCanvas,
     renderLoomTapestryGrid,
     weaveDay,
@@ -178,76 +179,12 @@ function nonNegInt(value) {
     return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
 }
 
-const COVERAGE_QUARTERS = 96;
-
-function isTruthyCoverageFlag(value) {
-    if (value === null || value === undefined || value === false || value === 0) return false;
-    if (typeof value === 'string') {
-        const trimmed = value.trim().toLowerCase();
-        return trimmed !== '' && trimmed !== '0' && trimmed !== 'false';
-    }
-    return Boolean(value);
-}
-
 /**
- * Decode a Chronicle coverage mask into 96 quarter-hour flags (0/1), matching
- * `ChronicleStore` (24-char big-endian hex) and `ChroniclePanel.decodeCoverageMask`
- * (96-char bitstring, BigInt, 12-byte Uint8Array, 3-word Uint32Array,
- * 24-hour or 96-quarter arrays, or `{ bits | mask | quarters | hours }`).
- * Returns null when coverage is missing or unrecognized.
+ * Decode a Chronicle coverage mask into 96 quarter-hour flags (0/1), delegating
+ * to `ChronicleLoom.decodeCoverageBits`. Returns null when missing/unrecognized.
  */
 export function decodeTapestryCoverage(coverage) {
-    if (coverage === null || coverage === undefined) return null;
-    const raw = (typeof coverage === 'object' && !Array.isArray(coverage) && !ArrayBuffer.isView(coverage))
-        ? (coverage.bits ?? coverage.mask ?? coverage.quarters ?? coverage.hours ?? null)
-        : coverage;
-    if (raw === null || raw === undefined) return null;
-
-    const quarters = new Uint8Array(COVERAGE_QUARTERS);
-    if (typeof raw === 'bigint') {
-        for (let q = 0; q < COVERAGE_QUARTERS; q++) quarters[q] = Number((raw >> BigInt(q)) & 1n);
-        return quarters;
-    }
-    if (typeof raw === 'string') {
-        const trimmed = raw.trim();
-        if (/^[01]{96}$/.test(trimmed)) {
-            for (let q = 0; q < COVERAGE_QUARTERS; q++) quarters[q] = trimmed.charCodeAt(q) === 49 ? 1 : 0;
-            return quarters;
-        }
-        const hex = trimmed.startsWith('0x') || trimmed.startsWith('0X') ? trimmed.slice(2) : trimmed;
-        if (/^[0-9a-fA-F]{1,24}$/.test(hex)) {
-            const bits = BigInt(`0x${hex}`);
-            for (let q = 0; q < COVERAGE_QUARTERS; q++) quarters[q] = Number((bits >> BigInt(q)) & 1n);
-            return quarters;
-        }
-        return null;
-    }
-    if ((raw instanceof Uint32Array || Array.isArray(raw)) && raw.length === 3) {
-        for (let q = 0; q < COVERAGE_QUARTERS; q++) {
-            const word = Number(raw[q >> 5]) >>> 0;
-            quarters[q] = (word >>> (q & 31)) & 1;
-        }
-        return quarters;
-    }
-    if ((raw instanceof Uint8Array || Array.isArray(raw)) && raw.length === 12) {
-        for (let q = 0; q < COVERAGE_QUARTERS; q++) {
-            const byte = Number(raw[q >> 3]) & 0xff;
-            quarters[q] = (byte >> (q & 7)) & 1;
-        }
-        return quarters;
-    }
-    if ((Array.isArray(raw) || ArrayBuffer.isView(raw)) && raw.length === COVERAGE_QUARTERS) {
-        for (let q = 0; q < COVERAGE_QUARTERS; q++) quarters[q] = isTruthyCoverageFlag(raw[q]) ? 1 : 0;
-        return quarters;
-    }
-    if ((Array.isArray(raw) || ArrayBuffer.isView(raw)) && raw.length === 24) {
-        for (let h = 0; h < 24; h++) {
-            const covered = isTruthyCoverageFlag(raw[h]) ? 1 : 0;
-            for (let q = 0; q < 4; q++) quarters[h * 4 + q] = covered;
-        }
-        return quarters;
-    }
-    return null;
+    return decodeCoverageBits(coverage);
 }
 
 /** Collapse a decoded 96-quarter coverage mask into 24 hour flags (0/1), or null. */

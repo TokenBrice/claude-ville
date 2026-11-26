@@ -25,6 +25,7 @@ import {
     LOOM_HOURS_PER_DAY,
     LOOM_PANEL_HEIGHT,
     LOOM_PANEL_WIDTH,
+    decodeCoverageBits,
     drawLoomToCanvas,
     encodeLoomPng,
     renderLoomFrieze,
@@ -234,72 +235,13 @@ function eventText(event) {
     }
 }
 
-function isTruthyCoverageFlag(value) {
-    if (value === null || value === undefined || value === false || value === 0) return false;
-    if (typeof value === 'string') {
-        const trimmed = value.trim().toLowerCase();
-        return trimmed !== '' && trimmed !== '0' && trimmed !== 'false';
-    }
-    return Boolean(value);
-}
-
 /**
  * Decode an optional 96-bit quarter-hour coverage mask into a 96-byte array
- * of 0/1 flags. Returns null when coverage is unknown/missing so callers can
- * render missing hours honestly as uncovered linen.
+ * of 0/1 flags via `ChronicleLoom.decodeCoverageBits`. Returns null when
+ * coverage is unknown/missing so callers can render missing hours honestly.
  */
 export function decodeCoverageMask(coverage) {
-    if (coverage === null || coverage === undefined) return null;
-    const raw = (typeof coverage === 'object' && !Array.isArray(coverage) && !ArrayBuffer.isView(coverage))
-        ? (coverage.bits ?? coverage.mask ?? coverage.quarters ?? coverage.hours ?? null)
-        : coverage;
-    if (raw === null || raw === undefined) return null;
-
-    const quarters = new Uint8Array(COVERAGE_QUARTERS);
-    if (typeof raw === 'bigint') {
-        for (let q = 0; q < COVERAGE_QUARTERS; q++) quarters[q] = Number((raw >> BigInt(q)) & 1n);
-        return quarters;
-    }
-    if (typeof raw === 'string') {
-        const trimmed = raw.trim();
-        if (/^[01]{96}$/.test(trimmed)) {
-            for (let q = 0; q < COVERAGE_QUARTERS; q++) quarters[q] = trimmed.charCodeAt(q) === 49 ? 1 : 0;
-            return quarters;
-        }
-        const hex = trimmed.startsWith('0x') || trimmed.startsWith('0X') ? trimmed.slice(2) : trimmed;
-        if (/^[0-9a-fA-F]{1,24}$/.test(hex)) {
-            const bits = BigInt(`0x${hex}`);
-            for (let q = 0; q < COVERAGE_QUARTERS; q++) quarters[q] = Number((bits >> BigInt(q)) & 1n);
-            return quarters;
-        }
-        return null;
-    }
-    if ((raw instanceof Uint32Array || Array.isArray(raw)) && raw.length === 3) {
-        for (let q = 0; q < COVERAGE_QUARTERS; q++) {
-            const word = Number(raw[q >> 5]) >>> 0;
-            quarters[q] = (word >>> (q & 31)) & 1;
-        }
-        return quarters;
-    }
-    if ((raw instanceof Uint8Array || Array.isArray(raw)) && raw.length === 12) {
-        for (let q = 0; q < COVERAGE_QUARTERS; q++) {
-            const byte = Number(raw[q >> 3]) & 0xff;
-            quarters[q] = (byte >> (q & 7)) & 1;
-        }
-        return quarters;
-    }
-    if ((Array.isArray(raw) || ArrayBuffer.isView(raw)) && raw.length === COVERAGE_QUARTERS) {
-        for (let q = 0; q < COVERAGE_QUARTERS; q++) quarters[q] = isTruthyCoverageFlag(raw[q]) ? 1 : 0;
-        return quarters;
-    }
-    if ((Array.isArray(raw) || ArrayBuffer.isView(raw)) && raw.length === 24) {
-        for (let h = 0; h < 24; h++) {
-            const covered = isTruthyCoverageFlag(raw[h]) ? 1 : 0;
-            for (let q = 0; q < 4; q++) quarters[h * 4 + q] = covered;
-        }
-        return quarters;
-    }
-    return null;
+    return decodeCoverageBits(coverage);
 }
 
 /** Encode a 96-quarter truthy array or BigInt into a 12-byte coverage mask. */
@@ -942,6 +884,40 @@ export function loomHourFromOffset(offsetX, width = LOOM_STRIP_WIDTH) {
     return Math.max(0, Math.min(LOOM_HOURS_PER_DAY - 1, Math.floor((clamped / safeWidth) * LOOM_HOURS_PER_DAY)));
 }
 
+/**
+ * Compute horizontal scrollLeft that brings `focusHour` cleanly into view inside
+ * the Loom tray once mounted, leaving up to one panel of trailing breathing room.
+ */
+export function loomInitialScrollLeft(focusHour, viewportWidth = SUN_ARC_DEFAULT_WIDTH, trackWidth = LOOM_STRIP_WIDTH) {
+    if (!Number.isInteger(focusHour) || focusHour < 0 || focusHour >= LOOM_HOURS_PER_DAY) return 0;
+    const viewW = Math.max(LOOM_PANEL_WIDTH, Number(viewportWidth) || SUN_ARC_DEFAULT_WIDTH);
+    const totalW = Math.max(viewW, Number(trackWidth) || LOOM_STRIP_WIDTH);
+    const maxScroll = Math.max(0, totalW - viewW);
+    const trailingMargin = Math.min(LOOM_PANEL_WIDTH, Math.max(0, Math.floor((viewW - LOOM_PANEL_WIDTH) / 2)));
+    const desired = (focusHour + 1) * LOOM_PANEL_WIDTH + trailingMargin - viewW;
+    return Math.max(0, Math.min(maxScroll, Math.round(desired)));
+}
+
+/**
+ * Format the Loom of Days header summary honestly, distinguishing work cells
+ * woven into the field from total Chronicle events (arrivals/departures live on
+ * the selvedge border, not as field cells).
+ */
+export function formatLoomReadout(stats) {
+    const coveredHours = Math.max(0, Number(stats?.coveredHours) || 0);
+    if (coveredHours === 0) return 'Bare warp marks unrecorded hours';
+    const workCells = Math.max(0, Number(stats?.coalescedCells) || 0);
+    const totalEvents = Math.max(0, Number(stats?.totalEvents) || 0);
+    const parts = [
+        `${coveredHours}h woven`,
+        `${formatNumber(workCells)} ${workCells === 1 ? 'work cell' : 'work cells'}`,
+    ];
+    if (totalEvents > 0) {
+        parts.push(`${formatNumber(totalEvents)} ${totalEvents === 1 ? 'event' : 'events'}`);
+    }
+    return parts.join(' · ');
+}
+
 /** Zero-PII download file name for a Loom of Days Scroll PNG: `claudeville-loom-YYYY-MM-DD.png`. */
 export function loomScrollFileName(dateKey = chronicleDateKey()) {
     const raw = String(dateKey || '').trim();
@@ -1048,6 +1024,8 @@ export class ChroniclePanel {
         this._selectedPage = null;
         this._selectedHour = null;
         this._hourSyncListeners = [];
+        this._pendingLoomScroll = null;
+        this._loomScrollRaf = null;
         this._avatars = [];
         this._destroyed = false;
     }
@@ -1248,6 +1226,7 @@ export class ChroniclePanel {
                 summary: data.summary,
                 coverage: data.coverage,
                 sky: data.sky,
+                ...(this.loomMiniatureResolver ? { resolveMiniature: this.loomMiniatureResolver } : {}),
             });
         } catch (error) {
             this._reportFailure(
@@ -1317,6 +1296,28 @@ export class ChroniclePanel {
         }
     }
 
+    _cancelPendingLoomScroll() {
+        this._pendingLoomScroll = null;
+        if (this._loomScrollRaf !== null) {
+            if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(this._loomScrollRaf);
+            this._loomScrollRaf = null;
+        }
+    }
+
+    _flushPendingLoomScroll() {
+        const scrollFn = this._pendingLoomScroll;
+        this._pendingLoomScroll = null;
+        if (typeof scrollFn !== 'function' || this._destroyed) return;
+        scrollFn();
+        if (typeof requestAnimationFrame === 'function') {
+            this._loomScrollRaf = requestAnimationFrame(() => {
+                this._loomScrollRaf = null;
+                if (this._destroyed) return;
+                scrollFn();
+            });
+        }
+    }
+
     _renderPage(page, dateKey, request) {
         const {
             events,
@@ -1332,6 +1333,7 @@ export class ChroniclePanel {
         this._selectedHour = null;
         const content = this.modal.contentEl;
         if (content) {
+            this._cancelPendingLoomScroll();
             this._releaseAvatars();
             replaceChildren(content, [this._tabs('day', request), ...this._render(events, summary, {
                 newestFirst: true,
@@ -1344,6 +1346,7 @@ export class ChroniclePanel {
                 loomEvents,
                 onDateChange: nextDate => this._showDate(nextDate, request),
             })]);
+            this._flushPendingLoomScroll();
         }
     }
 
@@ -1396,6 +1399,7 @@ export class ChroniclePanel {
             || !this.modal.isRequestCurrent(request)) return;
         const content = this.modal.contentEl;
         if (!content) return;
+        this._cancelPendingLoomScroll();
         this._releaseAvatars();
         replaceChildren(content, [this._tabs('hall', request), ...this._renderHall(buildHallOfLives(records))]);
     }
@@ -1452,6 +1456,7 @@ export class ChroniclePanel {
     destroy() {
         if (this._destroyed) return;
         this._destroyed = true;
+        this._cancelPendingLoomScroll();
         this._dateReadSeq++;
         this.modal?.invalidateRequest?.(this._request);
         this._request = null;
@@ -1605,9 +1610,7 @@ export class ChroniclePanel {
 
     _loomNode(loomModel, sunArcModel) {
         const stats = loomModel.stats;
-        const defaultReadout = stats.coveredHours > 0
-            ? `${stats.coveredHours}h woven · ${stats.wovenEvents} ${stats.wovenEvents === 1 ? 'event' : 'events'}`
-            : 'Bare warp marks unrecorded hours';
+        const defaultReadout = formatLoomReadout(stats);
         const readout = el('span', { className: 'chronicle__loom-readout' }, defaultReadout);
 
         const exportButton = el('button', {
@@ -1748,18 +1751,29 @@ export class ChroniclePanel {
             highlightHour(hour, { scrollIntoView: true });
         });
 
-        // Start scrolled to the latest active or covered hour so woven panels are in view.
+        // Schedule post-mount scroll to the latest active or covered hour so
+        // woven panels are positioned cleanly in view once attached to the DOM.
         let initialFocusHour = null;
         for (let h = LOOM_HOURS_PER_DAY - 1; h >= 0; h--) {
-            if (loomModel.panels[h].cells.length > 0) { initialFocusHour = h; break; }
+            const p = loomModel.panels[h];
+            if (p.cells.length > 0 || p.arrivals.length > 0 || p.departures.length > 0) {
+                initialFocusHour = h;
+                break;
+            }
         }
         if (initialFocusHour === null) {
             for (let h = LOOM_HOURS_PER_DAY - 1; h >= 0; h--) {
                 if (!loomModel.panels[h].fullyUncovered) { initialFocusHour = h; break; }
             }
         }
-        if (initialFocusHour !== null && typeof viewport.scrollLeft === 'number') {
-            viewport.scrollLeft = Math.max(0, initialFocusHour * LOOM_PANEL_WIDTH - LOOM_PANEL_WIDTH * 2);
+        if (initialFocusHour !== null) {
+            this._pendingLoomScroll = () => {
+                if (viewport.isConnected === false || !viewport.parentNode) return;
+                if (typeof viewport.scrollLeft !== 'number') return;
+                const viewW = Number(viewport.clientWidth) || SUN_ARC_DEFAULT_WIDTH;
+                const trackW = Number(viewport.scrollWidth) || LOOM_STRIP_WIDTH;
+                viewport.scrollLeft = loomInitialScrollLeft(initialFocusHour, viewW, trackW);
+            };
         }
 
         return el('section', { className: 'chronicle__loom', ariaLabel: 'Loom of Days 24-hour frieze' }, [
@@ -1900,6 +1914,7 @@ export class ChroniclePanel {
         });
         const loomModel = weaveDay(Array.isArray(loomEvents) ? loomEvents : [], coverage ?? null, sky ?? null, {
             dateKey,
+            ...(isToday ? { endTs: Date.now() } : {}),
         });
         const nodes = [
             this._datePicker(dateKey, onDateChange, replayable),

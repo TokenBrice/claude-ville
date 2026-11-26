@@ -159,13 +159,16 @@ export const ARCHIVE_CUTAWAY_PROFILE = Object.freeze({
         maxSpines: ARCHIVE_MAX_SPINES,
     }),
     // The Loom of Days hangs on the back wall (Wave 6 weaves the panel): a
-    // 96 x 72 panel scaled to 48 x 36, sheared on the +0.5 wall slope from
-    // `destRect`'s top-left. Nothing is painted until a panel exists.
+    // 96 x 72 panel downsampled to 48 x 36, sheared on the +0.5 wall slope.
+    // `destRect` anchors the baked iron hooks on aperture.png; `mountOffset`
+    // shifts the hanging frame 2 px down/inward so its top-right corner clears
+    // the wall-plate beam cleanly. Nothing is painted until a panel exists.
     loomWall: Object.freeze({
         sourceWidth: 96,
         sourceHeight: 72,
         slope: 0.5,
         destRect: Object.freeze({ x: 113, y: 98, width: 48, height: 36 }),
+        mountOffset: Object.freeze({ x: 0, y: 2 }),
     }),
 });
 
@@ -992,13 +995,205 @@ export function archiveShelfGeometry(shelf = ARCHIVE_CUTAWAY_PROFILE.compactionS
     return { sw, sh: shelf.spineHeight || 6, stepX, slope, rise, spineAt, boardX0: ax, boardX1, stamp: { x: stampX, y: ay + rise(stampX) + 1 } };
 }
 
+const ARCHIVE_LOOM_DOWNSAMPLE_CACHE = new WeakMap();
+
+function loomBandBoundsForRow(y, srcH) {
+    if (srcH === 72) {
+        if (y < 2) return [0, 1];
+        if (y < 12) return [2, 11];
+        if (y < 60) return [12, 59];
+        if (y < 70) return [60, 69];
+        return [70, 71];
+    }
+    return [0, srcH - 1];
+}
+
+/**
+ * Crisp pixel-art-preserving 2x2 downsampler for the Archive rear-wall Loom
+ * panel (96x72 -> 48x36). Within each source block, picks the exact source
+ * texel with highest local contrast against its band-clamped 4x4 neighborhood
+ * (with a chroma tie-breaker) so actor silhouettes, stamps, `+N` numerals,
+ * pennants, and bare-warp threads stay legible without blended anti-aliasing.
+ * Grading-invariant across day, dusk, and C2 night lighting.
+ */
+export function downsampleLoomPanel2x(srcData, srcW, srcH, dstW = 48, dstH = 36) {
+    const w = Math.max(1, Math.trunc(Number(dstW) || 48));
+    const h = Math.max(1, Math.trunc(Number(dstH) || 36));
+    const sw = Math.max(1, Math.trunc(Number(srcW) || 96));
+    const sh = Math.max(1, Math.trunc(Number(srcH) || 72));
+    const out = new Uint8ClampedArray(w * h * 4);
+    if (!srcData || srcData.length < sw * sh * 4) return out;
+
+    for (let dy = 0; dy < h; dy++) {
+        const sy0 = Math.floor((dy * sh) / h);
+        const sy1 = Math.max(sy0 + 1, Math.min(sh, Math.floor(((dy + 1) * sh) / h)));
+        const [bandMinY, bandMaxY] = loomBandBoundsForRow(sy0, sh);
+        const ny0 = Math.max(bandMinY, sy0 - 1);
+        const ny1 = Math.min(bandMaxY, sy1);
+
+        for (let dx = 0; dx < w; dx++) {
+            const sx0 = Math.floor((dx * sw) / w);
+            const sx1 = Math.max(sx0 + 1, Math.min(sw, Math.floor(((dx + 1) * sw) / w)));
+            const dstOffset = (dy * w + dx) * 4;
+
+            // Gather opaque pixels in the 2x2 block and test fast-path uniformity.
+            let firstO = -1;
+            let uniform = true;
+            let opaqueCount = 0;
+            for (let sy = sy0; sy < sy1; sy++) {
+                const rowBase = sy * sw * 4;
+                for (let sx = sx0; sx < sx1; sx++) {
+                    const o = rowBase + sx * 4;
+                    if (srcData[o + 3] <= 0) continue;
+                    opaqueCount += 1;
+                    if (firstO < 0) {
+                        firstO = o;
+                    } else if (
+                        srcData[o] !== srcData[firstO]
+                        || srcData[o + 1] !== srcData[firstO + 1]
+                        || srcData[o + 2] !== srcData[firstO + 2]
+                    ) {
+                        uniform = false;
+                    }
+                }
+            }
+            if (opaqueCount === 0) continue;
+            if (uniform) {
+                out[dstOffset] = srcData[firstO];
+                out[dstOffset + 1] = srcData[firstO + 1];
+                out[dstOffset + 2] = srcData[firstO + 2];
+                out[dstOffset + 3] = srcData[firstO + 3];
+                continue;
+            }
+
+            // Compute band-clamped local 4x4 neighborhood mean RGB.
+            const nx0 = Math.max(0, sx0 - 1);
+            const nx1 = Math.min(sw - 1, sx1);
+            let sumR = 0;
+            let sumG = 0;
+            let sumB = 0;
+            let nCount = 0;
+            for (let ny = ny0; ny <= ny1; ny++) {
+                const nRow = ny * sw * 4;
+                for (let nx = nx0; nx <= nx1; nx++) {
+                    const no = nRow + nx * 4;
+                    if (srcData[no + 3] <= 0) continue;
+                    sumR += srcData[no];
+                    sumG += srcData[no + 1];
+                    sumB += srcData[no + 2];
+                    nCount += 1;
+                }
+            }
+            const meanR = nCount > 0 ? sumR / nCount : 128;
+            const meanG = nCount > 0 ? sumG / nCount : 128;
+            const meanB = nCount > 0 ? sumB / nCount : 128;
+
+            // Pick the highest-contrast actual source texel (zero color blending).
+            let bestO = firstO;
+            let bestScore = -1;
+            for (let sy = sy0; sy < sy1; sy++) {
+                const rowBase = sy * sw * 4;
+                for (let sx = sx0; sx < sx1; sx++) {
+                    const o = rowBase + sx * 4;
+                    if (srcData[o + 3] <= 0) continue;
+                    const r = srcData[o];
+                    const g = srcData[o + 1];
+                    const b = srcData[o + 2];
+                    const dr = r - meanR;
+                    const dg = g - meanG;
+                    const db = b - meanB;
+                    const contrast2 = 2 * dr * dr + 4 * dg * dg + 3 * db * db;
+                    const maxC = r > g ? (r > b ? r : b) : (g > b ? g : b);
+                    const minC = r < g ? (r < b ? r : b) : (g < b ? g : b);
+                    const chroma = maxC - minC;
+                    const score = contrast2 + chroma * chroma * 0.25;
+                    if (score > bestScore) {
+                        bestScore = score;
+                        bestO = o;
+                    }
+                }
+            }
+
+            out[dstOffset] = srcData[bestO];
+            out[dstOffset + 1] = srcData[bestO + 1];
+            out[dstOffset + 2] = srcData[bestO + 2];
+            out[dstOffset + 3] = srcData[bestO + 3];
+        }
+    }
+
+    return out;
+}
+
+function createLoomDownsampleCanvas(width, height, rgba) {
+    let canvas = null;
+    if (globalThis.document?.createElement) {
+        canvas = globalThis.document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+    } else if (typeof globalThis.OffscreenCanvas === 'function') {
+        canvas = new globalThis.OffscreenCanvas(width, height);
+    }
+    const cctx = canvas?.getContext?.('2d');
+    if (!cctx) return null;
+    if (typeof cctx.putImageData === 'function' && typeof ImageData === 'function') {
+        cctx.putImageData(new ImageData(new Uint8ClampedArray(rgba), width, height), 0, 0);
+        return canvas;
+    }
+    if (typeof cctx.fillRect === 'function') {
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+                const o = (y * width + x) * 4;
+                if (rgba[o + 3] <= 0) continue;
+                cctx.fillStyle = `#${((1 << 24) | (rgba[o] << 16) | (rgba[o + 1] << 8) | rgba[o + 2]).toString(16).slice(1)}`;
+                cctx.fillRect(x, y, 1, 1);
+            }
+        }
+        return canvas;
+    }
+    return null;
+}
+
+function resolveDownsampledLoomSurface(panel, srcW, srcH, dstW, dstH, wantCanvas) {
+    const version = Number(panel?._cvPixelVersion) || 0;
+    const key = `${srcW}x${srcH}->${dstW}x${dstH}|v${version}`;
+    const cached = ARCHIVE_LOOM_DOWNSAMPLE_CACHE.get(panel);
+    if (cached && cached.key === key && (!wantCanvas || cached.canvas)) {
+        return cached;
+    }
+
+    let srcData = null;
+    if (panel?.data && panel.data.length >= srcW * srcH * 4 && typeof panel.getContext !== 'function') {
+        srcData = panel.data;
+    } else if (typeof panel?.getContext === 'function') {
+        try {
+            const pctx = panel.getContext('2d');
+            if (typeof pctx?.getImageData === 'function') {
+                const img = pctx.getImageData(0, 0, srcW, srcH);
+                if (img?.data?.length >= srcW * srcH * 4) srcData = img.data;
+            }
+        } catch {
+            srcData = null;
+        }
+        if (!srcData && panel?._loomRgba?.data?.length >= srcW * srcH * 4) {
+            srcData = panel._loomRgba.data;
+        }
+    }
+    if (!srcData) return null;
+
+    const data = downsampleLoomPanel2x(srcData, srcW, srcH, dstW, dstH);
+    const canvas = wantCanvas ? createLoomDownsampleCanvas(dstW, dstH, data) : null;
+    const entry = { key, width: dstW, height: dstH, data, canvas };
+    if (panel && typeof panel === 'object') ARCHIVE_LOOM_DOWNSAMPLE_CACHE.set(panel, entry);
+    return entry;
+}
+
 /**
  * Paint Archive's interior: the Loom of Days panel (only once Wave 6 hands
- * one over, sheared on the +0.5 wall), the Compaction Shelf (up to 12 2x6
- * spines along the same slope + pixel numeral stamp for overflow), and
- * strictly postcard-gated bay names (ONLY when `showBayNames` is true AND
- * `!postcardFrame()`). The lecterns are baked art (`interior.png`), drawn
- * over the readers.
+ * one over, crisply downsampled to 48x36 and sheared on the +0.5 wall), the
+ * Compaction Shelf (up to 12 2x6 spines along the same slope + pixel numeral
+ * stamp for overflow), and strictly postcard-gated bay names (ONLY when
+ * `showBayNames` is true AND `!postcardFrame()`). The lecterns are baked art
+ * (`interior.png`), drawn over the readers.
  */
 export function drawArchiveCutaway(ctx, state, {
     localPoint = (x, y) => ({ x: Math.round(x), y: Math.round(y) }),
@@ -1008,14 +1203,16 @@ export function drawArchiveCutaway(ctx, state, {
     if (!ctx || !state) return { drawnSpines: 0, overflowStamped: false, bayNamesDrawn: false, loomDrawn: false };
 
     // 1. The Loom of Days: nothing until a panel exists; then the 96 x 72
-    //    panel scaled to 48 x 36, one texel column at a time down the +0.5
-    //    rear-wall slope, strictly inside the Archive cutaway mask.
+    //    panel crisply downsampled to 48 x 36, shifted by `mountOffset` so its
+    //    top-right corner clears the wall-plate beam cleanly, sheared one texel
+    //    column at a time down the +0.5 rear-wall slope inside the cut mask.
     const loom = state.loomWall || ARCHIVE_CUTAWAY_PROFILE.loomWall;
     let loomDrawn = false;
     const panel = loom?.panel || null;
     const hasZeroDim = Boolean(panel && (panel.width === 0 || panel.height === 0));
     if (panel && !hasZeroDim) {
         const dest = loom.destRect;
+        const mountOffset = loom.mountOffset || ARCHIVE_CUTAWAY_PROFILE.loomWall.mountOffset || { x: 0, y: 0 };
         const slope = Number(loom.slope) || 0;
         const srcW = Number(panel.width) > 0 ? Number(panel.width) : loom.sourceWidth;
         const srcH = Number(panel.height) > 0 ? Number(panel.height) : loom.sourceHeight;
@@ -1024,29 +1221,49 @@ export function drawArchiveCutaway(ctx, state, {
         const canDrawImage = !isRgbaBuffer && typeof ctx.drawImage === 'function';
         if (canDrawImage || isRgbaBuffer) {
             if ('imageSmoothingEnabled' in ctx) ctx.imageSmoothingEnabled = false;
-            const top = localPoint(dest.x, dest.y);
+            const top = localPoint(dest.x + (mountOffset.x || 0), dest.y + (mountOffset.y || 0));
             ctx.fillStyle = PIXEL_OUTLINE_INK;
             for (let col = -1; col <= dest.width; col++) {
                 const y = top.y + Math.round(slope * col);
                 ctx.fillRect(top.x + col, y - 1, 1, dest.height + 2);
             }
+            const downsampled = resolveDownsampledLoomSurface(panel, srcW, srcH, dest.width, dest.height, canDrawImage);
             if (canDrawImage) {
-                for (let col = 0; col < dest.width; col++) {
-                    const y = top.y + Math.round(slope * col);
-                    ctx.drawImage(panel, Math.floor(col * scaleX), 0, 1, srcH, top.x + col, y, 1, dest.height);
+                if (downsampled?.canvas) {
+                    for (let col = 0; col < dest.width; col++) {
+                        const y = top.y + Math.round(slope * col);
+                        ctx.drawImage(downsampled.canvas, col, 0, 1, dest.height, top.x + col, y, 1, dest.height);
+                    }
+                } else {
+                    for (let col = 0; col < dest.width; col++) {
+                        const y = top.y + Math.round(slope * col);
+                        ctx.drawImage(panel, Math.floor(col * scaleX), 0, 1, srcH, top.x + col, y, 1, dest.height);
+                    }
                 }
             } else {
-                const scaleY = srcH / dest.height;
-                const data = panel.data;
+                const data = downsampled?.data || downsampleLoomPanel2x(panel.data, srcW, srcH, dest.width, dest.height);
                 for (let col = 0; col < dest.width; col++) {
-                    const sx = Math.min(srcW - 1, Math.floor(col * scaleX));
                     const y0 = top.y + Math.round(slope * col);
-                    for (let row = 0; row < dest.height; row++) {
-                        const sy = Math.min(srcH - 1, Math.floor(row * scaleY));
-                        const o = (sy * srcW + sx) * 4;
-                        if (data[o + 3] <= 0) continue;
-                        ctx.fillStyle = `#${((1 << 24) | (data[o] << 16) | (data[o + 1] << 8) | data[o + 2]).toString(16).slice(1)}`;
-                        ctx.fillRect(top.x + col, y0 + row, 1, 1);
+                    let row = 0;
+                    while (row < dest.height) {
+                        const o = (row * dest.width + col) * 4;
+                        const a = data[o + 3];
+                        if (a <= 0) {
+                            row += 1;
+                            continue;
+                        }
+                        const r = data[o];
+                        const g = data[o + 1];
+                        const b = data[o + 2];
+                        let run = 1;
+                        while (row + run < dest.height) {
+                            const no = ((row + run) * dest.width + col) * 4;
+                            if (data[no + 3] <= 0 || data[no] !== r || data[no + 1] !== g || data[no + 2] !== b) break;
+                            run += 1;
+                        }
+                        ctx.fillStyle = `#${((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1)}`;
+                        ctx.fillRect(top.x + col, y0 + row, 1, run);
+                        row += run;
                     }
                 }
             }

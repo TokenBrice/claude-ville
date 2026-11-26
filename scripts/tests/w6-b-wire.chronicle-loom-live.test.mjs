@@ -38,6 +38,7 @@ import {
     ARCHIVE_CUTAWAY_PROFILE,
     CutawayPeelController,
     buildArchiveCutawayState,
+    downsampleLoomPanel2x,
     drawArchiveCutaway,
 } from '../../claudeville/src/presentation/character-mode/BuildingCutaways.js';
 import { BuildingSprite } from '../../claudeville/src/presentation/character-mode/BuildingSprite.js';
@@ -61,7 +62,9 @@ import {
     LOOM_STRIP_HEIGHT,
     LOOM_STRIP_WIDTH,
     exportLoomScrollPng,
+    formatLoomReadout,
     loomHourFromOffset,
+    loomInitialScrollLeft,
     loomScrollFileName,
 } from '../../claudeville/src/presentation/shared/ChroniclePanel.js';
 import {
@@ -820,15 +823,19 @@ test('W6-B-Wire (4): App weaves live Archive rear-wall panel, closes it on audio
     assert.equal(loomDraws.length, loomRect.width, 'one 1-texel sheared column draw per destRect width');
 
     const archiveCut = getBuildingApertureProfile('archive').cut;
+    const mountOffset = ARCHIVE_CUTAWAY_PROFILE.loomWall.mountOffset || { x: 0, y: 0 };
+    assert.equal(mountOffset.y >= 2, true, 'Archive Loom panel clears the top-right wall-plate beam');
     for (let col = 0; col < loomDraws.length; col++) {
         const [img, sx, sy, sw, sh, dx, dy, dw, dh] = loomDraws[col];
-        assert.equal(img, openBuilt.canvas);
-        assert.equal(sx, col * 2);
+        assert.ok(img && img !== openBuilt.canvas, 'draws crisply downsampled 48x36 surface, not raw 2:1 point decimation');
+        assert.equal(img.width, loomRect.width);
+        assert.equal(img.height, loomRect.height);
+        assert.equal(sx, col);
         assert.equal(sy, 0);
         assert.equal(sw, 1);
-        assert.equal(sh, LOOM_PANEL_HEIGHT);
-        assert.equal(dx, loomRect.x + col);
-        assert.equal(dy, loomRect.y + Math.round(0.5 * col), 'sheared along Archive nave +0.5 rear wall slope');
+        assert.equal(sh, loomRect.height);
+        assert.equal(dx, loomRect.x + mountOffset.x + col);
+        assert.equal(dy, loomRect.y + mountOffset.y + Math.round(0.5 * col), 'sheared along Archive nave +0.5 rear wall slope');
         assert.equal(dw, 1);
         assert.equal(dh, loomRect.height);
         for (let py = dy; py < dy + dh; py++) {
@@ -851,7 +858,7 @@ test('W6-B-Wire (4): App weaves live Archive rear-wall panel, closes it on audio
         }
     }
 
-    // 4. App live wiring: refreshArchiveLoomPanel + `audio:evensong` closes today's last panel.
+    // 4. App live wiring: refreshArchiveLoomPanel + `audio:evensong` active guard & close.
     const receivedPanels = [];
     const app = new App();
     app.chronicleLog = {
@@ -876,7 +883,7 @@ test('W6-B-Wire (4): App weaves live Archive rear-wall panel, closes it on audio
         assert.equal(liveState.hour, 15);
         assert.equal(liveState.closed, false);
         assert.equal(receivedPanels.length, 1);
-        assert.equal(renderer._archiveLoomPanel, liveState.canvas);
+        assert.ok(renderer._archiveLoomPanel === liveState.canvas);
 
         // Night C2 overlay grading routes `archive.loomPanel` through `_gradedCutawayImage`.
         const gradedKeys = [];
@@ -905,13 +912,21 @@ test('W6-B-Wire (4): App weaves live Archive rear-wall panel, closes it on audio
             'Archive rear-wall Loom panel takes C2 night grading on the ungraded overlay',
         );
 
-        // Emit `audio:evensong` -> closes today's last panel cleanly!
+        // Cancelled / ending `audio:evensong` (`active: false` or omitted) MUST NOT close the Loom!
+        eventBus.emit('audio:evensong', { day: dateKey, active: false, reason: 'cancelled', ts: localTs(y, m, d, 21, 0) });
         eventBus.emit('audio:evensong', { dateKey, ts: localTs(y, m, d, 21, 0) });
+        await Promise.allSettled([...app._chronicleTasks]);
+        assert.equal(app._archiveLoomClosedDate, null, 'cancelled/inactive audio:evensong does not close Loom');
+        assert.equal(app._archiveLoomPanelState.closed, false);
+        assert.equal(receivedPanels.length, 1, 'cancelled/inactive audio:evensong triggers zero extra refreshes');
+
+        // Active `audio:evensong` (`active: true`, `day`) closes today's last panel cleanly!
+        eventBus.emit('audio:evensong', { day: dateKey, active: true, ts: localTs(y, m, d, 21, 0) });
         await Promise.allSettled([...app._chronicleTasks]);
         assert.equal(app._archiveLoomClosedDate, dateKey);
         assert.equal(app._archiveLoomPanelState.closed, true);
-        assert.equal(receivedPanels.length, 2, 'audio:evensong pushes closed Loom panel to Archive renderer');
-        assert.notEqual(receivedPanels[1], receivedPanels[0], 'closed Evensong panel replaces open panel surface');
+        assert.equal(receivedPanels.length, 2, 'active audio:evensong pushes closed Loom panel to Archive renderer');
+        assert.ok(receivedPanels[1] !== receivedPanels[0], 'closed Evensong panel replaces open panel surface');
     } finally {
         await app.destroy();
     }
@@ -964,4 +979,173 @@ test('W6-B-Wire (5): live day weave + frieze + tapestry grid + Archive panel sta
     timings.sort((a, b) => a - b);
     const medianMs = timings[Math.floor(timings.length / 2)];
     assert.ok(medianMs <= 50, `expected full live weave+render <= 50 ms/day, got median ${medianMs.toFixed(2)} ms`);
+});
+
+// ── 6. Wave 6 Council Fix-B Integration Tests ────────────────────────────────
+
+test('W6-B-Wire (6): cached 14x16 miniature resolver across all 4 call sites, post-mount scrollLeft, readout honesty, flush before Evensong read, and 2x2 Archive downsampling', async (t) => {
+    createFakeDom(t);
+    const rafQueue = [];
+    setGlobal(t, 'requestAnimationFrame', (fn) => {
+        rafQueue.push(fn);
+        return rafQueue.length;
+    });
+    setGlobal(t, 'cancelAnimationFrame', () => {});
+    setGlobal(t, 'window', Object.assign(new EventTarget(), {
+        location: { origin: 'http://localhost' },
+        __claudeVillePerf: {},
+        setInterval,
+        clearInterval,
+    }));
+
+    const { App, createLoomMiniatureResolver, buildArchiveLoomPanelCanvas } = await import('../../claudeville/src/presentation/App.js');
+
+    // Build two distinct synthetic idle sprite sheets (RGBA buffers) with robe colors to exercise palette swap.
+    const makeSheet = (r, g, b) => {
+        const w = 16;
+        const h = 16;
+        const data = new Uint8ClampedArray(w * h * 4);
+        for (let y = 2; y < 15; y++) {
+            for (let x = 4; x < 12; x++) {
+                const o = (y * w + x) * 4;
+                data[o] = r;
+                data[o + 1] = g;
+                data[o + 2] = b;
+                data[o + 3] = 255;
+            }
+        }
+        return { width: w, height: h, data };
+    };
+    const claudeSheet = makeSheet(200, 90, 60);
+    const codexSheet = makeSheet(60, 140, 210);
+    const fakeAssets = {
+        missing: new Set(),
+        palettes: {
+            claude: { trim: ['#d97757', '#e5a34b', '#79d975'] },
+            codex: { trim: ['#4fa3e3', '#79d975', '#d97757'] },
+        },
+        get(id) {
+            if (id && id.includes('codex')) return codexSheet;
+            if (id && id.includes('claude')) return claudeSheet;
+            return null;
+        },
+        getEntry(id) {
+            if (id && id.includes('codex')) return { paletteSource: { robe: ['#3c8cd2'], trim: [] } };
+            if (id && id.includes('claude')) return { paletteSource: { robe: ['#c85a3c'], trim: [] } };
+            return null;
+        },
+    };
+
+    const resolver = createLoomMiniatureResolver({
+        getAssets: () => fakeAssets,
+        getCompositor: () => null,
+        getWorld: () => null,
+    });
+    const mClaudeA = resolver({ provider: 'claude', model: 'claude-opus-4-6', agentId: 'a-1' });
+    const mClaudeB = resolver({ provider: 'claude', model: 'claude-opus-4-6', agentId: 'a-2' });
+    const mCodex = resolver({ provider: 'codex', model: 'gpt-5.4-codex', agentId: 'b-1' });
+    const mMissing = resolver({ provider: 'unknown-provider', model: 'missing-model', agentId: 'x-1', spriteId: 'agent.none' });
+
+    assert.ok(mClaudeA && mClaudeA.width === 14 && mClaudeA.height === 16);
+    assert.ok(mCodex && mCodex.width === 14 && mCodex.height === 16);
+    assert.equal(mMissing, null, 'missing sheet returns null so ChronicleLoom falls back to slate pawn');
+    assert.notDeepEqual(mClaudeA.data, mCodex.data, 'distinct provider/model sheets resolve to distinct miniatures');
+    assert.ok(resolver.cacheSize() >= 2, 'miniature resolver caches extracted 14x16 RGBA tiles');
+    // Cached repeat call returns the exact frozen object reference.
+    assert.equal(resolver({ provider: 'claude', model: 'claude-opus-4-6', agentId: 'a-1' }), mClaudeA);
+    assert.ok(mClaudeB && mClaudeB.width === 14 && mClaudeB.height === 16);
+
+    // Confirm resolver flows through modal frieze, Scroll PNG, Tapestry, and Archive panel (distinct from pawn fallback).
+    const dateKey = '2026-11-26';
+    const events = [
+        { ts: localTs(2026, 11, 26, 18, 10), localDate: dateKey, kind: 'commit', provider: 'claude', model: 'claude-opus-4-6', agentId: 'a-1', project: 'claude-ville' },
+        { ts: localTs(2026, 11, 26, 18, 25), localDate: dateKey, kind: 'push', provider: 'codex', model: 'gpt-5.4-codex', agentId: 'b-1', project: 'claude-ville' },
+    ];
+    let coverage = EMPTY_COVERAGE_MASK;
+    for (let q = 0; q < 4; q++) coverage = setCoverageQuarter(coverage, 18 * 4 + q);
+
+    const scrollWithResolver = exportLoomScrollPng({ dateKey, events, coverage, resolveMiniature: resolver });
+    const scrollFallback = exportLoomScrollPng({ dateKey, events, coverage, resolveMiniature: null });
+    assert.notEqual(
+        Buffer.compare(Buffer.from(scrollWithResolver.pngBytes), Buffer.from(scrollFallback.pngBytes)),
+        0,
+        'Scroll PNG uses real miniatures rather than fallback slate pawns',
+    );
+
+    const tapWithResolver = createPixelCanvas(TAPESTRY_WIDTH, TAPESTRY_HEIGHT);
+    const tapFallback = createPixelCanvas(TAPESTRY_WIDTH, TAPESTRY_HEIGHT);
+    renderChronicleTapestry({ dateKey, summary: summarizeDay(events), events, coverage, resolveMiniature: resolver, canvas: tapWithResolver.canvas });
+    renderChronicleTapestry({ dateKey, summary: summarizeDay(events), events, coverage, resolveMiniature: null, canvas: tapFallback.canvas });
+    assert.notDeepEqual(tapWithResolver.rgba, tapFallback.rgba, 'Tapestry export uses real miniatures');
+
+    const archWithResolver = buildArchiveLoomPanelCanvas({ dateKey, events, coverage, resolveMiniature: resolver });
+    const archFallback = buildArchiveLoomPanelCanvas({ dateKey, events, coverage, resolveMiniature: null });
+    assert.notDeepEqual(archWithResolver.rgba.data, archFallback.rgba.data, 'Archive rear-wall panel uses real miniatures');
+
+    // Post-mount scrollLeft brings latest woven hour (18:00) cleanly into view instead of staying at 00:00.
+    const contentEl = new FakeElement('div');
+    const modal = {
+        contentEl,
+        beginRequest: () => 1,
+        isRequestCurrent: req => req === 1,
+        open: () => true,
+        invalidateRequest: () => {},
+    };
+    const log = {
+        retentionDays: 14,
+        async readDay() { return events; },
+        async readDayPage() { return { events: [...events].reverse(), summary: summarizeDay(events), totalCount: events.length }; },
+        async readDayCoverage() { return coverage; },
+        async readDaySky() { return null; },
+    };
+    const panel = new ChroniclePanel({
+        modal,
+        chronicleLog: log,
+        solarProvider: () => null,
+        loomMiniatureResolver: resolver,
+    });
+    panel._request = 1;
+    panel._selectedDateKey = dateKey;
+    const page = await panel._readPage(dateKey);
+    panel._renderPage(page, dateKey, 1);
+    const viewport = contentEl.querySelector('.chronicle__loom-viewport');
+    assert.ok(viewport);
+    const expectedScroll = loomInitialScrollLeft(18, viewport.clientWidth, LOOM_STRIP_WIDTH);
+    assert.ok(expectedScroll > 800, 'hour 18 scroll target shifts viewport well past 00:00');
+    assert.equal(viewport.scrollLeft, expectedScroll, 'post-mount flush sets scrollLeft after attachment');
+    assert.ok(rafQueue.length >= 1, 'schedules requestAnimationFrame post-layout scroll');
+    // Reset and fire rAF to verify post-paint alignment also applies cleanly.
+    viewport.scrollLeft = 0;
+    rafQueue.shift()();
+    assert.equal(viewport.scrollLeft, expectedScroll, 'requestAnimationFrame aligns scrollLeft to latest woven hour');
+
+    // formatLoomReadout distinguishes work cells from selvedge arrival/departure events.
+    const readout = formatLoomReadout({ coveredHours: 1, coalescedCells: 0, totalEvents: 40 });
+    assert.equal(readout, '1h woven · 0 work cells · 40 events');
+
+    // 2x2 Archive downsampler preserves single-pixel high-contrast ink/stamp details on odd coordinates that 2:1 point decimation drops!
+    const test96 = new Uint8ClampedArray(96 * 72 * 4);
+    for (let i = 0; i < test96.length; i += 4) {
+        test96[i] = 220; test96[i + 1] = 210; test96[i + 2] = 190; test96[i + 3] = 255;
+    }
+    // Place a vivid dark-red stamp pixel at odd (x=11, y=21), which 2:1 point sampling at (10,20) misses completely.
+    const oddOff = (21 * 96 + 11) * 4;
+    test96[oddOff] = 160; test96[oddOff + 1] = 24; test96[oddOff + 2] = 24; test96[oddOff + 3] = 255;
+    const ds48 = downsampleLoomPanel2x(test96, 96, 72, 48, 36);
+    const dstOff = (10 * 48 + 5) * 4;
+    assert.deepEqual(
+        [ds48[dstOff], ds48[dstOff + 1], ds48[dstOff + 2]],
+        [160, 24, 24],
+        '2x2 contrast downsampler preserves odd-coordinate stamp pixels lost by naive 2:1 decimation',
+    );
+
+    // Verify App.js wires flush() before readDay in setDayEventsProvider.
+    const appSrc = fs.readFileSync(path.join(ROOT, 'claudeville/src/presentation/App.js'), 'utf8');
+    const providerIdx = appSrc.indexOf('setDayEventsProvider');
+    assert.ok(providerIdx > 0);
+    const providerBlock = appSrc.slice(providerIdx, providerIdx + 360);
+    assert.ok(
+        providerBlock.indexOf('flush') > 0 && providerBlock.indexOf('flush') < providerBlock.indexOf('readDay'),
+        'setDayEventsProvider flushes ChronicleLog before calling readDay',
+    );
 });

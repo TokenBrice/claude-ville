@@ -100,12 +100,14 @@ export const LOOM_WAIT_UNIT_MS = 5 * 60 * 1000; // 300_000 ms (5 minutes)
 export const LOOM_MAX_PIPS = 5;
 export const LOOM_MAX_WAIT_KNOTS = 6;
 
-const ERROR_RESOLVING_KINDS = new Set([
+export const ERROR_RESOLVING_KINDS = Object.freeze([
     LOOM_EVENT_KIND.MENDED,
     LOOM_EVENT_KIND.RESOLVED,
     LOOM_EVENT_KIND.COMPLETED,
     LOOM_EVENT_KIND.DEPARTED,
 ]);
+
+const ERROR_RESOLVING_KIND_SET = new Set(ERROR_RESOLVING_KINDS);
 
 const CELL_ELIGIBLE_KINDS = new Set([
     LOOM_EVENT_KIND.RELEASE,
@@ -648,22 +650,37 @@ export function createCoverageMask(spec = null) {
     return mask;
 }
 
-/**
- * Normalize any 96-bit coverage representation into a 96-element `Uint8Array`
- * of 0/1 flags (one per quarter-hour `0..95`). Missing/null coverage yields
- * all zeroes (all uncovered -> bare warp, V8 honesty).
- */
-export function normalizeCoverageBits(coverage) {
-    const bits = new Uint8Array(LOOM_TOTAL_QUARTERS);
-    if (coverage == null) return bits;
+function isTruthyCoverageFlag(value) {
+    if (value === null || value === undefined || value === false || value === 0) return false;
+    if (typeof value === 'string') {
+        const trimmed = value.trim().toLowerCase();
+        return trimmed !== '' && trimmed !== '0' && trimmed !== 'false';
+    }
+    return Boolean(value);
+}
 
-    // Unwrap meta-store container objects (`{ mask }`, `{ bits }`, `{ quarters }`, `{ hours }`, `{ value }`).
+/**
+ * Canonical 96-bit quarter-hour coverage mask decoder shared by ChronicleLoom,
+ * ChroniclePanel, and ChronicleTapestry.
+ *
+ * Accepts 24-char big-endian hex (with optional `0x`), 96-char bitstring,
+ * BigInt, 12-byte Uint8Array/Array, 3-word Uint32Array/Array, 96-quarter
+ * arrays/views, 24-hour arrays/views (boolean or 4-bit quarter nibbles), or
+ * container objects (`{ bits | mask | quarters | hours | value }`).
+ * Returns `Uint8Array(96)` of 0/1 flags, or `null` when missing/unrecognized.
+ */
+export function decodeCoverageBits(coverage) {
+    if (coverage == null) return null;
+
+    // Unwrap meta-store container objects (`{ bits }`, `{ mask }`, `{ quarters }`, `{ hours }`, `{ value }`).
     if (typeof coverage === 'object'
         && !Array.isArray(coverage)
         && !ArrayBuffer.isView(coverage)) {
-        const inner = coverage.mask ?? coverage.bits ?? coverage.quarters ?? coverage.hours ?? coverage.value ?? null;
-        return inner == null ? bits : normalizeCoverageBits(inner);
+        const inner = coverage.bits ?? coverage.mask ?? coverage.quarters ?? coverage.hours ?? coverage.value ?? null;
+        return inner == null ? null : decodeCoverageBits(inner);
     }
+
+    const bits = new Uint8Array(LOOM_TOTAL_QUARTERS);
 
     if (typeof coverage === 'bigint') {
         for (let i = 0; i < LOOM_TOTAL_QUARTERS; i++) {
@@ -688,69 +705,60 @@ export function normalizeCoverageBits(coverage) {
             }
             return bits;
         }
-        return bits;
+        return null;
     }
 
-    if (coverage instanceof Uint8Array || coverage instanceof Uint8ClampedArray) {
-        if (coverage.length === LOOM_TOTAL_QUARTERS) {
-            for (let i = 0; i < LOOM_TOTAL_QUARTERS; i++) bits[i] = coverage[i] ? 1 : 0;
-            return bits;
-        }
-        if (coverage.length >= 12) {
-            for (let i = 0; i < LOOM_TOTAL_QUARTERS; i++) {
-                bits[i] = (coverage[i >> 3] >> (i & 7)) & 1;
-            }
-            return bits;
+    if ((coverage instanceof Uint32Array || Array.isArray(coverage)) && coverage.length === 3) {
+        for (let i = 0; i < LOOM_TOTAL_QUARTERS; i++) {
+            bits[i] = ((Number(coverage[i >>> 5]) >>> 0) >>> (i & 31)) & 1;
         }
         return bits;
     }
 
-    if (coverage instanceof Uint32Array) {
-        if (coverage.length >= 3) {
-            for (let i = 0; i < LOOM_TOTAL_QUARTERS; i++) {
-                bits[i] = (coverage[i >>> 5] >>> (i & 31)) & 1;
-            }
+    if ((Array.isArray(coverage) || ArrayBuffer.isView(coverage)) && coverage.length === LOOM_TOTAL_QUARTERS) {
+        for (let i = 0; i < LOOM_TOTAL_QUARTERS; i++) {
+            bits[i] = isTruthyCoverageFlag(coverage[i]) ? 1 : 0;
         }
         return bits;
     }
 
-    if (Array.isArray(coverage)) {
-        if (coverage.length === LOOM_TOTAL_QUARTERS) {
-            for (let i = 0; i < LOOM_TOTAL_QUARTERS; i++) bits[i] = coverage[i] ? 1 : 0;
-            return bits;
-        }
-        if (coverage.length === 12) {
-            for (let i = 0; i < LOOM_TOTAL_QUARTERS; i++) {
-                bits[i] = (Number(coverage[i >> 3]) >> (i & 7)) & 1;
-            }
-            return bits;
-        }
-        if (coverage.length === 3) {
-            for (let i = 0; i < LOOM_TOTAL_QUARTERS; i++) {
-                bits[i] = (Number(coverage[i >>> 5]) >>> (i & 31)) & 1;
-            }
-            return bits;
-        }
-        if (coverage.length === LOOM_HOURS_PER_DAY) {
-            const nibbleMode = coverage.some(v => typeof v === 'number' && v > 1);
-            for (let h = 0; h < LOOM_HOURS_PER_DAY; h++) {
-                const entry = coverage[h];
-                if (nibbleMode) {
-                    const nibble = Number(entry) || 0;
-                    for (let q = 0; q < LOOM_QUARTERS_PER_HOUR; q++) {
-                        bits[h * LOOM_QUARTERS_PER_HOUR + q] = (nibble >> q) & 1;
-                    }
-                } else {
-                    const covered = entry ? 1 : 0;
-                    for (let q = 0; q < LOOM_QUARTERS_PER_HOUR; q++) {
-                        bits[h * LOOM_QUARTERS_PER_HOUR + q] = covered;
-                    }
+    if ((Array.isArray(coverage) || ArrayBuffer.isView(coverage)) && coverage.length === LOOM_HOURS_PER_DAY) {
+        const nibbleMode = Array.isArray(coverage) && coverage.some(v => typeof v === 'number' && v > 1);
+        for (let h = 0; h < LOOM_HOURS_PER_DAY; h++) {
+            const entry = coverage[h];
+            if (nibbleMode) {
+                const nibble = Number(entry) || 0;
+                for (let q = 0; q < LOOM_QUARTERS_PER_HOUR; q++) {
+                    bits[h * LOOM_QUARTERS_PER_HOUR + q] = (nibble >> q) & 1;
+                }
+            } else {
+                const covered = isTruthyCoverageFlag(entry) ? 1 : 0;
+                for (let q = 0; q < LOOM_QUARTERS_PER_HOUR; q++) {
+                    bits[h * LOOM_QUARTERS_PER_HOUR + q] = covered;
                 }
             }
         }
+        return bits;
     }
 
-    return bits;
+    if ((coverage instanceof Uint8Array || coverage instanceof Uint8ClampedArray || Array.isArray(coverage))
+        && coverage.length === 12) {
+        for (let i = 0; i < LOOM_TOTAL_QUARTERS; i++) {
+            bits[i] = ((Number(coverage[i >> 3]) & 0xff) >> (i & 7)) & 1;
+        }
+        return bits;
+    }
+
+    return null;
+}
+
+/**
+ * Normalize any 96-bit coverage representation into a 96-element `Uint8Array`
+ * of 0/1 flags (one per quarter-hour `0..95`). Missing/null coverage yields
+ * all zeroes (all uncovered -> bare warp, V8 honesty).
+ */
+export function normalizeCoverageBits(coverage) {
+    return decodeCoverageBits(coverage) || new Uint8Array(LOOM_TOTAL_QUARTERS);
 }
 
 // --- Sky Code Normalization -------------------------------------------------
@@ -940,14 +948,113 @@ function extractRepoKey(event) {
     return clean || null;
 }
 
-function extractAgentKey(event) {
+function extractExplicitAgentKey(event) {
     const id = String(event?.agentId ?? '').trim();
     if (id) return id;
     const identityKey = String(event?.identityKey ?? '').trim();
     if (identityKey) return identityKey;
     const name = String(event?.agentName ?? '').trim();
     if (name) return name;
-    return 'unknown';
+    return null;
+}
+
+function extractAgentKey(event) {
+    return extractExplicitAgentKey(event) || 'unknown';
+}
+
+function extractEventTimestamp(event) {
+    for (const candidate of [event?.ts, event?.at, event?.timestamp]) {
+        if (candidate === null || candidate === undefined || candidate === '') continue;
+        const ts = Number(candidate);
+        if (Number.isFinite(ts)) return ts;
+    }
+    if (Number.isInteger(event?.hour) && event.hour >= 0 && event.hour < LOOM_HOURS_PER_DAY) {
+        const minute = Number.isFinite(Number(event.minute))
+            ? Math.max(0, Math.min(59, Math.floor(Number(event.minute))))
+            : 0;
+        return event.hour * 3_600_000 + minute * 60_000;
+    }
+    return null;
+}
+
+/**
+ * Canonical pure open-error evaluator shared by ChronicleLoom and Evensong.
+ *
+ * Evaluates Chronicle events up to `endTs` (default `Infinity`) in deterministic
+ * chronological order and returns the array of `errored` event records that are
+ * still unresolved at `endTs`. An agent's open error(s) are closed by any later
+ * event of kind in `ERROR_RESOLVING_KINDS` (`mended`, `resolved`, `completed`,
+ * `departed`).
+ */
+export function openErrorsAt(events = [], endTs = Infinity) {
+    const list = Array.isArray(events) ? events : [];
+    const hasCutoff = endTs !== null && endTs !== undefined && endTs !== ''
+        && Number.isFinite(Number(endTs));
+    const cutoff = hasCutoff ? Number(endTs) : Infinity;
+
+    const ordered = [];
+    for (let i = 0; i < list.length; i++) {
+        const raw = list[i];
+        if (!raw || typeof raw !== 'object') continue;
+        const kind = normalizeKind(raw.kind ?? raw.type);
+        if (!kind) continue;
+        const ts = extractEventTimestamp(raw);
+        if (hasCutoff && ts !== null && ts > cutoff) continue;
+        const explicitAgent = extractExplicitAgentKey(raw);
+        const agentKey = explicitAgent || 'unknown';
+        ordered.push({
+            raw,
+            index: i,
+            id: String(raw.id ?? ''),
+            kind,
+            ts: ts !== null ? ts : 0,
+            hasExplicitAgent: explicitAgent !== null,
+            agentKey,
+            repoKey: extractRepoKey(raw),
+            explicitResolved: raw.explicitResolved === true
+                || raw.resolved === true
+                || raw.open === false
+                || raw.mended === true,
+        });
+    }
+
+    ordered.sort((a, b) => (a.ts - b.ts)
+        || compareStrings(a.agentKey, b.agentKey)
+        || compareStrings(a.kind, b.kind)
+        || compareStrings(a.id, b.id)
+        || (a.index - b.index));
+
+    const open = [];
+    for (const ev of ordered) {
+        if (ev.kind === LOOM_EVENT_KIND.ERRORED) {
+            if (!ev.explicitResolved) open.push(ev);
+            continue;
+        }
+        if (!ERROR_RESOLVING_KIND_SET.has(ev.kind) || open.length === 0) continue;
+
+        if (ev.hasExplicitAgent) {
+            for (let i = open.length - 1; i >= 0; i--) {
+                if (open[i].agentKey === ev.agentKey) open.splice(i, 1);
+            }
+        } else if (ev.repoKey) {
+            let matched = false;
+            for (let i = open.length - 1; i >= 0; i--) {
+                if (open[i].repoKey === ev.repoKey) {
+                    open.splice(i, 1);
+                    matched = true;
+                }
+            }
+            if (!matched) {
+                for (let i = open.length - 1; i >= 0; i--) {
+                    if (!open[i].hasExplicitAgent) open.splice(i, 1);
+                }
+            }
+        } else {
+            open.length = 0;
+        }
+    }
+
+    return open.map(entry => entry.raw);
 }
 
 function resolveHourAndMinute(event, options) {
@@ -1087,41 +1194,24 @@ export function weaveDay(events = [], coverage = null, sky = null, options = {})
     normalized.sort(compareNormalizedEvents);
 
     // 2. Chronological cross-hour resolution pass:
-    //    - Determine whether each `errored` event is still open at day's end
-    //      or was subsequently resolved/mended for the same agent.
+    //    - Determine open vs resolved `errored` events via the canonical
+    //      `openErrorsAt(events, endTs)` helper (`mended`, `resolved`,
+    //      `completed`, `departed`).
     //    - Pair `waiting` events with subsequent `resolved` events for wait
-    //      durations when `waitedMs` was not stamped directly on `waiting`.
-    const openErrorsByAgent = new Map();  // agentId -> array of normalized error events
+    //      durations when `waitedMs` was not stamped directly on `waiting`,
+    //      and measure ongoing unresolved waits up to `endTs` (or `now`).
+    const rawEndTs = options?.endTs ?? options?.now ?? null;
+    const hasEndTs = rawEndTs !== null && rawEndTs !== undefined && rawEndTs !== ''
+        && Number.isFinite(Number(rawEndTs));
+    const endTs = hasEndTs ? Number(rawEndTs) : null;
+    const openErrorSet = new Set(openErrorsAt(normalized, endTs ?? Infinity));
+
     const openWaitByAgent = new Map();    // agentId -> pending normalized waiting event
-    const eventErrorOpen = new Map();     // event -> boolean
     const eventWaitMs = new Map();        // event -> number (ms)
     const orphanWaitResolves = [];        // resolved events with waitedMs >= 5m and no prior waiting
 
     for (const ev of normalized) {
-        if (ev.kind === LOOM_EVENT_KIND.ERRORED) {
-            if (ev.explicitResolved) {
-                eventErrorOpen.set(ev, false);
-            } else {
-                eventErrorOpen.set(ev, true);
-                let list = openErrorsByAgent.get(ev.agentId);
-                if (!list) {
-                    list = [];
-                    openErrorsByAgent.set(ev.agentId, list);
-                }
-                list.push(ev);
-            }
-            continue;
-        }
-
-        if (ERROR_RESOLVING_KINDS.has(ev.kind)) {
-            const pendingErrors = openErrorsByAgent.get(ev.agentId);
-            if (pendingErrors && pendingErrors.length > 0) {
-                for (const errEv of pendingErrors) {
-                    eventErrorOpen.set(errEv, false);
-                }
-                pendingErrors.length = 0;
-            }
-        }
+        if (hasEndTs && ev.ts > endTs) continue;
 
         if (ev.kind === LOOM_EVENT_KIND.WAITING) {
             if (ev.waitedMs !== null) {
@@ -1153,7 +1243,20 @@ export function weaveDay(events = [], coverage = null, sky = null, options = {})
         }
 
         if (ev.kind === LOOM_EVENT_KIND.DEPARTED || ev.kind === LOOM_EVENT_KIND.COMPLETED) {
-            openWaitByAgent.delete(ev.agentId);
+            const pendingWait = openWaitByAgent.get(ev.agentId);
+            if (pendingWait) {
+                openWaitByAgent.delete(ev.agentId);
+                if (!pendingWait.hasDuration) {
+                    eventWaitMs.set(pendingWait.event, Math.max(0, ev.ts - pendingWait.event.ts));
+                }
+            }
+        }
+    }
+
+    if (hasEndTs) {
+        for (const pendingWait of openWaitByAgent.values()) {
+            if (pendingWait.hasDuration) continue;
+            eventWaitMs.set(pendingWait.event, Math.max(0, endTs - pendingWait.event.ts));
         }
     }
 
@@ -1277,7 +1380,7 @@ export function weaveDay(events = [], coverage = null, sky = null, options = {})
         }
 
         if (ev.kind === LOOM_EVENT_KIND.ERRORED) {
-            const isOpen = eventErrorOpen.get(ev) !== false;
+            const isOpen = openErrorSet.has(ev);
             const weight = isOpen ? LOOM_EVENT_WEIGHTS.errored : LOOM_EVENT_WEIGHTS.erroredResolved;
             byKind.errored += 1;
             if (isOpen) byKind.erroredOpen += 1;
@@ -1316,6 +1419,7 @@ export function weaveDay(events = [], coverage = null, sky = null, options = {})
     const panels = [];
     let totalCoalescedCells = 0;
     let totalDrawnCells = 0;
+    let totalOverflowCells = 0;
     let totalOverflowEvents = 0;
     let coveredQuarters = 0;
     let coveredHours = 0;
@@ -1347,15 +1451,19 @@ export function weaveDay(events = [], coverage = null, sky = null, options = {})
 
         candidates.sort(compareCellsByWeight);
 
-        let overflowCount = 0;
+        let overflowCells = 0;
+        let overflowEvents = 0;
         let chosen;
         if (totalCoalesced > LOOM_GRID.maxCells) {
             chosen = candidates.slice(0, LOOM_GRID.maxCells - 1);
-            overflowCount = totalCoalesced - (LOOM_GRID.maxCells - 1);
+            const hidden = candidates.slice(LOOM_GRID.maxCells - 1);
+            overflowCells = hidden.length;
+            for (const draft of hidden) overflowEvents += draft.count;
         } else {
             chosen = candidates;
         }
-        totalOverflowEvents += overflowCount;
+        totalOverflowCells += overflowCells;
+        totalOverflowEvents += overflowEvents;
 
         // Chosen cells are laid out strictly in chronological time order.
         chosen.sort(compareCellsByTime);
@@ -1405,15 +1513,17 @@ export function weaveDay(events = [], coverage = null, sky = null, options = {})
         });
 
         const cells = [...eventCells];
-        if (overflowCount > 0) {
+        if (overflowCells > 0) {
             const slot = LOOM_GRID.maxCells - 1;
             cells.push(Object.freeze({
                 type: 'overflow',
                 slot,
                 col: slot % LOOM_GRID.cols,
                 row: Math.floor(slot / LOOM_GRID.cols),
-                count: overflowCount,
-                label: `+${overflowCount}`,
+                count: overflowCells,
+                overflowCells,
+                overflowEvents,
+                label: `+${overflowCells}`,
             }));
         }
 
@@ -1432,7 +1542,9 @@ export function weaveDay(events = [], coverage = null, sky = null, options = {})
             sky: skyEntry,
             cells: Object.freeze(cells),
             eventCells: Object.freeze(eventCells),
-            overflowCount,
+            overflowCells,
+            overflowCount: overflowCells,
+            overflowEvents,
             totalCoalesced,
             arrivals: Object.freeze(bucket.arrivals),
             departures: Object.freeze(bucket.departures),
@@ -1448,6 +1560,7 @@ export function weaveDay(events = [], coverage = null, sky = null, options = {})
             wovenEvents,
             coalescedCells: totalCoalescedCells,
             drawnCells: totalDrawnCells,
+            overflowCells: totalOverflowCells,
             overflowEvents: totalOverflowEvents,
             arrivals: byKind.arrived,
             departures: byKind.departed,
@@ -1547,18 +1660,41 @@ function measurePixelTextWidth(text, font) {
 // --- Panel Layer Painters ---------------------------------------------------
 
 // Bare warp across a 24 px quarter-hour band: vertical warp threads every 4 px,
-// zero weft.
+// strictly zero horizontal weft.
 function paintBareWarpQuarter(data, surfW, surfH, px, py, quarterIndex) {
     const x0 = px + quarterIndex * LOOM_QUARTER_WIDTH;
+    const bgColor = PALETTE.warpBg;
     for (let ry = 0; ry < LOOM_PANEL_HEIGHT; ry++) {
         const wy = py + ry;
         if (wy < 0 || wy >= surfH) continue;
         const threadColor = ((ry >> 1) & 1) === 0 ? PALETTE.warpLight : PALETTE.warpMid;
-        const bgColor = (ry & 3) === 0 ? PALETTE.warpBgAlt : PALETTE.warpBg;
         for (let rx = 0; rx < LOOM_QUARTER_WIDTH; rx++) {
             const wx = x0 + rx;
             if (wx < 0 || wx >= surfW) continue;
             const c = (rx % LOOM_WARP_STRIDE === 0) ? threadColor : bgColor;
+            const o = (wy * surfW + wx) * 4;
+            data[o] = c[0];
+            data[o + 1] = c[1];
+            data[o + 2] = c[2];
+            data[o + 3] = 255;
+        }
+    }
+}
+
+// Solid woven linen weft backing patch behind an event cell's 28x22 footprint so
+// miniatures and stamps never sit over near-black bare warp in partly covered hours.
+function paintCellLinenBacking(data, surfW, surfH, px, py, cx, cy) {
+    for (let dy = 0; dy < LOOM_GRID.cellHeight; dy++) {
+        const wy = cy + dy;
+        if (wy < 0 || wy >= surfH) continue;
+        const ry = wy - py;
+        for (let dx = 0; dx < LOOM_GRID.cellWidth; dx++) {
+            const wx = cx + dx;
+            if (wx < 0 || wx >= surfW) continue;
+            const rx = wx - px;
+            const c = (rx % LOOM_WARP_STRIDE === 0 && (ry & 1) === 0)
+                ? PALETTE.linenRib
+                : (((rx + ry) & 1) === 0 ? PALETTE.linenBase : PALETTE.linenLight);
             const o = (wy * surfW + wx) * 4;
             data[o] = c[0];
             data[o + 1] = c[1];
@@ -2021,6 +2157,7 @@ function paintPanelOntoRgba(data, surfW, surfH, px, py, panel, options = {}) {
         if (cell.type === 'overflow') {
             paintOverflowPlate(data, surfW, surfH, cx, cy, cell);
         } else {
+            paintCellLinenBacking(data, surfW, surfH, px, py, cx, cy);
             paintEventCell(data, surfW, surfH, cx, cy, cell, options.resolveMiniature);
         }
     }

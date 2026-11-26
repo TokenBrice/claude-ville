@@ -9,6 +9,7 @@ import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 
 import {
+    ERROR_RESOLVING_KINDS,
     LOOM_BANDS,
     LOOM_EVENT_KIND,
     LOOM_EVENT_WEIGHTS,
@@ -23,10 +24,12 @@ import {
     LOOM_WAIT_UNIT_MS,
     LOOM_WARP_STRIDE,
     createCoverageMask,
+    decodeCoverageBits,
     drawLoomToCanvas,
     encodeLoomPng,
     loomRepoPennant,
     normalizeCoverageBits,
+    openErrorsAt,
     renderLoomFrieze,
     renderLoomPanel,
     renderLoomTapestryGrid,
@@ -767,4 +770,86 @@ test('performance: full 24-hour busy day weaves and renders RGBA strip well with
         medianMs <= 50,
         `expected median weave+render <= 50 ms, got median=${medianMs.toFixed(2)} ms (max=${maxMs.toFixed(2)} ms)`,
     );
+});
+
+test('W6-Fix-B craft: canonical openErrorsAt, pure bare warp without horizontal weft, linen backing under cells, ongoing waits, and overflow stats', () => {
+    // 1. Canonical openErrorsAt(events, endTs) resolves on mended, resolved, completed, and departed.
+    assert.deepEqual([...ERROR_RESOLVING_KINDS], ['mended', 'resolved', 'completed', 'departed']);
+    const errEvents = [
+        { ts: atHour(9, 10), kind: 'errored', agentId: 'a-mend' },
+        { ts: atHour(9, 20), kind: 'mended', agentId: 'a-mend' },
+        { ts: atHour(10, 10), kind: 'errored', agentId: 'a-res' },
+        { ts: atHour(10, 20), kind: 'resolved', agentId: 'a-res' },
+        { ts: atHour(11, 10), kind: 'errored', agentId: 'a-comp' },
+        { ts: atHour(11, 20), kind: 'completed', agentId: 'a-comp' },
+        { ts: atHour(12, 10), kind: 'errored', agentId: 'a-dep' },
+        { ts: atHour(12, 20), kind: 'departed', agentId: 'a-dep' },
+        { ts: atHour(13, 10), kind: 'errored', agentId: 'a-open' },
+    ];
+    assert.deepEqual(
+        openErrorsAt(errEvents, atHour(21, 0)).map(e => e.agentId),
+        ['a-open'],
+        'all four closing kinds close an agent open error',
+    );
+    assert.deepEqual(
+        openErrorsAt(errEvents, atHour(11, 15)).map(e => e.agentId),
+        ['a-comp'],
+        'cutoff endTs excludes resolutions after endTs',
+    );
+
+    // 2. Bare warp has ZERO horizontal weft banding (uniform gap color across all rows 0..71).
+    const emptyDay = weaveDay([], null, null, { utc: true, dateKey: DAY_KEY });
+    const bare = renderLoomPanel(emptyDay.panels[0]);
+    const refGap = readRgba(bare, 1, 0);
+    for (let y = 0; y < LOOM_PANEL_HEIGHT; y++) {
+        assert.deepEqual(readRgba(bare, 1, y), refGap, `row ${y}: bare warp gap has zero horizontal weft banding`);
+    }
+
+    // 3. Event cell placed in a partly covered hour receives woven linen backing even over uncovered quarters.
+    const partialCov = createCoverageMask({ quarters: [14 * 4 + 0] });
+    const partialDay = weaveDay([
+        { ts: atHour(14, 2), kind: 'commit', agentId: 'a1' },
+        { ts: atHour(14, 4), kind: 'push', agentId: 'a2' },
+        { ts: atHour(14, 6), kind: 'release', agentId: 'a3' },
+    ], partialCov, null, { utc: true, dateKey: DAY_KEY });
+    const partialSurface = renderLoomPanel(partialDay.panels[14]);
+    const slot2X = LOOM_GRID.marginX + 2 * (LOOM_GRID.cellWidth + LOOM_GRID.gapX);
+    const slot2Y = LOOM_BANDS.field.y;
+    const cornerPx = readRgba(partialSurface, slot2X, slot2Y);
+    assert.notDeepEqual(cornerPx, refGap, 'cell footprint over uncovered quarter paints woven linen backing, not bare warp');
+    assert.ok(cornerPx[0] >= 180 && cornerPx[1] >= 160 && cornerPx[2] >= 120, 'cell backing uses warm woven linen');
+
+    // 4. Ongoing unresolved long wait (>= 5 min up to endTs) is woven with wait knots.
+    const ongoingDay = weaveDay(
+        [{ ts: atHour(15, 10), kind: 'waiting', agentId: 'w-live' }],
+        createCoverageMask({ hours: [15] }),
+        null,
+        { utc: true, dateKey: DAY_KEY, endTs: atHour(15, 25) },
+    );
+    assert.equal(ongoingDay.panels[15].eventCells.length, 1);
+    assert.equal(ongoingDay.panels[15].eventCells[0].waitKnots, 3);
+    assert.equal(ongoingDay.panels[15].eventCells[0].pipMode, 'knots');
+
+    // 5. Overflow stats distinguish hidden coalesced cells (`overflowCells`) from hidden raw events (`overflowEvents`).
+    const overflowInput = [];
+    for (let i = 0; i < 7; i++) {
+        if (i < 5) {
+            overflowInput.push({ ts: atHour(16, i * 5), kind: 'release', agentId: `top-${i}` });
+        } else {
+            for (let k = 0; k < 3; k++) {
+                overflowInput.push({ ts: atHour(16, 30 + i * 3 + k), kind: 'completed', agentId: `low-${i}` });
+            }
+        }
+    }
+    const overflowDay = weaveDay(overflowInput, createCoverageMask({ hours: [16] }), null, { utc: true, dateKey: DAY_KEY });
+    assert.equal(overflowDay.panels[16].overflowCells, 2);
+    assert.equal(overflowDay.panels[16].overflowEvents, 6);
+    assert.equal(overflowDay.panels[16].cells[5].label, '+2');
+    assert.equal(overflowDay.stats.overflowCells, 2);
+    assert.equal(overflowDay.stats.overflowEvents, 6);
+
+    // 6. Shared decodeCoverageBits returns null for missing/invalid input.
+    assert.equal(decodeCoverageBits(null), null);
+    assert.equal(decodeCoverageBits('not-hex'), null);
+    assert.equal(decodeCoverageBits(partialCov).length, 96);
 });

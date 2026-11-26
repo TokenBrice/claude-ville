@@ -7064,6 +7064,7 @@ export class BuildingSprite {
                 out.data[i + 3] = a;
             }
             context.putImageData(out, 0, 0);
+            entry.canvas._cvPixelVersion = (entry.canvas._cvPixelVersion || 0) + 1;
             entry.gradeKey = gradeKey;
         }
         return entry.canvas;

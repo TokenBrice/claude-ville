@@ -42,13 +42,25 @@ import { installVerifiedOutcomeMemory, uninstallVerifiedOutcomeMemory } from './
 import { HARBOR_FOCUS_FLEET_EVENT } from './shared/HarborLedger.js';
 import { sessionDetailsService } from './shared/SessionDetailsService.js';
 import { ClientPerfMetrics } from './shared/ClientPerfMetrics.js';
-import { getModelVisualIdentity } from './shared/ModelVisualIdentity.js';
+import { getModelVisualIdentity, providerPaletteKey } from './shared/ModelVisualIdentity.js';
 import { installChromeTooltip } from './shared/ChromeTooltip.js';
 import { publishReservedBox, publishReservedRect } from './shared/ReservedRects.js';
 import { overlayContextAttributes } from './shared/DisplaySettings.js';
 import { isKeyboardEditTarget } from './dashboard-mode/DashboardKeyboardNavigation.js';
 
 import { AssetManager } from './character-mode/AssetManager.js';
+import {
+    Compositor,
+    agentPaletteVariant,
+    parseTrimColor,
+    resolveHeadAccessory,
+    shiftRobeColor,
+    sourceGeneration,
+    sourceList,
+    trimIndex,
+} from './character-mode/Compositor.js';
+import { avatarIdleCell } from './character-mode/AgentLayerRecords.js';
+import { DIRECTIONS, WALK_FRAMES } from './character-mode/SpriteSheet.js';
 import { precipitationIsFrozen } from './character-mode/GroundState.js';
 import { setRestSeatVisualBeat } from './character-mode/RestSeats.js';
 import { createAtmosphereSnapshot } from './character-mode/AtmosphereState.js';
@@ -56,6 +68,7 @@ import { effectiveCanvasDpr } from './character-mode/CanvasBudget.js';
 import { paintRevealBands } from './character-mode/RevealBands.js';
 import { withPostcardFrame } from './character-mode/Postcard.js';
 import {
+    LOOM_GRID,
     LOOM_PANEL_HEIGHT,
     LOOM_PANEL_WIDTH,
     drawLoomToCanvas,
@@ -149,6 +162,378 @@ export function chronicleSkyCode(snap) {
     };
 }
 
+const LOOM_MINIATURE_CACHE_LIMIT = 256;
+const LOOM_PALETTE_TOL = 12;
+
+function parseHexRgb6(hex) {
+    const clean = String(hex || '').replace('#', '').trim();
+    if (!/^[0-9a-fA-F]{6}$/.test(clean)) return null;
+    const v = Number.parseInt(clean, 16);
+    return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+}
+
+function applyMiniaturePaletteSwap(rgba, { paletteSource = null, trimRamp = null, paletteVariant = 0, teamTrim = null } = {}) {
+    const sourceRobeHex = sourceList(paletteSource?.robe);
+    const sourceTrimHex = sourceList(paletteSource?.trim);
+    const trimOverride = parseTrimColor(teamTrim);
+    const ramp = Array.isArray(trimRamp) ? trimRamp : [];
+    const targetTrimRgb = trimOverride
+        || (ramp.length ? parseHexRgb6(ramp[trimIndex(paletteVariant, ramp.length)]) : null);
+    const robe = sourceRobeHex.map(parseHexRgb6).filter(Boolean);
+    const trimSwap = targetTrimRgb
+        ? sourceTrimHex.map(parseHexRgb6).filter(Boolean).map(src => [src, targetTrimRgb])
+        : [];
+    if (!robe.length && !trimSwap.length) return;
+
+    const shifted = new Map();
+    const near = (r, g, b, src) => (
+        Math.abs(r - src[0]) <= LOOM_PALETTE_TOL
+        && Math.abs(g - src[1]) <= LOOM_PALETTE_TOL
+        && Math.abs(b - src[2]) <= LOOM_PALETTE_TOL
+    );
+    for (let i = 0; i < rgba.length; i += 4) {
+        if (rgba[i + 3] < 16) continue;
+        const r = rgba[i];
+        const g = rgba[i + 1];
+        const b = rgba[i + 2];
+        let done = false;
+        for (let k = 0; k < robe.length; k++) {
+            if (!near(r, g, b, robe[k])) continue;
+            const key = (r << 16) | (g << 8) | b;
+            let out = shifted.get(key);
+            if (!out) {
+                out = shiftRobeColor([r, g, b], paletteVariant, robe[k]);
+                shifted.set(key, out);
+            }
+            rgba[i] = out[0];
+            rgba[i + 1] = out[1];
+            rgba[i + 2] = out[2];
+            done = true;
+            break;
+        }
+        if (done) continue;
+        for (let k = 0; k < trimSwap.length; k++) {
+            const [src, dst] = trimSwap[k];
+            if (!near(r, g, b, src)) continue;
+            rgba[i] = Math.max(0, Math.min(255, dst[0] + (r - src[0])));
+            rgba[i + 1] = Math.max(0, Math.min(255, dst[1] + (g - src[1])));
+            rgba[i + 2] = Math.max(0, Math.min(255, dst[2] + (b - src[2])));
+            break;
+        }
+    }
+}
+
+function readIdleSouthCellRgba(source, { alreadyComposited = false, documentRef = globalThis.document } = {}) {
+    const srcW = Math.floor(Number(source?.naturalWidth || source?.width) || 0);
+    const srcH = Math.floor(Number(source?.naturalHeight || source?.height) || 0);
+    if (!(srcW > 0 && srcH > 0)) return null;
+
+    let cellX = 0;
+    let cellY = 0;
+    let cellW = srcW;
+    let cellH = srcH;
+    if (!alreadyComposited && srcW !== srcH) {
+        const cellSize = Math.floor(srcW / DIRECTIONS.length);
+        if (!(cellSize > 0)) return null;
+        cellX = 0;
+        cellY = srcH >= (WALK_FRAMES + 1) * cellSize ? WALK_FRAMES * cellSize : 0;
+        cellW = cellSize;
+        cellH = Math.min(cellSize, srcH - cellY);
+    }
+
+    if (source?.data && source.data.length >= srcW * srcH * 4) {
+        const out = new Uint8ClampedArray(cellW * cellH * 4);
+        for (let y = 0; y < cellH; y++) {
+            const srcRow = ((cellY + y) * srcW + cellX) * 4;
+            out.set(source.data.subarray(srcRow, srcRow + cellW * 4), y * cellW * 4);
+        }
+        return { width: cellW, height: cellH, data: out };
+    }
+
+    if (typeof source?.getContext === 'function') {
+        try {
+            const ctx = source.getContext('2d', { willReadFrequently: true }) || source.getContext('2d');
+            if (typeof ctx?.getImageData === 'function') {
+                const img = ctx.getImageData(cellX, cellY, cellW, cellH);
+                if (img?.data?.length >= cellW * cellH * 4) {
+                    return { width: cellW, height: cellH, data: new Uint8ClampedArray(img.data) };
+                }
+            }
+        } catch { /* fall through to scratch canvas */ }
+    }
+
+    let scratch = null;
+    if (documentRef && typeof documentRef.createElement === 'function') {
+        scratch = documentRef.createElement('canvas');
+        scratch.width = cellW;
+        scratch.height = cellH;
+    } else if (typeof globalThis.OffscreenCanvas === 'function') {
+        scratch = new globalThis.OffscreenCanvas(cellW, cellH);
+    }
+    const sctx = scratch?.getContext?.('2d', { willReadFrequently: true }) || scratch?.getContext?.('2d');
+    if (!sctx || typeof sctx.drawImage !== 'function' || typeof sctx.getImageData !== 'function') return null;
+    try {
+        sctx.imageSmoothingEnabled = false;
+        sctx.drawImage(source, cellX, cellY, cellW, cellH, 0, 0, cellW, cellH);
+        const img = sctx.getImageData(0, 0, cellW, cellH);
+        if (!img?.data || img.data.length < cellW * cellH * 4) return null;
+        return { width: cellW, height: cellH, data: new Uint8ClampedArray(img.data) };
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Extract a crisp `14x16` RGBA Loom miniature from an idle south-facing model
+ * sheet or composited cell (zero smoothing, tight opaque crop, bottom-aligned
+ * majority-mode pixel sampling that preserves exact palette colors).
+ */
+export function extractLoomMiniatureRgba(source, {
+    width = LOOM_GRID.actorWidth,
+    height = LOOM_GRID.actorHeight,
+    paletteSource = null,
+    trimRamp = null,
+    paletteVariant = 0,
+    teamTrim = null,
+    alreadyComposited = false,
+    documentRef = globalThis.document,
+} = {}) {
+    const cell = readIdleSouthCellRgba(source, { alreadyComposited, documentRef });
+    if (!cell) return null;
+
+    if (!alreadyComposited) {
+        applyMiniaturePaletteSwap(cell.data, { paletteSource, trimRamp, paletteVariant, teamTrim });
+    }
+
+    const { width: cw, height: ch, data } = cell;
+    let minX = cw;
+    let minY = ch;
+    let maxX = -1;
+    let maxY = -1;
+    for (let threshold of [128, 16]) {
+        for (let y = 0; y < ch; y++) {
+            const rowBase = y * cw * 4;
+            for (let x = 0; x < cw; x++) {
+                if (data[rowBase + x * 4 + 3] < threshold) continue;
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+            }
+        }
+        if (maxX >= minX) break;
+    }
+    if (maxX < minX || maxY < minY) return null;
+
+    const dstW = Math.max(1, Math.trunc(Number(width) || LOOM_GRID.actorWidth));
+    const dstH = Math.max(1, Math.trunc(Number(height) || LOOM_GRID.actorHeight));
+    const bw = maxX - minX + 1;
+    const bh = maxY - minY + 1;
+    const scale = Math.min(dstW / bw, dstH / bh);
+    const drawW = Math.max(1, Math.min(dstW, Math.round(bw * scale)));
+    const drawH = Math.max(1, Math.min(dstH, Math.round(bh * scale)));
+    const padX = Math.floor((dstW - drawW) / 2);
+    const padY = dstH - drawH;
+    const out = new Uint8ClampedArray(dstW * dstH * 4);
+    const votes = new Map();
+
+    for (let dy = 0; dy < drawH; dy++) {
+        const sy0 = minY + Math.floor((dy * bh) / drawH);
+        const sy1 = Math.max(sy0 + 1, Math.min(maxY + 1, minY + Math.floor(((dy + 1) * bh) / drawH)));
+        for (let dx = 0; dx < drawW; dx++) {
+            const sx0 = minX + Math.floor((dx * bw) / drawW);
+            const sx1 = Math.max(sx0 + 1, Math.min(maxX + 1, minX + Math.floor(((dx + 1) * bw) / drawW)));
+            votes.clear();
+            let opaque = 0;
+            let bestNonInkKey = -1;
+            let bestNonInkCount = 0;
+            let bestAnyKey = -1;
+            let bestAnyCount = 0;
+            const area = (sx1 - sx0) * (sy1 - sy0);
+
+            for (let sy = sy0; sy < sy1; sy++) {
+                const rowBase = sy * cw * 4;
+                for (let sx = sx0; sx < sx1; sx++) {
+                    const o = rowBase + sx * 4;
+                    if (data[o + 3] < 128) continue;
+                    opaque += 1;
+                    const r = data[o];
+                    const g = data[o + 1];
+                    const b = data[o + 2];
+                    const key = (r << 16) | (g << 8) | b;
+                    const count = (votes.get(key) || 0) + 1;
+                    votes.set(key, count);
+                    if (count > bestAnyCount) {
+                        bestAnyCount = count;
+                        bestAnyKey = key;
+                    }
+                    const luma = r * 299 + g * 587 + b * 114;
+                    if (luma >= 32000 && count > bestNonInkCount) {
+                        bestNonInkCount = count;
+                        bestNonInkKey = key;
+                    }
+                }
+            }
+            if (opaque === 0 || (area >= 4 && opaque * 4 < area)) continue;
+            const chosen = bestNonInkKey >= 0 ? bestNonInkKey : bestAnyKey;
+            const doff = ((padY + dy) * dstW + (padX + dx)) * 4;
+            out[doff] = (chosen >> 16) & 255;
+            out[doff + 1] = (chosen >> 8) & 255;
+            out[doff + 2] = chosen & 255;
+            out[doff + 3] = 255;
+        }
+    }
+
+    return Object.freeze({ width: dstW, height: dstH, data: out });
+}
+
+/**
+ * Create ONE cached `14x16` RGBA model miniature resolver backed by
+ * `AssetManager` model sheets and `Compositor` identity palette swaps.
+ * Returns `null` ONLY when no model sheet is resident/loadable so
+ * `ChronicleLoom` falls back to the plain slate pawn per Spec §5.4.
+ */
+export function createLoomMiniatureResolver({
+    getAssets = () => null,
+    getCompositor = () => Compositor.shared(),
+    getWorld = () => null,
+    onAssetLoaded = null,
+    documentRef = globalThis.document,
+    maxEntries = LOOM_MINIATURE_CACHE_LIMIT,
+} = {}) {
+    const cache = new Map();
+    const pendingLoads = new Set();
+
+    function resolve(actor, dims = {}) {
+        const assets = getAssets?.();
+        if (!assets) return null;
+
+        const worldAgent = actor?.agentId ? getWorld?.()?.agents?.get?.(actor.agentId) : null;
+        const provider = actor?.provider || worldAgent?.provider || '';
+        const model = actor?.model || worldAgent?.model || null;
+        const effort = actor?.effort || worldAgent?.effort || null;
+        const agentId = actor?.agentId || worldAgent?.id || null;
+
+        const identity = getModelVisualIdentity(model, effort, provider, agentId);
+        const providerKey = providerPaletteKey({ provider, model });
+        const paletteKey = actor?.paletteKey
+            || identity?.paletteKey
+            || (providerKey !== 'default' ? providerKey : 'claude');
+        const primarySpriteId = actor?.spriteId || identity?.spriteId || null;
+        const fallbackBaseId = providerKey && providerKey !== 'default'
+            ? `agent.${providerKey}.base`
+            : null;
+
+        const readSheet = (id) => {
+            if (!id || typeof assets.get !== 'function') return null;
+            if (assets.missing?.has?.(id)) return null;
+            return assets.get(id, { request: false }) || null;
+        };
+
+        let spriteId = primarySpriteId;
+        let sheet = readSheet(spriteId);
+        if (!sheet && primarySpriteId?.startsWith('agent.') && typeof assets.requestCharacterAssets === 'function') {
+            if (!pendingLoads.has(primarySpriteId)) {
+                pendingLoads.add(primarySpriteId);
+                Promise.resolve(assets.requestCharacterAssets(primarySpriteId))
+                    .then((loaded) => {
+                        pendingLoads.delete(primarySpriteId);
+                        if (loaded) onAssetLoaded?.(primarySpriteId);
+                    })
+                    .catch(() => {
+                        pendingLoads.delete(primarySpriteId);
+                    });
+            }
+        }
+        if (!sheet && fallbackBaseId && fallbackBaseId !== primarySpriteId) {
+            sheet = readSheet(fallbackBaseId);
+            if (sheet) spriteId = fallbackBaseId;
+        }
+        if (!sheet) return null;
+
+        const variant = agentPaletteVariant(agentId || actor?.identityKey || '', model || '', paletteKey);
+        const teamTrim = parseTrimColor(actor?.trim) ? String(actor.trim).toLowerCase() : null;
+        const entry = assets.getEntry?.(spriteId) || null;
+        const accessory = resolveHeadAccessory({
+            effortAccessory: identity?.effortAccessory || null,
+            allowEffort: identity?.allowRuntimeEffortAccessory !== false,
+            agentId,
+            headCovered: entry?.headCovered === true,
+            headBare: entry?.headBare === true,
+        });
+
+        const width = Math.max(1, Math.trunc(Number(dims?.width) || LOOM_GRID.actorWidth));
+        const height = Math.max(1, Math.trunc(Number(dims?.height) || LOOM_GRID.actorHeight));
+        const compositor = getCompositor?.() || null;
+        const useCompositor = Boolean(
+            compositor
+            && typeof compositor.assets?.get === 'function'
+            && !sheet.data
+            && (documentRef?.createElement || typeof globalThis.OffscreenCanvas === 'function'),
+        );
+        const cacheKey = [
+            spriteId,
+            sourceGeneration(sheet),
+            paletteKey,
+            variant,
+            teamTrim || '_',
+            accessory || '_',
+            useCompositor ? 'c' : 'r',
+            `${width}x${height}`,
+        ].join('|');
+
+        if (cache.has(cacheKey)) {
+            const hit = cache.get(cacheKey);
+            cache.delete(cacheKey);
+            cache.set(cacheKey, hit);
+            return hit;
+        }
+
+        let miniature = null;
+        if (useCompositor) {
+            try {
+                const idleCell = avatarIdleCell(compositor, spriteId, paletteKey, variant, accessory, teamTrim);
+                if (idleCell) {
+                    miniature = extractLoomMiniatureRgba(idleCell, {
+                        width,
+                        height,
+                        alreadyComposited: true,
+                        documentRef,
+                    });
+                }
+            } catch {
+                miniature = null;
+            }
+        }
+        if (!miniature) {
+            miniature = extractLoomMiniatureRgba(sheet, {
+                width,
+                height,
+                paletteSource: entry?.paletteSource || null,
+                trimRamp: assets.palettes?.[paletteKey]?.trim || null,
+                paletteVariant: variant,
+                teamTrim,
+                alreadyComposited: false,
+                documentRef,
+            });
+        }
+        if (!miniature) return null;
+
+        while (cache.size >= maxEntries) {
+            cache.delete(cache.keys().next().value);
+        }
+        cache.set(cacheKey, miniature);
+        return miniature;
+    }
+
+    resolve.clearCache = () => {
+        cache.clear();
+        pendingLoads.clear();
+    };
+    resolve.cacheSize = () => cache.size;
+    return resolve;
+}
+
 /**
  * Weave and rasterize today's latest active (or covered) 96x72 Loom of Days
  * panel for the Archive cutaway's rear-wall frame (§5.2 / §5.4). Returns
@@ -162,10 +547,14 @@ export function buildArchiveLoomPanelCanvas({
     dateKey = chronicleDateKey(),
     hour = null,
     closed = false,
+    endTs = null,
     resolveMiniature = null,
     documentRef = globalThis.document,
 } = {}) {
-    const dayModel = weaveDay(Array.isArray(events) ? events : [], coverage ?? null, sky ?? null, { dateKey });
+    const dayModel = weaveDay(Array.isArray(events) ? events : [], coverage ?? null, sky ?? null, {
+        dateKey,
+        ...(endTs != null ? { endTs } : {}),
+    });
     const panel = selectArchiveLoomPanel(dayModel, { hour });
     if (!panel) {
         return {
@@ -196,6 +585,7 @@ export function buildArchiveLoomPanelCanvas({
         const ctx = typeof canvas?.getContext === 'function' ? canvas.getContext('2d') : null;
         if (ctx && typeof ctx.fillRect === 'function') {
             drawLoomToCanvas(ctx, rgba, { layout: 'single-panel' });
+            canvas._loomRgba = rgba;
         } else {
             canvas = null;
         }
@@ -357,6 +747,7 @@ export class App {
         this._archiveLoomSeq = 0;
         this._archiveLoomClosedDate = null;
         this._archiveLoomPanelState = null;
+        this._loomMiniatureResolver = null;
         this._resizeWorldCanvas = null;
         this._resizeObserver = null;
         this._resizeHandle = null;
@@ -722,9 +1113,11 @@ export class App {
                 onVisualBeatChange,
                 onAudioReady: audio => {
                     onVisualBeatChange(audio?.getVisualBeat?.() ?? null);
-                    audio?.directors?.bgm?.setDayEventsProvider?.(({ day } = {}) => (
-                        this.chronicleLog?.readDay?.(day) ?? []
-                    ));
+                    audio?.directors?.bgm?.setDayEventsProvider?.(async ({ day } = {}) => {
+                        if (!this.chronicleLog) return [];
+                        await Promise.resolve(this.chronicleLog.flush?.()).catch(() => {});
+                        return (await this.chronicleLog.readDay?.(day)) ?? [];
+                    });
                 },
                 frameAttention: () => {
                     if (this.modeManager?.getCurrentMode() === 'dashboard') return false;
@@ -1706,7 +2099,11 @@ export class App {
                 this.assets?.requestCharacterAssets?.(id, {
                     signal: this._bootController?.signal,
                 })
-            )).catch((error) => {
+            )).then((loaded) => {
+                if (loaded && !this._destroyed && this.renderer?.buildingRenderer) {
+                    this._scheduleArchiveLoomRefresh();
+                }
+            }).catch((error) => {
                 if (!this._destroyed) {
                     console.warn('[App] Character assets failed to load:', error.message);
                 }
@@ -1910,6 +2307,26 @@ export class App {
         document.addEventListener('keydown', this._onDeferredModalIntent, true);
     }
 
+    _getLoomMiniatureResolver() {
+        if (!this._loomMiniatureResolver) {
+            this._loomMiniatureResolver = createLoomMiniatureResolver({
+                getAssets: () => this.assets || this.renderer?.assets || null,
+                getCompositor: () => this.renderer?.compositor || Compositor.shared(),
+                getWorld: () => this.world,
+                onAssetLoaded: () => {
+                    if (!this._destroyed && this.chronicleLog) {
+                        this._scheduleArchiveLoomRefresh();
+                    }
+                },
+            });
+        }
+        return this._loomMiniatureResolver;
+    }
+
+    _resolveLoomMiniature(actor, dims) {
+        return this._getLoomMiniatureResolver()(actor, dims);
+    }
+
     async _openChroniclePanel() {
         if (!this._chroniclePanelLoadPromise) {
             this._chroniclePanelLoadPromise = Promise.all([
@@ -1924,6 +2341,7 @@ export class App {
                     usageGetter: () => this.latestUsage,
                     toast: this.toast,
                     liveHistory: !this.simMode,
+                    loomMiniatureResolver: this._getLoomMiniatureResolver(),
                     onExportTapestry: data => this._exportTapestry(data),
                 });
                 this.chroniclePanel = panel;
@@ -1937,7 +2355,13 @@ export class App {
         return panel?.open?.();
     }
 
-    async _exportTapestry(data) {
+    async _exportTapestry(inputData) {
+        const isToday = !inputData?.dateKey || inputData.dateKey === chronicleDateKey();
+        const data = {
+            ...inputData,
+            resolveMiniature: inputData?.resolveMiniature || this._getLoomMiniatureResolver(),
+            ...(isToday ? { loomOptions: { ...(inputData?.loomOptions || {}), endTs: Date.now() } } : {}),
+        };
         const { renderChronicleTapestry, tapestryFileName } = await import('./shared/ChronicleTapestry.js');
         const fromDashboard = this.modeManager.getCurrentMode() === 'dashboard';
         if (fromDashboard) this.modeManager.switchMode('character');
@@ -2294,10 +2718,11 @@ export class App {
         }));
 
         this._eventUnsubscribers.push(eventBus.on('audio:evensong', (payload = {}) => {
-            if (this._destroyed) return;
+            if (this._destroyed || payload?.active !== true) return;
             const ts = Number.isFinite(Number(payload?.ts)) ? Number(payload.ts) : Date.now();
-            const targetDateKey = typeof payload?.dateKey === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(payload.dateKey)
-                ? payload.dateKey
+            const rawDateKey = payload?.day || payload?.dateKey;
+            const targetDateKey = typeof rawDateKey === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(rawDateKey.trim())
+                ? rawDateKey.trim()
                 : chronicleDateKey(ts);
             const targetHour = Number.isInteger(payload?.hour) ? payload.hour : null;
             this._archiveLoomClosedDate = targetDateKey;
@@ -2318,6 +2743,7 @@ export class App {
                         closed: true,
                         dateKey: targetDateKey,
                         hour: targetHour,
+                        endTs: ts,
                     }))
                     .catch(() => {}),
             );
@@ -2339,12 +2765,14 @@ export class App {
         closed = null,
         dateKey = null,
         hour = null,
+        endTs = null,
         documentRef = globalThis.document,
     } = {}) {
         if (this._destroyed || !this.chronicleLog) return null;
+        const todayKey = chronicleDateKey();
         const targetDateKey = typeof dateKey === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateKey)
             ? dateKey
-            : chronicleDateKey();
+            : todayKey;
         const isClosed = closed !== null ? Boolean(closed) : (this._archiveLoomClosedDate === targetDateKey);
         const seq = ++this._archiveLoomSeq;
 
@@ -2362,6 +2790,9 @@ export class App {
         ]);
         if (this._destroyed || seq !== this._archiveLoomSeq) return null;
 
+        const effectiveEndTs = endTs !== null && Number.isFinite(Number(endTs))
+            ? Number(endTs)
+            : (targetDateKey === todayKey ? Date.now() : null);
         const built = buildArchiveLoomPanelCanvas({
             events,
             coverage,
@@ -2369,6 +2800,8 @@ export class App {
             dateKey: targetDateKey,
             hour,
             closed: isClosed,
+            endTs: effectiveEndTs,
+            resolveMiniature: this._getLoomMiniatureResolver(),
             documentRef,
         });
         const panelSurface = built.canvas || built.rgba || null;
@@ -2654,6 +3087,8 @@ export class App {
         this._archiveLoomSeq++;
         this._archiveLoomClosedDate = null;
         this._archiveLoomPanelState = null;
+        this._loomMiniatureResolver?.clearCache?.();
+        this._loomMiniatureResolver = null;
         if (this._resizeHandle) {
             cancelAnimationFrame(this._resizeHandle);
             this._resizeHandle = null;
