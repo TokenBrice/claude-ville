@@ -29,6 +29,9 @@ export const HULL_ROLL_FRAMES = 5;
 export const HULL_ROLL_STEP_DEG = 1.5;
 const HULL_ROLL_CENTRE = 2;
 const TIMBER = materialClassId('timber');
+// W6.3 — the tide overlays' matter: the quay's wet course is stone, the
+// sandbar is earth.
+const TIDE_LAYER_MATERIALS = Object.freeze({ stone: materialClassId('stone'), earth: materialClassId('earth') });
 // Wake foam is matter on the water, not a water stop: the water shader's
 // stop cycle would swallow a foam-coloured texel, so it grades as unlit foam.
 const FOAM_MATERIAL = materialClassId('unlit');
@@ -404,13 +407,20 @@ export function liveryStrip(strip, accent, stripeRow) {
 // ─── Pose → records ──────────────────────────────────────────────────────────
 
 // `pose`: { id, strip, frame, x, y (waterline anchor, world px), bob (whole
-// texels, up), sink (whole texels, down), alpha (quantized), wake: null |
+// texels, up), tide (whole texels, up: a moored hull's lunar-tide lift, −L;
+// W6.3), sink (whole texels, down), alpha (quantized), wake: null |
 // { dirX, dirY, length } }. Every value is already whole-texel; the records
-// sit on the world texel grid.
+// sit on the world texel grid. The tide lifts the hull, its reflection, its
+// waterline collar and its lamps alike (they ride the same water).
+export function hullRise(pose) {
+    return (pose.bob | 0) + (pose.tide | 0);
+}
+
 export function hullGeometry(pose) {
     const { strip } = pose;
     const x0 = Math.round(pose.x) - strip.anchorX;
-    const top = Math.round(pose.y) - strip.anchorY - (pose.bob | 0) + (pose.sink | 0);
+    const rise = hullRise(pose);
+    const top = Math.round(pose.y) - strip.anchorY - rise + (pose.sink | 0);
     // A sinking hull loses the rows that pass below its waterline.
     const visible = Math.max(1, strip.anchorY + 1 - (pose.sink | 0));
     return {
@@ -421,7 +431,7 @@ export function hullGeometry(pose) {
         height: visible,
         // The reflection keeps the full hull through the lip row and mirrors
         // about the row under it (the record base).
-        reflectY: Math.round(pose.y) - strip.anchorY - (pose.bob | 0),
+        reflectY: Math.round(pose.y) - strip.anchorY - rise,
         reflectHeight: strip.anchorY + 1,
     };
 }
@@ -540,7 +550,7 @@ export function hullLampPoints(pose) {
     if (!local.length) return NO_LAMPS;
     // The texels sit `sink` lower while the hull sinks (hullGeometry crops
     // rows, it does not move the texels it keeps); a sunk lamp is gone.
-    const top = Math.round(pose.y) - pose.strip.anchorY - (pose.bob | 0) + (pose.sink | 0);
+    const top = Math.round(pose.y) - pose.strip.anchorY - hullRise(pose) + (pose.sink | 0);
     const out = [];
     for (const point of local) {
         if (point.y >= g.height) continue;
@@ -822,5 +832,48 @@ export function drawHullFallback(ctx, pose, { ungradedOverlay = false, lightGrad
     }
     const image = tinted(strip.liveryKey || strip.key || strip.spriteId, strip.image);
     ctx.drawImage(image, g.sx, 0, g.width, g.height, g.x, g.y, g.width, g.height);
+    ctx.restore();
+}
+
+// ─── W6.3 tide overlays ─────────────────────────────────────────────────────
+
+// One ground-band record per CoastBake tide layer (`tideOverlayLayers`): the
+// quay's wet course or the World Ash sandbar, opaque texels on the world
+// grid, under every hull, graded with the scene like the ground they lie on.
+export function tideOverlayRecord(layer) {
+    return {
+        id: `ground:${layer.id}`,
+        stableKey: layer.id,
+        textureKey: layer.textureKey,
+        source: layer.canvas,
+        sourceWidth: layer.width,
+        sourceHeight: layer.height,
+        sx: 0,
+        sy: 0,
+        sw: layer.width,
+        sh: layer.height,
+        x: layer.x,
+        y: layer.y,
+        width: layer.width,
+        height: layer.height,
+        alpha: 1,
+        material: TIDE_LAYER_MATERIALS[layer.material] ?? TIDE_LAYER_MATERIALS.stone,
+        elevation: 0,
+        emissive: 0,
+        occluder: 0,
+        footY: -1,
+        textureRevision: 0,
+    };
+}
+
+// The Canvas twin: one whole-pixel `drawImage` of the layer (world transform
+// applied), graded through the tint cache when it lands on the ungraded
+// overlay.
+export function drawTideOverlayFallback(ctx, layer, { ungradedOverlay = false, lightGrade = null } = {}) {
+    if (!layer?.canvas) return;
+    prepareTint(ungradedOverlay ? lightGrade : null);
+    ctx.save();
+    ctx.globalAlpha = 1;
+    ctx.drawImage(tinted(layer.textureKey, layer.canvas), layer.x, layer.y);
     ctx.restore();
 }

@@ -44,7 +44,8 @@ import {
 import { drawPixelFlame, fillPixelEllipse } from './PixelShapes.js';
 import { PENNANT_REST_FRAME, currentPennantTime, currentPennantWind, drawBranchPennon, drawPennant, pennantFrame } from './PixelPennant.js';
 
-import { anchorLampStrip, drawHullFallback, drawHullLamps, hullGeometry, hullHeadingDirection, hullLampPoints, hullLampStrip, hullMasthead, hullRecords, hullStrip, liveryStrip, rollFrameIndex } from './HarborHulls.js';
+import { anchorLampStrip, drawHullFallback, drawHullLamps, drawTideOverlayFallback, hullGeometry, hullHeadingDirection, hullLampPoints, hullLampStrip, hullMasthead, hullRecords, hullStrip, liveryStrip, rollFrameIndex, tideOverlayRecord } from './HarborHulls.js';
+import { tideOverlayLayers } from './CoastBake.js';
 import { normalizeLightSource } from './LightSourceRegistry.js';
 
 import {
@@ -294,6 +295,18 @@ const REPO_ANCHORAGE_ACTIVE_MS = 5 * 60 * 1000;
 // can replay every water/air detail above the direct GPU island.
 const OVERLAY_SAFE_SCENE_ITEMS = [];
 
+// W6.3 — the tide overlays (CoastBake `tideOverlayLayers`: the quay's wet
+// course, the World Ash sandbar) ride this category as ground-band items,
+// painted before every sorted sprite on the Canvas path.
+export const TIDE_OVERLAY_SORT_Y = -1e6;
+const NO_TIDE_ITEMS = Object.freeze([]);
+
+// The renderer's frame snapshot carries the tide (AtmosphereState
+// `lunarTide`); both harbor categories hand it on before they enumerate.
+function syncLunarTide(renderer) {
+    renderer?.harborTraffic?.setLunarTide?.(renderer?._lastAtmosphere?.lunarTide ?? null);
+}
+
 // 3.8 / M23 — the hulls themselves are matter: on the resident path they are
 // V9 records (painter depth, grade, lamp light, footprint occlusion) with a
 // `reflect` twin and a V-wake stamp in the ground band; elsewhere the Canvas
@@ -305,12 +318,30 @@ export const HARBOR_HULL_SCENE_CATEGORY = Object.freeze({
     // the back half, so the whole building hides it.
     behindSplitBuildings: true,
     enumerate({ renderer } = {}) {
-        return renderer?.harborTraffic?.enumerateHullDrawables?.() ?? [];
+        const harbor = renderer?.harborTraffic;
+        if (!harbor) return [];
+        syncLunarTide(renderer);
+        const hulls = harbor.enumerateHullDrawables?.() ?? [];
+        // A level tide adds nothing: the hull list goes out as it always has.
+        const tide = harbor.tideOverlayItems?.(renderer) ?? NO_TIDE_ITEMS;
+        if (!tide.length) return hulls;
+        const items = harbor._hullCategoryItems || (harbor._hullCategoryItems = []);
+        items.length = 0;
+        for (let index = 0; index < tide.length; index++) items.push(tide[index]);
+        for (let index = 0; index < hulls.length; index++) items.push(hulls[index]);
+        return items;
     },
     emitSceneCommands(item) {
         return item?.records?.length ? item.records : null;
     },
     canvasFallback(ctx, item, zoom, context = {}) {
+        if (item?.tideLayer) {
+            drawTideOverlayFallback(ctx, item.tideLayer, {
+                ungradedOverlay: context.ungradedOverlay === true,
+                lightGrade: context.renderer?._lastAtmosphere?.lightGrade || null,
+            });
+            return;
+        }
         if (!item?.pose) return;
         const renderer = context.renderer;
         drawHullFallback(ctx, item.pose, {
@@ -328,6 +359,7 @@ export const HARBOR_TRAFFIC_SCENE_CATEGORY = Object.freeze({
     enumerate({ renderer } = {}) {
         const items = OVERLAY_SAFE_SCENE_ITEMS;
         items.length = 0;
+        syncLunarTide(renderer);
         const wildlifeItems = WILDLIFE_SCENE_CATEGORY.enumerate({ renderer });
         for (let index = 0; index < wildlifeItems.length; index++) items.push(wildlifeItems[index]);
         const harborItems = renderer?.harborTraffic?.enumerateDrawables?.() ?? [];
@@ -1323,6 +1355,11 @@ export class HarborTraffic {
         this._drawableBuffer = [];
         this._hullItems = [];
         this._hullItemPool = new Map();
+        // W6.3 — the moored hulls' lunar-tide lift (whole texels up, = L) and
+        // the tide overlay items, rebuilt only when CoastBake's layers change.
+        this._tideLift = 0;
+        this._lunarTide = null;
+        this._tideItems = { layers: null, items: NO_TIDE_ITEMS };
         this._departingBuffer = [];
         this._convoyGroups = new Map();
         // 8.2 — release sloops by crown key (see launchReleaseSail).
@@ -3941,10 +3978,60 @@ export class HarborTraffic {
         }
     }
 
-    // v0.23 A3 / 3.8 — per-ship vertical bob in whole texels (positive = up),
+    // W6.3 — the frame's lunar tide (AtmosphereState `lunarTide`). A moored
+    // hull rides it `L` whole texels up (drawn −L in screen y: 2 up at high
+    // water, 2 down at low), its reflection, collar, lamps and marks with it;
+    // a level tide (L = 0, every pinned capture) moves nothing.
+    setLunarTide(tide) {
+        const level = Math.round(Number(tide?.level) || 0);
+        this._tideLift = Math.max(-2, Math.min(2, level));
+        this._lunarTide = tide || null;
+    }
+
+    // The tide's lift for one ship: moored (docked or at anchor, not under
+    // way, not mid storage transfer, not a release sloop) only. A state step,
+    // never animated; it holds under reduced motion.
+    _shipTideLift(ship = {}) {
+        if (!this._tideLift) return 0;
+        if (ship.status !== 'docked' && ship.status !== 'anchored') return 0;
+        if (ship.storageTransfer || ship.releaseSail || this._shipUnderWay(ship)) return 0;
+        return this._tideLift;
+    }
+
+    // W6.3 — the CoastBake tide overlay layers as harbor-hulls items (one
+    // ground record each), pooled by the layers array CoastBake caches.
+    tideOverlayItems(renderer) {
+        const layers = tideOverlayLayers(renderer, this._lunarTide);
+        if (!layers.length) return NO_TIDE_ITEMS;
+        if (this._tideItems.layers === layers) return this._tideItems.items;
+        // `wx`/`wy` (the layer's centre) cull the item; its `x`/`y` stay
+        // unset so no split building re-sorts a ground mark between halves.
+        const items = layers.map(layer => ({
+            kind: 'harbor-hulls',
+            id: layer.id,
+            sortY: TIDE_OVERLAY_SORT_Y,
+            x: NaN,
+            y: NaN,
+            wx: layer.x + layer.width / 2,
+            wy: layer.y + layer.height / 2,
+            pose: null,
+            tideLayer: layer,
+            records: [tideOverlayRecord(layer)],
+        }));
+        this._tideItems = { layers, items };
+        return items;
+    }
+
+    // The whole-texel rise every mark of a ship rides (positive = up): its
+    // heave plus a moored hull's tide lift.
+    _shipBob(ship = {}) {
+        return this._shipHeave(ship) + this._shipTideLift(ship);
+    }
+
+    // v0.23 A3 / 3.8 — per-ship vertical heave in whole texels (positive = up),
     // phase-seeded off the ship id so a docked flock heaves out of sync.
     // Departing hulls heave harder. Zero under reduced motion.
-    _shipBob(ship = {}) {
+    _shipHeave(ship = {}) {
         if (this.motionScale <= 0) return 0;
         const phase = (stableHash(ship.id || '') % 1000) / 1000 * Math.PI * 2;
         const heave = ship.status === 'departing' ? 1.7 : 1;
@@ -4029,7 +4116,8 @@ export class HarborTraffic {
             frame,
             x: ship.x,
             y: ship.y,
-            bob: this._shipBob(ship),
+            bob: this._shipHeave(ship),
+            tide: this._shipTideLift(ship),
             sink: sink.px,
             alpha,
             // Past the horizon's near edge the V wake is lost with the hull.

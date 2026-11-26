@@ -16,6 +16,11 @@
 //                                                     and motion budget
 //   atmosphere.lightGrade                           — C2 world grade
 //                                                     (GradeEvaluator)
+//   atmosphere.lunarTide                            — W6.3 equilibrium tide
+//                                                     `{ h, level, sandbarExposed }`
+//   atmosphere.skyKeys                              — W6.3 Lantern Night,
+//                                                     solstice alignment and
+//                                                     eclipse keys (SkyRenderer)
 //
 // The semantic phase fields exist at both the top level (canonical) AND nested
 // under `clock` (alias). Prefer the top-level fields inside this module's
@@ -24,6 +29,13 @@
 
 import { applyGradeToRgb, evaluateGrade, lampCourseAt } from './GradeEvaluator.js';
 import { ART_RAMPS } from '../../config/artPalette.js';
+import {
+    SYNODIC_MONTH_DAYS,
+    eclipseSkyKeyAt,
+    isLanternNight,
+    moonAgeDaysAt,
+    solsticeAlignmentAt,
+} from '../../config/villageCalendar.js';
 import { lookStrength } from './LookStrengths.js';
 import { readVillageForecast } from '../shared/VillageWeatherSettings.js';
 import { PRECIPITATING, groundOptionsFor, groundStateAt, isFrostMonth, precipitationIsFrozen, snowBucketOf, snowfallOn } from './GroundState.js';
@@ -1166,12 +1178,9 @@ function buildSun(minute, weather, solarDay, elevationNowDeg) {
     };
 }
 
-const SYNODIC_MONTH_DAYS = 29.530588853;
-const REFERENCE_NEW_MOON_MS = Date.UTC(2000, 0, 6, 18, 14);
-
-function moonAgeDays(utcMs) {
-    return ((utcMs - REFERENCE_NEW_MOON_MS) / 86400000 % SYNODIC_MONTH_DAYS + SYNODIC_MONTH_DAYS) % SYNODIC_MONTH_DAYS;
-}
+// The lunation clock (mean synodic month from a reference new moon) lives
+// in config/villageCalendar.js, shared with the sky keys.
+const moonAgeDays = moonAgeDaysAt;
 
 // LA-4a — the phase follows the instant's age, so the fill (the grade's
 // moon term, the moon's road) changes smoothly instead of stepping at
@@ -1211,7 +1220,9 @@ const MOON_UP_DEG = 93;
 const MOON_HORIZON_FADE = 0.06;
 const MOON_NIGHT_RAMP = 0.08;
 
-// 0 at moonrise, 1 at moonset (clamped outside), and the rise/set fade.
+// 0 at moonrise, 1 at moonset (clamped outside), and the rise/set fade;
+// also the instant, the moon's age and the sun's hour angle it read (the
+// lunar tide and the eclipse keys share them).
 function moonArc(date, minute, solar, site) {
     const ruled = typeof site?.offsetMinutes === 'function';
     const offsetNow = ruled ? siteOffsetAt(date, site) : -date.getTimezoneOffset();
@@ -1225,11 +1236,17 @@ function moonArc(date, minute, solar, site) {
     const sunHourDeg = (minute - solar.solarNoonMinute + solar.offsetMinutes - offsetNow) / 4;
     const hourDeg = ((((sunHourDeg - elongationDeg + 180) % 360) + 360) % 360) - 180;
     const arc = clamp((hourDeg + MOON_UP_DEG) / (2 * MOON_UP_DEG));
-    return { arc, ageDays, fade: smoothstep(arc / MOON_HORIZON_FADE) * smoothstep((1 - arc) / MOON_HORIZON_FADE) };
+    return {
+        arc,
+        ageDays,
+        sunHourDeg,
+        instantMs,
+        fade: smoothstep(arc / MOON_HORIZON_FADE) * smoothstep((1 - arc) / MOON_HORIZON_FADE),
+    };
 }
 
-function buildMoon(minute, phase, phaseProgress, weather, date, solar, site) {
-    const { arc, ageDays, fade } = moonArc(date, minute, solar, site);
+function buildMoon(minute, phase, phaseProgress, weather, date, solar, site, arcState = null) {
+    const { arc, ageDays, fade } = arcState || moonArc(date, minute, solar, site);
     const nightWeight = phase === 'night'
         ? smoothstep(phaseProgress / MOON_NIGHT_RAMP) * smoothstep((1 - phaseProgress) / MOON_NIGHT_RAMP)
         : 0;
@@ -1253,6 +1270,156 @@ function buildMoon(minute, phase, phaseProgress, weather, date, solar, site) {
         // the fill ramps with it (moonFillFor), so a moon already high at
         // either edge of the night eases in and out instead of stepping.
         nightWeight,
+    };
+}
+
+// ---------------------------------------------------------------------------
+// W6.3 (spec 04 §5.6) — the real lunar tide: the equilibrium semidiurnal
+// tide from the two bodies the sky already computes. No table, no station
+// data. `localSolarHours` is the site's apparent solar time (12 at the real
+// sun's transit, the same hour angle the drawn moon reads), `moonAgeDays`
+// the lunation clock's age:
+//
+//   H_sun  = 2π (localSolarHours − 12) / 24
+//   E      = 2π moonAgeDays / 29.530588853
+//   H_moon = H_sun − E
+//   h      = (cos 2 H_moon + 0.46 cos 2 H_sun) / 1.46        in [−1, 1]
+//   L      = clamp(round(2 h), −2, +2)    five levels, 0.1 of hysteresis on h
+//
+// Two highs and two lows every 24 h 50 min; springs at new and full moon
+// (|h| reaches 1), neaps at the quarters (|h| ≤ 0.37, L stays in −1 … +1).
+// The World Ash sandbar opens only at `h ≤ −0.92` (within about two days of
+// a spring, for about an hour and a half round each low water). A level is
+// a state step on the minute; nothing animates. It is the lunar tide for the
+// site's longitude, never a prediction for a real harbour.
+export const LUNAR_TIDE_SUN_SHARE = 0.46;
+export const LUNAR_TIDE_HYSTERESIS = 0.1;
+export const LUNAR_TIDE_SANDBAR_H = -0.92;
+export const LUNAR_TIDE_MAX_LEVEL = 2;
+export const LUNAR_TIDE_DESCRIPTION = "the lunar tide for the site's longitude, not a prediction for a real harbour";
+
+/** The equilibrium tide height `h` in [−1, 1]. Pure. */
+export function lunarTideHeight(localSolarHours, moonAgeDaysValue) {
+    const hSun = 2 * Math.PI * (Number(localSolarHours) - 12) / 24;
+    const elongation = 2 * Math.PI * Number(moonAgeDaysValue) / SYNODIC_MONTH_DAYS;
+    const hMoon = hSun - elongation;
+    return (Math.cos(2 * hMoon) + LUNAR_TIDE_SUN_SHARE * Math.cos(2 * hSun)) / (1 + LUNAR_TIDE_SUN_SHARE);
+}
+
+function rawTideLevel(h) {
+    return Math.max(-LUNAR_TIDE_MAX_LEVEL, Math.min(LUNAR_TIDE_MAX_LEVEL, Math.round(2 * h)));
+}
+
+/**
+ * The tide level L for height `h`, held by `previousLevel`: level P covers
+ * h in [(P − 0.5) / 2, (P + 0.5) / 2], and is left only once h runs half the
+ * hysteresis (0.05) past that edge, so the rising and falling thresholds of
+ * every step stand LUNAR_TIDE_HYSTERESIS (0.1) apart. Pure.
+ */
+export function lunarTideLevel(h, previousLevel = null) {
+    const height = Number(h);
+    if (!Number.isFinite(height)) return 0;
+    const raw = rawTideLevel(height);
+    const prev = Number.isInteger(previousLevel) ? previousLevel : null;
+    if (prev === null || raw === prev || Math.abs(prev) > LUNAR_TIDE_MAX_LEVEL) return raw;
+    const half = LUNAR_TIDE_HYSTERESIS / 2;
+    const low = (prev - 0.5) / 2 - half;
+    const high = (prev + 0.5) / 2 + half;
+    return height >= low && height <= high ? prev : raw;
+}
+
+// What a pinned clock (a fixed timeline, an hour override or a frozen
+// snapshot: every golden and parity capture) carries: the level tide, so a
+// pinned frame costs nothing and never moves with the moon.
+export const NEUTRAL_LUNAR_TIDE = Object.freeze({
+    h: 0,
+    level: 0,
+    sandbarExposed: false,
+    source: 'pinned',
+    localSolarHours: null,
+    moonAgeDays: null,
+    longitude: null,
+    description: LUNAR_TIDE_DESCRIPTION,
+});
+
+function tideState(h, previousLevel, { source = 'lunar', localSolarHours = null, moonAgeDays: age = null, longitude = null } = {}) {
+    return {
+        h,
+        level: lunarTideLevel(h, previousLevel),
+        sandbarExposed: h <= LUNAR_TIDE_SANDBAR_H,
+        source,
+        localSolarHours,
+        moonAgeDays: age,
+        longitude,
+        description: LUNAR_TIDE_DESCRIPTION,
+    };
+}
+
+/**
+ * The tide a QA override forces: a level −2 … +2 (h = level / 2, the
+ * sandbar shut), `'sandbar'` (the lowest spring: h = −1, L = −2, the sandbar
+ * open), or `{ h }` (any height, its level and gate derived). Null for no
+ * override or an unknown value.
+ */
+export function lunarTideOverrideState(override) {
+    if (override == null) return null;
+    if (override === 'sandbar') return tideState(-1, null, { source: 'override' });
+    if (typeof override === 'object' && Number.isFinite(Number(override.h))) {
+        return tideState(clamp(Number(override.h), -1, 1), null, { source: 'override' });
+    }
+    const level = Number(override);
+    if (!Number.isInteger(level) || Math.abs(level) > LUNAR_TIDE_MAX_LEVEL) return null;
+    return { ...tideState(level / 2, null, { source: 'override' }), level, sandbarExposed: false };
+}
+
+function lunarTideFor(arcState, site, previousLevel) {
+    const localSolarHours = ((12 + arcState.sunHourDeg / 15) % 24 + 24) % 24;
+    const h = lunarTideHeight(localSolarHours, arcState.ageDays);
+    return tideState(h, previousLevel, {
+        localSolarHours,
+        moonAgeDays: arcState.ageDays,
+        longitude: Number.isFinite(site?.lon) ? site.lon : null,
+    });
+}
+
+/**
+ * The live lunar tide at `date` for the village's solar site (`site` as
+ * `normalizeSolarSite` takes it, else the pinned or system site), held by
+ * `previousLevel`. `{ h, level, sandbarExposed, source, localSolarHours,
+ * moonAgeDays, longitude, description }`. Pure.
+ */
+export function lunarTideAt(date, site = null, previousLevel = null) {
+    const when = normalizeDate(date);
+    const { day, site: village } = solarStateForDate(when, site);
+    return lunarTideFor(moonArc(when, minutesSinceMidnight(when), day, village), village, previousLevel);
+}
+
+// W6.3 — the sky keys (config/villageCalendar.js predicates) for one
+// snapshot. Each is off (false / null) on an ordinary date; an eclipse keys
+// only while its body is up over the village.
+function buildSkyKeys({ date, minute, phase, weather, cloudCover, sun, moon, arcState, solarDay }) {
+    const lanternNight = isLanternNight({
+        moonAgeDays: arcState.ageDays,
+        phase,
+        minuteOfDay: minute,
+        weatherType: weather.type,
+        cloudCover,
+        precipitation: weather.precipitation,
+    });
+    const solstice = solsticeAlignmentAt({
+        month: date.getMonth() + 1,
+        day: date.getDate(),
+        minuteOfDay: minute,
+        solarNoonMinute: solarDay?.solarNoonMinute,
+        sunUp: sun?.visible === true,
+    });
+    const key = eclipseSkyKeyAt(arcState.instantMs);
+    const eclipse = key && (key.body === 'sun' ? sun?.visible === true : moon?.visible === true) ? key : null;
+    return {
+        lanternNight,
+        solstice,
+        eclipse,
+        active: lanternNight || solstice?.aligned === true || eclipse !== null,
     };
 }
 
@@ -1590,6 +1757,7 @@ export function createAtmosphereSnapshot({
     timelineKnots = null,
     forecast = null,
     solarSite = null,
+    lunarTide = null,
 } = {}) {
     const effectiveDate = applyHourOverride(normalizeDate(now), hourOverride);
     const minute = minutesSinceMidnight(effectiveDate);
@@ -1607,7 +1775,8 @@ export function createAtmosphereSnapshot({
     const intensity = clamp(weather.intensity);
     const cloudCover = Number.isFinite(weather.cloudCover) ? weather.cloudCover : preset.cloudCover;
     const transition = phaseTransition(phase, phaseProgress);
-    const moon = buildMoon(minute, phase, phaseProgress, weather, effectiveDate, solarDay, site);
+    const arcState = moonArc(effectiveDate, minute, solarDay, site);
+    const moon = buildMoon(minute, phase, phaseProgress, weather, effectiveDate, solarDay, site, arcState);
     const lighting = buildLighting(minute, shift, phase, phaseProgress, weather, moon);
     const timeBucket = Math.floor(dayProgress * 96);
     const lightBucket = Math.round(phaseLight(phase, phaseProgress) * 100);
@@ -1621,6 +1790,14 @@ export function createAtmosphereSnapshot({
     const snowfall = snowfallOn(effectiveDate.getMonth(), weather) ? lookStrength('ey4') : 0;
     const lightGrade = lightGradeFor(minute, weather, lighting.moonFill, shift, snowfall);
     const sunElevationNow = sunElevationAt(solarDay, minute);
+    const sun = buildSun(minute, weather, solarDay, sunElevationNow);
+    // W6.3 — the tide: a QA override first, then the level tide on a pinned
+    // clock (fixed timeline, hour override, frozen), else the live tide held
+    // by the caller's previous level.
+    const tideOptions = lunarTide && typeof lunarTide === 'object' ? lunarTide : {};
+    const pinnedTide = tideOptions.pinned === true || hourOverride != null || timelineMode === 'fixed';
+    const tide = lunarTideOverrideState(tideOptions.override)
+        || (pinnedTide ? NEUTRAL_LUNAR_TIDE : lunarTideFor(arcState, site, tideOptions.previousLevel ?? null));
 
     return {
         phase,
@@ -1653,7 +1830,7 @@ export function createAtmosphereSnapshot({
         sky: {
             palette: skyPaletteFor(lightGrade),
             assetIds: SKY_ASSETS,
-            sun: buildSun(minute, weather, solarDay, sunElevationNow),
+            sun,
             moon,
             starsAlpha: starAlpha(lightGrade, weather),
             cloudCover,
@@ -1664,6 +1841,9 @@ export function createAtmosphereSnapshot({
         // contract for marks and tethers.
         lightGrade,
         lighting,
+        // W6.3 — the equilibrium lunar tide (spec 04 §5.6) and the sky keys.
+        lunarTide: tide,
+        skyKeys: buildSkyKeys({ date: effectiveDate, minute, phase, weather, cloudCover, sun, moon, arcState, solarDay }),
         reactions: buildReactions(phase, phaseProgress, weather, lighting),
         motion: {
             driftEnabled,
@@ -1686,6 +1866,10 @@ export class AtmosphereState {
         this._timelineKnots = null;
         this._frozenDate = null;
         this._freezingState = false;
+        // W6.3 — the tide level the last snapshot showed (its hysteresis) and
+        // the QA override (`setLunarTideOverride`).
+        this._lunarTideLevel = null;
+        this._lunarTideOverride = null;
         this._lastSnapshot = null;
         this._previousHelper = null;
         this._debugHelperInstalled = false;
@@ -1704,7 +1888,14 @@ export class AtmosphereState {
             timelineMode: this._timelineMode,
             timelineKnots: this._timelineKnots,
             forecast,
+            lunarTide: {
+                previousLevel: this._lunarTideLevel,
+                override: this._lunarTideOverride,
+                pinned: this._frozenDate !== null,
+            },
         });
+        const tide = this._lastSnapshot.lunarTide;
+        this._lunarTideLevel = tide.source === 'lunar' ? tide.level : null;
         // C-W2 — everything `groundStateAt` needs to integrate the same
         // history the live weather resolves from.
         this._lastSnapshot.timeline = {
@@ -1756,6 +1947,14 @@ export class AtmosphereState {
         return this.snapshot();
     }
 
+    // QA and verification only (W6.3): force the tide to a level −2 … +2,
+    // `'sandbar'` (the lowest spring, sandbar open) or `{ h }`; `null`
+    // returns to the live lunar tide (or the level tide on a pinned clock).
+    setLunarTideOverride(levelOrNull = null) {
+        this._lunarTideOverride = lunarTideOverrideState(levelOrNull) ? levelOrNull : null;
+        return this.snapshot();
+    }
+
     setSeed(seed) {
         const parsed = Number(seed);
         this._seedOverride = Number.isFinite(parsed) ? parsed >>> 0 : null;
@@ -1795,6 +1994,8 @@ export class AtmosphereState {
         this._timelineMode = 'auto';
         this._timelineKnots = null;
         this._frozenDate = null;
+        this._lunarTideOverride = null;
+        this._lunarTideLevel = null;
         setSolarSite(null);
         return this.snapshot();
     }
@@ -1838,6 +2039,7 @@ export class AtmosphereState {
             setTimelineMode: (mode) => this.setTimelineMode(mode),
             setTimelineKnots: (knots) => this.setTimelineKnots(knots),
             setSolarSite: (site) => this.setSolarSite(site),
+            setLunarTideOverride: (levelOrNull) => this.setLunarTideOverride(levelOrNull),
             freeze: () => this.freeze(),
             clear: () => this.clear(),
             snapshot: () => this.snapshot(),

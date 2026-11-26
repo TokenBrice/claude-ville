@@ -4,6 +4,7 @@
 // transform — viewport-fixed.
 
 import { AtmosphereState, sampleSkyLadder } from './AtmosphereState.js';
+import { ART_RAMPS } from '../../config/artPalette.js';
 import { canvasPixelCount, releaseCanvasBackingStore } from './CanvasBudget.js';
 import { ungradeRgb } from './CanvasGrade.js';
 import { applyGradeToRgb } from './GradeEvaluator.js';
@@ -367,6 +368,96 @@ export function auroraPhaseIndex(ribbon, timeMs, motionScale = 1) {
 // haze lives in WorldFrameRenderer (ground-atmosphere stage).
 export const SKY_WEATHER_PLATE_SPACE = 'vertical-canvas';
 
+// W6.3 — the sky keys (`atmosphere.skyKeys`, config/villageCalendar.js):
+// Lantern Night, the Solstice Belfry Alignment and the 2026–2027 eclipses.
+// Every key leans named sky-plate stops toward a master-palette ramp stop by
+// a stepped share (quarters for an eclipse), so a keyed plate is still the
+// one band ladder; on an ordinary date `skyKeyPalette` returns the palette
+// object itself and the plate, its cache key and every pixel stay as they
+// were.
+export const SKY_KEY_TINTS = Object.freeze({
+    // A clear full-moon evening: the lanterns' warmth on the horizon haze.
+    lanternNight: Object.freeze({ hex: ART_RAMPS.emissive[0], share: 0.12, stops: Object.freeze(['horizon', 'haze']) }),
+    // The solstice noon over the belfry: a thin gold course in the mid sky.
+    solstice: Object.freeze({ hex: ART_RAMPS.trimGold[2], share: 0.1, stops: Object.freeze(['midBand', 'horizon']) }),
+});
+// The umbra (a solar eclipse key): the sky toward the void and deep-water
+// ramps overhead, the 360° sunset ring on the horizon, at most UMBRA_MAX_SHARE
+// at totality.
+export const UMBRA_STOPS = Object.freeze({
+    zenith: ART_RAMPS.void[2],
+    upperBand: ART_RAMPS.deepWater[0],
+    midBand: ART_RAMPS.deepWater[1],
+    horizon: ART_RAMPS.trimGold[1],
+    haze: ART_RAMPS.emissive[0],
+});
+export const UMBRA_MAX_SHARE = 0.8;
+// A lunar eclipse dims the moonlit sky a little: the upper courses toward
+// the void ramp.
+const LUNAR_DIM_STOPS = Object.freeze({ zenith: ART_RAMPS.void[1], upperBand: ART_RAMPS.void[2], midBand: ART_RAMPS.deepWater[0] });
+const LUNAR_DIM_MAX_SHARE = 0.2;
+// The blood moon: the disc toward the crimson cloth ramp, its glow on the
+// darker crimson stop.
+export const BLOOD_MOON_HEX = ART_RAMPS.clothCrimson[1];
+export const BLOOD_MOON_MAX_SHARE = 0.6;
+const BLOOD_MOON_GLOW_HEX = ART_RAMPS.clothCrimson[0];
+const MOON_GLOW_RGB = Object.freeze([176, 208, 255]);
+// The umbra disc over the sun (void ramp) and the corona the halo turns to at
+// totality (snow ramp).
+const UMBRA_DISC_HEX = ART_RAMPS.void[1];
+const CORONA_HEX = ART_RAMPS.snow[3];
+const KEY_SHARE_STEPS = 16;
+
+function leanHex(hex, towardHex, share) {
+    const from = hexToRgb01(hex);
+    const to = hexToRgb01(towardHex);
+    const q = Math.round(clamp(share) * KEY_SHARE_STEPS) / KEY_SHARE_STEPS;
+    return rgb01Hex(from.map((channel, index) => channel + (to[index] - channel) * q));
+}
+
+/** The eclipse key's strength for one body (0 when that body is not keyed). */
+export function eclipseStrength(skyKeys, body) {
+    const eclipse = skyKeys?.eclipse;
+    return eclipse && eclipse.body === body ? clamp(Number(eclipse.strength) || 0) : 0;
+}
+
+/**
+ * The sky palette under the snapshot's sky keys. Returns `palette` itself
+ * (same object, no allocation) when no key touches the plate.
+ */
+export function skyKeyPalette(palette, skyKeys) {
+    if (!palette || !skyKeys?.active) return palette;
+    const umbra = eclipseStrength(skyKeys, 'sun');
+    const lunar = eclipseStrength(skyKeys, 'moon');
+    const lantern = skyKeys.lanternNight === true;
+    const aligned = skyKeys.solstice?.aligned === true;
+    if (!(umbra > 0) && !(lunar > 0) && !lantern && !aligned) return palette;
+    const out = { ...palette };
+    if (umbra > 0) {
+        for (const [stop, hex] of Object.entries(UMBRA_STOPS)) {
+            if (out[stop]) out[stop] = leanHex(out[stop], hex, umbra * UMBRA_MAX_SHARE);
+        }
+    }
+    if (lunar > 0) {
+        for (const [stop, hex] of Object.entries(LUNAR_DIM_STOPS)) {
+            if (out[stop]) out[stop] = leanHex(out[stop], hex, lunar * LUNAR_DIM_MAX_SHARE);
+        }
+    }
+    for (const [name, on] of [['solstice', aligned], ['lanternNight', lantern]]) {
+        if (!on) continue;
+        const tint = SKY_KEY_TINTS[name];
+        for (const stop of tint.stops) if (out[stop]) out[stop] = leanHex(out[stop], tint.hex, tint.share);
+    }
+    return out;
+}
+
+/** A short token naming the active sky keys ('' on an ordinary date). */
+export function skyKeyToken(skyKeys) {
+    if (!skyKeys?.active) return '';
+    const eclipse = skyKeys.eclipse ? `${skyKeys.eclipse.body}${skyKeys.eclipse.strength}` : '';
+    return `k${skyKeys.lanternNight ? 'L' : ''}${skyKeys.solstice?.aligned ? 'S' : ''}${eclipse}`;
+}
+
 export class SkyRenderer {
     constructor({ assets } = {}) {
         this.assets = assets || null;
@@ -448,7 +539,7 @@ export class SkyRenderer {
         const zoom = camera?.zoom || 1;
         const timeBucket = Math.floor(performance.now() / refreshMs);
         const graded = this._backdropGraded ? `g${atmosphere.lightGrade?.cacheKey || ''}` : 'f';
-        const key = `${canvas.width}x${canvas.height}@${dpr}|${atmosphere.cacheKey}|${graded}|${quantX},${quantY},${zoom}|${timeBucket}`;
+        const key = `${canvas.width}x${canvas.height}@${dpr}|${atmosphere.cacheKey}|${graded}|${quantX},${quantY},${zoom}|${timeBucket}${skyKeyToken(atmosphere.skyKeys)}`;
         if (this._frameCache && this._frameCacheKey === key) return this._frameCache;
 
         const width = Math.max(1, Math.round(canvas.width * dpr));
@@ -604,7 +695,7 @@ export class SkyRenderer {
     // thousand texels. Per frame: one zenith fill, one pattern fill, one
     // void fill, together one screen of fill — the same as the old blit.
     _drawPlate(ctx, canvas, camera, atmosphere) {
-        const palette = atmosphere.sky?.palette;
+        const palette = skyKeyPalette(atmosphere.sky?.palette, atmosphere.skyKeys);
         if (!palette) return;
         const zoom = camera?.zoom || 1;
         const cell = Math.max(1, Math.round(zoom));
@@ -833,9 +924,15 @@ export class SkyRenderer {
         const warmth = lighting.sunWarmth ?? 0;
         const bloomScale = lighting.sunBloomScale ?? 1;
         const glowRadius = radius * (3.2 + warmth * 2.2) * bloomScale;
-        const glowRgb = warmth > 0.05
-            ? [255, Math.round(214 - warmth * 50), Math.round(150 - warmth * 60)]
-            : [255, 236, 160];
+        // W6.3 — under an eclipse's umbra the glare drops with the key and,
+        // at totality, the halo is the pale corona.
+        const umbra = eclipseStrength(atmosphere.skyKeys, 'sun');
+        const glowRgb = umbra >= 1
+            ? hexToRgb255(CORONA_HEX)
+            : warmth > 0.05
+                ? [255, Math.round(214 - warmth * 50), Math.round(150 - warmth * 60)]
+                : [255, 236, 160];
+        const glowAlpha = umbra > 0 ? 1 - 0.75 * umbra : 1;
 
         ctx.save();
         // 1.3 — the glow is a stepped halo (three dithered courses on a 2 px
@@ -843,7 +940,7 @@ export class SkyRenderer {
         // gone.
         ctx.globalCompositeOperation = 'screen';
         ctx.globalAlpha = 1;
-        const halo = this._getSteppedGlowStamp(glowRadius, glowRgb, visibleSun.alpha * 0.34);
+        const halo = this._getSteppedGlowStamp(glowRadius, glowRgb, visibleSun.alpha * 0.34 * glowAlpha);
         ctx.drawImage(halo, Math.round(x - halo.width / 2), Math.round(y - halo.height / 2));
 
         // The canopy pass composites over the terrain so the sky's glare
@@ -867,8 +964,42 @@ export class SkyRenderer {
         ctx.imageSmoothingEnabled = false;
         const stamp = this._getSunStamp(radius, warmth, visibleSun.squashY ?? 1);
         ctx.drawImage(stamp, Math.round(x - stamp.width / 2), Math.round(y - stamp.height / 2));
+        if (umbra > 0) {
+            const umbraStamp = this._getUmbraStamp(radius, umbra);
+            if (umbraStamp) {
+                ctx.drawImage(umbraStamp.canvas, Math.round(x - umbraStamp.canvas.width / 2 + umbraStamp.offsetX), Math.round(y - umbraStamp.canvas.height / 2));
+            }
+        }
         ctx.restore();
         return true;
+    }
+
+    // W6.3 — the moon's disc over the sun under a solar eclipse key: a flat
+    // void-ramp pixel disc on the sun's 2 px cell, the sun's own radius, slid
+    // in from the west by the key's quarter step (centred at totality).
+    _getUmbraStamp(radius, strength) {
+        if (typeof document === 'undefined') return null;
+        const cell = SUN_STAMP_CELL_PX;
+        const rc = Math.max(4, Math.round(radius / cell));
+        const step = Math.round(clamp(strength) * 4) / 4;
+        const key = `${rc}|${step}`;
+        if (this._umbraStamp?.key === key) return this._umbraStamp;
+        releaseCanvasBackingStore(this._umbraStamp?.canvas);
+        const cells = rc * 2 + 2;
+        const canvas = document.createElement('canvas');
+        canvas.width = cells * cell;
+        canvas.height = cells * cell;
+        const o = canvas.getContext('2d');
+        o.fillStyle = UMBRA_DISC_HEX;
+        const centre = cells / 2;
+        for (let gy = 0; gy < cells; gy++) {
+            for (let gx = 0; gx < cells; gx++) {
+                if (Math.hypot((gx + 0.5 - centre) / rc, (gy + 0.5 - centre) / rc) > 1) continue;
+                o.fillRect(gx * cell, gy * cell, cell, cell);
+            }
+        }
+        this._umbraStamp = { key, canvas, offsetX: Math.round((1 - step) * rc * 1.8) * cell };
+        return this._umbraStamp;
     }
 
     // 1.3 — a stepped halo for the sun and moon: three flat courses (alpha
@@ -979,7 +1110,8 @@ export class SkyRenderer {
         const position = this._resolveSunPosition(camera, canvas, sun, radius);
         if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) return;
 
-        const alphaMul = Number.isFinite(options.alphaMul) ? options.alphaMul : 1;
+        const alphaMul = (Number.isFinite(options.alphaMul) ? options.alphaMul : 1)
+            * (1 - eclipseStrength(atmosphere.skyKeys, 'sun'));
         const baseAlpha = 0.10 * warmth * (sun.alpha ?? 0) * alphaMul;
         if (baseAlpha <= 0.002) return;
 
@@ -1139,9 +1271,11 @@ export class SkyRenderer {
                 (authoredPhase === 'crescent' && illumination > 0.10 && illumination < 0.31)
                 || ((authoredPhase === 'half' || authoredPhase === 'gibbous') && id === authoredPhaseId)
             );
+        const blood = eclipseStrength(atmosphere.skyKeys, 'moon');
         if (shouldUseAuthoredMoon) {
-            const img = this.assets.get(id);
+            const source = this.assets.get(id);
             const dims = this.assets.getDims(id);
+            const img = blood > 0 ? this._bloodMoonCanvas(source, dims.w, dims.h, `a|${id}`, blood) || source : source;
             const x = canvas.width * moon.xFrac - dims.w / 2;
             const y = canvas.height * moon.yFrac - dims.h / 2;
             ctx.save();
@@ -1220,7 +1354,8 @@ export class SkyRenderer {
         const y = canvas.height * moon.yFrac;
         const horizonClear = Number.isFinite(this._horizonY) ? (this._horizonY - y) * 1.05 : 54;
         const radius = Math.min(54, Math.max(36, horizonClear));
-        const halo = this._getMoonGlowStamp(radius, [176, 208, 255], MOON_GLOW_COURSES);
+        const blood = eclipseStrength(atmosphere?.skyKeys, 'moon');
+        const halo = this._getMoonGlowStamp(radius, blood > 0 ? hexToRgb255(BLOOD_MOON_GLOW_HEX) : MOON_GLOW_RGB, MOON_GLOW_COURSES);
         ctx.save();
         if (Number.isFinite(this._horizonY) && this._horizonY > 0) {
             ctx.beginPath();
@@ -1245,12 +1380,40 @@ export class SkyRenderer {
         ctx.save();
         ctx.globalAlpha = moon.alpha;
         this._drawMoonGlow(ctx, canvas, { ...moon, alpha: moon.alpha * (0.25 + illumination * 0.75) }, atmosphere);
-        const stamp = this._getCodeMoonStamp(r, squashY, isNew, waxing, illumination);
+        const codeStamp = this._getCodeMoonStamp(r, squashY, isNew, waxing, illumination);
+        const blood = eclipseStrength(atmosphere?.skyKeys, 'moon');
+        const stamp = codeStamp && blood > 0
+            ? this._bloodMoonCanvas(codeStamp, codeStamp.width, codeStamp.height, `c|${this._codeMoonStamp?.key}`, blood) || codeStamp
+            : codeStamp;
         if (stamp) {
             ctx.imageSmoothingEnabled = false;
             ctx.drawImage(stamp, Math.round(x - stamp.width / 2), Math.round(y - stamp.height / 2));
         }
         ctx.restore();
+    }
+
+    // W6.3 — the blood moon (a lunar eclipse key): the disc's own texels
+    // leaned toward the crimson cloth ramp by the key's quarter step
+    // (`source-atop`, so the disc's alpha and edge are untouched). One cached
+    // canvas per (disc, step).
+    _bloodMoonCanvas(source, width, height, sourceKey, strength) {
+        if (typeof document === 'undefined' || !source || !(width > 0) || !(height > 0)) return null;
+        const step = Math.round(clamp(strength) * 4) / 4;
+        const key = `${sourceKey}|${width}x${height}|${step}`;
+        if (this._bloodMoon?.key === key) return this._bloodMoon.canvas;
+        releaseCanvasBackingStore(this._bloodMoon?.canvas);
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const o = canvas.getContext('2d');
+        o.imageSmoothingEnabled = false;
+        o.drawImage(source, 0, 0, width, height);
+        o.globalCompositeOperation = 'source-atop';
+        o.globalAlpha = step * BLOOD_MOON_MAX_SHARE;
+        o.fillStyle = BLOOD_MOON_HEX;
+        o.fillRect(0, 0, width, height);
+        this._bloodMoon = { key, canvas };
+        return canvas;
     }
 
     // W2-B (§4.12) — integer pixel-disc fallback moon on the 2-px cell grid
@@ -1841,6 +2004,10 @@ export class SkyRenderer {
         this._godrayStamp = null;
         releaseCanvasBackingStore(this._codeMoonStamp?.canvas);
         this._codeMoonStamp = null;
+        releaseCanvasBackingStore(this._umbraStamp?.canvas);
+        this._umbraStamp = null;
+        releaseCanvasBackingStore(this._bloodMoon?.canvas);
+        this._bloodMoon = null;
         for (const stamp of this._glowStamps?.values() || []) releaseCanvasBackingStore(stamp);
         this._glowStamps?.clear();
         for (const strip of this._deck || []) releaseCanvasBackingStore(strip);
@@ -1881,6 +2048,14 @@ function hexToRgb01(hex) {
 
 function rgb01Css(rgb) {
     return `rgb(${rgb.map(channel => Math.round(clamp(channel) * 255)).join(', ')})`;
+}
+
+function rgb01Hex(rgb) {
+    return `#${rgb.map(channel => Math.round(clamp(channel) * 255).toString(16).padStart(2, '0')).join('')}`;
+}
+
+function hexToRgb255(hex) {
+    return hexToRgb01(hex).map(channel => Math.round(channel * 255));
 }
 
 // 1.3 — sparse: 48 stars per 1280×720 of sky, clamped to 40–140.

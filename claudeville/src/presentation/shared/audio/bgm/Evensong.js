@@ -1299,4 +1299,73 @@ export function validateEvensongGrammar(score) {
     return { ok: errors.length === 0, errors };
 }
 
+// ---------------------------------------------------------------------------
+// Live wiring (W6.3): the trigger's constants and the day's own ledger.
+
+// The soft chime (ActionableRouting HOUR_CHIME_SOFT) that calls Evensong in.
+export const EVENSONG_CHIME_HOUR = EVENSONG_END_HOUR;
+// Queued at the chime, Evensong starts in the breath after the band's
+// current visit; a day whose breath comes later than this has no Evensong.
+export const EVENSONG_QUEUE_CAP_MS = 4 * 60 * 1000;
+
+const LEDGER_KINDS = new Set(['commit', 'push', 'release', 'errored', 'mended']);
+const LEDGER_LIMIT = 1024;
+
+/** The local calendar day of `date` as `YYYY-MM-DD` (the clock's `localDate`). */
+export function evensongDayKey(date) {
+    const d = date instanceof Date ? date : new Date(date);
+    if (!Number.isFinite(d.getTime())) return null;
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/**
+ * The day's verified work as Evensong reads it, kept by the band director
+ * from the facts it already hears (`outcome:verified`, the watchtower's
+ * errors and mends). Each entry is reduced at once to its kind, its local
+ * minute and anonymous integers (the repo's pennant slot, the agent's hash
+ * slot): no repo or agent string is ever kept. `record(fact, at)` takes the
+ * fact's own time (never reads the clock); `events(day)` returns that local
+ * day's entries in `composeEvensong`'s input shape. FIFO-capped, deduplicated.
+ */
+export function createEvensongDayLedger({ limit = LEDGER_LIMIT } = {}) {
+    let entries = [];
+    const seen = new Set();
+    return {
+        record({ kind, repoSlot = null, agentSlot = null } = {}, at) {
+            const name = String(kind || '').toLowerCase();
+            if (!LEDGER_KINDS.has(name)) return false;
+            const when = at instanceof Date ? at : new Date(Number(at));
+            const day = evensongDayKey(when);
+            if (!day) return false;
+            const repo = Number.isInteger(repoSlot) && repoSlot >= 0 ? repoSlot : null;
+            const agent = Number.isInteger(agentSlot) && agentSlot >= 0 ? agentSlot : null;
+            const key = `${name}|${when.getTime()}|${repo}|${agent}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            entries.push(Object.freeze({
+                day,
+                key,
+                kind: name,
+                minuteOfDay: when.getHours() * 60 + when.getMinutes() + when.getSeconds() / 60,
+                ...(repo != null ? { repoSlot: repo } : {}),
+                ...(agent != null ? { agentSlot: agent } : {}),
+            }));
+            while (entries.length > limit) seen.delete(entries.shift().key);
+            return true;
+        },
+        events(day) {
+            return entries
+                .filter(entry => entry.day === day)
+                .map(({ day: _day, key: _key, ...event }) => event);
+        },
+        clear() {
+            entries = [];
+            seen.clear();
+        },
+        get size() {
+            return entries.length;
+        },
+    };
+}
+
 export { ALLOWED_KEYS };

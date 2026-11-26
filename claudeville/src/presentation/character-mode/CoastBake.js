@@ -4792,3 +4792,260 @@ export function canvasSeaMarkRgb(renderer, stop, x, y, marked, outer = true) {
     const rgb = seaShade(spec, stop, bk, hk, marked, course);
     return (rgb[0] << 16) | (rgb[1] << 8) | rgb[2];
 }
+
+// ---------------------------------------------------------------------------
+// W6.3 (spec 04 §5.6) — the real lunar tide's two coast effects, as runtime
+// overlays over the one coast bake: no new bake, no field in the coast
+// artifact, and nothing at all while the tide is level. `atmosphere.lunarTide`
+// (AtmosphereState) carries `level` (L, −2 … +2) and `sandbarExposed`
+// (h ≤ −0.92).
+//
+// Quay wet course: `clamp(1 − L, 0, 3)` dark wet-stone rows on the quay faces
+// (bank zones 2 dressed ashlar, 3 Harbor piles, 4 the Forge quay) above the
+// waterline, where that water is the tide's (the sea and the Harbor: a
+// depth cap above the lagoon's; never a river or a lagoon). The bake's own tideline row is the level course (L = 0: one
+// row), so the overlay paints only the rows a low tide adds above it (L = −1:
+// one, L = −2: two) and nothing at high water. The waterline is the contact
+// foot the bake encoded into the resident water field (`cycleOffset`
+// 33 … 112, one base-three digit a texel: 1 = the first water row under a
+// face), which the artifact already carries.
+//
+// Sandbar: one authored spit, the tombolo that joins the World Ash islet to
+// the mainland tongue across the shallow channel south of it, drawn only
+// while the sandbar is exposed, on the sand and tideline ramps, every texel
+// opaque, and only over the field's water.
+export const TIDE_WET_COURSE_ZONES = Object.freeze([2, 3, 4]);
+export const TIDE_BAKED_WET_ROWS = 1;
+export const TIDE_MAX_WET_ROWS = 3;
+const TIDE_FOOT_CODE_MIN = 33;
+const TIDE_FOOT_CODE_MAX = 32 + 80;
+// Rows above a foot at which the face's bank zone is read (the bake reads it
+// at the face's top; a dressed face is five or more rows).
+const TIDE_ZONE_PROBE_ROWS = Object.freeze([4, 1, 7]);
+const TIDE_LAYER_CHUNK_PX = 192;
+const NO_TIDE_LAYERS = Object.freeze([]);
+
+/** The quay wet course in rows for a tide level: clamp(1 − L, 0, 3). */
+export function tideWetCourseRows(level) {
+    const L = Math.max(-2, Math.min(2, Math.round(Number(level) || 0)));
+    return Math.max(0, Math.min(TIDE_MAX_WET_ROWS, 1 - L));
+}
+
+function tileValueAtTexel(table, x, y) {
+    const u = (y - 0.5) / TILE_HEIGHT + (x + 0.5) / TILE_WIDTH;
+    const v = (y - 0.5) / TILE_HEIGHT - (x + 0.5) / TILE_WIDTH;
+    const tx = Math.round(u);
+    const ty = Math.round(v);
+    if (tx < 0 || ty < 0 || tx >= MAP_SIZE || ty >= MAP_SIZE) return 0;
+    return table[ty * MAP_SIZE + tx] || 0;
+}
+
+/**
+ * The quay waterline: every contact-foot texel the bake encoded into the
+ * water field's `cycleOffset` whose face is a quay (`TIDE_WET_COURSE_ZONES`),
+ * `{ x, y, zone }` (y = the first water row under the face), sorted by x
+ * then y. With the field's per-tile depth `caps`, only feet on tidal water
+ * (a cap above LAGOON_CAP: the sea and the Harbor) count. Pure.
+ */
+export function quayWaterlineFeet(waterFields, bankZone, { zones = TIDE_WET_COURSE_ZONES, caps = null } = {}) {
+    const out = [];
+    if (!waterFields?.cycleOffset || !bankZone) return out;
+    const { cols, rows, x: originX, y: originY, cycleOffset } = waterFields;
+    for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+            const value = cycleOffset[r * cols + c];
+            if (value < TIDE_FOOT_CODE_MIN || value > TIDE_FOOT_CODE_MAX) continue;
+            let code = value - 32;
+            for (let texel = 0; texel < 4; texel++, code = Math.floor(code / 3)) {
+                if (code % 3 !== 1) continue;
+                const x = originX + c * 2 + (texel & 1);
+                const y = originY + r * 2 + (texel >> 1);
+                if (caps && !(tileValueAtTexel(caps, x, y + 1) > LAGOON_CAP)) continue;
+                let zone = 0;
+                for (const rowsUp of TIDE_ZONE_PROBE_ROWS) {
+                    zone = tileValueAtTexel(bankZone, x, y - rowsUp);
+                    if (zone) break;
+                }
+                if (zones.includes(zone)) out.push({ x, y, zone });
+            }
+        }
+    }
+    return out.sort((a, b) => (a.x - b.x) || (a.y - b.y));
+}
+
+/**
+ * The wet-course texels a tide level adds over the bake: `{ x, y, rgb }` on
+ * the tideline ramp's two wet-stone stops, rows TIDE_BAKED_WET_ROWS + 1 …
+ * `tideWetCourseRows(level)` above each foot. Empty at L ≥ 0. Pure.
+ */
+export function quayWetCourseTexels(feet, level) {
+    const rows = tideWetCourseRows(level);
+    const out = [];
+    if (rows <= TIDE_BAKED_WET_ROWS || !Array.isArray(feet)) return out;
+    for (const foot of feet) {
+        for (let k = TIDE_BAKED_WET_ROWS + 1; k <= rows; k++) {
+            const y = foot.y - k;
+            out.push({ x: foot.x, y, rgb: TIDE[hash2(foot.x, y, 977) < 0.35 ? 0 : 1] });
+        }
+    }
+    return out;
+}
+
+// The authored spit, world px: a centre line from the mainland tongue's tip
+// (south) to the islet's sand (north) across the channel, its half-width
+// wide at both roots and pinched at the waist.
+export const WORLD_ASH_SANDBAR = Object.freeze({
+    points: Object.freeze([
+        Object.freeze([386, 507]),
+        Object.freeze([391, 494]),
+        Object.freeze([398, 483]),
+        Object.freeze([404, 473]),
+    ]),
+    rootHalfWidth: 7,
+    waistHalfWidth: 3,
+    minWaterSd: 0.02,
+});
+
+function sandbarDistance(x, y, points) {
+    let best = Infinity;
+    let bestT = 0;
+    let length = 0;
+    const segments = [];
+    for (let k = 1; k < points.length; k++) {
+        const [ax, ay] = points[k - 1];
+        const [bx, by] = points[k];
+        const len = Math.hypot(bx - ax, by - ay);
+        segments.push({ ax, ay, dx: bx - ax, dy: by - ay, len, from: length });
+        length += len;
+    }
+    for (const seg of segments) {
+        const t = Math.max(0, Math.min(1, ((x - seg.ax) * seg.dx + (y - seg.ay) * seg.dy) / (seg.len * seg.len || 1)));
+        const d = Math.hypot(x - (seg.ax + seg.dx * t), y - (seg.ay + seg.dy * t));
+        if (d < best) {
+            best = d;
+            bestT = (seg.from + seg.len * t) / (length || 1);
+        }
+    }
+    return { d: best, t: bestT };
+}
+
+/**
+ * The sandbar's texels, `{ x, y, rgb }`, every one opaque and on the sand or
+ * tideline ramp: SAND[1] body, a SAND[2] crest down the centre (solid, then
+ * an ordered-dither seam), a SAND[0] rim, and on the south-facing lip a wet
+ * tideline fleck.
+ * `isWaterAt(x, y)` keeps it on the channel's water. Pure.
+ */
+export function worldAshSandbarTexels(isWaterAt = () => true, shape = WORLD_ASH_SANDBAR) {
+    const { points, rootHalfWidth, waistHalfWidth } = shape;
+    const halfWidthAt = t => waistHalfWidth + (rootHalfWidth - waistHalfWidth) * Math.pow(Math.abs(2 * t - 1), 1.5);
+    const xs = points.map(p => p[0]);
+    const ys = points.map(p => p[1]);
+    const x0 = Math.floor(Math.min(...xs) - rootHalfWidth - 1);
+    const x1 = Math.ceil(Math.max(...xs) + rootHalfWidth + 1);
+    const y0 = Math.floor(Math.min(...ys) - rootHalfWidth - 1);
+    const y1 = Math.ceil(Math.max(...ys) + rootHalfWidth + 1);
+    const inside = (x, y) => {
+        const { d, t } = sandbarDistance(x + 0.5, y + 0.5, points);
+        const edge = halfWidthAt(t) + (hash2(x >> 1, y >> 1, 983) - 0.5) * 1.2;
+        return d <= edge ? { d, edge } : null;
+    };
+    const out = [];
+    for (let y = y0; y <= y1; y++) {
+        for (let x = x0; x <= x1; x++) {
+            const hit = inside(x, y);
+            if (!hit || !isWaterAt(x, y)) continue;
+            let rgb = SAND[1];
+            if (!inside(x, y + 1)) rgb = hash2(x, y, 989) < 0.4 ? TIDE[2] : SAND[0];
+            else if (hit.d >= hit.edge - 1) rgb = SAND[0];
+            else if (hit.d <= hit.edge * 0.3 || (hit.d <= hit.edge * 0.5 && bayer(x, y) < 0.5)) rgb = SAND[2];
+            out.push({ x, y, rgb });
+        }
+    }
+    return out;
+}
+
+/**
+ * The texels the tide adds this frame: `{ wet, sandbar }` (arrays of
+ * `{ x, y, rgb }`). Both empty — and nothing read or allocated past the
+ * test — while the tide is level (L = 0, sandbar shut) or the coast has not
+ * baked.
+ */
+export function tideOverlayTexels(renderer, tide) {
+    const level = Math.max(-2, Math.min(2, Math.round(Number(tide?.level) || 0)));
+    const sandbar = tide?.sandbarExposed === true;
+    if (level === 0 && !sandbar) return { wet: NO_TIDE_LAYERS, sandbar: NO_TIDE_LAYERS };
+    const bake = renderer?._coastBake;
+    const field = renderer?._coastField;
+    if (!bake?.waterFields || !field?.bankZone) return { wet: NO_TIDE_LAYERS, sandbar: NO_TIDE_LAYERS };
+    const feet = quayWaterlineFeet(bake.waterFields, field.bankZone, { caps: field.caps || null });
+    const minSd = WORLD_ASH_SANDBAR.minWaterSd;
+    return {
+        wet: quayWetCourseTexels(feet, level),
+        sandbar: sandbar && typeof field.signedDistanceAtWorld === 'function'
+            ? worldAshSandbarTexels((x, y) => field.signedDistanceAtWorld(x + 0.5, y + 0.5) > minSd)
+            : NO_TIDE_LAYERS,
+    };
+}
+
+function tideLayerCanvas(texels) {
+    if (!texels.length || typeof document === 'undefined') return null;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const t of texels) {
+        x0 = Math.min(x0, t.x); y0 = Math.min(y0, t.y);
+        x1 = Math.max(x1, t.x); y1 = Math.max(y1, t.y);
+    }
+    const width = x1 - x0 + 1;
+    const height = y1 - y0 + 1;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    const image = ctx.createImageData(width, height);
+    for (const t of texels) {
+        const o = ((t.y - y0) * width + (t.x - x0)) * 4;
+        image.data[o] = t.rgb[0];
+        image.data[o + 1] = t.rgb[1];
+        image.data[o + 2] = t.rgb[2];
+        image.data[o + 3] = 255;
+    }
+    ctx.putImageData(image, 0, 0);
+    return { canvas, x: x0, y: y0, width, height };
+}
+
+function chunkTexels(texels) {
+    const chunks = new Map();
+    for (const t of texels) {
+        const key = `${Math.floor(t.x / TIDE_LAYER_CHUNK_PX)},${Math.floor(t.y / TIDE_LAYER_CHUNK_PX)}`;
+        if (!chunks.has(key)) chunks.set(key, []);
+        chunks.get(key).push(t);
+    }
+    return [...chunks.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
+/**
+ * The tide's overlay layers for this frame, world px, cached on the renderer
+ * per (water-field bake, level, sandbar): `{ id, kind: 'wet' | 'sandbar',
+ * material, canvas, x, y, width, height, textureKey }`, the wet course split
+ * into TIDE_LAYER_CHUNK_PX chunks so each culls on its own. The shared empty
+ * array while the tide is level.
+ */
+export function tideOverlayLayers(renderer, tide) {
+    const level = Math.max(-2, Math.min(2, Math.round(Number(tide?.level) || 0)));
+    const sandbar = tide?.sandbarExposed === true;
+    if (level === 0 && !sandbar) return NO_TIDE_LAYERS;
+    const revision = renderer?._coastBake?.waterFields?.revision;
+    if (!revision) return NO_TIDE_LAYERS;
+    const key = `${revision}|L${level}|S${sandbar ? 1 : 0}`;
+    if (renderer._tideOverlay?.key === key) return renderer._tideOverlay.layers;
+    const texels = tideOverlayTexels(renderer, { level, sandbarExposed: sandbar });
+    const layers = [];
+    for (const [chunk, group] of chunkTexels(texels.wet)) {
+        const layer = tideLayerCanvas(group);
+        if (layer) layers.push({ ...layer, id: `tide-wet:${chunk}`, kind: 'wet', material: 'stone', textureKey: `tide-wet:${key}:${chunk}` });
+    }
+    const bar = tideLayerCanvas(texels.sandbar);
+    if (bar) layers.push({ ...bar, id: 'tide-sandbar', kind: 'sandbar', material: 'earth', textureKey: `tide-sandbar:${key}` });
+    renderer._tideOverlay = { key, layers: Object.freeze(layers) };
+    return renderer._tideOverlay.layers;
+}

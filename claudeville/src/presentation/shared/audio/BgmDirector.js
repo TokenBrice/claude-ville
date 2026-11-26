@@ -24,6 +24,21 @@
 // OutcomeSignals) and the hour chime. In Town band a wait is carried by the
 // band's own cadence (D4). The feed's link cues and the return digest stay
 // with the signals director, alive from boot.
+//
+// W6.3 (spec 04 §5.5) — Evensong. At the soft 21:00 chime, once a local day,
+// while the Town band sounds and the day holds verified work (a commit, a
+// push or a release), the director composes the day's 16 bars
+// (`composeEvensong`, keyed by the hour's `phaseKey`) and queues them like
+// the nightfall and fanfare stingers: the band finishes the visit it is in,
+// takes its breath, and the Evensong band (`bgm/BandEngine.js`: lead, bass
+// and comp, 3 dB under the band, no percussion) plays before the next visit.
+// If that breath comes more than four minutes after the chime, the day has
+// no Evensong. A day without verified work stays silent. `audio:evensong`
+// `{ active: true, durationMs }` marks its start (villagers turn toward the
+// Archive bell) and `{ active: false }` its end or cancellation. The day's
+// events come from `setDayEventsProvider(fn)` (the Chronicle) when one is
+// set, else from the director's own ledger of the facts it hears, kept as
+// anonymous slots from boot.
 
 import { eventBus } from '../../../domain/events/DomainEvent.js';
 import { bucketCounts } from '../../../domain/services/SignalLedger.js';
@@ -49,6 +64,10 @@ import {
 } from './ActionableRouting.js';
 import { audibleAgents, isAudibleAgent } from './AudibleWorld.js';
 import { arrangementKeyframeAt } from './DayArc.js';
+import { BandEngine, EVENSONG_BREATH_SEC, holdTownBand } from './bgm/BandEngine.js';
+import { EVENSONG_QUEUE_CAP_MS, composeEvensong, createEvensongDayLedger, evensongDayKey } from './bgm/Evensong.js';
+import { phaseKey } from './MusicalScale.js';
+import { repoProfile } from '../RepoColor.js';
 import { Sequencer } from './music/Sequencer.js';
 import { arrangementWeatherFor } from './music/Voicings.js';
 import { resolveCueSpot } from './SpatialField.js';
@@ -84,6 +103,26 @@ const BGM_LEVEL = 0.9;
 // enough that a wait-heavy stretch and an ordinary hour both sit in S2's
 // −31 ± 1 (the waiting cadence, not the level, carries the wait).
 const ATTENTION_DB = -2;
+// W6.3 — the Evensong's lifecycle states (`snapshot().evensong.state`).
+const EVENSONG_LIVE_STATES = new Set(['gathering', 'queued', 'playing']);
+
+// An agent id as an anonymous integer slot (FNV-1a): the ledger keeps no
+// agent string.
+function agentSlotOf(agentId) {
+    if (agentId == null || agentId === '') return null;
+    const text = String(agentId);
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < text.length; i++) {
+        hash ^= text.charCodeAt(i);
+        hash = Math.imul(hash, 0x01000193);
+    }
+    return (hash >>> 0) % 1000003;
+}
+
+function factTime(value) {
+    const at = Number(value);
+    return Number.isFinite(at) && at > 0 ? at : Date.now();
+}
 
 /**
  * The counts the working section is made of, from the same ledger the
@@ -198,6 +237,42 @@ export class BgmDirector {
             this._atmosphereAt = Date.now();
             this._atmosphereSource = 'world';
         });
+        // W6.3 — Evensong: the day's ledger is kept from boot too, so a band
+        // started in the evening still knows the morning's work.
+        this._dayEventsProvider = null;
+        this._dayLedger = createEvensongDayLedger();
+        this._evensong = { day: null, state: 'idle' };
+        this._evensongBand = null;
+        this._releaseBandHold = null;
+        this._ledgerOffs = [
+            eventBus.on('outcome:verified', outcome => this._recordDayFact(outcome)),
+            eventBus.on('distress:watchtower', (payload) => {
+                const kind = payload?.kind === 'errored' ? 'errored' : payload?.kind === 'recovered' ? 'mended' : null;
+                if (!kind) return;
+                this._dayLedger.record({ kind, agentSlot: agentSlotOf(cuePayload(payload).agentId) }, factTime(payload?.at));
+            }),
+        ];
+    }
+
+    /**
+     * W6.3 — where Evensong reads the day's events: `fn({ day, date })`
+     * returns (or resolves to) the day's events in `composeEvensong`'s shape
+     * (the Chronicle's rows); `null` returns to the director's own ledger.
+     */
+    setDayEventsProvider(fn) {
+        this._dayEventsProvider = typeof fn === 'function' ? fn : null;
+    }
+
+    _recordDayFact(outcome) {
+        const fact = verifiedOutcomeFact(outcome);
+        if (!fact) return;
+        // The repo is reduced to its pennant slot at once (no string kept).
+        const repoSlot = fact.repo ? repoProfile(fact.repo)?.pennantIndex : null;
+        this._dayLedger.record({
+            kind: fact.kind,
+            repoSlot: Number.isInteger(repoSlot) ? repoSlot : null,
+            agentSlot: agentSlotOf(fact.agentId),
+        }, factTime(outcome?.at));
     }
 
     start() {
@@ -261,6 +336,9 @@ export class BgmDirector {
 
     stop() {
         if (!this.running) return;
+        this._cancelEvensong('stopped');
+        this._evensongBand?.stop();
+        this._evensongBand = null;
         this.running = false;
         this.paused = false;
         if (this._interval) clearInterval(this._interval);
@@ -280,6 +358,8 @@ export class BgmDirector {
         this.stop();
         this._atmosphereOff?.();
         this._atmosphereOff = null;
+        for (const off of this._ledgerOffs) off?.();
+        this._ledgerOffs = [];
     }
 
     // D2: the Town band voice ('isle' | 'chip'); kept across rebuilds, and
@@ -465,6 +545,166 @@ export class BgmDirector {
                 this._lastBellHour = chime.hour;
             }
         }
+        // W6.3 — the soft chime calls Evensong in, once a local day.
+        if (chime?.soft) this._armEvensong(atmosphere);
+        this._evensongTick();
+    }
+
+    // ── Evensong (W6.3) ──
+
+    // The Town band is sounding: this director runs, is not paused, and its
+    // band is playing.
+    _townBandSounding() {
+        return this._ownsSignals() && Boolean(this.player?.running) && Boolean(this.engine?.context);
+    }
+
+    _armEvensong(atmosphere) {
+        const day = atmosphere?.clock?.localDate || evensongDayKey(atmosphere?.clock?.date ?? new Date());
+        if (!day || this._evensong.day === day) return false;
+        // Not sounding: not this day's turn yet (the chime minute retries).
+        if (!this._townBandSounding()) return false;
+        const evensong = {
+            day,
+            state: 'gathering',
+            queuedAtMs: Date.now(),
+            queuedAtAudio: this.engine.now(),
+            score: null,
+            startsAt: null,
+            endsAt: null,
+            durationMs: null,
+            announced: false,
+            reason: null,
+        };
+        this._evensong = evensong;
+        let events;
+        try {
+            events = this._dayEventsProvider
+                ? this._dayEventsProvider({ day, date: atmosphere?.clock?.date ?? null })
+                : this._dayLedger.events(day);
+        } catch {
+            events = [];
+        }
+        if (events && typeof events.then === 'function') {
+            events.then(
+                list => { if (this._evensong === evensong) this._queueEvensong(list); },
+                () => { if (this._evensong === evensong) this._settleEvensong('silent'); },
+            );
+            return true;
+        }
+        this._queueEvensong(events);
+        return true;
+    }
+
+    // Compose the day and queue it on the band's next breath. Pure until the
+    // queue: a day with no verified work ends here, silent.
+    _queueEvensong(events) {
+        const evensong = this._evensong;
+        if (evensong.state !== 'gathering') return;
+        if (!this._townBandSounding()) {
+            this._cancelEvensong('band');
+            return;
+        }
+        const score = composeEvensong(Array.isArray(events) ? events : [], phaseKey(this._phase));
+        if (!score) {
+            this._settleEvensong('silent');
+            return;
+        }
+        if (Date.now() - evensong.queuedAtMs > EVENSONG_QUEUE_CAP_MS) {
+            this._cancelEvensong('late');
+            return;
+        }
+        this._evensongBand ||= new BandEngine(this.engine);
+        const arrangement = this.player?.arrangement || {};
+        this._evensongBand.prepare({
+            family: score.family,
+            voice: this._voice,
+            keyframe: score.family === 'night' ? 'night' : null,
+            weather: arrangement.weather,
+            season: arrangement.season,
+            level: BGM_LEVEL,
+        });
+        this._releaseBandHold?.();
+        this._releaseBandHold = holdTownBand(this.player, t => this._onBandBreath(t)) || null;
+        if (!this._releaseBandHold) {
+            this._cancelEvensong('unsupported');
+            return;
+        }
+        evensong.score = score;
+        evensong.state = 'queued';
+    }
+
+    // The band's hand-over at audio time `t` (where its next visit would
+    // start): play Evensong there, then let the band resume a breath after
+    // its last bar. Null hands the breath back to the band.
+    _onBandBreath(t) {
+        const evensong = this._evensong;
+        if (evensong.state !== 'queued') return null;
+        const capSec = EVENSONG_QUEUE_CAP_MS / 1000;
+        if (t - evensong.queuedAtAudio > capSec || Date.now() - evensong.queuedAtMs > EVENSONG_QUEUE_CAP_MS) {
+            this._cancelEvensong('late');
+            return null;
+        }
+        const result = this._evensongBand?.play(evensong.score, { at: t }) ?? { ok: false, why: 'stopped' };
+        if (!result.ok) {
+            this._cancelEvensong(result.why || 'stopped');
+            return null;
+        }
+        evensong.state = 'playing';
+        evensong.startsAt = result.startsAt;
+        evensong.endsAt = result.endsAt;
+        evensong.durationMs = result.durationMs;
+        this._releaseBandHold?.();
+        this._releaseBandHold = null;
+        return { resumeAt: result.endsAt + EVENSONG_BREATH_SEC };
+    }
+
+    // Once a second: the four-minute cap while queued, the start and end
+    // marks while playing, and the Evensong band's close after its tail.
+    _evensongTick() {
+        const evensong = this._evensong;
+        const now = this.engine?.now?.() ?? 0;
+        if (evensong.state === 'gathering' || evensong.state === 'queued') {
+            if (Date.now() - evensong.queuedAtMs > EVENSONG_QUEUE_CAP_MS
+                || (evensong.state === 'queued' && now - evensong.queuedAtAudio > EVENSONG_QUEUE_CAP_MS / 1000)) {
+                this._cancelEvensong('late');
+            }
+            return;
+        }
+        if (evensong.state === 'playing') {
+            if (!evensong.announced && now >= evensong.startsAt) {
+                evensong.announced = true;
+                eventBus.emit('audio:evensong', { active: true, durationMs: evensong.durationMs, day: evensong.day });
+            }
+            if (now >= evensong.endsAt) this._settleEvensong('finished');
+            return;
+        }
+        if (this._evensongBand?.running && this._evensongBand.finishedAt(now)) this._evensongBand.stop();
+    }
+
+    // End of a live Evensong (finished or silent): `{ active: false }` for one
+    // that was queued or playing.
+    _settleEvensong(reason) {
+        const evensong = this._evensong;
+        const wasLive = EVENSONG_LIVE_STATES.has(evensong.state) && reason !== 'silent';
+        this._releaseBandHold?.();
+        this._releaseBandHold = null;
+        evensong.state = reason === 'silent' ? 'silent' : 'done';
+        evensong.reason = reason;
+        evensong.score = reason === 'silent' ? null : evensong.score;
+        if (wasLive) eventBus.emit('audio:evensong', { active: false, reason, day: evensong.day });
+    }
+
+    _cancelEvensong(reason) {
+        const evensong = this._evensong;
+        if (!EVENSONG_LIVE_STATES.has(evensong.state)) return false;
+        const wasPlaying = evensong.state === 'playing';
+        this._releaseBandHold?.();
+        this._releaseBandHold = null;
+        if (wasPlaying) this._evensongBand?.stop();
+        evensong.state = 'cancelled';
+        evensong.reason = reason;
+        eventBus.emit('audio:evensong', { active: false, reason, day: evensong.day });
+        return true;
     }
 
     // The arrangement follows the counts, not the poll: the density change is
@@ -527,6 +767,15 @@ export class BgmDirector {
             voice: this._voice,
             percussion: { ...this._densities },
             ceremonies: this.governor?.snapshot().ceremonies ?? null,
+            evensong: {
+                day: this._evensong.day,
+                state: this._evensong.state,
+                reason: this._evensong.reason ?? null,
+                startsAt: this._evensong.startsAt ?? null,
+                endsAt: this._evensong.endsAt ?? null,
+                durationMs: this._evensong.durationMs ?? null,
+                band: this._evensongBand?.snapshot() ?? null,
+            },
             // The band actually playing plus the one the counts want next.
             section: {
                 applied: this.player ? SECTION_NAMES[this.player.band] : this._section.applied,
