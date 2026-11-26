@@ -1,16 +1,26 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { bucketAgents, bucketCounts, bucketForStatus, compareByWaitAge } from '../../domain/services/SignalLedger.js';
 import { toolCategory } from '../../domain/services/ToolIdentity.js';
+import { normalizeBuildingType } from '../../config/buildings.js';
+import { BUILDING_ACCENTS, BUILDING_ACCENTS_RGB } from '../../config/theme.js';
+import { MendLedger } from '../character-mode/OutcomeMends.js';
 import { AvatarCanvas } from './AvatarCanvas.js';
 import {
+    ghostTicksForTape,
+    HOURS_STRIP_HEIGHT,
+    HOURS_STRIP_WIDTH,
     ObservedCallTapeStore,
+    paintHoursStripCanvas,
     paintSessionStrip,
     paintTape,
+    ProjectHoursLedger,
     STRIP_HEIGHT,
     STRIP_WIDTH,
     TAPE_BUCKET_MS,
     TAPE_HEIGHT,
+    TAPE_SHORT_WIDTH,
     TAPE_WIDTH,
+    tapeSpanForAge,
 } from './ObservedCallTape.js';
 import { i18n } from '../../config/i18n.js';
 import { sessionDetailsService } from '../shared/SessionDetailsService.js';
@@ -70,6 +80,308 @@ const DASHBOARD_TOOL_HISTORY_LIMIT = 12;
 const PROMPT_DETAIL_MAX_LENGTH = 200;
 const DASHBOARD_FILTER_EVENT = 'dashboard:filter-changed';
 const DASHBOARD_FILTER_REQUEST_EVENT = 'dashboard:filter-requested';
+export const DASHBOARD_LOCATE_IN_WORLD_EVENT = 'dashboard:locate-in-world';
+// W4.4 (F4/R11, §4.9) — optional grid-level columns allocate only when at
+// least 30 % of visible rows carry data; below that, per-row inline chips ride
+// at the right end of NOW so FOR/TOKENS/COST stay aligned across every project.
+export const OPTIONAL_COLUMN_THRESHOLD = 0.30;
+
+export function shouldAllocateOptionalColumn(matchCount, totalCount, threshold = OPTIONAL_COLUMN_THRESHOLD) {
+    const total = Number(totalCount) || 0;
+    const matches = Number(matchCount) || 0;
+    if (total <= 0 || matches <= 0) return false;
+    return (matches / total) + 1e-12 >= threshold;
+}
+
+// W4.4 (§4.9) — nine static cached 44x40 district backdrops for portraits in situ.
+export const DISTRICT_BACKDROP_KEYS = Object.freeze([
+    'command',
+    'taskboard',
+    'archive',
+    'mine',
+    'forge',
+    'harbor',
+    'watchtower',
+    'tavern',
+    'portal',
+]);
+export const DISTRICT_BACKDROP_SIZE = Object.freeze({ width: 44, height: 40 });
+const DISTRICT_BACKDROP_SET = new Set(DISTRICT_BACKDROP_KEYS);
+const _districtBackdropCache = new Map();
+
+export function districtKeyForAgent(agent) {
+    if (!agent) return null;
+    const fromTools = normalizeBuildingType(buildingClassForAgent(agent));
+    if (fromTools && DISTRICT_BACKDROP_SET.has(fromTools)) return fromTools;
+    for (const candidate of [agent.targetBuildingType, agent.lastKnownBuildingType, agent.buildingType, agent.building]) {
+        const normalized = normalizeBuildingType(candidate);
+        if (normalized && DISTRICT_BACKDROP_SET.has(normalized)) return normalized;
+    }
+    const status = normalizeStatus(agent.status);
+    if (status === 'idle' || status === 'completed') return 'tavern';
+    return null;
+}
+
+function paintDistrictBackdrop(ctx, key) {
+    const w = DISTRICT_BACKDROP_SIZE.width;
+    const h = DISTRICT_BACKDROP_SIZE.height;
+    const rgb = BUILDING_ACCENTS_RGB[key] || '139, 139, 158';
+    const accent = BUILDING_ACCENTS[key] || '#8b8b9e';
+    const tint = (alpha) => `rgba(${rgb}, ${alpha})`;
+
+    // Warm dark-keep base + stepped horizon band so the villager face pops cleanly.
+    ctx.fillStyle = '#0e0a08';
+    ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = tint(0.14);
+    ctx.fillRect(0, 0, w, 16);
+    ctx.fillStyle = tint(0.08);
+    ctx.fillRect(0, 16, w, 14);
+    ctx.fillStyle = '#140f0c';
+    ctx.fillRect(0, 30, w, 10);
+
+    // Subtle masonry / timber architectural crop specific to each of the 9 districts.
+    ctx.fillStyle = tint(0.24);
+    switch (key) {
+        case 'command':
+            // Battlements + domed hall lintel
+            for (let x = 2; x < w - 2; x += 6) ctx.fillRect(x, 3, 4, 4);
+            ctx.fillRect(4, 7, w - 8, 2);
+            ctx.fillStyle = tint(0.18);
+            ctx.fillRect(10, 9, 4, 21);
+            ctx.fillRect(w - 14, 9, 4, 21);
+            break;
+        case 'taskboard':
+            // Timber eave + slate board frame + twin eave lantern pips
+            ctx.fillRect(3, 5, w - 6, 3);
+            ctx.fillRect(6, 8, 2, 22);
+            ctx.fillRect(w - 8, 8, 2, 22);
+            ctx.fillStyle = accent;
+            ctx.fillRect(5, 9, 2, 2);
+            ctx.fillRect(w - 7, 9, 2, 2);
+            break;
+        case 'archive':
+            // Three tall Gothic lancet arches
+            for (const lx of [6, 19, 32]) {
+                ctx.fillRect(lx + 1, 5, 4, 2);
+                ctx.fillRect(lx, 7, 6, 18);
+                ctx.fillStyle = '#0e0a08';
+                ctx.fillRect(lx + 1, 8, 4, 15);
+                ctx.fillStyle = tint(0.24);
+            }
+            break;
+        case 'mine':
+            // Heavy timber tunnel props + stone lintel + faint ore glints
+            ctx.fillRect(4, 6, w - 8, 4);
+            ctx.fillRect(5, 10, 4, 22);
+            ctx.fillRect(w - 9, 10, 4, 22);
+            ctx.fillStyle = accent;
+            ctx.fillRect(11, 14, 2, 2);
+            ctx.fillRect(w - 14, 19, 2, 2);
+            break;
+        case 'forge':
+            // Brick arch + low ember hearth glow
+            ctx.fillRect(6, 6, w - 12, 3);
+            ctx.fillRect(4, 9, 4, 21);
+            ctx.fillRect(w - 8, 9, 4, 21);
+            ctx.fillStyle = tint(0.32);
+            ctx.fillRect(10, 26, w - 20, 6);
+            ctx.fillStyle = accent;
+            ctx.fillRect(14, 29, w - 28, 2);
+            break;
+        case 'harbor':
+            // Quay timber pilings + stepped sea ripples
+            ctx.fillRect(0, 24, w, 3);
+            ctx.fillRect(6, 14, 3, 18);
+            ctx.fillRect(w - 9, 14, 3, 18);
+            ctx.fillStyle = tint(0.28);
+            ctx.fillRect(4, 31, 12, 1);
+            ctx.fillRect(24, 34, 14, 1);
+            break;
+        case 'watchtower':
+            // Lighthouse masonry courses + narrow coastal slits + beacon band
+            ctx.fillRect(12, 4, w - 24, 3);
+            ctx.fillStyle = accent;
+            ctx.fillRect(15, 7, w - 30, 3);
+            ctx.fillStyle = tint(0.22);
+            ctx.fillRect(11, 10, w - 22, 20);
+            ctx.fillStyle = '#0e0a08';
+            ctx.fillRect(20, 14, 4, 8);
+            break;
+        case 'tavern':
+            // Half-timber crossbeams + warm leaded window pane
+            ctx.fillRect(2, 6, w - 4, 3);
+            ctx.fillRect(4, 9, 3, 21);
+            ctx.fillRect(w - 7, 9, 3, 21);
+            ctx.fillStyle = tint(0.28);
+            ctx.fillRect(12, 12, 8, 10);
+            ctx.fillRect(w - 20, 12, 8, 10);
+            break;
+        case 'portal':
+            // Carved stone arch + perimeter rune pips
+            ctx.fillRect(8, 5, w - 16, 3);
+            ctx.fillRect(6, 8, 3, 22);
+            ctx.fillRect(w - 9, 8, 3, 22);
+            ctx.fillStyle = accent;
+            for (const [rx, ry] of [[10, 10], [w - 12, 10], [8, 18], [w - 10, 18]]) {
+                ctx.fillRect(rx, ry, 2, 2);
+            }
+            break;
+        default:
+            break;
+    }
+
+    // Crisp 1 px inner dark seam
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
+    ctx.fillRect(0, 0, w, 1);
+    ctx.fillRect(0, h - 1, w, 1);
+}
+
+/**
+ * Return the static cached 44x40 district backdrop for `building` (zero
+ * per-frame allocation; at most 9 entries cached for the lifetime of the tab).
+ */
+export function getDistrictBackdrop(building) {
+    const key = normalizeBuildingType(building);
+    if (!key || !DISTRICT_BACKDROP_SET.has(key)) return null;
+    if (_districtBackdropCache.has(key)) return _districtBackdropCache.get(key);
+    let canvas = null;
+    let dataUrl = '';
+    if (typeof document !== 'undefined' && typeof document.createElement === 'function') {
+        canvas = document.createElement('canvas');
+        canvas.width = DISTRICT_BACKDROP_SIZE.width;
+        canvas.height = DISTRICT_BACKDROP_SIZE.height;
+        const ctx = canvas.getContext?.('2d');
+        if (ctx) {
+            ctx.imageSmoothingEnabled = false;
+            paintDistrictBackdrop(ctx, key);
+            if (typeof canvas.toDataURL === 'function') {
+                try { dataUrl = canvas.toDataURL('image/png') || ''; } catch { dataUrl = ''; }
+            }
+        }
+    }
+    const entry = Object.freeze({
+        building: key,
+        width: DISTRICT_BACKDROP_SIZE.width,
+        height: DISTRICT_BACKDROP_SIZE.height,
+        accent: BUILDING_ACCENTS[key],
+        canvas,
+        dataUrl,
+    });
+    _districtBackdropCache.set(key, entry);
+    return entry;
+}
+
+// W4.4 (§4.9) — Mend brackets: pair a failed shell run with the passing run
+// that mended it using OutcomeMends.MendLedger.
+function toolEntryTimestamp(entry, index) {
+    const raw = entry?.ts ?? entry?.completedAt;
+    const numeric = Number(raw);
+    if (Number.isFinite(numeric) && numeric > 0) return numeric;
+    const parsed = typeof raw === 'string' ? Date.parse(raw) : NaN;
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    return (index + 1) * 1_000;
+}
+
+function toolEntryExitCode(entry) {
+    const raw = entry?.toolExitCode ?? entry?.exitCode;
+    if (raw === null || raw === undefined || raw === '') return null;
+    const value = Number(raw);
+    return Number.isFinite(value) ? value : null;
+}
+
+function toolEntryCommandDetail(entry) {
+    const raw = typeof entry?.detail === 'string'
+        ? entry.detail
+        : (typeof entry?.input === 'string' ? entry.input : '');
+    return raw.trim().replace(/^(?:command|cmd)=/, '');
+}
+
+/**
+ * Run `MendLedger` across chronological tool history entries and return
+ * display-order (newest-first) mend bracket pairs.
+ */
+export function findMendPairs(tools, { agentId = 'agent', provider = '' } = {}) {
+    if (!Array.isArray(tools) || tools.length < 2) return [];
+    const ledger = new MendLedger();
+    const pairs = [];
+    const count = tools.length;
+    for (let chronoIndex = 0; chronoIndex < count; chronoIndex++) {
+        const entry = tools[chronoIndex];
+        const exitCode = toolEntryExitCode(entry);
+        if (exitCode === null) continue;
+        const mend = ledger.observe({
+            agentId: String(agentId || 'agent'),
+            id: chronoIndex,
+            tool: entry?.tool,
+            detail: toolEntryCommandDetail(entry),
+            exitCode,
+            exitCodeSource: entry?.exitCodeSource || 'exit',
+            provider: provider || '',
+            location: entry?.location ?? '',
+            completedAt: toolEntryTimestamp(entry, chronoIndex),
+        });
+        if (!mend || !Number.isInteger(mend.failedId) || !Number.isInteger(mend.resultId)) continue;
+        const passDisplayIndex = (count - 1) - mend.resultId;
+        const failDisplayIndex = (count - 1) - mend.failedId;
+        if (passDisplayIndex < 0 || failDisplayIndex >= count || passDisplayIndex >= failDisplayIndex) continue;
+        pairs.push({
+            passDisplayIndex,
+            failDisplayIndex,
+            signature: mend.signature,
+            failedExit: mend.failedExit,
+            failedAt: mend.failedAt,
+            at: mend.at,
+        });
+    }
+    return pairs;
+}
+
+/**
+ * Annotate newest-first tool history DOM rows with 1 px margin mend brackets
+ * for every `MendLedger` pair whose endpoints lie inside `nodes`.
+ */
+export function annotateMendBrackets(listEl, nodes, chronologicalTools, {
+    agentId = 'agent',
+    provider = '',
+    classPrefix = 'dash-card__tool',
+    offset = 0,
+} = {}) {
+    const pairs = findMendPairs(chronologicalTools, { agentId, provider });
+    const hasClass = `${classPrefix}-list--has-mend`;
+    const passClass = `${classPrefix}-item--mend-pass`;
+    const spanClass = `${classPrefix}-item--mend-span`;
+    const failClass = `${classPrefix}-item--mend-fail`;
+    for (const node of nodes || []) {
+        node?.classList?.remove?.(passClass, spanClass, failClass);
+        if (node?.dataset) {
+            delete node.dataset.mendRole;
+            delete node.dataset.mendPair;
+        }
+    }
+    let activePairs = 0;
+    const end = offset + (nodes?.length || 0);
+    pairs.forEach((pair, pairIndex) => {
+        if (pair.passDisplayIndex < offset || pair.failDisplayIndex >= end) return;
+        const localPass = pair.passDisplayIndex - offset;
+        const localFail = pair.failDisplayIndex - offset;
+        activePairs++;
+        for (let i = localPass; i <= localFail; i++) {
+            const row = nodes[i];
+            if (!row) continue;
+            const role = i === localPass ? 'pass' : (i === localFail ? 'fail' : 'span');
+            row.classList?.add?.(role === 'pass' ? passClass : (role === 'fail' ? failClass : spanClass));
+            if (row.dataset) {
+                row.dataset.mendRole = role;
+                row.dataset.mendPair = String(pairIndex);
+            }
+            if (role === 'pass' && !row.title) {
+                row.title = `Mended earlier failure of ${pair.signature} (exit ${pair.failedExit})`;
+            }
+        }
+    });
+    listEl?.classList?.toggle?.(hasClass, activePairs > 0);
+    return pairs;
+}
 // UI-1 — chips, the bell lane and section counts read the one status-word
 // map (AgentPresentation.STATUS_WORDS): rate-limited is LIMIT here too.
 const ROW_STATUS_FILTERS = Object.freeze([
@@ -613,9 +925,11 @@ function hasOpenSurface(documentRef = globalThis.document) {
 }
 
 export class DashboardRenderer {
-    constructor(world, { toast = null } = {}) {
+    constructor(world, { toast = null, onLocateInWorld = null, frameAttention = null } = {}) {
         this.world = world;
         this.toast = toast;
+        this._onLocateInWorld = typeof onLocateInWorld === 'function' ? onLocateInWorld : null;
+        this._frameAttention = typeof frameAttention === 'function' ? frameAttention : null;
         this.gridEl = document.getElementById('dashboardGrid');
         this.attentionEl = document.getElementById('dashboardAttentionQueue');
         this.emptyEl = document.getElementById('dashboardEmpty');
@@ -649,11 +963,17 @@ export class DashboardRenderer {
         this._pendingAvatarDraws = new Set();
         this._avatarDrawFrame = null;
         this._flipTimers = new Set();
-        // 7.12 — observation starts when the Dashboard module loads; every
-        // earlier bucket paints as a dotted baseline. Fed in every mode, O(1)
-        // per update.
+        this._gridHasWork = false;
+        this._gridHasKids = false;
+        // 7.12 + W4.4 — observation starts when the Dashboard module loads;
+        // every earlier bucket stays blank (or shows cached ghost ticks) left
+        // of the 1 px brass openedAt rule. Fed in every mode, O(1) per update.
         this._tapes = new ObservedCallTapeStore();
-        for (const agent of world?.agents?.values?.() || []) this._tapes.observe(agent);
+        this._hours = new ProjectHoursLedger();
+        for (const agent of world?.agents?.values?.() || []) {
+            this._tapes.observe(agent);
+            this._hours.observeAgent(this._projectKeyFor(agent), agent);
+        }
         this._tapeTimer = null;
         this._bellEl = null;
         this._motionQuery = typeof window !== 'undefined'
@@ -677,10 +997,16 @@ export class DashboardRenderer {
 
         this._onAgentAdded = (agent) => {
             this._tapes?.observe(agent);
+            this._hours?.observeAgent(this._projectKeyFor(agent), agent);
             if (this.active) this._queueFlush({ render: true });
         };
         this._onAgentUpdated = (agent) => {
             this._tapes?.observe(agent);
+            if (this._hours?.observeAgent(this._projectKeyFor(agent), agent) && this.active) {
+                const project = this._projectKeyFor(agent);
+                const sectionEl = this._sectionEls.get(project);
+                if (sectionEl) this._paintSectionHours(sectionEl, project);
+            }
             if (this.active) {
                 this._renderAgentUpdate(agent);
                 const parentId = String(agent?.parentSessionId || '');
@@ -693,8 +1019,25 @@ export class DashboardRenderer {
         this._onAgentRemoved = (agent) => {
             this._executionChildIdsByParent.delete(String(agent.id));
             this._tapes?.forget(agent.id);
+            this._hours?.forget(agent.id);
             sessionDetailsService.deleteForAgent(agent);
             if (this.active) this._queueFlush({ render: true });
+        };
+        this._onOutcomeVerified = (outcome) => {
+            if (!outcome || (outcome.kind !== 'commit' && outcome.kind !== 'push')) return;
+            const agent = outcome.agentId ? this.world?.agents?.get?.(outcome.agentId) : null;
+            const project = outcome.project || (agent ? this._projectKeyFor(agent) : null);
+            if (!project) return;
+            const changed = this._hours?.recordOutcome(
+                project,
+                outcome.kind,
+                Number(outcome.at || outcome.ts) || Date.now(),
+                outcome.id || outcome.eventId || null,
+            );
+            if (changed && this.active) {
+                const sectionEl = this._sectionEls.get(project);
+                if (sectionEl) this._paintSectionHours(sectionEl, project);
+            }
         };
         this._onModeChanged = (mode) => {
             this.active = mode === 'dashboard';
@@ -737,6 +1080,7 @@ export class DashboardRenderer {
         eventBus.on('agent:added', this._onAgentAdded);
         eventBus.on('agent:updated', this._onAgentUpdated);
         eventBus.on('agent:removed', this._onAgentRemoved);
+        eventBus.on('outcome:verified', this._onOutcomeVerified);
         eventBus.on('mode:changed', this._onModeChanged);
         eventBus.on(DASHBOARD_FILTER_EVENT, this._onSharedFilterChanged);
         // U-P8 — each project lane states its harbor cargo (`3 unpushed ·
@@ -912,18 +1256,69 @@ export class DashboardRenderer {
         return groups;
     }
 
-    // Shared optional tracks at #dashboardGrid level so FOR/TOKENS/COST align
-    // across all project sections and blank LAST 10 MIN tapes stay hidden until
-    // observed buckets have recorded activity.
+    // Shared optional tracks at #dashboardGrid level (F4/R11, §4.9) so
+    // FOR/TOKENS/COST align across all project sections. WORKING SET and
+    // CHILDREN allocate only when >= 30 % of visible rows carry them; below
+    // that threshold those rows show compact inline chips in NOW instead.
     _syncGridColumns(rowAgents, now = Date.now()) {
         if (!this.gridEl) return;
         const list = Array.isArray(rowAgents) ? rowAgents : [];
-        const hasWork = list.some(rowHasWork);
-        const hasKids = list.some(agent => this._hasChildProgress(agent));
+        const workRows = list.filter(rowHasWork).length;
+        const kidRows = list.filter(agent => this._hasChildProgress(agent)).length;
+        const hasWork = shouldAllocateOptionalColumn(workRows, list.length);
+        const hasKids = shouldAllocateOptionalColumn(kidRows, list.length);
         const hasTape = Boolean(this._tapes?.hasObservedActivity(list.map(agent => agent.id), now));
+        const span = this._tapes ? this._tapes.span(now) : tapeSpanForAge(0);
+        this._gridHasWork = hasWork;
+        this._gridHasKids = hasKids;
         this.gridEl.classList.toggle('dashboard__grid--has-work', hasWork);
         this.gridEl.classList.toggle('dashboard__grid--has-kids', hasKids);
         this.gridEl.classList.toggle('dashboard__grid--has-tape', hasTape);
+        this.gridEl.classList.toggle('dashboard__grid--tape-5m', span.tier === '5m');
+        this._syncTapeHeaders(span, now);
+        for (const card of this.cards.values()) this._syncRowInlineChips(card);
+    }
+
+    _syncTapeHeaders(span, now = Date.now()) {
+        const header = span?.header || 'LAST 10 MIN';
+        const title = this._tapes?.title(now) || '';
+        for (const sectionEl of this._sectionEls.values()) {
+            const col = sectionEl._sectionRefs?.tapeCol;
+            if (col) {
+                this._setText(col, header);
+                if (title) col.title = title;
+            }
+        }
+    }
+
+    _syncRowInlineChips(cardEl) {
+        const refs = cardEl?._elements;
+        if (!refs) return;
+        const workChip = refs.nowWorkChip;
+        if (workChip) {
+            const text = cardEl._inlineWorkText || '';
+            const show = Boolean(text) && !this._gridHasWork;
+            workChip.hidden = !show;
+            this._setText(workChip, text);
+            workChip.title = cardEl._inlineWorkTitle || '';
+            workChip.classList?.toggle?.('dash-card__now-chip--collision', Boolean(cardEl._inlineWorkCollision));
+        }
+        const kidsChip = refs.nowKidsChip;
+        if (kidsChip) {
+            const text = cardEl._inlineKidsText || '';
+            const show = Boolean(text) && !this._gridHasKids;
+            kidsChip.hidden = !show;
+            this._setText(kidsChip, text);
+            kidsChip.title = cardEl._inlineKidsTitle || '';
+        }
+    }
+
+    _cachedToolHistory(agentId) {
+        const local = this.toolHistories.get(agentId);
+        if (Array.isArray(local)) return local;
+        const agent = this.world?.agents?.get?.(agentId);
+        const cached = agent ? sessionDetailsService.detailCacheState(agent)?.value?.toolHistory : null;
+        return Array.isArray(cached) ? cached : null;
     }
 
     _cardFor(agent) {
@@ -946,13 +1341,16 @@ export class DashboardRenderer {
         return this._bellEl;
     }
 
-    // 7.12 — repaint tapes on 15 s bucket boundaries while the Dashboard is
-    // visible; no rAF loop, and each tape repaints only if its key changed.
+    // 7.12 + W4.4 — repaint tapes and project hours strips on 15 s bucket
+    // boundaries while the Dashboard is visible; no rAF loop, and each tape
+    // repaints only if its key changed.
     _startTapeClock() {
         this._stopTapeClock();
         const tick = () => {
             const now = Date.now();
             this._tapeTimer = setTimeout(tick, TAPE_BUCKET_MS - (now % TAPE_BUCKET_MS) + 20);
+            this._hours?.cover(now);
+            const span = this._tapes ? this._tapes.span(now) : tapeSpanForAge(0);
             const rowIds = [];
             for (const card of this.cards.values()) {
                 this._paintCardTape(card, now);
@@ -962,6 +1360,11 @@ export class DashboardRenderer {
             }
             if (this.gridEl && this._tapes) {
                 this.gridEl.classList.toggle('dashboard__grid--has-tape', this._tapes.hasObservedActivity(rowIds, now));
+                this.gridEl.classList.toggle('dashboard__grid--tape-5m', span.tier === '5m');
+                this._syncTapeHeaders(span, now);
+            }
+            for (const [projectPath, sectionEl] of this._sectionEls) {
+                this._paintSectionHours(sectionEl, projectPath, now);
             }
         };
         this._tapeTimer = setTimeout(tick, TAPE_BUCKET_MS - (Date.now() % TAPE_BUCKET_MS) + 20);
@@ -978,16 +1381,24 @@ export class DashboardRenderer {
         const canvas = cardEl?._elements?.tapeCanvas;
         const id = cardEl?.dataset?.agentId;
         if (!canvas || !id || !this._tapes) return;
-        const signature = this._tapes.signature(id, now);
+        const span = this._tapes.span(now);
+        const cached = this._cachedToolHistory(id);
+        const cachedSig = cached ? `${cached.length}:${cached.at(-1)?.ts || 0}` : '';
+        const signature = `${this._tapes.signature(id, now)}|${cachedSig}`;
+        if (canvas.width !== span.width) canvas.width = span.width;
         if (canvas._tapeSignature !== signature) {
             canvas._tapeSignature = signature;
-            paintTape(canvas, this._tapes.cells(id, now));
+            const cells = this._tapes.cells(id, now, { buckets: span.buckets });
+            const ghostTicks = cached ? ghostTicksForTape(cached, now, { buckets: span.buckets }) : null;
+            paintTape(canvas, cells, { ghostTicks });
         }
         if (this.gridEl
             && !this.gridEl.classList.contains('dashboard__grid--has-tape')
             && cardEl.parentElement !== this._bellEl
             && this._tapes.hasObservedActivity([id], now)) {
             this.gridEl.classList.add('dashboard__grid--has-tape');
+            this.gridEl.classList.toggle('dashboard__grid--tape-5m', span.tier === '5m');
+            this._syncTapeHeaders(span, now);
         }
         if (this.selection?.isSelected(id)) this._paintStrip(cardEl, id, now);
     }
@@ -1344,11 +1755,13 @@ export class DashboardRenderer {
         section.className = 'dashboard__section';
         section.dataset.project = projectPath;
 
+        const initialTapeHeader = this._tapes?.span()?.header || 'LAST 5 MIN';
         section.innerHTML = `
             <div class="dashboard__section-header">
                 <span class="dashboard__pennant" aria-hidden="true"></span>
                 <span class="dashboard__section-name"></span>
                 <span class="dashboard__section-path"></span>
+                <canvas class="dashboard__hours-strip" width="${HOURS_STRIP_WIDTH}" height="${HOURS_STRIP_HEIGHT}" aria-hidden="true"></canvas>
                 <span class="dashboard__section-health" aria-label="Project health"></span>
                 <span class="dashboard__section-lift" hidden></span>
                 <button type="button" class="dashboard__section-harbor" hidden></button>
@@ -1364,7 +1777,7 @@ export class DashboardRenderer {
                 <span></span>
                 <span>AGENT</span>
                 <span>NOW</span>
-                <span class="dashboard__col--tape" title="Tool calls this tab observed, one column per 15 s: a block per call (bright = write/run/task), a band while it needed you, errored or hit quota, dots before the tab was watching">LAST 10 MIN</span>
+                <span class="dashboard__col--tape" title="${this._tapes?.title() || ''}">${initialTapeHeader}</span>
                 <span class="dashboard__col--num">FOR</span>
                 <span class="dashboard__col--num" title="New tokens (input, output, cache writes), as the top bar counts them; cache reads below">TOKENS</span>
                 <span class="dashboard__col--num" title="≈ cost includes estimated usage (token counts x published rates); — no usage reported">COST</span>
@@ -1377,6 +1790,8 @@ export class DashboardRenderer {
         section._sectionRefs = {
             name: section.querySelector('.dashboard__section-name'),
             path: section.querySelector('.dashboard__section-path'),
+            hoursCanvas: section.querySelector('.dashboard__hours-strip'),
+            tapeCol: section.querySelector('.dashboard__col--tape'),
             count: section.querySelector('.dashboard__section-count'),
             lift: section.querySelector('.dashboard__section-lift'),
             harbor: section.querySelector('.dashboard__section-harbor'),
@@ -1431,6 +1846,28 @@ export class DashboardRenderer {
         this._updateSectionHealth(sectionEl, refs, [...agents, ...laneAgents]);
         sectionEl._harborAgents = [...agents, ...laneAgents];
         this._updateSectionHarbor(sectionEl, projectPath, sectionEl._harborAgents);
+        this._paintSectionHours(sectionEl, projectPath);
+    }
+
+    _paintSectionHours(sectionEl, projectPath, now = Date.now()) {
+        const canvas = sectionEl?._sectionRefs?.hoursCanvas;
+        if (!canvas || !this._hours) return;
+        const signature = this._hours.signature(projectPath, now);
+        if (canvas._hoursSignature === signature) return;
+        canvas._hoursSignature = signature;
+        const hours = this._hours.hoursFor(projectPath, now);
+        paintHoursStripCanvas(canvas, hours);
+        const covered = hours.filter(cell => cell.covered);
+        const calls = covered.reduce((sum, cell) => sum + cell.act + cell.look, 0);
+        const commits = covered.reduce((sum, cell) => sum + cell.commits, 0);
+        const pushes = covered.reduce((sum, cell) => sum + cell.pushes, 0);
+        const summary = [
+            `Today (24h · ${covered.length}h covered)`,
+            `${calls} observed ${calls === 1 ? 'call' : 'calls'}`,
+            commits ? `${commits} verified ${commits === 1 ? 'commit' : 'commits'}` : '',
+            pushes ? `${pushes} verified ${pushes === 1 ? 'push' : 'pushes'}` : '',
+        ].filter(Boolean).join(' · ');
+        canvas.title = `${summary} · uncovered hours blank`;
     }
 
     // The lane's harbor chip: its repo's ledger, narrowed to the branches
@@ -1557,6 +1994,10 @@ export class DashboardRenderer {
                     <span class="dash-card__phase"></span>
                     <span class="dash-card__silent" hidden></span>
                     <span class="dash-card__phase-detail"></span>
+                    <span class="dash-card__now-chips">
+                        <span class="dash-card__now-chip dash-card__now-chip--work" hidden></span>
+                        <span class="dash-card__now-chip dash-card__now-chip--kids" hidden></span>
+                    </span>
                 </span>
                 <span class="dash-card__tape"></span>
                 <span class="dash-card__for"></span>
@@ -1628,9 +2069,11 @@ export class DashboardRenderer {
         card._heroCanvas = null;
         card._avatarSignature = '';
 
-        // 7.12 — observed-call tape, painted on whole pixels.
+        // 7.12 + W4.4 — observed-call tape, painted on whole pixels (80 px
+        // under 5 min, 160 px from 5 min onward).
+        const tapeSpan = this._tapes?.span() || tapeSpanForAge(0);
         const tapeCanvas = document.createElement('canvas');
-        tapeCanvas.width = TAPE_WIDTH;
+        tapeCanvas.width = tapeSpan.width || TAPE_SHORT_WIDTH;
         tapeCanvas.height = TAPE_HEIGHT;
         tapeCanvas.className = 'dash-card__tape-canvas';
         tapeCanvas.setAttribute('aria-hidden', 'true');
@@ -1670,6 +2113,7 @@ export class DashboardRenderer {
 
         card._elements = {
             select: selectBtn,
+            niche: card.querySelector('.dash-card__niche'),
             name: card.querySelector('.dash-card__name'),
             model: card.querySelector('.dash-card__model'),
             branch: card.querySelector('.dash-card__branch'),
@@ -1688,6 +2132,8 @@ export class DashboardRenderer {
             nowIcon: card.querySelector('.dash-card__now-icon'),
             phase: card.querySelector('.dash-card__phase'),
             phaseDetail: card.querySelector('.dash-card__phase-detail'),
+            nowWorkChip: card.querySelector('.dash-card__now-chip--work'),
+            nowKidsChip: card.querySelector('.dash-card__now-chip--kids'),
             tapeCanvas,
             forCell: card.querySelector('.dash-card__for'),
             workSummary: card.querySelector('.dash-card__work-summary'),
@@ -1777,8 +2223,28 @@ export class DashboardRenderer {
             </span>
         `;
         cardEl._elements.select.appendChild(call);
+        // W4.4 (§4.9) — right-aligned Bell Lane footer action `LOCATE IN WORLD ▸`
+        // placed as a sibling after `.dash-card__select` (still inside the
+        // `cv-frame--attn` border on `.dash-card`) so there is never a nested
+        // interactive `<button>` inside `<button>`.
+        const footer = document.createElement('div');
+        footer.className = 'dash-card__call-footer';
+        const locateBtn = document.createElement('button');
+        locateBtn.type = 'button';
+        locateBtn.className = 'dash-card__call-locate';
+        locateBtn.textContent = 'LOCATE IN WORLD ▸';
+        locateBtn.title = 'Switch to World and frame this agent (A)';
+        locateBtn.addEventListener('click', (event) => {
+            event.stopPropagation();
+            const current = this.world?.agents?.get?.(cardEl.dataset.agentId);
+            if (current) this._locateInWorld(current);
+        });
+        footer.appendChild(locateBtn);
+        cardEl._elements.select.after(footer);
         const refs = {
             root: call,
+            footer,
+            locate: locateBtn,
             hero: call.querySelector('.dash-card__call-hero'),
             name: call.querySelector('.dash-card__call-name'),
             meta: call.querySelector('.dash-card__call-meta'),
@@ -1850,6 +2316,30 @@ export class DashboardRenderer {
 
         this._setText(refs.prov, signalProvenance(agent).toUpperCase());
         refs.prov.title = signalProvenance(agent);
+        if (refs.locate) {
+            refs.locate.setAttribute('aria-label', `Locate ${agent.name || agent.id} in World`);
+        }
+    }
+
+    _locateInWorld(agent) {
+        if (!agent || this._destroyed) return;
+        eventBus.emit(DASHBOARD_LOCATE_IN_WORLD_EVENT, { agentId: agent.id, agent });
+        if (this._onLocateInWorld) {
+            this._onLocateInWorld(agent);
+            return;
+        }
+        document.getElementById('btnModeCharacter')?.click?.();
+        if (this._frameAttention) {
+            this._frameAttention(agent);
+        } else if (typeof KeyboardEvent === 'function' && typeof document?.dispatchEvent === 'function') {
+            document.dispatchEvent(new KeyboardEvent('keydown', {
+                key: 'a',
+                code: 'KeyA',
+                bubbles: true,
+                cancelable: true,
+            }));
+        }
+        emitAgentSelected(agent);
     }
 
     _renderAttentionQueue(agents) {
@@ -1930,9 +2420,10 @@ export class DashboardRenderer {
             providerGroup = document.createElement('div');
             providerGroup.className = 'dashboard-attention__group dashboard-attention__group--providers';
             for (const provider of providers) {
-                providerGroup.appendChild(this._filterButton({
+                const info = providerPresentation(provider);
+                const button = this._filterButton({
                     key: `provider:${provider}`,
-                    label: `${providerPresentation(provider).badge.label} ${providerCounts[provider]}`,
+                    label: '',
                     pressed: this._providerFilters.has(provider),
                     onClick: () => {
                         if (this._providerFilters.has(provider)) this._providerFilters.delete(provider);
@@ -1940,7 +2431,17 @@ export class DashboardRenderer {
                         this._controlsSignature = '';
                         this.render();
                     },
-                }));
+                });
+                button.classList.add('dashboard-attention__item--provider');
+                // W4.4 (§4.9) — 2x6 px guild-material color bar before each provider's count.
+                const pip = document.createElement('i');
+                pip.className = 'dashboard-attention__provider-pip';
+                pip.setAttribute('aria-hidden', 'true');
+                pip.style.backgroundColor = info.badge.color;
+                const countEl = document.createElement('b');
+                countEl.textContent = String(providerCounts[provider]);
+                button.append(pip, document.createTextNode(`${info.badge.label} `), countEl);
+                providerGroup.appendChild(button);
             }
             if (hasFilters) {
                 providerGroup.appendChild(this._filterButton({
@@ -2118,6 +2619,7 @@ export class DashboardRenderer {
         const inLane = Boolean(this._bellEl) && cardEl.parentElement === this._bellEl;
         const signature = [
             building || '',
+            districtKeyForAgent(agent) || '',
             inLane,
             agent.name || '',
             agent.model || '',
@@ -2249,8 +2751,8 @@ export class DashboardRenderer {
                 this._setStyle(refs.message, 'display', 'none');
             }
 
-            // #30 — district identity lives only in the selected detail now
-            // (7.10): an emblem glyph, no row wash.
+            // #30 + W4.4 — district identity lives in the selected detail emblem
+            // and as one of 9 static cached 44x40 backdrops behind the portrait niche.
             const buildingInfo = buildingPresentation(building);
             if (buildingInfo) {
                 cardEl.dataset.building = buildingInfo.building;
@@ -2264,6 +2766,14 @@ export class DashboardRenderer {
                 delete cardEl.dataset.building;
                 cardEl.style.removeProperty('--cv-building');
                 if (refs.buildingEmblem) this._setStyle(refs.buildingEmblem, 'display', 'none');
+            }
+            const districtKey = districtKeyForAgent(agent);
+            if (refs.niche && cardEl._nicheDistrict !== districtKey) {
+                cardEl._nicheDistrict = districtKey;
+                if (districtKey) refs.niche.dataset.district = districtKey;
+                else delete refs.niche.dataset.district;
+                const backdrop = districtKey ? getDistrictBackdrop(districtKey) : null;
+                this._setStyle(refs.niche, 'backgroundImage', backdrop?.dataUrl ? `url("${backdrop.dataUrl}")` : '');
             }
 
             if (inLane) this._updateCallBlock(cardEl, agent);
@@ -2337,6 +2847,16 @@ export class DashboardRenderer {
         this._setText(summary, summaryText);
         if (summary) summary.title = leadPath;
         summary?.parentElement?.classList.toggle('dash-card__work-cell--collision', collisions.length > 0);
+        // W4.4 (F4/R11) — compact inline chip in NOW whenever the wide WORKING SET
+        // column is below the 30 % grid allocation threshold.
+        const uniqueFiles = new Set(workingSet.map(item => item?.path).filter(Boolean)).size;
+        const inlineWork = uniqueFiles > 0
+            ? `${uniqueFiles} ${uniqueFiles === 1 ? 'file' : 'files'}`
+            : (collisions.length > 0 ? `${collisions.length} overlap` : '');
+        cardEl._inlineWorkText = inlineWork;
+        cardEl._inlineWorkCollision = collisions.length > 0;
+        cardEl._inlineWorkTitle = summaryText;
+        this._syncRowInlineChips(cardEl);
         const signature = JSON.stringify([workingSet, collisions]);
         if (container._workingSetSignature === signature) return;
         container._workingSetSignature = signature;
@@ -2395,6 +2915,9 @@ export class DashboardRenderer {
                 && agent.tasks.length > 0);
         this._renderKidStrip(cardEl, agent, children);
         if (!hasTaskProgress) {
+            cardEl._inlineKidsText = '';
+            cardEl._inlineKidsTitle = '';
+            this._syncRowInlineChips(cardEl);
             this._setText(target, agent.parentSessionId ? 'Child agent' : '—');
             target.title = agent.parentSessionId ? `Parent ${agent.parentSessionId}` : 'No child agents';
             this._setText(sourceEl, '');
@@ -2402,6 +2925,10 @@ export class DashboardRenderer {
             sourceEl?.classList.remove('dash-card__children-source--exact', 'dash-card__children-source--inferred');
             return;
         }
+        const kidCount = Math.max(children.length, Number(progress.total) || 0);
+        cardEl._inlineKidsText = kidCount > 0 ? `▸ ${kidCount}` : '';
+        cardEl._inlineKidsTitle = `${progress.done}/${progress.total} done`;
+        this._syncRowInlineChips(cardEl);
         this._setText(target, `${progress.done}/${progress.total} done`);
         target.title = children.length
             ? children.map(child => `${child.name || child.id}: ${child.isDeparted ? 'Unknown' : statusWord(child.status)}`).join('; ')
@@ -2783,6 +3310,12 @@ export class DashboardRenderer {
             if (chip) node.querySelector('summary')?.appendChild(chip);
         });
         replaceDetailRows(listEl, nodes);
+        const agent = this.world?.agents?.get?.(agentId);
+        annotateMendBrackets(listEl, [...listEl.children], limited, {
+            agentId,
+            provider: agent?.provider || '',
+            classPrefix: 'dash-card__tool',
+        });
     }
 
     _toolExitChip(entry) {
@@ -2843,6 +3376,7 @@ export class DashboardRenderer {
                 if (cardEl) {
                     this._renderToolHistory(cardEl, agent.id, toolHistory);
                     this._updateStaleBadge(cardEl, agent);
+                    this._paintCardTape(cardEl);
                     this._paintStrip(cardEl, agent.id);
                 }
             }
@@ -2982,6 +3516,7 @@ export class DashboardRenderer {
         eventBus.off('agent:added', this._onAgentAdded);
         eventBus.off('agent:updated', this._onAgentUpdated);
         eventBus.off('agent:removed', this._onAgentRemoved);
+        eventBus.off('outcome:verified', this._onOutcomeVerified);
         eventBus.off('mode:changed', this._onModeChanged);
         eventBus.off(DASHBOARD_FILTER_EVENT, this._onSharedFilterChanged);
         eventBus.off('harbor:updated', this._onHarborUpdated);

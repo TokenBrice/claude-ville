@@ -22,6 +22,7 @@
 /* Shared optional tracks at #dashboardGrid level so FOR/TOKENS/COST align
    across every project section (relaxed 2026-11-23, operator decision). */
 .dashboard__grid--has-tape { --dash-cols-tape: 160px; }
+.dashboard__grid--has-tape.dashboard__grid--tape-5m { --dash-cols-tape: 80px; }
 .dashboard__grid--has-work { --dash-cols-work: minmax(120px, 200px); }
 .dashboard__grid--has-kids { --dash-cols-kids: 160px; }
 
@@ -205,6 +206,13 @@
     color: transparent;
     font-size: 0;
 }
+/* W4.4 (§4.9) — 2x6 px guild-material color bar before each provider count. */
+.dashboard-attention__provider-pip {
+    display: inline-block;
+    flex: none;
+    width: 2px;
+    height: 6px;
+}
 .dashboard-attention__search {
     flex: none;
     margin-left: 12px;
@@ -276,6 +284,15 @@
     font: var(--fs-body)/var(--lh-body) var(--font-body);
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+/* W4.4 (§4.9) — 24h Project Hours Strip: 24 crisp 6x8 px cells with 1 px gaps. */
+.dashboard__hours-strip {
+    display: block;
+    flex: none;
+    width: 167px;
+    height: 8px;
+    image-rendering: pixelated;
 }
 
 .dashboard__section-health {
@@ -535,12 +552,15 @@
 .dash-card--departed .dash-card__name,
 .dash-card--departed .dash-card__now--status .dash-card__phase { color: var(--ink-3); }
 
-/* 7.8 — the static 44×40 portrait niche */
+/* 7.8 + W4.4 — the static 44×40 portrait niche over its cached district backdrop */
 .dash-card__niche {
     width: 44px;
     height: 40px;
     overflow: hidden;
-    background: var(--bg-0);
+    background-color: var(--bg-0);
+    background-size: 100% 100%;
+    background-repeat: no-repeat;
+    image-rendering: pixelated;
     box-shadow: inset 0 0 0 1px var(--line-1);
 }
 .dash-card__niche canvas,
@@ -605,6 +625,31 @@
 .dash-card__silent[data-tier="2"] { color: var(--ink-2); border-color: var(--line-2); }
 .dash-card__silent[data-tier="3"] { color: var(--ink-1); border-color: var(--ink-3); }
 
+/* W4.4 (F4/R11) — compact inline chips at the right end of NOW whenever the
+   wide WORKING SET or CHILDREN track stays below the 30 % grid threshold. */
+.dash-card__now-chips {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    gap: 4px;
+    margin-left: auto;
+}
+.dash-card__now-chips:not(:has(> :not([hidden]))) { display: none; }
+.dash-card__now-chip {
+    padding: 0 5px;
+    border: 1px solid var(--line-2);
+    background: var(--bg-2);
+    color: var(--ink-2);
+    font: var(--fs-body)/var(--lh-body) var(--font-body);
+    white-space: nowrap;
+}
+.dash-card__now-chip--collision {
+    border-color: color-mix(in srgb, var(--cv-status-errored) 45%, transparent);
+    color: var(--cv-status-errored);
+}
+.dashboard__grid--has-work .dash-card__now-chip--work,
+.dashboard__grid--has-kids .dash-card__now-chip--kids { display: none; }
+
 .dash-card__tape {
     display: none;
     align-items: center;
@@ -612,6 +657,7 @@
 }
 .dashboard__grid--has-tape .dash-card__tape { display: flex; }
 .dash-card__tape-canvas { width: 160px; height: 16px; }
+.dashboard__grid--tape-5m .dash-card__tape-canvas { width: 80px; }
 
 .dash-card__for,
 .dash-card__usage-tokens,
@@ -868,6 +914,30 @@
     font: var(--fs-body)/var(--lh-body) var(--font-body);
     white-space: nowrap;
 }
+.dash-card__call-footer { display: none; }
+.dash-card--call > .dash-card__call-footer {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding: 0 12px 8px 16px;
+}
+.dash-card__call-locate {
+    padding: 3px 8px;
+    border: 1px solid var(--line-2);
+    background: var(--bg-2);
+    color: var(--ink-1);
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
+    letter-spacing: 1px;
+    white-space: nowrap;
+    cursor: pointer;
+}
+.dash-card__call-locate:hover,
+.dash-card__call-locate:focus-visible {
+    border-color: var(--gold);
+    background: var(--bg-3);
+    color: var(--gold-hi);
+    outline: none;
+}
 .dash-card--call .dash-card__hero-slot { display: none; }
 .dash-card--call .dash-card__detail { border-top-color: var(--line-2); }
 
@@ -1051,6 +1121,34 @@
     text-transform: uppercase;
 }
 .dash-card__tool-list { display: flex; flex-direction: column; }
+.dash-card__tool-list--has-mend { padding-left: 12px; }
+.dash-card__tool-item--mend-pass,
+.dash-card__tool-item--mend-span,
+.dash-card__tool-item--mend-fail { position: relative; overflow: visible; }
+.dash-card__tool-item--mend-pass::before,
+.dash-card__tool-item--mend-span::before,
+.dash-card__tool-item--mend-fail::before {
+    content: '';
+    position: absolute;
+    left: -9px;
+    width: 7px;
+    pointer-events: none;
+    border-left: 1px solid var(--brass);
+}
+.dash-card__tool-item--mend-pass::before {
+    top: 50%;
+    bottom: 0;
+    border-top: 1px solid var(--brass);
+}
+.dash-card__tool-item--mend-span::before {
+    top: 0;
+    bottom: 0;
+}
+.dash-card__tool-item--mend-fail::before {
+    top: 0;
+    bottom: 50%;
+    border-bottom: 1px solid var(--brass);
+}
 .dash-card__tool-item {
     display: flex;
     align-items: center;

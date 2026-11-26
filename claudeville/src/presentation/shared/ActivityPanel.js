@@ -50,14 +50,17 @@ import { HARBOR_FOCUS_FLEET_EVENT, harborLedger, ledgerFailureText, ledgerLaneLa
 import { repoDisplayName, repoProfile } from './RepoColor.js';
 import { contextWindowLimitForModel } from './ModelVisualIdentity.js';
 import { AvatarCanvas } from '../dashboard-mode/AvatarCanvas.js';
-import { buildExecutionTree } from '../dashboard-mode/DashboardRenderer.js';
+import { annotateMendBrackets, buildExecutionTree } from '../dashboard-mode/DashboardRenderer.js';
+import { eventShapeSvgPath, eventShapeSvgViewBox } from './EventShapes.js';
 import { narrativeFeedEntries } from '../character-mode/VillageDirector.js';
 import { groupTodosByPhase } from '../character-mode/TaskboardBoardModel.js';
 import { buildBuildingInstrumentModel, BUILDING_INSTRUMENT_NAME_LIMIT } from './BuildingInstrumentModel.js';
 import { buildCausalWaterfall, causalTimestamp } from './WorkWaterfallModel.js';
 
 const PANEL_TOOL_LIMIT = 30;
+export const PANEL_TOOL_VISIBLE = 6;
 const PANEL_MESSAGE_LIMIT = 12;
+export const PANEL_MESSAGE_VISIBLE = 3;
 const PANEL_INTER_AGENT_MESSAGE_LIMIT = 5;
 const PANEL_GIT_EVENT_LIMIT = 6;
 const PANEL_RELATIONSHIP_LIMIT = 4;
@@ -65,14 +68,22 @@ const PANEL_RELATIONSHIP_LIMIT = 4;
 // behind one overflow row.
 const WORKING_SET_TILE_LIMIT = 4;
 const DIRECTOR_FEED_LIMIT = 12;
+export const PANEL_DIRECTOR_FEED_VISIBLE = 5;
 const BUILDING_SIGNAL_REFRESH_INTERVAL = 5000;
 const JOURNEY_BREADCRUMB_LIMIT = 5;
 const BUILDING_RECENT_WORK_LIMIT = 3;
 const PIN_COMPARE_LIMIT = 2;
 const NARRATION_ENTRY_LIMIT = 20;
+export const PANEL_NARRATION_VISIBLE = 4;
 const NARRATION_RETENTION_MS = 5 * 60_000;
 const PINNED_AGENTS_STORAGE_KEY = 'claudeville.pinnedAgents';
-const VILLAGE_OPEN_STORAGE_KEY = 'claudeville.activityPanel.villageOpen';
+export const ACTIVITY_TAB_STORAGE_KEY = 'claudeville.activityPanel.tab';
+export const ACTIVITY_PANEL_TABS = Object.freeze(['live', 'work', 'life']);
+const ACTIVITY_TAB_LABELS = Object.freeze({
+    live: 'LIVE',
+    work: 'WORK',
+    life: 'LIFE',
+});
 const VILLAGE_DIRECTOR_EVENT = 'village:director';
 const VILLAGE_BUILDING_SIGNAL_EVENT = 'village:building-signal';
 const CONFIGURED_BUILDING_TYPES = new Set(BUILDING_DEFS.map(def => normalizeBuildingType(def.type)));
@@ -167,6 +178,121 @@ export const SECTION_ORDER = Object.freeze([
     'narration',
     'village-bonds',
 ]);
+
+// W4.4 (R10, §4.8) — exact 15-section mapping across the 3-tab Keep Folio:
+// LIVE (4), WORK (5), LIFE (6). `village` dissolves into the LIFE tab body.
+export const TAB_OF_SECTION = Object.freeze({
+    'current-tool': 'live',
+    'tool-history': 'live',
+    'messages': 'live',
+    'cost-tokens': 'live',
+    'prompt-plan': 'work',
+    'execution-tree': 'work',
+    'causal-waterfall': 'work',
+    'working-set': 'work',
+    'journey': 'life',
+    'village': 'life',
+    'scene-log': 'life',
+    'chronicle': 'life',
+    'harbor-log': 'work',
+    'narration': 'life',
+    'village-bonds': 'life',
+});
+
+// W4.4 (§3.2 / §4.8) — compaction chit formatting: `412K → 38K` when both
+// preTokens and postTokens exist, `412K` alone when postTokens is null;
+// `K` below one million, `1.2M` above.
+export function formatCompactionTokens(tokens) {
+    const value = Number(tokens);
+    if (!Number.isFinite(value) || value < 0) return '';
+    if (value >= 1_000_000) {
+        const millions = value / 1_000_000;
+        const text = millions >= 10 ? String(Math.round(millions)) : String(Number(millions.toFixed(1)));
+        return `${text}M`;
+    }
+    if (value >= 1_000) return `${Math.round(value / 1_000)}K`;
+    return String(Math.round(value));
+}
+
+export function formatCompactionLabel(compaction) {
+    if (!compaction || typeof compaction !== 'object') return '';
+    const pre = Number(compaction.preTokens);
+    if (!Number.isFinite(pre) || pre <= 0) return '';
+    const preText = formatCompactionTokens(pre);
+    const hasPost = compaction.postTokens !== null
+        && compaction.postTokens !== undefined
+        && Number.isFinite(Number(compaction.postTokens))
+        && Number(compaction.postTokens) >= 0;
+    if (!hasPost) return preText;
+    return `${preText} → ${formatCompactionTokens(Number(compaction.postTokens))}`;
+}
+
+// W4.4 (§4.8) — crisp 1 px provenance marginalia glyph in the left gutter,
+// drawn from the shared EventShapes silhouettes used by the thought layer.
+function marginaliaGlyph(shapeId, title = '') {
+    const shape = eventShapeSvgPath(shapeId) ? shapeId : 'read-page';
+    const children = [];
+    if (typeof document !== 'undefined' && typeof document.createElementNS === 'function') {
+        const ns = 'http://www.w3.org/2000/svg';
+        const svg = document.createElementNS(ns, 'svg');
+        svg.setAttribute('viewBox', eventShapeSvgViewBox(shape));
+        svg.setAttribute('class', 'activity-panel__marginalia-svg');
+        svg.setAttribute('aria-hidden', 'true');
+        svg.setAttribute('focusable', 'false');
+        svg.setAttribute('shape-rendering', 'crispEdges');
+        const path = document.createElementNS(ns, 'path');
+        path.setAttribute('fill', 'currentColor');
+        path.setAttribute('fill-rule', 'evenodd');
+        path.setAttribute('d', eventShapeSvgPath(shape));
+        svg.appendChild(path);
+        children.push(svg);
+    }
+    return el('span', {
+        className: ['activity-panel__marginalia', `activity-panel__marginalia--${shape}`],
+        title: title || undefined,
+        dataset: { marginalia: shape },
+    }, children);
+}
+
+function toolMarginaliaShape(entry) {
+    const exitCode = Number(entry?.toolExitCode);
+    if (Number.isFinite(exitCode) && exitCode !== 0) return 'incident-bracket';
+    const cat = toolCategory(entry?.tool);
+    return ({
+        read: 'read-page',
+        write: 'edit-strike',
+        exec: 'shell-slate',
+        search: 'search-lens',
+        task: 'task-slip',
+    })[cat] || 'read-page';
+}
+
+function narrationMarginaliaShape(entry) {
+    if (entry?.kind === 'plan') return 'task-slip';
+    return dialogueShape(entry?.kind) === 'chip' ? 'read-page' : 'message-scroll';
+}
+
+function sceneMarginaliaShape(kind) {
+    return ({
+        handoff: 'child-return',
+        parade: 'release-crown',
+        incident: 'incident-bracket',
+        arrival: 'check',
+        departure: 'stale-seal',
+    })[kind] || 'read-page';
+}
+
+function chapterMarginaliaShape(kind) {
+    return ({
+        commit: 'anchor',
+        push: 'anchor',
+        errored: 'incident-bracket',
+        waiting: 'needs-you',
+        rate_limited: 'limit-gate',
+        resolved: 'check',
+        completed: 'check',
+    })[kind] || 'read-page';
+}
 
 // The full request, redacted and on one line. The call card clamps it in CSS
 // and keeps the complete text behind the shared disclosure.
@@ -616,8 +742,15 @@ export class ActivityPanel {
         this._promptPlanSectionEl = null;
         this._promptPlanTitleEl = null;
         this._promptPlanBodyEl = null;
-        this._villageSectionEl = null;
-        this._villageBodyEl = null;
+        this._tabsEl = null;
+        this._tabListEl = null;
+        this._tabButtons = {};
+        this._tabPanels = {};
+        this._tabEmptyEls = {};
+        this._bodyEl = null;
+        this._ledgerDetailsEl = null;
+        this._contextTicksEl = null;
+        this._activeTab = this._loadActiveTab();
         this._pinStripEl = null;
         this._pinToggleBtn = null;
         this._pinFetchSeq = 0;
@@ -633,7 +766,8 @@ export class ActivityPanel {
         this._workingDirectoryCopyBtn = null;
         this._ensurePinCompare();
         this._ensureWorkingDirectoryAction();
-        this._ensureVillageSection();
+        this._ensureTabFolio();
+        this._ensureCostLedgerDisclosure();
         this._mountExistingSections();
         this._ensurePromptPlanSection();
         this._ensureExecutionTreeSection();
@@ -649,6 +783,7 @@ export class ActivityPanel {
         this._ensureDirectorFeedSection();
         this._ensureRelationshipsSection();
         this._ensureMessageEdgesSection();
+        this._applyActiveTab();
         // Sections that belong to agent mode and must be hidden when a building is selected.
         for (const node of this.panelEl?.querySelectorAll('.activity-panel__meta, .activity-panel__section') || []) {
             this._registerAgentSection(node);
@@ -746,6 +881,7 @@ export class ActivityPanel {
                 }
                 this._renderRelationships(agent);
                 this._updatePinToggle(agent);
+                this._syncTabEmptyStates();
             }
         };
         this._onAgentRemoved = (agent) => {
@@ -941,6 +1077,7 @@ export class ActivityPanel {
 
     _mountExistingSections() {
         for (const key of [...SECTION_ORDER].reverse()) {
+            if (key === 'village') continue;
             const node = this.panelEl?.querySelector(`[data-section="${key}"]`);
             if (node) this._mountSection(key, node);
         }
@@ -951,35 +1088,196 @@ export class ActivityPanel {
         if (!node || index < 0 || !this.panelEl) return;
         node.dataset.section = key;
 
-        const villageIndex = SECTION_ORDER.indexOf('village');
-        const insideVillage = index > villageIndex;
-        const parent = insideVillage ? this._villageBodyEl : this.panelEl;
+        const tab = TAB_OF_SECTION[key] || 'live';
+        const parent = this._tabPanels?.[tab] || this._bodyEl || this.panelEl;
         if (!parent) return;
 
         const next = SECTION_ORDER.slice(index + 1)
+            .filter(nextKey => TAB_OF_SECTION[nextKey] === tab)
             .map(nextKey => parent.querySelector(`[data-section="${nextKey}"]`))
             .find(candidate => candidate?.parentNode === parent);
         if (next) {
             parent.insertBefore(node, next);
             return;
         }
+        const emptyPlaceholder = this._tabEmptyEls?.[tab];
+        if (emptyPlaceholder && emptyPlaceholder.parentNode === parent) {
+            parent.insertBefore(node, emptyPlaceholder);
+            return;
+        }
         parent.appendChild(node);
     }
 
-    _ensureVillageSection() {
-        if (this._villageSectionEl && this._villageBodyEl) return;
-        const body = el('div', { className: 'activity-panel__village-body' });
-        const details = el('details', { className: 'activity-panel__village' }, [
-            el('summary', { className: 'activity-panel__village-summary', text: 'IN THE VILLAGE' }),
-            body,
-        ]);
-        details.open = this._loadVillageOpen();
-        this._onVillageToggle = () => this._persistVillageOpen();
-        details.addEventListener('toggle', this._onVillageToggle);
-        this._villageSectionEl = details;
-        this._villageBodyEl = body;
-        this._mountSection('village', details);
-        this._registerAgentSection(details);
+    // W4.4 (§4.8) — 3-tab Keep Folio (`LIVE · WORK · LIFE`) pinned under the
+    // Call card + Session header, with `.activity-panel__body` as the SOLE
+    // vertical scroller in the panel.
+    _ensureTabFolio() {
+        if (this._tabsEl && this._bodyEl) return;
+        if (!this.panelEl) return;
+
+        const tabList = el('div', {
+            className: ['topbar__well', 'cv-frame', 'cv-frame--well', 'activity-panel__tab-well'],
+            ariaLabel: 'Activity folio',
+        });
+        tabList.setAttribute('role', 'tablist');
+
+        const body = el('div', { className: 'activity-panel__body' });
+        this._tabButtons = {};
+        this._tabPanels = {};
+        this._tabEmptyEls = {};
+
+        for (const tab of ACTIVITY_PANEL_TABS) {
+            const cap = tab.charAt(0).toUpperCase() + tab.slice(1);
+            const tabId = `panelTab${cap}`;
+            const panelId = `panelTabPanel${cap}`;
+            const button = el('button', {
+                className: ['topbar__mode-btn', 'activity-panel__tab'],
+                text: ACTIVITY_TAB_LABELS[tab],
+                dataset: { tab },
+            });
+            button.type = 'button';
+            button.id = tabId;
+            button.setAttribute('role', 'tab');
+            button.setAttribute('aria-controls', panelId);
+            button.setAttribute('aria-selected', 'false');
+            button.tabIndex = -1;
+            button.addEventListener('click', () => this.setActiveTab(tab));
+            tabList.appendChild(button);
+            this._tabButtons[tab] = button;
+
+            const emptyNote = el('div', {
+                className: ['activity-panel__empty', 'activity-panel__tab-empty'],
+                text: 'Nothing recorded yet',
+            });
+            emptyNote.hidden = true;
+            const panel = el('div', {
+                className: 'activity-panel__tab-panel',
+                dataset: { tabPanel: tab },
+            }, [emptyNote]);
+            panel.id = panelId;
+            panel.setAttribute('role', 'tabpanel');
+            panel.setAttribute('aria-labelledby', tabId);
+            panel.hidden = true;
+            body.appendChild(panel);
+            this._tabPanels[tab] = panel;
+            this._tabEmptyEls[tab] = emptyNote;
+        }
+
+        this._onTabListKeydown = (event) => {
+            const key = event.key;
+            if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(key)) return;
+            event.preventDefault();
+            const current = ACTIVITY_PANEL_TABS.indexOf(this._activeTab);
+            const idx = current < 0 ? 0 : current;
+            let nextIndex = idx;
+            if (key === 'ArrowRight') nextIndex = (idx + 1) % ACTIVITY_PANEL_TABS.length;
+            else if (key === 'ArrowLeft') nextIndex = (idx - 1 + ACTIVITY_PANEL_TABS.length) % ACTIVITY_PANEL_TABS.length;
+            else if (key === 'Home') nextIndex = 0;
+            else if (key === 'End') nextIndex = ACTIVITY_PANEL_TABS.length - 1;
+            this.setActiveTab(ACTIVITY_PANEL_TABS[nextIndex], { focus: true });
+        };
+        tabList.addEventListener('keydown', this._onTabListKeydown);
+
+        const tabsWrap = el('div', { className: 'activity-panel__tabs' }, [tabList]);
+        const meta = this.panelEl.querySelector('.activity-panel__meta');
+        if (meta?.after) {
+            meta.after(tabsWrap, body);
+        } else {
+            this.panelEl.appendChild(tabsWrap);
+            this.panelEl.appendChild(body);
+        }
+
+        this._tabsEl = tabsWrap;
+        this._tabListEl = tabList;
+        this._bodyEl = body;
+    }
+
+    _ensureCostLedgerDisclosure() {
+        const grid = this.dom?.panelTokenGrid;
+        if (grid && !this._ledgerDetailsEl && grid.parentNode) {
+            const details = el('details', {
+                className: ['activity-panel__journey-details', 'activity-panel__ledger-details'],
+            }, [
+                el('summary', { className: 'activity-panel__journey-summary', text: 'Token ledger' }),
+            ]);
+            grid.parentNode.insertBefore(details, grid);
+            details.appendChild(grid);
+            this._ledgerDetailsEl = details;
+        }
+        const barWrap = this.dom?.panelContextBar?.parentElement;
+        if (barWrap && !this._contextTicksEl) {
+            const ticks = el('div', { className: 'activity-panel__context-ticks' });
+            barWrap.appendChild(ticks);
+            this._contextTicksEl = ticks;
+        }
+    }
+
+    setActiveTab(tab, { focus = false, persist = true } = {}) {
+        const next = ACTIVITY_PANEL_TABS.includes(tab) ? tab : 'live';
+        this._activeTab = next;
+        this._applyActiveTab();
+        if (this._bodyEl) this._bodyEl.scrollTop = 0;
+        if (persist) this._persistActiveTab(next);
+        if (focus) this._tabButtons?.[next]?.focus?.({ preventScroll: true });
+    }
+
+    _applyActiveTab() {
+        const active = ACTIVITY_PANEL_TABS.includes(this._activeTab) ? this._activeTab : 'live';
+        this._activeTab = active;
+        for (const tab of ACTIVITY_PANEL_TABS) {
+            const isSelected = tab === active;
+            const btn = this._tabButtons?.[tab];
+            if (btn) {
+                btn.setAttribute('aria-selected', String(isSelected));
+                btn.tabIndex = isSelected ? 0 : -1;
+                btn.classList?.toggle?.('topbar__mode-btn--active', isSelected);
+                btn.classList?.toggle?.('activity-panel__tab--active', isSelected);
+            }
+            const panel = this._tabPanels?.[tab];
+            if (panel) {
+                panel.hidden = this._mode === 'building' || !isSelected;
+            }
+        }
+    }
+
+    _syncTabEmptyStates() {
+        for (const tab of ACTIVITY_PANEL_TABS) {
+            const panel = this._tabPanels?.[tab];
+            const btn = this._tabButtons?.[tab];
+            const emptyNote = this._tabEmptyEls?.[tab];
+            if (!panel) continue;
+            const sections = [...(panel.querySelectorAll?.('[data-section]') || [])];
+            const visibleSections = sections.filter(section => section.style?.display !== 'none' && !section.hidden);
+            const hasVisible = visibleSections.length > 0;
+            const hasContent = visibleSections.some((section) => {
+                if (section.dataset?.section === 'cost-tokens') {
+                    return !this.dom?.panelNoUsage || this.dom.panelNoUsage.style?.display === 'none';
+                }
+                return !section.querySelector?.('.activity-panel__empty');
+            });
+            if (btn) {
+                btn.classList?.toggle?.('activity-panel__tab--empty', !hasContent);
+                if (btn.dataset) btn.dataset.empty = String(!hasContent);
+            }
+            if (emptyNote) emptyNote.hidden = hasVisible;
+        }
+    }
+
+    _loadActiveTab() {
+        if (typeof localStorage === 'undefined') return 'live';
+        try {
+            const stored = localStorage.getItem(ACTIVITY_TAB_STORAGE_KEY);
+            return ACTIVITY_PANEL_TABS.includes(stored) ? stored : 'live';
+        } catch {
+            return 'live';
+        }
+    }
+
+    _persistActiveTab(tab) {
+        if (typeof localStorage === 'undefined') return;
+        try {
+            localStorage.setItem(ACTIVITY_TAB_STORAGE_KEY, tab);
+        } catch { /* ignore */ }
     }
 
     _loadPinnedAgentIds() {
@@ -1000,22 +1298,6 @@ export class ActivityPanel {
         if (typeof localStorage === 'undefined') return;
         try {
             localStorage.setItem(PINNED_AGENTS_STORAGE_KEY, JSON.stringify([...this._pinned].slice(0, PIN_COMPARE_LIMIT)));
-        } catch { /* ignore */ }
-    }
-
-    _loadVillageOpen() {
-        if (typeof localStorage === 'undefined') return false;
-        try {
-            return localStorage.getItem(VILLAGE_OPEN_STORAGE_KEY) === 'true';
-        } catch {
-            return false;
-        }
-    }
-
-    _persistVillageOpen() {
-        if (typeof localStorage === 'undefined' || !this._villageSectionEl) return;
-        try {
-            localStorage.setItem(VILLAGE_OPEN_STORAGE_KEY, String(this._villageSectionEl.open));
         } catch { /* ignore */ }
     }
 
@@ -1396,6 +1678,7 @@ export class ActivityPanel {
         this._renderNarration(agent);
         this._revealPanel();
         this.panelEl.scrollTop = 0;
+        if (this._bodyEl) this._bodyEl.scrollTop = 0;
         document.body.classList.add('cv-panel-open');
         this._startPanelKeyboardHandling();
         this._mountHeroPortrait(agent);
@@ -1412,6 +1695,8 @@ export class ActivityPanel {
         this._renderDirectorFeed();
         this._renderRelationships(agent);
         this._updatePinToggle(agent);
+        this._applyActiveTab();
+        this._syncTabEmptyStates();
         this._refreshPinCompare({ fetch: true });
         this._startPolling();
     }
@@ -1592,6 +1877,7 @@ export class ActivityPanel {
             this.dom.panelMode.textContent = '';
             this.dom.panelMode.className = 'activity-panel__value';
         }
+        this._renderCompactionTicks(agent);
     }
 
     // `· 13s` after the status label: time in state, painted on open and on
@@ -2354,6 +2640,7 @@ export class ActivityPanel {
                 todos: Array.isArray(data.todos) ? data.todos : agent.todos,
             });
         }
+        this._syncTabEmptyStates();
     }
 
     // ─── Rendering ─────────────────────────────────────
@@ -2393,11 +2680,60 @@ export class ActivityPanel {
             // Nodes mirror `limited` in reverse order (newest first).
             const reversed = [...limited].reverse();
             nodes.forEach((node, index) => {
-                const chip = this._toolExitChip(reversed[index]);
-                if (chip) node.querySelector('summary')?.appendChild(chip);
+                const entry = reversed[index];
+                const summary = node.querySelector('summary');
+                if (summary) {
+                    const glyph = marginaliaGlyph(toolMarginaliaShape(entry), `${entry?.tool || 'Tool'} call`);
+                    summary.insertBefore(glyph, summary.firstChild);
+                }
+                const chip = this._toolExitChip(entry);
+                if (chip) summary?.appendChild(chip);
             });
         }
-        replaceDetailRows(container, nodes);
+        // W4.4 (§4.8) — no nested scrollbox: show newest N directly and fold
+        // earlier calls behind one native disclosure.
+        if (nodes.length <= PANEL_TOOL_VISIBLE) {
+            replaceDetailRows(container, nodes);
+            annotateMendBrackets(container, [...container.children], limited, {
+                agentId: this.currentAgent?.id || 'agent',
+                provider: this.currentAgent?.provider || '',
+                classPrefix: 'activity-panel__tool',
+            });
+            return;
+        }
+        const visibleNodes = nodes.slice(0, PANEL_TOOL_VISIBLE);
+        const earlierNodes = nodes.slice(PANEL_TOOL_VISIBLE);
+        const earlierBody = el('div', { className: 'activity-panel__list-more-body' }, earlierNodes);
+        const disclosure = el('details', {
+            className: 'activity-panel__list-more cv-inspection',
+            dataset: {
+                detailKey: 'tool-history:more',
+                detailSignature: `${earlierNodes.length}:${signature}`,
+            },
+        }, [
+            el('summary', {
+                className: 'activity-panel__list-more-summary',
+                text: `Show ${earlierNodes.length} earlier ${earlierNodes.length === 1 ? 'call' : 'calls'}`,
+            }),
+            earlierBody,
+        ]);
+        replaceDetailRows(container, [...visibleNodes, disclosure]);
+        const mountedVisible = [...container.children].slice(0, visibleNodes.length);
+        annotateMendBrackets(container, mountedVisible, limited, {
+            agentId: this.currentAgent?.id || 'agent',
+            provider: this.currentAgent?.provider || '',
+            classPrefix: 'activity-panel__tool',
+            offset: 0,
+        });
+        const mountedEarlier = container.querySelector('.activity-panel__list-more-body');
+        if (mountedEarlier) {
+            annotateMendBrackets(mountedEarlier, [...mountedEarlier.children], limited, {
+                agentId: this.currentAgent?.id || 'agent',
+                provider: this.currentAgent?.provider || '',
+                classPrefix: 'activity-panel__tool',
+                offset: PANEL_TOOL_VISIBLE,
+            });
+        }
     }
 
     _toolExitChip(entry) {
@@ -2438,15 +2774,45 @@ export class ActivityPanel {
             return;
         }
         const reversed = [...limited].reverse();
-        replaceDetailRows(container, reversed.map((m, index) => {
+        const nodes = reversed.map((m, index) => {
+            const role = String(m.role || 'Message').toLowerCase();
+            const shape = role === 'user' ? 'task-slip' : (m.truncated || m.textTruncated ? 'read-page' : 'message-scroll');
+            const summaryText = `${m.role || 'Message'} excerpt · ${truncateText(m.text || '', 80)}`;
             const node = inspectableText(m.text || '', {
-                summary: `${m.role || 'Message'} excerpt · ${truncateText(m.text || '', 80)}`,
+                summary: summaryText,
                 key: String(m.id || `${m.ts || index}:${m.role || ''}`),
                 truncated: m.truncated === true || m.textTruncated === true,
             });
             node.classList.add('activity-panel__msg');
+            const summary = node.querySelector('summary');
+            if (summary) {
+                summary.replaceChildren(
+                    marginaliaGlyph(shape, `${m.role || 'Message'} transcript`),
+                    el('span', { className: 'activity-panel__msg-summary', text: summaryText }),
+                );
+            }
             return node;
-        }));
+        });
+        if (nodes.length <= PANEL_MESSAGE_VISIBLE) {
+            replaceDetailRows(container, nodes);
+            return;
+        }
+        const visibleNodes = nodes.slice(0, PANEL_MESSAGE_VISIBLE);
+        const earlierNodes = nodes.slice(PANEL_MESSAGE_VISIBLE);
+        const disclosure = el('details', {
+            className: 'activity-panel__list-more cv-inspection',
+            dataset: {
+                detailKey: 'messages:more',
+                detailSignature: `${earlierNodes.length}:${signature}`,
+            },
+        }, [
+            el('summary', {
+                className: 'activity-panel__list-more-summary',
+                text: `Show ${earlierNodes.length} earlier ${earlierNodes.length === 1 ? 'message' : 'messages'}`,
+            }),
+            el('div', { className: 'activity-panel__list-more-body' }, earlierNodes),
+        ]);
+        replaceDetailRows(container, [...visibleNodes, disclosure]);
     }
 
     _renderTokenUsage(usage) {
@@ -2479,7 +2845,10 @@ export class ActivityPanel {
 
     _renderUsage(normalizedUsage, { fromSnapshot = false } = {}) {
         const cost = this._costForUsage(normalizedUsage);
-        const usageSignature = `${fromSnapshot ? 'snapshot' : 'detail'}|${normalizedUsage.availability}|${normalizedUsage.totalInput}|${normalizedUsage.totalOutput}|${normalizedUsage.cacheRead}|${normalizedUsage.cacheCreate}|${normalizedUsage.contextWindow}|${normalizedUsage.contextWindowMax}|${normalizedUsage.turnCount}|${cost.usd}|${cost.source}|${cost.rateMatch}|${cost.rateRevision}|${cost.unknownModel}`;
+        const compactionsSig = Array.isArray(this.currentAgent?.compactions)
+            ? this.currentAgent.compactions.map(c => `${c?.at || 0}:${c?.preTokens || 0}:${c?.postTokens ?? ''}`).join(',')
+            : '';
+        const usageSignature = `${fromSnapshot ? 'snapshot' : 'detail'}|${normalizedUsage.availability}|${normalizedUsage.totalInput}|${normalizedUsage.totalOutput}|${normalizedUsage.cacheRead}|${normalizedUsage.cacheCreate}|${normalizedUsage.contextWindow}|${normalizedUsage.contextWindowMax}|${normalizedUsage.turnCount}|${cost.usd}|${cost.source}|${cost.rateMatch}|${cost.rateRevision}|${cost.unknownModel}|${compactionsSig}`;
         if (usageSignature === this._renderSignatures.tokenUsage) return;
         this._renderSignatures.tokenUsage = usageSignature;
 
@@ -2507,7 +2876,9 @@ export class ActivityPanel {
         else if (contextPct > 50) bar.classList.add('activity-panel__context-bar--warning');
         if (showContext) bar.parentElement?.removeAttribute('hidden');
         else bar.parentElement?.setAttribute('hidden', '');
+        this._renderCompactionTicks(this.currentAgent, maxContext);
         this.dom.panelTokenGrid.hidden = false;
+        if (this._ledgerDetailsEl) this._ledgerDetailsEl.hidden = false;
         this.dom.panelCostRow.hidden = false;
         this.dom.panelNoUsage.hidden = normalizedUsage.availability !== 'partial';
         this.dom.panelNoUsage.textContent = 'Partial usage · some token counts are unavailable';
@@ -2618,7 +2989,9 @@ export class ActivityPanel {
         // An empty context bar implies a measurement of zero; with no usage
         // there is nothing to fill, so the track goes.
         this.dom.panelContextBar.parentElement?.setAttribute('hidden', '');
+        this._renderCompactionTicks(this.currentAgent);
         this.dom.panelTokenGrid.hidden = true;
+        if (this._ledgerDetailsEl) this._ledgerDetailsEl.hidden = true;
         this.dom.panelCostRow.hidden = true;
         this.dom.panelNoUsage.hidden = true;
         this.dom.panelNoUsage.textContent = label;
@@ -2643,6 +3016,45 @@ export class ActivityPanel {
         // numeral: with a measured cost the context stat hides instead.
         this._setContextStat('-', label, !measured);
         this._renderCost(measured ? this._costForUsage(tokens) : null);
+    }
+
+    // W4.4 (§3.2 / §4.8) — render one tick per compaction on the context bar
+    // whenever `agent.compactions` is a non-empty array; gracefully no-ops on
+    // null/undefined/empty arrays.
+    _renderCompactionTicks(agent, maxContext = 0) {
+        const container = this._contextTicksEl;
+        if (!container) return;
+        const raw = Array.isArray(agent?.compactions) ? agent.compactions : [];
+        const entries = raw
+            .map(entry => ({ entry, label: formatCompactionLabel(entry) }))
+            .filter(item => Boolean(item.label));
+        if (!entries.length) {
+            if (container.childNodes?.length) replaceChildren(container, []);
+            container.hidden = true;
+            return;
+        }
+        const ceiling = Number(maxContext)
+            || Number(agent?.tokens?.contextWindowMax)
+            || contextWindowLimitForModel(agent?.model, agent?.provider)
+            || 0;
+        const nodes = entries.map(({ entry, label }, index) => {
+            const pre = Number(entry.preTokens) || 0;
+            const pct = ceiling > 0
+                ? Math.max(2, Math.min(98, (pre / ceiling) * 100))
+                : ((index + 1) / (entries.length + 1)) * 100;
+            const trigger = entry.trigger && entry.trigger !== 'unknown' ? ` · ${entry.trigger}` : '';
+            const tick = el('span', {
+                className: 'activity-panel__context-tick',
+                title: `${label}${trigger}`,
+                dataset: { compactionLabel: label },
+                style: { left: `${pct.toFixed(1)}%` },
+            });
+            tick.setAttribute('aria-label', `Compacted ${label}`);
+            return tick;
+        });
+        container.hidden = false;
+        this.dom?.panelContextBar?.parentElement?.removeAttribute?.('hidden');
+        replaceChildren(container, nodes);
     }
 
     _emptyState(text) {
@@ -2739,6 +3151,7 @@ export class ActivityPanel {
             style: event.inferred ? { opacity: '0.68' } : undefined,
         }, [
             el('span', { className: 'activity-panel__token-label' }, [
+                marginaliaGlyph(status.label === 'failed' || status.label === 'rejected' ? 'incident-bracket' : 'anchor', status.title || label),
                 el('span', {
                     className: 'activity-panel__harbor-dot',
                     style: { background: status.color },
@@ -2883,10 +3296,25 @@ export class ActivityPanel {
         this._narrationSectionEl.style.display = '';
         if (signature === this._renderSignatures.narration) return;
         this._renderSignatures.narration = signature;
-        replaceChildren(
-            this._narrationBodyEl,
-            ordered.map(entry => this._narrationRow(entry, now)),
-        );
+        const rows = ordered.map(entry => this._narrationRow(entry, now));
+        if (rows.length <= PANEL_NARRATION_VISIBLE) {
+            replaceChildren(this._narrationBodyEl, rows);
+            return;
+        }
+        const wasOpen = this._narrationBodyEl.querySelector('.activity-panel__list-more')?.open || false;
+        const visibleRows = rows.slice(0, PANEL_NARRATION_VISIBLE);
+        const earlierRows = rows.slice(PANEL_NARRATION_VISIBLE);
+        const disclosure = el('details', {
+            className: 'activity-panel__list-more cv-inspection',
+        }, [
+            el('summary', {
+                className: 'activity-panel__list-more-summary',
+                text: `Show ${earlierRows.length} earlier ${earlierRows.length === 1 ? 'entry' : 'entries'}`,
+            }),
+            el('div', { className: 'activity-panel__list-more-body' }, earlierRows),
+        ]);
+        disclosure.open = wasOpen;
+        replaceChildren(this._narrationBodyEl, [...visibleRows, disclosure]);
     }
 
     _narrationRow(entry, now = Date.now()) {
@@ -2905,10 +3333,11 @@ export class ActivityPanel {
                 text: 'redacted',
             }));
         }
+        const provenanceLabel = dialogueSourceLabel(entry);
         const footer = [
             el('span', {
                 className: 'activity-panel__narration-provenance',
-                text: dialogueSourceLabel(entry),
+                text: provenanceLabel,
             }),
             ...flags,
             el('span', {
@@ -2922,8 +3351,11 @@ export class ActivityPanel {
                 `activity-panel__narration-row--${shape}`,
             ],
         }, [
-            el('div', { className: 'activity-panel__narration-text', text }),
-            el('div', { className: 'activity-panel__narration-footer' }, footer),
+            marginaliaGlyph(narrationMarginaliaShape(entry), provenanceLabel),
+            el('div', { className: 'activity-panel__narration-content' }, [
+                el('div', { className: 'activity-panel__narration-text', text }),
+                el('div', { className: 'activity-panel__narration-footer' }, footer),
+            ]),
         ]);
     }
 
@@ -2968,6 +3400,7 @@ export class ActivityPanel {
                 || identityKey !== this._currentBiographyIdentityKey
             ) return;
             this._renderChronicleBody(biography);
+            this._syncTabEmptyStates();
         } catch {
             if (
                 !this._destroyed
@@ -3066,6 +3499,7 @@ export class ActivityPanel {
 
     _bookOfLivesChapterNode(chapter) {
         return el('div', { className: 'activity-panel__life-chapter' }, [
+            marginaliaGlyph(chapterMarginaliaShape(chapter.kind), chapter.label || chapter.kind),
             el('span', {
                 className: `activity-panel__life-mark activity-panel__life-mark--${chapter.kind}`,
             }),
@@ -3151,12 +3585,33 @@ export class ActivityPanel {
         this._directorFeedSectionEl.style.display = '';
         if (signature === this._renderSignatures.directorFeed) return;
         this._renderSignatures.directorFeed = signature;
-        replaceChildren(this._directorFeedBodyEl, ordered.map(entry => this._directorFeedRow(entry, now)));
+        const rows = ordered.map(entry => this._directorFeedRow(entry, now));
+        if (rows.length <= PANEL_DIRECTOR_FEED_VISIBLE) {
+            replaceChildren(this._directorFeedBodyEl, rows);
+            this._syncTabEmptyStates();
+            return;
+        }
+        const wasOpen = this._directorFeedBodyEl.querySelector('.activity-panel__list-more')?.open || false;
+        const visibleRows = rows.slice(0, PANEL_DIRECTOR_FEED_VISIBLE);
+        const earlierRows = rows.slice(PANEL_DIRECTOR_FEED_VISIBLE);
+        const disclosure = el('details', {
+            className: 'activity-panel__list-more cv-inspection',
+        }, [
+            el('summary', {
+                className: 'activity-panel__list-more-summary',
+                text: `Show ${earlierRows.length} earlier ${earlierRows.length === 1 ? 'scene' : 'scenes'}`,
+            }),
+            el('div', { className: 'activity-panel__list-more-body' }, earlierRows),
+        ]);
+        disclosure.open = wasOpen;
+        replaceChildren(this._directorFeedBodyEl, [...visibleRows, disclosure]);
+        this._syncTabEmptyStates();
     }
 
     _directorFeedRow(entry, now = Date.now()) {
         const ago = formatRelative(entry.ts, now) || 'just now';
         return el('div', { className: ['activity-panel__feed-row', `activity-panel__feed-row--${entry.kind}`] }, [
+            marginaliaGlyph(sceneMarginaliaShape(entry.kind), `${entry.kind || 'scene'} scene`),
             el('span', { className: `activity-panel__feed-tick activity-panel__feed-tick--${entry.kind}` }),
             el('span', { className: 'activity-panel__feed-label', text: entry.label }),
             el('span', { className: 'activity-panel__feed-time', text: ago }),
@@ -3685,27 +4140,36 @@ export class ActivityPanel {
     // ─── Building mode ─────────────────────────────────
 
     _hideAgentSections() {
+        if (this._tabsEl) this._tabsEl.style.display = 'none';
+        for (const tab of ACTIVITY_PANEL_TABS) {
+            if (this._tabPanels?.[tab]) this._tabPanels[tab].hidden = true;
+        }
         for (const node of this._agentSections) {
             if (node) node.style.display = 'none';
         }
     }
 
     _showAgentSections() {
+        if (this._tabsEl) this._tabsEl.style.display = '';
         for (const node of this._agentSections) {
             if (node) node.style.display = '';
         }
+        this._applyActiveTab();
     }
 
     _ensureBuildingContentEl() {
         if (this._buildingContentEl && this._buildingContentEl.isConnected) return;
         const container = el('div', { className: 'activity-panel__building' });
-        // Insert immediately after the header so building content occupies the
-        // same vertical region the agent meta+sections would.
-        const header = this.panelEl.querySelector('.activity-panel__header');
-        if (header && header.nextSibling) {
-            this.panelEl.insertBefore(container, header.nextSibling);
+        // Mount inside `.activity-panel__body` (the sole scroller) when present.
+        if (this._bodyEl) {
+            this._bodyEl.appendChild(container);
         } else {
-            this.panelEl.appendChild(container);
+            const header = this.panelEl.querySelector('.activity-panel__header');
+            if (header && header.nextSibling) {
+                this.panelEl.insertBefore(container, header.nextSibling);
+            } else {
+                this.panelEl.appendChild(container);
+            }
         }
         this._buildingContentEl = container;
     }
@@ -4432,7 +4896,7 @@ export class ActivityPanel {
         eventBus.off('affinity:ready', this._onAffinityReady);
         eventBus.off('mode:changed', this._onModeChanged);
         document.removeEventListener('visibilitychange', this._onVisibilityChange);
-        this._villageSectionEl?.removeEventListener('toggle', this._onVillageToggle);
+        this._tabListEl?.removeEventListener('keydown', this._onTabListKeydown);
 
         const ownedNodes = [
             this._pinStripEl,
@@ -4440,6 +4904,9 @@ export class ActivityPanel {
             this._workingDirectoryRowEl,
             this._statusElapsedEl,
             this._callCardEl,
+            this._tabsEl,
+            this._bodyEl,
+            this._contextTicksEl,
             this._promptPlanSectionEl,
             this._executionTreeSectionEl,
             this._causalWaterfallSectionEl,
@@ -4451,7 +4918,6 @@ export class ActivityPanel {
             this._narrationSectionEl,
             this._relationshipsSectionEl,
             this._messageEdgesSectionEl,
-            this._villageSectionEl,
         ];
         for (const node of ownedNodes) node?.remove?.();
         this._executionChildIdsByParent.clear();
@@ -4504,7 +4970,13 @@ export class ActivityPanel {
         this._causalWaterfallToolHistory = [];
         this._promptPlanSectionEl = null;
         this._promptPlanTitleEl = null;
-        this._villageSectionEl = null;
-        this._villageBodyEl = null;
+        this._tabsEl = null;
+        this._tabListEl = null;
+        this._tabButtons = {};
+        this._tabPanels = {};
+        this._tabEmptyEls = {};
+        this._bodyEl = null;
+        this._ledgerDetailsEl = null;
+        this._contextTicksEl = null;
     }
 }

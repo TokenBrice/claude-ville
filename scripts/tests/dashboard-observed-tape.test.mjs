@@ -7,6 +7,7 @@ import {
     TAPE_BUCKET_MS,
     TAPE_BUCKETS,
     TAPE_HEIGHT,
+    TAPE_INK,
     TAPE_STATUS_INK,
     TAPE_WIDTH,
     paintTapeCells,
@@ -41,7 +42,7 @@ function raster(width, height) {
     };
 }
 
-test('a fresh tape is a dotted baseline except for what this tab has seen', () => {
+test('a fresh tape leaves unobserved buckets blank behind a 1 px brass rule at tab open', () => {
     const { store } = storeAt(at(0, 5_000));
     store.observe({ id: 'a', status: 'working', currentTool: 'Edit', currentToolInput: 'x.js' }, at(0, 5_000));
     const cells = store.cells('a', at(0, 6_000));
@@ -51,8 +52,10 @@ test('a fresh tape is a dotted baseline except for what this tab has seen', () =
 
     const { px, ctx } = raster(TAPE_WIDTH, TAPE_HEIGHT);
     paintTapeCells(ctx, cells, 1);
-    assert.equal(px[12].slice(0, 156).filter(Boolean).length, 39, 'one 1 px dot per unobserved bucket');
-    assert.ok(px.slice(0, 12).every(row => row.slice(0, 156).every(value => value === null)), 'no full-height hatch');
+    // Unobserved area left of the brass rule (columns 0..154) is blank linen (zero dots).
+    assert.ok(px.every(row => row.slice(0, 155).every(value => value === null)), 'unobserved buckets stay blank linen, never zero dots');
+    // Crisp 1 px brass vertical rule sits at column 155 immediately before bucket 39 (x = 156).
+    assert.ok(px.every(row => row[155] === TAPE_INK.brass), '1 px brass rule marks openedAt');
     assert.equal(px[11][156], '#d9c9a3', 'the observed call stands on the baseline');
 });
 

@@ -75,8 +75,8 @@ function dashboardRows(t, agents) {
     });
     const fields = ['select', 'name', 'model', 'branch', 'workflowBadge', 'role', 'teamBadge',
         'providerBadge', 'signalSource', 'detailStatus', 'currentTool', 'toolIcon', 'toolName',
-        'toolDetail', 'now', 'nowIcon', 'phase', 'phaseDetail', 'searchContext', 'message',
-        'workingSet', 'workSummary'];
+        'toolDetail', 'now', 'nowIcon', 'phase', 'phaseDetail', 'nowWorkChip', 'nowKidsChip',
+        'searchContext', 'message', 'workingSet', 'workSummary'];
     for (const agent of agents) dash.cards.set(agent.id, Object.assign(node(), {
         _elements: Object.fromEntries(fields.map(name => [name, node()])),
     }));
@@ -113,7 +113,13 @@ for (const startsWithWork of [false, true]) {
         eventBus.emit('dashboard:filter-changed', { query: '', matches: agents.map(agent => ({ agentId: agent.id })) });
         await Promise.resolve();
         assert.equal(render.mock.callCount(), 1);
-        assert.equal(hasWork(), true);
+        // W4.4 (§4.9): wide WORKING SET track allocates only at >= 30 % share;
+        // 2/25 (8 %) stays inline in NOW unless the rest of the cohort already had work.
+        assert.equal(hasWork(), startsWithWork);
+        if (!startsWithWork) {
+            assert.equal(dash.cards.get('01')._elements.nowWorkChip.hidden, false);
+            assert.equal(dash.cards.get('01')._elements.nowWorkChip.textContent, '1 file');
+        }
         assert.deepEqual(section.order.slice(0, 3), ['01', '02', '00']);
         assert.equal(dash.cards.get('01')._elements.workSummary.textContent, '1 overlap · fixture.js');
 
@@ -128,12 +134,25 @@ for (const startsWithWork of [false, true]) {
         assert.equal(hasWork(), false);
         assert.deepEqual(section.order.slice(0, 3), ['00', '01', '02']);
 
+        // 1/25 (4 %) keeps the track collapsed and shows an inline chip;
+        // 8/25 (32 % >= 30 %) allocates the shared grid-level track.
         render.mock.resetCalls();
         agents[0].workingSet = [{ path: 'solo.js', op: 'read', at: now }];
         eventBus.emit('agent:updated', agents[0]);
         await Promise.resolve();
         assert.equal(render.mock.callCount(), 1);
+        assert.equal(hasWork(), false);
+        assert.equal(dash.cards.get('00')._elements.nowWorkChip.hidden, false);
+
+        render.mock.resetCalls();
+        for (const agent of agents.slice(1, 8)) {
+            agent.workingSet = [{ path: `${agent.id}.js`, op: 'read', at: now }];
+            eventBus.emit('agent:updated', agent);
+        }
+        await Promise.resolve();
+        assert.equal(render.mock.callCount(), 1);
         assert.equal(hasWork(), true);
+        assert.equal(dash.cards.get('00')._elements.nowWorkChip.hidden, true);
     });
 }
 

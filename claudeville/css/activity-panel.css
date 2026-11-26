@@ -17,8 +17,7 @@
     box-shadow: inset 1px 0 0 var(--line-2);
     display: flex;
     flex-direction: column;
-    overflow-x: hidden;
-    overflow-y: auto;
+    overflow: hidden;
     position: relative;
     z-index: 1;
     color: var(--ink-1);
@@ -51,12 +50,143 @@
     transition: none;
 }
 
-.activity-panel::-webkit-scrollbar {
+/* W4.4 (§4.8) — the sole vertical scroller in the Activity Panel; Call card,
+   Session block and the 3-tab Keep Folio bar stay pinned above it. */
+.activity-panel__body {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow-x: hidden;
+    overflow-y: auto;
+}
+
+.activity-panel__body::-webkit-scrollbar {
     width: 4px;
 }
 
-.activity-panel::-webkit-scrollbar-thumb {
+.activity-panel__body::-webkit-scrollbar-thumb {
     background: var(--line-2);
+}
+
+.activity-panel__tabs {
+    padding: 8px 12px 8px 16px;
+    border-bottom: 1px solid var(--line-1);
+    flex-shrink: 0;
+}
+
+.activity-panel__tab-well {
+    width: 100%;
+    margin-left: 0;
+}
+
+.activity-panel__tab {
+    flex: 1 1 0;
+    text-align: center;
+}
+
+/* Empty tab stays in place dimmed (tabs never jump or reorder). */
+.activity-panel__tab--empty:not([aria-selected="true"]) {
+    color: var(--ink-4);
+}
+
+.activity-panel__tab--empty:not([aria-selected="true"]):hover {
+    color: var(--ink-2);
+}
+
+.activity-panel__tab-panel {
+    display: flex;
+    flex-direction: column;
+}
+
+.activity-panel__tab-panel[hidden] {
+    display: none;
+}
+
+.activity-panel__tab-empty {
+    padding: 16px 12px 16px 16px;
+}
+
+.activity-panel__tab-empty[hidden] {
+    display: none;
+}
+
+/* W4.4 (§4.8) — 1 px-crisp provenance marginalia glyph in the left gutter. */
+.activity-panel__marginalia {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 12px;
+    height: 12px;
+    color: var(--ink-3);
+}
+
+.activity-panel__marginalia-svg {
+    display: block;
+    width: 10px;
+    height: 10px;
+    shape-rendering: crispEdges;
+}
+
+.activity-panel__marginalia--incident-bracket {
+    color: var(--cv-status-errored);
+}
+
+.activity-panel__marginalia--needs-you {
+    color: var(--cv-status-waiting-user);
+}
+
+.activity-panel__marginalia--limit-gate {
+    color: var(--cv-status-rate-limited);
+}
+
+.activity-panel__marginalia--anchor,
+.activity-panel__marginalia--release-crown {
+    color: var(--brass);
+}
+
+/* W4.4 (§4.8) — disclosure rows replacing all 4 nested scrollboxes. */
+.activity-panel__list-more {
+    margin-top: 2px;
+}
+
+.activity-panel__list-more-summary {
+    padding: 3px 6px;
+    color: var(--ink-2);
+    background: var(--bg-0);
+    border: 1px solid var(--line-1);
+    font: var(--fs-body)/var(--lh-body) var(--font-body);
+    cursor: pointer;
+    list-style: none;
+}
+
+.activity-panel__list-more-summary::-webkit-details-marker {
+    display: none;
+}
+
+.activity-panel__list-more-summary::before {
+    content: '▸';
+    margin-right: 5px;
+    color: var(--ink-3);
+}
+
+.activity-panel__list-more[open] > .activity-panel__list-more-summary::before {
+    content: '▾';
+}
+
+.activity-panel__list-more-summary:hover,
+.activity-panel__list-more-summary:focus-visible {
+    color: var(--gold-hi);
+    border-color: var(--line-2);
+    outline: none;
+}
+
+.activity-panel__list-more-body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-top: 2px;
 }
 
 /* ─── Header: `64px | name / status / provenance` ─────────────────── */
@@ -499,19 +629,48 @@
 
 .activity-panel__tool-history {
     flex: 0 0 auto;
-    max-height: 156px;
-    overflow-y: auto;
     display: flex;
     flex-direction: column;
     gap: 2px;
 }
 
-.activity-panel__tool-history::-webkit-scrollbar {
-    width: 4px;
+.activity-panel__tool-list--has-mend {
+    padding-left: 12px;
 }
 
-.activity-panel__tool-history::-webkit-scrollbar-thumb {
-    background: var(--line-2);
+.activity-panel__tool-item--mend-pass,
+.activity-panel__tool-item--mend-span,
+.activity-panel__tool-item--mend-fail {
+    position: relative;
+    overflow: visible;
+}
+
+.activity-panel__tool-item--mend-pass::before,
+.activity-panel__tool-item--mend-span::before,
+.activity-panel__tool-item--mend-fail::before {
+    content: '';
+    position: absolute;
+    left: -9px;
+    width: 7px;
+    pointer-events: none;
+    border-left: 1px solid var(--brass);
+}
+
+.activity-panel__tool-item--mend-pass::before {
+    top: 50%;
+    bottom: -2px;
+    border-top: 1px solid var(--brass);
+}
+
+.activity-panel__tool-item--mend-span::before {
+    top: -2px;
+    bottom: -2px;
+}
+
+.activity-panel__tool-item--mend-fail::before {
+    top: -2px;
+    bottom: 50%;
+    border-bottom: 1px solid var(--brass);
 }
 
 .activity-panel__tool-item {
@@ -552,19 +711,20 @@
 /* ─── Messages ───────────────────────────────────── */
 
 .activity-panel__messages {
-    max-height: 76px;
-    overflow-y: auto;
     display: flex;
     flex-direction: column;
     gap: 4px;
 }
 
-.activity-panel__messages::-webkit-scrollbar {
-    width: 4px;
+.activity-panel__msg.cv-inspection > summary {
+    display: flex;
+    align-items: center;
+    gap: 6px;
 }
 
-.activity-panel__messages::-webkit-scrollbar-thumb {
-    background: var(--line-2);
+.activity-panel__msg-summary {
+    min-width: 0;
+    overflow-wrap: anywhere;
 }
 
 .activity-panel__msg {
@@ -1071,40 +1231,9 @@
 }
 
 
-/* ─── Village disclosure ─────────────────────────── */
+/* ─── Tab panel tail hairline ─────────────────────────── */
 
-.activity-panel__village {
-    flex-shrink: 0;
-    border-bottom: 1px solid var(--line-1);
-    background: transparent;
-}
-
-.activity-panel__village-summary {
-    padding: 9px 12px;
-    color: var(--ink-3);
-    font-family: var(--font-display);
-    font-size: var(--fs-label);
-    letter-spacing: 1px;
-    cursor: pointer;
-    list-style: none;
-}
-
-.activity-panel__village-summary::-webkit-details-marker {
-    display: none;
-}
-
-.activity-panel__village-summary::before {
-    content: '+';
-    display: inline-block;
-    width: 13px;
-    color: var(--ink-1);
-}
-
-.activity-panel__village[open] > .activity-panel__village-summary::before {
-    content: '-';
-}
-
-.activity-panel__village-body > .activity-panel__section:last-child {
+.activity-panel__tab-panel > .activity-panel__section:last-of-type {
     border-bottom: 0;
 }
 
@@ -1190,7 +1319,7 @@
 
 .activity-panel__life-chapter {
     display: grid;
-    grid-template-columns: 7px minmax(0, 1fr) auto;
+    grid-template-columns: 12px 7px minmax(0, 1fr) auto;
     align-items: baseline;
     gap: 6px;
     padding: 5px 0;
@@ -1534,10 +1663,11 @@
 }
 
 .activity-panel__context-bar-wrap {
+    position: relative;
     width: 100%;
     height: 4px;
     background: var(--bg-0);
-    overflow: hidden;
+    overflow: visible;
 }
 
 .activity-panel__context-bar {
@@ -1547,6 +1677,41 @@
     transform-origin: left center;
     background: var(--cv-green-soft);
     transition: transform 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* W4.4 (§3.2 / §4.8) — compaction ticks overlaid on the context bar. */
+.activity-panel__context-ticks {
+    position: absolute;
+    inset: -2px 0;
+    pointer-events: none;
+}
+
+.activity-panel__context-ticks[hidden] {
+    display: none;
+}
+
+.activity-panel__context-tick {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    margin-left: -1px;
+    background: var(--gold);
+    box-shadow: 0 0 0 1px var(--bg-0);
+    pointer-events: auto;
+    cursor: help;
+}
+
+.activity-panel__ledger-details {
+    margin-top: 2px;
+}
+
+.activity-panel__ledger-details[hidden] {
+    display: none;
+}
+
+.activity-panel__ledger-details[open] > .activity-panel__token-grid {
+    margin-top: 6px;
 }
 
 .activity-panel__no-usage {
@@ -1604,28 +1769,26 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
-    max-height: 260px;
-    overflow-y: auto;
-}
-
-.activity-panel__narration-list::-webkit-scrollbar {
-    width: 4px;
-}
-
-.activity-panel__narration-list::-webkit-scrollbar-thumb {
-    background: var(--line-2);
 }
 
 .activity-panel__narration-row {
     position: relative;
     display: flex;
-    flex-direction: column;
-    gap: 4px;
+    align-items: flex-start;
+    gap: 6px;
     min-width: 0;
     padding: 7px 9px;
     background: var(--bg-2);
     border: 1px solid var(--line-1);
     border-left: 3px solid var(--ink-3);
+}
+
+.activity-panel__narration-content {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
 }
 
 .activity-panel__narration-row--bubble {
@@ -1720,8 +1883,6 @@
     display: flex;
     flex-direction: column;
     gap: 5px;
-    max-height: 168px;
-    overflow-y: auto;
 }
 
 .activity-panel__feed-row {
@@ -1785,8 +1946,6 @@
 .activity-panel__tool-item.cv-inspection[open] > summary::before { content: '▾'; }
 .activity-panel__tool-input:has(.cv-inspection) { white-space: normal; overflow: visible; max-height: none; }
 .activity-panel__msg.cv-inspection { font: var(--fs-body)/var(--lh-body) var(--font-body); }
-
-.activity-panel__messages:has(details[open]), .activity-panel__tool-history:has(details[open]) { max-height: none; overflow: visible; }
 
 .activity-panel__empty { color: var(--ink-3); }
 
