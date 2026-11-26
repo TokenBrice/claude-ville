@@ -3353,6 +3353,25 @@ export class IsometricRenderer {
         if (this._disposed || !this.running || !this._worldModeActive) return false;
         if (!this._worldResourcesSuspended) {
             this.trailRenderer?.resume?.();
+            if (!this.terrainCache && !this._terrainResident && this._terrainArtifactNeedsRead) {
+                this._prepareTerrainArtifactRead();
+                const prep = this._terrainArtifactPreparation;
+                if (prep) {
+                    let timer = null;
+                    await Promise.race([
+                        prep.then(() => (this._terrainArtifactRead ? this._terrainArtifactReadPromise : null)),
+                        new Promise((resolve) => { timer = setTimeout(resolve, 250); }),
+                    ]);
+                    clearTimeout(timer);
+                }
+                if (
+                    this._disposed
+                    || !this.running
+                    || !this._worldModeActive
+                    || this._contextLost
+                    || generation !== this._worldResourceGeneration
+                ) return false;
+            }
             return true;
         }
         if (this.assets?.resume) {
@@ -4095,6 +4114,7 @@ export class IsometricRenderer {
             || this._disposed
             || !this._worldModeActive
             || this._worldResourcesSuspended
+            || this._visibilityPaused
             || this._contextLost
             || this._frameFailureStats.paused
             || !this.camera
@@ -11396,6 +11416,7 @@ export class IsometricRenderer {
     _discardTerrainArtifactRead() {
         releaseCanvasBackingStore(this._terrainArtifactRead?.ready?.canvas);
         this._terrainArtifactRead = null;
+        this._terrainArtifactReadPromise = null;
     }
 
     _discardTerrainArtifactWrite() {

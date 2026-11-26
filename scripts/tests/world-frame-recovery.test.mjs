@@ -210,6 +210,7 @@ test('hidden or lost Worlds cancel recovery and restart only after their lifecyc
     assert.equal(r.resumeAfterFrameFailure(), false);
     r._update = () => {};
     document.visibilityState = 'visible';
+    assert.equal(r.renderNow(), false, 'visibility-paused renderer must not synchronously rebake before resumeFromVisibility');
     r.resumeFromVisibility();
     await r._worldResumePromise;
     clock.frame();
