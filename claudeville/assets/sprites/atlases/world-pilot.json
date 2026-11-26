@@ -389,7 +389,7 @@
       "id": "building.forge",
       "materialClass": "stone",
       "sourcePath": "buildings/building.forge/base.png",
-      "sourceSha256": "abf99a840dd57013288cf467a4dadfe993b66d31e93dda9853c433be7f4ec5ad",
+      "sourceSha256": "2fe3f6be4c2080c030ecb273e3303f33ab01c3cf5f62e321f4fa3ad633083951",
       "sourceSize": {
         "h": 232,
         "w": 256
@@ -775,10 +775,10 @@
     }
   },
   "channelSha256": {
-    "albedo": "7a3ea93ab84dd159adac3215010c402d86aaa803ad730a422ef56d9a301ac144",
-    "emissive": "8c30f2b1fc7f77215d17c372022da32cd6977f8ca15db1f8434569fd2c74c4e7",
-    "material": "2077e34353a3374d0bf8b4788efaad6a14210c021c56b52c8612be7425275360",
-    "occluder": "ea50e6e66883117081033874b6bc81d77ad649cd844f4a1f03c63d6cf5aae65d"
+    "albedo": "aeaec49cea45b53c349a31cc82f3666629b964163587eee128747af9d4da076a",
+    "emissive": "f82a76ff92db14367a0711e7245d2a82bfaf54461d1eba6c881bc1676f5de63e",
+    "material": "1dcc26236a94cd907baa5551aa78d08c615f84845ce6d5fb823867211552bf73",
+    "occluder": "98b7c44dc25c077efab9f6bdb88c2ce9be5ee7bfd69429b0523d6ef88ee0e386"
   },
   "channels": {
     "albedo": "assets/sprites/atlases/world-pilot.albedo.png",
@@ -10447,7 +10447,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "abf99a840dd57013288cf467a4dadfe993b66d31e93dda9853c433be7f4ec5ad",
+      "sourceSha256": "2fe3f6be4c2080c030ecb273e3303f33ab01c3cf5f62e321f4fa3ad633083951",
       "sourceSize": {
         "h": 232,
         "w": 256
@@ -10491,7 +10491,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "4dab6b9a21a56cd39e3ef8fe95f6a1c1dfa33a30ed033a6c84790098ee9c3a28",
+      "sourceSha256": "f87867470948ea12411688f9f73efdb869a9f624dd73c57c5eff5aa52f353b94",
       "sourceSize": {
         "h": 232,
         "w": 256
@@ -10535,7 +10535,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "2aa8dd69363dc374e5b8e3de87b95536bb9524cc2eecc962af88a37f75b09ef0",
+      "sourceSha256": "9f94825c85872a98e3fc5850266584495c1b170465672bafef7c2e5628c51964",
       "sourceSize": {
         "h": 22,
         "w": 112
@@ -10623,7 +10623,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "2cd8c406a753921b89e13c5246082f0ae27ac0b5964bbcae493fd06c590dcbf5",
+      "sourceSha256": "4e7f318825d31398a9ed943c1a7409457476128611ffe1e784f15f50cde3e74b",
       "sourceSize": {
         "h": 232,
         "w": 256

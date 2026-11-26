@@ -351,7 +351,8 @@ test('NE v0.67.1 E: boosted lantern, Forge, and Mine emissive sidecars match wor
     };
     const forgeEmissive = readPng('buildings/building.forge/base.emissive.png');
     const mineEmissive = readPng('buildings/building.mine/base.emissive.png');
-    assert.deepEqual(alphaHistogram(forgeEmissive), { 175: 127, 210: 1741 });
+    // W5-B D6 open-front Forge recessed hearth (alphas 175 & 210) and Mine (alphas 145, 155, 200).
+    assert.deepEqual(alphaHistogram(forgeEmissive), { 175: 151, 210: 79 });
     assert.deepEqual(alphaHistogram(mineEmissive), { 145: 724, 155: 705, 200: 100 });
 
     // Re-baked world-pilot.emissive.png matches all three sidecars pixel-for-pixel.

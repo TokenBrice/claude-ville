@@ -1249,8 +1249,12 @@ function recordForProp(renderer, drawable, sequence) {
         if (page?.width && page.complete !== false && (parent || crop)) {
             const centre = parent && buildingCenterToWorld(parent);
             const anchor = assets.getAnchor(id);
-            const x = crop?.x ?? crop?.sx ?? crop?.[0] ?? cached.x - Math.round(centre?.x - anchor?.[0]);
-            const y = crop?.y ?? crop?.sy ?? crop?.[1] ?? cached.y - Math.round(centre?.y - anchor?.[1]);
+            const x = centre && anchor
+                ? cached.x - Math.round(centre.x - anchor[0])
+                : (crop?.x ?? crop?.sx ?? crop?.[0]) - record.sx;
+            const y = centre && anchor
+                ? cached.y - Math.round(centre.y - anchor[1])
+                : (crop?.y ?? crop?.sy ?? crop?.[1]) - record.sy;
             if (Number.isFinite(x) && Number.isFinite(y)) {
                 registerSurface(record, id, page, x + (surface.offsetX || 0), y + (surface.offsetY || 0), 7);
             }
