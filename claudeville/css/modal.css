@@ -879,6 +879,127 @@
     font-variant-numeric: tabular-nums;
 }
 
+/* ── Chronicle Loom of Days 24-hour Bayeux Frieze (W6-B) ────────────────
+   Keep-at-Night pixel chrome: zero gradients, zero border-radius, zero italics,
+   strictly pixelated 1:1 96x72 panels in a crisp horizontal scroll tray. */
+
+.chronicle__loom {
+    margin: 0 0 16px;
+    padding: 8px 12px;
+    background: var(--bg-0);
+    border: 1px solid var(--line-1);
+}
+
+.chronicle__loom-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+
+.chronicle__loom-title {
+    color: var(--ink-3);
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+.chronicle__loom-readout {
+    flex: 1 1 auto;
+    min-width: 0;
+    color: var(--ink-2);
+    font: var(--fs-body)/var(--lh-body) var(--font-body);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.chronicle__loom-export-button {
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+
+.chronicle__loom-viewport {
+    overflow-x: auto;
+    overflow-y: hidden;
+    background: var(--bg-1);
+    border: 1px solid var(--line-2);
+}
+
+.chronicle__loom-track {
+    position: relative;
+    width: 2304px;
+}
+
+.chronicle__loom-canvas {
+    display: block;
+    width: 2304px;
+    height: 72px;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    cursor: pointer;
+}
+
+.chronicle__loom-selection {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 96px;
+    height: 72px;
+    box-sizing: border-box;
+    border: 2px solid var(--gold);
+    pointer-events: none;
+}
+
+.chronicle__loom-hours {
+    display: flex;
+    width: 2304px;
+    background: var(--bg-0);
+    border-top: 1px solid var(--line-1);
+}
+
+.chronicle__loom-hour {
+    flex: 0 0 96px;
+    width: 96px;
+    padding: 3px 4px;
+    box-sizing: border-box;
+    background: transparent;
+    border: 0;
+    border-right: 1px solid var(--line-1);
+    color: var(--ink-3);
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
+    font-variant-numeric: tabular-nums;
+    text-align: left;
+    cursor: pointer;
+}
+
+.chronicle__loom-hour:last-child {
+    border-right: 0;
+}
+
+.chronicle__loom-hour:hover {
+    color: var(--ink-1);
+    background: var(--bg-2);
+}
+
+.chronicle__loom-hour--uncovered {
+    color: var(--ink-4);
+}
+
+.chronicle__loom-hour--active-work {
+    color: var(--ink-2);
+}
+
+.chronicle__loom-hour--selected {
+    color: var(--gold);
+    background: var(--bg-2);
+    box-shadow: inset 0 -2px 0 var(--gold);
+}
+
 .chronicle__chapters {
     display: flex;
     flex-direction: column;

@@ -27,6 +27,12 @@ import {
     WORLD_DISPLAY_FONT_8,
     WORLD_DISPLAY_FONT_16,
 } from '../../config/theme.js';
+import {
+    LOOM_TAPESTRY_BAND,
+    drawLoomToCanvas,
+    renderLoomTapestryGrid,
+    weaveDay,
+} from './ChronicleLoom.js';
 
 export const TAPESTRY_WIDTH = 1200;
 export const TAPESTRY_HEIGHT = 1600;
@@ -559,50 +565,82 @@ function drawLedgerBand(ctx, stats, repoColors, textDrawn) {
     }
 }
 
-function drawLoomBand(ctx, loom) {
+function drawLoomBand(ctx, loom, {
+    dateKey = null,
+    events = [],
+    coverage = null,
+    sky = null,
+    resolveMiniature = null,
+    loomOptions = null,
+} = {}) {
     const band = TAPESTRY_BANDS.loom;
     ctx.fillStyle = PALETTE.walnutDark;
     ctx.fillRect(band.x, band.y, band.width, band.height);
 
-    // 12x2 panels of 96x72 -> 1152 wide, 144 tall + 16 gap + 28 top/bottom selvedge = 216 px.
-    const panelW = 96;
-    const panelH = 72;
-    const rowGap = 16;
-    const padY = Math.floor((band.height - (panelH * 2 + rowGap)) / 2);
-
-    if (loom && !Array.isArray(loom) && loom.width && loom.height) {
+    let wovenDay = null;
+    if (loom && !Array.isArray(loom) && loom.data && loom.width && loom.height) {
+        // Pre-rendered ChronicleLoom RGBA surface (1152x216).
+        drawLoomToCanvas(ctx, loom, {
+            x: band.x,
+            y: band.y,
+            layout: 'tapestry',
+        });
+    } else if (loom && !Array.isArray(loom) && Array.isArray(loom.panels)) {
+        // Pre-woven ChronicleLoom day model.
+        wovenDay = loom;
+        const rgba = renderLoomTapestryGrid(wovenDay, {
+            ...(loomOptions || {}),
+            ...(typeof resolveMiniature === 'function' ? { resolveMiniature } : {}),
+        });
+        drawLoomToCanvas(ctx, rgba, {
+            x: band.x,
+            y: band.y,
+            layout: 'tapestry',
+        });
+    } else if (loom && !Array.isArray(loom) && loom.width && loom.height) {
+        // Explicit canvas/image surface override.
         ctx.imageSmoothingEnabled = false;
         ctx.drawImage(loom, 0, 0, loom.width, loom.height, band.x, band.y, band.width, band.height);
-    } else {
-        const panels = Array.isArray(loom) ? loom : [];
+    } else if (Array.isArray(loom) && loom.length > 0) {
+        // Explicit array of per-hour panel canvases (12x2 grid).
+        const panelW = 96;
+        const panelH = 72;
+        const rowGap = LOOM_TAPESTRY_BAND.rowGap;
+        const padY = LOOM_TAPESTRY_BAND.padY;
         for (let idx = 0; idx < 24; idx++) {
-            const col = idx % 12;
-            const row = Math.floor(idx / 12);
+            const col = idx % LOOM_TAPESTRY_BAND.cols;
+            const row = Math.floor(idx / LOOM_TAPESTRY_BAND.cols);
             const px = band.x + col * panelW;
             const py = band.y + padY + row * (panelH + rowGap);
-            const panel = panels[idx] || null;
+            const panel = loom[idx] || null;
             if (panel && panel.width && panel.height) {
                 ctx.imageSmoothingEnabled = false;
                 ctx.drawImage(panel, 0, 0, panel.width, panel.height, px, py, panelW, panelH);
-            } else {
-                // Graceful empty warp grid before Wave 6 Loom wires in:
-                // 2 px top/bottom selvedge + vertical warp threads every 4 px.
-                ctx.fillStyle = PALETTE.linenWarp;
-                ctx.fillRect(px + 1, py, panelW - 2, panelH);
-                ctx.fillStyle = PALETTE.selvedge;
-                ctx.fillRect(px + 1, py, panelW - 2, 2);
-                ctx.fillRect(px + 1, py + panelH - 2, panelW - 2, 2);
-                ctx.fillStyle = PALETTE.linenThread;
-                for (let wx = px + 4; wx < px + panelW - 2; wx += 4) {
-                    ctx.fillRect(wx, py + 2, 1, panelH - 4);
-                }
             }
         }
+    } else {
+        // Live Wave 6-B ChronicleLoom band: 1152x216 px (12 panels x 2 rows per
+        // LOOM_TAPESTRY_BAND), strictly woven from this selected day's events,
+        // coverage mask, and hourly sky codes (zero fillText, zero live-agent leak).
+        wovenDay = weaveDay(Array.isArray(events) ? events : [], coverage ?? null, sky ?? null, {
+            ...(dateKey ? { dateKey } : {}),
+            ...(loomOptions || {}),
+        });
+        const rgba = renderLoomTapestryGrid(wovenDay, {
+            ...(loomOptions || {}),
+            ...(typeof resolveMiniature === 'function' ? { resolveMiniature } : {}),
+        });
+        drawLoomToCanvas(ctx, rgba, {
+            x: band.x,
+            y: band.y,
+            layout: 'tapestry',
+        });
     }
 
     ctx.fillStyle = PALETTE.brass;
     ctx.fillRect(band.x, band.y, band.width, 2);
     ctx.fillRect(band.x, band.y + band.height - 2, band.width, 2);
+    return wovenDay;
 }
 
 function drawCastBand(ctx, cast) {
@@ -675,7 +713,10 @@ export function renderChronicleTapestry({
     loom = null,
     cast = [],
     coverage = null,
+    sky = null,
     repoColors = [],
+    resolveMiniature = null,
+    loomOptions = null,
     canvas = null,
     ctx = null,
     documentRef = globalThis.document,
@@ -698,20 +739,44 @@ export function renderChronicleTapestry({
     }
 
     const effectiveDate = date ?? dateKey ?? '2026-11-19';
+    const resolvedDate = resolveDate(effectiveDate);
+    const effectiveDateKey = typeof dateKey === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateKey.trim())
+        ? dateKey.trim()
+        : `${resolvedDate.getFullYear()}-${String(resolvedDate.getMonth() + 1).padStart(2, '0')}-${String(resolvedDate.getDate()).padStart(2, '0')}`;
     const dateLabel = formatTapestryDate(effectiveDate);
     const masthead = formatTapestryMasthead(effectiveDate);
+    const dayEvents = Array.isArray(events) ? events : [];
     const stats = extractTapestryStats({ summary, events, roster, cast, coverage });
     const effectiveCast = stats.villagers > 0 ? cast : [];
     const textDrawn = [];
+
+    // Pre-weave when live loom inputs are supplied so ledger repo swatches can
+    // also display deterministic pennant colors (zero repo names, zero PII).
+    const preWovenLoom = loom == null
+        ? weaveDay(dayEvents, coverage ?? null, sky ?? null, {
+            dateKey: effectiveDateKey,
+            ...(loomOptions || {}),
+        })
+        : (loom && !Array.isArray(loom) && Array.isArray(loom.panels) ? loom : null);
+    const effectiveRepoColors = (Array.isArray(repoColors) && repoColors.length > 0)
+        ? repoColors
+        : (preWovenLoom?.stats?.repos?.map((r) => r.color) || []);
 
     targetCtx.save();
     targetCtx.imageSmoothingEnabled = false;
     drawWalnutBorder(targetCtx);
     drawMasthead(targetCtx, masthead, textDrawn);
     drawDioramaSlot(targetCtx, diorama);
-    drawSunArcSlot(targetCtx, sunArc, Array.isArray(events) ? events : [], coverage);
-    drawLedgerBand(targetCtx, stats, repoColors, textDrawn);
-    drawLoomBand(targetCtx, loom);
+    drawSunArcSlot(targetCtx, sunArc, dayEvents, coverage);
+    drawLedgerBand(targetCtx, stats, effectiveRepoColors, textDrawn);
+    const loomDay = drawLoomBand(targetCtx, preWovenLoom ?? loom, {
+        dateKey: effectiveDateKey,
+        events: dayEvents,
+        coverage,
+        sky,
+        resolveMiniature,
+        loomOptions,
+    });
     drawCastBand(targetCtx, effectiveCast);
     targetCtx.restore();
 
@@ -722,6 +787,7 @@ export function renderChronicleTapestry({
         dateLabel,
         masthead,
         stats,
+        loom: loomDay || preWovenLoom,
         textDrawn,
         fileName: tapestryFileName(effectiveDate),
     };

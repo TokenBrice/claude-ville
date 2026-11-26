@@ -657,11 +657,11 @@ export function normalizeCoverageBits(coverage) {
     const bits = new Uint8Array(LOOM_TOTAL_QUARTERS);
     if (coverage == null) return bits;
 
-    // Unwrap meta-store container objects (`{ mask }`, `{ bits }`, `{ quarters }`, `{ value }`).
+    // Unwrap meta-store container objects (`{ mask }`, `{ bits }`, `{ quarters }`, `{ hours }`, `{ value }`).
     if (typeof coverage === 'object'
         && !Array.isArray(coverage)
         && !ArrayBuffer.isView(coverage)) {
-        const inner = coverage.mask ?? coverage.bits ?? coverage.quarters ?? coverage.value ?? null;
+        const inner = coverage.mask ?? coverage.bits ?? coverage.quarters ?? coverage.hours ?? coverage.value ?? null;
         return inner == null ? bits : normalizeCoverageBits(inner);
     }
 
@@ -681,7 +681,7 @@ export function normalizeCoverageBits(coverage) {
             return bits;
         }
         const hex = trimmed.replace(/^0x/i, '');
-        if (/^[0-9a-fA-F]{24}$/.test(hex)) {
+        if (/^[0-9a-fA-F]{1,24}$/.test(hex)) {
             const value = BigInt(`0x${hex}`);
             for (let i = 0; i < LOOM_TOTAL_QUARTERS; i++) {
                 bits[i] = Number((value >> BigInt(i)) & 1n);
@@ -838,31 +838,59 @@ export function normalizeSkyEntry(entry, hour) {
         if (entry.known === false) {
             return Object.freeze({ known: false, phase: null, weather: null, cloud: 0, moonOctant: null, code: null });
         }
+        const finiteField = (value) => {
+            if (value === null || value === undefined || value === '') return null;
+            const n = Number(value);
+            return Number.isFinite(n) ? n : null;
+        };
         const phaseRaw = String(entry.phase || entry.timeBand || '').trim().toLowerCase();
         const weatherRaw = String(entry.weather || entry.condition || '').trim().toLowerCase();
-        const hasCloud = Number.isFinite(Number(entry.cloud));
-        const hasRain = Number(entry.rain) > 0;
-        const hasSnow = Number(entry.snow) > 0;
-        const hasStorm = Boolean(entry.storm);
+        const cloudNum = finiteField(entry.cloud);
+        const rainNum = finiteField(entry.rain);
+        const snowNum = finiteField(entry.snow);
+        const moonNum = finiteField(entry.moon);
+        const isCompactStoreCode = !phaseRaw && !weatherRaw
+            && ('rain' in entry || 'snow' in entry || 'moon' in entry);
+        const hasCloud = cloudNum !== null;
+        const hasRain = rainNum !== null && rainNum > 0;
+        const hasSnow = snowNum !== null && snowNum > 0;
+        const hasStorm = Boolean(entry.storm) || (rainNum !== null && rainNum >= 2);
         const hasFog = Boolean(entry.fog);
-        const moonOctant = entry.moonOctant != null
-            ? normalizeMoonOctant(entry.moonOctant, { isFraction: false })
-            : normalizeMoonOctant(entry.moonPhase ?? entry.moon, { isFraction: true });
-        const hasAny = Boolean(phaseRaw || weatherRaw || hasCloud || hasRain || hasSnow || hasStorm || hasFog || moonOctant !== null);
+        let moonOctant = null;
+        if (entry.moonOctant != null) {
+            moonOctant = normalizeMoonOctant(entry.moonOctant, { isFraction: false });
+        } else if (entry.moonPhase != null) {
+            moonOctant = normalizeMoonOctant(entry.moonPhase, { isFraction: true });
+        } else if (entry.moon != null) {
+            if (typeof entry.moon === 'string') {
+                moonOctant = parseMoonPhaseToken(entry.moon.trim().toLowerCase());
+            } else if (isCompactStoreCode && moonNum !== null && Number.isInteger(moonNum) && moonNum >= 0 && moonNum <= 3) {
+                // ChronicleStore compact moon code (0..3 illumination steps): 0=new, 1=crescent, 2=quarter, 3=full (octant 4).
+                moonOctant = [0, 1, 2, 4][moonNum];
+            } else {
+                moonOctant = normalizeMoonOctant(entry.moon, { isFraction: true });
+            }
+        }
+        const hasAny = Boolean(
+            phaseRaw || weatherRaw || hasCloud || rainNum !== null || snowNum !== null
+            || hasStorm || hasFog || moonOctant !== null,
+        );
         if (!hasAny) {
             return Object.freeze({ known: false, phase: null, weather: null, cloud: 0, moonOctant: null, code: null });
         }
+        const compactCloudScale = isCompactStoreCode || (cloudNum !== null && cloudNum > 1);
         let weather = weatherRaw || 'clear';
         if (hasStorm) weather = 'storm';
         else if (hasSnow) weather = 'snow';
         else if (hasRain) weather = 'rain';
         else if (hasFog) weather = 'fog';
         else if (!weatherRaw && hasCloud) {
-            const c = Number(entry.cloud);
-            weather = c >= 0.75 ? 'overcast' : c >= 0.25 ? 'cloud' : 'clear';
+            weather = compactCloudScale
+                ? (cloudNum >= 3 ? 'overcast' : cloudNum >= 1 ? 'cloud' : 'clear')
+                : (cloudNum >= 0.75 ? 'overcast' : cloudNum >= 0.25 ? 'cloud' : 'clear');
         }
         const cloud = hasCloud
-            ? Math.max(0, Math.min(3, Math.round(Number(entry.cloud) * 3)))
+            ? Math.max(0, Math.min(3, Math.round(compactCloudScale ? cloudNum : cloudNum * 3)))
             : (weather === 'overcast' || weather === 'rain' || weather === 'storm' ? 3
                 : weather === 'cloud' || weather === 'snow' || weather === 'fog' ? 2 : 0);
         const phase = phaseRaw
@@ -1939,6 +1967,18 @@ function paintOverflowPlate(data, surfW, surfH, cx, cy, cell) {
     stampPixelText(data, surfW, surfH, text, tx, ty, font, PALETTE.plateInk, PALETTE.ink);
 }
 
+function paintClosingHem(data, surfW, surfH, px, py) {
+    // Evensong close (§5.5): a 2 px finished walnut-and-brass lockstitch along
+    // the panel's right edge sealing the day's last panel (pure pixels, zero text).
+    const edgeX = LOOM_PANEL_WIDTH - 2;
+    for (let ry = 0; ry < LOOM_PANEL_HEIGHT; ry++) {
+        const inner = (ry & 3) === 0 ? PALETTE.plateRim : PALETTE.selvedgeDark;
+        const outer = (ry & 1) === 0 ? PALETTE.selvedgeDark : PALETTE.selvedgeStitch;
+        setPx(data, surfW, px + edgeX, py + ry, surfW, surfH, inner[0], inner[1], inner[2], 255);
+        setPx(data, surfW, px + edgeX + 1, py + ry, surfW, surfH, outer[0], outer[1], outer[2], 255);
+    }
+}
+
 function paintPanelOntoRgba(data, surfW, surfH, px, py, panel, options = {}) {
     // Fully uncovered hour: 100% pure bare warp (vertical threads every 4 px,
     // zero weft, zero fabricated sky/events).
@@ -1946,6 +1986,7 @@ function paintPanelOntoRgba(data, surfW, surfH, px, py, panel, options = {}) {
         for (let q = 0; q < LOOM_QUARTERS_PER_HOUR; q++) {
             paintBareWarpQuarter(data, surfW, surfH, px, py, q);
         }
+        if (options.closed === true) paintClosingHem(data, surfW, surfH, px, py);
         return;
     }
 
@@ -1983,19 +2024,24 @@ function paintPanelOntoRgba(data, surfW, surfH, px, py, panel, options = {}) {
             paintEventCell(data, surfW, surfH, cx, cy, cell, options.resolveMiniature);
         }
     }
+
+    if (options.closed === true) paintClosingHem(data, surfW, surfH, px, py);
 }
 
 // --- Public RGBA Renderers --------------------------------------------------
 
-function resolveSinglePanel(panelOrDay, options = {}) {
-    if (panelOrDay && typeof panelOrDay.hour === 'number' && Array.isArray(panelOrDay.cells)) {
-        return panelOrDay;
+/**
+ * Select the hourly panel to hang on the Archive's rear-wall Loom frame (§5.2):
+ * explicit `hour` if provided, otherwise the latest active hour (with cells or
+ * selvedge ticks), otherwise the latest covered hour. Returns `null` when the
+ * day has neither observed coverage nor recorded events (V8 honesty: no empty
+ * placeholder panel).
+ */
+export function selectArchiveLoomPanel(dayModelInput, { hour = null } = {}) {
+    const dayModel = dayModelInput?.panels ? dayModelInput : weaveDay(dayModelInput);
+    if (Number.isInteger(hour) && hour >= 0 && hour < LOOM_HOURS_PER_DAY) {
+        return dayModel.panels[hour];
     }
-    const dayModel = panelOrDay?.panels ? panelOrDay : weaveDay(panelOrDay);
-    if (Number.isInteger(options.hour) && options.hour >= 0 && options.hour < LOOM_HOURS_PER_DAY) {
-        return dayModel.panels[options.hour];
-    }
-    // Default for Archive rear wall: last active or covered hour of the day.
     for (let h = LOOM_HOURS_PER_DAY - 1; h >= 0; h--) {
         const p = dayModel.panels[h];
         if (p.cells.length > 0 || p.arrivals.length > 0 || p.departures.length > 0) return p;
@@ -2003,7 +2049,15 @@ function resolveSinglePanel(panelOrDay, options = {}) {
     for (let h = LOOM_HOURS_PER_DAY - 1; h >= 0; h--) {
         if (!dayModel.panels[h].fullyUncovered) return dayModel.panels[h];
     }
-    return dayModel.panels[LOOM_HOURS_PER_DAY - 1];
+    return null;
+}
+
+function resolveSinglePanel(panelOrDay, options = {}) {
+    if (panelOrDay && typeof panelOrDay.hour === 'number' && Array.isArray(panelOrDay.cells)) {
+        return panelOrDay;
+    }
+    const dayModel = panelOrDay?.panels ? panelOrDay : weaveDay(panelOrDay);
+    return selectArchiveLoomPanel(dayModel, options) || dayModel.panels[LOOM_HOURS_PER_DAY - 1];
 }
 
 /**

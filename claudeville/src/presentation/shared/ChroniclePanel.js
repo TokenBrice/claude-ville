@@ -17,9 +17,20 @@ import { eventBus } from '../../domain/events/DomainEvent.js';
 import { AgentBiography } from '../../domain/value-objects/AgentBiography.js';
 import { Appearance } from '../../domain/value-objects/Appearance.js';
 import { solarDayFor } from '../character-mode/SolarClock.js';
+import { withPostcardFrame } from '../character-mode/Postcard.js';
 import { AvatarCanvas } from '../dashboard-mode/AvatarCanvas.js';
 import { buildBookOfLivesViewModel } from './ActivityPanel.js';
 import { providerPresentation } from './AgentPresentation.js';
+import {
+    LOOM_HOURS_PER_DAY,
+    LOOM_PANEL_HEIGHT,
+    LOOM_PANEL_WIDTH,
+    drawLoomToCanvas,
+    encodeLoomPng,
+    renderLoomFrieze,
+    renderLoomToRgba,
+    weaveDay,
+} from './ChronicleLoom.js';
 import { el, replaceChildren } from './DomSafe.js';
 import { formatCost, formatNumber } from './Formatters.js';
 
@@ -32,6 +43,8 @@ export const CHRONICLE_COMPACTED_KIND = ChronicleEventKind.COMPACTED ?? 'compact
 export const CHRONICLE_RELEASE_KIND = ChronicleEventKind.RELEASE ?? 'release';
 export const SUN_ARC_HEIGHT = 36;
 export const SUN_ARC_DEFAULT_WIDTH = 648;
+export const LOOM_STRIP_WIDTH = LOOM_HOURS_PER_DAY * LOOM_PANEL_WIDTH; // 2304 px (24 x 96)
+export const LOOM_STRIP_HEIGHT = LOOM_PANEL_HEIGHT;                    // 72 px
 export const COVERAGE_QUARTERS = 96;
 export { DIURNAL_BANDS, DIURNAL_BAND_LABELS };
 
@@ -922,21 +935,84 @@ export function buildChronicleCsv({
     return `${rows.map(row => row.map(csvEscapeCell).join(',')).join('\r\n')}\r\n`;
 }
 
-function downloadText(text, filename, mimeType) {
-    const blob = new Blob([text], { type: mimeType });
+/** Map a click/pointer x offset across the 24-hour Loom frieze into an integer hour 0..23. */
+export function loomHourFromOffset(offsetX, width = LOOM_STRIP_WIDTH) {
+    const safeWidth = Math.max(1, Number(width) || LOOM_STRIP_WIDTH);
+    const clamped = Math.max(0, Math.min(safeWidth - 1e-6, Number(offsetX) || 0));
+    return Math.max(0, Math.min(LOOM_HOURS_PER_DAY - 1, Math.floor((clamped / safeWidth) * LOOM_HOURS_PER_DAY)));
+}
+
+/** Zero-PII download file name for a Loom of Days Scroll PNG: `claudeville-loom-YYYY-MM-DD.png`. */
+export function loomScrollFileName(dateKey = chronicleDateKey()) {
+    const raw = String(dateKey || '').trim();
+    const valid = /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : chronicleDateKey();
+    return `claudeville-loom-${valid}.png`;
+}
+
+/**
+ * Pure, deterministic zero-PII Loom of Days Scroll PNG builder.
+ * Runs strictly inside `withPostcardFrame` (asserting 0 `fillText`/`strokeText`
+ * calls) and encodes byte-identical lossless PNG bytes via `ChronicleLoom`.
+ */
+export function exportLoomScrollPng({
+    dateKey = chronicleDateKey(),
+    events = [],
+    coverage = null,
+    sky = null,
+    layout = 'strip',
+    resolveMiniature = null,
+    weaveOptions = null,
+} = {}) {
+    const safeDateKey = String(dateKey || '').trim() || chronicleDateKey();
+    const { result, textCalls, textSites } = withPostcardFrame(() => {
+        const dayModel = weaveDay(Array.isArray(events) ? events : [], coverage ?? null, sky ?? null, {
+            dateKey: safeDateKey,
+            ...(weaveOptions || {}),
+        });
+        const rgba = renderLoomToRgba(dayModel, {
+            layout,
+            ...(typeof resolveMiniature === 'function' ? { resolveMiniature } : {}),
+        });
+        const pngBytes = encodeLoomPng(rgba);
+        return { dayModel, rgba, pngBytes };
+    }, { trace: true });
+
+    if (textCalls !== 0) {
+        throw new Error(`Chronicle Loom Scroll PNG violated zero-text guard (${textCalls} text call(s))`);
+    }
+
+    return {
+        pngBytes: result.pngBytes,
+        width: result.rgba.width,
+        height: result.rgba.height,
+        layout: result.rgba.layout,
+        fileName: loomScrollFileName(safeDateKey),
+        dayModel: result.dayModel,
+        textCalls,
+        textSites,
+    };
+}
+
+function downloadBlob(blob, filename, documentRef = globalThis.document) {
+    if (!blob || !documentRef?.createElement) return false;
     const url = URL.createObjectURL(blob);
     let link = null;
     try {
-        link = document.createElement('a');
+        link = documentRef.createElement('a');
         link.href = url;
         link.download = filename;
-        link.style.display = 'none';
-        document.body.append(link);
-        link.click();
+        if (link.style) link.style.display = 'none';
+        documentRef.body?.appendChild?.(link);
+        link.click?.();
+        return true;
     } finally {
-        link?.remove();
+        link?.remove?.();
         URL.revokeObjectURL(url);
     }
+}
+
+function downloadText(text, filename, mimeType) {
+    return downloadBlob(new Blob([text], { type: mimeType }), filename);
 }
 
 export class ChroniclePanel {
@@ -948,6 +1024,8 @@ export class ChroniclePanel {
         toast = null,
         liveHistory = true,
         onExportTapestry = null,
+        onExportLoomScroll = null,
+        loomMiniatureResolver = null,
         solarProvider = null,
     }) {
         this.modal = modal;
@@ -960,6 +1038,8 @@ export class ChroniclePanel {
         this.usageGetter = usageGetter;
         this.toast = toast;
         this.onExportTapestry = typeof onExportTapestry === 'function' ? onExportTapestry : null;
+        this.onExportLoomScroll = typeof onExportLoomScroll === 'function' ? onExportLoomScroll : null;
+        this.loomMiniatureResolver = typeof loomMiniatureResolver === 'function' ? loomMiniatureResolver : null;
         this.solarProvider = typeof solarProvider === 'function' ? solarProvider : null;
         this._request = null;
         this._dateReadSeq = 0;
@@ -967,6 +1047,7 @@ export class ChroniclePanel {
         this._selectedSpend = null;
         this._selectedPage = null;
         this._selectedHour = null;
+        this._hourSyncListeners = [];
         this._avatars = [];
         this._destroyed = false;
     }
@@ -1006,14 +1087,27 @@ export class ChroniclePanel {
     }
 
     async _readDayMeta(dateKey) {
-        const readKey = async (key) => {
-            if (typeof this.log?.readMeta === 'function') return this.log.readMeta(key);
-            if (typeof this.log?.store?.getMeta === 'function') return this.log.store.getMeta(key, null);
+        const readCoverage = async () => {
+            if (typeof this.log?.readDayCoverage === 'function') {
+                const value = await this.log.readDayCoverage(dateKey);
+                if (value != null) return value;
+            }
+            if (typeof this.log?.readMeta === 'function') return this.log.readMeta(`coverage:${dateKey}`);
+            if (typeof this.log?.store?.getMeta === 'function') return this.log.store.getMeta(`coverage:${dateKey}`, null);
+            return null;
+        };
+        const readSky = async () => {
+            if (typeof this.log?.readDaySky === 'function') {
+                const value = await this.log.readDaySky(dateKey);
+                if (value != null) return value;
+            }
+            if (typeof this.log?.readMeta === 'function') return this.log.readMeta(`sky:${dateKey}`);
+            if (typeof this.log?.store?.getMeta === 'function') return this.log.store.getMeta(`sky:${dateKey}`, null);
             return null;
         };
         const [coverage, sky] = await Promise.all([
-            readKey(`coverage:${dateKey}`).catch(() => null),
-            readKey(`sky:${dateKey}`).catch(() => null),
+            readCoverage().catch(() => null),
+            readSky().catch(() => null),
         ]);
         return { coverage: coverage ?? null, sky: sky ?? null };
     }
@@ -1028,7 +1122,15 @@ export class ChroniclePanel {
                 : false,
             this._readDayMeta(dateKey),
         ]);
-        return { ...page, spend, replayable, coverage: meta.coverage, sky: meta.sky };
+        // Only fetch the full day when the bounded timeline page truncated earlier hours.
+        let loomEvents = page.events;
+        if (page.totalCount > page.events.length && typeof this.log?.readDay === 'function') {
+            try {
+                const allEvents = await this.log.readDay(dateKey);
+                if (Array.isArray(allEvents)) loomEvents = allEvents;
+            } catch { /* fall back to loaded timeline page events */ }
+        }
+        return { ...page, loomEvents, spend, replayable, coverage: meta.coverage, sky: meta.sky };
     }
 
     async _readTimelinePage(dateKey) {
@@ -1157,6 +1259,40 @@ export class ChroniclePanel {
         }
     }
 
+    async _exportLoomScroll() {
+        if (this._destroyed) return null;
+        const dateKey = this._selectedDateKey || chronicleDateKey();
+        const request = this._request;
+        const readSeq = this._dateReadSeq;
+        try {
+            const data = await this._readExportData(dateKey);
+            if (this._destroyed || request !== this._request || readSeq !== this._dateReadSeq
+                || (this._selectedDateKey && dateKey !== this._selectedDateKey)
+                || (this.modal?.isRequestCurrent && !this.modal.isRequestCurrent(request))) return null;
+            const exported = exportLoomScrollPng({
+                dateKey: data.dateKey,
+                events: data.events,
+                coverage: data.coverage,
+                sky: data.sky,
+                layout: 'strip',
+                resolveMiniature: this.loomMiniatureResolver,
+            });
+            if (this.onExportLoomScroll) {
+                await this.onExportLoomScroll(exported, data);
+            } else {
+                downloadBlob(new Blob([exported.pngBytes], { type: 'image/png' }), exported.fileName);
+            }
+            return exported;
+        } catch (error) {
+            this._reportFailure(
+                CHRONICLE_EXPORT_FAILURE_EVENT,
+                'Could not export the Chronicle Loom Scroll PNG.',
+                { format: 'loom-scroll', dateKey, error },
+            );
+            return null;
+        }
+    }
+
     async _export(format) {
         if (this._destroyed) return;
         const dateKey = this._selectedDateKey || chronicleDateKey();
@@ -1182,7 +1318,16 @@ export class ChroniclePanel {
     }
 
     _renderPage(page, dateKey, request) {
-        const { events, summary, totalCount, spend, replayable, coverage = null, sky = null } = page;
+        const {
+            events,
+            loomEvents = events,
+            summary,
+            totalCount,
+            spend,
+            replayable,
+            coverage = null,
+            sky = null,
+        } = page;
         this._selectedPage = page;
         this._selectedHour = null;
         const content = this.modal.contentEl;
@@ -1196,6 +1341,7 @@ export class ChroniclePanel {
                 replayable,
                 coverage,
                 sky,
+                loomEvents,
                 onDateChange: nextDate => this._showDate(nextDate, request),
             })]);
         }
@@ -1318,7 +1464,10 @@ export class ChroniclePanel {
         this.usageGetter = null;
         this.toast = null;
         this.onExportTapestry = null;
+        this.onExportLoomScroll = null;
+        this.loomMiniatureResolver = null;
         this.solarProvider = null;
+        this._hourSyncListeners = [];
     }
 
     _spendNodes(spend, dateKey) {
@@ -1447,6 +1596,182 @@ export class ChroniclePanel {
         return true;
     }
 
+    _notifyHourSelected(hour, source = null) {
+        this._selectedHour = hour;
+        for (const listener of this._hourSyncListeners) {
+            try { listener(hour, source); } catch { /* sync listener must not break interaction */ }
+        }
+    }
+
+    _loomNode(loomModel, sunArcModel) {
+        const stats = loomModel.stats;
+        const defaultReadout = stats.coveredHours > 0
+            ? `${stats.coveredHours}h woven · ${stats.wovenEvents} ${stats.wovenEvents === 1 ? 'event' : 'events'}`
+            : 'Bare warp marks unrecorded hours';
+        const readout = el('span', { className: 'chronicle__loom-readout' }, defaultReadout);
+
+        const exportButton = el('button', {
+            className: ['chronicle__export-button', 'chronicle__loom-export-button'],
+            text: 'Export Loom Scroll PNG',
+            title: 'Download this day\'s Loom of Days as a zero-PII scroll PNG',
+            ariaLabel: 'Export selected Chronicle day as Loom Scroll PNG',
+        });
+        exportButton.type = 'button';
+        exportButton.addEventListener('click', () => this._exportLoomScroll());
+
+        const canvas = el('canvas', {
+            className: 'chronicle__loom-canvas',
+            ariaLabel: 'Loom of Days 24-hour Bayeux frieze; click an hour panel to jump to its Day Book entries',
+            dataset: { dateKey: loomModel.dateKey || sunArcModel.dateKey },
+        });
+        canvas.width = LOOM_STRIP_WIDTH;
+        canvas.height = LOOM_STRIP_HEIGHT;
+        canvas.setAttribute('role', 'img');
+        canvas.setAttribute('tabindex', '0');
+
+        // Paint the 24-hour Bayeux frieze strictly inside withPostcardFrame (0 text calls).
+        const ctx = typeof canvas.getContext === 'function' ? canvas.getContext('2d') : null;
+        if (ctx && typeof ctx.fillRect === 'function') {
+            withPostcardFrame(() => {
+                const rgba = renderLoomFrieze(loomModel, {
+                    ...(this.loomMiniatureResolver ? { resolveMiniature: this.loomMiniatureResolver } : {}),
+                });
+                drawLoomToCanvas(ctx, rgba, { layout: 'strip' });
+            });
+        }
+
+        const selectionFrame = el('div', { className: 'chronicle__loom-selection' });
+        selectionFrame.hidden = true;
+        selectionFrame.setAttribute('aria-hidden', 'true');
+
+        const hourCells = [];
+        for (let hour = 0; hour < LOOM_HOURS_PER_DAY; hour++) {
+            const panel = loomModel.panels[hour];
+            const cell = el('button', {
+                className: [
+                    'chronicle__loom-hour',
+                    ...(panel.fullyUncovered ? ['chronicle__loom-hour--uncovered'] : []),
+                    ...(panel.cells.length > 0 ? ['chronicle__loom-hour--active-work'] : []),
+                ],
+                text: `${String(hour).padStart(2, '0')}:00`,
+                dataset: { loomHour: hour },
+            });
+            cell.type = 'button';
+            cell.addEventListener('click', () => selectHour(hour));
+            hourCells.push(cell);
+        }
+
+        const track = el('div', { className: 'chronicle__loom-track' }, [
+            canvas,
+            selectionFrame,
+            el('div', { className: 'chronicle__loom-hours' }, hourCells),
+        ]);
+        const viewport = el('div', { className: 'chronicle__loom-viewport' }, [track]);
+
+        const describePanel = (hour) => {
+            const panel = loomModel.panels[hour];
+            if (!panel) return defaultReadout;
+            const hh = String(hour).padStart(2, '0');
+            if (panel.fullyUncovered) return `${hh}:00 · uncovered warp`;
+            const parts = [`${hh}:00`];
+            if (panel.coveredCount < 4) parts.push(`${panel.coveredCount}/4 quarters`);
+            if (panel.eventCells.length > 0) {
+                parts.push(`${panel.eventCells.length} ${panel.eventCells.length === 1 ? 'cell' : 'cells'}`);
+            } else {
+                parts.push('quiet hour');
+            }
+            if (panel.overflowCount > 0) parts.push(`+${panel.overflowCount} overflow`);
+            if (panel.repos.length > 0) parts.push(`${panel.repos.length} ${panel.repos.length === 1 ? 'repo' : 'repos'}`);
+            return parts.join(' · ');
+        };
+
+        const highlightHour = (hour, { scrollIntoView = false } = {}) => {
+            const valid = Number.isInteger(hour) && hour >= 0 && hour < LOOM_HOURS_PER_DAY;
+            for (let i = 0; i < hourCells.length; i++) {
+                hourCells[i].classList?.toggle?.('chronicle__loom-hour--selected', valid && i === hour);
+            }
+            if (!valid) {
+                selectionFrame.hidden = true;
+                delete canvas.dataset.selectedHour;
+                return;
+            }
+            canvas.dataset.selectedHour = String(hour);
+            selectionFrame.hidden = false;
+            if (selectionFrame.style) {
+                selectionFrame.style.left = `${hour * LOOM_PANEL_WIDTH}px`;
+            }
+            readout.textContent = describePanel(hour);
+            if (scrollIntoView && typeof viewport.scrollLeft === 'number') {
+                const viewW = Number(viewport.clientWidth) || SUN_ARC_DEFAULT_WIDTH;
+                viewport.scrollLeft = Math.max(0, hour * LOOM_PANEL_WIDTH - Math.floor((viewW - LOOM_PANEL_WIDTH) / 2));
+            }
+        };
+
+        const selectHour = (hour) => {
+            highlightHour(hour, { scrollIntoView: true });
+            this._notifyHourSelected(hour, 'loom');
+            this._scrollToHour(hour, sunArcModel.hours[hour]?.band || null);
+        };
+
+        const hourFromEvent = (event) => {
+            const rect = typeof canvas.getBoundingClientRect === 'function'
+                ? canvas.getBoundingClientRect()
+                : { left: 0, width: LOOM_STRIP_WIDTH };
+            return loomHourFromOffset((Number(event?.clientX) || 0) - rect.left, rect.width || LOOM_STRIP_WIDTH);
+        };
+
+        canvas.addEventListener('pointermove', (event) => {
+            readout.textContent = describePanel(hourFromEvent(event));
+        });
+        canvas.addEventListener('pointerleave', () => {
+            readout.textContent = this._selectedHour !== null
+                ? describePanel(this._selectedHour)
+                : defaultReadout;
+        });
+        canvas.addEventListener('click', (event) => selectHour(hourFromEvent(event)));
+        canvas.addEventListener('keydown', (event) => {
+            const current = this._selectedHour ?? 12;
+            if (event.key === 'ArrowRight') {
+                event.preventDefault?.();
+                selectHour((current + 1) % LOOM_HOURS_PER_DAY);
+            } else if (event.key === 'ArrowLeft') {
+                event.preventDefault?.();
+                selectHour((current + LOOM_HOURS_PER_DAY - 1) % LOOM_HOURS_PER_DAY);
+            } else if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault?.();
+                selectHour(current);
+            }
+        });
+
+        this._hourSyncListeners.push((hour, source) => {
+            if (source === 'loom') return;
+            highlightHour(hour, { scrollIntoView: true });
+        });
+
+        // Start scrolled to the latest active or covered hour so woven panels are in view.
+        let initialFocusHour = null;
+        for (let h = LOOM_HOURS_PER_DAY - 1; h >= 0; h--) {
+            if (loomModel.panels[h].cells.length > 0) { initialFocusHour = h; break; }
+        }
+        if (initialFocusHour === null) {
+            for (let h = LOOM_HOURS_PER_DAY - 1; h >= 0; h--) {
+                if (!loomModel.panels[h].fullyUncovered) { initialFocusHour = h; break; }
+            }
+        }
+        if (initialFocusHour !== null && typeof viewport.scrollLeft === 'number') {
+            viewport.scrollLeft = Math.max(0, initialFocusHour * LOOM_PANEL_WIDTH - LOOM_PANEL_WIDTH * 2);
+        }
+
+        return el('section', { className: 'chronicle__loom', ariaLabel: 'Loom of Days 24-hour frieze' }, [
+            el('div', { className: 'chronicle__loom-header' }, [
+                el('span', { className: 'chronicle__loom-title' }, 'LOOM OF DAYS'),
+                readout,
+                exportButton,
+            ]),
+            viewport,
+        ]);
+    }
+
     _sunArcNode(model) {
         const readout = el('span', { className: 'chronicle__sun-arc-readout' },
             model.hasCoverage ? 'Click an hour to jump' : 'Unrecorded hours shown as bare linen');
@@ -1487,12 +1812,18 @@ export class ChroniclePanel {
             });
         };
         const selectHour = (hour) => {
-            this._selectedHour = hour;
+            this._notifyHourSelected(hour, 'sun-arc');
             canvas.dataset.selectedHour = String(hour);
             readout.textContent = describeHour(hour);
             repaint();
             this._scrollToHour(hour, model.hours[hour]?.band || null);
         };
+        this._hourSyncListeners.push((hour, source) => {
+            if (source === 'sun-arc') return;
+            canvas.dataset.selectedHour = String(hour);
+            readout.textContent = describeHour(hour);
+            repaint();
+        });
         const hourFromEvent = (event) => {
             const rect = typeof canvas.getBoundingClientRect === 'function'
                 ? canvas.getBoundingClientRect()
@@ -1554,10 +1885,12 @@ export class ChroniclePanel {
         replayable = false,
         coverage = null,
         sky = null,
+        loomEvents = events,
         solar = undefined,
     } = {}) {
         const isToday = dateKey === chronicleDateKey();
         const resolvedSolar = solar !== undefined ? solar : this.solarProvider?.(dateKey);
+        this._hourSyncListeners = [];
         const sunArcModel = buildSunArcModel({
             dateKey,
             events,
@@ -1565,10 +1898,14 @@ export class ChroniclePanel {
             sky,
             solar: resolvedSolar,
         });
+        const loomModel = weaveDay(Array.isArray(loomEvents) ? loomEvents : [], coverage ?? null, sky ?? null, {
+            dateKey,
+        });
         const nodes = [
             this._datePicker(dateKey, onDateChange, replayable),
             el('p', { className: 'chronicle__opening' }, openingLine(summary, isToday)),
             this._sunArcNode(sunArcModel),
+            this._loomNode(loomModel, sunArcModel),
         ];
 
         nodes.push(el('div', { className: 'chronicle__ledger' }, [

@@ -770,6 +770,7 @@ export class BuildingSprite {
         eventBus.off('harbor:updated', this._onHarborUpdated);
         eventBus.off('chronicle:recorded', this._onChronicleRecorded);
         this._cutawayRoofCache?.clear?.();
+        this._archiveLoomPanel = null;
         this._resultShelf = [];
         this._resultShelfIds.clear();
         this._instrumentHits = [];
@@ -6820,11 +6821,22 @@ export class BuildingSprite {
         this._glassCutawayTarget = { type: next, since: Number.isFinite(nowMs) ? nowMs : Date.now(), resolved: false };
     }
 
-    // W5-B (Spec 04 §5.2/§5.4) — the Loom of Days hangs on the Archive's
-    // rear wall once Wave 6 weaves it: today's 96 x 72 panel (a canvas or
-    // image), or null for the bare frame.
+    // W5-B / W6-B (Spec 04 §5.2/§5.4) — the Loom of Days hangs on the Archive's
+    // rear wall once Wave 6 weaves it: today's 96 x 72 panel (a canvas, image,
+    // or RGBA pixel surface), or null for the bare frame (zero placeholder).
     setArchiveLoomPanel(panel = null) {
-        this._archiveLoomPanel = panel || null;
+        let next = panel || null;
+        if (next && next.data && next.width > 0 && next.height > 0 && typeof next.getContext !== 'function') {
+            const raster = createRasterCanvas(next.width, next.height);
+            const rctx = raster?.getContext?.('2d');
+            if (rctx && typeof rctx.putImageData === 'function' && typeof ImageData === 'function') {
+                rctx.putImageData(new ImageData(new Uint8ClampedArray(next.data), next.width, next.height), 0, 0);
+                next = raster;
+            }
+        }
+        if (this._archiveLoomPanel === next) return;
+        this._archiveLoomPanel = next;
+        if (this._cutawayLiving?.type === 'archive') this._cutawayLiving = null;
     }
 
     // R1 — inspection predicates read the camera's rest tier during a glide.
@@ -6984,7 +6996,19 @@ export class BuildingSprite {
         ctx.save();
         ctx.imageSmoothingEnabled = false;
         layer(stack.aperture);
-        if (living?.archive) drawArchiveCutaway(paint, living.archive, { localPoint, showBayNames: false });
+        if (living?.archive) {
+            const archiveState = grade && living.archive.loomWall?.panel
+                ? {
+                    ...living.archive,
+                    loomWall: {
+                        ...living.archive.loomWall,
+                        panel: this._gradedCutawayImage('archive.loomPanel', living.archive.loomWall.panel, grade)
+                            || living.archive.loomWall.panel,
+                    },
+                }
+                : living.archive;
+            drawArchiveCutaway(paint, archiveState, { localPoint, showBayNames: false });
+        }
         // The Harbor's signal rack hangs on the back wall, behind the loft's occupants.
         if (living?.harbor) drawHarborCutaway(paint, living.harbor, { localPoint, layer: 'wall' });
         for (const { slot, at, height } of placements) {

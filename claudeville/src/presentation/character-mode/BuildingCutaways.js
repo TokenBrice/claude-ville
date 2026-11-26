@@ -1008,24 +1008,50 @@ export function drawArchiveCutaway(ctx, state, {
     if (!ctx || !state) return { drawnSpines: 0, overflowStamped: false, bayNamesDrawn: false, loomDrawn: false };
 
     // 1. The Loom of Days: nothing until a panel exists; then the 96 x 72
-    //    panel scaled to 48 x 36, one texel column at a time down the slope.
+    //    panel scaled to 48 x 36, one texel column at a time down the +0.5
+    //    rear-wall slope, strictly inside the Archive cutaway mask.
     const loom = state.loomWall || ARCHIVE_CUTAWAY_PROFILE.loomWall;
     let loomDrawn = false;
-    if (loom?.panel && typeof ctx.drawImage === 'function') {
+    const panel = loom?.panel || null;
+    const hasZeroDim = Boolean(panel && (panel.width === 0 || panel.height === 0));
+    if (panel && !hasZeroDim) {
         const dest = loom.destRect;
         const slope = Number(loom.slope) || 0;
-        const scaleX = loom.sourceWidth / dest.width;
-        const top = localPoint(dest.x, dest.y);
-        ctx.fillStyle = PIXEL_OUTLINE_INK;
-        for (let col = -1; col <= dest.width; col++) {
-            const y = top.y + Math.round(slope * col);
-            ctx.fillRect(top.x + col, y - 1, 1, dest.height + 2);
+        const srcW = Number(panel.width) > 0 ? Number(panel.width) : loom.sourceWidth;
+        const srcH = Number(panel.height) > 0 ? Number(panel.height) : loom.sourceHeight;
+        const scaleX = srcW / dest.width;
+        const isRgbaBuffer = Boolean(panel.data && panel.data.length >= srcW * srcH * 4 && typeof panel.getContext !== 'function');
+        const canDrawImage = !isRgbaBuffer && typeof ctx.drawImage === 'function';
+        if (canDrawImage || isRgbaBuffer) {
+            if ('imageSmoothingEnabled' in ctx) ctx.imageSmoothingEnabled = false;
+            const top = localPoint(dest.x, dest.y);
+            ctx.fillStyle = PIXEL_OUTLINE_INK;
+            for (let col = -1; col <= dest.width; col++) {
+                const y = top.y + Math.round(slope * col);
+                ctx.fillRect(top.x + col, y - 1, 1, dest.height + 2);
+            }
+            if (canDrawImage) {
+                for (let col = 0; col < dest.width; col++) {
+                    const y = top.y + Math.round(slope * col);
+                    ctx.drawImage(panel, Math.floor(col * scaleX), 0, 1, srcH, top.x + col, y, 1, dest.height);
+                }
+            } else {
+                const scaleY = srcH / dest.height;
+                const data = panel.data;
+                for (let col = 0; col < dest.width; col++) {
+                    const sx = Math.min(srcW - 1, Math.floor(col * scaleX));
+                    const y0 = top.y + Math.round(slope * col);
+                    for (let row = 0; row < dest.height; row++) {
+                        const sy = Math.min(srcH - 1, Math.floor(row * scaleY));
+                        const o = (sy * srcW + sx) * 4;
+                        if (data[o + 3] <= 0) continue;
+                        ctx.fillStyle = `#${((1 << 24) | (data[o] << 16) | (data[o + 1] << 8) | data[o + 2]).toString(16).slice(1)}`;
+                        ctx.fillRect(top.x + col, y0 + row, 1, 1);
+                    }
+                }
+            }
+            loomDrawn = true;
         }
-        for (let col = 0; col < dest.width; col++) {
-            const y = top.y + Math.round(slope * col);
-            ctx.drawImage(loom.panel, Math.floor(col * scaleX), 0, 1, loom.sourceHeight, top.x + col, y, 1, dest.height);
-        }
-        loomDrawn = true;
     }
 
     // 2. Compaction Shelf: the board and up to 12 spines down the +0.5 slope.

@@ -54,6 +54,15 @@ import { setRestSeatVisualBeat } from './character-mode/RestSeats.js';
 import { createAtmosphereSnapshot } from './character-mode/AtmosphereState.js';
 import { effectiveCanvasDpr } from './character-mode/CanvasBudget.js';
 import { paintRevealBands } from './character-mode/RevealBands.js';
+import { withPostcardFrame } from './character-mode/Postcard.js';
+import {
+    LOOM_PANEL_HEIGHT,
+    LOOM_PANEL_WIDTH,
+    drawLoomToCanvas,
+    renderLoomPanel,
+    selectArchiveLoomPanel,
+    weaveDay,
+} from './shared/ChronicleLoom.js';
 
 /**
  * Build the Tapestry cast list strictly from the selected Chronicle day's
@@ -137,6 +146,75 @@ export function chronicleSkyCode(snap) {
         rain: wx.type === 'rain' || wx.type === 'storm' ? (wx.type === 'storm' ? 2 : 1) : 0,
         snow: precipitationIsFrozen(snap.effectiveDate?.getMonth(), wx) ? 1 : 0,
         moon: Math.round(Math.max(0, Math.min(1, Number(snap.sky?.moon?.phase?.illumination ?? snap.sky?.moon?.illumination ?? 0))) * 3),
+    };
+}
+
+/**
+ * Weave and rasterize today's latest active (or covered) 96x72 Loom of Days
+ * panel for the Archive cutaway's rear-wall frame (§5.2 / §5.4). Returns
+ * `canvas: null` when the day has neither observed coverage nor recorded events
+ * so the rear wall stays bare instead of drawing a placeholder.
+ */
+export function buildArchiveLoomPanelCanvas({
+    events = [],
+    coverage = null,
+    sky = null,
+    dateKey = chronicleDateKey(),
+    hour = null,
+    closed = false,
+    resolveMiniature = null,
+    documentRef = globalThis.document,
+} = {}) {
+    const dayModel = weaveDay(Array.isArray(events) ? events : [], coverage ?? null, sky ?? null, { dateKey });
+    const panel = selectArchiveLoomPanel(dayModel, { hour });
+    if (!panel) {
+        return {
+            canvas: null,
+            panel: null,
+            dayModel,
+            rgba: null,
+            hour: null,
+            dateKey,
+            closed: Boolean(closed),
+            textCalls: 0,
+        };
+    }
+
+    const { result, textCalls } = withPostcardFrame(() => {
+        const rgba = renderLoomPanel(panel, {
+            closed: Boolean(closed),
+            ...(typeof resolveMiniature === 'function' ? { resolveMiniature } : {}),
+        });
+        let canvas = null;
+        if (documentRef && typeof documentRef.createElement === 'function') {
+            canvas = documentRef.createElement('canvas');
+            canvas.width = LOOM_PANEL_WIDTH;
+            canvas.height = LOOM_PANEL_HEIGHT;
+        } else if (typeof globalThis.OffscreenCanvas === 'function') {
+            canvas = new globalThis.OffscreenCanvas(LOOM_PANEL_WIDTH, LOOM_PANEL_HEIGHT);
+        }
+        const ctx = typeof canvas?.getContext === 'function' ? canvas.getContext('2d') : null;
+        if (ctx && typeof ctx.fillRect === 'function') {
+            drawLoomToCanvas(ctx, rgba, { layout: 'single-panel' });
+        } else {
+            canvas = null;
+        }
+        return { rgba, canvas };
+    }, { trace: true });
+
+    if (textCalls !== 0) {
+        throw new Error(`Archive Loom panel violated zero-text guard (${textCalls} text call(s))`);
+    }
+
+    return {
+        canvas: result.canvas,
+        panel,
+        dayModel,
+        rgba: result.rgba,
+        hour: panel.hour,
+        dateKey,
+        closed: Boolean(closed),
+        textCalls,
     };
 }
 
@@ -275,6 +353,10 @@ export class App {
         this._chroniclePruneInterval = null;
         this._chroniclePruneState = { promise: null };
         this._chronicleTasks = new Set();
+        this._archiveLoomRefreshTimer = null;
+        this._archiveLoomSeq = 0;
+        this._archiveLoomClosedDate = null;
+        this._archiveLoomPanelState = null;
         this._resizeWorldCanvas = null;
         this._resizeObserver = null;
         this._resizeHandle = null;
@@ -532,6 +614,13 @@ export class App {
         }
     }
 
+    _currentChronicleSkyCode() {
+        const snap = this.renderer?._lastAtmosphere
+            || this.renderer?.atmosphereState?.snapshot?.()
+            || createAtmosphereSnapshot();
+        return chronicleSkyCode(snap);
+    }
+
     _readDashboardAtmosphere() {
         if (this.modeManager?.getCurrentMode() !== 'dashboard') return null;
         return this.renderer?.atmosphereState?.snapshot() ?? createAtmosphereSnapshot();
@@ -574,6 +663,9 @@ export class App {
                 this._runChroniclePrune().catch((err) => {
                     console.warn('[App] ChronicleStore prune failed:', err.message);
                 });
+                if (this.renderer?.buildingRenderer) {
+                    this._trackChronicleTask(this.refreshArchiveLoomPanel().catch(() => {}));
+                }
             }, 5 * 60 * 1000);
         } else {
             this._bindVillageObservations();
@@ -588,8 +680,16 @@ export class App {
         if (!this.chronicleLog) {
             this.chronicleLog = new ChronicleLog({ store: this.chronicleStore }).start();
             this.chronicleLog.startMetaSampling?.({
-                skyProvider: () => chronicleSkyCode(this.renderer?._lastAtmosphere),
+                skyProvider: () => this._currentChronicleSkyCode(),
             });
+            if (this.chronicleLog._metaSample) {
+                this._trackChronicleTask(Promise.resolve(this.chronicleLog._metaSample).then(() => {
+                    if (!this._destroyed && this.renderer?.buildingRenderer) {
+                        return this.refreshArchiveLoomPanel();
+                    }
+                    return null;
+                }).catch(() => {}));
+            }
         }
         if (!this.spendLedger) {
             this.spendLedger = new SpendLedger(this.world, { store: this.chronicleStore });
@@ -1986,6 +2086,10 @@ export class App {
             const previous = this.renderer;
             this.renderer = candidate;
             candidate.setVisualBeat?.(this.topBar?.audio?.getVisualBeat?.() ?? null);
+            if (this._archiveLoomPanelState?.canvas) {
+                candidate.buildingRenderer?.setArchiveLoomPanel?.(this._archiveLoomPanelState.canvas);
+            }
+            this._trackChronicleTask(this.refreshArchiveLoomPanel().catch(() => {}));
             previous?.hide?.();
             await this._mountWorldTools(candidate);
             if (this._destroyed || this.renderer !== candidate) return;
@@ -2169,6 +2273,109 @@ export class App {
         }));
         // `chronicle:aurora` is the audio cue's (BgmDirector, SignalDirector):
         // the sky never answers to the Chronicle or any agent event (V3).
+
+        // W6-B (Spec 04 §5.2/§5.4/§5.5) — keep the Archive rear-wall Loom panel
+        // woven from live Chronicle records, and close today's last panel cleanly
+        // when Evensong sounds at 21:00.
+        this._eventUnsubscribers.push(eventBus.on('chronicle:recorded', (record) => {
+            if (this._destroyed) return;
+            const recordDate = typeof record?.localDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(record.localDate)
+                ? record.localDate
+                : chronicleDateKey(Number(record?.ts) || Date.now());
+            if (this._archiveLoomClosedDate && this._archiveLoomClosedDate !== recordDate) {
+                this._archiveLoomClosedDate = null;
+            }
+            this._scheduleArchiveLoomRefresh();
+        }));
+
+        this._eventUnsubscribers.push(eventBus.on('audio:evensong', (payload = {}) => {
+            if (this._destroyed) return;
+            const ts = Number.isFinite(Number(payload?.ts)) ? Number(payload.ts) : Date.now();
+            const targetDateKey = typeof payload?.dateKey === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(payload.dateKey)
+                ? payload.dateKey
+                : chronicleDateKey(ts);
+            const targetHour = Number.isInteger(payload?.hour) ? payload.hour : null;
+            this._archiveLoomClosedDate = targetDateKey;
+            if (this._archiveLoomRefreshTimer !== null) {
+                clearTimeout(this._archiveLoomRefreshTimer);
+                this._archiveLoomRefreshTimer = null;
+            }
+            this._trackChronicleTask(
+                Promise.allSettled([
+                    this.chronicleLog?.flush?.(),
+                    this.chronicleLog?.recordCoverageQuarter?.(ts),
+                    (() => {
+                        const code = this._currentChronicleSkyCode();
+                        return code ? this.chronicleLog?.recordSkyHour?.(code, ts) : null;
+                    })(),
+                ])
+                    .then(() => this.refreshArchiveLoomPanel({
+                        closed: true,
+                        dateKey: targetDateKey,
+                        hour: targetHour,
+                    }))
+                    .catch(() => {}),
+            );
+        }));
+    }
+
+    _scheduleArchiveLoomRefresh(delayMs = 250) {
+        if (this._destroyed || !this.chronicleLog) return;
+        if (this._archiveLoomRefreshTimer !== null) return;
+        this._archiveLoomRefreshTimer = setTimeout(() => {
+            this._archiveLoomRefreshTimer = null;
+            if (this._destroyed) return;
+            this._trackChronicleTask(this.refreshArchiveLoomPanel().catch(() => {}));
+        }, delayMs);
+        this._archiveLoomRefreshTimer?.unref?.();
+    }
+
+    async refreshArchiveLoomPanel({
+        closed = null,
+        dateKey = null,
+        hour = null,
+        documentRef = globalThis.document,
+    } = {}) {
+        if (this._destroyed || !this.chronicleLog) return null;
+        const targetDateKey = typeof dateKey === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateKey)
+            ? dateKey
+            : chronicleDateKey();
+        const isClosed = closed !== null ? Boolean(closed) : (this._archiveLoomClosedDate === targetDateKey);
+        const seq = ++this._archiveLoomSeq;
+
+        await this.chronicleLog.flush?.().catch(() => {});
+        const [events, coverage, sky] = await Promise.all([
+            typeof this.chronicleLog.readDay === 'function'
+                ? this.chronicleLog.readDay(targetDateKey).catch(() => [])
+                : Promise.resolve([]),
+            typeof this.chronicleLog.readDayCoverage === 'function'
+                ? this.chronicleLog.readDayCoverage(targetDateKey).catch(() => null)
+                : this.chronicleStore?.getDayCoverage?.(targetDateKey).catch(() => null) ?? Promise.resolve(null),
+            typeof this.chronicleLog.readDaySky === 'function'
+                ? this.chronicleLog.readDaySky(targetDateKey).catch(() => null)
+                : this.chronicleStore?.getDaySky?.(targetDateKey).catch(() => null) ?? Promise.resolve(null),
+        ]);
+        if (this._destroyed || seq !== this._archiveLoomSeq) return null;
+
+        const built = buildArchiveLoomPanelCanvas({
+            events,
+            coverage,
+            sky,
+            dateKey: targetDateKey,
+            hour,
+            closed: isClosed,
+            documentRef,
+        });
+        const panelSurface = built.canvas || built.rgba || null;
+        this._archiveLoomPanelState = {
+            dateKey: targetDateKey,
+            hour: built.hour,
+            closed: built.closed,
+            canvas: panelSurface,
+            dayModel: built.dayModel,
+        };
+        this.renderer?.buildingRenderer?.setArchiveLoomPanel?.(panelSurface);
+        return this._archiveLoomPanelState;
     }
 
     _trackChronicleTask(task) {
@@ -2435,6 +2642,13 @@ export class App {
             window.clearInterval(this._chroniclePruneInterval);
             this._chroniclePruneInterval = null;
         }
+        if (this._archiveLoomRefreshTimer !== null) {
+            clearTimeout(this._archiveLoomRefreshTimer);
+            this._archiveLoomRefreshTimer = null;
+        }
+        this._archiveLoomSeq++;
+        this._archiveLoomClosedDate = null;
+        this._archiveLoomPanelState = null;
         if (this._resizeHandle) {
             cancelAnimationFrame(this._resizeHandle);
             this._resizeHandle = null;
