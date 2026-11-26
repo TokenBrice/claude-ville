@@ -82,6 +82,7 @@ import {
 import {
     getBuildingApertureProfile,
     getBuildingAssayProfile,
+    getBuildingOpenFront,
     getBuildingPlanTabProfile,
     getBuildingRestCovers,
     getBuildingRestEmber,
@@ -90,7 +91,28 @@ import {
     getBuildingWorkloadProfile,
     isBuildingApertureLayer,
 } from './BuildingVisualRegistry.js';
-import { APERTURE_MIN_ZOOM, apertureCutContains, assignRoomSlots, buildApertureModel } from './BuildingApertureModel.js';
+import {
+    APERTURE_MIN_ZOOM,
+    apertureCutContains,
+    assignRoomSlots,
+    buildApertureModel,
+    normalizeApertureLayers,
+    resolveApertureTrigger,
+} from './BuildingApertureModel.js';
+import {
+    BAYER_PEEL_STEPS,
+    CutawayPeelController,
+    buildArchiveCutawayState,
+    buildBayerPeelMask,
+    buildCommandWarTableState,
+    buildHarborCutawayState,
+    drawArchiveCutaway,
+    drawCommandWarTable,
+    drawHarborCutaway,
+    formatCommandSillBar,
+} from './BuildingCutaways.js';
+import { buildOpenFrontSprites, OPEN_FRONT_PROFILES } from './OpenFront.js';
+import { getModelVisualIdentity } from '../shared/ModelVisualIdentity.js';
 import { ROOM_GLASS_STEPS, RoomGlass, nightLitStep, readPixels } from './RoomGlass.js';
 import { shadowFamilyForPose } from './RoomShadowStamps.js';
 import { tankardLift } from './RestSeats.js';
@@ -465,6 +487,30 @@ function columnHasOpaquePixels(mask, width, height, sx, sw) {
     return false;
 }
 
+// W5-B (D6) — OpenFront's profile with a registry calibration's measured
+// fields over it (`frontArchRows`, `postLineInset`, `lintelDepthBias`,
+// `columnPx`, `interiorFloorBounds`, `bays`). Memoized per record.
+const RESOLVED_OPEN_FRONTS = new WeakMap();
+export function resolveOpenFrontProfile(record) {
+    if (!record?.profile) return null;
+    const cached = RESOLVED_OPEN_FRONTS.get(record);
+    if (cached) return cached;
+    const base = OPEN_FRONT_PROFILES[record.profile];
+    if (!base) return null;
+    const resolved = Object.freeze({
+        ...base,
+        frontArchRows: record.frontArchRows || base.frontArchRows,
+        postLineInset: Number.isFinite(record.postLineInset) ? record.postLineInset : base.postLineInset,
+        lintelDepthBias: Number.isFinite(record.lintelDepthBias) ? record.lintelDepthBias : base.lintelDepthBias,
+        columnPx: Number.isFinite(record.columnPx) ? record.columnPx : base.columnPx,
+        interiorFloorBounds: record.interiorFloorBounds || base.interiorFloorBounds,
+        bays: record.bays || base.bays,
+        calibrated: Boolean(record.frontArchRows),
+    });
+    RESOLVED_OPEN_FRONTS.set(record, resolved);
+    return resolved;
+}
+
 function compareBuildingDrawableDepth(a, b) {
     return (a.sortY - b.sortY)
         || ((BUILDING_DRAWABLE_SORT_BAND[a.kind] ?? 50) - (BUILDING_DRAWABLE_SORT_BAND[b.kind] ?? 50))
@@ -622,6 +668,29 @@ export class BuildingSprite {
         // agentId -> desk index per building type. Sticky, so a session keeps
         // its desk until it stops qualifying.
         this._deskAssignments = new Map();
+        // W5-B (D6) — lifted-roof cutaways. One Bayer peel advanced once per
+        // frame, The Glass dwell target (`setGlassCutawayTarget`), the masked
+        // roof steps, and the live inputs the interiors read (pending-commit
+        // repos for the Harbor rack, today's compactions for the Archive
+        // shelf). None of it changes the default frame.
+        this._cutawayPeel = new CutawayPeelController();
+        this._cutawayPeelSerial = null;
+        this._cutawayPeelSnap = null;
+        this._cutawayRoofCache = new Map();
+        this._cutawayLiving = null;
+        this._apertureSessions = [];
+        this._glassCutawayTarget = null;
+        this._harborPendingRepos = [];
+        this._onHarborUpdated = (repos) => { this._harborPendingRepos = Array.isArray(repos) ? repos : []; };
+        eventBus.on('harbor:updated', this._onHarborUpdated);
+        this._compactionRecords = [];
+        this._archiveLoomPanel = null;
+        this._onChronicleRecorded = (record) => this._observeCompaction(record);
+        eventBus.on('chronicle:recorded', this._onChronicleRecorded);
+        // W5-B (D6) — open-front arch split drawables (the Forge; the Tavern's
+        // are TavernArcade's), emitted only while a smith stands in the bay.
+        this._openFrontSprites = new Map();
+        this._openFrontActive = '';
         // 6.3 — every building's room slots (`_updateRoomSlots`), each room's
         // stepped lit share, and the glass the rooms light (RoomGlass). A
         // worker keeps its window while it works: leaving work extinguishes
@@ -689,6 +758,9 @@ export class BuildingSprite {
         eventBus.off('building:mine-assay', this._onMineAssay);
         eventBus.off('building:forge-workload', this._onForgeWorkload);
         eventBus.off('tool:result', this._onToolResult);
+        eventBus.off('harbor:updated', this._onHarborUpdated);
+        eventBus.off('chronicle:recorded', this._onChronicleRecorded);
+        this._cutawayRoofCache?.clear?.();
         this._resultShelf = [];
         this._resultShelfIds.clear();
         this._instrumentHits = [];
@@ -938,6 +1010,8 @@ export class BuildingSprite {
         const drawnColumns = new Set();
         for (let index = 0; index < drawables.length; index++) {
             const drawable = drawables[index];
+            // W5-B — open-front arch slices carry no building of their own.
+            if (!drawable.building) continue;
             if (drawable.kind === 'building-column') {
                 if (drawnColumns.has(drawable.building)) continue;
                 drawnColumns.add(drawable.building);
@@ -1014,6 +1088,7 @@ export class BuildingSprite {
             lampsLit: lampsLitAt(this.atmosphereState),
         });
         this._updateInspection();
+        this._updateOpenFrontOccupancy();
         this._updateNightLightGates(dt);
         this._advanceRoomShadows(Date.now());
         this._emitVillagePopulation();
@@ -2694,7 +2769,7 @@ export class BuildingSprite {
         const drawables = this.enumerateDrawables();
         for (let i = drawables.length - 1; i >= 0; i--) {
             const d = drawables[i];
-            if (d.kind === 'building-back') continue;
+            if (d.kind === 'building-back' || !d.building || !d.entry) continue;
             if (d.kind === 'building-column' && d.column) {
                 if (worldX < d.column.worldLeft || worldX >= d.column.worldRight) continue;
             }
@@ -2927,6 +3002,7 @@ export class BuildingSprite {
                 out.push({ kind: 'building', building: b, entry, wx, wy, sortY: this._buildingWholeSortY(b, wy) });
             }
         }
+        this._appendOpenFrontDrawables(out);
         out.sort(compareBuildingDrawableDepth);
         this._drawablesMissingMasks = missingMasks;
         this._drawablesMaskPending = missingMasks.length > 0 && typeof this.assets?.getMask === 'function';
@@ -2935,6 +3011,13 @@ export class BuildingSprite {
     }
 
     drawDrawable(ctx, d) {
+        // W5-B (D6) — an open-front arch slice: the masked lintel and piers
+        // drawn over a smith standing in the bay (GPU: GpuSceneBuilder takes
+        // the same `prop-column` payload through recordForProp).
+        if (d.kind === 'prop-column' && d.sprite) {
+            d.sprite.drawPart(ctx, 'column', this._zoom || 1, d.column);
+            return;
+        }
         const id = d.entry.id;
         if (d.kind === 'building') {
             const placed = this.sprites.drawSprite(ctx, id, d.wx, d.wy);
@@ -4066,6 +4149,12 @@ export class BuildingSprite {
                 // stamped here.
                 openAperture = this._openApertureFor(building);
             }
+        }
+        // W5-B (D6) — the Archive's and the Harbor's lifted-roof cutaways open
+        // the same way Command's does: selection at inspection zoom or a
+        // Glass dwell, drawn once after the split clip is released.
+        if (!openAperture && splitPass !== 'back' && (building.type === 'archive' || building.type === 'harbor')) {
+            openAperture = this._openApertureFor(building);
         }
         ctx.restore();
         // Command's gold war-standard rises above the dome finial (y=4, above
@@ -6696,18 +6785,79 @@ export class BuildingSprite {
         return sessions.sort((a, b) => (a.agentId < b.agentId ? -1 : a.agentId > b.agentId ? 1 : 0));
     }
 
+    // W5-B (R8) — The Glass's dwell target: the building under the lens, or
+    // null. The cutaway opens only once the lens has dwelt
+    // APERTURE_GLASS_DWELL_MS on the same building at inspection zoom, and a
+    // selection-opened cutaway always wins. `now` is Date.now() ms.
+    setGlassCutawayTarget(type, now = Date.now()) {
+        const next = type ? String(type) : null;
+        if (!next) {
+            this._glassCutawayTarget = null;
+            return;
+        }
+        if (this._glassCutawayTarget?.type === next) return;
+        this._glassCutawayTarget = { type: next, since: Number.isFinite(Number(now)) ? Number(now) : Date.now() };
+    }
+
+    // W5-B (Spec 04 §5.2/§5.4) — the Loom of Days hangs on the Archive's
+    // rear wall once Wave 6 weaves it: today's 96 x 72 panel (a canvas or
+    // image), or null for the bare frame.
+    setArchiveLoomPanel(panel = null) {
+        this._archiveLoomPanel = panel || null;
+    }
+
+    // R1 — inspection predicates read the camera's rest tier during a glide.
+    _inspectionZoom() {
+        return Number.isFinite(this._restZoom) && this._restZoom > 0 ? this._restZoom : (this._zoom || 0);
+    }
+
+    // W5-B — a cutaway opens only once its authored aperture layer has
+    // loaded: an unloaded stack would paint live props over the exterior.
+    _cutawayLayersReady(type, aperture) {
+        const stack = normalizeApertureLayers(aperture?.layers);
+        if (!stack) return false;
+        if (typeof this.assets?.get !== 'function') return true;
+        const entryId = `building.${type}`;
+        return Boolean(this.assets.get(`${entryId}.${stack.aperture}`));
+    }
+
     _updateInspection() {
-        const type = this._selectedBuildingType;
         this._apertureModel = null;
         this._apertureProfile = null;
+        this._apertureSessions = [];
+        const now = Date.now();
+        const zoom = this._inspectionZoom();
+        // Selection at inspection zoom first, then a dwelt Glass (R8).
+        let type = null;
+        let trigger = null;
+        const selected = this._selectedBuildingType;
+        const selectedProfile = selected ? getBuildingApertureProfile(selected) : null;
+        if (selectedProfile) {
+            trigger = resolveApertureTrigger({
+                buildingType: selected,
+                selectedType: selected,
+                zoom,
+                minZoom: Number.isFinite(selectedProfile.minZoom) ? selectedProfile.minZoom : APERTURE_MIN_ZOOM,
+            });
+            if (trigger) type = selected;
+        }
+        const glass = this._glassCutawayTarget;
+        if (!type && glass?.type) {
+            const glassProfile = getBuildingApertureProfile(glass.type);
+            trigger = glassProfile ? resolveApertureTrigger({
+                buildingType: glass.type,
+                glassType: glass.type,
+                glassDwellMs: now - glass.since,
+                zoom,
+                minZoom: Number.isFinite(glassProfile.minZoom) ? glassProfile.minZoom : APERTURE_MIN_ZOOM,
+            }) : null;
+            if (trigger) type = glass.type;
+        }
         if (!type) return;
 
         const aperture = getBuildingApertureProfile(type);
-        if (!aperture) return;
-        const sessions = this._inspectionSessions(type, Date.now());
-
-        const minZoom = Number.isFinite(aperture.minZoom) ? aperture.minZoom : APERTURE_MIN_ZOOM;
-        if ((this._zoom || 0) < minZoom) return;
+        if (!aperture || !this._cutawayLayersReady(type, aperture)) return;
+        const sessions = this._inspectionSessions(type, now);
         const capacity = aperture.slots.length;
         const { assignment } = assignRoomSlots({
             previous: this._deskAssignments.get(type),
@@ -6720,11 +6870,16 @@ export class BuildingSprite {
             .sort((a, b) => assignment.get(a.agentId) - assignment.get(b.agentId));
         const standing = sessions.filter((session) => !assignment.has(session.agentId));
         this._apertureProfile = aperture;
+        this._apertureSessions = [...seated, ...standing];
         this._apertureModel = buildApertureModel({
             buildingType: type,
             capacity,
-            sessions: [...seated, ...standing],
+            sessions: this._apertureSessions,
         });
+        this._apertureModel.trigger = trigger;
+        // The shipped Glass contract (IsometricRenderer, postcard frames)
+        // reads a lens-opened aperture as `source: 'glass'`.
+        if (trigger === 'glass') this._apertureModel.source = 'glass';
     }
 
     // C4 — the aperture record other surfaces may read. Null whenever the
@@ -6760,34 +6915,333 @@ export class BuildingSprite {
     // The authored sectional view. Fixed order, identical in Canvas and in the
     // resident renderer (both reach this through the shared functional-overlay
     // pass): cut and room shell, the presented occupants, the desks that
-    // occlude their legs, their marks, then the near frame.
+    // occlude their legs, their marks, then the near frame. W5-B (D6) — a
+    // 4-layer cutaway adds its living interior (Archive: Loom, shelf and
+    // spines behind the readers; Command: the war table; Harbor: the chart
+    // table, ledger desk and signal rack in front of them) and finally its
+    // `roof`, lifted on a 4 x 4 Bayer order in four 150 ms steps.
     _drawInspectionAperture(ctx, building, entry, wx, wy, open) {
         const { model, profile } = open;
+        const stack = normalizeApertureLayers(profile.layers);
+        if (!stack) return;
         const [baseAx, baseAy] = this.assets.getAnchor(entry.id);
         const localPoint = (lx, ly) => ({ x: Math.round(wx - baseAx + lx), y: Math.round(wy - baseAy + ly) });
         const layer = (name) => {
+            if (!name) return;
             const id = `${entry.id}.${name}`;
             if (!this.assets.get(id)) return;
             this.sprites.drawSprite(ctx, id, wx, wy, { anchor: [baseAx, baseAy] });
         };
+        const peel = stack.hasRoof ? this._cutawayPeelSnapshot() : null;
+        const living = this._cutawayLivingState(building.type, model, profile);
+        const placements = this._cutawayPlacements(building.type, model, profile, living);
         ctx.save();
         ctx.imageSmoothingEnabled = false;
-        layer(profile.layers[0]);
-        const occupantHeight = Math.max(8, Math.round(profile.occupant?.h || 26));
-        model.slots.forEach((slot, index) => {
-            const anchor = profile.slots[index]?.at;
-            if (!anchor) return;
-            this._drawApertureOccupant(ctx, localPoint(anchor[0], anchor[1]), slot, occupantHeight);
-        });
-        layer(profile.layers[1]);
-        model.slots.forEach((slot, index) => {
-            const anchor = profile.slots[index]?.at;
-            if (!anchor) return;
-            this._drawApertureSlotMark(ctx, localPoint(anchor[0], anchor[1]), slot);
-        });
-        layer(profile.layers[2]);
-        this._drawApertureLegend(ctx, localPoint, building, model, profile);
+        layer(stack.aperture);
+        if (living?.archive) drawArchiveCutaway(ctx, living.archive, { localPoint, showBayNames: false });
+        for (const { slot, at, height } of placements) {
+            this._drawApertureOccupant(ctx, localPoint(at[0], at[1]), slot, height);
+        }
+        layer(stack.interior);
+        if (living?.warTable) drawCommandWarTable(ctx, { ...living.warTable, sillBar: null }, { localPoint });
+        if (living?.harbor) drawHarborCutaway(ctx, living.harbor, { localPoint });
+        for (const { slot, at } of placements) this._drawApertureSlotMark(ctx, localPoint(at[0], at[1]), slot);
+        layer(stack.foreground);
+        if (stack.roof && peel) this._drawCutawayRoof(ctx, entry, stack.roof, wx, wy, peel);
+        this._drawApertureLegend(ctx, localPoint, building, model, profile, living);
         ctx.restore();
+    }
+
+    // W5-B — the Bayer peel, advanced once per frame (`_partPassSerial`)
+    // from whatever cutaway is open at draw time (selection, or a Glass
+    // dwell injected after `update`), so a lens-opened roof peels too.
+    // Reduced motion swaps at once.
+    _cutawayPeelSnapshot() {
+        const serial = this._partPassSerial;
+        if (this._cutawayPeelSnap && this._cutawayPeelSerial === serial) return this._cutawayPeelSnap;
+        const model = this._apertureModel;
+        const profile = this._apertureProfile;
+        const open = Boolean(model && profile);
+        const minZoom = Number.isFinite(profile?.minZoom) ? profile.minZoom : APERTURE_MIN_ZOOM;
+        const snap = this._cutawayPeel.update({
+            buildingId: open ? model.buildingType : null,
+            selected: open,
+            zoom: open ? minZoom : 0,
+            now: Date.now(),
+            reducedMotion: !((this.motionScale ?? 1) > 0),
+            layers: open ? profile.layers : undefined,
+            minZoom,
+        });
+        snap.source = open ? (model.source === 'glass' || model.trigger === 'glass' ? 'glass' : 'selection') : null;
+        this._cutawayPeelSerial = serial;
+        this._cutawayPeelSnap = snap;
+        return snap;
+    }
+
+    // The roof layer at a peel step: step 0 is the whole crop, steps 1-3 a
+    // cached Bayer-masked copy (kept texels keep their exact bytes, peeled
+    // texels are fully transparent: zero alpha fades), step 4 nothing.
+    _drawCutawayRoof(ctx, entry, name, wx, wy, peel) {
+        const step = Math.max(0, Math.min(BAYER_PEEL_STEPS, peel?.step ?? BAYER_PEEL_STEPS));
+        if (step >= BAYER_PEEL_STEPS) return;
+        const id = `${entry.id}.${name}`;
+        const [ax, ay] = this.assets.getAnchor(entry.id);
+        if (step === 0) {
+            if (this.assets.get(id)) this.sprites.drawSprite(ctx, id, wx, wy, { anchor: [ax, ay] });
+            return;
+        }
+        const masked = this._cutawayRoofStep(id, step);
+        if (masked) ctx.drawImage(masked.canvas, Math.round(wx - ax) + masked.x, Math.round(wy - ay) + masked.y);
+    }
+
+    _cutawayRoofStep(id, step) {
+        const key = `${id}:${step}`;
+        if (this._cutawayRoofCache.has(key)) return this._cutawayRoofCache.get(key);
+        const image = this.assets.get(id);
+        const w = image?.naturalWidth || image?.width || 0;
+        const h = image?.naturalHeight || image?.height || 0;
+        const data = w > 0 && h > 0 ? readPixels(image, w, h) : null;
+        if (!data) return null;
+        // Crop to the opaque texels on a 4-aligned origin, so the Bayer phase
+        // stays sprite-local.
+        let minX = w;
+        let minY = h;
+        let maxX = -1;
+        let maxY = -1;
+        for (let y = 0; y < h; y++) {
+            for (let x = 0; x < w; x++) {
+                if (data[(y * w + x) * 4 + 3] === 0) continue;
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+            }
+        }
+        if (maxX < 0) return null;
+        const x0 = minX & ~3;
+        const y0 = minY & ~3;
+        const cw = maxX - x0 + 1;
+        const ch = maxY - y0 + 1;
+        const mask = buildBayerPeelMask(cw, ch, step);
+        const canvas = createRasterCanvas(cw, ch);
+        const cctx = canvas?.getContext?.('2d');
+        if (!cctx) return null;
+        const out = cctx.createImageData(cw, ch);
+        for (let y = 0; y < ch; y++) {
+            for (let x = 0; x < cw; x++) {
+                if (!mask[y * cw + x]) continue;
+                const src = ((y + y0) * w + (x + x0)) * 4;
+                const dst = (y * cw + x) * 4;
+                out.data[dst] = data[src];
+                out.data[dst + 1] = data[src + 1];
+                out.data[dst + 2] = data[src + 2];
+                out.data[dst + 3] = data[src + 3];
+            }
+        }
+        cctx.putImageData(out, 0, 0);
+        const entry = { canvas, x: x0, y: y0 };
+        this._cutawayRoofCache.set(key, entry);
+        return entry;
+    }
+
+    // W5-B — the live state each cutaway interior paints, once per frame:
+    // Command's war table muster, the Archive's bays and compaction shelf,
+    // the Harbor's chart-loft slots and signal rack.
+    _cutawayLivingState(type, model, profile) {
+        const serial = this._partPassSerial;
+        const cached = this._cutawayLiving;
+        if (cached && cached.serial === serial && cached.type === type && cached.model === model) return cached.state;
+        const spriteById = new Map();
+        for (const sprite of this.agentSprites || []) {
+            if (sprite?.agent?.id) spriteById.set(sprite.agent.id, sprite);
+        }
+        const agents = [...spriteById.values()].map((sprite) => sprite.agent).filter((agent) => agent && !agent.isDeparted);
+        const buildingOf = (agent) => {
+            const sprite = spriteById.get(agent?.id);
+            return sprite?._foldBuildingType || agent?.targetBuildingType || agent?.lastKnownBuildingType || agent?.buildingType || agent?.building || null;
+        };
+        const sessions = this._apertureSessions || [];
+        let state = null;
+        if (profile?.cutaway === 'command') {
+            const allAgents = agents.map((agent) => ({
+                id: agent.id,
+                parentSessionId: agent.parentSessionId || null,
+                rootSessionId: agent.rootSessionId || null,
+                status: agent.status,
+                building: buildingOf(agent),
+                trimColor: this._modelTrimFor(agent),
+            }));
+            state = { warTable: buildCommandWarTableState({ presentedSessions: sessions, allAgents }) };
+        } else if (profile?.cutaway === 'archive') {
+            const readers = sessions.map((session) => spriteById.get(session.agentId)?.agent).filter(Boolean);
+            const compactions = [];
+            for (const agent of agents) {
+                for (const entry of Array.isArray(agent.compactions) ? agent.compactions : []) {
+                    compactions.push({ id: `${agent.id}:${entry.at}`, agentId: agent.id, timestamp: entry.at, trimColor: this._modelTrimFor(agent) });
+                }
+            }
+            state = {
+                archive: buildArchiveCutawayState({
+                    agents: readers,
+                    compactions,
+                    chronicleEvents: this._compactionRecords,
+                    now: new Date(),
+                    loomPanel: this._archiveLoomPanel || null,
+                }),
+            };
+        } else if (profile?.cutaway === 'harbor') {
+            const visitors = sessions.map((session) => spriteById.get(session.agentId)?.agent).filter(Boolean).map((agent) => ({
+                id: agent.id,
+                currentTool: agent.currentTool || null,
+                toolInput: agent.currentToolInput || {},
+                building: buildingOf(agent),
+            }));
+            // `harbor:updated` rows (HarborTraffic): one lantern per repo with
+            // pending commits, in that repo's pennant colour.
+            const pending = (this._harborPendingRepos || []).map((row) => ({
+                repo: row?.project || row?.repoName || row?.repo || '',
+                pendingCommits: row?.pendingCommits ?? row?.count ?? 0,
+                color: row?.profile?.accent || (row?.project ? repoProfile(row.project).accent : null) || row?.color || null,
+            }));
+            state = { harbor: buildHarborCutawayState({ agents: visitors, harborPendingRepos: pending }) };
+        }
+        this._cutawayLiving = { serial, type, model, state };
+        return state;
+    }
+
+    _modelTrimFor(agent) {
+        try {
+            return getModelVisualIdentity(agent?.model, agent?.effort, agent?.provider, agent?.id)?.trim || null;
+        } catch {
+            return null;
+        }
+    }
+
+    // A COMPACTED Chronicle record joins today's shelf (bounded; the shelf
+    // itself clears at local midnight).
+    _observeCompaction(record) {
+        if (String(record?.kind || '').toLowerCase() !== 'compacted') return;
+        const timestamp = Number(record.ts);
+        if (!Number.isFinite(timestamp)) return;
+        const id = record.compactionKey || record.id;
+        if (this._compactionRecords.some((item) => item.id === id)) return;
+        this._compactionRecords.push({ id, kind: 'compacted', agentId: record.agentId || null, timestamp });
+        if (this._compactionRecords.length > 64) this._compactionRecords.splice(0, this._compactionRecords.length - 64);
+    }
+
+    // Where each presented occupant stands. Command and the shipped stack:
+    // slot i is desk i. Archive: a reader stands at the bay of its newest
+    // workingSet path, one per bay. Harbor: the chart table and ledger desk
+    // take the visitors whose current tool classifies to the Harbor. Heights
+    // are clamped so a body never rises out of its cut.
+    _cutawayPlacements(type, model, profile, living) {
+        const out = [];
+        const baseHeight = Math.max(8, Math.round(profile.occupant?.h || 26));
+        const heightAt = (at) => {
+            const cut = profile.cut;
+            const top = cut ? cut.top + (Number(cut.slope) || 0) * (at[0] - cut.x0) : -Infinity;
+            return Math.max(8, Math.min(baseHeight, Math.floor(at[1] - top - 2)));
+        };
+        const slotById = new Map(model.slots.map((slot) => [slot.agentId, slot]));
+        if (living?.archive) {
+            const taken = new Set();
+            for (const slot of model.slots) {
+                const reader = living.archive.readers.find((entry) => entry.agentId === slot.agentId);
+                const bay = reader ? reader.bayIndex : living.archive.bays.length - 1;
+                if (taken.has(bay)) continue;
+                const at = profile.slots[bay]?.at;
+                if (!at) continue;
+                taken.add(bay);
+                out.push({ slot, at, height: heightAt(at) });
+            }
+            return out;
+        }
+        if (living?.harbor) {
+            living.harbor.slots.forEach((harborSlot, index) => {
+                const slot = harborSlot.agentId ? slotById.get(harborSlot.agentId) : null;
+                const at = profile.slots[index]?.at;
+                if (slot && at) out.push({ slot, at, height: heightAt(at) });
+            });
+            return out;
+        }
+        model.slots.forEach((slot, index) => {
+            const at = profile.slots[index]?.at;
+            if (at) out.push({ slot, at, height: heightAt(at) });
+        });
+        return out;
+    }
+
+    // ── W5-B (D6) — open fronts ─────────────────────────────────────────────
+    // The open-front profile this renderer draws for `type`: OpenFront's
+    // profile with the registry calibration measured on the shipped art
+    // (bake-forge-openfront.mjs). The Tavern's drawables are TavernArcade's.
+    _openFrontProfileFor(type) {
+        const record = getBuildingOpenFront(type);
+        return record?.drawables === 'BuildingSprite' ? resolveOpenFrontProfile(record) : null;
+    }
+
+    // Once per frame: which open bays hold a body. The arch drawables exist
+    // only while one does, so an empty bay leaves the default frame (and its
+    // GPU records) exactly as it ships.
+    _updateOpenFrontOccupancy() {
+        let key = '';
+        for (const building of this.buildings || []) {
+            const profile = this._openFrontProfileFor(building?.type);
+            if (profile && this._openFrontBayOccupied(building, profile)) key += `${building.type};`;
+        }
+        if (key !== this._openFrontActive) {
+            this._openFrontActive = key;
+            this._drawablesCache = null;
+        }
+    }
+
+    _openFrontBayOccupied(building, profile) {
+        const ox = Number(building?.position?.tileX ?? building?.x);
+        const oy = Number(building?.position?.tileY ?? building?.y);
+        if (!Number.isFinite(ox) || !Number.isFinite(oy)) return false;
+        const rects = profile.interiorFloorBounds?.tileRects || [];
+        for (const sprite of this.agentSprites || []) {
+            if (!sprite || sprite.agent?.isDeparted || !Number.isFinite(sprite.x) || !Number.isFinite(sprite.y)) continue;
+            const tile = worldToTile(sprite.x, sprite.y);
+            const dx = tile.tileX - ox;
+            const dy = tile.tileY - oy;
+            if (rects.some((rect) => dx >= rect.dx && dx < rect.dx + rect.width && dy >= rect.dy && dy < rect.dy + rect.height)) return true;
+        }
+        return false;
+    }
+
+    _openFrontSpritesFor(building, profile) {
+        const cached = this._openFrontSprites.get(building);
+        if (cached && cached.profile === profile) return cached.sprites;
+        const sprites = buildOpenFrontSprites({ buildingId: building.type, building, assets: this.assets, profile });
+        this._openFrontSprites.set(building, { profile, sprites });
+        return sprites;
+    }
+
+    // The front arch's column slices as `prop-column` drawables: no
+    // `building`/`entry` of their own, so every building-drawable consumer
+    // (occluders, emitter cuts, hit tests) passes them by, while the depth
+    // pass and GpuSceneBuilder.recordForProp draw them like TavernArcade's.
+    _appendOpenFrontDrawables(out) {
+        if (!this._openFrontActive) return;
+        for (const building of this.buildings || []) {
+            if (!this._openFrontActive.includes(`${building?.type};`)) continue;
+            const profile = this._openFrontProfileFor(building.type);
+            if (!profile) continue;
+            for (const sprite of this._openFrontSpritesFor(building, profile)) {
+                for (const column of sprite.occlusionColumns || []) {
+                    out.push({
+                        kind: 'prop-column',
+                        poolKey: `open-front:${building.type}:${column.index}`,
+                        openFront: building.type,
+                        sprite,
+                        part: 'column',
+                        column,
+                        sortY: column.sortY,
+                    });
+                }
+            }
+        }
     }
 
     // The occupant is drawn from its own composited sheet, so it is the same
@@ -6838,19 +7292,35 @@ export class BuildingSprite {
 
     // The legend names what the room shows: the same working/waiting counts
     // the 4.2 rooms use, one row per presented session with its current tool,
-    // and an exact `+N more`. Counts, never percentages.
-    _drawApertureLegend(ctx, localPoint, building, model, profile) {
+    // and an exact `+N more`. Counts, never percentages. W5-B (R12) — a
+    // `sillBar` profile carves one 11 px line on the sill instead: Command
+    // `3 WORKING · 1 WAITING · +2` (the war table's exact overflow), the
+    // Archive the same counts, or its bay names when The Glass opened it.
+    // Per-slot tool prose moves to hover and The Glass. Never on a postcard.
+    _drawApertureLegend(ctx, localPoint, building, model, profile, living = null) {
         const legend = profile.legend;
         if (!legend?.at || postcardFrame()) return;
         const rooms = this._roomSlotsByType.get(model.buildingType);
         const working = Number.isFinite(model.workingCount) ? model.workingCount : (rooms ? rooms.working : 0);
         const waiting = Number.isFinite(model.waitingCount) ? model.waitingCount : (rooms ? rooms.waiting : 0);
-        const rows = [`${working} working · ${waiting} waiting`];
-        for (const slot of model.slots) {
-            rows.push(slot.tool ? `${slot.name} · ${slot.tool}` : slot.name);
+        let rows;
+        const sillBar = Boolean(profile.sillBar && living);
+        if (sillBar) {
+            let line = living.warTable?.sillBar
+                || formatCommandSillBar({ working, waiting, overflow: model.overflow });
+            if (living.archive && (model.source === 'glass' || model.trigger === 'glass') && living.archive.bayNames?.length) {
+                line = living.archive.bayNames.join(' · ');
+            }
+            rows = [line];
+        } else {
+            // No living cutaway state: the shipped legend stands.
+            rows = [`${working} working · ${waiting} waiting`];
+            for (const slot of model.slots) {
+                rows.push(slot.tool ? `${slot.name} · ${slot.tool}` : slot.name);
+            }
+            if (model.overflow > 0) rows.push(`+${model.overflow} more`);
+            if (!model.slots.length) rows.push('No assigned sessions');
         }
-        if (model.overflow > 0) rows.push(`+${model.overflow} more`);
-        if (!model.slots.length) rows.push('No assigned sessions');
         // 5.4 — screen-fixed 11 px rows from the authored anchor, so the
         // legend reads at every zoom without world-scaled text.
         const origin = localPoint(legend.at[0], legend.at[1]);
@@ -6862,7 +7332,9 @@ export class BuildingSprite {
         ctx.font = WORLD_BODY_FONT_11;
         ctx.textAlign = 'left';
         ctx.textBaseline = 'alphabetic';
-        const width = rows.reduce((max, text) => Math.max(max, measureLabelText(ctx, text)), 0) + 8;
+        const textWidth = rows.reduce((max, text) => Math.max(max, measureLabelText(ctx, text)), 0) + 8;
+        // The sill bar spans the sill: `legend.w` texels at this zoom.
+        const width = sillBar ? Math.max(textWidth, Math.round((legend.w || 0) * zoom)) : textWidth;
         const height = rows.length * 12 + 4;
         ctx.fillStyle = LABEL_INK.plateOutline;
         ctx.fillRect(-1, -1, width + 2, height + 2);

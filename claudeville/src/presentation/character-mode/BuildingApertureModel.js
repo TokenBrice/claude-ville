@@ -12,6 +12,60 @@
 // ordinary counts.
 export const APERTURE_MIN_ZOOM = 2;
 
+// W5-B (R8) — The Glass opens a cutaway only after the lens has dwelt this
+// long on the same building at inspection zoom. There is no hover-peep and no
+// zoom-auto: selection at `z >= 2` or this dwell are the only two triggers.
+export const APERTURE_GLASS_DWELL_MS = 300;
+
+// W5-B (D6) — the two layer stacks an aperture may author: the shipped
+// sectional view, or a lifted-roof cutaway whose `roof` (the wall and roof
+// crop it replaces) leaves first.
+export const APERTURE_LAYERS_3 = Object.freeze(['aperture', 'interior', 'foreground']);
+export const APERTURE_LAYERS_4 = Object.freeze(['roof', 'aperture', 'interior', 'foreground']);
+
+/**
+ * Name the roles of a 3- or 4-layer aperture stack, or null for anything
+ * else. Roles are positional, so an authored stack may rename its layers:
+ * `[roof?, aperture, interior, foreground]`.
+ */
+export function normalizeApertureLayers(layers) {
+    if (!Array.isArray(layers) || (layers.length !== 3 && layers.length !== 4)) return null;
+    const names = layers.map((name) => (typeof name === 'string' ? name.trim() : ''));
+    if (names.some((name) => !name) || new Set(names).size !== names.length) return null;
+    const offset = names.length - 3;
+    return Object.freeze({
+        layers: Object.freeze(names),
+        roof: offset ? names[0] : null,
+        aperture: names[offset],
+        interior: names[offset + 1],
+        foreground: names[offset + 2],
+        hasRoof: offset === 1,
+    });
+}
+
+/**
+ * The explicit inspection trigger (R1/R8), evaluated on the camera's rest
+ * zoom: `selection` when the building is the selected one at
+ * `zoom >= minZoom`, else `glass` once The Glass has dwelt
+ * `APERTURE_GLASS_DWELL_MS` on it at that zoom, else null. A selection always
+ * wins over the lens, and nothing opens on hover or on zoom alone.
+ */
+export function resolveApertureTrigger({
+    buildingType = null,
+    selectedType = null,
+    glassType = null,
+    glassDwellMs = 0,
+    zoom = 0,
+    minZoom = APERTURE_MIN_ZOOM,
+    dwellMs = APERTURE_GLASS_DWELL_MS,
+} = {}) {
+    const type = buildingType ? String(buildingType) : '';
+    if (!type || !(Number(zoom) >= minZoom)) return null;
+    if (selectedType === type) return 'selection';
+    if (glassType === type && Number(glassDwellMs) >= dwellMs) return 'glass';
+    return null;
+}
+
 /**
  * Whether the sprite-local point (x, y) lies inside an aperture `cut`
  * (`{ x0, x1, top, bottom, slope }`: the parallelogram between x0 and x1 whose

@@ -4,11 +4,15 @@ import { fileURLToPath } from 'node:url';
 import { PNG } from 'pngjs';
 import { APPROACH_FILES } from '../../claudeville/src/config/townPlan.js';
 import {
+    apertureFloorY,
     BUILDING_VISUAL_REGISTRY,
+    getBuildingSurfaceAoPairs,
     signBoxFor,
     windowRectBounds,
 } from '../../claudeville/src/presentation/character-mode/BuildingVisualRegistry.js';
-import { apertureCutContains } from '../../claudeville/src/presentation/character-mode/BuildingApertureModel.js';
+import { apertureCutContains, normalizeApertureLayers } from '../../claudeville/src/presentation/character-mode/BuildingApertureModel.js';
+import { OPEN_FRONT_PROFILES, parseArchRows } from '../../claudeville/src/presentation/character-mode/OpenFront.js';
+import { checkAoMonotonicity, validateSurfaceV1Buffer } from '../sprites/bake-depth-channels.mjs';
 import { buildingCenterToWorld, tileToWorld } from '../../claudeville/src/presentation/character-mode/Projection.js';
 import { createWalkClearance, FOOTPRINT_CLEARANCE_PAD } from '../../claudeville/src/presentation/character-mode/WalkClearance.js';
 import { collectSpriteEntries, loadSpriteManifest, pathForEntry, spritesRoot } from '../sprites/manifest-utils.mjs';
@@ -525,6 +529,189 @@ export function validateSignAnchors(reporter, buildings, registry) {
     }
 }
 
+// W5-B (D6, R9) — which buildings may open, and how: lifted-roof cutaways
+// for Command, Archive and Harbor only; open fronts for the Tavern and the
+// Forge only. The Mine and the Task board get nothing.
+export const CUTAWAY_BUILDINGS = Object.freeze(['command', 'archive', 'harbor']);
+export const OPEN_FRONT_BUILDINGS = Object.freeze(['tavern', 'forge']);
+
+function pngAlphaAt(png, x, y) {
+    const ix = Math.floor(x);
+    const iy = Math.floor(y);
+    if (!png || ix < 0 || iy < 0 || ix >= png.width || iy >= png.height) return 0;
+    return png.data[(iy * png.width + ix) * 4 + 3];
+}
+
+/**
+ * Spec 04 §5.1–5.3 — every cutaway's layers are registered with base.png
+ * (same size, every texel inside the cut on base.png's silhouette, zero
+ * semi-alpha, `roof` byte-exact to base.png over the cut) and every slot lies
+ * inside its cut parallelogram, below the back-wall floor line, on an opaque
+ * floor texel of its aperture layer and on the building itself.
+ */
+export function cutawayReport(type, aperture, readPng = (name) => readSpritePng(type, name)) {
+    const errors = [];
+    const stack = normalizeApertureLayers(aperture?.layers);
+    if (!stack) return { errors: ['`layers` must be [aperture, interior, foreground] or [roof, aperture, interior, foreground]'] };
+    if (!aperture.cut || !Array.isArray(aperture.slots) || !aperture.slots.length) return { errors: ['needs a `cut` and at least one slot'] };
+    const base = readPng('base.png');
+    if (!base) return { errors: ['no base.png'] };
+    const inCut = (x, y) => base.data[(y * base.width + x) * 4 + 3] > 0 && apertureCutContains(aperture.cut, x + 0.5, y + 0.5);
+    const layers = {};
+    for (const name of stack.layers) {
+        const png = readPng(`${name}.png`);
+        if (!png) {
+            errors.push(`layer ${name}.png is missing`);
+            continue;
+        }
+        layers[name] = png;
+        if (png.width !== base.width || png.height !== base.height) {
+            errors.push(`layer ${name}.png is ${png.width}x${png.height}, not registered to base.png ${base.width}x${base.height}`);
+            continue;
+        }
+        let semi = 0;
+        let outside = 0;
+        let roofMismatch = 0;
+        for (let y = 0; y < png.height; y++) {
+            for (let x = 0; x < png.width; x++) {
+                const o = (y * png.width + x) * 4;
+                const a = png.data[o + 3];
+                const inside = inCut(x, y);
+                if (name === stack.roof) {
+                    for (let c = 0; c < 4; c++) {
+                        if (png.data[o + c] !== (inside ? base.data[o + c] : 0)) {
+                            roofMismatch++;
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                if (a === 0) continue;
+                if (a !== 255) semi++;
+                if (!inside) outside++;
+            }
+        }
+        if (semi) errors.push(`layer ${name}.png has ${semi} semi-transparent texel(s)`);
+        if (outside) errors.push(`layer ${name}.png paints ${outside} texel(s) outside the cut`);
+        if (roofMismatch) errors.push(`layer ${name}.png differs from base.png's crop over the cut on ${roofMismatch} texel(s)`);
+    }
+    const floorLayer = layers[stack.aperture];
+    let slotsChecked = 0;
+    for (const slot of aperture.slots) {
+        const at = slot?.at;
+        const label = `slot ${slot?.id ?? slotsChecked}`;
+        slotsChecked++;
+        if (!Array.isArray(at) || at.length !== 2 || !at.every(Number.isFinite)) {
+            errors.push(`${label} needs a finite sprite-local \`at\``);
+            continue;
+        }
+        if (!apertureCutContains(aperture.cut, at[0], at[1])) errors.push(`${label} [${at}] lies outside the cut`);
+        const floorY = apertureFloorY(aperture, at[0]);
+        if (Number.isFinite(floorY) && !(at[1] > floorY)) errors.push(`${label} [${at}] stands above the floor line (y ${floorY.toFixed(2)})`);
+        if (floorLayer && pngAlphaAt(floorLayer, at[0], at[1]) !== 255) errors.push(`${label} [${at}] is not on an opaque ${stack.aperture}.png floor texel`);
+        if (pngAlphaAt(base, at[0], at[1]) === 0) errors.push(`${label} [${at}] is off base.png's silhouette`);
+    }
+    return { errors, slots: slotsChecked, layers: stack.layers.length };
+}
+
+export function validateCutaways(reporter, registry = BUILDING_VISUAL_REGISTRY) {
+    for (const [type, visual] of Object.entries(registry)) {
+        const aperture = visual?.aperture;
+        if (aperture && !CUTAWAY_BUILDINGS.includes(type)) {
+            reporter.error(`registry.${type}.aperture`, 'D6: only Command, Archive and Harbor open a lifted-roof cutaway');
+            continue;
+        }
+        if (visual?.openFront && !OPEN_FRONT_BUILDINGS.includes(type)) {
+            reporter.error(`registry.${type}.openFront`, 'D6: only the Tavern and the Forge are open fronts');
+        }
+        if (!aperture) continue;
+        const report = cutawayReport(type, aperture);
+        for (const error of report.errors) reporter.error(`registry.${type}.aperture`, error);
+    }
+    for (const type of CUTAWAY_BUILDINGS) {
+        if (!registry[type]?.aperture) reporter.error(`registry.${type}.aperture`, 'D6: missing lifted-roof cutaway profile');
+    }
+}
+
+/**
+ * Spec 03 §2 (Wave 5 depth gate) — when `base.surface.png` exists (or the
+ * registry declares `surfaceSidecar`): registered to base.png, H16 === 0 and
+ * A === 0 outside alpha, normal index B in [0..63], valid bit on every covered
+ * texel, and every authored `surfaceAoPairs` crevice at least as occluded as
+ * its exposed texel.
+ */
+export function surfaceSidecarReport(type, visual, readPng = (name) => readSpritePng(type, name)) {
+    const surface = readPng('base.surface.png');
+    if (!surface) return visual?.surfaceSidecar ? { errors: ['registry declares surfaceSidecar but base.surface.png is missing'] } : null;
+    const base = readPng('base.png');
+    if (!base) return { errors: ['no base.png'] };
+    if (surface.width !== base.width || surface.height !== base.height) {
+        return { errors: [`base.surface.png is ${surface.width}x${surface.height}, base.png ${base.width}x${base.height}`] };
+    }
+    const errors = [];
+    const validation = validateSurfaceV1Buffer(surface.data, base.data, surface.width, surface.height);
+    if (!validation.ok) errors.push(...validation.errors.slice(0, 4));
+    const pairs = getBuildingSurfaceAoPairs(type);
+    if (pairs.length) {
+        const mono = checkAoMonotonicity({ rgba: surface.data, width: surface.width, height: surface.height, pairs });
+        if (!mono.ok) errors.push(`AO not monotonic: ${JSON.stringify(mono.violations)}`);
+    } else if (visual?.surfaceSidecar) {
+        errors.push('registry declares surfaceSidecar without surfaceAoPairs');
+    }
+    return { errors, stats: validation.stats };
+}
+
+export function validateSurfaceSidecars(reporter, buildings, registry = BUILDING_VISUAL_REGISTRY) {
+    for (const building of buildings) {
+        const report = surfaceSidecarReport(building.type, registry[building.type]);
+        for (const error of report?.errors || []) reporter.error(`building.${building.type}/base.surface.png`, error);
+    }
+}
+
+// W5-B (D6) — a calibrated open front (the Forge): its arch rows parse inside
+// the sprite, cover opaque texels only, and no bay's feet fall on the front
+// arch or off the art. `bake-forge-openfront.mjs --check` re-derives the
+// calibration from the pixels.
+export function openFrontReport(type, record, readPng = (name) => readSpritePng(type, name)) {
+    if (!record?.frontArchRows) return null;
+    const profile = OPEN_FRONT_PROFILES[record.profile];
+    if (!profile) return { errors: [`unknown OpenFront profile "${record.profile}"`] };
+    const base = readPng('base.png');
+    if (!base) return { errors: ['no base.png'] };
+    const errors = [];
+    if (base.width !== profile.nativeSize.width || base.height !== profile.nativeSize.height) {
+        errors.push(`base.png is ${base.width}x${base.height}, profile expects ${profile.nativeSize.width}x${profile.nativeSize.height}`);
+    }
+    const runs = parseArchRows(record.frontArchRows, base.width, base.height);
+    const front = new Uint8Array(base.width * base.height);
+    let transparent = 0;
+    for (const [y, x, length] of runs) {
+        for (let i = x; i < x + length; i++) {
+            front[y * base.width + i] = 1;
+            if (base.data[(y * base.width + i) * 4 + 3] === 0) transparent++;
+        }
+    }
+    if (!runs.length) errors.push('frontArchRows is empty');
+    if (transparent) errors.push(`frontArchRows covers ${transparent} transparent texel(s)`);
+    for (const bay of record.bays || []) {
+        const [x, y] = bay.at || [];
+        if (!Number.isFinite(x) || !Number.isFinite(y)) {
+            errors.push(`bay ${bay.id} needs a sprite-local \`at\``);
+            continue;
+        }
+        if (front[y * base.width + x]) errors.push(`bay ${bay.id} [${x},${y}] stands on the front arch`);
+        if (pngAlphaAt(base, x, y) === 0) errors.push(`bay ${bay.id} [${x},${y}] is off base.png's silhouette`);
+    }
+    return { errors };
+}
+
+export function validateOpenFronts(reporter, registry = BUILDING_VISUAL_REGISTRY) {
+    for (const [type, visual] of Object.entries(registry)) {
+        const report = openFrontReport(type, visual?.openFront);
+        for (const error of report?.errors || []) reporter.error(`registry.${type}.openFront`, error);
+    }
+}
+
 function validateSpriteManifest(reporter, buildings, manifestIds) {
     const expectedIds = new Set(buildings.map((building) => `building.${building.type}`));
     for (const id of expectedIds) {
@@ -586,7 +773,11 @@ async function main() {
         validateSpriteManifest(reporter, BUILDING_DEFS, manifestIds);
         validateGroundingProfiles(reporter, BUILDING_DEFS, groundingConfig);
         validateSignAnchors(reporter, BUILDING_DEFS, BUILDING_VISUAL_REGISTRY);
+        validateSurfaceSidecars(reporter, BUILDING_DEFS, BUILDING_VISUAL_REGISTRY);
     }
+    // W5-B (D6) — lifted-roof cutaways and calibrated open fronts.
+    validateCutaways(reporter, BUILDING_VISUAL_REGISTRY);
+    validateOpenFronts(reporter, BUILDING_VISUAL_REGISTRY);
     // BL-6 — art geometry: window/room rects on the sidecar glass, room masks
     // (plan 6.3), frame-strip parts well-formed (plan 6.1).
     validateWindowGeometry(reporter, { registry: BUILDING_VISUAL_REGISTRY, spritesRoot });
