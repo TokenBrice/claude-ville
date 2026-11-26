@@ -106,10 +106,11 @@ test('weather bake adds only two Float32 planes to the ground bake', t => {
 test('persisted summer and winter weather bytes match the non-aliased bake', t => {
     const renderer = groundBakeFixture(t);
     // SHA-256 from the ground weather bake over grass, sand, dirt, road, plaza and off-island texels
-    // (updated 2026-11-23 after GroundBake turf contrast, cluster passes and road/plaza separation).
+    // (updated 2026-11-26 for W1-A: the 1x1 colour lattice's right-hand (2c + 1) samples, paving
+    // units and kerbs in the stops, calm meadow sweeps and the land / water pair guard).
     const reference = {
-        summer: '8a6bb6ce9c81d14ecd487f2f29021da64b2b25f1089f41e26b4f5a824002a39b',
-        winter: '619dd95001df83d8d59c5be1d136e2832ae2fa4334950eee8a8b3b42e67e1f1b',
+        summer: '2eca6b3ffe909e8fcc548e43fc48036ac83995c9318b1183f4c2cb573d04aca1',
+        winter: 'b00d7a920eb808e461063bbb72cb2226dcd59098a969e7bbfdf625871b28a87d',
     };
     for (const [season, expected] of Object.entries(reference)) {
         renderer._terrainSeason = season;

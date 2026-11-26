@@ -6,7 +6,7 @@ import { WORLD_TREE } from '../../claudeville/src/config/scenery.js';
 import { TILE_WIDTH, TILE_HEIGHT } from '../../claudeville/src/config/constants.js';
 import { buildingCenterToWorld, tileToWorld } from '../../claudeville/src/presentation/character-mode/Projection.js';
 import { evaluateGrade, applyGradeToRgb } from '../../claudeville/src/presentation/character-mode/GradeEvaluator.js';
-import { bakeGround, bakeWinterGround } from '../../claudeville/src/presentation/character-mode/GroundBake.js';
+import { GROUND_COLOR_TEXEL_W, GROUND_FIELD_TEXEL_W, bakeGround, bakeWinterGround } from '../../claudeville/src/presentation/character-mode/GroundBake.js';
 
 const hexToRgb = (hex) => [
     parseInt(hex.slice(1, 3), 16),
@@ -61,10 +61,19 @@ function makeBakeFixture(t, overrides = {}) {
     return { renderer, getImage: () => lastImageData };
 }
 
+// W1.1 (X-5) — the published fields (aoBuf, surfaces, puddles) stay on the
+// 2x1 field grid; the colour lattice is one texel per world px
+// (base.color, COLOR_TEXEL_W = 1), so pixel (col, row) of the image is
+// texel row * color.cols + col.
 function worldToTexel(base, wx, wy) {
-    const col = Math.floor((wx - base.x0) / 2);
+    const col = Math.floor((wx - base.x0) / GROUND_FIELD_TEXEL_W);
     const row = Math.floor(wy - base.y0);
     return { col, row, idx: row * base.cols + col };
+}
+function worldToPixel(base, wx, wy) {
+    const col = Math.floor((wx - base.x0) / GROUND_COLOR_TEXEL_W);
+    const row = Math.floor(wy - base.y0);
+    return { col, row, idx: row * base.color.cols + col };
 }
 
 test('C-02 ramps: road[2] stays lighter than grass[2] in raw luma and under every diurnal/night grade', () => {
@@ -101,20 +110,24 @@ test('C-02 ramps: road[2] stays lighter than grass[2] in raw luma and under ever
     }
 });
 
-test('C-02 turf: seam-only dithering calms open meadow texel-to-texel luminance chatter', t => {
+test('C-02 turf: calm macro sweeps keep 1x1 meadow texel-to-texel luminance quiet', t => {
     const { renderer, getImage } = makeBakeFixture(t);
     const base = bakeGround(renderer);
     const img = getImage();
-    const w = base.cols * 2;
+    const w = base.color.cols;
+    assert.equal(GROUND_COLOR_TEXEL_W, 1);
+    assert.equal(w, base.cols * 2, 'the colour lattice is twice the field grid across');
     const center = tileToWorld(20, 20);
-    const { col: c0, row: r0 } = worldToTexel(base, center.x - 160, center.y - 80);
+    const { col: c0, row: r0 } = worldToPixel(base, center.x - 160, center.y - 80);
     let pairs = 0;
     let sumDiff = 0;
     let flat = 0;
+    // 1x1 adjacency over the same 280 x 140 world px window (spec 02 §5.2:
+    // mean step < 9.5, flat share > 0.60 — tufts are ~18 % of meadow texels).
     for (let row = r0; row < r0 + 140; row++) {
-        for (let col = c0; col < c0 + 140; col++) {
-            const o1 = (row * w + col * 2) * 4;
-            const o2 = (row * w + (col + 1) * 2) * 4;
+        for (let col = c0; col < c0 + 280; col++) {
+            const o1 = (row * w + col) * 4;
+            const o2 = o1 + 4;
             const l1 = luma255([img.data[o1], img.data[o1 + 1], img.data[o1 + 2]]);
             const l2 = luma255([img.data[o2], img.data[o2 + 1], img.data[o2 + 2]]);
             const d = Math.abs(l1 - l2);
@@ -126,20 +139,20 @@ test('C-02 turf: seam-only dithering calms open meadow texel-to-texel luminance 
     const meanAdj = sumDiff / pairs;
     const flatShare = flat / pairs;
     assert.ok(meanAdj < 9.5, `meadow mean adjacent luma step ${meanAdj.toFixed(2)} should be < 9.5`);
-    assert.ok(flatShare > 0.55, `meadow flat adjacent share ${(flatShare * 100).toFixed(1)}% should exceed 55%`);
+    assert.ok(flatShare > 0.60, `meadow flat adjacent share ${(flatShare * 100).toFixed(1)}% should exceed 60%`);
 });
 
 test('C-02 paving: Archive painted-plinth AO, >1-step paving AO collar, and recessed plaza-to-road kerb', t => {
     const archiveDef = BUILDING_DEFS.find(d => d.type === 'archive');
     const townSquareTiles = new Set();
-    const roadTiles = new Set();
+    const mainAvenueTiles = new Set();
     for (let ty = 19; ty <= 21; ty++) {
         for (let tx = 18; tx <= 20; tx++) townSquareTiles.add(`${tx},${ty}`);
-        for (let tx = 21; tx <= 23; tx++) roadTiles.add(`${tx},${ty}`);
+        for (let tx = 21; tx <= 23; tx++) mainAvenueTiles.add(`${tx},${ty}`);
     }
     const { renderer, getImage } = makeBakeFixture(t, {
         townSquareTiles,
-        roadTiles,
+        mainAvenueTiles,
         assets: { getAnchor: (id) => (id === 'building.archive' ? [167, 182] : [0, 0]) },
         world: {
             buildings: new Map([
@@ -161,7 +174,7 @@ test('C-02 paving: Archive painted-plinth AO, >1-step paving AO collar, and rece
     });
     const base = bakeGround(renderer);
     const img = getImage();
-    const w = base.cols * 2;
+    const { cols, surfaces, aoBuf } = base.color;
 
     // 1. Archive painted SW plinth ([40,172] -> [212,230]) carries full contact AO at midpoint.
     const centre = buildingCenterToWorld(renderer.world.buildings.get('archive'));
@@ -169,6 +182,9 @@ test('C-02 paving: Archive painted-plinth AO, >1-step paving AO collar, and rece
     const midY = centre.y + (172 + 230) / 2 - 182;
     const foot = worldToTexel(base, midX, midY - 2);
     const near = worldToTexel(base, midX, midY + 3);
+    // E1 — the Archive terrace riser moves its contact collar down by
+    // aoShiftRows (4), so the plinth foot and the rows just in front of it
+    // stay inside the occluder.
     assert.equal(base.aoBuf[foot.idx], 255, 'Archive SW plinth foot must have full contact AO');
     assert.ok(base.aoBuf[near.idx] >= 160, `Archive SW plinth near contact AO (${base.aoBuf[near.idx]}) must be >= 160`);
 
@@ -179,15 +195,15 @@ test('C-02 paving: Archive painted-plinth AO, >1-step paving AO collar, and rece
     let plazaRoadKerbMatches = 0;
     const roadStop0 = hexToRgb(ART_RAMPS.road[0]);
     for (let row = 1; row < base.rows - 1; row++) {
-        for (let col = 1; col < base.cols - 1; col++) {
-            const idx = row * base.cols + col;
-            if (base.surfaces[idx] !== 4) continue; // S_PLAZA
-            const o = (row * w + col * 2) * 4;
+        for (let col = 1; col < cols - 1; col++) {
+            const idx = row * cols + col;
+            if (surfaces[idx] !== 4) continue; // S_PLAZA
+            const o = idx * 4;
             const r = img.data[o], g = img.data[o + 1], b = img.data[o + 2];
-            if (base.aoBuf[idx] > 180 && r === plazaStop0[0] && g === plazaStop0[1] && b === plazaStop0[2]) {
+            if (aoBuf[idx] > 180 && r === plazaStop0[0] && g === plazaStop0[1] && b === plazaStop0[2]) {
                 plazaDarkCount++;
             }
-            const below = base.surfaces[(row + 1) * base.cols + col];
+            const below = surfaces[(row + 1) * cols + col];
             if (below === 3 && r === roadStop0[0] && g === roadStop0[1] && b === roadStop0[2]) {
                 plazaRoadKerbMatches++;
             }
@@ -205,7 +221,7 @@ test('C-02 trees: World Ash gets wide root contact AO without a painted dark roo
     });
     const base = bakeGround(renderer);
     const img = getImage();
-    const w = base.cols * 2;
+    const w = base.color.cols;
 
     // World Ash elliptical root contact AO extends well past the old 0.55-tile circle (~17px).
     const ashWorld = tileToWorld(ash.tileX, ash.tileY);
@@ -216,11 +232,11 @@ test('C-02 trees: World Ash gets wide root contact AO without a painted dark roo
     const foliage0 = hexToRgb(ART_RAMPS.foliage[0]);
     const countFoliage0Around = (wx, wy, rx, ry) => {
         let hits = 0;
-        const { col: c0, row: r0 } = worldToTexel(base, wx - rx, wy - ry);
-        const { col: c1, row: r1 } = worldToTexel(base, wx + rx, wy + ry);
+        const { col: c0, row: r0 } = worldToPixel(base, wx - rx, wy - ry);
+        const { col: c1, row: r1 } = worldToPixel(base, wx + rx, wy + ry);
         for (let row = Math.max(0, r0); row <= Math.min(base.rows - 1, r1); row++) {
-            for (let col = Math.max(0, c0); col <= Math.min(base.cols - 1, c1); col++) {
-                const o = (row * w + col * 2) * 4;
+            for (let col = Math.max(0, c0); col <= Math.min(w - 1, c1); col++) {
+                const o = (row * w + col) * 4;
                 if (img.data[o] === foliage0[0] && img.data[o + 1] === foliage0[1] && img.data[o + 2] === foliage0[2]) {
                     hits++;
                 }
@@ -265,13 +281,13 @@ test('C-02 winter snow: 4-stop SNOW_TONE_BY_RANK without baked cast-shadow doubl
 
     // 2. Four sunlit snow stops (including SNOW[1] on rank-0 snowy grass) are active in full snow cover.
     const snow1 = hexToRgb(ART_RAMPS.snow[1]);
-    const w = base.cols * 2;
+    const { cols, surfaces } = base.color;
     let snow1OnGrass = 0;
     for (let row = 0; row < base.rows; row++) {
-        for (let col = 0; col < base.cols; col++) {
-            const idx = row * base.cols + col;
-            if (base.surfaces[idx] !== 0) continue; // S_GRASS
-            const o = (row * w + col * 2) * 4;
+        for (let col = 0; col < cols; col++) {
+            const idx = row * cols + col;
+            if (surfaces[idx] !== 0) continue; // S_GRASS
+            const o = idx * 4;
             if (unshaded[o] === snow1[0] && unshaded[o + 1] === snow1[1] && unshaded[o + 2] === snow1[2]) {
                 snow1OnGrass++;
             }

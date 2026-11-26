@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { MAP_SIZE, TILE_WIDTH, TILE_HEIGHT } from '../../claudeville/src/config/constants.js';
 import { GROUND_CLASS, restoreGroundArtifact, captureGroundArtifact, validGroundArtifact } from '../../claudeville/src/presentation/character-mode/GroundBake.js';
 import { getCoastField, restoreCoastArtifact, captureCoastArtifact, validCoastArtifact } from '../../claudeville/src/presentation/character-mode/CoastBake.js';
-import { TerrainArtifactStore, terrainArtifactKey, terrainArtifactInputsSettled, terrainContentHash, terrainArtifactConfiguration } from '../../claudeville/src/presentation/character-mode/TerrainArtifactStore.js';
+import { TERRAIN_ARTIFACT_SCHEMA, TerrainArtifactStore, terrainArtifactKey, terrainArtifactInputsSettled, terrainArtifactManifest, terrainContentHash, terrainArtifactConfiguration } from '../../claudeville/src/presentation/character-mode/TerrainArtifactStore.js';
 import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
 import { eventBus } from '../../claudeville/src/domain/events/DomainEvent.js';
 
@@ -179,7 +179,7 @@ function terrainFrameFixture(t, { matchingCandidate = true, presented = false } 
     const source = { world: renderer.world, waterTiles: new Set() };
     const field = getCoastField(source);
     source._coastBake = { key: field.key, fieldMs: field.buildMs, bakeMs: 1, coast: null, waterFields: null };
-    const artifact = { schema: 2, bounds, dpr: 1, width: 2, height: 2,
+    const artifact = { schema: TERRAIN_ARTIFACT_SCHEMA, manifest: terrainArtifactManifest(), bounds, dpr: 1, width: 2, height: 2,
         rgba: new Uint8ClampedArray([17, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255]),
         ground: groundFixture(), coast: captureCoastArtifact(source) };
     return {
