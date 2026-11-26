@@ -63,7 +63,7 @@ const DOWNBEAT_STRIDE = 2;
 // Deterministic per-agent phase offset in [0, period) so villagers never tick
 // in global lockstep. Returns 0 when agentId is absent (preserving synthetic
 // tests and wall-clock callers without an agent identity).
-export function ritualPhaseOffset(agentId, period) {
+function seededOffset(agentId, period) {
     if (!agentId || !(period > 0)) return 0;
     let hash = 2166136261;
     const key = String(agentId);
@@ -81,6 +81,50 @@ export function ritualPhaseOffset(agentId, period) {
     return (hash >>> 0) % Math.trunc(period);
 }
 
+// The sprite reads the offset by id and period, without a conductor reference.
+// Keep only the admitted bodies of a sounding conductor here (six at most).
+const soundingGestures = new Map();
+
+export function phaseBias(agentId, pose, nowMs) {
+    const state = soundingGestures.get(agentId);
+    if (!state || state.pose !== pose || !state.beat.active()) return 0;
+    const { period } = state;
+    // A cached work-strip cell can be drawn after the stamp crossed a contact.
+    // Reading that cell's timestamp must leave the current cycle intact.
+    if (nowMs < state.from && nowMs >= state.previousFrom) {
+        return contactBias(state.previousFrom, state.natural - period, period, nowMs);
+    }
+    if (nowMs >= state.target || nowMs < state.from) {
+        if (nowMs >= state.target && nowMs < state.natural + period) {
+            state.previousFrom = state.from;
+            state.from = state.target;
+            state.natural += period;
+        } else {
+            state.natural = nowMs - ((nowMs + state.seed) % period) + period;
+            state.from = state.natural - period;
+            state.previousFrom = state.from;
+        }
+        state.target = state.natural - state.beat.phaseBiasFor(agentId, state.building,
+            state.natural, nowMs, state.slot, state.of);
+        // A mark up to one visual lead ago can already be on this first frame.
+        if (nowMs >= state.target) return state.natural - state.target;
+    }
+    return contactBias(state.from, state.natural, period, nowMs);
+}
+
+// Rebase on the last contact. An early hit cuts the wind-up short;
+// for a late hit both readers hold the last millisecond before contact.
+function contactBias(from, natural, period, nowMs) {
+    const elapsed = Math.min(nowMs - from, period - 1);
+    return natural - period + elapsed - nowMs;
+}
+
+export function ritualPhaseOffset(agentId, period, nowMs) {
+    const state = soundingGestures.get(agentId);
+    if (state && state.period === period) return state.seed + phaseBias(agentId, state.pose, nowMs ?? Date.now());
+    return seededOffset(agentId, period);
+}
+
 // The beat on screen for `ritual` at `now` (Date.now clock), or null. Only a
 // playing ritual (a real tool:invoked event the agent is visibly performing)
 // strikes; a fading ritual finishes a beat that has already struck.
@@ -91,7 +135,7 @@ export function ritualDownbeat(ritual, now = Date.now()) {
     const origin = ritual.beatOrigin;
     if (!period || !Number.isFinite(origin)) return null;
     const lead = DOWNBEAT_MOMENT.anticipation;
-    const clock = now + ritualPhaseOffset(ritual.agentId, period);
+    const clock = now + ritualPhaseOffset(ritual.agentId, period, now);
     const beat = Math.floor((clock + lead) / period);
     const index = beat - origin;
     if (index < 0 || index % DOWNBEAT_STRIDE !== 0) return null;
@@ -403,7 +447,9 @@ function lifecycleTargetKey(lifecycle) {
 }
 
 export class RitualConductor {
-    constructor({ motionScale = 1 } = {}) {
+    constructor({ motionScale = 1, visualBeat = null } = {}) {
+        this.visualBeat = visualBeat;
+        this._crewChanged = true;
         this.motionScale = motionScale;
         this.context = {
             world: null,
@@ -417,7 +463,55 @@ export class RitualConductor {
         ];
     }
 
+    setVisualBeat(beat) {
+        if (beat === this.visualBeat) return;
+        this._clearGesturePhases();
+        this.visualBeat = beat;
+        this._crewChanged = true;
+    }
+
+    _clearGesturePhases() {
+        for (const [id, state] of soundingGestures) {
+            if (state.owner === this) soundingGestures.delete(id);
+        }
+    }
+
+    _syncGesturePhases() {
+        if (!this.visualBeat) return;
+        if (this.motionScale <= 0 || !this.visualBeat.active()) {
+            this._clearGesturePhases();
+            this._crewChanged = true;
+            return;
+        }
+        if (!this._crewChanged) return;
+        this._crewChanged = false;
+        const poses = this.getAgentPoses();
+        for (const [id, state] of soundingGestures) {
+            const ritual = poses.get(id);
+            if (state.owner === this && (!ritual?.motionEnabled || ritual.phase === 'pending' || ritual.pose !== state.pose)) {
+                soundingGestures.delete(id);
+            }
+        }
+        const workers = [...poses.keys()].sort().filter(id => {
+            const ritual = poses.get(id);
+            return ritual.motionEnabled && ritual.phase !== 'pending' && ritual.pose !== 'scan';
+        });
+        for (const id of workers) {
+            const { building, pose } = poses.get(id);
+            const crew = workers.filter(other => poses.get(other).building === building);
+            const slot = crew.indexOf(id);
+            const prior = soundingGestures.get(id);
+            if (prior?.owner === this && prior.pose === pose && prior.slot === slot && prior.of === crew.length) continue;
+            const period = RITUAL_GESTURE_PERIOD_MS[pose];
+            if (period) soundingGestures.set(id, {
+                owner: this, beat: this.visualBeat, building, pose, period, seed: seededOffset(id, period),
+                slot, of: crew.length, natural: -Infinity, target: -Infinity, from: -Infinity,
+            });
+        }
+    }
+
     dispose() {
+        this.setVisualBeat(null);
         for (const unsubscribe of this.unsubscribers) unsubscribe();
         this.unsubscribers = [];
         this.rituals = [];
@@ -467,6 +561,7 @@ export class RitualConductor {
         const meta = ritualMetaFor(event);
         if (!meta) return null;
         if (!this.canAccept(event)) return null;
+        this._crewChanged = true;
         const building = meta.building || event.building;
         const now = event.ts || Date.now();
         const targetKey = lifecycleTargetKey(meta.commandLifecycle || event.commandLifecycle);
@@ -524,6 +619,7 @@ export class RitualConductor {
         const delta = Math.max(0, Number(dt) || 0);
         for (const ritual of this.rituals) {
             const agent = this.context.world?.agents?.get?.(ritual.agentId) || this.context.agentSprites?.get?.(ritual.agentId)?.agent;
+            const wasGesturing = ritual.motionEnabled && ritual.phase !== 'pending';
             ritual.motionEnabled = this.motionScale > 0 && resolveObservation(agent, Date.now()).state !== 'stale';
             ritual.elapsedMs += delta;
             ritual.remainingMs -= delta;
@@ -539,8 +635,12 @@ export class RitualConductor {
             }
             if (ritual.remainingMs <= 280 && ritual.phase !== 'done') ritual.phase = 'fading';
             if (ritual.remainingMs <= 0) ritual.phase = 'done';
+            if (ritual.phase === 'done' || wasGesturing !== (ritual.motionEnabled && ritual.phase !== 'pending')) {
+                this._crewChanged = true;
+            }
         }
         this.rituals = this.rituals.filter(ritual => ritual.phase !== 'done');
+        this._syncGesturePhases();
     }
 
     getActiveRitualsForBuilding(type) {

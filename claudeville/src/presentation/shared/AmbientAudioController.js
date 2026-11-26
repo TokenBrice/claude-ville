@@ -15,6 +15,7 @@
 // sound off, through the wake on a hidden page. The same tick re-reads hush
 // and quiet hours and the popover's line; nothing here runs per frame.
 
+import { createVisualBeat } from './audio/VisualBeat.js';
 import { AudioEngine } from './audio/AudioEngine.js';
 import { SignalDirector } from './audio/SignalDirector.js';
 import { BgmDirector } from './audio/BgmDirector.js';
@@ -222,6 +223,7 @@ export class AmbientAudioController {
         this._viewKey = null;
         this._view = null;
 
+        this._visualBeat = null;
         this.engine = new AudioEngine();
         this._quietActive = this._quietHoursNow();
         this.volumeStep = readPresetVolumeStep(this._effectiveMode());
@@ -427,6 +429,27 @@ export class AmbientAudioController {
             && !this.director.paused;
     }
 
+    _visualBeatEnabled() {
+        return !this._destroyed && this.preset === 'townBand' && this.volumeStep > 0
+            && !this.hushed && this.directors.bgm.running && !this.directors.bgm.paused
+            && !globalThis.document?.hidden && !this._reducedMotion?.()
+            && this.directors.bgm._atmosphere?.motion?.particleEnabled !== false;
+    }
+
+    getVisualBeat() {
+        const band = this.directors.bgm;
+        if (!this._visualBeatEnabled() || this.engine.context?.state !== 'running') {
+            this._visualBeat?.dispose();
+            this._visualBeat = null;
+        } else if (!this._visualBeat && band.player && this.engine.musicClock.playing(this.engine.now())) {
+            this._visualBeat = createVisualBeat({
+                engine: this.engine, sequencer: band.player, musicClock: this.engine.musicClock,
+                isEnabled: () => this._visualBeatEnabled(),
+            });
+        }
+        return this._visualBeat?.active() ? this._visualBeat : null;
+    }
+
     // Master volume as a whole step 0–10 (1.2) for the preset now heard
     // (7.8: each keeps its own); the engine applies the step law after the
     // ceiling.
@@ -617,6 +640,10 @@ export class AmbientAudioController {
 
     _stopDirector(id) {
         this._cancelCrossfadeStop(id);
+        if (id === 'bgm') {
+            this._visualBeat?.dispose();
+            this._visualBeat = null;
+        }
         this.directors[id].stop();
     }
 
@@ -1161,6 +1188,7 @@ export class AmbientAudioController {
     // `audio:sound-state` carries the view, on change only.
     _publishView() {
         if (this._destroyed) return;
+        this.getVisualBeat();
         const view = this.soundView();
         const key = JSON.stringify(view);
         if (key === this._viewKey) return;

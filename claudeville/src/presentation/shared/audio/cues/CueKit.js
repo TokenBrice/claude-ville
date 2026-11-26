@@ -418,9 +418,9 @@ function monotonicNow() {
 // Audio-clock → monotonic clock. `getOutputTimestamp` pairs the two properly,
 // so a note's published time is when it is *heard*, output latency included;
 // without it the pairing falls back to this instant in both clocks.
-function monotonicTimeForAudioTime(engine, audioTime) {
+export function monotonicTimeForAudioTime(engine, audioTime, perfNow = monotonicNow) {
     const ctx = engine?.context;
-    const now = monotonicNow();
+    const now = perfNow();
     if (!ctx) return now;
     let contextTime = ctx.currentTime;
     let performanceTime = now;

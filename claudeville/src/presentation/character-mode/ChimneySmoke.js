@@ -94,12 +94,17 @@ function minuteJump(a, b) {
 }
 
 export class ChimneySmoke {
-    constructor() {
+    constructor({ visualBeat = null } = {}) {
+        this.setVisualBeat(visualBeat);
         this._sources = null;
         this._lastPuff = new Map();
         this._initialized = false;
         this._lastClockMs = null;
         this._lastMinuteOfDay = null;
+    }
+
+    setVisualBeat(beat) {
+        this.visualBeat = beat;
     }
 
     // World-space chimney mouths, resolved once every building's art anchor
@@ -174,6 +179,8 @@ export class ChimneySmoke {
         const dark = Number(atmosphere?.lightGrade?.night) > 0.35
             || atmosphere?.phase === 'night' || atmosphere?.phase === 'dusk';
         const livePool = Array.isArray(particleSystem.particles) ? particleSystem.particles : null;
+        const beat = this.visualBeat?.active() ? this.visualBeat : null;
+        const perfMs = beat ? performance.now() : 0;
         for (const source of sources) {
             const interval = smokeInterval(source, presence, atmosphere);
             if (!interval) {
@@ -183,12 +190,22 @@ export class ChimneySmoke {
             const tag = `chimney:${source.key}`;
             const liveCount = particleSystem.countTagged(tag);
             let last = this._lastPuff.get(source.key);
-            if (last !== undefined && (stamp < last || (coldOrScrub && livePool && liveCount === 0))) {
+            if (last !== undefined && ((clockScrub && stamp < last) || (coldOrScrub && livePool && liveCount === 0))) {
                 this._lastPuff.delete(source.key);
                 last = undefined;
             }
             const maxPuffs = maxPuffsFor(source, presence);
-            if (last !== undefined && stamp - last < interval) continue;
+            let naturalStamp = stamp;
+            if (last !== undefined && beat && source.type !== 'watchtower' && !coldOrScrub) {
+                const step = Math.ceil(interval / 140) * 140;
+                const next = last + step;
+                const natural = perfMs + next - clockMs;
+                const shift = beat.barAccent(natural, perfMs) - natural;
+                // At the 140 ms tier two puffs can flank one bar. Only the nearer moves.
+                const accent = shift >= -step / 2 && shift < step / 2 ? shift : 0;
+                if (clockMs < next + accent) continue;
+                naturalStamp = Math.max(next, stamp);
+            } else if (last !== undefined && stamp - last < interval) continue;
             if (liveCount >= maxPuffs) continue;
             const preseed = Boolean(coldOrScrub && livePool && liveCount === 0);
             const wantCount = preseed
@@ -225,7 +242,7 @@ export class ChimneySmoke {
                     if (puff.tag === tag) added.push(puff);
                 }
                 if (added.length === 0) continue;
-                this._lastPuff.set(source.key, stamp);
+                this._lastPuff.set(source.key, naturalStamp);
                 if (preseed && added.length > 1) {
                     added.reverse();
                     for (let k = 1; k < added.length && k - 1 < COLD_PRESEED_FRACS.length; k++) {
@@ -237,7 +254,7 @@ export class ChimneySmoke {
                     }
                 }
             } else {
-                this._lastPuff.set(source.key, stamp);
+                this._lastPuff.set(source.key, naturalStamp);
             }
         }
         this._initialized = true;

@@ -326,7 +326,8 @@ export const WILDLIFE_SCENE_CATEGORY = Object.freeze({
 // Owns fauna animation state. The host supplies stable world classifiers,
 // culling, renderer services, and the live frame/motion values.
 export class WildlifeRenderer {
-    constructor(host) {
+    constructor(host, visualBeat = null) {
+        this.setVisualBeat(visualBeat);
         this.host = host;
         this.openSeaFlockBirds = this._buildOpenSeaFlockBirds();
         this._landBirdRoutes = null;
@@ -391,6 +392,10 @@ export class WildlifeRenderer {
         this._livestockOrder = [];
         this._deerPose = { tileX: 0, tileY: 0, walking: false, dir: 'east', frame: 0, alpha: 1 };
         this._faunaCell = { sx: 0, sy: 0, sw: 0, sh: 0, mirror: false };
+    }
+
+    setVisualBeat(beat) {
+        this.visualBeat = beat;
     }
 
     drawSceneLayer(ctx, frameToken = null) {
@@ -888,13 +893,18 @@ export class WildlifeRenderer {
         const homes = this._fireflyHomeTiles();
         if (!homes.length) return;
         const now = Math.floor((Number(this.host.motionTimeMs) || 0) / 125) * 125;
+        const beat = this.visualBeat?.active() ? this.visualBeat : null;
+        const perfMs = beat ? frameNow ?? performance.now() : 0;
+        const lock = beat?.lockedPeriod(FIREFLY_CYCLE_MS, perfMs);
+        const period = lock?.periodMs ?? FIREFLY_CYCLE_MS;
+        const blinkTime = lock ? Math.floor((perfMs - lock.originMs) / 125) * 125 : now;
         const view = this._viewCenter();
         const bounds = this.host._getVisibleTileBounds(1);
         const lit = [];
         for (let i = 0; i < homes.length; i++) {
             const home = homes[i];
             if (home.tileX < bounds.startX || home.tileX > bounds.endX || home.tileY < bounds.startY || home.tileY > bounds.endY) continue;
-            const blink = (now + home.seed * FIREFLY_CYCLE_MS * 7) % FIREFLY_CYCLE_MS;
+            const blink = (blinkTime + home.seed * period * 7) % period;
             lit.push({ i, home, blink, rank: (this._visibleFireflyIds.has(i) ? 0 : 1e9) + dist2(home, view) });
         }
         lit.sort((a, b) => a.rank - b.rank);
