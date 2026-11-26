@@ -49,13 +49,58 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { launchChromium } from './support/chromium.mjs';
 import { BENCH_WEATHER, GPU_LAUNCH_ARGS, resolveServer } from './support/world-bench.mjs';
+import { bucketAttributionDiffs, decodeAttributionBuffer } from '../visual/attribution.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const GPU_BURST = path.join(ROOT, 'scripts', 'world', 'gpu-burst.mjs');
 const PASS_SHARE = 0.999;
+const STRICT_PASS_SHARE = 0.9999;
+const MAX_UNCLASSIFIED_NON_RIM_OVER1 = 10;
 const QUIET_LOAD = 4;
 const FLIGHT_ZOOM = 1.37;
 const TARGETS = ['composite', 'scene', 'emission'];
+
+/**
+ * Ingest an optional record-ID attribution buffer (`r32uint` or `rgba8`)
+ * alongside a per-pixel diff array and classify >1 LSB non-rim pixels into
+ * explained (known boundary shaderTag) vs unclassified buckets (Spec 03 §3.3).
+ */
+export function summarizeParityAttribution({
+  pixelD,
+  attribution,
+  attributionFormat = 'auto',
+  records = [],
+  rimMask = null,
+  width,
+  height,
+  shareLe1 = 1,
+  strict = false,
+}) {
+  if (!attribution || !pixelD || !width || !height) return null;
+  const words = decodeAttributionBuffer(attribution, width, height, attributionFormat);
+  const buckets = bucketAttributionDiffs({
+    pixelD,
+    attribution: words,
+    attributionFormat: 'r32uint',
+    records,
+    rimMask,
+    width,
+    height,
+  });
+  const strictPass = shareLe1 >= STRICT_PASS_SHARE && buckets.unclassifiedNonRimOver1 <= MAX_UNCLASSIFIED_NON_RIM_OVER1;
+  return {
+    classifiedNonRimOver1: buckets.explainedNonRimOver1,
+    unclassifiedNonRimOver1: buckets.unclassifiedNonRimOver1,
+    rimOver1: buckets.rimOver1,
+    over1Total: buckets.over1Total,
+    byTag: buckets.byTag,
+    byRegion: buckets.byRegion,
+    byRecord: buckets.byRecord,
+    strictThresholds: { shareLe1: STRICT_PASS_SHARE, maxUnclassifiedNonRimOver1: MAX_UNCLASSIFIED_NON_RIM_OVER1 },
+    strictPass,
+    enforced: Boolean(strict),
+  };
+}
 
 // §5.3 scenario matrix. `zoom` is a camera tier (Camera.tierZoom); the camera
 // centres on the scenario's own `metadata.camera.centerTile`.
@@ -124,6 +169,7 @@ Options:
   --look=<id:value,...>   LookStrengths overrides set in the page before posing (e.g. ms1:1)
   --no-device-loss        Skip the device-loss and WebGL context-loss checks
   --burst                 Also run gpu-burst FULL (level 0) per backend at 1680 and 4880
+  --strict-attribution    When attribution buffers are returned, enforce shareLe1 >= 0.9999 and <= 10 unclassified non-rim >1 LSB px
   --no-images             Skip the frame/diff PNGs
   --headed                Show the Chromium window
   --help                  Print this help
@@ -142,6 +188,7 @@ function parseArgs(argv) {
     url: null,
     deviceLoss: true,
     burst: false,
+    strictAttribution: false,
     images: true,
     headed: false,
   };
@@ -150,6 +197,7 @@ function parseArgs(argv) {
     if (arg === '--help') { usage(); process.exit(0); }
     if (arg === '--headed') { options.headed = true; continue; }
     if (arg === '--burst') { options.burst = true; continue; }
+    if (arg === '--strict-attribution') { options.strictAttribution = true; continue; }
     if (arg === '--no-device-loss') { options.deviceLoss = false; continue; }
     if (arg === '--no-images') { options.images = false; continue; }
     const [flag, inline] = arg.split('=', 2);
@@ -419,6 +467,13 @@ function installParityHelpers() {
       const bytes = capture[name];
       out[name] = bytes && bytes.length === capture.width * capture.height * 4 ? new Uint8Array(bytes.buffer || bytes, bytes.byteOffset || 0, bytes.length) : null;
       if (bytes && !out[name]) out[`${name}Error`] = `length ${bytes.length} != ${capture.width}x${capture.height}x4`;
+    }
+    if (capture.attribution && capture.attribution.byteLength === capture.width * capture.height * 4) {
+      out.attribution = new Uint8Array(capture.attribution.buffer || capture.attribution, capture.attribution.byteOffset || 0, capture.attribution.byteLength);
+      out.attributionFormat = capture.attributionFormat || (capture.attribution instanceof Uint32Array ? 'r32uint' : 'rgba8');
+    } else {
+      out.attribution = null;
+      out.attributionFormat = null;
     }
     if (out.rowOrder && out.rowOrder !== 'top-left') out.error = `rowOrder ${out.rowOrder}`;
     if (out.channelOrder && out.channelOrder !== 'rgba') out.error = `channelOrder ${out.channelOrder}`;
@@ -789,6 +844,33 @@ function installParityHelpers() {
       if (!out.webgpu.ok) { out.targets[name] = { status: 'n/a', reason: out.webgpu.reason }; continue; }
       const metric = await T.compare(ref, test, images ? (name === 'composite' ? 'always' : 'diff') : false);
       out.targets[name] = { status: name === 'emission' && metric.maxAbsDiff > EMISSION_MAX_LSB ? 'fail' : metric.verdict, ...metric };
+    }
+    const attrCapture = g?.capture?.attribution ? g.capture : a.capture?.attribution ? a.capture : null;
+    if (attrCapture && a.capture?.composite && g?.capture?.composite) {
+      const ref = a.capture.composite;
+      const test = g.capture.composite;
+      const count = T.width * T.height;
+      const pixelD = new Uint8Array(count);
+      for (let p = 0, i = 0; p < count; p++, i += 4) {
+        pixelD[p] = Math.max(
+          Math.abs(ref[i] - test[i]),
+          Math.abs(ref[i + 1] - test[i + 1]),
+          Math.abs(ref[i + 2] - test[i + 2]),
+          Math.abs(ref[i + 3] - test[i + 3]),
+        );
+      }
+      const bytesToBase64 = (arr) => {
+        let str = '';
+        for (let i = 0; i < arr.length; i += 0x8000) str += String.fromCharCode.apply(null, arr.subarray(i, i + 0x8000));
+        return btoa(str);
+      };
+      out.attributionPayload = {
+        format: attrCapture.attributionFormat,
+        attributionBase64: bytesToBase64(attrCapture.attribution),
+        pixelDBase64: bytesToBase64(pixelD),
+        rimBase64: T.rim ? bytesToBase64(T.rim) : null,
+        records: (T.frame?.records || []).map((rec, idx) => ({ id: rec.id || rec.debugId || rec.key || `record:${idx}` })),
+      };
     }
     if (images) {
       if (a.capture?.composite) out.webglImage = await T.png(a.capture.composite, T.width, T.height);
@@ -1197,6 +1279,29 @@ async function main() {
           }
           delete result.webglImage;
           delete result.webgpuImage;
+          if (result.attributionPayload && result.targets?.composite) {
+            const payload = result.attributionPayload;
+            const [bw, bh] = result.backing || [];
+            const attrSummary = summarizeParityAttribution({
+              pixelD: Buffer.from(payload.pixelDBase64, 'base64'),
+              attribution: Buffer.from(payload.attributionBase64, 'base64'),
+              attributionFormat: payload.format,
+              records: payload.records,
+              rimMask: payload.rimBase64 ? Buffer.from(payload.rimBase64, 'base64') : null,
+              width: bw,
+              height: bh,
+              shareLe1: result.targets.composite.shareLe1,
+              strict: options.strictAttribution,
+            });
+            if (attrSummary) {
+              result.targets.composite.attribution = attrSummary;
+              if (options.strictAttribution && !attrSummary.strictPass && result.targets.composite.status === 'pass') {
+                result.targets.composite.status = 'fail';
+                result.targets.composite.verdict = 'fail';
+              }
+            }
+          }
+          delete result.attributionPayload;
           Object.assign(row, result);
         } catch (error) {
           row.error = String(error?.message || error).slice(0, 400);
@@ -1250,6 +1355,9 @@ async function main() {
     emission: targetCell(row.targets?.emission),
     rim: row.rim ? pct(row.rim.share) : '-',
     'rim>1': row.targets?.composite?.rimTier ? `${row.targets.composite.rimTier.over1}/${row.targets.composite.over1}` : '-',
+    'attr(cls/unc)': row.targets?.composite?.attribution
+      ? `${row.targets.composite.attribution.classifiedNonRimOver1}/${row.targets.composite.attribution.unclassifiedNonRimOver1}`
+      : '-',
     glStable: row.webglSelfStable ?? '-',
     appReplay: row.appReplay?.diffPixels ?? '-',
     verdict: row.verdict,

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Offline art analyzer (Opus 5.5 aesthetic plan, item 3.1 / contract C1).
+// Offline art analyzer & ratcheted CI gate (Opus 5.5 aesthetic plan, item 3.1 /
+// contract C1 + Wave 0.4 Medium Contract OA-M1 & art-budget.json ratchet).
 //
 // Reads every manifest sprite and terrain PNG and reports, per asset:
 //   colours   unique RGBA colours among visible pixels (> 400 = unquantized)
@@ -13,37 +14,30 @@
 //             is flagged only above 5% of its visible pixels.
 //   offRamp   terrain only: share of pixels whose nearest stop of the sheet's
 //             C1 ramps (ART_RAMPS) is further than dE_OK 0.04 in OKLab
+//   edgeCont  terrain only (4x4 Wang sheets): share of shared Wang-neighbor
+//             border texels within OKLab dE <= 0.03
+//   grain     Medium Contract OA-M1 Sobel edge-texel density per 32x32 opaque
+//             sample relative to building.tavern/base.png (target [0.70, 1.30])
 //   scale     manifest display scales that are not an integer multiple of
 //             the source texel (displaySize / size, display* / width|height,
 //             any numeric *scale* key)
-// Terrain pixels are also binned by their nearest ramp: water sheets are
-// checked against WATER_VOID_SATURATION_MAX, and the pooled land pixels of the
-// run against the D5 ground band (GROUND_SATURATION), with a per-ramp
-// breakdown (measured S vs the ramp's own S). Pooling counts sheet pixels, not
-// on-screen coverage.
 //
-// Seasonal and canopy ramps (plan 5.1/5.3): each ramp the tree canopies and
-// the baked leaf litter use is checked against its rules (dark -> light by
-// luminance, no Tier A except snow's M9 winter exception, foliageDeep /
-// foliageSun at S <= 0.50 with a mid hue of 90-110 deg), and every tree sheet
-// is run through FoliageRenderer's own canopy remap for every variant and
-// season: every remapped canopy pixel must be a stop of the plan's ramps
-// (`offRamp` 0).
-//
-// Advisory only: always exits 0. Runs next to `npm run sprites:audit-refresh`.
+// Advisory by default (exits 0). Pass `--gate` to enforce `art-budget.json`
+// monotonically (exits 1 on any regression or over-budget new asset).
+// Pass `--update-budget` to tighten `art-budget.json` monotonically (refuses to
+// loosen any cap unless `--allow-loosen` is passed).
 //
 // Usage:
 //   node scripts/sprites/art-analyze.mjs [--json] [--ids <id,prefix.*,...>] [--flagged]
+//   node scripts/sprites/art-analyze.mjs --gate [--budget <path>] [--season <spring|summer|autumn|winter>] [--with-feet-audit]
+//   node scripts/sprites/art-analyze.mjs --update-budget [--allow-loosen] [--budget <path>]
 
-import { existsSync, readFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { basename, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { PNG } from 'pngjs';
-import {
-    ART_RAMPS,
-    GROUND_RAMP_KEYS,
-    GROUND_SATURATION,
-    WATER_VOID_SATURATION_MAX,
-} from '../../claudeville/src/config/artPalette.js';
+import * as artPalette from '../../claudeville/src/config/artPalette.js';
 import {
     CANOPY_SEASONS,
     CANOPY_VARIANTS,
@@ -58,10 +52,30 @@ import {
     collectSpriteEntries,
     expectedPathsForEntry,
     loadSpriteManifest,
+    repoRoot,
     spritesRoot,
 } from './manifest-utils.mjs';
 
-const THRESHOLDS = Object.freeze({
+const {
+    ART_RAMPS,
+    GROUND_RAMP_KEYS,
+    GROUND_SATURATION,
+    WATER_VOID_SATURATION_MAX,
+} = artPalette;
+
+// Reconciliation ruling X-7 (Opus 02 §1.1): OKLCH-verified per-season ground
+// median saturation bands. Uses artPalette.GROUND_SATURATION_BY_SEASON once
+// Wave 1/2 exports it, falling back to the locked X-7 bands today.
+export const GROUND_SATURATION_BY_SEASON = Object.freeze(
+    artPalette.GROUND_SATURATION_BY_SEASON || {
+        spring: Object.freeze({ min: 0.48, max: 0.56 }),
+        summer: Object.freeze({ min: 0.45, max: 0.50 }),
+        autumn: Object.freeze({ min: 0.40, max: 0.50 }),
+        winter: Object.freeze({ min: 0.22, max: 0.36 }),
+    },
+);
+
+export const THRESHOLDS = Object.freeze({
     colours: 400,
     semiAlpha: 0.01,
     tierA: 0.05,
@@ -70,14 +84,23 @@ const THRESHOLDS = Object.freeze({
     tierASaturationMinValue: 0.50,
     offRampDistance: 0.04,
     offRamp: 0.10,
+    terrainEdgeDeltaE: 0.03,
+    terrainMinEdgeContinuity: 0.99,
+    sobelEdgeThreshold: 64,
+    grainMinInteriorPixels: 64,
+    grainRatioBand: Object.freeze([0.70, 1.30]),
 });
+
+export const DEFAULT_BUDGET_PATH = fileURLToPath(new URL('./art-budget.json', import.meta.url));
+const TAVERN_BENCHMARK_PATH = join(spritesRoot, 'buildings', 'building.tavern', 'base.png');
 
 // Every manifest art group; `luts` (data images, grading tables) is not art.
 const ANALYZED_GROUPS = [
     'characters', 'equipment', 'accessories', 'statusOverlays', 'buildings',
     'props', 'vegetation', 'terrain', 'bridges', 'atmosphere',
 ];
-const SIDECAR_SUFFIX = /\.(material|emissive|occluder)\.png$/;
+const GRAIN_CHECKED_CLASSES = new Set(['props', 'vegetation', 'bridges', 'terrain']);
+const SIDECAR_SUFFIX = /\.(material|emissive|occluder|surface|rooms)\.png$/;
 // Whole-file emissive roles: authored light is allowed to be Tier A.
 const EMISSIVE_MATERIALS = new Set(['fire', 'unlit']);
 const EMISSIVE_GEOMETRIES = new Set(['authored-albedo', 'layer', 'light']);
@@ -97,15 +120,36 @@ const WATER_RAMPS = new Set(['shallowWater', 'deepWater', 'void']);
 // ---------------------------------------------------------------- arguments
 
 function parseArgs(argv) {
-    const opts = { json: false, flaggedOnly: false, ids: null, help: false };
+    const opts = {
+        json: false,
+        flaggedOnly: false,
+        ids: null,
+        help: false,
+        gate: false,
+        updateBudget: false,
+        allowLoosen: false,
+        budgetPath: DEFAULT_BUDGET_PATH,
+        season: 'summer',
+        withFeetAudit: false,
+    };
     for (let i = 0; i < argv.length; i++) {
         const arg = argv[i];
         if (arg === '--json') opts.json = true;
         else if (arg === '--flagged') opts.flaggedOnly = true;
+        else if (arg === '--gate') opts.gate = true;
+        else if (arg === '--update-budget') opts.updateBudget = true;
+        else if (arg === '--allow-loosen') opts.allowLoosen = true;
+        else if (arg === '--with-feet-audit') opts.withFeetAudit = true;
         else if (arg === '--help' || arg === '-h') opts.help = true;
         else if (arg === '--ids' || arg.startsWith('--ids=')) {
             const value = arg === '--ids' ? argv[++i] : arg.slice('--ids='.length);
             opts.ids = String(value || '').split(',').map((s) => s.trim()).filter(Boolean);
+        } else if (arg === '--budget' || arg.startsWith('--budget=')) {
+            const value = arg === '--budget' ? argv[++i] : arg.slice('--budget='.length);
+            opts.budgetPath = resolve(process.cwd(), String(value || ''));
+        } else if (arg === '--season' || arg.startsWith('--season=')) {
+            const value = arg === '--season' ? argv[++i] : arg.slice('--season='.length);
+            opts.season = String(value || 'summer').toLowerCase();
         } else {
             console.error(`[art-analyze] ignoring unknown argument: ${arg}`);
         }
@@ -131,11 +175,11 @@ for (let i = 0; i < 256; i++) {
     SRGB_TO_LINEAR[i] = c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
 }
 
-function luminance(r, g, b) {
+export function luminance(r, g, b) {
     return 0.2126 * SRGB_TO_LINEAR[r] + 0.7152 * SRGB_TO_LINEAR[g] + 0.0722 * SRGB_TO_LINEAR[b];
 }
 
-function oklab(r, g, b) {
+export function oklab(r, g, b) {
     const lr = SRGB_TO_LINEAR[r];
     const lg = SRGB_TO_LINEAR[g];
     const lb = SRGB_TO_LINEAR[b];
@@ -181,6 +225,181 @@ function nearestStop(lab, rampKeys) {
     return { distance: best, ramp: bestKey };
 }
 
+// ------------------------------------------------ grain & Wang continuity
+
+/**
+ * Medium Contract OA-M1 grain measurement: Sobel edge-texel density normalized
+ * per 32x32 opaque interior sample (1024 interior opaque texels).
+ *
+ * @param {{ width: number, height: number, data: Uint8Array|Buffer }} png
+ * @param {number} [edgeThreshold]
+ * @returns {{ edgePixels: number, interiorPixels: number, densityPer32x32: number|null }}
+ */
+export function measureGrainDensity(png, edgeThreshold = THRESHOLDS.sobelEdgeThreshold) {
+    const { width, height, data } = png;
+    if (width < 3 || height < 3) {
+        return { edgePixels: 0, interiorPixels: 0, densityPer32x32: null };
+    }
+    const count = width * height;
+    const luma = new Float32Array(count);
+    const opaque = new Uint8Array(count);
+    for (let p = 0, i = 0; p < count; p++, i += 4) {
+        if (data[i + 3] >= 128) {
+            opaque[p] = 1;
+            luma[p] = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+        }
+    }
+    let interiorPixels = 0;
+    let edgePixels = 0;
+    const threshSq = edgeThreshold * edgeThreshold;
+    for (let y = 1; y < height - 1; y++) {
+        const row0 = (y - 1) * width;
+        const row1 = y * width;
+        const row2 = (y + 1) * width;
+        for (let x = 1; x < width - 1; x++) {
+            if (
+                !opaque[row0 + x - 1] || !opaque[row0 + x] || !opaque[row0 + x + 1]
+                || !opaque[row1 + x - 1] || !opaque[row1 + x] || !opaque[row1 + x + 1]
+                || !opaque[row2 + x - 1] || !opaque[row2 + x] || !opaque[row2 + x + 1]
+            ) {
+                continue;
+            }
+            interiorPixels++;
+            const gx =
+                -luma[row0 + x - 1] + luma[row0 + x + 1]
+                - 2 * luma[row1 + x - 1] + 2 * luma[row1 + x + 1]
+                - luma[row2 + x - 1] + luma[row2 + x + 1];
+            const gy =
+                -luma[row0 + x - 1] - 2 * luma[row0 + x] - luma[row0 + x + 1]
+                + luma[row2 + x - 1] + 2 * luma[row2 + x] + luma[row2 + x + 1];
+            if (gx * gx + gy * gy >= threshSq) edgePixels++;
+        }
+    }
+    const densityPer32x32 = interiorPixels >= THRESHOLDS.grainMinInteriorPixels
+        ? (edgePixels / interiorPixels) * 1024
+        : null;
+    return { edgePixels, interiorPixels, densityPer32x32 };
+}
+
+/**
+ * Wang 4x4 terrain sheet edge-continuity check (Spec 03 §3.3).
+ *
+ * Each sheet is a 4x4 grid of square cells (`cell = width / 4`), indexed by
+ * 4-bit edge mask (bit 0 = N, 1 = E, 2 = S, 3 = W; see TerrainTileset.js).
+ * Measures the share of shared border texels across matching Wang-neighbor
+ * pairs whose OKLab distance is <= `maxDeltaE` (default 0.03).
+ *
+ * @param {{ width: number, height: number, data: Uint8Array|Buffer }} png
+ * @param {number} [maxDeltaE=0.03]
+ * @returns {{ pairsChecked: number, borderTexels: number, continuousTexels: number, continuity: number|null, maxEdgeDeltaE: number }}
+ */
+export function measureWangEdgeContinuity(png, maxDeltaE = THRESHOLDS.terrainEdgeDeltaE) {
+    const { width, height, data } = png;
+    if (width !== height || width < 16 || width % 4 !== 0) {
+        return { pairsChecked: 0, borderTexels: 0, continuousTexels: 0, continuity: null, maxEdgeDeltaE: 0 };
+    }
+    const cell = width / 4;
+    const labCache = new Map();
+    const labAt = (x, y) => {
+        const i = (y * width + x) * 4;
+        if (data[i + 3] === 0) return null;
+        const key = (data[i] << 16) | (data[i + 1] << 8) | data[i + 2];
+        let hit = labCache.get(key);
+        if (!hit) {
+            hit = oklab(data[i], data[i + 1], data[i + 2]);
+            labCache.set(key, hit);
+        }
+        return hit;
+    };
+
+    let pairsChecked = 0;
+    let borderTexels = 0;
+    let continuousTexels = 0;
+    let maxObserved = 0;
+
+    // Check matching horizontal (a.E === b.W) and vertical (a.S === b.N) Wang
+    // neighbors for uniform edge cells (cells 0 and 15 self-tile and pair with
+    // all matching-edge cells).
+    for (let a = 0; a < 16; a++) {
+        const ax = (a % 4) * cell;
+        const ay = Math.floor(a / 4) * cell;
+        const aE = (a >> 1) & 1;
+        const aS = (a >> 2) & 1;
+        for (let b = 0; b < 16; b++) {
+            const bx = (b % 4) * cell;
+            const by = Math.floor(b / 4) * cell;
+            const bW = (b >> 3) & 1;
+            const bN = b & 1;
+            if (aE === bW) {
+                pairsChecked++;
+                for (let y = 0; y < cell; y++) {
+                    const l1 = labAt(ax + cell - 1, ay + y);
+                    const l2 = labAt(bx, by + y);
+                    if (!l1 || !l2) continue;
+                    borderTexels++;
+                    const d = Math.hypot(l1[0] - l2[0], l1[1] - l2[1], l1[2] - l2[2]);
+                    if (d > maxObserved) maxObserved = d;
+                    if (d <= maxDeltaE) continuousTexels++;
+                }
+            }
+            if (aS === bN) {
+                pairsChecked++;
+                for (let x = 0; x < cell; x++) {
+                    const l1 = labAt(ax + x, ay + cell - 1);
+                    const l2 = labAt(bx + x, by);
+                    if (!l1 || !l2) continue;
+                    borderTexels++;
+                    const d = Math.hypot(l1[0] - l2[0], l1[1] - l2[1], l1[2] - l2[2]);
+                    if (d > maxObserved) maxObserved = d;
+                    if (d <= maxDeltaE) continuousTexels++;
+                }
+            }
+        }
+    }
+
+    return {
+        pairsChecked,
+        borderTexels,
+        continuousTexels,
+        continuity: borderTexels > 0 ? continuousTexels / borderTexels : null,
+        maxEdgeDeltaE: maxObserved,
+    };
+}
+
+/**
+ * Validate a Wave 5 `.surface.png` sidecar against an albedo PNG.
+ * Contract (Spec 01 §1 & Spec 03 §3.3):
+ *   - Identical dimensions to albedo PNG
+ *   - Outside albedo alpha (albedo.a === 0): H16 === 0 and valid bit (A & 0x80) === 0
+ *   - On valid pixels (A & 0x80): quantized normal index B in [0..63] (upper 2 bits zero)
+ */
+export function validateSurfaceSidecar(albedoPng, surfacePng) {
+    const issues = [];
+    if (albedoPng.width !== surfacePng.width || albedoPng.height !== surfacePng.height) {
+        issues.push(`dimensions ${surfacePng.width}x${surfacePng.height} != ${albedoPng.width}x${albedoPng.height}`);
+        return issues;
+    }
+    const count = albedoPng.width * albedoPng.height;
+    let outsideAlphaHeight = 0;
+    let invalidNormalId = 0;
+    for (let p = 0, i = 0; p < count; p++, i += 4) {
+        const albedoA = albedoPng.data[i + 3];
+        const r = surfacePng.data[i];
+        const g = surfacePng.data[i + 1];
+        const b = surfacePng.data[i + 2];
+        const a = surfacePng.data[i + 3];
+        const h16 = r | (g << 8);
+        if (albedoA === 0) {
+            if (h16 !== 0 || (a & 0x80) !== 0) outsideAlphaHeight++;
+        } else if ((a & 0x80) !== 0) {
+            if (b > 63) invalidNormalId++;
+        }
+    }
+    if (outsideAlphaHeight > 0) issues.push(`${outsideAlphaHeight} px have non-zero height/valid outside alpha`);
+    if (invalidNormalId > 0) issues.push(`${invalidNormalId} valid px have normal index > 63`);
+    return issues;
+}
+
 // ------------------------------------------------------------------- stats
 
 const SAT_BINS = 256;
@@ -194,6 +413,9 @@ function newStats() {
         colours: new Set(),
         satHist: new Uint32Array(SAT_BINS),
         terrain: null,
+        grainEdgePixels: 0,
+        grainInteriorPixels: 0,
+        surfaceIssues: [],
     };
 }
 
@@ -206,6 +428,8 @@ function newTerrainStats() {
         land: 0,
         water: 0,
         rampHists: {},
+        edgeContinuity: null,
+        maxEdgeDeltaE: null,
     };
 }
 
@@ -250,7 +474,7 @@ function emissiveMask(absPath, width, height) {
     }
 }
 
-function analyzeFile(stats, absPath, { exemptWholeFile, terrainRamps }) {
+function analyzeFile(stats, absPath, { exemptWholeFile, terrainRamps, measureGrain }) {
     const png = readPng(absPath);
     const { width, height, data } = png;
     const mask = exemptWholeFile ? null : emissiveMask(absPath, width, height);
@@ -302,6 +526,32 @@ function analyzeFile(stats, absPath, { exemptWholeFile, terrainRamps }) {
             (t.rampHists[hit.ramp] ||= new Uint32Array(SAT_BINS))[satBin]++;
         }
     }
+
+    if (measureGrain) {
+        const g = measureGrainDensity(png);
+        stats.grainEdgePixels += g.edgePixels;
+        stats.grainInteriorPixels += g.interiorPixels;
+    }
+
+    if (terrainRamps && stats.terrain && stats.terrain.edgeContinuity === null) {
+        const wang = measureWangEdgeContinuity(png);
+        if (wang.continuity !== null) {
+            stats.terrain.edgeContinuity = wang.continuity;
+            stats.terrain.maxEdgeDeltaE = wang.maxEdgeDeltaE;
+        }
+    }
+
+    const surfaceSidecar = absPath.replace(/\.png$/, '.surface.png');
+    if (existsSync(surfaceSidecar)) {
+        try {
+            const surfacePng = readPng(surfaceSidecar);
+            const issues = validateSurfaceSidecar(png, surfacePng);
+            for (const issue of issues) stats.surfaceIssues.push(`${basename(surfaceSidecar)}: ${issue}`);
+        } catch (err) {
+            stats.surfaceIssues.push(`${basename(surfaceSidecar)}: ${err.message}`);
+        }
+    }
+
     return { width, height };
 }
 
@@ -363,13 +613,20 @@ function scaleIssues(entry) {
     return issues;
 }
 
-function analyzeEntry(entry, group) {
+function computeTavernGrainBenchmark() {
+    if (!existsSync(TAVERN_BENCHMARK_PATH)) return null;
+    const png = readPng(TAVERN_BENCHMARK_PATH);
+    return measureGrainDensity(png).densityPer32x32;
+}
+
+function analyzeEntry(entry, group, tavernGrainDensity = null) {
     const stats = newStats();
     const files = [];
     const missing = [];
     const errors = [];
     const terrainRamps = terrainRampsFor(entry.id);
     const statusRole = group === 'statusOverlays';
+    const measureGrain = GRAIN_CHECKED_CLASSES.has(group) || group === 'buildings';
 
     for (const relPath of expectedPathsForEntry(entry)) {
         if (SIDECAR_SUFFIX.test(relPath)) continue;
@@ -381,7 +638,7 @@ function analyzeEntry(entry, group) {
         const { spec } = layerSpecFor(entry, relPath);
         const exemptWholeFile = statusRole || isEmissiveRole(entry, spec);
         try {
-            analyzeFile(stats, absPath, { exemptWholeFile, terrainRamps });
+            analyzeFile(stats, absPath, { exemptWholeFile, terrainRamps, measureGrain });
             files.push(relPath);
         } catch (err) {
             errors.push(`${relPath}: ${err.message}`);
@@ -389,6 +646,13 @@ function analyzeEntry(entry, group) {
     }
 
     const visible = stats.visible || 0;
+    const grainDensity = stats.grainInteriorPixels >= THRESHOLDS.grainMinInteriorPixels
+        ? (stats.grainEdgePixels / stats.grainInteriorPixels) * 1024
+        : null;
+    const grainRatio = grainDensity !== null && tavernGrainDensity
+        ? grainDensity / tavernGrainDensity
+        : null;
+
     const result = {
         id: entry.id,
         class: group,
@@ -400,6 +664,10 @@ function analyzeEntry(entry, group) {
         tierA: visible ? stats.tierA / visible : 0,
         tierAExempt: visible ? stats.exempt / visible : 0,
         offRamp: null,
+        edgeContinuity: null,
+        grainDensity,
+        grainRatio,
+        surfaceIssues: stats.surfaceIssues,
         terrain: null,
         scaleIssues: scaleIssues(entry),
         missing,
@@ -410,12 +678,15 @@ function analyzeEntry(entry, group) {
     if (stats.terrain) {
         const t = stats.terrain;
         result.offRamp = t.pixels ? t.offRamp / t.pixels : 0;
+        result.edgeContinuity = t.edgeContinuity;
         result.terrain = {
             ramps: terrainRamps,
             landShare: t.pixels ? t.land / t.pixels : 0,
             landSaturation: histMedian(t.landHist),
             waterShare: t.pixels ? t.water / t.pixels : 0,
             waterSaturation: histMedian(t.waterHist),
+            edgeContinuity: t.edgeContinuity,
+            maxEdgeDeltaE: t.maxEdgeDeltaE,
             landHist: t.landHist,
             rampHists: t.rampHists,
         };
@@ -427,6 +698,7 @@ function analyzeEntry(entry, group) {
     if (result.tierA > THRESHOLDS.tierA) result.flags.push('tier-a');
     if (result.offRamp !== null && result.offRamp > THRESHOLDS.offRamp) result.flags.push('off-ramp');
     if (result.scaleIssues.length) result.flags.push('scale');
+    if (result.surfaceIssues.length) result.flags.push('surface');
     // The D5 ground band applies to the ground as a whole (pooled in
     // summarize), not to one mixed sheet: a cobble sheet is meant to be grey.
     const water = result.terrain?.waterSaturation;
@@ -456,7 +728,12 @@ function table(rows, columns) {
     return out.join('\n');
 }
 
-function summarize(results) {
+function resolveGroundBand(season = 'summer') {
+    const band = GROUND_SATURATION_BY_SEASON[season] || GROUND_SATURATION_BY_SEASON.summer || GROUND_SATURATION;
+    return Array.isArray(band) ? { min: band[0], max: band[1] } : band;
+}
+
+function summarize(results, { season = 'summer', tavernGrainDensity = null } = {}) {
     const classes = {};
     for (const r of results) {
         const c = (classes[r.class] ||= { assets: 0, flagged: 0, colours: [], semi: [], sat: [], tierA: [] });
@@ -504,13 +781,15 @@ function summarize(results) {
         medianSaturation: histMedian(hist),
         rampSaturation: median((ART_RAMPS[ramp] || []).map(hexSaturation)),
     }));
+    const band = resolveGroundBand(season);
     const ground = landPixels ? {
+        season,
         landPixels,
         medianSaturation: histMedian(pooled),
-        band: GROUND_SATURATION,
+        band,
         ramps,
     } : null;
-    return { classes: out, ground };
+    return { classes: out, ground, tavernGrainDensity };
 }
 
 function hexSaturation(hex) {
@@ -521,10 +800,8 @@ function hexSaturation(hex) {
 
 // ------------------------------------------------ seasonal and canopy ramps
 
-// Rules per plan 5.1/5.3 ramp. Every ramp runs dark -> light by luminance and
-// stays out of Tier A unless `tierAExempt` (snow: maintainer decision M9).
-// Snow may cool its shadow step but its top step reads as snow only near
-// achromatic (terrain-foliage notes: S <= 0.12).
+// Rules per plan 5.1/5.3 + Opus 02 §1.3 ramps. Optional future ramps are
+// validated automatically as soon as they appear in ART_RAMPS.
 const SEASONAL_RAMP_RULES = Object.freeze({
     snow: { maxSat: 0.2, topMaxSat: 0.12, tierAExempt: true },
     leafAutumn: {},
@@ -535,6 +812,13 @@ const SEASONAL_RAMP_RULES = Object.freeze({
     blossom: {},
     foliageDeep: { maxSat: 0.5, midHue: [90, 110] },
     foliageSun: { maxSat: 0.5, midHue: [90, 110] },
+    // Opus 02 §1.3 (Wave 1/2 additions — enforced as soon as present in ART_RAMPS)
+    grassDormant: { maxSat: 0.36, midHue: [60, 75], optionalUntilAdded: true },
+    grassSpring: { maxSat: 0.60, optionalUntilAdded: true },
+    blossomIvory: { optionalUntilAdded: true },
+    leafMarcescent: { maxSat: 0.62, optionalUntilAdded: true },
+    cliff: { maxSat: 0.30, optionalUntilAdded: true },
+    tideline: { maxSat: 0.36, optionalUntilAdded: true },
 });
 
 function hexHsv(hex) {
@@ -560,8 +844,10 @@ function isTierAHex(hex) {
 }
 
 function seasonalRampReport() {
-    return Object.entries(SEASONAL_RAMP_RULES).map(([key, rule]) => {
+    const out = [];
+    for (const [key, rule] of Object.entries(SEASONAL_RAMP_RULES)) {
         const stops = ART_RAMPS[key] || [];
+        if (!stops.length && rule.optionalUntilAdded) continue;
         const hsv = stops.map(hexHsv);
         const lum = stops.map((hex) => luminance(...hexToRgb(hex)));
         const flags = [];
@@ -575,7 +861,7 @@ function seasonalRampReport() {
         const mid = stops.length >> 1;
         const midHue = stops.length ? (stops.length % 2 ? hsv[mid].h : (hsv[mid - 1].h + hsv[mid].h) / 2) : null;
         if (rule.midHue && !(midHue >= rule.midHue[0] && midHue <= rule.midHue[1])) flags.push('mid-hue');
-        return {
+        out.push({
             ramp: key,
             stops: stops.length,
             minSat: Math.min(1, ...hsv.map((c) => c.s)),
@@ -585,8 +871,9 @@ function seasonalRampReport() {
             midHue,
             tierAStops: tierA.length,
             flags,
-        };
-    });
+        });
+    }
+    return out;
 }
 
 const packRgb = (r, g, b) => (r << 16) | (g << 8) | b;
@@ -596,17 +883,6 @@ function rampStopSet(key, stops = 0) {
     return (stops ? hexes.slice(0, stops) : hexes).map((hex) => packRgb(...hexToRgb(hex)));
 }
 
-// Runs every tree sheet through FoliageRenderer's canopy remap for each plan
-// its variants and seasons use and counts canopy pixels that land off the
-// plan's ramps. A turning oak keeps its authored pixels below the turned
-// crown; those are counted as `authored`, not off-ramp. Winter state sheets
-// (plan 5.5 bare/snow, `canopy: false`) are never remapped, so they report no
-// plans; their palette is checked by the per-asset rows above.
-//
-// BI-2: the plans of every autumn stage's turn (PHENOLOGY_STAGES `turned` plus
-// the species' `shed`) are checked too, and every part-shed stage's crown
-// (`shedCanopy` over the stage plan, `shed` states): a fallen texel must be
-// the bare sheet's, every kept canopy texel on the plan's ramps.
 function canopyRemapReport() {
     return Object.entries(TREE_SPRITES).map(([key, sprite]) => {
         const absPath = join(spritesRoot, 'vegetation', `${sprite.id}.png`);
@@ -637,8 +913,6 @@ function canopyRemapReport() {
         const bare = barePath && existsSync(barePath) ? Uint8ClampedArray.from(readPng(barePath).data.subarray(0, width * height * 4)) : null;
         const row = { sprite: key, missing: false, plans: plans.size, shed: bare ? sheds.length : 0, canopy: 0, remapped: 0, authored: 0, offRamp: 0 };
         const checks = [...[...plans].map((plan) => ({ plan, share: 0 })), ...(bare ? sheds : [])];
-        // A kept clump's new edge under an authored plan takes one of the
-        // sheet's own canopy colours.
         const authoredColours = new Set();
         for (let i = 0; i < source.length; i += 4) {
             if (isCanopyPixel(source, i, Math.floor(i / 4 / width), height)) authoredColours.add(packRgb(source[i], source[i + 1], source[i + 2]));
@@ -657,7 +931,6 @@ function canopyRemapReport() {
                     const i = (y * width + x) * 4;
                     const fallen = share && data[i] === bare[i] && data[i + 1] === bare[i + 1] && data[i + 2] === bare[i + 2] && data[i + 3] === bare[i + 3];
                     if (!isCanopyPixel(source, i, y, height)) {
-                        // The shed swaps only whole texels to the bare sheet off the canopy.
                         if (share && !fallen && (data[i] !== source[i] || data[i + 1] !== source[i + 1] || data[i + 2] !== source[i + 2] || data[i + 3] !== source[i + 3])) row.offRamp++;
                         continue;
                     }
@@ -674,19 +947,397 @@ function canopyRemapReport() {
     });
 }
 
-function printReport(results, summary, opts) {
+// ------------------------------------------------------------ ratcheted gate
+
+function roundUp(value, decimals = 4) {
+    const scale = 10 ** decimals;
+    return Math.ceil(value * scale - 1e-12) / scale;
+}
+
+function roundDown(value, decimals = 4) {
+    const scale = 10 ** decimals;
+    return Math.floor(value * scale + 1e-12) / scale;
+}
+
+export function loadArtBudget(budgetPath = DEFAULT_BUDGET_PATH) {
+    if (!existsSync(budgetPath)) {
+        throw new Error(`art-budget.json not found at ${budgetPath}`);
+    }
+    return JSON.parse(readFileSync(budgetPath, 'utf8'));
+}
+
+/**
+ * Evaluate analyzed assets against `art-budget.json`.
+ * Pure function so unit tests can inject synthetic regressions cleanly.
+ */
+export function evaluateGate(results, summary, budget, { season = 'summer' } = {}) {
+    const rules = budget?.globalRules || {};
+    const allowlist = budget?.legacyAllowlist || {};
+    const violations = [];
+    const maxColoursByClass = rules.maxColoursNewAsset || {};
+    const defaultSemiAlpha = rules.maxSemiAlphaOutsideAtmosphere ?? 0.002;
+    const defaultTierA = rules.maxTierAOutsideExempt ?? 0.05;
+    const defaultMaxOffRamp = rules.terrainMinOnRampShare !== undefined
+        ? roundUp(1 - rules.terrainMinOnRampShare, 4)
+        : 0.03;
+    const defaultMinEdgeContinuity = rules.terrainMinEdgeContinuity ?? 0.99;
+    const grainBand = rules.mediumContractGrainRatioBand || [0.70, 1.30];
+
+    for (const r of results) {
+        const allow = allowlist[r.id] || null;
+        if (r.missing.length) {
+            violations.push({ id: r.id, rule: 'missing', message: `missing files: ${r.missing.join(', ')}` });
+        }
+        if (r.errors.length) {
+            violations.push({ id: r.id, rule: 'errors', message: `unreadable files: ${r.errors.join(', ')}` });
+        }
+        if (r.scaleIssues.length) {
+            violations.push({ id: r.id, rule: 'scale', message: `non-integer display scale: ${r.scaleIssues.join('; ')}` });
+        }
+        if (r.surfaceIssues?.length) {
+            violations.push({ id: r.id, rule: 'surface', message: `surface sidecar invalid: ${r.surfaceIssues.join('; ')}` });
+        }
+
+        const classCap = maxColoursByClass[r.class] ?? THRESHOLDS.colours;
+        const maxColours = allow?.maxColours ?? classCap;
+        if (r.colours > maxColours) {
+            violations.push({
+                id: r.id,
+                rule: 'maxColours',
+                actual: r.colours,
+                cap: maxColours,
+                message: `colours ${r.colours} > cap ${maxColours}${allow ? ' (legacy cap regressed)' : ' (new asset cap)'}`,
+            });
+        }
+
+        if (r.class !== 'atmosphere') {
+            const maxSemi = allow?.maxSemiAlpha ?? defaultSemiAlpha;
+            if (r.semiAlpha > maxSemi + 1e-9) {
+                violations.push({
+                    id: r.id,
+                    rule: 'maxSemiAlpha',
+                    actual: r.semiAlpha,
+                    cap: maxSemi,
+                    message: `semiAlpha ${pct(r.semiAlpha, 2)} > cap ${pct(maxSemi, 2)}`,
+                });
+            }
+        }
+
+        const maxTierA = allow?.maxTierA ?? defaultTierA;
+        if (r.tierA > maxTierA + 1e-9) {
+            violations.push({
+                id: r.id,
+                rule: 'maxTierA',
+                actual: r.tierA,
+                cap: maxTierA,
+                message: `tierA ${pct(r.tierA, 2)} > cap ${pct(maxTierA, 2)}`,
+            });
+        }
+
+        if (r.offRamp !== null) {
+            const maxOffRamp = allow?.maxOffRamp ?? defaultMaxOffRamp;
+            if (r.offRamp > maxOffRamp + 1e-9) {
+                violations.push({
+                    id: r.id,
+                    rule: 'maxOffRamp',
+                    actual: r.offRamp,
+                    cap: maxOffRamp,
+                    message: `terrain offRamp ${pct(r.offRamp, 2)} > cap ${pct(maxOffRamp, 2)}`,
+                });
+            }
+        }
+
+        if (r.edgeContinuity !== null && r.edgeContinuity !== undefined) {
+            const minEdge = allow?.minEdgeContinuity ?? defaultMinEdgeContinuity;
+            if (r.edgeContinuity + 1e-9 < minEdge) {
+                violations.push({
+                    id: r.id,
+                    rule: 'minEdgeContinuity',
+                    actual: r.edgeContinuity,
+                    cap: minEdge,
+                    message: `Wang edge continuity ${pct(r.edgeContinuity, 2)} < min ${pct(minEdge, 2)}`,
+                });
+            }
+        }
+
+        const waterSat = r.terrain?.waterSaturation;
+        if (waterSat !== null && waterSat !== undefined && r.terrain.waterShare > 0.05) {
+            const maxWaterSat = allow?.maxWaterSaturation ?? WATER_VOID_SATURATION_MAX;
+            if (waterSat > maxWaterSat + 1e-9) {
+                violations.push({
+                    id: r.id,
+                    rule: 'maxWaterSaturation',
+                    actual: waterSat,
+                    cap: maxWaterSat,
+                    message: `water saturation ${num(waterSat, 4)} > cap ${num(maxWaterSat, 4)}`,
+                });
+            }
+        }
+
+        if (GRAIN_CHECKED_CLASSES.has(r.class) && r.grainRatio !== null && r.grainRatio !== undefined) {
+            const minGrain = allow?.minGrainRatio ?? grainBand[0];
+            const maxGrain = allow?.maxGrainRatio ?? grainBand[1];
+            if (r.grainRatio + 1e-9 < minGrain || r.grainRatio > maxGrain + 1e-9) {
+                violations.push({
+                    id: r.id,
+                    rule: 'grainRatio',
+                    actual: r.grainRatio,
+                    cap: [minGrain, maxGrain],
+                    message: `Medium Contract grain ratio ${num(r.grainRatio, 3)} outside [${num(minGrain, 3)}, ${num(maxGrain, 3)}]`,
+                });
+            }
+        }
+    }
+
+    // Seasonal ramp integrity
+    for (const ramp of summary?.seasonalRamps || []) {
+        if (ramp.flags.length) {
+            violations.push({
+                id: `ramp.${ramp.ramp}`,
+                rule: 'seasonalRamp',
+                message: `ramp ${ramp.ramp} flagged: ${ramp.flags.join(', ')}`,
+            });
+        }
+    }
+
+    // Canopy remap integrity (offRamp must be 0)
+    for (const remap of summary?.canopyRemaps || []) {
+        if (remap.missing || remap.offRamp > 0) {
+            violations.push({
+                id: `canopy.${remap.sprite}`,
+                rule: 'canopyRemap',
+                actual: remap.offRamp,
+                cap: 0,
+                message: remap.missing
+                    ? `canopy sprite ${remap.sprite} missing`
+                    : `canopy remap ${remap.sprite} has ${remap.offRamp} off-ramp pixels`,
+            });
+        }
+    }
+
+    // Seasonal ground saturation band (X-7)
+    const seasonBands = budget?.groundSaturationBySeason || {};
+    const targetBand = seasonBands[season] || [GROUND_SATURATION.min, GROUND_SATURATION.max];
+    if (summary?.ground && Number.isFinite(summary.ground.medianSaturation)) {
+        const legacyBand = budget?.legacyPooledGroundSaturationBand?.[season];
+        const effectiveMin = legacyBand ? legacyBand[0] : targetBand[0];
+        const effectiveMax = legacyBand ? legacyBand[1] : targetBand[1];
+        const s = summary.ground.medianSaturation;
+        if (s + 1e-9 < effectiveMin || s > effectiveMax + 1e-9) {
+            violations.push({
+                id: `ground.${season}`,
+                rule: 'groundSaturation',
+                actual: s,
+                cap: [effectiveMin, effectiveMax],
+                message: `pooled ground median S ${num(s, 4)} outside [${num(effectiveMin, 4)}, ${num(effectiveMax, 4)}]`,
+            });
+        }
+    }
+
+    return {
+        pass: violations.length === 0,
+        assetsChecked: results.length,
+        allowlistedCount: Object.keys(allowlist).length,
+        violations,
+    };
+}
+
+/**
+ * Compute an updated `art-budget.json` object from analyzed results.
+ * Strictly monotonic by default: caps may ONLY tighten (decrease upper bounds
+ * or increase lower bounds). Throws if any asset would require loosening a cap
+ * or adding a new allowlist entry unless `allowLoosen === true`.
+ */
+export function updateBudgetMonotonic(currentBudget, results, summary, { allowLoosen = false, season = 'summer' } = {}) {
+    const next = JSON.parse(JSON.stringify(currentBudget));
+    const rules = next.globalRules;
+    const maxColoursByClass = rules.maxColoursNewAsset || {};
+    const defaultSemiAlpha = rules.maxSemiAlphaOutsideAtmosphere ?? 0.002;
+    const defaultTierA = rules.maxTierAOutsideExempt ?? 0.05;
+    const defaultMaxOffRamp = roundUp(1 - (rules.terrainMinOnRampShare ?? 0.97), 4);
+    const defaultMinEdge = rules.terrainMinEdgeContinuity ?? 0.99;
+    const grainBand = rules.mediumContractGrainRatioBand || [0.70, 1.30];
+
+    const prevAllow = currentBudget.legacyAllowlist || {};
+    const nextAllow = {};
+    const loosened = [];
+    const tightened = [];
+
+    const checkUpper = (id, key, actual, defaultCap, prevCap, decimals = 4) => {
+        const rounded = decimals === 0 ? Math.ceil(actual) : roundUp(actual, decimals);
+        if (actual <= defaultCap + 1e-9) {
+            if (prevCap !== undefined) tightened.push(`${id}.${key}: removed (${prevCap} -> within global ${defaultCap})`);
+            return undefined;
+        }
+        if (prevCap === undefined) {
+            if (!allowLoosen) {
+                loosened.push(`${id}.${key}: new violation (${rounded} > global ${defaultCap})`);
+                return undefined;
+            }
+            return rounded;
+        }
+        if (rounded > prevCap + 1e-9) {
+            if (!allowLoosen) {
+                loosened.push(`${id}.${key}: regressed (${prevCap} -> ${rounded})`);
+                return prevCap;
+            }
+            return rounded;
+        }
+        if (rounded < prevCap - 1e-9) {
+            tightened.push(`${id}.${key}: tightened (${prevCap} -> ${rounded})`);
+        }
+        return Math.min(prevCap, rounded);
+    };
+
+    const checkLower = (id, key, actual, defaultMin, prevMin, decimals = 4) => {
+        const rounded = roundDown(actual, decimals);
+        if (actual + 1e-9 >= defaultMin) {
+            if (prevMin !== undefined) tightened.push(`${id}.${key}: removed (${prevMin} -> within global ${defaultMin})`);
+            return undefined;
+        }
+        if (prevMin === undefined) {
+            if (!allowLoosen) {
+                loosened.push(`${id}.${key}: new violation (${rounded} < global ${defaultMin})`);
+                return undefined;
+            }
+            return rounded;
+        }
+        if (rounded + 1e-9 < prevMin) {
+            if (!allowLoosen) {
+                loosened.push(`${id}.${key}: regressed (${prevMin} -> ${rounded})`);
+                return prevMin;
+            }
+            return rounded;
+        }
+        if (rounded > prevMin + 1e-9) {
+            tightened.push(`${id}.${key}: tightened (${prevMin} -> ${rounded})`);
+        }
+        return Math.max(prevMin, rounded);
+    };
+
+    for (const r of results) {
+        const prev = prevAllow[r.id];
+        const entry = {};
+
+        const classCap = maxColoursByClass[r.class] ?? THRESHOLDS.colours;
+        const cCap = checkUpper(r.id, 'maxColours', r.colours, classCap, prev?.maxColours, 0);
+        if (cCap !== undefined) entry.maxColours = cCap;
+
+        if (r.class !== 'atmosphere') {
+            const sCap = checkUpper(r.id, 'maxSemiAlpha', r.semiAlpha, defaultSemiAlpha, prev?.maxSemiAlpha, 4);
+            if (sCap !== undefined) entry.maxSemiAlpha = sCap;
+        }
+
+        const tCap = checkUpper(r.id, 'maxTierA', r.tierA, defaultTierA, prev?.maxTierA, 4);
+        if (tCap !== undefined) entry.maxTierA = tCap;
+
+        if (r.offRamp !== null) {
+            const oCap = checkUpper(r.id, 'maxOffRamp', r.offRamp, defaultMaxOffRamp, prev?.maxOffRamp, 4);
+            if (oCap !== undefined) entry.maxOffRamp = oCap;
+        }
+
+        if (r.edgeContinuity !== null && r.edgeContinuity !== undefined) {
+            const eMin = checkLower(r.id, 'minEdgeContinuity', r.edgeContinuity, defaultMinEdge, prev?.minEdgeContinuity, 4);
+            if (eMin !== undefined) entry.minEdgeContinuity = eMin;
+        }
+
+        const waterSat = r.terrain?.waterSaturation;
+        if (waterSat !== null && waterSat !== undefined && r.terrain.waterShare > 0.05) {
+            const wCap = checkUpper(r.id, 'maxWaterSaturation', waterSat, WATER_VOID_SATURATION_MAX, prev?.maxWaterSaturation, 4);
+            if (wCap !== undefined) entry.maxWaterSaturation = wCap;
+        }
+
+        if (GRAIN_CHECKED_CLASSES.has(r.class) && r.grainRatio !== null && r.grainRatio !== undefined) {
+            const gMin = checkLower(r.id, 'minGrainRatio', r.grainRatio, grainBand[0], prev?.minGrainRatio, 4);
+            const gMax = checkUpper(r.id, 'maxGrainRatio', r.grainRatio, grainBand[1], prev?.maxGrainRatio, 4);
+            if (gMin !== undefined) entry.minGrainRatio = gMin;
+            if (gMax !== undefined) entry.maxGrainRatio = gMax;
+        }
+
+        if (Object.keys(entry).length > 0) {
+            entry.reason = prev?.reason || `pre-Wave-0 ${r.class} baseline; ratchet down on touch`;
+            nextAllow[r.id] = entry;
+        }
+    }
+
+    // Preserve any allowlisted entries for IDs not in a filtered subset (if any).
+    const seen = new Set(results.map((r) => r.id));
+    for (const [id, entry] of Object.entries(prevAllow)) {
+        if (!seen.has(id)) nextAllow[id] = entry;
+    }
+
+    if (loosened.length > 0 && !allowLoosen) {
+        const err = new Error(`Refusing to loosen art-budget.json without --allow-loosen:\n  ${loosened.join('\n  ')}`);
+        err.loosened = loosened;
+        throw err;
+    }
+
+    // Sort keys deterministically so diffs stay minimal.
+    next.legacyAllowlist = Object.fromEntries(
+        Object.keys(nextAllow).sort().map((id) => [id, nextAllow[id]]),
+    );
+
+    // Check pooled ground saturation band
+    if (summary?.ground && Number.isFinite(summary.ground.medianSaturation)) {
+        const s = summary.ground.medianSaturation;
+        const target = next.groundSaturationBySeason?.[season] || [0.45, 0.50];
+        if (s < target[0] || s > target[1]) {
+            const prevLegacy = currentBudget.legacyPooledGroundSaturationBand?.[season];
+            const nextMin = roundDown(Math.min(s, target[0]), 4);
+            const nextMax = roundUp(Math.max(s, target[1]), 4);
+            if (!prevLegacy && !allowLoosen) {
+                throw new Error(`Refusing to add legacyPooledGroundSaturationBand.${season} without --allow-loosen (measured ${num(s, 4)})`);
+            }
+            next.legacyPooledGroundSaturationBand = {
+                ...(next.legacyPooledGroundSaturationBand || {}),
+                [season]: [nextMin, nextMax],
+            };
+        } else if (next.legacyPooledGroundSaturationBand?.[season]) {
+            delete next.legacyPooledGroundSaturationBand[season];
+            if (Object.keys(next.legacyPooledGroundSaturationBand).length === 0) {
+                delete next.legacyPooledGroundSaturationBand;
+            }
+        }
+    }
+
+    return { budget: next, tightened, loosened };
+}
+
+function runFeetAuditCheck(ids) {
+    const scriptPath = join(repoRoot, 'scripts', 'sprites', 'feet-audit.mjs');
+    const args = [scriptPath, '--json'];
+    if (ids && ids.length) args.push(`--ids=${ids.join(',')}`);
+    const run = spawnSync(process.execPath, args, { cwd: repoRoot, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+    let parsed = null;
+    try {
+        parsed = JSON.parse(run.stdout || '{}');
+    } catch {
+        parsed = null;
+    }
+    return {
+        exitCode: run.status,
+        failures: parsed?.failures || [],
+        stderr: String(run.stderr || '').trim(),
+    };
+}
+
+function printReport(results, summary, opts, gateResult = null) {
     const rows = opts.flaggedOnly ? results.filter((r) => r.flags.length) : results;
-    console.log(`ClaudeVille art analysis — ${results.length} assets (advisory; see artPalette.js for the rules)\n`);
-    console.log(table(rows, [
-        { label: 'id', get: (r) => r.id },
-        { label: 'class', get: (r) => r.class },
-        { label: 'colours', get: (r) => r.colours, right: true },
-        { label: 'semiA', get: (r) => pct(r.semiAlpha), right: true },
-        { label: 'sat', get: (r) => num(r.saturation), right: true },
-        { label: 'tierA', get: (r) => pct(r.tierA), right: true },
-        { label: 'offRamp', get: (r) => pct(r.offRamp), right: true },
-        { label: 'flags', get: (r) => r.flags.join(',') },
-    ]));
+    const modeLabel = opts.gate ? 'GATE' : 'advisory; see artPalette.js for the rules';
+    console.log(`ClaudeVille art analysis — ${results.length} assets (${modeLabel})\n`);
+    if (!opts.gate || opts.flaggedOnly) {
+        console.log(table(rows, [
+            { label: 'id', get: (r) => r.id },
+            { label: 'class', get: (r) => r.class },
+            { label: 'colours', get: (r) => r.colours, right: true },
+            { label: 'semiA', get: (r) => pct(r.semiAlpha), right: true },
+            { label: 'sat', get: (r) => num(r.saturation), right: true },
+            { label: 'tierA', get: (r) => pct(r.tierA), right: true },
+            { label: 'offRamp', get: (r) => pct(r.offRamp), right: true },
+            { label: 'grain', get: (r) => (r.grainRatio === null ? '-' : num(r.grainRatio)), right: true },
+            { label: 'flags', get: (r) => r.flags.join(',') },
+        ]));
+    }
 
     const scaleRows = results.filter((r) => r.scaleIssues.length);
     if (scaleRows.length) {
@@ -695,8 +1346,9 @@ function printReport(results, summary, opts) {
     }
 
     const terrainRows = results.filter((r) => r.terrain);
-    if (terrainRows.length) {
-        console.log(`\nTerrain vs C1 (ground band S ${GROUND_SATURATION.min}-${GROUND_SATURATION.max}, water S <= ${WATER_VOID_SATURATION_MAX}, off-ramp dE_OK > ${THRESHOLDS.offRampDistance}):`);
+    if (terrainRows.length && !opts.gate) {
+        const band = resolveGroundBand(opts.season);
+        console.log(`\nTerrain vs C1 (season=${opts.season} ground band S ${band.min}-${band.max}, water S <= ${WATER_VOID_SATURATION_MAX}, off-ramp dE_OK > ${THRESHOLDS.offRampDistance}):`);
         console.log(table(terrainRows, [
             { label: 'id', get: (r) => r.id },
             { label: 'ramps', get: (r) => r.terrain.ramps.join('+') },
@@ -705,10 +1357,11 @@ function printReport(results, summary, opts) {
             { label: 'water', get: (r) => pct(r.terrain.waterShare, 0), right: true },
             { label: 'waterS', get: (r) => num(r.terrain.waterSaturation), right: true },
             { label: 'offRamp', get: (r) => pct(r.offRamp), right: true },
+            { label: 'edgeCont', get: (r) => pct(r.edgeContinuity), right: true },
         ]));
         if (summary.ground) {
             const s = summary.ground.medianSaturation;
-            const verdict = s > GROUND_SATURATION.max ? 'above band (too loud)' : s < GROUND_SATURATION.min ? 'below band (too grey)' : 'inside band';
+            const verdict = s > band.max ? 'above band (too loud)' : s < band.min ? 'below band (too grey)' : 'inside band';
             console.log(`\n  Pooled ground median S ${num(s)} over ${summary.ground.landPixels} land sheet pixels: ${verdict}.`);
             console.log('  All terrain pixels by nearest C1 ramp (measured S vs the ramp\'s own median S):');
             console.log(table(summary.ground.ramps, [
@@ -720,7 +1373,7 @@ function printReport(results, summary, opts) {
         }
     }
 
-    if (summary.seasonalRamps) {
+    if (summary.seasonalRamps && !opts.gate) {
         console.log('\nSeasonal and canopy ramps (plan 5.1/5.3; dark -> light, no Tier A except snow, foliageDeep/Sun S <= 0.50 and mid hue 90-110):');
         console.log(table(summary.seasonalRamps, [
             { label: 'ramp', get: (r) => r.ramp },
@@ -732,7 +1385,7 @@ function printReport(results, summary, opts) {
             { label: 'flags', get: (r) => r.flags.join(',') },
         ]));
     }
-    if (summary.canopyRemaps) {
+    if (summary.canopyRemaps && !opts.gate) {
         console.log('\nTree canopy remaps (FoliageRenderer, every variant, season and BI-2 stage, shed crowns included; offRamp must be 0):');
         console.log(table(summary.canopyRemaps, [
             { label: 'sprite', get: (r) => r.sprite },
@@ -745,17 +1398,19 @@ function printReport(results, summary, opts) {
         ]));
     }
 
-    console.log('\nBy class (medians of per-asset values):');
-    const classRows = Object.entries(summary.classes).map(([name, c]) => ({ name, ...c }));
-    console.log(table(classRows, [
-        { label: 'class', get: (c) => c.name },
-        { label: 'assets', get: (c) => c.assets, right: true },
-        { label: 'flagged', get: (c) => c.flagged, right: true },
-        { label: 'colours', get: (c) => (c.medianColours ?? '-'), right: true },
-        { label: 'semiA', get: (c) => pct(c.medianSemiAlpha), right: true },
-        { label: 'sat', get: (c) => num(c.medianSaturation), right: true },
-        { label: 'tierA', get: (c) => pct(c.medianTierA), right: true },
-    ]));
+    if (!opts.gate) {
+        console.log('\nBy class (medians of per-asset values):');
+        const classRows = Object.entries(summary.classes).map(([name, c]) => ({ name, ...c }));
+        console.log(table(classRows, [
+            { label: 'class', get: (c) => c.name },
+            { label: 'assets', get: (c) => c.assets, right: true },
+            { label: 'flagged', get: (c) => c.flagged, right: true },
+            { label: 'colours', get: (c) => (c.medianColours ?? '-'), right: true },
+            { label: 'semiA', get: (c) => pct(c.medianSemiAlpha), right: true },
+            { label: 'sat', get: (c) => num(c.medianSaturation), right: true },
+            { label: 'tierA', get: (c) => pct(c.medianTierA), right: true },
+        ]));
+    }
 
     const problems = results.filter((r) => r.missing.length || r.errors.length);
     if (problems.length) {
@@ -767,16 +1422,33 @@ function printReport(results, summary, opts) {
     }
 
     const flagged = results.filter((r) => r.flags.length).length;
-    console.log(`\n${flagged} of ${results.length} assets flagged. Flags: colours > ${THRESHOLDS.colours}; semi-alpha > ${pct(THRESHOLDS.semiAlpha, 0)}; tier-a > ${pct(THRESHOLDS.tierA, 0)} of visible pixels outside status/emissive roles; off-ramp > ${pct(THRESHOLDS.offRamp, 0)}; water-loud = water pixels above S ${WATER_VOID_SATURATION_MAX}; scale = non-integer manifest display scale.`);
+    if (gateResult) {
+        if (summary.tavernGrainDensity) {
+            console.log(`Tavern 32x32 Sobel grain benchmark: ${num(summary.tavernGrainDensity, 1)} edge px / 1024 interior px`);
+        }
+        console.log(`Checked ${gateResult.assetsChecked} assets (${gateResult.allowlistedCount} ratcheted legacy allowlist entries, ${flagged} advisory flags).`);
+        if (gateResult.pass) {
+            console.log('[art:gate] PASS — zero budget regressions or new-asset violations.');
+        } else {
+            console.error(`[art:gate] FAIL — ${gateResult.violations.length} violation(s):`);
+            for (const v of gateResult.violations) {
+                console.error(`  - ${v.id} [${v.rule}]: ${v.message}`);
+            }
+        }
+    } else {
+        console.log(`\n${flagged} of ${results.length} assets flagged. Flags: colours > ${THRESHOLDS.colours}; semi-alpha > ${pct(THRESHOLDS.semiAlpha, 0)}; tier-a > ${pct(THRESHOLDS.tierA, 0)} of visible pixels outside status/emissive roles; off-ramp > ${pct(THRESHOLDS.offRamp, 0)}; water-loud = water pixels above S ${WATER_VOID_SATURATION_MAX}; scale = non-integer manifest display scale.`);
+    }
 }
 
-function toJson(results, summary) {
+function toJson(results, summary, gateResult = null) {
     return {
         generatedAt: new Date().toISOString(),
         thresholds: THRESHOLDS,
         groundBand: GROUND_SATURATION,
+        groundSaturationBySeason: GROUND_SATURATION_BY_SEASON,
         waterSaturationMax: WATER_VOID_SATURATION_MAX,
         summary,
+        gate: gateResult,
         assets: results.map((r) => ({
             ...r,
             terrain: r.terrain ? { ...r.terrain, landHist: undefined, rampHists: undefined } : null,
@@ -784,41 +1456,119 @@ function toJson(results, summary) {
     };
 }
 
+export function runArtAnalysis(opts = {}) {
+    const matches = idMatcher(opts.ids || null);
+    const manifest = loadSpriteManifest();
+    const tavernGrainDensity = computeTavernGrainBenchmark();
+    const results = [];
+    for (const group of ANALYZED_GROUPS) {
+        for (const entry of collectSpriteEntries(manifest, [group])) {
+            if (!entry?.id || !matches(entry.id)) continue;
+            results.push(analyzeEntry(entry, group, tavernGrainDensity));
+        }
+    }
+    const summary = summarize(results, { season: opts.season || 'summer', tavernGrainDensity });
+    if (!opts.ids || Object.values(TREE_SPRITES).some((sprite) => matches(sprite.id))) {
+        summary.seasonalRamps = seasonalRampReport();
+        summary.canopyRemaps = canopyRemapReport();
+    }
+    return { results, summary };
+}
+
 // -------------------------------------------------------------------- main
 
 function main() {
     const opts = parseArgs(process.argv.slice(2));
     if (opts.help) {
-        console.log('Usage: node scripts/sprites/art-analyze.mjs [--json] [--ids <id,prefix.*,...>] [--flagged]');
+        console.log('Usage: node scripts/sprites/art-analyze.mjs [--json] [--ids <id,prefix.*,...>] [--flagged] [--gate] [--budget <path>] [--season <spring|summer|autumn|winter>] [--update-budget [--allow-loosen]] [--with-feet-audit]');
         return;
     }
-    const matches = idMatcher(opts.ids);
-    const manifest = loadSpriteManifest();
-    const results = [];
-    for (const group of ANALYZED_GROUPS) {
-        for (const entry of collectSpriteEntries(manifest, [group])) {
-            if (!entry?.id || !matches(entry.id)) continue;
-            results.push(analyzeEntry(entry, group));
-        }
-    }
+
+    const { results, summary } = runArtAnalysis(opts);
     if (opts.ids && results.length === 0) {
         console.error(`[art-analyze] no manifest ids match: ${opts.ids.join(', ')}`);
     }
-    const summary = summarize(results);
-    if (!opts.ids || Object.values(TREE_SPRITES).some((sprite) => matches(sprite.id))) {
-        summary.seasonalRamps = seasonalRampReport();
-        summary.canopyRemaps = canopyRemapReport();
+
+    if (opts.updateBudget) {
+        const currentBudget = existsSync(opts.budgetPath)
+            ? loadArtBudget(opts.budgetPath)
+            : {
+                schemaVersion: 1,
+                globalRules: {
+                    maxColoursNewAsset: {
+                        characters: 64,
+                        equipment: 48,
+                        accessories: 48,
+                        statusOverlays: 48,
+                        buildings: 96,
+                        props: 48,
+                        vegetation: 32,
+                        terrain: 64,
+                        bridges: 64,
+                        atmosphere: 64,
+                    },
+                    maxSemiAlphaOutsideAtmosphere: 0.002,
+                    maxTierAOutsideExempt: 0.05,
+                    terrainMinOnRampShare: 0.97,
+                    terrainMaxEdgeDeltaE: 0.03,
+                    terrainMinEdgeContinuity: 0.99,
+                    mediumContractGrainRatioBand: [0.70, 1.30],
+                    styleDistanceSigmaCap: 2.0,
+                    feetAuditRequired: true,
+                    feetAuditInvocation: 'node scripts/sprites/feet-audit.mjs --ids=<id> --directions=e,w,se,sw',
+                },
+                groundSaturationBySeason: {
+                    spring: [0.48, 0.56],
+                    summer: [0.45, 0.50],
+                    autumn: [0.40, 0.50],
+                    winter: [0.22, 0.36],
+                },
+                legacyAllowlist: {},
+            };
+        const { budget: nextBudget, tightened } = updateBudgetMonotonic(currentBudget, results, summary, {
+            allowLoosen: opts.allowLoosen,
+            season: opts.season,
+        });
+        writeFileSync(opts.budgetPath, `${JSON.stringify(nextBudget, null, 2)}\n`);
+        console.log(`[art-analyze] updated ${opts.budgetPath} (${Object.keys(nextBudget.legacyAllowlist).length} allowlisted entries, ${tightened.length} tightened).`);
+        return;
     }
+
+    let gateResult = null;
+    if (opts.gate) {
+        const budget = loadArtBudget(opts.budgetPath);
+        gateResult = evaluateGate(results, summary, budget, { season: opts.season });
+        if (opts.withFeetAudit) {
+            const feet = runFeetAuditCheck(opts.ids);
+            gateResult.feetAudit = feet;
+            if (feet.exitCode !== 0) {
+                gateResult.pass = false;
+                gateResult.violations.push({
+                    id: 'feet-audit',
+                    rule: 'feetAudit',
+                    message: `feet-audit failed (${feet.failures.length} group failure(s))`,
+                });
+            }
+        }
+    }
+
     if (opts.json) {
-        console.log(JSON.stringify(toJson(results, summary), null, 2));
+        console.log(JSON.stringify(toJson(results, summary, gateResult), null, 2));
     } else {
-        printReport(results, summary, opts);
+        printReport(results, summary, opts, gateResult);
+    }
+
+    if (opts.gate && !gateResult.pass) {
+        process.exitCode = 1;
     }
 }
 
-try {
-    main();
-} catch (err) {
-    console.error(`[art-analyze] advisory run failed: ${err?.stack || err}`);
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+    try {
+        main();
+    } catch (err) {
+        const isGate = process.argv.includes('--gate') || process.argv.includes('--update-budget');
+        console.error(`[art-analyze] ${isGate ? 'gate' : 'advisory'} run failed: ${err?.stack || err}`);
+        process.exitCode = isGate ? 1 : 0;
+    }
 }
-process.exitCode = 0;

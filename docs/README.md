@@ -19,6 +19,7 @@ ClaudeVille documentation stays current, task-oriented, and close to the code it
 | [`docs/design-decisions.md`](design-decisions.md) | Current | Reference | Records load-bearing architecture decisions, rationale, and change obligations. |
 | [`docs/local-api.md`](local-api.md) | Current | Reference | Local HTTP endpoints, hook ingestion, and WebSocket updates. |
 | [`docs/material-channel-contract.md`](material-channel-contract.md) | Current | Contract | Defines semantic drawables, material channels, sidecars, atlases, and deterministic defaults. |
+| [`docs/medium-contract.md`](medium-contract.md) | Current | Contract | Defines the nine single-hand pixel-art rules across terrain, water, props, foliage, weather, light, and chrome, plus starred `art:gate` checks. |
 | [`docs/motion-budget.md`](motion-budget.md) | Current | Contract | Defines animation allocation gates, pulse bands, and reduced-motion fallbacks. |
 | [`docs/pixellab-reference.md`](pixellab-reference.md) | Current | Reference | Covers PixelLab capabilities, parameters, lifecycle, and API pitfalls; the generation runbook remains under `scripts/sprites/`. |
 | [`docs/rendering-baselines.md`](rendering-baselines.md) | Current | Reference | Defines deterministic renderer evidence, capture metadata, scenario matrix, and performance comparisons. |
