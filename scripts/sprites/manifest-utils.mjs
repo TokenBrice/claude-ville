@@ -137,6 +137,24 @@ export function roomMaskPathForEntry(entry) {
     return base ? base.replace(/\.png$/, '.rooms.png') : null;
 }
 
+// Wave 5.2 surface-v1 depth/normal sidecars (`surfaceSidecar: true`): semantic
+// RGBA8 height/normal/AO data beside base albedo, baked by
+// scripts/sprites/bake-depth-channels.mjs. Not an albedo art path.
+export function surfaceSidecarPathForEntry(entry) {
+    if (entry?.surfaceSidecar !== true) return null;
+    const base = pathForEntry(entry);
+    return base ? base.replace(/\.png$/, '.surface.png') : null;
+}
+
+// Wave 5.1 Harbor planar mirror underside proxy (`undersideSidecar: true`):
+// timber-joist underside soffit rendered strictly by the mirrored camera pass,
+// baked by scripts/sprites/bake-harbor-underside.mjs.
+export function undersideSidecarPathForEntry(entry) {
+    if (entry?.undersideSidecar !== true) return null;
+    const base = pathForEntry(entry);
+    return base ? base.replace(/\/base\.png$/, '/underside.png') : null;
+}
+
 export function inferSpriteTool(id) {
     if (id.startsWith('agent.')) return 'create_character';
     if (id.startsWith('terrain.')) return 'tileset';

@@ -16,6 +16,8 @@ import {
     repoRoot,
     roomMaskPathForEntry,
     spritesRoot,
+    surfaceSidecarPathForEntry,
+    undersideSidecarPathForEntry,
 } from './manifest-utils.mjs';
 import {
     materialExpectedPngPaths,
@@ -92,6 +94,7 @@ const REQUIRED_PRO_CHARACTER_IDS = new Set([
     'agent.codex.gpt55',
 ]);
 
+const expectedSurfaceSidecarPaths = new Set();
 for (const e of collectSpriteEntries(manifest)) {
     manifestEntries.push(e);
     if (e.id?.startsWith('agent.')) characterEntries.push(e);
@@ -99,9 +102,17 @@ for (const e of collectSpriteEntries(manifest)) {
     for (const p of expectedPathsForEntry(e)) expected.add(p);
     const roomMask = roomMaskPathForEntry(e);
     if (roomMask) expected.add(roomMask);
+    const surfaceSidecar = surfaceSidecarPathForEntry(e);
+    if (surfaceSidecar) {
+        expected.add(surfaceSidecar);
+        expectedSurfaceSidecarPaths.add(surfaceSidecar);
+    }
+    const undersideSidecar = undersideSidecarPathForEntry(e);
+    if (undersideSidecar) expected.add(undersideSidecar);
 }
 const expectedMaterialPngPaths = materialExpectedPngPaths(manifest);
 for (const path of expectedMaterialPngPaths) expected.add(path);
+for (const path of expectedSurfaceSidecarPaths) expectedMaterialPngPaths.add(path);
 
 let invalidManifest = 0;
 for (const entry of manifestEntries) {

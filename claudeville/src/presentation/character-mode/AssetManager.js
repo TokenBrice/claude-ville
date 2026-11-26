@@ -25,6 +25,29 @@ const AGENT_CELL_DIRECTIONS = Object.freeze(['s', 'se', 'e', 'ne', 'n', 'nw', 'w
 const WALK_ROWS = 6;
 const CHARACTER_RETRY_BASE_MS = 5_000;
 const CHARACTER_RETRY_MAX_MS = 60_000;
+const AUXILIARY_SIDECAR_CHANNELS = Object.freeze(['surface', 'underside']);
+
+function auxiliarySidecarPathFor(entry, channel, albedoPath) {
+    if (!entry || !albedoPath) return null;
+    if (channel === 'surface') {
+        if (typeof entry.surfaceSidecar === 'string') return entry.surfaceSidecar;
+        return entry.surfaceSidecar === true
+            ? String(albedoPath).replace(/\.png(?=($|\?))/, '.surface.png')
+            : null;
+    }
+    if (channel === 'underside') {
+        if (typeof entry.undersideSidecar === 'string') return entry.undersideSidecar;
+        return entry.undersideSidecar === true
+            ? String(albedoPath).replace(/\/base\.png(?=($|\?))/, '/underside.png')
+            : null;
+    }
+    return null;
+}
+
+function sidecarPathForEntry(entry, channel, albedoPath) {
+    return companionPathFor(entry, channel, albedoPath)
+        || auxiliarySidecarPathFor(entry, channel, albedoPath);
+}
 let assetManagerResourceSequence = 0;
 let derivedArtJobSequence = 0;
 
@@ -287,9 +310,10 @@ export class AssetManager {
         this.anchors = new Map();      // id → [cx, cy] in sprite-local px
         this.outlines = new Map();     // interactive id → HTMLCanvasElement (1-px gold edge)
         this._interactionArtIds = new Set();
-        this.companions = new Map(MATERIAL_CHANNELS
-            .filter((channel) => channel !== 'albedo')
-            .map((channel) => [channel, new Map()]));
+        this.companions = new Map([
+            ...MATERIAL_CHANNELS.filter((channel) => channel !== 'albedo'),
+            ...AUXILIARY_SIDECAR_CHANNELS,
+        ].map((channel) => [channel, new Map()]));
         this.atlasImages = new Map();  // `${atlasId}:${channel}` → HTMLImageElement
         this.atlasMetadata = new Map();// atlas id → deterministic metadata JSON
         this.actionStrips = new Map(); // agent id → { image, meta, path, channels }
@@ -809,7 +833,7 @@ export class AssetManager {
                     materialClass: layer.materialClass || entry.materialClass,
                     elevation: layer.elevation || entry.elevation,
                     occluder: layer.occluder || entry.occluder,
-                    atlasFrame: parentAtlas?.atlas
+                    atlasFrame: parentAtlas?.atlas && layer?.atlasExclude !== true
                         ? { atlas: parentAtlas.atlas, key: id }
                         : null,
                     parentId: entry.id,
@@ -939,9 +963,15 @@ export class AssetManager {
         ));
         const sidecarLoads = [];
         for (const entry of entries) {
+            const basePath = this._pathFor(entry);
             for (const channel of MATERIAL_CHANNELS) {
                 if (channel === 'albedo') continue;
-                const path = companionPathFor(entry, channel, this._pathFor(entry));
+                const path = companionPathFor(entry, channel, basePath);
+                if (!path) continue;
+                sidecarLoads.push(this._loadCompanion(entry, channel, path, { signal, generation }));
+            }
+            for (const channel of AUXILIARY_SIDECAR_CHANNELS) {
+                const path = auxiliarySidecarPathFor(entry, channel, basePath);
                 if (!path) continue;
                 sidecarLoads.push(this._loadCompanion(entry, channel, path, { signal, generation }));
             }
@@ -1858,6 +1888,9 @@ export class AssetManager {
                 for (const channel of MATERIAL_CHANNELS) {
                     if (channel !== 'albedo') pins.add(`companion:${channel}:${id}`);
                 }
+                for (const channel of AUXILIARY_SIDECAR_CHANNELS) {
+                    pins.add(`companion:${channel}:${id}`);
+                }
                 const atlasId = normalizeAtlasFrame(this.getEntry(id)?.atlasFrame)?.atlas;
                 if (!atlasId) continue;
                 for (const channel of MATERIAL_CHANNELS) pins.add(`atlas:${atlasId}:${channel}`);
@@ -1876,7 +1909,7 @@ export class AssetManager {
             const channel = parts[1];
             const id = parts.slice(2).join(':');
             const entry = this.getEntry(id);
-            const path = entry && companionPathFor(entry, channel, this._pathFor(entry));
+            const path = entry && sidecarPathForEntry(entry, channel, this._pathFor(entry));
             if (entry && path) operation = this._loadCompanion(entry, channel, path, { generation });
         } else {
             const atlasId = parts[1];

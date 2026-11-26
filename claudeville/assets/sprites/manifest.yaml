@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-11-26-w4-wave4"
+  assetVersion: "2026-11-26-w5-wave5"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -2393,6 +2393,9 @@ buildings:
     # 6.3 — base.rooms.png: R = room index (1..N) on each room's glass,
     # baked by scripts/sprites/bake-room-masks.mjs.
     roomsSidecar: true
+    # W5.2 — base.surface.png (surface-v1 height/normal/AO page),
+    # baked by scripts/sprites/bake-depth-channels.mjs.
+    surfaceSidecar: true
     atlasFrame: { atlas: world-pilot, key: building.command }
     elevation: { base: 0, top: 240, unit: sprite-px }
     emissive:
@@ -2412,6 +2415,16 @@ buildings:
       # at resting zoom >= 2, in the fixed order aperture -> occupants ->
       # interior -> slot marks -> foreground; the generic manifest-layer pass
       # skips them, so they never appear on the default frame.
+      # W5.2 — Bayer-peel roof cap for the 4-layer Command east-wing cutaway,
+      # cropped pixel-exact from base.png by scripts/sprites/bake-cutaway-command.mjs.
+      roof:
+        tool: procedural
+        prompt: "exact pixel crop of Command east wing roof and front wall over the cutaway parallelogram for 4-step Bayer peel; baked deterministically from base.png"
+        width: 360
+        height: 240
+        anchor: [199, 164]
+        materialClass: stone
+        atlasExclude: true
       aperture:
         tool: hand-authored
         prompt: "sectional cut through the Command east wing wall: shaded ceiling, stone back wall with course lines, a single wall sconce, cool stone floor; authored, not generated"
@@ -2419,6 +2432,7 @@ buildings:
         height: 240
         anchor: [199, 164]
         materialClass: stone
+        atlasExclude: true
       interior:
         tool: hand-authored
         prompt: "Command inspection interior dressing composed from the prop.interior kit: reading desk, planning table, instrument stand, pinned parchment; authored, not generated"
@@ -2426,6 +2440,7 @@ buildings:
         height: 240
         anchor: [199, 164]
         materialClass: timber
+        atlasExclude: true
       foreground:
         tool: hand-authored
         prompt: "near frame of the Command aperture: sawn floor-slab sill, near jamb outline and the far jamb's exposed wall thickness that occlude the presented occupant; authored, not generated"
@@ -2433,6 +2448,7 @@ buildings:
         height: 240
         anchor: [199, 164]
         materialClass: stone
+        atlasExclude: true
       # 6.2 — the lifted gate (visible leaf y 116–193 = 78 px, 1.2× the 1:1
       # body; the leaf bottom was pushed 1 row down over the threshold in
       # base.png, its sidecars and this strip; the porch
@@ -2655,6 +2671,9 @@ buildings:
     occluderSidecar: true
     surfaceCode: true
     roomsSidecar: true
+    # W5.1 — underside.png timber-joist proxy for WebGPU PlanarWaterPass,
+    # baked by scripts/sprites/bake-harbor-underside.mjs.
+    undersideSidecar: true
     atlasFrame: { atlas: world-pilot, key: building.harbor }
     elevation: { base: 0, top: 284, unit: sprite-px }
     emissive:
@@ -2727,6 +2746,40 @@ buildings:
         anchor: [302, 122]
         dressing: true
         materialClass: timber
+      # W5.2 — 4-layer Harbor Chart Loft lifted-roof cutaway (Spec 04 §5.3),
+      # baked deterministically by scripts/sprites/bake-cutaway-harbor.mjs.
+      roof:
+        tool: procedural
+        prompt: "exact pixel crop of Harbor slate hood roof over the Chart Loft cutaway for 4-step Bayer peel; baked deterministically from base.png"
+        width: 384
+        height: 284
+        anchor: [131, 154]
+        materialClass: stone
+        atlasExclude: true
+      aperture:
+        tool: procedural
+        prompt: "sectional cut through the Harbor Chart Loft upper storey: planked oak floor and counting-house back wall; baked deterministically"
+        width: 384
+        height: 284
+        anchor: [131, 154]
+        materialClass: timber
+        atlasExclude: true
+      interior:
+        tool: procedural
+        prompt: "Harbor Chart Loft interior dressing: drafting chart table, ledger desk, nautical maps and lantern rack mount; baked deterministically"
+        width: 384
+        height: 284
+        anchor: [131, 154]
+        materialClass: timber
+        atlasExclude: true
+      foreground:
+        tool: procedural
+        prompt: "near frame of the Harbor Chart Loft cutaway: timber beams and sawn sill framing presented occupants; baked deterministically"
+        width: 384
+        height: 284
+        anchor: [131, 154]
+        materialClass: timber
+        atlasExclude: true
 
   # ── HERO: The Tavern ── (2026-10-14; replaces the retired Clock Observatory
   # on its 4x4 footprint). Pro model (create_image_pro, 400x368 canvas, seed
@@ -2909,6 +2962,9 @@ buildings:
     occluderSidecar: true
     surfaceCode: true
     roomsSidecar: true
+    # W5.2 — base.surface.png (surface-v1 height/normal/AO page),
+    # baked by scripts/sprites/bake-depth-channels.mjs.
+    surfaceSidecar: true
     atlasFrame: { atlas: world-pilot, key: building.forge }
     elevation: { base: 0, top: 232, unit: sprite-px }
     emissive:
@@ -3209,6 +3265,40 @@ buildings:
         anchor: [279, 205]
         dressing: true
         materialClass: timber
+      # W5.2 — 4-layer Archive Repo Directory Bays & Compaction Shelf cutaway (Spec 04 §5.2),
+      # baked deterministically by scripts/sprites/bake-cutaway-archive.mjs.
+      roof:
+        tool: procedural
+        prompt: "exact pixel crop of Archive nave roof and lancet wall over the cutaway parallelogram for 4-step Bayer peel; baked deterministically from base.png"
+        width: 336
+        height: 240
+        anchor: [167, 182]
+        materialClass: stone
+        atlasExclude: true
+      aperture:
+        tool: procedural
+        prompt: "sectional cut through the Archive library nave: stone flagstone floor, lancet back wall and rear Loom wall; baked deterministically"
+        width: 336
+        height: 240
+        anchor: [167, 182]
+        materialClass: stone
+        atlasExclude: true
+      interior:
+        tool: procedural
+        prompt: "Archive library interior dressing: five oak Repo Directory Bays with lecterns and north Compaction Shelf; baked deterministically"
+        width: 336
+        height: 240
+        anchor: [167, 182]
+        materialClass: timber
+        atlasExclude: true
+      foreground:
+        tool: procedural
+        prompt: "near frame of the Archive cutaway: sawn stone sill and near buttress jambs occluding lower legs; baked deterministically"
+        width: 336
+        height: 240
+        anchor: [167, 182]
+        materialClass: stone
+        atlasExclude: true
 
 # ─── PROPS ───────────────────────────────────────────────────────────────────
 # Prop ids match the camelCase `type` field in IsometricRenderer.js

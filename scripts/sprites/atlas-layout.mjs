@@ -170,6 +170,7 @@ export function frameSpecsForEntry(entry, channels = MATERIAL_CHANNELS) {
         for (const name of Object.keys(entry.layers).sort()) {
             if (name === 'base') continue;
             const layer = entry.layers[name];
+            if (layer?.atlasExclude === true) continue;
             const layerDims = declaredDimensions(layer);
             const layerPath = `buildings/${entry.id}/${name}.png`;
             frames.push({
