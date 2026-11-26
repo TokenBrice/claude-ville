@@ -6,12 +6,17 @@ import path from 'node:path';
 
 import { BUILDING_DEFS } from '../../claudeville/src/config/buildings.js';
 import { Building } from '../../claudeville/src/domain/entities/Building.js';
-import { apertureCutContains } from '../../claudeville/src/presentation/character-mode/BuildingApertureModel.js';
+import {
+    APERTURE_GLASS_DWELL_MS,
+    apertureCutContains,
+    normalizeApertureLayers,
+} from '../../claudeville/src/presentation/character-mode/BuildingApertureModel.js';
 import { BUILDING_VISUAL_REGISTRY } from '../../claudeville/src/presentation/character-mode/BuildingVisualRegistry.js';
 import { withPostcardFrame } from '../../claudeville/src/presentation/character-mode/Postcard.js';
 import { buildingCenterToWorld, tileToWorld } from '../../claudeville/src/presentation/character-mode/Projection.js';
 import {
     FORGE_ARCH_ROWS,
+    FORGE_OPEN_FRONT_PROFILE,
     OPEN_FRONT_PROFILES,
     TAVERN_ARCH_ROWS,
     buildOpenFrontSprites,
@@ -31,7 +36,6 @@ import {
     CUTAWAY_LAYERS_3,
     CUTAWAY_LAYERS_4,
     CutawayPeelController,
-    GLASS_DWELL_MS,
     HARBOR_CUTAWAY_PROFILE,
     HARBOR_MAX_LANTERNS,
     WAR_TABLE_LANDMARKS,
@@ -46,8 +50,9 @@ import {
     drawCommandWarTable,
     drawHarborCutaway,
     formatCommandSillBar,
+    archiveShelfGeometry,
+    harborRackGeometry,
     hashDirectoryName,
-    normalizeCutawayLayers,
     projectWarTableDot,
 } from '../../claudeville/src/presentation/character-mode/BuildingCutaways.js';
 import {
@@ -391,7 +396,12 @@ test('§5.1 Command War Table: upright 3x5 vs errored 5x3 pawns, returned remova
     // Exact sill bar format (fits 168 px at z2).
     assert.equal(formatCommandSillBar({ working: 3, waiting: 1, overflow: 2 }), '3 WORKING · 1 WAITING · +2');
     assert.equal(formatCommandSillBar({ working: 2, waiting: 0, overflow: 0 }), '2 WORKING · 0 WAITING');
-    assert.equal(state.sillBar, '3 WORKING · 1 WAITING · +3');
+    // W5 Fix-B — the sill bar counts every presented session and every
+    // mustered crew once, by resolved status: leads a/b and the helper, nine
+    // of lead-a's children (child-2 errored) and lead-b's one, and the waiter.
+    assert.equal(state.workingCount, 13);
+    assert.equal(state.waitingCount, 1);
+    assert.equal(state.sillBar, '13 WORKING · 1 WAITING · +3');
 
     // Drawing in normal mode vs postcardFrame().
     const painted = [];
@@ -511,8 +521,30 @@ test('§5.2 Archive: 5 bays stable hashing, 5th fallback bay, 12-spine shelf cap
     assert.equal(resDefault.drawnSpines, 12);
     assert.equal(resDefault.overflowStamped, true);
     assert.equal(resDefault.bayNamesDrawn, false);
-    assert.equal(ctxDefault.images.length, 1, 'Loom of Days panel scaled onto rear wall');
+    assert.equal(resDefault.loomDrawn, true);
+    assert.equal(ctxDefault.images.length, ARCHIVE_CUTAWAY_PROFILE.loomWall.destRect.width,
+        'Loom of Days panel sheared onto the rear wall one texel column at a time');
     assert.equal(ctxDefault.textCalls.length, 0);
+
+    // W5 Fix-B (Fable P1-3) — no panel yet: nothing at the Loom's place, no
+    // empty board; the shelf spines step down the +0.5 wall inside x0..x1.
+    const bare = buildArchiveCutawayState({ directories: dirs, compactions, chronicleEvents, now: today, loomPanel: null });
+    const ctxBare = makeRecordingCtx();
+    const resBare = drawArchiveCutaway(ctxBare, bare);
+    assert.equal(resBare.loomDrawn, false);
+    assert.equal(ctxBare.images.length, 0);
+    const loomRect = ARCHIVE_CUTAWAY_PROFILE.loomWall.destRect;
+    const shelfGeometry = archiveShelfGeometry();
+    for (const rect of ctxBare.rects) {
+        assert.ok(rect.x >= ARCHIVE_CUTAWAY_PROFILE.cut.x0 && rect.x + rect.w - 1 <= ARCHIVE_CUTAWAY_PROFILE.cut.x1,
+            `shelf rect [${rect.x},${rect.y} ${rect.w}x${rect.h}] stays inside x0..x1`);
+        const insideLoom = rect.x >= loomRect.x && rect.x < loomRect.x + loomRect.width && rect.y < loomRect.y + loomRect.height && rect.w === loomRect.width;
+        assert.equal(insideLoom, false, 'no Loom board without a panel');
+    }
+    const first = shelfGeometry.spineAt(0);
+    const last = shelfGeometry.spineAt(ARCHIVE_MAX_SPINES - 1);
+    assert.equal(last.y - first.y, Math.round(0.5 * (last.x - ARCHIVE_CUTAWAY_PROFILE.compactionShelf.at[0])) - Math.round(0.5 * (first.x - ARCHIVE_CUTAWAY_PROFILE.compactionShelf.at[0])),
+        'spines step down the wall slope');
 
     const glassTexts = [];
     const ctxGlass = makeRecordingCtx();
@@ -578,15 +610,44 @@ test('§5.3 Harbor Chart Loft: 2 Harbor-classified slots, 4-lantern cap + numera
     assert.equal(result.overflowStamped, true);
     assert.equal(ctx.textCalls.length, 0);
     assert.equal(textCalls, 0);
+
+    // W5 Fix-B (Fable P1-1/P1-2) — the loft is sheared on the oriel wall's
+    // slope, and the rack beam, all four lanterns and a `+99` stamp land
+    // strictly inside it.
+    assert.equal(HARBOR_CUTAWAY_PROFILE.cut.slope, -0.5);
+    const full = buildHarborCutawayState({
+        agents: [],
+        harborPendingRepos: Array.from({ length: HARBOR_MAX_LANTERNS + 120 }, (_, i) => ({ repoRoot: `/work/r${i}`, pendingCommits: 1 })),
+    });
+    const rackCtx = makeRecordingCtx();
+    drawHarborCutaway(rackCtx, full, { layer: 'all' });
+    let outside = 0;
+    for (const rect of rackCtx.rects) {
+        for (let y = rect.y; y < rect.y + rect.h; y++) {
+            for (let x = rect.x; x < rect.x + rect.w; x++) {
+                if (!apertureCutContains(HARBOR_CUTAWAY_PROFILE.cut, x + 0.5, y + 0.5)) outside++;
+            }
+        }
+    }
+    assert.equal(outside, 0, 'every rack, lantern, stamp and table texel inside the sheared cut');
+    const rack = harborRackGeometry();
+    assert.equal(rack.beamY(rack.x1) - rack.beamY(rack.x0), Math.round(-0.5 * (rack.x1 - rack.x0)), 'the beam climbs the wall slope');
+    // The wall layer and the props layer split the painter around the occupants.
+    const wallCtx = makeRecordingCtx();
+    const propsCtx = makeRecordingCtx();
+    assert.equal(drawHarborCutaway(wallCtx, full, { layer: 'wall' }).drawnLanterns, 4);
+    assert.equal(drawHarborCutaway(propsCtx, full, { layer: 'props' }).drawnLanterns, 0);
+    assert.equal(wallCtx.rects.length + propsCtx.rects.length, rackCtx.rects.length);
 });
 
 // ─── 5. Bayer Cutaway Peel Controller & OpenFront Engine ─────────────────────
 
 test('CutawayPeelController: selection>=z2 & 300ms Glass dwell triggers, 4x150ms Bayer steps & reducedMotion instant swap', () => {
     assert.equal(BAYER_4X4.length, 16);
-    assert.equal(normalizeCutawayLayers(CUTAWAY_LAYERS_4).hasRoofPeel, true);
-    assert.equal(normalizeCutawayLayers(CUTAWAY_LAYERS_3).hasRoofPeel, false);
-    assert.equal(normalizeCutawayLayers(['only-one']), null);
+    // One layer-stack normalizer and one dwell (BuildingApertureModel).
+    assert.equal(normalizeApertureLayers(CUTAWAY_LAYERS_4).hasRoof, true);
+    assert.equal(normalizeApertureLayers(CUTAWAY_LAYERS_3).hasRoof, false);
+    assert.equal(normalizeApertureLayers(['only-one']), null);
 
     // Pure Bayer peel mask coverage across an 8x8 tile (4 blocks of 4x4): 100%, 75%, 50%, 25%, 0%.
     const expectedCoverage = [1, 0.75, 0.5, 0.25, 0];
@@ -647,15 +708,19 @@ test('CutawayPeelController: selection>=z2 & 300ms Glass dwell triggers, 4x150ms
     assert.equal(rmClose.step, 0);
     assert.equal(rmClose.isOpen, false);
 
-    // Inspection Glass dwell trigger: closed before 300ms, opens at >= 300ms even at zoom 1.
+    // Inspection Glass dwell trigger: never below z 2, however long the
+    // lens dwells; at z >= 2 closed before 300ms, open at >= 300ms.
+    const lowCtrl = new CutawayPeelController();
+    assert.equal(lowCtrl.update({ buildingId: 'harbor', glassHover: true, zoom: 1, now: 2000 }).isOpen, false);
+    assert.equal(lowCtrl.update({ buildingId: 'harbor', glassHover: true, zoom: 1, now: 2000 + APERTURE_GLASS_DWELL_MS * 10 }).isOpen, false);
     const glassCtrl = new CutawayPeelController();
-    assert.equal(glassCtrl.update({ buildingId: 'harbor', glassHover: true, zoom: 1, now: 2000 }).isOpen, false);
-    assert.equal(glassCtrl.update({ buildingId: 'harbor', glassHover: true, zoom: 1, now: 2000 + GLASS_DWELL_MS - 1 }).isOpen, false);
-    const dwellStart = glassCtrl.update({ buildingId: 'harbor', glassHover: true, zoom: 1, now: 2000 + GLASS_DWELL_MS });
+    assert.equal(glassCtrl.update({ buildingId: 'harbor', glassHover: true, zoom: 2, now: 2000 }).isOpen, false);
+    assert.equal(glassCtrl.update({ buildingId: 'harbor', glassHover: true, zoom: 2, now: 2000 + APERTURE_GLASS_DWELL_MS - 1 }).isOpen, false);
+    const dwellStart = glassCtrl.update({ buildingId: 'harbor', glassHover: true, zoom: 2, now: 2000 + APERTURE_GLASS_DWELL_MS });
     assert.equal(dwellStart.trigger, 'glass-dwell');
     assert.equal(dwellStart.isOpen, true);
     assert.equal(dwellStart.step, 0);
-    const dwellStep2 = glassCtrl.update({ buildingId: 'harbor', glassHover: true, zoom: 1, now: 2000 + GLASS_DWELL_MS + 300 });
+    const dwellStep2 = glassCtrl.update({ buildingId: 'harbor', glassHover: true, zoom: 2, now: 2000 + APERTURE_GLASS_DWELL_MS + 300 });
     assert.equal(dwellStep2.step, 2);
     assert.equal(dwellStep2.roofCoverage, 0.5);
 });
@@ -665,6 +730,7 @@ test('OpenFront: Tavern & Forge profiles, exact RGBA byte preservation, bay cont
     const forge = getOpenFrontProfile('building.forge');
     assert.ok(tavern && forge);
     assert.equal(tavern.frontArchRows, TAVERN_ARCH_ROWS);
+    assert.equal(forge, FORGE_OPEN_FRONT_PROFILE, 'one authoritative Forge profile');
     assert.equal(forge.frontArchRows, FORGE_ARCH_ROWS);
     assert.deepEqual(forge.nativeSize, { width: 256, height: 232 });
     assert.deepEqual(forge.anchor, [128, 169]);
@@ -684,11 +750,13 @@ test('OpenFront: Tavern & Forge profiles, exact RGBA byte preservation, bay cont
     const split = splitOpenFrontMask(w, h, forge.frontArchRows, sourceRgba);
     assert.ok(split.frontArchCount > 500, 'Forge front arch mask covers piers and lintel');
     assert.equal(split.frontArchCount + split.rearInteriorCount, w * h);
-    // Open smithy mouth center (x=86, y=170) stays in rearInterior, never frontArch.
-    assert.equal(split.frontArchMask[170 * w + 86], 0, 'open mouth stays in rearInterior');
+    // Both arches' interiors (x=50 and x=86 at y=170) stay in rearInterior.
+    assert.equal(split.frontArchMask[170 * w + 86], 0, 'right arch stays in rearInterior');
     assert.equal(split.rearInteriorMask[170 * w + 86], 1);
-    // Left pier (x=50, y=150) belongs to frontArch.
-    assert.equal(split.frontArchMask[150 * w + 50], 1, 'left pier in frontArch');
+    assert.equal(split.frontArchMask[150 * w + 50], 0, 'left arch stays in rearInterior');
+    // The centre pier (x=64, y=150) and the oak lintel (x=80, y=120) are front arch.
+    assert.equal(split.frontArchMask[150 * w + 64], 1, 'centre pier in frontArch');
+    assert.equal(split.frontArchMask[120 * w + 80], 1, 'lintel in frontArch');
 
     for (let p = 0; p < w * h; p++) {
         assert.equal(split.frontArchMask[p] + split.rearInteriorMask[p], 1);

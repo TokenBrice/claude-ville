@@ -1,7 +1,10 @@
 // Wave 5-B wiring (D6, Spec 04 §5.1–5.3, Spec 03 §1.2 5.1–5.4, X-13): the
-// 12 lifted-roof cutaway layers, the calibrated open-front Forge, the
-// surface-v1 pages, and their runtime wiring in the registry, the aperture
-// model, BuildingSprite and world:validate-buildings.
+// 12 lifted-roof cutaway layers, the open-front Forge arcade, the surface-v1
+// pages, and their runtime wiring in the registry, the aperture model,
+// BuildingSprite and world:validate-buildings. W5 Fix-B adds the council's
+// fixes: the arcade bake and its one profile, the sheared Harbor loft, the
+// Archive's Loom/shelf, the peel replay, the resolved Glass target, the
+// night grade, reader spill and per-repo lanterns.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -28,11 +31,10 @@ import {
     HARBOR_CUTAWAY_PROFILE,
     warTableTexelToSprite,
 } from '../../claudeville/src/presentation/character-mode/BuildingCutaways.js';
-import { BuildingSprite, resolveOpenFrontProfile } from '../../claudeville/src/presentation/character-mode/BuildingSprite.js';
+import { BuildingSprite, gradedPainterContext, resolveOpenFrontProfile } from '../../claudeville/src/presentation/character-mode/BuildingSprite.js';
 import {
     apertureFloorY,
     BUILDING_VISUAL_REGISTRY,
-    FORGE_OPEN_FRONT_CALIBRATION,
     getBuildingApertureProfile,
     getBuildingOpenFront,
     getBuildingSurfaceAoPairs,
@@ -40,16 +42,25 @@ import {
     isBuildingApertureLayer,
 } from '../../claudeville/src/presentation/character-mode/BuildingVisualRegistry.js';
 import { appendDepthSortedDrawables } from '../../claudeville/src/presentation/character-mode/DrawablePass.js';
-import { FORGE_ARCH_ROWS, OPEN_FRONT_PROFILES, parseArchRows } from '../../claudeville/src/presentation/character-mode/OpenFront.js';
+import { FORGE_ARCH_ROWS, FORGE_OPEN_FRONT_PROFILE, OPEN_FRONT_PROFILES, parseArchRows } from '../../claudeville/src/presentation/character-mode/OpenFront.js';
+import { repoProfile } from '../../claudeville/src/presentation/shared/RepoColor.js';
 import { withPostcardFrame } from '../../claudeville/src/presentation/character-mode/Postcard.js';
 import { buildingCenterToWorld, tileToWorld } from '../../claudeville/src/presentation/character-mode/Projection.js';
 import { bakeArchiveCutaway } from '../sprites/bake-cutaway-archive.mjs';
 import { bakeCommandCutaway, cutawayMask, readPng } from '../sprites/bake-cutaway-command.mjs';
 import { bakeHarborCutaway } from '../sprites/bake-cutaway-harbor.mjs';
-import { calibrateForgeOpenFront, verifyForgeCalibration } from '../sprites/bake-forge-openfront.mjs';
+import {
+    FORGE_ARCADE,
+    LINTEL_TOP,
+    SMITH_HEIGHT_PX,
+    bakeForgeOpenFront,
+    readForgeFiles,
+    verifyForgeBake,
+} from '../sprites/bake-forge-openfront.mjs';
 import {
     CUTAWAY_BUILDINGS,
     cutawayReport,
+    livingPainterReport,
     openFrontReport,
     OPEN_FRONT_BUILDINGS,
     surfaceSidecarReport,
@@ -144,7 +155,7 @@ function rendererWith(fields = {}) {
         _harborPendingRepos: [],
         _compactionRecords: [],
         _openFrontSprites: new Map(),
-        _openFrontActive: '',
+        _openFrontActive: new Set(),
         _partPassSerial: 1,
         motionScale: 1,
         ...fields,
@@ -306,42 +317,79 @@ test('every cutaway slot lies inside its cut, below its floor line, on an opaque
         mine: { ...BUILDING_VISUAL_REGISTRY.mine, aperture: BUILDING_VISUAL_REGISTRY.command.aperture },
     });
     assert.ok(reported.some((line) => /registry\.mine\.aperture: D6/.test(line)));
+
+    // W5 Fix-B (Fable P1-2) — every living-painter texel lies inside its cut,
+    // and a painter that overhangs the cut is caught.
+    for (const type of CUTAWAY_BUILDINGS) {
+        const living = livingPainterReport(type, getBuildingApertureProfile(type));
+        assert.deepEqual(living.errors, [], `${type} living painters inside the cut`);
+        assert.ok(living.rects > 10);
+    }
+    const narrow = { ...getBuildingApertureProfile('harbor'), cut: { ...HARBOR_CUTAWAY_PROFILE.cut, x1: 150 } };
+    assert.ok(livingPainterReport('harbor', narrow).errors.some((error) => /outside the cut/.test(error)));
 });
 
 // ─── 3. Forge open front + surface-v1 pages ─────────────────────────────────
 
-test('the Forge open front is calibrated to the real furnace arch; the shipped geometric rows split the stone beside it', () => {
-    const calibration = calibrateForgeOpenFront();
-    const base = spritePng('forge', 'base.png');
-    assert.deepEqual(verifyForgeCalibration(calibration, { base }), []);
-    assert.equal(calibration.rows.join(''), FORGE_OPEN_FRONT_CALIBRATION.frontArchRows, 'registry block is current');
+test('the Forge open front is a two-arch arcade: the bake reproduces every file, and OpenFront holds its one profile', () => {
+    const current = readForgeFiles();
+    const bake = bakeForgeOpenFront(current);
+    assert.deepEqual(verifyForgeBake(bake, { original: current.base }), []);
+    for (const [key, raster] of Object.entries(bake.files)) {
+        assert.ok(bytesEqual(current[key].data, raster.data), `building.forge ${key} matches the deterministic bake`);
+    }
+    // One authoritative profile: OpenFront's, named (never overridden) by the registry.
+    assert.equal(OPEN_FRONT_PROFILES.forge, FORGE_OPEN_FRONT_PROFILE);
+    assert.equal(FORGE_OPEN_FRONT_PROFILE.frontArchRows, bake.calibration.rows.join(''), 'OpenFront block is current');
+    assert.equal(FORGE_ARCH_ROWS, FORGE_OPEN_FRONT_PROFILE.frontArchRows);
+    assert.deepEqual(Object.keys(getBuildingOpenFront('forge')).sort(), ['drawables', 'profile']);
+    assert.equal(resolveOpenFrontProfile(getBuildingOpenFront('forge')), FORGE_OPEN_FRONT_PROFILE);
+    assert.equal(resolveOpenFrontProfile(getBuildingOpenFront('tavern')), OPEN_FRONT_PROFILES.tavern);
+    assert.deepEqual(FORGE_OPEN_FRONT_PROFILE.anchor, [128, 169]);
+    assert.deepEqual(FORGE_OPEN_FRONT_PROFILE.nativeSize, { width: 256, height: 232 });
+    assert.deepEqual(FORGE_OPEN_FRONT_PROFILE.bays.map((bay) => bay.id), ['forge-hearth', 'forge-anvil']);
+
     const width = 256;
     const front = new Uint8Array(width * 232);
-    for (const [y, x, length] of parseArchRows(FORGE_OPEN_FRONT_CALIBRATION.frontArchRows, width, 232)) {
+    for (const [y, x, length] of parseArchRows(FORGE_OPEN_FRONT_PROFILE.frontArchRows, width, 232)) {
         for (let i = x; i < x + length; i++) front[y * width + i] = 1;
     }
+    // Fire, rest mask and bellows stay on the interior: the arch never covers them.
     const hearth = spritePng('forge', 'hearth.png');
+    const banked = spritePng('forge', 'banked.png');
     for (let i = 0; i < front.length; i++) {
         if (hearth.data[i * 4 + 3] > 0) assert.equal(front[i], 0, 'no fire texel is front arch');
+        if (banked.data[i * 4 + 3] > 0) assert.equal(front[i], 0, 'no rest texel is front arch');
     }
-    // Calibrated: the stone pier right of the mouth (x 95, y 170) is front arch.
-    assert.equal(front[170 * width + 95], 1);
-    // The shipped geometric rows put that same stone in the rear interior.
-    const shipped = new Uint8Array(width * 232);
-    for (const [y, x, length] of parseArchRows(FORGE_ARCH_ROWS, width, 232)) for (let i = x; i < x + length; i++) shipped[y * width + i] = 1;
-    assert.equal(shipped[170 * width + 95], 0);
-    assert.equal(OPEN_FRONT_PROFILES.forge.frontArchRows, FORGE_ARCH_ROWS, 'OpenFront.js is untouched');
+    // The centre pier and the lintel are front arch; both arch interiors are not.
+    assert.equal(front[150 * width + 64], 1);
+    assert.equal(front[120 * width + 80], 1);
+    assert.equal(front[150 * width + 48], 0);
+    assert.equal(front[150 * width + 80], 0);
 
-    const resolved = resolveOpenFrontProfile(FORGE_OPEN_FRONT_CALIBRATION);
-    assert.equal(resolved.calibrated, true);
-    assert.equal(resolved.frontArchRows, FORGE_OPEN_FRONT_CALIBRATION.frontArchRows);
-    assert.deepEqual(resolved.anchor, [128, 169]);
-    assert.deepEqual(resolved.nativeSize, { width: 256, height: 232 });
-    assert.deepEqual(resolved.bays.map((bay) => bay.id), ['forge-hearth', 'forge-anvil']);
-    assert.equal(resolveOpenFrontProfile(FORGE_OPEN_FRONT_CALIBRATION), resolved, 'memoized');
-    assert.deepEqual(openFrontReport('forge', FORGE_OPEN_FRONT_CALIBRATION).errors, []);
-    const onArch = { ...FORGE_OPEN_FRONT_CALIBRATION, bays: [{ id: 'bad', at: [95, 170] }] };
-    assert.ok(openFrontReport('forge', onArch).errors.some((error) => /stands on the front arch/.test(error)));
+    // Each bay: a buildings.js work slot on the open floor, inside an arch,
+    // its smith's crown clear of the lintel.
+    const forgeDef = BUILDING_DEFS.find((def) => def.type === 'forge');
+    const forge = new Building(forgeDef);
+    for (const bay of FORGE_OPEN_FRONT_PROFILE.bays) {
+        const slot = forgeDef.visitTiles.find((tile) => tile.tileX === bay.tile.tileX && tile.tileY === bay.tile.tileY);
+        assert.equal(slot?.role, 'work', `${bay.id} is a work slot`);
+        assert.equal(forge.isOpenFloor(bay.tile.tileX, bay.tile.tileY), true, `${bay.id} is open floor`);
+        assert.equal(forge.blocksWalkTile(bay.tile.tileX, bay.tile.tileY), false, `${bay.id} is walkable`);
+        assert.ok(FORGE_ARCADE.openings.some((opening) => bay.at[0] >= opening.x0 && bay.at[0] <= opening.x1), `${bay.id} inside an arch`);
+        assert.ok(bay.at[1] - SMITH_HEIGHT_PX >= LINTEL_TOP[bay.at[0]], `${bay.id} crown clears the lintel`);
+        assert.equal(front[bay.at[1] * width + bay.at[0]], 0, `${bay.id} feet off the front arch`);
+    }
+    // The trough's corner and the yard anvil keep row 29 closed either side.
+    assert.equal(forge.blocksWalkTile(26, 29), true);
+    assert.equal(forge.blocksWalkTile(29, 29), true);
+
+    assert.deepEqual(openFrontReport('forge', getBuildingOpenFront('forge'), undefined, BUILDING_DEFS).errors, []);
+    assert.equal(openFrontReport('tavern', getBuildingOpenFront('tavern')), null, "the Tavern's drawables are TavernArcade's");
+    const onPier = { ...forgeDef, visitTiles: forgeDef.visitTiles.filter((tile) => tile.tileY !== 29), openFloor: [] };
+    const broken = openFrontReport('forge', getBuildingOpenFront('forge'), undefined, [onPier]).errors;
+    assert.ok(broken.some((error) => /not a work visit tile/.test(error)));
+    assert.ok(broken.some((error) => /not on the building's openFloor/.test(error)));
 });
 
 test('surface-v1 pages: H16 = 0 outside alpha, B <= 63, valid bit, AO monotonic pairs (Forge and Command)', () => {
@@ -416,6 +464,29 @@ test('BuildingSprite: selection at rest zoom 2 opens a cutaway, a Glass dwell op
     r.setGlassCutawayTarget(null);
     r._updateInspection();
     assert.equal(r.getApertureModel(), null);
+
+    // W5 Fix-B (Opus P1-1) — a resolved target from IsometricRenderer
+    // (InspectionGlass already ran its dwell and exit) opens and closes at
+    // once, with no second 300 ms timer.
+    r._selectedBuildingType = null;
+    r.setGlassCutawayTarget('archive', { resolved: true });
+    r._updateInspection();
+    assert.equal(r.getApertureModel()?.buildingType, 'archive', 'opens on the same frame');
+    assert.equal(r.getApertureModel().trigger, 'glass');
+    assert.equal(r.getApertureModel().source, 'glass');
+    r.setGlassCutawayTarget(null, { resolved: true });
+    r._updateInspection();
+    assert.equal(r.getApertureModel(), null, 'closes on the same frame');
+    // A resolved lens still needs inspection zoom.
+    r._restZoom = 1;
+    r.setGlassCutawayTarget('archive', { resolved: true });
+    r._updateInspection();
+    assert.equal(r.getApertureModel(), null);
+    r._restZoom = 2;
+    // The numeric second argument keeps its standalone dwell.
+    r.setGlassCutawayTarget('harbor', now);
+    r._updateInspection();
+    assert.equal(r.getApertureModel(), null, 'a raw lens target dwells first');
 });
 
 test('BuildingSprite: the roof lifts on a 4-step 150 ms Bayer peel, once per frame, and swaps at once under reduced motion', (t) => {
@@ -441,6 +512,27 @@ test('BuildingSprite: the roof lifts on a 4-step 150 ms Bayer peel, once per fra
     const snap = reduced._cutawayPeelSnapshot();
     assert.equal(snap.step, 4);
     assert.equal(snap.fullyOpen, true);
+
+    // W5 Fix-B (Fable P1-4) — closing resets the peel: reselecting replays
+    // the whole 0 -> 1 -> 2 -> 3 -> 4 lift instead of reopening fully peeled.
+    r._selectedBuildingType = null;
+    r._updateInspection();
+    assert.equal(r._cutawayPeelSnap, null);
+    r._selectedBuildingType = 'command';
+    r._updateInspection();
+    const replay = [];
+    for (const [time, serial] of [[10_000, 20], [10_150, 21], [10_300, 22], [10_450, 23], [10_600, 24]]) {
+        now = time;
+        r._partPassSerial = serial;
+        replay.push(r._cutawayPeelSnapshot().step);
+    }
+    assert.deepEqual(replay, [0, 1, 2, 3, 4], 'the reopened roof peels again');
+    // Switching to another cutaway building also starts from a whole roof.
+    r._selectedBuildingType = 'archive';
+    r._updateInspection();
+    now = 20_000;
+    r._partPassSerial = 30;
+    assert.equal(r._cutawayPeelSnapshot().step, 0);
 
     // The roof layer draws whole at step 0, a masked step 1..3, nothing at 4.
     const drawn = [];
@@ -479,12 +571,30 @@ test('BuildingSprite: Command draws aperture -> occupants -> interior -> war tab
     const living = r._cutawayLivingState('command', open.model, open.profile);
     assert.equal(living.warTable.pawns.length, 2);
     assert.deepEqual(living.warTable.pawns.map((pawn) => [pawn.agentId, pawn.width, pawn.height]).sort(), [['scout', 3, 5], ['scribe', 5, 3]]);
-    // The sill bar is one line through the postcard-locked legend site.
-    assert.deepEqual(ctx.texts.map((entry) => entry.text), ['1 WORKING · 0 WAITING']);
+    // The sill bar is one line through the postcard-locked legend site. W5
+    // Fix-B — it counts the presented lead and its mustered crew by status:
+    // the lead and the scout work, the errored scribe neither works nor waits.
+    assert.deepEqual(ctx.texts.map((entry) => entry.text), ['2 WORKING · 0 WAITING']);
 
     const postcard = recCtx();
     withPostcardFrame(() => r._drawInspectionAperture(postcard, { type: 'command' }, { id: 'building.command' }, 199, 164, open));
     assert.equal(postcard.texts.length, 0, 'no text on a postcard frame');
+
+    // W5 Fix-B — council-fleet: the lead polls its crew from the plaza, so no
+    // session is presented at Command, yet the hall musters the plaque's
+    // squad: its crew stands on the table and the sill counts real workers.
+    const council = agentSprite('council', { building: null });
+    const crew = ['forge', 'archive', 'harbor', 'mine'].map((building, i) => agentSprite(`crew-${i}`, {
+        building, parentSessionId: 'council', status: i === 3 ? 'idle' : 'working',
+    }));
+    const hall = rendererWith({ _selectedBuildingType: 'command', agentSprites: [council, ...crew] });
+    hall._updateInspection();
+    const hallOpen = hall._openApertureFor({ type: 'command' });
+    assert.equal(hallOpen.model.slots.length, 0, 'nobody presented at Command');
+    const muster = hall._cutawayLivingState('command', hallOpen.model, hallOpen.profile).warTable;
+    assert.equal(muster.ownerLeadId, 'council');
+    assert.equal(muster.pawns.length, 4);
+    assert.equal(muster.sillBar, '4 WORKING · 0 WAITING', 'the lead and its three working crew');
 });
 
 test('BuildingSprite: Archive readers stand at their bays, the shelf counts today\'s compactions; Harbor seats Harbor tools and adds no text', (t) => {
@@ -521,6 +631,9 @@ test('BuildingSprite: Archive readers stand at their bays, the shelf counts toda
     assert.ok(loomCtx.draws.some((args) => args[0] === panel), 'the panel is drawn onto the rear wall');
     r.setArchiveLoomPanel(null);
     r._cutawayLiving = null;
+    const bareCtx = recCtx();
+    r._drawInspectionAperture(bareCtx, { type: 'archive' }, { id: 'building.archive' }, 167, 182, open);
+    assert.equal(bareCtx.draws.length, 0, 'no Loom board until Wave 6 hands over a panel');
     // Opened by The Glass, the sill carries the bay names (never on a postcard).
     open.model.source = 'glass';
     const glassCtx = recCtx();
@@ -542,12 +655,86 @@ test('BuildingSprite: Archive readers stand at their bays, the shelf counts toda
     const seats = harbor._cutawayPlacements('harbor', harborOpen.model, harborOpen.profile, harborLiving);
     assert.deepEqual(seats.map((seat) => seat.slot.agentId), harborLiving.harbor.slots.filter((slot) => slot.agentId).map((slot) => slot.agentId));
     for (const seat of seats) {
-        const top = harborOpen.profile.cut.top;
-        assert.ok(seat.at[1] - seat.height >= top + 2, 'a loft body never rises out of its cut');
+        const cut = harborOpen.profile.cut;
+        const top = cut.top + cut.slope * (seat.at[0] - cut.x0);
+        assert.ok(seat.at[1] - seat.height >= top + 2, 'a loft body never rises out of its sheared cut');
+        // On the plank floor, clear of the chart table's top.
+        assert.ok(seat.at[1] > apertureFloorY(harborOpen.profile, seat.at[0]));
+        const table = HARBOR_CUTAWAY_PROFILE.chartTable;
+        assert.ok(Math.abs(seat.at[0] - table.at[0]) > table.width / 2, 'never stands on the chart table');
     }
     const harborCtx = recCtx();
     harbor._drawInspectionAperture(harborCtx, { type: 'harbor' }, { id: 'building.harbor' }, 131, 154, harborOpen);
     assert.equal(harborCtx.texts.length, 0, 'the Chart Loft adds no text');
+
+    // W5 Fix-B (Fable P1-7) — branch-lane rows fold into one lantern per
+    // repository, in that repository's pennant accent.
+    const lanes = rendererWith({
+        _selectedBuildingType: 'harbor',
+        agentSprites: [pusher],
+        _harborPendingRepos: [
+            { project: '/work/alpha', branch: 'main', pendingCommits: 2 },
+            { project: '/work/alpha', branch: 'feature/x', pendingCommits: 3 },
+            { project: '/work/beta', branch: 'main', pendingCommits: 1 },
+        ],
+    });
+    lanes._updateInspection();
+    const lanesOpen = lanes._openApertureFor({ type: 'harbor' });
+    const lanterns = lanes._cutawayLivingState('harbor', lanesOpen.model, lanesOpen.profile).harbor.signalRack.lanterns;
+    assert.equal(lanterns.length, 2, 'one lantern per repository');
+    const alpha = lanterns.find((lantern) => lantern.repo === '/work/alpha');
+    assert.equal(alpha.pendingCommits, 5);
+    assert.equal(alpha.color, repoProfile('/work/alpha').accent);
+
+    // W5 Fix-B (Fable P1-6) — readers whose newest paths share a bay spill to
+    // the next free bay: every presented reader is shown, up to five.
+    const crowd = ['a', 'b', 'c'].map((id) => agentSprite(`reader-${id}`, {
+        building: 'archive',
+        extra: { repoRoot: '/r', workingSet: [{ path: 'docs/same.md', at: 1 }] },
+    }));
+    const archive = rendererWith({ _selectedBuildingType: 'archive', agentSprites: crowd });
+    archive._updateInspection();
+    const archiveOpen = archive._openApertureFor({ type: 'archive' });
+    const crowdLiving = archive._cutawayLivingState('archive', archiveOpen.model, archiveOpen.profile);
+    const crowdSeats = archive._cutawayPlacements('archive', archiveOpen.model, archiveOpen.profile, crowdLiving);
+    assert.equal(crowdSeats.length, 3, 'no reader dropped');
+    assert.equal(new Set(crowdSeats.map((seat) => seat.at.join(','))).size, 3, 'each at its own bay');
+});
+
+test('BuildingSprite: on the ungraded overlay the cutaway takes the night grade; the occupant fallback is opaque', (t) => {
+    t.mock.method(Date, 'now', () => 0);
+    const night = {
+        exposure: 0.45, saturation: 0.7, gain: [0.6, 0.65, 0.9], lift: [0, 0, 0.02], gamma: [1, 1, 1],
+        shadowTint: [0.1, 0.12, 0.2], highlightTint: [1, 1, 1], purkinje: [0, 0, 0], night: 1,
+    };
+    const fills = [];
+    const facade = gradedPainterContext({ fillRect: () => {}, set fillStyle(v) { fills.push(v); }, get fillStyle() { return fills.at(-1); } }, night);
+    facade.fillStyle = '#c8743a';
+    assert.notEqual(fills[0], '#c8743a', 'a painter fill is graded');
+    assert.equal(gradedPainterContext(recCtx(), null).fillRect !== undefined, true);
+
+    const lead = agentSprite('lead', { building: 'command' });
+    const r = rendererWith({ _selectedBuildingType: 'command', agentSprites: [lead], atmosphereState: { lightGrade: night } });
+    r._updateInspection();
+    const open = r._openApertureFor({ type: 'command' });
+    const graded = [];
+    r._gradedCutawayImage = (key, image, grade) => {
+        graded.push(key);
+        assert.equal(grade, night);
+        return { graded: key };
+    };
+    r._ungradedOverlay = true;
+    const ctx = recCtx();
+    r._drawInspectionAperture(ctx, { type: 'command' }, { id: 'building.command' }, 199, 164, open);
+    r._ungradedOverlay = false;
+    assert.deepEqual(graded, ['building.command.aperture', 'building.command.interior', 'building.command.foreground', 'building.command.roof']);
+    assert.ok(ctx.fills.every((fill) => fill.fill !== '#654629'), 'the war table oak is graded, not noon timber');
+
+    // No resident sheet: an opaque ART_RAMPS figure, never a translucent wash.
+    const fallback = recCtx();
+    r._drawApertureOccupant(fallback, { x: 10, y: 40 }, { agentId: 'ghost' }, 20);
+    assert.ok(fallback.fills.length >= 2);
+    for (const fill of fallback.fills) assert.match(fill.fill, /^#[0-9a-f]{6}$/i, 'opaque hex fill');
 });
 
 test('BuildingSprite: Forge arch split drawables exist only while a smith stands in the bay, and sandwich them on Canvas and GPU paths', () => {
@@ -558,18 +745,20 @@ test('BuildingSprite: Forge arch split drawables exist only while a smith stands
 
     // Empty bay: the shipped drawable list, no arch slices.
     r._updateOpenFrontOccupancy();
-    assert.equal(r._openFrontActive, '');
+    assert.equal(r._openFrontActive.size, 0);
     const empty = r.enumerateDrawables();
     assert.ok(empty.length > 4);
     assert.equal(empty.filter((d) => d.kind === 'prop-column').length, 0);
 
-    // A smith at the hearth bay.
-    const bay = FORGE_OPEN_FRONT_CALIBRATION.bays[0];
+    // A smith at the hearth bay (its work tile on the open floor).
+    const bay = FORGE_OPEN_FRONT_PROFILE.bays[0];
     const bayWorld = { x: bay.at[0] - 128 + center.x, y: bay.at[1] - 169 + center.y };
+    assert.deepEqual(bayWorld, tileToWorld(bay.tile.tileX, bay.tile.tileY), 'the bay is its tile');
     const smith = agentSprite('smith', { building: 'forge', x: bayWorld.x, y: bayWorld.y });
     r.agentSprites = [smith];
     r._updateOpenFrontOccupancy();
-    assert.equal(r._openFrontActive, 'forge;');
+    assert.equal(r._openFrontActive.size, 1);
+    assert.equal(r._openFrontActive.has('forge'), true);
     const drawables = r.enumerateDrawables();
     assert.notEqual(drawables, empty, 'the cache was rebuilt');
     const arch = drawables.filter((d) => d.kind === 'prop-column');
@@ -579,7 +768,15 @@ test('BuildingSprite: Forge arch split drawables exist only while a smith stands
         assert.equal(d.part, 'column');
         assert.equal(d.building, undefined, 'no building/entry: occluder, emitter and hit consumers pass it by');
         assert.equal(typeof d.sprite.columnSourceSpan, 'function', 'GpuSceneBuilder.recordForProp contract');
+        // W5 Fix-B — the surface-v1 binding GpuSceneBuilder reads.
+        assert.equal(d.buildingType, 'forge');
+        assert.equal(d.buildingId, 'building.forge');
+        assert.deepEqual(d.surfaceCrop, { sx: d.column.sx, sy: 0, sw: d.column.sw, sh: 232 });
+        assert.ok(d.column.sw > 0 && d.column.sx >= 0 && d.column.sx + d.column.sw <= 256);
     }
+    // The crops tile the arch's span exactly once.
+    const spans = arch.map((d) => [d.column.sx, d.column.sx + d.column.sw]).sort((a, b) => a[0] - b[0]);
+    for (let i = 1; i < spans.length; i++) assert.equal(spans[i][0], spans[i - 1][1]);
     // Sandwich: the Forge's own columns < smith < the arch column over the smith.
     const relX = bayWorld.x - arch[0].sprite.x;
     const archColumn = arch.find((d) => relX >= d.column.left && relX < d.column.right);
@@ -587,7 +784,7 @@ test('BuildingSprite: Forge arch split drawables exist only while a smith stands
     const own = drawables.filter((d) => d.kind === 'building-column' && d.building === forge
         && bayWorld.x >= d.column.worldLeft && bayWorld.x < d.column.worldRight);
     assert.ok(own.length === 1 && own[0].sortY < bayWorld.y, 'the smith draws over the hearth and rear interior');
-    // A yard visitor at the anvil work slot (28, 30), right under the arch, stands in front of it.
+    // A yard visitor right in front of the arcade (28, 30) stands in front of it.
     const yard = tileToWorld(28, 30);
     const yardColumn = arch.find((d) => yard.x - d.sprite.x >= d.column.left && yard.x - d.sprite.x < d.column.right);
     assert.ok(yardColumn.sortY < yard.y);

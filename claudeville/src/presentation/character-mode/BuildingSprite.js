@@ -26,12 +26,12 @@ import { classifyTool, isScriptWrapperTool, placedBuilding as placedToolBuilding
 import { isWaitingOnCrew } from '../../domain/services/StatusResolver.js';
 import { repoProfile } from '../shared/RepoColor.js';
 import { formatWaitAge } from '../shared/Formatters.js';
-import { ledgerPlaqueRows } from '../shared/HarborLedger.js';
+import { harborLedger, ledgerPlaqueRows } from '../shared/HarborLedger.js';
 import { squadMusterLines } from './RelationshipState.js';
 import { getReservedRects } from '../shared/ReservedRects.js';
 import { fireBreath, normalizeLightSource } from './LightSourceRegistry.js';
 import { dayShiftFor, normalizeLightingState, smokeWindDrift, sourceEnergyFor } from './AtmosphereState.js';
-import { lampCourseAt } from './GradeEvaluator.js';
+import { applyGradeToRgb, lampCourseAt } from './GradeEvaluator.js';
 import { lampRoundFor } from './LamplighterRound.js';
 import { canvasGradeKey, statusClothPreimage } from './CanvasGrade.js';
 import { isWorkingVisitor, NON_WORKING_VISIT_ROLES } from './VisitIntentManager.js';
@@ -92,6 +92,7 @@ import {
     isBuildingApertureLayer,
 } from './BuildingVisualRegistry.js';
 import {
+    APERTURE_GLASS_DWELL_MS,
     APERTURE_MIN_ZOOM,
     apertureCutContains,
     assignRoomSlots,
@@ -487,29 +488,35 @@ function columnHasOpaquePixels(mask, width, height, sx, sw) {
     return false;
 }
 
-// W5-B (D6) — OpenFront's profile with a registry calibration's measured
-// fields over it (`frontArchRows`, `postLineInset`, `lintelDepthBias`,
-// `columnPx`, `interiorFloorBounds`, `bays`). Memoized per record.
-const RESOLVED_OPEN_FRONTS = new WeakMap();
+// W5 Fix-B (D6) — the open-front profile a registry `openFront` record names:
+// OpenFront's one authoritative profile (the Forge's is measured on its
+// arcade by bake-forge-openfront.mjs). No registry field overrides it.
 export function resolveOpenFrontProfile(record) {
     if (!record?.profile) return null;
-    const cached = RESOLVED_OPEN_FRONTS.get(record);
-    if (cached) return cached;
-    const base = OPEN_FRONT_PROFILES[record.profile];
-    if (!base) return null;
-    const resolved = Object.freeze({
-        ...base,
-        frontArchRows: record.frontArchRows || base.frontArchRows,
-        postLineInset: Number.isFinite(record.postLineInset) ? record.postLineInset : base.postLineInset,
-        lintelDepthBias: Number.isFinite(record.lintelDepthBias) ? record.lintelDepthBias : base.lintelDepthBias,
-        columnPx: Number.isFinite(record.columnPx) ? record.columnPx : base.columnPx,
-        interiorFloorBounds: record.interiorFloorBounds || base.interiorFloorBounds,
-        bays: record.bays || base.bays,
-        calibrated: Boolean(record.frontArchRows),
-    });
-    RESOLVED_OPEN_FRONTS.set(record, resolved);
-    return resolved;
+    return OPEN_FRONT_PROFILES[record.profile] || null;
 }
+
+// W5 Fix-B (Fable P1-5) — a 2D context facade for the cutaways' living
+// painters on the ungraded overlay: every `#rrggbb` fill takes the frame's
+// C2 grade (`gradeTone`), so the war table, the shelf spines and the
+// lanterns sit in the same light as the stone around them.
+export function gradedPainterContext(ctx, grade) {
+    if (!ctx || !grade) return ctx;
+    return {
+        get fillStyle() { return ctx.fillStyle; },
+        set fillStyle(value) { ctx.fillStyle = typeof value === 'string' ? gradeTone(value, grade) : value; },
+        get globalAlpha() { return ctx.globalAlpha; },
+        set globalAlpha(value) { ctx.globalAlpha = value; },
+        fillRect: (x, y, w, h) => ctx.fillRect(x, y, w, h),
+        drawImage: (...args) => ctx.drawImage(...args),
+        save: () => ctx.save?.(),
+        restore: () => ctx.restore?.(),
+    };
+}
+
+// The plain figure that stands in for an occupant whose sheet is not
+// resident yet: opaque ART_RAMPS stops, never a translucent wash.
+const OCCUPANT_FALLBACK = Object.freeze({ body: ART_RAMPS.ashlar[4], head: ART_RAMPS.ashlar[6] });
 
 function compareBuildingDrawableDepth(a, b) {
     return (a.sortY - b.sortY)
@@ -689,8 +696,10 @@ export class BuildingSprite {
         eventBus.on('chronicle:recorded', this._onChronicleRecorded);
         // W5-B (D6) — open-front arch split drawables (the Forge; the Tavern's
         // are TavernArcade's), emitted only while a smith stands in the bay.
+        // `_openFrontActive` is the Set of building types with a body in
+        // their bay this frame.
         this._openFrontSprites = new Map();
-        this._openFrontActive = '';
+        this._openFrontActive = new Set();
         // 6.3 — every building's room slots (`_updateRoomSlots`), each room's
         // stepped lit share, and the glass the rooms light (RoomGlass). A
         // worker keeps its window while it works: leaving work extinguishes
@@ -6785,18 +6794,30 @@ export class BuildingSprite {
         return sessions.sort((a, b) => (a.agentId < b.agentId ? -1 : a.agentId > b.agentId ? 1 : 0));
     }
 
-    // W5-B (R8) — The Glass's dwell target: the building under the lens, or
-    // null. The cutaway opens only once the lens has dwelt
-    // APERTURE_GLASS_DWELL_MS on the same building at inspection zoom, and a
-    // selection-opened cutaway always wins. `now` is Date.now() ms.
-    setGlassCutawayTarget(type, now = Date.now()) {
+    // W5-B (R8) — The Glass's cutaway target: the building under the lens, or
+    // null. Two callers:
+    //   - `{ resolved: true }` (IsometricRenderer._updateGlassCutaway, after
+    //     InspectionGlass.updateCutaway ran its 300 ms dwell and 400 ms exit):
+    //     the state machine already decided, so the cutaway opens or closes at
+    //     once on `type || null` (`trigger`/`source` 'glass'), no second timer.
+    //   - a numeric `now` (Date.now() ms; standalone use and tests): the raw
+    //     lens target, opened only after APERTURE_GLASS_DWELL_MS on the same
+    //     building at inspection zoom.
+    // A selection-opened cutaway always wins either way.
+    setGlassCutawayTarget(type, optsOrNowMs = Date.now()) {
         const next = type ? String(type) : null;
+        const opts = optsOrNowMs && typeof optsOrNowMs === 'object' ? optsOrNowMs : null;
+        if (opts?.resolved === true) {
+            this._glassCutawayTarget = next ? { type: next, since: -Infinity, resolved: true } : null;
+            return;
+        }
         if (!next) {
             this._glassCutawayTarget = null;
             return;
         }
-        if (this._glassCutawayTarget?.type === next) return;
-        this._glassCutawayTarget = { type: next, since: Number.isFinite(Number(now)) ? Number(now) : Date.now() };
+        if (this._glassCutawayTarget?.type === next && !this._glassCutawayTarget.resolved) return;
+        const nowMs = Number(opts ? opts.nowMs : optsOrNowMs);
+        this._glassCutawayTarget = { type: next, since: Number.isFinite(nowMs) ? nowMs : Date.now(), resolved: false };
     }
 
     // W5-B (Spec 04 §5.2/§5.4) — the Loom of Days hangs on the Archive's
@@ -6847,16 +6868,23 @@ export class BuildingSprite {
             trigger = glassProfile ? resolveApertureTrigger({
                 buildingType: glass.type,
                 glassType: glass.type,
-                glassDwellMs: now - glass.since,
+                // A resolved lens already dwelt (InspectionGlass); a raw one dwells here.
+                glassDwellMs: glass.resolved ? APERTURE_GLASS_DWELL_MS : now - glass.since,
                 zoom,
                 minZoom: Number.isFinite(glassProfile.minZoom) ? glassProfile.minZoom : APERTURE_MIN_ZOOM,
             }) : null;
             if (trigger) type = glass.type;
         }
-        if (!type) return;
+        if (!type) {
+            this._resetCutawayPeel();
+            return;
+        }
 
         const aperture = getBuildingApertureProfile(type);
-        if (!aperture || !this._cutawayLayersReady(type, aperture)) return;
+        if (!aperture || !this._cutawayLayersReady(type, aperture)) {
+            this._resetCutawayPeel();
+            return;
+        }
         const sessions = this._inspectionSessions(type, now);
         const capacity = aperture.slots.length;
         const { assignment } = assignRoomSlots({
@@ -6880,6 +6908,15 @@ export class BuildingSprite {
         // The shipped Glass contract (IsometricRenderer, postcard frames)
         // reads a lens-opened aperture as `source: 'glass'`.
         if (trigger === 'glass') this._apertureModel.source = 'glass';
+    }
+
+    // W5 Fix-B (Fable P1-4) — no cutaway open: the Bayer peel starts over, so
+    // deselecting and reselecting any cutaway building replays the whole
+    // 0 -> 1 -> 2 -> 3 -> 4 roof lift (150 ms a step).
+    _resetCutawayPeel() {
+        this._cutawayPeel?.reset?.();
+        this._cutawayPeelSnap = null;
+        this._cutawayPeelSerial = null;
     }
 
     // C4 — the aperture record other surfaces may read. Null whenever the
@@ -6926,11 +6963,20 @@ export class BuildingSprite {
         if (!stack) return;
         const [baseAx, baseAy] = this.assets.getAnchor(entry.id);
         const localPoint = (lx, ly) => ({ x: Math.round(wx - baseAx + lx), y: Math.round(wy - baseAy + ly) });
+        // W5 Fix-B (Fable P1-5) — on the ungraded overlay (the resident GPU
+        // world) the cutaway takes the frame's C2 grade itself, like the
+        // building around it: its layers, its living painters and its
+        // occupants. The Canvas depth pass grades the whole frame afterwards.
+        const grade = this._overlayLightGrade();
+        const paint = grade ? gradedPainterContext(ctx, grade) : ctx;
         const layer = (name) => {
             if (!name) return;
             const id = `${entry.id}.${name}`;
-            if (!this.assets.get(id)) return;
-            this.sprites.drawSprite(ctx, id, wx, wy, { anchor: [baseAx, baseAy] });
+            const image = this.assets.get(id);
+            if (!image) return;
+            const graded = grade ? this._gradedCutawayImage(id, image, grade) : null;
+            if (graded) ctx.drawImage(graded, Math.round(wx - baseAx), Math.round(wy - baseAy));
+            else this.sprites.drawSprite(ctx, id, wx, wy, { anchor: [baseAx, baseAy] });
         };
         const peel = stack.hasRoof ? this._cutawayPeelSnapshot() : null;
         const living = this._cutawayLivingState(building.type, model, profile);
@@ -6938,18 +6984,65 @@ export class BuildingSprite {
         ctx.save();
         ctx.imageSmoothingEnabled = false;
         layer(stack.aperture);
-        if (living?.archive) drawArchiveCutaway(ctx, living.archive, { localPoint, showBayNames: false });
+        if (living?.archive) drawArchiveCutaway(paint, living.archive, { localPoint, showBayNames: false });
+        // The Harbor's signal rack hangs on the back wall, behind the loft's occupants.
+        if (living?.harbor) drawHarborCutaway(paint, living.harbor, { localPoint, layer: 'wall' });
         for (const { slot, at, height } of placements) {
-            this._drawApertureOccupant(ctx, localPoint(at[0], at[1]), slot, height);
+            this._drawApertureOccupant(ctx, localPoint(at[0], at[1]), slot, height, grade);
         }
         layer(stack.interior);
-        if (living?.warTable) drawCommandWarTable(ctx, { ...living.warTable, sillBar: null }, { localPoint });
-        if (living?.harbor) drawHarborCutaway(ctx, living.harbor, { localPoint });
+        if (living?.warTable) drawCommandWarTable(paint, { ...living.warTable, sillBar: null }, { localPoint });
+        if (living?.harbor) drawHarborCutaway(paint, living.harbor, { localPoint, layer: 'props' });
         for (const { slot, at } of placements) this._drawApertureSlotMark(ctx, localPoint(at[0], at[1]), slot);
         layer(stack.foreground);
-        if (stack.roof && peel) this._drawCutawayRoof(ctx, entry, stack.roof, wx, wy, peel);
+        if (stack.roof && peel) this._drawCutawayRoof(ctx, entry, stack.roof, wx, wy, peel, grade);
         this._drawApertureLegend(ctx, localPoint, building, model, profile, living);
         ctx.restore();
+    }
+
+    // A cutaway layer (or a peeled roof step) under the frame's C2 grade:
+    // every texel through `applyGradeToRgb`, cached per image until the grade
+    // moves a 1/128 step.
+    _gradedCutawayImage(key, image, grade) {
+        if (!grade || typeof document === 'undefined' && typeof OffscreenCanvas !== 'function') return null;
+        const w = image?.naturalWidth || image?.width || 0;
+        const h = image?.naturalHeight || image?.height || 0;
+        if (!(w > 0 && h > 0)) return null;
+        const gradeKey = canvasGradeKey(grade);
+        const cache = (this._gradedCutawayLayers ||= new Map());
+        let entry = cache.get(key);
+        if (!entry || entry.image !== image) {
+            const pixels = readPixels(image, w, h);
+            if (!pixels) return null;
+            entry = { image, pixels, canvas: createRasterCanvas(w, h), gradeKey: null };
+            if (!entry.canvas) return null;
+            cache.set(key, entry);
+        }
+        if (entry.gradeKey !== gradeKey) {
+            const context = entry.canvas.getContext('2d');
+            if (!context) return null;
+            const out = context.createImageData(w, h);
+            const memo = new Map();
+            const source = entry.pixels;
+            for (let i = 0; i < source.length; i += 4) {
+                const a = source[i + 3];
+                if (!a) continue;
+                const packed = (source[i] << 16) | (source[i + 1] << 8) | source[i + 2];
+                let rgb = memo.get(packed);
+                if (!rgb) {
+                    rgb = applyGradeToRgb([source[i] / 255, source[i + 1] / 255, source[i + 2] / 255], grade)
+                        .map((channel) => Math.round(Math.max(0, Math.min(1, channel)) * 255));
+                    memo.set(packed, rgb);
+                }
+                out.data[i] = rgb[0];
+                out.data[i + 1] = rgb[1];
+                out.data[i + 2] = rgb[2];
+                out.data[i + 3] = a;
+            }
+            context.putImageData(out, 0, 0);
+            entry.gradeKey = gradeKey;
+        }
+        return entry.canvas;
     }
 
     // W5-B — the Bayer peel, advanced once per frame (`_partPassSerial`)
@@ -6981,17 +7074,23 @@ export class BuildingSprite {
     // The roof layer at a peel step: step 0 is the whole crop, steps 1-3 a
     // cached Bayer-masked copy (kept texels keep their exact bytes, peeled
     // texels are fully transparent: zero alpha fades), step 4 nothing.
-    _drawCutawayRoof(ctx, entry, name, wx, wy, peel) {
+    _drawCutawayRoof(ctx, entry, name, wx, wy, peel, grade = null) {
         const step = Math.max(0, Math.min(BAYER_PEEL_STEPS, peel?.step ?? BAYER_PEEL_STEPS));
         if (step >= BAYER_PEEL_STEPS) return;
         const id = `${entry.id}.${name}`;
         const [ax, ay] = this.assets.getAnchor(entry.id);
         if (step === 0) {
-            if (this.assets.get(id)) this.sprites.drawSprite(ctx, id, wx, wy, { anchor: [ax, ay] });
+            const image = this.assets.get(id);
+            if (!image) return;
+            const graded = grade ? this._gradedCutawayImage(id, image, grade) : null;
+            if (graded) ctx.drawImage(graded, Math.round(wx - ax), Math.round(wy - ay));
+            else this.sprites.drawSprite(ctx, id, wx, wy, { anchor: [ax, ay] });
             return;
         }
         const masked = this._cutawayRoofStep(id, step);
-        if (masked) ctx.drawImage(masked.canvas, Math.round(wx - ax) + masked.x, Math.round(wy - ay) + masked.y);
+        if (!masked) return;
+        const graded = grade ? this._gradedCutawayImage(`${id}:${step}`, masked.canvas, grade) : null;
+        ctx.drawImage(graded || masked.canvas, Math.round(wx - ax) + masked.x, Math.round(wy - ay) + masked.y);
     }
 
     _cutawayRoofStep(id, step) {
@@ -7071,7 +7170,23 @@ export class BuildingSprite {
                 building: buildingOf(agent),
                 trimColor: this._modelTrimFor(agent),
             }));
-            state = { warTable: buildCommandWarTableState({ presentedSessions: sessions, allAgents }) };
+            // W5 Fix-B — the hall musters the plaque's squads: after the
+            // sessions presented here, every live lead with a crew out, busiest
+            // first (RelationshipState's squad order), so the war table and its
+            // sill bar count the same council the `Name · out ▸ back` plaque
+            // names even when the lead stands elsewhere in the village.
+            const crews = new Map();
+            for (const agent of allAgents) {
+                const parentId = agent.parentSessionId || agent.rootSessionId || null;
+                if (!parentId || parentId === agent.id || !spriteById.has(parentId)) continue;
+                crews.set(parentId, (crews.get(parentId) || 0) + 1);
+            }
+            const presentedIds = new Set(sessions.map((session) => session.agentId));
+            const musterLeads = [...crews.entries()]
+                .filter(([id]) => !presentedIds.has(id))
+                .sort((a, b) => (b[1] - a[1]) || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+                .map(([id]) => ({ agentId: id, id, status: spriteById.get(id)?.agent?.status || null, muster: true }));
+            state = { warTable: buildCommandWarTableState({ presentedSessions: [...sessions, ...musterLeads], allAgents }) };
         } else if (profile?.cutaway === 'archive') {
             const readers = sessions.map((session) => spriteById.get(session.agentId)?.agent).filter(Boolean);
             const compactions = [];
@@ -7096,13 +7211,18 @@ export class BuildingSprite {
                 toolInput: agent.currentToolInput || {},
                 building: buildingOf(agent),
             }));
-            // `harbor:updated` rows (HarborTraffic): one lantern per repo with
-            // pending commits, in that repo's pennant colour.
-            const pending = (this._harborPendingRepos || []).map((row) => ({
-                repo: row?.project || row?.repoName || row?.repo || '',
-                pendingCommits: row?.pendingCommits ?? row?.count ?? 0,
-                color: row?.profile?.accent || (row?.project ? repoProfile(row.project).accent : null) || row?.color || null,
-            }));
+            // `harbor:updated` rows (HarborTraffic) are one per branch lane:
+            // they fold through the Harbor ledger into one group per repo, so
+            // the rack hangs one lantern per repository with pending
+            // commits, in that repo's pennant accent (W5 Fix-B, Fable P1-7).
+            const ledger = harborLedger(this._harborPendingRepos || []);
+            const pending = ledger.groups
+                .filter((group) => group.count > 0)
+                .map((group) => ({
+                    repo: group.project,
+                    pendingCommits: group.count,
+                    color: repoProfile(group.project).accent,
+                }));
             state = { harbor: buildHarborCutawayState({ agents: visitors, harborPendingRepos: pending }) };
         }
         this._cutawayLiving = { serial, type, model, state };
@@ -7144,13 +7264,24 @@ export class BuildingSprite {
         };
         const slotById = new Map(model.slots.map((slot) => [slot.agentId, slot]));
         if (living?.archive) {
+            // Each reader stands at the bay of its newest path; a reader whose
+            // bay is already held takes the next free bay (wrapping), so all
+            // five bays fill before anyone presented goes unseen.
             const taken = new Set();
+            const bayCount = Math.min(living.archive.bays.length, profile.slots.length);
             for (const slot of model.slots) {
                 const reader = living.archive.readers.find((entry) => entry.agentId === slot.agentId);
-                const bay = reader ? reader.bayIndex : living.archive.bays.length - 1;
-                if (taken.has(bay)) continue;
-                const at = profile.slots[bay]?.at;
-                if (!at) continue;
+                const home = reader ? reader.bayIndex : bayCount - 1;
+                let bay = -1;
+                for (let step = 0; step < bayCount; step++) {
+                    const candidate = (home + step) % bayCount;
+                    if (!taken.has(candidate) && profile.slots[candidate]?.at) {
+                        bay = candidate;
+                        break;
+                    }
+                }
+                if (bay < 0) continue;
+                const at = profile.slots[bay].at;
                 taken.add(bay);
                 out.push({ slot, at, height: heightAt(at) });
             }
@@ -7184,15 +7315,19 @@ export class BuildingSprite {
     // only while one does, so an empty bay leaves the default frame (and its
     // GPU records) exactly as it ships.
     _updateOpenFrontOccupancy() {
-        let key = '';
+        let changed = false;
+        const active = this._openFrontActive instanceof Set ? this._openFrontActive : (this._openFrontActive = new Set());
         for (const building of this.buildings || []) {
-            const profile = this._openFrontProfileFor(building?.type);
-            if (profile && this._openFrontBayOccupied(building, profile)) key += `${building.type};`;
+            const type = building?.type;
+            if (!type) continue;
+            const profile = this._openFrontProfileFor(type);
+            const occupied = Boolean(profile && this._openFrontBayOccupied(building, profile));
+            if (occupied === active.has(type)) continue;
+            if (occupied) active.add(type);
+            else active.delete(type);
+            changed = true;
         }
-        if (key !== this._openFrontActive) {
-            this._openFrontActive = key;
-            this._drawablesCache = null;
-        }
+        if (changed) this._drawablesCache = null;
     }
 
     _openFrontBayOccupied(building, profile) {
@@ -7222,18 +7357,28 @@ export class BuildingSprite {
     // `building`/`entry` of their own, so every building-drawable consumer
     // (occluders, emitter cuts, hit tests) passes them by, while the depth
     // pass and GpuSceneBuilder.recordForProp draw them like TavernArcade's.
+    // W5 Fix-B — each Forge column also names its building and its
+    // base.png crop (`surfaceCrop`), so GpuSceneBuilder binds the Forge's
+    // surface-v1 page to the arch slices and they keep exact per-texel depth.
     _appendOpenFrontDrawables(out) {
-        if (!this._openFrontActive) return;
+        if (!(this._openFrontActive instanceof Set) || !this._openFrontActive.size) return;
         for (const building of this.buildings || []) {
-            if (!this._openFrontActive.includes(`${building?.type};`)) continue;
+            if (!this._openFrontActive.has(building?.type)) continue;
             const profile = this._openFrontProfileFor(building.type);
             if (!profile) continue;
+            const spriteId = profile.spriteId || `building.${building.type}`;
+            const dims = this.assets?.getDims?.(spriteId) || { w: profile.nativeSize?.width, h: profile.nativeSize?.height };
             for (const sprite of this._openFrontSpritesFor(building, profile)) {
                 for (const column of sprite.occlusionColumns || []) {
                     out.push({
                         kind: 'prop-column',
                         poolKey: `open-front:${building.type}:${column.index}`,
                         openFront: building.type,
+                        buildingType: building.type,
+                        buildingId: spriteId,
+                        surfaceCrop: Number.isFinite(column.sx) && Number.isFinite(dims?.h)
+                            ? { sx: column.sx, sy: 0, sw: column.sw, sh: dims.h }
+                            : null,
                         sprite,
                         part: 'column',
                         column,
@@ -7250,15 +7395,21 @@ export class BuildingSprite {
     // height for this room (4.1): the room is a full storey and a person in it
     // fills about two thirds of it, which is what makes the occupants readable
     // at zoom 2 instead of a row of specks.
-    _drawApertureOccupant(ctx, point, slot, height = 26) {
+    _drawApertureOccupant(ctx, point, slot, height = 26, grade = null) {
         const sprite = this._spriteForAgent(slot.agentId);
         const cell = sprite?.currentPoseCell?.() || sprite?.spriteSheet?.cell?.('idle', 0, 0) || null;
         const canvas = cell?.canvas || sprite?.spriteCanvas || null;
         if (!cell || !canvas) {
-            // No sheet resident yet: a plain slate figure, never an invented
+            // No sheet resident yet: a plain slate figure (opaque ART_RAMPS
+            // stops, a lit head over a shaded body), never an invented
             // identity.
-            ctx.fillStyle = 'rgba(158, 150, 164, 0.9)';
-            ctx.fillRect(point.x - Math.round(height / 5), point.y - height, Math.max(4, Math.round(height / 2.5)), height);
+            const w = Math.max(4, Math.round(height / 2.5));
+            const left = point.x - Math.round(height / 5);
+            const head = Math.max(3, Math.round(height / 5));
+            ctx.fillStyle = grade ? gradeTone(OCCUPANT_FALLBACK.body, grade) : OCCUPANT_FALLBACK.body;
+            ctx.fillRect(left, point.y - height + head, w, height - head);
+            ctx.fillStyle = grade ? gradeTone(OCCUPANT_FALLBACK.head, grade) : OCCUPANT_FALLBACK.head;
+            ctx.fillRect(left + 1, point.y - height, Math.max(2, w - 2), head);
             return;
         }
         const sx = cell.sx + Math.round(cell.sw * 0.28);
@@ -7267,9 +7418,62 @@ export class BuildingSprite {
         const sh = Math.round(cell.sh * 0.74);
         const dh = Math.max(10, height);
         const dw = Math.max(6, Math.round((sw * dh) / Math.max(1, sh)));
+        const source = grade ? this._gradedOccupantCrop(canvas, sx, sy, sw, sh, grade) : null;
         ctx.globalAlpha = slot.observation?.state === 'stale' ? 0.72 : 1;
-        ctx.drawImage(canvas, sx, sy, sw, sh, point.x - Math.round(dw / 2), point.y - dh, dw, dh);
+        if (source) ctx.drawImage(source, 0, 0, sw, sh, point.x - Math.round(dw / 2), point.y - dh, dw, dh);
+        else ctx.drawImage(canvas, sx, sy, sw, sh, point.x - Math.round(dw / 2), point.y - dh, dw, dh);
         ctx.globalAlpha = 1;
+    }
+
+    // An occupant's crop under the frame's C2 grade (the ungraded overlay):
+    // cached per sheet canvas and crop until the grade moves; bounded.
+    _gradedOccupantCrop(canvas, sx, sy, sw, sh, grade) {
+        if (!(sw > 0 && sh > 0)) return null;
+        const crops = (this._gradedOccupants ||= new WeakMap());
+        let byCrop = crops.get(canvas);
+        if (!byCrop) {
+            byCrop = new Map();
+            crops.set(canvas, byCrop);
+        }
+        const key = `${sx},${sy},${sw},${sh}`;
+        const gradeKey = canvasGradeKey(grade);
+        let entry = byCrop.get(key);
+        if (entry?.gradeKey === gradeKey) return entry.canvas;
+        if (!entry) {
+            if (byCrop.size >= 48) byCrop.clear();
+            const crop = createRasterCanvas(sw, sh);
+            const cropCtx = crop?.getContext?.('2d');
+            if (!cropCtx) return null;
+            cropCtx.drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
+            let pixels = null;
+            try {
+                pixels = cropCtx.getImageData(0, 0, sw, sh);
+            } catch {
+                return null;
+            }
+            entry = { canvas: crop, context: cropCtx, pixels, gradeKey: null };
+            byCrop.set(key, entry);
+        }
+        const out = entry.context.createImageData(sw, sh);
+        const source = entry.pixels.data;
+        const memo = new Map();
+        for (let i = 0; i < source.length; i += 4) {
+            if (!source[i + 3]) continue;
+            const packed = (source[i] << 16) | (source[i + 1] << 8) | source[i + 2];
+            let rgb = memo.get(packed);
+            if (!rgb) {
+                rgb = applyGradeToRgb([source[i] / 255, source[i + 1] / 255, source[i + 2] / 255], grade)
+                    .map((channel) => Math.round(Math.max(0, Math.min(1, channel)) * 255));
+                memo.set(packed, rgb);
+            }
+            out.data[i] = rgb[0];
+            out.data[i + 1] = rgb[1];
+            out.data[i + 2] = rgb[2];
+            out.data[i + 3] = source[i + 3];
+        }
+        entry.context.putImageData(out, 0, 0);
+        entry.gradeKey = gradeKey;
+        return entry.canvas;
     }
 
     // One status pip per desk and, for an unfresh observation, the 1.1 seal.

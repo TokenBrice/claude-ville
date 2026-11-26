@@ -12,11 +12,13 @@
 //   aperture.png    the nave's back wall (coursed ashlar, pilasters between the
 //                   bays, three far lancets, the Loom of Days hooks), five oak
 //                   Repo Directory Bay bookcases against it, the Compaction
-//                   Shelf cabinet at the north end beside bay 1, and the
-//                   flagstone floor every bay slot stands on.
-//   interior.png    the five oak lecterns, one per bay at the slot 12 texels
-//                   toward the viewer from its ground lancet, drawn after the
-//                   readers so each lectern occludes its reader's legs.
+//                   Shelf cabinet on the floor before bay 0 (sheared on the
+//                   wall's +0.5 slope, inside the cut), and the flagstone
+//                   floor every bay slot stands on.
+//   interior.png    the five oak lecterns (cross foot, slender post, sloped
+//                   book-rest with an open folio), one per bay at the slot 12
+//                   texels toward the viewer from its ground lancet, drawn
+//                   after the readers so each lectern occludes their legs.
 //   foreground.png  the sawn sill along the wall's base line, the buttress
 //                   stubs and feet framing the bays, and the end jambs.
 //
@@ -33,7 +35,7 @@
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { normalizeApertureLayers } from '../../claudeville/src/presentation/character-mode/BuildingApertureModel.js';
-import { ARCHIVE_CUTAWAY_PROFILE } from '../../claudeville/src/presentation/character-mode/BuildingCutaways.js';
+import { ARCHIVE_CUTAWAY_PROFILE, archiveShelfGeometry } from '../../claudeville/src/presentation/character-mode/BuildingCutaways.js';
 import {
     apertureFloorY,
     getBuildingApertureProfile,
@@ -62,8 +64,8 @@ export const ARCHIVE_DIR = join(BUILDINGS_DIR, 'building.archive');
 // The wall's own base line (the plinth foot between the buttresses), measured
 // on base.png: y = 176 at x 88, rising with the wall at +0.5.
 export const ARCHIVE_WALL_BASE = Object.freeze({ at: Object.freeze([88, 176]), slope: 0.5 });
-// Bookcase heights per bay: bays 1 and 2 stand under the Loom of Days.
-export const ARCHIVE_BOOKCASE_HEIGHTS = Object.freeze([16, 12, 12, 16, 16]);
+// Bookcase heights per bay: bays 1, 2 and 3 stand under the Loom of Days.
+export const ARCHIVE_BOOKCASE_HEIGHTS = Object.freeze([16, 12, 12, 12, 16]);
 // Far-wall lancets (sprite x), clear of the Loom space and the bookcases.
 export const ARCHIVE_FAR_LANCETS = Object.freeze([95, 110, 182]);
 
@@ -196,11 +198,13 @@ function paintArchiveAperture(layer, aperture, mask, base) {
             for (let y = col.top + 3; y < floorRow(x) - 1; y++) layer.set(x, y, x === px ? R.ashlar[4] : R.ashlar[2]);
         }
     }
-    // The Loom of Days wall space: two iron hooks above its frame.
-    const loom = ARCHIVE_CUTAWAY_PROFILE.loomWall.destRect;
+    // The Loom of Days wall space: two iron hooks above its (sheared) frame.
+    const loomWall = ARCHIVE_CUTAWAY_PROFILE.loomWall;
+    const loom = loomWall.destRect;
     for (const hx of [loom.x + 3, loom.x + loom.width - 4]) {
-        layer.set(hx, loom.y - 3, INK);
-        layer.set(hx, loom.y - 2, R.timber[0]);
+        const hy = loom.y + Math.round((loomWall.slope || 0) * (hx - loom.x));
+        layer.set(hx, hy - 3, INK);
+        layer.set(hx, hy - 2, R.timber[0]);
     }
     // Five oak Repo Directory Bays against the back wall.
     const bookcases = archiveBookcases(aperture);
@@ -215,46 +219,62 @@ function paintArchiveAperture(layer, aperture, mask, base) {
         paintFarLancet(layer, lx, bottom);
     }
     for (const bookcase of bookcases) paintBookcase(layer, bookcase);
-    // The Compaction Shelf's cabinet at the north end beside bay 1: a dark
-    // back panel behind the live spines, the live shelf board, then a drawer
-    // front down to the floor.
+    // The Compaction Shelf's cabinet on the floor in front of bay 0, sheared
+    // on the nave wall's +0.5 slope like the live spines it holds: a dark
+    // back panel behind the spines, the shelf board, then a drawer front.
     const shelf = ARCHIVE_CUTAWAY_PROFILE.compactionShelf;
-    const sx0 = shelf.at[0];
-    const sx1 = shelf.at[0] + ARCHIVE_CUTAWAY_PROFILE.compactionShelf.maxSpines * (shelf.spineWidth + shelf.gap) + 1;
-    const sy0 = shelf.at[1] - 1;
-    const sy1 = shelf.at[1] + shelf.spineHeight + 8;
+    const shelfGeometry = archiveShelfGeometry(shelf);
     const cabinet = new PixelLayer(layer.width, layer.height, layer.clip);
-    for (let x = sx0; x <= sx1; x++) {
-        for (let y = sy0; y <= sy1; y++) {
-            const rel = y - shelf.at[1];
+    for (let x = shelfGeometry.boardX0; x <= shelfGeometry.boardX1; x++) {
+        const y0 = shelf.at[1] + shelfGeometry.rise(x);
+        for (let rel = -1; rel <= shelf.spineHeight + 8; rel++) {
             let color;
             if (rel < shelf.spineHeight) color = R.timber[0];
             else if (rel < shelf.spineHeight + 3) color = R.timber[2];
             else if (rel === shelf.spineHeight + 5) color = R.timber[1];
-            else color = (x === sx0 ? R.timber[3] : R.timber[2]);
-            cabinet.set(x, y, color);
+            else color = (x === shelfGeometry.boardX0 ? R.timber[3] : R.timber[2]);
+            cabinet.set(x, y0 + rel, color);
         }
     }
-    for (let x = sx0 + 5; x <= sx1; x += 10) cabinet.set(x, shelf.at[1] + shelf.spineHeight + 7, R.trimGold[0]);
+    for (let x = shelfGeometry.boardX0 + 5; x <= shelfGeometry.boardX1; x += 10) {
+        cabinet.set(x, shelf.at[1] + shelfGeometry.rise(x) + shelf.spineHeight + 7, R.trimGold[0]);
+    }
     layer.outline(cabinet, INK);
     layer.stamp(cabinet);
     return { bookcases, pilasters };
 }
 
+// A reading lectern (W5 Fix-B, Fable P2): a cross foot, a slender oak post,
+// and a sloped book-rest (higher at the back) carrying an open parchment
+// folio with a crimson ribbon — a stand, not a stool.
 function paintLectern(layer, cx, cy) {
     const body = new PixelLayer(layer.width, layer.height, layer.clip);
-    // Slanted desk with an open folio.
-    for (let x = cx - 3; x <= cx + 3; x++) {
-        body.set(x, cy - 7, R.timber[3]);
-        body.set(x, cy - 6, R.timber[2]);
+    // Cross foot.
+    for (let x = cx - 3; x <= cx + 3; x++) body.set(x, cy, x === cx - 3 ? R.timber[2] : R.timber[1]);
+    body.set(cx - 1, cy - 1, R.timber[1]);
+    body.set(cx, cy - 1, R.timber[0]);
+    // Slender post.
+    for (let y = cy - 7; y <= cy - 2; y++) {
+        body.set(cx - 1, y, R.timber[2]);
+        body.set(cx, y, R.timber[1]);
     }
-    for (let x = cx - 2; x <= cx + 2; x++) body.set(x, cy - 8, x <= cx ? R.sand[4] : R.sand[3]);
-    body.set(cx, cy - 8, R.sand[2]);
-    // Closed oak stand and foot.
-    for (let y = cy - 5; y <= cy - 1; y++) {
-        for (let x = cx - 2; x <= cx + 2; x++) body.set(x, y, x === cx - 2 ? R.timber[2] : R.timber[1]);
+    // Sloped book-rest: its back edge one row higher than its front lip.
+    for (let x = cx - 4; x <= cx + 3; x++) {
+        const back = x <= cx - 1 ? cy - 10 : cy - 9;
+        body.set(x, back, R.timber[3]);
+        body.set(x, back + 1, R.timber[2]);
+        if (back + 2 <= cy - 8) body.set(x, back + 2, R.timber[1]);
     }
-    for (let x = cx - 3; x <= cx + 3; x++) body.set(x, cy, R.timber[0]);
+    // Open folio: two parchment pages, a dark gutter, a ribbon over the lip.
+    for (let x = cx - 3; x <= cx + 2; x++) {
+        if (x === cx) continue;
+        const top = x <= cx - 1 ? cy - 12 : cy - 11;
+        body.set(x, top, x < cx ? R.sand[4] : R.sand[3]);
+        body.set(x, top + 1, x < cx ? R.sand[3] : R.sand[2]);
+    }
+    body.set(cx, cy - 11, R.timber[0]);
+    body.set(cx, cy - 10, R.clothCrimson[1]);
+    body.set(cx, cy - 9, R.clothCrimson[0]);
     layer.outline(body, INK);
     layer.stamp(body);
 }

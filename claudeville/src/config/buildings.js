@@ -198,17 +198,31 @@ export const BUILDING_DEFS = [
         entrance: { tileX: 25, tileY: 30 },
         visitTiles: [
             workSlot(25, 30, { x: 27.5, y: 27.5 }, { queueGroup: 'forge-anvil', stance: 'hammer' }),
-            workSlot(28, 30, { x: 27.5, y: 27.5 }, { queueGroup: 'forge-anvil', stance: 'hammer' }),
+            // W5 Fix-B (D6) — the smithy arcade's two bays on the open floor
+            // (row 29, under the arches): the right arch's recessed hearth and
+            // the left arch's oak-mounted anvil, each smith facing into the
+            // bay (OpenFront FORGE_OPEN_FRONT_PROFILE bays).
+            workSlot(28, 29, { x: 26.8, y: 27.8 }, { queueGroup: 'forge-bay', stance: 'hammer', reason: 'forge-hearth' }),
+            workSlot(27, 29, { x: 27.2, y: 28.3 }, { queueGroup: 'forge-bay', stance: 'hammer', reason: 'forge-anvil' }),
+            // The yard anvil on its stone block, worked from the yard.
+            workSlot(29, 30, { x: 29.0, y: 29.4 }, { queueGroup: 'forge-anvil', stance: 'hammer' }),
             queueSlot(25, 31, { x: 27.5, y: 27.5 }, { queueGroup: 'forge-yard', reason: 'forge-yard' }),
             queueSlot(27, 31, { x: 27.5, y: 27.5 }, { queueGroup: 'forge-yard', reason: 'forge-yard' }),
             queueSlot(30, 31, { x: 27.5, y: 27.5 }, { queueGroup: 'forge-yard', reason: 'forge-yard' }),
             scenicSlot(24, 28, { x: 27.5, y: 27.5 }, { queueGroup: 'forge-watch', stance: 'warm-hands' }),
-            scenicSlot(29, 30, { x: 27.5, y: 27.5 }, { queueGroup: 'forge-watch', stance: 'warm-hands' }),
+            scenicSlot(26, 30, { x: 27.5, y: 27.5 }, { queueGroup: 'forge-watch', stance: 'warm-hands' }),
         ],
+        // Row 29 stays closed under the quench trough's corner (25-26) and the
+        // yard anvil (29); the two bays between them are the open floor.
         walkExclusion: [
-            { dx: -1, dy: 3, width: 5, height: 1 },
+            { dx: -1, dy: 3, width: 2, height: 1 },
+            { dx: 3, dy: 3, width: 1, height: 1 },
             { dx: 4, dy: 0, width: 1, height: 4 },
         ],
+        // The smithy arcade's floor under the two arches: walkable, and a
+        // body there paints inside the Forge, behind its piers and lintel
+        // (OpenFront `forge`, BuildingSprite's arch drawables).
+        openFloor: [{ dx: 1, dy: 3, width: 2, height: 1 }],
         scenery: {
             excludePadding: { x: 1, y: 1 },
             sightline: { x0: 23.5, y0: 24.5, x1: 31.5, y1: 30.5 },

@@ -15,15 +15,22 @@
 import { ART_RAMPS, PENNANT_PALETTE } from '../../config/artPalette.js';
 import { BUILDING_DEFS, normalizeBuildingType } from '../../config/buildings.js';
 import { classifyTool } from '../../domain/services/ToolIdentity.js';
-import { APERTURE_MIN_ZOOM } from './BuildingApertureModel.js';
+import {
+    APERTURE_GLASS_DWELL_MS,
+    APERTURE_LAYERS_3,
+    APERTURE_LAYERS_4,
+    APERTURE_MIN_ZOOM,
+    normalizeApertureLayers,
+} from './BuildingApertureModel.js';
 import { postcardFrame } from './Postcard.js';
 import { buildingCenterToWorld } from './Projection.js';
 import { repoProfile } from '../shared/RepoColor.js';
 
-export const CUTAWAY_LAYERS_4 = Object.freeze(['roof', 'aperture', 'interior', 'foreground']);
-export const CUTAWAY_LAYERS_3 = Object.freeze(['aperture', 'interior', 'foreground']);
+// The layer stacks and the 300 ms Glass dwell are BuildingApertureModel's
+// (`APERTURE_LAYERS_*`, `APERTURE_GLASS_DWELL_MS`): one definition each.
+export const CUTAWAY_LAYERS_4 = APERTURE_LAYERS_4;
+export const CUTAWAY_LAYERS_3 = APERTURE_LAYERS_3;
 export const CUTAWAY_MIN_ZOOM = APERTURE_MIN_ZOOM; // 2
-export const GLASS_DWELL_MS = 300;
 export const BAYER_PEEL_STEP_MS = 150;
 export const BAYER_PEEL_STEPS = 4;
 export const BAYER_PEEL_TOTAL_MS = BAYER_PEEL_STEP_MS * BAYER_PEEL_STEPS; // 600 ms
@@ -140,37 +147,62 @@ export const ARCHIVE_CUTAWAY_PROFILE = Object.freeze({
         Object.freeze({ index: 3, lancetAt: Object.freeze([159.5, 183]), at: Object.freeze([159.5, 195]), lecternAt: Object.freeze([159.5, 195]) }),
         Object.freeze({ index: 4, lancetAt: Object.freeze([181.5, 195]), at: Object.freeze([181.5, 207]), lecternAt: Object.freeze([181.5, 207]), fallback: true }),
     ]),
+    // The cabinet stands on the floor in front of bay 0's bookcase, its
+    // shelf sheared on the nave wall's +0.5 slope (a spine steps half a texel
+    // down per texel along), wholly inside x0..x1.
     compactionShelf: Object.freeze({
-        at: Object.freeze([88, 146]),
+        at: Object.freeze([92, 140]),
         spineWidth: 2,
         spineHeight: 6,
         gap: 1,
+        slope: 0.5,
         maxSpines: ARCHIVE_MAX_SPINES,
     }),
+    // The Loom of Days hangs on the back wall (Wave 6 weaves the panel): a
+    // 96 x 72 panel scaled to 48 x 36, sheared on the +0.5 wall slope from
+    // `destRect`'s top-left. Nothing is painted until a panel exists.
     loomWall: Object.freeze({
         sourceWidth: 96,
         sourceHeight: 72,
-        destRect: Object.freeze({ x: 118, y: 112, width: 48, height: 36 }),
+        slope: 0.5,
+        destRect: Object.freeze({ x: 113, y: 98, width: 48, height: 36 }),
     }),
 });
 
+// The Chart Loft under the oriel's slate hood: a sheared parallelogram on the
+// oriel's own SE-facing wall slope (-0.5, rising to the right) that holds the
+// whole hood, so the lifted `roof.png` is the entire hood and window wall.
+// Rows are counted on the wall: a texel's wall row is `y + 0.5 * (x - x0)`;
+// the back wall runs from the cut's top (row 90) to the floor line (row
+// 113), the plank floor below it to the sill (row 122, clear of the sign).
 export const HARBOR_CUTAWAY_PROFILE = Object.freeze({
     buildingType: 'harbor',
     minZoom: CUTAWAY_MIN_ZOOM,
     layers: CUTAWAY_LAYERS_4,
-    // Upper storey under the slate hood covering rooms 3, 4 and 5.
-    cut: Object.freeze({ x0: 138, x1: 168, top: 92, bottom: 118, slope: 0 }),
+    cut: Object.freeze({ x0: 133, x1: 167, top: 90, bottom: 122, slope: -0.5 }),
+    floor: Object.freeze({ at: Object.freeze([133, 113]), slope: -0.5 }),
     occupant: Object.freeze({ h: 20 }),
+    // Occupants stand on the plank floor beside their furniture, never on it:
+    // the ledger clerk in front of the wall desk, the navigator left of the
+    // chart table.
     slots: Object.freeze([
-        Object.freeze({ id: 'chartTable', bay: 'chart-table', at: Object.freeze([152, 108]), pose: 'think', facing: 'south-west' }),
-        Object.freeze({ id: 'ledgerDesk', bay: 'ledger-desk', at: Object.freeze([144, 112]), pose: 'tinker', facing: 'south-east' }),
+        Object.freeze({ id: 'chartTable', bay: 'chart-table', at: Object.freeze([152, 110]), pose: 'think', facing: 'south-east' }),
+        Object.freeze({ id: 'ledgerDesk', bay: 'ledger-desk', at: Object.freeze([143, 114]), pose: 'tinker', facing: 'south-west' }),
     ]),
+    // Furniture tops the live painter draws (centre of the sheared top).
+    chartTable: Object.freeze({ at: Object.freeze([161, 101]), width: 10, depth: 3 }),
+    ledgerDesk: Object.freeze({ at: Object.freeze([137, 106]), width: 7, depth: 2 }),
+    // The pending-commit lantern rack on the back wall: a beam stepping up
+    // the wall slope from `at`, four lanterns under it, then the `+N`
+    // overflow stamp (up to `+99`), all inside the cut.
     signalRack: Object.freeze({
-        at: Object.freeze([159, 97]),
+        at: Object.freeze([135, 95]),
+        slope: -0.5,
         spacing: 3,
         lanternWidth: 2,
         lanternHeight: 4,
         maxLanterns: HARBOR_MAX_LANTERNS,
+        maxOverflow: 99,
     }),
 });
 
@@ -181,21 +213,6 @@ export const BUILDING_CUTAWAY_PROFILES = Object.freeze({
 });
 
 // ─── 4-Layer Bayer Cutaway Peel State Machine ────────────────────────────────
-
-/**
- * Validate and normalize a 3-layer or 4-layer cutaway layer stack.
- */
-export function normalizeCutawayLayers(layers = CUTAWAY_LAYERS_4) {
-    if (!Array.isArray(layers) || (layers.length !== 3 && layers.length !== 4)) {
-        return null;
-    }
-    const normalized = layers.map((name) => String(name || '').trim()).filter(Boolean);
-    if (normalized.length !== layers.length) return null;
-    return Object.freeze({
-        layers: Object.freeze(normalized),
-        hasRoofPeel: normalized.length === 4 && normalized[0] === 'roof',
-    });
-}
 
 /**
  * Pure deterministic integer Bayer peel mask (`Uint8Array(width * height)`).
@@ -256,7 +273,7 @@ export function applyBayerPeelToRgba(roofRgba, width, height, step) {
 export class CutawayPeelController {
     constructor({
         minZoom = CUTAWAY_MIN_ZOOM,
-        glassDwellMs = GLASS_DWELL_MS,
+        glassDwellMs = APERTURE_GLASS_DWELL_MS,
         stepMs = BAYER_PEEL_STEP_MS,
         steps = BAYER_PEEL_STEPS,
     } = {}) {
@@ -295,10 +312,10 @@ export class CutawayPeelController {
         this._lastNow = t;
 
         const targetId = buildingId ? String(buildingId) : null;
-        const layerSpec = normalizeCutawayLayers(layers) || {
-            layers: CUTAWAY_LAYERS_4,
-            hasRoofPeel: true,
-        };
+        const stack = normalizeApertureLayers(layers);
+        const layerSpec = stack
+            ? { layers: stack.layers, hasRoofPeel: stack.hasRoof }
+            : { layers: CUTAWAY_LAYERS_4, hasRoofPeel: true };
 
         // Track continuous Glass dwell on the same building.
         let dwellMs = 0;
@@ -313,8 +330,11 @@ export class CutawayPeelController {
             this._dwellStartMs = null;
         }
 
-        const selectionTrigger = Boolean(targetId && selected && Number(zoom) >= minZoom);
-        const glassTrigger = Boolean(targetId && glassHover && dwellMs >= this.glassDwellMs);
+        // Both triggers need inspection zoom: The Glass never opens a
+        // cutaway below z 2, however long it dwells (R8).
+        const atZoom = Number(zoom) >= minZoom;
+        const selectionTrigger = Boolean(targetId && selected && atZoom);
+        const glassTrigger = Boolean(targetId && glassHover && atZoom && dwellMs >= this.glassDwellMs);
         const trigger = selectionTrigger ? 'selection' : (glassTrigger ? 'glass-dwell' : null);
 
         // Switching target building resets any prior peel cleanly.
@@ -534,25 +554,15 @@ export function buildCommandWarTableState({
     const sessions = Array.isArray(presentedSessions) ? presentedSessions : [];
     const agents = Array.isArray(allAgents) ? allAgents : [];
 
-    let workingCount = 0;
-    let waitingCount = 0;
-    for (const session of sessions) {
-        const status = String(session?.status || '').toLowerCase();
-        const isWorking = typeof session?.working === 'boolean' ? session.working : status === 'working';
-        const isWaiting = typeof session?.waiting === 'boolean'
-            ? session.waiting
-            : (status === 'waiting' || status === 'waiting_on_user');
-        if (isWorking) workingCount++;
-        if (isWaiting) waitingCount++;
-    }
-
     let ownerLead = null;
     let ownerChildren = [];
     let otherLeadsWithChildren = 0;
+    const crews = [];
 
     for (const session of sessions) {
         const kids = liveChildrenForLead(session, agents);
         if (!kids.length) continue;
+        crews.push(kids);
         if (!ownerLead) {
             ownerLead = session;
             ownerChildren = kids;
@@ -560,6 +570,27 @@ export function buildCommandWarTableState({
             otherLeadsWithChildren++;
         }
     }
+
+    // The sill bar counts the people the hall presents: every presented
+    // session and every mustered crew (the table's and the leads beyond it),
+    // each once, by its resolved status (a lead waiting on its crew in Poll
+    // is still a working session).
+    let workingCount = 0;
+    let waitingCount = 0;
+    const counted = new Set();
+    const tally = (entry, preferFlags) => {
+        const id = childIdOf(entry);
+        if (id && counted.has(id)) return;
+        if (id) counted.add(id);
+        const status = String(entry?.status || '').toLowerCase();
+        const isWorking = (preferFlags && entry?.working === true) || status === 'working';
+        const isWaiting = !isWorking && ((preferFlags && entry?.waiting === true)
+            || status === 'waiting' || status === 'waiting_on_user');
+        if (isWorking) workingCount++;
+        if (isWaiting) waitingCount++;
+    };
+    for (const session of sessions) tally(session, true);
+    for (const crew of crews) for (const child of crew) tally(child, false);
 
     const allPawns = [];
     for (const child of ownerChildren) {
@@ -943,73 +974,86 @@ export function buildArchiveCutawayState({
 }
 
 /**
- * Paint Archive's interior: 5 lecterns, Loom of Days rear-wall panel hook,
- * Compaction Shelf (up to 12 2x6 spines + pixel numeral stamp for overflow),
- * and strictly postcard-gated bay names (ONLY when `showBayNames` is true AND
- * `!postcardFrame()`).
+ * The sheared footprint of the Compaction Shelf: spine `i`'s top-left and the
+ * `+N` stamp's origin, stepping down the nave wall's +0.5 slope.
+ */
+export function archiveShelfGeometry(shelf = ARCHIVE_CUTAWAY_PROFILE.compactionShelf) {
+    const sw = shelf.spineWidth || 2;
+    const stepX = sw + (shelf.gap ?? 1);
+    const slope = Number(shelf.slope) || 0;
+    const [ax, ay] = shelf.at;
+    const rise = (x) => Math.round(slope * (x - ax));
+    const spineAt = (i) => {
+        const x = ax + 1 + i * stepX;
+        return { x, y: ay + rise(x) };
+    };
+    const boardX1 = ax + ARCHIVE_MAX_SPINES * stepX + 1;
+    const stampX = boardX1 + 2;
+    return { sw, sh: shelf.spineHeight || 6, stepX, slope, rise, spineAt, boardX0: ax, boardX1, stamp: { x: stampX, y: ay + rise(stampX) + 1 } };
+}
+
+/**
+ * Paint Archive's interior: the Loom of Days panel (only once Wave 6 hands
+ * one over, sheared on the +0.5 wall), the Compaction Shelf (up to 12 2x6
+ * spines along the same slope + pixel numeral stamp for overflow), and
+ * strictly postcard-gated bay names (ONLY when `showBayNames` is true AND
+ * `!postcardFrame()`). The lecterns are baked art (`interior.png`), drawn
+ * over the readers.
  */
 export function drawArchiveCutaway(ctx, state, {
     localPoint = (x, y) => ({ x: Math.round(x), y: Math.round(y) }),
     showBayNames = false,
     paintText = null,
 } = {}) {
-    if (!ctx || !state) return { drawnSpines: 0, overflowStamped: false, bayNamesDrawn: false };
+    if (!ctx || !state) return { drawnSpines: 0, overflowStamped: false, bayNamesDrawn: false, loomDrawn: false };
 
-    // 1. Rear wall hook for The Loom of Days (96x72 scaled onto nave back wall).
+    // 1. The Loom of Days: nothing until a panel exists; then the 96 x 72
+    //    panel scaled to 48 x 36, one texel column at a time down the slope.
     const loom = state.loomWall || ARCHIVE_CUTAWAY_PROFILE.loomWall;
-    const dest = loom.destRect;
-    const loomOrigin = localPoint(dest.x, dest.y);
-    ctx.fillStyle = PIXEL_OUTLINE_INK;
-    ctx.fillRect(loomOrigin.x - 1, loomOrigin.y - 1, dest.width + 2, dest.height + 2);
-    ctx.fillStyle = ART_RAMPS.timber[1];
-    ctx.fillRect(loomOrigin.x, loomOrigin.y, dest.width, dest.height);
-    if (loom.panel && typeof ctx.drawImage === 'function') {
-        ctx.drawImage(
-            loom.panel,
-            0, 0, loom.sourceWidth, loom.sourceHeight,
-            loomOrigin.x, loomOrigin.y, dest.width, dest.height,
-        );
-    }
-
-    // 2. Five bay lecterns along the ground lancets (slope +0.50).
-    for (const bay of state.bays || []) {
-        const lp = localPoint(bay.lecternAt[0], bay.lecternAt[1]);
+    let loomDrawn = false;
+    if (loom?.panel && typeof ctx.drawImage === 'function') {
+        const dest = loom.destRect;
+        const slope = Number(loom.slope) || 0;
+        const scaleX = loom.sourceWidth / dest.width;
+        const top = localPoint(dest.x, dest.y);
         ctx.fillStyle = PIXEL_OUTLINE_INK;
-        ctx.fillRect(lp.x - 3, lp.y - 5, 6, 6);
-        ctx.fillStyle = ART_RAMPS.timber[2];
-        ctx.fillRect(lp.x - 2, lp.y - 4, 4, 4);
-        ctx.fillStyle = ART_RAMPS.sand[3];
-        ctx.fillRect(lp.x - 2, lp.y - 4, 4, 2);
+        for (let col = -1; col <= dest.width; col++) {
+            const y = top.y + Math.round(slope * col);
+            ctx.fillRect(top.x + col, y - 1, 1, dest.height + 2);
+        }
+        for (let col = 0; col < dest.width; col++) {
+            const y = top.y + Math.round(slope * col);
+            ctx.drawImage(loom.panel, Math.floor(col * scaleX), 0, 1, loom.sourceHeight, top.x + col, y, 1, dest.height);
+        }
+        loomDrawn = true;
     }
 
-    // 3. Compaction Shelf beside bay 1: up to 12 2x6 spines + pixel numeral.
+    // 2. Compaction Shelf: the board and up to 12 spines down the +0.5 slope.
     const shelf = state.compactionShelf || {};
+    const geometry = archiveShelfGeometry({ ...ARCHIVE_CUTAWAY_PROFILE.compactionShelf, ...shelf });
     const spines = (shelf.spines || []).slice(0, ARCHIVE_MAX_SPINES);
-    const shelfAt = shelf.at || ARCHIVE_CUTAWAY_PROFILE.compactionShelf.at;
-    const shelfOrigin = localPoint(shelfAt[0], shelfAt[1]);
-    const sw = shelf.spineWidth || 2;
-    const sh = shelf.spineHeight || 6;
-    const stepX = sw + (shelf.gap ?? 1);
-    const shelfWidth = ARCHIVE_MAX_SPINES * stepX + 2;
-
-    ctx.fillStyle = PIXEL_OUTLINE_INK;
-    ctx.fillRect(shelfOrigin.x - 1, shelfOrigin.y + sh, shelfWidth + 2, 3);
-    ctx.fillStyle = ART_RAMPS.timber[2];
-    ctx.fillRect(shelfOrigin.x, shelfOrigin.y + sh + 1, shelfWidth, 1);
-
+    const shelfY = shelf.at?.[1] ?? ARCHIVE_CUTAWAY_PROFILE.compactionShelf.at[1];
+    for (let x = geometry.boardX0; x <= geometry.boardX1; x++) {
+        const p = localPoint(x, shelfY + geometry.rise(x) + geometry.sh);
+        ctx.fillStyle = PIXEL_OUTLINE_INK;
+        ctx.fillRect(p.x, p.y, 1, 3);
+        ctx.fillStyle = ART_RAMPS.timber[2];
+        ctx.fillRect(p.x, p.y + 1, 1, 1);
+    }
     for (let i = 0; i < spines.length; i++) {
         const spine = spines[i];
-        const sx = shelfOrigin.x + 1 + i * stepX;
-        const sy = shelfOrigin.y;
+        const at = geometry.spineAt(i);
+        const p = localPoint(at.x, at.y);
         ctx.fillStyle = PIXEL_OUTLINE_INK;
-        ctx.fillRect(sx - 1, sy - 1, sw + 2, sh + 1);
+        ctx.fillRect(p.x - 1, p.y - 1, geometry.sw + 2, geometry.sh + 1);
         ctx.fillStyle = spine.trimColor || ART_RAMPS.trimGold[1];
-        ctx.fillRect(sx, sy, sw, sh);
+        ctx.fillRect(p.x, p.y, geometry.sw, geometry.sh);
     }
 
     let overflowStamped = false;
     if ((shelf.overflow || 0) > 0) {
-        drawPixelNumeral(ctx, `+${shelf.overflow}`, shelfOrigin.x + shelfWidth + 2, shelfOrigin.y + 1, {
+        const stamp = localPoint(geometry.stamp.x, geometry.stamp.y);
+        drawPixelNumeral(ctx, `+${Math.min(99, shelf.overflow)}`, stamp.x, stamp.y, {
             color: ART_RAMPS.trimGold[3],
         });
         overflowStamped = true;
@@ -1037,7 +1081,7 @@ export function drawArchiveCutaway(ctx, state, {
         bayNamesDrawn = true;
     }
 
-    return { drawnSpines: spines.length, overflowStamped, bayNamesDrawn };
+    return { drawnSpines: spines.length, overflowStamped, bayNamesDrawn, loomDrawn };
 }
 
 // ─── §5.3 Harbor — Chart Loft ────────────────────────────────────────────────
@@ -1123,64 +1167,108 @@ export function buildHarborCutawayState({
 }
 
 /**
- * Paint Harbor's Chart Loft interior (chart table, ledger desk, and signal rack
- * with up to 4 pennant-colored lanterns + pixel numeral stamp). Zero text!
+ * The signal rack's sheared footprint: the beam's row at a column, each
+ * lantern's top-left, and the `+N` stamp origin (all on the wall slope).
+ */
+export function harborRackGeometry(rack = HARBOR_CUTAWAY_PROFILE.signalRack) {
+    const slope = Number(rack.slope) || 0;
+    const spacing = rack.spacing || 3;
+    const beamWidth = Math.max(8, (rack.maxLanterns || HARBOR_MAX_LANTERNS) * spacing + 2);
+    const [ax, ay] = rack.at;
+    const beamY = (x) => ay + Math.round(slope * (x - ax));
+    const x1 = ax + beamWidth - 1;
+    const lanternAt = (i) => {
+        const x = ax + 1 + i * spacing;
+        return { x, y: beamY(x) + 2 };
+    };
+    const stampX = x1 + 3;
+    return { slope, spacing, beamWidth, x0: ax, x1, beamY, lanternAt, stamp: { x: stampX, y: beamY(stampX) + 1 } };
+}
+
+// A sheared table top: `width` columns down the wall slope from its centre,
+// `depth` rows each, outlined; `fill(col, row)` picks a colour.
+function drawShearedTop(ctx, localPoint, { at, width, depth }, slope, fill) {
+    const x0 = at[0] - Math.floor(width / 2);
+    for (let col = -1; col <= width; col++) {
+        const x = x0 + col;
+        const y = at[1] + Math.round(slope * (x - at[0]));
+        const p = localPoint(x, y);
+        ctx.fillStyle = PIXEL_OUTLINE_INK;
+        ctx.fillRect(p.x, p.y - 1, 1, depth + 2);
+        if (col < 0 || col >= width) continue;
+        for (let row = 0; row < depth; row++) {
+            ctx.fillStyle = fill(col, row);
+            ctx.fillRect(p.x, p.y + row, 1, 1);
+        }
+    }
+}
+
+/**
+ * Paint Harbor's Chart Loft (zero text). `layer: 'wall'` is the signal rack
+ * on the back wall (drawn before the occupants, who stand in front of it);
+ * `layer: 'props'` the chart table and ledger desk tops (drawn after the
+ * occupants and the baked legs); `'all'` both. The rack hangs up to 4
+ * pennant-coloured lanterns, one per pending repo, and the `+N` stamp —
+ * every texel inside the sheared cut.
  */
 export function drawHarborCutaway(ctx, state, {
     localPoint = (x, y) => ({ x: Math.round(x), y: Math.round(y) }),
+    layer = 'all',
 } = {}) {
     if (!ctx || !state) return { drawnLanterns: 0, overflowStamped: false };
-
-    // 1. Chart table & ledger desk props.
-    const chartSlot = HARBOR_CUTAWAY_PROFILE.slots[0];
-    const ledgerSlot = HARBOR_CUTAWAY_PROFILE.slots[1];
-    const cp = localPoint(chartSlot.at[0], chartSlot.at[1]);
-    ctx.fillStyle = PIXEL_OUTLINE_INK;
-    ctx.fillRect(cp.x - 5, cp.y - 3, 10, 6);
-    ctx.fillStyle = ART_RAMPS.timber[2];
-    ctx.fillRect(cp.x - 4, cp.y - 2, 8, 4);
-    ctx.fillStyle = ART_RAMPS.sand[3];
-    ctx.fillRect(cp.x - 3, cp.y - 1, 6, 2);
-
-    const lp = localPoint(ledgerSlot.at[0], ledgerSlot.at[1]);
-    ctx.fillStyle = PIXEL_OUTLINE_INK;
-    ctx.fillRect(lp.x - 4, lp.y - 2, 8, 5);
-    ctx.fillStyle = ART_RAMPS.timber[1];
-    ctx.fillRect(lp.x - 3, lp.y - 1, 6, 3);
-
-    // 2. Signal rack (no body): up to 4 hanging lanterns in pennant color.
-    const rack = state.signalRack || HARBOR_CUTAWAY_PROFILE.signalRack;
-    const lanterns = (rack.lanterns || []).slice(0, HARBOR_MAX_LANTERNS);
-    const rackOrigin = localPoint(rack.at[0], rack.at[1]);
-    const spacing = rack.spacing || 3;
-    const lw = rack.lanternWidth || 2;
-    const lh = rack.lanternHeight || 4;
-    const beamWidth = Math.max(8, HARBOR_MAX_LANTERNS * spacing + 2);
-
-    ctx.fillStyle = PIXEL_OUTLINE_INK;
-    ctx.fillRect(rackOrigin.x - 1, rackOrigin.y - 1, beamWidth + 2, 3);
-    ctx.fillStyle = ART_RAMPS.slate[2];
-    ctx.fillRect(rackOrigin.x, rackOrigin.y, beamWidth, 1);
-
-    for (let i = 0; i < lanterns.length; i++) {
-        const lantern = lanterns[i];
-        const lx = rackOrigin.x + 1 + i * spacing;
-        const ly = rackOrigin.y + 2;
-        ctx.fillStyle = PIXEL_OUTLINE_INK;
-        ctx.fillRect(lx - 1, ly - 1, lw + 2, lh + 2);
-        ctx.fillStyle = lantern.color || PENNANT_PALETTE[i % PENNANT_PALETTE.length];
-        ctx.fillRect(lx, ly, lw, lh);
-        ctx.fillStyle = ART_RAMPS.emissive[2];
-        ctx.fillRect(lx, ly + 1, 1, 1);
-    }
-
+    const profile = HARBOR_CUTAWAY_PROFILE;
+    let drawnLanterns = 0;
     let overflowStamped = false;
-    if ((rack.overflow || 0) > 0) {
-        drawPixelNumeral(ctx, `+${rack.overflow}`, rackOrigin.x + beamWidth + 2, rackOrigin.y + 1, {
-            color: ART_RAMPS.emissive[2],
-        });
-        overflowStamped = true;
+
+    if (layer === 'all' || layer === 'wall') {
+        const rack = { ...profile.signalRack, ...(state.signalRack || {}) };
+        const geometry = harborRackGeometry(rack);
+        const lanterns = (rack.lanterns || []).slice(0, HARBOR_MAX_LANTERNS);
+        const lw = rack.lanternWidth || 2;
+        const lh = rack.lanternHeight || 4;
+        for (let x = geometry.x0 - 1; x <= geometry.x1 + 1; x++) {
+            const p = localPoint(x, geometry.beamY(x));
+            ctx.fillStyle = PIXEL_OUTLINE_INK;
+            ctx.fillRect(p.x, p.y - 1, 1, 3);
+            if (x < geometry.x0 || x > geometry.x1) continue;
+            ctx.fillStyle = ART_RAMPS.slate[2];
+            ctx.fillRect(p.x, p.y, 1, 1);
+        }
+        for (let i = 0; i < lanterns.length; i++) {
+            const lantern = lanterns[i];
+            const at = geometry.lanternAt(i);
+            const p = localPoint(at.x, at.y);
+            ctx.fillStyle = PIXEL_OUTLINE_INK;
+            ctx.fillRect(p.x - 1, p.y - 1, lw + 2, lh + 2);
+            ctx.fillStyle = lantern.color || PENNANT_PALETTE[i % PENNANT_PALETTE.length];
+            ctx.fillRect(p.x, p.y, lw, lh);
+            ctx.fillStyle = ART_RAMPS.emissive[2];
+            ctx.fillRect(p.x, p.y + 1, 1, 1);
+        }
+        drawnLanterns = lanterns.length;
+        if ((rack.overflow || 0) > 0) {
+            const stamp = localPoint(geometry.stamp.x, geometry.stamp.y);
+            drawPixelNumeral(ctx, `+${Math.min(rack.maxOverflow || 99, rack.overflow)}`, stamp.x, stamp.y, {
+                color: ART_RAMPS.emissive[2],
+            });
+            overflowStamped = true;
+        }
     }
 
-    return { drawnLanterns: lanterns.length, overflowStamped };
+    if (layer === 'all' || layer === 'props') {
+        const slope = Number(profile.cut.slope) || 0;
+        // Chart table: an oak top with a pinned sea chart.
+        drawShearedTop(ctx, localPoint, profile.chartTable, slope, (col, row) => {
+            if (col === 0 || col === profile.chartTable.width - 1) return ART_RAMPS.timber[2];
+            if (row === profile.chartTable.depth - 1) return ART_RAMPS.timber[1];
+            return (col + row) % 4 === 1 ? ART_RAMPS.shallowWater[1] : ART_RAMPS.sand[3];
+        });
+        // Ledger desk: a darker slant top with an open ledger.
+        drawShearedTop(ctx, localPoint, profile.ledgerDesk, slope, (col, row) => {
+            if (row === profile.ledgerDesk.depth - 1) return ART_RAMPS.timber[0];
+            return col >= 2 && col <= 4 ? ART_RAMPS.sand[4] : ART_RAMPS.timber[1];
+        });
+    }
+
+    return { drawnLanterns, overflowStamped };
 }

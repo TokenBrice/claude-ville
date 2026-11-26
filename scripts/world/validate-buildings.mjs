@@ -12,6 +12,18 @@ import {
 } from '../../claudeville/src/presentation/character-mode/BuildingVisualRegistry.js';
 import { apertureCutContains, normalizeApertureLayers } from '../../claudeville/src/presentation/character-mode/BuildingApertureModel.js';
 import { OPEN_FRONT_PROFILES, parseArchRows } from '../../claudeville/src/presentation/character-mode/OpenFront.js';
+import {
+    BUILDING_CUTAWAY_PROFILES,
+    HARBOR_MAX_LANTERNS,
+    WAR_TABLE_LANDMARKS,
+    WAR_TABLE_MAX_PAWNS,
+    buildArchiveCutawayState,
+    buildHarborCutawayState,
+    drawArchiveCutaway,
+    drawCommandWarTable,
+    drawHarborCutaway,
+    warTableTexelToSprite,
+} from '../../claudeville/src/presentation/character-mode/BuildingCutaways.js';
 import { checkAoMonotonicity, validateSurfaceV1Buffer } from '../sprites/bake-depth-channels.mjs';
 import { buildingCenterToWorld, tileToWorld } from '../../claudeville/src/presentation/character-mode/Projection.js';
 import { createWalkClearance, FOOTPRINT_CLEARANCE_PAD } from '../../claudeville/src/presentation/character-mode/WalkClearance.js';
@@ -614,6 +626,87 @@ export function cutawayReport(type, aperture, readPng = (name) => readSpritePng(
     return { errors, slots: slotsChecked, layers: stack.layers.length };
 }
 
+/**
+ * W5 Fix-B (Fable P1-2) — every texel a cutaway's living painter can paint
+ * lies inside its cut, on the building: the painters run at full capacity
+ * (every war-table pawn upright and prone, twelve shelf spines with a `+99`
+ * stamp, a Loom panel, four lanterns with a `+99` stamp, both furniture
+ * tops) against a recording context, and each filled rect is checked texel
+ * by texel with `apertureCutContains` (pixel centres, the bakers'
+ * convention). The sill bar and bay names are legends below the cut, not
+ * painters, and are left out.
+ */
+export function livingPainterReport(type, aperture, readPng = (name) => readSpritePng(type, name)) {
+    const base = readPng('base.png');
+    if (!base || !aperture?.cut) return null;
+    const rects = [];
+    const ctx = {
+        fillStyle: '#000000',
+        globalAlpha: 1,
+        fillRect(x, y, w, h) { rects.push({ x, y, w, h, kind: 'fill' }); },
+        drawImage(...args) {
+            const [dx, dy, dw, dh] = args.length >= 9 ? args.slice(5, 9) : [args[1], args[2], args[0]?.width || 0, args[0]?.height || 0];
+            rects.push({ x: dx, y: dy, w: dw, h: dh, kind: 'image' });
+        },
+        save() {},
+        restore() {},
+    };
+    const profile = BUILDING_CUTAWAY_PROFILES[type];
+    if (type === 'command') {
+        const pawns = [];
+        for (const landmark of Object.values(WAR_TABLE_LANDMARKS)) {
+            const at = warTableTexelToSprite(landmark.tx, landmark.ty, profile.table);
+            pawns.push({ spriteX: at.x, spriteY: at.y, width: 3, height: 5, orientation: 'upright' });
+            pawns.push({ spriteX: at.x, spriteY: at.y, width: 5, height: 3, orientation: 'prone' });
+        }
+        // Every landmark in both orientations, in batches of the table's cap.
+        for (let i = 0; i < pawns.length; i += WAR_TABLE_MAX_PAWNS) {
+            drawCommandWarTable(ctx, {
+                table: profile.table,
+                landmarks: Object.values(WAR_TABLE_LANDMARKS),
+                pawns: pawns.slice(i, i + WAR_TABLE_MAX_PAWNS),
+                sillBar: null,
+            });
+        }
+    } else if (type === 'archive') {
+        const today = Date.now();
+        const state = buildArchiveCutawayState({
+            agents: [],
+            compactions: Array.from({ length: 12 + 99 }, (_, i) => ({ id: `c${i}`, agentId: 'a', timestamp: today })),
+            now: new Date(today),
+            loomPanel: { width: 96, height: 72 },
+        });
+        drawArchiveCutaway(ctx, state, { showBayNames: false });
+    } else if (type === 'harbor') {
+        const state = buildHarborCutawayState({
+            agents: [],
+            harborPendingRepos: Array.from({ length: HARBOR_MAX_LANTERNS + 99 }, (_, i) => ({ repo: `repo-${i}`, pendingCommits: 1 })),
+        });
+        drawHarborCutaway(ctx, state, { layer: 'all' });
+    } else {
+        return null;
+    }
+    let outside = 0;
+    let offArt = 0;
+    const first = [];
+    for (const rect of rects) {
+        for (let y = Math.floor(rect.y); y < Math.floor(rect.y) + Math.ceil(rect.h); y++) {
+            for (let x = Math.floor(rect.x); x < Math.floor(rect.x) + Math.ceil(rect.w); x++) {
+                if (!apertureCutContains(aperture.cut, x + 0.5, y + 0.5)) {
+                    outside++;
+                    if (first.length < 3) first.push(`[${x},${y}]`);
+                } else if (pngAlphaAt(base, x, y) === 0) {
+                    offArt++;
+                }
+            }
+        }
+    }
+    const errors = [];
+    if (outside) errors.push(`living painters paint ${outside} texel(s) outside the cut (first ${first.join(' ')})`);
+    if (offArt) errors.push(`living painters paint ${offArt} texel(s) off base.png's silhouette`);
+    return { errors, rects: rects.length };
+}
+
 export function validateCutaways(reporter, registry = BUILDING_VISUAL_REGISTRY) {
     for (const [type, visual] of Object.entries(registry)) {
         const aperture = visual?.aperture;
@@ -627,6 +720,8 @@ export function validateCutaways(reporter, registry = BUILDING_VISUAL_REGISTRY) 
         if (!aperture) continue;
         const report = cutawayReport(type, aperture);
         for (const error of report.errors) reporter.error(`registry.${type}.aperture`, error);
+        const living = livingPainterReport(type, aperture);
+        for (const error of living?.errors || []) reporter.error(`registry.${type}.aperture`, error);
     }
     for (const type of CUTAWAY_BUILDINGS) {
         if (!registry[type]?.aperture) reporter.error(`registry.${type}.aperture`, 'D6: missing lifted-roof cutaway profile');
@@ -668,12 +763,13 @@ export function validateSurfaceSidecars(reporter, buildings, registry = BUILDING
     }
 }
 
-// W5-B (D6) — a calibrated open front (the Forge): its arch rows parse inside
-// the sprite, cover opaque texels only, and no bay's feet fall on the front
-// arch or off the art. `bake-forge-openfront.mjs --check` re-derives the
-// calibration from the pixels.
-export function openFrontReport(type, record, readPng = (name) => readSpritePng(type, name)) {
-    if (!record?.frontArchRows) return null;
+// W5-B (D6) — an open front this renderer draws (the Forge): its one
+// OpenFront profile's arch rows parse inside the sprite and cover opaque
+// texels only; every bay stands off the front arch, on the art, on a
+// buildings.js work slot on the building's `openFloor`.
+// `bake-forge-openfront.mjs --check` re-derives the profile from the pixels.
+export function openFrontReport(type, record, readPng = (name) => readSpritePng(type, name), defs = null) {
+    if (!record?.profile || record.drawables !== 'BuildingSprite') return null;
     const profile = OPEN_FRONT_PROFILES[record.profile];
     if (!profile) return { errors: [`unknown OpenFront profile "${record.profile}"`] };
     const base = readPng('base.png');
@@ -682,7 +778,7 @@ export function openFrontReport(type, record, readPng = (name) => readSpritePng(
     if (base.width !== profile.nativeSize.width || base.height !== profile.nativeSize.height) {
         errors.push(`base.png is ${base.width}x${base.height}, profile expects ${profile.nativeSize.width}x${profile.nativeSize.height}`);
     }
-    const runs = parseArchRows(record.frontArchRows, base.width, base.height);
+    const runs = parseArchRows(profile.frontArchRows, base.width, base.height);
     const front = new Uint8Array(base.width * base.height);
     let transparent = 0;
     for (const [y, x, length] of runs) {
@@ -693,7 +789,8 @@ export function openFrontReport(type, record, readPng = (name) => readSpritePng(
     }
     if (!runs.length) errors.push('frontArchRows is empty');
     if (transparent) errors.push(`frontArchRows covers ${transparent} transparent texel(s)`);
-    for (const bay of record.bays || []) {
+    const def = (defs || []).find((candidate) => candidate.type === type) || null;
+    for (const bay of profile.bays || []) {
         const [x, y] = bay.at || [];
         if (!Number.isFinite(x) || !Number.isFinite(y)) {
             errors.push(`bay ${bay.id} needs a sprite-local \`at\``);
@@ -701,13 +798,23 @@ export function openFrontReport(type, record, readPng = (name) => readSpritePng(
         }
         if (front[y * base.width + x]) errors.push(`bay ${bay.id} [${x},${y}] stands on the front arch`);
         if (pngAlphaAt(base, x, y) === 0) errors.push(`bay ${bay.id} [${x},${y}] is off base.png's silhouette`);
+        if (!def) continue;
+        const tile = bay.tile || {};
+        const slot = (def.visitTiles || []).find((visit) => visit.tileX === tile.tileX && visit.tileY === tile.tileY);
+        if (!slot || slot.role !== 'work') errors.push(`bay ${bay.id} tile (${tile.tileX},${tile.tileY}) is not a work visit tile`);
+        const onFloor = (def.openFloor || []).some((rect) => tile.tileX >= def.x + rect.dx && tile.tileX < def.x + rect.dx + rect.width
+            && tile.tileY >= def.y + rect.dy && tile.tileY < def.y + rect.dy + rect.height);
+        if (!onFloor) errors.push(`bay ${bay.id} tile (${tile.tileX},${tile.tileY}) is not on the building's openFloor`);
+        const blocked = (def.walkExclusion || []).some((rect) => tile.tileX >= def.x + (rect.dx || 0) && tile.tileX < def.x + (rect.dx || 0) + rect.width
+            && tile.tileY >= def.y + (rect.dy || 0) && tile.tileY < def.y + (rect.dy || 0) + rect.height);
+        if (blocked && !onFloor) errors.push(`bay ${bay.id} tile (${tile.tileX},${tile.tileY}) is walk-excluded`);
     }
     return { errors };
 }
 
-export function validateOpenFronts(reporter, registry = BUILDING_VISUAL_REGISTRY) {
+export function validateOpenFronts(reporter, registry = BUILDING_VISUAL_REGISTRY, defs = null) {
     for (const [type, visual] of Object.entries(registry)) {
-        const report = openFrontReport(type, visual?.openFront);
+        const report = openFrontReport(type, visual?.openFront, undefined, defs);
         for (const error of report?.errors || []) reporter.error(`registry.${type}.openFront`, error);
     }
 }
@@ -777,7 +884,7 @@ async function main() {
     }
     // W5-B (D6) — lifted-roof cutaways and calibrated open fronts.
     validateCutaways(reporter, BUILDING_VISUAL_REGISTRY);
-    validateOpenFronts(reporter, BUILDING_VISUAL_REGISTRY);
+    validateOpenFronts(reporter, BUILDING_VISUAL_REGISTRY, BUILDING_DEFS);
     // BL-6 — art geometry: window/room rects on the sidecar glass, room masks
     // (plan 6.3), frame-strip parts well-formed (plan 6.1).
     validateWindowGeometry(reporter, { registry: BUILDING_VISUAL_REGISTRY, spritesRoot });
