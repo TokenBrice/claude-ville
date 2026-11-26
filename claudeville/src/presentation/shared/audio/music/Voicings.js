@@ -43,7 +43,7 @@
 
 import { PIECES } from '../bgm/BgmSongbook.js';
 
-export const VOICES = Object.freeze(['isle', 'chip']);
+export const VOICES = Object.freeze(['isle']);
 export const DEFAULT_VOICE = 'isle';
 // DayArc's rows, which are GradeEvaluator's GRADE_KEYFRAMES.
 export const KEYFRAMES = Object.freeze(['deep-night', 'pre-dawn', 'sunrise', 'morning', 'noon', 'golden-hour', 'blue-hour', 'night']);
@@ -143,18 +143,6 @@ const TRIM_DB = Object.freeze({
         // entering at the full band).
         'groove:brushes': 1.5,
     }),
-    chip: Object.freeze({
-        chipBass: -0.5,
-        chipArp: 1,
-        'night:engine:chipArp': 3,
-        'counter:chipTri': -1,
-        'descant:chipPulse12': 4.5,
-        // The chip kit and its full-band groove are one hat: the kit sits a
-        // dB back so the groove is heard entering (MUSL-3).
-        'percussion:chipHat': -1,
-        'descant:chipTri': 5.7,
-        'night:percussion:chipHat': 4,
-    }),
 });
 
 // MUSL-1/5 chairs. Pitched seats pan at the seat (zero per-note panners).
@@ -173,12 +161,11 @@ const PAN_OVERRIDE = Object.freeze({
     'descant:fiddle': -0.32,
 });
 // Island Air sends per instrument (MUSL-1 seat sends on the ENG-6 scale:
-// bass nearly dry, the music box wettest; Chip keeps the Wave-2 sends).
+// bass nearly dry, the music box wettest).
 const AIR = Object.freeze({
     whistle: 0.18, lute: 0.2, harp: 0.28, upright: 0.05, marimba: 0.18, musicBox: 0.32,
     fiddle: 0.16, concertina: 0.14, dulcimer: 0.22,
     brushes: 0.14, brush: 0.14, shaker: 0.14, lowTom: 0.08, rim: 0.1,
-    chipPulse25: 0.18, chipPulse12: 0.12, chipArp: 0, chipTri: 0.12, chipFlute: 0.22, chipBass: 0, chipHat: 0,
 });
 
 const KIT_CLEAR = Object.freeze({ brush: 'brush', shaker: 'shaker', lowTom: 'lowTom', rim: 'rim' });
@@ -188,7 +175,6 @@ const KIT_NIGHT = Object.freeze({ brush: 'brush', shaker: 'shaker', lowTom: 'low
 const KIT_RAIN = Object.freeze({ brush: 'brush', shaker: 'shaker', lowTom: 'brush', rim: 'shaker' });
 // Snow: a sleigh colour carried by the shaker (bells stay cue-only, S1).
 const KIT_SNOW = Object.freeze({ brush: 'shaker', shaker: 'shaker', lowTom: 'brush', rim: 'shaker' });
-const KIT_CHIP = Object.freeze({ brush: 'chipHat', shaker: 'chipHat', lowTom: 'chipHat', rim: 'chipHat' });
 
 // The band's own groove seat (MUSL-3's full row: "+ brushes and a
 // descant"): the workshop kit plays from the light band as the village works
@@ -198,18 +184,12 @@ const KIT_CHIP = Object.freeze({ brush: 'chipHat', shaker: 'chipHat', lowTom: 'c
 // (MUSL-1: swish on 1 and 3, tap on 2 and 4; in 3/4 one swish a bar and in
 // 6/8, whose beat is the eighth, a swish on 1 and taps on the second dotted
 // quarter and its last eighth, their lone swish at full weight so the bar
-// carries the 4/4 groove's level). Chip: the hat on the eighths, the
-// offbeats softer.
+// carries the 4/4 groove's level).
 const GROOVE_STEPS = Object.freeze({
     isle: Object.freeze({
         4: Object.freeze([[0, 1.6, 0.8], [4, 0.25, 1], [8, 1.6, 0.8], [12, 0.25, 1]].map(Object.freeze)),
         3: Object.freeze([[0, 1.6, 1], [4, 0.25, 1], [8, 0.25, 0.9]].map(Object.freeze)),
         6: Object.freeze([[0, 2.4, 1], [12, 0.5, 1], [20, 0.5, 0.9]].map(Object.freeze)),
-    }),
-    chip: Object.freeze({
-        4: Object.freeze([0, 2, 4, 6, 8, 10, 12, 14].map(step => Object.freeze([step, 0.25, step % 4 === 0 ? 1 : 0.7]))),
-        3: Object.freeze([0, 2, 4, 6, 8, 10].map(step => Object.freeze([step, 0.25, step % 4 === 0 ? 1 : 0.7]))),
-        6: Object.freeze([0, 4, 8, 12, 16, 20].map(step => Object.freeze([step, 0.5, step % 12 === 0 ? 1 : 0.7]))),
     }),
 });
 
@@ -237,20 +217,7 @@ const ISLE_TOWN = Object.freeze({
     night: { lead: ['musicBox'], counter: ['harp', 0, { bright: 0.5 }], engine: ['harp', 0, { bright: 0.5 }], descant: ['harp', 0, { bright: 0.5 }] },
 });
 
-// Chip restored (MUSL-2/5): pulse lead by day, the flute at its written
-// octave by night (MUS-14: no pulse12 lead at night), the triangle pad.
-const CHIP_TOWN = Object.freeze({
-    'deep-night': { lead: ['chipFlute', 0, { bright: 0.6 }], counter: ['chipTri'], engine: ['chipTri'], descant: ['chipTri'], bright: 0.8 },
-    'pre-dawn': { lead: ['chipFlute'], counter: ['chipTri'], engine: ['chipArp', 0, { bright: 0.6 }], descant: ['chipTri'], bright: 0.85 },
-    sunrise: { lead: ['chipPulse25', 0, { bright: 0.85 }], counter: ['chipPulse12'], engine: ['chipArp'], descant: ['chipTri'] },
-    morning: { lead: ['chipPulse25'], counter: ['chipPulse12'], engine: ['chipArp'], descant: ['chipPulse12'] },
-    noon: { lead: ['chipPulse25'], counter: ['chipPulse12'], engine: ['chipArp'], descant: ['chipPulse12'] },
-    'golden-hour': { lead: ['chipPulse25', 0, { bright: 0.75 }], counter: ['chipPulse12'], engine: ['chipTri'], descant: ['chipTri'], tempoScale: 0.9 },
-    'blue-hour': { lead: ['chipFlute'], counter: ['chipPulse12', 0, { bright: 0.7 }], engine: ['chipTri'], descant: ['chipTri'], bright: 0.9 },
-    night: { lead: ['chipFlute'], counter: ['chipTri'], engine: ['chipArp', 0, { bright: 0.7 }], descant: ['chipTri'], bright: 0.85 },
-});
-
-const ROWS = Object.freeze({ isle: ISLE_TOWN, chip: CHIP_TOWN });
+const ROWS = Object.freeze({ isle: ISLE_TOWN });
 
 // Stems per seat that differ from the default target by instrument: the
 // harp engine sits at MUSL-1's harp level (−8…−9); the night percussion
@@ -327,24 +294,24 @@ function compile(voice, keyframe, weather, season, pieceName) {
         const [instrument, octaveShift = 0, over = {}] = own?.[seat] ?? row[seat];
         specs[seat] = { instrument, octaveShift, bright: rowBright * (over.bright ?? 1), soft: 0, figure: seat === 'engine' ? 'written' : undefined };
     }
-    specs.bass = { instrument: voice === 'chip' ? 'chipBass' : 'upright', octaveShift: 0, bright: 1, soft: 0, figure: 'written' };
+    specs.bass = { instrument: 'upright', octaveShift: 0, bright: 1, soft: 0, figure: 'written' };
     specs.percussion = {
-        instrument: voice === 'chip' ? 'chipHat' : 'brushes',
+        instrument: 'brushes',
         octaveShift: 0,
         // Night: a dark, soft brushed backbeat (the Isle's brushes sit
-        // in 3–5 kHz); the chip hat is a high-passed tick, left as built.
-        bright: voice === 'isle' && night ? 0.4 : 1,
-        soft: voice === 'isle' && night ? 0.3 : 0,
-        kit: voice === 'chip' ? KIT_CHIP : night ? KIT_NIGHT : KIT_CLEAR,
+        // in 3–5 kHz).
+        bright: night ? 0.4 : 1,
+        soft: night ? 0.3 : 0,
+        kit: night ? KIT_NIGHT : KIT_CLEAR,
         stemLu: night ? -15 : undefined,
     };
     if (!night) {
         specs.groove = {
-            instrument: voice === 'chip' ? 'chipHat' : 'brushes',
+            instrument: 'brushes',
             octaveShift: 0,
             bright: 1,
             soft: 0,
-            steps: GROOVE_STEPS[voice],
+            steps: GROOVE_STEPS.isle,
         };
     }
 
@@ -363,15 +330,13 @@ function compile(voice, keyframe, weather, season, pieceName) {
     // The keyframe rows swap colours with the weather; a piece's own players
     // keep their instruments (C4) and take only the figure, softness and air.
     const swap = !own;
-    const rainLead = voice === 'isle' ? 'whistle' : 'chipFlute';
-    const padEngine = voice === 'isle' ? 'harp' : 'chipTri';
     if (weather === 'rain' || weather === 'storm') {
         // Rain: a flute-like lead by day, the engine rings chords instead
         // of its pattern, shakers and brushes, softer attacks, wetter.
-        if (swap && !night) specs.lead.instrument = rainLead;
-        if (swap) specs.engine.instrument = padEngine;
+        if (swap && !night) specs.lead.instrument = 'whistle';
+        if (swap) specs.engine.instrument = 'harp';
         specs.engine.figure = 'sustain';
-        if (specs.percussion && voice === 'isle') specs.percussion.kit = KIT_RAIN;
+        if (specs.percussion) specs.percussion.kit = KIT_RAIN;
         soften(weather === 'storm' ? 0.7 : 0.5, weather === 'storm' ? 0.7 : 0.85);
         airAdd = 0.08;
         if (weather === 'storm') {
@@ -385,15 +350,15 @@ function compile(voice, keyframe, weather, season, pieceName) {
         // Snow: the music box by day at its written octave, a quiet
         // sixteenth glitter an octave up, the sleigh colour.
         if (swap) {
-            if (!night) specs.lead.instrument = voice === 'isle' ? 'musicBox' : 'chipFlute';
+            if (!night) specs.lead.instrument = 'musicBox';
             specs.lead.octaveShift = 0;
-            specs.engine.instrument = voice === 'isle' ? 'harp' : 'chipArp';
+            specs.engine.instrument = 'harp';
         }
         specs.engine.octaveShift = 12;
         specs.engine.figure = 'glitter';
         specs.engine.bright *= 0.7;
         specs.engine.stemLu = -9;
-        if (specs.percussion && voice === 'isle') specs.percussion.kit = KIT_SNOW;
+        if (specs.percussion) specs.percussion.kit = KIT_SNOW;
         soften(0.4, 0.9);
         airAdd = 0.05;
     } else if (weather === 'fog') {

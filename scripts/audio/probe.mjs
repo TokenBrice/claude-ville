@@ -91,7 +91,7 @@ import {
     QUIET_MIX, quietMixScene,
     PERCUSSION_SEGMENTS, RAIN_SWITCH_AT, TOWN_SESSION, WAIT_CADENCE, musicStemScene, percussionScene, rainSwitchScene,
     townSessionScene, waitCadenceScene,
-    AWAKEN, AWAKEN_SCENE, SIGNALS_ANSWER_AT, outputBusyScene, outputScene, signalsScene, softenScene,
+    AWAKEN, AWAKEN_SCENE, SIGNALS_ANSWER_AT, outputBusyScene, outputScene, signalsScene, softenScene, townBandOnlyScene,
 } from './lib/scenes.mjs';
 import {
     captionRows, clusterRow, crownRow, galleryRows, ladderCalls, ladderCaptioned, ladderTrimRows, laneEvents, wakeRows,
@@ -112,7 +112,7 @@ import {
 import {
     bandRows, armRow, dutyOf, nodesPerNoteRow, noteRows, percussionPerBar, seatLufs, seatPairs, stopLevels, visitRows,
 } from './lib/probe-wave6.mjs';
-import { awakenRows, outputRow, signalsRows, softenRow, toneRow } from './lib/probe-wave7.mjs';
+import { awakenRows, outputRow, signalsRows, softenRow, townBandOnlyRows } from './lib/probe-wave7.mjs';
 import { townBandHours } from './lib/music-sim.mjs';
 import {
     cueClash, identicalRenditionGap, motifStatements, parallelPerfects, phraseReheard, range, renditions, seatLine, tonalReheard,
@@ -652,48 +652,45 @@ function wave3Units(render, browser, baseUrl) {
             });
         }
     }
-    if (has('outcomes') || has('avsync')) {
+    if (has('outcomes')) {
         units.push({
-            name: 'outcomes (World fixture, Dashboard fixture)',
+            name: 'outcomes (World fixture, Dashboard fixture, calm signal diet)',
             async run() {
                 const r = await render('outcomes', OUTCOME_SCENE);
-                wave3.crown = crownRow(r, onsetNear);
-                if (has('avsync')) {
-                    const c = wave3.crown;
-                    verdict('avsync', c != null && c.publishedMs != null && Math.abs(c.publishedMs) <= CROWN_SYNC_MS, `release crown (HAR-12): peal note ${c?.index ?? '—'} published ${c?.publishedMs != null ? `${signed(c.publishedMs, 1)} ms` : '—'} from the crown's accent, heard ${c?.heardMs != null ? `${signed(c.heardMs, 1)} ms` : '—'}; want the published note within ±${CROWN_SYNC_MS} ms`);
-                }
-                if (!has('outcomes')) return;
                 const w = r.meta.warmup;
                 const push = laneEvents(r, 'push');
                 const pushNotes = push.scores.filter(s => !s.silent).flatMap(s => s.notes).length;
-                const pushCaption = (r.meta.captions || []).some(c => c.cueKind === 'push' && push.cues.some(p => Math.abs(p.t - c.wall) < 1));
-                verdict('outcomes', push.cues.length === 1 && pushNotes > 0 && pushCaption, `outcome:verified {push} → ${push.cues.length} push cue(s) "${push.cues[0]?.label ?? ''}", ${pushNotes} published note(s), Toast caption ${pushCaption ? 'shown' : 'missing'} (auto, sound on); want one cue with notes and its caption`);
+                const pushAutoCaption = (r.meta.captions || []).some(c => c.setting === 'auto' && c.cueKind === 'push' && push.cues.some(p => Math.abs(p.t - c.wall) < 1));
+                const pushEventsCaption = (r.meta.captions || []).some(c => c.setting === 'events' && c.cueKind === 'push' && push.cues.some(p => Math.abs(p.t - c.wall) < 1));
+                verdict('outcomes', push.cues.length === 1 && pushNotes === 0 && !pushAutoCaption && pushEventsCaption, `outcome:verified {push} → ${push.cues.length} push cue(s) "${push.cues[0]?.label ?? ''}", ${pushNotes} sounding note(s), auto caption ${pushAutoCaption ? 'shown' : 'hidden'}, events caption ${pushEventsCaption ? 'shown' : 'missing'}; want silent cue, hidden under auto, shown under events`);
                 const quiet = r.meta.cues.filter(c => c.t >= w + 12 && c.t < w + 25);
                 verdict('outcomes', quiet.length === 0, `10 × exit 0: ${quiet.length} cue(s) in the 13 s after (${quiet.map(c => c.kind).join(', ') || 'none'}); want silence`);
                 const failed = laneEvents(r, 'toolFailed');
-                verdict('outcomes', failed.cues.length >= 1 && failed.cues.length <= 2, `10 non-zero exits from one agent in 60 s → ${failed.cues.length} toolFailed cue(s) (${failed.cues.map(c => `"${c.label}"`).join(', ')}); want 1–2`);
+                const failedSounding = failed.scores.filter(s => !s.silent).length;
+                verdict('outcomes', failed.cues.length >= 1 && failed.cues.length <= 2 && failedSounding === 0, `10 non-zero exits from one agent in 60 s → ${failed.cues.length} toolFailed cue(s), ${failedSounding} sounding (${failed.cues.map(c => `"${c.label}"`).join(', ')}); want 1–2 silent cues`);
                 for (const lane of ['turnDone', 'dispatch', 'subagentReturn', 'release']) {
                     const e = laneEvents(r, lane, { withinSec: 5 });
-                    verdict('outcomes', e.cues.length === 1 && e.scores.some(s => !s.silent), `World: ${lane} → ${e.cues.length} cue(s)${e.cues[0] ? ` "${e.cues[0].label}"` : ''}, ${e.scores.filter(s => !s.silent).length} sounding score(s); want one`);
+                    const sounding = e.scores.filter(s => !s.silent).length;
+                    verdict('outcomes', e.cues.length === 1 && sounding === 0, `World: ${lane} → ${e.cues.length} cue(s)${e.cues[0] ? ` "${e.cues[0].label}"` : ''}, ${sounding} sounding score(s); want 1 silent (announceOnly)`);
                 }
                 const d = await render('outcomes:dashboard', DASHBOARD_SCENE);
                 for (const lane of ['turnDone', 'subagentReturn']) {
                     const e = laneEvents(d, lane, { withinSec: 5 });
-                    verdict('outcomes', e.cues.length === 1 && e.scores.some(s => !s.silent), `Dashboard (agent:* transitions only): ${lane} → ${e.cues.length} cue(s)${e.cues[0] ? ` "${e.cues[0].label}"` : ''}; want one`);
+                    const sounding = e.scores.filter(s => !s.silent).length;
+                    verdict('outcomes', e.cues.length === 1 && sounding === 0, `Dashboard (agent:* transitions only): ${lane} → ${e.cues.length} cue(s)${e.cues[0] ? ` "${e.cues[0].label}"` : ''}, ${sounding} sounding; want 1 silent`);
                 }
-                // SND-1: Signals sounds a long turn's end, within its caps.
+                // v0.69 calm signal diet: Signals silences both short and long turns.
                 const sig = await render('outcomes:signals-long-turn', SIGNALS_LONG_TURN_SCENE);
                 const turnRow = (lane) => {
                     const e = laneEvents(sig, lane, { withinSec: 4, kinds: ['turnDone'] });
-                    const captioned = (sig.meta.captions || []).some(c => c.cueKind === 'turnDone' && e.cues.some(p => Math.abs(p.t - c.wall) < 1));
-                    return { cues: e.cues.length, sounding: e.scores.filter(x => !x.silent).length, captioned };
+                    const autoCaptioned = (sig.meta.captions || []).some(c => c.setting === 'auto' && c.cueKind === 'turnDone' && e.cues.some(p => Math.abs(p.t - c.wall) < 1));
+                    const eventsCaptioned = (sig.meta.captions || []).some(c => c.setting === 'events' && c.cueKind === 'turnDone' && e.cues.some(p => Math.abs(p.t - c.wall) < 1));
+                    return { cues: e.cues.length, sounding: e.scores.filter(x => !x.silent).length, autoCaptioned, eventsCaptioned };
                 };
                 const [short, long, capped] = ['shortTurn', 'longTurn', 'cappedTurn'].map(turnRow);
-                const knock = sig.meta.levels.find(l => l.kind === 'turnDone');
-                info('outcomes', `Signals: the long-turn knock's trim ${knock ? `${signed(knock.trimDb)} dB` : '—'} (Medium over silence; the needs-you call takes −4 dB there)`);
-                verdict('outcomes', short.cues === 1 && short.sounding === 0 && short.captioned, `Signals: a 25 s turn ends → ${short.cues} cue(s), ${short.sounding} sounding, caption ${short.captioned ? 'shown' : 'missing'}; want caption only`);
-                verdict('outcomes', long.cues === 1 && long.sounding === 1 && long.captioned, `Signals: a 150 s turn ends (SND-1) → ${long.cues} cue(s), ${long.sounding} sounding, caption ${long.captioned ? 'shown' : 'missing'}; want one knock and its caption`);
-                verdict('outcomes', capped.cues === 1 && capped.sounding === 0 && capped.captioned, `Signals: a second long turn 30 s later → ${capped.cues} cue(s), ${capped.sounding} sounding, caption ${capped.captioned ? 'shown' : 'missing'}; want caption only (LONG_TURN_CAPS gap)`);
+                verdict('outcomes', short.cues === 1 && short.sounding === 0 && !short.autoCaptioned && short.eventsCaptioned, `Signals: a 25 s turn ends → ${short.cues} cue(s), ${short.sounding} sounding, auto ${short.autoCaptioned ? 'shown' : 'hidden'}, events ${short.eventsCaptioned ? 'shown' : 'missing'}; want silent, events-only caption`);
+                verdict('outcomes', long.cues === 1 && long.sounding === 0 && !long.autoCaptioned && long.eventsCaptioned, `Signals: a 150 s turn ends → ${long.cues} cue(s), ${long.sounding} sounding, auto ${long.autoCaptioned ? 'shown' : 'hidden'}, events ${long.eventsCaptioned ? 'shown' : 'missing'}; want silent (v0.69 calm diet), events-only caption`);
+                verdict('outcomes', capped.cues === 1 && capped.sounding === 0 && !capped.autoCaptioned && capped.eventsCaptioned, `Signals: a second long turn 30 s later → ${capped.cues} cue(s), ${capped.sounding} sounding, auto ${capped.autoCaptioned ? 'shown' : 'hidden'}, events ${capped.eventsCaptioned ? 'shown' : 'missing'}; want silent, events-only caption`);
                 const errs = [...r.errors, ...d.errors, ...sig.errors];
                 if (errs.length) info('outcomes', `page errors: ${errs.slice(0, 3).join(' | ')}`);
             },
@@ -837,14 +834,12 @@ function wave6Units(render, renderOnce, scene, marginBed) {
     if (stemChecks.some(has)) {
         for (const piece of PIECES) {
             units.push({
-                name: `musicstems (6.1–6.3, 6.5: ${piece.name}, day and night, Isle and Chip)`,
+                name: `musicstems (6.1–6.3, 6.5: ${piece.name}, day and night, Isle)`,
                 async run() {
                     const rows = {};
                     for (const phase of ['day', 'night']) {
-                        for (const voice of ['isle', 'chip']) {
-                            const r = await renderOnce(`music:stems:${piece.name}:${phase}:${voice}`, musicStemScene({ piece: piece.name, seconds: stemSeconds(piece), phase, voice }));
-                            rows[`${phase}:${voice}`] = stemRow(r, { piece: piece.name, phase, voice });
-                        }
+                        const r = await renderOnce(`music:stems:${piece.name}:${phase}:isle`, musicStemScene({ piece: piece.name, seconds: stemSeconds(piece), phase }));
+                        rows[`${phase}:isle`] = stemRow(r, { piece: piece.name, phase, voice: 'isle' });
                     }
                     for (const row of Object.values(rows)) {
                         const tag = `${piece.name} ${row.phase} ${row.voice} (${row.keyframe ?? '—'})`;
@@ -881,18 +876,13 @@ function wave6Units(render, renderOnce, scene, marginBed) {
                     if (has('isleband')) {
                         for (const phase of ['day', 'night']) {
                             const isle = rows[`${phase}:isle`].arm;
-                            const chip = rows[`${phase}:chip`].arm;
                             const j = judgeIsleArm(isle);
-                            verdict('isleband', j.pass, `${piece.name} ${phase}, level-matched A/B of the same notes (music + its air${isle.air ? '' : ' — no air tap'}; dry S/M ${fmt(isle.dry.sideMidDb)} dB): Isle laptop loss ${fmt(isle.laptopLossLu)} LU, S/M ${fmt(isle.sideMidDb)} dB, mono fold ${fmt(isle.monoLossLu)} LU, 2–5 kHz ${fmt(isle.presenceDb)} dB — Chip ${fmt(chip.laptopLossLu)} LU, ${fmt(chip.sideMidDb)} dB, ${fmt(chip.monoLossLu)} LU, ${fmt(chip.presenceDb)} dB; want Isle laptop ≤ ${L.laptopLossMaxLu} LU, S/M ${L.sideMidDb[0]}…${L.sideMidDb[1]} dB, mono ≤ ${L.monoLossMaxLu} LU${j.failures.length ? ` — ${j.failures.join(', ')}` : ''}`);
+                            verdict('isleband', j.pass, `${piece.name} ${phase} (music + its air${isle.air ? '' : ' — no air tap'}; dry S/M ${fmt(isle.dry.sideMidDb)} dB): Isle laptop loss ${fmt(isle.laptopLossLu)} LU, S/M ${fmt(isle.sideMidDb)} dB, mono fold ${fmt(isle.monoLossLu)} LU, 2–5 kHz ${fmt(isle.presenceDb)} dB; want Isle laptop ≤ ${L.laptopLossMaxLu} LU, S/M ${L.sideMidDb[0]}…${L.sideMidDb[1]} dB, mono ≤ ${L.monoLossMaxLu} LU${j.failures.length ? ` — ${j.failures.join(', ')}` : ''}`);
                         }
                         const nd = nightDarker(rows['day:isle'].arm.presenceDb, rows['night:isle'].arm.presenceDb);
-                        const ndChip = nightDarker(rows['day:chip'].arm.presenceDb, rows['night:chip'].arm.presenceDb);
                         const per = k => Object.entries(rows[k].presence).map(([seat, v]) => `${seat} ${fmt(v)}`).join(', ');
                         info('isleband', `${piece.name}: 2–5 kHz band level per seat (dB, output-referred), Isle day ${per('day:isle')}; night ${per('night:isle')}; air-wet share in the arm: day ${fmt(rows['day:isle'].arm.presenceDb - rows['day:isle'].arm.dry.presenceDb)} dB, night ${fmt(rows['night:isle'].arm.presenceDb - rows['night:isle'].arm.dry.presenceDb)} dB (arm − dry)`);
-                        verdict('isleband', nd.pass, `${piece.name}: Isle 2–5 kHz share night ${fmt(rows['night:isle'].arm.presenceDb)} vs day ${fmt(rows['day:isle'].arm.presenceDb)} dB (${fmt(nd.under)} dB under); want ≥ ${L.nightPresenceUnderDayDb} dB under (Chip: ${fmt(ndChip.under)} dB)`);
-                    }
-                    if (has('nightmusic')) {
-                        info('nightmusic', `${piece.name}: night 2–5 kHz share Isle ${fmt(rows['night:isle'].arm.presenceDb)} dB vs Chip ${fmt(rows['night:chip'].arm.presenceDb)} dB (Chip restored ≈ the shipped night band's timbres): ${fmt(rows['night:chip'].arm.presenceDb - rows['night:isle'].arm.presenceDb)} dB under (6.3 asks ≈ 6)`);
+                        verdict('isleband', nd.pass, `${piece.name}: Isle 2–5 kHz share night ${fmt(rows['night:isle'].arm.presenceDb)} vs day ${fmt(rows['day:isle'].arm.presenceDb)} dB (${fmt(nd.under)} dB under); want ≥ ${L.nightPresenceUnderDayDb} dB under`);
                     }
                 },
             });
@@ -912,16 +902,12 @@ function wave6Units(render, renderOnce, scene, marginBed) {
     }
     if (has('score')) {
         units.push({
-            name: 'score (6.5: routine cues over the Town band)',
+            name: 'score (6.5: routine cues silenced over the Town band)',
             async run() {
                 for (const name of ['townBand']) {
                     const r = await scene(name);
-                    const frames = r.meta.music?.frames || [];
-                    const chords = frames.flatMap(f => f.chords.map(c => ({ t: c.time, root: c.rootPc, pcs: c.pcs }))).sort((a, b) => a.t - b.t);
-                    const playing = t => frames.some(f => t >= (f.chords[0]?.time ?? Infinity) && t < f.until);
-                    const cues = r.meta.scheduled.filter(s => !s.silent && ROUTINE_KINDS.has(s.kind)).flatMap(s => s.notes.map((t, i) => ({ t, midi: Number.isFinite(s.hz[i]) ? hzToMidi(s.hz[i]) : null, kind: s.kind }))).filter(c => c.midi != null && playing(c.t));
-                    const j = cueClash(cues, chords);
-                    verdict('score', j.checked > 0 && j.clashes === 0, `${name}: routine-cue notes over the sounding chord (MusicClock frames): ${j.clashes} clashes of ${j.checked} (${fmt(j.pct)} %); want 0 %`);
+                    const soundingRoutine = r.meta.scheduled.filter(s => !s.silent && ROUTINE_KINDS.has(s.kind));
+                    verdict('score', soundingRoutine.length === 0, `${name}: sounding routine cues over the Town band: ${soundingRoutine.length}; want 0 (v0.69 calm signal diet)`);
                 }
             },
         });
@@ -1110,13 +1096,26 @@ function wave7Units(renderOnce) {
                     const call = x.calls[0];
                     verdict('signals', call != null && call.peakDb - floorRef >= L.callOverFloorDb, `Signals (${tag}): the needs-you call ${call ? db(call.peakDb) : 'never sounded'} (loudest 400 ms), ${call ? fmt(call.peakDb - floorRef) : '—'} dB over the floor (${db(x.floorMaxDb)}, counted at ${L.signalsFloorDbfs} dBFS when silent); want ≥ ${L.callOverFloorDb} dB`);
                     for (const a of x.arrivals) {
-                        verdict('signals', a.caption != null && !a.sounded && a.peakDb < L.signalsFloorDbfs, `Signals (${tag}): the arrival at ${fmt(a.t - r.meta.warmup, 1)} s captioned ${a.caption ? `"${a.caption}"` : 'nothing'}${a.announceOnly ? ' (announceOnly)' : ''}, ${a.sounded ? 'sounded' : 'no sound'}, loudest 400 ms over the 3 s after ${db(a.peakDb)}; want a caption and no rise (< ${L.signalsFloorDbfs} dBFS)`);
+                        verdict('signals', a.caption == null && !a.sounded && a.peakDb < L.signalsFloorDbfs, `Signals (${tag}): the arrival at ${fmt(a.t - r.meta.warmup, 1)} s captioned ${a.caption ? `"${a.caption}"` : 'nothing'}${a.announceOnly ? ' (announceOnly)' : ''}, ${a.sounded ? 'sounded' : 'no sound'}, loudest 400 ms over the 3 s after ${db(a.peakDb)}; want no sound (< ${L.signalsFloorDbfs} dBFS) and hidden under auto captions`);
                     }
-                    if (!open) info('signals', `Signals (busy): the answered strike at ${x.answered.map(t => `${fmt(t - r.meta.warmup, 1)} s`).join(', ') || 'none'} (the needs-you is answered at ${SIGNALS_ANSWER_AT} s)`);
+                    if (!open) info('signals', `Signals (busy): the answered strike at ${x.answered.map(t => `${fmt(t - r.meta.warmup, 1)} s`).join(', ') || 'none'} (the needs-you is answered at ${SIGNALS_ANSWER_AT} s; silenced under v0.69 calm signal diet)`);
                     if (r.errors.length) info('signals', `page errors: ${r.errors.slice(0, 3).join(' | ')}`);
                 },
             });
         }
+        units.push({
+            name: 'signals (v0.69 3.A: Town band only — music plays, zero cue synthesis/ducking, captions fire)',
+            async run() {
+                const r = await renderOnce('signals:townBandOnly', townBandOnlyScene());
+                const x = townBandOnlyRows(r);
+                verdict('signals', x.preset === 'townBandOnly' && Number.isFinite(x.musicLufsI) && x.musicLufsI > -60, `Town band only: preset ${x.preset}, music ${fmt(x.musicLufsI)} LUFS-I; want townBandOnly with audible music`);
+                verdict('signals', x.soundingCount === 0 && x.cuePeakDb < L.signalsFloorDbfs && x.duckCount === 0, `Town band only: ${x.soundingCount} sounding cue score(s)${x.soundingKinds.length ? ` (${x.soundingKinds.join(', ')})` : ''}, cue stem peak ${db(x.cuePeakDb)}, ${x.duckCount} duck window(s); want 0 cues, cue stem < ${L.signalsFloorDbfs} dBFS, 0 ducks`);
+                const wantCaptions = ['summons', 'distress', 'limit'];
+                const missing = wantCaptions.filter(k => !x.urgentCaptions.includes(k));
+                verdict('signals', missing.length === 0, `Town band only: urgent captions shown under auto [${x.urgentCaptions.join(', ') || 'none'}]${missing.length ? ` (missing ${missing.join(', ')})` : ''}; want all three`);
+                if (r.errors.length) info('signals', `Town band only page errors: ${r.errors.slice(0, 3).join(' | ')}`);
+            },
+        });
     }
     if (has('awaken')) {
         units.push({
@@ -1134,19 +1133,12 @@ function wave7Units(renderOnce) {
     }
     if (has('listening')) {
         units.push({
-            name: 'listening (7.7: output, tone)',
+            name: 'listening (7.7: output)',
             async run() {
                 const busy = {};
                 for (const output of ['speakers', 'mono']) busy[output] = outputRow(await renderOnce(`output:busy:${output}`, outputBusyScene({ output })));
                 const d = busy.mono.lufsI - busy.speakers.lufsI;
                 verdict('listening', Math.abs(d) <= L.monoCompLu && busy.mono.lrDiffDb < -90, `Mono vs Speakers (the Town band with cues): ${fmt(busy.mono.lufsI)} vs ${fmt(busy.speakers.lufsI)} LUFS-I (${signed(d, 2)} LU; compensation ${fmt(busy.mono.output?.monoCompDb, 2)} dB), mono L−R ${Number.isFinite(busy.mono.lrDiffDb) ? `max ${fmt(busy.mono.lrDiffDb)} dBFS` : 'identical'}; want within ±${L.monoCompLu} LU and L = R`);
-                const t = {};
-                for (const tone of [-1, 0, 1]) t[tone] = toneRow(await renderOnce(`tone:music:${tone}`, outputScene({ tone })));
-                for (const tone of [-1, 1]) {
-                    const hi = t[tone].highDb - t[0].highDb;
-                    const lo = t[tone].lowDb - t[0].lowDb;
-                    verdict('listening', Math.abs(hi - tone * L.toneShelfDb) <= L.toneTolDb && Math.abs(lo) <= L.toneLowTolDb, `tone ${signed(tone, 0)} on the Town band: 5–10 kHz ${signed(hi, 2)} dB, 100–1000 Hz ${signed(lo, 2)} dB vs tone 0 (engine tone ${fmt(t[tone].output?.toneDb, 1)} dB); want ${signed(tone * L.toneShelfDb, 0)} ± ${L.toneTolDb} dB above the shelf, within ±${L.toneLowTolDb} dB under it`);
-                }
             },
         });
         units.push({

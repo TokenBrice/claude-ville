@@ -231,13 +231,6 @@ export const VOICE_REGISTRY = Object.freeze({
     'music.shaker': Object.freeze({ nominalLufsM: -35.1, plr: 15.4 }),
     'music.lowTom': Object.freeze({ nominalLufsM: -34.7, plr: 13.8 }),
     'music.rim': Object.freeze({ nominalLufsM: -36.6, plr: 20.8 }),
-    'music.chipPulse25': Object.freeze({ nominalLufsM: -36.2, plr: 4.7 }),
-    'music.chipPulse12': Object.freeze({ nominalLufsM: -36.5, plr: 6.4 }),
-    'music.chipArp': Object.freeze({ nominalLufsM: -31.4, plr: 12.3 }),
-    'music.chipTri': Object.freeze({ nominalLufsM: -36.6, plr: 2.8 }),
-    'music.chipFlute': Object.freeze({ nominalLufsM: -34.8, plr: 6.6 }),
-    'music.chipBass': Object.freeze({ nominalLufsM: -36.4, plr: 1.5 }),
-    'music.chipHat': Object.freeze({ nominalLufsM: -34.9, plr: 20.9 }),
 });
 
 // Memory table (S8): resident AudioBuffer bytes per SampleBank client

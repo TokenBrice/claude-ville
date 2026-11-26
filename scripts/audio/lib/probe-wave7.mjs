@@ -1,10 +1,9 @@
 // The probe's Wave-7 measurements ("the front door"): the Signals floor
-// (7.2), the awakening (7.4), and the listening options — output, tone and
-// soften (7.7) — on the virtual clock. Every function returns numbers;
-// probe.mjs turns them into PASS/FAIL lines.
+// (7.2), Town band only (v0.69 3.A), the awakening (7.4), and the listening
+// options — output and soften (7.7) — on the virtual clock. Every function
+// returns numbers; probe.mjs turns them into PASS/FAIL lines.
 import { loudness } from './analyze.mjs';
 import { energyMeanLufs } from './checks.mjs';
-import { bandLevelDb } from './probe-virtual.mjs';
 
 const toDb = x => (x > 0 ? 10 * Math.log10(x) : -Infinity);
 
@@ -57,6 +56,30 @@ export function signalsRows(r, { ringSec = 6, winSec = 0.4 } = {}) {
     return { floorWindows: floor.length, floorMaxDb: floorMax, calls, arrivals, kinds, answered: sounding.filter(c => c.kind === 'answered').map(c => c.onset) };
 }
 
+// v0.69 3.A: Town band only — music plays at its normal level while the cue
+// stem stays silent, zero non-silent cue scores or ducks occur, and urgent
+// captions still fire under `auto`.
+export function townBandOnlyRows(r, { winSec = 0.4 } = {}) {
+    const prog = slice(r.program, r.sr, r.meta.warmup, r.program.L.length / r.sr);
+    const musicLufsI = loudness(prog.L, prog.R, r.sr).integrated;
+    const cueCurve = rmsCurveDb(r.stems.cue, r.sr, { winSec, from: r.meta.warmup });
+    const cuePeakDb = maxOf(cueCurve);
+    const sounding = r.meta.scheduled.filter(s => !s.silent && s.notes?.length);
+    const ducks = r.meta.ducks.filter(d => d.at >= r.meta.warmup);
+    const urgentCaptions = [...new Set((r.meta.captions || [])
+        .map(c => (c.cueKind === 'attention' ? 'summons' : c.cueKind))
+        .filter(kind => ['summons', 'distress', 'limit'].includes(kind)))];
+    return {
+        preset: r.meta.finalSnapshot?.preset ?? r.meta.finalSnapshot?.mode ?? '—',
+        musicLufsI,
+        cuePeakDb,
+        soundingCount: sounding.length,
+        soundingKinds: [...new Set(sounding.map(s => s.kind))],
+        duckCount: ducks.length,
+        urgentCaptions,
+    };
+}
+
 // Momentary max (LUFS) of a stem over [a, b].
 function mMax(pair, sr, a, b) {
     const s = slice(pair, sr, a, b);
@@ -89,13 +112,6 @@ export function outputRow(r) {
     let d = 0;
     for (let i = 0; i < s.L.length; i++) d = Math.max(d, Math.abs(s.L[i] - s.R[i]));
     return { lufsI: loudness(s.L, s.R, r.sr).integrated, lrDiffDb: d > 0 ? 20 * Math.log10(d) : -Infinity, output: r.meta.output ?? null };
-}
-
-// 7.7 tone: the program's band levels (dB) after the warmup — above the
-// 3 kHz shelf (5–10 kHz) and well under it (100–1000 Hz).
-export function toneRow(r) {
-    const s = slice(r.program, r.sr, r.meta.warmup, r.program.L.length / r.sr);
-    return { highDb: bandLevelDb(s, r.sr, 5000, 10000), lowDb: bandLevelDb(s, r.sr, 100, 1000), output: r.meta.output ?? null };
 }
 
 // A cue's attack on the cue stem: the RMS envelope (`winMs` windows every

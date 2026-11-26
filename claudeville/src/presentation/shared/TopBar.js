@@ -23,7 +23,6 @@ import { publishReservedRect } from './ReservedRects.js';
 import { shortcutBlocked } from './ShortcutGuard.js';
 import { OPEN_METEO_URL, VILLAGE_WEATHER_KEY, readVillageWeather, watchVillageWeather, weatherMode } from './VillageWeatherSettings.js';
 import {
-    DEFAULT_TOWN_BAND_VOICE,
     HUSH_DURATION_MS,
     SOUND_PRESETS,
     SOUND_PRESET_DETAILS,
@@ -722,19 +721,11 @@ export class TopBar {
             ),
             onSoundBackground: (value) => sound(audio => audio.setBackground(value), settings => settings.soundBackground),
             onSoundOutput: (value) => sound(audio => audio.setOutput(value), settings => settings.soundOutput),
-            onSoundTone: (value) => sound(audio => audio.setTone(value), settings => settings.soundTone),
             onSoundSoften: (value) => sound(audio => audio.setSoften(value), settings => settings.soundSoften),
             onSoundQuietHours: (value) => sound(audio => audio.setQuietHours(value), settings => settings.soundQuietHours),
-            onSoundHush: (on) => sound((audio) => {
-                if (on) audio.hush(HUSH_DURATION_MS);
-                else audio.resumeFromHush();
-                return audio.soundView().hushedUntil ?? 0;
-            }, settings => settings.soundHushUntil),
             // SND-7: SET's three call previews, at the current volume.
             onSoundTestCall: (kind) => this._withAudio(audio => audio.testCall(kind)),
-            onAutoCamera: (enabled) => this._setAutoCamera(enabled),
             onDesktopAlerts: (enabled) => this._setDesktopAlerts(enabled),
-            onSidebarCollapsed: (collapsed) => this._setSidebarCollapsed(collapsed),
             onReducedMotion: (reduced) => this._setReducedMotion(reduced),
             onHdrHighlights: (mode) => this._setHdrHighlights(mode),
             onVillageWeather: (mode) => this._setVillageWeather(mode),
@@ -763,13 +754,11 @@ export class TopBar {
             audio.setVolumeStep(readPresetVolumeStep('off'));
             audio.setBackground(defaults.soundBackground);
             audio.setOutput(defaults.soundOutput);
-            audio.setTone(defaults.soundTone);
             audio.setSoften(defaults.soundSoften);
             audio.setQuietHours(defaults.soundQuietHours);
         } else {
             this._applySoundView(storedSoundView());
         }
-        eventBus.emit('sound:town-band-voice', { voice: DEFAULT_TOWN_BAND_VOICE });
         eventBus.emit('camera:auto-camera', { enabled: true });
         eventBus.emit(HDR_HIGHLIGHTS_EVENT, { mode: HDR_HIGHLIGHTS_DEFAULT });
         eventBus.emit(SIGNAGE_EVENT, { mode: SIGNAGE_DEFAULT_MODE });
@@ -1231,18 +1220,19 @@ export class TopBar {
         const available = view.available !== false;
         const on = available && view.preset !== 'off';
         const hushed = view.soundState === 'hushed';
+        const previewable = on && view.preset !== 'townBandOnly';
         this._renderSoundPresets(view.preset);
         setHidden(els.volume.row, !on);
         setSliderStep(els.volume, Number(view.volumeStep) || 0);
         setText(els.now, view.nowLine || '');
         setHidden(els.note, !view.recalibrated);
-        setHidden(els.preview, !on);
-        // Hush drops a playing preset to Signals for an hour; while hushed
-        // the same button resumes. Quiet hours end on their own.
+        setHidden(els.preview, !previewable);
+        // Hush drops Town band to Signals (or pauses Town band only) for an
+        // hour; while hushed the same button resumes. Quiet hours end on their own.
         const hushable = hushed ? !view.quietActive : on && view.preset !== 'signals';
         setHidden(els.hush, !hushable);
-        // Off with nothing to resume: no empty action row under the presets.
-        setHidden(els.actions, !on && !hushable);
+        // Off (or quiet-hours Town band only) with nothing to act on: no empty action row.
+        setHidden(els.actions, !previewable && !hushable);
         setText(els.hush, hushed ? 'RESUME NOW' : 'HUSH FOR 1 HOUR');
     }
 

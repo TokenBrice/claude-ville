@@ -5,8 +5,7 @@
 //   player ─► director group (groupInput('music', director); crossfade gain)
 //          ─► music group fader ─► music bus
 //   music ─► low shelf −3 dB @ 160 Hz ─► bass < 300 Hz mono ─► attention ─► musicDuck
-//     ─► tone shelf (the listener's Warm ↔ Bright, 3 kHz)
-//       ─► bedGate ─► PROGRAM_TRIM ─► HPF 30 Hz ─┐
+//     ─► bedGate ─► PROGRAM_TRIM ─► HPF 30 Hz ─┐
 //   cue ───────────► PROGRAM_TRIM ───────────────┤
 //   Island Air wet ► PROGRAM_TRIM ───────────────┴─► mono fold ─► LP 14 kHz ─► limiter (−1.5 dBFS) ─► volume ─► fade ─► out
 //
@@ -45,7 +44,7 @@ import { makeFilter } from './Filters.js';
 import { IslandAir } from './IslandAir.js';
 import { LIMITER_CEILING_DBFS, PROGRAM_TRIM_DB, STANDARD_VOLUME_STEP, volumeStepGain } from './Loudness.js';
 import { MusicClock } from './MusicClock.js';
-import { TONE_TAU_SEC, outputSettings, toneDb, widthMatrix } from './OutputStage.js';
+import { WIDTH_TAU_SEC, outputSettings, widthMatrix } from './OutputStage.js';
 import { rngStream } from './Rng.js';
 import { NoisePool, SampleBank } from './SampleBank.js';
 import { Transport } from './Transport.js';
@@ -287,7 +286,6 @@ export class AudioEngine {
         this._airBedGate = null;
         this._airWetTrim = null;
         this._airPhase = 'day';
-        this._toneShelf = null;
         this._attention = null;
         this._bedTap = null;
         this._bedMeter = null;
@@ -299,10 +297,9 @@ export class AudioEngine {
         // Mix state outlives the context so a rebuilt graph keeps the mix.
         this._groupLevels = new Map(AUDIO_GROUPS.map(name => [name, 1]));
         this._directors = new Map();
-        // The listener's output, tone and soften (7.7); set before or after
-        // the graph exists.
+        // The listener's output and soften (7.7); set before or after the
+        // graph exists.
         this._output = outputSettings('speakers');
-        this._tone = 0;
         this._softened = false;
         // Quiet hours (UX-11): the cue bus a little softer, dB ≤ 0.
         this._cueTrimDb = 0;
@@ -435,12 +432,10 @@ export class AudioEngine {
         this._bedOpenAt = now;
         musicPre.connect(this._busOuts.get('music'));
 
-        // Program: the tone shelf on the music, then gate, trim, HPF.
-        this._toneShelf = makeFilter(ctx, 'highshelf', 3000, { gain: toneDb(this._tone) });
+        // Program: gate, trim, HPF.
         this.bedGate = gain();
         const masterSum = gain();
         this._busOuts.get('music')
-            .connect(this._toneShelf)
             .connect(this.bedGate)
             .connect(gain(dbToGain(PROGRAM_TRIM_DB)))
             .connect(makeFilter(ctx, 'highpass', 30))
@@ -753,34 +748,6 @@ export class AudioEngine {
         return [this.bedGate.gain, this._airBedGate?.gain].filter(Boolean);
     }
 
-    // Cached console-style timbres: band-limited pulse waves (NES duty
-    // cycles) and a soft flute (sine plus a whisper of harmonics).
-    wave(name) {
-        if (!this.context) return null;
-        if (!this._waves) this._waves = new Map();
-        if (!this._waves.has(name)) {
-            const ctx = this.context;
-            let wave = null;
-            if (name === 'pulse25' || name === 'pulse12') {
-                const duty = name === 'pulse25' ? 0.25 : 0.125;
-                const n = 24;
-                const real = new Float32Array(n);
-                const imag = new Float32Array(n);
-                for (let k = 1; k < n; k++) {
-                    imag[k] = (2 / (k * Math.PI)) * Math.sin(k * Math.PI * duty);
-                }
-                wave = ctx.createPeriodicWave(real, imag);
-            } else if (name === 'flute') {
-                wave = ctx.createPeriodicWave(
-                    new Float32Array([0, 0, 0, 0, 0]),
-                    new Float32Array([0, 1, 0.22, 0.1, 0.04]),
-                );
-            }
-            this._waves.set(name, wave);
-        }
-        return this._waves.get(name);
-    }
-
     start() {
         if (this._disposed || !this.context || !this.fadeGain) return;
         this.started = true;
@@ -1011,19 +978,6 @@ export class AudioEngine {
         return Math.max(MIN_GAIN, this._groupLevels.get(name));
     }
 
-    // Warm ↔ Bright (7.7, SOTA-14): −1…+1 → ±4 dB on a 3 kHz shelf over the
-    // music only.
-    setTone(value) {
-        const v = Math.max(-1, Math.min(1, Number(value) || 0));
-        if (v === this._tone) return;
-        this._tone = v;
-        if (this._toneShelf) this._toneShelf.gain.setTargetAtTime(toneDb(v), this.now(), TONE_TAU_SEC);
-    }
-
-    get tone() {
-        return this._tone;
-    }
-
     // Speakers · Headphones · Mono (7.7, UX-10). Pans apply to voices placed
     // from now on; the mono fold glides over 0.1 s.
     setOutput(mode) {
@@ -1065,8 +1019,6 @@ export class AudioEngine {
             output: this._output.output,
             panScale: this._output.panScale,
             monoCompDb: this._output.monoCompDb,
-            tone: this._tone,
-            toneDb: toneDb(this._tone),
             softened: this._softened,
             cueTrimDb: this._cueTrimDb,
         };
@@ -1099,7 +1051,7 @@ export class AudioEngine {
             set: (w, db, at) => {
                 const m = widthMatrix(w);
                 for (const [param, v] of [[ll.gain, m.a], [rr.gain, m.a], [rl.gain, m.b], [lr.gain, m.b], [output.gain, dbToGain(db)]]) {
-                    param.setTargetAtTime(v, at, TONE_TAU_SEC);
+                    param.setTargetAtTime(v, at, WIDTH_TAU_SEC);
                 }
             },
         };
@@ -1353,13 +1305,11 @@ export class AudioEngine {
         this.air = null;
         this._airBedGate = null;
         this._airWetTrim = null;
-        this._toneShelf = null;
         this._attention = null;
         this._bedTap = null;
         this._bedMeter = null;
         this._musicPre = null;
         this._meterModuleContext = null;
-        this._waves = null;
         this._disposePromise = (async () => {
             if (context) {
                 try { await context.close(); } catch { /* already closed */ }

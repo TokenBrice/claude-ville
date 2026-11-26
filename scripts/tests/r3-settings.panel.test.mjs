@@ -11,13 +11,9 @@ import {
 import {
     SOUND_SETTING_DEFAULTS,
     readCaptionSetting,
-    readCountHours,
     readReminderSetting,
-    readTownBandVoice,
     writeCaptionSetting,
-    writeCountHours,
     writeReminderSetting,
-    writeTownBandVoice,
 } from '../../claudeville/src/presentation/shared/SoundSettings.js';
 import { STANDARD_VOLUME_STEP } from '../../claudeville/src/presentation/shared/audio/Loudness.js';
 
@@ -96,11 +92,8 @@ test('settings review reads every operator preference, sound levels as steps', (
         'claudeville.sound.background': 'signals',
         'claudeville.sound.calibration': '2',
         'claudeville.sound.reminders': 'gentle',
-        'claudeville.sound.countHours': '1',
         'claudeville.captions': 'all',
-        'claudeville.sound.townBandVoice': 'chip',
         'claudeville.sound.output': 'mono',
-        'claudeville.sound.tone': '-0.5',
         'claudeville.sound.soften': 'on',
         'claudeville.sound.hushUntil': '1790000000000',
         'claudeville.sound.quietHours': '23-07',
@@ -120,11 +113,8 @@ test('settings review reads every operator preference, sound levels as steps', (
         soundVolumes: { signals: 8, bgm: 7 },
         soundBackground: 'signals',
         soundReminders: 'gentle',
-        soundCountHours: true,
         captions: 'all',
-        soundTownBandVoice: 'chip',
         soundOutput: 'mono',
-        soundTone: -0.5,
         soundSoften: 'on',
         soundHushUntil: 1790000000000,
         soundQuietHours: '23-07',
@@ -145,46 +135,32 @@ test('an uncalibrated profile reads as the standard level before the controller 
     assert.deepEqual(settings.soundVolumes, { signals: STANDARD_VOLUME_STEP, bgm: STANDARD_VOLUME_STEP });
 });
 
-test('reminder, caption and hour-count preferences read their defaults and reject unknown values', () => {
+test('reminder and caption preferences read their defaults and reject unknown values', () => {
     const fresh = readPersistedSettings(new MemoryStorage());
     assert.equal(fresh.villageWeather, 'modeled');
     assert.equal(fresh.soundReminders, 'standard');
     assert.equal(fresh.captions, 'auto');
-    assert.equal(fresh.soundCountHours, false);
     assert.equal(fresh.soundPreset, 'off');
 
     const odd = readPersistedSettings(new MemoryStorage({
         'claudeville.sound.reminders': 'loud',
         'claudeville.captions': 'everything',
-        'claudeville.sound.countHours': 'true',
     }));
     assert.equal(odd.soundReminders, 'standard');
     assert.equal(odd.captions, 'auto');
-    assert.equal(odd.soundCountHours, false);
 });
 
 test('SET writes the preferences its readers take on use', () => {
     const storage = new MemoryStorage();
     assert.equal(writeReminderSetting('off', storage), 'off');
     assert.equal(writeCaptionSetting('signals', storage), 'signals');
-    assert.equal(writeCountHours(true, storage), true);
     assert.equal(readReminderSetting(storage), 'off');
     assert.equal(readCaptionSetting(storage), 'signals');
-    assert.equal(readCountHours(storage), true);
-    assert.equal(storage.getItem('claudeville.sound.countHours'), '1');
 
     assert.equal(writeReminderSetting('shout', storage), 'standard', 'an unknown choice writes the default');
     assert.equal(writeCaptionSetting(undefined, storage), 'auto');
     assert.equal(readReminderSetting(storage), 'standard');
     assert.equal(readCaptionSetting(storage), 'auto');
-
-    // D2: the Isle Band unless the operator picked Chip restored.
-    assert.equal(readTownBandVoice(storage), 'isle');
-    assert.equal(writeTownBandVoice('chip', storage), 'chip');
-    assert.equal(readTownBandVoice(storage), 'chip');
-    assert.equal(writeTownBandVoice('kazoo', storage), 'isle');
-    storage.setItem('claudeville.sound.townBandVoice', 'console');
-    assert.equal(readTownBandVoice(storage), 'isle');
 });
 
 test('settings defaults cover every sound key, with the calibration key written after the levels', () => {
@@ -215,13 +191,11 @@ test('reset writes defaults in place without clearing unrelated local data', () 
     assert.equal(result.soundPreset, 'off', 'a reset sets the preset to Off');
     assert.equal(result.soundBackground, 'play');
     assert.equal(result.soundOutput, 'speakers');
-    assert.equal(result.soundTone, 0);
     assert.equal(result.soundSoften, 'auto');
     assert.equal(result.soundHushUntil, 0);
     assert.equal(result.soundQuietHours, 'off');
     assert.equal(result.autoCamera, true);
     assert.equal(result.soundReminders, 'standard');
-    assert.equal(result.soundCountHours, false);
     assert.equal(result.captions, 'auto');
     assert.equal(result.villageWeather, 'modeled');
 });

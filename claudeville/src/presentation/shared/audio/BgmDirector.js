@@ -55,7 +55,7 @@ import { expectCueScore } from './CueScore.js';
 import { longTurnDetails } from './CueGovernor.js';
 import { createLiveAtmosphereSnapshot, dayShiftFor } from '../../character-mode/AtmosphereState.js';
 import { seasonTokenForAtmosphere } from '../../character-mode/SeasonalAmbience.js';
-import { readCountHours, readTownBandVoice } from '../SoundSettings.js';
+import { URGENT_SOUNDING } from './SignalDirector.js';
 import {
     ActionableCueRouter,
     attentionStatus,
@@ -226,7 +226,7 @@ export class BgmDirector {
         this._outcomeTracker = null;
         this._outcomes = null;
         this._harborFailures = null;
-        this._voice = readTownBandVoice();
+        this._cuesEnabled = true;
         this._workshopMemory = createWorkshopMemory();
         this._densities = {};
         // The sky is followed from construction (boot), so a band that starts
@@ -296,13 +296,14 @@ export class BgmDirector {
         this.engine.transport.resume();
 
         this._workshopMemory = createWorkshopMemory();
-        this.player = new Sequencer(this.engine, { preset: 'townBand', director: 'bgm', voice: this._voice });
+        this.player = new Sequencer(this.engine, { preset: 'townBand', director: 'bgm' });
         // Everything the first chunk reads is in place before the band starts:
         // the sky, and the band the counts want now (the hysteresis is for
         // changes, not for the start).
         this._applyAtmosphere(this._currentAtmosphere());
         const counts = workingSectionCounts(audibleAgents(this.world, Date.now()));
-        this._section = { applied: sectionForCounts(counts), pending: null, pendingSince: 0 };
+        const sectionCounts = this._cuesEnabled ? counts : { ...counts, actionable: 0 };
+        this._section = { applied: sectionForCounts(sectionCounts), pending: null, pendingSince: 0 };
         this._applyWorkingSection();
         this.player.start();
         this.player.setLevel(BGM_LEVEL, 0.5);
@@ -375,11 +376,14 @@ export class BgmDirector {
         this._ledgerOffs = [];
     }
 
-    // D2: the Town band voice ('isle' | 'chip'); kept across rebuilds, and
-    // a live band switches at its next four-bar boundary.
-    setVoice(voice) {
-        this._voice = voice === 'chip' ? 'chip' : 'isle';
-        this.player?.setVoice(this._voice);
+    // Town band vs Town band only (v0.69 3.A): when false, every cue routes
+    // announceOnly (zero synthesis, zero ducking), and waiting cadences /
+    // attention dips stay off so the Isle Band plays uninterrupted.
+    setCuesEnabled(enabled) {
+        const next = Boolean(enabled);
+        if (next === this._cuesEnabled) return;
+        this._cuesEnabled = next;
+        if (this.running) this._applyWorkingSection();
     }
 
     // S7: an entry summons while the operator is looking plays the L2 voice;
@@ -493,8 +497,9 @@ export class BgmDirector {
 
     _playOutcome(outcome) {
         const agentId = outcome.agentId ?? null;
-        // 6.8: the band's release fanfare follows the gold peal, at a bar.
-        if (outcome.kind === 'release' && this._ownsSignals()) {
+        // 6.8: the band's release fanfare follows the gold peal, at a bar,
+        // except in Town band only where the Isle Band plays uninterrupted.
+        if (outcome.kind === 'release' && this._ownsSignals() && this._cuesEnabled) {
             this.player?.playOccasion('release', { reason: 'release', at: this.engine.now() + RELEASE_AFTER_PEAL_SEC });
         }
         return this.cue(outcome.kind, {
@@ -504,7 +509,6 @@ export class BgmDirector {
             repo: outcome.repo,
             version: outcome.version,
             ...(outcome.building ? { building: outcome.building } : {}),
-            // SND-1: a long turn's end rises to the Medium level over the band.
             ...longTurnDetails(outcome, this.governor),
         });
     }
@@ -528,7 +532,8 @@ export class BgmDirector {
 
     cue(kind, extra = {}) {
         if (!this.running || !this.cueKit) return false;
-        const payload = { phase: this._phase, preset: 'townBand', ...extra };
+        const payload = { phase: this._phase, preset: this._cuesEnabled ? 'townBand' : 'townBandOnly', ...extra };
+        if (!this._cuesEnabled || !URGENT_SOUNDING.has(kind)) payload.announceOnly = true;
         payload.spot ??= resolveCueSpot(payload, {
             agentId: payload.agentId ?? payload.agent?.id ?? null,
             world: this.world,
@@ -550,11 +555,14 @@ export class BgmDirector {
         this._applyAtmosphere(atmosphere);
         this._applyWorkingSection();
 
-        // The hour chime (D7): the phrase by day, a soft chime at 21:00.
+        // The hour chime (D7): silenced by the urgent-only signal diet
+        // (captions only in Town band; disabled in Town band only). The soft
+        // 21:00 chime still calls Evensong in both Town band presets.
         const chime = hourChimeFor(atmosphere.clock);
         if (chime && this._lastBellHour !== chime.hour) {
-            const count = !chime.soft && readCountHours();
-            if (this.cue('hourBell', { hour: chime.hour, soft: chime.soft, count })) {
+            if (!this._cuesEnabled) {
+                this._lastBellHour = chime.hour;
+            } else if (this.cue('hourBell', { hour: chime.hour, soft: chime.soft, count: false })) {
                 this._lastBellHour = chime.hour;
             }
         }
@@ -630,7 +638,6 @@ export class BgmDirector {
         const arrangement = this.player?.arrangement || {};
         this._evensongBand.prepare({
             family: score.family,
-            voice: this._voice,
             keyframe: score.family === 'night' ? 'night' : null,
             weather: arrangement.weather,
             season: arrangement.season,
@@ -726,16 +733,17 @@ export class BgmDirector {
     // Only audible (non-stale) agents move the band (S6).
     _applyWorkingSection(now = Date.now()) {
         this._counts = workingSectionCounts(audibleAgents(this.world, now));
-        this._section = updateWorkingSection(this._section, { counts: this._counts, now });
+        const sectionCounts = this._cuesEnabled ? this._counts : { ...this._counts, actionable: 0 };
+        this._section = updateWorkingSection(this._section, { counts: sectionCounts, now });
         this.player?.setBand(SECTION_NAMES.indexOf(this._section.applied));
-        this.player?.setWaiting(this._counts.actionable > 0);
+        this.player?.setWaiting(this._cuesEnabled && this._counts.actionable > 0);
         this._densities = percussionDensities(buildWorkshopState({
             agents: this.world?.agents ?? [],
             now,
             memory: this._workshopMemory,
         }));
         this.player?.setWorkshopDensity(this._densities);
-        this._setAttention(this._counts.actionable > 0 ? ATTENTION_DB : 0);
+        this._setAttention(this._cuesEnabled && this._counts.actionable > 0 ? ATTENTION_DB : 0);
     }
 
     _applyAtmosphere(atmosphere) {
@@ -777,7 +785,8 @@ export class BgmDirector {
             lastCue: this.cueKit?.lastCue || null,
             nowPlaying: this.player?.nowPlaying || null,
             music: this.player?.snapshot() ?? null,
-            voice: this._voice,
+            voice: 'isle',
+            cuesEnabled: this._cuesEnabled,
             percussion: { ...this._densities },
             ceremonies: this.governor?.snapshot().ceremonies ?? null,
             evensong: {

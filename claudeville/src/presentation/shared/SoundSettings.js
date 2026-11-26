@@ -27,25 +27,36 @@ export const SOUND_STEP_MAX = 10;
 export const SOUND_RECALIBRATED_MESSAGE = 'Sound was recalibrated to a new standard level.';
 
 // Presets (7.2, UX-3): storage keeps `enabled` plus a mode id; the UI names
-// the three ways to listen and never shows a mode id. A mode id stored by an
+// the four ways to listen and never shows a mode id. A mode id stored by an
 // older build (the retired Village, 'ambient') is not a choice any more and
 // reads as the default, the Town band.
 export const SOUND_MODE_KEY = 'claudeville.sound.mode';
-export const SOUND_MODES = Object.freeze(['signals', 'bgm']);
+export const SOUND_MODES = Object.freeze(['signals', 'bgm', 'bgmOnly']);
 export const DEFAULT_SOUND_MODE = 'bgm';
-export const SOUND_PRESETS = Object.freeze(['off', 'signals', 'townBand']);
+export const SOUND_PRESETS = Object.freeze(['off', 'signals', 'townBand', 'townBandOnly']);
 export const SOUND_PRESET_LABELS = Object.freeze({
     off: 'Off',
     signals: 'Signals',
     townBand: 'Town band',
+    townBandOnly: 'Town band only',
 });
 export const SOUND_PRESET_DETAILS = Object.freeze({
     off: 'Silent. Captions still appear.',
-    signals: 'A bell when an agent needs you, errors, or hits a limit; a soft knock when a long turn finishes.',
-    townBand: 'Continuous town music. The signal bells ring over it.',
+    signals: 'A bell when an agent needs you, errors, or hits a limit.',
+    townBand: 'Continuous town music with urgent signal bells.',
+    townBandOnly: 'Continuous town music only. No signal bells; captions still appear.',
 });
-const PRESET_MODES = Object.freeze({ signals: 'signals', townBand: 'bgm' });
-const MODE_PRESETS = Object.freeze({ signals: 'signals', bgm: 'townBand' });
+const PRESET_MODES = Object.freeze({ signals: 'signals', townBand: 'bgm', townBandOnly: 'bgmOnly' });
+const MODE_PRESETS = Object.freeze({ signals: 'signals', bgm: 'townBand', bgmOnly: 'townBandOnly' });
+const VOLUME_MODES = Object.freeze(['signals', 'bgm']);
+
+export function isTownBandMode(mode) {
+    return mode === 'bgm' || mode === 'bgmOnly';
+}
+
+export function isTownBandPreset(preset) {
+    return preset === 'townBand' || preset === 'townBandOnly';
+}
 
 // What a visible but unfocused window plays (D3, UX-4).
 export const SOUND_BACKGROUND_KEY = 'claudeville.sound.background';
@@ -58,40 +69,25 @@ export const SOUND_REMINDERS_KEY = 'claudeville.sound.reminders';
 export const SOUND_REMINDER_SETTINGS = Object.freeze(['standard', 'gentle', 'off']);
 export const DEFAULT_SOUND_REMINDERS = 'standard';
 
-// Captions (3.8, S6): `auto` shows signals only while sound is off and
-// signals and events while it is on.
+// Captions (3.8, S6): `auto` shows signals only whether sound is off or on;
+// `events` and `all` opt into routine/event and scenery captions.
 export const CAPTIONS_KEY = 'claudeville.captions';
 export const CAPTION_SETTINGS = Object.freeze(['auto', 'signals', 'events', 'all']);
 export const DEFAULT_CAPTIONS = 'auto';
-
-// D7: the hour bell plays its phrase; counting the strokes is opt-in.
-export const SOUND_COUNT_HOURS_KEY = 'claudeville.sound.countHours';
-export const DEFAULT_SOUND_COUNT_HOURS = '0';
-
-// D2: the Town band plays as the Isle Band; Chip restored is its one-click
-// alternative voicing.
-export const TOWN_BAND_VOICE_KEY = 'claudeville.sound.townBandVoice';
-export const TOWN_BAND_VOICES = Object.freeze(['isle', 'chip']);
-export const DEFAULT_TOWN_BAND_VOICE = 'isle';
 
 // Output (7.7, UX-10): chosen by hand, never detected.
 export const SOUND_OUTPUT_KEY = 'claudeville.sound.output';
 export const SOUND_OUTPUTS = Object.freeze(['speakers', 'headphones', 'mono']);
 export const DEFAULT_SOUND_OUTPUT = 'speakers';
 
-// Tone (7.7, SOTA-14): Warm −1 … Bright +1, ±4 dB at the 3 kHz shelf.
-export const SOUND_TONE_KEY = 'claudeville.sound.tone';
-export const DEFAULT_SOUND_TONE = '0';
-export const TONE_RANGE_DB = 4;
-
 // Soften sudden sounds (7.7, UX-14): `auto` follows Reduce motion.
 export const SOUND_SOFTEN_KEY = 'claudeville.sound.soften';
 export const SOUND_SOFTEN_SETTINGS = Object.freeze(['auto', 'on', 'off']);
 export const DEFAULT_SOUND_SOFTEN = 'auto';
 
-// Hush and quiet hours (7.7, UX-11): both drop to Signals. Hush is a
-// timestamp (ms since the epoch, 0 = none) and survives a reload; quiet
-// hours are fixed local-clock windows.
+// Hush and quiet hours (7.7, UX-11): drop Town band to Signals (or pause
+// Town band only). Hush is a timestamp (ms since the epoch, 0 = none) and
+// survives a reload; quiet hours are fixed local-clock windows.
 export const SOUND_HUSH_UNTIL_KEY = 'claudeville.sound.hushUntil';
 export const HUSH_DURATION_MS = 60 * 60 * 1000;
 export const SOUND_QUIET_HOURS_KEY = 'claudeville.sound.quietHours';
@@ -103,7 +99,7 @@ export const SOUND_INVITED_KEY = 'claudeville.sound.invited';
 // 7.1: the first-ever click on the sound control opened the presets.
 export const SOUND_CHIP_SEEN_KEY = 'claudeville.sound.chipSeen';
 
-const PRESET_VOLUME_DEFAULTS = Object.freeze(Object.fromEntries(SOUND_MODES.map(mode => [mode, STANDARD_VOLUME_STEP])));
+const PRESET_VOLUME_DEFAULTS = Object.freeze(Object.fromEntries(VOLUME_MODES.map(mode => [mode, STANDARD_VOLUME_STEP])));
 
 // Every sound key and the value a reset writes. The calibration key comes
 // last, so a reset never needs the D5 recalibration.
@@ -113,14 +109,11 @@ export const SOUND_SETTING_DEFAULTS = Object.freeze({
     [SOUND_VOLUMES_KEY]: JSON.stringify(PRESET_VOLUME_DEFAULTS),
     [SOUND_BACKGROUND_KEY]: DEFAULT_SOUND_BACKGROUND,
     [SOUND_OUTPUT_KEY]: DEFAULT_SOUND_OUTPUT,
-    [SOUND_TONE_KEY]: DEFAULT_SOUND_TONE,
     [SOUND_SOFTEN_KEY]: DEFAULT_SOUND_SOFTEN,
     [SOUND_HUSH_UNTIL_KEY]: '0',
     [SOUND_QUIET_HOURS_KEY]: DEFAULT_QUIET_HOURS,
     [SOUND_REMINDERS_KEY]: DEFAULT_SOUND_REMINDERS,
-    [SOUND_COUNT_HOURS_KEY]: DEFAULT_SOUND_COUNT_HOURS,
     [CAPTIONS_KEY]: DEFAULT_CAPTIONS,
-    [TOWN_BAND_VOICE_KEY]: DEFAULT_TOWN_BAND_VOICE,
     [SOUND_INVITED_KEY]: '0',
     [SOUND_CHIP_SEEN_KEY]: '0',
     [SOUND_CALIBRATION_KEY]: SOUND_CALIBRATION,
@@ -183,11 +176,14 @@ export function presetForMode(mode) {
     return MODE_PRESETS[mode] ?? MODE_PRESETS[DEFAULT_SOUND_MODE];
 }
 
-// A UI preset or a mode id → the mode whose volume slot it uses; 'off' (and
-// anything unknown) → the stored mode, the preset the toggle turns back on.
+// A UI preset or a mode id → the mode whose volume slot it uses; 'bgmOnly'
+// shares the 'bgm' slot so switching townBand ↔ townBandOnly keeps the same
+// volume; 'off' (and anything unknown) → the stored mode, normalized the same way.
 function volumeMode(preset, storage) {
-    if (SOUND_MODES.includes(preset)) return preset;
-    return modeForPreset(preset) ?? readStoredSoundMode(storage);
+    const mode = SOUND_MODES.includes(preset)
+        ? preset
+        : (modeForPreset(preset) ?? readStoredSoundMode(storage));
+    return mode === 'bgmOnly' ? 'bgm' : mode;
 }
 
 export function readStoredSoundEnabled(storage = defaultStorage()) {
@@ -243,9 +239,9 @@ export function writePresetVolumeStep(preset, step, storage = defaultStorage()) 
     return volumes[mode];
 }
 
-/** Every preset's step, keyed by mode id. */
+/** Every preset's step, keyed by volume mode id (`{ signals, bgm }`). */
 export function readPresetVolumeSteps(storage = defaultStorage()) {
-    return Object.fromEntries(SOUND_MODES.map(mode => [mode, readPresetVolumeStep(mode, storage)]));
+    return Object.fromEntries(VOLUME_MODES.map(mode => [mode, readPresetVolumeStep(mode, storage)]));
 }
 
 // UX-18: a profile with a single stored step gets it in every preset's slot,
@@ -278,30 +274,6 @@ export function readSoundOutput(storage = defaultStorage()) {
 
 export function writeSoundOutput(value, storage = defaultStorage()) {
     return writeChoice(storage, SOUND_OUTPUT_KEY, SOUND_OUTPUTS, value, DEFAULT_SOUND_OUTPUT);
-}
-
-// Tone is kept to quarter steps (1 dB of the ±4 dB shelf).
-function toneValue(value) {
-    if (value == null || value === '') return null;
-    const number = Number(value);
-    if (!Number.isFinite(number)) return null;
-    return Math.round(Math.max(-1, Math.min(1, number)) * TONE_RANGE_DB) / TONE_RANGE_DB + 0;
-}
-
-/** −1 (warm) … +1 (bright); 0 when absent or unreadable. */
-export function readSoundTone(storage = defaultStorage()) {
-    return toneValue(storageGet(storage, SOUND_TONE_KEY)) ?? 0;
-}
-
-export function writeSoundTone(value, storage = defaultStorage()) {
-    const next = toneValue(value) ?? 0;
-    storageSet(storage, SOUND_TONE_KEY, String(next));
-    return next;
-}
-
-/** The shelf gain of a tone value, in dB. */
-export function toneDb(tone) {
-    return (toneValue(tone) ?? 0) * TONE_RANGE_DB + 0;
 }
 
 export function readSoundSoften(storage = defaultStorage()) {
@@ -403,23 +375,6 @@ export function writeCaptionSetting(value, storage = defaultStorage()) {
     return writeChoice(storage, CAPTIONS_KEY, CAPTION_SETTINGS, value, DEFAULT_CAPTIONS);
 }
 
-export function readCountHours(storage = defaultStorage()) {
-    return storageGet(storage, SOUND_COUNT_HOURS_KEY) === '1';
-}
-
-export function writeCountHours(on, storage = defaultStorage()) {
-    storageSet(storage, SOUND_COUNT_HOURS_KEY, on ? '1' : '0');
-    return Boolean(on);
-}
-
-export function readTownBandVoice(storage = defaultStorage()) {
-    return storedChoice(storage, TOWN_BAND_VOICE_KEY, TOWN_BAND_VOICES, DEFAULT_TOWN_BAND_VOICE);
-}
-
-export function writeTownBandVoice(value, storage = defaultStorage()) {
-    return writeChoice(storage, TOWN_BAND_VOICE_KEY, TOWN_BAND_VOICES, value, DEFAULT_TOWN_BAND_VOICE);
-}
-
 /**
  * Every stored sound preference, as SET and the popover show it. TopBar's
  * `readPersistedSettings` spreads it.
@@ -432,11 +387,8 @@ export function readSoundSettings(storage = defaultStorage()) {
         soundVolumes: readPresetVolumeSteps(storage),
         soundBackground: readSoundBackground(storage),
         soundReminders: readReminderSetting(storage),
-        soundCountHours: readCountHours(storage),
         captions: readCaptionSetting(storage),
-        soundTownBandVoice: readTownBandVoice(storage),
         soundOutput: readSoundOutput(storage),
-        soundTone: readSoundTone(storage),
         soundSoften: readSoundSoften(storage),
         soundHushUntil: readHushUntil(storage),
         soundQuietHours: readQuietHours(storage),

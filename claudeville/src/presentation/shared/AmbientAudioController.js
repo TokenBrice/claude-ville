@@ -39,6 +39,8 @@ import {
     SOUND_RECALIBRATED_MESSAGE,
     hushActive,
     inQuietHours,
+    isTownBandMode,
+    isTownBandPreset,
     migratePresetVolumes,
     modeForPreset,
     presetForMode,
@@ -50,10 +52,8 @@ import {
     readSoundBackground,
     readSoundOutput,
     readSoundSoften,
-    readSoundTone,
     readStoredSoundEnabled,
     readStoredSoundMode,
-    readTownBandVoice,
     recalibrateStoredSound,
     softenActive,
     soundStep,
@@ -63,20 +63,20 @@ import {
     writeSoundBackground,
     writeSoundOutput,
     writeSoundSoften,
-    writeSoundTone,
     writeStoredSoundEnabled,
     writeStoredSoundMode,
-    writeTownBandVoice,
 } from './SoundSettings.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 
 // Two directors: the signals one carries the signal route from boot and,
-// playing, is the Signals preset; the bgm one plays the Town band. A mode id
-// is what storage keeps (`signals | bgm`; a stored legacy `ambient` reads as
-// `bgm` in SoundSettings); the UI names presets.
+// playing, is the Signals preset; the bgm one plays both Town band presets
+// (`bgm` with urgent cues, `bgmOnly` without cues). A mode id is what storage
+// keeps (`signals | bgm | bgmOnly`; a stored legacy `ambient` reads as `bgm`
+// in SoundSettings); the UI names presets.
 const DIRECTOR_IDS = Object.freeze(['signals', 'bgm']);
 function directorFor(mode) {
-    return mode === 'bgm' ? 'bgm' : 'signals';
+    if (mode === null) return null;
+    return isTownBandMode(mode) ? 'bgm' : 'signals';
 }
 // Into or out of Signals the band fades over 800 ms (UX-3): both directors
 // play through an equal-power crossfade of their director gains, and the
@@ -180,7 +180,6 @@ export class AmbientAudioController {
         this.mode = readStoredSoundMode();
         this.background = readSoundBackground();
         this.output = readSoundOutput();
-        this.tone = readSoundTone();
         this.soften = readSoundSoften();
         this.quietHours = readQuietHours();
         this.hushedUntil = readHushUntil();
@@ -200,8 +199,10 @@ export class AmbientAudioController {
         // Mode crossfades: the outgoing director's stop, per director id,
         // pending until its gain has faded to zero.
         this._crossfadeStops = new Map();
-        // The mode the directors are set up for (null until sound first plays).
+        // The mode the directors are set up for (null until sound first plays
+        // or while silenced by hush / quiet hours in `bgmOnly`).
         this._playingMode = null;
+        this._silenced = false;
         this._activation = null;
         this._destroyPromise = null;
         this._destroyed = false;
@@ -230,7 +231,6 @@ export class AmbientAudioController {
         this.volumeStep = readPresetVolumeStep(this._effectiveMode());
         this.engine.setVolumeStep(this.volumeStep);
         this.engine.setOutput(this.output);
-        this.engine.setTone(this.tone);
         this.engine.setCueTrim(this._quietActive ? QUIET_HOURS_CUE_DB : 0);
         this._applySoften();
         // One cue arbiter per engine (1.6): both directors submit through the
@@ -267,7 +267,8 @@ export class AmbientAudioController {
         eventBus.on('agent:removed', this._onAgentRemoved);
         this._inactive = this._pageInactive();
         this.directors.signals.setHidden(this._inactive);
-        this.directors.signals.setSignalRouting(true);
+        this.directors.bgm.setCuesEnabled(this.mode === 'bgm');
+        this._syncSignalRouting();
 
         this._onUnlockGesture = (event) => this._handleUnlockGesture(event);
         this._onVisibility = () => this._syncPresence();
@@ -298,9 +299,6 @@ export class AmbientAudioController {
             queueMicrotask(() => this._captureEntryTrim());
         };
         eventBus.on('attention:raised', this._onAttentionRaised);
-        // D2: SET's Town band voice lands at the band's next chunk.
-        this._onTownBandVoice = () => this.directors.bgm?.setVoice?.(readTownBandVoice());
-        eventBus.on('sound:town-band-voice', this._onTownBandVoice);
         // The popover's line follows a piece change at once (7.3).
         this._onNowPlaying = () => this._publishView();
         eventBus.on('audio:now-playing', this._onNowPlaying);
@@ -423,15 +421,19 @@ export class AmbientAudioController {
     }
 
     // Playing, as the listener would hear it: the context runs and the active
-    // director is running and not paused. Anything less is armed or off.
+    // director is running and not paused (or intentionally silenced by hush /
+    // quiet hours in Town band only). Anything less is armed or off.
     isRunning() {
-        return this.engine.context?.state === 'running'
-            && this.director.running === true
-            && !this.director.paused;
+        if (this.engine.context?.state !== 'running') return false;
+        if (this._silenced && this._effectiveMode() === null) return !this._pageInactive();
+        const id = directorFor(this._playingMode ?? this._effectiveMode());
+        if (!id) return false;
+        const director = this.directors[id];
+        return director.running === true && !director.paused;
     }
 
     _visualBeatEnabled() {
-        return !this._destroyed && this.preset === 'townBand' && this.volumeStep > 0
+        return !this._destroyed && isTownBandPreset(this.preset) && this.volumeStep > 0
             && !this.hushed && this.directors.bgm.running && !this.directors.bgm.paused
             && !globalThis.document?.hidden && !this._reducedMotion?.()
             && this.directors.bgm._atmosphere?.motion?.particleEnabled !== false;
@@ -478,21 +480,13 @@ export class AmbientAudioController {
         return this.background;
     }
 
-    // 7.7: Speakers · Headphones · Mono, Warm ↔ Bright, Soften sudden sounds.
+    // 7.7: Speakers · Headphones · Mono, Soften sudden sounds.
     setOutput(output) {
         if (this._destroyed) return this.output;
         this.output = writeSoundOutput(output);
         this.engine.setOutput(this.output);
         this._publishView();
         return this.output;
-    }
-
-    setTone(tone) {
-        if (this._destroyed) return this.tone;
-        this.tone = writeSoundTone(tone);
-        this.engine.setTone(this.tone);
-        this._publishView();
-        return this.tone;
     }
 
     setSoften(setting) {
@@ -577,14 +571,24 @@ export class AmbientAudioController {
         this.engine.prewarm?.();
     }
 
-    // Signals while hushed or in quiet hours; the chosen mode otherwise.
+    // Signals while hushed or in quiet hours for Town band (or Signals);
+    // null (silence/paused music) for Town band only so hush never turns
+    // signal bells on.
     _effectiveMode() {
-        if (this.enabled && (hushActive(this.hushedUntil, Date.now()) || this._quietActive)) return 'signals';
+        if (this.enabled && (hushActive(this.hushedUntil, Date.now()) || this._quietActive)) {
+            return this.mode === 'bgmOnly' ? null : 'signals';
+        }
         return this.mode;
     }
 
+    _signalsAudible() {
+        const effective = this._effectiveMode();
+        return Boolean(this.enabled && effective !== null && effective !== 'bgmOnly');
+    }
+
     get director() {
-        return this.directors[directorFor(this._playingMode ?? this._effectiveMode())];
+        const id = directorFor(this._playingMode ?? this._effectiveMode());
+        return id ? this.directors[id] : this.directors.signals;
     }
 
     _applyVolume() {
@@ -601,16 +605,64 @@ export class AmbientAudioController {
         this._applyVolume();
         const next = this._effectiveMode();
         const previous = this._playingMode;
-        if (previous === null || next === previous) return;
-        if (!this.enabled || this._pageInactive() || !this.isRunning()) {
+        const wasSilenced = this._silenced;
+        if (!wasSilenced && previous === null) return;
+        if (next === previous && !wasSilenced) return;
+        if (next === null && wasSilenced) return;
+        const prevDir = directorFor(previous);
+        const active = this.enabled && !this._pageInactive() && this.engine.context?.state === 'running'
+            && (wasSilenced || (prevDir !== null && this.directors[prevDir].running === true && !this.directors[prevDir].paused));
+        if (!active) {
             // Paused or stopping: the next start builds `next` from scratch.
-            if (!this._paused) this._playingMode = null;
+            if (!this._paused) {
+                this._playingMode = null;
+                this._silenced = false;
+            }
+            return;
+        }
+        if (next === null) {
+            this._playingMode = null;
+            this._silenced = true;
+            for (const id of DIRECTOR_IDS) {
+                if (this.directors[id].running) this._stopDirector(id);
+            }
+            this._syncQuietMix();
+            this._syncSignalRouting();
+            this._emitBellState();
+            this._publishView();
+            return;
+        }
+        this._silenced = false;
+        const nextDir = directorFor(next);
+        if (prevDir !== null && prevDir === nextDir && this.directors[nextDir].running) {
+            // Seamless in-place switch (bgm ↔ bgmOnly): keep the current piece
+            // running with no crossfade or restart.
+            this._playingMode = next;
+            if (nextDir === 'bgm') this.directors.bgm.setCuesEnabled(next === 'bgm');
+            this._syncQuietMix();
+            this._syncSignalRouting();
+            this._emitBellState();
+            this._publishView();
             return;
         }
         this._playingMode = next;
-        this._crossfade(directorFor(previous), directorFor(next));
+        if (nextDir === 'bgm') this.directors.bgm.setCuesEnabled(next === 'bgm');
+        if (prevDir !== null && prevDir !== nextDir && this.directors[prevDir].running) {
+            this._crossfade(prevDir, nextDir);
+        } else {
+            const incoming = this.directors[nextDir];
+            this._cancelCrossfadeStop(nextDir);
+            if (!incoming.running) {
+                this.engine.fadeDirector(nextDir, 0, { duration: 0 });
+                this.directors.signals.setSignalRouting(nextDir !== 'bgm');
+                incoming.start();
+            }
+            this.engine.fadeDirector(nextDir, 1, { duration: SIGNALS_FADE_SEC });
+        }
         this._syncQuietMix();
         this._syncSignalRouting();
+        this._emitBellState();
+        this._publishView();
     }
 
     // Equal-power crossfade of the two director gains (engine.fadeDirector).
@@ -658,6 +710,7 @@ export class AmbientAudioController {
     _stopDirectors() {
         for (const id of DIRECTOR_IDS) this._stopDirector(id);
         this._playingMode = null;
+        this._silenced = false;
     }
 
     // D3 (5.6): a visible window without focus and with "Keep playing"
@@ -672,7 +725,7 @@ export class AmbientAudioController {
         const preset = active ? this._effectiveMode() : null;
         if (active === this._quietMix.active && preset === this._quietMix.preset) return;
         this._quietMix = { active, preset };
-        const quiet = preset === 'bgm';
+        const quiet = isTownBandMode(preset);
         this.engine.setGroupLevel('music', quiet ? 10 ** (BLUR_MUSIC_DB / 20) : 1);
         this.engine.setBedCompensation(quiet ? -BLUR_MUSIC_DB : 0);
     }
@@ -698,7 +751,7 @@ export class AmbientAudioController {
         this._wakeToken++;
         this._wakeHoldUntil = 0;
         this.directors.signals.setHidden(false);
-        this.directors.signals.setSignalRouting(this._effectiveMode() !== 'bgm');
+        this.directors.signals.setSignalRouting(!isTownBandMode(this._effectiveMode()));
         const activationGeneration = ++this._activationGeneration;
         const visibilityGeneration = this._visibilityGeneration;
         let ready = false;
@@ -721,8 +774,9 @@ export class AmbientAudioController {
 
         this.engine.start();
         this._watchContext();
-        // The latch goes first, before any director builds (7.4).
-        this._awaken();
+        // The latch goes first, before any director builds (7.4), unless
+        // starting silenced (e.g. Town band only during quiet hours).
+        if (this._effectiveMode() !== null) this._awaken();
         // Back from an absence: continue the piece where it stopped, unless
         // the absence was long or crossed day ↔ night, which rebuilds.
         const away = this._paused;
@@ -732,12 +786,18 @@ export class AmbientAudioController {
             if (director.paused) director.resume();
         }
         const mode = this._effectiveMode();
-        if (this._playingMode !== null && this._playingMode !== mode) {
+        if ((this._playingMode !== null || this._silenced) && this._playingMode !== mode) {
             // A hush that began or ended while away.
             this._applyEffectiveMode();
+        } else if (mode === null) {
+            for (const id of DIRECTOR_IDS) if (this.directors[id].running) this._stopDirector(id);
+            this._playingMode = null;
+            this._silenced = true;
         } else {
+            this._silenced = false;
             this._playingMode = mode;
             const id = directorFor(mode);
+            if (id === 'bgm') this.directors.bgm.setCuesEnabled(mode === 'bgm');
             const director = this.directors[id];
             // Only the mode's own director plays after a fresh start.
             for (const other of DIRECTOR_IDS) if (other !== id && this.directors[other].running) this._stopDirector(other);
@@ -776,7 +836,7 @@ export class AmbientAudioController {
         this._stopDirectors();
         // Pending routine cues describe a moment the listener has left.
         this.cues.governor.clearRoutine();
-        this.directors.signals.setSignalRouting(true);
+        this._syncSignalRouting();
         this.engine.stop();
         if (this._suspendTimer) clearTimeout(this._suspendTimer);
         this._suspendTimer = setTimeout(() => {
@@ -880,11 +940,13 @@ export class AmbientAudioController {
         const bgmOwnsSignals = this.enabled && !hidden
             && directorFor(this._playingMode) === 'bgm' && this.directors.bgm.running;
         this.directors.signals.setSignalRouting(!bgmOwnsSignals);
+        this.directors.signals.setCuesEnabled(this._signalsAudible());
     }
 
     // An urgent cue while sound is away: wake the cue path at full level
     // (the bed and music stay closed), play the cue, hold until it has rung
-    // out, then suspend. Without sound it is still captioned.
+    // out, then suspend. Without audible signals (Off or Town band only) it
+    // captions without waking the AudioContext.
     _handleHiddenSummons(payload) {
         if (this._destroyed) return;
         const agentId = payload?.agentId ?? payload?.agent?.id ?? null;
@@ -894,8 +956,8 @@ export class AmbientAudioController {
 
         const generation = this._visibilityGeneration;
         const finish = () => this._hiddenSummonsPending.delete(pendingKey);
-        if (!this.enabled || !this.available || !this.mayStart) {
-            this._playHiddenUrgent(payload);
+        if (!this._signalsAudible() || !this.available || !this.mayStart) {
+            this._playHiddenUrgent({ ...payload, announceOnly: true });
             finish();
             return;
         }
@@ -1057,6 +1119,7 @@ export class AmbientAudioController {
             agentId: ladder.agentId,
             label: agent?.name || agent?.agentName || null,
             heldTrimDb: this._ladderWait?.heldTrimDb ?? null,
+            ...(!this._signalsAudible() ? { announceOnly: true } : {}),
         };
         const played = Boolean(
             this.directors.signals.playReminder(reminder)
@@ -1070,10 +1133,10 @@ export class AmbientAudioController {
         }
     }
 
-    // Whether a hidden page's urgent cue will be heard from the page itself;
-    // desktop alerts go silent when it will (UX-13).
+    // Whether the page itself rings urgent signal bells; OS desktop alerts go
+    // silent only when it will, so alerts stay unmuted in Town band only (3.A).
     _emitBellState() {
-        const rings = Boolean(this.available && this.enabled && this.mayStart);
+        const rings = Boolean(this.available && this._signalsAudible() && this.engine.context?.state === 'running');
         if (rings === this._bellRings) return;
         this._bellRings = rings;
         eventBus.emit('audio:bell-state', { rings });
@@ -1093,6 +1156,7 @@ export class AmbientAudioController {
     _handleContextState() {
         if (this._destroyed) return;
         if (this.enabled && this.engine.context?.state !== 'running') this._armUnlockListeners();
+        this._emitBellState();
         this._publishView();
     }
 
@@ -1141,14 +1205,18 @@ export class AmbientAudioController {
     _nowLine(state) {
         if (state === 'off') return '';
         if (state === 'armed') return 'Waiting for a click — browsers start sound on your first click';
-        if (state === 'away') return 'Paused while you\'re away · signals still ring';
+        if (state === 'away') {
+            return this.mode === 'bgmOnly'
+                ? 'Paused while you\'re away'
+                : 'Paused while you\'re away · signals still ring';
+        }
         if (state === 'hushed') {
             if (hushActive(this.hushedUntil, Date.now())) return `Hushed until ${clockTime(this.hushedUntil)}`;
             const ends = quietHoursEndsAt(this.quietHours, new Date());
-            return ends ? `Quiet hours until ${clockHour(ends)}` : 'Listening for agents that need you';
+            return ends ? `Quiet hours until ${clockHour(ends)}` : (this.mode === 'bgmOnly' ? 'Music paused' : 'Listening for agents that need you');
         }
         const mode = this._playingMode ?? this._effectiveMode();
-        if (mode === 'bgm') return nowPlayingLine(this.directors.bgm.player?.nowPlaying ?? null);
+        if (isTownBandMode(mode)) return nowPlayingLine(this.directors.bgm.player?.nowPlaying ?? null);
         return 'Listening for agents that need you';
     }
 
@@ -1160,9 +1228,10 @@ export class AmbientAudioController {
             case 'armed': return 'Sound not started — click anywhere to start it';
             case 'away': return 'Sound paused while you\'re away — it resumes when you return';
             case 'hushed': {
-                if (hushActive(this.hushedUntil, Date.now())) return `Hushed until ${clockTime(this.hushedUntil)} — signals only`;
+                const suffix = this.mode === 'bgmOnly' ? 'music paused' : 'signals only';
+                if (hushActive(this.hushedUntil, Date.now())) return `Hushed until ${clockTime(this.hushedUntil)} — ${suffix}`;
                 const ends = quietHoursEndsAt(this.quietHours, new Date());
-                return ends ? `Quiet hours until ${clockHour(ends)} — signals only` : 'Hushed — signals only';
+                return ends ? `Quiet hours until ${clockHour(ends)} — ${suffix}` : `Hushed — ${suffix}`;
             }
             default: return `Sound on · ${SOUND_PRESET_LABELS[presetForMode(this._playingMode ?? this.mode)]} — click to turn off`;
         }
@@ -1187,7 +1256,6 @@ export class AmbientAudioController {
             quietActive: this.enabled && this._quietActive && hushedUntil === null,
             background: this.background,
             output: this.output,
-            tone: this.tone,
             soften: this.soften,
             recalibrated: this._recalibrated,
         };
@@ -1243,7 +1311,6 @@ export class AmbientAudioController {
             quietHours: this.quietHours,
             quietActive: view.quietActive,
             output: this.output,
-            tone: this.tone,
             soften: this.soften,
             softened: this.engine.softened ?? null,
             outputStage: this.engine.outputSnapshot?.() ?? null,
@@ -1254,7 +1321,6 @@ export class AmbientAudioController {
             userActivated: this.userActivated,
             autoplayAllowed: autoplayAllowed(),
             background: this.background,
-            townBandVoice: readTownBandVoice(),
             blurred: this._windowBlurred,
             // D3 (5.6): the quiet mix, `{ active, preset }`.
             quietMix: { ...this._quietMix },
@@ -1273,7 +1339,6 @@ export class AmbientAudioController {
             setVolumeStep: (step) => this.setVolumeStep(step),
             setBackground: (b) => this.setBackground(b),
             setOutput: (o) => this.setOutput(o),
-            setTone: (t) => this.setTone(t),
             setSoften: (s) => this.setSoften(s),
             setQuietHours: (q) => this.setQuietHours(q),
             hush: (ms) => this.hush(ms),
@@ -1281,12 +1346,6 @@ export class AmbientAudioController {
             testCall: (kind) => this.testCall(kind),
             playPreviewBell: () => this.playPreviewBell(),
             prewarm: () => this.prewarm(),
-            // D2, the same path as SET's row: stored, then heard at the next chunk.
-            setTownBandVoice: (voice) => {
-                const stored = writeTownBandVoice(voice);
-                eventBus.emit('sound:town-band-voice', { voice: stored });
-                return stored;
-            },
             cue: (kind) => this.director.cue(kind),
             meters: (opts) => this._meters(opts),
         };
@@ -1315,7 +1374,6 @@ export class AmbientAudioController {
         eventBus.off('agent:removed', this._onAgentRemoved);
         this._terminal.clear();
         eventBus.off('attention:raised', this._onAttentionRaised);
-        eventBus.off('sound:town-band-voice', this._onTownBandVoice);
         eventBus.off('audio:now-playing', this._onNowPlaying);
         this._closeLadderWait();
         for (const director of Object.values(this.directors)) director.destroy?.();

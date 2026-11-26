@@ -125,7 +125,7 @@ test('over the band the step lands on the guarded bar and never folds into one p
     }
 });
 
-test('Signals captions a mend without a sound; the Town band sounds it', () => {
+test('Signals and Town band both caption a mend without a sound under the calm signal diet', () => {
     const engine = Object.freeze({ context: null, started: false });
     const governor = new CueGovernor({ minSpacingMs: 0 });
     const kit = new CueKit(engine, governor);
@@ -145,7 +145,7 @@ test('Signals captions a mend without a sound; the Town band sounds it', () => {
         townBand._playOutcome({ kind: 'mended', agentId: 'b', count: 1 });
         assert.deepEqual(submitted, [
             { kind: 'mended', announceOnly: true, preset: null },
-            { kind: 'mended', announceOnly: false, preset: 'townBand' },
+            { kind: 'mended', announceOnly: true, preset: 'townBand' },
         ]);
     } finally {
         townBand?.stop();

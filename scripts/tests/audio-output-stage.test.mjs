@@ -4,7 +4,6 @@ import assert from 'node:assert/strict';
 import {
     OUTPUT_MODES,
     outputSettings,
-    toneDb,
     widthMatrix,
 } from '../../claudeville/src/presentation/shared/audio/OutputStage.js';
 import { CueGovernor } from '../../claudeville/src/presentation/shared/audio/CueGovernor.js';
@@ -33,14 +32,6 @@ test('output modes: speakers as made, headphones narrower, mono folded and lifte
     const mono = outputSettings('mono');
     assert.ok(mono.mono && mono.monoCompDb > 0);
     assert.equal(outputSettings('surround').output, 'speakers');
-});
-
-test('tone maps −1…+1 to ±4 dB and clamps', () => {
-    assert.equal(toneDb(0), 0);
-    assert.equal(toneDb(1), 4);
-    assert.equal(toneDb(-1), -4);
-    assert.equal(toneDb(3), 4);
-    assert.equal(toneDb('x'), 0);
 });
 
 // A sounding engine on a frozen clock that records ducks and attacks.

@@ -5,28 +5,21 @@ import { el, replaceChildren } from './DomSafe.js';
 import { getClientPerfMetrics } from './ClientPerfMetrics.js';
 import { OPEN_METEO_URL, WEATHER_LICENCE_URL, weatherMode } from './VillageWeatherSettings.js';
 import {
-    HUSH_DURATION_MS,
     SOUND_PRESETS,
     SOUND_PRESET_DETAILS,
     SOUND_PRESET_LABELS,
     SOUND_STEP_MAX,
-    TONE_RANGE_DB,
     modeForPreset,
-    readTownBandVoice,
     soundStep,
     writeCaptionSetting,
-    writeCountHours,
-    writeHushUntil,
     writePresetVolumeStep,
     writeQuietHours,
     writeReminderSetting,
     writeSoundBackground,
     writeSoundOutput,
     writeSoundSoften,
-    writeSoundTone,
     writeStoredSoundEnabled,
     writeStoredSoundMode,
-    writeTownBandVoice,
 } from './SoundSettings.js';
 import {
     SIGNAGE_LABELS, SIGNAGE_EVENT, normalizeSignageMode, writeSignageMode,
@@ -65,8 +58,7 @@ const SOFTEN_CHOICES = Object.freeze([
     ['on', 'On'],
     ['off', 'Off'],
 ]);
-// Captions (3.8): Automatic follows the sound: signals while it is off,
-// signals and events while it is on.
+// Captions (3.8): Automatic shows urgent signals only; events and all opt in.
 const CAPTION_CHOICES = Object.freeze([
     ['auto', 'Automatic'],
     ['signals', 'Signals only'],
@@ -85,12 +77,6 @@ const SOUND_CALL_PREVIEWS = Object.freeze([
     Object.freeze(['limit', 'LIMIT']),
 ]);
 
-// D2: the Town band's players. The sound controller hears a change on
-// `sound:town-band-voice` and the band changes voice at its next chunk.
-const TOWN_BAND_VOICE_CHOICES = Object.freeze([
-    ['isle', 'Isle Band'],
-    ['chip', 'Chip restored'],
-]);
 // 10.2: HDR highlights. The detail says what this renderer and screen can
 // show and follows the published display status while the panel is open;
 // where the choice cannot apply (Canvas and WebGL never present HDR, nor a
@@ -124,16 +110,6 @@ const LEVEL_SCALE = Object.freeze({
     readout: step => `${step} / 10`,
     valueText: step => (step === 0 ? 'Off' : `${step} of 10`),
 });
-// Tone: Warm −4 dB … Bright +4 dB in 1 dB steps; stored as −1…+1.
-const signedDb = db => (db === 0 ? '0 dB' : `${db > 0 ? '+' : '−'}${Math.abs(db)} dB`);
-const TONE_SCALE = Object.freeze({
-    min: -TONE_RANGE_DB,
-    max: TONE_RANGE_DB,
-    toSlider: value => Math.round(Math.max(-1, Math.min(1, Number(value) || 0)) * TONE_RANGE_DB) + 0,
-    fromSlider: step => step / TONE_RANGE_DB,
-    readout: signedDb,
-    valueText: db => (db === 0 ? 'Neutral' : `${db < 0 ? 'Warm' : 'Bright'}, ${signedDb(db)}`),
-});
 
 // The sliders are 88px wide with an 8px square thumb: 80px of travel split
 // into whole-pixel steps (8px for 0–10), so the gold fill always ends on a
@@ -147,11 +123,6 @@ function syncRangeFill(input) {
 
 function presetOf(settings) {
     return SOUND_PRESETS.includes(settings?.soundPreset) ? settings.soundPreset : 'off';
-}
-
-function clockTime(ms) {
-    const date = new Date(ms);
-    return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
 }
 
 function storageGet(storage, key) {
@@ -308,18 +279,12 @@ export class SettingsPanel {
         onSoundVolume,
         onSoundBackground,
         onSoundOutput,
-        onSoundTone,
         onSoundSoften,
         onSoundQuietHours,
-        onSoundHush,
         onSoundReminders,
-        onSoundCountHours,
-        onSoundTownBandVoice,
         onSoundTestCall,
         onCaptions,
-        onAutoCamera,
         onDesktopAlerts,
-        onSidebarCollapsed,
         onReducedMotion,
         onHdrHighlights,
         onVillageWeather,
@@ -330,7 +295,7 @@ export class SettingsPanel {
         getHookFreshness,
         unknownModelSeenToday,
         alertsAvailable = true,
-        fetchImpl = globalThis.fetch,
+        fetchImpl = (...args) => globalThis.fetch(...args),
         storage = globalThis.window?.localStorage,
     } = {}) {
         this.readSettings = readSettings;
@@ -345,25 +310,16 @@ export class SettingsPanel {
         this.onSoundVolume = onSoundVolume || ((preset, step) => writePresetVolumeStep(preset, step, storage));
         this.onSoundBackground = onSoundBackground || (value => writeSoundBackground(value, storage));
         this.onSoundOutput = onSoundOutput || (value => writeSoundOutput(value, storage));
-        this.onSoundTone = onSoundTone || (value => writeSoundTone(value, storage));
         this.onSoundSoften = onSoundSoften || (value => writeSoundSoften(value, storage));
         this.onSoundQuietHours = onSoundQuietHours || (value => writeQuietHours(value, storage));
-        this.onSoundHush = onSoundHush || (on => writeHushUntil(on ? Date.now() + HUSH_DURATION_MS : 0, storage));
         // Preferences no audio object needs to apply: SET persists them and
         // their readers take them on use.
         this.onSoundReminders = onSoundReminders || (value => writeReminderSetting(value, storage));
-        this.onSoundCountHours = onSoundCountHours || (on => writeCountHours(on, storage));
-        this.onSoundTownBandVoice = onSoundTownBandVoice || ((value) => {
-            const voice = writeTownBandVoice(value, storage);
-            eventBus.emit('sound:town-band-voice', { voice });
-        });
         // SND-7: a preview of one call; nothing to hear without the controller.
         this.onSoundTestCall = onSoundTestCall || null;
         this._storage = storage;
         this.onCaptions = onCaptions || (value => writeCaptionSetting(value, storage));
-        this.onAutoCamera = onAutoCamera;
         this.onDesktopAlerts = onDesktopAlerts;
-        this.onSidebarCollapsed = onSidebarCollapsed;
         this.onReducedMotion = onReducedMotion;
         this.onHdrHighlights = onHdrHighlights || (value => writeHdrHighlights(value, storage));
         this.onVillageWeather = onVillageWeather;
@@ -377,6 +333,7 @@ export class SettingsPanel {
         this.fetchImpl = fetchImpl;
         this.root = null;
         this.providers = [];
+        this._providerLoadState = 'loading';
         this.controls = new Map();
         this._destroyed = false;
         this._providerController = null;
@@ -394,14 +351,12 @@ export class SettingsPanel {
         this.root.append(
             el('p', {
                 className: 'settings-panel__intro',
-                text: 'Preferences, local watchtowers, storage, pricing, and live browser health.',
+                text: 'Sound, display preferences, local watchtowers, and system diagnostics.',
             }),
             this._buildSound(settings),
-            this._buildControls(settings),
+            this._buildDisplay(settings),
             this._buildWatchtowers(),
-            this._buildStorage(),
-            this._buildPricing(),
-            this._buildHealth(),
+            this._buildDiagnostics(),
             this._buildActions(),
         );
 
@@ -430,62 +385,53 @@ export class SettingsPanel {
         ]);
     }
 
-    // SOUND (7.8, UX-16): the popover's model plus the listening preferences,
-    // in the order Listen to, Volume, then how and when it plays. Volume
-    // follows the preset: Off hides it, and each preset keeps its own
-    // volume step.
+    // SOUND & ALERTS (7.8, UX-16, v0.69 4.C): primary listening controls and
+    // alerts up front, secondary sound tweaks collapsed under More sound options.
     _buildSound(settings) {
         const preset = presetOf(settings);
         const presetRow = this._select('soundPreset', 'Listen to', SOUND_PRESET_DETAILS[preset], PRESET_CHOICES, preset,
             value => this._choosePreset(value));
         const volumeRow = this._slider('soundVolume', 'Volume', '', null,
             step => this.onSoundVolume?.(this._sound.preset, step));
-        const hushButton = el('button', { className: 'settings-button' });
-        hushButton.type = 'button';
-        hushButton.addEventListener('click', () => this._toggleHush());
-        const hushRow = this._settingRow('Hush', 'Signals only for an hour.', hushButton);
-        this.controls.set('soundHush', hushButton);
         const callsRow = this._buildCallPreviews();
         this._sound = {
             preset: null,
             presetDetail: presetRow.querySelector('.settings-control__detail'),
             volumeRow,
             callsRow,
-            hushDetail: hushRow.querySelector('.settings-control__detail'),
-            hushUntil: 0,
         };
-        const grid = el('div', { className: 'settings-controls' }, [
+        const primary = el('div', { className: 'settings-controls' }, [
             presetRow,
             volumeRow,
             callsRow,
-            this._select('soundBackground', 'In the background', 'When ClaudeVille is visible but another app has focus.',
-                BACKGROUND_CHOICES, settings.soundBackground, this.onSoundBackground),
-            this._select('soundOutput', 'Output', 'Headphones narrows left–right placement. Mono plays everything in both ears.',
-                OUTPUT_CHOICES, settings.soundOutput, this.onSoundOutput),
-            this._slider('soundTone', 'Tone', 'Warm ↔ Bright, on the town music.', settings.soundTone,
-                value => this.onSoundTone?.(value), TONE_SCALE),
-            this._select('soundQuietHours', 'Quiet hours', 'Signals only, a little softer.',
-                QUIET_HOURS_CHOICES, settings.soundQuietHours, this.onSoundQuietHours),
-            hushRow,
-            this._select('captions', 'Captions', 'Short notes for what the village signals.',
-                CAPTION_CHOICES, settings.captions, this.onCaptions),
-            this._select('soundSoften', 'Soften sudden sounds', 'Gentler bells. Follows Reduce motion unless set.',
-                SOFTEN_CHOICES, settings.soundSoften, this.onSoundSoften),
             this._select('soundReminders', 'Reminders', 'Ring again while an agent is still waiting.',
                 REMINDER_CHOICES, settings.soundReminders, this.onSoundReminders),
-            this._checkbox('soundCountHours', 'Count the hours', 'The tower bell strikes the hour after its phrase.',
-                settings.soundCountHours, this.onSoundCountHours),
-            this._select('soundTownBandVoice', 'Town band voice', 'Who plays the town music: the island\'s own band or the restored console chip.',
-                TOWN_BAND_VOICE_CHOICES, settings.soundTownBandVoice ?? readTownBandVoice(this._storage), this.onSoundTownBandVoice),
+            this._checkbox('desktopAlerts', 'Desktop alerts', this.alertsAvailable
+                ? 'Notify when an agent needs you.'
+                : 'Unavailable in this browser.', settings.desktopAlerts, this.onDesktopAlerts, !this.alertsAvailable),
+            this._select('captions', 'Captions', 'Short notes for what the village signals.',
+                CAPTION_CHOICES, settings.captions, this.onCaptions),
+        ]);
+        const more = el('details', { className: 'settings-section__details' }, [
+            el('summary', { className: 'settings-section__summary', text: 'More sound options' }),
+            el('div', { className: 'settings-controls' }, [
+                this._select('soundBackground', 'In the background', 'When ClaudeVille is visible but another app has focus.',
+                    BACKGROUND_CHOICES, settings.soundBackground, this.onSoundBackground),
+                this._select('soundOutput', 'Output', 'Headphones narrows left–right placement. Mono plays everything in both ears.',
+                    OUTPUT_CHOICES, settings.soundOutput, this.onSoundOutput),
+                this._select('soundQuietHours', 'Quiet hours', 'Signals only, a little softer (pauses Town band only).',
+                    QUIET_HOURS_CHOICES, settings.soundQuietHours, this.onSoundQuietHours),
+                this._select('soundSoften', 'Soften sudden sounds', 'Gentler bells. Follows Reduce motion unless set.',
+                    SOFTEN_CHOICES, settings.soundSoften, this.onSoundSoften),
+            ]),
         ]);
         this._renderPreset(settings);
-        this._renderHush(settings.soundHushUntil);
-        const section = this._section('SOUND', 'settings-section--sound', [grid]);
+        const section = this._section('SOUND & ALERTS', 'settings-section--sound', [primary, more]);
         section.id = 'settingsSound';
         return section;
     }
 
-    _buildControls(settings) {
+    _buildDisplay(settings) {
         const grid = el('div', { className: 'settings-controls' });
         const hdrRow = this._select('hdrHighlights', 'HDR highlights', hdrHighlightsAvailability(readDisplayStatus()).detail, HDR_HIGHLIGHT_CHOICES,
             normalizeHdrHighlights(settings.hdrHighlights), value => this._chooseHdr(value));
@@ -520,28 +466,23 @@ export class SettingsPanel {
         detail.id = 'settingsVillageWeatherDetail';
         this.controls.get('villageWeather').setAttribute('aria-describedby', detail.id);
         grid.append(
-            this._checkbox('autoCamera', 'Automatic camera', 'Frame live action while the World is idle.', settings.autoCamera, this.onAutoCamera),
-            this._checkbox('desktopAlerts', 'Desktop alerts', this.alertsAvailable
-                ? 'Notify when an agent needs you.'
-                : 'Unavailable in this browser.', settings.desktopAlerts, this.onDesktopAlerts, !this.alertsAvailable),
-            this._checkbox('sidebarCollapsed', 'Collapse sidebar', 'Keep the agent roster folded.', settings.sidebarCollapsed, this.onSidebarCollapsed),
-            this._checkbox('reducedMotion', 'Reduce motion', 'Override the system preference for this browser.', settings.reducedMotion, this.onReducedMotion),
-            hdrRow,
-            this._select('signage', 'Signage', 'Choose how landmarks show their occupants.',
-                Object.entries(SIGNAGE_LABELS), normalizeSignageMode(settings.signage), value => {
-                    const mode = writeSignageMode(value, this._storage);
-                    eventBus.emit(SIGNAGE_EVENT, { mode });
-                    return mode;
-                }),
+            weatherRow,
             this._select('glass', 'The Glass', 'Hold G or arm the dock tool to inspect the village.',
                 [['off', 'Off'], ['on', 'On']], normalizeGlassSetting(settings.glass), value => {
                     const mode = writeGlassSetting(value, this._storage);
                     eventBus.emit(GLASS_EVENT, { mode });
                     return mode;
                 }),
-            weatherRow,
+            this._select('signage', 'Signage', 'Choose how landmarks show their occupants.',
+                Object.entries(SIGNAGE_LABELS), normalizeSignageMode(settings.signage), value => {
+                    const mode = writeSignageMode(value, this._storage);
+                    eventBus.emit(SIGNAGE_EVENT, { mode });
+                    return mode;
+                }),
+            hdrRow,
+            this._checkbox('reducedMotion', 'Reduce motion', 'Override the system preference for this browser.', settings.reducedMotion, this.onReducedMotion),
         );
-        return this._section('CONTROLS', 'settings-section--controls', [grid]);
+        return this._section('DISPLAY & WORLD', 'settings-section--display', [grid]);
     }
 
     // The HDR row from the published display status: its detail and whether
@@ -571,25 +512,8 @@ export class SettingsPanel {
         return result;
     }
 
-    async _toggleHush() {
-        const hushed = this._sound.hushUntil > Date.now();
-        const until = await this.onSoundHush?.(!hushed);
-        this._renderHush(Number.isFinite(Number(until)) ? Number(until) : this.readSettings?.()?.soundHushUntil);
-    }
-
-    _renderHush(until) {
-        const sound = this._sound;
-        if (!sound) return;
-        const next = Number(until) > Date.now() ? Number(until) : 0;
-        sound.hushUntil = next;
-        const detail = next ? `Hushed until ${clockTime(next)}` : 'Signals only for an hour.';
-        const text = next ? 'RESUME NOW' : 'HUSH FOR 1 HOUR';
-        const button = this.controls.get('soundHush');
-        if (sound.hushDetail && sound.hushDetail.textContent !== detail) sound.hushDetail.textContent = detail;
-        if (button && button.textContent !== text) button.textContent = text;
-    }
-
-    // The rows that follow the preset: its detail and its own volume step.
+    // The rows that follow the preset: its detail, its volume step, and
+    // whether signal calls can be previewed.
     _renderPreset(settings) {
         const sound = this._sound;
         if (!sound) return;
@@ -598,8 +522,8 @@ export class SettingsPanel {
         const detail = SOUND_PRESET_DETAILS[preset];
         if (sound.presetDetail && sound.presetDetail.textContent !== detail) sound.presetDetail.textContent = detail;
         sound.volumeRow.hidden = !mode;
-        sound.callsRow.hidden = !mode;
-        if (mode) this._syncRange('soundVolume', settings.soundVolumes?.[mode]);
+        sound.callsRow.hidden = !mode || preset === 'townBandOnly';
+        if (mode) this._syncRange('soundVolume', settings.soundVolumes?.[mode === 'bgmOnly' ? 'bgm' : mode]);
         sound.preset = preset;
     }
 
@@ -712,20 +636,25 @@ export class SettingsPanel {
             text: 'Reading local provider health…',
         });
         this.watchtowerList.setAttribute('aria-live', 'polite');
-        return this._section('WATCHTOWERS', 'settings-section--watchtowers', [this.watchtowerList]);
+        return this._section('PROVIDERS (WATCHTOWERS)', 'settings-section--watchtowers', [this.watchtowerList]);
     }
 
     async _loadProviders() {
+        this._providerLoadState = 'loading';
         if (typeof this.fetchImpl !== 'function') {
+            this._providerLoadState = 'error';
             this._renderProviderError();
             return;
         }
         this._providerController?.abort?.();
         this._providerController = new AbortController();
         try {
-            const response = await this.fetchImpl('/api/providers', { signal: this._providerController.signal });
+            // Call receiver-free so native Window.fetch never throws Illegal invocation.
+            const fetchFn = this.fetchImpl;
+            const response = await fetchFn('/api/providers', { signal: this._providerController.signal });
             if (!response?.ok) throw new Error(`HTTP ${response?.status || 0}`);
             const payload = await response.json();
+            if (this._destroyed) return;
             const providers = Array.isArray(payload?.health)
                 ? payload.health
                 : (Array.isArray(payload?.providers) ? payload.providers : []);
@@ -737,9 +666,13 @@ export class SettingsPanel {
                     sessions: Math.max(0, Number(provider?.sessions) || 0),
                 }))
                 .sort((a, b) => a.name.localeCompare(b.name));
+            this._providerLoadState = 'loaded';
             this._renderProviders();
         } catch (error) {
-            if (error?.name !== 'AbortError') this._renderProviderError();
+            if (error?.name !== 'AbortError') {
+                this._providerLoadState = 'error';
+                this._renderProviderError();
+            }
         }
     }
 
@@ -774,10 +707,39 @@ export class SettingsPanel {
         }));
     }
 
-    _buildStorage() {
+    _buildDiagnostics() {
+        this.healthLink = el('span', { className: 'settings-fact-row__value' });
+        this.healthSnapshot = el('span', { className: 'settings-fact-row__value' });
+        this.healthFrames = el('span', { className: 'settings-fact-row__value' });
+        this.healthLoop = el('span', { className: 'settings-fact-row__value' });
+        const row = (label, value) => el('div', { className: 'settings-fact-row' }, [
+            el('span', { className: 'settings-fact-row__label', text: label }),
+            value,
+        ]);
+        const healthGroup = el('div', { className: 'settings-diagnostics__group' }, [
+            el('h4', { className: 'settings-diagnostics__heading', text: 'HEALTH' }),
+            row('Link', this.healthLink),
+            row('Last snapshot', this.healthSnapshot),
+            row('Render', this.healthFrames),
+            row('Event-loop delay', this.healthLoop),
+        ]);
+
+        this.pricingState = el('span', { className: 'settings-pricing__state' });
+        const pricingGroup = el('div', { className: 'settings-diagnostics__group' }, [
+            el('h4', { className: 'settings-diagnostics__heading', text: 'PRICING' }),
+            el('div', { className: 'settings-fact-row' }, [
+                el('span', { className: 'settings-fact-row__label', text: 'Model pricing table' }),
+                el('span', { className: 'settings-fact-row__value' }, [
+                    `revision ${TokenUsage.rateRevision} · `,
+                    this.pricingState,
+                ]),
+            ]),
+        ]);
+
         this.chronicleNotice = el('p', { className: 'settings-storage__notice' });
         this.chronicleNotice.setAttribute('role', 'status');
-        return this._section('STORAGE', 'settings-section--storage', [
+        const storageGroup = el('div', { className: 'settings-diagnostics__group settings-diagnostics__group--wide' }, [
+            el('h4', { className: 'settings-diagnostics__heading', text: 'STORAGE' }),
             el('dl', { className: 'settings-ledger' }, [
                 el('dt', { text: 'Preferences, names, pins' }),
                 el('dd', { text: 'Browser storage · survives reload' }),
@@ -788,36 +750,12 @@ export class SettingsPanel {
             ]),
             this.chronicleNotice,
         ]);
-    }
 
-    _buildPricing() {
-        this.pricingState = el('span', { className: 'settings-pricing__state' });
-        return this._section('PRICING', 'settings-section--pricing', [
-            el('div', { className: 'settings-fact-row' }, [
-                el('span', { className: 'settings-fact-row__label', text: 'Model pricing table' }),
-                el('span', { className: 'settings-fact-row__value' }, [
-                    `revision ${TokenUsage.rateRevision} · `,
-                    this.pricingState,
-                ]),
-            ]),
+        const details = el('details', { className: 'settings-section__details' }, [
+            el('summary', { className: 'settings-section__summary', text: 'Health, pricing, and storage' }),
+            el('div', { className: 'settings-diagnostics' }, [healthGroup, pricingGroup, storageGroup]),
         ]);
-    }
-
-    _buildHealth() {
-        this.healthLink = el('span', { className: 'settings-fact-row__value' });
-        this.healthSnapshot = el('span', { className: 'settings-fact-row__value' });
-        this.healthFrames = el('span', { className: 'settings-fact-row__value' });
-        this.healthLoop = el('span', { className: 'settings-fact-row__value' });
-        const row = (label, value) => el('div', { className: 'settings-fact-row' }, [
-            el('span', { className: 'settings-fact-row__label', text: label }),
-            value,
-        ]);
-        return this._section('HEALTH', 'settings-section--health', [
-            row('Link', this.healthLink),
-            row('Last snapshot', this.healthSnapshot),
-            row('Render', this.healthFrames),
-            row('Event-loop delay', this.healthLoop),
-        ]);
+        return this._section('SYSTEM & DIAGNOSTICS', 'settings-section--diagnostics', [details]);
     }
 
     _refreshOperationalRows() {
@@ -856,7 +794,7 @@ export class SettingsPanel {
                 : 'all models matched today';
             this.pricingState.classList.toggle('settings-pricing__state--unknown', Boolean(this.unknownModelSeenToday?.()));
         }
-        this._renderProviders(now);
+        if (this._providerLoadState === 'loaded') this._renderProviders(now);
     }
 
     _buildActions() {
@@ -887,7 +825,7 @@ export class SettingsPanel {
 
     syncControls() {
         const settings = this.readSettings?.() || {};
-        for (const key of ['autoCamera', 'desktopAlerts', 'sidebarCollapsed', 'reducedMotion']) {
+        for (const key of ['desktopAlerts', 'reducedMotion']) {
             const input = this.controls.get(key);
             if (input) input.checked = Boolean(settings[key]);
         }
@@ -917,17 +855,12 @@ export class SettingsPanel {
             captions: settings.captions || 'auto',
             soundSoften: settings.soundSoften || 'auto',
             soundReminders: settings.soundReminders || 'standard',
-            soundTownBandVoice: settings.soundTownBandVoice ?? readTownBandVoice(this._storage),
         };
         for (const [key, value] of Object.entries(selects)) {
             const select = this.controls.get(key);
             if (select && select.value !== value) select.value = value;
         }
-        const countHours = this.controls.get('soundCountHours');
-        if (countHours && countHours.checked !== Boolean(settings.soundCountHours)) countHours.checked = Boolean(settings.soundCountHours);
-        this._syncRange('soundTone', settings.soundTone);
         this._renderPreset(settings);
-        this._renderHush(settings.soundHushUntil);
     }
 
     _syncRange(key, value) {

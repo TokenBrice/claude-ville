@@ -915,7 +915,7 @@ export class CueKit {
         const { kind, lane } = cue;
         const index = Math.max(1, Math.trunc(Number(cue.clusterIndex) || 1));
         const identity = { kind, agentId: cue.agentId ?? null, teamName: null, sourceEventId: cueSourceEventId(cue) };
-        const canSound = Boolean(this.engine?.context && this.engine?.started);
+        const canSound = Boolean(this.engine?.context && this.engine?.started) && !cue.announceOnly;
         if (!canSound) {
             publishCueScore({ ...identity, startMs: monotonicNow(), offsetsMs: [0], silent: true });
             return this._emitCue(cue);

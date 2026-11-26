@@ -659,11 +659,11 @@ export function phaseLockedPairs(scores, { tolMs = 5 } = {}) {
 }
 
 // ------------------------------------------------------------- captions ----
-// S6 / 3.8 (HAR-13): whether a cue's caption shows, from the plan: signals
-// always; events (outcome and routine) with *Signals and events* or
-// *Everything*, and by default (`auto`) only while sound is on; scenery only
-// with *Everything* while sound is on; the digest is sound-only (its toast is
-// the `attention:digest` notice).
+// S6 / 3.8 (HAR-13) / v0.69 calm signal diet: signals always caption; events
+// (outcome and routine) caption only with *Signals and events* or *Everything*
+// (not under `auto`, whether sound is off or on); scenery captions only with
+// *Everything* while sound is on; the digest is sound-only (its toast is the
+// `attention:digest` notice).
 export const CUE_STRATUM = Object.freeze({
     summons: 'signal', distress: 'signal', limit: 'signal', reminder: 'signal', answered: 'signal',
     turnDone: 'outcome', subagentReturn: 'outcome', toolFailed: 'outcome', commit: 'outcome', mended: 'outcome', push: 'outcome',
@@ -676,7 +676,7 @@ export const CUE_STRATUM = Object.freeze({
 export function captionExpected(kind, setting, soundOn) {
     const s = CUE_STRATUM[kind];
     if (s === 'signal') return true;
-    if (s === 'outcome' || s === 'routine') return setting === 'events' || setting === 'all' || (setting === 'auto' && soundOn);
+    if (s === 'outcome' || s === 'routine') return setting === 'events' || setting === 'all';
     if (s === 'scenery') return setting === 'all' && soundOn;
     return false;
 }
@@ -1003,7 +1003,6 @@ export function loopsPerPieceHour(renditions, { max = MUSIC_LIMITS.loopsPerPiece
 // the worklet load included); the program's short-term within 3 dB of steady
 // 4 s after the enable; its M max ≤ the needs-you call's − 12 LU; once per
 // page session. 7.7: Mono's fold compensation within 0.5 LU of Speakers;
-// tone ±1 → ±4 dB (± 1) above the 3 kHz shelf and ≤ 0.5 dB under it;
 // Soften: struck-bell attacks ≥ 22 ms (a 25 ms ramp reads 24–25 ms, the
 // 12 ms default ≤ 13), non-needs-you ducks at 0.7 × their depth (± 0.05),
 // the needs-you call whole (M max within 0.2 LU).
@@ -1011,6 +1010,5 @@ export const WAVE7_LIMITS = Object.freeze({
     signalsFloorDbfs: -80, callOverFloorDb: 20,
     awakenOnsetMs: 150, awakenStWithinDb: 3, awakenStAtSec: 4, awakenUnderCallLu: 12,
     monoCompLu: 0.5,
-    toneShelfDb: 4, toneTolDb: 1, toneLowTolDb: 0.5,
     softBellAttackMinMs: 22, softDuckScale: 0.7, softDuckTol: 0.05, callWholeLu: 0.2,
 });

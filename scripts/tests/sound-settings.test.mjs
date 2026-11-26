@@ -2,9 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+    SOUND_MODES,
+    SOUND_PRESETS,
+    SOUND_PRESET_LABELS,
     SOUND_SETTING_DEFAULTS,
     hushActive,
     inQuietHours,
+    isTownBandMode,
+    isTownBandPreset,
     migratePresetVolumes,
     quietHoursEndsAt,
     readHushUntil,
@@ -15,11 +20,9 @@ import {
     readSoundOutput,
     readSoundSettings,
     readSoundSoften,
-    readSoundTone,
     readStoredSoundPreset,
     recalibrateStoredSound,
     softenActive,
-    toneDb,
     writeHushUntil,
     writePresetVolumeStep,
     writeQuietHours,
@@ -27,7 +30,6 @@ import {
     writeSoundInvited,
     writeSoundOutput,
     writeSoundSoften,
-    writeSoundTone,
 } from '../../claudeville/src/presentation/shared/SoundSettings.js';
 import { STANDARD_VOLUME_STEP } from '../../claudeville/src/presentation/shared/audio/Loudness.js';
 
@@ -60,8 +62,13 @@ test('the single stored step seeds every preset once, then each preset keeps its
     storage.setItem('claudeville.sound.volume', '1');
     const reloaded = new MemoryStorage(Object.fromEntries(storage.values));
     assert.equal(readPresetVolumeStep('townBand', reloaded), 4);
+    assert.equal(readPresetVolumeStep('townBandOnly', reloaded), 4, 'Town band only shares the Town band volume slot');
     assert.equal(readPresetVolumeStep('bgm', reloaded), 4, 'a mode id reads the same slot');
+    assert.equal(readPresetVolumeStep('bgmOnly', reloaded), 4, 'bgmOnly aliases the bgm volume slot');
     assert.equal(readPresetVolumeStep('signals', reloaded), 7);
+    assert.equal(writePresetVolumeStep('townBandOnly', 8, reloaded), 8);
+    assert.equal(readPresetVolumeStep('townBand', reloaded), 8);
+    assert.deepEqual(JSON.parse(reloaded.getItem('claudeville.sound.volumes')), { signals: 7, bgm: 8 });
     assert.equal(migratePresetVolumes(reloaded), false);
 });
 
@@ -107,10 +114,9 @@ test('invalid volume steps fall back or clamp; an uncalibrated profile reads the
     assert.equal(migratePresetVolumes(legacy), false, 'the reset already wrote the per-preset steps');
 });
 
-test('output, tone, soften, hush, quiet hours, invited and first click read their defaults and reject junk', () => {
+test('output, soften, hush, quiet hours, invited and first click read their defaults and reject junk', () => {
     const fresh = new MemoryStorage();
     assert.equal(readSoundOutput(fresh), 'speakers');
-    assert.equal(readSoundTone(fresh), 0);
     assert.equal(readSoundSoften(fresh), 'auto');
     assert.equal(readHushUntil(fresh), 0);
     assert.equal(readQuietHours(fresh), 'off');
@@ -119,7 +125,6 @@ test('output, tone, soften, hush, quiet hours, invited and first click read thei
 
     const junk = new MemoryStorage({
         'claudeville.sound.output': 'surround',
-        'claudeville.sound.tone': 'bright',
         'claudeville.sound.soften': 'yes',
         'claudeville.sound.hushUntil': '-5',
         'claudeville.sound.quietHours': '21-06',
@@ -127,7 +132,6 @@ test('output, tone, soften, hush, quiet hours, invited and first click read thei
         'claudeville.sound.chipSeen': 'yes',
     });
     assert.equal(readSoundOutput(junk), 'speakers');
-    assert.equal(readSoundTone(junk), 0);
     assert.equal(readSoundSoften(junk), 'auto');
     assert.equal(readHushUntil(junk), 0);
     assert.equal(readQuietHours(junk), 'off');
@@ -140,13 +144,6 @@ test('output, tone, soften, hush, quiet hours, invited and first click read thei
     assert.equal(writeSoundSoften('off', storage), 'off');
     assert.equal(writeQuietHours('22-08', storage), '22-08');
     assert.equal(writeQuietHours('9-5', storage), 'off');
-    // Tone clamps to −1…+1 in quarter steps (1 dB of the ±4 dB shelf).
-    assert.equal(writeSoundTone(3, storage), 1);
-    assert.equal(writeSoundTone(-0.3, storage), -0.25);
-    assert.equal(readSoundTone(storage), -0.25);
-    assert.equal(toneDb(readSoundTone(storage)), -1);
-    assert.equal(toneDb(-1), -4);
-    assert.equal(writeSoundTone('nope', storage), 0);
     assert.equal(writeHushUntil(1790000000000.4, storage), 1790000000000);
     assert.equal(readHushUntil(storage), 1790000000000);
     assert.equal(writeHushUntil(null, storage), 0);
@@ -184,8 +181,18 @@ test('quiet hours wrap midnight on the local clock and say when they end', () =>
 });
 
 test('the preset reads Off while sound is disabled, and the defaults match what a fresh profile reads', () => {
+    assert.deepEqual([...SOUND_MODES], ['signals', 'bgm', 'bgmOnly']);
+    assert.deepEqual([...SOUND_PRESETS], ['off', 'signals', 'townBand', 'townBandOnly']);
+    assert.equal(SOUND_PRESET_LABELS.townBandOnly, 'Town band only');
+    assert.equal(isTownBandMode('bgm'), true);
+    assert.equal(isTownBandMode('bgmOnly'), true);
+    assert.equal(isTownBandMode('signals'), false);
+    assert.equal(isTownBandPreset('townBand'), true);
+    assert.equal(isTownBandPreset('townBandOnly'), true);
+    assert.equal(isTownBandPreset('signals'), false);
     assert.equal(readStoredSoundPreset(new MemoryStorage({ 'claudeville.sound.mode': 'bgm' })), 'off');
     assert.equal(readStoredSoundPreset(new MemoryStorage({ 'claudeville.sound.enabled': 'true', 'claudeville.sound.mode': 'signals' })), 'signals');
+    assert.equal(readStoredSoundPreset(new MemoryStorage({ 'claudeville.sound.enabled': 'true', 'claudeville.sound.mode': 'bgmOnly' })), 'townBandOnly');
     assert.equal(readStoredSoundPreset(new MemoryStorage({ 'claudeville.sound.enabled': 'true', 'claudeville.sound.mode': 'chip' })), 'townBand');
     // The retired Village's stored mode id reads as the Town band.
     assert.equal(readStoredSoundPreset(new MemoryStorage({ 'claudeville.sound.enabled': 'true', 'claudeville.sound.mode': 'ambient' })), 'townBand');

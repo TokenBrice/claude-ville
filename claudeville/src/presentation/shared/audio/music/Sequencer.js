@@ -83,10 +83,10 @@ const COMP_LOW = -17;
 const COMP_HIGH = -3;
 // The comp's velocity where its figure names none.
 const ENGINE_VEL = 0.85;
-// Players whose note sounds its written length (the chip waves, the bow,
-// the bellows, the breath); plucked and struck players ring by their own
-// decay (`engineFigure`'s chord strikes).
-const HELD_KINDS = new Set(['chip', 'bowed', 'reed', 'wind']);
+// Players whose note sounds its written length (the bow, the bellows, the
+// breath); plucked and struck players ring by their own decay (`engineFigure`'s
+// chord strikes).
+const HELD_KINDS = new Set(['bowed', 'reed', 'wind']);
 // Descant (MUS-8): a sixth over the melody, snapped to a chord tone, on notes
 // of at least a beat.
 const DESCANT_INTERVAL = 9;
@@ -363,7 +363,7 @@ function withinRange(semi, range) {
 // ── the sequencer ──
 
 export class Sequencer extends BaseLayer {
-    constructor(engine, { preset = 'townBand', voice = DEFAULT_VOICE, ...options } = {}) {
+    constructor(engine, { preset = 'townBand', ...options } = {}) {
         const config = PRESETS[preset];
         if (!config) throw new Error(`unknown music preset ${preset}`);
         super(engine, {
@@ -373,13 +373,12 @@ export class Sequencer extends BaseLayer {
         this._arrangedPiece = null; // whose own players the voicing seats (C4)
         this.name = `music:${preset}`;
         this.phase = 'day';
-        this.voice = voice;
+        this.voice = DEFAULT_VOICE;
         this.band = 2;
         this.arrangement = { weather: 'clear', season: 'summer', keyframe: 'noon' };
-        this._pendingVoice = null;
         this._pendingBand = null;
         this._pendingArrangement = null;
-        this._pinned = null; // { piece, band, voice }
+        this._pinned = null; // { piece, band }
         this._density = {};
         this._waiting = false;
         this._homeOwed = false;
@@ -427,14 +426,6 @@ export class Sequencer extends BaseLayer {
         return this._pendingBand != null;
     }
 
-    // Town band voice (D2): 'isle' or 'chip'; lands at the next chunk boundary.
-    setVoice(voice) {
-        const next = voice === 'chip' ? 'chip' : 'isle';
-        if (next === (this._pendingVoice ?? this.voice)) return false;
-        this._pendingVoice = next === this.voice ? null : next;
-        return true;
-    }
-
     // Weather, season and grade keyframe (MUS-16, MUSL-8); a changed
     // arrangement lands at the next chunk boundary.
     setArrangement({ weather, season, keyframe } = {}) {
@@ -474,7 +465,7 @@ export class Sequencer extends BaseLayer {
         this.engine.musicClock?.setPhase(phase);
     }
 
-    // Probe and QA: `{ piece, band, voice }`. `piece` makes that piece the
+    // Probe and QA: `{ piece, band }`. `piece` makes that piece the
     // only candidate from the next start on; `band` holds the working band
     // against setBand; `null` releases every pin.
     pin(spec) {
@@ -485,9 +476,8 @@ export class Sequencer extends BaseLayer {
         const name = spec.piece ?? null;
         if (name !== null && !PIECES.some(p => p.name === name)) return false;
         const band = spec.band == null ? null : Math.max(0, Math.min(3, Math.round(Number(spec.band))));
-        this._pinned = { piece: name, band, voice: spec.voice ?? null };
+        this._pinned = { piece: name, band };
         if (band != null) this._pendingBand = band === this.band ? null : band;
-        if (spec.voice) this.setVoice(spec.voice);
         return true;
     }
 
@@ -926,7 +916,7 @@ export class Sequencer extends BaseLayer {
     _voicingNow() {
         const arrangement = this._pendingArrangement ?? this.arrangement;
         return voicingFor({
-            voice: this._pendingVoice ?? this.voice,
+            voice: DEFAULT_VOICE,
             keyframe: arrangement.keyframe,
             weather: arrangement.weather,
             season: arrangement.season,
@@ -935,7 +925,7 @@ export class Sequencer extends BaseLayer {
         });
     }
 
-    // Pending band, voice and arrangement land here (a chunk boundary at `t`),
+    // Pending band and arrangement land here (a chunk boundary at `t`),
     // and the players of the piece the chunk belongs to (C4).
     _applyPending(t, piece = this._arrangedPiece) {
         let changed = false;
@@ -952,11 +942,6 @@ export class Sequencer extends BaseLayer {
         } else if (this._pendingBand != null) {
             this.band = this._pendingBand;
             this._pendingBand = null;
-            changed = true;
-        }
-        if (this._pendingVoice) {
-            this.voice = this._pendingVoice;
-            this._pendingVoice = null;
             changed = true;
         }
         let arrangementChanged = false;

@@ -133,7 +133,7 @@ test('every piece has its own players: no two of a family share lead, counter an
     for (const piece of PIECES) assert.equal(voicingFor({ piece: piece.name }).seats.bass.instrument, 'upright', piece.name);
 });
 
-test('a piece\'s players replace the keyframe row\'s; the row still darkens them, the weather re-dresses them without swapping them, Chip keeps its rows', () => {
+test('a piece\'s players replace the keyframe row\'s; the row still darkens them and the weather re-dresses them without swapping them', () => {
     for (const piece of PIECES.filter(p => p.family === 'day')) {
         const [lead, , over = {}] = piece.arrangement.lead;
         const noon = voicingFor({ keyframe: 'noon', piece: piece.name });
@@ -156,9 +156,6 @@ test('a piece\'s players replace the keyframe row\'s; the row still darkens them
         // With no piece the row still swaps colours: rain's whistle over a harp.
         const rowRain = voicingFor({ keyframe: 'noon', weather: 'rain' });
         assert.deepEqual([rowRain.seats.lead.instrument, rowRain.seats.engine.instrument], ['whistle', 'harp']);
-        for (const keyframe of DAY_KEYFRAMES) {
-            assert.deepEqual(voicingFor({ voice: 'chip', keyframe, piece: piece.name }).seats, voicingFor({ voice: 'chip', keyframe }).seats);
-        }
     }
     // The season colours the cadence and never swaps the players.
     for (const season of SEASONS) {
@@ -173,9 +170,6 @@ test('the keyframes are coloured by instrument or register', () => {
     const rows = KEYFRAMES.filter(k => k !== 'noon').map(k => byKeyframe.get(k));
     assert.equal(new Set(rows).size, rows.length, 'two keyframes share an arrangement');
     assert.equal(byKeyframe.get('morning'), byKeyframe.get('noon'));
-    const chipDay = voicingFor({ voice: 'chip', keyframe: 'noon' }).seats.lead.instrument;
-    const chipNight = voicingFor({ voice: 'chip', keyframe: 'night' }).seats.lead.instrument;
-    assert.notEqual(chipDay, chipNight);
 });
 
 test('dusk keeps the whole band in its written register (MUS-13)', () => {
@@ -212,10 +206,13 @@ test('rain and snow re-dress the tune with softer attacks', () => {
     }
 });
 
-test('Chip plays chip instruments in every seat', () => {
+test('Isle Band is the sole voicing and unknown voice ids fall back to isle', () => {
+    assert.deepEqual([...VOICES], ['isle']);
     for (const keyframe of KEYFRAMES) {
-        const chip = voicingFor({ voice: 'chip', keyframe, band: 3, piece: 'willowbrook' });
-        assert.ok(Object.values(chip.seats).every(seat => seat.instrument.startsWith('chip')));
+        const legacy = voicingFor({ voice: 'chip', keyframe, band: 3, piece: 'willowbrook' });
+        const isle = voicingFor({ voice: 'isle', keyframe, band: 3, piece: 'willowbrook' });
+        assert.equal(legacy.voice, 'isle');
+        assert.deepEqual(legacy.seats, isle.seats);
     }
 });
 

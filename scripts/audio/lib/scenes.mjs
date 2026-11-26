@@ -3,15 +3,13 @@ import { SEATS } from '../../../claudeville/src/presentation/shared/audio/music/
 // The virtual-clock probe's named scenes (page/virtual.js specs). Scene
 // time: `warmup` seconds settle the enable fade and the director's level
 // slews and are discarded; action `at` is seconds after warmup. `mode` is
-// the stored preset: 'bgm' (the Town band) or 'signals' (no music: nothing
-// sounds between the cues).
+// the stored preset: 'bgm' (the Town band), 'bgmOnly' (Town band only, no
+// signal bells), or 'signals' (no music: nothing sounds between the cues).
 // Targets live in Loudness.js (S2); the judges in checks.mjs.
 
 const DAY = Object.freeze({ phase: 'day', progress: 0.5, weather: { type: 'clear', windX: 0.3 } });
 const RAIN = Object.freeze({ phase: 'day', progress: 0.5, weather: { type: 'rain', intensity: 0.7, windX: 0.6 } });
 const NIGHT = Object.freeze({ phase: 'night', progress: 0.5, weather: { type: 'clear', windX: 0.3 } });
-
-export const TOWN_BAND_VOICE_KEY = 'claudeville.sound.townBandVoice';
 
 // One lane's cue through the real producers (the harness page has no
 // AttentionService or VillageDirector, so the probe emits their events):
@@ -128,10 +126,10 @@ export const SCENES = {
     avSync: {
         mode: 'bgm', world: { counts: { working: 12 } }, atmosphere: DAY, warmup: 8, seconds: 140, stems: ['cue'], musicProbe: {},
         actions: [
-            ...[0, 1, 2, 3].map(i => ({ at: 2 + i * 32, accent: { kind: 'arrival', leadMs: 450 + 110 * i }, emit: 'village:scene', payload: { kind: 'arrival' }, agentIndex: i, label: `arrival (accent +${450 + 110 * i} ms)`, lane: 'routine' })),
-            ...[0, 1, 2].map(i => ({ at: 18 + i * 32, emit: 'village:scene', payload: { kind: 'departure' }, agentIndex: 6 + i, label: 'departure', lane: 'routine' })),
-            { at: 114, emit: 'distress:watchtower', payload: { kind: 'recovered' }, agentIndex: 10, label: 'recovery', lane: 'routine' },
-            { at: 130, emit: 'team:gather', payload: { teamName: 'probe', members: ['probe-a', 'probe-b', 'probe-c'] }, label: 'council', lane: 'routine' },
+            ...[0, 1, 2, 3].map(i => ({ at: 2 + i * 32, accent: { kind: 'arrival', leadMs: 450 + 110 * i }, play: { kind: 'arrival' }, agentIndex: i, label: `arrival (accent +${450 + 110 * i} ms)`, lane: 'routine' })),
+            ...laneActions('needsYou', 18, 6),
+            ...laneActions('error', 50, 7),
+            ...laneActions('limit', 82, 8),
         ],
     },
 };
@@ -163,19 +161,14 @@ export function marginVoices(lane) {
     return MARGIN_VOICES[lane] ?? [LANE_CUE_KIND[lane]];
 }
 // The beds: `signals` is S2's no-music bed (CueLevel's `village` context)
-// as the Signals preset plays it — silence between the attention voices,
-// the only lanes it sounds; each call meets a bed quieter than any S2 row,
-// so its window's ceiling is exempt (S2: a cue that lands into a bed that
-// quiet is gated only by the limiter GR). `music` is the Town band;
-// `bandBusy` / `bandBusyChip` the Town band over the busy island (every
-// building working, so the arrangement and percussion play; Willowbrook
-// pinned, the reel's piece), in the Isle voice and in Chip, for the urgent
-// lanes; the probe prints the band each placement meets.
+// as the Signals preset plays it — silence between the urgent attention
+// voices; `music` is the Town band (which shares the urgent-only signal
+// diet); `bandBusy` is the Town band over the busy island (every building
+// working, Willowbrook pinned, Isle Band).
 export const MARGIN_BEDS = {
     signals: { bed: 'village', mode: 'signals', atmosphere: DAY, silent: true, lanes: URGENT_MARGIN_LANES },
-    music: { bed: 'music', mode: 'bgm', atmosphere: DAY },
-    bandBusy: { bed: 'music', mode: 'bgm', atmosphere: DAY, busy: true, piece: 'willowbrook', voice: 'isle', lanes: URGENT_MARGIN_LANES },
-    bandBusyChip: { bed: 'music', mode: 'bgm', atmosphere: DAY, busy: true, piece: 'willowbrook', voice: 'chip', lanes: URGENT_MARGIN_LANES },
+    music: { bed: 'music', mode: 'bgm', atmosphere: DAY, lanes: URGENT_MARGIN_LANES },
+    bandBusy: { bed: 'music', mode: 'bgm', atmosphere: DAY, busy: true, piece: 'willowbrook', lanes: URGENT_MARGIN_LANES },
 };
 export function marginLanes(bedName) {
     return MARGIN_BEDS[bedName]?.lanes ?? MARGIN_LANES;
@@ -239,7 +232,6 @@ export function marginScene(bedName, lane, voice = null, only = null) {
         : { counts: { working: crowd } };
     return {
         mode: bed.mode, world, atmosphere: bed.atmosphere,
-        ...(bed.voice ? { storage: { [TOWN_BAND_VOICE_KEY]: bed.voice } } : {}),
         ...(bed.piece ? { bgm: { piece: bed.piece } } : {}),
         warmup: 10, seconds, actions: [...(lead?.actions ?? []), ...actions].sort((a, b) => a.at - b.at),
         stems: ['cue', 'music', 'limiterIn', 'limiterOut'],
@@ -310,7 +302,7 @@ export const AIR_ARRIVALS = [{ at: 3, d: 0, x: 0.5 }, { at: 31, d: 1, x: 1 }];
 export const AIR_CUE_SCENE = {
     mode: 'bgm', world: { counts: { working: 6 } }, atmosphere: DAY, warmup: 10, seconds: 38,
     actions: [
-        ...AIR_ARRIVALS.map(a => ({ at: a.at, emit: 'village:scene', payload: { kind: 'arrival', normalizedScreenX: a.x, normalizedScreenY: 0.5 }, agentIndex: 4 + a.d, label: `arrival d = ${a.d}`, lane: 'routine' })),
+        ...AIR_ARRIVALS.map(a => ({ at: a.at, play: { kind: 'arrival', payload: { normalizedScreenX: a.x, normalizedScreenY: 0.5 } }, agentIndex: 4 + a.d, label: `arrival d = ${a.d}`, lane: 'routine' })),
         ...[0, 1, 2].flatMap(i => laneActions('needsYou', 10 + i * 7, i)),
     ],
     stems: ['cue', 'airWet'], airOff: 'bed',
@@ -477,9 +469,9 @@ export const STALE_SCENE = {
 // Agents: 0–3 workers, 4 a parent with sub-agents added below.
 const OUTCOME_WORLD = { counts: { working: 5 } };
 export const OUTCOME_SCENE = {
-    mode: 'bgm', world: OUTCOME_WORLD, atmosphere: DAY, warmup: 10, seconds: 150, stems: ['cue'], captions: ['auto'],
+    mode: 'bgm', world: OUTCOME_WORLD, atmosphere: DAY, warmup: 10, seconds: 150, stems: ['cue'], captions: ['auto', 'events'],
     actions: [
-        // A verified push: one push cue, its caption and its published notes.
+        // A verified push: silent under the v0.69 calm signal diet, captioned when events are opted in.
         { at: 3, emit: 'outcome:verified', payload: { kind: 'push', project: 'probe' }, agentIndex: 0, label: 'push', lane: 'push' },
         // Ten clean exits: silence.
         ...Array.from({ length: 10 }, (_, i) => ({ at: 12 + i * 0.5, emit: 'tool:result', payload: { tool: 'Bash', exitCode: 0, building: 'forge' }, agentIndex: 1, label: 'exit 0', lane: 'exit0' })),
@@ -490,7 +482,7 @@ export const OUTCOME_SCENE = {
         { at: 91, status: { index: 3, status: 'idle', fields: { lastTurnDurationMs: LONG_TURN_MS } }, label: 'turn done', lane: 'turnDone' },
         { at: 100, addAgent: { status: 'working', parentIndex: 4 }, label: 'dispatch', lane: 'dispatch' },
         { at: 115, remove: { index: 5 }, label: 'return', lane: 'subagentReturn' },
-        // A verified release, its crown accent declared as the renderer does.
+        // A verified release (silent under the calm signal diet).
         { at: 130, accent: { kind: 'release', leadMs: 900 }, emit: 'outcome:verified', payload: { kind: 'release', project: 'probe' }, agentIndex: 0, label: 'release', lane: 'release' },
     ],
 };
@@ -507,11 +499,10 @@ export const DASHBOARD_SCENE = {
     ],
 };
 
-// SND-1 in Signals (which captions every other outcome): a 25 s turn ends
-// (caption only), a long turn ends (the knock sounds), a second long turn
-// 30 s later meets the governor's 60 s long-turn gap (caption only).
+// v0.69 calm signal diet in Signals: 25 s and 150 s finished turns both stay
+// silent (announceOnly) and caption only when event captions are opted in.
 export const SIGNALS_LONG_TURN_SCENE = {
-    mode: 'signals', world: { counts: { working: 4 } }, atmosphere: DAY, warmup: 6, seconds: 50, stems: ['cue'], captions: ['auto'],
+    mode: 'signals', world: { counts: { working: 4 } }, atmosphere: DAY, warmup: 6, seconds: 50, stems: ['cue'], captions: ['auto', 'events'],
     actions: [
         { at: 2, status: { index: 0, status: 'working' } },
         { at: 3, status: { index: 0, status: 'idle', fields: { lastTurnDurationMs: LONG_TURN_MS } }, label: 'short turn', lane: 'shortTurn' },
@@ -524,10 +515,10 @@ export const SIGNALS_LONG_TURN_SCENE = {
 
 // HAR-13 caption parity: every kind once, through the director's cue path
 // (so the governor, the ladder and the caption route are the shipped
-// ones), in both presets, sound on (rendered) and off, four Toasts — one
+// ones), across presets, sound on (rendered) and off, four Toasts — one
 // per caption setting. Kinds sit 12 s apart (outcomes share the routine
 // 6/min); each on its own agent.
-export const CAPTION_MODES = Object.freeze(['signals', 'bgm']);
+export const CAPTION_MODES = Object.freeze(['signals', 'bgm', 'bgmOnly']);
 export const CAPTION_SETTINGS = ['auto', 'signals', 'events', 'all'];
 export const CAPTION_KINDS = Object.freeze([
     ['summons', { level: 1 }], ['distress', {}], ['limit', {}], ['reminder', { level: 2, family: 'needsYou', count: 1, oldestMs: 120000 }],
@@ -636,11 +627,11 @@ const NIGHT_KEYED = Object.freeze({ ...NIGHT, key: 'night', keyOffsetMin: 30 });
 // enough for one 16-bar rendition. `seconds` from the piece's own tempo.
 // The Town band is the whole program between cues, so the air's wet return
 // (`airWet`) is the band's own room: the A/B hears music + air.
-export function musicStemScene({ piece, seconds, phase = 'day', voice = 'isle' }) {
+export function musicStemScene({ piece, seconds, phase = 'day' }) {
     const f = workFixture(TOWN_BUSY, { seconds: seconds + 4, seed: 61 });
     return {
         mode: 'bgm', world: f.world, actions: f.actions, atmosphere: phase === 'night' ? NIGHT_KEYED : DAY_KEYED,
-        bgm: { piece, band: 3, voice }, storage: { [TOWN_BAND_VOICE_KEY]: voice },
+        bgm: { piece, band: 3 },
         warmup: 1, seconds, stems: ['music', 'airWet'], lint: false,
         musicProbe: { seatStems: MUSIC_SEATS, countNodes: true, stopLint: true },
     };
@@ -731,6 +722,12 @@ export function signalsScene({ openWait: keepOpen = false } = {}) {
     return { mode: 'signals', world: BUSY_WORLD, atmosphere: DAY, warmup: 10, seconds: 180, actions, stems: ['cue'], captions: ['auto'] };
 }
 
+// v0.69 3.A Town band only: continuous music with zero cue synthesis or
+// ducking; urgent captions still appear under auto.
+export function townBandOnlyScene() {
+    return { mode: 'bgmOnly', world: BUSY_WORLD, atmosphere: DAY, warmup: 10, seconds: 180, actions: busyActions(), stems: ['music', 'cue'], captions: ['auto'] };
+}
+
 // 7.4: the first enable of a page session in the Town band (the default
 // preset), recorded from the enable; a needs-you at 26 s for the
 // awakening's level; Off at 33 s and the Town band again at 35 s — the same
@@ -746,15 +743,14 @@ export const AWAKEN_SCENE = {
     ],
 };
 
-// 7.7 output, tone and soften, through the stored settings the controller
-// applies at the enable (`claudeville.sound.output|tone|soften`).
+// 7.7 output and soften, through the stored settings the controller applies at
+// the enable (`claudeville.sound.output|soften`).
 // `outputScene`: the Town band (Willowbrook pinned), cue-free — the program
-// is the band (Mono's fold, the tone shelf). `outputBusyScene`: the same
-// band with an arrival and a needs-you (Mono's loudness with cues).
-export function listeningStorage({ output, tone, soften } = {}) {
+// is the band (Mono's fold). `outputBusyScene`: the same band with a needs-you
+// (Mono's loudness with cues).
+export function listeningStorage({ output, soften } = {}) {
     return {
         ...(output != null ? { 'claudeville.sound.output': output } : {}),
-        ...(tone != null ? { 'claudeville.sound.tone': String(tone) } : {}),
         ...(soften != null ? { 'claudeville.sound.soften': soften } : {}),
     };
 }
@@ -764,20 +760,20 @@ export function outputScene(listening = {}) {
 export function outputBusyScene(listening = {}) {
     return {
         ...outputScene(listening),
-        actions: [{ at: 6, emit: 'village:scene', payload: { kind: 'arrival' }, agentIndex: 1, label: 'arrival', lane: 'routine' }, ...laneActions('needsYou', 16, 0)],
+        actions: [...laneActions('needsYou', 16, 0)],
     };
 }
 
-// 7.7 soften: the Town band with an arrival (a struck bell), a needs-you
-// (stays whole) and an error, rendered with Soften on and off; the band's
-// note-timed ducks under the non-urgent cues carry Soften's duck scale.
+// 7.7 soften: the Town band with a struck bell (direct voice check), a
+// needs-you (stays whole) and an error, rendered with Soften on and off; the
+// band's note-timed ducks under non-needs-you cues carry Soften's duck scale.
 export const SOFTEN = Object.freeze({ arrivalAt: 4, needsYouAt: 22, errorAt: 32 });
 export function softenScene(soften) {
     return {
         mode: 'bgm', world: { counts: { working: 4, idle: 1 } }, atmosphere: DAY, warmup: 10, seconds: 42,
         stems: ['cue'], storage: listeningStorage({ soften: soften ? 'on' : 'off' }),
         actions: [
-            { at: SOFTEN.arrivalAt, emit: 'village:scene', payload: { kind: 'arrival' }, agentIndex: 3, label: 'arrival', lane: 'routine' },
+            { at: SOFTEN.arrivalAt, play: { kind: 'arrival' }, agentIndex: 3, label: 'arrival', lane: 'routine' },
             ...laneActions('needsYou', SOFTEN.needsYouAt, 0),
             ...laneActions('error', SOFTEN.errorAt, 1),
         ],

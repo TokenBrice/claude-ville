@@ -7,7 +7,7 @@
 //                       sound enabled through the real topbar note (Town band).
 //
 // Realtime world/atmosphere vocabulary (see page/runtime.js):
-//   mode              'bgm' (Town band) | 'signals' (no music, silence between cues)
+//   mode              'bgm' (Town band) | 'bgmOnly' (Town band only) | 'signals' (no music, silence between cues)
 //   world.counts      {working, waiting, waiting_on_user, idle, errored, ...}
 //   atmosphere        {phase, progress, weather:{type,intensity,precipitation,fog,windX}}
 //   bgm               {piece, loop}: the pinned Town band piece and the loop recorded
@@ -128,10 +128,10 @@ export function buildTargets() {
     });
 
     // ------------------------------------------------------------ Signals
-    // The Signals preset sounds only summons/distress/limit/reminder/
-    // answered/recovery and captions every other kind, over no bed at all:
-    // the three signals ring out of silence, and the arrival between them
-    // must stay silent.
+    // The Signals preset sounds only urgent cues (summons/distress/limit/
+    // reminder/linkLost) and silences routine/outcome/scenery chimes, over no
+    // bed at all: the urgent signals ring out of silence, while arrivals and
+    // recovery stay silent.
     t.push({
         name: 'signals-day-urgent', category: 'signals', method: 'realtime', mode: 'signals',
         atmosphere: { phase: 'day', progress: 0.5, weather: { type: 'clear' } }, world: { counts: { working: 4, idle: 1 } },

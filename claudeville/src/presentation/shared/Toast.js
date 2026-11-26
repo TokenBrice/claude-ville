@@ -61,14 +61,14 @@ export function cueStratum(kind) {
 }
 
 // Pure caption policy: caption setting × sound on/off × cue → shown?
-// `auto` is signals only while sound is off and signals and events while it
-// is on; scenery needs `all` and sound on.
+// `auto` is signals only whether sound is off or on; events opt in through
+// `events` or `all`; scenery needs `all` and sound on.
 export function cueCaptionShown(payload, { setting = 'auto', soundOn = false } = {}) {
     if (!payload || typeof payload !== 'object' || payload.soundOnly === true) return false;
     const choice = CAPTION_SETTINGS.includes(setting) ? setting : 'auto';
     switch (cueStratum(cleanLabel(payload.kind))) {
         case 'signal': return true;
-        case 'event': return choice === 'events' || choice === 'all' || (choice === 'auto' && Boolean(soundOn));
+        case 'event': return choice === 'events' || choice === 'all';
         case 'scenery': return choice === 'all' && Boolean(soundOn);
         default: return false;
     }

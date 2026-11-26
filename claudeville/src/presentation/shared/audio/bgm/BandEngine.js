@@ -178,13 +178,12 @@ export class BandEngine extends BaseLayer {
      * director's band level). Call ahead of `play`, so baked players are
      * ready before the first note.
      */
-    prepare({ family = 'night', voice = 'isle', keyframe = null, weather = 'clear', season = 'summer', level = 1 } = {}) {
+    prepare({ family = 'night', keyframe = null, weather = 'clear', season = 'summer', level = 1 } = {}) {
         if (!this.engine?.context) return false;
         if (!this.running) this.start();
         if (!this.running) return false;
         const fam = family === 'day' ? 'day' : 'night';
         const voicing = voicingFor({
-            voice,
             keyframe: keyframe || (fam === 'night' ? 'night' : 'golden-hour'),
             weather,
             season,
@@ -205,7 +204,7 @@ export class BandEngine extends BaseLayer {
             if (spec?.instrument) this._player(name, spec.instrument, ctx);
         }
         this.setLevel(level, 0.05);
-        this._prepared = { family: fam, voice, keyframe: voicing.keyframe ?? keyframe, voicing };
+        this._prepared = { family: fam, keyframe: voicing.keyframe ?? keyframe, voicing };
         return true;
     }
 

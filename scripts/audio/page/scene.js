@@ -147,7 +147,7 @@ export function seedSoundStorage(spec = {}) {
 }
 
 // Stored preset ids (`claudeville.sound.mode`) → the controller's preset names.
-export const PRESET_FOR_MODE = Object.freeze({ signals: 'signals', bgm: 'townBand' });
+export const PRESET_FOR_MODE = Object.freeze({ signals: 'signals', bgm: 'townBand', bgmOnly: 'townBandOnly' });
 
 // -------------------------------------------------------------- actions ----
 // {status:{index,status,fields}} | {addAgent:{status,provider,parentIndex,fields}} |

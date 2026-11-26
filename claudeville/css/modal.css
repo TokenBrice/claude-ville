@@ -226,8 +226,10 @@
 }
 
 .settings-panel__intro,
-.settings-section--controls,
 .settings-section--sound,
+.settings-section--display,
+.settings-section--watchtowers,
+.settings-section--diagnostics,
 .settings-actions {
     grid-column: 1 / -1;
 }
@@ -245,6 +247,87 @@
 
 .settings-section__heading {
     margin: 0 0 8px;
+    color: var(--ink-3);
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
+    letter-spacing: 1px;
+}
+
+.settings-section__details {
+    margin-top: 12px;
+    border-top: 1px solid var(--line-1);
+    padding-top: 8px;
+}
+
+.settings-section--diagnostics .settings-section__details {
+    margin-top: 0;
+    border-top: 0;
+    padding-top: 0;
+}
+
+.settings-section__summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+    color: var(--ink-2);
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    list-style: none;
+    cursor: pointer;
+    user-select: none;
+}
+
+.settings-section__summary::-webkit-details-marker {
+    display: none;
+}
+
+.settings-section__summary::before {
+    content: '+';
+    display: inline-block;
+    width: 1.5ch;
+    color: var(--gold);
+}
+
+.settings-section__details[open] > .settings-section__summary::before {
+    content: '−';
+}
+
+.settings-section__summary:hover {
+    color: var(--ink-1);
+}
+
+.settings-section__summary:focus-visible {
+    outline: 2px solid var(--cv-focus);
+    outline-offset: 2px;
+}
+
+.settings-section__details[open] > .settings-controls,
+.settings-section__details[open] > .settings-diagnostics {
+    margin-top: 8px;
+}
+
+.settings-diagnostics {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 16px;
+}
+
+.settings-diagnostics__group {
+    display: grid;
+    gap: 8px;
+    align-content: start;
+    min-width: 0;
+}
+
+.settings-diagnostics__group--wide {
+    grid-column: 1 / -1;
+    padding-top: 12px;
+    border-top: 1px solid var(--line-1);
+}
+
+.settings-diagnostics__heading {
+    margin: 0;
     color: var(--ink-3);
     font: var(--fs-label)/var(--lh-label) var(--font-display);
     letter-spacing: 1px;

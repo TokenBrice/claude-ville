@@ -188,7 +188,6 @@ const NOISE_TAKES = {
     brushTap: { filters: [['bandpass', 3200, 0.9]], env: [0.002, 0.012, 0.09], variants: 4 },
     swish: { filters: [['bandpass', 5000, 0.5]], loop: 1.0, variants: 2 },
     shaker: { filters: [['bandpass', 6500, 1.2]], env: [0.01, 0.022, 0.14], variants: 4 },
-    hat: { filters: [['highpass', 3500, Math.SQRT1_2]], env: [0.004, 0.006, 0.05], variants: 3 },
 };
 const takeVariants = take => (take === 'rim' ? RIM_VARIANTS : NOISE_TAKES[take].variants);
 const SWISH_MIN_SEC = 0.4;
@@ -202,41 +201,14 @@ const SWISH_RISE_SEC = 0.1;
 const lowpassGain = (f, fc, q) => 1 / Math.sqrt((1 - (f / fc) ** 2) ** 2 + (f / (fc * q)) ** 2);
 const bandpassGain = (f, fc, q) => 1 / Math.sqrt(1 + (q * (f / fc - fc / f)) ** 2);
 const bodyGain = (f, { floor, peaks }) => peaks.reduce((sum, [fc, q, amp]) => sum + amp * bandpassGain(f, fc, q), floor);
-const pulseRow = duty => Array.from({ length: 24 }, (_, k) => (k ? (2 / (k * Math.PI)) * Math.sin(k * Math.PI * duty) : 0));
 const WAVES = {
     whistle: [0, 1, 0.16, 0.085, 0.03, 0.012],
-    pulse25: pulseRow(0.25),
-    pulse12: pulseRow(0.125),
-    flute: [0, 1, 0.22, 0.1, 0.04],
-    // MUSL-2's chip bass: the triangle with a 2nd and 3rd harmonic added.
-    chipBass: [0, 1, 0.3, 1 / 9, 0.08, 1 / 25, 0, 1 / 49],
-    triangle: Array.from({ length: 16 }, (_, k) => (k % 2 ? ((((k - 1) / 2) % 2 ? -1 : 1) * 8) / (Math.PI * Math.PI * k * k) : 0)),
     // The bowed string's Helmholtz motion: a sawtooth, 40 harmonics.
     saw: Array.from({ length: 41 }, (_, k) => (k ? 1 / k : 0)),
     // A free reed: every harmonic, falling slowly (k^−0.85), the even ones
     // weaker: the buzzy, slightly hollow squeezebox tone.
     reed: Array.from({ length: 33 }, (_, k) => (k ? k ** -0.85 * (k % 2 ? 1 : 0.55) : 0)),
 };
-
-// Chip voices: today's Town band envelopes and seat low-passes (Voicings
-// `chip` before 6.1: lead 2.8 kHz, counter and arp 1.8 kHz, bass 800 Hz).
-//   env 'hold'  exponential attack, hold, exponential release;
-//   env 'pluck' 8 ms attack, exponential decay over the note;
-//   env 'swell' slow setTarget swell and an 8τ tail.
-// scale/min: sounding seconds = max(min, dur · scale). lp: f0 → [Hz, Q].
-const Q_BUTTERWORTH = Math.SQRT1_2;
-const CHIP = {
-    chipPulse25: { wave: 'pulse25', lp: () => [2800, Q_BUTTERWORTH], env: 'hold', attack: 0.012, release: 0.05, scale: 0.9, min: 0, vibrato: { minSec: 0.9, rate: 5.4, cents: 8, rise: 0.3 } },
-    chipPulse12: { wave: 'pulse12', lp: () => [1800, Q_BUTTERWORTH], env: 'hold', attack: 0.012, release: 0.05, scale: 0.95, min: 0 },
-    chipArp: { wave: 'pulse12', lp: () => [1800, Q_BUTTERWORTH], env: 'pluck', scale: 1, min: 0 },
-    chipTri: { wave: 'triangle', lp: () => [1800, Q_BUTTERWORTH], env: 'swell', scale: 1, min: 0 },
-    chipFlute: { wave: 'flute', lp: () => [2800, Q_BUTTERWORTH], env: 'pluck', scale: 1, min: 1.4 },
-    chipBass: { wave: 'chipBass', lp: () => [800, Q_BUTTERWORTH], env: 'hold', attack: 0.012, release: 0.05, scale: 0.99, min: 0 },
-};
-
-const SWELL_TAU = 0.4;
-const SWELL_RELEASE_TAU = 0.3;
-const NOTE_TAIL_SEC = 0.08;
 
 // The whistle (MUSL-1): scoop, chiff and breath (its noise lane), vibrato
 // on long notes, the low-pass at min(4.8 kHz, 6·f0), Q 0.3.
@@ -285,12 +257,11 @@ const CONCERTINA = {
 
 // ------------------------------------------------------------------ the table
 
-// kind: pluck | modal | wind | bowed | reed | perc | chip. range: the
+// kind: pluck | modal | wind | bowed | reed | perc. range: the
 // sounding semitones re A4 an instrument plays well (the sequencer folds
 // notes into it by octaves; a baked row's roots cover it); null on
 // unpitched percussion. level: linear gain of vel 1 (the calibration).
 // nodesPerNote: the most a note builds.
-const CHIP_RANGE = [-36, 24];
 const ROWS = {
     whistle: { kind: 'wind', range: [-12, 19], nodesPerNote: 4, level: 0.02653 },
     lute: { kind: 'pluck', range: [-24, 12], bakeRate: 16000, nodesPerNote: 3, level: 0.07718 },
@@ -306,13 +277,6 @@ const ROWS = {
     shaker: { kind: 'perc', takes: ['shaker'], bakeRate: 24000, nodesPerNote: 4, pannable: true, level: 0.1471 },
     lowTom: { kind: 'perc', range: [-31, -19], bakeRate: 12000, nodesPerNote: 4, pannable: true, level: 0.1283 },
     rim: { kind: 'perc', takes: ['rim'], bakeRate: 16000, nodesPerNote: 4, pannable: true, level: 0.2293 },
-    chipPulse25: { kind: 'chip', range: CHIP_RANGE, nodesPerNote: 4, level: 0.05 },
-    chipPulse12: { kind: 'chip', range: CHIP_RANGE, nodesPerNote: 2, level: 0.05669 },
-    chipArp: { kind: 'chip', range: CHIP_RANGE, nodesPerNote: 2, level: 0.2027 },
-    chipTri: { kind: 'chip', range: CHIP_RANGE, nodesPerNote: 2, level: 0.03184 },
-    chipFlute: { kind: 'chip', range: CHIP_RANGE, nodesPerNote: 2, level: 0.0551 },
-    chipBass: { kind: 'chip', range: CHIP_RANGE, nodesPerNote: 2, level: 0.02564 },
-    chipHat: { kind: 'perc', takes: ['hat'], bakeRate: 24000, nodesPerNote: 4, pannable: true, level: 0.2834 },
 };
 
 // Roots cover [lo, hi] in ROOT_STEP-semitone cells, each root central to its cell.
@@ -335,7 +299,7 @@ export const INSTRUMENTS = freezeAll(Object.fromEntries(Object.entries(ROWS).map
 }])));
 
 // Short lowercase display names (C5: the Town band's Now line names the
-// players), one per instrument; the chip lead and counter pulses read alike.
+// players), one per instrument.
 export const INSTRUMENT_LABELS = Object.freeze({
     whistle: 'whistle',
     lute: 'lute',
@@ -351,13 +315,6 @@ export const INSTRUMENT_LABELS = Object.freeze({
     shaker: 'shaker',
     lowTom: 'low tom',
     rim: 'rim',
-    chipPulse25: 'chip pulse',
-    chipPulse12: 'chip pulse',
-    chipArp: 'chip arp',
-    chipTri: 'chip triangle',
-    chipFlute: 'chip flute',
-    chipBass: 'chip bass',
-    chipHat: 'chip hat',
 });
 
 function rowOf(name) {
@@ -797,7 +754,6 @@ class Instrument {
         if (kind === 'wind') return this._whistle(ctx, t, hz, dur, vel, opts);
         if (kind === 'bowed') return this._fiddle(ctx, t, hz, dur, vel, opts);
         if (kind === 'reed') return this._concertina(ctx, t, hz, dur, vel, opts);
-        if (kind === 'chip') return this._chip(ctx, t, hz, dur, vel, opts);
         if (kind === 'perc') return this._perc(ctx, bank, s, t, hz, dur, vel, opts);
         return this._pitched(ctx, bank, s, t, hz, dur, vel, opts);
     }
@@ -1147,57 +1103,6 @@ class Instrument {
         lane.env.gain.linearRampToValueAtTime(L.chiff * g, t + L.chiffSec);
         lane.env.gain.setTargetAtTime(L.rest * g, t + L.chiffSec + 0.002, L.tau);
         lane.env.gain.setTargetAtTime(0, end, L.releaseTau);
-    }
-
-    _chip(ctx, t, hz, dur, vel, opts) {
-        const C = CHIP[this.name];
-        const { attack: soft, bright } = effective(opts);
-        const sec = Math.max(C.min, (Number(dur) || 0) * C.scale);
-        const level = this.row.level * vel;
-        const osc = ctx.createOscillator();
-        const wave = waveFor(ctx, C.wave, hz, { lp: C.lp, bright, tag: this.name });
-        if (wave && typeof osc.setPeriodicWave === 'function') osc.setPeriodicWave(wave);
-        osc.frequency.value = hz;
-        const env = ctx.createGain();
-        const g = env.gain;
-        let stopAt;
-        const floor = floorOf(level);
-        g.setValueAtTime(floor, t);
-        if (C.env === 'pluck') {
-            g.exponentialRampToValueAtTime(level, t + 0.008 + soft);
-            g.exponentialRampToValueAtTime(floor, t + Math.max(sec, 0.02 + soft));
-            stopAt = t + Math.max(sec, 0.02 + soft) + NOTE_TAIL_SEC;
-        } else if (C.env === 'swell') {
-            g.setTargetAtTime(level, t, SWELL_TAU);
-            g.setTargetAtTime(0, t + Math.max(0.05, sec - SWELL_TAU), SWELL_RELEASE_TAU);
-            stopAt = t + Math.max(0.05, sec - SWELL_TAU) + SWELL_RELEASE_TAU * TAIL_TAUS;
-        } else {
-            const a = C.attack + soft;
-            g.exponentialRampToValueAtTime(level, t + a);
-            g.setValueAtTime(level, t + Math.max(a + 0.008, sec - C.release));
-            g.exponentialRampToValueAtTime(floor, t + Math.max(a + 0.02, sec));
-            stopAt = t + Math.max(a + 0.02, sec) + NOTE_TAIL_SEC;
-        }
-        const sources = [osc];
-        const nodes = [env];
-        const vib = C.vibrato;
-        if (vib && sec >= vib.minSec) {
-            const lfo = ctx.createOscillator();
-            const depth = ctx.createGain();
-            lfo.frequency.value = vib.rate;
-            depth.gain.setValueAtTime(0, t);
-            depth.gain.linearRampToValueAtTime(vib.cents, t + vib.rise);
-            lfo.connect(depth).connect(osc.detune);
-            lfo.start(t);
-            lfo.stop(stopAt);
-            sources.push(lfo);
-            nodes.push(depth);
-        }
-        osc.connect(env).connect(this.dest);
-        osc.start(t);
-        osc.stop(stopAt);
-        this._own(sources, env, nodes);
-        return stopAt;
     }
 }
 

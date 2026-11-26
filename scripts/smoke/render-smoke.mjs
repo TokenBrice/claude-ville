@@ -335,7 +335,7 @@ async function keyboardWalk(browser, baseUrl) {
     });
     assert.equal(aria.dialog, 'dialog', 'the SOUND panel is a dialog');
     assert.equal(aria.label, 'Listen to', `the presets radiogroup is labelled ${aria.label}`);
-    assert.equal(aria.radios, 3, `the presets radiogroup has ${aria.radios} radios`);
+    assert.equal(aria.radios, 4, `the presets radiogroup has ${aria.radios} radios`);
     assert.equal(aria.focused, 'radio', 'the panel opens with focus on a preset radio');
     await page.keyboard.press('ArrowDown');
     await page.keyboard.press('ArrowDown');
@@ -542,6 +542,23 @@ async function run() {
       assert.deepEqual(await history.evaluate(() => window.liveMessages), []);
       assert.deepEqual(usageRequests, []);
       diagnostics.simulationIsolation = 'live history, leases, broadcast and usage preserved';
+    });
+
+    await timedStep('settings-watchtowers', async () => {
+      await settledClick(page, 'button[aria-label="Open settings"]');
+      const watchtowers = page.locator('.settings-section--watchtowers');
+      await watchtowers.waitFor({ state: 'visible' });
+      await page.locator('.settings-section--watchtowers .settings-provider').first().waitFor({ state: 'visible' });
+      const info = await watchtowers.evaluate((section) => ({
+        providerCount: section.querySelectorAll('.settings-provider').length,
+        text: section.textContent || '',
+      }));
+      assert.ok(info.providerCount > 0, `Watchtowers rendered ${info.providerCount} providers`);
+      assert.equal(info.text.includes('No providers were reported.'), false, 'Watchtowers reported empty providers');
+      assert.equal(info.text.includes('Provider health is unavailable.'), false, 'Watchtowers reported unavailable health');
+      await page.keyboard.press('Escape');
+      await watchtowers.waitFor({ state: 'hidden' });
+      diagnostics.watchtowers = { providerCount: info.providerCount };
     });
 
     await timedStep('sound-states', async () => {

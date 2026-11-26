@@ -104,12 +104,12 @@ test('Karplus–Strong strings are tuned within 1 cent at every root', () => {
 });
 
 test('a live wave keeps its seat low-pass: harmonics above the corner fall away', () => {
-    const low = liveHarmonics('chipBass', 110, { lp: () => [800, Math.SQRT1_2] });
-    const high = liveHarmonics('chipBass', 440, { lp: () => [800, Math.SQRT1_2] });
+    const low = liveHarmonics('saw', 110, { lp: () => [800, Math.SQRT1_2] });
+    const high = liveHarmonics('saw', 440, { lp: () => [800, Math.SQRT1_2] });
     // The 3rd harmonic of A4 (1320 Hz) is past 800 Hz, that of A2 (330 Hz) is not.
     assert.ok(high[3] / high[1] < 0.5 * (low[3] / low[1]));
-    const dark = liveHarmonics('pulse25', 440, { bright: 0.5 });
-    const plain = liveHarmonics('pulse25', 440);
+    const dark = liveHarmonics('reed', 440, { bright: 0.5 });
+    const plain = liveHarmonics('reed', 440);
     assert.ok(Math.abs(dark[5] / dark[1]) < Math.abs(plain[5] / plain[1]));
 });
 

@@ -184,9 +184,11 @@ test('the Town band line names the piece and its players, one name when they rea
         'Now · The Painted Isle · whistle & bass');
     assert.equal(line({ piece: 'paintedIsle', title: 'The Painted Isle', lead: 'harp', counter: 'harp' }),
         'Now · The Painted Isle · harp');
-    assert.equal(line({ piece: 'paintedIsle', title: 'The Painted Isle', lead: 'chipPulse25', counter: 'chipPulse12' }),
-        'Now · The Painted Isle · chip pulse');
     assert.equal(line({ piece: 'paintedIsle', title: 'The Painted Isle' }), 'Now · The Painted Isle');
+
+    controller._playingMode = 'bgmOnly';
+    assert.equal(line({ piece: 'paintedIsle', title: 'The Painted Isle', lead: 'whistle', counter: 'upright' }),
+        'Now · The Painted Isle · whistle & bass');
 
     controller._playingMode = 'signals';
     assert.equal(controller._nowLine('playing'), 'Listening for agents that need you');
@@ -197,9 +199,11 @@ function crossfadeHarness({ mode = 'signals' } = {}) {
     const director = (id) => ({
         running: false,
         paused: false,
+        cuesEnabled: true,
         start() { this.running = true; log.push(`${id}:start`); },
         stop() { this.running = false; log.push(`${id}:stop`); },
         setSignalRouting(on) { this.signals = on; },
+        setCuesEnabled(on) { this.cuesEnabled = on; },
     });
     const controller = Object.create(AmbientAudioController.prototype);
     Object.assign(controller, {

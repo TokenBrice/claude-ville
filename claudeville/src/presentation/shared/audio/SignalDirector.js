@@ -50,12 +50,9 @@ const DIRECTOR_ID = 'signals';
 const PAUSE_CLOSE_SEC = 0.08;
 const RESUME_OPEN_SEC = 0.25;
 const ATMO_FRESH_MS = 3000;
-// What Signals sounds (7.2, UX-3); every other kind only captions, except a
-// long turn's end (SND-1), which knocks as a "your move".
-const SIGNALS_SOUNDING = new Set(['summons', 'distress', 'limit', 'reminder', 'answered', 'recovery']);
-function soundsInSignals(kind, payload) {
-    return SIGNALS_SOUNDING.has(kind) || (kind === 'turnDone' && payload.long === true);
-}
+// Unified urgent-only sounding cues (v0.69 3.B): only these five kinds
+// synthesize sound in Signals and Town band; every other kind captions only.
+export const URGENT_SOUNDING = Object.freeze(new Set(['summons', 'distress', 'limit', 'reminder', 'linkLost']));
 // The bed-aware trim's window (CueLevel) for a cue with no music under it.
 const NO_MUSIC_BED = 'village';
 
@@ -110,6 +107,7 @@ export class SignalDirector {
         this._unsubscribes = [];
         this._signalUnsubscribes = [];
         this._signalRouting = true;
+        this._cuesEnabled = true;
         this.hidden = false;
         this._hiddenSummonsHandler = null;
         this._atmosphere = null;
@@ -225,6 +223,10 @@ export class SignalDirector {
         const routing = Boolean(enabled);
         if (routing !== this._signalRouting) this._airPhase = null;
         this._signalRouting = routing;
+    }
+
+    setCuesEnabled(enabled) {
+        this._cuesEnabled = Boolean(enabled);
     }
 
     setHidden(hidden) {
@@ -468,10 +470,11 @@ export class SignalDirector {
             || null;
     }
 
-    // A signal-route cue that must reach a hidden page (reminders, the
-    // answered strike, link cues) goes through the wake; otherwise it plays.
+    // A signal-route cue that must reach a hidden page (reminders, linkLost)
+    // goes through the wake only when it is audible; silent kinds caption only.
     _signalCue(kind, details) {
-        if (this.hidden && this._hiddenSummonsHandler) {
+        const audible = this._cuesEnabled && URGENT_SOUNDING.has(kind) && !details?.announceOnly;
+        if (this.hidden && this._hiddenSummonsHandler && audible) {
             this._hiddenSummonsHandler({ ...details, audioCueKind: kind });
             return true;
         }
@@ -586,9 +589,9 @@ export class SignalDirector {
         if (cueLifecycleDecision({ lane: payload.lane, hidden: this.hidden }) !== 'play') {
             return false;
         }
-        // Signals sounds the attention voices only; the rest caption (7.2).
-        // A cue raised on the Town band's behalf sounds in the band's mix.
-        if (this._signalRouting && !soundsInSignals(kind, payload)) payload.announceOnly = true;
+        // Only URGENT_SOUNDING cues synthesize sound (and only while cues are
+        // enabled); every routine, outcome and scenery kind captions only.
+        if (!this._cuesEnabled || !URGENT_SOUNDING.has(kind)) payload.announceOnly = true;
         // The S2 window the bed-aware trim aims at: the band's music when
         // the cue plays in its mix, otherwise the no-music bed.
         payload.bed ??= NO_MUSIC_BED;

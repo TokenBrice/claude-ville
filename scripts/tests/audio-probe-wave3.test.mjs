@@ -67,12 +67,13 @@ test('two same-kind urgent scores for different agents sharing two note times ar
     assert.equal(phaseLockedPairs([lead, { kind: 'distress', agentId: 'b', notes: [10, 10.15] }]).length, 0);
 });
 
-test('captions per setting: signals always, events per setting and sound, scenery only for everything with sound, the digest never', () => {
+test('captions per setting: signals always, events only when opted in, scenery only for everything with sound, the digest never', () => {
     for (const setting of ['auto', 'signals', 'events', 'all']) for (const on of [true, false]) assert.equal(captionExpected('reminder', setting, on), true);
     assert.equal(captionExpected('push', 'auto', false), false);
-    assert.equal(captionExpected('push', 'auto', true), true);
+    assert.equal(captionExpected('push', 'auto', true), false);
     assert.equal(captionExpected('arrival', 'signals', true), false);
     assert.equal(captionExpected('arrival', 'events', false), true);
+    assert.equal(captionExpected('arrival', 'events', true), true);
     assert.equal(captionExpected('hourBell', 'all', false), false);
     assert.equal(captionExpected('hourBell', 'events', true), false);
     assert.equal(captionExpected('hourBell', 'all', true), true);
@@ -80,12 +81,12 @@ test('captions per setting: signals always, events per setting and sound, scener
 });
 
 test('caption parity fails on a caption shown against its setting, a caption missing, or a caption for a silent cue', () => {
-    const row = { kind: 'push', setting: 'auto', soundOn: true, played: true, shown: true, heard: true };
+    const row = { kind: 'push', setting: 'events', soundOn: true, played: true, shown: true, heard: true };
     assert.equal(judgeCaptionParity([row]).pass, true);
-    assert.equal(judgeCaptionParity([{ ...row, soundOn: false, heard: null }]).pass, false);
+    assert.equal(judgeCaptionParity([{ ...row, setting: 'auto', shown: true }]).pass, false);
     assert.equal(judgeCaptionParity([{ ...row, shown: false }]).pass, false);
     assert.equal(judgeCaptionParity([{ ...row, heard: false }]).pass, false);
-    // Signals captions an outcome without sounding it: announced only, no claim of a sound.
+    // Outcomes are announced only without sounding: no claim of a sound.
     assert.equal(judgeCaptionParity([{ ...row, heard: false, announceOnly: true }]).pass, true);
     // A cue that never played has nothing to caption.
     assert.equal(judgeCaptionParity([{ ...row, played: false, shown: false }]).pass, true);
