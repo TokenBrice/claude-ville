@@ -105,6 +105,16 @@ fn cloudNoiseAt(cell: vec2f) -> f32 {
     return n;
 }
 fn cloudSeamField(cell: vec2f, n: f32, order: f32, seamAt: f32) -> f32 {
+    if (seamAt == 2.0) {
+        var p = cell + 0.5 + frame.cloudLone.xy;
+        if (frame.cloudLone.z > 0.0) { p = vec2f(2100.0, 1000.0) + (cell + 0.5 - frame.cloudLone.xy) * (120.0 / frame.cloudLone.z); }
+        let uv = fract(p / vec2f(3200.0, 1280.0));
+        let id = round(textureLoad(cloudTile, vec2i(floor(uv * 256.0)), 0).g * 255.0);
+        if (id == 0.0 || select(id > frame.cloudLone.w, id != 4.0, frame.cloudLone.z > 0.0)) { return 0.0; }
+        let d = textureSampleLevel(cloudTile, cloudSampler, uv, 0.0).b * (255.0 / 128.0) + (order - 0.5) * 0.08;
+        return select(select(0.0, frame.cloudThresholds.x, d <= 1.0), frame.cloudThresholds.y, d <= 0.55);
+    }
+    if (frame.cloud.w <= 0.0) { return min(n, frame.cloudThresholds.x - 0.001); }
     let near = min(min(abs(n - frame.cloudThresholds.x), abs(n - frame.cloudThresholds.y)),
         min(abs(n - frame.cloudThresholds.z), abs(n - seamAt)));
     if (near > 0.03) { return n; }
@@ -122,7 +132,7 @@ fn cloudCourseAt(m: f32) -> f32 {
     return step(frame.cloudThresholds.x, m) + step(frame.cloudThresholds.y, m) + step(frame.cloudThresholds.z, m);
 }
 fn applyCloudCourse(color: vec3f, course: f32) -> vec3f {
-    return color * (vec3f(1.0) - course * frame.cloud.z * vec3f(1.0, 0.96, 0.84));
+    return color * (vec3f(1.0) - course * frame.cloud.z * 0.64);
 }
 fn applyAerialHaze(color0: vec3f, order: f32, cellCentreY: f32, additive: bool) -> vec3f {
     var color = color0;
@@ -163,7 +173,9 @@ fn applySeaCourses(color0: vec3f, cell: vec2f, order: f32, cellCentreY: f32, add
     var squall = 0.0;
     if (seaOpenWater) { squall = squallShade(cell, cloudNoiseAt(cell), order); }
     // SEA-1 — no cloud multiply on open water (GLSL applySeaCourses).
-    let oneCourse = seaOpenWater && frame.cloud.w > 0.0;
+    var seaSd: f32;
+    var seaFlags: u32;
+    let oneCourse = batch.terrainBatch != 0u && coastFieldAt(cell, &seaSd, &seaFlags) && (seaFlags & 16u) != 0u;
     if (squall <= 0.0 && !oneCourse) { return applyAtmosphereCourses(color0, cell, order, cellCentreY, additive); }
     var cloud = 0.0;
     if (frame.cloud.z > 0.0) { cloud = cloudCourseAt(cloudSeamField(cell, cloudNoiseAt(cell), order, 2.0)) * frame.cloud.z; }

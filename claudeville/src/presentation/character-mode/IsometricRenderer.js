@@ -11613,6 +11613,7 @@ export class IsometricRenderer {
         const y1 = (height - m.f) / m.d;
         if (!(y1 > y0)) return false;
         return drawCloudShadowCourses(ctx, {
+            coast: this._coastBake,
             atmosphere,
             region: [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }],
             timeMs: this.motionTimeMs ?? perfNow,

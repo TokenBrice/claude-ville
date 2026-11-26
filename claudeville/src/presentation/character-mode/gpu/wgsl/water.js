@@ -10,6 +10,7 @@
 // (wgsl/common.js). Needs WGSL_COMMON (glslMod), SEAM_WGSL, and ATMOSPHERE_WGSL
 // (cloudNoiseAt, cloudSeamField).
 import {
+    RIVER_THREAD_AXES,
     COAST_FIELD_FLAGS,
     COAST_PALETTE,
     DEPTH_BOUNDS,
@@ -33,6 +34,7 @@ import {
     SEA_KEY_SHIFT,
     SEA_KEY_SPAN,
     SEA_KEY_WOBBLE,
+    SUN_SPARK_SHARE,
     SEA_PAW_CAP_BASE,
     SEA_PAW_CAP_GAIN,
     SEA_PAW_THRESHOLD,
@@ -149,7 +151,13 @@ fn deepSwellLit(p: vec2f, tick: f32, storm: f32, density: f32) -> f32 {
     if (waterHash12(run + vec2f(59.0, 11.0)) >= ${SWELL_SET_SHARE.toFixed(2)}) { return 0.0; }
     return select(1.0, 2.0, storm > 0.5 && waterHash12(cell + vec2f(17.0, 31.0)) < 0.25);
 }
+fn inMoonRoad(p: vec2f) -> bool {
+    let screen = (p + 0.5 + frame.cameraXy) * frame.cameraScale;
+    if (frame.glint.z < 2.5 || abs(screen.x - frame.glint.x) >= frame.cameraScale * 0.95 * (5.0 + screen.y * frame.glint.w)) { return false; }
+    return true;
+}
 fn starlightAt(p: vec2f, cap: f32, strength: f32, tick: f32) -> bool {
+    if (!inMoonRoad(p)) { return false; }
     if (strength <= 0.0 || cap < 0.5) { return false; }
     let cell = floor(p / vec2f(3.0, 1.0));
     let seed = waterHash12(cell + vec2f(307.0, 43.0));
@@ -250,7 +258,7 @@ fn swellCap(p: vec2f, s: f32, near: f32, paw: f32) -> f32 {
         let d = (vec2f(cx, centre.y) - at) / vec2f(${(SWELL_CLUSTER_CELL[0] * 0.5).toFixed(1)}, ${(SWELL_CLUSTER_CELL[1] * 0.5).toFixed(1)});
         inCluster = dot(d, d) < 1.0;
     }
-    let presence = select(mix(${SWELL_LONE_CAPS[0].toFixed(2)}, ${SWELL_LONE_CAPS[1].toFixed(2)}, near), ${SWELL_CLUSTER_CAPS.toFixed(2)}, inCluster);
+    let presence = select(mix(${SWELL_LONE_CAPS[0].toFixed(3)}, ${SWELL_LONE_CAPS[1].toFixed(2)}, near), ${SWELL_CLUSTER_CAPS.toFixed(2)}, inCluster);
     if (waterLatticeHash(k + vec2f(211.0, 17.0)) >= presence) { return 0.0; }
     let local = vec2f(x - k.x * ${SWELL_CAP_CELL[0].toFixed(1)}, p.y - row * ${SWELL_CAP_CELL[1].toFixed(1)});
     let len = 3.0 + floor(waterLatticeHash(k + vec2f(223.0, 5.0)) * 5.0);
@@ -276,8 +284,15 @@ fn swellForm(rowsIn: f32, period: f32, crestRows: f32, lit: f32, trough: f32, or
     return select(0.0, -1.0, linBody > 0.0 && lin < lit && (linBody >= turnL || order < linBody / turnL)
         && (lin < lit * 0.55 || order >= (lin - lit * 0.55) / max(lit * 0.45, 1e-4)));
 }
+fn seaBodyBend(x: f32, band: f32) -> f32 {
+    let wide = (0.7 * seaSeamOctave(x, 320.0, 2.0 * band) + 0.3 * seaSeamOctave(x, 128.0, 2.0 * band + 1.0) - 0.5) * 28.0;
+    let fine = abs(glslMod(x + 19.0 * band, 128.0) - 64.0) / 16.0 - 2.0;
+    return clamp(floor(wide + fine + 0.5), -14.0, 14.0);
+}
 fn seaBodyStop(p: vec2f, s: f32, stop: f32, excess: f32, order: f32) -> f32 {
-    if (clamp((p.y - OPEN_SEA_HORIZON_Y - ${SEA_BODY_ROWS[0].toFixed(1)}) / ${(SEA_BODY_ROWS[1] - SEA_BODY_ROWS[0]).toFixed(1)}, 0.0, 1.0) <= order) { return stop; }
+    let start = ${SEA_BODY_ROWS[0].toFixed(1)} - seaBodyBend(p.x, 7.0);
+    let end = ${SEA_BODY_ROWS[1].toFixed(1)} - seaBodyBend(p.x, 8.0);
+    if (clamp((p.y - OPEN_SEA_HORIZON_Y - start) / (end - start), 0.0, 1.0) <= order) { return stop; }
     let key = clamp(0.5 - seaKeyReach(p) / ${SEA_KEY_SPAN.toFixed(1)}, 0.0, 1.0);
     let calm = clamp((excess - ${SWELL_CALM_TILES[0].toFixed(1)}) / ${(SWELL_CALM_TILES[1] - SWELL_CALM_TILES[0]).toFixed(1)}, 0.0, 1.0);
     let farCalm = clamp((excess - ${SWELL_FAR_CALM_TILES[0].toFixed(1)}) / ${(SWELL_FAR_CALM_TILES[1] - SWELL_FAR_CALM_TILES[0]).toFixed(1)}, 0.0, 1.0);
@@ -535,10 +550,12 @@ fn rainRingAt(p: vec2f, precipitation: f32, storm: f32, clock: f32) -> bool {
         || (d.y < 0.5 && abs(d.x - 4.0) < 0.5);
 }
 fn causticAt(p: vec2f, clock: f32) -> bool {
-    let t8 = glslMod(floor(frame.timeMs * 0.004 * clock), 8.0) / 8.0;
-    let a = (p.x * 0.5 + p.y) / 9.0 + 0.45 * sin((p.x * 0.5 - p.y) * 0.13) + t8;
-    let b = (p.y - p.x * 0.5) / 13.0 + 0.45 * sin((p.x * 0.5 + p.y) * 0.09) - t8;
-    return fract(a) >= 0.92 || fract(b) >= 0.92;
+    let cell = floor(p / vec2f(6.0, 3.0));
+    let t8 = glslMod(floor(frame.timeMs * 0.004 * clock), 8.0);
+    let h = waterLatticeHash(cell + vec2f(t8 * 17.0, 3.0));
+    let local = floor(p) - cell * vec2f(6.0, 3.0);
+    let sx = 1.0 + floor(fract(h * 7.31) * 3.0);
+    return h < ${SUN_SPARK_SHARE.toFixed(2)} && local.y == 1.0 && (local.x == sx || (fract(h * 13.7) < 0.35 && local.x == sx + 1.0));
 }
 fn staticWaterDashes(color0: vec3f, px: vec2f) -> vec3f {
     let depthLuma = dot(color0, vec3f(0.2126, 0.7152, 0.0722));
@@ -625,10 +642,35 @@ fn causticSurface(p: vec2f, stop: i32) -> bool {
     if ((cFlags & ${COAST_FIELD_FLAGS.water}u) == 0u || (cFlags & ${COAST_FIELD_FLAGS.sea}u) != 0u) { return false; }
     return !(frame.shadeRect.w > 0.0 && shadeGroundAt(p));
 }
+const THREAD_AXES = array<vec2f, ${RIVER_THREAD_AXES.length}>(${RIVER_THREAD_AXES.map(([s,b]) => `vec2f(${s.toFixed(1)}, ${b.toFixed(1)})`).join(', ')});
 fn applyWaterState(color0: vec3f, px: vec2f, seaPath: ptr<function, bool>) -> vec3f {
     *seaPath = false;
     seaSkyTake = 0.0;
     var color = color0;
+    var contactSd: f32;
+    var contactFlags: u32;
+    if (coastFieldAt(px, &contactSd, &contactFlags) && (contactFlags & 64u) == 0u) {
+        let offset = cycleOffsetAt(px);
+        let p = floor(px);
+
+        if ((contactFlags & 32u) != 0u) {
+            let lane = glslMod(p.x, 2.0) + 2.0 * glslMod(p.y, 2.0);
+            let phase = glslMod(floor(frame.timeMs * frame.waterFx.x / 300.0), 3.0);
+            let digit = glslMod(floor((offset - 32.0) / pow(3.0, lane) + 0.00001), 3.0);
+            let eddy = offset == 113.0 && glslMod(floor((contactSd * 64.0 + 128.0) / exp2(lane + 4.0 * glslMod(floor(frame.timeMs * 0.003 * frame.waterFx.x), 2.0))), 2.0) == 1.0;
+            if (eddy || (offset < 113.0 && ((digit == 1.0 && (phase != 1.0 || glslMod(p.x, 4.0) != 0.0))
+                || (digit == 2.0 && phase == 2.0 && glslMod(p.x, 6.0) < 2.0)))) { return applyWaterMood(WATER_FOAM * foamNightScale()) * WATER_CAST; }
+        } else if (offset >= 16.0 && offset < 16.0 + ${RIVER_THREAD_AXES.length.toFixed(1)}) {
+            let axis = THREAD_AXES[i32(offset) - 16];
+            let st = vec2f(p.x - floor(frame.timeMs * 0.006 * frame.waterFx.x), p.y - floor(axis.x * p.x + axis.y));
+            let tile = floor(st / vec2f(20.0, 7.0));
+            let h = waterLatticeHash(tile);
+            let stop = waterStopIndex(color);
+            if (stop >= 0 && h < 0.45 && glslMod(st.y, 7.0) == 3.0 && glslMod(st.x, 20.0) < 4.0 + floor(fract(h * 11.3) * 6.0)) {
+                return applyWaterMood(WATER_STOPS[max(0, stop - 1)]) * WATER_CAST;
+            }
+        }
+    }
     if (color.b < color.r + 0.02 || color.g < color.r) {
         var sd: f32;
         var flags: u32;
@@ -649,6 +691,7 @@ fn applyWaterState(color0: vec3f, px: vec2f, seaPath: ptr<function, bool>) -> ve
         return applyWaterMood(lifted) * WATER_CAST;
     }
     // SEA-1 — with the look on, open water is flagged under any sky (GLSL).
+
     seaOpenWater = batch.terrainBatch != 0u && (frame.squall.w > 0.0 || frame.cloud.w > 0.0) && stop >= 2
         && f32(stop) >= openSeaStop(openSeaDepth(p), waterBayer4(p));
     let storm = step(0.5, frame.weather.z);
@@ -744,13 +787,14 @@ fn applyWaterState(color0: vec3f, px: vec2f, seaPath: ptr<function, bool>) -> ve
     }
     let calm = select(1.0, frame.stillWater.y, still);
     var course = 0.0;
-    if (offset < 31.5) {
+    if (offset < 15.5) {
         if (waterHash12(cell) < mix(${NEAR_SHORE_DASH_DENSITY.toFixed(2)} * calm, 0.7, storm)) {
             let entry = glslMod(glslMod(offset, 16.0) + floor(frame.timeMs * 0.004 * clock), 16.0);
             course = select(select(0.0, 2.0, entry > 13.5), 1.0, entry > 14.5);
             if (course > 0.0 && storm > 0.5 && waterHash12(cell + vec2f(17.0, 31.0)) < 0.25) { course = 3.0; }
         }
     } else if (stop >= 2 && !(openWater && seaCalm())) {
+        if (offset < 200.0) { return applyWaterMood(color) * WATER_CAST; }
         var density = ${NEAR_SHORE_DASH_DENSITY.toFixed(2)};
         if (stop >= 3) { density = ${DEEP_DASH_DENSITY.toFixed(2)}; }
         let lit = deepSwellLit(p, deepTick, storm, density * calm);

@@ -58,6 +58,8 @@ import {
     canvasSeaKey,
     canvasSeaMarkRgb,
     COAST_FIELD_FLAGS,
+    RIVER_THREAD_AXES,
+    seaBandBend,
     COAST_PALETTE,
     DEPTH_BOUNDS,
     foamNightScale,
@@ -88,6 +90,7 @@ import {
     GRASS_GUST_ORDER_BASE,
     GRASS_GUST_ORDER_CAP,
     GRASS_GUST_ORDER_GAIN,
+    SUN_SPARK_SHARE,
     SEA_PAW_CAP_BASE,
     SEA_PAW_CAP_GAIN,
     SEA_PAW_THRESHOLD,
@@ -437,7 +440,9 @@ function seaField(drift = 0) {
             return Math.sqrt(dx * dx + dy * dy) - SEA_KEY_REACH + (key(x / 700 + 5, y / 350 + 9) - 0.5) * 2 * SEA_KEY_WOBBLE;
         },
         body(x, y, s, stop, excess, order) {
-            if (clamp01((y - OCEAN_HORIZON_WORLD_Y - SEA_BODY_ROWS[0]) / (SEA_BODY_ROWS[1] - SEA_BODY_ROWS[0])) <= order) return stop;
+            const start = SEA_BODY_ROWS[0] - seaBandBend(x, 7);
+            const end = SEA_BODY_ROWS[1] - seaBandBend(x, 8);
+            if (clamp01((y - OCEAN_HORIZON_WORLD_Y - start) / (end - start)) <= order) return stop;
             const key = clamp01(0.5 - field.keyReach(x, y) / SEA_KEY_SPAN);
             const calm = clamp01((excess - SWELL_CALM_TILES[0]) / (SWELL_CALM_TILES[1] - SWELL_CALM_TILES[0]));
             const farCalm = clamp01((excess - SWELL_FAR_CALM_TILES[0]) / (SWELL_FAR_CALM_TILES[1] - SWELL_FAR_CALM_TILES[0]));
@@ -520,6 +525,13 @@ function layerCanvas(layer, w, h) {
 // The terrain base: texel classes and the per-bake lists, once per terrain
 // cache and coast-field revision.
 
+export function sunSparkAt(x, y, step) {
+    if (posMod(y, 3) !== 1) return false;
+    const h = latticeHash12(Math.floor(x / 6) + step * 17, Math.floor(y / 3) + 3);
+    const sx = 1 + Math.floor(fract(h * 7.31) * 3), lx = posMod(x, 6);
+    return h < SUN_SPARK_SHARE && (lx === sx || (fract(h * 13.7) < 0.35 && lx === sx + 1));
+}
+
 function buildBase(renderer) {
     const cache = renderer.terrainCache;
     const bounds = renderer.terrainCacheBounds;
@@ -562,10 +574,35 @@ function buildBase(renderer) {
     // BI-1 — `still`: the dash's origin is on still water (a lagoon's
     // shoreward band), whose density the knot wind sets.
     const nearCells = [];
+    const threads = [], collars = [[], [], []], eddies = [[], []];
     for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
             const offset = cycleOffset[r * cols + c];
-            if (offset >= 32) continue;
+            if (offset >= 16) {
+                if (offset === 255) continue;
+                const cell = r * cols + c;
+                for (let oy = 0; oy < 2; oy++) for (let ox = 0; ox < 2; ox++) {
+                    const x = fx + 2 * c + ox, y = fy + 2 * r + oy, i = texelAt(x, y);
+                    if (i < 0) continue;
+                    const lane = oy * 2 + ox;
+                    if (offset === 113) {
+                        for (let f = 0; f < 2; f++) if (coastField[cell * 2] & (1 << (lane + 4 * f))) eddies[f].push(i);
+                    } else if (offset >= 32) {
+                        const digit = Math.floor((offset - 32) / 3 ** lane) % 3;
+                        if (digit === 1) {
+                            collars[0].push(i);
+                            if (posMod(x, 4)) collars[1].push(i);
+                            collars[2].push(i);
+                        } else if (digit === 2 && posMod(x, 6) < 2) collars[2].push(i);
+                    } else if (cls[i] <= 5) {
+                        const axis = RIVER_THREAD_AXES[offset - 16];
+                        if (!axis) continue;
+                        const t = y - Math.floor(axis[0] * x + axis[1]);
+                        if (posMod(t, 7) === 3) threads.push(i, Math.floor(t / 7));
+                    }
+                }
+                continue;
+            }
             const still = offset < 16 && (coastField[(r * cols + c) * 2 + 1] & STILL_FLAGS) === STILL_FLAGS ? 1 : 0;
             const X = fx + c * 2;
             const Y = fy + r * 2;
@@ -599,6 +636,9 @@ function buildBase(renderer) {
     });
     for (let b = 1; b <= 16; b++) near.start[b] = Math.max(near.start[b], near.start[b - 1]);
     base.near = near;
+    base.threads = Int32Array.from(threads);
+    base.collars = collars.map(list => Uint32Array.from(list));
+    base.eddies = eddies.map(list => Uint32Array.from(list));
 
     // 3.10 specks (static, stops 0-1) and the caustic net's eight states on
     // stops 0-1 plus sunlit river and lagoon stop 2 (shade checked per frame).
@@ -620,10 +660,9 @@ function buildBase(renderer) {
             } else if (hash12(Math.floor(x / 2) + 3, y + 71) < 0.04) {
                 specks.push(i);
             }
-            const a = (x * 0.5 + y) / 9 + 0.45 * Math.sin((x * 0.5 - y) * 0.13);
-            const b = (y - x * 0.5) / 13 + 0.45 * Math.sin((x * 0.5 + y) * 0.09);
-            for (let s = 0; s < 8; s++) {
-                if (fract(a + s / 8) >= 0.92 || fract(b - s / 8) >= 0.92) caustic[s].push(i);
+            if (posMod(y, 3) !== 1) continue;
+            for (let step = 0; step < 8; step++) {
+                if (sunSparkAt(x, y, step)) caustic[step].push(i);
             }
         }
     }
@@ -1186,7 +1225,7 @@ function resolveFx(renderer, atmosphere) {
             ? liquidPrecipitation(atmosphere, weather)
             : 0,
         caustics: effectBudgetMode('shallowCaustics', level) === 'on'
-            && !raining
+            && !raining && (grade.daylight ?? 1 - (grade.night || 0)) > 0.5
             && (Number(grade.sunBand) || 0) > 0.3
             && clamp01(weather.cloudCover) < 0.5
             && (Number(grade.night) || 0) < 0.5
@@ -1519,7 +1558,10 @@ function rebuildOverlay(state, base, fx, palette, rect, renderer, sea) {
     }
     // Night starlight: two-texel tips on the existing swell caps. Sample
     // each 3x1 cell once, with the resident hash and independently held life.
-    if (fx.starlight > 0) {
+    if (fx.starlight > 0 && sea.road?.kind === 3) {
+        const view = sea.view;
+        const gx = view.x0 + (sea.road.body?.xFrac ?? 0.5) * (view.x1 - view.x0);
+        const grow = 0.12 * (sea.road.growScale ?? 1);
         for (let y = Math.max(y0, fx.horizonTop); y < y1; y++) {
             for (let cx = Math.floor(x0 / 3); cx * 3 < x1; cx++) {
                 const seed = hash12(cx + 307, y + 43);
@@ -1528,6 +1570,7 @@ function rebuildOverlay(state, base, fx, palette, rect, renderer, sea) {
                 for (let x = Math.max(x0, cx * 3); x < Math.min(x1, cx * 3 + 2); x++) {
                     const p = at(x, y);
                     if (riseMap[p] <= 0) continue;
+                    if (Math.abs(x + 0.5 - gx) >= 0.95 * (5 + (y + 0.5 - view.y0) * grow)) continue;
                     let colour = palette.starlight;
                     if (infoAt(x, y) & SEA_OPEN_SEA) {
                         const c = canvasSeaMarkRgb(renderer, 'crest', x, y, true);
@@ -1600,6 +1643,14 @@ function rebuildOverlay(state, base, fx, palette, rect, renderer, sea) {
     // global step, then the set's big-wave peak where a band meets it (a
     // texel it leaves at its baked class shows the terrain). BI-8: the crest
     // front's glowing texels land on the glow layer, laid after the grade.
+    const shift = Math.floor(fx.t * 0.006 * clock);
+    eachTexel(base.threads, 2, (i, x, y, n) => {
+        const s = x - shift, h = latticeHash12(Math.floor(s / 20), base.threads[n + 1]);
+        if (h < 0.45 && posMod(s, 20) < 4 + Math.floor(fract(h * 11.3) * 6)) out[at(x, y)] = palette.stops[Math.max(0, cls[i] - 1)];
+    });
+    const foam = (i, x, y) => { out[at(x, y)] = palette.classes[CLS_FOAM]; mask[at(x, y)] = 1; };
+    eachTexel(base.collars[Math.floor(fx.t * clock / 300) % 3], 1, foam);
+    eachTexel(base.eddies[Math.floor(fx.t * 0.003 * clock) % 2], 1, foam);
     state.glowLive = false;
     if (clock > 0 && fx.swash) {
         const glow = fx.surfGlow > 0 ? layerCanvas(state.glow, w, h) : null;
@@ -2409,9 +2460,11 @@ export function drawCanvasWaterState(ctx, renderer, atmosphere) {
     const weather = atmosphere?.weather || {};
     const sun = resolveSun(renderer, atmosphere, fx);
     const gust = resolveGust(state, fx, rect, weather);
+    const glint = canvasGlint(atmosphere);
     const overlayKey = [
+        glint?.kind, glint?.body?.xFrac,
         base.key, paletteKey, rect.x0, rect.y0, rect.w, rect.h, fx.clock > 0 ? 1 : 0,
-        fx.starlight,
+        Math.floor(fx.t * fx.clock / 300) % 3, Math.floor(fx.t * 0.003 * fx.clock) % 2, fx.starlight,
         fx.deepTick, fx.nearTick, fx.ringTick, posMod(fx.swashStep, SWASH_SET), fx.rippleTick,
         fx.stillPaws ? 1 : 0, Math.round(fx.stillShare * 256), fx.surfGlow > 0 ? 1 : 0,
         fx.caustics ? Math.floor(fx.t * 0.004 * fx.clock) % 8 : -1,
@@ -2432,7 +2485,7 @@ export function drawCanvasWaterState(ctx, renderer, atmosphere) {
     }
     if (overlayKey !== state.overlayKey) {
         const started = performance.now();
-        rebuildOverlay(state, base, fx, palette, rect, renderer, { caps: state.caps, sun, gust });
+        rebuildOverlay(state, base, fx, palette, rect, renderer, { caps: state.caps, sun, gust, view, road: glint });
         state.overlayKey = overlayKey;
         state.pathKey = '';
         state.stats.overlayMs = performance.now() - started;
@@ -2443,7 +2496,6 @@ export function drawCanvasWaterState(ctx, renderer, atmosphere) {
     state.glowDraw = state.glowLive && fx.surfGlow > 0;
     ctx.drawImage(state.overlay.canvas, state.overlay.x, state.overlay.y);
     // 3.2 — the path.
-    const glint = canvasGlint(atmosphere);
     const moonPostGrade = Boolean(glint && glint.kind === 3 && mood.night > 0 && atmosphere?.lightGrade);
     if (glint) {
         const pathKey = `${fx.deepTick}|${glint.kind}|${Math.round(glint.strength * 64)}|${Math.round((glint.growScale ?? 1) * 64)}|${Math.round((glint.body?.xFrac ?? 0.5) * 4096)}|${Math.round(view.x0)},${Math.round(view.y0)},${Math.round(view.x1)},${Math.round(view.y1)}|${view.texelPx}|${state.overlayKey}`;

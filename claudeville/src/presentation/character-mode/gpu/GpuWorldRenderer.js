@@ -83,6 +83,7 @@ import { buildRadianceEmitters, GroundRadiance, RADIANCE_MIN_SOLVE_MS, RADIANCE_
 import { SUN_SHADE_GLSL, resolveSunShade } from './SunShade.js';
 import { capSaturation, NEUTRAL_GRADE } from '../GradeEvaluator.js';
 import {
+    RIVER_THREAD_AXES,
     COAST_FIELD_FLAGS,
     COAST_PALETTE,
     DEPTH_BOUNDS,
@@ -227,7 +228,8 @@ export const SEA_CONTOUR_ROWS = 14;
 // SEA_PAW_CAP_GAIN x gust, so a paw reads as a patch of wave caps in the
 // sea's own grammar, never a separate speckle.
 export const SEA_PAW_THRESHOLD = 0.12;
-export const SEA_PAW_CAP_BASE = 0.12;
+export const SUN_SPARK_SHARE = 0.06;
+export const SEA_PAW_CAP_BASE = 0.06;
 export const SEA_PAW_CAP_GAIN = 0.5;
 // 3.3 (a) — swell sets (`swellPhase`, `swellCap`, `seaBodyStop`): the sea
 // rolls in long sets SWELL_SET_PERIOD world rows apart along the swell's
@@ -252,8 +254,8 @@ export const SWELL_NEAR_FADE = 8;
 // swell seen toward a horizon, off the iso axes so a set never echoes the
 // map diamond).
 export const SWELL_CLUSTER_CELL = Object.freeze([40, 16]);
-export const SWELL_CLUSTER_CAPS = 0.7;
-export const SWELL_LONE_CAPS = Object.freeze([0.03, 0.08]);
+export const SWELL_CLUSTER_CAPS = 0.45;
+export const SWELL_LONE_CAPS = Object.freeze([0.012, 0.03]);
 export const SWELL_SET_NORMAL = Object.freeze([0.08, 1]);
 export const SWELL_SET_WARP = 1.2;
 export const SWELL_SET_WARP_FINE = 0.35;
@@ -309,7 +311,7 @@ export const SWELL_CHOP_TROUGH_ROWS = Object.freeze([16, 6]);
 export const SWELL_CREST_ROWS = 2;
 export const SWELL_CREST_RISE = Object.freeze([3, 2]);
 export const SWELL_CREST_RUN = 110;
-export const SWELL_CREST_GAPS = 0.35;
+export const SWELL_CREST_GAPS = 0.55;
 export const SWELL_CREST_HEIGHT = 0.35;
 // 3.3 (a) — the sea's sun-key gradient (`seaKeyReach`, `seaBodyStop`), told
 // through the swell rather than a painted blob: each set's lit slope widens
@@ -697,6 +699,16 @@ float cloudNoiseAt(vec2 cell) {
 }
 // Solid courses, dithered only in a 1-2 texel seam at each edge.
 float cloudSeamField(vec2 cell, float n, float order, float seamAt) {
+    if (seamAt == 2.0) {
+        vec2 p = cell + 0.5 + u_cloudLone.xy;
+        if (u_cloudLone.z > 0.0) p = vec2(2100.0, 1000.0) + (cell + 0.5 - u_cloudLone.xy) * (120.0 / u_cloudLone.z);
+        vec2 uv = fract(p / vec2(3200.0, 1280.0));
+        float id = round(texelFetch(u_cloudTile, ivec2(floor(uv * 256.0)), 0).g * 255.0);
+        if (id == 0.0 || (u_cloudLone.z > 0.0 ? id != 4.0 : id > u_cloudLone.w)) return 0.0;
+        float d = textureLod(u_cloudTile, uv, 0.0).b * (255.0 / 128.0) + (order - 0.5) * 0.08;
+        return d <= 0.55 ? u_cloudThresholds.y : d <= 1.0 ? u_cloudThresholds.x : 0.0;
+    }
+    if (u_cloud.w <= 0.0) { return min(n, u_cloudThresholds.x - 0.001); }
     float near = min(min(abs(n - u_cloudThresholds.x), abs(n - u_cloudThresholds.y)),
         min(abs(n - u_cloudThresholds.z), abs(n - seamAt)));
     if (near > 0.03) return n;
@@ -715,7 +727,7 @@ float cloudCourseAt(float m) {
 }
 // Slightly cool shade: blue loses less than red.
 vec3 applyCloudCourse(vec3 color, float course) {
-    return color * (vec3(1.0) - course * u_cloud.z * vec3(1.0, 0.96, 0.84));
+    return color * (vec3(1.0) - course * u_cloud.z * 0.64);
 }
 // 48 solid haze courses down the upper frame; each hands to the next in a
 // two-texel ordered seam (its height from the curve's slope at this row), so
@@ -862,7 +874,13 @@ float deepSwellLit(vec2 p, float tick, float storm, float density) {
     if (waterHash12(run + vec2(59.0, 11.0)) >= ${SWELL_SET_SHARE.toFixed(2)}) return 0.0;
     return storm > 0.5 && waterHash12(cell + vec2(17.0, 31.0)) < 0.25 ? 2.0 : 1.0;
 }
+bool inMoonRoad(vec2 p) {
+    vec2 screen = (p + 0.5 + u_camera.xy) * u_camera.z;
+    if (u_glint.z < 2.5 || abs(screen.x - u_glint.x) >= u_camera.z * 0.95 * (5.0 + screen.y * u_glint.w)) { return false; }
+    return true;
+}
 bool starlightAt(vec2 p, float cap, float strength, float tick) {
+    if (!inMoonRoad(p)) { return false; }
     if (strength <= 0.0 || cap < 0.5) return false;
     vec2 cell = floor(p / vec2(3.0, 1.0));
     float seed = waterHash12(cell + vec2(307.0, 43.0));
@@ -1050,7 +1068,7 @@ float swellCap(vec2 p, float s, float near, float paw) {
         vec2 d = (vec2(cx, centre.y) - at) / vec2(${(SWELL_CLUSTER_CELL[0] * 0.5).toFixed(1)}, ${(SWELL_CLUSTER_CELL[1] * 0.5).toFixed(1)});
         inCluster = dot(d, d) < 1.0;
     }
-    float presence = inCluster ? ${SWELL_CLUSTER_CAPS.toFixed(2)} : mix(${SWELL_LONE_CAPS[0].toFixed(2)}, ${SWELL_LONE_CAPS[1].toFixed(2)}, near);
+    float presence = inCluster ? ${SWELL_CLUSTER_CAPS.toFixed(2)} : mix(${SWELL_LONE_CAPS[0].toFixed(3)}, ${SWELL_LONE_CAPS[1].toFixed(2)}, near);
     if (waterLatticeHash(k + vec2(211.0, 17.0)) >= presence) return 0.0;
     vec2 local = vec2(x - k.x * ${SWELL_CAP_CELL[0].toFixed(1)}, p.y - row * ${SWELL_CAP_CELL[1].toFixed(1)});
     float len = 3.0 + floor(waterLatticeHash(k + vec2(223.0, 5.0)) * 5.0);
@@ -1092,8 +1110,15 @@ float swellForm(float rowsIn, float period, float crestRows, float lit, float tr
 // key; the trough stilled near the island), else the chop's form; taking
 // over from the horizon's stops across SEA_BODY_ROWS on a Bayer ramp. 0..6
 // (6 is WATER_TROUGH, one stop below the deepest). Static (no clock).
+float seaBodyBend(float x, float band) {
+    float wide = (0.7 * seaSeamOctave(x, 320.0, 2.0 * band) + 0.3 * seaSeamOctave(x, 128.0, 2.0 * band + 1.0) - 0.5) * 28.0;
+    float fine = abs(mod(x + 19.0 * band, 128.0) - 64.0) / 16.0 - 2.0;
+    return clamp(floor(wide + fine + 0.5), -14.0, 14.0);
+}
 float seaBodyStop(vec2 p, float s, float stop, float excess, float order) {
-    if (clamp((p.y - OPEN_SEA_HORIZON_Y - ${SEA_BODY_ROWS[0].toFixed(1)}) / ${(SEA_BODY_ROWS[1] - SEA_BODY_ROWS[0]).toFixed(1)}, 0.0, 1.0) <= order) return stop;
+    float start = ${SEA_BODY_ROWS[0].toFixed(1)} - seaBodyBend(p.x, 7.0);
+    float end = ${SEA_BODY_ROWS[1].toFixed(1)} - seaBodyBend(p.x, 8.0);
+    if (clamp((p.y - OPEN_SEA_HORIZON_Y - start) / (end - start), 0.0, 1.0) <= order) return stop;
     float key = clamp(0.5 - seaKeyReach(p) / ${SEA_KEY_SPAN.toFixed(1)}, 0.0, 1.0);
     float calm = clamp((excess - ${SWELL_CALM_TILES[0].toFixed(1)}) / ${(SWELL_CALM_TILES[1] - SWELL_CALM_TILES[0]).toFixed(1)}, 0.0, 1.0);
     float farCalm = clamp((excess - ${SWELL_FAR_CALM_TILES[0].toFixed(1)}) / ${(SWELL_FAR_CALM_TILES[1] - SWELL_FAR_CALM_TILES[0]).toFixed(1)}, 0.0, 1.0);
@@ -1605,7 +1630,6 @@ uniform vec2 u_stillWater;
 uniform float u_surfGlow;
 // 3.2 — the sky body's path: (screenX backing px, strength, kind 0 off /
 // 1 gold / 2 pale / 3 silver, grow = texels of half-width per backing row).
-uniform vec4 u_glint;
 // The active kind's two raw seaPath stops: [0] hi, [1] lo.
 uniform vec3 u_glintStops[2];
 // True only for the terrain-cache batch: the swash and wet band touch the
@@ -1764,6 +1788,7 @@ vec3 applyPuddle(vec3 color, vec2 world) {
 
 ${WATER_MOOD_GLSL}
 
+uniform vec4 u_glint;
 ${SEA_SWELL_GLSL}
 ${SEA_WEATHER_GLSL}
 
@@ -1923,10 +1948,12 @@ bool rainRingAt(vec2 p, float precipitation, float storm, float clock) {
 // phase fields (wavelengths 9 and 13) drifting one eighth per 4 Hz step,
 // lit where either crosses its 0.92 band.
 bool causticAt(vec2 p, float clock) {
-    float t8 = mod(floor(u_time * 0.004 * clock), 8.0) / 8.0;
-    float a = (p.x * 0.5 + p.y) / 9.0 + 0.45 * sin((p.x * 0.5 - p.y) * 0.13) + t8;
-    float b = (p.y - p.x * 0.5) / 13.0 + 0.45 * sin((p.x * 0.5 + p.y) * 0.09) - t8;
-    return fract(a) >= 0.92 || fract(b) >= 0.92;
+    vec2 cell = floor(p / vec2(6.0, 3.0));
+    float t8 = mod(floor(u_time * 0.004 * clock), 8.0);
+    float h = waterLatticeHash(cell + vec2(t8 * 17.0, 3.0));
+    vec2 local = floor(p) - cell * vec2(6.0, 3.0);
+    float sx = 1.0 + floor(fract(h * 7.31) * 3.0);
+    return h < ${SUN_SPARK_SHARE.toFixed(2)} && local.y == 1.0 && (local.x == sx || (fract(h * 13.7) < 0.35 && local.x == sx + 1.0));
 }
 
 // Today's static water frame (the reduced-motion and MINIMAL crest frame):
@@ -2036,10 +2063,35 @@ vec3 liftMirrorColour(vec3 color, vec2 px) {
     return clamp(color * (liftL / baseL), 0.0, 1.0);
 }
 bool causticSurface(vec2 p, int stop);
+const vec2 THREAD_AXES[${RIVER_THREAD_AXES.length}] = vec2[](${RIVER_THREAD_AXES.map(([s,b]) => `vec2(${s.toFixed(1)}, ${b.toFixed(1)})`).join(', ')});
 vec3 applyWaterState(vec3 color, vec2 px, out bool seaPath) {
     seaPath = false;
     seaSkyTake = 0.0;
     // Only blue/teal albedo enters the water-stop path. Warm mirrors still take the water mood.
+    float contactSd;
+    uint contactFlags;
+    if (coastFieldAt(px, contactSd, contactFlags) && (contactFlags & 64u) == 0u) {
+        float offset = cycleOffsetAt(px);
+        vec2 p = floor(px);
+
+        if ((contactFlags & 32u) != 0u) {
+            float lane = mod(p.x, 2.0) + 2.0 * mod(p.y, 2.0);
+            float phase = mod(floor(u_time * u_waterFx.x / 300.0), 3.0);
+            float digit = mod(floor((offset - 32.0) / pow(3.0, lane) + 0.00001), 3.0);
+            bool eddy = offset == 113.0 && mod(floor((contactSd * 64.0 + 128.0) / exp2(lane + 4.0 * mod(floor(u_time * 0.003 * u_waterFx.x), 2.0))), 2.0) == 1.0;
+            if (eddy || (offset < 113.0 && ((digit == 1.0 && (phase != 1.0 || mod(p.x, 4.0) != 0.0))
+                || (digit == 2.0 && phase == 2.0 && mod(p.x, 6.0) < 2.0)))) { return applyWaterMood(WATER_FOAM * foamNightScale()) * WATER_CAST; }
+        } else if (offset >= 16.0 && offset < 16.0 + ${RIVER_THREAD_AXES.length.toFixed(1)}) {
+            vec2 axis = THREAD_AXES[int(offset) - 16];
+            vec2 st = vec2(p.x - floor(u_time * 0.006 * u_waterFx.x), p.y - floor(axis.x * p.x + axis.y));
+            vec2 tile = floor(st / vec2(20.0, 7.0));
+            float h = waterLatticeHash(tile);
+            int stop = waterStopIndex(color);
+            if (stop >= 0 && h < 0.45 && mod(st.y, 7.0) == 3.0 && mod(st.x, 20.0) < 4.0 + floor(fract(h * 11.3) * 6.0)) {
+                return applyWaterMood(WATER_STOPS[max(0, stop - 1)]) * WATER_CAST;
+            }
+        }
+    }
     if (color.b < color.r + 0.02 || color.g < color.r) {
         // 3.7 — a baked reflection of warm timber or sandstone is still water:
         // it takes the night and storm mood like the stops around it.
@@ -2062,6 +2114,7 @@ vec3 applyWaterState(vec3 color, vec2 px, out bool seaPath) {
     }
     // SEA-1 — with the look on, open water is flagged under any sky, so
     // applySeaCourses gives it the open sea's cloud rule (the map edge).
+
     seaOpenWater = u_terrainBatch && (u_squall.w > 0.0 || u_cloud.w > 0.0) && stop >= 2
         && float(stop) >= openSeaStop(openSeaDepth(p), waterBayer4(p));
     float storm = step(0.5, u_weather.z);
@@ -2171,7 +2224,7 @@ vec3 applyWaterState(vec3 color, vec2 px, out bool seaPath) {
     }
     float calm = still ? u_stillWater.y : 1.0;
     float course = 0.0;
-    if (offset < 31.5) {
+    if (offset < 15.5) {
         // Near shore and river current: lit on course entries 14 (the lead,
         // FOAM_CREST on the shallowest stops) and 15, stepping every 250 ms.
         if (waterHash12(cell) < mix(${NEAR_SHORE_DASH_DENSITY.toFixed(2)} * calm, 0.7, storm)) {
@@ -2180,6 +2233,7 @@ vec3 applyWaterState(vec3 color, vec2 px, out bool seaPath) {
             if (course > 0.0 && storm > 0.5 && waterHash12(cell + vec2(17.0, 31.0)) < 0.25) course = 3.0;
         }
     } else if (stop >= 2 && !(openWater && seaCalm())) {
+        if (offset < 200.0) { return applyWaterMood(color) * WATER_CAST; }
         float lit = deepSwellLit(p, deepTick, storm, (stop >= 3 ? ${DEEP_DASH_DENSITY.toFixed(2)} : ${NEAR_SHORE_DASH_DENSITY.toFixed(2)}) * calm);
         course = lit > 1.5 ? 3.0 : lit;
     }
@@ -2338,7 +2392,9 @@ vec3 applySeaCourses(vec3 color, vec2 cell, float order, float cellCentreY, bool
     // SEA-1 — open water carries its light and shade in the lift (shade sits
     // one stop below the lit water, seaLiftedStop), so it takes no cloud
     // multiply (shadeOpenSea's rule): one firm edge, no contour ring.
-    bool oneCourse = seaOpenWater && u_cloud.w > 0.0;
+    float seaSd;
+    uint seaFlags;
+    bool oneCourse = u_terrainBatch && coastFieldAt(cell, seaSd, seaFlags) && (seaFlags & 16u) != 0u;
     if (squall <= 0.0 && !oneCourse) return applyAtmosphereCourses(color, cell, order, cellCentreY, additive);
     float cloud = u_cloud.z > 0.0 ? cloudCourseAt(cloudSeamField(cell, cloudNoiseAt(cell), order, 2.0)) * u_cloud.z : 0.0;
     if (oneCourse) cloud = 0.0;
@@ -3500,7 +3556,6 @@ uniform float u_time;
 uniform vec4 u_weather;
 uniform vec4 u_waterFx;
 uniform float u_starlight;
-uniform vec4 u_glint;
 uniform vec3 u_glintStops[2];
 uniform float u_seaSunBand;
 uniform vec3 u_fogColor;
@@ -3714,6 +3769,7 @@ ${FAT_TAPS_GLSL}
 ${GRADE_GLSL}
 ${ATMOSPHERE_COURSES_GLSL}
 ${WATER_MOOD_GLSL}
+uniform vec4 u_glint;
 ${SEA_SWELL_GLSL}
 ${SEA_WEATHER_GLSL}
 ${WATER_PALETTE_GLSL}

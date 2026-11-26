@@ -1,26 +1,11 @@
-// 3.11 (M11) — moving things reflect.
-//
-// A body standing where the water is (feet within 0.3 tiles of the coast
-// contour: banks, bridges; or open water within half a body height straight
-// below the feet: the edge of a pier or quay) gets a duplicate of its packed albedo
-// record with V9's `reflect` flag, cropped to the feet and placed in the
-// ground band. The vertex stage mirrors it about its base (the feet row); the
-// scene fragment keeps it on painted water only (3.6's coast field), drops
-// every fifth row, ripples rows by a whole texel on the shared palette tick,
-// fades it in three Bayer alpha courses and pulls it 38 % toward the local
-// water stop. Labels, rings, plates and beacons never enter the agent albedo
-// records, so they are never duplicated. At most 12, nearest the camera
-// centre; FULL only (EFFECT_BUDGET `bodyReflections`).
+// Mirror up to twelve nearby bodies about the first exposed water below their feet.
+// The ground band and the resident water mask clip the duplicate behind the scene.
 
-import { getCoastField } from './CoastBake.js';
+import { COAST_FIELD_FLAGS, getCoastField, MAX_CONTACT_GAP } from './CoastBake.js';
 import { effectBudgetMode } from './gpu/GpuWorldPolicy.js';
 
 export const BODY_REFLECTION_CAP = 12;
-const SHORE_SD = -0.3;
-// A pier deck sits over the water in screen space, not in the coast field:
-// its seats read 0.4-0.6 tiles inland, with the water 12-16 world px below
-// the feet. Water that close under the feet takes the mirrored figure.
-const PIER_REACH_PX = 16;
+const { water, covered } = COAST_FIELD_FLAGS;
 const _candidates = [];
 const _reflections = [];
 
@@ -47,20 +32,29 @@ export function insertBodyReflectionRecords(renderer, records) {
         seen.add(agentId);
         const sprite = renderer.agentSprites.get(agentId);
         if (!sprite || !Number.isFinite(sprite.x) || !Number.isFinite(sprite.y)) continue;
-        const onShore = coast.signedDistanceAtWorld(sprite.x, sprite.y) > SHORE_SD
-            || coast.signedDistanceAtWorld(sprite.x, sprite.y + PIER_REACH_PX) > 0;
-        if (!onShore) continue;
-        _candidates.push({ agentId, sprite, distance: Math.hypot(sprite.x - cx, sprite.y - cy) });
+        let gap = 0;
+        const field = renderer._coastBake?.waterFields;
+        while (gap <= MAX_CONTACT_GAP) {
+            const x = sprite.x, y = sprite.y + gap;
+            if (field) {
+                const col = Math.floor((x - field.x) / 2), row = Math.floor((y - field.y) / 2);
+                if (col >= 0 && row >= 0 && col < field.cols && row < field.rows
+                    && (field.coastField[(row * field.cols + col) * 2 + 1] & (water | covered)) === water) break;
+            } else if (coast.signedDistanceAtWorld(x, y) > 0) break;
+            gap++;
+        }
+        if (gap <= MAX_CONTACT_GAP) _candidates.push({ agentId, sprite, gap, distance: Math.hypot(sprite.x - cx, sprite.y - cy) });
     }
     if (!_candidates.length) return records;
     _candidates.sort((a, b) => a.distance - b.distance);
     if (_candidates.length > BODY_REFLECTION_CAP) _candidates.length = BODY_REFLECTION_CAP;
-    const chosen = new Map(_candidates.map(c => [c.agentId, c.sprite]));
+    const chosen = new Map(_candidates.map(c => [c.agentId, c]));
     _reflections.length = 0;
     for (let index = 0; index < records.length; index++) {
         const record = records[index];
         const agentId = agentIdOf(record);
-        const sprite = agentId ? chosen.get(agentId) : null;
+        const candidate = chosen.get(agentId);
+        const sprite = candidate?.sprite;
         if (!sprite || !(record.height > 0) || !(record.sh > 0)) continue;
         // Crop the cell to the feet row so the mirror axis is the ground line.
         // A body lifted onto a bridge deck is drawn `lift` px up: crop at its
@@ -73,7 +67,7 @@ export function insertBodyReflectionRecords(renderer, records) {
             ...record,
             id: `ground:reflect:${record.id}`,
             // Separate hats and weapons share the body’s waterline.
-            y: record.sharedLayer ? 2 * (sprite.y + 1 - height) - record.y : record.y + 2 * lift,
+            y: 2 * candidate.gap + (record.sharedLayer ? 2 * (sprite.y + 1 - height) - record.y : record.y + 2 * lift),
             height,
             sh,
             reflect: true,

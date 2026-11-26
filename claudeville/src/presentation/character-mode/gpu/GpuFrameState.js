@@ -9,11 +9,11 @@ import {
     aerialPerspectiveStrength,
     binGpuLights,
     buildCloudShadowTile,
+    cumulusCount,
     clampGpuLights,
     clearDayHazeWeight,
     clearNightHazeWeight,
     CLOUD_FIELD_PERIOD,
-    CLOUD_PLANE_CORE,
     cloudPlaneScale,
     SEA_LIFT_SLEW,
     SEA_SKY_WEIGHT,
@@ -589,6 +589,7 @@ export function resolveWaterFx(feed, camera, level, grade, moonFill, width, out 
     out.starlight = resolveStarlight(feed.atmosphere, weather, grade, moonFill, level);
     const zoom = finite(camera?.zoom, 1);
     fx[2] = effectBudgetMode('shallowCaustics', level) === 'on'
+        && finite(grade.daylight, 1 - finite(grade.night, 0)) > 0.5
         && !raining
         && finite(grade.sunBand, 0) > 0.3
         && cloudCover < 0.5
@@ -677,8 +678,8 @@ export function resolveAtmosphereCourses(level, camera, feed, grade, out = creat
         out.cloud[0] = ((-drift.x * planeX % period) + period) % period;
         out.cloud[1] = ((-drift.y * planeY % period) + period) % period;
         out.cloud[2] = 0.125 * cloudStrength;
-        out.thresholds[0] = cloudThreshold(covered);
-        out.thresholds[1] = cloudThreshold(covered * (plane > 0 ? CLOUD_PLANE_CORE : 0.55));
+        out.thresholds[0] = plane > 0 ? 1.1 : cloudThreshold(covered);
+        out.thresholds[1] = plane > 0 ? 1.3 : cloudThreshold(covered * 0.55);
         out.thresholds[2] = plane > 0 ? 2 : cloudThreshold(covered * 0.22);
         // 3.4 — sun on water: the sea's clearest share, 0.8 of the
         // covered share (where the field is lowest), takes one stop
@@ -697,6 +698,9 @@ export function resolveAtmosphereCourses(level, camera, feed, grade, out = creat
     // the shader leans the field on a dome there, and two courses cut it.
     // Off at MINIMAL (`cloud-courses`) and frozen out under reduced motion.
     out.lone.fill(0);
+    out.lone[0] = ((-drift.x % 3200) + 3200) % 3200;
+    out.lone[1] = ((-drift.y % 1280) + 1280) % 1280;
+    out.lone[3] = cumulusCount(covered);
     const lone = feed.loneCloud;
     if (!out.courses && moving && cloudStrength > 0.02 && lone?.active && lone.radius > 0) {
         const period = CLOUD_FIELD_PERIOD;
@@ -707,8 +711,8 @@ export function resolveAtmosphereCourses(level, camera, feed, grade, out = creat
         out.thresholds[0] = LONE_CLOUD_THRESHOLDS[0];
         out.thresholds[1] = LONE_CLOUD_THRESHOLDS[1];
         out.thresholds[2] = 2;
-        out.lone[0] = lone.fieldX;
-        out.lone[1] = lone.fieldY;
+        out.lone[0] = lone.x;
+        out.lone[1] = lone.y;
         out.lone[2] = lone.radius;
     }
     out.cloud[3] = plane;

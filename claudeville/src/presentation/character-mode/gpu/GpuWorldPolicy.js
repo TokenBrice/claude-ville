@@ -1226,6 +1226,38 @@ export function sortedCloudField(data, size = CLOUD_TILE_SIZE, samples = 384) {
     return out.sort();
 }
 
+// C1, C2, C3, C5, C6, C4: the largest cloud enters last.
+export const CUMULUS_STAMPS = Object.freeze([
+    [400, 200, [[0,0,180,80],[150,-20,140,64],[-140,10,120,56],[40,-50,110,48]]],
+    [1500, 420, [[0,0,220,96],[190,20,150,70],[-170,-10,130,60]]],
+    [2600, 180, [[0,0,140,64],[110,-30,100,48],[-90,20,90,40],[30,40,80,36],[-40,-40,70,32]]],
+    [2100, 1000, [[0,0,120,56],[90,10,80,40],[-80,-10,70,32]]],
+    [3000, 700, [[0,0,200,90],[170,30,120,56],[-150,20,140,62],[60,-60,100,44]]],
+    [900, 900, [[0,0,260,110],[220,-30,170,76],[-230,10,160,70],[0,-70,140,60]]],
+]);
+export const cumulusCount = share => Math.max(0, Math.min(6, Math.round(6 * share / 0.38)));
+
+function bakeCumulus(data, size) {
+    // R remains the weather texture for ruffles, mist and squalls. G identifies
+    // the nearest stamp, B carries squared lobe distance at 1/128 resolution.
+    for (let i = 2; i < data.length; i += 4) data[i] = 255;
+    for (const [index, [cx, cy, lobes]] of CUMULUS_STAMPS.entries()) {
+        for (const [dx, dy, rx, ry] of lobes) {
+            const x0 = (cx + dx) * size / 3200, y0 = (cy + dy) * size / 1280;
+            const w = rx * size / 3200, h = ry * size / 1280;
+            for (let y = Math.floor(y0 - 1.42*h); y <= y0 + 1.42*h; y++) {
+                for (let x = Math.floor(x0 - 1.42*w); x <= x0 + 1.42*w; x++) {
+                    const d = Math.round(128 * (((x + 0.5 - x0) / w) ** 2 + ((y + 0.5 - y0) / h) ** 2));
+                    const i = 4 * ((((y % size) + size) % size) * size + ((x % size) + size) % size);
+                    if (d >= data[i + 2]) continue;
+                    data[i + 1] = index + 1;
+                    data[i + 2] = d;
+                }
+            }
+        }
+    }
+}
+
 export function buildCloudShadowTile(size = CLOUD_TILE_SIZE, seed = 0x5eed) {
     const data = new Uint8Array(size * size * 4);
     const hash = (x, y, octave) => {
@@ -1274,6 +1306,7 @@ export function buildCloudShadowTile(size = CLOUD_TILE_SIZE, seed = 0x5eed) {
         data[offset + 2] = value;
         data[offset + 3] = 255;
     }
+    bakeCumulus(data, size);
     return data;
 }
 
