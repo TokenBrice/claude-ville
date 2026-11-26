@@ -100,6 +100,15 @@ function preview(scale = 8) {
 }
 
 const args = process.argv.slice(2);
+if (args.includes('--help') || args.includes('-h')) {
+    console.log(`Usage: node scripts/sprites/bake-rest-seats.mjs [--check | --preview <dir> | --help]
+
+  (default)        Write the 6 prop.tavernTable.{sw,se}.{back,front,front.emissive}.png sheets
+  --check          Exit 1 if any baked PNG differs from tavernTableArt()
+  --preview <dir>  Write an 8x preview sheet (tavern-tables-8x.png) into <dir>
+  --help, -h       Show this help and exit without writing files`);
+    process.exit(0);
+}
 const check = args.includes('--check');
 const previewAt = args.indexOf('--preview');
 const list = files();

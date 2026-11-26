@@ -131,30 +131,32 @@ export const PROP_SIDECAR_RULES = Object.freeze({
             ] },
         ],
     },
-    // W1-D 1.10 — the Hourglass Belfry's lantern chamber behind each glass:
-    // the dark pocket of each arch head over the glass's top cap, and the
-    // 1-px reveal slit down both jambs (brighter across the glass's waist),
-    // every texel outside every cell of `prop.hourglassBelfryGlass` (no
-    // reading's shroud, peak or limit cord ever lies over a lit texel).
+    // W1-D 1.10 / W1-Fix-C — the Hourglass Belfry's recessed lantern chamber
+    // behind each glass: a warm stop-1 glow tucked strictly into each upper
+    // arch-head pocket, framed by a softer lower-alpha stop-0 halo along the
+    // arch soffit and outer jamb reveals, every texel strictly outside every
+    // cell of `prop.hourglassBelfryGlass` (no reading's shroud, peak or limit
+    // cord ever lies over a lit texel).
     'prop.hourglassBelfry': {
+        maskAlpha: [96, 136, 168],
         masks: [
-            { at: [37, 84], rows: [
-                '..........1......1....',
-                '..1111.....1.......1..',
-                '11...1111...11......11',
-                '1...11.111...1.......1',
-                '1.11...1.11...11.....1',
-                '1.1....111111..1.....1',
+            { at: [37, 85], rows: [
+                '..0000................',
+                '.00..0000...00........',
+                '0...001100...0........',
+                '0..01111100...........',
+                '0..001111100..........',
+                '0.......00000.........',
             ] },
-            { at: [69, 84], rows: [
-                '....1......1..........',
-                '..11......1....11111..',
-                '11......11...1111..11.',
-                '1...........111111...1',
-                '1.....1....1111...11.1',
-                '1.....1..111111...11.1',
+            { at: [69, 85], rows: [
+                '...............00000..',
+                '........00..00000..00.',
+                '..........00111100...0',
+                '..........01111110...0',
+                '.........001111100...0',
+                '........00000000.....0',
             ] },
-            ...[37, 58, 69, 90].map((x) => maskColumn(x, 90, 130, (y) => (y >= 104 && y <= 116 ? '1' : '0'))),
+            ...[37, 58, 69, 90].map((x) => maskColumn(x, 91, 118, () => '0')),
         ],
     },
 });
@@ -267,7 +269,9 @@ function derivePropSidecar(albedo, rule, entry) {
     const out = new PNG({ width: albedo.width, height: albedo.height, colorType: 6 });
     if (rule.masks) {
         // Authored masks: each texel takes its own ART_RAMPS.emissive stop
-        // and that stop's alpha, only where the albedo is opaque.
+        // and that stop's alpha (or the rule's softer maskAlpha), only where
+        // the albedo is opaque.
+        const alphas = rule.maskAlpha || MASK_ALPHA;
         for (const { at: [mx, my], rows } of rule.masks) {
             rows.forEach((row, dy) => [...row].forEach((code, dx) => {
                 if (code === '.') return;
@@ -281,7 +285,7 @@ function derivePropSidecar(albedo, rule, entry) {
                 out.data[i] = emitted[0];
                 out.data[i + 1] = emitted[1];
                 out.data[i + 2] = emitted[2];
-                out.data[i + 3] = MASK_ALPHA[stop];
+                out.data[i + 3] = alphas[stop];
             }));
         }
         return out;

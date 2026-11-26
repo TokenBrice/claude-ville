@@ -29,7 +29,7 @@
 //     --headed                Show browser window
 //     --help                  Show help
 
-import { cpSync, mkdirSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -60,6 +60,26 @@ export function resolveRecordFlags(rec, flagMap = GPU_RECORD_FLAGS) {
 export const GREEN_SWATCH_RGB = Object.freeze([65, 97, 57]); // #416139
 export const MIN_DISTINCT_INTERIOR_COLORS = 4;
 export const MAX_GREEN_FILL_SHARE = 0.50;
+// Deterministic calendar date pinned for any undated `--case` run so captures
+// never depend on the host's wall-clock date/time.
+export const DEFAULT_CAPTURE_DATE = '2026-07-15';
+
+/**
+ * Merge newly captured cases into an existing `manifest.json` case list by
+ * `caseId`, preserving prior captured cases in `--out` while updating any
+ * re-captured `caseId` in place (so incremental `--case` runs never drop
+ * earlier scenarios from `manifest.json`).
+ */
+export function mergeManifestCases(existingCases = [], nextCases = []) {
+    const byId = new Map();
+    for (const item of Array.isArray(existingCases) ? existingCases : []) {
+        if (item?.caseId) byId.set(item.caseId, item);
+    }
+    for (const item of Array.isArray(nextCases) ? nextCases : []) {
+        if (item?.caseId) byId.set(item.caseId, item);
+    }
+    return [...byId.values()];
+}
 
 export const DEFAULT_SCENARIOS = Object.freeze([
     { id: 'readme-noon', scenario: 'readme-showcase', hour: 12, weather: 'clear', zoom: 2, date: '2026-07-15', season: 'summer' },
@@ -443,23 +463,46 @@ function installVisualCaptureHelpers() {
     };
 
     const readCanvasWorld = (renderer) => {
-        const canvas = renderer.worldCanvas || document.getElementById('worldCanvas') || document.querySelector('#worldStack canvas');
-        if (!canvas || canvas.width <= 0 || canvas.height <= 0) return null;
+        const world = renderer.canvas || renderer.worldCanvas || document.getElementById('worldCanvas') || document.querySelector('#worldStack canvas');
+        if (!world || world.width <= 0 || world.height <= 0) return null;
+        const width = world.width;
+        const height = world.height;
         const tmp = document.createElement('canvas');
-        tmp.width = canvas.width;
-        tmp.height = canvas.height;
+        tmp.width = width;
+        tmp.height = height;
         const g = tmp.getContext('2d', { willReadFrequently: true });
-        g.drawImage(canvas, 0, 0);
-        const data = g.getImageData(0, 0, canvas.width, canvas.height).data;
+        // Composite the exact presented Canvas stack:
+        // 1. Base 2D world canvas (#worldCanvas — graded directly when PostFx
+        //    is inactive, or ungraded 2D source when hybrid PostFx grades onto
+        //    #worldFxCanvas).
+        g.drawImage(world, 0, 0, width, height);
+        // 2. Hybrid PostFx canvas (#worldFxCanvas) when visible: carries the
+        //    graded night/day world frame over #worldCanvas.
+        const fx = renderer.fxCanvas || document.getElementById('worldFxCanvas');
+        const fxVisible = Boolean(
+            fx && fx.width > 0 && fx.height > 0
+            && fx.style?.display !== 'none'
+            && getComputedStyle(fx).display !== 'none',
+        );
+        if (fxVisible) {
+            g.drawImage(fx, 0, 0, width, height);
+        }
+        // 3. Ungraded upper overlay (#worldOverlayCanvas: emitter cuts, water
+        //    columns, weather foreground, fireflies, marks, labels).
+        const overlay = renderer.overlayCanvas || document.getElementById('worldOverlayCanvas');
+        if (overlay && overlay.width > 0 && overlay.height > 0 && overlay.style?.display !== 'none') {
+            g.drawImage(overlay, 0, 0, width, height);
+        }
+        const data = g.getImageData(0, 0, width, height).data;
         return {
-            width: canvas.width,
-            height: canvas.height,
+            width,
+            height,
             composite: new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
             scene: null,
             emission: null,
             attribution: null,
             attributionFormat: null,
-            source: 'canvas-getImageData',
+            source: fxVisible ? 'canvas-postfx-composite' : 'canvas-overlay-composite',
         };
     };
 
@@ -598,7 +641,7 @@ function installVisualCaptureHelpers() {
                 if (gpu.backend === 'webgpu') await gpu.drain?.();
                 finalCap = await readGpuTargets(gpu, r);
             } else {
-                r._renderSingleFrame?.();
+                r.renderNow?.();
                 finalCap = readCanvasWorld(r);
             }
             if (!finalCap?.composite) break;
@@ -700,11 +743,9 @@ export async function captureVisualRun(options) {
                     try { localStorage.setItem('cv-auto-camera', '0'); } catch {}
                 });
                 const page = await context.newPage();
-                const effectiveDate = options.date || item.date;
+                const effectiveDate = options.date || item.date || DEFAULT_CAPTURE_DATE;
                 const expectedSeason = inferSeasonFromDate(effectiveDate) || item.season || null;
-                if (effectiveDate) {
-                    await page.clock.setFixedTime(new Date(`${effectiveDate}T12:00:00`));
-                }
+                await page.clock.setFixedTime(new Date(`${effectiveDate}T12:00:00`));
                 const pageErrors = [];
                 page.on('pageerror', (err) => pageErrors.push(String(err?.message || err).slice(0, 300)));
                 page.on('console', (msg) => {
@@ -838,15 +879,35 @@ export async function captureVisualRun(options) {
         await server.stop();
     }
 
+    const manifestPath = path.join(outDir, 'manifest.json');
+    let priorCases = [];
+    if (existsSync(manifestPath)) {
+        try {
+            const prior = JSON.parse(readFileSync(manifestPath, 'utf8'));
+            if (Array.isArray(prior?.cases)) priorCases = prior.cases;
+        } catch {}
+    }
+    const nextCases = results.map((r) => ({
+        caseId: r.caseId,
+        status: r.status,
+        scenario: r.meta.scenario,
+        hour: r.meta.hour,
+        weather: r.meta.weather,
+        zoom: r.meta.zoom,
+        date: r.meta.date,
+        backend: r.meta.backend,
+        backing: r.meta.backing,
+        selfStableBytes: r.meta.determinism.selfStableBytes,
+    }));
     const summary = {
         schemaVersion: 1,
         capturedAt: new Date().toISOString(),
         host: { platform: os.platform(), arch: os.arch(), cpu: os.cpus()[0]?.model || null },
         outDir,
         acceptedToGolden: options.accept ? options.goldenDir : null,
-        cases: results.map((r) => ({ caseId: r.caseId, status: r.status, backing: r.meta.backing, selfStableBytes: r.meta.determinism.selfStableBytes })),
+        cases: mergeManifestCases(priorCases, nextCases),
     };
-    writeFileSync(path.join(outDir, 'manifest.json'), `${JSON.stringify(summary, null, 2)}\n`);
+    writeFileSync(manifestPath, `${JSON.stringify(summary, null, 2)}\n`);
     return summary;
 }
 

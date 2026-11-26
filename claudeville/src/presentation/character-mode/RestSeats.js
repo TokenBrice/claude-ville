@@ -213,24 +213,49 @@ export function tavernTableArt(facing = 'south-west') {
     const LONG = longLit ? OAK[2] : OAK[1];
     const LONG_HI = longLit ? OAK[3] : OAK[2];
     const CAP = longLit ? OAK[1] : OAK[2];
-    const grain = (a, c, salt) => seatHash(`${Math.floor(a * 9)}:${Math.floor(c * 40)}:${salt}`) % 5 === 0;
-    const knot = (a, c, salt) => seatHash(`${Math.floor(a * 11)}:${Math.floor(c * 32)}:${salt}:k`) % 6 === 0;
+    // Smooth 2–3 px elongated oak grain dashes along the plank axis (~1 in 9).
+    const grainDash = (a, c, salt) => seatHash(`${Math.floor(a * 5)}:${Math.floor(c * 24)}:${salt}`) % 9 === 0;
+    // At most one subtle heartwood knot per plank (never dark speckled dots).
+    const plankKnot = (a, c, boardIdx, cMin, cMax, salt) => {
+        const h = seatHash(`knot:${boardIdx}:${salt}`);
+        const knotA = -0.34 + ((h & 255) / 255) * 0.68;
+        const knotC = cMin + 0.32 * (cMax - cMin) + (((h >>> 8) & 255) / 255) * 0.36 * (cMax - cMin);
+        return Math.abs(a - knotA) < 0.048 && Math.abs(c - knotC) < 0.017;
+    };
 
     // A board top at height h over [a0, a1] x [c0, c1], `seams` across.
-    // Distinct weathered oak plank grooves (`OAK[0]`), plank-to-plank shade
-    // variation (`OAK[2]`/`OAK[3]`) and adzed dark grain flecks (`OAK[1]`)
-    // give the tabletop crisp 1x1 tactile texture matching the Tavern's own timber.
-    const boardTop = (a0, a1, c0, c1, h, seams, part, salt) => each((x, y, cx, cy) => {
-        const [a, c] = topAt(cx, cy, h);
-        if (a < a0 || a > a1 || c < c0 || c > c1) return;
-        let boardIdx = 0;
-        for (let i = 0; i < seams.length; i++) if (c >= seams[i]) boardIdx = i + 1;
-        let colour = (boardIdx & 1) === 1 ? OAK[2] : OAK[3];
-        if (seams.some((s) => Math.abs(c - s) < 0.02)) colour = OAK[0];
-        else if (knot(a, c, salt)) colour = OAK[0];
-        else if (grain(a, c, salt)) colour = (boardIdx & 1) === 1 ? OAK[3] : OAK[1];
-        put(x, y, colour, part);
-    });
+    // Crafted oak planks with crisp dark seams (`OAK[0]`), subtle plank-edge
+    // bevel highlights, joinery dowel pegs over the trestle cleats, at most
+    // one subtle knot per plank and smooth elongated grain dashes along the
+    // plank axis.
+    const boardTop = (a0, a1, c0, c1, h, seams, part, salt, pegAt = null) => {
+        const edges = [c0, ...seams, c1];
+        each((x, y, cx, cy) => {
+            const [a, c] = topAt(cx, cy, h);
+            if (a < a0 || a > a1 || c < c0 || c > c1) return;
+            let boardIdx = 0;
+            for (let i = 0; i < seams.length; i++) if (c >= seams[i]) boardIdx = i + 1;
+            const cMin = edges[boardIdx];
+            const cMax = edges[boardIdx + 1];
+            const cMid = (cMin + cMax) / 2;
+            const altPlank = (boardIdx & 1) === 1;
+            let colour = altPlank ? OAK[2] : OAK[3];
+            if (seams.some((s) => Math.abs(c - s) < 0.02)) {
+                colour = OAK[0];
+            } else if (c - cMin > 0.018 && c - cMin < 0.04) {
+                // Crisp sunlit bevel catchlight along each plank's upper edge.
+                colour = OAK[3];
+            } else if (pegAt !== null && Math.abs(Math.abs(a) - pegAt) < 0.028 && Math.abs(c - cMid) < 0.02) {
+                // Recessed oak joinery peg over the A-frame cleat.
+                colour = OAK[0];
+            } else if (plankKnot(a, c, boardIdx, cMin, cMax, salt)) {
+                colour = OAK[1];
+            } else if (grainDash(a, c, salt)) {
+                colour = altPlank ? OAK[1] : OAK[2];
+            }
+            put(x, y, colour, part);
+        });
+    };
     // The long face at across = A over [a0, a1], rows h in [h0, h1).
     const longFace = (A, a0, a1, h0, h1, part, rows) => each((x, y, cx, cy) => {
         const [a, h] = acrossPlane(cx, cy, A);
@@ -245,21 +270,28 @@ export function tavernTableArt(facing = 'south-west') {
         let colour = CAP;
         if (seams.some((s) => Math.abs(c - s) < 0.017)) colour = OAK[0];
         else if (Math.floor(h - h0) === Math.floor((h1 - h0) / 2)) {
-            const board = [c0, ...seams, c1].findIndex((s, i, list) => i < list.length - 1 && c >= s && c < list[i + 1]);
             const edges = [c0, ...seams, c1];
+            const board = edges.findIndex((s, i, list) => i < list.length - 1 && c >= s && c < list[i + 1]);
             const mid = (edges[board] + edges[board + 1]) / 2;
             if (Math.abs(c - mid) < 0.017) colour = longLit ? OAK[2] : OAK[3];
         }
         put(x, y, colour, part);
     });
     // A splayed leg board in the plane along = P, from (cFoot, h 0) to
-    // (cTop, hTop), `w` texels wide; `far` legs stand in the table's shade.
+    // (cTop, hTop), `w` texels wide; `far` legs stand in the table's shade,
+    // while near legs carry subtle vertical bevel shading.
     const legBoard = (P, cFoot, cTop, h0, hTop, w, part, far) => each((x, y, cx, cy) => {
         const [c, h] = alongPlane(cx, cy, P);
         if (h < h0 || h >= hTop) return;
         const mid = cFoot + (cTop - cFoot) * (h - h0) / (hTop - h0);
-        if (Math.abs(c - mid) > w / 64) return;
-        put(x, y, far ? OAK[0] : CAP, part, h < h0 + 1 ? 'foot' : 'leg');
+        const halfW = w / 64;
+        if (Math.abs(c - mid) > halfW) return;
+        let colour = far ? OAK[0] : CAP;
+        if (!far) {
+            if (c - mid < -halfW * 0.35) colour = longLit ? OAK[2] : OAK[3];
+            else if (c - mid > halfW * 0.45) colour = OAK[0];
+        }
+        put(x, y, colour, part, h < h0 + 1 ? 'foot' : 'leg');
     });
     // A cross cleat in the plane along = P: rows [h0, h1) over [c0, c1].
     const cleat = (P, c0, c1, h0, h1, part, far) => each((x, y, cx, cy) => {
@@ -276,8 +308,8 @@ export function tavernTableArt(facing = 'south-west') {
         legBoard(P, -bd + 0.02, -0.02, 0, B.height - B.apron, 2.6, 'front', far);
         legBoard(P, bd - 0.02, 0.02, 0, B.height - B.apron, 2.6, 'front', far);
     }
-    boardTop(-L, L, -bd, bd, B.height, [0], 'back', 1);
-    longFace(bd, -L, L, B.height - B.apron, B.height, 'front', (row) => (row === B.apron - 1 ? LONG_HI : row === 0 ? OAK[1] : LONG));
+    boardTop(-L, L, -bd, bd, B.height, [0], 'back', 1, B.end);
+    longFace(bd, -L, L, B.height - B.apron, B.height, 'front', (row) => (row === B.apron - 1 ? LONG_HI : row === 0 ? OAK[0] : LONG));
     endGrain(L, -bd, bd, B.height - B.apron, B.height, [0], 'front');
 
     // --- the table: the far A-frame, the stretcher, the near A-frame, then
@@ -292,14 +324,15 @@ export function tavernTableArt(facing = 'south-west') {
         cleat(P, c - 0.07, c + 0.07, 5, 7, 'front', far);
     };
     aFrame(-T.frame, true);
-    longFace(c + 0.02, -T.frame, T.frame, T.stretcher, T.stretcher + 2, 'front', (row) => (row === 1 ? LONG : OAK[1]));
+    longFace(c + 0.02, -T.frame, T.frame, T.stretcher, T.stretcher + 2, 'front', (row) => (row === 1 ? LONG : OAK[0]));
     aFrame(T.frame, false);
     const seams = [c - d / 3, c + d / 3];
-    boardTop(-L, L, c - d, c + d, T.height, seams, 'front', 2);
-    longFace(c + d, -L, L, legTop, T.height, 'front', (row, a) => {
+    boardTop(-L, L, c - d, c + d, T.height, seams, 'front', 2, T.frame);
+    // Clean horizontal board-thickness bevel on the front apron (zero flecks).
+    longFace(c + d, -L, L, legTop, T.height, 'front', (row) => {
         if (row === T.apron - 1) return LONG_HI;
         if (row === 0) return OAK[0];
-        return seatHash(`ap:${Math.floor(a * 12)}`) % 4 === 0 ? (longLit ? OAK[0] : OAK[3]) : LONG;
+        return LONG;
     });
     endGrain(L, c - d, c + d, legTop, T.height, seams, 'front');
 
@@ -331,16 +364,16 @@ export function tavernTableArt(facing = 'south-west') {
     for (const [x, y] of feet) put(x, y, FOOT_CONTACT, 'front', 'contact');
 
     // --- iron strap corners: an L of strap over each end of the table's
-    // apron and down the end grain at the front corner, a rivet on each.
+    // apron and down the end grain at the front corner, a crisp rivet on each.
     for (const a of [-L + 0.05, L - 0.05]) {
         for (let row = 0; row < T.apron; row++) {
             const [sx, sy] = project(a, c + d, legTop + row + 0.5);
-            put(sx, sy, row === 1 ? IRON[2] : IRON[1], 'front');
+            put(sx, sy, row === 1 ? IRON[3] : IRON[0], 'front');
         }
     }
     for (let row = 0; row < T.apron; row++) {
         const [sx, sy] = project(L, c + d - 0.05, legTop + row + 0.5);
-        put(sx, sy, row === 1 ? IRON[1] : IRON[0], 'front');
+        put(sx, sy, row === 1 ? IRON[2] : IRON[0], 'front');
     }
     for (const a of [-L + 0.05, L - 0.05]) {
         const [sx, sy] = project(a, c + d - 0.03, T.height);
@@ -380,17 +413,19 @@ export function tavernTableArt(facing = 'south-west') {
 
 // The seeded dressing stamps (6 texels wide, foot on the bottom row),
 // authored for a south-west table; a south-east one mirrors them.
+// Foam and parchment stay strictly below Tier A (< 0.62 luma at noon;
+// never EFFECT_COLORS.peak on a static daytime prop).
 const DRESSING_ROWS = Object.freeze({
-    // A foam tankard, the patrons' own (C4 cream head, iron hoops).
+    // A foam tankard, the patrons' own (warm ivory foam head, iron hoops).
     tankard: ['.FFFF.', 'FFFFFF', 'LMMMSh', 'IIIIIh', 'LMMMSh', 'LMMMS.', 'IIIII.', '.DDD..'],
     // A folded parchment lying flat, its fold a stop down, its shadow on the oak.
-    parchment: ['..PPPP', 'PPPPfS', 'SSSSf.', '.kkkk.'],
+    parchment: ['..PPPP', 'PPPPfp', 'ppppf.', '.kkkk.'],
     // A wooden trencher with a heel of bread.
     trencher: ['..bb..', '.kMbM.', 'kMLLMk', '.kkkk.'],
 });
 const DRESSING_COLOURS = Object.freeze({
-    F: EFFECT_COLORS.peak, L: OAK[3], M: OAK[2], S: SAND[3], I: STONE[1], D: OAK[0], h: STONE[2],
-    P: SAND[4], f: SAND[1], k: OAK[1], b: SAND[2],
+    F: PLAZA[4], L: OAK[3], M: OAK[2], S: OAK[1], I: STONE[1], D: OAK[0], h: STONE[2],
+    P: SAND[2], p: SAND[1], f: SAND[0], k: OAK[1], b: SAND[1],
 });
 
 /**
@@ -776,7 +811,7 @@ export function tankardStamp(mirror = false) {
         '.DDD..',
     ];
     const colours = {
-        F: EFFECT_COLORS.peak, L: TIMBER[3], M: TIMBER[2], S: TIMBER[1],
+        F: PLAZA[4], L: TIMBER[3], M: TIMBER[2], S: TIMBER[1],
         I: STONE[1], D: TIMBER[0], h: STONE[2],
     };
     const canvas = document.createElement('canvas');
