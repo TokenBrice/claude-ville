@@ -149,7 +149,7 @@ const HALF_H = TILE_HEIGHT / 2;
 // longest measured slice stays within GROUND_SLICE_CAP_MS (`stats.maxSliceMs`)
 // with a row's worth of headroom over the soft target.
 const GROUND_BAND_ROWS = 64;
-const GROUND_SLICE_MS = 6;
+const GROUND_SLICE_MS = 5;
 const GROUND_SLICE_CAP_MS = 9;
 // The transient working-set ceiling of one base bake (the large typed
 // planes it holds at once, accounted in `stats.peakBytes`).

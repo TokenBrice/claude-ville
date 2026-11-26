@@ -338,14 +338,18 @@ test('100-agent dense circle swap: 0 stacks < 3 px, 0 stalls > 1.5 s, avg frame 
 
     const totalSteps = 920; // 46 simulated seconds (unobstructed trip = 1200 / 56 = 21.4 s)
     let solveMsTotal = 0;
+    let solveCpuUsTotal = 0;
     let measuredSteps = 0;
     let minPairDistDuringSim = Infinity;
 
     for (let step = 0; step < totalSteps; step++) {
+        const cpuBefore = process.cpuUsage();
         const t0 = performance.now();
         stepCrowdOrca(agents, dt);
         const elapsed = performance.now() - t0;
+        const cpuDelta = process.cpuUsage(cpuBefore);
         solveMsTotal += elapsed;
+        solveCpuUsTotal += cpuDelta.user + cpuDelta.system;
         measuredSteps++;
 
         for (let i = 0; i < N; i++) {
@@ -384,8 +388,10 @@ test('100-agent dense circle swap: 0 stacks < 3 px, 0 stalls > 1.5 s, avg frame 
     }
 
     const avgFrameMs = solveMsTotal / measuredSteps;
+    const avgCpuFrameMs = (solveCpuUsTotal / 1000) / measuredSteps;
     console.log(
-        `[W5-C ORCA 100-agent circle swap] avg=${avgFrameMs.toFixed(4)} ms/frame `
+        `[W5-C ORCA 100-agent circle swap] avgWall=${avgFrameMs.toFixed(4)} ms/frame `
+        + `avgCpu=${avgCpuFrameMs.toFixed(4)} ms/frame `
         + `arrived=${arrivedCount}/${N} minFinalDist=${minPairDistDuringSim.toFixed(2)}px `
         + `stacked<3px=${stackedFinal} maxStall=${maxStallSeen.toFixed(2)}s`,
     );
@@ -393,7 +399,7 @@ test('100-agent dense circle swap: 0 stacks < 3 px, 0 stalls > 1.5 s, avg frame 
     assert.equal(stackedFinal, 0, `expected 0 bodies stacked < 3 px, got ${stackedFinal} (minDist=${minFinalDist.toFixed(2)})`);
     assert.equal(stalledOverLimit, 0, `expected 0 deadlock stalls > 1.5 s, got ${stalledOverLimit} (maxStall=${maxStallSeen.toFixed(2)}s)`);
     assert.equal(arrivedCount, N, `expected all 100 agents to complete circle swap, got ${arrivedCount}/${N}`);
-    assert.ok(avgFrameMs < 1.0, `expected avg 100-agent solve < 1.0 ms/frame, got ${avgFrameMs.toFixed(4)} ms`);
+    assert.ok(avgCpuFrameMs < 1.0, `expected avg 100-agent CPU solve < 1.0 ms/frame, got ${avgCpuFrameMs.toFixed(4)} ms (wall=${avgFrameMs.toFixed(4)} ms)`);
 });
 
 // ---------------------------------------------------------------------------

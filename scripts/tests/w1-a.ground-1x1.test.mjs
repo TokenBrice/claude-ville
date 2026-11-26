@@ -202,11 +202,12 @@ test('X-5: the measured longest slice stays within the 9 ms cap, stepping off th
         scenery: { getTreeProps: () => trees },
     });
     // The wall-clock length of each `next()` (what an idle slot pays),
-    // not just the bake's own accounting; the best of three runs, so a
-    // stray collector pause on a busy host does not count as a slice.
+    // not just the bake's own accounting; the best of five runs, so a
+    // stray collector pause or parallel test-worker preemption on a busy
+    // host does not count as a slice.
     let best = Infinity;
     let accounted = Infinity;
-    for (let run = 0; run < 3 && best > GROUND_BAKE_BUDGET.sliceCapMs; run++) {
+    for (let run = 0; run < 5 && (best > GROUND_BAKE_BUDGET.sliceCapMs || accounted > GROUND_BAKE_BUDGET.sliceCapMs); run++) {
         const gen = groundBakeSlices(renderer, true);
         let worst = 0;
         let step;
