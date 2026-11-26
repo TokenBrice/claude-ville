@@ -106,7 +106,7 @@ import { Chronicler } from './Chronicler.js';
 import { VillageDirector } from './VillageDirector.js';
 import { tileToWorld, worldToTile, buildingCenterToWorld } from './Projection.js';
 import { summarizeCrowdClusterEntries } from './CrowdClusters.js';
-import { attentionScreenRects, isAttentionStatus, layoutAttentionPlates } from './AttentionPlates.js';
+import { attentionKeyAt, attentionScreenRects, isAttentionStatus, layoutAttentionPlates } from './AttentionPlates.js';
 import { IDENTITY_LABEL, identityLabelTop, identityLabelWidth } from './WorldLabelKit.js';
 import {
     THOUGHT_CANDIDATE_COUNT,
@@ -2256,6 +2256,7 @@ export class IsometricRenderer {
         this.councilRibbon = new CouncilRibbon();
         this.signageMode = readSignageMode();
         this.buildingRenderer?.setSignageMode?.(this.signageMode);
+        this.buildingRenderer?.setTheatreMode?.(Boolean(this.theatreMode));
         // #attract — idle attract camera defaults on; honor the persisted toggle.
         let autoCam = true;
         try { autoCam = window.localStorage?.getItem('cv-auto-camera') !== '0'; } catch (_) { /* storage unavailable */ }
@@ -2595,6 +2596,7 @@ export class IsometricRenderer {
         if (!root || (!active && !root.dataset.cvTheatre && !this.theatreMode)) return;
         this._endTheatreTransition?.();
         this.theatreMode = Boolean(active);
+        this.buildingRenderer?.setTheatreMode?.(this.theatreMode);
         const whisper = document.getElementById('theatreWhisper');
         clearTimeout(this._whisperTimer);
         whisper?.toggleAttribute('data-visible', active);
@@ -8391,10 +8393,7 @@ export class IsometricRenderer {
             state: this._attentionState || (this._attentionState = {}),
             dwellNow: now,
             hoveredAgentId: this._hoveredAgentSprite?.agent.id,
-            hoveredAttentionKey: this._attentionLayout?.plates?.find(p => {
-                const r = p.rect, pt = this._hoverPoint;
-                return pt && r && pt.x >= r.left && pt.x < r.right && pt.y >= r.top && pt.y < r.bottom;
-            })?.key,
+            hoveredAttentionKey: this._hoverPoint ? attentionKeyAt(this._attentionLayout, this._hoverPoint.x, this._hoverPoint.y) : null,
             selectedAgentId: this.selectedAgent?.id,
             attentionHold: Boolean(this.cameraDirector?.attentionFrame?.hold && !this.cameraDirector.attentionFrame.hold.done),
             readMode: this.getReadMode(),

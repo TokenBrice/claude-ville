@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-11-26-w1-council-final"
+  assetVersion: "2026-11-26-w4-wave4"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -2344,6 +2344,18 @@ statusOverlays:
     size: 64
     anchor: [32, 36]
 
+  # W4-Pre 4.2 — The Glass 228x228 brass rim stamp (Spec 04 §4.7).
+  # Baked deterministically by scripts/sprites/bake-inspection-glass.mjs:
+  # exact 220 px transparent aperture + 4 px 3-course brass bezel, 0 AA.
+  - id: overlay.inspectionGlass.rim
+    tool: procedural
+    prompt: "228x228 circular stepped pixel-art brass inspection glass bezel with 220px transparent inner aperture, 4px three-course bevelled brass ring, four cardinal rivets, and 1px dark outer and inner ink rings, zero anti-aliasing, transparent background"
+    width: 228
+    height: 228
+    anchor: [114, 114]
+    materialClass: metal
+    provenance: { item: 'W4-Pre 4.2', source: 'scripts/sprites/bake-inspection-glass.mjs', generations: 0, generatedAt: '2026-11-26' }
+
 # ─── BUILDINGS ───────────────────────────────────────────────────────────────
 # All buildings are single-image PNGs (buildings/<id>/base.png) per the building
 # style contract (docs/building-style-contract.md): true 2:1 iso, slate-blue roofs,
@@ -4629,6 +4641,22 @@ props:
     height: 32
     anchor: [24, 24]
     provenance: { item: 'W8.3b', generations: 1 }
+
+  # W4-Pre 4.1 — Carved district signage motif strip (Spec 04 §4.2).
+  # 9-frame 16x16 strip in BUILDING_DEFS order, baked deterministically by
+  # scripts/sprites/bake-carved-motifs.mjs (0 PixelLab gens).
+  - id: prop.carvedMotifs
+    tool: procedural
+    prompt: "9-frame horizontal strip of 16x16 carved medieval oak door-bracket district signs on wrought-iron bracket arms with 10x10 walnut-framed 8x8 carved bas-relief emblems matching the nine village landmarks, crisp 1px outline, transparent background"
+    width: 144
+    height: 16
+    frames: 9
+    frameW: 16
+    frameH: 16
+    anchor: [8, 14]
+    materialClass: timber
+    elevation: { base: 0, top: 14, unit: sprite-px }
+    provenance: { item: 'W4-Pre 4.1', source: 'scripts/sprites/bake-carved-motifs.mjs', generations: 0, generatedAt: '2026-11-26' }
 
 # ─── VEGETATION ──────────────────────────────────────────────────────────────
 vegetation:

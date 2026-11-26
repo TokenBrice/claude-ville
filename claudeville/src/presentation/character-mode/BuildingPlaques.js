@@ -510,7 +510,7 @@ export const CARVED_CELL_OFFSET = Object.freeze([-8, -1]);
 // Joined dynamically until the W4 integrator merges the manifest entry for
 // the baked sheet (as InspectionGlass does for its rim stamp): no manifest
 // entry, no resident sheet, so the bracket draws its recipe pixels.
-export const CARVED_MOTIF_SHEET_ID = ['prop', 'carvedMotifs'].join('.');
+export const CARVED_MOTIF_SHEET_ID = 'prop.carvedMotifs';
 export const CARVED_MOTIF_ORDER = Object.freeze(BUILDING_DEFS.map((building) => building.type));
 const CARVED_INK = '#060402';
 const TALLY_WALNUT = ART_RAMPS.timber[0];

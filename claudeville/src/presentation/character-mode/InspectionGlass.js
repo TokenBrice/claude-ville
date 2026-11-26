@@ -35,8 +35,7 @@ export const GLASS_TOUCH_OFFSET_Y = 134;
 export const GLASS_TOUCH_DRAG_THRESHOLD_PX = 6;
 export const GLASS_CUTAWAY_MIN_ZOOM = 2;
 
-// Joined dynamically until Wave 4 merges the manifest patch for the rim stamp.
-export const GLASS_RIM_ASSET_ID = ['overlay', 'inspectionGlass', 'rim'].join('.');
+export const GLASS_RIM_ASSET_ID = 'overlay.inspectionGlass.rim';
 
 const RIM_INK = '#060402';
 const RIM_LIT = ART_RAMPS.trimGold[2];

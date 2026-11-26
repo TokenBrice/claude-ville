@@ -1183,10 +1183,7 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
         readMode: renderer.getReadMode(),
         selectedType: villageSnapshot?.selectedBuildingSignal?.type || null,
     };
-    if (theatreMode && renderer.buildingRenderer) {
-        renderer.buildingRenderer.plaqueWorldRects = [];
-        renderer.buildingRenderer.plaqueDrawnTypes?.clear();
-    } else if (!postcard) renderer.buildingRenderer?.drawLabels(overlayCtx, {
+    if (!postcard) renderer.buildingRenderer?.drawLabels(overlayCtx, {
         ...labelOptions,
     });
     if (collectStructuralDiagnostics) {
@@ -2312,7 +2309,10 @@ function drawGlassPass(ctx, renderer, sprites, labelOptions) {
                 buildings.plaqueDrawnTypes = new Set();
                 buildings.plaqueBuildingByAgentId = new Map();
                 buildings.drawLabels(ctx, { ...labelOptions, theatreMode: false, readMode: true, glassPass: true,
-                    inGlass: (x, y) => glass.inLens(x, y) });
+                    inGlass: (wx, wy) => {
+                        const pt = renderer.camera.worldToScreen(wx, wy);
+                        return glass.inLens(pt.x, pt.y);
+                    } });
             } finally {
                 Object.assign(buildings, { plaqueWorldRects, plaqueDrawnTypes, plaqueBuildingByAgentId });
             }
