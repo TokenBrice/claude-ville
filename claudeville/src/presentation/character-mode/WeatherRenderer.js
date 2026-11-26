@@ -10,11 +10,12 @@
 
 import { WEATHER_PRESETS, WEATHER_TYPES } from './AtmosphereState.js';
 import { MAP_SIZE, TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
-import { WEATHER_SNOW_COLORS } from '../../config/artPalette.js';
+import { RECEIVER_LUMA_CEILING, WEATHER_SNOW_COLORS } from '../../config/artPalette.js';
 import { ornamentPlan, sampleFramePressure } from './MarkGovernor.js';
 import { baseWindX, cloudCourseDrift, windAt } from './Wind.js';
-import { applyGradeToRgb } from './GradeEvaluator.js';
-import { OCEAN_HORIZON_WORLD_Y, overcastPearlShare, RAIN_START_PRECIPITATION } from './CoastBake.js';
+import { applyGradeToRgb, capSaturation } from './GradeEvaluator.js';
+import { COAST_FIELD_FLAGS, OCEAN_HORIZON_WORLD_Y, overcastPearlShare, RAIN_START_PRECIPITATION } from './CoastBake.js';
+import { extractPuddleSites } from './GroundWeatherField.js';
 import { lookStrength } from './LookStrengths.js';
 import { precipitationIsFrozen } from './GroundState.js';
 
@@ -107,6 +108,15 @@ export const SPLASH_FRAMES = Object.freeze([
 ]);
 export const RAIN_LIGHT = '#c4d6e2';
 export const RAIN_DIM = '#96aabb';
+// W2-B (§4.12) — 2-frame concentric rain puddle rings (2 × 120 ms):
+// Frame A = 3×1 art-px (centre + left/right),
+// Frame B = 5×3 art-px hollow ellipse outline (exact 8 px).
+export const PUDDLE_RING_FRAME_MS = 120;
+export const PUDDLE_RING_RATE_PER_10 = 1.5;
+export const PUDDLE_RING_FRAMES = Object.freeze([
+    Object.freeze(['.....', '.###.', '.....']),
+    Object.freeze(['.###.', '#...#', '.###.']),
+]);
 
 const DEFAULT_INTENSITY = {
     overcast: 0.38,
@@ -169,6 +179,10 @@ const FOG_COURSE_ALPHA = Object.freeze([0.11, 0.2, 0.31]);
 const FOG_OCTAVES = Object.freeze([[3, 8, 0.62], [6, 16, 0.38]]);
 const FOG_SEAM_TEXELS = 1;
 const FOG_BUCKETS = 8;
+// W2-B (§4.11) — fog-bank density multiplier over coast `water` cells (canals,
+// lagoon, open water), capped by FOG_BUCKETS; §4.10 dawn rose-gold crest mix.
+export const FOG_WATER_DENSITY_BOOST = 1.35;
+export const DAWN_MIST_CREST_MIX = 0.22;
 // LA-7 — sea fret: the banks lie full on the sea (the open sea past the
 // shelf too), the lake and the rivers and thin to this share over land at
 // look strength 1 (`la7`; 0 keeps today's even banks). The share rides the
@@ -336,6 +350,11 @@ export class WeatherRenderer {
         this._lastSplashStamp = 0;
         this._splashStampSeed = 0;
         this._splashes = [];
+        this._puddleRings = [];
+        this._puddleRingAccum = 0;
+        this._puddleRingSeed = 0;
+        this._lastFrameDt = 16;
+        this._lightningSheen = 0;
         this._lightGrade = null;
         this._washTile = null;
         this._washPattern = null;
@@ -344,6 +363,14 @@ export class WeatherRenderer {
         this._fogVariants = null;
         this._bolt = null;
         this._allowEmbellishment = true;
+    }
+
+    /**
+     * W2-B (§4.11) — read-only lightning sheen scalar: 1 during the 83 ms
+     * storm flash peak when motion is enabled, 0 otherwise / reduced motion.
+     */
+    get lightningSheen() {
+        return this._lightningSheen;
     }
 
     setAssets(assets) {
@@ -375,6 +402,7 @@ export class WeatherRenderer {
     } = {}) {
         if (!ctx || !canvas || !canvas.width || !canvas.height) return;
 
+        this._lightningSheen = 0;
         const weather = normalizeWeather(atmosphere);
         if (!weather) return;
         this._lightGrade = atmosphere?.lightGrade || null;
@@ -388,14 +416,16 @@ export class WeatherRenderer {
         if (!hasForegroundWeather) return;
 
         const particleEnabled = atmosphere?.motion?.particleEnabled !== false;
+        this._lightningSheen = lightningSheenFor(strike, particleEnabled ? 1 : 0);
         const level = weatherPressureLevel(atmosphere, !particleEnabled, {
             zoom: this.sceneContext?.camera?.zoom,
             width: canvas.width,
             height: canvas.height,
         });
         this._allowEmbellishment = weatherEmbellishmentAllowed(level);
+        const frameDt = particleEnabled ? Math.max(0, Math.min(MAX_FRAME_DT, Number(dt) || 0)) : 0;
+        this._lastFrameDt = frameDt;
         if (particleEnabled) {
-            const frameDt = Math.max(0, Math.min(MAX_FRAME_DT, Number(dt) || 0));
             this.elapsedMs = (this.elapsedMs + frameDt) % LOOP_MS;
         }
 
@@ -447,9 +477,11 @@ export class WeatherRenderer {
             const storm = weather.type === 'storm';
             const rainIntensity = Math.max(precipitation, weather.intensity * (storm ? 0.86 : 0.72)) * legibility.rain;
             if (frozenPrecipitation(atmosphere)) {
+                this._puddleRings.length = 0;
+                this._puddleRingAccum = 0;
                 this._drawSnow(ctx, canvas, { ...weather, intensity: rainIntensity }, phaseMs, seed, particleEnabled);
             } else {
-                this._drawRain(ctx, canvas, { ...weather, intensity: rainIntensity }, phaseMs, seed, particleEnabled, timeMs, gpuRainShare);
+                this._drawRain(ctx, canvas, { ...weather, intensity: rainIntensity }, phaseMs, seed, particleEnabled, timeMs, gpuRainShare, frameDt, atmosphere);
             }
         }
         // Reduced motion: `stormStrikeAt` never strikes, so no bolt and no flash.
@@ -468,8 +500,13 @@ export class WeatherRenderer {
         this._lastSplashStamp = 0;
         this._splashStampSeed = 0;
         this._splashes.length = 0;
+        this._puddleRings.length = 0;
+        this._puddleRingAccum = 0;
+        this._puddleRingSeed = 0;
+        this._lastFrameDt = 16;
+        this._lightningSheen = 0;
         this.sceneContext = null;
-        const fogTiles = Object.values(this._fogVariants || {}).map(variant => variant.canvas);
+        const fogTiles = Object.values(this._fogVariants || {}).flatMap(variant => [variant.canvas, variant.waterCanvas]);
         for (const tile of [this._washTile, ...fogTiles]) {
             if (!tile) continue;
             tile.width = 0;
@@ -559,6 +596,9 @@ export class WeatherRenderer {
 
     // The overlay is ungraded on both backends, so the wash and fog colours
     // take the C2 grade here (a fog at night is a dim blue-grey, not white).
+    // W2-B (§4.11): fog takes its hue from the graded sky/haze (capped at
+    // S <= 0.18) at the legacy graded luma, blending back to legacy at night
+    // so night = 1 stays byte-identical to v0.67.1.
     _gradedWashColors() {
         const grade = this._lightGrade;
         const key = grade?.cacheKey || 'neutral';
@@ -566,11 +606,29 @@ export class WeatherRenderer {
         const toGraded = rgb => (grade
             ? applyGradeToRgb(rgb.map(channel => channel / 255), grade).map(channel => Math.round(clamp(channel, 0, 1) * 255))
             : rgb.slice());
+        let fog;
+        if (grade) {
+            const legacy01 = applyGradeToRgb(FOG_WASH_RGB.map(channel => channel / 255), grade);
+            if (grade.horizonHaze && grade.skyHorizon) {
+                const sky = capSaturation(
+                    mix3(hexToRgb01(grade.horizonHaze), hexToRgb01(grade.skyHorizon), 0.35),
+                    0.18,
+                );
+                const scale = lumaOf(legacy01) / Math.max(1e-4, lumaOf(sky));
+                const tinted = sky.map(channel => channel * scale);
+                const fog01 = mix3(tinted, legacy01, gradeNightOf(grade));
+                fog = fog01.map(channel => Math.round(clamp(channel, 0, 1) * 255));
+            } else {
+                fog = legacy01.map(channel => Math.round(clamp(channel, 0, 1) * 255));
+            }
+        } else {
+            fog = FOG_WASH_RGB.slice();
+        }
         this._washColors = {
             key,
             overcast: toGraded(OVERCAST_WASH_RGB),
             pearl: toGraded(OVERCAST_PEARL_RGB),
-            fog: toGraded(FOG_WASH_RGB),
+            fog,
         };
         return this._washColors;
     }
@@ -583,7 +641,10 @@ export class WeatherRenderer {
     // ground below the sea horizon, under every body, building and tree. The
     // tile is FOG_COLOR as-is (both backends grade the world downstream).
     // `landShare` is the LA-7 sea fret's share over land (1 = even banks).
-    groundFogLayer({ atmosphere = null, viewport = null, timeMs = null } = {}) {
+    // W2-B (§4.10–4.11): top course takes a dawn rose-gold crest when dawn
+    // share > 0; water density is boosted ×1.35 (capped at FOG_BUCKETS), with
+    // safe ×1.0 fallback when no coast field is bound.
+    groundFogLayer({ atmosphere = null, viewport = null, timeMs = null, waterFields = null } = {}) {
         const weather = normalizeWeather(atmosphere);
         if (!weather || !(weather.intensity > 0) || typeof document === 'undefined') return null;
         const reduced = atmosphere?.motion?.particleEnabled === false;
@@ -594,28 +655,63 @@ export class WeatherRenderer {
         });
         if (!weatherEmbellishmentAllowed(level)) return null;
         const legibility = weatherLegibilityGate(weather, atmosphere);
-        const strength = Math.round(clamp(fogBankIntensity(weather, legibility) * seaFretMistShare(weather), 0, 1) * FOG_BUCKETS);
+        const rawStrength = clamp(fogBankIntensity(weather, legibility) * seaFretMistShare(weather), 0, 1);
+        const strength = Math.round(rawStrength * FOG_BUCKETS);
         if (strength <= 0) return null;
-        const key = `ground-fog-${strength}`;
+        const waterStrength = Math.min(FOG_BUCKETS, Math.round(clamp(rawStrength * FOG_WATER_DENSITY_BOOST, 0, 1) * FOG_BUCKETS));
+        const dawnShare = Math.round(dawnMistShareOf(atmosphere) * 8) / 8;
+        const skyHorizonHex = atmosphere?.lightGrade?.skyHorizon || atmosphere?.sky?.palette?.horizon || null;
+        const topCourseRgb = dawnShare > 0 && skyHorizonHex
+            ? mix3(FOG_COLOR, hexToRgb01(skyHorizonHex).map(c => c * 255), DAWN_MIST_CREST_MIX * dawnShare).map(c => Math.round(clamp(c, 0, 255)))
+            : FOG_COLOR;
+        const crestSuffix = dawnShare > 0 && skyHorizonHex ? `-d${Math.round(dawnShare * 8)}-${topCourseRgb.join(',')}` : '';
+        const key = `ground-fog-${strength}${crestSuffix}`;
+        const waterKey = `ground-fog-${waterStrength}${crestSuffix}`;
         const variants = this._fogVariants ||= {};
         const variant = variants.plain ||= {
             canvas: null,
-            layer: { canvas: null, key: '', x: 0, y: 0, width: FOG_TILE_W, height: FOG_TILE_H, texel: FOG_TEXEL, top: OCEAN_HORIZON_WORLD_Y },
+            waterCanvas: null,
+            waterKey: '',
+            layer: {
+                canvas: null,
+                waterCanvas: null,
+                key: '',
+                x: 0,
+                y: 0,
+                width: FOG_TILE_W,
+                height: FOG_TILE_H,
+                texel: FOG_TEXEL,
+                top: OCEAN_HORIZON_WORLD_Y,
+            },
         };
         if (variant.layer.key !== key || !variant.canvas) {
-            variant.canvas = bakeFogBankTile(variant.canvas, strength / FOG_BUCKETS, FOG_COLOR);
+            variant.canvas = bakeFogBankTile(variant.canvas, strength / FOG_BUCKETS, FOG_COLOR, topCourseRgb);
+        }
+        const fields = waterFields || this.sceneContext?.waterFields?.() || this.sceneContext?.coastField || null;
+        let waterCanvas = variant.canvas;
+        if (fields?.coastField && waterStrength > strength) {
+            if (variant.waterKey !== waterKey || !variant.waterCanvas) {
+                variant.waterCanvas = bakeFogBankTile(variant.waterCanvas, waterStrength / FOG_BUCKETS, FOG_COLOR, topCourseRgb);
+                variant.waterKey = waterKey;
+            }
+            waterCanvas = variant.waterCanvas;
         }
         const drift = cloudCourseDrift(reduced ? null : timeMs, weather);
         const layer = variant.layer;
         layer.canvas = variant.canvas;
+        layer.waterCanvas = waterCanvas;
         layer.key = key;
         layer.x = Math.round(drift.x);
         layer.y = Math.round(drift.y);
         layer.landShare = seaFretLandShare();
+        layer.landStrength = strength / FOG_BUCKETS;
+        layer.waterStrength = fields?.coastField ? waterStrength / FOG_BUCKETS : strength / FOG_BUCKETS;
+        layer.waterDensityBoost = FOG_WATER_DENSITY_BOOST;
+        layer.dawnCrestRgb = topCourseRgb;
         return layer;
     }
 
-    _drawRain(ctx, canvas, weather, phaseMs, seed, particleEnabled, timeMs = 0, gpuShare = 0) {
+    _drawRain(ctx, canvas, weather, phaseMs, seed, particleEnabled, timeMs = 0, gpuShare = 0, frameDt = this._lastFrameDt, atmosphere = null) {
         const intensity = clamp(weather.intensity, 0, 1);
         const storm = weather.type === 'storm';
         const grid = this._artGrid();
@@ -662,12 +758,13 @@ export class WeatherRenderer {
         }
         ctx.restore();
 
-        // Storm fronts: a few darker sheets of heavier air drifting on the
-        // wind, only in heavy storms and only with motion (the caller gates
-        // the flash the same way). `intensity` is already legibility-gated, so
-        // a pressured scene drops below the threshold and keeps its labels.
+        // Storm fronts: wind-sheared parallelogram sheets of heavier air
+        // drifting on the wind, only in heavy storms and only with motion (the
+        // caller gates the flash the same way). `intensity` is already
+        // legibility-gated, so a pressured scene drops below the threshold and
+        // keeps its labels.
         if (this._allowEmbellishment && storm && intensity > 0.7 && particleEnabled) {
-            this._drawRainCurtains(ctx, canvas, { intensity, windX: drift, phaseMs, seed });
+            this._drawRainCurtains(ctx, canvas, { intensity, windX: drift, lean, phaseMs, seed });
         }
 
         if (this._allowEmbellishment && (weather.precipitation > SPLASH_PRECIP_THRESHOLD || intensity > SPLASH_PRECIP_THRESHOLD)) {
@@ -678,7 +775,12 @@ export class WeatherRenderer {
                 seed,
                 alphaScale,
                 overlayShare,
+                frameDt,
+                atmosphere,
             });
+        } else if (!particleEnabled) {
+            this._puddleRings.length = 0;
+            this._puddleRingAccum = 0;
         }
     }
 
@@ -855,12 +957,14 @@ export class WeatherRenderer {
         ctx.restore();
     }
 
-    // 2–3 sheets of heavier air drifting on the wind, each phase-offset, so a
-    // storm reads as weather fronts crossing the view. Each sheet is two
-    // stepped courses (a dense core inside a thinner band) of source-over
-    // darkening: storm air gets heavier, never milkier. Storm-only,
-    // animated-only; the courses' alpha stays under the labels' contrast.
-    _drawRainCurtains(ctx, canvas, { intensity, windX, phaseMs, seed }) {
+    // W2-B (§4.12) — 2–3 wind-sheared parallelogram sheets of heavier storm
+    // air drifting on the wind. Each sheet shears with the streak `lean`
+    // (`clamp(wind * 0.8, -1.5, 1.5)` cells per cell of fall), draws two flat
+    // courses per cell-row (outer alpha * 0.5, inner core layered to alpha * 1)
+    // with 2-cell 4×4 Bayer horizontal edges, a ragged cloud base
+    // (`hash(columnCell) % 4` cells), and a 6-cell 50 % Bayer bottom splash
+    // band. Zero full-height fillRect bars.
+    _drawRainCurtains(ctx, canvas, { intensity, windX, lean = null, phaseMs, seed }) {
         const count = intensity > 0.86 ? 3 : 2;
         // L1-1 — the curtains darken; like the washes they spend half their
         // alpha at full night.
@@ -868,7 +972,13 @@ export class WeatherRenderer {
         if (baseAlpha <= 0.005) return;
         const span = canvas.width + canvas.width * 0.6;
         const drift = clamp(Number(windX) || 0, -1.4, 1.4);
+        const wind = Number.isFinite(lean) ? lean : drift;
+        const shear = clamp(wind * 0.8, -1.5, 1.5);
         const { cell } = this._artGrid();
+        const totalRows = Math.ceil(canvas.height / cell);
+        const screenCols = Math.ceil(canvas.width / cell);
+        if (!(totalRows > 0) || !(screenCols > 0)) return;
+        const bottomBandStart = Math.max(0, totalRows - 6);
 
         ctx.save();
         ctx.fillStyle = 'rgb(18, 26, 38)';
@@ -880,13 +990,86 @@ export class WeatherRenderer {
             // Move with the wind; wrap across an extended span so a curtain
             // re-enters from the upwind edge.
             const travel = (phaseMs * speed * drift) + phase * span;
-            const left = Math.round((wrap(travel, -width, span) - width * 0.5) / cell) * cell;
+            const leftBase = Math.round((wrap(travel, -width, span) - width * 0.5) / cell) * cell;
+            // Anchor mid-height to leftBase so strong wind shear stays framed.
+            const left = leftBase - Math.round(totalRows * 0.5 * shear) * cell;
+            const leftCell = Math.round(left / cell);
             const alpha = baseAlpha * (0.7 + random01(seed, curtainSeed + 29) * 0.5);
-            const outer = Math.round(width / cell) * cell;
-            const inner = Math.round(width * 0.5 / cell) * cell;
+            const outerCells = Math.max(4, Math.round(width / cell));
+            const innerCells = Math.max(2, Math.round((width * 0.5) / cell));
+            const innerOffsetCells = Math.round((outerCells - innerCells) / 2);
+
+            const drawSheetCourse = (offsetCells, courseCells) => {
+                ctx.beginPath();
+                for (let row = 0; row < totalRows; row++) {
+                    const rowY = row * cell;
+                    const rowShear = Math.round(row * shear);
+                    const c0 = leftCell + offsetCells + rowShear;
+                    const c1 = c0 + courseCells;
+                    const visStart = Math.max(0, c0);
+                    const visEnd = Math.min(screenCols, c1);
+                    if (visStart >= visEnd) continue;
+                    const bayerRow = (row & 3) * 4;
+                    const isTopRagged = row < 4;
+                    const isBottomMist = row >= bottomBandStart;
+
+                    if (!isTopRagged && !isBottomMist) {
+                        // Left 2-cell 4×4 Bayer feathered edge.
+                        if (c0 >= 0 && c0 < screenCols && BAYER4[bayerRow + (c0 & 3)] < 5) {
+                            ctx.rect(c0 * cell, rowY, cell, cell);
+                        }
+                        if (c0 + 1 >= 0 && c0 + 1 < screenCols && c0 + 1 < c1 - 2 && BAYER4[bayerRow + ((c0 + 1) & 3)] < 11) {
+                            ctx.rect((c0 + 1) * cell, rowY, cell, cell);
+                        }
+                        // Solid interior strip for this row (height === cell).
+                        const midStart = Math.max(0, c0 + 2);
+                        const midEnd = Math.min(screenCols, c1 - 2);
+                        if (midEnd > midStart) {
+                            ctx.rect(midStart * cell, rowY, (midEnd - midStart) * cell, cell);
+                        }
+                        // Right 2-cell 4×4 Bayer feathered edge.
+                        if (c1 - 2 >= 0 && c1 - 2 < screenCols && c1 - 2 >= c0 + 2 && BAYER4[bayerRow + ((c1 - 2) & 3)] < 11) {
+                            ctx.rect((c1 - 2) * cell, rowY, cell, cell);
+                        }
+                        if (c1 - 1 >= 0 && c1 - 1 < screenCols && BAYER4[bayerRow + ((c1 - 1) & 3)] < 5) {
+                            ctx.rect((c1 - 1) * cell, rowY, cell, cell);
+                        }
+                        continue;
+                    }
+
+                    // Top 4 ragged cloud-base rows and bottom 6 misty splash rows.
+                    let runStart = -1;
+                    for (let col = visStart; col < visEnd; col++) {
+                        let draw = true;
+                        if (isTopRagged) {
+                            const sheetCol = col - leftCell - rowShear;
+                            const startRow = hashCurtainColumn(seed, curtainSeed, sheetCol) & 3;
+                            if (row < startRow) draw = false;
+                        }
+                        if (draw) {
+                            const b = BAYER4[bayerRow + (col & 3)];
+                            const dEdge = Math.min(col - c0, c1 - 1 - col);
+                            const edgeLimit = dEdge === 0 ? 5 : dEdge === 1 ? 11 : 16;
+                            const limit = isBottomMist ? Math.min(edgeLimit, 8) : edgeLimit;
+                            if (b >= limit) draw = false;
+                        }
+                        if (draw) {
+                            if (runStart < 0) runStart = col;
+                        } else if (runStart >= 0) {
+                            ctx.rect(runStart * cell, rowY, (col - runStart) * cell, cell);
+                            runStart = -1;
+                        }
+                    }
+                    if (runStart >= 0) {
+                        ctx.rect(runStart * cell, rowY, (visEnd - runStart) * cell, cell);
+                    }
+                }
+                ctx.fill();
+            };
+
             ctx.globalAlpha = alpha * 0.5;
-            ctx.fillRect(left, 0, outer, canvas.height);
-            ctx.fillRect(left + Math.round((outer - inner) / 2 / cell) * cell, 0, inner, canvas.height);
+            drawSheetCourse(0, outerCells);
+            drawSheetCourse(innerOffsetCells, innerCells);
         }
         ctx.restore();
     }
@@ -895,7 +1078,25 @@ export class WeatherRenderer {
     // walkable, dry, and not behind a building's opaque art (the overlay has
     // no depth). Each is a three-frame pixel crown in world-anchored cells, so
     // it pans with the ground. Water keeps its own rain ripples.
-    _drawRainSplashes(ctx, grid, { intensity, precipitation, particleEnabled, seed, alphaScale, overlayShare = 1 }) {
+    // W2-B (§4.12) — active puddle sites also spawn 2-frame concentric rings.
+    _drawRainSplashes(ctx, grid, {
+        intensity,
+        precipitation,
+        particleEnabled,
+        seed,
+        alphaScale,
+        overlayShare = 1,
+        frameDt = this._lastFrameDt,
+        atmosphere = null,
+    }) {
+        this._drawPuddleRings(ctx, grid, {
+            precipitation,
+            particleEnabled,
+            seed,
+            alphaScale,
+            frameDt,
+            atmosphere,
+        });
         if (!(overlayShare > 0)) return;
         const camera = grid.camera;
         const tiles = this.sceneContext?.openGroundTiles?.() || null;
@@ -946,6 +1147,115 @@ export class WeatherRenderer {
             this._stampSplash(ctx, grid, splash.x, splash.y, frame, alpha);
         }
         this._splashes.length = next;
+    }
+
+    // W2-B (§4.12) — 2-frame concentric rain puddle rings on active visible
+    // puddle sites from GroundWeatherField. Rate: `1.5 * precip` per second per
+    // 10 visible sites, <= 1 active ring per site, 2 × 120 ms frames, coloured
+    // from graded `skyHorizon` lifted 1 stop under `RECEIVER_LUMA_CEILING`.
+    // Strictly off under reduced motion.
+    _drawPuddleRings(ctx, grid, { precipitation, particleEnabled, seed, alphaScale = 1, frameDt = 16, atmosphere = null }) {
+        if (!particleEnabled || !(precipitation > SPLASH_PRECIP_THRESHOLD)) {
+            this._puddleRings.length = 0;
+            this._puddleRingAccum = 0;
+            return;
+        }
+        const camera = grid.camera;
+        if (!camera?.worldToScreen || !camera?.screenToWorld) return;
+        const sites = this._resolvePuddleSites();
+        if (!sites || !sites.length) return;
+
+        const now = this.elapsedMs;
+        const totalLifeMs = PUDDLE_RING_FRAMES.length * PUDDLE_RING_FRAME_MS;
+
+        // Expire finished rings first and index currently occupied sites so
+        // every site holds at most 1 active ring.
+        const activeSites = new Set();
+        let kept = 0;
+        for (const ring of this._puddleRings) {
+            const age = ringAgeMs(now, ring.born);
+            if (age < 0 || age >= totalLifeMs) continue;
+            this._puddleRings[kept++] = ring;
+            activeSites.add(ring.site);
+        }
+        this._puddleRings.length = kept;
+
+        const view = this._visibleWorldRect(camera);
+        const rawPuddles = this.sceneContext?.puddleLevel?.() ?? atmosphere?.groundState?.puddles;
+        const puddleLevel = Number.isFinite(Number(rawPuddles)) ? clamp(Number(rawPuddles), 0, 1) : 1;
+        const visible = [];
+        for (const site of sites) {
+            if (site.threshold != null && puddleLevel < site.threshold) continue;
+            if (!inRect(site, view)) continue;
+            visible.push(site);
+        }
+
+        if (visible.length > 0 && frameDt > 0) {
+            const ratePerSec = PUDDLE_RING_RATE_PER_10 * precipitation * (visible.length / 10);
+            this._puddleRingAccum = Math.min(
+                visible.length,
+                this._puddleRingAccum + ratePerSec * (frameDt / 1000),
+            );
+            if (this._puddleRingAccum >= 1) {
+                const free = [];
+                for (const site of visible) {
+                    if (!activeSites.has(site)) free.push(site);
+                }
+                while (this._puddleRingAccum >= 1 && free.length > 0) {
+                    this._puddleRingSeed = (this._puddleRingSeed + 1) >>> 0;
+                    const pickSeed = (seed + Math.imul(this._puddleRingSeed, 0x9e3779b1)) >>> 0;
+                    const pickIdx = Math.floor(random01(pickSeed, 17) * free.length);
+                    const site = free[pickIdx];
+                    free[pickIdx] = free[free.length - 1];
+                    free.pop();
+                    activeSites.add(site);
+                    this._puddleRings.push({ site, x: site.x, y: site.y, born: now });
+                    this._puddleRingAccum -= 1;
+                }
+                if (free.length === 0) this._puddleRingAccum = 0;
+            }
+        }
+
+        if (!this._puddleRings.length) return;
+        const color = puddleRingColor(this._lightGrade, atmosphere?.sky?.palette?.horizon);
+        const ringAlpha = clamp((0.55 + precipitation * 0.3) * alphaScale, 0, 1);
+        for (const ring of this._puddleRings) {
+            const age = ringAgeMs(now, ring.born);
+            const frame = Math.floor(age / PUDDLE_RING_FRAME_MS);
+            if (frame < 0 || frame >= PUDDLE_RING_FRAMES.length) continue;
+            this._stampPuddleRing(ctx, grid, ring.x, ring.y, frame, color, ringAlpha);
+        }
+    }
+
+    _resolvePuddleSites() {
+        const direct = this.sceneContext?.puddleSites?.();
+        if (Array.isArray(direct)) return direct;
+        const field = this.sceneContext?.groundWeatherField?.()
+            || this.sceneContext?.groundWeather
+            || this.sceneContext?.groundPuddleMask?.()
+            || null;
+        return field ? extractPuddleSites(field) : null;
+    }
+
+    _stampPuddleRing(ctx, grid, worldX, worldY, frame, color, alpha) {
+        const { camera, cell, zoom } = grid;
+        const rows = PUDDLE_RING_FRAMES[frame];
+        const halfW = (rows[0].length - 1) / 2;
+        const halfH = (rows.length - 1) / 2;
+        const p = camera.worldToScreen(worldX, worldY);
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = color;
+        for (let row = 0; row < rows.length; row++) {
+            const line = rows[row];
+            const dy = row - halfH;
+            for (let col = 0; col < line.length; col++) {
+                if (line[col] !== '#') continue;
+                const dx = col - halfW;
+                ctx.fillRect(Math.round(p.x + dx * zoom), Math.round(p.y + dy * zoom), cell, cell);
+            }
+        }
+        ctx.restore();
     }
 
     _stampSplash(ctx, grid, worldX, worldY, frame, alpha) {
@@ -1066,13 +1376,14 @@ export class WeatherRenderer {
  * strike `id`/`seed` that key the bolt's shape. Reduced motion (or particle
  * motion off) never strikes: no bolt and no flash.
  */
-const _strike = { active: false, scalar: 0, exposure: [0, 0, 0], stage: 0, step: -1, id: -1, seed: 0 };
+const _strike = { active: false, scalar: 0, exposure: [0, 0, 0], stage: 0, step: -1, id: -1, seed: 0, sheen: 0 };
 export function stormStrikeAt(tMs, atmosphere, motionScale = 1) {
     const strike = _strike;
     strike.active = false;
     strike.scalar = 0;
     strike.stage = 0;
     strike.step = -1;
+    strike.sheen = 0;
     strike.exposure[0] = 0;
     strike.exposure[1] = 0;
     strike.exposure[2] = 0;
@@ -1097,10 +1408,21 @@ export function stormStrikeAt(tMs, atmosphere, motionScale = 1) {
     strike.scalar = step.scalar;
     strike.stage = step.stage;
     strike.step = index;
+    strike.sheen = index === 0 ? 1 : 0;
     strike.id = cycle;
     strike.seed = (seed + Math.imul(cycle + 1, 0x27d4eb2f)) >>> 0;
     for (let channel = 0; channel < 3; channel++) strike.exposure[channel] = gain * FLASH_TINT[channel];
     return strike;
+}
+
+/**
+ * W2-B (§4.11) — lightning sheen scalar for RoofWeather wet-course +1 pop and
+ * sea swell crest lift: returns 1 during the 83 ms flash peak (step 0) when
+ * motion is enabled, 0 otherwise / under reduced motion.
+ */
+export function lightningSheenFor(strike, motionScale = 1) {
+    if (!(Number(motionScale) > 0)) return 0;
+    return strike?.active && strike.step === 0 ? 1 : 0;
 }
 
 /**
@@ -1487,7 +1809,72 @@ function fogField() {
     return _fogField;
 }
 
-function bakeFogBankTile(canvas, strength, rgb) {
+/**
+ * W2-B (§4.11) — fog-bank course density multiplier by height: ×1.35 over
+ * texels carrying the coast `water` flag (canals, lagoon, sea), ×1.0 elsewhere,
+ * quantized and capped by FOG_BUCKETS.
+ */
+export function fogBankDensityAt(baseStrength, isWater = false) {
+    const raw = clamp(Number(baseStrength) || 0, 0, 1) * (isWater ? FOG_WATER_DENSITY_BOOST : 1);
+    return Math.min(FOG_BUCKETS, Math.round(clamp(raw, 0, 1) * FOG_BUCKETS)) / FOG_BUCKETS;
+}
+
+/**
+ * True when `(worldX, worldY)` carries the coast `water` flag and is not
+ * covered by a bridge or dock; safely returns false when no coast field is
+ * bound.
+ */
+export function isCoastWaterAt(waterFields, worldX, worldY) {
+    if (!waterFields?.coastField) return false;
+    const { x, y, cols, rows, coastField } = waterFields;
+    const c = Math.floor((worldX - x) / 2);
+    const r = Math.floor((worldY - y) / 2);
+    if (c < 0 || r < 0 || c >= cols || r >= rows) return false;
+    const flags = coastField[(r * cols + c) * 2 + 1];
+    return (flags & COAST_FIELD_FLAGS.water) !== 0 && (flags & COAST_FIELD_FLAGS.covered) === 0;
+}
+
+/**
+ * W2-B (§4.11) — samples the fog-bank course (0..3) at a world coordinate,
+ * applying the ×1.35 water-height boost when `waterFields` marks the cell as
+ * water (safe ×1.0 fallback otherwise).
+ */
+export function fogCourseAtWorld(worldX, worldY, { strength = 0, driftX = 0, driftY = 0, waterFields = null } = {}) {
+    const density = fogBankDensityAt(strength, isCoastWaterAt(waterFields, worldX, worldY));
+    if (!(density > 0)) return 0;
+    const { w, h, values, slope, sorted } = fogField();
+    const tx = mod(Math.floor((worldX - driftX) / FOG_TEXEL), w);
+    const ty = mod(Math.floor((worldY - driftY) / FOG_TEXEL), h);
+    const index = ty * w + tx;
+    const share = 0.3 + 0.34 * density;
+    const threshold = s => sorted[Math.round((1 - clamp(s, 0, 1)) * (sorted.length - 1))];
+    const n = values[index] + (BAYER4[(ty & 3) * 4 + (tx & 3)] / 16 - 0.5) * 2 * FOG_SEAM_TEXELS * slope[index];
+    return (n >= threshold(share) ? 1 : 0)
+        + (n >= threshold(share * 0.55) ? 1 : 0)
+        + (n >= threshold(share * 0.25) ? 1 : 0);
+}
+
+/**
+ * W2-B (§4.12) — concentric puddle ring colour: graded `skyHorizon` lifted 1
+ * stop (×1.25), strictly capped so encoded Rec.709 luma <= RECEIVER_LUMA_CEILING
+ * (0.74).
+ */
+export function puddleRingColor(grade = null, fallbackHex = RAIN_LIGHT) {
+    const hex = grade?.skyHorizon || fallbackHex || RAIN_LIGHT;
+    const base = hexToRgb01(hex);
+    let rgb = base.map(channel => channel * 1.25);
+    const peak = Math.max(1, rgb[0], rgb[1], rgb[2]);
+    if (peak > 1) rgb = rgb.map(channel => channel / peak);
+    const y = lumaOf(rgb);
+    if (y > RECEIVER_LUMA_CEILING) {
+        const scale = RECEIVER_LUMA_CEILING / y;
+        rgb = rgb.map(channel => channel * scale);
+    }
+    const bytes = rgb.map(channel => Math.floor(clamp(channel, 0, 1) * 255));
+    return `rgb(${bytes[0]}, ${bytes[1]}, ${bytes[2]})`;
+}
+
+function bakeFogBankTile(canvas, strength, rgb, topCourseRgb = rgb) {
     const { w, h, values, slope, sorted } = fogField();
     const tile = canvas || document.createElement('canvas');
     tile.width = w;
@@ -1506,10 +1893,11 @@ function bakeFogBankTile(canvas, strength, rgb) {
             const n = values[index] + (BAYER4[(y % 4) * 4 + (x % 4)] / 16 - 0.5) * 2 * FOG_SEAM_TEXELS * slope[index];
             const course = (n >= t1 ? 1 : 0) + (n >= t2 ? 1 : 0) + (n >= t3 ? 1 : 0);
             if (!course) continue;
+            const c = course === 1 ? topCourseRgb : rgb;
             const offset = (y * w + x) * 4;
-            image.data[offset] = rgb[0];
-            image.data[offset + 1] = rgb[1];
-            image.data[offset + 2] = rgb[2];
+            image.data[offset] = c[0];
+            image.data[offset + 1] = c[1];
+            image.data[offset + 2] = c[2];
             image.data[offset + 3] = Math.round(FOG_COURSE_ALPHA[course - 1] * alphaScale * 255);
         }
     }
@@ -1662,4 +2050,49 @@ function mod(value, size) {
 
 function inRect(point, rect) {
     return point.x >= rect.left && point.x <= rect.right && point.y >= rect.top && point.y <= rect.bottom;
+}
+
+function hexToRgb01(hex) {
+    const value = String(hex || '#000000').replace('#', '').padEnd(6, '0').slice(0, 6);
+    return [
+        parseInt(value.slice(0, 2), 16) / 255,
+        parseInt(value.slice(2, 4), 16) / 255,
+        parseInt(value.slice(4, 6), 16) / 255,
+    ];
+}
+
+function lumaOf(rgb) {
+    return rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+}
+
+function mix3(a, b, t) {
+    return [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+    ];
+}
+
+// §4.10 — dawn mist share: `1 - |minute - sunrise| / 60` clamped to 0..1.
+function dawnMistShareOf(atmosphere) {
+    const minute = Number(atmosphere?.clock?.minuteOfDay);
+    if (!Number.isFinite(minute)) return 0;
+    const sunrise = Number.isFinite(Number(atmosphere?.solar?.sunriseMinute))
+        ? Number(atmosphere.solar.sunriseMinute)
+        : 6 * 60;
+    return clamp(1 - Math.abs(minute - sunrise) / 60, 0, 1);
+}
+
+// Deterministic integer hash for ragged rain-curtain cloud base columns.
+function hashCurtainColumn(seed, curtainSeed, col) {
+    let h = ((seed ^ curtainSeed) + Math.imul(col | 0, 0x27d4eb2d)) >>> 0;
+    h ^= h >>> 15;
+    h = Math.imul(h, 0x85ebca6b) >>> 0;
+    h ^= h >>> 13;
+    return h >>> 0;
+}
+
+// Age of a puddle ring in ms, handling the LOOP_MS wrap-around cleanly.
+function ringAgeMs(now, born) {
+    return now >= born ? now - born : (now + LOOP_MS) - born;
 }

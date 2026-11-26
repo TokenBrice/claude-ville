@@ -59,6 +59,28 @@ const SUN_COURSES = Object.freeze({
     day: Object.freeze(['#ffdf86', '#ffe992', '#fff0a0']),
     warm: Object.freeze(['#ffcf7c', '#ffe08e', '#fff0a0']),
 });
+// W2-B (§4.12) — god-rays baked on a 4-px cell grid in three flat courses
+// with a ±0.06 4×4 Bayer seam; no smooth linear gradients.
+const GODRAY_CELL_PX = 4;
+const GODRAY_BAYER_HALF_BAND = 0.06;
+const GODRAY_COURSES = Object.freeze([
+    Object.freeze({ rgb: Object.freeze([255, 198, 124]), alpha: 0.35 }),
+    Object.freeze({ rgb: Object.freeze([255, 206, 138]), alpha: 0.65 }),
+    Object.freeze({ rgb: Object.freeze([255, 226, 168]), alpha: 1.0 }),
+]);
+// W2-B (§4.12) — fallback code moon on the 2-px cell grid: fixed unit-disc
+// maria blobs and flat/Bayer terminator, zero arcs/ellipses/radial gradients.
+const CODE_MOON_DISC_HEX = '#cfe4ff';
+const CODE_MOON_LIMB_HEX = '#e4efff';
+const CODE_MOON_MARIA_HEX = '#a9bcd6';
+const CODE_MOON_SHADOW_RGBA = 'rgba(20, 36, 58, 0.82)';
+const CODE_MOON_NEW_DISC_RGBA = 'rgba(20, 36, 58, 0.76)';
+const CODE_MOON_NEW_LIMB_RGBA = 'rgba(190, 216, 255, 0.36)';
+const CODE_MOON_MARIA = Object.freeze([
+    Object.freeze([-0.30, -0.20, 0.28]),
+    Object.freeze([0.18, 0.05, 0.22]),
+    Object.freeze([-0.05, 0.38, 0.18]),
+]);
 const MOON_PHASE_ASSETS = {
     crescent: 'atmosphere.moon.crescent.cool',
     half: 'atmosphere.moon.half.cool',
@@ -361,6 +383,8 @@ export class SkyRenderer {
         this._shootingStars = [];
         this._nextAmbientMeteorAt = 0;
         this._sunStamp = null;
+        this._godrayStamp = null;
+        this._codeMoonStamp = null;
         this._currentPhase = null;
         this._currentCloudCover = 0;
         this._currentMotionScale = 1;
@@ -954,46 +978,120 @@ export class SkyRenderer {
         const radius = Math.max(22, Math.min(canvas.width, canvas.height) * 0.042);
         const position = this._resolveSunPosition(camera, canvas, sun, radius);
         if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) return;
-        const { x, y } = position;
 
         const alphaMul = Number.isFinite(options.alphaMul) ? options.alphaMul : 1;
         const baseAlpha = 0.10 * warmth * (sun.alpha ?? 0) * alphaMul;
         if (baseAlpha <= 0.002) return;
 
-        const rayCount = 7;
-        const spreadRad = 25 * Math.PI / 180;
-        const length = Math.hypot(canvas.width, canvas.height) * 1.1;
-        const halfWidth = Math.max(8, radius * 0.42);
+        const stamp = this._getGodrayStamp(
+            canvas.width,
+            canvas.height,
+            position.x,
+            position.y,
+            radius,
+            warmth,
+            alphaMul,
+        );
+        if (!stamp) return;
 
         ctx.save();
         ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = clamp(baseAlpha, 0, 1);
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(stamp, 0, 0, stamp.width * GODRAY_CELL_PX, stamp.height * GODRAY_CELL_PX);
+        ctx.restore();
+    }
+
+    // W2-B (§4.12) — stepped 4-px cell god-ray stamp: 7 rays over ±25°,
+    // 3 flat courses (q >= 0.66 / 0.33 / 0.10) with ±0.06 4×4 Bayer seams.
+    // Rebuilt only when the quantized sun position (4 px), warmth (1/16),
+    // alphaMul or canvas dims change; drawn with `screen` at `baseAlpha`.
+    _getGodrayStamp(canvasWidth, canvasHeight, sunX, sunY, radius, warmth, alphaMul) {
+        if (typeof document === 'undefined') return null;
+        const cell = GODRAY_CELL_PX;
+        const width = Math.max(1, Math.round(canvasWidth));
+        const height = Math.max(1, Math.round(canvasHeight));
+        const sunQx = Math.round(sunX / cell);
+        const sunQy = Math.round(sunY / cell);
+        const warmthQ = Math.round(clamp(warmth, 0, 1) * 16);
+        const alphaMulQ = Math.round(clamp(alphaMul, 0, 4) * 64);
+        const key = `${width}x${height}|${sunQx},${sunQy}|${warmthQ}|${alphaMulQ}`;
+        if (this._godrayStamp?.key === key) return this._godrayStamp.canvas;
+
+        releaseCanvasBackingStore(this._godrayStamp?.canvas);
+
+        const cols = Math.max(1, Math.ceil(width / cell));
+        const rows = Math.max(1, Math.ceil(height / cell));
+        const sx = sunQx * cell;
+        const sy = sunQy * cell;
+        const rayCount = 7;
+        const spreadRad = 25 * Math.PI / 180;
+        const length = Math.hypot(width, height) * 1.1;
+        const invLength = 1 / Math.max(1, length);
+        const halfWidth = Math.max(8, radius * 0.42);
+        const rays = [];
         for (let i = 0; i < rayCount; i++) {
             const t = rayCount === 1 ? 0 : (i / (rayCount - 1)) * 2 - 1;
             const angle = Math.PI / 2 + t * spreadRad;
-            const dx = Math.cos(angle);
-            const dy = Math.sin(angle);
-            const fx = x + dx * length;
-            const fy = y + dy * length;
-            const px = -dy * halfWidth;
-            const py = dx * halfWidth;
             const widthBoost = 1 + (1 - Math.abs(t)) * 0.35;
-            const rayAlpha = baseAlpha * (0.78 + (1 - Math.abs(t)) * 0.22);
-
-            const grad = ctx.createLinearGradient(x, y, fx, fy);
-            grad.addColorStop(0, `rgba(255, 226, 168, ${rayAlpha})`);
-            grad.addColorStop(0.45, `rgba(255, 206, 138, ${rayAlpha * 0.45})`);
-            grad.addColorStop(1, 'rgba(255, 198, 124, 0)');
-
-            ctx.fillStyle = grad;
-            ctx.beginPath();
-            ctx.moveTo(x - px * 0.45 * widthBoost, y - py * 0.45 * widthBoost);
-            ctx.lineTo(x + px * 0.45 * widthBoost, y + py * 0.45 * widthBoost);
-            ctx.lineTo(fx + px * widthBoost, fy + py * widthBoost);
-            ctx.lineTo(fx - px * widthBoost, fy - py * widthBoost);
-            ctx.closePath();
-            ctx.fill();
+            const hw = halfWidth * widthBoost;
+            rays.push({
+                dx: Math.cos(angle),
+                dy: Math.sin(angle),
+                hw,
+                invHw: 1 / hw,
+            });
         }
-        ctx.restore();
+
+        const off = document.createElement('canvas');
+        off.width = cols;
+        off.height = rows;
+        const octx = off.getContext('2d');
+        const image = octx.createImageData(cols, rows);
+        const data = image.data;
+
+        const hwMax = halfWidth * 1.35;
+        const tanSpread = Math.tan(spreadRad);
+        const hwReach = hwMax / Math.cos(spreadRad);
+        const minGy = Math.max(0, Math.floor((sy - hwMax) / cell));
+        const maxGy = Math.min(rows - 1, Math.ceil((sy + length + hwMax) / cell));
+        const courseAlphas = GODRAY_COURSES.map(course => Math.round(course.alpha * 255));
+
+        for (let gy = minGy; gy <= maxGy; gy++) {
+            const ry = (gy + 0.5) * cell - sy;
+            const reachX = Math.abs(ry) * tanSpread + hwReach;
+            const minGx = Math.max(0, Math.floor((sx - reachX) / cell));
+            const maxGx = Math.min(cols - 1, Math.ceil((sx + reachX) / cell));
+            const bayerRow = (gy & 3) * 4;
+            const rowOffset = gy * cols;
+            for (let gx = minGx; gx <= maxGx; gx++) {
+                const rx = (gx + 0.5) * cell - sx;
+                let q = 0;
+                for (let i = 0; i < rayCount; i++) {
+                    const ray = rays[i];
+                    const along = rx * ray.dx + ry * ray.dy;
+                    if (along < 0 || along > length) continue;
+                    const perp = Math.abs(-rx * ray.dy + ry * ray.dx);
+                    if (perp > ray.hw) continue;
+                    const val = (1 - perp * ray.invHw) * (1 - along * invLength);
+                    if (val > q) q = val;
+                }
+                if (q <= 0.10 - GODRAY_BAYER_HALF_BAND) continue;
+                const bayer = (BAYER4[bayerRow + (gx & 3)] / 16 - 0.5) * (GODRAY_BAYER_HALF_BAND * 2);
+                const qb = q + bayer;
+                const courseIdx = qb >= 0.66 ? 2 : qb >= 0.33 ? 1 : qb >= 0.10 ? 0 : -1;
+                if (courseIdx < 0) continue;
+                const rgb = GODRAY_COURSES[courseIdx].rgb;
+                const offset = (rowOffset + gx) * 4;
+                data[offset] = rgb[0];
+                data[offset + 1] = rgb[1];
+                data[offset + 2] = rgb[2];
+                data[offset + 3] = courseAlphas[courseIdx];
+            }
+        }
+        octx.putImageData(image, 0, 0);
+        this._godrayStamp = { key, canvas: off };
+        return off;
     }
 
     // Where the day path would carry the sun below the sea horizon (or the
@@ -1141,44 +1239,103 @@ export class SkyRenderer {
         const squashY = moon.squashY ?? 1;
         const phase = moon.phase || { phaseName: 'crescent', illumination: 0.24, waxing: false };
         const illumination = clamp(phase.illumination ?? 0.24, 0, 1);
-        const litWidth = r * (0.22 + illumination * 1.46);
-        const shadowOffset = phase.phaseName === 'new'
-            ? 0
-            : (phase.waxing ? -1 : 1) * r * (0.92 - illumination * 0.84);
+        const isNew = phase.phaseName === 'new';
+        const waxing = Boolean(phase.waxing);
+
         ctx.save();
         ctx.globalAlpha = moon.alpha;
         this._drawMoonGlow(ctx, canvas, { ...moon, alpha: moon.alpha * (0.25 + illumination * 0.75) }, atmosphere);
-        ctx.translate(x, y);
-        ctx.scale(1, squashY);
-        ctx.fillStyle = '#cfe4ff';
-        ctx.beginPath();
-        ctx.arc(0, 0, r, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.clip();
-        if (phase.phaseName === 'new') {
-            ctx.fillStyle = 'rgba(8, 18, 34, 0.76)';
-            ctx.fillRect(-r - 2, -r - 2, r * 2 + 4, r * 2 + 4);
-            ctx.strokeStyle = 'rgba(190, 216, 255, 0.36)';
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.arc(0, 0, r - 1, 0, Math.PI * 2);
-            ctx.stroke();
-        } else {
-            ctx.globalCompositeOperation = 'source-atop';
-            const shadow = ctx.createRadialGradient(shadowOffset, -r * 0.08, r * 0.12, shadowOffset, 0, r * 1.34);
-            shadow.addColorStop(0, 'rgba(20, 36, 58, 0.05)');
-            shadow.addColorStop(0.52, 'rgba(14, 26, 44, 0.28)');
-            shadow.addColorStop(1, 'rgba(4, 12, 24, 0.82)');
-            ctx.fillStyle = shadow;
-            const shadowX = phase.waxing ? -r - litWidth * 0.38 : litWidth * 0.38;
-            ctx.fillRect(shadowX, -r - 2, r * 2.4, r * 2 + 4);
-            ctx.globalCompositeOperation = 'screen';
-            ctx.fillStyle = `rgba(238, 247, 255, ${0.06 + illumination * 0.08})`;
-            ctx.beginPath();
-            ctx.ellipse((phase.waxing ? 1 : -1) * r * 0.12, -r * 0.18, litWidth * 0.32, r * 0.22, -0.24, 0, Math.PI * 2);
-            ctx.fill();
+        const stamp = this._getCodeMoonStamp(r, squashY, isNew, waxing, illumination);
+        if (stamp) {
+            ctx.imageSmoothingEnabled = false;
+            ctx.drawImage(stamp, Math.round(x - stamp.width / 2), Math.round(y - stamp.height / 2));
         }
         ctx.restore();
+    }
+
+    // W2-B (§4.12) — integer pixel-disc fallback moon on the 2-px cell grid
+    // (SUN_STAMP_CELL_PX): fixed maria blobs, upper-left bright limb, 1-cell
+    // 4×4 Bayer terminator, and row-baked horizon squash (cells stay square).
+    _getCodeMoonStamp(radius, squash = 1, isNew = false, waxing = false, illumination = 0.24) {
+        if (typeof document === 'undefined') return null;
+        const cell = SUN_STAMP_CELL_PX;
+        const rc = Math.max(4, Math.round(radius / cell));
+        const squashQ = Math.max(0.5, Math.round(clamp(squash, 0.5, 1) * 16) / 16);
+        const illumQ = Math.round(clamp(illumination, 0, 1) * 32) / 32;
+        const key = `${rc}|${squashQ}|${isNew ? 'n' : (waxing ? 'wx' : 'wn')}|${illumQ}`;
+        if (this._codeMoonStamp?.key === key) return this._codeMoonStamp.canvas;
+
+        releaseCanvasBackingStore(this._codeMoonStamp?.canvas);
+
+        const cellsX = rc * 2 + 2;
+        const cellsY = Math.ceil(rc * 2 * squashQ) + 2;
+        const off = document.createElement('canvas');
+        off.width = cellsX * cell;
+        off.height = cellsY * cell;
+        const o = off.getContext('2d');
+        const cx0 = cellsX / 2;
+        const cy0 = cellsY / 2;
+        const rcY = Math.max(1, rc * squashQ);
+        const side = waxing ? -1 : 1;
+        // Negative cos(π * illum) maps illum=0 → -1 (full shadow), illum=0.5 → 0
+        // (half shadow), illum=1 → +1 (full lit), keeping the exact cosine profile.
+        const cosPhase = -Math.cos(Math.PI * illumQ);
+        const insideDisc = (gx, gy) => Math.hypot((gx + 0.5 - cx0) / rc, (gy + 0.5 - cy0) / rcY) <= 1;
+
+        for (let gy = 0; gy < cellsY; gy++) {
+            const dy = (gy + 0.5 - cy0) / rcY;
+            const chord = Math.sqrt(Math.max(0, 1 - dy * dy));
+            const termX = cosPhase * chord;
+            const bayerRow = (gy & 3) * 4;
+            for (let gx = 0; gx < cellsX; gx++) {
+                const dx = (gx + 0.5 - cx0) / rc;
+                const d = Math.hypot(dx, dy);
+                if (d > 1) continue;
+
+                const px = gx * cell;
+                const py = gy * cell;
+                if (isNew) {
+                    o.fillStyle = CODE_MOON_NEW_DISC_RGBA;
+                    o.fillRect(px, py, cell, cell);
+                    const isRim = !insideDisc(gx - 1, gy) || !insideDisc(gx + 1, gy)
+                        || !insideDisc(gx, gy - 1) || !insideDisc(gx, gy + 1);
+                    if (isRim) {
+                        o.fillStyle = CODE_MOON_NEW_LIMB_RGBA;
+                        o.fillRect(px, py, cell, cell);
+                    }
+                    continue;
+                }
+
+                let fill = CODE_MOON_DISC_HEX;
+                for (let m = 0; m < CODE_MOON_MARIA.length; m++) {
+                    const [mx, my, mr] = CODE_MOON_MARIA[m];
+                    if (Math.hypot(dx - mx, dy - my) <= mr) {
+                        fill = CODE_MOON_MARIA_HEX;
+                        break;
+                    }
+                }
+                if (d >= 0.82 && dx + dy < 0) fill = CODE_MOON_LIMB_HEX;
+                o.fillStyle = fill;
+                o.fillRect(px, py, cell, cell);
+
+                if (illumQ < 0.99) {
+                    const distCells = (dx * side - termX) * rc;
+                    let shadowed = false;
+                    if (distCells >= 0.5) {
+                        shadowed = true;
+                    } else if (distCells > -0.5) {
+                        const order = BAYER4[bayerRow + (gx & 3)] / 16;
+                        shadowed = order < (distCells + 0.5);
+                    }
+                    if (shadowed) {
+                        o.fillStyle = CODE_MOON_SHADOW_RGBA;
+                        o.fillRect(px, py, cell, cell);
+                    }
+                }
+            }
+        }
+        this._codeMoonStamp = { key, canvas: off };
+        return off;
     }
 
     // 5.7 — the horizon cloud deck. Three strips baked once per bucket (cell,
@@ -1677,6 +1834,10 @@ export class SkyRenderer {
         this._frameCacheKey = '';
         releaseCanvasBackingStore(this._sunStamp?.canvas);
         this._sunStamp = null;
+        releaseCanvasBackingStore(this._godrayStamp?.canvas);
+        this._godrayStamp = null;
+        releaseCanvasBackingStore(this._codeMoonStamp?.canvas);
+        this._codeMoonStamp = null;
         for (const stamp of this._glowStamps?.values() || []) releaseCanvasBackingStore(stamp);
         this._glowStamps?.clear();
         for (const strip of this._deck || []) releaseCanvasBackingStore(strip);

@@ -147,3 +147,99 @@ export function validGroundWeather(field) {
         && field.texelW === GROUND_WEATHER_TEXEL_W && field.x0 === GROUND_WEATHER_X0 && field.y0 === GROUND_WEATHER_Y0
         && field.data instanceof Uint8Array && field.data.length === GROUND_WEATHER_COLS * GROUND_WEATHER_ROWS * 4;
 }
+
+const _puddleSiteCache = new WeakMap();
+
+/**
+ * W2-B (§4.12) — extracts distinct puddle sites (world centre + threshold)
+ * from a packed RGBA8 GroundWeatherField (channel A) or an R8 puddleMask
+ * without altering the 1280×1280 binary layout. Cached per backing Uint8Array.
+ * Each site sits at the peak-depth texel of its connected puddle component so
+ * it stays strictly inside the puddle as long as `puddles >= site.threshold`.
+ */
+export function extractPuddleSites(source) {
+    const data = source?.data;
+    const cols = Number(source?.cols) || 0;
+    const rows = Number(source?.rows) || 0;
+    if (!(data instanceof Uint8Array) || !(cols > 0) || !(rows > 0)) return Object.freeze([]);
+    const cached = _puddleSiteCache.get(data);
+    if (cached) return cached;
+
+    const total = cols * rows;
+    const isRgba = data.length === total * 4;
+    const isR8 = data.length === total;
+    if (!isRgba && !isR8) return Object.freeze([]);
+
+    const stride = isRgba ? 4 : 1;
+    const alphaOffset = isRgba ? 3 : 0;
+    const x0 = Number.isFinite(source.x0) ? source.x0 : GROUND_WEATHER_X0;
+    const y0 = Number.isFinite(source.y0) ? source.y0 : GROUND_WEATHER_Y0;
+    const texelW = Number.isFinite(source.texelW) && source.texelW > 0 ? source.texelW : GROUND_WEATHER_TEXEL_W;
+
+    const visited = new Uint8Array(total);
+    const stack = [];
+    const sites = [];
+
+    for (let start = 0; start < total; start++) {
+        if (visited[start]) continue;
+        const firstByte = data[start * stride + alphaOffset];
+        if (firstByte === 0) continue;
+
+        visited[start] = 1;
+        stack.push(start);
+        let maxByte = firstByte;
+        let peakColSum = 0;
+        let peakRowSum = 0;
+        let peakCount = 0;
+        let area = 0;
+
+        while (stack.length > 0) {
+            const idx = stack.pop();
+            const byte = data[idx * stride + alphaOffset];
+            const row = Math.floor(idx / cols);
+            const col = idx - row * cols;
+            area++;
+
+            if (byte > maxByte) {
+                maxByte = byte;
+                peakColSum = col;
+                peakRowSum = row;
+                peakCount = 1;
+            } else if (byte === maxByte) {
+                peakColSum += col;
+                peakRowSum += row;
+                peakCount++;
+            }
+
+            // 8-connected flood-fill groups organic elliptical puddles into one site.
+            const rMin = row > 0 ? row - 1 : 0;
+            const rMax = row + 1 < rows ? row + 1 : rows - 1;
+            const cMin = col > 0 ? col - 1 : 0;
+            const cMax = col + 1 < cols ? col + 1 : cols - 1;
+            for (let nr = rMin; nr <= rMax; nr++) {
+                const rowBase = nr * cols;
+                for (let nc = cMin; nc <= cMax; nc++) {
+                    const nIdx = rowBase + nc;
+                    if (visited[nIdx]) continue;
+                    if (data[nIdx * stride + alphaOffset] === 0) continue;
+                    visited[nIdx] = 1;
+                    stack.push(nIdx);
+                }
+            }
+        }
+
+        const peakCol = peakColSum / peakCount;
+        const peakRow = peakRowSum / peakCount;
+        sites.push(Object.freeze({
+            x: x0 + (peakCol + 0.5) * texelW,
+            y: y0 + peakRow + 0.5,
+            threshold: 1 - maxByte / 255,
+            maxByte,
+            area,
+        }));
+    }
+
+    const result = Object.freeze(sites);
+    _puddleSiteCache.set(data, result);
+    return result;
+}
