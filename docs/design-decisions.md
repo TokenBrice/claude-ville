@@ -186,9 +186,9 @@ If you change any of these, also revisit `ACTIVE_THRESHOLD_MS` (the active-sessi
 
 Decision D4 of the audio plan (Wave 6, item 6.9) amends what "no ambience" means: the band **plays along** with the village as *music*. Its percussion is the village at work — per building one Isle Band percussion voice (`PERCUSSION_VOICE`: brush, shaker, low tom, rim) on each piece's authored weight rows (one weight per sixteenth of a beat), admitted on the song grid when a seeded draw falls under the building's `WorkshopModel` density times the row's weight, only in the working bands that admit percussion, silent in a `rest` section and when nobody works. Weather and season re-dress the same tunes (softer attacks, a let-ring or glittering comp, the rain or snow percussion kit, a storm drone, more air; the season's cadence colour) as compile-time voicing variants (`music/Voicings.js`), switched at the next chunk boundary from the atmosphere snapshot and the `DayArc` keyframe. The band may follow the village, never imitate it.
 
-Continuous town music is the background, while discrete village and attention signals still ring over it. The band's voice is the Isle Band by default; Chip restored is a one-click voicing (D2, `claudeville.sound.townBandVoice`, SET *Town band voice*), applied at the next chunk.
+Continuous town music is the background, while urgent attention signals ring over it (unless muted by the Town band only preset). The band's voice is the Isle Band.
 
-If you change this, update: `claudeville/src/presentation/shared/audio/BgmDirector.js`, `audio/music/Sequencer.js`, `audio/music/Voicings.js`, `audio/DayArc.js` (`arrangementKeyframeAt`), `audio/WorkshopModel.js`, `audio/bgm/ScoreKit.js` (`PERCUSSION_VOICE`), `SignalDirector.js`, `SoundSettings.js` and `SettingsPanel.js` (the voice), the mode description in `claudeville/src/presentation/shared/README.md`, and this entry.
+If you change this, update: `claudeville/src/presentation/shared/audio/BgmDirector.js`, `audio/music/Sequencer.js`, `audio/music/Voicings.js`, `audio/DayArc.js` (`arrangementKeyframeAt`), `audio/WorkshopModel.js`, `audio/bgm/ScoreKit.js` (`PERCUSSION_VOICE`), `SignalDirector.js`, `SoundSettings.js` and `SettingsPanel.js`, the mode description in `claudeville/src/presentation/shared/README.md`, and this entry.
 
 ## One music preset, a book of distinct pieces (v0.47.1)
 

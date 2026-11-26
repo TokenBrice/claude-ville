@@ -2369,7 +2369,7 @@ export function paintSpeechLayer(overlayCtx, renderer, sortedSprites, {
         }
     }
     if (speechPlan.drawBubbles) drawThoughtLayer(overlayCtx, sortedSprites, zoom);
-    if (speechPlan.useScribe && speaker && (!speechPlan.drawBubbles || speaker.bubbleSlot == null)) {
+    if (speechPlan.drawPip && speaker) {
         drawQuillPip(overlayCtx, speaker, zoom);
     }
     return speechPlan;

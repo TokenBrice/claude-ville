@@ -441,4 +441,7 @@ test('layoutThoughtColumn accepts an optional compact headMaxText cap and resolv
     assert.deepEqual(resolveSpeechDisplay(1.0, false, false, 'both'), {
         drawBubbles: true, useScribe: true, drawPip: false, overviewCompact: true,
     });
+    assert.deepEqual(resolveSpeechDisplay(1.0, true, false, 'auto'), {
+        drawBubbles: true, useScribe: false, drawPip: false, overviewCompact: false,
+    });
 });

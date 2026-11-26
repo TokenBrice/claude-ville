@@ -119,6 +119,13 @@ export const SOUND_SETTING_DEFAULTS = Object.freeze({
     [SOUND_CALIBRATION_KEY]: SOUND_CALIBRATION,
 });
 
+// Retired sound keys removed during Reset to defaults so storage stays clean.
+export const RETIRED_SOUND_SETTING_KEYS = Object.freeze([
+    'claudeville.sound.tone',
+    'claudeville.sound.countHours',
+    'claudeville.sound.townBandVoice',
+]);
+
 function storageGet(storage, key) {
     try { return storage?.getItem(key) ?? null; } catch { return null; }
 }

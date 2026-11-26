@@ -16,8 +16,8 @@
 //   scenes       S2's Town band row (Loudness.js) at the standard step, the
 //                band stem's ST max; HAR-5 stems and the level map
 //   margins      cue lanes (needs-you, error, limit, routine, scenery, the
-//                three outcome tiers) over the Town band, the busy band (Isle
-//                and Chip; urgent lanes) and the Signals bed (the no-music
+//                three outcome tiers) over the Town band, the busy Isle band
+//                (urgent lanes) and the Signals bed (the no-music
 //                bed: urgent lanes, ceiling exempt over its silence): median
 //                of 3 placements in the full S2 window, the band rule and
 //                urgent limiter GR ≤ 3 dB; the Minor outcome ≥ 3 LU under
@@ -58,8 +58,8 @@
 //                both presets, sound on and off
 //   honesty      must-never 13 (phase-locked urgent bells, stale-data sound)
 //   quietmix     5.6 (D3): blur in the Town band −3 dB, focus restores in ≤ 1 s
-//   musicstems   6.1–6.3, 6.5: every piece (PIECES) day and night, Isle and
-//                Chip, in its own arrangement; isleband, nightmusic and score
+//   musicstems   6.1–6.3, 6.5: every piece (PIECES) day and night, Isle
+//                Band, in its own arrangement; isleband, nightmusic and score
 //                read the same stem matrix
 //   townband, percussion, signals, awaken, listening   Waves 6–7 (below)
 //   lint, routing, away (+ resume), ceremony   the Wave-0 checks (live app)
@@ -762,7 +762,7 @@ function quietMixUnits(renderOnce) {
 }
 
 // ------------------------------------------------------------ Wave 6 units ----
-// The music. The stem matrix (every piece of PIECES × day/night × Isle/Chip,
+// The music. The stem matrix (every piece of PIECES × day/night, Isle Band,
 // one full-band render each in the piece's own arrangement, every seat on
 // its own stem) feeds musicstems (6.2), isleband (6.1) and nightmusic (6.3);
 // each render is reduced to numbers in its unit. The score (6.5) also runs
@@ -788,7 +788,7 @@ function stemSeconds(piece) {
 // A stem-matrix render → numbers: per-seat LUFS-I, the bands (each the
 // admitted seats of Voicings at the arrangement the band actually played,
 // the piece's own players), the players the voicing seats and those heard
-// per seat, the Isle/Chip arm, nodes per note, the stop lint, the lead's
+// per seat, the Isle arm, nodes per note, the stop lint, the lead's
 // range and the melody–bass parallels.
 // The seats a piece's arrangement names (C4: lead, counter, engine,
 // descant); bass and percussion are the band's own.

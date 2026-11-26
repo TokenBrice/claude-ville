@@ -363,7 +363,7 @@ export function usesScribeLine(restZoom, readMode, theatreMode) {
 /**
  * Resolves how agent speech/thought lines render for the current zoom, READ
  * mode, Theatre mode, and operator `speechDisplay` preference:
- * - READ (`B`): always draws above-agent bubbles (compact at `restZoom < 1.6`).
+ * - READ (`B`): always draws full-width above-agent bubbles (up to 8, full 232 px).
  * - Theatre (`H`): always pure stage — bottom-left SPOKEN stream + quill pip.
  * - Otherwise follows `speechDisplay`: `'auto'` (zoom-adaptive at 1.6),
  *   `'bubbles'` (always above agents), `'spoken'` (always bottom-left stream),
@@ -372,7 +372,7 @@ export function usesScribeLine(restZoom, readMode, theatreMode) {
 export function resolveSpeechDisplay(restZoom, readMode, theatreMode, speechDisplay = 'auto') {
     const overviewCompact = restZoom < 1.6;
     if (readMode === true) {
-        return { drawBubbles: true, useScribe: false, drawPip: false, overviewCompact };
+        return { drawBubbles: true, useScribe: false, drawPip: false, overviewCompact: false };
     }
     if (theatreMode === true) {
         return { drawBubbles: false, useScribe: true, drawPip: true, overviewCompact: false };

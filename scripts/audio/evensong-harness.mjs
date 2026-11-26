@@ -5,7 +5,7 @@
 //                                           [--out-dir agents/evensong/render] (or --out)
 //                                           [--synthetic] [--days 10]
 //                                           [--key A] [--mode minor]
-//                                           [--voice isle] [--seed 0x5eed]
+//                                           [--seed 0x5eed]
 //                                           [--node-synth]
 //
 // Privacy lock: repo and agent names in Chronicle CSVs are reduced to anonymous
@@ -980,7 +980,7 @@ export async function runHarness(options = {}) {
     const inputDir = path.resolve(options.inputDir || path.join(REPO_ROOT, 'agents/evensong/days'));
     const outDir = path.resolve(options.outDir || path.join(REPO_ROOT, 'agents/evensong/render'));
     const key = normalizeEvensongKey({ tonic: options.key || 'A', mode: options.mode || 'minor' });
-    const voice = options.voice === 'chip' ? 'chip' : 'isle';
+    const voice = 'isle';
     const seed = options.seed != null ? Number(options.seed) : DEFAULT_SEED;
     const forceNodeSynth = Boolean(options.nodeSynth);
     const quiet = Boolean(options.quiet);
@@ -1080,7 +1080,6 @@ if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
         days: args.days,
         key: args.key,
         mode: args.mode,
-        voice: args.voice,
         seed: args.seed,
         nodeSynth: Boolean(args['node-synth']),
     }).catch((err) => {

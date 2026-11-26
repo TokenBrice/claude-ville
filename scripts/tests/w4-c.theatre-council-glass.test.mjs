@@ -247,7 +247,7 @@ test('overview speaks once with a three-dot pip, below higher captions and above
         drawBubbles: false, useScribe: true, drawPip: true, overviewCompact: false,
     });
     assert.deepEqual(resolveSpeechDisplay(1, true, false, 'spoken'), {
-        drawBubbles: true, useScribe: false, drawPip: false, overviewCompact: true,
+        drawBubbles: true, useScribe: false, drawPip: false, overviewCompact: false,
     });
     // Both mode snapshots the SPOKEN line with speaker attribution before drawThought clears _statusThread.
     const bothDraws = [];

@@ -29,6 +29,10 @@ class MemoryStorage {
     setItem(key, value) {
         this.values.set(key, String(value));
     }
+
+    removeItem(key) {
+        this.values.delete(key);
+    }
 }
 
 test('reduced-motion reads reuse one native query and preserve override notifications', () => {
@@ -180,6 +184,9 @@ test('settings defaults cover every sound key, with the calibration key written 
 test('reset writes defaults in place without clearing unrelated local data', () => {
     const storage = new MemoryStorage({
         ...Object.fromEntries(Object.keys(PERSISTED_SETTING_DEFAULTS).map(key => [key, 'changed'])),
+        'claudeville.sound.tone': 'warm',
+        'claudeville.sound.countHours': 'true',
+        'claudeville.sound.townBandVoice': 'chip',
         'claudeville.generatedNames': '["Ada"]',
     });
 
@@ -188,6 +195,9 @@ test('reset writes defaults in place without clearing unrelated local data', () 
     for (const [key, value] of Object.entries(PERSISTED_SETTING_DEFAULTS)) {
         assert.equal(storage.getItem(key), value, key);
     }
+    assert.equal(storage.getItem('claudeville.sound.tone'), null, 'retired tone key is removed on reset');
+    assert.equal(storage.getItem('claudeville.sound.countHours'), null, 'retired countHours key is removed on reset');
+    assert.equal(storage.getItem('claudeville.sound.townBandVoice'), null, 'retired townBandVoice key is removed on reset');
     assert.equal(storage.getItem('claudeville.generatedNames'), '["Ada"]');
     assert.equal(result.soundEnabled, false);
     assert.equal(result.soundPreset, 'off', 'a reset sets the preset to Off');

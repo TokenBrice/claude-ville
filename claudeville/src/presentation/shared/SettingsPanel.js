@@ -339,6 +339,7 @@ export class SettingsPanel {
         this.root = null;
         this.providers = [];
         this._providerLoadState = 'loading';
+        this._lastProviderSignature = null;
         this.controls = new Map();
         this._destroyed = false;
         this._providerController = null;
@@ -642,6 +643,7 @@ export class SettingsPanel {
     }
 
     _buildWatchtowers() {
+        this._lastProviderSignature = null;
         this.watchtowerList = el('div', {
             className: 'settings-roster',
             text: 'Reading local provider health…',
@@ -689,6 +691,9 @@ export class SettingsPanel {
 
     _renderProviderError() {
         if (!this.watchtowerList) return;
+        const signature = 'error';
+        if (signature === this._lastProviderSignature) return;
+        this._lastProviderSignature = signature;
         replaceChildren(this.watchtowerList, [el('p', {
             className: 'settings-empty settings-empty--degraded',
             text: 'Provider health is unavailable.',
@@ -698,24 +703,38 @@ export class SettingsPanel {
     _renderProviders(now = Date.now()) {
         if (!this.watchtowerList) return;
         if (this.providers.length === 0) {
+            const signature = 'empty';
+            if (signature === this._lastProviderSignature) return;
+            this._lastProviderSignature = signature;
             replaceChildren(this.watchtowerList, [el('p', {
                 className: 'settings-empty',
                 text: 'No providers were reported.',
             })]);
             return;
         }
-        replaceChildren(this.watchtowerList, this.providers.map((provider) => {
-            const hookAge = Number(this.getHookFreshness?.(provider.id, now));
+        const rows = this.providers.map((provider) => {
+            const rawHookAge = provider.health !== 'unavailable'
+                ? this.getHookFreshness?.(provider.id, now)
+                : null;
+            const hookAge = rawHookAge != null && rawHookAge !== '' ? Number(rawHookAge) : NaN;
             const hook = Number.isFinite(hookAge) && hookAge >= 0 && hookAge < HOOK_LIVE_WINDOW_MS
-                ? ` · hook: live · ${ageText(hookAge)}`
+                ? ` · hook live (${ageText(hookAge)} ago)`
                 : '';
-            return el('div', {
+            return {
                 className: `settings-provider ${providerClass(provider)}`,
-            }, [
-                el('span', { className: 'settings-provider__name', text: provider.name }),
-                el('span', { className: 'settings-provider__state', text: `${providerState(provider)}${hook}` }),
-            ]);
-        }));
+                name: provider.name,
+                state: `${providerState(provider)}${hook}`,
+            };
+        });
+        const signature = rows.map(row => `${row.className}\u001f${row.name}\u001f${row.state}`).join('\u001e');
+        if (signature === this._lastProviderSignature) return;
+        this._lastProviderSignature = signature;
+        replaceChildren(this.watchtowerList, rows.map(row => el('div', {
+            className: row.className,
+        }, [
+            el('span', { className: 'settings-provider__name', text: row.name }),
+            el('span', { className: 'settings-provider__state', text: row.state }),
+        ])));
     }
 
     _buildDiagnostics() {

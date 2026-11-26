@@ -13,7 +13,7 @@ import { VOICES } from '../../claudeville/src/presentation/shared/audio/music/Vo
 import { INSTRUMENTS } from '../../claudeville/src/presentation/shared/audio/music/Instruments.js';
 import { cueCaptionShown } from '../../claudeville/src/presentation/shared/Toast.js';
 import { SettingsPanel } from '../../claudeville/src/presentation/shared/SettingsPanel.js';
-import { TopBar } from '../../claudeville/src/presentation/shared/TopBar.js';
+import { TopBar, resetPersistedSettings } from '../../claudeville/src/presentation/shared/TopBar.js';
 import { eventBus } from '../../claudeville/src/domain/events/DomainEvent.js';
 
 function memoryStorage(initial = {}) {
@@ -21,6 +21,7 @@ function memoryStorage(initial = {}) {
     return {
         getItem: key => (values.has(key) ? values.get(key) : null),
         setItem: (key, value) => values.set(key, String(value)),
+        removeItem: key => values.delete(key),
     };
 }
 
@@ -99,6 +100,7 @@ test('3.A: Town band only switches in place from Town band with zero crossfade o
     const controller = Object.create(AmbientAudioController.prototype);
     Object.assign(controller, {
         _destroyed: false,
+        _gestureSeen: true,
         _windowBlurred: false,
         _quietMix: { active: false, preset: null },
         _crossfadeStops: new Map(),
@@ -153,7 +155,7 @@ test('3.A: Town band only switches in place from Town band with zero crossfade o
     }
 });
 
-test('3.A: hush and quiet hours in Town band only stop music cleanly without turning bells on', () => {
+test('3.A: hush and quiet hours in Town band only fade out smoothly over 800 ms, cancel on rapid un-hush, and never turn bells on', async () => {
     const log = [];
     const bellStates = collectEvents('audio:bell-state');
     const makeDirector = (id) => ({
@@ -196,7 +198,7 @@ test('3.A: hush and quiet hours in Town band only stop music cleanly without tur
             setBedCompensation() {},
             fadeDirector: (id, to, { duration }) => {
                 log.push(`${id}->${to}@${duration}`);
-                return 0.01;
+                return 10.01;
             },
         },
         _publishView() {},
@@ -207,10 +209,12 @@ test('3.A: hush and quiet hours in Town band only stop music cleanly without tur
         // Away copy in Town band only drops "· signals still ring".
         assert.equal(controller._nowLine('away'), "Paused while you're away");
 
-        // Hush in bgmOnly: effective mode is null, bgm stops, signals NEVER starts.
+        // Hush in bgmOnly: fades bgm over 0.8 s via _crossfadeStops, signals NEVER starts.
         controller.hush(60_000);
         assert.equal(controller._effectiveMode(), null);
-        assert.equal(controller.directors.bgm.running, false);
+        assert.deepEqual(log, ['bgm->0@0.8']);
+        assert.equal(controller.directors.bgm.running, true, 'bgm keeps running during 800 ms fade out');
+        assert.equal(controller._crossfadeStops.has('bgm'), true, 'stop scheduled in _crossfadeStops');
         assert.equal(controller.directors.signals.running, false);
         assert.equal(controller._silenced, true);
         assert.equal(controller.isRunning(), true);
@@ -218,7 +222,27 @@ test('3.A: hush and quiet hours in Town band only stop music cleanly without tur
         assert.deepEqual(bellStates.payloads.at(-1), { rings: false });
         assert.ok(!log.includes('signals:start'), 'signals must never start when hushed in Town band only');
 
-        // Resume from hush: bgm restarts with cues still disabled.
+        // Rapid un-hush BEFORE the fade completes cancels the pending stop and fades bgm back in without restart!
+        log.length = 0;
+        controller.resumeFromHush();
+        assert.equal(controller._effectiveMode(), 'bgmOnly');
+        assert.equal(controller._silenced, false);
+        assert.equal(controller._crossfadeStops.has('bgm'), false, 'pending fade stop cancelled on rapid un-hush');
+        assert.deepEqual(log, ['bgm->1@0.8'], 'turns fade around without stopping or restarting bgm');
+        await new Promise(resolve => setTimeout(resolve, 120));
+        assert.equal(controller.directors.bgm.running, true, 'bgm stays running after original fade window passes');
+        assert.equal(log.includes('bgm:stop'), false, 'cancelled stop timer never stops bgm');
+
+        // Full hush fade completes and stops bgm cleanly.
+        log.length = 0;
+        controller.hush(60_000);
+        assert.deepEqual(log, ['bgm->0@0.8']);
+        await new Promise(resolve => setTimeout(resolve, 120));
+        assert.equal(controller.directors.bgm.running, false, 'bgm stops once 800 ms fade finishes');
+        assert.equal(controller.directors.signals.running, false);
+        assert.deepEqual(log, ['bgm->0@0.8', 'bgm:stop']);
+
+        // Resume after full fade restarts bgm cleanly with cues still disabled.
         log.length = 0;
         controller.resumeFromHush();
         assert.equal(controller._effectiveMode(), 'bgmOnly');
@@ -226,16 +250,19 @@ test('3.A: hush and quiet hours in Town band only stop music cleanly without tur
         assert.equal(controller.directors.bgm.running, true);
         assert.equal(controller.directors.bgm.cuesEnabled, false);
         assert.equal(controller.directors.signals.running, false);
-        assert.ok(log.includes('bgm:start'));
+        assert.deepEqual(log, ['bgm->0@0', 'bgm:start', 'bgm->1@0.8']);
         assert.ok(!log.includes('signals:start'));
 
-        // Quiet hours in bgmOnly follow the exact same path.
+        // Quiet hours in bgmOnly follow the exact same fade-out & stop path.
         log.length = 0;
         controller._quietActive = true;
         controller._applyEffectiveMode();
+        assert.deepEqual(log, ['bgm->0@0.8']);
+        assert.equal(controller.directors.bgm.running, true);
+        assert.equal(controller._silenced, true);
+        await new Promise(resolve => setTimeout(resolve, 120));
         assert.equal(controller.directors.bgm.running, false);
         assert.equal(controller.directors.signals.running, false);
-        assert.equal(controller._silenced, true);
 
         log.length = 0;
         controller._quietActive = false;
@@ -243,6 +270,65 @@ test('3.A: hush and quiet hours in Town band only stop music cleanly without tur
         assert.equal(controller.directors.bgm.running, true);
         assert.equal(controller.directors.bgm.cuesEnabled, false);
         assert.equal(controller.directors.signals.running, false);
+    } finally {
+        for (const timer of controller._crossfadeStops.values()) clearTimeout(timer);
+        controller._crossfadeStops.clear();
+        bellStates.off();
+    }
+});
+
+test('Opus P1 #1: bell-state stays { rings: true } while suspended in Signals/Town band once activated, and false in Off/Town band only', () => {
+    const bellStates = collectEvents('audio:bell-state');
+    const makeController = ({ enabled, mode, state = 'suspended', gestureSeen = true }) => {
+        const controller = Object.create(AmbientAudioController.prototype);
+        Object.assign(controller, {
+            _destroyed: false,
+            _gestureSeen: gestureSeen,
+            _quietActive: false,
+            _bellRings: null,
+            hushedUntil: 0,
+            available: true,
+            enabled,
+            mode,
+            engine: { context: { state } },
+            _armUnlockListeners() {},
+            _publishView() {},
+        });
+        return controller;
+    };
+
+    try {
+        // Signals with suspended context + mayStart: true -> rings: true (hidden-tab wake will ring!).
+        const signals = makeController({ enabled: true, mode: 'signals', state: 'suspended', gestureSeen: true });
+        signals._emitBellState();
+        assert.deepEqual(bellStates.payloads.at(-1), { rings: true });
+        // Context statechange to suspended must NOT flip rings to false (prevents double sound!).
+        bellStates.payloads.length = 0;
+        signals._handleContextState();
+        assert.deepEqual(bellStates.payloads, [], 'no false bell-state transition on context suspend');
+        assert.equal(signals._bellRings, true);
+
+        // Town band with suspended context + mayStart: true -> rings: true.
+        const townBand = makeController({ enabled: true, mode: 'bgm', state: 'suspended', gestureSeen: true });
+        townBand._emitBellState();
+        assert.deepEqual(bellStates.payloads.at(-1), { rings: true });
+
+        // Town band only -> rings: false (even with mayStart: true and running or suspended context).
+        for (const state of ['running', 'suspended']) {
+            const bgmOnly = makeController({ enabled: true, mode: 'bgmOnly', state, gestureSeen: true });
+            bgmOnly._emitBellState();
+            assert.deepEqual(bellStates.payloads.at(-1), { rings: false });
+        }
+
+        // Off -> rings: false.
+        const off = makeController({ enabled: false, mode: 'bgm', state: 'running', gestureSeen: true });
+        off._emitBellState();
+        assert.deepEqual(bellStates.payloads.at(-1), { rings: false });
+
+        // Armed before any gesture (mayStart: false) -> rings: false so OS alerts remain unmuted.
+        const armed = makeController({ enabled: true, mode: 'signals', state: 'suspended', gestureSeen: false });
+        armed._emitBellState();
+        assert.deepEqual(bellStates.payloads.at(-1), { rings: false });
     } finally {
         bellStates.off();
     }
@@ -855,4 +941,170 @@ test('4.C / 3.A: TopBar sound popover hides Preview in Off and Town band only', 
     assert.equal(bar._soundEls.preview.hidden, false);
     assert.equal(bar._soundEls.hush.hidden, false);
     assert.equal(bar._soundEls.actions.hidden, false);
+});
+
+test('Opus P2 #3/#4/#9: orphan TopBar setters removed, reset clears retired keys and restores live controller mode to default Town band', async () => {
+    assert.equal(typeof TopBar.prototype._setAutoCamera, 'undefined', '_setAutoCamera orphan removed');
+    assert.equal(typeof TopBar.prototype._setSidebarCollapsed, 'undefined', '_setSidebarCollapsed orphan removed');
+
+    await withFakeDom(async ({ storage }) => {
+        storage.setItem('claudeville.sound.tone', 'warm');
+        storage.setItem('claudeville.sound.countHours', 'true');
+        storage.setItem('claudeville.sound.townBandVoice', 'chip');
+        storage.setItem('claudeville.sound.calibration', '2');
+        storage.setItem('claudeville.sound.enabled', 'true');
+        storage.setItem('claudeville.sound.mode', 'signals');
+
+        const audio = Object.create(AmbientAudioController.prototype);
+        Object.assign(audio, {
+            _destroyed: false,
+            _gestureSeen: true,
+            _windowBlurred: false,
+            _inactive: false,
+            _visibilityGeneration: 0,
+            _quietMix: { active: false, preset: null },
+            _crossfadeStops: new Map(),
+            _playingMode: 'signals',
+            _silenced: false,
+            _quietActive: false,
+            _recalibrated: false,
+            _enablePending: false,
+            _bellRings: null,
+            hushedUntil: 0,
+            quietHours: '22-08',
+            output: 'mono',
+            soften: 'on',
+            available: true,
+            background: 'signals',
+            enabled: true,
+            mode: 'signals',
+            volumeStep: 3,
+            cues: { kit: { armFamilyLine() {} }, governor: { clearRoutine() {} } },
+            directors: {
+                signals: { running: true, paused: false, stop() { this.running = false; }, setHidden() {}, setSignalRouting() {}, setCuesEnabled() {} },
+                bgm: { running: false, paused: false, stop() { this.running = false; }, setCuesEnabled() {} },
+            },
+            engine: {
+                context: { state: 'running' },
+                setVolumeStep() {},
+                setOutput() {},
+                setSoften() {},
+                setCueTrim() {},
+                setGroupLevel() {},
+                setBedCompensation() {},
+                stop() {},
+            },
+            _removeUnlockListeners() {},
+            _armUnlockListeners() {},
+            _deactivate() { this._playingMode = null; this.directors.signals.running = false; },
+            _startActivation() {},
+            _publishView() {},
+        });
+
+        const bar = Object.create(TopBar.prototype);
+        bar.audio = audio;
+        bar._villageWeather = { setMode() {} };
+        bar._setReducedMotion = () => {};
+        bar.attention = null;
+        bar._settingsPanel = { syncControls() {} };
+        globalThis.document.getElementById = () => null;
+
+        bar._resetSettings();
+
+        assert.equal(storage.getItem('claudeville.sound.tone'), null, 'retired tone key cleared');
+        assert.equal(storage.getItem('claudeville.sound.countHours'), null, 'retired countHours key cleared');
+        assert.equal(storage.getItem('claudeville.sound.townBandVoice'), null, 'retired townBandVoice key cleared');
+        assert.equal(audio.enabled, false);
+        assert.equal(audio.mode, SoundSettings.DEFAULT_SOUND_MODE, 'live controller mode reset to default bgm');
+        assert.equal(audio.lastPreset, 'townBand');
+
+        // Pressing M (`toggleFromUser`) after Reset must turn on default Town band, not pre-reset Signals.
+        const nextPreset = audio.toggleFromUser();
+        assert.equal(nextPreset, 'townBand');
+        assert.equal(audio.mode, 'bgm');
+    });
+
+    // Direct resetPersistedSettings removes retired keys while keeping unrelated storage intact.
+    const direct = memoryStorage({
+        'claudeville.sound.tone': 'bright',
+        'claudeville.sound.countHours': '1',
+        'claudeville.sound.townBandVoice': 'chip',
+        'claudeville.unrelated': 'keep',
+    });
+    resetPersistedSettings(direct);
+    assert.equal(direct.getItem('claudeville.sound.tone'), null);
+    assert.equal(direct.getItem('claudeville.sound.countHours'), null);
+    assert.equal(direct.getItem('claudeville.sound.townBandVoice'), null);
+    assert.equal(direct.getItem('claudeville.unrelated'), 'keep');
+});
+
+test('Opus P2 #8 & Fable Watchtowers: 1 Hz refresh skips redundant DOM rewrites and renders clean hook copy', async () => {
+    await withFakeDom(async ({ storage }) => {
+        const hookAges = new Map([
+            ['claude', 1200],
+            ['codex', null],
+            ['grok', 400], // stale/unexpected hook on an unavailable provider must be ignored
+            ['kimi', null],
+        ]);
+        const panel = new SettingsPanel({
+            storage,
+            readSettings: () => defaultSettings(),
+            getHookFreshness: (id) => hookAges.get(id) ?? null,
+            fetchImpl: async () => ({
+                ok: true,
+                json: async () => ({
+                    health: [
+                        { id: 'claude', name: 'Claude Code', health: 'healthy', sessions: 2 },
+                        { id: 'codex', name: 'Codex CLI', health: 'empty', sessions: 0 },
+                        { id: 'grok', name: 'Grok CLI', health: 'unavailable', sessions: 0 },
+                        { id: 'kimi', name: 'Kimi', health: 'unavailable', sessions: 0 },
+                    ],
+                }),
+            }),
+        });
+
+        const root = panel.build();
+        let replaceCalls = 0;
+        const origReplace = panel.watchtowerList.replaceChildren.bind(panel.watchtowerList);
+        panel.watchtowerList.replaceChildren = (...nodes) => {
+            replaceCalls++;
+            return origReplace(...nodes);
+        };
+
+        await new Promise(resolve => setTimeout(resolve, 10));
+        assert.equal(panel._providerLoadState, 'loaded');
+        assert.equal(replaceCalls, 1, 'initial load writes Watchtowers DOM once');
+
+        const statesByName = () => Object.fromEntries(
+            root.findAll(n => n.classList.contains('settings-provider')).map(row => [
+                row.querySelector('.settings-provider__name').textContent,
+                row.querySelector('.settings-provider__state').textContent,
+            ]),
+        );
+
+        assert.deepEqual(statesByName(), {
+            'Claude Code': 'ready · 2 sessions · hook live (1.2 s ago)',
+            'Codex CLI': 'empty',
+            'Grok CLI': 'not installed',
+            'Kimi': 'not installed',
+        });
+
+        // 1 Hz operational refreshes with unchanged content must NOT rewrite aria-live DOM.
+        const firstChildren = [...panel.watchtowerList.children];
+        panel._refreshOperationalRows();
+        panel._refreshOperationalRows();
+        panel._refreshOperationalRows();
+        assert.equal(replaceCalls, 1, 'unchanged 1 Hz refreshes perform zero DOM rewrites');
+        assert.deepEqual(panel.watchtowerList.children, firstChildren, 'existing row nodes preserved');
+
+        // When hook freshness genuinely changes (expires), Watchtowers DOM updates once.
+        hookAges.set('claude', 20_000);
+        panel._refreshOperationalRows();
+        assert.equal(replaceCalls, 2, 'changed hook state updates Watchtowers DOM once');
+        assert.equal(statesByName()['Claude Code'], 'ready · 2 sessions');
+        panel._refreshOperationalRows();
+        assert.equal(replaceCalls, 2, 'subsequent unchanged ticks stay no-ops');
+
+        panel.destroy();
+    });
 });

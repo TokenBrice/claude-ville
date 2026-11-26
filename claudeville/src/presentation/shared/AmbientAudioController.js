@@ -2,8 +2,8 @@
 // Owns the opt-in lifecycle — off by default, user-gesture unlock, background
 // policy, pause in place while away, hidden-tab wakes — and the listener's
 // choices, persisted through SoundSettings: the preset (Off · Signals ·
-// Town band), a volume step per preset, output, tone, soften, hush and
-// quiet hours. It is DOM-free: the chip, the SOUND popover and SET render
+// Town band · Town band only), a volume step per preset, output, soften,
+// hush and quiet hours. It is DOM-free: the chip, the SOUND popover and SET render
 // `soundView()`, which it emits as `audio:sound-state` only when it
 // changes. All sound is delegated to AudioEngine (mix chain, the music
 // group fader, per-director crossfade gains, the Transport) and the two
@@ -32,6 +32,7 @@ import {
     next as nextReminder,
 } from './audio/UrgencyLadder.js';
 import {
+    DEFAULT_SOUND_MODE,
     HUSH_DURATION_MS,
     SOUND_BACKGROUNDS,
     SOUND_PRESETS,
@@ -139,7 +140,7 @@ function phaseFamily(phase) {
 
 // The popover's line for what the band plays (7.3, C6): the piece's title
 // and its two players by their display names — one name when the lead and
-// the counter read alike (the same instrument, or the Chip's two pulses),
+// the counter read alike (the same instrument),
 // the title alone when the players are unknown.
 function nowPlayingLine(playing) {
     if (!playing?.piece) return 'Now · between tunes';
@@ -338,7 +339,7 @@ export class AmbientAudioController {
         return this.userActivated || autoplayAllowed();
     }
 
-    /** The preset the listener chose: `off | signals | townBand`. */
+    /** The preset the listener chose: `off | signals | townBand | townBandOnly`. */
     get preset() {
         return this.enabled ? presetForMode(this.mode) : 'off';
     }
@@ -418,6 +419,17 @@ export class AmbientAudioController {
         this._emitBellState();
         this._publishView();
         return this.preset;
+    }
+
+    /** Reset the remembered mode (used by Reset to defaults while sound is off). */
+    resetMode(mode = DEFAULT_SOUND_MODE) {
+        if (this._destroyed) return this.mode;
+        this.mode = writeStoredSoundMode(mode);
+        this._applyVolume();
+        if (this.enabled && this.isRunning()) this._applyEffectiveMode();
+        this._emitBellState();
+        this._publishView();
+        return this.mode;
     }
 
     // Playing, as the listener would hear it: the context runs and the active
@@ -508,8 +520,9 @@ export class AmbientAudioController {
         this.engine.setSoften(softenActive(this.soften, this._reducedMotion?.() ?? false));
     }
 
-    // Hush and quiet hours (7.7, UX-11) drop to Signals; the summons still
-    // sounds. Expiry crossfades back to the chosen preset, with no bells.
+    // Hush and quiet hours (7.7, UX-11) drop Town band to Signals (the summons
+    // still sounds) and fade Town band only to silence without turning bells on.
+    // Expiry fades back to the chosen preset, with no bells.
     hush(ms = HUSH_DURATION_MS) {
         if (this._destroyed) return this.hushedUntil;
         const duration = Math.max(0, Number(ms) || 0);
@@ -624,7 +637,7 @@ export class AmbientAudioController {
             this._playingMode = null;
             this._silenced = true;
             for (const id of DIRECTOR_IDS) {
-                if (this.directors[id].running) this._stopDirector(id);
+                if (this.directors[id].running) this._fadeOutDirector(id);
             }
             this._syncQuietMix();
             this._syncSignalRouting();
@@ -690,6 +703,20 @@ export class AmbientAudioController {
             this._syncSignalRouting();
         }, delayMs));
         this._syncSignalRouting();
+    }
+
+    _fadeOutDirector(id) {
+        this._cancelCrossfadeStop(id);
+        const end = this.engine.fadeDirector(id, 0, { duration: SIGNALS_FADE_SEC });
+        const fadeEnd = Number.isFinite(end) ? end : this.engine.now() + SIGNALS_FADE_SEC;
+        const delayMs = Math.max(0, (fadeEnd - this.engine.now()) * 1000) + CROSSFADE_STOP_MARGIN_MS;
+        this._crossfadeStops.set(id, setTimeout(() => {
+            this._crossfadeStops.delete(id);
+            if (this._destroyed || directorFor(this._playingMode) === id) return;
+            if (this._silenced && this._effectiveMode() !== null) return;
+            this._stopDirector(id);
+            this._syncSignalRouting();
+        }, delayMs));
     }
 
     _cancelCrossfadeStop(id) {
@@ -1133,10 +1160,11 @@ export class AmbientAudioController {
         }
     }
 
-    // Whether the page itself rings urgent signal bells; OS desktop alerts go
-    // silent only when it will, so alerts stay unmuted in Town band only (3.A).
+    // Whether the page itself rings urgent signal bells (including via a hidden-tab
+    // wake once activated); OS desktop alerts go silent only when it will, so alerts
+    // stay unmuted in Off and Town band only (3.A) without double-sounding while hidden.
     _emitBellState() {
-        const rings = Boolean(this.available && this._signalsAudible() && this.engine.context?.state === 'running');
+        const rings = Boolean(this.available && this._signalsAudible() && this.mayStart);
         if (rings === this._bellRings) return;
         this._bellRings = rings;
         eventBus.emit('audio:bell-state', { rings });

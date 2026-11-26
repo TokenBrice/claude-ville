@@ -24,6 +24,7 @@ import { shortcutBlocked } from './ShortcutGuard.js';
 import { OPEN_METEO_URL, VILLAGE_WEATHER_KEY, readVillageWeather, watchVillageWeather, weatherMode } from './VillageWeatherSettings.js';
 import {
     HUSH_DURATION_MS,
+    RETIRED_SOUND_SETTING_KEYS,
     SOUND_PRESETS,
     SOUND_PRESET_DETAILS,
     SOUND_PRESET_LABELS,
@@ -243,6 +244,9 @@ function setSliderStep(slider, step) {
 export function resetPersistedSettings(storage = globalThis.window?.localStorage) {
     for (const [key, value] of Object.entries(PERSISTED_SETTING_DEFAULTS)) {
         try { storage?.setItem(key, value); } catch { /* persistence is optional */ }
+    }
+    for (const key of RETIRED_SOUND_SETTING_KEYS) {
+        try { storage?.removeItem?.(key); } catch { /* persistence is optional */ }
     }
     return readPersistedSettings(storage);
 }
@@ -754,6 +758,7 @@ export class TopBar {
         if (audio) {
             const defaults = readSoundSettings();
             audio.setPreset('off');
+            audio.resetMode?.(defaults.soundMode);
             if (audio.soundView().hushedUntil) audio.resumeFromHush();
             audio.setVolumeStep(readPresetVolumeStep('off'));
             audio.setBackground(defaults.soundBackground);
@@ -798,31 +803,11 @@ export class TopBar {
         return readPresetVolumeStep(preset);
     }
 
-    // SET's Auto camera row is the FREE | AUTO half of the World dock's camera
-    // control (App): persist, then announce; the dock and the renderer follow.
-    _setAutoCamera(enabled) {
-        const next = Boolean(enabled);
-        if (readPersistedSettings().autoCamera !== next) {
-            try { window.localStorage?.setItem('cv-auto-camera', next ? '1' : '0'); } catch { /* persistence is optional */ }
-            eventBus.emit('camera:auto-camera', { enabled: next });
-        }
-        return readPersistedSettings().autoCamera;
-    }
-
     async _setDesktopAlerts(enabled) {
         if (!this.attention?.desktopAlertsAvailable) return false;
         const on = await this.attention.setDesktopAlerts(Boolean(enabled));
         this._applyAlertsState(on);
         return on;
-    }
-
-    _setSidebarCollapsed(collapsed) {
-        const next = Boolean(collapsed);
-        const sidebar = document.getElementById('sidebar');
-        const current = sidebar?.classList.contains('sidebar--collapsed')
-            ?? readPersistedSettings().sidebarCollapsed;
-        if (current !== next) document.getElementById('sidebarToggle')?.click();
-        return document.getElementById('sidebar')?.classList.contains('sidebar--collapsed') ?? next;
     }
 
     _setReducedMotion(reduced) {
@@ -1477,7 +1462,7 @@ export class TopBar {
 
     // Today's observed spend and the live burn rate — the numbers that answer
     // "am I burning tokens?" (quota headroom stands in the World, on the
-    // Hourglass Belfry). The old readout summed
+    // Runic Tide-Terrace). The old readout summed
     // the lifetime cost of whichever sessions happened to be resident, which
     // moved for reasons that had nothing to do with spending.
     _renderSpend(pending = this._countsPending) {

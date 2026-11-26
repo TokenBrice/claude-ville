@@ -40,7 +40,7 @@ Adapters are read-only inputs registered by `adapters/index.js`. Availability is
 
 - [World renderer and selection lifecycle](src/presentation/character-mode/README.md)
 - [Dashboard cards, lifecycle, and detail polling](src/presentation/dashboard-mode/README.md)
-- [Shared chrome, Activity Panel, selection, detail cache, and sound](src/presentation/shared/README.md) (`AmbientAudioController.js` and `shared/audio/`: presets Off · Signals · Town band; the local probe is documented in [`scripts/audio/README.md`](../scripts/audio/README.md))
+- [Shared chrome, Activity Panel, selection, detail cache, and sound](src/presentation/shared/README.md) (`AmbientAudioController.js` and `shared/audio/`: presets Off · Signals · Town band · Town band only; the local probe is documented in [`scripts/audio/README.md`](../scripts/audio/README.md))
 
 `WebSocketClient` patches escaped session IDs and preserves untouched session-object identity. Session-only deltas normalize changed residents; every message still re-evaluates untouched residents' clock-derived status, activity-age buckets, and verified git outcomes (including activation, expiry eligibility, and fallback timestamps). Status or age-bucket transitions use full upserts to preserve status-derived tools and retained dialogue; unchanged residents only refresh `activityAgeMs` and `lastActive`. Shared git, team, collision, usage, or wholesale changes use full ingestion. Invalid v2 baselines, patches, or unresolved IDs request one outstanding resync until a full snapshot arrives; an unanswered resync is re-sent once after 10 s, then the socket reconnects (VB-8). A delta without `deltaVersion: 2` instead sends one `{ type: 'hello', deltas: false }` without resync; reconnect negotiates capability again.
 

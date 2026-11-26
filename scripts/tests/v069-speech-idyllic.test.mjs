@@ -174,14 +174,13 @@ test('resolveSpeechDisplay covers full 4 modes x zoom x readMode x theatreMode m
     const zooms = [0.5, 1.0, 1.59, 1.6, 2.0];
     for (const mode of [...SPEECH_DISPLAY_MODES, 'invalid']) {
         for (const z of zooms) {
-            const compact = z < 1.6;
-            // READ key B always forces above-agent bubbles and suppresses scribe stream.
+            // READ key B always forces full-width above-agent bubbles and suppresses scribe stream.
             for (const theatre of [false, true]) {
                 assert.deepEqual(resolveSpeechDisplay(z, true, theatre, mode), {
                     drawBubbles: true,
                     useScribe: false,
                     drawPip: false,
-                    overviewCompact: compact,
+                    overviewCompact: false,
                 }, `readMode mode=${mode} z=${z} theatre=${theatre}`);
             }
             // Theatre mode H (without READ) always forces pure-stage SPOKEN stream + quill pip.
@@ -310,6 +309,23 @@ test('overview compact bubble packing at z=0.5 and z=1.0 enforces scaled budget,
     const placed20 = cluster20.filter(sp => sp.bubbleSlot != null);
     assert.equal(placed20.length, 8);
     assert.equal(placed20[0]._thoughtHeadMaxText, THOUGHT_HEAD.maxText);
+
+    // Holding/locking READ (B) at overview zoom (z = 1.0) shows full-width bubbles (up to 8, 232 px maxText).
+    const rRead = makeRendererHost(1.0, { width: 2560, height: 1440 });
+    rRead.setSpeechDisplay('auto');
+    rRead._readMode = true;
+    const clusterRead = Array.from({ length: 10 }, (_, i) => makeSpeaker(`sread-${i}`, {
+        x: 240 + (i % 5) * 420,
+        y: 260 + Math.floor(i / 5) * 320,
+        fresh: 4000 + i,
+    }));
+    rRead._assignAgentBubbleSlots(clusterRead, 1.0, [], null, 1000);
+    const placedRead = clusterRead.filter(sp => sp.bubbleSlot != null);
+    assert.equal(placedRead.length, 8, 'READ at overview zoom admits full 8-bubble budget');
+    assert.equal(rRead._speechDisplayPlan.overviewCompact, false);
+    for (const sp of placedRead) {
+        assert.equal(sp._thoughtHeadMaxText, THOUGHT_HEAD.maxText, 'READ at overview zoom uses full 232 px text width');
+    }
 });
 
 test('Both mode snapshots SPOKEN line before AgentSprite.drawThought clears _statusThread, formats speaker name, and omits duplicate quill pip', () => {
