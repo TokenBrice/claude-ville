@@ -353,8 +353,22 @@ test('the header timer starts before World mounts and honors the mounted atmosph
 
 test('forecast changes refresh the World clock from its last atmosphere without another frame', () => {
     const fields = new Map(['time', 'phase', 'override'].map(name => [`.topbar__clock-${name}`, {}]));
+    const creditAttrs = new Map();
+    const credit = {
+        getAttribute: (k) => creditAttrs.get(k) ?? null,
+        setAttribute: (k, v) => creditAttrs.set(k, String(v)),
+        removeAttribute: (k) => creditAttrs.delete(k),
+    };
+    fields.set('.topbar__clock-source', credit);
     fields.set('path', { setAttribute() {} });
-    const clock = { dataset: {}, querySelector: selector => fields.get(selector) };
+    const clockAttrs = new Map();
+    const clock = {
+        dataset: {},
+        querySelector: selector => fields.get(selector),
+        getAttribute: (k) => clockAttrs.get(k) ?? null,
+        setAttribute: (k, v) => clockAttrs.set(k, String(v)),
+        removeAttribute: (k) => clockAttrs.delete(k),
+    };
     const last = { clock: { label: '12:00' }, weather: { type: 'clear' } };
     const topBar = Object.assign(Object.create(TopBar.prototype), {
         els: { clock },
@@ -368,6 +382,16 @@ test('forecast changes refresh the World clock from its last atmosphere without 
     topBar._renderWitnessClock(last);
     topBar._refreshWitnessClock();
     assert.match(clock.dataset.tip, /Real sky.*fetched 1m ago.*snow/);
+    assert.equal(creditAttrs.has('href'), true);
+
+    topBar._renderWitnessClock({
+        ...last,
+        weather: { type: 'clear', frozen: false },
+        weatherSource: { kind: 'idyllic', ageMinutes: null },
+    });
+    assert.equal(clock.dataset.tip, 'Idyllic village weather · clear');
+    assert.equal(creditAttrs.has('href'), false);
+    assert.equal(clockAttrs.get('tabindex'), '0');
 });
 
 test('the clock credit can open its parent tooltip from keyboard focus', (t) => {

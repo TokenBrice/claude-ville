@@ -33,8 +33,8 @@ const read = file => fs.readFileSync(path.join(WORLD, file), 'utf8');
 // developer overlays only. `caption`: the postcard's own caption band.
 const SITES = {
     'AgentGpuOverlayRenderer.js drawDepartedTreatment': { flag: true, why: 'DEPARTED plaque' },
-    'AgentSprite.js _drawThoughtHead': { tier: 'if (!postcard) drawThoughtLayer(', why: 'speech: the model\'s words, speaker tag' },
-    'AgentSprite.js _drawThoughtHistory': { tier: 'if (!postcard) drawThoughtLayer(', why: 'speech history' },
+    'AgentSprite.js _drawThoughtHead': { tier: 'if (!postcard) paintSpeechLayer(', why: 'speech: the model\'s words, speaker tag' },
+    'AgentSprite.js _drawThoughtHistory': { tier: 'if (!postcard) paintSpeechLayer(', why: 'speech history' },
     'AgentSprite.js _drawNamePlate': { flag: '_drawNameTag', why: 'T2 plate: villager name (a cached stamp, so gated before the blit)' },
     'AgentSprite.js _drawObservationSeal': { flag: true, why: 'last-observed age' },
     'AgentSprite.js _drawTurnSand': { flag: true, why: 'turn duration' },

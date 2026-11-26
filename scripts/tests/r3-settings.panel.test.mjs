@@ -103,7 +103,8 @@ test('settings review reads every operator preference, sound levels as steps', (
         'claudeville.alerts.desktop': '1',
         'claudeville.sidebarCollapsed': 'true',
         'claudeville.display.hdrHighlights': 'full',
-        'claudeville.villageWeather': 'real-sky',
+        'claudeville.world.speechDisplay': 'bubbles',
+        'claudeville.villageWeather': 'idyllic',
     });
 
     assert.deepEqual(readPersistedSettings(storage), {
@@ -125,8 +126,9 @@ test('settings review reads every operator preference, sound levels as steps', (
         sidebarCollapsed: true,
         hdrHighlights: 'full',
         signage: 'compact',
+        speechDisplay: 'bubbles',
         glass: 'off',
-        villageWeather: 'real-sky',
+        villageWeather: 'idyllic',
     });
 });
 
@@ -197,6 +199,7 @@ test('reset writes defaults in place without clearing unrelated local data', () 
     assert.equal(result.autoCamera, true);
     assert.equal(result.soundReminders, 'standard');
     assert.equal(result.captions, 'auto');
+    assert.equal(result.speechDisplay, 'auto');
     assert.equal(result.villageWeather, 'modeled');
 });
 

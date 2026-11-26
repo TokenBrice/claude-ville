@@ -39,6 +39,7 @@ import {
 } from './SoundSettings.js';
 import {
     SIGNAGE_STORAGE_KEY, SIGNAGE_DEFAULT_MODE, SIGNAGE_EVENT, readSignageMode,
+    SPEECH_DISPLAY_STORAGE_KEY, DEFAULT_SPEECH_DISPLAY, SPEECH_DISPLAY_EVENT, readSpeechDisplay,
     HDR_HIGHLIGHTS_DEFAULT,
     HDR_HIGHLIGHTS_EVENT,
     HDR_HIGHLIGHTS_STORAGE_KEY,
@@ -109,6 +110,7 @@ export const PERSISTED_SETTING_DEFAULTS = Object.freeze({
     'claudeville.sidebarCollapsed': 'false',
     [HDR_HIGHLIGHTS_STORAGE_KEY]: HDR_HIGHLIGHTS_DEFAULT,
     [SIGNAGE_STORAGE_KEY]: SIGNAGE_DEFAULT_MODE,
+    [SPEECH_DISPLAY_STORAGE_KEY]: DEFAULT_SPEECH_DISPLAY,
     [GLASS_STORAGE_KEY]: GLASS_DEFAULT_MODE,
     [VILLAGE_WEATHER_KEY]: 'modeled',
 });
@@ -130,6 +132,7 @@ export function readPersistedSettings(storage = globalThis.window?.localStorage)
         sidebarCollapsed: storageValue(storage, 'claudeville.sidebarCollapsed') === 'true',
         hdrHighlights: readHdrHighlights(storage),
         signage: readSignageMode(storage),
+        speechDisplay: readSpeechDisplay(storage),
         glass: readGlassSetting(storage),
         villageWeather: readVillageWeather(storage),
     };
@@ -528,8 +531,9 @@ export class TopBar {
         const age = source?.ageMinutes == null ? '' : ` · fetched ${formatWaitAge(source.ageMinutes * 60_000)} ago`;
         const usingForecast = source?.kind === 'forecast';
         const sourceLine = usingForecast ? `Real sky · Open-Meteo forecast adapted for the village${age}`
-            : source?.kind === 'stale' ? `Modeled village weather · Open-Meteo forecast expired${age}`
-                : source ? `Modeled village weather · Open-Meteo forecast unavailable${age}` : 'Modeled village weather';
+            : source?.kind === 'idyllic' ? 'Idyllic village weather'
+                : source?.kind === 'stale' ? `Modeled village weather · Open-Meteo forecast expired${age}`
+                    : source ? `Modeled village weather · Open-Meteo forecast unavailable${age}` : 'Modeled village weather';
         const timeline = snapshot.timeline;
         const override = timeline?.hourOverride != null || timeline?.frozen || timeline?.mode === 'fixed'
             ? 'FIXED' : this._villageState.source === 'simulator' ? 'SIM' : '';
@@ -762,6 +766,7 @@ export class TopBar {
         eventBus.emit('camera:auto-camera', { enabled: true });
         eventBus.emit(HDR_HIGHLIGHTS_EVENT, { mode: HDR_HIGHLIGHTS_DEFAULT });
         eventBus.emit(SIGNAGE_EVENT, { mode: SIGNAGE_DEFAULT_MODE });
+        eventBus.emit(SPEECH_DISPLAY_EVENT, { mode: DEFAULT_SPEECH_DISPLAY });
         eventBus.emit(GLASS_EVENT, { mode: GLASS_DEFAULT_MODE });
         if (this.attention) {
             void this.attention.setDesktopAlerts(false).then((on) => this._applyAlertsState(on));

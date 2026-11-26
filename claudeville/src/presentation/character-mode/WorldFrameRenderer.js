@@ -1162,7 +1162,11 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     if (!gpuWorldRendered) {
         for (const sprite of sortedSprites) sprite.drawDeferredNameTag?.(overlayCtx);
     }
-    paintSpeechLayer(overlayCtx, renderer, sortedSprites, { zoom, restZoom, theatreMode, postcard });
+    if (!postcard) paintSpeechLayer(overlayCtx, renderer, sortedSprites, { zoom, restZoom, theatreMode, postcard });
+    else {
+        renderer._scribeSpeaker = null;
+        renderer._scribeLine = null;
+    }
     // 4.5 — the shared-file overlap plate. The thread and knot live in the
     // occluded ground texture; the exact counts belong here, once, in both
     // backends, so dense load keeps the numbers when the lines are dropped.

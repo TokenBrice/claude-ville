@@ -23,6 +23,7 @@ import {
 } from './SoundSettings.js';
 import {
     SIGNAGE_LABELS, SIGNAGE_EVENT, normalizeSignageMode, writeSignageMode,
+    SPEECH_DISPLAY_LABELS, SPEECH_DISPLAY_EVENT, normalizeSpeechDisplay, writeSpeechDisplay,
     HDR_HIGHLIGHT_LABELS,
     HDR_HIGHLIGHT_MODES,
     normalizeHdrHighlights,
@@ -84,7 +85,11 @@ const SOUND_CALL_PREVIEWS = Object.freeze([
 // but still focusable, so keyboard and screen-reader users reach the reason.
 const HDR_HIGHLIGHT_CHOICES = Object.freeze(HDR_HIGHLIGHT_MODES.map(mode => [mode, HDR_HIGHLIGHT_LABELS[mode]]));
 const HDR_DETAIL_ID = 'settingsHdrHighlightsDetail';
-const WEATHER_CHOICES = [['modeled', 'Modeled'], ['real-sky', 'Real sky']];
+const WEATHER_CHOICES = Object.freeze([
+    ['modeled', 'Modeled'],
+    ['real-sky', 'Real sky'],
+    ['idyllic', 'Idyllic'],
+]);
 
 function hdrHighlightsAvailability(status) {
     if (status && status.backend !== 'webgpu') {
@@ -448,13 +453,13 @@ export class SettingsPanel {
         });
         this._renderHdr(readDisplayStatus());
         this._offDisplayStatus = onDisplayStatus(status => this._renderHdr(status));
-        const weatherRow = this._select('villageWeather', 'Village weather',
-            'For non-commercial use. Real sky shares your timezone city’s coordinates with ',
+        const weatherRow = this._select('villageWeather', 'Village sky',
+            'Idyllic keeps clear weather with the real day/night cycle. Real sky shares your timezone city’s coordinates with ',
             WEATHER_CHOICES, weatherMode(settings.villageWeather), this.onVillageWeather);
         const detail = weatherRow.querySelector('.settings-control__detail');
         const links = [
-            ['Open-Meteo', OPEN_METEO_URL, '. Forecast adapted under '],
-            ['CC BY 4.0', WEATHER_LICENCE_URL, '.'],
+            ['Open-Meteo', OPEN_METEO_URL, ' (non-commercial, '],
+            ['CC BY 4.0', WEATHER_LICENCE_URL, ').'],
         ];
         for (const [label, href, suffix] of links) {
             const link = el('a', { text: label });
@@ -467,6 +472,12 @@ export class SettingsPanel {
         this.controls.get('villageWeather').setAttribute('aria-describedby', detail.id);
         grid.append(
             weatherRow,
+            this._select('speechDisplay', 'Speech bubbles', 'Show agent speech above villagers, in the bottom-left stream, or both.',
+                Object.entries(SPEECH_DISPLAY_LABELS), normalizeSpeechDisplay(settings.speechDisplay), value => {
+                    const mode = writeSpeechDisplay(value, this._storage);
+                    eventBus.emit(SPEECH_DISPLAY_EVENT, { mode });
+                    return mode;
+                }),
             this._select('glass', 'The Glass', 'Hold G or arm the dock tool to inspect the village.',
                 [['off', 'Off'], ['on', 'On']], normalizeGlassSetting(settings.glass), value => {
                     const mode = writeGlassSetting(value, this._storage);
@@ -830,7 +841,11 @@ export class SettingsPanel {
             if (input) input.checked = Boolean(settings[key]);
         }
         const hdrSelect = this.controls.get('hdrHighlights');
-        for (const [key, mode] of [['signage', normalizeSignageMode(settings.signage)], ['glass', normalizeGlassSetting(settings.glass)]]) {
+        for (const [key, mode] of [
+            ['speechDisplay', normalizeSpeechDisplay(settings.speechDisplay)],
+            ['signage', normalizeSignageMode(settings.signage)],
+            ['glass', normalizeGlassSetting(settings.glass)],
+        ]) {
             const input = this.controls.get(key);
             if (input) input.value = mode;
         }
