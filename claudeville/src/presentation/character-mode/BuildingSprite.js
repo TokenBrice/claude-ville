@@ -93,7 +93,9 @@ import {
     isBuildingApertureLayer,
 } from './BuildingVisualRegistry.js';
 import { APERTURE_MIN_ZOOM, apertureCutContains, assignRoomSlots, buildApertureModel } from './BuildingApertureModel.js';
-import { RoomGlass, readPixels } from './RoomGlass.js';
+import { ROOM_GLASS_STEPS, RoomGlass, nightLitStep, readPixels } from './RoomGlass.js';
+import { shadowFamilyForPose } from './RoomShadowStamps.js';
+import { tankardLift } from './RestSeats.js';
 import { mirrorRowOf, waterlineProfile } from './CoastBake.js';
 import { ApertureLights, APERTURE_GLASS_SNAP, APERTURE_REGISTRY_CLEARANCE, apertureIntensity, apertureOverRoof, apertureRadius } from './ApertureLights.js';
 import { RoofWeather } from './RoofWeather.js';
@@ -294,6 +296,77 @@ function lampCycleCaught(atmosphere, type) {
     if (!def) return true;
     return lampRoundFor(atmosphere)(def.x + def.width / 2, def.y + def.height / 2);
 }
+
+// W3.1 — shadow-theatre windows (spec 04 §1.5). A building's stamps and
+// rhythm dips change together, at most once per quantum (<= 3.1 Hz), and at
+// most one building's glass is rebuilt for them per frame (round-robin).
+export const ROOM_SHADOW_QUANTUM_MS = 320;
+// The Forge rhythm pane's contact dip: one rung of ROOM_GLASS_STEPS (1.0 -> 0.75).
+export const ROOM_RHYTHM_DIP = 1 - 1 / ROOM_GLASS_STEPS;
+// Truth gate 2: a stamp needs the room's stepped night share at least this lit.
+export const ROOM_SHADOW_MIN_NIGHT = 0.5;
+const POSE_STRIP_CELL = 92;
+
+// The group-relative strip frame a pose cell shows (C2 action strips), or 0
+// for a sheet cell.
+export function poseStripFrame(cell) {
+    if (cell?.source !== 'strip') return 0;
+    const rows = cell.meta?.groups?.[cell.group]?.rows;
+    const size = Number(cell.meta?.cell) || POSE_STRIP_CELL;
+    const first = Number(rows?.[0]);
+    if (!Number.isInteger(first) || !Number.isFinite(Number(cell.sy))) return 0;
+    return Math.max(0, Math.floor(Number(cell.sy) / size) - first);
+}
+
+function livePoseCell(sprite) {
+    return (typeof sprite?.currentPoseCell === 'function' ? sprite.currentPoseCell() : sprite?._poseCell) || null;
+}
+
+// True while `sprite` shows its `strike` strip's contact frame (the frame
+// WorkDownbeats and ScoreTap land on). A stale observation holds the strip,
+// so it never strikes.
+export function onStrikeContact(sprite) {
+    const cell = livePoseCell(sprite);
+    if (cell?.source !== 'strip' || cell.group !== 'strike') return false;
+    if (sprite?.observation?.state === 'stale') return false;
+    const contact = cell.meta?.groups?.strike?.contactFrame;
+    return poseStripFrame(cell) === (Number.isInteger(contact) ? contact : 0);
+}
+
+// Facing east (se, e, ne) slides +1, west (nw, w, sw) -1, north/south 0.
+function paceSign(direction) {
+    const index = Number(direction);
+    if (index >= 1 && index <= 3) return 1;
+    if (index >= 5 && index <= 7) return -1;
+    return 0;
+}
+
+/**
+ * Pure: the stamp descriptor `{ family, frame, dx }` of one room occupant,
+ * from its live pose. The family follows the pose group; `frame` is the
+ * parity of its real strip frame (the seated sip lifts on the real seeded
+ * `tankardLift` of an authored `drink`); `dx` slides an `upright` body one
+ * texel only while it really paces. Reduced motion locks frame 0 and dx 0;
+ * a stale observation freezes the previous descriptor (`prev`).
+ */
+export function roomShadowDescriptor(sprite, { motion = true, nowMs = Date.now(), prev = null } = {}) {
+    const cell = livePoseCell(sprite);
+    const poseGroup = cell?.source === 'strip'
+        ? cell.group
+        : (typeof sprite?._seatedSeat === 'function' && sprite._seatedSeat() ? 'sit' : null);
+    const family = shadowFamilyForPose(poseGroup);
+    if (!motion) return { family, frame: 0, dx: 0 };
+    if (sprite?.observation?.state === 'stale') {
+        return prev?.family === family ? prev : { family, frame: 0, dx: 0 };
+    }
+    let frame = 0;
+    if (family === 'seated') frame = poseGroup === 'drink' && tankardLift(sprite?.agent?.id, nowMs, true) > 0 ? 1 : 0;
+    else if (family !== 'upright') frame = poseStripFrame(cell) & 1;
+    const dx = family === 'upright' && sprite?.moving === true ? paceSign(sprite.direction) : 0;
+    return { family, frame, dx };
+}
+
+const EMPTY_ROOM_SHADOWS = Object.freeze({ key: '', byGroup: new Map(), dips: new Set(), at: -Infinity });
 const PARTICLE_ALIASES = {
     sparkle2: 'sparkle',
     sparkle3: 'sparkle',
@@ -758,9 +831,13 @@ export class BuildingSprite {
             : [];
     }
 
-    setZoom(value) {
+    // `restZoom` (optional) is the camera's rest-tier target during a glide
+    // (W3.1 truth gate 3); without it the stamps read the live zoom.
+    setZoom(value, restZoom = null) {
         const zoom = Number(value);
         this._zoom = Number.isFinite(zoom) ? zoom : 0;
+        const rest = Number(restZoom);
+        this._restZoom = restZoom != null && Number.isFinite(rest) && rest > 0 ? rest : null;
     }
 
     // W7.10a — selection wins; else two or more live plans make the slate a
@@ -911,6 +988,7 @@ export class BuildingSprite {
         });
         this._updateInspection();
         this._updateNightLightGates(dt);
+        this._advanceRoomShadows(Date.now());
         this._emitVillagePopulation();
         this._syncTaskboardPapers(Date.now());
         this._updateForgeGlow(dt);
@@ -6028,7 +6106,8 @@ export class BuildingSprite {
         const slots = this._roomSlotsByType?.get(type);
         const worked = !slots || this._roomHeldByWorker(slots, roomIndex);
         if (night <= 0) return worked ? value * DAYTIME_ROOM_GLASS_SHARE : 0;
-        return value * (worked ? Math.max(DAYTIME_ROOM_GLASS_SHARE, night) : night);
+        // W3.1 — a Forge rhythm pane dips one rung on its smith's contact.
+        return value * (worked ? Math.max(DAYTIME_ROOM_GLASS_SHARE, night) : night) * this._roomRhythmDip(type, roomIndex);
     }
 
     _roomUnderOpenAperture(type, roomIndex) {
@@ -6066,6 +6145,8 @@ export class BuildingSprite {
     // base emissive gate is down at night (0 arrived workers: keeper/routing or
     // banked hearth), this masks base glass to unlit slate while
     // `_roomGlassLitPart` paints the stepped lit panes on top.
+    // W3.1 — the room's shadow stamp rides the same patch (`shadowFor`): its
+    // ink is the pane's unlit albedo, and the all-unlit branch already is.
     glassPatchFor(building) {
         const type = building?.type;
         if (!type) return null;
@@ -6076,7 +6157,113 @@ export class BuildingSprite {
             type,
             (group) => this._glassGroupGate(type, group),
             (group) => this._nightGlassGroupGate(type, group),
+            (group) => this.shadowFor(type, group),
         );
+    }
+
+    // W3.1 — the applied stamp descriptor `{ family, frame, dx }` of glass
+    // group `group` (room `group - 1`) of `type`, or null. `_advanceRoomShadows`
+    // admits a descriptor only through all five truth gates (spec 04 §1.5); a
+    // postcard frame (gate 5) drops every stamp at once.
+    shadowFor(type, group) {
+        if (postcardFrame()) return null;
+        return this._roomShadowState?.get(type)?.byGroup?.get(group) || null;
+    }
+
+    // W3.1 — the Forge rhythm pane's glass multiplier: ROOM_RHYTHM_DIP for the
+    // quantum its smith's strike lands, else 1. Reduced motion holds 1.
+    _roomRhythmDip(type, roomIndex) {
+        if (!((this.motionScale ?? 1) > 0) || postcardFrame()) return 1;
+        return this._roomShadowState?.get(type)?.dips?.has(roomIndex) ? ROOM_RHYTHM_DIP : 1;
+    }
+
+    // Truth gate 3 reads the camera's rest-tier target, never a mid-glide zoom.
+    _shadowRestZoom() {
+        const camera = this.camera;
+        const target = Number(camera?.targetZoom ?? camera?.zoom);
+        if (camera && Number.isFinite(target) && target > 0) return target;
+        if (this._restZoom > 0) return this._restZoom;
+        return this._zoom > 0 ? this._zoom : 1;
+    }
+
+    // W3.1 — what `type`'s rooms should show now: `{ key, byGroup, dips }`.
+    // Truth gates (spec 04 §1.5), all required:
+    //   1. the room is in `slots.assignment` (an arrived worker or patron, lit
+    //      at 1.0; never `routingAssignment` at 0.6 or the keeper pane at 0.40);
+    //   2. its stepped night share (`nightLitStep(roomGate)`) is at least 0.5;
+    //   3. the camera's rest-tier target is >= APERTURE_MIN_ZOOM (2);
+    //   4. it is not under an open aperture cut;
+    //   5. the frame is not a postcard.
+    // S-class rooms get a stamp descriptor; the Forge's R-class rooms dip
+    // while their smith is on the strike contact frame (motion on only).
+    _desiredRoomShadows(type, nowMs, spriteById, prev = EMPTY_ROOM_SHADOWS) {
+        if (postcardFrame()) return EMPTY_ROOM_SHADOWS;
+        if (!(this._shadowRestZoom() >= APERTURE_MIN_ZOOM - 1e-6)) return EMPTY_ROOM_SHADOWS;
+        const rooms = this.roomGlass?.map?.(type)?.roomShadows;
+        const slots = this._roomSlotsByType?.get(type);
+        if (!rooms || !slots?.assignment?.size) return EMPTY_ROOM_SHADOWS;
+        const motion = (this.motionScale ?? 1) > 0;
+        const byGroup = new Map();
+        const dips = new Set();
+        let key = '';
+        const held = [...slots.assignment].sort((a, b) => a[1] - b[1]);
+        for (const [agentId, roomIndex] of held) {
+            const group = roomIndex + 1;
+            const cls = rooms[group]?.cls;
+            if (!cls) continue;
+            if (nightLitStep(this.roomGate(type, roomIndex)) < ROOM_SHADOW_MIN_NIGHT) continue;
+            if (this._roomUnderOpenAperture(type, roomIndex)) continue;
+            const sprite = spriteById().get(agentId) || null;
+            if (cls === 'R') {
+                if (motion && onStrikeContact(sprite)) {
+                    dips.add(roomIndex);
+                    key += `R${roomIndex};`;
+                }
+                continue;
+            }
+            const desc = roomShadowDescriptor(sprite, { motion, nowMs, prev: prev.byGroup.get(group) });
+            byGroup.set(group, desc);
+            key += `${group}${desc.family}${desc.frame}${desc.dx};`;
+        }
+        return key ? { key, byGroup, dips } : EMPTY_ROOM_SHADOWS;
+    }
+
+    // W3.1 — once a frame: each building's stamps may change once per
+    // ROOM_SHADOW_QUANTUM_MS, and at most one building changes (so rebuilds
+    // its glass patch) this frame, taken round-robin. A postcard frame leaves
+    // the state alone (`shadowFor` and the dip drop it live).
+    _advanceRoomShadows(nowMs = Date.now()) {
+        if (postcardFrame() || !this.roomGlass?.map) return null;
+        const types = [];
+        for (const building of this.buildings || []) {
+            const type = building?.type;
+            if (type && !types.includes(type) && this.roomGlass.map(type)?.shadowRooms > 0) types.push(type);
+        }
+        if (!types.length) return null;
+        const states = this._roomShadowState || (this._roomShadowState = new Map());
+        let index = null;
+        const spriteById = () => {
+            if (index) return index;
+            index = new Map();
+            for (const sprite of this.agentSprites || []) {
+                const id = sprite?.agent?.id;
+                if (id != null && !index.has(id)) index.set(id, sprite);
+            }
+            return index;
+        };
+        const start = (this._roomShadowCursor || 0) % types.length;
+        for (let step = 0; step < types.length; step++) {
+            const at = (start + step) % types.length;
+            const type = types[at];
+            const applied = states.get(type) || EMPTY_ROOM_SHADOWS;
+            if (nowMs - applied.at < ROOM_SHADOW_QUANTUM_MS) continue;
+            const next = this._desiredRoomShadows(type, nowMs, spriteById, applied);
+            if (next.key === applied.key) continue;
+            states.set(type, { key: next.key, byGroup: next.byGroup, dips: next.dips, at: nowMs });
+            this._roomShadowCursor = (at + 1) % types.length;
+            return type;
+        }
+        return null;
     }
 
     // NE P3.1 — procedural part carrying night-lit keeper/routing room panes
@@ -6087,7 +6274,11 @@ export class BuildingSprite {
         const type = building?.type;
         if (!type || !(this._nightWindowGate() > 0) || this._emissiveGateFor(building) >= 0.98) return null;
         if (typeof this.roomGlass?.litPatch !== 'function') return null;
-        const lit = this.roomGlass.litPatch(type, (group) => this._nightGlassGroupGate(type, group));
+        const lit = this.roomGlass.litPatch(
+            type,
+            (group) => this._nightGlassGroupGate(type, group),
+            (group) => this.shadowFor(type, group),
+        );
         if (!lit) return null;
         const textureKey = `proc:building.${type}.roomGlassLit`;
         const revKey = `${textureKey}:${lit.key}`;
