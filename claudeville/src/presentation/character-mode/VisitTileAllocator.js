@@ -1,5 +1,5 @@
 import { normalizeBuildingType, VISIT_OVERFLOW_TILES } from '../../config/buildings.js';
-import { TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
+import { MAP_SIZE, TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
 import { AMBIENT_GROUND_PROPS, DISTRICT_PROPS, SCENIC_POINT_PROPS } from '../../config/scenery.js';
 import { APPROACH_FILES, COMMAND_QUEUE, inVillageMasonry, REST_SEATS, REST_STANDS } from '../../config/townPlan.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
@@ -8,6 +8,7 @@ import { summarizeCrowdClusterEntries } from './CrowdClusters.js';
 import { projectKeyFor, updateHomeDistrictContext } from './HomeDistrict.js';
 import { errandCap, ROUTINE_ROLES, STROLL_CAP } from './CrowdRoutine.js';
 import { restSeatStepBias } from './DayRoutine.js';
+import { BUILDING_SINK_TYPES, buildingSinkTiles, fnv1a32, fnv1aString, SINK_IDS, tileKeyIndex } from './Pathfinder.js';
 
 const DEFAULT_RESERVATION_TTL_MS = 20000;
 const TILE_OCCUPANCY_RADIUS = 0.78;
@@ -32,6 +33,7 @@ const LOCAL_CLUSTER_RADIUS = 2.4;
 const LOCAL_CLUSTER_PENALTY = 12;
 const CROWD_CLUSTER_CELL_SIZE = 4;
 const CROWD_CLUSTER_TOP_LIMIT = 12;
+const OCCUPANCY_CELLS = MAP_SIZE * MAP_SIZE;
 
 // Plans 7.1 / 7.2 — occupancy places outside any building. Their reservations
 // carry their own building types, so they never raise a building's load,
@@ -164,6 +166,7 @@ export class VisitTileAllocator {
         this._occupancyEntries = [];
         this._occupancyBuckets = new Map();
         this._crowdClusters = [];
+        this._sinkSync = new Map();
         this._disposed = false;
     }
 
@@ -178,10 +181,31 @@ export class VisitTileAllocator {
         this.pathfinder = pathfinder || null;
         this._rebuildAgentMeta();
         this._rebuildOccupancyIndex();
+        this._syncPathfinderSinks();
         updateHomeDistrictContext(this.agentSprites);
         this.cleanup(Date.now());
         this._releaseStaleAgentReservations();
         return this;
+    }
+
+    // W0.2 — the Pathfinder's nine landmark sinks follow the live buildings
+    // (their visit slots, entrance, outer ring and approach file), so a moved
+    // or re-authored landmark keeps its flow field. Re-registered only when a
+    // building or its slot list is replaced.
+    _syncPathfinderSinks() {
+        const pathfinder = this.pathfinder;
+        if (typeof pathfinder?.setSinkTiles !== 'function') return;
+        for (const type of BUILDING_SINK_TYPES) {
+            const building = this.buildings.get(type);
+            if (!building) continue;
+            const visitTiles = Array.isArray(building.visitTiles) ? building.visitTiles : null;
+            const synced = this._sinkSync.get(type);
+            if (synced && synced.pathfinder === pathfinder && synced.building === building && synced.visitTiles === visitTiles) continue;
+            this._sinkSync.set(type, { pathfinder, building, visitTiles });
+            const tiles = buildingSinkTiles(type, visitTiles);
+            if (building.entrance) tiles.push(building.entrance);
+            pathfinder.setSinkTiles(SINK_IDS[type], tiles);
+        }
     }
 
     _rebuildAgentMeta() {
@@ -368,9 +392,11 @@ export class VisitTileAllocator {
         const buildingCapacity = this._buildingCapacity(resolvedBuilding, buildingType, slots.length, intent);
         const buildingOccupancy = this._buildingOccupancy(resolvedBuilding, buildingType, agentId);
         const hasWalkableSlot = slots.some((slot) => this._isStandable(slot.tileX, slot.tileY));
+        const walkDistances = this._slotWalkDistances(sourceTile, slots);
 
         let best = null;
-        for (const slot of slots) {
+        for (let slotIndex = 0; slotIndex < slots.length; slotIndex++) {
+            const slot = slots[slotIndex];
             const scored = this._scoreSlot({
                 slot,
                 agentId,
@@ -381,6 +407,7 @@ export class VisitTileAllocator {
                 existingReservation,
                 intent,
                 now,
+                walkDistance: walkDistances ? walkDistances[slotIndex] : null,
             });
             if (hasWalkableSlot && !scored.walkable) {
                 this.metrics.unwalkableSkipped++;
@@ -949,19 +976,63 @@ export class VisitTileAllocator {
 
     // One immutable-by-convention map per two-second window. Rounded pressure
     // and a content version keep unchanged crowds reusable across windows.
+    // W0.2 — occupancy folds into two tile-indexed grids (standing bodies,
+    // rounded counts) hashed with FNV-1a; nothing is sorted. When the
+    // fingerprint matches the previous window, that window's maps, sets and
+    // versions carry over, so routing layers keyed on them never churn.
+    // `standingVersion` keeps its legacy shape (standing keys joined in tile
+    // order); `congestionVersion` is the congestion grid's fingerprint.
     getCongestionSnapshot(now = Date.now()) {
         const bucket = Math.floor(now / 2000);
-        if (this._congestionSnapshot?.bucket === bucket) return this._congestionSnapshot;
+        const previous = this._congestionSnapshot;
+        if (previous?.bucket === bucket) return previous;
         const congestionTiles = new Map();
         const standingTiles = new Set();
+        const standingGrid = new Uint8Array(OCCUPANCY_CELLS);
+        const congestionGrid = new Uint8Array(OCCUPANCY_CELLS);
+        // Off-map buckets (none on a live map) hash order-independently.
+        let offMapSum = 0;
+        let offMapXor = 0;
+        let offMapStanding = null;
         for (const [key, entries] of this._occupancyBuckets) {
-            congestionTiles.set(key, Math.min(8, Math.round(entries.length / 2) * 2));
-            if (entries.some((entry) => !entry.moving && !entry.pending)) standingTiles.add(key);
+            const count = Math.min(8, Math.round(entries.length / 2) * 2);
+            const standing = entries.some((entry) => !entry.moving && !entry.pending);
+            congestionTiles.set(key, count);
+            if (standing) standingTiles.add(key);
+            const index = tileKeyIndex(key);
+            if (index >= 0) {
+                congestionGrid[index] = count;
+                standingGrid[index] = standing ? 1 : 0;
+            } else {
+                const entryHash = fnv1aString(`${key}:${count}:${standing ? 1 : 0}`);
+                offMapSum = (offMapSum + entryHash) >>> 0;
+                offMapXor = (offMapXor ^ Math.imul(entryHash, 0x9e3779b1)) >>> 0;
+                if (standing) (offMapStanding ||= []).push(key);
+            }
         }
-        const congestionVersion = [...congestionTiles].sort(([a], [b]) => a.localeCompare(b))
-            .map(([key, count]) => `${key}:${count}`).join(';');
-        const standingVersion = [...standingTiles].sort().join(';');
-        this._congestionSnapshot = { bucket, congestionTiles, congestionVersion, standingTiles, standingVersion };
+        const congestionFingerprint = (fnv1a32(congestionGrid) ^ offMapSum) >>> 0;
+        const occupancyFingerprint = (fnv1a32(standingGrid, congestionGrid) ^ offMapSum ^ offMapXor) >>> 0;
+        if (previous && previous.occupancyFingerprint === occupancyFingerprint) {
+            this._congestionSnapshot = { ...previous, bucket };
+            return this._congestionSnapshot;
+        }
+        const standingKeys = [];
+        for (let index = 0; index < OCCUPANCY_CELLS; index++) {
+            if (!standingGrid[index]) continue;
+            const tileX = index % MAP_SIZE;
+            standingKeys.push(`${tileX},${(index - tileX) / MAP_SIZE}`);
+        }
+        if (offMapStanding) standingKeys.push(...offMapStanding);
+        this._congestionSnapshot = {
+            bucket,
+            congestionTiles,
+            congestionVersion: congestionTiles.size ? `fnv:${congestionFingerprint.toString(16).padStart(8, '0')}` : '',
+            standingTiles,
+            standingVersion: standingKeys.join(';'),
+            occupancyFingerprint,
+            standingGrid,
+            congestionGrid,
+        };
         return this._congestionSnapshot;
     }
 
@@ -1012,6 +1083,7 @@ export class VisitTileAllocator {
         this._occupancyBuckets.clear();
         this._crowdClusters = [];
         this._congestionSnapshot = null;
+        this._sinkSync.clear();
     }
 
     _scoreSlot({
@@ -1024,6 +1096,7 @@ export class VisitTileAllocator {
         existingReservation,
         intent,
         now,
+        walkDistance = null,
     }) {
         const tileX = slot.tileX;
         const tileY = slot.tileY;
@@ -1036,7 +1109,9 @@ export class VisitTileAllocator {
             && existingReservation.slotId === slotId;
         const tileOccupancy = this._tileOccupancy(tileX, tileY, agentId);
         const clusterPressure = this._clusterPressureAt(tileX, tileY, agentId);
-        const distance = sourceTile ? this._distance(sourceTile, slot) : 0;
+        const distance = Number.isFinite(walkDistance)
+            ? walkDistance
+            : (sourceTile ? this._distance(sourceTile, slot) : 0);
         const capacityLimit = Math.max(1, Number(slot.capacity) || buildingCapacity);
         const projectedTileUse = tileOccupancy + reservations.filter((reservation) => reservation.agentId !== agentId).length;
         const projectedBuildingUse = buildingOccupancy + this._reservationCountForBuilding(buildingType, agentId);
@@ -1097,6 +1172,30 @@ export class VisitTileAllocator {
             overTileCapacity,
             clusterPressure,
         };
+    }
+
+    // W0.2 — canal-aware slot distances. A body standing on a sink seed (a
+    // landmark's place, a rest zone, the gate, the Portal) reads each slot's
+    // walk cost back to that sink from the Pathfinder's flow field in O(1);
+    // walk costs are symmetric but for the crowd terms. A slot the field
+    // cannot reach scores on straight-line distance (it is unwalkable and
+    // skipped), and a slot inside the body's own sink sends the allocation
+    // back to straight-line distance: the field cannot rank its own seeds.
+    // Null without a pathfinder that exposes sinks.
+    _slotWalkDistances(sourceTile, slots) {
+        const pathfinder = this.pathfinder;
+        if (!sourceTile || typeof pathfinder?.sinkCostAt !== 'function' || typeof pathfinder.sinkIdAt !== 'function') return null;
+        const sink = pathfinder.sinkIdAt(Math.round(Number(sourceTile.tileX)), Math.round(Number(sourceTile.tileY)));
+        if (!(sink >= 0)) return null;
+        const out = new Array(slots.length);
+        let ranked = 0;
+        for (let index = 0; index < slots.length; index++) {
+            const cost = pathfinder.sinkCostAt(sink, Math.round(slots[index].tileX), Math.round(slots[index].tileY));
+            if (cost === 0) return null;
+            out[index] = Number.isFinite(cost) ? cost : null;
+            if (out[index] !== null) ranked++;
+        }
+        return ranked ? out : null;
     }
 
     _candidateTiles({ building, buildingType, candidates }) {

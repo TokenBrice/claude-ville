@@ -1,4 +1,7 @@
 import { MAP_SIZE } from '../../config/constants.js';
+import { BUILDING_DEFS, VISIT_OVERFLOW_TILES } from '../../config/buildings.js';
+import { AMBIENT_SCENIC_POINTS } from '../../config/scenery.js';
+import { APPROACH_FILES, COMMAND_QUEUE, PORTAL_SPAWN_TILE, REST_SEATS, REST_STANDS, VILLAGE_GATE } from '../../config/townPlan.js';
 
 const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]];
 const TILE_WEIGHTS = Object.freeze({
@@ -28,13 +31,255 @@ export function routePersonalityFor(id) {
     return (hash >>> 0) % ROUTE_PERSONALITIES.length;
 }
 
+// W0.2 — numeric routing grid. Every search runs on flat tile indices
+// (idx = tileY * MAP_N + tileX) over preallocated typed arrays; no `${x},${y}`
+// string is built inside a search. The string-keyed Sets and Maps callers pass
+// (roads, lanes, bridges, crowd snapshots) are folded into the typed layers
+// once per distinct content, never per query.
+const MAP_N = MAP_SIZE;
+const CELLS = MAP_N * MAP_N;
+const DIR_COUNT = DIRS.length;
+const DIR_OFFSET = Int32Array.from(DIRS, ([dx, dy]) => dy * MAP_N + dx);
+const DIR_LENGTH = Float64Array.from(DIRS, ([dx, dy]) => (dx !== 0 && dy !== 0 ? Math.SQRT2 : 1));
+const DIR_OPPOSITE = Int8Array.from(DIRS, ([dx, dy]) => DIRS.findIndex(([ox, oy]) => ox === -dx && oy === -dy));
+const OCTILE_DIAGONAL_EXTRA = Math.SQRT2 - 1;
+const IndexArray = CELLS <= 0xffff ? Uint16Array : Uint32Array;
+const SlotArray = CELLS <= 0x7fff ? Int16Array : Int32Array;
+
+// staticFlags bits. Bit 0 follows the walk grid; bits 1..6 are the authored
+// route layers (each loaded from one caller collection, see `_syncStatic`);
+// bit 7 is reserved for Wave 6 terrace stairs (`tierGrid`).
+const FLAG_WALK = 1;
+const FLAG_BRIDGE = 2;
+const FLAG_DOCK = 4;
+const FLAG_PLAZA = 8;
+const FLAG_ROAD = 16;
+const FLAG_LANE = 32;
+const FLAG_AVOID = 64;
+const FLAG_STAIR = 128;
+const STATIC_ROLE_FLAGS = Object.freeze([FLAG_BRIDGE, FLAG_DOCK, FLAG_PLAZA, FLAG_ROAD, FLAG_LANE, FLAG_AVOID]);
+const RICH_ROUTE_FLAGS = FLAG_DOCK | FLAG_PLAZA | FLAG_ROAD | FLAG_LANE;
+const CROWD_STANDING = 1;
+const CROWD_CONGESTION = 2;
+
+// 2D Gaussian congestion field: radius 2, sigma 1.15, peak-normalised so a
+// lone crowded tile keeps its legacy cost and its neighbours share a falloff
+// (a crowded bridge deck raises its approaches, which splits a crowd across
+// the other crossing). congestionCost = min(1.2, congestionBlur * 0.16).
+const CONGESTION_RADIUS = 2;
+const CONGESTION_SIGMA = 1.15;
+const CONGESTION_KERNEL = (() => {
+    const size = CONGESTION_RADIUS * 2 + 1;
+    const kernel = new Float32Array(size * size);
+    for (let dy = -CONGESTION_RADIUS; dy <= CONGESTION_RADIUS; dy++) {
+        for (let dx = -CONGESTION_RADIUS; dx <= CONGESTION_RADIUS; dx++) {
+            kernel[(dy + CONGESTION_RADIUS) * size + dx + CONGESTION_RADIUS] = Math.exp(-(dx * dx + dy * dy) / (2 * CONGESTION_SIGMA * CONGESTION_SIGMA));
+        }
+    }
+    return kernel;
+})();
+
+const PATH_CACHE_LIMIT = 384;
+export const FLOW_REBUILD_WINDOW_MS = 2000;
+export const FLOW_TRACE_STEP_LIMIT = 128;
+
+// The 16 fixed semantic sinks. Their seed tiles come from the town config, so
+// the Pathfinder needs no renderer hook; VisitTileAllocator re-registers the
+// building sinks from the live buildings it is handed (`setSinkTiles`).
+export const SINK_NAMES = Object.freeze([
+    'command', 'taskboard', 'forge', 'mine', 'archive', 'tavern', 'portal', 'watchtower', 'harbor',
+    'command-queue',
+    'rest:tavern-garden', 'rest:plaza-steps', 'rest:harbor-pier',
+    'village-gate',
+    'north-island',
+    'portal-exit',
+]);
+export const SINK_COUNT = SINK_NAMES.length;
+export const SINK_IDS = Object.freeze(Object.fromEntries(SINK_NAMES.map((name, index) => [name, index])));
+export const BUILDING_SINK_TYPES = Object.freeze(SINK_NAMES.slice(0, 9));
+
+// A landmark's sink: every place a visitor of it may be sent (visit slots,
+// entrance, outer ring and approach file).
+export function buildingSinkTiles(type, visitTiles = null) {
+    const def = BUILDING_DEFS.find((entry) => entry.type === type);
+    const base = Array.isArray(visitTiles) && visitTiles.length ? visitTiles : (def?.visitTiles || []);
+    return [
+        ...base,
+        def?.entrance || null,
+        ...(VISIT_OVERFLOW_TILES[type] || []),
+        ...(APPROACH_FILES[type] || []),
+    ].filter(Boolean);
+}
+
+export function defaultSinkTiles() {
+    const sinks = BUILDING_SINK_TYPES.map((type) => buildingSinkTiles(type));
+    sinks.push([...COMMAND_QUEUE.slots, ...COMMAND_QUEUE.overflow]);
+    sinks.push([...REST_SEATS.filter((seat) => seat.building === 'tavern'), ...(REST_STANDS.tavern?.tiles || [])]);
+    sinks.push(REST_SEATS.filter((seat) => seat.building !== 'tavern' && seat.occluder !== 'pier'));
+    sinks.push(REST_SEATS.filter((seat) => seat.occluder === 'pier'));
+    sinks.push([VILLAGE_GATE.inside, VILLAGE_GATE.outside]);
+    sinks.push(AMBIENT_SCENIC_POINTS.filter((point) => point.district === 'north' || point.district === 'farm'));
+    sinks.push([PORTAL_SPAWN_TILE]);
+    return sinks;
+}
+
+// FNV-1a over bytes: the occupancy fingerprint shared with VisitTileAllocator.
+export function fnv1a32(...arrays) {
+    let hash = 0x811c9dc5;
+    for (const bytes of arrays) {
+        if (!bytes) continue;
+        for (let index = 0; index < bytes.length; index++) {
+            hash ^= bytes[index] & 0xff;
+            hash = Math.imul(hash, 0x01000193);
+        }
+    }
+    return hash >>> 0;
+}
+
+export function fnv1aString(value, seed = 0x811c9dc5) {
+    let hash = seed;
+    const text = String(value);
+    for (let index = 0; index < text.length; index++) {
+        hash ^= text.charCodeAt(index);
+        hash = Math.imul(hash, 0x01000193);
+    }
+    return hash >>> 0;
+}
+
+function mix32(value) {
+    let h = value >>> 0;
+    h ^= h >>> 16;
+    h = Math.imul(h, 0x85ebca6b);
+    h ^= h >>> 13;
+    h = Math.imul(h, 0xc2b2ae35);
+    h ^= h >>> 16;
+    return h >>> 0;
+}
+
+function combineKey(hash, value) {
+    return Math.imul((hash ^ mix32(value)) >>> 0, 0x01000193) >>> 0;
+}
+
+// `${x},${y}` → flat index, or -1 for a malformed or off-map key.
+export function tileKeyIndex(key) {
+    if (typeof key !== 'string') return -1;
+    const comma = key.indexOf(',');
+    if (comma <= 0) return -1;
+    const tileX = Number(key.slice(0, comma));
+    const tileY = Number(key.slice(comma + 1));
+    if (!Number.isInteger(tileX) || !Number.isInteger(tileY)) return -1;
+    if (tileX < 0 || tileX >= MAP_N || tileY < 0 || tileY >= MAP_N) return -1;
+    return tileY * MAP_N + tileX;
+}
+
+const NEUTRAL_POLICY = Object.freeze({
+    road: TILE_WEIGHTS.road,
+    plaza: TILE_WEIGHTS.plaza,
+    lane: TILE_WEIGHTS.lane,
+    prefActive: false,
+    prefCode: 0,
+    kappa: 1,
+    minWeight: Math.min(TILE_WEIGHTS.bridge, TILE_WEIGHTS.lane),
+});
+
+const HEUR_OCTILE = 1;
+const HEUR_FIELD = 2;
+
 export class Pathfinder {
-    constructor(grid) {
+    // `clock` drives the crowd rebuild windows: wall-clock milliseconds by
+    // default, the clock VisitTileAllocator buckets its congestion snapshots
+    // on, so a new window's crowd always finds its sinks free to rebuild.
+    constructor(grid, { clock = null } = {}) {
+        this._clock = typeof clock === 'function' ? clock : Date.now;
+        this._perfNow = () => (globalThis.performance?.now?.() ?? Date.now());
+
+        // Static layers (rebuilt when the walk grid or an authored route
+        // collection changes). tierGrid is Wave 6 E2's terrace tier: all 0
+        // (one grade) until terraces land; a tier change is a stair edge.
+        this.staticFlags = new Uint8Array(CELLS);
+        this.bridgeIdGrid = new Uint8Array(CELLS);
+        this.baseCostLayer = new Float32Array(CELLS);
+        this.tierGrid = new Uint8Array(CELLS);
+        this.stepMask = new Uint8Array(CELLS);
+        // Dynamic two-second crowd fields, keyed by their FNV-1a fingerprint.
+        this.standingGrid = new Uint8Array(CELLS);
+        this.congestionRaw = new Uint8Array(CELLS);
+        this.congestionBlur = new Float32Array(CELLS);
+        // Sink registry: integrated cost to each sink's nearest seed.
+        this.sinkIntegration = new Float32Array(SINK_COUNT * CELLS).fill(Infinity);
+        this._sinkViews = Array.from({ length: SINK_COUNT }, (_, sink) => this.sinkIntegration.subarray(sink * CELLS, (sink + 1) * CELLS));
+        this.sinkOf = new Uint8Array(CELLS);
+        // One preallocated indexed binary min-heap shared by every search.
+        // heapIdx doubles as the BFS queue and trace scratch, heapPos as the
+        // BFS parent link and heapCost as A*'s per-tile f score.
+        this.heapIdx = new IndexArray(CELLS);
+        this.heapPos = new SlotArray(CELLS);
+        this.heapCost = new Float32Array(CELLS);
+        this.visited = new Uint8Array(CELLS);
+        this._heapSize = 0;
+
+        this._targets = new Int32Array(9);
+        this._targetCount = 0;
+        this._lastLookupKind = 0;
+        this._policy = { road: 0, plaza: 0, lane: 0, prefActive: false, prefCode: 0, kappa: 1, minWeight: 1 };
+        this._samplePolicy = { road: 0, plaza: 0, lane: 0, prefActive: false, prefCode: 0, kappa: 1, minWeight: 1 };
+
+        this._sinkSeeds = defaultSinkTiles().map((tiles) => this._seedIndices(tiles));
+        this._sinkSeedVersion = new Uint32Array(SINK_COUNT);
+        this._sinkBuilt = new Uint8Array(SINK_COUNT);
+        this._sinkStaticKey = new Uint32Array(SINK_COUNT);
+        this._sinkCrowdKey = new Uint32Array(SINK_COUNT);
+        this._sinkBuiltSeedVersion = new Uint32Array(SINK_COUNT);
+        this._sinkBuiltTopology = new Uint32Array(SINK_COUNT);
+        this._sinkBuiltWindow = new Float64Array(SINK_COUNT);
+        this._refreshSinkOf();
+
+        this._roleHash = new Uint32Array(STATIC_ROLE_FLAGS.length);
+        this._standingHash = 0;
+        this._congestionHash = 0;
+        this._standingRef = null;
+        this._congestionRef = null;
+        this._collectionHashes = new WeakMap();
+        this._bridgeCodes = new Map();
+        this._bridgeIds = [];
+        this._bridgeMapCodes = new WeakMap();
+        this._bridgeMapSeq = 0;
+        this._baseCostStaticKey = -1;
+        this._primary = null;
+        this._topologyVersion = 0;
+
+        this._pathCache = new Map();
         this.grid = grid;
         this.walkableTiles = this._buildWalkableList(grid);
-        this._pathCache = new Map();
+        this._rebuildTopology();
+        this._resetStats();
+    }
+
+    _resetStats() {
         this._cacheHits = 0;
         this._cacheMisses = 0;
+        this._flow = {
+            lookups: 0,
+            lookupMs: 0,
+            maxLookupMs: 0,
+            traceMs: 0,
+            guidedMs: 0,
+            adhocMs: 0,
+            sinkLookups: 0,
+            traceHits: 0,
+            guidedSearches: 0,
+            adhocSearches: 0,
+            unweightedSearches: 0,
+            staleFieldFallbacks: 0,
+            rebuilds: 0,
+            rebuildMs: 0,
+            lastRebuildMs: 0,
+            maxRebuildMs: 0,
+            deferredRebuilds: 0,
+            crowdIngests: 0,
+            crowdChanges: 0,
+            staticLoads: 0,
+        };
     }
 
     _buildWalkableList(grid) {
@@ -45,6 +290,51 @@ export class Pathfinder {
             }
         }
         return tiles;
+    }
+
+    // Walk bit + per-tile legal step mask under findPath's step rule: an
+    // in-bounds walkable neighbour; a diagonal needs both axis neighbours
+    // walkable (no corner cut across water or a wall); a tier change needs
+    // an orthogonal stair pair (none until Wave 6). The rule is symmetric, so
+    // stepMask also answers "may a neighbour step onto me".
+    _rebuildTopology() {
+        const flags = this.staticFlags;
+        const grid = this.grid;
+        for (let index = 0; index < CELLS; index++) {
+            if (grid?.[index] === 1) flags[index] |= FLAG_WALK;
+            else flags[index] &= ~FLAG_WALK;
+        }
+        const mask = this.stepMask;
+        const tier = this.tierGrid;
+        for (let y = 0; y < MAP_N; y++) {
+            for (let x = 0; x < MAP_N; x++) {
+                const index = y * MAP_N + x;
+                if (!(flags[index] & FLAG_WALK)) {
+                    mask[index] = 0;
+                    continue;
+                }
+                let bits = 0;
+                for (let dir = 0; dir < DIR_COUNT; dir++) {
+                    const dx = DIRS[dir][0];
+                    const dy = DIRS[dir][1];
+                    const nx = x + dx;
+                    const ny = y + dy;
+                    if (nx < 0 || nx >= MAP_N || ny < 0 || ny >= MAP_N) continue;
+                    const next = ny * MAP_N + nx;
+                    if (!(flags[next] & FLAG_WALK)) continue;
+                    if (dx !== 0 && dy !== 0 && (!(flags[y * MAP_N + nx] & FLAG_WALK) || !(flags[ny * MAP_N + x] & FLAG_WALK))) continue;
+                    if (tier[next] !== tier[index]) {
+                        const stair = dx === 0 || dy === 0
+                            ? Math.abs(tier[next] - tier[index]) === 1 && (flags[next] & FLAG_STAIR) && (flags[index] & FLAG_STAIR)
+                            : false;
+                        if (!stair) continue;
+                    }
+                    bits |= 1 << dir;
+                }
+                mask[index] = bits;
+            }
+        }
+        this._topologyVersion = (this._topologyVersion + 1) >>> 0;
     }
 
     sampleWalkable(rng) {
@@ -80,7 +370,7 @@ export class Pathfinder {
     }
 
     _cacheResult(key, value) {
-        if (this._pathCache.size >= 384) {
+        if (this._pathCache.size >= PATH_CACHE_LIMIT) {
             this._pathCache.delete(this._pathCache.keys().next().value);
         }
         // The cache owns both the array and its waypoint objects. AgentSprite
@@ -96,12 +386,58 @@ export class Pathfinder {
     }
 
     getDiagnostics() {
+        const flow = this._flow;
         return {
             cacheEntries: this._pathCache.size,
-            cacheLimit: 384,
+            cacheLimit: PATH_CACHE_LIMIT,
             cacheHits: this._cacheHits,
             cacheMisses: this._cacheMisses,
+            sinkCount: SINK_COUNT,
+            memoryBytes: this.getMemoryFootprint(),
+            flow: {
+                lookups: flow.lookups,
+                avgLookupMs: flow.lookups ? flow.lookupMs / flow.lookups : 0,
+                maxLookupMs: flow.maxLookupMs,
+                avgTraceLookupMs: flow.traceHits ? flow.traceMs / flow.traceHits : 0,
+                avgGuidedLookupMs: flow.guidedSearches ? flow.guidedMs / flow.guidedSearches : 0,
+                avgAdhocLookupMs: flow.adhocSearches ? flow.adhocMs / flow.adhocSearches : 0,
+                sinkLookups: flow.sinkLookups,
+                traceHits: flow.traceHits,
+                guidedSearches: flow.guidedSearches,
+                adhocSearches: flow.adhocSearches,
+                unweightedSearches: flow.unweightedSearches,
+                staleFieldFallbacks: flow.staleFieldFallbacks,
+                // Share of weighted lookups served by a fresh sink field, and
+                // of those answered by the O(8) trace alone.
+                sinkHitRate: flow.lookups ? flow.sinkLookups / flow.lookups : 0,
+                traceHitRate: flow.sinkLookups ? flow.traceHits / flow.sinkLookups : 0,
+                rebuilds: flow.rebuilds,
+                rebuildMs: flow.rebuildMs,
+                avgRebuildMs: flow.rebuilds ? flow.rebuildMs / flow.rebuilds : 0,
+                lastRebuildMs: flow.lastRebuildMs,
+                maxRebuildMs: flow.maxRebuildMs,
+                deferredRebuilds: flow.deferredRebuilds,
+                crowdIngests: flow.crowdIngests,
+                crowdChanges: flow.crowdChanges,
+                staticLoads: flow.staticLoads,
+                crowdFingerprint: (this._standingHash ^ mix32(this._congestionHash)) >>> 0,
+            },
         };
+    }
+
+    // Bytes held by the routing grid's typed arrays.
+    getMemoryFootprint() {
+        let bytes = 0;
+        for (const array of [
+            this.staticFlags, this.bridgeIdGrid, this.baseCostLayer, this.tierGrid, this.stepMask,
+            this.standingGrid, this.congestionRaw, this.congestionBlur,
+            this.sinkIntegration, this.sinkOf,
+            this.heapIdx, this.heapPos, this.heapCost, this.visited, this._targets,
+            this._sinkSeedVersion, this._sinkBuilt, this._sinkStaticKey, this._sinkCrowdKey,
+            this._sinkBuiltSeedVersion, this._sinkBuiltTopology, this._sinkBuiltWindow, this._roleHash,
+            ...this._sinkSeeds,
+        ]) bytes += array.byteLength;
+        return bytes;
     }
 
     setGrid(grid) {
@@ -110,11 +446,34 @@ export class Pathfinder {
         this._pathCache.clear();
         this._cacheHits = 0;
         this._cacheMisses = 0;
+        this._rebuildTopology();
+    }
+
+    // Wave 6 E2 — terrace tiers (0..2) and their stair tiles. Every tier is 0
+    // until terraces land, which keeps today's step rule.
+    setTierGrid(tiers, stairTiles = null) {
+        for (let index = 0; index < CELLS; index++) {
+            this.tierGrid[index] = Math.max(0, Math.min(255, Math.round(Number(tiers?.[index]) || 0)));
+            this.staticFlags[index] &= ~FLAG_STAIR;
+        }
+        for (const tile of stairTiles || []) {
+            const index = this._tileIndex(tile?.tileX, tile?.tileY);
+            if (index >= 0) this.staticFlags[index] |= FLAG_STAIR;
+        }
+        this._pathCache.clear();
+        this._rebuildTopology();
     }
 
     isWalkable(tileX, tileY) {
         if (tileX < 0 || tileX >= MAP_SIZE || tileY < 0 || tileY >= MAP_SIZE) return false;
         return this.grid[tileY * MAP_SIZE + tileX] === 1;
+    }
+
+    _tileIndex(tileX, tileY) {
+        const x = Math.round(Number(tileX));
+        const y = Math.round(Number(tileY));
+        if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x >= MAP_N || y < 0 || y >= MAP_N) return -1;
+        return y * MAP_N + x;
     }
 
     // VB-15 — keeps only the walk nodes a body can reach from `from` (the
@@ -126,25 +485,27 @@ export class Pathfinder {
     keepReachableFrom(from) {
         const start = from ? this.nearestWalkable(from.tileX, from.tileY, 8) : null;
         if (!start) return 0;
-        const N = MAP_SIZE;
-        const reached = new Uint8Array(N * N);
-        const queue = [start.tileY * N + start.tileX];
+        const reached = this.visited;
+        const queue = this.heapIdx;
+        const mask = this.stepMask;
+        reached.fill(0);
+        let tail = 0;
+        queue[tail++] = start.tileY * MAP_N + start.tileX;
         reached[queue[0]] = 1;
-        for (let head = 0; head < queue.length; head++) {
-            const cx = queue[head] % N;
-            const cy = (queue[head] - cx) / N;
-            for (const [dx, dy] of DIRS) {
-                const nx = cx + dx;
-                const ny = cy + dy;
-                if (!this.isWalkable(nx, ny) || reached[ny * N + nx]) continue;
-                // Corner-cut guard, as in findPath.
-                if (dx !== 0 && dy !== 0 && (!this.isWalkable(cx + dx, cy) || !this.isWalkable(cx, cy + dy))) continue;
-                reached[ny * N + nx] = 1;
-                queue.push(ny * N + nx);
+        for (let head = 0; head < tail; head++) {
+            const current = queue[head];
+            const bits = mask[current];
+            // Corner-cut guard, as in findPath (folded into stepMask).
+            for (let dir = 0; dir < DIR_COUNT; dir++) {
+                if (!(bits & (1 << dir))) continue;
+                const next = current + DIR_OFFSET[dir];
+                if (reached[next]) continue;
+                reached[next] = 1;
+                queue[tail++] = next;
             }
         }
         let closed = 0;
-        for (let index = 0; index < N * N; index++) {
+        for (let index = 0; index < CELLS; index++) {
             if (this.grid[index] === 1 && !reached[index]) {
                 this.grid[index] = 0;
                 closed++;
@@ -176,173 +537,870 @@ export class Pathfinder {
             return [];
         }
 
-        const targetCandidates = this._walkableCandidates(Math.round(to.tileX), Math.round(to.tileY));
-        if (targetCandidates.length === 0) return [];
+        const tx = Math.round(to.tileX);
+        const ty = Math.round(to.tileY);
+        if (!this._collectTargets(tx, ty)) return [];
+        const startIdx = fy * MAP_N + fx;
 
-        const cacheKey = `${fx},${fy}|${Math.round(to.tileX)},${Math.round(to.tileY)}${this._pathOptionsCacheKey(pathOptions)}`;
-        const cached = this._pathCache.get(cacheKey);
-        if (cached) {
-            this._cacheHits++;
-            return this._copyPath(cached);
+        if (pathOptions.weighted && !this._isTarget(startIdx)) {
+            const t0 = this._perfNow();
+            const weightedResult = this._findWeightedPath(startIdx, bridgeTiles, pathOptions);
+            const ms = this._perfNow() - t0;
+            const flow = this._flow;
+            flow.lookups++;
+            flow.lookupMs += ms;
+            if (ms > flow.maxLookupMs) flow.maxLookupMs = ms;
+            if (this._lastLookupKind === 1) flow.traceMs += ms;
+            else if (this._lastLookupKind === 2) flow.guidedMs += ms;
+            else flow.adhocMs += ms;
+            if (weightedResult.length > 0) return weightedResult;
         }
-        this._cacheMisses++;
 
-        if (pathOptions.weighted) {
-            const weightedResult = this._findWeightedPath(fx, fy, targetCandidates, bridgeTiles, pathOptions);
-            if (weightedResult.length > 0) {
-                this._cacheResult(cacheKey, weightedResult);
-                return weightedResult;
+        return this._findUnweightedPath(fx, fy, tx, ty, bridgeTiles);
+    }
+
+    // Target candidates into `_targets`: the tile itself when walkable, else
+    // its walkable 8-neighbours (a blocked target never resolves further).
+    _collectTargets(tileX, tileY) {
+        let count = 0;
+        if (this.isWalkable(tileX, tileY)) {
+            this._targets[count++] = tileY * MAP_N + tileX;
+        } else {
+            for (let dy = -1; dy <= 1; dy++) {
+                for (let dx = -1; dx <= 1; dx++) {
+                    if (dx === 0 && dy === 0) continue;
+                    const nx = tileX + dx;
+                    const ny = tileY + dy;
+                    if (this.isWalkable(nx, ny)) this._targets[count++] = ny * MAP_N + nx;
+                }
             }
         }
+        this._targetCount = count;
+        return count;
+    }
+
+    _isTarget(index) {
+        const targets = this._targets;
+        for (let i = 0; i < this._targetCount; i++) if (targets[i] === index) return true;
+        return false;
+    }
+
+    // Unweighted trips: the straight tile line when clear, else BFS. Cached
+    // under a numeric key (start tile, target tile, bridge map).
+    _findUnweightedPath(fx, fy, tx, ty, bridgeTiles) {
+        const startIdx = fy * MAP_N + fx;
+        const cacheKey = this._unweightedCacheKey(startIdx, tx, ty, bridgeTiles);
+        if (cacheKey >= 0) {
+            const cached = this._pathCache.get(cacheKey);
+            if (cached) {
+                this._cacheHits++;
+                return this._copyPath(cached);
+            }
+        }
+        this._cacheMisses++;
+        this._flow.unweightedSearches++;
 
         // Fast path: if a tile-step line from `from` to `to` never crosses a blocked tile,
         // skip BFS entirely.
-        for (const target of targetCandidates) {
-            const lineTiles = this._lineWalkableTiles(fx, fy, target.tileX, target.tileY);
+        for (let i = 0; i < this._targetCount; i++) {
+            const target = this._targets[i];
+            const targetX = target % MAP_N;
+            const targetY = (target - targetX) / MAP_N;
+            const lineTiles = this._lineWalkableTiles(fx, fy, targetX, targetY);
             if (lineTiles) {
                 const fastTiles = lineTiles.slice(1);
                 const crossesBridge = fastTiles.some((t) => bridgeTiles?.has(`${t.tileX},${t.tileY}`));
                 const fastResult = crossesBridge
                     ? this._lookahead(this._simplify(fastTiles, bridgeTiles), bridgeTiles)
-                    : [{ tileX: target.tileX, tileY: target.tileY }];
-                this._cacheResult(cacheKey, fastResult);
+                    : [{ tileX: targetX, tileY: targetY }];
+                if (cacheKey >= 0) this._cacheResult(cacheKey, fastResult);
                 return fastResult;
             }
         }
 
-        // BFS — index-pointer queue (O(n)) and integer target set (no string allocation).
-        const N = MAP_SIZE;
-        const visited = new Uint8Array(N * N);
-        const parent = new Int32Array(N * N).fill(-1);
-        const targetSet = new Set(targetCandidates.map(({ tileX, tileY }) => tileY * N + tileX));
-        const queue = [fy * N + fx];
+        // BFS — typed queue (heapIdx), parent links (heapPos), no strings.
+        const visited = this.visited;
+        const queue = this.heapIdx;
+        const parent = this.heapPos;
+        const mask = this.stepMask;
+        visited.fill(0);
+        parent.fill(-1);
         let head = 0;
-        visited[fy * N + fx] = 1;
+        let tail = 0;
+        queue[tail++] = startIdx;
+        visited[startIdx] = 1;
         let foundIdx = -1;
-        while (head < queue.length) {
+        while (head < tail) {
             const cur = queue[head++];
-            if (targetSet.has(cur)) {
+            if (this._isTarget(cur)) {
                 foundIdx = cur;
                 break;
             }
-            const cx = cur % N;
-            const cy = (cur - cx) / N;
-            for (const [dx, dy] of DIRS) {
-                const nx = cx + dx;
-                const ny = cy + dy;
-                if (nx < 0 || nx >= N || ny < 0 || ny >= N) continue;
+            const bits = mask[cur];
+            for (let dir = 0; dir < DIR_COUNT; dir++) {
                 // Corner-cut guard: diagonal step requires both axis-aligned neighbors walkable.
-                if (dx !== 0 && dy !== 0 && (!this.isWalkable(cx + dx, cy) || !this.isWalkable(cx, cy + dy))) continue;
-                const idx = ny * N + nx;
+                if (!(bits & (1 << dir))) continue;
+                const idx = cur + DIR_OFFSET[dir];
                 if (visited[idx]) continue;
-                if (!this.isWalkable(nx, ny)) continue;
                 visited[idx] = 1;
                 parent[idx] = cur;
-                queue.push(idx);
+                queue[tail++] = idx;
             }
         }
         if (foundIdx === -1) {
-            console.warn('[Pathfinder] no path from', fx, fy, 'to nearest of', targetCandidates.length, 'candidates; closest:', JSON.stringify(targetCandidates[0]));
+            const first = this._targets[0];
+            console.warn('[Pathfinder] no path from', fx, fy, 'to nearest of', this._targetCount, 'candidates; closest:', JSON.stringify({ tileX: first % MAP_N, tileY: Math.floor(first / MAP_N) }));
             return [];
         }
 
         // Reconstruct path from to -> from.
         const tiles = [];
         let cur = foundIdx;
-        while (cur !== -1 && cur !== fy * N + fx) {
-            tiles.push({ tileX: cur % N, tileY: (cur - (cur % N)) / N });
+        while (cur !== -1 && cur !== startIdx) {
+            tiles.push({ tileX: cur % MAP_N, tileY: (cur - (cur % MAP_N)) / MAP_N });
             cur = parent[cur];
         }
         tiles.reverse();
         const result = this._lookahead(this._simplify(tiles, bridgeTiles), bridgeTiles);
-        this._cacheResult(cacheKey, result);
+        if (cacheKey >= 0) this._cacheResult(cacheKey, result);
         return result;
     }
 
-    _walkableCandidates(tileX, tileY) {
-        if (this.isWalkable(tileX, tileY)) return [{ tileX, tileY }];
-
-        const candidates = [];
-        for (let dy = -1; dy <= 1; dy++) {
-            for (let dx = -1; dx <= 1; dx++) {
-                if (dx === 0 && dy === 0) continue;
-                const nx = tileX + dx;
-                const ny = tileY + dy;
-                if (this.isWalkable(nx, ny)) candidates.push({ tileX: nx, tileY: ny });
+    _unweightedCacheKey(startIdx, tx, ty, bridgeTiles) {
+        if (tx < -512 || tx > 511 || ty < -512 || ty > 511) return -1;
+        let mapCode = 0;
+        if (bridgeTiles && typeof bridgeTiles === 'object') {
+            mapCode = this._bridgeMapCodes.get(bridgeTiles);
+            if (!mapCode) {
+                mapCode = ++this._bridgeMapSeq;
+                this._bridgeMapCodes.set(bridgeTiles, mapCode);
             }
         }
-        return candidates;
+        return ((mapCode * CELLS + startIdx) * 1024 + (ty + 512)) * 1024 + (tx + 512);
     }
 
-    _findWeightedPath(fx, fy, targetCandidates, bridgeTiles, pathOptions) {
-        const N = MAP_SIZE;
-        const startIdx = fy * N + fx;
-        const targetSet = new Set(targetCandidates.map(({ tileX, tileY }) => tileY * N + tileX));
-        const visited = new Uint8Array(N * N);
-        const parent = new Int32Array(N * N).fill(-1);
-        const cost = new Float64Array(N * N);
-        cost.fill(Infinity);
-        cost[startIdx] = 0;
-        const heap = [];
-        this._heapPush(heap, { idx: startIdx, cost: 0 });
+    // Weighted trips. A target that is a sink seed traces that sink's flow
+    // field (O(8) per step); a trace that settles on another seed of the
+    // same sink re-runs as an A* guided by the field (an exact, consistent
+    // heuristic). Any other target — or a sink whose crowd field is stale
+    // inside its rebuild window — runs a numeric octile A*. Returns [] when
+    // no weighted route exists (findPath then takes the unweighted search).
+    _findWeightedPath(startIdx, bridgeTiles, pathOptions) {
+        const staticMask = this._syncStatic(bridgeTiles, pathOptions);
+        const crowdMask = this._syncCrowd(pathOptions);
+        const staticKey = this._contextStaticKey(staticMask);
+        const crowdKey = this._contextCrowdKey(crowdMask);
+        const primary = this._notePrimary(staticMask, crowdMask, staticKey, crowdKey);
+        const policy = this._resolvePolicy(this._policy, pathOptions.weights, pathOptions.preferredBridgeId);
+        const flow = this._flow;
 
-        let foundIdx = -1;
-        while (heap.length > 0) {
-            const current = this._heapPop(heap);
-            if (!current || visited[current.idx]) continue;
-            if (current.cost > cost[current.idx]) continue;
-            visited[current.idx] = 1;
-            if (targetSet.has(current.idx)) {
-                foundIdx = current.idx;
-                break;
-            }
-
-            const cx = current.idx % N;
-            const cy = (current.idx - cx) / N;
-            for (const [dx, dy] of DIRS) {
-                const nx = cx + dx;
-                const ny = cy + dy;
-                if (nx < 0 || nx >= N || ny < 0 || ny >= N) continue;
-                if (dx !== 0 && dy !== 0 && (!this.isWalkable(cx + dx, cy) || !this.isWalkable(cx, cy + dy))) continue;
-                if (!this.isWalkable(nx, ny)) continue;
-                const nextIdx = ny * N + nx;
-                if (visited[nextIdx]) continue;
-                const stepCost = this._weightedStepCost(cx, cy, nx, ny, dx, dy, bridgeTiles, pathOptions, targetSet);
-                const nextCost = current.cost + stepCost;
-                if (nextCost >= cost[nextIdx]) continue;
-                cost[nextIdx] = nextCost;
-                parent[nextIdx] = current.idx;
-                this._heapPush(heap, { idx: nextIdx, cost: nextCost });
+        let tiles = null;
+        this._lastLookupKind = 3;
+        if (primary && this._targetCount === 1) {
+            const target = this._targets[0];
+            const sink = this.sinkOf[target] - 1;
+            if (sink >= 0) {
+                if (this._ensureSink(sink, staticMask, crowdMask, staticKey, crowdKey)) {
+                    flow.sinkLookups++;
+                    tiles = this._traceToTarget(sink, startIdx, target, policy, staticMask, crowdMask);
+                    if (tiles) {
+                        flow.traceHits++;
+                        this._lastLookupKind = 1;
+                    } else {
+                        flow.guidedSearches++;
+                        this._lastLookupKind = 2;
+                        tiles = this._search(startIdx, policy, staticMask, crowdMask, HEUR_FIELD, sink);
+                    }
+                } else {
+                    flow.staleFieldFallbacks++;
+                }
             }
         }
-
-        if (foundIdx === -1) return [];
-
-        const tiles = [];
-        let cur = foundIdx;
-        while (cur !== -1 && cur !== startIdx) {
-            tiles.push({ tileX: cur % N, tileY: (cur - (cur % N)) / N });
-            cur = parent[cur];
+        if (!tiles) {
+            flow.adhocSearches++;
+            this._lastLookupKind = 3;
+            tiles = this._search(startIdx, policy, staticMask, crowdMask, HEUR_OCTILE, -1);
         }
-        tiles.reverse();
+        if (!tiles || tiles.length === 0) return [];
         return this._simplify(tiles, bridgeTiles);
     }
 
-    _weightedStepCost(cx, cy, nx, ny, dx, dy, bridgeTiles, pathOptions, targetSet = null) {
-        const diagonal = dx !== 0 && dy !== 0;
-        const base = diagonal ? 1.414 : 1;
-        const fromWeight = this._tileTravelWeight(cx, cy, bridgeTiles, pathOptions);
-        const toWeight = this._tileTravelWeight(nx, ny, bridgeTiles, pathOptions);
-        let step = base * Math.min(fromWeight, toWeight);
-        // Soft occupancy cost for tiles where villagers stand, except the goal tile.
-        if (pathOptions.standingTiles?.size) {
-            const nextIdx = ny * MAP_SIZE + nx;
-            if (!targetSet?.has(nextIdx) && pathOptions.standingTiles.has(`${nx},${ny}`)) {
-                step += TILE_WEIGHTS.standing;
+    // ---- Static route layers -------------------------------------------------
+
+    // Folds the caller's authored collections into staticFlags. Each layer
+    // keeps the content hash it was loaded from, so per-sprite copies of the
+    // same plaza set, or the same bridge map passed twice, never reload.
+    _syncStatic(bridgeTiles, pathOptions) {
+        return this._syncStaticRole(0, bridgeTiles, pathOptions.bridgeTiles)
+            | this._syncStaticRole(1, pathOptions.dockTiles, null)
+            | this._syncStaticRole(2, pathOptions.plazaTiles, null)
+            | this._syncStaticRole(3, pathOptions.roadTiles, pathOptions.preferredTiles)
+            | this._syncStaticRole(4, pathOptions.laneTiles, null)
+            | this._syncStaticRole(5, pathOptions.avoidTiles, null);
+    }
+
+    // One layer from up to two collections (a bridge map passed as argument
+    // and option, roads and preferred tiles); returns its flag when present.
+    _syncStaticRole(role, first, second) {
+        const a = first?.size ? first : null;
+        const b = second?.size && second !== a ? second : null;
+        if (!a && !b) return 0;
+        const withInfo = role === 0;
+        const ha = a ? this._collectionHash(a, withInfo) : 0;
+        const hb = b ? this._collectionHash(b, withInfo) : 0;
+        const hash = !a ? hb : (!b || ha === hb ? ha : (combineKey(ha ^ hb, Math.min(ha, hb)) || 1));
+        if (this._roleHash[role] !== hash) this._loadStaticRole(role, a, b, hash);
+        return STATIC_ROLE_FLAGS[role];
+    }
+
+    _collectionHash(collection, withInfo) {
+        const memo = this._collectionHashes.get(collection);
+        if (memo && memo.size === collection.size) return memo.hash;
+        let sum = 0;
+        let xor = 0;
+        const isMap = collection instanceof Map;
+        for (const key of collection.keys()) {
+            const index = tileKeyIndex(key);
+            let entry = index >= 0 ? mix32(index + 1) : mix32(fnv1aString(key) | 0x80000000);
+            if (withInfo && isMap) {
+                const bridgeId = collection.get(key)?.bridgeId;
+                if (bridgeId) entry = mix32(entry ^ fnv1aString(bridgeId));
+            }
+            sum = (sum + entry) >>> 0;
+            xor = (xor ^ mix32(entry + 0x7f4a7c15)) >>> 0;
+        }
+        const hash = combineKey(combineKey(sum, xor), collection.size) || 1;
+        this._collectionHashes.set(collection, { size: collection.size, hash });
+        return hash;
+    }
+
+    _loadStaticRole(role, first, second, hash) {
+        const flag = STATIC_ROLE_FLAGS[role];
+        const flags = this.staticFlags;
+        for (let index = 0; index < CELLS; index++) flags[index] &= ~flag;
+        if (role === 0) this.bridgeIdGrid.fill(0);
+        for (const collection of [first, second]) {
+            if (!collection) continue;
+            const isMap = collection instanceof Map;
+            for (const key of collection.keys()) {
+                const index = tileKeyIndex(key);
+                if (index < 0) continue;
+                flags[index] |= flag;
+                if (role === 0 && isMap && !this.bridgeIdGrid[index]) {
+                    const bridgeId = collection.get(key)?.bridgeId;
+                    if (bridgeId) this.bridgeIdGrid[index] = this._bridgeCode(bridgeId);
+                }
             }
         }
-        return step;
+        if (role === 0) {
+            const ids = [...this._bridgeCodes.keys()].sort();
+            const riverIds = ids.filter((id) => id.includes('river'));
+            this._bridgeIds = riverIds.length >= 2 ? riverIds : ids;
+        }
+        this._roleHash[role] = hash;
+        this._baseCostStaticKey = -1;
+        this._flow.staticLoads++;
     }
+
+    _bridgeCode(bridgeId) {
+        let code = this._bridgeCodes.get(bridgeId);
+        if (!code) {
+            if (this._bridgeCodes.size >= 254) return 255;
+            code = this._bridgeCodes.size + 1;
+            this._bridgeCodes.set(bridgeId, code);
+        }
+        return code;
+    }
+
+    _contextStaticKey(staticMask) {
+        let key = combineKey(0x811c9dc5, staticMask);
+        for (let role = 0; role < STATIC_ROLE_FLAGS.length; role++) {
+            if (staticMask & STATIC_ROLE_FLAGS[role]) key = combineKey(key, this._roleHash[role]);
+        }
+        return key;
+    }
+
+    _contextCrowdKey(crowdMask) {
+        let key = combineKey(0x01000193, crowdMask);
+        if (crowdMask & CROWD_STANDING) key = combineKey(key, this._standingHash);
+        if (crowdMask & CROWD_CONGESTION) key = combineKey(key, this._congestionHash);
+        return key;
+    }
+
+    // Sink fields serve one routing context: the latest long trip's (roads,
+    // lanes, plazas or docks) once any arrives, else the latest weighted
+    // trip's. Local trips over a bare grid never displace it; they take A*.
+    _notePrimary(staticMask, crowdMask, staticKey, crowdKey) {
+        const rich = (staticMask & RICH_ROUTE_FLAGS) !== 0;
+        const primary = this._primary;
+        if (!primary || rich || !primary.rich) {
+            if (!primary) {
+                this._primary = { rich, staticMask, crowdMask, staticKey, crowdKey };
+            } else {
+                primary.rich = rich || primary.rich;
+                primary.staticMask = staticMask;
+                primary.crowdMask = crowdMask;
+                primary.staticKey = staticKey;
+                primary.crowdKey = crowdKey;
+            }
+            return true;
+        }
+        return primary.staticKey === staticKey && primary.crowdKey === crowdKey
+            && primary.staticMask === staticMask && primary.crowdMask === crowdMask;
+    }
+
+    // ---- Dynamic crowd fields ------------------------------------------------
+
+    _syncCrowd(pathOptions) {
+        let mask = 0;
+        const standing = pathOptions.standingTiles;
+        if (standing?.size) {
+            mask |= CROWD_STANDING;
+            if (standing !== this._standingRef) {
+                this._standingRef = standing;
+                this._loadStanding(standing);
+            }
+        }
+        const congestion = pathOptions.congestionTiles;
+        if (congestion?.size) {
+            mask |= CROWD_CONGESTION;
+            if (congestion !== this._congestionRef) {
+                this._congestionRef = congestion;
+                this._loadCongestion(congestion);
+            }
+        }
+        return mask;
+    }
+
+    _loadStanding(standing) {
+        const grid = this.standingGrid;
+        grid.fill(0);
+        for (const key of standing.keys()) {
+            const index = tileKeyIndex(key);
+            if (index >= 0) grid[index] = 1;
+        }
+        this._flow.crowdIngests++;
+        const hash = fnv1a32(grid);
+        if (hash !== this._standingHash) {
+            this._standingHash = hash;
+            this._flow.crowdChanges++;
+        }
+    }
+
+    _loadCongestion(congestion) {
+        const raw = this.congestionRaw;
+        raw.fill(0);
+        for (const [key, value] of congestion.entries()) {
+            const index = tileKeyIndex(key);
+            const count = Number(value);
+            if (index < 0 || !Number.isFinite(count) || count <= 0) continue;
+            raw[index] = Math.min(255, Math.max(1, Math.round(count)));
+        }
+        this._flow.crowdIngests++;
+        const hash = fnv1a32(raw);
+        if (hash === this._congestionHash) return;
+        this._congestionHash = hash;
+        this._flow.crowdChanges++;
+        // Sparse splat of the Gaussian kernel around each crowded tile.
+        const blur = this.congestionBlur;
+        blur.fill(0);
+        const size = CONGESTION_RADIUS * 2 + 1;
+        for (let index = 0; index < CELLS; index++) {
+            const count = raw[index];
+            if (!count) continue;
+            const x = index % MAP_N;
+            const y = (index - x) / MAP_N;
+            for (let dy = -CONGESTION_RADIUS; dy <= CONGESTION_RADIUS; dy++) {
+                const ny = y + dy;
+                if (ny < 0 || ny >= MAP_N) continue;
+                for (let dx = -CONGESTION_RADIUS; dx <= CONGESTION_RADIUS; dx++) {
+                    const nx = x + dx;
+                    if (nx < 0 || nx >= MAP_N) continue;
+                    blur[ny * MAP_N + nx] += count * CONGESTION_KERNEL[(dy + CONGESTION_RADIUS) * size + dx + CONGESTION_RADIUS];
+                }
+            }
+        }
+    }
+
+    congestionCostAt(tileX, tileY) {
+        const index = this._tileIndex(tileX, tileY);
+        return index < 0 ? 0 : Math.min(TILE_WEIGHTS.congestionMax, this.congestionBlur[index] * TILE_WEIGHTS.congestionStep);
+    }
+
+    // ---- Personality policy and costs ---------------------------------------
+
+    _resolvePolicy(out, weights, preferredBridgeId) {
+        const w = weights || TILE_WEIGHTS;
+        out.road = Number.isFinite(w.road) ? w.road : TILE_WEIGHTS.road;
+        out.plaza = Number.isFinite(w.plaza) ? w.plaza : TILE_WEIGHTS.plaza;
+        out.lane = Number.isFinite(w.lane) ? w.lane : TILE_WEIGHTS.lane;
+        out.prefActive = !!preferredBridgeId;
+        out.prefCode = preferredBridgeId ? (this._bridgeCodes.get(preferredBridgeId) || -1) : 0;
+        const bridgeFactor = out.prefActive ? 0.92 : 1;
+        // κ scales a neutral sink field into a consistent lower bound for
+        // this policy's costs; minWeight does the same for octile distance.
+        out.kappa = Math.max(0, Math.min(1,
+            out.road / TILE_WEIGHTS.road,
+            out.plaza / TILE_WEIGHTS.plaza,
+            out.lane / TILE_WEIGHTS.lane,
+            bridgeFactor));
+        out.minWeight = Math.max(0, Math.min(1, TILE_WEIGHTS.bridge * bridgeFactor, TILE_WEIGHTS.dock, out.road, out.plaza, out.lane));
+        return out;
+    }
+
+    // Personality for sampleFlowDirection: a ROUTE_PERSONALITIES bucket (its
+    // alternate bridge picked from the loaded crossings, as AgentSprite does),
+    // a weights object, or null for the neutral field's own weights.
+    _personalityPolicy(personality) {
+        if (personality == null) return NEUTRAL_POLICY;
+        if (typeof personality === 'number') {
+            const bucket = Math.max(0, Math.min(ROUTE_PERSONALITIES.length - 1, Math.floor(personality) || 0));
+            const weights = ROUTE_PERSONALITIES[bucket];
+            const ids = this._bridgeIds;
+            const preferred = ids.length ? ids[weights.bridgePreference % ids.length] : '';
+            return this._resolvePolicy(this._samplePolicy, weights, preferred);
+        }
+        const weights = personality.weights || personality;
+        return this._resolvePolicy(this._samplePolicy, weights, personality.preferredBridgeId || '');
+    }
+
+    _tileWeight(index, staticMask, policy) {
+        const flags = this.staticFlags[index] & staticMask;
+        let weight = 1;
+        if (flags & FLAG_BRIDGE) {
+            const code = this.bridgeIdGrid[index];
+            weight = TILE_WEIGHTS.bridge * (policy.prefActive && code ? (code === policy.prefCode ? 0.92 : 1.08) : 1);
+        } else if (flags & FLAG_DOCK) weight = TILE_WEIGHTS.dock;
+        else if (flags & FLAG_PLAZA) weight = policy.plaza;
+        else if (flags & FLAG_ROAD) weight = policy.road;
+        if ((flags & FLAG_LANE) && !(flags & FLAG_PLAZA) && policy.lane < weight) weight = policy.lane;
+        if (flags & FLAG_AVOID) weight += TILE_WEIGHTS.avoid;
+        return weight;
+    }
+
+    // Cost of stepping from `from` (weight `fromWeight`) onto `to` along
+    // `dir`: distance × the cheaper surface, a soft standing-body cost unless
+    // `to` is a goal, and the blurred crowd cost of the tile entered.
+    _stepCost(fromWeight, to, dir, staticMask, crowdMask, policy, goal) {
+        const length = DIR_LENGTH[dir];
+        const toWeight = this._tileWeight(to, staticMask, policy);
+        let cost = length * (fromWeight < toWeight ? fromWeight : toWeight);
+        if ((crowdMask & CROWD_STANDING) && !goal && this.standingGrid[to]) cost += TILE_WEIGHTS.standing;
+        if (crowdMask & CROWD_CONGESTION) {
+            const blur = this.congestionBlur[to];
+            if (blur > 0) cost += length * Math.min(TILE_WEIGHTS.congestionMax, blur * TILE_WEIGHTS.congestionStep);
+        }
+        return cost;
+    }
+
+    _ensureBaseCost(staticMask, staticKey) {
+        if (this._baseCostStaticKey === staticKey) return;
+        const base = this.baseCostLayer;
+        for (let index = 0; index < CELLS; index++) base[index] = this._tileWeight(index, staticMask, NEUTRAL_POLICY);
+        this._baseCostStaticKey = staticKey;
+    }
+
+    // ---- Sink registry --------------------------------------------------------
+
+    _seedIndices(tiles) {
+        const seen = new Set();
+        for (const tile of tiles || []) {
+            const index = this._tileIndex(tile?.tileX ?? tile?.x, tile?.tileY ?? tile?.y);
+            if (index >= 0) seen.add(index);
+        }
+        return IndexArray.from([...seen].sort((a, b) => a - b));
+    }
+
+    // A tile in several sinks belongs to the smallest (the tightest field).
+    _refreshSinkOf() {
+        const owner = this.sinkOf;
+        owner.fill(0);
+        for (let sink = 0; sink < SINK_COUNT; sink++) {
+            const seeds = this._sinkSeeds[sink];
+            for (let i = 0; i < seeds.length; i++) {
+                const current = owner[seeds[i]];
+                if (!current || seeds.length < this._sinkSeeds[current - 1].length) owner[seeds[i]] = sink + 1;
+            }
+        }
+    }
+
+    _resolveSinkId(sink) {
+        if (typeof sink === 'string') return SINK_IDS[sink] ?? -1;
+        const id = Math.floor(Number(sink));
+        return Number.isInteger(id) && id >= 0 && id < SINK_COUNT ? id : -1;
+    }
+
+    // Replaces a sink's seed tiles (a matched destination set). Returns true
+    // when the content changed; the field then rebuilds on its next use.
+    setSinkTiles(sink, tiles) {
+        const id = this._resolveSinkId(sink);
+        if (id < 0) return false;
+        const seeds = this._seedIndices(tiles);
+        const current = this._sinkSeeds[id];
+        if (current.length === seeds.length && current.every((value, i) => value === seeds[i])) return false;
+        this._sinkSeeds[id] = seeds;
+        this._sinkSeedVersion[id] = (this._sinkSeedVersion[id] + 1) >>> 0;
+        this._refreshSinkOf();
+        return true;
+    }
+
+    getSinkTiles(sink) {
+        const id = this._resolveSinkId(sink);
+        if (id < 0) return [];
+        return Array.from(this._sinkSeeds[id], (index) => ({ tileX: index % MAP_N, tileY: Math.floor(index / MAP_N) }));
+    }
+
+    // The sink a tile seeds (the smallest when several do), else -1.
+    sinkIdAt(tileX, tileY) {
+        const index = this._tileIndex(tileX, tileY);
+        return index < 0 ? -1 : this.sinkOf[index] - 1;
+    }
+
+    // Integrated walk cost from a tile to the sink's nearest seed under the
+    // current routing context (canal- and crowd-aware); Infinity when the
+    // sink is unknown or unreachable from the tile.
+    sinkCostAt(sink, tileX, tileY) {
+        const id = this._resolveSinkId(sink);
+        const index = this._tileIndex(tileX, tileY);
+        if (id < 0 || index < 0) return Infinity;
+        if (!this._ensurePrimarySink(id) && !this._sinkBuilt[id]) return Infinity;
+        return this._sinkViews[id][index];
+    }
+
+    // O(8) personality lookup: the DIRS index of the best next step toward
+    // the sink from (tileX, tileY), or -1 at a seed or with no route. It scores
+    // each legal, strictly-descending neighbour by its integrated cost plus
+    // this personality's step cost; ties keep the lowest direction index.
+    sampleFlowDirection(sink, tileX, tileY, personality = null) {
+        const id = this._resolveSinkId(sink);
+        const index = this._tileIndex(tileX, tileY);
+        if (id < 0 || index < 0) return -1;
+        if (!this._ensurePrimarySink(id) && !this._sinkBuilt[id]) return -1;
+        const primary = this._primary;
+        return this._flowDirection(id, index, this._personalityPolicy(personality), primary?.staticMask || 0, primary?.crowdMask || 0);
+    }
+
+    _ensurePrimarySink(id) {
+        const primary = this._primary;
+        const staticMask = primary?.staticMask || 0;
+        const crowdMask = primary?.crowdMask || 0;
+        return this._ensureSink(id, staticMask, crowdMask, this._contextStaticKey(staticMask), this._contextCrowdKey(crowdMask));
+    }
+
+    // Fresh field → true. A structural change (walk grid, seeds, route
+    // layers) rebuilds at once; a crowd change rebuilds a sink at most once
+    // per FLOW_REBUILD_WINDOW_MS window (aligned like the allocator's
+    // congestion buckets; callers take A* meanwhile), and an unchanged
+    // occupancy fingerprint never rebuilds.
+    _ensureSink(sink, staticMask, crowdMask, staticKey, crowdKey) {
+        const structural = !this._sinkBuilt[sink]
+            || this._sinkStaticKey[sink] !== staticKey
+            || this._sinkBuiltSeedVersion[sink] !== this._sinkSeedVersion[sink]
+            || this._sinkBuiltTopology[sink] !== this._topologyVersion;
+        if (!structural && this._sinkCrowdKey[sink] === crowdKey) return true;
+        const window = Math.floor(Number(this._clock()) / FLOW_REBUILD_WINDOW_MS);
+        if (!structural && window === this._sinkBuiltWindow[sink]) {
+            this._flow.deferredRebuilds++;
+            return false;
+        }
+        this._rebuildSink(sink, staticMask, crowdMask, staticKey, crowdKey, window);
+        return true;
+    }
+
+    // Backward multi-source Dijkstra from every walkable seed (cost 0) over
+    // the neutral weights, the standing cost and the congestion field.
+    _rebuildSink(sink, staticMask, crowdMask, staticKey, crowdKey, window) {
+        const t0 = this._perfNow();
+        this._ensureBaseCost(staticMask, staticKey);
+        const field = this._sinkViews[sink];
+        const base = this.baseCostLayer;
+        const mask = this.stepMask;
+        const flags = this.staticFlags;
+        const visited = this.visited;
+        const standing = (crowdMask & CROWD_STANDING) ? this.standingGrid : null;
+        const blur = (crowdMask & CROWD_CONGESTION) ? this.congestionBlur : null;
+        field.fill(Infinity);
+        visited.fill(0);
+        this.heapPos.fill(-1);
+        this._heapSize = 0;
+        const seeds = this._sinkSeeds[sink];
+        for (let i = 0; i < seeds.length; i++) {
+            const seed = seeds[i];
+            if (!(flags[seed] & FLAG_WALK) || field[seed] === 0) continue;
+            field[seed] = 0;
+            this._heapPush(field, seed);
+        }
+        while (this._heapSize > 0) {
+            const v = this._heapPop(field);
+            visited[v] = 1;
+            const bits = mask[v];
+            if (!bits) continue;
+            const costV = field[v];
+            const weightV = base[v];
+            // Entering v: a standing body there costs unless v is a seed.
+            const standingCost = standing && costV !== 0 && standing[v] ? TILE_WEIGHTS.standing : 0;
+            const crowd = blur && blur[v] > 0 ? Math.min(TILE_WEIGHTS.congestionMax, blur[v] * TILE_WEIGHTS.congestionStep) : 0;
+            for (let dir = 0; dir < DIR_COUNT; dir++) {
+                if (!(bits & (1 << dir))) continue;
+                const u = v + DIR_OFFSET[dir];
+                if (visited[u]) continue;
+                const length = DIR_LENGTH[dir];
+                const weightU = base[u];
+                const next = costV + length * (weightU < weightV ? weightU : weightV) + standingCost + length * crowd;
+                if (next < field[u]) {
+                    field[u] = next;
+                    if (this.heapPos[u] < 0) this._heapPush(field, u);
+                    else this._heapDecrease(field, u);
+                }
+            }
+        }
+        this._sinkBuilt[sink] = 1;
+        this._sinkStaticKey[sink] = staticKey;
+        this._sinkCrowdKey[sink] = crowdKey;
+        this._sinkBuiltSeedVersion[sink] = this._sinkSeedVersion[sink];
+        this._sinkBuiltTopology[sink] = this._topologyVersion;
+        this._sinkBuiltWindow[sink] = window;
+        const ms = this._perfNow() - t0;
+        const flow = this._flow;
+        flow.rebuilds++;
+        flow.rebuildMs += ms;
+        flow.lastRebuildMs = ms;
+        if (ms > flow.maxRebuildMs) flow.maxRebuildMs = ms;
+    }
+
+    _flowDirection(sink, index, policy, staticMask, crowdMask) {
+        const field = this._sinkViews[sink];
+        const here = field[index];
+        const bits = this.stepMask[index];
+        if (!bits || !(here > 0) || here === Infinity) return -1;
+        const fromWeight = this._tileWeight(index, staticMask, policy);
+        let best = -1;
+        let bestScore = Infinity;
+        for (let dir = 0; dir < DIR_COUNT; dir++) {
+            if (!(bits & (1 << dir))) continue;
+            const next = index + DIR_OFFSET[dir];
+            const remaining = field[next];
+            if (!(remaining < here)) continue;
+            const score = remaining + this._stepCost(fromWeight, next, dir, staticMask, crowdMask, policy, remaining === 0);
+            if (score < bestScore) {
+                bestScore = score;
+                best = dir;
+            }
+        }
+        return best;
+    }
+
+    // Follows the flow field from start; tiles (start exclusive, target
+    // inclusive) when it lands on `target`, else null (another seed, a dead
+    // end or the step cap).
+    _traceToTarget(sink, startIdx, target, policy, staticMask, crowdMask) {
+        const field = this._sinkViews[sink];
+        if (!(field[startIdx] < Infinity)) return null;
+        const scratch = this.heapIdx;
+        let cur = startIdx;
+        let steps = 0;
+        while (cur !== target) {
+            if (steps >= FLOW_TRACE_STEP_LIMIT || field[cur] === 0) return null;
+            const dir = this._flowDirection(sink, cur, policy, staticMask, crowdMask);
+            if (dir < 0) return null;
+            cur += DIR_OFFSET[dir];
+            scratch[steps++] = cur;
+        }
+        const tiles = new Array(steps);
+        for (let i = 0; i < steps; i++) {
+            const index = scratch[i];
+            const x = index % MAP_N;
+            tiles[i] = { tileX: x, tileY: (index - x) / MAP_N };
+        }
+        return tiles;
+    }
+
+    // ---- A* ------------------------------------------------------------------
+
+    // Both bounds are consistent, so their max is: κ × the sink field (exact
+    // up to the personality's ±8%) steers the long haul across canals, and
+    // octile distance to the goal itself sharpens the last few tiles among a
+    // sink's other seeds.
+    _heuristic(index, mode, policy, sink) {
+        const octile = this._octileToTargets(index, policy);
+        if (mode === HEUR_FIELD) {
+            const remaining = this._sinkViews[sink][index];
+            if (remaining === Infinity) return Infinity;
+            const field = policy.kappa * remaining;
+            return field > octile ? field : octile;
+        }
+        return octile;
+    }
+
+    _octileToTargets(index, policy) {
+        const x = index % MAP_N;
+        const y = (index - x) / MAP_N;
+        let best = Infinity;
+        for (let i = 0; i < this._targetCount; i++) {
+            const target = this._targets[i];
+            const tx = target % MAP_N;
+            const dx = Math.abs(tx - x);
+            const dy = Math.abs((target - tx) / MAP_N - y);
+            const octile = (dx > dy ? dx : dy) + OCTILE_DIAGONAL_EXTRA * (dx < dy ? dx : dy);
+            if (octile < best) best = octile;
+        }
+        return policy.minWeight * best;
+    }
+
+    // A* toward `_targets` with a consistent heuristic (octile × the
+    // cheapest surface, or κ × a sink field). heapCost holds f per tile, so
+    // g = f − h. Returns tiles (start exclusive) or null.
+    _search(startIdx, policy, staticMask, crowdMask, mode, sink) {
+        const f = this.heapCost;
+        const visited = this.visited;
+        const heapPos = this.heapPos;
+        const mask = this.stepMask;
+        f.fill(Infinity);
+        visited.fill(0);
+        heapPos.fill(-1);
+        this._heapSize = 0;
+        const startH = this._heuristic(startIdx, mode, policy, sink);
+        if (startH === Infinity) return null;
+        f[startIdx] = startH;
+        this._heapPush(f, startIdx);
+        let found = -1;
+        while (this._heapSize > 0) {
+            const cur = this._heapPop(f);
+            visited[cur] = 1;
+            if (this._isTarget(cur)) {
+                found = cur;
+                break;
+            }
+            const bits = mask[cur];
+            if (!bits) continue;
+            const g = f[cur] - this._heuristic(cur, mode, policy, sink);
+            const fromWeight = this._tileWeight(cur, staticMask, policy);
+            for (let dir = 0; dir < DIR_COUNT; dir++) {
+                if (!(bits & (1 << dir))) continue;
+                const next = cur + DIR_OFFSET[dir];
+                if (visited[next]) continue;
+                const h = this._heuristic(next, mode, policy, sink);
+                if (h === Infinity) continue;
+                const score = g + this._stepCost(fromWeight, next, dir, staticMask, crowdMask, policy, this._isTarget(next)) + h;
+                if (score < f[next]) {
+                    f[next] = score;
+                    if (heapPos[next] < 0) this._heapPush(f, next);
+                    else this._heapDecrease(f, next);
+                }
+            }
+        }
+        if (found < 0) return null;
+        return this._reconstruct(found, startIdx, policy, staticMask, crowdMask, mode, sink);
+    }
+
+    // Walks back from the goal over closed tiles, each step to the
+    // neighbour whose g + step cost explains this tile's g (strictly lower g,
+    // so the walk always ends at the start).
+    _reconstruct(found, startIdx, policy, staticMask, crowdMask, mode, sink) {
+        const f = this.heapCost;
+        const visited = this.visited;
+        const mask = this.stepMask;
+        const scratch = this.heapIdx;
+        let count = 0;
+        let cur = found;
+        let g = f[cur] - this._heuristic(cur, mode, policy, sink);
+        while (cur !== startIdx) {
+            scratch[count++] = cur;
+            if (count > CELLS) return null;
+            const bits = mask[cur];
+            let best = -1;
+            let bestValue = Infinity;
+            let bestG = Infinity;
+            for (let dir = 0; dir < DIR_COUNT; dir++) {
+                if (!(bits & (1 << dir))) continue;
+                const prev = cur + DIR_OFFSET[dir];
+                if (!visited[prev]) continue;
+                const prevG = f[prev] - this._heuristic(prev, mode, policy, sink);
+                if (!(prevG < g)) continue;
+                // The step prev → cur runs along the opposite direction.
+                const value = prevG + this._stepCost(this._tileWeight(prev, staticMask, policy), cur, DIR_OPPOSITE[dir], staticMask, crowdMask, policy, this._isTarget(cur));
+                if (value < bestValue) {
+                    bestValue = value;
+                    best = prev;
+                    bestG = prevG;
+                }
+            }
+            if (best < 0) return null;
+            cur = best;
+            g = bestG;
+        }
+        const tiles = new Array(count);
+        for (let i = 0; i < count; i++) {
+            const index = scratch[count - 1 - i];
+            const x = index % MAP_N;
+            tiles[i] = { tileX: x, tileY: (index - x) / MAP_N };
+        }
+        return tiles;
+    }
+
+    // Indexed binary min-heap over tile indices keyed by `keys[tile]`.
+    _heapPush(keys, tile) {
+        let index = this._heapSize++;
+        const heap = this.heapIdx;
+        const pos = this.heapPos;
+        const key = keys[tile];
+        while (index > 0) {
+            const parent = (index - 1) >> 1;
+            const parentTile = heap[parent];
+            if (keys[parentTile] <= key) break;
+            heap[index] = parentTile;
+            pos[parentTile] = index;
+            index = parent;
+        }
+        heap[index] = tile;
+        pos[tile] = index;
+    }
+
+    _heapDecrease(keys, tile) {
+        const heap = this.heapIdx;
+        const pos = this.heapPos;
+        let index = pos[tile];
+        const key = keys[tile];
+        while (index > 0) {
+            const parent = (index - 1) >> 1;
+            const parentTile = heap[parent];
+            if (keys[parentTile] <= key) break;
+            heap[index] = parentTile;
+            pos[parentTile] = index;
+            index = parent;
+        }
+        heap[index] = tile;
+        pos[tile] = index;
+    }
+
+    _heapPop(keys) {
+        const heap = this.heapIdx;
+        const pos = this.heapPos;
+        const root = heap[0];
+        pos[root] = -1;
+        const size = --this._heapSize;
+        if (size > 0) {
+            const last = heap[size];
+            const key = keys[last];
+            let index = 0;
+            while (true) {
+                const left = index * 2 + 1;
+                if (left >= size) break;
+                const right = left + 1;
+                const child = right < size && keys[heap[right]] < keys[heap[left]] ? right : left;
+                const childTile = heap[child];
+                if (keys[childTile] >= key) break;
+                heap[index] = childTile;
+                pos[childTile] = index;
+                index = child;
+            }
+            heap[index] = last;
+            pos[last] = index;
+        }
+        return root;
+    }
+
+    // ---- Legacy string-keyed helpers (tests and route descriptions) --------
 
     _tileTravelWeight(tileX, tileY, bridgeTiles, pathOptions) {
         const key = `${tileX},${tileY}`;
@@ -376,8 +1434,9 @@ export class Pathfinder {
         const laneTiles = this._normalizeTileSet(options?.laneTiles);
         const avoidTiles = this._normalizeTileSet(options?.avoidTiles);
         const standingTiles = this._normalizeTileSet(options?.standingTiles);
-        const standingVersion = options?.standingVersion
-            || (standingTiles?.size ? [...standingTiles].sort().join(';') : '');
+        // W0.2 — no sorted standing string: the crowd layers key on their
+        // FNV-1a occupancy fingerprint instead.
+        const standingVersion = options?.standingVersion || '';
         const congestionTiles = this._normalizeTileWeights(options?.congestionTiles);
         const optionBridgeTiles = this._normalizeTileSet(options?.bridgeTiles);
         const bridgeCount = optionBridgeTiles?.size || bridgeTiles?.size || 0;
@@ -498,38 +1557,6 @@ export class Pathfinder {
             congestion,
             roadShare: list.length ? roadSteps / list.length : 0,
         };
-    }
-
-    _heapPush(heap, item) {
-        heap.push(item);
-        let index = heap.length - 1;
-        while (index > 0) {
-            const parent = Math.floor((index - 1) / 2);
-            if (heap[parent].cost <= item.cost) break;
-            heap[index] = heap[parent];
-            index = parent;
-        }
-        heap[index] = item;
-    }
-
-    _heapPop(heap) {
-        if (heap.length === 0) return null;
-        const root = heap[0];
-        const last = heap.pop();
-        if (heap.length > 0 && last) {
-            let index = 0;
-            while (true) {
-                const left = index * 2 + 1;
-                const right = left + 1;
-                if (left >= heap.length) break;
-                const child = right < heap.length && heap[right].cost < heap[left].cost ? right : left;
-                if (heap[child].cost >= last.cost) break;
-                heap[index] = heap[child];
-                index = child;
-            }
-            heap[index] = last;
-        }
-        return root;
     }
 
     _lineWalkable(x0, y0, x1, y1) {
