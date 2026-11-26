@@ -3139,6 +3139,7 @@ function shutdownRuntime({ reason = 'shutdown', exitCode = 0, exitProcess = true
   watcherSchedulerTimer = null;
   perfSampleTimer = null;
   shutdownGitEnrichmentWorker();
+  usageQuota.shutdown?.();
 
   for (const timer of watchRetryTimers.values()) clearTimeout(timer);
   watchRetryTimers.clear();

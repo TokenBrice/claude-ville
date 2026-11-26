@@ -1,21 +1,26 @@
 /**
- * usageQuota.js - account usage and quota (Claude, plus Codex rate limits)
+ * usageQuota.js - account usage and quota (Claude, Codex, GLM/z.AI, Antigravity)
  *
  * Data source:
  *   A) ~/.claude/.credentials.json → subscriptionType, rateLimitTier
  *   B) ~/.claude/history.jsonl → today/this-week activity (bounded reverse scan)
  *   C) api.anthropic.com/api/oauth/usage → Claude account quota windows and limits (refreshed every QUOTA_API_TTL)
  *   D) the Codex adapter's newest `token_count.rate_limits` → `codex` (no I/O here)
+ *   E) api.z.ai/api/monitor/usage/quota/limit → GLM/z.AI account quota (optional, only when key configured)
+ *   F) ~/.t3/caches/antigravity.json (zero-network primary) + optional standalone OAuth fallback → `antigravity`
  *
  * SV-10: it never spawns a CLI (a boot-time `claude auth status` fetched an
  * email no client read) and serves no frozen `stats-cache.json` totals.
  */
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const https = require('https');
+const crypto = require('crypto');
 
-const CLAUDE_HOME = path.join(require('os').homedir(), '.claude');
+const DEFAULT_HOME = os.homedir();
+const CLAUDE_HOME = path.join(DEFAULT_HOME, '.claude');
 const CREDENTIALS_PATH = path.join(CLAUDE_HOME, '.credentials.json');
 const HISTORY_PATH = path.join(CLAUDE_HOME, 'history.jsonl');
 
@@ -25,20 +30,68 @@ const STATS_TTL = 30_000;         // 30 seconds
 const QUOTA_API_TTL = 5 * 60_000; // 5 minutes
 const QUOTA_MAX_STALE_MS = 30 * 60_000; // stop trusting a frozen snapshot after 30 minutes of failures
 const QUOTA_RESPONSE_MAX_BYTES = 256 * 1024;
+const QUOTA_REQUEST_TIMEOUT_MS = 5000;
 const HISTORY_TAIL_CHUNK_BYTES = 64 * 1024;
 const HISTORY_MAX_LINE_BYTES = 4 * 1024 * 1024;
+
+// GLM / z.AI quota constants
+const DEFAULT_GLM_QUOTA_URL = 'https://api.z.ai/api/monitor/usage/quota/limit';
+const GLM_ALLOWED_HOSTS = Object.freeze(new Set([
+  'api.z.ai',
+  'open.bigmodel.cn',
+  'dev.bigmodel.cn',
+]));
+const GLM_MAX_LIMIT_ROWS = 64;
+const GLM_ERROR_STATUSES = new Set([401, 403, 429]);
+
+// Antigravity quota constants
+const ANTIGRAVITY_CACHE_POLL_MS = 30_000;
+const ANTIGRAVITY_CACHE_MAX_STALE_MS = 6 * 60 * 60_000; // 6 hours
+const ANTIGRAVITY_CACHE_MAX_BYTES = 2 * 1024 * 1024;
+const ANTIGRAVITY_OAUTH_MIN_REMAINING_MS = 60_000;
+const DEFAULT_ANTIGRAVITY_OAUTH_URL = 'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary';
+const ANTIGRAVITY_ALLOWED_HOSTS = Object.freeze(new Set([
+  'daily-cloudcode-pa.googleapis.com',
+  'cloudcode-pa.googleapis.com',
+]));
+const ANTIGRAVITY_ERROR_STATUSES = new Set([401, 403, 429]);
 
 // Cache store
 const cache = {
   credentials: { data: null, ts: 0 },
   stats: { data: null, ts: 0 },
   quota: { data: null, nextAttemptAt: 0, available: false, lastSuccessTs: 0, error: null },
+  glmCreds: { key: null, fingerprint: null, ts: 0 },
+  glm: { data: null, nextAttemptAt: 0, available: false, lastSuccessTs: 0, error: null, fingerprint: null },
+  antigravityFile: {
+    lastPollAt: 0,
+    mtimeMs: -1,
+    size: -1,
+    exists: false,
+    data: null,
+    signature: '',
+  },
+  antigravityOauth: { data: null, nextAttemptAt: 0, available: false, lastSuccessTs: 0, error: null, fingerprint: null },
 };
-// Set by init(). `onChange` hears when the quota snapshot or its failure state
+// Set by init(). `onChange` hears when a quota snapshot or its failure state
 // changes, so the server can push the new usage without waiting for a session
 // scan. `codexRateLimits` returns the Codex adapter's newest rate-limit
-// observation (SV-6).
-const quotaHooks = { onChange: null, codexRateLimits: null };
+// observation (SV-6). Optional injection overrides stay null in production.
+const quotaHooks = {
+  onChange: null,
+  codexRateLimits: null,
+  glmApiKey: null,
+  glmEndpoint: null,
+  glmRequest: null,
+  glmCredentialsPath: null,
+  antigravityCachePath: null,
+  antigravityTokenPaths: null,
+  antigravityEndpoint: null,
+  antigravityRequest: null,
+  env: null,
+  homeDir: null,
+};
+let antigravityPollTimer = null;
 
 function aggregateHistoryFile(filePath, todayStart, weekStart) {
   const fd = fs.openSync(filePath, 'r');
@@ -441,6 +494,750 @@ function readCodexQuota(now) {
   }
 }
 
+// ─── Shared helpers for GLM & Antigravity quota ────────────────
+
+function activeEnv() {
+  return quotaHooks.env || process.env;
+}
+
+function activeHomeDir() {
+  return quotaHooks.homeDir || DEFAULT_HOME;
+}
+
+function t3RootDir() {
+  const env = activeEnv();
+  const explicit = typeof env.CLAUDEVILLE_T3_DIR === 'string' ? env.CLAUDEVILLE_T3_DIR.trim() : '';
+  if (explicit) {
+    return path.basename(explicit) === 'userdata' ? path.dirname(explicit) : explicit;
+  }
+  return path.join(activeHomeDir(), '.t3');
+}
+
+function secretFingerprint(secret) {
+  if (typeof secret !== 'string' || !secret) return null;
+  return crypto.createHash('sha256').update(secret).digest('hex');
+}
+
+function clampPercent(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  return Math.min(100, Math.max(0, numeric));
+}
+
+function nonNegativeFinite(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric >= 0 ? numeric : null;
+}
+
+function parseIsoOrEpochMs(value) {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    // Clamp sub-millisecond fractional digits (e.g. Go RFC3339Nano) for strict parsers.
+    const normalized = trimmed.replace(/(\.\d{3})\d+/, '$1');
+    return resetsAtMs(normalized);
+  }
+  return resetsAtMs(value);
+}
+
+function dropExpiredIsoWindow(window, now) {
+  if (!window) return null;
+  if (window.resetsAt !== null && window.resetsAt !== undefined) {
+    const ms = parseIsoOrEpochMs(window.resetsAt);
+    if (ms !== null && ms <= now) return null;
+  }
+  return window;
+}
+
+// ─── GLM / z.AI Quota API ──────────────────────────────────────
+
+function glmCredentialsFilePath() {
+  if (typeof quotaHooks.glmCredentialsPath === 'string' && quotaHooks.glmCredentialsPath) {
+    return quotaHooks.glmCredentialsPath;
+  }
+  const env = activeEnv();
+  const xdg = !quotaHooks.homeDir && typeof env.XDG_CONFIG_HOME === 'string' && env.XDG_CONFIG_HOME.trim()
+    ? env.XDG_CONFIG_HOME.trim()
+    : path.join(activeHomeDir(), '.config');
+  return path.join(xdg, 'glm-acp-agent', 'credentials.json');
+}
+
+function readGlmApiKey(now = Date.now()) {
+  if (typeof quotaHooks.glmApiKey === 'function') {
+    const injected = quotaHooks.glmApiKey();
+    return typeof injected === 'string' && injected.trim() ? injected.trim() : null;
+  }
+  if (typeof quotaHooks.glmApiKey === 'string') {
+    return quotaHooks.glmApiKey.trim() || null;
+  }
+  if (cache.glmCreds.ts > 0 && (now - cache.glmCreds.ts) < CREDENTIALS_TTL) {
+    return cache.glmCreds.key;
+  }
+  const env = activeEnv();
+  let key = null;
+  for (const name of ['GLM_MCP_API_KEY', 'ZAI_API_KEY', 'Z_AI_API_KEY']) {
+    const candidate = env[name];
+    if (typeof candidate === 'string' && candidate.trim()) {
+      key = candidate.trim();
+      break;
+    }
+  }
+  if (!key) {
+    try {
+      const credPath = glmCredentialsFilePath();
+      if (fs.existsSync(credPath)) {
+        const parsed = JSON.parse(fs.readFileSync(credPath, 'utf8'));
+        for (const field of ['z_ai_api_key', 'apiKey', 'api_key', 'key']) {
+          const candidate = parsed?.[field];
+          if (typeof candidate === 'string' && candidate.trim()) {
+            key = candidate.trim();
+            break;
+          }
+        }
+      }
+    } catch { /* ignore unreadable/malformed credentials file */ }
+  }
+  cache.glmCreds = { key, fingerprint: secretFingerprint(key), ts: now };
+  return key;
+}
+
+/**
+ * Resolve and validate the GLM quota endpoint against the strict HTTPS host
+ * allowlist (`api.z.ai`, `open.bigmodel.cn`, `dev.bigmodel.cn`). Rejects any
+ * non-HTTPS, custom-port, credential-bearing, or non-allowlisted URL.
+ */
+function resolveGlmQuotaUrl(rawUrl) {
+  const candidate = rawUrl === undefined
+    ? (quotaHooks.glmEndpoint || activeEnv().GLM_QUOTA_URL || activeEnv().ACP_GLM_BASE_URL || DEFAULT_GLM_QUOTA_URL)
+    : rawUrl;
+  if (typeof candidate !== 'string' || !candidate.trim()) return null;
+  let parsed;
+  try {
+    parsed = new URL(candidate.trim());
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'https:'
+    || parsed.username
+    || parsed.password
+    || parsed.port
+    || !GLM_ALLOWED_HOSTS.has(parsed.hostname)) {
+    return null;
+  }
+  return new URL('/api/monitor/usage/quota/limit', parsed.origin);
+}
+
+function normalizeGlmWindow(row, now = Date.now()) {
+  if (!row || typeof row !== 'object') return null;
+  const resetMs = parseIsoOrEpochMs(row.nextResetTime);
+  if (resetMs !== null && resetMs <= now) return null;
+  const used = nonNegativeFinite(row.currentValue);
+  const limit = nonNegativeFinite(row.usage);
+  const remaining = nonNegativeFinite(row.remaining)
+    ?? (used !== null && limit !== null ? Math.max(0, limit - used) : null);
+  const explicitPct = nonNegativeFinite(row.percentage);
+  const computedPct = used !== null && limit !== null && limit > 0
+    ? (used / limit) * 100
+    : null;
+  const rawPct = explicitPct !== null ? explicitPct : computedPct;
+  const usedPercent = rawPct !== null ? clampPercent(rawPct) : null;
+  if (usedPercent === null) return null;
+  return {
+    usedPercent,
+    used,
+    limit,
+    remaining,
+    resetsAt: resetMs !== null ? new Date(resetMs).toISOString() : null,
+  };
+}
+
+function selectGlmLimitRow(limits, matcher) {
+  let creditRow = null;
+  let tokenRow = null;
+  for (const row of limits) {
+    if (!row || typeof row !== 'object') continue;
+    const unit = Number(row.unit);
+    const number = Number(row.number);
+    if (!Number.isFinite(unit) || !Number.isFinite(number)) continue;
+    if (!matcher(unit, number)) continue;
+    if (row.type === 'CREDIT_LIMIT' && !creditRow) creditRow = row;
+    else if (row.type === 'TOKENS_LIMIT' && !tokenRow) tokenRow = row;
+  }
+  return creditRow || tokenRow;
+}
+
+function parseGlmQuotaPayload(payload, now = Date.now()) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return { status: 'invalid' };
+  const code = payload.code;
+  if (code === 401 || code === '401') return { status: 'error', statusCode: 401 };
+  if (code === 403 || code === '403') return { status: 'error', statusCode: 403 };
+  if (payload.success === false || (code !== undefined && ![0, 200, '0', '200'].includes(code))) {
+    return { status: 'invalid' };
+  }
+  const data = payload.data && typeof payload.data === 'object' && !Array.isArray(payload.data)
+    ? payload.data
+    : null;
+  const limits = Array.isArray(data?.limits) ? data.limits : null;
+  if (!limits || limits.length === 0 || limits.length > GLM_MAX_LIMIT_ROWS) {
+    return { status: 'invalid' };
+  }
+
+  const weeklyRow = selectGlmLimitRow(
+    limits,
+    (unit, number) => (unit === 6 && number === 1) || (unit === 4 && number === 7),
+  );
+  const fiveHourRow = selectGlmLimitRow(
+    limits,
+    (unit, number) => unit === 3 && number === 5,
+  );
+  if (!weeklyRow && !fiveHourRow) return { status: 'invalid' };
+
+  const plan = typeof data.level === 'string' && data.level.trim() ? data.level.trim() : null;
+  return {
+    status: 'ok',
+    snapshot: {
+      plan,
+      weekly: weeklyRow ? normalizeGlmWindow(weeklyRow, now) : null,
+      fiveHour: fiveHourRow ? normalizeGlmWindow(fiveHourRow, now) : null,
+      observedAt: new Date(now).toISOString(),
+    },
+  };
+}
+
+function recordGlmQuotaSuccess(payload, now = Date.now()) {
+  const parsed = parseGlmQuotaPayload(payload, now);
+  if (parsed.status === 'error') {
+    recordGlmQuotaFailure(parsed.statusCode, {}, now);
+    return;
+  }
+  if (parsed.status !== 'ok') return;
+  cache.glm.data = parsed.snapshot;
+  cache.glm.lastSuccessTs = now;
+  cache.glm.error = null;
+  if (!cache.glm.available) console.log('[Usage] GLM quota API available');
+  cache.glm.available = true;
+  notifyQuotaChange();
+}
+
+function recordGlmQuotaFailure(statusCode, headers = {}, now = Date.now()) {
+  if (!GLM_ERROR_STATUSES.has(statusCode)) return;
+  const previous = cache.glm.error;
+  const hadSnapshot = cache.glm.data !== null;
+  cache.glm.error = previous?.status === statusCode ? previous : { status: statusCode, at: now };
+  if (statusCode === 401 || statusCode === 403) {
+    if (previous?.status !== statusCode) {
+      console.log(`[Usage] GLM quota API rejected credentials (${statusCode})`);
+    }
+    cache.glm.available = false;
+    cache.glm.data = null;
+  } else if (statusCode === 429) {
+    cache.glm.nextAttemptAt = Math.max(cache.glm.nextAttemptAt, now + quotaRetryDelayMs(headers?.['retry-after'], now));
+  }
+  if (cache.glm.error !== previous || (hadSnapshot && cache.glm.data === null)) notifyQuotaChange();
+}
+
+function tryFetchGlmQuota(now = Date.now()) {
+  if (cache.glm.nextAttemptAt === Infinity) return;
+  const apiKey = readGlmApiKey(now);
+  const fingerprint = secretFingerprint(apiKey);
+  if (fingerprint !== cache.glm.fingerprint) {
+    // Credential rotation or removal invalidates prior cached state.
+    const hadState = cache.glm.available || cache.glm.error !== null;
+    cache.glm.fingerprint = fingerprint;
+    cache.glm.data = null;
+    cache.glm.available = false;
+    cache.glm.lastSuccessTs = 0;
+    cache.glm.error = null;
+    cache.glm.nextAttemptAt = 0;
+    if (hadState) notifyQuotaChange();
+  }
+  if (!apiKey) return;
+  if (now < cache.glm.nextAttemptAt) return;
+
+  const url = resolveGlmQuotaUrl();
+  if (!url) return;
+
+  cache.glm.nextAttemptAt = now + QUOTA_API_TTL;
+
+  const options = {
+    hostname: url.hostname,
+    path: url.pathname,
+    method: 'GET',
+    headers: {
+      // Z.AI's official usage monitor script and glm-acp-agent send the raw API key
+      // in Authorization (no Bearer prefix) across api.z.ai and bigmodel.cn.
+      Authorization: apiKey,
+      Accept: 'application/json',
+    },
+    timeout: QUOTA_REQUEST_TIMEOUT_MS,
+  };
+
+  const requester = quotaHooks.glmRequest || https.request;
+  const req = requester(options, (res) => {
+    consumeQuotaResponse(res, data => recordGlmQuotaSuccess(data, Date.now()), {
+      onFailure: (statusCode, headers) => recordGlmQuotaFailure(statusCode, headers, Date.now()),
+    });
+  });
+
+  req.on('error', () => { /* ignore network errors; never log key */ });
+  req.on('timeout', () => { req.destroy(); });
+  req.end();
+}
+
+function readGlmQuota(now = Date.now()) {
+  tryFetchGlmQuota(now);
+
+  const fresh = cache.glm.available
+    && cache.glm.data !== null
+    && (now - cache.glm.lastSuccessTs) <= QUOTA_MAX_STALE_MS;
+
+  if (!fresh && !cache.glm.error) return null;
+
+  if (!fresh) {
+    return {
+      plan: null,
+      weekly: null,
+      fiveHour: null,
+      observedAt: null,
+      error: cache.glm.error,
+    };
+  }
+
+  return {
+    plan: cache.glm.data.plan,
+    weekly: dropExpiredIsoWindow(cache.glm.data.weekly, now),
+    fiveHour: dropExpiredIsoWindow(cache.glm.data.fiveHour, now),
+    observedAt: cache.glm.data.observedAt,
+    error: cache.glm.error,
+  };
+}
+
+// ─── Antigravity Quota (T3 Cache Primary + Optional OAuth Fallback) ──
+
+const ANTIGRAVITY_WINDOW_SPECS = Object.freeze({
+  'gemini-weekly': { field: 'geminiWeekly', windowMinutes: 10080, label: 'Gemini · Weekly' },
+  'gemini-5h': { field: 'geminiFiveHour', windowMinutes: 300, label: 'Gemini · 5-hour' },
+  '3p-weekly': { field: 'sharedWeekly', windowMinutes: 10080, label: 'Claude & GPT (shared) · Weekly' },
+  '3p-5h': { field: 'sharedFiveHour', windowMinutes: 300, label: 'Claude & GPT (shared) · 5-hour' },
+});
+
+function resolveAntigravityCachePath() {
+  if (typeof quotaHooks.antigravityCachePath === 'string' && quotaHooks.antigravityCachePath) {
+    return quotaHooks.antigravityCachePath;
+  }
+  return path.join(t3RootDir(), 'caches', 'antigravity.json');
+}
+
+function normalizeAntigravityWindow(raw, defaults, now = null) {
+  if (!raw || typeof raw !== 'object') return null;
+  let usedPercent = clampPercent(raw.usedPercent);
+  if (usedPercent === null) {
+    const usedFraction = nonNegativeFinite(raw.usedFraction);
+    if (usedFraction !== null) usedPercent = clampPercent(usedFraction * 100);
+  }
+  if (usedPercent === null) {
+    const remainingFraction = nonNegativeFinite(raw.remainingFraction);
+    if (remainingFraction !== null) usedPercent = clampPercent((1 - remainingFraction) * 100);
+  }
+  if (usedPercent === null) return null;
+
+  const rawReset = raw.resetsAt ?? raw.resetTime ?? raw.resetAt ?? null;
+  const resetMs = parseIsoOrEpochMs(rawReset);
+  if (now !== null && resetMs !== null && resetMs <= now) return null;
+
+  const duration = nonNegativeFinite(raw.windowDurationMins ?? raw.windowMinutes);
+  const windowMinutes = duration !== null && duration > 0 ? Math.round(duration) : defaults.windowMinutes;
+  const label = typeof raw.label === 'string' && raw.label.trim()
+    ? raw.label.trim().slice(0, 128)
+    : defaults.label;
+
+  return {
+    usedPercent,
+    resetsAt: resetMs !== null ? new Date(resetMs).toISOString() : null,
+    windowMinutes,
+    label,
+  };
+}
+
+function parseAntigravityT3CacheRaw(json) {
+  if (!json || typeof json !== 'object' || Array.isArray(json)) return null;
+  const limits = json.usageLimits;
+  if (!limits || typeof limits !== 'object' || !Array.isArray(limits.windows)) return null;
+
+  const observedMs = parseIsoOrEpochMs(limits.checkedAt) ?? parseIsoOrEpochMs(json.checkedAt);
+  const observedAt = observedMs !== null ? new Date(observedMs).toISOString() : null;
+
+  const result = {
+    geminiWeekly: null,
+    geminiFiveHour: null,
+    sharedWeekly: null,
+    sharedFiveHour: null,
+    observedAt,
+  };
+  let matchedAny = false;
+  for (const win of limits.windows) {
+    if (!win || typeof win !== 'object') continue;
+    const spec = ANTIGRAVITY_WINDOW_SPECS[win.id];
+    if (!spec) continue;
+    matchedAny = true;
+    const normalized = normalizeAntigravityWindow(win, spec, null);
+    if (normalized) result[spec.field] = normalized;
+  }
+  if (!matchedAny) return null;
+  return result;
+}
+
+function projectAntigravityT3Cache(raw, now = Date.now()) {
+  if (!raw) return null;
+  const observedMs = parseIsoOrEpochMs(raw.observedAt);
+  const isStaleAge = observedMs !== null && (now - observedMs) > ANTIGRAVITY_CACHE_MAX_STALE_MS;
+
+  const geminiWeekly = dropExpiredIsoWindow(raw.geminiWeekly, now);
+  const geminiFiveHour = dropExpiredIsoWindow(raw.geminiFiveHour, now);
+  const sharedWeekly = dropExpiredIsoWindow(raw.sharedWeekly, now);
+  const sharedFiveHour = dropExpiredIsoWindow(raw.sharedFiveHour, now);
+
+  const liveWindows = [geminiWeekly, geminiFiveHour, sharedWeekly, sharedFiveHour].filter(Boolean);
+  const hasFutureReset = liveWindows.some(w => w.resetsAt !== null && parseIsoOrEpochMs(w.resetsAt) > now);
+  const allExpiredWhileStale = isStaleAge && !hasFutureReset;
+
+  return {
+    stale: isStaleAge,
+    snapshot: {
+      source: 't3-cache',
+      geminiWeekly: allExpiredWhileStale ? null : geminiWeekly,
+      geminiFiveHour: allExpiredWhileStale ? null : geminiFiveHour,
+      sharedWeekly: allExpiredWhileStale ? null : sharedWeekly,
+      sharedFiveHour: allExpiredWhileStale ? null : sharedFiveHour,
+      observedAt: raw.observedAt,
+      error: null,
+    },
+  };
+}
+
+function parseAntigravityT3Cache(json, now = Date.now()) {
+  const raw = parseAntigravityT3CacheRaw(json);
+  const projected = projectAntigravityT3Cache(raw, now);
+  return projected ? projected.snapshot : null;
+}
+
+function pollAntigravityCacheFile(now = Date.now(), { force = false, notifyOnInitial = false } = {}) {
+  const entry = cache.antigravityFile;
+  if (!force && entry.lastPollAt > 0 && (now - entry.lastPollAt) < ANTIGRAVITY_CACHE_POLL_MS) {
+    return entry.data;
+  }
+  const hadPriorPoll = entry.lastPollAt > 0;
+  entry.lastPollAt = now;
+
+  const cachePath = resolveAntigravityCachePath();
+  let stat;
+  try {
+    stat = fs.statSync(cachePath);
+  } catch {
+    if (entry.exists || entry.data !== null) {
+      entry.exists = false;
+      entry.mtimeMs = -1;
+      entry.size = -1;
+      entry.data = null;
+      entry.signature = '';
+      if (hadPriorPoll) notifyQuotaChange();
+    }
+    return null;
+  }
+
+  if (!stat.isFile() || stat.size <= 0 || stat.size > ANTIGRAVITY_CACHE_MAX_BYTES) {
+    return entry.data;
+  }
+  if (entry.exists && entry.mtimeMs === stat.mtimeMs && entry.size === stat.size) {
+    return entry.data;
+  }
+
+  let parsed = null;
+  try {
+    const json = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
+    parsed = parseAntigravityT3CacheRaw(json);
+  } catch {
+    // Keep prior snapshot on transient mid-write read error, retry next poll.
+    return entry.data;
+  }
+
+  const nextSignature = parsed ? JSON.stringify(parsed) : '';
+  const changed = nextSignature !== entry.signature;
+  entry.exists = true;
+  entry.mtimeMs = stat.mtimeMs;
+  entry.size = stat.size;
+  entry.data = parsed;
+  entry.signature = nextSignature;
+  if (changed && (hadPriorPoll || (notifyOnInitial && parsed !== null))) {
+    notifyQuotaChange();
+  }
+  return entry.data;
+}
+
+function defaultAntigravityTokenPaths() {
+  const candidates = [
+    path.join(activeHomeDir(), '.gemini', 'antigravity-cli', 'antigravity-oauth-token'),
+  ];
+  const providersDir = path.join(t3RootDir(), 'userdata', 'providers', 'antigravity');
+  try {
+    for (const dirent of fs.readdirSync(providersDir, { withFileTypes: true })) {
+      if (!dirent.isDirectory()) continue;
+      candidates.push(path.join(providersDir, dirent.name, 'antigravity-acp', 'antigravity-oauth-token'));
+    }
+  } catch { /* directory absent */ }
+  return candidates;
+}
+
+function readAntigravityOauthToken(now = Date.now()) {
+  const paths = typeof quotaHooks.antigravityTokenPaths === 'function'
+    ? quotaHooks.antigravityTokenPaths()
+    : (Array.isArray(quotaHooks.antigravityTokenPaths) ? quotaHooks.antigravityTokenPaths : defaultAntigravityTokenPaths());
+
+  let best = null;
+  for (const tokenPath of paths || []) {
+    if (typeof tokenPath !== 'string' || !tokenPath) continue;
+    try {
+      if (!fs.existsSync(tokenPath)) continue;
+      const parsed = JSON.parse(fs.readFileSync(tokenPath, 'utf8'));
+      const tok = parsed?.token && typeof parsed.token === 'object' ? parsed.token : parsed;
+      const accessToken = typeof tok?.access_token === 'string' && tok.access_token.trim()
+        ? tok.access_token.trim()
+        : null;
+      const expiryMs = parseIsoOrEpochMs(tok?.expiry);
+      if (!accessToken || expiryMs === null || expiryMs <= now + ANTIGRAVITY_OAUTH_MIN_REMAINING_MS) {
+        continue;
+      }
+      if (!best || expiryMs > best.expiryMs) {
+        best = { accessToken, expiryMs };
+      }
+    } catch { /* ignore unreadable/malformed token file */ }
+  }
+  return best;
+}
+
+function resolveAntigravityOauthUrl(rawUrl) {
+  const candidate = rawUrl === undefined
+    ? (quotaHooks.antigravityEndpoint || DEFAULT_ANTIGRAVITY_OAUTH_URL)
+    : rawUrl;
+  if (typeof candidate !== 'string' || !candidate.trim()) return null;
+  let parsed;
+  try {
+    parsed = new URL(candidate.trim());
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'https:'
+    || parsed.username
+    || parsed.password
+    || parsed.port
+    || !ANTIGRAVITY_ALLOWED_HOSTS.has(parsed.hostname)) {
+    return null;
+  }
+  return new URL('/v1internal:retrieveUserQuotaSummary', parsed.origin);
+}
+
+function classifyAntigravityBucket(entry) {
+  const id = String(entry?.id || entry?.bucketId || entry?.modelId || entry?.model || entry?.label || '').toLowerCase();
+  if (ANTIGRAVITY_WINDOW_SPECS[id]) return ANTIGRAVITY_WINDOW_SPECS[id];
+
+  const is3p = /\b3p\b|claude|gpt|shared|third[_ -]?party/.test(id);
+  const isGemini = !is3p && /gemini/.test(id);
+  if (!is3p && !isGemini) return null;
+
+  const duration = nonNegativeFinite(entry?.windowDurationMins ?? entry?.windowMinutes);
+  const kind = String(entry?.kind || entry?.windowType || '').toLowerCase();
+  const isWeekly = (duration !== null && duration >= 10080)
+    || /weekly|week|7d|168h/.test(`${id} ${kind}`);
+  const isFiveHour = (duration !== null && duration > 0 && duration <= 360)
+    || /5h|5-hour|session|300m/.test(`${id} ${kind}`);
+
+  if (isGemini && isWeekly) return ANTIGRAVITY_WINDOW_SPECS['gemini-weekly'];
+  if (isGemini && isFiveHour) return ANTIGRAVITY_WINDOW_SPECS['gemini-5h'];
+  if (is3p && isWeekly) return ANTIGRAVITY_WINDOW_SPECS['3p-weekly'];
+  if (is3p && isFiveHour) return ANTIGRAVITY_WINDOW_SPECS['3p-5h'];
+  return null;
+}
+
+function parseAntigravityOauthPayload(payload, now = Date.now()) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const result = {
+    geminiWeekly: null,
+    geminiFiveHour: null,
+    sharedWeekly: null,
+    sharedFiveHour: null,
+    observedAt: new Date(now).toISOString(),
+  };
+  let matchedAny = false;
+
+  const rows = [
+    ...(Array.isArray(payload.windows) ? payload.windows : []),
+    ...(Array.isArray(payload.buckets) ? payload.buckets : []),
+    ...(Array.isArray(payload.quotaBuckets) ? payload.quotaBuckets : []),
+    ...(Array.isArray(payload.userQuotaBuckets) ? payload.userQuotaBuckets : []),
+  ];
+  for (const row of rows) {
+    const spec = classifyAntigravityBucket(row);
+    if (!spec) continue;
+    matchedAny = true;
+    const normalized = normalizeAntigravityWindow(row, spec, now);
+    if (normalized) {
+      const existing = result[spec.field];
+      if (!existing || normalized.usedPercent > existing.usedPercent) {
+        result[spec.field] = normalized;
+      }
+    }
+  }
+
+  for (const [id, spec] of Object.entries(ANTIGRAVITY_WINDOW_SPECS)) {
+    const direct = payload[spec.field] ?? payload[id];
+    if (direct && typeof direct === 'object') {
+      matchedAny = true;
+      const normalized = normalizeAntigravityWindow(direct, spec, now);
+      if (normalized) result[spec.field] = normalized;
+    }
+  }
+
+  if (!matchedAny) return null;
+  return result;
+}
+
+function recordAntigravityOauthSuccess(payload, now = Date.now()) {
+  const parsed = parseAntigravityOauthPayload(payload, now);
+  if (!parsed) return;
+  cache.antigravityOauth.data = parsed;
+  cache.antigravityOauth.lastSuccessTs = now;
+  cache.antigravityOauth.error = null;
+  if (!cache.antigravityOauth.available) console.log('[Usage] Antigravity OAuth quota fallback available');
+  cache.antigravityOauth.available = true;
+  notifyQuotaChange();
+}
+
+function recordAntigravityOauthFailure(statusCode, headers = {}, now = Date.now()) {
+  if (!ANTIGRAVITY_ERROR_STATUSES.has(statusCode)) return;
+  const previous = cache.antigravityOauth.error;
+  const hadSnapshot = cache.antigravityOauth.data !== null;
+  cache.antigravityOauth.error = previous?.status === statusCode ? previous : { status: statusCode, at: now };
+  if (statusCode === 401 || statusCode === 403) {
+    if (previous?.status !== statusCode) {
+      console.log(`[Usage] Antigravity OAuth quota rejected credentials (${statusCode})`);
+    }
+    cache.antigravityOauth.available = false;
+    cache.antigravityOauth.data = null;
+  } else if (statusCode === 429) {
+    cache.antigravityOauth.nextAttemptAt = Math.max(
+      cache.antigravityOauth.nextAttemptAt,
+      now + quotaRetryDelayMs(headers?.['retry-after'], now),
+    );
+  }
+  if (cache.antigravityOauth.error !== previous || (hadSnapshot && cache.antigravityOauth.data === null)) {
+    notifyQuotaChange();
+  }
+}
+
+function tryFetchAntigravityOauth(now = Date.now()) {
+  if (now < cache.antigravityOauth.nextAttemptAt) return;
+  const token = readAntigravityOauthToken(now);
+  if (!token) return;
+
+  const url = resolveAntigravityOauthUrl();
+  if (!url) return;
+
+  const fingerprint = secretFingerprint(token.accessToken);
+  if (fingerprint !== cache.antigravityOauth.fingerprint) {
+    cache.antigravityOauth.fingerprint = fingerprint;
+    cache.antigravityOauth.error = null;
+  }
+
+  cache.antigravityOauth.nextAttemptAt = now + QUOTA_API_TTL;
+  const body = '{}';
+  const options = {
+    hostname: url.hostname,
+    path: url.pathname,
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token.accessToken}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      'Content-Length': Buffer.byteLength(body),
+    },
+    timeout: QUOTA_REQUEST_TIMEOUT_MS,
+  };
+
+  const requester = quotaHooks.antigravityRequest || https.request;
+  const req = requester(options, (res) => {
+    consumeQuotaResponse(res, data => recordAntigravityOauthSuccess(data, Date.now()), {
+      onFailure: (statusCode, headers) => recordAntigravityOauthFailure(statusCode, headers, Date.now()),
+    });
+  });
+
+  req.on('error', () => { /* ignore network errors; never log token */ });
+  req.on('timeout', () => { req.destroy(); });
+  req.end(body);
+}
+
+function readAntigravityQuota(now = Date.now()) {
+  const rawFile = pollAntigravityCacheFile(now);
+  const projected = projectAntigravityT3Cache(rawFile, now);
+
+  // Primary: zero-network fresh T3 cache wins with zero network requests.
+  if (projected && !projected.stale) {
+    return projected.snapshot;
+  }
+
+  // Fallback: only when T3 cache is absent or stale, try standalone OAuth
+  // with a strictly unexpired token (never attempts OAuth refresh).
+  tryFetchAntigravityOauth(now);
+
+  const oauthFresh = cache.antigravityOauth.available
+    && cache.antigravityOauth.data !== null
+    && (now - cache.antigravityOauth.lastSuccessTs) <= QUOTA_MAX_STALE_MS;
+
+  if (oauthFresh) {
+    return {
+      source: 'oauth-api',
+      geminiWeekly: dropExpiredIsoWindow(cache.antigravityOauth.data.geminiWeekly, now),
+      geminiFiveHour: dropExpiredIsoWindow(cache.antigravityOauth.data.geminiFiveHour, now),
+      sharedWeekly: dropExpiredIsoWindow(cache.antigravityOauth.data.sharedWeekly, now),
+      sharedFiveHour: dropExpiredIsoWindow(cache.antigravityOauth.data.sharedFiveHour, now),
+      observedAt: cache.antigravityOauth.data.observedAt,
+      error: cache.antigravityOauth.error,
+    };
+  }
+
+  if (cache.antigravityOauth.error) {
+    return {
+      source: 'oauth-api',
+      geminiWeekly: null,
+      geminiFiveHour: null,
+      sharedWeekly: null,
+      sharedFiveHour: null,
+      observedAt: null,
+      error: cache.antigravityOauth.error,
+    };
+  }
+
+  // Stale T3 cache with no active OAuth fallback still reports observedAt with
+  // any expired windows nulled out (never fake 0%).
+  if (projected) return projected.snapshot;
+  return null;
+}
+
+function startAntigravityCachePoller() {
+  stopAntigravityCachePoller();
+  antigravityPollTimer = setInterval(() => {
+    pollAntigravityCacheFile(Date.now(), { force: true, notifyOnInitial: true });
+  }, ANTIGRAVITY_CACHE_POLL_MS);
+  if (typeof antigravityPollTimer.unref === 'function') antigravityPollTimer.unref();
+}
+
+function stopAntigravityCachePoller() {
+  if (antigravityPollTimer) {
+    clearInterval(antigravityPollTimer);
+    antigravityPollTimer = null;
+  }
+}
+
 // ─── Public API ────────────────────────────────────────────────
 
 function fetchUsage() {
@@ -473,19 +1270,53 @@ function fetchUsage() {
     },
     quotaAvailable: quotaFresh,
     codex: readCodexQuota(now),
+    glm: readGlmQuota(now),
+    antigravity: readAntigravityQuota(now),
   };
 }
 
-function init({ onChange = null, codexRateLimits = null } = {}) {
+function init({
+  onChange = null,
+  codexRateLimits = null,
+  glmApiKey = null,
+  glmEndpoint = null,
+  glmRequest = null,
+  glmCredentialsPath = null,
+  antigravityCachePath = null,
+  antigravityTokenPaths = null,
+  antigravityEndpoint = null,
+  antigravityRequest = null,
+  env = null,
+  homeDir = null,
+  pollAntigravity = true,
+} = {}) {
   quotaHooks.onChange = typeof onChange === 'function' ? onChange : null;
   quotaHooks.codexRateLimits = typeof codexRateLimits === 'function' ? codexRateLimits : null;
-  // Initial quota API attempt
+  quotaHooks.glmApiKey = glmApiKey;
+  quotaHooks.glmEndpoint = glmEndpoint;
+  quotaHooks.glmRequest = typeof glmRequest === 'function' ? glmRequest : null;
+  quotaHooks.glmCredentialsPath = glmCredentialsPath;
+  quotaHooks.antigravityCachePath = antigravityCachePath;
+  quotaHooks.antigravityTokenPaths = antigravityTokenPaths;
+  quotaHooks.antigravityEndpoint = antigravityEndpoint;
+  quotaHooks.antigravityRequest = typeof antigravityRequest === 'function' ? antigravityRequest : null;
+  quotaHooks.env = env;
+  quotaHooks.homeDir = homeDir;
+  // Initial quota attempts
   tryFetchQuota();
+  tryFetchGlmQuota();
+  pollAntigravityCacheFile(Date.now(), { force: true });
+  if (pollAntigravity) startAntigravityCachePoller();
+}
+
+function shutdown() {
+  stopAntigravityCachePoller();
 }
 
 module.exports = {
   fetchUsage,
   init,
+  shutdown,
   _test: {
     codexQuotaFromObservation,
     consumeQuotaResponse,
@@ -493,10 +1324,41 @@ module.exports = {
     recordQuotaFailure,
     recordQuotaSuccess,
     resetsAtMs,
+    resolveGlmQuotaUrl,
+    parseGlmQuotaPayload,
+    recordGlmQuotaSuccess,
+    recordGlmQuotaFailure,
+    tryFetchGlmQuota,
+    readGlmQuota,
+    readGlmApiKey,
+    parseAntigravityT3Cache,
+    parseAntigravityOauthPayload,
+    pollAntigravityCacheFile,
+    readAntigravityOauthToken,
+    resolveAntigravityOauthUrl,
+    recordAntigravityOauthSuccess,
+    recordAntigravityOauthFailure,
+    tryFetchAntigravityOauth,
+    readAntigravityQuota,
     resetQuotaCache({ nextAttemptAt = Infinity } = {}) {
+      stopAntigravityCachePoller();
       cache.quota = { data: null, nextAttemptAt, available: false, lastSuccessTs: 0, error: null };
+      cache.glmCreds = { key: null, fingerprint: null, ts: 0 };
+      cache.glm = { data: null, nextAttemptAt, available: false, lastSuccessTs: 0, error: null, fingerprint: null };
+      cache.antigravityFile = { lastPollAt: 0, mtimeMs: -1, size: -1, exists: false, data: null, signature: '' };
+      cache.antigravityOauth = { data: null, nextAttemptAt, available: false, lastSuccessTs: 0, error: null, fingerprint: null };
       quotaHooks.onChange = null;
       quotaHooks.codexRateLimits = null;
+      quotaHooks.glmApiKey = null;
+      quotaHooks.glmEndpoint = null;
+      quotaHooks.glmRequest = null;
+      quotaHooks.glmCredentialsPath = null;
+      quotaHooks.antigravityCachePath = null;
+      quotaHooks.antigravityTokenPaths = null;
+      quotaHooks.antigravityEndpoint = null;
+      quotaHooks.antigravityRequest = null;
+      quotaHooks.env = null;
+      quotaHooks.homeDir = null;
     },
     setCodexRateLimitsSource(source) {
       quotaHooks.codexRateLimits = source;
@@ -504,8 +1366,15 @@ module.exports = {
     setQuotaChangeListener(listener) {
       quotaHooks.onChange = listener;
     },
+    setHooks(overrides = {}) {
+      Object.assign(quotaHooks, overrides);
+    },
     QUOTA_API_TTL,
     QUOTA_MAX_STALE_MS,
     QUOTA_RESPONSE_MAX_BYTES,
+    ANTIGRAVITY_CACHE_POLL_MS,
+    ANTIGRAVITY_CACHE_MAX_STALE_MS,
+    GLM_ALLOWED_HOSTS,
+    ANTIGRAVITY_ALLOWED_HOSTS,
   },
 };

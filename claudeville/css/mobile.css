@@ -624,7 +624,20 @@
     }
 }
 
-/* Codex quota card: the observation age stays in the card's title. */
+/* Account Quota Rail: 2x2 grid on wider mobile screens, stacked on narrow phones;
+   observation age stays in each card's title. */
+:root[data-cv-profile="mobile"] .dashboard-quota-rail {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    margin-bottom: 10px;
+}
+
+@media (max-width: 520px) {
+    :root[data-cv-profile="mobile"] .dashboard-quota-rail {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
 :root[data-cv-profile="mobile"] .dashboard-quota__age {
     display: none;
 }

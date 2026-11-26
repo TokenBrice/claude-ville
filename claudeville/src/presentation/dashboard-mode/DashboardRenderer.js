@@ -28,22 +28,26 @@ import { SESSION_DETAIL_REFRESH_INTERVAL } from '../../config/constants.js';
 import { replaceChildren } from '../shared/DomSafe.js';
 import { normalizeCostSource, TokenUsage } from '../../domain/value-objects/TokenUsage.js';
 import {
+    antigravityQuotaFacts,
+    claudeQuotaFacts,
     collisionsForAgent,
     formatCost,
     formatCreditChange,
     costSourceTitle,
     formatElapsed,
+    formatQuotaErrorStatus,
     formatRelative,
+    formatResetCountdown,
     formatTokens,
     formatToolDetail,
     formatWaitAge,
+    glmQuotaFacts,
     normalizeStatus,
     shortenHomePath,
     shortProjectName,
     subscribeElapsedText,
     truncateText,
     workingSetForAgent,
-    quotaLimitFacts,
 } from '../shared/Formatters.js';
 import { AgentSelectionMirror, emitAgentDeselected, emitAgentSelected } from '../shared/AgentSelection.js';
 import { HARBOR_FOCUS_FLEET_EVENT, harborLedger, ledgerFailureText, middleTruncate } from '../shared/HarborLedger.js';
@@ -647,8 +651,8 @@ export function codexQuotaFacts(codex, now = Date.now()) {
     };
 }
 
-// A tally-bar account card holds two lines inside the bar's 40 px: the
-// reading on top, its facts (joined by ` · ` in CSS) below.
+// A quota-rail account card holds two lines: the reading on top, its facts
+// (joined by ` · ` in CSS) below.
 function quotaRows(part, head, facts) {
     const rows = document.createDocumentFragment();
     const top = part('dashboard-quota__head');
@@ -662,9 +666,25 @@ function quotaRows(part, head, facts) {
     return rows;
 }
 
-/** What the tally bar's account cards read from `/api/usage`: a change to either repaints them. */
+export { claudeQuotaFacts, glmQuotaFacts, antigravityQuotaFacts };
+
+/** What the Quota Rail's 4 provider cards read from `/api/usage`: a change to any repaints the rail. */
 export function quotaCardsSignature(usage) {
-    return { codex: usage?.codex ?? null, claudeLimit: usage?.quota?.highestActiveLimit ?? null };
+    const q = usage?.quota;
+    return {
+        claude: q || usage?.quotaError || usage?.quotaAvailable !== undefined ? {
+            available: usage?.quotaAvailable ?? null,
+            highestActiveLimit: q?.highestActiveLimit ?? null,
+            sevenDay: q?.sevenDay ?? null,
+            sevenDayResetsAt: q?.sevenDayResetsAt ?? null,
+            fiveHour: q?.fiveHour ?? null,
+            fiveHourResetsAt: q?.fiveHourResetsAt ?? null,
+            error: usage?.quotaError ?? null,
+        } : null,
+        codex: usage?.codex ?? null,
+        glm: usage?.glm ?? null,
+        antigravity: usage?.antigravity ?? null,
+    };
 }
 
 /** The edge flash belongs only to a genuine errored status. */
@@ -1093,11 +1113,14 @@ export class DashboardRenderer {
             }
         };
         eventBus.on('harbor:updated', this._onHarborUpdated);
-        // Codex quota card: the account facts B1 adds to /api/usage.
+        // Dedicated 4-provider account quota rail (Claude, Codex, GLM, Antigravity).
+        this.quotaRailEl = null;
+        this._quotaRailSignature = '';
+        this._quotaRailUnsubscribes = [];
         this._latestUsage = null;
         this._onUsageUpdated = (usage) => {
             this._latestUsage = usage || null;
-            if (this.active) this._renderAttentionQueue(Array.from(this.world.agents.values()));
+            if (this.active) this._renderQuotaRail();
         };
         eventBus.on('usage:updated', this._onUsageUpdated);
         document.addEventListener('visibilitychange', this._onVisibilityChange);
@@ -1119,6 +1142,7 @@ export class DashboardRenderer {
         const agents = Array.from(this.world.agents.values());
         this._rememberStableOrder(agents);
         this._renderAttentionQueue(agents);
+        this._renderQuotaRail();
 
         if (agents.length === 0) {
             this._detailFetchGeneration++;
@@ -2379,7 +2403,6 @@ export class DashboardRenderer {
             provider: [...this._providerFilters].sort(),
             search: this._searchQuery,
             matches: this._searchMatches?.size ?? agents.length,
-            quota: quotaCardsSignature(this._latestUsage),
         });
         this.attentionEl.hidden = false;
         if (signature === this._controlsSignature) {
@@ -2493,9 +2516,8 @@ export class DashboardRenderer {
             Object.assign(document.createElement('span'), { textContent: '— unavailable' }),
         );
         legend.title = '≈ cost includes estimated usage (token counts x published rates); — no usage reported';
-        const quotaCards = [this._claudeLimitCard(), this._codexQuotaCard()].filter(Boolean);
-        replaceChildren(this.attentionEl, [heading, list, ...quotaCards, legend]);
-        this._attentionRefs = { heading, list, statusGroup, providerLabel, providerGroup, legend, quotaCards };
+        replaceChildren(this.attentionEl, [heading, list, legend]);
+        this._attentionRefs = { heading, list, statusGroup, providerLabel, providerGroup, legend };
         this._syncAttentionLayout();
         if (focusedKey) {
             [...this.attentionEl.querySelectorAll('[data-filter-key]')]
@@ -2507,6 +2529,8 @@ export class DashboardRenderer {
     // Shed the legend first when the tally bar runs tight, then stack the
     // provider chips cleanly below the status row instead of clipping them,
     // and publish the bar's height so sticky section headers stay aligned.
+    // Account limit cards live in `.dashboard-quota-rail`, so filter chips
+    // get the full width of `.dashboard-attention`.
     _syncAttentionLayout() {
         const bar = this.attentionEl;
         const refs = this._attentionRefs;
@@ -2514,7 +2538,7 @@ export class DashboardRenderer {
         const barWidth = Number(bar.clientWidth) || 0;
         if (barWidth <= 0) return;
 
-        const { heading, list, statusGroup, providerLabel, providerGroup, legend, quotaCards } = refs;
+        const { heading, list, statusGroup, providerLabel, providerGroup, legend, quotaCards = [] } = refs;
         const childWidth = (el) => {
             if (!el) return 0;
             return Math.ceil(el.getBoundingClientRect?.().width || el.offsetWidth || 0);
@@ -2557,15 +2581,116 @@ export class DashboardRenderer {
         this._setCustomProperty(this.gridEl?.parentElement, '--dash-attention-height', `${barHeight}px`);
     }
 
-    // The Codex account card in the tally bar: `CODEX WEEKLY ▮▮▮ 100% LIMIT` over
+    _ensureQuotaRail() {
+        if (this.quotaRailEl) return this.quotaRailEl;
+        const existing = typeof document !== 'undefined'
+            ? document.getElementById?.('dashboardQuotaRail')
+            : null;
+        if (existing) {
+            this.quotaRailEl = existing;
+            return existing;
+        }
+        if (typeof document === 'undefined' || typeof document.createElement !== 'function') return null;
+        const rail = document.createElement('section');
+        rail.id = 'dashboardQuotaRail';
+        rail.className = 'dashboard-quota-rail';
+        rail.setAttribute('aria-label', 'Account weekly limits');
+        rail.hidden = true;
+        const parent = this.attentionEl?.parentElement || this.gridEl?.parentElement || null;
+        if (this.attentionEl && typeof this.attentionEl.after === 'function' && parent) {
+            this.attentionEl.after(rail);
+        } else if (parent && typeof parent.insertBefore === 'function') {
+            const ref = this.gridEl && this.gridEl.parentElement === parent ? this.gridEl : null;
+            parent.insertBefore(rail, ref);
+        } else if (parent && typeof parent.appendChild === 'function') {
+            parent.appendChild(rail);
+        }
+        this.quotaRailEl = rail;
+        return rail;
+    }
+
+    _clearQuotaRailSubscriptions() {
+        if (!Array.isArray(this._quotaRailUnsubscribes)) return;
+        for (const unsub of this._quotaRailUnsubscribes) {
+            try { unsub(); } catch { /* ignore */ }
+        }
+        this._quotaRailUnsubscribes.length = 0;
+    }
+
+    _subscribeQuotaElapsed(node, formatter) {
+        const unsub = subscribeElapsedText(node, formatter);
+        if (Array.isArray(this._quotaRailUnsubscribes)) {
+            this._quotaRailUnsubscribes.push(unsub);
+        }
+        return unsub;
+    }
+
+    _quotaResetFact(part, resetsAtMs) {
+        const reset = part('dashboard-quota__fact');
+        reset.dataset.resetsAt = String(resetsAtMs);
+        this._subscribeQuotaElapsed(reset, now => formatResetCountdown(resetsAtMs, now));
+        return reset;
+    }
+
+    _quotaAgeFact(part, observedAtMs) {
+        const age = part('dashboard-quota__age');
+        age.dataset.observedAt = String(observedAtMs);
+        this._subscribeQuotaElapsed(age, now => `${formatWaitAge(Math.max(0, now - observedAtMs))} ago`);
+        return age;
+    }
+
+    _tickResetCountdowns(now = Date.now()) {
+        if (!this.quotaRailEl || typeof this.quotaRailEl.querySelectorAll !== 'function') return;
+        for (const node of this.quotaRailEl.querySelectorAll('[data-resets-at]')) {
+            const resetsAt = Number(node.dataset?.resetsAt);
+            if (!Number.isFinite(resetsAt) || resetsAt <= 0) continue;
+            const next = formatResetCountdown(resetsAt, now);
+            if (node.textContent !== next) node.textContent = next;
+        }
+        for (const node of this.quotaRailEl.querySelectorAll('[data-observed-at]')) {
+            const observedAt = Number(node.dataset?.observedAt);
+            if (!Number.isFinite(observedAt) || observedAt <= 0) continue;
+            const next = `${formatWaitAge(Math.max(0, now - observedAt))} ago`;
+            if (node.textContent !== next) node.textContent = next;
+        }
+    }
+
+    _renderQuotaRail(usage = this._latestUsage) {
+        const rail = this._ensureQuotaRail();
+        if (!rail) return;
+        const signature = JSON.stringify(quotaCardsSignature(usage));
+        if (signature === this._quotaRailSignature && rail._renderedOnce) return;
+        this._quotaRailSignature = signature;
+        rail._renderedOnce = true;
+
+        this._clearQuotaRailSubscriptions();
+        const cards = [
+            this._claudeLimitCard(usage),
+            this._codexQuotaCard(usage),
+            this._glmQuotaCard(usage),
+            this._antigravityQuotaCard(usage),
+        ].filter(Boolean);
+
+        if (cards.length === 0) {
+            replaceChildren(rail, []);
+            rail.hidden = true;
+            return;
+        }
+        replaceChildren(rail, cards);
+        rail.hidden = false;
+    }
+
+    // The Codex account card in the Quota Rail: `CODEX WEEKLY ▮▮▮ 100% LIMIT` over
     // `resets 5d12h · 2,510.33 credits · fell 31.83 in 1m · 3m ago`. Absent or null usage.codex
     // (an older server, or no rollout with rate_limits) shows nothing.
-    _codexQuotaCard() {
-        const facts = codexQuotaFacts(this._latestUsage?.codex);
+    _codexQuotaCard(usage = this._latestUsage) {
+        const facts = codexQuotaFacts(usage?.codex);
         if (!facts) return null;
         const part = (className, text = '') => Object.assign(document.createElement('span'), { className, textContent: text });
-        const card = part(`dashboard-quota${facts.limit ? ' dashboard-quota--limit' : ''}`);
-        card.title = 'Codex account quota from the newest rollout\'s rate limits. LIMIT means the account is at its window\'s limit '
+        const muted = facts.usedText === '—';
+        const card = part(`dashboard-quota dashboard-quota--codex${facts.limit ? ' dashboard-quota--limit' : ''}${muted ? ' dashboard-quota--muted' : ''}`);
+        card.dataset.provider = 'codex';
+        card.title = 'Codex account limits from the newest rollout\'s rate limits. LIMIT means the account is at its window\'s limit '
             + '(spending credits when it has them); Codex villagers keep their own status.';
         const provider = part('dashboard-quota__provider', providerPresentation('codex').badge.label.toUpperCase());
         provider.style.color = providerPresentation('codex').badge.color;
@@ -2574,46 +2699,126 @@ export class DashboardRenderer {
         const head = [provider, part('dashboard-quota__window', facts.windowLabel.toUpperCase()), gauge, part('dashboard-quota__used', facts.usedText)];
         if (facts.limit) head.push(part('dashboard-quota__word', bucketWord('quota', 'upper')));
         const facts2 = [];
-        if (facts.resetsAt) {
-            const reset = part('dashboard-quota__fact');
-            subscribeElapsedText(reset, now => `resets ${formatWaitAge(Math.max(0, facts.resetsAt - now))}`);
-            facts2.push(reset);
-        }
+        if (facts.resetsAt) facts2.push(this._quotaResetFact(part, facts.resetsAt));
         if (facts.credits) facts2.push(part('dashboard-quota__fact', facts.credits));
         if (facts.creditChange) facts2.push(part('dashboard-quota__fact', facts.creditChange));
-        if (facts.observedAt) {
-            const age = part('dashboard-quota__age');
-            subscribeElapsedText(age, now => `${formatWaitAge(Math.max(0, now - facts.observedAt))} ago`);
-            facts2.push(age);
-        }
+        if (facts.observedAt) facts2.push(this._quotaAgeFact(part, facts.observedAt));
         card.append(quotaRows(part, head, facts2));
         return card;
     }
 
-    // The Claude account's highest active limit (registry lane): `CLAUDE WEEKLY
-    // ▮▮▮ 68% WARNING` over `resets 2d`. Calm by default; a severity
-    // other than normal takes the card's one existing severity frame, worded
-    // with the reported severity, never LIMIT (Claude reports no enforcement).
-    _claudeLimitCard() {
-        const facts = quotaLimitFacts(this._latestUsage?.quota?.highestActiveLimit);
+    // The Claude account card in the Quota Rail: prefers `highestActiveLimit`,
+    // and falls back to `sevenDay` + `sevenDayResetsAt` (labeled `CLAUDE WEEKLY`,
+    // with 5h in the secondary line and tooltip) so Claude stays visible whenever
+    // weekly usage is live. Handles 401/429 gracefully without faking 0%.
+    _claudeLimitCard(usage = this._latestUsage) {
+        const facts = claudeQuotaFacts(usage);
         if (!facts) return null;
         const part = (className, text = '') => Object.assign(document.createElement('span'), { className, textContent: text });
-        const card = part(`dashboard-quota dashboard-quota--claude${facts.warn ? ' dashboard-quota--limit' : ''}`);
-        card.title = 'The Claude account limit with the highest reported percentage, with its kind, scope and severity. '
-            + 'Claude villagers keep their own status.';
+        const card = part(`dashboard-quota dashboard-quota--claude${facts.warn ? ' dashboard-quota--limit' : ''}${facts.muted ? ' dashboard-quota--muted' : ''}`);
+        card.dataset.provider = 'claude';
+        const tipParts = ['Claude account weekly usage'];
+        if (facts.used !== null) tipParts.push(`${facts.windowLabel} ${facts.usedText}`);
+        if (facts.fiveHourText) {
+            const fiveHourReset = facts.fiveHourResetsAt ? ` (${formatResetCountdown(facts.fiveHourResetsAt)})` : '';
+            tipParts.push(`${facts.fiveHourText}${fiveHourReset}`);
+        }
+        if (facts.errorStatus === 401) tipParts.push('stored token expired (401); run `claude` to refresh');
+        else if (facts.errorStatus === 429) tipParts.push('check throttled (429); backing off');
+        tipParts.push('Claude villagers keep their own status.');
+        card.title = tipParts.join(' · ');
+
         const provider = part('dashboard-quota__provider', providerPresentation('claude').badge.label.toUpperCase());
         provider.style.color = providerPresentation('claude').badge.color;
         const gauge = part('dashboard-quota__gauge');
-        const lit = Math.min(GAUGE_SEGMENTS, Math.round((Math.max(0, facts.used) / 100) * GAUGE_SEGMENTS));
-        for (let index = 0; index < GAUGE_SEGMENTS; index++) gauge.appendChild(part(index < lit ? 'on' : ''));
-        const head = [provider, part('dashboard-quota__window', facts.label.toUpperCase()), gauge, part('dashboard-quota__used', facts.usedText)];
-        if (facts.warn) head.push(part('dashboard-quota__word', facts.severity.toUpperCase()));
+        for (let index = 0; index < GAUGE_SEGMENTS; index++) gauge.appendChild(part(index < facts.lit ? 'on' : ''));
+        const head = [provider, part('dashboard-quota__window', facts.windowLabel.toUpperCase()), gauge, part('dashboard-quota__used', facts.usedText)];
+        if (facts.badgeWord) head.push(part('dashboard-quota__word', facts.badgeWord));
         const facts2 = [];
-        if (facts.resetsAt) {
-            const reset = part('dashboard-quota__fact');
-            subscribeElapsedText(reset, now => `resets ${formatWaitAge(Math.max(0, facts.resetsAt - now))}`);
-            facts2.push(reset);
+        if (facts.resetsAt) facts2.push(this._quotaResetFact(part, facts.resetsAt));
+        if (facts.fiveHourText) facts2.push(part('dashboard-quota__fact', facts.fiveHourText));
+        const errorText = formatQuotaErrorStatus(facts.errorStatus);
+        if (errorText) facts2.push(part('dashboard-quota__fact dashboard-quota__fact--error', errorText));
+        card.append(quotaRows(part, head, facts2));
+        return card;
+    }
+
+    // The GLM / z.AI account card in the Quota Rail: `GLM WEEKLY ▮▮▮ 42%` over
+    // `resets 3d4h · 5h 12% · max`. Styled with z.AI terracotta accent (#b36b51).
+    _glmQuotaCard(usage = this._latestUsage) {
+        const facts = glmQuotaFacts(usage?.glm);
+        if (!facts) return null;
+        const part = (className, text = '') => Object.assign(document.createElement('span'), { className, textContent: text });
+        const card = part(`dashboard-quota dashboard-quota--glm${facts.limit ? ' dashboard-quota--limit' : ''}${facts.muted ? ' dashboard-quota--muted' : ''}`);
+        card.dataset.provider = 'glm';
+        const tipParts = ['GLM (z.AI) Coding Plan limits'];
+        if (facts.plan) tipParts.push(`plan ${facts.plan}`);
+        if (facts.used !== null) tipParts.push(`${facts.windowLabel} ${facts.usedText}`);
+        if (facts.usedCredits !== null && facts.limitCredits !== null) {
+            tipParts.push(`${facts.usedCredits.toLocaleString('en-US', { maximumFractionDigits: 1 })} / ${facts.limitCredits.toLocaleString('en-US', { maximumFractionDigits: 1 })}`);
         }
+        if (facts.fiveHourText) {
+            const fiveHourReset = facts.fiveHourResetsAt ? ` (${formatResetCountdown(facts.fiveHourResetsAt)})` : '';
+            tipParts.push(`${facts.fiveHourText}${fiveHourReset}`);
+        }
+        const errorText = formatQuotaErrorStatus(facts.errorStatus);
+        if (errorText) tipParts.push(errorText);
+        card.title = tipParts.join(' · ');
+
+        const provider = part('dashboard-quota__provider', 'GLM');
+        provider.style.color = providerPresentation('zai').badge.color;
+        const gauge = part('dashboard-quota__gauge');
+        for (let index = 0; index < GAUGE_SEGMENTS; index++) gauge.appendChild(part(index < facts.lit ? 'on' : ''));
+        const head = [provider, part('dashboard-quota__window', facts.windowLabel.toUpperCase()), gauge, part('dashboard-quota__used', facts.usedText)];
+        if (facts.limit) head.push(part('dashboard-quota__word', bucketWord('quota', 'upper')));
+        const facts2 = [];
+        if (facts.resetsAt) facts2.push(this._quotaResetFact(part, facts.resetsAt));
+        if (facts.fiveHourText) facts2.push(part('dashboard-quota__fact', facts.fiveHourText));
+        if (facts.plan) facts2.push(part('dashboard-quota__fact', facts.plan));
+        if (errorText) facts2.push(part('dashboard-quota__fact dashboard-quota__fact--error', errorText));
+        card.append(quotaRows(part, head, facts2));
+        return card;
+    }
+
+    // The Antigravity account card in the Quota Rail: `ANTIGRAVITY WEEKLY ▮▮▮ 23%`
+    // (Gemini weekly primary) over `resets 6d9h · 3P shared 0% · 4m ago`, with
+    // both 5h windows in the hover tooltip. Styled with steel-indigo (#6c96c2).
+    _antigravityQuotaCard(usage = this._latestUsage) {
+        const facts = antigravityQuotaFacts(usage?.antigravity);
+        if (!facts) return null;
+        const part = (className, text = '') => Object.assign(document.createElement('span'), { className, textContent: text });
+        const card = part(`dashboard-quota dashboard-quota--antigravity${facts.limit ? ' dashboard-quota--limit' : ''}${facts.muted ? ' dashboard-quota--muted' : ''}`);
+        card.dataset.provider = 'antigravity';
+        const tipParts = ['Antigravity account limits'];
+        tipParts.push(`Gemini weekly ${facts.usedText}`);
+        if (facts.sharedWeeklyText) {
+            const sharedReset = facts.sharedWeeklyResetsAt ? ` (${formatResetCountdown(facts.sharedWeeklyResetsAt)})` : '';
+            tipParts.push(`${facts.sharedWeeklyText}${sharedReset}`);
+        }
+        if (facts.geminiFiveHourText) {
+            const reset = facts.geminiFiveHourResetsAt ? ` (${formatResetCountdown(facts.geminiFiveHourResetsAt)})` : '';
+            tipParts.push(`${facts.geminiFiveHourText}${reset}`);
+        }
+        if (facts.sharedFiveHourText) {
+            const reset = facts.sharedFiveHourResetsAt ? ` (${formatResetCountdown(facts.sharedFiveHourResetsAt)})` : '';
+            tipParts.push(`${facts.sharedFiveHourText}${reset}`);
+        }
+        if (facts.source) tipParts.push(`source ${facts.source}`);
+        const errorText = formatQuotaErrorStatus(facts.errorStatus);
+        if (errorText) tipParts.push(errorText);
+        card.title = tipParts.join(' · ');
+
+        const provider = part('dashboard-quota__provider', providerPresentation('antigravity').badge.label.toUpperCase());
+        provider.style.color = providerPresentation('antigravity').badge.color;
+        const gauge = part('dashboard-quota__gauge');
+        for (let index = 0; index < GAUGE_SEGMENTS; index++) gauge.appendChild(part(index < facts.lit ? 'on' : ''));
+        const head = [provider, part('dashboard-quota__window', facts.windowLabel.toUpperCase()), gauge, part('dashboard-quota__used', facts.usedText)];
+        if (facts.limit) head.push(part('dashboard-quota__word', bucketWord('quota', 'upper')));
+        const facts2 = [];
+        if (facts.resetsAt) facts2.push(this._quotaResetFact(part, facts.resetsAt));
+        if (facts.sharedWeeklyText) facts2.push(part('dashboard-quota__fact', facts.sharedWeeklyText));
+        if (errorText) facts2.push(part('dashboard-quota__fact dashboard-quota__fact--error', errorText));
+        if (facts.observedAt) facts2.push(this._quotaAgeFact(part, facts.observedAt));
         card.append(quotaRows(part, head, facts2));
         return card;
     }
@@ -3520,6 +3725,7 @@ export class DashboardRenderer {
         this.active = false;
         this._stopDetailFetching();
         this._stopTapeClock();
+        this._clearQuotaRailSubscriptions();
         for (const timer of this._flipTimers) clearTimeout(timer);
         this._flipTimers.clear();
         if (this._avatarDrawFrame !== null) {

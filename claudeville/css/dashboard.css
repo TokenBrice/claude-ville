@@ -1243,34 +1243,86 @@
     .dashboard__section--errored-flash .dashboard__section-header { animation: none; }
 }
 
-/* Codex quota card (tally bar): the account's window, its reset and its
-   credits. LIMIT (Q3) rims the card in the rate-limit orchid; a quota that
-   is merely high stays in ink. */
-/* Two lines inside the 40 px bar: the reading, then its facts. */
+/* ═══ 4-Provider Account Quota Rail (Claude, Codex, GLM, Antigravity) ═══
+   Dedicated compact strip below the tally bar so filter chips keep the full
+   width of `.dashboard-attention`. Hidden cleanly when all providers are null.
+   LIMIT (Q3) rims the card in the rate-limit orchid; normal usage stays quiet
+   with each provider's painted accent rule. */
+.dashboard-quota-rail {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 8px;
+    margin: 0 0 12px;
+}
+.dashboard-quota-rail[hidden] { display: none !important; }
+
 .dashboard-quota {
-    display: inline-flex;
-    flex: none;
+    --quota-accent: var(--ink-2);
+    display: flex;
     flex-direction: column;
     justify-content: center;
-    min-height: 24px;
-    padding: 1px 6px;
+    gap: 2px;
+    min-width: 0;
+    min-height: 36px;
+    padding: 4px 8px;
     border: 1px solid var(--line-1);
+    border-left: 2px solid var(--quota-accent);
+    background: var(--bg-1);
+    box-shadow: inset 0 1px 0 var(--line-2), 0 1px 0 var(--seam);
     color: var(--ink-2);
     font: var(--fs-body)/var(--lh-body) var(--font-body);
     white-space: nowrap;
 }
-.dashboard-quota--limit { border-color: color-mix(in srgb, var(--cv-status-rate-limited) 50%, transparent); }
+.dashboard-quota--claude { --quota-accent: #977bb5; }
+.dashboard-quota--codex { --quota-accent: #5ba49c; }
+.dashboard-quota--glm { --quota-accent: #b36b51; }
+.dashboard-quota--antigravity { --quota-accent: #6c96c2; }
+.dashboard-quota--limit {
+    --quota-accent: var(--cv-status-rate-limited);
+    border-color: color-mix(in srgb, var(--cv-status-rate-limited) 50%, transparent);
+    border-left-color: var(--cv-status-rate-limited);
+}
+.dashboard-quota--muted {
+    border-left-color: var(--line-2);
+}
+.dashboard-quota--muted .dashboard-quota__used { color: var(--ink-3); }
 .dashboard-quota__provider,
 .dashboard-quota__window,
-.dashboard-quota__word { font: var(--fs-label)/var(--lh-label) var(--font-display); letter-spacing: 1px; }
-.dashboard-quota__window { color: var(--ink-3); }
-.dashboard-quota__word { color: var(--cv-status-rate-limited); }
-.dashboard-quota__used { color: var(--ink-1); font-variant-numeric: tabular-nums; }
+.dashboard-quota__word { font: var(--fs-label)/var(--lh-label) var(--font-display); letter-spacing: 0.5px; }
+.dashboard-quota__provider { flex: none; }
+.dashboard-quota__window {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--ink-3);
+    text-overflow: ellipsis;
+}
+.dashboard-quota__word { flex: none; color: var(--cv-status-rate-limited); }
+.dashboard-quota__used { flex: none; color: var(--ink-1); font-variant-numeric: tabular-nums; }
 .dashboard-quota__fact,
 .dashboard-quota__age { color: var(--ink-3); }
-.dashboard-quota__head { display: flex; align-items: center; gap: 6px; height: 16px; }
-.dashboard-quota__facts > * + *::before { content: ' · '; }
-.dashboard-quota__gauge { display: inline-flex; gap: 1px; }
-.dashboard-quota__gauge > span { width: 3px; height: 8px; background: var(--line-2); }
-.dashboard-quota__gauge > span.on { background: var(--ink-2); }
+.dashboard-quota__fact--error { color: var(--cv-status-waiting); }
+.dashboard-quota__head {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    height: 16px;
+}
+.dashboard-quota__facts {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.dashboard-quota__facts > * + *::before { content: ' · '; color: var(--ink-4); }
+.dashboard-quota__gauge {
+    display: inline-flex;
+    flex: none;
+    gap: 1px;
+    margin-left: auto;
+}
+.dashboard-quota__gauge > span { width: 2px; height: 8px; background: var(--line-2); }
+.dashboard-quota__gauge > span.on { background: var(--quota-accent); }
 .dashboard-quota--limit .dashboard-quota__gauge > span.on { background: var(--cv-status-rate-limited); }

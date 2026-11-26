@@ -154,6 +154,249 @@ export function quotaLimitFacts(limit) {
     };
 }
 
+const QUOTA_GAUGE_SEGMENTS = 12;
+
+export function parseResetTimestamp(value) {
+    if (value === null || value === undefined || value === '') return null;
+    if (typeof value === 'number') {
+        if (!Number.isFinite(value) || value <= 0) return null;
+        return Math.round(value > 1e12 ? value : value * 1000);
+    }
+    if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (!trimmed) return null;
+        const asNumber = Number(trimmed);
+        if (Number.isFinite(asNumber)) {
+            return asNumber > 0 ? Math.round(asNumber > 1e12 ? asNumber : asNumber * 1000) : null;
+        }
+        const parsed = Date.parse(trimmed.replace(/(\.\d{3})\d+/, '$1'));
+        return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : null;
+    }
+    return null;
+}
+
+export function formatResetCountdown(resetsAt, now = Date.now()) {
+    const ms = parseResetTimestamp(resetsAt);
+    if (ms === null) return '';
+    return `resets ${formatWaitAge(Math.max(0, ms - now))}`;
+}
+
+export function formatQuotaErrorStatus(status) {
+    const code = Number(status);
+    if (code === 401) return 'auth expired (401)';
+    if (code === 403) return 'auth rejected (403)';
+    if (code === 429) return 'throttled (429)';
+    return '';
+}
+
+function finiteNumberOrNull(value) {
+    if (value === null || value === undefined || value === '') return null;
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+}
+
+function clampQuotaPercent(value) {
+    const numeric = finiteNumberOrNull(value);
+    if (numeric === null) return null;
+    return Math.min(100, Math.max(0, numeric));
+}
+
+function quotaGaugeLit(percent) {
+    if (percent === null) return 0;
+    return Math.min(QUOTA_GAUGE_SEGMENTS, Math.round((Math.max(0, percent) / 100) * QUOTA_GAUGE_SEGMENTS));
+}
+
+function liveWindowFacts(window, now) {
+    if (!window || typeof window !== 'object') return null;
+    const usedPercent = clampQuotaPercent(window.usedPercent);
+    if (usedPercent === null) return null;
+    const resetsAt = parseResetTimestamp(window.resetsAt);
+    if (resetsAt !== null && resetsAt <= now) return null;
+    return {
+        usedPercent,
+        resetsAt,
+        used: finiteNumberOrNull(window.used),
+        limit: finiteNumberOrNull(window.limit),
+        remaining: finiteNumberOrNull(window.remaining),
+        label: typeof window.label === 'string' ? window.label : '',
+    };
+}
+
+/**
+ * Normalize `/api/usage` Claude account limits for the Dashboard Quota Rail.
+ * Prefers `quota.highestActiveLimit` when active and unexpired, and falls back
+ * to `quota.sevenDay` (+ `sevenDayResetsAt`, with 5h in secondary facts) so
+ * Claude's weekly usage stays visible even when no active limit entry is flagged.
+ */
+export function claudeQuotaFacts(usage, now = Date.now()) {
+    if (!usage || typeof usage !== 'object') return null;
+    const quota = usage.quota && typeof usage.quota === 'object' ? usage.quota : null;
+    const available = usage.quotaAvailable !== false;
+    const errorStatus = Number(usage.quotaError?.status) || null;
+
+    const fiveHourResetsAt = parseResetTimestamp(quota?.fiveHourResetsAt);
+    const fiveHourRatio = available && !(fiveHourResetsAt !== null && fiveHourResetsAt <= now)
+        ? finiteNumberOrNull(quota?.fiveHour)
+        : null;
+    const fiveHourPct = fiveHourRatio !== null ? Math.min(100, Math.max(0, fiveHourRatio * 100)) : null;
+
+    const sevenDayResetsAt = parseResetTimestamp(quota?.sevenDayResetsAt);
+    const sevenDayRatio = available && !(sevenDayResetsAt !== null && sevenDayResetsAt <= now)
+        ? finiteNumberOrNull(quota?.sevenDay)
+        : null;
+    const sevenDayPct = sevenDayRatio !== null ? Math.min(100, Math.max(0, sevenDayRatio * 100)) : null;
+
+    const activeRaw = available ? quotaLimitFacts(quota?.highestActiveLimit) : null;
+    const active = activeRaw && !(activeRaw.resetsAt !== null && activeRaw.resetsAt <= now) ? activeRaw : null;
+
+    if (active) {
+        const isSession = quota?.highestActiveLimit?.kind === 'session';
+        return {
+            source: 'active-limit',
+            windowLabel: active.label,
+            used: active.used,
+            usedText: active.usedText,
+            lit: quotaGaugeLit(active.used),
+            resetsAt: active.resetsAt && active.resetsAt > now ? active.resetsAt : null,
+            warn: active.warn || active.used >= 100,
+            badgeWord: active.warn ? active.severity.toUpperCase() : (active.used >= 100 ? 'LIMIT' : ''),
+            fiveHourText: !isSession && fiveHourPct !== null ? `5h ${Math.round(fiveHourPct)}%` : '',
+            fiveHourResetsAt: !isSession && fiveHourPct !== null && fiveHourResetsAt > now ? fiveHourResetsAt : null,
+            errorStatus,
+            muted: false,
+        };
+    }
+
+    if (sevenDayPct !== null) {
+        return {
+            source: 'seven-day',
+            windowLabel: 'weekly',
+            used: sevenDayPct,
+            usedText: `${Math.round(sevenDayPct)}%`,
+            lit: quotaGaugeLit(sevenDayPct),
+            resetsAt: sevenDayResetsAt && sevenDayResetsAt > now ? sevenDayResetsAt : null,
+            warn: sevenDayPct >= 100,
+            badgeWord: sevenDayPct >= 100 ? 'LIMIT' : '',
+            fiveHourText: fiveHourPct !== null ? `5h ${Math.round(fiveHourPct)}%` : '',
+            fiveHourResetsAt: fiveHourPct !== null && fiveHourResetsAt > now ? fiveHourResetsAt : null,
+            errorStatus,
+            muted: false,
+        };
+    }
+
+    if (fiveHourPct !== null) {
+        return {
+            source: 'five-hour',
+            windowLabel: '5h',
+            used: fiveHourPct,
+            usedText: `${Math.round(fiveHourPct)}%`,
+            lit: quotaGaugeLit(fiveHourPct),
+            resetsAt: fiveHourResetsAt && fiveHourResetsAt > now ? fiveHourResetsAt : null,
+            warn: fiveHourPct >= 100,
+            badgeWord: fiveHourPct >= 100 ? 'LIMIT' : '',
+            fiveHourText: '',
+            fiveHourResetsAt: null,
+            errorStatus,
+            muted: false,
+        };
+    }
+
+    if (errorStatus === 401 || errorStatus === 403 || errorStatus === 429) {
+        return {
+            source: 'error',
+            windowLabel: 'weekly',
+            used: null,
+            usedText: '—',
+            lit: 0,
+            resetsAt: null,
+            warn: false,
+            badgeWord: '',
+            fiveHourText: '',
+            fiveHourResetsAt: null,
+            errorStatus,
+            muted: true,
+        };
+    }
+
+    return null;
+}
+
+/**
+ * Normalize `/api/usage.glm` for the Dashboard Quota Rail.
+ */
+export function glmQuotaFacts(glm, now = Date.now()) {
+    if (!glm || typeof glm !== 'object') return null;
+    const weekly = liveWindowFacts(glm.weekly, now);
+    const fiveHour = liveWindowFacts(glm.fiveHour, now);
+    const errorStatus = Number(glm.error?.status) || null;
+    const plan = typeof glm.plan === 'string' && glm.plan.trim() ? glm.plan.trim() : '';
+    const observedAt = parseResetTimestamp(glm.observedAt);
+
+    if (!weekly && !fiveHour && !errorStatus && !observedAt) return null;
+
+    const primary = weekly || fiveHour;
+    const used = primary ? primary.usedPercent : null;
+    return {
+        windowLabel: weekly ? 'weekly' : (fiveHour ? '5h' : 'weekly'),
+        used,
+        usedText: used === null ? '—' : `${Math.round(used)}%`,
+        lit: quotaGaugeLit(used),
+        limit: used !== null && used >= 100,
+        resetsAt: primary?.resetsAt && primary.resetsAt > now ? primary.resetsAt : null,
+        fiveHourText: weekly && fiveHour ? `5h ${Math.round(fiveHour.usedPercent)}%` : '',
+        fiveHourResetsAt: fiveHour?.resetsAt && fiveHour.resetsAt > now ? fiveHour.resetsAt : null,
+        usedCredits: primary?.used ?? null,
+        limitCredits: primary?.limit ?? null,
+        remainingCredits: primary?.remaining ?? null,
+        plan,
+        observedAt,
+        errorStatus,
+        muted: used === null || errorStatus === 401 || errorStatus === 403,
+    };
+}
+
+/**
+ * Normalize `/api/usage.antigravity` for the Dashboard Quota Rail.
+ * Primary gauge tracks Gemini Weekly; 3P shared Weekly rides in the subline,
+ * and both 5h windows surface on hover.
+ */
+export function antigravityQuotaFacts(antigravity, now = Date.now()) {
+    if (!antigravity || typeof antigravity !== 'object') return null;
+    const geminiWeekly = liveWindowFacts(antigravity.geminiWeekly, now);
+    const geminiFiveHour = liveWindowFacts(antigravity.geminiFiveHour, now);
+    const sharedWeekly = liveWindowFacts(antigravity.sharedWeekly, now);
+    const sharedFiveHour = liveWindowFacts(antigravity.sharedFiveHour, now);
+    const errorStatus = Number(antigravity.error?.status) || null;
+    const observedAt = parseResetTimestamp(antigravity.observedAt);
+    const source = typeof antigravity.source === 'string' ? antigravity.source : '';
+
+    if (!geminiWeekly && !geminiFiveHour && !sharedWeekly && !sharedFiveHour && !errorStatus && !observedAt) {
+        return null;
+    }
+
+    const used = geminiWeekly ? geminiWeekly.usedPercent : null;
+    const sharedUsed = sharedWeekly ? sharedWeekly.usedPercent : null;
+    return {
+        windowLabel: 'weekly',
+        used,
+        usedText: used === null ? '—' : `${Math.round(used)}%`,
+        lit: quotaGaugeLit(used),
+        limit: (used !== null && used >= 100) || (sharedUsed !== null && sharedUsed >= 100),
+        resetsAt: geminiWeekly?.resetsAt && geminiWeekly.resetsAt > now ? geminiWeekly.resetsAt : null,
+        sharedWeeklyUsed: sharedUsed,
+        sharedWeeklyText: sharedUsed !== null ? `3P shared ${Math.round(sharedUsed)}%` : '',
+        sharedWeeklyResetsAt: sharedWeekly?.resetsAt && sharedWeekly.resetsAt > now ? sharedWeekly.resetsAt : null,
+        geminiFiveHourText: geminiFiveHour ? `Gemini 5h ${Math.round(geminiFiveHour.usedPercent)}%` : '',
+        geminiFiveHourResetsAt: geminiFiveHour?.resetsAt && geminiFiveHour.resetsAt > now ? geminiFiveHour.resetsAt : null,
+        sharedFiveHourText: sharedFiveHour ? `3P 5h ${Math.round(sharedFiveHour.usedPercent)}%` : '',
+        sharedFiveHourResetsAt: sharedFiveHour?.resetsAt && sharedFiveHour.resetsAt > now ? sharedFiveHour.resetsAt : null,
+        source,
+        observedAt,
+        errorStatus,
+        muted: used === null || errorStatus === 401 || errorStatus === 403,
+    };
+}
+
 export function workingSetForAgent(agent) {
     return Array.isArray(agent?.workingSet) ? agent.workingSet.slice(0, 16) : [];
 }
