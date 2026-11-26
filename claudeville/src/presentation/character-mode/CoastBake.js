@@ -3735,11 +3735,7 @@ const FRESNEL_KEY_UNIT = 1 << 27;
  * rows on the 4x4 Bayer order. Pure, world-anchored (pans never swim).
  */
 export function seaFresnelCourseAt(x, y) {
-    const yb = y + (bayer(x, y) - 0.5) * 4;
-    for (let b = 0; b < SEA_FRESNEL_Y.length; b++) {
-        if (yb < SEA_FRESNEL_Y[b] + seaBandBend(x, SEA_FRESNEL_BANDS[b])) return b;
-    }
-    return SEA_FRESNEL_NEAR;
+    return CanvasGrade.seaFresnelCourse(x, y, seaBandBend);
 }
 
 /**
@@ -3759,16 +3755,20 @@ export function seaFresnelMoods(mood, grade) {
     const far = colourTo01(grade.seaFar || grade.skyHorizon);
     if (!(gate > 0) || !far) return null;
     const seaFar = far.map(q);
-    const sky = Array.isArray(mood?.sky) ? mood.sky : [0, 0, 0];
+    const base = { sky: mood?.sky || [0, 0, 0], skyWeight: mood?.skyWeight || 0 };
     const moods = [];
     for (let c = 0; c < SEA_FRESNEL_NEAR; c++) {
-        moods.push({
-            ...mood,
-            sky: sky.map((channel, i) => q(channel + (seaFar[i] - channel) * SEA_FRESNEL_FAR[c])),
-            skyWeight: q(Math.max(Number(mood?.skyWeight) || 0, SEA_FRESNEL_WEIGHT[c] * gate)),
-        });
+        const { sky, skyWeight } = CanvasGrade.seaCourseSky(base, seaFar, gate, c);
+        moods.push({ ...mood, sky: sky.map(q), skyWeight: q(skyWeight) });
     }
     return { moods, gate, seaFar, key: `f${gate}:${seaFar.join(',')}` };
+}
+
+// Both bakes must swap courses together when the horizon or the night gate changes.
+function fresnelKey(mood, grade) {
+    if (!(grade?.seaFresnelGate > 0)) return '';
+    const glow = grade.afterglow > 0 ? `:a${grade.afterglow}` : '';
+    return `f${Math.round(grade.seaFresnelGate * 256)}:${grade.seaFar ?? grade.skyHorizon}:${waterMoodKey(mood)}${glow}`;
 }
 
 /** The Canvas rebake key of a `waterMoodFor` result. */
@@ -3960,8 +3960,8 @@ function drawCanvasMoodLayer(ctx, renderer, atmosphere) {
     const drop = mirrorStormDrop(atmosphere?.weather, atmosphere);
     const seaLift = seaSunLift(lookStrength('sea1'), grade, atmosphere?.weather, atmosphere?.sky?.sun?.elevationDeg);
     // W2 OA-W4 — the sea's Fresnel courses (none at night: bit-exact).
-    const fresnel = seaFresnelMoods(mood, grade);
-    const moodKey = `${waterMoodKey(mood)}:${sunBand}:${drop}:${seaLift}${fresnel ? `:${fresnel.key}` : ''}`;
+    const fresnel = fresnelKey(mood, grade);
+    const moodKey = `${waterMoodKey(mood)}:${sunBand}:${drop}:${seaLift}:${fresnel}`;
     const now = performance.now();
     const due = layer.moodKey !== moodKey || !(now - layer.bakedAt < OCEAN_REBAKE_MIN_MS);
     if (due && (layer.moodKey !== moodKey || layer.gradeKey !== gradeKey)) {
@@ -3999,7 +3999,7 @@ function drawCanvasMoodLayer(ctx, renderer, atmosphere) {
         };
         const fScale = foamNightScale(mood);
         const sScale = 1 + (DRY_SAND_NIGHT_SCALE - 1) * (mood?.night || 0);
-        const preimage = (rgb, mood) => CanvasGrade.canvasWaterPreimage(rgb, grade, { postFx, sky: mood });
+        const preimage = (rgb, course) => CanvasGrade.canvasWaterPreimage(rgb, grade, { postFx, sky: mood, course });
         // A texel's memo key: its colour (with the flag bits), plus its
         // Fresnel course above them while the courses are on.
         const keyAt = fresnel
@@ -4020,10 +4020,8 @@ function drawCanvasMoodLayer(ctx, renderer, atmosphere) {
             } else {
                 const baseRgb = (colour & FOAM_MARK) ? rawRgb.map(v => v * fScale) : rawRgb;
                 rgb = waterSurfaceRgb(baseRgb, mood, sunBand);
-                // W2 OA-W4 — a far-sea course's water mood (the same night and
-                // storm, its own sky and weight), else the layer's own.
                 const course = Math.floor(key / FRESNEL_KEY_UNIT) - 1;
-                if (!(colour & MIRROR_UNCAPPED)) rgb = preimage(rgb, course >= 0 ? fresnel.moods[course] : mood);
+                if (!(colour & MIRROR_UNCAPPED)) rgb = preimage(rgb, course >= 0 ? course : SEA_FRESNEL_NEAR);
             }
             const out = (Math.round(rgb[0] * 255) << 16) | (Math.round(rgb[1] * 255) << 8) | Math.round(rgb[2] * 255);
             memo.set(key, out);
@@ -4429,13 +4427,12 @@ export function openSeaSquall(weather, motionTimeMs = 0) {
 // capped graded water (the same surface + preimage as the Canvas water mood
 // layer), and the sky colours' preimage; `graded` keeps the finished colours
 // the band and haze courses mix, as the resident composite mixes them.
-function oceanPalette(atmosphere, postFx) {
-    const mood = waterMoodFor(atmosphere);
+function oceanPalette(atmosphere, postFx, mood, course) {
     const grade = atmosphere?.lightGrade || null;
     const sunBand = waterSunBandFor(atmosphere);
     const pre = [...OPEN_SEA_STOPS, SEA_TROUGH, FOAM_CREST].map((rgb) => {
         const c = waterSurfaceRgb(rgb.map(channel => channel / 255), mood, sunBand);
-        return grade ? CanvasGrade.canvasWaterPreimage(c, grade, { postFx, sky: mood }) : c;
+        return grade ? CanvasGrade.canvasWaterPreimage(c, grade, { postFx, sky: mood, course }) : c;
     });
     const sky = openSeaSky(atmosphere);
     const preimage = rgb => (grade ? CanvasGrade.canvasFramePreimage(rgb, grade, { postFx }) : rgb);
@@ -4471,14 +4468,19 @@ export function canvasGlint(atmosphere) {
 }
 
 function oceanKey(atmosphere, postFx) {
-    const palette = oceanPalette(atmosphere, postFx);
+    const mood = waterMoodFor(atmosphere);
+    const fresnel = fresnelKey(mood, atmosphere?.lightGrade);
+    const palette = oceanPalette(atmosphere, postFx, mood, SEA_FRESNEL_NEAR);
     const q = rgb => rgb.map(channel => channel >> 2).join('.');
     const hazeRows = openSeaHazeRows(atmosphere?.weather?.fog);
     return {
         palette,
+        fresnel,
+        coursePalettes: [],
+        paletteFor: course => oceanPalette(atmosphere, postFx, mood, course),
         hazeRows,
         shades: new Map(),
-        key: `${postFx ? 'p' : 'c'}|${palette.water.map(q).join(',')}|${q(palette.haze)}|${q(palette.horizon)}|${hazeRows}`,
+        key: `${postFx ? 'p' : 'c'}|${palette.water.map(q).join(',')}|${q(palette.haze)}|${q(palette.horizon)}|${hazeRows}|${fresnel}`,
     };
 }
 
@@ -4542,12 +4544,13 @@ function bandCourseAt(spec, x, j, order) {
 // band mixes the sky's horizon colour in (held at HSL L <= 0.70), a marked
 // texel (a cap, a crest) taking OPEN_SEA_BAND_MARK_LIFT more of it, then the
 // haze courses; painted as the frame preimage. Memoized per bake.
-function seaShade(spec, stop, bk, hk, marked) {
+function seaShade(spec, stop, bk, hk, marked, course) {
     const s = stop === 'crest' ? OPEN_SEA_STOPS.length + 1 : Math.max(0, Math.min(OPEN_SEA_STOPS.length, stop));
-    const key = ((s * 8 + bk) * 4 + hk) * 2 + (marked ? 1 : 0);
+    const key = (((s * 8 + bk) * 4 + hk) * 2 + (marked ? 1 : 0)) * 4 + course;
     let out = spec.shades.get(key);
     if (out) return out;
-    const { graded, preimage, water } = spec.palette;
+    const { graded, preimage, water } = course === SEA_FRESNEL_NEAR ? spec.palette
+        : (spec.coursePalettes[course] ||= spec.paletteFor(course));
     let w = OPEN_SEA_BAND_WEIGHTS[bk] ?? 0;
     if (marked && w > 0) w += OPEN_SEA_BAND_MARK_LIFT;
     const h = OPEN_SEA_HAZE_WEIGHTS[hk] ?? 0;
@@ -4574,11 +4577,13 @@ function seaShade(spec, stop, bk, hk, marked) {
 function canvasSeaTexel(i, j, spec) {
     const order = bayer(i, j);
     const stop = openSeaStopAt(openSeaDepthAt(i, OCEAN_HORIZON_WORLD_Y + j), order);
-    return seaShade(spec, stop, bandCourseAt(spec, i, j, order), hazeCourse(j, spec.hazeRows, order), false);
+    const course = spec.fresnel ? seaFresnelCourseAt(i, OCEAN_HORIZON_WORLD_Y + j) : SEA_FRESNEL_NEAR;
+    return seaShade(spec, stop, bandCourseAt(spec, i, j, order), hazeCourse(j, spec.hazeRows, order), false, course);
 }
 
 function stripRowsFor(spec) {
-    return Math.max(OPEN_SEA_LIGHT_REACH + SEA_SEAM_ROWS, spec.hazeRows + OPEN_SEA_BAND_DEPTH + CANVAS_BAND_CONTOUR_ROWS) + 4;
+    const rows = Math.max(OPEN_SEA_LIGHT_REACH + SEA_SEAM_ROWS, spec.hazeRows + OPEN_SEA_BAND_DEPTH + CANVAS_BAND_CONTOUR_ROWS) + 4;
+    return spec.fresnel ? Math.max(rows, SEA_FRESNEL_Y[2] + 16 - OCEAN_HORIZON_WORLD_Y) : rows;
 }
 
 // The horizon strip: every row whose stop or sky mix still varies, one seam
@@ -4650,7 +4655,8 @@ export function drawOuterOcean(ctx, renderer, atmosphere, { gpuGraded = false } 
     const postFx = renderer?.postFx?.isActive?.() === true;
     const spec = oceanKey(atmosphere, postFx);
     const weatherKey = `${atmosphere?.weather?.type || 'clear'}|${postFx}`;
-    const due = now - state.bakedAt >= OCEAN_REBAKE_MIN_MS || state.weatherKey !== weatherKey;
+    const due = now - state.bakedAt >= OCEAN_REBAKE_MIN_MS || state.weatherKey !== weatherKey
+        || state.spec?.fresnel !== spec.fresnel;
     if (!state.strip || (state.key !== spec.key && due)) {
         const started = performance.now();
         bakeCanvasSea(state, spec);
@@ -4679,18 +4685,19 @@ export function canvasSeaKey(renderer) {
  * `stop = 'crest'` selects the named FOAM_CREST for sparse night starlight,
  * through the same water grade, band and haze as numeric depth stops.
  */
-export function canvasSeaMarkRgb(renderer, stop, x, y, marked) {
+export function canvasSeaMarkRgb(renderer, stop, x, y, marked, outer = true) {
     const state = renderer?._outerOcean;
     const spec = state?.spec;
     if (!spec) return -1;
     const j = y - OCEAN_HORIZON_WORLD_Y;
     let bk = OPEN_SEA_BAND_WEIGHTS.length;
     let hk = OPEN_SEA_HAZE_WEIGHTS.length;
-    if (j < state.stripRows) {
+    if (outer && j < state.stripRows) {
         const order = bayer(x, j);
         bk = bandCourseAt(spec, x, j, order);
         hk = hazeCourse(j, spec.hazeRows, order);
     }
-    const rgb = seaShade(spec, stop, bk, hk, marked);
+    const course = spec.fresnel ? seaFresnelCourseAt(x, y) : SEA_FRESNEL_NEAR;
+    const rgb = seaShade(spec, stop, bk, hk, marked, course);
     return (rgb[0] << 16) | (rgb[1] << 8) | rgb[2];
 }

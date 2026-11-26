@@ -664,6 +664,7 @@ fn sceneSurface() -> SurfaceSample {
     unlitPane = authoredEmission.a > 0.0 && v_gate == 0.0 && v_emissive == 0.0;
     emissive = authoredEmission.a * 2.0 * clamp(v_gate, 0.0, 1.0);
   } else if (batch.hasMaterialMap != 0u) {
+    unlitPane = !packedMap && sidecar.b > 0.5 && v_gate == 0.0 && v_emissive == 0.0;
     // A material map without an authored emissive channel is non-emissive.
     emissionColor = vec3f(0.0);
     emissive = 0.0;

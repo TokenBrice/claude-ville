@@ -312,7 +312,7 @@ fn fresnelCourse(cell: vec2f) -> i32 {
 }
 fn applyWaterSky(baseColor: vec3f, course: i32) -> vec3f {
     if (course == 3) { return applyFlatWaterSky(baseColor); }
-    let color = capSaturation(baseColor, waterMaxSat());
+    let color = capSaturation(baseColor, mix(waterMaxSat(), 0.28, frame.faceExtra.w * SEA_FRESNEL_FAR[course]));
     let weight = max(frame.waterSky.w, SEA_FRESNEL_WEIGHT[course] * frame.skyFar.w);
     let sky = mix(frame.waterSky.rgb, frame.skyFar.rgb, SEA_FRESNEL_FAR[course]);
     let y = dot(color, GRADE_LUMA);

@@ -131,6 +131,27 @@ export function nightLitStep(gate) {
     return Math.round(lit * NIGHT_ROOM_GLASS_STEPS) / NIGHT_ROOM_GLASS_STEPS;
 }
 
+// Hall glass is always dark. A room starts lighting before its painted quarter-step changes.
+export function roomGlintMask(buildings, type, glass) {
+    const map = glass && buildings?.roomGlass?.map(type);
+    if (!map?.emissive) return null;
+    const groups = Array.from({ length: map.rooms + 1 }, (_, group) =>
+        group === 0 || buildings.roomGlassGate(type, group - 1) === 0 ? '1' : '0').join('');
+    if (map.glintMask?.key === groups) return map.glintMask;
+    const data = new Uint8Array(map.w * map.h);
+    for (let y = 0; y < map.h; y++) {
+        for (let x = 0; x < map.w; x++) {
+            const i = y * map.w + x;
+            if (groups[map.group[i]] === '1') {
+                data[i] = map.emissive[((map.top + y) * map.spriteWidth + map.left + x) * 4 + 3];
+            }
+        }
+    }
+    const mask = { data, key: groups, map };
+    map.glintMask = mask;
+    return mask;
+}
+
 export class RoomGlass {
     constructor(assets) {
         this.assets = assets;
@@ -184,6 +205,8 @@ export class RoomGlass {
                     material: this._crop(this.assets.getCompanion?.(id, 'material'), map),
                     occluder: this._crop(this.assets.getCompanion?.(id, 'occluder'), map),
                 };
+                const material = map.channels.material;
+                if (material) map.materialPixels = material.getContext('2d').getImageData(0, 0, map.w, map.h);
             }
             this._maps.set(type, map);
         });

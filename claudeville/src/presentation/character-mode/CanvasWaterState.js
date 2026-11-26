@@ -1262,6 +1262,22 @@ function resolveFx(renderer, atmosphere) {
 // ---------------------------------------------------------------------------
 // The step overlay.
 
+// The lift, swell body and crest must land on the same course as the bed they replace.
+function swellColour(renderer, base, palette, flags, stop, x, y, marked) {
+    const ocean = renderer._outerOcean;
+    const outside = (flags & SEA_OPEN_SEA) !== 0;
+    if (!ocean || y - OCEAN_HORIZON_WORLD_Y >= ocean.stripRows) return palette.stops[stop];
+    if (!outside) {
+        if (!ocean.spec?.fresnel) return palette.stops[stop];
+        const c = Math.floor((x - base.fx) / 2);
+        const r = Math.floor((y - base.fy) / 2);
+        if (c < 0 || r < 0 || c >= base.cols || r >= base.rows
+            || !(base.coastField[(r * base.cols + c) * 2 + 1] & COAST_FIELD_FLAGS.sea)) return palette.stops[stop];
+    }
+    const rgb = canvasSeaMarkRgb(renderer, stop, x, y, marked, outside);
+    return rgb < 0 ? palette.stops[stop] : (0xff000000 | ((rgb & 255) << 16) | (rgb & 0xff00) | (rgb >> 16)) >>> 0;
+}
+
 // `sea`: the frame's cap chunks (`caps`), the sunlit tile and its offset
 // (`sun`, null when off) and the gust field (`gust`, null in calm air).
 function rebuildOverlay(state, base, fx, palette, rect, renderer, sea) {
@@ -1328,11 +1344,7 @@ function rebuildOverlay(state, base, fx, palette, rect, renderer, sea) {
     // band and haze course, the in-map water's stop.
     const markColour = (v, x, y, lighter) => {
         const s = Math.max(0, (v & 7) - lighter);
-        if (v & SEA_OPEN_SEA) {
-            const c = canvasSeaMarkRgb(renderer, s, x, y, true);
-            if (c >= 0) return ((255 << 24) | ((c & 255) << 16) | (c & 0xff00) | (c >> 16)) >>> 0;
-        }
-        return palette.stops[s];
+        return swellColour(renderer, base, palette, v, s, x, y, true);
     };
     // 3.7 — the reflection row ripple (on the water clock only).
     if (clock > 0) {
@@ -1820,14 +1832,7 @@ function chunkSeaCanvas(state, chunk, cx, cy, palette, key, renderer, lift) {
         const v = info[idx];
         const ly = (idx / CHUNK_W) | 0;
         const y = Y0 + ly;
-        if ((v & SEA_OPEN_SEA) && y - OCEAN_HORIZON_WORLD_Y < SEA_FLAT_ROWS + 8) {
-            const c = canvasSeaMarkRgb(renderer, stop, X0 + idx - ly * CHUNK_W, y, false);
-            if (c >= 0) {
-                u32[idx] = ((255 << 24) | ((c & 255) << 16) | (c & 0xff00) | (c >> 16)) >>> 0;
-                return;
-            }
-        }
-        u32[idx] = palette.stops[stop];
+        u32[idx] = swellColour(renderer, state.base, palette, v, stop, X0 + idx - ly * CHUNK_W, y, false);
     };
     if (lift) {
         // SEA-1 — `lift` is the sun ({ lift, floor }): its stops, floored.

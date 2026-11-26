@@ -1147,7 +1147,7 @@ int fresnelCourse(vec2 cell) {
 }
 vec3 applyWaterSky(vec3 baseColor, int course) {
     if (course == 3) { return applyFlatWaterSky(baseColor); }
-    vec3 color = capSaturation(baseColor, waterMaxSat());
+    vec3 color = capSaturation(baseColor, mix(waterMaxSat(), 0.28, u_faceExtra.w * SEA_FRESNEL_FAR[course]));
     float weight = max(u_waterSky.w, SEA_FRESNEL_WEIGHT[course] * u_skyFar.w);
     vec3 sky = mix(u_waterSky.rgb, u_skyFar.rgb, SEA_FRESNEL_FAR[course]);
     float y = dot(color, GRADE_LUMA);
@@ -2639,6 +2639,7 @@ void main() {
         unlitPane = authoredEmission.a > 0.0 && v_gate == 0.0 && v_emissive == 0.0;
         emissive = authoredEmission.a * 2.0 * clamp(v_gate, 0.0, 1.0);
     } else if (u_hasMaterialMap) {
+        unlitPane = !packedMap && sidecar.b > 0.5 && v_gate == 0.0 && v_emissive == 0.0;
         // A material map without an authored emissive channel is explicitly
         // non-emissive; never infer a glow from its albedo pixels.
         emissionColor = vec3(0.0);

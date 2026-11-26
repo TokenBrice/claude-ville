@@ -23,6 +23,7 @@ import { GROUND_CLASS, paintGroundMaterial } from '../GroundBake.js';
 import { castLightingFor, frameShadeLayer, stampCastFor, structureCast, treeCast, TREE_CAST_ALPHA } from '../RakingLight.js';
 import { shadeSelfProp } from '../ShadeField.js';
 import { cacheEmitterRecords } from '../EmitterCuts.js';
+import { roomGlintMask } from '../RoomGlass.js';
 import { IDLE_FRAMES, WALK_FRAMES } from '../SpriteSheet.js';
 
 const PILOT_PROP_IDS = Object.freeze(['prop.lantern', 'prop.plazaBrazier', 'prop.plazaBrazier.lit', 'prop.bridgeLanternPost']);
@@ -871,34 +872,13 @@ function forgeWorkloadRecord(renderer, drawable, record, spriteLeft, col, horizo
 // each dark room's own unlit albedo drawn on the same texels right after the
 // landmark, with no emissive channel, so an unoccupied room — and every pane
 // by day (M15) — shows unlit slate glass instead of the lit sidecar.
-const glassGlintMasks = new WeakMap();
-
-function unlitPaneMask(buildings, type, patch) {
-    const map = buildings.roomGlass?.map?.(type);
-    if (!map?.emissive) return null;
-    // A room gate can cross zero within the same quarter-step of painted glass.
-    const unlit = Array.from({ length: map.rooms + 1 }, (_, group) =>
-        Number(group === 0 || buildings.roomGlassGate(type, group - 1) === 0));
-    const key = unlit.join('');
-    const cached = glassGlintMasks.get(patch);
-    if (cached?.key === key) return cached;
-    const canvas = cached?.canvas || document.createElement('canvas');
-    canvas.width = map.w;
-    canvas.height = map.h;
-    const ctx = canvas.getContext('2d');
-    const image = ctx.createImageData(map.w, map.h);
-    for (let y = 0; y < map.h; y++) {
-        for (let x = 0; x < map.w; x++) {
-            const pixel = y * map.w + x;
-            if (unlit[map.group[pixel]]) {
-                image.data[pixel * 4 + 3] = map.emissive[((y + map.top) * map.spriteWidth + map.left + x) * 4 + 3];
-            }
-        }
-    }
-    ctx.putImageData(image, 0, 0);
-    const mask = { key, canvas };
-    glassGlintMasks.set(patch, mask);
-    return mask;
+// Material B is reserved on landmarks. Only the glass crop writes pane eligibility there.
+function updateGlassMaterial(patch, mask) {
+    const image = mask?.map.materialPixels;
+    if (!image || patch.glintMask === mask) return;
+    for (let i = 0; i < mask.data.length; i++) image.data[i * 4 + 2] = mask.data[i] ? 255 : 0;
+    patch.channels.material.getContext('2d').putImageData(image, 0, 0);
+    patch.glintMask = mask;
 }
 
 function glassPatchRecord(renderer, drawable, record, spriteLeft, col, horizon, front) {
@@ -924,19 +904,21 @@ function glassPatchRecord(renderer, drawable, record, spriteLeft, col, horizon, 
     const spriteTop = record.y - (horizon != null && front ? horizon : 0);
     const id = drawable.entry.id;
     const version = renderer.assets?.assetVersion || '';
-    const glintMask = record.surfaceCode && renderer.buildingRenderer.atmosphereState?.lightGrade?.windowGlint > 0
-        ? unlitPaneMask(renderer.buildingRenderer, drawable.building.type, patch) : null;
+    const material = patch.channels?.material || null;
+    const glintMask = material && record.surfaceCode && renderer.buildingRenderer.atmosphereState?.lightGrade?.windowGlint > 0
+        ? roomGlintMask(renderer.buildingRenderer, drawable.building.type, patch) : null;
+    updateGlassMaterial(patch, glintMask);
     return {
         ...record,
         id: `${record.id}:glass`,
         stableKey: `${record.stableKey}:glass`,
         textureKey: `${id}:glass`,
-        sidecarKey: `${id}:glass${glintMask ? ':glint' : ''}`,
+        sidecarKey: `${id}:glass`,
         goldenRim: false,
         alpenglowRow: Math.max(0, record.alpenglowRow - Math.max(0, patch.top - (front ? horizon : 0))),
         source: patch.canvas,
-        materialSource: patch.channels?.material || null,
-        emissiveSource: glintMask?.canvas || null,
+        materialSource: material,
+        emissiveSource: null,
         emissiveGate: 0,
         occluderSource: patch.channels?.occluder || null,
         sourceWidth: patch.w,
@@ -951,7 +933,8 @@ function glassPatchRecord(renderer, drawable, record, spriteLeft, col, horizon, 
         height: sh,
         emissive: 0,
         textureRevision: `${version}:${patch.revision}`,
-        sidecarRevision: glintMask ? `${version}:glass:${glintMask.key}` : `${version}:glass`,
+        sidecarRevision: `${version}:glass`,
+        materialRevision: patch.glintMask ? `${version}:glass:${patch.glintMask.key}` : null,
         sourceKind: 'individual',
     };
 }

@@ -249,8 +249,13 @@ function canvasUngradeRgb(target, terms) {
  * Returns `rgb` itself when the cap does not bind. Used for the outer ocean
  * and the in-map water copy (CoastBake).
  */
-export function canvasWaterPreimage(rgb, grade, { postFx = false, maxS = null, sky = null } = {}) {
+export function canvasWaterPreimage(rgb, grade, { postFx = false, maxS = null, sky = null, course = 3 } = {}) {
     if (!grade) return rgb;
+    if (course < 3 && grade.seaFresnelGate > 0) {
+        const target = applySeaFresnel(applyGradeToRgb(rgb, grade), sky, grade, course);
+        // Invert the displayed byte to keep dark Afterglow stops on their intended hue.
+        return canvasFramePreimage(target.map(c => Math.round(c * 255) / 255), grade, { postFx });
+    }
     const cap = maxS ?? (sky ? waterMaxSaturation(sky) : WATER_MAX_SATURATION);
     const finish = graded => capSaturation(sky?.skyWeight > 0 ? applyWaterSky(graded, sky) : graded, cap);
     if (postFx) {
@@ -296,15 +301,22 @@ export function seaFresnelCourse(x, y, seaBandBend) {
     return 3;
 }
 
+export function seaCourseSky(mood, far, gate, course) {
+    return {
+        sky: mood.sky.map((v, i) => v + (far[i] - v) * SEA_FRESNEL_FAR[course]),
+        skyWeight: Math.max(mood.skyWeight, SEA_FRESNEL_WEIGHT[course] * gate),
+    };
+}
+
 /** OA-W4 open-water landing on an already graded bed, before horizon haze. */
 export function applySeaFresnel(rgb, mood, grade, course) {
     const gate = grade.seaFresnelGate;
     const limit = waterMaxSaturation(mood);
     if (!(gate > 0) || course === 3) return capSaturation(applyWaterSky(rgb, mood), limit);
-    rgb = capSaturation(rgb, limit);
-    const far = hexToRgb01(grade.seaFar);
-    const sky = mood.sky.map((v, i) => v + (far[i] - v) * SEA_FRESNEL_FAR[course]);
-    const weight = Math.round(Math.max(mood.skyWeight, SEA_FRESNEL_WEIGHT[course] * gate) * 256);
+    rgb = capSaturation(rgb, limit + (0.28 - limit) * (grade.afterglow || 0) * SEA_FRESNEL_FAR[course]);
+    const far = hexToRgb01(grade.seaFar ?? grade.skyHorizon);
+    const { sky, skyWeight } = seaCourseSky(mood, far, gate, course);
+    const weight = Math.round(skyWeight * 256);
     const target = applyWaterSky(rgb, { sky, skyWeight: 1 });
     const linear16 = v => Math.round((v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4) * 65535);
     const mixed = rgb.map((v, i) => {

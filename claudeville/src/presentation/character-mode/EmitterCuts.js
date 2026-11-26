@@ -36,6 +36,7 @@ import {
     isDaytimeHighEnergyBuilding,
     materialClassId,
 } from './gpu/GpuWorldPolicy.js';
+import { roomGlintMask } from './RoomGlass.js';
 import { hullGeometry } from './HarborHulls.js';
 import { tileToWorld } from './Projection.js';
 
@@ -834,11 +835,10 @@ export function drawCanvasEmitterCuts(ctx, renderer, atmosphere, bloomScale = 0)
 // W2 (spec 02 §4.3/§4.5/§4.7/§4.8) — Canvas fallback overlays: cached golden
 // silhouette rim, Afterglow top-20 % alpenglow, and west-window apricot glint,
 // drawn after the frame grade and right under `drawCanvasEmitterCuts`.
-const occluderSidecars = new Map();
-const gradeOverlayDescriptors = new Map();
+const overlayAssets = new WeakMap();
 const canvasGradeOverlayCache = new CanvasOverlayStampCache();
 
-function occluderSidecarFor(assets, id) {
+function occluderSidecarFor(assets, id, occluderSidecars) {
     const companion = assets.getCompanion?.(id, 'occluder');
     if (companion) return companion;
     const key = `${assets.assetVersion || ''}|${id}`;
@@ -875,18 +875,23 @@ function readImageRgba(image, width, height) {
     return data;
 }
 
-function gradeOverlayDescriptorFor(assets, id, entry, gate, glass) {
+function gradeOverlayDescriptorFor(assets, id, entry, gate, glass, panes) {
+    let cache = overlayAssets.get(assets);
+    if (!cache || cache.version !== assets.assetVersion) {
+        cache = { version: assets.assetVersion, occluders: new Map(), descriptors: new Map() };
+        overlayAssets.set(assets, cache);
+    }
     const albedoImg = assets.get?.(id);
     const width = albedoImg?.naturalWidth || albedoImg?.width || 0;
     const height = albedoImg?.naturalHeight || albedoImg?.height || 0;
     if (!width || !height) return null;
     const alpenglowRow = Number(entry?.alpenglowRow) || 0;
     const surfaceCoded = entry?.surfaceCode === true;
-    const occluderImg = surfaceCoded ? occluderSidecarFor(assets, id) : null;
+    const occluderImg = surfaceCoded ? occluderSidecarFor(assets, id, cache.occluders) : null;
     const emissiveImg = surfaceCoded && entry?.emissiveSidecar === true ? emissiveSidecarFor(assets, id) : null;
     if (!alpenglowRow && !occluderImg) return null;
     const key = `${assets.assetVersion || ''}|${id}`;
-    let entryState = gradeOverlayDescriptors.get(key);
+    let entryState = cache.descriptors.get(key);
     if (!entryState || entryState.albedoImg !== albedoImg || entryState.occluderImg !== occluderImg || entryState.emissiveImg !== emissiveImg) {
         const albedo = readImageRgba(albedoImg, width, height);
         const geometry = occluderImg ? readImageRgba(occluderImg, width, height) : null;
@@ -907,33 +912,26 @@ function gradeOverlayDescriptorFor(assets, id, entry, gate, glass) {
                 revision: 1,
             },
         };
-        gradeOverlayDescriptors.set(key, entryState);
+        cache.descriptors.set(key, entryState);
     }
-    const unlitKey = `${gate > 0.02 ? 1 : 0}|${glass?.key || (glass?.canvas ? `${glass.x},${glass.y},${glass.canvas.width},${glass.canvas.height}` : '')}`;
-    if (entryState.emissiveRgba && entryState.unlitKey !== unlitKey) {
+    const gx0 = Math.round(glass?.left ?? glass?.x ?? 0);
+    const gy0 = Math.round(glass?.top ?? glass?.y ?? 0);
+    const unlitKey = `${gate === 0}|${gx0},${gy0}`;
+    if ((panes || entryState.emissiveRgba) && (entryState.unlitKey !== unlitKey || entryState.panes !== panes)) {
         entryState.unlitKey = unlitKey;
-        const count = width * height;
-        const mask = new Uint8Array(count);
-        const em = entryState.emissiveRgba;
-        if (!(gate > 0.02)) {
-            for (let p = 0; p < count; p++) if (em[p * 4 + 3] > 0) mask[p] = 1;
-        } else if (glass?.canvas) {
-            const gctx = glass.canvas.getContext('2d', { willReadFrequently: true });
-            const gw = glass.canvas.width;
-            const gh = glass.canvas.height;
-            const gdata = gctx.getImageData(0, 0, gw, gh).data;
-            const gx0 = Math.round(glass.x || 0);
-            const gy0 = Math.round(glass.y || 0);
-            for (let gy = 0; gy < gh; gy++) {
-                const sy = gy0 + gy;
+        entryState.panes = panes;
+        const mask = new Uint8Array(width * height);
+        if (panes) {
+            const { w, h } = panes.map;
+            for (let y = 0; y < h; y++) {
+                const sy = gy0 + y;
                 if (sy < 0 || sy >= height) continue;
-                for (let gx = 0; gx < gw; gx++) {
-                    const sx = gx0 + gx;
-                    if (sx < 0 || sx >= width) continue;
-                    const p = sy * width + sx;
-                    if (em[p * 4 + 3] > 0 && gdata[(gy * gw + gx) * 4 + 3] > 0) mask[p] = 1;
-                }
+                const start = Math.max(0, -gx0);
+                const end = Math.min(w, width - gx0);
+                if (start < end) mask.set(panes.data.subarray(y * w + start, y * w + end), sy * width + gx0 + start);
             }
+        } else if (gate === 0 && !glass && entryState.emissiveRgba) {
+            for (let p = 0; p < mask.length; p++) mask[p] = entryState.emissiveRgba[p * 4 + 3];
         }
         entryState.descriptor.unlitEmitter = mask;
         entryState.descriptor.revision += 1;
@@ -969,7 +967,8 @@ export function drawCanvasGradeOverlays(ctx, renderer, atmosphere) {
         if (!entry?.surfaceCode && !(Number(entry?.alpenglowRow) > 0)) continue;
         const gate = buildings._emissiveGateFor?.(building) ?? 1;
         const glass = buildings.glassPatchFor?.(building) || null;
-        const desc = gradeOverlayDescriptorFor(assets, id, entry, gate, glass);
+        const panes = grade.windowGlint > 0 ? roomGlintMask(buildings, building.type, glass) : null;
+        const desc = gradeOverlayDescriptorFor(assets, id, entry, gate, glass, panes);
         if (!desc) continue;
         const stamp = canvasGradeOverlayCache.get(desc, grade);
         if (!stamp) continue;

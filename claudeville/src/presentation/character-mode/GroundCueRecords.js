@@ -30,6 +30,7 @@
 // unsupported and skipped, and any cue that needs them stays in the retained
 // cue texture.
 
+import { DEW_GLINT_COLOR } from './SeasonalAmbience.js';
 import { GPU_RECORD_FLAGS } from './gpu/GpuWorldPolicy.js';
 import { isOffshoreRecordId } from './OffshoreScenery.js';
 
@@ -577,7 +578,7 @@ export class GroundCueRecorder {
         if (!parsed) return null;
         const alpha = parsed.a * Math.max(0, Math.min(1, Number(this.globalAlpha) || 0));
         if (alpha < MIN_RECORD_ALPHA) return null;
-        const band = this.atlas.band(quantizeRgb(parsed.rgb));
+        const band = this.atlas.band(style === DEW_GLINT_COLOR ? parsed.rgb : quantizeRgb(parsed.rgb));
         if (band < 0) return null;
         const op = this.globalCompositeOperation;
         return { top: band * BAND_HEIGHT, alpha, add: op === 'screen' || op === 'lighter' || op === 'plus-lighter' };
