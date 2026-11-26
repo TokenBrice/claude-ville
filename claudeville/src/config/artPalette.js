@@ -107,9 +107,29 @@ export const ART_RAMPS = Object.freeze({
     shallowWater: ['#4d848f', '#5c999d', '#96c7be'],
     grass: ['#26572d', '#346e30', '#4f823b', '#689146', '#7f9e51'],
     dirt: ['#6a5038', '#7c6043', '#8e7050', '#9f805d', '#ae8f6a'],
-    road: ['#4a4c51', '#5b5e64', '#71747a', '#83868c', '#95989e'],
-    plaza: ['#706352', '#827461', '#948671', '#a69882', '#b6a892'],
+    // W1.1 — paving as units: cool plum mortar -> warm limestone lip
+    // (top held 0.043 under ashlar[8]; dark stops calibrated so 02:00 moon=0
+    // land-above-water stays > +6.5 L* unmodified).
+    road: ['#4a4b52', '#5f6168', '#717378', '#8c8781', '#9f9b92'],
+    plaza: ['#63565e', '#7c6e69', '#928473', '#a79984', '#b7ad99'],
+    // W1.1 — cool limestone sibling of `plaza` (same okL ladder): ~30 %
+    // of plaza stones and the medallion's compass rays.
+    plazaCool: ['#54505b', '#6c6c75', '#82878c', '#9d9b93', '#b2aea3'],
+    // W1.1 — the Forge hearth yard: violet-black basalt -> rust-dust tops.
+    cinder: ['#2e2d34', '#3e3c42', '#544b49', '#675b54', '#7c6d61'],
     sand: ['#a8936c', '#b7a279', '#c5b086', '#d2bd93', '#dcc9a1'],
+    // W1.2 — coastal limestone-slate (CoastBake cliff, Lighthouse plinth,
+    // riprap): blue slate crevice -> warm limestone rim.
+    cliff: ['#292e38', '#40454e', '#5b5d63', '#7a756e', '#938b7e', '#a9a090'],
+    // W1.2 — wet band of every bank face: wet slate, wet slate lit, algae, algae lit.
+    tideline: ['#1e282c', '#2b383b', '#2e4332', '#445d41'],
+    // W2.4 — seasonal turf on the grass value ladder (same okL +-0.012).
+    grassDormant: ['#454f37', '#5b6346', '#727657', '#858666', '#969374'],
+    grassSpring: ['#30572a', '#476d2f', '#638138', '#7d9042', '#949c4d'],
+    // W2.4 — hawthorn/apple blossom: lilac-grey shade -> cream (Tier B top).
+    blossomIvory: ['#8b838f', '#ab9f97', '#c2b9aa', '#d8d1bb'],
+    // W2.4 — late-autumn marcescent oak leaves (bronze/umber, never pink).
+    leafMarcescent: ['#3f271e', '#583725', '#6f482c', '#875b36', '#9b7043'],
     foliage: ['#1c2b24', '#2a3e2c', '#3e5634', '#5a723d', '#86944f'],
     stone: ['#25262d', '#373944', '#4d4f5a', '#686a72', '#8c8b8a'],
     timber: ['#2a1c14', '#45301f', '#654629', '#8a6337'],
@@ -165,7 +185,9 @@ export const ART_RAMPS = Object.freeze({
 });
 
 // Ramps that make up the ground plane (terrain bakes, off-ramp analysis).
-export const GROUND_RAMP_KEYS = Object.freeze(['grass', 'dirt', 'road', 'plaza', 'sand']);
+export const GROUND_RAMP_KEYS = Object.freeze([
+    'grass', 'dirt', 'road', 'plaza', 'plazaCool', 'cinder', 'sand', 'grassDormant', 'grassSpring',
+]);
 
 // Tier A (L > 0.70 or S > 0.65) is reserved for these roles only. Values are
 // the live status authority (theme.js THEME), not copies, so the palette
@@ -179,9 +201,19 @@ export const RESERVED_STATUS = Object.freeze({
     rateLimited: THEME.rateLimited,
 });
 
-// Maintainer decision D5: moderate mute. Ground median saturation target band.
-export const GROUND_SATURATION = Object.freeze({ min: 0.45, max: 0.50 });
+// D2 (2026-11-26) — ground median saturation band per season. Summer is the
+// D5 moderate mute; winter allows dormant straw turf, spring a fresh flush.
+export const GROUND_SATURATION_BY_SEASON = Object.freeze({
+    spring: Object.freeze({ min: 0.48, max: 0.56 }),
+    summer: Object.freeze({ min: 0.45, max: 0.50 }),
+    autumn: Object.freeze({ min: 0.40, max: 0.50 }),
+    winter: Object.freeze({ min: 0.22, max: 0.36 }),
+});
+export const GROUND_SATURATION = GROUND_SATURATION_BY_SEASON.summer;
+// W1.1 — applies to the mean of >= 8x8-texel windows (macro value), never
+// to a single stone's bevel (micro).
 export const GROUND_LOCAL_CONTRAST_MAX_RATIO = 0.6;
+export const GROUND_LOCAL_CONTRAST_WINDOW = 8;
 // Relaxed 2026-11-23 (operator decision: clearly blue daytime water, night/storm <= 0.37).
 export const WATER_VOID_SATURATION_MAX = 0.50;
 // V5 receiver ceiling (see the brightest-thing rule above). Attention

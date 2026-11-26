@@ -1132,3 +1132,18 @@ export const GRASS_TUFT_DENSITY = { min: 0.24, max: 0.50 };
 // Flower-clump scatter. Wider meadow bands everywhere plus district `flowerBoost`.
 // Flowers are flat and never block building sightlines.
 export const FLOWER_DENSITY = { min: 0.02, max: 0.16 };
+
+// W1.3 (OA-W1) — authored bathymetry features (tile coords; offset in tiles of
+// signed distance; > 0 deepens, < 0 shoals; falloff (1 - (d / r)^2)^2 inside r).
+export const BATHYMETRY_FEATURES = Object.freeze([
+    // Dredged Harbor channel: open sea -> pier berths, deep stop up to the quay.
+    Object.freeze({ kind: 'channel', points: [[40.5, 21.0], [37.5, 22.0], [33.5, 22.0]], r: 0.9, offset: +1.20 }),
+    // Portal sandbar: a shoal off the SW beach under the Portal (2..5 x 29..32).
+    Object.freeze({ kind: 'bar', center: [-1.4, 31.0], rx: 2.4, ry: 0.75, angle: 0.0, offset: -0.90 }),
+    // Reef shelves under the sea stacks (OFFSHORE_SCENERY).
+    Object.freeze({ kind: 'reef', center: [35.0, 0.5], r: 1.6, offset: -1.00 }),
+    Object.freeze({ kind: 'reef', center: [37.5, 1.0], r: 1.4, offset: -0.90 }),
+    Object.freeze({ kind: 'reef', center: [37.5, 4.5], r: 1.4, offset: -0.90 }),
+    Object.freeze({ kind: 'reef', center: [-3.5, 20.5], r: 1.6, offset: -1.00 }),
+    Object.freeze({ kind: 'reef', center: [16.5, 42.5], r: 1.4, offset: -0.90 }),
+]);

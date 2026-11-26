@@ -835,10 +835,10 @@
     "terrain.grass-cobble": {
       "maxColours": 67,
       "maxTierA": 0.118,
-      "maxOffRamp": 0.8041,
+      "maxOffRamp": 0.902,
       "minEdgeContinuity": 0.3505,
       "minGrainRatio": 0.6055,
-      "reason": "pre-Wave-0 terrain baseline; ratchet down on touch"
+      "reason": "pre-Wave-0 luminance-only sheet; superseded by Wave 1.1 1x1 stone lattice"
     },
     "terrain.grass-dirt": {
       "maxTierA": 0.1329,
