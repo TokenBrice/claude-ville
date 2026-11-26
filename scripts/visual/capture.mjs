@@ -321,10 +321,13 @@ function installVisualCaptureHelpers() {
         const worldStackOpacity = stackEl ? Number(getComputedStyle(stackEl).opacity) : 0;
         const atmosphere = r?.atmosphereState || window.__claudeVilleAtmosphere;
         const terrainKey =
-            r?._terrainArtifactKey
+            r?.terrainCacheKey
+            || r?.terrainCacheBaseKey
+            || r?._terrainArtifactKey
             || r?._lastTerrainKey
             || r?._terrainBakedKey
             || r?.terrainKey
+            || (r?.terrainCache ? `canvas:${r.terrainCache.width}x${r.terrainCache.height}` : '')
             || (r?._terrainCanvas ? `canvas:${r._terrainCanvas.width}x${r._terrainCanvas.height}` : '')
             || (r?.gpuWorld?._terrainTexture ? 'gpu:terrain-bound' : '');
         const presentGeneration =
