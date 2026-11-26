@@ -720,7 +720,12 @@ export class App {
                 simulation: this.simMode,
                 refreshAtmosphere: snapshot => this.renderer?.atmosphereState?.update({ now: snapshot.effectiveDate }),
                 onVisualBeatChange,
-                onAudioReady: audio => onVisualBeatChange(audio?.getVisualBeat?.() ?? null),
+                onAudioReady: audio => {
+                    onVisualBeatChange(audio?.getVisualBeat?.() ?? null);
+                    audio?.directors?.bgm?.setDayEventsProvider?.(({ day } = {}) => (
+                        this.chronicleLog?.readDay?.(day) ?? []
+                    ));
+                },
                 frameAttention: () => {
                     if (this.modeManager?.getCurrentMode() === 'dashboard') return false;
                     if (this.renderer?.theatreMode || this.renderer?.stripProfile) {

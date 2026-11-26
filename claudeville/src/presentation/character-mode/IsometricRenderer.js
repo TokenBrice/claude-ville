@@ -11490,8 +11490,17 @@ export class IsometricRenderer {
 
     _buildTerraceProps() {
         const sprites = [], images = new Map();
-        const add = (name, x, y, w, h, anchor, materialClass = 'stone') => {
-            const id = `prop.${name}`;
+        const stairIds = {
+            ne: 'prop.terraceStair.ne',
+            nw: 'prop.terraceStair.nw',
+            se: 'prop.terraceStair.se',
+            sw: 'prop.terraceStair.sw',
+        };
+        const cornerIds = {
+            inner: 'prop.terraceCorner.inner',
+            outer: 'prop.terraceCorner.outer',
+        };
+        const add = (id, x, y, w, h, anchor, materialClass = 'stone') => {
             if (!images.has(id)) {
                 let image = this.assets?.get?.(id);
                 if (!image && !this.assets?.getEntry?.(id) && typeof Image !== 'undefined') {
@@ -11509,19 +11518,19 @@ export class IsometricRenderer {
                 const [, a, b] = surface.plane16;
                 const dir = a > 0 ? 'se' : a < 0 ? 'nw' : b > 0 ? 'sw' : 'ne';
                 // The baked tread midpoint lies 4 px above its local base at y=31.
-                add(`terraceStair.${dir}`, tx, ty, 64, 48, 27);
+                add(stairIds[dir], tx, ty, 64, 48, 27);
             } else if (surface.route && surface.id === 2) {
                 const h = planeHeight(surface.plane16);
                 const east = supportHeight(tx + 1, ty, this.surfaceRegistry) >= h, south = supportHeight(tx, ty + 1, this.surfaceRegistry) >= h;
                 const outer = !east && !south;
                 const inner = east && south && supportHeight(tx + 1, ty + 1, this.surfaceRegistry) < h;
                 // Align the 8 px coping to the raised lip (the PNG base is y=20).
-                if (outer || inner) add(`terraceCorner.${outer ? 'outer' : 'inner'}`, tx + 0.375, ty + 0.375, 32, 32, 12);
+                if (outer || inner) add(outer ? cornerIds.outer : cornerIds.inner, tx + 0.375, ty + 0.375, 32, 32, 12);
             }
         }
         for (const spill of this.surfaceRegistry.spills) {
             const { tx, ty } = tileCoords(spill.lower[0]);
-            add('lagoonSpillway', tx, ty, 64, 96, 82, 'water');
+            add('prop.lagoonSpillway', tx, ty, 64, 96, 82, 'water');
         }
         return sprites;
     }

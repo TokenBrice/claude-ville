@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-11-26-w5-wave5-b"
+  assetVersion: "2026-11-26-w6-wave6"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -4747,6 +4747,82 @@ props:
     materialClass: timber
     elevation: { base: 0, top: 14, unit: sprite-px }
     provenance: { item: 'W4-Pre 4.1', source: 'scripts/sprites/bake-carved-motifs.mjs', generations: 0, generatedAt: '2026-11-26' }
+
+  # W6-A 6.1 — Lagoon-to-Canal animated waterfall spillway (Spec 03 §1.2, 0 PixelLab gens).
+  - id: prop.lagoonSpillway
+    tool: procedural
+    prompt: "4-frame animated 256x96 horizontal strip (64x96 per frame) of a medieval coursed-ashlar mossy stone sluice retaining wall flanking a stepped vertical pixel-art waterfall spilling from a raised lagoon into a foaming lower splash collar, crisp 1px outline on stone cheeks, zero blur, transparent background"
+    width: 256
+    height: 96
+    frames: 4
+    frameW: 64
+    frameH: 96
+    fps: 6
+    anchor: [32, 82]
+    materialClass: water
+    elevation: { base: 0, top: 64, unit: sprite-px }
+    provenance: { item: 'W6-A 6.1', source: 'scripts/sprites/bake-lagoon-spillway.mjs', generations: 0, generatedAt: '2026-11-26' }
+
+  # W6-A 6.2 — E2 Terrace Stair Flights & Retaining Wall Corner Kit (Spec 03 §1.2, 0 PixelLab gens).
+  - id: prop.terraceStair.ne
+    tool: procedural
+    prompt: "64x48 isometric medieval coursed-ashlar stone terrace stair flight climbing north-east with 8px rise (4x 2px risers), worn limestone flagstone treads, stepped cheek walls, subtle crevice moss, crisp 1px #060402 selective outline, transparent background"
+    width: 64
+    height: 48
+    anchor: [32, 36]
+    materialClass: stone
+    elevation: { base: 0, top: 8, unit: sprite-px }
+    provenance: { item: 'W6-A 6.2', source: 'scripts/sprites/bake-terrace-kit.mjs', generations: 0, generatedAt: '2026-11-26' }
+
+  - id: prop.terraceStair.nw
+    tool: procedural
+    prompt: "64x48 isometric medieval coursed-ashlar stone terrace stair flight climbing north-west with 8px rise (4x 2px risers), worn limestone flagstone treads, stepped cheek walls, subtle crevice moss, crisp 1px #060402 selective outline, transparent background"
+    width: 64
+    height: 48
+    anchor: [32, 36]
+    materialClass: stone
+    elevation: { base: 0, top: 8, unit: sprite-px }
+    provenance: { item: 'W6-A 6.2', source: 'scripts/sprites/bake-terrace-kit.mjs', generations: 0, generatedAt: '2026-11-26' }
+
+  - id: prop.terraceStair.se
+    tool: procedural
+    prompt: "64x48 isometric medieval coursed-ashlar stone terrace stair flight climbing south-east with 8px rise (4x 2px risers), worn limestone flagstone treads, stepped cheek walls, subtle crevice moss, crisp 1px #060402 selective outline, transparent background"
+    width: 64
+    height: 48
+    anchor: [32, 36]
+    materialClass: stone
+    elevation: { base: 0, top: 8, unit: sprite-px }
+    provenance: { item: 'W6-A 6.2', source: 'scripts/sprites/bake-terrace-kit.mjs', generations: 0, generatedAt: '2026-11-26' }
+
+  - id: prop.terraceStair.sw
+    tool: procedural
+    prompt: "64x48 isometric medieval coursed-ashlar stone terrace stair flight climbing south-west with 8px rise (4x 2px risers), worn limestone flagstone treads, stepped cheek walls, subtle crevice moss, crisp 1px #060402 selective outline, transparent background"
+    width: 64
+    height: 48
+    anchor: [32, 36]
+    materialClass: stone
+    elevation: { base: 0, top: 8, unit: sprite-px }
+    provenance: { item: 'W6-A 6.2', source: 'scripts/sprites/bake-terrace-kit.mjs', generations: 0, generatedAt: '2026-11-26' }
+
+  - id: prop.terraceCorner.inner
+    tool: procedural
+    prompt: "32x32 isometric concave inner retaining wall corner in coursed medieval ashlar with 8px rise, overhanging stone coping cap, lower flagstone courtyard pocket, subtle crevice moss, crisp 1px #060402 selective outline, transparent background"
+    width: 32
+    height: 32
+    anchor: [16, 24]
+    materialClass: stone
+    elevation: { base: 0, top: 9, unit: sprite-px }
+    provenance: { item: 'W6-A 6.2', source: 'scripts/sprites/bake-terrace-kit.mjs', generations: 0, generatedAt: '2026-11-26' }
+
+  - id: prop.terraceCorner.outer
+    tool: procedural
+    prompt: "32x32 isometric convex outer retaining wall corner prow in coursed medieval ashlar with 8px rise, long-and-short dressed corner quoins, overhanging stone coping cap, terrace flagstone top, subtle crevice moss, crisp 1px #060402 selective outline, transparent background"
+    width: 32
+    height: 32
+    anchor: [16, 24]
+    materialClass: stone
+    elevation: { base: 0, top: 9, unit: sprite-px }
+    provenance: { item: 'W6-A 6.2', source: 'scripts/sprites/bake-terrace-kit.mjs', generations: 0, generatedAt: '2026-11-26' }
 
 # ─── VEGETATION ──────────────────────────────────────────────────────────────
 vegetation:
