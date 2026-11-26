@@ -7,12 +7,18 @@ import { fileURLToPath } from 'node:url';
 import { AgentStatus } from '../../claudeville/src/domain/value-objects/AgentStatus.js';
 import { STATUS_VISUALS } from '../../claudeville/src/config/theme.js';
 import {
+    CALM_GROUND_AURA,
+    CALM_GROUND_HEX,
+    GROUND_AURA,
+    GROUND_SIGNAL_STATUSES,
     STATUS_AURA,
     drawCrowdClusterAuras,
     drawCrowdClusterBadges,
 } from '../../claudeville/src/presentation/character-mode/CrowdClusterOverlay.js';
 import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
 import { tileToWorld } from '../../claudeville/src/presentation/character-mode/Projection.js';
+import { TopBar, soundSliderFill } from '../../claudeville/src/presentation/shared/TopBar.js';
+import { SOUND_STEP_MAX } from '../../claudeville/src/presentation/shared/SoundSettings.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 
@@ -202,4 +208,129 @@ test('W0-A: Shift+D and Shift+O toggle debug overlays only in World mode and thr
     );
     assert.equal(/KeyP[^\n]*togglePathDebug/.test(isoSource), false, 'Shift+P must not be bound to togglePathDebug');
     assert.match(isoSource, /import\s*\{\s*shortcutBlocked\s*\}\s*from\s*['"]\.\.\/shared\/ShortcutGuard\.js['"]/);
+});
+
+test('W0 council: actionable crowds pool in exact STATUS_VISUALS hues; calm crowds pool in warm brass while pips keep their hues', () => {
+    // Every actionable/attention status tints the ground in its exact
+    // STATUS_VISUALS hue (no stale v0.67.2 sky blue or orange).
+    assert.deepEqual([...GROUND_SIGNAL_STATUSES].sort(), [
+        AgentStatus.ERRORED, AgentStatus.RATE_LIMITED, AgentStatus.WAITING, AgentStatus.WAITING_ON_USER,
+    ].sort());
+    const expected = {
+        [AgentStatus.WAITING_ON_USER]: '#e8d44d',
+        [AgentStatus.ERRORED]: '#e06c5b',
+        [AgentStatus.RATE_LIMITED]: '#f06ae0',
+        [AgentStatus.WAITING]: '#df8c3f',
+    };
+    for (const [status, hex] of Object.entries(expected)) {
+        assert.equal(STATUS_VISUALS[status].color.toLowerCase(), hex, `${status} keeps its canonical hue`);
+        assert.equal(GROUND_AURA[status], STATUS_AURA[status], `${status} ground aura is the STATUS_VISUALS aura`);
+        assert.equal(GROUND_AURA[status].fill, `rgba(${hexToRgbString(hex)}, 1)`);
+        for (const stale of ['rgba(111, 179, 217, 1)', 'rgba(91, 150, 190, 1)', 'rgba(251, 146, 60, 1)', 'rgba(234, 88, 12, 1)']) {
+            assert.notEqual(GROUND_AURA[status].fill, stale, `${status} ground fill is not a stale hue`);
+            assert.notEqual(GROUND_AURA[status].stroke, stale, `${status} ground rim is not a stale hue`);
+        }
+    }
+
+    // Calm crowds (working, idle, completed, chatting) share one deliberate
+    // warm neutral brass ground, never their own green/sky/parchment.
+    assert.equal(CALM_GROUND_HEX, '#c8b58a');
+    assert.equal(CALM_GROUND_AURA.fill, 'rgba(200, 181, 138, 1)');
+    for (const status of Object.keys(STATUS_VISUALS).filter((key) => !GROUND_SIGNAL_STATUSES.includes(key))) {
+        assert.equal(GROUND_AURA[status], CALM_GROUND_AURA, `${status} pools in calm brass`);
+        assert.notEqual(GROUND_AURA[status].fill, STATUS_AURA[status].fill, `${status} ground is not its pip hue`);
+    }
+    for (const status of [AgentStatus.WORKING, AgentStatus.IDLE, AgentStatus.COMPLETED]) {
+        assert.equal(GROUND_AURA[status], CALM_GROUND_AURA, `${status} is calm`);
+    }
+
+    // Behaviour: the ground pass paints the cluster's ground aura; the
+    // standard's pips still paint every status in its STATUS_VISUALS hue.
+    const cluster = (dominantStatus, statuses) => ({
+        clusters: [{ id: '5,5', tileX: 20, tileY: 20, count: 4, dominantStatus, statuses }],
+    });
+    const calm = cluster(AgentStatus.WORKING, { [AgentStatus.WORKING]: 3, [AgentStatus.IDLE]: 1 });
+    const calmGround = recordingCtx();
+    drawCrowdClusterAuras(calmGround.ctx, { crowdStats: calm });
+    assert.ok(calmGround.fills.includes(CALM_GROUND_AURA.fill), 'a working crowd pools in brass');
+    assert.ok(calmGround.fills.includes(CALM_GROUND_AURA.stroke), 'with a brass dotted rim');
+    assert.ok(!calmGround.fills.includes(STATUS_AURA[AgentStatus.WORKING].fill), 'no green-on-green ground pool');
+    const calmBadge = recordingCtx();
+    drawCrowdClusterBadges(calmBadge.ctx, { crowdStats: calm, agentSprites: new Map(), zoom: 1 });
+    assert.ok(calmBadge.fills.includes(STATUS_AURA[AgentStatus.WORKING].fill), 'the working pip stays green');
+    assert.ok(calmBadge.fills.includes(STATUS_AURA[AgentStatus.IDLE].fill), 'the idle pip stays sky');
+    assert.ok(!calmBadge.fills.includes(CALM_GROUND_AURA.fill), 'pips never wear the ground brass');
+
+    for (const status of GROUND_SIGNAL_STATUSES) {
+        const ground = recordingCtx();
+        drawCrowdClusterAuras(ground.ctx, { crowdStats: cluster(status, { [status]: 3, [AgentStatus.WORKING]: 1 }) });
+        assert.ok(ground.fills.includes(STATUS_AURA[status].fill), `${status} pools in its own hue`);
+        assert.ok(!ground.fills.includes(CALM_GROUND_AURA.fill), `${status} never pools in brass`);
+    }
+});
+
+class FakeStyle {
+    constructor() { this.props = new Map(); this.writes = 0; }
+    getPropertyValue(name) { return this.props.get(name) || ''; }
+    setProperty(name, value) { this.writes++; this.props.set(name, String(value)); }
+}
+
+function fakeNode(extra = {}) {
+    const attributes = new Map();
+    return {
+        hidden: false,
+        textContent: '',
+        style: new FakeStyle(),
+        getAttribute: (name) => (attributes.has(name) ? attributes.get(name) : null),
+        setAttribute: (name, value) => attributes.set(name, String(value)),
+        ...extra,
+    };
+}
+
+test('W0 council: TopBar sets the sound volume slider --fill so the Chromium track paints its gold share', () => {
+    // The formula is fluid (thumb-centre on a track of any width), clamped 0..1.
+    assert.equal(soundSliderFill(0), 'calc(4px + (100% - 8px) * 0)');
+    assert.equal(soundSliderFill(SOUND_STEP_MAX), 'calc(4px + (100% - 8px) * 1)');
+    assert.equal(soundSliderFill(SOUND_STEP_MAX * 0.7), 'calc(4px + (100% - 8px) * 0.7)');
+    assert.equal(soundSliderFill(-3), soundSliderFill(0));
+    assert.equal(soundSliderFill(SOUND_STEP_MAX * 4), soundSliderFill(SOUND_STEP_MAX));
+    assert.equal(soundSliderFill(Number.NaN), soundSliderFill(0));
+
+    // topbar.css consumes --fill on the WebKit track (Firefox keeps
+    // ::-moz-range-progress), and TopBar never hardcodes a track width.
+    const topbarCss = fs.readFileSync(path.join(REPO_ROOT, 'claudeville/css/topbar.css'), 'utf8');
+    assert.match(topbarCss, /\.topbar__sound-vol::-webkit-slider-runnable-track\s*\{[^}]*var\(--fill/s);
+    assert.match(topbarCss, /\.topbar__sound-vol::-moz-range-progress\s*\{[^}]*var\(--gold\)/s);
+    const topbarSource = fs.readFileSync(path.join(REPO_ROOT, 'claudeville/src/presentation/shared/TopBar.js'), 'utf8');
+    assert.match(topbarSource, /setStyleProperty\(slider\.input, '--fill', soundSliderFill\(step\)\)/);
+    assert.equal(/--fill[^\n]*88px/.test(topbarSource), false, 'no fixed-width track math');
+
+    // Sync path: rendering the popover writes the view's volume step.
+    const input = fakeNode({ type: 'range', value: '0' });
+    const volume = { row: fakeNode(), input, value: fakeNode() };
+    const topbar = {
+        _soundEls: {
+            radios: {}, volume,
+            now: fakeNode(), note: fakeNode(), preview: fakeNode(), hush: fakeNode(), actions: fakeNode(),
+        },
+        _soundView: { preset: 'townBand', volumeStep: 7 },
+        _renderSoundPresets: TopBar.prototype._renderSoundPresets,
+    };
+    TopBar.prototype._renderSoundPanel.call(topbar);
+    assert.equal(input.value, '7');
+    assert.equal(input.style.getPropertyValue('--fill'), 'calc(4px + (100% - 8px) * 0.7)');
+    const writes = input.style.writes;
+    TopBar.prototype._renderSoundPanel.call(topbar);
+    assert.equal(input.style.writes, writes, 'an unchanged step writes no style');
+
+    // Input path: dragging the slider moves the fill live.
+    const steps = [];
+    topbar._withAudio = (fn) => fn({ setVolumeStep: (step) => steps.push(step) });
+    input.value = '3';
+    TopBar.prototype._onSoundSliderInput.call(topbar, input);
+    assert.equal(input.style.getPropertyValue('--fill'), 'calc(4px + (100% - 8px) * 0.3)');
+    input.value = '0';
+    TopBar.prototype._onSoundSliderInput.call(topbar, input);
+    assert.equal(input.style.getPropertyValue('--fill'), 'calc(4px + (100% - 8px) * 0)');
+    assert.deepEqual(steps, [3, 0]);
 });

@@ -42,6 +42,9 @@ const DIR_COUNT = DIRS.length;
 const DIR_OFFSET = Int32Array.from(DIRS, ([dx, dy]) => dy * MAP_N + dx);
 const DIR_LENGTH = Float64Array.from(DIRS, ([dx, dy]) => (dx !== 0 && dy !== 0 ? Math.SQRT2 : 1));
 const DIR_OPPOSITE = Int8Array.from(DIRS, ([dx, dy]) => DIRS.findIndex(([ox, oy]) => ox === -dx && oy === -dy));
+// (dy + 1) * 3 + (dx + 1) → the DIRS index of that unit step (-1 for none),
+// so a straight-line walk can test each step against stepMask.
+const STEP_DIR = Int8Array.from({ length: 9 }, (_, cell) => DIRS.findIndex(([dx, dy]) => dx === (cell % 3) - 1 && dy === Math.floor(cell / 3) - 1));
 const OCTILE_DIAGONAL_EXTRA = Math.SQRT2 - 1;
 const IndexArray = CELLS <= 0xffff ? Uint16Array : Uint32Array;
 const SlotArray = CELLS <= 0x7fff ? Int16Array : Int32Array;
@@ -57,6 +60,8 @@ const FLAG_ROAD = 16;
 const FLAG_LANE = 32;
 const FLAG_AVOID = 64;
 const FLAG_STAIR = 128;
+// FLAG_WALK in each byte of a 32-bit word of staticFlags.
+const WALK_WORD = FLAG_WALK * 0x01010101;
 const STATIC_ROLE_FLAGS = Object.freeze([FLAG_BRIDGE, FLAG_DOCK, FLAG_PLAZA, FLAG_ROAD, FLAG_LANE, FLAG_AVOID]);
 const RICH_ROUTE_FLAGS = FLAG_DOCK | FLAG_PLAZA | FLAG_ROAD | FLAG_LANE;
 const CROWD_STANDING = 1;
@@ -80,6 +85,8 @@ const CONGESTION_KERNEL = (() => {
 })();
 
 const PATH_CACHE_LIMIT = 384;
+// Distinct bridge-map contents keyed before the unweighted cache restarts.
+const BRIDGE_MAP_CODE_LIMIT = 1024;
 export const FLOW_REBUILD_WINDOW_MS = 2000;
 export const FLOW_TRACE_STEP_LIMIT = 128;
 
@@ -172,6 +179,46 @@ export function tileKeyIndex(key) {
     return tileY * MAP_N + tileX;
 }
 
+// Exact compare of a collection against the key sequence (and bridge info)
+// its hash memo was taken from: an unchanged collection still holds the
+// same key strings in the same insertion order, so this costs one iteration
+// and a reference compare per key, with no parsing or hashing. Each
+// collection shape keeps its own loop so every iteration site stays
+// monomorphic (~2 ns a key).
+function sameCollectionContent(collection, memo) {
+    if (memo.isMap) return sameBridgeInfo(collection, memo.keys, memo.info);
+    return collection instanceof Map ? sameMapKeys(collection, memo.keys) : sameSetKeys(collection, memo.keys);
+}
+
+function sameSetKeys(collection, keys) {
+    let slot = 0;
+    for (const key of collection) {
+        if (key !== keys[slot]) return false;
+        slot++;
+    }
+    return slot === keys.length;
+}
+
+function sameMapKeys(collection, keys) {
+    let slot = 0;
+    for (const key of collection.keys()) {
+        if (key !== keys[slot]) return false;
+        slot++;
+    }
+    return slot === keys.length;
+}
+
+function sameBridgeInfo(collection, keys, info) {
+    let slot = 0;
+    for (const key of collection.keys()) {
+        if (key !== keys[slot]) return false;
+        const value = collection.get(key);
+        if (value?.bridgeId !== info[slot * 2] || value?.kind !== info[slot * 2 + 1]) return false;
+        slot++;
+    }
+    return slot === keys.length;
+}
+
 const NEUTRAL_POLICY = Object.freeze({
     road: TILE_WEIGHTS.road,
     plaza: TILE_WEIGHTS.plaza,
@@ -237,18 +284,29 @@ export class Pathfinder {
         this._roleHash = new Uint32Array(STATIC_ROLE_FLAGS.length);
         this._standingHash = 0;
         this._congestionHash = 0;
+        // Crowd inputs re-read only while (object, supplied version) holds;
+        // an unversioned collection is re-read on every lookup.
         this._standingRef = null;
+        this._standingVersion = '';
         this._congestionRef = null;
+        this._congestionVersion = '';
+        // Content hashes of versioned route collections, per (object, version).
         this._collectionHashes = new WeakMap();
         this._bridgeCodes = new Map();
         this._bridgeIds = [];
-        this._bridgeMapCodes = new WeakMap();
+        // Bridge-map content hash → small code for the unweighted cache key.
+        this._bridgeMapCodes = new Map();
         this._bridgeMapSeq = 0;
         this._baseCostStaticKey = -1;
         this._primary = null;
         this._topologyVersion = 0;
 
         this._pathCache = new Map();
+        // In-place grid edit guard (`_syncGrid`): word views of a 0/1 byte
+        // grid and of staticFlags, whose bit 0 is the walk bit.
+        this._flagWords = CELLS % 4 === 0 ? new Uint32Array(this.staticFlags.buffer, 0, CELLS >> 2) : null;
+        this._gridWords = null;
+        this._syncedGrid = null;
         this.grid = grid;
         this.walkableTiles = this._buildWalkableList(grid);
         this._rebuildTopology();
@@ -298,6 +356,7 @@ export class Pathfinder {
     // an orthogonal stair pair (none until Wave 6). The rule is symmetric, so
     // stepMask also answers "may a neighbour step onto me".
     _rebuildTopology() {
+        this._snapshotGrid();
         const flags = this.staticFlags;
         const grid = this.grid;
         for (let index = 0; index < CELLS; index++) {
@@ -440,13 +499,79 @@ export class Pathfinder {
         return bytes;
     }
 
+    // A new (or in-place edited) walk grid starts a fresh routing context, as
+    // at construction: the walk bits and step mask rebuild, the authored
+    // route layers and crowd inputs reload from their collections on the
+    // next lookup, and every cached route and sink field is dropped. Terrace
+    // tiers and stairs (`setTierGrid`) and the sink seeds carry over.
     setGrid(grid) {
         this.grid = grid;
         this.walkableTiles = this._buildWalkableList(grid);
         this._pathCache.clear();
+        this._bridgeMapCodes.clear();
+        this._bridgeMapSeq = 0;
         this._cacheHits = 0;
         this._cacheMisses = 0;
+        this._resetRouteLayers();
         this._rebuildTopology();
+    }
+
+    _resetRouteLayers() {
+        const flags = this.staticFlags;
+        for (let index = 0; index < CELLS; index++) flags[index] &= FLAG_STAIR;
+        this.bridgeIdGrid.fill(0);
+        this._roleHash.fill(0);
+        this._baseCostStaticKey = -1;
+        this._standingRef = null;
+        this._standingVersion = '';
+        this._congestionRef = null;
+        this._congestionVersion = '';
+        this._primary = null;
+        this._sinkBuilt.fill(0);
+    }
+
+    // A caller may write into the grid array it handed over without calling
+    // setGrid. Every routing lookup (findPath, sinkCostAt,
+    // sampleFlowDirection) first compares that array with the walk bits it
+    // was built from and resyncs on any difference, so a tile blocked in
+    // place is never routed through. A 0/1 byte grid compares as 400 32-bit
+    // words against the walk bit of staticFlags (no copy kept); any other
+    // array compares tile by tile.
+    _snapshotGrid() {
+        const grid = this.grid;
+        this._syncedGrid = grid;
+        this._gridWords = null;
+        if (!(grid instanceof Uint8Array) || grid.length !== CELLS || CELLS % 4 !== 0 || grid.byteOffset % 4 !== 0) return;
+        for (let index = 0; index < CELLS; index++) if (grid[index] > 1) return;
+        this._gridWords = new Uint32Array(grid.buffer, grid.byteOffset, CELLS >> 2);
+    }
+
+    _syncGrid() {
+        const grid = this.grid;
+        if (!grid) return false;
+        if (grid !== this._syncedGrid) {
+            this.setGrid(grid);
+            return true;
+        }
+        const words = this._gridWords;
+        if (words) {
+            const flagWords = this._flagWords;
+            for (let index = 0; index < words.length; index++) {
+                if (words[index] !== (flagWords[index] & WALK_WORD)) {
+                    this.setGrid(grid);
+                    return true;
+                }
+            }
+            return false;
+        }
+        const flags = this.staticFlags;
+        for (let index = 0; index < CELLS; index++) {
+            if ((grid[index] === 1) !== ((flags[index] & FLAG_WALK) !== 0)) {
+                this.setGrid(grid);
+                return true;
+            }
+        }
+        return false;
     }
 
     // Wave 6 E2 — terrace tiers (0..2) and their stair tiles. Every tier is 0
@@ -464,9 +589,11 @@ export class Pathfinder {
         this._rebuildTopology();
     }
 
+    // Reads the walk bit the step mask was built from, so a walkability
+    // answer and a route always agree on the same grid snapshot.
     isWalkable(tileX, tileY) {
         if (tileX < 0 || tileX >= MAP_SIZE || tileY < 0 || tileY >= MAP_SIZE) return false;
-        return this.grid[tileY * MAP_SIZE + tileX] === 1;
+        return (this.staticFlags[tileY * MAP_SIZE + tileX] & FLAG_WALK) !== 0;
     }
 
     _tileIndex(tileX, tileY) {
@@ -519,6 +646,7 @@ export class Pathfinder {
     // Empty array if unreachable. If straight-line works (no obstacles between centers
     // sampled at tile granularity), returns the single waypoint [to].
     findPath(from, to, bridgeTiles, options = null) {
+        this._syncGrid();
         const fx = Math.round(from.tileX);
         const fy = Math.round(from.tileY);
         const pathOptions = this._normalizePathOptions(options, bridgeTiles);
@@ -556,7 +684,7 @@ export class Pathfinder {
             if (weightedResult.length > 0) return weightedResult;
         }
 
-        return this._findUnweightedPath(fx, fy, tx, ty, bridgeTiles);
+        return this._findUnweightedPath(fx, fy, tx, ty, bridgeTiles, pathOptions.routeVersion);
     }
 
     // Target candidates into `_targets`: the tile itself when walkable, else
@@ -585,11 +713,12 @@ export class Pathfinder {
         return false;
     }
 
-    // Unweighted trips: the straight tile line when clear, else BFS. Cached
-    // under a numeric key (start tile, target tile, bridge map).
-    _findUnweightedPath(fx, fy, tx, ty, bridgeTiles) {
+    // Unweighted trips: the straight tile line when every step is a legal
+    // stepMask edge, else BFS. Cached under a numeric key (start tile, target
+    // tile, bridge-map content).
+    _findUnweightedPath(fx, fy, tx, ty, bridgeTiles, routeVersion = '') {
         const startIdx = fy * MAP_N + fx;
-        const cacheKey = this._unweightedCacheKey(startIdx, tx, ty, bridgeTiles);
+        const cacheKey = this._unweightedCacheKey(startIdx, tx, ty, bridgeTiles, routeVersion);
         if (cacheKey >= 0) {
             const cached = this._pathCache.get(cacheKey);
             if (cached) {
@@ -666,14 +795,23 @@ export class Pathfinder {
         return result;
     }
 
-    _unweightedCacheKey(startIdx, tx, ty, bridgeTiles) {
+    // The bridge map enters by content (deck ids and kinds included), never
+    // by object identity, so a map edited in place keys a fresh route.
+    _unweightedCacheKey(startIdx, tx, ty, bridgeTiles, routeVersion) {
         if (tx < -512 || tx > 511 || ty < -512 || ty > 511) return -1;
         let mapCode = 0;
-        if (bridgeTiles && typeof bridgeTiles === 'object') {
-            mapCode = this._bridgeMapCodes.get(bridgeTiles);
+        if (bridgeTiles && typeof bridgeTiles === 'object' && typeof bridgeTiles.keys !== 'function') return -1;
+        if (bridgeTiles?.size) {
+            const hash = this._collectionHash(bridgeTiles, true, routeVersion);
+            mapCode = this._bridgeMapCodes.get(hash);
             if (!mapCode) {
+                if (this._bridgeMapSeq >= BRIDGE_MAP_CODE_LIMIT) {
+                    this._bridgeMapCodes.clear();
+                    this._bridgeMapSeq = 0;
+                    this._pathCache.clear();
+                }
                 mapCode = ++this._bridgeMapSeq;
-                this._bridgeMapCodes.set(bridgeTiles, mapCode);
+                this._bridgeMapCodes.set(hash, mapCode);
             }
         }
         return ((mapCode * CELLS + startIdx) * 1024 + (ty + 512)) * 1024 + (tx + 512);
@@ -729,48 +867,75 @@ export class Pathfinder {
 
     // Folds the caller's authored collections into staticFlags. Each layer
     // keeps the content hash it was loaded from, so per-sprite copies of the
-    // same plaza set, or the same bridge map passed twice, never reload.
+    // same plaza set, or the same bridge map passed twice, never reload,
+    // while a collection edited in place (same object, same size, other
+    // tiles) always does. `routeVersion`, when a caller supplies one, is the
+    // collections' revision and lets an unchanged (object, revision) pair
+    // skip re-hashing.
     _syncStatic(bridgeTiles, pathOptions) {
-        return this._syncStaticRole(0, bridgeTiles, pathOptions.bridgeTiles)
-            | this._syncStaticRole(1, pathOptions.dockTiles, null)
-            | this._syncStaticRole(2, pathOptions.plazaTiles, null)
-            | this._syncStaticRole(3, pathOptions.roadTiles, pathOptions.preferredTiles)
-            | this._syncStaticRole(4, pathOptions.laneTiles, null)
-            | this._syncStaticRole(5, pathOptions.avoidTiles, null);
+        const version = pathOptions.routeVersion;
+        return this._syncStaticRole(0, bridgeTiles, pathOptions.bridgeTiles, version)
+            | this._syncStaticRole(1, pathOptions.dockTiles, null, version)
+            | this._syncStaticRole(2, pathOptions.plazaTiles, null, version)
+            | this._syncStaticRole(3, pathOptions.roadTiles, pathOptions.preferredTiles, version)
+            | this._syncStaticRole(4, pathOptions.laneTiles, null, version)
+            | this._syncStaticRole(5, pathOptions.avoidTiles, null, version);
     }
 
     // One layer from up to two collections (a bridge map passed as argument
     // and option, roads and preferred tiles); returns its flag when present.
-    _syncStaticRole(role, first, second) {
+    _syncStaticRole(role, first, second, version) {
         const a = first?.size ? first : null;
         const b = second?.size && second !== a ? second : null;
         if (!a && !b) return 0;
         const withInfo = role === 0;
-        const ha = a ? this._collectionHash(a, withInfo) : 0;
-        const hb = b ? this._collectionHash(b, withInfo) : 0;
+        const ha = a ? this._collectionHash(a, withInfo, version) : 0;
+        const hb = b ? this._collectionHash(b, withInfo, version) : 0;
         const hash = !a ? hb : (!b || ha === hb ? ha : (combineKey(ha ^ hb, Math.min(ha, hb)) || 1));
         if (this._roleHash[role] !== hash) this._loadStaticRole(role, a, b, hash);
         return STATIC_ROLE_FLAGS[role];
     }
 
-    _collectionHash(collection, withInfo) {
+    // Order-independent content hash of a tile collection (its bridge ids
+    // and kinds too, `withInfo`). Object identity and size alone never vouch
+    // for content: the memo keeps the key sequence (and bridge info) it was
+    // hashed from, and a later call reuses its hash only after an exact
+    // compare against that snapshot, or, when the caller supplies a
+    // revision, for the same object at the same revision.
+    _collectionHash(collection, withInfo, version = '') {
+        const size = collection.size;
+        const isMap = withInfo && collection instanceof Map;
         const memo = this._collectionHashes.get(collection);
-        if (memo && memo.size === collection.size) return memo.hash;
+        if (memo && memo.size === size && memo.isMap === isMap) {
+            if (version && memo.version === version) return memo.hash;
+            if (sameCollectionContent(collection, memo)) {
+                memo.version = version;
+                return memo.hash;
+            }
+        }
+        const keys = new Array(size);
+        const info = isMap ? new Array(size * 2) : null;
         let sum = 0;
         let xor = 0;
-        const isMap = collection instanceof Map;
+        let slot = 0;
         for (const key of collection.keys()) {
             const index = tileKeyIndex(key);
             let entry = index >= 0 ? mix32(index + 1) : mix32(fnv1aString(key) | 0x80000000);
-            if (withInfo && isMap) {
-                const bridgeId = collection.get(key)?.bridgeId;
+            if (isMap) {
+                const value = collection.get(key);
+                const bridgeId = value?.bridgeId;
+                const kind = value?.kind;
                 if (bridgeId) entry = mix32(entry ^ fnv1aString(bridgeId));
+                if (kind) entry = mix32(entry ^ fnv1aString(kind, 0x9e3779b9));
+                info[slot * 2] = bridgeId;
+                info[slot * 2 + 1] = kind;
             }
+            keys[slot++] = key;
             sum = (sum + entry) >>> 0;
             xor = (xor ^ mix32(entry + 0x7f4a7c15)) >>> 0;
         }
-        const hash = combineKey(combineKey(sum, xor), collection.size) || 1;
-        this._collectionHashes.set(collection, { size: collection.size, hash });
+        const hash = combineKey(combineKey(sum, xor), size) || 1;
+        this._collectionHashes.set(collection, { version, size, isMap, keys, info, hash });
         return hash;
     }
 
@@ -851,21 +1016,31 @@ export class Pathfinder {
 
     // ---- Dynamic crowd fields ------------------------------------------------
 
+    // A supplied `standingVersion` / `congestionVersion` (VisitTileAllocator's
+    // snapshot fingerprints) is authoritative: the same object at the same
+    // version is not re-read, and a bumped version re-reads it even when the
+    // caller mutated that object in place. An unversioned collection may have
+    // changed in place at any time, so it is re-read on every lookup; the
+    // occupancy fingerprint still keeps unchanged content from rebuilding.
     _syncCrowd(pathOptions) {
         let mask = 0;
         const standing = pathOptions.standingTiles;
         if (standing?.size) {
             mask |= CROWD_STANDING;
-            if (standing !== this._standingRef) {
+            const version = pathOptions.standingVersion;
+            if (!version || standing !== this._standingRef || version !== this._standingVersion) {
                 this._standingRef = standing;
+                this._standingVersion = version;
                 this._loadStanding(standing);
             }
         }
         const congestion = pathOptions.congestionTiles;
         if (congestion?.size) {
             mask |= CROWD_CONGESTION;
-            if (congestion !== this._congestionRef) {
+            const version = pathOptions.congestionVersion;
+            if (!version || congestion !== this._congestionRef || version !== this._congestionVersion) {
                 this._congestionRef = congestion;
+                this._congestionVersion = version;
                 this._loadCongestion(congestion);
             }
         }
@@ -1060,6 +1235,7 @@ export class Pathfinder {
     // current routing context (canal- and crowd-aware); Infinity when the
     // sink is unknown or unreachable from the tile.
     sinkCostAt(sink, tileX, tileY) {
+        this._syncGrid();
         const id = this._resolveSinkId(sink);
         const index = this._tileIndex(tileX, tileY);
         if (id < 0 || index < 0) return Infinity;
@@ -1072,6 +1248,7 @@ export class Pathfinder {
     // each legal, strictly-descending neighbour by its integrated cost plus
     // this personality's step cost; ties keep the lowest direction index.
     sampleFlowDirection(sink, tileX, tileY, personality = null) {
+        this._syncGrid();
         const id = this._resolveSinkId(sink);
         const index = this._tileIndex(tileX, tileY);
         if (id < 0 || index < 0) return -1;
@@ -1436,7 +1613,7 @@ export class Pathfinder {
         const standingTiles = this._normalizeTileSet(options?.standingTiles);
         // W0.2 — no sorted standing string: the crowd layers key on their
         // FNV-1a occupancy fingerprint instead.
-        const standingVersion = options?.standingVersion || '';
+        const standingVersion = String(options?.standingVersion || '');
         const congestionTiles = this._normalizeTileWeights(options?.congestionTiles);
         const optionBridgeTiles = this._normalizeTileSet(options?.bridgeTiles);
         const bridgeCount = optionBridgeTiles?.size || bridgeTiles?.size || 0;
@@ -1454,8 +1631,11 @@ export class Pathfinder {
         return {
             weighted: !!options?.preferRoads || weighted,
             cacheKey: options?.cacheKey || '',
-            congestionVersion: options?.congestionVersion || options?.crowdVersion || '',
+            congestionVersion: String(options?.congestionVersion || options?.crowdVersion || ''),
             standingVersion,
+            // Revision of the authored route collections (roads, lanes,
+            // plazas, docks, avoid tiles, bridges); optional.
+            routeVersion: String(options?.routeVersion || ''),
             roadTiles,
             preferredTiles,
             plazaTiles,
@@ -1563,11 +1743,18 @@ export class Pathfinder {
         return !!this._lineWalkableTiles(x0, y0, x1, y1);
     }
 
+    // The Bresenham tile line from (x0, y0) to (x1, y1), or null when any
+    // step on it is not a legal stepMask edge. That one test covers every
+    // step rule the searches use: the next tile is walkable, a diagonal
+    // never cuts a blocked corner, and a terrace tier change only happens
+    // across an orthogonal stair pair. The straight-line shortcut and
+    // `_lookahead` both walk this, so neither can skip a terrace edge.
     _lineWalkableTiles(x0, y0, x1, y1) {
         const dx = Math.abs(x1 - x0);
         const dy = Math.abs(y1 - y0);
         const sx = x0 < x1 ? 1 : -1;
         const sy = y0 < y1 ? 1 : -1;
+        const mask = this.stepMask;
         let err = dx - dy;
         let cx = x0;
         let cy = y0;
@@ -1577,15 +1764,14 @@ export class Pathfinder {
             tiles.push({ tileX: cx, tileY: cy });
             if (cx === x1 && cy === y1) return tiles;
             const e2 = 2 * err;
-            if (e2 > -dy && e2 < dx) {
-                // Diagonal step — check both corner tiles to prevent corner-cutting.
-                if (!this.isWalkable(cx + sx, cy) || !this.isWalkable(cx, cy + sy)) return null;
-                err -= dy; cx += sx;
-                err += dx; cy += sy;
-            } else {
-                if (e2 > -dy) { err -= dy; cx += sx; }
-                if (e2 < dx) { err += dx; cy += sy; }
-            }
+            let stepX = 0;
+            let stepY = 0;
+            if (e2 > -dy) { err -= dy; stepX = sx; }
+            if (e2 < dx) { err += dx; stepY = sy; }
+            const dir = STEP_DIR[(stepY + 1) * 3 + stepX + 1];
+            if (dir < 0 || !(mask[cy * MAP_N + cx] & (1 << dir))) return null;
+            cx += stepX;
+            cy += stepY;
         }
     }
 

@@ -603,3 +603,225 @@ test('benchmark: sink findPath lookups average <= 0.10 ms over 500 production qu
     t.diagnostic(`16-sink rebuild ${rebuilt.rebuildMs.toFixed(3)} ms total · ${rebuilt.avgRebuildMs.toFixed(3)} ms/sink`);
     assert.equal(rebuilt.rebuilds, SINK_COUNT);
 });
+
+// The tiles a straight segment walks: the same Bresenham stepping the
+// Pathfinder's line test and `_lookahead` use, written out independently.
+function lineTiles(from, to) {
+    const tiles = [];
+    let x = from.tileX;
+    let y = from.tileY;
+    const dx = Math.abs(to.tileX - x);
+    const dy = Math.abs(to.tileY - y);
+    const sx = x < to.tileX ? 1 : -1;
+    const sy = y < to.tileY ? 1 : -1;
+    let err = dx - dy;
+    while (x !== to.tileX || y !== to.tileY) {
+        const e2 = 2 * err;
+        if (e2 > -dy) { err -= dy; x += sx; }
+        if (e2 < dx) { err += dx; y += sy; }
+        tiles.push({ tileX: x, tileY: y });
+    }
+    return tiles;
+}
+
+const expandLines = (from, waypoints) => {
+    const tiles = [];
+    let prev = from;
+    for (const point of waypoints) {
+        tiles.push(...lineTiles(prev, point));
+        prev = point;
+    }
+    return tiles;
+};
+
+test('terrace edges: straight-line shortcuts and lookahead never step across a tier change without a stair', () => {
+    // Open ground split into two terraces: x 0..19 is tier 0, x 20..39 tier
+    // 1, joined by one orthogonal stair pair at (19,30)/(20,30).
+    const tiers = new Uint8Array(CELLS);
+    for (let y = 0; y < MAP_SIZE; y++) for (let x = 20; x < MAP_SIZE; x++) tiers[y * MAP_SIZE + x] = 1;
+    const stairs = [{ tileX: 19, tileY: 30 }, { tileX: 20, tileY: 30 }];
+    const stairKeys = new Set(stairs.map(keyOf));
+    const tierAt = (tile) => tiers[tile.tileY * MAP_SIZE + tile.tileX];
+    // Independent of stepMask: a walk/corner-legal step that changes tier
+    // only orthogonally, by one, between two stair tiles.
+    const terraceStep = (pathfinder, a, b) => {
+        if (!legalStep(pathfinder, a.tileX, a.tileY, b.tileX, b.tileY)) return false;
+        if (tierAt(a) === tierAt(b)) return true;
+        return (a.tileX === b.tileX || a.tileY === b.tileY) && Math.abs(tierAt(a) - tierAt(b)) === 1
+            && stairKeys.has(keyOf(a)) && stairKeys.has(keyOf(b));
+    };
+    const assertTerraceWalk = (pathfinder, from, tiles, label) => {
+        let prev = from;
+        for (const tile of tiles) {
+            assert.ok(terraceStep(pathfinder, prev, tile), `${label}: illegal terrace step ${keyOf(prev)}->${keyOf(tile)}`);
+            prev = tile;
+        }
+    };
+    const build = (withStairs, wall = []) => {
+        const blocked = new Set(wall);
+        const pathfinder = syntheticPathfinder(gridWith((x, y) => !blocked.has(`${x},${y}`)));
+        pathfinder.setTierGrid(tiers, withStairs ? stairs : []);
+        return pathfinder;
+    };
+
+    const pathfinder = build(true);
+    // The terrace edge's step mask is zero everywhere but the stair.
+    for (let y = 0; y < MAP_SIZE; y++) {
+        const west = pathfinder.stepMask[y * MAP_SIZE + 19];
+        const east = pathfinder.stepMask[y * MAP_SIZE + 20];
+        assert.equal(!!(west & 1), y === 30, `(19,${y}) east step`);
+        assert.equal(!!(east & 2), y === 30, `(20,${y}) west step`);
+        for (const dir of [4, 6]) assert.equal(west & (1 << dir), 0, `(19,${y}) never steps diagonally onto the upper terrace`);
+        for (const dir of [5, 7]) assert.equal(east & (1 << dir), 0, `(20,${y}) never steps diagonally onto the lower terrace`);
+    }
+    assert.equal(pathfinder._lineWalkable(19, 10, 20, 10), false, 'adjacent walkable tiles across the edge are not a line');
+    assert.equal(pathfinder._lineWalkable(10, 4, 30, 8), false, 'nor is a long line across it');
+    assert.equal(pathfinder._lineWalkable(19, 30, 20, 30), true, 'the stair pair is');
+
+    // (a) The straight-line fast path: adjacent tiles, no stair between.
+    // (b) `_lookahead`: a wall blocks the direct row, so BFS runs and the
+    //     lookahead looks for shortcuts back across the edge.
+    const sinkTarget = { tileX: 20, tileY: 10 };
+    for (const [label, finder, from, to] of [
+        ['fast path', pathfinder, { tileX: 19, tileY: 10 }, { tileX: 20, tileY: 10 }],
+        ['lookahead', build(true, ['19,10', '20,10']), { tileX: 18, tileY: 10 }, { tileX: 21, tileY: 10 }],
+    ]) {
+        finder.setSinkTiles('portal-exit', [label === 'fast path' ? sinkTarget : to]);
+        const weightedOptions = { preferRoads: true, roadTiles: new Set(['0,0']) };
+        const routes = [
+            ['weighted sink', finder.findPath(from, to, new Map(), weightedOptions), expandWeighted],
+            ['weighted ad-hoc', finder.findPath(from, { tileX: to.tileX + 1, tileY: to.tileY }, new Map(), weightedOptions), expandWeighted],
+            ['unweighted', finder.findPath(from, to, null, null), expandLines],
+            ['unweighted again (cached)', finder.findPath(from, to, null, null), expandLines],
+        ];
+        for (const [mode, path, expand] of routes) {
+            assert.ok(path.length > 1, `${label} ${mode}: a multi-waypoint route, not a shortcut`);
+            const tiles = expand(from, path);
+            assertTerraceWalk(finder, from, tiles, `${label} ${mode}`);
+            assert.ok(tiles.some((tile) => stairKeys.has(keyOf(tile))), `${label} ${mode} climbs the stair`);
+        }
+    }
+
+    // No stair at all: the terraces are sealed, and no mode falls back to a
+    // straight line across the edge.
+    const sealed = build(false);
+    for (const options of [{ preferRoads: true, roadTiles: new Set(['0,0']) }, null]) {
+        assert.deepEqual(quiet(() => sealed.findPath({ tileX: 19, tileY: 10 }, { tileX: 20, tileY: 10 }, null, options)), []);
+    }
+});
+
+test('crowd and route dirty checks: in-place edits re-read on a bumped version or by content, never by identity and size', () => {
+    let now = 0;
+    const pathfinder = syntheticPathfinder(gridWith(() => true), { clock: () => now });
+    const roadTiles = new Set(['0,0']);
+    const from = { tileX: 20, tileY: 14 };
+    const to = { tileX: 20, tileY: 26 };
+    const congestion = new Map([['3,3', 8]]);
+    const route = (extra) => pathfinder.findPath(from, to, null, { preferRoads: true, roadTiles, congestionTiles: congestion, ...extra });
+    const crosses = (path, x, y) => expandWeighted(from, path).some((tile) => tile.tileX === x && tile.tileY === y);
+
+    assert.ok(crosses(route({ congestionVersion: 'fnv:1' }), 20, 20), 'a calm column walks straight down');
+    assert.ok(pathfinder.congestionCostAt(3, 3) > 1);
+    assert.equal(pathfinder.congestionCostAt(20, 20), 0);
+
+    // The same Map moves its crowd from (3,3) to (20,20) in place (same
+    // object, same size) and the caller bumps its version.
+    congestion.delete('3,3');
+    congestion.set('20,20', 8);
+    const bumped = route({ congestionVersion: 'fnv:2' });
+    assert.equal(pathfinder.congestionCostAt(3, 3), 0, 'the old crowd is gone at once');
+    assert.ok(Math.abs(pathfinder.congestionCostAt(20, 20) - 1.2) < 1e-6, 'the new crowd costs at once');
+    assert.ok(!crosses(bumped, 20, 20), 'the route steps around the moved jam');
+    assertLegalWalk(pathfinder, from, expandWeighted(from, bumped), 'bumped');
+
+    // A supplied version is authoritative: same object, same version is
+    // not re-read.
+    const ingests = pathfinder.getDiagnostics().flow.crowdIngests;
+    route({ congestionVersion: 'fnv:2' });
+    assert.equal(pathfinder.getDiagnostics().flow.crowdIngests, ingests, 'an unchanged (object, version) pair is not re-read');
+
+    // Unversioned, the same Map edited in place is re-read on every lookup.
+    congestion.delete('20,20');
+    congestion.set('30,5', 8);
+    assert.ok(crosses(route({}), 20, 20), 'the cleared column is walkable again');
+    assert.equal(pathfinder.congestionCostAt(20, 20), 0);
+    assert.ok(pathfinder.congestionCostAt(30, 5) > 1);
+
+    // Standing bodies: a Set edited in place with a bumped version.
+    const standing = new Set(['5,5']);
+    const standingRoute = (standingVersion) => pathfinder.findPath(from, to, null, { preferRoads: true, roadTiles, standingTiles: standing, standingVersion });
+    standingRoute('5,5');
+    assert.equal(pathfinder.standingGrid[5 * MAP_SIZE + 5], 1);
+    standing.delete('5,5');
+    standing.add('20,20');
+    assert.ok(!crosses(standingRoute('20,20'), 20, 20), 'the route steps around the moved body');
+    assert.equal(pathfinder.standingGrid[5 * MAP_SIZE + 5], 0);
+    assert.equal(pathfinder.standingGrid[20 * MAP_SIZE + 20], 1);
+
+    // Authored route layers: a road Set edited in place (same size) reloads
+    // by content, with or without a route revision.
+    const roadBit = (x, y) => !!(pathfinder.staticFlags[y * MAP_SIZE + x] & 16);
+    const roads = new Set(['5,5', '5,6']);
+    const roadRoute = (routeVersion) => pathfinder.findPath(from, to, null, { preferRoads: true, roadTiles: roads, routeVersion });
+    roadRoute('');
+    assert.ok(roadBit(5, 5) && roadBit(5, 6));
+    roads.delete('5,5');
+    roads.add('6,6');
+    roadRoute('');
+    assert.ok(!roadBit(5, 5) && roadBit(6, 6), 'an unversioned in-place edit reloads the road layer');
+    roadRoute('roads-1');
+    roads.delete('6,6');
+    roads.add('7,7');
+    roadRoute('roads-2');
+    assert.ok(!roadBit(6, 6) && roadBit(7, 7), 'a bumped route revision reloads it');
+});
+
+test('setGrid: blocking a tile in place invalidates every route, sink field and walkability answer through it', () => {
+    // A wall at x = 20 with gaps at (20,10) and (20,30).
+    const grid = gridWith((x, y) => x !== 20 || y === 10 || y === 30);
+    const pathfinder = syntheticPathfinder(grid);
+    const from = { tileX: 15, tileY: 10 };
+    const to = { tileX: 25, tileY: 10 };
+    const adhoc = { tileX: 25, tileY: 11 };
+    pathfinder.setSinkTiles('portal-exit', [to]);
+    const options = { preferRoads: true, roadTiles: new Set(['0,0']) };
+    const gapIndex = 10 * MAP_SIZE + 20;
+    const throughGap = (tiles) => tiles.some((tile) => tile.tileX === 20 && tile.tileY === 10);
+    const routes = () => [
+        ['weighted sink', from, pathfinder.findPath(from, to, new Map(), options), expandWeighted],
+        ['weighted ad-hoc', from, pathfinder.findPath(from, adhoc, new Map(), options), expandWeighted],
+        ['unweighted', from, pathfinder.findPath(from, to, null, null), expandLines],
+    ];
+    for (const [mode, start, path, expand] of routes()) {
+        assert.ok(throughGap(expand(start, path)), `${mode} takes the near gap while it is open`);
+    }
+    const openCost = pathfinder.sinkCostAt('portal-exit', from.tileX, from.tileY);
+
+    const assertBlocked = (label) => {
+        assert.equal(pathfinder.isWalkable(20, 10), false, `${label}: isWalkable reads the rebuilt walk bit`);
+        assert.ok(!pathfinder.walkableTiles.some((tile) => tile.tileX === 20 && tile.tileY === 10), `${label}: the walkable list drops it`);
+        for (let index = 0; index < CELLS; index++) {
+            const x = index % MAP_SIZE;
+            assert.equal(pathfinder.isWalkable(x, (index - x) / MAP_SIZE), grid[index] === 1, `${label}: isWalkable matches the grid at ${index}`);
+        }
+        for (const [mode, start, path, expand] of routes()) {
+            const tiles = expand(start, path);
+            assert.ok(tiles.length > 0 && !throughGap(tiles), `${label} ${mode} never walks through the blocked gap`);
+            assertLegalWalk(pathfinder, start, tiles, `${label} ${mode}`);
+        }
+        assert.ok(pathfinder.sinkCostAt('portal-exit', from.tileX, from.tileY) > openCost + 20, `${label}: the sink field rebuilt around the far gap`);
+    };
+
+    grid[gapIndex] = 0;
+    pathfinder.setGrid(grid);
+    assertBlocked('setGrid');
+
+    // The same edit without setGrid: the next lookup notices the array no
+    // longer matches its walk bits and resyncs before routing.
+    grid[gapIndex] = 1;
+    pathfinder.setGrid(grid);
+    for (const [mode, start, path, expand] of routes()) assert.ok(throughGap(expand(start, path)), `${mode} reopens through the gap`);
+    grid[gapIndex] = 0;
+    assert.ok(!throughGap(expandWeighted(from, pathfinder.findPath(from, to, new Map(), options))), 'an in-place edit is seen by the next findPath');
+    assertBlocked('in place');
+});

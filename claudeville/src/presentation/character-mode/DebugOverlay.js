@@ -132,9 +132,10 @@ export class DebugOverlay {
         ctx.restore();
     }
 
-    // Shift-P pathfinding overlay: planned paths as breadcrumb dots plus a
-    // glowing diamond on each agent's destination tile. Independent of the
-    // main shift-D overlay so paths stay readable without the walkability tint.
+    // Shift+O pathfinding overlay (moved from Shift+P): planned paths as
+    // breadcrumb dots plus a glowing diamond on each agent's destination
+    // tile. Independent of the main Shift+D overlay so paths stay readable
+    // without the walkability tint.
     drawPathDebug(ctx, { agentSprites } = {}) {
         if (!this.pathDebugEnabled || !agentSprites?.size) return;
         for (const sprite of agentSprites.values()) {

@@ -136,7 +136,7 @@ not extend alpha beyond albedo.
 The committed pilot atlas has identical rectangles and padding in every channel:
 
 - `albedo`: original RGBA pixels.
-- `material`: R = stable material-class index; G/B reserved (the baked terrain map: see below); A = albedo alpha.
+- `material`: R = stable material-class index; G reserved, except on character sheets and action strips, where its low six bits are the Wave 0 `recolorCode` (0 keeps the albedo, 1-31 a robe colour, 32-34 a trim anchor; authored by `scripts/sprites/author-roster-channels.mjs` from `characters/roster-palettes.json`), and in the baked terrain map (see below); B reserved; A = albedo alpha.
 - `emissive`: authored RGB with A as contribution; transparent black by default.
 - `occluder`: R = authored height (zero in the flat default), G = occlusion
   strength, B = surface code on surface-coded landmarks (*Occluder channel
@@ -181,14 +181,14 @@ re-points its attributes at its own byte range (`_pointRecordInstances`).
 
 The layout below has one owner, `gpu/GpuRecordLayout.js`, so every world
 backend stages from the same bytes: `RECORD_LAYOUT` / `RECORD_OFFSETS` (field
-byte offsets), `RECORD_HEAD_BYTES` 48, `RECORD_INSTANCE_BYTES` 68,
+byte offsets), `RECORD_HEAD_BYTES` 48, `RECORD_INSTANCE_BYTES` 72,
 `recordHasDefaultTail`, `writeGpuRecordInstance(f32, u16, byteOffset, record,
 tail)` and `stageGpuRecords(batches, staging, { fullTail })` (one growable
 buffer from `createRecordStaging()`; sets each batch's `tail`, `cueRuns`,
-`instanceOffset`, `count`; `fullTail` stages every record at 68 bytes for a
+`instanceOffset`, `count`; `fullTail` stages every record at 72 bytes for a
 backend with base-instance draws). `assertRecordStride(stride)` checks the
 field table tiles the record at module load and rejects any other stride: a
-WebGPU storage struct must use scalar lanes (stride 68), never `vec4` lanes
+WebGPU storage struct must use scalar lanes (stride 72), never `vec4` lanes
 (stride 80). The uint16 pairs are little-endian, so a reader of 32-bit lanes
 takes each lane's low half first.
 
@@ -200,21 +200,28 @@ takes each lane's low half first.
 | 3 | `USHORT x4` | `(page layer, gate x 65535, ramp, flags)` | 48-55 |
 | 4 | `USHORT x4` | `(depth key, footY, frontCornerX, frontCornerY)`; receiver coordinates are integer world px + 32768 | 56-63 |
 | 5 | `USHORT x2`, `vertexAttribIPointer`, flat | `(ownerSlot, landmarkId)` | 64-67 |
+| 6 | `USHORT x2`, `vertexAttribIPointer`, flat | `(flags high half, variant or alpenglow row)`: flags 65536 and up; a `recolorIndex` record's crowd variant (0-11), else its alpenglow row | 68-71 |
 
 Continuous values stay float32, so the instanced frame is hash-identical with the
 six-vertex staging it replaced. A batch whose records all hold the default tail
-(locs 3-5: page layer 0, gate 1, no ramp or flags, depth key 0, footY -1,
-frontCorner `(0, -1)`, no identity) stages the 48-byte head only and reads the
-tail as constant generic attributes: terrain, ground marks and every
-ground-cue chord. A cue batch holding dot runs and a batch holding building or
+(locs 3-6: page layer 0, gate 1, no ramp, recolour row or flags, depth key 0,
+footY -1, frontCorner `(0, -1)`, no identity, no variant or alpenglow row) stages the 48-byte
+head only and reads the tail as constant generic attributes: terrain, ground
+marks and every ground-cue chord. A cue batch holding dot runs and a batch holding building or
 tree ground casts stage the tail (their flags).
 
-**Flags** (`GPU_RECORD_FLAGS` in `gpu/GpuWorldPolicy.js`, loc3.w). One bit per
-meaning, never reused. `assignGpuRecordV9Fields` packs bits 1-256, 1024, 4096
-and 8192 from the record's booleans; the mark and cue producers set `flags`
-directly; `wgsl/common.js` generates the WGSL `RECORD_FLAG_*` constants from
-the same object. Bit 2048 is held for the 2.8 lamp-shadow twin (look `nl3`);
-bits 16384 and up are free.
+**Flags** (`GPU_RECORD_FLAGS` in `gpu/GpuWorldPolicy.js`: loc3.w carries
+1-32768 and loc6.x, the high half, 65536 and up; both readers rebuild one
+32-bit word). One bit per meaning, never reused. `assignGpuRecordV9Fields`
+packs bits 1-256, 1024, 4096 and 8192, and since Wave 0 bits 16384-2097152,
+from the record's booleans (the Wave 0 bits also from its own `flags`); the
+mark and cue producers set `flags` directly; `wgsl/common.js` generates the
+WGSL `RECORD_FLAG_*` constants from the same object. Bit 2048 is held for the
+2.8 lamp-shadow twin (look `nl3`). Of the Wave 0 bits only `recolorIndex`
+(16384) has a writer today; `faceKeyed` 32768, `goldenRim` 65536,
+`reliefMaterial` 131072, `surfacePage` 262144, `mirrorSource` 524288,
+`shaftReceiver` 1048576 and `surfaceRelative` 2097152 are named and packed but
+not yet written. Bits above 2097152 are free.
 
 | Bit | Name | Writer | Reader |
 | ---: | --- | --- | --- |
@@ -231,6 +238,7 @@ bits 16384 and up are free.
 | 1024 | `seaFret` | `WorldFrameRenderer.groundFogRecords` (LA-7), set while the `la7` land share is below 1; the record's alpha is that share | fragment (`seaFretAlpha`): over coast flag `water` and not `covered`, and off the coast lattice, the bank keeps alpha 1; elsewhere the record alpha |
 | 4096 | `sunSelf` | SD-2: `AgentGpuOverlayRenderer.getGroundRecords` on a villager's sun trail (its own `cast` ground mark while the resident path reads the shade field), and `GpuSceneBuilder.recordForProp` on a prop the field holds as a mass of its own (`config/landmarkMassing.js` `PROP_MASSING`: the windmill) | fragment (`gpu/SunShade.js`), only while the shade field is bound: a ground-self record is discarded wherever the field's ground rule already shades its texel (trail and shade never add, and a body crossing a shade edge hands its shadow over texel by texel); an upright record takes the massing's verdict at its drawn position instead of the ceiling at its foot, so it is never under its own mass |
 | 8192 | `shadeExempt` | SD-2: `AgentGpuOverlayRenderer.setFrameRecord` on the body of an action-needed villager (waiting on you, errored, rate-limited; not a departed tableau), `AgentSprite` on what lies on that body (the rate-limited frost tint, a snow course) and on a petitioner's floor candle | fragment (`gpu/SunShade.js`), only while the shade field is bound: the record is never stepped, so attention loses nothing in the sun's shade |
+| 16384 | `recolorIndex` | `GpuSceneBuilder` body and layer records that won an `agentPaletteLut` row (`record.recolorRow`, loc3.z; the crowd variant in loc6.y) | fragment (`indexedAlbedo`, WebGL2 and WGSL): reads the texel's 6-bit `recolorCode` from the packed geometry's B bits 1..6 and looks it up in that row of `u_paletteLut` (0 keeps the albedo, 1-31 a robe colour, 32-34 a trim shift) before any filtering or lighting; a recolour record never takes the 3.5 ramp response |
 
 - **T1 mark records** (Wave 10 S5, WebGPU contract §7.4): `AttentionPlates
   .attentionMarkRecords(layout, { scale })` turns an attention layout's
@@ -394,7 +402,7 @@ guarantees 16 fragment units). Terrain, water and sprites share one program,
 | 2 | `u_shadeField` | SD-2 sun shade field (`ShadeField.js` `field.texels`, 1408x1536, 2x1 world px a texel, `texelFetch`): R shade ceiling (2 world px a unit), G ground coverage, B the trees' canopy coverage, A the massing's verdict at the drawn position (`SHADE_SURFACE` x 32). 8,650,752 B, uploaded once per built field (`field:shade`: about every 5 minutes of daylight); the 1x1 stand-in and `u_shadeRect` 0 while `sd2` is 0, at MINIMAL, with no sun up or before the first build lands | RGBA8 | `sunShadeStep` on sprite records (the unit 2.2's deleted screen occlusion target left free) |
 | 3 | `u_emissiveMap` | emissive sidecar | RGBA8 | authored emission (RGB hue, A contribution) |
 | 4 | `u_occluderMap` | occluder companion | RGBA8 | elevation; 2.3 surface code |
-| 5 | `u_paletteLut` | palette-ramp LUT, 11 material classes x 3 courses | RGBA8 | 3.5 ramp records (`paletteRamp`: the Command gate; with look `nl1` > 0 also `GpuSceneBuilder.RAMP_LANDMARKS`, today the Forge, Tavern, Taskboard and Lighthouse, on the tuned landing `u_firelight.y`, which never touches Command) |
+| 5 | `u_paletteLut` | `AgentLayerRecords.agentPaletteLut`, one `64×256` table (`PALETTE_LUT_WIDTH` x `PALETTE_LUT_HEIGHT`, uploaded as `lut:palette-ramp`): rows 0-2 the palette-ramp LUT, 11 material classes x 3 courses (`roster-palettes.json` `firelight`); rows 4-255 one villager palette identity each (texels 1-31 robe colours by recolour code, 32-34 the model's trim anchors, 35 the resolved trim) | RGBA8 | 3.5 ramp records, rows 0-2 (`paletteRamp`: the Command gate; with look `nl1` > 0 also `GpuSceneBuilder.RAMP_LANDMARKS`, today the Forge, Tavern, Taskboard and Lighthouse, on the tuned landing `u_firelight.y`, which never touches Command; gated by `u_hasPaletteLut`); Wave 0 `recolorIndex` body records, their own row (loc3.z): the 6-bit `recolorCode` authored in `sheet.material.png` G (low 6 bits) and carried in the packed geometry's B bits 1..6 (bit 0 the geometry-presence bit) |
 | 6 | `u_footprint` | footprint height (R, world px) + landmark id (G) (`FootprintField.js`, 704x384, 4 world px/texel) | RG8 | 2.2 light loop: the footprint march |
 | 7 | `u_cycleOffset` | 3.1 water cycle offset per coast cell | R8 | water crests and the near-shore cycle |
 | 8 | `u_coastField` | 3.6 coast field: R signed distance, G `COAST_FIELD_FLAGS`; BA 3.7 mirror stops | RGBA8 | swash, reflection ripple, the open-sea shelf, 2.9 water columns; `reflect` and `groundCast` records |
@@ -493,7 +501,7 @@ three ways; the record's flags choose the reading:
 | --- | --- | --- | --- |
 | R | authored fog elevation, 0-1; replaces loc2.z where A > 0 | true height above the landmark's visual base line, `min(255, round(h))` world px; fog lifts off it over 128 world px (`min(1, R x 255 / 128)`); the receiver's ground point is R px straight below the texel | material id (**255 = no material**, record default) |
 | G | occlusion strength (`alpha x occluder.strength`) | the same | occluder height, read as the elevation |
-| B | 0 | surface code `face x 64 + min(63, round(h / 4))`: face 0 up/apron, 1 left wall (SW-facing), 2 right wall (SE-facing), 3 roof | occlusion strength, read only as presence (**0 = no geometry**, record defaults; an authored 0 packs as 1/255) |
+| B | 0 | surface code `face x 64 + min(63, round(h / 4))`: face 0 up/apron, 1 left wall (SW-facing), 2 right wall (SE-facing), 3 roof | occlusion strength, read only as presence (**0 = no geometry**, record defaults; an authored 0 packs as 1/255); on a Wave 0 layered body sheet (`modelLayerSheet`, flag 16384 `recolorIndex`) instead `recolorCode << 1 \| presence`: bits 1..6 the material G code, bit 0 the geometry presence |
 | A | albedo alpha: presence | the same | 255 wherever material or geometry is present |
 
 - The surface code's readers take only the face class, `B >> 6`; the low six
@@ -583,16 +591,16 @@ three ways; the record's flags choose the reading:
 `?renderer=webgpu` forces it; `gpu/GpuWorldRendererWebGPU.js`, `gpu/wgpu/`,
 `gpu/wgsl/`). It consumes this contract unchanged:
 
-- Records: every batch stages the full 68-byte record
+- Records: every batch stages the full 72-byte record
   (`stageGpuRecords(batches, staging, { fullTail: true })`) into one storage
   buffer read in the vertex stage as `array<RecordInstance>` of scalar lanes
   (`wgsl/common.js`, built from `RECORD_LAYOUT`: `loc0x..loc2w` f32, then
-  `loc3xy`, `loc3zw`, `loc4xy`, `loc4zw`, `loc5xy` u32 with the first uint16 in
-  the low half; `recordLoc0..5()` return what the GL attributes read). A batch
-  draws its own slice with `firstInstance = instanceOffset / 68` (WebGPU's
-  `instance_index` includes it), so the head-only default tail is a WebGL2
+  `loc3xy`, `loc3zw`, `loc4xy`, `loc4zw`, `loc5xy`, `loc6xy` u32 with the first
+  uint16 in the low half; `recordLoc0..6()` return what the GL attributes read).
+  A batch draws its own slice with `firstInstance = instanceOffset / 72`
+  (WebGPU's `instance_index` includes it), so the head-only default tail is a WebGL2
   detail. A compute probe on every new device reads the lanes back through the
-  shader's own storage layout and calls `assertRecordStride` (68, never 80).
+  shader's own storage layout and calls `assertRecordStride` (72, never 80).
 - Samplers become named bindings (no sampler arrays; *WebGPU bind groups*
   below). Both albedo bindings always exist; the inactive one is a 1×1
   stand-in, as the page's is on unit 14. Every scene read is explicit LOD 0
@@ -648,7 +656,7 @@ stages). Group 0 is rebound per frame, group 1 per batch:
 | 0 / 16 | `linearSampler` | sampler | linear, clamp |
 | 0 / 17 | `shadeField` | `texture_2d<f32>` | SD-2 sun shade field, RGBA8 (`textureLoad`; `frame.shadeRect` / `frame.shade`), else the 1x1 stand-in |
 | 1 / 0 | `batch` | uniform buffer, dynamic offset (one 256-byte slot per batch) | `BatchUniforms` |
-| 1 / 1 | `recs` | read-only storage buffer, `array<RecordInstance>` | the frame's 68-byte records (the mark pass binds its own record buffer) |
+| 1 / 1 | `recs` | read-only storage buffer, `array<RecordInstance>` | the frame's 72-byte records (the mark pass binds its own record buffer) |
 | 1 / 2 | `albedo` | `texture_2d<f32>` | unpaged albedo, else a 1x1 stand-in |
 | 1 / 3 | `albedoPage` | `texture_2d_array<f32>` | albedo page, else a 1x1 stand-in |
 | 1 / 4 | `materialMap` | `texture_2d<f32>` | material sidecar or packed geometry |

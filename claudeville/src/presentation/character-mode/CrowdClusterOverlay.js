@@ -1,4 +1,5 @@
 import { TILE_HALF_WIDTH, TILE_HALF_HEIGHT } from './Projection.js';
+import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
 import { BUILDING_ACCENTS_RGB, STATUS_VISUALS, WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
 import { worldToTile } from './Projection.js';
@@ -60,10 +61,36 @@ function auraFromHex(hex, badgeAlpha = 0.8) {
     });
 }
 
-// Derived directly from STATUS_VISUALS (theme.js / DESIGN.md) so cluster auras
-// and pips stay locked to the single canonical status palette.
+// Derived directly from STATUS_VISUALS (theme.js / DESIGN.md) so the
+// standard's status pips, and the ground pool of every actionable crowd,
+// stay locked to the single canonical status palette.
 export const STATUS_AURA = Object.freeze(Object.fromEntries(
     Object.entries(STATUS_VISUALS).map(([status, visual]) => [status, auraFromHex(visual.color)]),
+));
+
+// The statuses that tint the ground: a crowd that needs the operator (needs
+// you, errored, rate limited) or is stalled (waiting) pools in its exact
+// STATUS_VISUALS hue.
+export const GROUND_SIGNAL_STATUSES = Object.freeze([
+    AgentStatus.WAITING_ON_USER,
+    AgentStatus.ERRORED,
+    AgentStatus.RATE_LIMITED,
+    AgentStatus.WAITING,
+]);
+
+// Every calm crowd (working, idle, completed, chatting) pools in one warm
+// neutral brass instead. At the ground pool's 7–12% alpha over green turf,
+// working green and idle sky read as green-on-green mush and parchment
+// vanished; one brass ground lets an actionable hue stand out on its own,
+// while the standard's pips still name each calm status in its own hue.
+export const CALM_GROUND_HEX = '#c8b58a';
+export const CALM_GROUND_AURA = auraFromHex(CALM_GROUND_HEX);
+
+export const GROUND_AURA = Object.freeze(Object.fromEntries(
+    Object.keys(STATUS_AURA).map((status) => [
+        status,
+        GROUND_SIGNAL_STATUSES.includes(status) ? STATUS_AURA[status] : CALM_GROUND_AURA,
+    ]),
 ));
 
 const PIP_RADIUS = 3;
@@ -136,7 +163,8 @@ function cohortAura(type) {
 }
 
 function clusterAura(cluster) {
-    return cluster.kind === 'cohort' ? cohortAura(cluster.building) : statusAura(cluster.dominantStatus);
+    if (cluster.kind === 'cohort') return cohortAura(cluster.building);
+    return GROUND_AURA[cluster.dominantStatus] || STATUS_AURA_FALLBACK;
 }
 
 // Ground pass: one faint scanline isometric ellipse per dense cluster, rimmed

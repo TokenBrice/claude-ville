@@ -210,11 +210,26 @@ function setHidden(node, hidden) {
     if (node && node.hidden !== hidden) node.hidden = hidden;
 }
 
+function setStyleProperty(node, name, value) {
+    const style = node?.style;
+    if (style && style.getPropertyValue(name) !== value) style.setProperty(name, value);
+}
+
+// The gold share of the volume track (topbar.css `--fill`): Chromium paints
+// the track from it, Firefox from ::-moz-range-progress. The fill ends under
+// the 8px thumb's centre on a track of any width: 4px + (100% - 8px) × the
+// step's share of the range.
+export function soundSliderFill(step) {
+    const ratio = Math.max(0, Math.min(1, (Number(step) || 0) / SOUND_STEP_MAX));
+    return `calc(4px + (100% - 8px) * ${Number(ratio.toFixed(4))})`;
+}
+
 function setSliderStep(slider, step) {
     const value = String(step);
     if (slider.input.value !== value) slider.input.value = value;
     setAttr(slider.input, 'aria-valuetext', stepValueText(step));
     setText(slider.value, stepReadout(step));
+    setStyleProperty(slider.input, '--fill', soundSliderFill(step));
 }
 
 export function resetPersistedSettings(storage = globalThis.window?.localStorage) {

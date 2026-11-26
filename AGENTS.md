@@ -27,7 +27,7 @@ Start the maintained local server with `npm run dev` at `http://localhost:4000`.
 | Codex config | `.codex/config.toml` | Project-scoped PixelLab MCP |
 | Model registry | `claudeville/src/config/models.json` (+ generated `.js`/`.cjs`) | [`.claude/skills/add-model/SKILL.md`](.claude/skills/add-model/SKILL.md) |
 | Tests / smoke | `scripts/tests/`, `scripts/smoke/` | [test README](scripts/tests/README.md), [smoke README](scripts/smoke/README.md) |
-| CI | `.github/workflows/ci.yml` | `npm ci` + `validate:full` on Node 22, 24 and 26 |
+| CI | `.github/workflows/ci.yml` | `npm ci` + `validate:full`, then `art:gate` and `visual:gate`, on Node 22, 24 and 26 |
 | Documentation | `docs/` | [`docs/README.md`](docs/README.md) |
 
 `/agents/` is gitignored local scratch for agent plans, research, and handovers: never commit it, and never link to it from tracked files.
@@ -44,7 +44,8 @@ Match the command to the change:
 | Structure / docs | `npm run verify:architecture` (includes root-doc parity) |
 | Agent scratch | `npm run check:artifacts` (`/agents/` stays ignored and untracked) |
 | Integration replay | `npm run test:integration` |
-| Sprite assets / `manifest.yaml` | `npm run sprites:audit-refresh`; visuals: `npm run sprites:capture-fresh` then `npm run sprites:visual-diff` |
+| Sprite assets / `manifest.yaml` | `npm run sprites:audit-refresh`; art budget: `npm run art:gate` (ratchets `scripts/sprites/art-budget.json`; CI); visuals: `npm run sprites:capture-fresh` then `npm run sprites:visual-diff` |
+| World visuals (frozen frames) | `npm run visual:gate` (pure-Node OKLab ΔE and SSIM against `claudeville/visual/golden/`; CI) |
 | World buildings / terrain config | `npm run world:validate-buildings`; `npm run world:validate-terrain` |
 | Sound / audio | `npm run audio:probe` (local gate; not in CI) |
 | Broad regression | `npm run validate:quick` (fast); `npm run validate:full` (CI) |
