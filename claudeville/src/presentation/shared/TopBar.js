@@ -295,7 +295,7 @@ export function connectionChip(state, now = Date.now()) {
 }
 
 export class TopBar {
-    constructor(world, { modal, attention, chronicle, spendLedger, frameAttention, readDashboardAtmosphere, refreshAtmosphere, simulation, onAudioReady } = {}) {
+    constructor(world, { modal, attention, chronicle, spendLedger, frameAttention, readDashboardAtmosphere, refreshAtmosphere, simulation, onAudioReady, onVisualBeatChange } = {}) {
         this._motionOverride = installReducedMotionOverride();
         this.world = world;
         this.modal = modal || null;
@@ -401,6 +401,7 @@ export class TopBar {
         // this bar's views of its `audio:sound-state`. A click inside them is
         // theirs, never an unlock gesture as well.
         this._audioOptions = {
+            onVisualBeatChange,
             world: this.world,
             ownsGesture: (target) => Boolean(target && (
                 this.els.soundGroup?.contains?.(target) || this._soundEls?.panel?.contains?.(target)

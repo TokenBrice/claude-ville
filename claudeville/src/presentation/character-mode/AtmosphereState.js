@@ -26,7 +26,7 @@ import { applyGradeToRgb, evaluateGrade, lampCourseAt } from './GradeEvaluator.j
 import { ART_RAMPS } from '../../config/artPalette.js';
 import { lookStrength } from './LookStrengths.js';
 import { readVillageForecast } from '../shared/VillageWeatherSettings.js';
-import { PRECIPITATING, snowfallOn } from './GroundState.js';
+import { PRECIPITATING, groundOptionsFor, groundStateAt, isFrostMonth, precipitationIsFrozen, snowBucketOf, snowfallOn } from './GroundState.js';
 import { WIND_MAX, baseWindX, windAt, windSpeedForType } from './Wind.js';
 import {
     SUNRISE_ALTITUDE_DEG,
@@ -578,12 +578,17 @@ function timelineStateAt(minute, knots, joined = false, realSky = false) {
 }
 
 // W3-D — 0.0 / 1.0 °C freezing hysteresis for visible breath puffs.
-// Returns boolean; never guesses freezing when temperature is absent unless
-// snow precipitation is actively frozen.
-export function resolveFreezingState(temperatureC, previousFreezing = false, frozenPrecip = false) {
-    if (frozenPrecip === true) return true;
+export function resolveFreezingState(temperatureC, previousFreezing = false, frozenPrecip = false,
+    { date, weather, frost, snowCover, phase } = {}) {
     const temp = temperatureC == null ? NaN : Number(temperatureC);
-    if (!Number.isFinite(temp)) return false;
+    if (!Number.isFinite(temp)) {
+        const month = date?.getMonth();
+        const fallingSnow = precipitationIsFrozen(month, weather) && weather?.precipitation > PRECIPITATING;
+        const coldPhase = phase ?? (date && resolvePhase(minutesSinceMidnight(date)).phase);
+        const clearDawn = isFrostMonth(month) && weather?.type === 'clear' && coldPhase === 'dawn';
+        return frozenPrecip === true || fallingSnow || (frost == null ? clearDawn : frost > 0)
+            || ((coldPhase === 'night' || coldPhase === 'dawn') && snowBucketOf(snowCover) > 0);
+    }
     if (temp <= 0.0) return true;
     if (temp >= 1.0) return false;
     return Boolean(previousFreezing);
@@ -1597,6 +1602,7 @@ export function createAtmosphereSnapshot({
         ? null : forecastSource(effectiveDate, forecast);
     const activeForecast = weatherSource?.kind === 'forecast' ? forecast : null;
     const weather = resolveWeather(effectiveDate, weatherOverride, { seedOverride, timelineMode, timelineKnots, forecast: activeForecast });
+    weather.frozen = weather.precipitation > PRECIPITATING && precipitationIsFrozen(effectiveDate.getMonth(), weather);
     const preset = WEATHER_PRESETS[weather.type] || WEATHER_PRESETS.clear;
     const intensity = clamp(weather.intensity);
     const cloudCover = Number.isFinite(weather.cloudCover) ? weather.cloudCover : preset.cloudCover;
@@ -1699,15 +1705,6 @@ export class AtmosphereState {
             timelineKnots: this._timelineKnots,
             forecast,
         });
-        const weather = this._lastSnapshot.weather;
-        if (weather) {
-            this._freezingState = resolveFreezingState(
-                weather.temperatureC,
-                this._freezingState,
-                weather.frozen === true,
-            );
-            weather.freezing = this._freezingState;
-        }
         // C-W2 — everything `groundStateAt` needs to integrate the same
         // history the live weather resolves from.
         this._lastSnapshot.timeline = {
@@ -1718,6 +1715,12 @@ export class AtmosphereState {
             knots: this._timelineKnots,
             forecast: this._lastSnapshot.weatherSource?.kind === 'forecast' ? forecast : null,
         };
+        const { weather, effectiveDate: date, phase } = this._lastSnapshot;
+        const ground = weather.temperatureC == null && (isFrostMonth(date.getMonth()) || phase === 'night' || phase === 'dawn')
+            ? groundStateAt(date, groundOptionsFor(this._lastSnapshot)) : null;
+        this._freezingState = resolveFreezingState(weather.temperatureC, this._freezingState, weather.frozen,
+            { date, weather, phase, frost: ground?.frost, snowCover: ground?.snowCover });
+        weather.freezing = this._freezingState;
         return this._lastSnapshot;
     }
 

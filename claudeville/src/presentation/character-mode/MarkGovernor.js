@@ -1,12 +1,14 @@
+import { SHELL_TOOL_NAMES } from '../../domain/services/ToolIdentity.js';
+
 export const MarkTier = Object.freeze({ PRIMARY: 'primary', RECENT: 'recent', WORKING: 'working', SECONDARY: 'working', AMBIENT: 'ambient' });
-const SHELL_TOOLS = new Set(['bash', 'shell', 'exec', 'run_command']);
 const STILL_WORK_ARC = Object.freeze({ draw: true, alpha: 0.78, unconditional: true });
 const TURN_SAND_MS = 120_000;
 
 export function stillWorkState(agent, nowMs) {
     if (agent?.status !== 'working' || agent.isDeparted || !Number.isFinite(nowMs)) return null;
     if (agent.pendingTool) {
-        if (!SHELL_TOOLS.has(String(agent.pendingTool).toLowerCase())
+        const tool = String(agent.pendingTool).toLowerCase();
+        if (!SHELL_TOOL_NAMES.has(tool === 'bash' ? 'Bash' : tool)
             || !Number.isFinite(agent.pendingSince) || agent.pendingSince < 0) return null;
         const elapsedMs = nowMs - agent.pendingSince;
         return elapsedMs >= 60_000 ? { kind: 'watching', elapsedMs } : null;

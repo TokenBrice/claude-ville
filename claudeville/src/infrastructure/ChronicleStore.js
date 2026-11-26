@@ -3,6 +3,7 @@ import { eventBus } from '../domain/events/DomainEvent.js';
 const DB_NAME = 'claudeville-chronicle';
 const DB_VERSION = 7;
 const LEASE_KEY = 'claudeville.chronicle.captureLease';
+const META_LEASE_KEY = 'metaWriterLease';
 const DEFAULT_LEASE_TTL_MS = 7000;
 const LIFETIME_COUNTS_META_KEY = 'lifetimeCounts';
 const LIFETIME_COMMIT_ID_LIMIT = 4096;
@@ -278,6 +279,7 @@ export class ChronicleStore {
             ? new BroadcastChannel(DB_NAME + this.storageNamespace)
             : null;
         this._leaseToken = null;
+        this._metaLeaseToken = randomToken();
         this._lastLeaseNotice = 0;
         this._lifetimeCounts = null;
         this._recentCommitIds = null;
@@ -647,11 +649,7 @@ export class ChronicleStore {
 
     /** Spec 04 §5.4 — mark one quarter-hour (0..95) present in `meta` key `coverage:<dateKey>`. */
     async markCoverageQuarter(dateKey, quarterIndex) {
-        const key = coverageMetaKey(dateKey);
-        const existing = await this.getMeta(key, EMPTY_COVERAGE_MASK);
-        const next = setCoverageQuarter(existing, quarterIndex);
-        await this.setMeta(key, next);
-        return next;
+        return this._writeMetaSample(coverageMetaKey(dateKey), mask => setCoverageQuarter(mask, quarterIndex));
     }
 
     /** Spec 04 §5.4 — 24-element hourly sky codes for `dateKey`, or null when missing. */
@@ -664,12 +662,11 @@ export class ChronicleStore {
     async recordSkyHour(dateKey, hour, code) {
         const h = Math.trunc(Number(hour));
         if (!Number.isInteger(h) || h < 0 || h >= SKY_HOURS) return null;
-        const key = skyMetaKey(dateKey);
-        const existing = await this.getMeta(key, null);
-        const slots = normalizeDaySky(existing);
-        slots[h] = normalizeSkyCode(code);
-        await this.setMeta(key, slots);
-        return slots;
+        return this._writeMetaSample(skyMetaKey(dateKey), existing => {
+            const slots = normalizeDaySky(existing);
+            slots[h] = normalizeSkyCode(code);
+            return slots;
+        });
     }
 
     async _loadLifetimeCounts() {
@@ -917,6 +914,41 @@ export class ChronicleStore {
             });
         }
         return records.length;
+    }
+
+    // Claim the writer and update the sample in one transaction, even when tabs wake together.
+    async _writeMetaSample(key, update) {
+        await this.open();
+        const tx = this.db.transaction('meta', 'readwrite');
+        const done = txDone(tx);
+        const meta = tx.objectStore('meta');
+        const lease = meta.get(META_LEASE_KEY);
+        let value = null;
+        lease.onsuccess = () => {
+            const current = lease.result;
+            const ts = nowMs();
+            if (current?.token !== this._metaLeaseToken && current?.expiresAt > ts) return;
+            const row = meta.get(key);
+            row.onsuccess = () => {
+                value = update(row.result?.value);
+                meta.put({ key, value, ts });
+                meta.put({ key: META_LEASE_KEY, token: this._metaLeaseToken, expiresAt: ts + COVERAGE_WRITE_INTERVAL_MS + DEFAULT_LEASE_TTL_MS });
+            };
+        };
+        await done;
+        return value;
+    }
+
+    async releaseMetaLease() {
+        if (!this.db) return;
+        const tx = this.db.transaction('meta', 'readwrite');
+        const done = txDone(tx);
+        const meta = tx.objectStore('meta');
+        const lease = meta.get(META_LEASE_KEY);
+        lease.onsuccess = () => {
+            if (lease.result?.token === this._metaLeaseToken) meta.delete(META_LEASE_KEY);
+        };
+        await done;
     }
 
     acquireCaptureLease({ ttlMs = DEFAULT_LEASE_TTL_MS } = {}) {

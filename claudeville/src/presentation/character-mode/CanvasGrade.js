@@ -745,7 +745,7 @@ export function emitterNightCarry(grade) {
  *
  * NE P3.4 — Canvas keeps its declared lower tier with no villager moonlight rim.
  */
-export function buildEmitterCut(albedo, emissive, grade = null) {
+export function buildEmitterCut(albedo, emissive, grade = null, backing = {}) {
     const width = albedo?.width | 0;
     const height = albedo?.height | 0;
     if (!width || !height || emissive?.width !== width || emissive?.height !== height) return null;
@@ -776,14 +776,14 @@ export function buildEmitterCut(albedo, emissive, grade = null) {
     if (x1 < 0) return null;
     const cutWidth = x1 - x0 + 1;
     const cutHeight = y1 - y0 + 1;
-    const canvas = document.createElement('canvas');
-    canvas.width = cutWidth;
-    canvas.height = cutHeight;
+    const canvas = backing.canvas ||= document.createElement('canvas');
+    if (canvas.width !== cutWidth) canvas.width = cutWidth;
+    if (canvas.height !== cutHeight) canvas.height = cutHeight;
     const ctx = canvas.getContext('2d');
     const image = ctx.createImageData(cutWidth, cutHeight);
-    const bloom = document.createElement('canvas');
-    bloom.width = cutWidth;
-    bloom.height = cutHeight;
+    const bloom = backing.bloom ||= document.createElement('canvas');
+    if (bloom.width !== cutWidth) bloom.width = cutWidth;
+    if (bloom.height !== cutHeight) bloom.height = cutHeight;
     const bloomCtx = bloom.getContext('2d');
     const bloomImage = bloomCtx.createImageData(cutWidth, cutHeight);
     const nightCarry = emitterNightCarry(grade);

@@ -545,16 +545,18 @@ function overBaseEmissiveStrip(assets, entry, draw) {
 // 6.1 — a manifest part's cut (the Pharos lamp and lens, portal runes, the
 // Task board lanterns, every cycled emitter), from the draw's own image and
 // the channel strip the GPU part record emits through, cached per strip.
-function partCutFor(assets, buildings, entry, draw, grade = null) {
+export function partCutFor(assets, buildings, entry, draw, grade = null) {
     const channels = buildings.partChannelsFor?.(entry, draw);
-    const key = `part|${draw.textureKey}|${channels?.key || ''}`;
+    const key = `part|${draw.id || `${entry.id}.${draw.name}`}`;
+    const revision = `${draw.textureRevision ?? draw.textureKey}|${channels?.key || ''}`;
     const carryStep = nightCarryStepFor(grade);
     const cached = cuts.get(key);
-    if (cached && cached.carryStep === carryStep) return cached.cut;
+    if (cached?.revision === revision && cached.carryStep === carryStep) return cached.cut;
     const emissive = channels?.emissive || overBaseEmissiveStrip(assets, entry, draw);
     if (!emissive) return null;
-    const cut = buildEmitterCut(draw.image, emissive, quantisedGradeForStep(carryStep));
-    cuts.set(key, { carryStep, cut });
+    const backing = cached?.backing || {};
+    const cut = buildEmitterCut(draw.image, emissive, quantisedGradeForStep(carryStep), backing);
+    cuts.set(key, { revision, carryStep, backing, cut });
     return cut;
 }
 

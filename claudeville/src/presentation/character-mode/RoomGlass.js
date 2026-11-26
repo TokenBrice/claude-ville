@@ -428,7 +428,7 @@ export class RoomGlass {
      * full alpha whatever the group's share, and any ink makes a patch even
      * when every pane is fully lit.
      */
-    patch(type, gateFor, nightGateFor = null, shadowFor = null) {
+    patch(type, gateFor, nightGateFor = null, shadowFor = null, rhythmFor = null) {
         const map = this.map(type);
         if (!map?.albedo) return null;
         const unlitSteps = new Array(map.rooms + 1);
@@ -440,7 +440,7 @@ export class RoomGlass {
             const rawGate = gateFor(group);
             const rawNight = nightGateFor ? nightGateFor(group) : rawGate;
             const night = nightLitStep(rawNight);
-            const lit = night > 0 ? nightLitStep(rawGate) : litStep(rawGate);
+            const lit = night > 0 ? nightLitStep(rawGate) * (rhythmFor?.(group) ?? 1) : litStep(rawGate);
             if (lit > 0 && night === 0 && map.emissive) {
                 dayShares[group] = lit;
                 unlitSteps[group] = 0;
@@ -451,7 +451,7 @@ export class RoomGlass {
                 dayShares[group] = 0;
                 unlitSteps[group] = 1 - lit;
                 if (unlitSteps[group] > 0) any = true;
-                key += `U${Math.round(unlitSteps[group] * NIGHT_ROOM_GLASS_STEPS)}`;
+                key += `U${lit}`;
             }
         }
         const plan = shadowPlan(map, shadowFor);
@@ -536,17 +536,17 @@ export class RoomGlass {
      * empty (no albedo, no emissive), so the all-unlit base patch under this
      * part shows the same silhouette `patch` paints when the gate is up.
      */
-    litPatch(type, nightGateFor, shadowFor = null) {
+    litPatch(type, nightGateFor, shadowFor = null, rhythmFor = null) {
         const map = this.map(type);
         if (!map?.albedo || !map?.emissive || !(map.rooms > 0)) return null;
         const steps = new Array(map.rooms + 1).fill(0);
         let key = '';
         let any = false;
         for (let group = 1; group <= map.rooms; group++) {
-            const step = nightLitStep(nightGateFor(group));
+            const step = nightLitStep(nightGateFor(group)) * (rhythmFor?.(group) ?? 1);
             steps[group] = step;
             if (step > 0) any = true;
-            key += `${Math.round(step * NIGHT_ROOM_GLASS_STEPS)},`;
+            key += `${step},`;
         }
         if (!any) return null;
         const plan = shadowPlan(map, shadowFor);

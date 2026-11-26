@@ -744,9 +744,9 @@ export class BuildingSprite {
 
     // Spec 04 §3.3 — one-frame cream keeper-lamp flash when a verified `gh pr checks`
     // pass lands in HarborTraffic (no-op under reduced motion).
-    triggerWatchtowerChecksFlash(now = Date.now()) {
+    triggerWatchtowerChecksFlash() {
         if ((this.motionScale ?? 1) <= 0) return;
-        this._watchtowerChecksFlashUntil = Math.max(this._watchtowerChecksFlashUntil || 0, now + 120);
+        this._watchtowerChecksFlash = true;
     }
 
     setBuildings(map) {
@@ -5648,12 +5648,23 @@ export class BuildingSprite {
     // courses 1-3, a strictly horizontal edge-on flare leaves the glass at lamp
     // height (longer in fog). Reduced motion shows the steady lamp only.
     _drawWatchtowerFire(ctx, beacon) {
-        if (lampCourseFor(this.atmosphereState) < LAMP_COURSE_LAMPLIGHT) return;
+        if (lampCourseFor(this.atmosphereState) >= LAMP_COURSE_LAMPLIGHT) this._drawPharosLamp(ctx, beacon);
+        if (!this._watchtowerChecksFlash) return;
+        this._watchtowerChecksFlash = false;
+        if ((this.motionScale ?? 1) <= 0) return;
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = 0.92;
+        ctx.fillStyle = ART_RAMPS.beaconFire[6];
+        this._fillPixelCircle(ctx, Math.round(beacon.x), Math.round(beacon.y), 6);
+        ctx.restore();
+    }
+
+    _drawPharosLamp(ctx, beacon) {
         const ms = this._partClockMs();
         const motionScale = this.motionScale ?? 1;
         const breath = fireBreath(ms, 'fire:watchtower', motionScale);
         const flash = pharosFlashCourseAt(ms, this._lighthouseWatched(), motionScale);
-        const checksCreamFlash = motionScale > 0 && Date.now() < (this._watchtowerChecksFlashUntil || 0);
         const ox = Math.round(beacon.x);
         const oy = Math.round(beacon.y);
         const [, , , rim, mid, hot, core] = ART_RAMPS.beaconFire;
@@ -5667,7 +5678,7 @@ export class BuildingSprite {
         this._fillDitheredCircle(ctx, ox, oy, 18 + course + flash, 12, 0.2 + 0.03 * flash, mid);
         for (const [radius, alpha, color] of [
             [10 + course + flash, 0.32 + 0.06 * flash, hot],
-            [5 + (flash >= 2 || checksCreamFlash ? 1 : 0), checksCreamFlash ? 0.92 : (0.5 + 0.15 * flash), checksCreamFlash ? '#fff6d6' : core],
+            [5 + (flash >= 2 ? 1 : 0), 0.5 + 0.15 * flash, core],
         ]) {
             ctx.globalAlpha = alpha;
             ctx.fillStyle = color;
@@ -6108,7 +6119,7 @@ export class BuildingSprite {
     // amber by day at DAYTIME_ROOM_GLASS_SHARE (0.75) and rise to full 1.0 at
     // night; keeper (0.40) and routing (0.6) tiers are night-only so daytime
     // frames remain unchanged. Light pools keep reading `_roomApertureGate`.
-    roomGlassGate(type, roomIndex) {
+    roomGlassGate(type, roomIndex, rhythm = true) {
         const lit = this._roomLitByType.get(type);
         const value = lit ? lit[roomIndex] || 0 : 0;
         if (!(value > 0) || this._roomUnderOpenAperture(type, roomIndex)) return 0;
@@ -6117,7 +6128,7 @@ export class BuildingSprite {
         const worked = !slots || this._roomHeldByWorker(slots, roomIndex);
         if (night <= 0) return worked ? value * DAYTIME_ROOM_GLASS_SHARE : 0;
         // W3.1 — a Forge rhythm pane dips one rung on its smith's contact.
-        return value * (worked ? Math.max(DAYTIME_ROOM_GLASS_SHARE, night) : night) * this._roomRhythmDip(type, roomIndex);
+        return value * (worked ? Math.max(DAYTIME_ROOM_GLASS_SHARE, night) : night) * (rhythm ? this._roomRhythmDip(type, roomIndex) : 1);
     }
 
     _roomUnderOpenAperture(type, roomIndex) {
@@ -6141,7 +6152,7 @@ export class BuildingSprite {
     // Command or Archive pane is one) is never lit: only a room a worker holds
     // glows, so N workers light exactly min(N, rooms) glass shapes.
     _glassGroupGate(type, group) {
-        return group > 0 ? this.roomGlassGate(type, group - 1) : 0;
+        return group > 0 ? this.roomGlassGate(type, group - 1, false) : 0;
     }
 
     _nightGlassGroupGate(type, group) {
@@ -6168,6 +6179,7 @@ export class BuildingSprite {
             (group) => this._glassGroupGate(type, group),
             (group) => this._nightGlassGroupGate(type, group),
             (group) => this.shadowFor(type, group),
+            (group) => this._roomRhythmDip(type, group - 1),
         );
     }
 
@@ -6288,6 +6300,7 @@ export class BuildingSprite {
             type,
             (group) => this._nightGlassGroupGate(type, group),
             (group) => this.shadowFor(type, group),
+            (group) => this._roomRhythmDip(type, group - 1),
         );
         if (!lit) return null;
         const textureKey = `proc:building.${type}.roomGlassLit`;

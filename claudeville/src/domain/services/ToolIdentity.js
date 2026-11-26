@@ -386,7 +386,7 @@ const MULTI_TOOL_NAMES = new Set([
     'multi_tool_use.parallel',
 ]);
 
-const SHELL_TOOL_NAMES = new Set([
+export const SHELL_TOOL_NAMES = new Set([
     'Bash',
     'run_command',
     'run_shell_command',

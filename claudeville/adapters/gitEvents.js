@@ -2737,6 +2737,7 @@ function parseGitEventsFromCommand(command, context = {}, options = {}) {
         type: 'checks',
         check,
         watch: check.source === 'run' ? true : ghFlagEnabled(scan, '--watch'),
+        formatted: ['--json', '--jq', '-q', '--template', '-t'].some(flag => scan.flags.has(flag)),
         exitStatusFlag: check.source === 'run' ? ghFlagEnabled(scan, '--exit-status') : false,
         pr: check.source === 'pr' ? parseGhChecksPrNumber(scan.positionals[0]) : null,
       };
@@ -2938,7 +2939,7 @@ function parseGitEventsFromCommand(command, context = {}, options = {}) {
       if (takesExitCode) {
         if (candidate.check.source === 'pr') {
           if (effectiveExitCode === 0) {
-            checkOutcome = 'pass';
+            checkOutcome = candidate.formatted ? 'unknown' : 'pass';
           } else if (effectiveExitCode === 8 && effectiveExitCodeSource === 'exit') {
             checkOutcome = 'pending';
           } else if (

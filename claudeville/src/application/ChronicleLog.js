@@ -162,7 +162,7 @@ export class ChronicleLog {
         this._waitingSince = new Map();
         this._seenGitEvents = new Set();
         this._seenCompactions = new Set();
-        this._seenReleases = new Set();
+        this._seenReleases = new Map();
         this._presentIds = new Set();   // arrived today, no departure since
         this._writeTail = Promise.resolve();
         this._seq = 0;
@@ -174,7 +174,7 @@ export class ChronicleLog {
         this._mendSeen = new Set();
         this._skyProvider = typeof skyProvider === 'function' ? skyProvider : null;
         this._metaTimer = null;
-        this._captureLease = null;
+        this._metaSample = null;
         this._lastSkyHourKey = null;
     }
 
@@ -228,7 +228,11 @@ export class ChronicleLog {
         };
 
         this._onMended = (mend) => this._noteMend(mend);
-        this._onVerifiedOutcome = (outcome) => this._noteVerifiedOutcome(outcome);
+        this._onVerifiedOutcome = outcome => {
+            if (outcome?.kind !== 'release') return;
+            if (this._replayed) this._noteVerifiedOutcome(outcome);
+            else this._replayPromise.then(() => this._noteVerifiedOutcome(outcome));
+        };
 
         eventBus.on('agent:added', this._onAdded);
         eventBus.on('agent:updated', this._onUpdated);
@@ -240,7 +244,7 @@ export class ChronicleLog {
 
     stop() {
         if (this._stopPromise) return this._stopPromise;
-        this.stopMetaSampling();
+        const stoppedSampling = this.stopMetaSampling();
         if (this.running) {
             this.running = false;
             eventBus.off('agent:added', this._onAdded);
@@ -253,7 +257,7 @@ export class ChronicleLog {
                 eventBus.emit('chronicle:log-stopped', this);
             }
         }
-        this._stopPromise = this.flush();
+        this._stopPromise = Promise.all([this.flush(), stoppedSampling]).then(() => undefined);
         return this._stopPromise;
     }
 
@@ -326,8 +330,7 @@ export class ChronicleLog {
                     if (event.compactionKey) this._seenCompactions.add(event.compactionKey);
                     else if (event.agentId && event.ts) this._seenCompactions.add(`${event.agentId}:${event.ts}`);
                 } else if (event.kind === ChronicleEventKind.RELEASE) {
-                    if (event.releaseKey) this._seenReleases.add(event.releaseKey);
-                    else if (event.ts) this._seenReleases.add(`${event.project || ''}:${event.agentId || ''}:${event.ts}`);
+                    this._rememberRelease(event.releaseProject ?? event.project, event.agentId, event.ts);
                 }
                 return null;
             });
@@ -385,25 +388,6 @@ export class ChronicleLog {
         for (const event of agent.gitEvents || []) {
             if (!event?.id) continue;
             const type = String(event.type || '').toLowerCase();
-            if (type === 'release') {
-                const verified = event.dryRun !== true && (event.success === true || Number(event.exitCode) === 0);
-                if (verified) {
-                    const ts = Number(event.completedAt || event.ts || 0);
-                    if (ts && Date.now() - ts <= 60 * 60 * 1000) {
-                        const releaseKey = `${projectName(agent?.projectPath) || ''}:${agent?.id || ''}:${ts}`;
-                        if (!this._seenReleases.has(releaseKey) && !this._seenReleases.has(event.id)) {
-                            this._seenReleases.add(releaseKey);
-                            this._seenReleases.add(event.id);
-                            this.record(ChronicleEventKind.RELEASE, agent, {
-                                ts,
-                                label: event.tag || event.label || null,
-                                releaseKey,
-                            });
-                        }
-                    }
-                }
-                continue;
-            }
             if (type !== 'commit' && type !== 'push') continue;
             // #10 / R7 — a push is one occurrence: its own event id (which
             // carries the chain segment), never a shared commandHash or
@@ -489,18 +473,25 @@ export class ChronicleLog {
         }
     }
 
+    _rememberRelease(project, agentId, ts) {
+        const key = JSON.stringify([project || '', agentId || '']);
+        const times = this._seenReleases.get(key) || [];
+        const displayKey = JSON.stringify([projectName(project) || '', agentId || '']);
+        const nearby = at => Math.abs(at - ts) < 60_000;
+        if (times.some(nearby) || (key !== displayKey && this._seenReleases.get(displayKey)?.some(nearby))) return false;
+        this._seenReleases.delete(key);
+        this._seenReleases.set(key, [...times.filter(at => Date.now() - at <= 3_600_000), ts]);
+        if (this._seenReleases.size > 2000) this._seenReleases.delete(this._seenReleases.keys().next().value);
+        return true;
+    }
+
     // Spec 04 §5.4 — log `RELEASE` when a verified outcome is a release.
     _noteVerifiedOutcome(outcome) {
         if (!outcome || outcome.kind !== 'release') return;
         const ts = Number(outcome.at) || Date.now();
         if (Date.now() - ts > 60 * 60 * 1000) return;
         const proj = projectName(outcome.project) || (outcome.project ? String(outcome.project) : null);
-        const releaseKey = `${proj || ''}:${outcome.agentId || ''}:${ts}`;
-        if (this._seenReleases.has(releaseKey)) return;
-        this._seenReleases.add(releaseKey);
-        if (this._seenReleases.size > 2000) {
-            this._seenReleases = new Set([...this._seenReleases].slice(-1000));
-        }
+        if (!this._rememberRelease(outcome.project, outcome.agentId, ts)) return;
         this.record(ChronicleEventKind.RELEASE, {
             id: outcome.agentId || null,
             name: null,
@@ -510,20 +501,14 @@ export class ChronicleLog {
             ts,
             project: proj,
             label: outcome.label || null,
-            releaseKey,
+            releaseProject: boundedText(outcome.project, 2048),
+            releaseKey: `${proj || ''}:${outcome.agentId || ''}:${ts}`,
         });
     }
 
     /** Spec 04 §5.4 — record one 96-bit presence quarter in `meta` (`coverage:<dateKey>`). */
-    async recordCoverageQuarter(ts = Date.now(), { requireLease = false } = {}) {
+    async recordCoverageQuarter(ts = Date.now()) {
         if (!this.store) return null;
-        if (requireLease && typeof this.store.acquireCaptureLease === 'function') {
-            const held = this._captureLease?.renew?.() === true;
-            if (!held) {
-                this._captureLease = this.store.acquireCaptureLease();
-                if (!this._captureLease?.acquired) return null;
-            }
-        }
         const dateKey = chronicleDateKey(ts);
         const quarter = quarterIndexForTime(ts);
         if (typeof this.store.markCoverageQuarter === 'function') {
@@ -588,22 +573,21 @@ export class ChronicleLog {
     startMetaSampling({ intervalMs = COVERAGE_WRITE_INTERVAL_MS, skyProvider = this._skyProvider } = {}) {
         if (typeof skyProvider === 'function') this._skyProvider = skyProvider;
         if (this._metaTimer || typeof setInterval !== 'function') return;
-        const tick = () => {
-            const now = Date.now();
-            this.recordCoverageQuarter(now, { requireLease: true }).catch(() => {});
-            if (typeof this._skyProvider === 'function') {
-                const hourKey = `${chronicleDateKey(now)}:${new Date(now).getHours()}`;
-                if (hourKey !== this._lastSkyHourKey) {
-                    const code = this._skyProvider(now);
-                    if (code) {
-                        this._lastSkyHourKey = hourKey;
-                        this.recordSkyHour(code, now).catch(() => {});
-                    }
-                }
-            }
+        const sampleSky = async now => {
+            const hourKey = `${chronicleDateKey(now)}:${new Date(now).getHours()}`;
+            if (hourKey === this._lastSkyHourKey) return;
+            const code = this._skyProvider?.(now);
+            if (code && await this.recordSkyHour(code, now)) this._lastSkyHourKey = hourKey;
         };
-        tick();
+        const tick = () => {
+            if (this._metaSample) return this._metaSample;
+            const now = Date.now();
+            this._metaSample = Promise.allSettled([this.recordCoverageQuarter(now), sampleSky(now)])
+                .finally(() => { this._metaSample = null; });
+            return this._metaSample;
+        };
         this._metaTimer = setInterval(tick, intervalMs);
+        void tick();
         this._metaTimer.unref?.();
     }
 
@@ -611,9 +595,8 @@ export class ChronicleLog {
         if (this._metaTimer) {
             clearInterval(this._metaTimer);
             this._metaTimer = null;
+            return Promise.resolve(this._metaSample).then(() => this.store?.releaseMetaLease?.()).catch(() => {});
         }
-        this._captureLease?.release?.();
-        this._captureLease = null;
     }
 
     // #10 — a push logs once per occurrence and outcome, labelled by its own

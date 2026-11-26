@@ -853,24 +853,37 @@ export function tankardStamp(mirror = false) {
     return canvas;
 }
 
+let restSeatVisualBeat = null;
+
+export function setRestSeatVisualBeat(beat) {
+    restSeatVisualBeat = beat;
+}
+
 // The sip step (an index into TANKARD_SIP_LIFT) at `now` for patron
 // `agentId`, or -1 between sips and under reduced motion.
-export function tankardSipStep(agentId, now, motion = true) {
+export function tankardSipStep(agentId, now, motion = true, visualBeat = restSeatVisualBeat) {
     if (!motion) return -1;
     let hash = 2166136261;
     const key = String(agentId ?? '');
     for (let i = 0; i < key.length; i++) hash = Math.imul(hash ^ key.charCodeAt(i), 16777619);
     hash >>>= 0;
     const period = TANKARD_SIP_MIN_MS + (hash % (TANKARD_SIP_MAX_MS - TANKARD_SIP_MIN_MS));
-    const t = (now + (hash % period)) % period;
+    let t = (now + (hash % period)) % period;
+    if (visualBeat?.active()) {
+        // ScoreTap uses monotonic time. Move the nearest seeded sip, including one just ahead.
+        if (t > period / 2) t -= period;
+        const onset = now - t - performance.timeOrigin;
+        const cadence = visualBeat.cadenceNear(onset, 1000);
+        if (cadence != null) t += onset - cadence;
+    }
     const step = Math.floor(t / TANKARD_SIP_STEP_MS);
-    return step < TANKARD_SIP_LIFT.length ? step : -1;
+    return step >= 0 && step < TANKARD_SIP_LIFT.length ? step : -1;
 }
 
 // Texels the tankard stands above its rest at `now` for patron `agentId`:
 // 0 between sips, a TANKARD_SIP_LIFT step during one.
-export function tankardLift(agentId, now, motion = true) {
-    const step = tankardSipStep(agentId, now, motion);
+export function tankardLift(agentId, now, motion = true, visualBeat = restSeatVisualBeat) {
+    const step = tankardSipStep(agentId, now, motion, visualBeat);
     return step < 0 ? 0 : TANKARD_SIP_LIFT[step];
 }
 

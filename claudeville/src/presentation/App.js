@@ -49,9 +49,22 @@ import { overlayContextAttributes } from './shared/DisplaySettings.js';
 import { isKeyboardEditTarget } from './dashboard-mode/DashboardKeyboardNavigation.js';
 
 import { AssetManager } from './character-mode/AssetManager.js';
+import { precipitationIsFrozen } from './character-mode/GroundState.js';
+import { setRestSeatVisualBeat } from './character-mode/RestSeats.js';
 import { createAtmosphereSnapshot } from './character-mode/AtmosphereState.js';
 import { effectiveCanvasDpr } from './character-mode/CanvasBudget.js';
 import { paintRevealBands } from './character-mode/RevealBands.js';
+
+export function chronicleSkyCode(snap) {
+    const wx = snap?.weather;
+    if (!wx) return null;
+    return {
+        cloud: Math.round(Math.max(0, Math.min(1, Number(wx.cloudCover) || 0)) * 3),
+        rain: wx.type === 'rain' || wx.type === 'storm' ? (wx.type === 'storm' ? 2 : 1) : 0,
+        snow: precipitationIsFrozen(snap.effectiveDate?.getMonth(), wx) ? 1 : 0,
+        moon: Math.round(Math.max(0, Math.min(1, Number(snap.sky?.moon?.phase?.illumination ?? snap.sky?.moon?.illumination ?? 0))) * 3),
+    };
+}
 
 const LIFECYCLE_DRAIN_TIMEOUT_MS = 2000;
 const INITIAL_WEBSOCKET_TIMEOUT_MS = 2500;
@@ -500,17 +513,7 @@ export class App {
         if (!this.chronicleLog) {
             this.chronicleLog = new ChronicleLog({ store: this.chronicleStore }).start();
             this.chronicleLog.startMetaSampling?.({
-                skyProvider: () => {
-                    const snap = this.renderer?._lastAtmosphere;
-                    const wx = snap?.weather;
-                    if (!wx) return null;
-                    return {
-                        cloud: Math.round(Math.max(0, Math.min(1, Number(wx.cloudCover) || 0)) * 3),
-                        rain: wx.type === 'rain' || wx.type === 'storm' ? (wx.type === 'storm' ? 2 : 1) : 0,
-                        snow: wx.frozen === true ? 1 : 0,
-                        moon: Math.round(Math.max(0, Math.min(1, Number(snap?.sky?.moon?.illumination) || 0)) * 3),
-                    };
-                },
+                skyProvider: () => chronicleSkyCode(this.renderer?._lastAtmosphere),
             });
         }
         if (!this.spendLedger) {
@@ -525,6 +528,14 @@ export class App {
             };
         }
         if (!this.topBar) {
+            let previousBeat;
+            const onVisualBeatChange = beat => {
+                if (beat === previousBeat) return;
+                previousBeat = beat;
+                setRestSeatVisualBeat(beat);
+                this.renderer?.setVisualBeat?.(beat);
+            };
+            this._eventUnsubscribers.push(eventBus.on('audio:visual-beat', ({ beat }) => onVisualBeatChange(beat)));
             this.topBar = new TopBar(this.world, {
                 modal: this.modal,
                 attention: this.attentionService,
@@ -533,7 +544,8 @@ export class App {
                 readDashboardAtmosphere: () => this._readDashboardAtmosphere(),
                 simulation: this.simMode,
                 refreshAtmosphere: snapshot => this.renderer?.atmosphereState?.update({ now: snapshot.effectiveDate }),
-                onAudioReady: (audio) => this.renderer?.setVisualBeat?.(audio?.getVisualBeat?.() ?? null),
+                onVisualBeatChange,
+                onAudioReady: audio => onVisualBeatChange(audio?.getVisualBeat?.() ?? null),
                 frameAttention: () => {
                     if (this.modeManager?.getCurrentMode() === 'dashboard') return false;
                     this.renderer?.cameraDirector?.frameAttention(this.renderer.agentSprites);
@@ -1345,6 +1357,7 @@ export class App {
                 return;
             }
             if (!renderer) return;
+            renderer.setVisualBeat?.(this.topBar?.audio?.getVisualBeat?.() ?? null);
             renderer.armFirstFrameSignal?.('return');
         }));
     }

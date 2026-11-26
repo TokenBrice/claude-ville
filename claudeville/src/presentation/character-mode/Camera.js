@@ -825,6 +825,14 @@ export class Camera {
         return this.zoomTiers[currentIndex];
     }
 
+    get restZoomTarget() {
+        return Number.isFinite(this._zoomAnimation?.toZoom) ? this._zoomAnimation.toZoom : this.zoom;
+    }
+
+    get targetZoom() {
+        return this.restZoomTarget;
+    }
+
     // C6 — the frame owner an operator can reason about: 'user' while their own
     // pose stands, 'auto' for today's timed director, or the exclusive claim
     // held by Ambient (5.1/5.2).

@@ -1270,6 +1270,7 @@ export class HarborTraffic {
         // one-shot Lighthouse keeper lamp flash hook for `pass`.
         this._checksByShipId = new Map();
         this._seenChecksIds = new Set();
+        this._checksSnapshotAt = null;
         this._pendingChecksPassFlash = false;
         // #18 — repos seen at least once, so a brand-new repo's first anchorage
         // can fire a one-time christening (maiden banner) and skip it thereafter.
@@ -4348,7 +4349,7 @@ export class HarborTraffic {
      * Ingest verified `checks` git events directly (called from `reconcile` and
      * available for focused unit testing).
      */
-    observeChecksEvents(events = [], now = Date.now()) {
+    observeChecksEvents(events = [], now = Date.now(), liveAfter = 0) {
         const list = [];
         for (const raw of Array.isArray(events) ? events : []) {
             if (!raw || String(raw.type || '').toLowerCase() !== 'checks') continue;
@@ -4370,7 +4371,7 @@ export class HarborTraffic {
                 while (this._seenChecksIds.size > MAX_SEEN_CHECKS_IDS) {
                     this._seenChecksIds.delete(this._seenChecksIds.values().next().value);
                 }
-                if (!expired) this._pendingChecksPassFlash = true;
+                if (!expired && item.at > liveAfter && item.at <= now) this._pendingChecksPassFlash = true;
             }
             const cutter = this._matchPrCutterForChecks(item.project, item.pr);
             if (!cutter) continue;
@@ -4414,8 +4415,9 @@ export class HarborTraffic {
                 }
             }
         }
+        if (this._checksSnapshotAt === null && agents?.length) this._checksSnapshotAt = now;
         if (checks.length || this._checksByShipId.size > 0) {
-            this.observeChecksEvents(checks, now);
+            this.observeChecksEvents(checks, now, this._checksSnapshotAt);
         }
     }
 

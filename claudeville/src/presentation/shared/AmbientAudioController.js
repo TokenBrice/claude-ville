@@ -166,7 +166,7 @@ export class AmbientAudioController {
     // the sound control itself (the chip or its popover), which decides on
     // its own; `reducedMotion()` is the effective Reduce motion, which
     // *Soften sudden sounds* follows on `auto`.
-    constructor({ world, ownsGesture, reducedMotion } = {}) {
+    constructor({ world, ownsGesture, reducedMotion, onVisualBeatChange } = {}) {
         this.world = world || null;
         this._ownsGesture = typeof ownsGesture === 'function' ? ownsGesture : null;
         this._reducedMotion = typeof reducedMotion === 'function' ? reducedMotion : null;
@@ -224,6 +224,7 @@ export class AmbientAudioController {
         this._view = null;
 
         this._visualBeat = null;
+        this._onVisualBeatChange = onVisualBeatChange;
         this.engine = new AudioEngine();
         this._quietActive = this._quietHoursNow();
         this.volumeStep = readPresetVolumeStep(this._effectiveMode());
@@ -436,16 +437,24 @@ export class AmbientAudioController {
             && this.directors.bgm._atmosphere?.motion?.particleEnabled !== false;
     }
 
+    _setVisualBeat(beat) {
+        if (this._visualBeat === beat) return;
+        this._visualBeat?.dispose();
+        this._visualBeat = beat;
+        this._onVisualBeatChange?.(beat);
+        eventBus.emit('audio:visual-beat', { beat });
+    }
+
     getVisualBeat() {
         const band = this.directors.bgm;
-        if (!this._visualBeatEnabled() || this.engine.context?.state !== 'running') {
-            this._visualBeat?.dispose();
-            this._visualBeat = null;
-        } else if (!this._visualBeat && band.player && this.engine.musicClock.playing(this.engine.now())) {
-            this._visualBeat = createVisualBeat({
+        if (!this._visualBeatEnabled() || this.engine.context?.state !== 'running'
+            || !band.player || !this.engine.musicClock.playing(this.engine.now())) {
+            this._setVisualBeat(null);
+        } else if (!this._visualBeat) {
+            this._setVisualBeat(createVisualBeat({
                 engine: this.engine, sequencer: band.player, musicClock: this.engine.musicClock,
                 isEnabled: () => this._visualBeatEnabled(),
-            });
+            }));
         }
         return this._visualBeat?.active() ? this._visualBeat : null;
     }
@@ -641,8 +650,7 @@ export class AmbientAudioController {
     _stopDirector(id) {
         this._cancelCrossfadeStop(id);
         if (id === 'bgm') {
-            this._visualBeat?.dispose();
-            this._visualBeat = null;
+            this._setVisualBeat(null);
         }
         this.directors[id].stop();
     }
